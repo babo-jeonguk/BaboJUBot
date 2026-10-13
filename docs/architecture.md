@@ -1,6 +1,6 @@
 # 전체 구조
 
-BaboJUBot의 큰 module, module 사이 seam, 각 seam에서 주고받는 것의 모양, 제품 불변 조건을 강제하는 위치를 정합니다. 2026-10-13 사용자와 합의한 첫 번째 구조이며 제품 코드는 아직 없습니다. 언어·프레임워크·DB·프로세스 분리, 데이터 형식, 도구 선택은 [다음 단계로 넘긴 결정](#다음-단계로-넘긴-결정)에서 이어서 정합니다. 용어는 [`GLOSSARY.md`](../GLOSSARY.md)를 따르고, 구조를 고른 이유는 [`docs/adr/`](adr/)에 있습니다.
+BaboJUBot의 큰 module, module 사이 seam, 각 seam에서 주고받는 것의 모양, 제품 불변 조건을 강제하는 위치를 정합니다. 2026-10-13 사용자와 합의한 첫 번째 구조이며 제품 코드는 아직 없습니다. 스택은 [ADR-0004](adr/0004-paperclip-aligned-stack.md)를 따르고, 데이터 형식과 세부 도구 선택은 [다음 단계로 넘긴 결정](#다음-단계로-넘긴-결정)에서 이어서 정합니다. 용어는 [`GLOSSARY.md`](../GLOSSARY.md)를 따르고, 구조를 고른 이유는 [`docs/adr/`](adr/)에 있습니다.
 
 ## Module
 
@@ -24,6 +24,20 @@ BaboJUBot의 큰 module, module 사이 seam, 각 seam에서 주고받는 것의 
 | Agent Runtime | 실행 시도를 외부 실행기로 수행하고 외부 job을 실행 수단에 맡깁니다. 자체 agent loop는 두지 않습니다([ADR-0001](adr/0001-adapter-control-plane.md)). | ① 연구 환경 |
 | Memory port | 연구 기록 위의 회수 계층. 기법과 저장 엔진은 기억 이슈에서 정합니다. | ① 연구 환경 |
 | Research Harness | 저장소에서 버전 관리하는 연구용 내용물과 하네스 전용 도구. 연구 판단은 에이전트가 합니다. | ② 연구 하네스 |
+
+## 패키지 구성
+
+| 위치 | 담는 것 | Module |
+|---|---|---|
+| `apps/server` | HTTP·WebSocket API와 실행 시도 실행. 첫 판은 한 프로세스이고 worker 분리는 필요할 때 합니다. | Control Plane, Agent Runtime |
+| `apps/web` | 대시보드 | Surface |
+| `packages/core` | 생애주기·승인 정책·조직 경계 같은 도메인 규칙. 웹 프레임워크와 DB에 의존하지 않습니다. | Control Plane |
+| `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구 | 모든 seam |
+| `packages/db` | Drizzle 스키마와 migration | Control Plane |
+| `packages/runtime` | 실행기 adapter(가짜부터), job runner adapter, 채널 adapter | Agent Runtime, Surface |
+| `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
+
+Memory port는 첫 판에서 `packages/core`의 interface와 `packages/db`의 단순 구현으로 둡니다.
 
 ## Seam
 
@@ -132,8 +146,9 @@ Surface가 받는 것:
 
 ## 다음 단계로 넘긴 결정
 
-- 언어·프레임워크·DB·프로세스 분리와 테스트 도구
+- worker 프로세스 분리 시점
 - 각 seam의 구체 데이터 형식과 조직 도구 노출 방식
+- 연구 지도 그래프 라이브러리(구현 전 prototype)
 - 메시지 앱 선택
 - 기억 기법과 저장 엔진
 - 외부 job 실행 수단과 자격 증명 저장

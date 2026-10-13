@@ -13,7 +13,7 @@ pnpm install --ignore-scripts
 pnpm check
 ```
 
-`pnpm check`는 Markdown 문서의 로컬 링크를 검사합니다. 제품 기능 테스트나 타입 검사를 대신하지 않습니다. 개발 서버·DB·프레임워크·테스트 도구 선택은 첫 walking skeleton 구현에서 결정합니다.
+`pnpm check`는 Markdown 문서의 로컬 링크를 검사합니다. 제품 기능 테스트나 타입 검사를 대신하지 않습니다. 스택은 [ADR-0004](docs/adr/0004-paperclip-aligned-stack.md)로 정했고, 개발 서버·테스트 명령은 첫 walking skeleton 구현에서 추가합니다.
 
 ## 문서
 
