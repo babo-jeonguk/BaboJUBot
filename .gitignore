@@ -1,0 +1,45 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+auth.json
+# Dependencies and generated output
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+.next/
+.vite/
+.turbo/
+*.tsbuildinfo
+# Local research/runtime data (templates remain tracked)
+.babojubot/
+.worktrees/
+/workspaces/
+/artifacts/
+/checkpoints/
+/data/
+/logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+# Python adapters
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+# Local tooling
+.reference-cache/
+.DS_Store
+.idea/
+.vscode/
+.tmp/

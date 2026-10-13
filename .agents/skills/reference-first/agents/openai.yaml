@@ -1,0 +1,6 @@
+interface:
+  display_name: "Reference First"
+  short_description: "Research prior implementations with pinned evidence before implementing"
+  default_prompt: "Use $reference-first for this issue: write the brief, discover references broadly, recon source and behavior with pinned evidence, synthesize adopt/reject patterns, and post the receipt."
+policy:
+  allow_implicit_invocation: false

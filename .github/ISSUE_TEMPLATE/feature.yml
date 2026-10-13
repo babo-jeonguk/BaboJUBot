@@ -1,0 +1,28 @@
+name: 기능 구현
+description: 조사와 결정, 완료 기준을 포함한 기능 제안
+title: "[기능] "
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 문제와 기대 동작
+    validations:
+      required: true
+  - type: textarea
+    id: research
+    attributes:
+      label: 구현 전 조사할 것
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: 결정할 것과 선행 blocker
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 완료 조건과 구현 후 검증
+    validations:
+      required: true
