@@ -15,14 +15,15 @@ disable-model-invocation: true
 - 조사와 권고만 한다. 제품 코드·테스트·설정은 그대로 두고 구현을 시작하지 않는다. 결과는 어떤 방식으로 구현하든 읽을 수 있는 참고 자료로 쓴다.
 - 권고는 확정 계약이 아니다. Issue·`AGENTS.md`·`GLOSSARY.md`·ADR의 결정과 맞지 않는 패턴은 배제하거나
   「상충 — 사용자 판단」으로 남긴다.
-- 자격 증명 없이 볼 수 있는 공개 자료와 OSS만 실행한다. 로그인·유료 API·실제 모델 호출이 필요한 확인은
-  사용자 승인 전까지 「미확인」이다.
+- 자격 증명 없이 볼 수 있는 공개 자료와 OSS만 실행한다. 모델 API가 필요한 OSS는 mock provider를 붙여
+  돌린다([references/recon.md](references/recon.md) 「Self-host」). 로그인·유료 API·실제 모델 호출이 필요한
+  확인은 사용자 승인 전까지 「미확인」이다.
 
 ## 산출물
 
 key는 `issue-<n>`(여럿이면 `issue-<n>-<m>`) 또는 kebab-case 주제 이름이다.
 
-- `.reference-cache/<key>/`(git 무시): `candidates.md`, `notes/`, `recon/`, `probes/`, `receipt.md`.
+- `.reference-cache/<key>/`(git 무시): `candidates.md`, `notes/`, `recon/`, `probes/`, `selfhost/`, `receipt.md`.
   고정 SHA checkout은 `.reference-cache/src/<owner>-<repo>@<sha7>/`에 두고 재사용한다.
 - `docs/research/<key>-references.md`: [assets/references-doc.md](assets/references-doc.md)의 틀. 결정에 쓴
   것만 압축해 담는다. 커밋하지 않고 구현 변경과 함께 커밋되게 둔다.
@@ -50,7 +51,8 @@ Brief를 채운다: 구현할 문제, 동종 문제(제품 이름이 아닌 메�
 사례를 찾을 수 있는 만큼 찾고, 모든 후보를 `candidates.md`에 남긴다. 관점이 셋 이상이면 관점별 worker를
 병렬로 보낸다: [assets/worker-discovery.md](assets/worker-discovery.md).
 완료: 관점마다 saturation 근거(마지막 라운드가 새 패턴·변형·실패 모드를 더하지 않음)가 있고, 질문마다 후보
-또는 「레퍼런스 없음」이 있고, 심층 대상마다 선정 이유가 있다.
+또는 「레퍼런스 없음」이 있고, 모든 후보에 실행 경로(공개 데모·self-host·없음)가, 심층 대상마다 선정 이유가
+있다.
 
 **3 Recon.** 심층 대상을 [references/recon.md](references/recon.md)대로 조사한다. 대상이 여럿이면
 [assets/worker-recon.md](assets/worker-recon.md)로 나눈다. 근거는 [references/evidence.md](references/evidence.md)
