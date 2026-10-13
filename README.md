@@ -2,7 +2,7 @@
 
 연구 목표마다 독립적인 AI 조직을 구성하고, Research Lead와 작업자들이 협력하는 범용 연구 운영 프로젝트입니다. 초기 계획·팀 승인, 진행 관찰, 사용자 개입, 조직별 기억, 사용자 최종 검토를 지원하는 방향으로 개발합니다.
 
-현재 상태는 **전체 구조 설계 전**입니다. 요구사항·용어·조사 문서만 있고 서버·대시보드·실제 agent 실행은 아직 구현되지 않았습니다.
+현재 상태는 **전체 구조 설계 완료, 구현 전**입니다. 요구사항·용어·조사 문서와 [전체 구조](docs/architecture.md)가 있고 서버·대시보드·실제 agent 실행은 아직 구현되지 않았습니다.
 
 ## 개발 시작
 
@@ -13,11 +13,12 @@ pnpm install --ignore-scripts
 pnpm check
 ```
 
-`pnpm check`는 Markdown 문서의 로컬 링크를 검사합니다. 제품 기능 테스트나 타입 검사를 대신하지 않습니다. 개발 서버·DB·프레임워크·테스트 도구 선택은 전체 구조 설계에서 결정합니다.
+`pnpm check`는 Markdown 문서의 로컬 링크를 검사합니다. 제품 기능 테스트나 타입 검사를 대신하지 않습니다. 개발 서버·DB·프레임워크·테스트 도구 선택은 첫 walking skeleton 구현에서 결정합니다.
 
 ## 문서
 
 - [기능 범위](docs/features.md)
+- [전체 구조](docs/architecture.md)와 [ADR](docs/adr/)
 - [인터뷰 기록](docs/project-intent.md)
 - [공통 용어](GLOSSARY.md)
 - [6개 참고 프로젝트 코드 구조](docs/research/reference-code-structure.md)
