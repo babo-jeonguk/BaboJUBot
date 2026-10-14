@@ -3,11 +3,12 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router";
 import {
+  ALL_SECTIONS,
   buildInbox,
   buildOrgs,
   inProgress,
   needsAttention,
-  ORG_TABS,
+  newOrg,
   SCENARIOS,
   type Decision,
   type InboxItem,
@@ -15,6 +16,7 @@ import {
   type Scenario,
   type Stage,
 } from "./data";
+import { AgentDetail, ArtifactView, LaterStub, TaskDetail } from "./details";
 
 // ---------- store ----------
 
@@ -25,6 +27,10 @@ type Store = {
   orgs: Org[];
   inbox: InboxItem[];
   orgById: (id?: string) => Org | undefined;
+  updateOrg: (id: string, fn: (o: Org) => Org) => void;
+  createOrg: (name: string) => string;
+  creating: boolean;
+  setCreating: (v: boolean) => void;
   setRead: (id: string, read: boolean) => void;
   setArchived: (id: string, archived: boolean) => void;
   decide: (id: string, outcome: Decision) => void;
@@ -41,16 +47,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const raw = sp.get("data") as Scenario | null;
   const scenario: Scenario = raw && SCENARIOS.includes(raw) ? raw : "normal";
   const fail = sp.get("fail") === "1";
-  const orgs = useMemo(() => buildOrgs(scenario), [scenario]);
-  const [inbox, setInbox] = useState<InboxItem[]>(() => buildInbox(orgs));
+  const base = useMemo(() => buildOrgs(scenario), [scenario]);
+  const [orgs, setOrgs] = useState<Org[]>(base);
+  const [inbox, setInbox] = useState<InboxItem[]>(() => buildInbox(base));
+  const [creating, setCreating] = useState(false);
   const [policy, setPolicy] = useState<Record<string, boolean>>({ "llm-eval": true });
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextToast = useRef(0);
   // Reset inbox when the scenario changes (render-phase, so it can't clobber child effects).
-  const [seed, setSeed] = useState(orgs);
-  if (seed !== orgs) {
-    setSeed(orgs);
-    setInbox(buildInbox(orgs));
+  const [seed, setSeed] = useState(base);
+  if (seed !== base) {
+    setSeed(base);
+    setOrgs(base);
+    setInbox(buildInbox(base));
   }
 
   const patch = (id: string, p: Partial<InboxItem>) =>
@@ -67,6 +76,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     orgs,
     inbox,
     orgById: (id) => orgs.find((o) => o.id === id),
+    updateOrg: (id, fn) => setOrgs((xs) => xs.map((o) => (o.id === id ? fn(o) : o))),
+    createOrg: (name) => {
+      const id = `new-${orgs.length + 1}`;
+      setOrgs((xs) => [...xs, newOrg(id, name)]);
+      return id;
+    },
+    creating,
+    setCreating,
     setRead: (id, read) => patch(id, { read }),
     setArchived: (id, archived) => {
       patch(id, { archived });
@@ -122,7 +139,7 @@ export function useKeep() {
   const [sp] = useSearchParams();
   return (to: string) => {
     const keep = new URLSearchParams();
-    for (const k of ["variant", "data", "fail"]) {
+    for (const k of ["variant", "data", "fail", "later"]) {
       const v = sp.get(k);
       if (v) keep.set(k, v);
     }
@@ -135,14 +152,19 @@ export function L({ to, ...rest }: { to: string } & Omit<React.ComponentProps<ty
   return <Link to={keep(to)} {...rest} />;
 }
 
+/** /orgs/:org/:section[/:item[/:sub]] — 상세는 목록 섹션 아래 경로의 페이지다. 실행 시도만 /runs/:id. */
 export function useRouteInfo() {
   const { pathname } = useLocation();
-  const m = pathname.match(/^\/orgs\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?/);
+  const m = pathname.match(/^\/orgs\/([^/]+)(?:\/(.*))?$/);
+  const rest = (m?.[2] ?? "").split("/").filter(Boolean);
+  const isRun = rest[0] === "runs";
   return {
     pathname,
     orgId: m?.[1],
-    tab: m?.[2] === "runs" ? undefined : (m?.[2] ?? "dashboard"),
-    runId: m?.[2] === "runs" ? m?.[3] : undefined,
+    tab: isRun ? undefined : (rest[0] ?? "dashboard"),
+    runId: isRun ? rest[1] : undefined,
+    itemId: isRun ? undefined : rest[1],
+    sub: isRun ? undefined : rest[2],
     inboxId: pathname.match(/^\/inbox\/([^/]+)/)?.[1],
     global: pathname === "/" ? "home" : pathname.startsWith("/inbox") ? "inbox" : pathname.startsWith("/settings") ? "settings" : undefined,
   };
@@ -154,6 +176,7 @@ export function useRouteInfo() {
 export type Width = "reading" | "standard" | "full";
 export const WIDTH_LABEL: Record<Width, string> = { reading: "좁게 768px", standard: "중간 1024px", full: "전체 폭" };
 const WIDTH_CLASS: Record<Width, string> = { reading: "max-w-3xl", standard: "max-w-5xl", full: "max-w-none" };
+const DETAIL_WIDTH: Record<string, Width> = { agents: "standard", tasks: "standard", artifacts: "reading" };
 const TAB_WIDTH: Record<string, Width> = {
   dashboard: "full",
   activity: "full",
@@ -166,6 +189,8 @@ const TAB_WIDTH: Record<string, Width> = {
 };
 export function widthFor(r: ReturnType<typeof useRouteInfo>): Width {
   if (r.runId) return "reading";
+  if (r.orgId && r.itemId) return DETAIL_WIDTH[r.tab ?? ""] ?? "standard";
+  if (r.orgId && ALL_SECTIONS.find((x) => x.slug === r.tab)?.later) return "reading";
   if (r.orgId) return TAB_WIDTH[r.tab ?? ""] ?? "standard";
   if (r.inboxId) return "standard";
   if (r.global === "settings") return "reading";
@@ -246,12 +271,15 @@ export function DataGate({ children, empty }: { children: ReactNode; empty?: Rea
 }
 
 export function NoOrgs() {
+  const { setCreating } = useStore();
   return (
     <div className="card animate-fade-up mx-auto mt-10 max-w-md p-8 text-center">
       <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 text-xl">🧭</div>
       <div className="font-semibold">아직 연구 조직이 없습니다</div>
       <p className="mt-1 text-sm text-slate-500">연구 목표 하나가 조직 하나가 됩니다.</p>
-      <button className="btn-primary mt-4">＋ 새 연구 조직</button>
+      <button className="btn-primary mt-4" onClick={() => setCreating(true)}>
+        ＋ 새 연구 조직
+      </button>
     </div>
   );
 }
@@ -298,6 +326,11 @@ export function OrgBody({ org }: { org: Org }) {
   const r = useRouteInfo();
   const body = (() => {
     if (r.runId) return <RunDetail org={org} runId={r.runId} />;
+    if (r.itemId && r.tab === "agents") return <AgentDetail org={org} agentId={r.itemId} sub={r.sub} />;
+    if (r.itemId && r.tab === "tasks") return <TaskDetail org={org} taskId={r.itemId} />;
+    if (r.itemId && r.tab === "artifacts") return <ArtifactView org={org} artifactId={r.itemId} />;
+    const later = ALL_SECTIONS.find((x) => x.slug === r.tab && x.later);
+    if (later) return <LaterStub section={later} />;
     switch (r.tab) {
       case "dashboard":
         return <OrgDashboard org={org} />;
@@ -320,15 +353,15 @@ export function OrgBody({ org }: { org: Org }) {
     }
   })();
   return (
-    <Page width={widthFor(r)} className={r.tab === "chat" && !r.runId ? "flex flex-1 flex-col" : ""}>
+    <Page width={widthFor(r)} className={r.tab === "chat" && !r.runId ? "flex flex-1 flex-col" : ""} key={r.pathname}>
       {body}
     </Page>
   );
 }
 
-function Card({ title, children, className = "" }: { title?: string; children: ReactNode; className?: string }) {
+export function Card({ title, children, className = "" }: { title?: string; children: ReactNode; className?: string }) {
   return (
-    <section className={`card p-4 ${className}`}>
+    <section className={`card min-w-0 p-4 ${className}`}>
       {title && <h3 className="mb-3 text-[13px] font-semibold text-slate-500">{title}</h3>}
       {children}
     </section>
@@ -385,7 +418,7 @@ function OrgDashboard({ org }: { org: Org }) {
         <StatTile label="실행 중 실행 시도" value={liveRuns(org)} accent={liveRuns(org) > 0 && <LiveDot />} />
         <StatTile label="진행 중 작업" value={org.tasks.filter((t) => t.status === "진행 중").length} />
         <StatTile label="주의 필요 (이 조직)" value={counts.attention} />
-        <StatTile label="산출물" value={org.artifacts} />
+        <StatTile label="산출물" value={org.artifacts.length} />
       </div>
       <Card title="최근 14일 실행 시도" className="lg:col-span-2">
         <DailyRunsChart daily={org.daily} />
@@ -421,7 +454,7 @@ function OrgDashboard({ org }: { org: Org }) {
   );
 }
 
-function ActivityList({ org, limit, agent }: { org: Org; limit?: number; agent?: string }) {
+export function ActivityList({ org, limit, agent }: { org: Org; limit?: number; agent?: string }) {
   const xs = org.activity.filter((a) => !agent || a.agent === agent).slice(0, limit);
   return (
     <ul className="text-sm">
@@ -431,6 +464,11 @@ function ActivityList({ org, limit, agent }: { org: Org; limit?: number; agent?:
           <span className="w-24 shrink-0 truncate font-medium">{a.agent}</span>
           <span className="min-w-0 flex-1 text-slate-600">
             {a.text}{" "}
+            {a.artifactId && org.artifacts.some((x) => x.id === a.artifactId) && (
+              <L className="mr-2 text-xs font-medium text-brand-600 hover:underline" to={`/orgs/${org.id}/artifacts/${a.artifactId}`}>
+                산출물 →
+              </L>
+            )}
             {a.runId && (
               <L className="text-xs font-medium text-brand-600 hover:underline" to={`/orgs/${org.id}/runs/${a.runId}`}>
                 실행 시도 {a.runId.split("-").pop()} →
@@ -490,6 +528,20 @@ function LeadChat({ org }: { org: Org }) {
   return (
     <div className="flex flex-1 flex-col">
       <div className="flex-1 space-y-3">
+        {!msgs.length && (
+          <div className="card animate-fade-up mx-auto mt-6 max-w-md p-6 text-center">
+            <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-50 text-lg">💬</div>
+            <div className="font-semibold">Research Lead와 연구 목표를 정하세요</div>
+            <p className="mt-1 text-sm text-slate-500">목표와 완료 기준을 합의하면 Lead가 초기 연구 계획·팀·연구 환경 명세를 승인 요청으로 올립니다.</p>
+            <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+              {["무엇을 알아내고 싶은지 설명할게요", "완료 기준을 같이 정해 주세요"].map((s) => (
+                <button key={s} onClick={() => setDraft(s)} className="chip bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50">
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {msgs.map((m, i) => (
           <div key={i} className={`animate-fade-up flex ${m.from === "사용자" ? "justify-end" : "justify-start"}`}>
             <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed ${m.from === "사용자" ? "rounded-br-md bg-brand-600 text-white shadow-sm shadow-brand-600/25" : "card rounded-bl-md"}`}>
@@ -547,12 +599,14 @@ function LeadChat({ org }: { org: Org }) {
   );
 }
 
+export const TASK_TONE: Record<string, string> = { "진행 중": "text-brand-600", 완료: "text-emerald-600", 막힘: "text-rose-600", "할 일": "text-slate-500" };
+
 function Tasks({ org }: { org: Org }) {
   if (!org.tasks.length) return <p className="card p-6 text-sm text-slate-500">작업이 아직 없습니다. (초기 연구 승인 전에는 작업이 생기지 않음)</p>;
-  const tone: Record<string, string> = { "진행 중": "text-brand-600", 완료: "text-emerald-600", 막힘: "text-rose-600", "할 일": "text-slate-500" };
+  const tone = TASK_TONE;
   return (
     <div className="card overflow-hidden">
-      <table className="w-full text-sm">
+      <table className="w-full text-sm [&_tr]:relative">
         <thead className="bg-slate-50/80 text-left text-xs text-slate-500">
           <tr>
             <th className="px-4 py-2.5 font-medium">ID</th>
@@ -564,9 +618,14 @@ function Tasks({ org }: { org: Org }) {
         </thead>
         <tbody>
           {org.tasks.map((t) => (
-            <tr key={t.id} className="border-t border-slate-100 transition hover:bg-slate-50/70">
+            <tr key={t.id} className="group border-t border-slate-100 transition hover:bg-slate-50/70">
               <td className="px-4 py-3 text-slate-400">{t.id}</td>
-              <td className="px-4 py-3 font-medium">{t.title}</td>
+              <td className="px-4 py-3 font-medium">
+                <L to={`/orgs/${org.id}/tasks/${t.id}`} className="after:absolute after:inset-0 group-hover:text-brand-700">
+                  {t.title}
+                </L>
+                {t.comments.length > 0 && <span className="ml-2 text-xs font-normal text-slate-400">💬 {t.comments.length}</span>}
+              </td>
               <td className={`px-4 py-3 ${tone[t.status]}`}>{t.status}</td>
               <td className="px-4 py-3">{t.assignee}</td>
               <td className="hidden px-4 py-3 text-slate-400 md:table-cell">{t.node ?? "—"}</td>
@@ -600,7 +659,32 @@ function MapStub({ org }: { org: Org }) {
           ))}
         </Card>
         <Card title="노드 상세 패널">
-          {sel ? <p className="animate-fade-up text-sm font-medium">{sel}</p> : <p className="text-sm text-slate-500">노드를 고르면 계획·지표·연결 작업이 여기 보입니다.</p>}
+          {sel ? (
+            <div key={sel} className="animate-fade-up space-y-3 text-sm">
+              <p className="font-medium">{sel}</p>
+              {(() => {
+                const t = org.tasks.find((x) => x.node && sel.startsWith(x.node));
+                const arts = t ? org.artifacts.filter((a) => a.taskId === t.id) : [];
+                return t ? (
+                  <div className="space-y-1">
+                    <div className="text-xs text-slate-400">연결 작업</div>
+                    <L to={`/orgs/${org.id}/tasks/${t.id}`} className="block font-medium text-brand-600 hover:underline">
+                      {t.id} {t.title} →
+                    </L>
+                    {arts.map((a) => (
+                      <L key={a.id} to={`/orgs/${org.id}/artifacts/${a.id}`} className="block text-brand-600 hover:underline">
+                        📄 {a.name}
+                      </L>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400">연결 작업 없음</p>
+                );
+              })()}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">노드를 고르면 계획·지표·연결 작업이 여기 보입니다.</p>
+          )}
         </Card>
       </div>
     </div>
@@ -611,21 +695,22 @@ function Agents({ org }: { org: Org }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       {org.agents.map((a) => (
-        <div key={a.id} className="card card-hover p-4">
+        <L key={a.id} to={`/orgs/${org.id}/agents/${a.id}`} className="card card-hover block p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-brand-400 to-brand-700 text-sm font-semibold text-white">{a.name.slice(0, 1)}</div>
             <div className="min-w-0">
               <div className="truncate font-medium">{a.name}</div>
               <div className="text-xs text-slate-400">
-                {a.role} · heartbeat {a.heartbeat}
+                {a.role} · heartbeat {a.hb.on ? a.hb.every : "꺼짐"}
               </div>
             </div>
           </div>
           <div className={`mt-3 flex items-center gap-1.5 text-sm ${a.status === "실행 중" ? "text-emerald-600" : "text-slate-500"}`}>
             {a.status === "실행 중" && <LiveDot />}
             {a.status}
+            <span className="ml-auto text-xs text-slate-400">상세 →</span>
           </div>
-        </div>
+        </L>
       ))}
     </div>
   );
@@ -652,14 +737,12 @@ function OrgSettings({ org }: { org: Org }) {
         </button>
         <p className="mt-3 text-xs text-slate-400">초기 연구 승인과 최종 완료는 항상 사용자 결정입니다(끌 수 없음).</p>
       </Card>
-      <Card title="Heartbeat">
-        {org.agents.map((a) => (
-          <div key={a.id} className="flex justify-between py-1">
-            <span>{a.name}</span>
-            <span className="text-slate-400">{a.heartbeat}</span>
-          </div>
-        ))}
-      </Card>
+      <p className="px-1 text-xs text-slate-400">
+        Heartbeat·일시정지는 에이전트마다 정합니다 →{" "}
+        <L to={`/orgs/${org.id}/agents`} className="font-medium text-brand-600 hover:underline">
+          에이전트
+        </L>
+      </p>
     </div>
   );
 }
@@ -811,10 +894,15 @@ export function InboxDetail({ item, onBack }: { item: InboxItem; onBack?: () => 
               <li>△ 개선안 효과 측정 (부분)</li>
             </ul>
           </Card>
-          <Card title="산출물">
+          <Card title="근거 산출물">
             <ul className="space-y-0.5 text-sm font-medium text-brand-600">
-              <li>report-v1.md</li>
-              <li>error-taxonomy.csv</li>
+              {org.artifacts.map((a) => (
+                <li key={a.id}>
+                  <L to={`/orgs/${org.id}/artifacts/${a.id}`} className="hover:underline">
+                    📄 {a.name} →
+                  </L>
+                </li>
+              ))}
             </ul>
           </Card>
         </div>
@@ -878,4 +966,4 @@ export function useOrgParam() {
   return { orgId, org: orgById(orgId) };
 }
 
-export const tabLabel = (slug?: string) => ORG_TABS.find((t) => t.slug === slug)?.label;
+export const tabLabel = (slug?: string) => ALL_SECTIONS.find((t) => t.slug === slug)?.label;

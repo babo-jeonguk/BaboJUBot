@@ -33,7 +33,7 @@ export function PrototypeSwitcher({ variants, current }: { variants: V[]; curren
 
   const org = orgById(r.orgId);
   const scope = r.orgId
-    ? `조직 ${org ? org.name : `${r.orgId} (없음)`} › ${r.runId ? `실행 시도 ${r.runId}` : tabLabel(r.tab)}`
+    ? `조직 ${org ? org.name : `${r.orgId} (없음)`} › ${r.runId ? `실행 시도 ${r.runId}` : `${tabLabel(r.tab)}${r.itemId ? ` › ${r.itemId}` : ""}${r.sub ? ` › ${r.sub}` : ""}`}`
     : r.global === "home"
       ? "전역 › 홈"
       : r.global === "inbox"
@@ -68,6 +68,10 @@ export function PrototypeSwitcher({ variants, current }: { variants: V[]; curren
       <label className="flex items-center gap-1">
         <input type="checkbox" checked={sp.get("fail") === "1"} onChange={(e) => set("fail", e.target.checked ? "1" : null)} />
         결정 실패
+      </label>
+      <label className="flex items-center gap-1">
+        <input type="checkbox" checked={sp.get("later") !== "0"} onChange={(e) => set("later", e.target.checked ? null : "0")} />
+        이후 판 메뉴
       </label>
       <span className="max-w-[28rem] truncate border-l border-white/30 pl-2 text-white/80" title={scope}>
         범위: {scope} · 폭: {WIDTH_LABEL[widthFor(r)]}

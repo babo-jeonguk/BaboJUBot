@@ -1,11 +1,13 @@
 // PROTOTYPE (#50) — Variant C: 왼쪽 조직 레일(약칭+단계 텍스트) + 선택 조직의 세로 섹션 목록 + 본문.
 // Inbox는 하나의 패널뿐이다: 넓은 화면(≥1280px)에서는 오른쪽에 붙고, 좁으면 오른쪽 drawer로 연다.
 // 본문 폭은 화면마다 3단계(좁게/중간/전체) 중 하나. 홈 = 생애주기 보드.
+// 2차: 섹션 목록을 묶음으로 나누고(이후 판 화면은 흐리게), 상세(에이전트·작업·산출물)는 섹션 아래 경로의 페이지.
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { useNavigate } from "react-router";
-import { ORG_TABS, STAGES, type Org } from "../data";
+import { useNavigate, useSearchParams } from "react-router";
+import { SECTION_GROUPS, STAGES, type Org } from "../data";
+import { CreateOrgDialog, useCrumbs } from "../details";
 import {
   applyFilter,
   Count,
@@ -23,7 +25,6 @@ import {
   OrgControls,
   Page,
   StageBadge,
-  tabLabel,
   useInboxCounts,
   useKeep,
   useRouteInfo,
@@ -91,7 +92,7 @@ export function VariantC() {
               <button aria-label="탐색 열기" onClick={() => setSheet(true)} className="btn-ghost px-2">
                 ☰
               </button>
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{org ? `${org.name} › ${r.runId ? "실행 시도" : tabLabel(r.tab)}` : r.global === "inbox" ? "Inbox" : r.global === "settings" ? "설정" : "홈"}</span>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{org ? <MobileCrumb org={org} /> : r.global === "inbox" ? "Inbox" : r.global === "settings" ? "설정" : "홈"}</span>
               <button onClick={() => setOpen(true)} className="btn-soft px-2.5 py-1 text-xs">
                 Inbox <Count n={counts.attention} tone="amber" />
               </button>
@@ -121,6 +122,7 @@ export function VariantC() {
             </div>
           </main>
 
+          <CreateOrgDialog />
           {docked ? (
             open && (
               <aside className="animate-slide-in-right flex w-[340px] shrink-0 flex-col border-l border-slate-200/70 bg-white/70 backdrop-blur">
@@ -174,6 +176,7 @@ function Rail() {
   const { orgs } = useStore();
   const c = useInboxCounts();
   const p = usePanel();
+  const { setCreating } = useStore();
   return (
     <nav className="scrollbar-thin flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto bg-gradient-to-b from-brand-950 to-slate-950 py-3 pb-24 text-white">
       <Tip content="홈 · 전체 조직 개요">
@@ -201,7 +204,7 @@ function Rail() {
         ))}
       </DataGate>
       <Tip content="새 연구 조직">
-        <button className="mt-1 flex h-9 w-9 items-center justify-center rounded-xl border border-dashed border-white/25 text-white/60 transition hover:border-white/60 hover:text-white active:scale-95">＋</button>
+        <button onClick={() => setCreating(true)} aria-label="새 연구 조직" className="mt-1 flex h-9 w-9 items-center justify-center rounded-xl border border-dashed border-white/25 text-white/60 transition hover:border-white/60 hover:text-white active:scale-95">＋</button>
       </Tip>
       <div className="flex-1" />
       <Tip content="전역 설정">
@@ -264,8 +267,11 @@ function Sections({ org }: { org: Org }) {
     tasks: <span className="text-[11px] text-slate-400">{org.tasks.length || ""}</span>,
     review: org.stage === "결과 검토 중" ? <Count n={1} tone="amber" /> : null,
   };
+  const [sp] = useSearchParams();
+  const showLater = sp.get("later") !== "0";
+  const [shut, setShut] = useState<Record<string, boolean>>({});
   return (
-    <nav className="flex w-60 shrink-0 flex-col gap-3 border-r border-slate-200/70 bg-white/60 p-3 backdrop-blur" aria-label="조직 화면">
+    <nav className="scrollbar-thin flex w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-200/70 bg-white/60 p-3 pb-24 backdrop-blur" aria-label="조직 화면">
       <div className="card p-3">
         <div className="text-[15px] leading-snug font-semibold text-slate-900">{org.name}</div>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -286,33 +292,73 @@ function Sections({ org }: { org: Org }) {
           <OrgControls org={org} />
         </div>
       </div>
-      <ul className="space-y-0.5">
-        {ORG_TABS.map((t) => {
-          const on = r.tab === t.slug || (!!r.runId && t.slug === "activity");
-          return (
-            <li key={t.slug}>
-              <L
-                to={`/orgs/${org.id}/${t.slug}`}
-                aria-current={on ? "page" : undefined}
-                className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition duration-150 active:scale-[0.98] ${on ? "bg-white font-semibold text-slate-900 shadow-card ring-1 ring-slate-900/5" : "text-slate-600 hover:bg-white/80 hover:text-slate-900"}`}
+      {SECTION_GROUPS.map((g, gi) => {
+        const items = g.items.filter((t) => showLater || !t.later);
+        const isOn = (slug: string) => r.tab === slug || (!!r.runId && slug === "activity");
+        const closed = g.label && shut[g.label];
+        const shown = closed ? items.filter((t) => isOn(t.slug)) : items;
+        return (
+          <div key={gi}>
+            {g.label && (
+              <button
+                onClick={() => setShut((x) => ({ ...x, [g.label!]: !x[g.label!] }))}
+                aria-expanded={!closed}
+                className="group mb-0.5 flex w-full items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-semibold tracking-wide text-slate-400 transition hover:text-slate-600"
               >
-                <span className={`h-4 w-1 rounded-full transition-colors ${on ? "bg-brand-500" : "bg-transparent"}`} />
-                <span className="flex-1">{t.label}</span>
-                {extra[t.slug]}
-              </L>
-            </li>
-          );
-        })}
-      </ul>
+                {g.label}
+                <span className={`ml-auto text-[10px] transition-transform duration-200 ${closed ? "-rotate-90" : ""}`}>▾</span>
+              </button>
+            )}
+            <ul className="space-y-0.5">
+              {shown.map((t) => {
+                const on = isOn(t.slug);
+                return (
+                  <li key={t.slug} className="animate-fade-in">
+                    <L
+                      to={`/orgs/${org.id}/${t.slug}`}
+                      aria-current={on ? "page" : undefined}
+                      title={t.later ? `이후 판: ${t.later}` : undefined}
+                      className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition duration-150 active:scale-[0.98] ${on ? "bg-white font-semibold text-slate-900 shadow-card ring-1 ring-slate-900/5" : t.later ? "text-slate-400 hover:bg-white/60" : "text-slate-600 hover:bg-white/80 hover:text-slate-900"}`}
+                    >
+                      <span className={`h-4 w-1 rounded-full transition-colors ${on ? "bg-brand-500" : "bg-transparent"}`} />
+                      <span className="flex-1">{t.label}</span>
+                      {t.later ? <span className="rounded-full border border-dashed border-slate-300 px-1.5 text-[10px] text-slate-400">이후</span> : extra[t.slug]}
+                    </L>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
     </nav>
   );
 }
 
+function MobileCrumb({ org }: { org: Org }) {
+  const cs = useCrumbs(org);
+  return <>{`${org.name} › ${cs[cs.length - 1].label}`}</>;
+}
+
 function OrgTitle({ org }: { org: Org }) {
-  const r = useRouteInfo();
+  const cs = useCrumbs(org);
   return (
-    <div className="hidden border-b border-slate-200/70 bg-white/60 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
-      {org.name} <span className="mx-1">›</span> <span className="font-medium text-slate-700">{r.runId ? `실행 시도 ${r.runId}` : tabLabel(r.tab)}</span>
+    <div className="hidden truncate border-b border-slate-200/70 bg-white/60 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
+      <L to={`/orgs/${org.id}`} className="transition hover:text-slate-700">
+        {org.name}
+      </L>
+      {cs.map((c, i) => (
+        <span key={i}>
+          <span className="mx-1.5">›</span>
+          {c.to ? (
+            <L to={c.to} className="transition hover:text-slate-700">
+              {c.label}
+            </L>
+          ) : (
+            <span className="font-medium text-slate-700">{c.label}</span>
+          )}
+        </span>
+      ))}
     </div>
   );
 }
@@ -440,7 +486,7 @@ function InboxMain() {
 // ---------- home ----------
 
 function Home() {
-  const { orgs } = useStore();
+  const { orgs, setCreating } = useStore();
   const c = useInboxCounts();
   const p = usePanel();
   const total = orgs.reduce((s, o) => s + liveRuns(o), 0);
@@ -462,7 +508,9 @@ function Home() {
             <div className="text-[13px] text-slate-500">연구 조직</div>
             <div className="text-2xl font-semibold">{orgs.length}</div>
           </div>
-          <button className="btn-primary ml-auto">＋ 새 연구 조직</button>
+          <button className="btn-primary ml-auto" onClick={() => setCreating(true)}>
+            ＋ 새 연구 조직
+          </button>
         </div>
         <div className="scrollbar-thin flex gap-3 overflow-x-auto pb-4">
           {STAGES.map((s) => {
