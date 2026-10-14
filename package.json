@@ -8,6 +8,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "check": "node scripts/check-project.mjs"
+    "check": "node scripts/check-project.mjs",
+    "prototype:layout": "pnpm --filter @babojubot/prototype-dashboard-layout dev"
   }
 }
