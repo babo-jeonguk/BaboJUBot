@@ -1,7 +1,10 @@
-// PROTOTYPE (#50) — throwaway floating variant switcher. Dev builds only.
+// PROTOTYPE (#50, #51) — throwaway floating variant switcher. Dev builds only.
+// On 조직 › 연구 지도 the arrows switch ?map= (research map variants) instead of the shell ?variant=.
 import { useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { SCENARIOS } from "./data";
+import { MAP_VARIANTS } from "./map/ResearchMap";
+import { DENSITIES, FIXTURES, useMapStats } from "./map/store";
 import { tabLabel, useRouteInfo, useStore, WIDTH_LABEL, widthFor } from "./shared";
 
 type V = { key: string; name: string };
@@ -10,7 +13,13 @@ export function PrototypeSwitcher({ variants, current }: { variants: V[]; curren
   const [sp, setSp] = useSearchParams();
   const { scenario, orgById, inbox, status } = useStore();
   const r = useRouteInfo();
-  const i = variants.findIndex((v) => v.key === current);
+  const onMap = !!r.orgId && r.tab === "map" && !r.itemId;
+  const stats = useMapStats();
+  const mapKey = MAP_VARIANTS.find((x) => x.key === sp.get("map"))?.key ?? "A";
+  const list = onMap ? MAP_VARIANTS : variants;
+  const cur = onMap ? mapKey : current;
+  const param = onMap ? "map" : "variant";
+  const i = list.findIndex((v) => v.key === cur);
 
   const set = (k: string, val: string | null) => {
     const n = new URLSearchParams(sp);
@@ -18,12 +27,12 @@ export function PrototypeSwitcher({ variants, current }: { variants: V[]; curren
     else n.set(k, val);
     setSp(n, { replace: true });
   };
-  const go = (d: number) => set("variant", variants[(i + d + variants.length) % variants.length].key);
+  const go = (d: number) => set(param, list[(i + d + list.length) % list.length].key);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest("input, textarea, select, [contenteditable], [role=tablist], [role=menu]")) return;
+      if (t.closest("input, textarea, select, [contenteditable], [role=tablist], [role=menu], [data-map-canvas], .react-flow")) return;
       if (e.key === "ArrowLeft") go(-1);
       if (e.key === "ArrowRight") go(1);
     };
@@ -50,11 +59,36 @@ export function PrototypeSwitcher({ variants, current }: { variants: V[]; curren
         ◀
       </button>
       <span className="min-w-40 text-center font-semibold">
-        {current} ({variants[i].name})
+        {onMap && "지도 "}
+        {cur} ({list[i].name})
       </span>
       <button aria-label="다음 배치" className="rounded px-2 hover:bg-white/20" onClick={() => go(1)}>
         ▶
       </button>
+      {onMap && (
+        <>
+          <label className="flex items-center gap-1 border-l border-white/30 pl-2">
+            노드
+            <select className="rounded bg-white/10 px-1" value={sp.get("n") ?? "seed"} onChange={(e) => set("n", e.target.value === "seed" ? null : e.target.value)}>
+              {FIXTURES.map((s) => (
+                <option key={s} className="text-black">
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            보조%
+            <select className="rounded bg-white/10 px-1" value={sp.get("sec") ?? "20"} onChange={(e) => set("sec", e.target.value === "20" ? null : e.target.value)} disabled={!sp.get("n")} title="seed 자료는 고정 보조 연결">
+              {DENSITIES.map((s) => (
+                <option key={s} className="text-black">
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
+      )}
       <label className="flex items-center gap-1 border-l border-white/30 pl-2">
         자료
         <select className="rounded bg-white/10 px-1" value={scenario} onChange={(e) => set("data", e.target.value === "normal" ? null : e.target.value)}>
@@ -78,6 +112,15 @@ export function PrototypeSwitcher({ variants, current }: { variants: V[]; curren
         {item && ` · 읽음=${item.read} 보관=${item.archived} 결정=${item.decision}`}
         {status !== "ok" && ` · status=${status}`}
       </span>
+      {onMap && stats && (
+        <span className="border-l border-white/30 pl-2 font-mono text-[11px] text-emerald-300">
+          {stats.engine} · 노드 {stats.visible}/{stats.total} · 주 {stats.primary} · 보조 {stats.secondary} · 배치 {stats.layoutMs?.toFixed(1) ?? "–"}ms ×{stats.layoutRuns}
+          {stats.pending && " · 계산 중"}
+          {stats.dirty && " · 구조 바뀜(재배치 대기)"}
+          {stats.stale > 0 && ` · 버린 늦은 결과 ${stats.stale}`}
+          {sp.get("node") && ` · 선택 ${sp.get("node")}`}
+        </span>
+      )}
     </div>
   );
 }

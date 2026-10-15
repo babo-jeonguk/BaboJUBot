@@ -17,6 +17,7 @@ import {
   type Stage,
 } from "./data";
 import { AgentDetail, ArtifactView, LaterStub, TaskDetail } from "./details";
+import { ResearchMap } from "./map/ResearchMap";
 
 // ---------- store ----------
 
@@ -139,7 +140,7 @@ export function useKeep() {
   const [sp] = useSearchParams();
   return (to: string) => {
     const keep = new URLSearchParams();
-    for (const k of ["variant", "data", "fail", "later"]) {
+    for (const k of ["variant", "data", "fail", "later", "map", "n", "sec"]) {
       const v = sp.get(k);
       if (v) keep.set(k, v);
     }
@@ -341,7 +342,7 @@ export function OrgBody({ org }: { org: Org }) {
       case "tasks":
         return <Tasks org={org} />;
       case "map":
-        return <MapStub org={org} />;
+        return <ResearchMap org={org} />;
       case "agents":
         return <Agents org={org} />;
       case "review":
@@ -353,7 +354,7 @@ export function OrgBody({ org }: { org: Org }) {
     }
   })();
   return (
-    <Page width={widthFor(r)} className={r.tab === "chat" && !r.runId ? "flex flex-1 flex-col" : ""} key={r.pathname}>
+    <Page width={widthFor(r)} className={(r.tab === "chat" || r.tab === "map") && !r.runId && !r.itemId ? "flex flex-1 flex-col" : ""} key={r.pathname}>
       {body}
     </Page>
   );
@@ -633,60 +634,6 @@ function Tasks({ org }: { org: Org }) {
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function MapStub({ org }: { org: Org }) {
-  const rows = [
-    [0, "문제", "P1 한국어 평가셋 부족"],
-    [1, "가설", "H1 번역셋으로 충분"],
-    [1, "가설", "H2 원어민 작성셋이 필요"],
-    [2, "검증 방법", "M1 두 셋의 순위 상관 비교"],
-    [3, "실험", "E1 채점 프롬프트 비교"],
-  ] as const;
-  const [sel, setSel] = useState<string>();
-  return (
-    <div>
-      <div className="mb-3 text-xs text-slate-400">연구 지도 배치·라이브러리는 #51에서 정합니다. 여기서는 공간만 확인합니다. ({org.name})</div>
-      <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
-        <Card className="min-h-96">
-          {rows.map(([d, k, t]) => (
-            <button key={t} onClick={() => setSel(t)} className={`my-0.5 flex w-full items-center rounded-xl py-1.5 pr-2 text-left text-sm transition ${sel === t ? "bg-brand-50 ring-1 ring-brand-200" : "hover:bg-slate-50"}`} style={{ paddingLeft: 8 + d * 28 }}>
-              <span className="mr-2 rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">{k}</span>
-              {t}
-            </button>
-          ))}
-        </Card>
-        <Card title="노드 상세 패널">
-          {sel ? (
-            <div key={sel} className="animate-fade-up space-y-3 text-sm">
-              <p className="font-medium">{sel}</p>
-              {(() => {
-                const t = org.tasks.find((x) => x.node && sel.startsWith(x.node));
-                const arts = t ? org.artifacts.filter((a) => a.taskId === t.id) : [];
-                return t ? (
-                  <div className="space-y-1">
-                    <div className="text-xs text-slate-400">연결 작업</div>
-                    <L to={`/orgs/${org.id}/tasks/${t.id}`} className="block font-medium text-brand-600 hover:underline">
-                      {t.id} {t.title} →
-                    </L>
-                    {arts.map((a) => (
-                      <L key={a.id} to={`/orgs/${org.id}/artifacts/${a.id}`} className="block text-brand-600 hover:underline">
-                        📄 {a.name}
-                      </L>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-400">연결 작업 없음</p>
-                );
-              })()}
-            </div>
-          ) : (
-            <p className="text-sm text-slate-500">노드를 고르면 계획·지표·연결 작업이 여기 보입니다.</p>
-          )}
-        </Card>
-      </div>
     </div>
   );
 }

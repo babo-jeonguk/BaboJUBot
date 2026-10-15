@@ -9,6 +9,7 @@
   },
   "scripts": {
     "check": "node scripts/check-project.mjs",
-    "prototype:layout": "pnpm --filter @babojubot/prototype-dashboard-layout dev"
+    "prototype:layout": "pnpm --filter @babojubot/prototype-dashboard-layout dev",
+    "prototype:map": "pnpm --filter @babojubot/prototype-dashboard-layout dev"
   }
 }
