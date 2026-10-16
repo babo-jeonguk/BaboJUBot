@@ -107,6 +107,7 @@ export async function startServer({
   ) {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== eventStreamPath) return refuse(socket, 404);
+    if (!isSameOrigin(req)) return refuse(socket, 403);
     const organizationId = url.searchParams.get("organizationId");
     let scope: StreamScope = { kind: "all" };
     if (organizationId !== null) {
@@ -148,6 +149,20 @@ export async function startServer({
 
 function notFound(res: express.Response) {
   res.status(404).json({ error: { code: "not_found" } });
+}
+
+/**
+ * 브라우저는 WebSocket에 동일 출처 정책을 적용하지 않으므로, 다른 사이트의 페이지가 Event stream을 읽지 못하게 한다.
+ * Origin이 없는 연결(브라우저가 아닌 client)은 허용한다. 인증은 하지 않는다.
+ */
+function isSameOrigin(req: http.IncomingMessage) {
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
 }
 
 function refuse(socket: Duplex, status: number) {

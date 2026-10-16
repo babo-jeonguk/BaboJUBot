@@ -26,8 +26,11 @@ export type TestServer = {
     path: string,
     body?: unknown
   ) => Promise<{ status: number; body: any }>;
-  /** 구독 준비(`ready`)까지 기다린 Event stream 연결. */
-  subscribe: (scope: StreamScope) => Promise<Subscription>;
+  /** 구독 준비(`ready`)까지 기다린 Event stream 연결. `origin`을 주면 브라우저처럼 Origin header를 보낸다. */
+  subscribe: (
+    scope: StreamScope,
+    options?: { origin?: string }
+  ) => Promise<Subscription>;
   close: () => Promise<void>;
 };
 
@@ -61,13 +64,14 @@ export async function startTestServer(): Promise<TestServer> {
       const text = await res.text();
       return { status: res.status, body: text ? JSON.parse(text) : undefined };
     },
-    subscribe(scope) {
+    subscribe(scope, { origin } = {}) {
       const query =
         scope.kind === "organization"
           ? `?organizationId=${encodeURIComponent(scope.organizationId)}`
           : "";
       const socket = new WebSocket(
-        server.url.replace(/^http/, "ws") + eventStreamPath + query
+        server.url.replace(/^http/, "ws") + eventStreamPath + query,
+        { origin }
       );
       sockets.add(socket);
       const events: Event[] = [];

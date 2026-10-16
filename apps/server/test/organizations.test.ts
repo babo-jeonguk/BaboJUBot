@@ -136,4 +136,15 @@ describe("Event stream scopes", () => {
       t.subscribe({ kind: "organization", organizationId: "nope" })
     ).rejects.toThrow(/404/);
   });
+
+  it("refuses browser connections from another origin", async () => {
+    await expect(
+      t.subscribe({ kind: "all" }, { origin: "http://evil.example" })
+    ).rejects.toThrow(/403/);
+    const sameOrigin = await t.subscribe(
+      { kind: "all" },
+      { origin: t.baseUrl }
+    );
+    sameOrigin.close();
+  });
 });
