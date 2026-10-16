@@ -186,7 +186,7 @@ export function useProjection(m: MapApi, opts: { dir: Dir; secMode: SecMode; hid
     },
     [m],
   );
-  return { nodes, edges, onNodesChange };
+  return { nodes, edges, onNodesChange, setNodes };
 }
 
 // ---------- node card ----------

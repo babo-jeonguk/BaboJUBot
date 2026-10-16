@@ -1,11 +1,14 @@
 // PROTOTYPE (#51) — Map A: React Flow + Dagre. 좌→우 트리, 오른쪽 고정 노드 상세 패널, 편집은 모두 명시 폼.
-// Research baseline (D01/D04): select → detail → explicit forms; no drag-to-connect, nodes not draggable.
-import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useReactFlow } from "@xyflow/react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { RNode } from "./data";
+// Research baseline (D01/D04): select → detail → explicit forms; no drag-to-connect.
+// Picked 2026-10-16. Round 2: nodes can be dragged (subtree follows by default). A dragged spot is view state,
+// not a research record: it is pinned across auto relayouts, never logged as an edit, never wakes the Lead,
+// and never changes the primary parent.
+import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useReactFlow, type NodeChange } from "@xyflow/react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { descendants, NODE_H, NODE_W, type RNode } from "./data";
 import type { Dir } from "./layout";
 import { AddForm, DiscardButton, KindTag, LinkForm, NodeFacts, ParentForm, SEC_LABEL, StatusText, TitleStatusForm, type SecMode } from "./parts";
-import { nodeTypes, useEngineLayout, useFitOnce, useProjection } from "./rf";
+import { nodeTypes, useEngineLayout, useFitOnce, useProjection, type RFNode } from "./rf";
 import { reportStats, type MapApi } from "./store";
 
 export function MapA({ m }: { m: MapApi }) {
@@ -24,18 +27,58 @@ function Inner({ m }: { m: MapApi }) {
   const [hideGone, setHideGone] = useState(false);
   const [auto, setAuto] = useState(true);
   const [form, setForm] = useState<Form>(null);
+  const [pinned, setPinned] = useState(new Map<string, { x: number; y: number }>()); // node centres
+  const [follow, setFollow] = useState(true);
+  const drag = useRef<Map<string, { x: number; y: number }> | null>(null); // top-left at drag start
   const rf = useReactFlow();
 
   const visible = useMemo(() => (hideGone ? m.data.nodes.filter((n) => n.status !== "폐기") : m.data.nodes), [m.data.nodes, hideGone]);
   const layout = useEngineLayout("dagre", visible, dir, auto);
-  const { nodes, edges, onNodesChange } = useProjection(m, { dir, secMode, hideDiscarded: hideGone, connectable: false, layout, visible });
+  const proj = useProjection(m, { dir, secMode, hideDiscarded: hideGone, connectable: false, layout, visible, manual: pinned });
+  const { nodes, edges } = proj;
+  // flipping direction makes old spots meaningless
+  useEffect(() => setPinned(new Map()), [dir]);
+
+  const pin = (xs: { id: string; position: { x: number; y: number } }[]) =>
+    setPinned((mm) => {
+      const n = new Map(mm);
+      for (const x of xs) n.set(x.id, { x: x.position.x + NODE_W / 2, y: x.position.y + NODE_H / 2 });
+      return n;
+    });
+  const onNodesChange = (cs: NodeChange<RFNode>[]) => {
+    proj.onNodesChange(cs);
+    // keyboard moves (selected node + arrow keys) arrive as position changes outside a mouse drag
+    if (!drag.current) {
+      const moved = cs.filter((c) => c.type === "position" && c.position && !c.dragging) as { id: string; position: { x: number; y: number } }[];
+      if (moved.length) pin(moved);
+    }
+  };
+  const onDragStart = (id: string) => {
+    const ids = new Set(follow ? [id, ...descendants(m.data, id)] : [id]);
+    drag.current = new Map(nodes.filter((x) => ids.has(x.id)).map((x) => [x.id, { ...x.position }]));
+  };
+  const onDrag = (id: string, p: { x: number; y: number }) => {
+    const s = drag.current;
+    const p0 = s?.get(id);
+    if (!s || !p0 || s.size < 2) return;
+    const dx = p.x - p0.x;
+    const dy = p.y - p0.y;
+    proj.setNodes((ns) => ns.map((x) => (x.id !== id && s.has(x.id) ? { ...x, position: { x: s.get(x.id)!.x + dx, y: s.get(x.id)!.y + dy } } : x)));
+  };
+  const onDragStop = (id: string, p: { x: number; y: number }) => {
+    const s = drag.current;
+    drag.current = null;
+    if (!s) return;
+    const p0 = s.get(id)!;
+    pin([...s].map(([k, v]) => ({ id: k, position: k === id ? p : { x: v.x + p.x - p0.x, y: v.y + p.y - p0.y } })));
+  };
   const node = m.data.nodes.find((n) => n.id === m.selected);
 
   useEffect(() => setForm(null), [m.selected]);
   useFitOnce(`${m.key}|${dir}|${layout.laidKey?.split("|")[0]}`, layout.runs > 0);
 
   useEffect(() => {
-    reportStats({ engine: "Dagre (sync)", visible: visible.length, total: m.data.nodes.length, primary: visible.filter((n) => n.parentId).length, secondary: m.data.links.length, layoutMs: layout.ms, layoutRuns: layout.runs, stale: layout.stale, pending: layout.pending, dirty: layout.dirty });
+    reportStats({ engine: "Dagre (sync)", visible: visible.length, total: m.data.nodes.length, primary: visible.filter((n) => n.parentId).length, secondary: m.data.links.length, layoutMs: layout.ms, layoutRuns: layout.runs, stale: layout.stale, pending: layout.pending, dirty: layout.dirty, pinned: pinned.size });
   });
   useEffect(() => () => reportStats(null), []);
 
@@ -71,12 +114,21 @@ function Inner({ m }: { m: MapApi }) {
             ↻ 재배치{layout.dirty && " (구조 바뀜)"}
           </button>
         )}
+        <Seg>
+          <button className={tb(follow)} onClick={() => setFollow(true)} title="노드를 끌면 그 아래 주 연결 하위 노드도 같이 움직입니다">끌면 하위도 함께</button>
+          <button className={tb(!follow)} onClick={() => setFollow(false)}>그 노드만</button>
+        </Seg>
+        {pinned.size > 0 && (
+          <button className="btn-soft py-1 text-xs" onClick={() => setPinned(new Map())} title="직접 옮긴 위치를 지우고 자동 배치로 돌아갑니다">
+            ↺ 자동 정렬로 되돌리기 ({pinned.size})
+          </button>
+        )}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
         <div className="card relative min-h-[420px] flex-1 overflow-hidden" data-map-canvas>
           {!m.data.nodes.length && <Empty onAdd={() => setForm("add")} />}
-          {!node && m.data.nodes.length > 0 && <div className="pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 rounded-lg bg-white/85 px-2 py-1 text-[11px] text-slate-500">노드를 누르면 오른쪽에 상세·편집 패널 · Tab→Enter로도 선택</div>}
+          {!node && m.data.nodes.length > 0 && <div className="pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 rounded-lg bg-white/85 px-2 py-1 text-[11px] text-slate-500">노드를 누르면 오른쪽에 상세·편집 패널 · 끌어서 위치 이동(지도 보기에만 저장) · Tab→Enter로도 선택</div>}
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -84,7 +136,10 @@ function Inner({ m }: { m: MapApi }) {
             onNodesChange={onNodesChange}
             onNodeClick={(_, n) => m.select(n.id)}
             onPaneClick={() => m.select(undefined)}
-            nodesDraggable={false}
+            onNodeDragStart={(_, n) => onDragStart(n.id)}
+            onNodeDrag={(_, n) => onDrag(n.id, n.position)}
+            onNodeDragStop={(_, n) => onDragStop(n.id, n.position)}
+            selectNodesOnDrag={false}
             nodesConnectable={false}
             deleteKeyCode={null}
             onlyRenderVisibleElements={nodes.length > 150}

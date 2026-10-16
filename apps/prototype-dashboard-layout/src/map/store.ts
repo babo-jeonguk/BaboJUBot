@@ -91,6 +91,7 @@ export type MapStats = {
   stale: number;
   pending: boolean;
   dirty: boolean;
+  pinned?: number;
 };
 let stats: MapStats | null = null;
 const statSubs = new Set<() => void>();

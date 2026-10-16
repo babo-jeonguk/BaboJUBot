@@ -118,6 +118,7 @@ export function PrototypeSwitcher({ variants, current }: { variants: V[]; curren
           {stats.pending && " · 계산 중"}
           {stats.dirty && " · 구조 바뀜(재배치 대기)"}
           {stats.stale > 0 && ` · 버린 늦은 결과 ${stats.stale}`}
+          {!!stats.pinned && ` · 직접 옮긴 노드 ${stats.pinned}`}
           {sp.get("node") && ` · 선택 ${sp.get("node")}`}
         </span>
       )}
