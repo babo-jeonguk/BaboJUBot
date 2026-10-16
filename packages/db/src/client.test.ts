@@ -1,16 +1,20 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { describe, expect, it } from "vitest";
-import { openEphemeralDatabase } from "./client.ts";
+import { freePort, openDatabase } from "./client.ts";
 
 describe("embedded Postgres lifetime", () => {
-  it("closes after Postgres died on its own", async () => {
-    const handle = await openEphemeralDatabase();
+  it("closes and removes a non-persistent dataDir after Postgres died on its own", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const handle = await openDatabase({
+      embedded: { dataDir, port: await freePort(), persistent: false },
+    });
     const client = new pg.Client({ connectionString: handle.url });
     await client.connect();
     const { rows } = await client.query<{ pid: string }>(
@@ -23,6 +27,7 @@ describe("embedded Postgres lifetime", () => {
     while (isAlive(pid)) await new Promise((r) => setTimeout(r, 50));
 
     await handle.close();
+    expect(fs.existsSync(dataDir)).toBe(false);
   }, 15_000);
 
   it("lets the process exit promptly when Postgres fails to start", async () => {

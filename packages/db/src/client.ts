@@ -53,17 +53,23 @@ export async function openDatabase(
     onLog: () => {},
     onError: (error) => console.error("[embedded-postgres]", error),
   });
-  if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
-    await cluster.initialise();
-  await startCluster(cluster);
+  // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
+  // `stop`이 돌아오면 postgres는 끝났다.
+  const stop = async () => {
+    await cluster.stop();
+    if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });
+  };
   try {
+    if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
+      await cluster.initialise();
+    await startCluster(cluster);
     await ensureDatabase(cluster);
     return await connect(
       `postgres://postgres:postgres@127.0.0.1:${port}/${databaseName}`,
-      () => cluster.stop()
+      stop
     );
   } catch (error) {
-    await cluster.stop();
+    await stop();
     throw error;
   }
 }
@@ -71,7 +77,7 @@ export async function openDatabase(
 /**
  * embedded-postgres의 `stop`은 이미 끝난 postgres의 exit를 기다리며 멈춘다(upstream issue #32).
  * 종료 hook도 모든 cluster에 `stop`을 부르므로, postgres가 끝나면 cluster가 그 프로세스를 잊게 한다.
- * `start`가 실패하면 postgres는 이미 끝났으므로 `stop`할 것이 없다.
+ * `start`가 실패해도 postgres는 이미 끝났으므로 `stop`은 바로 돌아온다.
  */
 async function startCluster(cluster: EmbeddedPostgres) {
   // 18.4.0-beta.17의 비공개 field. 버전을 올리면 이 우회가 아직 필요한지 확인한다.
@@ -137,19 +143,9 @@ async function connect(
 export async function openEphemeralDatabase(): Promise<DatabaseHandle> {
   const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
   try {
-    const handle = await openDatabase({
+    return await openDatabase({
       embedded: { dataDir, port: await freePort(), persistent: false },
     });
-    return {
-      ...handle,
-      close: async () => {
-        try {
-          await handle.close();
-        } finally {
-          await fsp.rm(dataDir, { recursive: true, force: true });
-        }
-      },
-    };
   } catch (error) {
     await fsp.rm(dataDir, { recursive: true, force: true });
     throw error;
