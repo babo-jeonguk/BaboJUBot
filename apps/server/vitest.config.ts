@@ -1,4 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-// Each test file starts its own embedded Postgres; give cluster startup room.
-export default defineConfig({ test: { hookTimeout: 60_000 } });
+// Tests start embedded Postgres clusters and a child server process; give them room on a busy machine.
+export default defineConfig({
+  test: { hookTimeout: 60_000, testTimeout: 30_000 },
+});
