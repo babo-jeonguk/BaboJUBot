@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import net from "node:net";
@@ -54,8 +55,7 @@ export async function openDatabase(
   });
   if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
     await cluster.initialise();
-  // start가 실패하면 postgres 프로세스는 이미 끝났다. 이때 stop은 오지 않을 exit를 기다리므로 부르지 않는다.
-  await cluster.start();
+  await startCluster(cluster);
   try {
     await ensureDatabase(cluster);
     return await connect(
@@ -66,6 +66,33 @@ export async function openDatabase(
     await cluster.stop();
     throw error;
   }
+}
+
+/**
+ * embedded-postgres의 `stop`은 이미 끝난 postgres의 exit를 기다리며 멈춘다(upstream issue #32).
+ * 종료 hook도 모든 cluster에 `stop`을 부르므로, postgres가 끝나면 cluster가 그 프로세스를 잊게 한다.
+ * `start`가 실패하면 postgres는 이미 끝났으므로 `stop`할 것이 없다.
+ */
+async function startCluster(cluster: EmbeddedPostgres) {
+  // 18.4.0-beta.17의 비공개 field. 버전을 올리면 이 우회가 아직 필요한지 확인한다.
+  const internal = cluster as unknown as { process?: ChildProcess };
+  const forgetWhenExited = () => {
+    const child = internal.process;
+    if (!child) return;
+    const forget = () => {
+      if (internal.process === child) internal.process = undefined;
+    };
+    if (child.exitCode !== null || child.signalCode !== null) forget();
+    else child.once("exit", forget);
+  };
+  try {
+    await cluster.start();
+  } catch (error) {
+    forgetWhenExited();
+    // embedded-postgres는 postgres가 먼저 끝나면 이유 없이 reject한다.
+    throw error ?? new Error("embedded Postgres exited before it was ready");
+  }
+  forgetWhenExited();
 }
 
 async function ensureDatabase(cluster: EmbeddedPostgres) {
@@ -87,6 +114,8 @@ async function connect(
   release: () => Promise<void>
 ): Promise<DatabaseHandle> {
   const pool = new pg.Pool({ connectionString: url });
+  // 쉬는 연결이 끊기면(Postgres 재시작 등) pool이 그 연결을 버린다. listener가 없으면 프로세스가 죽는다.
+  pool.on("error", (error) => console.error("[db]", error.message));
   const db = drizzle(pool, { schema });
   const close = async () => {
     try {
