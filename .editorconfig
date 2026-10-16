@@ -9,3 +9,8 @@ indent_size = 2
 
 [*.py]
 indent_size = 4
+
+# drizzle-kit output
+[packages/db/migrations/**]
+indent_style = unset
+insert_final_newline = unset

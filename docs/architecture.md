@@ -1,6 +1,6 @@
 # 전체 구조
 
-BaboJUBot의 큰 module, module 사이 seam, 각 seam에서 주고받는 것의 모양, 제품 불변 조건을 강제하는 위치를 정합니다. 2026-10-13 사용자와 합의한 첫 번째 구조이며 제품 코드는 아직 없습니다. 스택은 [ADR-0004](adr/0004-paperclip-aligned-stack.md)를 따르고, 데이터 형식과 세부 도구 선택은 [다음 단계로 넘긴 결정](#다음-단계로-넘긴-결정)에서 이어서 정합니다. 용어는 [`GLOSSARY.md`](../GLOSSARY.md)를 따르고, 구조를 고른 이유는 [`docs/adr/`](adr/)에 있습니다.
+BaboJUBot의 큰 module, module 사이 seam, 각 seam에서 주고받는 것의 모양, 제품 불변 조건을 강제하는 위치를 정합니다. 2026-10-13 사용자와 합의한 첫 번째 구조입니다. 스택은 [ADR-0004](adr/0004-paperclip-aligned-stack.md)를 따르고, 데이터 형식과 세부 도구 선택은 [다음 단계로 넘긴 결정](#다음-단계로-넘긴-결정)에서 이어서 정합니다. 용어는 [`GLOSSARY.md`](../GLOSSARY.md)를 따르고, 구조를 고른 이유는 [`docs/adr/`](adr/)에 있습니다.
 
 ## Module
 

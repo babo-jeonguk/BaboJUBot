@@ -43,3 +43,6 @@ venv/
 .idea/
 .vscode/
 .tmp/
+# Playwright output
+test-results/
+playwright-report/
