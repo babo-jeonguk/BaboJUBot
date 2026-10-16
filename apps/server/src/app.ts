@@ -3,8 +3,18 @@ import http from "node:http";
 import type net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
-import { createOrganizationInputSchema, eventStreamPath, type StreamFrame, type StreamScope } from "@babojubot/contracts";
-import { findOrganization, listOrganizationEvents, listOrganizations, type Database } from "@babojubot/db";
+import {
+  createOrganizationInputSchema,
+  eventStreamPath,
+  type StreamFrame,
+  type StreamScope,
+} from "@babojubot/contracts";
+import {
+  findOrganization,
+  listOrganizationEvents,
+  listOrganizations,
+  type Database,
+} from "@babojubot/db";
 import express, { type ErrorRequestHandler } from "express";
 import { WebSocketServer, type WebSocket } from "ws";
 import { EventHub } from "./event-hub.ts";
@@ -23,7 +33,12 @@ export type RunningServer = {
   close: () => Promise<void>;
 };
 
-export async function startServer({ db, port, host = "127.0.0.1", webDistDir }: ServerOptions): Promise<RunningServer> {
+export async function startServer({
+  db,
+  port,
+  host = "127.0.0.1",
+  webDistDir,
+}: ServerOptions): Promise<RunningServer> {
   const hub = new EventHub();
   const app = express();
   app.use(express.json());
@@ -39,7 +54,9 @@ export async function startServer({ db, port, host = "127.0.0.1", webDistDir }: 
   app.post("/api/organizations", async (req, res) => {
     const input = createOrganizationInputSchema.safeParse(req.body);
     if (!input.success) {
-      res.status(422).json({ error: { code: "invalid_input", issues: input.error.issues } });
+      res
+        .status(422)
+        .json({ error: { code: "invalid_input", issues: input.error.issues } });
       return;
     }
     res.status(201).json(await createOrganization(db, hub, input.data));
@@ -60,7 +77,9 @@ export async function startServer({ db, port, host = "127.0.0.1", webDistDir }: 
 
   if (webDistDir && fs.existsSync(webDistDir)) {
     app.use(express.static(webDistDir));
-    app.get("/{*path}", (_req, res) => res.sendFile(path.join(webDistDir, "index.html")));
+    app.get("/{*path}", (_req, res) =>
+      res.sendFile(path.join(webDistDir, "index.html"))
+    );
   }
 
   app.use(((error, _req, res, _next) => {
@@ -81,13 +100,18 @@ export async function startServer({ db, port, host = "127.0.0.1", webDistDir }: 
     });
   });
 
-  async function upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer) {
+  async function upgrade(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer
+  ) {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== eventStreamPath) return refuse(socket, 404);
     const organizationId = url.searchParams.get("organizationId");
     let scope: StreamScope = { kind: "all" };
     if (organizationId !== null) {
-      if (!(await findOrganization(db, organizationId))) return refuse(socket, 404);
+      if (!(await findOrganization(db, organizationId)))
+        return refuse(socket, 404);
       scope = { kind: "organization", organizationId };
     }
     wss.handleUpgrade(req, socket, head, (ws) => attach(ws, scope));
@@ -97,7 +121,9 @@ export async function startServer({ db, port, host = "127.0.0.1", webDistDir }: 
     const send = (frame: StreamFrame) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
     };
-    const unsubscribe = hub.subscribe(scope, (event) => send({ type: "event", event }));
+    const unsubscribe = hub.subscribe(scope, (event) =>
+      send({ type: "event", event })
+    );
     ws.on("close", unsubscribe);
     ws.on("error", unsubscribe);
     send({ type: "ready" });
@@ -125,5 +151,7 @@ function notFound(res: express.Response) {
 }
 
 function refuse(socket: Duplex, status: number) {
-  socket.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  socket.end(
+    `HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`
+  );
 }

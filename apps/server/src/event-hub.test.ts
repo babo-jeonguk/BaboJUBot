@@ -6,7 +6,11 @@ const event = (id: number, organizationId: string): Event => ({
   id,
   organizationId,
   type: "organization.created",
-  payload: { name: "x", stage: "goal_setting", leadAgentId: crypto.randomUUID() },
+  payload: {
+    name: "x",
+    stage: "goal_setting",
+    leadAgentId: crypto.randomUUID(),
+  },
   createdAt: new Date().toISOString(),
 });
 
@@ -16,7 +20,9 @@ describe("EventHub", () => {
     const all: Event[] = [];
     const a: Event[] = [];
     hub.subscribe({ kind: "all" }, (e) => all.push(e));
-    hub.subscribe({ kind: "organization", organizationId: "A" }, (e) => a.push(e));
+    hub.subscribe({ kind: "organization", organizationId: "A" }, (e) =>
+      a.push(e)
+    );
 
     hub.publish(event(1, "A"));
     hub.publish(event(2, "B"));

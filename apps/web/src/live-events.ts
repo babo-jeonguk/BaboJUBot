@@ -33,8 +33,13 @@ export function useLiveEvents() {
           return;
         }
         const { event } = frame.data;
-        void queryClient.invalidateQueries({ queryKey: queryKeys.organizations, exact: true });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.organization(event.organizationId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.organizations,
+          exact: true,
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.organization(event.organizationId),
+        });
       };
       socket.onclose = () => {
         if (stopped) return;

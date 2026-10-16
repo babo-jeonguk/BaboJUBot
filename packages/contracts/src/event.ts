@@ -18,7 +18,9 @@ export const organizationCreatedEventSchema = z.object({
   }),
 });
 
-export const eventSchema = z.discriminatedUnion("type", [organizationCreatedEventSchema]);
+export const eventSchema = z.discriminatedUnion("type", [
+  organizationCreatedEventSchema,
+]);
 export type Event = z.infer<typeof eventSchema>;
 export type EventType = Event["type"];
 /** 저장 전 Event. ID와 시각은 Event log가 정한다. */
@@ -30,7 +32,8 @@ export const eventListSchema = z.array(eventSchema);
  * Event stream 구독 범위. `all`은 사용자 화면(홈·사이드바)용 전체 조직 구독이고,
  * 조직 구독은 그 조직의 Event만 받는다. 범위는 Event의 organizationId를 바꾸지 않는다.
  */
-export type StreamScope = { kind: "all" } | { kind: "organization"; organizationId: string };
+export type StreamScope =
+  { kind: "all" } | { kind: "organization"; organizationId: string };
 
 export const eventStreamPath = "/api/events";
 

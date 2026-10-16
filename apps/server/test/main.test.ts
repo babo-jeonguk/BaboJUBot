@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
-import { freePort, createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
+import {
+  freePort,
+  createTestDatabase,
+  type TestDatabase,
+} from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
@@ -15,10 +19,14 @@ afterAll(async () => {
 
 it("starts against an external Postgres URL and leaves that Postgres running on shutdown", async () => {
   const port = await freePort();
-  const child = spawn(process.execPath, [fileURLToPath(new URL("../src/main.ts", import.meta.url))], {
-    env: { ...process.env, DATABASE_URL: external.url, PORT: String(port) },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
+    {
+      env: { ...process.env, DATABASE_URL: external.url, PORT: String(port) },
+      stdio: ["ignore", "pipe", "inherit"],
+    }
+  );
   try {
     const [line] = await once(child.stdout!, "data");
     expect(String(line)).toContain("external Postgres");
@@ -35,5 +43,7 @@ it("starts against an external Postgres URL and leaves that Postgres running on 
   }
 
   // The server only owned its connections: the external database still answers.
-  expect((await listOrganizations(external.db)).map((o) => o.name)).toContain("외부 DB 조직");
+  expect((await listOrganizations(external.db)).map((o) => o.name)).toContain(
+    "외부 DB 조직"
+  );
 });

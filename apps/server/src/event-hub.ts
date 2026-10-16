@@ -17,7 +17,11 @@ export class EventHub {
 
   publish(event: Event): void {
     for (const { scope, listener } of this.#subscribers) {
-      if (scope.kind === "organization" && scope.organizationId !== event.organizationId) continue;
+      if (
+        scope.kind === "organization" &&
+        scope.organizationId !== event.organizationId
+      )
+        continue;
       try {
         listener(event);
       } catch (error) {

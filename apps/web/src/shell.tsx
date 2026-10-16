@@ -7,7 +7,14 @@ import { useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation, useMatch } from "react-router";
 import { useOrganization, useOrganizations } from "./api.ts";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
-import { abbr, avatarStyle, StageBadge, stageLabel, stageShortLabel, type Width } from "./ui.tsx";
+import {
+  abbr,
+  avatarStyle,
+  StageBadge,
+  stageLabel,
+  stageShortLabel,
+  type Width,
+} from "./ui.tsx";
 
 export type Section = { slug: string; label: string; width: Width };
 export const defaultSection = "dashboard";
@@ -33,13 +40,19 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
       { slug: "activity", label: "활동", width: "full" },
     ],
   },
-  { label: "운영", items: [{ slug: "settings", label: "설정", width: "reading" }] },
+  {
+    label: "운영",
+    items: [{ slug: "settings", label: "설정", width: "reading" }],
+  },
 ];
-export const findSection = (slug: string) => sectionGroups.flatMap((g) => g.items).find((s) => s.slug === slug);
+export const findSection = (slug: string) =>
+  sectionGroups.flatMap((g) => g.items).find((s) => s.slug === slug);
 
 function useCurrent() {
   const org = useMatch("/orgs/:orgId/*")?.params.orgId;
-  const section = useMatch("/orgs/:orgId/:section/*")?.params.section ?? (org ? defaultSection : undefined);
+  const section =
+    useMatch("/orgs/:orgId/:section/*")?.params.section ??
+    (org ? defaultSection : undefined);
   return { orgId: org, section, home: useLocation().pathname === "/" };
 }
 
@@ -58,7 +71,11 @@ export function Shell() {
             <Dialog.Overlay className="fixed inset-0 z-40 bg-slate-950/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
             <Dialog.Content
               className="fixed inset-y-0 left-0 z-50 flex shadow-pop data-[state=closed]:animate-slide-out-left data-[state=open]:animate-slide-in-left"
-              onClick={(e) => (e.target as HTMLElement).closest("a, button[data-closes-sheet]") && setSheet(false)}
+              onClick={(e) =>
+                (e.target as HTMLElement).closest(
+                  "a, button[data-closes-sheet]"
+                ) && setSheet(false)
+              }
             >
               <Dialog.Title className="sr-only">탐색</Dialog.Title>
               <Rail />
@@ -69,17 +86,26 @@ export function Shell() {
 
         <main className="flex min-w-0 flex-1 flex-col overflow-auto pb-20">
           <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur md:hidden">
-            <button aria-label="탐색 열기" onClick={() => setSheet(true)} className="btn-ghost px-2">
+            <button
+              aria-label="탐색 열기"
+              onClick={() => setSheet(true)}
+              className="btn-ghost px-2"
+            >
               ☰
             </button>
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">{orgId ? <Crumbs orgId={orgId} compact /> : "홈"}</span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              {orgId ? <Crumbs orgId={orgId} compact /> : "홈"}
+            </span>
           </div>
           {orgId && (
             <div className="hidden truncate border-b border-slate-200/70 bg-white/60 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
               <Crumbs orgId={orgId} />
             </div>
           )}
-          <div key={useLocation().pathname} className="animate-fade-up flex flex-1 flex-col">
+          <div
+            key={useLocation().pathname}
+            className="animate-fade-up flex flex-1 flex-col"
+          >
             <Outlet />
           </div>
         </main>
@@ -88,12 +114,22 @@ export function Shell() {
   );
 }
 
-function Tip({ children, content }: { children: ReactNode; content: ReactNode }) {
+function Tip({
+  children,
+  content,
+}: {
+  children: ReactNode;
+  content: ReactNode;
+}) {
   return (
     <Tooltip.Root>
       <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
       <Tooltip.Portal>
-        <Tooltip.Content side="right" sideOffset={10} className="animate-pop-in z-[60] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop">
+        <Tooltip.Content
+          side="right"
+          sideOffset={10}
+          className="animate-pop-in z-[60] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
+        >
           {content}
           <Tooltip.Arrow className="fill-slate-900" />
         </Tooltip.Content>
@@ -118,24 +154,44 @@ function Rail() {
   const orgs = useOrganizations();
   const openCreate = useOpenCreateOrganization();
   return (
-    <nav aria-label="연구 조직" className="scrollbar-thin flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto bg-gradient-to-b from-brand-950 to-slate-950 py-3 pb-24 text-white">
+    <nav
+      aria-label="연구 조직"
+      className="scrollbar-thin flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto bg-gradient-to-b from-brand-950 to-slate-950 py-3 pb-24 text-white"
+    >
       <Tip content="홈 · 전체 조직 개요">
-        <Link to="/" className={railItem(home)} aria-current={home ? "page" : undefined}>
+        <Link
+          to="/"
+          className={railItem(home)}
+          aria-current={home ? "page" : undefined}
+        >
           <ActiveBar on={home} />
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl text-lg">⌂</span>
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl text-lg">
+            ⌂
+          </span>
           <span className="text-[10px] text-white/60">홈</span>
         </Link>
       </Tip>
       <div className="my-2 h-px w-8 bg-white/15" />
-      {orgs.isPending && <div className="h-9 w-9 animate-pulse rounded-xl bg-white/10" aria-busy />}
+      {orgs.isPending && (
+        <div
+          className="h-9 w-9 animate-pulse rounded-xl bg-white/10"
+          aria-busy
+        />
+      )}
       {orgs.isError && (
         <Tip content="조직 목록을 불러오지 못했습니다">
-          <button onClick={() => void orgs.refetch()} className="text-xs text-rose-300" aria-label="조직 목록 다시 불러오기">
+          <button
+            onClick={() => void orgs.refetch()}
+            className="text-xs text-rose-300"
+            aria-label="조직 목록 다시 불러오기"
+          >
             ⚠
           </button>
         </Tip>
       )}
-      {orgs.data?.map((o) => <RailOrganization key={o.id} org={o} on={orgId === o.id} />)}
+      {orgs.data?.map((o) => (
+        <RailOrganization key={o.id} org={o} on={orgId === o.id} />
+      ))}
       <Tip content="새 연구 조직">
         <button
           onClick={openCreate}
@@ -162,7 +218,12 @@ function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
         </div>
       }
     >
-      <Link to={`/orgs/${org.id}`} className={railItem(on)} aria-current={on ? "page" : undefined} aria-label={`${org.name} · ${stage}`}>
+      <Link
+        to={`/orgs/${org.id}`}
+        className={railItem(on)}
+        aria-current={on ? "page" : undefined}
+        aria-label={`${org.name} · ${stage}`}
+      >
         <ActiveBar on={on} />
         <span
           className={`flex h-9 w-9 items-center justify-center rounded-xl text-[13px] font-semibold shadow-sm transition ${on ? "ring-2 ring-white" : ""} ${dim ? "opacity-45 grayscale" : ""}`}
@@ -170,7 +231,11 @@ function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
         >
           {abbr(org.name)}
         </span>
-        <span className={`w-full truncate px-0.5 text-center text-[10px] ${on ? "text-white" : "text-white/55"}`}>{stageShortLabel[org.stage]}</span>
+        <span
+          className={`w-full truncate px-0.5 text-center text-[10px] ${on ? "text-white" : "text-white/55"}`}
+        >
+          {stageShortLabel[org.stage]}
+        </span>
       </Link>
     </Tip>
   );
@@ -182,26 +247,39 @@ function Sections({ orgId }: { orgId: string }) {
   const [shut, setShut] = useState<Record<string, boolean>>({});
   if (!org.data) return null;
   return (
-    <nav className="scrollbar-thin flex w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-200/70 bg-white/60 p-3 pb-24 backdrop-blur" aria-label="조직 화면">
+    <nav
+      className="scrollbar-thin flex w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-200/70 bg-white/60 p-3 pb-24 backdrop-blur"
+      aria-label="조직 화면"
+    >
       <div className="card p-3">
-        <div className="text-[15px] leading-snug font-semibold text-slate-900">{org.data.name}</div>
+        <div className="text-[15px] leading-snug font-semibold text-slate-900">
+          {org.data.name}
+        </div>
         <div className="mt-2">
           <StageBadge stage={org.data.stage} />
         </div>
       </div>
       {sectionGroups.map((g, gi) => {
         const closed = g.label && shut[g.label];
-        const shown = closed ? g.items.filter((s) => s.slug === section) : g.items;
+        const shown = closed
+          ? g.items.filter((s) => s.slug === section)
+          : g.items;
         return (
           <div key={gi}>
             {g.label && (
               <button
-                onClick={() => setShut((x) => ({ ...x, [g.label!]: !x[g.label!] }))}
+                onClick={() =>
+                  setShut((x) => ({ ...x, [g.label!]: !x[g.label!] }))
+                }
                 aria-expanded={!closed}
                 className="group mb-0.5 flex w-full items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-semibold tracking-wide text-slate-400 transition hover:text-slate-600"
               >
                 {g.label}
-                <span className={`ml-auto text-[10px] transition-transform duration-200 ${closed ? "-rotate-90" : ""}`}>▾</span>
+                <span
+                  className={`ml-auto text-[10px] transition-transform duration-200 ${closed ? "-rotate-90" : ""}`}
+                >
+                  ▾
+                </span>
               </button>
             )}
             <ul className="space-y-0.5">
@@ -214,7 +292,9 @@ function Sections({ orgId }: { orgId: string }) {
                       aria-current={on ? "page" : undefined}
                       className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition duration-150 active:scale-[0.98] ${on ? "bg-white font-semibold text-slate-900 shadow-card ring-1 ring-slate-900/5" : "text-slate-600 hover:bg-white/80 hover:text-slate-900"}`}
                     >
-                      <span className={`h-4 w-1 rounded-full transition-colors ${on ? "bg-brand-500" : "bg-transparent"}`} />
+                      <span
+                        className={`h-4 w-1 rounded-full transition-colors ${on ? "bg-brand-500" : "bg-transparent"}`}
+                      />
                       {s.label}
                     </Link>
                   </li>

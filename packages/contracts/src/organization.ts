@@ -24,7 +24,9 @@ export const organizationNameMaxLength = 120;
 export const createOrganizationInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(organizationNameMaxLength),
 });
-export type CreateOrganizationInput = z.infer<typeof createOrganizationInputSchema>;
+export type CreateOrganizationInput = z.infer<
+  typeof createOrganizationInputSchema
+>;
 
 export const agentSchema = z.object({
   id: z.uuid(),

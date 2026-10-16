@@ -23,12 +23,24 @@ describe("creating an organization", () => {
     const res = await t.request("GET", `/api/organizations/${created.id}`);
     expect(res.status).toBe(200);
     const org = organizationDetailSchema.parse(res.body);
-    expect(org).toMatchObject({ id: created.id, name: "음성 인식 오류 분석", stage: "goal_setting" });
+    expect(org).toMatchObject({
+      id: created.id,
+      name: "음성 인식 오류 분석",
+      stage: "goal_setting",
+    });
     expect(org.agents).toHaveLength(1);
-    expect(org.agents[0]).toMatchObject({ role: "lead", organizationId: created.id });
+    expect(org.agents[0]).toMatchObject({
+      role: "lead",
+      organizationId: created.id,
+    });
 
     const list = await t.request("GET", "/api/organizations");
-    expect(list.body).toContainEqual({ id: org.id, name: org.name, stage: "goal_setting", createdAt: org.createdAt });
+    expect(list.body).toContainEqual({
+      id: org.id,
+      name: org.name,
+      stage: "goal_setting",
+      createdAt: org.createdAt,
+    });
   });
 
   it("publishes an Event carrying the organization ID", async () => {
@@ -40,7 +52,11 @@ describe("creating an organization", () => {
     expect(event).toMatchObject({
       organizationId: org.id,
       type: "organization.created",
-      payload: { name: "조직 이벤트", stage: "goal_setting", leadAgentId: org.agents[0]!.id },
+      payload: {
+        name: "조직 이벤트",
+        stage: "goal_setting",
+        leadAgentId: org.agents[0]!.id,
+      },
     });
     const log = await t.request("GET", `/api/organizations/${org.id}/events`);
     expect(log.body).toEqual([event]);
@@ -51,21 +67,42 @@ describe("creating an organization", () => {
     const all = await t.subscribe({ kind: "all" });
     const before = (await t.request("GET", "/api/organizations")).body.length;
 
-    for (const body of [{ name: "   " }, { name: "x", stage: "researching" }, { name: "x", id: crypto.randomUUID() }, {}]) {
+    for (const body of [
+      { name: "   " },
+      { name: "x", stage: "researching" },
+      { name: "x", id: crypto.randomUUID() },
+      {},
+    ]) {
       const res = await t.request("POST", "/api/organizations", body);
       expect(res.status, JSON.stringify(body)).toBe(422);
     }
-    expect((await t.request("POST", "/api/organizations", "{not json")).status).toBe(400);
+    expect(
+      (await t.request("POST", "/api/organizations", "{not json")).status
+    ).toBe(400);
 
-    expect((await t.request("GET", "/api/organizations")).body).toHaveLength(before);
+    expect((await t.request("GET", "/api/organizations")).body).toHaveLength(
+      before
+    );
     await all.expectNoEvents();
     all.close();
   });
 
   it("answers 404 for an unknown organization", async () => {
-    expect((await t.request("GET", `/api/organizations/${crypto.randomUUID()}`)).status).toBe(404);
-    expect((await t.request("GET", "/api/organizations/nope")).status).toBe(404);
-    expect((await t.request("GET", `/api/organizations/${crypto.randomUUID()}/events`)).status).toBe(404);
+    expect(
+      (await t.request("GET", `/api/organizations/${crypto.randomUUID()}`))
+        .status
+    ).toBe(404);
+    expect((await t.request("GET", "/api/organizations/nope")).status).toBe(
+      404
+    );
+    expect(
+      (
+        await t.request(
+          "GET",
+          `/api/organizations/${crypto.randomUUID()}/events`
+        )
+      ).status
+    ).toBe(404);
   });
 });
 
@@ -74,8 +111,14 @@ describe("Event stream scopes", () => {
     const a = await create("조직 A");
     const b = await create("조직 B");
     const all = await t.subscribe({ kind: "all" });
-    const onlyA = await t.subscribe({ kind: "organization", organizationId: a.id });
-    const onlyB = await t.subscribe({ kind: "organization", organizationId: b.id });
+    const onlyA = await t.subscribe({
+      kind: "organization",
+      organizationId: a.id,
+    });
+    const onlyB = await t.subscribe({
+      kind: "organization",
+      organizationId: b.id,
+    });
 
     const c = await create("조직 C");
 
@@ -86,7 +129,11 @@ describe("Event stream scopes", () => {
   });
 
   it("refuses to subscribe to an unknown organization", async () => {
-    await expect(t.subscribe({ kind: "organization", organizationId: crypto.randomUUID() })).rejects.toThrow(/404/);
-    await expect(t.subscribe({ kind: "organization", organizationId: "nope" })).rejects.toThrow(/404/);
+    await expect(
+      t.subscribe({ kind: "organization", organizationId: crypto.randomUUID() })
+    ).rejects.toThrow(/404/);
+    await expect(
+      t.subscribe({ kind: "organization", organizationId: "nope" })
+    ).rejects.toThrow(/404/);
   });
 });

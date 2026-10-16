@@ -1,4 +1,10 @@
-import type { Agent, CreateOrganizationInput, LifecycleStage, NewEvent, Organization } from "@babojubot/contracts";
+import type {
+  Agent,
+  CreateOrganizationInput,
+  LifecycleStage,
+  NewEvent,
+  Organization,
+} from "@babojubot/contracts";
 
 export const initialStage: LifecycleStage = "goal_setting";
 export const leadAgentName = "Research Lead";
@@ -13,17 +19,35 @@ export type OrganizationCreation = {
 };
 
 /** 새 조직은 `목표 설정`에서 시작하고 전용 Research Lead 하나를 갖는다. */
-export function planOrganizationCreation(input: CreateOrganizationInput, { newId, now }: RecordSource): OrganizationCreation {
+export function planOrganizationCreation(
+  input: CreateOrganizationInput,
+  { newId, now }: RecordSource
+): OrganizationCreation {
   const createdAt = now().toISOString();
-  const organization: Organization = { id: newId(), name: input.name, stage: initialStage, createdAt };
-  const lead: Agent = { id: newId(), organizationId: organization.id, role: "lead", name: leadAgentName, createdAt };
+  const organization: Organization = {
+    id: newId(),
+    name: input.name,
+    stage: initialStage,
+    createdAt,
+  };
+  const lead: Agent = {
+    id: newId(),
+    organizationId: organization.id,
+    role: "lead",
+    name: leadAgentName,
+    createdAt,
+  };
   return {
     organization,
     agents: [lead],
     event: {
       organizationId: organization.id,
       type: "organization.created",
-      payload: { name: organization.name, stage: organization.stage, leadAgentId: lead.id },
+      payload: {
+        name: organization.name,
+        stage: organization.stage,
+        leadAgentId: lead.id,
+      },
     },
   };
 }

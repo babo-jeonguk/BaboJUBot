@@ -14,7 +14,11 @@ export default defineConfig({
       // 임시 embedded Postgres를 쓰는 서버. SIGTERM을 받으면 Postgres를 멈추고 dataDir를 지운다.
       command: "node ../server/src/main.ts",
       url: `http://127.0.0.1:${apiPort}/api/health`,
-      env: { PORT: String(apiPort), BABOJUBOT_EPHEMERAL_DB: "1", DATABASE_URL: "" },
+      env: {
+        PORT: String(apiPort),
+        BABOJUBOT_EPHEMERAL_DB: "1",
+        DATABASE_URL: "",
+      },
       gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
       reuseExistingServer: false,
       timeout: 60_000,
@@ -22,7 +26,10 @@ export default defineConfig({
     {
       command: "vite",
       url: `http://127.0.0.1:${webPort}`,
-      env: { WEB_PORT: String(webPort), BABOJUBOT_API: `http://127.0.0.1:${apiPort}` },
+      env: {
+        WEB_PORT: String(webPort),
+        BABOJUBOT_API: `http://127.0.0.1:${apiPort}`,
+      },
       reuseExistingServer: false,
     },
   ],

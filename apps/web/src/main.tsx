@@ -18,7 +18,10 @@ function App() {
       <Routes>
         <Route element={<Shell />}>
           <Route index element={<Home />} />
-          <Route path="orgs/:orgId/:section?" element={<OrganizationScreen />} />
+          <Route
+            path="orgs/:orgId/:section?"
+            element={<OrganizationScreen />}
+          />
           <Route path="*" element={<NotFound what="화면" />} />
         </Route>
       </Routes>
@@ -33,5 +36,5 @@ createRoot(document.getElementById("root")!).render(
         <App />
       </BrowserRouter>
     </QueryClientProvider>
-  </StrictMode>,
+  </StrictMode>
 );

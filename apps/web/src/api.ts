@@ -21,7 +21,11 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T extends z.ZodType>(schema: T, path: string, init?: RequestInit): Promise<z.infer<T>> {
+async function request<T extends z.ZodType>(
+  schema: T,
+  path: string,
+  init?: RequestInit
+): Promise<z.infer<T>> {
   const res = await fetch(path, init);
   if (!res.ok) throw new ApiError(res.status);
   return schema.parse(await res.json());
@@ -37,8 +41,13 @@ export function useOrganizations() {
 export function useOrganization(id: string) {
   return useQuery({
     queryKey: queryKeys.organization(id),
-    queryFn: () => request(organizationDetailSchema, `/api/organizations/${encodeURIComponent(id)}`),
-    retry: (count, error) => !(error instanceof ApiError && error.status === 404) && count < 3,
+    queryFn: () =>
+      request(
+        organizationDetailSchema,
+        `/api/organizations/${encodeURIComponent(id)}`
+      ),
+    retry: (count, error) =>
+      !(error instanceof ApiError && error.status === 404) && count < 3,
   });
 }
 
@@ -55,10 +64,15 @@ export function useCreateOrganization() {
     onSuccess: (org: OrganizationDetail) => {
       queryClient.setQueryData(queryKeys.organization(org.id), org);
       const { agents: _agents, ...summary } = org;
-      queryClient.setQueryData<Organization[]>(queryKeys.organizations, (list) =>
-        list && !list.some((o) => o.id === org.id) ? [...list, summary] : list,
+      queryClient.setQueryData<Organization[]>(
+        queryKeys.organizations,
+        (list) =>
+          list && !list.some((o) => o.id === org.id) ? [...list, summary] : list
       );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.organizations, exact: true });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.organizations,
+        exact: true,
+      });
     },
   });
 }
