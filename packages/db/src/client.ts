@@ -54,6 +54,7 @@ export async function openDatabase(
   });
   if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
     await cluster.initialise();
+  // start가 실패하면 postgres 프로세스는 이미 끝났다. 이때 stop은 오지 않을 exit를 기다리므로 부르지 않는다.
   await cluster.start();
   try {
     await ensureDatabase(cluster);
@@ -87,21 +88,20 @@ async function connect(
 ): Promise<DatabaseHandle> {
   const pool = new pg.Pool({ connectionString: url });
   const db = drizzle(pool, { schema });
+  const close = async () => {
+    try {
+      await pool.end();
+    } finally {
+      await release();
+    }
+  };
   try {
     await migrateDatabase(db);
   } catch (error) {
-    await pool.end();
-    await release();
+    await close();
     throw error;
   }
-  return {
-    db,
-    url,
-    close: async () => {
-      await pool.end();
-      await release();
-    },
-  };
+  return { db, url, close };
 }
 
 /** 임시 dataDir와 빈 port에 embedded Postgres를 띄운다. `close`가 cluster와 dataDir를 지운다. 테스트와 E2E용. */
@@ -114,8 +114,11 @@ export async function openEphemeralDatabase(): Promise<DatabaseHandle> {
     return {
       ...handle,
       close: async () => {
-        await handle.close();
-        await fsp.rm(dataDir, { recursive: true, force: true });
+        try {
+          await handle.close();
+        } finally {
+          await fsp.rm(dataDir, { recursive: true, force: true });
+        }
       },
     };
   } catch (error) {
