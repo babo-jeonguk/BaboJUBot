@@ -22,24 +22,11 @@ pnpm check        # Markdown 로컬 링크 검사
 
 데이터베이스는 `DATABASE_URL`이 있으면 그 외부 Postgres에 연결만 하고, 없으면 embedded Postgres를 `.babojubot/postgres`(`BABOJUBOT_HOME`으로 변경)에 띄웁니다. 둘 다 시작할 때 같은 migration을 적용합니다. 운영은 `pnpm build` 후 `DATABASE_URL=… pnpm start`로 서버가 빌드한 대시보드까지 제공합니다. 그 밖의 설정(`PORT`, `HOST`, `EMBEDDED_POSTGRES_PORT`)은 [`apps/server/src/main.ts`](apps/server/src/main.ts) 머리에 있습니다. 스택은 [ADR-0004](docs/adr/0004-paperclip-aligned-stack.md)를 따릅니다.
 
-| 위치 | 담는 것 |
-|---|---|
-| `packages/contracts` | seam별 zod 스키마: 조직 생성 제어 명령, 조직·에이전트, Event와 Event stream frame |
-| `packages/core` | 도메인 규칙. 새 조직은 `목표 설정`에서 시작하고 전용 Research Lead 하나를 가집니다. |
-| `packages/db` | Drizzle 스키마·migration, embedded/외부 Postgres 연결, 조직·Lead·Event 원자 저장 |
-| `packages/runtime` | 실행기·job runner·채널 adapter 자리(#53부터) |
-| `apps/server` | HTTP API와 Event stream(`/api/events`, 전체 또는 `?organizationId=`로 조직 구독) |
-| `apps/web` | 대시보드(배치 C) |
-| `harness/` | Role·Soul·Skill·연구 흐름 템플릿 자리 |
+패키지별 책임은 [전체 구조](docs/architecture.md#패키지-구성), 수정할 코드와 테스트의 위치는 [코드 지도](docs/agents/code-map.md)에서 확인합니다.
 
 ## 문서
 
-- [기능 범위](docs/features.md)
-- [전체 구조](docs/architecture.md)와 [ADR](docs/adr/)
-- [인터뷰 기록](docs/project-intent.md)
-- [공통 용어](GLOSSARY.md)
-- [6개 참고 프로젝트 코드 구조](docs/research/reference-code-structure.md)
-- [23개 비교 대상](docs/research/comparative-survey.md)
+[문서 지도](docs/README.md)에서 기능·구조·용어·개발 운영·인터뷰·조사 문서를 질문별로 찾습니다.
 
 실제 실행 인스턴스의 파일·기억·실험 결과는 Git에서 제외하는 `.babojubot/` 아래 또는 설정된 외부 저장소에 둡니다. 최종 저장 방식은 후속 이슈에서 결정합니다.
 

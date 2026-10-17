@@ -27,6 +27,8 @@ BaboJUBot의 큰 module, module 사이 seam, 각 seam에서 주고받는 것의 
 
 ## 패키지 구성
 
+아래는 목표 구조의 책임 배치입니다. 현재 구현 현황은 [README](../README.md), 실제 진입점과 테스트는 [코드 지도](agents/code-map.md)를 따릅니다.
+
 | 위치 | 담는 것 | Module |
 |---|---|---|
 | `apps/server` | HTTP·WebSocket API와 실행 시도 실행. 첫 판은 한 프로세스이고 worker 분리는 필요할 때 합니다. | Control Plane, Agent Runtime |

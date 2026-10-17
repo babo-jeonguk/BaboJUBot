@@ -11,14 +11,8 @@ BaboJUBot의 도메인 문서를 읽고, 도메인 언어를 코드·이슈·문
 
 ## 지식이 기록되는 곳
 
-새로 알게 된 내용은 그 종류의 Source of Truth 한 곳에만 기록하고, 다른 문서에서는 링크합니다.
-
-| 내용 | Source of Truth |
-| --- | --- |
-| 도메인 개념이 무엇인지 | [`GLOSSARY.md`](../../GLOSSARY.md) |
-| 제품이 제공할 기능 범위 | [`docs/features.md`](../features.md) |
-| 개별 구현 요구사항·조사·결정·Acceptance Criteria | 해당 GitHub 이슈 |
-| 여러 이슈에 걸쳐 오래 유지되는 아키텍처 결정 | `docs/adr/` ([ADR](#adr) 조건을 충족할 때만) |
+기록 위치와 문서별 경계는 [문서 지도](../README.md)를 따릅니다.
+이 문서는 도메인 언어의 적용·충돌 처리와 ADR 작성 조건을 담당합니다.
 
 ## Ubiquitous Language
 

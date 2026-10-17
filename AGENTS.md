@@ -1,6 +1,6 @@
 # BaboJUBot
 
-연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 현재는 판 1 walking skeleton(조직 생성과 Event stream)까지 구현했습니다. 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
+연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 현재 구현 현황은 [`README.md`](README.md), 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
 
 ## 제품 불변 조건
 
@@ -18,6 +18,9 @@
 작업을 시작하기 전에 아래 항목 중 현재 작업에 해당하는 문서만 모두 읽습니다.
 
 - 기능 구현·변경 → 해당 GitHub 이슈의 조사·결정·완료 조건과 [`docs/features.md`](docs/features.md)의 확정 범위
+- 코드 탐색·수정 위치 결정·버그 원인 추적 → [`docs/agents/code-map.md`](docs/agents/code-map.md)의 해당 작업 항목
+- PR 병합 요청 → [`docs/agents/pr-merge.md`](docs/agents/pr-merge.md)의 절차와 완료 조건
+- 문서 생성·수정·구조 정리 → [`docs/README.md`](docs/README.md)의 문서별 책임과 작성·갱신 기준
 - module 경계·seam·불변 조건 강제 위치 → [`docs/architecture.md`](docs/architecture.md)와 [`docs/adr/`](docs/adr/)
 - 도메인 용어, 용어 충돌, 설계 결정 기록 → [`docs/agents/domain.md`](docs/agents/domain.md)
 - 이슈 조회·작성·댓글·label·triage → [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)와 [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md)
