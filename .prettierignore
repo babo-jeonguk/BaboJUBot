@@ -1,0 +1,5 @@
+# Generated
+pnpm-lock.yaml
+packages/db/migrations/
+# Documents keep their hand-aligned tables and line breaks.
+*.md

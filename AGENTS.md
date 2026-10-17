@@ -1,6 +1,6 @@
 # BaboJUBot
 
-연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 현재는 요구사항·용어·조사 문서와 전체 구조 설계만 있고, 제품 기능 코드는 아직 없습니다. 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
+연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 현재는 판 1 walking skeleton(조직 생성과 Event stream)까지 구현했습니다. 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
 
 ## 제품 불변 조건
 

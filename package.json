@@ -8,6 +8,26 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "check": "node scripts/check-project.mjs"
+    "dev": "pnpm --parallel --filter @babojubot/server --filter @babojubot/web run dev",
+    "start": "pnpm --filter @babojubot/server run start",
+    "build": "pnpm -r --if-present run build",
+    "test": "pnpm -r --if-present run test",
+    "test:e2e": "pnpm --filter @babojubot/web run test:e2e",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "lint": "eslint .",
+    "check": "node scripts/check-project.mjs",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "eslint": "10.12.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.13.0",
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2"
   }
 }

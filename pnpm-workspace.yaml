@@ -1,3 +1,10 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# embedded-postgres ships its native library symlinks through this postinstall script.
+onlyBuiltDependencies:
+  - "@embedded-postgres/linux-x64"
+# esbuild finds its platform binary through optional dependencies; its postinstall only verifies it.
+ignoredBuiltDependencies:
+  - esbuild
