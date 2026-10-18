@@ -25,7 +25,6 @@
 | [#50](issue-50-references.md#brief)·[화면 조사](paperclip-dashboard.md)·[후보](dashboard-references.md) | Inbox와 도메인 승인 구별, scope/cache, 에이전트 상세 | 확정 화면 지도와 #54의 별도 승인 상세가 우선. 캡처 재사용 없이 필요한 상태 새 확인 |
 | [실행 모델](agent-runtime-models.md)·[협력](agent-interaction-models.md)·[Paperclip](paperclip.md)·[코드 구조](reference-code-structure.md) | adapter·하네스·승인 소스 후보 | 고정 ref 파일별 비교 또는 새 ref 원문 재독. 기존 E는 위 문서 링크로만 인용 |
 | [#51](issue-51-references.md#brief)·[비교 목록](comparative-survey.md) | 템플릿/그래프 경계·후보 출발점 | 그래프 layout은 #56으로 이번 심층 제외 |
-| Anthropic 리뷰(`anthropic-code-review.md`, 별도 미커밋 조사) | 연구 주제 관련성 점검 | 개발 리뷰 운영 자료로 초기 승인 메커니즘 근거에 재사용하지 않음 |
 
 기존 `.reference-cache/issue-{1,50,51,52,53}/`는 소스·도구 위치 탐색에 사용한다. 실행 로그와 신규 근거는 이번 캐시에 별도 보존한다.
 
