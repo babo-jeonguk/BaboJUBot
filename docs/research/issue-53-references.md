@@ -24,7 +24,7 @@
 | [#52](issue-52-references.md#brief)·[Paperclip](paperclip.md)·[코드 구조](reference-code-structure.md) | PG fixture·WS snapshot, 기존 checkout·파일 위치 | Paperclip의 queue4·surface14·runtime6파일을 각각 과거 ref와 blob 비교. 78b833c 대비 auth middleware 변경·나머지 해당 파일 동일, 1b4c803 대비 runtime/queue 일부 변경 또는 당시 경로 미존재. 모두 새 SHA 재독; 상세 cache 기록 |
 | [#50](issue-50-references.md#brief)·[Paperclip 화면](paperclip-dashboard.md)·[화면 후보](dashboard-references.md) | scope/cache/상세 진입 질문 | 이후 C 확정과 #53 agent 상세 추가가 우선. 옛 배치 제안을 재선정하지 않음 |
 | [#1](issue-1-references.md#brief) | strict 계약·가짜 clock/runtime 검증 방법 | 이전 backlog·저장 엔진·승인 권고는 현행 #49/ADR에 대체됨 |
-| [비교 목록](comparative-survey.md)·[#51](issue-51-references.md#brief)·[코드 리뷰 조사](anthropic-code-review.md) | 후보·범위 확인 | 연구 지도/리뷰 운영은 이번 실행 메커니즘의 직접 근거가 없어 심층 재사용 안 함 |
+| [비교 목록](comparative-survey.md)·[#51](issue-51-references.md#brief) | 후보·범위 확인 | 연구 지도는 이번 실행 메커니즘의 직접 근거가 없어 심층 재사용 안 함 |
 
 기존 `.reference-cache/issue-{1,50,51,52}/`, `wayfinder-foundation/`은 소스/도구 위치에만 재사용했다. 기존 문서의 Evidence ID는 위 anchor로 인용하고 아래 E는 이번 원문·실행에만 부여한다.
 

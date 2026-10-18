@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   runResultSchema,
   runtimeActivitySchema,
@@ -48,6 +49,11 @@ export class RunDispatcher {
   readonly #pumps = new Map<string, Promise<void>>();
   readonly #kickedAgain = new Set<string>();
   readonly #active = new Map<string, AbortController>();
+  readonly #pendingFinishes = new Map<
+    string,
+    { runId: string; result: RunResult }
+  >();
+  readonly #recovery = new AbortController();
   #closed = false;
 
   constructor(options: {
@@ -79,12 +85,10 @@ export class RunDispatcher {
       this.#kickedAgain.add(agentId);
       return;
     }
-    const pump = this.#pump(agentId)
-      .catch((error) => console.error("[runs] dispatch failed", error))
-      .finally(() => {
-        this.#pumps.delete(agentId);
-        if (this.#kickedAgain.delete(agentId)) this.kick(agentId);
-      });
+    const pump = this.#dispatch(agentId).finally(() => {
+      this.#pumps.delete(agentId);
+      if (this.#kickedAgain.delete(agentId)) this.kick(agentId);
+    });
     this.#pumps.set(agentId, pump);
   }
 
@@ -106,12 +110,44 @@ export class RunDispatcher {
   /** 새 실행 시도를 받지 않고, 진행 중인 실행 시도를 취소해 실행기가 정리를 끝낼 때까지 기다린다. */
   async close(): Promise<void> {
     this.#closed = true;
+    this.#recovery.abort();
     for (const controller of this.#active.values()) controller.abort(shutdown);
     while (this.#pumps.size) await Promise.all(this.#pumps.values());
   }
 
+  /** DB 오류 후 같은 admission·종료 저장을 최대 5초 간격으로 다시 시도한다. 실행기를 재실행하지 않는다. */
+  async #dispatch(agentId: string) {
+    let backoffMs = 100;
+    while (!this.#closed) {
+      try {
+        await this.#pump(agentId);
+        return;
+      } catch (error) {
+        console.error("[runs] dispatch failed, retrying", error);
+        if (this.#closed) return;
+        try {
+          await delay(backoffMs, undefined, { signal: this.#recovery.signal });
+        } catch {
+          return; // 서버 종료는 재시도 대기도 즉시 끝낸다.
+        }
+        backoffMs = Math.min(backoffMs * 2, 5_000);
+      }
+    }
+  }
+
+  async #settle(agentId: string) {
+    const pending = this.#pendingFinishes.get(agentId);
+    if (!pending) return;
+    const event = await this.#finish(pending.runId, pending.result);
+    this.#pendingFinishes.delete(agentId);
+    if (event) this.#publish(event);
+  }
+
   async #pump(agentId: string) {
     while (!this.#closed) {
+      // 종료 저장을 끝내기 전에는 새 실행 시도를 claim하거나 실행기를 다시 부르지 않는다.
+      await this.#settle(agentId);
+      if (this.#closed) return;
       const { token, digest } = issueRunToken();
       const claimed = await claimNextRun(this.#db, agentId, {
         tokenDigest: digest,
@@ -166,13 +202,14 @@ export class RunDispatcher {
     } finally {
       this.#active.delete(run.id);
     }
-    const finished = await this.#finish(run.id, result);
-    if (finished) this.#publish(finished);
+    this.#pendingFinishes.set(run.agentId, { runId: run.id, result });
+    await this.#settle(run.agentId);
   }
 
   /**
    * 종료 결과를 저장한다. 저장이 계속 실패하면 실행 시도가 실행 중으로 남아 에이전트가 막히므로 몇 번 다시 시도한다.
-   * 그래도 실패하면 다음 서버 시작 때 `failInterruptedRuns`가 끝낸다.
+   * 그래도 실패하면 dispatcher가 같은 결과 저장을 backoff 뒤 다시 시도한다.
+   * DB 장애가 서버 종료까지 이어지면 다음 시작 때 `failInterruptedRuns`가 끝낸다.
    */
   async #finish(runId: string, result: RunResult) {
     for (let attempt = 1; ; attempt++) {

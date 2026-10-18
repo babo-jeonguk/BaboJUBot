@@ -12,13 +12,14 @@ import {
   type Script,
 } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
 afterEach(async () => {
   await t?.close();
   t = undefined;
+  vi.restoreAllMocks();
 });
 
 /** 가짜 실행기를 감싸 받은 요청과 같은 에이전트의 동시 실행 수를 기록한다. */
@@ -84,6 +85,99 @@ const runDetail = async (orgId: string, runId: string) =>
   );
 
 describe("Lead conversation", () => {
+  it("recovers a failed admission without another message or a drain kick", async () => {
+    t = await startTestServer();
+    const org = await createOrganization("디스패치 복구");
+    const stream = await t.subscribe({
+      kind: "organization",
+      organizationId: org.id,
+    });
+    const transaction = t.db.transaction.bind(t.db);
+    // 메시지 저장은 성공하고 그 다음 admission transaction만 실패한다.
+    vi.spyOn(t.db, "transaction")
+      .mockImplementationOnce(transaction)
+      .mockRejectedValueOnce(new Error("temporary admission failure"));
+
+    await say(org.id, "한 번만 보낼 메시지");
+    while ((await stream.next(10_000)).type !== "run.finished") {
+      /* 완료 barrier */
+    }
+    expect(await conversation(org.id)).toHaveLength(2);
+    expect((await runs(org.id)).map((r) => r.status)).toEqual(["completed"]);
+    stream.close();
+  });
+
+  it("stops retrying admission on shutdown even while the database still fails", async () => {
+    t = await startTestServer();
+    const org = await createOrganization("복구 중 종료");
+    let failed!: () => void;
+    const failure = new Promise<void>((resolve) => {
+      failed = resolve;
+    });
+    const transaction = t.db.transaction.bind(t.db);
+    vi.spyOn(t.db, "transaction")
+      .mockImplementationOnce(transaction)
+      .mockImplementation(() => {
+        failed();
+        return Promise.reject(new Error("database unavailable"));
+      });
+    await say(org.id, "재시도 중 종료할 메시지");
+    await failure;
+    await t.stopServer();
+
+    const { listRuns } = await import("@babojubot/db");
+    expect(await listRuns(t.db, org.id)).toEqual([]);
+  });
+
+  it("saves the original result after repeated finish failures and admits the next run", async () => {
+    const gate = createGate();
+    const inner = holdFirstRun(gate);
+    let executions = 0;
+    t = await startTestServer({
+      runtime: {
+        async execute(request, control) {
+          executions++;
+          const result = await inner.execute(request, control);
+          if (executions === 1) {
+            const transactions = vi.spyOn(t!.db, "transaction");
+            for (let i = 0; i < 4; i++)
+              transactions.mockRejectedValueOnce(
+                new Error("temporary finish failure")
+              );
+          }
+          return { ...result, summary: "원래 종료 결과" };
+        },
+      },
+    });
+    const org = await createOrganization("종료 저장 복구");
+    const stream = await t.subscribe({
+      kind: "organization",
+      organizationId: org.id,
+    });
+    await say(org.id, "첫 메시지");
+    await gate.reached;
+    await say(org.id, "다음 메시지");
+    gate.open();
+
+    for (let remaining = 2; remaining > 0;) {
+      if ((await stream.next(10_000)).type === "run.finished") remaining--;
+    }
+    expect((await runs(org.id)).map((r) => r.status)).toEqual([
+      "completed",
+      "completed",
+    ]);
+    expect(executions).toBe(2);
+    expect(
+      (await conversation(org.id)).filter((m) => m.author === "agent")
+    ).toHaveLength(2);
+    const [second, first] = await runs(org.id);
+    expect((await runDetail(org.id, first!.id)).summary).toBe("원래 종료 결과");
+    expect(
+      (await runDetail(org.id, second!.id)).wakeReasons.map((w) => w.body)
+    ).toEqual(["다음 메시지"]);
+    stream.close();
+  });
+
   it("wakes the Lead into one run whose scripted reply shows in the conversation and the Event stream", async () => {
     const now = new Date("2026-10-18T09:00:00.000Z");
     t = await startTestServer({ now: () => now });
@@ -201,13 +295,16 @@ describe("organization tools", () => {
     return tokens.at(-1)!;
   }
   /** 받은 토큰을 모으고, 지정한 gate가 있으면 다음 실행 시도 하나를 거기서 멈춘다. */
-  function tokenCapture(gate: Gate) {
+  function tokenCapture(
+    gate: Gate,
+    stopReason: "completed" | "failed" | "cancelled" = "completed"
+  ) {
     const tokens: string[] = [];
     let inner = holdFirstRun(gate);
     const runtime: RuntimeAdapter = {
-      execute(request, control) {
+      async execute(request, control) {
         tokens.push(request.access.token);
-        return inner.execute(request, control);
+        return { ...(await inner.execute(request, control)), stopReason };
       },
     };
     return {
@@ -217,37 +314,40 @@ describe("organization tools", () => {
     };
   }
 
-  it("refuses every tool, reads included, once the token's run has ended", async () => {
-    const gate = createGate();
-    const capture = tokenCapture(gate);
-    t = await startTestServer({ runtime: capture.runtime });
-    const org = await createOrganization("토큰 조직");
-    const token = await heldRun(org.id, capture.tokens, gate);
-    const ownMessage = (await conversation(org.id))[0]!;
-    expect((await t.tool(token, "GET", "/run-context")).status).toBe(200);
-    gate.open();
-    await t.drain();
+  it.each(["completed", "failed", "cancelled"] as const)(
+    "refuses every tool, reads included, once the token's run is %s",
+    async (stopReason) => {
+      const gate = createGate();
+      const capture = tokenCapture(gate, stopReason);
+      t = await startTestServer({ runtime: capture.runtime });
+      const org = await createOrganization("토큰 조직");
+      const token = await heldRun(org.id, capture.tokens, gate);
+      const ownMessage = (await conversation(org.id))[0]!;
+      expect((await t.tool(token, "GET", "/run-context")).status).toBe(200);
+      gate.open();
+      await t.drain();
 
-    const before = await conversation(org.id);
-    const stream = await t.subscribe({
-      kind: "organization",
-      organizationId: org.id,
-    });
-    for (const [method, path, body] of [
-      ["GET", "/run-context"],
-      ["GET", `/messages/${ownMessage.id}`],
-      ["POST", "/messages", { body: "늦은 답장" }],
-    ] as const) {
-      const res = await t.tool(token, method, path, body);
-      expect(res.status, `${method} ${path}`).toBe(401);
-      expect(res.body).toEqual({ error: { code: "invalid_token" } });
+      const before = await conversation(org.id);
+      const stream = await t.subscribe({
+        kind: "organization",
+        organizationId: org.id,
+      });
+      for (const [method, path, body] of [
+        ["GET", "/run-context"],
+        ["GET", `/messages/${ownMessage.id}`],
+        ["POST", "/messages", { body: "늦은 답장" }],
+      ] as const) {
+        const res = await t.tool(token, method, path, body);
+        expect(res.status, `${method} ${path}`).toBe(401);
+        expect(res.body).toEqual({ error: { code: "invalid_token" } });
+      }
+      for (const bad of [undefined, "", "not-a-token"])
+        expect((await t.tool(bad, "GET", "/run-context")).status).toBe(401);
+      expect(await conversation(org.id)).toEqual(before);
+      await stream.expectNoEvents();
+      stream.close();
     }
-    for (const bad of [undefined, "", "not-a-token"])
-      expect((await t.tool(bad, "GET", "/run-context")).status).toBe(401);
-    expect(await conversation(org.id)).toEqual(before);
-    await stream.expectNoEvents();
-    stream.close();
-  });
+  );
 
   it("treats another organization's records as nonexistent and takes no organization selector", async () => {
     const gate = createGate();

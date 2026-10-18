@@ -136,7 +136,7 @@ function Composer({
     if (!body || send.isPending) return;
     try {
       await send.mutateAsync(body);
-      setText("");
+      setText((current) => (current.trim() === body ? "" : current));
     } catch {
       // 오류는 send.error로 보이고 입력은 그대로 둔다.
     }

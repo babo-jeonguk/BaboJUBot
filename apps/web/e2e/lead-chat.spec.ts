@@ -1,5 +1,39 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test("keeps a draft edited while the previous message is being sent", async ({
+  page,
+}) => {
+  const created = await page.request.post("/api/organizations", {
+    data: { name: "초안 보존 조직" },
+  });
+  const org = (await created.json()) as { id: string };
+  await page.goto(`/orgs/${org.id}/chat`);
+  const input = page.getByLabel("Lead에게 보낼 메시지");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(`**/api/organizations/${org.id}/messages`, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    await held;
+    await route.fulfill({ response });
+  });
+  try {
+    await input.fill("첫 메시지");
+    await page.getByRole("button", { name: "보내기" }).click();
+    await expect(page.getByRole("status")).toHaveText("전송 중…");
+    await input.fill("다음 메시지 초안");
+    release();
+    await expect(page.getByRole("status")).toHaveCount(0);
+    await expect(input).toHaveValue("다음 메시지 초안");
+    await expect(page.getByRole("button", { name: "보내기" })).toBeEnabled();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
+
 /** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
 async function openWithLiveEvents(page: Page, path: string) {
   const ready = new Promise<void>((resolve) =>
