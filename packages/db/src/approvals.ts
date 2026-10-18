@@ -5,11 +5,13 @@ import type {
   DecideApprovalInput,
   Event,
   InboxItem,
+  LifecycleStage,
   Organization,
   OrgToolName,
   PublicActivity,
   RecordGoalInput,
   RequestInitialApprovalInput,
+  ToolRefusalReason,
 } from "@babojubot/contracts";
 import {
   buildInitialResearchProposal,
@@ -21,7 +23,6 @@ import {
   type HarnessLibraryContents,
   type ProposalProblem,
   type RecordSource,
-  type ToolCheck,
   type Wake,
 } from "@babojubot/core";
 import { and, asc, desc, eq } from "drizzle-orm";
@@ -49,8 +50,27 @@ import {
 // 결정과 같은 transaction에 저장하고, 알림과 실행 시도 촉진만 commit 뒤에 한다.
 
 type ActiveRunRef = { id: string; agentRole: AgentRole };
+type LockedRun = { id: string; organizationId: string; agentId: string };
 
-export type GateResult = ToolCheck & { event?: Event };
+export type GateResult =
+  { ok: true } | { ok: false; reason: ToolRefusalReason; event: Event };
+
+/** 지금 조직 단계로 Role·단계 규칙을 검사하고, 거부하면 그 실행 시도에 귀속한 `tool.refused` Event를 남긴다. */
+async function checkOrRefuse(
+  tx: Executor,
+  run: ActiveRunRef,
+  locked: LockedRun,
+  stage: LifecycleStage,
+  tool: OrgToolName
+): Promise<GateResult> {
+  const check = checkToolCall(tool, { role: run.agentRole, stage });
+  if (check.ok) return check;
+  const event = await insertEvent(
+    tx,
+    toolRefusedEvent(locked, tool, stage, check.reason)
+  );
+  return { ...check, event };
+}
 
 /**
  * 조직 도구 호출 전의 Role·단계 검사. 거부하면 그 실행 시도에 귀속한 `tool.refused` Event를 남긴다.
@@ -68,23 +88,14 @@ export async function gateToolCall(
       .select({ stage: organizations.stage })
       .from(organizations)
       .where(eq(organizations.id, locked.organizationId));
-    const check = checkToolCall(tool, {
-      role: run.agentRole,
-      stage: org!.stage,
-    });
-    if (check.ok) return check;
-    const event = await insertEvent(
-      tx,
-      toolRefusedEvent(locked, tool, org!.stage, check.reason)
-    );
-    return { ...check, event };
+    return checkOrRefuse(tx, run, locked, org!.stage, tool);
   });
 }
 
 export type ToolWrite<T> =
   | { kind: "ok"; value: T; events: Event[] }
   | { kind: "run_finished" }
-  | { kind: "refused"; reason: "role" | "stage"; events: Event[] }
+  | { kind: "refused"; reason: ToolRefusalReason; events: Event[] }
   | { kind: "invalid"; problem: ProposalProblem };
 
 /** 조직 도구 쓰기의 공통 틀: 실행 중인 실행 시도와 그 조직 행을 잠그고, 단계 규칙을 다시 확인한 뒤 쓴다. */
@@ -95,7 +106,7 @@ async function toolWrite<T>(
   activity: PublicActivity,
   write: (
     tx: Executor,
-    locked: { id: string; organizationId: string; agentId: string },
+    locked: LockedRun,
     org: typeof organizations.$inferSelect
   ) => Promise<
     | { kind: "ok"; value: T; events: Event[] }
@@ -106,17 +117,9 @@ async function toolWrite<T>(
     const locked = await lockRunningRun(tx, run.id, "share");
     if (!locked) return { kind: "run_finished" };
     const org = (await lockOrganization(tx, locked.organizationId))!;
-    const check = checkToolCall(tool, {
-      role: run.agentRole,
-      stage: org.stage,
-    });
-    if (!check.ok) {
-      const event = await insertEvent(
-        tx,
-        toolRefusedEvent(locked, tool, org.stage, check.reason)
-      );
-      return { kind: "refused", reason: check.reason, events: [event] };
-    }
+    const gate = await checkOrRefuse(tx, run, locked, org.stage, tool);
+    if (!gate.ok)
+      return { kind: "refused", reason: gate.reason, events: [gate.event] };
     const result = await write(tx, locked, org);
     if (result.kind !== "ok") return result;
     const summary = await insertEvent(tx, {

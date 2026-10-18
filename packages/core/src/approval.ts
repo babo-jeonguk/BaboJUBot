@@ -7,14 +7,14 @@ import type {
   FlowTemplateCopy,
   InitialResearchProposal,
   InstructionCopy,
-  InstructionSourceFile,
   LifecycleStage,
   NewEvent,
   OrgToolName,
   RecordGoalInput,
   RequestInitialApprovalInput,
+  ToolRefusalReason,
 } from "@babojubot/contracts";
-import { instructionKindOf, type HarnessLibraryContents } from "./harness.ts";
+import { copyInstructions, type HarnessLibraryContents } from "./harness.ts";
 import type { RecordSource } from "./organization.ts";
 import type { Wake } from "./run.ts";
 
@@ -45,7 +45,7 @@ export const toolRules: Record<OrgToolName, ToolRule> = {
   add_worker: { roles: leadOnly, stages: ["researching"] },
 };
 
-export type ToolCheck = { ok: true } | { ok: false; reason: "role" | "stage" };
+export type ToolCheck = { ok: true } | { ok: false; reason: ToolRefusalReason };
 
 /** 이 Role의 에이전트가 이 단계의 조직에서 이 도구를 쓸 수 있는가. Role 거부가 단계 거부보다 먼저다. */
 export function checkToolCall(
@@ -66,7 +66,7 @@ export const toolRefusedEvent = (
   run: RunRef,
   tool: OrgToolName,
   stage: LifecycleStage,
-  reason: "role" | "stage"
+  reason: ToolRefusalReason
 ): NewEvent => ({
   organizationId: run.organizationId,
   type: "tool.refused",
@@ -181,6 +181,15 @@ export const decisionStatus: Record<
   request_changes: "changes_requested",
 };
 
+/** 결정된 승인 요청의 상태 → 사용자가 내린 결정. 결정을 기다리는 요청에는 결정이 없다. */
+export function decisionOfStatus(status: ApprovalStatus): ApprovalDecision {
+  const found = (
+    Object.entries(decisionStatus) as [ApprovalDecision, ApprovalStatus][]
+  ).find(([, s]) => s === status);
+  if (!found) throw new Error(`approval status ${status} has no decision`);
+  return found[0];
+}
+
 export type ApprovalDecisionPlan = {
   status: Exclude<ApprovalStatus, "pending">;
   note: string | null;
@@ -272,20 +281,4 @@ export function planApprovalDecision(
       },
     },
   };
-}
-
-/** 라이브러리 내용을 에이전트 하나의 사본으로. 사본마다 새 ID를 받으므로 같은 Role의 에이전트끼리도 공유하지 않는다. */
-export function copyInstructions(
-  agent: Pick<Agent, "id" | "organizationId">,
-  files: InstructionSourceFile[],
-  { newId, createdAt }: { newId: () => string; createdAt: string }
-): InstructionCopy[] {
-  return files.map((file) => ({
-    ...file,
-    id: newId(),
-    organizationId: agent.organizationId,
-    agentId: agent.id,
-    kind: instructionKindOf(file.path),
-    createdAt,
-  }));
 }

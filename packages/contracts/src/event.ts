@@ -2,7 +2,7 @@ import { z } from "zod";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
 import { lifecycleStageSchema } from "./organization.ts";
-import { orgToolNameSchema } from "./tools.ts";
+import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
 import {
   publicActivitySchema,
   runStopReasonSchema,
@@ -102,7 +102,7 @@ export const approvalRequestedEventSchema = z.object({
 });
 
 /**
- * 사용자의 승인 결정 제어 명령. `stage`는 결정 뒤 조직 단계, `createdAgentIds`는 승인으로 생긴 작업자,
+ * 사용자의 승인 결정 제어 명령을 남긴 Event. `stage`는 결정 뒤 조직 단계, `createdAgentIds`는 승인으로 생긴 작업자,
  * `wokenAgentId`는 결정 사유로 깨운 에이전트(요청한 Lead)다.
  */
 export const approvalDecidedEventSchema = z.object({
@@ -129,7 +129,7 @@ export const toolRefusedEventSchema = z.object({
     agentId: z.uuid(),
     tool: orgToolNameSchema,
     stage: lifecycleStageSchema,
-    reason: z.enum(["role", "stage"]),
+    reason: toolRefusalReasonSchema,
   }),
 });
 

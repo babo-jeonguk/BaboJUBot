@@ -7,7 +7,7 @@ import type {
   NewEvent,
   Organization,
 } from "@babojubot/contracts";
-import { copyInstructions } from "./approval.ts";
+import { copyInstructions } from "./harness.ts";
 
 export const initialStage: LifecycleStage = "goal_setting";
 export const leadAgentName = "Research Lead";

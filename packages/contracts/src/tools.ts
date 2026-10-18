@@ -72,6 +72,11 @@ export const orgToolOutputSchemas = {
   add_worker: z.unknown(),
 } as const satisfies Record<OrgToolName, z.ZodType>;
 
+/** Role 또는 생애주기 단계 규칙이 도구 호출을 거부한 이유. */
+export const toolRefusalReasons = ["role", "stage"] as const;
+export const toolRefusalReasonSchema = z.enum(toolRefusalReasons);
+export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
+
 /**
  * 도구 거부 응답. 토큰이 없거나 끝난 실행 시도의 것이면 401 `invalid_token`,
  * 다른 조직의 기록과 없는 기록은 똑같이 404 `not_found`, 입력이 계약 밖이면 422 `invalid_input`.

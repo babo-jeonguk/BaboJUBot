@@ -2,7 +2,7 @@
 
 Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물을 `AGENTS.md`/`SOUL.md`/`SKILL.md` 관례로 둡니다. 구조와 사본 규칙은 [전체 구조](../docs/architecture.md#research-harness--control-plane--agent-runtime)를 따릅니다.
 
-이 디렉터리는 하네스 라이브러리입니다. 서버가 요청마다 읽어 그때 내용을 에이전트별 사본과 승인 대상으로 고정하므로, 여기를 고쳐도 이미 만든 사본과 제출된 승인 요청은 바뀌지 않습니다.
+이 디렉터리는 하네스 라이브러리입니다. 서버가 요청마다 읽으며, 사본과 승인 대상이 이 내용을 언제 고정하는지는 [전체 구조](../docs/architecture.md#research-harness--control-plane--agent-runtime)에 있습니다.
 
 ```text
 roles/<name>/role.json     label, agent(lead|worker), skills(Skill 이름 목록)

@@ -8,6 +8,7 @@ import {
   type OrgToolErrorCode,
   type OrgToolName,
   type PublicActivity,
+  type ToolRefusalReason,
 } from "@babojubot/contracts";
 import {
   appendRunActivity,
@@ -102,11 +103,13 @@ export function orgToolsRouter({
       const run = res.locals.run as ActiveRun;
       const gate = await gateToolCall(db, run, name);
       if (!gate) return refuse(res, 401, "invalid_token");
-      if (gate.event) publish([gate.event]);
-      if (!gate.ok) return refuseByRule(res, gate.reason);
+      if (!gate.ok) {
+        publish([gate.event]);
+        return refuseByRule(res, gate.reason);
+      }
       await handler(req, res, run);
     };
-  const refuseByRule = (res: express.Response, reason: "role" | "stage") =>
+  const refuseByRule = (res: express.Response, reason: ToolRefusalReason) =>
     reason === "role"
       ? refuse(res, 403, "forbidden")
       : refuse(res, 409, "stage_closed");

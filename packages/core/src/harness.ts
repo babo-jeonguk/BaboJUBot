@@ -3,6 +3,7 @@ import {
   harnessNameSchema,
   type AgentRole,
   type FlowTemplateSnapshot,
+  type InstructionCopy,
   type InstructionFile,
   type InstructionKind,
   type InstructionSourceFile,
@@ -103,3 +104,19 @@ export function parseSkillFrontmatter(text: string): {
 
 const unquote = (value: string) =>
   /^(["']).*\1$/.test(value) ? value.slice(1, -1) : value;
+
+/** 라이브러리 내용을 에이전트 하나의 사본으로. 사본마다 새 ID를 받으므로 같은 Role의 에이전트끼리도 공유하지 않는다. */
+export function copyInstructions(
+  agent: { id: string; organizationId: string },
+  files: InstructionSourceFile[],
+  { newId, createdAt }: { newId: () => string; createdAt: string }
+): InstructionCopy[] {
+  return files.map((file) => ({
+    ...file,
+    id: newId(),
+    organizationId: agent.organizationId,
+    agentId: agent.id,
+    kind: instructionKindOf(file.path),
+    createdAt,
+  }));
+}

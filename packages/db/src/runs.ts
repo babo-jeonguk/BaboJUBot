@@ -13,6 +13,7 @@ import type {
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
+  decisionOfStatus,
   instructionsBundleVersion,
   planAgentMessage,
   planRunFinish,
@@ -490,18 +491,11 @@ async function selectWakes(
             kind: wake.kind,
             wakeId: wake.id,
             approvalId: wake.approvalId!,
-            decision: decisionOf[decision as keyof typeof decisionOf],
+            decision: decisionOfStatus(decision!),
             note,
           },
   }));
 }
-
-/** 승인 요청의 결정 상태 → 사용자가 내린 결정. 깨우기는 결정된 요청만 가리킨다. */
-const decisionOf = {
-  approved: "approve",
-  rejected: "reject",
-  changes_requested: "request_changes",
-} as const;
 
 const sentBy = alias(runs, "sent_by");
 const deliveredTo = alias(runs, "delivered_to");

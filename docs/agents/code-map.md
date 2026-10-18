@@ -45,8 +45,9 @@
 ```text
 create-organization.tsx → api.ts → POST /api/organizations (server/app.ts)
   → server/organizations.ts
-    → core/organization.ts: 생성할 조직·Lead·Event 조립
-    → db/organizations.ts: transaction 저장
+    → server/harness.ts loadHarnessLibrary·leadInstructionsOf: 하네스 라이브러리의 Lead Role·Soul
+    → core/organization.ts: 생성할 조직·Lead·Lead 사본·Event 조립
+    → db/organizations.ts: 조직·Lead·사본·Event transaction 저장
     → EventHub.publish: commit 뒤 알림
   → HTTP 응답으로 웹 캐시 갱신
 
@@ -70,7 +71,7 @@ chat.tsx → POST /api/organizations/:id/messages (server/app.ts)
     → db/runs.ts finishRun → run.finished Event → 쌓인 깨우기가 있으면 다음 실행 시도
 ```
 
-깨우기가 실행 시도로 이어지지 않거나 같은 에이전트가 겹쳐 실행되면 `claimNextRun`과 `RunDispatcher.kick`에서, 조직 도구 거부는 `server/tools.ts`에서 시작합니다.
+깨우기가 실행 시도로 이어지지 않거나 같은 에이전트가 겹쳐 실행되면 `claimNextRun`과 `RunDispatcher.kick`에서, 조직 도구의 토큰 거부는 `server/tools.ts`에서, Role·단계 거부는 core `toolRules`와 db `gateToolCall`에서 시작합니다.
 
 ## 초기 연구 승인의 연결 경로
 
