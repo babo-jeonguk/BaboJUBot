@@ -27,6 +27,16 @@ describe("checkToolCall", () => {
     expect(
       checkToolCall("record_goal", { role: "lead", stage: "goal_setting" })
     ).toEqual({ ok: true });
+    // 합의한 목표는 계획 수립 이후 다시 기록할 수 없다. 목표 변경은 승인 정책 항목이다(ADR-0003, #58).
+    for (const stage of [
+      "planning",
+      "awaiting_approval",
+      "researching",
+    ] as const)
+      expect(checkToolCall("record_goal", { role: "lead", stage })).toEqual({
+        ok: false,
+        reason: "stage",
+      });
     expect(
       checkToolCall("request_initial_approval", {
         role: "lead",

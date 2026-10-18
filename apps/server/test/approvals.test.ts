@@ -306,10 +306,16 @@ describe("goal and initial research approval", () => {
     ).toBe(404);
   });
 
-  it("refuses task creation and worker addition while planning, records each refusal and changes nothing", async () => {
+  it("refuses re-recording the goal, task creation and worker addition while planning, records each refusal and changes nothing", async () => {
     const lead = leadRuns({
       steps: [
         { do: "call", tool: "record_goal", input: () => goal },
+        {
+          do: "call",
+          tool: "record_goal",
+          input: () => ({ goal: "다른 목표", completionCriteria: "다른 기준" }),
+          allowRefusal: true,
+        },
         {
           do: "call",
           tool: "create_task",
@@ -331,11 +337,13 @@ describe("goal and initial research approval", () => {
 
     expect(lead.states[0]!.calls).toEqual([
       expect.objectContaining({ tool: "record_goal", ok: true }),
+      { tool: "record_goal", ok: false, status: 409, code: "stage_closed" },
       { tool: "create_task", ok: false, status: 409, code: "stage_closed" },
       { tool: "add_worker", ok: false, status: 409, code: "stage_closed" },
     ]);
     const after = await organization(org.id);
-    expect(after.stage).toBe("planning");
+    // 합의한 목표는 계획 수립에서 다시 기록해도 바뀌지 않는다.
+    expect(after).toMatchObject({ stage: "planning", ...goal });
     expect(after.agents).toHaveLength(1);
     const [run] = runSummaryListSchema.parse(
       await get(`/api/organizations/${org.id}/runs`)
@@ -345,6 +353,13 @@ describe("goal and initial research approval", () => {
       .parse(await get(`/api/organizations/${org.id}/runs/${run!.id}`))
       .transcript.filter((e) => e.type === "tool.refused");
     expect(refusals.map((e) => e.payload)).toEqual([
+      {
+        runId: run!.id,
+        agentId: org.lead.id,
+        tool: "record_goal",
+        stage: "planning",
+        reason: "stage",
+      },
       {
         runId: run!.id,
         agentId: org.lead.id,

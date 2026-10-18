@@ -39,7 +39,8 @@ export const toolRules: Record<OrgToolName, ToolRule> = {
   // 첫 판은 Lead만 사용자와 대화한다. 작업자는 작업 댓글로만 사용자와 이어진다(docs/features.md).
   send_message: { roles: leadOnly, stages: anyStage },
   get_harness_library: { roles: leadOnly, stages: anyStage },
-  record_goal: { roles: leadOnly, stages: ["goal_setting", "planning"] },
+  // 합의한 목표·완료 기준의 변경은 승인 정책 항목이다(ADR-0003, #58). 그 전에는 목표 설정에서만 기록한다.
+  record_goal: { roles: leadOnly, stages: ["goal_setting"] },
   request_initial_approval: { roles: leadOnly, stages: ["planning"] },
   create_task: { roles: everyone, stages: ["researching"] },
   add_worker: { roles: leadOnly, stages: ["researching"] },
@@ -73,7 +74,7 @@ export const toolRefusedEvent = (
   payload: { runId: run.id, agentId: run.agentId, tool, stage, reason },
 });
 
-/** 목표 설정에서 기록하면 계획 수립으로 넘어간다. 계획 수립 중에 다시 기록하면 단계는 그대로다. */
+/** 목표 설정에서 기록하면 계획 수립으로 넘어간다. */
 export function planGoalRecord(
   run: RunRef,
   input: RecordGoalInput
