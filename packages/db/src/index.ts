@@ -7,3 +7,4 @@ export {
   type DatabaseOptions,
 } from "./client.ts";
 export * from "./organizations.ts";
+export * from "./runs.ts";

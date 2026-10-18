@@ -6,19 +6,31 @@ import type { Duplex } from "node:stream";
 import {
   createOrganizationInputSchema,
   eventStreamPath,
+  orgToolsBasePath,
+  sendOwnerMessageInputSchema,
+  type RuntimeAdapter,
   type StreamFrame,
   type StreamScope,
 } from "@babojubot/contracts";
 import {
+  findAgentDetail,
   findOrganization,
+  findRunDetail,
+  listConversation,
   listOrganizationEvents,
   listOrganizations,
+  listRuns,
   type Database,
 } from "@babojubot/db";
+import { findLead } from "@babojubot/core";
+import { createScriptedRuntime } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import { WebSocketServer, type WebSocket } from "ws";
+import { sendOwnerMessage } from "./conversation.ts";
+import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { createOrganization } from "./organizations.ts";
+import { orgToolsRouter } from "./tools.ts";
 
 export type ServerOptions = {
   db: Database;
@@ -26,10 +38,17 @@ export type ServerOptions = {
   host?: string;
   /** 빌드한 대시보드. 있으면 API 밖의 경로에 SPA로 제공한다. */
   webDistDir?: string;
+  /** 실행기 adapter. 첫 판은 가짜 실행기뿐이고, 테스트는 시나리오를 주입한다. */
+  runtime?: RuntimeAdapter;
+  /** 기록 시각에 쓰는 시계. 테스트가 주입한다. */
+  now?: () => Date;
 };
 
 export type RunningServer = {
   url: string;
+  /** 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. 테스트 helper. */
+  drain: () => Promise<void>;
+  /** 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다. */
   close: () => Promise<void>;
 };
 
@@ -38,10 +57,21 @@ export async function startServer({
   port,
   host = "127.0.0.1",
   webDistDir,
+  runtime = createScriptedRuntime(),
+  now = () => new Date(),
 }: ServerOptions): Promise<RunningServer> {
   const hub = new EventHub();
+  let url = "";
+  const dispatcher = new RunDispatcher({
+    db,
+    hub,
+    runtime,
+    now,
+    toolsBaseUrl: () => url,
+  });
   const app = express();
   app.use(express.json());
+  app.use(orgToolsBasePath, orgToolsRouter({ db, hub, now }));
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
@@ -70,7 +100,56 @@ export async function startServer({
 
   app.get("/api/organizations/:id/events", async (req, res) => {
     if (!(await findOrganization(db, req.params.id))) return notFound(res);
-    res.json(await listOrganizationEvents(db, req.params.id));
+    res.json(
+      await listOrganizationEvents(db, req.params.id, {
+        agentId: queryString(req.query.agentId),
+      })
+    );
+  });
+
+  app.get("/api/organizations/:id/messages", async (req, res) => {
+    const org = await findOrganization(db, req.params.id);
+    const lead = org && findLead(org.agents);
+    if (!org || !lead) return notFound(res);
+    res.json(await listConversation(db, org.id, lead.id));
+  });
+
+  app.post("/api/organizations/:id/messages", async (req, res) => {
+    const org = await findOrganization(db, req.params.id);
+    if (!org) return notFound(res);
+    const input = sendOwnerMessageInputSchema.safeParse(req.body);
+    if (!input.success) {
+      res
+        .status(422)
+        .json({ error: { code: "invalid_input", issues: input.error.issues } });
+      return;
+    }
+    res
+      .status(201)
+      .json(
+        await sendOwnerMessage({ db, hub, dispatcher, now }, org, input.data)
+      );
+  });
+
+  app.get("/api/organizations/:id/runs", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(
+      await listRuns(db, req.params.id, {
+        agentId: queryString(req.query.agentId),
+      })
+    );
+  });
+
+  app.get("/api/organizations/:id/runs/:runId", async (req, res) => {
+    const run = await findRunDetail(db, req.params.id, req.params.runId);
+    if (!run) return notFound(res);
+    res.json(run);
+  });
+
+  app.get("/api/organizations/:id/agents/:agentId", async (req, res) => {
+    const agent = await findAgentDetail(db, req.params.id, req.params.agentId);
+    if (!agent) return notFound(res);
+    res.json(agent);
   });
 
   app.use("/api", (_req, res) => notFound(res));
@@ -135,10 +214,20 @@ export async function startServer({
     server.listen(port, host, resolve);
   });
   const address = server.address() as net.AddressInfo;
+  url = `http://${host}:${address.port}`;
+  try {
+    await dispatcher.start();
+  } catch (error) {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw error;
+  }
 
   return {
-    url: `http://${host}:${address.port}`,
+    url,
+    drain: () => dispatcher.drain(),
     close: async () => {
+      await dispatcher.close();
       for (const client of wss.clients) client.terminate();
       wss.close();
       server.closeAllConnections();
@@ -146,6 +235,9 @@ export async function startServer({
     },
   };
 }
+
+const queryString = (value: unknown) =>
+  typeof value === "string" ? value : undefined;
 
 function notFound(res: express.Response) {
   res.status(404).json({ error: { code: "not_found" } });

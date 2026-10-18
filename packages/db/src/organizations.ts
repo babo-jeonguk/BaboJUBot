@@ -1,12 +1,18 @@
 import type {
-  Agent,
   Event,
   Organization,
   OrganizationDetail,
 } from "@babojubot/contracts";
 import type { OrganizationCreation } from "@babojubot/core";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import {
+  insertEvent,
+  isUuid,
+  toAgent,
+  toEvent,
+  toOrganization,
+} from "./rows.ts";
 import { agents, events, organizations } from "./schema.ts";
 
 /** 조직·에이전트·Event를 한 transaction으로 저장하고 저장된 Event를 돌려준다. 하나라도 실패하면 아무것도 남지 않는다. */
@@ -24,8 +30,7 @@ export async function insertOrganizationCreation(
       .values(
         records.agents.map((a) => ({ ...a, createdAt: new Date(a.createdAt) }))
       );
-    const [row] = await tx.insert(events).values(records.event).returning();
-    return toEvent(row!);
+    return insertEvent(tx, records.event);
   });
 }
 
@@ -54,29 +59,23 @@ export async function findOrganization(
   return { ...toOrganization(row), agents: members.map(toAgent) };
 }
 
+/** 조직의 Event log. `agentId`를 주면 그 에이전트에 귀속된 Event만 돌려준다. */
 export async function listOrganizationEvents(
   db: Database,
-  organizationId: string
+  organizationId: string,
+  { agentId }: { agentId?: string } = {}
 ): Promise<Event[]> {
   if (!isUuid(organizationId)) return [];
+  if (agentId !== undefined && !isUuid(agentId)) return [];
   const rows = await db
     .select()
     .from(events)
-    .where(eq(events.organizationId, organizationId))
+    .where(
+      and(
+        eq(events.organizationId, organizationId),
+        agentId === undefined ? undefined : eq(events.agentId, agentId)
+      )
+    )
     .orderBy(asc(events.id));
   return rows.map(toEvent);
 }
-
-const isUuid = (s: string) =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
-
-/** DB 행의 시각을 계약의 ISO 문자열로 바꾼다. */
-const withIsoTime = <T extends { createdAt: Date }>(row: T) => ({
-  ...row,
-  createdAt: row.createdAt.toISOString(),
-});
-const toOrganization = (row: typeof organizations.$inferSelect): Organization =>
-  withIsoTime(row);
-const toAgent = (row: typeof agents.$inferSelect): Agent => withIsoTime(row);
-const toEvent = (row: typeof events.$inferSelect): Event =>
-  withIsoTime(row) as Event;

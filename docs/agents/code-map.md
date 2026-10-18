@@ -21,7 +21,15 @@
 | 서버 시작·종료, embedded/외부 DB, 정적 웹 제공 | [server/main.ts](../../apps/server/src/main.ts), server/app.ts; [db/client.ts](../../packages/db/src/client.ts) | [외부 DB 시작·종료 테스트](../../apps/server/test/main.test.ts), DB 테스트, 관련 실행 확인 |
 | DB 테스트 환경·임시 Postgres 수명 | [db/testing.ts](../../packages/db/src/testing.ts), db/client.ts; [서버 테스트 지원](../../apps/server/test/support.ts) | DB·서버 테스트. 브라우저의 임시 서버는 [Playwright 설정](../../apps/web/playwright.config.ts) |
 | 실행·빌드·검사·CI·commit hook | [루트 scripts](../../package.json), 각 workspace의 package.json, [CI](../../.github/workflows/scaffold.yml), [pre-commit](../../.husky/pre-commit) | 명령 사용법은 [README](../../README.md#개발-시작); 문서 링크는 [check-project.mjs](../../scripts/check-project.mjs) |
-| 후속 실행기·연구 하네스의 구현 위치 탐색 | [packages/runtime](../../packages/runtime/src/index.ts)은 패키지 경계, [harness](../../harness/README.md)는 내용물을 둘 자리 | 현재 전용 구현·테스트 없음; 요구와 계약은 해당 후속 이슈 |
+| 실행 시도 계약(요청·공개 활동·종료·취소), 조직 도구·Lead 대화 메시지 계약 | [contracts/run.ts](../../packages/contracts/src/run.ts), [tools.ts](../../packages/contracts/src/tools.ts), [message.ts](../../packages/contracts/src/message.ts), [event.ts](../../packages/contracts/src/event.ts) | [계약 테스트](../../packages/contracts/src/run.test.ts) |
+| 사용자 메시지·깨우기·실행 시도 묶음·세션 이어 가기·토큰 허용 규칙 | [core/run.ts](../../packages/core/src/run.ts) | [API 통합 테스트](../../apps/server/test/runs.test.ts); API로 재현하기 어려운 bundle 버전별 세션 규칙만 [core 테스트](../../packages/core/src/run.test.ts) |
+| 깨우기 대기열, 에이전트당 실행 시도 하나, 묶음 고정, 종료·도구 쓰기 직렬화 | [db/runs.ts](../../packages/db/src/runs.ts)의 `claimNextRun`·`finishRun`·`insertAgentMessage`; [schema](../../packages/db/src/schema.ts), [migration](../../packages/db/migrations/) | [DB admission·동시성 테스트](../../packages/db/src/runs.test.ts) |
+| 깨우기 처리·DB 오류 후 admission/종료 저장 재시도·실행기 호출·공개 활동 필터·서버 종료 시 취소 | [server/dispatcher.ts](../../apps/server/src/dispatcher.ts)의 `RunDispatcher`; [run-token.ts](../../apps/server/src/run-token.ts) | [API 통합 테스트](../../apps/server/test/runs.test.ts) |
+| 조직 도구 HTTP의 토큰 인증·교차 조직 404·종료 토큰 거부 | [server/tools.ts](../../apps/server/src/tools.ts); db/runs.ts의 `authenticateRun` | API 통합 테스트의 `organization tools` |
+| Lead 대화·실행 시도·에이전트 조회 API | [server/app.ts](../../apps/server/src/app.ts), [conversation.ts](../../apps/server/src/conversation.ts) | API 통합 테스트 |
+| 가짜 실행기 시나리오·조직 도구 client·테스트 gate | [runtime/scripted.ts](../../packages/runtime/src/scripted.ts), [tools-client.ts](../../packages/runtime/src/tools-client.ts), [testing.ts](../../packages/runtime/src/testing.ts) | [가짜 실행기 테스트](../../packages/runtime/src/scripted.test.ts) |
+| Lead 대화·활동·실행 시도 상세·에이전트 화면 | [web/chat.tsx](../../apps/web/src/chat.tsx), [activity.tsx](../../apps/web/src/activity.tsx), [agents.tsx](../../apps/web/src/agents.tsx); web/api.ts의 query key | [Lead 대화 E2E](../../apps/web/e2e/lead-chat.spec.ts) |
+| 후속 실제 실행기·연구 하네스의 구현 위치 탐색 | [packages/runtime](../../packages/runtime/src/index.ts)에 adapter를 더하고, [harness](../../harness/README.md)는 내용물을 둘 자리 | 실제 adapter·하네스 테스트 없음; 요구와 계약은 해당 후속 이슈 |
 
 ## 조직 생성의 연결 경로
 
@@ -39,6 +47,21 @@ EventHub → WebSocket /api/events → live-events.ts → 관련 query 재조회
 생성·저장·알림 순서 문제는 [서버 생성 서비스](../../apps/server/src/organizations.ts)에서 시작합니다.
 Event stream 재연결 시 화면 복구는 [useLiveEvents](../../apps/web/src/live-events.ts)에서 확인합니다.
 DB schema·contracts·웹 응답 검증을 가로지르는 변경은 위 경로의 각 경계를 함께 확인합니다.
+
+## Lead 대화에서 실행 시도까지의 연결 경로
+
+```text
+chat.tsx → POST /api/organizations/:id/messages (server/app.ts)
+  → conversation.ts → core/run.ts planOwnerMessage → db/runs.ts insertOwnerMessage(메시지·깨우기·Event)
+  → RunDispatcher.kick(Lead)
+    → db/runs.ts claimNextRun: 에이전트 행 잠금 → 실행 중 확인 → 대기 깨우기 전부를 실행 시도에 고정
+    → RuntimeAdapter.execute(요청: 신원·토큰·깨우기 사유·맥락 …)
+        가짜 실행기 → /api/tools/* (server/tools.ts, Bearer 토큰) → 메시지·도구 요약 Event
+        emit(공개 활동) → 허용 종류만 run.activity Event
+    → db/runs.ts finishRun → run.finished Event → 쌓인 깨우기가 있으면 다음 실행 시도
+```
+
+깨우기가 실행 시도로 이어지지 않거나 같은 에이전트가 겹쳐 실행되면 `claimNextRun`과 `RunDispatcher.kick`에서, 조직 도구 거부는 `server/tools.ts`에서 시작합니다.
 
 ## 지도 갱신
 

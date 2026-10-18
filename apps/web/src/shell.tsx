@@ -5,11 +5,12 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation, useMatch } from "react-router";
-import { useOrganization, useOrganizations } from "./api.ts";
+import { useOrganization, useOrganizations, useRun } from "./api.ts";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import {
   abbr,
   avatarStyle,
+  runLabel,
   StageBadge,
   stageLabel,
   stageShortLabel,
@@ -48,11 +49,17 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
 export const findSection = (slug: string) =>
   sectionGroups.flatMap((g) => g.items).find((s) => s.slug === slug);
 
+/** 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에 속한다. */
+const detailSection: Record<string, string> = { runs: "agents" };
+
 function useCurrent() {
   const org = useMatch("/orgs/:orgId/*")?.params.orgId;
-  const section =
-    useMatch("/orgs/:orgId/:section/*")?.params.section ??
-    (org ? defaultSection : undefined);
+  const matched = useMatch("/orgs/:orgId/:section/*")?.params.section;
+  const section = matched
+    ? (detailSection[matched] ?? matched)
+    : org
+      ? defaultSection
+      : undefined;
   return { orgId: org, section, home: useLocation().pathname === "/" };
 }
 
@@ -308,20 +315,40 @@ function Sections({ orgId }: { orgId: string }) {
   );
 }
 
-/** 조직 › 섹션. 앞 단계는 링크. */
+/** 조직 › 섹션 › 상세. 앞 단계는 링크. 실행 시도는 에이전트 아래에 둔다. */
 function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   const { section } = useCurrent();
   const org = useOrganization(orgId);
+  const agentMatch = useMatch("/orgs/:orgId/agents/:agentId")?.params.agentId;
+  const runMatch = useMatch("/orgs/:orgId/runs/:runId")?.params.runId;
+  const run = useRun(orgId, runMatch);
   const name = org.data?.name ?? "…";
   const label = (section && findSection(section)?.label) ?? section;
-  if (compact) return <>{`${name} › ${label}`}</>;
+  const agentId = agentMatch ?? run.data?.agentId;
+  const agent = org.data?.agents.find((a) => a.id === agentId);
+  const trail: { label: string; to?: string }[] = [
+    { label: name, to: `/orgs/${orgId}` },
+    { label: label ?? "", to: `/orgs/${orgId}/${section}` },
+  ];
+  if (agent)
+    trail.push({ label: agent.name, to: `/orgs/${orgId}/agents/${agent.id}` });
+  if (runMatch) trail.push({ label: runLabel(runMatch) });
+  trail[trail.length - 1] = { label: trail[trail.length - 1]!.label };
+  if (compact) return <>{trail.map((c) => c.label).join(" › ")}</>;
   return (
-    <>
-      <Link to={`/orgs/${orgId}`} className="transition hover:text-slate-700">
-        {name}
-      </Link>
-      <span className="mx-1.5">›</span>
-      <span className="font-medium text-slate-700">{label}</span>
-    </>
+    <nav aria-label="위치">
+      {trail.map((c, i) => (
+        <span key={i}>
+          {i > 0 && <span className="mx-1.5">›</span>}
+          {c.to ? (
+            <Link to={c.to} className="transition hover:text-slate-700">
+              {c.label}
+            </Link>
+          ) : (
+            <span className="font-medium text-slate-700">{c.label}</span>
+          )}
+        </span>
+      ))}
+    </nav>
   );
 }

@@ -1,6 +1,9 @@
 import { lifecycleStages } from "@babojubot/contracts";
 import { Link, useParams } from "react-router";
+import { ActivityScreen } from "./activity.tsx";
+import { AgentsScreen } from "./agents.tsx";
 import { ApiError, useOrganization, useOrganizations } from "./api.ts";
+import { LeadChat } from "./chat.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
 import {
@@ -127,28 +130,26 @@ export function OrganizationScreen() {
   const current = findSection(section);
   if (!current) return <NotFound what="화면" />;
   const { label, width } = current;
-  if (section === "chat") {
-    const lead = org.data.agents.find((a) => a.role === "lead");
+  const { agents } = org.data;
+  const lead = agents.find((a) => a.role === "lead");
+  if (section === "chat" && lead)
     return (
-      <Page width={width}>
-        <h1 className="mb-1 text-xl font-semibold">Lead 대화</h1>
-        <p className="mb-6 text-sm text-slate-500">{lead?.name}</p>
-        <div
-          className="card animate-fade-up p-8 text-center"
-          data-testid="lead-chat-empty"
-        >
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-50 text-xl">
-            🎯
-          </div>
-          <div className="font-semibold">연구 목표와 완료 기준을 정하세요</div>
-          <p className="mt-1 text-sm text-slate-500">
-            Research Lead와 대화로 이 조직의 연구 목표와 완료 기준을 합의하는
-            것부터 시작합니다.
-          </p>
-        </div>
+      <Page width={width} className="flex flex-1 flex-col">
+        <LeadChat orgId={orgId} lead={lead} />
       </Page>
     );
-  }
+  if (section === "activity")
+    return (
+      <Page width={width}>
+        <ActivityScreen orgId={orgId} agents={agents} />
+      </Page>
+    );
+  if (section === "agents")
+    return (
+      <Page width={width}>
+        <AgentsScreen orgId={orgId} agents={agents} />
+      </Page>
+    );
   return (
     <Page width={width}>
       <div className="card animate-fade-up p-6">

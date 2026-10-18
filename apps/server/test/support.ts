@@ -2,6 +2,7 @@ import {
   eventStreamPath,
   streamFrameSchema,
   type Event,
+  type RuntimeAdapter,
   type StreamScope,
 } from "@babojubot/contracts";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
@@ -24,8 +25,20 @@ export type TestServer = {
   request: (
     method: string,
     path: string,
+    body?: unknown,
+    headers?: Record<string, string>
+  ) => Promise<{ status: number; body: any }>;
+  /** 실행 시도별 토큰으로 조직 도구를 부른다. */
+  tool: (
+    token: string | undefined,
+    method: string,
+    path: string,
     body?: unknown
   ) => Promise<{ status: number; body: any }>;
+  /** 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. */
+  drain: () => Promise<void>;
+  /** 서버(실행 중인 실행 시도 포함)만 멈추고 DB는 남긴다. */
+  stopServer: () => Promise<void>;
   /** 구독 준비(`ready`)까지 기다린 Event stream 연결. `origin`을 주면 브라우저처럼 Origin header를 보낸다. */
   subscribe: (
     scope: StreamScope,
@@ -34,35 +47,67 @@ export type TestServer = {
   close: () => Promise<void>;
 };
 
+export type TestServerOptions = {
+  /** 실행기 adapter. 기본은 가짜 실행기의 기본 시나리오다. */
+  runtime?: RuntimeAdapter;
+  /** 기록 시각에 쓰는 시계. */
+  now?: () => Date;
+};
+
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */
-export async function startTestServer(): Promise<TestServer> {
+export async function startTestServer(
+  options: TestServerOptions = {}
+): Promise<TestServer> {
   const database = await createTestDatabase();
   let server: RunningServer;
   try {
-    server = await startServer({ db: database.db, port: 0 });
+    server = await startServer({ db: database.db, port: 0, ...options });
   } catch (error) {
     await database.close();
     throw error;
   }
   const sockets = new Set<WebSocket>();
+  let serverStopped = false;
+
+  const request: TestServer["request"] = async (
+    method,
+    path,
+    body,
+    headers = {}
+  ) => {
+    const res = await fetch(server.url + path, {
+      method,
+      headers: {
+        ...headers,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body:
+        body === undefined
+          ? undefined
+          : typeof body === "string"
+            ? body
+            : JSON.stringify(body),
+    });
+    const text = await res.text();
+    return { status: res.status, body: text ? JSON.parse(text) : undefined };
+  };
 
   return {
     baseUrl: server.url,
     db: database.db,
-    async request(method, path, body) {
-      const res = await fetch(server.url + path, {
+    request,
+    tool: (token, method, path, body) =>
+      request(
         method,
-        headers:
-          body === undefined ? {} : { "content-type": "application/json" },
-        body:
-          body === undefined
-            ? undefined
-            : typeof body === "string"
-              ? body
-              : JSON.stringify(body),
-      });
-      const text = await res.text();
-      return { status: res.status, body: text ? JSON.parse(text) : undefined };
+        "/api/tools" + path,
+        body,
+        token === undefined ? {} : { authorization: `Bearer ${token}` }
+      ),
+    drain: () => server.drain(),
+    async stopServer() {
+      serverStopped = true;
+      for (const socket of sockets) socket.terminate();
+      await server.close();
     },
     subscribe(scope, { origin } = {}) {
       const query =
@@ -117,7 +162,7 @@ export async function startTestServer(): Promise<TestServer> {
     },
     async close() {
       for (const socket of sockets) socket.terminate();
-      await server.close();
+      if (!serverStopped) await server.close();
       await database.close();
     },
   };

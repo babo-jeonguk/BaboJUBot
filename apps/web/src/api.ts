@@ -1,6 +1,12 @@
 import {
+  agentDetailSchema,
+  conversationMessageListSchema,
+  conversationMessageSchema,
+  eventListSchema,
   organizationDetailSchema,
   organizationListSchema,
+  runDetailSchema,
+  runSummaryListSchema,
   type CreateOrganizationInput,
   type Organization,
   type OrganizationDetail,
@@ -8,10 +14,24 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { z } from "zod";
 
+/** 조직 범위 조회는 모두 그 조직 key 아래에 두어, 조직 Event가 오면 한꺼번에 다시 불러온다. */
 export const queryKeys = {
   organizations: ["organizations"] as const,
   organization: (id: string) => ["organizations", id] as const,
+  conversation: (id: string) => ["organizations", id, "messages"] as const,
+  events: (id: string, agentId?: string) =>
+    ["organizations", id, "events", agentId ?? "all"] as const,
+  runs: (id: string) => ["organizations", id, "runs"] as const,
+  run: (id: string, runId: string) =>
+    ["organizations", id, "runs", runId] as const,
+  agent: (id: string, agentId: string) =>
+    ["organizations", id, "agents", agentId] as const,
 };
+
+const orgPath = (id: string, rest = "") =>
+  `/api/organizations/${encodeURIComponent(id)}${rest}`;
+const notFoundIsFinal = (count: number, error: Error) =>
+  !(error instanceof ApiError && error.status === 404) && count < 3;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -46,8 +66,7 @@ export function useOrganization(id: string) {
         organizationDetailSchema,
         `/api/organizations/${encodeURIComponent(id)}`
       ),
-    retry: (count, error) =>
-      !(error instanceof ApiError && error.status === 404) && count < 3,
+    retry: notFoundIsFinal,
   });
 }
 
@@ -74,5 +93,77 @@ export function useCreateOrganization() {
         exact: true,
       });
     },
+  });
+}
+
+export function useConversation(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.conversation(orgId),
+    queryFn: () =>
+      request(conversationMessageListSchema, orgPath(orgId, "/messages")),
+  });
+}
+
+/** Lead 대화에 사용자 메시지를 보낸다. 실패하면 입력을 지우지 않도록 호출한 쪽이 결과를 본다. */
+export function useSendMessage(orgId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: string) =>
+      request(conversationMessageSchema, orgPath(orgId, "/messages"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body, delivery: "next_run" }),
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.conversation(orgId),
+      }),
+  });
+}
+
+export function useEvents(orgId: string, agentId?: string) {
+  return useQuery({
+    queryKey: queryKeys.events(orgId, agentId),
+    queryFn: () =>
+      request(
+        eventListSchema,
+        orgPath(
+          orgId,
+          agentId ? `/events?agentId=${encodeURIComponent(agentId)}` : "/events"
+        )
+      ),
+  });
+}
+
+export function useRuns(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.runs(orgId),
+    queryFn: () => request(runSummaryListSchema, orgPath(orgId, "/runs")),
+  });
+}
+
+export function useRun(orgId: string, runId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.run(orgId, runId ?? ""),
+    queryFn: () =>
+      request(
+        runDetailSchema,
+        orgPath(orgId, `/runs/${encodeURIComponent(runId!)}`)
+      ),
+    enabled: runId !== undefined,
+    retry: notFoundIsFinal,
+  });
+}
+
+export function useAgent(orgId: string, agentId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.agent(orgId, agentId ?? ""),
+    queryFn: () =>
+      request(
+        agentDetailSchema,
+        orgPath(orgId, `/agents/${encodeURIComponent(agentId!)}`)
+      ),
+    enabled: agentId !== undefined,
+    retry: notFoundIsFinal,
   });
 }
