@@ -5,7 +5,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation, useMatch } from "react-router";
-import { useOrganization, useOrganizations, useRun } from "./api.ts";
+import { useInbox, useOrganization, useOrganizations, useRun } from "./api.ts";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import {
   abbr,
@@ -49,8 +49,11 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
 export const findSection = (slug: string) =>
   sectionGroups.flatMap((g) => g.items).find((s) => s.slug === slug);
 
-/** 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에 속한다. */
-const detailSection: Record<string, string> = { runs: "agents" };
+/** 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에, 승인 요청은 대시보드에 속한다. */
+const detailSection: Record<string, string> = {
+  runs: "agents",
+  approvals: "dashboard",
+};
 
 function useCurrent() {
   const org = useMatch("/orgs/:orgId/*")?.params.orgId;
@@ -60,7 +63,13 @@ function useCurrent() {
     : org
       ? defaultSection
       : undefined;
-  return { orgId: org, section, home: useLocation().pathname === "/" };
+  const pathname = useLocation().pathname;
+  return {
+    orgId: org,
+    section,
+    home: pathname === "/",
+    inbox: pathname === "/inbox",
+  };
 }
 
 export function Shell() {
@@ -157,8 +166,9 @@ function ActiveBar({ on }: { on: boolean }) {
 }
 
 function Rail() {
-  const { orgId, home } = useCurrent();
+  const { orgId, home, inbox } = useCurrent();
   const orgs = useOrganizations();
+  const waiting = useInbox().data?.length ?? 0;
   const openCreate = useOpenCreateOrganization();
   return (
     <nav
@@ -176,6 +186,25 @@ function Rail() {
             ⌂
           </span>
           <span className="text-[10px] text-white/60">홈</span>
+        </Link>
+      </Tip>
+      <Tip content={`Inbox · 결정을 기다리는 항목 ${waiting}개`}>
+        <Link
+          to="/inbox"
+          className={railItem(inbox)}
+          aria-current={inbox ? "page" : undefined}
+          aria-label={`Inbox · 주의 필요 ${waiting}개`}
+        >
+          <ActiveBar on={inbox} />
+          <span className="relative flex h-9 w-9 items-center justify-center rounded-xl text-lg">
+            ✉
+            {waiting > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-400 px-1 text-[10px] font-semibold text-slate-950">
+                {waiting}
+              </span>
+            )}
+          </span>
+          <span className="text-[10px] text-white/60">Inbox</span>
         </Link>
       </Tip>
       <div className="my-2 h-px w-8 bg-white/15" />
@@ -321,6 +350,7 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   const org = useOrganization(orgId);
   const agentMatch = useMatch("/orgs/:orgId/agents/:agentId")?.params.agentId;
   const runMatch = useMatch("/orgs/:orgId/runs/:runId")?.params.runId;
+  const approvalMatch = useMatch("/orgs/:orgId/approvals/:approvalId");
   const run = useRun(orgId, runMatch);
   const name = org.data?.name ?? "…";
   const label = (section && findSection(section)?.label) ?? section;
@@ -333,6 +363,7 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   if (agent)
     trail.push({ label: agent.name, to: `/orgs/${orgId}/agents/${agent.id}` });
   if (runMatch) trail.push({ label: runLabel(runMatch) });
+  if (approvalMatch) trail.push({ label: "승인 요청" });
   trail[trail.length - 1] = { label: trail[trail.length - 1]!.label };
   if (compact) return <>{trail.map((c) => c.label).join(" › ")}</>;
   return (

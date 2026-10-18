@@ -1,13 +1,19 @@
 import {
   agentDetailSchema,
+  agentInstructionsSchema,
+  approvalSchema,
+  approvalSummaryListSchema,
   conversationMessageListSchema,
   conversationMessageSchema,
   eventListSchema,
+  flowTemplateCopySchema,
+  inboxSchema,
   organizationDetailSchema,
   organizationListSchema,
   runDetailSchema,
   runSummaryListSchema,
   type CreateOrganizationInput,
+  type DecideApprovalInput,
   type Organization,
   type OrganizationDetail,
 } from "@babojubot/contracts";
@@ -26,6 +32,14 @@ export const queryKeys = {
     ["organizations", id, "runs", runId] as const,
   agent: (id: string, agentId: string) =>
     ["organizations", id, "agents", agentId] as const,
+  instructions: (id: string, agentId: string) =>
+    ["organizations", id, "agents", agentId, "instructions"] as const,
+  flowTemplate: (id: string) => ["organizations", id, "flow-template"] as const,
+  approvals: (id: string) => ["organizations", id, "approvals"] as const,
+  approval: (id: string, approvalId: string) =>
+    ["organizations", id, "approvals", approvalId] as const,
+  /** 조직을 가로지르는 대기열. 어느 조직의 Event든 다시 불러온다. */
+  inbox: ["inbox"] as const,
 };
 
 const orgPath = (id: string, rest = "") =>
@@ -35,9 +49,12 @@ const notFoundIsFinal = (count: number, error: Error) =>
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number) {
-    super(`API ${status}`);
+  /** 서버가 돌려준 오류 코드(`already_decided` 등). */
+  readonly code: string | undefined;
+  constructor(status: number, code?: string) {
+    super(`API ${status}${code ? ` ${code}` : ""}`);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -47,7 +64,11 @@ async function request<T extends z.ZodType>(
   init?: RequestInit
 ): Promise<z.infer<T>> {
   const res = await fetch(path, init);
-  if (!res.ok) throw new ApiError(res.status);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => undefined)) as
+      { error?: { code?: string } } | undefined;
+    throw new ApiError(res.status, body?.error?.code);
+  }
   return schema.parse(await res.json());
 }
 
@@ -165,5 +186,96 @@ export function useAgent(orgId: string, agentId: string | undefined) {
       ),
     enabled: agentId !== undefined,
     retry: notFoundIsFinal,
+  });
+}
+
+export function useAgentInstructions(orgId: string, agentId: string) {
+  return useQuery({
+    queryKey: queryKeys.instructions(orgId, agentId),
+    queryFn: () =>
+      request(
+        agentInstructionsSchema,
+        orgPath(orgId, `/agents/${encodeURIComponent(agentId)}/instructions`)
+      ),
+    retry: notFoundIsFinal,
+  });
+}
+
+/** 조직의 연구 흐름 템플릿 사본. 초기 연구 승인 전에는 없다(`null`). */
+export function useFlowTemplate(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.flowTemplate(orgId),
+    queryFn: async () => {
+      try {
+        return await request(
+          flowTemplateCopySchema,
+          orgPath(orgId, "/flow-template")
+        );
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+  });
+}
+
+export function useApprovals(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.approvals(orgId),
+    queryFn: () =>
+      request(approvalSummaryListSchema, orgPath(orgId, "/approvals")),
+  });
+}
+
+export function useApproval(orgId: string, approvalId: string) {
+  return useQuery({
+    queryKey: queryKeys.approval(orgId, approvalId),
+    queryFn: () =>
+      request(
+        approvalSchema,
+        orgPath(orgId, `/approvals/${encodeURIComponent(approvalId)}`)
+      ),
+    retry: notFoundIsFinal,
+  });
+}
+
+export function useInbox() {
+  return useQuery({
+    queryKey: queryKeys.inbox,
+    queryFn: () => request(inboxSchema, "/api/inbox"),
+  });
+}
+
+/**
+ * 승인 결정 제어 명령. 성공하거나 이미 결정됐다는 응답을 받으면 그 조직과 Inbox를 다시 불러와 서버의 결과를 보인다.
+ * 결과를 미리 화면에 반영하지 않는다.
+ */
+export function useDecideApproval(orgId: string, approvalId: string) {
+  const queryClient = useQueryClient();
+  const refresh = () => {
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.organization(orgId),
+    });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
+  };
+  return useMutation({
+    mutationFn: (input: DecideApprovalInput) =>
+      request(
+        approvalSchema,
+        orgPath(orgId, `/approvals/${encodeURIComponent(approvalId)}/decision`),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }
+      ),
+    onSuccess: (approval) => {
+      queryClient.setQueryData(queryKeys.approval(orgId, approvalId), approval);
+      refresh();
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "already_decided")
+        refresh();
+    },
   });
 }

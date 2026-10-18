@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import {
   createOrganizationInputSchema,
+  decideApprovalInputSchema,
   eventStreamPath,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
@@ -14,9 +15,14 @@ import {
 } from "@babojubot/contracts";
 import {
   findAgentDetail,
+  findAgentInstructions,
+  findApproval,
+  findFlowTemplate,
   findOrganization,
   findRunDetail,
+  listApprovals,
   listConversation,
+  listInbox,
   listOrganizationEvents,
   listOrganizations,
   listRuns,
@@ -26,9 +32,11 @@ import { findLead } from "@babojubot/core";
 import { createScriptedRuntime } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import { WebSocketServer, type WebSocket } from "ws";
+import { decideApproval } from "./approvals.ts";
 import { sendOwnerMessage } from "./conversation.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
+import { defaultHarnessDir } from "./harness.ts";
 import { createOrganization } from "./organizations.ts";
 import { orgToolsRouter } from "./tools.ts";
 
@@ -42,6 +50,8 @@ export type ServerOptions = {
   runtime?: RuntimeAdapter;
   /** 기록 시각에 쓰는 시계. 테스트가 주입한다. */
   now?: () => Date;
+  /** 하네스 라이브러리 디렉터리. 기본은 저장소의 `harness/`. */
+  harnessDir?: string;
 };
 
 export type RunningServer = {
@@ -59,6 +69,7 @@ export async function startServer({
   webDistDir,
   runtime = createScriptedRuntime(),
   now = () => new Date(),
+  harnessDir = defaultHarnessDir,
 }: ServerOptions): Promise<RunningServer> {
   const hub = new EventHub();
   let url = "";
@@ -71,7 +82,7 @@ export async function startServer({
   });
   const app = express();
   app.use(express.json());
-  app.use(orgToolsBasePath, orgToolsRouter({ db, hub, now }));
+  app.use(orgToolsBasePath, orgToolsRouter({ db, hub, now, harnessDir }));
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
@@ -89,7 +100,14 @@ export async function startServer({
         .json({ error: { code: "invalid_input", issues: input.error.issues } });
       return;
     }
-    res.status(201).json(await createOrganization(db, hub, input.data));
+    res
+      .status(201)
+      .json(await createOrganization({ db, hub, harnessDir }, input.data));
+  });
+
+  /** Inbox. 첫 판은 모든 조직에서 결정을 기다리는 승인 요청뿐이다. */
+  app.get("/api/inbox", async (_req, res) => {
+    res.json(await listInbox(db));
   });
 
   app.get("/api/organizations/:id", async (req, res) => {
@@ -151,6 +169,67 @@ export async function startServer({
     if (!agent) return notFound(res);
     res.json(agent);
   });
+
+  /** 에이전트의 Role·Soul·Skill 사본 읽기. 편집은 #64. */
+  app.get(
+    "/api/organizations/:id/agents/:agentId/instructions",
+    async (req, res) => {
+      const found = await findAgentInstructions(
+        db,
+        req.params.id,
+        req.params.agentId
+      );
+      if (!found) return notFound(res);
+      res.json(found);
+    }
+  );
+
+  app.get("/api/organizations/:id/flow-template", async (req, res) => {
+    const template = await findFlowTemplate(db, req.params.id);
+    if (!template) return notFound(res);
+    res.json(template);
+  });
+
+  app.get("/api/organizations/:id/approvals", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(await listApprovals(db, req.params.id));
+  });
+
+  app.get("/api/organizations/:id/approvals/:approvalId", async (req, res) => {
+    const approval = await findApproval(
+      db,
+      req.params.id,
+      req.params.approvalId
+    );
+    if (!approval) return notFound(res);
+    res.json(approval);
+  });
+
+  /** 승인 결정 제어 명령. 결정은 한 번만 할 수 있고, 이미 결정한 요청은 409 `already_decided`다. */
+  app.post(
+    "/api/organizations/:id/approvals/:approvalId/decision",
+    async (req, res) => {
+      const input = decideApprovalInputSchema.safeParse(req.body);
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const result = await decideApproval(
+        { db, hub, dispatcher, now },
+        req.params.id,
+        req.params.approvalId,
+        input.data
+      );
+      if (result.kind === "not_found") return notFound(res);
+      if (result.kind === "already_decided") {
+        res.status(409).json({ error: { code: "already_decided" } });
+        return;
+      }
+      res.json(result.approval);
+    }
+  );
 
   app.use("/api", (_req, res) => notFound(res));
 

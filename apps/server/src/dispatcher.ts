@@ -151,7 +151,6 @@ export class RunDispatcher {
       const { token, digest } = issueRunToken();
       const claimed = await claimNextRun(this.#db, agentId, {
         tokenDigest: digest,
-        instructionsBundleVersion: null,
         source: { newId: randomUUID, now: this.#now },
       });
       if (!claimed) return;
@@ -160,7 +159,10 @@ export class RunDispatcher {
     }
   }
 
-  async #execute({ run, wakeReasons }: ClaimedRun, token: string) {
+  async #execute(
+    { run, wakeReasons, instructions }: ClaimedRun,
+    token: string
+  ) {
     const controller = new AbortController();
     this.#active.set(run.id, controller);
     // 닫는 중에 admission이 끝난 실행 시도도 바로 취소를 받는다.
@@ -176,6 +178,7 @@ export class RunDispatcher {
           wakeReasons,
           context: loaded.context,
           instructionsBundleVersion: run.instructionsBundleVersion,
+          instructions,
           workspace: null,
           previousSession: run.sessionBefore,
         },

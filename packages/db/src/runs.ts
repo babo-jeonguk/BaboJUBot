@@ -3,6 +3,7 @@ import type {
   AgentRole,
   ConversationMessage,
   Event,
+  InstructionFile,
   PublicActivity,
   RunContextResponse,
   RunDetail,
@@ -12,10 +13,10 @@ import type {
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
+  instructionsBundleVersion,
   planAgentMessage,
   planRunFinish,
   planRunStart,
-  toWakeReason,
   type NewRun,
   type OwnerMessagePlan,
   type PendingWake,
@@ -27,6 +28,7 @@ import type { Database } from "./client.ts";
 import {
   insertEvent,
   isUuid,
+  lockRunningRun,
   toAgent,
   toEvent,
   toOrganization,
@@ -34,7 +36,9 @@ import {
 } from "./rows.ts";
 import {
   agents,
+  approvals,
   events,
+  instructionCopies,
   messages,
   organizations,
   runs,
@@ -62,6 +66,8 @@ export async function insertOwnerMessage(
 export type ClaimedRun = {
   run: NewRun;
   wakeReasons: WakeReason[];
+  /** 지침 bundle 버전을 정한 사본 내용. admission 때 고정해 실행기에 그대로 넘긴다. */
+  instructions: InstructionFile[];
   event: Event;
 };
 
@@ -69,15 +75,12 @@ export type ClaimedRun = {
  * 에이전트의 대기 중인 깨우기를 모두 새 실행 시도 하나에 고정한다. 에이전트 행을 잠근 뒤 실행 중인 실행 시도가
  * 있는지 다시 보므로 여러 호출자가 동시에 불러도 실행 시도는 하나만 생긴다(부분 unique가 마지막 방어선).
  * 실행 중이거나 대기 중인 깨우기가 없으면 아무것도 하지 않는다. 실행기는 commit 뒤에 부른다.
+ * 지침 bundle 버전은 같은 transaction에서 읽은 그 에이전트의 사본 내용으로 정한다.
  */
 export async function claimNextRun(
   db: Database,
   agentId: string,
-  options: {
-    tokenDigest: string;
-    instructionsBundleVersion: string | null;
-    source: RecordSource;
-  }
+  options: { tokenDigest: string; source: RecordSource }
 ): Promise<ClaimedRun | undefined> {
   return db.transaction(async (tx) => {
     const [agent] = await tx
@@ -101,11 +104,12 @@ export async function claimNextRun(
       .where(eq(runs.agentId, agentId))
       .orderBy(desc(runs.seq))
       .limit(1);
+    const instructions = await selectInstructions(tx, agentId);
     const plan = planRunStart(
       {
         agent: toAgent(agent),
         pendingWakes,
-        instructionsBundleVersion: options.instructionsBundleVersion,
+        instructionsBundleVersion: instructionsBundleVersion(instructions),
         previousRun: previous,
       },
       options.source
@@ -127,7 +131,12 @@ export async function claimNextRun(
     if (claimed.length !== ids.length)
       throw new Error("wake bundle changed while claiming a run");
     const event = await insertEvent(tx, plan.event);
-    return { run: plan.run, wakeReasons: plan.wakeReasons, event };
+    return {
+      run: plan.run,
+      wakeReasons: plan.wakeReasons,
+      instructions,
+      event,
+    };
   });
 }
 
@@ -286,7 +295,7 @@ export async function loadRunContext(
   if (!row) return undefined;
   const { run, agent, organization } = row;
   const wakeReasons = (await selectWakes(db, eq(wakes.runId, run.id))).map(
-    toWakeReason
+    (w) => w.reason
   );
   return {
     identity: {
@@ -296,9 +305,13 @@ export async function loadRunContext(
     },
     wakeReasons,
     context: {
-      organization: (({ id, name, stage }) => ({ id, name, stage }))(
-        toOrganization(organization)
-      ),
+      organization: (({ id, name, stage, goal, completionCriteria }) => ({
+        id,
+        name,
+        stage,
+        goal,
+        completionCriteria,
+      }))(toOrganization(organization)),
       agent: { id: agent.id, role: agent.role, name: agent.name },
       conversation: await selectConversation(
         db,
@@ -371,7 +384,7 @@ export async function findRunDetail(
   if (!row) return undefined;
   const { usage, ...summary } = row;
   const wakeReasons = (await selectWakes(db, eq(wakes.runId, runId))).map(
-    toWakeReason
+    (w) => w.reason
   );
   const transcript = await db
     .select()
@@ -410,6 +423,9 @@ export async function findAgentDetail(
   return {
     ...toAgent(agent),
     status: (await findRunningRunId(db, agentId)) ? "running" : "idle",
+    instructionsBundleVersion: instructionsBundleVersion(
+      await selectInstructions(db, agentId)
+    ),
     recentRuns: recent,
   };
 }
@@ -425,49 +441,67 @@ async function findRunningRunId(db: Executor, agentId: string) {
   return active?.id;
 }
 
-async function lockRunningRun(
-  tx: Executor,
-  runId: string,
-  strength: "update" | "share"
-) {
-  const [run] = await tx
+/** 에이전트의 지침 사본. bundle 버전 계산과 실행기 전달에 쓴다. */
+async function selectInstructions(
+  db: Executor,
+  agentId: string
+): Promise<InstructionFile[]> {
+  return db
     .select({
-      id: runs.id,
-      organizationId: runs.organizationId,
-      agentId: runs.agentId,
-      status: runs.status,
+      path: instructionCopies.path,
+      content: instructionCopies.content,
     })
-    .from(runs)
-    .where(eq(runs.id, runId))
-    .for(strength);
-  return run && acceptsToolCalls(run.status) ? run : undefined;
+    .from(instructionCopies)
+    .where(eq(instructionCopies.agentId, agentId))
+    .orderBy(asc(instructionCopies.path));
 }
 
+/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정)에서 읽는다. */
 async function selectWakes(
   db: Executor,
   where: ReturnType<typeof and>
 ): Promise<PendingWake[]> {
   const rows = await db
     .select({
-      id: wakes.id,
-      organizationId: wakes.organizationId,
-      agentId: wakes.agentId,
-      kind: wakes.kind,
-      messageId: wakes.messageId,
-      createdAt: wakes.createdAt,
+      wake: wakes,
       body: messages.body,
+      decision: approvals.status,
+      note: approvals.decisionNote,
     })
     .from(wakes)
     .leftJoin(messages, eq(messages.id, wakes.messageId))
+    .leftJoin(approvals, eq(approvals.id, wakes.approvalId))
     .where(where)
     .orderBy(asc(wakes.seq));
-  return rows.map((w) => ({
-    ...w,
-    messageId: w.messageId!,
-    body: w.body ?? "",
-    createdAt: w.createdAt.toISOString(),
+  return rows.map(({ wake, body, decision, note }) => ({
+    id: wake.id,
+    organizationId: wake.organizationId,
+    agentId: wake.agentId,
+    createdAt: wake.createdAt.toISOString(),
+    reason:
+      wake.kind === "owner_message"
+        ? {
+            kind: wake.kind,
+            wakeId: wake.id,
+            messageId: wake.messageId!,
+            body: body ?? "",
+          }
+        : {
+            kind: wake.kind,
+            wakeId: wake.id,
+            approvalId: wake.approvalId!,
+            decision: decisionOf[decision as keyof typeof decisionOf],
+            note,
+          },
   }));
 }
+
+/** 승인 요청의 결정 상태 → 사용자가 내린 결정. 깨우기는 결정된 요청만 가리킨다. */
+const decisionOf = {
+  approved: "approve",
+  rejected: "reject",
+  changes_requested: "request_changes",
+} as const;
 
 const sentBy = alias(runs, "sent_by");
 const deliveredTo = alias(runs, "delivered_to");

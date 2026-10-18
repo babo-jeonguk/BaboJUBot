@@ -7,22 +7,28 @@ import type {
   SendOwnerMessageInput,
   SessionState,
   Usage,
-  WakeKind,
   WakeReason,
 } from "@babojubot/contracts";
 import type { RecordSource } from "./organization.ts";
 
-/** 에이전트에게 새 실행 시도가 필요해진 사건. 실행 시도에 묶이기 전까지 대기한다. */
+/** 에이전트에게 새 실행 시도가 필요해진 사건. 실행 시도에 묶이기 전까지 대기하며 사유가 된 기록을 가리킨다. */
 export type Wake = {
   id: string;
   organizationId: string;
   agentId: string;
-  kind: WakeKind;
-  messageId: string;
   createdAt: string;
+} & (
+  | { kind: "owner_message"; messageId: string }
+  | { kind: "approval_decision"; approvalId: string }
+);
+/** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. */
+export type PendingWake = {
+  id: string;
+  organizationId: string;
+  agentId: string;
+  createdAt: string;
+  reason: WakeReason;
 };
-/** 대기 중인 깨우기와 그 사유가 된 메시지 본문. */
-export type PendingWake = Wake & { body: string };
 
 /** 사용자 메시지 기록. 메시지·깨우기·Event는 함께 저장되어야 한다. */
 export type OwnerMessagePlan = {
@@ -89,10 +95,6 @@ export function planAgentMessage(
 export const findLead = <T extends Pick<Agent, "role">>(agents: T[]) =>
   agents.find((a) => a.role === "lead");
 
-/** 첫 판은 Lead만 사용자와 대화한다. 작업자는 작업 댓글로만 사용자와 이어진다(docs/features.md). */
-export const canMessageOwner = (agent: Pick<Agent, "role">) =>
-  agent.role === "lead";
-
 const messageCreatedEvent = (message: ConversationMessage): NewEvent => ({
   organizationId: message.organizationId,
   type: "message.created",
@@ -153,7 +155,7 @@ export function planRunStart(
   };
   return {
     run,
-    wakeReasons: pendingWakes.map(toWakeReason),
+    wakeReasons: pendingWakes.map((w) => w.reason),
     event: {
       organizationId: run.organizationId,
       type: "run.started",
@@ -165,13 +167,6 @@ export function planRunStart(
     },
   };
 }
-
-export const toWakeReason = (wake: PendingWake): WakeReason => ({
-  kind: wake.kind,
-  wakeId: wake.id,
-  messageId: wake.messageId,
-  body: wake.body,
-});
 
 export type RunFinishPlan = {
   update: {

@@ -1,5 +1,6 @@
 import {
   orgToolErrorSchema,
+  orgToolMethods,
   orgToolOutputSchemas,
   orgToolPaths,
   orgToolsBasePath,
@@ -19,7 +20,17 @@ export class OrgToolError extends Error {
   }
 }
 
+export type OrgToolOutput<T extends OrgToolName> = ReturnType<
+  (typeof orgToolOutputSchemas)[T]["parse"]
+>;
+
 export type OrgToolClient = {
+  /** 도구 하나를 부른다. POST 도구는 `input`을 본문으로 보낸다. 거부되면 {@link OrgToolError}. */
+  call<T extends OrgToolName>(
+    tool: T,
+    input?: unknown,
+    params?: Record<string, string>
+  ): Promise<OrgToolOutput<T>>;
   getRunContext(): Promise<RunContextResponse>;
   sendMessage(body: string): Promise<ConversationMessage>;
   getMessage(messageId: string): Promise<ConversationMessage>;
@@ -39,16 +50,21 @@ export function createOrgToolClient({
 }): OrgToolClient {
   async function call<T extends OrgToolName>(
     tool: T,
-    path: string,
-    body?: unknown
-  ) {
+    input?: unknown,
+    params: Record<string, string> = {}
+  ): Promise<OrgToolOutput<T>> {
+    const path = Object.entries(params).reduce<string>(
+      (p, [key, value]) => p.replace(`:${key}`, encodeURIComponent(value)),
+      orgToolPaths[tool]
+    );
+    const post = orgToolMethods[tool] === "POST";
     const res = await fetch(new URL(orgToolsBasePath + path, baseUrl), {
-      method: body === undefined ? "GET" : "POST",
+      method: orgToolMethods[tool],
       headers: {
         authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(post ? { "content-type": "application/json" } : {}),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: post ? JSON.stringify(input ?? {}) : undefined,
       signal,
     });
     const json: unknown = await res.json().catch(() => undefined);
@@ -60,25 +76,12 @@ export function createOrgToolClient({
         refusal.success ? refusal.data.error.code : undefined
       );
     }
-    return orgToolOutputSchemas[tool].parse(json);
+    return orgToolOutputSchemas[tool].parse(json) as OrgToolOutput<T>;
   }
   return {
-    getRunContext: () =>
-      call(
-        "get_run_context",
-        orgToolPaths.get_run_context
-      ) as Promise<RunContextResponse>,
-    sendMessage: (body) =>
-      call("send_message", orgToolPaths.send_message, {
-        body,
-      }) as Promise<ConversationMessage>,
-    getMessage: (messageId) =>
-      call(
-        "get_message",
-        orgToolPaths.get_message.replace(
-          ":messageId",
-          encodeURIComponent(messageId)
-        )
-      ) as Promise<ConversationMessage>,
+    call,
+    getRunContext: () => call("get_run_context"),
+    sendMessage: (body) => call("send_message", { body }),
+    getMessage: (messageId) => call("get_message", undefined, { messageId }),
   };
 }

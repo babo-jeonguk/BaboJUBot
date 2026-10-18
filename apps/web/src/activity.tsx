@@ -3,11 +3,13 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { useEvents } from "./api.ts";
 import {
+  decisionLabel,
   formatTime,
   Loading,
   LoadError,
   runLabel,
   runStatusLabel,
+  stageLabel,
 } from "./ui.tsx";
 
 type Described = { icon: string; title: string; detail?: string };
@@ -52,6 +54,39 @@ export function describeEvent(event: Event, agentName: string): Described {
         title: `${agentName} 실행 시도 ${runStatusLabel[event.payload.stopReason]}`,
         detail: event.payload.error ?? event.payload.summary ?? undefined,
       };
+    case "organization.goal_recorded":
+      return {
+        icon: "🎯",
+        title: `${agentName}가 연구 목표와 완료 기준을 기록했습니다 → ${stageLabel[event.payload.stage]}`,
+        detail: `목표: ${event.payload.goal}\n완료 기준: ${event.payload.completionCriteria}`,
+      };
+    case "approval.requested":
+      return {
+        icon: "📝",
+        title: `${agentName}가 초기 연구 승인을 요청했습니다 → ${stageLabel[event.payload.stage]}`,
+      };
+    case "approval.decided":
+      return {
+        icon: event.payload.decision === "approve" ? "✅" : "↺",
+        title: `사용자가 초기 연구 승인 요청을 ${decisionLabel[event.payload.decision]}했습니다 → ${stageLabel[event.payload.stage]}`,
+        detail:
+          [
+            event.payload.note && `사유: ${event.payload.note}`,
+            event.payload.createdAgentIds.length &&
+              `작업자 ${event.payload.createdAgentIds.length}명 생성`,
+          ]
+            .filter(Boolean)
+            .join("\n") || undefined,
+      };
+    case "tool.refused":
+      return {
+        icon: "⛔",
+        title: `조직 도구 ${event.payload.tool} 거부`,
+        detail:
+          event.payload.reason === "stage"
+            ? `${stageLabel[event.payload.stage]} 단계에서는 쓸 수 없습니다`
+            : `${agentName}의 역할로는 쓸 수 없습니다`,
+      };
   }
 }
 
@@ -86,6 +121,14 @@ export function EventRow({
           <div className="mt-0.5 text-xs break-words whitespace-pre-wrap text-slate-500">
             {detail}
           </div>
+        )}
+        {"approvalId" in event.payload && (
+          <Link
+            to={`/orgs/${orgId}/approvals/${event.payload.approvalId}`}
+            className="mt-0.5 mr-3 inline-block text-xs text-brand-600 hover:underline"
+          >
+            승인 요청 보기
+          </Link>
         )}
         {showRunLink && runId && (
           <Link

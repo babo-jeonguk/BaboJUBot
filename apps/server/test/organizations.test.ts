@@ -39,6 +39,8 @@ describe("creating an organization", () => {
       id: org.id,
       name: org.name,
       stage: "goal_setting",
+      goal: null,
+      completionCriteria: null,
       createdAt: org.createdAt,
     });
   });

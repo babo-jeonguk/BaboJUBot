@@ -8,6 +8,7 @@ import {
   listOrganizations,
 } from "./organizations.ts";
 import { migrateDatabase } from "./client.ts";
+import { findAgentInstructions } from "./harness.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 import { agents, organizations } from "./schema.ts";
 
@@ -20,10 +21,16 @@ afterAll(async () => {
 });
 
 const plan = (name: string) =>
-  planOrganizationCreation(
-    { name },
-    { newId: randomUUID, now: () => new Date() }
-  );
+  planOrganizationCreation({ name }, leadFiles, {
+    newId: randomUUID,
+    now: () => new Date(),
+  });
+const leadFiles = ["AGENTS.md", "SOUL.md"].map((path) => ({
+  path,
+  content: `${path} 내용`,
+  source: `roles/lead/${path}`,
+  sourceDigest: "d",
+}));
 
 describe("organization records", () => {
   it("re-running migrations is a no-op", async () => {
@@ -70,6 +77,33 @@ describe("organization records", () => {
     expect(
       await listOrganizationEvents(t.db, creation.organization.id)
     ).toEqual([]);
+  });
+
+  it("stores the Lead's own instruction copies with the organization or not at all", async () => {
+    const creation = plan("조직 사본");
+    const [role] = creation.instructionCopies;
+    // 같은 에이전트의 같은 경로 사본은 둘일 수 없다.
+    const broken = {
+      ...creation,
+      instructionCopies: [role!, { ...role!, id: randomUUID() }],
+    };
+    await expect(insertOrganizationCreation(t.db, broken)).rejects.toThrow();
+    expect(
+      await findOrganization(t.db, creation.organization.id)
+    ).toBeUndefined();
+
+    await insertOrganizationCreation(t.db, creation);
+    const lead = creation.agents[0]!;
+    expect(
+      await findAgentInstructions(t.db, creation.organization.id, lead.id)
+    ).toMatchObject({
+      agentId: lead.id,
+      bundleVersion: expect.stringMatching(/^sha256:/),
+      copies: [
+        { path: "AGENTS.md", kind: "role", source: "roles/lead/AGENTS.md" },
+        { path: "SOUL.md", kind: "soul" },
+      ],
+    });
   });
 
   it("refuses a second Lead for an existing organization", async () => {

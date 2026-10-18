@@ -1,0 +1,43 @@
+import { randomUUID } from "node:crypto";
+import type { DecideApprovalInput } from "@babojubot/contracts";
+import {
+  decideApproval as storeDecision,
+  type Database,
+  type DecisionResult,
+} from "@babojubot/db";
+import type { RunDispatcher } from "./dispatcher.ts";
+import type { EventHub } from "./event-hub.ts";
+
+/**
+ * 사용자의 승인 결정 제어 명령. 결정·단계·팀·사본·템플릿·Lead 깨우기·Event를 한 transaction으로 저장한 뒤에만
+ * 알리고 Lead를 깨운다. 알림이 실패해도 저장된 결정은 성공이며, 깨우기는 저장돼 있어 서버 시작 때도 다시 처리된다.
+ */
+export async function decideApproval(
+  {
+    db,
+    hub,
+    dispatcher,
+    now,
+  }: {
+    db: Database;
+    hub: EventHub;
+    dispatcher: RunDispatcher;
+    now: () => Date;
+  },
+  organizationId: string,
+  approvalId: string,
+  input: DecideApprovalInput
+): Promise<DecisionResult> {
+  const result = await storeDecision(db, organizationId, approvalId, input, {
+    newId: randomUUID,
+    now,
+  });
+  if (result.kind !== "decided") return result;
+  try {
+    hub.publish(result.event);
+  } catch (error) {
+    console.error("[approvals] publish after commit failed", error);
+  }
+  dispatcher.kick(result.wake.agentId);
+  return result;
+}

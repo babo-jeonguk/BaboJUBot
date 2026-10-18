@@ -29,7 +29,16 @@
 | Lead 대화·실행 시도·에이전트 조회 API | [server/app.ts](../../apps/server/src/app.ts), [conversation.ts](../../apps/server/src/conversation.ts) | API 통합 테스트 |
 | 가짜 실행기 시나리오·조직 도구 client·테스트 gate | [runtime/scripted.ts](../../packages/runtime/src/scripted.ts), [tools-client.ts](../../packages/runtime/src/tools-client.ts), [testing.ts](../../packages/runtime/src/testing.ts) | [가짜 실행기 테스트](../../packages/runtime/src/scripted.test.ts) |
 | Lead 대화·활동·실행 시도 상세·에이전트 화면 | [web/chat.tsx](../../apps/web/src/chat.tsx), [activity.tsx](../../apps/web/src/activity.tsx), [agents.tsx](../../apps/web/src/agents.tsx); web/api.ts의 query key | [Lead 대화 E2E](../../apps/web/e2e/lead-chat.spec.ts) |
-| 후속 실제 실행기·연구 하네스의 구현 위치 탐색 | [packages/runtime](../../packages/runtime/src/index.ts)에 adapter를 더하고, [harness](../../harness/README.md)는 내용물을 둘 자리 | 실제 adapter·하네스 테스트 없음; 요구와 계약은 해당 후속 이슈 |
+| 목표 기록·승인 요청·결정·하네스 사본·Inbox 계약 | [contracts/approval.ts](../../packages/contracts/src/approval.ts), [harness.ts](../../packages/contracts/src/harness.ts); 새 Event는 event.ts, 도구 이름·경로·method는 tools.ts | API 통합 테스트 |
+| Role·생애주기 단계별 조직 도구 규칙, 승인 대상 snapshot, 결정의 효과(단계·작업자·사본·템플릿·깨우기) | [core/approval.ts](../../packages/core/src/approval.ts)의 `toolRules`·`checkToolCall`·`buildInitialResearchProposal`·`planApprovalDecision` | [core 테스트](../../packages/core/src/approval.test.ts), [승인 API 통합 테스트](../../apps/server/test/approvals.test.ts) |
+| 지침 bundle 버전 직렬화, SKILL.md frontmatter·UTF-8 검증 | [core/harness.ts](../../packages/core/src/harness.ts) | [core 테스트](../../packages/core/src/harness.test.ts) |
+| 하네스 라이브러리 구조·읽기 실패, Lead Role 찾기 | [harness/README.md](../../harness/README.md), [server/harness.ts](../../apps/server/src/harness.ts)의 `loadHarnessLibrary` | 승인 API 통합 테스트가 사본 내용을 라이브러리 파일과 비교 |
+| 거부한 도구 호출의 Event, 단계 전이 경합, 결정 한 번만 적용·rollback | [db/approvals.ts](../../packages/db/src/approvals.ts)의 `gateToolCall`·`toolWrite`·`decideApproval`; 조직 행 잠금은 [db/rows.ts](../../packages/db/src/rows.ts)의 `lockOrganization` | 승인 API 통합 테스트의 동시 결정·거부 기록 |
+| 에이전트 사본·조직 템플릿 사본 조회, admission의 bundle 버전 | [db/harness.ts](../../packages/db/src/harness.ts); db/runs.ts의 `claimNextRun`·`selectWakes` | [DB 저장 테스트](../../packages/db/src/organizations.test.ts), 승인 API 통합 테스트 |
+| 승인 결정 명령·Inbox·승인 요청·사본 조회 API | [server/app.ts](../../apps/server/src/app.ts), [server/approvals.ts](../../apps/server/src/approvals.ts); 조직 도구 handler는 server/tools.ts | 승인 API 통합 테스트 |
+| 가짜 Lead의 데모 흐름(목표 기록 → 승인 요청 → 재제출) | [runtime/scripted.ts](../../packages/runtime/src/scripted.ts)의 `demoLeadScript` | [가짜 실행기 테스트](../../packages/runtime/src/scripted.test.ts) |
+| Inbox·승인 요청 상세·결정 폼, 조직 대시보드, 에이전트 팀·사본 보기 | [web/approvals.tsx](../../apps/web/src/approvals.tsx), [pages.tsx](../../apps/web/src/pages.tsx)의 `OrganizationDashboard`, [agents.tsx](../../apps/web/src/agents.tsx)의 `InstructionCopies` | [초기 연구 승인 E2E](../../apps/web/e2e/initial-approval.spec.ts) |
+| 후속 실제 실행기 adapter의 구현 위치 탐색 | [packages/runtime](../../packages/runtime/src/index.ts)에 adapter를 더하고, 요청의 `instructions`(사본 내용)를 실행기 방식으로 주입 | 실제 adapter 테스트 없음; 요구와 계약은 해당 후속 이슈 |
 
 ## 조직 생성의 연결 경로
 
@@ -62,6 +71,22 @@ chat.tsx → POST /api/organizations/:id/messages (server/app.ts)
 ```
 
 깨우기가 실행 시도로 이어지지 않거나 같은 에이전트가 겹쳐 실행되면 `claimNextRun`과 `RunDispatcher.kick`에서, 조직 도구 거부는 `server/tools.ts`에서 시작합니다.
+
+## 초기 연구 승인의 연결 경로
+
+```text
+가짜 Lead(runtime/scripted.ts) → /api/tools/goal, /api/tools/initial-approval (server/tools.ts)
+  → db/approvals.ts gateToolCall: core checkToolCall(Role·단계), 거부면 tool.refused Event
+  → toolWrite: 실행 시도 잠금 → 조직 행 잠금 → 단계 재확인 → 목표 기록 / 하네스 라이브러리로 snapshot 고정한 승인 요청
+
+approvals.tsx 결정 폼 → POST /api/organizations/:id/approvals/:approvalId/decision (server/app.ts)
+  → server/approvals.ts → db/approvals.ts decideApproval
+      조직 행 잠금 → pending 확인 → core planApprovalDecision → 조건부 결정
+      → 작업자·사본·템플릿 사본·단계·Lead 깨우기·approval.decided Event (한 transaction)
+  → EventHub.publish → RunDispatcher.kick(Lead) → claimNextRun이 사본으로 bundle 버전을 정함
+```
+
+결정이 두 번 적용되거나 팀이 일부만 생기면 `decideApproval`에서, 승인 전 도구가 열리면 core `toolRules`에서 시작합니다.
 
 ## 지도 갱신
 

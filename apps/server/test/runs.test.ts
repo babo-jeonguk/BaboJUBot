@@ -5,6 +5,7 @@ import {
   runSummaryListSchema,
   type RunRequest,
   type RuntimeAdapter,
+  type WakeReason,
 } from "@babojubot/contracts";
 import {
   createScriptedRuntime,
@@ -16,6 +17,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
+const bodyOf = (reason: WakeReason) =>
+  reason.kind === "owner_message" ? reason.body : undefined;
 afterEach(async () => {
   await t?.close();
   t = undefined;
@@ -173,7 +176,7 @@ describe("Lead conversation", () => {
     const [second, first] = await runs(org.id);
     expect((await runDetail(org.id, first!.id)).summary).toBe("원래 종료 결과");
     expect(
-      (await runDetail(org.id, second!.id)).wakeReasons.map((w) => w.body)
+      (await runDetail(org.id, second!.id)).wakeReasons.map(bodyOf)
     ).toEqual(["다음 메시지"]);
     stream.close();
   });
@@ -248,10 +251,10 @@ describe("Lead conversation", () => {
     const [second, first] = await runs(org.id);
     expect([first!.status, second!.status]).toEqual(["completed", "completed"]);
     expect(
-      (await runDetail(org.id, first!.id)).wakeReasons.map((w) => w.body)
+      (await runDetail(org.id, first!.id)).wakeReasons.map(bodyOf)
     ).toEqual(["첫 메시지"]);
     expect(
-      (await runDetail(org.id, second!.id)).wakeReasons.map((w) => w.body)
+      (await runDetail(org.id, second!.id)).wakeReasons.map(bodyOf)
     ).toEqual(["둘째", "셋째", "둘째"]);
     expect(watch.requests.map((r) => r.wakeReasons.length)).toEqual([1, 3]);
     // 첫 실행 시도의 맥락에는 실행 중 도착한 메시지가 섞이지 않는다.

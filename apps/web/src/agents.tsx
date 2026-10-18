@@ -1,11 +1,24 @@
-import type { Agent, RunSummary } from "@babojubot/contracts";
+import type {
+  Agent,
+  InstructionKind,
+  RunSummary,
+  WakeReason,
+} from "@babojubot/contracts";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { EventRow } from "./activity.tsx";
-import { ApiError, useAgent, useOrganization, useRun } from "./api.ts";
+import {
+  ApiError,
+  useAgent,
+  useAgentInstructions,
+  useOrganization,
+  useRun,
+} from "./api.ts";
 import {
   abbr,
   AgentStatusBadge,
   avatarStyle,
+  decisionLabel,
   formatTime,
   Loading,
   LoadError,
@@ -18,7 +31,7 @@ import {
 
 const roleLabel = { lead: "Research Lead", worker: "작업자" } as const;
 
-/** 조직 › 에이전트: Lead·작업자 팀과 상태. 첫 판에는 Lead만 있다. */
+/** 조직 › 에이전트: Lead·작업자 팀과 상태. 작업자는 초기 연구 승인 때 생긴다. */
 export function AgentsScreen({
   orgId,
   agents,
@@ -26,14 +39,38 @@ export function AgentsScreen({
   orgId: string;
   agents: Agent[];
 }) {
+  const leads = agents.filter((a) => a.role === "lead");
+  const workers = agents.filter((a) => a.role === "worker");
   return (
     <>
       <h1 className="mb-4 text-xl font-semibold">에이전트</h1>
-      <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {agents.map((a) => (
-          <AgentCard key={a.id} orgId={orgId} agent={a} />
-        ))}
-      </ul>
+      <section aria-label="Research Lead" className="mb-6">
+        <h2 className="mb-2 text-sm font-semibold text-slate-600">
+          Research Lead
+        </h2>
+        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {leads.map((a) => (
+            <AgentCard key={a.id} orgId={orgId} agent={a} />
+          ))}
+        </ul>
+      </section>
+      <section aria-label="작업자 팀">
+        <h2 className="mb-2 text-sm font-semibold text-slate-600">
+          작업자 팀 {workers.length}명
+        </h2>
+        {!workers.length ? (
+          <div className="card p-6 text-sm text-slate-500">
+            아직 작업자가 없습니다. 초기 연구 승인 요청을 승인하면 제안된 팀이
+            생깁니다.
+          </div>
+        ) : (
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {workers.map((a) => (
+              <AgentCard key={a.id} orgId={orgId} agent={a} />
+            ))}
+          </ul>
+        )}
+      </section>
     </>
   );
 }
@@ -100,6 +137,7 @@ export function AgentDetailPage() {
           )}
         </div>
       </div>
+      <InstructionCopies key={a.id} orgId={orgId} agentId={a.id} />
       <section aria-label="최근 실행 시도">
         <h2 className="mb-2 text-sm font-semibold text-slate-600">
           최근 실행 시도
@@ -117,6 +155,102 @@ export function AgentDetailPage() {
         )}
       </section>
     </Page>
+  );
+}
+
+const kindLabel: Record<InstructionKind, string> = {
+  role: "Role",
+  soul: "Soul",
+  skill: "Skill",
+};
+
+/**
+ * 에이전트 상세 › Role·Soul·Skill 사본. 이 에이전트가 소유한 사본을 읽기 전용으로 보인다.
+ * 편집·revision은 후속 이슈(#64)에서 연다. 에이전트가 바뀌면 key로 선택을 초기화한다.
+ */
+function InstructionCopies({
+  orgId,
+  agentId,
+}: {
+  orgId: string;
+  agentId: string;
+}) {
+  const found = useAgentInstructions(orgId, agentId);
+  const [selected, setSelected] = useState(0);
+  const body = () => {
+    if (found.isPending) return <Loading />;
+    if (found.isError)
+      return (
+        <LoadError
+          what="Role·Soul·Skill 사본"
+          onRetry={() => void found.refetch()}
+        />
+      );
+    const { copies, bundleVersion } = found.data;
+    if (!copies.length)
+      return (
+        <div className="card p-6 text-sm text-slate-500">
+          이 에이전트에게는 사본이 없습니다. 사본이 생기기 전에 만든 에이전트일
+          수 있습니다.
+        </div>
+      );
+    const copy = copies[Math.min(selected, copies.length - 1)]!;
+    return (
+      <div className="card overflow-hidden">
+        <div
+          role="tablist"
+          aria-label="사본 파일"
+          className="scrollbar-thin flex gap-1 overflow-x-auto border-b border-slate-100 px-2 pt-2"
+        >
+          {copies.map((c, i) => (
+            <button
+              key={c.id}
+              role="tab"
+              aria-selected={c.id === copy.id}
+              onClick={() => setSelected(i)}
+              className={`shrink-0 rounded-t-lg px-3 py-1.5 text-xs transition ${c.id === copy.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-500 hover:text-slate-800"}`}
+            >
+              {kindLabel[c.kind]} · {c.path}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel" aria-label={copy.path}>
+          <dl className="grid grid-cols-[5.5rem_1fr] gap-x-3 gap-y-1 border-b border-slate-100 px-4 py-3 text-xs text-slate-500">
+            <dt>사본</dt>
+            <dd className="font-mono break-all" data-testid="copy-id">
+              {copy.id}
+            </dd>
+            <dt>복사한 원본</dt>
+            <dd className="font-mono break-all">
+              harness/{copy.source} · {copy.sourceDigest.slice(0, 12)}
+            </dd>
+            <dt>지침 bundle</dt>
+            <dd className="font-mono break-all">
+              {bundleVersion?.slice(0, 19) ?? "없음"}
+            </dd>
+          </dl>
+          {copy.content ? (
+            <pre className="max-h-[28rem] overflow-auto px-4 py-3 font-sans text-sm break-words whitespace-pre-wrap text-slate-800">
+              {copy.content}
+            </pre>
+          ) : (
+            <p className="px-4 py-3 text-sm text-slate-400">빈 파일</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+  return (
+    <section aria-label="Role·Soul·Skill 사본" className="mb-6">
+      <h2 className="mb-1 text-sm font-semibold text-slate-600">
+        Role·Soul·Skill 사본
+      </h2>
+      <p className="mb-2 text-xs text-slate-400">
+        이 에이전트만의 사본입니다. 같은 Role의 다른 에이전트와 공유하지 않으며
+        여기서는 읽기만 합니다.
+      </p>
+      {body()}
+    </section>
   );
 }
 
@@ -185,10 +319,7 @@ export function RunDetailPage() {
         </h2>
         <ol className="card divide-y divide-slate-100">
           {r.wakeReasons.map((w) => (
-            <li key={w.wakeId} className="px-4 py-2.5 text-sm">
-              <div className="text-xs text-slate-400">사용자 메시지</div>
-              <div className="break-words whitespace-pre-wrap">{w.body}</div>
-            </li>
+            <WakeReasonRow key={w.wakeId} orgId={orgId} reason={w} />
           ))}
         </ol>
       </section>
@@ -243,5 +374,37 @@ export function RunDetailPage() {
         </dl>
       </section>
     </Page>
+  );
+}
+
+function WakeReasonRow({
+  orgId,
+  reason,
+}: {
+  orgId: string;
+  reason: WakeReason;
+}) {
+  if (reason.kind === "owner_message")
+    return (
+      <li className="px-4 py-2.5 text-sm">
+        <div className="text-xs text-slate-400">사용자 메시지</div>
+        <div className="break-words whitespace-pre-wrap">{reason.body}</div>
+      </li>
+    );
+  return (
+    <li className="px-4 py-2.5 text-sm">
+      <div className="text-xs text-slate-400">승인 결정</div>
+      <Link
+        to={`/orgs/${orgId}/approvals/${reason.approvalId}`}
+        className="text-brand-600 hover:underline"
+      >
+        초기 연구 승인 요청 {decisionLabel[reason.decision]}
+      </Link>
+      {reason.note && (
+        <div className="mt-0.5 break-words whitespace-pre-wrap">
+          {reason.note}
+        </div>
+      )}
+    </li>
   );
 }

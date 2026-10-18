@@ -1,4 +1,6 @@
 export * from "./organization.ts";
+export * from "./harness.ts";
+export * from "./approval.ts";
 export * from "./message.ts";
 export * from "./run.ts";
 export * from "./tools.ts";

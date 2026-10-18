@@ -40,6 +40,7 @@ export function useLiveEvents() {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.organization(event.organizationId),
         });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
       };
       socket.onclose = () => {
         if (stopped) return;

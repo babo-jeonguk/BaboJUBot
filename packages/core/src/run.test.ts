@@ -20,10 +20,8 @@ describe("planRunStart", () => {
     id,
     organizationId: "org-1",
     agentId: "lead-1",
-    kind: "owner_message",
-    messageId: `msg-${id}`,
-    body,
     createdAt: at,
+    reason: { kind: "owner_message", wakeId: id, messageId: `msg-${id}`, body },
   });
 
   it("resumes the previous session only under the same instructions bundle", () => {

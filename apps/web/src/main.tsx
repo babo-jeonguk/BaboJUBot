@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router";
 import { AgentDetailPage, RunDetailPage } from "./agents.tsx";
+import { ApprovalDetailPage, InboxPage } from "./approvals.tsx";
 import { CreateOrganizationProvider } from "./create-organization.tsx";
 import { useLiveEvents } from "./live-events.ts";
 import { Home, OrganizationScreen } from "./pages.tsx";
@@ -19,6 +20,11 @@ function App() {
       <Routes>
         <Route element={<Shell />}>
           <Route index element={<Home />} />
+          <Route path="inbox" element={<InboxPage />} />
+          <Route
+            path="orgs/:orgId/approvals/:approvalId"
+            element={<ApprovalDetailPage />}
+          />
           <Route
             path="orgs/:orgId/agents/:agentId"
             element={<AgentDetailPage />}
