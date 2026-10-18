@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router";
+import { AgentDetailPage, RunDetailPage } from "./agents.tsx";
 import { CreateOrganizationProvider } from "./create-organization.tsx";
 import { useLiveEvents } from "./live-events.ts";
 import { Home, OrganizationScreen } from "./pages.tsx";
@@ -18,6 +19,11 @@ function App() {
       <Routes>
         <Route element={<Shell />}>
           <Route index element={<Home />} />
+          <Route
+            path="orgs/:orgId/agents/:agentId"
+            element={<AgentDetailPage />}
+          />
+          <Route path="orgs/:orgId/runs/:runId" element={<RunDetailPage />} />
           <Route
             path="orgs/:orgId/:section?"
             element={<OrganizationScreen />}

@@ -1,4 +1,8 @@
-import type { LifecycleStage } from "@babojubot/contracts";
+import type {
+  AgentStatus,
+  LifecycleStage,
+  RunStatus,
+} from "@babojubot/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 
@@ -42,6 +46,63 @@ export function StageBadge({ stage }: { stage: LifecycleStage }) {
     </span>
   );
 }
+
+export const runStatusLabel: Record<RunStatus, string> = {
+  running: "실행 중",
+  completed: "완료",
+  failed: "실패",
+  cancelled: "취소됨",
+};
+const runStatusStyle: Record<RunStatus, [string, string]> = {
+  running: ["bg-brand-50 text-brand-700", "bg-brand-500 animate-pulse"],
+  completed: ["bg-emerald-50 text-emerald-700", "bg-emerald-500"],
+  failed: ["bg-rose-50 text-rose-700", "bg-rose-500"],
+  cancelled: ["bg-slate-100 text-slate-600", "bg-slate-400"],
+};
+
+/** 실행 시도의 성공은 연구 완료가 아니다. 실행 시도 상태만 보인다. */
+export function RunStatusBadge({ status }: { status: RunStatus }) {
+  const [c, dot] = runStatusStyle[status];
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${c}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+      {runStatusLabel[status]}
+    </span>
+  );
+}
+
+export const agentStatusLabel: Record<AgentStatus, string> = {
+  idle: "대기",
+  running: "실행 중",
+};
+
+export function AgentStatusBadge({ status }: { status: AgentStatus }) {
+  const on = status === "running";
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${on ? "bg-brand-50 text-brand-700" : "bg-slate-100 text-slate-600"}`}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${on ? "animate-pulse bg-brand-500" : "bg-slate-400"}`}
+      />
+      {agentStatusLabel[status]}
+    </span>
+  );
+}
+
+const timeFormat = new Intl.DateTimeFormat("ko-KR", {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+export const formatTime = (iso: string) => timeFormat.format(new Date(iso));
+/** 실행 시도를 짧게 부르는 이름. 전체 ID는 주소에 있다. */
+export const runLabel = (runId: string) => `실행 시도 ${runId.slice(0, 8)}`;
 
 /** 본문 폭 3단계: 좁게 768px, 중간 1024px, 전체 폭. 창이 좁으면 창 폭을 따른다. */
 export type Width = "reading" | "standard" | "full";

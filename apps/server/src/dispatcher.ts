@@ -1,0 +1,210 @@
+import { randomUUID } from "node:crypto";
+import {
+  runResultSchema,
+  runtimeActivitySchema,
+  type Event,
+  type RunCancel,
+  type RunResult,
+  type RuntimeAdapter,
+} from "@babojubot/contracts";
+import {
+  appendRunActivity,
+  claimNextRun,
+  failInterruptedRuns,
+  finishRun,
+  listAgentsWithPendingWakes,
+  loadRunContext,
+  type ClaimedRun,
+  type Database,
+} from "@babojubot/db";
+import type { EventHub } from "./event-hub.ts";
+import { issueRunToken } from "./run-token.ts";
+
+const failed = (error: string): RunResult => ({
+  stopReason: "failed",
+  error,
+  summary: null,
+  usage: null,
+  nextSession: null,
+});
+const shutdown: RunCancel = { type: "cancel", reason: "server_shutdown" };
+const cancelled: RunResult = {
+  ...failed(""),
+  stopReason: "cancelled",
+  error: null,
+};
+
+/**
+ * 깨우기를 실행 시도로 만들어 실행기에 맡긴다. 에이전트당 실행 시도 하나는 DB admission(`claimNextRun`)이
+ * 보장하고, 이 객체는 같은 프로세스 안에서 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다.
+ * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행한다.
+ */
+export class RunDispatcher {
+  readonly #db: Database;
+  readonly #hub: EventHub;
+  readonly #runtime: RuntimeAdapter;
+  readonly #now: () => Date;
+  readonly #toolsBaseUrl: () => string;
+  readonly #pumps = new Map<string, Promise<void>>();
+  readonly #kickedAgain = new Set<string>();
+  readonly #active = new Map<string, AbortController>();
+  #closed = false;
+
+  constructor(options: {
+    db: Database;
+    hub: EventHub;
+    runtime: RuntimeAdapter;
+    now: () => Date;
+    toolsBaseUrl: () => string;
+  }) {
+    this.#db = options.db;
+    this.#hub = options.hub;
+    this.#runtime = options.runtime;
+    this.#now = options.now;
+    this.#toolsBaseUrl = options.toolsBaseUrl;
+  }
+
+  /** 이전 프로세스가 남긴 실행 중 실행 시도를 실패로 끝내고, 대기 중인 깨우기가 있는 에이전트를 깨운다. */
+  async start(): Promise<void> {
+    for (const event of await failInterruptedRuns(this.#db, { now: this.#now }))
+      this.#publish(event);
+    for (const agentId of await listAgentsWithPendingWakes(this.#db))
+      this.kick(agentId);
+  }
+
+  /** 에이전트에게 새 깨우기가 생겼다. 이미 처리 중이면 그 처리가 끝난 뒤 다시 확인한다. */
+  kick(agentId: string): void {
+    if (this.#closed) return;
+    if (this.#pumps.has(agentId)) {
+      this.#kickedAgain.add(agentId);
+      return;
+    }
+    const pump = this.#pump(agentId)
+      .catch((error) => console.error("[runs] dispatch failed", error))
+      .finally(() => {
+        this.#pumps.delete(agentId);
+        if (this.#kickedAgain.delete(agentId)) this.kick(agentId);
+      });
+    this.#pumps.set(agentId, pump);
+  }
+
+  /**
+   * 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. 테스트 helper.
+   * 다른 프로세스가 실행 중이라 처리할 수 없는 깨우기가 남으면 오래 기다리지 않고 실패한다.
+   */
+  async drain(): Promise<void> {
+    for (let round = 0; round < 50; round++) {
+      while (this.#pumps.size) await Promise.all(this.#pumps.values());
+      const agents = await listAgentsWithPendingWakes(this.#db);
+      if (!agents.length || this.#closed) return;
+      for (const agentId of agents) this.kick(agentId);
+      if (round) await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error("wake queue did not drain");
+  }
+
+  /** 새 실행 시도를 받지 않고, 진행 중인 실행 시도를 취소해 실행기가 정리를 끝낼 때까지 기다린다. */
+  async close(): Promise<void> {
+    this.#closed = true;
+    for (const controller of this.#active.values()) controller.abort(shutdown);
+    while (this.#pumps.size) await Promise.all(this.#pumps.values());
+  }
+
+  async #pump(agentId: string) {
+    while (!this.#closed) {
+      const { token, digest } = issueRunToken();
+      const claimed = await claimNextRun(this.#db, agentId, {
+        tokenDigest: digest,
+        instructionsBundleVersion: null,
+        source: { newId: randomUUID, now: this.#now },
+      });
+      if (!claimed) return;
+      this.#publish(claimed.event);
+      await this.#execute(claimed, token);
+    }
+  }
+
+  async #execute({ run, wakeReasons }: ClaimedRun, token: string) {
+    const controller = new AbortController();
+    this.#active.set(run.id, controller);
+    // 닫는 중에 admission이 끝난 실행 시도도 바로 취소를 받는다.
+    if (this.#closed) controller.abort(shutdown);
+    let result: RunResult;
+    try {
+      const loaded = await loadRunContext(this.#db, run.id);
+      if (!loaded) throw new Error(`run ${run.id} disappeared`);
+      const raw = await this.#runtime.execute(
+        {
+          identity: loaded.identity,
+          access: { toolsBaseUrl: this.#toolsBaseUrl(), token },
+          wakeReasons,
+          context: loaded.context,
+          instructionsBundleVersion: run.instructionsBundleVersion,
+          workspace: null,
+          previousSession: run.sessionBefore,
+        },
+        {
+          signal: controller.signal,
+          emit: (activity) => this.#emit(run.id, activity),
+        }
+      );
+      const parsed = runResultSchema.safeParse(raw);
+      if (parsed.success) result = parsed.data;
+      else {
+        console.error(
+          "[runs] runtime returned an invalid result",
+          parsed.error
+        );
+        result = failed("실행기가 계약 밖의 종료 결과를 돌려주었습니다.");
+      }
+    } catch (error) {
+      // 실행기 오류 내용은 공개 기록에 그대로 옮기지 않는다.
+      console.error(`[runs] run ${run.id} runtime error`, error);
+      result = controller.signal.aborted
+        ? cancelled
+        : failed("실행기가 오류로 끝났습니다.");
+    } finally {
+      this.#active.delete(run.id);
+    }
+    const finished = await this.#finish(run.id, result);
+    if (finished) this.#publish(finished);
+  }
+
+  /**
+   * 종료 결과를 저장한다. 저장이 계속 실패하면 실행 시도가 실행 중으로 남아 에이전트가 막히므로 몇 번 다시 시도한다.
+   * 그래도 실패하면 다음 서버 시작 때 `failInterruptedRuns`가 끝낸다.
+   */
+  async #finish(runId: string, result: RunResult) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await finishRun(this.#db, runId, result, { now: this.#now });
+      } catch (error) {
+        if (attempt >= 3) throw error;
+        console.error(`[runs] run ${runId} finish failed, retrying`, error);
+        await new Promise((r) => setTimeout(r, 100 * attempt));
+      }
+    }
+  }
+
+  /** 허용한 공개 활동만 남긴다. 비공개·알 수 없는 값과 종료 뒤의 활동은 버린다. */
+  async #emit(runId: string, raw: unknown) {
+    const activity = runtimeActivitySchema.safeParse(raw);
+    if (!activity.success) {
+      console.warn(`[runs] run ${runId} dropped a non-public activity`);
+      return;
+    }
+    const event = await appendRunActivity(this.#db, runId, {
+      source: "runtime",
+      activity: activity.data,
+    });
+    if (event) this.#publish(event);
+  }
+
+  #publish(event: Event) {
+    try {
+      this.#hub.publish(event);
+    } catch (error) {
+      console.error("[runs] publish after commit failed", error);
+    }
+  }
+}
