@@ -31,7 +31,7 @@ const leadOnly = ["lead"] as const;
 
 /**
  * Role·생애주기 단계별 조직 도구 규칙. `목표 설정`·`계획 수립`·`승인 대기`에는 조회·메시지·계획 도구만 열리고,
- * 작업 생성과 작업자 추가는 `연구 진행`에서만 열린다.
+ * 작업·산출물·에이전트 간 메시지 쓰기와 작업자 추가는 `연구 진행`에서만 열린다. 작업·산출물 조회는 언제나 열린다.
  */
 export const toolRules: Record<OrgToolName, ToolRule> = {
   get_run_context: { roles: everyone, stages: anyStage },
@@ -43,6 +43,15 @@ export const toolRules: Record<OrgToolName, ToolRule> = {
   record_goal: { roles: leadOnly, stages: ["goal_setting"] },
   request_initial_approval: { roles: leadOnly, stages: ["planning"] },
   create_task: { roles: everyone, stages: ["researching"] },
+  list_tasks: { roles: everyone, stages: anyStage },
+  get_task: { roles: everyone, stages: anyStage },
+  start_task: { roles: everyone, stages: ["researching"] },
+  complete_task: { roles: everyone, stages: ["researching"] },
+  // 작업 댓글은 작업자가 사용자에게 답하는 통로다.
+  comment_task: { roles: everyone, stages: ["researching"] },
+  record_artifact: { roles: everyone, stages: ["researching"] },
+  get_artifact: { roles: everyone, stages: anyStage },
+  message_agent: { roles: everyone, stages: ["researching"] },
   add_worker: { roles: leadOnly, stages: ["researching"] },
 };
 

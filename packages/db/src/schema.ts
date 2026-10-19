@@ -1,12 +1,14 @@
 import {
   agentRoles,
   approvalKinds,
+  artifactFormats,
   approvalStatuses,
   instructionKinds,
   lifecycleStages,
   messageAuthors,
   messageDeliveries,
   runStatuses,
+  taskStatuses,
   type FlowKind,
   type InitialResearchProposal,
   type NewEvent,
@@ -289,10 +291,206 @@ export const flowTemplates = pgTable(
   ]
 );
 
-const wakeKinds = [
-  "owner_message",
-  "approval_decision",
-] as const satisfies readonly WakeKind[];
+/**
+ * 작업. 담당·부모·생성·완료 참조는 모두 같은 조직의 기록이다(복합 FK). 완료하면 자기 보고(요약·완료한 에이전트·실행 시도·시각)가
+ * 함께 남고, 완료는 다시 바뀌지 않는다(저장 쪽 조건부 갱신).
+ */
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    status: text("status", { enum: taskStatuses }).notNull(),
+    assigneeAgentId: uuid("assignee_agent_id").notNull(),
+    parentTaskId: uuid("parent_task_id"),
+    createdByAgentId: uuid("created_by_agent_id").notNull(),
+    createdByRunId: uuid("created_by_run_id").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
+    reportSummary: text("report_summary"),
+    completedByAgentId: uuid("completed_by_agent_id"),
+    completedByRunId: uuid("completed_by_run_id"),
+    completedAt: timestamp("completed_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("tasks_status_check", sql`${t.status} in (${inList(taskStatuses)})`),
+    check(
+      "tasks_report_check",
+      sql`(${t.status} = 'completed') = (${t.completedAt} is not null)
+        and num_nulls(${t.completedAt}, ${t.reportSummary}, ${t.completedByAgentId}, ${t.completedByRunId}) in (0, 4)`
+    ),
+    check(
+      "tasks_started_check",
+      sql`(${t.status} <> 'open' or ${t.startedAt} is null)
+        and (${t.status} <> 'in_progress' or ${t.startedAt} is not null)`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.assigneeAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.parentTaskId],
+      foreignColumns: [t.organizationId, t.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.completedByAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.completedByRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    unique("tasks_organization_id_id_unique").on(t.organizationId, t.id),
+    index("tasks_organization_idx").on(t.organizationId, t.seq),
+  ]
+);
+
+/** 작업 댓글. 사용자 댓글은 작성 에이전트·실행 시도가 없고, 에이전트 댓글은 둘 다 있다. */
+export const taskComments = pgTable(
+  "task_comments",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    taskId: uuid("task_id").notNull(),
+    author: text("author", { enum: messageAuthors }).notNull(),
+    agentId: uuid("agent_id"),
+    runId: uuid("run_id"),
+    body: text("body").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "task_comments_author_check",
+      sql`(${t.author} = 'owner' and ${t.agentId} is null and ${t.runId} is null)
+        or (${t.author} = 'agent' and ${t.agentId} is not null and ${t.runId} is not null)`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.taskId],
+      foreignColumns: [tasks.organizationId, tasks.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.agentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.runId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    unique("task_comments_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    index("task_comments_task_idx").on(t.organizationId, t.taskId, t.seq),
+  ]
+);
+
+/** 산출물. 첫 판은 Markdown·텍스트 본문을 그대로 둔다. 연결 작업과 작성 에이전트·실행 시도는 같은 조직의 기록이다. */
+export const artifacts = pgTable(
+  "artifacts",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    taskId: uuid("task_id").notNull(),
+    title: text("title").notNull(),
+    format: text("format", { enum: artifactFormats }).notNull(),
+    content: text("content").notNull(),
+    createdByAgentId: uuid("created_by_agent_id").notNull(),
+    createdByRunId: uuid("created_by_run_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "artifacts_format_check",
+      sql`${t.format} in (${inList(artifactFormats)})`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.taskId],
+      foreignColumns: [tasks.organizationId, tasks.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    unique("artifacts_organization_id_id_unique").on(t.organizationId, t.id),
+    index("artifacts_task_idx").on(t.organizationId, t.taskId, t.seq),
+  ]
+);
+
+/** 같은 조직 에이전트 사이의 메시지. 보낸 실행 시도를 가리킨다. */
+export const agentToAgentMessages = pgTable(
+  "agent_to_agent_messages",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    senderAgentId: uuid("sender_agent_id").notNull(),
+    senderRunId: uuid("sender_run_id").notNull(),
+    recipientAgentId: uuid("recipient_agent_id").notNull(),
+    body: text("body").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "agent_to_agent_messages_recipient_check",
+      sql`${t.senderAgentId} <> ${t.recipientAgentId}`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.senderAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.senderRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.recipientAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    unique("agent_to_agent_messages_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+  ]
+);
+
+/** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채운다. */
+const wakeSourceColumns = {
+  owner_message: "message_id",
+  approval_decision: "approval_id",
+  task_assigned: "task_id",
+  task_completed: "task_id",
+  task_comment: "comment_id",
+  agent_to_agent_message: "agent_to_agent_message_id",
+} as const satisfies Record<WakeKind, string>;
+const wakeKinds = Object.keys(wakeSourceColumns) as WakeKind[];
 
 /** 깨우기 대기열. `run_id`가 없으면 대기 중이고, 실행 시도가 가져가면 그 실행 시도에 고정된다. */
 export const wakes = pgTable(
@@ -304,9 +502,14 @@ export const wakes = pgTable(
       .notNull()
       .references(() => organizations.id),
     agentId: uuid("agent_id").notNull(),
-    kind: text("kind", { enum: wakeKinds }).notNull(),
+    kind: text("kind", {
+      enum: wakeKinds as [WakeKind, ...WakeKind[]],
+    }).notNull(),
     messageId: uuid("message_id"),
     approvalId: uuid("approval_id"),
+    taskId: uuid("task_id"),
+    commentId: uuid("comment_id"),
+    agentToAgentMessageId: uuid("agent_to_agent_message_id"),
     runId: uuid("run_id"),
     createdAt: createdAt(),
   },
@@ -314,8 +517,15 @@ export const wakes = pgTable(
     check("wakes_kind_check", sql`${t.kind} in (${inList(wakeKinds)})`),
     check(
       "wakes_source_check",
-      sql`(${t.kind} = 'owner_message' and ${t.messageId} is not null and ${t.approvalId} is null)
-        or (${t.kind} = 'approval_decision' and ${t.approvalId} is not null and ${t.messageId} is null)`
+      sql`num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}) = 1
+        and (${sql.raw(
+          Object.entries(wakeSourceColumns)
+            .map(
+              ([kind, column]) =>
+                `("kind" = '${kind}' and "${column}" is not null)`
+            )
+            .join(" or ")
+        )})`
     ),
     foreignKey({
       columns: [t.organizationId, t.agentId],
@@ -330,6 +540,21 @@ export const wakes = pgTable(
       foreignColumns: [approvals.organizationId, approvals.id],
     }),
     foreignKey({
+      columns: [t.organizationId, t.taskId],
+      foreignColumns: [tasks.organizationId, tasks.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.commentId],
+      foreignColumns: [taskComments.organizationId, taskComments.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.agentToAgentMessageId],
+      foreignColumns: [
+        agentToAgentMessages.organizationId,
+        agentToAgentMessages.id,
+      ],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.runId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
@@ -341,6 +566,14 @@ export const wakes = pgTable(
     uniqueIndex("wakes_message_unique").on(t.messageId),
     // 승인 결정 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_approval_unique").on(t.approvalId),
+    // 작업 하나의 할당과 완료는 각각 깨우기 하나만 만든다.
+    uniqueIndex("wakes_task_kind_unique")
+      .on(t.taskId, t.kind)
+      .where(sql`${t.taskId} is not null`),
+    uniqueIndex("wakes_comment_unique").on(t.commentId),
+    uniqueIndex("wakes_agent_to_agent_message_unique").on(
+      t.agentToAgentMessageId
+    ),
   ]
 );
 

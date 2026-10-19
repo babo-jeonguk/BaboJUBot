@@ -8,6 +8,7 @@ import { CreateOrganizationProvider } from "./create-organization.tsx";
 import { useLiveEvents } from "./live-events.ts";
 import { Home, OrganizationScreen } from "./pages.tsx";
 import { Shell } from "./shell.tsx";
+import { ArtifactPage, TaskDetailPage } from "./tasks.tsx";
 import { NotFound } from "./ui.tsx";
 import "./index.css";
 
@@ -30,6 +31,14 @@ function App() {
             element={<AgentDetailPage />}
           />
           <Route path="orgs/:orgId/runs/:runId" element={<RunDetailPage />} />
+          <Route
+            path="orgs/:orgId/tasks/:taskId"
+            element={<TaskDetailPage />}
+          />
+          <Route
+            path="orgs/:orgId/artifacts/:artifactId"
+            element={<ArtifactPage />}
+          />
           <Route
             path="orgs/:orgId/:section?"
             element={<OrganizationScreen />}

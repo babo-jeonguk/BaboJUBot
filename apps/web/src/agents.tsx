@@ -4,7 +4,7 @@ import type {
   RunSummary,
   WakeReason,
 } from "@babojubot/contracts";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import { EventRow } from "./activity.tsx";
 import {
@@ -144,7 +144,10 @@ export function AgentDetailPage() {
         </h2>
         {!a.recentRuns.length ? (
           <div className="card p-6 text-sm text-slate-500">
-            아직 실행 시도가 없습니다. Lead 대화에 메시지를 보내면 깨어납니다.
+            아직 실행 시도가 없습니다.{" "}
+            {a.role === "lead"
+              ? "Lead 대화에 메시지를 보내면 깨어납니다."
+              : "작업을 맡거나 작업 댓글·메시지를 받으면 깨어납니다."}
           </div>
         ) : (
           <ul className="card divide-y divide-slate-100">
@@ -384,27 +387,55 @@ function WakeReasonRow({
   orgId: string;
   reason: WakeReason;
 }) {
-  if (reason.kind === "owner_message")
-    return (
-      <li className="px-4 py-2.5 text-sm">
-        <div className="text-xs text-slate-400">사용자 메시지</div>
-        <div className="break-words whitespace-pre-wrap">{reason.body}</div>
-      </li>
-    );
-  return (
+  const row = (label: string, body: ReactNode, detail?: string | null) => (
     <li className="px-4 py-2.5 text-sm">
-      <div className="text-xs text-slate-400">승인 결정</div>
-      <Link
-        to={`/orgs/${orgId}/approvals/${reason.approvalId}`}
-        className="text-brand-600 hover:underline"
-      >
-        초기 연구 승인 요청 {decisionLabel[reason.decision]}
-      </Link>
-      {reason.note && (
-        <div className="mt-0.5 break-words whitespace-pre-wrap">
-          {reason.note}
-        </div>
+      <div className="text-xs text-slate-400">{label}</div>
+      {body}
+      {detail && (
+        <div className="mt-0.5 break-words whitespace-pre-wrap">{detail}</div>
       )}
     </li>
   );
+  const link = (to: string, text: string) => (
+    <Link to={to} className="text-brand-600 hover:underline">
+      {text}
+    </Link>
+  );
+  const task = (taskId: string) => `/orgs/${orgId}/tasks/${taskId}`;
+  switch (reason.kind) {
+    case "owner_message":
+      return row(
+        "사용자 메시지",
+        <div className="break-words whitespace-pre-wrap">{reason.body}</div>
+      );
+    case "approval_decision":
+      return row(
+        "승인 결정",
+        link(
+          `/orgs/${orgId}/approvals/${reason.approvalId}`,
+          `초기 연구 승인 요청 ${decisionLabel[reason.decision]}`
+        ),
+        reason.note
+      );
+    case "task_assigned":
+      return row("작업 할당", link(task(reason.taskId), reason.title));
+    case "task_completed":
+      return row(
+        "작업 완료 · 자기 보고",
+        link(task(reason.taskId), reason.title),
+        reason.summary
+      );
+    case "task_comment":
+      return row(
+        "사용자 작업 댓글",
+        link(task(reason.taskId), "작업 보기"),
+        reason.body
+      );
+    case "agent_to_agent_message":
+      return row(
+        "같은 조직 에이전트 메시지",
+        link(`/orgs/${orgId}/agents/${reason.senderAgentId}`, "보낸 에이전트"),
+        reason.body
+      );
+  }
 }

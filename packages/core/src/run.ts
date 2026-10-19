@@ -20,6 +20,10 @@ export type Wake = {
 } & (
   | { kind: "owner_message"; messageId: string }
   | { kind: "approval_decision"; approvalId: string }
+  | { kind: "task_assigned"; taskId: string }
+  | { kind: "task_completed"; taskId: string }
+  | { kind: "task_comment"; commentId: string }
+  | { kind: "agent_to_agent_message"; agentToAgentMessageId: string }
 );
 /** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. */
 export type PendingWake = {

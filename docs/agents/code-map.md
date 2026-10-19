@@ -45,11 +45,25 @@
 | Role/단계 도구 규칙·snapshot·결정 효과 | [core/approval.ts](../../packages/core/src/approval.ts) `toolRules`·`checkToolCall`·`buildInitialResearchProposal`·`planApprovalDecision` | [core](../../packages/core/src/approval.test.ts), 승인 API |
 | bundle 버전 직렬화·frontmatter·UTF-8 | [core/harness.ts](../../packages/core/src/harness.ts) | [core](../../packages/core/src/harness.test.ts) |
 | 라이브러리 구조·읽기 실패·Lead Role | [harness 안내](../../harness/README.md), [server/harness.ts](../../apps/server/src/harness.ts) `loadHarnessLibrary` | 승인 API에서 라이브러리와 사본 비교 |
-| 거부 Event·전이 경합·결정 단일 적용/rollback | [db/approvals.ts](../../packages/db/src/approvals.ts) `gateToolCall`·`toolWrite`·`decideApproval`; [rows.ts](../../packages/db/src/rows.ts) `lockOrganization` | 승인 API 동시 결정·거부 기록 |
+| 거부 Event·전이 경합·결정 단일 적용/rollback | [db/tool-calls.ts](../../packages/db/src/tool-calls.ts) `gateToolCall`·`toolWrite`, [db/approvals.ts](../../packages/db/src/approvals.ts) `decideApproval`; [rows.ts](../../packages/db/src/rows.ts) `lockOrganization` | 승인 API 동시 결정·거부 기록 |
 | 에이전트/조직 템플릿 사본·admission bundle 버전 | [db/harness.ts](../../packages/db/src/harness.ts), db/runs.ts `claimNextRun`·`selectWakes` | DB 조직 저장 테스트, 승인 API |
 | 결정 명령·Inbox·요청/사본 조회 API | server/app.ts, [server/approvals.ts](../../apps/server/src/approvals.ts); 도구 handler는 server/tools.ts | 승인 API |
 | 가짜 Lead 목표→승인 요청→재제출 | runtime/scripted.ts `demoLeadScript` | 가짜 실행기 테스트 |
 | Inbox·결정 폼·조직 대시보드·팀/사본 | [web/approvals.tsx](../../apps/web/src/approvals.tsx), pages.tsx `OrganizationDashboard`, agents.tsx `InstructionCopies` | 초기 승인 E2E |
+
+## 작업·작업자 실행 시도·산출물
+
+통합 검증: [작업 API](../../apps/server/test/tasks.test.ts), [작업 화면 E2E](../../apps/web/e2e/tasks.spec.ts).
+
+| 작업·증상 | 진입점·계약 | 추가 검증·범위 |
+| --- | --- | --- |
+| 작업·댓글·산출물·에이전트 간 메시지 입력과 조회 모양, 깨우기 사유·Event | [contracts/task.ts](../../packages/contracts/src/task.ts), run.ts `wakeReasonSchema`, event.ts, 도구 이름·경로·오류 코드는 tools.ts | 작업 API |
+| 깨울 에이전트(부모 담당자·생성자·담당자·수신자, 자기 자신 제외)·착수/완료 권한·중복 완료 | [core/task.ts](../../packages/core/src/task.ts); 단계 규칙은 core/approval.ts `toolRules` | [core](../../packages/core/src/task.test.ts), 작업 API |
+| 같은 조직 참조 확인·기록과 깨우기·Event의 한 transaction·조건부 완료 | [db/tasks.ts](../../packages/db/src/tasks.ts), [db/tool-calls.ts](../../packages/db/src/tool-calls.ts) `toolWrite`(실행 시도→조직 잠금·단계 재확인); 복합 FK는 schema·migrations | 작업 API의 교차 조직·중복 완료 |
+| 깨우기 사유 읽기·실행 맥락의 팀 | db/runs.ts `selectWakes`·`loadRunContext` | 작업 API, 실행 API |
+| 작업 도구 HTTP·거부 코드·commit 뒤 깨운 에이전트 촉진 | server/tools.ts `respondWrite`; 사용자 댓글은 [server/tasks.ts](../../apps/server/src/tasks.ts)·app.ts | 작업 API |
+| 가짜 Lead 분담·가짜 작업자 착수→산출물→완료·댓글 답장 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript` | 가짜 실행기 테스트, 작업 화면 E2E |
+| 작업 목록·상세·댓글 입력·산출물 단건·이동 경로 | [web/tasks.tsx](../../apps/web/src/tasks.tsx), main.tsx routes, shell.tsx 경로 표시; api.ts query key | 작업 화면 E2E(390px·댓글 실패 시 입력 유지 포함) |
 
 ## 개발 환경
 
@@ -102,6 +116,20 @@ scripted → /api/tools/goal·/api/tools/initial-approval(server/tools)
 ```
 
 중복 결정·부분 팀 생성은 decideApproval, 승인 전 도구 노출은 toolRules에서 시작합니다.
+
+### 작업과 작업자 실행 시도
+
+```text
+scripted(Lead) → /api/tools/tasks(server/tools) → toolWrite(실행 시도→조직 잠금·단계 재확인)
+  → db createTask(담당·부모 같은 조직 확인, core planTaskCreation) → 작업·담당자 깨우기·Event 함께 저장
+  → EventHub → dispatcher.kick(담당자) → claimNextRun → scripted(작업자)
+      → /tasks/:id/start → /artifacts → /tasks/:id/complete(core planTaskCompletion·조건부 완료)
+      → 부모 담당자 또는 생성자 깨우기 → kick → 그 에이전트의 실행 시도
+작업 상세 댓글 → POST /api/organizations/:id/tasks/:taskId/comments(app) → server/tasks
+  → insertOwnerTaskComment(댓글·담당자 깨우기·Event) → kick(담당자)
+```
+
+깨우지 않은 할당·완료는 core/task.ts의 대상 선택, 다른 조직 참조는 db/tasks.ts의 확인과 복합 FK에서 시작합니다.
 
 ## 지도 갱신
 

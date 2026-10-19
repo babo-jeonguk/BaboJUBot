@@ -35,12 +35,17 @@ export type ScriptStep =
   | { do: "send_message"; body: (state: ScriptState) => string }
   /** 조직 안의 메시지 하나를 조회한다. */
   | { do: "read_message"; messageId: (state: ScriptState) => string }
-  /** 조직 도구 하나를 부른다. `allowRefusal`이면 거부돼도 결과로 남기고 다음 단계로 간다. */
+  /**
+   * 조직 도구 하나를 부른다. `params`는 경로 변수(`taskId` 등)다.
+   * `allowRefusal`이면 거부돼도 결과로 남기고 다음 단계로 간다. `when`이 거짓이면 부르지 않고 건너뛴다.
+   */
   | {
       do: "call";
       tool: OrgToolName;
       input?: (state: ScriptState) => unknown;
+      params?: (state: ScriptState) => Record<string, string>;
       allowRefusal?: boolean;
+      when?: (state: ScriptState) => boolean;
     }
   /** 테스트가 정한 조건까지 멈춘다. 취소되면 reject해야 한다. */
   | { do: "hold"; until: (signal: AbortSignal) => Promise<void> }
@@ -64,10 +69,22 @@ const decisionLabel = {
 } as const;
 
 /** 깨우기 사유 한 줄. */
-export const describeWakeReason = (reason: WakeReason) =>
-  reason.kind === "owner_message"
-    ? quote(reason.body)
-    : `초기 연구 승인 요청 ${decisionLabel[reason.decision]}${reason.note ? `: ${quote(reason.note)}` : ""}`;
+export function describeWakeReason(reason: WakeReason): string {
+  switch (reason.kind) {
+    case "owner_message":
+      return quote(reason.body);
+    case "approval_decision":
+      return `초기 연구 승인 요청 ${decisionLabel[reason.decision]}${reason.note ? `: ${quote(reason.note)}` : ""}`;
+    case "task_assigned":
+      return `작업 ${quote(reason.title)}을 맡음`;
+    case "task_completed":
+      return `작업 ${quote(reason.title)} 완료, 자기 보고: ${quote(reason.summary)}`;
+    case "task_comment":
+      return `작업 댓글 ${quote(reason.body)}`;
+    case "agent_to_agent_message":
+      return `에이전트 메시지 ${quote(reason.body)}`;
+  }
+}
 
 /** 받은 깨우기 사유를 모두 짚는 답장. */
 const replyToWakeReasons = ({ context, request }: ScriptState) => {
@@ -143,7 +160,8 @@ export function parseGoalMessage(
  * 가짜 Lead의 데모 흐름. 실제 판단 없이 단계와 깨우기 사유로 정한다.
  * - 목표 설정: `목표:`·`완료 기준:` 줄이 있는 메시지를 받으면 목표를 기록하고 곧바로 초기 연구 승인을 요청한다.
  * - 계획 수립(반려·수정 요청을 받음): 사유를 반영한 새 요청을 제출한다.
- * - 그 밖: 받은 깨우기 사유에 답장한다.
+ * - 연구 진행(승인을 받음): 작업자마다 작업을 하나씩 만들어 맡긴다.
+ * - 그 밖(하위 작업 완료 등): 받은 깨우기 사유에 답장한다.
  */
 export function demoLeadScript(request: RunRequest): Script {
   const { stage } = request.context.organization;
@@ -197,6 +215,11 @@ export function demoLeadScript(request: RunRequest): Script {
       summary: () => "사유를 반영해 초기 연구 승인을 다시 요청했습니다.",
     };
 
+  const approved = request.wakeReasons.some(
+    (r) => r.kind === "approval_decision" && r.decision === "approve"
+  );
+  if (stage === "researching" && approved) return assignInitialTasks(request);
+
   if (stage === "goal_setting" && messages.length)
     return {
       ...leadReplyScript,
@@ -210,9 +233,117 @@ export function demoLeadScript(request: RunRequest): Script {
   return leadReplyScript;
 }
 
-/** 기본 선택: Lead는 데모 흐름. 작업자 시나리오는 작업(#55)과 함께 더한다. */
+/**
+ * 승인 직후 가짜 Lead의 첫 분담: 작업자마다 목표를 나눈 작업 하나를 만들어 맡기고 Lead 대화로 알린다.
+ * 작업자가 없으면 아무 작업도 만들지 않는다.
+ */
+function assignInitialTasks(request: RunRequest): Script {
+  const workers = request.context.team.filter((a) => a.role === "worker");
+  const goal = request.context.organization.goal ?? "연구 목표";
+  return {
+    steps: [
+      { do: "read_context" },
+      ...workers.map((worker, i): ScriptStep => ({
+        do: "call",
+        tool: "create_task",
+        input: () => ({
+          title: `연구 문제 정리 ${i + 1}`,
+          description: `목표 “${goal}”에 필요한 연구 문제를 정리하고 메모를 산출물로 남긴다. (가짜 실행기가 만든 예시 작업입니다.)`,
+          assigneeAgentId: worker.id,
+        }),
+      })),
+      {
+        do: "send_message",
+        body: () =>
+          `(가짜 실행기) 초기 연구 승인을 받아 작업 ${workers.length}개를 만들어 ${workers.map((w) => w.name).join(", ")}에게 맡겼습니다. 작업 화면에서 진행을 볼 수 있습니다.`,
+      },
+    ],
+    summary: () => `작업 ${workers.length}개를 만들어 맡겼습니다.`,
+  };
+}
+
+/**
+ * 가짜 작업자의 데모 흐름. 깨우기 사유마다 정해진 단계를 실행한다.
+ * - 작업을 맡음: 작업을 읽고 착수해 Markdown 산출물을 남기고 자기 보고와 함께 완료한다. 착수가 거부되면 그 작업은 거기서 멈춘다.
+ * - 사용자의 작업 댓글: 그 작업에 댓글로 답한다. 작업 상태는 바꾸지 않는다.
+ * - 에이전트 메시지·하위 작업 완료: 읽었다는 활동만 남긴다.
+ */
+export function demoWorkerScript(request: RunRequest): Script {
+  const steps: ScriptStep[] = [{ do: "read_context" }];
+  for (const reason of request.wakeReasons) {
+    if (reason.kind === "task_assigned") {
+      const params = () => ({ taskId: reason.taskId });
+      // 착수가 거부되면(Lead가 먼저 완료한 작업 등) 거부만 남기고 이 작업의 산출물·완료는 건너뛴다.
+      const started = ({ calls }: ScriptState) =>
+        calls.some(
+          (c) =>
+            c.tool === "start_task" &&
+            c.ok &&
+            (c.output as { id: string }).id === reason.taskId
+        );
+      steps.push(
+        { do: "call", tool: "get_task", params },
+        { do: "call", tool: "start_task", params, allowRefusal: true },
+        {
+          do: "call",
+          tool: "record_artifact",
+          when: started,
+          input: () => ({
+            taskId: reason.taskId,
+            title: `${reason.title} 메모`,
+            format: "markdown",
+            content: [
+              `# ${reason.title} 메모`,
+              ``,
+              `- 정리한 연구 문제 후보를 적는다.`,
+              `- 다음 단계로 가설·아이디어를 세운다.`,
+              ``,
+              `(가짜 실행기가 만든 예시 산출물입니다. 검증된 결과가 아닙니다.)`,
+            ].join("\n"),
+          }),
+        },
+        {
+          do: "call",
+          tool: "complete_task",
+          params,
+          input: () => ({
+            summary: `(가짜 실행기) ${quote(reason.title)}을 정리해 메모를 산출물로 남겼습니다.`,
+          }),
+          when: started,
+          // 착수 뒤 Lead가 조정으로 먼저 완료했으면 거부를 남긴다.
+          allowRefusal: true,
+        }
+      );
+    } else if (reason.kind === "task_comment")
+      steps.push({
+        do: "call",
+        tool: "comment_task",
+        params: () => ({ taskId: reason.taskId }),
+        input: () => ({
+          body: `(가짜 실행기) 댓글을 받았습니다: ${quote(reason.body)} 다음 작업에 반영하겠습니다.`,
+        }),
+      });
+    else
+      steps.push({
+        do: "emit",
+        activity: {
+          type: "progress",
+          text: `받은 사유를 읽었습니다: ${describeWakeReason(reason)}`,
+        },
+      });
+  }
+  return {
+    steps,
+    summary: ({ calls }) =>
+      `깨우기 ${request.wakeReasons.length}개를 처리하며 조직 도구를 ${calls.length}번 불렀습니다.`,
+  };
+}
+
+/** 기본 선택: Lead와 작업자의 데모 흐름. */
 export const defaultScriptSelector: ScriptSelector = (request) =>
-  request.context.agent.role === "lead" ? demoLeadScript(request) : undefined;
+  request.context.agent.role === "lead"
+    ? demoLeadScript(request)
+    : demoWorkerScript(request);
 
 export function createScriptedRuntime({
   select = defaultScriptSelector,
@@ -270,8 +401,13 @@ export function createScriptedRuntime({
               await tools.getMessage(step.messageId(state));
               break;
             case "call":
+              if (step.when && !step.when(state)) break;
               try {
-                const output = await tools.call(step.tool, step.input?.(state));
+                const output = await tools.call(
+                  step.tool,
+                  step.input?.(state),
+                  step.params?.(state)
+                );
                 state.calls.push({ tool: step.tool, ok: true, output });
               } catch (error) {
                 if (!(error instanceof OrgToolError) || !step.allowRefusal)

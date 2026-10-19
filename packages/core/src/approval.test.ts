@@ -23,6 +23,34 @@ describe("checkToolCall", () => {
     ).toEqual({ ok: true });
   });
 
+  it("opens task, artifact and agent message writes to every role only while researching, and their reads always", () => {
+    const writes = [
+      "create_task",
+      "start_task",
+      "complete_task",
+      "comment_task",
+      "record_artifact",
+      "message_agent",
+    ] as const;
+    for (const role of ["lead", "worker"] as const)
+      for (const tool of writes) {
+        expect(checkToolCall(tool, { role, stage: "researching" })).toEqual({
+          ok: true,
+        });
+        expect(
+          checkToolCall(tool, { role, stage: "awaiting_approval" })
+        ).toEqual({ ok: false, reason: "stage" });
+      }
+    for (const tool of ["list_tasks", "get_task", "get_artifact"] as const)
+      expect(
+        checkToolCall(tool, { role: "worker", stage: "planning" })
+      ).toEqual({ ok: true });
+    // 작업자는 사용자와 Lead 대화를 하지 않는다. 사용자에게는 작업 댓글로 답한다.
+    expect(
+      checkToolCall("send_message", { role: "worker", stage: "researching" })
+    ).toEqual({ ok: false, reason: "role" });
+  });
+
   it("opens goal recording and the initial approval request to the Lead only, in their stages", () => {
     expect(
       checkToolCall("record_goal", { role: "lead", stage: "goal_setting" })

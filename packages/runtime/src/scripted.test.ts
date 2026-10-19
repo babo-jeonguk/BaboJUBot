@@ -2,6 +2,7 @@ import type { RunRequest } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
   createScriptedRuntime,
+  defaultScriptSelector,
   demoLeadScript,
   leadReplyScript,
   parseGoalMessage,
@@ -34,6 +35,7 @@ const request: RunRequest = {
       completionCriteria: null,
     },
     agent: { id: ids.agentId, role: "lead", name: "Research Lead" },
+    team: [{ id: ids.agentId, role: "lead", name: "Research Lead" }],
     conversation: [],
   },
   instructionsBundleVersion: null,
@@ -250,10 +252,98 @@ describe("demo Lead scenario", () => {
           }
         ).plan
     ).toContain("줄여 주세요");
+    expect(demoLeadScript(at("researching", [message("진행 상황은?")]))).toBe(
+      leadReplyScript
+    );
+  });
+
+  it("hands one task to each worker after the initial research approval", () => {
+    const workers = [crypto.randomUUID(), crypto.randomUUID()];
+    const approved = at(
+      "researching",
+      [
+        {
+          kind: "approval_decision",
+          wakeId: crypto.randomUUID(),
+          approvalId: crypto.randomUUID(),
+          decision: "approve",
+          note: null,
+        },
+      ],
+      "오류 절반"
+    );
+    approved.context.team = [
+      ...request.context.team,
+      ...workers.map((id, i) => ({
+        id,
+        role: "worker" as const,
+        name: `연구원 ${i + 1}`,
+      })),
+    ];
+    const script = demoLeadScript(approved);
+    const state = {
+      request: approved,
+      context: undefined,
+      sent: [],
+      calls: [],
+    };
     expect(
-      demoLeadScript(
-        at("researching", [{ ...sentBack, decision: "approve", note: null }])
+      script.steps.flatMap((s) =>
+        s.do === "call"
+          ? [
+              [
+                s.tool,
+                (s.input?.(state) as { assigneeAgentId: string })
+                  .assigneeAgentId,
+              ],
+            ]
+          : []
       )
-    ).toBe(leadReplyScript);
+    ).toEqual(workers.map((id) => ["create_task", id]));
+  });
+});
+
+describe("demo worker scenario", () => {
+  const worker = (wakeReasons: RunRequest["wakeReasons"]): RunRequest => ({
+    ...request,
+    wakeReasons,
+    context: {
+      ...request.context,
+      organization: { ...request.context.organization, stage: "researching" },
+      agent: { ...request.context.agent, role: "worker", name: "연구원 1" },
+    },
+  });
+
+  it("starts an assigned task, records an artifact and completes it with a self-report, replying to comments on the task", () => {
+    const taskId = crypto.randomUUID();
+    const script = defaultScriptSelector(
+      worker([
+        {
+          kind: "task_assigned",
+          wakeId: crypto.randomUUID(),
+          taskId,
+          title: "자료 조사",
+        },
+        {
+          kind: "task_comment",
+          wakeId: crypto.randomUUID(),
+          taskId,
+          commentId: crypto.randomUUID(),
+          body: "근거를 보강해 주세요",
+        },
+      ])
+    )!;
+    const state = { request, context: undefined, sent: [], calls: [] };
+    expect(
+      script.steps.flatMap((s) =>
+        s.do === "call" ? [[s.tool, s.params?.(state)?.taskId]] : []
+      )
+    ).toEqual([
+      ["get_task", taskId],
+      ["start_task", taskId],
+      ["record_artifact", undefined],
+      ["complete_task", taskId],
+      ["comment_task", taskId],
+    ]);
   });
 });
