@@ -17,7 +17,8 @@
 
 작업을 시작하기 전에 아래 항목 중 현재 작업에 해당하는 문서만 모두 읽습니다.
 
-- 기능 구현·변경 → 해당 GitHub 이슈의 조사·결정·완료 조건과 [`docs/features.md`](docs/features.md)의 확정 범위
+- 기능 구현·변경, `implement` 호출 → [`docs/agents/implementation.md`](docs/agents/implementation.md)의 착수·PR 생성 절차, 해당 GitHub 이슈의 조사·결정·완료 조건과 [`docs/features.md`](docs/features.md)의 확정 범위
+- 코드 리뷰 결과의 수정·반영, 외부 리뷰 자료 전달 → [`docs/agents/review-fixes.md`](docs/agents/review-fixes.md)의 지적 검증·수정·재검토 절차
 - 코드 탐색·수정 위치 결정·버그 원인 추적 → [`docs/agents/code-map.md`](docs/agents/code-map.md)의 해당 작업 항목
 - PR 병합 요청 → [`docs/agents/pr-merge.md`](docs/agents/pr-merge.md)의 절차와 완료 조건
 - 문서 생성·수정·구조 정리 → [`docs/README.md`](docs/README.md)의 문서별 책임과 작성·갱신 기준

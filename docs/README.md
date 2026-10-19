@@ -22,6 +22,8 @@
 | 어떤 문서에 기록하고 어떻게 분리하는가? | 이 문서 | 문서별 책임·작성·갱신 기준. 용어와 ADR의 상세 작성 규칙은 domain |
 | 용어 충돌을 어떻게 해결하고 ADR은 언제 쓰는가? | [domain.md](agents/domain.md) | 도메인 언어 적용, 충돌 처리, 컨텍스트와 ADR 작성 조건 |
 | 이 작업의 코드·테스트는 어디서 찾는가? | [code-map.md](agents/code-map.md) | 작업·증상별 진입점, 연결 경로, 현재 테스트 위치. 검증 실행 절차는 병합 문서와 README |
+| 구현은 어디서 시작해 언제 완료하는가? | [implementation.md](agents/implementation.md) | 작업 브랜치·구현·로컬 리뷰·검증·커밋·push·PR 생성과 외부 리뷰 인계 |
+| 리뷰 지적을 어떻게 검증·수정하고 재검토하는가? | [review-fixes.md](agents/review-fixes.md) | finding별 판정·실패 유형 검증·수정·재검토 수렴, 외부 리뷰 요청 자료 형식 |
 | PR 병합은 어떤 순서와 조건으로 완료하는가? | [pr-merge.md](agents/pr-merge.md) | 병합 판단·기록 동기화·검증 선택·병합·후처리·보고. 이슈 API와 label 정의는 아래 문서 |
 | GitHub 이슈를 어떻게 조회·수정·연결하는가? | [issue-tracker.md](agents/issue-tracker.md) | `gh` 사용, 게시 규칙, 의존성·parent 연결과 skill의 tracker 작업 매핑 |
 | triage 역할에 어떤 label을 쓰는가? | [triage-labels.md](agents/triage-labels.md) | 역할과 실제 label의 대응. API 사용법은 issue-tracker |

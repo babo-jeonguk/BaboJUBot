@@ -26,6 +26,12 @@ pnpm check        # Markdown 로컬 링크 검사
 
 `pnpm install`은 `@embedded-postgres/linux-x64`의 postinstall만 실행합니다(`pnpm-workspace.yaml`의 `onlyBuiltDependencies`). 이 script가 Postgres native library의 symlink를 만들기 때문에 `--ignore-scripts`로 설치하면 embedded Postgres가 뜨지 않습니다. 다른 OS·아키텍처에서는 해당 `@embedded-postgres/*` 패키지를 같은 목록에 추가합니다.
 
+[CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·테스트·빌드·E2E를 모두 실행합니다.
+기능 브랜치 push만으로는 중복 실행하지 않고, 같은 PR의 오래된 실행은 취소합니다.
+`main`의 필수 검사는 workflow의 `ci / …` job 전체이며, 실행 환경과 검사 이름은 workflow를 기준으로 합니다.
+표준 GitHub-hosted runner를 쓰는 공개 저장소의 실행 시간은 무료입니다([GitHub 과금 문서](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
+실패한 E2E의 trace 등 결과물만 3일 보관하며 artifact·cache 저장 공간 한도는 별도로 관리합니다.
+
 데이터베이스는 `DATABASE_URL`이 있으면 그 외부 Postgres에 연결만 하고, 없으면 embedded Postgres를 `.babojubot/postgres`(`BABOJUBOT_HOME`으로 변경)에 띄웁니다. 둘 다 시작할 때 같은 migration을 적용합니다. 운영은 `pnpm build` 후 `DATABASE_URL=… pnpm start`로 서버가 빌드한 대시보드까지 제공합니다. 그 밖의 설정(`PORT`, `HOST`, `EMBEDDED_POSTGRES_PORT`)은 [`apps/server/src/main.ts`](apps/server/src/main.ts) 머리에 있습니다. 스택은 [ADR-0004](docs/adr/0004-paperclip-aligned-stack.md)를 따릅니다.
 
 패키지별 책임은 [전체 구조](docs/architecture.md#패키지-구성), 수정할 코드와 테스트의 위치는 [코드 지도](docs/agents/code-map.md)에서 확인합니다.

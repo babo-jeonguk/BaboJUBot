@@ -1,13 +1,41 @@
-name: Scaffold checks
-on: [push, pull_request]
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
+    name: ci / ${{ matrix.script }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        script: [check, typecheck, lint, test, build, "test:e2e"]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: '24'
-      - run: node scripts/check-project.mjs
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium and system dependencies
+        if: matrix.script == 'test:e2e'
+        run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium
+      - run: pnpm run ${{ matrix.script }}
+      - name: Keep failed E2E traces
+        if: failure() && matrix.script == 'test:e2e'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 3
