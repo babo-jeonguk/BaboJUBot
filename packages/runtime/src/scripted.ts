@@ -37,7 +37,7 @@ export type ScriptStep =
   | { do: "read_message"; messageId: (state: ScriptState) => string }
   /**
    * 조직 도구 하나를 부른다. `params`는 경로 변수(`taskId` 등)다.
-   * `allowRefusal`이면 거부돼도 결과로 남기고 다음 단계로 간다.
+   * `allowRefusal`이면 거부돼도 결과로 남기고 다음 단계로 간다. `when`이 거짓이면 부르지 않고 건너뛴다.
    */
   | {
       do: "call";
@@ -45,6 +45,7 @@ export type ScriptStep =
       input?: (state: ScriptState) => unknown;
       params?: (state: ScriptState) => Record<string, string>;
       allowRefusal?: boolean;
+      when?: (state: ScriptState) => boolean;
     }
   /** 테스트가 정한 조건까지 멈춘다. 취소되면 reject해야 한다. */
   | { do: "hold"; until: (signal: AbortSignal) => Promise<void> }
@@ -263,7 +264,7 @@ function assignInitialTasks(request: RunRequest): Script {
 
 /**
  * 가짜 작업자의 데모 흐름. 깨우기 사유마다 정해진 단계를 실행한다.
- * - 작업을 맡음: 작업을 읽고 착수해 Markdown 산출물을 남기고 자기 보고와 함께 완료한다.
+ * - 작업을 맡음: 작업을 읽고 착수해 Markdown 산출물을 남기고 자기 보고와 함께 완료한다. 착수가 거부되면 그 작업은 거기서 멈춘다.
  * - 사용자의 작업 댓글: 그 작업에 댓글로 답한다. 작업 상태는 바꾸지 않는다.
  * - 에이전트 메시지·하위 작업 완료: 읽었다는 활동만 남긴다.
  */
@@ -272,13 +273,21 @@ export function demoWorkerScript(request: RunRequest): Script {
   for (const reason of request.wakeReasons) {
     if (reason.kind === "task_assigned") {
       const params = () => ({ taskId: reason.taskId });
+      // 착수가 거부되면(Lead가 먼저 완료한 작업 등) 거부만 남기고 이 작업의 산출물·완료는 건너뛴다.
+      const started = ({ calls }: ScriptState) =>
+        calls.some(
+          (c) =>
+            c.tool === "start_task" &&
+            c.ok &&
+            (c.output as { id: string }).id === reason.taskId
+        );
       steps.push(
         { do: "call", tool: "get_task", params },
-        // 이미 다른 에이전트가 끝낸 작업이면 거부를 남기고 넘어간다.
         { do: "call", tool: "start_task", params, allowRefusal: true },
         {
           do: "call",
           tool: "record_artifact",
+          when: started,
           input: () => ({
             taskId: reason.taskId,
             title: `${reason.title} 메모`,
@@ -300,6 +309,8 @@ export function demoWorkerScript(request: RunRequest): Script {
           input: () => ({
             summary: `(가짜 실행기) ${quote(reason.title)}을 정리해 메모를 산출물로 남겼습니다.`,
           }),
+          when: started,
+          // 착수 뒤 Lead가 조정으로 먼저 완료했으면 거부를 남긴다.
           allowRefusal: true,
         }
       );
@@ -390,6 +401,7 @@ export function createScriptedRuntime({
               await tools.getMessage(step.messageId(state));
               break;
             case "call":
+              if (step.when && !step.when(state)) break;
               try {
                 const output = await tools.call(
                   step.tool,

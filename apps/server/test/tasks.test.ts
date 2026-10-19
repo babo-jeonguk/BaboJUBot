@@ -1,4 +1,5 @@
 import {
+  artifactContentMaxLength,
   artifactSchema,
   eventListSchema,
   organizationDetailSchema,
@@ -18,6 +19,7 @@ import {
 } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { jsonBodyLimitBytes } from "../src/app.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -424,6 +426,160 @@ describe("tasks and worker runs", () => {
     expect(
       reasons(agents.of(org.lead.id)).filter((r) => r.kind === "task_completed")
     ).toEqual([]);
+  });
+
+  it("skips the artifact and completion when the worker's start is refused because the Lead completed the task first, still handling its other wake reasons", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await researching(agents, "조정 완료 조직");
+    const [w1] = org.workers;
+    // 연구원 1이 메시지로 깨어나 실행 중인 동안 Lead가 작업을 맡기고 곧바로 조정으로 완료한다.
+    // 할당 사유는 연구원 1의 다음 실행 시도(기본 시나리오)로 간다.
+    const workerBusy = createGate();
+    const leadDone = createGate();
+    agents.queue(w1!.id, {
+      steps: [{ do: "read_context" }, { do: "hold", until: workerBusy.wait }],
+    });
+    agents.queue(org.lead.id, {
+      steps: [
+        {
+          do: "call",
+          tool: "message_agent",
+          input: () => ({
+            recipientAgentId: w1!.id,
+            body: "잠시 기다려 주세요",
+          }),
+        },
+        { do: "hold", until: () => workerBusy.reached },
+        {
+          do: "call",
+          tool: "create_task",
+          input: () => ({ title: "조정 작업", assigneeAgentId: w1!.id }),
+        },
+        {
+          do: "call",
+          tool: "complete_task",
+          params: (state) => ({ taskId: ok(state.calls[1]).id }),
+          input: () => ({ summary: "Lead가 먼저 정리했습니다" }),
+        },
+        { do: "hold", until: leadDone.wait },
+      ],
+    });
+    await say(org.id, "작업");
+    await leadDone.reached;
+    const [task] = await tasksOf(org.id);
+    expect(task!.status).toBe("completed");
+    const comment = await t.request(
+      "POST",
+      `/api/organizations/${org.id}/tasks/${task!.id}/comments`,
+      { body: "왜 끝났나요?" }
+    );
+    expect(comment.status).toBe(201);
+    leadDone.open();
+    workerBusy.open();
+    await t.drain();
+
+    const next = agents.of(w1!.id).at(-1)!;
+    expect(next.request.wakeReasons.map((r) => r.kind)).toEqual([
+      "task_assigned",
+      "task_comment",
+    ]);
+    expect(
+      next.state.calls.map((c) => [
+        c.tool,
+        c.ok ? "ok" : `${c.status} ${c.code}`,
+      ])
+    ).toEqual([
+      ["get_task", "ok"],
+      ["start_task", "409 invalid_transition"],
+      ["comment_task", "ok"],
+    ]);
+    // 산출물도 두 번째 완료도 없고 Lead의 자기 보고가 그대로 남는다.
+    expect(await taskDetail(org.id, task!.id)).toMatchObject({
+      status: "completed",
+      startedAt: null,
+      report: { summary: "Lead가 먼저 정리했습니다", agentId: org.lead.id },
+      artifacts: [],
+      comments: [
+        expect.objectContaining({ author: "owner" }),
+        expect.objectContaining({ author: "agent", agentId: w1!.id }),
+      ],
+    });
+    const types = (await eventsOf(org.id)).map((e) => e.type);
+    expect(types).not.toContain("artifact.recorded");
+    expect(types.filter((x) => x === "task.completed")).toHaveLength(1);
+  });
+
+  it("records an artifact up to the contract's character limit regardless of its encoded size, and refuses longer or oversized bodies", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await researching(agents, "큰 산출물 조직");
+    const [w1] = org.workers;
+    const contents = [
+      "가".repeat(40_000),
+      "가".repeat(artifactContentMaxLength),
+      // JSON에서 한 글자가 6바이트(\u0001)로 늘어나는 가장 큰 본문.
+      "\u0001".repeat(artifactContentMaxLength),
+      "a".repeat(artifactContentMaxLength + 1),
+    ];
+    agents.queue(w1!.id, {
+      steps: contents.map((content, i) => ({
+        do: "call",
+        tool: "record_artifact",
+        input: (state) => ({
+          taskId: (
+            state.request.wakeReasons[0] as Extract<
+              WakeReason,
+              { kind: "task_assigned" }
+            >
+          ).taskId,
+          title: `큰 산출물 ${i + 1}`,
+          format: "text",
+          content,
+        }),
+        allowRefusal: true,
+      })),
+    });
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "create_task",
+        input: { title: "큰 산출물", assigneeAgentId: w1!.id },
+      })
+    );
+    await say(org.id, "작업");
+    await t.drain();
+
+    const run = agents.of(w1!.id)[0]!;
+    expect(
+      run.state.calls.map((c) => (c.ok ? "ok" : `${c.status} ${c.code}`))
+    ).toEqual(["ok", "ok", "ok", "422 invalid_input"]);
+    const [task] = await tasksOf(org.id);
+    const { artifacts } = await taskDetail(org.id, task!.id);
+    expect(artifacts).toHaveLength(3);
+    for (const [i, summary] of artifacts.entries()) {
+      const artifact = artifactSchema.parse(
+        await get(`/api/organizations/${org.id}/artifacts/${summary.id}`)
+      );
+      expect(artifact.content).toBe(contents[i]);
+    }
+
+    // 상한을 넘는 본문은 토큰 확인·계약 검사 전에 413으로 거부한다.
+    const tooLarge = await t.tool(
+      run.request.access.token,
+      "POST",
+      "/artifacts",
+      {
+        taskId: task!.id,
+        title: "너무 큼",
+        format: "text",
+        content: "a".repeat(jsonBodyLimitBytes),
+      }
+    );
+    expect(tooLarge).toEqual({
+      status: 413,
+      body: { error: { code: "body_too_large" } },
+    });
   });
 
   it("wakes the assignee with the owner's task comment, delivering it to the next run and keeping a completed task completed", async () => {

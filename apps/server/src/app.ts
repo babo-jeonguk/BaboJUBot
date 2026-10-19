@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import {
   addTaskCommentInputSchema,
+  artifactContentMaxLength,
   createOrganizationInputSchema,
   decideApprovalInputSchema,
   eventStreamPath,
@@ -44,6 +45,13 @@ import { defaultHarnessDir } from "./harness.ts";
 import { createOrganization } from "./organizations.ts";
 import { addOwnerTaskComment } from "./tasks.ts";
 import { orgToolsRouter } from "./tools.ts";
+
+/**
+ * JSON 요청 본문 크기 상한(바이트). 계약상 가장 큰 본문인 산출물(최대 {@link artifactContentMaxLength}자)은
+ * 한 글자(UTF-16 code unit)가 JSON에서 최대 6바이트(`\uXXXX`)이므로 그만큼과 나머지 필드의 여유를 둔다.
+ * 문자 수 제한은 Zod 계약이 맡고, 이 상한은 그 계약을 막지 않는 바깥 경계다.
+ */
+export const jsonBodyLimitBytes = artifactContentMaxLength * 6 + 64 * 1024;
 
 export type ServerOptions = {
   db: Database;
@@ -86,7 +94,7 @@ export async function startServer({
     toolsBaseUrl: () => url,
   });
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: jsonBodyLimitBytes }));
   app.use(
     orgToolsBasePath,
     orgToolsRouter({ db, hub, dispatcher, now, harnessDir })
@@ -294,6 +302,10 @@ export async function startServer({
   app.use(((error, _req, res, _next) => {
     if (error?.type === "entity.parse.failed") {
       res.status(400).json({ error: { code: "invalid_json" } });
+      return;
+    }
+    if (error?.type === "entity.too.large") {
+      res.status(413).json({ error: { code: "body_too_large" } });
       return;
     }
     console.error("[server]", error);
