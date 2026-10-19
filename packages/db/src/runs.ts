@@ -36,6 +36,7 @@ import {
   type Executor,
 } from "./rows.ts";
 import {
+  agentToAgentMessages,
   agents,
   approvals,
   events,
@@ -43,6 +44,8 @@ import {
   messages,
   organizations,
   runs,
+  taskComments,
+  tasks,
   wakes,
 } from "./schema.ts";
 
@@ -314,6 +317,11 @@ export async function loadRunContext(
         completionCriteria,
       }))(toOrganization(organization)),
       agent: { id: agent.id, role: agent.role, name: agent.name },
+      team: await db
+        .select({ id: agents.id, role: agents.role, name: agents.name })
+        .from(agents)
+        .where(eq(agents.organizationId, run.organizationId))
+        .orderBy(asc(agents.createdAt), asc(agents.name)),
       conversation: await selectConversation(
         db,
         run.organizationId,
@@ -457,7 +465,7 @@ async function selectInstructions(
     .orderBy(asc(instructionCopies.path));
 }
 
-/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정)에서 읽는다. */
+/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지)에서 읽는다. */
 async function selectWakes(
   db: Executor,
   where: ReturnType<typeof and>
@@ -468,33 +476,91 @@ async function selectWakes(
       body: messages.body,
       decision: approvals.status,
       note: approvals.decisionNote,
+      task: {
+        title: tasks.title,
+        summary: tasks.reportSummary,
+        completedBy: tasks.completedByAgentId,
+      },
+      comment: { taskId: taskComments.taskId, body: taskComments.body },
+      agentToAgent: {
+        sender: agentToAgentMessages.senderAgentId,
+        body: agentToAgentMessages.body,
+      },
     })
     .from(wakes)
     .leftJoin(messages, eq(messages.id, wakes.messageId))
     .leftJoin(approvals, eq(approvals.id, wakes.approvalId))
+    .leftJoin(tasks, eq(tasks.id, wakes.taskId))
+    .leftJoin(taskComments, eq(taskComments.id, wakes.commentId))
+    .leftJoin(
+      agentToAgentMessages,
+      eq(agentToAgentMessages.id, wakes.agentToAgentMessageId)
+    )
     .where(where)
     .orderBy(asc(wakes.seq));
-  return rows.map(({ wake, body, decision, note }) => ({
-    id: wake.id,
-    organizationId: wake.organizationId,
-    agentId: wake.agentId,
-    createdAt: wake.createdAt.toISOString(),
-    reason:
-      wake.kind === "owner_message"
-        ? {
-            kind: wake.kind,
-            wakeId: wake.id,
-            messageId: wake.messageId!,
-            body: body ?? "",
-          }
-        : {
-            kind: wake.kind,
-            wakeId: wake.id,
-            approvalId: wake.approvalId!,
-            decision: decisionOfStatus(decision!),
-            note,
-          },
-  }));
+  return rows.map(
+    ({ wake, body, decision, note, task, comment, agentToAgent }) => {
+      const wakeId = wake.id;
+      const reason = ((): WakeReason => {
+        switch (wake.kind) {
+          case "owner_message":
+            return {
+              kind: wake.kind,
+              wakeId,
+              messageId: wake.messageId!,
+              body: body!,
+            };
+          case "approval_decision":
+            return {
+              kind: wake.kind,
+              wakeId,
+              approvalId: wake.approvalId!,
+              decision: decisionOfStatus(decision!),
+              note,
+            };
+          case "task_assigned":
+            return {
+              kind: wake.kind,
+              wakeId,
+              taskId: wake.taskId!,
+              title: task!.title,
+            };
+          case "task_completed":
+            return {
+              kind: wake.kind,
+              wakeId,
+              taskId: wake.taskId!,
+              title: task!.title,
+              summary: task!.summary!,
+              completedByAgentId: task!.completedBy!,
+            };
+          case "task_comment":
+            return {
+              kind: wake.kind,
+              wakeId,
+              taskId: comment!.taskId,
+              commentId: wake.commentId!,
+              body: comment!.body,
+            };
+          case "agent_to_agent_message":
+            return {
+              kind: wake.kind,
+              wakeId,
+              messageId: wake.agentToAgentMessageId!,
+              senderAgentId: agentToAgent!.sender,
+              body: agentToAgent!.body,
+            };
+        }
+      })();
+      return {
+        id: wake.id,
+        organizationId: wake.organizationId,
+        agentId: wake.agentId,
+        createdAt: wake.createdAt.toISOString(),
+        reason,
+      };
+    }
+  );
 }
 
 const sentBy = alias(runs, "sent_by");

@@ -42,6 +42,38 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     decision: approvalDecisionSchema,
     note: z.string().nullable(),
   }),
+  /** 작업을 맡았다. */
+  z.object({
+    kind: z.literal("task_assigned"),
+    wakeId: z.uuid(),
+    taskId: z.uuid(),
+    title: z.string(),
+  }),
+  /** 하위 작업(부모 작업 담당자에게) 또는 내가 만든 작업(부모가 없을 때)이 끝났다. `summary`는 완료한 에이전트의 자기 보고다. */
+  z.object({
+    kind: z.literal("task_completed"),
+    wakeId: z.uuid(),
+    taskId: z.uuid(),
+    title: z.string(),
+    summary: z.string(),
+    completedByAgentId: z.uuid(),
+  }),
+  /** 사용자가 내가 맡은 작업에 댓글을 남겼다. */
+  z.object({
+    kind: z.literal("task_comment"),
+    wakeId: z.uuid(),
+    taskId: z.uuid(),
+    commentId: z.uuid(),
+    body: z.string(),
+  }),
+  /** 같은 조직의 에이전트가 메시지를 보냈다. */
+  z.object({
+    kind: z.literal("agent_to_agent_message"),
+    wakeId: z.uuid(),
+    messageId: z.uuid(),
+    senderAgentId: z.uuid(),
+    body: z.string(),
+  }),
 ]);
 export type WakeReason = z.infer<typeof wakeReasonSchema>;
 export type WakeKind = WakeReason["kind"];
@@ -66,6 +98,10 @@ export const runContextSchema = z.object({
     completionCriteria: z.string().nullable(),
   }),
   agent: z.object({ id: z.uuid(), role: agentRoleSchema, name: z.string() }),
+  /** 같은 조직의 에이전트. 작업 담당·메시지 받는 에이전트를 고를 때 쓴다. */
+  team: z.array(
+    z.object({ id: z.uuid(), role: agentRoleSchema, name: z.string() })
+  ),
   conversation: z.array(conversationMessageSchema),
 });
 export type RunContext = z.infer<typeof runContextSchema>;

@@ -10,3 +10,5 @@ export * from "./organizations.ts";
 export * from "./runs.ts";
 export * from "./harness.ts";
 export * from "./approvals.ts";
+export * from "./tool-calls.ts";
+export * from "./tasks.ts";

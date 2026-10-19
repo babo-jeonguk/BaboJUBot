@@ -14,6 +14,7 @@ import { approvalKindLabel } from "./approvals.tsx";
 import { LeadChat } from "./chat.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
+import { TasksScreen } from "./tasks.tsx";
 import {
   abbr,
   ApprovalStatusBadge,
@@ -152,6 +153,12 @@ export function OrganizationScreen() {
     return (
       <Page width={width}>
         <ActivityScreen orgId={orgId} agents={agents} />
+      </Page>
+    );
+  if (section === "tasks")
+    return (
+      <Page width={width}>
+        <TasksScreen orgId={orgId} agents={agents} />
       </Page>
     );
   if (section === "agents")

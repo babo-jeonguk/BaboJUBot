@@ -78,6 +78,31 @@ export function describeEvent(event: Event, agentName: string): Described {
             .filter(Boolean)
             .join("\n") || undefined,
       };
+    case "task.created":
+      return {
+        icon: "📌",
+        title: `${agentName}가 작업을 만들었습니다`,
+        detail: event.payload.parentTaskId ? "하위 작업" : undefined,
+      };
+    case "task.started":
+      return { icon: "▶", title: `${agentName}가 작업에 착수했습니다` };
+    case "task.completed":
+      return {
+        icon: "☑",
+        title: `${agentName}가 작업을 완료했습니다`,
+        detail: "자기 보고와 함께 완료했습니다. 검증된 결과가 아닙니다.",
+      };
+    case "task.commented":
+      return event.payload.author === "owner"
+        ? { icon: "💬", title: "사용자가 작업에 댓글을 남겼습니다" }
+        : { icon: "↩", title: `${agentName}가 작업에 댓글을 남겼습니다` };
+    case "artifact.recorded":
+      return { icon: "📄", title: `${agentName}가 산출물을 기록했습니다` };
+    case "agent_to_agent_message.created":
+      return {
+        icon: "✉",
+        title: `${agentName}가 같은 조직 에이전트에게 메시지를 보냈습니다`,
+      };
     case "tool.refused":
       return {
         icon: "⛔",
@@ -121,6 +146,23 @@ export function EventRow({
           <div className="mt-0.5 text-xs break-words whitespace-pre-wrap text-slate-500">
             {detail}
           </div>
+        )}
+        {"artifactId" in event.payload ? (
+          <Link
+            to={`/orgs/${orgId}/artifacts/${event.payload.artifactId}`}
+            className="mt-0.5 mr-3 inline-block text-xs text-brand-600 hover:underline"
+          >
+            산출물 보기
+          </Link>
+        ) : (
+          "taskId" in event.payload && (
+            <Link
+              to={`/orgs/${orgId}/tasks/${event.payload.taskId}`}
+              className="mt-0.5 mr-3 inline-block text-xs text-brand-600 hover:underline"
+            >
+              작업 보기
+            </Link>
+          )
         )}
         {"approvalId" in event.payload && (
           <Link

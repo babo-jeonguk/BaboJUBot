@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
+  addTaskCommentInputSchema,
+  completeTaskInputSchema,
+  createTaskInputSchema,
   orgToolPaths,
+  recordArtifactInputSchema,
   recordGoalInputSchema,
   requestInitialApprovalInputSchema,
   sendAgentMessageInputSchema,
+  sendAgentToAgentMessageInputSchema,
+  startTaskInputSchema,
   type Event,
   type OrgToolErrorCode,
   type OrgToolName,
@@ -13,34 +19,68 @@ import {
 import {
   appendRunActivity,
   authenticateRun,
+  commentTask,
+  completeTask,
+  createTask,
+  findArtifact,
   findMessage,
+  findTaskDetail,
   gateToolCall,
   insertAgentMessage,
   insertInitialApprovalRequest,
+  listTasks,
   loadRunContext,
+  recordArtifact,
   recordGoal,
+  sendAgentToAgentMessage,
+  startTask,
   type ActiveRun,
   type Database,
   type ToolWrite,
 } from "@babojubot/db";
+import type { ProposalProblem, TaskRuleProblem } from "@babojubot/core";
 import express from "express";
+import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
 import { listHarnessLibrary, loadHarnessLibrary } from "./harness.ts";
 import { digestRunToken } from "./run-token.ts";
+
+/** 도구 규칙의 거부 → 응답 코드·HTTP 상태. */
+type ToolProblem =
+  ProposalProblem | TaskRuleProblem | "not_found" | "self_message";
+const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> = {
+  goal_missing: ["invalid_input", 422],
+  unknown_role: ["invalid_input", 422],
+  unknown_template: ["invalid_input", 422],
+  self_message: ["invalid_input", 422],
+  not_found: ["not_found", 404],
+  not_assignee: ["not_assignee", 403],
+  already_completed: ["already_completed", 409],
+  invalid_transition: ["invalid_transition", 409],
+};
+
+/** 공개 요약에 쓰는 글자 수. */
+const chars = (text: string) => [...text].length;
+
+const quote = (text: string) =>
+  `“${chars(text) > 60 ? `${[...text].slice(0, 60).join("")}…` : text}”`;
 
 /**
  * 조직 도구 HTTP. 사용자 API와 따로 실행 시도별 토큰으로만 인증하고, 조직·에이전트·실행 시도는 토큰에서만 정한다.
  * 실행 중이 아닌 실행 시도의 토큰은 읽기까지 모두 거부한다. 모든 도구는 먼저 Role·생애주기 단계 규칙(core `checkToolCall`)을
  * 통과해야 하며, 거부한 호출은 Event log에 남는다. 성공한 호출은 그 실행 시도의 공개 활동에 요약을 남긴다.
+ * 다른 에이전트를 깨운 쓰기는 commit 뒤 그 에이전트의 실행 시도를 촉진한다.
  */
 export function orgToolsRouter({
   db,
   hub,
+  dispatcher,
   now,
   harnessDir,
 }: {
   db: Database;
   hub: EventHub;
+  dispatcher: RunDispatcher;
   now: () => Date;
   harnessDir: string;
 }): express.Router {
@@ -113,21 +153,34 @@ export function orgToolsRouter({
     reason === "role"
       ? refuse(res, 403, "forbidden")
       : refuse(res, 409, "stage_closed");
-  /** 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다. */
-  const respondWrite = <T>(res: express.Response, result: ToolWrite<T>) => {
+  /**
+   * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다.
+   * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
+   */
+  const respondWrite = <T, P extends ToolProblem>(
+    res: express.Response,
+    result: ToolWrite<T, P>,
+    status = 201
+  ) => {
     switch (result.kind) {
       case "ok":
         publish(result.events);
-        return res.status(201).json(result.value);
+        for (const agentId of result.woken ?? []) dispatcher.kick(agentId);
+        return res.status(status).json(result.value);
       case "run_finished":
         return refuse(res, 401, "invalid_token");
       case "refused":
         publish(result.events);
         return refuseByRule(res, result.reason);
-      case "invalid":
-        return refuse(res, 422, "invalid_input");
+      case "invalid": {
+        const [code, httpStatus] = problemResponses[result.problem];
+        return refuse(res, httpStatus, code);
+      }
     }
   };
+  const source = { newId: randomUUID, now };
+  const param = (req: express.Request, name: string) =>
+    String(req.params[name]);
 
   router.get(
     orgToolPaths.get_run_context,
@@ -169,7 +222,7 @@ export function orgToolsRouter({
         source: { newId: randomUUID, now },
         activity: toolActivity(
           "send_message",
-          `Lead 대화에 답장 (${[...input.data.body].length}자)`
+          `Lead 대화에 답장 (${chars(input.data.body)}자)`
         ),
       });
       if (!saved) return refuse(res, 401, "invalid_token");
@@ -229,12 +282,173 @@ export function orgToolsRouter({
     })
   );
 
-  // 작업(#55)과 작업자 추가(#58)는 아직 없다. 단계 규칙은 지금부터 적용한다.
-  for (const name of ["create_task", "add_worker"] as const)
-    router.post(
-      orgToolPaths[name],
-      tool(name, async (_req, res) => refuse(res, 501, "not_implemented"))
-    );
+  router.post(
+    orgToolPaths.create_task,
+    tool("create_task", async (req, res, run) => {
+      const input = createTaskInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await createTask(db, run, input.data, {
+          source,
+          activity: toolActivity(
+            "create_task",
+            `작업 생성: ${quote(input.data.title)}${input.data.parentTaskId ? " (하위 작업)" : ""}`
+          ),
+        })
+      );
+    })
+  );
+
+  router.get(
+    orgToolPaths.list_tasks,
+    tool("list_tasks", async (_req, res, run) => {
+      const list = await listTasks(db, run.organizationId);
+      if (
+        !(await recordRead(
+          run,
+          "list_tasks",
+          `작업 목록 조회: ${list.length}개`
+        ))
+      )
+        return refuse(res, 401, "invalid_token");
+      res.json(list);
+    })
+  );
+
+  router.get(
+    orgToolPaths.get_task,
+    tool("get_task", async (req, res, run) => {
+      const task = await findTaskDetail(
+        db,
+        run.organizationId,
+        param(req, "taskId")
+      );
+      // 다른 조직의 작업과 없는 작업은 같은 응답이다.
+      if (!task) return refuse(res, 404, "not_found");
+      if (
+        !(await recordRead(run, "get_task", `작업 조회: ${quote(task.title)}`))
+      )
+        return refuse(res, 401, "invalid_token");
+      res.json(task);
+    })
+  );
+
+  router.post(
+    orgToolPaths.start_task,
+    tool("start_task", async (req, res, run) => {
+      if (!startTaskInputSchema.safeParse(req.body ?? {}).success)
+        return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await startTask(db, run, param(req, "taskId"), {
+          source,
+          activity: toolActivity("start_task", "작업 착수"),
+        }),
+        200
+      );
+    })
+  );
+
+  router.post(
+    orgToolPaths.complete_task,
+    tool("complete_task", async (req, res, run) => {
+      const input = completeTaskInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await completeTask(db, run, param(req, "taskId"), input.data.summary, {
+          source,
+          activity: toolActivity(
+            "complete_task",
+            `작업 완료와 자기 보고 (${chars(input.data.summary)}자)`
+          ),
+        }),
+        200
+      );
+    })
+  );
+
+  router.post(
+    orgToolPaths.comment_task,
+    tool("comment_task", async (req, res, run) => {
+      const input = addTaskCommentInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await commentTask(db, run, param(req, "taskId"), input.data.body, {
+          source,
+          activity: toolActivity(
+            "comment_task",
+            `작업 댓글 (${chars(input.data.body)}자)`
+          ),
+        })
+      );
+    })
+  );
+
+  router.post(
+    orgToolPaths.record_artifact,
+    tool("record_artifact", async (req, res, run) => {
+      const input = recordArtifactInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await recordArtifact(db, run, input.data, {
+          source,
+          activity: toolActivity(
+            "record_artifact",
+            `산출물 기록: ${quote(input.data.title)} (${input.data.format}, ${chars(input.data.content)}자)`
+          ),
+        })
+      );
+    })
+  );
+
+  router.get(
+    orgToolPaths.get_artifact,
+    tool("get_artifact", async (req, res, run) => {
+      const artifact = await findArtifact(
+        db,
+        run.organizationId,
+        param(req, "artifactId")
+      );
+      if (!artifact) return refuse(res, 404, "not_found");
+      if (
+        !(await recordRead(
+          run,
+          "get_artifact",
+          `산출물 조회: ${quote(artifact.title)}`
+        ))
+      )
+        return refuse(res, 401, "invalid_token");
+      res.json(artifact);
+    })
+  );
+
+  router.post(
+    orgToolPaths.message_agent,
+    tool("message_agent", async (req, res, run) => {
+      const input = sendAgentToAgentMessageInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await sendAgentToAgentMessage(db, run, input.data, {
+          source,
+          activity: toolActivity(
+            "message_agent",
+            `같은 조직 에이전트에게 메시지 (${chars(input.data.body)}자)`
+          ),
+        })
+      );
+    })
+  );
+
+  // 작업자 추가(#58)는 아직 없다. 단계 규칙은 지금부터 적용한다.
+  router.post(
+    orgToolPaths.add_worker,
+    tool("add_worker", async (_req, res) => refuse(res, 501, "not_implemented"))
+  );
 
   router.use((_req, res) => refuse(res, 404, "not_found"));
   return router;

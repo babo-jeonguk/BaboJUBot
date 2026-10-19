@@ -1,25 +1,19 @@
 import type {
-  AgentRole,
   Approval,
   ApprovalSummary,
   DecideApprovalInput,
   Event,
   InboxItem,
-  LifecycleStage,
   Organization,
-  OrgToolName,
   PublicActivity,
   RecordGoalInput,
   RequestInitialApprovalInput,
-  ToolRefusalReason,
 } from "@babojubot/contracts";
 import {
   buildInitialResearchProposal,
-  checkToolCall,
   planApprovalDecision,
   planGoalRecord,
   planInitialApprovalRequest,
-  toolRefusedEvent,
   type HarnessLibraryContents,
   type ProposalProblem,
   type RecordSource,
@@ -32,9 +26,7 @@ import {
   instructionCopyRow,
   isUuid,
   lockOrganization,
-  lockRunningRun,
   toOrganization,
-  type Executor,
 } from "./rows.ts";
 import {
   agents,
@@ -44,92 +36,11 @@ import {
   organizations,
   wakes,
 } from "./schema.ts";
+import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
 
 // 목표 기록, 초기 연구 승인 요청과 결정의 저장. 단계 전이는 모두 조직 행 잠금 아래에서 단계를 다시 확인하고,
 // 결정은 `pending`인 요청에만 조건부로 적용해 한 번만 일어난다. 도메인 효과(단계·팀·사본·템플릿·깨우기·Event)는
 // 결정과 같은 transaction에 저장하고, 알림과 실행 시도 촉진만 commit 뒤에 한다.
-
-type ActiveRunRef = { id: string; agentRole: AgentRole };
-type LockedRun = { id: string; organizationId: string; agentId: string };
-
-export type GateResult =
-  { ok: true } | { ok: false; reason: ToolRefusalReason; event: Event };
-
-/** 지금 조직 단계로 Role·단계 규칙을 검사하고, 거부하면 그 실행 시도에 귀속한 `tool.refused` Event를 남긴다. */
-async function checkOrRefuse(
-  tx: Executor,
-  run: ActiveRunRef,
-  locked: LockedRun,
-  stage: LifecycleStage,
-  tool: OrgToolName
-): Promise<GateResult> {
-  const check = checkToolCall(tool, { role: run.agentRole, stage });
-  if (check.ok) return check;
-  const event = await insertEvent(
-    tx,
-    toolRefusedEvent(locked, tool, stage, check.reason)
-  );
-  return { ...check, event };
-}
-
-/**
- * 조직 도구 호출 전의 Role·단계 검사. 거부하면 그 실행 시도에 귀속한 `tool.refused` Event를 남긴다.
- * 실행 시도가 이미 끝났으면 `undefined`. 단계를 바꾸는 도구는 저장할 때 잠금 아래에서 다시 검사한다.
- */
-export async function gateToolCall(
-  db: Database,
-  run: ActiveRunRef,
-  tool: OrgToolName
-): Promise<GateResult | undefined> {
-  return db.transaction(async (tx) => {
-    const locked = await lockRunningRun(tx, run.id, "share");
-    if (!locked) return undefined;
-    const [org] = await tx
-      .select({ stage: organizations.stage })
-      .from(organizations)
-      .where(eq(organizations.id, locked.organizationId));
-    return checkOrRefuse(tx, run, locked, org!.stage, tool);
-  });
-}
-
-export type ToolWrite<T> =
-  | { kind: "ok"; value: T; events: Event[] }
-  | { kind: "run_finished" }
-  | { kind: "refused"; reason: ToolRefusalReason; events: Event[] }
-  | { kind: "invalid"; problem: ProposalProblem };
-
-/** 조직 도구 쓰기의 공통 틀: 실행 중인 실행 시도와 그 조직 행을 잠그고, 단계 규칙을 다시 확인한 뒤 쓴다. */
-async function toolWrite<T>(
-  db: Database,
-  run: ActiveRunRef,
-  tool: OrgToolName,
-  activity: PublicActivity,
-  write: (
-    tx: Executor,
-    locked: LockedRun,
-    org: typeof organizations.$inferSelect
-  ) => Promise<
-    | { kind: "ok"; value: T; events: Event[] }
-    | { kind: "invalid"; problem: ProposalProblem }
-  >
-): Promise<ToolWrite<T>> {
-  return db.transaction(async (tx) => {
-    const locked = await lockRunningRun(tx, run.id, "share");
-    if (!locked) return { kind: "run_finished" };
-    const org = (await lockOrganization(tx, locked.organizationId))!;
-    const gate = await checkOrRefuse(tx, run, locked, org.stage, tool);
-    if (!gate.ok)
-      return { kind: "refused", reason: gate.reason, events: [gate.event] };
-    const result = await write(tx, locked, org);
-    if (result.kind !== "ok") return result;
-    const summary = await insertEvent(tx, {
-      organizationId: locked.organizationId,
-      type: "run.activity",
-      payload: { runId: locked.id, agentId: locked.agentId, activity },
-    });
-    return { ...result, events: [...result.events, summary] };
-  });
-}
 
 /** Lead의 목표·완료 기준 기록. 목표 설정에서 기록하면 계획 수립으로 넘어간다. */
 export function recordGoal(
@@ -137,7 +48,7 @@ export function recordGoal(
   run: ActiveRunRef,
   input: RecordGoalInput,
   activity: PublicActivity
-): Promise<ToolWrite<Organization>> {
+): Promise<ToolWrite<Organization, ProposalProblem>> {
   return toolWrite(db, run, "record_goal", activity, async (tx, locked) => {
     const plan = planGoalRecord(locked, input);
     const [row] = await tx
@@ -163,7 +74,7 @@ export function insertInitialApprovalRequest(
     source: RecordSource;
     activity: PublicActivity;
   }
-): Promise<ToolWrite<Approval>> {
+): Promise<ToolWrite<Approval, ProposalProblem>> {
   return toolWrite(
     db,
     run,

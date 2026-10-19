@@ -4,6 +4,7 @@ import type net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import {
+  addTaskCommentInputSchema,
   createOrganizationInputSchema,
   decideApprovalInputSchema,
   eventStreamPath,
@@ -17,15 +18,18 @@ import {
   findAgentDetail,
   findAgentInstructions,
   findApproval,
+  findArtifact,
   findFlowTemplate,
   findOrganization,
   findRunDetail,
+  findTaskDetail,
   listApprovals,
   listConversation,
   listInbox,
   listOrganizationEvents,
   listOrganizations,
   listRuns,
+  listTasks,
   type Database,
 } from "@babojubot/db";
 import { findLead } from "@babojubot/core";
@@ -38,6 +42,7 @@ import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
 import { createOrganization } from "./organizations.ts";
+import { addOwnerTaskComment } from "./tasks.ts";
 import { orgToolsRouter } from "./tools.ts";
 
 export type ServerOptions = {
@@ -82,7 +87,10 @@ export async function startServer({
   });
   const app = express();
   app.use(express.json());
-  app.use(orgToolsBasePath, orgToolsRouter({ db, hub, now, harnessDir }));
+  app.use(
+    orgToolsBasePath,
+    orgToolsRouter({ db, hub, dispatcher, now, harnessDir })
+  );
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
@@ -188,6 +196,49 @@ export async function startServer({
     const template = await findFlowTemplate(db, req.params.id);
     if (!template) return notFound(res);
     res.json(template);
+  });
+
+  app.get("/api/organizations/:id/tasks", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(await listTasks(db, req.params.id));
+  });
+
+  app.get("/api/organizations/:id/tasks/:taskId", async (req, res) => {
+    const task = await findTaskDetail(db, req.params.id, req.params.taskId);
+    if (!task) return notFound(res);
+    res.json(task);
+  });
+
+  /** 사용자의 작업 댓글. 그 작업 담당자를 깨운다. 사용자는 작업자와 작업 댓글로만 이야기한다. */
+  app.post(
+    "/api/organizations/:id/tasks/:taskId/comments",
+    async (req, res) => {
+      const input = addTaskCommentInputSchema.safeParse(req.body);
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const result = await addOwnerTaskComment(
+        { db, hub, dispatcher, now },
+        req.params.id,
+        req.params.taskId,
+        input.data.body
+      );
+      if (result.kind === "not_found") return notFound(res);
+      res.status(201).json(result.comment);
+    }
+  );
+
+  app.get("/api/organizations/:id/artifacts/:artifactId", async (req, res) => {
+    const artifact = await findArtifact(
+      db,
+      req.params.id,
+      req.params.artifactId
+    );
+    if (!artifact) return notFound(res);
+    res.json(artifact);
   });
 
   app.get("/api/organizations/:id/approvals", async (req, res) => {

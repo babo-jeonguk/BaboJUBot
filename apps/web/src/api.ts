@@ -3,6 +3,7 @@ import {
   agentInstructionsSchema,
   approvalSchema,
   approvalSummaryListSchema,
+  artifactSchema,
   conversationMessageListSchema,
   conversationMessageSchema,
   eventListSchema,
@@ -12,6 +13,9 @@ import {
   organizationListSchema,
   runDetailSchema,
   runSummaryListSchema,
+  taskCommentSchema,
+  taskDetailSchema,
+  taskListSchema,
   type CreateOrganizationInput,
   type DecideApprovalInput,
   type Organization,
@@ -38,6 +42,11 @@ export const queryKeys = {
   approvals: (id: string) => ["organizations", id, "approvals"] as const,
   approval: (id: string, approvalId: string) =>
     ["organizations", id, "approvals", approvalId] as const,
+  tasks: (id: string) => ["organizations", id, "tasks"] as const,
+  task: (id: string, taskId: string) =>
+    ["organizations", id, "tasks", taskId] as const,
+  artifact: (id: string, artifactId: string) =>
+    ["organizations", id, "artifacts", artifactId] as const,
   /** 조직을 가로지르는 대기열. 어느 조직의 Event든 다시 불러온다. */
   inbox: ["inbox"] as const,
 };
@@ -277,5 +286,62 @@ export function useDecideApproval(orgId: string, approvalId: string) {
       if (error instanceof ApiError && error.code === "already_decided")
         refresh();
     },
+  });
+}
+
+export function useTasks(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.tasks(orgId),
+    queryFn: () => request(taskListSchema, orgPath(orgId, "/tasks")),
+  });
+}
+
+export function useTask(orgId: string, taskId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.task(orgId, taskId ?? ""),
+    queryFn: () =>
+      request(
+        taskDetailSchema,
+        orgPath(orgId, `/tasks/${encodeURIComponent(taskId!)}`)
+      ),
+    enabled: taskId !== undefined,
+    retry: notFoundIsFinal,
+  });
+}
+
+export function useArtifact(orgId: string, artifactId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.artifact(orgId, artifactId ?? ""),
+    queryFn: () =>
+      request(
+        artifactSchema,
+        orgPath(orgId, `/artifacts/${encodeURIComponent(artifactId!)}`)
+      ),
+    enabled: artifactId !== undefined,
+    retry: notFoundIsFinal,
+  });
+}
+
+/**
+ * 작업 댓글을 단다. 담당자를 깨우며, 담당자가 실행 중이면 다음 실행 시도에 반영된다.
+ * 서버가 저장한 뒤에만 thread를 다시 불러오고, 실패하면 입력을 지우지 않도록 호출한 쪽이 결과를 본다.
+ */
+export function useAddTaskComment(orgId: string, taskId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: string) =>
+      request(
+        taskCommentSchema,
+        orgPath(orgId, `/tasks/${encodeURIComponent(taskId)}/comments`),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ body }),
+        }
+      ),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.task(orgId, taskId),
+      }),
   });
 }

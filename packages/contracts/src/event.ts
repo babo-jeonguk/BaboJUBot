@@ -133,6 +133,80 @@ export const toolRefusedEventSchema = z.object({
   }),
 });
 
+/** 작업 생성. 담당자가 생성한 에이전트 자신이 아니면 담당자를 깨운다(`wokenAgentId`). */
+export const taskCreatedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("task.created"),
+  payload: z.object({
+    taskId: z.uuid(),
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    assigneeAgentId: z.uuid(),
+    parentTaskId: z.uuid().nullable(),
+    wokenAgentId: z.uuid().nullable(),
+  }),
+});
+
+/** 담당자가 작업에 착수했다. */
+export const taskStartedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("task.started"),
+  payload: z.object({ taskId: z.uuid(), runId: z.uuid(), agentId: z.uuid() }),
+});
+
+/**
+ * 작업 완료와 자기 보고. 부모 작업이 있으면 그 담당자를, 없으면 작업을 만든 에이전트를 깨운다.
+ * 깨울 에이전트가 완료한 에이전트 자신이면 깨우지 않는다(`wokenAgentId`가 없다).
+ */
+export const taskCompletedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("task.completed"),
+  payload: z.object({
+    taskId: z.uuid(),
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    wokenAgentId: z.uuid().nullable(),
+  }),
+});
+
+/** 작업 댓글. 사용자 댓글은 담당자를 깨우고, 에이전트 댓글은 쓴 실행 시도를 가리키며 아무도 깨우지 않는다. */
+export const taskCommentedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("task.commented"),
+  payload: z.object({
+    taskId: z.uuid(),
+    commentId: z.uuid(),
+    author: messageAuthorSchema,
+    agentId: z.uuid().nullable(),
+    runId: z.uuid().nullable(),
+    wokenAgentId: z.uuid().nullable(),
+  }),
+});
+
+/** 산출물 기록. */
+export const artifactRecordedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("artifact.recorded"),
+  payload: z.object({
+    artifactId: z.uuid(),
+    taskId: z.uuid(),
+    runId: z.uuid(),
+    agentId: z.uuid(),
+  }),
+});
+
+/** 같은 조직 에이전트 사이의 메시지. 받는 에이전트를 깨운다. */
+export const agentToAgentMessageCreatedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent_to_agent_message.created"),
+  payload: z.object({
+    messageId: z.uuid(),
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    recipientAgentId: z.uuid(),
+  }),
+});
+
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
   goalRecordedEventSchema,
@@ -140,6 +214,12 @@ export const eventSchema = z.discriminatedUnion("type", [
   approvalDecidedEventSchema,
   toolRefusedEventSchema,
   messageCreatedEventSchema,
+  taskCreatedEventSchema,
+  taskStartedEventSchema,
+  taskCompletedEventSchema,
+  taskCommentedEventSchema,
+  artifactRecordedEventSchema,
+  agentToAgentMessageCreatedEventSchema,
   runStartedEventSchema,
   runActivityEventSchema,
   runFinishedEventSchema,

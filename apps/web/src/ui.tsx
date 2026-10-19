@@ -4,6 +4,7 @@ import type {
   ApprovalStatus,
   LifecycleStage,
   RunStatus,
+  TaskStatus,
 } from "@babojubot/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
@@ -99,6 +100,31 @@ export function ApprovalStatusBadge({ status }: { status: ApprovalStatus }) {
       className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${approvalStatusStyle[status]}`}
     >
       {approvalStatusLabel[status]}
+    </span>
+  );
+}
+
+export const taskStatusLabel: Record<TaskStatus, string> = {
+  open: "할당됨",
+  in_progress: "진행 중",
+  completed: "완료",
+};
+const taskStatusStyle: Record<TaskStatus, [string, string]> = {
+  open: ["bg-slate-100 text-slate-600", "bg-slate-400"],
+  in_progress: ["bg-brand-50 text-brand-700", "bg-brand-500"],
+  completed: ["bg-emerald-50 text-emerald-700", "bg-emerald-500"],
+};
+
+/** 작업 상태. 완료는 담당자의 자기 보고일 뿐 검증된 결과가 아니다. */
+export function TaskStatusBadge({ status }: { status: TaskStatus }) {
+  const [c, dot] = taskStatusStyle[status];
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${c}`}
+      data-testid="task-status"
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+      {taskStatusLabel[status]}
     </span>
   );
 }

@@ -5,7 +5,14 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation, useMatch } from "react-router";
-import { useInbox, useOrganization, useOrganizations, useRun } from "./api.ts";
+import {
+  useArtifact,
+  useInbox,
+  useOrganization,
+  useOrganizations,
+  useRun,
+  useTask,
+} from "./api.ts";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import {
   abbr,
@@ -49,10 +56,11 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
 export const findSection = (slug: string) =>
   sectionGroups.flatMap((g) => g.items).find((s) => s.slug === slug);
 
-/** 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에, 승인 요청은 대시보드에 속한다. */
+/** 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에, 승인 요청은 대시보드에, 산출물은 작업에 속한다. */
 const detailSection: Record<string, string> = {
   runs: "agents",
   approvals: "dashboard",
+  artifacts: "tasks",
 };
 
 function useCurrent() {
@@ -344,14 +352,21 @@ function Sections({ orgId }: { orgId: string }) {
   );
 }
 
-/** 조직 › 섹션 › 상세. 앞 단계는 링크. 실행 시도는 에이전트 아래에 둔다. */
+/** 조직 › 섹션 › 상세. 앞 단계는 링크. 실행 시도는 에이전트 아래에, 산출물은 연결 작업 아래에 둔다. */
 function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   const { section } = useCurrent();
   const org = useOrganization(orgId);
   const agentMatch = useMatch("/orgs/:orgId/agents/:agentId")?.params.agentId;
   const runMatch = useMatch("/orgs/:orgId/runs/:runId")?.params.runId;
   const approvalMatch = useMatch("/orgs/:orgId/approvals/:approvalId");
+  const artifactMatch = useMatch("/orgs/:orgId/artifacts/:artifactId")?.params
+    .artifactId;
   const run = useRun(orgId, runMatch);
+  const artifact = useArtifact(orgId, artifactMatch);
+  const taskId =
+    useMatch("/orgs/:orgId/tasks/:taskId")?.params.taskId ??
+    artifact.data?.taskId;
+  const task = useTask(orgId, taskId);
   const name = org.data?.name ?? "…";
   const label = (section && findSection(section)?.label) ?? section;
   const agentId = agentMatch ?? run.data?.agentId;
@@ -364,6 +379,12 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
     trail.push({ label: agent.name, to: `/orgs/${orgId}/agents/${agent.id}` });
   if (runMatch) trail.push({ label: runLabel(runMatch) });
   if (approvalMatch) trail.push({ label: "승인 요청" });
+  if (taskId)
+    trail.push({
+      label: task.data?.title ?? "작업",
+      to: `/orgs/${orgId}/tasks/${taskId}`,
+    });
+  if (artifactMatch) trail.push({ label: artifact.data?.title ?? "산출물" });
   trail[trail.length - 1] = { label: trail[trail.length - 1]!.label };
   if (compact) return <>{trail.map((c) => c.label).join(" › ")}</>;
   return (
