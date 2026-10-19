@@ -4,16 +4,19 @@ import type {
   InstructionCopy,
   NewEvent,
   Organization,
+  Task,
 } from "@babojubot/contracts";
 import { acceptsToolCalls } from "@babojubot/core";
 import { eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   agents,
+  artifacts,
   events,
   instructionCopies,
   organizations,
   runs,
+  tasks,
 } from "./schema.ts";
 
 /** Database 또는 그 안의 transaction. */
@@ -99,3 +102,42 @@ export const toInstructionCopy = ({
   seq: _seq,
   ...row
 }: typeof instructionCopies.$inferSelect): InstructionCopy => withIsoTime(row);
+
+export const toTask = (row: typeof tasks.$inferSelect): Task => ({
+  id: row.id,
+  organizationId: row.organizationId,
+  title: row.title,
+  description: row.description,
+  status: row.status,
+  assigneeAgentId: row.assigneeAgentId,
+  parentTaskId: row.parentTaskId,
+  researchNodeId: row.researchNodeId,
+  createdByAgentId: row.createdByAgentId,
+  createdByRunId: row.createdByRunId,
+  startedAt: row.startedAt?.toISOString() ?? null,
+  report:
+    row.completedAt &&
+    row.reportSummary !== null &&
+    row.completedByAgentId &&
+    row.completedByRunId
+      ? {
+          summary: row.reportSummary,
+          agentId: row.completedByAgentId,
+          runId: row.completedByRunId,
+          completedAt: row.completedAt.toISOString(),
+        }
+      : null,
+  createdAt: row.createdAt.toISOString(),
+});
+
+/** 산출물 요약(본문 제외) 열. */
+export const artifactSummaryColumns = {
+  id: artifacts.id,
+  organizationId: artifacts.organizationId,
+  taskId: artifacts.taskId,
+  title: artifacts.title,
+  format: artifacts.format,
+  createdByAgentId: artifacts.createdByAgentId,
+  createdByRunId: artifacts.createdByRunId,
+  createdAt: artifacts.createdAt,
+};

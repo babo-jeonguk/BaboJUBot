@@ -19,12 +19,15 @@ export const taskStatuses = ["open", "in_progress", "completed"] as const;
 export const taskStatusSchema = z.enum(taskStatuses);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
-/** 작업 생성. 담당 에이전트와 부모 작업은 같은 조직의 기록이어야 한다. */
+/**
+ * 작업 생성. 담당 에이전트·부모 작업·연결할 연구 노드는 같은 조직의 기록이어야 하며, 연구 노드는 폐기되지 않은 것이어야 한다.
+ */
 export const createTaskInputSchema = z.strictObject({
   title: text(taskTitleMaxLength),
   description: z.string().trim().max(taskDescriptionMaxLength).default(""),
   assigneeAgentId: z.uuid(),
   parentTaskId: z.uuid().optional(),
+  researchNodeId: z.uuid().optional(),
 });
 export type CreateTaskInput = z.input<typeof createTaskInputSchema>;
 
@@ -85,6 +88,8 @@ export const taskSchema = z.object({
   status: taskStatusSchema,
   assigneeAgentId: z.uuid(),
   parentTaskId: z.uuid().nullable(),
+  /** 연결된 연구 노드. 작업은 노드 0~1개에 연결된다. */
+  researchNodeId: z.uuid().nullable(),
   createdByAgentId: z.uuid(),
   createdByRunId: z.uuid(),
   startedAt: time.nullable(),

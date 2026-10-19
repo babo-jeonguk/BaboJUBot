@@ -37,6 +37,7 @@ const request: RunRequest = {
     agent: { id: ids.agentId, role: "lead", name: "Research Lead" },
     team: [{ id: ids.agentId, role: "lead", name: "Research Lead" }],
     conversation: [],
+    researchFlow: null,
   },
   instructionsBundleVersion: null,
   instructions: [],
@@ -311,10 +312,14 @@ describe("demo worker scenario", () => {
       ...request.context,
       organization: { ...request.context.organization, stage: "researching" },
       agent: { ...request.context.agent, role: "worker", name: "연구원 1" },
+      researchFlow: {
+        nodeKinds: [{ name: "problem", label: "연구 문제" }],
+        linkKinds: [],
+      },
     },
   });
 
-  it("starts an assigned task, records an artifact and completes it with a self-report, replying to comments on the task", () => {
+  it("starts an assigned task, records an artifact and a research node linked to the task, and completes it with a self-report, replying to comments on the task", () => {
     const taskId = crypto.randomUUID();
     const script = defaultScriptSelector(
       worker([
@@ -342,8 +347,41 @@ describe("demo worker scenario", () => {
       ["get_task", taskId],
       ["start_task", taskId],
       ["record_artifact", undefined],
+      ["create_research_node", undefined],
+      ["link_task_research_node", taskId],
       ["complete_task", taskId],
       ["comment_task", taskId],
     ]);
+    // 착수했으면 템플릿의 첫 종류로 작업 제목의 노드를 만들고, 만든 노드에 작업을 연결한다.
+    const nodeId = crypto.randomUUID();
+    const started = {
+      ...state,
+      calls: [
+        {
+          tool: "start_task" as const,
+          ok: true as const,
+          output: { id: taskId },
+        },
+        {
+          tool: "create_research_node" as const,
+          ok: true as const,
+          output: { id: nodeId, title: "자료 조사" },
+        },
+      ],
+    };
+    const step = (tool: string) =>
+      script.steps.find(
+        (s): s is Extract<typeof s, { do: "call" }> =>
+          s.do === "call" && s.tool === tool
+      )!;
+    expect(step("create_research_node").when!(started)).toBe(true);
+    expect(step("create_research_node").input!(started)).toMatchObject({
+      kind: "problem",
+      title: "자료 조사",
+    });
+    expect(step("link_task_research_node").input!(started)).toEqual({
+      researchNodeId: nodeId,
+    });
+    expect(step("link_task_research_node").when!(state)).toBe(false);
   });
 });

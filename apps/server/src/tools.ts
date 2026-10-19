@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
+  addResearchLinkInputSchema,
   addTaskCommentInputSchema,
+  assignResearchNodeParentInputSchema,
+  changeResearchNodeParentInputSchema,
   completeTaskInputSchema,
+  createResearchNodeInputSchema,
+  emptyCommandInputSchema,
+  linkTaskResearchNodeInputSchema,
+  updateResearchNodeInputSchema,
   createTaskInputSchema,
   orgToolPaths,
   recordArtifactInputSchema,
@@ -24,7 +31,9 @@ import {
   createTask,
   findArtifact,
   findMessage,
+  findResearchNodeDetail,
   findTaskDetail,
+  getResearchMap,
   gateToolCall,
   insertAgentMessage,
   insertInitialApprovalRequest,
@@ -34,30 +43,44 @@ import {
   recordGoal,
   sendAgentToAgentMessage,
   startTask,
+  writeResearchMap,
   type ActiveRun,
   type Database,
+  type MapCommand,
   type ToolWrite,
 } from "@babojubot/db";
-import type { ProposalProblem, TaskRuleProblem } from "@babojubot/core";
+import type {
+  MapRuleProblem,
+  ProposalProblem,
+  TaskRuleProblem,
+} from "@babojubot/core";
 import express from "express";
+import type { z } from "zod";
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
 import { listHarnessLibrary, loadHarnessLibrary } from "./harness.ts";
 import { digestRunToken } from "./run-token.ts";
 
-/** 도구 규칙의 거부 → 응답 코드·HTTP 상태. */
-type ToolProblem =
-  ProposalProblem | TaskRuleProblem | "not_found" | "self_message";
-const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> = {
-  goal_missing: ["invalid_input", 422],
-  unknown_role: ["invalid_input", 422],
-  unknown_template: ["invalid_input", 422],
-  self_message: ["invalid_input", 422],
-  not_found: ["not_found", 404],
-  not_assignee: ["not_assignee", 403],
-  already_completed: ["already_completed", 409],
-  invalid_transition: ["invalid_transition", 409],
-};
+/** 도구 규칙의 거부 → 응답 코드·HTTP 상태. 사용자 지도 편집도 같은 표를 쓴다. */
+export type ToolProblem =
+  ProposalProblem | TaskRuleProblem | MapRuleProblem | "self_message";
+export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
+  {
+    goal_missing: ["invalid_input", 422],
+    unknown_role: ["invalid_input", 422],
+    unknown_template: ["invalid_input", 422],
+    self_message: ["invalid_input", 422],
+    not_found: ["not_found", 404],
+    not_assignee: ["not_assignee", 403],
+    already_completed: ["already_completed", 409],
+    invalid_transition: ["invalid_transition", 409],
+    unknown_kind: ["unknown_kind", 422],
+    self_link: ["invalid_input", 422],
+    primary_cycle: ["primary_cycle", 409],
+    primary_parent_exists: ["primary_parent_exists", 409],
+    node_discarded: ["node_discarded", 409],
+    task_already_linked: ["task_already_linked", 409],
+  };
 
 /** 공개 요약에 쓰는 글자 수. */
 const chars = (text: string) => [...text].length;
@@ -293,7 +316,7 @@ export function orgToolsRouter({
           source,
           activity: toolActivity(
             "create_task",
-            `작업 생성: ${quote(input.data.title)}${input.data.parentTaskId ? " (하위 작업)" : ""}`
+            `작업 생성: ${quote(input.data.title)}${input.data.parentTaskId ? " (하위 작업)" : ""}${input.data.researchNodeId ? " (연구 노드 연결)" : ""}`
           ),
         })
       );
@@ -442,6 +465,166 @@ export function orgToolsRouter({
         })
       );
     })
+  );
+
+  router.get(
+    orgToolPaths.get_research_map,
+    tool("get_research_map", async (_req, res, run) => {
+      const map = await getResearchMap(db, run.organizationId);
+      const recorded = await recordRead(
+        run,
+        "get_research_map",
+        `연구 지도 조회: 노드 ${map.nodes.length}개, 보조 연결 ${map.links.length}개`
+      );
+      if (!recorded) return refuse(res, 401, "invalid_token");
+      res.json(map);
+    })
+  );
+
+  router.get(
+    orgToolPaths.get_research_node,
+    tool("get_research_node", async (req, res, run) => {
+      const node = await findResearchNodeDetail(
+        db,
+        run.organizationId,
+        param(req, "nodeId")
+      );
+      // 다른 조직의 노드와 없는 노드는 같은 응답이다.
+      if (!node) return refuse(res, 404, "not_found");
+      if (
+        !(await recordRead(
+          run,
+          "get_research_node",
+          `연구 노드 조회: ${quote(node.title)}`
+        ))
+      )
+        return refuse(res, 401, "invalid_token");
+      res.json(node);
+    })
+  );
+
+  /** 연구 지도 쓰기 도구 하나: 입력 계약 → 명령 → 저장. 공개 요약은 명령으로 정한다. */
+  const mapTool = <S extends z.ZodType>(
+    name: OrgToolName,
+    schema: S,
+    command: (input: z.infer<S>, req: express.Request) => MapCommand,
+    summary: (input: z.infer<S>) => string,
+    status = 200
+  ) =>
+    tool(name, async (req, res, run) => {
+      const input = schema.safeParse(req.body ?? {});
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await writeResearchMap(db, run, command(input.data, req), {
+          source,
+          activity: toolActivity(name, summary(input.data)),
+        }),
+        status
+      );
+    });
+  const nodeId = (req: express.Request) => param(req, "nodeId");
+  const taskId = (req: express.Request) => param(req, "taskId");
+
+  router.post(
+    orgToolPaths.create_research_node,
+    mapTool(
+      "create_research_node",
+      createResearchNodeInputSchema,
+      (input) => ({ op: "create_node", input }),
+      (input) =>
+        `연구 노드 생성: ${input.kind} ${quote(input.title)}${input.parentNodeId ? " (주 부모 지정)" : ""}`,
+      201
+    )
+  );
+  router.patch(
+    orgToolPaths.update_research_node,
+    mapTool(
+      "update_research_node",
+      updateResearchNodeInputSchema,
+      (input, req) => ({ op: "update_node", nodeId: nodeId(req), input }),
+      (input) => `연구 노드 수정: ${Object.keys(input).join(", ")}`
+    )
+  );
+  router.post(
+    orgToolPaths.assign_research_node_parent,
+    mapTool(
+      "assign_research_node_parent",
+      assignResearchNodeParentInputSchema,
+      (input, req) => ({
+        op: "assign_parent",
+        nodeId: nodeId(req),
+        parentNodeId: input.parentNodeId,
+      }),
+      () => "연구 노드 주 부모 지정"
+    )
+  );
+  router.post(
+    orgToolPaths.change_research_node_parent,
+    mapTool(
+      "change_research_node_parent",
+      changeResearchNodeParentInputSchema,
+      (input, req) => ({
+        op: "change_parent",
+        nodeId: nodeId(req),
+        parentNodeId: input.parentNodeId,
+      }),
+      (input) =>
+        input.parentNodeId ? "연구 노드 주 부모 변경" : "연구 노드 주 부모 없앰"
+    )
+  );
+  router.post(
+    orgToolPaths.add_research_link,
+    mapTool(
+      "add_research_link",
+      addResearchLinkInputSchema,
+      (input) => ({ op: "add_link", input }),
+      (input) => `보조 연결 추가: ${input.kind}`,
+      201
+    )
+  );
+  for (const [name, op, summary] of [
+    ["discard_research_node", "discard_node", "연구 노드 폐기"],
+    ["restore_research_node", "restore_node", "연구 노드 폐기 취소"],
+  ] as const)
+    router.post(
+      orgToolPaths[name],
+      mapTool(
+        name,
+        emptyCommandInputSchema,
+        (_input, req) => ({ op, nodeId: nodeId(req) }),
+        () => summary
+      )
+    );
+  for (const [name, op, summary] of [
+    ["link_task_research_node", "link_task", "작업을 연구 노드에 연결"],
+    [
+      "relink_task_research_node",
+      "relink_task",
+      "작업을 다른 연구 노드로 재연결",
+    ],
+  ] as const)
+    router.post(
+      orgToolPaths[name],
+      mapTool(
+        name,
+        linkTaskResearchNodeInputSchema,
+        (input, req) => ({
+          op,
+          taskId: taskId(req),
+          researchNodeId: input.researchNodeId,
+        }),
+        () => summary
+      )
+    );
+  router.post(
+    orgToolPaths.unlink_task_research_node,
+    mapTool(
+      "unlink_task_research_node",
+      emptyCommandInputSchema,
+      (_input, req) => ({ op: "unlink_task", taskId: taskId(req) }),
+      () => "작업의 연구 노드 연결 해제"
+    )
   );
 
   // 작업자 추가(#58)는 아직 없다. 단계 규칙은 지금부터 적용한다.

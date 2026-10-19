@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   ApprovalStatus,
   LifecycleStage,
+  ResearchNodeStatus,
   RunStatus,
   TaskStatus,
 } from "@babojubot/contracts";
@@ -128,6 +129,14 @@ export function TaskStatusBadge({ status }: { status: TaskStatus }) {
     </span>
   );
 }
+
+export const researchNodeStatusLabel: Record<ResearchNodeStatus, string> = {
+  proposed: "제안됨",
+  in_progress: "진행 중",
+  done: "완료",
+  rejected: "기각됨",
+  discarded: "폐기",
+};
 
 export const agentStatusLabel: Record<AgentStatus, string> = {
   idle: "대기",

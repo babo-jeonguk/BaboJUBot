@@ -4,8 +4,13 @@ import type net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import {
+  addResearchLinkInputSchema,
   addTaskCommentInputSchema,
   artifactContentMaxLength,
+  changeResearchNodeParentInputSchema,
+  createResearchNodeInputSchema,
+  emptyCommandInputSchema,
+  updateResearchNodeInputSchema,
   createOrganizationInputSchema,
   decideApprovalInputSchema,
   eventStreamPath,
@@ -22,8 +27,10 @@ import {
   findArtifact,
   findFlowTemplate,
   findOrganization,
+  findResearchNodeDetail,
   findRunDetail,
   findTaskDetail,
+  getResearchMap,
   listApprovals,
   listConversation,
   listInbox,
@@ -32,10 +39,13 @@ import {
   listRuns,
   listTasks,
   type Database,
+  type MapCommand,
+  type OwnerMapEditResult,
 } from "@babojubot/db";
 import { findLead } from "@babojubot/core";
 import { createScriptedRuntime } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
+import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
 import { decideApproval } from "./approvals.ts";
 import { sendOwnerMessage } from "./conversation.ts";
@@ -43,8 +53,9 @@ import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
 import { createOrganization } from "./organizations.ts";
+import { editResearchMapAsOwner } from "./research-map.ts";
 import { addOwnerTaskComment } from "./tasks.ts";
-import { orgToolsRouter } from "./tools.ts";
+import { orgToolsRouter, problemResponses } from "./tools.ts";
 
 /**
  * JSON 요청 본문 크기 상한(바이트). 계약상 가장 큰 본문인 산출물(최대 {@link artifactContentMaxLength}자)은
@@ -248,6 +259,98 @@ export async function startServer({
     if (!artifact) return notFound(res);
     res.json(artifact);
   });
+
+  app.get("/api/organizations/:id/research-map", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(await getResearchMap(db, req.params.id));
+  });
+
+  app.get("/api/organizations/:id/research-nodes/:nodeId", async (req, res) => {
+    const node = await findResearchNodeDetail(
+      db,
+      req.params.id,
+      req.params.nodeId
+    );
+    if (!node) return notFound(res);
+    res.json(node);
+  });
+
+  /**
+   * 사용자의 연구 지도 편집 하나: 입력 계약 → 명령 → 저장. 편집은 편집자(사용자)를 기록하고 Lead를 깨운다.
+   * 초기 연구 승인 전·최종 완료·중단 단계에서는 409 `stage_closed`, 지도 규칙의 거부는 조직 도구와 같은 응답 코드다.
+   */
+  const mapEdit =
+    <S extends z.ZodType>(
+      schema: S,
+      command: (input: z.infer<S>, req: express.Request) => MapCommand,
+      status = 200
+    ): express.RequestHandler =>
+    async (req, res) => {
+      const input = schema.safeParse(req.body ?? {});
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const result: OwnerMapEditResult<unknown> = await editResearchMapAsOwner(
+        { db, hub, dispatcher, now },
+        String(req.params.id),
+        command(input.data, req)
+      );
+      if (result.kind === "stage_closed") {
+        res.status(409).json({ error: { code: "stage_closed" } });
+        return;
+      }
+      if (result.kind === "invalid") {
+        const [code, httpStatus] = problemResponses[result.problem];
+        res.status(httpStatus).json({ error: { code } });
+        return;
+      }
+      res.status(status).json(result.value);
+    };
+  const nodeId = (req: express.Request) => String(req.params.nodeId);
+
+  app.post(
+    "/api/organizations/:id/research-nodes",
+    mapEdit(
+      createResearchNodeInputSchema,
+      (input) => ({ op: "create_node", input }),
+      201
+    )
+  );
+  app.patch(
+    "/api/organizations/:id/research-nodes/:nodeId",
+    mapEdit(updateResearchNodeInputSchema, (input, req) => ({
+      op: "update_node",
+      nodeId: nodeId(req),
+      input,
+    }))
+  );
+  app.post(
+    "/api/organizations/:id/research-nodes/:nodeId/parent",
+    mapEdit(changeResearchNodeParentInputSchema, (input, req) => ({
+      op: "change_parent",
+      nodeId: nodeId(req),
+      parentNodeId: input.parentNodeId,
+    }))
+  );
+  app.post(
+    "/api/organizations/:id/research-links",
+    mapEdit(
+      addResearchLinkInputSchema,
+      (input) => ({ op: "add_link", input }),
+      201
+    )
+  );
+  for (const op of ["discard_node", "restore_node"] as const)
+    app.post(
+      `/api/organizations/:id/research-nodes/:nodeId/${op === "discard_node" ? "discard" : "restore"}`,
+      mapEdit(emptyCommandInputSchema, (_input, req) => ({
+        op,
+        nodeId: nodeId(req),
+      }))
+    );
 
   app.get("/api/organizations/:id/approvals", async (req, res) => {
     if (!(await findOrganization(db, req.params.id))) return notFound(res);

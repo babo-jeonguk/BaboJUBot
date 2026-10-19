@@ -1,4 +1,4 @@
-import type { Agent, Event } from "@babojubot/contracts";
+import type { Agent, Event, ResearchMapOperation } from "@babojubot/contracts";
 import { useState } from "react";
 import { Link } from "react-router";
 import { useEvents } from "./api.ts";
@@ -13,6 +13,19 @@ import {
 } from "./ui.tsx";
 
 type Described = { icon: string; title: string; detail?: string };
+
+export const mapOperationLabel: Record<ResearchMapOperation, string> = {
+  create_node: "노드 추가",
+  update_node: "노드 수정",
+  assign_parent: "주 부모 지정",
+  change_parent: "주 부모 변경",
+  add_link: "보조 연결 추가",
+  discard_node: "노드 폐기",
+  restore_node: "폐기 취소",
+  link_task: "작업 연결",
+  relink_task: "작업 재연결",
+  unlink_task: "작업 연결 해제",
+};
 
 /** Event 하나를 화면 문장으로. 공개 기록에 있는 값만 보이며 내용을 추측하지 않는다. */
 export function describeEvent(event: Event, agentName: string): Described {
@@ -102,6 +115,15 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "✉",
         title: `${agentName}가 같은 조직 에이전트에게 메시지를 보냈습니다`,
+      };
+    case "research_map.edited":
+      return {
+        icon: "🗺",
+        title:
+          event.payload.author === "owner"
+            ? "사용자가 연구 지도를 편집했습니다"
+            : `${agentName}가 연구 지도를 편집했습니다`,
+        detail: `${mapOperationLabel[event.payload.operation]}${event.payload.wokenAgentId ? " · Lead를 깨웠습니다" : ""}`,
       };
     case "tool.refused":
       return {

@@ -7,6 +7,9 @@ import {
   lifecycleStages,
   messageAuthors,
   messageDeliveries,
+  researchMapOperations,
+  researchNodeStatuses,
+  researchNodeWorkStatuses,
   runStatuses,
   taskStatuses,
   type FlowKind,
@@ -18,6 +21,7 @@ import {
 } from "@babojubot/contracts";
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   check,
   foreignKey,
@@ -291,6 +295,141 @@ export const flowTemplates = pgTable(
   ]
 );
 
+/** 기록을 만든 쪽(`<prefix>_author`·`_agent_id`·`_run_id`). 사용자는 에이전트·실행 시도가 없고, 에이전트는 둘 다 있다. */
+const authorCheck = (
+  name: string,
+  author: AnyPgColumn,
+  agentId: AnyPgColumn,
+  runId: AnyPgColumn
+) =>
+  check(
+    name,
+    sql`(${author} = 'owner' and ${agentId} is null and ${runId} is null)
+      or (${author} = 'agent' and ${agentId} is not null and ${runId} is not null)`
+  );
+
+/**
+ * 연구 노드. 주 부모는 같은 조직의 노드 하나(`parent_node_id`)라서 노드마다 최대 하나다. 주 연결 순환 금지는 조직 행 잠금 아래에서
+ * 최신 주 연결을 읽어 검사하는 저장 쪽이 강제한다. 폐기는 상태이며 폐기 직전 상태를 함께 둔다. 노드는 지우지 않는다.
+ */
+export const researchNodes = pgTable(
+  "research_nodes",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    kind: text("kind").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    status: text("status", { enum: researchNodeStatuses }).notNull(),
+    statusBeforeDiscard: text("status_before_discard", {
+      enum: researchNodeWorkStatuses,
+    }),
+    parentNodeId: uuid("parent_node_id"),
+    createdByAuthor: text("created_by_author", {
+      enum: messageAuthors,
+    }).notNull(),
+    createdByAgentId: uuid("created_by_agent_id"),
+    createdByRunId: uuid("created_by_run_id"),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+  },
+  (t) => [
+    check(
+      "research_nodes_status_check",
+      sql`${t.status} in (${inList(researchNodeStatuses)})
+        and (${t.statusBeforeDiscard} is null or ${t.statusBeforeDiscard} in (${inList(researchNodeWorkStatuses)}))
+        and (${t.status} = 'discarded') = (${t.statusBeforeDiscard} is not null)`
+    ),
+    check(
+      "research_nodes_parent_check",
+      sql`${t.parentNodeId} is null or ${t.parentNodeId} <> ${t.id}`
+    ),
+    authorCheck(
+      "research_nodes_author_check",
+      t.createdByAuthor,
+      t.createdByAgentId,
+      t.createdByRunId
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.parentNodeId],
+      foreignColumns: [t.organizationId, t.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    unique("research_nodes_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    index("research_nodes_organization_idx").on(t.organizationId, t.seq),
+  ]
+);
+
+/** 보조 연결. 관계마다 ID가 있고 개수·순환 제한이 없다. 양 끝은 같은 조직의 서로 다른 노드다. */
+export const researchLinks = pgTable(
+  "research_links",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    sourceNodeId: uuid("source_node_id").notNull(),
+    targetNodeId: uuid("target_node_id").notNull(),
+    kind: text("kind").notNull(),
+    createdByAuthor: text("created_by_author", {
+      enum: messageAuthors,
+    }).notNull(),
+    createdByAgentId: uuid("created_by_agent_id"),
+    createdByRunId: uuid("created_by_run_id"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "research_links_endpoints_check",
+      sql`${t.sourceNodeId} <> ${t.targetNodeId}`
+    ),
+    authorCheck(
+      "research_links_author_check",
+      t.createdByAuthor,
+      t.createdByAgentId,
+      t.createdByRunId
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.sourceNodeId],
+      foreignColumns: [researchNodes.organizationId, researchNodes.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.targetNodeId],
+      foreignColumns: [researchNodes.organizationId, researchNodes.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.createdByRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    unique("research_links_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    index("research_links_organization_idx").on(t.organizationId, t.seq),
+  ]
+);
+
 /**
  * 작업. 담당·부모·생성·완료 참조는 모두 같은 조직의 기록이다(복합 FK). 완료하면 자기 보고(요약·완료한 에이전트·실행 시도·시각)가
  * 함께 남고, 완료는 다시 바뀌지 않는다(저장 쪽 조건부 갱신).
@@ -308,6 +447,8 @@ export const tasks = pgTable(
     status: text("status", { enum: taskStatuses }).notNull(),
     assigneeAgentId: uuid("assignee_agent_id").notNull(),
     parentTaskId: uuid("parent_task_id"),
+    /** 연결된 연구 노드. 열 하나라서 작업은 노드 0~1개에 연결된다. */
+    researchNodeId: uuid("research_node_id"),
     createdByAgentId: uuid("created_by_agent_id").notNull(),
     createdByRunId: uuid("created_by_run_id").notNull(),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
@@ -341,6 +482,10 @@ export const tasks = pgTable(
       foreignColumns: [t.organizationId, t.id],
     }),
     foreignKey({
+      columns: [t.organizationId, t.researchNodeId],
+      foreignColumns: [researchNodes.organizationId, researchNodes.id],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.createdByAgentId],
       foreignColumns: [agents.organizationId, agents.id],
     }),
@@ -358,6 +503,67 @@ export const tasks = pgTable(
     }),
     unique("tasks_organization_id_id_unique").on(t.organizationId, t.id),
     index("tasks_organization_idx").on(t.organizationId, t.seq),
+    index("tasks_research_node_idx").on(t.organizationId, t.researchNodeId),
+  ]
+);
+
+/**
+ * 연구 지도 편집 기록. 편집 하나(사용자 또는 에이전트·실행 시도)마다 한 행이며, 사용자 편집은 이 행을 가리키는 Lead 깨우기를 만든다.
+ */
+export const researchMapEdits = pgTable(
+  "research_map_edits",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    editorAuthor: text("editor_author", { enum: messageAuthors }).notNull(),
+    editorAgentId: uuid("editor_agent_id"),
+    editorRunId: uuid("editor_run_id"),
+    operation: text("operation", { enum: researchMapOperations }).notNull(),
+    nodeId: uuid("node_id"),
+    linkId: uuid("link_id"),
+    taskId: uuid("task_id"),
+    summary: text("summary").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "research_map_edits_operation_check",
+      sql`${t.operation} in (${inList(researchMapOperations)})`
+    ),
+    authorCheck(
+      "research_map_edits_editor_check",
+      t.editorAuthor,
+      t.editorAgentId,
+      t.editorRunId
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.editorAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.editorRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.nodeId],
+      foreignColumns: [researchNodes.organizationId, researchNodes.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.linkId],
+      foreignColumns: [researchLinks.organizationId, researchLinks.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.taskId],
+      foreignColumns: [tasks.organizationId, tasks.id],
+    }),
+    unique("research_map_edits_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    index("research_map_edits_node_idx").on(t.organizationId, t.nodeId, t.seq),
   ]
 );
 
@@ -489,6 +695,7 @@ const wakeSourceColumns = {
   task_completed: "task_id",
   task_comment: "comment_id",
   agent_to_agent_message: "agent_to_agent_message_id",
+  research_map_edit: "map_edit_id",
 } as const satisfies Record<WakeKind, string>;
 const wakeKinds = Object.keys(wakeSourceColumns) as WakeKind[];
 
@@ -510,6 +717,7 @@ export const wakes = pgTable(
     taskId: uuid("task_id"),
     commentId: uuid("comment_id"),
     agentToAgentMessageId: uuid("agent_to_agent_message_id"),
+    mapEditId: uuid("map_edit_id"),
     runId: uuid("run_id"),
     createdAt: createdAt(),
   },
@@ -517,7 +725,7 @@ export const wakes = pgTable(
     check("wakes_kind_check", sql`${t.kind} in (${inList(wakeKinds)})`),
     check(
       "wakes_source_check",
-      sql`num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}) = 1
+      sql`num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}) = 1
         and (${sql.raw(
           Object.entries(wakeSourceColumns)
             .map(
@@ -555,6 +763,10 @@ export const wakes = pgTable(
       ],
     }),
     foreignKey({
+      columns: [t.organizationId, t.mapEditId],
+      foreignColumns: [researchMapEdits.organizationId, researchMapEdits.id],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.runId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
@@ -574,6 +786,8 @@ export const wakes = pgTable(
     uniqueIndex("wakes_agent_to_agent_message_unique").on(
       t.agentToAgentMessageId
     ),
+    // 사용자 편집 하나는 깨우기 하나만 만든다.
+    uniqueIndex("wakes_map_edit_unique").on(t.mapEditId),
   ]
 );
 

@@ -11,15 +11,22 @@ import {
   inboxSchema,
   organizationDetailSchema,
   organizationListSchema,
+  researchLinkSchema,
+  researchMapSchema,
+  researchNodeDetailSchema,
+  researchNodeSchema,
   runDetailSchema,
   runSummaryListSchema,
   taskCommentSchema,
   taskDetailSchema,
   taskListSchema,
+  type AddResearchLinkInput,
   type CreateOrganizationInput,
+  type CreateResearchNodeInput,
   type DecideApprovalInput,
   type Organization,
   type OrganizationDetail,
+  type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { z } from "zod";
@@ -47,6 +54,9 @@ export const queryKeys = {
     ["organizations", id, "tasks", taskId] as const,
   artifact: (id: string, artifactId: string) =>
     ["organizations", id, "artifacts", artifactId] as const,
+  researchMap: (id: string) => ["organizations", id, "research-map"] as const,
+  researchNode: (id: string, nodeId: string) =>
+    ["organizations", id, "research-nodes", nodeId] as const,
   /** 조직을 가로지르는 대기열. 어느 조직의 Event든 다시 불러온다. */
   inbox: ["inbox"] as const,
 };
@@ -343,5 +353,99 @@ export function useAddTaskComment(orgId: string, taskId: string) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.task(orgId, taskId),
       }),
+  });
+}
+
+export function useResearchMap(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.researchMap(orgId),
+    queryFn: () => request(researchMapSchema, orgPath(orgId, "/research-map")),
+  });
+}
+
+/** 노드 상세(연결 작업·산출물·편집 기록). 선택한 노드 ID로 최신 기록을 읽는다. */
+export function useResearchNode(orgId: string, nodeId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.researchNode(orgId, nodeId ?? ""),
+    queryFn: () =>
+      request(
+        researchNodeDetailSchema,
+        orgPath(orgId, `/research-nodes/${encodeURIComponent(nodeId!)}`)
+      ),
+    enabled: nodeId !== undefined,
+    retry: notFoundIsFinal,
+  });
+}
+
+/** 사용자의 연구 지도 편집 하나. 서버가 편집자를 기록하고 Lead를 깨운다. */
+export type MapEdit =
+  | { op: "create_node"; input: CreateResearchNodeInput }
+  | { op: "update_node"; nodeId: string; input: UpdateResearchNodeInput }
+  | { op: "change_parent"; nodeId: string; parentNodeId: string | null }
+  | { op: "add_link"; input: AddResearchLinkInput }
+  | { op: "discard_node" | "restore_node"; nodeId: string };
+
+const json = (method: string, body: unknown): RequestInit => ({
+  method,
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+/**
+ * 연구 지도 편집. 서버가 저장한 뒤에만 지도와 노드 상세를 다시 불러오며 결과를 미리 화면에 반영하지 않는다.
+ * 거부·실패하면 지도는 서버 기록 그대로이고, 폼 입력은 호출한 쪽이 지우지 않는다.
+ */
+export function useEditResearchMap(orgId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (edit: MapEdit): Promise<{ id: string }> => {
+      const node = (id: string, rest = "") =>
+        orgPath(orgId, `/research-nodes/${encodeURIComponent(id)}${rest}`);
+      switch (edit.op) {
+        case "create_node":
+          return request(
+            researchNodeSchema,
+            orgPath(orgId, "/research-nodes"),
+            json("POST", edit.input)
+          );
+        case "update_node":
+          return request(
+            researchNodeSchema,
+            node(edit.nodeId),
+            json("PATCH", edit.input)
+          );
+        case "change_parent":
+          return request(
+            researchNodeSchema,
+            node(edit.nodeId, "/parent"),
+            json("POST", { parentNodeId: edit.parentNodeId })
+          );
+        case "add_link":
+          return request(
+            researchLinkSchema,
+            orgPath(orgId, "/research-links"),
+            json("POST", edit.input)
+          );
+        case "discard_node":
+        case "restore_node":
+          return request(
+            researchNodeSchema,
+            node(
+              edit.nodeId,
+              edit.op === "discard_node" ? "/discard" : "/restore"
+            ),
+            json("POST", {})
+          );
+      }
+    },
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.researchMap(orgId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["organizations", orgId, "research-nodes"],
+        }),
+      ]),
   });
 }

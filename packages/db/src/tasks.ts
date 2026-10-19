@@ -19,6 +19,7 @@ import {
   planTaskCompletion,
   planTaskCreation,
   planTaskStart,
+  taskNodeProblem,
   type RecordSource,
   type TaskRuleProblem,
   type TaskState,
@@ -27,11 +28,18 @@ import {
 import { and, asc, eq, ne } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
-import { insertEvent, isUuid, type Executor } from "./rows.ts";
+import {
+  artifactSummaryColumns,
+  insertEvent,
+  isUuid,
+  toTask,
+  type Executor,
+} from "./rows.ts";
 import {
   agentToAgentMessages,
   agents,
   artifacts,
+  researchNodes,
   taskComments,
   tasks,
   wakes,
@@ -43,14 +51,16 @@ import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
 
 type WriteOptions = { source: RecordSource; activity: PublicActivity };
 
-/** 작업 생성. 담당 에이전트와 부모 작업이 이 조직의 기록이어야 하며, 담당자를 깨운다. */
+/**
+ * 작업 생성. 담당 에이전트·부모 작업·연결할 연구 노드가 이 조직의 기록이어야 하며(노드는 폐기되지 않은 것), 담당자를 깨운다.
+ */
 export function createTask(
   db: Database,
   run: ActiveRunRef,
-  input: Required<Omit<CreateTaskInput, "parentTaskId">> &
-    Pick<CreateTaskInput, "parentTaskId">,
+  input: Required<Omit<CreateTaskInput, "parentTaskId" | "researchNodeId">> &
+    Pick<CreateTaskInput, "parentTaskId" | "researchNodeId">,
   { source, activity }: WriteOptions
-): Promise<ToolWrite<Task, "not_found">> {
+): Promise<ToolWrite<Task, "not_found" | "node_discarded">> {
   return toolWrite(db, run, "create_task", activity, async (tx, locked) => {
     const orgId = locked.organizationId;
     if (!(await agentInOrganization(tx, orgId, input.assigneeAgentId)))
@@ -60,6 +70,19 @@ export function createTask(
       !(await selectTask(tx, orgId, input.parentTaskId))
     )
       return { kind: "invalid", problem: "not_found" };
+    if (input.researchNodeId) {
+      const [node] = await tx
+        .select({ status: researchNodes.status })
+        .from(researchNodes)
+        .where(
+          and(
+            eq(researchNodes.organizationId, orgId),
+            eq(researchNodes.id, input.researchNodeId)
+          )
+        );
+      const problem = taskNodeProblem(node);
+      if (problem) return { kind: "invalid", problem };
+    }
     const plan = planTaskCreation(locked, input, source);
     await tx.insert(tasks).values(taskRow(plan.task));
     if (plan.wake) await insertWake(tx, plan.wake);
@@ -390,49 +413,13 @@ const taskRow = (task: Task) => ({
   status: task.status,
   assigneeAgentId: task.assigneeAgentId,
   parentTaskId: task.parentTaskId,
+  researchNodeId: task.researchNodeId,
   createdByAgentId: task.createdByAgentId,
   createdByRunId: task.createdByRunId,
   createdAt: new Date(task.createdAt),
-});
-
-const toTask = (row: typeof tasks.$inferSelect): Task => ({
-  id: row.id,
-  organizationId: row.organizationId,
-  title: row.title,
-  description: row.description,
-  status: row.status,
-  assigneeAgentId: row.assigneeAgentId,
-  parentTaskId: row.parentTaskId,
-  createdByAgentId: row.createdByAgentId,
-  createdByRunId: row.createdByRunId,
-  startedAt: row.startedAt?.toISOString() ?? null,
-  report:
-    row.completedAt &&
-    row.reportSummary !== null &&
-    row.completedByAgentId &&
-    row.completedByRunId
-      ? {
-          summary: row.reportSummary,
-          agentId: row.completedByAgentId,
-          runId: row.completedByRunId,
-          completedAt: row.completedAt.toISOString(),
-        }
-      : null,
-  createdAt: row.createdAt.toISOString(),
 });
 
 const commentRow = ({ deliveredToRunId: _delivered, ...c }: TaskComment) => ({
   ...c,
   createdAt: new Date(c.createdAt),
 });
-
-const artifactSummaryColumns = {
-  id: artifacts.id,
-  organizationId: artifacts.organizationId,
-  taskId: artifacts.taskId,
-  title: artifacts.title,
-  format: artifacts.format,
-  createdByAgentId: artifacts.createdByAgentId,
-  createdByRunId: artifacts.createdByRunId,
-  createdAt: artifacts.createdAt,
-};

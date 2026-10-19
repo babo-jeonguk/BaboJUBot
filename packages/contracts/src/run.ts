@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { approvalDecisionSchema } from "./approval.ts";
-import { instructionFileSchema } from "./harness.ts";
+import { flowKindSchema, instructionFileSchema } from "./harness.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
+import { researchMapOperationSchema } from "./research-map.ts";
 
 // Control Plane → Agent Runtime 실행 시도 계약(docs/architecture.md).
 // 요청 · 진행(공개 활동) · 종료 · 제어(취소)의 네 면을 따로 정의한다.
@@ -74,6 +75,15 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     senderAgentId: z.uuid(),
     body: z.string(),
   }),
+  /** 사용자가 연구 지도를 편집했다(Lead에게). `summary`는 무엇이 어떻게 바뀌었는지다. */
+  z.object({
+    kind: z.literal("research_map_edit"),
+    wakeId: z.uuid(),
+    editId: z.uuid(),
+    operation: researchMapOperationSchema,
+    nodeId: z.uuid().nullable(),
+    summary: z.string(),
+  }),
 ]);
 export type WakeReason = z.infer<typeof wakeReasonSchema>;
 export type WakeKind = WakeReason["kind"];
@@ -103,6 +113,13 @@ export const runContextSchema = z.object({
     z.object({ id: z.uuid(), role: agentRoleSchema, name: z.string() })
   ),
   conversation: z.array(conversationMessageSchema),
+  /** 조직 사본 흐름 템플릿이 선언한 연구 노드·보조 연결 종류. 초기 연구 승인 전에는 없다. */
+  researchFlow: z
+    .object({
+      nodeKinds: z.array(flowKindSchema),
+      linkKinds: z.array(flowKindSchema),
+    })
+    .nullable(),
 });
 export type RunContext = z.infer<typeof runContextSchema>;
 
