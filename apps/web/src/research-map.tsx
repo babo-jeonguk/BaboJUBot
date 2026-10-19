@@ -10,6 +10,7 @@ import {
   type FlowKind,
   type LifecycleStage,
   type MapActor,
+  type OrgToolErrorCode,
   type ResearchLink,
   type ResearchMap,
   type ResearchNode,
@@ -40,7 +41,6 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useSearchParams } from "react-router";
-import { mapOperationLabel } from "./activity.tsx";
 import {
   ApiError,
   useEditResearchMap,
@@ -54,6 +54,7 @@ import {
   formatTime,
   Loading,
   LoadError,
+  mapOperationLabel,
   researchNodeStatusLabel,
   runLabel,
 } from "./ui.tsx";
@@ -89,20 +90,23 @@ const secLabel: Record<SecMode, string> = {
 const shortId = (id: string) => id.slice(0, 8);
 const discarded = (n: ResearchNode) => n.status === "discarded";
 
-const problemText: Record<string, string> = {
-  primary_cycle:
-    "자기 자신이나 후손은 주 부모가 될 수 없습니다. 주 연결은 순환할 수 없습니다.",
-  primary_parent_exists: "이미 주 부모가 있습니다.",
-  node_discarded:
-    "폐기된 노드는 폐기 취소만 할 수 있고 새 연결의 대상이 될 수 없습니다.",
-  unknown_kind: "조직의 연구 흐름 템플릿에 없는 종류입니다.",
-  stage_closed: "지금 조직 단계에서는 연구 지도를 편집할 수 없습니다.",
-  not_found: "노드를 찾을 수 없습니다. 지도를 다시 불러왔습니다.",
-  invalid_input:
-    "입력을 확인하세요. 자기 자신과는 보조 연결을 맺을 수 없습니다.",
-};
+const problemText: Partial<Record<OrgToolErrorCode | "stage_closed", string>> =
+  {
+    primary_cycle:
+      "자기 자신이나 후손은 주 부모가 될 수 없습니다. 주 연결은 순환할 수 없습니다.",
+    primary_parent_exists: "이미 주 부모가 있습니다.",
+    node_discarded:
+      "폐기된 노드는 폐기 취소만 할 수 있고 새 연결의 대상이 될 수 없습니다.",
+    unknown_kind: "조직의 연구 흐름 템플릿에 없는 종류입니다.",
+    stage_closed: "지금 조직 단계에서는 연구 지도를 편집할 수 없습니다.",
+    not_found: "노드를 찾을 수 없습니다. 지도를 다시 불러왔습니다.",
+    invalid_input:
+      "입력을 확인하세요. 자기 자신과는 보조 연결을 맺을 수 없습니다.",
+  };
 const editFailure = (error: unknown) =>
-  (error instanceof ApiError && error.code && problemText[error.code]) ||
+  (error instanceof ApiError &&
+    error.code &&
+    problemText[error.code as keyof typeof problemText]) ||
   "저장했는지 확인하지 못했습니다. 입력은 그대로 두었으니 지도를 확인하고 다시 시도하세요.";
 
 /** 지도의 파생 조회: 노드·자식·보조 연결·종류. */
@@ -364,7 +368,7 @@ function MapWorkspace({
   const key = layoutKey(visible, dir);
   const laidOut = useMemo(() => layoutOf(key), [key]);
 
-  // 선택한 노드의 root까지 경로·하위·보조 연결 이웃을 강조하고 나머지를 흐리게 한다.
+  // 선택한 노드의 root까지 경로·하위 노드 전체·보조 연결 이웃을 강조하고 나머지를 흐리게 한다.
   const focus = useMemo(() => {
     if (!selected) return undefined;
     const set = new Set<string>();
@@ -374,7 +378,7 @@ function MapWorkspace({
       n = n.parentNodeId ? index.byId.get(n.parentNodeId) : undefined
     )
       set.add(n.id);
-    for (const c of index.children.get(selected) ?? []) set.add(c.id);
+    for (const id of descendantsOf(index, selected)) set.add(id);
     for (const l of index.map.links)
       if (l.sourceNodeId === selected || l.targetNodeId === selected) {
         set.add(l.sourceNodeId);

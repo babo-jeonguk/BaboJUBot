@@ -55,7 +55,8 @@ import { defaultHarnessDir } from "./harness.ts";
 import { createOrganization } from "./organizations.ts";
 import { editResearchMapAsOwner } from "./research-map.ts";
 import { addOwnerTaskComment } from "./tasks.ts";
-import { orgToolsRouter, problemResponses } from "./tools.ts";
+import { problemResponses } from "./problems.ts";
+import { orgToolsRouter } from "./tools.ts";
 
 /**
  * JSON 요청 본문 크기 상한(바이트). 계약상 가장 큰 본문인 산출물(최대 {@link artifactContentMaxLength}자)은

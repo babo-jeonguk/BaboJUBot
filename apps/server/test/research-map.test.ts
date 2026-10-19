@@ -10,6 +10,7 @@ import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   calls,
+  idle,
   ok,
   reasons,
   scriptedAgents,
@@ -540,9 +541,55 @@ describe("research map", () => {
       ["create_node", "agent"],
       ["link_task", "agent"],
       ["update_node", "owner"],
+      // 이 노드로 들어오는 보조 연결의 추가도 이 노드의 기록에 보인다.
+      ["add_link", "owner"],
       ["discard_node", "owner"],
       ["restore_node", "owner"],
     ]);
+  });
+
+  it("records a node link made at task creation as the creating agent's map edit", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await researching(agents, "생성 연결 조직");
+    const { H } = await seedMap(org.id);
+    await t.drain();
+    const editsBefore = (await mapEvents(org.id)).length;
+    agents.queue(org.workers[0]!.id, idle);
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "create_task",
+        input: {
+          title: "가설 검증",
+          assigneeAgentId: org.workers[0]!.id,
+          researchNodeId: H,
+        },
+      })
+    );
+    await say(org.id, "작업");
+    await t.drain();
+
+    const [task] = await tasksOf(org.id);
+    expect(task!.researchNodeId).toBe(H);
+    const leadRun = agents.of(org.lead.id).at(-1)!.request.identity.runId;
+    expect(
+      (await mapEvents(org.id)).slice(editsBefore).map((e) => e.payload)
+    ).toEqual([
+      expect.objectContaining({
+        operation: "link_task",
+        author: "agent",
+        agentId: org.lead.id,
+        runId: leadRun,
+        nodeId: H,
+        taskId: task!.id,
+        wokenAgentId: null,
+      }),
+    ]);
+    expect((await nodeDetail(org.id, H)).edits.at(-1)).toMatchObject({
+      operation: "link_task",
+      taskId: task!.id,
+    });
   });
 
   it("refuses map edits before the initial research approval and keeps the map empty", async () => {

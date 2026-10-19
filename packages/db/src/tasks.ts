@@ -44,6 +44,7 @@ import {
   tasks,
   wakes,
 } from "./schema.ts";
+import { linkCreatedTask } from "./research-map.ts";
 import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
 
 // 작업·작업 댓글·산출물·에이전트 간 메시지의 저장. 도구 쓰기는 모두 `toolWrite`의 실행 시도 → 조직 잠금 아래에서
@@ -84,13 +85,25 @@ export function createTask(
       if (problem) return { kind: "invalid", problem };
     }
     const plan = planTaskCreation(locked, input, source);
-    await tx.insert(tasks).values(taskRow(plan.task));
+    // 연구 노드 연결은 작업을 쓴 뒤 연결 편집으로 남긴다.
+    await tx
+      .insert(tasks)
+      .values({ ...taskRow(plan.task), researchNodeId: null });
     if (plan.wake) await insertWake(tx, plan.wake);
     const event = await insertEvent(tx, plan.event);
+    const linked =
+      input.researchNodeId &&
+      (await linkCreatedTask(
+        tx,
+        locked,
+        plan.task.id,
+        input.researchNodeId,
+        source
+      ));
     return {
       kind: "ok",
       value: plan.task,
-      events: [event],
+      events: linked ? [event, linked] : [event],
       woken: wokenBy(plan.wake),
     };
   });

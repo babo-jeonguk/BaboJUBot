@@ -30,7 +30,7 @@ import {
   type RecordSource,
   type Wake,
 } from "@babojubot/core";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, or } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   artifactSummaryColumns,
@@ -191,7 +191,7 @@ export async function getResearchMap(
   return { nodes: nodes.map(toNode), links: links.map(toLink) };
 }
 
-/** 노드 상세: 연결 작업과 그 산출물, 편집 기록. 다른 조직의 노드와 없는 노드를 구별하지 않는다. */
+/** 노드 상세: 연결 작업과 그 산출물, 편집 기록(들어오는 보조 연결 포함). 다른 조직의 노드와 없는 노드를 구별하지 않는다. */
 export async function findResearchNodeDetail(
   db: Executor,
   organizationId: string,
@@ -235,13 +235,26 @@ export async function findResearchNodeDetail(
         )
         .orderBy(asc(artifacts.seq))
     : [];
+  // 이 노드가 대상인 편집과, 이 노드로 들어오는 보조 연결의 추가.
+  const incoming = db
+    .select({ id: researchLinks.id })
+    .from(researchLinks)
+    .where(
+      and(
+        eq(researchLinks.organizationId, organizationId),
+        eq(researchLinks.targetNodeId, nodeId)
+      )
+    );
   const edits = await db
     .select()
     .from(researchMapEdits)
     .where(
       and(
         eq(researchMapEdits.organizationId, organizationId),
-        eq(researchMapEdits.nodeId, nodeId)
+        or(
+          eq(researchMapEdits.nodeId, nodeId),
+          inArray(researchMapEdits.linkId, incoming)
+        )
       )
     )
     .orderBy(asc(researchMapEdits.seq));
@@ -310,7 +323,7 @@ async function apply<C extends MapCommand>(
         editor,
         c.nodeId,
         c.parentNodeId,
-        c.op === "assign_parent" ? "assign" : "change",
+        c.op,
         source
       );
       break;
@@ -333,38 +346,52 @@ async function apply<C extends MapCommand>(
         editor,
         task,
         c.op === "unlink_task" ? null : c.researchNodeId,
-        c.op === "link_task"
-          ? "link"
-          : c.op === "relink_task"
-            ? "relink"
-            : "unlink",
+        c.op,
         source
       );
-      if (typeof plan === "string") return { kind: "invalid", problem: plan };
-      const event = plan.kind === "edit" ? await store(tx, plan) : undefined;
-      const updated = await selectTaskRow(tx, map.organizationId, c.taskId);
-      return {
-        kind: "ok",
-        value: toTask(updated!) as MapCommandValue<C>,
-        event,
-        wake: plan.kind === "edit" ? plan.wake : undefined,
-      };
+      break;
     }
   }
   if (typeof plan === "string") return { kind: "invalid", problem: plan };
-  if (plan.kind === "unchanged")
-    return {
-      kind: "ok",
-      value: plan.value as MapCommandValue<C>,
-      event: undefined,
-      wake: undefined,
-    };
+  const edited = plan.kind === "edit" ? plan : undefined;
+  const event = edited && (await store(tx, edited));
+  // 작업 연결 명령은 저장 뒤의 작업 전체를 돌려준다.
+  const value =
+    "taskId" in c
+      ? toTask((await selectTaskRow(tx, map.organizationId, c.taskId))!)
+      : plan.value;
   return {
     kind: "ok",
-    value: plan.value as MapCommandValue<C>,
-    event: await store(tx, plan),
-    wake: plan.wake,
+    value: value as MapCommandValue<C>,
+    event,
+    wake: edited?.wake,
   };
+}
+
+/**
+ * 작업 생성 때의 연구 노드 연결. 작업 생성과 같은 transaction에서 연결 편집 기록·Event를 남긴다.
+ * 노드가 같은 조직의 폐기되지 않은 노드인지는 작업을 쓰기 전에 확인해야 한다(여기서 거부되면 오류다).
+ */
+export async function linkCreatedTask(
+  tx: Executor,
+  run: { id: string; organizationId: string; agentId: string },
+  taskId: string,
+  researchNodeId: string,
+  source: RecordSource
+): Promise<Event | undefined> {
+  const map = await loadMap(tx, run.organizationId);
+  const result =
+    map &&
+    (await apply(
+      tx,
+      map,
+      { author: "agent", agentId: run.agentId, runId: run.id },
+      { op: "link_task", taskId, researchNodeId },
+      source
+    ));
+  if (result?.kind !== "ok")
+    throw new Error(`task ${taskId} could not be linked to ${researchNodeId}`);
+  return result.event;
 }
 
 async function store(

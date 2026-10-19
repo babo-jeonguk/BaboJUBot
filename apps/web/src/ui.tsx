@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   ApprovalStatus,
   LifecycleStage,
+  ResearchMapOperation,
   ResearchNodeStatus,
   RunStatus,
   TaskStatus,
@@ -136,6 +137,19 @@ export const researchNodeStatusLabel: Record<ResearchNodeStatus, string> = {
   done: "완료",
   rejected: "기각됨",
   discarded: "폐기",
+};
+
+export const mapOperationLabel: Record<ResearchMapOperation, string> = {
+  create_node: "노드 추가",
+  update_node: "노드 수정",
+  assign_parent: "주 부모 지정",
+  change_parent: "주 부모 변경",
+  add_link: "보조 연결 추가",
+  discard_node: "노드 폐기",
+  restore_node: "폐기 취소",
+  link_task: "작업 연결",
+  relink_task: "작업 재연결",
+  unlink_task: "작업 연결 해제",
 };
 
 export const agentStatusLabel: Record<AgentStatus, string> = {

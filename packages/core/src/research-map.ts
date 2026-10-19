@@ -150,7 +150,7 @@ export function planNodeUpdate(
 }
 
 /**
- * 주 부모 지정(`assign`)과 변경(`change`). 지정은 주 부모가 없는 노드에만 하고, 변경은 기존 주 부모를 명시적으로 바꾸거나
+ * 주 부모 지정(`assign_parent`)과 변경(`change_parent`). 지정은 주 부모가 없는 노드에만 하고, 변경은 기존 주 부모를 명시적으로 바꾸거나
  * 없앤다(`null`). 자기 자신이나 후손은 주 부모가 될 수 없다. 순환 검사는 폐기된 노드를 포함한 모든 주 연결을 따라간다.
  */
 export function planParentChange(
@@ -158,7 +158,7 @@ export function planParentChange(
   editor: MapEditor,
   nodeId: string,
   parentNodeId: string | null,
-  mode: "assign" | "change",
+  operation: "assign_parent" | "change_parent",
   source: RecordSource
 ): MapPlan<ResearchNode> {
   const node = map.nodes.get(nodeId);
@@ -168,7 +168,7 @@ export function planParentChange(
     return "node_discarded";
   if (node.parentNodeId === parentNodeId)
     return { kind: "unchanged", value: node };
-  if (mode === "assign" && node.parentNodeId !== null)
+  if (operation === "assign_parent" && node.parentNodeId !== null)
     return "primary_parent_exists";
   if (parent && isSelfOrDescendant(map.nodes, node.id, parent.id))
     return "primary_cycle";
@@ -180,7 +180,7 @@ export function planParentChange(
     updatedAt: at,
   };
   return edited(map, editor, source, at, {
-    operation: mode === "assign" ? "assign_parent" : "change_parent",
+    operation,
     refs: { nodeId },
     summary: `노드 ${quote(node.title)} 주 부모: ${before ? quote(before.title) : "없음"} → ${parent ? quote(parent.title) : "없음"}`,
     value: updated,
@@ -284,7 +284,7 @@ export function taskNodeProblem(
 }
 
 /**
- * 작업의 연구 노드 연결(`link`)·재연결(`relink`)·해제(`unlink`). 작업은 노드 0~1개에 연결된다.
+ * 작업의 연구 노드 연결(`link_task`)·재연결(`relink_task`)·해제(`unlink_task`). 작업은 노드 0~1개에 연결된다.
  * 연결은 연결이 없는 작업에만 하고, 다른 노드로 바꾸려면 재연결을 명시해야 한다.
  */
 export function planTaskNodeLink(
@@ -292,7 +292,7 @@ export function planTaskNodeLink(
   editor: MapEditor,
   task: { id: string; title: string; researchNodeId: string | null },
   researchNodeId: string | null,
-  mode: "link" | "relink" | "unlink",
+  operation: "link_task" | "relink_task" | "unlink_task",
   source: RecordSource
 ): MapPlan<{ taskId: string; researchNodeId: string | null }> {
   const value = { taskId: task.id, researchNodeId };
@@ -306,14 +306,14 @@ export function planTaskNodeLink(
     if (task.researchNodeId === researchNodeId)
       return { kind: "unchanged", value };
     if (problem) return problem;
-    if (mode === "link" && task.researchNodeId !== null)
+    if (operation === "link_task" && task.researchNodeId !== null)
       return "task_already_linked";
   } else if (task.researchNodeId === null) return { kind: "unchanged", value };
   const describe = (n: ResearchNode | undefined) =>
     n ? quote(n.title) : "없음";
   const at = source.now().toISOString();
   return edited(map, editor, source, at, {
-    operation: `${mode}_task`,
+    operation,
     refs: { nodeId: next?.id ?? current?.id ?? null, taskId: task.id },
     summary: `작업 ${quote(task.title)}의 연구 노드: ${describe(current)} → ${describe(next)}`,
     value,

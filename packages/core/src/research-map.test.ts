@@ -132,53 +132,67 @@ describe("planNodeCreation", () => {
 
 describe("planParentChange", () => {
   it("assigns a parent only to a parentless node and changes it only explicitly", () => {
-    expect(planParentChange(map(), agent, "H", "X", "assign", source)).toBe(
-      "primary_parent_exists"
+    expect(
+      planParentChange(map(), agent, "H", "X", "assign_parent", source)
+    ).toBe("primary_parent_exists");
+    const assigned = planParentChange(
+      map(),
+      agent,
+      "X",
+      "M",
+      "assign_parent",
+      source
     );
-    const assigned = planParentChange(map(), agent, "X", "M", "assign", source);
     expect(assigned).toMatchObject({
       kind: "edit",
       value: { parentNodeId: "M" },
       edit: { operation: "assign_parent" },
     });
-    const changed = planParentChange(map(), owner, "H", "X", "change", source);
+    const changed = planParentChange(
+      map(),
+      owner,
+      "H",
+      "X",
+      "change_parent",
+      source
+    );
     expect(changed).toMatchObject({
       kind: "edit",
       value: { parentNodeId: "X" },
       edit: { summary: "노드 “노드 H” 주 부모: “노드 P” → “노드 X”" },
     });
     expect(
-      planParentChange(map(), owner, "H", null, "change", source)
+      planParentChange(map(), owner, "H", null, "change_parent", source)
     ).toMatchObject({ kind: "edit", value: { parentNodeId: null } });
     expect(
-      planParentChange(map(), owner, "H", "P", "change", source)
+      planParentChange(map(), owner, "H", "P", "change_parent", source)
     ).toMatchObject({ kind: "unchanged" });
   });
 
   it("refuses itself or a descendant as the parent, following primary links through discarded nodes", () => {
-    expect(planParentChange(map(), owner, "P", "P", "change", source)).toBe(
-      "primary_cycle"
-    );
-    expect(planParentChange(map(), owner, "P", "M", "change", source)).toBe(
-      "primary_cycle"
-    );
+    expect(
+      planParentChange(map(), owner, "P", "P", "change_parent", source)
+    ).toBe("primary_cycle");
+    expect(
+      planParentChange(map(), owner, "P", "M", "change_parent", source)
+    ).toBe("primary_cycle");
     // D(폐기)의 하위 노드 C도 P의 후손이다.
     const withChild = map(node("C", { parentNodeId: "D" }));
-    expect(planParentChange(withChild, owner, "P", "C", "change", source)).toBe(
-      "primary_cycle"
-    );
+    expect(
+      planParentChange(withChild, owner, "P", "C", "change_parent", source)
+    ).toBe("primary_cycle");
   });
 
   it("refuses a discarded node or a discarded parent", () => {
-    expect(planParentChange(map(), owner, "D", "X", "change", source)).toBe(
-      "node_discarded"
-    );
-    expect(planParentChange(map(), owner, "X", "D", "assign", source)).toBe(
-      "node_discarded"
-    );
-    expect(planParentChange(map(), owner, "X", "nope", "assign", source)).toBe(
-      "not_found"
-    );
+    expect(
+      planParentChange(map(), owner, "D", "X", "change_parent", source)
+    ).toBe("node_discarded");
+    expect(
+      planParentChange(map(), owner, "X", "D", "assign_parent", source)
+    ).toBe("node_discarded");
+    expect(
+      planParentChange(map(), owner, "X", "nope", "assign_parent", source)
+    ).toBe("not_found");
   });
 });
 
@@ -286,36 +300,36 @@ describe("planTaskNodeLink", () => {
 
   it("links an unlinked task once and requires an explicit relink for another node", () => {
     expect(
-      planTaskNodeLink(map(), agent, task(null), "H", "link", source)
+      planTaskNodeLink(map(), agent, task(null), "H", "link_task", source)
     ).toMatchObject({
       kind: "edit",
       change: { type: "set_task_node", taskId: "task-1", researchNodeId: "H" },
       edit: { operation: "link_task", nodeId: "H", taskId: "task-1" },
     });
     expect(
-      planTaskNodeLink(map(), agent, task("H"), "H", "link", source)
+      planTaskNodeLink(map(), agent, task("H"), "H", "link_task", source)
     ).toMatchObject({ kind: "unchanged" });
-    expect(planTaskNodeLink(map(), agent, task("H"), "M", "link", source)).toBe(
-      "task_already_linked"
-    );
     expect(
-      planTaskNodeLink(map(), agent, task("H"), "M", "relink", source)
+      planTaskNodeLink(map(), agent, task("H"), "M", "link_task", source)
+    ).toBe("task_already_linked");
+    expect(
+      planTaskNodeLink(map(), agent, task("H"), "M", "relink_task", source)
     ).toMatchObject({ kind: "edit", value: { researchNodeId: "M" } });
     expect(
-      planTaskNodeLink(map(), agent, task("H"), null, "unlink", source)
+      planTaskNodeLink(map(), agent, task("H"), null, "unlink_task", source)
     ).toMatchObject({
       kind: "edit",
       edit: { operation: "unlink_task", nodeId: "H" },
       value: { researchNodeId: null },
     });
     expect(
-      planTaskNodeLink(map(), agent, task(null), null, "unlink", source)
+      planTaskNodeLink(map(), agent, task(null), null, "unlink_task", source)
     ).toMatchObject({ kind: "unchanged" });
     expect(
-      planTaskNodeLink(map(), agent, task(null), "D", "link", source)
+      planTaskNodeLink(map(), agent, task(null), "D", "link_task", source)
     ).toBe("node_discarded");
     expect(
-      planTaskNodeLink(map(), agent, task(null), "nope", "link", source)
+      planTaskNodeLink(map(), agent, task(null), "nope", "link_task", source)
     ).toBe("not_found");
   });
 });
