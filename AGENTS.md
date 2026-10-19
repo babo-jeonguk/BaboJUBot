@@ -15,17 +15,17 @@
 
 ## Routing
 
-작업을 시작하기 전에 아래 항목 중 현재 작업에 해당하는 문서만 모두 읽습니다.
+착수 전에 해당 개발 절차를 읽고 완료 조건까지 따릅니다. 참고 문서는 작업에 해당하는 절만 읽습니다.
 
-- 기능 구현·변경, `implement` 호출 → [`docs/agents/implementation.md`](docs/agents/implementation.md)의 착수·PR 생성 절차, 해당 GitHub 이슈의 조사·결정·완료 조건과 [`docs/features.md`](docs/features.md)의 확정 범위
-- 코드 리뷰 결과의 수정·반영, 외부 리뷰 자료 전달 → [`docs/agents/review-fixes.md`](docs/agents/review-fixes.md)의 지적 검증·수정·재검토 절차
-- 코드 탐색·수정 위치 결정·버그 원인 추적 → [`docs/agents/code-map.md`](docs/agents/code-map.md)의 해당 작업 항목
-- PR 병합 요청 → [`docs/agents/pr-merge.md`](docs/agents/pr-merge.md)의 절차와 완료 조건
-- 문서 생성·수정·구조 정리 → [`docs/README.md`](docs/README.md)의 문서별 책임과 작성·갱신 기준
-- module 경계·seam·불변 조건 강제 위치 → [`docs/architecture.md`](docs/architecture.md)와 [`docs/adr/`](docs/adr/)
-- 도메인 용어, 용어 충돌, 설계 결정 기록 → [`docs/agents/domain.md`](docs/agents/domain.md)
-- 이슈 조회·작성·댓글·label·triage → [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)와 [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md)
-- 사용자 요구의 배경·의도 → [`docs/project-intent.md`](docs/project-intent.md)
-- 설치·검증 명령 → [`README.md`](README.md)의 개발 시작
-- 커밋 메시지 작성 → [`docs/agents/commit-messages.md`](docs/agents/commit-messages.md)
-- 구현 직전 선행 사례·레퍼런스 조사 → [`reference-first`](.agents/skills/reference-first/SKILL.md) skill (`/reference-first #<n>`)
+- 구현·`implement` → [구현 절차](docs/agents/implementation.md), 해당 이슈의 조사·결정·완료 조건과 [기능 범위](docs/features.md)
+- 리뷰 수정·외부 리뷰 인계 → [리뷰 반영](docs/agents/review-fixes.md)
+- 코드 탐색·버그 추적 → [코드 지도](docs/agents/code-map.md)
+- PR 병합 → [병합 절차](docs/agents/pr-merge.md)
+- 문서 작성·구조 정리 → [문서 지도와 작성 기준](docs/README.md)
+- module·seam·불변 조건 강제 → [전체 구조](docs/architecture.md)와 관련 [ADR](docs/adr/)
+- 용어·의미 충돌·ADR 작성 → [도메인 규칙](docs/agents/domain.md)
+- 이슈 작업 → [이슈 운영](docs/agents/issue-tracker.md); label·triage 시 [label 표](docs/agents/triage-labels.md)
+- 사용자 요구의 배경 → [인터뷰 기록](docs/project-intent.md)
+- 설치·검증 → [개발 시작](README.md#개발-시작)과 [검증 기준](README.md#검증-기준)
+- 커밋 메시지 → [커밋 규칙](docs/agents/commit-messages.md)
+- 구현 전 레퍼런스 조사 → [reference-first](.agents/skills/reference-first/SKILL.md) (`/reference-first #<n>`)

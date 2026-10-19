@@ -1,45 +1,40 @@
 # 전체 구조
 
-BaboJUBot의 큰 module, module 사이 seam, 각 seam에서 주고받는 것의 모양, 제품 불변 조건을 강제하는 위치를 정합니다. 2026-10-13 사용자와 합의한 첫 번째 구조입니다. 스택은 [ADR-0004](adr/0004-paperclip-aligned-stack.md)를 따르고, 데이터 형식과 세부 도구 선택은 [다음 단계로 넘긴 결정](#다음-단계로-넘긴-결정)에서 이어서 정합니다. 용어는 [`GLOSSARY.md`](../GLOSSARY.md)를 따르고, 구조를 고른 이유는 [`docs/adr/`](adr/)에 있습니다.
+2026-10-13 합의한 목표 구조입니다. [용어](../GLOSSARY.md)·[결정 이유](adr/)·[스택](adr/0004-paperclip-aligned-stack.md)을 따르며, 미정 사항은 [후속 결정](#다음-단계로-넘긴-결정)에 둡니다.
 
 ## Module
 
 ```text
-[Surface]          웹 대시보드 · 메시지 채널 adapter
-                     │ 제어 명령 · 사용자 메시지 · 사용자 편집 ↓      ↑ Event stream · 조회 · 알림
-[Control Plane]    조직 · 에이전트 · 작업 · 메시지 · 승인 요청 · 승인 정책 · 예산
-                   연구 지도 · 산출물 · 외부 job · 사용자 할 일 · Event log
-                     │ 실행 시도 요청 ↓                               ↑ 활동 이벤트 · usage · 세션 상태
-                     │                                               ↑ 조직 도구 호출 (실행 시도별 토큰)
-[Agent Runtime]    실행기 adapter · job runner adapter
-                     ↑ 실행 시도 조립 때 로드
-[Research Harness] Role · Soul · Skill · 연구 흐름 템플릿 · 연구 철학
-[Memory port]      조직 기억 · 에이전트 기억
+Surface ⇄ Control Plane ⇄ Agent Runtime(실행기·job runner adapter)
+               ↕                  ↑ 실행 시도 조립 때 로드
+           Memory port      Research Harness
 ```
 
-| Module | 책임 | 사용자가 말한 세 영역 |
-|---|---|---|
-| Surface | 대시보드와 메시지 앱. 비즈니스 규칙 없이 같은 명령 경로와 같은 Event stream을 씁니다. | ③ 감시·개입 |
-| Control Plane | 연구 기록의 원본이자 상태를 바꾸는 유일한 곳. 모든 제품 불변 조건을 강제합니다. | ① 연구 환경 |
-| Agent Runtime | 실행 시도를 외부 실행기로 수행하고 외부 job을 실행 수단에 맡깁니다. 자체 agent loop는 두지 않습니다([ADR-0001](adr/0001-adapter-control-plane.md)). | ① 연구 환경 |
-| Memory port | 연구 기록 위의 회수 계층. 기법과 저장 엔진은 기억 이슈에서 정합니다. | ① 연구 환경 |
-| Research Harness | 저장소에서 버전 관리하는 연구용 내용물과 하네스 전용 도구. 연구 판단은 에이전트가 합니다. | ② 연구 하네스 |
+| Module | 책임 |
+|---|---|
+| Surface | 웹 대시보드·메시지 채널. 비즈니스 규칙 없이 같은 명령 경로·Event stream 사용 |
+| Control Plane | 연구 기록의 원본·상태 변경의 유일한 주체. 조직·에이전트·작업·메시지·승인·예산·지도·산출물·job·사용자 할 일·Event log 및 제품 불변 조건 강제 |
+| Agent Runtime | 실행 시도·외부 job을 실행 수단에 위임. 자체 agent loop 없음([ADR-0001](adr/0001-adapter-control-plane.md)) |
+| Memory port | 연구 기록 위의 회수 계층. 기법·엔진은 기억 이슈에서 결정 |
+| Research Harness | 버전 관리하는 연구 내용물·전용 도구. 연구 판단은 에이전트 담당 |
+
+사용자 요구의 ① 연구 환경은 Control Plane·Runtime·Memory, ② 연구 하네스는 Harness, ③ 감시·개입은 Surface에 대응합니다.
 
 ## 패키지 구성
 
-아래는 목표 구조의 책임 배치입니다. 현재 구현 현황은 [README](../README.md), 실제 진입점과 테스트는 [코드 지도](agents/code-map.md)를 따릅니다.
+현재 구현은 [README](../README.md), 실제 코드·테스트는 [코드 지도](agents/code-map.md)를 따릅니다.
 
 | 위치 | 담는 것 | Module |
 |---|---|---|
-| `apps/server` | HTTP·WebSocket API와 실행 시도 실행. 첫 판은 한 프로세스이고 worker 분리는 필요할 때 합니다. | Control Plane, Agent Runtime |
+| `apps/server` | HTTP·WebSocket API·실행 시도. 첫 판은 한 프로세스, 필요할 때 worker 분리 | Control Plane, Agent Runtime |
 | `apps/web` | 대시보드 | Surface |
-| `packages/core` | 생애주기·승인 정책·조직 경계 같은 도메인 규칙. 웹 프레임워크와 DB에 의존하지 않습니다. | Control Plane |
+| `packages/core` | 생애주기·승인 정책·조직 경계 규칙. 웹 프레임워크·DB 의존 없음 | Control Plane |
 | `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구 | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
 | `packages/runtime` | 실행기 adapter(가짜부터), job runner adapter, 채널 adapter | Agent Runtime, Surface |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
 
-Memory port는 첫 판에서 `packages/core`의 interface와 `packages/db`의 단순 구현으로 둡니다.
+Memory port의 첫 판은 core interface·db 단순 구현입니다.
 
 ## Seam
 
@@ -47,15 +42,15 @@ Memory port는 첫 판에서 `packages/core`의 interface와 `packages/db`의 �
 
 Surface가 보내는 것:
 
-- **제어 명령**: 승인·반려·수정 요청, 결과 검토(수정 요청·최종 완료), 에이전트·조직 일시정지·재개·중단, 예산 조정, 승인 정책 변경. 즉시 효력이 있고 감사 기록에 남습니다.
-- **사용자 메시지**: Lead 대화 또는 작업 댓글. 전달 방식은 `다음 실행 시도에 반영`(기본), `steer`(Lead 대화이고 실행기가 지원할 때), `중단하고 반영` 중 하나입니다. `중단하고 반영`은 실행 시도 중단 제어 명령과 사용자 메시지 두 개로 기록합니다.
-- **사용자 편집**: 연구 지도, 에이전트별 Role·Soul·Skill 사본. 즉시 반영하고 편집자를 기록하며 Lead를 깨웁니다. 연구 노드 삭제는 `폐기` 상태로 바꿉니다.
+- **제어 명령**: 승인·반려·수정 요청, 결과 검토·최종 완료, 에이전트/조직 일시정지·재개·중단, 예산·승인 정책 변경. 즉시 효력·감사 기록.
+- **사용자 메시지**: Lead 대화·작업 댓글. `다음 실행 시도에 반영`(기본), `steer`(Lead 대화·실행기 지원 시), `중단하고 반영` 중 선택. 마지막은 중단 명령·메시지를 각각 기록합니다.
+- **사용자 편집**: 연구 지도·에이전트별 Role·Soul·Skill 사본. 즉시 반영·편집자 기록·Lead 깨우기. 연구 노드 삭제는 `폐기` 전이입니다.
 - **조회**: 화면에 필요한 조직 범위 데이터.
 
 Surface가 받는 것:
 
-- **Event stream**: 조직 ID가 붙은 상태 변화와 실행 시도 활동. 모든 화면이 구독해 실시간으로 갱신합니다.
-- **알림 outbox**: Lead 보고·질문, 승인 요청, 사용자 할 일, 결과 제출, 오류·예산·job 경고. 메시지 채널 adapter가 가져가 보내고, 받은 답장·버튼 입력은 위의 같은 명령 경로로 되돌립니다. 첫 판의 채널 adapter는 가짜입니다.
+- **Event stream**: 조직 ID가 붙은 상태 변화·실행 시도 활동. 모든 화면이 실시간 구독합니다.
+- **알림 outbox**: Lead 보고·질문, 승인 요청, 사용자 할 일, 결과 제출, 오류·예산·job 경고. 채널 adapter가 전송하고 답장·버튼 입력은 같은 명령 경로로 돌립니다. 첫 판은 가짜 채널입니다.
 
 ### Control Plane → Agent Runtime: 실행 시도
 
@@ -66,13 +61,13 @@ Surface가 받는 것:
 | 종료 | usage·비용 추정, 다음 세션 상태 또는 세션 초기화, 요약, 종료 사유 |
 | 제어 | 취소 |
 
-지침 bundle 버전이 바뀌면 이전 세션을 재개하지 않고 새 세션으로 시작합니다. 재개한 세션에는 지침을 다시 넣지 못하는 실행기가 많기 때문입니다. 첫 판은 가짜 실행기로 이 계약을 처음부터 끝까지 검증하고, 실제 adapter는 Claude 계열, ACP 범용 순으로 붙입니다. 실제 모델 호출 전에 계정·자격 증명·비용 권한을 확인합니다.
+지침 bundle 버전 변경 시 새 세션으로 시작합니다(재개 세션의 지침 교체를 지원하지 않는 실행기 대응). 가짜 실행기로 전체 계약을 검증한 뒤 Claude 계열→ACP 범용 adapter를 붙입니다. 실제 모델 호출 전 계정·자격 증명·비용 권한을 확인합니다.
 
 ### Agent → Control Plane: 조직 도구
 
-에이전트는 실행 시도별 토큰을 쓰는 하나의 도구 계약으로 Control Plane을 호출합니다. 조직·에이전트 범위는 토큰에서만 정해지고 도구 입력에는 조직을 고르는 값이 없습니다.
+실행 시도별 토큰을 쓰는 단일 도구 계약입니다. 조직·에이전트 범위는 토큰에서만 정하고 입력으로 조직을 선택할 수 없습니다.
 
-도구 범주: 작업, 메시지(같은 조직 안), 산출물, 연구 지도, 기억, 승인 요청, 사용자 할 일, 외부 job, 결과 제출, 팀·하네스 사본 조정. 승인 정책이 요구하는 행동의 도구 호출은 제품이 승인 요청으로 바꾸고, 사용자가 승인하면 실제로 실행합니다.
+도구 범주: 작업, 메시지(같은 조직 안), 산출물, 연구 지도, 기억, 승인 요청, 사용자 할 일, 외부 job, 결과 제출, 팀·하네스 사본 조정. 정책상 승인 대상 호출은 제품이 승인 요청으로 전환하고 사용자 승인 뒤 실행합니다.
 
 ### Control Plane ↔ job runner
 
@@ -84,25 +79,25 @@ Surface가 받는 것:
 
 ### Research Harness → Control Plane · Agent Runtime
 
-- 하네스 라이브러리는 Role·Soul·Skill·연구 흐름 템플릿·공통 연구 철학을 `AGENTS.md`/`SOUL.md`/`SKILL.md` 관례로 담습니다. 실행기를 바꿔도 내용물을 그대로 씁니다.
-- 초기 연구 승인 요청은 제출 때 라이브러리 내용(팀 구성의 Role·Soul·Skill과 흐름 템플릿)을 snapshot으로 고정합니다. 승인하면 라이브러리를 다시 읽지 않고 사용자가 검토한 그 snapshot에서 복사합니다. 반려·수정 요청 뒤의 재제출은 직전 요청을 가리키는 새 요청이며 직전 요청의 내용과 결정은 남습니다.
-- Lead의 Role·Soul은 조직을 만들 때 라이브러리에서 사본으로 복사됩니다. 초기 연구 승인 때 Lead가 제안한 흐름 템플릿은 조직 사본으로, Role·Soul·Skill은 팀 구성대로 에이전트마다 따로 사본으로 복사됩니다. 연구 중 추가되는 에이전트도 라이브러리에서 자기 사본을 받으며, 한 에이전트의 사본을 고쳐도 같은 Role의 다른 에이전트는 바뀌지 않습니다. 이후 Lead와 사용자는 사본을 조정하고, 라이브러리 개선은 사용자가 합니다.
-- 흐름 템플릿은 연구 노드 종류와 연결 종류를 선언합니다. Control Plane은 그 구조만 검증하고 연구적 판단은 하지 않습니다.
+- 라이브러리는 Role·Soul·Skill·흐름 템플릿·연구 철학을 `AGENTS.md`/`SOUL.md`/`SKILL.md` 관례로 담으며 실행기와 독립적입니다.
+- 초기 연구 승인 제출 시 팀 Role·Soul·Skill·흐름 템플릿을 snapshot으로 고정하고 승인 때 그 snapshot에서 복사합니다. 반려·수정 요청 후 재제출은 직전 요청을 참조하는 새 요청으로 남겨 이전 내용·결정을 보존합니다.
+- Lead Role·Soul은 조직 생성 시 라이브러리에서 복사합니다. 초기 승인 시 흐름 템플릿은 조직 사본, 팀 Role·Soul·Skill은 에이전트별 사본으로 만듭니다. 이후 추가 에이전트도 라이브러리에서 별도 사본을 받습니다. 같은 Role이어도 사본 수정은 서로 독립적이며 Lead·사용자가 조정합니다. 라이브러리는 사용자가 개선합니다.
+- 흐름 템플릿은 노드·연결 종류를 선언합니다. Control Plane은 구조를 검증하고 연구 판단은 에이전트에 둡니다.
 
 ### Memory port
 
-`write(scope, entry, 출처)`와 `recall(scope, query)` 모양입니다. scope(조직 기억·에이전트 기억)는 실행 시도 신원에서 정해집니다. 명시적 공유는 Control Plane에 둔 기록이며 Memory port가 이를 따릅니다. 첫 구현은 기법 없이 가장 단순하게 둡니다.
+`write(scope, entry, 출처)`·`recall(scope, query)`. 조직/에이전트 scope는 실행 시도 신원에서 정하고 Control Plane의 명시적 공유 기록을 따릅니다. 첫 구현은 특정 기법 없이 단순하게 둡니다.
 
 ## 상호작용 규칙
 
 협력은 영속 기록과 깨우기로 합니다([ADR-0002](adr/0002-durable-records-and-wakes.md)).
 
-- 작업 할당, 메시지 도착, 하위 작업 완료, 승인 결정(승인·반려·수정 요청), 사용자 편집, 외부 job 종료가 받는 에이전트를 깨웁니다.
-- 한 에이전트에 쌓인 깨우기는 하나의 실행 시도로 합칩니다. 실행 중에 도착한 입력은 다음 실행 시도로 미루며, 예외는 위 사용자 메시지 전달 방식뿐입니다.
+- 깨우기 원인: 작업 할당·메시지·하위 작업 완료·승인 결정(승인/반려/수정)·사용자 편집·외부 job 종료.
+- 에이전트별 대기 깨우기는 한 실행 시도로 합칩니다. 실행 중 입력은 다음 시도로 미루며 예외는 위 메시지 전달 방식뿐입니다.
 - Heartbeat는 에이전트별로 켜는 주기적 깨우기입니다. 간격은 Role 기본값을 사용자가 조정합니다.
-- 하위 작업이 끝나면 부모 작업 담당자를 깨웁니다. 하위 결과는 자기 보고로 표시하고 검증 대상으로 둡니다.
-- 사용자는 기본적으로 Lead와 대화하고, 작업 댓글은 그 작업의 담당 에이전트를 깨웁니다. Lead는 기록으로 봅니다.
-- 외부 job이 끝나면 시작한 에이전트를 깨웁니다. job 실패는 Lead를 깨우지 않고 대시보드와 알림에 표시합니다.
+- 하위 작업 완료는 부모 담당자를 깨웁니다. 하위 결과는 검증 대상인 자기 보고로 표시합니다.
+- 사용자는 기본적으로 Lead와 대화합니다. 작업 댓글은 해당 담당자만 깨우고 Lead는 기록으로 봅니다.
+- job 종료는 시작한 에이전트를 깨웁니다. 실패는 Lead 깨우기 대신 대시보드·알림에 표시합니다.
 
 ## 조직 생애주기
 

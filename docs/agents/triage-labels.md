@@ -1,15 +1,13 @@
-# Triage Labels
+# Triage labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+mattpocock/skills의 역할 이름과 이 저장소의 실제 label은 같습니다.
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| -------------------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| 역할·label | 의미 |
+| --- | --- |
+| `needs-triage` | 관리자의 평가 필요 |
+| `needs-info` | 제보자의 추가 정보 대기 |
+| `ready-for-agent` | 명세가 충분해 AFK agent 구현 가능 |
+| `ready-for-human` | 사람의 구현 필요 |
+| `wontfix` | 진행하지 않음 |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
-
-Edit the right-hand column to match whatever vocabulary you actually use.
+skill이 역할을 지시하면 이 label을 씁니다. 조작 명령은 [이슈 운영](issue-tracker.md)을 따릅니다.
