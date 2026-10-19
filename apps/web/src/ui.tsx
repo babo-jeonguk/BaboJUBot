@@ -1,5 +1,7 @@
 import type {
   AgentStatus,
+  ApprovalDecision,
+  ApprovalStatus,
   LifecycleStage,
   RunStatus,
 } from "@babojubot/contracts";
@@ -69,6 +71,34 @@ export function RunStatusBadge({ status }: { status: RunStatus }) {
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
       {runStatusLabel[status]}
+    </span>
+  );
+}
+
+export const decisionLabel: Record<ApprovalDecision, string> = {
+  approve: "승인",
+  reject: "반려",
+  request_changes: "수정 요청",
+};
+export const approvalStatusLabel: Record<ApprovalStatus, string> = {
+  pending: "결정 대기",
+  approved: "승인됨",
+  rejected: "반려됨",
+  changes_requested: "수정 요청됨",
+};
+const approvalStatusStyle: Record<ApprovalStatus, string> = {
+  pending: "bg-amber-50 text-amber-800",
+  approved: "bg-emerald-50 text-emerald-700",
+  rejected: "bg-rose-50 text-rose-700",
+  changes_requested: "bg-sky-50 text-sky-700",
+};
+
+export function ApprovalStatusBadge({ status }: { status: ApprovalStatus }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${approvalStatusStyle[status]}`}
+    >
+      {approvalStatusLabel[status]}
     </span>
   );
 }

@@ -37,10 +37,13 @@ export const agentSchema = z.object({
 });
 export type Agent = z.infer<typeof agentSchema>;
 
+/** 연구 조직. 연구 목표와 완료 기준은 목표 설정에서 Lead가 기록하기 전에는 없다. */
 export const organizationSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   stage: lifecycleStageSchema,
+  goal: z.string().nullable(),
+  completionCriteria: z.string().nullable(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 export type Organization = z.infer<typeof organizationSchema>;

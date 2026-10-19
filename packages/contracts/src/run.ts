@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { approvalDecisionSchema } from "./approval.ts";
+import { instructionFileSchema } from "./harness.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
 
@@ -32,6 +34,14 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     messageId: z.uuid(),
     body: z.string(),
   }),
+  /** 사용자가 승인 요청을 결정했다. 반려·수정 요청의 사유가 `note`에 있다. */
+  z.object({
+    kind: z.literal("approval_decision"),
+    wakeId: z.uuid(),
+    approvalId: z.uuid(),
+    decision: approvalDecisionSchema,
+    note: z.string().nullable(),
+  }),
 ]);
 export type WakeReason = z.infer<typeof wakeReasonSchema>;
 export type WakeKind = WakeReason["kind"];
@@ -52,6 +62,8 @@ export const runContextSchema = z.object({
     id: z.uuid(),
     name: z.string(),
     stage: lifecycleStageSchema,
+    goal: z.string().nullable(),
+    completionCriteria: z.string().nullable(),
   }),
   agent: z.object({ id: z.uuid(), role: agentRoleSchema, name: z.string() }),
   conversation: z.array(conversationMessageSchema),
@@ -68,8 +80,10 @@ export const runRequestSchema = z.object({
   access: z.object({ toolsBaseUrl: z.url(), token: z.string().min(1) }),
   wakeReasons: z.array(wakeReasonSchema).min(1),
   context: runContextSchema,
-  /** 지침 bundle 버전. 사본(#54) 전에는 없다. 바뀌면 이전 세션을 이어 가지 않는다. */
+  /** 지침 bundle 버전. 에이전트의 Role·Soul·Skill 사본 내용에서 정하며, 사본이 없으면 없다. 바뀌면 이전 세션을 이어 가지 않는다. */
   instructionsBundleVersion: z.string().nullable(),
+  /** 그 버전을 정한 사본 내용. 실행기가 자기 방식으로 주입한다. */
+  instructions: z.array(instructionFileSchema),
   /** 연구 환경 workspace. 연구 환경 구성 전에는 없다. */
   workspace: z.object({ cwd: z.string() }).nullable(),
   previousSession: sessionStateSchema.nullable(),
@@ -173,6 +187,8 @@ export const agentDetailSchema = z.object({
   name: z.string(),
   createdAt: z.iso.datetime({ offset: true }),
   status: agentStatusSchema,
+  /** 현재 사본에서 정한 지침 bundle 버전. 다음 실행 시도가 받는다. */
+  instructionsBundleVersion: z.string().nullable(),
   recentRuns: z.array(runSummarySchema),
 });
 export type AgentDetail = z.infer<typeof agentDetailSchema>;

@@ -1,6 +1,12 @@
 import type { RunRequest } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
-import { createScriptedRuntime } from "./scripted.ts";
+import {
+  createScriptedRuntime,
+  demoLeadScript,
+  leadReplyScript,
+  parseGoalMessage,
+  type Script,
+} from "./scripted.ts";
 import { createGate } from "./testing.ts";
 
 const ids = {
@@ -24,11 +30,14 @@ const request: RunRequest = {
       id: ids.organizationId,
       name: "조직",
       stage: "goal_setting",
+      goal: null,
+      completionCriteria: null,
     },
     agent: { id: ids.agentId, role: "lead", name: "Research Lead" },
     conversation: [],
   },
   instructionsBundleVersion: null,
+  instructions: [],
   workspace: null,
   previousSession: null,
 };
@@ -168,5 +177,83 @@ describe("scripted runtime", () => {
       { signal: c.controller.signal, emit: c.emit }
     );
     expect(result.stopReason).toBe("failed");
+  });
+});
+
+describe("demo Lead scenario", () => {
+  const calls = (script: Script) =>
+    script.steps.flatMap((s) => (s.do === "call" ? [s.tool] : []));
+  const at = (
+    stage: RunRequest["context"]["organization"]["stage"],
+    wakeReasons: RunRequest["wakeReasons"],
+    goal: string | null = null
+  ): RunRequest => ({
+    ...request,
+    wakeReasons,
+    context: {
+      ...request.context,
+      organization: {
+        ...request.context.organization,
+        stage,
+        goal,
+        completionCriteria: goal && "기준",
+      },
+    },
+  });
+  const message = (body: string) => ({
+    kind: "owner_message" as const,
+    wakeId: crypto.randomUUID(),
+    messageId: crypto.randomUUID(),
+    body,
+  });
+
+  it("reads a goal only from both `목표:` and `완료 기준:` lines", () => {
+    expect(parseGoalMessage("목표: 오류 절반\n완료 기준：WER 10%")).toEqual({
+      goal: "오류 절반",
+      completionCriteria: "WER 10%",
+    });
+    expect(parseGoalMessage("오류를 줄이는 것이 목표입니다")).toBeUndefined();
+    expect(parseGoalMessage("목표: 오류 절반")).toBeUndefined();
+  });
+
+  it("records the goal and requests approval, resubmits after changes are requested, and otherwise replies", () => {
+    expect(
+      calls(
+        demoLeadScript(
+          at("goal_setting", [message("목표: 오류 절반\n완료 기준: WER 10%")])
+        )
+      )
+    ).toEqual(["record_goal", "request_initial_approval"]);
+    expect(
+      calls(demoLeadScript(at("goal_setting", [message("안녕")])))
+    ).toEqual([]);
+    const sentBack = {
+      kind: "approval_decision" as const,
+      wakeId: crypto.randomUUID(),
+      approvalId: crypto.randomUUID(),
+      decision: "request_changes" as const,
+      note: "줄여 주세요",
+    };
+    const resubmit = demoLeadScript(at("planning", [sentBack], "오류 절반"));
+    expect(calls(resubmit)).toEqual(["request_initial_approval"]);
+    const step = resubmit.steps.find((s) => s.do === "call");
+    expect(
+      step?.do === "call" &&
+        (
+          step.input?.({
+            request,
+            context: undefined,
+            sent: [],
+            calls: [],
+          }) as {
+            plan: string;
+          }
+        ).plan
+    ).toContain("줄여 주세요");
+    expect(
+      demoLeadScript(
+        at("researching", [{ ...sentBack, decision: "approve", note: null }])
+      )
+    ).toBe(leadReplyScript);
   });
 });

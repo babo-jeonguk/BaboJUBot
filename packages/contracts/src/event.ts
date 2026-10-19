@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
 import { lifecycleStageSchema } from "./organization.ts";
+import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
 import {
   publicActivitySchema,
   runStopReasonSchema,
@@ -73,8 +75,70 @@ export const runFinishedEventSchema = z.object({
   }),
 });
 
+/** Lead가 연구 목표와 완료 기준을 기록했다. 목표 설정에서 기록하면 계획 수립으로 넘어간다. */
+export const goalRecordedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("organization.goal_recorded"),
+  payload: z.object({
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    goal: z.string(),
+    completionCriteria: z.string(),
+    stage: lifecycleStageSchema,
+  }),
+});
+
+/** Lead가 승인 요청을 올렸다. `stage`는 요청 뒤 조직 단계다. */
+export const approvalRequestedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("approval.requested"),
+  payload: z.object({
+    approvalId: z.uuid(),
+    kind: approvalKindSchema,
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    stage: lifecycleStageSchema,
+  }),
+});
+
+/**
+ * 사용자의 승인 결정 제어 명령을 남긴 Event. `stage`는 결정 뒤 조직 단계, `createdAgentIds`는 승인으로 생긴 작업자,
+ * `wokenAgentId`는 결정 사유로 깨운 에이전트(요청한 Lead)다.
+ */
+export const approvalDecidedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("approval.decided"),
+  payload: z.object({
+    approvalId: z.uuid(),
+    kind: approvalKindSchema,
+    by: z.literal("owner"),
+    decision: approvalDecisionSchema,
+    note: z.string().nullable(),
+    stage: lifecycleStageSchema,
+    createdAgentIds: z.array(z.uuid()),
+    wokenAgentId: z.uuid(),
+  }),
+});
+
+/** 조직 도구 호출을 Role 또는 생애주기 단계 규칙으로 거부했다. 거부한 호출은 아무것도 바꾸지 않는다. */
+export const toolRefusedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("tool.refused"),
+  payload: z.object({
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    tool: orgToolNameSchema,
+    stage: lifecycleStageSchema,
+    reason: toolRefusalReasonSchema,
+  }),
+});
+
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
+  goalRecordedEventSchema,
+  approvalRequestedEventSchema,
+  approvalDecidedEventSchema,
+  toolRefusedEventSchema,
   messageCreatedEventSchema,
   runStartedEventSchema,
   runActivityEventSchema,

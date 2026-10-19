@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RunResult } from "@babojubot/contracts";
+import type { RunResult, WakeReason } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { insertOrganizationCreation } from "./organizations.ts";
@@ -33,8 +33,11 @@ const completed: RunResult = {
   nextSession: null,
 };
 
+const messageIdOf = (reason: WakeReason) =>
+  reason.kind === "owner_message" ? reason.messageId : undefined;
+
 async function organization() {
-  const creation = planOrganizationCreation({ name: "조직" }, source);
+  const creation = planOrganizationCreation({ name: "조직" }, [], source);
   await insertOrganizationCreation(t.db, creation);
   const lead = creation.agents[0]!;
   const send = async (body: string) => {
@@ -49,7 +52,6 @@ async function organization() {
   const claim = (tokenDigest = randomUUID()) =>
     claimNextRun(t.db, lead.id, {
       tokenDigest,
-      instructionsBundleVersion: null,
       source,
     });
   return { lead, send, claim };
@@ -62,10 +64,7 @@ describe("wake queue admission", () => {
     const second = await send("둘");
 
     const run1 = await claim();
-    expect(run1?.wakeReasons.map((w) => w.messageId)).toEqual([
-      first.id,
-      second.id,
-    ]);
+    expect(run1?.wakeReasons.map(messageIdOf)).toEqual([first.id, second.id]);
     expect(run1?.event).toMatchObject({
       type: "run.started",
       payload: { runId: run1?.run.id },
@@ -76,7 +75,7 @@ describe("wake queue admission", () => {
 
     // 실행 중 도착한 메시지는 지금 실행 시도의 맥락에 섞이지 않는다.
     const context = await loadRunContext(t.db, run1!.run.id);
-    expect(context?.wakeReasons.map((w) => w.messageId)).toEqual([
+    expect(context?.wakeReasons.map(messageIdOf)).toEqual([
       first.id,
       second.id,
     ]);
@@ -89,7 +88,7 @@ describe("wake queue admission", () => {
       await finishRun(t.db, run1!.run.id, completed, source)
     ).toMatchObject({ type: "run.finished" });
     const run2 = await claim();
-    expect(run2?.wakeReasons.map((w) => w.messageId)).toEqual([third.id]);
+    expect(run2?.wakeReasons.map(messageIdOf)).toEqual([third.id]);
 
     const conversation = await listConversation(
       t.db,

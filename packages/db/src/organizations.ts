@@ -8,14 +8,15 @@ import { and, asc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   insertEvent,
+  instructionCopyRow,
   isUuid,
   toAgent,
   toEvent,
   toOrganization,
 } from "./rows.ts";
-import { agents, events, organizations } from "./schema.ts";
+import { agents, events, instructionCopies, organizations } from "./schema.ts";
 
-/** 조직·에이전트·Event를 한 transaction으로 저장하고 저장된 Event를 돌려준다. 하나라도 실패하면 아무것도 남지 않는다. */
+/** 조직·에이전트·Lead 지침 사본·Event를 한 transaction으로 저장하고 저장된 Event를 돌려준다. 하나라도 실패하면 아무것도 남지 않는다. */
 export async function insertOrganizationCreation(
   db: Database,
   records: OrganizationCreation
@@ -30,6 +31,10 @@ export async function insertOrganizationCreation(
       .values(
         records.agents.map((a) => ({ ...a, createdAt: new Date(a.createdAt) }))
       );
+    if (records.instructionCopies.length)
+      await tx
+        .insert(instructionCopies)
+        .values(records.instructionCopies.map(instructionCopyRow));
     return insertEvent(tx, records.event);
   });
 }

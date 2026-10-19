@@ -1,14 +1,24 @@
 import { lifecycleStages } from "@babojubot/contracts";
 import { Link, useParams } from "react-router";
+import type { OrganizationDetail } from "@babojubot/contracts";
 import { ActivityScreen } from "./activity.tsx";
 import { AgentsScreen } from "./agents.tsx";
-import { ApiError, useOrganization, useOrganizations } from "./api.ts";
+import {
+  ApiError,
+  useApprovals,
+  useFlowTemplate,
+  useOrganization,
+  useOrganizations,
+} from "./api.ts";
+import { approvalKindLabel } from "./approvals.tsx";
 import { LeadChat } from "./chat.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
 import {
   abbr,
+  ApprovalStatusBadge,
   avatarStyle,
+  formatTime,
   Loading,
   LoadError,
   NotFound,
@@ -150,6 +160,12 @@ export function OrganizationScreen() {
         <AgentsScreen orgId={orgId} agents={agents} />
       </Page>
     );
+  if (section === "dashboard")
+    return (
+      <Page width={width}>
+        <OrganizationDashboard org={org.data} />
+      </Page>
+    );
   return (
     <Page width={width}>
       <div className="card animate-fade-up p-6">
@@ -159,5 +175,124 @@ export function OrganizationScreen() {
         </p>
       </div>
     </Page>
+  );
+}
+
+/** 조직 › 대시보드: 단계, 연구 목표·완료 기준, 결정을 기다리는 승인 요청과 승인 이력, 팀과 연구 흐름 템플릿. */
+function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
+  const approvals = useApprovals(org.id);
+  const template = useFlowTemplate(org.id);
+  const pending = approvals.data?.find((a) => a.status === "pending");
+  const workers = org.agents.filter((a) => a.role === "worker").length;
+  return (
+    <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-xl font-semibold">{org.name}</h1>
+          <StageBadge stage={org.stage} />
+        </div>
+        {pending && (
+          <Link
+            to={`/orgs/${org.id}/approvals/${pending.id}`}
+            className="card card-hover flex items-center gap-3 p-4 ring-2 ring-amber-200"
+          >
+            <span className="text-xl">📝</span>
+            <div className="min-w-0 flex-1">
+              <div className="font-medium">
+                {approvalKindLabel[pending.kind]}이 결정을 기다립니다
+              </div>
+              <div className="text-xs text-slate-500">
+                계획·팀·연구 환경 명세를 검토하고 결정하세요.
+              </div>
+            </div>
+            <span className="text-sm text-brand-600">검토하기 →</span>
+          </Link>
+        )}
+        <section aria-label="연구 목표" className="card p-4">
+          <h2 className="mb-2 text-sm font-semibold text-slate-600">
+            연구 목표와 완료 기준
+          </h2>
+          {org.goal ? (
+            <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[6rem_1fr]">
+              <dt className="text-slate-500">연구 목표</dt>
+              <dd
+                className="break-words whitespace-pre-wrap"
+                data-testid="goal"
+              >
+                {org.goal}
+              </dd>
+              <dt className="text-slate-500">완료 기준</dt>
+              <dd
+                className="break-words whitespace-pre-wrap"
+                data-testid="completion-criteria"
+              >
+                {org.completionCriteria}
+              </dd>
+            </dl>
+          ) : (
+            <p className="text-sm text-slate-500">
+              아직 기록되지 않았습니다.{" "}
+              <Link
+                to={`/orgs/${org.id}/chat`}
+                className="text-brand-600 hover:underline"
+              >
+                Lead 대화
+              </Link>
+              에서 합의하면 Lead가 기록합니다.
+            </p>
+          )}
+        </section>
+      </div>
+      <div className="space-y-4">
+        <section aria-label="팀" className="card p-4 text-sm">
+          <h2 className="mb-2 font-semibold text-slate-600">팀</h2>
+          <Link
+            to={`/orgs/${org.id}/agents`}
+            className="text-brand-600 hover:underline"
+          >
+            Research Lead · 작업자 {workers}명
+          </Link>
+          <div className="mt-2 text-xs text-slate-500">
+            연구 흐름 템플릿:{" "}
+            {template.isPending
+              ? "…"
+              : template.isError
+                ? "불러오지 못함"
+                : (template.data?.label ?? "초기 연구 승인 뒤 정해집니다")}
+          </div>
+        </section>
+        <section aria-label="승인 요청 이력" className="card text-sm">
+          <h2 className="px-4 pt-4 pb-2 font-semibold text-slate-600">
+            승인 요청
+          </h2>
+          {approvals.isPending ? (
+            <Loading />
+          ) : approvals.isError ? (
+            <LoadError
+              what="승인 요청"
+              onRetry={() => void approvals.refetch()}
+            />
+          ) : !approvals.data.length ? (
+            <p className="px-4 pb-4 text-slate-500">아직 없습니다.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {approvals.data.map((a) => (
+                <li key={a.id}>
+                  <Link
+                    to={`/orgs/${org.id}/approvals/${a.id}`}
+                    className="flex items-center gap-2 px-4 py-2.5 transition hover:bg-slate-50"
+                  >
+                    <ApprovalStatusBadge status={a.status} />
+                    <span className="ml-auto text-xs text-slate-400 tabular-nums">
+                      {formatTime(a.createdAt)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    </div>
   );
 }

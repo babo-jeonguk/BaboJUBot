@@ -39,6 +39,7 @@ venv/
 .ruff_cache/
 # Local tooling
 .reference-cache/
+.scratch/
 .DS_Store
 .idea/
 .vscode/

@@ -1,10 +1,13 @@
 import type {
   Agent,
   CreateOrganizationInput,
+  InstructionCopy,
+  InstructionSourceFile,
   LifecycleStage,
   NewEvent,
   Organization,
 } from "@babojubot/contracts";
+import { copyInstructions } from "./harness.ts";
 
 export const initialStage: LifecycleStage = "goal_setting";
 export const leadAgentName = "Research Lead";
@@ -15,12 +18,17 @@ export type RecordSource = { newId: () => string; now: () => Date };
 export type OrganizationCreation = {
   organization: Organization;
   agents: Agent[];
+  instructionCopies: InstructionCopy[];
   event: NewEvent;
 };
 
-/** 새 조직은 `목표 설정`에서 시작하고 전용 Research Lead 하나를 갖는다. */
+/**
+ * 새 조직은 `목표 설정`에서 시작하고 전용 Research Lead 하나를 갖는다.
+ * Lead는 하네스 라이브러리의 Lead Role에서 복사한 자기 Role·Soul 사본을 받는다.
+ */
 export function planOrganizationCreation(
   input: CreateOrganizationInput,
+  leadInstructions: InstructionSourceFile[],
   { newId, now }: RecordSource
 ): OrganizationCreation {
   const createdAt = now().toISOString();
@@ -28,6 +36,8 @@ export function planOrganizationCreation(
     id: newId(),
     name: input.name,
     stage: initialStage,
+    goal: null,
+    completionCriteria: null,
     createdAt,
   };
   const lead: Agent = {
@@ -40,6 +50,10 @@ export function planOrganizationCreation(
   return {
     organization,
     agents: [lead],
+    instructionCopies: copyInstructions(lead, leadInstructions, {
+      newId,
+      createdAt,
+    }),
     event: {
       organizationId: organization.id,
       type: "organization.created",

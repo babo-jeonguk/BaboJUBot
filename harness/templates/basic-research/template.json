@@ -1,0 +1,16 @@
+{
+  "label": "기본 연구 흐름",
+  "description": "문제를 찾아 목록화하고, 가설·아이디어를 세워 검증 방법을 정한 뒤 실험·검증으로 결과를 얻고 평가해 반복한다.",
+  "nodeKinds": [
+    { "name": "problem", "label": "연구 문제" },
+    { "name": "hypothesis", "label": "가설·아이디어" },
+    { "name": "method", "label": "검증 방법" },
+    { "name": "experiment", "label": "실험·검증" },
+    { "name": "result", "label": "결과" }
+  ],
+  "linkKinds": [
+    { "name": "supports", "label": "뒷받침" },
+    { "name": "refutes", "label": "반박" },
+    { "name": "relates", "label": "관련" }
+  ]
+}

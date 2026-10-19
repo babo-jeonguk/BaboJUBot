@@ -1,9 +1,14 @@
 import {
   agentRoles,
+  approvalKinds,
+  approvalStatuses,
+  instructionKinds,
   lifecycleStages,
   messageAuthors,
   messageDeliveries,
   runStatuses,
+  type FlowKind,
+  type InitialResearchProposal,
   type NewEvent,
   type SessionState,
   type Usage,
@@ -38,12 +43,19 @@ export const organizations = pgTable(
     id: uuid("id").primaryKey(),
     name: text("name").notNull(),
     stage: text("stage", { enum: lifecycleStages }).notNull(),
+    /** Lead가 목표 설정에서 기록한다. 기록 전에는 없다. */
+    goal: text("goal"),
+    completionCriteria: text("completion_criteria"),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
     }).notNull(),
   },
   (t) => [
+    check(
+      "organizations_goal_check",
+      sql`(${t.goal} is null) = (${t.completionCriteria} is null)`
+    ),
     check(
       "organizations_stage_check",
       sql`${t.stage} in (${inList(lifecycleStages)})`
@@ -74,6 +86,39 @@ export const agents = pgTable(
     uniqueIndex("agents_one_lead_per_organization")
       .on(t.organizationId)
       .where(sql`${t.role} = 'lead'`),
+  ]
+);
+
+/**
+ * 에이전트 소유 지침 사본(Role·Soul·Skill). 하네스 라이브러리에서 복사한 내용과 그 출처·digest를 둔다.
+ * 사본은 에이전트마다 따로이며 같은 Role의 에이전트끼리도 행을 공유하지 않는다. 편집·revision은 #64.
+ */
+export const instructionCopies = pgTable(
+  "instruction_copies",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    agentId: uuid("agent_id").notNull(),
+    kind: text("kind", { enum: instructionKinds }).notNull(),
+    path: text("path").notNull(),
+    content: text("content").notNull(),
+    source: text("source").notNull(),
+    sourceDigest: text("source_digest").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "instruction_copies_kind_check",
+      sql`${t.kind} in (${inList(instructionKinds)})`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.agentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    uniqueIndex("instruction_copies_agent_path_unique").on(t.agentId, t.path),
   ]
 );
 
@@ -165,7 +210,89 @@ export const messages = pgTable(
   ]
 );
 
-const wakeKinds = ["owner_message"] as const satisfies readonly WakeKind[];
+/**
+ * 승인 요청. 제안 내용은 제출 때 고정한 snapshot이고 다시 바뀌지 않는다. 결정은 `pending`에서 한 번만 하며,
+ * 반려·수정 요청 뒤의 재제출은 직전 요청을 가리키는 새 행이다. 조직마다 결정을 기다리는 요청은 하나뿐이다.
+ */
+export const approvals = pgTable(
+  "approvals",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    kind: text("kind", { enum: approvalKinds }).notNull(),
+    status: text("status", { enum: approvalStatuses }).notNull(),
+    requestedByAgentId: uuid("requested_by_agent_id").notNull(),
+    requestedByRunId: uuid("requested_by_run_id").notNull(),
+    previousApprovalId: uuid("previous_approval_id"),
+    proposal: jsonb("proposal").$type<InitialResearchProposal>().notNull(),
+    decisionNote: text("decision_note"),
+    decidedAt: timestamp("decided_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("approvals_kind_check", sql`${t.kind} in (${inList(approvalKinds)})`),
+    check(
+      "approvals_status_check",
+      sql`${t.status} in (${inList(approvalStatuses)})`
+    ),
+    check(
+      "approvals_decided_check",
+      sql`(${t.status} = 'pending') = (${t.decidedAt} is null)`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.requestedByAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.requestedByRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.previousApprovalId],
+      foreignColumns: [t.organizationId, t.id],
+    }),
+    unique("approvals_organization_id_id_unique").on(t.organizationId, t.id),
+    uniqueIndex("approvals_one_pending_per_organization")
+      .on(t.organizationId)
+      .where(sql`${t.status} = 'pending'`),
+    index("approvals_organization_idx").on(t.organizationId, t.seq),
+  ]
+);
+
+/** 조직이 소유한 연구 흐름 템플릿 사본. 초기 연구 승인 때 승인한 snapshot에서 한 번 만든다. */
+export const flowTemplates = pgTable(
+  "flow_templates",
+  {
+    id: uuid("id").primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id)
+      .unique(),
+    approvalId: uuid("approval_id").notNull(),
+    name: text("name").notNull(),
+    label: text("label").notNull(),
+    description: text("description").notNull(),
+    nodeKinds: jsonb("node_kinds").$type<FlowKind[]>().notNull(),
+    linkKinds: jsonb("link_kinds").$type<FlowKind[]>().notNull(),
+    source: text("source").notNull(),
+    sourceDigest: text("source_digest").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.approvalId],
+      foreignColumns: [approvals.organizationId, approvals.id],
+    }),
+  ]
+);
+
+const wakeKinds = [
+  "owner_message",
+  "approval_decision",
+] as const satisfies readonly WakeKind[];
 
 /** 깨우기 대기열. `run_id`가 없으면 대기 중이고, 실행 시도가 가져가면 그 실행 시도에 고정된다. */
 export const wakes = pgTable(
@@ -179,14 +306,16 @@ export const wakes = pgTable(
     agentId: uuid("agent_id").notNull(),
     kind: text("kind", { enum: wakeKinds }).notNull(),
     messageId: uuid("message_id"),
+    approvalId: uuid("approval_id"),
     runId: uuid("run_id"),
     createdAt: createdAt(),
   },
   (t) => [
     check("wakes_kind_check", sql`${t.kind} in (${inList(wakeKinds)})`),
     check(
-      "wakes_message_check",
-      sql`${t.kind} <> 'owner_message' or ${t.messageId} is not null`
+      "wakes_source_check",
+      sql`(${t.kind} = 'owner_message' and ${t.messageId} is not null and ${t.approvalId} is null)
+        or (${t.kind} = 'approval_decision' and ${t.approvalId} is not null and ${t.messageId} is null)`
     ),
     foreignKey({
       columns: [t.organizationId, t.agentId],
@@ -195,6 +324,10 @@ export const wakes = pgTable(
     foreignKey({
       columns: [t.organizationId, t.messageId],
       foreignColumns: [messages.organizationId, messages.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.approvalId],
+      foreignColumns: [approvals.organizationId, approvals.id],
     }),
     foreignKey({
       columns: [t.organizationId, t.runId],
@@ -206,6 +339,8 @@ export const wakes = pgTable(
     index("wakes_run_idx").on(t.runId),
     // 메시지 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_message_unique").on(t.messageId),
+    // 승인 결정 하나는 깨우기 하나만 만든다.
+    uniqueIndex("wakes_approval_unique").on(t.approvalId),
   ]
 );
 
