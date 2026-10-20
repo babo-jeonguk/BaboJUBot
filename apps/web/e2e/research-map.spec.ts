@@ -218,3 +218,101 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
     panel.getByRole("button", { name: "＋ 하위 노드" })
   ).toBeInViewport();
 });
+
+test("parallel secondary links between the same two nodes are drawn apart and listed by link ID", async ({
+  page,
+}) => {
+  const org = await researchingOrganization(page, "병렬 보조 연결 조직");
+  await page.request.post(
+    `/api/organizations/${org.id}/approvals/${org.approvalId}/decision`,
+    { data: { decision: "approve" } }
+  );
+  let nodes: { id: string; title: string }[] = [];
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(
+          `/api/organizations/${org.id}/research-map`
+        );
+        nodes = ((await res.json()) as { nodes: typeof nodes }).nodes;
+        return nodes.length;
+      },
+      { timeout: 20_000 }
+    )
+    .toBe(2);
+  const [from, to] = nodes;
+
+  // 같은 방향의 두 노드 사이: 종류가 다른 연결 2개와 같은 종류의 연결 2개.
+  for (const kind of ["supports", "refutes", "relates", "relates"]) {
+    const res = await page.request.post(
+      `/api/organizations/${org.id}/research-links`,
+      { data: { sourceNodeId: from!.id, targetNodeId: to!.id, kind } }
+    );
+    expect(res.status()).toBe(201);
+  }
+  const links = (
+    (await (
+      await page.request.get(`/api/organizations/${org.id}/research-map`)
+    ).json()) as { links: { id: string }[] }
+  ).links;
+  expect(links).toHaveLength(4);
+
+  await page.goto(`/orgs/${org.id}/map?node=${from!.id}`);
+  const paths = links.map((l) =>
+    page.locator(
+      `.react-flow__edge[data-id="${l.id}"] path.react-flow__edge-path`
+    )
+  );
+  for (const p of paths) await expect(p).toHaveCount(1);
+  const shapes = await Promise.all(paths.map((p) => p.getAttribute("d")));
+  expect(new Set(shapes).size).toBe(4);
+
+  // 선택한 노드에 닿은 연결의 종류 이름도 서로 겹치지 않는다.
+  const labelsApart = async () => {
+    const boxes = await page
+      .locator(".react-flow__edge-textwrapper")
+      .evaluateAll((els) =>
+        els.map((el) => el.getBoundingClientRect().toJSON() as DOMRect)
+      );
+    expect(boxes).toHaveLength(4);
+    for (const [i, a] of boxes.entries())
+      for (const b of boxes.slice(i + 1))
+        expect(
+          a.bottom <= b.top ||
+            b.bottom <= a.top ||
+            a.right <= b.left ||
+            b.right <= a.left
+        ).toBe(true);
+  };
+  await labelsApart();
+
+  // 위→아래로 바꾸면 연결은 출발 카드의 아래쪽 가운데에서 나간다.
+  await page.getByRole("button", { name: "위→아래" }).click();
+  const card = page.locator(`.react-flow__node[data-id="${from!.id}"]`);
+  await expect
+    .poll(async () => {
+      const [x, y] = ((await card.getAttribute("style")) ?? "")
+        .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)/)!
+        .slice(1)
+        .map(Number);
+      const [sx, sy] = ((await paths[0]!.getAttribute("d")) ?? "")
+        .match(/^M([-\d.]+),([-\d.]+)/)!
+        .slice(1)
+        .map(Number);
+      return [Math.round(sx! - x!), sy! > y! + 70];
+    })
+    .toEqual([116, true]);
+  await labelsApart();
+
+  // 상세 패널은 관계 ID별로 한 행씩 보이고, 같은 종류의 두 연결도 짧은 ID로 구분된다.
+  const panel = page.getByRole("complementary", { name: "노드 상세" });
+  const rows = panel.locator("[data-link-id]");
+  await expect(rows).toHaveCount(4);
+  await expect(rows.filter({ hasText: "─관련→" })).toHaveCount(2);
+  const shown = await rows.getByTestId("link-id").allTextContents();
+  expect(new Set(shown).size).toBe(4);
+  for (const l of links)
+    await expect(panel.locator(`[data-link-id="${l.id}"]`)).toContainText(
+      l.id.slice(0, 8)
+    );
+});

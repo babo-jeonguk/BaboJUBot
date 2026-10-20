@@ -19,6 +19,7 @@ import {
 } from "@babojubot/contracts";
 import {
   Background,
+  BaseEdge,
   Controls,
   Handle,
   MarkerType,
@@ -27,7 +28,9 @@ import {
   ReactFlowProvider,
   useNodesInitialized,
   useReactFlow,
+  useUpdateNodeInternals,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -292,11 +295,9 @@ const ResearchCard = memo(function ResearchCard({
         <span className={`text-[11px] font-medium ${statusTone[node.status]}`}>
           {researchNodeStatusLabel[node.status]}
         </span>
-        {tasks > 0 && (
-          <span className="ml-auto rounded bg-slate-100 px-1 text-[10px] text-slate-500">
-            작업 {tasks}
-          </span>
-        )}
+        <span className="ml-auto rounded bg-slate-100 px-1 text-[10px] text-slate-500">
+          작업 {tasks}
+        </span>
       </div>
       <div
         className={`mt-1 line-clamp-2 text-[12.5px] leading-snug break-words ${gone ? "text-slate-400 line-through" : "text-slate-800"}`}
@@ -314,6 +315,66 @@ const ResearchCard = memo(function ResearchCard({
   );
 });
 const nodeTypes = { research: ResearchCard };
+
+// 같은 두 노드 사이 차선의 축별 간격. 종류 이름표가 겹치지 않도록 위아래로 벌릴 때는 이름표 높이, 좌우로 벌릴 때는 폭 기준이다.
+const LANE_GAP = { y: 24, x: 44 };
+// 연결 핸들에서 나가는 방향으로 둔 bezier 제어점. React Flow 기본 bezier(curvature 0.25)와 같은 식이다.
+const outward: Record<Position, XY> = {
+  [Position.Left]: { x: -1, y: 0 },
+  [Position.Right]: { x: 1, y: 0 },
+  [Position.Top]: { x: 0, y: -1 },
+  [Position.Bottom]: { x: 0, y: 1 },
+};
+const reach = (distance: number) =>
+  distance >= 0 ? distance / 2 : 0.25 * 25 * Math.sqrt(-distance);
+
+type LinkEdgeType = Edge<{ lane: number }, "link">;
+/** 보조 연결. 같은 두 노드 사이의 연결마다 진행 방향에 수직인 차선을 두어 선과 종류 이름이 겹치지 않게 한다. */
+const LinkEdge = memo(function LinkEdge({
+  id,
+  sourceX: sx,
+  sourceY: sy,
+  targetX: tx,
+  targetY: ty,
+  sourcePosition,
+  targetPosition,
+  data,
+  style,
+  markerEnd,
+  label,
+  labelStyle,
+  labelBgStyle,
+}: EdgeProps<LinkEdgeType>) {
+  const out = outward[sourcePosition];
+  const into = outward[targetPosition];
+  const a = reach((tx - sx) * out.x + (ty - sy) * out.y);
+  const b = reach((sx - tx) * into.x + (sy - ty) * into.y);
+  // 두 제어점을 같이 옮기면 곡선 가운데가 3/4만큼 움직인다.
+  const gap = out.x !== 0 ? LANE_GAP.y : LANE_GAP.x;
+  const shift = ((data?.lane ?? 0) * gap) / 0.75;
+  const c1 = {
+    x: sx + out.x * a + out.y * shift,
+    y: sy + out.y * a + out.x * shift,
+  };
+  const c2 = {
+    x: tx + into.x * b + out.y * shift,
+    y: ty + into.y * b + out.x * shift,
+  };
+  return (
+    <BaseEdge
+      id={id}
+      path={`M${sx},${sy} C${c1.x},${c1.y} ${c2.x},${c2.y} ${tx},${ty}`}
+      labelX={(sx + 3 * c1.x + 3 * c2.x + tx) / 8}
+      labelY={(sy + 3 * c1.y + 3 * c2.y + ty) / 8}
+      label={label}
+      labelStyle={labelStyle}
+      labelBgStyle={labelBgStyle}
+      style={style}
+      markerEnd={markerEnd}
+    />
+  );
+});
+const edgeTypes = { link: LinkEdge };
 
 type Panel = { mode: "add_root" } | { mode: "node"; id: string } | null;
 
@@ -432,33 +493,58 @@ function MapWorkspace({
         },
       });
     }
-  if (secMode !== "off")
-    for (const l of index.map.links) {
-      if (!visibleIds.has(l.sourceNodeId) || !visibleIds.has(l.targetNodeId))
-        continue;
-      const touch = l.sourceNodeId === selected || l.targetNodeId === selected;
-      if (secMode === "focus" && !touch) continue;
-      const color = linkColor(index.linkKinds, l.kind);
-      edges.push({
-        // 관계 ID를 그대로 쓴다. 같은 두 노드 사이의 여러 연결이 합쳐지지 않는다.
-        id: l.id,
-        source: l.sourceNodeId,
-        target: l.targetNodeId,
-        type: "default",
-        selectable: false,
-        zIndex: touch ? 5 : 0,
-        label: touch ? kindLabel(index.linkKinds, l.kind) : undefined,
-        labelStyle: { fill: color, fontWeight: 600, fontSize: 11 },
-        labelBgStyle: { fill: "white" },
-        style: {
-          stroke: color,
-          strokeWidth: touch ? 2 : 1.2,
-          strokeDasharray: "5 4",
-          opacity: touch ? 0.95 : selected ? 0.12 : 0.32,
-        },
-        markerEnd: { type: MarkerType.Arrow, color, width: 12, height: 12 },
-      });
-    }
+  const drawn =
+    secMode === "off"
+      ? []
+      : index.map.links.filter(
+          (l) =>
+            visibleIds.has(l.sourceNodeId) &&
+            visibleIds.has(l.targetNodeId) &&
+            (secMode === "all" ||
+              l.sourceNodeId === selected ||
+              l.targetNodeId === selected)
+        );
+  // 같은 방향으로 같은 두 노드를 잇는 보조 연결들. 겹치지 않게 순서대로 벌려 그린다.
+  const pair = (l: ResearchLink) => `${l.sourceNodeId}>${l.targetNodeId}`;
+  const parallel = new Map<string, number>();
+  for (const l of drawn)
+    parallel.set(pair(l), (parallel.get(pair(l)) ?? 0) + 1);
+  const placed = new Map<string, number>();
+  for (const l of drawn) {
+    const touch = l.sourceNodeId === selected || l.targetNodeId === selected;
+    const color = linkColor(index.linkKinds, l.kind);
+    const lane = placed.get(pair(l)) ?? 0;
+    placed.set(pair(l), lane + 1);
+    edges.push({
+      // 관계 ID를 그대로 쓴다. 같은 두 노드 사이의 여러 연결이 합쳐지지 않는다.
+      id: l.id,
+      source: l.sourceNodeId,
+      target: l.targetNodeId,
+      type: "link",
+      data: { lane: lane - (parallel.get(pair(l))! - 1) / 2 },
+      selectable: false,
+      zIndex: touch ? 5 : 0,
+      label: touch ? kindLabel(index.linkKinds, l.kind) : undefined,
+      labelStyle: { fill: color, fontWeight: 600, fontSize: 11 },
+      labelBgStyle: { fill: "white" },
+      style: {
+        stroke: color,
+        strokeWidth: touch ? 2 : 1.2,
+        strokeDasharray: "5 4",
+        opacity: touch ? 0.95 : selected ? 0.12 : 0.32,
+      },
+      markerEnd: { type: MarkerType.Arrow, color, width: 12, height: 12 },
+    });
+  }
+
+  // 방향을 바꾸면 카드의 연결 핸들이 옮겨 간다. 카드 크기는 그대로라 React Flow가 핸들 위치를 다시 재도록 알린다.
+  const updateNodeInternals = useUpdateNodeInternals();
+  const handlesDir = useRef(dir);
+  useEffect(() => {
+    if (handlesDir.current === dir) return;
+    handlesDir.current = dir;
+    updateNodeInternals(visible.map((n) => n.id));
+  }, [dir, visible, updateNodeInternals]);
 
   // 화면 맞춤은 처음 열 때와 방향을 바꿀 때만 한다. 이후 재배치는 사용자의 viewport를 유지한다.
   const fitted = useRef<Dir | null>(null);
@@ -644,6 +730,7 @@ function MapWorkspace({
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
             onNodeClick={(_, n) => select(n.id)}
             onPaneClick={() => select(undefined)}
@@ -769,7 +856,16 @@ function NodeDetail({
         <span className="shrink-0 font-medium" style={{ color }}>
           {outgoing ? `─${label}→` : `←${label}─`}
         </span>
-        {ref(outgoing ? l.targetNodeId : l.sourceNodeId)}
+        <span className="min-w-0 flex-1">
+          {ref(outgoing ? l.targetNodeId : l.sourceNodeId)}
+        </span>
+        <span
+          className="shrink-0 text-[10px] text-slate-400"
+          title={`관계 ID ${l.id}`}
+          data-testid="link-id"
+        >
+          {shortId(l.id)}
+        </span>
       </div>
     );
   };
