@@ -254,7 +254,7 @@ describe("planDiscard and planRestore", () => {
     });
   });
 
-  it("accepts only a restore for a discarded node", () => {
+  it("refuses every other edit of a discarded node; a repeated discard or restore is no edit", () => {
     expect(planNodeUpdate(map(), owner, "D", { title: "y" }, source)).toBe(
       "node_discarded"
     );

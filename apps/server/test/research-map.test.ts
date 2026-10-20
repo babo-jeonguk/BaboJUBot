@@ -474,6 +474,14 @@ describe("research map", () => {
     expect(kept.links).toEqual([
       expect.objectContaining({ sourceNodeId: second.id, targetNodeId: root }),
     ]);
+    // 폐기된 노드를 다시 폐기하면 무변경 성공이다: 폐기 직전 상태를 덮지 않고 기록·Event·깨우기도 없다.
+    const again = await edit("POST", org.id, `/research-nodes/${root}/discard`);
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({
+      status: "discarded",
+      statusBeforeDiscard: "in_progress",
+      updatedAt: discarded.updatedAt,
+    });
 
     const restored = await edit(
       "POST",
