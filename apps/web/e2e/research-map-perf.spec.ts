@@ -1,8 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
 // 연구 지도 성능 측정(#51 통과 기준 조합). 기본 검사에서는 건너뛰고 `MAP_PERF=1 pnpm test:e2e research-map-perf`로 실행한다(노드 수는 MAP_PERF_SIZES=50,200).
-// 헤드리스 Chromium 소프트웨어 렌더링 값이라 실제 GPU 프레임이 아니며, 변경 전후·조합끼리 비교하는 용도다.
+// MAP_PERF이면 Playwright 설정이 화면을 프로덕션 빌드(vite preview)로 띄운다. 헤드리스 Chromium 소프트웨어 렌더링 값이라 실제 GPU
+// 프레임이 아니며, 변경 전후·조합끼리 비교하는 용도다.
 test.skip(!process.env.MAP_PERF, "MAP_PERF=1일 때만 측정한다");
+// 실패 대비 trace 기록은 동작마다 화면을 남겨 측정값을 낮춘다.
+test.use({ trace: "off" });
 
 const sizes = process.env.MAP_PERF_SIZES?.split(",").map(Number) ?? [
   50, 200, 500,
@@ -107,12 +110,94 @@ type Row = {
   viewport: string;
   openMs: number;
   panFps: number;
+  zoomFps: number;
+  dragFps: number;
   selectMs: number;
+  reselectMs: number;
   findMs: number;
   editMs: number;
 };
 
-/** 지도를 열고 화면 끌기 fps·노드 선택 지연·주 부모 찾기·제목 편집 반영 시간을 잰다. */
+/** fn 동안 그려진 animation frame의 초당 수. */
+async function fps(page: Page, fn: () => Promise<void>) {
+  await page.evaluate(() => {
+    const w = window as unknown as { frames_: number; stop_: boolean };
+    w.frames_ = 0;
+    w.stop_ = false;
+    const tick = () => {
+      w.frames_++;
+      if (!w.stop_) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const t0 = Date.now();
+  await fn();
+  const frames = await page.evaluate(() => {
+    const w = window as unknown as { frames_: number; stop_: boolean };
+    w.stop_ = true;
+    return w.frames_;
+  });
+  return Math.round((frames * 1000) / (Date.now() - t0));
+}
+
+/** 지도 화면 안에 다 보이는 카드의 노드 ID와 가운데 좌표. */
+const cardsInView = (page: Page) =>
+  page.evaluate(() => {
+    const c = document
+      .querySelector('[data-testid="map-canvas"]')!
+      .getBoundingClientRect();
+    return [
+      ...document.querySelectorAll<HTMLElement>('[data-testid="map-node"]'),
+    ]
+      .map((e) => ({ id: e.dataset.nodeId!, r: e.getBoundingClientRect() }))
+      .filter(
+        ({ r }) =>
+          r.top > c.top + 4 &&
+          r.bottom < c.bottom - 4 &&
+          r.left > c.left + 4 &&
+          r.right < c.right - 4
+      )
+      .map(({ id, r }) => ({
+        id,
+        x: r.left + r.width / 2,
+        y: r.top + r.height / 2,
+      }));
+  });
+
+/** 화면 안 카드 n개. 모자라면 화면 맞춤을 누른다. */
+async function cards(page: Page, n: number) {
+  let found = await cardsInView(page);
+  if (found.length < n) {
+    await page.locator(".react-flow__controls-fitview").click();
+    await page.waitForTimeout(500);
+    found = await cardsInView(page);
+  }
+  if (found.length < n) throw new Error(`화면 안 카드가 ${n}개보다 적다`);
+  return found;
+}
+
+/** 노드를 눌러 상세 패널 머리에 그 노드가 보이고 다음 프레임이 그려질 때까지. */
+const selectMs = (page: Page, id: string) =>
+  page.evaluate(async (id) => {
+    const t = performance.now();
+    document
+      .querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)!
+      .click();
+    for (;;) {
+      await new Promise((r) => requestAnimationFrame(r));
+      if (
+        document.querySelector(`[data-testid="node-detail"] [title="${id}"]`)
+      ) {
+        await new Promise((r) => requestAnimationFrame(r));
+        return Math.round(performance.now() - t);
+      }
+    }
+  }, id);
+
+/**
+ * 지도를 열어 첫 카드가 보일 때까지, 화면 끌기·휠 확대 축소·노드 끌기(하위 함께) fps, 노드 선택(패널 열기)과 다른 노드 선택
+ * 지연, 보조 연결 대상 찾기, 제목 편집이 카드에 반영되기까지를 잰다.
+ */
 async function measure(
   page: Page,
   orgId: string,
@@ -120,17 +205,16 @@ async function measure(
   far: { id: string }
 ): Promise<Omit<Row, "nodes" | "links" | "viewport">> {
   const opened = Date.now();
-  await page.goto(`/orgs/${orgId}/map`);
-  await expect(page.getByTestId("map-node").first()).toBeVisible({
-    timeout: 30_000,
-  });
-  await page.evaluate(
-    () => new Promise((r) => requestAnimationFrame(() => r(null)))
+  await page.goto(`/orgs/${orgId}/map`, { waitUntil: "commit" });
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="map-node"]'),
+    null,
+    { polling: "raf", timeout: 30_000 }
   );
   const openMs = Date.now() - opened;
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(800);
 
-  // 화면 끌기: 빈 pane 한 점을 찾아 1초 동안 끌며 animation frame 수를 센다.
+  // 화면 끌기: 빈 pane 한 점을 잡고 끈다.
   const canvas = (await page.getByTestId("map-canvas").boundingBox())!;
   const start = await page.evaluate((box) => {
     for (let y = box.y + 20; y < box.y + box.height - 60; y += 15)
@@ -144,48 +228,45 @@ async function measure(
     return null;
   }, canvas);
   if (!start) throw new Error("빈 pane을 찾지 못했다");
-  await page.evaluate(() => {
-    const w = window as unknown as { frames_: number; stop_: boolean };
-    w.frames_ = 0;
-    w.stop_ = false;
-    const tick = () => {
-      w.frames_++;
-      if (!w.stop_) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+  const panFps = await fps(page, async () => {
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 60; i++)
+      await page.mouse.move(
+        start.x + Math.sin((i / 60) * Math.PI * 2) * 120,
+        start.y + i
+      );
+    await page.mouse.up();
   });
-  const t0 = Date.now();
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  const steps = 60;
-  for (let i = 1; i <= steps; i++) {
-    const dx = Math.sin((i / steps) * Math.PI * 2) * 120;
-    await page.mouse.move(start.x + dx, start.y + i);
-  }
-  await page.mouse.up();
-  const frames = await page.evaluate(() => {
-    const w = window as unknown as { frames_: number; stop_: boolean };
-    w.stop_ = true;
-    return w.frames_;
-  });
-  const panFps = Math.round((frames * 1000) / (Date.now() - t0));
 
-  // 노드 선택: 클릭부터 상세 패널이 그 노드를 보일 때까지.
-  const card = page.locator(`[data-testid="map-node"][data-node-id]`).first();
-  const selectedId = (await card.getAttribute("data-node-id"))!;
-  const selectMs = await page.evaluate(async (id) => {
-    const el = document.querySelector<HTMLElement>(
-      `.react-flow__node[data-id="${id}"]`
-    )!;
-    const t = performance.now();
-    el.click();
-    for (;;) {
-      await new Promise((r) => requestAnimationFrame(r));
-      const panel = document.querySelector('[data-testid="node-detail"]');
-      if (panel?.textContent?.includes(id.slice(0, 8)))
-        return Math.round(performance.now() - t);
-    }
-  }, selectedId);
+  // 휠 확대 뒤 축소.
+  const zoomFps = await fps(page, async () => {
+    await page.mouse.move(
+      canvas.x + canvas.width / 2,
+      canvas.y + canvas.height / 2
+    );
+    for (let i = 0; i < 30; i++) await page.mouse.wheel(0, i < 15 ? -60 : 60);
+  });
+  await page.waitForTimeout(800);
+
+  // 노드 끌기: 화면 안 카드 하나를 하위 노드와 함께 끈다(보기 상태).
+  const [grab] = await cards(page, 1);
+  const dragFps = await fps(page, async () => {
+    await page.mouse.move(grab!.x, grab!.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 60; i++)
+      await page.mouse.move(grab!.x + i * 2, grab!.y + Math.sin(i / 10) * 40);
+    await page.mouse.up();
+  });
+  await page.getByRole("button", { name: /자동 정렬로 되돌리기/ }).click();
+  await page.waitForTimeout(500);
+
+  // 노드 선택(상세 패널이 열린다)과, 패널이 열린 채 다른 노드 선택.
+  const [first] = await cards(page, 1);
+  const select = await selectMs(page, first!.id);
+  await page.waitForTimeout(300);
+  const second = (await cards(page, 2)).find((c) => c.id !== first!.id)!;
+  const reselect = await selectMs(page, second.id);
 
   // 찾기: 보조 연결 대상 목록에서 마지막에 만든 노드를 ID로 찾는다.
   const panel = page.getByRole("complementary", { name: "노드 상세" });
@@ -198,7 +279,7 @@ async function measure(
   const findMs = Date.now() - findStart;
 
   // 편집: 고른 노드의 제목을 바꿔 카드에 반영될 때까지.
-  // 지도가 크면 화면 밖 카드는 그리지 않으므로 먼저 그 노드로 이동한다.
+  // 보이는 노드만 그리는 지도도 같은 순서로 잴 수 있게 먼저 그 노드로 이동한다.
   await page.goto(`/orgs/${orgId}/map?node=${target.id}`);
   await panel.getByRole("button", { name: "지도에서 이 노드로 이동" }).click();
   const title = `편집 ${Date.now()}`;
@@ -209,7 +290,16 @@ async function measure(
     page.locator(`[data-testid="map-node"][data-node-id="${target.id}"]`)
   ).toContainText(title);
   const editMs = Date.now() - editStart;
-  return { openMs, panFps, selectMs, findMs, editMs };
+  return {
+    openMs,
+    panFps,
+    zoomFps,
+    dragFps,
+    selectMs: select,
+    reselectMs: reselect,
+    findMs,
+    editMs,
+  };
 }
 
 test("research map performance across node counts, secondary link ratios and widths", async ({
