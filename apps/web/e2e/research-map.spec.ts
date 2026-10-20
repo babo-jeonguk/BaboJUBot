@@ -92,6 +92,18 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(other.getByTestId("map-node")).toHaveCount(3);
   await expect(panel.getByTestId("node-status")).toHaveText("제안됨");
   await expect(panel).toContainText("연구 문제 정리 1");
+  // 주 연결은 노드 아래 정적 레이어에 있고, 고른 노드의 경로는 그 위에 같은 경로로 진하게 겹쳐 그린다.
+  const childId = new URL(page.url()).searchParams.get("node")!;
+  const curve = async (selector: string) =>
+    ((await page.locator(selector).getAttribute("d")) ?? "")
+      .match(/-?[\d.]+/g)!
+      .map(Number);
+  const strong = await curve(
+    `.react-flow__edge[data-id="primary:${childId}"] path.react-flow__edge-path`
+  );
+  const faint = await curve(`svg.rm-layer path[data-id="primary:${childId}"]`);
+  expect(faint).toHaveLength(strong.length);
+  faint.forEach((v, i) => expect(v).toBeCloseTo(strong[i]!, 0));
 
   // 제목·상태 수정. 편집 기록에 편집자가 남는다.
   await panel
@@ -267,6 +279,23 @@ test("parallel secondary links between the same two nodes are drawn apart and li
   const shapes = await Promise.all(paths.map((p) => p.getAttribute("d")));
   expect(new Set(shapes).size).toBe(4);
 
+  // 연한 보조 연결은 노드 아래 정적 레이어에 있고, 강조한 연결은 그 위에 같은 경로로 겹쳐 그린다.
+  const sameCurves = async () => {
+    for (const l of links) {
+      const curve = async (selector: string) =>
+        ((await page.locator(selector).getAttribute("d")) ?? "")
+          .match(/-?[\d.]+/g)!
+          .map(Number);
+      const faint = await curve(`svg.rm-links path[data-id="${l.id}"]`);
+      const strong = await curve(
+        `.react-flow__edge[data-id="${l.id}"] path.react-flow__edge-path`
+      );
+      expect(faint).toHaveLength(strong.length);
+      faint.forEach((v, i) => expect(v).toBeCloseTo(strong[i]!, 0));
+    }
+  };
+  await sameCurves();
+
   // 선택한 노드에 닿은 연결의 종류 이름도 서로 겹치지 않는다.
   const labelsApart = async () => {
     const boxes = await page
@@ -303,6 +332,7 @@ test("parallel secondary links between the same two nodes are drawn apart and li
     })
     .toEqual([116, true]);
   await labelsApart();
+  await sameCurves();
 
   // 상세 패널은 관계 ID별로 한 행씩 보이고, 같은 종류의 두 연결도 짧은 ID로 구분된다.
   const panel = page.getByRole("complementary", { name: "노드 상세" });
