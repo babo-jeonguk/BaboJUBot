@@ -55,7 +55,7 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   await expect(rows.nth(1)).toContainText("담당 연구원 2");
   await expect(rows.nth(0).getByTestId("task-status")).toHaveText("완료", runs);
 
-  // 작업 상세: 자기 보고 요약, 산출물, 연결된 연구 노드.
+  // 작업 상세: 자기 보고 요약, 산출물, 작업자가 만들어 연결한 연구 노드.
   await rows.nth(0).click();
   await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
   const taskUrl = page.url();
@@ -70,7 +70,7 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   );
   await expect(
     page.getByRole("region", { name: "연결된 연구 노드" })
-  ).toContainText("연결된 연구 노드가 없습니다");
+  ).toContainText("연구 문제 · 제안됨");
 
   // 댓글은 담당자를 깨우고, 작업자의 답 댓글이 새로고침 없이 thread에 붙는다. 작업은 완료 그대로다.
   const comments = page.getByRole("region", { name: "댓글" });

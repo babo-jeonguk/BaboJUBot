@@ -1,4 +1,5 @@
 import { lifecycleStages } from "@babojubot/contracts";
+import { lazy, Suspense } from "react";
 import { Link, useParams } from "react-router";
 import type { OrganizationDetail } from "@babojubot/contracts";
 import { ActivityScreen } from "./activity.tsx";
@@ -27,6 +28,11 @@ import {
   StageBadge,
   stageLabel,
 } from "./ui.tsx";
+
+/** 연구 지도는 React Flow·Dagre를 쓰므로 그 화면을 열 때만 불러온다. */
+const ResearchMapScreen = lazy(() =>
+  import("./research-map.tsx").then((m) => ({ default: m.ResearchMapScreen }))
+);
 
 // ---------- 홈: 전체 조직 개요 ----------
 
@@ -159,6 +165,18 @@ export function OrganizationScreen() {
     return (
       <Page width={width}>
         <TasksScreen orgId={orgId} agents={agents} />
+      </Page>
+    );
+  if (section === "map")
+    return (
+      <Page width={width} className="flex flex-1 flex-col">
+        <Suspense fallback={<Loading />}>
+          <ResearchMapScreen
+            orgId={orgId}
+            stage={org.data.stage}
+            agents={agents}
+          />
+        </Suspense>
       </Page>
     );
   if (section === "agents")

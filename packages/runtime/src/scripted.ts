@@ -83,6 +83,8 @@ export function describeWakeReason(reason: WakeReason): string {
       return `작업 댓글 ${quote(reason.body)}`;
     case "agent_to_agent_message":
       return `에이전트 메시지 ${quote(reason.body)}`;
+    case "research_map_edit":
+      return `사용자의 연구 지도 편집: ${reason.summary}`;
   }
 }
 
@@ -264,15 +266,28 @@ function assignInitialTasks(request: RunRequest): Script {
 
 /**
  * 가짜 작업자의 데모 흐름. 깨우기 사유마다 정해진 단계를 실행한다.
- * - 작업을 맡음: 작업을 읽고 착수해 Markdown 산출물을 남기고 자기 보고와 함께 완료한다. 착수가 거부되면 그 작업은 거기서 멈춘다.
+ * - 작업을 맡음: 작업을 읽고 착수해 Markdown 산출물을 남기고, 템플릿의 첫 종류로 연구 노드를 만들어 작업을 연결한 뒤
+ *   자기 보고와 함께 완료한다. 착수가 거부되면 그 작업은 거기서 멈춘다.
  * - 사용자의 작업 댓글: 그 작업에 댓글로 답한다. 작업 상태는 바꾸지 않는다.
  * - 에이전트 메시지·하위 작업 완료: 읽었다는 활동만 남긴다.
  */
 export function demoWorkerScript(request: RunRequest): Script {
   const steps: ScriptStep[] = [{ do: "read_context" }];
+  // 조직 사본 템플릿이 선언한 첫 노드 종류(기본 연구 흐름에서는 연구 문제).
+  const firstNodeKind = request.context.researchFlow?.nodeKinds[0]?.name;
   for (const reason of request.wakeReasons) {
     if (reason.kind === "task_assigned") {
       const params = () => ({ taskId: reason.taskId });
+      // 이 작업으로 만든 연구 노드.
+      const recordedNode = ({ calls }: ScriptState) =>
+        (
+          calls.findLast(
+            (c) =>
+              c.tool === "create_research_node" &&
+              c.ok &&
+              (c.output as { title: string }).title === reason.title
+          ) as { output: { id: string } } | undefined
+        )?.output.id;
       // 착수가 거부되면(Lead가 먼저 완료한 작업 등) 거부만 남기고 이 작업의 산출물·완료는 건너뛴다.
       const started = ({ calls }: ScriptState) =>
         calls.some(
@@ -301,6 +316,23 @@ export function demoWorkerScript(request: RunRequest): Script {
               `(가짜 실행기가 만든 예시 산출물입니다. 검증된 결과가 아닙니다.)`,
             ].join("\n"),
           }),
+        },
+        {
+          do: "call",
+          tool: "create_research_node",
+          when: (state) => started(state) && firstNodeKind !== undefined,
+          input: () => ({
+            kind: firstNodeKind,
+            title: reason.title,
+            body: `작업 ${quote(reason.title)}에서 정리한 연구 문제 후보. 근거는 이 작업의 산출물에 있습니다. (가짜 실행기가 만든 예시입니다.)`,
+          }),
+        },
+        {
+          do: "call",
+          tool: "link_task_research_node",
+          when: (state) => recordedNode(state) !== undefined,
+          params,
+          input: (state) => ({ researchNodeId: recordedNode(state) }),
         },
         {
           do: "call",

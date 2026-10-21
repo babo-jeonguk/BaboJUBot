@@ -12,6 +12,12 @@ import {
   taskSchema,
 } from "./task.ts";
 import {
+  researchLinkSchema,
+  researchMapSchema,
+  researchNodeDetailSchema,
+  researchNodeSchema,
+} from "./research-map.ts";
+import {
   runContextSchema,
   runIdentitySchema,
   wakeReasonSchema,
@@ -40,6 +46,18 @@ export const orgToolNames = [
   "get_artifact",
   "message_agent",
   "add_worker",
+  "get_research_map",
+  "get_research_node",
+  "create_research_node",
+  "update_research_node",
+  "assign_research_node_parent",
+  "change_research_node_parent",
+  "add_research_link",
+  "discard_research_node",
+  "restore_research_node",
+  "link_task_research_node",
+  "relink_task_research_node",
+  "unlink_task_research_node",
 ] as const;
 export const orgToolNameSchema = z.enum(orgToolNames);
 export type OrgToolName = (typeof orgToolNames)[number];
@@ -70,9 +88,21 @@ export const orgToolPaths = {
   get_artifact: "/artifacts/:artifactId",
   message_agent: "/agent-messages",
   add_worker: "/workers",
+  get_research_map: "/research-map",
+  get_research_node: "/research-nodes/:nodeId",
+  create_research_node: "/research-nodes",
+  update_research_node: "/research-nodes/:nodeId",
+  assign_research_node_parent: "/research-nodes/:nodeId/parent",
+  change_research_node_parent: "/research-nodes/:nodeId/parent/change",
+  add_research_link: "/research-links",
+  discard_research_node: "/research-nodes/:nodeId/discard",
+  restore_research_node: "/research-nodes/:nodeId/restore",
+  link_task_research_node: "/tasks/:taskId/research-node",
+  relink_task_research_node: "/tasks/:taskId/research-node/relink",
+  unlink_task_research_node: "/tasks/:taskId/research-node/unlink",
 } as const satisfies Record<OrgToolName, string>;
 
-/** 읽기 도구는 GET, 기록을 남기는 도구는 POST. */
+/** 읽기 도구는 GET, 기록을 남기는 도구는 POST, 기존 기록의 일부 필드를 고치는 도구는 PATCH. */
 export const orgToolMethods = {
   get_run_context: "GET",
   send_message: "POST",
@@ -90,7 +120,19 @@ export const orgToolMethods = {
   get_artifact: "GET",
   message_agent: "POST",
   add_worker: "POST",
-} as const satisfies Record<OrgToolName, "GET" | "POST">;
+  get_research_map: "GET",
+  get_research_node: "GET",
+  create_research_node: "POST",
+  update_research_node: "PATCH",
+  assign_research_node_parent: "POST",
+  change_research_node_parent: "POST",
+  add_research_link: "POST",
+  discard_research_node: "POST",
+  restore_research_node: "POST",
+  link_task_research_node: "POST",
+  relink_task_research_node: "POST",
+  unlink_task_research_node: "POST",
+} as const satisfies Record<OrgToolName, "GET" | "POST" | "PATCH">;
 
 export const orgToolOutputSchemas = {
   get_run_context: runContextResponseSchema,
@@ -110,6 +152,18 @@ export const orgToolOutputSchemas = {
   message_agent: agentToAgentMessageSchema,
   // 작업자 추가(#58)는 아직 없다. 지금은 단계 규칙의 거부만 확인할 수 있다.
   add_worker: z.unknown(),
+  get_research_map: researchMapSchema,
+  get_research_node: researchNodeDetailSchema,
+  create_research_node: researchNodeSchema,
+  update_research_node: researchNodeSchema,
+  assign_research_node_parent: researchNodeSchema,
+  change_research_node_parent: researchNodeSchema,
+  add_research_link: researchLinkSchema,
+  discard_research_node: researchNodeSchema,
+  restore_research_node: researchNodeSchema,
+  link_task_research_node: taskSchema,
+  relink_task_research_node: taskSchema,
+  unlink_task_research_node: taskSchema,
 } as const satisfies Record<OrgToolName, z.ZodType>;
 
 /** Role 또는 생애주기 단계 규칙이 도구 호출을 거부한 이유. */
@@ -124,6 +178,10 @@ export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
  * 두 거부는 Event log에 남는다. 아직 구현하지 않은 도구는 501 `not_implemented`.
  * 작업 규칙의 거부: 담당자가 아닌 착수나 담당자·Lead가 아닌 완료는 403 `not_assignee`,
  * 완료된 작업의 다시 완료는 409 `already_completed`, 지금 상태에서 할 수 없는 착수는 409 `invalid_transition`.
+ * 연구 지도 규칙의 거부: 조직 사본 템플릿에 없는 노드·연결 종류는 422 `unknown_kind`, 자기 자신과의 보조 연결은
+ * 422 `invalid_input`, 주 연결 순환(자기 자신이나 후손을 주 부모로)은 409 `primary_cycle`, 이미 다른 주 부모가 있는 노드의
+ * 주 부모 지정은 409 `primary_parent_exists`, 이미 다른 노드에 연결된 작업의 연결은 409 `task_already_linked`,
+ * 폐기된 노드의 편집(폐기 취소 제외)·폐기된 노드로의 새 연결은 409 `node_discarded`.
  */
 export const orgToolErrorCodes = [
   "invalid_token",
@@ -135,6 +193,11 @@ export const orgToolErrorCodes = [
   "not_assignee",
   "already_completed",
   "invalid_transition",
+  "unknown_kind",
+  "primary_cycle",
+  "primary_parent_exists",
+  "task_already_linked",
+  "node_discarded",
 ] as const;
 export type OrgToolErrorCode = (typeof orgToolErrorCodes)[number];
 export const orgToolErrorSchema = z.object({

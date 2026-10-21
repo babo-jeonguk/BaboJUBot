@@ -35,7 +35,7 @@ export type TaskState = {
   parentAssigneeAgentId: string | null;
 };
 
-/** 작업 생성은 담당자를 깨운다. 담당자와 부모 작업이 같은 조직인지는 저장 쪽이 확인한다. */
+/** 작업 생성은 담당자를 깨운다. 담당자·부모 작업·연구 노드가 같은 조직인지는 저장 쪽이 확인한다. */
 export function planTaskCreation(
   run: RunRef,
   input: {
@@ -43,6 +43,7 @@ export function planTaskCreation(
     description: string;
     assigneeAgentId: string;
     parentTaskId?: string;
+    researchNodeId?: string;
   },
   { newId, now }: RecordSource
 ): { task: Task; wake: Wake | undefined; event: NewEvent } {
@@ -55,6 +56,7 @@ export function planTaskCreation(
     status: "open",
     assigneeAgentId: input.assigneeAgentId,
     parentTaskId: input.parentTaskId ?? null,
+    researchNodeId: input.researchNodeId ?? null,
     createdByAgentId: run.agentId,
     createdByRunId: run.id,
     startedAt: null,

@@ -3,6 +3,7 @@ import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
 import { lifecycleStageSchema } from "./organization.ts";
 import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
+import { researchMapOperationSchema } from "./research-map.ts";
 import {
   publicActivitySchema,
   runStopReasonSchema,
@@ -207,6 +208,26 @@ export const agentToAgentMessageCreatedEventSchema = z.object({
   }),
 });
 
+/**
+ * 연구 지도 편집 하나. 사용자 편집은 `author: owner`이며 Lead를 깨운다(`wokenAgentId`).
+ * 에이전트 편집은 편집한 에이전트·실행 시도를 가리키고 아무도 깨우지 않는다.
+ */
+export const researchMapEditedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("research_map.edited"),
+  payload: z.object({
+    editId: z.uuid(),
+    operation: researchMapOperationSchema,
+    author: messageAuthorSchema,
+    agentId: z.uuid().nullable(),
+    runId: z.uuid().nullable(),
+    nodeId: z.uuid().nullable(),
+    linkId: z.uuid().nullable(),
+    taskId: z.uuid().nullable(),
+    wokenAgentId: z.uuid().nullable(),
+  }),
+});
+
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
   goalRecordedEventSchema,
@@ -220,6 +241,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   taskCommentedEventSchema,
   artifactRecordedEventSchema,
   agentToAgentMessageCreatedEventSchema,
+  researchMapEditedEventSchema,
   runStartedEventSchema,
   runActivityEventSchema,
   runFinishedEventSchema,

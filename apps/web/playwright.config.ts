@@ -28,7 +28,10 @@ export default defineConfig({
       timeout: 60_000,
     },
     {
-      command: "vite",
+      // 성능 측정(MAP_PERF)은 개발 모드가 아니라 프로덕션 빌드로 잰다.
+      command: process.env.MAP_PERF
+        ? `vite build && vite preview --port ${webPort} --strictPort`
+        : "vite",
       url: `http://127.0.0.1:${webPort}`,
       env: {
         WEB_PORT: String(webPort),

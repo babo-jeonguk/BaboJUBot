@@ -40,9 +40,11 @@ import {
   agents,
   approvals,
   events,
+  flowTemplates,
   instructionCopies,
   messages,
   organizations,
+  researchMapEdits,
   runs,
   taskComments,
   tasks,
@@ -301,6 +303,13 @@ export async function loadRunContext(
   const wakeReasons = (await selectWakes(db, eq(wakes.runId, run.id))).map(
     (w) => w.reason
   );
+  const [template] = await db
+    .select({
+      nodeKinds: flowTemplates.nodeKinds,
+      linkKinds: flowTemplates.linkKinds,
+    })
+    .from(flowTemplates)
+    .where(eq(flowTemplates.organizationId, run.organizationId));
   return {
     identity: {
       organizationId: run.organizationId,
@@ -328,6 +337,7 @@ export async function loadRunContext(
         run.agentId,
         { upToRunSeq: run.seq, limit: 50 }
       ),
+      researchFlow: template ?? null,
     },
   };
 }
@@ -465,7 +475,7 @@ async function selectInstructions(
     .orderBy(asc(instructionCopies.path));
 }
 
-/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지)에서 읽는다. */
+/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집)에서 읽는다. */
 async function selectWakes(
   db: Executor,
   where: ReturnType<typeof and>
@@ -486,6 +496,11 @@ async function selectWakes(
         sender: agentToAgentMessages.senderAgentId,
         body: agentToAgentMessages.body,
       },
+      mapEdit: {
+        operation: researchMapEdits.operation,
+        nodeId: researchMapEdits.nodeId,
+        summary: researchMapEdits.summary,
+      },
     })
     .from(wakes)
     .leftJoin(messages, eq(messages.id, wakes.messageId))
@@ -496,10 +511,11 @@ async function selectWakes(
       agentToAgentMessages,
       eq(agentToAgentMessages.id, wakes.agentToAgentMessageId)
     )
+    .leftJoin(researchMapEdits, eq(researchMapEdits.id, wakes.mapEditId))
     .where(where)
     .orderBy(asc(wakes.seq));
   return rows.map(
-    ({ wake, body, decision, note, task, comment, agentToAgent }) => {
+    ({ wake, body, decision, note, task, comment, agentToAgent, mapEdit }) => {
       const wakeId = wake.id;
       const reason = ((): WakeReason => {
         switch (wake.kind) {
@@ -549,6 +565,15 @@ async function selectWakes(
               messageId: wake.agentToAgentMessageId!,
               senderAgentId: agentToAgent!.sender,
               body: agentToAgent!.body,
+            };
+          case "research_map_edit":
+            return {
+              kind: wake.kind,
+              wakeId,
+              editId: wake.mapEditId!,
+              operation: mapEdit!.operation,
+              nodeId: mapEdit!.nodeId,
+              summary: mapEdit!.summary,
             };
         }
       })();

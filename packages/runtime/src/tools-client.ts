@@ -25,7 +25,7 @@ export type OrgToolOutput<T extends OrgToolName> = ReturnType<
 >;
 
 export type OrgToolClient = {
-  /** 도구 하나를 부른다. POST 도구는 `input`을 본문으로 보낸다. 거부되면 {@link OrgToolError}. */
+  /** 도구 하나를 부른다. GET이 아닌 도구는 `input`을 본문으로 보낸다. 거부되면 {@link OrgToolError}. */
   call<T extends OrgToolName>(
     tool: T,
     input?: unknown,
@@ -57,7 +57,7 @@ export function createOrgToolClient({
       (p, [key, value]) => p.replace(`:${key}`, encodeURIComponent(value)),
       orgToolPaths[tool]
     );
-    const post = orgToolMethods[tool] === "POST";
+    const post = orgToolMethods[tool] !== "GET";
     const res = await fetch(new URL(orgToolsBasePath + path, baseUrl), {
       method: orgToolMethods[tool],
       headers: {

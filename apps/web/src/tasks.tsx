@@ -11,7 +11,9 @@ import {
   ApiError,
   useAddTaskComment,
   useArtifact,
+  useFlowTemplate,
   useOrganization,
+  useResearchNode,
   useTask,
   useTasks,
 } from "./api.ts";
@@ -21,6 +23,7 @@ import {
   LoadError,
   NotFound,
   Page,
+  researchNodeStatusLabel,
   runLabel,
   TaskStatusBadge,
 } from "./ui.tsx";
@@ -147,15 +150,52 @@ export function TaskDetailPage() {
         </div>
         <div className="min-w-0 space-y-4">
           <ArtifactList orgId={orgId} artifacts={t.artifacts} agents={agents} />
-          <section aria-label="연결된 연구 노드" className="card p-4 text-sm">
-            <h2 className="mb-2 font-semibold text-slate-600">
-              연결된 연구 노드
-            </h2>
-            <p className="text-slate-500">연결된 연구 노드가 없습니다.</p>
-          </section>
+          <LinkedNode orgId={orgId} nodeId={t.researchNodeId} />
         </div>
       </div>
     </Page>
+  );
+}
+
+/** 작업이 연결된 연구 노드(0~1개). 지도에서 그 노드를 골라 연다. */
+function LinkedNode({
+  orgId,
+  nodeId,
+}: {
+  orgId: string;
+  nodeId: string | null;
+}) {
+  const node = useResearchNode(orgId, nodeId ?? undefined);
+  const template = useFlowTemplate(orgId);
+  const kind =
+    node.data &&
+    (template.data?.nodeKinds.find((k) => k.name === node.data.kind)?.label ??
+      node.data.kind);
+  return (
+    <section aria-label="연결된 연구 노드" className="card p-4 text-sm">
+      <h2 className="mb-2 font-semibold text-slate-600">연결된 연구 노드</h2>
+      {!nodeId ? (
+        <p className="text-slate-500">연결된 연구 노드가 없습니다.</p>
+      ) : node.isPending ? (
+        <p className="text-slate-400">불러오는 중…</p>
+      ) : node.isError ? (
+        <LoadError what="연구 노드" onRetry={() => void node.refetch()} />
+      ) : (
+        <Link
+          to={`/orgs/${orgId}/map?node=${node.data.id}`}
+          className="block rounded-xl px-2 py-1.5 transition hover:bg-slate-50"
+        >
+          <div className="text-xs text-slate-500">
+            {kind} · {researchNodeStatusLabel[node.data.status]}
+          </div>
+          <div
+            className={`font-medium break-words ${node.data.status === "discarded" ? "text-slate-400 line-through" : "text-brand-700"}`}
+          >
+            {node.data.title}
+          </div>
+        </Link>
+      )}
+    </section>
   );
 }
 

@@ -7,6 +7,7 @@ import {
   formatTime,
   Loading,
   LoadError,
+  mapOperationLabel,
   runLabel,
   runStatusLabel,
   stageLabel,
@@ -102,6 +103,15 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "✉",
         title: `${agentName}가 같은 조직 에이전트에게 메시지를 보냈습니다`,
+      };
+    case "research_map.edited":
+      return {
+        icon: "🗺",
+        title:
+          event.payload.author === "owner"
+            ? "사용자가 연구 지도를 편집했습니다"
+            : `${agentName}가 연구 지도를 편집했습니다`,
+        detail: `${mapOperationLabel[event.payload.operation]}${event.payload.wokenAgentId ? " · Lead를 깨웠습니다" : ""}`,
       };
     case "tool.refused":
       return {

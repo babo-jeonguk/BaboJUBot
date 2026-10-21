@@ -1,0 +1,54 @@
+/* 연구 지도(research-map.tsx). 선택에 따른 흐리게 하기·연결 투명도·점선은 노드·연결 객체가 아니라 여기서 정한다. */
+
+/* 연결 레이어(EdgeLayer). 선택과 무관하게 그대로라, 화면을 끌 때 새로 보이는 곳만 그린다. */
+.rm-layer {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+  z-index: -1;
+}
+.rm-links {
+  opacity: 0.32;
+}
+/* 노드를 끄는 동안 움직이는 연결만 담는 합성 레이어. 이 레이어만 매 프레임 다시 그린다.
+   점선은 그리는 비용이 커서 끄는 동안만 실선으로 두고, 놓으면 정적 레이어에서 다시 점선으로 그린다. */
+.rm-moving-layer {
+  will-change: transform;
+}
+.rm-moving-layer .rm-links path {
+  stroke-dasharray: none;
+}
+
+/* 선택이 있으면 지도 전체를 흐리게 덮는다. 합성 레이어의 opacity만 바뀌므로 아래 지도를 다시 그리지 않는다. */
+.rm-veil {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  background: rgb(255 255 255 / 0.7);
+  opacity: 0;
+  will-change: opacity;
+}
+.rm-focus .rm-veil {
+  opacity: 1;
+}
+
+/* 보조 연결 점선은 화면에서 5px·4px로 보이게 한다. 배율 단계(--rm-dash-scale)에 맞춰 늘려 축소해도 점선 조각이 촘촘해지지 않는다. */
+.rm-links path,
+.rm-link .react-flow__edge-path {
+  stroke-dasharray: calc(5px * var(--rm-dash-scale, 1))
+    calc(4px * var(--rm-dash-scale, 1));
+}
+
+/* 지도 전체를 합성 레이어로 둔다. 화면을 끌면 다시 그리지 않고 옮기며, 확대·축소가 끝나면 브라우저가 그 배율로 다시 그린다. */
+.rm-canvas .react-flow__viewport {
+  will-change: transform;
+}
+
+/* React Flow Background(dots, gap 24, size 1)와 같은 점. 지도 좌표에 있어 배율에 따라 함께 커지고 작아진다. */
+.rm-dots {
+  position: absolute;
+  z-index: -2;
+  pointer-events: none;
+  background-image: radial-gradient(circle, #e2e8f0 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+}

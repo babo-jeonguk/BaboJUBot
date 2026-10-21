@@ -437,5 +437,15 @@ function WakeReasonRow({
         link(`/orgs/${orgId}/agents/${reason.senderAgentId}`, "보낸 에이전트"),
         reason.body
       );
+    case "research_map_edit":
+      return row(
+        "사용자 연구 지도 편집",
+        reason.nodeId ? (
+          link(`/orgs/${orgId}/map?node=${reason.nodeId}`, "지도에서 보기")
+        ) : (
+          <span className="text-slate-500">연구 지도</span>
+        ),
+        reason.summary
+      );
   }
 }

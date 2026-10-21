@@ -12,3 +12,4 @@ export * from "./harness.ts";
 export * from "./approvals.ts";
 export * from "./tool-calls.ts";
 export * from "./tasks.ts";
+export * from "./research-map.ts";
