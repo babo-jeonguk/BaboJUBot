@@ -473,6 +473,15 @@ describe("result submission and final completion", () => {
     agents.queue(org.lead.id, { steps: [{ do: "hold", until: gate.wait }] });
     await say(org.id, "잠시 기다려 주세요");
     await gate.reached;
+    // 조직 도구 목록에는 결과 제출까지만 있고 최종 완료·승인 결정·승인 정책 변경 도구가 없다.
+    expect(orgToolNames).toContain("submit_result");
+    expect(
+      orgToolNames.filter((n) =>
+        /(complete|finish|close)_(org|organization|research)|stage|polic|decide|decision|approve/.test(
+          n
+        )
+      )
+    ).toEqual([]);
     const token = capture.tokenOf(org.lead.id);
     const attempt = {
       decision: "complete",

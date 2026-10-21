@@ -2,6 +2,7 @@ import {
   decisionNoteMaxLength,
   type Agent,
   type LifecycleStage,
+  type ResultDecision,
   type ResultSubmission,
 } from "@babojubot/contracts";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -13,11 +14,12 @@ import {
   useResultSubmission,
   useResultSubmissions,
 } from "./api.ts";
-import { formatLabel, nameOf } from "./tasks.tsx";
 import {
+  formatLabel,
   formatTime,
   Loading,
   LoadError,
+  nameOf,
   NotFound,
   Page,
   ResultStatusBadge,
@@ -249,7 +251,7 @@ function DecisionForm({
   const trimmed = note.trim();
   const alreadyDecided =
     decide.error instanceof ApiError && decide.error.code === "already_decided";
-  const send = (decision: "request_changes" | "complete") =>
+  const send = (decision: ResultDecision) =>
     decide.mutate(
       { decision, note: trimmed || undefined },
       { onSuccess: onDecided }

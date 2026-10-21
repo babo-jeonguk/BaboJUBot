@@ -1,4 +1,5 @@
 import type {
+  Agent,
   AgentStatus,
   ApprovalDecision,
   ApprovalStatus,
@@ -213,6 +214,10 @@ const timeFormat = new Intl.DateTimeFormat("ko-KR", {
 });
 export const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 /** 실행 시도를 짧게 부르는 이름. 전체 ID는 주소에 있다. */
+export const formatLabel = { markdown: "Markdown", text: "텍스트" } as const;
+export const nameOf = (agents: Agent[], id: string | null) =>
+  agents.find((a) => a.id === id)?.name ?? "에이전트";
+
 export const runLabel = (runId: string) => `실행 시도 ${runId.slice(0, 8)}`;
 
 /** 본문 폭 3단계: 좁게 768px, 중간 1024px, 전체 폭. 창이 좁으면 창 폭을 따른다. */

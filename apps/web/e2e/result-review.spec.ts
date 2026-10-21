@@ -118,6 +118,15 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   ).toBeVisible();
   const secondUrl = page.url();
 
+  // 다시 제출한 Lead 실행 시도의 상세에는 수정 요청 사유와 의견이 보인다.
+  const leadRuns = (await (await page.request.get(api("/runs"))).json()) as {
+    id: string;
+  }[];
+  await page.goto(`/orgs/${org.id}/runs/${leadRuns[0]!.id}`);
+  await expect(main).toContainText("결과 수정 요청");
+  await expect(main).toContainText("한계도 적어 주세요");
+  await page.goto(secondUrl);
+
   // 좁은 화면에서도 결정 버튼에 닿는다.
   await page.setViewportSize({ width: 390, height: 844 });
   const complete = decision.getByRole("button", { name: "최종 완료" });

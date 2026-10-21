@@ -18,19 +18,17 @@ import {
   useTasks,
 } from "./api.ts";
 import {
+  formatLabel,
   formatTime,
   Loading,
   LoadError,
+  nameOf,
   NotFound,
   Page,
   researchNodeStatusLabel,
   runLabel,
   TaskStatusBadge,
 } from "./ui.tsx";
-
-export const formatLabel = { markdown: "Markdown", text: "텍스트" } as const;
-export const nameOf = (agents: Agent[], id: string | null) =>
-  agents.find((a) => a.id === id)?.name ?? "에이전트";
 
 /** 조직 › 작업: 작업 목록(제목·상태·담당자). 각 작업은 별도 상세 페이지로 열린다. */
 export function TasksScreen({

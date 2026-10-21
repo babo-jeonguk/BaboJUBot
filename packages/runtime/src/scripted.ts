@@ -230,17 +230,15 @@ export function demoLeadScript(request: RunRequest): Script {
   );
   if (stage === "researching" && approved) return assignInitialTasks(request);
 
-  const changes = request.wakeReasons.findLast(
-    (r) => r.kind === "result_changes_requested"
+  const changeRequest = request.wakeReasons.findLast(
+    (r): r is Extract<WakeReason, { kind: "result_changes_requested" }> =>
+      r.kind === "result_changes_requested"
   );
   if (
     stage === "researching" &&
-    (changes || messages.some((m) => resultRequest.test(m)))
+    (changeRequest || messages.some((m) => resultRequest.test(m)))
   )
-    return submitResultScript(
-      request,
-      changes?.kind === "result_changes_requested" ? changes.note : null
-    );
+    return submitResultScript(request, changeRequest?.note ?? null);
 
   if (stage === "goal_setting" && messages.length)
     return {

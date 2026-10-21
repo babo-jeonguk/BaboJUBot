@@ -73,7 +73,7 @@ export function planResultSubmission(
   };
 }
 
-export const resultDecisionStatus: Record<
+const resultDecisionStatus: Record<
   ResultDecision,
   Exclude<ResultSubmissionStatus, "pending">
 > = {
@@ -107,9 +107,9 @@ export function planResultDecision(
   const decidedAt = now().toISOString();
   const { organizationId } = submission;
   const note = input.note || null;
-  const changes = input.decision === "request_changes";
-  const stage: LifecycleStage = changes ? "researching" : "completed";
-  const wake: Wake | null = changes
+  const requestsChanges = input.decision === "request_changes";
+  const stage: LifecycleStage = requestsChanges ? "researching" : "completed";
+  const wake: Wake | null = requestsChanges
     ? {
         id: newId(),
         organizationId,
