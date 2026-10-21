@@ -166,6 +166,13 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
 
   // 하위·보조 연결·작업이 있는 노드를 폐기해도 기록은 남고, 폐기 취소로 이전 상태로 돌아간다.
   await first.click();
+  // 선택이 바뀌어 패널이 첫 노드를 보일 때까지 기다린다. 그 전에 누르면 이전 노드를 폐기하려 한다.
+  await expect(page).toHaveURL(
+    new RegExp(`[?&]node=${await first.getAttribute("data-node-id")}`)
+  );
+  await expect(panel.getByLabel("제목", { exact: true })).toHaveValue(
+    "연구 문제 정리 1"
+  );
   await panel.getByRole("button", { name: "폐기…" }).click();
   const confirm = panel.getByRole("group", { name: "폐기 확인" });
   await expect(confirm).toContainText("보조 연결 1개, 연결 작업 1개");
