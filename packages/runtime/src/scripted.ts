@@ -1,14 +1,16 @@
-import type {
-  ConversationMessage,
-  OrgToolName,
-  RequestInitialApprovalInput,
-  RunContextResponse,
-  RunRequest,
-  RunResult,
-  RuntimeAdapter,
-  Task,
-  TaskDetail,
-  WakeReason,
+import {
+  resultArtifactsMax,
+  resultSummaryMaxLength,
+  type ConversationMessage,
+  type OrgToolName,
+  type RequestInitialApprovalInput,
+  type RunContextResponse,
+  type RunRequest,
+  type RunResult,
+  type RuntimeAdapter,
+  type Task,
+  type TaskDetail,
+  type WakeReason,
 } from "@babojubot/contracts";
 import { createOrgToolClient, OrgToolError } from "./tools-client.ts";
 
@@ -315,8 +317,8 @@ function submitResultScript(
         do: "then",
         steps: (state) => {
           const done = outputs<TaskDetail>(state, "get_task");
-          const artifactIds = done.flatMap((t) => t.artifacts.map((a) => a.id));
-          if (!artifactIds.length)
+          const evidence = done.flatMap((t) => t.artifacts.map((a) => a.id));
+          if (!evidence.length)
             return [
               {
                 do: "send_message",
@@ -324,17 +326,10 @@ function submitResultScript(
                   "(가짜 실행기) 아직 근거로 묶을 산출물이 없어 결과를 제출하지 않았습니다. 작업이 끝나면 다시 부탁해 주세요.",
               },
             ];
-          const summary = [
-            `# 결과 요약`,
-            ``,
-            `목표: ${goal}`,
-            ``,
-            `완료한 작업 ${done.length}개의 자기 보고:`,
-            ...done.map((t) => `- ${t.title}: ${t.report?.summary ?? ""}`),
-            ...(feedback ? [``, `반영한 수정 의견: ${feedback}`] : []),
-            ``,
-            `(가짜 실행기가 만든 예시 요약입니다. 완료 기준 충족을 판단하지 않았습니다.)`,
-          ].join("\n");
+          // 제출 계약의 상한 안에서 앞에서부터 고르고, 고르지 못한 수를 요약과 답장에 밝힌다.
+          const artifactIds = evidence.slice(0, resultArtifactsMax);
+          const summary = resultSummary(goal, done, feedback);
+          const left = evidence.length - artifactIds.length;
           return [
             {
               do: "call",
@@ -344,7 +339,7 @@ function submitResultScript(
             {
               do: "send_message",
               body: () =>
-                `(가짜 실행기) ${feedback ? "수정 의견을 반영해 " : ""}결과를 근거 산출물 ${artifactIds.length}개와 함께 제출했습니다. Inbox에서 검토하고 수정 요청 또는 최종 완료를 결정해 주세요.`,
+                `(가짜 실행기) ${feedback ? "수정 의견을 반영해 " : ""}결과를 근거 산출물 ${left ? `${evidence.length}개 중 ${artifactIds.length}개(제출 상한)` : `${artifactIds.length}개`}와 함께 제출했습니다. Inbox에서 검토하고 수정 요청 또는 최종 완료를 결정해 주세요.`,
             },
           ];
         },
@@ -355,6 +350,38 @@ function submitResultScript(
         ? "결과를 제출했습니다."
         : "근거 산출물이 없어 결과를 제출하지 않았습니다.",
   };
+}
+
+/**
+ * 가짜 Lead의 결과 요약: 완료한 작업의 자기 보고를 앞에서부터 담고, 제출 계약의 길이 상한을 넘을 보고는
+ * 넣지 않고 그 수를 적는다.
+ */
+function resultSummary(
+  goal: string,
+  done: TaskDetail[],
+  feedback: string | null
+): string {
+  const head = [`# 결과 요약`, ``, `목표: ${goal}`, ``];
+  const tail = [
+    ...(feedback ? [``, `반영한 수정 의견: ${feedback}`] : []),
+    ``,
+    `(가짜 실행기가 만든 예시 요약입니다. 완료 기준 충족을 판단하지 않았습니다.)`,
+  ];
+  const reports = done.map((t) => `- ${t.title}: ${t.report?.summary ?? ""}`);
+  const lines = (n: number) => [
+    ...head,
+    `완료한 작업 ${done.length}개의 자기 보고:`,
+    ...reports.slice(0, n),
+    ...(n < reports.length
+      ? [
+          `- 작업 ${reports.length - n}개의 자기 보고는 길이 제한으로 생략했습니다.`,
+        ]
+      : []),
+    ...tail,
+  ];
+  let n = reports.length;
+  while (n > 0 && lines(n).join("\n").length > resultSummaryMaxLength) n--;
+  return lines(n).join("\n");
 }
 
 /**
