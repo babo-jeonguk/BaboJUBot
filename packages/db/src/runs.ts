@@ -524,6 +524,7 @@ async function selectWakes(
     .select({
       wake: wakes,
       body: messages.body,
+      approvalKind: approvals.kind,
       decision: approvals.status,
       note: approvals.decisionNote,
       task: {
@@ -563,6 +564,7 @@ async function selectWakes(
     ({
       wake,
       body,
+      approvalKind,
       decision,
       note,
       task,
@@ -586,6 +588,7 @@ async function selectWakes(
               kind: wake.kind,
               wakeId,
               approvalId: wake.approvalId!,
+              approvalKind: approvalKind!,
               decision: decisionOfStatus(decision!),
               note,
             };

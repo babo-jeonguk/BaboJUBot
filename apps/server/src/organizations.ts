@@ -2,9 +2,15 @@ import { randomUUID } from "node:crypto";
 import type {
   CreateOrganizationInput,
   OrganizationDetail,
+  UpdateApprovalPolicyInput,
 } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
-import { insertOrganizationCreation, type Database } from "@babojubot/db";
+import {
+  insertOrganizationCreation,
+  updateApprovalPolicy as storePolicy,
+  type Database,
+  type PolicyChange,
+} from "@babojubot/db";
 import type { EventHub } from "./event-hub.ts";
 import { leadInstructionsOf, loadHarnessLibrary } from "./harness.ts";
 
@@ -30,4 +36,23 @@ export async function createOrganization(
     console.error("[organizations] publish after commit failed", error);
   }
   return { ...creation.organization, agents: creation.agents };
+}
+
+/**
+ * 사용자의 승인 정책 변경 제어 명령. 정책과 Event를 한 transaction으로 저장한 뒤에만 알린다.
+ * 조직 도구에는 이 명령이 없다. 이미 결정을 기다리는 승인 요청은 바꾸지 않는다.
+ */
+export async function updateApprovalPolicy(
+  { db, hub }: { db: Database; hub: EventHub },
+  organizationId: string,
+  input: UpdateApprovalPolicyInput
+): Promise<PolicyChange> {
+  const result = await storePolicy(db, organizationId, input);
+  if (result.kind !== "changed") return result;
+  try {
+    hub.publish(result.event);
+  } catch (error) {
+    console.error("[organizations] publish after commit failed", error);
+  }
+  return result;
 }

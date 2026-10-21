@@ -48,9 +48,21 @@ export const withIsoTime = <T extends { createdAt: Date }>(row: T) => ({
   ...row,
   createdAt: row.createdAt.toISOString(),
 });
-export const toOrganization = (
-  row: typeof organizations.$inferSelect
-): Organization => withIsoTime(row);
+export const toOrganization = ({
+  addWorkerApproval,
+  ...row
+}: typeof organizations.$inferSelect): Organization => ({
+  ...withIsoTime(row),
+  approvalPolicy: { addWorker: addWorkerApproval },
+});
+export const organizationRow = ({
+  approvalPolicy,
+  ...organization
+}: Organization): typeof organizations.$inferInsert => ({
+  ...organization,
+  addWorkerApproval: approvalPolicy.addWorker,
+  createdAt: new Date(organization.createdAt),
+});
 export const toAgent = (row: typeof agents.$inferSelect): Agent =>
   withIsoTime(row);
 export const toEvent = ({
@@ -94,6 +106,15 @@ export async function lockOrganization(tx: Executor, organizationId: string) {
     .for("no key update");
   return row;
 }
+
+/** 조직 에이전트의 이름. 새 작업자 번호를 정할 때 쓴다. */
+export const agentNamesOf = async (tx: Executor, organizationId: string) =>
+  (
+    await tx
+      .select({ name: agents.name })
+      .from(agents)
+      .where(eq(agents.organizationId, organizationId))
+  ).map((a) => a.name);
 
 export const instructionCopyRow = (copy: InstructionCopy) => ({
   ...copy,

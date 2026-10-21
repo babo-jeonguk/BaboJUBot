@@ -5,3 +5,4 @@ export * from "./approval.ts";
 export * from "./result.ts";
 export * from "./task.ts";
 export * from "./research-map.ts";
+export * from "./worker.ts";

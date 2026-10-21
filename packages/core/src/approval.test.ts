@@ -120,13 +120,15 @@ describe("planApprovalDecision", () => {
     requestedByAgentId: "lead-1",
     proposal,
   };
+  const awaiting = { stage: "awaiting_approval" as const, agentNames: [] };
+  const decide = (input: Parameters<typeof planApprovalDecision>[1]) => {
+    const plan = planApprovalDecision(approval, input, awaiting, source);
+    if (typeof plan === "string") throw new Error(plan);
+    return plan;
+  };
 
   it("approves into research with one worker per head, each owning separate copies", () => {
-    const plan = planApprovalDecision(
-      approval,
-      { decision: "approve" },
-      source
-    );
+    const plan = decide({ decision: "approve" });
     expect(plan.status).toBe("approved");
     expect(plan.stage).toBe("researching");
     expect(plan.workers.map((w) => w.name)).toEqual(["연구원 1", "연구원 2"]);
@@ -160,11 +162,7 @@ describe("planApprovalDecision", () => {
       ["reject", "rejected"],
       ["request_changes", "changes_requested"],
     ] as const) {
-      const plan = planApprovalDecision(
-        approval,
-        { decision, note: "사유" },
-        source
-      );
+      const plan = decide({ decision, note: "사유" });
       expect(plan).toMatchObject({
         status,
         stage: "planning",

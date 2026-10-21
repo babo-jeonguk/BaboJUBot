@@ -13,8 +13,8 @@ import {
   resultSubmissionStatuses,
   runStatuses,
   taskStatuses,
+  type ApprovalProposal,
   type FlowKind,
-  type InitialResearchProposal,
   type NewEvent,
   type SessionState,
   type Usage,
@@ -24,6 +24,7 @@ import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   bigint,
+  boolean,
   check,
   foreignKey,
   index,
@@ -55,6 +56,8 @@ export const organizations = pgTable(
     /** Lead가 목표 설정에서 기록한다. 기록 전에는 없다. */
     goal: text("goal"),
     completionCriteria: text("completion_criteria"),
+    /** 승인 정책 `작업자 추가`. 켜져 있으면 Lead의 작업자 추가가 승인 요청이 된다. 사용자 제어 명령만 바꾼다. */
+    addWorkerApproval: boolean("add_worker_approval").notNull().default(false),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -220,8 +223,9 @@ export const messages = pgTable(
 );
 
 /**
- * 승인 요청. 제안 내용은 제출 때 고정한 snapshot이고 다시 바뀌지 않는다. 결정은 `pending`에서 한 번만 하며,
- * 반려·수정 요청 뒤의 재제출은 직전 요청을 가리키는 새 행이다. 조직마다 결정을 기다리는 요청은 하나뿐이다.
+ * 승인 요청. 제안 내용은 제출 때 고정한 snapshot이고 다시 바뀌지 않으며 모양은 종류(`kind`)가 정한다.
+ * 결정은 `pending`에서 한 번만 하며, 반려·수정 요청 뒤의 재제출은 직전 요청을 가리키는 새 행이다.
+ * 결정을 기다리는 초기 연구 승인 요청은 조직마다 하나뿐이고, 작업자 추가 요청은 호출마다 따로 여럿일 수 있다.
  */
 export const approvals = pgTable(
   "approvals",
@@ -236,7 +240,7 @@ export const approvals = pgTable(
     requestedByAgentId: uuid("requested_by_agent_id").notNull(),
     requestedByRunId: uuid("requested_by_run_id").notNull(),
     previousApprovalId: uuid("previous_approval_id"),
-    proposal: jsonb("proposal").$type<InitialResearchProposal>().notNull(),
+    proposal: jsonb("proposal").$type<ApprovalProposal>().notNull(),
     decisionNote: text("decision_note"),
     decidedAt: timestamp("decided_at", { withTimezone: true, mode: "date" }),
     createdAt: createdAt(),
@@ -264,9 +268,9 @@ export const approvals = pgTable(
       foreignColumns: [t.organizationId, t.id],
     }),
     unique("approvals_organization_id_id_unique").on(t.organizationId, t.id),
-    uniqueIndex("approvals_one_pending_per_organization")
+    uniqueIndex("approvals_one_pending_initial_per_organization")
       .on(t.organizationId)
-      .where(sql`${t.status} = 'pending'`),
+      .where(sql`${t.status} = 'pending' and ${t.kind} = 'initial_research'`),
     index("approvals_organization_idx").on(t.organizationId, t.seq),
   ]
 );

@@ -1,22 +1,24 @@
-import type {
-  Agent,
-  AgentRole,
-  ApprovalDecision,
-  ApprovalKind,
-  ApprovalStatus,
-  FlowTemplateCopy,
-  InitialResearchProposal,
-  InstructionCopy,
-  LifecycleStage,
-  NewEvent,
-  OrgToolName,
-  RecordGoalInput,
-  RequestInitialApprovalInput,
-  ToolRefusalReason,
+import {
+  approvalKindDecisions,
+  type AddWorkerProposal,
+  type Agent,
+  type AgentRole,
+  type ApprovalDecision,
+  type ApprovalStatus,
+  type FlowTemplateCopy,
+  type InitialResearchProposal,
+  type InstructionCopy,
+  type LifecycleStage,
+  type NewEvent,
+  type OrgToolName,
+  type RecordGoalInput,
+  type RequestInitialApprovalInput,
+  type ToolRefusalReason,
 } from "@babojubot/contracts";
 import { copyInstructions, type HarnessLibraryContents } from "./harness.ts";
 import type { RecordSource } from "./organization.ts";
 import type { Wake } from "./run.ts";
+import { planWorker } from "./worker.ts";
 
 // 목표 기록 → 초기 연구 승인 요청 → 사용자 결정. 초기 연구 승인은 끌 수 없는 제품 규칙이다(ADR-0003).
 // 역할 문서가 아니라 여기의 도구 규칙과 저장 쪽의 조건부 갱신이 승인 전 실행을 막는다.
@@ -84,7 +86,7 @@ export function checkToolCall(
   return { ok: true };
 }
 
-type RunRef = { id: string; organizationId: string; agentId: string };
+export type RunRef = { id: string; organizationId: string; agentId: string };
 
 /** 거부한 도구 호출의 Event. 호출한 실행 시도에 귀속한다. */
 export const toolRefusedEvent = (
@@ -151,16 +153,19 @@ export function buildInitialResearchProposal(
   };
 }
 
+/** 승인 요청의 종류와 그 검토 내용. 종류마다 내용의 모양이 다르다. */
+export type ApprovalSubject =
+  | { kind: "initial_research"; proposal: InitialResearchProposal }
+  | { kind: "add_worker"; proposal: AddWorkerProposal };
+
 export type NewApproval = {
   id: string;
   organizationId: string;
-  kind: ApprovalKind;
   requestedByAgentId: string;
   requestedByRunId: string;
   previousApprovalId: string | null;
-  proposal: InitialResearchProposal;
   createdAt: string;
-};
+} & ApprovalSubject;
 
 /** 초기 연구 승인 요청은 조직을 승인 대기로 넘긴다. 반려·수정 요청 뒤의 재제출은 새 요청이며 직전 요청을 가리킨다. */
 export function planInitialApprovalRequest(
@@ -227,59 +232,79 @@ export type ApprovalDecisionPlan = {
   event: NewEvent;
 };
 
+export type PendingApproval = {
+  id: string;
+  organizationId: string;
+  requestedByAgentId: string;
+} & ApprovalSubject;
+
 /**
- * 결정을 기다리는 초기 연구 승인 요청에 대한 사용자 결정. 승인하면 `연구 진행`으로 넘어가고, snapshot의 팀 구성대로
- * 작업자를 만들어 각자에게 따로 Role·Soul·Skill 사본을 주며 흐름 템플릿을 조직 사본으로 둔다. 반려·수정 요청은
- * 아무것도 만들지 않고 `계획 수립`으로 돌린다. 어느 결정이든 요청한 Lead를 그 사유로 깨운다.
+ * 결정을 기다리는 승인 요청에 대한 사용자 결정. 종류마다 내릴 수 있는 결정과 효과가 다르며, 그 종류에 없는 결정은
+ * `decision_not_allowed`다. 어느 결정이든 요청한 Lead를 그 사유로 깨운다.
  * 한 번만 결정할 수 있다는 규칙은 저장 쪽의 조건부 갱신이 강제한다.
+ *
+ * - 초기 연구 승인: 승인하면 `연구 진행`으로 넘어가고, snapshot의 팀 구성대로 작업자를 만들어 각자에게 따로
+ *   Role·Soul·Skill 사본을 주며 흐름 템플릿을 조직 사본으로 둔다. 반려·수정 요청은 아무것도 만들지 않고 `계획 수립`으로 돌린다.
+ * - 작업자 추가: 승인하면 snapshot으로 작업자 한 명과 그 사본을 만든다. 단계와 상관없이 승인할 수 있고(#58 사용자 결정),
+ *   반려는 아무것도 만들지 않는다. 어느 결정도 조직 단계를 바꾸지 않는다.
  */
 export function planApprovalDecision(
-  approval: {
-    id: string;
-    organizationId: string;
-    kind: ApprovalKind;
-    requestedByAgentId: string;
-    proposal: InitialResearchProposal;
-  },
+  approval: PendingApproval,
   input: { decision: ApprovalDecision; note?: string },
+  { stage, agentNames }: { stage: LifecycleStage; agentNames: string[] },
   { newId, now }: RecordSource
-): ApprovalDecisionPlan {
+): ApprovalDecisionPlan | "decision_not_allowed" {
+  const allowed: readonly ApprovalDecision[] =
+    approvalKindDecisions[approval.kind];
+  if (!allowed.includes(input.decision)) return "decision_not_allowed";
   const createdAt = now().toISOString();
-  const { organizationId, proposal } = approval;
+  const { organizationId } = approval;
   const approved = input.decision === "approve";
   const workers: Agent[] = [];
   const copies: InstructionCopy[] = [];
-  if (approved)
-    for (const member of proposal.team)
-      for (let i = 1; i <= member.count; i++) {
-        const worker: Agent = {
+  let template: FlowTemplateCopy | null = null;
+  let nextStage = stage;
+  if (approval.kind === "initial_research") {
+    const { proposal } = approval;
+    if (approved)
+      for (const member of proposal.team)
+        for (let i = 1; i <= member.count; i++) {
+          const worker: Agent = {
+            id: newId(),
+            organizationId,
+            role: "worker",
+            name: `${member.label} ${i}`,
+            createdAt,
+          };
+          workers.push(worker);
+          copies.push(
+            ...copyInstructions(worker, member.files, { newId, createdAt })
+          );
+        }
+    template = approved
+      ? {
+          ...proposal.template,
           id: newId(),
           organizationId,
-          role: "worker",
-          name: `${member.label} ${i}`,
+          approvalId: approval.id,
           createdAt,
-        };
-        workers.push(worker);
-        copies.push(
-          ...copyInstructions(worker, member.files, { newId, createdAt })
-        );
-      }
-  const template: FlowTemplateCopy | null = approved
-    ? {
-        ...proposal.template,
-        id: newId(),
-        organizationId,
-        approvalId: approval.id,
-        createdAt,
-      }
-    : null;
+        }
+      : null;
+    nextStage = approved ? "researching" : "planning";
+  } else if (approved) {
+    const added = planWorker(organizationId, approval.proposal, agentNames, {
+      newId,
+      createdAt,
+    });
+    workers.push(added.worker);
+    copies.push(...added.copies);
+  }
   const note = input.note || null;
-  const stage: LifecycleStage = approved ? "researching" : "planning";
   return {
     status: decisionStatus[input.decision],
     note,
     decidedAt: createdAt,
-    stage,
+    stage: nextStage,
     workers,
     copies,
     template,
@@ -300,7 +325,7 @@ export function planApprovalDecision(
         by: "owner",
         decision: input.decision,
         note,
-        stage,
+        stage: nextStage,
         createdAgentIds: workers.map((w) => w.id),
         wokenAgentId: approval.requestedByAgentId,
       },

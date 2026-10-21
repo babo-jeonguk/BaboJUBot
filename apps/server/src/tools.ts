@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   addResearchLinkInputSchema,
+  addWorkerInputSchema,
   addTaskCommentInputSchema,
   assignResearchNodeParentInputSchema,
   changeResearchNodeParentInputSchema,
@@ -25,6 +26,7 @@ import {
   type ToolRefusalReason,
 } from "@babojubot/contracts";
 import {
+  addWorker,
   appendRunActivity,
   authenticateRun,
   commentTask,
@@ -604,10 +606,25 @@ export function orgToolsRouter({
     )
   );
 
-  // 작업자 추가(#58)는 아직 없다. 단계 규칙은 지금부터 적용한다.
+  // 승인 정책이 꺼져 있으면 곧바로 작업자를 만들고(201), 켜져 있으면 승인 요청만 남긴다(202).
   router.post(
     orgToolPaths.add_worker,
-    tool("add_worker", async (_req, res) => refuse(res, 501, "not_implemented"))
+    tool("add_worker", async (req, res, run) => {
+      const input = addWorkerInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      const result = await addWorker(db, run, input.data, {
+        library: await loadHarnessLibrary(harnessDir),
+        source,
+        activity: toolActivity("add_worker", `작업자 추가: ${input.data.role}`),
+      });
+      respondWrite(
+        res,
+        result,
+        result.kind === "ok" && result.value.status === "pending_approval"
+          ? 202
+          : 201
+      );
+    })
   );
 
   router.post(

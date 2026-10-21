@@ -168,6 +168,7 @@ describe("goal and initial research approval", () => {
         },
       },
     });
+    if (requested.kind !== "initial_research") throw new Error(requested.kind);
     expect(requested.proposal.team).toEqual([
       expect.objectContaining({
         role: "researcher",
@@ -498,8 +499,10 @@ describe("goal and initial research approval", () => {
     });
     t = await startTestServer({ runtime: lead.runtime });
     const { org } = await awaitingApproval("승인 고정");
-    expect(Object.keys(await organization(org.id)).sort()).toEqual([
+    const detail = await organization(org.id);
+    expect(Object.keys(detail).sort()).toEqual([
       "agents",
+      "approvalPolicy",
       "completionCriteria",
       "createdAt",
       "goal",
@@ -507,6 +510,15 @@ describe("goal and initial research approval", () => {
       "name",
       "stage",
     ]);
+    // 승인 정책의 항목은 선택 행동뿐이고, 초기 연구 승인을 끄는 항목은 없다(ADR-0003).
+    expect(Object.keys(detail.approvalPolicy)).toEqual(["addWorker"]);
+    expect(
+      (
+        await t.request("PUT", `/api/organizations/${org.id}/approval-policy`, {
+          initialResearch: false,
+        })
+      ).status
+    ).toBe(422);
     // 승인 대기 중에도 작업 도구는 닫혀 있다.
     await say(org.id, "작업을 만들어 볼래?");
     await t.drain();

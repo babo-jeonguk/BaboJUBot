@@ -17,6 +17,7 @@ import {
 import {
   abbr,
   AgentStatusBadge,
+  approvalKindLabel,
   avatarStyle,
   decisionLabel,
   formatTime,
@@ -31,7 +32,7 @@ import {
 
 const roleLabel = { lead: "Research Lead", worker: "작업자" } as const;
 
-/** 조직 › 에이전트: Lead·작업자 팀과 상태. 작업자는 초기 연구 승인 때 생긴다. */
+/** 조직 › 에이전트: Lead·작업자 팀과 상태. 작업자는 초기 연구 승인 때 생기고, 연구 진행 중 Lead가 더한다. */
 export function AgentsScreen({
   orgId,
   agents,
@@ -413,7 +414,7 @@ function WakeReasonRow({
         "승인 결정",
         link(
           `/orgs/${orgId}/approvals/${reason.approvalId}`,
-          `초기 연구 승인 요청 ${decisionLabel[reason.decision]}`
+          `${approvalKindLabel[reason.approvalKind]} ${decisionLabel[reason.decision]}`
         ),
         reason.note
       );

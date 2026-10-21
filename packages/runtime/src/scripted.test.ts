@@ -241,6 +241,7 @@ describe("demo Lead scenario", () => {
       kind: "approval_decision" as const,
       wakeId: crypto.randomUUID(),
       approvalId: crypto.randomUUID(),
+      approvalKind: "initial_research" as const,
       decision: "request_changes" as const,
       note: "줄여 주세요",
     };
@@ -274,6 +275,7 @@ describe("demo Lead scenario", () => {
           kind: "approval_decision",
           wakeId: crypto.randomUUID(),
           approvalId: crypto.randomUUID(),
+          approvalKind: "initial_research",
           decision: "approve",
           note: null,
         },
@@ -308,6 +310,54 @@ describe("demo Lead scenario", () => {
           : []
       )
     ).toEqual(workers.map((id) => ["create_task", id]));
+  });
+
+  it("adds a worker when the owner asks, and only replies to a worker addition's decision", () => {
+    const state = (r: RunRequest) => ({
+      request: r,
+      context: undefined,
+      sent: [],
+      calls: [],
+    });
+    const asked = at("researching", [message("작업자 추가: researcher")]);
+    const script = demoLeadScript(asked);
+    expect(calls(script)).toEqual(["add_worker"]);
+    const step = script.steps.find((s) => s.do === "call");
+    expect(step?.do === "call" && step.input?.(state(asked))).toEqual({
+      role: "researcher",
+    });
+    const plain = demoLeadScript(
+      at("researching", [message("작업자 추가해 주세요")])
+    );
+    const plainStep = plain.steps.find((s) => s.do === "call");
+    expect(
+      plainStep?.do === "call" &&
+        plainStep.input?.(state(at("researching", [])))
+    ).toEqual({ role: "researcher" });
+    // 작업자 추가는 연구 진행에서만 연다.
+    expect(
+      calls(demoLeadScript(at("result_review", [message("작업자 추가")])))
+    ).toEqual([]);
+
+    for (const decision of ["approve", "reject"] as const)
+      expect(
+        demoLeadScript(
+          at(
+            "researching",
+            [
+              {
+                kind: "approval_decision",
+                wakeId: crypto.randomUUID(),
+                approvalId: crypto.randomUUID(),
+                approvalKind: "add_worker",
+                decision,
+                note: decision === "reject" ? "충분합니다" : null,
+              },
+            ],
+            "오류 절반"
+          )
+        )
+      ).toBe(leadReplyScript);
   });
 
   it("keeps the demo Lead's result submission within the contract's evidence and summary limits and says what it left out", async () => {

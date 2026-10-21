@@ -20,13 +20,14 @@ describe("planOrganizationCreation", () => {
     deps
   );
 
-  it("starts the organization in goal setting", () => {
+  it("starts the organization in goal setting with every approval policy off", () => {
     expect(plan.organization).toEqual({
       id: "org-1",
       name: "음성 인식 오류 분석",
       stage: "goal_setting",
       goal: null,
       completionCriteria: null,
+      approvalPolicy: { addWorker: false },
       createdAt: "2026-10-16T00:00:00.000Z",
     });
   });

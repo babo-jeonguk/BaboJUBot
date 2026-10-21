@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { approvalSchema } from "./approval.ts";
+import { addWorkerResultSchema, approvalSchema } from "./approval.ts";
 import { harnessLibrarySchema } from "./harness.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { organizationSchema } from "./organization.ts";
@@ -155,8 +155,7 @@ export const orgToolOutputSchemas = {
   record_artifact: artifactSchema,
   get_artifact: artifactSchema,
   message_agent: agentToAgentMessageSchema,
-  // 작업자 추가(#58)는 아직 없다. 지금은 단계 규칙의 거부만 확인할 수 있다.
-  add_worker: z.unknown(),
+  add_worker: addWorkerResultSchema,
   get_research_map: researchMapSchema,
   get_research_node: researchNodeDetailSchema,
   create_research_node: researchNodeSchema,
@@ -182,6 +181,7 @@ export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
  * 다른 조직의 기록과 없는 기록은 똑같이 404 `not_found`, 입력이 계약 밖이면 422 `invalid_input`.
  * Role이 쓸 수 없는 도구는 403 `forbidden`, 지금 생애주기 단계에서 닫힌 도구는 409 `stage_closed`이며
  * 두 거부는 Event log에 남는다. 아직 구현하지 않은 도구는 501 `not_implemented`.
+ * 작업자 추가는 곧바로 생긴 작업자면 201, 승인 정책 때문에 승인 요청이 되었으면 202다.
  * 작업 규칙의 거부: 담당자가 아닌 착수나 담당자·Lead가 아닌 완료는 403 `not_assignee`,
  * 완료된 작업의 다시 완료는 409 `already_completed`, 지금 상태에서 할 수 없는 착수는 409 `invalid_transition`.
  * 연구 지도 규칙의 거부: 조직 사본 템플릿에 없는 노드·연결 종류는 422 `unknown_kind`, 자기 자신과의 보조 연결은

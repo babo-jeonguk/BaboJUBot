@@ -1,5 +1,6 @@
 import {
   resultArtifactsMax,
+  type AddWorkerResult,
   resultSummaryMaxLength,
   type ConversationMessage,
   type OrgToolName,
@@ -75,12 +76,17 @@ const decisionLabel = {
 } as const;
 
 /** 깨우기 사유 한 줄. */
+const approvalKindLabel = {
+  initial_research: "초기 연구 승인 요청",
+  add_worker: "작업자 추가 승인 요청",
+} as const;
+
 export function describeWakeReason(reason: WakeReason): string {
   switch (reason.kind) {
     case "owner_message":
       return quote(reason.body);
     case "approval_decision":
-      return `초기 연구 승인 요청 ${decisionLabel[reason.decision]}${reason.note ? `: ${quote(reason.note)}` : ""}`;
+      return `${approvalKindLabel[reason.approvalKind]} ${decisionLabel[reason.decision]}${reason.note ? `: ${quote(reason.note)}` : ""}`;
     case "task_assigned":
       return `작업 ${quote(reason.title)}을 맡음`;
     case "task_completed":
@@ -170,7 +176,9 @@ export function parseGoalMessage(
  * 가짜 Lead의 데모 흐름. 실제 판단 없이 단계와 깨우기 사유로 정한다.
  * - 목표 설정: `목표:`·`완료 기준:` 줄이 있는 메시지를 받으면 목표를 기록하고 곧바로 초기 연구 승인을 요청한다.
  * - 계획 수립(반려·수정 요청을 받음): 사유를 반영한 새 요청을 제출한다.
- * - 연구 진행(승인을 받음): 작업자마다 작업을 하나씩 만들어 맡긴다.
+ * - 연구 진행(초기 연구 승인을 받음): 작업자마다 작업을 하나씩 만들어 맡긴다.
+ * - 연구 진행(사용자가 `작업자 추가`를 부탁함): `작업자 추가: <Role>` 줄의 Role(없으면 researcher)로 작업자를 추가한다.
+ *   승인 정책이 켜져 있으면 승인 요청이 되었다고 알린다. 작업자 추가 요청의 결정에는 답장만 한다.
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
  *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
@@ -228,9 +236,19 @@ export function demoLeadScript(request: RunRequest): Script {
     };
 
   const approved = request.wakeReasons.some(
-    (r) => r.kind === "approval_decision" && r.decision === "approve"
+    (r) =>
+      r.kind === "approval_decision" &&
+      r.approvalKind === "initial_research" &&
+      r.decision === "approve"
   );
   if (stage === "researching" && approved) return assignInitialTasks(request);
+
+  const workerRequest = messages.findLast((m) => workerRequestPattern.test(m));
+  if (stage === "researching" && workerRequest)
+    return addWorkerScript(
+      /작업자\s*추가\s*[:：]\s*([a-z0-9-]+)/.exec(workerRequest)?.[1] ??
+        "researcher"
+    );
 
   const changeRequest = request.wakeReasons.findLast(
     (r): r is Extract<WakeReason, { kind: "result_changes_requested" }> =>
@@ -281,6 +299,38 @@ function assignInitialTasks(request: RunRequest): Script {
       },
     ],
     summary: () => `작업 ${workers.length}개를 만들어 맡겼습니다.`,
+  };
+}
+
+/** 사용자가 작업자 추가를 부탁하는 메시지. */
+const workerRequestPattern = /작업자\s*추가/;
+
+/** 가짜 Lead의 작업자 추가. 결과가 곧바로 생긴 작업자인지 승인 대기인지 Lead 대화로 알린다. */
+function addWorkerScript(role: string): Script {
+  // 거부를 허용하지 않은 호출이므로 다음 단계에 닿았다면 호출은 성공했다.
+  const added = ({ calls }: ScriptState) => {
+    const output = calls.findLast((c) => c.tool === "add_worker");
+    const result = output?.ok ? (output.output as AddWorkerResult) : undefined;
+    return result?.status === "added" ? result.agent : undefined;
+  };
+  return {
+    steps: [
+      { do: "read_context" },
+      { do: "call", tool: "add_worker", input: () => ({ role }) },
+      {
+        do: "send_message",
+        body: (state) => {
+          const worker = added(state);
+          return worker
+            ? `(가짜 실행기) 작업자 ${worker.name}을 팀에 추가했습니다.`
+            : `(가짜 실행기) 작업자 추가 승인 정책이 켜져 있어 승인을 요청했습니다. Inbox에서 결정해 주세요.`;
+        },
+      },
+    ],
+    summary: (state) =>
+      added(state)
+        ? "작업자를 추가했습니다."
+        : "작업자 추가 승인을 요청했습니다.",
   };
 }
 

@@ -43,6 +43,13 @@
       "when": 1792560426406,
       "tag": "0005_result_review",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792606735647,
+      "tag": "0006_add_worker_policy",
+      "breakpoints": true
     }
   ]
 }

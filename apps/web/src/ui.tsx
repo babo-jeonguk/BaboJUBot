@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentStatus,
   ApprovalDecision,
+  ApprovalKind,
   ApprovalStatus,
   LifecycleStage,
   ResearchMapOperation,
@@ -85,6 +86,10 @@ export const decisionLabel: Record<ApprovalDecision, string> = {
   approve: "승인",
   reject: "반려",
   request_changes: "수정 요청",
+};
+export const approvalKindLabel: Record<ApprovalKind, string> = {
+  initial_research: "초기 연구 승인 요청",
+  add_worker: "작업자 추가 승인 요청",
 };
 export const approvalStatusLabel: Record<ApprovalStatus, string> = {
   pending: "결정 대기",
