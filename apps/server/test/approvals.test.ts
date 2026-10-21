@@ -176,7 +176,9 @@ describe("goal and initial research approval", () => {
       }),
     ]);
     expect(
-      inboxSchema.parse(await get("/api/inbox")).map((i) => i.approval.id)
+      inboxSchema
+        .parse(await get("/api/inbox"))
+        .map((i) => i.kind === "approval" && i.approval.id)
     ).toEqual([summary!.id]);
 
     const res = await decide(org.id, summary!.id, { decision: "approve" });

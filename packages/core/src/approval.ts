@@ -31,7 +31,8 @@ const leadOnly = ["lead"] as const;
 
 /**
  * Role·생애주기 단계별 조직 도구 규칙. `목표 설정`·`계획 수립`·`승인 대기`에는 조회·메시지·계획 도구만 열리고,
- * 작업·산출물·연구 지도·에이전트 간 메시지 쓰기와 작업자 추가는 `연구 진행`에서만 열린다. 작업·산출물·연구 지도 조회는 언제나 열린다.
+ * 작업·산출물·연구 지도·에이전트 간 메시지 쓰기, 작업자 추가와 결과 제출은 `연구 진행`에서만 열린다. 작업·산출물·연구 지도 조회는 언제나 열린다.
+ * 그래서 `결과 검토 중`·`최종 완료`에는 조회와 Lead 대화 답장만 남는다.
  */
 export const toolRules: Record<OrgToolName, ToolRule> = {
   get_run_context: { roles: everyone, stages: anyStage },
@@ -65,6 +66,8 @@ export const toolRules: Record<OrgToolName, ToolRule> = {
   link_task_research_node: { roles: everyone, stages: ["researching"] },
   relink_task_research_node: { roles: everyone, stages: ["researching"] },
   unlink_task_research_node: { roles: everyone, stages: ["researching"] },
+  // 결과 제출은 Lead의 판단이다. 최종 완료는 사용자 결정뿐이라 도구가 없다.
+  submit_result: { roles: leadOnly, stages: ["researching"] },
 };
 
 export type ToolCheck = { ok: true } | { ok: false; reason: ToolRefusalReason };

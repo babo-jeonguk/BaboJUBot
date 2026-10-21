@@ -10,6 +10,7 @@ import {
   researchMapOperations,
   researchNodeStatuses,
   researchNodeWorkStatuses,
+  resultSubmissionStatuses,
   runStatuses,
   taskStatuses,
   type FlowKind,
@@ -26,8 +27,10 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -687,6 +690,89 @@ export const agentToAgentMessages = pgTable(
   ]
 );
 
+/**
+ * 결과 제출. 요약·검토 기준(목표·완료 기준 사본)·근거 산출물은 제출 때 고정하고 다시 바뀌지 않는다. 결정은 `pending`에서
+ * 한 번만 하며, 수정 요청 뒤의 재제출은 직전 제출을 가리키는 새 행이다. 조직마다 결정을 기다리는 제출은 하나뿐이다.
+ */
+export const resultSubmissions = pgTable(
+  "result_submissions",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    status: text("status", { enum: resultSubmissionStatuses }).notNull(),
+    submittedByAgentId: uuid("submitted_by_agent_id").notNull(),
+    submittedByRunId: uuid("submitted_by_run_id").notNull(),
+    previousSubmissionId: uuid("previous_submission_id"),
+    summary: text("summary").notNull(),
+    goal: text("goal").notNull(),
+    completionCriteria: text("completion_criteria").notNull(),
+    decisionNote: text("decision_note"),
+    decidedAt: timestamp("decided_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "result_submissions_status_check",
+      sql`${t.status} in (${inList(resultSubmissionStatuses)})`
+    ),
+    check(
+      "result_submissions_decided_check",
+      sql`(${t.status} = 'pending') = (${t.decidedAt} is null)`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.submittedByAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.submittedByRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.previousSubmissionId],
+      foreignColumns: [t.organizationId, t.id],
+    }),
+    unique("result_submissions_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    uniqueIndex("result_submissions_one_pending_per_organization")
+      .on(t.organizationId)
+      .where(sql`${t.status} = 'pending'`),
+    index("result_submissions_organization_idx").on(t.organizationId, t.seq),
+  ]
+);
+
+/** 결과 제출의 근거 산출물. 같은 조직의 산출물만 묶이고, `position`이 제출한 순서다. */
+export const resultSubmissionArtifacts = pgTable(
+  "result_submission_artifacts",
+  {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    submissionId: uuid("submission_id").notNull(),
+    artifactId: uuid("artifact_id").notNull(),
+    position: integer("position").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.submissionId, t.artifactId] }),
+    unique("result_submission_artifacts_position_unique").on(
+      t.submissionId,
+      t.position
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.submissionId],
+      foreignColumns: [resultSubmissions.organizationId, resultSubmissions.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.artifactId],
+      foreignColumns: [artifacts.organizationId, artifacts.id],
+    }),
+  ]
+);
+
 /** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채운다. */
 const wakeSourceColumns = {
   owner_message: "message_id",
@@ -696,6 +782,7 @@ const wakeSourceColumns = {
   task_comment: "comment_id",
   agent_to_agent_message: "agent_to_agent_message_id",
   research_map_edit: "map_edit_id",
+  result_changes_requested: "result_submission_id",
 } as const satisfies Record<WakeKind, string>;
 const wakeKinds = Object.keys(wakeSourceColumns) as WakeKind[];
 
@@ -718,6 +805,7 @@ export const wakes = pgTable(
     commentId: uuid("comment_id"),
     agentToAgentMessageId: uuid("agent_to_agent_message_id"),
     mapEditId: uuid("map_edit_id"),
+    resultSubmissionId: uuid("result_submission_id"),
     runId: uuid("run_id"),
     createdAt: createdAt(),
   },
@@ -725,7 +813,7 @@ export const wakes = pgTable(
     check("wakes_kind_check", sql`${t.kind} in (${inList(wakeKinds)})`),
     check(
       "wakes_source_check",
-      sql`num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}) = 1
+      sql`num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.resultSubmissionId}) = 1
         and (${sql.raw(
           Object.entries(wakeSourceColumns)
             .map(
@@ -767,6 +855,10 @@ export const wakes = pgTable(
       foreignColumns: [researchMapEdits.organizationId, researchMapEdits.id],
     }),
     foreignKey({
+      columns: [t.organizationId, t.resultSubmissionId],
+      foreignColumns: [resultSubmissions.organizationId, resultSubmissions.id],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.runId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
@@ -788,6 +880,8 @@ export const wakes = pgTable(
     ),
     // 사용자 편집 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_map_edit_unique").on(t.mapEditId),
+    // 수정 요청 하나는 깨우기 하나만 만든다.
+    uniqueIndex("wakes_result_submission_unique").on(t.resultSubmissionId),
   ]
 );
 

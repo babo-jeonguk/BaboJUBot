@@ -6,6 +6,8 @@ import type {
   RunRequest,
   RunResult,
   RuntimeAdapter,
+  Task,
+  TaskDetail,
   WakeReason,
 } from "@babojubot/contracts";
 import { createOrgToolClient, OrgToolError } from "./tools-client.ts";
@@ -47,6 +49,8 @@ export type ScriptStep =
       allowRefusal?: boolean;
       when?: (state: ScriptState) => boolean;
     }
+  /** 앞 단계의 결과로 이어서 실행할 단계를 정한다. 정한 단계는 바로 다음에 실행한다. */
+  | { do: "then"; steps: (state: ScriptState) => ScriptStep[] }
   /** 테스트가 정한 조건까지 멈춘다. 취소되면 reject해야 한다. */
   | { do: "hold"; until: (signal: AbortSignal) => Promise<void> }
   /** 실행기 오류를 흉내 낸다. */
@@ -85,6 +89,8 @@ export function describeWakeReason(reason: WakeReason): string {
       return `에이전트 메시지 ${quote(reason.body)}`;
     case "research_map_edit":
       return `사용자의 연구 지도 편집: ${reason.summary}`;
+    case "result_changes_requested":
+      return `제출한 결과에 수정 요청: ${quote(reason.note)}`;
   }
 }
 
@@ -163,7 +169,9 @@ export function parseGoalMessage(
  * - 목표 설정: `목표:`·`완료 기준:` 줄이 있는 메시지를 받으면 목표를 기록하고 곧바로 초기 연구 승인을 요청한다.
  * - 계획 수립(반려·수정 요청을 받음): 사유를 반영한 새 요청을 제출한다.
  * - 연구 진행(승인을 받음): 작업자마다 작업을 하나씩 만들어 맡긴다.
- * - 그 밖(하위 작업 완료 등): 받은 깨우기 사유에 답장한다.
+ * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
+ *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
+ * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
  */
 export function demoLeadScript(request: RunRequest): Script {
   const { stage } = request.context.organization;
@@ -222,6 +230,18 @@ export function demoLeadScript(request: RunRequest): Script {
   );
   if (stage === "researching" && approved) return assignInitialTasks(request);
 
+  const changes = request.wakeReasons.findLast(
+    (r) => r.kind === "result_changes_requested"
+  );
+  if (
+    stage === "researching" &&
+    (changes || messages.some((m) => resultRequest.test(m)))
+  )
+    return submitResultScript(
+      request,
+      changes?.kind === "result_changes_requested" ? changes.note : null
+    );
+
   if (stage === "goal_setting" && messages.length)
     return {
       ...leadReplyScript,
@@ -261,6 +281,81 @@ function assignInitialTasks(request: RunRequest): Script {
       },
     ],
     summary: () => `작업 ${workers.length}개를 만들어 맡겼습니다.`,
+  };
+}
+
+/** 사용자가 결과 제출을 부탁하는 메시지. */
+const resultRequest = /결과(를)?\s*제출/;
+
+/**
+ * 가짜 Lead의 결과 제출: 작업 목록에서 완료한 작업을 읽어 그 산출물을 근거로 묶고, 자기 보고를 모은 요약으로 제출한다.
+ * 수정 요청을 받았으면 그 의견을 요약에 적는다. 근거 산출물이 없으면 제출하지 않고 Lead 대화로 알린다.
+ */
+function submitResultScript(
+  request: RunRequest,
+  feedback: string | null
+): Script {
+  const goal = request.context.organization.goal ?? "연구 목표";
+  const outputs = <T>({ calls }: ScriptState, tool: OrgToolName) =>
+    calls.flatMap((c) => (c.tool === tool && c.ok ? [c.output as T] : []));
+  return {
+    steps: [
+      { do: "read_context" },
+      { do: "call", tool: "list_tasks" },
+      {
+        do: "then",
+        steps: (state) =>
+          outputs<Task[]>(state, "list_tasks")[0]!
+            .filter((task) => task.status === "completed")
+            .map((task) => ({
+              do: "call",
+              tool: "get_task",
+              params: () => ({ taskId: task.id }),
+            })),
+      },
+      {
+        do: "then",
+        steps: (state) => {
+          const done = outputs<TaskDetail>(state, "get_task");
+          const artifactIds = done.flatMap((t) => t.artifacts.map((a) => a.id));
+          if (!artifactIds.length)
+            return [
+              {
+                do: "send_message",
+                body: () =>
+                  "(가짜 실행기) 아직 근거로 묶을 산출물이 없어 결과를 제출하지 않았습니다. 작업이 끝나면 다시 부탁해 주세요.",
+              },
+            ];
+          const summary = [
+            `# 결과 요약`,
+            ``,
+            `목표: ${goal}`,
+            ``,
+            `완료한 작업 ${done.length}개의 자기 보고:`,
+            ...done.map((t) => `- ${t.title}: ${t.report?.summary ?? ""}`),
+            ...(feedback ? [``, `반영한 수정 의견: ${feedback}`] : []),
+            ``,
+            `(가짜 실행기가 만든 예시 요약입니다. 완료 기준 충족을 판단하지 않았습니다.)`,
+          ].join("\n");
+          return [
+            {
+              do: "call",
+              tool: "submit_result",
+              input: () => ({ summary, artifactIds }),
+            },
+            {
+              do: "send_message",
+              body: () =>
+                `(가짜 실행기) ${feedback ? "수정 의견을 반영해 " : ""}결과를 근거 산출물 ${artifactIds.length}개와 함께 제출했습니다. Inbox에서 검토하고 수정 요청 또는 최종 완료를 결정해 주세요.`,
+            },
+          ];
+        },
+      },
+    ],
+    summary: ({ calls }) =>
+      calls.some((c) => c.tool === "submit_result" && c.ok)
+        ? "결과를 제출했습니다."
+        : "근거 산출물이 없어 결과를 제출하지 않았습니다.",
   };
 }
 
@@ -417,7 +512,8 @@ export function createScriptedRuntime({
         calls: [],
       };
       try {
-        for (const step of script.steps) {
+        const queue = [...script.steps];
+        for (let step = queue.shift(); step; step = queue.shift()) {
           signal.throwIfAborted();
           switch (step.do) {
             case "read_context":
@@ -451,6 +547,9 @@ export function createScriptedRuntime({
                   code: error.code,
                 });
               }
+              break;
+            case "then":
+              queue.unshift(...step.steps(state));
               break;
             case "hold":
               await step.until(signal);

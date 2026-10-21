@@ -2,6 +2,7 @@ import { z } from "zod";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
 import { lifecycleStageSchema } from "./organization.ts";
+import { resultDecisionSchema } from "./result.ts";
 import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
 import {
@@ -121,6 +122,36 @@ export const approvalDecidedEventSchema = z.object({
   }),
 });
 
+/** Lead가 결과를 제출했다. `stage`는 제출 뒤 조직 단계(결과 검토 중)다. */
+export const resultSubmittedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("result.submitted"),
+  payload: z.object({
+    submissionId: z.uuid(),
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    artifactIds: z.array(z.uuid()),
+    stage: lifecycleStageSchema,
+  }),
+});
+
+/**
+ * 사용자의 결과 검토 제어 명령을 남긴 Event. `stage`는 결정 뒤 조직 단계이고,
+ * 수정 요청이면 의견과 함께 깨운 Lead가 `wokenAgentId`다. 최종 완료는 아무도 깨우지 않는다.
+ */
+export const resultDecidedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("result.decided"),
+  payload: z.object({
+    submissionId: z.uuid(),
+    by: z.literal("owner"),
+    decision: resultDecisionSchema,
+    note: z.string().nullable(),
+    stage: lifecycleStageSchema,
+    wokenAgentId: z.uuid().nullable(),
+  }),
+});
+
 /** 조직 도구 호출을 Role 또는 생애주기 단계 규칙으로 거부했다. 거부한 호출은 아무것도 바꾸지 않는다. */
 export const toolRefusedEventSchema = z.object({
   ...eventBase,
@@ -233,6 +264,8 @@ export const eventSchema = z.discriminatedUnion("type", [
   goalRecordedEventSchema,
   approvalRequestedEventSchema,
   approvalDecidedEventSchema,
+  resultSubmittedEventSchema,
+  resultDecidedEventSchema,
   toolRefusedEventSchema,
   messageCreatedEventSchema,
   taskCreatedEventSchema,

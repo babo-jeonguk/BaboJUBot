@@ -7,6 +7,7 @@ import { ApprovalDetailPage, InboxPage } from "./approvals.tsx";
 import { CreateOrganizationProvider } from "./create-organization.tsx";
 import { useLiveEvents } from "./live-events.ts";
 import { Home, OrganizationScreen } from "./pages.tsx";
+import { ResultSubmissionPage } from "./results.tsx";
 import { Shell } from "./shell.tsx";
 import { ArtifactPage, TaskDetailPage } from "./tasks.tsx";
 import { NotFound } from "./ui.tsx";
@@ -25,6 +26,10 @@ function App() {
           <Route
             path="orgs/:orgId/approvals/:approvalId"
             element={<ApprovalDetailPage />}
+          />
+          <Route
+            path="orgs/:orgId/results/:submissionId"
+            element={<ResultSubmissionPage />}
           />
           <Route
             path="orgs/:orgId/agents/:agentId"

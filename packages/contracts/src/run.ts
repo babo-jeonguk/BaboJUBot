@@ -84,6 +84,13 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     nodeId: z.uuid().nullable(),
     summary: z.string(),
   }),
+  /** 사용자가 제출한 결과에 수정을 요청했다(Lead에게). `note`가 사용자의 의견이다. */
+  z.object({
+    kind: z.literal("result_changes_requested"),
+    wakeId: z.uuid(),
+    submissionId: z.uuid(),
+    note: z.string(),
+  }),
 ]);
 export type WakeReason = z.infer<typeof wakeReasonSchema>;
 export type WakeKind = WakeReason["kind"];

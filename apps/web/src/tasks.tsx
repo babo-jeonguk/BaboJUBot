@@ -28,8 +28,8 @@ import {
   TaskStatusBadge,
 } from "./ui.tsx";
 
-const formatLabel = { markdown: "Markdown", text: "텍스트" } as const;
-const nameOf = (agents: Agent[], id: string | null) =>
+export const formatLabel = { markdown: "Markdown", text: "텍스트" } as const;
+export const nameOf = (agents: Agent[], id: string | null) =>
   agents.find((a) => a.id === id)?.name ?? "에이전트";
 
 /** 조직 › 작업: 작업 목록(제목·상태·담당자). 각 작업은 별도 상세 페이지로 열린다. */

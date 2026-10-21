@@ -5,6 +5,8 @@ import type {
   LifecycleStage,
   ResearchMapOperation,
   ResearchNodeStatus,
+  ResultDecision,
+  ResultSubmissionStatus,
   RunStatus,
   TaskStatus,
 } from "@babojubot/contracts";
@@ -102,6 +104,36 @@ export function ApprovalStatusBadge({ status }: { status: ApprovalStatus }) {
       className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${approvalStatusStyle[status]}`}
     >
       {approvalStatusLabel[status]}
+    </span>
+  );
+}
+
+export const resultDecisionLabel: Record<ResultDecision, string> = {
+  request_changes: "수정 요청",
+  complete: "최종 완료",
+};
+export const resultStatusLabel: Record<ResultSubmissionStatus, string> = {
+  pending: "검토 대기",
+  changes_requested: "수정 요청됨",
+  completed: "최종 완료",
+};
+const resultStatusStyle: Record<ResultSubmissionStatus, string> = {
+  pending: "bg-amber-50 text-amber-800",
+  changes_requested: "bg-sky-50 text-sky-700",
+  completed: "bg-emerald-50 text-emerald-700",
+};
+
+/** 결과 제출 상태. 검토 대기는 사용자 결정이 필요하다는 뜻이다. */
+export function ResultStatusBadge({
+  status,
+}: {
+  status: ResultSubmissionStatus;
+}) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${resultStatusStyle[status]}`}
+    >
+      {resultStatusLabel[status]}
     </span>
   );
 }

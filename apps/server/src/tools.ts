@@ -17,6 +17,7 @@ import {
   sendAgentMessageInputSchema,
   sendAgentToAgentMessageInputSchema,
   startTaskInputSchema,
+  submitResultInputSchema,
   type Event,
   type OrgToolErrorCode,
   type OrgToolName,
@@ -43,6 +44,7 @@ import {
   recordGoal,
   sendAgentToAgentMessage,
   startTask,
+  submitResult,
   writeResearchMap,
   type ActiveRun,
   type Database,
@@ -606,6 +608,24 @@ export function orgToolsRouter({
   router.post(
     orgToolPaths.add_worker,
     tool("add_worker", async (_req, res) => refuse(res, 501, "not_implemented"))
+  );
+
+  router.post(
+    orgToolPaths.submit_result,
+    tool("submit_result", async (req, res, run) => {
+      const input = submitResultInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await submitResult(db, run, input.data, {
+          source,
+          activity: toolActivity(
+            "submit_result",
+            `결과 제출: 요약 ${chars(input.data.summary)}자, 근거 산출물 ${input.data.artifactIds.length}개`
+          ),
+        })
+      );
+    })
   );
 
   router.use((_req, res) => refuse(res, 404, "not_found"));

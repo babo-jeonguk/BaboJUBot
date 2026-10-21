@@ -83,7 +83,8 @@ export async function lockRunningRun(
 
 /**
  * 조직 행을 `FOR NO KEY UPDATE`로 잠근다. 단계 전이는 모두 이 잠금 아래에서 단계를 다시 확인한다.
- * 다른 기록의 FK 확인(`KEY SHARE`)과는 부딪히지 않아 에이전트 행을 잠근 admission과 교착하지 않는다.
+ * 다른 기록의 FK 확인(`KEY SHARE`)과는 부딪히지 않는다. 실행 시도 admission은 같은 행을 `FOR SHARE`로 잠근 뒤
+ * 에이전트 행을 잠그므로(조직 → 에이전트), 이 잠금 아래에서 깨우기·Event를 넣으며 에이전트 행을 기다려도 교착하지 않는다.
  */
 export async function lockOrganization(tx: Executor, organizationId: string) {
   const [row] = await tx

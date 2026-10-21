@@ -8,12 +8,14 @@ import {
   ApiError,
   useApprovals,
   useFlowTemplate,
+  useResultSubmissions,
   useOrganization,
   useOrganizations,
 } from "./api.ts";
 import { approvalKindLabel } from "./approvals.tsx";
 import { LeadChat } from "./chat.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
+import { ResultReviewScreen } from "./results.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
 import { TasksScreen } from "./tasks.tsx";
 import {
@@ -179,6 +181,12 @@ export function OrganizationScreen() {
         </Suspense>
       </Page>
     );
+  if (section === "review")
+    return (
+      <Page width={width}>
+        <ResultReviewScreen orgId={orgId} stage={org.data.stage} />
+      </Page>
+    );
   if (section === "agents")
     return (
       <Page width={width}>
@@ -203,11 +211,13 @@ export function OrganizationScreen() {
   );
 }
 
-/** 조직 › 대시보드: 단계, 연구 목표·완료 기준, 결정을 기다리는 승인 요청과 승인 이력, 팀과 연구 흐름 템플릿. */
+/** 조직 › 대시보드: 단계, 연구 목표·완료 기준, 결정을 기다리는 승인 요청·결과 제출과 승인 이력, 팀과 연구 흐름 템플릿. */
 function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
   const approvals = useApprovals(org.id);
+  const results = useResultSubmissions(org.id);
   const template = useFlowTemplate(org.id);
   const pending = approvals.data?.find((a) => a.status === "pending");
+  const pendingResult = results.data?.find((r) => r.status === "pending");
   const workers = org.agents.filter((a) => a.role === "worker").length;
   return (
     <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
@@ -228,6 +238,22 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
               </div>
               <div className="text-xs text-slate-500">
                 계획·팀·연구 환경 명세를 검토하고 결정하세요.
+              </div>
+            </div>
+            <span className="text-sm text-brand-600">검토하기 →</span>
+          </Link>
+        )}
+        {pendingResult && (
+          <Link
+            to={`/orgs/${org.id}/results/${pendingResult.id}`}
+            className="card card-hover flex items-center gap-3 p-4 ring-2 ring-amber-200"
+          >
+            <span className="text-xl">📦</span>
+            <div className="min-w-0 flex-1">
+              <div className="font-medium">제출된 결과가 검토를 기다립니다</div>
+              <div className="text-xs text-slate-500">
+                요약·완료 기준·근거 산출물을 보고 수정 요청 또는 최종 완료를
+                결정하세요.
               </div>
             </div>
             <span className="text-sm text-brand-600">검토하기 →</span>

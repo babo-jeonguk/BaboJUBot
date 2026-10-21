@@ -13,6 +13,7 @@ import {
   updateResearchNodeInputSchema,
   createOrganizationInputSchema,
   decideApprovalInputSchema,
+  decideResultInputSchema,
   eventStreamPath,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
@@ -28,6 +29,7 @@ import {
   findFlowTemplate,
   findOrganization,
   findResearchNodeDetail,
+  findResultSubmission,
   findRunDetail,
   findTaskDetail,
   getResearchMap,
@@ -36,6 +38,7 @@ import {
   listInbox,
   listOrganizationEvents,
   listOrganizations,
+  listResultSubmissions,
   listRuns,
   listTasks,
   type Database,
@@ -54,6 +57,7 @@ import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
 import { createOrganization } from "./organizations.ts";
 import { editResearchMapAsOwner } from "./research-map.ts";
+import { decideResult } from "./results.ts";
 import { addOwnerTaskComment } from "./tasks.ts";
 import { problemResponses } from "./problems.ts";
 import { orgToolsRouter } from "./tools.ts";
@@ -133,7 +137,7 @@ export async function startServer({
       .json(await createOrganization({ db, hub, harnessDir }, input.data));
   });
 
-  /** Inbox. 첫 판은 모든 조직에서 결정을 기다리는 승인 요청뿐이다. */
+  /** Inbox. 첫 판은 모든 조직에서 결정을 기다리는 승인 요청과 결과 제출뿐이다. */
   app.get("/api/inbox", async (_req, res) => {
     res.json(await listInbox(db));
   });
@@ -391,6 +395,51 @@ export async function startServer({
         return;
       }
       res.json(result.approval);
+    }
+  );
+
+  app.get("/api/organizations/:id/results", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(await listResultSubmissions(db, req.params.id));
+  });
+
+  app.get("/api/organizations/:id/results/:submissionId", async (req, res) => {
+    const submission = await findResultSubmission(
+      db,
+      req.params.id,
+      req.params.submissionId
+    );
+    if (!submission) return notFound(res);
+    res.json(submission);
+  });
+
+  /**
+   * 결과 검토 제어 명령: 수정 요청 또는 최종 완료. 최종 완료는 이 사용자 명령으로만 일어나며 조직 도구가 없다.
+   * 결정은 한 번만 할 수 있고, 이미 결정한 제출(재제출 뒤의 옛 제출 포함)은 409 `already_decided`다.
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   */
+  app.post(
+    "/api/organizations/:id/results/:submissionId/decision",
+    async (req, res) => {
+      const input = decideResultInputSchema.safeParse(req.body);
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const result = await decideResult(
+        { db, hub, dispatcher, now },
+        req.params.id,
+        req.params.submissionId,
+        input.data
+      );
+      if (result.kind === "not_found") return notFound(res);
+      if (result.kind === "already_decided") {
+        res.status(409).json({ error: { code: "already_decided" } });
+        return;
+      }
+      res.json(result.submission);
     }
   );
 
