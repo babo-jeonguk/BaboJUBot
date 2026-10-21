@@ -36,7 +36,7 @@ pnpm check        # Markdown 로컬 링크 검사
 
 `pnpm install`은 `@embedded-postgres/linux-x64`의 postinstall만 실행합니다(`pnpm-workspace.yaml`의 `onlyBuiltDependencies`). 이 script가 Postgres native library의 symlink를 만들기 때문에 `--ignore-scripts`로 설치하면 embedded Postgres가 뜨지 않습니다. 다른 OS·아키텍처에서는 해당 `@embedded-postgres/*` 패키지를 같은 목록에 추가합니다.
 
-[CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·테스트·빌드·E2E를 모두 실행합니다.
+[CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·테스트·빌드·E2E를 실행합니다. 바뀐 파일이 Markdown뿐이면 문서 검사만 돌리고 나머지 검사는 건너뛴 채 성공으로 표시합니다.
 기능 브랜치 push만으로는 중복 실행하지 않고, 같은 PR의 오래된 실행은 취소합니다.
 `main`의 필수 검사는 workflow의 `ci / …` job 전체이며, 실행 환경과 검사 이름은 workflow를 기준으로 합니다.
 표준 GitHub-hosted runner를 쓰는 공개 저장소의 실행 시간은 무료입니다([GitHub 과금 문서](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
@@ -58,7 +58,7 @@ pnpm check        # Markdown 로컬 링크 검사
 - 여러 행에 해당하면 합쳐 적용합니다. 조직 상태·승인·조직 분리 계약 변경은 해당 핵심 시나리오를 검증합니다.
 - 검사마다 SHA·명령 또는 CI run·결과를 기록하고 실패 출력·종료 코드도 보존합니다. 미실행 환경·시나리오는 구분하고 PR이 있으면 본문에 모읍니다.
 - 같은 코드의 검증은 재사용할 수 있습니다. 이전 SHA를 근거로 쓰면 이후 diff와 적용 이유를 남기고, 변경·실패·환경 차이에 맞춰 재검사합니다. 실패는 원인을 확인해 해소합니다.
-- 로컬 검사 선택과 별개로 PR·main의 CI는 위에 설명한 전체 검사를 실행합니다. 병합 판단은 [병합 절차](docs/agents/pr-merge.md)를 따릅니다.
+- 로컬 검사 선택과 별개로 PR·main의 CI는 위에 설명한 검사를 실행합니다. 병합 판단은 [병합 절차](docs/agents/pr-merge.md)를 따릅니다.
 
 ## 문서
 

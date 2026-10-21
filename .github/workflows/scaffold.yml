@@ -10,29 +10,59 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # 바뀐 파일이 Markdown뿐이면 문서 검사(check)만 실제로 돌린다. 나머지 job은 이름을 유지한 채 바로 성공한다.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BASE" HEAD | grep -v '\.md$' >/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
   check:
     name: ci / ${{ matrix.script }}
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         script: [check, typecheck, lint, test, build, "test:e2e"]
+    env:
+      RUN: ${{ matrix.script == 'check' || needs.changes.outputs.code == 'true' }}
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.1.0
+      - if: env.RUN != 'true'
+        run: echo "Markdown만 바뀌어 ${{ matrix.script }}를 건너뜁니다."
+      - if: env.RUN == 'true'
+        uses: actions/checkout@v7.0.1
+      - if: env.RUN == 'true'
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
-      - uses: pnpm/action-setup@v6.1.0
+      - if: env.RUN == 'true'
+        uses: pnpm/action-setup@v6.1.0
         with:
           cache: true
-      - run: pnpm install --frozen-lockfile
+      - if: env.RUN == 'true'
+        run: pnpm install --frozen-lockfile
       - name: Install Chromium and system dependencies
-        if: matrix.script == 'test:e2e'
+        if: env.RUN == 'true' && matrix.script == 'test:e2e'
         run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium
-      - run: pnpm run ${{ matrix.script }}
+      - if: env.RUN == 'true'
+        run: pnpm run ${{ matrix.script }}
       - name: Keep failed E2E traces
-        if: failure() && matrix.script == 'test:e2e'
+        if: failure() && env.RUN == 'true' && matrix.script == 'test:e2e'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
