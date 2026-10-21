@@ -10,6 +10,7 @@ import {
   mapOperationLabel,
   runLabel,
   runStatusLabel,
+  resultDecisionLabel,
   stageLabel,
 } from "./ui.tsx";
 
@@ -75,6 +76,24 @@ export function describeEvent(event: Event, agentName: string): Described {
             event.payload.note && `사유: ${event.payload.note}`,
             event.payload.createdAgentIds.length &&
               `작업자 ${event.payload.createdAgentIds.length}명 생성`,
+          ]
+            .filter(Boolean)
+            .join("\n") || undefined,
+      };
+    case "result.submitted":
+      return {
+        icon: "📦",
+        title: `${agentName}가 결과를 제출했습니다 → ${stageLabel[event.payload.stage]}`,
+        detail: `근거 산출물 ${event.payload.artifactIds.length}개`,
+      };
+    case "result.decided":
+      return {
+        icon: event.payload.decision === "complete" ? "🏁" : "↺",
+        title: `사용자가 제출된 결과를 ${resultDecisionLabel[event.payload.decision]}했습니다 → ${stageLabel[event.payload.stage]}`,
+        detail:
+          [
+            event.payload.note && `의견: ${event.payload.note}`,
+            event.payload.wokenAgentId && "Lead를 깨웠습니다",
           ]
             .filter(Boolean)
             .join("\n") || undefined,

@@ -121,12 +121,3 @@ export const approvalSchema = approvalSummarySchema.extend({
   decisionNote: z.string().nullable(),
 });
 export type Approval = z.infer<typeof approvalSchema>;
-
-/** Inbox 항목. 첫 판은 결정을 기다리는 승인 요청만 담는다(나머지 종류와 읽음·보관은 #61). */
-export const inboxItemSchema = z.object({
-  kind: z.literal("approval"),
-  organizationName: z.string(),
-  approval: approvalSummarySchema,
-});
-export type InboxItem = z.infer<typeof inboxItemSchema>;
-export const inboxSchema = z.array(inboxItemSchema);

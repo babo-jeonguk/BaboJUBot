@@ -1,10 +1,13 @@
 import type {
+  Agent,
   AgentStatus,
   ApprovalDecision,
   ApprovalStatus,
   LifecycleStage,
   ResearchMapOperation,
   ResearchNodeStatus,
+  ResultDecision,
+  ResultSubmissionStatus,
   RunStatus,
   TaskStatus,
 } from "@babojubot/contracts";
@@ -106,6 +109,36 @@ export function ApprovalStatusBadge({ status }: { status: ApprovalStatus }) {
   );
 }
 
+export const resultDecisionLabel: Record<ResultDecision, string> = {
+  request_changes: "수정 요청",
+  complete: "최종 완료",
+};
+export const resultStatusLabel: Record<ResultSubmissionStatus, string> = {
+  pending: "검토 대기",
+  changes_requested: "수정 요청됨",
+  completed: "최종 완료",
+};
+const resultStatusStyle: Record<ResultSubmissionStatus, string> = {
+  pending: "bg-amber-50 text-amber-800",
+  changes_requested: "bg-sky-50 text-sky-700",
+  completed: "bg-emerald-50 text-emerald-700",
+};
+
+/** 결과 제출 상태. 검토 대기는 사용자 결정이 필요하다는 뜻이다. */
+export function ResultStatusBadge({
+  status,
+}: {
+  status: ResultSubmissionStatus;
+}) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${resultStatusStyle[status]}`}
+    >
+      {resultStatusLabel[status]}
+    </span>
+  );
+}
+
 export const taskStatusLabel: Record<TaskStatus, string> = {
   open: "할당됨",
   in_progress: "진행 중",
@@ -181,6 +214,10 @@ const timeFormat = new Intl.DateTimeFormat("ko-KR", {
 });
 export const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 /** 실행 시도를 짧게 부르는 이름. 전체 ID는 주소에 있다. */
+export const formatLabel = { markdown: "Markdown", text: "텍스트" } as const;
+export const nameOf = (agents: Agent[], id: string | null) =>
+  agents.find((a) => a.id === id)?.name ?? "에이전트";
+
 export const runLabel = (runId: string) => `실행 시도 ${runId.slice(0, 8)}`;
 
 /** 본문 폭 3단계: 좁게 768px, 중간 1024px, 전체 폭. 창이 좁으면 창 폭을 따른다. */

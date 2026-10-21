@@ -3,7 +3,6 @@ import type {
   ApprovalSummary,
   DecideApprovalInput,
   Event,
-  InboxItem,
   Organization,
   PublicActivity,
   RecordGoalInput,
@@ -19,7 +18,7 @@ import {
   type RecordSource,
   type Wake,
 } from "@babojubot/core";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   insertEvent,
@@ -242,21 +241,6 @@ export async function findApproval(
   return row && toApproval(row);
 }
 
-/** Inbox: 모든 조직에서 결정을 기다리는 승인 요청. 오래된 것부터. */
-export async function listInbox(db: Database): Promise<InboxItem[]> {
-  const rows = await db
-    .select({ approval: approvals, organizationName: organizations.name })
-    .from(approvals)
-    .innerJoin(organizations, eq(organizations.id, approvals.organizationId))
-    .where(eq(approvals.status, "pending"))
-    .orderBy(asc(approvals.seq));
-  return rows.map(({ approval, organizationName }) => ({
-    kind: "approval",
-    organizationName,
-    approval: toApprovalSummary(approval),
-  }));
-}
-
 const toApproval = ({
   seq: _seq,
   requestedByRunId: _run,
@@ -269,7 +253,7 @@ const toApproval = ({
   decidedAt: decidedAt?.toISOString() ?? null,
 });
 
-const toApprovalSummary = (
+export const toApprovalSummary = (
   row: typeof approvals.$inferSelect
 ): ApprovalSummary => {
   const {

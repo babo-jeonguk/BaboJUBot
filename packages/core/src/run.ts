@@ -1,6 +1,7 @@
 import type {
   Agent,
   ConversationMessage,
+  LifecycleStage,
   NewEvent,
   RunResult,
   RunStatus,
@@ -25,6 +26,7 @@ export type Wake = {
   | { kind: "task_comment"; commentId: string }
   | { kind: "agent_to_agent_message"; agentToAgentMessageId: string }
   | { kind: "research_map_edit"; mapEditId: string }
+  | { kind: "result_changes_requested"; resultSubmissionId: string }
 );
 /** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. */
 export type PendingWake = {
@@ -125,6 +127,17 @@ export type RunStartPlan = {
   wakeReasons: WakeReason[];
   event: NewEvent;
 };
+
+/** 새 실행 시도를 시작하지 않는 조직 단계. 깨우기는 남겨 두며, 최종 완료에는 어떤 깨우기 사유도 예외가 없다. */
+export const runBlockingStages = [
+  "paused",
+  "stopped",
+  "completed",
+] as const satisfies readonly LifecycleStage[];
+
+/** 이 단계의 조직에서 실행 시도를 시작할 수 있는가(admission). */
+export const admitsRuns = (stage: LifecycleStage) =>
+  !(runBlockingStages as readonly LifecycleStage[]).includes(stage);
 
 /**
  * 대기 중인 깨우기를 모두 실행 시도 하나로 묶는다. 묶음은 이 시점에 고정되며,

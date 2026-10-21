@@ -1,4 +1,11 @@
-import type { RunRequest } from "@babojubot/contracts";
+import {
+  resultArtifactsMax,
+  resultSubmissionSchema,
+  submitResultInputSchema,
+  taskReportMaxLength,
+  type RunRequest,
+  type TaskDetail,
+} from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
   createScriptedRuntime,
@@ -301,6 +308,154 @@ describe("demo Lead scenario", () => {
           : []
       )
     ).toEqual(workers.map((id) => ["create_task", id]));
+  });
+
+  it("keeps the demo Lead's result submission within the contract's evidence and summary limits and says what it left out", async () => {
+    const now = new Date().toISOString();
+    const lead = ids.agentId;
+    const researching: RunRequest = {
+      ...request,
+      wakeReasons: [
+        {
+          kind: "owner_message",
+          wakeId: crypto.randomUUID(),
+          messageId: crypto.randomUUID(),
+          body: "결과 제출 부탁해요",
+        },
+      ],
+      context: {
+        ...request.context,
+        organization: {
+          ...request.context.organization,
+          stage: "researching",
+          goal: "오류 유형을 정리한다",
+          completionCriteria: "유형 목록",
+        },
+      },
+    };
+    // 상한보다 많은 완료 작업. 작업마다 산출물 하나와 가장 긴 자기 보고를 남겼다.
+    const tasks: TaskDetail[] = Array.from(
+      { length: resultArtifactsMax + 10 },
+      (_, i) => ({
+        id: crypto.randomUUID(),
+        organizationId: ids.organizationId,
+        title: `작업 ${i + 1}`,
+        description: "",
+        status: "completed",
+        assigneeAgentId: lead,
+        parentTaskId: null,
+        researchNodeId: null,
+        createdByAgentId: lead,
+        createdByRunId: ids.runId,
+        startedAt: now,
+        report: {
+          summary: "보".repeat(taskReportMaxLength),
+          agentId: lead,
+          runId: ids.runId,
+          completedAt: now,
+        },
+        createdAt: now,
+        comments: [],
+        artifacts: [
+          {
+            id: crypto.randomUUID(),
+            organizationId: ids.organizationId,
+            taskId: crypto.randomUUID(),
+            title: `메모 ${i + 1}`,
+            format: "markdown",
+            createdByAgentId: lead,
+            createdByRunId: ids.runId,
+            createdAt: now,
+          },
+        ],
+      })
+    );
+    const submitted: unknown[] = [];
+    const sent: string[] = [];
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname.replace("/api/tools", "");
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      if (path === "/run-context")
+        return Response.json({
+          identity: researching.identity,
+          wakeReasons: researching.wakeReasons,
+          context: researching.context,
+        });
+      if (path === "/tasks")
+        return Response.json(
+          tasks.map(({ comments: _c, artifacts: _a, ...task }) => task)
+        );
+      if (path.startsWith("/tasks/"))
+        return Response.json(tasks.find((t) => path.endsWith(t.id)));
+      if (path === "/results") {
+        submitted.push(body);
+        // 서버처럼 계약 밖 입력은 422로 거부한다.
+        const parsed = submitResultInputSchema.safeParse(body);
+        if (!parsed.success)
+          return Response.json(
+            { error: { code: "invalid_input" } },
+            { status: 422 }
+          );
+        return Response.json(
+          resultSubmissionSchema.parse({
+            id: crypto.randomUUID(),
+            organizationId: ids.organizationId,
+            status: "pending",
+            submittedByAgentId: lead,
+            submittedByRunId: ids.runId,
+            previousSubmissionId: null,
+            createdAt: now,
+            decidedAt: null,
+            summary: parsed.data.summary,
+            goal: "오류 유형을 정리한다",
+            completionCriteria: "유형 목록",
+            artifacts: [],
+            decisionNote: null,
+          }),
+          { status: 201 }
+        );
+      }
+      if (path === "/messages") {
+        sent.push(body.body);
+        return Response.json(
+          {
+            id: crypto.randomUUID(),
+            organizationId: ids.organizationId,
+            agentId: lead,
+            author: "agent",
+            body: body.body,
+            delivery: null,
+            sentByRunId: ids.runId,
+            deliveredToRunId: null,
+            createdAt: now,
+          },
+          { status: 201 }
+        );
+      }
+      return Response.json({ error: { code: "not_found" } }, { status: 404 });
+    };
+    const c = control();
+
+    const result = await createScriptedRuntime({ fetch }).execute(researching, {
+      signal: c.controller.signal,
+      emit: c.emit,
+    });
+
+    expect(result).toMatchObject({ stopReason: "completed", error: null });
+    const [input] = submitted as { summary: string; artifactIds: string[] }[];
+    expect(submitResultInputSchema.safeParse(input).success).toBe(true);
+    // 근거는 앞에서부터 상한까지, 요약에는 들어간 자기 보고만 담고 생략한 수를 밝힌다.
+    expect(input!.artifactIds).toEqual(
+      tasks.slice(0, resultArtifactsMax).map((t) => t.artifacts[0]!.id)
+    );
+    expect(input!.summary).toMatch(
+      /작업 \d+개의 자기 보고는 길이 제한으로 생략/
+    );
+    expect(sent).toEqual([
+      expect.stringContaining(
+        `근거 산출물 ${tasks.length}개 중 ${resultArtifactsMax}개`
+      ),
+    ]);
   });
 });
 

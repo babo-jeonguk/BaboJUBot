@@ -15,6 +15,8 @@ import {
   researchMapSchema,
   researchNodeDetailSchema,
   researchNodeSchema,
+  resultSubmissionSchema,
+  resultSubmissionSummaryListSchema,
   runDetailSchema,
   runSummaryListSchema,
   taskCommentSchema,
@@ -24,6 +26,7 @@ import {
   type CreateOrganizationInput,
   type CreateResearchNodeInput,
   type DecideApprovalInput,
+  type DecideResultInput,
   type Organization,
   type OrganizationDetail,
   type UpdateResearchNodeInput,
@@ -49,6 +52,9 @@ export const queryKeys = {
   approvals: (id: string) => ["organizations", id, "approvals"] as const,
   approval: (id: string, approvalId: string) =>
     ["organizations", id, "approvals", approvalId] as const,
+  results: (id: string) => ["organizations", id, "results"] as const,
+  result: (id: string, submissionId: string) =>
+    ["organizations", id, "results", submissionId] as const,
   tasks: (id: string) => ["organizations", id, "tasks"] as const,
   task: (id: string, taskId: string) =>
     ["organizations", id, "tasks", taskId] as const,
@@ -290,6 +296,59 @@ export function useDecideApproval(orgId: string, approvalId: string) {
       ),
     onSuccess: (approval) => {
       queryClient.setQueryData(queryKeys.approval(orgId, approvalId), approval);
+      refresh();
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "already_decided")
+        refresh();
+    },
+  });
+}
+
+export function useResultSubmissions(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.results(orgId),
+    queryFn: () =>
+      request(resultSubmissionSummaryListSchema, orgPath(orgId, "/results")),
+  });
+}
+
+export function useResultSubmission(orgId: string, submissionId: string) {
+  return useQuery({
+    queryKey: queryKeys.result(orgId, submissionId),
+    queryFn: () =>
+      request(
+        resultSubmissionSchema,
+        orgPath(orgId, `/results/${encodeURIComponent(submissionId)}`)
+      ),
+    retry: notFoundIsFinal,
+  });
+}
+
+/**
+ * 결과 검토 제어 명령(수정 요청·최종 완료). 성공하거나 이미 결정됐다는 응답을 받으면 그 조직과 Inbox를 다시 불러와
+ * 서버의 결과를 보인다. 결과를 미리 화면에 반영하지 않는다.
+ */
+export function useDecideResult(orgId: string, submissionId: string) {
+  const queryClient = useQueryClient();
+  const refresh = () => {
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.organization(orgId),
+    });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
+  };
+  return useMutation({
+    mutationFn: (input: DecideResultInput) =>
+      request(
+        resultSubmissionSchema,
+        orgPath(orgId, `/results/${encodeURIComponent(submissionId)}/decision`),
+        json("POST", input)
+      ),
+    onSuccess: (submission) => {
+      queryClient.setQueryData(
+        queryKeys.result(orgId, submissionId),
+        submission
+      );
       refresh();
     },
     onError: (error) => {

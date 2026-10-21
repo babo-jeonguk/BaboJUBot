@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { RunResult, WakeReason } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { insertOrganizationCreation } from "./organizations.ts";
 import {
@@ -10,10 +11,13 @@ import {
   failInterruptedRuns,
   finishRun,
   insertOwnerMessage,
+  listAgentsWithPendingWakes,
   listConversation,
   listRuns,
   loadRunContext,
 } from "./runs.ts";
+import { insertEvent, lockOrganization } from "./rows.ts";
+import { organizations } from "./schema.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 
 let t: TestDatabase;
@@ -127,6 +131,74 @@ describe("wake queue admission", () => {
 
     expect(runA).toBeDefined();
     expect(runB).toBeDefined();
+  });
+});
+
+describe("admission and organization stage", () => {
+  /** 다른 연결이 행 잠금을 기다리기 시작할 때까지. */
+  const someoneWaitsForALock = async () => {
+    for (let i = 0; i < 200; i++) {
+      const { rows } = await t.db.execute(
+        sql`select 1 from pg_stat_activity where wait_event_type = 'Lock'`
+      );
+      if (rows.length) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error("no connection waited for a lock");
+  };
+
+  it("serializes a claim behind a stage transition that wakes the same agent, and refuses it once the organization is completed", async () => {
+    const { lead, send, claim } = await organization();
+    await send("완료 직전 메시지");
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let markLocked!: () => void;
+    const locked = new Promise<void>((r) => (markLocked = r));
+    // 단계 전이처럼 조직 행을 잠근 채, 같은 에이전트를 가리키는 기록(FK로 에이전트 행 KEY SHARE)을 남기고 완료로 넘긴다.
+    const transition = t.db.transaction(async (tx) => {
+      await lockOrganization(tx, lead.organizationId);
+      markLocked();
+      await released;
+      await insertEvent(tx, {
+        organizationId: lead.organizationId,
+        type: "message.created",
+        payload: {
+          messageId: randomUUID(),
+          agentId: lead.id,
+          author: "owner",
+          runId: null,
+        },
+      });
+      await tx
+        .update(organizations)
+        .set({ stage: "completed" })
+        .where(eq(organizations.id, lead.organizationId));
+    });
+    await locked;
+    const claiming = claim();
+    await someoneWaitsForALock();
+    release();
+
+    // 에이전트 행을 먼저 잠그는 admission이면 여기서 교착(40P01)한다.
+    await transition;
+    expect(await claiming).toBeUndefined();
+    expect(await claim()).toBeUndefined();
+    expect(await listAgentsWithPendingWakes(t.db)).not.toContain(lead.id);
+  });
+
+  it("lets a stage transition wait for a claim that already holds the organization", async () => {
+    const { lead, send, claim } = await organization();
+    await send("먼저 온 메시지");
+    const run = await claim();
+    expect(run).toBeDefined();
+    await t.db
+      .update(organizations)
+      .set({ stage: "completed" })
+      .where(eq(organizations.id, lead.organizationId));
+    // 이미 시작한 실행 시도는 그대로이고, 끝난 뒤 새 깨우기는 실행 시도가 되지 않는다.
+    await send("완료 뒤 메시지");
+    expect(await finishRun(t.db, run!.run.id, completed, source)).toBeDefined();
+    expect(await claim()).toBeUndefined();
   });
 });
 

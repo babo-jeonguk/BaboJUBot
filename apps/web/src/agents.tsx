@@ -447,5 +447,11 @@ function WakeReasonRow({
         ),
         reason.summary
       );
+    case "result_changes_requested":
+      return row(
+        "결과 수정 요청",
+        link(`/orgs/${orgId}/results/${reason.submissionId}`, "제출 보기"),
+        reason.note
+      );
   }
 }

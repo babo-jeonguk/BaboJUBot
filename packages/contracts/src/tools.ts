@@ -3,6 +3,7 @@ import { approvalSchema } from "./approval.ts";
 import { harnessLibrarySchema } from "./harness.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { organizationSchema } from "./organization.ts";
+import { resultSubmissionSchema } from "./result.ts";
 import {
   agentToAgentMessageSchema,
   artifactSchema,
@@ -26,6 +27,7 @@ import {
 // Agent → Control Plane 조직 도구 계약. 모든 도구는 `Authorization: Bearer <실행 시도별 토큰>`으로 호출하고,
 // 조직·에이전트·실행 시도는 토큰에서만 정한다. 도구 입력에는 조직을 고르는 값이 없다.
 // 어떤 Role이 어느 생애주기 단계에서 어떤 도구를 쓸 수 있는지는 core의 `checkToolCall`이 정한다.
+// 승인 결정·최종 완료·승인 정책 변경은 사용자 제어 명령이며 조직 도구가 없다. Lead는 결과 제출까지만 한다.
 
 export const orgToolsBasePath = "/api/tools";
 
@@ -58,6 +60,7 @@ export const orgToolNames = [
   "link_task_research_node",
   "relink_task_research_node",
   "unlink_task_research_node",
+  "submit_result",
 ] as const;
 export const orgToolNameSchema = z.enum(orgToolNames);
 export type OrgToolName = (typeof orgToolNames)[number];
@@ -100,6 +103,7 @@ export const orgToolPaths = {
   link_task_research_node: "/tasks/:taskId/research-node",
   relink_task_research_node: "/tasks/:taskId/research-node/relink",
   unlink_task_research_node: "/tasks/:taskId/research-node/unlink",
+  submit_result: "/results",
 } as const satisfies Record<OrgToolName, string>;
 
 /** 읽기 도구는 GET, 기록을 남기는 도구는 POST, 기존 기록의 일부 필드를 고치는 도구는 PATCH. */
@@ -132,6 +136,7 @@ export const orgToolMethods = {
   link_task_research_node: "POST",
   relink_task_research_node: "POST",
   unlink_task_research_node: "POST",
+  submit_result: "POST",
 } as const satisfies Record<OrgToolName, "GET" | "POST" | "PATCH">;
 
 export const orgToolOutputSchemas = {
@@ -164,6 +169,7 @@ export const orgToolOutputSchemas = {
   link_task_research_node: taskSchema,
   relink_task_research_node: taskSchema,
   unlink_task_research_node: taskSchema,
+  submit_result: resultSubmissionSchema,
 } as const satisfies Record<OrgToolName, z.ZodType>;
 
 /** Role 또는 생애주기 단계 규칙이 도구 호출을 거부한 이유. */

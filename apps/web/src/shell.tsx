@@ -56,11 +56,15 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
 export const findSection = (slug: string) =>
   sectionGroups.flatMap((g) => g.items).find((s) => s.slug === slug);
 
-/** 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에, 승인 요청은 대시보드에, 산출물은 작업에 속한다. */
+/**
+ * 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에, 승인 요청은 대시보드에, 산출물은 작업에,
+ * 결과 제출은 결과 검토에 속한다.
+ */
 const detailSection: Record<string, string> = {
   runs: "agents",
   approvals: "dashboard",
   artifacts: "tasks",
+  results: "review",
 };
 
 function useCurrent() {
@@ -359,6 +363,7 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   const agentMatch = useMatch("/orgs/:orgId/agents/:agentId")?.params.agentId;
   const runMatch = useMatch("/orgs/:orgId/runs/:runId")?.params.runId;
   const approvalMatch = useMatch("/orgs/:orgId/approvals/:approvalId");
+  const resultMatch = useMatch("/orgs/:orgId/results/:submissionId");
   const artifactMatch = useMatch("/orgs/:orgId/artifacts/:artifactId")?.params
     .artifactId;
   const run = useRun(orgId, runMatch);
@@ -379,6 +384,7 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
     trail.push({ label: agent.name, to: `/orgs/${orgId}/agents/${agent.id}` });
   if (runMatch) trail.push({ label: runLabel(runMatch) });
   if (approvalMatch) trail.push({ label: "승인 요청" });
+  if (resultMatch) trail.push({ label: "결과 제출" });
   if (taskId)
     trail.push({
       label: task.data?.title ?? "작업",

@@ -13,6 +13,7 @@ import type {
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
+  admitsRuns,
   decisionOfStatus,
   instructionsBundleVersion,
   planAgentMessage,
@@ -21,9 +22,21 @@ import {
   type NewRun,
   type OwnerMessagePlan,
   type PendingWake,
+  runBlockingStages,
   type RecordSource,
 } from "@babojubot/core";
-import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
 import {
@@ -45,6 +58,7 @@ import {
   messages,
   organizations,
   researchMapEdits,
+  resultSubmissions,
   runs,
   taskComments,
   tasks,
@@ -82,6 +96,11 @@ export type ClaimedRun = {
  * 있는지 다시 보므로 여러 호출자가 동시에 불러도 실행 시도는 하나만 생긴다(부분 unique가 마지막 방어선).
  * 실행 중이거나 대기 중인 깨우기가 없으면 아무것도 하지 않는다. 실행기는 commit 뒤에 부른다.
  * 지침 bundle 버전은 같은 transaction에서 읽은 그 에이전트의 사본 내용으로 정한다.
+ *
+ * 조직이 실행 시도를 받지 않는 단계(최종 완료 등, core `admitsRuns`)면 깨우기를 남겨 두고 아무것도 하지 않는다.
+ * 단계 검사는 조직 행 `FOR SHARE` 아래에서 하므로 단계 전이(`FOR NO KEY UPDATE`)와 직렬화된다. 전이가 먼저면 바뀐 단계를 보고,
+ * admission이 먼저면 전이는 그 실행 시도가 생긴 뒤에 일어난다. 잠금 순서는 조직 → 에이전트다. 에이전트를 먼저 잠그면
+ * 조직 행을 잠근 채 깨우기·Event의 FK로 에이전트 행(`KEY SHARE`)을 기다리는 쓰기와 교착한다.
  */
 export async function claimNextRun(
   db: Database,
@@ -89,6 +108,18 @@ export async function claimNextRun(
   options: { tokenDigest: string; source: RecordSource }
 ): Promise<ClaimedRun | undefined> {
   return db.transaction(async (tx) => {
+    // 에이전트의 조직은 바뀌지 않는다. 잠그기 전에 읽어도 된다.
+    const [owner] = await tx
+      .select({ organizationId: agents.organizationId })
+      .from(agents)
+      .where(eq(agents.id, agentId));
+    if (!owner) return undefined;
+    const [org] = await tx
+      .select({ stage: organizations.stage })
+      .from(organizations)
+      .where(eq(organizations.id, owner.organizationId))
+      .for("share");
+    if (!admitsRuns(org!.stage)) return undefined;
     const [agent] = await tx
       .select()
       .from(agents)
@@ -200,14 +231,23 @@ export async function failInterruptedRuns(
   return finished;
 }
 
-/** 대기 중인 깨우기가 있는 에이전트. 서버 시작 때 다시 깨운다. */
+/**
+ * 실행 시도를 받는 조직에서 대기 중인 깨우기가 있는 에이전트. 서버 시작 때 다시 깨운다.
+ * 최종 완료 등 admission을 거부하는 조직의 깨우기는 남아 있어도 처리할 것이 아니므로 빠진다.
+ */
 export async function listAgentsWithPendingWakes(
   db: Database
 ): Promise<string[]> {
   const rows = await db
     .selectDistinct({ agentId: wakes.agentId })
     .from(wakes)
-    .where(isNull(wakes.runId));
+    .innerJoin(organizations, eq(organizations.id, wakes.organizationId))
+    .where(
+      and(
+        isNull(wakes.runId),
+        notInArray(organizations.stage, [...runBlockingStages])
+      )
+    );
   return rows.map((r) => r.agentId);
 }
 
@@ -475,7 +515,7 @@ async function selectInstructions(
     .orderBy(asc(instructionCopies.path));
 }
 
-/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집)에서 읽는다. */
+/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집, 결과 수정 요청)에서 읽는다. */
 async function selectWakes(
   db: Executor,
   where: ReturnType<typeof and>
@@ -501,6 +541,7 @@ async function selectWakes(
         nodeId: researchMapEdits.nodeId,
         summary: researchMapEdits.summary,
       },
+      resultNote: resultSubmissions.decisionNote,
     })
     .from(wakes)
     .leftJoin(messages, eq(messages.id, wakes.messageId))
@@ -512,10 +553,24 @@ async function selectWakes(
       eq(agentToAgentMessages.id, wakes.agentToAgentMessageId)
     )
     .leftJoin(researchMapEdits, eq(researchMapEdits.id, wakes.mapEditId))
+    .leftJoin(
+      resultSubmissions,
+      eq(resultSubmissions.id, wakes.resultSubmissionId)
+    )
     .where(where)
     .orderBy(asc(wakes.seq));
   return rows.map(
-    ({ wake, body, decision, note, task, comment, agentToAgent, mapEdit }) => {
+    ({
+      wake,
+      body,
+      decision,
+      note,
+      task,
+      comment,
+      agentToAgent,
+      mapEdit,
+      resultNote,
+    }) => {
       const wakeId = wake.id;
       const reason = ((): WakeReason => {
         switch (wake.kind) {
@@ -574,6 +629,13 @@ async function selectWakes(
               operation: mapEdit!.operation,
               nodeId: mapEdit!.nodeId,
               summary: mapEdit!.summary,
+            };
+          case "result_changes_requested":
+            return {
+              kind: wake.kind,
+              wakeId,
+              submissionId: wake.resultSubmissionId!,
+              note: resultNote!,
             };
         }
       })();
