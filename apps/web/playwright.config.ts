@@ -5,8 +5,8 @@ const webPort = 5199;
 
 export default defineConfig({
   testDir: "e2e",
-  // 여러 화면을 거치는 시나리오에 느린 CI runner의 여유를 준다. 개별 expect 대기는 기본값을 유지한다.
-  timeout: process.env.CI ? 120_000 : 30_000,
+  // 여러 화면을 거치는 시나리오에 느린 CI runner·부하가 큰 로컬 기기의 여유를 준다. 개별 expect 대기는 기본값을 유지한다.
+  timeout: 120_000,
   // spec들이 E2E 서버와 DB 하나를 같이 쓴다. 빈 DB를 전제하는 조직 생성 spec이 먼저 돌도록 파일 순서대로 하나씩 실행한다.
   workers: 1,
   forbidOnly: !!process.env.CI,

@@ -17,7 +17,7 @@
 
 착수 전에 해당 개발 절차를 읽고 완료 조건까지 따릅니다. 참고 문서는 작업에 해당하는 절만 읽습니다.
 
-- 구현·`implement` → [구현 절차](docs/agents/implementation.md), 해당 이슈의 조사·결정·완료 조건과 [기능 범위](docs/features.md)
+- 구현·`implement` → [구현 절차](docs/agents/implementation.md)(push·PR까지), 해당 이슈의 조사·결정·완료 조건과 [기능 범위](docs/features.md)
 - 리뷰 수정·외부 리뷰 인계 → [리뷰 반영](docs/agents/review-fixes.md)
 - 코드 탐색·버그 추적 → [코드 지도](docs/agents/code-map.md)
 - PR 병합 → [병합 절차](docs/agents/pr-merge.md)

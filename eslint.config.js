@@ -39,6 +39,22 @@ export default defineConfig([
     },
   },
   {
+    // 계약의 union(깨우기 사유·이벤트·단계 등)에 값이 늘면 그 값을 다루지 않는 switch를 lint가 짚는다.
+    files: ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      "@typescript-eslint/switch-exhaustiveness-check": [
+        "error",
+        { considerDefaultExhaustiveForUnions: true },
+      ],
+    },
+  },
+  {
     // 테스트는 응답 JSON을 그대로 다룬다.
     files: ["**/test/**", "**/*.test.ts"],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
