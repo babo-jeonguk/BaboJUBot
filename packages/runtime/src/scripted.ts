@@ -75,12 +75,12 @@ const decisionLabel = {
   request_changes: "수정 요청",
 } as const;
 
-/** 깨우기 사유 한 줄. */
 const approvalKindLabel = {
   initial_research: "초기 연구 승인 요청",
   add_worker: "작업자 추가 승인 요청",
 } as const;
 
+/** 깨우기 사유 한 줄. */
 export function describeWakeReason(reason: WakeReason): string {
   switch (reason.kind) {
     case "owner_message":
@@ -243,12 +243,11 @@ export function demoLeadScript(request: RunRequest): Script {
   );
   if (stage === "researching" && approved) return assignInitialTasks(request);
 
-  const workerRequest = messages.findLast((m) => workerRequestPattern.test(m));
+  const workerRequest = messages
+    .map((m) => workerRequestPattern.exec(m))
+    .findLast(Boolean);
   if (stage === "researching" && workerRequest)
-    return addWorkerScript(
-      /작업자\s*추가\s*[:：]\s*([a-z0-9-]+)/.exec(workerRequest)?.[1] ??
-        "researcher"
-    );
+    return addWorkerScript(workerRequest[1] ?? "researcher");
 
   const changeRequest = request.wakeReasons.findLast(
     (r): r is Extract<WakeReason, { kind: "result_changes_requested" }> =>
@@ -302,8 +301,8 @@ function assignInitialTasks(request: RunRequest): Script {
   };
 }
 
-/** 사용자가 작업자 추가를 부탁하는 메시지. */
-const workerRequestPattern = /작업자\s*추가/;
+/** 사용자가 작업자 추가를 부탁하는 메시지. `작업자 추가: <Role>`이면 그 Role을 고른다. */
+const workerRequestPattern = /작업자\s*추가(?:\s*[:：]\s*([a-z0-9-]+))?/;
 
 /** 가짜 Lead의 작업자 추가. 결과가 곧바로 생긴 작업자인지 승인 대기인지 Lead 대화로 알린다. */
 function addWorkerScript(role: string): Script {

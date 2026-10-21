@@ -259,6 +259,41 @@ describe("add_worker approval policy", () => {
     expect(await workersOf(s.org.id)).toEqual(before);
   });
 
+  it("still decides a waiting request after the research stage has moved on, keeping that stage", async () => {
+    const s = await leadSession("단계 이동 조직");
+    await setPolicy(s.org.id, { addWorker: true });
+    const before = await workersOf(s.org.id);
+    const approvalId = (await s.addWorker()).body.approval.id as string;
+    // 요청이 기다리는 사이 Lead가 결과를 제출해 결과 검토 중이 된다.
+    const lead = s.capture.tokenOf(s.org.lead.id);
+    const task = await t!.tool(lead, "POST", orgToolPaths.create_task, {
+      title: "정리",
+      assigneeAgentId: s.org.lead.id,
+    });
+    const artifact = await t!.tool(lead, "POST", orgToolPaths.record_artifact, {
+      taskId: task.body.id,
+      title: "메모",
+      format: "markdown",
+      content: "# 메모",
+    });
+    const submitted = await t!.tool(lead, "POST", orgToolPaths.submit_result, {
+      summary: "정리했다",
+      artifactIds: [artifact.body.id],
+    });
+    expect(submitted.status).toBe(201);
+    await s.finish();
+    expect((await organization(s.org.id)).stage).toBe("result_review");
+
+    const decided = await decide(s.org.id, approvalId, { decision: "approve" });
+    expect(decided.status).toBe(200);
+    await t!.drain();
+    expect(await workersOf(s.org.id)).toHaveLength(before.length + 1);
+    expect((await organization(s.org.id)).stage).toBe("result_review");
+    expect(workerDecisions(s.agents.of(s.org.lead.id))).toEqual([
+      expect.objectContaining({ approvalId, decision: "approve" }),
+    ]);
+  });
+
   it("keeps each call a separate request, and leaves waiting requests in place when the policy is turned off", async () => {
     const s = await leadSession("여러 요청 조직");
     await setPolicy(s.org.id, { addWorker: true });

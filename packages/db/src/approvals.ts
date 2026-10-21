@@ -168,6 +168,7 @@ export async function decideApproval(
         `pending approval ${approvalId} in an organization at ${org.stage}`
       );
 
+    // 저장할 때 `kind`에 맞는 내용만 넣으므로 행의 kind·proposal 짝이 PendingApproval의 짝이다(toApproval과 같음).
     const plan = planApprovalDecision(
       current as typeof current & PendingApproval,
       input,

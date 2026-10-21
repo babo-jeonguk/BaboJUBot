@@ -15,7 +15,7 @@ import {
   type RequestInitialApprovalInput,
   type ToolRefusalReason,
 } from "@babojubot/contracts";
-import { copyInstructions, type HarnessLibraryContents } from "./harness.ts";
+import type { HarnessLibraryContents } from "./harness.ts";
 import type { RecordSource } from "./organization.ts";
 import type { Wake } from "./run.ts";
 import { planWorker } from "./worker.ts";
@@ -269,17 +269,14 @@ export function planApprovalDecision(
     if (approved)
       for (const member of proposal.team)
         for (let i = 1; i <= member.count; i++) {
-          const worker: Agent = {
-            id: newId(),
+          const added = planWorker(
             organizationId,
-            role: "worker",
-            name: `${member.label} ${i}`,
-            createdAt,
-          };
-          workers.push(worker);
-          copies.push(
-            ...copyInstructions(worker, member.files, { newId, createdAt })
+            member,
+            workers.map((w) => w.name),
+            { newId, createdAt }
           );
+          workers.push(added.worker);
+          copies.push(...added.copies);
         }
     template = approved
       ? {
