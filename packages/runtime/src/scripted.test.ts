@@ -338,6 +338,7 @@ describe("demo Lead scenario", () => {
     for (const body of [
       "작업자 추가하지 마세요",
       "작업자 추가는 나중에 합시다",
+      "작업자 추가\n하지 마세요",
     ])
       expect(demoLeadScript(at("researching", [message(body)]))).toBe(
         leadReplyScript
@@ -377,7 +378,11 @@ describe("demo Lead scenario", () => {
       expect(demoLeadScript(at("researching", [message(body)]))).not.toBe(
         leadReplyScript
       );
-    for (const body of ["결과 제출하지 마세요", "결과 제출은 나중에 합시다"])
+    for (const body of [
+      "결과 제출하지 마세요",
+      "결과 제출은 나중에 합시다",
+      "결과 제출\n하지 마세요",
+    ])
       expect(demoLeadScript(at("researching", [message(body)]))).toBe(
         leadReplyScript
       );

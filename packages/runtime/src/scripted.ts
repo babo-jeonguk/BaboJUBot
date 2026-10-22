@@ -177,7 +177,7 @@ export function parseGoalMessage(
  * - 목표 설정: `목표:`·`완료 기준:` 줄이 있는 메시지를 받으면 목표를 기록하고 곧바로 초기 연구 승인을 요청한다.
  * - 계획 수립(반려·수정 요청을 받음): 사유를 반영한 새 요청을 제출한다.
  * - 연구 진행(초기 연구 승인을 받음): 작업자마다 작업을 하나씩 만들어 맡긴다.
- * - 부탁은 명령으로 된 줄만 인정한다(`requestLine`). 부정문이나 단순 언급은 그 밖의 메시지로 답장만 한다.
+ * - 부탁은 메시지 전체가 명령일 때만 인정한다(`requestMessage`). 부정문이나 단순 언급은 그 밖의 메시지로 답장만 한다.
  * - 연구 진행(사용자가 `작업자 추가`를 부탁함): `작업자 추가: <Role>` 줄의 Role(없으면 researcher)로 작업자를 추가한다.
  *   승인 정책이 켜져 있으면 승인 요청이 되었다고 알린다. 작업자 추가 요청의 결정에는 답장만 한다.
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
@@ -303,16 +303,16 @@ function assignInitialTasks(request: RunRequest): Script {
 }
 
 /**
- * 사용자가 가짜 Lead에게 부탁하는 한 줄. 명령 뒤에는 부탁하는 끝맺음(`해 주세요`·`부탁해요` 등)만 올 수 있어서
- * 부정문(`…하지 마세요`)이나 단순 언급(`…은 나중에`)은 부탁이 아니다.
+ * 사용자가 가짜 Lead에게 부탁하는 메시지. 메시지 전체가 명령이고 뒤에는 부탁하는 끝맺음(`해 주세요`·`부탁해요` 등)만
+ * 올 수 있어서, 부정문(`…하지 마세요`, 다음 줄의 `하지 마세요` 포함)이나 단순 언급(`…은 나중에`)은 부탁이 아니다.
  */
-function requestLine(command: string): RegExp {
+function requestMessage(command: string): RegExp {
   const ending = String.raw`(?:을|를)?\s*(?:(?:시도\s*)?해\s*(?:주세요|줘)|부탁(?:해요|합니다|드립니다)?)?\s*[.!]?`;
-  return new RegExp(String.raw`^\s*${command}${ending}\s*$`, "m");
+  return new RegExp(String.raw`^\s*${command}${ending}\s*$`);
 }
 
 /** 사용자가 작업자 추가를 부탁하는 메시지. `작업자 추가: <Role>`이면 그 Role을 고른다. */
-const workerRequestPattern = requestLine(
+const workerRequestPattern = requestMessage(
   String.raw`작업자\s*추가(?:\s*[:：]\s*([a-z0-9-]+))?`
 );
 
@@ -346,7 +346,7 @@ function addWorkerScript(role: string): Script {
 }
 
 /** 사용자가 결과 제출을 부탁하는 메시지. */
-const resultRequest = requestLine(String.raw`결과(?:를)?\s*제출`);
+const resultRequest = requestMessage(String.raw`결과(?:를)?\s*제출`);
 
 /**
  * 가짜 Lead의 결과 제출: 작업 목록에서 완료한 작업을 읽어 그 산출물을 근거로 묶고, 자기 보고를 모은 요약으로 제출한다.
