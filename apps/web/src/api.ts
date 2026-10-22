@@ -47,6 +47,8 @@ export const queryKeys = {
   events: (id: string, agentId?: string) =>
     ["organizations", id, "events", agentId ?? "all"] as const,
   runs: (id: string) => ["organizations", id, "runs"] as const,
+  runningRuns: (id: string) =>
+    ["organizations", id, "runs", { status: "running" }] as const,
   run: (id: string, runId: string) =>
     ["organizations", id, "runs", runId] as const,
   agent: (id: string, agentId: string) =>
@@ -199,6 +201,15 @@ export function useRuns(orgId: string) {
   return useQuery({
     queryKey: queryKeys.runs(orgId),
     queryFn: () => request(runSummaryListSchema, orgPath(orgId, "/runs")),
+  });
+}
+
+/** 진행 중 실행 시도 전부(취소 정리 중 포함). 최근 목록과 달리 개수를 자르지 않는다. */
+export function useRunningRuns(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.runningRuns(orgId),
+    queryFn: () =>
+      request(runSummaryListSchema, orgPath(orgId, "/runs?status=running")),
   });
 }
 

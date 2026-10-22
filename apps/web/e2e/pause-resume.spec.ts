@@ -200,3 +200,29 @@ test("the owner picks interrupt-and-deliver in the Lead chat, keeps the choice w
   }[];
   expect(events.map((e) => e.type)).toContain("agent.interrupted");
 });
+
+test("the Lead chat falls back to delivering on the next run when another tab stops the organization", async ({
+  page,
+}) => {
+  const org = await createOrganization(page, "다른 탭 중단 E2E 조직");
+  await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
+  const input = page.getByLabel("Lead에게 보낼 메시지");
+  const interrupt = page.getByRole("radio", { name: "중단하고 반영" });
+  const nextRun = page.getByRole("radio", { name: "다음 실행 시도에 반영" });
+  await interrupt.check();
+  await input.fill("중단 직전에 쓴 메시지");
+
+  // 다른 탭의 중단은 Event로 이 탭에 반영된다.
+  expect(
+    (await page.request.post(org.api("/stop"), { data: {} })).status()
+  ).toBe(200);
+  await expect(interrupt).toBeDisabled();
+  await expect(nextRun).toBeChecked();
+  await expect(input).toHaveValue("중단 직전에 쓴 메시지");
+
+  await page.getByRole("button", { name: "보내기" }).click();
+  const owner = page.locator('[data-author="owner"]');
+  await expect(owner.getByText("중단 직전에 쓴 메시지")).toBeVisible();
+  await expect(owner.getByText("⤵ 중단하고 반영")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});

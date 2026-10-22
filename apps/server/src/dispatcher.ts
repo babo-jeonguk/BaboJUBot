@@ -107,17 +107,23 @@ export class RunDispatcher {
   }
 
   /**
-   * 조직 재개 뒤, 그 조직에서 대기 중인 깨우기가 있는 에이전트를 모두 깨운다. 실패해도 서버 시작·다음 깨우기가 다시 확인한다.
-   * 호출자는 응답 전에 기다린다. 그래야 응답 뒤의 관찰(`drain` 등)이 이미 시작한 처리를 본다.
+   * 조직 재개 뒤, 그 조직에서 대기 중인 깨우기가 있는 에이전트를 모두 깨운다.
+   * 호출자는 응답 전에 첫 조회를 기다린다. 그래야 응답 뒤의 관찰(`drain` 등)이 이미 시작한 처리를 본다.
+   * 첫 조회가 실패하면 응답은 기다리지 않고, admission과 같은 backoff로 뒤에서 다시 조회한다.
+   * 깨우기는 DB에 남아 있으므로 다시 조회해도 실행기를 중복해 부르지 않는다.
    */
   async kickOrganization(organizationId: string): Promise<void> {
-    try {
+    const kickWaiting = async () => {
       for (const agentId of await listAgentsWithPendingWakes(this.#db, {
         organizationId,
       }))
         this.kick(agentId);
+    };
+    try {
+      await kickWaiting();
     } catch (error) {
       console.error("[runs] kicking a resumed organization failed", error);
+      void this.#retrying("kicking a resumed organization", kickWaiting);
     }
   }
 
@@ -144,20 +150,25 @@ export class RunDispatcher {
     while (this.#pumps.size) await Promise.all(this.#pumps.values());
   }
 
-  /** DB 오류 후 같은 admission·종료 저장을 최대 5초 간격으로 다시 시도한다. 실행기를 재실행하지 않는다. */
-  async #dispatch(agentId: string) {
+  /** DB 오류 후 같은 admission·종료 저장을 다시 시도한다. 실행기를 재실행하지 않는다. */
+  #dispatch(agentId: string) {
+    return this.#retrying("dispatch", () => this.#pump(agentId));
+  }
+
+  /** DB 오류 후 같은 일을 최대 5초 간격으로 성공할 때까지 다시 한다. 서버 종료는 재시도 대기도 즉시 끝낸다. */
+  async #retrying(what: string, task: () => Promise<void>) {
     let backoffMs = 100;
     while (!this.#closed) {
       try {
-        await this.#pump(agentId);
+        await task();
         return;
       } catch (error) {
-        console.error("[runs] dispatch failed, retrying", error);
+        console.error(`[runs] ${what} failed, retrying`, error);
         if (this.#closed) return;
         try {
           await delay(backoffMs, undefined, { signal: this.#recovery.signal });
         } catch {
-          return; // 서버 종료는 재시도 대기도 즉시 끝낸다.
+          return;
         }
         backoffMs = Math.min(backoffMs * 2, 5_000);
       }

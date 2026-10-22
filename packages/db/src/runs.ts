@@ -493,6 +493,25 @@ export async function listRuns(
   return rows.map(toRunSummary);
 }
 
+/**
+ * 조직의 진행 중 실행 시도(취소 정리 중 포함). 최근 목록(`listRuns`)은 개수를 자르므로 오래 실행 중인 것이 빠질 수 있다.
+ * 진행 중 실행 시도는 에이전트당 하나뿐이라 자르지 않는다.
+ */
+export async function listRunningRuns(
+  db: Database,
+  organizationId: string
+): Promise<RunSummary[]> {
+  if (!isUuid(organizationId)) return [];
+  const rows = await db
+    .select(runSummaryColumns)
+    .from(runs)
+    .where(
+      and(eq(runs.organizationId, organizationId), eq(runs.status, "running"))
+    )
+    .orderBy(desc(runs.seq));
+  return rows.map(toRunSummary);
+}
+
 /** 실행 시도 상세. 다른 조직의 실행 시도와 없는 실행 시도를 구별하지 않는다. */
 export async function findRunDetail(
   db: Database,

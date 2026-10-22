@@ -187,12 +187,14 @@ function Composer({
   const [delivery, setDelivery] = useState<MessageDelivery>("next_run");
   const send = useSendMessage(orgId);
   // 중단은 제어 명령이라 끝난 조직에서는 고를 수 없다(서버도 409 `organization_closed`).
+  // 고른 뒤 다른 탭에서 조직이 끝나도 고를 수 없는 값으로 보내지 않게, 그때는 다음 실행 시도로 보낸다.
   const closed = stage !== undefined && isClosedStage(stage);
+  const chosen: MessageDelivery = closed ? "next_run" : delivery;
   const submit = async () => {
     const body = text.trim();
     if (!body || send.isPending) return;
     try {
-      await send.mutateAsync({ body, delivery });
+      await send.mutateAsync({ body, delivery: chosen });
       setText((current) => (current.trim() === body ? "" : current));
       setDelivery("next_run");
     } catch {
@@ -250,7 +252,7 @@ function Composer({
               type="radio"
               name="delivery"
               value={d}
-              checked={delivery === d}
+              checked={chosen === d}
               disabled={send.isPending || (d === "interrupt" && closed)}
               onChange={() => setDelivery(d)}
               className="accent-brand-600"
@@ -267,7 +269,7 @@ function Composer({
       )}
       <p className="mt-2 text-xs text-slate-400">
         {held ??
-          (delivery === "interrupt"
+          (chosen === "interrupt"
             ? {
                 idle: "Lead가 실행 중이 아니므로 취소할 것 없이 이 메시지로 Lead를 깨웁니다.",
                 running:

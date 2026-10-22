@@ -42,6 +42,7 @@ import {
   listOrganizationEvents,
   listOrganizations,
   listResultSubmissions,
+  listRunningRuns,
   listRuns,
   listTasks,
   type Database,
@@ -253,12 +254,15 @@ export async function startServer({
     res.status(201).json(sent.message);
   });
 
+  // `?status=running`은 최근 목록과 달리 진행 중 실행 시도를 모두 돌려준다(대시보드의 실행 중·취소 정리 중 개수).
   app.get("/api/organizations/:id/runs", async (req, res) => {
     if (!(await findOrganization(db, req.params.id))) return notFound(res);
     res.json(
-      await listRuns(db, req.params.id, {
-        agentId: queryString(req.query.agentId),
-      })
+      req.query.status === "running"
+        ? await listRunningRuns(db, req.params.id)
+        : await listRuns(db, req.params.id, {
+            agentId: queryString(req.query.agentId),
+          })
     );
   });
 

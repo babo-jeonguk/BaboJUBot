@@ -15,7 +15,7 @@ import {
   useResultSubmissions,
   useOrganization,
   useOrganizations,
-  useRuns,
+  useRunningRuns,
 } from "./api.ts";
 import { approvalKindHint } from "./approvals.tsx";
 import { LeadChat } from "./chat.tsx";
@@ -150,12 +150,12 @@ function NoOrganizations() {
  */
 function OrganizationControl({ org }: { org: OrganizationDetail }) {
   const control = useControlOrganization(org.id);
-  const runs = useRuns(org.id);
+  const runs = useRunningRuns(org.id);
   const [confirmingStop, setConfirmingStop] = useState(false);
   const closed = isClosedStage(org.stage);
   const paused = org.stage === "paused";
   const busy = closed || control.isPending;
-  const running = runs.data?.filter((r) => r.status === "running") ?? [];
+  const running = runs.data ?? [];
   const cancelling = running.filter((r) => r.cancelReason).length;
   const send = (command: OrganizationCommand) =>
     control.mutate(command, { onSettled: () => setConfirmingStop(false) });

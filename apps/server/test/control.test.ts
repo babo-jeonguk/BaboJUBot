@@ -13,7 +13,7 @@ import {
 } from "@babojubot/contracts";
 import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
   calls,
@@ -152,6 +152,31 @@ describe("organization pause and resume", () => {
     ]);
   });
 
+  it("wakes the held agents after a resume even when finding them fails once", async () => {
+    t = await startTestServer();
+    const org = await createOrganization("재개 뒤 깨우기 복구");
+    await control(org.id, "pause");
+    await say(org.id, "멈춘 동안 보낸 메시지");
+    const stream = await t.subscribe({
+      kind: "organization",
+      organizationId: org.id,
+    });
+    // 재개는 저장되고, 그 뒤 깨울 에이전트를 찾는 조회만 한 번 실패한다.
+    vi.spyOn(t.db, "selectDistinct").mockImplementationOnce(() => {
+      throw new Error("temporary lookup failure");
+    });
+
+    expect((await control(org.id, "resume")).status).toBe(200);
+    // 다른 메시지나 drain 없이 실행 시도가 시작해 끝난다.
+    while ((await stream.next(10_000)).type !== "run.finished") {
+      /* 완료 barrier */
+    }
+    stream.close();
+    expect(await runsOf(org.id)).toEqual([
+      expect.objectContaining({ status: "completed", wakeCount: 1 }),
+    ]);
+  });
+
   it("returns to the stage before the pause, and a repeated pause keeps that stage", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });
@@ -199,6 +224,58 @@ describe("organization pause and resume", () => {
 
     const org = await researching(agents, "연구 진행 조직");
     await pauseAndResume(org.id, "researching");
+  });
+});
+
+describe("running runs", () => {
+  it("lists every running run however many runs came after it", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await researching(agents, "오래 실행 중인 작업자");
+    const worker = org.workers[0]!;
+    const gate = createGate();
+    onTestFinished(() => gate.open());
+    agents.queue(worker.id, { steps: [{ do: "hold", until: gate.wait }] });
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "create_task",
+        input: { title: "긴 작업", assigneeAgentId: worker.id },
+      })
+    );
+    const stream = await t.subscribe({
+      kind: "organization",
+      organizationId: org.id,
+    });
+    const leadRunFinished = async () => {
+      // 작업자는 멈춰 있으므로 끝나는 실행 시도는 Lead의 것뿐이다.
+      while ((await stream.next(10_000)).type !== "run.finished") {
+        /* 완료 barrier */
+      }
+    };
+    await say(org.id, "긴 작업을 맡겨 주세요");
+    await gate.reached;
+    await leadRunFinished();
+    const [held] = await runsOf(org.id, worker.id);
+    // 그 뒤 Lead 실행 시도 50개로 최근 목록에서 작업자의 실행 시도를 밀어낸다.
+    for (let i = 0; i < 50; i++) {
+      await say(org.id, `메시지 ${i}`);
+      await leadRunFinished();
+    }
+    stream.close();
+    expect((await runsOf(org.id)).map((r) => r.id)).not.toContain(held!.id);
+
+    expect(
+      runSummaryListSchema.parse(
+        await get(`/api/organizations/${org.id}/runs?status=running`)
+      )
+    ).toEqual([
+      expect.objectContaining({
+        id: held!.id,
+        agentId: worker.id,
+        status: "running",
+      }),
+    ]);
   });
 });
 
