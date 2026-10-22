@@ -34,11 +34,7 @@ export async function decideResult(
     now,
   });
   if (result.kind !== "decided") return result;
-  try {
-    for (const event of result.events) hub.publish(event);
-  } catch (error) {
-    console.error("[results] publish after commit failed", error);
-  }
+  hub.publish(...result.events);
   if (result.resumed) await dispatcher.kickOrganization(organizationId);
   if (result.wake) dispatcher.kick(result.wake.agentId);
   return result;

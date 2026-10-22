@@ -41,11 +41,7 @@ export async function sendOwnerMessage(
   const stored = await insertOwnerMessage(db, plan);
   if (stored.kind === "organization_closed") return stored;
   const { events, cancellation } = stored;
-  try {
-    for (const event of events) hub.publish(event);
-  } catch (error) {
-    console.error("[conversation] publish after commit failed", error);
-  }
+  hub.publish(...events);
   dispatcher.cancel(cancellation);
   dispatcher.kick(plan.wake.agentId);
   return { kind: "sent", message: plan.message };

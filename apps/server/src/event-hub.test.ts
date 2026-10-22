@@ -15,7 +15,7 @@ const event = (id: number, organizationId: string): Event => ({
 });
 
 describe("EventHub", () => {
-  it("routes by scope without rewriting the organization ID", () => {
+  it("routes by scope in order without rewriting the organization ID", () => {
     const hub = new EventHub();
     const all: Event[] = [];
     const a: Event[] = [];
@@ -24,8 +24,7 @@ describe("EventHub", () => {
       a.push(e)
     );
 
-    hub.publish(event(1, "A"));
-    hub.publish(event(2, "B"));
+    hub.publish(event(1, "A"), event(2, "B"));
 
     expect(all.map((e) => [e.id, e.organizationId])).toEqual([
       [1, "A"],

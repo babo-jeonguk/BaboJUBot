@@ -19,7 +19,6 @@ import {
   sendAgentToAgentMessageInputSchema,
   startTaskInputSchema,
   submitResultInputSchema,
-  type Event,
   type OrgToolErrorCode,
   type OrgToolName,
   type PublicActivity,
@@ -92,14 +91,6 @@ export function orgToolsRouter({
     status: number,
     code: OrgToolErrorCode
   ) => res.status(status).json({ error: { code } });
-  /** commit 뒤 알림. 알림이 실패해도 저장된 도구 호출은 성공으로 돌려준다(재시도로 중복 저장하지 않게). */
-  const publish = (events: Event[]) => {
-    try {
-      for (const event of events) hub.publish(event);
-    } catch (error) {
-      console.error("[tools] publish after commit failed", error);
-    }
-  };
   const toolActivity = (
     tool: OrgToolName,
     summary: string
@@ -118,7 +109,7 @@ export function orgToolsRouter({
       run.id,
       toolActivity(tool, summary)
     );
-    if (event) publish([event]);
+    if (event) hub.publish(event);
     return event !== undefined;
   };
 
@@ -146,7 +137,7 @@ export function orgToolsRouter({
       const gate = await gateToolCall(db, run, name);
       if (!gate) return refuse(res, 401, "invalid_token");
       if (!gate.ok) {
-        publish([gate.event]);
+        hub.publish(gate.event);
         return refuseByRule(res, gate.reason);
       }
       await handler(req, res, run);
@@ -166,13 +157,13 @@ export function orgToolsRouter({
   ) => {
     switch (result.kind) {
       case "ok":
-        publish(result.events);
+        hub.publish(...result.events);
         for (const agentId of result.woken ?? []) dispatcher.kick(agentId);
         return res.status(status).json(result.value);
       case "run_finished":
         return refuse(res, 401, "invalid_token");
       case "refused":
-        publish(result.events);
+        hub.publish(...result.events);
         return refuseByRule(res, result.reason);
       case "invalid": {
         const [code, httpStatus] = problemResponses[result.problem];
@@ -228,7 +219,7 @@ export function orgToolsRouter({
         ),
       });
       if (!saved) return refuse(res, 401, "invalid_token");
-      publish(saved.events);
+      hub.publish(...saved.events);
       res.status(201).json(saved.message);
     })
   );

@@ -30,11 +30,7 @@ export async function createOrganization(
     { newId: randomUUID, now: () => new Date() }
   );
   const event = await insertOrganizationCreation(db, creation);
-  try {
-    hub.publish(event);
-  } catch (error) {
-    console.error("[organizations] publish after commit failed", error);
-  }
+  hub.publish(event);
   return { ...creation.organization, agents: creation.agents };
 }
 
@@ -49,10 +45,6 @@ export async function updateApprovalPolicy(
 ): Promise<PolicyChange> {
   const result = await storePolicy(db, organizationId, input);
   if (result.kind !== "changed") return result;
-  try {
-    hub.publish(result.event);
-  } catch (error) {
-    console.error("[organizations] publish after commit failed", error);
-  }
+  hub.publish(result.event);
   return result;
 }

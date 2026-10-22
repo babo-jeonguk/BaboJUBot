@@ -33,12 +33,7 @@ export async function editResearchMapAsOwner<C extends MapCommand>(
     now,
   });
   if (result.kind !== "ok") return result;
-  if (result.event)
-    try {
-      hub.publish(result.event);
-    } catch (error) {
-      console.error("[research-map] publish after commit failed", error);
-    }
+  if (result.event) hub.publish(result.event);
   if (result.wake) dispatcher.kick(result.wake.agentId);
   return result;
 }

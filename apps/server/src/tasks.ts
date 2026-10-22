@@ -38,11 +38,7 @@ export async function addOwnerTaskComment(
     }
   );
   if (result.kind !== "ok") return result;
-  try {
-    hub.publish(result.event);
-  } catch (error) {
-    console.error("[tasks] publish after commit failed", error);
-  }
+  hub.publish(result.event);
   dispatcher.kick(result.wake.agentId);
   return result;
 }

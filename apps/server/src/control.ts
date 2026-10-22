@@ -1,7 +1,6 @@
 import type {
   AgentCommand,
   AgentDetail,
-  Event,
   Organization,
   OrganizationCommand,
 } from "@babojubot/contracts";
@@ -28,7 +27,7 @@ export async function controlOrganization(
 ): Promise<ControlResult<Organization>> {
   const result = await storeOrganizationControl(db, organizationId, command);
   if (result.kind !== "changed") return result;
-  publish(hub, result.event);
+  hub.publish(result.event);
   dispatcher.cancel(result.cancellation);
   if (command === "resume") await dispatcher.kickOrganization(organizationId);
   return result;
@@ -45,19 +44,11 @@ export async function controlAgent(
   if (result.kind === "not_found" || result.kind === "organization_closed")
     return result;
   if (result.kind === "changed") {
-    publish(hub, result.event);
+    hub.publish(result.event);
     dispatcher.cancel(result.cancellation);
     if (command === "resume") dispatcher.kick(agentId);
   }
   const detail = await findAgentDetail(db, organizationId, agentId);
   if (!detail) return { kind: "not_found" };
   return { ...result, value: detail };
-}
-
-function publish(hub: EventHub, event: Event) {
-  try {
-    hub.publish(event);
-  } catch (error) {
-    console.error("[control] publish after commit failed", error);
-  }
 }

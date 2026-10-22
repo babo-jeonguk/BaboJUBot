@@ -3,7 +3,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   runResultSchema,
   runtimeActivitySchema,
-  type Event,
   type RunCancel,
   type RunResult,
   type RuntimeAdapter,
@@ -75,7 +74,7 @@ export class RunDispatcher {
   /** 이전 프로세스가 남긴 실행 중 실행 시도를 실패로 끝내고, 대기 중인 깨우기가 있는 에이전트를 깨운다. */
   async start(): Promise<void> {
     for (const event of await failInterruptedRuns(this.#db, { now: this.#now }))
-      this.#publish(event);
+      this.#hub.publish(event);
     for (const agentId of await listAgentsWithPendingWakes(this.#db))
       this.kick(agentId);
   }
@@ -180,7 +179,7 @@ export class RunDispatcher {
     if (!pending) return;
     const event = await this.#finish(pending.runId, pending.result);
     this.#pendingFinishes.delete(agentId);
-    if (event) this.#publish(event);
+    if (event) this.#hub.publish(event);
   }
 
   async #pump(agentId: string) {
@@ -194,7 +193,7 @@ export class RunDispatcher {
         source: { newId: randomUUID, now: this.#now },
       });
       if (!claimed) return;
-      this.#publish(claimed.event);
+      this.#hub.publish(claimed.event);
       await this.#execute(claimed, token);
     }
   }
@@ -284,14 +283,6 @@ export class RunDispatcher {
       source: "runtime",
       activity: activity.data,
     });
-    if (event) this.#publish(event);
-  }
-
-  #publish(event: Event) {
-    try {
-      this.#hub.publish(event);
-    } catch (error) {
-      console.error("[runs] publish after commit failed", error);
-    }
+    if (event) this.#hub.publish(event);
   }
 }
