@@ -39,7 +39,7 @@ export async function decideResult(
   } catch (error) {
     console.error("[results] publish after commit failed", error);
   }
-  if (result.resumed) void dispatcher.kickOrganization(organizationId);
+  if (result.resumed) await dispatcher.kickOrganization(organizationId);
   if (result.wake) dispatcher.kick(result.wake.agentId);
   return result;
 }

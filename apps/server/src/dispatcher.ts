@@ -106,7 +106,10 @@ export class RunDispatcher {
       } satisfies RunCancel);
   }
 
-  /** 조직 재개 뒤, 그 조직에서 대기 중인 깨우기가 있는 에이전트를 모두 깨운다. 실패해도 서버 시작·다음 깨우기가 다시 확인한다. */
+  /**
+   * 조직 재개 뒤, 그 조직에서 대기 중인 깨우기가 있는 에이전트를 모두 깨운다. 실패해도 서버 시작·다음 깨우기가 다시 확인한다.
+   * 호출자는 응답 전에 기다린다. 그래야 응답 뒤의 관찰(`drain` 등)이 이미 시작한 처리를 본다.
+   */
   async kickOrganization(organizationId: string): Promise<void> {
     try {
       for (const agentId of await listAgentsWithPendingWakes(this.#db, {

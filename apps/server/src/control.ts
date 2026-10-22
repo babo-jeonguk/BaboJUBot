@@ -30,7 +30,7 @@ export async function controlOrganization(
   if (result.kind !== "changed") return result;
   publish(hub, result.event);
   dispatcher.cancel(result.cancellation);
-  if (command === "resume") void dispatcher.kickOrganization(organizationId);
+  if (command === "resume") await dispatcher.kickOrganization(organizationId);
   return result;
 }
 
