@@ -334,6 +334,14 @@ describe("demo Lead scenario", () => {
       plainStep?.do === "call" &&
         plainStep.input?.(state(at("researching", [])))
     ).toEqual({ role: "researcher" });
+    // 부정문·단순 언급은 부탁이 아니다.
+    for (const body of [
+      "작업자 추가하지 마세요",
+      "작업자 추가는 나중에 합시다",
+    ])
+      expect(demoLeadScript(at("researching", [message(body)]))).toBe(
+        leadReplyScript
+      );
     // 작업자 추가는 연구 진행에서만 연다.
     expect(
       calls(demoLeadScript(at("result_review", [message("작업자 추가")])))
@@ -358,6 +366,21 @@ describe("demo Lead scenario", () => {
           )
         )
       ).toBe(leadReplyScript);
+  });
+
+  it("submits a result only when the owner asks for it, not when the message merely mentions it", () => {
+    for (const body of [
+      "결과 제출 부탁해요",
+      "결과를 제출해 주세요",
+      "결과 제출을 시도해 주세요",
+    ])
+      expect(demoLeadScript(at("researching", [message(body)]))).not.toBe(
+        leadReplyScript
+      );
+    for (const body of ["결과 제출하지 마세요", "결과 제출은 나중에 합시다"])
+      expect(demoLeadScript(at("researching", [message(body)]))).toBe(
+        leadReplyScript
+      );
   });
 
   it("keeps the demo Lead's result submission within the contract's evidence and summary limits and says what it left out", async () => {
