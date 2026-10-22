@@ -95,7 +95,7 @@ export type ToolCall = { activity: PublicActivity; operation?: ToolOperation };
  *
  * 같은 호출 키(`call.operation`)를 주면 그 에이전트가 같은 키로 이미 남긴 결과를 다시 쓰지 않고 돌려준다. 키 기록은 효과와 같은
  * transaction이므로 효과가 commit되었으면 키도 있고, 같은 키의 동시 호출은 조직 행 잠금으로 직렬화된다. 서버 재시작 뒤 같은 깨우기를
- * 다시 받은 실행 시도는 새 실행 시도·토큰이어도 같은 키면 앞 실행 시도의 결과를 받으며 새 기록·깨우기는 없다.
+ * 다시 받은 실행 시도는 새 실행 시도·토큰이어도 같은 키면 앞 실행 시도의 결과를 받으며 새 기록·Event·깨우기는 없다.
  * Role·단계 규칙은 같은 키여도 먼저 검사한다.
  */
 export async function toolWrite<T, P extends string>(
@@ -122,12 +122,6 @@ export async function toolWrite<T, P extends string>(
     const org = (await lockOrganization(tx, owner.organizationId))!;
     const locked = await lockRun(tx, run);
     if (!locked) return { kind: "run_finished" };
-    const summaryOf = (activity: PublicActivity) =>
-      insertEvent(tx, {
-        organizationId: locked.organizationId,
-        type: "run.activity",
-        payload: { runId: locked.id, agentId: locked.agentId, activity },
-      });
     const gate = await checkOrRefuse(tx, locked, org.stage, tool);
     if (!gate.ok)
       return { kind: "refused", reason: gate.reason, events: [gate.event] };
@@ -144,16 +138,7 @@ export async function toolWrite<T, P extends string>(
       if (done) {
         if (done.tool !== tool || done.requestDigest !== operation.digest)
           return { kind: "invalid", problem: "idempotency_conflict" };
-        const replayed = await summaryOf({
-          source: "control_plane",
-          activity: {
-            type: "org_tool",
-            tool,
-            summary:
-              "같은 호출 키로 이미 남긴 결과를 다시 돌려줌 (새 기록 없음)",
-          },
-        });
-        return { kind: "ok", value: done.result as T, events: [replayed] };
+        return { kind: "ok", value: done.result as T, events: [] };
       }
     }
     const result = await write(tx, locked, org);
@@ -168,7 +153,11 @@ export async function toolWrite<T, P extends string>(
         result: result.value,
         runId: locked.id,
       });
-    const summary = await summaryOf(activity);
+    const summary = await insertEvent(tx, {
+      organizationId: locked.organizationId,
+      type: "run.activity",
+      payload: { runId: locked.id, agentId: locked.agentId, activity },
+    });
     return { ...result, events: [...result.events, summary] };
   });
 }

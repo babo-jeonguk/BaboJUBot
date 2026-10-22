@@ -1,4 +1,4 @@
-import { taskListSchema } from "@babojubot/contracts";
+import { eventListSchema, taskListSchema } from "@babojubot/contracts";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { scriptedAgents, serverHelpers } from "./scenarios.ts";
@@ -48,9 +48,28 @@ describe("idempotency key on write tools", () => {
       title: "한 번만 만들 작업",
       assigneeAgentId: org.workers[0]!.id,
     };
+    // 이 호출이 남기는 Event: 작업 생성과 Lead 실행 시도의 활동. 할당받은 작업자의 실행 시도는 따로 진행된다.
+    const events = async () =>
+      eventListSchema
+        .parse(
+          (await t!.request("GET", `/api/organizations/${org.id}/events`)).body
+        )
+        .filter(
+          (e) =>
+            e.type === "task.created" ||
+            (e.type === "run.activity" && e.payload.agentId === org.lead.id)
+        );
+    const before = (await events()).length;
     const first = await call("POST", "/tasks", task);
     expect(first.status).toBe(201);
+    const recorded = await events();
+    expect(recorded.slice(before).map((e) => e.type)).toEqual([
+      "task.created",
+      "run.activity",
+    ]);
+    // 같은 키의 재호출은 처음 결과만 돌려주고 기록·Event를 새로 남기지 않는다.
     expect(await call("POST", "/tasks", task)).toEqual(first);
+    expect(await events()).toEqual(recorded);
     expect(
       await call("POST", "/tasks", { ...task, title: "다른 작업" })
     ).toEqual({

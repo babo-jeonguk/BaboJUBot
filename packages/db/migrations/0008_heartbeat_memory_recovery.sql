@@ -66,3 +66,8 @@ ALTER TABLE "wakes" ADD CONSTRAINT "wakes_source_check" CHECK (("wakes"."kind" =
 -- 지금까지 실행 시도가 받은 깨우기 기록을 옮긴다. 이 migration 전에는 깨우기 하나가 실행 시도 하나에만 묶였다.
 INSERT INTO "run_wakes" ("organization_id", "run_id", "wake_id")
   SELECT "organization_id", "run_id", "id" FROM "wakes" WHERE "run_id" IS NOT NULL;
+--> statement-breakpoint
+-- 이 migration 전에 생긴 에이전트는 공통 기본 간격(60분)을 받는다. 연구원 Role(roles/researcher)로 생긴 에이전트는 새 연구원처럼
+-- 이 migration 시점의 Role 기본 간격(harness/roles/researcher/role.json, 30분)으로 덮어쓴다.
+UPDATE "agents" SET "heartbeat_interval_minutes" = 30, "heartbeat_default_minutes" = 30
+  WHERE "id" IN (SELECT "agent_id" FROM "instruction_copies" WHERE "source" LIKE 'roles/researcher/%');

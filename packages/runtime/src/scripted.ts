@@ -203,23 +203,47 @@ export function parseGoalMessage(
  *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
  * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
+ *
+ * 단계를 바꾸는 쓰기(목표 기록 → 계획 수립, 초기 연구 승인 요청 → 승인 대기, 결과 제출 → 결과 검토 중) 뒤에 서버가 멈추면,
+ * 같은 깨우기를 다시 받은 실행 시도는 바뀐 단계에서 시작한다. 그때는 저장된 단계·목표로 이미 한 쓰기를 알아보고 건너뛰어
+ * 그 흐름의 남은 단계부터 이어 간다. 단계 규칙은 그대로라 끝난 단계의 도구를 다시 부르지 않는다.
  */
 export function demoLeadScript(request: RunRequest): Script {
-  const { stage } = request.context.organization;
+  const {
+    stage,
+    goal: recorded,
+    completionCriteria,
+  } = request.context.organization;
   const messages = request.wakeReasons.flatMap((r) =>
     r.kind === "owner_message" ? [r.body] : []
   );
   const goal = messages.map(parseGoalMessage).findLast(Boolean);
+  const sentBack = request.wakeReasons.findLast(
+    (r) => r.kind === "approval_decision" && r.decision !== "approve"
+  );
+  const proposing = stage === "planning" || stage === "awaiting_approval";
 
-  if (stage === "goal_setting" && goal)
+  // 이 목표를 이미 기록했으면 계획 수립·승인 대기에서도 같은 흐름을 이어 간다.
+  const goalRecorded =
+    recorded === goal?.goal && completionCriteria === goal?.completionCriteria;
+  if (
+    goal &&
+    (stage === "goal_setting" || (proposing && goalRecorded && !sentBack))
+  )
     return {
       steps: [
         { do: "read_context" },
-        { do: "call", tool: "record_goal", input: () => goal },
+        {
+          do: "call",
+          tool: "record_goal",
+          input: () => goal,
+          when: () => stage === "goal_setting",
+        },
         {
           do: "call",
           tool: "request_initial_approval",
           input: () => demoProposal(goal.goal),
+          when: () => stage !== "awaiting_approval",
         },
         {
           do: "send_message",
@@ -230,15 +254,7 @@ export function demoLeadScript(request: RunRequest): Script {
       summary: () => "목표를 기록하고 초기 연구 승인을 요청했습니다.",
     };
 
-  const sentBack = request.wakeReasons.findLast(
-    (r) => r.kind === "approval_decision" && r.decision !== "approve"
-  );
-  const recorded = request.context.organization.goal;
-  if (
-    stage === "planning" &&
-    sentBack?.kind === "approval_decision" &&
-    recorded
-  )
+  if (proposing && sentBack?.kind === "approval_decision" && recorded)
     return {
       steps: [
         { do: "read_context" },
@@ -246,6 +262,7 @@ export function demoLeadScript(request: RunRequest): Script {
           do: "call",
           tool: "request_initial_approval",
           input: () => demoProposal(recorded, sentBack.note),
+          when: () => stage === "planning",
         },
         {
           do: "send_message",
@@ -275,7 +292,7 @@ export function demoLeadScript(request: RunRequest): Script {
       r.kind === "result_changes_requested"
   );
   if (
-    stage === "researching" &&
+    (stage === "researching" || stage === "result_review") &&
     (changeRequest || messages.some((m) => resultRequest.test(m)))
   )
     return submitResultScript(request, changeRequest?.note ?? null);
@@ -373,11 +390,13 @@ const resultRequest = requestMessage(String.raw`결과(?:를)?\s*제출`);
 /**
  * 가짜 Lead의 결과 제출: 작업 목록에서 완료한 작업을 읽어 그 산출물을 근거로 묶고, 자기 보고를 모은 요약으로 제출한다.
  * 수정 요청을 받았으면 그 의견을 요약에 적는다. 근거 산출물이 없으면 제출하지 않고 Lead 대화로 알린다.
+ * 이미 제출해 결과 검토 중이면 제출은 건너뛰고 같은 근거로 알린다.
  */
 function submitResultScript(
   request: RunRequest,
   feedback: string | null
 ): Script {
+  const { stage } = request.context.organization;
   const goal = request.context.organization.goal ?? "연구 목표";
   const outputs = <T>({ calls }: ScriptState, tool: OrgToolName) =>
     calls.flatMap((c) => (c.tool === tool && c.ok ? [c.output as T] : []));
@@ -418,6 +437,7 @@ function submitResultScript(
               do: "call",
               tool: "submit_result",
               input: () => ({ summary, artifactIds }),
+              when: () => stage === "researching",
             },
             {
               do: "send_message",
@@ -429,6 +449,7 @@ function submitResultScript(
       },
     ],
     summary: ({ calls }) =>
+      stage === "result_review" ||
       calls.some((c) => c.tool === "submit_result" && c.ok)
         ? "결과를 제출했습니다."
         : "근거 산출물이 없어 결과를 제출하지 않았습니다.",
@@ -619,14 +640,19 @@ export function createScriptedRuntime({
         sent: [],
         calls: [],
       };
-      // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
-      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 새 깨우기가 섞이면 키가 달라진다.
+      // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
+      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
+      // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
       const bundle = createHash("sha256")
         .update(request.wakeReasons.map((r) => r.wakeId).join(","))
         .digest("hex")
         .slice(0, 32);
-      let effects = 0;
-      const once = () => ({ idempotencyKey: `${bundle}-${effects++}` });
+      const effects = new Map<OrgToolName, number>();
+      const once = (tool: OrgToolName) => {
+        const n = effects.get(tool) ?? 0;
+        effects.set(tool, n + 1);
+        return { idempotencyKey: `${bundle}-${tool}-${n}` };
+      };
       try {
         const queue = [...script.steps];
         for (let step = queue.shift(); step; step = queue.shift()) {
@@ -640,7 +666,7 @@ export function createScriptedRuntime({
               break;
             case "send_message":
               state.sent.push(
-                await tools.sendMessage(step.body(state), once())
+                await tools.sendMessage(step.body(state), once("send_message"))
               );
               break;
             case "read_message":
@@ -653,7 +679,7 @@ export function createScriptedRuntime({
                   step.tool,
                   step.input?.(state),
                   step.params?.(state),
-                  orgToolMethods[step.tool] === "GET" ? {} : once()
+                  orgToolMethods[step.tool] === "GET" ? {} : once(step.tool)
                 );
                 state.calls.push({ tool: step.tool, ok: true, output });
               } catch (error) {
