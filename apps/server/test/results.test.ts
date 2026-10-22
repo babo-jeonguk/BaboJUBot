@@ -8,6 +8,7 @@ import {
   resultSubmissionSummaryListSchema,
   runSummaryListSchema,
   type Event,
+  type OrganizationCommand,
   type RuntimeAdapter,
   type WakeReason,
 } from "@babojubot/contracts";
@@ -538,7 +539,7 @@ describe("result submission and final completion", () => {
   it("resumes a paused organization on a decision, completing it at once, and refuses decisions once stopped", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });
-    const control = (orgId: string, command: "pause" | "stop") =>
+    const control = (orgId: string, command: OrganizationCommand) =>
       t!.request("POST", `/api/organizations/${orgId}/${command}`, {});
 
     const changing = await submitted(agents, "멈춘 채 수정 요청");

@@ -6,6 +6,7 @@ import {
   orgToolPaths,
   runSummaryListSchema,
   type Event,
+  type OrganizationCommand,
   type RunResult,
   type RuntimeAdapter,
   type WakeReason,
@@ -47,7 +48,7 @@ const runsOf = async (orgId: string, agentId?: string) =>
   );
 const control = (
   orgId: string,
-  command: "pause" | "resume" | "stop",
+  command: OrganizationCommand,
   agentId?: string
 ) =>
   t!.request(

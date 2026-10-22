@@ -1,5 +1,4 @@
 import {
-  isClosedStage,
   type AgentDetail,
   type AgentRole,
   type ConversationMessage,
@@ -22,6 +21,7 @@ import {
   planInterrupt,
   planRunFinish,
   planRunStart,
+  type InterruptPlan,
   type NewRun,
   type OwnerMessagePlan,
   type PendingWake,
@@ -89,23 +89,24 @@ export async function insertOwnerMessage(
   | { kind: "organization_closed" }
 > {
   return db.transaction(async (tx) => {
-    const interrupting = plan.message.delivery === "interrupt";
-    if (interrupting) {
+    let control: InterruptPlan | null = null;
+    if (plan.message.delivery === "interrupt") {
       const org = await lockOrganization(tx, plan.message.organizationId);
-      if (isClosedStage(org!.stage)) return { kind: "organization_closed" };
+      const [running] = await lockCancellableRuns(
+        tx,
+        eq(runs.agentId, plan.message.agentId)
+      );
+      const planned = planInterrupt(plan.message, org!.stage, running ?? null);
+      if (planned === "organization_closed") return { kind: planned };
+      control = planned;
     }
     await tx.insert(messages).values(messageRow(plan.message));
     await tx
       .insert(wakes)
       .values({ ...plan.wake, createdAt: new Date(plan.wake.createdAt) });
     const created = await insertEvent(tx, plan.event);
-    if (!interrupting)
+    if (!control)
       return { kind: "sent", events: [created], cancellation: null };
-    const [running] = await lockCancellableRuns(
-      tx,
-      eq(runs.agentId, plan.message.agentId)
-    );
-    const control = planInterrupt(plan.message, running ?? null);
     await requestCancellation(tx, control.cancellation);
     return {
       kind: "sent",

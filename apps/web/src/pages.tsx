@@ -1,7 +1,10 @@
 import { isClosedStage, lifecycleStages } from "@babojubot/contracts";
 import { lazy, Suspense, useState } from "react";
 import { Link, useParams } from "react-router";
-import type { OrganizationDetail } from "@babojubot/contracts";
+import type {
+  OrganizationCommand,
+  OrganizationDetail,
+} from "@babojubot/contracts";
 import { ActivityScreen } from "./activity.tsx";
 import { AgentsScreen } from "./agents.tsx";
 import {
@@ -154,7 +157,7 @@ function OrganizationControl({ org }: { org: OrganizationDetail }) {
   const busy = closed || control.isPending;
   const running = runs.data?.filter((r) => r.status === "running") ?? [];
   const cancelling = running.filter((r) => r.cancelReason).length;
-  const send = (command: "pause" | "resume" | "stop") =>
+  const send = (command: OrganizationCommand) =>
     control.mutate(command, { onSettled: () => setConfirmingStop(false) });
   return (
     <section aria-label="조직 제어" className="card p-4 text-sm">

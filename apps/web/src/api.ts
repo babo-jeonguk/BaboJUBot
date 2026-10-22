@@ -24,12 +24,14 @@ import {
   taskDetailSchema,
   taskListSchema,
   type AddResearchLinkInput,
+  type AgentCommand,
   type CreateOrganizationInput,
   type CreateResearchNodeInput,
   type DecideApprovalInput,
   type DecideResultInput,
   type MessageDelivery,
   type Organization,
+  type OrganizationCommand,
   type OrganizationDetail,
   type UpdateApprovalPolicyInput,
   type UpdateResearchNodeInput,
@@ -289,7 +291,7 @@ export function useUpdateApprovalPolicy(orgId: string) {
 export function useControlOrganization(orgId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (command: "pause" | "resume" | "stop") =>
+    mutationFn: (command: OrganizationCommand) =>
       request(organizationSchema, orgPath(orgId, `/${command}`), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -315,7 +317,7 @@ export function useControlOrganization(orgId: string) {
 export function useControlAgent(orgId: string, agentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (command: "pause" | "resume") =>
+    mutationFn: (command: AgentCommand) =>
       request(
         agentDetailSchema,
         orgPath(orgId, `/agents/${encodeURIComponent(agentId)}/${command}`),

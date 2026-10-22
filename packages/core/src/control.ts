@@ -147,14 +147,21 @@ export function planAgentControl(
   };
 }
 
+export type InterruptPlan = {
+  cancellation: RunCancellation | null;
+  event: NewEvent;
+};
+
 /**
  * `중단하고 반영`의 실행 시도 중단 제어 명령. 받는 에이전트의 진행 중 실행 시도를 취소하고, 메시지는 깨우기로 남아 다음 실행 시도가 받는다.
- * 조직·에이전트는 일시정지하지 않는다. 실행 중이 아니면 취소할 것 없이 제어 기록만 남는다.
+ * 조직·에이전트는 일시정지하지 않는다. 실행 중이 아니면 취소할 것 없이 제어 기록만 남는다. 끝난 조직은 받지 않는다.
  */
 export function planInterrupt(
   message: Pick<ConversationMessage, "id" | "organizationId" | "agentId">,
+  organizationStage: LifecycleStage,
   runningRunId: string | null
-): { cancellation: RunCancellation | null; event: NewEvent } {
+): InterruptPlan | "organization_closed" {
+  if (isClosedStage(organizationStage)) return "organization_closed";
   return {
     cancellation: runningRunId
       ? { reason: "owner_interrupt", runIds: [runningRunId] }
