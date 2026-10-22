@@ -13,7 +13,7 @@ import {
 } from "@babojubot/contracts";
 import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
   calls,
@@ -456,6 +456,69 @@ describe("interrupt and deliver", () => {
     ).toMatchObject({ payload: { runId: null, messageId: message.id } });
     expect(await runsOf(org.id)).toEqual([
       expect.objectContaining({ status: "completed", wakeCount: 1 }),
+    ]);
+  });
+
+  it("joins a run still cleaning up after an earlier cancel instead of recording it as idle", async () => {
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    // 단언이 실패해도 실행기를 놓아 서버를 닫을 수 있게 한다.
+    onTestFinished(() => release());
+    let reachedHold!: () => void;
+    const holdReached = new Promise<void>((r) => (reachedHold = r));
+    const received: WakeReason[][] = [];
+    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 실행기.
+    const slow: RuntimeAdapter = {
+      async execute(request): Promise<RunResult> {
+        received.push(request.wakeReasons);
+        if (received.length === 1) {
+          reachedHold();
+          await released;
+        }
+        return {
+          stopReason: "completed",
+          error: null,
+          summary: null,
+          usage: null,
+          nextSession: null,
+        };
+      },
+    };
+    t = await startTestServer({ runtime: slow });
+    const org = await createOrganization("정리 중 중단하고 반영");
+    await say(org.id, "긴 일을 시작해 주세요");
+    await holdReached;
+    const [running] = await runsOf(org.id);
+
+    const first = await interrupt(org.id, "방향을 바꿔 주세요");
+    const second = await interrupt(org.id, "이것도 반영해 주세요");
+    // 정리 중인 실행 시도도 실행 중이며, 처음 취소 사유를 그대로 둔다.
+    expect(await runsOf(org.id)).toEqual([
+      expect.objectContaining({
+        id: running!.id,
+        status: "running",
+        cancelReason: "owner_interrupt",
+      }),
+    ]);
+    expect(
+      (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
+    ).toMatchObject([
+      { payload: { runId: running!.id, messageId: first.id } },
+      { payload: { runId: running!.id, messageId: second.id } },
+    ]);
+
+    release();
+    await t.drain();
+    const [next, cancelled] = await runsOf(org.id);
+    expect(cancelled).toMatchObject({
+      id: running!.id,
+      status: "cancelled",
+      cancelReason: "owner_interrupt",
+    });
+    expect(next).toMatchObject({ status: "completed", wakeCount: 2 });
+    expect(bodies(received.at(-1)!)).toEqual([
+      "방향을 바꿔 주세요",
+      "이것도 반영해 주세요",
     ]);
   });
 });

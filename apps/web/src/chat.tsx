@@ -101,7 +101,9 @@ export function LeadChat({ orgId, lead }: { orgId: string; lead: Agent }) {
       <div ref={end} />
       <Composer
         orgId={orgId}
-        leadRunning={!!running && !running.cancelReason}
+        leadRun={
+          !running ? "idle" : running.cancelReason ? "cancelling" : "running"
+        }
         held={heldBy(stage, agent.data?.paused ?? false)}
         stage={stage}
       />
@@ -171,12 +173,13 @@ function heldBy(stage: LifecycleStage | undefined, leadPaused: boolean) {
 
 function Composer({
   orgId,
-  leadRunning,
+  leadRun,
   held,
   stage,
 }: {
   orgId: string;
-  leadRunning: boolean;
+  /** 취소 정리 중인 실행 시도도 끝날 때까지 실행 중이며, 다음 실행 시도는 그 정리 뒤에 시작한다. */
+  leadRun: "idle" | "running" | "cancelling";
   held: string | null;
   stage: LifecycleStage | undefined;
 }) {
@@ -265,12 +268,16 @@ function Composer({
       <p className="mt-2 text-xs text-slate-400">
         {held ??
           (delivery === "interrupt"
-            ? leadRunning
-              ? "Lead의 진행 중 실행 시도를 취소하고, 정리가 끝나면 이 메시지로 다음 실행 시도를 시작합니다."
-              : "Lead가 실행 중이 아니므로 취소할 것 없이 이 메시지로 Lead를 깨웁니다."
-            : leadRunning
-              ? "Lead가 실행 중입니다. 지금 보내는 메시지는 다음 실행 시도에 반영됩니다."
-              : "보낸 메시지는 Lead를 깨워 다음 실행 시도에 반영됩니다.")}
+            ? {
+                idle: "Lead가 실행 중이 아니므로 취소할 것 없이 이 메시지로 Lead를 깨웁니다.",
+                running:
+                  "Lead의 진행 중 실행 시도를 취소하고, 정리가 끝나면 이 메시지로 다음 실행 시도를 시작합니다.",
+                cancelling:
+                  "Lead의 실행 시도가 이미 취소 정리 중입니다. 정리가 끝나면 이 메시지로 다음 실행 시도를 시작합니다.",
+              }[leadRun]
+            : leadRun === "idle"
+              ? "보낸 메시지는 Lead를 깨워 다음 실행 시도에 반영됩니다."
+              : "Lead가 실행 중입니다. 지금 보내는 메시지는 다음 실행 시도에 반영됩니다.")}
       </p>
     </form>
   );

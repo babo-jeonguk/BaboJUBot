@@ -45,7 +45,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
 import {
   insertEvent,
-  lockCancellableRuns,
+  lockRunningRunOfAgent,
   lockOrganization,
   requestCancellation,
   isUuid,
@@ -92,11 +92,8 @@ export async function insertOwnerMessage(
     let control: InterruptPlan | null = null;
     if (plan.message.delivery === "interrupt") {
       const org = await lockOrganization(tx, plan.message.organizationId);
-      const [running] = await lockCancellableRuns(
-        tx,
-        eq(runs.agentId, plan.message.agentId)
-      );
-      const planned = planInterrupt(plan.message, org!.stage, running ?? null);
+      const running = await lockRunningRunOfAgent(tx, plan.message.agentId);
+      const planned = planInterrupt(plan.message, org!.stage, running);
       if (planned === "organization_closed") return { kind: planned };
       control = planned;
     }
