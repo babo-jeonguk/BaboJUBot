@@ -41,6 +41,7 @@ describe("creating an organization", () => {
       stage: "goal_setting",
       goal: null,
       completionCriteria: null,
+      approvalPolicy: { addWorker: false },
       createdAt: org.createdAt,
     });
   });

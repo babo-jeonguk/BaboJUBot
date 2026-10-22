@@ -12,14 +12,16 @@ import {
   useOrganization,
   useOrganizations,
 } from "./api.ts";
-import { approvalKindLabel } from "./approvals.tsx";
+import { approvalKindHint } from "./approvals.tsx";
 import { LeadChat } from "./chat.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { ResultReviewScreen } from "./results.tsx";
+import { SettingsScreen } from "./settings.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
 import { TasksScreen } from "./tasks.tsx";
 import {
   abbr,
+  approvalKindLabel,
   ApprovalStatusBadge,
   avatarStyle,
   formatTime,
@@ -199,6 +201,12 @@ export function OrganizationScreen() {
         <OrganizationDashboard org={org.data} />
       </Page>
     );
+  if (section === "settings")
+    return (
+      <Page width={width}>
+        <SettingsScreen org={org.data} />
+      </Page>
+    );
   return (
     <Page width={width}>
       <div className="card animate-fade-up p-6">
@@ -216,7 +224,7 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
   const approvals = useApprovals(org.id);
   const results = useResultSubmissions(org.id);
   const template = useFlowTemplate(org.id);
-  const pending = approvals.data?.find((a) => a.status === "pending");
+  const pending = approvals.data?.filter((a) => a.status === "pending") ?? [];
   const pendingResult = results.data?.find((r) => r.status === "pending");
   const workers = org.agents.filter((a) => a.role === "worker").length;
   return (
@@ -226,23 +234,24 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
           <h1 className="text-xl font-semibold">{org.name}</h1>
           <StageBadge stage={org.stage} />
         </div>
-        {pending && (
+        {pending.map((a) => (
           <Link
-            to={`/orgs/${org.id}/approvals/${pending.id}`}
+            key={a.id}
+            to={`/orgs/${org.id}/approvals/${a.id}`}
             className="card card-hover flex items-center gap-3 p-4 ring-2 ring-amber-200"
           >
             <span className="text-xl">📝</span>
             <div className="min-w-0 flex-1">
               <div className="font-medium">
-                {approvalKindLabel[pending.kind]}이 결정을 기다립니다
+                {approvalKindLabel[a.kind]}이 결정을 기다립니다
               </div>
               <div className="text-xs text-slate-500">
-                계획·팀·연구 환경 명세를 검토하고 결정하세요.
+                {approvalKindHint[a.kind]}
               </div>
             </div>
             <span className="text-sm text-brand-600">검토하기 →</span>
           </Link>
-        )}
+        ))}
         {pendingResult && (
           <Link
             to={`/orgs/${org.id}/results/${pendingResult.id}`}
@@ -334,6 +343,9 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
                     className="flex items-center gap-2 px-4 py-2.5 transition hover:bg-slate-50"
                   >
                     <ApprovalStatusBadge status={a.status} />
+                    <span className="truncate text-slate-700">
+                      {approvalKindLabel[a.kind]}
+                    </span>
                     <span className="ml-auto text-xs text-slate-400 tabular-nums">
                       {formatTime(a.createdAt)}
                     </span>

@@ -2,14 +2,20 @@ import type {
   Event,
   Organization,
   OrganizationDetail,
+  UpdateApprovalPolicyInput,
 } from "@babojubot/contracts";
-import type { OrganizationCreation } from "@babojubot/core";
+import {
+  planApprovalPolicyChange,
+  type OrganizationCreation,
+} from "@babojubot/core";
 import { and, asc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   insertEvent,
   instructionCopyRow,
   isUuid,
+  lockOrganization,
+  organizationRow,
   toAgent,
   toEvent,
   toOrganization,
@@ -23,9 +29,7 @@ export async function insertOrganizationCreation(
 ): Promise<Event> {
   return db.transaction(async (tx) => {
     const { organization } = records;
-    await tx
-      .insert(organizations)
-      .values({ ...organization, createdAt: new Date(organization.createdAt) });
+    await tx.insert(organizations).values(organizationRow(organization));
     await tx
       .insert(agents)
       .values(
@@ -36,6 +40,37 @@ export async function insertOrganizationCreation(
         .insert(instructionCopies)
         .values(records.instructionCopies.map(instructionCopyRow));
     return insertEvent(tx, records.event);
+  });
+}
+
+export type PolicyChange =
+  | { kind: "changed"; organization: Organization; event: Event }
+  | { kind: "unchanged"; organization: Organization }
+  | { kind: "not_found" };
+
+/**
+ * 사용자의 승인 정책 변경 제어 명령. 조직 행 잠금 아래에서 바꾸고 그 Event를 같은 transaction에 남긴다.
+ * 조직 도구 쓰기도 같은 잠금 아래에서 정책을 읽으므로, 작업자 추가는 바뀌기 전 정책이나 바뀐 뒤 정책 하나로만 갈린다.
+ */
+export async function updateApprovalPolicy(
+  db: Database,
+  organizationId: string,
+  input: UpdateApprovalPolicyInput
+): Promise<PolicyChange> {
+  if (!isUuid(organizationId)) return { kind: "not_found" };
+  return db.transaction(async (tx) => {
+    const row = await lockOrganization(tx, organizationId);
+    if (!row) return { kind: "not_found" };
+    const organization = toOrganization(row);
+    const change = planApprovalPolicyChange(organization, input);
+    if (!change) return { kind: "unchanged", organization };
+    const [updated] = await tx
+      .update(organizations)
+      .set({ addWorkerApproval: change.policy.addWorker })
+      .where(eq(organizations.id, organizationId))
+      .returning();
+    const event = await insertEvent(tx, change.event);
+    return { kind: "changed", organization: toOrganization(updated!), event };
   });
 }
 

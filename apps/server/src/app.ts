@@ -17,6 +17,7 @@ import {
   eventStreamPath,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
+  updateApprovalPolicyInputSchema,
   type RuntimeAdapter,
   type StreamFrame,
   type StreamScope,
@@ -55,7 +56,7 @@ import { sendOwnerMessage } from "./conversation.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
-import { createOrganization } from "./organizations.ts";
+import { createOrganization, updateApprovalPolicy } from "./organizations.ts";
 import { editResearchMapAsOwner } from "./research-map.ts";
 import { decideResult } from "./results.ts";
 import { addOwnerTaskComment } from "./tasks.ts";
@@ -146,6 +147,27 @@ export async function startServer({
     const org = await findOrganization(db, req.params.id);
     if (!org) return notFound(res);
     res.json(org);
+  });
+
+  /**
+   * 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. 바꾼 뒤의 조직을 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   */
+  app.put("/api/organizations/:id/approval-policy", async (req, res) => {
+    const input = updateApprovalPolicyInputSchema.safeParse(req.body);
+    if (!input.success) {
+      res
+        .status(422)
+        .json({ error: { code: "invalid_input", issues: input.error.issues } });
+      return;
+    }
+    const result = await updateApprovalPolicy(
+      { db, hub },
+      req.params.id,
+      input.data
+    );
+    if (result.kind === "not_found") return notFound(res);
+    res.json(result.organization);
   });
 
   app.get("/api/organizations/:id/events", async (req, res) => {
@@ -372,7 +394,10 @@ export async function startServer({
     res.json(approval);
   });
 
-  /** 승인 결정 제어 명령. 결정은 한 번만 할 수 있고, 이미 결정한 요청은 409 `already_decided`다. */
+  /**
+   * 승인 결정 제어 명령. 결정은 한 번만 할 수 있고, 이미 결정한 요청은 409 `already_decided`다.
+   * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 422 `decision_not_allowed`다.
+   */
   app.post(
     "/api/organizations/:id/approvals/:approvalId/decision",
     async (req, res) => {
@@ -392,6 +417,10 @@ export async function startServer({
       if (result.kind === "not_found") return notFound(res);
       if (result.kind === "already_decided") {
         res.status(409).json({ error: { code: "already_decided" } });
+        return;
+      }
+      if (result.kind === "decision_not_allowed") {
+        res.status(422).json({ error: { code: "decision_not_allowed" } });
         return;
       }
       res.json(result.approval);

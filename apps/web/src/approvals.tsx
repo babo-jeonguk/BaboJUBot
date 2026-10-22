@@ -1,7 +1,9 @@
 import {
+  approvalKindDecisions,
   decisionNoteMaxLength,
   type Approval,
   type ApprovalDecision,
+  type ApprovalKind,
   type InboxItem,
 } from "@babojubot/contracts";
 import { useState, type ReactNode } from "react";
@@ -15,6 +17,7 @@ import {
 } from "./api.ts";
 import {
   abbr,
+  approvalKindLabel,
   approvalStatusLabel,
   ApprovalStatusBadge,
   avatarStyle,
@@ -26,7 +29,11 @@ import {
   Page,
 } from "./ui.tsx";
 
-export const approvalKindLabel = { initial_research: "초기 연구 승인 요청" };
+/** 대시보드에서 결정을 기다리는 요청 아래에 붙이는 안내. */
+export const approvalKindHint: Record<ApprovalKind, string> = {
+  initial_research: "계획·팀·연구 환경 명세를 검토하고 결정하세요.",
+  add_worker: "추가할 작업자의 Role과 받을 사본을 검토하고 결정하세요.",
+};
 
 /** Inbox: 모든 조직에서 사용자 결정을 기다리는 항목. 첫 판은 승인 요청과 결과 제출뿐이다(읽음·보관과 나머지 종류는 #61). */
 export function InboxPage() {
@@ -125,8 +132,9 @@ function InboxRow({
 }
 
 /**
- * 승인 요청 상세: 목표·완료 기준, 계획, 팀 구성, 연구 환경 명세, 연구 흐름 템플릿을 함께 보고 결정한다.
- * 보이는 내용은 제출 때 고정한 snapshot이며 승인하면 이 내용 그대로 팀과 사본이 생긴다.
+ * 승인 요청 상세. 초기 연구 승인은 목표·완료 기준, 계획, 팀 구성, 연구 환경 명세, 연구 흐름 템플릿을,
+ * 작업자 추가는 추가할 작업자의 Role과 받을 사본을 함께 보고 결정한다.
+ * 보이는 내용은 요청 때 고정한 snapshot이며 승인하면 이 내용 그대로 작업자와 사본이 생긴다.
  */
 export function ApprovalDetailPage() {
   const { orgId = "", approvalId = "" } = useParams();
@@ -141,7 +149,6 @@ export function ApprovalDetailPage() {
       <LoadError what="승인 요청" onRetry={() => void approval.refetch()} />
     );
   const a = approval.data;
-  const { proposal } = a;
   const lead = org.data?.agents.find((x) => x.id === a.requestedByAgentId);
   return (
     <Page width="standard">
@@ -172,6 +179,33 @@ export function ApprovalDetailPage() {
         </div>
       </div>
 
+      {a.kind === "initial_research" ? (
+        <InitialResearchContent proposal={a.proposal} />
+      ) : (
+        <AddWorkerContent proposal={a.proposal} />
+      )}
+
+      {a.status === "pending" ? (
+        <DecisionForm orgId={orgId} approvalId={a.id} kind={a.kind} />
+      ) : (
+        <DecisionReceipt orgId={orgId} approval={a} />
+      )}
+    </Page>
+  );
+}
+
+type ProposalOf<K extends ApprovalKind> = Extract<
+  Approval,
+  { kind: K }
+>["proposal"];
+
+function InitialResearchContent({
+  proposal,
+}: {
+  proposal: ProposalOf<"initial_research">;
+}) {
+  return (
+    <>
       <Block label="연구 목표와 완료 기준">
         <dl className="grid gap-x-4 gap-y-2 p-4 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
@@ -235,13 +269,44 @@ export function ApprovalDetailPage() {
           />
         </div>
       </Block>
+    </>
+  );
+}
 
-      {a.status === "pending" ? (
-        <DecisionForm orgId={orgId} approvalId={a.id} />
-      ) : (
-        <DecisionReceipt orgId={orgId} approval={a} />
-      )}
-    </Page>
+/** 작업자 추가 요청: Lead가 고른 Role과, 승인하면 새 작업자가 받을 Role·Soul·Skill 사본의 내용. */
+function AddWorkerContent({
+  proposal,
+}: {
+  proposal: ProposalOf<"add_worker">;
+}) {
+  return (
+    <Block label="추가할 작업자">
+      <div className="px-4 py-3 text-sm">
+        <div className="flex items-center gap-2">
+          <span className="font-medium">{proposal.label}</span>
+          <span className="text-xs text-slate-400">{proposal.role}</span>
+          <span className="ml-auto tabular-nums">1명</span>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          받을 사본 {proposal.files.length}개. 요청 때 하네스 라이브러리에서
+          읽은 내용이며, 승인하면 이 내용으로 새 작업자만의 사본을 만듭니다.
+        </p>
+      </div>
+      <ul className="divide-y divide-slate-100 border-t border-slate-100">
+        {proposal.files.map((f) => (
+          <li key={f.path} className="px-4 py-2 text-xs">
+            <details>
+              <summary className="cursor-pointer font-mono break-all text-slate-600">
+                {f.path} ← harness/{f.source} · {f.sourceDigest.slice(0, 12)}
+              </summary>
+              <pre className="mt-2 max-h-80 overflow-auto rounded-lg bg-slate-50 p-3 whitespace-pre-wrap text-slate-700">
+                {f.content}
+              </pre>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </Block>
   );
 }
 
@@ -279,22 +344,38 @@ function Kinds({ label, kinds }: { label: string; kinds: string[] }) {
   );
 }
 
-const decisions: { decision: ApprovalDecision; className: string }[] = [
-  { decision: "approve", className: "btn-primary" },
-  { decision: "request_changes", className: "btn-soft" },
-  { decision: "reject", className: "btn-danger" },
-];
+const decisionStyle: Record<ApprovalDecision, string> = {
+  approve: "btn-primary",
+  request_changes: "btn-soft",
+  reject: "btn-danger",
+};
+
+const decisionHelp: Record<ApprovalKind, { effect: string; note: string }> = {
+  initial_research: {
+    effect:
+      "승인하면 조직이 연구 진행으로 넘어가고 위 팀 구성대로 작업자가 생깁니다. 반려와 수정 요청은 계획 수립으로 돌아가며 사유와 함께 Lead를 깨웁니다.",
+    note: "결정 사유 (반려·수정 요청에는 필요)",
+  },
+  add_worker: {
+    effect:
+      "승인하면 위 사본을 받은 작업자 한 명이 생기고, 반려하면 아무것도 만들지 않습니다. 어느 쪽이든 연구 단계는 그대로이며 결정과 사유로 Lead를 깨웁니다.",
+    note: "결정 사유 (반려에는 필요)",
+  },
+};
 
 /**
- * 결정 폼. 세 결정이 한 요청 상태를 함께 쓰므로 하나를 보내는 동안 모두 잠근다.
- * 반려와 수정 요청은 사유가 있어야 보낼 수 있고, 사유는 Lead를 깨우는 사유가 된다. 실패하면 사유를 그대로 둔다.
+ * 결정 폼. 종류마다 내릴 수 있는 결정이 다르고(작업자 추가에는 수정 요청이 없다), 모든 결정이 한 요청 상태를
+ * 함께 쓰므로 하나를 보내는 동안 모두 잠근다. 승인 밖의 결정은 사유가 있어야 보낼 수 있고, 사유는 Lead를 깨우는
+ * 사유가 된다. 실패하면 사유를 그대로 둔다.
  */
 function DecisionForm({
   orgId,
   approvalId,
+  kind,
 }: {
   orgId: string;
   approvalId: string;
+  kind: ApprovalKind;
 }) {
   const [note, setNote] = useState("");
   const decide = useDecideApproval(orgId, approvalId);
@@ -309,15 +390,13 @@ function DecisionForm({
     >
       <h2 className="mb-1 text-sm font-semibold">결정</h2>
       <p className="mb-3 text-xs text-slate-500">
-        승인하면 조직이 연구 진행으로 넘어가고 위 팀 구성대로 작업자가 생깁니다.
-        반려와 수정 요청은 계획 수립으로 돌아가며 사유와 함께 Lead를 깨웁니다.
-        결정은 한 번만 할 수 있습니다.
+        {decisionHelp[kind].effect} 결정은 한 번만 할 수 있습니다.
       </p>
       <label
         htmlFor="decision-note"
         className="mb-1 block text-xs text-slate-600"
       >
-        결정 사유 (반려·수정 요청에는 필요)
+        {decisionHelp[kind].note}
       </label>
       <textarea
         id="decision-note"
@@ -328,10 +407,10 @@ function DecisionForm({
         className="w-full resize-y rounded-xl bg-white px-3 py-2 text-sm ring-1 ring-slate-200 outline-none focus:ring-brand-400"
       />
       <div className="mt-3 flex flex-wrap gap-2">
-        {decisions.map(({ decision, className }) => (
+        {approvalKindDecisions[kind].map((decision) => (
           <button
             key={decision}
-            className={className}
+            className={decisionStyle[decision]}
             disabled={decide.isPending || (decision !== "approve" && !trimmed)}
             onClick={() =>
               decide.mutate({ decision, note: trimmed || undefined })
@@ -382,7 +461,9 @@ function DecisionReceipt({
       <p className="text-slate-500">
         {a.status === "approved" ? (
           <>
-            연구 진행으로 넘어가 팀이 생겼습니다.{" "}
+            {a.kind === "initial_research"
+              ? "연구 진행으로 넘어가 팀이 생겼습니다."
+              : "작업자가 팀에 더해졌습니다."}{" "}
             <Link
               to={`/orgs/${orgId}/agents`}
               className="text-brand-600 hover:underline"
@@ -390,8 +471,10 @@ function DecisionReceipt({
               팀 보기
             </Link>
           </>
-        ) : (
+        ) : a.kind === "initial_research" ? (
           "계획 수립으로 돌아갔고 Lead가 사유를 받아 다시 계획합니다."
+        ) : (
+          "작업자를 만들지 않았고 Lead가 사유를 받았습니다."
         )}
       </p>
     </section>

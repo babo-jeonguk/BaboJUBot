@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
-import { lifecycleStageSchema } from "./organization.ts";
+import { harnessNameSchema } from "./harness.ts";
+import { approvalPolicySchema, lifecycleStageSchema } from "./organization.ts";
 import { resultDecisionSchema } from "./result.ts";
 import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
@@ -90,7 +91,30 @@ export const goalRecordedEventSchema = z.object({
   }),
 });
 
-/** Lead가 승인 요청을 올렸다. `stage`는 요청 뒤 조직 단계다. */
+/** 사용자의 승인 정책 변경 제어 명령. 바꾸기 전 정책과 바꾼 뒤 정책을 함께 남긴다. 값이 그대로인 명령은 남지 않는다. */
+export const approvalPolicyChangedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("organization.approval_policy_changed"),
+  payload: z.object({
+    by: z.literal("owner"),
+    previous: approvalPolicySchema,
+    policy: approvalPolicySchema,
+  }),
+});
+
+/** 승인 정책이 꺼져 있어 Lead의 작업자 추가가 곧바로 작업자를 만들었다. `role`은 사본을 복사한 하네스 Role이다. */
+export const workerAddedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("worker.added"),
+  payload: z.object({
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    workerAgentId: z.uuid(),
+    role: harnessNameSchema,
+  }),
+});
+
+/** Lead가 승인 요청을 올렸다. `stage`는 요청 뒤 조직 단계다. 작업자 추가 요청은 단계를 바꾸지 않는다. */
 export const approvalRequestedEventSchema = z.object({
   ...eventBase,
   type: z.literal("approval.requested"),
@@ -104,7 +128,7 @@ export const approvalRequestedEventSchema = z.object({
 });
 
 /**
- * 사용자의 승인 결정 제어 명령을 남긴 Event. `stage`는 결정 뒤 조직 단계, `createdAgentIds`는 승인으로 생긴 작업자,
+ * 사용자의 승인 결정 제어 명령을 남긴 Event. `stage`는 결정 뒤 조직 단계(작업자 추가 결정은 바꾸지 않음), `createdAgentIds`는 승인으로 생긴 작업자,
  * `wokenAgentId`는 결정 사유로 깨운 에이전트(요청한 Lead)다.
  */
 export const approvalDecidedEventSchema = z.object({
@@ -261,7 +285,9 @@ export const researchMapEditedEventSchema = z.object({
 
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
+  approvalPolicyChangedEventSchema,
   goalRecordedEventSchema,
+  workerAddedEventSchema,
   approvalRequestedEventSchema,
   approvalDecidedEventSchema,
   resultSubmittedEventSchema,

@@ -4,8 +4,9 @@ import {
   harnessNameSchema,
   instructionSourceFileSchema,
 } from "./harness.ts";
+import { agentSchema } from "./organization.ts";
 
-// 목표 기록과 승인 요청. 초기 연구 승인은 끌 수 없는 사용자 결정이다(ADR-0003).
+// 목표 기록과 승인 요청. 초기 연구 승인은 끌 수 없는 사용자 결정이고, 작업자 추가는 조직별 승인 정책을 따른다(ADR-0003).
 
 const longText = (max: number) => z.string().trim().min(1).max(max);
 export const goalMaxLength = 4_000;
@@ -67,7 +68,22 @@ export type InitialResearchProposal = z.infer<
   typeof initialResearchProposalSchema
 >;
 
-export const approvalKinds = ["initial_research"] as const;
+/** Lead의 작업자 추가. 하네스 라이브러리의 작업자 Role 이름 하나로 작업자 한 명을 더한다. */
+export const addWorkerInputSchema = z.strictObject({ role: harnessNameSchema });
+export type AddWorkerInput = z.infer<typeof addWorkerInputSchema>;
+
+/**
+ * 작업자 추가 승인 요청의 snapshot. 호출할 때 서버가 라이브러리에서 읽은 Role·Soul·Skill 내용 그대로이며,
+ * 승인하면 라이브러리를 다시 읽지 않고 이 내용으로 새 작업자의 사본을 만든다.
+ */
+export const addWorkerProposalSchema = z.object({
+  role: harnessNameSchema,
+  label: z.string(),
+  files: z.array(instructionSourceFileSchema),
+});
+export type AddWorkerProposal = z.infer<typeof addWorkerProposalSchema>;
+
+export const approvalKinds = ["initial_research", "add_worker"] as const;
 export const approvalKindSchema = z.enum(approvalKinds);
 export type ApprovalKind = z.infer<typeof approvalKindSchema>;
 
@@ -89,6 +105,12 @@ export const approvalDecisions = [
 ] as const;
 export const approvalDecisionSchema = z.enum(approvalDecisions);
 export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>;
+
+/** 종류마다 사용자가 내릴 수 있는 결정. 작업자 추가에는 수정 요청이 없다. */
+export const approvalKindDecisions = {
+  initial_research: approvalDecisions,
+  add_worker: ["approve", "reject"],
+} as const satisfies Record<ApprovalKind, readonly ApprovalDecision[]>;
 
 /** 승인 결정 제어 명령. 반려와 수정 요청은 Lead를 깨울 사유가 필요하다. */
 export const decideApprovalInputSchema = z
@@ -116,8 +138,31 @@ export const approvalSummarySchema = z.object({
 export type ApprovalSummary = z.infer<typeof approvalSummarySchema>;
 export const approvalSummaryListSchema = z.array(approvalSummarySchema);
 
-export const approvalSchema = approvalSummarySchema.extend({
-  proposal: initialResearchProposalSchema,
-  decisionNote: z.string().nullable(),
-});
+/** 승인 요청 상세. 검토 내용(`proposal`)의 모양은 종류마다 다르다. */
+export const approvalSchema = z.discriminatedUnion("kind", [
+  approvalSummarySchema.extend({
+    kind: z.literal("initial_research"),
+    proposal: initialResearchProposalSchema,
+    decisionNote: z.string().nullable(),
+  }),
+  approvalSummarySchema.extend({
+    kind: z.literal("add_worker"),
+    proposal: addWorkerProposalSchema,
+    decisionNote: z.string().nullable(),
+  }),
+]);
 export type Approval = z.infer<typeof approvalSchema>;
+export type ApprovalProposal = Approval["proposal"];
+
+/**
+ * 작업자 추가 도구의 결과. 승인 정책이 꺼져 있으면 곧바로 생긴 작업자(`added`), 켜져 있으면
+ * 사용자 결정을 기다리는 승인 요청(`pending_approval`)이며 작업자는 아직 없다.
+ */
+export const addWorkerResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("added"), agent: agentSchema }),
+  z.object({
+    status: z.literal("pending_approval"),
+    approval: approvalSummarySchema,
+  }),
+]);
+export type AddWorkerResult = z.infer<typeof addWorkerResultSchema>;

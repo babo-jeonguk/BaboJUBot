@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { approvalDecisionSchema } from "./approval.ts";
+import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { flowKindSchema, instructionFileSchema } from "./harness.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
@@ -40,6 +40,7 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     kind: z.literal("approval_decision"),
     wakeId: z.uuid(),
     approvalId: z.uuid(),
+    approvalKind: approvalKindSchema,
     decision: approvalDecisionSchema,
     note: z.string().nullable(),
   }),

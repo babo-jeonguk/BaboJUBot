@@ -11,6 +11,7 @@ import {
   inboxSchema,
   organizationDetailSchema,
   organizationListSchema,
+  organizationSchema,
   researchLinkSchema,
   researchMapSchema,
   researchNodeDetailSchema,
@@ -29,6 +30,7 @@ import {
   type DecideResultInput,
   type Organization,
   type OrganizationDetail,
+  type UpdateApprovalPolicyInput,
   type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -240,6 +242,32 @@ export function useFlowTemplate(orgId: string) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
       }
+    },
+  });
+}
+
+/**
+ * 승인 정책 변경 제어 명령. 서버가 저장한 정책으로만 화면을 바꾸고(낙관 반영 없음), 그 조직을 다시 불러온다.
+ * 다른 탭은 정책 변경 Event로 같은 조직을 다시 불러온다.
+ */
+export function useUpdateApprovalPolicy(orgId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateApprovalPolicyInput) =>
+      request(organizationSchema, orgPath(orgId, "/approval-policy"), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (org) => {
+      queryClient.setQueryData<OrganizationDetail>(
+        queryKeys.organization(orgId),
+        (detail) => detail && { ...detail, ...org }
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.organization(orgId),
+        exact: true,
+      });
     },
   });
 }

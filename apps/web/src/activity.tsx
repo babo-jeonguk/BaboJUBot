@@ -62,15 +62,32 @@ export function describeEvent(event: Event, agentName: string): Described {
         title: `${agentName}가 연구 목표와 완료 기준을 기록했습니다 → ${stageLabel[event.payload.stage]}`,
         detail: `목표: ${event.payload.goal}\n완료 기준: ${event.payload.completionCriteria}`,
       };
+    case "organization.approval_policy_changed":
+      return {
+        icon: "⚙",
+        title: `사용자가 승인 정책 “작업자 추가”를 ${event.payload.policy.addWorker ? "켰습니다" : "껐습니다"}`,
+      };
+    case "worker.added":
+      return {
+        icon: "➕",
+        title: `${agentName}가 작업자를 추가했습니다`,
+        detail: `Role: ${event.payload.role}`,
+      };
     case "approval.requested":
       return {
         icon: "📝",
-        title: `${agentName}가 초기 연구 승인을 요청했습니다 → ${stageLabel[event.payload.stage]}`,
+        title:
+          event.payload.kind === "add_worker"
+            ? `${agentName}가 작업자 추가 승인을 요청했습니다`
+            : `${agentName}가 초기 연구 승인을 요청했습니다 → ${stageLabel[event.payload.stage]}`,
       };
     case "approval.decided":
       return {
         icon: event.payload.decision === "approve" ? "✅" : "↺",
-        title: `사용자가 초기 연구 승인 요청을 ${decisionLabel[event.payload.decision]}했습니다 → ${stageLabel[event.payload.stage]}`,
+        title:
+          event.payload.kind === "add_worker"
+            ? `사용자가 작업자 추가 승인 요청을 ${decisionLabel[event.payload.decision]}했습니다`
+            : `사용자가 초기 연구 승인 요청을 ${decisionLabel[event.payload.decision]}했습니다 → ${stageLabel[event.payload.stage]}`,
         detail:
           [
             event.payload.note && `사유: ${event.payload.note}`,
