@@ -1,15 +1,15 @@
-import type {
-  AddWorkerInput,
-  AddWorkerProposal,
-  Agent,
-  ApprovalPolicy,
-  InstructionCopy,
-  LifecycleStage,
-  NewEvent,
+import {
+  defaultHeartbeatMinutes,
+  type AddWorkerInput,
+  type AddWorkerProposal,
+  type ApprovalPolicy,
+  type InstructionCopy,
+  type LifecycleStage,
+  type NewEvent,
 } from "@babojubot/contracts";
 import type { NewApproval, RunRef } from "./approval.ts";
 import { copyInstructions, type HarnessLibraryContents } from "./harness.ts";
-import type { RecordSource } from "./organization.ts";
+import type { NewAgent, RecordSource } from "./organization.ts";
 
 // Lead의 작업자 추가. 승인 정책(ADR-0003)이 꺼져 있으면 곧바로 작업자를 만들고, 켜져 있으면 승인 요청만 남긴다.
 // 어느 쪽이든 호출할 때 읽은 라이브러리 내용을 고정하며, 승인 때 라이브러리를 다시 읽지 않는다.
@@ -24,7 +24,12 @@ export function buildAddWorkerProposal(
 ): AddWorkerProposal | "unknown_role" {
   const role = library.roles.get(input.role);
   if (!role || role.agent !== "worker") return "unknown_role";
-  return { role: input.role, label: role.label, files: role.files };
+  return {
+    role: input.role,
+    label: role.label,
+    files: role.files,
+    heartbeatMinutes: role.heartbeatMinutes,
+  };
 }
 
 /** 새 작업자의 이름: Role 표시 이름 뒤에 같은 이름의 작업자 중 가장 큰 번호 + 1. */
@@ -37,19 +42,20 @@ export function nextWorkerName(label: string, existingNames: string[]) {
   return `${prefix}${Math.max(0, ...taken) + 1}`;
 }
 
-/** snapshot에서 작업자 한 명과 그 작업자만의 Role·Soul·Skill 사본을 만든다. */
+/** snapshot에서 작업자 한 명과 그 작업자만의 Role·Soul·Skill 사본을 만든다. 기본 heartbeat 간격도 snapshot의 Role 값이다. */
 export function planWorker(
   organizationId: string,
-  proposal: AddWorkerProposal,
+  proposal: Pick<AddWorkerProposal, "label" | "files" | "heartbeatMinutes">,
   agentNames: string[],
   { newId, createdAt }: { newId: () => string; createdAt: string }
-): { worker: Agent; copies: InstructionCopy[] } {
-  const worker: Agent = {
+): { worker: NewAgent; copies: InstructionCopy[] } {
+  const worker: NewAgent = {
     id: newId(),
     organizationId,
     role: "worker",
     name: nextWorkerName(proposal.label, agentNames),
     createdAt,
+    heartbeatMinutes: proposal.heartbeatMinutes ?? defaultHeartbeatMinutes,
   };
   return {
     worker,
@@ -60,7 +66,7 @@ export function planWorker(
 export type AddWorkerPlan =
   | {
       kind: "added";
-      worker: Agent;
+      worker: NewAgent;
       copies: InstructionCopy[];
       event: NewEvent;
     }

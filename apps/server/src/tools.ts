@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   addResearchLinkInputSchema,
   addWorkerInputSchema,
@@ -8,7 +8,12 @@ import {
   completeTaskInputSchema,
   createResearchNodeInputSchema,
   emptyCommandInputSchema,
+  idempotencyKeyHeader,
+  idempotencyKeySchema,
   linkTaskResearchNodeInputSchema,
+  memoryRecallLimitDefault,
+  recallMemoryInputSchema,
+  writeMemoryInputSchema,
   updateResearchNodeInputSchema,
   createTaskInputSchema,
   orgToolPaths,
@@ -24,6 +29,7 @@ import {
   type PublicActivity,
   type ToolRefusalReason,
 } from "@babojubot/contracts";
+import { memoryScopeOf } from "@babojubot/core";
 import {
   addWorker,
   appendRunActivity,
@@ -31,6 +37,7 @@ import {
   commentTask,
   completeTask,
   createTask,
+  dbMemory,
   findArtifact,
   findMessage,
   findResearchNodeDetail,
@@ -46,10 +53,12 @@ import {
   sendAgentToAgentMessage,
   startTask,
   submitResult,
+  writeMemory,
   writeResearchMap,
   type ActiveRun,
   type Database,
   type MapCommand,
+  type ToolOperation,
   type ToolWrite,
 } from "@babojubot/db";
 import express from "express";
@@ -59,6 +68,11 @@ import type { EventHub } from "./event-hub.ts";
 import { listHarnessLibrary, loadHarnessLibrary } from "./harness.ts";
 import { digestRunToken } from "./run-token.ts";
 import { problemResponses, type ToolProblem } from "./problems.ts";
+
+const scopeLabel = {
+  organization: "조직 기억",
+  agent: "에이전트 기억",
+} as const;
 
 /** 공개 요약에 쓰는 글자 수. */
 const chars = (text: string) => [...text].length;
@@ -150,6 +164,23 @@ export function orgToolsRouter({
    * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다.
    * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
    */
+  /**
+   * `Idempotency-Key` header의 같은 호출 키. 없으면 `undefined`, 계약 밖이면 `false`.
+   * 같은 키에 다른 입력이 오는지는 검사한 입력의 digest로 가린다.
+   */
+  const operationOf = (
+    req: express.Request,
+    input: unknown
+  ): ToolOperation | undefined | false => {
+    const header = req.headers[idempotencyKeyHeader];
+    if (header === undefined) return undefined;
+    const key = idempotencyKeySchema.safeParse(header);
+    if (!key.success) return false;
+    return {
+      key: key.data,
+      digest: createHash("sha256").update(JSON.stringify(input)).digest("hex"),
+    };
+  };
   const respondWrite = <T, P extends ToolProblem>(
     res: express.Response,
     result: ToolWrite<T, P>,
@@ -211,16 +242,19 @@ export function orgToolsRouter({
     tool("send_message", async (req, res, run) => {
       const input = sendAgentMessageInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      const saved = await insertAgentMessage(db, run.id, input.data.body, {
-        source: { newId: randomUUID, now },
-        activity: toolActivity(
-          "send_message",
-          `Lead 대화에 답장 (${chars(input.data.body)}자)`
-        ),
-      });
-      if (!saved) return refuse(res, 401, "invalid_token");
-      hub.publish(...saved.events);
-      res.status(201).json(saved.message);
+      const operation = operationOf(req, input.data);
+      if (operation === false) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await insertAgentMessage(db, run, input.data.body, {
+          source,
+          activity: toolActivity(
+            "send_message",
+            `Lead 대화에 답장 (${chars(input.data.body)}자)`
+          ),
+          operation,
+        })
+      );
     })
   );
 
@@ -633,6 +667,45 @@ export function orgToolsRouter({
           ),
         })
       );
+    })
+  );
+
+  // 기억 범위의 조직·에이전트와 출처는 토큰의 실행 시도에서만 정한다. 입력은 조직 기억인지 자기 에이전트 기억인지뿐이다.
+  router.post(
+    orgToolPaths.write_memory,
+    tool("write_memory", async (req, res, run) => {
+      const input = writeMemoryInputSchema.safeParse(req.body);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      const operation = operationOf(req, input.data);
+      if (operation === false) return refuse(res, 422, "invalid_input");
+      respondWrite(
+        res,
+        await writeMemory(db, run, input.data, {
+          source,
+          activity: toolActivity(
+            "write_memory",
+            `${scopeLabel[input.data.scope]} 쓰기 (${chars(input.data.content)}자)`
+          ),
+          operation,
+        })
+      );
+    })
+  );
+
+  router.get(
+    orgToolPaths.recall_memory,
+    tool("recall_memory", async (req, res, run) => {
+      const input = recallMemoryInputSchema.safeParse(req.query);
+      if (!input.success) return refuse(res, 422, "invalid_input");
+      const { scope, query, limit } = input.data;
+      const found = await dbMemory(db, source).recall(
+        memoryScopeOf(run, scope),
+        { text: query, limit }
+      );
+      const summary = `${scopeLabel[scope]} 회수: ${found.length}개${query ? `, 검색어 ${chars(query)}자` : ""}${limit === memoryRecallLimitDefault ? "" : `, 최대 ${limit}개`}`;
+      if (!(await recordRead(run, "recall_memory", summary)))
+        return refuse(res, 401, "invalid_token");
+      res.json(found);
     })
   );
 

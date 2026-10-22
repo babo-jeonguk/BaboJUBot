@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import {
+  idempotentOrgTools,
   resultArtifactsMax,
   type AddWorkerResult,
   resultSummaryMaxLength,
@@ -99,6 +101,8 @@ export function describeWakeReason(reason: WakeReason): string {
       return `사용자의 연구 지도 편집: ${reason.summary}`;
     case "result_changes_requested":
       return `제출한 결과에 수정 요청: ${quote(reason.note)}`;
+    case "heartbeat":
+      return "heartbeat 간격이 지남";
   }
 }
 
@@ -121,6 +125,21 @@ const leadReplySteps = (
   },
   { do: "send_message", body },
 ];
+
+/** 사건 없이 heartbeat로만 깨어났을 때: 맥락을 읽고 활동만 남긴다. 사용자에게 답장하지 않는다. */
+export const heartbeatScript: Script = {
+  steps: [
+    { do: "read_context" },
+    {
+      do: "emit",
+      activity: {
+        type: "progress",
+        text: "heartbeat로 깨어나 맥락을 확인했습니다. 새 사건이 없어 할 일이 없습니다.",
+      },
+    },
+  ],
+  summary: () => "heartbeat: 새 사건이 없습니다.",
+};
 
 /** 사용자 메시지에 대한 Lead의 기본 시나리오: 맥락을 읽고 받은 깨우기 사유를 모두 짚어 답장한다. */
 export const leadReplyScript: Script = {
@@ -182,6 +201,7 @@ export function parseGoalMessage(
  *   승인 정책이 켜져 있으면 승인 요청이 되었다고 알린다. 작업자 추가 요청의 결정에는 답장만 한다.
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
  *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
+ * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
  */
 export function demoLeadScript(request: RunRequest): Script {
@@ -270,6 +290,8 @@ export function demoLeadScript(request: RunRequest): Script {
         ].join("\n")
       ),
     };
+  if (request.wakeReasons.every((r) => r.kind === "heartbeat"))
+    return heartbeatScript;
   return leadReplyScript;
 }
 
@@ -450,7 +472,7 @@ function resultSummary(
  * - 작업을 맡음: 작업을 읽고 착수해 Markdown 산출물을 남기고, 템플릿의 첫 종류로 연구 노드를 만들어 작업을 연결한 뒤
  *   자기 보고와 함께 완료한다. 착수가 거부되면 그 작업은 거기서 멈춘다.
  * - 사용자의 작업 댓글: 그 작업에 댓글로 답한다. 작업 상태는 바꾸지 않는다.
- * - 에이전트 메시지·하위 작업 완료: 읽었다는 활동만 남긴다.
+ * - 에이전트 메시지·하위 작업 완료·heartbeat: 읽었다는 활동만 남긴다.
  */
 export function demoWorkerScript(request: RunRequest): Script {
   const steps: ScriptStep[] = [{ do: "read_context" }];
@@ -597,6 +619,14 @@ export function createScriptedRuntime({
         sent: [],
         calls: [],
       };
+      // 효과를 남기는 호출의 키: 받은 깨우기 묶음과 그 안에서 몇 번째 효과인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
+      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·기억을 되풀이하지 않는다. 새 깨우기가 섞이면 키가 달라진다.
+      const bundle = createHash("sha256")
+        .update(request.wakeReasons.map((r) => r.wakeId).join(","))
+        .digest("hex")
+        .slice(0, 32);
+      let effects = 0;
+      const once = () => ({ idempotencyKey: `${bundle}-${effects++}` });
       try {
         const queue = [...script.steps];
         for (let step = queue.shift(); step; step = queue.shift()) {
@@ -609,7 +639,9 @@ export function createScriptedRuntime({
               await emit(step.activity);
               break;
             case "send_message":
-              state.sent.push(await tools.sendMessage(step.body(state)));
+              state.sent.push(
+                await tools.sendMessage(step.body(state), once())
+              );
               break;
             case "read_message":
               await tools.getMessage(step.messageId(state));
@@ -620,7 +652,12 @@ export function createScriptedRuntime({
                 const output = await tools.call(
                   step.tool,
                   step.input?.(state),
-                  step.params?.(state)
+                  step.params?.(state),
+                  (idempotentOrgTools as readonly OrgToolName[]).includes(
+                    step.tool
+                  )
+                    ? once()
+                    : {}
                 );
                 state.calls.push({ tool: step.tool, ok: true, output });
               } catch (error) {

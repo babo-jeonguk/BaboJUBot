@@ -20,6 +20,7 @@ import {
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
   updateApprovalPolicyInputSchema,
+  updateHeartbeatInputSchema,
   type RuntimeAdapter,
   type StreamFrame,
   type StreamScope,
@@ -60,6 +61,7 @@ import { sendOwnerMessage } from "./conversation.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
+import { HeartbeatScheduler, updateHeartbeat } from "./heartbeat.ts";
 import { createOrganization, updateApprovalPolicy } from "./organizations.ts";
 import { editResearchMapAsOwner } from "./research-map.ts";
 import { decideResult } from "./results.ts";
@@ -86,12 +88,16 @@ export type ServerOptions = {
   now?: () => Date;
   /** 하네스 라이브러리 디렉터리. 기본은 저장소의 `harness/`. */
   harnessDir?: string;
+  /** 지난 heartbeat를 확인하는 간격(ms). heartbeat 간격은 분 단위이므로 그보다 충분히 짧다. */
+  heartbeatPollMs?: number;
 };
 
 export type RunningServer = {
   url: string;
   /** 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. 테스트 helper. */
   drain: () => Promise<void>;
+  /** 주입한 시계의 지금 시각으로 지난 heartbeat를 처리한다. 테스트 helper(서버는 주기적으로 스스로 확인한다). */
+  tickHeartbeats: () => Promise<void>;
   /** 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다. */
   close: () => Promise<void>;
 };
@@ -104,6 +110,7 @@ export async function startServer({
   runtime = createScriptedRuntime(),
   now = () => new Date(),
   harnessDir = defaultHarnessDir,
+  heartbeatPollMs = 5_000,
 }: ServerOptions): Promise<RunningServer> {
   const hub = new EventHub();
   let url = "";
@@ -113,6 +120,13 @@ export async function startServer({
     runtime,
     now,
     toolsBaseUrl: () => url,
+  });
+  const heartbeats = new HeartbeatScheduler({
+    db,
+    hub,
+    dispatcher,
+    now,
+    pollMs: heartbeatPollMs,
   });
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
@@ -218,6 +232,32 @@ export async function startServer({
         res.json(result.value);
       }
     );
+
+  /**
+   * 에이전트 heartbeat 설정 변경. 사용자만 바꾸며 조직 도구가 없다. 변경 뒤의 에이전트 상세를 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
+   * 일시정지 중에도 바꿀 수 있고, 최종 완료·중단 조직은 409 `organization_closed`다.
+   */
+  app.put(
+    "/api/organizations/:id/agents/:agentId/heartbeat",
+    async (req, res) => {
+      const input = updateHeartbeatInputSchema.safeParse(req.body);
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const result = await updateHeartbeat(
+        { db, hub, now },
+        req.params.id,
+        req.params.agentId,
+        input.data
+      );
+      if (result.kind === "not_found") return notFound(res);
+      if (result.kind === "organization_closed") return closed(res);
+      res.json(result.agent);
+    }
+  );
 
   app.get("/api/organizations/:id/events", async (req, res) => {
     if (!(await findOrganization(db, req.params.id))) return notFound(res);
@@ -598,7 +638,9 @@ export async function startServer({
   const address = server.address() as net.AddressInfo;
   url = `http://${host}:${address.port}`;
   try {
+    // 남은 실행 시도 복구가 끝난 뒤에 heartbeat가 새 깨우기를 만든다.
     await dispatcher.start();
+    heartbeats.start();
   } catch (error) {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -608,7 +650,9 @@ export async function startServer({
   return {
     url,
     drain: () => dispatcher.drain(),
+    tickHeartbeats: () => heartbeats.tick(),
     close: async () => {
+      await heartbeats.close();
       await dispatcher.close();
       for (const client of wss.clients) client.terminate();
       wss.close();

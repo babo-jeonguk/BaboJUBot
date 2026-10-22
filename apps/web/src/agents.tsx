@@ -1,4 +1,5 @@
 import {
+  heartbeatIntervalMaxMinutes,
   isClosedStage,
   type Agent,
   type AgentDetail,
@@ -17,6 +18,7 @@ import {
   useControlAgent,
   useOrganization,
   useRun,
+  useUpdateHeartbeat,
 } from "./api.ts";
 import {
   abbr,
@@ -157,6 +159,7 @@ export function AgentDetailPage() {
         </div>
       </div>
       <AgentControl orgId={orgId} agent={a} stage={stage} />
+      <HeartbeatSettings orgId={orgId} agent={a} stage={stage} />
       <InstructionCopies key={a.id} orgId={orgId} agentId={a.id} />
       <section aria-label="최근 실행 시도">
         <h2 className="mb-2 text-sm font-semibold text-slate-600">
@@ -226,6 +229,134 @@ function AgentControl({
           control.error.code === "organization_closed"
             ? "조직이 이미 끝나 명령을 받지 않았습니다."
             : "명령을 처리하지 못했습니다. 상태는 그대로이니 다시 시도하세요."}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * 에이전트 heartbeat: 켜기·끄기와 간격(분), 서버가 정한 다음 heartbeat. 고치는 동안의 값은 지역 상태에 두고,
+ * 고치지 않을 때는 서버 값(다른 탭의 변경 포함)을 그대로 보인다. 저장에 실패하면 입력을 그대로 두고 저장된 값을 함께 알린다.
+ * 다음 heartbeat는 서버가 깨우기를 만드는 예정 시각이며 실행 시도 시작을 보장하지 않는다.
+ */
+function HeartbeatSettings({
+  orgId,
+  agent,
+  stage,
+}: {
+  orgId: string;
+  agent: AgentDetail;
+  stage: LifecycleStage | undefined;
+}) {
+  const update = useUpdateHeartbeat(orgId, agent.id);
+  const saved = agent.heartbeat;
+  const [draft, setDraft] = useState<{
+    enabled: boolean;
+    interval: string;
+  } | null>(null);
+  const enabled = draft?.enabled ?? saved.enabled;
+  const interval = draft?.interval ?? String(saved.intervalMinutes);
+  const minutes = Number(interval);
+  const valid =
+    /^\d+$/.test(interval) &&
+    minutes >= 1 &&
+    minutes <= heartbeatIntervalMaxMinutes;
+  const changed =
+    enabled !== saved.enabled ||
+    (valid && minutes !== saved.intervalMinutes) ||
+    !valid;
+  const closed = stage !== undefined && isClosedStage(stage);
+  const held = agent.paused || stage === "paused";
+  const edit = (next: Partial<{ enabled: boolean; interval: string }>) =>
+    setDraft({ enabled, interval, ...next });
+  const save = () =>
+    update.mutate(
+      { enabled, intervalMinutes: minutes },
+      { onSuccess: () => setDraft(null) }
+    );
+  const status = () => {
+    if (closed) return "끝난 조직이라 heartbeat로 깨우지 않습니다.";
+    if (!saved.enabled || !saved.nextAt) return "꺼져 있습니다.";
+    const next = `다음 heartbeat ${formatTime(saved.nextAt)} · ${saved.intervalMinutes}분마다`;
+    return held
+      ? `${next}. 일시정지 중이라 깨우지 않으며, 재개 뒤 예정이 지나 있으면 한 번 깨웁니다.`
+      : next;
+  };
+  return (
+    <section aria-label="Heartbeat" className="card mb-6 p-4 text-sm">
+      <h2 className="mb-1 text-sm font-semibold">Heartbeat</h2>
+      <p className="mb-3 text-xs text-slate-500">
+        사건이 없어도 간격마다 이 에이전트를 깨웁니다. 깨울 때 기다리는 다른
+        깨우기가 있으면 실행 시도 하나로 합칩니다.
+      </p>
+      <form
+        className="flex flex-wrap items-end gap-x-4 gap-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (valid && changed && !closed) save();
+        }}
+      >
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-brand-600"
+            checked={enabled}
+            disabled={closed || update.isPending}
+            onChange={(e) => edit({ enabled: e.currentTarget.checked })}
+          />
+          <span className="font-medium">heartbeat 켜기</span>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-slate-500">간격(분)</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={heartbeatIntervalMaxMinutes}
+            step={1}
+            className="w-28 rounded-xl bg-slate-50 px-3 py-1.5 text-sm tabular-nums ring-1 ring-slate-200 transition outline-none focus:bg-white focus:ring-2 focus:ring-brand-400 disabled:opacity-60 aria-[invalid=true]:ring-rose-400"
+            value={interval}
+            disabled={closed || update.isPending}
+            aria-invalid={!valid}
+            aria-describedby="heartbeat-interval-help"
+            onChange={(e) => edit({ interval: e.currentTarget.value })}
+          />
+        </label>
+        <button
+          type="submit"
+          className="btn-soft"
+          disabled={closed || update.isPending || !valid || !changed}
+        >
+          {update.isPending ? "저장하는 중…" : "저장"}
+        </button>
+        {draft && !update.isPending && (
+          <button
+            type="button"
+            className="text-xs text-slate-500 hover:text-slate-800"
+            onClick={() => {
+              setDraft(null);
+              update.reset();
+            }}
+          >
+            되돌리기
+          </button>
+        )}
+      </form>
+      <p id="heartbeat-interval-help" className="mt-2 text-xs text-slate-500">
+        {valid
+          ? `Role 기본값 ${saved.roleDefaultMinutes}분. 켜거나 간격을 바꾸면 그때부터 간격만큼 뒤에 깨웁니다.`
+          : `간격은 1분부터 ${heartbeatIntervalMaxMinutes}분(7일)까지 분 단위 정수로 적으세요.`}
+      </p>
+      <p role="status" className="mt-2 text-xs text-slate-700">
+        {status()}
+      </p>
+      {!update.isPending && update.isError && (
+        <p role="alert" className="mt-2 text-xs text-rose-600">
+          {update.error instanceof ApiError &&
+          update.error.code === "organization_closed"
+            ? "조직이 이미 끝나 설정을 바꾸지 않았습니다."
+            : `저장하지 못했습니다. 저장된 설정(${saved.enabled ? `켜짐, ${saved.intervalMinutes}분` : "꺼짐"})은 그대로이니 다시 시도하세요.`}
         </p>
       )}
     </section>
@@ -523,6 +654,11 @@ function WakeReasonRow({
         "결과 수정 요청",
         link(`/orgs/${orgId}/results/${reason.submissionId}`, "제출 보기"),
         reason.note
+      );
+    case "heartbeat":
+      return row(
+        "Heartbeat",
+        <span className="text-slate-700">heartbeat 간격이 지났습니다</span>
       );
   }
 }

@@ -20,6 +20,7 @@ import {
   planAgentMessage,
   planInterrupt,
   planRunFinish,
+  planRunInterruption,
   planRunStart,
   type InterruptPlan,
   type NewRun,
@@ -44,6 +45,11 @@ import {
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
 import {
+  toolWriteOnce,
+  type ToolOperation,
+  type ToolWrite,
+} from "./tool-calls.ts";
+import {
   insertEvent,
   lockRunningRunOfAgent,
   lockOrganization,
@@ -51,6 +57,7 @@ import {
   isUuid,
   lockRunningRun,
   toAgent,
+  toAgentHeartbeat,
   toEvent,
   toOrganization,
   type Executor,
@@ -67,6 +74,7 @@ import {
   researchMapEdits,
   resultSubmissions,
   runs,
+  runWakes,
   taskComments,
   tasks,
   wakes,
@@ -200,6 +208,13 @@ export async function claimNextRun(
       .returning({ id: wakes.id });
     if (claimed.length !== ids.length)
       throw new Error("wake bundle changed while claiming a run");
+    await tx.insert(runWakes).values(
+      ids.map((wakeId) => ({
+        organizationId: plan.run.organizationId,
+        runId: plan.run.id,
+        wakeId,
+      }))
+    );
     const event = await insertEvent(tx, plan.event);
     return {
       run: plan.run,
@@ -241,36 +256,80 @@ export async function finishRun(
   });
 }
 
-const interruptedError =
-  "서버가 실행 중에 멈춰 이 실행 시도를 끝내지 못했습니다.";
+/**
+ * 서버가 멈춰 실행기 결과 없이 끝나는 실행 시도를 끝낸다(core `planRunInterruption`). 종료·깨우기 복원·Event는 한 transaction이며,
+ * 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`다. 서버 시작의 복구와 서버 종료 때 취소로 돌아온 실행 시도가 쓴다.
+ */
+export async function interruptRun(
+  db: Database,
+  runId: string,
+  source: Pick<RecordSource, "now">
+): Promise<Event | undefined> {
+  return db.transaction(async (tx) => {
+    const [run] = await tx
+      .select({
+        id: runs.id,
+        organizationId: runs.organizationId,
+        agentId: runs.agentId,
+        cancelReason: runs.cancelReason,
+        sessionBefore: runs.sessionBefore,
+      })
+      .from(runs)
+      .where(and(eq(runs.id, runId), eq(runs.status, "running")))
+      .for("update");
+    if (!run) return undefined;
+    const held = await tx
+      .select({ id: wakes.id, kind: wakes.kind })
+      .from(wakes)
+      .where(eq(wakes.runId, runId))
+      .orderBy(asc(wakes.seq));
+    const [pendingHeartbeat] = await tx
+      .select({ id: wakes.id })
+      .from(wakes)
+      .where(
+        and(
+          eq(wakes.agentId, run.agentId),
+          eq(wakes.kind, "heartbeat"),
+          isNull(wakes.runId)
+        )
+      );
+    const plan = planRunInterruption(
+      run,
+      { wakes: held, pendingHeartbeat: pendingHeartbeat !== undefined },
+      source
+    );
+    await tx
+      .update(runs)
+      .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
+      .where(eq(runs.id, runId));
+    if (plan.requeueWakeIds.length)
+      await tx
+        .update(wakes)
+        .set({ runId: null })
+        .where(
+          and(inArray(wakes.id, plan.requeueWakeIds), eq(wakes.runId, runId))
+        );
+    return insertEvent(tx, plan.event);
+  });
+}
 
 /**
- * 서버가 멈춰 실행 중으로 남은 실행 시도를 실패로 끝낸다. 실행 시도를 돌리는 서버 프로세스가 하나라는 전제다
- * (docs/architecture.md 패키지 구성). worker를 나누면 프로세스별 소유 기록이 필요하다. 그 실행 시도에 묶인 입력의 재처리는 #60에서 정한다.
- * 서버 시작 때 실행기를 부르기 전에 한 번 부른다.
+ * 서버가 멈춰 실행 중으로 남은 실행 시도를 `server_restart`로 끝내고 그 깨우기를 다시 대기시킨다(`interruptRun`).
+ * 실행 시도를 돌리는 서버 프로세스가 하나라는 전제다(docs/architecture.md 패키지 구성). worker를 나누면 프로세스별 소유 기록이 필요하다.
+ * 서버 시작 때 실행기를 부르기 전에 한 번 부른다. 실행 시도마다 따로 저장하므로 중간에 실패해도 다시 부르면 남은 것만 끝낸다.
  */
-export async function failInterruptedRuns(
+export async function recoverInterruptedRuns(
   db: Database,
   source: Pick<RecordSource, "now">
 ): Promise<Event[]> {
   const rows = await db
     .select({ id: runs.id })
     .from(runs)
-    .where(eq(runs.status, "running"));
+    .where(eq(runs.status, "running"))
+    .orderBy(asc(runs.seq));
   const finished: Event[] = [];
   for (const { id } of rows) {
-    const event = await finishRun(
-      db,
-      id,
-      {
-        stopReason: "failed",
-        error: interruptedError,
-        summary: null,
-        usage: null,
-        nextSession: null,
-      },
-      source
-    );
+    const event = await interruptRun(db, id, source);
     if (event) finished.push(event);
   }
   return finished;
@@ -365,30 +424,36 @@ export async function appendRunActivity(
   });
 }
 
-/** 조직 도구 메시지 보내기. 메시지와 도구 호출 요약을 종료와 직렬화한 한 transaction으로 남긴다. */
+/**
+ * 조직 도구 메시지 보내기. 메시지와 도구 호출 요약을 종료와 직렬화한 한 transaction으로 남긴다(`toolWrite`).
+ * 같은 호출 키를 주면 그 에이전트의 같은 키는 한 번만 보낸다. 서버 재시작 뒤 같은 깨우기를 다시 받은 실행 시도가 답장을 되풀이하지 않는다.
+ */
 export async function insertAgentMessage(
   db: Database,
-  runId: string,
+  run: ActiveRun,
   body: string,
-  options: { source: RecordSource; activity: PublicActivity }
-): Promise<{ message: ConversationMessage; events: Event[] } | undefined> {
-  return db.transaction(async (tx) => {
-    const run = await lockRunningRun(tx, runId);
-    if (!run) return undefined;
-    const plan = planAgentMessage(run, body, options.source);
-    await tx.insert(messages).values(messageRow(plan.message));
-    const created = await insertEvent(tx, plan.event);
-    const activity = await insertEvent(tx, {
-      organizationId: run.organizationId,
-      type: "run.activity",
-      payload: {
-        runId: run.id,
-        agentId: run.agentId,
-        activity: options.activity,
-      },
-    });
-    return { message: plan.message, events: [created, activity] };
-  });
+  options: {
+    source: RecordSource;
+    activity: PublicActivity;
+    operation?: ToolOperation;
+  }
+): Promise<ToolWrite<ConversationMessage, "idempotency_conflict">> {
+  return toolWriteOnce(
+    db,
+    run,
+    "send_message",
+    options.activity,
+    options.operation,
+    async (tx, locked) => {
+      const plan = planAgentMessage(locked, body, options.source);
+      await tx.insert(messages).values(messageRow(plan.message));
+      return {
+        kind: "ok",
+        value: plan.message,
+        events: [await insertEvent(tx, plan.event)],
+      };
+    }
+  );
 }
 
 /** 실행 시도 요청과 내 실행 맥락 조회가 같은 내용을 쓴다. 이 실행 시도까지 전달된 기록만 담는다. */
@@ -404,9 +469,7 @@ export async function loadRunContext(
     .where(eq(runs.id, runId));
   if (!row) return undefined;
   const { run, agent, organization } = row;
-  const wakeReasons = (await selectWakes(db, eq(wakes.runId, run.id))).map(
-    (w) => w.reason
-  );
+  const wakeReasons = (await selectRunWakes(db, run.id)).map((w) => w.reason);
   const [template] = await db
     .select({
       nodeKinds: flowTemplates.nodeKinds,
@@ -525,9 +588,7 @@ export async function findRunDetail(
     .where(and(eq(runs.organizationId, organizationId), eq(runs.id, runId)));
   if (!row) return undefined;
   const { usage, ...summary } = row;
-  const wakeReasons = (await selectWakes(db, eq(wakes.runId, runId))).map(
-    (w) => w.reason
-  );
+  const wakeReasons = (await selectRunWakes(db, runId)).map((w) => w.reason);
   const transcript = await db
     .select()
     .from(events)
@@ -569,6 +630,7 @@ export async function findAgentDetail(
     instructionsBundleVersion: instructionsBundleVersion(
       await selectInstructions(db, agentId)
     ),
+    heartbeat: toAgentHeartbeat(agent),
     recentRuns: recent,
   };
 }
@@ -599,10 +661,23 @@ async function selectInstructions(
     .orderBy(asc(instructionCopies.path));
 }
 
-/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집, 결과 수정 요청)에서 읽는다. */
+/** 실행 시도가 받은 깨우기. 서버 재시작으로 다시 대기한 깨우기도 받았던 실행 시도의 기록에 남는다. */
+const selectRunWakes = (db: Executor, runId: string) =>
+  selectWakes(
+    db,
+    inArray(
+      wakes.id,
+      db
+        .select({ id: runWakes.wakeId })
+        .from(runWakes)
+        .where(eq(runWakes.runId, runId))
+    )
+  );
+
+/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집, 결과 수정 요청)에서 읽는다. heartbeat는 가리키는 기록이 없다. */
 async function selectWakes(
   db: Executor,
-  where: ReturnType<typeof and>
+  where: ReturnType<typeof and> | ReturnType<typeof inArray>
 ): Promise<PendingWake[]> {
   const rows = await db
     .select({
@@ -724,6 +799,8 @@ async function selectWakes(
               submissionId: wake.resultSubmissionId!,
               note: resultNote!,
             };
+          case "heartbeat":
+            return { kind: wake.kind, wakeId };
         }
       })();
       return {
@@ -805,7 +882,7 @@ const runSummaryColumns = {
   startedAt: runs.startedAt,
   finishedAt: runs.finishedAt,
   // drizzle은 select 안의 열을 테이블 없이 쓰므로 상관 subquery는 이름을 직접 밝힌다.
-  wakeCount: sql<number>`(select count(*) from "wakes" where "wakes"."run_id" = "runs"."id")::int`,
+  wakeCount: sql<number>`(select count(*) from "run_wakes" where "run_wakes"."run_id" = "runs"."id")::int`,
 };
 
 const toRunSummary = (row: {

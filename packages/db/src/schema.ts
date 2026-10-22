@@ -3,8 +3,10 @@ import {
   approvalKinds,
   artifactFormats,
   approvalStatuses,
+  heartbeatIntervalMaxMinutes,
   instructionKinds,
   lifecycleStages,
+  memoryScopes,
   messageAuthors,
   messageDeliveries,
   researchMapOperations,
@@ -94,6 +96,21 @@ export const agents = pgTable(
     name: text("name").notNull(),
     /** 사용자가 이 에이전트를 일시정지했다. 사용자 제어 명령만 바꾸며 켜져 있으면 admission이 실행 시도를 시작하지 않는다. */
     paused: boolean("paused").notNull().default(false),
+    /** heartbeat 켜짐. 켜져 있을 때만 다음 heartbeat 예정 시각이 있다. 사용자 설정 변경만 바꾼다. */
+    heartbeatEnabled: boolean("heartbeat_enabled").notNull().default(false),
+    /** heartbeat 간격(분). 처음에는 Role의 기본 간격이다. */
+    heartbeatIntervalMinutes: integer("heartbeat_interval_minutes")
+      .notNull()
+      .default(60),
+    /** 에이전트가 생길 때 Role에서 받은 기본 heartbeat 간격(분). */
+    heartbeatDefaultMinutes: integer("heartbeat_default_minutes")
+      .notNull()
+      .default(60),
+    /** 다음 heartbeat 예정 시각. scheduler가 지난 예정을 처리하면 간격만큼 뒤로 옮긴다. */
+    heartbeatNextAt: timestamp("heartbeat_next_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -101,6 +118,16 @@ export const agents = pgTable(
   },
   (t) => [
     check("agents_role_check", sql`${t.role} in (${inList(agentRoles)})`),
+    check(
+      "agents_heartbeat_check",
+      sql`${t.heartbeatEnabled} = (${t.heartbeatNextAt} is not null)
+        and ${t.heartbeatIntervalMinutes} between 1 and ${sql.raw(String(heartbeatIntervalMaxMinutes))}
+        and ${t.heartbeatDefaultMinutes} between 1 and ${sql.raw(String(heartbeatIntervalMaxMinutes))}`
+    ),
+    // scheduler가 지난 heartbeat를 찾는다.
+    index("agents_heartbeat_due_idx")
+      .on(t.heartbeatNextAt)
+      .where(sql`${t.heartbeatEnabled}`),
     index("agents_organization_idx").on(t.organizationId),
     // 다른 기록이 (조직, 에이전트)로 참조해 다른 조직의 에이전트에 묶이지 않게 한다.
     unique("agents_organization_id_id_unique").on(t.organizationId, t.id),
@@ -146,7 +173,7 @@ export const instructionCopies = pgTable(
 
 /**
  * 실행 시도. 에이전트당 실행 중인 실행 시도는 하나뿐이다(부분 unique). 토큰은 digest만 저장한다.
- * 묶은 깨우기는 wakes.run_id가 가리킨다.
+ * 묶은 깨우기는 run_wakes가 기록하고, 지금 그 깨우기를 가진 실행 시도는 wakes.run_id가 가리킨다.
  */
 export const runs = pgTable(
   "runs",
@@ -794,7 +821,7 @@ export const resultSubmissionArtifacts = pgTable(
   ]
 );
 
-/** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채운다. */
+/** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채우고, heartbeat는 가리키는 기록이 없다. */
 const wakeSourceColumns = {
   owner_message: "message_id",
   approval_decision: "approval_id",
@@ -804,10 +831,16 @@ const wakeSourceColumns = {
   agent_to_agent_message: "agent_to_agent_message_id",
   research_map_edit: "map_edit_id",
   result_changes_requested: "result_submission_id",
-} as const satisfies Record<WakeKind, string>;
-const wakeKinds = Object.keys(wakeSourceColumns) as WakeKind[];
+} as const satisfies Record<Exclude<WakeKind, "heartbeat">, string>;
+const wakeKinds = [
+  ...Object.keys(wakeSourceColumns),
+  "heartbeat",
+] as WakeKind[];
 
-/** 깨우기 대기열. `run_id`가 없으면 대기 중이고, 실행 시도가 가져가면 그 실행 시도에 고정된다. */
+/**
+ * 깨우기 대기열. `run_id`가 없으면 대기 중이고, 실행 시도가 가져가면 그 실행 시도에 고정된다.
+ * 서버 재시작으로 끝난 실행 시도의 깨우기는 다시 대기하며(`run_id` 없음), 받았던 실행 시도는 run_wakes에 남는다.
+ */
 export const wakes = pgTable(
   "wakes",
   {
@@ -834,7 +867,9 @@ export const wakes = pgTable(
     check("wakes_kind_check", sql`${t.kind} in (${inList(wakeKinds)})`),
     check(
       "wakes_source_check",
-      sql`num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.resultSubmissionId}) = 1
+      sql`(${t.kind} = 'heartbeat'
+          and num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.resultSubmissionId}) = 0)
+        or num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.resultSubmissionId}) = 1
         and (${sql.raw(
           Object.entries(wakeSourceColumns)
             .map(
@@ -887,6 +922,11 @@ export const wakes = pgTable(
       .on(t.agentId, t.seq)
       .where(sql`${t.runId} is null`),
     index("wakes_run_idx").on(t.runId),
+    unique("wakes_organization_id_id_unique").on(t.organizationId, t.id),
+    // 에이전트마다 대기 중인 heartbeat 깨우기는 하나뿐이다. 지난 heartbeat는 쌓지 않고 합친다.
+    uniqueIndex("wakes_one_pending_heartbeat_per_agent")
+      .on(t.agentId)
+      .where(sql`${t.kind} = 'heartbeat' and ${t.runId} is null`),
     // 메시지 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_message_unique").on(t.messageId),
     // 승인 결정 하나는 깨우기 하나만 만든다.
@@ -903,6 +943,108 @@ export const wakes = pgTable(
     uniqueIndex("wakes_map_edit_unique").on(t.mapEditId),
     // 수정 요청 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_result_submission_unique").on(t.resultSubmissionId),
+  ]
+);
+
+/**
+ * 실행 시도가 받은 깨우기의 기록. 한 번 남으면 바뀌지 않는다. 서버 재시작으로 다시 대기한 깨우기는
+ * 다음 실행 시도에도 묶이므로 깨우기 하나가 여러 실행 시도에 남을 수 있다. 실행 시도 상세·대화 전달 경계가 이 기록을 읽는다.
+ */
+export const runWakes = pgTable(
+  "run_wakes",
+  {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    runId: uuid("run_id").notNull(),
+    wakeId: uuid("wake_id").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.runId, t.wakeId] }),
+    foreignKey({
+      columns: [t.organizationId, t.runId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.wakeId],
+      foreignColumns: [wakes.organizationId, wakes.id],
+    }),
+    index("run_wakes_wake_idx").on(t.wakeId),
+  ]
+);
+
+/**
+ * 조직 기억·에이전트 기억(Memory port 첫 판). `agent_id`는 에이전트 기억의 주인이며 조직 기억이면 없다.
+ * 범위와 출처(쓴 에이전트·실행 시도)는 같은 조직이어야 한다(복합 FK).
+ */
+export const memories = pgTable(
+  "memories",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    scope: text("scope", { enum: memoryScopes }).notNull(),
+    agentId: uuid("agent_id"),
+    content: text("content").notNull(),
+    sourceAgentId: uuid("source_agent_id").notNull(),
+    sourceRunId: uuid("source_run_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check(
+      "memories_scope_check",
+      sql`${t.scope} in (${inList(memoryScopes)})
+        and (${t.scope} = 'agent') = (${t.agentId} is not null)`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.agentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.sourceAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.sourceRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    index("memories_scope_idx").on(t.organizationId, t.agentId, t.seq),
+  ]
+);
+
+/**
+ * 같은 효과를 한 번만 남기는 조직 도구 호출(`Idempotency-Key`). 에이전트마다 키 하나에 처음 저장한 결과를 둔다.
+ * 효과와 같은 transaction에 남으므로, 효과가 commit되었으면 이 기록도 있다. 결과는 다시 처리할 수 있는 동안 지우지 않는다.
+ */
+export const toolOperations = pgTable(
+  "tool_operations",
+  {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    agentId: uuid("agent_id").notNull(),
+    key: text("key").notNull(),
+    tool: text("tool").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    result: jsonb("result").notNull(),
+    /** 처음 쓴 실행 시도. */
+    runId: uuid("run_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.agentId, t.key] }),
+    foreignKey({
+      columns: [t.organizationId, t.agentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.runId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
   ]
 );
 

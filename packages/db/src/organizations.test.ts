@@ -21,10 +21,14 @@ afterAll(async () => {
 });
 
 const plan = (name: string) =>
-  planOrganizationCreation({ name }, leadFiles, {
-    newId: randomUUID,
-    now: () => new Date(),
-  });
+  planOrganizationCreation(
+    { name },
+    { files: leadFiles },
+    {
+      newId: randomUUID,
+      now: () => new Date(),
+    }
+  );
 const leadFiles = ["AGENTS.md", "SOUL.md"].map((path) => ({
   path,
   content: `${path} 내용`,

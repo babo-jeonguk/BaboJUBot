@@ -106,6 +106,27 @@ export function describeEvent(event: Event, agentName: string): Described {
           ? `${runLabel(event.payload.runId)} 취소 요청. 함께 보낸 메시지는 다음 실행 시도가 받습니다`
           : "실행 중이 아니어서 취소할 실행 시도가 없었습니다. 메시지는 다음 실행 시도가 받습니다",
       };
+    case "agent.heartbeat_changed":
+      return {
+        icon: "⏱",
+        title: event.payload.enabled
+          ? `사용자가 ${agentName}의 heartbeat를 ${event.payload.intervalMinutes}분 간격으로 켰습니다`
+          : `사용자가 ${agentName}의 heartbeat를 껐습니다`,
+        detail: event.payload.nextAt
+          ? `다음 heartbeat ${formatTime(event.payload.nextAt)}`
+          : undefined,
+      };
+    case "agent.heartbeat":
+      return {
+        icon: "⏱",
+        title: `${agentName} heartbeat`,
+        detail: `${event.payload.wakeId ? "깨우기를 남겼습니다" : "기다리는 heartbeat 깨우기가 있어 합쳤습니다"}. 다음 heartbeat ${formatTime(event.payload.nextAt)}`,
+      };
+    case "memory.written":
+      return {
+        icon: "🧠",
+        title: `${agentName}가 ${event.payload.scope === "organization" ? "조직 기억" : "에이전트 기억"}을 썼습니다`,
+      };
     case "worker.added":
       return {
         icon: "➕",

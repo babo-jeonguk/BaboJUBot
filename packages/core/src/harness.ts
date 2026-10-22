@@ -22,6 +22,8 @@ export type HarnessLibraryContents = {
       skills: string[];
       /** 그 Role의 에이전트가 받을 지침 bundle: AGENTS.md, SOUL.md, skills/<name>/SKILL.md. */
       files: InstructionSourceFile[];
+      /** 그 Role의 에이전트가 받는 기본 heartbeat 간격(분). */
+      heartbeatMinutes: number;
     }
   >;
   templates: Map<string, FlowTemplateSnapshot>;

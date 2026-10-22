@@ -17,3 +17,5 @@ export * from "./results.ts";
 export * from "./inbox.ts";
 export * from "./workers.ts";
 export * from "./control.ts";
+export * from "./heartbeat.ts";
+export * from "./memories.ts";

@@ -34,6 +34,7 @@ import {
   type OrganizationCommand,
   type OrganizationDetail,
   type UpdateApprovalPolicyInput,
+  type UpdateHeartbeatInput,
   type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -343,6 +344,29 @@ export function useControlAgent(orgId: string, agentId: string) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.organization(orgId),
       });
+    },
+  });
+}
+
+/**
+ * 에이전트 heartbeat 설정 변경. 서버가 확정한 에이전트 상세(다음 heartbeat 포함)로만 화면을 바꾼다.
+ * 다른 탭은 `agent.heartbeat_changed` Event로 같은 에이전트를 다시 불러온다.
+ */
+export function useUpdateHeartbeat(orgId: string, agentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateHeartbeatInput) =>
+      request(
+        agentDetailSchema,
+        orgPath(orgId, `/agents/${encodeURIComponent(agentId)}/heartbeat`),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }
+      ),
+    onSuccess: (agent) => {
+      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
     },
   });
 }

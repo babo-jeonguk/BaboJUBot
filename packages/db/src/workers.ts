@@ -12,6 +12,7 @@ import {
 import { toApprovalSummary } from "./approvals.ts";
 import type { Database } from "./client.ts";
 import {
+  agentRow,
   agentNamesOf,
   insertEvent,
   instructionCopyRow,
@@ -58,10 +59,7 @@ export function addWorker(
       if (plan.kind === "added") {
         const [worker] = await tx
           .insert(agents)
-          .values({
-            ...plan.worker,
-            createdAt: new Date(plan.worker.createdAt),
-          })
+          .values(agentRow(plan.worker))
           .returning();
         await tx
           .insert(instructionCopies)

@@ -1,7 +1,6 @@
 import {
   approvalKindDecisions,
   type AddWorkerProposal,
-  type Agent,
   type AgentRole,
   type ApprovalDecision,
   type ApprovalStatus,
@@ -16,7 +15,7 @@ import {
   type ToolRefusalReason,
 } from "@babojubot/contracts";
 import type { HarnessLibraryContents } from "./harness.ts";
-import type { RecordSource } from "./organization.ts";
+import type { NewAgent, RecordSource } from "./organization.ts";
 import type { Wake } from "./run.ts";
 import { planWorker } from "./worker.ts";
 
@@ -70,6 +69,9 @@ export const toolRules: Record<OrgToolName, ToolRule> = {
   unlink_task_research_node: { roles: everyone, stages: ["researching"] },
   // 결과 제출은 Lead의 판단이다. 최종 완료는 사용자 결정뿐이라 도구가 없다.
   submit_result: { roles: leadOnly, stages: ["researching"] },
+  // 기억은 연구 기록이 아니라 에이전트가 다시 꺼내 쓰는 맥락이다. 단계와 상관없이 자기 조직·자기 에이전트 범위에서만 쓴다.
+  write_memory: { roles: everyone, stages: anyStage },
+  recall_memory: { roles: everyone, stages: anyStage },
 };
 
 export type ToolCheck = { ok: true } | { ok: false; reason: ToolRefusalReason };
@@ -139,6 +141,7 @@ export function buildInitialResearchProposal(
       label: role.label,
       count: member.count,
       files: role.files,
+      heartbeatMinutes: role.heartbeatMinutes,
     });
   }
   const template = library.templates.get(input.template);
@@ -225,7 +228,7 @@ export type ApprovalDecisionPlan = {
   note: string | null;
   decidedAt: string;
   stage: LifecycleStage;
-  workers: Agent[];
+  workers: NewAgent[];
   copies: InstructionCopy[];
   template: FlowTemplateCopy | null;
   wake: Wake;
@@ -260,7 +263,7 @@ export function planApprovalDecision(
   const createdAt = now().toISOString();
   const { organizationId } = approval;
   const approved = input.decision === "approve";
-  const workers: Agent[] = [];
+  const workers: NewAgent[] = [];
   const copies: InstructionCopy[] = [];
   let template: FlowTemplateCopy | null = null;
   let nextStage = stage;

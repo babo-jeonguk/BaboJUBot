@@ -3,12 +3,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   agentRoleSchema,
+  defaultHeartbeatMinutes,
   flowTemplateDefinitionSchema,
+  heartbeatIntervalSchema,
   harnessNameSchema,
   type HarnessLibrary,
   type InstructionSourceFile,
 } from "@babojubot/contracts";
 import {
+  type AgentRoleSource,
   contentDigest,
   decodeInstructionText,
   instructionPaths,
@@ -30,6 +33,8 @@ const roleManifestSchema = z.strictObject({
   label: z.string().trim().min(1),
   agent: agentRoleSchema,
   skills: z.array(harnessNameSchema),
+  /** 이 Role의 에이전트가 받는 기본 heartbeat 간격(분). 사용자가 에이전트마다 조정한다. */
+  heartbeatMinutes: heartbeatIntervalSchema.default(defaultHeartbeatMinutes),
 });
 
 /**
@@ -138,12 +143,10 @@ export function listHarnessLibrary(
   };
 }
 
-/** 새 Lead가 받을 Role·Soul(·Skill) 원본. 라이브러리에 Lead Role이 없으면 조직을 만들지 않는다. */
-export function leadInstructionsOf(
-  contents: HarnessLibraryContents
-): InstructionSourceFile[] {
+/** 새 Lead가 받을 Role·Soul(·Skill) 원본과 기본 heartbeat 간격. 라이브러리에 Lead Role이 없으면 조직을 만들지 않는다. */
+export function leadRoleOf(contents: HarnessLibraryContents): AgentRoleSource {
   const role = contents.roles.get(leadHarnessRole);
   if (!role || role.agent !== "lead")
     throw new Error(`하네스 roles/${leadHarnessRole}: Lead Role이 없습니다`);
-  return role.files;
+  return { files: role.files, heartbeatMinutes: role.heartbeatMinutes };
 }

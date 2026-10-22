@@ -1,12 +1,17 @@
 import type {
   Agent,
+  AgentHeartbeat,
   Event,
   InstructionCopy,
   NewEvent,
   Organization,
   Task,
 } from "@babojubot/contracts";
-import { acceptsToolCalls, type RunCancellation } from "@babojubot/core";
+import {
+  acceptsToolCalls,
+  type NewAgent,
+  type RunCancellation,
+} from "@babojubot/core";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
@@ -64,9 +69,31 @@ export const organizationRow = ({
   createdAt: new Date(organization.createdAt),
 });
 export const toAgent = ({
-  paused: _paused,
-  ...row
-}: typeof agents.$inferSelect): Agent => withIsoTime(row);
+  id,
+  organizationId,
+  role,
+  name,
+  createdAt,
+}: typeof agents.$inferSelect): Agent =>
+  withIsoTime({ id, organizationId, role, name, createdAt });
+/** 새 에이전트 행. heartbeat는 꺼져 있고 간격은 Role의 기본 간격이다. */
+export const agentRow = ({
+  heartbeatMinutes,
+  ...agent
+}: NewAgent): typeof agents.$inferInsert => ({
+  ...agent,
+  heartbeatIntervalMinutes: heartbeatMinutes,
+  heartbeatDefaultMinutes: heartbeatMinutes,
+  createdAt: new Date(agent.createdAt),
+});
+export const toAgentHeartbeat = (
+  row: typeof agents.$inferSelect
+): AgentHeartbeat => ({
+  enabled: row.heartbeatEnabled,
+  intervalMinutes: row.heartbeatIntervalMinutes,
+  roleDefaultMinutes: row.heartbeatDefaultMinutes,
+  nextAt: row.heartbeatNextAt?.toISOString() ?? null,
+});
 export const toEvent = ({
   agentId: _agentId,
   runId: _runId,

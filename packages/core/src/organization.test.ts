@@ -16,7 +16,7 @@ const deps = {
 describe("planOrganizationCreation", () => {
   const plan = planOrganizationCreation(
     { name: "음성 인식 오류 분석" },
-    leadFiles,
+    { files: leadFiles, heartbeatMinutes: 90 },
     deps
   );
 
@@ -47,7 +47,7 @@ describe("planOrganizationCreation", () => {
     ]);
   });
 
-  it("gives the organization exactly one dedicated Research Lead", () => {
+  it("gives the organization exactly one dedicated Research Lead with its Role's heartbeat interval", () => {
     expect(plan.agents).toEqual([
       {
         id: "lead-1",
@@ -55,6 +55,7 @@ describe("planOrganizationCreation", () => {
         role: "lead",
         name: "Research Lead",
         createdAt: "2026-10-16T00:00:00.000Z",
+        heartbeatMinutes: 90,
       },
     ]);
   });

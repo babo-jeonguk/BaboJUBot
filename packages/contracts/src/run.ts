@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { flowKindSchema, instructionFileSchema } from "./harness.ts";
+import { agentHeartbeatSchema } from "./heartbeat.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
@@ -8,19 +9,29 @@ import { researchMapOperationSchema } from "./research-map.ts";
 // Control Plane → Agent Runtime 실행 시도 계약(docs/architecture.md).
 // 요청 · 진행(공개 활동) · 종료 · 제어(취소)의 네 면을 따로 정의한다.
 
-/** 실행 시도 상태. `running` 밖의 값은 모두 종료이며 종료 사유와 같은 말을 쓴다. */
+/**
+ * 실행 시도 상태. `running` 밖의 값은 모두 종료이며 종료 사유와 같은 말을 쓴다.
+ * `server_restart`는 실행기가 아니라 Control Plane이 정한다. 서버가 멈춰(종료·crash) 끝내지 못한 실행 시도이며,
+ * 그 실행 시도가 받은 깨우기는 다시 대기해 다음 실행 시도가 받는다.
+ */
 export const runStatuses = [
   "running",
   "completed",
   "failed",
   "cancelled",
+  "server_restart",
 ] as const;
 export const runStatusSchema = z.enum(runStatuses);
 export type RunStatus = z.infer<typeof runStatusSchema>;
 
+/** 실행기가 돌려주는 종료 사유. */
 export const runStopReasons = ["completed", "failed", "cancelled"] as const;
 export const runStopReasonSchema = z.enum(runStopReasons);
 export type RunStopReason = z.infer<typeof runStopReasonSchema>;
+
+/** 저장한 실행 시도 종료 사유: 실행기의 종료 사유와 서버 재시작. */
+export const runEndReasonSchema = runStatusSchema.exclude(["running"]);
+export type RunEndReason = z.infer<typeof runEndReasonSchema>;
 
 /** 에이전트 상태. 첫 판은 실행 중인 실행 시도가 있는지만 구별한다. */
 export const agentStatuses = ["idle", "running"] as const;
@@ -92,6 +103,8 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     submissionId: z.uuid(),
     note: z.string(),
   }),
+  /** 켜 둔 heartbeat의 간격이 지났다. 가리키는 기록은 없다. */
+  z.object({ kind: z.literal("heartbeat"), wakeId: z.uuid() }),
 ]);
 export type WakeReason = z.infer<typeof wakeReasonSchema>;
 export type WakeKind = WakeReason["kind"];
@@ -247,6 +260,7 @@ export const runSummarySchema = z.object({
   status: runStatusSchema,
   /** 사용자 제어가 요청한 취소. 실행 중이면 실행기가 정리하는 중이고, 끝나면 `cancelled`다. */
   cancelReason: runCancelReasonSchema.nullable(),
+  /** 이 실행 시도가 받은 깨우기 수. 서버 재시작으로 끝나 다시 대기한 깨우기도 이 실행 시도의 기록에 남는다. */
   wakeCount: z.number().int().positive(),
   summary: z.string().nullable(),
   error: z.string().nullable(),
@@ -267,6 +281,7 @@ export const agentDetailSchema = z.object({
   paused: z.boolean(),
   /** 현재 사본에서 정한 지침 bundle 버전. 다음 실행 시도가 받는다. */
   instructionsBundleVersion: z.string().nullable(),
+  heartbeat: agentHeartbeatSchema,
   recentRuns: z.array(runSummarySchema),
 });
 export type AgentDetail = z.infer<typeof agentDetailSchema>;

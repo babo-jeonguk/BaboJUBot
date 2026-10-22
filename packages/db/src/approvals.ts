@@ -23,6 +23,7 @@ import {
 import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
+  agentRow,
   agentNamesOf,
   insertEvent,
   instructionCopyRow,
@@ -215,11 +216,7 @@ export async function decideApproval(
     if (!decided)
       throw new Error(`approval ${approvalId} changed under the lock`);
     if (plan.workers.length)
-      await tx
-        .insert(agents)
-        .values(
-          plan.workers.map((a) => ({ ...a, createdAt: new Date(a.createdAt) }))
-        );
+      await tx.insert(agents).values(plan.workers.map(agentRow));
     if (plan.copies.length)
       await tx
         .insert(instructionCopies)

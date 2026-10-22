@@ -7,7 +7,7 @@ import type {
   ToolRefusalReason,
 } from "@babojubot/contracts";
 import { checkToolCall, toolRefusedEvent } from "@babojubot/core";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   insertEvent,
@@ -15,7 +15,7 @@ import {
   lockRunningRun,
   type Executor,
 } from "./rows.ts";
-import { organizations, runs } from "./schema.ts";
+import { organizations, runs, toolOperations } from "./schema.ts";
 
 // 조직 도구 호출의 공통 검사와 쓰기 틀. 모든 쓰기는 조직 행 → 실행 시도 행 순서로 잠그고(제어 명령의 취소 요청과 같은 순서),
 // 잠금 아래에서 실행 시도가 아직 도구를 쓸 수 있는지와 Role·단계 규칙을 다시 확인한다. 같은 조직의 도구 쓰기는 조직 행 잠금으로 직렬화된다.
@@ -92,15 +92,50 @@ export async function toolWrite<T, P extends string>(
   run: ActiveRunRef,
   tool: OrgToolName,
   activity: PublicActivity,
-  write: (
-    tx: Executor,
-    locked: LockedRun,
-    org: typeof organizations.$inferSelect
-  ) => Promise<
-    | { kind: "ok"; value: T; events: Event[]; woken?: string[] }
-    | { kind: "invalid"; problem: P }
-  >
+  write: ToolWriteBody<T, P>
 ): Promise<ToolWrite<T, P>> {
+  // 같은 호출 키가 없으면 `idempotency_conflict`는 생기지 않는다.
+  return writeTool(db, run, tool, activity, write, undefined) as Promise<
+    ToolWrite<T, P>
+  >;
+}
+
+/** 같은 효과를 한 번만 남기는 호출의 키와 입력 digest. 키는 에이전트마다 따로다(contracts `idempotentOrgTools`). */
+export type ToolOperation = { key: string; digest: string };
+
+/**
+ * `toolWrite`에 같은 호출 키를 더한 쓰기. 그 에이전트가 같은 키로 이미 쓴 결과가 있으면 다시 쓰지 않고 그 결과를 돌려주며,
+ * 다른 도구나 다른 입력이면 `idempotency_conflict`다. 키 기록은 효과와 같은 transaction이고, 같은 키의 동시 호출은 조직 행 잠금으로 직렬화된다.
+ * 서버 재시작 뒤 같은 깨우기를 다시 받은 실행 시도는 새 실행 시도·토큰이어도 같은 키면 앞 실행 시도의 결과를 받는다.
+ */
+export async function toolWriteOnce<T, P extends string>(
+  db: Database,
+  run: ActiveRunRef,
+  tool: OrgToolName,
+  activity: PublicActivity,
+  operation: ToolOperation | undefined,
+  write: ToolWriteBody<T, P>
+): Promise<ToolWrite<T, P | "idempotency_conflict">> {
+  return writeTool(db, run, tool, activity, write, operation);
+}
+
+type ToolWriteBody<T, P extends string> = (
+  tx: Executor,
+  locked: LockedRun,
+  org: typeof organizations.$inferSelect
+) => Promise<
+  | { kind: "ok"; value: T; events: Event[]; woken?: string[] }
+  | { kind: "invalid"; problem: P }
+>;
+
+async function writeTool<T, P extends string>(
+  db: Database,
+  run: ActiveRunRef,
+  tool: OrgToolName,
+  activity: PublicActivity,
+  write: ToolWriteBody<T, P>,
+  operation: ToolOperation | undefined
+): Promise<ToolWrite<T, P | "idempotency_conflict">> {
   return db.transaction(async (tx) => {
     // 실행 시도의 조직은 바뀌지 않는다. 잠그기 전에 읽어도 된다.
     const [owner] = await tx
@@ -114,13 +149,50 @@ export async function toolWrite<T, P extends string>(
     const gate = await checkOrRefuse(tx, locked, org.stage, tool);
     if (!gate.ok)
       return { kind: "refused", reason: gate.reason, events: [gate.event] };
+    const summaryOf = (activity: PublicActivity) =>
+      insertEvent(tx, {
+        organizationId: locked.organizationId,
+        type: "run.activity",
+        payload: { runId: locked.id, agentId: locked.agentId, activity },
+      });
+    if (operation) {
+      const [done] = await tx
+        .select()
+        .from(toolOperations)
+        .where(
+          and(
+            eq(toolOperations.agentId, locked.agentId),
+            eq(toolOperations.key, operation.key)
+          )
+        );
+      if (done) {
+        if (done.tool !== tool || done.requestDigest !== operation.digest)
+          return { kind: "invalid", problem: "idempotency_conflict" };
+        const replayed = await summaryOf({
+          source: "control_plane",
+          activity: {
+            type: "org_tool",
+            tool,
+            summary:
+              "같은 호출 키로 이미 남긴 결과를 다시 돌려줌 (새 기록 없음)",
+          },
+        });
+        return { kind: "ok", value: done.result as T, events: [replayed] };
+      }
+    }
     const result = await write(tx, locked, org);
     if (result.kind !== "ok") return result;
-    const summary = await insertEvent(tx, {
-      organizationId: locked.organizationId,
-      type: "run.activity",
-      payload: { runId: locked.id, agentId: locked.agentId, activity },
-    });
+    if (operation)
+      await tx.insert(toolOperations).values({
+        organizationId: locked.organizationId,
+        agentId: locked.agentId,
+        key: operation.key,
+        tool,
+        requestDigest: operation.digest,
+        result: result.value,
+        runId: locked.id,
+      });
+    const summary = await summaryOf(activity);
     return { ...result, events: [...result.events, summary] };
   });
 }

@@ -31,9 +31,24 @@ const library: HarnessLibraryContents = {
   roles: new Map([
     [
       "researcher",
-      { label: "문헌 조사자", agent: "worker", skills: [], files },
+      {
+        label: "문헌 조사자",
+        agent: "worker",
+        skills: [],
+        files,
+        heartbeatMinutes: 30,
+      },
     ],
-    ["lead", { label: "Research Lead", agent: "lead", skills: [], files }],
+    [
+      "lead",
+      {
+        label: "Research Lead",
+        agent: "lead",
+        skills: [],
+        files,
+        heartbeatMinutes: 60,
+      },
+    ],
   ]),
   templates: new Map(),
 };
@@ -41,6 +56,7 @@ const proposal: AddWorkerProposal = {
   role: "researcher",
   label: "문헌 조사자",
   files,
+  heartbeatMinutes: 30,
 };
 
 describe("buildAddWorkerProposal", () => {

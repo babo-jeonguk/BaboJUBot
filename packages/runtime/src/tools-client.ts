@@ -1,4 +1,5 @@
 import {
+  idempotencyKeyHeader,
   orgToolErrorSchema,
   orgToolMethods,
   orgToolOutputSchemas,
@@ -25,14 +26,21 @@ export type OrgToolOutput<T extends OrgToolName> = ReturnType<
 >;
 
 export type OrgToolClient = {
-  /** 도구 하나를 부른다. GET이 아닌 도구는 `input`을 본문으로 보낸다. 거부되면 {@link OrgToolError}. */
+  /**
+   * 도구 하나를 부른다. GET은 `input`을 query string으로, 그 밖은 본문으로 보낸다. 거부되면 {@link OrgToolError}.
+   * `idempotencyKey`는 같은 효과를 한 번만 남기는 호출 키다(contracts `idempotentOrgTools`).
+   */
   call<T extends OrgToolName>(
     tool: T,
     input?: unknown,
-    params?: Record<string, string>
+    params?: Record<string, string>,
+    options?: { idempotencyKey?: string }
   ): Promise<OrgToolOutput<T>>;
   getRunContext(): Promise<RunContextResponse>;
-  sendMessage(body: string): Promise<ConversationMessage>;
+  sendMessage(
+    body: string,
+    options?: { idempotencyKey?: string }
+  ): Promise<ConversationMessage>;
   getMessage(messageId: string): Promise<ConversationMessage>;
 };
 
@@ -51,18 +59,26 @@ export function createOrgToolClient({
   async function call<T extends OrgToolName>(
     tool: T,
     input?: unknown,
-    params: Record<string, string> = {}
+    params: Record<string, string> = {},
+    { idempotencyKey }: { idempotencyKey?: string } = {}
   ): Promise<OrgToolOutput<T>> {
     const path = Object.entries(params).reduce<string>(
       (p, [key, value]) => p.replace(`:${key}`, encodeURIComponent(value)),
       orgToolPaths[tool]
     );
     const post = orgToolMethods[tool] !== "GET";
-    const res = await fetch(new URL(orgToolsBasePath + path, baseUrl), {
+    const url = new URL(orgToolsBasePath + path, baseUrl);
+    if (!post && input !== undefined)
+      for (const [key, value] of Object.entries(
+        input as Record<string, string | number>
+      ))
+        url.searchParams.set(key, String(value));
+    const res = await fetch(url, {
       method: orgToolMethods[tool],
       headers: {
         authorization: `Bearer ${token}`,
         ...(post ? { "content-type": "application/json" } : {}),
+        ...(idempotencyKey ? { [idempotencyKeyHeader]: idempotencyKey } : {}),
       },
       body: post ? JSON.stringify(input ?? {}) : undefined,
       signal,
@@ -81,7 +97,7 @@ export function createOrgToolClient({
   return {
     call,
     getRunContext: () => call("get_run_context"),
-    sendMessage: (body) => call("send_message", { body }),
+    sendMessage: (body, options) => call("send_message", { body }, {}, options),
     getMessage: (messageId) => call("get_message", undefined, { messageId }),
   };
 }

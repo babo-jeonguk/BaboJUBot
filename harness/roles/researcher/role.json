@@ -1,5 +1,6 @@
 {
   "label": "연구원",
   "agent": "worker",
-  "skills": ["record-research-node"]
+  "skills": ["record-research-node"],
+  "heartbeatMinutes": 30
 }

@@ -569,7 +569,7 @@ describe("run activity", () => {
     ).toBe(404);
   });
 
-  it("cancels a running run on shutdown and waits for the runtime to settle", async () => {
+  it("cancels a running run on shutdown, waits for the runtime to settle, and keeps its wakes for the next start", async () => {
     const gate = createGate();
     t = await startTestServer({ runtime: holdFirstRun(gate) });
     const org = await createOrganization("종료 조직");
@@ -578,10 +578,12 @@ describe("run activity", () => {
 
     await t.stopServer();
 
-    const { listRuns, listConversation } = await import("@babojubot/db");
+    const { listAgentsWithPendingWakes, listRuns, listConversation } =
+      await import("@babojubot/db");
     expect((await listRuns(t.db, org.id)).map((r) => r.status)).toEqual([
-      "cancelled",
+      "server_restart",
     ]);
+    expect(await listAgentsWithPendingWakes(t.db)).toEqual([org.lead.id]);
     expect(
       (await listConversation(t.db, org.id, org.lead.id)).map((m) => m.author)
     ).toEqual(["owner"]);

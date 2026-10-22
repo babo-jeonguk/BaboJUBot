@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { addWorkerResultSchema, approvalSchema } from "./approval.ts";
 import { harnessLibrarySchema } from "./harness.ts";
+import { memoryEntryListSchema, memoryEntrySchema } from "./memory.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { organizationSchema } from "./organization.ts";
 import { resultSubmissionSchema } from "./result.ts";
@@ -61,6 +62,8 @@ export const orgToolNames = [
   "relink_task_research_node",
   "unlink_task_research_node",
   "submit_result",
+  "write_memory",
+  "recall_memory",
 ] as const;
 export const orgToolNameSchema = z.enum(orgToolNames);
 export type OrgToolName = (typeof orgToolNames)[number];
@@ -104,6 +107,8 @@ export const orgToolPaths = {
   relink_task_research_node: "/tasks/:taskId/research-node/relink",
   unlink_task_research_node: "/tasks/:taskId/research-node/unlink",
   submit_result: "/results",
+  write_memory: "/memories",
+  recall_memory: "/memories",
 } as const satisfies Record<OrgToolName, string>;
 
 /** 읽기 도구는 GET, 기록을 남기는 도구는 POST, 기존 기록의 일부 필드를 고치는 도구는 PATCH. */
@@ -137,6 +142,8 @@ export const orgToolMethods = {
   relink_task_research_node: "POST",
   unlink_task_research_node: "POST",
   submit_result: "POST",
+  write_memory: "POST",
+  recall_memory: "GET",
 } as const satisfies Record<OrgToolName, "GET" | "POST" | "PATCH">;
 
 export const orgToolOutputSchemas = {
@@ -169,7 +176,26 @@ export const orgToolOutputSchemas = {
   relink_task_research_node: taskSchema,
   unlink_task_research_node: taskSchema,
   submit_result: resultSubmissionSchema,
+  write_memory: memoryEntrySchema,
+  recall_memory: memoryEntryListSchema,
 } as const satisfies Record<OrgToolName, z.ZodType>;
+
+/**
+ * 같은 호출을 다시 보내도 효과가 한 번만 남는 쓰기 도구. 호출에 `Idempotency-Key` header를 주면 그 에이전트의 같은 키는
+ * 처음 저장한 결과를 그대로 돌려주고 기록·Event를 다시 남기지 않는다. 서버 재시작 뒤 같은 깨우기를 다시 받은 실행 시도가
+ * 이미 남긴 답장·기억을 되풀이하지 않게 한다. 같은 키로 다른 도구나 다른 입력을 보내면 409 `idempotency_conflict`다.
+ * 키는 효과 하나를 가리키도록 호출하는 쪽이 정하며, 실행 시도 ID처럼 다시 시도할 때 바뀌는 값으로 정하면 중복을 막지 못한다.
+ */
+export const idempotentOrgTools = [
+  "send_message",
+  "write_memory",
+] as const satisfies readonly OrgToolName[];
+export const idempotencyKeyHeader = "idempotency-key";
+export const idempotencyKeySchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[\x21-\x7e]+$/);
 
 /** Role 또는 생애주기 단계 규칙이 도구 호출을 거부한 이유. */
 export const toolRefusalReasons = ["role", "stage"] as const;
@@ -188,6 +214,7 @@ export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
  * 422 `invalid_input`, 주 연결 순환(자기 자신이나 후손을 주 부모로)은 409 `primary_cycle`, 이미 다른 주 부모가 있는 노드의
  * 주 부모 지정은 409 `primary_parent_exists`, 이미 다른 노드에 연결된 작업의 연결은 409 `task_already_linked`,
  * 폐기된 노드의 편집(폐기 취소 제외)·폐기된 노드로의 새 연결은 409 `node_discarded`.
+ * 같은 `Idempotency-Key`로 다른 도구·입력을 보내면 409 `idempotency_conflict`({@link idempotentOrgTools}).
  */
 export const orgToolErrorCodes = [
   "invalid_token",
@@ -204,6 +231,7 @@ export const orgToolErrorCodes = [
   "primary_parent_exists",
   "task_already_linked",
   "node_discarded",
+  "idempotency_conflict",
 ] as const;
 export type OrgToolErrorCode = (typeof orgToolErrorCodes)[number];
 export const orgToolErrorSchema = z.object({

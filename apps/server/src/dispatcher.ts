@@ -11,11 +11,12 @@ import type { RunCancellation } from "@babojubot/core";
 import {
   appendRunActivity,
   claimNextRun,
-  failInterruptedRuns,
   findRunCancelReason,
   finishRun,
+  interruptRun,
   listAgentsWithPendingWakes,
   loadRunContext,
+  recoverInterruptedRuns,
   type ClaimedRun,
   type Database,
 } from "@babojubot/db";
@@ -50,9 +51,10 @@ export class RunDispatcher {
   readonly #pumps = new Map<string, Promise<void>>();
   readonly #kickedAgain = new Set<string>();
   readonly #active = new Map<string, AbortController>();
+  /** 저장하지 못한 종료. `server_restart`는 서버 종료로 실행기가 취소되어 돌아온 실행 시도다(`interruptRun`). */
   readonly #pendingFinishes = new Map<
     string,
-    { runId: string; result: RunResult }
+    { runId: string; result: RunResult | "server_restart" }
   >();
   readonly #recovery = new AbortController();
   #closed = false;
@@ -71,9 +73,14 @@ export class RunDispatcher {
     this.#toolsBaseUrl = options.toolsBaseUrl;
   }
 
-  /** 이전 프로세스가 남긴 실행 중 실행 시도를 실패로 끝내고, 대기 중인 깨우기가 있는 에이전트를 깨운다. */
+  /**
+   * 이전 프로세스가 실행 중으로 남긴 실행 시도를 `server_restart`로 끝내 그 깨우기를 다시 대기시키고,
+   * 대기 중인 깨우기가 있는 에이전트를 깨운다. 실행기를 부르기 전에 복구를 끝낸다.
+   */
   async start(): Promise<void> {
-    for (const event of await failInterruptedRuns(this.#db, { now: this.#now }))
+    for (const event of await recoverInterruptedRuns(this.#db, {
+      now: this.#now,
+    }))
       this.#hub.publish(event);
     for (const agentId of await listAgentsWithPendingWakes(this.#db))
       this.kick(agentId);
@@ -141,7 +148,10 @@ export class RunDispatcher {
     throw new Error("wake queue did not drain");
   }
 
-  /** 새 실행 시도를 받지 않고, 진행 중인 실행 시도를 취소해 실행기가 정리를 끝낼 때까지 기다린다. */
+  /**
+   * 새 실행 시도를 받지 않고, 진행 중인 실행 시도를 취소해 실행기가 정리를 끝낼 때까지 기다린다.
+   * 취소로 돌아온 실행 시도는 `server_restart`로 끝나고 그 깨우기는 다시 대기해 다음 서버 시작 때 처리된다.
+   */
   async close(): Promise<void> {
     this.#closed = true;
     this.#recovery.abort();
@@ -251,19 +261,33 @@ export class RunDispatcher {
     } finally {
       this.#active.delete(run.id);
     }
-    this.#pendingFinishes.set(run.agentId, { runId: run.id, result });
+    const shutDown =
+      controller.signal.aborted &&
+      (controller.signal.reason as RunCancel | undefined)?.reason ===
+        "server_shutdown";
+    this.#pendingFinishes.set(run.agentId, {
+      runId: run.id,
+      // 서버 종료로 끝까지 하지 못한 실행 시도는 받은 깨우기를 다음 실행 시도에 다시 넘긴다. 실행기가 끝을 냈으면 그 결과다.
+      result:
+        shutDown && result.stopReason === "cancelled"
+          ? "server_restart"
+          : result,
+    });
     await this.#settle(run.agentId);
   }
 
   /**
    * 종료 결과를 저장한다. 저장이 계속 실패하면 실행 시도가 실행 중으로 남아 에이전트가 막히므로 몇 번 다시 시도한다.
    * 그래도 실패하면 dispatcher가 같은 결과 저장을 backoff 뒤 다시 시도한다.
-   * DB 장애가 서버 종료까지 이어지면 다음 시작 때 `failInterruptedRuns`가 끝낸다.
+   * DB 장애가 서버 종료까지 이어지면 다음 시작 때 `recoverInterruptedRuns`가 끝낸다.
    */
-  async #finish(runId: string, result: RunResult) {
+  async #finish(runId: string, result: RunResult | "server_restart") {
+    const source = { now: this.#now };
     for (let attempt = 1; ; attempt++) {
       try {
-        return await finishRun(this.#db, runId, result, { now: this.#now });
+        return result === "server_restart"
+          ? await interruptRun(this.#db, runId, source)
+          : await finishRun(this.#db, runId, result, source);
       } catch (error) {
         if (attempt >= 3) throw error;
         console.error(`[runs] run ${runId} finish failed, retrying`, error);

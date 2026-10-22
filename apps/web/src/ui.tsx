@@ -62,12 +62,14 @@ export const runStatusLabel: Record<RunStatus, string> = {
   completed: "완료",
   failed: "실패",
   cancelled: "취소됨",
+  server_restart: "서버 재시작",
 };
 const runStatusStyle: Record<RunStatus, [string, string]> = {
   running: ["bg-brand-50 text-brand-700", "bg-brand-500 animate-pulse"],
   completed: ["bg-emerald-50 text-emerald-700", "bg-emerald-500"],
   failed: ["bg-rose-50 text-rose-700", "bg-rose-500"],
   cancelled: ["bg-slate-100 text-slate-600", "bg-slate-400"],
+  server_restart: ["bg-amber-50 text-amber-800", "bg-amber-500"],
 };
 
 /** 사용자 제어가 실행 시도를 취소한 사유. 어느 범위의 명령이었는지 이름으로 보인다. */
