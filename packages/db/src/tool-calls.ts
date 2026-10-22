@@ -15,10 +15,10 @@ import {
   lockRunningRun,
   type Executor,
 } from "./rows.ts";
-import { organizations } from "./schema.ts";
+import { organizations, runs } from "./schema.ts";
 
-// 조직 도구 호출의 공통 검사와 쓰기 틀. 모든 쓰기는 실행 중인 실행 시도 행 → 조직 행 순서로 잠그고,
-// 잠금 아래에서 Role·단계 규칙을 다시 확인한다. 같은 조직의 도구 쓰기는 조직 행 잠금으로 직렬화된다.
+// 조직 도구 호출의 공통 검사와 쓰기 틀. 모든 쓰기는 조직 행 → 실행 시도 행 순서로 잠그고(제어 명령의 취소 요청과 같은 순서),
+// 잠금 아래에서 실행 시도가 아직 도구를 쓸 수 있는지와 Role·단계 규칙을 다시 확인한다. 같은 조직의 도구 쓰기는 조직 행 잠금으로 직렬화된다.
 
 export type ActiveRunRef = { id: string; agentRole: AgentRole };
 /** 잠근 실행 시도와 그 에이전트의 Role. 도구가 쓰는 기록의 조직·작성자·실행 시도는 여기서만 정한다. */
@@ -49,7 +49,7 @@ async function checkOrRefuse(
 }
 
 const lockRun = async (tx: Executor, run: ActiveRunRef) => {
-  const locked = await lockRunningRun(tx, run.id, "share");
+  const locked = await lockRunningRun(tx, run.id);
   return locked && { ...locked, role: run.agentRole };
 };
 
@@ -83,7 +83,10 @@ export type ToolWrite<T, P extends string> =
   | { kind: "refused"; reason: ToolRefusalReason; events: Event[] }
   | { kind: "invalid"; problem: P };
 
-/** 조직 도구 쓰기의 공통 틀: 실행 중인 실행 시도와 그 조직 행을 잠그고, 단계 규칙을 다시 확인한 뒤 쓴다. */
+/**
+ * 조직 도구 쓰기의 공통 틀: 조직 행과 실행 시도 행을 잠그고, 실행 시도가 끝나거나 취소를 요청받지 않았는지와 단계 규칙을 다시 확인한 뒤 쓴다.
+ * 실행 시도 행을 먼저 잠그면 조직 행을 잠근 채 실행 시도에 취소를 요청하는 제어 명령과 교착한다.
+ */
 export async function toolWrite<T, P extends string>(
   db: Database,
   run: ActiveRunRef,
@@ -99,9 +102,15 @@ export async function toolWrite<T, P extends string>(
   >
 ): Promise<ToolWrite<T, P>> {
   return db.transaction(async (tx) => {
+    // 실행 시도의 조직은 바뀌지 않는다. 잠그기 전에 읽어도 된다.
+    const [owner] = await tx
+      .select({ organizationId: runs.organizationId })
+      .from(runs)
+      .where(eq(runs.id, run.id));
+    if (!owner) return { kind: "run_finished" };
+    const org = (await lockOrganization(tx, owner.organizationId))!;
     const locked = await lockRun(tx, run);
     if (!locked) return { kind: "run_finished" };
-    const org = (await lockOrganization(tx, locked.organizationId))!;
     const gate = await checkOrRefuse(tx, locked, org.stage, tool);
     if (!gate.ok)
       return { kind: "refused", reason: gate.reason, events: [gate.event] };

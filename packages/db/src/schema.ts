@@ -11,6 +11,7 @@ import {
   researchNodeStatuses,
   researchNodeWorkStatuses,
   resultSubmissionStatuses,
+  runCancelReasons,
   runStatuses,
   taskStatuses,
   type ApprovalProposal,
@@ -58,12 +59,19 @@ export const organizations = pgTable(
     completionCriteria: text("completion_criteria"),
     /** 승인 정책 `작업자 추가`. 켜져 있으면 Lead의 작업자 추가가 승인 요청이 된다. 사용자 제어 명령만 바꾼다. */
     addWorkerApproval: boolean("add_worker_approval").notNull().default(false),
+    /** 일시정지 전 단계. 일시정지 중에만 있고 재개하면 이 단계로 돌아간다. */
+    pausedFrom: text("paused_from", { enum: lifecycleStages }),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
     }).notNull(),
   },
   (t) => [
+    check(
+      "organizations_paused_from_check",
+      sql`(${t.stage} = 'paused') = (${t.pausedFrom} is not null)
+        and ${t.pausedFrom} not in ('paused', 'completed', 'stopped')`
+    ),
     check(
       "organizations_goal_check",
       sql`(${t.goal} is null) = (${t.completionCriteria} is null)`
@@ -84,6 +92,8 @@ export const agents = pgTable(
       .references(() => organizations.id),
     role: text("role", { enum: agentRoles }).notNull(),
     name: text("name").notNull(),
+    /** 사용자가 이 에이전트를 일시정지했다. 사용자 제어 명령만 바꾸며 켜져 있으면 admission이 실행 시도를 시작하지 않는다. */
+    paused: boolean("paused").notNull().default(false),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -148,6 +158,8 @@ export const runs = pgTable(
       .references(() => organizations.id),
     agentId: uuid("agent_id").notNull(),
     status: text("status", { enum: runStatuses }).notNull(),
+    /** 사용자 제어가 요청한 취소. 요청한 순간 토큰이 닫히고, 실행기가 정리를 끝내면 `cancelled`로 끝난다. */
+    cancelReason: text("cancel_reason", { enum: runCancelReasons }),
     tokenDigest: text("token_digest").notNull().unique(),
     instructionsBundleVersion: text("instructions_bundle_version"),
     sessionBefore: jsonb("session_before").$type<SessionState>(),
@@ -163,6 +175,11 @@ export const runs = pgTable(
   },
   (t) => [
     check("runs_status_check", sql`${t.status} in (${inList(runStatuses)})`),
+    check(
+      "runs_cancel_reason_check",
+      sql`${t.cancelReason} in (${inList(runCancelReasons)})
+        and (${t.cancelReason} is null or ${t.status} in ('running', 'cancelled'))`
+    ),
     check(
       "runs_finished_check",
       sql`(${t.status} = 'running') = (${t.finishedAt} is null)`

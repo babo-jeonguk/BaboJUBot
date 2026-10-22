@@ -50,6 +50,13 @@
       "when": 1792606735647,
       "tag": "0006_add_worker_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792656386845,
+      "tag": "0007_pause_stop",
+      "breakpoints": true
     }
   ]
 }

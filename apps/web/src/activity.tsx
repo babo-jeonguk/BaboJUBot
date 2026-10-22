@@ -16,6 +16,9 @@ import {
 
 type Described = { icon: string; title: string; detail?: string };
 
+const cancelledRuns = (count: number) =>
+  count ? `, 실행 시도 ${count}개 취소 요청` : "";
+
 /** Event 하나를 화면 문장으로. 공개 기록에 있는 값만 보이며 내용을 추측하지 않는다. */
 export function describeEvent(event: Event, agentName: string): Described {
   switch (event.type) {
@@ -66,6 +69,42 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "⚙",
         title: `사용자가 승인 정책 “작업자 추가”를 ${event.payload.policy.addWorker ? "켰습니다" : "껐습니다"}`,
+      };
+    case "organization.paused":
+      return {
+        icon: "⏸",
+        title: "사용자가 조직을 일시정지했습니다",
+        detail: `${stageLabel[event.payload.from]}에서 멈춤${cancelledRuns(event.payload.cancelledRunIds.length)}. 재개하면 이 단계로 돌아갑니다`,
+      };
+    case "organization.resumed":
+      return {
+        icon: "▶",
+        title: "조직을 재개했습니다",
+        detail: `${stageLabel[event.payload.stage]}로 돌아감. 그동안 쌓인 깨우기를 전달합니다`,
+      };
+    case "organization.stopped":
+      return {
+        icon: "⏹",
+        title: "사용자가 조직을 중단했습니다",
+        detail: `${stageLabel[event.payload.from]}에서 중단${cancelledRuns(event.payload.cancelledRunIds.length)}. 되돌릴 수 없습니다`,
+      };
+    case "agent.paused":
+      return {
+        icon: "⏸",
+        title: `사용자가 ${agentName}를 일시정지했습니다`,
+        detail: event.payload.runId
+          ? `${runLabel(event.payload.runId)} 취소 요청`
+          : undefined,
+      };
+    case "agent.resumed":
+      return { icon: "▶", title: `사용자가 ${agentName}를 재개했습니다` };
+    case "agent.interrupted":
+      return {
+        icon: "⤵",
+        title: `사용자가 ${agentName}에게 중단하고 반영을 요청했습니다`,
+        detail: event.payload.runId
+          ? `${runLabel(event.payload.runId)} 취소 요청. 함께 보낸 메시지는 다음 실행 시도가 받습니다`
+          : "실행 중이 아니어서 취소할 실행 시도가 없었습니다. 메시지는 다음 실행 시도가 받습니다",
       };
     case "worker.added":
       return {

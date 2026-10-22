@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-/** 조직 생애주기. 중단은 어느 단계에서든 갈 수 있다(docs/architecture.md). */
+/**
+ * 조직 생애주기. 일시정지·중단은 최종 완료 전 어느 단계에서든 걸 수 있고, 일시정지는 재개하면 직전 단계로 돌아간다.
+ * 최종 완료와 중단은 되돌릴 수 없는 끝이다(docs/architecture.md).
+ */
 export const lifecycleStages = [
   "goal_setting",
   "planning",
@@ -13,6 +16,21 @@ export const lifecycleStages = [
 ] as const;
 export const lifecycleStageSchema = z.enum(lifecycleStages);
 export type LifecycleStage = z.infer<typeof lifecycleStageSchema>;
+
+/** 끝난 단계. 제어 명령(일시정지·재개·중단)을 받지 않는다. */
+export const closedStages = [
+  "completed",
+  "stopped",
+] as const satisfies readonly LifecycleStage[];
+export const isClosedStage = (stage: LifecycleStage) =>
+  (closedStages as readonly LifecycleStage[]).includes(stage);
+
+/** 조직 제어 명령: 일시정지·재개·중단. 사용자만 내리며 조직 도구가 없다. */
+export const organizationCommands = ["pause", "resume", "stop"] as const;
+export type OrganizationCommand = (typeof organizationCommands)[number];
+/** 에이전트 제어 명령: 일시정지·재개. 조직 제어와 따로 저장한다. */
+export const agentCommands = ["pause", "resume"] as const;
+export type AgentCommand = (typeof agentCommands)[number];
 
 export const agentRoles = ["lead", "worker"] as const;
 export const agentRoleSchema = z.enum(agentRoles);
@@ -61,6 +79,8 @@ export const organizationSchema = z.object({
   goal: z.string().nullable(),
   completionCriteria: z.string().nullable(),
   approvalPolicy: approvalPolicySchema,
+  /** 일시정지 전 단계. 재개하면 이 단계로 돌아간다. 일시정지 중이 아니면 없다. */
+  pausedFrom: lifecycleStageSchema.nullable(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 export type Organization = z.infer<typeof organizationSchema>;

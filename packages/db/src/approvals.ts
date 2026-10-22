@@ -11,6 +11,7 @@ import type {
 import {
   buildInitialResearchProposal,
   planApprovalDecision,
+  planDecisionStage,
   planGoalRecord,
   planInitialApprovalRequest,
   type HarnessLibraryContents,
@@ -124,10 +125,18 @@ export function insertInitialApprovalRequest(
   );
 }
 
+/** 결정 결과. `resumed`면 일시정지 중이던 조직을 이 결정이 재개했고, `events`는 재개·결정 Event 순서다. */
 export type DecisionResult =
-  | { kind: "decided"; approval: Approval; event: Event; wake: Wake }
+  | {
+      kind: "decided";
+      approval: Approval;
+      events: Event[];
+      wake: Wake;
+      resumed: boolean;
+    }
   | { kind: "already_decided"; approval: Approval }
   | { kind: "decision_not_allowed" }
+  | { kind: "organization_closed" }
   | { kind: "not_found" };
 
 /**
@@ -135,6 +144,8 @@ export type DecisionResult =
  * 단계·작업자·각 작업자의 사본·조직 템플릿 사본·Lead 깨우기·Event를 같은 transaction에 저장한다.
  * 이미 결정한 요청은 같은 결정이라도 다시 적용하지 않는다. 다른 조직의 요청과 없는 요청은 같은 `not_found`다.
  * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 `decision_not_allowed`이며 아무것도 남기지 않는다.
+ * 초기 연구 승인 결정은 단계를 바꾸므로, 일시정지 중이면 조직을 재개하며 결정하고 중단된 조직에서는 `organization_closed`다.
+ * 작업자 추가 결정은 단계와 상관없이 받으며 일시정지를 풀지 않는다(#58).
  */
 export async function decideApproval(
   db: Database,
@@ -160,20 +171,24 @@ export async function decideApproval(
     if (!current) return { kind: "not_found" };
     if (current.status !== "pending")
       return { kind: "already_decided", approval: toApproval(current) };
-    if (
-      current.kind === "initial_research" &&
-      org.stage !== "awaiting_approval"
-    )
+    const decisionStage = planDecisionStage(
+      org,
+      current.kind === "initial_research" ? "awaiting_approval" : null
+    );
+    if (decisionStage.kind === "organization_closed")
+      return { kind: decisionStage.kind };
+    if (decisionStage.kind === "stage_mismatch")
       throw new Error(
         `pending approval ${approvalId} in an organization at ${org.stage}`
       );
+    const resumed = decisionStage.resumed;
 
     // 저장할 때 `kind`에 맞는 내용만 넣으므로 행의 kind·proposal 짝이 PendingApproval의 짝이다(toApproval과 같음).
     const plan = planApprovalDecision(
       current as typeof current & PendingApproval,
       input,
       {
-        stage: org.stage,
+        stage: resumed ? "awaiting_approval" : org.stage,
         agentNames:
           current.kind === "add_worker"
             ? await agentNamesOf(tx, organizationId)
@@ -216,17 +231,24 @@ export async function decideApproval(
       });
     await tx
       .update(organizations)
-      .set({ stage: plan.stage })
+      .set({
+        stage: plan.stage,
+        ...(resumed ? { pausedFrom: null } : {}),
+      })
       .where(eq(organizations.id, organizationId));
     await tx
       .insert(wakes)
       .values({ ...plan.wake, createdAt: new Date(plan.wake.createdAt) });
-    const event = await insertEvent(tx, plan.event);
+    const events = [
+      ...(resumed ? [await insertEvent(tx, resumed)] : []),
+      await insertEvent(tx, plan.event),
+    ];
     return {
       kind: "decided",
       approval: toApproval(decided),
-      event,
+      events,
       wake: plan.wake,
+      resumed: resumed !== null,
     };
   });
 }

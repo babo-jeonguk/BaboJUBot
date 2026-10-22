@@ -6,6 +6,7 @@ import type { Duplex } from "node:stream";
 import {
   addResearchLinkInputSchema,
   addTaskCommentInputSchema,
+  agentCommands,
   artifactContentMaxLength,
   changeResearchNodeParentInputSchema,
   createResearchNodeInputSchema,
@@ -15,6 +16,7 @@ import {
   decideApprovalInputSchema,
   decideResultInputSchema,
   eventStreamPath,
+  organizationCommands,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
   updateApprovalPolicyInputSchema,
@@ -40,6 +42,7 @@ import {
   listOrganizationEvents,
   listOrganizations,
   listResultSubmissions,
+  listRunningRuns,
   listRuns,
   listTasks,
   type Database,
@@ -52,6 +55,7 @@ import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
 import { decideApproval } from "./approvals.ts";
+import { controlAgent, controlOrganization } from "./control.ts";
 import { sendOwnerMessage } from "./conversation.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
@@ -170,6 +174,51 @@ export async function startServer({
     res.json(result.organization);
   });
 
+  /** 본문 없는 제어 명령의 입력 검사. 다른 입력 오류와 같은 응답 모양이다. */
+  const emptyCommand = (req: express.Request, res: express.Response) => {
+    const input = emptyCommandInputSchema.safeParse(req.body ?? {});
+    if (!input.success)
+      res
+        .status(422)
+        .json({ error: { code: "invalid_input", issues: input.error.issues } });
+    return input.success;
+  };
+
+  /**
+   * 조직 일시정지·재개·중단 제어 명령. 사용자만 내리며 조직 도구가 없다. 명령 뒤의 조직을 돌려주고, 이미 그 상태면 아무것도 남기지 않는다.
+   * 최종 완료·중단 조직은 409 `organization_closed`다(이미 중단한 조직의 중단은 그대로 둔다).
+   */
+  for (const command of organizationCommands)
+    app.post(`/api/organizations/:id/${command}`, async (req, res) => {
+      if (!emptyCommand(req, res)) return;
+      const result = await controlOrganization(
+        { db, hub, dispatcher },
+        req.params.id,
+        command
+      );
+      if (result.kind === "not_found") return notFound(res);
+      if (result.kind === "organization_closed") return closed(res);
+      res.json(result.value);
+    });
+
+  /** 에이전트 일시정지·재개 제어 명령. 명령 뒤의 에이전트 상세를 돌려준다. 끝난 조직의 에이전트는 409 `organization_closed`다. */
+  for (const command of agentCommands)
+    app.post(
+      `/api/organizations/:id/agents/:agentId/${command}`,
+      async (req, res) => {
+        if (!emptyCommand(req, res)) return;
+        const result = await controlAgent(
+          { db, hub, dispatcher },
+          req.params.id,
+          req.params.agentId,
+          command
+        );
+        if (result.kind === "not_found") return notFound(res);
+        if (result.kind === "organization_closed") return closed(res);
+        res.json(result.value);
+      }
+    );
+
   app.get("/api/organizations/:id/events", async (req, res) => {
     if (!(await findOrganization(db, req.params.id))) return notFound(res);
     res.json(
@@ -196,19 +245,24 @@ export async function startServer({
         .json({ error: { code: "invalid_input", issues: input.error.issues } });
       return;
     }
-    res
-      .status(201)
-      .json(
-        await sendOwnerMessage({ db, hub, dispatcher, now }, org, input.data)
-      );
+    const sent = await sendOwnerMessage(
+      { db, hub, dispatcher, now },
+      org,
+      input.data
+    );
+    if (sent.kind === "organization_closed") return closed(res);
+    res.status(201).json(sent.message);
   });
 
+  // `?status=running`은 최근 목록과 달리 진행 중 실행 시도를 모두 돌려준다(대시보드의 실행 중·취소 정리 중 개수).
   app.get("/api/organizations/:id/runs", async (req, res) => {
     if (!(await findOrganization(db, req.params.id))) return notFound(res);
     res.json(
-      await listRuns(db, req.params.id, {
-        agentId: queryString(req.query.agentId),
-      })
+      req.query.status === "running"
+        ? await listRunningRuns(db, req.params.id)
+        : await listRuns(db, req.params.id, {
+            agentId: queryString(req.query.agentId),
+          })
     );
   });
 
@@ -397,6 +451,7 @@ export async function startServer({
   /**
    * 승인 결정 제어 명령. 결정은 한 번만 할 수 있고, 이미 결정한 요청은 409 `already_decided`다.
    * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 422 `decision_not_allowed`다.
+   * 일시정지 중의 초기 연구 승인 결정은 조직을 재개하고, 중단된 조직의 초기 연구 승인 결정은 409 `organization_closed`다.
    */
   app.post(
     "/api/organizations/:id/approvals/:approvalId/decision",
@@ -423,6 +478,7 @@ export async function startServer({
         res.status(422).json({ error: { code: "decision_not_allowed" } });
         return;
       }
+      if (result.kind === "organization_closed") return closed(res);
       res.json(result.approval);
     }
   );
@@ -445,6 +501,7 @@ export async function startServer({
   /**
    * 결과 검토 제어 명령: 수정 요청 또는 최종 완료. 최종 완료는 이 사용자 명령으로만 일어나며 조직 도구가 없다.
    * 결정은 한 번만 할 수 있고, 이미 결정한 제출(재제출 뒤의 옛 제출 포함)은 409 `already_decided`다.
+   * 일시정지 중의 결정은 조직을 재개하고(최종 완료는 곧바로 완료), 중단된 조직은 409 `organization_closed`다.
    * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
    */
   app.post(
@@ -468,6 +525,7 @@ export async function startServer({
         res.status(409).json({ error: { code: "already_decided" } });
         return;
       }
+      if (result.kind === "organization_closed") return closed(res);
       res.json(result.submission);
     }
   );
@@ -565,6 +623,11 @@ const queryString = (value: unknown) =>
 
 function notFound(res: express.Response) {
   res.status(404).json({ error: { code: "not_found" } });
+}
+
+/** 최종 완료·중단 조직이라 받을 수 없는 제어 명령·결정. */
+function closed(res: express.Response) {
+  res.status(409).json({ error: { code: "organization_closed" } });
 }
 
 /**

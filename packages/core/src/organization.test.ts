@@ -28,6 +28,7 @@ describe("planOrganizationCreation", () => {
       goal: null,
       completionCriteria: null,
       approvalPolicy: { addWorker: false },
+      pausedFrom: null,
       createdAt: "2026-10-16T00:00:00.000Z",
     });
   });

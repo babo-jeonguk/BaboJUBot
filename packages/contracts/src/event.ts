@@ -102,6 +102,78 @@ export const approvalPolicyChangedEventSchema = z.object({
   }),
 });
 
+/**
+ * 사용자의 조직 일시정지 제어 명령. `from`은 일시정지 전 단계로 재개하면 돌아가고,
+ * `cancelledRunIds`는 취소를 요청한 진행 중 실행 시도다. 그 사이 생긴 깨우기는 남아 재개 때 전달된다.
+ */
+export const organizationPausedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("organization.paused"),
+  payload: z.object({
+    by: z.literal("owner"),
+    from: lifecycleStageSchema,
+    cancelledRunIds: z.array(z.uuid()),
+  }),
+});
+
+/**
+ * 조직 재개. `stage`는 돌아간 단계(일시정지 전 단계)다. 재개 명령 또는 일시정지 중 단계를 바꾸는 결정
+ * (초기 연구 승인·결과 검토)이 남기며, 결정이면 이어서 그 결정의 Event가 온다. 개별 에이전트 일시정지는 풀지 않는다.
+ */
+export const organizationResumedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("organization.resumed"),
+  payload: z.object({
+    by: z.literal("owner"),
+    stage: lifecycleStageSchema,
+  }),
+});
+
+/** 사용자의 조직 중단 제어 명령. 되돌릴 수 없다. `from`은 중단 전 단계, `cancelledRunIds`는 취소를 요청한 실행 시도다. */
+export const organizationStoppedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("organization.stopped"),
+  payload: z.object({
+    by: z.literal("owner"),
+    from: lifecycleStageSchema,
+    cancelledRunIds: z.array(z.uuid()),
+  }),
+});
+
+/** 사용자의 에이전트 일시정지 제어 명령. `runId`는 취소를 요청한 그 에이전트의 진행 중 실행 시도(없으면 없음)다. */
+export const agentPausedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.paused"),
+  payload: z.object({
+    by: z.literal("owner"),
+    agentId: z.uuid(),
+    runId: z.uuid().nullable(),
+  }),
+});
+
+/** 사용자의 에이전트 재개 제어 명령. 조직 일시정지는 풀지 않는다. */
+export const agentResumedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.resumed"),
+  payload: z.object({ by: z.literal("owner"), agentId: z.uuid() }),
+});
+
+/**
+ * `중단하고 반영`의 실행 시도 중단 제어 명령. 함께 보낸 메시지(`messageId`)는 따로 `message.created`로 남고 다음 실행 시도가 받는다.
+ * `runId`는 취소를 요청한 받는 에이전트의 진행 중 실행 시도이며, 실행 중이 아니었으면 없다. 이미 취소 정리 중인 실행 시도면
+ * 그 정리에 합류하므로 그 실행 시도이고, 취소 사유는 처음 것을 그대로 둔다.
+ */
+export const agentInterruptedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.interrupted"),
+  payload: z.object({
+    by: z.literal("owner"),
+    agentId: z.uuid(),
+    runId: z.uuid().nullable(),
+    messageId: z.uuid(),
+  }),
+});
+
 /** 승인 정책이 꺼져 있어 Lead의 작업자 추가가 곧바로 작업자를 만들었다. `role`은 사본을 복사한 하네스 Role이다. */
 export const workerAddedEventSchema = z.object({
   ...eventBase,
@@ -286,6 +358,12 @@ export const researchMapEditedEventSchema = z.object({
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
   approvalPolicyChangedEventSchema,
+  organizationPausedEventSchema,
+  organizationResumedEventSchema,
+  organizationStoppedEventSchema,
+  agentPausedEventSchema,
+  agentResumedEventSchema,
+  agentInterruptedEventSchema,
   goalRecordedEventSchema,
   workerAddedEventSchema,
   approvalRequestedEventSchema,

@@ -59,7 +59,7 @@
 | --- | --- | --- |
 | 작업·댓글·산출물·에이전트 간 메시지 입력과 조회 모양, 깨우기 사유·Event | [contracts/task.ts](../../packages/contracts/src/task.ts), run.ts `wakeReasonSchema`, event.ts, 도구 이름·경로·오류 코드는 tools.ts | 작업 API |
 | 깨울 에이전트(부모 담당자·생성자·담당자·수신자, 자기 자신 제외)·착수/완료 권한·중복 완료 | [core/task.ts](../../packages/core/src/task.ts); 단계 규칙은 core/approval.ts `toolRules` | [core](../../packages/core/src/task.test.ts), 작업 API |
-| 같은 조직 참조 확인·기록과 깨우기·Event의 한 transaction·조건부 완료 | [db/tasks.ts](../../packages/db/src/tasks.ts), [db/tool-calls.ts](../../packages/db/src/tool-calls.ts) `toolWrite`(실행 시도→조직 잠금·단계 재확인); 복합 FK는 schema·migrations | 작업 API의 교차 조직·중복 완료 |
+| 같은 조직 참조 확인·기록과 깨우기·Event의 한 transaction·조건부 완료 | [db/tasks.ts](../../packages/db/src/tasks.ts), [db/tool-calls.ts](../../packages/db/src/tool-calls.ts) `toolWrite`(조직→실행 시도 잠금·취소·단계 재확인); 복합 FK는 schema·migrations | 작업 API의 교차 조직·중복 완료 |
 | 깨우기 사유 읽기·실행 맥락의 팀 | db/runs.ts `selectWakes`·`loadRunContext` | 작업 API, 실행 API |
 | 작업 도구 HTTP·거부 코드·commit 뒤 깨운 에이전트 촉진 | server/tools.ts `respondWrite`; 사용자 댓글은 [server/tasks.ts](../../apps/server/src/tasks.ts)·app.ts | 작업 API |
 | 가짜 Lead 분담·가짜 작업자 착수→산출물→완료·댓글 답장 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript` | 가짜 실행기 테스트, 작업 화면 E2E |
@@ -106,6 +106,19 @@
 | 가짜 Lead의 `작업자 추가: <Role>` 부탁·작업자 추가 결정 답장 | runtime/scripted.ts `demoLeadScript`·`addWorkerScript` | 가짜 실행기 테스트, 작업자 추가 API |
 | 설정 체크박스(저장 중·실패·서버 값)·종류별 승인 상세·결정 폼·대시보드 대기 요청 | [web/settings.tsx](../../apps/web/src/settings.tsx), approvals.tsx, pages.tsx, api.ts `useUpdateApprovalPolicy` | 작업자 승인 정책 E2E(다른 탭·390px 반영 포함) |
 
+## 일시정지·재개·중단과 중단하고 반영
+
+통합 검증: [제어 API](../../apps/server/test/control.test.ts), [제어 E2E](../../apps/web/e2e/pause-resume.spec.ts).
+
+| 작업·증상 | 진입점·계약 | 추가 검증·범위 |
+| --- | --- | --- |
+| 일시정지 전 단계(`pausedFrom`)·끝난 단계(`closedStages`), 에이전트 `paused`, 취소 사유(`runCancelReasons`)·실행 시도 `cancelReason`, 전달 방식 `interrupt`, Event `organization.paused`·`resumed`·`stopped`·`agent.paused`·`resumed`·`interrupted` | contracts/organization.ts, run.ts, message.ts, event.ts | 제어 API |
+| 명령별 전이·no-op·`organization_closed`, 일시정지 중 결정의 재개(`planDecisionStage`), `중단하고 반영` 계획 | [core/control.ts](../../packages/core/src/control.ts); 토큰 닫힘 `acceptsToolCalls`·취소 우선 종료 `planRunFinish`는 core/run.ts | 제어 API, 결과 API·작업자 추가 API의 일시정지 중 결정 |
+| 조직 → 에이전트 → 실행 시도 잠금 아래 단계·일시정지·취소 요청·Event 한 transaction, 중단된 조직의 결정할 수 없는 Inbox 항목 제외 | [db/control.ts](../../packages/db/src/control.ts) `controlOrganization`·`controlAgent`, rows.ts `lockCancellableRuns`·`requestCancellation`; db/inbox.ts; 메시지와 중단은 db/runs.ts `insertOwnerMessage`; 결정의 재개는 db/approvals.ts·results.ts; schema `paused_from`·`paused`·`cancel_reason` | [DB 잠금 순서](../../packages/db/src/runs.test.ts) `control commands` |
+| 일시정지한 에이전트 admission·재개 대상 목록, 취소 요청 실행 시도의 토큰 거부·종료 저장, 개수를 자르지 않는 진행 중 실행 시도(`/runs?status=running`) | db/runs.ts `claimNextRun`·`listAgentsWithPendingWakes`·`authenticateRun`·`finishRun`·`listRunningRuns`, rows.ts `lockRunningRun`·`lockRunningRunOfAgent` | 제어 API `cancellation boundary`·`running runs` |
+| commit 뒤 실행기 취소·등록 직후 취소 재확인·재개 뒤 촉진과 그 조회 실패의 backoff 재시도 | server/dispatcher.ts `cancel`·`kickOrganization`·`#retrying`·`#execute`, [server/control.ts](../../apps/server/src/control.ts), conversation.ts, app.ts `/pause`·`/resume`·`/stop` | 제어 API. 등록 틈은 API로 재현하지 않음 |
+| 조직 제어·실행 중/취소 정리 중 개수, 에이전트 제어, 전달 방식 선택·실패 시 보존·끝난 조직에서 다음 실행 시도로 복귀, 결정 폼의 일시정지·중단 안내 | pages.tsx `OrganizationControl`, agents.tsx `AgentControl`, chat.tsx `Composer`, approvals.tsx·results.tsx `DecisionForm`, ui.tsx `RunStatusBadge`·`PausedBadge`, activity.tsx; api.ts `useControlOrganization`·`useControlAgent`·`useRunningRuns` | 제어 E2E(다른 탭·390px 포함) |
+
 ## 개발 환경
 
 | 작업 | 진입점·검증 |
@@ -149,7 +162,7 @@ chat → POST /api/organizations/:id/messages(app) → conversation
 ```text
 scripted → /api/tools/goal·/api/tools/initial-approval(server/tools)
   → gateToolCall(core checkToolCall; 거부 시 tool.refused)
-  → toolWrite(실행 시도→조직 잠금·단계 재확인) → 목표 기록/라이브러리 snapshot 승인 요청
+  → toolWrite(조직→실행 시도 잠금·취소·단계 재확인) → 목표 기록/라이브러리 snapshot 승인 요청
 결정 폼 → POST /api/organizations/:id/approvals/:approvalId/decision(app) → server/approvals
   → decideApproval(조직 잠금·pending·core planApprovalDecision·조건부 결정)
   → 작업자·사본·템플릿·단계·Lead 깨우기·approval.decided 함께 저장
@@ -161,7 +174,7 @@ scripted → /api/tools/goal·/api/tools/initial-approval(server/tools)
 ### 작업과 작업자 실행 시도
 
 ```text
-scripted(Lead) → /api/tools/tasks(server/tools) → toolWrite(실행 시도→조직 잠금·단계 재확인)
+scripted(Lead) → /api/tools/tasks(server/tools) → toolWrite(조직→실행 시도 잠금·취소·단계 재확인)
   → db createTask(담당·부모 같은 조직 확인, core planTaskCreation) → 작업·담당자 깨우기·Event 함께 저장
   → EventHub → dispatcher.kick(담당자) → claimNextRun → scripted(작업자)
       → /tasks/:id/start → /artifacts → /tasks/:id/complete(core planTaskCompletion·조건부 완료)
@@ -176,7 +189,7 @@ scripted(Lead) → /api/tools/tasks(server/tools) → toolWrite(실행 시도→
 
 ```text
 scripted(작업자) → /api/tools/research-nodes·research-links·tasks/:id/research-node(server/tools)
-  → writeResearchMap(toolWrite: 실행 시도→조직 잠금·단계 재확인) → 최신 지도 읽기 → core plan*
+  → writeResearchMap(toolWrite: 조직→실행 시도 잠금·취소·단계 재확인) → 최신 지도 읽기 → core plan*
   → 변경·편집 기록·Event 함께 저장(에이전트 편집은 아무도 깨우지 않음)
 지도 패널 폼 → /api/organizations/:id/research-*(app) → server/research-map
   → editResearchMap(조직 잠금·편집 단계·최신 지도·core plan*) → 변경·편집 기록·Lead 깨우기·Event
@@ -188,7 +201,7 @@ scripted(작업자) → /api/tools/research-nodes·research-links·tasks/:id/res
 ### 결과 제출과 최종 완료
 
 ```text
-scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite: 실행 시도→조직 잠금·단계 재확인)
+scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite: 조직→실행 시도 잠금·취소·단계 재확인)
   → 같은 조직 산출물 확인 → core planResultSubmission → 제출·근거·결과 검토 중·result.submitted 함께 저장
 결정 폼 → POST /api/organizations/:id/results/:submissionId/decision(app) → server/results
   → decideResult(조직 잠금·pending·core planResultDecision·조건부 결정)
@@ -198,12 +211,25 @@ scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite: 
 
 완료 뒤 실행 시도가 생기면 `admitsRuns`와 claim의 잠금 순서, 중복 결정은 decideResult의 pending 조건에서 시작합니다.
 
+### 일시정지·재개·중단
+
+```text
+대시보드·에이전트 상세 → POST /api/organizations/:id/{pause,resume,stop}·/agents/:agentId/{pause,resume}(app) → server/control
+  → controlOrganization·controlAgent(조직 잠금 → 에이전트 → 진행 중 실행 시도 FOR UPDATE, core plan*)
+  → 단계·pausedFrom / paused, 실행 시도 cancel_reason, Event 함께 저장
+  → EventHub → dispatcher.cancel(commit 뒤 abort) → 실행기 정리 → finishRun(cancelled) → 재개면 kickOrganization·kick
+Lead 대화(중단하고 반영) → POST /messages {delivery: interrupt} → insertOwnerMessage(조직 잠금·메시지·깨우기·두 Event·취소 요청)
+  → dispatcher.cancel → 취소된 실행 시도 종료 뒤 claimNextRun이 메시지 깨우기를 다음 실행 시도에 묶음
+```
+
+취소 뒤 늦은 도구 쓰기는 `lockRunningRun`의 `cancelReason`, 재개 뒤 실행이 없으면 `listAgentsWithPendingWakes`의 에이전트 `paused`·단계 필터에서 시작합니다.
+
 ### 작업자 추가와 승인 정책
 
 ```text
 설정 체크박스 → PUT /api/organizations/:id/approval-policy(app) → server/organizations
   → updateApprovalPolicy(조직 잠금·core planApprovalPolicyChange) → 정책·Event → EventHub → 다른 탭 재조회
-scripted(Lead) → /api/tools/workers(server/tools) → addWorker(toolWrite: 실행 시도→조직 잠금·단계 재확인)
+scripted(Lead) → /api/tools/workers(server/tools) → addWorker(toolWrite: 조직→실행 시도 잠금·취소·단계 재확인)
   → core buildAddWorkerProposal(라이브러리 snapshot) → planAddWorker(잠금 아래 최신 정책)
   → 꺼짐: 작업자·사본·worker.added(201) / 켜짐: 승인 요청·approval.requested(202, 단계 유지)
 결정 폼 → decideApproval(조직 잠금·pending·종류별 결정) → 작업자·사본(승인만)·Lead 깨우기·approval.decided

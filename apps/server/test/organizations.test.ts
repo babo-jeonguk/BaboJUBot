@@ -42,6 +42,7 @@ describe("creating an organization", () => {
       goal: null,
       completionCriteria: null,
       approvalPolicy: { addWorker: false },
+      pausedFrom: null,
       createdAt: org.createdAt,
     });
   });

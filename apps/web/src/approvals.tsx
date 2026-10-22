@@ -5,6 +5,7 @@ import {
   type ApprovalDecision,
   type ApprovalKind,
   type InboxItem,
+  type LifecycleStage,
 } from "@babojubot/contracts";
 import { useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
@@ -186,7 +187,12 @@ export function ApprovalDetailPage() {
       )}
 
       {a.status === "pending" ? (
-        <DecisionForm orgId={orgId} approvalId={a.id} kind={a.kind} />
+        <DecisionForm
+          orgId={orgId}
+          approvalId={a.id}
+          kind={a.kind}
+          stage={org.data?.stage}
+        />
       ) : (
         <DecisionReceipt orgId={orgId} approval={a} />
       )}
@@ -367,21 +373,33 @@ const decisionHelp: Record<ApprovalKind, { effect: string; note: string }> = {
  * 결정 폼. 종류마다 내릴 수 있는 결정이 다르고(작업자 추가에는 수정 요청이 없다), 모든 결정이 한 요청 상태를
  * 함께 쓰므로 하나를 보내는 동안 모두 잠근다. 승인 밖의 결정은 사유가 있어야 보낼 수 있고, 사유는 Lead를 깨우는
  * 사유가 된다. 실패하면 사유를 그대로 둔다.
+ * 일시정지 중의 초기 연구 승인 결정은 조직을 재개하므로 미리 알린다. 중단된 조직에서는 결정할 수 없다.
+ * 작업자 추가 결정은 단계와 상관없이 받으며 일시정지를 풀지 않는다.
  */
 function DecisionForm({
   orgId,
   approvalId,
   kind,
+  stage,
 }: {
   orgId: string;
   approvalId: string;
   kind: ApprovalKind;
+  stage: LifecycleStage | undefined;
 }) {
   const [note, setNote] = useState("");
   const decide = useDecideApproval(orgId, approvalId);
   const trimmed = note.trim();
   const alreadyDecided =
     decide.error instanceof ApiError && decide.error.code === "already_decided";
+  const changesStage = kind === "initial_research";
+  const closed = changesStage && stage === "stopped";
+  const pausedNotice =
+    stage !== "paused"
+      ? null
+      : changesStage
+        ? "조직이 일시정지 중입니다. 결정하면 일시정지가 풀리고 연구가 다시 진행됩니다."
+        : "조직이 일시정지 중입니다. 이 결정은 일시정지를 풀지 않으며, Lead는 재개한 뒤 결정을 받습니다.";
   return (
     <section
       id="decision"
@@ -392,6 +410,11 @@ function DecisionForm({
       <p className="mb-3 text-xs text-slate-500">
         {decisionHelp[kind].effect} 결정은 한 번만 할 수 있습니다.
       </p>
+      {(pausedNotice || closed) && (
+        <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
+          {closed ? "중단된 조직이라 결정할 수 없습니다." : pausedNotice}
+        </p>
+      )}
       <label
         htmlFor="decision-note"
         className="mb-1 block text-xs text-slate-600"
@@ -411,7 +434,9 @@ function DecisionForm({
           <button
             key={decision}
             className={decisionStyle[decision]}
-            disabled={decide.isPending || (decision !== "approve" && !trimmed)}
+            disabled={
+              closed || decide.isPending || (decision !== "approve" && !trimmed)
+            }
             onClick={() =>
               decide.mutate({ decision, note: trimmed || undefined })
             }
@@ -429,7 +454,10 @@ function DecisionForm({
         <p role="alert" className="mt-2 text-xs text-rose-600">
           {alreadyDecided
             ? "이미 결정된 요청입니다. 최신 결정을 불러옵니다."
-            : "결정을 보내지 못했습니다. 사유는 그대로 두었으니 다시 시도하세요."}
+            : decide.error instanceof ApiError &&
+                decide.error.code === "organization_closed"
+              ? "조직이 중단되어 결정을 받지 않았습니다."
+              : "결정을 보내지 못했습니다. 사유는 그대로 두었으니 다시 시도하세요."}
         </p>
       )}
     </section>

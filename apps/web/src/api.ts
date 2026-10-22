@@ -24,11 +24,14 @@ import {
   taskDetailSchema,
   taskListSchema,
   type AddResearchLinkInput,
+  type AgentCommand,
   type CreateOrganizationInput,
   type CreateResearchNodeInput,
   type DecideApprovalInput,
   type DecideResultInput,
+  type MessageDelivery,
   type Organization,
+  type OrganizationCommand,
   type OrganizationDetail,
   type UpdateApprovalPolicyInput,
   type UpdateResearchNodeInput,
@@ -44,6 +47,8 @@ export const queryKeys = {
   events: (id: string, agentId?: string) =>
     ["organizations", id, "events", agentId ?? "all"] as const,
   runs: (id: string) => ["organizations", id, "runs"] as const,
+  runningRuns: (id: string) =>
+    ["organizations", id, "runs", { status: "running" }] as const,
   run: (id: string, runId: string) =>
     ["organizations", id, "runs", runId] as const,
   agent: (id: string, agentId: string) =>
@@ -152,15 +157,24 @@ export function useConversation(orgId: string) {
   });
 }
 
-/** Lead 대화에 사용자 메시지를 보낸다. 실패하면 입력을 지우지 않도록 호출한 쪽이 결과를 본다. */
+/**
+ * Lead 대화에 사용자 메시지를 보낸다. 실패하면 입력과 전달 방식을 지우지 않도록 호출한 쪽이 결과를 본다.
+ * `중단하고 반영`은 메시지와 실행 시도 중단 제어 명령을 한 요청으로 보낸다(서버가 함께 저장).
+ */
 export function useSendMessage(orgId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: string) =>
+    mutationFn: ({
+      body,
+      delivery,
+    }: {
+      body: string;
+      delivery: MessageDelivery;
+    }) =>
       request(conversationMessageSchema, orgPath(orgId, "/messages"), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body, delivery: "next_run" }),
+        body: JSON.stringify({ body, delivery }),
       }),
     onSuccess: () =>
       queryClient.invalidateQueries({
@@ -187,6 +201,15 @@ export function useRuns(orgId: string) {
   return useQuery({
     queryKey: queryKeys.runs(orgId),
     queryFn: () => request(runSummaryListSchema, orgPath(orgId, "/runs")),
+  });
+}
+
+/** 진행 중 실행 시도 전부(취소 정리 중 포함). 최근 목록과 달리 개수를 자르지 않는다. */
+export function useRunningRuns(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.runningRuns(orgId),
+    queryFn: () =>
+      request(runSummaryListSchema, orgPath(orgId, "/runs?status=running")),
   });
 }
 
@@ -267,6 +290,58 @@ export function useUpdateApprovalPolicy(orgId: string) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.organization(orgId),
         exact: true,
+      });
+    },
+  });
+}
+
+/**
+ * 조직 일시정지·재개·중단 제어 명령. 서버가 확정한 조직으로만 화면을 바꾸고(낙관 반영 없음) 그 조직 범위를 다시 불러온다.
+ * 다른 탭은 제어 명령 Event로 같은 조직을 다시 불러온다.
+ */
+export function useControlOrganization(orgId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: OrganizationCommand) =>
+      request(organizationSchema, orgPath(orgId, `/${command}`), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    onSuccess: (org) => {
+      queryClient.setQueryData<OrganizationDetail>(
+        queryKeys.organization(orgId),
+        (detail) => detail && { ...detail, ...org }
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.organization(orgId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.organizations,
+        exact: true,
+      });
+    },
+  });
+}
+
+/** 에이전트 일시정지·재개 제어 명령. 응답의 에이전트 상세로 바꾸고 그 조직 범위를 다시 불러온다. */
+export function useControlAgent(orgId: string, agentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: AgentCommand) =>
+      request(
+        agentDetailSchema,
+        orgPath(orgId, `/agents/${encodeURIComponent(agentId)}/${command}`),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        }
+      ),
+    onSuccess: (agent) => {
+      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.organization(orgId),
       });
     },
   });

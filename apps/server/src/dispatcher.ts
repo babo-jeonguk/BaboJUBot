@@ -8,10 +8,12 @@ import {
   type RunResult,
   type RuntimeAdapter,
 } from "@babojubot/contracts";
+import type { RunCancellation } from "@babojubot/core";
 import {
   appendRunActivity,
   claimNextRun,
   failInterruptedRuns,
+  findRunCancelReason,
   finishRun,
   listAgentsWithPendingWakes,
   loadRunContext,
@@ -93,6 +95,39 @@ export class RunDispatcher {
   }
 
   /**
+   * commit된 사용자 제어 취소를 진행 중인 실행기에 보낸다. 실행기가 정리를 끝내 종료가 저장될 때까지 그 에이전트의 다음 실행 시도는 없다.
+   * admission과 실행기 등록 사이의 실행 시도는 등록 직후 DB의 취소 요청을 다시 읽어 받는다(`#execute`).
+   */
+  cancel(cancellation: RunCancellation | null): void {
+    for (const runId of cancellation?.runIds ?? [])
+      this.#active.get(runId)?.abort({
+        type: "cancel",
+        reason: cancellation!.reason,
+      } satisfies RunCancel);
+  }
+
+  /**
+   * 조직 재개 뒤, 그 조직에서 대기 중인 깨우기가 있는 에이전트를 모두 깨운다.
+   * 호출자는 응답 전에 첫 조회를 기다린다. 그래야 응답 뒤의 관찰(`drain` 등)이 이미 시작한 처리를 본다.
+   * 첫 조회가 실패하면 응답은 기다리지 않고, admission과 같은 backoff로 뒤에서 다시 조회한다.
+   * 깨우기는 DB에 남아 있으므로 다시 조회해도 실행기를 중복해 부르지 않는다.
+   */
+  async kickOrganization(organizationId: string): Promise<void> {
+    const kickWaiting = async () => {
+      for (const agentId of await listAgentsWithPendingWakes(this.#db, {
+        organizationId,
+      }))
+        this.kick(agentId);
+    };
+    try {
+      await kickWaiting();
+    } catch (error) {
+      console.error("[runs] kicking a resumed organization failed", error);
+      void this.#retrying("kicking a resumed organization", kickWaiting);
+    }
+  }
+
+  /**
    * 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. 테스트 helper.
    * 다른 프로세스가 실행 중이라 처리할 수 없는 깨우기가 남으면 오래 기다리지 않고 실패한다.
    */
@@ -115,20 +150,25 @@ export class RunDispatcher {
     while (this.#pumps.size) await Promise.all(this.#pumps.values());
   }
 
-  /** DB 오류 후 같은 admission·종료 저장을 최대 5초 간격으로 다시 시도한다. 실행기를 재실행하지 않는다. */
-  async #dispatch(agentId: string) {
+  /** DB 오류 후 같은 admission·종료 저장을 다시 시도한다. 실행기를 재실행하지 않는다. */
+  #dispatch(agentId: string) {
+    return this.#retrying("dispatch", () => this.#pump(agentId));
+  }
+
+  /** DB 오류 후 같은 일을 최대 5초 간격으로 성공할 때까지 다시 한다. 서버 종료는 재시도 대기도 즉시 끝낸다. */
+  async #retrying(what: string, task: () => Promise<void>) {
     let backoffMs = 100;
     while (!this.#closed) {
       try {
-        await this.#pump(agentId);
+        await task();
         return;
       } catch (error) {
-        console.error("[runs] dispatch failed, retrying", error);
+        console.error(`[runs] ${what} failed, retrying`, error);
         if (this.#closed) return;
         try {
           await delay(backoffMs, undefined, { signal: this.#recovery.signal });
         } catch {
-          return; // 서버 종료는 재시도 대기도 즉시 끝낸다.
+          return;
         }
         backoffMs = Math.min(backoffMs * 2, 5_000);
       }
@@ -169,6 +209,13 @@ export class RunDispatcher {
     if (this.#closed) controller.abort(shutdown);
     let result: RunResult;
     try {
+      // 등록 전에 commit된 사용자 제어 취소는 `cancel`이 이 controller를 찾지 못했으므로 여기서 받는다.
+      const cancelReason = await findRunCancelReason(this.#db, run.id);
+      if (cancelReason && !controller.signal.aborted)
+        controller.abort({
+          type: "cancel",
+          reason: cancelReason,
+        } satisfies RunCancel);
       const loaded = await loadRunContext(this.#db, run.id);
       if (!loaded) throw new Error(`run ${run.id} disappeared`);
       const raw = await this.#runtime.execute(

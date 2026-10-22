@@ -3,6 +3,7 @@ import type {
   ConversationMessage,
   LifecycleStage,
   NewEvent,
+  RunCancelReason,
   RunResult,
   RunStatus,
   SendOwnerMessageInput,
@@ -128,7 +129,10 @@ export type RunStartPlan = {
   event: NewEvent;
 };
 
-/** 새 실행 시도를 시작하지 않는 조직 단계. 깨우기는 남겨 두며, 최종 완료에는 어떤 깨우기 사유도 예외가 없다. */
+/**
+ * 새 실행 시도를 시작하지 않는 조직 단계. 깨우기는 남겨 두며 어떤 깨우기 사유도 예외가 없다.
+ * 일시정지는 재개 때 남은 깨우기를 실행 시도 하나로 묶어 전달한다. 에이전트 일시정지도 그 에이전트의 admission을 같은 방식으로 막는다.
+ */
 export const runBlockingStages = [
   "paused",
   "stopped",
@@ -198,15 +202,24 @@ export type RunFinishPlan = {
   event: NewEvent;
 };
 
-/** 실행기가 돌려준 종료 결과로 실행 시도를 끝낸다. 종료는 한 번만 확정된다(저장 쪽이 강제). */
+/**
+ * 실행기가 돌려준 종료 결과로 실행 시도를 끝낸다. 종료는 한 번만 확정된다(저장 쪽이 강제).
+ * 사용자 제어가 취소를 요청한 실행 시도는 실행기가 무엇을 돌려주든 `cancelled`로 끝난다. 늦게 돌아온 성공이 취소를 덮지 않는다.
+ */
 export function planRunFinish(
-  run: { id: string; organizationId: string; agentId: string },
+  run: {
+    id: string;
+    organizationId: string;
+    agentId: string;
+    cancelReason: RunCancelReason | null;
+  },
   result: RunResult,
   { now }: Pick<RecordSource, "now">
 ): RunFinishPlan {
+  const status = run.cancelReason ? "cancelled" : result.stopReason;
   return {
     update: {
-      status: result.stopReason,
+      status,
       summary: result.summary,
       error: result.error,
       usage: result.usage,
@@ -219,7 +232,7 @@ export function planRunFinish(
       payload: {
         runId: run.id,
         agentId: run.agentId,
-        stopReason: result.stopReason,
+        stopReason: status,
         summary: result.summary,
         error: result.error,
       },
@@ -227,5 +240,11 @@ export function planRunFinish(
   };
 }
 
-/** 실행 시도별 토큰은 그 실행 시도가 실행 중일 때만 조직 도구를 연다. 종료 뒤에는 읽기도 거부한다. */
-export const acceptsToolCalls = (status: RunStatus) => status === "running";
+/**
+ * 실행 시도별 토큰은 그 실행 시도가 실행 중이고 취소를 요청받지 않았을 때만 조직 도구를 연다.
+ * 종료 뒤와 사용자 제어가 취소를 요청한 뒤에는 실행기가 정리 중이어도 읽기까지 거부한다.
+ */
+export const acceptsToolCalls = (run: {
+  status: RunStatus;
+  cancelReason: RunCancelReason | null;
+}) => run.status === "running" && run.cancelReason === null;
