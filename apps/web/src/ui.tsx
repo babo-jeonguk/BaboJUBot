@@ -9,6 +9,7 @@ import type {
   ResearchNodeStatus,
   ResultDecision,
   ResultSubmissionStatus,
+  RunCancelReason,
   RunStatus,
   TaskStatus,
 } from "@babojubot/contracts";
@@ -69,15 +70,36 @@ const runStatusStyle: Record<RunStatus, [string, string]> = {
   cancelled: ["bg-slate-100 text-slate-600", "bg-slate-400"],
 };
 
-/** 실행 시도의 성공은 연구 완료가 아니다. 실행 시도 상태만 보인다. */
-export function RunStatusBadge({ status }: { status: RunStatus }) {
-  const [c, dot] = runStatusStyle[status];
+/** 사용자 제어가 실행 시도를 취소한 사유. 어느 범위의 명령이었는지 이름으로 보인다. */
+export const runCancelReasonLabel: Record<RunCancelReason, string> = {
+  organization_paused: "조직 일시정지",
+  organization_stopped: "조직 중단",
+  agent_paused: "에이전트 일시정지",
+  owner_interrupt: "중단하고 반영",
+};
+
+/**
+ * 실행 시도의 성공은 연구 완료가 아니다. 실행 시도 상태만 보인다.
+ * 취소를 요청받고 실행기가 정리 중이면 `취소 중`이고, 사용자 제어로 취소됐으면 그 사유를 함께 보인다.
+ */
+export function RunStatusBadge({
+  status,
+  cancelReason = null,
+}: {
+  status: RunStatus;
+  cancelReason?: RunCancelReason | null;
+}) {
+  const cancelling = status === "running" && cancelReason !== null;
+  const [c, dot] = cancelling
+    ? ["bg-amber-50 text-amber-800", "bg-amber-500 animate-pulse"]
+    : runStatusStyle[status];
   return (
     <span
       className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${c}`}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-      {runStatusLabel[status]}
+      {cancelling ? "취소 중" : runStatusLabel[status]}
+      {cancelReason && ` · ${runCancelReasonLabel[cancelReason]}`}
     </span>
   );
 }
@@ -205,6 +227,16 @@ export function AgentStatusBadge({ status }: { status: AgentStatus }) {
         className={`h-1.5 w-1.5 rounded-full ${on ? "animate-pulse bg-brand-500" : "bg-slate-400"}`}
       />
       {agentStatusLabel[status]}
+    </span>
+  );
+}
+
+/** 사용자가 에이전트를 일시정지했다. 실행 상태와 따로 보인다. */
+export function PausedBadge() {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+      <span aria-hidden>⏸</span>
+      <span>일시정지</span>
     </span>
   );
 }

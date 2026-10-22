@@ -11,6 +11,7 @@ import type { EventHub } from "./event-hub.ts";
 /**
  * 사용자의 승인 결정 제어 명령. 결정·단계·팀·사본·템플릿·Lead 깨우기·Event를 한 transaction으로 저장한 뒤에만
  * 알리고 Lead를 깨운다. 알림이 실패해도 저장된 결정은 성공이며, 깨우기는 저장돼 있어 서버 시작 때도 다시 처리된다.
+ * 일시정지 중의 초기 연구 승인 결정은 조직을 재개하므로 그 조직의 대기 깨우기를 모두 다시 처리한다.
  */
 export async function decideApproval(
   {
@@ -34,10 +35,11 @@ export async function decideApproval(
   });
   if (result.kind !== "decided") return result;
   try {
-    hub.publish(result.event);
+    for (const event of result.events) hub.publish(event);
   } catch (error) {
     console.error("[approvals] publish after commit failed", error);
   }
+  if (result.resumed) void dispatcher.kickOrganization(organizationId);
   dispatcher.kick(result.wake.agentId);
   return result;
 }

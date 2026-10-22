@@ -1,8 +1,11 @@
-import type {
-  Agent,
-  InstructionKind,
-  RunSummary,
-  WakeReason,
+import {
+  isClosedStage,
+  type Agent,
+  type AgentDetail,
+  type InstructionKind,
+  type LifecycleStage,
+  type RunSummary,
+  type WakeReason,
 } from "@babojubot/contracts";
 import { useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
@@ -11,6 +14,7 @@ import {
   ApiError,
   useAgent,
   useAgentInstructions,
+  useControlAgent,
   useOrganization,
   useRun,
 } from "./api.ts";
@@ -25,6 +29,7 @@ import {
   LoadError,
   NotFound,
   Page,
+  PausedBadge,
   runLabel,
   runStatusLabel,
   RunStatusBadge,
@@ -94,16 +99,20 @@ function AgentCard({ orgId, agent }: { orgId: string; agent: Agent }) {
           <div className="truncate font-medium">{agent.name}</div>
           <div className="text-xs text-slate-500">{roleLabel[agent.role]}</div>
         </div>
-        {detail.data && <AgentStatusBadge status={detail.data.status} />}
+        <span className="flex flex-col items-end gap-1">
+          {detail.data && <AgentStatusBadge status={detail.data.status} />}
+          {detail.data?.paused && <PausedBadge />}
+        </span>
       </Link>
     </li>
   );
 }
 
-/** 조직 › 에이전트 › <에이전트>: 상태와 최근 실행 시도. 각 실행 시도는 상세로 이어진다. */
+/** 조직 › 에이전트 › <에이전트>: 상태·일시정지·재개와 최근 실행 시도. 각 실행 시도는 상세로 이어진다. */
 export function AgentDetailPage() {
   const { orgId = "", agentId = "" } = useParams();
   const agent = useAgent(orgId, agentId);
+  const stage = useOrganization(orgId).data?.stage;
   if (agent.isPending) return <Loading />;
   if (agent.isError)
     return agent.error instanceof ApiError && agent.error.status === 404 ? (
@@ -127,17 +136,27 @@ export function AgentDetailPage() {
           <div className="text-sm text-slate-500">{roleLabel[a.role]}</div>
         </div>
         <div className="flex flex-col items-end gap-1">
-          <AgentStatusBadge status={a.status} />
+          <div className="flex items-center gap-1.5">
+            <AgentStatusBadge status={a.status} />
+            {a.paused && <PausedBadge />}
+          </div>
           {live && (
             <Link
               to={`/orgs/${orgId}/runs/${live.id}`}
-              className="text-xs text-brand-600 hover:underline"
+              className="flex items-center gap-1.5 text-xs text-brand-600 hover:underline"
             >
               {runLabel(live.id)} 보기
+              {live.cancelReason && (
+                <RunStatusBadge
+                  status={live.status}
+                  cancelReason={live.cancelReason}
+                />
+              )}
             </Link>
           )}
         </div>
       </div>
+      <AgentControl orgId={orgId} agent={a} stage={stage} />
       <InstructionCopies key={a.id} orgId={orgId} agentId={a.id} />
       <section aria-label="최근 실행 시도">
         <h2 className="mb-2 text-sm font-semibold text-slate-600">
@@ -159,6 +178,57 @@ export function AgentDetailPage() {
         )}
       </section>
     </Page>
+  );
+}
+
+/**
+ * 에이전트 일시정지·재개. 이 에이전트 하나에만 걸리며 조직 일시정지와 따로다(조직을 재개해도 풀리지 않는다).
+ * 서버가 확정한 상태만 보이고, 요청 중에는 버튼을 잠근다. 끝난 조직에서는 버튼을 보이되 누를 수 없다.
+ */
+function AgentControl({
+  orgId,
+  agent,
+  stage,
+}: {
+  orgId: string;
+  agent: AgentDetail;
+  stage: LifecycleStage | undefined;
+}) {
+  const control = useControlAgent(orgId, agent.id);
+  const closed = stage !== undefined && isClosedStage(stage);
+  const command = agent.paused ? "resume" : "pause";
+  return (
+    <section aria-label="에이전트 제어" className="card mb-6 p-4 text-sm">
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          className="btn-soft"
+          disabled={closed || control.isPending}
+          onClick={() => control.mutate(command)}
+        >
+          {agent.paused ? "▶ 에이전트 재개" : "⏸ 에이전트 일시정지"}
+        </button>
+        {control.isPending && (
+          <span role="status" className="text-xs text-slate-500">
+            요청하는 중…
+          </span>
+        )}
+      </div>
+      <p className="mt-2 text-xs text-slate-500">
+        {closed
+          ? "끝난 조직의 에이전트는 일시정지·재개할 수 없습니다."
+          : agent.paused
+            ? "이 에이전트만 멈춰 있습니다. 그동안 받은 깨우기는 재개하면 실행 시도 하나로 전달됩니다. 조직을 재개해도 풀리지 않습니다."
+            : "이 에이전트 하나만 멈춥니다. 진행 중 실행 시도는 취소하고, 다른 에이전트는 계속 일합니다."}
+      </p>
+      {!control.isPending && control.isError && (
+        <p role="alert" className="mt-2 text-xs text-rose-600">
+          {control.error instanceof ApiError &&
+          control.error.code === "organization_closed"
+            ? "조직이 이미 끝나 명령을 받지 않았습니다."
+            : "명령을 처리하지 못했습니다. 상태는 그대로이니 다시 시도하세요."}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -265,7 +335,7 @@ function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
         to={`/orgs/${orgId}/runs/${run.id}`}
         className="flex items-center gap-3 px-4 py-3 text-sm transition hover:bg-slate-50"
       >
-        <RunStatusBadge status={run.status} />
+        <RunStatusBadge status={run.status} cancelReason={run.cancelReason} />
         <div className="min-w-0 flex-1">
           <div className="font-medium text-slate-800">{runLabel(run.id)}</div>
           <div className="truncate text-xs text-slate-500">
@@ -303,7 +373,7 @@ export function RunDetailPage() {
     <Page width="standard">
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">{runLabel(r.id)}</h1>
-        <RunStatusBadge status={r.status} />
+        <RunStatusBadge status={r.status} cancelReason={r.cancelReason} />
         <div className="w-full text-sm text-slate-500">
           <Link
             to={`/orgs/${orgId}/agents/${r.agentId}`}

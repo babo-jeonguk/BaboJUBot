@@ -8,10 +8,12 @@ import {
   type RunResult,
   type RuntimeAdapter,
 } from "@babojubot/contracts";
+import type { RunCancellation } from "@babojubot/core";
 import {
   appendRunActivity,
   claimNextRun,
   failInterruptedRuns,
+  findRunCancelReason,
   finishRun,
   listAgentsWithPendingWakes,
   loadRunContext,
@@ -93,6 +95,30 @@ export class RunDispatcher {
   }
 
   /**
+   * commit된 사용자 제어 취소를 진행 중인 실행기에 보낸다. 실행기가 정리를 끝내 종료가 저장될 때까지 그 에이전트의 다음 실행 시도는 없다.
+   * admission과 실행기 등록 사이의 실행 시도는 등록 직후 DB의 취소 요청을 다시 읽어 받는다(`#execute`).
+   */
+  cancel(cancellation: RunCancellation | null): void {
+    for (const runId of cancellation?.runIds ?? [])
+      this.#active.get(runId)?.abort({
+        type: "cancel",
+        reason: cancellation!.reason,
+      } satisfies RunCancel);
+  }
+
+  /** 조직 재개 뒤, 그 조직에서 대기 중인 깨우기가 있는 에이전트를 모두 깨운다. 실패해도 서버 시작·다음 깨우기가 다시 확인한다. */
+  async kickOrganization(organizationId: string): Promise<void> {
+    try {
+      for (const agentId of await listAgentsWithPendingWakes(this.#db, {
+        organizationId,
+      }))
+        this.kick(agentId);
+    } catch (error) {
+      console.error("[runs] kicking a resumed organization failed", error);
+    }
+  }
+
+  /**
    * 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. 테스트 helper.
    * 다른 프로세스가 실행 중이라 처리할 수 없는 깨우기가 남으면 오래 기다리지 않고 실패한다.
    */
@@ -169,6 +195,13 @@ export class RunDispatcher {
     if (this.#closed) controller.abort(shutdown);
     let result: RunResult;
     try {
+      // 등록 전에 commit된 사용자 제어 취소는 `cancel`이 이 controller를 찾지 못했으므로 여기서 받는다.
+      const cancelReason = await findRunCancelReason(this.#db, run.id);
+      if (cancelReason && !controller.signal.aborted)
+        controller.abort({
+          type: "cancel",
+          reason: cancelReason,
+        } satisfies RunCancel);
       const loaded = await loadRunContext(this.#db, run.id);
       if (!loaded) throw new Error(`run ${run.id} disappeared`);
       const raw = await this.#runtime.execute(

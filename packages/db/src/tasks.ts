@@ -47,7 +47,7 @@ import {
 import { linkCreatedTask } from "./research-map.ts";
 import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
 
-// 작업·작업 댓글·산출물·에이전트 간 메시지의 저장. 도구 쓰기는 모두 `toolWrite`의 실행 시도 → 조직 잠금 아래에서
+// 작업·작업 댓글·산출물·에이전트 간 메시지의 저장. 도구 쓰기는 모두 `toolWrite`의 조직 → 실행 시도 잠금 아래에서
 // 같은 조직 참조를 확인하고, 기록·깨우기·Event를 한 transaction에 남긴다. 다른 조직의 기록과 없는 기록은 같은 `not_found`다.
 
 type WriteOptions = { source: RecordSource; activity: PublicActivity };

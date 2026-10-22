@@ -95,7 +95,7 @@ export const mapCommandTools = {
   unlink_task: "unlink_task_research_node",
 } as const satisfies Record<MapCommand["op"], OrgToolName>;
 
-/** 에이전트의 연구 지도 편집 도구. 실행 시도 → 조직 잠금과 단계 규칙은 `toolWrite`가 맡는다. 에이전트 편집은 아무도 깨우지 않는다. */
+/** 에이전트의 연구 지도 편집 도구. 조직 → 실행 시도 잠금과 취소·단계 확인은 `toolWrite`가 맡는다. 에이전트 편집은 아무도 깨우지 않는다. */
 export function writeResearchMap<C extends MapCommand>(
   db: Database,
   run: ActiveRunRef,

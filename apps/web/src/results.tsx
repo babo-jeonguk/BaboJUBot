@@ -181,6 +181,7 @@ export function ResultSubmissionPage() {
           key={s.id}
           orgId={orgId}
           submissionId={s.id}
+          stage={org.data?.stage}
           onDecided={() => setDecidedHere(true)}
         />
       ) : (
@@ -239,10 +240,12 @@ function Evidence({
 function DecisionForm({
   orgId,
   submissionId,
+  stage,
   onDecided,
 }: {
   orgId: string;
   submissionId: string;
+  stage: LifecycleStage | undefined;
   onDecided: () => void;
 }) {
   const [note, setNote] = useState("");
@@ -251,6 +254,7 @@ function DecisionForm({
   const trimmed = note.trim();
   const alreadyDecided =
     decide.error instanceof ApiError && decide.error.code === "already_decided";
+  const closed = stage === "stopped";
   const send = (decision: ResultDecision) =>
     decide.mutate(
       { decision, note: trimmed || undefined },
@@ -268,6 +272,13 @@ function DecisionForm({
         최종 완료는 연구를 닫으며, 이후에는 어떤 에이전트도 새로 실행되지
         않습니다. 결정은 한 번만 할 수 있습니다.
       </p>
+      {(stage === "paused" || closed) && (
+        <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
+          {closed
+            ? "중단된 조직이라 결정할 수 없습니다."
+            : "조직이 일시정지 중입니다. 수정 요청하면 일시정지가 풀리고 연구 진행으로 돌아가며, 최종 완료하면 바로 완료됩니다."}
+        </p>
+      )}
       <label
         htmlFor="result-note"
         className="mb-1 block text-xs text-slate-600"
@@ -285,7 +296,7 @@ function DecisionForm({
       <div className="mt-3 flex flex-wrap gap-2">
         <button
           className="btn-soft"
-          disabled={decide.isPending || !trimmed}
+          disabled={closed || decide.isPending || !trimmed}
           onClick={() => send("request_changes")}
         >
           수정 요청
@@ -294,7 +305,7 @@ function DecisionForm({
           <>
             <button
               className="btn-primary"
-              disabled={decide.isPending}
+              disabled={closed || decide.isPending}
               onClick={() => send("complete")}
             >
               최종 완료 확정
@@ -310,7 +321,7 @@ function DecisionForm({
         ) : (
           <button
             className="btn-primary"
-            disabled={decide.isPending}
+            disabled={closed || decide.isPending}
             onClick={() => setConfirming(true)}
           >
             최종 완료
@@ -331,7 +342,10 @@ function DecisionForm({
         <p role="alert" className="mt-2 text-xs text-rose-600">
           {alreadyDecided
             ? "이미 결정된 제출입니다. 최신 결정을 불러옵니다."
-            : "결정을 보내지 못했습니다. 의견은 그대로 두었으니 다시 시도하세요."}
+            : decide.error instanceof ApiError &&
+                decide.error.code === "organization_closed"
+              ? "조직이 중단되어 결정을 받지 않았습니다."
+              : "결정을 보내지 못했습니다. 의견은 그대로 두었으니 다시 시도하세요."}
         </p>
       )}
     </section>

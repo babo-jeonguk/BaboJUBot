@@ -1,15 +1,17 @@
-import type {
-  AgentDetail,
-  AgentRole,
-  ConversationMessage,
-  Event,
-  InstructionFile,
-  PublicActivity,
-  RunContextResponse,
-  RunDetail,
-  RunResult,
-  RunSummary,
-  WakeReason,
+import {
+  isClosedStage,
+  type AgentDetail,
+  type AgentRole,
+  type ConversationMessage,
+  type Event,
+  type InstructionFile,
+  type PublicActivity,
+  type RunCancelReason,
+  type RunContextResponse,
+  type RunDetail,
+  type RunResult,
+  type RunSummary,
+  type WakeReason,
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
@@ -17,6 +19,7 @@ import {
   decisionOfStatus,
   instructionsBundleVersion,
   planAgentMessage,
+  planInterrupt,
   planRunFinish,
   planRunStart,
   type NewRun,
@@ -24,6 +27,7 @@ import {
   type PendingWake,
   runBlockingStages,
   type RecordSource,
+  type RunCancellation,
 } from "@babojubot/core";
 import {
   and,
@@ -41,6 +45,9 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
 import {
   insertEvent,
+  lockCancellableRuns,
+  lockOrganization,
+  requestCancellation,
   isUuid,
   lockRunningRun,
   toAgent,
@@ -67,17 +74,44 @@ import {
 
 // ---------- 메시지와 깨우기 ----------
 
-/** 사용자 메시지·깨우기·Event를 한 transaction으로 저장한다. 하나라도 실패하면 아무것도 남지 않는다. */
+/**
+ * 사용자 메시지·깨우기·Event를 한 transaction으로 저장한다. 하나라도 실패하면 아무것도 남지 않는다.
+ * `중단하고 반영`이면 같은 transaction에서 받는 에이전트의 진행 중 실행 시도에 취소를 요청하고 그 제어 명령 Event도 남긴다.
+ * 조직 행을 먼저 잠가 admission과 직렬화하므로, 메시지는 취소된 실행 시도가 아니라 그 뒤의 실행 시도에 묶인다.
+ * 중단은 제어 명령이므로 최종 완료·중단 조직에서는 메시지도 남기지 않고 `organization_closed`다.
+ * 실행기에 취소를 보내는 일은 commit 뒤 호출자가 `cancellation`으로 한다.
+ */
 export async function insertOwnerMessage(
   db: Database,
   plan: OwnerMessagePlan
-): Promise<Event> {
+): Promise<
+  | { kind: "sent"; events: Event[]; cancellation: RunCancellation | null }
+  | { kind: "organization_closed" }
+> {
   return db.transaction(async (tx) => {
+    const interrupting = plan.message.delivery === "interrupt";
+    if (interrupting) {
+      const org = await lockOrganization(tx, plan.message.organizationId);
+      if (isClosedStage(org!.stage)) return { kind: "organization_closed" };
+    }
     await tx.insert(messages).values(messageRow(plan.message));
     await tx
       .insert(wakes)
       .values({ ...plan.wake, createdAt: new Date(plan.wake.createdAt) });
-    return insertEvent(tx, plan.event);
+    const created = await insertEvent(tx, plan.event);
+    if (!interrupting)
+      return { kind: "sent", events: [created], cancellation: null };
+    const [running] = await lockCancellableRuns(
+      tx,
+      eq(runs.agentId, plan.message.agentId)
+    );
+    const control = planInterrupt(plan.message, running ?? null);
+    await requestCancellation(tx, control.cancellation);
+    return {
+      kind: "sent",
+      events: [created, await insertEvent(tx, control.event)],
+      cancellation: control.cancellation,
+    };
   });
 }
 
@@ -97,7 +131,8 @@ export type ClaimedRun = {
  * 실행 중이거나 대기 중인 깨우기가 없으면 아무것도 하지 않는다. 실행기는 commit 뒤에 부른다.
  * 지침 bundle 버전은 같은 transaction에서 읽은 그 에이전트의 사본 내용으로 정한다.
  *
- * 조직이 실행 시도를 받지 않는 단계(최종 완료 등, core `admitsRuns`)면 깨우기를 남겨 두고 아무것도 하지 않는다.
+ * 조직이 실행 시도를 받지 않는 단계(최종 완료·일시정지·중단, core `admitsRuns`)이거나 에이전트가 일시정지면
+ * 깨우기를 남겨 두고 아무것도 하지 않는다. 취소를 요청받고 정리 중인 실행 시도도 실행 중이므로 끝날 때까지 다음 실행 시도는 없다.
  * 단계 검사는 조직 행 `FOR SHARE` 아래에서 하므로 단계 전이(`FOR NO KEY UPDATE`)와 직렬화된다. 전이가 먼저면 바뀐 단계를 보고,
  * admission이 먼저면 전이는 그 실행 시도가 생긴 뒤에 일어난다. 잠금 순서는 조직 → 에이전트다. 에이전트를 먼저 잠그면
  * 조직 행을 잠근 채 깨우기·Event의 FK로 에이전트 행(`KEY SHARE`)을 기다리는 쓰기와 교착한다.
@@ -125,7 +160,7 @@ export async function claimNextRun(
       .from(agents)
       .where(eq(agents.id, agentId))
       .for("update");
-    if (!agent) return undefined;
+    if (!agent || agent.paused) return undefined;
     if (await findRunningRunId(tx, agentId)) return undefined;
 
     const pendingWakes = await selectWakes(
@@ -177,7 +212,10 @@ export async function claimNextRun(
   });
 }
 
-/** 종료 결과를 저장한다. 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`를 돌려준다. */
+/**
+ * 종료 결과를 저장한다. 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`를 돌려준다.
+ * 취소를 요청받은 실행 시도는 실행기의 결과와 상관없이 `cancelled`로 끝난다(core `planRunFinish`).
+ */
 export async function finishRun(
   db: Database,
   runId: string,
@@ -185,7 +223,16 @@ export async function finishRun(
   source: Pick<RecordSource, "now">
 ): Promise<Event | undefined> {
   return db.transaction(async (tx) => {
-    const run = await lockRunningRun(tx, runId, "update");
+    const [run] = await tx
+      .select({
+        id: runs.id,
+        organizationId: runs.organizationId,
+        agentId: runs.agentId,
+        cancelReason: runs.cancelReason,
+      })
+      .from(runs)
+      .where(and(eq(runs.id, runId), eq(runs.status, "running")))
+      .for("update");
     if (!run) return undefined;
     const plan = planRunFinish(run, result, source);
     await tx
@@ -232,23 +279,41 @@ export async function failInterruptedRuns(
 }
 
 /**
- * 실행 시도를 받는 조직에서 대기 중인 깨우기가 있는 에이전트. 서버 시작 때 다시 깨운다.
- * 최종 완료 등 admission을 거부하는 조직의 깨우기는 남아 있어도 처리할 것이 아니므로 빠진다.
+ * 실행 시도를 받는 조직에서 대기 중인 깨우기가 있는 에이전트. 서버 시작·조직 재개 때 다시 깨운다.
+ * 최종 완료·일시정지·중단 등 admission을 거부하는 조직과 일시정지한 에이전트의 깨우기는 남아 있어도 지금 처리할 것이 아니므로 빠진다.
  */
 export async function listAgentsWithPendingWakes(
-  db: Database
+  db: Database,
+  { organizationId }: { organizationId?: string } = {}
 ): Promise<string[]> {
   const rows = await db
     .selectDistinct({ agentId: wakes.agentId })
     .from(wakes)
     .innerJoin(organizations, eq(organizations.id, wakes.organizationId))
+    .innerJoin(agents, eq(agents.id, wakes.agentId))
     .where(
       and(
         isNull(wakes.runId),
-        notInArray(organizations.stage, [...runBlockingStages])
+        notInArray(organizations.stage, [...runBlockingStages]),
+        eq(agents.paused, false),
+        organizationId === undefined
+          ? undefined
+          : eq(wakes.organizationId, organizationId)
       )
     );
   return rows.map((r) => r.agentId);
+}
+
+/** 실행 시도에 요청된 사용자 제어 취소. 실행기 등록 직후 다시 읽어, 등록 전에 commit된 취소를 놓치지 않는다. */
+export async function findRunCancelReason(
+  db: Database,
+  runId: string
+): Promise<RunCancelReason | null> {
+  const [row] = await db
+    .select({ cancelReason: runs.cancelReason })
+    .from(runs)
+    .where(eq(runs.id, runId));
+  return row?.cancelReason ?? null;
 }
 
 // ---------- 실행 시도별 토큰과 조직 도구 ----------
@@ -260,7 +325,7 @@ export type ActiveRun = {
   agentRole: AgentRole;
 };
 
-/** 토큰 digest의 실행 시도가 실행 중일 때만 그 신원을 돌려준다. 끝났거나 없으면 `undefined`. */
+/** 토큰 digest의 실행 시도가 실행 중이고 취소를 요청받지 않았을 때만 그 신원을 돌려준다. 그 밖이면 `undefined`. */
 export async function authenticateRun(
   db: Database,
   tokenDigest: string
@@ -271,13 +336,14 @@ export async function authenticateRun(
       organizationId: runs.organizationId,
       agentId: runs.agentId,
       status: runs.status,
+      cancelReason: runs.cancelReason,
       agentRole: agents.role,
     })
     .from(runs)
     .innerJoin(agents, eq(agents.id, runs.agentId))
     .where(eq(runs.tokenDigest, tokenDigest));
-  if (!row || !acceptsToolCalls(row.status)) return undefined;
-  const { status: _status, ...run } = row;
+  if (!row || !acceptsToolCalls(row)) return undefined;
+  const { status: _status, cancelReason: _cancel, ...run } = row;
   return run;
 }
 
@@ -291,7 +357,7 @@ export async function appendRunActivity(
   activity: PublicActivity
 ): Promise<Event | undefined> {
   return db.transaction(async (tx) => {
-    const run = await lockRunningRun(tx, runId, "share");
+    const run = await lockRunningRun(tx, runId);
     if (!run) return undefined;
     return insertEvent(tx, {
       organizationId: run.organizationId,
@@ -309,7 +375,7 @@ export async function insertAgentMessage(
   options: { source: RecordSource; activity: PublicActivity }
 ): Promise<{ message: ConversationMessage; events: Event[] } | undefined> {
   return db.transaction(async (tx) => {
-    const run = await lockRunningRun(tx, runId, "share");
+    const run = await lockRunningRun(tx, runId);
     if (!run) return undefined;
     const plan = planAgentMessage(run, body, options.source);
     await tx.insert(messages).values(messageRow(plan.message));
@@ -482,6 +548,7 @@ export async function findAgentDetail(
   return {
     ...toAgent(agent),
     status: (await findRunningRunId(db, agentId)) ? "running" : "idle",
+    paused: agent.paused,
     instructionsBundleVersion: instructionsBundleVersion(
       await selectInstructions(db, agentId)
     ),
@@ -715,6 +782,7 @@ const runSummaryColumns = {
   organizationId: runs.organizationId,
   agentId: runs.agentId,
   status: runs.status,
+  cancelReason: runs.cancelReason,
   summary: runs.summary,
   error: runs.error,
   startedAt: runs.startedAt,
@@ -728,6 +796,7 @@ const toRunSummary = (row: {
   organizationId: string;
   agentId: string;
   status: RunSummary["status"];
+  cancelReason: RunSummary["cancelReason"];
   summary: string | null;
   error: string | null;
   startedAt: Date;

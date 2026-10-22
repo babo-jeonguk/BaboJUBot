@@ -535,6 +535,69 @@ describe("result submission and final completion", () => {
     expect(await submissions(org.id)).toHaveLength(1);
   });
 
+  it("resumes a paused organization on a decision, completing it at once, and refuses decisions once stopped", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const control = (orgId: string, command: "pause" | "stop") =>
+      t!.request("POST", `/api/organizations/${orgId}/${command}`, {});
+
+    const changing = await submitted(agents, "멈춘 채 수정 요청");
+    await control(changing.id, "pause");
+    const changed = await decide(changing.id, changing.submissionId, {
+      decision: "request_changes",
+      note: "근거를 더 모아 주세요",
+    });
+    expect(changed.status).toBe(200);
+    expect(await organization(changing.id)).toMatchObject({
+      stage: "researching",
+      pausedFrom: null,
+    });
+    expect((await eventsOf(changing.id)).slice(-2)).toMatchObject([
+      { type: "organization.resumed", payload: { stage: "result_review" } },
+      { type: "result.decided", payload: { stage: "researching" } },
+    ]);
+    await t.drain();
+    expect(changesRequested(agents.of(changing.lead.id))).toHaveLength(1);
+
+    const completing = await submitted(agents, "멈춘 채 최종 완료");
+    await control(completing.id, "pause");
+    expect(
+      (
+        await decide(completing.id, completing.submissionId, {
+          decision: "complete",
+        })
+      ).status
+    ).toBe(200);
+    expect(await organization(completing.id)).toMatchObject({
+      stage: "completed",
+      pausedFrom: null,
+    });
+    // 최종 완료한 조직은 제어 명령을 받지 않는다.
+    for (const command of ["pause", "stop"] as const) {
+      const res = await control(completing.id, command);
+      expect(res.status, command).toBe(409);
+      expect(res.body).toEqual({ error: { code: "organization_closed" } });
+    }
+
+    const stopped = await submitted(agents, "중단 뒤 결정");
+    await control(stopped.id, "stop");
+    const refused = await decide(stopped.id, stopped.submissionId, {
+      decision: "complete",
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({ error: { code: "organization_closed" } });
+    expect((await submission(stopped.id, stopped.submissionId)).status).toBe(
+      "pending"
+    );
+    expect(
+      (await inbox()).filter(
+        (item) =>
+          item.kind === "result_submission" &&
+          item.submission.id === stopped.submissionId
+      )
+    ).toEqual([]);
+  });
+
   it("applies one of concurrent decisions once", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });

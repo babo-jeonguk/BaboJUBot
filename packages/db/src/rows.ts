@@ -6,8 +6,8 @@ import type {
   Organization,
   Task,
 } from "@babojubot/contracts";
-import { acceptsToolCalls } from "@babojubot/core";
-import { eq } from "drizzle-orm";
+import { acceptsToolCalls, type RunCancellation } from "@babojubot/core";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   agents,
@@ -63,8 +63,10 @@ export const organizationRow = ({
   addWorkerApproval: approvalPolicy.addWorker,
   createdAt: new Date(organization.createdAt),
 });
-export const toAgent = (row: typeof agents.$inferSelect): Agent =>
-  withIsoTime(row);
+export const toAgent = ({
+  paused: _paused,
+  ...row
+}: typeof agents.$inferSelect): Agent => withIsoTime(row);
 export const toEvent = ({
   agentId: _agentId,
   runId: _runId,
@@ -72,31 +74,29 @@ export const toEvent = ({
 }: typeof events.$inferSelect): Event => withIsoTime(row) as Event;
 
 /**
- * 실행 중인 실행 시도 행을 잠근다. 종료(`update`)와 도구 쓰기(`share`)가 이 잠금으로 직렬화되므로
- * 끝난 실행 시도의 토큰으로는 아무것도 남지 않는다. 실행 중이 아니면 `undefined`.
+ * 조직 도구를 쓸 수 있는 실행 시도 행을 `FOR SHARE`로 잠근다. 종료와 취소 요청(`FOR UPDATE`)이 이 잠금으로 직렬화되므로
+ * 끝났거나 취소를 요청받은 실행 시도의 토큰으로는 아무것도 남지 않는다. 쓸 수 없으면 `undefined`.
  */
-export async function lockRunningRun(
-  tx: Executor,
-  runId: string,
-  strength: "update" | "share"
-) {
+export async function lockRunningRun(tx: Executor, runId: string) {
   const [run] = await tx
     .select({
       id: runs.id,
       organizationId: runs.organizationId,
       agentId: runs.agentId,
       status: runs.status,
+      cancelReason: runs.cancelReason,
     })
     .from(runs)
     .where(eq(runs.id, runId))
-    .for(strength);
-  return run && acceptsToolCalls(run.status) ? run : undefined;
+    .for("share");
+  return run && acceptsToolCalls(run) ? run : undefined;
 }
 
 /**
  * 조직 행을 `FOR NO KEY UPDATE`로 잠근다. 단계 전이는 모두 이 잠금 아래에서 단계를 다시 확인한다.
- * 다른 기록의 FK 확인(`KEY SHARE`)과는 부딪히지 않는다. 실행 시도 admission은 같은 행을 `FOR SHARE`로 잠근 뒤
- * 에이전트 행을 잠그므로(조직 → 에이전트), 이 잠금 아래에서 깨우기·Event를 넣으며 에이전트 행을 기다려도 교착하지 않는다.
+ * 다른 기록의 FK 확인(`KEY SHARE`)과는 부딪히지 않는다. 행 잠금 순서는 어디서나 조직 → 에이전트 → 실행 시도다.
+ * 실행 시도 admission은 같은 행을 `FOR SHARE`로 잠근 뒤 에이전트 행을 잠그고, 도구 쓰기는 이 잠금 뒤에 실행 시도 행을,
+ * 제어 명령은 이 잠금 뒤에 취소할 실행 시도 행을 잠그므로 이 잠금 아래에서 다른 행을 기다려도 교착하지 않는다.
  */
 export async function lockOrganization(tx: Executor, organizationId: string) {
   const [row] = await tx
@@ -105,6 +105,41 @@ export async function lockOrganization(tx: Executor, organizationId: string) {
     .where(eq(organizations.id, organizationId))
     .for("no key update");
   return row;
+}
+
+/**
+ * 취소를 요청받지 않은 진행 중 실행 시도를 잠그고 ID를 돌려준다. 종료 저장이 먼저 잠갔으면 그 종료를 기다린 뒤
+ * 끝난 실행 시도는 빼고 돌려준다(Read Committed의 재확인).
+ */
+export async function lockCancellableRuns(
+  tx: Executor,
+  where: ReturnType<typeof eq>
+): Promise<string[]> {
+  const rows = await tx
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(where, eq(runs.status, "running"), isNull(runs.cancelReason)))
+    .orderBy(runs.seq)
+    .for("update");
+  return rows.map((r) => r.id);
+}
+
+/** 잠근 실행 시도에 취소 요청을 남긴다. 이미 요청받은 실행 시도는 처음 사유를 그대로 둔다. */
+export async function requestCancellation(
+  tx: Executor,
+  cancellation: RunCancellation | null
+) {
+  if (!cancellation?.runIds.length) return;
+  await tx
+    .update(runs)
+    .set({ cancelReason: cancellation.reason })
+    .where(
+      and(
+        inArray(runs.id, cancellation.runIds),
+        eq(runs.status, "running"),
+        isNull(runs.cancelReason)
+      )
+    );
 }
 
 /** 조직 에이전트의 이름. 새 작업자 번호를 정할 때 쓴다. */

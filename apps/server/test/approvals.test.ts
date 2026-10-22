@@ -508,6 +508,7 @@ describe("goal and initial research approval", () => {
       "goal",
       "id",
       "name",
+      "pausedFrom",
       "stage",
     ]);
     // 승인 정책의 항목은 선택 행동뿐이고, 초기 연구 승인을 끄는 항목은 없다(ADR-0003).

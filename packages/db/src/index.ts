@@ -16,3 +16,4 @@ export * from "./research-map.ts";
 export * from "./results.ts";
 export * from "./inbox.ts";
 export * from "./workers.ts";
+export * from "./control.ts";

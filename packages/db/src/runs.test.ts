@@ -17,7 +17,8 @@ import {
   loadRunContext,
 } from "./runs.ts";
 import { insertEvent, lockOrganization } from "./rows.ts";
-import { organizations } from "./schema.ts";
+import { organizations, runs } from "./schema.ts";
+import { toolWrite } from "./tool-calls.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 
 let t: TestDatabase;
@@ -134,19 +135,19 @@ describe("wake queue admission", () => {
   });
 });
 
-describe("admission and organization stage", () => {
-  /** 다른 연결이 행 잠금을 기다리기 시작할 때까지. */
-  const someoneWaitsForALock = async () => {
-    for (let i = 0; i < 200; i++) {
-      const { rows } = await t.db.execute(
-        sql`select 1 from pg_stat_activity where wait_event_type = 'Lock'`
-      );
-      if (rows.length) return;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    throw new Error("no connection waited for a lock");
-  };
+/** 다른 연결이 행 잠금을 기다리기 시작할 때까지. */
+const someoneWaitsForALock = async () => {
+  for (let i = 0; i < 200; i++) {
+    const { rows } = await t.db.execute(
+      sql`select 1 from pg_stat_activity where wait_event_type = 'Lock'`
+    );
+    if (rows.length) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("no connection waited for a lock");
+};
 
+describe("admission and organization stage", () => {
   it("serializes a claim behind a stage transition that wakes the same agent, and refuses it once the organization is completed", async () => {
     const { lead, send, claim } = await organization();
     await send("완료 직전 메시지");
@@ -199,6 +200,62 @@ describe("admission and organization stage", () => {
     await send("완료 뒤 메시지");
     expect(await finishRun(t.db, run!.run.id, completed, source)).toBeDefined();
     expect(await claim()).toBeUndefined();
+  });
+});
+
+describe("control commands", () => {
+  it("lets a tool write wait behind a cancellation without a deadlock and then refuses it", async () => {
+    const { lead, send, claim } = await organization();
+    await send("x");
+    const digest = randomUUID();
+    const runId = (await claim(digest))!.run.id;
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let markLocked!: () => void;
+    const locked = new Promise<void>((r) => (markLocked = r));
+    // 제어 명령처럼 조직 행을 잠근 채, 도구 쓰기가 기다리기 시작한 뒤 실행 시도 행에 취소를 요청한다.
+    const cancelling = t.db.transaction(async (tx) => {
+      await lockOrganization(tx, lead.organizationId);
+      markLocked();
+      await released;
+      await tx
+        .update(runs)
+        .set({ cancelReason: "organization_paused" })
+        .where(eq(runs.id, runId));
+    });
+    await locked;
+    let wrote = false;
+    const writing = toolWrite(
+      t.db,
+      { id: runId, agentRole: "lead" },
+      "record_goal",
+      {
+        source: "control_plane",
+        activity: { type: "org_tool", tool: "record_goal", summary: "x" },
+      },
+      async () => {
+        wrote = true;
+        return { kind: "ok", value: null, events: [] };
+      }
+    );
+    await someoneWaitsForALock();
+    release();
+
+    // 실행 시도 행을 먼저 잠그는 도구 쓰기면 여기서 교착(40P01)한다.
+    await cancelling;
+    expect(await writing).toEqual({ kind: "run_finished" });
+    expect(wrote).toBe(false);
+    expect(await authenticateRun(t.db, digest)).toBeUndefined();
+    // 실행기가 돌려준 결과와 상관없이 취소로 끝나고, 그 뒤에야 다음 실행 시도가 생긴다.
+    await send("y");
+    expect(await claim()).toBeUndefined();
+    await finishRun(t.db, runId, completed, source);
+    expect((await listRuns(t.db, lead.organizationId)).at(-1)).toMatchObject({
+      id: runId,
+      status: "cancelled",
+      cancelReason: "organization_paused",
+    });
+    expect(await claim()).toBeDefined();
   });
 });
 

@@ -202,12 +202,25 @@ export const runResultSchema = z.strictObject({
 export type RunResult = z.infer<typeof runResultSchema>;
 
 /**
- * 제어: 취소. Control Plane은 이 값을 `signal.reason`으로 전한다. 사용자 중단 제어(#59)가 사유를 더한다.
+ * 사용자 제어 명령이 실행 시도를 취소한 사유: 조직 일시정지·조직 중단·에이전트 일시정지·`중단하고 반영`.
+ * 실행 시도에 영속하며, 요청한 순간 그 실행 시도의 토큰은 조직 도구를 쓸 수 없다.
+ */
+export const runCancelReasons = [
+  "organization_paused",
+  "organization_stopped",
+  "agent_paused",
+  "owner_interrupt",
+] as const;
+export const runCancelReasonSchema = z.enum(runCancelReasons);
+export type RunCancelReason = z.infer<typeof runCancelReasonSchema>;
+
+/**
+ * 제어: 취소. Control Plane은 이 값을 `signal.reason`으로 전한다. 서버 종료 또는 사용자 제어({@link RunCancelReason})가 사유다.
  * 취소는 요청일 뿐이고, 실행 시도는 실행기가 정리를 끝내고 결과를 돌려준 뒤에 끝난다.
  */
 export const runCancelSchema = z.strictObject({
   type: z.literal("cancel"),
-  reason: z.enum(["server_shutdown"]),
+  reason: z.enum(["server_shutdown", ...runCancelReasons]),
 });
 export type RunCancel = z.infer<typeof runCancelSchema>;
 
@@ -232,6 +245,8 @@ export const runSummarySchema = z.object({
   organizationId: z.uuid(),
   agentId: z.uuid(),
   status: runStatusSchema,
+  /** 사용자 제어가 요청한 취소. 실행 중이면 실행기가 정리하는 중이고, 끝나면 `cancelled`다. */
+  cancelReason: runCancelReasonSchema.nullable(),
   wakeCount: z.number().int().positive(),
   summary: z.string().nullable(),
   error: z.string().nullable(),
@@ -248,6 +263,8 @@ export const agentDetailSchema = z.object({
   name: z.string(),
   createdAt: z.iso.datetime({ offset: true }),
   status: agentStatusSchema,
+  /** 사용자가 이 에이전트를 일시정지했다. 조직 일시정지와 따로이며, 에이전트 재개로만 풀린다. */
+  paused: z.boolean(),
   /** 현재 사본에서 정한 지침 bundle 버전. 다음 실행 시도가 받는다. */
   instructionsBundleVersion: z.string().nullable(),
   recentRuns: z.array(runSummarySchema),

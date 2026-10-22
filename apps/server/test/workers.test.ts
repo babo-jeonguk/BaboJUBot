@@ -294,6 +294,39 @@ describe("add_worker approval policy", () => {
     ]);
   });
 
+  it("decides a waiting request while the organization is paused without resuming it, and the Lead hears it after the resume", async () => {
+    const s = await leadSession("일시정지 중 작업자 결정");
+    await setPolicy(s.org.id, { addWorker: true });
+    const before = await workersOf(s.org.id);
+    const approvalId = (await s.addWorker()).body.approval.id as string;
+    await s.finish();
+    expect(
+      (await t!.request("POST", `/api/organizations/${s.org.id}/pause`, {}))
+        .status
+    ).toBe(200);
+
+    const decided = await decide(s.org.id, approvalId, { decision: "approve" });
+    expect(decided.status).toBe(200);
+    await t!.drain();
+    expect(await workersOf(s.org.id)).toHaveLength(before.length + 1);
+    expect(await organization(s.org.id)).toMatchObject({
+      stage: "paused",
+      pausedFrom: "researching",
+    });
+    expect(
+      (await eventsOf(s.org.id)).filter(
+        (e) => e.type === "organization.resumed"
+      )
+    ).toEqual([]);
+    expect(workerDecisions(s.agents.of(s.org.lead.id))).toEqual([]);
+
+    await t!.request("POST", `/api/organizations/${s.org.id}/resume`, {});
+    await t!.drain();
+    expect(workerDecisions(s.agents.of(s.org.lead.id))).toEqual([
+      expect.objectContaining({ approvalId, decision: "approve" }),
+    ]);
+  });
+
   it("keeps each call a separate request, and leaves waiting requests in place when the policy is turned off", async () => {
     const s = await leadSession("여러 요청 조직");
     await setPolicy(s.org.id, { addWorker: true });

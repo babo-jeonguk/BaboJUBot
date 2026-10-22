@@ -6,3 +6,4 @@ export * from "./result.ts";
 export * from "./task.ts";
 export * from "./research-map.ts";
 export * from "./worker.ts";
+export * from "./control.ts";

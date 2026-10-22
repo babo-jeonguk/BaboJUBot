@@ -42,6 +42,7 @@ export function planOrganizationCreation(
     goal: null,
     completionCriteria: null,
     approvalPolicy: defaultApprovalPolicy,
+    pausedFrom: null,
     createdAt,
   };
   const lead: Agent = {
