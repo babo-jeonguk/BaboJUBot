@@ -2,7 +2,6 @@ import type {
   ArtifactSummary,
   DecideResultInput,
   Event,
-  PublicActivity,
   ResultSubmission,
   ResultSubmissionSummary,
   SubmitResultInput,
@@ -31,7 +30,12 @@ import {
   resultSubmissions,
   wakes,
 } from "./schema.ts";
-import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
+import {
+  toolWrite,
+  type ActiveRunRef,
+  type ToolCall,
+  type ToolWrite,
+} from "./tool-calls.ts";
 
 // 결과 제출과 사용자의 결과 검토 결정의 저장. 단계 전이는 모두 조직 행 잠금 아래에서 단계를 다시 확인하고,
 // 결정은 `pending`인 제출에만 조건부로 적용해 한 번만 일어난다. 제출·결정과 그 효과(단계·근거 산출물·Lead 깨우기·Event)는
@@ -46,63 +50,57 @@ export function submitResult(
   db: Database,
   run: ActiveRunRef,
   input: SubmitResultInput,
-  { source, activity }: { source: RecordSource; activity: PublicActivity }
+  { source, ...call }: ToolCall & { source: RecordSource }
 ): Promise<ToolWrite<ResultSubmission, "not_found">> {
-  return toolWrite(
-    db,
-    run,
-    "submit_result",
-    activity,
-    async (tx, locked, org) => {
-      const found = await selectArtifactSummaries(
-        tx,
-        locked.organizationId,
-        input.artifactIds
-      );
-      if (found.length !== input.artifactIds.length)
-        return { kind: "invalid", problem: "not_found" };
-      const [previous] = await tx
-        .select({ id: resultSubmissions.id })
-        .from(resultSubmissions)
-        .where(eq(resultSubmissions.organizationId, locked.organizationId))
-        .orderBy(desc(resultSubmissions.seq))
-        .limit(1);
-      const plan = planResultSubmission(
-        locked,
-        org,
-        input,
-        previous?.id ?? null,
-        source
-      );
-      const { artifactIds, ...submission } = plan.submission;
-      const [row] = await tx
-        .insert(resultSubmissions)
-        .values({
-          ...submission,
-          status: "pending",
-          createdAt: new Date(submission.createdAt),
-        })
-        .returning();
-      await tx.insert(resultSubmissionArtifacts).values(
-        artifactIds.map((artifactId, position) => ({
-          organizationId: locked.organizationId,
-          submissionId: submission.id,
-          artifactId,
-          position,
-        }))
-      );
-      await tx
-        .update(organizations)
-        .set({ stage: plan.stage })
-        .where(eq(organizations.id, locked.organizationId));
-      const event = await insertEvent(tx, plan.event);
-      return {
-        kind: "ok",
-        value: toResultSubmission(row!, found),
-        events: [event],
-      };
-    }
-  );
+  return toolWrite(db, run, "submit_result", call, async (tx, locked, org) => {
+    const found = await selectArtifactSummaries(
+      tx,
+      locked.organizationId,
+      input.artifactIds
+    );
+    if (found.length !== input.artifactIds.length)
+      return { kind: "invalid", problem: "not_found" };
+    const [previous] = await tx
+      .select({ id: resultSubmissions.id })
+      .from(resultSubmissions)
+      .where(eq(resultSubmissions.organizationId, locked.organizationId))
+      .orderBy(desc(resultSubmissions.seq))
+      .limit(1);
+    const plan = planResultSubmission(
+      locked,
+      org,
+      input,
+      previous?.id ?? null,
+      source
+    );
+    const { artifactIds, ...submission } = plan.submission;
+    const [row] = await tx
+      .insert(resultSubmissions)
+      .values({
+        ...submission,
+        status: "pending",
+        createdAt: new Date(submission.createdAt),
+      })
+      .returning();
+    await tx.insert(resultSubmissionArtifacts).values(
+      artifactIds.map((artifactId, position) => ({
+        organizationId: locked.organizationId,
+        submissionId: submission.id,
+        artifactId,
+        position,
+      }))
+    );
+    await tx
+      .update(organizations)
+      .set({ stage: plan.stage })
+      .where(eq(organizations.id, locked.organizationId));
+    const event = await insertEvent(tx, plan.event);
+    return {
+      kind: "ok",
+      value: toResultSubmission(row!, found),
+      events: [event],
+    };
+  });
 }
 
 /** 결정 결과. `resumed`면 일시정지 중이던 조직을 이 결정이 재개했고, `events`는 재개·결정 Event 순서다. */

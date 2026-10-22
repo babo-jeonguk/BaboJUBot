@@ -28,7 +28,7 @@ export type OrgToolOutput<T extends OrgToolName> = ReturnType<
 export type OrgToolClient = {
   /**
    * 도구 하나를 부른다. GET은 `input`을 query string으로, 그 밖은 본문으로 보낸다. 거부되면 {@link OrgToolError}.
-   * `idempotencyKey`는 같은 효과를 한 번만 남기는 호출 키다(contracts `idempotentOrgTools`).
+   * `idempotencyKey`는 같은 효과를 한 번만 남기는 호출 키다(contracts `idempotencyKeyHeader`).
    */
   call<T extends OrgToolName>(
     tool: T,

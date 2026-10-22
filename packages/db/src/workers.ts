@@ -1,8 +1,4 @@
-import type {
-  AddWorkerInput,
-  AddWorkerResult,
-  PublicActivity,
-} from "@babojubot/contracts";
+import type { AddWorkerInput, AddWorkerResult } from "@babojubot/contracts";
 import {
   buildAddWorkerProposal,
   planAddWorker,
@@ -20,7 +16,12 @@ import {
   toOrganization,
 } from "./rows.ts";
 import { agents, approvals, instructionCopies } from "./schema.ts";
-import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
+import {
+  toolWrite,
+  type ActiveRunRef,
+  type ToolCall,
+  type ToolWrite,
+} from "./tool-calls.ts";
 
 /**
  * Lead의 작업자 추가. 조직 행 잠금 아래에서 읽은 최신 승인 정책으로 갈린다. 꺼져 있으면 작업자·그 사본·Event를,
@@ -30,17 +31,16 @@ export function addWorker(
   db: Database,
   run: ActiveRunRef,
   input: AddWorkerInput,
-  options: {
+  options: ToolCall & {
     library: HarnessLibraryContents;
     source: RecordSource;
-    activity: PublicActivity;
   }
 ): Promise<ToolWrite<AddWorkerResult, "unknown_role">> {
   return toolWrite<AddWorkerResult, "unknown_role">(
     db,
     run,
     "add_worker",
-    options.activity,
+    options,
     async (tx, locked, org) => {
       const proposal = buildAddWorkerProposal(input, options.library);
       if (typeof proposal === "string")

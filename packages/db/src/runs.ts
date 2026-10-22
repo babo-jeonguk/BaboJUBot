@@ -44,11 +44,7 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
-import {
-  toolWriteOnce,
-  type ToolOperation,
-  type ToolWrite,
-} from "./tool-calls.ts";
+import { toolWrite, type ToolCall, type ToolWrite } from "./tool-calls.ts";
 import {
   hasPendingHeartbeat,
   insertEvent,
@@ -433,34 +429,22 @@ export async function appendRunActivity(
 
 /**
  * 조직 도구 메시지 보내기. 메시지와 도구 호출 요약을 종료와 직렬화한 한 transaction으로 남긴다(`toolWrite`).
- * 같은 호출 키를 주면 그 에이전트의 같은 키는 한 번만 보낸다. 서버 재시작 뒤 같은 깨우기를 다시 받은 실행 시도가 답장을 되풀이하지 않는다.
  */
 export async function insertAgentMessage(
   db: Database,
   run: ActiveRun,
   body: string,
-  options: {
-    source: RecordSource;
-    activity: PublicActivity;
-    operation?: ToolOperation;
-  }
-): Promise<ToolWrite<ConversationMessage, "idempotency_conflict">> {
-  return toolWriteOnce(
-    db,
-    run,
-    "send_message",
-    options.activity,
-    options.operation,
-    async (tx, locked) => {
-      const plan = planAgentMessage(locked, body, options.source);
-      await tx.insert(messages).values(messageRow(plan.message));
-      return {
-        kind: "ok",
-        value: plan.message,
-        events: [await insertEvent(tx, plan.event)],
-      };
-    }
-  );
+  options: ToolCall & { source: RecordSource }
+): Promise<ToolWrite<ConversationMessage, never>> {
+  return toolWrite(db, run, "send_message", options, async (tx, locked) => {
+    const plan = planAgentMessage(locked, body, options.source);
+    await tx.insert(messages).values(messageRow(plan.message));
+    return {
+      kind: "ok",
+      value: plan.message,
+      events: [await insertEvent(tx, plan.event)],
+    };
+  });
 }
 
 /** 실행 시도 요청과 내 실행 맥락 조회가 같은 내용을 쓴다. 이 실행 시도까지 전달된 기록만 담는다. */

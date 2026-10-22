@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  idempotentOrgTools,
+  orgToolMethods,
   resultArtifactsMax,
   type AddWorkerResult,
   resultSummaryMaxLength,
@@ -619,8 +619,8 @@ export function createScriptedRuntime({
         sent: [],
         calls: [],
       };
-      // 효과를 남기는 호출의 키: 받은 깨우기 묶음과 그 안에서 몇 번째 효과인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
-      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·기억을 되풀이하지 않는다. 새 깨우기가 섞이면 키가 달라진다.
+      // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
+      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 새 깨우기가 섞이면 키가 달라진다.
       const bundle = createHash("sha256")
         .update(request.wakeReasons.map((r) => r.wakeId).join(","))
         .digest("hex")
@@ -653,11 +653,7 @@ export function createScriptedRuntime({
                   step.tool,
                   step.input?.(state),
                   step.params?.(state),
-                  (idempotentOrgTools as readonly OrgToolName[]).includes(
-                    step.tool
-                  )
-                    ? once()
-                    : {}
+                  orgToolMethods[step.tool] === "GET" ? {} : once()
                 );
                 state.calls.push({ tool: step.tool, ok: true, output });
               } catch (error) {

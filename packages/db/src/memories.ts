@@ -1,8 +1,4 @@
-import type {
-  MemoryEntry,
-  PublicActivity,
-  WriteMemoryInput,
-} from "@babojubot/contracts";
+import type { MemoryEntry, WriteMemoryInput } from "@babojubot/contracts";
 import {
   memoryScopeOf,
   memorySourceOf,
@@ -16,11 +12,7 @@ import type { Database } from "./client.ts";
 import { insertEvent, type Executor } from "./rows.ts";
 import type { ActiveRun } from "./runs.ts";
 import { memories } from "./schema.ts";
-import {
-  toolWriteOnce,
-  type ToolOperation,
-  type ToolWrite,
-} from "./tool-calls.ts";
+import { toolWrite, type ToolCall, type ToolWrite } from "./tool-calls.ts";
 
 /**
  * Memory port의 첫 판 구현: 저장과 최근순·문자열 일치 회수. 범위의 조직·에이전트로만 거르고(같음 비교),
@@ -73,39 +65,25 @@ const inScope = (scope: MemoryScopeKey) =>
     ? and(eq(memories.scope, "organization"), isNull(memories.agentId))
     : and(eq(memories.scope, "agent"), eq(memories.agentId, scope.agentId));
 
-/**
- * 조직 도구 기억 쓰기. 범위와 출처는 실행 시도 신원(토큰)에서 정한다. 종료·취소된 실행 시도의 토큰으로는 남지 않는다(`toolWrite`).
- * 같은 호출 키를 주면 그 에이전트의 같은 키는 한 번만 쓴다.
- */
+/** 조직 도구 기억 쓰기. 범위와 출처는 실행 시도 신원(토큰)에서 정한다. 종료·취소된 실행 시도의 토큰으로는 남지 않는다(`toolWrite`). */
 export async function writeMemory(
   db: Database,
   run: ActiveRun,
   input: WriteMemoryInput,
-  options: {
-    source: RecordSource;
-    activity: PublicActivity;
-    operation?: ToolOperation;
-  }
-): Promise<ToolWrite<MemoryEntry, "idempotency_conflict">> {
-  return toolWriteOnce(
-    db,
-    run,
-    "write_memory",
-    options.activity,
-    options.operation,
-    async (tx, locked) => {
-      const entry = await dbMemory(tx, options.source).write(
-        memoryScopeOf(locked, input.scope),
-        { content: input.content },
-        memorySourceOf(locked)
-      );
-      return {
-        kind: "ok",
-        value: entry,
-        events: [await insertEvent(tx, memoryWrittenEvent(entry))],
-      };
-    }
-  );
+  options: ToolCall & { source: RecordSource }
+): Promise<ToolWrite<MemoryEntry, never>> {
+  return toolWrite(db, run, "write_memory", options, async (tx, locked) => {
+    const entry = await dbMemory(tx, options.source).write(
+      memoryScopeOf(locked, input.scope),
+      { content: input.content },
+      memorySourceOf(locked)
+    );
+    return {
+      kind: "ok",
+      value: entry,
+      events: [await insertEvent(tx, memoryWrittenEvent(entry))],
+    };
+  });
 }
 
 const toMemoryEntry = (row: typeof memories.$inferSelect): MemoryEntry => ({

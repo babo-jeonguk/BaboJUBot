@@ -240,8 +240,10 @@ describe("control commands", () => {
       { id: runId, agentRole: "lead" },
       "record_goal",
       {
-        source: "control_plane",
-        activity: { type: "org_tool", tool: "record_goal", summary: "x" },
+        activity: {
+          source: "control_plane",
+          activity: { type: "org_tool", tool: "record_goal", summary: "x" },
+        },
       },
       async () => {
         wrote = true;

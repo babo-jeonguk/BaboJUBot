@@ -16,6 +16,7 @@ import {
   writeMemoryInputSchema,
   updateResearchNodeInputSchema,
   createTaskInputSchema,
+  orgToolMethods,
   orgToolPaths,
   recordArtifactInputSchema,
   recordGoalInputSchema,
@@ -58,6 +59,7 @@ import {
   type ActiveRun,
   type Database,
   type MapCommand,
+  type ToolCall,
   type ToolOperation,
   type ToolWrite,
 } from "@babojubot/db";
@@ -154,6 +156,11 @@ export function orgToolsRouter({
         hub.publish(gate.event);
         return refuseByRule(res, gate.reason);
       }
+      if (orgToolMethods[name] !== "GET") {
+        const operation = operationOf(req);
+        if (operation === false) return refuse(res, 422, "invalid_input");
+        res.locals.operation = operation;
+      }
       await handler(req, res, run);
     };
   const refuseByRule = (res: express.Response, reason: ToolRefusalReason) =>
@@ -161,12 +168,11 @@ export function orgToolsRouter({
       ? refuse(res, 403, "forbidden")
       : refuse(res, 409, "stage_closed");
   /**
-   * `Idempotency-Key` header의 같은 호출 키. 없으면 `undefined`, 계약 밖이면 `false`.
-   * 같은 키에 다른 입력이 오는지는 검사한 입력의 digest로 가린다.
+   * 쓰기 도구의 `Idempotency-Key` header. 없으면 `undefined`, 계약 밖이면 `false`.
+   * 같은 키에 다른 입력이 오는지는 경로 변수와 본문의 digest로 가린다.
    */
   const operationOf = (
-    req: express.Request,
-    input: unknown
+    req: express.Request
   ): ToolOperation | undefined | false => {
     const header = req.headers[idempotencyKeyHeader];
     if (header === undefined) return undefined;
@@ -174,9 +180,20 @@ export function orgToolsRouter({
     if (!key.success) return false;
     return {
       key: key.data,
-      digest: createHash("sha256").update(JSON.stringify(input)).digest("hex"),
+      digest: createHash("sha256")
+        .update(JSON.stringify({ params: req.params, body: req.body ?? null }))
+        .digest("hex"),
     };
   };
+  /** 쓰기 도구 호출 하나: 공개 활동 요약과 그 요청의 같은 호출 키. */
+  const callOf = (
+    res: express.Response,
+    tool: OrgToolName,
+    summary: string
+  ): ToolCall => ({
+    activity: toolActivity(tool, summary),
+    operation: res.locals.operation as ToolOperation | undefined,
+  });
   /**
    * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다.
    * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
@@ -242,17 +259,15 @@ export function orgToolsRouter({
     tool("send_message", async (req, res, run) => {
       const input = sendAgentMessageInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      const operation = operationOf(req, input.data);
-      if (operation === false) return refuse(res, 422, "invalid_input");
       respondWrite(
         res,
         await insertAgentMessage(db, run, input.data.body, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "send_message",
             `Lead 대화에 답장 (${chars(input.data.body)}자)`
           ),
-          operation,
         })
       );
     })
@@ -283,7 +298,7 @@ export function orgToolsRouter({
           db,
           run,
           input.data,
-          toolActivity("record_goal", "연구 목표와 완료 기준 기록")
+          callOf(res, "record_goal", "연구 목표와 완료 기준 기록")
         )
       );
     })
@@ -300,7 +315,8 @@ export function orgToolsRouter({
         await insertInitialApprovalRequest(db, run, input.data, {
           library: await loadHarnessLibrary(harnessDir),
           source: { newId: randomUUID, now },
-          activity: toolActivity(
+          ...callOf(
+            res,
             "request_initial_approval",
             `초기 연구 승인 요청: 작업자 ${heads}명, 템플릿 ${input.data.template}`
           ),
@@ -318,7 +334,8 @@ export function orgToolsRouter({
         res,
         await createTask(db, run, input.data, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "create_task",
             `작업 생성: ${quote(input.data.title)}${input.data.parentTaskId ? " (하위 작업)" : ""}${input.data.researchNodeId ? " (연구 노드 연결)" : ""}`
           ),
@@ -370,7 +387,7 @@ export function orgToolsRouter({
         res,
         await startTask(db, run, param(req, "taskId"), {
           source,
-          activity: toolActivity("start_task", "작업 착수"),
+          ...callOf(res, "start_task", "작업 착수"),
         }),
         200
       );
@@ -386,7 +403,8 @@ export function orgToolsRouter({
         res,
         await completeTask(db, run, param(req, "taskId"), input.data.summary, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "complete_task",
             `작업 완료와 자기 보고 (${chars(input.data.summary)}자)`
           ),
@@ -405,7 +423,8 @@ export function orgToolsRouter({
         res,
         await commentTask(db, run, param(req, "taskId"), input.data.body, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "comment_task",
             `작업 댓글 (${chars(input.data.body)}자)`
           ),
@@ -423,7 +442,8 @@ export function orgToolsRouter({
         res,
         await recordArtifact(db, run, input.data, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "record_artifact",
             `산출물 기록: ${quote(input.data.title)} (${input.data.format}, ${chars(input.data.content)}자)`
           ),
@@ -462,7 +482,8 @@ export function orgToolsRouter({
         res,
         await sendAgentToAgentMessage(db, run, input.data, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "message_agent",
             `같은 조직 에이전트에게 메시지 (${chars(input.data.body)}자)`
           ),
@@ -522,7 +543,7 @@ export function orgToolsRouter({
         res,
         await writeResearchMap(db, run, command(input.data, req), {
           source,
-          activity: toolActivity(name, summary(input.data)),
+          ...callOf(res, name, summary(input.data)),
         }),
         status
       );
@@ -640,7 +661,7 @@ export function orgToolsRouter({
       const result = await addWorker(db, run, input.data, {
         library: await loadHarnessLibrary(harnessDir),
         source,
-        activity: toolActivity("add_worker", `작업자 추가: ${input.data.role}`),
+        ...callOf(res, "add_worker", `작업자 추가: ${input.data.role}`),
       });
       respondWrite(
         res,
@@ -661,7 +682,8 @@ export function orgToolsRouter({
         res,
         await submitResult(db, run, input.data, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "submit_result",
             `결과 제출: 요약 ${chars(input.data.summary)}자, 근거 산출물 ${input.data.artifactIds.length}개`
           ),
@@ -676,17 +698,15 @@ export function orgToolsRouter({
     tool("write_memory", async (req, res, run) => {
       const input = writeMemoryInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      const operation = operationOf(req, input.data);
-      if (operation === false) return refuse(res, 422, "invalid_input");
       respondWrite(
         res,
         await writeMemory(db, run, input.data, {
           source,
-          activity: toolActivity(
+          ...callOf(
+            res,
             "write_memory",
             `${scopeLabel[input.data.scope]} 쓰기 (${chars(input.data.content)}자)`
           ),
-          operation,
         })
       );
     })

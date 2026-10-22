@@ -3,7 +3,6 @@ import type {
   Event,
   MapActor,
   OrgToolName,
-  PublicActivity,
   ResearchLink,
   ResearchMap,
   ResearchMapEdit,
@@ -50,7 +49,12 @@ import {
   tasks,
   wakes,
 } from "./schema.ts";
-import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
+import {
+  toolWrite,
+  type ActiveRunRef,
+  type ToolCall,
+  type ToolWrite,
+} from "./tool-calls.ts";
 
 // 연구 지도의 저장. 에이전트 도구와 사용자 편집 모두 조직 행 잠금 아래에서 최신 지도(조직 사본 템플릿·모든 노드)를 따로 읽어
 // core 규칙을 적용하므로, 같은 조직의 동시 구조 편집이 순환을 남기지 않는다. 변경·편집 기록·Event와 사용자 편집의 Lead 깨우기는
@@ -100,13 +104,13 @@ export function writeResearchMap<C extends MapCommand>(
   db: Database,
   run: ActiveRunRef,
   command: C,
-  { source, activity }: { source: RecordSource; activity: PublicActivity }
+  { source, ...call }: ToolCall & { source: RecordSource }
 ): Promise<ToolWrite<MapCommandValue<C>, MapRuleProblem>> {
   return toolWrite(
     db,
     run,
     mapCommandTools[command.op],
-    activity,
+    call,
     async (tx, locked) => {
       const map = await loadMap(tx, locked.organizationId);
       // 연구 진행 단계의 조직은 초기 연구 승인으로 템플릿 사본을 갖는다.

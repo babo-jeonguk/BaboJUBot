@@ -133,7 +133,7 @@
 | 에이전트 상세 heartbeat 폼(고치는 동안 입력 유지·저장 실패·다음 heartbeat·일시정지 안내), 실행 시도 상세의 heartbeat 사유 | agents.tsx `HeartbeatSettings`·`WakeReasonRow`, api.ts `useUpdateHeartbeat`, activity.tsx | heartbeat E2E(다른 탭·390px·실패 시 입력 유지) |
 | 기억 범위·출처를 실행 시도 신원에서 정함, Memory port | [contracts/memory.ts](../../packages/contracts/src/memory.ts), [core/memory.ts](../../packages/core/src/memory.ts) `MemoryPort`·`memoryScopeOf` | 기억 API |
 | 기억 저장·최근순·글자 그대로의 회수, 같은 조직 범위·출처(복합 FK) | [db/memories.ts](../../packages/db/src/memories.ts) `dbMemory`·`writeMemory`; schema `memories` | 기억 API |
-| 같은 호출 키의 한 번만 남는 효과(`Idempotency-Key`) | contracts tools.ts `idempotentOrgTools`, db/tool-calls.ts `toolWriteOnce`·schema `tool_operations`, server/tools.ts `operationOf`, runtime/scripted.ts 키 정하기 | 기억 API, 재시작 복구 API |
+| 모든 쓰기 도구의 같은 호출 키(`Idempotency-Key`)·한 번만 남는 효과 | contracts tools.ts `idempotencyKeyHeader`, db/tool-calls.ts `toolWrite`(`ToolCall.operation`)·schema `tool_operations`, server/tools.ts `operationOf`·`callOf`, runtime/scripted.ts 키 정하기 | [같은 호출 키 API](../../apps/server/test/idempotency.test.ts), 기억 API, 재시작 복구 API |
 | 서버 재시작 복구(종료·깨우기 복원·Event 한 transaction, 기존 취소 사유 보존), 정상 종료 때 같은 처리 | core/run.ts `planRunInterruption`, db/runs.ts `interruptRun`·`recoverInterruptedRuns`, server/dispatcher.ts `start`·`#execute` | [DB](../../packages/db/src/runs.test.ts) `run termination`, 재시작 복구 API |
 | 실행 시도가 받은 깨우기 기록(재전달 뒤에도 옛 상세·개수 유지) | schema `run_wakes`·migration 0008 backfill, db/runs.ts `claimNextRun`·`selectRunWakes`·`wakeCount` | 재시작 복구 API |
 
@@ -253,7 +253,7 @@ HeartbeatScheduler.tick(주입 시계) → runDueHeartbeats(에이전트마다: 
   → server_restart·깨우기 복원·run.finished → 대기 깨우기 kick → scheduler 시작
 ```
 
-중복 heartbeat는 `wakes_one_pending_heartbeat_per_agent`와 planHeartbeat의 대기 확인, 재전달된 입력의 옛 상세는 `run_wakes`, 되풀이된 답장·기억은 `toolWriteOnce`에서 시작합니다.
+중복 heartbeat는 `wakes_one_pending_heartbeat_per_agent`와 planHeartbeat의 대기 확인, 재전달된 입력의 옛 상세는 `run_wakes`, 되풀이된 쓰기는 `toolWrite`의 호출 키 확인에서 시작합니다.
 
 ### 작업자 추가와 승인 정책
 
