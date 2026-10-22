@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import {
+  orgToolMethods,
   resultArtifactsMax,
   type AddWorkerResult,
   resultSummaryMaxLength,
@@ -99,6 +101,8 @@ export function describeWakeReason(reason: WakeReason): string {
       return `사용자의 연구 지도 편집: ${reason.summary}`;
     case "result_changes_requested":
       return `제출한 결과에 수정 요청: ${quote(reason.note)}`;
+    case "heartbeat":
+      return "heartbeat 간격이 지남";
   }
 }
 
@@ -121,6 +125,21 @@ const leadReplySteps = (
   },
   { do: "send_message", body },
 ];
+
+/** 사건 없이 heartbeat로만 깨어났을 때: 맥락을 읽고 활동만 남긴다. 사용자에게 답장하지 않는다. */
+export const heartbeatScript: Script = {
+  steps: [
+    { do: "read_context" },
+    {
+      do: "emit",
+      activity: {
+        type: "progress",
+        text: "heartbeat로 깨어나 맥락을 확인했습니다. 새 사건이 없어 할 일이 없습니다.",
+      },
+    },
+  ],
+  summary: () => "heartbeat: 새 사건이 없습니다.",
+};
 
 /** 사용자 메시지에 대한 Lead의 기본 시나리오: 맥락을 읽고 받은 깨우기 사유를 모두 짚어 답장한다. */
 export const leadReplyScript: Script = {
@@ -182,43 +201,76 @@ export function parseGoalMessage(
  *   승인 정책이 켜져 있으면 승인 요청이 되었다고 알린다. 작업자 추가 요청의 결정에는 답장만 한다.
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
  *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
+ * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
+ *
+ * 단계를 바꾸는 쓰기(목표 기록 → 계획 수립, 초기 연구 승인 요청 → 승인 대기, 결과 제출 → 결과 검토 중) 뒤에 서버가 멈추면,
+ * 같은 깨우기를 다시 받은 실행 시도는 바뀐 단계에서 시작한다. 그때는 저장된 단계·목표로 이미 한 쓰기를 알아보고 건너뛰어
+ * 그 흐름의 남은 단계부터 이어 간다. 단계 규칙은 그대로라 끝난 단계의 도구를 다시 부르지 않는다.
  */
 export function demoLeadScript(request: RunRequest): Script {
-  const { stage } = request.context.organization;
+  const {
+    stage,
+    goal: recorded,
+    completionCriteria,
+  } = request.context.organization;
   const messages = request.wakeReasons.flatMap((r) =>
     r.kind === "owner_message" ? [r.body] : []
   );
-  const goal = messages.map(parseGoalMessage).findLast(Boolean);
+  const goals = messages.flatMap((m) => parseGoalMessage(m) ?? []);
+  const sentBack = request.wakeReasons.findLast(
+    (r) => r.kind === "approval_decision" && r.decision !== "approve"
+  );
+  const proposing = stage === "planning" || stage === "awaiting_approval";
 
-  if (stage === "goal_setting" && goal)
+  // 목표 설정에서는 마지막 목표 메시지를 기록한다. 계획 수립·승인 대기에서는 받은 목표 메시지 중 이미 기록한 목표가 있으면
+  // 그 흐름을 이어 간다. 다시 대기한 깨우기에 새 메시지가 합쳐져도 마지막 메시지와 상관없이 기록한 목표를 찾는다.
+  const goal =
+    stage === "goal_setting"
+      ? goals.at(-1)
+      : proposing && !sentBack
+        ? goals.find(
+            (g) =>
+              g.goal === recorded && g.completionCriteria === completionCriteria
+          )
+        : undefined;
+  // 기록한 목표와 다른 목표 메시지. 목표 설정이 끝나면 목표를 기록하는 도구가 닫히므로 반영하지 않았다고 알린다.
+  const ignoredGoals = goals.filter(
+    (g) =>
+      g.goal !== goal?.goal || g.completionCriteria !== goal.completionCriteria
+  );
+  if (goal)
     return {
       steps: [
         { do: "read_context" },
-        { do: "call", tool: "record_goal", input: () => goal },
+        {
+          do: "call",
+          tool: "record_goal",
+          input: () => goal,
+          when: () => stage === "goal_setting",
+        },
         {
           do: "call",
           tool: "request_initial_approval",
           input: () => demoProposal(goal.goal),
+          when: () => stage !== "awaiting_approval",
         },
         {
           do: "send_message",
           body: () =>
-            `(가짜 실행기) 목표와 완료 기준을 기록하고 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세를 검토해 주세요.`,
+            [
+              `(가짜 실행기) 목표와 완료 기준을 기록하고 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세를 검토해 주세요.`,
+              ...ignoredGoals.map(
+                (g) =>
+                  `- 함께 받은 목표 ${quote(g.goal)}는 기록한 목표와 달라 반영하지 않았습니다.`
+              ),
+            ].join("\n"),
         },
       ],
       summary: () => "목표를 기록하고 초기 연구 승인을 요청했습니다.",
     };
 
-  const sentBack = request.wakeReasons.findLast(
-    (r) => r.kind === "approval_decision" && r.decision !== "approve"
-  );
-  const recorded = request.context.organization.goal;
-  if (
-    stage === "planning" &&
-    sentBack?.kind === "approval_decision" &&
-    recorded
-  )
+  if (proposing && sentBack?.kind === "approval_decision" && recorded)
     return {
       steps: [
         { do: "read_context" },
@@ -226,6 +278,7 @@ export function demoLeadScript(request: RunRequest): Script {
           do: "call",
           tool: "request_initial_approval",
           input: () => demoProposal(recorded, sentBack.note),
+          when: () => stage === "planning",
         },
         {
           do: "send_message",
@@ -255,7 +308,7 @@ export function demoLeadScript(request: RunRequest): Script {
       r.kind === "result_changes_requested"
   );
   if (
-    stage === "researching" &&
+    (stage === "researching" || stage === "result_review") &&
     (changeRequest || messages.some((m) => resultRequest.test(m)))
   )
     return submitResultScript(request, changeRequest?.note ?? null);
@@ -270,6 +323,8 @@ export function demoLeadScript(request: RunRequest): Script {
         ].join("\n")
       ),
     };
+  if (request.wakeReasons.every((r) => r.kind === "heartbeat"))
+    return heartbeatScript;
   return leadReplyScript;
 }
 
@@ -351,11 +406,13 @@ const resultRequest = requestMessage(String.raw`결과(?:를)?\s*제출`);
 /**
  * 가짜 Lead의 결과 제출: 작업 목록에서 완료한 작업을 읽어 그 산출물을 근거로 묶고, 자기 보고를 모은 요약으로 제출한다.
  * 수정 요청을 받았으면 그 의견을 요약에 적는다. 근거 산출물이 없으면 제출하지 않고 Lead 대화로 알린다.
+ * 이미 제출해 결과 검토 중이면 제출은 건너뛰고 같은 근거로 알린다.
  */
 function submitResultScript(
   request: RunRequest,
   feedback: string | null
 ): Script {
+  const { stage } = request.context.organization;
   const goal = request.context.organization.goal ?? "연구 목표";
   const outputs = <T>({ calls }: ScriptState, tool: OrgToolName) =>
     calls.flatMap((c) => (c.tool === tool && c.ok ? [c.output as T] : []));
@@ -396,6 +453,7 @@ function submitResultScript(
               do: "call",
               tool: "submit_result",
               input: () => ({ summary, artifactIds }),
+              when: () => stage === "researching",
             },
             {
               do: "send_message",
@@ -407,6 +465,7 @@ function submitResultScript(
       },
     ],
     summary: ({ calls }) =>
+      stage === "result_review" ||
       calls.some((c) => c.tool === "submit_result" && c.ok)
         ? "결과를 제출했습니다."
         : "근거 산출물이 없어 결과를 제출하지 않았습니다.",
@@ -450,7 +509,7 @@ function resultSummary(
  * - 작업을 맡음: 작업을 읽고 착수해 Markdown 산출물을 남기고, 템플릿의 첫 종류로 연구 노드를 만들어 작업을 연결한 뒤
  *   자기 보고와 함께 완료한다. 착수가 거부되면 그 작업은 거기서 멈춘다.
  * - 사용자의 작업 댓글: 그 작업에 댓글로 답한다. 작업 상태는 바꾸지 않는다.
- * - 에이전트 메시지·하위 작업 완료: 읽었다는 활동만 남긴다.
+ * - 에이전트 메시지·하위 작업 완료·heartbeat: 읽었다는 활동만 남긴다.
  */
 export function demoWorkerScript(request: RunRequest): Script {
   const steps: ScriptStep[] = [{ do: "read_context" }];
@@ -597,6 +656,19 @@ export function createScriptedRuntime({
         sent: [],
         calls: [],
       };
+      // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
+      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
+      // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
+      const bundle = createHash("sha256")
+        .update(request.wakeReasons.map((r) => r.wakeId).join(","))
+        .digest("hex")
+        .slice(0, 32);
+      const effects = new Map<OrgToolName, number>();
+      const once = (tool: OrgToolName) => {
+        const n = effects.get(tool) ?? 0;
+        effects.set(tool, n + 1);
+        return { idempotencyKey: `${bundle}-${tool}-${n}` };
+      };
       try {
         const queue = [...script.steps];
         for (let step = queue.shift(); step; step = queue.shift()) {
@@ -609,7 +681,9 @@ export function createScriptedRuntime({
               await emit(step.activity);
               break;
             case "send_message":
-              state.sent.push(await tools.sendMessage(step.body(state)));
+              state.sent.push(
+                await tools.sendMessage(step.body(state), once("send_message"))
+              );
               break;
             case "read_message":
               await tools.getMessage(step.messageId(state));
@@ -620,7 +694,8 @@ export function createScriptedRuntime({
                 const output = await tools.call(
                   step.tool,
                   step.input?.(state),
-                  step.params?.(state)
+                  step.params?.(state),
+                  orgToolMethods[step.tool] === "GET" ? {} : once(step.tool)
                 );
                 state.calls.push({ tool: step.tool, ok: true, output });
               } catch (error) {

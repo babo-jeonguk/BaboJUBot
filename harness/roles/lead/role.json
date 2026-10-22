@@ -1,5 +1,6 @@
 {
   "label": "Research Lead",
   "agent": "lead",
-  "skills": []
+  "skills": [],
+  "heartbeatMinutes": 60
 }

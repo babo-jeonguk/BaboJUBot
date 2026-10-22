@@ -57,6 +57,13 @@
       "when": 1792656386845,
       "tag": "0007_pause_stop",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792677085321,
+      "tag": "0008_heartbeat_memory_recovery",
+      "breakpoints": true
     }
   ]
 }

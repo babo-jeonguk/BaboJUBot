@@ -6,9 +6,10 @@ import { approvalPolicySchema, lifecycleStageSchema } from "./organization.ts";
 import { resultDecisionSchema } from "./result.ts";
 import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
+import { memoryScopeSchema } from "./memory.ts";
 import {
   publicActivitySchema,
-  runStopReasonSchema,
+  runEndReasonSchema,
   runSummarySchema,
   usageSchema,
   wakeReasonSchema,
@@ -65,14 +66,18 @@ export const runActivityEventSchema = z.object({
   }),
 });
 
-/** 실행 시도 종료. 종료 뒤에는 그 실행 시도의 토큰으로 조직 도구를 쓸 수 없다. */
+/**
+ * 실행 시도 종료. 종료 뒤에는 그 실행 시도의 토큰으로 조직 도구를 쓸 수 없다.
+ * `server_restart`면 그 실행 시도의 깨우기(`requeuedWakeIds`)가 다시 대기해 다음 실행 시도가 받는다.
+ */
 export const runFinishedEventSchema = z.object({
   ...eventBase,
   type: z.literal("run.finished"),
   payload: z.object({
     runId: z.uuid(),
     agentId: z.uuid(),
-    stopReason: runStopReasonSchema,
+    stopReason: runEndReasonSchema,
+    requeuedWakeIds: z.array(z.uuid()).optional(),
     summary: z.string().nullable(),
     error: z.string().nullable(),
   }),
@@ -171,6 +176,45 @@ export const agentInterruptedEventSchema = z.object({
     agentId: z.uuid(),
     runId: z.uuid().nullable(),
     messageId: z.uuid(),
+  }),
+});
+
+/** 사용자의 heartbeat 설정 변경. 바꾼 뒤의 설정과 서버가 정한 다음 heartbeat다. 값이 그대로인 변경은 남지 않는다. */
+export const agentHeartbeatChangedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.heartbeat_changed"),
+  payload: z.object({
+    by: z.literal("owner"),
+    agentId: z.uuid(),
+    enabled: z.boolean(),
+    intervalMinutes: z.number().int().positive(),
+    nextAt: z.iso.datetime({ offset: true }).nullable(),
+  }),
+});
+
+/**
+ * heartbeat 간격이 지나 서버가 깨우기를 만들었다. `wakeId`는 만든 깨우기이며, 아직 실행 시도가 받지 않은 heartbeat 깨우기가
+ * 있으면 새로 만들지 않고 없다. `nextAt`은 그다음 heartbeat 예정 시각이다.
+ */
+export const agentHeartbeatEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.heartbeat"),
+  payload: z.object({
+    agentId: z.uuid(),
+    wakeId: z.uuid().nullable(),
+    nextAt: z.iso.datetime({ offset: true }),
+  }),
+});
+
+/** 에이전트가 조직 도구로 기억을 썼다. 내용은 Event에 담지 않는다. */
+export const memoryWrittenEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("memory.written"),
+  payload: z.object({
+    runId: z.uuid(),
+    agentId: z.uuid(),
+    memoryId: z.uuid(),
+    scope: memoryScopeSchema,
   }),
 });
 
@@ -364,6 +408,9 @@ export const eventSchema = z.discriminatedUnion("type", [
   agentPausedEventSchema,
   agentResumedEventSchema,
   agentInterruptedEventSchema,
+  agentHeartbeatChangedEventSchema,
+  agentHeartbeatEventSchema,
+  memoryWrittenEventSchema,
   goalRecordedEventSchema,
   workerAddedEventSchema,
   approvalRequestedEventSchema,

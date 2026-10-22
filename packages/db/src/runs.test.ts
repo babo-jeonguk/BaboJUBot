@@ -8,15 +8,21 @@ import {
   appendRunActivity,
   authenticateRun,
   claimNextRun,
-  failInterruptedRuns,
+  findRunDetail,
   finishRun,
   insertOwnerMessage,
   listAgentsWithPendingWakes,
   listConversation,
   listRuns,
   loadRunContext,
+  recoverInterruptedRuns,
 } from "./runs.ts";
-import { insertEvent, lockOrganization } from "./rows.ts";
+import {
+  insertEvent,
+  lockOrganization,
+  lockRunningRun,
+  requestCancellation,
+} from "./rows.ts";
 import { organizations, runs } from "./schema.ts";
 import { toolWrite } from "./tool-calls.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
@@ -42,7 +48,11 @@ const messageIdOf = (reason: WakeReason) =>
   reason.kind === "owner_message" ? reason.messageId : undefined;
 
 async function organization() {
-  const creation = planOrganizationCreation({ name: "조직" }, [], source);
+  const creation = planOrganizationCreation(
+    { name: "조직" },
+    { files: [] },
+    source
+  );
   await insertOrganizationCreation(t.db, creation);
   const lead = creation.agents[0]!;
   const send = async (body: string) => {
@@ -230,8 +240,10 @@ describe("control commands", () => {
       { id: runId, agentRole: "lead" },
       "record_goal",
       {
-        source: "control_plane",
-        activity: { type: "org_tool", tool: "record_goal", summary: "x" },
+        activity: {
+          source: "control_plane",
+          activity: { type: "org_tool", tool: "record_goal", summary: "x" },
+        },
       },
       async () => {
         wrote = true;
@@ -286,23 +298,65 @@ describe("run termination", () => {
     ).toBeUndefined();
   });
 
-  it("fails runs a stopped server left running so the agent can run again", async () => {
-    const { send, claim } = await organization();
-    await send("x");
-    const claimed = await claim();
+  it("ends runs a stopped server left running and hands their wakes to a new run", async () => {
+    const { lead, send, claim } = await organization();
+    const message = await send("x");
+    const digest = randomUUID();
+    const interrupted = await claim(digest);
 
-    const events = await failInterruptedRuns(t.db, source);
+    const events = await recoverInterruptedRuns(t.db, source);
 
+    // 같은 DB를 쓰는 앞 테스트가 실행 중으로 남긴 실행 시도도 함께 끝난다.
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "run.finished",
         payload: expect.objectContaining({
-          runId: claimed!.run.id,
-          stopReason: "failed",
+          runId: interrupted!.run.id,
+          stopReason: "server_restart",
+          requeuedWakeIds: [interrupted!.wakeReasons[0]!.wakeId],
         }),
       })
     );
-    await send("y");
-    expect(await claim()).toBeDefined();
+    expect(await authenticateRun(t.db, digest)).toBeUndefined();
+    // 다시 불러도 이미 끝난 실행 시도는 그대로다.
+    expect(await recoverInterruptedRuns(t.db, source)).toEqual([]);
+    expect(await listAgentsWithPendingWakes(t.db)).toContain(lead.id);
+
+    const next = await claim();
+    expect(next?.run.id).not.toBe(interrupted!.run.id);
+    expect(next?.wakeReasons.map(messageIdOf)).toEqual([message.id]);
+    // 옛 실행 시도의 기록은 받았던 깨우기를 그대로 보여 준다.
+    const old = await findRunDetail(
+      t.db,
+      lead.organizationId,
+      interrupted!.run.id
+    );
+    expect(old).toMatchObject({ status: "server_restart", wakeCount: 1 });
+    expect(old?.wakeReasons.map(messageIdOf)).toEqual([message.id]);
+    expect(
+      (await listConversation(t.db, lead.organizationId, lead.id)).map(
+        (m) => m.deliveredToRunId
+      )
+    ).toEqual([next!.run.id]);
+  });
+
+  it("keeps an owner cancellation requested before the server stopped and does not hand its wakes over again", async () => {
+    const { lead, send, claim } = await organization();
+    await send("x");
+    const claimed = await claim();
+    await t.db.transaction(async (tx) => {
+      await lockRunningRun(tx, claimed!.run.id);
+      await requestCancellation(tx, {
+        reason: "owner_interrupt",
+        runIds: [claimed!.run.id],
+      });
+    });
+
+    await recoverInterruptedRuns(t.db, source);
+
+    expect(
+      await findRunDetail(t.db, lead.organizationId, claimed!.run.id)
+    ).toMatchObject({ status: "cancelled", cancelReason: "owner_interrupt" });
+    expect(await claim()).toBeUndefined();
   });
 });

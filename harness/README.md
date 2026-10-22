@@ -5,7 +5,7 @@ Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물을 `AGENTS.m
 이 디렉터리는 하네스 라이브러리입니다. 서버가 요청마다 읽으며, 사본과 승인 대상이 이 내용을 언제 고정하는지는 [전체 구조](../docs/architecture.md#research-harness--control-plane--agent-runtime)에 있습니다.
 
 ```text
-roles/<name>/role.json     label, agent(lead|worker), skills(Skill 이름 목록)
+roles/<name>/role.json     label, agent(lead|worker), skills(Skill 이름 목록), heartbeatMinutes(기본 heartbeat 간격·분, 없으면 60)
 roles/<name>/AGENTS.md     Role 지침 → 에이전트 사본의 AGENTS.md
 roles/<name>/SOUL.md       Soul → 에이전트 사본의 SOUL.md
 skills/<name>/SKILL.md     Agent Skills 형식(frontmatter name·description) → 사본의 skills/<name>/SKILL.md

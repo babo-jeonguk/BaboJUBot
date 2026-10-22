@@ -37,6 +37,8 @@ export type TestServer = {
   ) => Promise<{ status: number; body: any }>;
   /** 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. */
   drain: () => Promise<void>;
+  /** 서버 시계의 지금 시각으로 지난 heartbeat를 처리한다. */
+  tickHeartbeats: () => Promise<void>;
   /** 서버(실행 중인 실행 시도 포함)만 멈추고 DB는 남긴다. */
   stopServer: () => Promise<void>;
   /** 구독 준비(`ready`)까지 기다린 Event stream 연결. `origin`을 주면 브라우저처럼 Origin header를 보낸다. */
@@ -104,6 +106,7 @@ export async function startTestServer(
         token === undefined ? {} : { authorization: `Bearer ${token}` }
       ),
     drain: () => server.drain(),
+    tickHeartbeats: () => server.tickHeartbeats(),
     async stopServer() {
       serverStopped = true;
       for (const socket of sockets) socket.terminate();

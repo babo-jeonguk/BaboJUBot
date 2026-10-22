@@ -11,6 +11,7 @@ import {
 import { and, asc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
+  agentRow,
   insertEvent,
   instructionCopyRow,
   isUuid,
@@ -30,11 +31,7 @@ export async function insertOrganizationCreation(
   return db.transaction(async (tx) => {
     const { organization } = records;
     await tx.insert(organizations).values(organizationRow(organization));
-    await tx
-      .insert(agents)
-      .values(
-        records.agents.map((a) => ({ ...a, createdAt: new Date(a.createdAt) }))
-      );
+    await tx.insert(agents).values(records.agents.map(agentRow));
     if (records.instructionCopies.length)
       await tx
         .insert(instructionCopies)

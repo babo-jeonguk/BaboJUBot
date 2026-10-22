@@ -4,6 +4,7 @@ import {
   harnessNameSchema,
   instructionSourceFileSchema,
 } from "./harness.ts";
+import { heartbeatIntervalSchema } from "./heartbeat.ts";
 import { agentSchema } from "./organization.ts";
 
 // 목표 기록과 승인 요청. 초기 연구 승인은 끌 수 없는 사용자 결정이고, 작업자 추가는 조직별 승인 정책을 따른다(ADR-0003).
@@ -60,6 +61,8 @@ export const initialResearchProposalSchema = z.object({
       label: z.string(),
       count: z.number().int().positive(),
       files: z.array(instructionSourceFileSchema),
+      /** Role의 기본 heartbeat 간격(분). 이 필드가 생기기 전의 요청에는 없다. */
+      heartbeatMinutes: heartbeatIntervalSchema.optional(),
     })
   ),
   template: flowTemplateSnapshotSchema,
@@ -80,6 +83,8 @@ export const addWorkerProposalSchema = z.object({
   role: harnessNameSchema,
   label: z.string(),
   files: z.array(instructionSourceFileSchema),
+  /** Role의 기본 heartbeat 간격(분). 이 필드가 생기기 전의 요청에는 없다. */
+  heartbeatMinutes: heartbeatIntervalSchema.optional(),
 });
 export type AddWorkerProposal = z.infer<typeof addWorkerProposalSchema>;
 

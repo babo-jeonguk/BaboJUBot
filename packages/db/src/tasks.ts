@@ -4,7 +4,6 @@ import type {
   ArtifactSummary,
   CreateTaskInput,
   Event,
-  PublicActivity,
   RecordArtifactInput,
   SendAgentToAgentMessageInput,
   Task,
@@ -45,12 +44,17 @@ import {
   wakes,
 } from "./schema.ts";
 import { linkCreatedTask } from "./research-map.ts";
-import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
+import {
+  toolWrite,
+  type ActiveRunRef,
+  type ToolCall,
+  type ToolWrite,
+} from "./tool-calls.ts";
 
 // 작업·작업 댓글·산출물·에이전트 간 메시지의 저장. 도구 쓰기는 모두 `toolWrite`의 조직 → 실행 시도 잠금 아래에서
 // 같은 조직 참조를 확인하고, 기록·깨우기·Event를 한 transaction에 남긴다. 다른 조직의 기록과 없는 기록은 같은 `not_found`다.
 
-type WriteOptions = { source: RecordSource; activity: PublicActivity };
+type WriteOptions = ToolCall & { source: RecordSource };
 
 /**
  * 작업 생성. 담당 에이전트·부모 작업·연결할 연구 노드가 이 조직의 기록이어야 하며(노드는 폐기되지 않은 것), 담당자를 깨운다.
@@ -60,9 +64,9 @@ export function createTask(
   run: ActiveRunRef,
   input: Required<Omit<CreateTaskInput, "parentTaskId" | "researchNodeId">> &
     Pick<CreateTaskInput, "parentTaskId" | "researchNodeId">,
-  { source, activity }: WriteOptions
+  { source, ...call }: WriteOptions
 ): Promise<ToolWrite<Task, "not_found" | "node_discarded">> {
-  return toolWrite(db, run, "create_task", activity, async (tx, locked) => {
+  return toolWrite(db, run, "create_task", call, async (tx, locked) => {
     const orgId = locked.organizationId;
     if (!(await agentInOrganization(tx, orgId, input.assigneeAgentId)))
       return { kind: "invalid", problem: "not_found" };
@@ -114,9 +118,9 @@ export function startTask(
   db: Database,
   run: ActiveRunRef,
   taskId: string,
-  { source, activity }: WriteOptions
+  { source, ...call }: WriteOptions
 ): Promise<ToolWrite<Task, "not_found" | TaskRuleProblem>> {
-  return toolWrite(db, run, "start_task", activity, async (tx, locked) => {
+  return toolWrite(db, run, "start_task", call, async (tx, locked) => {
     const state = await selectTaskState(tx, locked.organizationId, taskId);
     if (!state) return { kind: "invalid", problem: "not_found" };
     const plan = planTaskStart(locked, state, source);
@@ -141,9 +145,9 @@ export function completeTask(
   run: ActiveRunRef,
   taskId: string,
   summary: string,
-  { source, activity }: WriteOptions
+  { source, ...call }: WriteOptions
 ): Promise<ToolWrite<Task, "not_found" | TaskRuleProblem>> {
-  return toolWrite(db, run, "complete_task", activity, async (tx, locked) => {
+  return toolWrite(db, run, "complete_task", call, async (tx, locked) => {
     const state = await selectTaskState(tx, locked.organizationId, taskId);
     if (!state) return { kind: "invalid", problem: "not_found" };
     const plan = planTaskCompletion(locked, state, summary, source);
@@ -177,9 +181,9 @@ export function commentTask(
   run: ActiveRunRef,
   taskId: string,
   body: string,
-  { source, activity }: WriteOptions
+  { source, ...call }: WriteOptions
 ): Promise<ToolWrite<TaskComment, "not_found">> {
-  return toolWrite(db, run, "comment_task", activity, async (tx, locked) => {
+  return toolWrite(db, run, "comment_task", call, async (tx, locked) => {
     if (!(await selectTask(tx, locked.organizationId, taskId)))
       return { kind: "invalid", problem: "not_found" };
     const plan = planAgentTaskComment(locked, taskId, body, source);
@@ -194,9 +198,9 @@ export function recordArtifact(
   db: Database,
   run: ActiveRunRef,
   input: RecordArtifactInput,
-  { source, activity }: WriteOptions
+  { source, ...call }: WriteOptions
 ): Promise<ToolWrite<Artifact, "not_found">> {
-  return toolWrite(db, run, "record_artifact", activity, async (tx, locked) => {
+  return toolWrite(db, run, "record_artifact", call, async (tx, locked) => {
     if (!(await selectTask(tx, locked.organizationId, input.taskId)))
       return { kind: "invalid", problem: "not_found" };
     const plan = planArtifactRecord(locked, input, source);
@@ -214,9 +218,9 @@ export function sendAgentToAgentMessage(
   db: Database,
   run: ActiveRunRef,
   input: SendAgentToAgentMessageInput,
-  { source, activity }: WriteOptions
+  { source, ...call }: WriteOptions
 ): Promise<ToolWrite<AgentToAgentMessage, "not_found" | "self_message">> {
-  return toolWrite(db, run, "message_agent", activity, async (tx, locked) => {
+  return toolWrite(db, run, "message_agent", call, async (tx, locked) => {
     if (
       !(await agentInOrganization(
         tx,

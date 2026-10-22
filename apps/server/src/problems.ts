@@ -7,7 +7,11 @@ import type {
 
 /** 도구 규칙의 거부 → 응답 코드·HTTP 상태. 사용자 지도 편집도 같은 표를 쓴다. */
 export type ToolProblem =
-  ProposalProblem | TaskRuleProblem | MapRuleProblem | "self_message";
+  | ProposalProblem
+  | TaskRuleProblem
+  | MapRuleProblem
+  | "self_message"
+  | "idempotency_conflict";
 export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
   {
     goal_missing: ["invalid_input", 422],
@@ -24,4 +28,5 @@ export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
     primary_parent_exists: ["primary_parent_exists", 409],
     node_discarded: ["node_discarded", 409],
     task_already_linked: ["task_already_linked", 409],
+    idempotency_conflict: ["idempotency_conflict", 409],
   };

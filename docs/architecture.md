@@ -86,7 +86,7 @@ Surface가 받는 것:
 
 ### Memory port
 
-`write(scope, entry, 출처)`·`recall(scope, query)`. 조직/에이전트 scope는 실행 시도 신원에서 정하고 Control Plane의 명시적 공유 기록을 따릅니다. 첫 구현은 특정 기법 없이 단순하게 둡니다.
+`write(scope, entry, 출처)`·`recall(scope, query)`. 조직/에이전트 scope와 출처는 실행 시도 신원에서 정하고 Control Plane의 명시적 공유 기록을 따릅니다. 첫 구현(core port·db 구현)은 특정 기법 없이 저장과 최근순·글자 그대로의 문자열 회수만 합니다.
 
 ## 상호작용 규칙
 

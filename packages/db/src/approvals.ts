@@ -4,7 +4,6 @@ import type {
   DecideApprovalInput,
   Event,
   Organization,
-  PublicActivity,
   RecordGoalInput,
   RequestInitialApprovalInput,
 } from "@babojubot/contracts";
@@ -23,6 +22,7 @@ import {
 import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
+  agentRow,
   agentNamesOf,
   insertEvent,
   instructionCopyRow,
@@ -38,7 +38,12 @@ import {
   organizations,
   wakes,
 } from "./schema.ts";
-import { toolWrite, type ActiveRunRef, type ToolWrite } from "./tool-calls.ts";
+import {
+  toolWrite,
+  type ActiveRunRef,
+  type ToolCall,
+  type ToolWrite,
+} from "./tool-calls.ts";
 
 // 목표 기록, 초기 연구 승인 요청과 승인 결정의 저장. 단계 전이는 모두 조직 행 잠금 아래에서 단계를 다시 확인하고,
 // 결정은 `pending`인 요청에만 조건부로 적용해 한 번만 일어난다. 도메인 효과(단계·팀·사본·템플릿·깨우기·Event)는
@@ -49,9 +54,9 @@ export function recordGoal(
   db: Database,
   run: ActiveRunRef,
   input: RecordGoalInput,
-  activity: PublicActivity
+  call: ToolCall
 ): Promise<ToolWrite<Organization, ProposalProblem>> {
-  return toolWrite(db, run, "record_goal", activity, async (tx, locked) => {
+  return toolWrite(db, run, "record_goal", call, async (tx, locked) => {
     const plan = planGoalRecord(locked, input);
     const [row] = await tx
       .update(organizations)
@@ -71,17 +76,16 @@ export function insertInitialApprovalRequest(
   db: Database,
   run: ActiveRunRef,
   input: RequestInitialApprovalInput,
-  options: {
+  options: ToolCall & {
     library: HarnessLibraryContents;
     source: RecordSource;
-    activity: PublicActivity;
   }
 ): Promise<ToolWrite<Approval, ProposalProblem>> {
   return toolWrite(
     db,
     run,
     "request_initial_approval",
-    options.activity,
+    options,
     async (tx, locked, org) => {
       const proposal = buildInitialResearchProposal(
         org,
@@ -215,11 +219,7 @@ export async function decideApproval(
     if (!decided)
       throw new Error(`approval ${approvalId} changed under the lock`);
     if (plan.workers.length)
-      await tx
-        .insert(agents)
-        .values(
-          plan.workers.map((a) => ({ ...a, createdAt: new Date(a.createdAt) }))
-        );
+      await tx.insert(agents).values(plan.workers.map(agentRow));
     if (plan.copies.length)
       await tx
         .insert(instructionCopies)

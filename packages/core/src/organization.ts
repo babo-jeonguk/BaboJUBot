@@ -1,5 +1,6 @@
 import {
   defaultApprovalPolicy,
+  defaultHeartbeatMinutes,
   type Agent,
   type ApprovalPolicy,
   type CreateOrganizationInput,
@@ -17,21 +18,30 @@ export const leadAgentName = "Research Lead";
 
 export type RecordSource = { newId: () => string; now: () => Date };
 
+/** 새 에이전트와 Role에서 받은 기본 heartbeat 간격(분). heartbeat는 꺼진 채로 생긴다. */
+export type NewAgent = Agent & { heartbeatMinutes: number };
+
+/** 에이전트가 생길 때 받는 하네스 Role 내용: 지침 원본과 기본 heartbeat 간격. */
+export type AgentRoleSource = {
+  files: InstructionSourceFile[];
+  heartbeatMinutes?: number;
+};
+
 /** 조직 생성이 함께 저장해야 하는 기록. 전부 저장되거나 아무것도 저장되지 않아야 한다. */
 export type OrganizationCreation = {
   organization: Organization;
-  agents: Agent[];
+  agents: NewAgent[];
   instructionCopies: InstructionCopy[];
   event: NewEvent;
 };
 
 /**
  * 새 조직은 `목표 설정`에서 시작하고 전용 Research Lead 하나를 가지며, 승인 정책은 모두 꺼져 있다.
- * Lead는 하네스 라이브러리의 Lead Role에서 복사한 자기 Role·Soul 사본을 받는다.
+ * Lead는 하네스 라이브러리의 Lead Role에서 복사한 자기 Role·Soul 사본과 기본 heartbeat 간격을 받는다.
  */
 export function planOrganizationCreation(
   input: CreateOrganizationInput,
-  leadInstructions: InstructionSourceFile[],
+  leadRole: AgentRoleSource,
   { newId, now }: RecordSource
 ): OrganizationCreation {
   const createdAt = now().toISOString();
@@ -45,17 +55,18 @@ export function planOrganizationCreation(
     pausedFrom: null,
     createdAt,
   };
-  const lead: Agent = {
+  const lead: NewAgent = {
     id: newId(),
     organizationId: organization.id,
     role: "lead",
     name: leadAgentName,
     createdAt,
+    heartbeatMinutes: leadRole.heartbeatMinutes ?? defaultHeartbeatMinutes,
   };
   return {
     organization,
     agents: [lead],
-    instructionCopies: copyInstructions(lead, leadInstructions, {
+    instructionCopies: copyInstructions(lead, leadRole.files, {
       newId,
       createdAt,
     }),

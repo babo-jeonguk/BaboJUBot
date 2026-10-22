@@ -10,6 +10,7 @@ import {
   defaultScriptSelector,
   leadReplyScript,
   type Script,
+  type ScriptSelector,
   type ScriptState,
   type ToolCallRecord,
 } from "@babojubot/runtime";
@@ -20,15 +21,16 @@ import type { TestServer } from "./support.ts";
 
 /**
  * 에이전트마다 쌓아 둔 시나리오를 앞에서부터 하나씩 쓰고, 없으면 가짜 실행기의 기본 시나리오를 쓰는 실행기.
- * 받은 요청과 시나리오 상태를 실행 시도 순서대로 기록한다.
+ * 쌓아 둔 항목이 함수면 받은 요청으로 시나리오를 정한다. 받은 요청과 시나리오 상태를 실행 시도 순서대로 기록한다.
  */
 export function scriptedAgents() {
   const runs: { request: RunRequest; state: ScriptState }[] = [];
-  const queued = new Map<string, Script[]>();
+  const queued = new Map<string, (Script | ScriptSelector)[]>();
   const runtime = createScriptedRuntime({
     select: (request) => {
+      const next = queued.get(request.identity.agentId)?.shift();
       const script =
-        queued.get(request.identity.agentId)?.shift() ??
+        (typeof next === "function" ? next(request) : next) ??
         defaultScriptSelector(request)!;
       return {
         ...script,
@@ -41,7 +43,7 @@ export function scriptedAgents() {
   });
   return {
     runtime,
-    queue(agentId: string, ...scripts: Script[]) {
+    queue(agentId: string, ...scripts: (Script | ScriptSelector)[]) {
       queued.set(agentId, [...(queued.get(agentId) ?? []), ...scripts]);
     },
     /** 이 에이전트의 실행 시도들. */

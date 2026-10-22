@@ -5,10 +5,12 @@ import type {
   NewEvent,
   RunCancelReason,
   RunResult,
+  RunEndReason,
   RunStatus,
   SendOwnerMessageInput,
   SessionState,
   Usage,
+  WakeKind,
   WakeReason,
 } from "@babojubot/contracts";
 import type { RecordSource } from "./organization.ts";
@@ -28,6 +30,7 @@ export type Wake = {
   | { kind: "agent_to_agent_message"; agentToAgentMessageId: string }
   | { kind: "research_map_edit"; mapEditId: string }
   | { kind: "result_changes_requested"; resultSubmissionId: string }
+  | { kind: "heartbeat" }
 );
 /** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. */
 export type PendingWake = {
@@ -192,7 +195,7 @@ export function planRunStart(
 
 export type RunFinishPlan = {
   update: {
-    status: Exclude<RunStatus, "running">;
+    status: RunEndReason;
     summary: string | null;
     error: string | null;
     usage: Usage | null;
@@ -237,6 +240,69 @@ export function planRunFinish(
         error: result.error,
       },
     },
+  };
+}
+
+const serverRestartError =
+  "서버가 멈춰 이 실행 시도를 끝내지 못했습니다. 받은 깨우기는 다음 실행 시도가 다시 받습니다.";
+
+/**
+ * 서버가 멈춰(종료·crash) 실행기 결과 없이 끝나는 실행 시도. 서버 시작 때 남은 실행 시도와,
+ * 서버 종료 때 실행기가 취소로 돌아온 실행 시도에 쓴다. 저장 쪽은 한 transaction으로 종료·깨우기 복원·Event를 남긴다.
+ * - 사용자 제어가 이미 취소를 요청했으면 그 취소대로 `cancelled`로 끝나고 깨우기를 되돌리지 않는다. 취소 정리를 마친 뒤 멈춘 것과 같다.
+ * - 그 밖에는 `server_restart`로 끝나고 받은 깨우기를 다시 대기시킨다. 같은 실행 시도·토큰은 다시 쓰지 않으며
+ *   실행 시도가 받았던 깨우기의 기록은 그 실행 시도에 남는다. 대기 중인 heartbeat가 이미 있으면 옛 heartbeat는 그것과 합친다.
+ * 실행기가 돌려준 세션이 없으므로 이어 갈 세션은 그 실행 시도 전 세션 그대로다.
+ */
+export function planRunInterruption(
+  run: {
+    id: string;
+    organizationId: string;
+    agentId: string;
+    cancelReason: RunCancelReason | null;
+    sessionBefore: SessionState | null;
+  },
+  {
+    wakes,
+    pendingHeartbeat,
+  }: { wakes: { id: string; kind: WakeKind }[]; pendingHeartbeat: boolean },
+  source: Pick<RecordSource, "now">
+): RunFinishPlan & { requeueWakeIds: string[] } {
+  const plan = planRunFinish(
+    run,
+    {
+      stopReason: "cancelled",
+      error: null,
+      summary: null,
+      usage: null,
+      nextSession: run.sessionBefore,
+    },
+    source
+  );
+  if (run.cancelReason) return { ...plan, requeueWakeIds: [] };
+  // 그 사이 새 heartbeat가 대기 중이면 옛 heartbeat는 다시 대기시키지 않고 그 heartbeat에 합친다.
+  const wakeIds = wakes
+    .filter((w) => !(w.kind === "heartbeat" && pendingHeartbeat))
+    .map((w) => w.id);
+  return {
+    update: {
+      ...plan.update,
+      status: "server_restart",
+      error: serverRestartError,
+    },
+    event: {
+      organizationId: run.organizationId,
+      type: "run.finished",
+      payload: {
+        runId: run.id,
+        agentId: run.agentId,
+        stopReason: "server_restart",
+        summary: null,
+        error: serverRestartError,
+        requeuedWakeIds: wakeIds,
+      },
+    },
+    requeueWakeIds: wakeIds,
   };
 }
 
