@@ -217,19 +217,29 @@ export function demoLeadScript(request: RunRequest): Script {
   const messages = request.wakeReasons.flatMap((r) =>
     r.kind === "owner_message" ? [r.body] : []
   );
-  const goal = messages.map(parseGoalMessage).findLast(Boolean);
+  const goals = messages.flatMap((m) => parseGoalMessage(m) ?? []);
   const sentBack = request.wakeReasons.findLast(
     (r) => r.kind === "approval_decision" && r.decision !== "approve"
   );
   const proposing = stage === "planning" || stage === "awaiting_approval";
 
-  // 이 목표를 이미 기록했으면 계획 수립·승인 대기에서도 같은 흐름을 이어 간다.
-  const goalRecorded =
-    recorded === goal?.goal && completionCriteria === goal?.completionCriteria;
-  if (
-    goal &&
-    (stage === "goal_setting" || (proposing && goalRecorded && !sentBack))
-  )
+  // 목표 설정에서는 마지막 목표 메시지를 기록한다. 계획 수립·승인 대기에서는 받은 목표 메시지 중 이미 기록한 목표가 있으면
+  // 그 흐름을 이어 간다. 다시 대기한 깨우기에 새 메시지가 합쳐져도 마지막 메시지와 상관없이 기록한 목표를 찾는다.
+  const goal =
+    stage === "goal_setting"
+      ? goals.at(-1)
+      : proposing && !sentBack
+        ? goals.find(
+            (g) =>
+              g.goal === recorded && g.completionCriteria === completionCriteria
+          )
+        : undefined;
+  // 기록한 목표와 다른 목표 메시지. 목표 설정이 끝나면 목표를 기록하는 도구가 닫히므로 반영하지 않았다고 알린다.
+  const ignoredGoals = goals.filter(
+    (g) =>
+      g.goal !== goal?.goal || g.completionCriteria !== goal.completionCriteria
+  );
+  if (goal)
     return {
       steps: [
         { do: "read_context" },
@@ -248,7 +258,13 @@ export function demoLeadScript(request: RunRequest): Script {
         {
           do: "send_message",
           body: () =>
-            `(가짜 실행기) 목표와 완료 기준을 기록하고 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세를 검토해 주세요.`,
+            [
+              `(가짜 실행기) 목표와 완료 기준을 기록하고 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세를 검토해 주세요.`,
+              ...ignoredGoals.map(
+                (g) =>
+                  `- 함께 받은 목표 ${quote(g.goal)}는 기록한 목표와 달라 반영하지 않았습니다.`
+              ),
+            ].join("\n"),
         },
       ],
       summary: () => "목표를 기록하고 초기 연구 승인을 요청했습니다.",

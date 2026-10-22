@@ -199,16 +199,52 @@ describe("server restart recovery", () => {
       expect(types).not.toContain("tool.refused");
     }
   );
+
+  it("continues the recorded goal's approval request when a different goal message joins the redelivered wake", async () => {
+    const { http, org } = await crashAndRestart(
+      "record_goal",
+      "목표: 음성 인식 오류율을 절반으로 줄인다\n완료 기준: 공개 평가셋 WER 10% 이하",
+      async (http, orgId) =>
+        (await http.organization(orgId)).stage === "planning",
+      "목표: 음성 인식 지연시간을 줄인다\n완료 기준: 지연시간 100ms 이하"
+    );
+    expect(await http.organization(org.id)).toMatchObject({
+      stage: "awaiting_approval",
+      goal: "음성 인식 오류율을 절반으로 줄인다",
+    });
+    const approvals = approvalSummaryListSchema.parse(
+      (await http.call("GET", `/api/organizations/${org.id}/approvals`)).body
+    );
+    expect(approvals.map((a) => [a.kind, a.status])).toEqual([
+      ["initial_research", "pending"],
+    ]);
+    // 기록하지 못한 다른 목표는 답장에서 반영하지 않았다고 밝힌다.
+    const conversation = await http.conversation(org.id);
+    expect(conversation.map((m) => m.author)).toEqual([
+      "owner",
+      "owner",
+      "agent",
+    ]);
+    expect(conversation[2]!.body).toContain("초기 연구 승인을 요청했습니다");
+    expect(conversation[2]!.body).toContain("음성 인식 지연시간을 줄인다");
+    const types = (await http.events(org.id)).map((e) => e.type);
+    expect(
+      types.filter((t) => t === "organization.goal_recorded")
+    ).toHaveLength(1);
+    expect(types).not.toContain("tool.refused");
+  });
 });
 
 /**
  * 자식 서버 프로세스에서 Lead에게 `say`를 보내고, `stopAfter` 쓰기가 commit된 것을 `committed`로 확인한 뒤 SIGKILL한다.
+ * `alsoSay`가 있으면 SIGKILL 전에 보내, 다시 대기한 깨우기와 새 깨우기가 한 실행 시도로 합쳐지게 한다.
  * 같은 DB로 기본 가짜 실행기 서버를 다시 띄워 재처리가 끝날 때까지 기다린다.
  */
 async function crashAndRestart(
   stopAfter: string,
   say: string,
-  committed: (http: Api, orgId: string) => Promise<boolean>
+  committed: (http: Api, orgId: string) => Promise<boolean>,
+  alsoSay?: string
 ) {
   database = await createTestDatabase();
   const child = spawn(
@@ -232,6 +268,7 @@ async function crashAndRestart(
       if (i > 200) throw new Error(`${stopAfter} never committed`);
       await new Promise((r) => setTimeout(r, 25));
     }
+    if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
     await once(child, "exit");
   } finally {
@@ -245,7 +282,10 @@ async function crashAndRestart(
   const http = api(() => server!.url);
   const [next, old] = await http.runs(orgId);
   expect(old).toMatchObject({ status: "server_restart", wakeCount: 1 });
-  expect(next).toMatchObject({ status: "completed", wakeCount: 1 });
+  expect(next).toMatchObject({
+    status: "completed",
+    wakeCount: alsoSay ? 2 : 1,
+  });
   return { http, org: { id: orgId }, next: next!, old: old! };
 }
 
