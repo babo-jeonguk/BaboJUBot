@@ -552,7 +552,11 @@ describe("result submission and final completion", () => {
       stage: "researching",
       pausedFrom: null,
     });
-    expect((await eventsOf(changing.id)).slice(-2)).toMatchObject([
+    const events = await eventsOf(changing.id);
+    const resumedAt = events.findIndex(
+      (e) => e.type === "organization.resumed"
+    );
+    expect(events.slice(resumedAt, resumedAt + 2)).toMatchObject([
       { type: "organization.resumed", payload: { stage: "result_review" } },
       { type: "result.decided", payload: { stage: "researching" } },
     ]);

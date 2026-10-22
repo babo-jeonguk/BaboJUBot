@@ -542,14 +542,15 @@ describe("decisions while paused", () => {
       stage: "researching",
       pausedFrom: null,
     });
-    expect((await controlEvents(org.id)).at(-1)).toMatchObject({
-      type: "organization.resumed",
-      payload: { stage: "awaiting_approval" },
-    });
-    expect((await eventsOf(org.id)).at(-1)).toMatchObject({
-      type: "approval.decided",
-      payload: { stage: "researching" },
-    });
+    // 재개가 결정 바로 앞에 남는다. 그 뒤에는 깨운 Lead의 실행 시도 Event가 이어질 수 있다.
+    const events = await eventsOf(org.id);
+    const resumedAt = events.findIndex(
+      (e) => e.type === "organization.resumed"
+    );
+    expect(events.slice(resumedAt, resumedAt + 2)).toMatchObject([
+      { type: "organization.resumed", payload: { stage: "awaiting_approval" } },
+      { type: "approval.decided", payload: { stage: "researching" } },
+    ]);
     await t.drain();
     expect(agents.of(org.lead.id).at(-1)!.request.wakeReasons).toMatchObject([
       { kind: "approval_decision", decision: "approve" },
