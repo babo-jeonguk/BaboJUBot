@@ -50,7 +50,9 @@ import {
   type ToolWrite,
 } from "./tool-calls.ts";
 import {
+  hasPendingHeartbeat,
   insertEvent,
+  lockAgent,
   lockRunningRunOfAgent,
   lockOrganization,
   requestCancellation,
@@ -266,6 +268,20 @@ export async function interruptRun(
   source: Pick<RecordSource, "now">
 ): Promise<Event | undefined> {
   return db.transaction(async (tx) => {
+    // 실행 시도의 조직·에이전트는 바뀌지 않는다. 잠그기 전에 읽어도 된다.
+    const [owner] = await tx
+      .select({ organizationId: runs.organizationId, agentId: runs.agentId })
+      .from(runs)
+      .where(eq(runs.id, runId));
+    if (!owner) return undefined;
+    // 잠금 순서는 조직 → 에이전트 → 실행 시도다. 에이전트 행 잠금으로 heartbeat scheduler·admission과 직렬화해,
+    // 대기 heartbeat를 확인한 뒤 새 heartbeat가 생겨 다시 대기시킨 heartbeat와 겹치지 않게 한다.
+    await tx
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, owner.organizationId))
+      .for("share");
+    await lockAgent(tx, owner.organizationId, owner.agentId);
     const [run] = await tx
       .select({
         id: runs.id,
@@ -283,19 +299,10 @@ export async function interruptRun(
       .from(wakes)
       .where(eq(wakes.runId, runId))
       .orderBy(asc(wakes.seq));
-    const [pendingHeartbeat] = await tx
-      .select({ id: wakes.id })
-      .from(wakes)
-      .where(
-        and(
-          eq(wakes.agentId, run.agentId),
-          eq(wakes.kind, "heartbeat"),
-          isNull(wakes.runId)
-        )
-      );
+    const pendingHeartbeat = await hasPendingHeartbeat(tx, run.agentId);
     const plan = planRunInterruption(
       run,
-      { wakes: held, pendingHeartbeat: pendingHeartbeat !== undefined },
+      { wakes: held, pendingHeartbeat },
       source
     );
     await tx

@@ -5,14 +5,15 @@ import {
   runBlockingStages,
   type RecordSource,
 } from "@babojubot/core";
-import { and, asc, eq, isNull, lte, notInArray } from "drizzle-orm";
+import { and, asc, eq, lte, notInArray } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
+  hasPendingHeartbeat,
   insertEvent,
   isUuid,
+  lockAgent,
   lockOrganization,
   toAgentHeartbeat,
-  type Executor,
 } from "./rows.ts";
 import { agents, organizations, wakes } from "./schema.ts";
 
@@ -96,19 +97,12 @@ export async function runDueHeartbeats(
         .for("share");
       const agent = await lockAgent(tx, organizationId, id);
       if (!org || !agent) return undefined;
-      const [pending] = await tx
-        .select({ id: wakes.id })
-        .from(wakes)
-        .where(
-          and(
-            eq(wakes.agentId, id),
-            eq(wakes.kind, "heartbeat"),
-            isNull(wakes.runId)
-          )
-        );
       const plan = planHeartbeat(
         { ...agent, heartbeat: toAgentHeartbeat(agent) },
-        { stage: org.stage, pendingHeartbeat: pending !== undefined },
+        {
+          stage: org.stage,
+          pendingHeartbeat: await hasPendingHeartbeat(tx, id),
+        },
         source
       );
       if (!plan) return undefined;
@@ -128,22 +122,3 @@ export async function runDueHeartbeats(
   }
   return { events, woken };
 }
-
-/**
- * 조직 안의 에이전트 행을 `FOR NO KEY UPDATE`로 잠근다. 실행 시도 행을 잠근 채 Event FK로 에이전트 행(KEY SHARE)을
- * 기다리는 쓰기와 교착하지 않는다.
- */
-const lockAgent = async (
-  tx: Executor,
-  organizationId: string,
-  agentId: string
-) => {
-  const [agent] = await tx
-    .select()
-    .from(agents)
-    .where(
-      and(eq(agents.organizationId, organizationId), eq(agents.id, agentId))
-    )
-    .for("no key update");
-  return agent;
-};

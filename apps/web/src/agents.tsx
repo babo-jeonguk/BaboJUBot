@@ -1,5 +1,6 @@
 import {
   heartbeatIntervalMaxMinutes,
+  heartbeatIntervalSchema,
   isClosedStage,
   type Agent,
   type AgentDetail,
@@ -258,14 +259,12 @@ function HeartbeatSettings({
   const enabled = draft?.enabled ?? saved.enabled;
   const interval = draft?.interval ?? String(saved.intervalMinutes);
   const minutes = Number(interval);
+  // 계약과 같은 검사. 빈 칸·소수점은 숫자 입력이 비거나 정수가 아니므로 막힌다.
   const valid =
-    /^\d+$/.test(interval) &&
-    minutes >= 1 &&
-    minutes <= heartbeatIntervalMaxMinutes;
+    interval.trim() !== "" &&
+    heartbeatIntervalSchema.safeParse(minutes).success;
   const changed =
-    enabled !== saved.enabled ||
-    (valid && minutes !== saved.intervalMinutes) ||
-    !valid;
+    enabled !== saved.enabled || minutes !== saved.intervalMinutes;
   const closed = stage !== undefined && isClosedStage(stage);
   const held = agent.paused || stage === "paused";
   const edit = (next: Partial<{ enabled: boolean; interval: string }>) =>

@@ -161,10 +161,6 @@ export function orgToolsRouter({
       ? refuse(res, 403, "forbidden")
       : refuse(res, 409, "stage_closed");
   /**
-   * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다.
-   * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
-   */
-  /**
    * `Idempotency-Key` header의 같은 호출 키. 없으면 `undefined`, 계약 밖이면 `false`.
    * 같은 키에 다른 입력이 오는지는 검사한 입력의 digest로 가린다.
    */
@@ -181,6 +177,10 @@ export function orgToolsRouter({
       digest: createHash("sha256").update(JSON.stringify(input)).digest("hex"),
     };
   };
+  /**
+   * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다.
+   * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
+   */
   const respondWrite = <T, P extends ToolProblem>(
     res: express.Response,
     result: ToolWrite<T, P>,

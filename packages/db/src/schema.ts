@@ -3,6 +3,7 @@ import {
   approvalKinds,
   artifactFormats,
   approvalStatuses,
+  defaultHeartbeatMinutes,
   heartbeatIntervalMaxMinutes,
   instructionKinds,
   lifecycleStages,
@@ -101,11 +102,11 @@ export const agents = pgTable(
     /** heartbeat 간격(분). 처음에는 Role의 기본 간격이다. */
     heartbeatIntervalMinutes: integer("heartbeat_interval_minutes")
       .notNull()
-      .default(60),
+      .default(defaultHeartbeatMinutes),
     /** 에이전트가 생길 때 Role에서 받은 기본 heartbeat 간격(분). */
     heartbeatDefaultMinutes: integer("heartbeat_default_minutes")
       .notNull()
-      .default(60),
+      .default(defaultHeartbeatMinutes),
     /** 다음 heartbeat 예정 시각. scheduler가 지난 예정을 처리하면 간격만큼 뒤로 옮긴다. */
     heartbeatNextAt: timestamp("heartbeat_next_at", {
       withTimezone: true,
