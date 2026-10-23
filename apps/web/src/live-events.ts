@@ -2,14 +2,17 @@ import { eventStreamPath, streamFrameSchema } from "@babojubot/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { queryKeys } from "./api.ts";
+import { createLiveRefresh } from "./live-refresh.ts";
 
 /**
  * 셸은 전체 조직 Event stream 하나를 구독한다. Event는 관련 조회를 다시 불러오게 할 뿐이고,
  * 구독이 성립하거나 다시 연결될 때마다 전체를 재조회해 그 사이 놓친 변화를 맞춘다.
+ * 재조회 조율은 `createLiveRefresh`가 맡는다.
  */
 export function useLiveEvents() {
   const queryClient = useQueryClient();
   useEffect(() => {
+    const live = createLiveRefresh(queryClient);
     let socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
@@ -29,18 +32,15 @@ export function useLiveEvents() {
         if (!frame.success) return;
         if (frame.data.type === "ready") {
           attempt = 0;
-          void queryClient.invalidateQueries();
+          live.refresh();
           return;
         }
         const { event } = frame.data;
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.organizations,
-          exact: true,
-        });
-        void queryClient.invalidateQueries({
+        live.refresh({ queryKey: queryKeys.organizations, exact: true });
+        live.refresh({
           queryKey: queryKeys.organization(event.organizationId),
         });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
+        live.refresh({ queryKey: queryKeys.inbox });
       };
       socket.onclose = () => {
         if (stopped) return;
@@ -53,6 +53,7 @@ export function useLiveEvents() {
       stopped = true;
       clearTimeout(retry);
       socket?.close();
+      live.dispose();
     };
   }, [queryClient]);
 }

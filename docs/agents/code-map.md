@@ -15,6 +15,7 @@
 | 생성·조회 API·입력 오류·404 | [server/app.ts](../../apps/server/src/app.ts) `startServer` → 생성 서비스·DB·contracts | 조직 API |
 | 조직별 구독·Event 혼입 | app.ts upgrade·attach → [EventHub](../../apps/server/src/event-hub.ts); [event 계약](../../packages/contracts/src/event.ts) | [라우팅](../../apps/server/src/event-hub.test.ts), 조직 API `Event stream scopes` |
 | 생성 후 탭·홈·사이드바 갱신 | [web/live-events.ts](../../apps/web/src/live-events.ts) `useLiveEvents`; [api.ts](../../apps/web/src/api.ts) query key·캐시; Event 발행 | 생성 E2E |
+| Event가 몰릴 때 늦은 반영·겹친 재조회 | [web/live-refresh.ts](../../apps/web/src/live-refresh.ts) `createLiveRefresh`(조회마다 진행 하나·그사이 신호는 끝난 뒤 한 번 더) | [단위 검사](../../apps/web/src/live-refresh.test.ts), [느린 응답 다른 탭 E2E](../../apps/web/e2e/live-refresh.spec.ts) |
 | 생성 dialog·성공 이동·실패 안내 | [create-organization.tsx](../../apps/web/src/create-organization.tsx), api.ts `useCreateOrganization`, 입력 계약 | 생성 E2E |
 | 주소·메뉴·홈·빈 상태 | [pages.tsx](../../apps/web/src/pages.tsx), [shell.tsx](../../apps/web/src/shell.tsx), [main.tsx](../../apps/web/src/main.tsx) routes | 생성 E2E의 홈·메뉴·Lead 빈 화면 |
 | 공용 UI·상태·반응형 | [ui.tsx](../../apps/web/src/ui.tsx), [index.css](../../apps/web/src/index.css), 해당 화면 | 생성 E2E만으로 모든 화면·폭을 검증하지는 않음 |
@@ -169,7 +170,7 @@ create-organization → api → POST /api/organizations(app) → server/organiza
   → harness loadHarnessLibrary·leadInstructionsOf(Lead Role·Soul)
   → core planOrganizationCreation(조직·Lead·사본·Event)
   → db insertOrganizationCreation → EventHub → HTTP 응답 캐시
-EventHub → WebSocket /api/events → live-events → 다른 탭 query 재조회
+EventHub → WebSocket /api/events → live-events → live-refresh → 다른 탭 query 재조회
 ```
 
 저장·알림 순서는 server/organizations, Event 재연결 복구는 useLiveEvents에서 시작합니다.
