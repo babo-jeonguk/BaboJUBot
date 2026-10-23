@@ -1,5 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 
+/** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
+async function openInbox(page: Page) {
+  const button = page
+    .getByRole("navigation", { name: "연구 조직" })
+    .getByRole("button", { name: /^Inbox/ });
+  if ((await button.getAttribute("aria-expanded")) !== "true")
+    await button.click();
+}
+
 /** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
 async function openWithLiveEvents(page: Page, path: string) {
   const ready = new Promise<void>((resolve) =>
@@ -35,8 +44,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   ).toContainText("초기 연구 승인을 요청했습니다");
 
   // Inbox → 승인 요청 상세.
-  const rail = page.getByRole("navigation", { name: "연구 조직" });
-  await rail.getByRole("link", { name: /^Inbox/ }).click();
+  await openInbox(page);
   const inbox = page.getByRole("list", { name: "주의 필요" });
   await inbox.getByRole("link", { name: new RegExp(name) }).click();
   await expect(page).toHaveURL(/\/approvals\/[0-9a-f-]{36}$/);
@@ -72,7 +80,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   await expect(decision.getByRole("button")).toHaveCount(0);
 
   // Lead가 사유를 받아 다시 제출한 새 요청이 Inbox에 새로고침 없이 나타난다.
-  await rail.getByRole("link", { name: /^Inbox/ }).click();
+  await openInbox(page);
   await inbox.getByRole("link", { name: new RegExp(name) }).click();
   await expect(page).not.toHaveURL(firstUrl);
   await expect(

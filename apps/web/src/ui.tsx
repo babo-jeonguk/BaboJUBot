@@ -4,6 +4,7 @@ import type {
   ApprovalDecision,
   ApprovalKind,
   ApprovalStatus,
+  InboxItemKind,
   LifecycleStage,
   ResearchMapOperation,
   ResearchNodeStatus,
@@ -114,6 +115,11 @@ export const decisionLabel: Record<ApprovalDecision, string> = {
 export const approvalKindLabel: Record<ApprovalKind, string> = {
   initial_research: "초기 연구 승인 요청",
   add_worker: "작업자 추가 승인 요청",
+};
+export const inboxKindLabel: Record<InboxItemKind, string> = {
+  approval: "승인 요청",
+  result_submission: "결과 제출",
+  run_failure: "실패한 실행 시도",
 };
 export const approvalStatusLabel: Record<ApprovalStatus, string> = {
   pending: "결정 대기",

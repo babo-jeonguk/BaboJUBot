@@ -165,7 +165,9 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(list.getByRole("link").nth(0)).toContainText("최종 완료");
   await expect(list.getByRole("link").nth(1)).toContainText("수정 요청됨");
   await page.goto("/inbox");
-  await expect(page.getByRole("main")).not.toContainText(name);
+  const panel = page.getByRole("complementary", { name: "Inbox" });
+  await panel.getByRole("button", { name: /^전체 \d/ }).click();
+  await expect(panel).not.toContainText(name);
 });
 
 test("shows a missing result submission as not found", async ({ page }) => {

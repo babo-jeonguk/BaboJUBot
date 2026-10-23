@@ -1,5 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 
+/** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
+async function openInbox(page: Page) {
+  const button = page
+    .getByRole("navigation", { name: "연구 조직" })
+    .getByRole("button", { name: /^Inbox/ });
+  if ((await button.getAttribute("aria-expanded")) !== "true")
+    await button.click();
+}
+
 /** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
 async function openWithLiveEvents(page: Page, path: string) {
   const ready = new Promise<void>((resolve) =>
@@ -84,9 +93,8 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   expect(await workerCount()).toBe(2);
 
   // Inbox → 작업자 추가 요청 상세. 수정 요청은 없고, 반려에는 사유가 필요하다.
-  const rail = page.getByRole("navigation", { name: "연구 조직" });
   const openRequest = async () => {
-    await rail.getByRole("link", { name: /^Inbox/ }).click();
+    await openInbox(page);
     await page
       .getByRole("list", { name: "주의 필요" })
       .getByRole("link", { name: new RegExp(`작업자 추가 승인 요청.*${name}`) })

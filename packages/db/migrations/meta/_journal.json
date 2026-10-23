@@ -71,6 +71,13 @@
       "when": 1792723164640,
       "tag": "0009_instruction_revisions",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792754477192,
+      "tag": "0010_notification_outbox_inbox",
+      "breakpoints": true
     }
   ]
 }

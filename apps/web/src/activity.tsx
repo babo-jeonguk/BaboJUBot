@@ -5,6 +5,7 @@ import { useEvents } from "./api.ts";
 import {
   decisionLabel,
   formatTime,
+  inboxKindLabel,
   Loading,
   LoadError,
   mapOperationLabel,
@@ -214,6 +215,12 @@ export function describeEvent(event: Event, agentName: string): Described {
         icon: "📝",
         title: `사용자가 ${agentName}의 사본 ${event.payload.path}을 저장했습니다`,
         detail: `revision ${event.payload.revision} · Lead를 깨웠습니다`,
+      };
+    case "inbox_item.updated":
+      return {
+        icon: "🗂",
+        title: `사용자가 Inbox ${inboxKindLabel[event.payload.kind]} 항목을 정리했습니다`,
+        detail: `${event.payload.read ? "읽음" : "안 읽음"} · ${event.payload.archived ? "보관됨" : "보관 안 함"}`,
       };
     case "tool.refused":
       return {

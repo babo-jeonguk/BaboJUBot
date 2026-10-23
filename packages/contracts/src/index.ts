@@ -3,6 +3,7 @@ export * from "./harness.ts";
 export * from "./approval.ts";
 export * from "./result.ts";
 export * from "./inbox.ts";
+export * from "./notification.ts";
 export * from "./message.ts";
 export * from "./task.ts";
 export * from "./research-map.ts";

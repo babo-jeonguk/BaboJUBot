@@ -2,6 +2,7 @@ import { z } from "zod";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
 import { harnessNameSchema } from "./harness.ts";
+import { inboxItemKindSchema } from "./inbox.ts";
 import { approvalPolicySchema, lifecycleStageSchema } from "./organization.ts";
 import { resultDecisionSchema } from "./result.ts";
 import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
@@ -417,6 +418,22 @@ export const instructionCopyEditedEventSchema = z.object({
   }),
 });
 
+/**
+ * 사용자의 알림 정리 명령(읽음·보관). 정리 뒤 상태를 남기며, 값이 그대로인 명령은 남지 않는다.
+ * 원본(`kind`·`sourceId`)의 결정·단계·깨우기는 바뀌지 않는다.
+ */
+export const inboxItemUpdatedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("inbox_item.updated"),
+  payload: z.object({
+    by: z.literal("owner"),
+    kind: inboxItemKindSchema,
+    sourceId: z.uuid(),
+    read: z.boolean(),
+    archived: z.boolean(),
+  }),
+});
+
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
   approvalPolicyChangedEventSchema,
@@ -445,6 +462,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   agentToAgentMessageCreatedEventSchema,
   researchMapEditedEventSchema,
   instructionCopyEditedEventSchema,
+  inboxItemUpdatedEventSchema,
   runStartedEventSchema,
   runActivityEventSchema,
   runFinishedEventSchema,

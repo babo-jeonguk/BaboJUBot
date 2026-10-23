@@ -203,6 +203,7 @@ export function parseGoalMessage(
  *   승인 정책이 켜져 있으면 승인 요청이 되었다고 알린다. 작업자 추가 요청의 결정에는 답장만 한다.
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
  *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
+ * - 어느 단계든 사용자가 `실패 연습`을 부탁함: 아무것도 쓰지 않고 실행 시도를 실패로 끝낸다(Inbox·알림의 실패 항목 확인용).
  * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
  *
@@ -224,6 +225,12 @@ export function demoLeadScript(request: RunRequest): Script {
     (r) => r.kind === "approval_decision" && r.decision !== "approve"
   );
   const proposing = stage === "planning" || stage === "awaiting_approval";
+  if (messages.some((m) => failureDrill.test(m)))
+    return {
+      steps: [
+        { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+      ],
+    };
 
   // 목표 설정에서는 마지막 목표 메시지를 기록한다. 계획 수립·승인 대기에서는 받은 목표 메시지 중 이미 기록한 목표가 있으면
   // 그 흐름을 이어 간다. 다시 대기한 깨우기에 새 메시지가 합쳐져도 마지막 메시지와 상관없이 기록한 목표를 찾는다.
@@ -401,6 +408,9 @@ function addWorkerScript(role: string): Script {
         : "작업자 추가 승인을 요청했습니다.",
   };
 }
+
+/** 사용자가 실패한 실행 시도를 보고 싶어 부탁하는 메시지. */
+const failureDrill = requestMessage(String.raw`실패\s*연습`);
 
 /** 사용자가 결과 제출을 부탁하는 메시지. */
 const resultRequest = requestMessage(String.raw`결과(?:를)?\s*제출`);

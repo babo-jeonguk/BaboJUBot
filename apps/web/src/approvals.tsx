@@ -4,7 +4,6 @@ import {
   type Approval,
   type ApprovalDecision,
   type ApprovalKind,
-  type InboxItem,
   type LifecycleStage,
 } from "@babojubot/contracts";
 import { useState, type ReactNode } from "react";
@@ -13,15 +12,12 @@ import {
   ApiError,
   useApproval,
   useDecideApproval,
-  useInbox,
   useOrganization,
 } from "./api.ts";
 import {
-  abbr,
   approvalKindLabel,
   approvalStatusLabel,
   ApprovalStatusBadge,
-  avatarStyle,
   decisionLabel,
   formatTime,
   Loading,
@@ -35,102 +31,6 @@ export const approvalKindHint: Record<ApprovalKind, string> = {
   initial_research: "계획·팀·연구 환경 명세를 검토하고 결정하세요.",
   add_worker: "추가할 작업자의 Role과 받을 사본을 검토하고 결정하세요.",
 };
-
-/** Inbox: 모든 조직에서 사용자 결정을 기다리는 항목. 첫 판은 승인 요청과 결과 제출뿐이다(읽음·보관과 나머지 종류는 #61). */
-export function InboxPage() {
-  const inbox = useInbox();
-  return (
-    <Page width="standard">
-      <h1 className="mb-1 text-xl font-semibold">Inbox</h1>
-      <p className="mb-4 text-sm text-slate-500">
-        사용자의 결정이 필요한 항목입니다.
-      </p>
-      {inbox.isPending ? (
-        <Loading />
-      ) : inbox.isError ? (
-        <LoadError what="Inbox" onRetry={() => void inbox.refetch()} />
-      ) : !inbox.data.length ? (
-        <div className="card p-6 text-sm text-slate-500">
-          결정을 기다리는 항목이 없습니다.
-        </div>
-      ) : (
-        <ul className="card divide-y divide-slate-100" aria-label="주의 필요">
-          {inbox.data.map((item) => (
-            <li
-              key={
-                item.kind === "approval" ? item.approval.id : item.submission.id
-              }
-            >
-              <InboxRow {...inboxRow(item)} />
-            </li>
-          ))}
-        </ul>
-      )}
-    </Page>
-  );
-}
-
-/** Inbox 항목 → 한 줄의 링크·제목·부가 설명. */
-function inboxRow(item: InboxItem) {
-  const { organizationName } = item;
-  if (item.kind === "approval") {
-    const a = item.approval;
-    return {
-      to: `/orgs/${a.organizationId}/approvals/${a.id}`,
-      organizationId: a.organizationId,
-      organizationName,
-      title: approvalKindLabel[a.kind],
-      again: a.previousApprovalId !== null,
-      createdAt: a.createdAt,
-    };
-  }
-  const s = item.submission;
-  return {
-    to: `/orgs/${s.organizationId}/results/${s.id}`,
-    organizationId: s.organizationId,
-    organizationName,
-    title: "결과 제출",
-    again: s.previousSubmissionId !== null,
-    createdAt: s.createdAt,
-  };
-}
-
-function InboxRow({
-  to,
-  organizationId,
-  organizationName,
-  title,
-  again,
-  createdAt,
-}: ReturnType<typeof inboxRow>) {
-  return (
-    <Link
-      to={to}
-      className="flex items-center gap-3 px-4 py-3 text-sm transition hover:bg-slate-50"
-    >
-      <span
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"
-        style={avatarStyle(organizationId)}
-      >
-        {abbr(organizationName)}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="font-medium text-slate-800">{title}</div>
-        <div className="truncate text-xs text-slate-500">
-          {organizationName}
-          {again && " · 다시 제출됨"}
-        </div>
-      </div>
-      <span className="chip bg-amber-50 text-amber-800">주의 필요</span>
-      <time
-        dateTime={createdAt}
-        className="hidden shrink-0 text-xs text-slate-400 tabular-nums sm:block"
-      >
-        {formatTime(createdAt)}
-      </time>
-    </Link>
-  );
-}
 
 /**
  * 승인 요청 상세. 초기 연구 승인은 목표·완료 기준, 계획, 팀 구성, 연구 환경 명세, 연구 흐름 템플릿을,
