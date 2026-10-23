@@ -176,6 +176,8 @@ describe("result submission and final completion", () => {
       {
         kind: "result_submission",
         organizationName: "결과 제출 조직",
+        read: false,
+        archived: false,
         submission: expect.objectContaining({
           id: output.id,
           organizationId: org.id,

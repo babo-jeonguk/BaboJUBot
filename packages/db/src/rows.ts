@@ -9,6 +9,7 @@ import type {
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
+  notificationOf,
   type NewAgent,
   type RunCancellation,
 } from "@babojubot/core";
@@ -19,6 +20,7 @@ import {
   artifacts,
   events,
   instructionCopies,
+  notificationOutbox,
   organizations,
   runs,
   tasks,
@@ -29,7 +31,10 @@ import {
 export type Executor =
   Database | Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-/** Event를 저장한다. payload의 에이전트·실행 시도 귀속을 조회용 열로도 남긴다. */
+/**
+ * Event를 저장한다. payload의 에이전트·실행 시도 귀속을 조회용 열로도 남긴다.
+ * 알림을 쌓는 사건(core `notificationOf`)이면 같은 transaction에 알림 outbox 항목도 남긴다.
+ */
 export async function insertEvent(
   db: Executor,
   event: NewEvent
@@ -43,7 +48,15 @@ export async function insertEvent(
       runId: payload.runId ?? null,
     })
     .returning();
-  return toEvent(row!);
+  const stored = toEvent(row!);
+  const notification = notificationOf(stored);
+  if (notification)
+    await db.insert(notificationOutbox).values({
+      organizationId: stored.organizationId,
+      eventId: stored.id,
+      ...notification,
+    });
+  return stored;
 }
 
 export const isUuid = (s: string) =>
@@ -122,6 +135,7 @@ export async function lockRunningRun(tx: Executor, runId: string) {
 
 /**
  * 조직 행을 `FOR NO KEY UPDATE`로 잠근다. 단계 전이는 모두 이 잠금 아래에서 단계를 다시 확인한다.
+ * (Inbox 정리 상태·알림 outbox 행 잠금은 그 뒤에 다른 행을 기다리지 않는 마지막 잠금이라 이 순서 밖이다.)
  * 다른 기록의 FK 확인(`KEY SHARE`)과는 부딪히지 않는다. 행 잠금 순서는 어디서나 조직 → 에이전트 → 실행 시도다.
  * 실행 시도 admission은 같은 행을 `FOR SHARE`로 잠근 뒤 에이전트 행을 잠그고, 도구 쓰기는 이 잠금 뒤에 실행 시도 행을,
  * 제어 명령은 이 잠금 뒤에 취소할 실행 시도 행을 잠그므로 이 잠금 아래에서 다른 행을 기다려도 교착하지 않는다.

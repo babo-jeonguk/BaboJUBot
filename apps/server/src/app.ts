@@ -18,11 +18,14 @@ import {
   decideResultInputSchema,
   editInstructionCopyInputSchema,
   eventStreamPath,
+  inboxItemKindSchema,
   organizationCommands,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
   updateApprovalPolicyInputSchema,
   updateHeartbeatInputSchema,
+  updateInboxItemInputSchema,
+  type NotificationChannel,
   type RuntimeAdapter,
   type StreamFrame,
   type StreamScope,
@@ -32,6 +35,7 @@ import {
   findAgentInstructions,
   findApproval,
   findArtifact,
+  findFakeChannelMessage,
   findFlowTemplate,
   findInstructionRevision,
   findOrganization,
@@ -42,20 +46,28 @@ import {
   getResearchMap,
   listApprovals,
   listConversation,
+  listFakeChannelMessages,
   listInbox,
   listInstructionRevisions,
+  listOutbox,
   listOrganizationEvents,
   listOrganizations,
   listResultSubmissions,
   listRunningRuns,
   listRuns,
   listTasks,
+  recordFakeChannelMessage,
+  updateInboxItem,
   type Database,
   type MapCommand,
   type OwnerMapEditResult,
 } from "@babojubot/db";
 import { findLead } from "@babojubot/core";
-import { createScriptedRuntime } from "@babojubot/runtime";
+import {
+  createFakeChannel,
+  createScriptedRuntime,
+  replyThroughFakeChannel,
+} from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -68,6 +80,7 @@ import { defaultHarnessDir } from "./harness.ts";
 import { HeartbeatScheduler, updateHeartbeat } from "./heartbeat.ts";
 import { editInstructionCopyAsOwner } from "./instructions.ts";
 import { createOrganization, updateApprovalPolicy } from "./organizations.ts";
+import { NotificationRelay } from "./notifications.ts";
 import { editResearchMapAsOwner } from "./research-map.ts";
 import { decideResult } from "./results.ts";
 import { addOwnerTaskComment } from "./tasks.ts";
@@ -96,6 +109,10 @@ export type ServerOptions = {
   harnessDir?: string;
   /** 지난 heartbeat를 확인하는 간격(ms). heartbeat 간격은 분 단위이므로 그보다 충분히 짧다. */
   heartbeatPollMs?: number;
+  /** 알림을 보낼 메시지 앱 채널. 첫 판은 가짜 채널뿐이고, 테스트는 실패하는 채널을 주입한다. */
+  notificationChannel?: NotificationChannel;
+  /** 신호 없이 알림 outbox를 확인하는 간격(ms). 실패한 전송의 재시도 예정도 이때 확인한다. */
+  notificationPollMs?: number;
 };
 
 export type RunningServer = {
@@ -104,6 +121,8 @@ export type RunningServer = {
   drain: () => Promise<void>;
   /** 주입한 시계의 지금 시각으로 지난 heartbeat를 처리한다. 테스트 helper(서버는 주기적으로 스스로 확인한다). */
   tickHeartbeats: () => Promise<void>;
+  /** 주입한 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. 테스트 helper(서버는 스스로 보낸다). */
+  deliverNotifications: () => Promise<void>;
   /** 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다. */
   close: () => Promise<void>;
 };
@@ -117,6 +136,10 @@ export async function startServer({
   now = () => new Date(),
   harnessDir = defaultHarnessDir,
   heartbeatPollMs = 5_000,
+  notificationChannel = createFakeChannel((n) =>
+    recordFakeChannelMessage(db, n)
+  ),
+  notificationPollMs = 5_000,
 }: ServerOptions): Promise<RunningServer> {
   const hub = new EventHub();
   let url = "";
@@ -133,6 +156,13 @@ export async function startServer({
     dispatcher,
     now,
     pollMs: heartbeatPollMs,
+  });
+  const notifications = new NotificationRelay({
+    db,
+    hub,
+    channel: notificationChannel,
+    now,
+    pollMs: notificationPollMs,
   });
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
@@ -162,9 +192,66 @@ export async function startServer({
       .json(await createOrganization({ db, hub, harnessDir }, input.data));
   });
 
-  /** Inbox. 첫 판은 모든 조직에서 결정을 기다리는 승인 요청과 결과 제출뿐이다. */
+  /** Inbox. 모든 조직의 결정을 기다리는 승인 요청·결과 제출과 실패한 실행 시도, 각 항목의 읽음·보관. */
   app.get("/api/inbox", async (_req, res) => {
     res.json(await listInbox(db));
+  });
+
+  /**
+   * 알림 정리 명령(읽음·보관). 준 값을 그대로 대입하고 정리 뒤 상태를 돌려준다. 원본의 결정·단계·깨우기는 바뀌지 않는다.
+   * 다른 조직의 원본, 없는 원본·종류는 404다. 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   */
+  app.put("/api/organizations/:id/inbox/:kind/:sourceId", async (req, res) => {
+    const kind = inboxItemKindSchema.safeParse(req.params.kind);
+    if (!kind.success) return notFound(res);
+    const input = updateInboxItemInputSchema.safeParse(req.body);
+    if (!input.success) {
+      res.status(422).json({
+        error: { code: "invalid_input", issues: input.error.issues },
+      });
+      return;
+    }
+    const result = await updateInboxItem(
+      db,
+      req.params.id,
+      kind.data,
+      req.params.sourceId,
+      input.data
+    );
+    if (result.kind === "not_found") return notFound(res);
+    if (result.event) hub.publish(result.event);
+    res.json(result.state);
+  });
+
+  /** 알림 outbox와 각 항목의 전송 상태. 쌓인 순서다. */
+  app.get("/api/notifications", async (_req, res) => {
+    res.json(await listOutbox(db));
+  });
+
+  /** 가짜 채널이 받은 알림의 전송 기록. 받은 순서다. */
+  app.get("/api/channels/fake/messages", async (_req, res) => {
+    res.json(await listFakeChannelMessages(db));
+  });
+
+  /**
+   * 가짜 채널의 알림에 사용자가 답한다. 승인 요청 알림에만 승인 결정 입력으로 답하며, 대시보드와 같은 승인 결정 명령으로
+   * 보내 그 응답(200·409·422 등)을 그대로 돌려준다. 다른 알림은 422 `reply_not_allowed`다.
+   */
+  app.post("/api/channels/fake/messages/:messageId/reply", async (req, res) => {
+    const message = await findFakeChannelMessage(db, req.params.messageId);
+    if (!message) return notFound(res);
+    const result = await replyThroughFakeChannel(url, message, req.body);
+    if (result.kind === "reply_not_allowed") {
+      res.status(422).json({ error: { code: "reply_not_allowed" } });
+      return;
+    }
+    if (result.kind === "invalid_input") {
+      res
+        .status(422)
+        .json({ error: { code: "invalid_input", issues: result.issues } });
+      return;
+    }
+    res.status(result.status).json(result.body);
   });
 
   app.get("/api/organizations/:id", async (req, res) => {
@@ -714,6 +801,7 @@ export async function startServer({
     // 남은 실행 시도 복구가 끝난 뒤에 heartbeat가 새 깨우기를 만든다.
     await dispatcher.start();
     heartbeats.start();
+    notifications.start();
   } catch (error) {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -724,9 +812,12 @@ export async function startServer({
     url,
     drain: () => dispatcher.drain(),
     tickHeartbeats: () => heartbeats.tick(),
+    deliverNotifications: () => notifications.flush(),
     close: async () => {
       await heartbeats.close();
       await dispatcher.close();
+      // 실행 시도를 끝내며 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
+      await notifications.close();
       for (const client of wss.clients) client.terminate();
       wss.close();
       server.closeAllConnections();

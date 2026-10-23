@@ -369,6 +369,18 @@ describe("demo Lead scenario", () => {
       ).toBe(leadReplyScript);
   });
 
+  it("fails the run when the owner asks for a failure drill in any stage, not when it is merely mentioned", () => {
+    for (const stage of ["goal_setting", "researching"] as const)
+      expect(
+        demoLeadScript(at(stage, [message("실패 연습 해 주세요")])).steps
+      ).toEqual([
+        { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+      ]);
+    expect(
+      demoLeadScript(at("researching", [message("실패 연습은 하지 마세요")]))
+    ).toBe(leadReplyScript);
+  });
+
   it("submits a result only when the owner asks for it, not when the message merely mentions it", () => {
     for (const body of [
       "결과 제출 부탁해요",

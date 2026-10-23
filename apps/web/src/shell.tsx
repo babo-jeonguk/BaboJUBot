@@ -7,13 +7,13 @@ import { useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation, useMatch } from "react-router";
 import {
   useArtifact,
-  useInbox,
   useOrganization,
   useOrganizations,
   useRun,
   useTask,
 } from "./api.ts";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
+import { InboxPanel, useAttention, useInboxPanel } from "./inbox.tsx";
 import {
   abbr,
   avatarStyle,
@@ -80,7 +80,7 @@ function useCurrent() {
     orgId: org,
     section,
     home: pathname === "/",
-    inbox: pathname === "/inbox",
+    settings: pathname === "/settings",
   };
 }
 
@@ -124,6 +124,7 @@ export function Shell() {
             <span className="min-w-0 flex-1 truncate text-sm font-medium">
               {orgId ? <Crumbs orgId={orgId} compact /> : "홈"}
             </span>
+            <InboxButton className="btn-ghost relative px-2" />
           </div>
           {orgId && (
             <div className="hidden truncate border-b border-slate-200/70 bg-white/60 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
@@ -137,6 +138,7 @@ export function Shell() {
             <Outlet />
           </div>
         </main>
+        <InboxPanel />
       </div>
     </Tooltip.Provider>
   );
@@ -177,10 +179,71 @@ function ActiveBar({ on }: { on: boolean }) {
   );
 }
 
+/** 주의 필요 수 표시. 불러오는 중에는 숫자를 보이지 않고, 오류는 0이 아니라 !로 보인다. */
+function AttentionBadge({
+  count,
+  isError,
+  className,
+}: {
+  count: number | undefined;
+  isError: boolean;
+  className: string;
+}) {
+  if (isError)
+    return <span className={`${className} bg-rose-400 text-slate-950`}>!</span>;
+  if (!count) return null;
+  return (
+    <span className={`${className} bg-amber-400 text-slate-950`}>{count}</span>
+  );
+}
+const attentionText = ({
+  count,
+  isError,
+}: {
+  count: number | undefined;
+  isError: boolean;
+}) =>
+  isError
+    ? "주의 수를 불러오지 못함"
+    : count === undefined
+      ? "주의 수 불러오는 중"
+      : `주의 필요 ${count}개`;
+const badgeClass =
+  "absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold";
+
+/** Inbox 패널을 여닫는 버튼. 레일과 768px 미만 상단 바에 있다. */
+function InboxButton({
+  className,
+  children,
+}: {
+  className: string;
+  children?: ReactNode;
+}) {
+  const panel = useInboxPanel();
+  const attention = useAttention();
+  return (
+    <button
+      onClick={panel.toggle}
+      data-closes-sheet
+      aria-expanded={panel.open}
+      aria-label={`Inbox · ${attentionText(attention)}`}
+      className={className}
+    >
+      {children ?? (
+        <>
+          ✉
+          <AttentionBadge {...attention} className={badgeClass} />
+        </>
+      )}
+    </button>
+  );
+}
+
 function Rail() {
-  const { orgId, home, inbox } = useCurrent();
+  const { orgId, home, settings } = useCurrent();
   const orgs = useOrganizations();
-  const waiting = useInbox().data?.length ?? 0;
+  const panel = useInboxPanel();
+  const attention = useAttention();
   const openCreate = useOpenCreateOrganization();
   return (
     <nav
@@ -200,24 +263,15 @@ function Rail() {
           <span className="text-[10px] text-white/60">홈</span>
         </Link>
       </Tip>
-      <Tip content={`Inbox · 결정을 기다리는 항목 ${waiting}개`}>
-        <Link
-          to="/inbox"
-          className={railItem(inbox)}
-          aria-current={inbox ? "page" : undefined}
-          aria-label={`Inbox · 주의 필요 ${waiting}개`}
-        >
-          <ActiveBar on={inbox} />
+      <Tip content={`Inbox · ${attentionText(attention)}`}>
+        <InboxButton className={railItem(panel.open)}>
+          <ActiveBar on={panel.open} />
           <span className="relative flex h-9 w-9 items-center justify-center rounded-xl text-lg">
             ✉
-            {waiting > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-400 px-1 text-[10px] font-semibold text-slate-950">
-                {waiting}
-              </span>
-            )}
+            <AttentionBadge {...attention} className={badgeClass} />
           </span>
           <span className="text-[10px] text-white/60">Inbox</span>
-        </Link>
+        </InboxButton>
       </Tip>
       <div className="my-2 h-px w-8 bg-white/15" />
       {orgs.isPending && (
@@ -250,12 +304,28 @@ function Rail() {
           ＋
         </button>
       </Tip>
+      <div className="flex-1" />
+      <Tip content="전역 설정 · 실행기·환경 템플릿·비밀값·메시지 앱">
+        <Link
+          to="/settings"
+          className={railItem(settings)}
+          aria-current={settings ? "page" : undefined}
+          aria-label="전역 설정"
+        >
+          <ActiveBar on={settings} />
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl text-lg">
+            ⚙
+          </span>
+          <span className="text-[10px] text-white/60">설정</span>
+        </Link>
+      </Tip>
     </nav>
   );
 }
 
 function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
   const stage = stageLabel[org.stage];
+  const attention = useAttention(org.id);
   const dim = org.stage === "completed" || org.stage === "stopped";
   return (
     <Tip
@@ -263,6 +333,7 @@ function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
         <div className="space-y-1">
           <div className="font-semibold">{org.name}</div>
           <div className="text-white/70">{stage}</div>
+          <div className="text-white/70">{attentionText(attention)}</div>
         </div>
       }
     >
@@ -270,14 +341,20 @@ function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
         to={`/orgs/${org.id}`}
         className={railItem(on)}
         aria-current={on ? "page" : undefined}
-        aria-label={`${org.name} · ${stage}`}
+        aria-label={`${org.name} · ${stage} · ${attentionText(attention)}`}
       >
         <ActiveBar on={on} />
-        <span
-          className={`flex h-9 w-9 items-center justify-center rounded-xl text-[13px] font-semibold shadow-sm transition ${on ? "ring-2 ring-white" : ""} ${dim ? "opacity-45 grayscale" : ""}`}
-          style={avatarStyle(org.id)}
-        >
-          {abbr(org.name)}
+        <span className="relative">
+          <span
+            className={`flex h-9 w-9 items-center justify-center rounded-xl text-[13px] font-semibold shadow-sm transition ${on ? "ring-2 ring-white" : ""} ${dim ? "opacity-45 grayscale" : ""}`}
+            style={avatarStyle(org.id)}
+          >
+            {abbr(org.name)}
+          </span>
+          <AttentionBadge
+            {...attention}
+            className={`${badgeClass} -top-1.5 -right-1.5`}
+          />
         </span>
         <span
           className={`w-full truncate px-0.5 text-center text-[10px] ${on ? "text-white" : "text-white/55"}`}
@@ -292,6 +369,8 @@ function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
 function Sections({ orgId }: { orgId: string }) {
   const { section } = useCurrent();
   const org = useOrganization(orgId);
+  const panel = useInboxPanel();
+  const attention = useAttention(orgId);
   const [shut, setShut] = useState<Record<string, boolean>>({});
   if (!org.data) return null;
   return (
@@ -303,8 +382,16 @@ function Sections({ orgId }: { orgId: string }) {
         <div className="text-[15px] leading-snug font-semibold text-slate-900">
           {org.data.name}
         </div>
-        <div className="mt-2">
+        <div className="mt-2 flex items-center justify-between gap-2">
           <StageBadge stage={org.data.stage} />
+          <button
+            onClick={() => panel.show(orgId)}
+            data-closes-sheet
+            className="text-xs font-medium text-amber-700 transition hover:text-amber-900"
+            aria-label={`이 조직의 Inbox 열기 · ${attentionText(attention)}`}
+          >
+            주의 {attention.isError ? "!" : (attention.count ?? "…")} →
+          </button>
         </div>
       </div>
       {sectionGroups.map((g, gi) => {

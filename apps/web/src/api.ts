@@ -8,6 +8,7 @@ import {
   conversationMessageSchema,
   eventListSchema,
   flowTemplateCopySchema,
+  inboxItemStateSchema,
   inboxSchema,
   instructionCopySchema,
   instructionRevisionSchema,
@@ -33,12 +34,14 @@ import {
   type DecideApprovalInput,
   type DecideResultInput,
   type EditInstructionCopyInput,
+  type InboxItemKind,
   type MessageDelivery,
   type Organization,
   type OrganizationCommand,
   type OrganizationDetail,
   type UpdateApprovalPolicyInput,
   type UpdateHeartbeatInput,
+  type UpdateInboxItemInput,
   type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -503,6 +506,43 @@ export function useInbox() {
 }
 
 /**
+ * Inbox 항목에 대한 명령(결정·읽음·보관)의 mutation key. 응답을 기다리는 명령이 있는 항목이 Inbox의 `작업 중`이다.
+ * 항목 ID는 종류 안에서만 유일하므로 종류를 함께 쓴다.
+ */
+export const inboxItemMutationKey = (kind: InboxItemKind, sourceId: string) =>
+  ["inbox-item", kind, sourceId] as const;
+
+/**
+ * 알림 정리 명령(읽음·보관). 결과를 미리 반영하지 않고, 끝나면 성공·실패와 상관없이 Inbox를 다시 불러와 서버 상태를 보인다.
+ * 원본의 결정은 바꾸지 않으므로 다른 조회는 다시 부르지 않는다.
+ */
+export function useUpdateInboxItem(item: {
+  organizationId: string;
+  kind: InboxItemKind;
+  sourceId: string;
+}) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: inboxItemMutationKey(item.kind, item.sourceId),
+    mutationFn: (input: UpdateInboxItemInput) =>
+      request(
+        inboxItemStateSchema,
+        orgPath(
+          item.organizationId,
+          `/inbox/${item.kind}/${encodeURIComponent(item.sourceId)}`
+        ),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }
+      ),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox }),
+  });
+}
+
+/**
  * 승인 결정 제어 명령. 성공하거나 이미 결정됐다는 응답을 받으면 그 조직과 Inbox를 다시 불러와 서버의 결과를 보인다.
  * 결과를 미리 화면에 반영하지 않는다.
  */
@@ -515,6 +555,7 @@ export function useDecideApproval(orgId: string, approvalId: string) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
   };
   return useMutation({
+    mutationKey: inboxItemMutationKey("approval", approvalId),
     mutationFn: (input: DecideApprovalInput) =>
       request(
         approvalSchema,
@@ -569,6 +610,7 @@ export function useDecideResult(orgId: string, submissionId: string) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
   };
   return useMutation({
+    mutationKey: inboxItemMutationKey("result_submission", submissionId),
     mutationFn: (input: DecideResultInput) =>
       request(
         resultSubmissionSchema,

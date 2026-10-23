@@ -8,8 +8,10 @@ import {
   RouterProvider,
 } from "react-router";
 import { AgentDetailPage, RunDetailPage } from "./agents.tsx";
-import { ApprovalDetailPage, InboxPage } from "./approvals.tsx";
+import { ApprovalDetailPage } from "./approvals.tsx";
 import { CreateOrganizationProvider } from "./create-organization.tsx";
+import { GlobalSettingsPage } from "./global-settings.tsx";
+import { InboxPanelProvider, InboxRedirect } from "./inbox.tsx";
 import { useLiveEvents } from "./live-events.ts";
 import { Home, OrganizationScreen } from "./pages.tsx";
 import { ResultSubmissionPage } from "./results.tsx";
@@ -20,12 +22,16 @@ import "./index.css";
 
 const queryClient = new QueryClient();
 
-/** 셸 바깥의 공통: 실시간 Event 구독과 조직 생성 dialog. data router라서 화면은 이동 차단(`useBlocker`)을 쓸 수 있다. */
+/**
+ * 셸 바깥의 공통: 실시간 Event 구독, 조직 생성 dialog, Inbox 패널 상태. data router라서 화면은 이동 차단(`useBlocker`)을 쓸 수 있다.
+ */
 function Root() {
   useLiveEvents();
   return (
     <CreateOrganizationProvider>
-      <Shell />
+      <InboxPanelProvider>
+        <Shell />
+      </InboxPanelProvider>
     </CreateOrganizationProvider>
   );
 }
@@ -34,7 +40,8 @@ const router = createBrowserRouter(
   createRoutesFromElements(
     <Route element={<Root />}>
       <Route index element={<Home />} />
-      <Route path="inbox" element={<InboxPage />} />
+      <Route path="inbox" element={<InboxRedirect />} />
+      <Route path="settings" element={<GlobalSettingsPage />} />
       <Route
         path="orgs/:orgId/approvals/:approvalId"
         element={<ApprovalDetailPage />}

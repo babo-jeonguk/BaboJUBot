@@ -4,6 +4,8 @@ import {
   artifactFormats,
   approvalStatuses,
   defaultHeartbeatMinutes,
+  inboxItemKinds,
+  notificationKinds,
   heartbeatIntervalMaxMinutes,
   instructionKinds,
   lifecycleStages,
@@ -1150,6 +1152,7 @@ export const events = pgTable(
     index("events_organization_idx").on(t.organizationId, t.id),
     index("events_agent_idx").on(t.organizationId, t.agentId, t.id),
     index("events_run_idx").on(t.runId, t.id),
+    unique("events_organization_id_id_unique").on(t.organizationId, t.id),
     foreignKey({
       columns: [t.organizationId, t.agentId],
       foreignColumns: [agents.organizationId, agents.id],
@@ -1158,5 +1161,153 @@ export const events = pgTable(
       columns: [t.organizationId, t.runId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
+  ]
+);
+
+/**
+ * 알림 outbox. 알림을 쌓는 사건의 Event와 같은 transaction에 남는 전송 의도이며 Event 하나에 항목 하나다.
+ * 전송은 짧은 transaction의 claim(`claimToken`·`claimExpiresAt`) → transaction 밖 채널 전송 → claim이 그대로일 때만 정산이다.
+ * claim이 만료되면 다른 전송이 다시 가져가고, 오래된 claim의 정산은 아무것도 바꾸지 않는다.
+ */
+export const notificationOutbox = pgTable(
+  "notification_outbox",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    eventId: bigint("event_id", { mode: "number" }).notNull(),
+    kind: text("kind", { enum: notificationKinds }).notNull(),
+    sourceId: uuid("source_id").notNull(),
+    /** 채널에 넘긴 횟수. claim마다 하나 늘며 claim 번호로도 쓴다. */
+    attempts: integer("attempts").notNull().default(0),
+    /** 실패 뒤 다음 시도 예정. 없으면 곧바로 보낸다. */
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    claimToken: uuid("claim_token"),
+    claimExpiresAt: timestamp("claim_expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    sentAt: timestamp("sent_at", { withTimezone: true, mode: "date" }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    check(
+      "notification_outbox_kind_check",
+      sql`${t.kind} in (${inList(notificationKinds)})`
+    ),
+    check(
+      "notification_outbox_claim_check",
+      sql`(${t.claimToken} is null) = (${t.claimExpiresAt} is null)
+        and (${t.sentAt} is null or ${t.claimToken} is null)`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.eventId],
+      foreignColumns: [events.organizationId, events.id],
+    }),
+    uniqueIndex("notification_outbox_event_unique").on(t.eventId),
+    unique("notification_outbox_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    index("notification_outbox_due_idx")
+      .on(t.seq)
+      .where(sql`${t.sentAt} is null`),
+  ]
+);
+
+/** 가짜 채널이 받은 알림. 알림(outbox 항목)마다 하나뿐이라 다시 보낸 알림은 기록을 늘리지 않는다. */
+export const fakeChannelMessages = pgTable(
+  "fake_channel_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    notificationId: uuid("notification_id").notNull(),
+    kind: text("kind", { enum: notificationKinds }).notNull(),
+    sourceId: uuid("source_id").notNull(),
+    organizationName: text("organization_name").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    link: text("link").notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.notificationId],
+      foreignColumns: [
+        notificationOutbox.organizationId,
+        notificationOutbox.id,
+      ],
+    }),
+    uniqueIndex("fake_channel_messages_notification_unique").on(
+      t.notificationId
+    ),
+  ]
+);
+
+/**
+ * 사용자의 알림 정리 상태(읽음·보관). 원본과 따로 두며, 원본 열 하나만 종류에 맞게 채워 같은 조직의 원본을 FK로 가리킨다.
+ * 행이 없으면 안 읽음·보관 안 함이다.
+ */
+export const inboxStates = pgTable(
+  "inbox_states",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    kind: text("kind", { enum: inboxItemKinds }).notNull(),
+    approvalId: uuid("approval_id"),
+    resultSubmissionId: uuid("result_submission_id"),
+    runId: uuid("run_id"),
+    read: boolean("read").notNull().default(false),
+    archived: boolean("archived").notNull().default(false),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    check(
+      "inbox_states_kind_check",
+      sql`${t.kind} in (${inList(inboxItemKinds)})`
+    ),
+    check(
+      "inbox_states_source_check",
+      sql`num_nonnulls(${t.approvalId}, ${t.resultSubmissionId}, ${t.runId}) = 1
+        and ((${t.kind} = 'approval' and ${t.approvalId} is not null)
+          or (${t.kind} = 'result_submission' and ${t.resultSubmissionId} is not null)
+          or (${t.kind} = 'run_failure' and ${t.runId} is not null))`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.approvalId],
+      foreignColumns: [approvals.organizationId, approvals.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.resultSubmissionId],
+      foreignColumns: [resultSubmissions.organizationId, resultSubmissions.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.runId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    uniqueIndex("inbox_states_approval_unique").on(t.approvalId),
+    uniqueIndex("inbox_states_result_submission_unique").on(
+      t.resultSubmissionId
+    ),
+    uniqueIndex("inbox_states_run_unique").on(t.runId),
   ]
 );
