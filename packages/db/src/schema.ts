@@ -157,6 +157,8 @@ export const instructionCopies = pgTable(
     content: text("content").notNull(),
     source: text("source").notNull(),
     sourceDigest: text("source_digest").notNull(),
+    /** 지금 내용의 revision 번호. 편집할 때마다 하나 늘고 그 revision이 instruction_revisions에 남는다. */
+    revision: integer("revision").notNull().default(1),
     createdAt: createdAt(),
   },
   (t) => [
@@ -164,11 +166,17 @@ export const instructionCopies = pgTable(
       "instruction_copies_kind_check",
       sql`${t.kind} in (${inList(instructionKinds)})`
     ),
+    check("instruction_copies_revision_check", sql`${t.revision} >= 1`),
     foreignKey({
       columns: [t.organizationId, t.agentId],
       foreignColumns: [agents.organizationId, agents.id],
     }),
     uniqueIndex("instruction_copies_agent_path_unique").on(t.agentId, t.path),
+    unique("instruction_copies_organization_id_agent_id_id_unique").on(
+      t.organizationId,
+      t.agentId,
+      t.id
+    ),
   ]
 );
 
@@ -822,6 +830,63 @@ export const resultSubmissionArtifacts = pgTable(
   ]
 );
 
+/**
+ * 지침 사본의 revision. 사본마다 1부터 하나씩 늘고, 그때의 전체 본문을 담으며 바뀌지 않는다. revision 1은 복사로 생긴 처음 내용이다
+ * (편집자 `copy`, 시각은 사본을 만든 때). 조직·에이전트·사본은 복합 FK로 묶어 다른 조직·에이전트의 사본을 가리킬 수 없다.
+ * 에이전트 편집자 열은 이후 Lead 편집을 위한 자리다.
+ */
+export const instructionRevisions = pgTable(
+  "instruction_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    agentId: uuid("agent_id").notNull(),
+    copyId: uuid("copy_id").notNull(),
+    number: integer("number").notNull(),
+    editorAuthor: text("editor_author", {
+      enum: ["copy", "owner", "agent"],
+    }).notNull(),
+    editorAgentId: uuid("editor_agent_id"),
+    editorRunId: uuid("editor_run_id"),
+    content: text("content").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("instruction_revisions_number_check", sql`${t.number} >= 1`),
+    check(
+      "instruction_revisions_editor_check",
+      sql`(${t.editorAuthor} in ('copy', 'owner') and ${t.editorAgentId} is null and ${t.editorRunId} is null)
+      or (${t.editorAuthor} = 'agent' and ${t.editorAgentId} is not null and ${t.editorRunId} is not null)`
+    ),
+    foreignKey({
+      columns: [t.organizationId, t.agentId, t.copyId],
+      foreignColumns: [
+        instructionCopies.organizationId,
+        instructionCopies.agentId,
+        instructionCopies.id,
+      ],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.editorAgentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.editorRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    uniqueIndex("instruction_revisions_copy_number_unique").on(
+      t.copyId,
+      t.number
+    ),
+    unique("instruction_revisions_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+  ]
+);
+
 /** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채우고, heartbeat는 가리키는 기록이 없다. */
 const wakeSourceColumns = {
   owner_message: "message_id",
@@ -831,6 +896,7 @@ const wakeSourceColumns = {
   task_comment: "comment_id",
   agent_to_agent_message: "agent_to_agent_message_id",
   research_map_edit: "map_edit_id",
+  instruction_edit: "instruction_revision_id",
   result_changes_requested: "result_submission_id",
 } as const satisfies Record<Exclude<WakeKind, "heartbeat">, string>;
 const wakeKinds = [
@@ -860,6 +926,7 @@ export const wakes = pgTable(
     commentId: uuid("comment_id"),
     agentToAgentMessageId: uuid("agent_to_agent_message_id"),
     mapEditId: uuid("map_edit_id"),
+    instructionRevisionId: uuid("instruction_revision_id"),
     resultSubmissionId: uuid("result_submission_id"),
     runId: uuid("run_id"),
     createdAt: createdAt(),
@@ -869,8 +936,8 @@ export const wakes = pgTable(
     check(
       "wakes_source_check",
       sql`(${t.kind} = 'heartbeat'
-          and num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.resultSubmissionId}) = 0)
-        or num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.resultSubmissionId}) = 1
+          and num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 0)
+        or num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 1
         and (${sql.raw(
           Object.entries(wakeSourceColumns)
             .map(
@@ -912,6 +979,13 @@ export const wakes = pgTable(
       foreignColumns: [researchMapEdits.organizationId, researchMapEdits.id],
     }),
     foreignKey({
+      columns: [t.organizationId, t.instructionRevisionId],
+      foreignColumns: [
+        instructionRevisions.organizationId,
+        instructionRevisions.id,
+      ],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.resultSubmissionId],
       foreignColumns: [resultSubmissions.organizationId, resultSubmissions.id],
     }),
@@ -942,6 +1016,10 @@ export const wakes = pgTable(
     ),
     // 사용자 편집 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_map_edit_unique").on(t.mapEditId),
+    // 사본 저장 하나는 깨우기 하나만 만든다.
+    uniqueIndex("wakes_instruction_revision_unique").on(
+      t.instructionRevisionId
+    ),
     // 수정 요청 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_result_submission_unique").on(t.resultSubmissionId),
   ]

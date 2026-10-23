@@ -99,6 +99,8 @@ export function describeWakeReason(reason: WakeReason): string {
       return `에이전트 메시지 ${quote(reason.body)}`;
     case "research_map_edit":
       return `사용자의 연구 지도 편집: ${reason.summary}`;
+    case "instruction_edit":
+      return `사용자가 지침 사본 ${reason.path}을 revision ${reason.revision}으로 저장함`;
     case "result_changes_requested":
       return `제출한 결과에 수정 요청: ${quote(reason.note)}`;
     case "heartbeat":

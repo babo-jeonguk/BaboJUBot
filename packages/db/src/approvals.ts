@@ -21,11 +21,11 @@ import {
 } from "@babojubot/core";
 import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { insertInstructionCopies } from "./harness.ts";
 import {
   agentRow,
   agentNamesOf,
   insertEvent,
-  instructionCopyRow,
   isUuid,
   lockOrganization,
   toOrganization,
@@ -34,7 +34,6 @@ import {
   agents,
   approvals,
   flowTemplates,
-  instructionCopies,
   organizations,
   wakes,
 } from "./schema.ts";
@@ -220,10 +219,7 @@ export async function decideApproval(
       throw new Error(`approval ${approvalId} changed under the lock`);
     if (plan.workers.length)
       await tx.insert(agents).values(plan.workers.map(agentRow));
-    if (plan.copies.length)
-      await tx
-        .insert(instructionCopies)
-        .values(plan.copies.map(instructionCopyRow));
+    await insertInstructionCopies(tx, plan.copies);
     if (plan.template)
       await tx.insert(flowTemplates).values({
         ...plan.template,

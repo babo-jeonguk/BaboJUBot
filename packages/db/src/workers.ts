@@ -7,15 +7,15 @@ import {
 } from "@babojubot/core";
 import { toApprovalSummary } from "./approvals.ts";
 import type { Database } from "./client.ts";
+import { insertInstructionCopies } from "./harness.ts";
 import {
   agentRow,
   agentNamesOf,
   insertEvent,
-  instructionCopyRow,
   toAgent,
   toOrganization,
 } from "./rows.ts";
-import { agents, approvals, instructionCopies } from "./schema.ts";
+import { agents, approvals } from "./schema.ts";
 import {
   toolWrite,
   type ActiveRunRef,
@@ -61,9 +61,7 @@ export function addWorker(
           .insert(agents)
           .values(agentRow(plan.worker))
           .returning();
-        await tx
-          .insert(instructionCopies)
-          .values(plan.copies.map(instructionCopyRow));
+        await insertInstructionCopies(tx, plan.copies);
         const event = await insertEvent(tx, plan.event);
         return {
           kind: "ok",

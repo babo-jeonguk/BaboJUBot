@@ -4,19 +4,24 @@ import {
   isClosedStage,
   type Agent,
   type AgentDetail,
+  type InstructionEditor,
   type InstructionKind,
   type LifecycleStage,
   type RunSummary,
   type WakeReason,
 } from "@babojubot/contracts";
-import { useState, type ReactNode } from "react";
-import { Link, useParams } from "react-router";
+import * as Dialog from "@radix-ui/react-dialog";
+import { useCallback, useState, type ReactNode } from "react";
+import { Link, useBeforeUnload, useBlocker, useParams } from "react-router";
 import { EventRow } from "./activity.tsx";
 import {
   ApiError,
   useAgent,
   useAgentInstructions,
   useControlAgent,
+  useEditInstructionCopy,
+  useInstructionRevision,
+  useInstructionRevisions,
   useOrganization,
   useRun,
   useUpdateHeartbeat,
@@ -111,8 +116,18 @@ function AgentCard({ orgId, agent }: { orgId: string; agent: Agent }) {
   );
 }
 
-/** 조직 › 에이전트 › <에이전트>: 상태·일시정지·재개와 최근 실행 시도. 각 실행 시도는 상세로 이어진다. */
-export function AgentDetailPage() {
+/** 에이전트 상세의 탭. 주소가 탭을 정하므로 뒤로 가기·새로고침이 같은 탭을 연다(#50). */
+const agentTabs = [
+  { tab: "overview", label: "개요", path: "" },
+  { tab: "instructions", label: "Role·Soul·Skill", path: "/instructions" },
+] as const;
+export type AgentTab = (typeof agentTabs)[number]["tab"];
+
+/**
+ * 조직 › 에이전트 › <에이전트>. 개요 탭은 상태·일시정지·재개·heartbeat와 최근 실행 시도(각각 상세로 이어짐),
+ * Role·Soul·Skill 탭은 이 에이전트만의 사본 편집과 revision이다.
+ */
+export function AgentDetailPage({ tab }: { tab: AgentTab }) {
   const { orgId = "", agentId = "" } = useParams();
   const agent = useAgent(orgId, agentId);
   const stage = useOrganization(orgId).data?.stage;
@@ -127,7 +142,7 @@ export function AgentDetailPage() {
   const live = a.recentRuns.find((r) => r.status === "running");
   return (
     <Page width="standard">
-      <div className="mb-6 flex items-center gap-3">
+      <div className="mb-4 flex items-center gap-3">
         <span
           className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-base font-semibold text-white"
           style={avatarStyle(a.id)}
@@ -159,28 +174,53 @@ export function AgentDetailPage() {
           )}
         </div>
       </div>
-      <AgentControl orgId={orgId} agent={a} stage={stage} />
-      <HeartbeatSettings orgId={orgId} agent={a} stage={stage} />
-      <InstructionCopies key={a.id} orgId={orgId} agentId={a.id} />
-      <section aria-label="최근 실행 시도">
-        <h2 className="mb-2 text-sm font-semibold text-slate-600">
-          최근 실행 시도
-        </h2>
-        {!a.recentRuns.length ? (
-          <div className="card p-6 text-sm text-slate-500">
-            아직 실행 시도가 없습니다.{" "}
-            {a.role === "lead"
-              ? "Lead 대화에 메시지를 보내면 깨어납니다."
-              : "작업을 맡거나 작업 댓글·메시지를 받으면 깨어납니다."}
-          </div>
-        ) : (
-          <ul className="card divide-y divide-slate-100">
-            {a.recentRuns.map((r) => (
-              <RunRow key={r.id} orgId={orgId} run={r} />
-            ))}
-          </ul>
-        )}
-      </section>
+      <nav
+        aria-label="에이전트 상세 탭"
+        className="mb-6 flex gap-1 border-b border-slate-200"
+      >
+        {agentTabs.map((t) => (
+          <Link
+            key={t.tab}
+            to={`/orgs/${orgId}/agents/${a.id}${t.path}`}
+            aria-current={t.tab === tab ? "page" : undefined}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm transition ${t.tab === tab ? "border-brand-600 font-semibold text-slate-900" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+          >
+            {t.label}
+          </Link>
+        ))}
+      </nav>
+      {tab === "overview" ? (
+        <>
+          <AgentControl orgId={orgId} agent={a} stage={stage} />
+          <HeartbeatSettings orgId={orgId} agent={a} stage={stage} />
+          <section aria-label="최근 실행 시도">
+            <h2 className="mb-2 text-sm font-semibold text-slate-600">
+              최근 실행 시도
+            </h2>
+            {!a.recentRuns.length ? (
+              <div className="card p-6 text-sm text-slate-500">
+                아직 실행 시도가 없습니다.{" "}
+                {a.role === "lead"
+                  ? "Lead 대화에 메시지를 보내면 깨어납니다."
+                  : "작업을 맡거나 작업 댓글·메시지를 받으면 깨어납니다."}
+              </div>
+            ) : (
+              <ul className="card divide-y divide-slate-100">
+                {a.recentRuns.map((r) => (
+                  <RunRow key={r.id} orgId={orgId} run={r} />
+                ))}
+              </ul>
+            )}
+          </section>
+        </>
+      ) : (
+        <InstructionCopies
+          key={a.id}
+          orgId={orgId}
+          agentId={a.id}
+          stage={stage}
+        />
+      )}
     </Page>
   );
 }
@@ -368,19 +408,84 @@ const kindLabel: Record<InstructionKind, string> = {
   skill: "Skill",
 };
 
+const editorLabel = (editor: InstructionEditor) =>
+  editor.author === "copy"
+    ? "복사로 생김"
+    : editor.author === "owner"
+      ? "사용자"
+      : "에이전트";
+
+/** 편집 중인 사본 하나. `base`는 편집을 시작한 revision, `original`은 그때 본문이다. 서버 값과 따로 두어 실시간 갱신이 덮지 않는다. */
+type Draft = {
+  copyId: string;
+  base: number;
+  original: string;
+  content: string;
+};
+
+const saveErrorText = (code: string | undefined) => {
+  switch (code) {
+    case "organization_closed":
+      return "조직이 이미 끝나 저장하지 않았습니다.";
+    case "invalid_skill":
+      return "Skill을 읽을 수 없는 내용이라 저장하지 않았습니다. 첫 줄의 --- 부터 name(디렉터리 이름과 같게)과 description을 둔 frontmatter를 지켜 주세요.";
+    case "invalid_input":
+      return "1 MiB를 넘거나 저장할 수 없는 글자가 있어 저장하지 않았습니다.";
+    case "not_found":
+      return "이 사본을 찾지 못했습니다.";
+    default:
+      return "저장하지 못했습니다. 편집 내용은 그대로이니 다시 시도하세요.";
+  }
+};
+
 /**
- * 에이전트 상세 › Role·Soul·Skill 사본. 이 에이전트가 소유한 사본을 읽기 전용으로 보인다.
- * 편집·revision은 후속 이슈(#64)에서 연다. 에이전트가 바뀌면 key로 선택을 초기화한다.
+ * 에이전트 상세 › Role·Soul·Skill 탭. 이 에이전트가 소유한 사본을 고쳐 저장하고 revision을 본다.
+ * 편집 중인 본문(draft)은 서버 값과 따로 두므로 실시간 갱신·저장 실패·충돌에도 남는다. 저장하지 않은 편집이 있으면
+ * 다른 파일·화면으로 옮기거나 새로고침할 때 버릴지 묻는다. 예전 revision은 읽기만 하며 되돌리기·diff는 없다.
+ * 에이전트가 바뀌면 key로 상태를 초기화한다.
  */
 function InstructionCopies({
   orgId,
   agentId,
+  stage,
 }: {
   orgId: string;
   agentId: string;
+  stage: LifecycleStage | undefined;
 }) {
   const found = useAgentInstructions(orgId, agentId);
-  const [selected, setSelected] = useState(0);
+  const save = useEditInstructionCopy(orgId, agentId);
+  const [selectedPath, setSelectedPath] = useState<string>();
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [viewing, setViewing] = useState<number | null>(null);
+  const [switchTo, setSwitchTo] = useState<string | null>(null);
+  const dirty = draft !== null && draft.content !== draft.original;
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      dirty &&
+      (currentLocation.pathname !== nextLocation.pathname ||
+        currentLocation.search !== nextLocation.search)
+  );
+  useBeforeUnload(
+    useCallback(
+      (e: BeforeUnloadEvent) => {
+        if (dirty) e.preventDefault();
+      },
+      [dirty]
+    )
+  );
+  const closed = stage !== undefined && isClosedStage(stage);
+
+  const leaveDraft = () => {
+    setDraft(null);
+    save.reset();
+  };
+  const open = (path: string) => {
+    leaveDraft();
+    setViewing(null);
+    setSelectedPath(path);
+  };
+
   const body = () => {
     if (found.isPending) return <Loading />;
     if (found.isError)
@@ -398,7 +503,25 @@ function InstructionCopies({
           수 있습니다.
         </div>
       );
-    const copy = copies[Math.min(selected, copies.length - 1)]!;
+    const copy = copies.find((c) => c.path === selectedPath) ?? copies[0]!;
+    const editing = draft?.copyId === copy.id ? draft : null;
+    const select = (path: string) => {
+      if (path === copy.path) return;
+      if (dirty) setSwitchTo(path);
+      else open(path);
+    };
+    const submit = (expectedRevision: number) => {
+      if (!editing) return;
+      save.mutate(
+        { copyId: copy.id, content: editing.content, expectedRevision },
+        { onSuccess: () => setDraft(null) }
+      );
+    };
+    const conflict =
+      editing !== null &&
+      (copy.revision !== editing.base ||
+        (save.error instanceof ApiError &&
+          save.error.code === "revision_conflict"));
     return (
       <div className="card overflow-hidden">
         <div
@@ -406,12 +529,12 @@ function InstructionCopies({
           aria-label="사본 파일"
           className="scrollbar-thin flex gap-1 overflow-x-auto border-b border-slate-100 px-2 pt-2"
         >
-          {copies.map((c, i) => (
+          {copies.map((c) => (
             <button
               key={c.id}
               role="tab"
               aria-selected={c.id === copy.id}
-              onClick={() => setSelected(i)}
+              onClick={() => select(c.path)}
               className={`shrink-0 rounded-t-lg px-3 py-1.5 text-xs transition ${c.id === copy.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-500 hover:text-slate-800"}`}
             >
               {kindLabel[c.kind]} · {c.path}
@@ -428,36 +551,325 @@ function InstructionCopies({
             <dd className="font-mono break-all">
               harness/{copy.source} · {copy.sourceDigest.slice(0, 12)}
             </dd>
+            <dt>지금 revision</dt>
+            <dd className="tabular-nums" data-testid="copy-revision">
+              {copy.revision}
+            </dd>
             <dt>지침 bundle</dt>
             <dd className="font-mono break-all">
               {bundleVersion?.slice(0, 19) ?? "없음"}
             </dd>
           </dl>
-          {copy.content ? (
-            <pre className="max-h-[28rem] overflow-auto px-4 py-3 font-sans text-sm break-words whitespace-pre-wrap text-slate-800">
-              {copy.content}
-            </pre>
+          {viewing !== null ? (
+            <RevisionView
+              orgId={orgId}
+              agentId={agentId}
+              copyId={copy.id}
+              number={viewing}
+              onBack={() => setViewing(null)}
+            />
+          ) : editing ? (
+            <form
+              className="px-4 py-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!conflict) submit(editing.base);
+              }}
+            >
+              <textarea
+                aria-label={`${copy.path} 편집`}
+                className="block min-h-[22rem] w-full resize-y rounded-xl bg-slate-50 px-3 py-2 font-mono text-[13px] leading-relaxed ring-1 ring-slate-200 transition outline-none focus:bg-white focus:ring-2 focus:ring-brand-400 disabled:opacity-60"
+                value={editing.content}
+                disabled={save.isPending}
+                spellCheck={false}
+                onChange={(e) =>
+                  setDraft({ ...editing, content: e.currentTarget.value })
+                }
+              />
+              {conflict && !save.isPending && (
+                <div
+                  role="alert"
+                  className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-200"
+                >
+                  편집하는 동안 다른 곳에서 이 사본을 저장해 지금은 revision{" "}
+                  {copy.revision}입니다. 편집 내용은 그대로 두었습니다. 아래
+                  목록에서 최신 내용을 확인할 수 있고, 이 편집으로 덮어쓰려면
+                  다시 저장하세요.
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="btn-soft"
+                      onClick={() => submit(copy.revision)}
+                    >
+                      revision {copy.revision} 위에 이 편집 저장
+                    </button>
+                  </div>
+                </div>
+              )}
+              {!conflict && !save.isPending && save.isError && (
+                <p role="alert" className="mt-2 text-xs text-rose-600">
+                  {saveErrorText(
+                    save.error instanceof ApiError ? save.error.code : undefined
+                  )}
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={save.isPending || conflict || closed}
+                >
+                  {save.isPending ? "저장하는 중…" : "저장"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-soft"
+                  disabled={save.isPending}
+                  onClick={leaveDraft}
+                >
+                  취소
+                </button>
+                <span className="text-xs text-slate-500">
+                  {dirty ? "저장하지 않은 편집이 있습니다" : "바뀐 내용 없음"}
+                </span>
+              </div>
+            </form>
           ) : (
-            <p className="px-4 py-3 text-sm text-slate-400">빈 파일</p>
+            <>
+              <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+                <button
+                  className="btn-soft"
+                  disabled={closed}
+                  onClick={() => {
+                    save.reset();
+                    setDraft({
+                      copyId: copy.id,
+                      base: copy.revision,
+                      original: copy.content,
+                      content: copy.content,
+                    });
+                  }}
+                >
+                  ✎ 편집
+                </button>
+                {closed && (
+                  <span className="text-xs text-slate-500">
+                    끝난 조직의 사본은 고칠 수 없습니다.
+                  </span>
+                )}
+              </div>
+              {copy.content ? (
+                <pre className="max-h-[28rem] overflow-auto px-4 py-3 font-sans text-sm break-words whitespace-pre-wrap text-slate-800">
+                  {copy.content}
+                </pre>
+              ) : (
+                <p className="px-4 py-3 text-sm text-slate-400">빈 파일</p>
+              )}
+            </>
           )}
+          <RevisionList
+            orgId={orgId}
+            agentId={agentId}
+            copyId={copy.id}
+            current={copy.revision}
+            viewing={viewing}
+            locked={editing !== null}
+            onSelect={(n) => setViewing(n === copy.revision ? null : n)}
+          />
         </div>
       </div>
     );
   };
+  const asking = switchTo !== null || blocker.state === "blocked";
   return (
     <section aria-label="Role·Soul·Skill 사본" className="mb-6">
-      <h2 className="mb-1 text-sm font-semibold text-slate-600">
-        Role·Soul·Skill 사본
-      </h2>
-      <p className="mb-2 text-xs text-slate-400">
-        이 에이전트만의 사본입니다. 같은 Role의 다른 에이전트와 공유하지 않으며
-        여기서는 읽기만 합니다.
+      <p className="mb-2 text-xs text-slate-500">
+        이 에이전트만의 사본입니다. 고쳐도 같은 Role의 다른 에이전트와 하네스
+        라이브러리는 바뀌지 않습니다. 저장할 때마다 revision이 남고 Lead가
+        깨어나며, 이 에이전트의 다음 실행 시도는 바뀐 지침으로 새 세션에서
+        시작합니다. 진행 중인 실행 시도는 시작할 때 받은 지침 그대로입니다.
       </p>
       {body()}
+      <Dialog.Root
+        open={asking}
+        onOpenChange={(next) => {
+          if (next) return;
+          setSwitchTo(null);
+          if (blocker.state === "blocked") blocker.reset();
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px]" />
+          <Dialog.Content className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop">
+            <Dialog.Title className="text-base font-semibold">
+              저장하지 않은 편집이 있습니다
+            </Dialog.Title>
+            <Dialog.Description className="mt-1 text-sm text-slate-500">
+              옮기면 지금 편집한 내용을 버립니다. 사본과 revision은 바뀌지
+              않습니다.
+            </Dialog.Description>
+            <div className="mt-5 flex justify-end gap-2">
+              <Dialog.Close className="btn-soft">계속 편집</Dialog.Close>
+              <button
+                className="btn-danger"
+                onClick={() => {
+                  const target = switchTo;
+                  setSwitchTo(null);
+                  if (target !== null) open(target);
+                  else {
+                    leaveDraft();
+                    blocker.proceed?.();
+                  }
+                }}
+              >
+                편집 버리고 이동
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </section>
   );
 }
 
+/** 사본의 revision 목록(최근 것부터). 고르면 그 revision의 본문을 읽기 전용으로 연다. 편집 중에는 고를 수 없다. */
+function RevisionList({
+  orgId,
+  agentId,
+  copyId,
+  current,
+  viewing,
+  locked,
+  onSelect,
+}: {
+  orgId: string;
+  agentId: string;
+  copyId: string;
+  current: number;
+  viewing: number | null;
+  locked: boolean;
+  onSelect: (number: number) => void;
+}) {
+  const list = useInstructionRevisions(orgId, agentId, copyId);
+  const items = () => {
+    if (list.isPending) return <Loading />;
+    if (list.isError)
+      return (
+        <LoadError what="revision 목록" onRetry={() => void list.refetch()} />
+      );
+    if (!list.data.length)
+      return <p className="text-xs text-slate-400">revision이 없습니다.</p>;
+    return (
+      <ol className="divide-y divide-slate-100 rounded-xl ring-1 ring-slate-100">
+        {list.data.map((r) => {
+          const shown =
+            viewing === null ? r.number === current : r.number === viewing;
+          return (
+            <li key={r.id}>
+              <button
+                aria-pressed={shown}
+                disabled={locked}
+                onClick={() => onSelect(r.number)}
+                className={`flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition disabled:cursor-not-allowed disabled:opacity-60 ${shown ? "bg-brand-50" : "hover:bg-slate-50"}`}
+              >
+                <span className="w-24 shrink-0 font-medium text-slate-800 tabular-nums">
+                  revision {r.number}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-slate-600">
+                  {editorLabel(r.editor)}
+                  {r.number === current && (
+                    <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                      지금
+                    </span>
+                  )}
+                </span>
+                <time
+                  dateTime={r.createdAt}
+                  className="shrink-0 text-slate-400 tabular-nums"
+                >
+                  {formatTime(r.createdAt)}
+                </time>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    );
+  };
+  return (
+    <section
+      aria-label="revision 목록"
+      className="border-t border-slate-100 px-4 py-3"
+    >
+      <h3 className="mb-2 text-xs font-semibold text-slate-600">revision</h3>
+      {locked && (
+        <p className="mb-2 text-xs text-slate-400">
+          편집 중에는 예전 revision을 열 수 없습니다. 저장하거나 취소하세요.
+        </p>
+      )}
+      {items()}
+    </section>
+  );
+}
+
+/** 예전 revision 하나의 본문. 읽기 전용이며 편집·되돌리기가 없다. */
+function RevisionView({
+  orgId,
+  agentId,
+  copyId,
+  number,
+  onBack,
+}: {
+  orgId: string;
+  agentId: string;
+  copyId: string;
+  number: number;
+  onBack: () => void;
+}) {
+  const revision = useInstructionRevision(orgId, agentId, copyId, number);
+  return (
+    <div className="px-4 py-3" data-testid="revision-view">
+      <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600 ring-1 ring-slate-200">
+        <span className="font-semibold text-slate-800">
+          revision {number} · 읽기 전용
+        </span>
+        {revision.data && (
+          <span>
+            {editorLabel(revision.data.editor)} ·{" "}
+            {formatTime(revision.data.createdAt)}
+          </span>
+        )}
+        <button className="btn-ghost ml-auto" onClick={onBack}>
+          지금 사본으로
+        </button>
+      </div>
+      {revision.isPending ? (
+        <Loading />
+      ) : revision.isError ? (
+        revision.error instanceof ApiError && revision.error.status === 404 ? (
+          <p className="text-sm text-slate-500">
+            이 revision을 찾지 못했습니다.
+          </p>
+        ) : (
+          <LoadError
+            what={`revision ${number}`}
+            onRetry={() => void revision.refetch()}
+          />
+        )
+      ) : revision.data.content ? (
+        <pre
+          tabIndex={0}
+          aria-label={`revision ${number} 본문`}
+          className="max-h-[28rem] overflow-auto rounded-xl px-1 py-1 font-sans text-sm break-words whitespace-pre-wrap text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+        >
+          {revision.data.content}
+        </pre>
+      ) : (
+        <p className="text-sm text-slate-400">빈 파일</p>
+      )}
+    </div>
+  );
+}
 function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
   return (
     <li>
@@ -647,6 +1059,15 @@ function WakeReasonRow({
           <span className="text-slate-500">연구 지도</span>
         ),
         reason.summary
+      );
+    case "instruction_edit":
+      return row(
+        "사용자 사본 편집",
+        link(
+          `/orgs/${orgId}/agents/${reason.agentId}/instructions`,
+          "사본 보기"
+        ),
+        `${reason.path} · revision ${reason.revision}`
       );
     case "result_changes_requested":
       return row(

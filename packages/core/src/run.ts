@@ -29,6 +29,7 @@ export type Wake = {
   | { kind: "task_comment"; commentId: string }
   | { kind: "agent_to_agent_message"; agentToAgentMessageId: string }
   | { kind: "research_map_edit"; mapEditId: string }
+  | { kind: "instruction_edit"; instructionRevisionId: string }
   | { kind: "result_changes_requested"; resultSubmissionId: string }
   | { kind: "heartbeat" }
 );

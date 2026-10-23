@@ -49,7 +49,20 @@
 | 에이전트/조직 템플릿 사본·admission bundle 버전 | [db/harness.ts](../../packages/db/src/harness.ts), db/runs.ts `claimNextRun`·`selectWakes` | DB 조직 저장 테스트, 승인 API |
 | 결정 명령·Inbox·요청/사본 조회 API | server/app.ts, [server/approvals.ts](../../apps/server/src/approvals.ts); 도구 handler는 server/tools.ts | 승인 API |
 | 가짜 Lead 목표→승인 요청→재제출 | runtime/scripted.ts `demoLeadScript` | 가짜 실행기 테스트 |
-| Inbox·결정 폼·조직 대시보드·팀/사본 | [web/approvals.tsx](../../apps/web/src/approvals.tsx), pages.tsx `OrganizationDashboard`, agents.tsx `InstructionCopies` | 초기 승인 E2E |
+| Inbox·결정 폼·조직 대시보드·팀 | [web/approvals.tsx](../../apps/web/src/approvals.tsx), pages.tsx `OrganizationDashboard` | 초기 승인 E2E |
+
+## Role·Soul·Skill 사본 편집
+
+통합 검증: [사본 편집 API](../../apps/server/test/instructions.test.ts), [사본 편집 E2E](../../apps/web/e2e/instructions.spec.ts).
+
+| 작업·증상 | 진입점·계약 | 추가 검증·범위 |
+| --- | --- | --- |
+| 사본 revision 번호·revision 모양·편집 입력·크기 상한, 깨우기 사유·Event | contracts/harness.ts `instructionCopySchema`·`instructionRevisionSchema`·`editInstructionCopyInputSchema`, run.ts `instruction_edit`, event.ts `instruction_copy.edited` | 사본 편집 API |
+| 종료 조직·오래된 기준 revision·Skill frontmatter 거부, revision·Lead 깨우기·Event 계획 | core/harness.ts `planInstructionEdit` | [core](../../packages/core/src/harness.test.ts) |
+| 조직 잠금 아래 사본·revision·깨우기·Event 한 transaction, 교차 조직 404, 처음 사본의 revision 1 | db/harness.ts `editInstructionCopy`·`insertInstructionCopies`·`listInstructionRevisions`·`findInstructionRevision`; schema `instructionRevisions`(복합 FK)·migration 0009 | 사본 편집 API의 동시 저장·종료 조직 |
+| 편집 API·거부 코드·commit 뒤 Lead 촉진·본문 크기 상한 | server/app.ts `/agents/:agentId/instructions/:copyId`, [server/instructions.ts](../../apps/server/src/instructions.ts), app.ts `jsonBodyLimitBytes` | 사본 편집 API |
+| 편집 뒤 다음 실행 시도의 bundle·새 세션 | db/runs.ts `claimNextRun`(사본 내용으로 bundle) → core/run.ts `planRunStart`(버전이 다르면 이전 세션 없음) | 사본 편집 API의 진행 중·다음 실행 시도 |
+| 에이전트 상세 탭·사본 편집기·draft/충돌·이동 차단·revision 목록·예전 revision 보기 | agents.tsx `AgentDetailPage`·`InstructionCopies`·`RevisionList`·`RevisionView`, api.ts `useEditInstructionCopy`·`useInstructionRevisions`; 이동 차단은 main.tsx data router의 `useBlocker` | 사본 편집 E2E(390px 다른 탭 포함), 초기 승인 E2E의 사본 독립 |
 
 ## 작업·작업자 실행 시도·산출물
 
@@ -215,6 +228,18 @@ scripted(작업자) → /api/tools/research-nodes·research-links·tasks/:id/res
 ```
 
 거부 코드는 core/research-map.ts, 순환·동시 편집은 db/research-map.ts의 잠금 뒤 `loadMap`에서 시작합니다.
+
+### Role·Soul·Skill 사본 편집
+
+```text
+사본 편집기(base revision·draft) → PUT /api/organizations/:id/agents/:agentId/instructions/:copyId(app) → server/instructions
+  → editInstructionCopy(조직 잠금·조직/에이전트/사본 범위·core planInstructionEdit)
+  → 사본·revision·Lead 깨우기·instruction_copy.edited 함께 저장 → EventHub → kick(Lead)
+  → 다른 탭: 조직 Event → 사본·revision 목록 재조회(편집 중 draft는 그대로)
+다음 claimNextRun(조직 FOR SHARE 뒤 사본 읽기) → 내용 bundle 버전 → 이전 실행 시도와 다르면 이전 세션 없음
+```
+
+충돌·종료 거부는 core/harness.ts `planInstructionEdit`, 다른 조직 404는 db/harness.ts의 범위 조건과 복합 FK에서 시작합니다.
 
 ### 결과 제출과 최종 완료
 

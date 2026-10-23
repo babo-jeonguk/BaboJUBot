@@ -96,6 +96,19 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     nodeId: z.uuid().nullable(),
     summary: z.string(),
   }),
+  /**
+   * 사용자가 에이전트 하나의 Role·Soul·Skill 사본을 편집해 저장했다(Lead에게). `agentId`는 사본을 가진 에이전트,
+   * `revision`은 저장으로 생긴 revision 번호다. 그 에이전트의 다음 실행 시도가 새 내용을 받는다.
+   */
+  z.object({
+    kind: z.literal("instruction_edit"),
+    wakeId: z.uuid(),
+    revisionId: z.uuid(),
+    agentId: z.uuid(),
+    copyId: z.uuid(),
+    path: z.string(),
+    revision: z.number().int().positive(),
+  }),
   /** 사용자가 제출한 결과에 수정을 요청했다(Lead에게). `note`가 사용자의 의견이다. */
   z.object({
     kind: z.literal("result_changes_requested"),

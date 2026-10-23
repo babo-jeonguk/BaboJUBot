@@ -399,6 +399,24 @@ export const researchMapEditedEventSchema = z.object({
   }),
 });
 
+/**
+ * 사용자가 에이전트(`agentId`) 하나의 Role·Soul·Skill 사본을 저장해 revision이 생겼다. 내용은 Event에 담지 않는다.
+ * 같은 내용의 저장도 revision을 남긴다. `wokenAgentId`는 편집 사유로 깨운 Lead다.
+ */
+export const instructionCopyEditedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("instruction_copy.edited"),
+  payload: z.object({
+    by: z.literal("owner"),
+    agentId: z.uuid(),
+    copyId: z.uuid(),
+    path: z.string(),
+    revisionId: z.uuid(),
+    revision: z.number().int().positive(),
+    wokenAgentId: z.uuid(),
+  }),
+});
+
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
   approvalPolicyChangedEventSchema,
@@ -426,6 +444,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   artifactRecordedEventSchema,
   agentToAgentMessageCreatedEventSchema,
   researchMapEditedEventSchema,
+  instructionCopyEditedEventSchema,
   runStartedEventSchema,
   runActivityEventSchema,
   runFinishedEventSchema,
