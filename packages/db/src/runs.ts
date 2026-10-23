@@ -67,6 +67,7 @@ import {
   events,
   flowTemplates,
   instructionCopies,
+  instructionRevisions,
   messages,
   organizations,
   researchMapEdits,
@@ -692,6 +693,12 @@ async function selectWakes(
         nodeId: researchMapEdits.nodeId,
         summary: researchMapEdits.summary,
       },
+      instructionEdit: {
+        agentId: instructionRevisions.agentId,
+        copyId: instructionRevisions.copyId,
+        number: instructionRevisions.number,
+        path: instructionCopies.path,
+      },
       resultNote: resultSubmissions.decisionNote,
     })
     .from(wakes)
@@ -704,6 +711,14 @@ async function selectWakes(
       eq(agentToAgentMessages.id, wakes.agentToAgentMessageId)
     )
     .leftJoin(researchMapEdits, eq(researchMapEdits.id, wakes.mapEditId))
+    .leftJoin(
+      instructionRevisions,
+      eq(instructionRevisions.id, wakes.instructionRevisionId)
+    )
+    .leftJoin(
+      instructionCopies,
+      eq(instructionCopies.id, instructionRevisions.copyId)
+    )
     .leftJoin(
       resultSubmissions,
       eq(resultSubmissions.id, wakes.resultSubmissionId)
@@ -721,6 +736,7 @@ async function selectWakes(
       comment,
       agentToAgent,
       mapEdit,
+      instructionEdit,
       resultNote,
     }) => {
       const wakeId = wake.id;
@@ -782,6 +798,16 @@ async function selectWakes(
               operation: mapEdit!.operation,
               nodeId: mapEdit!.nodeId,
               summary: mapEdit!.summary,
+            };
+          case "instruction_edit":
+            return {
+              kind: wake.kind,
+              wakeId,
+              revisionId: wake.instructionRevisionId!,
+              agentId: instructionEdit!.agentId!,
+              copyId: instructionEdit!.copyId!,
+              path: instructionEdit!.path!,
+              revision: instructionEdit!.number!,
             };
           case "result_changes_requested":
             return {

@@ -30,16 +30,76 @@ export type InstructionKind = z.infer<typeof instructionKindSchema>;
 
 /**
  * 에이전트 하나가 소유한 지침 사본. 같은 Role에서 복사했어도 에이전트마다 따로 있고 ID가 다르다.
- * 사본을 고쳐도 하네스 라이브러리와 다른 에이전트의 사본은 바뀌지 않는다.
+ * 사본을 고쳐도 하네스 라이브러리와 다른 에이전트의 사본은 바뀌지 않는다. `source`·`sourceDigest`는 복사한 원본이며
+ * 편집해도 바뀌지 않는다. `revision`은 지금 내용의 revision 번호다(복사한 처음 내용이 1).
  */
 export const instructionCopySchema = instructionSourceFileSchema.extend({
   id: z.uuid(),
   organizationId: z.uuid(),
   agentId: z.uuid(),
   kind: instructionKindSchema,
+  revision: z.number().int().positive(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 export type InstructionCopy = z.infer<typeof instructionCopySchema>;
+
+/** 지침 파일 하나의 UTF-8 크기 상한(라이브러리 파일과 사본 편집이 같다). */
+export const instructionMaxBytes = 1024 * 1024;
+
+/**
+ * 사본 revision을 만든 쪽. `copy`는 라이브러리·승인 snapshot에서 복사해 생긴 처음 내용(revision 1)이고, `owner`는 사용자 편집이다.
+ * `agent`는 이후 Lead 편집을 위한 자리이며, 판 1에는 사본을 고치는 조직 도구가 없다.
+ */
+export const instructionEditorSchema = z.discriminatedUnion("author", [
+  z.object({ author: z.literal("copy") }),
+  z.object({ author: z.literal("owner") }),
+  z.object({ author: z.literal("agent"), agentId: z.uuid(), runId: z.uuid() }),
+]);
+export type InstructionEditor = z.infer<typeof instructionEditorSchema>;
+
+/** 사본 revision 목록의 항목. 저장마다 하나씩 늘며 바뀌지 않는다. 시각은 서버가 정한다. */
+export const instructionRevisionSummarySchema = z.object({
+  id: z.uuid(),
+  organizationId: z.uuid(),
+  agentId: z.uuid(),
+  copyId: z.uuid(),
+  number: z.number().int().positive(),
+  editor: instructionEditorSchema,
+  createdAt: z.iso.datetime({ offset: true }),
+});
+export type InstructionRevisionSummary = z.infer<
+  typeof instructionRevisionSummarySchema
+>;
+
+/** revision 하나와 그때 사본의 전체 본문. 읽기 전용이다. */
+export const instructionRevisionSchema =
+  instructionRevisionSummarySchema.extend({
+    path: z.string(),
+    content: z.string(),
+  });
+export type InstructionRevision = z.infer<typeof instructionRevisionSchema>;
+
+// 짝 없는 UTF-16 surrogate. UTF-8로 저장하면 다른 글자로 바뀌므로 받지 않는다.
+const loneSurrogate =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * 사용자의 사본 편집. 본문 전체를 보내며 경로·종류·복사 출처는 바꾸지 않는다. `expectedRevision`은 편집을 시작한 revision 번호로,
+ * 그사이 다른 저장이 있었으면 거부한다. Skill 본문의 frontmatter 검사는 서버가 한다.
+ */
+export const editInstructionCopyInputSchema = z.strictObject({
+  content: z
+    .string()
+    .refine((s) => !loneSurrogate.test(s), "올바른 유니코드 글자가 아닙니다")
+    .refine(
+      (s) => new TextEncoder().encode(s).byteLength <= instructionMaxBytes,
+      "지침 파일이 1 MiB를 넘습니다"
+    ),
+  expectedRevision: z.number().int().positive(),
+});
+export type EditInstructionCopyInput = z.infer<
+  typeof editInstructionCopyInputSchema
+>;
 
 /** 에이전트의 지침 사본 전체와 그 내용에서 정한 지침 bundle 버전. 사본이 없으면 버전도 없다. */
 export const agentInstructionsSchema = z.object({

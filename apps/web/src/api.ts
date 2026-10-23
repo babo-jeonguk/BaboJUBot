@@ -9,6 +9,9 @@ import {
   eventListSchema,
   flowTemplateCopySchema,
   inboxSchema,
+  instructionCopySchema,
+  instructionRevisionSchema,
+  instructionRevisionSummarySchema,
   organizationDetailSchema,
   organizationListSchema,
   organizationSchema,
@@ -29,6 +32,7 @@ import {
   type CreateResearchNodeInput,
   type DecideApprovalInput,
   type DecideResultInput,
+  type EditInstructionCopyInput,
   type MessageDelivery,
   type Organization,
   type OrganizationCommand,
@@ -38,7 +42,7 @@ import {
   type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { z } from "zod";
+import { z } from "zod";
 
 /** 조직 범위 조회는 모두 그 조직 key 아래에 두어, 조직 Event가 오면 한꺼번에 다시 불러온다. */
 export const queryKeys = {
@@ -56,6 +60,23 @@ export const queryKeys = {
     ["organizations", id, "agents", agentId] as const,
   instructions: (id: string, agentId: string) =>
     ["organizations", id, "agents", agentId, "instructions"] as const,
+  instructionRevisions: (id: string, agentId: string, copyId: string) =>
+    [
+      "organizations",
+      id,
+      "agents",
+      agentId,
+      "instructions",
+      copyId,
+      "revisions",
+    ] as const,
+  instructionRevision: (
+    id: string,
+    agentId: string,
+    copyId: string,
+    number: number
+  ) =>
+    [...queryKeys.instructionRevisions(id, agentId, copyId), number] as const,
   flowTemplate: (id: string) => ["organizations", id, "flow-template"] as const,
   approvals: (id: string) => ["organizations", id, "approvals"] as const,
   approval: (id: string, approvalId: string) =>
@@ -249,6 +270,89 @@ export function useAgentInstructions(orgId: string, agentId: string) {
         orgPath(orgId, `/agents/${encodeURIComponent(agentId)}/instructions`)
       ),
     retry: notFoundIsFinal,
+  });
+}
+
+const copyPath = (orgId: string, agentId: string, copyId: string, rest = "") =>
+  orgPath(
+    orgId,
+    `/agents/${encodeURIComponent(agentId)}/instructions/${encodeURIComponent(copyId)}${rest}`
+  );
+
+/** 사본의 revision 목록(최근 것부터). 사본이 저장되면 조직 Event로 다시 불러온다. */
+export function useInstructionRevisions(
+  orgId: string,
+  agentId: string,
+  copyId: string
+) {
+  return useQuery({
+    queryKey: queryKeys.instructionRevisions(orgId, agentId, copyId),
+    queryFn: () =>
+      request(
+        z.array(instructionRevisionSummarySchema),
+        copyPath(orgId, agentId, copyId, "/revisions")
+      ),
+    retry: notFoundIsFinal,
+  });
+}
+
+/** 사본 revision 하나의 전체 본문. revision은 바뀌지 않으므로 다시 불러오지 않는다. */
+export function useInstructionRevision(
+  orgId: string,
+  agentId: string,
+  copyId: string,
+  number: number | undefined
+) {
+  return useQuery({
+    queryKey: queryKeys.instructionRevision(
+      orgId,
+      agentId,
+      copyId,
+      number ?? 0
+    ),
+    queryFn: () =>
+      request(
+        instructionRevisionSchema,
+        copyPath(orgId, agentId, copyId, `/revisions/${number}`)
+      ),
+    enabled: number !== undefined,
+    staleTime: Infinity,
+    retry: notFoundIsFinal,
+  });
+}
+
+/**
+ * 사본 편집 저장. 서버가 저장한 뒤에만 사본·revision 목록·에이전트 상세(bundle 버전)를 다시 불러온다.
+ * 다른 곳에서 먼저 저장해 충돌하면 사본을 다시 불러와 지금 revision을 보인다. 거부·실패해도 편집 중인 본문은 호출한 쪽이 지우지 않는다.
+ */
+export function useEditInstructionCopy(orgId: string, agentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      copyId,
+      ...input
+    }: EditInstructionCopyInput & { copyId: string }) =>
+      request(
+        instructionCopySchema,
+        copyPath(orgId, agentId, copyId),
+        json("PUT", input)
+      ),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.instructions(orgId, agentId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agent(orgId, agentId),
+          exact: true,
+        }),
+      ]),
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "revision_conflict")
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.instructions(orgId, agentId),
+        });
+    },
   });
 }
 

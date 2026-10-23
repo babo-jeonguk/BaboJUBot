@@ -11,10 +11,12 @@ import {
   changeResearchNodeParentInputSchema,
   createResearchNodeInputSchema,
   emptyCommandInputSchema,
+  instructionMaxBytes,
   updateResearchNodeInputSchema,
   createOrganizationInputSchema,
   decideApprovalInputSchema,
   decideResultInputSchema,
+  editInstructionCopyInputSchema,
   eventStreamPath,
   organizationCommands,
   orgToolsBasePath,
@@ -31,6 +33,7 @@ import {
   findApproval,
   findArtifact,
   findFlowTemplate,
+  findInstructionRevision,
   findOrganization,
   findResearchNodeDetail,
   findResultSubmission,
@@ -40,6 +43,7 @@ import {
   listApprovals,
   listConversation,
   listInbox,
+  listInstructionRevisions,
   listOrganizationEvents,
   listOrganizations,
   listResultSubmissions,
@@ -62,6 +66,7 @@ import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
 import { HeartbeatScheduler, updateHeartbeat } from "./heartbeat.ts";
+import { editInstructionCopyAsOwner } from "./instructions.ts";
 import { createOrganization, updateApprovalPolicy } from "./organizations.ts";
 import { editResearchMapAsOwner } from "./research-map.ts";
 import { decideResult } from "./results.ts";
@@ -70,11 +75,12 @@ import { problemResponses } from "./problems.ts";
 import { orgToolsRouter } from "./tools.ts";
 
 /**
- * JSON 요청 본문 크기 상한(바이트). 계약상 가장 큰 본문인 산출물(최대 {@link artifactContentMaxLength}자)은
- * 한 글자(UTF-16 code unit)가 JSON에서 최대 6바이트(`\uXXXX`)이므로 그만큼과 나머지 필드의 여유를 둔다.
- * 문자 수 제한은 Zod 계약이 맡고, 이 상한은 그 계약을 막지 않는 바깥 경계다.
+ * JSON 요청 본문 크기 상한(바이트). 계약상 가장 큰 본문은 지침 사본 편집(UTF-8 {@link instructionMaxBytes}바이트)과
+ * 산출물(최대 {@link artifactContentMaxLength}자)이다. 한 바이트(제어 문자)나 한 글자(UTF-16 code unit)는 JSON에서 최대
+ * 6바이트(`\uXXXX`)이므로 그만큼과 나머지 필드의 여유를 둔다. 크기 제한은 Zod 계약이 맡고, 이 상한은 그 계약을 막지 않는 바깥 경계다.
  */
-export const jsonBodyLimitBytes = artifactContentMaxLength * 6 + 64 * 1024;
+export const jsonBodyLimitBytes =
+  Math.max(artifactContentMaxLength, instructionMaxBytes) * 6 + 64 * 1024;
 
 export type ServerOptions = {
   db: Database;
@@ -318,7 +324,7 @@ export async function startServer({
     res.json(agent);
   });
 
-  /** 에이전트의 Role·Soul·Skill 사본 읽기. 편집은 #64. */
+  /** 에이전트의 Role·Soul·Skill 사본과 지금 revision 번호, 그 내용의 지침 bundle 버전. */
   app.get(
     "/api/organizations/:id/agents/:agentId/instructions",
     async (req, res) => {
@@ -329,6 +335,73 @@ export async function startServer({
       );
       if (!found) return notFound(res);
       res.json(found);
+    }
+  );
+
+  const copyRef = (req: express.Request) => ({
+    organizationId: String(req.params.id),
+    agentId: String(req.params.agentId),
+    copyId: String(req.params.copyId),
+  });
+
+  /**
+   * 사용자의 사본 편집(본문 전체). 사용자만 고치며 조직 도구가 없다. 저장마다 revision을 남기고 편집 사유로 Lead를 깨우며,
+   * 바뀐 사본을 돌려준다. 편집을 시작한 revision이 지금 것이 아니면 409 `revision_conflict`, 최종 완료·중단 조직은
+   * 409 `organization_closed`, 라이브러리처럼 읽을 수 없는 Skill frontmatter는 422 `invalid_skill`이다.
+   */
+  app.put(
+    "/api/organizations/:id/agents/:agentId/instructions/:copyId",
+    async (req, res) => {
+      const input = editInstructionCopyInputSchema.safeParse(req.body);
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const result = await editInstructionCopyAsOwner(
+        { db, hub, dispatcher, now },
+        copyRef(req),
+        input.data
+      );
+      switch (result.kind) {
+        case "ok":
+          res.json(result.copy);
+          return;
+        case "not_found":
+          return notFound(res);
+        case "organization_closed":
+          return closed(res);
+        case "revision_conflict":
+          res.status(409).json({ error: { code: "revision_conflict" } });
+          return;
+        case "invalid_skill":
+          res.status(422).json({ error: { code: "invalid_skill" } });
+          return;
+      }
+    }
+  );
+
+  /** 사본의 revision 목록(최근 것부터, 본문 없음). */
+  app.get(
+    "/api/organizations/:id/agents/:agentId/instructions/:copyId/revisions",
+    async (req, res) => {
+      const list = await listInstructionRevisions(db, copyRef(req));
+      if (!list) return notFound(res);
+      res.json(list);
+    }
+  );
+
+  /** 사본 revision 하나의 전체 본문. 읽기 전용이다. */
+  app.get(
+    "/api/organizations/:id/agents/:agentId/instructions/:copyId/revisions/:number",
+    async (req, res) => {
+      const number = /^[1-9]\d*$/.test(req.params.number)
+        ? Number(req.params.number)
+        : 0;
+      const revision = await findInstructionRevision(db, copyRef(req), number);
+      if (!revision) return notFound(res);
+      res.json(revision);
     }
   );
 

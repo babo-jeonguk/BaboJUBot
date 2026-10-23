@@ -209,6 +209,12 @@ export function describeEvent(event: Event, agentName: string): Described {
             : `${agentName}가 연구 지도를 편집했습니다`,
         detail: `${mapOperationLabel[event.payload.operation]}${event.payload.wokenAgentId ? " · Lead를 깨웠습니다" : ""}`,
       };
+    case "instruction_copy.edited":
+      return {
+        icon: "📝",
+        title: `사용자가 ${agentName}의 사본 ${event.payload.path}을 저장했습니다`,
+        detail: `revision ${event.payload.revision} · Lead를 깨웠습니다`,
+      };
     case "tool.refused":
       return {
         icon: "⛔",

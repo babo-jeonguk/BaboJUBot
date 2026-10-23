@@ -360,7 +360,11 @@ function Sections({ orgId }: { orgId: string }) {
 function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   const { section } = useCurrent();
   const org = useOrganization(orgId);
-  const agentMatch = useMatch("/orgs/:orgId/agents/:agentId")?.params.agentId;
+  const agentOverview = useMatch("/orgs/:orgId/agents/:agentId");
+  const agentInstructions = useMatch(
+    "/orgs/:orgId/agents/:agentId/instructions"
+  );
+  const agentMatch = (agentOverview ?? agentInstructions)?.params.agentId;
   const runMatch = useMatch("/orgs/:orgId/runs/:runId")?.params.runId;
   const approvalMatch = useMatch("/orgs/:orgId/approvals/:approvalId");
   const resultMatch = useMatch("/orgs/:orgId/results/:submissionId");

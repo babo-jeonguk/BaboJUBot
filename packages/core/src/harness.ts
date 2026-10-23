@@ -1,13 +1,21 @@
 import { createHash } from "node:crypto";
 import {
   harnessNameSchema,
+  instructionMaxBytes,
+  isClosedStage,
   type AgentRole,
+  type EditInstructionCopyInput,
   type FlowTemplateSnapshot,
   type InstructionCopy,
   type InstructionFile,
   type InstructionKind,
+  type InstructionRevision,
   type InstructionSourceFile,
+  type LifecycleStage,
+  type NewEvent,
 } from "@babojubot/contracts";
+import type { RecordSource } from "./organization.ts";
+import type { Wake } from "./run.ts";
 
 // Research Harness 규칙: 라이브러리 내용의 검증, 에이전트 지침 bundle의 경로와 버전.
 // 파일을 읽는 일은 서버가 하고, 여기서는 읽은 내용만 다룬다.
@@ -68,8 +76,6 @@ export function instructionsBundleVersion(
   return `sha256:${hash.digest("hex")}`;
 }
 
-export const instructionMaxBytes = 1024 * 1024;
-
 /** 지침 파일 bytes를 글자로. 잘못된 UTF-8은 바꿔 넣지 않고 거부한다. BOM은 내용으로 보존한다. */
 export function decodeInstructionText(bytes: Uint8Array): string {
   if (bytes.byteLength > instructionMaxBytes)
@@ -107,7 +113,10 @@ export function parseSkillFrontmatter(text: string): {
 const unquote = (value: string) =>
   /^(["']).*\1$/.test(value) ? value.slice(1, -1) : value;
 
-/** 라이브러리 내용을 에이전트 하나의 사본으로. 사본마다 새 ID를 받으므로 같은 Role의 에이전트끼리도 공유하지 않는다. */
+/**
+ * 라이브러리 내용을 에이전트 하나의 사본으로. 사본마다 새 ID를 받으므로 같은 Role의 에이전트끼리도 공유하지 않는다.
+ * 복사한 내용이 revision 1이다.
+ */
 export function copyInstructions(
   agent: { id: string; organizationId: string },
   files: InstructionSourceFile[],
@@ -119,6 +128,84 @@ export function copyInstructions(
     organizationId: agent.organizationId,
     agentId: agent.id,
     kind: instructionKindOf(file.path),
+    revision: 1,
     createdAt,
   }));
+}
+
+/** 사본 편집의 거부. 다른 조직·없는 사본은 저장 쪽이 먼저 `not_found`로 거른다. */
+export type InstructionEditProblem =
+  "organization_closed" | "revision_conflict" | "invalid_skill";
+
+/** 사본 편집 하나의 기록: 바뀐 사본, 새 revision(전체 본문), 편집 사유로 Lead를 깨우기, Event. 함께 저장해야 한다. */
+export type InstructionEditPlan = {
+  copy: InstructionCopy;
+  revision: InstructionRevision;
+  wake: Wake;
+  event: NewEvent;
+};
+
+/**
+ * 사용자의 사본 편집. 최종 완료·중단 조직은 받지 않고, 편집을 시작한 revision이 지금 revision이 아니면 거부한다.
+ * Skill은 라이브러리에서 읽을 때와 같은 frontmatter(디렉터리 이름과 같은 name, description)를 지켜야 한다.
+ * 받은 저장은 내용이 같아도 revision을 남긴다. 복사 출처(`source`·`sourceDigest`)는 바꾸지 않는다.
+ * bundle 버전은 내용에서만 정하므로 revision 번호와 무관하다.
+ */
+export function planInstructionEdit(
+  target: { copy: InstructionCopy; stage: LifecycleStage; leadAgentId: string },
+  input: EditInstructionCopyInput,
+  { newId, now }: RecordSource
+): InstructionEditProblem | InstructionEditPlan {
+  const { copy, stage, leadAgentId } = target;
+  if (isClosedStage(stage)) return "organization_closed";
+  if (input.expectedRevision !== copy.revision) return "revision_conflict";
+  if (copy.kind === "skill" && !isLoadableSkill(copy.path, input.content))
+    return "invalid_skill";
+  const createdAt = now().toISOString();
+  const number = copy.revision + 1;
+  const revision: InstructionRevision = {
+    id: newId(),
+    organizationId: copy.organizationId,
+    agentId: copy.agentId,
+    copyId: copy.id,
+    number,
+    editor: { author: "owner" },
+    path: copy.path,
+    content: input.content,
+    createdAt,
+  };
+  return {
+    copy: { ...copy, content: input.content, revision: number },
+    revision,
+    wake: {
+      id: newId(),
+      organizationId: copy.organizationId,
+      agentId: leadAgentId,
+      kind: "instruction_edit",
+      instructionRevisionId: revision.id,
+      createdAt,
+    },
+    event: {
+      organizationId: copy.organizationId,
+      type: "instruction_copy.edited",
+      payload: {
+        by: "owner",
+        agentId: copy.agentId,
+        copyId: copy.id,
+        path: copy.path,
+        revisionId: revision.id,
+        revision: number,
+        wokenAgentId: leadAgentId,
+      },
+    },
+  };
+}
+
+function isLoadableSkill(path: string, content: string) {
+  const dir = /^skills\/([^/]+)\/SKILL\.md$/.exec(path)?.[1];
+  try {
+    return parseSkillFrontmatter(content).name === dir;
+  } catch {
+    return false;
+  }
 }

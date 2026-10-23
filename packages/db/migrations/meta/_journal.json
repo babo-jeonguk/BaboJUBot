@@ -64,6 +64,13 @@
       "when": 1792677085321,
       "tag": "0008_heartbeat_memory_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792723164640,
+      "tag": "0009_instruction_revisions",
+      "breakpoints": true
     }
   ]
 }

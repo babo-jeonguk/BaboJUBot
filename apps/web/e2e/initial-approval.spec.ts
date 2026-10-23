@@ -97,6 +97,10 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   const copyIdOf = async (worker: string) => {
     await page.goto(`/orgs/${org.id}/agents`);
     await team.getByRole("link", { name: new RegExp(worker) }).click();
+    await page
+      .getByRole("navigation", { name: "에이전트 상세 탭" })
+      .getByRole("link", { name: "Role·Soul·Skill" })
+      .click();
     const copies = page.getByRole("region", { name: "Role·Soul·Skill 사본" });
     await expect(copies.getByRole("tab")).toHaveText([
       "Role · AGENTS.md",
@@ -106,7 +110,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
     await expect(copies.getByRole("tabpanel")).toContainText("# 연구원");
     await copies.getByRole("tab", { name: "Soul · SOUL.md" }).click();
     await expect(copies.getByRole("tabpanel")).toContainText("# Soul");
-    // 읽기 전용: 편집 입력이 없다.
+    // 편집을 시작하기 전에는 편집 입력이 없다.
     await expect(
       copies.locator("textarea, input, [contenteditable]")
     ).toHaveCount(0);

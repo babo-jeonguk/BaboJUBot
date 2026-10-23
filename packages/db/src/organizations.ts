@@ -10,10 +10,10 @@ import {
 } from "@babojubot/core";
 import { and, asc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { insertInstructionCopies } from "./harness.ts";
 import {
   agentRow,
   insertEvent,
-  instructionCopyRow,
   isUuid,
   lockOrganization,
   organizationRow,
@@ -21,7 +21,7 @@ import {
   toEvent,
   toOrganization,
 } from "./rows.ts";
-import { agents, events, instructionCopies, organizations } from "./schema.ts";
+import { agents, events, organizations } from "./schema.ts";
 
 /** 조직·에이전트·Lead 지침 사본·Event를 한 transaction으로 저장하고 저장된 Event를 돌려준다. 하나라도 실패하면 아무것도 남지 않는다. */
 export async function insertOrganizationCreation(
@@ -32,10 +32,7 @@ export async function insertOrganizationCreation(
     const { organization } = records;
     await tx.insert(organizations).values(organizationRow(organization));
     await tx.insert(agents).values(records.agents.map(agentRow));
-    if (records.instructionCopies.length)
-      await tx
-        .insert(instructionCopies)
-        .values(records.instructionCopies.map(instructionCopyRow));
+    await insertInstructionCopies(tx, records.instructionCopies);
     return insertEvent(tx, records.event);
   });
 }
