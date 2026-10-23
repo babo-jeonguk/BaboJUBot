@@ -35,6 +35,16 @@ import {
   wakes,
 } from "./schema.ts";
 
+/** 사본 하나를 가리키는 범위. 조직·에이전트·사본이 모두 맞아야 찾는다. */
+export type InstructionCopyRef = {
+  organizationId: string;
+  agentId: string;
+  copyId: string;
+};
+
+const isCopyRef = (ref: InstructionCopyRef) =>
+  [ref.organizationId, ref.agentId, ref.copyId].every(isUuid);
+
 /**
  * 새 에이전트의 지침 사본을 저장한다. 복사한 처음 내용을 사본마다 revision 1(편집자 `copy`, 시각은 사본을 만든 때)로 함께 남긴다.
  * 사본을 만드는 transaction(조직 생성·승인 결정·작업자 추가) 안에서 부른다.
@@ -108,13 +118,12 @@ export type InstructionEditResult =
  */
 export async function editInstructionCopy(
   db: Database,
-  ref: { organizationId: string; agentId: string; copyId: string },
+  ref: InstructionCopyRef,
   input: EditInstructionCopyInput,
   source: RecordSource
 ): Promise<InstructionEditResult> {
   const { organizationId, agentId, copyId } = ref;
-  if (![organizationId, agentId, copyId].every(isUuid))
-    return { kind: "not_found" };
+  if (!isCopyRef(ref)) return { kind: "not_found" };
   return db.transaction(async (tx) => {
     const org = await lockOrganization(tx, organizationId);
     if (!org) return { kind: "not_found" };
@@ -176,10 +185,9 @@ export async function editInstructionCopy(
 /** 사본의 revision 목록(최근 것부터). 본문은 담지 않는다. 다른 조직·다른 에이전트의 사본과 없는 사본은 없다(`undefined`). */
 export async function listInstructionRevisions(
   db: Executor,
-  ref: { organizationId: string; agentId: string; copyId: string }
+  ref: InstructionCopyRef
 ): Promise<InstructionRevisionSummary[] | undefined> {
-  if (![ref.organizationId, ref.agentId, ref.copyId].every(isUuid))
-    return undefined;
+  if (!isCopyRef(ref)) return undefined;
   const [copy] = await db
     .select({ id: instructionCopies.id })
     .from(instructionCopies)
@@ -196,11 +204,10 @@ export async function listInstructionRevisions(
 /** 사본 revision 하나와 그때의 전체 본문. 다른 조직·다른 에이전트의 사본과 없는 번호를 구별하지 않는다. */
 export async function findInstructionRevision(
   db: Executor,
-  ref: { organizationId: string; agentId: string; copyId: string },
+  ref: InstructionCopyRef,
   number: number
 ): Promise<InstructionRevision | undefined> {
-  if (![ref.organizationId, ref.agentId, ref.copyId].every(isUuid))
-    return undefined;
+  if (!isCopyRef(ref)) return undefined;
   if (!Number.isSafeInteger(number) || number < 1) return undefined;
   const [row] = await db
     .select({
@@ -232,22 +239,14 @@ export async function findFlowTemplate(
   return row && withIsoTime(row);
 }
 
-const copyWhere = (ref: {
-  organizationId: string;
-  agentId: string;
-  copyId: string;
-}) =>
+const copyWhere = (ref: InstructionCopyRef) =>
   and(
     eq(instructionCopies.organizationId, ref.organizationId),
     eq(instructionCopies.agentId, ref.agentId),
     eq(instructionCopies.id, ref.copyId)
   );
 
-const revisionWhere = (ref: {
-  organizationId: string;
-  agentId: string;
-  copyId: string;
-}) =>
+const revisionWhere = (ref: InstructionCopyRef) =>
   and(
     eq(instructionRevisions.organizationId, ref.organizationId),
     eq(instructionRevisions.agentId, ref.agentId),

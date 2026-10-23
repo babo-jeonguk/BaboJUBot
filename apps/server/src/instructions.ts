@@ -3,6 +3,7 @@ import type { EditInstructionCopyInput } from "@babojubot/contracts";
 import {
   editInstructionCopy,
   type Database,
+  type InstructionCopyRef,
   type InstructionEditResult,
 } from "@babojubot/db";
 import type { RunDispatcher } from "./dispatcher.ts";
@@ -24,7 +25,7 @@ export async function editInstructionCopyAsOwner(
     dispatcher: RunDispatcher;
     now: () => Date;
   },
-  ref: { organizationId: string; agentId: string; copyId: string },
+  ref: InstructionCopyRef,
   input: EditInstructionCopyInput
 ): Promise<InstructionEditResult> {
   const result = await editInstructionCopy(db, ref, input, {

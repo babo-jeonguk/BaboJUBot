@@ -408,12 +408,11 @@ const kindLabel: Record<InstructionKind, string> = {
   skill: "Skill",
 };
 
-const editorLabel = (editor: InstructionEditor) =>
-  editor.author === "copy"
-    ? "복사로 생김"
-    : editor.author === "owner"
-      ? "사용자"
-      : "에이전트";
+const editorLabel: Record<InstructionEditor["author"], string> = {
+  copy: "복사로 생김",
+  owner: "사용자",
+  agent: "에이전트",
+};
 
 /** 편집 중인 사본 하나. `base`는 편집을 시작한 revision, `original`은 그때 본문이다. 서버 값과 따로 두어 실시간 갱신이 덮지 않는다. */
 type Draft = {
@@ -566,6 +565,7 @@ function InstructionCopies({
               agentId={agentId}
               copyId={copy.id}
               number={viewing}
+              backLabel={editing ? "편집으로 돌아가기" : "지금 사본으로"}
               onBack={() => setViewing(null)}
             />
           ) : editing ? (
@@ -673,8 +673,10 @@ function InstructionCopies({
             copyId={copy.id}
             current={copy.revision}
             viewing={viewing}
-            locked={editing !== null}
-            onSelect={(n) => setViewing(n === copy.revision ? null : n)}
+            editing={editing !== null}
+            onSelect={(n) =>
+              setViewing(!editing && n === copy.revision ? null : n)
+            }
           />
         </div>
       </div>
@@ -732,14 +734,17 @@ function InstructionCopies({
   );
 }
 
-/** 사본의 revision 목록(최근 것부터). 고르면 그 revision의 본문을 읽기 전용으로 연다. 편집 중에는 고를 수 없다. */
+/**
+ * 사본의 revision 목록(최근 것부터). 고르면 그 revision의 본문을 읽기 전용으로 연다. 편집 중에도 열 수 있으며
+ * (다른 곳에서 먼저 저장한 내용 확인 등) 편집 중인 본문은 그대로 남는다.
+ */
 function RevisionList({
   orgId,
   agentId,
   copyId,
   current,
   viewing,
-  locked,
+  editing,
   onSelect,
 }: {
   orgId: string;
@@ -747,7 +752,7 @@ function RevisionList({
   copyId: string;
   current: number;
   viewing: number | null;
-  locked: boolean;
+  editing: boolean;
   onSelect: (number: number) => void;
 }) {
   const list = useInstructionRevisions(orgId, agentId, copyId);
@@ -763,20 +768,21 @@ function RevisionList({
       <ol className="divide-y divide-slate-100 rounded-xl ring-1 ring-slate-100">
         {list.data.map((r) => {
           const shown =
-            viewing === null ? r.number === current : r.number === viewing;
+            viewing === null
+              ? !editing && r.number === current
+              : r.number === viewing;
           return (
             <li key={r.id}>
               <button
                 aria-pressed={shown}
-                disabled={locked}
                 onClick={() => onSelect(r.number)}
-                className={`flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition disabled:cursor-not-allowed disabled:opacity-60 ${shown ? "bg-brand-50" : "hover:bg-slate-50"}`}
+                className={`flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition ${shown ? "bg-brand-50" : "hover:bg-slate-50"}`}
               >
                 <span className="w-24 shrink-0 font-medium text-slate-800 tabular-nums">
                   revision {r.number}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-slate-600">
-                  {editorLabel(r.editor)}
+                  {editorLabel[r.editor.author]}
                   {r.number === current && (
                     <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
                       지금
@@ -802,9 +808,9 @@ function RevisionList({
       className="border-t border-slate-100 px-4 py-3"
     >
       <h3 className="mb-2 text-xs font-semibold text-slate-600">revision</h3>
-      {locked && (
+      {editing && (
         <p className="mb-2 text-xs text-slate-400">
-          편집 중에는 예전 revision을 열 수 없습니다. 저장하거나 취소하세요.
+          revision을 열어 봐도 편집 중인 내용은 그대로 남습니다.
         </p>
       )}
       {items()}
@@ -812,18 +818,20 @@ function RevisionList({
   );
 }
 
-/** 예전 revision 하나의 본문. 읽기 전용이며 편집·되돌리기가 없다. */
+/** revision 하나의 본문. 읽기 전용이며 편집·되돌리기가 없다. */
 function RevisionView({
   orgId,
   agentId,
   copyId,
   number,
+  backLabel,
   onBack,
 }: {
   orgId: string;
   agentId: string;
   copyId: string;
   number: number;
+  backLabel: string;
   onBack: () => void;
 }) {
   const revision = useInstructionRevision(orgId, agentId, copyId, number);
@@ -835,12 +843,12 @@ function RevisionView({
         </span>
         {revision.data && (
           <span>
-            {editorLabel(revision.data.editor)} ·{" "}
+            {editorLabel[revision.data.editor.author]} ·{" "}
             {formatTime(revision.data.createdAt)}
           </span>
         )}
         <button className="btn-ghost ml-auto" onClick={onBack}>
-          지금 사본으로
+          {backLabel}
         </button>
       </div>
       {revision.isPending ? (
@@ -870,6 +878,7 @@ function RevisionView({
     </div>
   );
 }
+
 function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
   return (
     <li>

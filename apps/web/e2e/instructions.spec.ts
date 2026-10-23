@@ -139,6 +139,12 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await expect(conflict).toContainText("지금은 revision 3입니다");
   await expect(save).toBeDisabled();
   await expect(editor).toHaveValue(mine);
+  // 편집 중에도 먼저 저장된 revision을 읽어 보고, 돌아오면 편집 내용이 그대로다.
+  await revisions(page).filter({ hasText: "revision 3" }).click();
+  const latest = section(page).getByTestId("revision-view");
+  await expect(latest).toContainText("다른 탭이 먼저 저장");
+  await latest.getByRole("button", { name: "편집으로 돌아가기" }).click();
+  await expect(editor).toHaveValue(mine);
   await conflict
     .getByRole("button", { name: "revision 3 위에 이 편집 저장" })
     .click();

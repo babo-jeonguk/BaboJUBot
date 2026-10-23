@@ -76,16 +76,7 @@ export const queryKeys = {
     copyId: string,
     number: number
   ) =>
-    [
-      "organizations",
-      id,
-      "agents",
-      agentId,
-      "instructions",
-      copyId,
-      "revisions",
-      number,
-    ] as const,
+    [...queryKeys.instructionRevisions(id, agentId, copyId), number] as const,
   flowTemplate: (id: string) => ["organizations", id, "flow-template"] as const,
   approvals: (id: string) => ["organizations", id, "approvals"] as const,
   approval: (id: string, approvalId: string) =>
