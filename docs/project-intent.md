@@ -224,5 +224,5 @@ Paperclip에서 확인한 부분을 기준점으로 사용하고 Hermes, xAI Gro
 - 예산 한도에 닿으면 진행 중인 외부 job도 기본으로 취소하고, 설정으로 유지를 고를 수 있다.
 - 대시보드는 Paperclip의 거의 모든 기능을 가져오고 OpenClaw·Hermes 등에서 필요한 것을 더한다. 조사: [Paperclip 대시보드](research/paperclip-dashboard.md), [기타 대시보드](research/dashboard-references.md).
 - 사용자는 기본적으로 Lead와 대화하지만 작업에 댓글을 달 수도 있다.
-- 메시지 앱은 두 번째 판에 붙이되, 첫 판에 그 자리를 구현해 둔다.
+- 메시지 앱은 두 번째 판에 붙이되, 첫 판에 그 자리를 구현해 둔다. (당시 인터뷰의 순서 표현. 2026-10-23 확인한 [현재 로드맵](architecture.md#구현-순서)은 실제 실행기 연결이 판 2, 메시지 앱 연결이 판 3이다.)
 - 사용자는 self-host하는 한 명이다.

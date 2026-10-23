@@ -61,7 +61,7 @@ Surface가 받는 것:
 | 종료 | usage·비용 추정, 다음 세션 상태 또는 세션 초기화, 요약, 종료 사유 |
 | 제어 | 취소 |
 
-지침 bundle 버전 변경 시 새 세션으로 시작합니다(재개 세션의 지침 교체를 지원하지 않는 실행기 대응). 가짜 실행기로 전체 계약을 검증한 뒤 Claude 계열→ACP 범용 adapter를 붙입니다. 실제 모델 호출 전 계정·자격 증명·비용 권한을 확인합니다.
+지침 bundle 버전 변경 시 새 세션으로 시작합니다(재개 세션의 지침 교체를 지원하지 않는 실행기 대응). 가짜 실행기로 전체 계약을 검증한 뒤 [판 2](#구현-순서)의 실제 실행기 adapter를 붙입니다. 실제 모델 호출 전 계정·자격 증명·비용 권한을 확인합니다.
 
 ### Agent → Control Plane: 조직 도구
 
@@ -142,10 +142,10 @@ Surface가 받는 것:
 
 ## 구현 순서
 
-각 판은 처음부터 끝까지 동작합니다.
+각 판은 처음부터 끝까지 동작합니다. 아래는 단계별 목표이며 상세 명세·구현 순서는 각 판을 구체화할 때 정합니다.
 
 1. 가짜 실행기와 가짜 채널로 조직 생성 → Lead 대화로 목표·완료 기준 → 계획·팀 제안 → 초기 연구 승인 → 작업 생성 → 작업자 실행 시도가 산출물과 연구 노드 생성 → 결과 제출 → 최종 완료. 승인 정책 항목 하나, heartbeat, 일시정지·재개를 포함합니다. 대시보드 첫 판 범위는 [`features.md`](features.md#웹-대시보드-화면-지도)에 있습니다.
-2. 실제 Claude 계열 실행기 adapter.
+2. 실제 실행기 adapter. Claude Code·Codex·Antigravity·OpenCode를 공통 실행 시도 계약에 연결해 실제 에이전트가 연구를 수행하도록 합니다. 실행기별 연결 방식(전용 adapter·ACP 등), 지침·도구 주입, 세션 재개·취소·활동/사용량 보고의 지원 범위와 구현 순서는 판 2 구체화 때 조사·결정합니다.
 3. 메시지 앱 채널 adapter.
 4. 외부 job, 기억, 예산을 깊게.
 5. 연구 흐름 템플릿 교체.
@@ -157,6 +157,9 @@ Surface가 받는 것:
 - 연구 지도에서 직접 옮긴 노드 위치: 자동 재배치와 겹칠 때 처리, 저장 범위([#51](https://github.com/babo-jeonguk/BaboJUBot/issues/51#issuecomment-6209365865))
 - 메시지 앱 선택
 - 기억 기법과 저장 엔진
+  - 판 4에서 #60의 최소 Memory port를 바탕으로 기억의 축적·갱신·검색·회수와 사용자 지정 공유를 구체화합니다. 아래는 조사 후보이며 기법·엔진은 조사 후 결정합니다.
+  - [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)의 Ingest·Query·Lint와 [chief-of-staff](https://github.com/mattpocock/skills/blob/5beb35b040e3de97e54fa9e386d7e42d15c295c2/skills/in-progress/chief-of-staff/SKILL.md)의 날짜·출처별 판단 이력·문서 링크 인계를 참고합니다.
+  - [ai-memory](https://github.com/akitaonrails/ai-memory/tree/ae7b8bba8c056e478592c0972669c8371152bac9)의 세션 인계·기억 구성과 [knowledge-work-plugins](https://github.com/anthropics/knowledge-work-plugins/tree/33d3dea41a341b341d4f5da2e8801ae0c89be2b8)의 단계적 조회·출처·상충 보존을 검토합니다. 기존 근거는 [#60 추가 조사](research/issue-60-references.md#사용자-지정-저장소-추가-조사), 기억 기법의 품질 평가는 후속 범위입니다.
 - 외부 job 실행 수단과 자격 증명 저장
 - 비용 집계 세부
 - 생애주기 하위 상태
