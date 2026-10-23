@@ -85,6 +85,24 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await expect(page).toHaveURL(/\/instructions$/);
   await expect(editor).toHaveValue(edited);
 
+  // 브라우저 뒤로 가기도 같은 확인을 거친다.
+  await page.goBack();
+  await expect(ask).toBeVisible();
+  await ask.getByRole("button", { name: "계속 편집" }).click();
+  await expect(page).toHaveURL(/\/instructions$/);
+  await expect(editor).toHaveValue(edited);
+
+  // 새로고침·탭 닫기는 브라우저 확인 창을 띄우고, 머무르면 편집 내용이 그대로다.
+  let unloadPrompt: string | undefined;
+  page.once("dialog", (dialog) => {
+    unloadPrompt = dialog.type();
+    void dialog.dismiss();
+  });
+  await page.close({ runBeforeUnload: true });
+  await expect.poll(() => unloadPrompt).toBe("beforeunload");
+  expect(page.isClosed()).toBe(false);
+  await expect(editor).toHaveValue(edited);
+
   // 저장이 실패하면 편집 내용은 그대로다.
   let failed = false;
   await page.route(`**${api}/*`, (route) => {
@@ -149,6 +167,19 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
     .getByRole("button", { name: "revision 3 위에 이 편집 저장" })
     .click();
   await expect(section(page).getByTestId("copy-revision")).toHaveText("4");
+  expect((await copies()).find((c) => c.id === original.id)).toMatchObject({
+    content: mine,
+    revision: 4,
+  });
+
+  // 뒤로 가기에서 편집을 버리면 이전 화면(개요)으로 가고 사본은 그대로다.
+  await section(page).getByRole("button", { name: "✎ 편집" }).click();
+  await editor.fill("버릴 편집");
+  await page.goBack();
+  await expect(ask).toBeVisible();
+  await ask.getByRole("button", { name: "편집 버리고 이동" }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${leadId}$`));
+  await expect(page.getByRole("region", { name: "Heartbeat" })).toBeVisible();
   expect((await copies()).find((c) => c.id === original.id)).toMatchObject({
     content: mine,
     revision: 4,
