@@ -553,7 +553,7 @@ export async function listRuns(
  * 진행 중 실행 시도는 에이전트당 하나뿐이라 자르지 않는다.
  */
 export async function listRunningRuns(
-  db: Database,
+  db: Executor,
   organizationId: string
 ): Promise<RunSummary[]> {
   if (!isUuid(organizationId)) return [];

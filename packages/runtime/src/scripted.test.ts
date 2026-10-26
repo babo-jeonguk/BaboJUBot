@@ -381,6 +381,25 @@ describe("demo Lead scenario", () => {
     ).toBe(leadReplyScript);
   });
 
+  it("holds the run until it is cancelled when the owner asks for a hold drill in any stage", async () => {
+    for (const stage of ["goal_setting", "researching"] as const) {
+      const { steps } = demoLeadScript(
+        at(stage, [message("실행 유지 연습 해 주세요")])
+      );
+      expect(steps).toEqual([{ do: "hold", until: expect.any(Function) }]);
+      const hold = steps[0] as Extract<(typeof steps)[number], { do: "hold" }>;
+      const controller = new AbortController();
+      const held = hold.until(controller.signal);
+      controller.abort("cancel");
+      await expect(held).rejects.toBe("cancel");
+    }
+    expect(
+      demoLeadScript(
+        at("researching", [message("실행 유지 연습은 하지 마세요")])
+      )
+    ).toBe(leadReplyScript);
+  });
+
   it("submits a result only when the owner asks for it, not when the message merely mentions it", () => {
     for (const body of [
       "결과 제출 부탁해요",

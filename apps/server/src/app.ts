@@ -22,6 +22,7 @@ import {
   organizationCommands,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
+  timeZoneSchema,
   updateApprovalPolicyInputSchema,
   updateHeartbeatInputSchema,
   updateInboxItemInputSchema,
@@ -43,6 +44,8 @@ import {
   findResultSubmission,
   findRunDetail,
   findTaskDetail,
+  getOrganizationDashboard,
+  getOverview,
   getResearchMap,
   listApprovals,
   listConversation,
@@ -190,6 +193,11 @@ export async function startServer({
     res
       .status(201)
       .json(await createOrganization({ db, hub, harnessDir }, input.data));
+  });
+
+  /** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 합계(취소 정리 중은 따로 센 수도). */
+  app.get("/api/overview", async (_req, res) => {
+    res.json(await getOverview(db, now()));
   });
 
   /** Inbox. 모든 조직의 결정을 기다리는 승인 요청·결과 제출과 실패한 실행 시도, 각 항목의 읽음·보관. */
@@ -355,6 +363,28 @@ export async function startServer({
       res.json(result.agent);
     }
   );
+
+  /**
+   * 조직 대시보드 요약. `timeZone`(IANA 이름, 기본 UTC)의 달력 날짜로 오늘까지 14일을 자른다.
+   * 서버가 모르는 시간대는 422 `invalid_time_zone`이다.
+   */
+  app.get("/api/organizations/:id/dashboard", async (req, res) => {
+    const timeZone = timeZoneSchema.safeParse(
+      queryString(req.query.timeZone) ?? "UTC"
+    );
+    const result = timeZone.success
+      ? await getOrganizationDashboard(db, req.params.id, {
+          now: now(),
+          timeZone: timeZone.data,
+        })
+      : ({ kind: "invalid_time_zone" } as const);
+    if (result.kind === "not_found") return notFound(res);
+    if (result.kind === "invalid_time_zone") {
+      res.status(422).json({ error: { code: "invalid_time_zone" } });
+      return;
+    }
+    res.json(result.dashboard);
+  });
 
   app.get("/api/organizations/:id/events", async (req, res) => {
     if (!(await findOrganization(db, req.params.id))) return notFound(res);
