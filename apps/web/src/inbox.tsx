@@ -1,6 +1,7 @@
 // Inbox 패널 하나(#50 결정): 1280px 이상에서는 본문 오른쪽에 340px로 붙고, 그보다 좁으면 오른쪽 drawer로 열려
 // 항목을 고르면 닫힌다. 범위는 전체 조직 / 현재 조직, 필터는 주의 필요·안 읽음·작업 중·전체·보관됨이다.
-// 읽음·보관(알림 정리)은 이 패널에서, 도메인 결정(승인·반려·수정 요청·최종 완료)은 항목 상세에서 한다.
+// 읽음·보관(알림 정리)은 이 패널에서, 도메인 결정(승인·반려·수정 요청·최종 완료)은 항목 상세(Inbox 상세 또는 원래 상세)에서 한다.
+// 행에는 결정 버튼을 두지 않는다(docs/research/inbox-detail-references.md D07).
 import {
   inboxFilters,
   inboxItemTime,
@@ -24,6 +25,7 @@ import {
 } from "react";
 import { Link, Navigate, useMatch } from "react-router";
 import { useInbox, useUpdateInboxItem } from "./api.ts";
+import { inboxDetailPath } from "./inbox-detail.tsx";
 import {
   abbr,
   approvalKindLabel,
@@ -188,7 +190,10 @@ function InboxContent({
   const panel = useInboxPanel();
   const inbox = useInbox();
   const working = useWorking();
-  const currentOrg = useMatch("/orgs/:orgId/*")?.params.orgId;
+  // Inbox 상세도 그 항목의 조직을 현재 조직으로 본다.
+  const orgMatch = useMatch("/orgs/:orgId/*")?.params.orgId;
+  const inboxMatch = useMatch("/inbox/:orgId/*")?.params.orgId;
+  const currentOrg = orgMatch ?? inboxMatch;
   const [filter, setFilter] = useState<InboxFilter | "working">("attention");
   const scoped = panel.scope === "organization" && currentOrg;
   const inScope = (inbox.data ?? []).filter(
@@ -280,23 +285,19 @@ function InboxContent({
   );
 }
 
-/** 항목 → 상세 경로·제목·부가 설명. */
+/** 항목 → 제목·부가 설명. */
 function describe(item: InboxItem) {
-  const org = inboxOrganizationId(item);
   if (item.kind === "approval")
     return {
-      to: `/orgs/${org}/approvals/${item.approval.id}`,
       title: approvalKindLabel[item.approval.kind],
       detail: item.approval.previousApprovalId ? "다시 제출됨" : null,
     };
   if (item.kind === "result_submission")
     return {
-      to: `/orgs/${org}/results/${item.submission.id}`,
       title: "결과 제출",
       detail: item.submission.previousSubmissionId ? "다시 제출됨" : null,
     };
   return {
-    to: `/orgs/${org}/runs/${item.run.id}`,
     title: "실행 시도 실패",
     detail: `${item.agentName}${item.run.error ? ` · ${item.run.error}` : ""}`,
   };
@@ -317,14 +318,18 @@ function InboxRow({
     kind: item.kind,
     sourceId: inboxSourceId(item),
   });
-  const { to, title, detail } = describe(item);
+  const { title, detail } = describe(item);
+  const to = inboxDetailPath(organizationId, item.kind, inboxSourceId(item));
+  // 지금 연 항목을 표시한다.
+  const current = useMatch(to) !== null;
   const at = inboxItemTime(item);
   return (
     <div className="px-3 py-3">
       <Link
         to={to}
         onClick={onPick}
-        className="flex items-start gap-3 rounded-xl p-1 text-sm transition hover:bg-slate-50"
+        aria-current={current ? "page" : undefined}
+        className={`flex items-start gap-3 rounded-xl p-1 text-sm transition hover:bg-slate-50 ${current ? "bg-brand-50/60 ring-1 ring-brand-200" : ""}`}
       >
         <span
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"

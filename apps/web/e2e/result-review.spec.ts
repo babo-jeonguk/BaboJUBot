@@ -64,6 +64,10 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(item).toContainText("결과 제출", runs);
   await item.click();
   await expect(page).toHaveURL(
+    /\/inbox\/[0-9a-f-]{36}\/result_submission\/[0-9a-f-]{36}$/
+  );
+  await page.getByRole("link", { name: /원래 화면에서 자세히 보기/ }).click();
+  await expect(page).toHaveURL(
     /\/orgs\/[0-9a-f-]{36}\/results\/[0-9a-f-]{36}$/
   );
   const firstUrl = page.url();
@@ -134,9 +138,17 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(complete).toBeInViewport();
   await page.setViewportSize({ width: 1280, height: 800 });
 
-  // 다른 탭에서 최종 완료하면 이 화면도 새로고침 없이 결정 기록으로 바뀐다.
+  // 다른 탭에서 Inbox 상세(요약)로 최종 완료하면 이 화면도 새로고침 없이 결정 기록으로 바뀐다.
   const other = await browser.newPage();
-  await other.goto(secondUrl);
+  await other.goto(
+    `/inbox/${org.id}/result_submission/${secondUrl.split("/").pop()}`
+  );
+  await expect(other.getByRole("region", { name: "결과 요약" })).toContainText(
+    "반영한 수정 의견: 한계도 적어 주세요"
+  );
+  await expect(
+    other.getByRole("region", { name: /근거 산출물 \d+개/ })
+  ).toBeVisible();
   const otherDecision = other.getByRole("region", { name: "결정" });
   await otherDecision.getByRole("button", { name: "최종 완료" }).click();
   await otherDecision.getByRole("button", { name: "최종 완료 확정" }).click();

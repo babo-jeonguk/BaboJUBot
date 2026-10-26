@@ -6,7 +6,7 @@ import {
   type ApprovalKind,
   type LifecycleStage,
 } from "@babojubot/contracts";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
@@ -41,6 +41,7 @@ export function ApprovalDetailPage() {
   const { orgId = "", approvalId = "" } = useParams();
   const approval = useApproval(orgId, approvalId);
   const org = useOrganization(orgId);
+  const [decidedHere, setDecidedHere] = useState(false);
   if (approval.isPending) return <Loading />;
   if (approval.isError)
     return approval.error instanceof ApiError &&
@@ -87,14 +88,19 @@ export function ApprovalDetailPage() {
       )}
 
       {a.status === "pending" ? (
-        <DecisionForm
+        <ApprovalDecisionForm
           orgId={orgId}
           approvalId={a.id}
           kind={a.kind}
           stage={org.data?.stage}
+          onDecided={() => setDecidedHere(true)}
         />
       ) : (
-        <DecisionReceipt orgId={orgId} approval={a} />
+        <ApprovalDecisionReceipt
+          orgId={orgId}
+          approval={a}
+          focus={decidedHere}
+        />
       )}
     </Page>
   );
@@ -259,12 +265,12 @@ const decisionStyle: Record<ApprovalDecision, string> = {
 const decisionHelp: Record<ApprovalKind, { effect: string; note: string }> = {
   initial_research: {
     effect:
-      "승인하면 조직이 연구 진행으로 넘어가고 위 팀 구성대로 작업자가 생깁니다. 반려와 수정 요청은 계획 수립으로 돌아가며 사유와 함께 Lead를 깨웁니다.",
+      "승인하면 조직이 연구 진행으로 넘어가고 요청한 팀 구성대로 작업자가 생깁니다. 반려와 수정 요청은 계획 수립으로 돌아가며 사유와 함께 Lead를 깨웁니다.",
     note: "결정 사유 (반려·수정 요청에는 필요)",
   },
   add_worker: {
     effect:
-      "승인하면 위 사본을 받은 작업자 한 명이 생기고, 반려하면 아무것도 만들지 않습니다. 어느 쪽이든 연구 단계는 그대로이며 결정과 사유로 Lead를 깨웁니다.",
+      "승인하면 요청한 사본을 받은 작업자 한 명이 생기고, 반려하면 아무것도 만들지 않습니다. 어느 쪽이든 연구 단계는 그대로이며 결정과 사유로 Lead를 깨웁니다.",
     note: "결정 사유 (반려에는 필요)",
   },
 };
@@ -275,17 +281,20 @@ const decisionHelp: Record<ApprovalKind, { effect: string; note: string }> = {
  * 사유가 된다. 실패하면 사유를 그대로 둔다.
  * 일시정지 중의 초기 연구 승인 결정은 조직을 재개하므로 미리 알린다. 중단된 조직에서는 결정할 수 없다.
  * 작업자 추가 결정은 단계와 상관없이 받으며 일시정지를 풀지 않는다.
+ * 승인 요청 상세와 Inbox 상세가 같은 폼을 쓴다.
  */
-function DecisionForm({
+export function ApprovalDecisionForm({
   orgId,
   approvalId,
   kind,
   stage,
+  onDecided,
 }: {
   orgId: string;
   approvalId: string;
   kind: ApprovalKind;
   stage: LifecycleStage | undefined;
+  onDecided: () => void;
 }) {
   const [note, setNote] = useState("");
   const decide = useDecideApproval(orgId, approvalId);
@@ -338,7 +347,10 @@ function DecisionForm({
               closed || decide.isPending || (decision !== "approve" && !trimmed)
             }
             onClick={() =>
-              decide.mutate({ decision, note: trimmed || undefined })
+              decide.mutate(
+                { decision, note: trimmed || undefined },
+                { onSuccess: onDecided }
+              )
             }
           >
             {decisionLabel[decision]}
@@ -364,15 +376,27 @@ function DecisionForm({
   );
 }
 
-function DecisionReceipt({
+/** 결정 기록. 이 화면에서 방금 결정했으면 사라진 버튼 대신 기록으로 포커스를 옮긴다. */
+export function ApprovalDecisionReceipt({
   orgId,
   approval: a,
+  focus,
 }: {
   orgId: string;
   approval: Approval;
+  focus: boolean;
 }) {
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focus) ref.current?.focus();
+  }, [focus]);
   return (
-    <section aria-label="결정" className="card p-4 text-sm">
+    <section
+      ref={ref}
+      tabIndex={-1}
+      aria-label="결정"
+      className="card p-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-300"
+    >
       <h2 className="mb-2 text-sm font-semibold">
         {approvalStatusLabel[a.status]}
         {a.decidedAt && (

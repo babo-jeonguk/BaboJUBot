@@ -177,7 +177,7 @@ export function ResultSubmissionPage() {
       </Block>
 
       {s.status === "pending" ? (
-        <DecisionForm
+        <ResultDecisionForm
           key={s.id}
           orgId={orgId}
           submissionId={s.id}
@@ -185,7 +185,7 @@ export function ResultSubmissionPage() {
           onDecided={() => setDecidedHere(true)}
         />
       ) : (
-        <DecisionReceipt submission={s} focus={decidedHere} />
+        <ResultDecisionReceipt submission={s} focus={decidedHere} />
       )}
     </Page>
   );
@@ -235,9 +235,9 @@ function Evidence({
 /**
  * 결과 검토 결정 폼. 두 결정이 한 제출 상태를 함께 쓰므로 하나를 보내는 동안 모두 잠근다.
  * 수정 요청은 의견이 있어야 보낼 수 있고 의견과 함께 Lead를 깨운다. 최종 완료는 되돌릴 수 없어 한 번 더 확인한다.
- * 실패하면 의견을 그대로 둔다. 의견 초안은 제출마다 따로다(`key`).
+ * 실패하면 의견을 그대로 둔다. 의견 초안은 제출마다 따로다(`key`). 결과 제출 상세와 Inbox 상세가 같은 폼을 쓴다.
  */
-function DecisionForm({
+export function ResultDecisionForm({
   orgId,
   submissionId,
   stage,
@@ -353,7 +353,7 @@ function DecisionForm({
 }
 
 /** 결정 기록. 이 화면에서 방금 결정했으면 사라진 버튼 대신 기록으로 포커스를 옮긴다. */
-function DecisionReceipt({
+export function ResultDecisionReceipt({
   submission: s,
   focus,
 }: {

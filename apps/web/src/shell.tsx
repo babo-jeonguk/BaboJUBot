@@ -86,6 +86,7 @@ function useCurrent() {
 
 export function Shell() {
   const { orgId } = useCurrent();
+  const inbox = useMatch("/inbox/*") !== null;
   const [sheet, setSheet] = useState(false);
   return (
     <Tooltip.Provider delayDuration={150}>
@@ -122,7 +123,13 @@ export function Shell() {
               ☰
             </button>
             <span className="min-w-0 flex-1 truncate text-sm font-medium">
-              {orgId ? <Crumbs orgId={orgId} compact /> : "홈"}
+              {orgId ? (
+                <Crumbs orgId={orgId} compact />
+              ) : inbox ? (
+                "Inbox"
+              ) : (
+                "홈"
+              )}
             </span>
             <InboxButton className="btn-ghost relative px-2" />
           </div>

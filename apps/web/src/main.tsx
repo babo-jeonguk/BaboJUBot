@@ -11,6 +11,7 @@ import { AgentDetailPage, RunDetailPage } from "./agents.tsx";
 import { ApprovalDetailPage } from "./approvals.tsx";
 import { CreateOrganizationProvider } from "./create-organization.tsx";
 import { GlobalSettingsPage } from "./global-settings.tsx";
+import { InboxDetailPage } from "./inbox-detail.tsx";
 import { InboxPanelProvider, InboxRedirect } from "./inbox.tsx";
 import { useLiveEvents } from "./live-events.ts";
 import { Home, OrganizationScreen } from "./pages.tsx";
@@ -41,6 +42,10 @@ const router = createBrowserRouter(
     <Route element={<Root />}>
       <Route index element={<Home />} />
       <Route path="inbox" element={<InboxRedirect />} />
+      <Route
+        path="inbox/:orgId/:kind/:sourceId"
+        element={<InboxDetailPage />}
+      />
       <Route path="settings" element={<GlobalSettingsPage />} />
       <Route
         path="orgs/:orgId/approvals/:approvalId"

@@ -109,12 +109,33 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
     .getByRole("listitem")
     .filter({ hasText: "실행 시도 실패" });
   await expect(archived).toContainText("보관됨");
-  // 상세로 가도 1280px 이상에서는 패널이 그대로 붙어 있다.
+  // Inbox 상세로 가도 1280px 이상에서는 패널이 그대로 붙어 있고, 연 항목이 표시된다.
+  // 실패에는 결정이 없고 실패 사유와 실행 기록 링크가 있다.
   await archived.getByRole("link").click();
+  await expect(page).toHaveURL(
+    new RegExp(`/inbox/${org.id}/run_failure/[0-9a-f-]{36}$`)
+  );
+  await expect(panel).toBeVisible();
+  await expect(archived.getByRole("link")).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+  await expect(panel.getByRole("button", { name: "현재 조직" })).toBeEnabled();
+  const main = page.getByRole("main");
+  await expect(main.getByRole("heading", { level: 1 })).toHaveText(
+    "실행 시도 실패"
+  );
+  await expect(main.getByRole("region", { name: "실패 사유" })).toContainText(
+    "사용자가 부탁한 실패 연습입니다"
+  );
+  await expect(main.getByRole("region", { name: "결정" })).toHaveCount(0);
+  // 상세의 정리 버튼은 패널과 같은 명령이다.
+  await main.getByRole("button", { name: "보관 해제" }).click();
+  await expect(panel.getByRole("button", { name: "보관됨 0" })).toBeVisible();
+  await main.getByRole("link", { name: /실행 기록 보기/ }).click();
   await expect(page).toHaveURL(
     new RegExp(`/orgs/${org.id}/runs/[0-9a-f-]{36}$`)
   );
-  await expect(panel).toBeVisible();
 
   // 보관은 승인 요청의 결정이나 단계를 바꾸지 않는다.
   const detail = await page.request.get(`/api/organizations/${org.id}`);
@@ -149,12 +170,84 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
   await expect(item).toContainText("실행 시도 실패", runs);
   await item.getByRole("link").click();
   await expect(drawer).toBeHidden();
-  await expect(page).toHaveURL(new RegExp(`/orgs/${org.id}/runs/`));
+  await expect(page).toHaveURL(new RegExp(`/inbox/${org.id}/run_failure/`));
+  await expect(page.getByRole("region", { name: "실패 사유" })).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth
     )
   ).toBe(true);
+});
+
+test("the Inbox detail summarizes an item without marking it read, keeps a decided item's address, and reports missing items", async ({
+  page,
+}) => {
+  const name = "Inbox 상세 조직";
+  const created = await page.request.post("/api/organizations", {
+    data: { name },
+  });
+  const org = (await created.json()) as { id: string };
+  const say = (body: string) =>
+    page.request.post(`/api/organizations/${org.id}/messages`, {
+      data: { body },
+    });
+  await openWithLiveEvents(page, "/");
+  await say("실패 연습");
+  await say("목표: Inbox 상세 확인\n완료 기준: 요약에서 결정한다");
+  await page
+    .getByRole("button", { name: /^Inbox · 주의 필요/ })
+    .first()
+    .click();
+  const panel = page.getByRole("complementary", { name: "Inbox" });
+  const attention = panel.getByRole("list", { name: "주의 필요" });
+  const failure = attention
+    .getByRole("listitem")
+    .filter({ hasText: name })
+    .filter({ hasText: "실행 시도 실패" });
+  const request = attention
+    .getByRole("listitem")
+    .filter({ hasText: name })
+    .filter({ hasText: "초기 연구 승인 요청" });
+  await expect(request).toBeVisible(runs);
+
+  // 실패 상세를 열어도 읽음으로 바뀌지 않는다. 상세의 읽음 버튼으로 읽으면 주의 필요에서 빠진다.
+  await failure.getByRole("link").click();
+  const main = page.getByRole("main");
+  await expect(main.getByRole("region", { name: "실패 사유" })).toBeVisible();
+  await expect(failure).toContainText("안 읽음");
+  await main.getByRole("button", { name: "읽음으로" }).click();
+  await expect(failure).toHaveCount(0);
+
+  // 승인 요청을 요약에서 반려한다. 사유가 있어야 보낼 수 있다.
+  await request.getByRole("link").click();
+  await expect(page).toHaveURL(
+    new RegExp(`/inbox/${org.id}/approval/[0-9a-f-]{36}$`)
+  );
+  const decidedUrl = page.url();
+  const decision = main.getByRole("region", { name: "결정" });
+  await expect(decision.getByRole("button", { name: "반려" })).toBeDisabled();
+  await decision.getByLabel(/결정 사유/).fill("목표를 더 좁혀 주세요");
+  await decision.getByRole("button", { name: "반려" }).click();
+  await expect(decision).toContainText("반려됨");
+  await expect(decision).toContainText("목표를 더 좁혀 주세요");
+  await expect(decision.getByRole("button")).toHaveCount(0);
+  // 결정한 승인 요청은 Inbox에서 빠지고, 정리 버튼도 사라진다(Lead가 다시 낸 요청은 새 항목이다).
+  await expect(
+    panel.locator(`a[href="${new URL(decidedUrl).pathname}"]`)
+  ).toHaveCount(0);
+  await expect(main.getByRole("group", { name: "알림 정리" })).toHaveCount(0);
+
+  // 결정한 항목의 주소를 다시 열어도 결정 기록이 보인다.
+  await page.goto(decidedUrl);
+  await expect(main.getByRole("region", { name: "결정" })).toContainText(
+    "반려됨"
+  );
+
+  // 없는 항목·모르는 종류는 찾을 수 없다고 알린다.
+  await page.goto(`/inbox/${org.id}/approval/${crypto.randomUUID()}`);
+  await expect(page.getByText("찾을 수 없는 승인 요청")).toBeVisible();
+  await page.goto(`/inbox/${org.id}/unknown/${crypto.randomUUID()}`);
+  await expect(page.getByText("찾을 수 없는 Inbox 항목")).toBeVisible();
 });
 
 test("global settings shows the places for the runtime, environment templates, secrets and messaging apps", async ({

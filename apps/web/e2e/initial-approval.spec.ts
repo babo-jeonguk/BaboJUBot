@@ -43,10 +43,14 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
     page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
   ).toContainText("초기 연구 승인을 요청했습니다");
 
-  // Inbox → 승인 요청 상세.
+  // Inbox → Inbox 상세(요약) → 원래 화면의 승인 요청 상세.
   await openInbox(page);
   const inbox = page.getByRole("list", { name: "주의 필요" });
   await inbox.getByRole("link", { name: new RegExp(name) }).click();
+  await expect(page).toHaveURL(
+    /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
+  );
+  await page.getByRole("link", { name: /원래 화면에서 자세히 보기/ }).click();
   await expect(page).toHaveURL(/\/approvals\/[0-9a-f-]{36}$/);
   const firstUrl = page.url();
   await expect(
@@ -80,23 +84,52 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   await expect(decision.getByRole("button")).toHaveCount(0);
 
   // Lead가 사유를 받아 다시 제출한 새 요청이 Inbox에 새로고침 없이 나타난다.
+  // 이번에는 Inbox 상세의 요약에서 결정한다. 계획은 앞부분만 보이고 줄였다는 안내가 있다.
   await openInbox(page);
   await inbox.getByRole("link", { name: new RegExp(name) }).click();
-  await expect(page).not.toHaveURL(firstUrl);
+  await expect(page).toHaveURL(
+    /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
+  );
+  const summaryUrl = page.url();
+  // 다시 제출된 요청은 새 승인 요청이다.
+  expect(summaryUrl.split("/").pop()).not.toBe(firstUrl.split("/").pop());
+  const main = page.getByRole("main");
+  await expect(main).toContainText("다시 제출됨");
   await expect(
-    page.getByRole("region", { name: "초기 연구 계획" })
-  ).toContainText("데이터셋을 먼저 정해 주세요");
+    page.getByRole("region", { name: "연구 목표와 완료 기준" })
+  ).toContainText("WER 10% 이하");
+  await expect(page.getByRole("region", { name: "팀 구성" })).toContainText(
+    "연구원 2명"
+  );
+  const plan = page.getByRole("region", { name: "초기 연구 계획" });
+  await expect(plan).toContainText("데이터셋을 먼저 정해 주세요");
+  await expect(plan).toContainText("전문은 원래 화면에서");
   await expect(
-    page.getByRole("link", { name: "직전 요청 보기" })
+    page.getByRole("region", { name: "연구 흐름 템플릿" })
   ).toBeVisible();
 
-  // 좁은 화면에서도 결정 영역에 닿는다.
+  // 좁은 화면에서도 요약의 결정 영역에 닿고, 결정하면 그 자리에 결정 기록이 남는다(다음 항목으로 가지 않는다).
   await page.setViewportSize({ width: 390, height: 844 });
   await decision.scrollIntoViewIfNeeded();
   await expect(decision.getByRole("button", { name: "승인" })).toBeInViewport();
   await decision.getByRole("button", { name: "승인" }).click();
   await expect(decision).toContainText("승인됨");
+  await expect(decision).toBeFocused();
+  await expect(page).toHaveURL(summaryUrl);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth
+    )
+  ).toBe(true);
   await page.setViewportSize({ width: 1280, height: 800 });
+
+  // 원래 화면도 같은 결정 기록이다.
+  await page.getByRole("link", { name: /원래 화면에서 자세히 보기/ }).click();
+  await expect(page).toHaveURL(/\/approvals\/[0-9a-f-]{36}$/);
+  await expect(decision).toContainText("승인됨");
+  await expect(
+    page.getByRole("link", { name: "직전 요청 보기" })
+  ).toBeVisible();
 
   // 승인으로 생긴 팀이 에이전트 화면에 보인다.
   await decision.getByRole("link", { name: "팀 보기" }).click();
