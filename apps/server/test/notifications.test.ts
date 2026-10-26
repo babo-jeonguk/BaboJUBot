@@ -176,11 +176,11 @@ describe("notification outbox and fake channel", () => {
       organizationName: "알림 조직",
       title: "실행 시도 실패",
       body: "Research Lead: 가짜 실행기 사고",
-      link: `/orgs/${org.id}/runs/${failed[0]!.id}`,
+      link: `/inbox/${org.id}/run_failure/${failed[0]!.id}`,
     });
     expect(recordOf("result_submission")).toMatchObject({
       body: "오류 유형 세 가지",
-      link: `/orgs/${org.id}/results/${submission!.id}`,
+      link: `/inbox/${org.id}/result_submission/${submission!.id}`,
     });
     expect(
       channel
@@ -188,6 +188,10 @@ describe("notification outbox and fake channel", () => {
         .map((m) => m.title)
         .sort()
     ).toEqual(["작업자 추가 승인 요청", "초기 연구 승인 요청"]);
+    // 알림을 누르면 Inbox 상세(요약)가 열린다. Lead 메시지는 Inbox 항목이 아니라 대화로 간다.
+    for (const m of channel.filter((m) => m.kind === "approval_request"))
+      expect(m.link).toBe(`/inbox/${org.id}/approval/${m.sourceId}`);
+    expect(recordOf("lead_message").link).toBe(`/orgs/${org.id}/chat`);
 
     // 다시 보내도 전송 기록은 늘지 않는다.
     await t.deliverNotifications();

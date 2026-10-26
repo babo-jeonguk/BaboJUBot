@@ -1,8 +1,9 @@
-import type {
-  ApprovalKind,
-  Event,
-  Notification,
-  NotificationKind,
+import {
+  inboxDetailPath,
+  type ApprovalKind,
+  type Event,
+  type Notification,
+  type NotificationKind,
 } from "@babojubot/contracts";
 
 /**
@@ -54,37 +55,36 @@ const bodyMaxLength = 500;
 const clip = (text: string) =>
   text.length > bodyMaxLength ? `${text.slice(0, bodyMaxLength - 1)}…` : text;
 
-/** 알림의 제목·본문·대시보드 상세 경로. 본문은 길면 자르고, 전체는 상세에서 본다. */
+/** 알림의 제목·본문·대시보드 경로. Inbox 항목이 되는 사건은 Inbox 상세(요약), Lead 메시지는 대화로 간다. 본문은 길면 자르고, 전체는 상세에서 본다. */
 export function notificationContent(
   organizationId: string,
   sourceId: string,
   facts: NotificationFacts
 ): Pick<Notification, "title" | "body" | "link"> {
-  const org = `/orgs/${organizationId}`;
   switch (facts.kind) {
     case "lead_message":
       return {
         title: "Research Lead 메시지",
         body: clip(facts.body),
-        link: `${org}/chat`,
+        link: `/orgs/${organizationId}/chat`,
       };
     case "approval_request":
       return {
         title: approvalTitle[facts.approvalKind],
         body: "사용자 결정을 기다립니다.",
-        link: `${org}/approvals/${sourceId}`,
+        link: inboxDetailPath(organizationId, "approval", sourceId),
       };
     case "result_submission":
       return {
         title: "결과 제출",
         body: clip(facts.summary),
-        link: `${org}/results/${sourceId}`,
+        link: inboxDetailPath(organizationId, "result_submission", sourceId),
       };
     case "run_failure":
       return {
         title: "실행 시도 실패",
         body: clip(`${facts.agentName}: ${facts.error ?? "오류 내용 없음"}`),
-        link: `${org}/runs/${sourceId}`,
+        link: inboxDetailPath(organizationId, "run_failure", sourceId),
       };
   }
 }

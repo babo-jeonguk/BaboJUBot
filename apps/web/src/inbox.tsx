@@ -1,8 +1,10 @@
 // Inbox 패널 하나(#50 결정): 1280px 이상에서는 본문 오른쪽에 340px로 붙고, 그보다 좁으면 오른쪽 drawer로 열려
 // 항목을 고르면 닫힌다. 범위는 전체 조직 / 현재 조직, 필터는 주의 필요·안 읽음·작업 중·전체·보관됨이다.
-// 읽음·보관(알림 정리)은 이 패널에서, 도메인 결정(승인·반려·수정 요청·최종 완료)은 항목 상세(Inbox 상세 또는 원래 상세)에서 한다.
+// 항목을 열면(Inbox 상세) 읽음이 된다. 패널에서는 체크한 항목을 한꺼번에 읽음으로 하고, 읽은 항목을 읽지 않음으로 되돌리거나 보관한다.
+// 도메인 결정(승인·반려·수정 요청·최종 완료)은 항목 상세(Inbox 상세 또는 원래 상세)에서 한다.
 // 행에는 결정 버튼을 두지 않는다(docs/research/inbox-detail-references.md D07).
 import {
+  inboxDetailPath,
   inboxFilters,
   inboxItemTime,
   inboxOrganizationId,
@@ -10,7 +12,6 @@ import {
   needsAttention,
   type InboxFilter,
   type InboxItem,
-  type InboxItemKind,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutationState } from "@tanstack/react-query";
@@ -25,7 +26,13 @@ import {
   type ReactNode,
 } from "react";
 import { Link, Navigate, useMatch } from "react-router";
-import { useInbox, useUpdateInboxItem } from "./api.ts";
+import {
+  markInboxItemsReadMutationKey,
+  useInbox,
+  useMarkInboxItemsRead,
+  useUpdateInboxItem,
+  type InboxItemRef,
+} from "./api.ts";
 import {
   abbr,
   approvalKindLabel,
@@ -111,19 +118,34 @@ export function useAttention(organizationId?: string) {
   return { count, isError: inbox.isError };
 }
 
-/** 응답을 기다리는 결정·정리 명령이 있는 항목(`작업 중`). mutation key는 `inboxItemMutationKey`다. */
+/**
+ * 응답을 기다리는 결정·정리 명령이 있는 항목(`작업 중`). 항목 하나의 명령은 mutation key(`inboxItemMutationKey`)로,
+ * 체크한 항목 읽음은 mutation 변수(항목 목록)로 안다.
+ */
 function useWorking() {
-  const keys = useMutationState({
+  const single = useMutationState({
     filters: { mutationKey: ["inbox-item"], status: "pending" },
     select: (m) => m.options.mutationKey?.slice(1).join(":"),
   });
-  return new Set(keys);
+  const many = useMutationState({
+    filters: { mutationKey: markInboxItemsReadMutationKey, status: "pending" },
+    select: (m) =>
+      ((m.state.variables ?? []) as InboxItemRef[]).map(
+        (r) => `${r.kind}:${r.sourceId}`
+      ),
+  });
+  return new Set([...single, ...many.flat()]);
 }
 const itemKey = (item: InboxItem) => `${item.kind}:${inboxSourceId(item)}`;
+const refOf = (item: InboxItem): InboxItemRef => ({
+  organizationId: inboxOrganizationId(item),
+  kind: item.kind,
+  sourceId: inboxSourceId(item),
+});
 
 const filterLabel: Record<InboxFilter | "working", string> = {
   attention: "주의 필요",
-  unread: "안 읽음",
+  unread: "읽지 않음",
   working: "작업 중",
   all: "전체",
   archived: "보관됨",
@@ -137,7 +159,7 @@ const filterOrder = [
 ] as const;
 const emptyText: Record<InboxFilter | "working", string> = {
   attention: "주의가 필요한 항목이 없습니다.",
-  unread: "안 읽은 항목이 없습니다.",
+  unread: "읽지 않은 항목이 없습니다.",
   working: "응답을 기다리는 명령이 없습니다.",
   all: "항목이 없습니다.",
   archived: "보관한 항목이 없습니다.",
@@ -204,6 +226,16 @@ function InboxContent({
   const shown = inScope
     .filter(matches(filter))
     .sort((a, b) => inboxItemTime(b).localeCompare(inboxItemTime(a)));
+  // 체크한 항목. 지금 보이는 항목 중에서만 센다(필터·범위를 바꾸면 보이지 않는 항목은 빠진다).
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  const checkedShown = shown.filter((item) => checked.has(itemKey(item)));
+  const toggle = (item: InboxItem) =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(itemKey(item))) next.add(itemKey(item));
+      return next;
+    });
+  const markRead = useMarkInboxItemsRead();
   return (
     <>
       <div className="flex items-center gap-2 border-b border-slate-200/70 px-4 py-3">
@@ -257,6 +289,40 @@ function InboxContent({
           })}
         </div>
       </div>
+      {checkedShown.length > 0 && (
+        <div
+          className="flex items-center gap-2 border-b border-slate-200/70 bg-slate-50 px-4 py-2 text-xs"
+          role="group"
+          aria-label="선택한 항목"
+        >
+          <span className="flex-1 text-slate-600">
+            {checkedShown.length}개 선택
+          </span>
+          <button
+            className="btn-soft px-2 py-1 text-xs"
+            disabled={markRead.isPending}
+            onClick={() =>
+              markRead.mutate(
+                checkedShown.filter((item) => !item.read).map(refOf),
+                { onSuccess: () => setChecked(new Set()) }
+              )
+            }
+          >
+            모두 읽음
+          </button>
+          <button
+            className="btn-ghost px-2 py-1 text-xs"
+            onClick={() => setChecked(new Set())}
+          >
+            선택 해제
+          </button>
+        </div>
+      )}
+      {markRead.isError && (
+        <p role="alert" className="px-4 py-2 text-xs text-rose-700">
+          일부 항목을 읽음으로 바꾸지 못했습니다. 다시 시도하세요.
+        </p>
+      )}
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
         {inbox.isPending ? (
           <Loading />
@@ -274,6 +340,8 @@ function InboxContent({
                 <InboxRow
                   item={item}
                   working={working.has(itemKey(item))}
+                  checked={checked.has(itemKey(item))}
+                  onCheck={() => toggle(item)}
                   onPick={onPick}
                 />
               </li>
@@ -284,13 +352,6 @@ function InboxContent({
     </>
   );
 }
-
-/** Inbox 상세 주소. 항목 ID는 종류 안에서만 유일하고 원본은 조직 범위로 찾으므로 조직·종류를 함께 쓴다. */
-export const inboxDetailPath = (
-  organizationId: string,
-  kind: InboxItemKind,
-  sourceId: string
-) => `/inbox/${organizationId}/${kind}/${sourceId}`;
 
 /** 항목 → 제목·부가 설명. */
 function describe(item: InboxItem) {
@@ -313,10 +374,14 @@ function describe(item: InboxItem) {
 function InboxRow({
   item,
   working,
+  checked,
+  onCheck,
   onPick,
 }: {
   item: InboxItem;
   working: boolean;
+  checked: boolean;
+  onCheck: () => void;
   onPick: () => void;
 }) {
   const organizationId = inboxOrganizationId(item);
@@ -326,59 +391,75 @@ function InboxRow({
   const current = useMatch(to) !== null;
   const at = inboxItemTime(item);
   return (
-    <div className="px-3 py-3">
-      <Link
-        to={to}
-        onClick={onPick}
-        aria-current={current ? "page" : undefined}
-        className={`flex items-start gap-3 rounded-xl p-1 text-sm transition hover:bg-slate-50 ${current ? "bg-brand-50/60 ring-1 ring-brand-200" : ""}`}
-      >
-        <span
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"
-          style={avatarStyle(organizationId)}
+    <div className="flex items-start gap-1 px-3 py-3">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onCheck}
+        aria-label={`${title} · ${item.organizationName} 선택`}
+        className="mt-3 h-4 w-4 shrink-0 accent-brand-600"
+      />
+      <div className="min-w-0 flex-1">
+        <Link
+          to={to}
+          onClick={onPick}
+          aria-current={current ? "page" : undefined}
+          className={`flex items-start gap-3 rounded-xl p-1 text-sm transition hover:bg-slate-50 ${current ? "bg-brand-50/60 ring-1 ring-brand-200" : ""}`}
         >
-          {abbr(item.organizationName)}
-        </span>
-        <span className="min-w-0 flex-1">
           <span
-            className={`block ${item.read ? "text-slate-600" : "font-semibold text-slate-900"}`}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"
+            style={avatarStyle(organizationId)}
           >
-            {title}
+            {abbr(item.organizationName)}
           </span>
-          <span className="block truncate text-xs text-slate-500">
-            {item.organizationName}
-            {detail && ` · ${detail}`}
-          </span>
-          <span className="mt-1 flex flex-wrap items-center gap-1">
-            {needsAttention(item) && (
-              <span className="chip bg-amber-50 text-amber-800">주의 필요</span>
-            )}
-            {!item.read && (
-              <span className="chip bg-brand-50 text-brand-700">안 읽음</span>
-            )}
-            {item.archived && (
-              <span className="chip bg-slate-100 text-slate-600">보관됨</span>
-            )}
-            {working && (
-              <span className="chip bg-sky-50 text-sky-700">작업 중</span>
-            )}
-            <time
-              dateTime={at}
-              className="text-[11px] text-slate-400 tabular-nums"
+          <span className="min-w-0 flex-1">
+            <span
+              className={`block ${item.read ? "text-slate-600" : "font-semibold text-slate-900"}`}
             >
-              {formatTime(at)}
-            </time>
+              {title}
+            </span>
+            <span className="block truncate text-xs text-slate-500">
+              {item.organizationName}
+              {detail && ` · ${detail}`}
+            </span>
+            <span className="mt-1 flex flex-wrap items-center gap-1">
+              {needsAttention(item) && (
+                <span className="chip bg-amber-50 text-amber-800">
+                  주의 필요
+                </span>
+              )}
+              {!item.read && (
+                <span className="chip bg-brand-50 text-brand-700">
+                  읽지 않음
+                </span>
+              )}
+              {item.archived && (
+                <span className="chip bg-slate-100 text-slate-600">보관됨</span>
+              )}
+              {working && (
+                <span className="chip bg-sky-50 text-sky-700">작업 중</span>
+              )}
+              <time
+                dateTime={at}
+                className="text-[11px] text-slate-400 tabular-nums"
+              >
+                {formatTime(at)}
+              </time>
+            </span>
           </span>
-        </span>
-      </Link>
-      <div className="mt-1 pl-12">
-        <InboxItemOrganize item={item} label={`${title} 정리`} />
+        </Link>
+        <div className="mt-1 pl-12">
+          <InboxItemOrganize item={item} label={`${title} 정리`} />
+        </div>
       </div>
     </div>
   );
 }
 
-/** 알림 정리(읽음·보관) 버튼. 패널 행과 Inbox 상세가 같은 명령으로 쓴다. 업무 결정과 따로다. */
+/**
+ * 알림 정리 버튼. 읽은 항목은 읽지 않음으로 되돌릴 수 있고(읽음은 항목을 열거나 체크해 한꺼번에), 보관·보관 해제한다.
+ * 패널 행과 Inbox 상세가 같은 명령으로 쓴다. 업무 결정과 따로다.
+ */
 export function InboxItemOrganize({
   item,
   label,
@@ -394,13 +475,15 @@ export function InboxItemOrganize({
   return (
     <>
       <div className="flex gap-1" role="group" aria-label={label}>
-        <button
-          className="btn-ghost px-2 py-1 text-xs"
-          disabled={update.isPending}
-          onClick={() => update.mutate({ read: !item.read })}
-        >
-          {item.read ? "안 읽음으로" : "읽음으로"}
-        </button>
+        {item.read && (
+          <button
+            className="btn-ghost px-2 py-1 text-xs"
+            disabled={update.isPending}
+            onClick={() => update.mutate({ read: false })}
+          >
+            읽지 않음
+          </button>
+        )}
         <button
           className="btn-ghost px-2 py-1 text-xs"
           disabled={update.isPending}

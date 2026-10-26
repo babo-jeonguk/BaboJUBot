@@ -220,7 +220,7 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "🗂",
         title: `사용자가 Inbox ${inboxKindLabel[event.payload.kind]} 항목을 정리했습니다`,
-        detail: `${event.payload.read ? "읽음" : "안 읽음"} · ${event.payload.archived ? "보관됨" : "보관 안 함"}`,
+        detail: `${event.payload.read ? "읽음" : "읽지 않음"} · ${event.payload.archived ? "보관됨" : "보관 안 함"}`,
       };
     case "tool.refused":
       return {

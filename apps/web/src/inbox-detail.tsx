@@ -1,7 +1,7 @@
 // Inbox 상세(#50 `/inbox/:id`, docs/research/inbox-detail-references.md D01–D08). 항목을 짧게 요약해 보이고 그 자리에서 결정한다.
 // 결정 폼·결정 기록은 원래 상세(승인 요청·결과 제출)와 같은 것을 쓰며, "원래 화면에서 자세히 보기"로 전체 내용을 연다.
 // 결정 뒤에는 제자리에서 결정 기록을 보이고 다음 항목으로 옮기지 않는다. 다른 곳에서 먼저 결정됐으면(409) 폼이 최신 상태를 불러와
-// 결정 기록으로 바뀐다. 열어도 읽음으로 바꾸지 않는다.
+// 결정 기록으로 바뀐다. 열면 그 항목을 읽음으로 바꾼다.
 import {
   inboxItemKindSchema,
   inboxSourceId,
@@ -9,12 +9,13 @@ import {
   type InboxItemKind,
   type ResultSubmission,
 } from "@babojubot/contracts";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
   useApproval,
   useInbox,
+  useUpdateInboxItem,
   useOrganization,
   useResultSubmission,
   useRun,
@@ -47,13 +48,14 @@ export function InboxDetailPage() {
   const kind = inboxItemKindSchema.safeParse(rawKind);
   if (!kind.success) return <NotFound what="Inbox 항목" />;
   // 항목마다 화면 상태(결정 초안·방금 결정함)가 따로다.
-  const props = { key: `${orgId}:${sourceId}`, orgId, sourceId };
+  const key = `${orgId}:${sourceId}`;
+  const props = { orgId, sourceId };
   return kind.data === "approval" ? (
-    <ApprovalSummary {...props} />
+    <ApprovalSummary key={key} {...props} />
   ) : kind.data === "result_submission" ? (
-    <ResultSummary {...props} />
+    <ResultSummary key={key} {...props} />
   ) : (
-    <RunFailureSummary {...props} />
+    <RunFailureSummary key={key} {...props} />
   );
 }
 
@@ -107,23 +109,29 @@ function Header({
         >
           {originalLabel} →
         </Link>
-        <Organize kind={kind} sourceId={sourceId} />
+        <Organize orgId={orgId} kind={kind} sourceId={sourceId} />
       </div>
     </div>
   );
 }
 
-/** 알림 정리. Inbox에 아직 있는 항목에만 보인다. */
-function Organize({
-  kind,
-  sourceId,
-}: {
-  kind: InboxItemKind;
-  sourceId: string;
-}) {
+/**
+ * 알림 정리. Inbox에 아직 있는 항목에만 보인다(결정한 승인 요청·결과 제출은 Inbox에서 빠진다).
+ * 열 때 읽지 않은 항목이면 한 번 읽음으로 바꾼다. 이 화면에서 읽지 않음으로 되돌리면 다시 바꾸지 않는다.
+ */
+function Organize({ orgId, kind, sourceId }: Props & { kind: InboxItemKind }) {
   const item = useInbox().data?.find(
     (i) => i.kind === kind && inboxSourceId(i) === sourceId
   );
+  const update = useUpdateInboxItem({ organizationId: orgId, kind, sourceId });
+  const markedOnOpen = useRef(false);
+  const unread = item ? !item.read : false;
+  const { mutate } = update;
+  useEffect(() => {
+    if (!unread || markedOnOpen.current) return;
+    markedOnOpen.current = true;
+    mutate({ read: true });
+  }, [unread, mutate]);
   return item ? <InboxItemOrganize item={item} label="알림 정리" /> : null;
 }
 

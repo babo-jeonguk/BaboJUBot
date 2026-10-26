@@ -67,6 +67,8 @@
 | <a id="E14"></a>E14 | Teams 승인 카드는 결정되면 "X가 승인함"으로 고쳐지고, 결정한 사람에게서 버튼이 사라진다 | [Up-To-Date-Views.md](https://github.com/MicrosoftDocs/msteams-docs/blob/30b6191ed5b2dab9657d691d27fba0ddf06b3ae6/msteams-platform/task-modules-and-cards/cards/Universal-actions-for-adaptive-cards/Up-To-Date-Views.md#L110-L126) | 문서 주장 |
 | <a id="E15"></a>E15 | Paseo는 주의 이유가 결정 대기(permission)이면 화면을 봐도 주의 표시를 지우지 않는다 | [agent-attention.ts](https://github.com/getpaseo/paseo/blob/16fe07560f58ae0b35ccedaf40d04f426833b2b3/packages/app/src/utils/agent-attention.ts#L63-L81) | 소스 확인 |
 | <a id="E16"></a>E16 | anthropic-cli는 새로 뜨거나 대상이 바뀐 승인 프롬프트가 600ms 동안 결정 키를 무시해, 앞 입력이 다음 항목에 답하는 것을 막는다 | [input.go](https://github.com/anthropics/anthropic-cli/blob/16d9c14b5bd6fd3d1f9871c934f2ddc8be506a05/internal/sessions/tui/input.go#L18-L31) | 소스 확인 |
+| <a id="E17"></a>E17 | Plane 알림 행을 누르면 읽지 않은 알림이면 `markNotificationAsRead`를 기다린 뒤 상세를 연다. 행에는 마우스를 올리면 보이는 읽음/읽지 않음 전환 아이콘, 머리에는 "모두 읽음"이 있다 | [item.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/workspace-notifications/sidebar/notification-card/item.tsx#L47-L67), [options/read.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/workspace-notifications/sidebar/notification-card/options/read.tsx#L32-L45), [header/options/root.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/workspace-notifications/sidebar/header/options/root.tsx#L44-L65) | 소스 확인 |
+| <a id="E18"></a>E18 | Novu Inbox 행을 누르면 읽지 않았으면 `read()`를 기다린 뒤 이동한다 | [controller.ts](https://github.com/novuhq/novu/blob/d7ff70c66565b05364276b0d39ecd3c9aad6822b/packages/js/src/ui/core/item/controller.ts#L49-L65) | 소스 확인 |
 
 worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 사례(Cordum 상세의 "If approved / If denied"·blast radius 확인, Hermes "Always allow"만 확인, HumanLayer 승인 행 dismiss 불가, Plane·Novu·Huly 열람 시 자동 읽음, SAP Fiori FCL 다음 항목/닫기, Carbon·Primer danger 확인의 취소 포커스)는 `notes/`에 있고 결정 근거로 쓰지 않았다.
 
@@ -90,7 +92,7 @@ worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 �
 | <a id="D02"></a>D02 | 채택 | Inbox 상세와 원래 상세는 **같은 결정 폼**(같은 HTTP 명령·사유 필수·최종 완료 2단 확인·409 처리)을 쓴다 | P01, E01, E05 | 결정 규칙을 한 곳에서. 두 화면에 결정 버튼이 있어도 결과가 같다 | Q5, Q2 |
 | <a id="D03"></a>D03 | 채택 | 요약 내용: 종류·조직·요청자·시각, **무엇을 결정하나와 결정의 효과**, 핵심 사실(초기 연구: 목표·완료 기준·팀 구성 인원·연구 환경·템플릿 이름, 계획은 앞부분만 / 작업자 추가: Role·사본 수 / 결과: 결과 요약·완료 기준·근거 산출물 제목). 줄인 부분은 "전문은 원래 화면에서"로 알린다 | P02, E07, E10, E11 | 사용자가 요약에서도 큰 결정을 하기로 했으므로(고정 결정) 결정에 필요한 사실은 요약에 남기고, 생략을 숨기지 않는다 | Q2 |
 | <a id="D04"></a>D04 | 채택 | 결정 뒤에는 **제자리에서 결정 기록**으로 바꾸고 결정 버튼을 없앤다. 다음 항목으로 자동 이동하지 않는다. 다른 곳에서 먼저 결정됐으면(409) 최신 상태를 다시 불러와 결정 기록(무엇으로·언제)을 보인다 | P03, E03, E04, E06, E14, [#58 D08](issue-58-references.md#D08) | Airflow는 409에 "Conflict"만 보여 무엇이 결정됐는지 모른다(E03 반례). Inbox 상세는 알림 맥락(Plane embed와 같음). 패널은 그대로 있어 다음 항목은 사용자가 고른다. 자동 이동은 오답 위험(E16) | Q3 |
-| <a id="D05"></a>D05 | 채택 | 상세를 열어도 읽음으로 바꾸지 않는다(현 #61 계약 유지). 읽음·보관 버튼을 상세에도 둔다(패널 행과 같은 명령) | P06, E15, [#61 P07](issue-61-references.md#P07) | 결정 대기 항목의 주의는 읽음과 무관하다. 실패 항목의 자동 읽음은 열린 결정으로 남긴다 | Q4 |
+| <a id="D05"></a>D05 | 변형 채택(사용자 결정 2026-10-26) | Inbox 상세를 열면 그 항목을 읽음으로 바꾼다. 행의 읽음 버튼은 두지 않고, 읽은 항목만 `읽지 않음`으로 되돌린다. 여러 항목은 체크하면 나타나는 `모두 읽음`으로 체크한 것만 읽음으로 한다 | E15, E17, E18, [#61 P07](issue-61-references.md#P07) | 처음 권고(열어도 읽음 불변)는 E15를 잘못 적용한 것이었다. E15는 결정 대기 항목의 **주의 필요**를 열람으로 지우지 않는 규칙이고, 이 제품은 이미 결정 대기의 주의 필요를 읽음과 무관하게 둔다. 열면 읽음은 Plane·Novu(E17, E18)와 메일함의 기본이다 | Q4 |
 | <a id="D06"></a>D06 | 채택 | 실패한 실행 시도 상세: 에이전트·실패 사유·끝난 시각과 "실행 기록 보기". 결정 버튼 없음 | E10 | 실패에는 결정할 것이 없다. 재시도 버튼은 현재 제품에 없는 명령이라 만들지 않는다 | Q2 |
 | <a id="D07"></a>D07 | 채택 | 패널 행은 지금처럼 열기 하나(+정리 버튼)이며 결정 버튼을 두지 않는다. 지금 연 항목을 패널에서 표시한다(`aria-current`) | P07, E13 | #50 D09와 같다. Paperclip 카드 결정(E07)은 배제 | Q6 |
 | <a id="D08"></a>D08 | 채택 | 배치: 본문 폭 1024px(`standard`), 머리에 종류·상태·조직·시각과 "원래 화면에서 자세히 보기", 요약 블록, 맨 아래 결정. 390px에서는 세로로 쌓이고 drawer는 항목을 고르면 닫힌다(#50) | E01, #50 | 결정 기록·버튼이 요약 아래에 있어 요약을 읽은 뒤 결정한다(GOV.UK E11) | Q6 |
@@ -106,7 +108,7 @@ worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 �
 
 ## 구현 참고
 
-- 권고 요약: `/inbox/:orgId/:kind/:sourceId` Inbox 상세를 만들고, 기존 승인·결과 화면의 결정 폼·결정 기록을 그대로 재사용한다. 요약은 결정에 필요한 사실과 생략 안내, 원래 화면 링크를 둔다. 결정 뒤 제자리 결정 기록, 자동 이동 없음, 열람은 읽음을 바꾸지 않음.
+- 권고 요약: `/inbox/:orgId/:kind/:sourceId` Inbox 상세를 만들고, 기존 승인·결과 화면의 결정 폼·결정 기록을 그대로 재사용한다. 요약은 결정에 필요한 사실과 생략 안내, 원래 화면 링크를 둔다. 결정 뒤 제자리 결정 기록, 자동 이동 없음, Inbox 상세를 열면 읽음(사용자 결정).
 - 구현 위치: `apps/web`(새 화면·route, 패널 행 링크). 서버·계약 변경 없음 — 결정·정리 명령과 조회 API는 기존 그대로([architecture](../architecture.md)의 웹 대시보드 경계).
 
 | ID | 검증할 경계 (입력 → 행동 → 기대) | 근거 |
@@ -116,12 +118,12 @@ worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 �
 | V03 | 결과 제출 Inbox 상세에서 최종 완료 → 확인 단계 → 결정 기록 | D02 |
 | V04 | 다른 탭에서 먼저 결정 → 이 화면에서 결정 → 409 안내 뒤 최신 결정 기록 | D04 |
 | V05 | 결정된 항목·없는 항목·다른 조직 ID의 Inbox 주소 직접 열기 → 결정 기록 / 없음 안내 | D01 |
-| V06 | 실패 항목 Inbox 상세 → 실패 사유·실행 기록 링크, 결정 버튼 없음. 열어도 안 읽음 유지, 상세의 읽음 버튼으로 읽음 | D05, D06 |
+| V06 | 실패 항목 Inbox 상세 → 실패 사유·실행 기록 링크, 결정 버튼 없음. 열면 읽음, 상세에서 `읽지 않음`으로 되돌리면 열려 있는 동안 다시 읽음이 되지 않음. 체크한 항목만 `모두 읽음` | D05, D06 |
 | V07 | 1280px 패널 붙은 상태·390px drawer에서 상세 열기, 가로 넘침 없음, 패널의 현재 항목 표시 | D07, D08 |
 
 | 열린 결정 | owner | 선택지와 근거 |
 |---|---|---|
-| 실패한 실행 시도 상세를 열면 자동으로 읽음 처리할지 | 사용자 | (a) 지금처럼 명시적 읽음만(E15, #61 계약) (b) 실패 항목만 열면 읽음(Plane·Novu·Huly 알림의 기본 — notes, 메인 미확인) |
+| ~~열면 읽음 처리할지~~ | 사용자 결정(2026-10-26) | 종류와 상관없이 Inbox 상세를 열면 읽음(D05). 원래 화면을 볼 때는 바꾸지 않음 |
 
 ## 한계와 미확인
 

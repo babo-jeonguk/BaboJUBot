@@ -14,7 +14,7 @@ export type InboxItemKind = z.infer<typeof inboxItemKindSchema>;
 
 /**
  * 사용자의 알림 정리 상태. 항목의 원본(승인 요청·결과 제출·실행 시도)과 따로 저장하며, 읽음·보관은 결정·단계·깨우기를 바꾸지 않는다.
- * 아직 정리하지 않은 항목은 안 읽음·보관 안 함이다.
+ * 아직 정리하지 않은 항목은 읽지 않음·보관 안 함이다.
  */
 export const inboxItemStateSchema = z.object({
   read: z.boolean(),
@@ -60,6 +60,15 @@ export const inboxSourceId = (item: InboxItem) =>
     : item.kind === "result_submission"
       ? item.submission.id
       : item.run.id;
+/**
+ * Inbox 상세(요약)의 대시보드 경로. 항목은 자기 ID가 없고 원본 ID는 종류 안에서만 유일하며 원본은 조직 범위로 찾으므로
+ * 조직·종류·원본 ID를 함께 쓴다. 결정한 뒤에도 같은 경로가 그 항목을 보인다.
+ */
+export const inboxDetailPath = (
+  organizationId: string,
+  kind: InboxItemKind,
+  sourceId: string
+) => `/inbox/${organizationId}/${kind}/${sourceId}`;
 export const inboxOrganizationId = (item: InboxItem) =>
   item.kind === "approval"
     ? item.approval.organizationId

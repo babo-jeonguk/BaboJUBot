@@ -54,22 +54,30 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
   });
   await expect(failure).toContainText(name);
   await expect(failure).toContainText("사용자가 부탁한 실패 연습입니다");
-  await expect(failure).toContainText("안 읽음");
+  await expect(failure).toContainText("읽지 않음");
+  // 읽지 않은 항목에는 읽음 버튼이 따로 없다(열거나 체크해 읽는다).
+  await expect(failure.getByRole("button", { name: /읽/ })).toHaveCount(0);
   await expect(
     panel.getByRole("button", { name: "주의 필요 1" })
   ).toBeVisible();
 
-  // 초기 연구 승인 요청도 주의 필요다. 읽어도 결정이 남아 있어 주의 필요에서 빠지지 않는다.
+  // 초기 연구 승인 요청도 주의 필요다. 체크해 읽음으로 해도 결정이 남아 있어 주의 필요에서 빠지지 않는다.
   await say("목표: Inbox 정리\n완료 기준: 읽음과 보관이 구분된다");
   const request = attention
     .getByRole("listitem")
     .filter({ hasText: "초기 연구 승인 요청" });
   await expect(request).toBeVisible(runs);
-  await request.getByRole("button", { name: "읽음으로" }).click();
+  const selection = panel.getByRole("group", { name: "선택한 항목" });
+  await expect(selection).toHaveCount(0);
+  await request.getByRole("checkbox").check();
+  await expect(selection).toContainText("1개 선택");
+  await selection.getByRole("button", { name: "모두 읽음" }).click();
+  await expect(selection).toHaveCount(0);
   await expect(
-    request.getByRole("button", { name: "안 읽음으로" })
+    request.getByRole("button", { name: "읽지 않음" })
   ).toBeVisible();
   await expect(request).toBeVisible();
+  await expect(failure).toContainText("읽지 않음");
 
   // 다른 탭은 패널을 열고 전체 필터를 본다.
   const other = await browser.newPage();
@@ -84,16 +92,19 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
   ).toBeVisible();
 
   // 실패는 읽으면 주의 필요에서 빠지고, 보관하면 전체에서도 빠져 보관됨에 남는다.
-  await failure.getByRole("button", { name: "읽음으로" }).click();
+  await failure.getByRole("checkbox").check();
+  await selection.getByRole("button", { name: "모두 읽음" }).click();
   await expect(failure).toHaveCount(0);
-  await expect(panel.getByRole("button", { name: "안 읽음 0" })).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "읽지 않음 0" })
+  ).toBeVisible();
   await panel.getByRole("button", { name: /^전체 \d/ }).click();
   const all = panel.getByRole("list", { name: "전체" });
   const readFailure = all
     .getByRole("listitem")
     .filter({ hasText: "실행 시도 실패" });
   await expect(
-    readFailure.getByRole("button", { name: "안 읽음으로" })
+    readFailure.getByRole("button", { name: "읽지 않음" })
   ).toBeVisible();
   await readFailure.getByRole("button", { name: "보관" }).click();
   await expect(readFailure).toHaveCount(0);
@@ -210,13 +221,38 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
     .filter({ hasText: "초기 연구 승인 요청" });
   await expect(request).toBeVisible(runs);
 
-  // 실패 상세를 열어도 읽음으로 바뀌지 않는다. 상세의 읽음 버튼으로 읽으면 주의 필요에서 빠진다.
+  // 실패 상세를 열면 읽음이 되어 주의 필요에서 빠진다.
   await failure.getByRole("link").click();
   const main = page.getByRole("main");
   await expect(main.getByRole("region", { name: "실패 사유" })).toBeVisible();
-  await expect(failure).toContainText("안 읽음");
-  await main.getByRole("button", { name: "읽음으로" }).click();
   await expect(failure).toHaveCount(0);
+  // 상세에서 읽지 않음으로 되돌리면 주의 필요로 돌아오고, 열려 있는 동안 다시 읽음으로 바뀌지 않는다.
+  await main.getByRole("button", { name: "읽지 않음" }).click();
+  await expect(failure).toContainText("읽지 않음");
+  const failureRead = async () =>
+    (
+      (await (await page.request.get("/api/inbox")).json()) as {
+        kind: string;
+        read: boolean;
+        run?: { organizationId: string };
+      }[]
+    ).find((i) => i.kind === "run_failure" && i.run?.organizationId === org.id)
+      ?.read;
+  await page.waitForTimeout(1_000);
+  expect(await failureRead()).toBe(false);
+  await expect(main.getByRole("button", { name: "읽지 않음" })).toHaveCount(0);
+
+  // 여러 항목을 체크하면 체크한 것만 한꺼번에 읽음이 된다.
+  const selection = panel.getByRole("group", { name: "선택한 항목" });
+  await failure.getByRole("checkbox").check();
+  await request.getByRole("checkbox").check();
+  await expect(selection).toContainText("2개 선택");
+  await selection.getByRole("button", { name: "모두 읽음" }).click();
+  await expect(failure).toHaveCount(0);
+  await expect(
+    request.getByRole("button", { name: "읽지 않음" })
+  ).toBeVisible();
+  expect(await failureRead()).toBe(true);
 
   // 다른 조직의 승인 요청도 기다린다. 한 요청에 쓰던 사유는 패널에서 다른 요청을 열면 따라가지 않는다.
   const otherName = "Inbox 상세 다른 조직";
