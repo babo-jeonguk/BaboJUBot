@@ -376,6 +376,59 @@ test("when marking an opened item read fails, the Inbox detail says so and retri
   await expect(alert).toHaveCount(0);
 });
 
+test("when the read-on-open reply is lost after the server marked the item read, the Inbox detail does not claim it failed", async ({
+  page,
+}) => {
+  const name = "Inbox 읽음 응답 유실 조직";
+  const org = (await (
+    await page.request.post("/api/organizations", { data: { name } })
+  ).json()) as { id: string };
+  await page.request.post(`/api/organizations/${org.id}/messages`, {
+    data: { body: "실패 연습" },
+  });
+  await openWithLiveEvents(page, `/orgs/${org.id}`);
+  await page
+    .getByRole("navigation", { name: "조직 화면" })
+    .getByRole("button", { name: /이 조직의 Inbox 열기/ })
+    .click();
+  const panel = page.getByRole("complementary", { name: "Inbox" });
+  const failure = panel
+    .getByRole("list", { name: "주의 필요" })
+    .getByRole("listitem")
+    .filter({ hasText: "실행 시도 실패" });
+  await expect(failure).toBeVisible(runs);
+
+  // 서버는 읽음을 저장했지만 응답이 오지 않는다.
+  let lost = false;
+  await page.route(
+    "**/api/organizations/*/inbox/run_failure/*",
+    async (route) => {
+      if (route.request().method() !== "PUT" || lost) return route.continue();
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+    }
+  );
+  await failure.getByRole("link").click();
+  await expect.poll(() => lost).toBe(true);
+  const main = page.getByRole("main");
+  const organize = main.getByRole("group", { name: "알림 정리" });
+
+  // 다시 불러온 Inbox가 읽음이면 실패 안내를 남기지 않는다.
+  await expect(failure).toHaveCount(0);
+  await expect(
+    organize.getByRole("button", { name: "읽지 않음" })
+  ).toBeVisible();
+  await expect(main.getByRole("alert")).toHaveCount(0);
+
+  // 그 뒤 읽지 않음으로 되돌려도 지난 실패 안내가 다시 나타나지 않는다.
+  await organize.getByRole("button", { name: "읽지 않음" }).click();
+  await expect(
+    panel.getByRole("list", { name: "주의 필요" }).getByRole("listitem")
+  ).toHaveCount(1);
+  await expect(main.getByRole("alert")).toHaveCount(0);
+});
+
 test("deciding from the Inbox detail after another surface decided first shows the recorded decision", async ({
   page,
 }) => {
