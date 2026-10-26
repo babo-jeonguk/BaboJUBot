@@ -8,6 +8,7 @@ import {
   conversationMessageSchema,
   eventListSchema,
   flowTemplateCopySchema,
+  inboxItemStateSchema,
   inboxSchema,
   instructionCopySchema,
   instructionRevisionSchema,
@@ -33,12 +34,14 @@ import {
   type DecideApprovalInput,
   type DecideResultInput,
   type EditInstructionCopyInput,
+  type InboxItemKind,
   type MessageDelivery,
   type Organization,
   type OrganizationCommand,
   type OrganizationDetail,
   type UpdateApprovalPolicyInput,
   type UpdateHeartbeatInput,
+  type UpdateInboxItemInput,
   type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -499,6 +502,64 @@ export function useInbox() {
   return useQuery({
     queryKey: queryKeys.inbox,
     queryFn: () => request(inboxSchema, "/api/inbox"),
+  });
+}
+
+/**
+ * 알림 정리 명령(읽음·보관). 결과를 미리 반영하지 않고, 끝나면 성공·실패와 상관없이 Inbox를 다시 불러와 서버 상태를 보인다.
+ * 원본의 결정은 바꾸지 않으므로 다른 조회는 다시 부르지 않는다.
+ */
+/**
+ * 체크한 항목을 한꺼번에 읽음으로. 항목마다 같은 정리 명령을 보낸다(부르는 쪽은 이미 읽은 항목을 넘기지 않는다).
+ */
+export type InboxItemRef = {
+  organizationId: string;
+  kind: InboxItemKind;
+  sourceId: string;
+};
+export function useMarkInboxItemsRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (items: InboxItemRef[]) =>
+      Promise.all(
+        items.map((item) =>
+          request(
+            inboxItemStateSchema,
+            orgPath(
+              item.organizationId,
+              `/inbox/${item.kind}/${encodeURIComponent(item.sourceId)}`
+            ),
+            json("PUT", { read: true })
+          )
+        )
+      ),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox }),
+  });
+}
+
+export function useUpdateInboxItem(item: {
+  organizationId: string;
+  kind: InboxItemKind;
+  sourceId: string;
+}) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateInboxItemInput) =>
+      request(
+        inboxItemStateSchema,
+        orgPath(
+          item.organizationId,
+          `/inbox/${item.kind}/${encodeURIComponent(item.sourceId)}`
+        ),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }
+      ),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox }),
   });
 }
 

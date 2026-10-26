@@ -1,5 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 
+/** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
+async function openInbox(page: Page) {
+  const button = page
+    .getByRole("navigation", { name: "연구 조직" })
+    .getByRole("button", { name: /^Inbox/ });
+  if ((await button.getAttribute("aria-expanded")) !== "true")
+    await button.click();
+}
+
 /** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
 async function openWithLiveEvents(page: Page, path: string) {
   const ready = new Promise<void>((resolve) =>
@@ -83,20 +92,21 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   await expect(requested).toHaveCount(1, runs);
   expect(await workerCount()).toBe(2);
 
-  // Inbox → 작업자 추가 요청 상세. 수정 요청은 없고, 반려에는 사유가 필요하다.
-  const rail = page.getByRole("navigation", { name: "연구 조직" });
+  // Inbox → 작업자 추가 요청의 Inbox 상세(요약). 수정 요청은 없고, 반려에는 사유가 필요하다.
   const openRequest = async () => {
-    await rail.getByRole("link", { name: /^Inbox/ }).click();
+    await openInbox(page);
     await page
       .getByRole("list", { name: "주의 필요" })
       .getByRole("link", { name: new RegExp(`작업자 추가 승인 요청.*${name}`) })
       .click();
-    await expect(page).toHaveURL(/\/approvals\/[0-9a-f-]{36}$/);
+    await expect(page).toHaveURL(
+      /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
+    );
   };
   await openRequest();
   const target = page.getByRole("region", { name: "추가할 작업자" });
   await expect(target).toContainText("연구원");
-  await expect(target).toContainText("AGENTS.md ← harness/roles/researcher");
+  await expect(target).toContainText("받을 사본");
   const decision = page.getByRole("region", { name: "결정" });
   await expect(decision.getByRole("button", { name: "수정 요청" })).toHaveCount(
     0
@@ -114,7 +124,11 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   await page.getByLabel("Lead에게 보낼 메시지").fill("작업자 추가: researcher");
   await page.getByRole("button", { name: "보내기" }).click();
   await expect(requested).toHaveCount(2, runs);
+  // 이번에는 원래 화면에서 사본 내용을 보고 승인한다.
   await openRequest();
+  await page.getByRole("link", { name: /원래 화면에서 자세히 보기/ }).click();
+  await expect(page).toHaveURL(/\/approvals\/[0-9a-f-]{36}$/);
+  await expect(target).toContainText("AGENTS.md ← harness/roles/researcher");
   await decision.getByRole("button", { name: "승인" }).click();
   await expect(decision).toContainText("승인됨");
   await expect(decision).toContainText("작업자가 팀에 더해졌습니다");

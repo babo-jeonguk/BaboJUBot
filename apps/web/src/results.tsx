@@ -93,7 +93,6 @@ export function ResultSubmissionPage() {
   const submission = useResultSubmission(orgId, submissionId);
   const org = useOrganization(orgId);
   const list = useResultSubmissions(orgId);
-  const [decidedHere, setDecidedHere] = useState(false);
   if (submission.isPending) return <Loading />;
   if (submission.isError)
     return submission.error instanceof ApiError &&
@@ -176,17 +175,12 @@ export function ResultSubmissionPage() {
         <Evidence orgId={orgId} submission={s} agents={agents} />
       </Block>
 
-      {s.status === "pending" ? (
-        <DecisionForm
-          key={s.id}
-          orgId={orgId}
-          submissionId={s.id}
-          stage={org.data?.stage}
-          onDecided={() => setDecidedHere(true)}
-        />
-      ) : (
-        <DecisionReceipt submission={s} focus={decidedHere} />
-      )}
+      <ResultDecision
+        key={s.id}
+        orgId={orgId}
+        submission={s}
+        stage={org.data?.stage}
+      />
     </Page>
   );
 }
@@ -233,9 +227,35 @@ function Evidence({
 }
 
 /**
+ * 결정 영역: 검토 대기면 결정 폼, 아니면 결정 기록. 결과 제출 상세와 Inbox 상세가 함께 쓰며,
+ * 의견 초안과 "이 화면에서 결정함"은 제출마다 따로다(`key`).
+ */
+export function ResultDecision({
+  orgId,
+  submission: s,
+  stage,
+}: {
+  orgId: string;
+  submission: ResultSubmission;
+  stage: LifecycleStage | undefined;
+}) {
+  const [decidedHere, setDecidedHere] = useState(false);
+  return s.status === "pending" ? (
+    <DecisionForm
+      orgId={orgId}
+      submissionId={s.id}
+      stage={stage}
+      onDecided={() => setDecidedHere(true)}
+    />
+  ) : (
+    <DecisionReceipt submission={s} focus={decidedHere} />
+  );
+}
+
+/**
  * 결과 검토 결정 폼. 두 결정이 한 제출 상태를 함께 쓰므로 하나를 보내는 동안 모두 잠근다.
  * 수정 요청은 의견이 있어야 보낼 수 있고 의견과 함께 Lead를 깨운다. 최종 완료는 되돌릴 수 없어 한 번 더 확인한다.
- * 실패하면 의견을 그대로 둔다. 의견 초안은 제출마다 따로다(`key`).
+ * 실패하면 의견을 그대로 둔다.
  */
 function DecisionForm({
   orgId,

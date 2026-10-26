@@ -9,3 +9,5 @@ export * from "./worker.ts";
 export * from "./control.ts";
 export * from "./heartbeat.ts";
 export * from "./memory.ts";
+
+export * from "./notification.ts";

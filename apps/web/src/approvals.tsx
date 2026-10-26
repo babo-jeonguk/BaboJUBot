@@ -4,24 +4,20 @@ import {
   type Approval,
   type ApprovalDecision,
   type ApprovalKind,
-  type InboxItem,
   type LifecycleStage,
 } from "@babojubot/contracts";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
   useApproval,
   useDecideApproval,
-  useInbox,
   useOrganization,
 } from "./api.ts";
 import {
-  abbr,
   approvalKindLabel,
   approvalStatusLabel,
   ApprovalStatusBadge,
-  avatarStyle,
   decisionLabel,
   formatTime,
   Loading,
@@ -35,102 +31,6 @@ export const approvalKindHint: Record<ApprovalKind, string> = {
   initial_research: "계획·팀·연구 환경 명세를 검토하고 결정하세요.",
   add_worker: "추가할 작업자의 Role과 받을 사본을 검토하고 결정하세요.",
 };
-
-/** Inbox: 모든 조직에서 사용자 결정을 기다리는 항목. 첫 판은 승인 요청과 결과 제출뿐이다(읽음·보관과 나머지 종류는 #61). */
-export function InboxPage() {
-  const inbox = useInbox();
-  return (
-    <Page width="standard">
-      <h1 className="mb-1 text-xl font-semibold">Inbox</h1>
-      <p className="mb-4 text-sm text-slate-500">
-        사용자의 결정이 필요한 항목입니다.
-      </p>
-      {inbox.isPending ? (
-        <Loading />
-      ) : inbox.isError ? (
-        <LoadError what="Inbox" onRetry={() => void inbox.refetch()} />
-      ) : !inbox.data.length ? (
-        <div className="card p-6 text-sm text-slate-500">
-          결정을 기다리는 항목이 없습니다.
-        </div>
-      ) : (
-        <ul className="card divide-y divide-slate-100" aria-label="주의 필요">
-          {inbox.data.map((item) => (
-            <li
-              key={
-                item.kind === "approval" ? item.approval.id : item.submission.id
-              }
-            >
-              <InboxRow {...inboxRow(item)} />
-            </li>
-          ))}
-        </ul>
-      )}
-    </Page>
-  );
-}
-
-/** Inbox 항목 → 한 줄의 링크·제목·부가 설명. */
-function inboxRow(item: InboxItem) {
-  const { organizationName } = item;
-  if (item.kind === "approval") {
-    const a = item.approval;
-    return {
-      to: `/orgs/${a.organizationId}/approvals/${a.id}`,
-      organizationId: a.organizationId,
-      organizationName,
-      title: approvalKindLabel[a.kind],
-      again: a.previousApprovalId !== null,
-      createdAt: a.createdAt,
-    };
-  }
-  const s = item.submission;
-  return {
-    to: `/orgs/${s.organizationId}/results/${s.id}`,
-    organizationId: s.organizationId,
-    organizationName,
-    title: "결과 제출",
-    again: s.previousSubmissionId !== null,
-    createdAt: s.createdAt,
-  };
-}
-
-function InboxRow({
-  to,
-  organizationId,
-  organizationName,
-  title,
-  again,
-  createdAt,
-}: ReturnType<typeof inboxRow>) {
-  return (
-    <Link
-      to={to}
-      className="flex items-center gap-3 px-4 py-3 text-sm transition hover:bg-slate-50"
-    >
-      <span
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"
-        style={avatarStyle(organizationId)}
-      >
-        {abbr(organizationName)}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="font-medium text-slate-800">{title}</div>
-        <div className="truncate text-xs text-slate-500">
-          {organizationName}
-          {again && " · 다시 제출됨"}
-        </div>
-      </div>
-      <span className="chip bg-amber-50 text-amber-800">주의 필요</span>
-      <time
-        dateTime={createdAt}
-        className="hidden shrink-0 text-xs text-slate-400 tabular-nums sm:block"
-      >
-        {formatTime(createdAt)}
-      </time>
-    </Link>
-  );
-}
 
 /**
  * 승인 요청 상세. 초기 연구 승인은 목표·완료 기준, 계획, 팀 구성, 연구 환경 명세, 연구 흐름 템플릿을,
@@ -186,16 +86,12 @@ export function ApprovalDetailPage() {
         <AddWorkerContent proposal={a.proposal} />
       )}
 
-      {a.status === "pending" ? (
-        <DecisionForm
-          orgId={orgId}
-          approvalId={a.id}
-          kind={a.kind}
-          stage={org.data?.stage}
-        />
-      ) : (
-        <DecisionReceipt orgId={orgId} approval={a} />
-      )}
+      <ApprovalDecision
+        key={a.id}
+        orgId={orgId}
+        approval={a}
+        stage={org.data?.stage}
+      />
     </Page>
   );
 }
@@ -359,15 +255,42 @@ const decisionStyle: Record<ApprovalDecision, string> = {
 const decisionHelp: Record<ApprovalKind, { effect: string; note: string }> = {
   initial_research: {
     effect:
-      "승인하면 조직이 연구 진행으로 넘어가고 위 팀 구성대로 작업자가 생깁니다. 반려와 수정 요청은 계획 수립으로 돌아가며 사유와 함께 Lead를 깨웁니다.",
+      "승인하면 조직이 연구 진행으로 넘어가고 요청한 팀 구성대로 작업자가 생깁니다. 반려와 수정 요청은 계획 수립으로 돌아가며 사유와 함께 Lead를 깨웁니다.",
     note: "결정 사유 (반려·수정 요청에는 필요)",
   },
   add_worker: {
     effect:
-      "승인하면 위 사본을 받은 작업자 한 명이 생기고, 반려하면 아무것도 만들지 않습니다. 어느 쪽이든 연구 단계는 그대로이며 결정과 사유로 Lead를 깨웁니다.",
+      "승인하면 요청한 사본을 받은 작업자 한 명이 생기고, 반려하면 아무것도 만들지 않습니다. 어느 쪽이든 연구 단계는 그대로이며 결정과 사유로 Lead를 깨웁니다.",
     note: "결정 사유 (반려에는 필요)",
   },
 };
+
+/**
+ * 결정 영역: 결정 대기면 결정 폼, 아니면 결정 기록. 승인 요청 상세와 Inbox 상세가 함께 쓴다.
+ * 이 화면에서 방금 결정했으면 사라진 버튼 대신 결정 기록으로 포커스를 옮긴다.
+ */
+export function ApprovalDecision({
+  orgId,
+  approval: a,
+  stage,
+}: {
+  orgId: string;
+  approval: Approval;
+  stage: LifecycleStage | undefined;
+}) {
+  const [decidedHere, setDecidedHere] = useState(false);
+  return a.status === "pending" ? (
+    <DecisionForm
+      orgId={orgId}
+      approvalId={a.id}
+      kind={a.kind}
+      stage={stage}
+      onDecided={() => setDecidedHere(true)}
+    />
+  ) : (
+    <DecisionReceipt orgId={orgId} approval={a} focus={decidedHere} />
+  );
+}
 
 /**
  * 결정 폼. 종류마다 내릴 수 있는 결정이 다르고(작업자 추가에는 수정 요청이 없다), 모든 결정이 한 요청 상태를
@@ -381,11 +304,13 @@ function DecisionForm({
   approvalId,
   kind,
   stage,
+  onDecided,
 }: {
   orgId: string;
   approvalId: string;
   kind: ApprovalKind;
   stage: LifecycleStage | undefined;
+  onDecided: () => void;
 }) {
   const [note, setNote] = useState("");
   const decide = useDecideApproval(orgId, approvalId);
@@ -438,7 +363,10 @@ function DecisionForm({
               closed || decide.isPending || (decision !== "approve" && !trimmed)
             }
             onClick={() =>
-              decide.mutate({ decision, note: trimmed || undefined })
+              decide.mutate(
+                { decision, note: trimmed || undefined },
+                { onSuccess: onDecided }
+              )
             }
           >
             {decisionLabel[decision]}
@@ -467,12 +395,23 @@ function DecisionForm({
 function DecisionReceipt({
   orgId,
   approval: a,
+  focus,
 }: {
   orgId: string;
   approval: Approval;
+  focus: boolean;
 }) {
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focus) ref.current?.focus();
+  }, [focus]);
   return (
-    <section aria-label="결정" className="card p-4 text-sm">
+    <section
+      ref={ref}
+      tabIndex={-1}
+      aria-label="결정"
+      className="card p-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-300"
+    >
       <h2 className="mb-2 text-sm font-semibold">
         {approvalStatusLabel[a.status]}
         {a.decidedAt && (

@@ -888,7 +888,7 @@ const messageRow = (m: ConversationMessage) => ({
   createdAt: new Date(m.createdAt),
 });
 
-const runSummaryColumns = {
+export const runSummaryColumns = {
   id: runs.id,
   organizationId: runs.organizationId,
   agentId: runs.agentId,
@@ -902,7 +902,7 @@ const runSummaryColumns = {
   wakeCount: sql<number>`(select count(*) from "run_wakes" where "run_wakes"."run_id" = "runs"."id")::int`,
 };
 
-const toRunSummary = (row: {
+export const toRunSummary = (row: {
   id: string;
   organizationId: string;
   agentId: string;

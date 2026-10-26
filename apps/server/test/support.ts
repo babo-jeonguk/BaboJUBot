@@ -1,4 +1,5 @@
 import {
+  type NotificationChannel,
   eventStreamPath,
   streamFrameSchema,
   type Event,
@@ -39,6 +40,8 @@ export type TestServer = {
   drain: () => Promise<void>;
   /** 서버 시계의 지금 시각으로 지난 heartbeat를 처리한다. */
   tickHeartbeats: () => Promise<void>;
+  /** 서버 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. */
+  deliverNotifications: () => Promise<void>;
   /** 서버(실행 중인 실행 시도 포함)만 멈추고 DB는 남긴다. */
   stopServer: () => Promise<void>;
   /** 구독 준비(`ready`)까지 기다린 Event stream 연결. `origin`을 주면 브라우저처럼 Origin header를 보낸다. */
@@ -54,6 +57,8 @@ export type TestServerOptions = {
   runtime?: RuntimeAdapter;
   /** 기록 시각에 쓰는 시계. */
   now?: () => Date;
+  /** 알림을 보낼 채널. 기본은 가짜 채널이다. */
+  notificationChannel?: NotificationChannel;
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */
@@ -107,6 +112,7 @@ export async function startTestServer(
       ),
     drain: () => server.drain(),
     tickHeartbeats: () => server.tickHeartbeats(),
+    deliverNotifications: () => server.deliverNotifications(),
     async stopServer() {
       serverStopped = true;
       for (const socket of sockets) socket.terminate();
