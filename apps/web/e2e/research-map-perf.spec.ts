@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 // 연구 지도 성능 측정(#51 통과 기준 조합). 기본 검사에서는 건너뛰고 `MAP_PERF=1 pnpm test:e2e research-map-perf`로 실행한다(노드 수는 MAP_PERF_SIZES=50,200).
-// MAP_PERF이면 Playwright 설정이 화면을 프로덕션 빌드(vite preview)로 띄운다. 헤드리스 Chromium 소프트웨어 렌더링 값이라 실제 GPU
+// Playwright 설정은 화면을 프로덕션 빌드(vite preview)로 띄운다. 헤드리스 Chromium 소프트웨어 렌더링 값이라 실제 GPU
 // 프레임이 아니며, 변경 전후·조합끼리 비교하는 용도다.
 test.skip(!process.env.MAP_PERF, "MAP_PERF=1일 때만 측정한다");
 // 실패 대비 trace 기록은 동작마다 화면을 남겨 측정값을 낮춘다.

@@ -319,7 +319,8 @@ test("parallel secondary links between the same two nodes are drawn apart and li
   ).links;
   expect(links).toHaveLength(4);
 
-  await page.goto(`/orgs/${org.id}/map?node=${from!.id}`);
+  // 첫 테스트처럼 셸이 뜬 뒤(구독 성립)부터 지도를 기다린다. 새 context의 첫 로딩을 한 번의 기대 시간에 넣지 않는다.
+  await openWithLiveEvents(page, `/orgs/${org.id}/map?node=${from!.id}`);
   const paths = links.map((l) =>
     page.locator(
       `.react-flow__edge[data-id="${l.id}"] path.react-flow__edge-path`

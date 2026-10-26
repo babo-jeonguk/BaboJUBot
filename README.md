@@ -44,7 +44,7 @@ Node.js 24.x, pnpm 10.33.0 및 Git을 사용합니다. GitHub 이슈 작업에�
 pnpm install
 pnpm dev          # 서버(http://127.0.0.1:3100)와 대시보드(http://127.0.0.1:5173)
 pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 임시 embedded Postgres를 띄웁니다.
-pnpm test:e2e     # Playwright smoke. 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
+pnpm test:e2e     # Playwright smoke(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
 pnpm lint
 pnpm check        # Markdown 로컬 링크 검사
