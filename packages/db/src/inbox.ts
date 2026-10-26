@@ -5,7 +5,7 @@ import type {
   InboxItemState,
   UpdateInboxItemInput,
 } from "@babojubot/contracts";
-import { inboxItemTime } from "@babojubot/contracts";
+import { canArchiveInboxItem, inboxItemTime } from "@babojubot/contracts";
 import { and, asc, eq, ne, or } from "drizzle-orm";
 import { toApprovalSummary } from "./approvals.ts";
 import type { Database } from "./client.ts";
@@ -164,6 +164,7 @@ async function sourceExists(
 /**
  * 사용자의 알림 정리 명령. 준 값(읽음·보관)을 그대로 대입하고, 바뀌었으면 정리 뒤 상태로 `inbox_item.updated` Event를 남긴다.
  * 원본의 결정·단계·깨우기는 건드리지 않는다. 다른 조직의 원본과 없는 원본은 `not_found`다.
+ * 보관할 수 없는 종류(결정을 기다리는 승인 요청·결과 제출)를 보관하라는 명령은 아무것도 바꾸지 않고 `archive_not_allowed`다.
  * 같은 항목의 동시 명령은 정리 상태 행 잠금으로 직렬화되어 서로의 값을 잃지 않는다.
  */
 export async function updateInboxItem(
@@ -175,9 +176,12 @@ export async function updateInboxItem(
 ): Promise<
   | { kind: "updated"; state: InboxItemState; event: Event | null }
   | { kind: "not_found" }
+  | { kind: "archive_not_allowed" }
 > {
   if (!isUuid(organizationId) || !isUuid(sourceId))
     return { kind: "not_found" };
+  if (input.archived && !canArchiveInboxItem(kind))
+    return { kind: "archive_not_allowed" };
   return db.transaction(async (tx) => {
     if (!(await sourceExists(tx, organizationId, kind, sourceId)))
       return { kind: "not_found" as const };

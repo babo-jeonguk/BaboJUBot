@@ -506,21 +506,12 @@ export function useInbox() {
 }
 
 /**
- * Inbox 항목에 대한 명령(결정·읽음·보관)의 mutation key. 응답을 기다리는 명령이 있는 항목이 Inbox의 `작업 중`이다.
- * 항목 ID는 종류 안에서만 유일하므로 종류를 함께 쓴다.
- */
-export const inboxItemMutationKey = (kind: InboxItemKind, sourceId: string) =>
-  ["inbox-item", kind, sourceId] as const;
-
-/**
  * 알림 정리 명령(읽음·보관). 결과를 미리 반영하지 않고, 끝나면 성공·실패와 상관없이 Inbox를 다시 불러와 서버 상태를 보인다.
  * 원본의 결정은 바꾸지 않으므로 다른 조회는 다시 부르지 않는다.
  */
 /**
- * 체크한 항목을 한꺼번에 읽음으로. 항목마다 같은 정리 명령을 보낸다(이미 읽은 항목은 보내지 않는다).
- * 응답을 기다리는 동안 그 항목들이 `작업 중`이며, mutation 변수가 항목 목록이다.
+ * 체크한 항목을 한꺼번에 읽음으로. 항목마다 같은 정리 명령을 보낸다(부르는 쪽은 이미 읽은 항목을 넘기지 않는다).
  */
-export const markInboxItemsReadMutationKey = ["inbox-items-read"] as const;
 export type InboxItemRef = {
   organizationId: string;
   kind: InboxItemKind;
@@ -529,7 +520,6 @@ export type InboxItemRef = {
 export function useMarkInboxItemsRead() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationKey: markInboxItemsReadMutationKey,
     mutationFn: (items: InboxItemRef[]) =>
       Promise.all(
         items.map((item) =>
@@ -555,7 +545,6 @@ export function useUpdateInboxItem(item: {
 }) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationKey: inboxItemMutationKey(item.kind, item.sourceId),
     mutationFn: (input: UpdateInboxItemInput) =>
       request(
         inboxItemStateSchema,
@@ -587,7 +576,6 @@ export function useDecideApproval(orgId: string, approvalId: string) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
   };
   return useMutation({
-    mutationKey: inboxItemMutationKey("approval", approvalId),
     mutationFn: (input: DecideApprovalInput) =>
       request(
         approvalSchema,
@@ -642,7 +630,6 @@ export function useDecideResult(orgId: string, submissionId: string) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
   };
   return useMutation({
-    mutationKey: inboxItemMutationKey("result_submission", submissionId),
     mutationFn: (input: DecideResultInput) =>
       request(
         resultSubmissionSchema,

@@ -125,6 +125,27 @@ worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 �
 |---|---|---|
 | ~~열면 읽음 처리할지~~ | 사용자 결정(2026-10-26) | 종류와 상관없이 Inbox 상세를 열면 읽음(D05). 원래 화면을 볼 때는 바꾸지 않음 |
 
+## 추가 조사: 필터와 보관 (2026-10-26)
+
+계기: 사용자가 필터 `주의 필요·안 읽음·작업 중`의 의도와 보관 대상을 물었다. 상세 메모: `notes/filters.md`·`notes/archive.md`.
+
+**출처 확인.** 세 구분은 2026-10-13 화면 지도 작성 때 [xAI Grok Bot 문서](https://docs.x.ai/grok-bot/settings-and-notifications)의 사이드바 상태(Needs attention / Unread activity / Working or typing — 봇 **대화** 단위, 열면 읽음)를 옮긴 것이다. [대시보드 조사](dashboard-references.md)는 이를 **사이드바** 표시로 채택했으나, 기능 목록·#49 이야기 76·#61로 옮기며 Inbox **항목 필터**가 되었다. `작업 중`에 다른 디자인 의도는 없었다.
+
+| ID | 관찰 | 출처 | 수준 |
+|---|---|---|---|
+| <a id="E19"></a>E19 | Novu 상태 필터: 기본 "Inbox"(보관·나중에 보기 제외, 읽음+읽지 않음) · Unread only · Archived · Snoozed | [stores/inbox.ts](https://github.com/novuhq/novu/blob/d7ff70c66565b05364276b0d39ecd3c9aad6822b/packages/js/src/ui/core/stores/inbox.ts#L47-L52), [defaultLocalization.ts](https://github.com/novuhq/novu/blob/d7ff70c66565b05364276b0d39ecd3c9aad6822b/packages/js/src/ui/config/defaultLocalization.ts#L9-L16) | 소스 확인 |
+| <a id="E20"></a>E20 | LangChain Agent Inbox는 thread 상태(All·Interrupted·Idle·Busy·Error)로 거르고 기본이 Interrupted(사람 응답 대기). Busy는 thread 실행 상태다 | [inbox-buttons.tsx](https://github.com/langchain-ai/agent-inbox/blob/f1616f3e7998e7e4fd574545b9558554d88d9c49/src/components/agent-inbox/components/inbox-buttons.tsx#L63-L93) | 소스 확인 |
+| <a id="E21"></a>E21 | Paperclip 탭 Mine·Recent·Unread·Blocked·All. Unread 탭은 승인을 읽음이 아니라 미결 상태로 거른다 | [Inbox.tsx](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/ui/src/pages/Inbox.tsx#L2466-L2474), [inbox.ts `getApprovalsForTab`](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/ui/src/lib/inbox.ts#L773-L805) | 소스 확인 |
+| <a id="E22"></a>E22 | HumanLayer 승인 행은 대기 중일 때만 만들고 `dismissible: false`라 결정해야만 빠진다 | [approval-rows.ts](https://github.com/humanlayer/humanlayer/blob/cbaf99b79446a914a0136c8eb93617b63dd424d6/apps/riptide-ui/src/lib/notifications/rows/approval-rows.ts#L5-L27), [WiredNotificationList.tsx](https://github.com/humanlayer/humanlayer/blob/cbaf99b79446a914a0136c8eb93617b63dd424d6/apps/riptide-ui/src/components/notifications/WiredNotificationList.tsx#L44-L53) | 소스 확인 |
+| <a id="E23"></a>E23 | Paperclip은 대기 중 승인 행에도 상태 검사 없이 보관 버튼·스와이프 보관을 둔다(탭으로만 갈림). 보관하면 배지에서도 빠진다 | [Inbox.tsx](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/ui/src/pages/Inbox.tsx#L3122-L3154) | 소스 확인 |
+
+그 밖에 결정 대기열 제품(Airflow·Plane Intake·OpenClaw)은 보관 없이 결정해야 빠지고, 보관은 결정과 묶이지 않은 알림함(GitHub·Plane 알림·Novu)에 있다. 결정 대기를 미루는 기능은 보관이 아니라 기한 있는 나중에 보기다(Plane Intake·Linear·PagerDuty) — `notes/archive.md`, 메인 원문 재확인은 E22·E23만.
+
+| ID | 결정 | 내용 | 근거 |
+|---|---|---|---|
+| <a id="D09"></a>D09 | 사용자 결정 | 필터는 주의 필요(기본, 레일 배지와 같은 판정)·전체(보관 제외)·읽지 않음·보관됨. `작업 중` 필터·표시는 없앤다(에이전트 실행 상태는 레일·에이전트 화면에 있음). 나중에 보기는 두지 않는다 | E19, E20, Grok Bot 출처 확인 |
+| <a id="D10"></a>D10 | 사용자 결정 | 보관은 끝난 일인 실패한 실행 시도에만 있다. 결정을 기다리는 승인 요청·결과 제출에는 보관 버튼이 없고 서버가 422 `archive_not_allowed`로 거부하며 DB 제약이 막는다. 결정하면 저절로 빠진다 | E22, E23(반례) |
+
 ## 한계와 미확인
 
 - 상용 서비스(Linear, GitHub, GitLab, Teams, Slack, SAP, Knock, Novu cloud 등)의 실제 화면은 로그인 벽으로 열지 않았고 문서 주장만 있다. SAP Fiori 새 포털은 403이라 보관본만 worker가 읽었다(결정 근거에서 제외).

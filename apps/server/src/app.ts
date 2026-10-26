@@ -219,6 +219,10 @@ export async function startServer({
       input.data
     );
     if (result.kind === "not_found") return notFound(res);
+    if (result.kind === "archive_not_allowed") {
+      res.status(422).json({ error: { code: "archive_not_allowed" } });
+      return;
+    }
     if (result.event) hub.publish(result.event);
     res.json(result.state);
   });

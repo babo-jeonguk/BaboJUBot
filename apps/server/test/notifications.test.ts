@@ -545,24 +545,39 @@ describe("Inbox", () => {
     ).toBe(422);
   });
 
-  it("archiving and reading a pending approval request leaves the decision, the stage and the Lead alone", async () => {
+  it("reading a pending approval request leaves the decision, the stage and the Lead alone, and archiving it is refused", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });
     const org = await awaitingApproval(agents, "보관 조직");
     const runsBefore = (await runsOf(org.id)).length;
 
+    // 결정을 기다리는 항목은 보관할 수 없다. 함께 보낸 읽음도 반영하지 않는다.
     expect(
       await tidy(org.id, "approval", org.approvalId, {
         read: true,
         archived: true,
       })
-    ).toMatchObject({ status: 200, body: { read: true, archived: true } });
+    ).toMatchObject({
+      status: 422,
+      body: { error: { code: "archive_not_allowed" } },
+    });
+    expect(await inboxOf(org.id)).toEqual([
+      expect.objectContaining({
+        kind: "approval",
+        read: false,
+        archived: false,
+      }),
+    ]);
+
+    expect(
+      await tidy(org.id, "approval", org.approvalId, { read: true })
+    ).toMatchObject({ status: 200, body: { read: true, archived: false } });
     await t.drain();
     expect(await inboxOf(org.id)).toEqual([
       expect.objectContaining({
         kind: "approval",
         read: true,
-        archived: true,
+        archived: false,
         approval: expect.objectContaining({
           id: org.approvalId,
           status: "pending",
@@ -572,10 +587,7 @@ describe("Inbox", () => {
     expect((await organization(org.id)).stage).toBe("awaiting_approval");
     expect(await runsOf(org.id)).toHaveLength(runsBefore);
 
-    // 보관을 풀면 다시 주의 필요로 돌아오고, 결정하면 Inbox에서 빠진다.
-    expect(
-      await tidy(org.id, "approval", org.approvalId, { archived: false })
-    ).toMatchObject({ body: { read: true, archived: false } });
+    // 결정하면 Inbox에서 빠진다.
     expect(
       (
         await t.request(

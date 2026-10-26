@@ -1,9 +1,10 @@
 // Inbox 패널 하나(#50 결정): 1280px 이상에서는 본문 오른쪽에 340px로 붙고, 그보다 좁으면 오른쪽 drawer로 열려
-// 항목을 고르면 닫힌다. 범위는 전체 조직 / 현재 조직, 필터는 주의 필요·안 읽음·작업 중·전체·보관됨이다.
+// 항목을 고르면 닫힌다. 범위는 전체 조직 / 현재 조직, 필터는 주의 필요·전체·읽지 않음·보관됨이다.
 // 항목을 열면(Inbox 상세) 읽음이 된다. 패널에서는 체크한 항목을 한꺼번에 읽음으로 하고, 읽은 항목을 읽지 않음으로 되돌리거나 보관한다.
 // 도메인 결정(승인·반려·수정 요청·최종 완료)은 항목 상세(Inbox 상세 또는 원래 상세)에서 한다.
 // 행에는 결정 버튼을 두지 않는다(docs/research/inbox-detail-references.md D07).
 import {
+  canArchiveInboxItem,
   inboxDetailPath,
   inboxFilters,
   inboxItemTime,
@@ -14,7 +15,6 @@ import {
   type InboxItem,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useMutationState } from "@tanstack/react-query";
 import {
   createContext,
   useContext,
@@ -27,7 +27,6 @@ import {
 } from "react";
 import { Link, Navigate, useMatch } from "react-router";
 import {
-  markInboxItemsReadMutationKey,
   useInbox,
   useMarkInboxItemsRead,
   useUpdateInboxItem,
@@ -118,24 +117,6 @@ export function useAttention(organizationId?: string) {
   return { count, isError: inbox.isError };
 }
 
-/**
- * 응답을 기다리는 결정·정리 명령이 있는 항목(`작업 중`). 항목 하나의 명령은 mutation key(`inboxItemMutationKey`)로,
- * 체크한 항목 읽음은 mutation 변수(항목 목록)로 안다.
- */
-function useWorking() {
-  const single = useMutationState({
-    filters: { mutationKey: ["inbox-item"], status: "pending" },
-    select: (m) => m.options.mutationKey?.slice(1).join(":"),
-  });
-  const many = useMutationState({
-    filters: { mutationKey: markInboxItemsReadMutationKey, status: "pending" },
-    select: (m) =>
-      ((m.state.variables ?? []) as InboxItemRef[]).map(
-        (r) => `${r.kind}:${r.sourceId}`
-      ),
-  });
-  return new Set([...single, ...many.flat()]);
-}
 const itemKey = (item: InboxItem) => `${item.kind}:${inboxSourceId(item)}`;
 const refOf = (item: InboxItem): InboxItemRef => ({
   organizationId: inboxOrganizationId(item),
@@ -143,24 +124,16 @@ const refOf = (item: InboxItem): InboxItemRef => ({
   sourceId: inboxSourceId(item),
 });
 
-const filterLabel: Record<InboxFilter | "working", string> = {
+const filterLabel: Record<InboxFilter, string> = {
   attention: "주의 필요",
-  unread: "읽지 않음",
-  working: "작업 중",
   all: "전체",
+  unread: "읽지 않음",
   archived: "보관됨",
 };
-const filterOrder = [
-  "attention",
-  "unread",
-  "working",
-  "all",
-  "archived",
-] as const;
-const emptyText: Record<InboxFilter | "working", string> = {
+const filterOrder = ["attention", "all", "unread", "archived"] as const;
+const emptyText: Record<InboxFilter, string> = {
   attention: "주의가 필요한 항목이 없습니다.",
   unread: "읽지 않은 항목이 없습니다.",
-  working: "응답을 기다리는 명령이 없습니다.",
   all: "항목이 없습니다.",
   archived: "보관한 항목이 없습니다.",
 };
@@ -211,20 +184,17 @@ function InboxContent({
 }) {
   const panel = useInboxPanel();
   const inbox = useInbox();
-  const working = useWorking();
   // Inbox 상세도 그 항목의 조직을 현재 조직으로 본다.
   const orgPageOrg = useMatch("/orgs/:orgId/*")?.params.orgId;
   const inboxDetailOrg = useMatch("/inbox/:orgId/*")?.params.orgId;
   const currentOrg = orgPageOrg ?? inboxDetailOrg;
-  const [filter, setFilter] = useState<InboxFilter | "working">("attention");
+  const [filter, setFilter] = useState<InboxFilter>("attention");
   const scoped = panel.scope === "organization" && currentOrg;
   const inScope = (inbox.data ?? []).filter(
     (item) => !scoped || inboxOrganizationId(item) === currentOrg
   );
-  const matches = (f: InboxFilter | "working") => (item: InboxItem) =>
-    f === "working" ? working.has(itemKey(item)) : inboxFilters[f](item);
   const shown = inScope
-    .filter(matches(filter))
+    .filter(inboxFilters[filter])
     .sort((a, b) => inboxItemTime(b).localeCompare(inboxItemTime(a)));
   // 체크한 항목. 지금 보이는 항목 중에서만 센다(필터·범위를 바꾸면 보이지 않는 항목은 빠진다).
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
@@ -274,7 +244,9 @@ function InboxContent({
         </div>
         <div className="flex flex-wrap gap-1" role="group" aria-label="필터">
           {filterOrder.map((f) => {
-            const count = inbox.data ? inScope.filter(matches(f)).length : null;
+            const count = inbox.data
+              ? inScope.filter(inboxFilters[f]).length
+              : null;
             return (
               <button
                 key={f}
@@ -339,7 +311,6 @@ function InboxContent({
               <li key={itemKey(item)}>
                 <InboxRow
                   item={item}
-                  working={working.has(itemKey(item))}
                   checked={checked.has(itemKey(item))}
                   onCheck={() => toggle(item)}
                   onPick={onPick}
@@ -373,13 +344,11 @@ function describe(item: InboxItem) {
 
 function InboxRow({
   item,
-  working,
   checked,
   onCheck,
   onPick,
 }: {
   item: InboxItem;
-  working: boolean;
   checked: boolean;
   onCheck: () => void;
   onPick: () => void;
@@ -436,9 +405,6 @@ function InboxRow({
               {item.archived && (
                 <span className="chip bg-slate-100 text-slate-600">보관됨</span>
               )}
-              {working && (
-                <span className="chip bg-sky-50 text-sky-700">작업 중</span>
-              )}
               <time
                 dateTime={at}
                 className="text-[11px] text-slate-400 tabular-nums"
@@ -457,7 +423,8 @@ function InboxRow({
 }
 
 /**
- * 알림 정리 버튼. 읽은 항목은 읽지 않음으로 되돌릴 수 있고(읽음은 항목을 열거나 체크해 한꺼번에), 보관·보관 해제한다.
+ * 알림 정리 버튼. 읽은 항목은 읽지 않음으로 되돌릴 수 있고(읽음은 항목을 열거나 체크해 한꺼번에),
+ * 실패한 실행 시도는 보관·보관 해제한다(결정을 기다리는 항목은 보관하지 않고 결정하면 빠진다).
  * 패널 행과 Inbox 상세가 같은 명령으로 쓴다. 업무 결정과 따로다.
  */
 export function InboxItemOrganize({
@@ -484,13 +451,15 @@ export function InboxItemOrganize({
             읽지 않음
           </button>
         )}
-        <button
-          className="btn-ghost px-2 py-1 text-xs"
-          disabled={update.isPending}
-          onClick={() => update.mutate({ archived: !item.archived })}
-        >
-          {item.archived ? "보관 해제" : "보관"}
-        </button>
+        {canArchiveInboxItem(item.kind) && (
+          <button
+            className="btn-ghost px-2 py-1 text-xs"
+            disabled={update.isPending}
+            onClick={() => update.mutate({ archived: !item.archived })}
+          >
+            {item.archived ? "보관 해제" : "보관"}
+          </button>
+        )}
       </div>
       {update.isError && (
         <p role="alert" className="mt-1 text-xs text-rose-700">

@@ -1285,6 +1285,11 @@ export const inboxStates = pgTable(
       "inbox_states_kind_check",
       sql`${t.kind} in (${inList(inboxItemKinds)})`
     ),
+    // 보관은 실패한 실행 시도에만 있다(contracts `canArchiveInboxItem`).
+    check(
+      "inbox_states_archive_check",
+      sql`${t.archived} = false or ${t.kind} = 'run_failure'`
+    ),
     check(
       "inbox_states_source_check",
       sql`num_nonnulls(${t.approvalId}, ${t.resultSubmissionId}, ${t.runId}) = 1

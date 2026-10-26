@@ -13,6 +13,13 @@ export const inboxItemKindSchema = z.enum(inboxItemKinds);
 export type InboxItemKind = z.infer<typeof inboxItemKindSchema>;
 
 /**
+ * 보관할 수 있는 항목. 끝난 일인 실패한 실행 시도만 보관한다. 결정을 기다리는 승인 요청·결과 제출은 보관해 숨길 수 없고,
+ * 결정하면 Inbox에서 빠진다.
+ */
+export const canArchiveInboxItem = (kind: InboxItemKind) =>
+  kind === "run_failure";
+
+/**
  * 사용자의 알림 정리 상태. 항목의 원본(승인 요청·결과 제출·실행 시도)과 따로 저장하며, 읽음·보관은 결정·단계·깨우기를 바꾸지 않는다.
  * 아직 정리하지 않은 항목은 읽지 않음·보관 안 함이다.
  */
@@ -84,15 +91,14 @@ export const inboxItemTime = (item: InboxItem) =>
       : (item.run.finishedAt ?? item.run.startedAt);
 
 /**
- * 주의 필요: 보관하지 않은 항목 중 결정을 기다리는 승인 요청·결과 제출(읽어도 결정은 남는다)과 아직 읽지 않은 실패.
+ * 주의 필요: 결정을 기다리는 승인 요청·결과 제출(보관할 수 없고 읽어도 결정은 남는다)과 보관하지 않은 읽지 않은 실패.
  * 레일·조직 카드의 주의 수와 Inbox의 주의 필요 필터가 이 하나의 판정을 쓴다.
  */
 export const needsAttention = (item: InboxItem) =>
   !item.archived && (item.kind !== "run_failure" || !item.read);
 
 /**
- * 서버가 판정하는 Inbox 필터. 필터끼리 겹치므로 개수를 더해 전체로 쓰지 않는다.
- * `작업 중`은 화면이 보낸 결정·정리 명령이 응답을 기다리는 항목이라 화면이 따로 센다.
+ * Inbox 필터: 주의 필요(기본)·전체(보관 제외)·읽지 않음·보관됨. 필터끼리 겹치므로 개수를 더해 전체로 쓰지 않는다.
  */
 export const inboxFilters = {
   attention: needsAttention,

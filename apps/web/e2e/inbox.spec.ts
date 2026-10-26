@@ -77,6 +77,13 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
     request.getByRole("button", { name: "읽지 않음" })
   ).toBeVisible();
   await expect(request).toBeVisible();
+  // 결정을 기다리는 항목은 보관할 수 없다. 보관은 끝난 일인 실패에만 있다.
+  await expect(request.getByRole("button", { name: "보관" })).toHaveCount(0);
+  await expect(failure.getByRole("button", { name: "보관" })).toBeVisible();
+  // 필터는 주의 필요·전체·읽지 않음·보관됨이다.
+  await expect(
+    panel.getByRole("group", { name: "필터" }).getByRole("button")
+  ).toHaveText([/^주의 필요/, /^전체/, /^읽지 않음/, /^보관됨/]);
   await expect(failure).toContainText("읽지 않음");
 
   // 다른 탭은 패널을 열고 전체 필터를 본다.
