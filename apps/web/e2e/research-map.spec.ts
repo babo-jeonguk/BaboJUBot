@@ -15,6 +15,37 @@ async function openWithLiveEvents(page: Page, path: string) {
   await ready;
 }
 
+/** 주소의 선택 노드(`?node=`)와 상세 패널의 노드가 서로 다른 가장 긴 구간(ms)을 매 프레임 잰다. 돌려받은 함수가 재기를 멈추고 값을 준다. */
+async function watchSelectionLag(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      selectionLag: { max: number; on: boolean };
+    };
+    const lag = (w.selectionLag = { max: 0, on: true });
+    let since: number | undefined;
+    const tick = (t: number) => {
+      const wanted = new URL(location.href).searchParams.get("node");
+      const shown = document
+        .querySelector('[data-testid="node-detail"] [data-testid="node-id"]')
+        ?.getAttribute("title");
+      if (wanted && shown && wanted !== shown) {
+        since ??= t;
+        lag.max = Math.max(lag.max, t - since);
+      } else since = undefined;
+      if (lag.on) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  return () =>
+    page.evaluate(() => {
+      const w = window as unknown as {
+        selectionLag: { max: number; on: boolean };
+      };
+      w.selectionLag.on = false;
+      return w.selectionLag.max;
+    });
+}
+
 /** 승인을 받아 가짜 작업자들이 작업마다 연구 노드를 만든 조직. */
 async function researchingOrganization(page: Page, name: string) {
   const created = await page.request.post("/api/organizations", {
@@ -87,8 +118,20 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
     panel.getByRole("radio", { name: "가설·아이디어" })
   ).toHaveAttribute("aria-checked", "true");
   await panel.getByLabel("새 노드 제목").fill("잡음 구간이 오류의 원인이다");
+  // 추가한 노드가 선택되면 주소와 같은 때에 패널도 그 노드로 바뀐다. 편집 Event 재조회가 몰리는 느린 기기에서도
+  // 이전 노드를 보이며 입력을 받지 않는다(CPU 4배 감속에서 라우터 transition 사용 시 0.8~1.5초, 끈 뒤 0초).
+  // 패널이 새 노드를 보인 뒤에 편집한다. 그 전에 편집하면 부모 노드가 바뀐다.
+  const lag = await watchSelectionLag(page);
+  const cpu = await context.newCDPSession(page);
+  await cpu.send("Emulation.setCPUThrottlingRate", { rate: 4 });
   await panel.getByRole("button", { name: "노드 추가" }).click();
   await expect(cards).toHaveCount(3);
+  await expect(panel.getByLabel("제목", { exact: true })).toHaveValue(
+    "잡음 구간이 오류의 원인이다",
+    runs
+  );
+  await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  expect(await lag()).toBeLessThan(300);
   await expect(other.getByTestId("map-node")).toHaveCount(3);
   await expect(panel.getByTestId("node-status")).toHaveText("제안됨");
   await expect(panel).toContainText("연구 문제 정리 1");

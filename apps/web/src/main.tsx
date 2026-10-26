@@ -75,10 +75,12 @@ const router = createBrowserRouter(
   )
 );
 
+// 화면 이동·선택(`?node=`)은 주소와 같은 때에 화면에 반영한다. 기본값인 startTransition 갱신은 TanStack Query의
+// useSyncExternalStore 갱신이 이어지면 계속 다시 시작돼 최대 약 5초 늦게 반영되고, 그동안 이전 화면이 입력을 받는다.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <RouterProvider router={router} useTransitions={false} />
     </QueryClientProvider>
   </StrictMode>
 );
