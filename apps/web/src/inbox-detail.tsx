@@ -118,6 +118,7 @@ function Header({
 /**
  * 알림 정리. Inbox에 아직 있는 항목에만 보인다(결정한 승인 요청·결과 제출은 Inbox에서 빠진다).
  * 열 때 읽지 않은 항목이면 한 번 읽음으로 바꾼다. 이 화면에서 읽지 않음으로 되돌리면 다시 바꾸지 않는다.
+ * 읽음 명령이 실패하면 저절로 다시 보내지 않고 알린 뒤, 사용자가 다시 시도하게 한다.
  */
 function Organize({ orgId, kind, sourceId }: Props & { kind: InboxItemKind }) {
   const item = useInbox().data?.find(
@@ -132,7 +133,24 @@ function Organize({ orgId, kind, sourceId }: Props & { kind: InboxItemKind }) {
     markedOnOpen.current = true;
     mutate({ read: true });
   }, [unread, mutate]);
-  return item ? <InboxItemOrganize item={item} label="알림 정리" /> : null;
+  if (!item) return null;
+  return (
+    <>
+      <InboxItemOrganize item={item} label="알림 정리" />
+      {update.isError && (
+        <p role="alert" className="w-full text-xs text-rose-700">
+          읽음으로 표시하지 못했습니다.{" "}
+          <button
+            className="font-medium underline"
+            disabled={update.isPending}
+            onClick={() => mutate({ read: true })}
+          >
+            다시 시도
+          </button>
+        </p>
+      )}
+    </>
+  );
 }
 
 function Block({ label, children }: { label: string; children: ReactNode }) {

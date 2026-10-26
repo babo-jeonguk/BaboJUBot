@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type NotificationChannel,
   approvalSummaryListSchema,
@@ -137,6 +138,15 @@ describe("notification outbox and fake channel", () => {
     const [submission] = resultSubmissionSummaryListSchema.parse(
       await get(`/api/organizations/${org.id}/results`)
     );
+    // 결정을 기다리는 결과 제출도 보관할 수 없다.
+    expect(
+      await tidy(org.id, "result_submission", submission!.id, {
+        archived: true,
+      })
+    ).toMatchObject({
+      status: 422,
+      body: { error: { code: "archive_not_allowed" } },
+    });
     const failed = (await runsOf(org.id)).filter((r) => r.status === "failed");
     const leadMessages = conversationMessageListSchema
       .parse(await get(`/api/organizations/${org.id}/messages`))
@@ -550,6 +560,22 @@ describe("Inbox", () => {
     t = await startTestServer({ runtime: agents.runtime });
     const org = await awaitingApproval(agents, "보관 조직");
     const runsBefore = (await runsOf(org.id)).length;
+
+    // 다른 조직의 원본과 없는 원본은 보관 여부를 따지기 전에 찾을 수 없다.
+    const other = organizationDetailSchema.parse(
+      (
+        await t.request("POST", "/api/organizations", {
+          name: "다른 보관 조직",
+        })
+      ).body
+    );
+    expect(
+      (await tidy(other.id, "approval", org.approvalId, { archived: true }))
+        .status
+    ).toBe(404);
+    expect(
+      (await tidy(org.id, "approval", randomUUID(), { archived: true })).status
+    ).toBe(404);
 
     // 결정을 기다리는 항목은 보관할 수 없다. 함께 보낸 읽음도 반영하지 않는다.
     expect(

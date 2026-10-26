@@ -335,6 +335,47 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await expect(page.getByText("찾을 수 없는 Inbox 항목")).toBeVisible();
 });
 
+test("when marking an opened item read fails, the Inbox detail says so and retries on request", async ({
+  page,
+}) => {
+  const name = "Inbox 읽음 실패 조직";
+  const org = (await (
+    await page.request.post("/api/organizations", { data: { name } })
+  ).json()) as { id: string };
+  await page.request.post(`/api/organizations/${org.id}/messages`, {
+    data: { body: "실패 연습" },
+  });
+  await openWithLiveEvents(page, `/orgs/${org.id}`);
+  await page
+    .getByRole("navigation", { name: "조직 화면" })
+    .getByRole("button", { name: /이 조직의 Inbox 열기/ })
+    .click();
+  const panel = page.getByRole("complementary", { name: "Inbox" });
+  const failure = panel
+    .getByRole("list", { name: "주의 필요" })
+    .getByRole("listitem")
+    .filter({ hasText: "실행 시도 실패" });
+  await expect(failure).toBeVisible(runs);
+
+  // 열 때 보내는 읽음 명령이 실패하면 오류를 알리고 읽지 않음으로 남는다.
+  await page.route("**/api/organizations/*/inbox/run_failure/*", (route) =>
+    route.request().method() === "PUT"
+      ? route.fulfill({ status: 500, body: "{}" })
+      : route.continue()
+  );
+  await failure.getByRole("link").click();
+  const main = page.getByRole("main");
+  const alert = main.getByRole("alert");
+  await expect(alert).toContainText("읽음으로 표시하지 못했습니다");
+  await expect(failure).toContainText("읽지 않음");
+
+  // 다시 시도하면 읽음이 되어 주의 필요에서 빠진다.
+  await page.unrouteAll({ behavior: "wait" });
+  await alert.getByRole("button", { name: "다시 시도" }).click();
+  await expect(failure).toHaveCount(0);
+  await expect(alert).toHaveCount(0);
+});
+
 test("deciding from the Inbox detail after another surface decided first shows the recorded decision", async ({
   page,
 }) => {

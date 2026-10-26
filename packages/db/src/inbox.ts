@@ -180,11 +180,12 @@ export async function updateInboxItem(
 > {
   if (!isUuid(organizationId) || !isUuid(sourceId))
     return { kind: "not_found" };
-  if (input.archived && !canArchiveInboxItem(kind))
-    return { kind: "archive_not_allowed" };
   return db.transaction(async (tx) => {
+    // 조직·원본을 먼저 확인한다. 다른 조직의 원본과 없는 원본은 보관 여부와 상관없이 `not_found`다.
     if (!(await sourceExists(tx, organizationId, kind, sourceId)))
       return { kind: "not_found" as const };
+    if (input.archived && !canArchiveInboxItem(kind))
+      return { kind: "archive_not_allowed" as const };
     await tx
       .insert(inboxStates)
       .values({ organizationId, kind, [sourceField[kind]]: sourceId })
