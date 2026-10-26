@@ -15,6 +15,19 @@ async function openWithLiveEvents(page: Page, path: string) {
   await ready;
 }
 
+/**
+ * 연구 지도 화면을 연다. 지도 화면은 셸이 뜬 뒤 따로 불러오는 코드·조회를 거쳐 그려져, 새 context의 첫 표시는
+ * 기기 부하에 따라 구독 성립 뒤에도 수 초가 걸린다(부하 평균 약 10에서 3.6~6.5초, CPU 2배 감속 4~11초).
+ * 그려질 때까지를 화면 이동으로 보고 테스트 시간 안에서 기다리며, 그 뒤 검사는 기본 기대 시간을 쓴다.
+ */
+async function openMap(page: Page, path: string) {
+  await openWithLiveEvents(page, path);
+  const heading = page.getByRole("heading", { name: "연구 지도", level: 1 });
+  // 조회 실패 안내가 뜨면 기다리지 않고 바로 실패한다.
+  await heading.or(page.getByRole("alert")).first().waitFor();
+  await expect(heading).toBeVisible();
+}
+
 /** 주소의 선택 노드(`?node=`)와 상세 패널의 노드가 서로 다른 가장 긴 구간(ms)을 매 프레임 잰다. 돌려받은 함수가 재기를 멈추고 값을 준다. */
 async function watchSelectionLag(page: Page) {
   await page.evaluate(() => {
@@ -80,7 +93,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   context,
 }) => {
   const org = await researchingOrganization(page, "지도 E2E 조직");
-  await openWithLiveEvents(page, `/orgs/${org.id}/map`);
+  await openMap(page, `/orgs/${org.id}/map`);
   await expect(page.getByRole("main")).toContainText(
     "초기 연구 승인 뒤 조직의 연구 흐름 템플릿이 정해지면"
   );
@@ -109,7 +122,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
 
   // 다른 탭에서도 같은 지도가 새로고침 없이 갱신된다.
   const other = await context.newPage();
-  await openWithLiveEvents(other, `/orgs/${org.id}/map`);
+  await openMap(other, `/orgs/${org.id}/map`);
   await expect(other.getByTestId("map-node")).toHaveCount(2);
 
   // 하위 노드 추가: 종류 기본값은 부모 다음 단계다.
@@ -319,8 +332,8 @@ test("parallel secondary links between the same two nodes are drawn apart and li
   ).links;
   expect(links).toHaveLength(4);
 
-  // 첫 테스트처럼 셸이 뜬 뒤(구독 성립)부터 지도를 기다린다. 새 context의 첫 로딩을 한 번의 기대 시간에 넣지 않는다.
-  await openWithLiveEvents(page, `/orgs/${org.id}/map?node=${from!.id}`);
+  // 새 context의 첫 지도 표시를 한 번의 기대 시간에 넣지 않는다. 지도가 그려진 뒤 연결을 검사한다.
+  await openMap(page, `/orgs/${org.id}/map?node=${from!.id}`);
   const paths = links.map((l) =>
     page.locator(
       `.react-flow__edge[data-id="${l.id}"] path.react-flow__edge-path`
