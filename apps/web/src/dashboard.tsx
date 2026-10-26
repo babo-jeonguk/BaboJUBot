@@ -1,12 +1,12 @@
 import {
   activeRunCount,
+  runEndReasonSchema,
   runSuccessRate,
+  taskStatuses,
   type DashboardDay,
   type OrganizationDashboard,
   type OrganizationDetail,
-  type RunEndReason,
-  type RunStatus,
-  type TaskStatus,
+  type RunningCount,
 } from "@babojubot/contracts";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
@@ -96,8 +96,10 @@ export function DashboardMetrics({ orgId }: { orgId: string }) {
       )}
       <WithDashboard orgId={orgId}>
         {({ tasks, runs, cancelling, artifacts, days }) => {
-          const success = runSuccessRate(days.map((d) => d.runsFinished));
-          const ended = sum(days.map((d) => d.runsFinished).reduce(addCounts));
+          const finished = days.map((d) => d.runsFinished);
+          const success = runSuccessRate(finished);
+          const excluded = (reason: "cancelled" | "server_restart") =>
+            finished.reduce((n, f) => n + f[reason], 0);
           return (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <Metric label="작업" value={sum(tasks)} testId="metric-tasks">
@@ -106,8 +108,9 @@ export function DashboardMetrics({ orgId }: { orgId: string }) {
                   .join(" · ")}
               </Metric>
               <Metric label="실행 시도" value={sum(runs)} testId="metric-runs">
-                실행 중 {activeRunCount({ running: runs.running, cancelling })}
-                {cancelling > 0 && ` · 취소 정리 중 ${cancelling}`}
+                <RunningCountText
+                  count={{ running: runs.running, cancelling }}
+                />
                 <br />
                 {endReasons
                   .map((s) => `${runStatusLabel[s]} ${runs[s]}`)
@@ -129,8 +132,9 @@ export function DashboardMetrics({ orgId }: { orgId: string }) {
                   ? "완료·실패로 끝난 실행 시도가 없습니다"
                   : `완료 ${success.completed} / (완료 ${success.completed} + 실패 ${success.failed})`}
                 <br />
-                취소·서버 재시작({ended - success.completed - success.failed}
-                개)은 세지 않습니다. 연구 최종 완료와 다릅니다.
+                취소 {excluded("cancelled")} · 서버 재시작{" "}
+                {excluded("server_restart")}은 세지 않습니다. 연구 최종 완료와
+                다릅니다.
               </Metric>
             </div>
           );
@@ -140,24 +144,20 @@ export function DashboardMetrics({ orgId }: { orgId: string }) {
   );
 }
 
-const addCounts = <K extends string>(
-  a: Record<K, number>,
-  b: Record<K, number>
-) =>
-  Object.fromEntries(
-    Object.keys(a).map((k) => [k, a[k as K] + b[k as K]])
-  ) as Record<K, number>;
+/** `실행 중 N · 취소 정리 중 M`. 조직 제어와 같이 실행 중은 정리 중을 뺀 수이고, 정리 중은 있을 때만 보인다. */
+export function RunningCountText({ count }: { count: RunningCount }) {
+  return (
+    <>
+      실행 중 {activeRunCount(count)}
+      {count.cancelling > 0 && ` · 취소 정리 중 ${count.cancelling}`}
+    </>
+  );
+}
 
 // ---------- 14일 차트 ----------
 
-const taskStatuses: TaskStatus[] = ["open", "in_progress", "completed"];
-const endReasons: RunEndReason[] = [
-  "completed",
-  "failed",
-  "cancelled",
-  "server_restart",
-];
-const runStatusesInChart: RunStatus[] = [...endReasons, "running"];
+const endReasons = runEndReasonSchema.options;
+const runStatusesInChart = [...endReasons, "running"] as const;
 
 /** 범주 색. 고정 순서로 배정하고 순환하지 않는다(dataviz 기본 팔레트, 인접 쌍 색각 검사 통과). */
 const slot = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"] as const;
@@ -211,10 +211,13 @@ function DayChart({
   caption: string;
   days: DashboardDay[];
   series: Series[];
-  display?: (day: DashboardDay) => { height: number; label: string };
+  display?: (day: DashboardDay) => { height: number | null; label: string };
 }) {
   const [active, setActive] = useState<number>();
-  const max = Math.max(1, ...days.map((d) => sum(valuesOf(series, d))));
+  const max = Math.max(
+    1,
+    ...days.map((d) => series.reduce((n, s) => n + s.value(d), 0))
+  );
   const describe = (d: DashboardDay) =>
     display
       ? `${shortDate(d.date)}: ${display(d).label}`
@@ -264,27 +267,34 @@ function DayChart({
                 <div
                   className={`mx-auto flex w-full max-w-6 flex-col-reverse gap-[2px] overflow-hidden rounded-t-[4px] ${active === i ? "opacity-80" : ""}`}
                 >
-                  {shown
-                    ? shown.height > 0 && (
+                  {shown ? (
+                    shown.height === null ? (
+                      // 값이 없는 날(분모 0)은 0%와 구별해 막대 대신 —를 둔다.
+                      <span className="text-center text-[10px] leading-none text-slate-300">
+                        —
+                      </span>
+                    ) : (
+                      <span
+                        style={{
+                          height: Math.max(2, shown.height * chartHeight),
+                          background: slot[0],
+                        }}
+                      />
+                    )
+                  ) : (
+                    series.map((s) => {
+                      const v = s.value(d);
+                      return v ? (
                         <span
+                          key={s.key}
                           style={{
-                            height: Math.max(2, shown.height * chartHeight),
-                            background: slot[0],
+                            height: Math.max(2, (v / max) * chartHeight),
+                            background: s.color,
                           }}
                         />
-                      )
-                    : series.map((s) => {
-                        const v = s.value(d);
-                        return v ? (
-                          <span
-                            key={s.key}
-                            style={{
-                              height: Math.max(2, (v / max) * chartHeight),
-                              background: s.color,
-                            }}
-                          />
-                        ) : null;
-                      })}
+                      ) : null;
+                    })
+                  )}
                 </div>
                 {active === i && (
                   <div
@@ -363,9 +373,6 @@ function DayChart({
   );
 }
 
-const valuesOf = (series: Series[], day: DashboardDay) =>
-  Object.fromEntries(series.map((s) => [s.key, s.value(day)]));
-
 /** 실행 시도·성공률·작업·산출물의 14일. 날짜는 브라우저 시간대로 자른다. */
 export function DashboardCharts({ orgId }: { orgId: string }) {
   return (
@@ -392,11 +399,13 @@ export function DashboardCharts({ orgId }: { orgId: string }) {
                   const { completed, failed, rate } = runSuccessRate([
                     d.runsFinished,
                   ]);
+                  const { cancelled, server_restart } = d.runsFinished;
+                  const others = `취소 ${cancelled} · 서버 재시작 ${server_restart} 제외`;
                   return rate === null
-                    ? { height: 0, label: "— (완료·실패 없음)" }
+                    ? { height: null, label: `— (완료·실패 없음, ${others})` }
                     : {
                         height: rate,
-                        label: `${percent(rate)} (완료 ${completed} / ${completed + failed})`,
+                        label: `${percent(rate)} (완료 ${completed} / ${completed + failed}, ${others})`,
                       };
                 }}
               />
@@ -441,8 +450,9 @@ export function RunningAgents({ org }: { org: OrganizationDetail }) {
                 className="px-4 pb-2 text-xs text-slate-500"
                 data-testid="running-agent-counts"
               >
-                실행 중 {activeRunCount({ running: runs.running, cancelling })}
-                {cancelling > 0 && ` · 취소 정리 중 ${cancelling}`}
+                <RunningCountText
+                  count={{ running: runs.running, cancelling }}
+                />
               </p>
               <ul className="divide-y divide-slate-100">
                 {runningRuns.map((run) => (

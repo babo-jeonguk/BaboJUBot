@@ -3,8 +3,10 @@ import {
   organizationDashboardSchema,
   organizationDetailSchema,
   overviewSchema,
+  runStatuses,
   runSummaryListSchema,
   taskDetailSchema,
+  taskStatuses,
 } from "@babojubot/contracts";
 import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
@@ -53,14 +55,6 @@ const countBy = <K extends string>(keys: readonly K[], values: K[]) =>
   Object.fromEntries(
     keys.map((k) => [k, values.filter((v) => v === k).length])
   ) as Record<K, number>;
-const runStatuses = [
-  "running",
-  "completed",
-  "failed",
-  "cancelled",
-  "server_restart",
-] as const;
-
 /** 날짜별 값만 뽑되 0인 날은 뺀다. */
 const nonZero = (days: { date: string }[], pick: (d: any) => number) =>
   Object.fromEntries(days.flatMap((d) => (pick(d) ? [[d.date, pick(d)]] : [])));
@@ -116,7 +110,7 @@ describe("organization dashboard", () => {
         asOf: clock.toISOString(),
         timeZone: "UTC",
         tasks: countBy(
-          ["open", "in_progress", "completed"],
+          taskStatuses,
           tasks.map((x) => x.status)
         ),
         runs: countBy(

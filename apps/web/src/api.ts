@@ -242,11 +242,19 @@ export function useOrganizationDashboard(orgId: string) {
   const timeZone = browserTimeZone();
   return useQuery({
     queryKey: queryKeys.dashboard(orgId, timeZone),
-    queryFn: () =>
-      request(
-        organizationDashboardSchema,
-        orgPath(orgId, `/dashboard?timeZone=${encodeURIComponent(timeZone)}`)
-      ),
+    queryFn: async () => {
+      const get = (tz: string) =>
+        request(
+          organizationDashboardSchema,
+          orgPath(orgId, `/dashboard?timeZone=${encodeURIComponent(tz)}`)
+        );
+      // 서버의 시간대 자료에 없는 이름이면 UTC로 자른다. 응답의 시간대를 화면에 밝힌다.
+      return get(timeZone).catch((error: unknown) => {
+        if (error instanceof ApiError && error.code === "invalid_time_zone")
+          return get("UTC");
+        throw error;
+      });
+    },
     refetchInterval: untilNextMidnight,
   });
 }

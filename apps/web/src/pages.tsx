@@ -29,6 +29,7 @@ import {
   DashboardMetrics,
   RecentActivity,
   RunningAgents,
+  RunningCountText,
 } from "./dashboard.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { ResultReviewScreen } from "./results.tsx";
@@ -166,9 +167,7 @@ export function Home() {
                           className="mt-2 text-xs text-brand-700 tabular-nums"
                           data-testid="organization-running"
                         >
-                          실행 중 {activeRunCount(runs)}
-                          {runs.cancelling > 0 &&
-                            ` · 취소 정리 중 ${runs.cancelling}`}
+                          <RunningCountText count={runs} />
                         </div>
                       )}
                     </Link>

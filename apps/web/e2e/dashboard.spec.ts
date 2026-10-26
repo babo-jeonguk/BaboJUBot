@@ -139,17 +139,47 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
     data: {},
   });
 
-  // 성공률은 완료 / (완료 + 실패)이며 취소는 세지 않는다. 실패 하나, 완료 하나가 차례로 반영된다.
+  // 성공률은 완료 / (완료 + 실패)이며 취소는 세지 않는다. 취소만 있는 날은 0%가 아니라 —다.
+  const rateChart = page.getByRole("figure", { name: "실행 성공률" });
+  const rateToday = rateChart.locator("[data-date]").last();
+  await expect(page.getByTestId("metric-success")).toContainText(
+    "취소 1 · 서버 재시작 0은 세지 않습니다"
+  );
+  await expect(rateToday).toHaveAttribute(
+    "aria-label",
+    /— \(완료·실패 없음, 취소 1 · 서버 재시작 0 제외\)/
+  );
+  await expect(rateToday).toContainText("—");
+  // 실패 하나, 완료 하나가 차례로 반영된다. 0%인 날은 막대 자리를 남겨 —인 날과 구별한다.
   await org.say("실패 연습");
   await expect(page.getByTestId("metric-success")).toContainText("0%", runs);
   await expect(page.getByTestId("metric-success")).toContainText(
     "완료 0 / (완료 0 + 실패 1)"
   );
+  await expect(rateToday).toHaveAttribute("aria-label", /0% \(완료 0 \/ 1,/);
+  await expect(rateToday).not.toContainText("—");
   await org.say("안녕하세요");
   await expect(page.getByTestId("metric-success")).toContainText("50%", runs);
-  const rateChart = page.getByRole("figure", { name: "실행 성공률" });
   await rateChart.getByText("숫자로 보기").click();
-  await expect(rateChart.getByRole("table")).toContainText("50% (완료 1 / 2)");
+  await expect(rateChart.getByRole("table")).toContainText(
+    "50% (완료 1 / 2, 취소 1 · 서버 재시작 0 제외)"
+  );
+
+  // 서버가 모르는 브라우저 시간대면 UTC로 잘라 보이고 그 사실을 밝힌다.
+  const unknownZone = await context.newPage();
+  await unknownZone.route(/\/dashboard\?timeZone=(?!UTC$)/, (route) =>
+    route.fulfill({
+      status: 422,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "invalid_time_zone" } }),
+    })
+  );
+  await unknownZone.goto(`/orgs/${org.id}/dashboard`);
+  await expect(
+    unknownZone.getByRole("region", { name: "14일 차트" })
+  ).toContainText("UTC 기준");
+  await expect(unknownZone.getByTestId("metric-success")).toContainText("50%");
+  await unknownZone.close();
 
   // 좁은 화면에서도 대시보드가 가로로 넘치지 않는다.
   await page.setViewportSize({ width: 390, height: 844 });
