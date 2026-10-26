@@ -1271,7 +1271,11 @@ function NodeDetail({
           >
             {kindLabel(index.nodeKinds, node.kind)}
           </span>
-          <span className="text-xs text-slate-400" title={node.id}>
+          <span
+            className="text-xs text-slate-400"
+            title={node.id}
+            data-testid="node-id"
+          >
             {shortId(node.id)}
           </span>
           <span
