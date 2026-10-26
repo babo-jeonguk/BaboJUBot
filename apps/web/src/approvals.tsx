@@ -41,7 +41,6 @@ export function ApprovalDetailPage() {
   const { orgId = "", approvalId = "" } = useParams();
   const approval = useApproval(orgId, approvalId);
   const org = useOrganization(orgId);
-  const [decidedHere, setDecidedHere] = useState(false);
   if (approval.isPending) return <Loading />;
   if (approval.isError)
     return approval.error instanceof ApiError &&
@@ -87,21 +86,12 @@ export function ApprovalDetailPage() {
         <AddWorkerContent proposal={a.proposal} />
       )}
 
-      {a.status === "pending" ? (
-        <ApprovalDecisionForm
-          orgId={orgId}
-          approvalId={a.id}
-          kind={a.kind}
-          stage={org.data?.stage}
-          onDecided={() => setDecidedHere(true)}
-        />
-      ) : (
-        <ApprovalDecisionReceipt
-          orgId={orgId}
-          approval={a}
-          focus={decidedHere}
-        />
-      )}
+      <ApprovalDecision
+        key={a.id}
+        orgId={orgId}
+        approval={a}
+        stage={org.data?.stage}
+      />
     </Page>
   );
 }
@@ -276,14 +266,40 @@ const decisionHelp: Record<ApprovalKind, { effect: string; note: string }> = {
 };
 
 /**
+ * 결정 영역: 결정 대기면 결정 폼, 아니면 결정 기록. 승인 요청 상세와 Inbox 상세가 함께 쓴다.
+ * 이 화면에서 방금 결정했으면 사라진 버튼 대신 결정 기록으로 포커스를 옮긴다.
+ */
+export function ApprovalDecision({
+  orgId,
+  approval: a,
+  stage,
+}: {
+  orgId: string;
+  approval: Approval;
+  stage: LifecycleStage | undefined;
+}) {
+  const [decidedHere, setDecidedHere] = useState(false);
+  return a.status === "pending" ? (
+    <DecisionForm
+      orgId={orgId}
+      approvalId={a.id}
+      kind={a.kind}
+      stage={stage}
+      onDecided={() => setDecidedHere(true)}
+    />
+  ) : (
+    <DecisionReceipt orgId={orgId} approval={a} focus={decidedHere} />
+  );
+}
+
+/**
  * 결정 폼. 종류마다 내릴 수 있는 결정이 다르고(작업자 추가에는 수정 요청이 없다), 모든 결정이 한 요청 상태를
  * 함께 쓰므로 하나를 보내는 동안 모두 잠근다. 승인 밖의 결정은 사유가 있어야 보낼 수 있고, 사유는 Lead를 깨우는
  * 사유가 된다. 실패하면 사유를 그대로 둔다.
  * 일시정지 중의 초기 연구 승인 결정은 조직을 재개하므로 미리 알린다. 중단된 조직에서는 결정할 수 없다.
  * 작업자 추가 결정은 단계와 상관없이 받으며 일시정지를 풀지 않는다.
- * 승인 요청 상세와 Inbox 상세가 같은 폼을 쓴다.
  */
-export function ApprovalDecisionForm({
+function DecisionForm({
   orgId,
   approvalId,
   kind,
@@ -376,8 +392,7 @@ export function ApprovalDecisionForm({
   );
 }
 
-/** 결정 기록. 이 화면에서 방금 결정했으면 사라진 버튼 대신 기록으로 포커스를 옮긴다. */
-export function ApprovalDecisionReceipt({
+function DecisionReceipt({
   orgId,
   approval: a,
   focus,

@@ -164,7 +164,7 @@
 | 전송 수명(Event 신호·시작·주기 확인·한 차례씩), outbox·전송 기록·정리 API | [server/notifications.ts](../../apps/server/src/notifications.ts) `NotificationRelay`, app.ts `/api/notifications`·`/api/channels/fake/*`·`/inbox/:kind/:sourceId` | 알림 API(재시도·재시작·대시보드와 같은 효과) |
 | 가짜 채널 adapter(기록 저장 주입), 채널 답의 승인 결정 HTTP 전달(승인 요청 알림만·결정 입력 계약 그대로) | [runtime/fake-channel.ts](../../packages/runtime/src/fake-channel.ts) `createFakeChannel`·`replyThroughFakeChannel`; 기록 조회는 db/notifications.ts | 알림 API(대시보드와 같은 효과·거부) |
 | Inbox 패널(붙음/drawer·범위·필터 개수·정리 버튼·작업 중), 레일·상단 바·조직 카드 진입점과 주의 수, 전역 설정 자리, 가짜 Lead `실패 연습` | [web/inbox.tsx](../../apps/web/src/inbox.tsx), shell.tsx, [global-settings.tsx](../../apps/web/src/global-settings.tsx), api.ts `useUpdateInboxItem`·`inboxItemMutationKey`; runtime/scripted.ts `demoLeadScript` | Inbox E2E(다른 탭·390px drawer 포함) |
-| Inbox 상세 `/inbox/:orgId/:kind/:sourceId`(요약·그 자리 결정·원래 화면 링크·정리 버튼, 결정 뒤 제자리 결정 기록) — 결정 폼·결정 기록은 원래 상세와 공유 | [web/inbox-detail.tsx](../../apps/web/src/inbox-detail.tsx) `InboxDetailPage`·`inboxDetailPath`; approvals.tsx `ApprovalDecisionForm`·`ApprovalDecisionReceipt`, results.tsx `ResultDecisionForm`·`ResultDecisionReceipt`; 근거 [inbox-detail 조사](../research/inbox-detail-references.md) | Inbox E2E, 초기 승인·작업자 추가·결과 검토 E2E |
+| Inbox 상세 `/inbox/:orgId/:kind/:sourceId`(요약·그 자리 결정·원래 화면 링크·정리 버튼, 결정 뒤 제자리 결정 기록, 실패가 아닌 실행 시도는 없음) — 결정 영역은 원래 상세와 공유 | [web/inbox-detail.tsx](../../apps/web/src/inbox-detail.tsx) `InboxDetailPage`; inbox.tsx `inboxDetailPath`·`InboxItemOrganize`(패널 행과 공유); approvals.tsx `ApprovalDecision`, results.tsx `ResultDecision`(원래 상세와 공유); 근거 [inbox-detail 조사](../research/inbox-detail-references.md) | Inbox E2E, 초기 승인·작업자 추가·결과 검토 E2E |
 
 ## 개발 환경
 

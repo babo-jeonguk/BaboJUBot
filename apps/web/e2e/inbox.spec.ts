@@ -218,15 +218,48 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await main.getByRole("button", { name: "읽음으로" }).click();
   await expect(failure).toHaveCount(0);
 
-  // 승인 요청을 요약에서 반려한다. 사유가 있어야 보낼 수 있다.
+  // 다른 조직의 승인 요청도 기다린다. 한 요청에 쓰던 사유는 패널에서 다른 요청을 열면 따라가지 않는다.
+  const otherName = "Inbox 상세 다른 조직";
+  const other = (await (
+    await page.request.post("/api/organizations", {
+      data: { name: otherName },
+    })
+  ).json()) as { id: string };
+  await page.request.post(`/api/organizations/${other.id}/messages`, {
+    data: { body: "목표: 다른 조직 확인\n완료 기준: 사유가 섞이지 않는다" },
+  });
+  const otherRequest = attention
+    .getByRole("listitem")
+    .filter({ hasText: otherName })
+    .filter({ hasText: "초기 연구 승인 요청" });
+  await expect(otherRequest).toBeVisible(runs);
   await request.getByRole("link").click();
   await expect(page).toHaveURL(
     new RegExp(`/inbox/${org.id}/approval/[0-9a-f-]{36}$`)
   );
   const decidedUrl = page.url();
   const decision = main.getByRole("region", { name: "결정" });
+  const note = decision.getByLabel(/결정 사유/);
+  await note.fill("목표를 더 좁혀 주세요");
+  await otherRequest.getByRole("link").click();
+  await expect(page).toHaveURL(
+    new RegExp(`/inbox/${other.id}/approval/[0-9a-f-]{36}$`)
+  );
+  await expect(
+    main.getByRole("region", { name: "연구 목표와 완료 기준" })
+  ).toContainText("다른 조직 확인");
+  await expect(note).toHaveValue("");
   await expect(decision.getByRole("button", { name: "반려" })).toBeDisabled();
-  await decision.getByLabel(/결정 사유/).fill("목표를 더 좁혀 주세요");
+
+  // 처음 요청으로 돌아가 요약에서 반려한다. 사유가 있어야 보낼 수 있다.
+  await request.getByRole("link").click();
+  await expect(page).toHaveURL(decidedUrl);
+  await expect(
+    main.getByRole("region", { name: "연구 목표와 완료 기준" })
+  ).toContainText("Inbox 상세 확인");
+  await expect(note).toHaveValue("");
+  await expect(decision.getByRole("button", { name: "반려" })).toBeDisabled();
+  await note.fill("목표를 더 좁혀 주세요");
   await decision.getByRole("button", { name: "반려" }).click();
   await expect(decision).toContainText("반려됨");
   await expect(decision).toContainText("목표를 더 좁혀 주세요");
@@ -243,11 +276,59 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
     "반려됨"
   );
 
-  // 없는 항목·모르는 종류는 찾을 수 없다고 알린다.
+  // 없는 항목, 다른 조직 주소의 항목, 실패하지 않은 실행 시도, 모르는 종류는 찾을 수 없다고 알린다.
   await page.goto(`/inbox/${org.id}/approval/${crypto.randomUUID()}`);
   await expect(page.getByText("찾을 수 없는 승인 요청")).toBeVisible();
+  const approvalId = new URL(decidedUrl).pathname.split("/").pop();
+  await page.goto(`/inbox/${other.id}/approval/${approvalId}`);
+  await expect(page.getByText("찾을 수 없는 승인 요청")).toBeVisible();
+  const orgRuns = (await (
+    await page.request.get(`/api/organizations/${org.id}/runs`)
+  ).json()) as { id: string; status: string }[];
+  const completed = orgRuns.find((r) => r.status === "completed")!;
+  await page.goto(`/inbox/${org.id}/run_failure/${completed.id}`);
+  await expect(page.getByText("찾을 수 없는 실패한 실행 시도")).toBeVisible();
   await page.goto(`/inbox/${org.id}/unknown/${crypto.randomUUID()}`);
   await expect(page.getByText("찾을 수 없는 Inbox 항목")).toBeVisible();
+});
+
+test("deciding from the Inbox detail after another surface decided first shows the recorded decision", async ({
+  page,
+}) => {
+  const created = await page.request.post("/api/organizations", {
+    data: { name: "Inbox 상세 경합 조직" },
+  });
+  const org = (await created.json()) as { id: string };
+  await page.request.post(`/api/organizations/${org.id}/messages`, {
+    data: { body: "목표: 경합 확인\n완료 기준: 먼저 온 결정이 남는다" },
+  });
+  const pending = async () =>
+    (
+      (await (await page.request.get("/api/inbox")).json()) as {
+        kind: string;
+        approval?: { id: string; organizationId: string };
+      }[]
+    ).find((i) => i.approval?.organizationId === org.id)?.approval?.id;
+  await expect.poll(pending, runs).toBeTruthy();
+  const approvalId = (await pending())!;
+
+  // 이 탭은 Event stream을 받지 않아, 다른 곳의 결정을 모른 채 결정 폼을 보고 있다.
+  await page.routeWebSocket(/\/api\/events/, () => {});
+  await page.goto(`/inbox/${org.id}/approval/${approvalId}`);
+  const decision = page.getByRole("region", { name: "결정" });
+  await expect(decision.getByRole("button", { name: "승인" })).toBeEnabled();
+  const approved = await page.request.post(
+    `/api/organizations/${org.id}/approvals/${approvalId}/decision`,
+    { data: { decision: "approve" } }
+  );
+  expect(approved.ok()).toBe(true);
+
+  // 이 화면의 반려는 409로 거절되고, 최신 상태를 다시 불러와 먼저 온 승인을 결정 기록으로 보인다.
+  await decision.getByLabel(/결정 사유/).fill("늦게 보낸 반려");
+  await decision.getByRole("button", { name: "반려" }).click();
+  await expect(decision).toContainText("승인됨");
+  await expect(decision).not.toContainText("늦게 보낸 반려");
+  await expect(decision.getByRole("button")).toHaveCount(0);
 });
 
 test("global settings shows the places for the runtime, environment templates, secrets and messaging apps", async ({

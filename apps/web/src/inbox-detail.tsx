@@ -9,7 +9,7 @@ import {
   type InboxItemKind,
   type ResultSubmission,
 } from "@babojubot/contracts";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
@@ -18,10 +18,10 @@ import {
   useOrganization,
   useResultSubmission,
   useRun,
-  useUpdateInboxItem,
 } from "./api.ts";
-import { ApprovalDecisionForm, ApprovalDecisionReceipt } from "./approvals.tsx";
-import { ResultDecisionForm, ResultDecisionReceipt } from "./results.tsx";
+import { ApprovalDecision } from "./approvals.tsx";
+import { InboxItemOrganize, useInboxPanel } from "./inbox.tsx";
+import { ResultDecision } from "./results.tsx";
 import {
   approvalKindLabel,
   ApprovalStatusBadge,
@@ -36,13 +36,6 @@ import {
   RunStatusBadge,
 } from "./ui.tsx";
 
-/** Inbox 상세 주소. 항목 ID는 종류 안에서만 유일하고 원본은 조직 범위로 찾으므로 조직·종류를 함께 쓴다. */
-export const inboxDetailPath = (
-  organizationId: string,
-  kind: InboxItemKind,
-  sourceId: string
-) => `/inbox/${organizationId}/${kind}/${sourceId}`;
-
 const sourcePath: Record<InboxItemKind, string> = {
   approval: "approvals",
   result_submission: "results",
@@ -53,7 +46,8 @@ export function InboxDetailPage() {
   const { orgId = "", kind: rawKind, sourceId = "" } = useParams();
   const kind = inboxItemKindSchema.safeParse(rawKind);
   if (!kind.success) return <NotFound what="Inbox 항목" />;
-  const props = { orgId, sourceId };
+  // 항목마다 화면 상태(결정 초안·방금 결정함)가 따로다.
+  const props = { key: `${orgId}:${sourceId}`, orgId, sourceId };
   return kind.data === "approval" ? (
     <ApprovalSummary {...props} />
   ) : kind.data === "result_submission" ? (
@@ -85,10 +79,18 @@ function Header({
   originalLabel: string;
 }) {
   const org = useOrganization(orgId);
+  const panel = useInboxPanel();
   return (
     <div className="mb-6">
       <div className="mb-1 text-xs text-slate-500">
-        Inbox · {inboxKindLabel[kind]} ·{" "}
+        <button
+          onClick={() => panel.show(orgId)}
+          className="hover:underline"
+          aria-label="Inbox 열기"
+        >
+          ← Inbox
+        </button>{" "}
+        · {inboxKindLabel[kind]} ·{" "}
         <Link to={`/orgs/${orgId}`} className="hover:underline">
           {org.data?.name ?? "조직"}
         </Link>
@@ -105,45 +107,24 @@ function Header({
         >
           {originalLabel} →
         </Link>
-        <Organize orgId={orgId} kind={kind} sourceId={sourceId} />
+        <Organize kind={kind} sourceId={sourceId} />
       </div>
     </div>
   );
 }
 
-/** 읽음·보관. 패널 행과 같은 명령이며 업무 결정과 따로다. */
-function Organize({ orgId, kind, sourceId }: Props & { kind: InboxItemKind }) {
-  const inbox = useInbox();
-  const item = inbox.data?.find(
+/** 알림 정리. Inbox에 아직 있는 항목에만 보인다. */
+function Organize({
+  kind,
+  sourceId,
+}: {
+  kind: InboxItemKind;
+  sourceId: string;
+}) {
+  const item = useInbox().data?.find(
     (i) => i.kind === kind && inboxSourceId(i) === sourceId
   );
-  const update = useUpdateInboxItem({ organizationId: orgId, kind, sourceId });
-  if (!item) return null;
-  return (
-    <>
-      <div className="flex gap-1" role="group" aria-label="알림 정리">
-        <button
-          className="btn-ghost px-2 py-1 text-xs"
-          disabled={update.isPending}
-          onClick={() => update.mutate({ read: !item.read })}
-        >
-          {item.read ? "안 읽음으로" : "읽음으로"}
-        </button>
-        <button
-          className="btn-ghost px-2 py-1 text-xs"
-          disabled={update.isPending}
-          onClick={() => update.mutate({ archived: !item.archived })}
-        >
-          {item.archived ? "보관 해제" : "보관"}
-        </button>
-      </div>
-      {update.isError && (
-        <p role="alert" className="w-full text-xs text-rose-700">
-          정리하지 못했습니다. 상태는 그대로입니다. 다시 시도하세요.
-        </p>
-      )}
-    </>
-  );
+  return item ? <InboxItemOrganize item={item} label="알림 정리" /> : null;
 }
 
 function Block({ label, children }: { label: string; children: ReactNode }) {
@@ -175,7 +156,6 @@ function Excerpt({ label, text }: { label: string; text: string }) {
 function ApprovalSummary({ orgId, sourceId }: Props) {
   const approval = useApproval(orgId, sourceId);
   const org = useOrganization(orgId);
-  const [decidedHere, setDecidedHere] = useState(false);
   if (approval.isPending) return <Loading />;
   if (approval.isError)
     return approval.error instanceof ApiError &&
@@ -198,21 +178,7 @@ function ApprovalSummary({ orgId, sourceId }: Props) {
       />
       <ProposalSummary approval={a} />
       <div className="mt-6">
-        {a.status === "pending" ? (
-          <ApprovalDecisionForm
-            orgId={orgId}
-            approvalId={a.id}
-            kind={a.kind}
-            stage={org.data?.stage}
-            onDecided={() => setDecidedHere(true)}
-          />
-        ) : (
-          <ApprovalDecisionReceipt
-            orgId={orgId}
-            approval={a}
-            focus={decidedHere}
-          />
-        )}
+        <ApprovalDecision orgId={orgId} approval={a} stage={org.data?.stage} />
       </div>
     </Page>
   );
@@ -257,7 +223,6 @@ function ProposalSummary({ approval: a }: { approval: Approval }) {
 function ResultSummary({ orgId, sourceId }: Props) {
   const submission = useResultSubmission(orgId, sourceId);
   const org = useOrganization(orgId);
-  const [decidedHere, setDecidedHere] = useState(false);
   if (submission.isPending) return <Loading />;
   if (submission.isError)
     return submission.error instanceof ApiError &&
@@ -280,17 +245,7 @@ function ResultSummary({ orgId, sourceId }: Props) {
       />
       <SubmissionSummary submission={s} />
       <div className="mt-6">
-        {s.status === "pending" ? (
-          <ResultDecisionForm
-            key={s.id}
-            orgId={orgId}
-            submissionId={s.id}
-            stage={org.data?.stage}
-            onDecided={() => setDecidedHere(true)}
-          />
-        ) : (
-          <ResultDecisionReceipt submission={s} focus={decidedHere} />
-        )}
+        <ResultDecision orgId={orgId} submission={s} stage={org.data?.stage} />
       </div>
     </Page>
   );
@@ -337,6 +292,8 @@ function RunFailureSummary({ orgId, sourceId }: Props) {
       <LoadError what="실행 시도" onRetry={() => void run.refetch()} />
     );
   const r = run.data;
+  // Inbox에는 실패한 실행 시도만 오른다. 다른 실행 시도를 이 주소로 열면 없는 항목이다.
+  if (r.status !== "failed") return <NotFound what="실패한 실행 시도" />;
   return (
     <Page width="standard">
       <Header

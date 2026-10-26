@@ -10,6 +10,7 @@ import {
   needsAttention,
   type InboxFilter,
   type InboxItem,
+  type InboxItemKind,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutationState } from "@tanstack/react-query";
@@ -25,7 +26,6 @@ import {
 } from "react";
 import { Link, Navigate, useMatch } from "react-router";
 import { useInbox, useUpdateInboxItem } from "./api.ts";
-import { inboxDetailPath } from "./inbox-detail.tsx";
 import {
   abbr,
   approvalKindLabel,
@@ -191,9 +191,9 @@ function InboxContent({
   const inbox = useInbox();
   const working = useWorking();
   // Inbox 상세도 그 항목의 조직을 현재 조직으로 본다.
-  const orgMatch = useMatch("/orgs/:orgId/*")?.params.orgId;
-  const inboxMatch = useMatch("/inbox/:orgId/*")?.params.orgId;
-  const currentOrg = orgMatch ?? inboxMatch;
+  const orgPageOrg = useMatch("/orgs/:orgId/*")?.params.orgId;
+  const inboxDetailOrg = useMatch("/inbox/:orgId/*")?.params.orgId;
+  const currentOrg = orgPageOrg ?? inboxDetailOrg;
   const [filter, setFilter] = useState<InboxFilter | "working">("attention");
   const scoped = panel.scope === "organization" && currentOrg;
   const inScope = (inbox.data ?? []).filter(
@@ -285,6 +285,13 @@ function InboxContent({
   );
 }
 
+/** Inbox 상세 주소. 항목 ID는 종류 안에서만 유일하고 원본은 조직 범위로 찾으므로 조직·종류를 함께 쓴다. */
+export const inboxDetailPath = (
+  organizationId: string,
+  kind: InboxItemKind,
+  sourceId: string
+) => `/inbox/${organizationId}/${kind}/${sourceId}`;
+
 /** 항목 → 제목·부가 설명. */
 function describe(item: InboxItem) {
   if (item.kind === "approval")
@@ -313,11 +320,6 @@ function InboxRow({
   onPick: () => void;
 }) {
   const organizationId = inboxOrganizationId(item);
-  const update = useUpdateInboxItem({
-    organizationId,
-    kind: item.kind,
-    sourceId: inboxSourceId(item),
-  });
   const { title, detail } = describe(item);
   const to = inboxDetailPath(organizationId, item.kind, inboxSourceId(item));
   // 지금 연 항목을 표시한다.
@@ -369,11 +371,29 @@ function InboxRow({
           </span>
         </span>
       </Link>
-      <div
-        className="mt-1 flex gap-1 pl-12"
-        role="group"
-        aria-label={`${title} 정리`}
-      >
+      <div className="mt-1 pl-12">
+        <InboxItemOrganize item={item} label={`${title} 정리`} />
+      </div>
+    </div>
+  );
+}
+
+/** 알림 정리(읽음·보관) 버튼. 패널 행과 Inbox 상세가 같은 명령으로 쓴다. 업무 결정과 따로다. */
+export function InboxItemOrganize({
+  item,
+  label,
+}: {
+  item: InboxItem;
+  label: string;
+}) {
+  const update = useUpdateInboxItem({
+    organizationId: inboxOrganizationId(item),
+    kind: item.kind,
+    sourceId: inboxSourceId(item),
+  });
+  return (
+    <>
+      <div className="flex gap-1" role="group" aria-label={label}>
         <button
           className="btn-ghost px-2 py-1 text-xs"
           disabled={update.isPending}
@@ -390,10 +410,10 @@ function InboxRow({
         </button>
       </div>
       {update.isError && (
-        <p role="alert" className="mt-1 pl-12 text-xs text-rose-700">
+        <p role="alert" className="mt-1 text-xs text-rose-700">
           정리하지 못했습니다. 상태는 그대로입니다. 다시 시도하세요.
         </p>
       )}
-    </div>
+    </>
   );
 }
