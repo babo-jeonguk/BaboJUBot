@@ -33,7 +33,8 @@ export type Notification = z.infer<typeof notificationSchema>;
 
 /**
  * outbox 항목의 전송 상태. `pending`은 아직 보내지 못했고(처음·재시도 대기·전송 중), `sent`는 채널이 받았다.
- * `attempts`는 채널에 넘긴 횟수, `nextAttemptAt`은 실패 뒤 다음 시도 예정이다.
+ * `attempts`는 전송 시도(claim) 횟수로, 내용을 만들지 못해 채널에 넘기지 못한 시도도 센다.
+ * `nextAttemptAt`은 실패 뒤 다음 시도 예정이다.
  */
 export const notificationDeliverySchema = z.object({
   status: z.enum(["pending", "sent"]),

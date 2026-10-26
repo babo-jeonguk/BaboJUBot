@@ -318,6 +318,7 @@ describe("notification content", () => {
     const entry = (await outboxOf(org.organizationId)).find(
       (e) => e.id === broken!.id
     )!;
+    // 채널에 넘기지 못했어도 전송 시도 하나로 센다(contracts `attempts`).
     expect(entry.delivery).toMatchObject({
       status: "pending",
       attempts: 1,

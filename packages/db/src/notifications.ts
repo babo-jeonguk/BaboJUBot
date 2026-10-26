@@ -29,7 +29,7 @@ import {
 export type ClaimedNotification = {
   id: string;
   claimToken: string;
-  /** 이번이 몇 번째 전송인가. */
+  /** 이번이 몇 번째 전송 시도(claim)인가. */
   attempts: number;
   notification: Notification;
 };

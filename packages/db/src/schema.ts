@@ -1180,7 +1180,7 @@ export const notificationOutbox = pgTable(
     eventId: bigint("event_id", { mode: "number" }).notNull(),
     kind: text("kind", { enum: notificationKinds }).notNull(),
     sourceId: uuid("source_id").notNull(),
-    /** 채널에 넘긴 횟수. claim마다 하나 늘며 claim 번호로도 쓴다. */
+    /** 전송 시도(claim) 횟수. 내용을 만들지 못해 채널에 넘기지 못한 시도도 센다. claim 번호로도 쓴다. */
     attempts: integer("attempts").notNull().default(0),
     /** 실패 뒤 다음 시도 예정. 없으면 곧바로 보낸다. */
     nextAttemptAt: timestamp("next_attempt_at", {
