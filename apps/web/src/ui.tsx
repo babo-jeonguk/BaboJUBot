@@ -14,8 +14,39 @@ import type {
   RunStatus,
   TaskStatus,
 } from "@babojubot/contracts";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
+
+/**
+ * 아이콘만 있는 버튼 등의 tooltip. 접근성 이름은 버튼의 `aria-label`이 맡고 tooltip은 보이는 이름이다.
+ * 셸의 `Tooltip.Provider` 아래에서 쓴다.
+ */
+export function Tip({
+  children,
+  content,
+  side = "top",
+}: {
+  children: ReactNode;
+  content: ReactNode;
+  side?: "top" | "right" | "bottom" | "left";
+}) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side={side}
+          sideOffset={side === "right" ? 10 : 6}
+          className="animate-pop-in z-[80] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
+        >
+          {content}
+          <Tooltip.Arrow className="fill-slate-900" />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
 
 export const stageLabel: Record<LifecycleStage, string> = {
   goal_setting: "목표 설정",
@@ -78,7 +109,7 @@ export const runCancelReasonLabel: Record<RunCancelReason, string> = {
   organization_paused: "조직 일시정지",
   organization_stopped: "조직 중단",
   agent_paused: "에이전트 일시정지",
-  owner_interrupt: "중단하고 반영",
+  owner_interrupt: "실행 중단",
 };
 
 /**

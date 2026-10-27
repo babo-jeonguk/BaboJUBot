@@ -20,6 +20,7 @@ import { Link, useNavigate } from "react-router";
 import {
   ApiError,
   useAgent,
+  useControlAgent,
   useConversation,
   useConversations,
   useMarkConversationRead,
@@ -37,12 +38,8 @@ import {
   PausedBadge,
   runLabel,
   RunStatusBadge,
+  Tip,
 } from "./ui.tsx";
-
-const deliveryLabel: Record<MessageDelivery, string> = {
-  next_run: "다음 실행 시도에 반영",
-  interrupt: "중단하고 반영",
-};
 
 /** 아직 보내지 않은 새 대화의 주소 조각. 첫 메시지를 보내면 그 대화의 주소로 바뀐다. */
 export const newConversationSlug = "new";
@@ -57,8 +54,8 @@ const chatPath = (orgId: string, conversation?: ConversationSummary | "new") =>
 /**
  * 조직 › Lead 대화. 왼쪽(좁은 화면은 머리의 목록 버튼)에서 대화를 고르고, 오른쪽에서 고른 대화를 주고받는다.
  * `conversationId`가 없으면 기본 대화, `new`면 아직 저장하지 않은 새 대화다. 새 대화는 첫 메시지와 함께 생긴다.
- * 사용자 메시지는 저장되면 Lead를 깨우고, Lead가 실행 중이면 다음 실행 시도에 반영된다.
- * `중단하고 반영`을 고르면 진행 중 실행 시도를 취소하고 그 메시지를 다음 실행 시도에 담는다.
+ * 사용자 메시지는 저장되면 Lead를 깨운다. Lead가 실행 중이면 입력창 버튼으로 `줄 세우기`(다음 실행 시도에 담음)와
+ * `중단하고 보내기`(진행 중 실행 시도를 취소하고 그 메시지를 다음 실행 시도에 담음)를 고르고, 입력이 비면 `실행 중단`만 한다.
  */
 export function LeadChat({
   orgId,
@@ -495,8 +492,9 @@ function MessageBubble({
         className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${mine ? "bg-brand-600 text-white" : "card text-slate-800"}`}
       />
       {m.delivery === "interrupt" && (
-        <div className="mt-1 text-[11px] font-medium text-amber-700">
-          ⤵ {deliveryLabel.interrupt}
+        <div className="mt-1 flex items-center gap-1 text-[11px] font-medium text-rose-600">
+          <BoltIcon className="h-3 w-3" />
+          중단하고 보냄
         </div>
       )}
       {mine && (
@@ -536,6 +534,12 @@ type OwnerMessageSender = {
   isError: boolean;
 };
 
+/**
+ * 입력창. 버튼은 Lead 상태를 따라 바뀐다. 실행 중이 아니면 `보내기` 하나, 실행 중이면 입력이 빌 때 `실행 중단`,
+ * 입력이 있으면 `중단하고 보내기`와 `줄 세우기`다. Enter는 언제나 `줄 세우기`(실행 중이 아니면 그냥 보내기)다.
+ * 고른 방식은 메시지마다 새로 정하며 남지 않는다. 실행 중 여부는 Lead 상세의 진행 중 실행 시도로 보고 Event로 바로 바뀐다.
+ * 이미 취소 정리 중인 실행 시도나 끝난 조직은 실행 중으로 치지 않는다(끝난 조직은 중단이 제어 명령이라 서버도 409).
+ */
 function Composer({
   orgId,
   lead,
@@ -548,31 +552,39 @@ function Composer({
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
-  const [delivery, setDelivery] = useState<MessageDelivery>("next_run");
+  const input = useRef<HTMLTextAreaElement>(null);
   const stage = useOrganization(orgId).data?.stage;
-  const paused = useAgent(orgId, lead.id).data?.paused ?? false;
+  const agent = useAgent(orgId, lead.id).data;
+  const stop = useControlAgent(orgId, lead.id);
+  const paused = agent?.paused ?? false;
   const held = heldBy(stage, paused);
-  // 중단은 제어 명령이라 끝난 조직에서는 고를 수 없다(서버도 409 `organization_closed`).
-  // 고른 뒤 다른 탭에서 조직이 끝나도 고를 수 없는 값으로 보내지 않게, 그때는 다음 실행 시도로 보낸다.
   const closed = stage !== undefined && isClosedStage(stage);
-  const chosen: MessageDelivery = closed ? "next_run" : delivery;
-  const submit = async () => {
+  const running =
+    !closed &&
+    (agent?.recentRuns.some(
+      (r) => r.status === "running" && r.cancelReason === null
+    ) ??
+      false);
+  const typed = text.trim() !== "";
+  const busy = send.isPending || stop.isPending;
+  const submit = async (delivery: MessageDelivery) => {
     const body = text.trim();
-    if (!body || send.isPending) return;
+    if (!body || busy) return;
     try {
-      await send.mutateAsync({ body, delivery: chosen });
+      await send.mutateAsync({ body, delivery });
       setText((current) => (current.trim() === body ? "" : current));
-      setDelivery("next_run");
     } catch {
-      // 오류는 send.isError로 보이고 입력과 전달 방식은 그대로 둔다.
+      // 오류는 send.isError로 보이고 입력은 그대로 둔다.
     }
   };
+  const stopRun = () =>
+    stop.mutate("interrupt", { onSuccess: () => input.current?.focus() });
   return (
     <form
       className="shrink-0 pt-3"
       onSubmit={(e) => {
         e.preventDefault();
-        void submit();
+        void submit("next_run");
       }}
     >
       {send.isPending && (
@@ -586,6 +598,7 @@ function Composer({
         </label>
         <textarea
           id="lead-message"
+          ref={input}
           value={text}
           rows={1}
           autoFocus={autoFocus}
@@ -598,39 +611,61 @@ function Composer({
               !e.nativeEvent.isComposing
             ) {
               e.preventDefault();
-              void submit();
+              void submit("next_run");
             }
           }}
           placeholder="Research Lead에게 메시지"
           className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
         />
-        <button
-          className="btn-primary"
-          disabled={!text.trim() || send.isPending}
-        >
-          보내기
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
+          {!running ? (
+            <IconButton
+              label="보내기"
+              type="submit"
+              tone="primary"
+              disabled={!typed || busy}
+            >
+              <ArrowUpIcon />
+            </IconButton>
+          ) : !typed ? (
+            <IconButton
+              label="실행 중단"
+              tone="stop"
+              disabled={busy}
+              onClick={stopRun}
+            >
+              <StopIcon />
+            </IconButton>
+          ) : (
+            <>
+              <IconButton
+                label="중단하고 보내기"
+                tone="danger"
+                disabled={busy}
+                onClick={() => void submit("interrupt")}
+              >
+                <BoltIcon className="h-[18px] w-[18px]" />
+              </IconButton>
+              <IconButton
+                label="줄 세우기"
+                type="submit"
+                tone="primary"
+                disabled={busy}
+              >
+                <QueueIcon />
+              </IconButton>
+            </>
+          )}
+        </div>
       </div>
-      <fieldset className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
-        <legend className="sr-only">전달 방식</legend>
-        {(["next_run", "interrupt"] as const).map((d) => (
-          <label key={d} className="flex items-center gap-1.5">
-            <input
-              type="radio"
-              name="delivery"
-              value={d}
-              checked={chosen === d}
-              disabled={send.isPending || (d === "interrupt" && closed)}
-              onChange={() => setDelivery(d)}
-              className="accent-brand-600"
-            />
-            {deliveryLabel[d]}
-          </label>
-        ))}
-      </fieldset>
       {send.isError && (
         <p role="alert" className="mt-2 text-xs text-rose-600">
           보내지 못했습니다. 다시 시도하세요.
+        </p>
+      )}
+      {stop.isError && !stop.isPending && (
+        <p role="alert" className="mt-2 text-xs text-rose-600">
+          중단하지 못했습니다. 다시 시도하세요.
         </p>
       )}
       {held && (
@@ -639,5 +674,105 @@ function Composer({
         </p>
       )}
     </form>
+  );
+}
+
+const iconButtonTone = {
+  primary:
+    "bg-brand-600 text-white shadow-sm shadow-brand-600/30 hover:bg-brand-700",
+  danger:
+    "bg-rose-600 text-white shadow-sm shadow-rose-600/30 hover:bg-rose-700",
+  stop: "bg-slate-900 text-white hover:bg-slate-700",
+} as const;
+
+/** 아이콘만 있는 둥근 버튼. 이름은 `aria-label`과 tooltip에 같은 글로 보인다. */
+function IconButton({
+  label,
+  tone,
+  type = "button",
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  tone: keyof typeof iconButtonTone;
+  type?: "button" | "submit";
+  disabled?: boolean;
+  onClick?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tip content={label}>
+      <button
+        type={type}
+        aria-label={label}
+        disabled={disabled}
+        onClick={onClick}
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition duration-150 ease-out select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-45 ${iconButtonTone[tone]}`}
+      >
+        {children}
+      </button>
+    </Tip>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-[18px] w-[18px]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10 16V4.5M5 9.5l5-5 5 5" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-4 w-4"
+      fill="currentColor"
+    >
+      <rect x="4.5" y="4.5" width="11" height="11" rx="2" />
+    </svg>
+  );
+}
+
+/** 지금 끊고 들어간다: 번개. 보낸 메시지의 `중단하고 보냄` 표시에도 쓴다. */
+function BoltIcon({ className }: { className: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className={className}
+      fill="currentColor"
+    >
+      <path d="M11.3 1.8 4 11.2h5.1l-1 7 7.4-9.6h-5.2l1-6.8Z" />
+    </svg>
+  );
+}
+
+/** 목록 끝에 더한다: 줄 셋과 더하기. */
+function QueueIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-[18px] w-[18px]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+    >
+      <path d="M3.5 5h10M3.5 9.5h10M3.5 14h5.5M15 11.5v6M12 14.5h6" />
+    </svg>
   );
 }

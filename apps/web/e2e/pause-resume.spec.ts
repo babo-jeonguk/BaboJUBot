@@ -141,66 +141,127 @@ test("pausing one agent from its detail page holds its messages until it resumes
     .not.toBeNull();
 });
 
-test("the owner picks interrupt-and-deliver in the Lead chat, keeps the choice when sending fails, and sees it on the message", async ({
+/** 가짜 Lead는 `실행 유지 연습` 부탁을 받으면 취소될 때까지 실행 시도를 끝내지 않는다. */
+async function holdLead(page: Page, org: { api: (path: string) => string }) {
+  const res = await page.request.post(org.api("/messages"), {
+    data: { body: "실행 유지 연습" },
+  });
+  expect(res.status()).toBe(201);
+}
+
+const latestRun = async (page: Page, org: { api: (path: string) => string }) =>
+  (
+    (await (await page.request.get(org.api("/runs"))).json()) as {
+      status: string;
+      cancelReason: string | null;
+    }[]
+  )[0];
+
+test("the Lead chat composer follows the Lead: send when idle, stop while running, interrupt-and-send or queue with text", async ({
   page,
 }) => {
-  const org = await createOrganization(page, "중단하고 반영 E2E 조직");
+  const org = await createOrganization(page, "입력창 버튼 E2E 조직");
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
   const input = page.getByLabel("Lead에게 보낼 메시지");
-  const interrupt = page.getByRole("radio", { name: "중단하고 반영" });
-  const nextRun = page.getByRole("radio", { name: "다음 실행 시도에 반영" });
-  await expect(nextRun).toBeChecked();
+  const send = page.getByRole("button", { name: "보내기", exact: true });
+  const stop = page.getByRole("button", { name: "실행 중단" });
+  const interrupt = page.getByRole("button", { name: "중단하고 보내기" });
+  const queue = page.getByRole("button", { name: "줄 세우기" });
+  const owner = page.locator('[data-author="owner"]');
 
-  // 보내지 못하면 입력과 전달 방식을 그대로 둔다.
+  // 쉬는 Lead에게는 보내기 하나다.
+  await expect(send).toBeDisabled();
+  await expect(stop).toHaveCount(0);
+  await expect(queue).toHaveCount(0);
+
+  // Lead가 실행 중이면 입력이 빌 때 실행 중단만 보이고, 누르면 메시지 없이 지금 실행 시도만 끝난다.
+  await holdLead(page, org);
+  await expect(stop).toBeVisible(runs);
+  await expect(send).toHaveCount(0);
+  await expect(owner.getByText("실행 유지 연습")).toHaveCount(1);
+  const messagesBefore = await owner.count();
+  await stop.click();
+  await expect(send).toBeVisible(runs);
+  await expect
+    .poll(() => latestRun(page, org), runs)
+    .toMatchObject({ status: "cancelled", cancelReason: "owner_interrupt" });
+  await expect(owner).toHaveCount(messagesBefore);
+  const events = (await (
+    await page.request.get(org.api("/events"))
+  ).json()) as { type: string; payload: { messageId?: string | null } }[];
+  expect(
+    events.filter((e) => e.type === "agent.interrupted").map((e) => e.payload)
+  ).toMatchObject([{ messageId: null }]);
+  // 일시정지가 아니므로 다음 부탁은 평소처럼 실행 시도를 시작한다.
+  await holdLead(page, org);
+  await expect(stop).toBeVisible(runs);
+
+  // 입력이 있으면 중단하고 보내기와 줄 세우기다. Enter는 줄 세우기다.
+  await input.fill("다음에 할 일 하나");
+  await expect(interrupt).toBeVisible();
+  await expect(queue).toBeVisible();
+  await expect(stop).toHaveCount(0);
+  await input.press("Enter");
+  await expect(owner.getByText("다음에 할 일 하나")).toBeVisible();
+  await expect(input).toHaveValue("");
+  await input.fill("다음에 할 일 둘");
+  await queue.click();
+  await expect(owner.getByText("다음에 할 일 둘")).toBeVisible();
+  await expect(stop).toBeVisible();
+  await expect(owner.getByText("중단하고 보냄")).toHaveCount(0);
+  expect(await latestRun(page, org)).toMatchObject({
+    status: "running",
+    cancelReason: null,
+  });
+
+  // 보내지 못하면 입력을 그대로 둔다.
   await page.route(`**/api/organizations/${org.id}/messages`, (route) =>
     route.request().method() === "POST"
       ? route.fulfill({ status: 500, body: "{}" })
       : route.continue()
   );
-  await interrupt.check();
   await input.fill("방향을 바꿔 주세요");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await interrupt.click();
   await expect(page.getByRole("alert")).toContainText("보내지 못했습니다");
   await expect(input).toHaveValue("방향을 바꿔 주세요");
-  await expect(interrupt).toBeChecked();
   await page.unrouteAll({ behavior: "wait" });
 
-  await page.getByRole("button", { name: "보내기" }).click();
-  const owner = page.locator('[data-author="owner"]');
-  await expect(owner.getByText("⤵ 중단하고 반영")).toBeVisible();
+  // 중단하고 보내면 지금 실행 시도가 끝나고, 줄 선 메시지와 함께 다음 실행 시도가 받는다.
+  await interrupt.click();
+  await expect(owner.getByText("중단하고 보냄")).toHaveCount(1);
   await expect(input).toHaveValue("");
-  await expect(nextRun).toBeChecked();
-  await expect(owner.getByRole("link", { name: "✓ 전달됨" })).toBeVisible(runs);
-  const events = (await (
-    await page.request.get(org.api("/events"))
-  ).json()) as {
-    type: string;
-  }[];
-  expect(events.map((e) => e.type)).toContain("agent.interrupted");
+  // 두 번째 실행 유지 부탁, 줄 선 메시지 둘, 중단하고 보낸 메시지가 더해져 모두 전달된다.
+  await expect(owner.getByRole("link", { name: "✓ 전달됨" })).toHaveCount(
+    messagesBefore + 4,
+    runs
+  );
+  await expect(send).toBeVisible(runs);
 });
 
-test("the Lead chat falls back to delivering on the next run when another tab stops the organization", async ({
+test("the Lead chat falls back to plain sending when another tab stops the organization", async ({
   page,
 }) => {
   const org = await createOrganization(page, "다른 탭 중단 E2E 조직");
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
   const input = page.getByLabel("Lead에게 보낼 메시지");
-  const interrupt = page.getByRole("radio", { name: "중단하고 반영" });
-  const nextRun = page.getByRole("radio", { name: "다음 실행 시도에 반영" });
-  await interrupt.check();
+  await holdLead(page, org);
   await input.fill("중단 직전에 쓴 메시지");
+  await expect(
+    page.getByRole("button", { name: "중단하고 보내기" })
+  ).toBeVisible(runs);
 
-  // 다른 탭의 중단은 Event로 이 탭에 반영된다.
+  // 다른 탭의 중단은 Event로 이 탭에 반영된다. 끝난 조직에는 중단할 실행이 없다.
   expect(
     (await page.request.post(org.api("/stop"), { data: {} })).status()
   ).toBe(200);
-  await expect(interrupt).toBeDisabled();
-  await expect(nextRun).toBeChecked();
+  await expect(
+    page.getByRole("button", { name: "중단하고 보내기" })
+  ).toHaveCount(0);
   await expect(input).toHaveValue("중단 직전에 쓴 메시지");
 
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
   const owner = page.locator('[data-author="owner"]');
   await expect(owner.getByText("중단 직전에 쓴 메시지")).toBeVisible();
-  await expect(owner.getByText("⤵ 중단하고 반영")).toHaveCount(0);
+  await expect(owner.getByText("중단하고 보냄")).toHaveCount(0);
   await expect(page.getByRole("alert")).toHaveCount(0);
 });

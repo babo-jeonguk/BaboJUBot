@@ -99,11 +99,21 @@ export function describeEvent(event: Event, agentName: string): Described {
     case "agent.resumed":
       return { icon: "▶", title: `사용자가 ${agentName}를 재개했습니다` };
     case "agent.interrupted":
-      return {
-        icon: "⤵",
-        title: `사용자가 ${agentName}에게 중단하고 반영을 요청했습니다`,
-        detail: event.payload.runId ? "실행 시도 취소 요청" : undefined,
-      };
+      if (!event.payload.messageId)
+        return {
+          icon: "■",
+          title: `사용자가 ${agentName}의 현재 실행 시도를 중단했습니다`,
+        };
+      return event.payload.runId
+        ? {
+            icon: "⚡",
+            title: `사용자가 ${agentName}의 현재 실행 시도를 중단하고 메시지를 보냈습니다`,
+          }
+        : {
+            icon: "⚡",
+            title: `사용자가 ${agentName}에게 중단하고 보내기를 요청했습니다`,
+            detail: "실행 중이 아님",
+          };
     case "agent.heartbeat_changed":
       return {
         icon: "⏱",
