@@ -200,14 +200,15 @@ export async function startServer({
     res.json(await getOverview(db, now()));
   });
 
-  /** Inbox. 모든 조직의 결정을 기다리는 승인 요청·결과 제출과 실패한 실행 시도, 각 항목의 읽음·보관. */
+  /** Inbox. 모든 조직의 승인 요청·결과 제출(결정한 것 포함)과 실패한 실행 시도, 각 항목의 읽음·보관. */
   app.get("/api/inbox", async (_req, res) => {
     res.json(await listInbox(db));
   });
 
   /**
    * 알림 정리 명령(읽음·보관). 준 값을 그대로 대입하고 정리 뒤 상태를 돌려준다. 원본의 결정·단계·깨우기는 바뀌지 않는다.
-   * 다른 조직의 원본, 없는 원본·종류는 404다. 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   * 다른 조직의 원본, 없는 원본·종류는 404다. 결정을 기다리는 승인 요청·결과 제출의 보관은 422 `archive_not_allowed`다.
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
    */
   app.put("/api/organizations/:id/inbox/:kind/:sourceId", async (req, res) => {
     const kind = inboxItemKindSchema.safeParse(req.params.kind);

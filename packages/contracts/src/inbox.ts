@@ -3,7 +3,7 @@ import { approvalSummarySchema } from "./approval.ts";
 import { resultSubmissionSummarySchema } from "./result.ts";
 import { runSummarySchema } from "./run.ts";
 
-/** Inbox 항목 종류. 승인 요청·결과 제출은 결정을 기다리는 동안만, 실패한 실행 시도는 보관해도 남는다. */
+/** Inbox 항목 종류. 승인 요청·결과 제출은 결정한 뒤에도 남고, 실패한 실행 시도는 실행 시도마다 남는다. */
 export const inboxItemKinds = [
   "approval",
   "result_submission",
@@ -13,15 +13,8 @@ export const inboxItemKindSchema = z.enum(inboxItemKinds);
 export type InboxItemKind = z.infer<typeof inboxItemKindSchema>;
 
 /**
- * 보관할 수 있는 항목. 끝난 일인 실패한 실행 시도만 보관한다. 결정을 기다리는 승인 요청·결과 제출은 보관해 숨길 수 없고,
- * 결정하면 Inbox에서 빠진다.
- */
-export const canArchiveInboxItem = (kind: InboxItemKind) =>
-  kind === "run_failure";
-
-/**
  * 사용자의 알림 정리 상태. 항목의 원본(승인 요청·결과 제출·실행 시도)과 따로 저장하며, 읽음·보관은 결정·단계·깨우기를 바꾸지 않는다.
- * 아직 정리하지 않은 항목은 읽지 않음·보관 안 함이다.
+ * 아직 정리하지 않은 항목은 보관 안 함이고, 결정한 승인 요청·결과 제출이면 읽음(결정하려면 본다), 아니면 읽지 않음이다.
  */
 export const inboxItemStateSchema = z.object({
   read: z.boolean(),
@@ -35,7 +28,7 @@ const itemBase = {
 };
 
 /**
- * Inbox 항목. 승인 요청과 결과 제출은 결정을 기다리는 동안만 나오고 결정하면 빠진다.
+ * Inbox 항목. 승인 요청과 결과 제출은 결정한 뒤에도 결정 상태(`status`)와 함께 남는다.
  * 실패한 실행 시도(`failed`)는 실행 시도마다 하나이며, 같은 에이전트의 뒤 실행 시도가 성공해도 남는다.
  * 사용자 취소·정상 완료·서버 재시작(깨우기를 다음 실행 시도가 다시 받음)은 실패가 아니다.
  */
@@ -90,15 +83,31 @@ export const inboxItemTime = (item: InboxItem) =>
       ? item.submission.createdAt
       : (item.run.finishedAt ?? item.run.startedAt);
 
+/** 결정을 기다리는 항목: `pending`인 승인 요청·결과 제출. 실패한 실행 시도에는 결정할 것이 없다. */
+export const awaitsDecision = (item: InboxItem) =>
+  item.kind === "approval"
+    ? item.approval.status === "pending"
+    : item.kind === "result_submission"
+      ? item.submission.status === "pending"
+      : false;
+
 /**
- * 주의 필요: 결정을 기다리는 승인 요청·결과 제출(보관할 수 없고 읽어도 결정은 남는다)과 보관하지 않은 읽지 않은 실패.
+ * 보관할 수 있는 항목: 결정을 기다리지 않는 모든 항목(결정한 승인 요청·결과 제출, 실패한 실행 시도).
+ * 결정을 기다리는 항목은 보관해 숨길 수 없고 결정해야 한다. 결정은 다시 바뀌지 않으므로 한 번 보관할 수 있게 된 항목은 계속 그렇다.
+ */
+export const canArchiveInboxItem = (item: InboxItem) => !awaitsDecision(item);
+
+/**
+ * 주의 필요: 결정을 기다리는 승인 요청·결과 제출(읽어도 결정할 때까지 남는다)과 보관하지 않은 읽지 않은 실패.
+ * 결정한 승인 요청·결과 제출은 읽지 않았어도 주의 필요가 아니다.
  * 레일·조직 카드의 주의 수와 Inbox의 주의 필요 필터가 이 하나의 판정을 쓴다.
  */
 export const needsAttention = (item: InboxItem) =>
-  !item.archived && (item.kind !== "run_failure" || !item.read);
+  !item.archived &&
+  (awaitsDecision(item) || (item.kind === "run_failure" && !item.read));
 
 /**
- * Inbox 필터: 주의 필요(기본)·전체(보관 제외)·읽지 않음·보관됨. 필터끼리 겹치므로 개수를 더해 전체로 쓰지 않는다.
+ * Inbox 필터: 주의 필요(기본)·전체(보관 제외, 결정한 항목 포함)·읽지 않음·보관됨. 필터끼리 겹치므로 개수를 더해 전체로 쓰지 않는다.
  */
 export const inboxFilters = {
   attention: needsAttention,

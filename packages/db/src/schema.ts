@@ -1285,11 +1285,8 @@ export const inboxStates = pgTable(
       "inbox_states_kind_check",
       sql`${t.kind} in (${inList(inboxItemKinds)})`
     ),
-    // 보관은 실패한 실행 시도에만 있다(contracts `canArchiveInboxItem`).
-    check(
-      "inbox_states_archive_check",
-      sql`${t.archived} = false or ${t.kind} = 'run_failure'`
-    ),
+    // 보관할 수 있는가(결정을 기다리지 않는 원본인가)는 원본 상태에 달려 있어 열 제약으로 쓰지 못한다.
+    // db/inbox.ts `updateInboxItem`이 원본을 읽어 지킨다(contracts `canArchiveInboxItem`).
     check(
       "inbox_states_source_check",
       sql`num_nonnulls(${t.approvalId}, ${t.resultSubmissionId}, ${t.runId}) = 1

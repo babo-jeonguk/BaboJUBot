@@ -7,6 +7,7 @@ import {
   eventListSchema,
   flowTemplateCopySchema,
   inboxSchema,
+  needsAttention,
   organizationDetailSchema,
   runDetailSchema,
   runSummaryListSchema,
@@ -270,7 +271,15 @@ describe("goal and initial research approval", () => {
         },
       }),
     ]);
-    expect(inboxSchema.parse(await get("/api/inbox"))).toEqual([]);
+    // 결정한 요청은 결정 상태와 함께 Inbox에 남고 주의 필요가 아니다.
+    const [kept] = inboxSchema.parse(await get("/api/inbox"));
+    expect(kept).toMatchObject({
+      kind: "approval",
+      read: true,
+      archived: false,
+      approval: { id: summary!.id, status: "approved" },
+    });
+    expect(needsAttention(kept!)).toBe(false);
   });
 
   it("gives a new organization's Lead its own Role and Soul copies from the library and runs it with that bundle", async () => {
