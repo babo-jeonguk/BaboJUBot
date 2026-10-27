@@ -3,7 +3,7 @@ import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { flowKindSchema, instructionFileSchema } from "./harness.ts";
 import { agentAppearanceSchema } from "./agent-profile.ts";
 import { agentHeartbeatSchema } from "./heartbeat.ts";
-import { conversationMessageSchema } from "./message.ts";
+import { conversationMessageSchema, conversationSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
 
@@ -45,6 +45,8 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     kind: z.literal("owner_message"),
     wakeId: z.uuid(),
     messageId: z.uuid(),
+    /** 메시지가 속한 대화. Lead는 이 대화로 답장한다. */
+    conversationId: z.uuid(),
     body: z.string(),
   }),
   /** 사용자가 승인 요청을 결정했다. 반려·수정 요청의 사유가 `note`에 있다. */
@@ -133,6 +135,7 @@ export type RunIdentity = z.infer<typeof runIdentitySchema>;
 /**
  * 맥락 묶음. Lead 대화는 이 실행 시도까지 전달된 메시지만 담고,
  * 실행 중 도착해 다음 실행 시도를 기다리는 사용자 메시지는 담지 않는다.
+ * `conversations`는 기본 대화와 이 실행 시도가 받은 사용자 메시지의 대화이고, `conversation`은 그 대화들의 최근 메시지다.
  */
 export const runContextSchema = z.object({
   organization: z.object({
@@ -147,6 +150,7 @@ export const runContextSchema = z.object({
   team: z.array(
     z.object({ id: z.uuid(), role: agentRoleSchema, name: z.string() })
   ),
+  conversations: z.array(conversationSchema.omit({ organizationId: true })),
   conversation: z.array(conversationMessageSchema),
   /** 조직 사본 흐름 템플릿이 선언한 연구 노드·보조 연결 종류. 초기 연구 승인 전에는 없다. */
   researchFlow: z

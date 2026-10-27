@@ -25,7 +25,7 @@
 
 ## 실행 시도·조직 도구·대화
 
-통합 검증: [실행 API](../../apps/server/test/runs.test.ts), [Lead 대화 E2E](../../apps/web/e2e/lead-chat.spec.ts).
+통합 검증: [실행 API](../../apps/server/test/runs.test.ts), [여러 대화 API](../../apps/server/test/conversations.test.ts), [Lead 대화 E2E](../../apps/web/e2e/lead-chat.spec.ts), [여러 대화 E2E](../../apps/web/e2e/lead-conversations.spec.ts).
 
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
@@ -35,9 +35,15 @@
 | 깨우기·DB admission/종료 저장 재시도·실행기 호출·활동 필터·종료 취소 | [server/dispatcher.ts](../../apps/server/src/dispatcher.ts) `RunDispatcher`, [run-token.ts](../../apps/server/src/run-token.ts) | 실행 API |
 | HTTP 토큰 인증·교차 조직 404·종료 토큰 거부 | [server/tools.ts](../../apps/server/src/tools.ts), db/runs.ts `authenticateRun` | 실행 API `organization tools` |
 | 대화·실행 시도·에이전트 조회 | server/app.ts, [conversation.ts](../../apps/server/src/conversation.ts) | 실행 API |
+| 여러 대화: 대화·목록 모양, 새 대화 시작 입력·결과, 본 위치, 답장의 `conversationId` | contracts message.ts `conversationSchema`·`conversationSummarySchema`·`startConversationResultSchema`·`sendAgentMessageInputSchema`, run.ts 깨우기 `owner_message.conversationId`·맥락 `conversations`, event.ts `message.created.conversationId` | [계약](../../packages/contracts/src/run.test.ts) |
+| 새 대화 제목·기본 대화(조직 생성 때), 답장이 갈 대화(고른 대화 → 받은 사용자 메시지의 대화 → 기본 대화, 여러 대화면 골라야 함) | core run.ts `planOwnerMessage`(`new`면 대화도 계획)·`conversationTitle`·`chooseReplyConversation`·`planDefaultConversation`, organization.ts `planOrganizationCreation` | [core](../../packages/core/src/run.test.ts) |
+| 대화 저장(새 대화는 첫 메시지와 한 transaction)·목록 순서·읽지 않음·본 위치·실행 시도 맥락의 대화, 다른 조직 대화 404, migration 0014 backfill | [db/conversations.ts](../../packages/db/src/conversations.ts), db/runs.ts `insertOwnerMessage`·`insertAgentMessage`·`loadRunContext`; schema `conversations`·`messages.conversation_id`(복합 FK)·migration 0014 | [DB](../../packages/db/src/conversations.test.ts) |
+| 대화 API: `GET/POST /api/organizations/:id/conversations`, `GET/POST …/conversations/:conversationId/messages`, `PUT …/read`, 기본 대화는 `/messages`로도 | server/app.ts `findChat`, conversation.ts `sendOwnerMessage`; 도구 오류는 problems.ts `conversation_required`(422) | 여러 대화 API |
 | 가짜 실행기·도구 client·테스트 gate | [runtime/scripted.ts](../../packages/runtime/src/scripted.ts), [tools-client.ts](../../packages/runtime/src/tools-client.ts), [testing.ts](../../packages/runtime/src/testing.ts) | [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
 | README 데모 시나리오(생성→목표→초기 승인→작업 결과→일시정지·재개·작업자 추가 승인→결과 제출→최종 완료)가 이어지지 않음 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript`, 각 단계의 화면 | [데모 흐름 E2E](../../apps/web/e2e/demo-flow.spec.ts)(주요 사용자 행동을 모두 화면으로 한 조직에서). 직접 거부·조직 격리·heartbeat due·복구는 각 절의 API 검증 |
 | 대화·활동·실행 시도 상세·에이전트 화면(조직도는 아래 [에이전트 조직도·이름·얼굴](#에이전트-조직도이름얼굴)) | [chat.tsx](../../apps/web/src/chat.tsx), [activity.tsx](../../apps/web/src/activity.tsx), [agents.tsx](../../apps/web/src/agents.tsx); api.ts query key | Lead 대화 E2E |
+| 대화 목록(왼쪽·390px 시트)·새 대화(`/chat/new`, 첫 보내기 뒤 그 대화 주소로)·읽지 않음 점(화면이 보일 때 본 위치 저장)·`/chat/:conversationId` | chat.tsx `LeadChat`·`ConversationList`·`Thread`·`DraftThread`, main.tsx route, pages.tsx `OrganizationScreen`; api.ts `useConversations`·`useConversation`·`useSendMessage`·`useStartConversation`·`useMarkConversationRead` | 여러 대화 E2E(다른 탭·390px 포함) |
+| 가짜 Lead의 답장 대화(사용자 메시지는 그 대화, 그 밖은 기본 대화, 대화마다 답장) | runtime/scripted.ts `leadReplyScript`·`replyConversationOf`·`defaultConversationOf`, tools-client.ts `sendMessage` | 가짜 실행기 테스트 |
 | 후속 실제 adapter | [runtime/index.ts](../../packages/runtime/src/index.ts)에 추가, 요청 `instructions` 사본을 실행기에 주입 | 실제 adapter 테스트 없음; 후속 이슈의 계약 확인 |
 
 ## 초기 연구 승인·하네스
@@ -162,7 +168,7 @@
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
 | 알림 종류·알림·outbox 전송 상태·가짜 채널 기록 모양, Inbox 항목 종류·정리 상태·결정 대기·필터 판정(`awaitsDecision`·`needsAttention`·`inboxFilters`)·정리 입력·Inbox 상세 경로(`inboxDetailPath`), Event `inbox_item.updated`, 채널 port `NotificationChannel` | [contracts/notification.ts](../../packages/contracts/src/notification.ts), [inbox.ts](../../packages/contracts/src/inbox.ts), event.ts | 알림 API |
-| 어떤 Event가 알림인가(에이전트 대화 메시지·승인 요청·결과 제출·`failed` 실행 시도), 재시도 간격, 알림 내용(링크: Inbox 항목이 되는 사건은 Inbox 상세, Lead 메시지는 대화) | [core/notification.ts](../../packages/core/src/notification.ts) `notificationOf`·`retryDelayMs`·`notificationContent` | [core](../../packages/core/src/notification.test.ts) |
+| 어떤 Event가 알림인가(에이전트 대화 메시지·승인 요청·결과 제출·`failed` 실행 시도), 재시도 간격, 알림 내용(링크: Inbox 항목이 되는 사건은 Inbox 상세, Lead 메시지는 그 메시지의 대화) | [core/notification.ts](../../packages/core/src/notification.ts) `notificationOf`·`retryDelayMs`·`notificationContent` | [core](../../packages/core/src/notification.test.ts) |
 | Event와 같은 transaction의 outbox 항목, claim(`SKIP LOCKED`·만료·새 token, 내용을 못 만든 항목은 그 claim의 실패로 정산)·같은 claim일 때만 정산·재시도 예정, 가짜 채널 기록(알림마다 하나) | [db/notifications.ts](../../packages/db/src/notifications.ts), rows.ts `insertEvent`; schema `notification_outbox`·`fake_channel_messages`(복합 FK)·migration 0010 | [DB](../../packages/db/src/notifications.test.ts) |
 | Inbox 목록(결정한 승인 요청·결과 제출도 남음, 중단된 조직의 결정 대기 요청만 빠짐, 정리한 적 없는 결정한 항목은 읽음), 정리 상태 저장(원본 열 하나·같은 조직 복합 FK·행 잠금 아래 대입·바뀐 때만 Event, 결정 대기 항목의 보관은 원본 상태를 읽어 `archive_not_allowed`), 이 판 전 실패의 읽음 backfill | db/inbox.ts `listInbox`·`updateInboxItem`, contracts `awaitsDecision`·`canArchiveInboxItem`; schema `inbox_states`·migration 0010·0011·0012(보관 열 제약 없앰) | 알림 API `Inbox`, [contracts](../../packages/contracts/src/inbox.test.ts) |
 | 전송 수명(Event 신호·시작·주기 확인·한 차례씩), outbox·전송 기록·정리 API | [server/notifications.ts](../../apps/server/src/notifications.ts) `NotificationRelay`, app.ts `GET /api/notifications`·`/api/channels/fake/*`·`PUT /api/organizations/:id/inbox/:kind/:sourceId`(결정 대기 항목의 보관은 422 `archive_not_allowed`, 다른 조직·없는 원본은 404) | 알림 API(재시도·재시작·대시보드와 같은 효과) |
@@ -223,11 +229,11 @@ EventHub → WebSocket /api/events → live-events → live-refresh → 다른 �
 ### Lead 대화·실행 시도
 
 ```text
-chat → POST /api/organizations/:id/messages(app) → conversation
-  → core planOwnerMessage → db insertOwnerMessage(메시지·깨우기·Event) → dispatcher kick
+chat → POST /api/organizations/:id/messages(기본 대화)·/conversations(새 대화)·/conversations/:id/messages(app) → conversation
+  → core planOwnerMessage → db insertOwnerMessage(새 대화·메시지·깨우기·Event) → dispatcher kick
   → claimNextRun(에이전트 잠금·실행 중 재확인·대기 깨우기 고정)
   → runtime execute(신원·토큰·깨우기·맥락)
-      → 토큰으로 /api/tools/* → 메시지·도구 요약 Event
+      → 토큰으로 /api/tools/* → 메시지·도구 요약 Event(send_message는 core chooseReplyConversation으로 대화를 정함)
       → emit → 공개 활동 허용 종류만 run.activity
   → finishRun → run.finished → 다음 깨우기 처리
 ```

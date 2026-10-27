@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  markConversationReadInputSchema,
   sendAgentMessageInputSchema,
   sendOwnerMessageInputSchema,
 } from "./message.ts";
@@ -72,5 +73,39 @@ describe("message inputs", () => {
         sendAgentMessageInputSchema.safeParse({ body: "x", ...extra }).success
       ).toBe(false);
     }
+  });
+
+  it("lets the Lead name the conversation it replies to, and the owner pick a conversation only by path", () => {
+    const conversationId = crypto.randomUUID();
+    expect(
+      sendAgentMessageInputSchema.parse({ body: "답", conversationId })
+    ).toEqual({ body: "답", conversationId });
+    expect(sendAgentMessageInputSchema.parse({ body: "답" })).toEqual({
+      body: "답",
+    });
+    expect(
+      sendAgentMessageInputSchema.safeParse({
+        body: "답",
+        conversationId: "default",
+      }).success
+    ).toBe(false);
+    expect(
+      sendOwnerMessageInputSchema.safeParse({ body: "x", conversationId })
+        .success
+    ).toBe(false);
+  });
+
+  it("marks a conversation read only up to a message", () => {
+    expect(
+      markConversationReadInputSchema.safeParse({
+        upToMessageId: crypto.randomUUID(),
+      }).success
+    ).toBe(true);
+    expect(
+      markConversationReadInputSchema.safeParse({
+        upToMessageId: crypto.randomUUID(),
+        unread: true,
+      }).success
+    ).toBe(false);
   });
 });

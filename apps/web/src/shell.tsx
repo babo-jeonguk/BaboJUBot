@@ -29,7 +29,7 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
   {
     items: [
       { slug: "dashboard", label: "대시보드", width: "full" },
-      { slug: "chat", label: "Lead 대화", width: "reading" },
+      { slug: "chat", label: "Lead 대화", width: "standard" },
     ],
   },
   {

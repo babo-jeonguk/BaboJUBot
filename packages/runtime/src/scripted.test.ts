@@ -22,6 +22,7 @@ const ids = {
   agentId: crypto.randomUUID(),
   runId: crypto.randomUUID(),
 };
+const defaultConversationId = crypto.randomUUID();
 const request: RunRequest = {
   identity: ids,
   access: { toolsBaseUrl: "http://tools.test", token: "secret-token" },
@@ -30,6 +31,7 @@ const request: RunRequest = {
       kind: "owner_message",
       wakeId: crypto.randomUUID(),
       messageId: crypto.randomUUID(),
+      conversationId: defaultConversationId,
       body: "목표를 정하자",
     },
   ],
@@ -43,6 +45,14 @@ const request: RunRequest = {
     },
     agent: { id: ids.agentId, role: "lead", name: "Research Lead" },
     team: [{ id: ids.agentId, role: "lead", name: "Research Lead" }],
+    conversations: [
+      {
+        id: defaultConversationId,
+        title: "기본 대화",
+        isDefault: true,
+        createdAt: new Date().toISOString(),
+      },
+    ],
     conversation: [],
     researchFlow: null,
   },
@@ -82,6 +92,9 @@ function toolServer(status = 200) {
         id: crypto.randomUUID(),
         organizationId: ids.organizationId,
         agentId: ids.agentId,
+        conversationId:
+          (calls.at(-1)!.body as { conversationId?: string }).conversationId ??
+          defaultConversationId,
         author: "agent",
         body: (calls.at(-1)!.body as { body: string }).body,
         delivery: null,
@@ -125,6 +138,7 @@ describe("scripted runtime", () => {
     ]);
     expect(tools.calls[1]!.body).toEqual({
       body: expect.stringContaining("목표를 정하자"),
+      conversationId: defaultConversationId,
     });
     expect(c.emitted).toEqual([{ type: "progress", text: expect.any(String) }]);
   });
@@ -210,10 +224,11 @@ describe("demo Lead scenario", () => {
       },
     },
   });
-  const message = (body: string) => ({
+  const message = (body: string, conversationId = defaultConversationId) => ({
     kind: "owner_message" as const,
     wakeId: crypto.randomUUID(),
     messageId: crypto.randomUUID(),
+    conversationId,
     body,
   });
 
@@ -264,6 +279,59 @@ describe("demo Lead scenario", () => {
     expect(demoLeadScript(at("researching", [message("진행 상황은?")]))).toBe(
       leadReplyScript
     );
+  });
+
+  it("replies in the conversation each owner message came from and sends what it does on its own to the default conversation", () => {
+    const other = crypto.randomUUID();
+    // `then` 단계를 펼친 답장들. 앞 단계의 도구 결과에 기대지 않는 시나리오만 펼친다.
+    const replies = (script: Script, r: RunRequest) => {
+      const state = { request: r, context: undefined, sent: [], calls: [] };
+      return script.steps
+        .flatMap((s) => (s.do === "then" ? s.steps(state) : [s]))
+        .flatMap((s) =>
+          s.do === "send_message"
+            ? [{ conversationId: s.conversationId, body: s.body(state) }]
+            : []
+        );
+    };
+    const sentTo = (r: RunRequest) =>
+      replies(demoLeadScript(r), r).map((m) => m.conversationId);
+    const decision = {
+      kind: "approval_decision" as const,
+      wakeId: crypto.randomUUID(),
+      approvalId: crypto.randomUUID(),
+      approvalKind: "add_worker" as const,
+      decision: "approve" as const,
+      note: null,
+    };
+    // 두 대화의 메시지와 승인 결정을 함께 받으면 대화마다 답장하고, 승인 결정은 기본 대화에서 짚는다.
+    const mixed = at(
+      "researching",
+      [message("진행 상황은?", other), message("안녕"), decision],
+      "오류 절반"
+    );
+    expect(sentTo(mixed)).toEqual([other, defaultConversationId]);
+    const bodies = replies(demoLeadScript(mixed), mixed).map((m) => m.body);
+    expect(bodies[0]).toContain("진행 상황은?");
+    expect(bodies[0]).not.toContain("안녕");
+    expect(bodies[1]).toContain("안녕");
+    expect(bodies[1]).toContain("작업자 추가 승인 요청 승인");
+    // 부탁받은 일은 부탁한 대화로, 승인 직후의 분담은 기본 대화로 알린다.
+    expect(sentTo(at("researching", [message("작업자 추가", other)]))).toEqual([
+      other,
+    ]);
+    expect(
+      sentTo(
+        at("goal_setting", [
+          message("목표: 오류 절반\n완료 기준: WER 10%", other),
+        ])
+      )
+    ).toEqual([other]);
+    expect(
+      sentTo(
+        at("researching", [{ ...decision, approvalKind: "initial_research" }])
+      )
+    ).toEqual([defaultConversationId]);
   });
 
   it("hands one task to each worker after the initial research approval", () => {
@@ -429,6 +497,7 @@ describe("demo Lead scenario", () => {
           kind: "owner_message",
           wakeId: crypto.randomUUID(),
           messageId: crypto.randomUUID(),
+          conversationId: defaultConversationId,
           body: "결과 제출 부탁해요",
         },
       ],
@@ -531,6 +600,7 @@ describe("demo Lead scenario", () => {
             id: crypto.randomUUID(),
             organizationId: ids.organizationId,
             agentId: lead,
+            conversationId: body.conversationId,
             author: "agent",
             body: body.body,
             delivery: null,

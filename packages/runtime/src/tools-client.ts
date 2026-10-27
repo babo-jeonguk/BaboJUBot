@@ -37,8 +37,9 @@ export type OrgToolClient = {
     options?: { idempotencyKey?: string }
   ): Promise<OrgToolOutput<T>>;
   getRunContext(): Promise<RunContextResponse>;
+  /** Lead 대화에 답장한다. `conversationId`가 없으면 서버가 받은 사용자 메시지의 대화(없으면 기본 대화)로 보낸다. */
   sendMessage(
-    body: string,
+    input: { body: string; conversationId?: string },
     options?: { idempotencyKey?: string }
   ): Promise<ConversationMessage>;
   getMessage(messageId: string): Promise<ConversationMessage>;
@@ -97,7 +98,7 @@ export function createOrgToolClient({
   return {
     call,
     getRunContext: () => call("get_run_context"),
-    sendMessage: (body, options) => call("send_message", { body }, {}, options),
+    sendMessage: (input, options) => call("send_message", input, {}, options),
     getMessage: (messageId) => call("get_message", undefined, { messageId }),
   };
 }

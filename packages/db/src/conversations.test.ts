@@ -1,0 +1,413 @@
+import { randomUUID } from "node:crypto";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { RunResult } from "@babojubot/contracts";
+import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
+import { eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  findConversation,
+  listConversations,
+  markConversationRead,
+} from "./conversations.ts";
+import { insertOrganizationCreation } from "./organizations.ts";
+import {
+  claimNextRun,
+  finishRun,
+  insertAgentMessage,
+  insertOwnerMessage,
+  listConversationMessages,
+  loadRunContext,
+} from "./runs.ts";
+import { conversations, organizations, wakes } from "./schema.ts";
+import { createTestDatabase, type TestDatabase } from "./testing.ts";
+
+let t: TestDatabase;
+beforeAll(async () => {
+  t = await createTestDatabase();
+});
+afterAll(async () => {
+  await t?.close();
+});
+
+const source = { newId: randomUUID, now: () => new Date() };
+const completed: RunResult = {
+  stopReason: "completed",
+  error: null,
+  summary: null,
+  usage: null,
+  nextSession: null,
+};
+
+async function organization() {
+  const creation = planOrganizationCreation(
+    { name: "대화 조직" },
+    { files: [] },
+    source
+  );
+  await insertOrganizationCreation(t.db, creation);
+  const lead = creation.agents[0]!;
+  const organizationId = lead.organizationId;
+  const defaultConversation = creation.defaultConversation;
+  /** 사용자 메시지. `new`면 새 대화를 시작한다. */
+  const send = async (
+    conversation: { id: string } | "new",
+    body: string,
+    delivery: "next_run" | "interrupt" = "next_run"
+  ) => {
+    const plan = planOwnerMessage(
+      { organizationId, agents: creation.agents },
+      conversation,
+      { body, delivery },
+      source
+    );
+    return { plan, stored: await insertOwnerMessage(t.db, plan) };
+  };
+  /** Lead의 다음 실행 시도를 시작하고 그 실행 시도로 답장하는 함수를 돌려준다. */
+  const claim = async () => {
+    const claimed = await claimNextRun(t.db, lead.id, {
+      tokenDigest: randomUUID(),
+      source,
+    });
+    const run = {
+      id: claimed!.run.id,
+      organizationId,
+      agentId: lead.id,
+      agentRole: "lead" as const,
+    };
+    const reply = (body: string, conversationId?: string) =>
+      insertAgentMessage(
+        t.db,
+        run,
+        { body, ...(conversationId ? { conversationId } : {}) },
+        {
+          activity: {
+            source: "control_plane",
+            activity: { type: "org_tool", tool: "send_message", summary: body },
+          },
+          source,
+        }
+      );
+    const finish = () => finishRun(t.db, run.id, completed, source);
+    return { run, claimed: claimed!, reply, finish };
+  };
+  return {
+    creation,
+    lead,
+    organizationId,
+    defaultConversation,
+    send,
+    claim,
+  };
+}
+
+describe("Lead conversations", () => {
+  it("stores a new conversation only together with its first owner message", async () => {
+    const org = await organization();
+    const { plan, stored } = await org.send("new", "데이터셋 후보를 찾아 줘");
+    expect(stored.kind).toBe("sent");
+    expect(
+      await findConversation(t.db, org.organizationId, plan.conversation!.id)
+    ).toEqual(plan.conversation);
+    expect(
+      (
+        await listConversationMessages(
+          t.db,
+          org.organizationId,
+          plan.conversation!.id
+        )
+      ).map((m) => m.body)
+    ).toEqual(["데이터셋 후보를 찾아 줘"]);
+
+    // 끝난 조직의 `중단하고 반영`은 받지 않으므로 새 대화도 남지 않는다.
+    await t.db
+      .update(organizations)
+      .set({ stage: "stopped" })
+      .where(eq(organizations.id, org.organizationId));
+    const refused = await org.send("new", "멈춰", "interrupt");
+    expect(refused.stored.kind).toBe("organization_closed");
+    expect(
+      await findConversation(
+        t.db,
+        org.organizationId,
+        refused.plan.conversation!.id
+      )
+    ).toBeUndefined();
+    // 다음 실행 시도에 반영은 지금처럼 남는다.
+    expect((await org.send("new", "나중에 읽어 줘")).stored.kind).toBe("sent");
+  });
+
+  it("routes the Lead's reply to the conversation the owner messages came from, and other replies to the default conversation", async () => {
+    const org = await organization();
+    const other = await organization();
+    const started = (await org.send("new", "새 주제")).plan.conversation!;
+
+    // 사용자 메시지 하나로 깨어난 실행 시도: 고르지 않아도 그 대화로 간다.
+    const first = await org.claim();
+    expect(first.claimed.wakeReasons).toEqual([
+      expect.objectContaining({
+        kind: "owner_message",
+        conversationId: started.id,
+      }),
+    ]);
+    const context = await loadRunContext(t.db, first.run.id);
+    expect(context?.context.conversations.map((c) => c.id)).toEqual([
+      org.defaultConversation.id,
+      started.id,
+    ]);
+    const reply = await first.reply("새 주제에 답합니다");
+    expect(reply).toMatchObject({
+      kind: "ok",
+      value: { conversationId: started.id },
+      events: [
+        expect.objectContaining({
+          type: "message.created",
+          payload: expect.objectContaining({ conversationId: started.id }),
+        }),
+        expect.anything(),
+      ],
+    });
+    // 다른 조직의 대화로는 보낼 수 없다.
+    expect(
+      await first.reply("새어 나가면 안 됨", other.defaultConversation.id)
+    ).toEqual({ kind: "invalid", problem: "not_found" });
+    await first.finish();
+
+    // 두 대화의 메시지를 받은 실행 시도는 대화를 골라야 하고, 고른 대화마다 답장할 수 있다.
+    await org.send(org.defaultConversation, "기본 대화에서");
+    await org.send(started, "새 주제에서");
+    const second = await org.claim();
+    expect(await second.reply("어디로?")).toEqual({
+      kind: "invalid",
+      problem: "conversation_required",
+    });
+    expect(
+      await second.reply("기본 대화 답", org.defaultConversation.id)
+    ).toMatchObject({
+      kind: "ok",
+      value: { conversationId: org.defaultConversation.id },
+    });
+    expect(await second.reply("새 주제 답", started.id)).toMatchObject({
+      kind: "ok",
+      value: { conversationId: started.id },
+    });
+    await second.finish();
+
+    // 사용자 메시지 없이 깨어난 실행 시도(heartbeat 등)의 메시지는 기본 대화로 간다.
+    await t.db.insert(wakes).values({
+      id: randomUUID(),
+      organizationId: org.organizationId,
+      agentId: org.lead.id,
+      kind: "heartbeat",
+      createdAt: new Date(),
+    });
+    const third = await org.claim();
+    expect(await third.reply("스스로 알립니다")).toMatchObject({
+      kind: "ok",
+      value: { conversationId: org.defaultConversation.id },
+    });
+    await third.finish();
+
+    const bodies = async (conversationId: string) =>
+      (
+        await listConversationMessages(t.db, org.organizationId, conversationId)
+      ).map((m) => `${m.author}:${m.body}`);
+    expect(await bodies(org.defaultConversation.id)).toEqual([
+      "owner:기본 대화에서",
+      "agent:기본 대화 답",
+      "agent:스스로 알립니다",
+    ]);
+    expect(await bodies(started.id)).toEqual([
+      "owner:새 주제",
+      "agent:새 주제에 답합니다",
+      "owner:새 주제에서",
+      "agent:새 주제 답",
+    ]);
+    // 다른 조직의 대화 ID로는 아무것도 보이지 않는다.
+    expect(
+      await listConversationMessages(t.db, other.organizationId, started.id)
+    ).toEqual([]);
+  });
+
+  it("lists the default conversation first, then by last activity, and marks the Lead's replies unread until the owner has seen them", async () => {
+    const org = await organization();
+    const older = (await org.send("new", "먼저 시작")).plan.conversation!;
+    const newer = (await org.send("new", "나중 시작")).plan.conversation!;
+    const run = await org.claim();
+    const answered = await run.reply("먼저 시작한 대화에 답", older.id);
+    await run.reply("나중 대화에도 답", newer.id);
+    await run.finish();
+    // 먼저 시작한 대화에 사용자가 다시 말해 그 대화가 가장 최근이 된다.
+    await org.send(older, "다시 질문");
+
+    const list = await listConversations(t.db, org.organizationId);
+    expect(list.map((c) => [c.title, c.isDefault, c.unread])).toEqual([
+      ["기본 대화", true, false],
+      ["먼저 시작", false, true],
+      ["나중 시작", false, true],
+    ]);
+
+    if (answered.kind !== "ok") throw new Error(answered.kind);
+    expect(
+      await markConversationRead(
+        t.db,
+        org.organizationId,
+        older.id,
+        answered.value.id
+      )
+    ).toBe("ok");
+    // 본 위치는 앞으로만 가고, 다른 대화의 메시지나 다른 조직으로는 바꿀 수 없다.
+    expect(
+      await markConversationRead(
+        t.db,
+        org.organizationId,
+        newer.id,
+        answered.value.id
+      )
+    ).toBe("not_found");
+    const other = await organization();
+    expect(
+      await markConversationRead(
+        t.db,
+        other.organizationId,
+        older.id,
+        answered.value.id
+      )
+    ).toBe("not_found");
+    expect(
+      (await listConversations(t.db, org.organizationId)).map((c) => c.unread)
+    ).toEqual([false, false, true]);
+  });
+});
+
+describe("migration 0014_lead_conversations", () => {
+  it("gives every existing organization a default conversation holding its earlier messages", async () => {
+    const migrations = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../migrations"
+    );
+    // 0014 직전까지만 적용한 DB를 같은 cluster에 따로 만든다.
+    const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
+    await fsp.cp(migrations, before, { recursive: true });
+    const journalPath = path.join(before, "meta/_journal.json");
+    const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
+      entries: { tag: string }[];
+    };
+    const index = journal.entries.findIndex(
+      (e) => e.tag === "0014_lead_conversations"
+    );
+    journal.entries = journal.entries.slice(0, index);
+    await fsp.writeFile(journalPath, JSON.stringify(journal));
+
+    const name = `backfill_${randomUUID().replaceAll("-", "")}`;
+    await t.db.execute(sql.raw(`create database ${name}`));
+    const url = new URL(t.url);
+    url.pathname = `/${name}`;
+    const pool = new pg.Pool({ connectionString: url.toString() });
+    try {
+      const db = drizzle(pool);
+      await migrate(db, { migrationsFolder: before });
+
+      const orgA = randomUUID();
+      const orgB = randomUUID();
+      const leadA = randomUUID();
+      const leadB = randomUUID();
+      const messageA = randomUUID();
+      await pool.query(
+        `insert into organizations (id, name, stage, created_at) values
+          ($1, 'A', 'goal_setting', now()), ($2, 'B', 'goal_setting', now())`,
+        [orgA, orgB]
+      );
+      await pool.query(
+        `insert into agents (id, organization_id, role, name, created_at) values
+          ($1, $2, 'lead', 'Research Lead', now()), ($3, $4, 'lead', 'Research Lead', now())`,
+        [leadA, orgA, leadB, orgB]
+      );
+      await pool.query(
+        `insert into messages (id, organization_id, agent_id, author, body, delivery, created_at)
+          values ($1, $2, $3, 'owner', '예전 메시지', 'next_run', now())`,
+        [messageA, orgA, leadA]
+      );
+      await pool.query(
+        `insert into events (organization_id, type, payload) values
+          ($1, 'message.created', $2)`,
+        [
+          orgA,
+          JSON.stringify({
+            messageId: messageA,
+            agentId: leadA,
+            author: "owner",
+            runId: null,
+          }),
+        ]
+      );
+
+      await migrate(db, { migrationsFolder: migrations });
+
+      const { rows: created } = await pool.query<{
+        id: string;
+        organization_id: string;
+        title: string;
+        is_default: boolean;
+        read_message_seq: string | null;
+      }>(
+        `select id, organization_id, title, is_default, read_message_seq from conversations order by title, organization_id`
+      );
+      expect(created).toHaveLength(2);
+      expect(
+        created.every((c) => c.is_default && c.title === "기본 대화")
+      ).toBe(true);
+      const defaultA = created.find((c) => c.organization_id === orgA)!;
+      const defaultB = created.find((c) => c.organization_id === orgB)!;
+      // 예전 메시지는 이미 본 것으로 두고, 메시지가 없던 조직은 본 위치가 없다.
+      expect(defaultA.read_message_seq).not.toBeNull();
+      expect(defaultB.read_message_seq).toBeNull();
+      const { rows: moved } = await pool.query(
+        `select conversation_id from messages where id = $1`,
+        [messageA]
+      );
+      expect(moved).toEqual([{ conversation_id: defaultA.id }]);
+      const { rows: events } = await pool.query(
+        `select payload from events where organization_id = $1 and type = 'message.created'`,
+        [orgA]
+      );
+      expect(events[0].payload).toMatchObject({
+        messageId: messageA,
+        conversationId: defaultA.id,
+      });
+      // 옮긴 뒤에는 대화 없는 메시지를 남길 수 없다.
+      await expect(
+        pool.query(
+          `insert into messages (id, organization_id, agent_id, author, body, delivery, created_at)
+            values ($1, $2, $3, 'owner', 'x', 'next_run', now())`,
+          [randomUUID(), orgB, leadB]
+        )
+      ).rejects.toThrow();
+    } finally {
+      await pool.end();
+      await t.db.execute(sql.raw(`drop database ${name}`));
+      await fsp.rm(before, { recursive: true, force: true });
+    }
+  });
+});
+
+// 조직의 기본 대화는 하나뿐이다.
+describe("default conversation", () => {
+  it("allows a single default conversation per organization", async () => {
+    const org = await organization();
+    await expect(
+      t.db.insert(conversations).values({
+        id: randomUUID(),
+        organizationId: org.organizationId,
+        title: "또 하나의 기본 대화",
+        isDefault: true,
+        createdAt: new Date(),
+      })
+    ).rejects.toThrow();
+  });
+});

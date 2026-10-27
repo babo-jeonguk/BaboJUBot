@@ -19,6 +19,7 @@ import {
   editInstructionCopyInputSchema,
   eventStreamPath,
   inboxItemKindSchema,
+  markConversationReadInputSchema,
   organizationCommands,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
@@ -49,7 +50,11 @@ import {
   getOverview,
   getResearchMap,
   listApprovals,
-  listConversation,
+  findConversation,
+  findDefaultConversation,
+  listConversationMessages,
+  listConversations,
+  markConversationRead,
   listFakeChannelMessages,
   listInbox,
   listInstructionRevisions,
@@ -424,31 +429,121 @@ export async function startServer({
     );
   });
 
-  app.get("/api/organizations/:id/messages", async (req, res) => {
-    const org = await findOrganization(db, req.params.id);
-    const lead = org && findLead(org.agents);
-    if (!org || !lead) return notFound(res);
-    res.json(await listConversation(db, org.id, lead.id));
-  });
-
-  app.post("/api/organizations/:id/messages", async (req, res) => {
-    const org = await findOrganization(db, req.params.id);
-    if (!org) return notFound(res);
+  /**
+   * 조직 안의 대화. 경로에 대화가 없으면 기본 대화다. 다른 조직의 대화는 없는 대화와 같은 404다.
+   * 끝난 조직의 대화도 읽을 수 있고, 보내기는 기존 규칙(끝난 조직의 `중단하고 반영`만 409)을 따른다.
+   */
+  const findChat = async (organizationId: string, conversationId?: string) => {
+    const org = await findOrganization(db, organizationId);
+    if (!org || !findLead(org.agents)) return undefined;
+    const conversation =
+      conversationId === undefined
+        ? await findDefaultConversation(db, org.id)
+        : await findConversation(db, org.id, conversationId);
+    return conversation && { org, conversation };
+  };
+  const ownerMessageInput = (req: express.Request, res: express.Response) => {
     const input = sendOwnerMessageInputSchema.safeParse(req.body);
-    if (!input.success) {
-      res
-        .status(422)
-        .json({ error: { code: "invalid_input", issues: input.error.issues } });
-      return;
-    }
+    if (input.success) return input.data;
+    res
+      .status(422)
+      .json({ error: { code: "invalid_input", issues: input.error.issues } });
+    return undefined;
+  };
+  const listChatMessages = async (
+    res: express.Response,
+    organizationId: string,
+    conversationId?: string
+  ) => {
+    const chat = await findChat(organizationId, conversationId);
+    if (!chat) return notFound(res);
+    res.json(
+      await listConversationMessages(db, chat.org.id, chat.conversation.id)
+    );
+  };
+  const sendChatMessage = async (
+    req: express.Request,
+    res: express.Response,
+    conversationId?: string
+  ) => {
+    const chat = await findChat(String(req.params.id), conversationId);
+    if (!chat) return notFound(res);
+    const input = ownerMessageInput(req, res);
+    if (!input) return;
     const sent = await sendOwnerMessage(
       { db, hub, dispatcher, now },
-      org,
-      input.data
+      chat.org,
+      chat.conversation,
+      input
     );
     if (sent.kind === "organization_closed") return closed(res);
     res.status(201).json(sent.message);
+  };
+
+  app.get("/api/organizations/:id/conversations", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(await listConversations(db, req.params.id));
   });
+
+  /** 새 대화를 첫 사용자 메시지와 함께 시작한다. 빈 대화는 만들지 않는다. */
+  app.post("/api/organizations/:id/conversations", async (req, res) => {
+    const org = await findOrganization(db, req.params.id);
+    if (!org || !findLead(org.agents)) return notFound(res);
+    const input = ownerMessageInput(req, res);
+    if (!input) return;
+    const sent = await sendOwnerMessage(
+      { db, hub, dispatcher, now },
+      org,
+      "new",
+      input
+    );
+    if (sent.kind === "organization_closed") return closed(res);
+    res
+      .status(201)
+      .json({ conversation: sent.conversation, message: sent.message });
+  });
+
+  app.get(
+    "/api/organizations/:id/conversations/:conversationId/messages",
+    (req, res) =>
+      listChatMessages(res, req.params.id, req.params.conversationId)
+  );
+
+  app.post(
+    "/api/organizations/:id/conversations/:conversationId/messages",
+    (req, res) => sendChatMessage(req, res, req.params.conversationId)
+  );
+
+  /** 사용자가 대화를 메시지 하나까지 보았다. 목록의 읽지 않음 표시만 바꾸며 Event를 남기지 않는다. 바뀐 대화 목록을 돌려준다. */
+  app.put(
+    "/api/organizations/:id/conversations/:conversationId/read",
+    async (req, res) => {
+      const input = markConversationReadInputSchema.safeParse(req.body);
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const marked = await markConversationRead(
+        db,
+        req.params.id,
+        req.params.conversationId,
+        input.data.upToMessageId
+      );
+      if (marked === "not_found") return notFound(res);
+      res.json(await listConversations(db, req.params.id));
+    }
+  );
+
+  // 기본 대화. 대화 경로가 생기기 전의 조회·보내기와 같다.
+  app.get("/api/organizations/:id/messages", (req, res) =>
+    listChatMessages(res, req.params.id)
+  );
+
+  app.post("/api/organizations/:id/messages", (req, res) =>
+    sendChatMessage(req, res)
+  );
 
   // `?status=running`은 최근 목록과 달리 진행 중 실행 시도를 모두 돌려준다(대시보드의 실행 중·취소 정리 중 개수).
   app.get("/api/organizations/:id/runs", async (req, res) => {

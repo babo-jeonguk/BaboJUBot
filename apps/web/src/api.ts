@@ -6,6 +6,7 @@ import {
   artifactSchema,
   conversationMessageListSchema,
   conversationMessageSchema,
+  conversationSummaryListSchema,
   eventListSchema,
   flowTemplateCopySchema,
   inboxItemStateSchema,
@@ -25,6 +26,7 @@ import {
   resultSubmissionSchema,
   resultSubmissionSummaryListSchema,
   runDetailSchema,
+  startConversationResultSchema,
   runSummaryListSchema,
   taskCommentSchema,
   taskDetailSchema,
@@ -59,7 +61,17 @@ import { z } from "zod";
 export const queryKeys = {
   organizations: ["organizations"] as const,
   organization: (id: string) => ["organizations", id] as const,
-  conversation: (id: string) => ["organizations", id, "messages"] as const,
+  conversations: (id: string) =>
+    ["organizations", id, "conversations"] as const,
+  /** 대화 하나의 메시지. 대화 ID가 없으면 기본 대화다. */
+  conversation: (id: string, conversationId?: string) =>
+    [
+      "organizations",
+      id,
+      "conversations",
+      conversationId ?? "default",
+      "messages",
+    ] as const,
   events: (id: string, agentId?: string) =>
     ["organizations", id, "events", agentId ?? "all"] as const,
   dashboard: (id: string, timeZone: string) =>
@@ -186,37 +198,113 @@ export function useCreateOrganization() {
   });
 }
 
-export function useConversation(orgId: string) {
+/** 조직의 대화 목록. 기본 대화가 맨 위, 나머지는 마지막 활동이 최근인 것부터다. */
+export function useConversations(orgId: string) {
   return useQuery({
-    queryKey: queryKeys.conversation(orgId),
+    queryKey: queryKeys.conversations(orgId),
     queryFn: () =>
-      request(conversationMessageListSchema, orgPath(orgId, "/messages")),
+      request(conversationSummaryListSchema, orgPath(orgId, "/conversations")),
   });
 }
 
+/** 대화가 없으면 기본 대화의 경로. */
+const messagesPath = (orgId: string, conversationId?: string) =>
+  orgPath(
+    orgId,
+    conversationId
+      ? `/conversations/${encodeURIComponent(conversationId)}/messages`
+      : "/messages"
+  );
+
+/** 대화 하나의 메시지. 대화 ID가 없으면 기본 대화다. */
+export function useConversation(orgId: string, conversationId?: string) {
+  return useQuery({
+    queryKey: queryKeys.conversation(orgId, conversationId),
+    queryFn: () =>
+      request(
+        conversationMessageListSchema,
+        messagesPath(orgId, conversationId)
+      ),
+    retry: notFoundIsFinal,
+  });
+}
+
+type OwnerMessage = { body: string; delivery: MessageDelivery };
+const jsonPost = (body: unknown) => ({
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
 /**
- * Lead 대화에 사용자 메시지를 보낸다. 실패하면 입력과 전달 방식을 지우지 않도록 호출한 쪽이 결과를 본다.
+ * Lead 대화에 사용자 메시지를 보낸다. 대화 ID가 없으면 기본 대화다. 실패하면 입력과 전달 방식을 지우지 않도록 호출한 쪽이 결과를 본다.
  * `중단하고 반영`은 메시지와 실행 시도 중단 제어 명령을 한 요청으로 보낸다(서버가 함께 저장).
  */
-export function useSendMessage(orgId: string) {
+export function useSendMessage(orgId: string, conversationId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: OwnerMessage) =>
+      request(
+        conversationMessageSchema,
+        messagesPath(orgId, conversationId),
+        jsonPost(input)
+      ),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.conversation(orgId, conversationId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.conversations(orgId),
+          exact: true,
+        }),
+      ]),
+  });
+}
+
+/** 첫 메시지로 새 대화를 시작한다. 메시지를 보내기 전에는 대화가 생기지 않는다. */
+export function useStartConversation(orgId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: OwnerMessage) =>
+      request(
+        startConversationResultSchema,
+        orgPath(orgId, "/conversations"),
+        jsonPost(input)
+      ),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations(orgId),
+        exact: true,
+      }),
+  });
+}
+
+/** 사용자가 대화를 메시지 하나까지 보았다. 서버가 돌려준 대화 목록으로 읽지 않음 표시를 바꾼다. */
+export function useMarkConversationRead(orgId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
-      body,
-      delivery,
+      conversationId,
+      upToMessageId,
     }: {
-      body: string;
-      delivery: MessageDelivery;
+      conversationId: string;
+      upToMessageId: string;
     }) =>
-      request(conversationMessageSchema, orgPath(orgId, "/messages"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body, delivery }),
-      }),
-    onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.conversation(orgId),
-      }),
+      request(
+        conversationSummaryListSchema,
+        orgPath(
+          orgId,
+          `/conversations/${encodeURIComponent(conversationId)}/read`
+        ),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ upToMessageId }),
+        }
+      ),
+    onSuccess: (list) =>
+      queryClient.setQueryData(queryKeys.conversations(orgId), list),
   });
 }
 

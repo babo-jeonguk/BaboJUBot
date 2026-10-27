@@ -227,6 +227,7 @@ describe("Lead conversation", () => {
         payload: {
           messageId: messages[1]!.id,
           agentId: org.lead.id,
+          conversationId: messages[0]!.conversationId,
           author: "agent",
           runId: run!.id,
         },
@@ -578,14 +579,21 @@ describe("run activity", () => {
 
     await t.stopServer();
 
-    const { listAgentsWithPendingWakes, listRuns, listConversation } =
-      await import("@babojubot/db");
+    const {
+      findDefaultConversation,
+      listAgentsWithPendingWakes,
+      listRuns,
+      listConversationMessages,
+    } = await import("@babojubot/db");
+    const chat = await findDefaultConversation(t.db, org.id);
     expect((await listRuns(t.db, org.id)).map((r) => r.status)).toEqual([
       "server_restart",
     ]);
     expect(await listAgentsWithPendingWakes(t.db)).toEqual([org.lead.id]);
     expect(
-      (await listConversation(t.db, org.id, org.lead.id)).map((m) => m.author)
+      (await listConversationMessages(t.db, org.id, chat!.id)).map(
+        (m) => m.author
+      )
     ).toEqual(["owner"]);
   });
 });

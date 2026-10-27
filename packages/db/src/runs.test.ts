@@ -12,7 +12,7 @@ import {
   finishRun,
   insertOwnerMessage,
   listAgentsWithPendingWakes,
-  listConversation,
+  listConversationMessages,
   listRuns,
   loadRunContext,
   recoverInterruptedRuns,
@@ -55,26 +55,30 @@ async function organization() {
   );
   await insertOrganizationCreation(t.db, creation);
   const lead = creation.agents[0]!;
+  const defaultConversation = creation.defaultConversation;
   const send = async (body: string) => {
     const plan = planOwnerMessage(
       { organizationId: lead.organizationId, agents: creation.agents },
+      defaultConversation,
       { body, delivery: "next_run" },
       source
     );
     await insertOwnerMessage(t.db, plan);
     return plan.message;
   };
+  const listConversation = () =>
+    listConversationMessages(t.db, lead.organizationId, defaultConversation.id);
   const claim = (tokenDigest = randomUUID()) =>
     claimNextRun(t.db, lead.id, {
       tokenDigest,
       source,
     });
-  return { lead, send, claim };
+  return { lead, send, claim, listConversation };
 }
 
 describe("wake queue admission", () => {
   it("bundles every pending wake into one run and holds later wakes for the next run", async () => {
-    const { lead, send, claim } = await organization();
+    const { send, claim, listConversation } = await organization();
     const first = await send("하나");
     const second = await send("둘");
 
@@ -105,11 +109,7 @@ describe("wake queue admission", () => {
     const run2 = await claim();
     expect(run2?.wakeReasons.map(messageIdOf)).toEqual([third.id]);
 
-    const conversation = await listConversation(
-      t.db,
-      lead.organizationId,
-      lead.id
-    );
+    const conversation = await listConversation();
     expect(conversation.map((m) => [m.body, m.deliveredToRunId])).toEqual([
       ["하나", run1!.run.id],
       ["둘", run1!.run.id],
@@ -176,6 +176,7 @@ describe("admission and organization stage", () => {
         payload: {
           messageId: randomUUID(),
           agentId: lead.id,
+          conversationId: randomUUID(),
           author: "owner",
           runId: null,
         },
@@ -299,7 +300,7 @@ describe("run termination", () => {
   });
 
   it("ends runs a stopped server left running and hands their wakes to a new run", async () => {
-    const { lead, send, claim } = await organization();
+    const { lead, send, claim, listConversation } = await organization();
     const message = await send("x");
     const digest = randomUUID();
     const interrupted = await claim(digest);
@@ -333,11 +334,9 @@ describe("run termination", () => {
     );
     expect(old).toMatchObject({ status: "server_restart", wakeCount: 1 });
     expect(old?.wakeReasons.map(messageIdOf)).toEqual([message.id]);
-    expect(
-      (await listConversation(t.db, lead.organizationId, lead.id)).map(
-        (m) => m.deliveredToRunId
-      )
-    ).toEqual([next!.run.id]);
+    expect((await listConversation()).map((m) => m.deliveredToRunId)).toEqual([
+      next!.run.id,
+    ]);
   });
 
   it("keeps an owner cancellation requested before the server stopped and does not hand its wakes over again", async () => {

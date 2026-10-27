@@ -212,6 +212,7 @@ export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
  * 주 부모 지정은 409 `primary_parent_exists`, 이미 다른 노드에 연결된 작업의 연결은 409 `task_already_linked`,
  * 폐기된 노드의 편집(폐기 취소 제외)·폐기된 노드로의 새 연결은 409 `node_discarded`.
  * 같은 `Idempotency-Key`로 다른 도구·입력을 보내면 409 `idempotency_conflict`({@link idempotencyKeyHeader}).
+ * 답장(`send_message`)의 대화가 같은 조직에 없으면 404 `not_found`, 여러 대화의 사용자 메시지를 받은 실행 시도가 대화를 고르지 않으면 422 `invalid_input`.
  */
 export const orgToolErrorCodes = [
   "invalid_token",

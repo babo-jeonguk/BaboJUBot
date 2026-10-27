@@ -1,6 +1,13 @@
 import { defaultAgentAppearance, type Agent } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
-import { planRunInterruption, planRunStart, type PendingWake } from "./run.ts";
+import {
+  chooseReplyConversation,
+  conversationTitle,
+  planOwnerMessage,
+  planRunInterruption,
+  planRunStart,
+  type PendingWake,
+} from "./run.ts";
 
 const at = "2026-10-18T00:00:00.000Z";
 const sequence = (...ids: string[]) => ({
@@ -16,13 +23,81 @@ const lead: Agent = {
   appearance: defaultAgentAppearance("lead-1"),
   createdAt: at,
 };
+describe("Lead conversations", () => {
+  const organization = { organizationId: "org-1", agents: [lead] };
+
+  it("starts a new conversation with its first owner message, titled after the message", () => {
+    const plan = planOwnerMessage(
+      organization,
+      "new",
+      { body: "  데이터셋\n후보를   정리해 줄래요?  ", delivery: "next_run" },
+      sequence("conversation-2", "msg-1", "wake-1")
+    );
+    expect(plan.conversation).toEqual({
+      id: "conversation-2",
+      organizationId: "org-1",
+      title: "데이터셋 후보를 정리해 줄래요?",
+      isDefault: false,
+      createdAt: at,
+    });
+    expect(plan.message).toMatchObject({
+      id: "msg-1",
+      conversationId: "conversation-2",
+      author: "owner",
+    });
+    expect(plan.wake).toMatchObject({ messageId: "msg-1", agentId: "lead-1" });
+    expect(plan.event.payload).toMatchObject({
+      messageId: "msg-1",
+      conversationId: "conversation-2",
+    });
+  });
+
+  it("adds a message to an existing conversation without starting another", () => {
+    const plan = planOwnerMessage(
+      organization,
+      { id: "conversation-1" },
+      { body: "이어서", delivery: "interrupt" },
+      sequence("msg-2", "wake-2")
+    );
+    expect(plan.conversation).toBeNull();
+    expect(plan.message).toMatchObject({
+      conversationId: "conversation-1",
+      delivery: "interrupt",
+    });
+  });
+
+  it("cuts a long first message to the title length", () => {
+    const title = conversationTitle("가".repeat(40));
+    expect([...title]).toHaveLength(30);
+    expect(title.endsWith("…")).toBe(true);
+    expect(conversationTitle("짧은 제목")).toBe("짧은 제목");
+  });
+
+  it("replies where the owner messages came from, sends self-initiated replies to the default conversation, and asks for a choice across conversations", () => {
+    expect(chooseReplyConversation(undefined, ["c-2", "c-2"], "c-1")).toBe(
+      "c-2"
+    );
+    expect(chooseReplyConversation(undefined, [], "c-1")).toBe("c-1");
+    expect(chooseReplyConversation(undefined, ["c-2", "c-3"], "c-1")).toBe(
+      "conversation_required"
+    );
+    expect(chooseReplyConversation("c-3", ["c-2", "c-3"], "c-1")).toBe("c-3");
+  });
+});
+
 describe("planRunStart", () => {
   const wake = (id: string, body: string): PendingWake => ({
     id,
     organizationId: "org-1",
     agentId: "lead-1",
     createdAt: at,
-    reason: { kind: "owner_message", wakeId: id, messageId: `msg-${id}`, body },
+    reason: {
+      kind: "owner_message",
+      wakeId: id,
+      messageId: `msg-${id}`,
+      conversationId: "conversation-1",
+      body,
+    },
   });
 
   it("resumes the previous session only under the same instructions bundle", () => {

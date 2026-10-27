@@ -261,7 +261,7 @@ export function orgToolsRouter({
       if (!input.success) return refuse(res, 422, "invalid_input");
       respondWrite(
         res,
-        await insertAgentMessage(db, run, input.data.body, {
+        await insertAgentMessage(db, run, input.data, {
           source,
           ...callOf(
             res,
