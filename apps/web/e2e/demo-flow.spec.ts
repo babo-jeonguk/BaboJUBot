@@ -123,9 +123,11 @@ test("the demo scenario walks one organization from creation through the Lead ch
       .getByRole("region", { name: "산출물" })
       .getByRole("link", { name: /연구 문제 정리 1 메모/ })
       .click();
-    await expect(page.getByTestId("artifact-content")).toContainText(
-      "# 연구 문제 정리 1 메모"
-    );
+    await expect(
+      page
+        .getByTestId("artifact-content")
+        .getByRole("heading", { name: "연구 문제 정리 1 메모" })
+    ).toBeVisible();
     await expect(main).toContainText(
       "산출물이 있다고 결과가 확인된 것은 아닙니다"
     );

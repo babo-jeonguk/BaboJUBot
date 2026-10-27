@@ -60,6 +60,7 @@ import {
   useTasks,
   type MapEdit,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
   formatTime,
   Loading,
@@ -1341,9 +1342,7 @@ function NodeDetail({
         )}
         {status.isError && <Problem error={status.error} />}
         {node.body && (
-          <p className="mt-2 text-xs break-words whitespace-pre-wrap text-slate-600">
-            {node.body}
-          </p>
+          <Markdown text={node.body} className="mt-2 text-xs text-slate-600" />
         )}
       </div>
 

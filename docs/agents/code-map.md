@@ -21,6 +21,7 @@
 | 생성 dialog·성공 이동·실패 안내 | [create-organization.tsx](../../apps/web/src/create-organization.tsx), api.ts `useCreateOrganization`, 입력 계약 | 생성 E2E |
 | 주소·메뉴·홈·빈 상태 | [pages.tsx](../../apps/web/src/pages.tsx), [shell.tsx](../../apps/web/src/shell.tsx), [main.tsx](../../apps/web/src/main.tsx) routes | 생성 E2E의 홈·메뉴·Lead 빈 화면 |
 | 공용 UI·상태·반응형 | [ui.tsx](../../apps/web/src/ui.tsx), [index.css](../../apps/web/src/index.css), 해당 화면 | 생성 E2E만으로 모든 화면·폭을 검증하지는 않음 |
+| 긴 글이 `#`·`**` 기호 그대로 보임·Markdown 링크·HTML 안전 | [markdown.tsx](../../apps/web/src/markdown.tsx) `Markdown`(react-markdown·remark-gfm·remark-breaks. 원문 HTML은 글자로, 안전하지 않은 주소는 비움, 바깥 링크는 새 탭·`noopener noreferrer`, 이미지는 링크, 글 속 제목은 두 단계 내림, 맨 앞 frontmatter는 코드 블록, `~` 하나는 취소선 아님), [markdown.css](../../apps/web/src/markdown.css). 쓰는 곳: 산출물(`format` markdown만)·작업 내용·자기 보고·댓글(tasks.tsx), Lead 대화(chat.tsx), 승인 계획·환경·사본 미리보기(approvals.tsx), 결과 요약(results.tsx), Inbox 상세 발췌·실행 요약(inbox-detail.tsx), 목표·완료 기준(pages.tsx와 위 상세), Role·Soul·Skill 사본·revision 보기·실행 시도 요약·깨우기 사유(agents.tsx), 연구 노드 본문(research-map.tsx). 편집 폼 textarea는 원문 그대로 | [단위 검사](../../apps/web/src/markdown.test.tsx), 작업 화면·초기 승인 E2E의 제목 role |
 
 ## 실행 시도·조직 도구·대화
 

@@ -22,6 +22,7 @@ import {
 } from "./api.ts";
 import { ApprovalDecision } from "./approvals.tsx";
 import { InboxItemOrganize, useInboxPanel } from "./inbox.tsx";
+import { Markdown } from "./markdown.tsx";
 import { ResultDecision } from "./results.tsx";
 import {
   approvalKindLabel,
@@ -175,7 +176,7 @@ function Excerpt({ label, text }: { label: string; text: string }) {
     <section aria-label={label} className="mb-4">
       <h2 className="mb-1.5 text-sm font-semibold text-slate-600">{label}</h2>
       <div className="card px-4 py-3 text-sm text-slate-800">
-        <p className="line-clamp-4 break-words whitespace-pre-wrap">{text}</p>
+        <Markdown text={text} className="max-h-24 overflow-hidden" />
         <p className="mt-1 text-xs text-slate-400">
           길면 앞부분만 보입니다. 전문은 원래 화면에서 볼 수 있습니다.
         </p>
@@ -234,10 +235,12 @@ function ProposalSummary({ approval: a }: { approval: Approval }) {
         </h2>
         <dl className="card grid gap-x-4 gap-y-2 px-4 py-3 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
-          <dd className="break-words whitespace-pre-wrap">{p.goal}</dd>
+          <dd className="min-w-0">
+            <Markdown text={p.goal} />
+          </dd>
           <dt className="text-slate-500">완료 기준</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {p.completionCriteria}
+          <dd className="min-w-0">
+            <Markdown text={p.completionCriteria} />
           </dd>
         </dl>
       </section>
@@ -297,10 +300,12 @@ function SubmissionSummary({
         </h2>
         <dl className="card grid gap-x-4 gap-y-2 px-4 py-3 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
-          <dd className="break-words whitespace-pre-wrap">{s.goal}</dd>
+          <dd className="min-w-0">
+            <Markdown text={s.goal} />
+          </dd>
           <dt className="text-slate-500">완료 기준</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {s.completionCriteria}
+          <dd className="min-w-0">
+            <Markdown text={s.completionCriteria} />
           </dd>
         </dl>
       </section>
@@ -339,7 +344,11 @@ function RunFailureSummary({ orgId, sourceId }: Props) {
         originalLabel="실행 기록 보기"
       />
       <Block label="실패 사유">{r.error ?? "사유가 남지 않았습니다."}</Block>
-      {r.summary && <Block label="실행 요약">{r.summary}</Block>}
+      {r.summary && (
+        <Block label="실행 요약">
+          <Markdown text={r.summary} />
+        </Block>
+      )}
     </Page>
   );
 }

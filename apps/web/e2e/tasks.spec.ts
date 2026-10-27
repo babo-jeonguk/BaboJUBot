@@ -94,9 +94,13 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   const artifacts = page.getByRole("region", { name: "산출물" });
   await artifacts.getByRole("link", { name: /연구 문제 정리 1 메모/ }).click();
   await expect(page).toHaveURL(/\/artifacts\/[0-9a-f-]{36}$/);
-  await expect(page.getByTestId("artifact-content")).toContainText(
-    "# 연구 문제 정리 1 메모"
-  );
+  // Markdown 산출물은 기호가 아니라 제목·목록으로 보인다.
+  const content = page.getByTestId("artifact-content");
+  await expect(
+    content.getByRole("heading", { name: "연구 문제 정리 1 메모" })
+  ).toBeVisible();
+  await expect(content.getByRole("listitem")).toHaveCount(2);
+  await expect(content).not.toContainText("#");
   await expect(page.getByRole("main")).toContainText(
     "산출물이 있다고 결과가 확인된 것은 아닙니다"
   );
