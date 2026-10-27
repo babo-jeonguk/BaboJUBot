@@ -9,7 +9,13 @@ import {
   type InboxItemKind,
   type ResultSubmission,
 } from "@babojubot/contracts";
-import { useEffect, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
@@ -170,16 +176,24 @@ function Block({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** 긴 글은 앞부분만 보이고, 줄였다는 것을 숨기지 않는다. */
+/** 긴 글은 앞부분만 보이고, 잘린 글은 아래가 흐려져 줄였다는 것을 숨기지 않는다. */
 function Excerpt({ label, text }: { label: string; text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [clipped, setClipped] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) setClipped(el.scrollHeight > el.clientHeight);
+  }, [text]);
   return (
     <section aria-label={label} className="mb-4">
       <h2 className="mb-1.5 text-sm font-semibold text-slate-600">{label}</h2>
       <div className="card px-4 py-3 text-sm text-slate-800">
-        <Markdown text={text} className="max-h-24 overflow-hidden" />
-        <p className="mt-1 text-xs text-slate-400">
-          길면 앞부분만 보입니다. 전문은 원래 화면에서 볼 수 있습니다.
-        </p>
+        <Markdown
+          ref={ref}
+          text={text}
+          data-clipped={clipped || undefined}
+          className={`max-h-24 overflow-hidden ${clipped ? "[mask-image:linear-gradient(to_bottom,black_55%,transparent)]" : ""}`}
+        />
       </div>
     </section>
   );

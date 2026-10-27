@@ -538,7 +538,7 @@ export function InboxItemOrganize({
       </div>
       {update.isError && (
         <p role="alert" className="mt-1 text-xs text-rose-700">
-          정리하지 못했습니다. 상태는 그대로입니다. 다시 시도하세요.
+          정리하지 못했습니다. 다시 시도하세요.
         </p>
       )}
     </>

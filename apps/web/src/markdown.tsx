@@ -1,4 +1,4 @@
-import type { ComponentProps, HTMLAttributes, ReactNode } from "react";
+import type { ComponentProps, HTMLAttributes, ReactNode, Ref } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -77,6 +77,7 @@ export function Markdown({
 }: {
   text: string;
   tone?: "default" | "inverse";
+  ref?: Ref<HTMLDivElement>;
 } & HTMLAttributes<HTMLDivElement>) {
   return (
     <div
