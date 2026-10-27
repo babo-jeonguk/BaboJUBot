@@ -415,3 +415,188 @@ describe("last activity on the home", () => {
     expect(Date.parse(at[busy.id]!)).toBeGreaterThan(Date.parse(at[quiet.id]!));
   });
 });
+
+describe("rooms on the home", () => {
+  it("lists organizations in creation order with their agents in join order, each agent's state and what a working agent holds, and the owner decisions still open", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const awaiting = await createOrganization("승인 기다리는 방");
+    const room = await researching(agents, "작업하는 방");
+    const closed = await createOrganization("끝난 방");
+    expect(
+      (await t.request("POST", `/api/organizations/${closed.id}/stop`, {}))
+        .status
+    ).toBe(200);
+    const [first, second] = room.workers as [
+      (typeof room.workers)[number],
+      (typeof room.workers)[number],
+    ];
+
+    // 작업자 1은 맡은 작업에 착수한 채 붙잡히고, 작업자 2는 실패로 끝난다.
+    const held = createGate();
+    const heldComment = createGate();
+    try {
+      agents.queue(first.id, (request) => {
+        const assigned = request.wakeReasons.find(
+          (r) => r.kind === "task_assigned"
+        )!;
+        return {
+          steps: [
+            {
+              do: "call",
+              tool: "start_task",
+              params: () => ({ taskId: assigned.taskId }),
+            },
+            { do: "hold", until: held.wait },
+          ],
+        };
+      });
+      agents.queue(second.id, {
+        steps: [{ do: "fail", error: "일부러 실패" }],
+      });
+      agents.queue(
+        room.lead.id,
+        calls(
+          {
+            tool: "create_task",
+            input: { title: "긴 문헌 조사", assigneeAgentId: first.id },
+          },
+          {
+            tool: "create_task",
+            input: { title: "실패할 분석", assigneeAgentId: second.id },
+          }
+        )
+      );
+      await say(room.id, "작업을 맡겨 주세요");
+      await held.reached;
+      await expect
+        .poll(async () =>
+          (await allRuns(room.id)).some(
+            (r) => r.agentId === second.id && r.status === "failed"
+          )
+        )
+        .toBe(true);
+      await expect
+        .poll(async () => (await runningRuns(room.id)).length)
+        .toBe(1);
+      expect(
+        (
+          await t.request(
+            "POST",
+            `/api/organizations/${room.id}/agents/${room.lead.id}/pause`,
+            {}
+          )
+        ).status
+      ).toBe(200);
+
+      const before = await overview();
+      const orgs = (await get("/api/organizations")) as { id: string }[];
+      // 만든 순서(목록 API와 같은 순서). 상태가 바뀌어도 순서는 그대로다.
+      expect(before.organizations.map((o) => o.organizationId)).toEqual(
+        orgs.map((o) => o.id)
+      );
+      const ids = before.organizations.map((o) => o.organizationId);
+      expect(ids.indexOf(awaiting.id)).toBeLessThan(ids.indexOf(room.id));
+      expect(ids.indexOf(room.id)).toBeLessThan(ids.indexOf(closed.id));
+      const of = (id: string) =>
+        before.organizations.find((o) => o.organizationId === id)!;
+
+      expect(of(awaiting.id)).toMatchObject({
+        name: "승인 기다리는 방",
+        goal: goal.goal,
+        stage: "awaiting_approval",
+        createdAt: awaiting.createdAt,
+        pendingDecisions: [
+          { kind: "initial_research", createdAt: expect.any(String) },
+        ],
+        agents: [
+          {
+            id: awaiting.lead.id,
+            role: "lead",
+            name: awaiting.lead.name,
+            appearance: awaiting.lead.appearance,
+            status: "idle",
+            paused: false,
+            lastRunFailed: false,
+            currentTask: null,
+            wakeKind: null,
+          },
+        ],
+      });
+      // 끝난 조직의 승인 요청은 결정할 수 없으므로 기다리는 결정이 아니다.
+      expect(of(closed.id)).toMatchObject({
+        stage: "stopped",
+        pendingDecisions: [],
+      });
+
+      const working = of(room.id);
+      expect(working.stage).toBe("researching");
+      expect(working.pendingDecisions).toEqual([]);
+      expect(working.agents.map((a) => a.id)).toEqual([
+        room.lead.id,
+        first.id,
+        second.id,
+      ]);
+      expect(working.agents).toEqual([
+        expect.objectContaining({
+          role: "lead",
+          status: "idle",
+          paused: true,
+          lastRunFailed: false,
+          currentTask: null,
+        }),
+        expect.objectContaining({
+          role: "worker",
+          status: "running",
+          paused: false,
+          lastRunFailed: false,
+          currentTask: "긴 문헌 조사",
+          wakeKind: "task_assigned",
+        }),
+        expect.objectContaining({
+          role: "worker",
+          status: "idle",
+          lastRunFailed: true,
+          currentTask: null,
+          wakeKind: null,
+        }),
+      ]);
+
+      // 작업이 진행 중이 아니어도 실행 시도가 받은 댓글의 작업을 붙잡고 있다. 다시 실행하면 실패 표시는 사라진다.
+      agents.queue(second.id, {
+        steps: [{ do: "hold", until: heldComment.wait }],
+      });
+      const failedTask = (await tasksOf(room.id)).find(
+        (task) => task.title === "실패할 분석"
+      )!;
+      expect(
+        (
+          await t.request(
+            "POST",
+            `/api/organizations/${room.id}/tasks/${failedTask.id}/comments`,
+            { body: "다시 봐 주세요" }
+          )
+        ).status
+      ).toBe(201);
+      await heldComment.reached;
+      const retried = (await overview()).organizations
+        .find((o) => o.organizationId === room.id)!
+        .agents.find((a) => a.id === second.id);
+      expect(retried).toMatchObject({
+        status: "running",
+        lastRunFailed: false,
+        currentTask: "실패할 분석",
+        wakeKind: "task_comment",
+      });
+    } finally {
+      held.open();
+      heldComment.open();
+    }
+    await t.drain();
+    const after = (await overview()).organizations.find(
+      (o) => o.organizationId === room.id
+    )!;
+    expect(after.agents.every((a) => a.status === "idle")).toBe(true);
+    expect(after.agents.every((a) => a.currentTask === null)).toBe(true);
+  });
+});

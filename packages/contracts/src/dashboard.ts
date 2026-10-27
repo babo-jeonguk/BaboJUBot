@@ -1,10 +1,15 @@
 import { z } from "zod";
+import { agentAppearanceSchema } from "./agent-profile.ts";
+import { approvalKinds } from "./approval.ts";
 import { eventSchema } from "./event.ts";
+import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
 import {
+  agentStatusSchema,
   runEndReasonSchema,
   runStatusSchema,
   runSummarySchema,
   type RunEndReason,
+  type WakeKind,
 } from "./run.ts";
 import { taskStatusSchema } from "./task.ts";
 
@@ -75,7 +80,60 @@ export const runningCountSchema = z.object({
 });
 export type RunningCount = z.infer<typeof runningCountSchema>;
 
-/** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 그 합계, 조직별 마지막 활동 시각을 한 조회에서 센다. */
+/** 깨우기 종류. 홈은 실행 중인 에이전트가 무엇 때문에 일하는지 짧게 보인다. */
+export const wakeKinds = [
+  "owner_message",
+  "approval_decision",
+  "task_assigned",
+  "task_completed",
+  "task_comment",
+  "agent_to_agent_message",
+  "research_map_edit",
+  "instruction_edit",
+  "result_changes_requested",
+  "organization_created",
+  "heartbeat",
+] as const satisfies readonly WakeKind[];
+// 깨우기 사유가 늘면 여기서 타입 오류가 나서 목록을 함께 고친다.
+const allWakeKinds: Exclude<WakeKind, (typeof wakeKinds)[number]> extends never
+  ? true
+  : never = true;
+void allWakeKinds;
+export const wakeKindSchema = z.enum(wakeKinds);
+
+/** 사용자 결정을 기다리는 일의 종류: 승인 요청 종류와 결과 제출. */
+export const pendingDecisionKinds = [
+  ...approvalKinds,
+  "result_submission",
+] as const;
+export const pendingDecisionKindSchema = z.enum(pendingDecisionKinds);
+export type PendingDecisionKind = z.infer<typeof pendingDecisionKindSchema>;
+
+/** 홈 개요의 에이전트 하나: 자리·얼굴과 지금 상태. */
+export const overviewAgentSchema = z.object({
+  id: z.uuid(),
+  role: agentRoleSchema,
+  name: z.string(),
+  appearance: agentAppearanceSchema,
+  status: agentStatusSchema,
+  /** 사용자가 이 에이전트를 일시정지했다(조직 일시정지와 따로). */
+  paused: z.boolean(),
+  /** 가장 최근 실행 시도가 실패로 끝났다. 실행 중이면 거짓이다. */
+  lastRunFailed: z.boolean(),
+  /**
+   * 실행 중일 때 붙잡고 있는 작업 제목: 진행 중인 작업, 없으면 그 실행 시도가 받은 깨우기의 작업.
+   * 실행 중이 아니거나 작업과 상관없는 일이면 없다.
+   */
+  currentTask: z.string().nullable(),
+  /** 실행 중일 때 그 실행 시도가 받은 가장 최근 깨우기 종류. 실행 중이 아니면 없다. */
+  wakeKind: wakeKindSchema.nullable(),
+});
+export type OverviewAgent = z.infer<typeof overviewAgentSchema>;
+
+/**
+ * 홈 개요. 모든 조직의 진행 중 실행 시도 수와 그 합계, 조직별 마지막 활동 시각, 방을 그릴 조직·에이전트 상태를
+ * 한 읽기 snapshot에서 낸다. 조직은 만든 순서(오래된 것이 먼저)다.
+ */
 export const overviewSchema = z.object({
   asOf: z.iso.datetime({ offset: true }),
   runs: runningCountSchema,
@@ -85,9 +143,23 @@ export const overviewSchema = z.object({
       organizationId: z.uuid(),
       /** 그 조직의 가장 최근 Event 시각. Event가 하나도 없으면 없다. */
       lastActivityAt: z.iso.datetime({ offset: true }).nullable(),
+      name: z.string(),
+      goal: z.string().nullable(),
+      stage: lifecycleStageSchema,
+      createdAt: z.iso.datetime({ offset: true }),
+      /** 들어온 순서(Lead가 먼저). */
+      agents: z.array(overviewAgentSchema),
+      /** 사용자 결정을 기다리는 승인 요청·결과 제출. 오래된 것이 먼저이며 끝난 조직은 비어 있다. */
+      pendingDecisions: z.array(
+        z.object({
+          kind: pendingDecisionKindSchema,
+          createdAt: z.iso.datetime({ offset: true }),
+        })
+      ),
     })
   ),
 });
+export type OverviewOrganization = Overview["organizations"][number];
 export type Overview = z.infer<typeof overviewSchema>;
 
 /** 화면의 `실행 중`은 취소 정리 중을 뺀 수다(조직 제어와 같은 뜻). 정리 중은 따로 보인다. */

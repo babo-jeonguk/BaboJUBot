@@ -101,7 +101,7 @@ export const toAgent = ({
     createdAt,
   });
 /** 저장한 얼굴이 없거나 지금 프리셋에 없는 값이면 ID에서 정한 기본 얼굴이다. */
-const resolveAppearance = (id: string, stored: unknown) => {
+export const resolveAppearance = (id: string, stored: unknown) => {
   const parsed = agentAppearanceSchema.safeParse(stored);
   return parsed.success ? parsed.data : defaultAgentAppearance(id);
 };
