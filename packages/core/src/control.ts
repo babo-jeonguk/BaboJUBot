@@ -8,7 +8,7 @@ import {
   type RunCancelReason,
 } from "@babojubot/contracts";
 
-// 사용자 제어 명령: 조직 일시정지·재개·중단, 에이전트 일시정지·재개, `중단하고 반영`의 실행 시도 중단.
+// 사용자 제어 명령: 조직 일시정지·재개·중단, 에이전트 일시정지·재개·실행 중단, `중단하고 보내기`의 실행 시도 중단.
 // 저장 쪽은 조직 행 잠금 아래에서 지금 상태와 진행 중 실행 시도를 읽어 여기에 넘기고, 결과를 한 transaction에 저장한 뒤
 // commit 뒤에 실행기에 취소를 보낸다. 같은 상태를 다시 요청하면 아무것도 바꾸지 않는다.
 
@@ -115,7 +115,11 @@ export type AgentControlPlan = {
   event: NewEvent;
 };
 
-/** 에이전트 제어 명령. 일시정지는 그 에이전트의 진행 중 실행 시도를 취소하고 이후 admission을 막는다. 끝난 조직은 받지 않는다. */
+/**
+ * 에이전트 제어 명령. 일시정지는 그 에이전트의 진행 중 실행 시도를 취소하고 이후 admission을 막는다. 끝난 조직은 받지 않는다.
+ * 실행 중단은 메시지 없이 진행 중 실행 시도만 취소하고 일시정지하지 않는다. `runningRunId`는 아직 취소를 요청받지 않은
+ * 진행 중 실행 시도이며, 없으면(실행 중이 아니거나 이미 정리 중) 아무것도 바꾸지 않는다.
+ */
 export function planAgentControl(
   agent: { id: string; organizationId: string; paused: boolean },
   organizationStage: LifecycleStage,
@@ -123,6 +127,23 @@ export function planAgentControl(
   runningRunId: string | null
 ): AgentControlPlan | ControlRefusal {
   if (isClosedStage(organizationStage)) return "organization_closed";
+  if (command === "interrupt") {
+    if (!runningRunId) return "unchanged";
+    return {
+      paused: agent.paused,
+      cancellation: { reason: "owner_interrupt", runIds: [runningRunId] },
+      event: {
+        organizationId: agent.organizationId,
+        type: "agent.interrupted",
+        payload: {
+          by: "owner",
+          agentId: agent.id,
+          runId: runningRunId,
+          messageId: null,
+        },
+      },
+    };
+  }
   if (agent.paused === (command === "pause")) return "unchanged";
   if (command === "resume")
     return {
@@ -153,7 +174,7 @@ export type InterruptPlan = {
 };
 
 /**
- * `중단하고 반영`의 실행 시도 중단 제어 명령. 받는 에이전트의 진행 중 실행 시도를 취소하고, 메시지는 깨우기로 남아 다음 실행 시도가 받는다.
+ * `중단하고 보내기`의 실행 시도 중단 제어 명령. 받는 에이전트의 진행 중 실행 시도를 취소하고, 메시지는 깨우기로 남아 다음 실행 시도가 받는다.
  * 조직·에이전트는 일시정지하지 않는다. 실행 중이 아니면 취소할 것 없이 제어 기록만 남는다. 끝난 조직은 받지 않는다.
  */
 export function planInterrupt(

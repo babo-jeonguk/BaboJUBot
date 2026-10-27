@@ -69,7 +69,7 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   // 정책이 켜져 있으니 Lead의 작업자 추가는 승인 요청이 되고 작업자는 아직 없다.
   await page.goto(`/orgs/${org.id}/chat`);
   await page.getByLabel("Lead에게 보낼 메시지").fill("작업자 추가: researcher");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
   const requested = page
     .getByRole("list", { name: "대화" })
     .locator('[data-author="agent"]')
@@ -109,7 +109,7 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   // 다시 부탁해 승인하면 작업자가 생긴다.
   await page.goto(`/orgs/${org.id}/chat`);
   await page.getByLabel("Lead에게 보낼 메시지").fill("작업자 추가: researcher");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
   await expect(requested).toHaveCount(2, runs);
   // 이번에는 원래 화면에서 사본 내용을 보고 승인한다.
   await openRequest();

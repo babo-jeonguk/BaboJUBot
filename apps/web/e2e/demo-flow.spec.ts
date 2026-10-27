@@ -39,7 +39,7 @@ test("the demo scenario walks one organization from creation with a goal through
   const orgPath = (path: string) => `/orgs/${orgId}${path}`;
   const send = async (body: string) => {
     await page.getByLabel("Lead에게 보낼 메시지").fill(body);
-    await page.getByRole("button", { name: "보내기" }).click();
+    await page.getByRole("button", { name: "보내기", exact: true }).click();
   };
 
   await test.step("연구 목표와 완료 기준을 적어 조직을 만들면 Lead가 초기 연구 승인을 요청한다", async () => {
@@ -249,7 +249,10 @@ test("the demo scenario walks one organization from creation with a goal through
 
   await test.step("사용자가 최종 완료를 확정한다", async () => {
     await decision.getByRole("button", { name: "최종 완료" }).click();
-    await decision.getByRole("button", { name: "최종 완료 확정" }).click();
+    await decision
+      .getByRole("group", { name: "최종 완료할까요?" })
+      .getByRole("button", { name: "최종 완료" })
+      .click();
     await expect(decision).toContainText("연구를 최종 완료했습니다");
     await expect(decision.getByRole("button")).toHaveCount(0);
     await expect(stageLink("최종 완료")).toBeVisible();

@@ -7,8 +7,8 @@ export const messageAuthorSchema = z.enum(messageAuthors);
 export type MessageAuthor = z.infer<typeof messageAuthorSchema>;
 
 /**
- * 사용자 메시지 전달 방식. `next_run`은 `다음 실행 시도에 반영`(기본)이고, `interrupt`는 `중단하고 반영`이다.
- * `중단하고 반영`은 받는 에이전트의 진행 중 실행 시도를 취소하는 제어 명령을 함께 남기고, 메시지는 다음 실행 시도가 받는다.
+ * 사용자 메시지 전달 방식. `next_run`은 `줄 세우기`(기본, 실행 중이 아니면 그냥 보내기)이고, `interrupt`는 `중단하고 보내기`다.
+ * `중단하고 보내기`는 받는 에이전트의 진행 중 실행 시도를 취소하는 제어 명령을 함께 남기고, 메시지는 다음 실행 시도가 받는다.
  * steer는 실행기 지원과 함께 더한다(판 2).
  */
 export const messageDeliveries = ["next_run", "interrupt"] as const;

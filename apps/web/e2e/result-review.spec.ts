@@ -136,7 +136,10 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   ).toBeVisible();
   const otherDecision = other.getByRole("region", { name: "결정" });
   await otherDecision.getByRole("button", { name: "최종 완료" }).click();
-  await otherDecision.getByRole("button", { name: "최종 완료 확정" }).click();
+  await otherDecision
+    .getByRole("group", { name: "최종 완료할까요?" })
+    .getByRole("button", { name: "최종 완료" })
+    .click();
   await expect(otherDecision).toContainText("연구를 최종 완료했습니다");
   await expect(otherDecision).toBeFocused();
   await other.close();

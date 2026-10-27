@@ -5,6 +5,7 @@ import {
   organizationSchema,
   orgToolPaths,
   runSummaryListSchema,
+  type AgentCommand,
   type Event,
   type OrganizationCommand,
   type RunResult,
@@ -26,7 +27,7 @@ import {
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
-// 사용자 제어 명령: 조직 일시정지·재개·중단, 에이전트 일시정지·재개, Lead 대화의 `중단하고 반영`(#59).
+// 사용자 제어 명령: 조직 일시정지·재개·중단, 에이전트 일시정지·재개·실행 중단, Lead 대화의 `중단하고 보내기`(#59).
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -58,7 +59,7 @@ const runsOf = async (orgId: string, agentId?: string) => {
 };
 const control = (
   orgId: string,
-  command: OrganizationCommand,
+  command: OrganizationCommand | AgentCommand,
   agentId?: string
 ) =>
   t!.request(
@@ -412,11 +413,11 @@ describe("organization stop", () => {
     ]);
 
     await say(org.id, "중단 뒤 메시지");
-    // `중단하고 반영`은 제어 명령이라 끝난 조직에서는 메시지도 남기지 않는다.
+    // `중단하고 보내기`는 제어 명령이라 끝난 조직에서는 메시지도 남기지 않는다.
     const refusedInterrupt = await t.request(
       "POST",
       `/api/organizations/${org.id}/messages`,
-      { body: "중단 뒤 중단하고 반영", delivery: "interrupt" }
+      { body: "중단 뒤 중단하고 보내기", delivery: "interrupt" }
     );
     expect(refusedInterrupt.status).toBe(409);
     expect(refusedInterrupt.body).toEqual({
@@ -431,6 +432,9 @@ describe("organization stop", () => {
       expect(res.body).toEqual({ error: { code: "organization_closed" } });
     }
     expect((await control(org.id, "pause", org.lead.id)).status).toBe(409);
+    expect((await control(org.id, "interrupt", org.lead.id)).body).toEqual({
+      error: { code: "organization_closed" },
+    });
     // 이미 중단한 조직의 중단은 아무것도 바꾸지 않는다.
     expect((await control(org.id, "stop")).status).toBe(200);
     expect(
@@ -476,11 +480,11 @@ describe("organization stop", () => {
   });
 });
 
-describe("interrupt and deliver", () => {
+describe("interrupt and send", () => {
   it("cancels the running run, records the control command and the message, and hands the message to the next run", async () => {
     const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
-    const org = await createOrganization("중단하고 반영 조직");
+    const org = await createOrganization("중단하고 보내기 조직");
     const gate = createGate();
     agents.queue(org.lead.id, holding(gate));
     await say(org.id, "긴 일을 시작해 주세요");
@@ -575,7 +579,7 @@ describe("interrupt and deliver", () => {
       },
     };
     t = await startTestServer({ runtime: quietCreation(slow) });
-    const org = await createOrganization("정리 중 중단하고 반영");
+    const org = await createOrganization("정리 중 중단하고 보내기");
     await say(org.id, "긴 일을 시작해 주세요");
     await holdReached;
     const [running] = await runsOf(org.id);
@@ -610,6 +614,115 @@ describe("interrupt and deliver", () => {
       "방향을 바꿔 주세요",
       "이것도 반영해 주세요",
     ]);
+  });
+});
+
+describe("stop the current run", () => {
+  it("cancels only the running run without a message, keeps the agent unpaused, and lets later wakes start runs", async () => {
+    const agents = scriptedAgents({ created: idle });
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await createOrganization("실행 중단 조직");
+    const gate = createGate();
+    agents.queue(org.lead.id, holding(gate));
+    await say(org.id, "긴 일을 시작해 주세요");
+    await gate.reached;
+    const [running] = await runsOf(org.id);
+    const before = (await get(`/api/organizations/${org.id}/messages`)).length;
+    const stream = await t.subscribe({
+      kind: "organization",
+      organizationId: org.id,
+    });
+
+    const res = await control(org.id, "interrupt", org.lead.id);
+    expect(res.status).toBe(200);
+    expect(agentDetailSchema.parse(res.body)).toMatchObject({
+      id: org.lead.id,
+      paused: false,
+    });
+    expect(await stream.next()).toMatchObject({
+      type: "agent.interrupted",
+      payload: {
+        by: "owner",
+        agentId: org.lead.id,
+        runId: running!.id,
+        messageId: null,
+      },
+    });
+    stream.close();
+
+    await t.drain();
+    // 취소된 실행 시도 뒤에 새 실행 시도는 없고, 메시지도 남지 않는다.
+    expect(await runsOf(org.id)).toEqual([
+      expect.objectContaining({
+        id: running!.id,
+        status: "cancelled",
+        cancelReason: "owner_interrupt",
+      }),
+    ]);
+    expect(await get(`/api/organizations/${org.id}/messages`)).toHaveLength(
+      before
+    );
+    expect((await organization(org.id)).stage).toBe("planning");
+
+    // 일시정지가 아니므로 다음 메시지는 평소처럼 실행 시도를 시작한다.
+    await say(org.id, "이어서 해 주세요");
+    await t.drain();
+    const [next] = await runsOf(org.id);
+    expect(next).toMatchObject({ status: "completed", cancelReason: null });
+    expect(bodies(agents.of(org.lead.id).at(-1)!.request.wakeReasons)).toEqual([
+      "이어서 해 주세요",
+    ]);
+  });
+
+  it("changes nothing when the agent is idle or its run is already being cancelled", async () => {
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    onTestFinished(() => release());
+    let reachedHold!: () => void;
+    const holdReached = new Promise<void>((r) => (reachedHold = r));
+    let executed = 0;
+    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 실행기.
+    const slow: RuntimeAdapter = {
+      async execute(): Promise<RunResult> {
+        if (++executed === 1) {
+          reachedHold();
+          await released;
+        }
+        return {
+          stopReason: "completed",
+          error: null,
+          summary: null,
+          usage: null,
+          nextSession: null,
+        };
+      },
+    };
+    t = await startTestServer({ runtime: quietCreation(slow) });
+    const org = await createOrganization("쉬는 Lead의 실행 중단");
+    const idleStop = await control(org.id, "interrupt", org.lead.id);
+    expect(idleStop.status).toBe(200);
+    expect(
+      (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
+    ).toEqual([]);
+
+    await say(org.id, "긴 일을 시작해 주세요");
+    await holdReached;
+    expect((await control(org.id, "interrupt", org.lead.id)).status).toBe(200);
+    // 정리 중인 실행 시도에 다시 내린 실행 중단은 아무것도 남기지 않는다.
+    expect((await control(org.id, "interrupt", org.lead.id)).status).toBe(200);
+    expect(
+      (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
+    ).toHaveLength(1);
+    release();
+    await t.drain();
+    expect((await runsOf(org.id)).map((r) => r.status)).toEqual(["cancelled"]);
+  });
+
+  it("does not reach another organization's agent", async () => {
+    t = await startTestServer({ runtime: quietCreation() });
+    const a = await createOrganization("조직 A");
+    const b = await createOrganization("조직 B");
+    expect((await control(a.id, "interrupt", b.lead.id)).status).toBe(404);
   });
 });
 

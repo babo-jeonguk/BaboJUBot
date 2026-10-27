@@ -23,13 +23,15 @@ test("keeps a draft edited while the previous message is being sent", async ({
   });
   try {
     await input.fill("첫 메시지");
-    await page.getByRole("button", { name: "보내기" }).click();
+    await page.getByRole("button", { name: "보내기", exact: true }).click();
     await expect(page.getByRole("status")).toHaveText("전송 중…");
     await input.fill("다음 메시지 초안");
     release();
     await expect(page.getByRole("status")).toHaveCount(0);
     await expect(input).toHaveValue("다음 메시지 초안");
-    await expect(page.getByRole("button", { name: "보내기" })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "보내기", exact: true })
+    ).toBeEnabled();
   } finally {
     release();
     await page.unrouteAll({ behavior: "wait" });
@@ -53,7 +55,7 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
   );
   const input = page.getByLabel("Lead에게 보낼 메시지");
   await input.fill("데이터셋은 무엇을 쓸 계획인가요");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
 
   // Lead의 답장은 새로고침 없이 Event stream으로 나타난다.
   const reply = conversation

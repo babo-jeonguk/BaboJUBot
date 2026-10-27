@@ -18,6 +18,7 @@ import { Home } from "./home.tsx";
 import { OrganizationScreen } from "./pages.tsx";
 import { ResultSubmissionPage } from "./results.tsx";
 import { Shell } from "./shell.tsx";
+import { ToastProvider } from "./toast.tsx";
 import { ArtifactPage, TaskDetailPage } from "./tasks.tsx";
 import { NotFound } from "./ui.tsx";
 import "./index.css";
@@ -34,14 +35,16 @@ if (!CSS.supports("field-sizing", "content"))
   });
 
 /**
- * 셸 바깥의 공통: 실시간 Event 구독, 조직 생성 dialog, Inbox 패널 상태. data router라서 화면은 이동 차단(`useBlocker`)을 쓸 수 있다.
+ * 셸 바깥의 공통: 실시간 Event 구독, 조직 생성 dialog, Inbox 패널 상태, 되돌리기 토스트. data router라서 화면은 이동 차단(`useBlocker`)을 쓸 수 있다.
  */
 function Root() {
   useLiveEvents();
   return (
     <CreateOrganizationProvider>
       <InboxPanelProvider>
-        <Shell />
+        <ToastProvider>
+          <Shell />
+        </ToastProvider>
       </InboxPanelProvider>
     </CreateOrganizationProvider>
   );

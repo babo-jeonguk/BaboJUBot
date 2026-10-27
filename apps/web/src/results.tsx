@@ -312,22 +312,33 @@ function DecisionForm({
           수정 요청
         </button>
         {confirming ? (
-          <>
+          <span
+            role="group"
+            aria-labelledby="complete-confirm-title"
+            className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-100 py-1 pr-1 pl-3"
+          >
+            <span className="text-xs text-slate-700">
+              <strong id="complete-confirm-title" className="font-semibold">
+                최종 완료할까요?
+              </strong>{" "}
+              되돌릴 수 없습니다.
+            </span>
+            <button
+              className="btn-ghost"
+              disabled={decide.isPending}
+              onClick={() => setConfirming(false)}
+              autoFocus
+            >
+              취소
+            </button>
             <button
               className="btn-primary"
               disabled={closed || decide.isPending}
               onClick={() => send("complete")}
             >
-              최종 완료 확정
+              최종 완료
             </button>
-            <button
-              className="btn-ghost"
-              disabled={decide.isPending}
-              onClick={() => setConfirming(false)}
-            >
-              취소
-            </button>
-          </>
+          </span>
         ) : (
           <button
             className="btn-primary"
@@ -338,9 +349,6 @@ function DecisionForm({
           </button>
         )}
       </div>
-      {confirming && !decide.isPending && (
-        <p className="mt-2 text-xs text-slate-600">되돌릴 수 없습니다.</p>
-      )}
       {decide.isPending && (
         <p role="status" className="mt-2 text-xs text-slate-500">
           결정을 보내는 중…

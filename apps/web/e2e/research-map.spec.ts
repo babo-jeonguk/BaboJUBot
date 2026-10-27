@@ -213,15 +213,24 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(panel.getByLabel("제목", { exact: true })).toHaveValue(
     "연구 문제 정리 1"
   );
-  await panel.getByRole("button", { name: "폐기…" }).click();
-  const confirm = panel.getByRole("group", { name: "폐기 확인" });
-  await expect(confirm).toContainText("보조 연결 1개, 연결 작업 1개");
-  await confirm.getByRole("button", { name: "폐기", exact: true }).click();
+  // 폐기는 되돌릴 수 있어 묻지 않고 바로 하고, 화면 아래 토스트에서 폐기 취소를 준다.
+  await panel.getByRole("button", { name: "폐기", exact: true }).click();
   await expect(first).toHaveAttribute("data-status", "discarded");
   await expect(panel.getByTestId("node-status")).toHaveText("폐기");
+  const toast = page.getByTestId("toast");
+  await expect(toast).toContainText("노드를 폐기했습니다");
   await expect(
     linked.getByRole("link", { name: /연구 문제 정리 1/ })
   ).toHaveCount(2);
+  await toast.getByRole("button", { name: "폐기 취소" }).click();
+  await expect(first).toHaveAttribute("data-status", "proposed");
+  await expect(toast).toHaveCount(0);
+
+  // 패널의 폐기 취소도 그대로 있다. 토스트는 닫기로 닫는다.
+  await panel.getByRole("button", { name: "폐기", exact: true }).click();
+  await expect(first).toHaveAttribute("data-status", "discarded");
+  await toast.getByRole("button", { name: "닫기" }).click();
+  await expect(toast).toHaveCount(0);
   await panel.getByRole("button", { name: /폐기 취소/ }).click();
   await expect(first).toHaveAttribute("data-status", "proposed");
 
