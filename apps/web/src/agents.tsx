@@ -632,13 +632,13 @@ function InstructionCopies({
       >
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px]" />
-          <Dialog.Content className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop">
+          <Dialog.Content
+            aria-describedby={undefined}
+            className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop"
+          >
             <Dialog.Title className="text-base font-semibold">
-              저장하지 않은 편집이 있습니다
+              편집한 내용을 버릴까요?
             </Dialog.Title>
-            <Dialog.Description className="mt-1 text-sm text-slate-500">
-              옮기면 편집한 내용을 버립니다.
-            </Dialog.Description>
             <div className="mt-5 flex justify-end gap-2">
               <Dialog.Close className="btn-soft">계속 편집</Dialog.Close>
               <button
@@ -653,7 +653,7 @@ function InstructionCopies({
                   }
                 }}
               >
-                편집 버리고 이동
+                버리기
               </button>
             </div>
           </Dialog.Content>

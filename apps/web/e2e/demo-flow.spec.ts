@@ -249,7 +249,10 @@ test("the demo scenario walks one organization from creation with a goal through
 
   await test.step("사용자가 최종 완료를 확정한다", async () => {
     await decision.getByRole("button", { name: "최종 완료" }).click();
-    await decision.getByRole("button", { name: "최종 완료 확정" }).click();
+    await decision
+      .getByRole("group", { name: "최종 완료할까요?" })
+      .getByRole("button", { name: "최종 완료" })
+      .click();
     await expect(decision).toContainText("연구를 최종 완료했습니다");
     await expect(decision.getByRole("button")).toHaveCount(0);
     await expect(stageLink("최종 완료")).toBeVisible();

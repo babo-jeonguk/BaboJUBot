@@ -57,7 +57,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
 
   // 저장하지 않은 편집이 있으면 다른 파일이나 화면으로 옮기기 전에 묻고, 계속 편집하면 그대로다.
   const ask = page.getByRole("dialog", {
-    name: "저장하지 않은 편집이 있습니다",
+    name: "편집한 내용을 버릴까요?",
   });
   await section(page).getByRole("tab", { name: "Soul · SOUL.md" }).click();
   await expect(ask).toBeVisible();
@@ -166,7 +166,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await editor.fill("버릴 편집");
   await page.goBack();
   await expect(ask).toBeVisible();
-  await ask.getByRole("button", { name: "편집 버리고 이동" }).click();
+  await ask.getByRole("button", { name: "버리기" }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${leadId}$`));
   await expect(page.getByRole("region", { name: "Heartbeat" })).toBeVisible();
   expect((await copies()).find((c) => c.id === original.id)).toMatchObject({

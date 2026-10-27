@@ -92,13 +92,15 @@ test("stopping asks once more and then leaves every control disabled", async ({
   const controls = page.getByRole("region", { name: "조직 제어" });
 
   await controls.getByRole("button", { name: /중단/ }).click();
-  const confirm = controls.getByRole("group", { name: "조직 중단 확인" });
+  const confirm = controls.getByRole("group", { name: "조직을 중단할까요?" });
   await expect(confirm).toContainText("되돌릴 수 없습니다");
+  // 되돌릴 수 없는 명령이라 포커스는 취소에서 시작한다.
+  await expect(confirm.getByRole("button", { name: "취소" })).toBeFocused();
   await confirm.getByRole("button", { name: "취소" }).click();
   await expect(confirm).toHaveCount(0);
 
   await controls.getByRole("button", { name: /중단/ }).click();
-  await confirm.getByRole("button", { name: "중단 확정" }).click();
+  await confirm.getByRole("button", { name: "중단", exact: true }).click();
   await expect(page.getByTestId("org-stage")).toHaveText("중단됨");
   await expect(
     controls.getByRole("button", { name: /일시정지/ })
