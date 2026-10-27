@@ -149,8 +149,11 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
     "50% (완료 1 / 2, 취소 1 · 서버 재시작 0 제외)"
   );
 
-  // 서버가 모르는 브라우저 시간대면 UTC로 잘라 보이고 그 사실을 밝힌다.
+  // 서버가 모르는 브라우저 시간대면 UTC로 잘라 보이고 그 사실을 밝힌다. 실행 환경의 시간대가 UTC여도 대체가 일어나게 브라우저 시간대를 정한다.
   const unknownZone = await context.newPage();
+  await (
+    await context.newCDPSession(unknownZone)
+  ).send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Seoul" });
   await unknownZone.route(/\/dashboard\?timeZone=(?!UTC$)/, (route) =>
     route.fulfill({
       status: 422,
