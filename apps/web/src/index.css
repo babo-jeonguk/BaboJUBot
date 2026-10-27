@@ -5,7 +5,8 @@
 @theme {
   --font-sans: "Pretendard Variable", Pretendard, system-ui, sans-serif;
   --font-mono:
-    ui-monospace, "SF Mono", Menlo, Consolas, "Pretendard Variable", monospace;
+    ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono",
+    "Liberation Mono", "Noto Sans Mono", "Pretendard Variable", monospace;
 
   --color-canvas: #f4f5f9;
   --color-brand-50: #eef0ff;
