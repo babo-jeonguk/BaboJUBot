@@ -19,7 +19,7 @@
 | E2E가 Event stream 구독 성립 전에 상태를 바꿈·ready를 기다리다 멈춤 | [e2e/support/live-events.ts](../../apps/web/e2e/support/live-events.ts) `openWithLiveEvents`(화면과 같은 frame 계약·제한 시간·listener 해제. `routeWebSocket` page 제외) | [helper 검사](../../apps/web/e2e/support/live-events.spec.ts) |
 | 주소는 바뀌었는데 화면·선택이 늦게 바뀜(이전 화면이 입력을 받음) | [main.tsx](../../apps/web/src/main.tsx) `RouterProvider useTransitions={false}`(라우터 갱신을 startTransition으로 미루지 않음. 미루면 재조회 갱신에 밀려 최대 약 5초 늦음) | [연구 지도 E2E](../../apps/web/e2e/research-map.spec.ts) `watchSelectionLag`(CPU 4배 감속에서 주소·패널 노드 불일치 구간) |
 | 생성 dialog·성공 이동·실패 안내 | [create-organization.tsx](../../apps/web/src/create-organization.tsx), api.ts `useCreateOrganization`, 입력 계약 | 생성 E2E |
-| 주소·메뉴·홈·빈 상태 | [pages.tsx](../../apps/web/src/pages.tsx), [shell.tsx](../../apps/web/src/shell.tsx), [main.tsx](../../apps/web/src/main.tsx) routes | 생성 E2E의 홈·메뉴·Lead 빈 화면 |
+| 주소·메뉴·홈·빈 상태 | [pages.tsx](../../apps/web/src/pages.tsx), [home.tsx](../../apps/web/src/home.tsx) `Home`·`NoOrganizations`, [shell.tsx](../../apps/web/src/shell.tsx), [main.tsx](../../apps/web/src/main.tsx) routes | 생성 E2E의 홈·메뉴·Lead 빈 화면 |
 | 공용 UI·상태·반응형 | [ui.tsx](../../apps/web/src/ui.tsx), [index.css](../../apps/web/src/index.css), 해당 화면 | 생성 E2E만으로 모든 화면·폭을 검증하지는 않음 |
 
 ## 실행 시도·조직 도구·대화
@@ -171,14 +171,15 @@
 
 ## 대시보드 지표·홈 개요
 
-통합 검증: [대시보드 API](../../apps/server/test/dashboard.test.ts), [대시보드 E2E](../../apps/web/e2e/dashboard.spec.ts).
+통합 검증: [대시보드 API](../../apps/server/test/dashboard.test.ts), [대시보드 E2E](../../apps/web/e2e/dashboard.spec.ts), [홈 E2E](../../apps/web/e2e/home.spec.ts).
 
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
 | 요약·개요 모양, 14일·최근 활동 수, 시간대 이름 모양, 성공률(완료 / (완료 + 실패), 합칠 때 분자·분모 따로)·화면의 `실행 중`(취소 정리 중 뺌) | [contracts/dashboard.ts](../../packages/contracts/src/dashboard.ts) `organizationDashboardSchema`·`overviewSchema`·`runSuccessRate`·`activeRunCount` | [계약](../../packages/contracts/src/dashboard.test.ts) |
-| 조직 범위 수·날짜 bucket(시간대 자정, 0인 날, 오늘이 끝나는 `nextDayAt`)·진행 중 목록·최근 Event를 한 READ ONLY REPEATABLE READ snapshot에서, 서버가 모르는 시간대 거부(`pg_timezone_names`), 모든 조직의 진행 중 수를 SQL 하나로 | [db/dashboard.ts](../../packages/db/src/dashboard.ts) `getOrganizationDashboard`·`getOverview`; 진행 중 목록은 db/runs.ts `listRunningRuns` | 대시보드 API(서울·UTC·뉴욕 서머타임 경계, 취소 정리 중, 다른 조직 제외) |
+| 조직 범위 수·날짜 bucket(시간대 자정, 0인 날, 오늘이 끝나는 `nextDayAt`)·진행 중 목록·최근 Event를 한 READ ONLY REPEATABLE READ snapshot에서, 서버가 모르는 시간대 거부(`pg_timezone_names`), 모든 조직의 진행 중 수·마지막 Event 시각(`lastActivityAt`)을 SQL 하나로 | [db/dashboard.ts](../../packages/db/src/dashboard.ts) `getOrganizationDashboard`·`getOverview`; 진행 중 목록은 db/runs.ts `listRunningRuns` | 대시보드 API(서울·UTC·뉴욕 서머타임 경계, 취소 정리 중, 다른 조직 제외, 조직별 마지막 활동) |
 | 조회 API·404·422 `invalid_time_zone`·기준 시각(주입 시계) | server/app.ts `GET /api/organizations/:id/dashboard`·`GET /api/overview` | 대시보드 API |
-| 지표·14일 차트(막대 hover/focus·`숫자로 보기` 표)·실행 중인 에이전트·최근 활동, 홈 실행 중 수·조직 카드, 활동 필터 주소(`?agent=`) | [web/dashboard.tsx](../../apps/web/src/dashboard.tsx), pages.tsx `Home`·`OrganizationDashboard`, activity.tsx `ActivityScreen`; api.ts `useOrganizationDashboard`(`dashboardQuery`: 브라우저 시간대, 서버가 모르는 이름이면 UTC, 응답의 `asOf`→`nextDayAt`만큼 기다려 재조회)·dashboard.tsx `RunningCountText`(실행 중·취소 정리 중 문구 하나)·`useOverview` | 대시보드 E2E(다른 탭 390px 홈·다른 조직·필터·390px 넘침 없음), web dashboard-query(UTC 대체 뒤 UTC 자정·브라우저 시계 앞섬) |
+| 지표·14일 차트(막대 hover/focus·`숫자로 보기` 표)·실행 중인 에이전트·최근 활동, 활동 필터 주소(`?agent=`) | [web/dashboard.tsx](../../apps/web/src/dashboard.tsx), pages.tsx `OrganizationDashboard`, activity.tsx `ActivityScreen`; api.ts `useOrganizationDashboard`(`dashboardQuery`: 브라우저 시간대, 서버가 모르는 이름이면 UTC, 응답의 `asOf`→`nextDayAt`만큼 기다려 재조회)·dashboard.tsx `RunningCountText`(실행 중·취소 정리 중 문구 하나)·`useOverview` | 대시보드 E2E(다른 탭 390px 홈·다른 조직·필터·390px 넘침 없음), web dashboard-query(UTC 대체 뒤 UTC 자정·브라우저 시계 앞섬) |
+| 홈 요약(주의 필요·실행 중·조직 수, 주의 필요를 누르면 Inbox)·조직 카드 구역(주의 필요 → 진행 중 → 접힌 끝난 조직)과 순서(주의 수 → 실행 중 → 일시정지 뒤 → 마지막 활동)·상대 시각 | [web/home.tsx](../../apps/web/src/home.tsx) `Home`·`arrangeHome`(주의 수는 contracts `needsAttention`, 레일·Inbox와 같은 판정. 주의가 있으면 끝난 조직도 주의 필요)·`relativeTime`; api.ts `useOverview`·`useInbox`; 근거 [홈 조사](../research/home-references.md) | [구역·순서·상대 시각](../../apps/web/src/home.test.ts), 홈 E2E(구역·순서·접힘·승인 뒤 이동·390px), 대시보드 E2E(390px 홈 실행 중 수) |
 | Event 뒤 홈 개요 재조회(전역 key라 조직 prefix에 들지 않음), 가짜 Lead `실행 유지 연습` | live-events.ts `queryKeys.overview`; runtime/scripted.ts `demoLeadScript` | 대시보드 E2E, [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
 
 ## 개발 환경
