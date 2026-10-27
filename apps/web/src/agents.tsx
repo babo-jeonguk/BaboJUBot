@@ -737,11 +737,6 @@ function RevisionList({
       className="border-t border-slate-100 px-4 py-3"
     >
       <h3 className="mb-2 text-xs font-semibold text-slate-600">revision</h3>
-      {editing && (
-        <p className="mb-2 text-xs text-slate-400">
-          revision을 열어 봐도 편집 중인 내용은 그대로 남습니다.
-        </p>
-      )}
       {items()}
     </section>
   );
