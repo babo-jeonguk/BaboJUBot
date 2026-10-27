@@ -63,7 +63,7 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
     request.getByRole("button", { name: "읽지 않음" })
   ).toBeVisible();
   await expect(request).toBeVisible();
-  // 결정을 기다리는 항목은 보관할 수 없다. 보관은 끝난 일인 실패에만 있다.
+  // 결정을 기다리는 항목은 보관할 수 없다(결정해야 한다). 실패는 보관할 수 있다.
   await expect(request.getByRole("button", { name: "보관" })).toHaveCount(0);
   await expect(failure.getByRole("button", { name: "보관" })).toBeVisible();
   // 필터는 주의 필요·전체·읽지 않음·보관됨이다.
@@ -293,11 +293,33 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await expect(decision).toContainText("반려됨");
   await expect(decision).toContainText("목표를 더 좁혀 주세요");
   await expect(decision.getByRole("button")).toHaveCount(0);
-  // 결정한 승인 요청은 Inbox에서 빠지고, 정리 버튼도 사라진다(Lead가 다시 낸 요청은 새 항목이다).
-  await expect(
-    panel.locator(`a[href="${new URL(decidedUrl).pathname}"]`)
-  ).toHaveCount(0);
-  await expect(main.getByRole("group", { name: "알림 정리" })).toHaveCount(0);
+  // 결정한 승인 요청은 주의 필요에서 빠지지만 전체에 결정 상태와 함께 남는다(Lead가 다시 낸 요청은 새 항목이다).
+  const decidedLink = `a[href="${new URL(decidedUrl).pathname}"]`;
+  await expect(attention.locator(decidedLink)).toHaveCount(0);
+  await panel.getByRole("button", { name: /^전체 \d/ }).click();
+  const decidedItem = panel
+    .getByRole("list", { name: "전체" })
+    .getByRole("listitem")
+    .filter({ has: page.locator(decidedLink) });
+  await expect(decidedItem).toContainText("반려됨");
+  await expect(decidedItem).not.toContainText("주의 필요");
+  // 결정한 항목은 상세에서 보관할 수 있고, 보관됨에서 다시 열면 결정 기록이 보인다.
+  await main
+    .getByRole("group", { name: "알림 정리" })
+    .getByRole("button", { name: "보관" })
+    .click();
+  await expect(decidedItem).toHaveCount(0);
+  await panel.getByRole("button", { name: /^보관됨 \d/ }).click();
+  const archivedDecided = panel
+    .getByRole("list", { name: "보관됨" })
+    .getByRole("listitem")
+    .filter({ has: page.locator(decidedLink) });
+  await expect(archivedDecided).toContainText("반려됨");
+  await archivedDecided.getByRole("link").click();
+  await expect(page).toHaveURL(decidedUrl);
+  await expect(main.getByRole("region", { name: "결정" })).toContainText(
+    "반려됨"
+  );
 
   // 결정한 항목의 주소를 다시 열어도 결정 기록이 보인다.
   await page.goto(decidedUrl);

@@ -5,6 +5,7 @@ import {
   conversationMessageListSchema,
   fakeChannelMessagesSchema,
   inboxSchema,
+  needsAttention,
   organizationDetailSchema,
   outboxSchema,
   resultSubmissionSummaryListSchema,
@@ -555,7 +556,7 @@ describe("Inbox", () => {
     ).toBe(422);
   });
 
-  it("reading a pending approval request leaves the decision, the stage and the Lead alone, and archiving it is refused", async () => {
+  it("reading a pending approval request leaves the decision, the stage and the Lead alone, archiving it is refused until it is decided, and it stays after the decision", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });
     const org = await awaitingApproval(agents, "보관 조직");
@@ -613,7 +614,7 @@ describe("Inbox", () => {
     expect((await organization(org.id)).stage).toBe("awaiting_approval");
     expect(await runsOf(org.id)).toHaveLength(runsBefore);
 
-    // 결정하면 Inbox에서 빠진다.
+    // 결정해도 Inbox에 결정 상태와 함께 남고, 주의 필요에서만 빠진다. 사용자가 붙인 읽음은 그대로다.
     expect(
       (
         await t.request(
@@ -623,6 +624,67 @@ describe("Inbox", () => {
         )
       ).status
     ).toBe(200);
-    expect(await inboxOf(org.id)).toEqual([]);
+    const [decided] = await inboxOf(org.id);
+    expect(decided).toMatchObject({
+      kind: "approval",
+      read: true,
+      archived: false,
+      approval: { id: org.approvalId, status: "approved" },
+    });
+    expect(needsAttention(decided!)).toBe(false);
+
+    // 결정한 항목은 보관하고 되돌릴 수 있으며, 결정은 그대로다.
+    expect(
+      await tidy(org.id, "approval", org.approvalId, { archived: true })
+    ).toMatchObject({ status: 200, body: { read: true, archived: true } });
+    expect(await inboxOf(org.id)).toEqual([
+      expect.objectContaining({
+        archived: true,
+        approval: expect.objectContaining({ status: "approved" }),
+      }),
+    ]);
+    expect(
+      await tidy(org.id, "approval", org.approvalId, { archived: false })
+    ).toMatchObject({ status: 200, body: { read: true, archived: false } });
+
+    // 중단된 조직의 결정한 항목도 기록으로 남는다.
+    expect(
+      (await t.request("POST", `/api/organizations/${org.id}/stop`, {})).status
+    ).toBe(200);
+    expect(await inboxOf(org.id)).toEqual([
+      expect.objectContaining({
+        approval: expect.objectContaining({
+          id: org.approvalId,
+          status: "approved",
+        }),
+      }),
+    ]);
+  });
+
+  it("shows a decided item nobody organized as read, and archiving it keeps it read", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await awaitingApproval(agents, "정리하지 않은 조직");
+    expect(
+      (
+        await t.request(
+          "POST",
+          `/api/organizations/${org.id}/approvals/${org.approvalId}/decision`,
+          { decision: "reject", note: "범위를 줄여 주세요" }
+        )
+      ).status
+    ).toBe(200);
+    await t.drain();
+    const rejected = (await inboxOf(org.id)).find(
+      (i) => i.kind === "approval" && i.approval.id === org.approvalId
+    );
+    expect(rejected).toMatchObject({
+      read: true,
+      archived: false,
+      approval: { status: "rejected" },
+    });
+    expect(
+      await tidy(org.id, "approval", org.approvalId, { archived: true })
+    ).toMatchObject({ status: 200, body: { read: true, archived: true } });
   });
 });

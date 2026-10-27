@@ -1,9 +1,11 @@
 // Inbox 패널 하나(#50 결정): 1280px 이상에서는 본문 오른쪽에 340px로 붙고, 그보다 좁으면 오른쪽 drawer로 열려
 // 항목을 고르면 닫힌다. 범위는 전체 조직 / 현재 조직, 필터는 주의 필요·전체·읽지 않음·보관됨이다.
 // 항목을 열면(Inbox 상세) 읽음이 된다. 패널에서는 체크한 항목을 한꺼번에 읽음으로 하고, 읽은 항목을 읽지 않음으로 되돌리거나 보관한다.
+// 결정한 승인 요청·결과 제출은 결정 상태와 함께 남는다(주의 필요는 아니다).
 // 도메인 결정(승인·반려·수정 요청·최종 완료)은 항목 상세(Inbox 상세 또는 원래 상세)에서 한다.
 // 행에는 결정 버튼을 두지 않는다(docs/research/inbox-detail-references.md D07).
 import {
+  awaitsDecision,
   canArchiveInboxItem,
   inboxDetailPath,
   inboxFilters,
@@ -35,10 +37,12 @@ import {
 import {
   abbr,
   approvalKindLabel,
+  ApprovalStatusBadge,
   avatarStyle,
   formatTime,
   Loading,
   LoadError,
+  ResultStatusBadge,
 } from "./ui.tsx";
 
 type Scope = "all" | "organization";
@@ -342,6 +346,16 @@ function describe(item: InboxItem) {
   };
 }
 
+/** 결정한 승인 요청·결과 제출의 결정 상태. 결정을 기다리는 항목과 실패에는 없다. */
+function DecidedBadge({ item }: { item: InboxItem }) {
+  if (awaitsDecision(item)) return null;
+  if (item.kind === "approval")
+    return <ApprovalStatusBadge status={item.approval.status} />;
+  if (item.kind === "result_submission")
+    return <ResultStatusBadge status={item.submission.status} />;
+  return null;
+}
+
 function InboxRow({
   item,
   checked,
@@ -397,6 +411,7 @@ function InboxRow({
                   주의 필요
                 </span>
               )}
+              <DecidedBadge item={item} />
               {!item.read && (
                 <span className="chip bg-brand-50 text-brand-700">
                   읽지 않음
@@ -424,7 +439,8 @@ function InboxRow({
 
 /**
  * 알림 정리 버튼. 읽은 항목은 읽지 않음으로 되돌릴 수 있고(읽음은 항목을 열거나 체크해 한꺼번에),
- * 실패한 실행 시도는 보관·보관 해제한다(결정을 기다리는 항목은 보관하지 않고 결정하면 빠진다).
+ * 결정을 기다리지 않는 항목(결정한 승인 요청·결과 제출, 실패한 실행 시도)은 보관·보관 해제한다.
+ * 결정을 기다리는 항목은 보관 버튼이 없다(결정해야 한다).
  * 패널 행과 Inbox 상세가 같은 명령으로 쓴다. 업무 결정과 따로다.
  */
 export function InboxItemOrganize({
@@ -451,7 +467,7 @@ export function InboxItemOrganize({
             읽지 않음
           </button>
         )}
-        {canArchiveInboxItem(item.kind) && (
+        {canArchiveInboxItem(item) && (
           <button
             className="btn-ghost px-2 py-1 text-xs"
             disabled={update.isPending}

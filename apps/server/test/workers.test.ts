@@ -3,7 +3,9 @@ import path from "node:path";
 import {
   agentInstructionsSchema,
   approvalSchema,
+  awaitsDecision,
   inboxSchema,
+  needsAttention,
   orgToolNames,
   orgToolPaths,
   organizationDetailSchema,
@@ -31,7 +33,9 @@ const organization = async (orgId: string) =>
   organizationDetailSchema.parse(await get(`/api/organizations/${orgId}`));
 const workersOf = async (orgId: string) =>
   (await organization(orgId)).agents.filter((a) => a.role === "worker");
-const inbox = async () => inboxSchema.parse(await get("/api/inbox"));
+const fullInbox = async () => inboxSchema.parse(await get("/api/inbox"));
+/** 결정을 기다리는 Inbox 항목. 앞서 결정한 초기 연구 승인 요청은 결정 기록으로 남아 있다. */
+const inbox = async () => (await fullInbox()).filter(awaitsDecision);
 const approval = async (orgId: string, approvalId: string) =>
   approvalSchema.parse(
     await get(`/api/organizations/${orgId}/approvals/${approvalId}`)
@@ -211,6 +215,16 @@ describe("add_worker approval policy", () => {
       wokenAgentId: s.org.lead.id,
     });
     expect(await inbox()).toEqual([]);
+    // 결정한 요청은 결정 상태와 함께 Inbox에 남고, 결정했으니 읽음이며 주의 필요가 아니다.
+    const kept = (await fullInbox()).find(
+      (i) => i.kind === "approval" && i.approval.id === approvalId
+    )!;
+    expect(kept).toMatchObject({
+      read: true,
+      archived: false,
+      approval: { status: "approved" },
+    });
+    expect(needsAttention(kept)).toBe(false);
   });
 
   it("rejecting creates no worker and wakes the Lead with the reason; a worker addition has no change request", async () => {

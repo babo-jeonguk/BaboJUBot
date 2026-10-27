@@ -156,7 +156,7 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await page.waitForTimeout(1_000);
   expect(await runCount()).toBe(before);
 
-  // 결과 검토 목록에는 두 제출과 각 결정이 남고, Inbox에서는 빠졌다.
+  // 결과 검토 목록에는 두 제출과 각 결정이 남고, Inbox에서도 주의 필요에서만 빠져 전체에 결정 상태와 함께 남는다.
   await page.goto(`/orgs/${org.id}/review`);
   const list = page.getByRole("list", { name: "결과 제출" });
   await expect(list.getByRole("link")).toHaveCount(2);
@@ -164,8 +164,18 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(list.getByRole("link").nth(1)).toContainText("수정 요청됨");
   await page.goto("/inbox");
   const panel = page.getByRole("complementary", { name: "Inbox" });
+  await expect(
+    panel.getByRole("list", { name: "주의 필요" }).filter({ hasText: name })
+  ).toHaveCount(0);
   await panel.getByRole("button", { name: /^전체 \d/ }).click();
-  await expect(panel).not.toContainText(name);
+  const kept = panel
+    .getByRole("list", { name: "전체" })
+    .getByRole("listitem")
+    .filter({ hasText: name })
+    .filter({ hasText: "결과 제출" });
+  await expect(kept).toHaveCount(2);
+  await expect(kept.filter({ hasText: "최종 완료" })).toHaveCount(1);
+  await expect(kept.filter({ hasText: "수정 요청됨" })).toHaveCount(1);
 });
 
 test("shows a missing result submission as not found", async ({ page }) => {

@@ -714,7 +714,7 @@ describe("decisions while paused", () => {
       (await get(`/api/organizations/${stopping.id}/approvals/${pending.id}`))
         .status
     ).toBe("pending");
-    // 결정할 수 없는 요청은 Inbox의 주의 필요 항목에 남지 않는다.
+    // 결정할 수 없는 요청은 Inbox에 나오지 않는다(결정한 요청만 기록으로 남는다).
     const inbox = await get("/api/inbox");
     expect(
       inbox.filter(

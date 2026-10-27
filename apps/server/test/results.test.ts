@@ -1,5 +1,6 @@
 import {
   inboxSchema,
+  needsAttention,
   orgToolMethods,
   orgToolNames,
   orgToolPaths,
@@ -47,7 +48,23 @@ const submission = async (orgId: string, submissionId: string) =>
   );
 const runsOf = async (orgId: string) =>
   runSummaryListSchema.parse(await get(`/api/organizations/${orgId}/runs`));
-const inbox = async () => inboxSchema.parse(await get("/api/inbox"));
+/** Inbox의 결과 제출 항목. 앞서 결정한 초기 연구 승인 요청은 결정 기록으로 남아 있다. */
+const inbox = async () =>
+  inboxSchema
+    .parse(await get("/api/inbox"))
+    .filter((i) => i.kind === "result_submission");
+/** 결정한 결과 제출은 결정 상태와 함께 Inbox에 남고, 결정했으니 읽음이며 주의 필요가 아니다. */
+async function expectKeptDecided(submissionId: string, status: string) {
+  const items = await inbox();
+  expect(items).toEqual([
+    expect.objectContaining({
+      read: true,
+      archived: false,
+      submission: expect.objectContaining({ id: submissionId, status }),
+    }),
+  ]);
+  expect(needsAttention(items[0]!)).toBe(false);
+}
 const decide = (
   orgId: string,
   submissionId: string,
@@ -235,7 +252,7 @@ describe("result submission and final completion", () => {
       decidedAt: expect.any(String),
     });
     expect((await organization(org.id)).stage).toBe("researching");
-    expect(await inbox()).toEqual([]);
+    await expectKeptDecided(org.submissionId, "changes_requested");
     await t.drain();
 
     // Lead가 그 제출을 가리키는 수정 요청 사유로 깨어나 의견을 받는다.
@@ -311,7 +328,7 @@ describe("result submission and final completion", () => {
       decisionNote: "기준을 충족했습니다",
     });
     expect((await organization(org.id)).stage).toBe("completed");
-    expect(await inbox()).toEqual([]);
+    await expectKeptDecided(org.submissionId, "completed");
     // 최종 완료는 아무도 깨우지 않는다.
     expect((await resultEvents(org.id)).at(-1)).toMatchObject({
       type: "result.decided",
