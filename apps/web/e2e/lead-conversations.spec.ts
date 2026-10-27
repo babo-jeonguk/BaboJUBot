@@ -20,7 +20,7 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   const input = page.getByLabel("Lead에게 보낼 메시지");
   const send = async (p: Page, body: string) => {
     await p.getByLabel("Lead에게 보낼 메시지").fill(body);
-    await p.getByRole("button", { name: "보내기" }).click();
+    await p.getByRole("button", { name: "보내기", exact: true }).click();
   };
 
   // 생성으로 깨어난 Lead는 사용자 메시지 없이 한 일(초기 연구 승인 요청)을 기본 대화로 알린다.

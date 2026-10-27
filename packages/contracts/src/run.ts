@@ -238,7 +238,7 @@ export const runResultSchema = z.strictObject({
 export type RunResult = z.infer<typeof runResultSchema>;
 
 /**
- * 사용자 제어 명령이 실행 시도를 취소한 사유: 조직 일시정지·조직 중단·에이전트 일시정지·`중단하고 반영`.
+ * 사용자 제어 명령이 실행 시도를 취소한 사유: 조직 일시정지·조직 중단·에이전트 일시정지·실행 중단(`owner_interrupt`, 메시지 없는 `실행 중단`과 `중단하고 보내기`).
  * 실행 시도에 영속하며, 요청한 순간 그 실행 시도의 토큰은 조직 도구를 쓸 수 없다.
  */
 export const runCancelReasons = [

@@ -61,6 +61,7 @@ import {
   type MapEdit,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
+import { useToast } from "./toast.tsx";
 import {
   formatTime,
   Loading,
@@ -1378,17 +1379,7 @@ function NodeDetail({
           />
         </Section>
       )}
-      {canEdit && (
-        <DiscardControl
-          orgId={orgId}
-          node={node}
-          counts={{
-            children: kids.length,
-            links: out.length + inn.length,
-            tasks: index.tasksByNode.get(node.id)?.length ?? 0,
-          }}
-        />
-      )}
+      {canEdit && <DiscardControl orgId={orgId} node={node} />}
 
       <section aria-label="편집 기록" className="text-xs">
         <h3 className="mb-1 font-semibold text-slate-600">편집 기록</h3>
@@ -1801,75 +1792,58 @@ function LinkForm({
   );
 }
 
-/** 폐기는 상태 변경이며 확인 단계에서 그대로 남는 기록을 보여 준다. 폐기 취소도 여기서 한다. */
+/**
+ * 폐기와 폐기 취소. 폐기는 되돌릴 수 있는 상태 변경이라 묻지 않고 바로 하고, 화면 아래 토스트에서도 폐기 취소를 준다.
+ */
 function DiscardControl({
   orgId,
   node,
-  counts,
 }: {
   orgId: string;
   node: ResearchNode;
-  counts: { children: number; links: number; tasks: number };
 }) {
-  const [asking, setAsking] = useState(false);
   const edit = useEditResearchMap(orgId);
-  const run = (op: "discard_node" | "restore_node") =>
-    void edit.mutateAsync({ op, nodeId: node.id }).then(
-      () => setAsking(false),
+  const toast = useToast();
+  const restore = () =>
+    edit
+      .mutateAsync({ op: "restore_node", nodeId: node.id })
+      .catch(() => undefined);
+  const discard = () =>
+    void edit.mutateAsync({ op: "discard_node", nodeId: node.id }).then(
+      () =>
+        toast({
+          message: "노드를 폐기했습니다",
+          action: {
+            label: "폐기 취소",
+            onAction: () =>
+              void edit
+                .mutateAsync({ op: "restore_node", nodeId: node.id })
+                .catch(() => toast({ message: "폐기를 취소하지 못했습니다" })),
+          },
+        }),
       () => undefined
-    );
-  let body: ReactNode;
-  if (discarded(node))
-    body = (
-      <button
-        className="btn-soft w-full"
-        disabled={edit.isPending}
-        onClick={() => run("restore_node")}
-      >
-        폐기 취소
-        {node.statusBeforeDiscard &&
-          ` (이전 상태: ${researchNodeStatusLabel[node.statusBeforeDiscard]})`}
-      </button>
-    );
-  else if (!asking)
-    body = (
-      <button className="btn-danger w-full" onClick={() => setAsking(true)}>
-        폐기…
-      </button>
-    );
-  else
-    body = (
-      <div
-        className="space-y-2 rounded-xl bg-rose-50 p-2.5 text-xs text-rose-800 ring-1 ring-rose-200"
-        role="group"
-        aria-label="폐기 확인"
-      >
-        <p>
-          이 노드를 폐기합니다. 기록은 지우지 않습니다: 하위 노드{" "}
-          {counts.children}개의 주 연결, 보조 연결 {counts.links}개, 연결 작업{" "}
-          {counts.tasks}개가 그대로 남고 폐기 취소할 수 있습니다.
-        </p>
-        <div className="flex gap-1.5">
-          <button
-            className="btn-soft py-1 text-xs"
-            onClick={() => setAsking(false)}
-            autoFocus
-          >
-            취소
-          </button>
-          <button
-            className="btn bg-rose-600 py-1 text-xs text-white hover:bg-rose-700"
-            disabled={edit.isPending}
-            onClick={() => run("discard_node")}
-          >
-            폐기
-          </button>
-        </div>
-      </div>
     );
   return (
     <div>
-      {body}
+      {discarded(node) ? (
+        <button
+          className="btn-soft w-full"
+          disabled={edit.isPending}
+          onClick={() => void restore()}
+        >
+          폐기 취소
+          {node.statusBeforeDiscard &&
+            ` (이전 상태: ${researchNodeStatusLabel[node.statusBeforeDiscard]})`}
+        </button>
+      ) : (
+        <button
+          className="btn-danger w-full"
+          disabled={edit.isPending}
+          onClick={discard}
+        >
+          폐기
+        </button>
+      )}
       {edit.isError && <Problem error={edit.error} />}
     </div>
   );

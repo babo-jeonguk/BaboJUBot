@@ -29,8 +29,11 @@ export const isClosedStage = (stage: LifecycleStage) =>
 /** 조직 제어 명령: 일시정지·재개·중단. 사용자만 내리며 조직 도구가 없다. */
 export const organizationCommands = ["pause", "resume", "stop"] as const;
 export type OrganizationCommand = (typeof organizationCommands)[number];
-/** 에이전트 제어 명령: 일시정지·재개. 조직 제어와 따로 저장한다. */
-export const agentCommands = ["pause", "resume"] as const;
+/**
+ * 에이전트 제어 명령: 일시정지·재개·실행 중단. 조직 제어와 따로 저장한다.
+ * 실행 중단(`interrupt`)은 메시지 없이 지금 실행 시도만 취소하고 일시정지하지 않으므로, 이후 깨우기는 그대로 실행 시도를 시작한다.
+ */
+export const agentCommands = ["pause", "resume", "interrupt"] as const;
 export type AgentCommand = (typeof agentCommands)[number];
 
 export const agentRoles = ["lead", "worker"] as const;

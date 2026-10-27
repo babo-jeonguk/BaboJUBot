@@ -71,7 +71,10 @@ export async function controlOrganization(
   });
 }
 
-/** 에이전트 일시정지·재개. 다른 조직의 에이전트와 없는 에이전트는 같은 `not_found`다. 값은 바뀐 뒤의 일시정지 여부다. */
+/**
+ * 에이전트 일시정지·재개·실행 중단. 다른 조직의 에이전트와 없는 에이전트는 같은 `not_found`다. 값은 바뀐 뒤의 일시정지 여부다.
+ * 실행 중단은 아직 취소를 요청받지 않은 진행 중 실행 시도가 있을 때만 취소 요청·Event를 남긴다.
+ */
 export async function controlAgent(
   db: Database,
   organizationId: string,
@@ -96,17 +99,18 @@ export async function controlAgent(
       .for("no key update");
     if (!agent) return { kind: "not_found" };
     const [running] =
-      command === "pause"
-        ? await lockCancellableRuns(tx, eq(runs.agentId, agentId))
-        : [];
+      command === "resume"
+        ? []
+        : await lockCancellableRuns(tx, eq(runs.agentId, agentId));
     const plan = planAgentControl(agent, org.stage, command, running ?? null);
     if (plan === "organization_closed") return { kind: plan };
     if (plan === "unchanged")
       return { kind: plan, value: { paused: agent.paused } };
-    await tx
-      .update(agents)
-      .set({ paused: plan.paused })
-      .where(eq(agents.id, agentId));
+    if (plan.paused !== agent.paused)
+      await tx
+        .update(agents)
+        .set({ paused: plan.paused })
+        .where(eq(agents.id, agentId));
     await requestCancellation(tx, plan.cancellation);
     return {
       kind: "changed",

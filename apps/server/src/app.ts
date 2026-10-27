@@ -333,7 +333,10 @@ export async function startServer({
       res.json(result.value);
     });
 
-  /** 에이전트 일시정지·재개 제어 명령. 명령 뒤의 에이전트 상세를 돌려준다. 끝난 조직의 에이전트는 409 `organization_closed`다. */
+  /**
+   * 에이전트 일시정지·재개·실행 중단(`interrupt`) 제어 명령. 명령 뒤의 에이전트 상세를 돌려준다. 끝난 조직의 에이전트는 409 `organization_closed`다.
+   * 실행 중단은 메시지 없이 진행 중 실행 시도만 취소하며, 실행 중이 아니면 아무것도 남기지 않는다.
+   */
   for (const command of agentCommands)
     app.post(
       `/api/organizations/:id/agents/:agentId/${command}`,
@@ -436,7 +439,7 @@ export async function startServer({
 
   /**
    * 조직 안의 대화. 경로에 대화가 없으면 기본 대화다. 다른 조직의 대화는 없는 대화와 같은 404다.
-   * 끝난 조직의 대화도 읽을 수 있고, 보내기는 기존 규칙(끝난 조직의 `중단하고 반영`만 409)을 따른다.
+   * 끝난 조직의 대화도 읽을 수 있고, 보내기는 기존 규칙(끝난 조직의 `중단하고 보내기`만 409)을 따른다.
    */
   const findChat = async (organizationId: string, conversationId?: string) => {
     const org = await findOrganization(db, organizationId);

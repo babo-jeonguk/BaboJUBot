@@ -91,25 +91,29 @@ function OrganizationControl({ org }: { org: OrganizationDetail }) {
       ) : (
         <span
           role="group"
-          aria-label="조직 중단 확인"
-          className="flex flex-wrap items-center gap-2 rounded-xl bg-rose-50 px-2 py-1"
+          aria-labelledby="stop-confirm-title"
+          className="flex flex-wrap items-center gap-2 rounded-xl bg-rose-50 py-1 pr-1 pl-3"
         >
           <span className="text-xs text-rose-700">
-            되돌릴 수 없습니다. 중단할까요?
+            <strong id="stop-confirm-title" className="font-semibold">
+              조직을 중단할까요?
+            </strong>{" "}
+            되돌릴 수 없습니다.
           </span>
+          <button
+            className="btn-ghost"
+            disabled={control.isPending}
+            onClick={() => setConfirmingStop(false)}
+            autoFocus
+          >
+            취소
+          </button>
           <button
             className="btn-danger"
             disabled={busy}
             onClick={() => send("stop")}
           >
-            중단 확정
-          </button>
-          <button
-            className="btn-ghost"
-            disabled={control.isPending}
-            onClick={() => setConfirmingStop(false)}
-          >
-            취소
+            중단
           </button>
         </span>
       )}

@@ -238,7 +238,7 @@ const jsonPost = (body: unknown) => ({
 
 /**
  * Lead 대화에 사용자 메시지를 보낸다. 대화 ID가 없으면 기본 대화다. 실패하면 입력과 전달 방식을 지우지 않도록 호출한 쪽이 결과를 본다.
- * `중단하고 반영`은 메시지와 실행 시도 중단 제어 명령을 한 요청으로 보낸다(서버가 함께 저장).
+ * `중단하고 보내기`는 메시지와 실행 시도 중단 제어 명령을 한 요청으로 보낸다(서버가 함께 저장).
  */
 export function useSendMessage(orgId: string, conversationId?: string) {
   const queryClient = useQueryClient();
@@ -572,7 +572,7 @@ export function useControlOrganization(orgId: string) {
   });
 }
 
-/** 에이전트 일시정지·재개 제어 명령. 응답의 에이전트 상세로 바꾸고 그 조직 범위를 다시 불러온다. */
+/** 에이전트 일시정지·재개·실행 중단 제어 명령. 응답의 에이전트 상세로 바꾸고 그 조직 범위를 다시 불러온다. */
 export function useControlAgent(orgId: string, agentId: string) {
   const queryClient = useQueryClient();
   return useMutation({

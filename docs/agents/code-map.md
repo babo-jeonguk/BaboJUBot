@@ -21,6 +21,7 @@
 | 주소는 바뀌었는데 화면·선택이 늦게 바뀜(이전 화면이 입력을 받음) | [main.tsx](../../apps/web/src/main.tsx) `RouterProvider useTransitions={false}`(라우터 갱신을 startTransition으로 미루지 않음. 미루면 재조회 갱신에 밀려 최대 약 5초 늦음) | [연구 지도 E2E](../../apps/web/e2e/research-map.spec.ts) `watchSelectionLag`(CPU 4배 감속에서 주소·패널 노드 불일치 구간) |
 | 생성 dialog(이름·연구 목표 필수, 완료 기준 선택)·성공 이동·실패 안내 | [create-organization.tsx](../../apps/web/src/create-organization.tsx), api.ts `useCreateOrganization`, 입력 계약 | 생성 E2E, 초기 승인 E2E(완료 기준 비움) |
 | 주소·메뉴·홈·빈 상태 | [pages.tsx](../../apps/web/src/pages.tsx), [home.tsx](../../apps/web/src/home.tsx) `Home`·`NoOrganizations`, [shell.tsx](../../apps/web/src/shell.tsx), [main.tsx](../../apps/web/src/main.tsx) routes | 생성 E2E의 홈·메뉴, Lead 대화 E2E의 빈 화면 |
+| 되돌릴 수 있는 행동 뒤의 되돌리기 토스트(아래 가운데·10초·마우스/포커스 동안 멈춤·Esc·닫기), 아이콘 버튼 tooltip | [toast.tsx](../../apps/web/src/toast.tsx) `ToastProvider`·`useToast`(main.tsx `Root`), ui.tsx `Tip`. 쓰는 곳: 연구 지도 폐기 | 연구 지도 E2E의 폐기·폐기 취소 |
 | 공용 UI·상태·반응형 | [ui.tsx](../../apps/web/src/ui.tsx), [index.css](../../apps/web/src/index.css), 해당 화면 | 생성 E2E만으로 모든 화면·폭을 검증하지는 않음 |
 | 긴 글이 `#`·`**` 기호 그대로 보임·Markdown 링크·HTML 안전 | [markdown.tsx](../../apps/web/src/markdown.tsx) `Markdown`(react-markdown·remark-gfm·remark-breaks. 원문 HTML은 글자로, 안전하지 않은 주소는 비움, 바깥 링크는 새 탭·`noopener noreferrer`, 이미지는 링크, 글 속 제목은 두 단계 내림, 맨 앞 frontmatter는 코드 블록, `~` 하나는 취소선 아님), [markdown.css](../../apps/web/src/markdown.css). 쓰는 곳: 산출물(`format` markdown만)·작업 내용·자기 보고·댓글(tasks.tsx), Lead 대화(chat.tsx), 승인 계획·환경·사본 미리보기(approvals.tsx), 결과 요약(results.tsx), Inbox 상세 발췌·실행 요약(inbox-detail.tsx), 목표·완료 기준(pages.tsx와 위 상세), Role·Soul·Skill 사본·revision 보기·실행 시도 요약·깨우기 사유(agents.tsx), 연구 노드 본문(research-map.tsx). 편집 폼 textarea는 원문 그대로 | [단위 검사](../../apps/web/src/markdown.test.tsx), 작업 화면·초기 승인 E2E의 제목 role |
 
@@ -100,7 +101,7 @@
 | 종류 선언·주 부모 지정/변경·순환·자기 연결·폐기/폐기 취소·작업 연결 0~1·같은 값 무변경·사용자 편집의 Lead 깨우기 | [core/research-map.ts](../../packages/core/src/research-map.ts) `plan*`; 도구 단계 규칙은 core/approval.ts `toolRules` | [core](../../packages/core/src/research-map.test.ts) |
 | 조직 잠금 아래 최신 지도 읽기·변경·편집 기록·깨우기·Event 한 transaction, 교차 조직 404 | [db/research-map.ts](../../packages/db/src/research-map.ts) `writeResearchMap`(도구)·`editResearchMap`(사용자); 복합 FK·노드당 주 부모 열은 schema·migrations | 연구 지도 API의 교차 조직·동시 주 부모 변경 |
 | 도구 HTTP·사용자 편집 API·거부 코드표·commit 뒤 Lead 촉진 | server/tools.ts 연구 지도 도구, app.ts `/research-*`, [server/research-map.ts](../../apps/server/src/research-map.ts), [server/problems.ts](../../apps/server/src/problems.ts) | 연구 지도 API |
-| 지도 화면·배치·보조 연결 표시·상세 패널·편집 폼·드래그(보기 상태) | [web/research-map.tsx](../../apps/web/src/research-map.tsx), api.ts `useResearchMap`·`useEditResearchMap`; 작업 상세의 연결 노드는 tasks.tsx | 연구 지도 E2E(390px·실패 시 입력 유지 포함) |
+| 지도 화면·배치·보조 연결 표시·상세 패널·편집 폼·드래그(보기 상태)·묻지 않는 폐기와 토스트의 폐기 취소 | [web/research-map.tsx](../../apps/web/src/research-map.tsx) `DiscardControl`, api.ts `useResearchMap`·`useEditResearchMap`; 작업 상세의 연결 노드는 tasks.tsx | 연구 지도 E2E(390px·실패 시 입력 유지 포함) |
 | 큰 지도의 화면 끌기·선택·노드 끌기 비용 | research-map.tsx `EdgeLayer`(연결 전체를 노드 아래 SVG로)·`focusCss`(강조 노드를 덮개 위로)·`reuse`(바뀐 노드·연결 객체만 새로); [web/research-map.css](../../apps/web/src/research-map.css) 덮개·점선·합성 레이어. React Flow edge는 강조할 연결만 | [성능 측정](../../apps/web/e2e/research-map-perf.spec.ts) `MAP_PERF=1`(프로덕션 빌드, 50/200/500노드·보조 0/20/100%·1280/390px). 연구 지도 E2E의 정적·강조 경로 일치 |
 
 ## 결과 제출·최종 완료
@@ -131,18 +132,18 @@
 | 가짜 Lead의 `작업자 추가: <Role>` 부탁·작업자 추가 결정 답장 | runtime/scripted.ts `demoLeadScript`·`addWorkerScript` | 가짜 실행기 테스트, 작업자 추가 API |
 | 설정 스위치(저장 중·실패·서버 값, 끌 수 없는 초기 연구 승인·최종 완료는 잠긴 스위치)·종류별 승인 상세·결정 폼·대시보드 대기 요청 | [web/settings.tsx](../../apps/web/src/settings.tsx), approvals.tsx, pages.tsx, api.ts `useUpdateApprovalPolicy` | 작업자 승인 정책 E2E(다른 탭·390px 반영 포함) |
 
-## 일시정지·재개·중단과 중단하고 반영
+## 일시정지·재개·중단과 실행 중단·중단하고 보내기
 
 통합 검증: [제어 API](../../apps/server/test/control.test.ts), [제어 E2E](../../apps/web/e2e/pause-resume.spec.ts).
 
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
-| 일시정지 전 단계(`pausedFrom`)·끝난 단계(`closedStages`), 에이전트 `paused`, 취소 사유(`runCancelReasons`)·실행 시도 `cancelReason`, 전달 방식 `interrupt`, Event `organization.paused`·`resumed`·`stopped`·`agent.paused`·`resumed`·`interrupted` | contracts/organization.ts, run.ts, message.ts, event.ts | 제어 API |
-| 명령별 전이·no-op·`organization_closed`, 일시정지 중 결정의 재개(`planDecisionStage`), `중단하고 반영` 계획 | [core/control.ts](../../packages/core/src/control.ts); 토큰 닫힘 `acceptsToolCalls`·취소 우선 종료 `planRunFinish`는 core/run.ts | 제어 API, 결과 API·작업자 추가 API의 일시정지 중 결정 |
+| 일시정지 전 단계(`pausedFrom`)·끝난 단계(`closedStages`), 에이전트 `paused`, 에이전트 명령 `interrupt`(실행 중단), 취소 사유(`runCancelReasons`)·실행 시도 `cancelReason`, 전달 방식 `interrupt`(중단하고 보내기), Event `organization.paused`·`resumed`·`stopped`·`agent.paused`·`resumed`·`interrupted`(실행 중단이면 `messageId` 없음) | contracts/organization.ts, run.ts, message.ts, event.ts | 제어 API |
+| 명령별 전이·no-op·`organization_closed`, 일시정지 중 결정의 재개(`planDecisionStage`), 실행 중단(`planAgentControl` `interrupt`, 취소할 실행 시도가 없으면 no-op)·`중단하고 보내기`(`planInterrupt`) 계획 | [core/control.ts](../../packages/core/src/control.ts)([단위](../../packages/core/src/control.test.ts)); 토큰 닫힘 `acceptsToolCalls`·취소 우선 종료 `planRunFinish`는 core/run.ts | 제어 API, 결과 API·작업자 추가 API의 일시정지 중 결정 |
 | 조직 → 에이전트 → 실행 시도 잠금 아래 단계·일시정지·취소 요청·Event 한 transaction, 중단된 조직의 결정할 수 없는 Inbox 항목 제외 | [db/control.ts](../../packages/db/src/control.ts) `controlOrganization`·`controlAgent`, rows.ts `lockCancellableRuns`·`requestCancellation`; db/inbox.ts; 메시지와 중단은 db/runs.ts `insertOwnerMessage`; 결정의 재개는 db/approvals.ts·results.ts; schema `paused_from`·`paused`·`cancel_reason` | [DB 잠금 순서](../../packages/db/src/runs.test.ts) `control commands` |
 | 일시정지한 에이전트 admission·재개 대상 목록, 취소 요청 실행 시도의 토큰 거부·종료 저장, 개수를 자르지 않는 진행 중 실행 시도(`/runs?status=running`) | db/runs.ts `claimNextRun`·`listAgentsWithPendingWakes`·`authenticateRun`·`finishRun`·`listRunningRuns`, rows.ts `lockRunningRun`·`lockRunningRunOfAgent` | 제어 API `cancellation boundary`·`running runs` |
-| commit 뒤 실행기 취소·등록 직후 취소 재확인·재개 뒤 촉진과 그 조회 실패의 backoff 재시도 | server/dispatcher.ts `cancel`·`kickOrganization`·`#retrying`·`#execute`, [server/control.ts](../../apps/server/src/control.ts), conversation.ts, app.ts `/pause`·`/resume`·`/stop` | 제어 API. 등록 틈은 API로 재현하지 않음 |
-| 조직 제어·실행 중/취소 정리 중 개수, 에이전트 제어, 전달 방식 선택·실패 시 보존·끝난 조직에서 다음 실행 시도로 복귀, 결정 폼의 일시정지·중단 안내 | pages.tsx `OrganizationControl`, agents.tsx `AgentControl`, chat.tsx `Composer`, approvals.tsx·results.tsx `DecisionForm`, ui.tsx `RunStatusBadge`·`PausedBadge`, activity.tsx; api.ts `useControlOrganization`·`useControlAgent`·`useRunningRuns` | 제어 E2E(다른 탭·390px 포함) |
+| commit 뒤 실행기 취소·등록 직후 취소 재확인·재개 뒤 촉진과 그 조회 실패의 backoff 재시도 | server/dispatcher.ts `cancel`·`kickOrganization`·`#retrying`·`#execute`, [server/control.ts](../../apps/server/src/control.ts), conversation.ts, app.ts `/pause`·`/resume`·`/stop`·`/agents/:agentId/interrupt` | 제어 API. 등록 틈은 API로 재현하지 않음 |
+| 조직 제어(중단 짧은 확인)·실행 중/취소 정리 중 개수, 에이전트 제어, 입력창 버튼(쉬면 보내기, 실행 중이면 실행 중단 또는 중단하고 보내기·줄 세우기)·실패 시 입력 보존·끝난 조직에서 보내기로 복귀, 결정 폼의 일시정지·중단 안내 | pages.tsx `OrganizationControl`, agents.tsx `AgentControl`, chat.tsx `Composer`·`IconButton`, approvals.tsx·results.tsx `DecisionForm`, ui.tsx `RunStatusBadge`·`PausedBadge`, activity.tsx; api.ts `useControlOrganization`·`useControlAgent`·`useRunningRuns` | 제어 E2E(다른 탭·390px 포함) |
 
 ## Heartbeat·기억·서버 재시작 복구
 
@@ -315,8 +316,10 @@ scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite: 
   → controlOrganization·controlAgent(조직 잠금 → 에이전트 → 진행 중 실행 시도 FOR UPDATE, core plan*)
   → 단계·pausedFrom / paused, 실행 시도 cancel_reason, Event 함께 저장
   → EventHub → dispatcher.cancel(commit 뒤 abort) → 실행기 정리 → finishRun(cancelled) → 재개면 kickOrganization·kick
-Lead 대화(중단하고 반영) → POST /messages {delivery: interrupt} → insertOwnerMessage(조직 잠금·메시지·깨우기·두 Event·취소 요청)
+Lead 대화(중단하고 보내기) → POST /messages {delivery: interrupt} → insertOwnerMessage(조직 잠금·메시지·깨우기·두 Event·취소 요청)
   → dispatcher.cancel → 취소된 실행 시도 종료 뒤 claimNextRun이 메시지 깨우기를 다음 실행 시도에 묶음
+Lead 대화(실행 중단) → POST /agents/:agentId/interrupt → controlAgent(조직 → 에이전트 → 취소 요청 없는 진행 중 실행 시도, 없으면 no-op)
+  → 취소 요청·agent.interrupted(messageId 없음) → dispatcher.cancel. 일시정지가 아니므로 남은 깨우기는 정리 뒤 평소처럼 처리
 ```
 
 취소 뒤 늦은 도구 쓰기는 `lockRunningRun`의 `cancelReason`, 재개 뒤 실행이 없으면 `listAgentsWithPendingWakes`의 에이전트 `paused`·단계 필터에서 시작합니다.
