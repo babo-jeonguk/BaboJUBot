@@ -210,6 +210,8 @@ describe("organization dashboard", () => {
     expect(seoul.asOf).toBe("2026-10-28T01:00:00.000Z");
     expect(seoul.days[0]!.date).toBe("2026-10-15");
     expect(seoul.days.at(-1)!.date).toBe("2026-10-28");
+    // 오늘은 서울 10/29 00:00에 끝난다. 화면은 이 시각까지 기다렸다 다시 불러온다.
+    expect(seoul.nextDayAt).toBe("2026-10-28T15:00:00.000Z");
     // 서울 10/14 23:59에 시작한 실행 시도는 14일 밖이다.
     expect(nonZero(seoul.days, (d) => d.runsStarted.completed)).toEqual({
       "2026-10-15": 1,
@@ -231,6 +233,7 @@ describe("organization dashboard", () => {
     const utc = await dashboard(org.id, "UTC");
     expect(utc.days[0]!.date).toBe("2026-10-15");
     expect(utc.days.at(-1)!.date).toBe("2026-10-28");
+    expect(utc.nextDayAt).toBe("2026-10-29T00:00:00.000Z");
     // UTC 10/14의 두 실행 시도는 14일 밖이다. 마지막 실행 시도는 10/27에 시작해 10/28에 끝났다.
     expect(nonZero(utc.days, (d) => d.runsStarted.completed)).toEqual({
       "2026-10-27": 3,
@@ -263,6 +266,8 @@ describe("organization dashboard", () => {
       ...Array.from({ length: 13 }, (_, i) => `2026-10-${19 + i}`),
       "2026-11-01",
     ]);
+    // 11/1은 25시간이라 다음 날은 EST 자정(UTC 05:00)에 시작한다.
+    expect(ny.nextDayAt).toBe("2026-11-02T05:00:00.000Z");
     expect(nonZero(ny.days, (d) => d.runsStarted.completed)).toEqual({
       "2026-10-31": 1,
       "2026-11-01": 1,

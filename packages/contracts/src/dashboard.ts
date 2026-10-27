@@ -47,6 +47,11 @@ export const organizationDashboardSchema = z.object({
   /** 기준 시각. 오늘 bucket은 이 시각까지다. */
   asOf: z.iso.datetime({ offset: true }),
   timeZone: z.string(),
+  /**
+   * 오늘이 끝나는 시각(이 시간대의 다음 자정, 서버의 시간대 자료로 계산). 이때부터 14일이 하루 밀린다.
+   * 화면은 `asOf`부터 이 시각까지 기다렸다 다시 불러온다(브라우저 시계·시간대와 무관).
+   */
+  nextDayAt: z.iso.datetime({ offset: true }),
   /** 작업 상태별 수. */
   tasks: z.record(taskStatusSchema, count),
   /** 실행 시도 상태별 수. `running`은 아직 끝나지 않은 전부(취소 정리 중 포함)다. */

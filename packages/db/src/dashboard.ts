@@ -85,6 +85,13 @@ export async function getOrganizationDashboard(
         sql`select to_char(${today} - i, 'YYYY-MM-DD') as date
           from generate_series(${dashboardDays - 1}::int, 0, -1) as i`
       );
+      // 오늘이 끝나는 시각. 서머타임으로 23·25시간인 날도 이 시간대의 다음 자정이다.
+      const {
+        rows: [nextDay],
+      } = await tx.execute<{ at: string }>(
+        sql`select to_char((${today} + 1)::timestamp at time zone ${timeZone} at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at`
+      );
       const days = new Map(
         dates.map(({ date }): [string, DashboardDay] => [
           date,
@@ -185,6 +192,7 @@ export async function getOrganizationDashboard(
           organizationId,
           asOf,
           timeZone,
+          nextDayAt: nextDay!.at,
           tasks: taskTotals,
           runs: runTotals,
           cancelling: cancelling!.n,

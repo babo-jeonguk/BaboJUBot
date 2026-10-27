@@ -174,9 +174,9 @@
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
 | 요약·개요 모양, 14일·최근 활동 수, 시간대 이름 모양, 성공률(완료 / (완료 + 실패), 합칠 때 분자·분모 따로)·화면의 `실행 중`(취소 정리 중 뺌) | [contracts/dashboard.ts](../../packages/contracts/src/dashboard.ts) `organizationDashboardSchema`·`overviewSchema`·`runSuccessRate`·`activeRunCount` | [계약](../../packages/contracts/src/dashboard.test.ts) |
-| 조직 범위 수·날짜 bucket(시간대 자정, 0인 날)·진행 중 목록·최근 Event를 한 READ ONLY REPEATABLE READ snapshot에서, 서버가 모르는 시간대 거부(`pg_timezone_names`), 모든 조직의 진행 중 수를 SQL 하나로 | [db/dashboard.ts](../../packages/db/src/dashboard.ts) `getOrganizationDashboard`·`getOverview`; 진행 중 목록은 db/runs.ts `listRunningRuns` | 대시보드 API(서울·UTC·뉴욕 서머타임 경계, 취소 정리 중, 다른 조직 제외) |
+| 조직 범위 수·날짜 bucket(시간대 자정, 0인 날, 오늘이 끝나는 `nextDayAt`)·진행 중 목록·최근 Event를 한 READ ONLY REPEATABLE READ snapshot에서, 서버가 모르는 시간대 거부(`pg_timezone_names`), 모든 조직의 진행 중 수를 SQL 하나로 | [db/dashboard.ts](../../packages/db/src/dashboard.ts) `getOrganizationDashboard`·`getOverview`; 진행 중 목록은 db/runs.ts `listRunningRuns` | 대시보드 API(서울·UTC·뉴욕 서머타임 경계, 취소 정리 중, 다른 조직 제외) |
 | 조회 API·404·422 `invalid_time_zone`·기준 시각(주입 시계) | server/app.ts `GET /api/organizations/:id/dashboard`·`GET /api/overview` | 대시보드 API |
-| 지표·14일 차트(막대 hover/focus·`숫자로 보기` 표)·실행 중인 에이전트·최근 활동, 홈 실행 중 수·조직 카드, 활동 필터 주소(`?agent=`) | [web/dashboard.tsx](../../apps/web/src/dashboard.tsx), pages.tsx `Home`·`OrganizationDashboard`, activity.tsx `ActivityScreen`; api.ts `useOrganizationDashboard`(브라우저 시간대, 서버가 모르는 이름이면 UTC, 자정 재조회)·dashboard.tsx `RunningCountText`(실행 중·취소 정리 중 문구 하나)·`useOverview` | 대시보드 E2E(다른 탭 390px 홈·다른 조직·필터·390px 넘침 없음) |
+| 지표·14일 차트(막대 hover/focus·`숫자로 보기` 표)·실행 중인 에이전트·최근 활동, 홈 실행 중 수·조직 카드, 활동 필터 주소(`?agent=`) | [web/dashboard.tsx](../../apps/web/src/dashboard.tsx), pages.tsx `Home`·`OrganizationDashboard`, activity.tsx `ActivityScreen`; api.ts `useOrganizationDashboard`(`dashboardQuery`: 브라우저 시간대, 서버가 모르는 이름이면 UTC, 응답의 `asOf`→`nextDayAt`만큼 기다려 재조회)·dashboard.tsx `RunningCountText`(실행 중·취소 정리 중 문구 하나)·`useOverview` | 대시보드 E2E(다른 탭 390px 홈·다른 조직·필터·390px 넘침 없음), web dashboard-query(UTC 대체 뒤 UTC 자정·브라우저 시계 앞섬) |
 | Event 뒤 홈 개요 재조회(전역 key라 조직 prefix에 들지 않음), 가짜 Lead `실행 유지 연습` | live-events.ts `queryKeys.overview`; runtime/scripted.ts `demoLeadScript` | 대시보드 E2E, [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
 
 ## 개발 환경
