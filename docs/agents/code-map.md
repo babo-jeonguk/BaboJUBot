@@ -16,6 +16,7 @@
 | 조직별 구독·Event 혼입 | app.ts upgrade·attach → [EventHub](../../apps/server/src/event-hub.ts); [event 계약](../../packages/contracts/src/event.ts) | [라우팅](../../apps/server/src/event-hub.test.ts), 조직 API `Event stream scopes` |
 | 생성 후 탭·홈·사이드바 갱신 | [web/live-events.ts](../../apps/web/src/live-events.ts) `useLiveEvents`; [api.ts](../../apps/web/src/api.ts) query key·캐시; Event 발행 | 생성 E2E |
 | Event가 몰릴 때 늦은 반영·겹친 재조회 | [web/live-refresh.ts](../../apps/web/src/live-refresh.ts) `createLiveRefresh`(조회마다 진행 하나·그사이 신호는 끝난 뒤 한 번 더) | [단위 검사](../../apps/web/src/live-refresh.test.ts), [느린 응답·재연결 다른 탭 E2E](../../apps/web/e2e/live-refresh.spec.ts) |
+| E2E가 Event stream 구독 성립 전에 상태를 바꿈·ready를 기다리다 멈춤 | [e2e/support/live-events.ts](../../apps/web/e2e/support/live-events.ts) `openWithLiveEvents`(화면과 같은 frame 계약·제한 시간·listener 해제. `routeWebSocket` page 제외) | [helper 검사](../../apps/web/e2e/support/live-events.spec.ts) |
 | 주소는 바뀌었는데 화면·선택이 늦게 바뀜(이전 화면이 입력을 받음) | [main.tsx](../../apps/web/src/main.tsx) `RouterProvider useTransitions={false}`(라우터 갱신을 startTransition으로 미루지 않음. 미루면 재조회 갱신에 밀려 최대 약 5초 늦음) | [연구 지도 E2E](../../apps/web/e2e/research-map.spec.ts) `watchSelectionLag`(CPU 4배 감속에서 주소·패널 노드 불일치 구간) |
 | 생성 dialog·성공 이동·실패 안내 | [create-organization.tsx](../../apps/web/src/create-organization.tsx), api.ts `useCreateOrganization`, 입력 계약 | 생성 E2E |
 | 주소·메뉴·홈·빈 상태 | [pages.tsx](../../apps/web/src/pages.tsx), [shell.tsx](../../apps/web/src/shell.tsx), [main.tsx](../../apps/web/src/main.tsx) routes | 생성 E2E의 홈·메뉴·Lead 빈 화면 |

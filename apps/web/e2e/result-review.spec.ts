@@ -1,19 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-
-/** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
-async function openWithLiveEvents(page: Page, path: string) {
-  const ready = new Promise<void>((resolve) =>
-    page.on("websocket", (ws) => {
-      if (!ws.url().includes("/api/events")) return;
-      ws.on(
-        "framereceived",
-        (f) => String(f.payload).includes('"ready"') && resolve()
-      );
-    })
-  );
-  await page.goto(path);
-  await ready;
-}
+import { expect, test } from "@playwright/test";
+import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
 

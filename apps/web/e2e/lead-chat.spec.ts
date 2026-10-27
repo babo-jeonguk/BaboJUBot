@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { openWithLiveEvents } from "./support/live-events.ts";
 
 test("keeps a draft edited while the previous message is being sent", async ({
   page,
@@ -33,21 +34,6 @@ test("keeps a draft edited while the previous message is being sent", async ({
     await page.unrouteAll({ behavior: "wait" });
   }
 });
-
-/** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
-async function openWithLiveEvents(page: Page, path: string) {
-  const ready = new Promise<void>((resolve) =>
-    page.on("websocket", (ws) => {
-      if (!ws.url().includes("/api/events")) return;
-      ws.on(
-        "framereceived",
-        (f) => String(f.payload).includes('"ready"') && resolve()
-      );
-    })
-  );
-  await page.goto(path);
-  await ready;
-}
 
 test("talking to the Lead shows its reply, the run in activity and run detail, and the Lead's recent runs", async ({
   page,

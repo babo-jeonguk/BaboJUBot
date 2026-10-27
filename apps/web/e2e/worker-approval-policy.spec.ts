@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openWithLiveEvents } from "./support/live-events.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
 async function openInbox(page: Page) {
@@ -7,21 +8,6 @@ async function openInbox(page: Page) {
     .getByRole("button", { name: /^Inbox/ });
   if ((await button.getAttribute("aria-expanded")) !== "true")
     await button.click();
-}
-
-/** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
-async function openWithLiveEvents(page: Page, path: string) {
-  const ready = new Promise<void>((resolve) =>
-    page.on("websocket", (ws) => {
-      if (!ws.url().includes("/api/events")) return;
-      ws.on(
-        "framereceived",
-        (f) => String(f.payload).includes('"ready"') && resolve()
-      );
-    })
-  );
-  await page.goto(path);
-  await ready;
 }
 
 const runs = { timeout: 20_000 };

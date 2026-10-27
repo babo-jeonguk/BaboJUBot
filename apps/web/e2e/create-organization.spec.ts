@@ -1,19 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openWithLiveEvents } from "./support/live-events.ts";
 
-/** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
-async function openWithLiveEvents(page: Page, path: string) {
-  const ready = new Promise<void>((resolve) =>
-    page.on("websocket", (ws) => {
-      if (!ws.url().includes("/api/events")) return;
-      ws.on(
-        "framereceived",
-        (f) => String(f.payload).includes('"ready"') && resolve()
-      );
-    })
-  );
-  await page.goto(path);
-  await ready;
-  // 이후 화면 갱신이 새로고침 없이 일어났는지 확인하는 표식.
+/** 화면을 열어 구독 성립을 기다린 뒤, 이후 화면 갱신이 새로고침 없이 일어났는지 확인할 표식을 심는다. */
+async function openMarked(page: Page, path: string) {
+  await openWithLiveEvents(page, path);
   await page.evaluate(
     () => ((window as unknown as { marker: number }).marker = 1)
   );
@@ -26,8 +16,8 @@ test("creating an organization opens its Lead chat and shows up everywhere witho
   context,
 }) => {
   const watcher = await context.newPage();
-  await openWithLiveEvents(watcher, "/");
-  await openWithLiveEvents(page, "/");
+  await openMarked(watcher, "/");
+  await openMarked(page, "/");
 
   // 조직 없음 빈 상태에서 dialog를 연다.
   await expect(page.getByText("아직 연구 조직이 없습니다")).toBeVisible();

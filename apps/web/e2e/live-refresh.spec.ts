@@ -1,19 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-/** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
-async function openWithLiveEvents(page: Page, path: string) {
-  const ready = new Promise<void>((resolve) =>
-    page.on("websocket", (ws) => {
-      if (!ws.url().includes("/api/events")) return;
-      ws.on(
-        "framereceived",
-        (f) => String(f.payload).includes('"ready"') && resolve()
-      );
-    })
-  );
-  await page.goto(path);
-  await ready;
-}
+import { isReadyFrame, openWithLiveEvents } from "./support/live-events.ts";
 
 /**
  * 탭의 GET 조회를 서버 응답을 바로 받아(요청 시작 때의 상태로 고정) 늦게 돌려준다.
@@ -159,7 +145,7 @@ test("after the Event stream drops and reconnects, another tab shows what change
     await reconnect;
     const server = ws.connectToServer();
     server.onMessage((message) => {
-      if (String(message).includes('"ready"')) onReady();
+      if (isReadyFrame(message)) onReady();
       ws.send(message);
     });
     connection = ws;

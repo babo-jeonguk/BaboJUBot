@@ -1,19 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-
-/** 전체 조직 Event stream 구독이 성립할 때까지 기다린다. */
-async function openWithLiveEvents(page: Page, path: string) {
-  const ready = new Promise<void>((resolve) =>
-    page.on("websocket", (ws) => {
-      if (!ws.url().includes("/api/events")) return;
-      ws.on(
-        "framereceived",
-        (f) => String(f.payload).includes('"ready"') && resolve()
-      );
-    })
-  );
-  await page.goto(path);
-  await ready;
-}
+import { openWithLiveEvents } from "./support/live-events.ts";
 
 /**
  * 연구 지도 화면을 연다. 지도 화면은 셸이 뜬 뒤 따로 불러오는 코드·조회를 거쳐 그려져, 새 context의 첫 표시는
