@@ -36,7 +36,7 @@
 | 대화·실행 시도·에이전트 조회 | server/app.ts, [conversation.ts](../../apps/server/src/conversation.ts) | 실행 API |
 | 가짜 실행기·도구 client·테스트 gate | [runtime/scripted.ts](../../packages/runtime/src/scripted.ts), [tools-client.ts](../../packages/runtime/src/tools-client.ts), [testing.ts](../../packages/runtime/src/testing.ts) | [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
 | README 데모 시나리오(생성→목표→초기 승인→작업 결과→일시정지·재개·작업자 추가 승인→결과 제출→최종 완료)가 이어지지 않음 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript`, 각 단계의 화면 | [데모 흐름 E2E](../../apps/web/e2e/demo-flow.spec.ts)(주요 사용자 행동을 모두 화면으로 한 조직에서). 직접 거부·조직 격리·heartbeat due·복구는 각 절의 API 검증 |
-| 대화·활동·실행 시도 상세·에이전트 화면 | [chat.tsx](../../apps/web/src/chat.tsx), [activity.tsx](../../apps/web/src/activity.tsx), [agents.tsx](../../apps/web/src/agents.tsx); api.ts query key | Lead 대화 E2E |
+| 대화·활동·실행 시도 상세·에이전트 화면(조직도는 아래 [에이전트 조직도·이름·얼굴](#에이전트-조직도이름얼굴)) | [chat.tsx](../../apps/web/src/chat.tsx), [activity.tsx](../../apps/web/src/activity.tsx), [agents.tsx](../../apps/web/src/agents.tsx); api.ts query key | Lead 대화 E2E |
 | 후속 실제 adapter | [runtime/index.ts](../../packages/runtime/src/index.ts)에 추가, 요청 `instructions` 사본을 실행기에 주입 | 실제 adapter 테스트 없음; 후속 이슈의 계약 확인 |
 
 ## 초기 연구 승인·하네스
@@ -181,6 +181,20 @@
 | 지표·14일 차트(막대 hover/focus·`숫자로 보기` 표)·실행 중인 에이전트·최근 활동, 홈 실행 중 수·조직 카드, 활동 필터 주소(`?agent=`) | [web/dashboard.tsx](../../apps/web/src/dashboard.tsx), pages.tsx `Home`·`OrganizationDashboard`, activity.tsx `ActivityScreen`; api.ts `useOrganizationDashboard`(`dashboardQuery`: 브라우저 시간대, 서버가 모르는 이름이면 UTC, 응답의 `asOf`→`nextDayAt`만큼 기다려 재조회)·dashboard.tsx `RunningCountText`(실행 중·취소 정리 중 문구 하나)·`useOverview` | 대시보드 E2E(다른 탭 390px 홈·다른 조직·필터·390px 넘침 없음), web dashboard-query(UTC 대체 뒤 UTC 자정·브라우저 시계 앞섬) |
 | Event 뒤 홈 개요 재조회(전역 key라 조직 prefix에 들지 않음), 가짜 Lead `실행 유지 연습` | live-events.ts `queryKeys.overview`; runtime/scripted.ts `demoLeadScript` | 대시보드 E2E, [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
 
+## 에이전트 조직도·이름·얼굴
+
+통합 검증: [에이전트 이름·얼굴 API](../../apps/server/test/agents.test.ts), [조직도 E2E](../../apps/web/e2e/org-chart.spec.ts)(다른 탭·390px·움직임 줄이기).
+
+| 작업·증상 | 진입점·계약 | 추가 검증·범위 |
+| --- | --- | --- |
+| 이름 규칙(trim·1~40자·제어 문자 거부)·얼굴 프리셋·ID에서 정한 기본 얼굴·변경 입력, Event `agent.profile_changed`, `Agent`·`AgentDetail`의 `appearance` | [contracts/agent-profile.ts](../../packages/contracts/src/agent-profile.ts) `agentNameSchema`·`agentAppearanceSchema`·`defaultAgentAppearance`·`updateAgentProfileInputSchema`, event.ts, organization.ts `agentSchema` | [core](../../packages/core/src/agent-profile.test.ts) `defaultAgentAppearance` |
+| 바뀐 항목만 저장·Event, 같은 값 무변경, 같은 조직 이름 겹침(대소문자 무시, 자기 이름 대소문자 바꾸기는 허용) | [core/agent-profile.ts](../../packages/core/src/agent-profile.ts) `planAgentProfileChange` | core |
+| 저장(조직 → 에이전트 잠금 아래 다른 이름 읽기, 작업자 추가와 직렬화)·다른 조직 `not_found`, 저장 얼굴이 없거나 옛 값이면 기본 얼굴 | [db/agents.ts](../../packages/db/src/agents.ts) `updateAgentProfile`, rows.ts `toAgent`; schema `agents.appearance`(migration 0012) | [DB](../../packages/db/src/organizations.test.ts) |
+| API(404·409 `name_taken`·422)·commit 뒤 Event, 조직 생성 응답의 기본 얼굴 | [server/agents.ts](../../apps/server/src/agents.ts), app.ts `PATCH …/agents/:agentId`, server/organizations.ts `createOrganization` | 이름·얼굴 API(다음 실행 시도 팀 맥락의 새 이름 포함) |
+| 조직도 배치(넓으면 위→아래 나무·끌기·확대·한눈에 보기, 좁으면 들여 쌓기)·카드 링크·실행 중 연결 | [web/org-chart.tsx](../../apps/web/src/org-chart.tsx)(agents.tsx `AgentsScreen`이 lazy로 불러옴), org-chart.css, api.ts `useRunningRuns` | 조직도 E2E |
+| 얼굴 그리기·깜빡임·포인터 따라보기(창 listener 하나)·상태별 표정·움직임 줄이기 | [web/agent-face.tsx](../../apps/web/src/agent-face.tsx) `AgentFace`·`faceMoodOf`, agent-face.css | 조직도 E2E(따라보기·움직임 줄이기) |
+| 상세 머리의 이름 바꾸기(Enter·포커스 이동 저장, Esc 취소)·얼굴 꾸미기 창, 활동 문장 | [web/agent-profile.tsx](../../apps/web/src/agent-profile.tsx) `AgentNameEditor`·`FaceCustomizer`, api.ts `useUpdateAgentProfile`, activity.tsx | 조직도 E2E |
+
 ## 개발 환경
 
 | 작업 | 진입점·검증 |
@@ -310,6 +324,16 @@ HeartbeatScheduler.tick(주입 시계) → runDueHeartbeats(에이전트마다: 
 ```
 
 중복 heartbeat는 `wakes_one_pending_heartbeat_per_agent`와 planHeartbeat의 대기 확인, 재전달된 입력의 옛 상세는 `run_wakes`, 되풀이된 쓰기는 `toolWrite`의 호출 키 확인에서 시작합니다.
+
+### 에이전트 이름·얼굴
+
+```text
+상세 머리(이름 입력·얼굴 꾸미기 창) → PATCH /api/organizations/:id/agents/:agentId(app) → server/agents
+  → updateAgentProfile(조직 → 에이전트 잠금·같은 조직 다른 이름, core planAgentProfileChange) → 이름·appearance·Event
+  → EventHub → 다른 탭 조직 재조회(조직도·사이드바·이동 경로) / 다음 실행 시도의 runContext.team
+```
+
+이름 겹침은 `planAgentProfileChange`의 `otherNames`, 얼굴이 기본으로 돌아가는 증상은 rows.ts `toAgent`의 프리셋 검사에서 시작합니다.
 
 ### 작업자 추가와 승인 정책
 

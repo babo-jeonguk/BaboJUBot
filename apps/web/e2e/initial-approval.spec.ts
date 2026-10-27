@@ -119,8 +119,8 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
 
   // 승인으로 생긴 팀이 에이전트 화면에 보인다.
   await decision.getByRole("link", { name: "팀 보기" }).click();
-  const team = page.getByRole("region", { name: "작업자 팀" });
-  await expect(team).toContainText("작업자 팀 2명");
+  const team = page.getByRole("region", { name: "조직도" });
+  await expect(team).toContainText("작업자 2명");
   const copyIdOf = async (worker: string) => {
     await page.goto(`/orgs/${org.id}/agents`);
     await team.getByRole("link", { name: new RegExp(worker) }).click();

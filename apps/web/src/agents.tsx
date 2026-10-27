@@ -11,9 +11,10 @@ import {
   type WakeReason,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useCallback, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useState, type ReactNode } from "react";
 import { Link, useBeforeUnload, useBlocker, useParams } from "react-router";
 import { EventRow } from "./activity.tsx";
+import { AgentNameEditor, FaceCustomizer } from "./agent-profile.tsx";
 import {
   ApiError,
   useAgent,
@@ -27,10 +28,8 @@ import {
   useUpdateHeartbeat,
 } from "./api.ts";
 import {
-  abbr,
   AgentStatusBadge,
   approvalKindLabel,
-  avatarStyle,
   decisionLabel,
   formatTime,
   Loading,
@@ -43,9 +42,14 @@ import {
   RunStatusBadge,
 } from "./ui.tsx";
 
-const roleLabel = { lead: "Research Lead", worker: "작업자" } as const;
+export const roleLabel = { lead: "Research Lead", worker: "작업자" } as const;
 
-/** 조직 › 에이전트: Lead·작업자 팀과 상태. 작업자는 초기 연구 승인 때 생기고, 연구 진행 중 Lead가 더한다. */
+const OrgChart = lazy(() => import("./org-chart.tsx"));
+
+/**
+ * 조직 › 에이전트: Lead 아래 작업자 팀을 잇는 팀 그래프(org-chart.tsx). 카드마다 얼굴·이름·역할·상태가 보이고 누르면 상세로 간다.
+ * 작업자는 초기 연구 승인 때 생기고, 연구 진행 중 Lead가 더한다.
+ */
 export function AgentsScreen({
   orgId,
   agents,
@@ -53,66 +57,19 @@ export function AgentsScreen({
   orgId: string;
   agents: Agent[];
 }) {
-  const leads = agents.filter((a) => a.role === "lead");
-  const workers = agents.filter((a) => a.role === "worker");
+  const workers = agents.filter((a) => a.role === "worker").length;
   return (
-    <>
-      <h1 className="mb-4 text-xl font-semibold">에이전트</h1>
-      <section aria-label="Research Lead" className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold text-slate-600">
-          Research Lead
-        </h2>
-        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {leads.map((a) => (
-            <AgentCard key={a.id} orgId={orgId} agent={a} />
-          ))}
-        </ul>
-      </section>
-      <section aria-label="작업자 팀">
-        <h2 className="mb-2 text-sm font-semibold text-slate-600">
-          작업자 팀 {workers.length}명
-        </h2>
-        {!workers.length ? (
-          <div className="card p-6 text-sm text-slate-500">
-            아직 작업자가 없습니다. 초기 연구 승인 요청을 승인하면 제안된 팀이
-            생깁니다.
-          </div>
-        ) : (
-          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {workers.map((a) => (
-              <AgentCard key={a.id} orgId={orgId} agent={a} />
-            ))}
-          </ul>
-        )}
-      </section>
-    </>
-  );
-}
-
-function AgentCard({ orgId, agent }: { orgId: string; agent: Agent }) {
-  const detail = useAgent(orgId, agent.id);
-  return (
-    <li>
-      <Link
-        to={`/orgs/${orgId}/agents/${agent.id}`}
-        className="card card-hover flex items-center gap-3 p-4"
-      >
-        <span
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-semibold text-white"
-          style={avatarStyle(agent.id)}
-        >
-          {abbr(agent.name)}
+    <section aria-label="조직도">
+      <h1 className="mb-4 flex items-baseline gap-2 text-xl font-semibold">
+        에이전트
+        <span className="text-sm font-normal text-slate-500">
+          작업자 {workers}명
         </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{agent.name}</div>
-          <div className="text-xs text-slate-500">{roleLabel[agent.role]}</div>
-        </div>
-        <span className="flex flex-col items-end gap-1">
-          {detail.data && <AgentStatusBadge status={detail.data.status} />}
-          {detail.data?.paused && <PausedBadge />}
-        </span>
-      </Link>
-    </li>
+      </h1>
+      <Suspense fallback={<Loading />}>
+        <OrgChart orgId={orgId} agents={agents} />
+      </Suspense>
+    </section>
   );
 }
 
@@ -142,15 +99,10 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
   const live = a.recentRuns.find((r) => r.status === "running");
   return (
     <Page width="standard">
-      <div className="mb-4 flex items-center gap-3">
-        <span
-          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-base font-semibold text-white"
-          style={avatarStyle(a.id)}
-        >
-          {abbr(a.name)}
-        </span>
+      <div className="mb-4 flex items-center gap-4">
+        <FaceCustomizer orgId={orgId} agent={a} />
         <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-semibold">{a.name}</h1>
+          <AgentNameEditor key={a.name} orgId={orgId} agent={a} />
           <div className="text-sm text-slate-500">{roleLabel[a.role]}</div>
         </div>
         <div className="flex flex-col items-end gap-1">
