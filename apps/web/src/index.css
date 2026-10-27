@@ -146,6 +146,15 @@
 body {
   @apply bg-canvas text-slate-800 antialiased;
 }
+/* 입력하는 만큼 높이가 늘고 화면 높이의 60%에서 멈춘다. 지원하지 않는 브라우저는 main.tsx의 대체 코드가 맞춘다. */
+@layer base {
+  textarea {
+    field-sizing: content;
+    min-height: calc(3lh + 1rem);
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+}
 .scrollbar-thin {
   scrollbar-width: thin;
 }

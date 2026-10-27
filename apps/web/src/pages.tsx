@@ -321,7 +321,7 @@ export function OrganizationScreen() {
   const lead = agents.find((a) => a.role === "lead");
   if (section === "chat" && lead)
     return (
-      <Page width={width} className="flex flex-1 flex-col">
+      <Page width={width} fill>
         <LeadChat orgId={orgId} lead={lead} />
       </Page>
     );

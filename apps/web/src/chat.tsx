@@ -46,7 +46,7 @@ export function LeadChat({ orgId, lead }: { orgId: string; lead: Agent }) {
   }, [count]);
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1">
         <h1 className="text-xl font-semibold">Lead 대화</h1>
         <Link
@@ -73,32 +73,36 @@ export function LeadChat({ orgId, lead }: { orgId: string; lead: Agent }) {
         )}
       </div>
 
-      {messages.isPending ? (
-        <Loading />
-      ) : messages.isError ? (
-        <LoadError what="대화" onRetry={() => void messages.refetch()} />
-      ) : !messages.data.length ? (
-        <div
-          className="card animate-fade-up p-8 text-center"
-          data-testid="lead-chat-empty"
-        >
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-50 text-xl">
-            🎯
+      <div className="scrollbar-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1">
+        {messages.isPending ? (
+          <Loading />
+        ) : messages.isError ? (
+          <LoadError what="대화" onRetry={() => void messages.refetch()} />
+        ) : !messages.data.length ? (
+          <div
+            className="card animate-fade-up p-8 text-center"
+            data-testid="lead-chat-empty"
+          >
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-50 text-xl">
+              🎯
+            </div>
+            <div className="font-semibold">
+              연구 목표와 완료 기준을 정하세요
+            </div>
+            <p className="mt-1 text-sm text-slate-500">
+              Research Lead와 대화로 이 조직의 연구 목표와 완료 기준을 합의하는
+              것부터 시작합니다.
+            </p>
           </div>
-          <div className="font-semibold">연구 목표와 완료 기준을 정하세요</div>
-          <p className="mt-1 text-sm text-slate-500">
-            Research Lead와 대화로 이 조직의 연구 목표와 완료 기준을 합의하는
-            것부터 시작합니다.
-          </p>
-        </div>
-      ) : (
-        <ol className="space-y-3" aria-label="대화">
-          {messages.data.map((m) => (
-            <MessageBubble key={m.id} message={m} orgId={orgId} lead={lead} />
-          ))}
-        </ol>
-      )}
-      <div ref={end} />
+        ) : (
+          <ol className="space-y-3" aria-label="대화">
+            {messages.data.map((m) => (
+              <MessageBubble key={m.id} message={m} orgId={orgId} lead={lead} />
+            ))}
+          </ol>
+        )}
+        <div ref={end} />
+      </div>
       <Composer
         orgId={orgId}
         leadRun={
@@ -203,7 +207,7 @@ function Composer({
   };
   return (
     <form
-      className="sticky bottom-0 mt-6 bg-canvas/90 pt-2 pb-4 backdrop-blur"
+      className="shrink-0 pt-3"
       onSubmit={(e) => {
         e.preventDefault();
         void submit();
@@ -221,7 +225,7 @@ function Composer({
         <textarea
           id="lead-message"
           value={text}
-          rows={2}
+          rows={1}
           maxLength={messageBodyMaxLength}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -235,7 +239,7 @@ function Composer({
             }
           }}
           placeholder="Research Lead에게 메시지 (Enter 보내기, Shift+Enter 줄바꿈)"
-          className="min-h-10 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
+          className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
         />
         <button
           className="btn-primary"

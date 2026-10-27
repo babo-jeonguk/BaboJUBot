@@ -273,18 +273,22 @@ const widthClass: Record<Width, string> = {
   full: "max-w-none",
 };
 
+/** `fill`이면 본문 높이를 창에 맞추고 스크롤은 화면 안쪽이 맡는다(대화처럼 입력창이 아래에 붙는 화면). */
 export function Page({
   width,
   children,
   className = "",
+  fill = false,
 }: {
   width: Width;
   children: ReactNode;
   className?: string;
+  fill?: boolean;
 }) {
   return (
     <div
-      className={`mx-auto w-full px-4 py-5 sm:px-6 ${widthClass[width]} ${className}`}
+      data-fill-height={fill || undefined}
+      className={`mx-auto w-full px-4 sm:px-6 ${fill ? "flex min-h-0 flex-1 flex-col pt-5 pb-3" : "py-5"} ${widthClass[width]} ${className}`}
     >
       {children}
     </div>

@@ -113,8 +113,8 @@ export function Shell() {
           </Dialog.Portal>
         </Dialog.Root>
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-auto pb-20">
-          <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur md:hidden">
+        <main className="flex min-w-0 flex-1 flex-col overflow-auto pb-20 has-[[data-fill-height]]:pb-0">
+          <div className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur md:hidden">
             <button
               aria-label="탐색 열기"
               onClick={() => setSheet(true)}
@@ -134,13 +134,13 @@ export function Shell() {
             <InboxButton className="btn-ghost relative px-2" />
           </div>
           {orgId && (
-            <div className="hidden truncate border-b border-slate-200/70 bg-white/60 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
+            <div className="sticky top-0 z-20 hidden shrink-0 truncate border-b border-slate-200/70 bg-white/80 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
               <Crumbs orgId={orgId} />
             </div>
           )}
           <div
             key={useLocation().pathname}
-            className="animate-fade-up flex flex-1 flex-col"
+            className="animate-fade-up flex flex-1 flex-col has-[[data-fill-height]]:min-h-0"
           >
             <Outlet />
           </div>
