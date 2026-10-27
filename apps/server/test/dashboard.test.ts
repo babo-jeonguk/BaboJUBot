@@ -427,10 +427,10 @@ describe("rooms on the home", () => {
       (await t.request("POST", `/api/organizations/${closed.id}/stop`, {}))
         .status
     ).toBe(200);
-    const [first, second] = room.workers as [
-      (typeof room.workers)[number],
-      (typeof room.workers)[number],
-    ];
+    // 함께 들어온 작업자는 처음 받은 이름의 번호 순으로 앉는다.
+    const [first, second] = [...room.workers].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    ) as [(typeof room.workers)[number], (typeof room.workers)[number]];
 
     // 작업자 1은 맡은 작업에 착수한 채 붙잡히고, 작업자 2는 실패로 끝난다.
     const held = createGate();
