@@ -644,8 +644,21 @@ function resultSummary(
  *   자기 보고와 함께 완료한다. 착수가 거부되면 그 작업은 거기서 멈춘다.
  * - 사용자의 작업 댓글: 그 작업에 댓글로 답한다. 작업 상태는 바꾸지 않는다.
  * - 에이전트 메시지·하위 작업 완료·heartbeat: 읽었다는 활동만 남긴다.
+ * - 사용자가 작업 댓글로 `실패 연습`·`실행 유지 연습`을 부탁함: Lead와 같이 실패로 끝내거나 취소될 때까지 끝내지 않는다
+ *   (홈·Inbox에서 작업자의 실패·실행 중 확인용).
  */
 export function demoWorkerScript(request: RunRequest): Script {
+  const comments = request.wakeReasons.flatMap((r) =>
+    r.kind === "task_comment" ? [r.body] : []
+  );
+  if (comments.some((c) => failureDrill.test(c)))
+    return {
+      steps: [
+        { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+      ],
+    };
+  if (comments.some((c) => holdDrill.test(c)))
+    return { steps: [{ do: "hold", until: untilCancelled }] };
   const steps: ScriptStep[] = [{ do: "read_context" }];
   // 조직 사본 템플릿이 선언한 첫 노드 종류(기본 연구 흐름에서는 연구 문제).
   const firstNodeKind = request.context.researchFlow?.nodeKinds[0]?.name;

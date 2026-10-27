@@ -11,6 +11,7 @@ import {
   createScriptedRuntime,
   defaultScriptSelector,
   demoLeadScript,
+  demoWorkerScript,
   leadReplyScript,
   parseGoalMessage,
   type Script,
@@ -702,6 +703,34 @@ describe("demo worker scenario", () => {
         linkKinds: [],
       },
     },
+  });
+
+  it("fails or holds the run when the owner asks for a drill in a task comment, and only replies when the drill is merely mentioned", async () => {
+    const comment = (body: string) =>
+      worker([
+        {
+          kind: "task_comment",
+          wakeId: crypto.randomUUID(),
+          taskId: crypto.randomUUID(),
+          commentId: crypto.randomUUID(),
+          body,
+        },
+      ]);
+    expect(demoWorkerScript(comment("실패 연습 해 주세요")).steps).toEqual([
+      { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+    ]);
+    const { steps } = demoWorkerScript(comment("실행 유지 연습"));
+    expect(steps).toEqual([{ do: "hold", until: expect.any(Function) }]);
+    const hold = steps[0] as Extract<(typeof steps)[number], { do: "hold" }>;
+    const controller = new AbortController();
+    const held = hold.until(controller.signal);
+    controller.abort("cancel");
+    await expect(held).rejects.toBe("cancel");
+    expect(
+      demoWorkerScript(comment("실행 유지 연습은 하지 마세요")).steps.map(
+        (s) => s.do
+      )
+    ).toEqual(["read_context", "call"]);
   });
 
   it("starts an assigned task, records an artifact and a research node linked to the task, and completes it with a self-report, replying to comments on the task", () => {
