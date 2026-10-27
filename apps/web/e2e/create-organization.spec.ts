@@ -46,7 +46,7 @@ test("creating an organization opens its Lead chat and shows up everywhere witho
   // 다른 탭의 홈과 사이드바는 Event stream으로 갱신된다.
   await expect(
     watcher
-      .getByRole("region", { name: "목표 설정" })
+      .getByRole("region", { name: "진행 중" })
       .getByText("음성 인식 오류 분석")
   ).toBeVisible();
   await expect(

@@ -1,8 +1,4 @@
-import {
-  activeRunCount,
-  isClosedStage,
-  lifecycleStages,
-} from "@babojubot/contracts";
+import { isClosedStage } from "@babojubot/contracts";
 import { lazy, Suspense, useState } from "react";
 import { Link, useParams } from "react-router";
 import type {
@@ -17,8 +13,6 @@ import {
   useControlOrganization,
   useResultSubmissions,
   useOrganization,
-  useOrganizations,
-  useOverview,
 } from "./api.ts";
 import { LeadChat } from "./chat.tsx";
 import {
@@ -26,19 +20,15 @@ import {
   DashboardMetrics,
   RecentActivity,
   RunningAgents,
-  RunningCountText,
 } from "./dashboard.tsx";
-import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { Markdown } from "./markdown.tsx";
 import { ResultReviewScreen } from "./results.tsx";
 import { SettingsScreen } from "./settings.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
 import { TasksScreen } from "./tasks.tsx";
 import {
-  abbr,
   approvalKindLabel,
   ApprovalStatusBadge,
-  avatarStyle,
   formatTime,
   Loading,
   LoadError,
@@ -52,148 +42,6 @@ import {
 const ResearchMapScreen = lazy(() =>
   import("./research-map.tsx").then((m) => ({ default: m.ResearchMapScreen }))
 );
-
-// ---------- 홈: 전체 조직 개요 ----------
-
-export function Home() {
-  const orgs = useOrganizations();
-  const overview = useOverview();
-  const openCreate = useOpenCreateOrganization();
-  if (orgs.isPending) return <Loading />;
-  if (orgs.isError)
-    return <LoadError what="조직 목록" onRetry={() => void orgs.refetch()} />;
-  if (!orgs.data.length) return <NoOrganizations />;
-  return (
-    <Page width="full">
-      <div className="mb-6 flex flex-wrap items-end gap-x-10 gap-y-4">
-        <div className="card px-4 py-3">
-          <div className="text-[13px] text-slate-500">연구 조직</div>
-          <div
-            className="text-2xl font-semibold"
-            data-testid="organization-count"
-          >
-            {orgs.data.length}
-          </div>
-        </div>
-        <div className="card px-4 py-3">
-          <div className="text-[13px] text-slate-500">실행 중</div>
-          {overview.data ? (
-            <>
-              <div
-                className="text-2xl font-semibold tabular-nums"
-                data-testid="running-run-count"
-              >
-                {activeRunCount(overview.data.runs)}
-              </div>
-              {overview.data.runs.cancelling > 0 && (
-                <div
-                  className="text-xs text-amber-700"
-                  data-testid="cancelling-run-count"
-                >
-                  취소 정리 중 {overview.data.runs.cancelling}
-                </div>
-              )}
-            </>
-          ) : overview.isError ? (
-            <button
-              role="alert"
-              className="text-sm text-rose-700 underline underline-offset-2"
-              onClick={() => void overview.refetch()}
-            >
-              불러오지 못함 · 다시 시도
-            </button>
-          ) : (
-            <div className="text-2xl font-semibold text-slate-300" aria-busy>
-              …
-            </div>
-          )}
-        </div>
-        <button className="btn-primary ml-auto" onClick={openCreate}>
-          ＋ 새 연구 조직
-        </button>
-      </div>
-      <div className="scrollbar-thin flex gap-3 overflow-x-auto pb-4">
-        {lifecycleStages.map((stage) => {
-          const xs = orgs.data.filter((o) => o.stage === stage);
-          if (!xs.length)
-            return (
-              <div
-                key={stage}
-                className="flex w-9 shrink-0 flex-col items-center gap-2 rounded-xl border border-dashed border-slate-200 py-3 text-[11px] text-slate-400"
-                title={`${stageLabel[stage]} · 0`}
-              >
-                <span className="[writing-mode:vertical-rl]">
-                  {stageLabel[stage]}
-                </span>
-                <span>0</span>
-              </div>
-            );
-          return (
-            <section
-              key={stage}
-              aria-label={stageLabel[stage]}
-              className="w-60 shrink-0 rounded-2xl bg-slate-200/40 p-2"
-            >
-              <div className="mb-2 flex items-center gap-2 px-1">
-                <StageBadge stage={stage} />
-                <span className="text-xs text-slate-400">{xs.length}</span>
-              </div>
-              <div className="space-y-2">
-                {xs.map((o) => {
-                  const runs = overview.data?.organizations.find(
-                    (r) => r.organizationId === o.id
-                  );
-                  return (
-                    <Link
-                      key={o.id}
-                      to={`/orgs/${o.id}`}
-                      className="card card-hover block p-3 text-sm"
-                    >
-                      <div className="flex items-start gap-2.5">
-                        <span
-                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"
-                          style={avatarStyle(o.id)}
-                        >
-                          {abbr(o.name)}
-                        </span>
-                        <div className="line-clamp-3 font-medium text-slate-800">
-                          {o.name}
-                        </div>
-                      </div>
-                      {runs && runs.running > 0 && (
-                        <div
-                          className="mt-2 text-xs text-brand-700 tabular-nums"
-                          data-testid="organization-running"
-                        >
-                          <RunningCountText count={runs} />
-                        </div>
-                      )}
-                    </Link>
-                  );
-                })}
-              </div>
-            </section>
-          );
-        })}
-      </div>
-    </Page>
-  );
-}
-
-function NoOrganizations() {
-  const openCreate = useOpenCreateOrganization();
-  return (
-    <div className="card animate-fade-up mx-auto mt-10 max-w-md p-8 text-center">
-      <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 text-xl">
-        🧭
-      </div>
-      <div className="font-semibold">아직 연구 조직이 없습니다</div>
-      <button className="btn-primary mt-4" onClick={openCreate}>
-        ＋ 새 연구 조직
-      </button>
-    </div>
-  );
-}
 
 // ---------- 조직 화면 ----------
 

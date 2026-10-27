@@ -322,9 +322,21 @@ describe("running runs on the dashboard and home", () => {
       );
       expect(before.organizations).toEqual(
         expect.arrayContaining([
-          { organizationId: a.id, running: 2, cancelling: 0 },
-          { organizationId: b.id, running: 1, cancelling: 0 },
-          { organizationId: idleOrg.id, running: 0, cancelling: 0 },
+          expect.objectContaining({
+            organizationId: a.id,
+            running: 2,
+            cancelling: 0,
+          }),
+          expect.objectContaining({
+            organizationId: b.id,
+            running: 1,
+            cancelling: 0,
+          }),
+          expect.objectContaining({
+            organizationId: idleOrg.id,
+            running: 0,
+            cancelling: 0,
+          }),
         ])
       );
 
@@ -339,7 +351,11 @@ describe("running runs on the dashboard and home", () => {
       expect(after.runs).toEqual({ running: 3, cancelling: 1 });
       expect(after.organizations).toEqual(
         expect.arrayContaining([
-          { organizationId: a.id, running: 2, cancelling: 1 },
+          expect.objectContaining({
+            organizationId: a.id,
+            running: 2,
+            cancelling: 1,
+          }),
         ])
       );
       // 대시보드의 진행 중 수·목록은 실제 진행 중 실행 시도와 같다.
@@ -367,5 +383,30 @@ describe("running runs on the dashboard and home", () => {
       running: 0,
       cancelled: 1,
     });
+  });
+});
+
+describe("last activity on the home", () => {
+  it("gives each organization the time of its own latest event", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const quiet = await createOrganization("조용한 조직");
+    const busy = await createOrganization("바쁜 조직");
+    await say(busy.id, "안녕하세요");
+    await t.drain();
+    const latest = async (orgId: string) =>
+      (await eventsOf(orgId))
+        .map((e) => e.createdAt)
+        .reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
+    const at = Object.fromEntries(
+      (await overview()).organizations.map((o) => [
+        o.organizationId,
+        o.lastActivityAt,
+      ])
+    );
+    expect(Date.parse(at[quiet.id]!)).toBe(Date.parse(await latest(quiet.id)));
+    expect(Date.parse(at[busy.id]!)).toBe(Date.parse(await latest(busy.id)));
+    // 다른 조직의 Event는 조용한 조직의 시각을 바꾸지 않는다.
+    expect(Date.parse(at[busy.id]!)).toBeGreaterThan(Date.parse(at[quiet.id]!));
   });
 });

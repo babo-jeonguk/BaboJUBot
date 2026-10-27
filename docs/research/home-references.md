@@ -1,0 +1,81 @@
+# 홈 레퍼런스 조사: 여러 연구 조직을 한눈에 보는 첫 화면
+
+조사일: 2026-10-27. 대상: 사용자 피드백 "홈의 디자인이 아쉽다, 레퍼런스 조사 후 결정". 구현 전 권고이며 채택한 결정은 [결정](#결정)에 적었다.
+
+## Brief
+
+- 구현할 문제: 홈이 조직 수·실행 중 수 카드 두 개와 생애주기 단계별 가로 칸반이었다. 조직이 적으면 대부분의 칸이 빈 세로 띠가 되고, 사용자가 지금 봐야 할 조직(주의 필요)이 드러나지 않았다.
+- 홈이 답할 질문: 어느 조직이 나를 기다리는가(주의 필요), 어느 조직이 지금 일하고 있는가(실행 중), 각 조직의 단계·목표·최근 활동, 새 조직 만들기.
+- 고정된 조건: 설명 문장 없이 배치와 시각 상태로 말한다. 개발 정보(ID·API 이름)를 보이지 않는다. 1개·5개·30개 조직과 390px에서 모두 보기 좋아야 한다. 최종 완료·중단 조직이 진행 중 조직을 밀어내지 않는다. 주의 판정은 레일·Inbox와 같은 `needsAttention`이다.
+
+## 레퍼런스
+
+| 레퍼런스 | 분류 | 버전·SHA | 깊이 | 선정 이유 |
+|---|---|---|---|---|
+| Paperclip Companies·Dashboard | 동종(회사=조직) | [`1b4c803`](https://github.com/paperclipai/paperclip/tree/1b4c803816e82b0265c8422e1a804327a7ed8c54) | 소스 | 기존 조사([paperclip-dashboard.md](paperclip-dashboard.md))의 기준 제품 |
+| OpenClaw Agents home | agent 운영 | [`80f170e`](https://github.com/openclaw/openclaw/tree/80f170ea263a21187384cb67d5aead87b1d01fc2) | 문서 | 여러 agent를 roster 카드로 보는 홈 |
+| Linear Projects | 다중 프로젝트 | 공식 문서(2026-10-27 열람) | 문서 | 상태·health로 묶는 프로젝트 목록, 끝난 프로젝트 표시 기간 |
+| Vercel Dashboard | 다중 프로젝트 | 공식 문서(2026-10-27 열람) | 문서 | 프로젝트 grid·list, 활동순 정렬 |
+| Devin 세션 사이드바 | agent 운영 | 제3자 변경 기록(2026-10-27 열람) | 목록 | 세션을 상태별로 묶는 사례 |
+| Hermes Agent Kanban | agent 운영 | [`3569e84`](https://github.com/NousResearch/hermes-agent/tree/3569e8461ea721623fa16e6f01fb636157989fe6) | 기존 조사 | 기존 홈 칸반과 같은 단계별 열 배치 |
+
+## 근거
+
+| ID | 관찰 | 출처 | 수준 |
+|---|---|---|---|
+| <a id="E01"></a>E01 | Paperclip 조직 목록은 한 열 카드 목록이다. 카드에 이름·상태 badge·설명 2줄·에이전트·작업 수·지출·생성 시각을 보이고, 보관한 조직도 같은 목록에 badge만 달고 섞인다. 정렬은 하지 않는다. | [`Companies.tsx` L116, L126, L193-L200, L241, L288](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/ui/src/pages/Companies.tsx#L116-L288) | 소스 확인 |
+| <a id="E02"></a>E02 | Paperclip Dashboard는 한 회사 안의 화면이다. 실행 중 에이전트 패널, 지표 카드 4개(활성 에이전트·진행 중 작업·월 지출·대기 승인), 14일 차트를 둔다. 여러 회사를 모아 보는 화면은 없다. | [`Dashboard.tsx` L377-L472](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/ui/src/pages/Dashboard.tsx#L377-L472) | 소스 확인 |
+| <a id="E03"></a>E03 | OpenClaw Agents home은 agent roster 카드다. 카드에 정체성·모델·현재 작업 상태·마지막 활동·주 대화 미리보기를 보이고, 작업 중인 agent가 먼저, 그다음 최근 활동순이다. | [`docs/web/control-ui.md` Agents home](https://github.com/openclaw/openclaw/blob/80f170ea263a21187384cb67d5aead87b1d01fc2/docs/web/control-ui.md) | 문서 확인 |
+| <a id="E04"></a>E04 | Linear 프로젝트 보기는 list·board·timeline이고 lead·status·health·target date로 묶는다. status로 정렬하면 진행 중이 먼저, 완료·취소가 뒤다. 완료한 프로젝트는 지난 주·달·해·전체·없음 중에서 골라 보인다. 빈 그룹 표시는 켜고 끌 수 있다. | [Display options](https://linear.app/docs/display-options), [Projects](https://linear.app/docs/projects) | 문서 확인 |
+| <a id="E05"></a>E05 | Linear 프로젝트 health는 On track·At risk·Off track 세 값이고, 최신 업데이트가 프로젝트 개요에 보인다. | [Initiative and project updates](https://linear.app/docs/initiative-and-project-updates) | 문서 확인 |
+| <a id="E06"></a>E06 | Vercel 대시보드는 범위(개인·팀)의 프로젝트를 grid·list로 보이고 선택을 계정에 저장한다. 활동순·이름순 정렬이 있다. | [Dashboard overview](https://examples.vercel.com/docs/dashboard-features/overview)(검색 결과 요약으로만 확인, 본문은 404) | 목록 |
+| <a id="E07"></a>E07 | Devin 세션 사이드바의 "Group by status"가 Working·Ready·Blocked·Inactive로 묶는다고 제3자 변경 기록이 적었다. 공식 문서에서는 찾지 못했다. | [havoptic.com/whats-new/devin](https://www.havoptic.com/whats-new/devin) | 미확인 |
+| <a id="E08"></a>E08 | Hermes Kanban은 작업을 상태별 열로 보인다. 단계 수가 많고 항목이 적으면 빈 열이 대부분이 된다(기존 홈 캡처에서 8단계 중 6~7개가 빈 띠). | [dashboard-references.md](dashboard-references.md), 기존 홈 캡처 | 기존 조사·실행 |
+
+## 패턴
+
+| ID | 패턴 | 사례 | 장점 | 비용·실패 모드 |
+|---|---|---|---|---|
+| <a id="P01"></a>P01 | 단계(상태)별 열 칸반 | E08, 기존 홈 | 단계 분포가 보인다 | 단계 8개에 조직이 적으면 빈 열이 화면을 차지하고, 주의 필요가 드러나지 않는다. 390px에서 가로 스크롤 |
+| <a id="P02"></a>P02 | roster 카드 grid, 일하는 것 먼저·최근 활동순 | E03, E06 | 1개·30개 모두 같은 모양, 화면 폭에 따라 열 수만 바뀐다 | 정렬이 활동에 따라 바뀐다 |
+| <a id="P03"></a>P03 | 상태로 묶은 구역(주의·진행·끝남) | E04, E07 | 사용자가 할 일이 맨 위에 모인다 | 구역이 많으면 다시 칸반이 된다 |
+| <a id="P04"></a>P04 | 끝난 항목은 뒤로 보내거나 기간·토글로 숨김 | E04 | 진행 중 항목이 밀리지 않는다 | 숨긴 것을 찾는 경로가 필요하다 |
+| <a id="P05"></a>P05 | 카드에 상태 badge·설명 2줄·수치·상대 시각 | E01, E03, E05 | 카드만 보고 들어갈지 정한다 | 수치가 많으면 시끄럽다 |
+| <a id="P06"></a>P06 | 위쪽 지표 카드 | E02 | 전체 크기가 바로 보인다 | 한 조직 안의 지표를 홈에 옮기면 홈이 대시보드가 된다 |
+
+## 결정
+
+| ID | 권고 | 내용 | 근거 |
+|---|---|---|---|
+| <a id="D01"></a>D01 | 변형 채택 | 홈은 조직 카드 grid(P02)를 **주의 필요 → 진행 중** 두 구역(P03)으로 나눈다. 구역마다 조직 수를 보이고 빈 구역은 그리지 않는다. 카드 열 수는 폭에 따라 1~4열이다. | E03, E04, E07 |
+| <a id="D02"></a>D02 | 채택 | 주의 필요 구역은 주의 수가 많은 순, 같으면 최근 활동순. 진행 중 구역은 실행 중인 조직 먼저, 일시정지는 뒤, 그 안에서 최근 활동순(OpenClaw와 같은 순서). | E03 |
+| <a id="D03"></a>D03 | 채택 | 최종 완료·중단 조직은 맨 아래 접힌 `끝난 조직 N`에 작은 행으로 둔다(P04). 끝나지 않은 조직이 없으면 펼쳐서 보인다. 주의가 남은 끝난 조직(중단 뒤 읽지 않은 실패 등)은 주의 필요에 두어 구역의 주의 수 합이 레일 배지와 같다. | E04 |
+| <a id="D04"></a>D04 | 변형 채택 | 카드: 아바타·이름, 목표 2줄, 주의 수 chip, 단계 badge, 실행 중 수, 마지막 활동 상대 시각(P05). 주의 카드는 왼쪽 amber 띠로 구역 밖에서도 구별된다. 지출·에이전트 수·작업 수는 넣지 않는다(아직 조직 대시보드의 몫). | E01, E03 |
+| <a id="D05"></a>D05 | 변형 채택 | 위쪽 요약은 칸 하나에 셋(주의 필요·실행 중·연구 조직)으로 줄인다(P06). 주의 필요를 누르면 Inbox가 열린다. 새 연구 조직 버튼은 오른쪽(390px에서는 아래 전체 폭). | E02 |
+| <a id="D06"></a>D06 | 채택 | 마지막 활동 시각은 서버 홈 개요(`GET /api/overview`)에 조직별 마지막 Event 시각 `lastActivityAt`을 더해 같은 조회에서 낸다. | — |
+
+### 배제한 패턴
+
+| 패턴 | 사례 | 이유 |
+|---|---|---|
+| 단계별 칸반 유지 | E08, 기존 홈 | 빈 단계가 화면 대부분을 차지하고, 사용자가 볼 조직이 드러나지 않는다. 단계는 카드 badge와 레일로 충분하다. |
+| 끝난 조직을 같은 목록에 badge만 달아 섞기 | E01 | 조직이 쌓일수록 진행 중 조직이 밀린다. |
+| 홈에 14일 차트·지출 지표 | E02 | 조직 하나의 지표라 조직 대시보드에 이미 있다. 여러 조직을 합친 차트는 지금 판단에 쓰이지 않는다. |
+| grid·list 전환, 이름순 정렬, 검색 | E06 | 30개까지는 카드 grid와 활동순으로 충분하다. 조직이 더 늘면 다시 본다. |
+| Linear health(On track 등) | E05 | 사람이 쓰는 판단 값이다. 지금 제품에는 해당 기록이 없고, 주의 필요·단계가 그 역할을 한다. |
+
+## 검증할 경계
+
+| ID | 입력 → 행동 → 기대 | 근거 |
+|---|---|---|
+| V01 | 승인 요청을 받은 조직 → 홈 → 주의 필요 구역에 `주의 1` chip, 같은 수면 최근 활동이 먼저 | D01, D02 |
+| V02 | 주의 없는 조직 → 진행 중 구역에 단계·마지막 활동 시각 | D01, D04 |
+| V03 | 중단한 조직 → 진행 중·주의 구역에 없고, `끝난 조직`을 펼치면 보임 | D03 |
+| V04 | 승인 결정 → 새로고침 없이 주의 필요에서 진행 중으로 옮김 | D01 |
+| V05 | 390px → 가로 넘침 없음 | Brief |
+| V06 | 조직별 `lastActivityAt` = 그 조직의 가장 최근 Event 시각, 다른 조직 Event는 영향 없음 | D06 |
+
+## 한계와 미확인
+
+- Linear·Vercel·Devin·OpenAI Codex 화면은 로그인이 필요해 직접 조작하지 못했다. Linear는 공식 문서로, Vercel은 검색 결과 요약으로만(공식 페이지 본문은 404), Devin은 제3자 기록으로만 확인했다. Codex 웹 문서([learn.chatgpt.com/docs/cloud](https://learn.chatgpt.com/docs/cloud))에는 작업 목록 배치 설명이 없어 근거에서 뺐다.
+- Paperclip·OpenClaw는 정적으로 읽었고 실행하지 않았다.
