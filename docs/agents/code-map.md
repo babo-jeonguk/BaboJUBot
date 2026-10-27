@@ -34,6 +34,7 @@
 | HTTP 토큰 인증·교차 조직 404·종료 토큰 거부 | [server/tools.ts](../../apps/server/src/tools.ts), db/runs.ts `authenticateRun` | 실행 API `organization tools` |
 | 대화·실행 시도·에이전트 조회 | server/app.ts, [conversation.ts](../../apps/server/src/conversation.ts) | 실행 API |
 | 가짜 실행기·도구 client·테스트 gate | [runtime/scripted.ts](../../packages/runtime/src/scripted.ts), [tools-client.ts](../../packages/runtime/src/tools-client.ts), [testing.ts](../../packages/runtime/src/testing.ts) | [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
+| README 데모 시나리오(생성→목표→초기 승인→작업 결과→일시정지·재개·작업자 추가 승인→결과 제출→최종 완료)가 이어지지 않음 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript`, 각 단계의 화면 | [데모 흐름 E2E](../../apps/web/e2e/demo-flow.spec.ts)(주요 사용자 행동을 모두 화면으로 한 조직에서). 직접 거부·조직 격리·heartbeat due·복구는 각 절의 API 검증 |
 | 대화·활동·실행 시도 상세·에이전트 화면 | [chat.tsx](../../apps/web/src/chat.tsx), [activity.tsx](../../apps/web/src/activity.tsx), [agents.tsx](../../apps/web/src/agents.tsx); api.ts query key | Lead 대화 E2E |
 | 후속 실제 adapter | [runtime/index.ts](../../packages/runtime/src/index.ts)에 추가, 요청 `instructions` 사본을 실행기에 주입 | 실제 adapter 테스트 없음; 후속 이슈의 계약 확인 |
 

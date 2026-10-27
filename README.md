@@ -2,7 +2,7 @@
 
 연구 목표마다 독립적인 AI 조직을 구성하고, Research Lead와 작업자들이 협력하는 범용 연구 운영 프로젝트입니다. 초기 계획·팀 승인, 진행 관찰, 사용자 개입, 조직별 기억, 사용자 최종 검토를 지원하는 방향으로 개발합니다.
 
-현재 상태는 **판 1 walking skeleton**입니다. 대시보드에서 연구 조직을 만들면 전용 Research Lead가 함께 생기고 `목표 설정` 단계로 시작하며, Event stream으로 사이드바와 홈에 바로 나타납니다. Lead 대화에 메시지를 보내면 Lead가 깨어나 실행 시도를 받고, 모델을 부르지 않는 가짜 실행기가 실행 시도별 토큰으로 조직 도구를 호출해 답장합니다. 활동·실행 시도 상세·에이전트 상세에서 그 실행 시도를 볼 수 있습니다. 실제 실행기 adapter와 실제 모델 호출은 아직 없습니다.
+현재 상태는 **판 1 walking skeleton**입니다. [데모 시나리오](#데모-시나리오)로 조직 생성부터 사용자 최종 완료까지 판 1 흐름 전체를 대시보드에서 직접 눌러 볼 수 있고, Playwright E2E 하나가 이 흐름을 지킵니다. 대시보드에서 연구 조직을 만들면 전용 Research Lead가 함께 생기고 `목표 설정` 단계로 시작하며, Event stream으로 사이드바와 홈에 바로 나타납니다. Lead 대화에 메시지를 보내면 Lead가 깨어나 실행 시도를 받고, 모델을 부르지 않는 가짜 실행기가 실행 시도별 토큰으로 조직 도구를 호출해 답장합니다. 활동·실행 시도 상세·에이전트 상세에서 그 실행 시도를 볼 수 있습니다. 실제 실행기 adapter와 실제 모델 호출은 아직 없습니다.
 
 Lead 대화에 `목표: …`와 `완료 기준: …` 줄을 보내면 가짜 Lead가 목표를 기록해 조직을 `계획 수립`으로 넘기고, 초기 연구 계획·팀 구성·연구 환경 명세·연구 흐름 템플릿을 하나의 초기 연구 승인 요청으로 올립니다. 사용자는 Inbox에서 승인 요청 상세를 열어 승인·반려·수정 요청을 합니다. 승인하면 조직이 `연구 진행`이 되고 제안한 작업자들이 생기며, 반려·수정 요청은 `계획 수립`으로 돌아가 사유와 함께 Lead를 깨웁니다. 승인 전에는 작업 생성·작업자 추가 도구를 제품이 거부하고 Event log에 남깁니다. 각 에이전트는 [하네스 라이브러리](harness/README.md)에서 복사한 자기 Role·Soul·Skill 사본을 갖고(Lead는 조직 생성 때, 작업자는 승인 때나 연구 중 추가될 때), 에이전트 상세의 Role·Soul·Skill 탭에서 봅니다.
 
@@ -44,13 +44,27 @@ Node.js 24.x, pnpm 10.33.0 및 Git을 사용합니다. GitHub 이슈 작업에�
 
 ```bash
 pnpm install
-pnpm dev          # 서버(http://127.0.0.1:3100)와 대시보드(http://127.0.0.1:5173)
+pnpm dev          # 서버(http://127.0.0.1:3100, 가짜 실행기 데모 시나리오)와 대시보드(http://127.0.0.1:5173)
 pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 임시 embedded Postgres를 띄웁니다.
-pnpm test:e2e     # Playwright smoke(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
+pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
 pnpm lint
 pnpm check        # Markdown 로컬 링크 검사
 ```
+
+### 데모 시나리오
+
+`pnpm dev`의 서버는 기본으로 가짜 실행기를 씁니다. 실제 모델·유료 API·자격 증명 없이 대시보드(http://127.0.0.1:5173)에서 판 1 흐름을 처음부터 끝까지 해 볼 수 있습니다. 개발 DB(`.babojubot/postgres`)는 지우지 않으므로 전에 만든 조직도 그대로 보입니다.
+
+1. 레일의 `＋`(새 연구 조직)로 조직을 만들면 Lead 대화가 열립니다.
+2. Lead 대화에 `목표: 공개 자료로 오류 유형을 정리한다`와 `완료 기준: 유형 목록과 근거 메모`를 두 줄로(Shift+Enter로 줄바꿈) 한 메시지에 보냅니다. Lead가 목표를 기록하고 초기 연구 승인을 요청합니다.
+3. Inbox에서 초기 연구 승인 요청을 열어 계획·팀·연구 환경 명세를 보고 승인합니다. 작업자 2명이 생기고 Lead가 한 명에 작업 하나씩 맡깁니다.
+4. 조직 › 작업에서 끝난 작업의 자기 보고·산출물과 연결된 연구 노드(누르면 연구 지도)를 봅니다. 산출물이 있어도 연구는 `연구 진행` 그대로입니다.
+5. 에이전트 상세에서 heartbeat를 켜고 끌 수 있습니다. 조직 › 설정에서 `작업자 추가` 승인 정책을 켭니다.
+6. 조직 › 대시보드에서 조직을 일시정지하고 Lead 대화에 `작업자 추가: researcher`를 보냅니다. 메시지는 `다음 실행 시도 대기`로 남습니다. 재개하면 Lead가 작업자 추가 승인을 요청하고, Inbox에서 승인하면 작업자 팀이 3명이 됩니다.
+7. Lead 대화에 `결과 제출 부탁해요`를 보내면 Lead가 산출물을 근거로 결과를 제출합니다. Inbox에서 결과 제출을 열어 요약·완료 기준·근거 산출물을 보고(전체 내용은 `원래 화면에서 자세히 보기`) `최종 완료`를 확정합니다. 의견을 적어 수정 요청하면 Lead가 다시 제출합니다.
+
+[데모 흐름 E2E](apps/web/e2e/demo-flow.spec.ts)가 같은 순서를 화면 조작으로 지킵니다(`pnpm test:e2e demo-flow`). 그 밖에 Lead 대화의 `실패 연습`·`실행 유지 연습` 부탁으로 실패한 실행 시도와 실행 중인 에이전트를 볼 수 있습니다.
 
 `pnpm install`은 `@embedded-postgres/linux-x64`의 postinstall만 실행합니다(`pnpm-workspace.yaml`의 `onlyBuiltDependencies`). 이 script가 Postgres native library의 symlink를 만들기 때문에 `--ignore-scripts`로 설치하면 embedded Postgres가 뜨지 않습니다. 다른 OS·아키텍처에서는 해당 `@embedded-postgres/*` 패키지를 같은 목록에 추가합니다.
 
