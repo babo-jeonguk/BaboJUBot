@@ -33,7 +33,10 @@ export async function controlOrganization(
   return result;
 }
 
-/** 사용자의 에이전트 일시정지·재개 제어 명령. 돌려주는 값은 명령 뒤의 에이전트 상세다. */
+/**
+ * 사용자의 에이전트 일시정지·재개·실행 중단 제어 명령. 돌려주는 값은 명령 뒤의 에이전트 상세다.
+ * 실행 중단은 일시정지가 아니므로 그 뒤의 깨우기는 평소처럼 실행 시도를 시작한다(취소 정리가 끝난 뒤).
+ */
 export async function controlAgent(
   { db, hub, dispatcher }: Deps,
   organizationId: string,

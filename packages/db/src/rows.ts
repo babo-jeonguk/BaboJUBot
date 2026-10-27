@@ -183,7 +183,7 @@ export async function lockCancellableRuns(
 
 /**
  * 에이전트의 진행 중 실행 시도를 잠그고 ID를 돌려준다. 취소 정리 중인 실행 시도도 끝날 때까지 진행 중이므로 포함한다.
- * `중단하고 반영`은 그 정리에 합류하고, 취소 사유는 `requestCancellation`이 처음 것을 그대로 둔다.
+ * `중단하고 보내기`는 그 정리에 합류하고, 취소 사유는 `requestCancellation`이 처음 것을 그대로 둔다.
  */
 export async function lockRunningRunOfAgent(
   tx: Executor,
