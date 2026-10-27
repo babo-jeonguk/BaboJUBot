@@ -29,7 +29,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
       .locator('[data-author="agent"]')
       .filter({ hasText: text });
   const attention = page.getByRole("list", { name: "주의 필요" });
-  const workerTeam = page.getByRole("region", { name: "작업자 팀" });
+  const workerTeam = page.getByRole("region", { name: "조직도" });
   const decision = page.getByRole("region", { name: "결정" });
   const controls = page.getByRole("region", { name: "조직 제어" });
   const main = page.getByRole("main");
@@ -64,7 +64,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
 
   await test.step("초기 연구 승인 전에는 작업자와 작업이 없다", async () => {
     await openWithLiveEvents(page, orgPath("/agents"));
-    await expect(workerTeam).toContainText("작업자 팀 0명");
+    await expect(workerTeam).toContainText("작업자 0명");
     await expect(workerTeam).toContainText("아직 작업자가 없습니다");
     await openWithLiveEvents(watcher, orgPath("/tasks"));
     await expect(watcher.getByRole("main")).toContainText(
@@ -142,10 +142,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
 
   await test.step("Lead의 heartbeat를 켜서 다음 시각을 보고 끈다", async () => {
     await page.goto(orgPath("/agents"));
-    await page
-      .getByRole("region", { name: "Research Lead" })
-      .getByRole("link")
-      .click();
+    await workerTeam.getByRole("link", { name: /Research Lead/ }).click();
     const heartbeat = page.getByRole("region", { name: "Heartbeat" });
     const toggle = heartbeat.getByRole("checkbox", { name: "heartbeat 켜기" });
     const save = heartbeat.getByRole("button", { name: "저장" });
@@ -189,7 +186,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
         .getByText("다음 실행 시도 대기")
     ).toBeVisible();
     await page.goto(orgPath("/agents"));
-    await expect(workerTeam).toContainText("작업자 팀 2명");
+    await expect(workerTeam).toContainText("작업자 2명");
   });
 
   await test.step("재개하면 Lead가 부탁을 받아 작업자 추가 승인을 요청하고, 팀은 승인 전까지 그대로다", async () => {
@@ -202,7 +199,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
       leadSaid("작업자 추가 승인 정책이 켜져 있어 승인을 요청했습니다")
     ).toHaveCount(1, runs);
     await page.goto(orgPath("/agents"));
-    await expect(workerTeam).toContainText("작업자 팀 2명");
+    await expect(workerTeam).toContainText("작업자 2명");
   });
 
   await test.step("Inbox에서 작업자 추가를 승인하면 팀이 한 명 늘고 연구 단계는 그대로다", async () => {
@@ -217,7 +214,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
     await expect(decision).toContainText("작업자가 팀에 더해졌습니다");
 
     await page.goto(orgPath("/agents"));
-    await expect(workerTeam).toContainText("작업자 팀 3명");
+    await expect(workerTeam).toContainText("작업자 3명");
     await expect(stageLink("연구 진행")).toBeVisible();
   });
 

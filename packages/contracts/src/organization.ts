@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentAppearanceSchema } from "./agent-profile.ts";
 
 /**
  * 조직 생애주기. 일시정지·중단은 최종 완료 전 어느 단계에서든 걸 수 있고, 일시정지는 재개하면 직전 단계로 돌아간다.
@@ -51,6 +52,8 @@ export const agentSchema = z.object({
   organizationId: z.uuid(),
   role: agentRoleSchema,
   name: z.string(),
+  /** 얼굴. 사용자가 고르지 않았으면 ID에서 정한 기본 얼굴이다. */
+  appearance: agentAppearanceSchema,
   createdAt: z.iso.datetime({ offset: true }),
 });
 export type Agent = z.infer<typeof agentSchema>;

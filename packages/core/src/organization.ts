@@ -18,8 +18,11 @@ export const leadAgentName = "Research Lead";
 
 export type RecordSource = { newId: () => string; now: () => Date };
 
-/** 새 에이전트와 Role에서 받은 기본 heartbeat 간격(분). heartbeat는 꺼진 채로 생긴다. */
-export type NewAgent = Agent & { heartbeatMinutes: number };
+/**
+ * 새 에이전트와 Role에서 받은 기본 heartbeat 간격(분). heartbeat는 꺼진 채로 생긴다.
+ * 얼굴은 저장하지 않고 ID에서 정한 기본 얼굴로 시작한다.
+ */
+export type NewAgent = Omit<Agent, "appearance"> & { heartbeatMinutes: number };
 
 /** 에이전트가 생길 때 받는 하네스 Role 내용: 지침 원본과 기본 heartbeat 간격. */
 export type AgentRoleSource = {

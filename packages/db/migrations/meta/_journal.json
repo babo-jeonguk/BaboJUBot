@@ -92,6 +92,13 @@
       "when": 1793082725756,
       "tag": "0012_inbox_archive_decided",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793088225367,
+      "tag": "0013_agent_profile",
+      "breakpoints": true
     }
   ]
 }

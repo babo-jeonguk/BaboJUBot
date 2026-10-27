@@ -41,6 +41,7 @@ import {
   type Organization,
   type OrganizationCommand,
   type OrganizationDetail,
+  type UpdateAgentProfileInput,
   type UpdateApprovalPolicyInput,
   type UpdateHeartbeatInput,
   type UpdateInboxItemInput,
@@ -525,6 +526,33 @@ export function useUpdateHeartbeat(orgId: string, agentId: string) {
       ),
     onSuccess: (agent) => {
       queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+    },
+  });
+}
+
+/**
+ * 에이전트 이름·얼굴 변경. 서버가 확정한 에이전트 상세로 바꾸고, 이름이 보이는 조직 상세(사이드바·그래프·활동)를 다시 불러온다.
+ * 다른 탭은 `agent.profile_changed` Event로 같은 조직을 다시 불러온다.
+ */
+export function useUpdateAgentProfile(orgId: string, agentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateAgentProfileInput) =>
+      request(
+        agentDetailSchema,
+        orgPath(orgId, `/agents/${encodeURIComponent(agentId)}`),
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }
+      ),
+    onSuccess: (agent) => {
+      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.organization(orgId),
+        exact: true,
+      });
     },
   });
 }

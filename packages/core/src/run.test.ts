@@ -1,4 +1,4 @@
-import type { Agent } from "@babojubot/contracts";
+import { defaultAgentAppearance, type Agent } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import { planRunInterruption, planRunStart, type PendingWake } from "./run.ts";
 
@@ -13,6 +13,7 @@ const lead: Agent = {
   organizationId: "org-1",
   role: "lead",
   name: "Research Lead",
+  appearance: defaultAgentAppearance("lead-1"),
   createdAt: at,
 };
 describe("planRunStart", () => {

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type {
-  CreateOrganizationInput,
-  OrganizationDetail,
-  UpdateApprovalPolicyInput,
+import {
+  defaultAgentAppearance,
+  type CreateOrganizationInput,
+  type OrganizationDetail,
+  type UpdateApprovalPolicyInput,
 } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
 import {
@@ -32,7 +33,10 @@ export async function createOrganization(
   hub.publish(event);
   return {
     ...creation.organization,
-    agents: creation.agents.map(({ heartbeatMinutes: _h, ...agent }) => agent),
+    agents: creation.agents.map(({ heartbeatMinutes: _h, ...agent }) => ({
+      ...agent,
+      appearance: defaultAgentAppearance(agent.id),
+    })),
   };
 }
 

@@ -67,12 +67,12 @@ test("another tab follows the burst of Events from an initial approval while the
   const watcher = await context.newPage();
   const maxInFlight = await slowGets(watcher, `**${api("")}`);
   await openWithLiveEvents(watcher, `/orgs/${org.id}/agents`);
-  const team = watcher.getByRole("region", { name: "작업자 팀" });
-  await expect(team).toContainText("작업자 팀 0명");
+  const team = watcher.getByRole("region", { name: "조직도" });
+  await expect(team).toContainText("작업자 0명");
 
   // 승인하면 작업자가 생기고 Lead가 깨어나 Event가 몰린다. 지켜보는 탭은 사용자 입력 없이 팀을 보여 준다.
   await approve();
-  await expect(team).toContainText("작업자 팀 2명", { timeout: 15_000 });
+  await expect(team).toContainText("작업자 2명", { timeout: 15_000 });
   expect(maxInFlight()).toBe(1);
 });
 

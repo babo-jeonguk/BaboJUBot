@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { defaultAgentAppearance } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   findOrganization,
@@ -8,6 +10,7 @@ import {
   listOrganizations,
 } from "./organizations.ts";
 import { migrateDatabase } from "./client.ts";
+import { updateAgentProfile } from "./agents.ts";
 import { findAgentInstructions } from "./harness.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 import { agents, organizations } from "./schema.ts";
@@ -134,5 +137,69 @@ describe("organization records", () => {
 
   it("treats a malformed organization ID as not found", async () => {
     expect(await findOrganization(t.db, "not-a-uuid")).toBeUndefined();
+  });
+
+  it("changes an agent's name and face inside its own organization only", async () => {
+    const a = plan("이름 조직 A");
+    const b = plan("이름 조직 B");
+    await insertOrganizationCreation(t.db, a);
+    await insertOrganizationCreation(t.db, b);
+    const leadA = a.agents[0]!;
+    const leadB = b.agents[0]!;
+    const orgA = a.organization.id;
+    const face = {
+      color: "mint",
+      eyes: "oval",
+      mouth: "flat",
+      accessory: "sprout",
+    } as const;
+
+    // 다른 조직의 에이전트는 없는 에이전트와 같다.
+    expect(
+      await updateAgentProfile(t.db, orgA, leadB.id, { name: "가로채기" })
+    ).toEqual({ kind: "not_found" });
+    const changed = await updateAgentProfile(t.db, orgA, leadA.id, {
+      name: "총괄",
+      appearance: face,
+    });
+    expect(changed).toMatchObject({
+      kind: "changed",
+      event: {
+        organizationId: orgA,
+        type: "agent.profile_changed",
+        payload: {
+          agentId: leadA.id,
+          name: { from: leadA.name, to: "총괄" },
+          appearance: face,
+        },
+      },
+    });
+    expect(
+      await updateAgentProfile(t.db, orgA, leadA.id, { appearance: face })
+    ).toEqual({ kind: "unchanged" });
+    expect((await findOrganization(t.db, orgA))?.agents[0]).toMatchObject({
+      name: "총괄",
+      appearance: face,
+    });
+    expect(
+      (await findOrganization(t.db, b.organization.id))?.agents[0]
+    ).toMatchObject({
+      name: leadB.name,
+      appearance: defaultAgentAppearance(leadB.id),
+    });
+  });
+
+  it("shows the default face when the stored face is not a current preset", async () => {
+    const creation = plan("옛 얼굴 조직");
+    await insertOrganizationCreation(t.db, creation);
+    const lead = creation.agents[0]!;
+    await t.db
+      .update(agents)
+      .set({ appearance: { color: "neon" } as never })
+      .where(eq(agents.id, lead.id));
+    expect(
+      (await findOrganization(t.db, creation.organization.id))?.agents[0]
+        ?.appearance
+    ).toEqual(defaultAgentAppearance(lead.id));
   });
 });
