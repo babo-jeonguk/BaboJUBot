@@ -1,7 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 15_000 };
+/** 행 앞 선택 단추의 체크박스 모양. 선택 중이 아니면 조직 아바타가 보이고 이 모양은 숨는다. */
+const boxOf = (row: Locator) => row.getByRole("checkbox").getByText("✓");
 
 test("the owner sorts failed runs and approval requests in the Inbox panel by attention, unread and archive, and another tab follows", async ({
   page,
@@ -55,7 +57,24 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
   await expect(request).toBeVisible(runs);
   const selection = panel.getByRole("group", { name: "선택한 항목" });
   await expect(selection).toHaveCount(0);
-  await request.getByRole("checkbox").check();
+  // 행 앞에는 체크박스 대신 조직 아바타가 있다. 아바타를 누르면 그 행이 체크되고,
+  // 하나라도 체크돼 있는 동안 다른 행도 아바타 대신 체크박스를 보인다.
+  await expect(boxOf(failure)).toBeHidden();
+  await expect(boxOf(request)).toBeHidden();
+  await request
+    .getByRole("checkbox", { name: `초기 연구 승인 요청 · ${name} 선택` })
+    .click();
+  await expect(request.getByRole("checkbox")).toBeChecked();
+  await expect(selection).toContainText("1개 선택");
+  await expect(boxOf(failure)).toBeVisible();
+  await expect(failure.getByRole("checkbox")).not.toBeChecked();
+  // 마지막 체크를 풀면 다른 행은 아바타로 돌아온다. 키보드(Space)로도 체크한다.
+  await request.getByRole("checkbox").click();
+  await expect(selection).toHaveCount(0);
+  await expect(boxOf(failure)).toBeHidden();
+  await request.getByRole("checkbox").focus();
+  await page.keyboard.press("Space");
+  await expect(request.getByRole("checkbox")).toBeChecked();
   await expect(selection).toContainText("1개 선택");
   await selection.getByRole("button", { name: "모두 읽음" }).click();
   await expect(selection).toHaveCount(0);
