@@ -49,12 +49,10 @@ test("creating an organization with a goal opens its Lead chat, wakes the Lead a
     rail.getByRole("link", { name: "음성 인식 오류 분석 · 승인 대기" })
   ).toBeVisible();
 
-  // 다른 탭의 홈과 사이드바는 Event stream으로 갱신된다. 초기 연구 승인 요청이 있어 홈의 주의 필요에 놓인다.
-  await expect(
-    watcher
-      .getByRole("region", { name: "주의 필요" })
-      .getByText("음성 인식 오류 분석")
-  ).toBeVisible();
+  // 다른 탭의 홈과 사이드바는 Event stream으로 갱신된다. 초기 연구 승인 요청이 있어 방의 Lead가 계획 승인을 묻는다.
+  const room = watcher.getByRole("region", { name: "음성 인식 오류 분석" });
+  await expect(room).toBeVisible();
+  await expect(room.getByTestId("decision-bubble")).toHaveText("?계획 승인");
   await expect(
     watcher
       .getByRole("navigation", { name: "연구 조직" })

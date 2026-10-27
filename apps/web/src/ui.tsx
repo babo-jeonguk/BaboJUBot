@@ -26,22 +26,32 @@ export function Tip({
   children,
   content,
   side = "top",
+  tone = "dark",
 }: {
   children: ReactNode;
   content: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
+  /** `speech`는 캐릭터 머리 위 말풍선(흰 바탕, 한 줄). */
+  tone?: "dark" | "speech";
 }) {
   return (
-    <Tooltip.Root>
+    <Tooltip.Root disableHoverableContent={tone === "speech"}>
       <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
       <Tooltip.Portal>
         <Tooltip.Content
           side={side}
           sideOffset={side === "right" ? 10 : 6}
-          className="animate-pop-in z-[80] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
+          collisionPadding={8}
+          className={
+            tone === "speech"
+              ? "animate-pop-in z-[80] max-w-56 truncate rounded-2xl bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-pop ring-1 ring-slate-900/10"
+              : "animate-pop-in z-[80] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
+          }
         >
           {content}
-          <Tooltip.Arrow className="fill-slate-900" />
+          <Tooltip.Arrow
+            className={tone === "speech" ? "fill-white" : "fill-slate-900"}
+          />
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>

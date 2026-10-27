@@ -73,17 +73,17 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
       .first()
   ).toBeVisible();
 
-  // 홈은 조직 카드와 전체 수에 진행 중 실행 시도를 보인다. 전체 수는 서버의 실제 진행 중 수와 같다.
+  // 홈은 조직의 방과 전체 수에 작업 중인 에이전트를 보인다. 전체 수는 서버의 실제 진행 중 수와 같다.
   const orgCard = (id: string) =>
-    home.getByRole("main").locator(`a[href="/orgs/${id}"]`);
+    home.getByRole("main").locator(`section[data-org-id="${id}"]`);
   const homeCard = orgCard(org.id);
-  await expect(homeCard.getByTestId("organization-running")).toHaveText(
-    "실행 중 1",
+  await expect(homeCard.getByTestId("room-headcount")).toHaveText(
+    /^작업 중 1/,
     runs
   );
-  await expect(
-    orgCard(other.id).getByTestId("organization-running")
-  ).toHaveCount(0);
+  await expect(orgCard(other.id).getByTestId("room-headcount")).toHaveText(
+    /^작업 중 0/
+  );
   const overview = (await (await page.request.get("/api/overview")).json()) as {
     runs: { running: number; cancelling: number };
   };
@@ -132,8 +132,8 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
     runs
   );
   await expect(page.getByTestId("metric-runs")).toContainText("취소됨 1");
-  await expect(homeCard.getByTestId("organization-running")).toHaveCount(
-    0,
+  await expect(homeCard.getByTestId("room-headcount")).toHaveText(
+    /^작업 중 0/,
     runs
   );
   await page.request.post(org.api(`/agents/${org.leadId}/resume`), {
