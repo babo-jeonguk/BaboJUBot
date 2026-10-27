@@ -113,7 +113,7 @@ test("another tab editing an agent's copy follows a save elsewhere while its cop
   });
   expect(saved.status()).toBe(200);
   await expect(section.getByRole("alert")).toContainText(
-    "지금은 revision 2입니다",
+    "다른 곳에서 먼저 저장했습니다 (revision 2)",
     { timeout: 15_000 }
   );
   const revisions = section

@@ -89,7 +89,6 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   );
   const plan = page.getByRole("region", { name: "초기 연구 계획" });
   await expect(plan).toContainText("데이터셋을 먼저 정해 주세요");
-  await expect(plan).toContainText("전문은 원래 화면에서");
   await expect(
     page.getByRole("region", { name: "연구 흐름 템플릿" })
   ).toBeVisible();

@@ -91,9 +91,7 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "⏸",
         title: `사용자가 ${agentName}를 일시정지했습니다`,
-        detail: event.payload.runId
-          ? `${runLabel(event.payload.runId)} 취소 요청`
-          : undefined,
+        detail: event.payload.runId ? "실행 시도 취소 요청" : undefined,
       };
     case "agent.resumed":
       return { icon: "▶", title: `사용자가 ${agentName}를 재개했습니다` };
@@ -101,9 +99,7 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "⤵",
         title: `사용자가 ${agentName}에게 중단하고 반영을 요청했습니다`,
-        detail: event.payload.runId
-          ? `${runLabel(event.payload.runId)} 취소 요청`
-          : undefined,
+        detail: event.payload.runId ? "실행 시도 취소 요청" : undefined,
       };
     case "agent.heartbeat_changed":
       return {
@@ -301,9 +297,10 @@ export function EventRow({
         {showRunLink && runId && (
           <Link
             to={`/orgs/${orgId}/runs/${runId}`}
+            title={runLabel(runId)}
             className="mt-0.5 inline-block text-xs text-brand-600 hover:underline"
           >
-            {runLabel(runId)}
+            실행 시도 보기
           </Link>
         )}
       </div>

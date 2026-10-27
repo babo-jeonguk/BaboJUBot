@@ -466,9 +466,10 @@ export function RunningAgents({ org }: { org: OrganizationDetail }) {
                       </span>
                       <Link
                         to={`/orgs/${org.id}/runs/${run.id}`}
+                        title={runLabel(run.id)}
                         className="text-brand-600 hover:underline"
                       >
-                        {runLabel(run.id)}
+                        실행 보기
                       </Link>
                       <Link
                         to={`/orgs/${org.id}/activity?agent=${run.agentId}`}

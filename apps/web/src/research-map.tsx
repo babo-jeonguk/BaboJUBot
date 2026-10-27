@@ -1408,9 +1408,10 @@ function NodeDetail({
                 {" · "}
                 <Link
                   to={`/orgs/${orgId}/runs/${node.createdBy.runId}`}
+                  title={runLabel(node.createdBy.runId)}
                   className="text-brand-600 hover:underline"
                 >
-                  {runLabel(node.createdBy.runId)}
+                  실행 시도
                 </Link>
               </>
             )}

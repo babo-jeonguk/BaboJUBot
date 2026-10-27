@@ -61,9 +61,10 @@ export function LeadChat({ orgId, lead }: { orgId: string; lead: Agent }) {
         {running && (
           <Link
             to={`/orgs/${orgId}/runs/${running.id}`}
+            title={runLabel(running.id)}
             className="flex items-center gap-1.5 text-xs text-brand-600 hover:underline"
           >
-            {runLabel(running.id)}
+            실행 중 →
             {running.cancelReason && (
               <RunStatusBadge
                 status={running.status}

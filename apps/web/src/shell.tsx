@@ -17,7 +17,6 @@ import { InboxPanel, useAttention, useInboxPanel } from "./inbox.tsx";
 import {
   abbr,
   avatarStyle,
-  runLabel,
   StageBadge,
   stageLabel,
   stageShortLabel,
@@ -480,7 +479,7 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   ];
   if (agent)
     trail.push({ label: agent.name, to: `/orgs/${orgId}/agents/${agent.id}` });
-  if (runMatch) trail.push({ label: runLabel(runMatch) });
+  if (runMatch) trail.push({ label: "실행 시도" });
   if (approvalMatch) trail.push({ label: "승인 요청" });
   if (resultMatch) trail.push({ label: "결과 제출" });
   if (taskId)

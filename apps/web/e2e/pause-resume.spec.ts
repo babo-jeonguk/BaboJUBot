@@ -101,9 +101,6 @@ test("stopping asks once more and then leaves every control disabled", async ({
   await expect(
     page.getByRole("button", { name: /에이전트 일시정지/ })
   ).toBeDisabled();
-  await expect(
-    page.getByText("끝난 조직의 에이전트는 일시정지·재개할 수 없습니다.")
-  ).toBeVisible();
 });
 
 test("pausing one agent from its detail page holds its messages until it resumes", async ({

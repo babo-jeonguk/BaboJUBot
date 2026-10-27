@@ -114,9 +114,10 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
           {live && (
             <Link
               to={`/orgs/${orgId}/runs/${live.id}`}
+              title={runLabel(live.id)}
               className="flex items-center gap-1.5 text-xs text-brand-600 hover:underline"
             >
-              {runLabel(live.id)} 보기
+              실행 중 →
               {live.cancelReason && (
                 <RunStatusBadge
                   status={live.status}
@@ -809,15 +810,15 @@ function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
     <li>
       <Link
         to={`/orgs/${orgId}/runs/${run.id}`}
+        title={runLabel(run.id)}
         className="flex items-center gap-3 px-4 py-3 text-sm transition hover:bg-slate-50"
       >
         <RunStatusBadge status={run.status} cancelReason={run.cancelReason} />
         <div className="min-w-0 flex-1">
-          <div className="font-medium text-slate-800">{runLabel(run.id)}</div>
-          <div className="truncate text-xs text-slate-500">
-            깨우기 {run.wakeCount}개
-            {(run.error ?? run.summary) && ` · ${run.error ?? run.summary}`}
+          <div className="truncate text-slate-800">
+            {run.error ?? run.summary ?? "실행 시도"}
           </div>
+          <div className="text-xs text-slate-500">깨우기 {run.wakeCount}개</div>
         </div>
         <time
           dateTime={run.startedAt}
@@ -848,7 +849,9 @@ export function RunDetailPage() {
   return (
     <Page width="standard">
       <div className="mb-6 flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold">{runLabel(r.id)}</h1>
+        <h1 className="text-xl font-semibold" title={runLabel(r.id)}>
+          실행 시도
+        </h1>
         <RunStatusBadge status={r.status} cancelReason={r.cancelReason} />
         <div className="w-full text-sm text-slate-500">
           <Link
