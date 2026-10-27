@@ -237,7 +237,37 @@ export const runs = pgTable(
   ]
 );
 
-/** Lead 대화의 메시지. 사용자 메시지는 전달 방식을, 에이전트 메시지는 보낸 실행 시도를 갖는다. */
+/**
+ * 사용자와 조직 Research Lead의 대화. 조직마다 기본 대화(`is_default`) 하나가 조직과 함께 생기고,
+ * 새 대화는 첫 사용자 메시지와 함께 생긴다. `read_message_seq`는 사용자가 마지막으로 본 메시지의 저장 순서이며
+ * 사용자의 보기만 바꾸고 앞으로만 간다.
+ */
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    title: text("title").notNull(),
+    isDefault: boolean("is_default").notNull().default(false),
+    readMessageSeq: bigint("read_message_seq", { mode: "number" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("conversations_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    // 조직마다 기본 대화는 하나뿐이다.
+    uniqueIndex("conversations_one_default_per_organization")
+      .on(t.organizationId)
+      .where(sql`${t.isDefault}`),
+  ]
+);
+
+/** Lead 대화의 메시지. 대화 하나에 속하며, 사용자 메시지는 전달 방식을, 에이전트 메시지는 보낸 실행 시도를 갖는다. */
 export const messages = pgTable(
   "messages",
   {
@@ -247,6 +277,7 @@ export const messages = pgTable(
       .notNull()
       .references(() => organizations.id),
     agentId: uuid("agent_id").notNull(),
+    conversationId: uuid("conversation_id").notNull(),
     author: text("author", { enum: messageAuthors }).notNull(),
     body: text("body").notNull(),
     delivery: text("delivery", { enum: messageDeliveries }),
@@ -272,11 +303,16 @@ export const messages = pgTable(
       foreignColumns: [agents.organizationId, agents.id],
     }),
     foreignKey({
+      columns: [t.organizationId, t.conversationId],
+      foreignColumns: [conversations.organizationId, conversations.id],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.sentByRunId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
     unique("messages_organization_id_id_unique").on(t.organizationId, t.id),
     index("messages_conversation_idx").on(t.organizationId, t.agentId, t.seq),
+    index("messages_conversation_id_idx").on(t.conversationId, t.seq),
   ]
 );
 

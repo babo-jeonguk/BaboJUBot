@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { planOrganizationCreation } from "./organization.ts";
 
-const ids = ["org-1", "lead-1", "copy-1", "copy-2"];
+const ids = ["org-1", "lead-1", "copy-1", "copy-2", "conversation-1"];
 const leadFiles = ["AGENTS.md", "SOUL.md"].map((path) => ({
   path,
   content: `${path} 내용`,
@@ -58,6 +58,16 @@ describe("planOrganizationCreation", () => {
         heartbeatMinutes: 90,
       },
     ]);
+  });
+
+  it("starts the default conversation with the Lead together with the organization", () => {
+    expect(plan.defaultConversation).toEqual({
+      id: "conversation-1",
+      organizationId: "org-1",
+      title: "기본 대화",
+      isDefault: true,
+      createdAt: "2026-10-16T00:00:00.000Z",
+    });
   });
 
   it("records an organization.created Event bound to the new organization", () => {

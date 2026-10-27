@@ -21,9 +21,10 @@ import {
   toEvent,
   toOrganization,
 } from "./rows.ts";
-import { agents, events, organizations } from "./schema.ts";
+import { conversationRow } from "./conversations.ts";
+import { agents, conversations, events, organizations } from "./schema.ts";
 
-/** 조직·에이전트·Lead 지침 사본·Event를 한 transaction으로 저장하고 저장된 Event를 돌려준다. 하나라도 실패하면 아무것도 남지 않는다. */
+/** 조직·에이전트·Lead 지침 사본·기본 대화·Event를 한 transaction으로 저장하고 저장된 Event를 돌려준다. 하나라도 실패하면 아무것도 남지 않는다. */
 export async function insertOrganizationCreation(
   db: Database,
   records: OrganizationCreation
@@ -33,6 +34,9 @@ export async function insertOrganizationCreation(
     await tx.insert(organizations).values(organizationRow(organization));
     await tx.insert(agents).values(records.agents.map(agentRow));
     await insertInstructionCopies(tx, records.instructionCopies);
+    await tx
+      .insert(conversations)
+      .values(conversationRow(records.defaultConversation));
     return insertEvent(tx, records.event);
   });
 }

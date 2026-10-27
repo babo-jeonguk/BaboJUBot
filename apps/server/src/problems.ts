@@ -11,6 +11,7 @@ export type ToolProblem =
   | TaskRuleProblem
   | MapRuleProblem
   | "self_message"
+  | "conversation_required"
   | "idempotency_conflict";
 export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
   {
@@ -18,6 +19,7 @@ export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
     unknown_role: ["invalid_input", 422],
     unknown_template: ["invalid_input", 422],
     self_message: ["invalid_input", 422],
+    conversation_required: ["invalid_input", 422],
     not_found: ["not_found", 404],
     not_assignee: ["not_assignee", 403],
     already_completed: ["already_completed", 409],

@@ -3,6 +3,7 @@ import {
   defaultHeartbeatMinutes,
   type Agent,
   type ApprovalPolicy,
+  type Conversation,
   type CreateOrganizationInput,
   type InstructionCopy,
   type InstructionSourceFile,
@@ -12,6 +13,7 @@ import {
   type UpdateApprovalPolicyInput,
 } from "@babojubot/contracts";
 import { copyInstructions } from "./harness.ts";
+import { planDefaultConversation } from "./run.ts";
 
 export const initialStage: LifecycleStage = "goal_setting";
 export const leadAgentName = "Research Lead";
@@ -35,11 +37,13 @@ export type OrganizationCreation = {
   organization: Organization;
   agents: NewAgent[];
   instructionCopies: InstructionCopy[];
+  /** 사용자와 Lead의 기본 대화. */
+  defaultConversation: Conversation;
   event: NewEvent;
 };
 
 /**
- * 새 조직은 `목표 설정`에서 시작하고 전용 Research Lead 하나를 가지며, 승인 정책은 모두 꺼져 있다.
+ * 새 조직은 `목표 설정`에서 시작하고 전용 Research Lead 하나와 그 Lead와의 기본 대화를 가지며, 승인 정책은 모두 꺼져 있다.
  * Lead는 하네스 라이브러리의 Lead Role에서 복사한 자기 Role·Soul 사본과 기본 heartbeat 간격을 받는다.
  */
 export function planOrganizationCreation(
@@ -71,6 +75,10 @@ export function planOrganizationCreation(
     agents: [lead],
     instructionCopies: copyInstructions(lead, leadRole.files, {
       newId,
+      createdAt,
+    }),
+    defaultConversation: planDefaultConversation(organization.id, {
+      id: newId(),
       createdAt,
     }),
     event: {

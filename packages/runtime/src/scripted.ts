@@ -38,8 +38,12 @@ export type ScriptStep =
   | { do: "read_context" }
   /** 공개 활동을 낸다. Control Plane이 허용하지 않는 값은 버려진다. */
   | { do: "emit"; activity: unknown }
-  /** Lead 대화에 답장한다. */
-  | { do: "send_message"; body: (state: ScriptState) => string }
+  /** Lead 대화에 답장한다. `conversationId`가 없으면 서버가 받은 사용자 메시지의 대화(없으면 기본 대화)로 보낸다. */
+  | {
+      do: "send_message";
+      body: (state: ScriptState) => string;
+      conversationId?: string;
+    }
   /** 조직 안의 메시지 하나를 조회한다. */
   | { do: "read_message"; messageId: (state: ScriptState) => string }
   /**
@@ -108,24 +112,60 @@ export function describeWakeReason(reason: WakeReason): string {
   }
 }
 
+/** Lead의 기본 대화. 사용자 메시지 없이 스스로 보내는 메시지가 간다. Lead가 아니면 대화가 없다. */
+export const defaultConversationOf = (request: RunRequest) =>
+  request.context.conversations.find((c) => c.isDefault)?.id;
+
+/** 깨우기 사유에 답장할 대화: 사용자 메시지는 그 메시지의 대화, 그 밖의 사유는 기본 대화. */
+export const replyConversationOf = (request: RunRequest, reason: WakeReason) =>
+  reason.kind === "owner_message"
+    ? reason.conversationId
+    : defaultConversationOf(request);
+
+/** 받은 깨우기 사유를 답장할 대화별로 나눈다. 대화는 처음 나온 순서대로다. */
+function reasonsByConversation(request: RunRequest) {
+  const groups = new Map<string | undefined, WakeReason[]>();
+  for (const reason of request.wakeReasons) {
+    const key = replyConversationOf(request, reason);
+    groups.set(key, [...(groups.get(key) ?? []), reason]);
+  }
+  return [...groups];
+}
+
 /** 받은 깨우기 사유를 모두 짚는 답장. */
-const replyToWakeReasons = ({ context, request }: ScriptState) => {
-  const reasons = context?.wakeReasons ?? request.wakeReasons;
-  return [
+const replyToWakeReasons = (reasons: WakeReason[]) =>
+  [
     `(가짜 실행기) 메시지 ${reasons.length}개를 받았습니다.`,
     ...reasons.map((r) => `- ${describeWakeReason(r)}`),
   ].join("\n");
-};
 
-const leadReplySteps = (
-  body: (state: ScriptState) => string = replyToWakeReasons
-): ScriptStep[] => [
+/**
+ * 받은 깨우기 사유에 대화마다 하나씩 답장한다. 사용자 메시지는 그 메시지의 대화로, 그 밖의 사유는 기본 대화로 간다.
+ * `extra`는 사용자 메시지가 있는 대화의 답장 끝에 붙인다.
+ */
+const leadReplySteps = (extra?: string): ScriptStep[] => [
   { do: "read_context" },
   {
     do: "emit",
     activity: { type: "progress", text: "받은 메시지를 읽었습니다." },
   },
-  { do: "send_message", body },
+  {
+    do: "then",
+    steps: ({ request }) =>
+      reasonsByConversation(request).map(
+        ([conversationId, reasons]): ScriptStep => ({
+          do: "send_message",
+          conversationId,
+          body: () =>
+            [
+              replyToWakeReasons(reasons),
+              ...(extra && reasons.some((r) => r.kind === "owner_message")
+                ? [extra]
+                : []),
+            ].join("\n"),
+        })
+      ),
+  },
 ];
 
 /** 사건 없이 heartbeat로만 깨어났을 때: 맥락을 읽고 활동만 남긴다. 사용자에게 답장하지 않는다. */
@@ -143,7 +183,10 @@ export const heartbeatScript: Script = {
   summary: () => "heartbeat: 새 사건이 없습니다.",
 };
 
-/** 사용자 메시지에 대한 Lead의 기본 시나리오: 맥락을 읽고 받은 깨우기 사유를 모두 짚어 답장한다. */
+/**
+ * 사용자 메시지에 대한 Lead의 기본 시나리오: 맥락을 읽고 받은 깨우기 사유를 모두 짚어 답장한다.
+ * 여러 대화의 사용자 메시지를 받으면 대화마다 답장하고, 사용자 메시지가 아닌 사유는 기본 대화에서 짚는다.
+ */
 export const leadReplyScript: Script = {
   steps: leadReplySteps(),
   summary: ({ sent, request }) =>
@@ -218,10 +261,20 @@ export function demoLeadScript(request: RunRequest): Script {
     goal: recorded,
     completionCriteria,
   } = request.context.organization;
-  const messages = request.wakeReasons.flatMap((r) =>
-    r.kind === "owner_message" ? [r.body] : []
+  const ownerMessages = request.wakeReasons.filter(
+    (r): r is Extract<WakeReason, { kind: "owner_message" }> =>
+      r.kind === "owner_message"
   );
-  const goals = messages.flatMap((m) => parseGoalMessage(m) ?? []);
+  const messages = ownerMessages.map((r) => r.body);
+  const defaultConversation = defaultConversationOf(request);
+  // 부탁한 사용자 메시지의 대화로 알린다. 사용자 메시지 없이 한 일은 기본 대화로 알린다.
+  const conversationOfMessage = (body: string | undefined) =>
+    ownerMessages.findLast((r) => r.body === body)?.conversationId ??
+    defaultConversation;
+  const goals = ownerMessages.flatMap((r) => {
+    const parsed = parseGoalMessage(r.body);
+    return parsed ? [{ ...parsed, conversationId: r.conversationId }] : [];
+  });
   const sentBack = request.wakeReasons.findLast(
     (r) => r.kind === "approval_decision" && r.decision !== "approve"
   );
@@ -258,7 +311,10 @@ export function demoLeadScript(request: RunRequest): Script {
         {
           do: "call",
           tool: "record_goal",
-          input: () => goal,
+          input: () => ({
+            goal: goal.goal,
+            completionCriteria: goal.completionCriteria,
+          }),
           when: () => stage === "goal_setting",
         },
         {
@@ -269,6 +325,7 @@ export function demoLeadScript(request: RunRequest): Script {
         },
         {
           do: "send_message",
+          conversationId: goal.conversationId,
           body: () =>
             [
               `(가짜 실행기) 목표와 완료 기준을 기록하고 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세를 검토해 주세요.`,
@@ -294,6 +351,7 @@ export function demoLeadScript(request: RunRequest): Script {
         },
         {
           do: "send_message",
+          conversationId: defaultConversation,
           body: () =>
             `(가짜 실행기) ${describeWakeReason(sentBack)}\n사유를 반영해 계획을 다시 제출했습니다.`,
         },
@@ -313,26 +371,31 @@ export function demoLeadScript(request: RunRequest): Script {
     .map((m) => workerRequestPattern.exec(m))
     .findLast(Boolean);
   if (stage === "researching" && workerRequest)
-    return addWorkerScript(workerRequest[1] ?? "researcher");
+    return addWorkerScript(
+      workerRequest[1] ?? "researcher",
+      conversationOfMessage(workerRequest.input)
+    );
 
   const changeRequest = request.wakeReasons.findLast(
     (r): r is Extract<WakeReason, { kind: "result_changes_requested" }> =>
       r.kind === "result_changes_requested"
   );
+  const resultMessage = messages.findLast((m) => resultRequest.test(m));
   if (
     (stage === "researching" || stage === "result_review") &&
-    (changeRequest || messages.some((m) => resultRequest.test(m)))
+    (changeRequest || resultMessage !== undefined)
   )
-    return submitResultScript(request, changeRequest?.note ?? null);
+    return submitResultScript(
+      request,
+      changeRequest?.note ?? null,
+      conversationOfMessage(resultMessage)
+    );
 
   if (stage === "goal_setting" && messages.length)
     return {
       ...leadReplyScript,
-      steps: leadReplySteps((state) =>
-        [
-          replyToWakeReasons(state),
-          "목표가 정해지면 `목표: …`와 `완료 기준: …` 줄로 보내 주세요. 기록하고 초기 연구 승인을 요청합니다.",
-        ].join("\n")
+      steps: leadReplySteps(
+        "목표가 정해지면 `목표: …`와 `완료 기준: …` 줄로 보내 주세요. 기록하고 초기 연구 승인을 요청합니다."
       ),
     };
   if (request.wakeReasons.every((r) => r.kind === "heartbeat"))
@@ -361,6 +424,7 @@ function assignInitialTasks(request: RunRequest): Script {
       })),
       {
         do: "send_message",
+        conversationId: defaultConversationOf(request),
         body: () =>
           `(가짜 실행기) 초기 연구 승인을 받아 작업 ${workers.length}개를 만들어 ${workers.map((w) => w.name).join(", ")}에게 맡겼습니다. 작업 화면에서 진행을 볼 수 있습니다.`,
       },
@@ -383,8 +447,8 @@ const workerRequestPattern = requestMessage(
   String.raw`작업자\s*추가(?:\s*[:：]\s*([a-z0-9-]+))?`
 );
 
-/** 가짜 Lead의 작업자 추가. 결과가 곧바로 생긴 작업자인지 승인 대기인지 Lead 대화로 알린다. */
-function addWorkerScript(role: string): Script {
+/** 가짜 Lead의 작업자 추가. 결과가 곧바로 생긴 작업자인지 승인 대기인지 부탁받은 대화로 알린다. */
+function addWorkerScript(role: string, conversationId?: string): Script {
   // 거부를 허용하지 않은 호출이므로 다음 단계에 닿았다면 호출은 성공했다.
   const added = ({ calls }: ScriptState) => {
     const output = calls.findLast((c) => c.tool === "add_worker");
@@ -397,6 +461,7 @@ function addWorkerScript(role: string): Script {
       { do: "call", tool: "add_worker", input: () => ({ role }) },
       {
         do: "send_message",
+        conversationId,
         body: (state) => {
           const worker = added(state);
           return worker
@@ -434,10 +499,12 @@ const resultRequest = requestMessage(String.raw`결과(?:를)?\s*제출`);
  * 가짜 Lead의 결과 제출: 작업 목록에서 완료한 작업을 읽어 그 산출물을 근거로 묶고, 자기 보고를 모은 요약으로 제출한다.
  * 수정 요청을 받았으면 그 의견을 요약에 적는다. 근거 산출물이 없으면 제출하지 않고 Lead 대화로 알린다.
  * 이미 제출해 결과 검토 중이면 제출은 건너뛰고 같은 근거로 알린다.
+ * 알림은 `conversationId`(부탁받은 대화, 수정 요청만 받았으면 기본 대화)로 간다.
  */
 function submitResultScript(
   request: RunRequest,
-  feedback: string | null
+  feedback: string | null,
+  conversationId: string | undefined
 ): Script {
   const { stage } = request.context.organization;
   const goal = request.context.organization.goal ?? "연구 목표";
@@ -467,6 +534,7 @@ function submitResultScript(
             return [
               {
                 do: "send_message",
+                conversationId,
                 body: () =>
                   "(가짜 실행기) 아직 근거로 묶을 산출물이 없어 결과를 제출하지 않았습니다. 작업이 끝나면 다시 부탁해 주세요.",
               },
@@ -484,6 +552,7 @@ function submitResultScript(
             },
             {
               do: "send_message",
+              conversationId,
               body: () =>
                 `(가짜 실행기) ${feedback ? "수정 의견을 반영해 " : ""}결과를 근거 산출물 ${left ? `${evidence.length}개 중 ${artifactIds.length}개(제출 상한)` : `${artifactIds.length}개`}와 함께 제출했습니다. Inbox에서 검토하고 수정 요청 또는 최종 완료를 결정해 주세요.`,
             },
@@ -709,7 +778,15 @@ export function createScriptedRuntime({
               break;
             case "send_message":
               state.sent.push(
-                await tools.sendMessage(step.body(state), once("send_message"))
+                await tools.sendMessage(
+                  {
+                    body: step.body(state),
+                    ...(step.conversationId
+                      ? { conversationId: step.conversationId }
+                      : {}),
+                  },
+                  once("send_message")
+                )
               );
               break;
             case "read_message":

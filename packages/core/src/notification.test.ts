@@ -1,6 +1,7 @@
 import type { Event, NewEvent } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  notificationContent,
   notificationOf as notificationOfStored,
   retryDelayMs,
 } from "./notification.ts";
@@ -38,6 +39,7 @@ describe("notificationOf", () => {
       payload: {
         messageId: source,
         agentId: agent,
+        conversationId: "conversation-1",
         author,
         runId: author === "agent" ? run : null,
       },
@@ -105,6 +107,22 @@ describe("notificationOf", () => {
         },
       })
     ).toBeNull();
+  });
+});
+
+describe("notificationContent", () => {
+  it("links a Lead message to the conversation it belongs to", () => {
+    expect(
+      notificationContent("org-1", "msg-1", {
+        kind: "lead_message",
+        body: "보고",
+        conversationId: "conversation-2",
+      })
+    ).toEqual({
+      title: "Research Lead 메시지",
+      body: "보고",
+      link: "/orgs/org-1/chat/conversation-2",
+    });
   });
 });
 

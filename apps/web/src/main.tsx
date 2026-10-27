@@ -79,6 +79,10 @@ const router = createBrowserRouter(
         path="orgs/:orgId/artifacts/:artifactId"
         element={<ArtifactPage />}
       />
+      <Route
+        path="orgs/:orgId/chat/:conversationId"
+        element={<OrganizationScreen section="chat" />}
+      />
       <Route path="orgs/:orgId/:section?" element={<OrganizationScreen />} />
       <Route path="*" element={<NotFound what="화면" />} />
     </Route>

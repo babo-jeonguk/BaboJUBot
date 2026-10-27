@@ -125,8 +125,11 @@ function OrganizationControl({ org }: { org: OrganizationDetail }) {
   );
 }
 
-export function OrganizationScreen() {
-  const { orgId = "", section = defaultSection } = useParams();
+/** 조직 화면. 대화 하나를 여는 주소(`/chat/:conversationId`)는 섹션이 경로에 없어 `section`으로 받는다. */
+export function OrganizationScreen({ section: fixed }: { section?: string }) {
+  const params = useParams();
+  const { orgId = "", conversationId } = params;
+  const section = fixed ?? params.section ?? defaultSection;
   const org = useOrganization(orgId);
   if (org.isPending) return <Loading />;
   if (org.isError)
@@ -143,7 +146,7 @@ export function OrganizationScreen() {
   if (section === "chat" && lead)
     return (
       <Page width={width} fill>
-        <LeadChat orgId={orgId} lead={lead} />
+        <LeadChat orgId={orgId} lead={lead} conversationId={conversationId} />
       </Page>
     );
   if (section === "activity")

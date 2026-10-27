@@ -15,6 +15,7 @@ import {
 import {
   acceptsToolCalls,
   admitsRuns,
+  chooseReplyConversation,
   decisionOfStatus,
   instructionsBundleVersion,
   planAgentMessage,
@@ -44,6 +45,13 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
+import {
+  contextConversations,
+  conversationRow,
+  findConversation,
+  findDefaultConversation,
+  receivedConversationIds,
+} from "./conversations.ts";
 import { toolWrite, type ToolCall, type ToolWrite } from "./tool-calls.ts";
 import {
   hasPendingHeartbeat,
@@ -64,6 +72,7 @@ import {
   agentToAgentMessages,
   agents,
   approvals,
+  conversations,
   events,
   flowTemplates,
   instructionCopies,
@@ -83,6 +92,7 @@ import {
 
 /**
  * 사용자 메시지·깨우기·Event를 한 transaction으로 저장한다. 하나라도 실패하면 아무것도 남지 않는다.
+ * 새 대화의 첫 메시지면 그 대화도 같은 transaction에 남기므로, 메시지가 남지 않으면 빈 대화도 남지 않는다.
  * `중단하고 반영`이면 같은 transaction에서 받는 에이전트의 진행 중 실행 시도에 취소를 요청하고 그 제어 명령 Event도 남긴다.
  * 조직 행을 먼저 잠가 admission과 직렬화하므로, 메시지는 취소된 실행 시도가 아니라 그 뒤의 실행 시도에 묶인다.
  * 중단은 제어 명령이므로 최종 완료·중단 조직에서는 메시지도 남기지 않고 `organization_closed`다.
@@ -104,6 +114,8 @@ export async function insertOwnerMessage(
       if (planned === "organization_closed") return { kind: planned };
       control = planned;
     }
+    if (plan.conversation)
+      await tx.insert(conversations).values(conversationRow(plan.conversation));
     await tx.insert(messages).values(messageRow(plan.message));
     await tx
       .insert(wakes)
@@ -430,15 +442,37 @@ export async function appendRunActivity(
 
 /**
  * 조직 도구 메시지 보내기. 메시지와 도구 호출 요약을 종료와 직렬화한 한 transaction으로 남긴다(`toolWrite`).
+ * 답장할 대화는 core `chooseReplyConversation`이 정한다. 고른 대화가 같은 조직에 없으면 `not_found`,
+ * 여러 대화의 사용자 메시지를 받은 실행 시도가 대화를 고르지 않았으면 `conversation_required`다.
  */
 export async function insertAgentMessage(
   db: Database,
   run: ActiveRun,
-  body: string,
+  input: { body: string; conversationId?: string },
   options: ToolCall & { source: RecordSource }
-): Promise<ToolWrite<ConversationMessage, never>> {
+): Promise<
+  ToolWrite<ConversationMessage, "not_found" | "conversation_required">
+> {
   return toolWrite(db, run, "send_message", options, async (tx, locked) => {
-    const plan = planAgentMessage(locked, body, options.source);
+    if (
+      input.conversationId &&
+      !(await findConversation(tx, locked.organizationId, input.conversationId))
+    )
+      return { kind: "invalid", problem: "not_found" };
+    const fallback = await findDefaultConversation(tx, locked.organizationId);
+    const conversationId = chooseReplyConversation(
+      input.conversationId,
+      await receivedConversationIds(tx, locked.id),
+      fallback!.id
+    );
+    if (conversationId === "conversation_required")
+      return { kind: "invalid", problem: conversationId };
+    const plan = planAgentMessage(
+      locked,
+      conversationId,
+      input.body,
+      options.source
+    );
     await tx.insert(messages).values(messageRow(plan.message));
     return {
       kind: "ok",
@@ -490,14 +524,40 @@ export async function loadRunContext(
         .from(agents)
         .where(eq(agents.organizationId, run.organizationId))
         .orderBy(asc(agents.createdAt), asc(agents.name)),
-      conversation: await selectConversation(
-        db,
-        run.organizationId,
-        run.agentId,
-        { upToRunSeq: run.seq, limit: 50 }
-      ),
+      ...(await runConversations(db, run, agent.role)),
       researchFlow: template ?? null,
     },
+  };
+}
+
+/**
+ * 실행 시도 맥락의 대화. Lead만 대화를 가지며, 기본 대화와 그 실행 시도가 받은 사용자 메시지의 대화마다
+ * 이 실행 시도까지 전달된 최근 메시지 50개를 저장 순서대로 합친다.
+ */
+async function runConversations(
+  db: Executor,
+  run: { id: string; organizationId: string; agentId: string; seq: number },
+  role: AgentRole
+): Promise<
+  Pick<RunContextResponse["context"], "conversations" | "conversation">
+> {
+  if (role !== "lead") return { conversations: [], conversation: [] };
+  const found = await contextConversations(db, run.organizationId, run.id);
+  const perConversation = await Promise.all(
+    found.map((c) =>
+      selectConversation(db, run.organizationId, c.id, {
+        agentId: run.agentId,
+        upToRunSeq: run.seq,
+        limit: 50,
+      })
+    )
+  );
+  return {
+    conversations: found.map(({ organizationId: _org, ...c }) => c),
+    conversation: perConversation
+      .flat()
+      .sort((a, b) => a.seq - b.seq)
+      .map(({ seq: _seq, ...m }) => m),
   };
 }
 
@@ -511,19 +571,21 @@ export async function findMessage(
   const [row] = await conversationQuery(db).where(
     and(eq(messages.organizationId, organizationId), eq(messages.id, messageId))
   );
-  return row && toMessage(row);
+  return row && withoutSeq(toMessage(row));
 }
 
 // ---------- Surface 조회 ----------
 
-/** 에이전트와 사용자의 대화. 오래된 것부터 최근 `limit`개. */
-export async function listConversation(
+/** 같은 조직 대화 하나의 메시지. 오래된 것부터 최근 `limit`개. */
+export async function listConversationMessages(
   db: Database,
   organizationId: string,
-  agentId: string,
+  conversationId: string,
   { limit = 200 }: { limit?: number } = {}
 ): Promise<ConversationMessage[]> {
-  return selectConversation(db, organizationId, agentId, { limit });
+  return (
+    await selectConversation(db, organizationId, conversationId, { limit })
+  ).map(withoutSeq);
 }
 
 /** 조직의 실행 시도. 최근 것부터. */
@@ -675,6 +737,7 @@ async function selectWakes(
     .select({
       wake: wakes,
       body: messages.body,
+      conversationId: messages.conversationId,
       approvalKind: approvals.kind,
       decision: approvals.status,
       note: approvals.decisionNote,
@@ -729,6 +792,7 @@ async function selectWakes(
     ({
       wake,
       body,
+      conversationId,
       approvalKind,
       decision,
       note,
@@ -747,6 +811,7 @@ async function selectWakes(
               kind: wake.kind,
               wakeId,
               messageId: wake.messageId!,
+              conversationId: conversationId!,
               body: body!,
             };
           case "approval_decision":
@@ -843,18 +908,24 @@ const conversationQuery = (db: Executor) =>
     .leftJoin(deliveredTo, eq(deliveredTo.id, wakes.runId))
     .$dynamic();
 
+/** 대화 하나의 메시지. 저장 순서(`seq`)를 붙여 여러 대화를 합칠 수 있게 한다. */
 async function selectConversation(
   db: Executor,
   organizationId: string,
-  agentId: string,
-  { upToRunSeq, limit }: { upToRunSeq?: number; limit: number }
-): Promise<ConversationMessage[]> {
-  if (!isUuid(organizationId) || !isUuid(agentId)) return [];
+  conversationId: string,
+  {
+    agentId,
+    upToRunSeq,
+    limit,
+  }: { agentId?: string; upToRunSeq?: number; limit: number }
+): Promise<(ConversationMessage & { seq: number })[]> {
+  if (!isUuid(organizationId) || !isUuid(conversationId)) return [];
   const rows = await conversationQuery(db)
     .where(
       and(
         eq(messages.organizationId, organizationId),
-        eq(messages.agentId, agentId),
+        eq(messages.conversationId, conversationId),
+        agentId === undefined ? undefined : eq(messages.agentId, agentId),
         upToRunSeq === undefined
           ? undefined
           : or(lte(sentBy.seq, upToRunSeq), lte(deliveredTo.seq, upToRunSeq))
@@ -866,21 +937,27 @@ async function selectConversation(
 }
 
 const toMessage = ({
-  message: { seq: _seq, createdAt, ...message },
+  message: { createdAt, ...message },
   deliveredToRunId,
 }: {
   message: typeof messages.$inferSelect;
   deliveredToRunId: string | null;
-}): ConversationMessage => ({
+}): ConversationMessage & { seq: number } => ({
   ...message,
   deliveredToRunId,
   createdAt: createdAt.toISOString(),
 });
 
+const withoutSeq = ({
+  seq: _seq,
+  ...message
+}: ConversationMessage & { seq: number }): ConversationMessage => message;
+
 const messageRow = (m: ConversationMessage) => ({
   id: m.id,
   organizationId: m.organizationId,
   agentId: m.agentId,
+  conversationId: m.conversationId,
   author: m.author,
   body: m.body,
   delivery: m.delivery,

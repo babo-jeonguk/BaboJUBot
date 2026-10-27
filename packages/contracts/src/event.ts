@@ -34,13 +34,14 @@ export const organizationCreatedEventSchema = z.object({
   }),
 });
 
-/** Lead 대화의 메시지 저장. 에이전트 메시지는 보낸 실행 시도(`runId`)를 가리킨다. */
+/** Lead 대화의 메시지 저장. 메시지가 속한 대화(`conversationId`)를 담고, 에이전트 메시지는 보낸 실행 시도(`runId`)를 가리킨다. */
 export const messageCreatedEventSchema = z.object({
   ...eventBase,
   type: z.literal("message.created"),
   payload: z.object({
     messageId: z.uuid(),
     agentId: z.uuid(),
+    conversationId: z.uuid(),
     author: messageAuthorSchema,
     runId: z.uuid().nullable(),
   }),

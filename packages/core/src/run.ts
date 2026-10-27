@@ -1,17 +1,20 @@
-import type {
-  Agent,
-  ConversationMessage,
-  LifecycleStage,
-  NewEvent,
-  RunCancelReason,
-  RunResult,
-  RunEndReason,
-  RunStatus,
-  SendOwnerMessageInput,
-  SessionState,
-  Usage,
-  WakeKind,
-  WakeReason,
+import {
+  conversationTitleMaxLength,
+  defaultConversationTitle,
+  type Agent,
+  type Conversation,
+  type ConversationMessage,
+  type LifecycleStage,
+  type NewEvent,
+  type RunCancelReason,
+  type RunResult,
+  type RunEndReason,
+  type RunStatus,
+  type SendOwnerMessageInput,
+  type SessionState,
+  type Usage,
+  type WakeKind,
+  type WakeReason,
 } from "@babojubot/contracts";
 import type { RecordSource } from "./organization.ts";
 
@@ -42,29 +45,72 @@ export type PendingWake = {
   reason: WakeReason;
 };
 
-/** 사용자 메시지 기록. 메시지·깨우기·Event는 함께 저장되어야 한다. */
+/**
+ * 사용자 메시지 기록. 메시지·깨우기·Event는 함께 저장되어야 한다.
+ * 새 대화의 첫 메시지면 `conversation`이 그 대화이고 메시지보다 먼저 함께 저장한다.
+ */
 export type OwnerMessagePlan = {
+  conversation: Conversation | null;
   message: ConversationMessage;
   wake: Wake;
   event: NewEvent;
 };
 
-/** 사용자 메시지는 그 조직의 Lead에게 가고 Lead를 깨운다. 실행 중이면 다음 실행 시도로 미룬다. */
+/** 조직과 함께 생기는 기본 대화. */
+export const planDefaultConversation = (
+  organizationId: string,
+  { id, createdAt }: { id: string; createdAt: string }
+): Conversation => ({
+  id,
+  organizationId,
+  title: defaultConversationTitle,
+  isDefault: true,
+  createdAt,
+});
+
+/** 새 대화의 제목: 첫 사용자 메시지의 공백을 한 칸으로 줄이고, 길면 잘라 말줄임표를 붙인다. */
+export function conversationTitle(body: string): string {
+  const text = body.replace(/\s+/g, " ").trim();
+  const chars = [...text];
+  return chars.length > conversationTitleMaxLength
+    ? `${chars
+        .slice(0, conversationTitleMaxLength - 1)
+        .join("")
+        .trimEnd()}…`
+    : text;
+}
+
+/**
+ * 사용자 메시지는 그 조직의 Lead에게 가고 Lead를 깨운다. 실행 중이면 다음 실행 시도로 미룬다.
+ * `conversation`은 메시지를 남길 같은 조직의 대화이고, `new`면 이 메시지로 새 대화를 시작한다.
+ */
 export function planOwnerMessage(
   organization: {
     organizationId: string;
     agents: Pick<Agent, "id" | "role">[];
   },
+  conversation: { id: string } | "new",
   input: Required<SendOwnerMessageInput>,
   { newId, now }: RecordSource
 ): OwnerMessagePlan {
   const lead = findLead(organization.agents);
   if (!lead) throw new Error("organization has no Research Lead");
   const createdAt = now().toISOString();
+  const started: Conversation | null =
+    conversation === "new"
+      ? {
+          id: newId(),
+          organizationId: organization.organizationId,
+          title: conversationTitle(input.body),
+          isDefault: false,
+          createdAt,
+        }
+      : null;
   const message: ConversationMessage = {
     id: newId(),
     organizationId: organization.organizationId,
     agentId: lead.id,
+    conversationId: started?.id ?? (conversation as { id: string }).id,
     author: "owner",
     body: input.body,
     delivery: input.delivery,
@@ -73,6 +119,7 @@ export function planOwnerMessage(
     createdAt,
   };
   return {
+    conversation: started,
     message,
     wake: {
       id: newId(),
@@ -86,9 +133,26 @@ export function planOwnerMessage(
   };
 }
 
+/**
+ * 에이전트 답장이 갈 대화. 고른 대화(`requested`, 같은 조직인지는 저장 쪽이 확인)가 있으면 그 대화이고,
+ * 없으면 이 실행 시도가 받은 사용자 메시지의 대화(`received`)다. 사용자 메시지 없이 깨어났으면(승인 결정·작업 완료·heartbeat 등)
+ * 스스로 보내는 메시지라 기본 대화로 간다. 여러 대화의 사용자 메시지를 받았으면 어느 대화인지 골라야 한다.
+ */
+export function chooseReplyConversation(
+  requested: string | undefined,
+  received: readonly string[],
+  defaultConversationId: string
+): string | "conversation_required" {
+  if (requested) return requested;
+  const distinct = [...new Set(received)];
+  if (distinct.length > 1) return "conversation_required";
+  return distinct[0] ?? defaultConversationId;
+}
+
 /** 에이전트가 조직 도구로 보낸 Lead 대화 답장. 사용자에게 가므로 아무도 깨우지 않는다. */
 export function planAgentMessage(
   run: { id: string; organizationId: string; agentId: string },
+  conversationId: string,
   body: string,
   { newId, now }: RecordSource
 ): { message: ConversationMessage; event: NewEvent } {
@@ -96,6 +160,7 @@ export function planAgentMessage(
     id: newId(),
     organizationId: run.organizationId,
     agentId: run.agentId,
+    conversationId,
     author: "agent",
     body,
     delivery: null,
@@ -116,6 +181,7 @@ const messageCreatedEvent = (message: ConversationMessage): NewEvent => ({
   payload: {
     messageId: message.id,
     agentId: message.agentId,
+    conversationId: message.conversationId,
     author: message.author,
     runId: message.sentByRunId,
   },

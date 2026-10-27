@@ -202,7 +202,15 @@ describe("notification outbox and fake channel", () => {
     // 알림을 누르면 Inbox 상세(요약)가 열린다. Lead 메시지는 Inbox 항목이 아니라 대화로 간다.
     for (const m of channel.filter((m) => m.kind === "approval_request"))
       expect(m.link).toBe(`/inbox/${org.id}/approval/${m.sourceId}`);
-    expect(recordOf("lead_message").link).toBe(`/orgs/${org.id}/chat`);
+    // 이 조직의 Lead 메시지는 모두 기본 대화에 있다.
+    const [chat] = (await get(
+      `/api/organizations/${org.id}/conversations`
+    )) as {
+      id: string;
+    }[];
+    expect(recordOf("lead_message").link).toBe(
+      `/orgs/${org.id}/chat/${chat!.id}`
+    );
 
     // 다시 보내도 전송 기록은 늘지 않는다.
     await t.deliverNotifications();
