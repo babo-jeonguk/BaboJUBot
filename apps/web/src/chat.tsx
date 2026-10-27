@@ -14,6 +14,7 @@ import {
   useOrganization,
   useSendMessage,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
   AgentStatusBadge,
   formatTime,
@@ -138,11 +139,11 @@ function MessageBubble({
           formatTime(m.createdAt)
         )}
       </div>
-      <div
-        className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm break-words whitespace-pre-wrap ${mine ? "bg-brand-600 text-white" : "card text-slate-800"}`}
-      >
-        {m.body}
-      </div>
+      <Markdown
+        text={m.body}
+        tone={mine ? "inverse" : "default"}
+        className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${mine ? "bg-brand-600 text-white" : "card text-slate-800"}`}
+      />
       {m.delivery === "interrupt" && (
         <div className="mt-1 text-[11px] font-medium text-amber-700">
           ⤵ {deliveryLabel.interrupt}

@@ -134,9 +134,13 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
       "Soul · SOUL.md",
       "Skill · skills/record-research-node/SKILL.md",
     ]);
-    await expect(copies.getByRole("tabpanel")).toContainText("# 연구원");
+    await expect(
+      copies.getByRole("tabpanel").getByRole("heading", { name: "연구원" })
+    ).toBeVisible();
     await copies.getByRole("tab", { name: "Soul · SOUL.md" }).click();
-    await expect(copies.getByRole("tabpanel")).toContainText("# Soul");
+    await expect(
+      copies.getByRole("tabpanel").getByRole("heading", { name: "Soul" })
+    ).toBeVisible();
     // 편집을 시작하기 전에는 편집 입력이 없다.
     await expect(
       copies.locator("textarea, input, [contenteditable]")

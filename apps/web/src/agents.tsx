@@ -26,6 +26,7 @@ import {
   useRun,
   useUpdateHeartbeat,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
   abbr,
   AgentStatusBadge,
@@ -659,9 +660,10 @@ function InstructionCopies({
                 )}
               </div>
               {copy.content ? (
-                <pre className="max-h-[28rem] overflow-auto px-4 py-3 font-sans text-sm break-words whitespace-pre-wrap text-slate-800">
-                  {copy.content}
-                </pre>
+                <Markdown
+                  text={copy.content}
+                  className="max-h-[28rem] overflow-auto px-4 py-3 text-sm text-slate-800"
+                />
               ) : (
                 <p className="px-4 py-3 text-sm text-slate-400">빈 파일</p>
               )}
@@ -865,13 +867,12 @@ function RevisionView({
           />
         )
       ) : revision.data.content ? (
-        <pre
+        <Markdown
+          text={revision.data.content}
           tabIndex={0}
           aria-label={`revision ${number} 본문`}
-          className="max-h-[28rem] overflow-auto rounded-xl px-1 py-1 font-sans text-sm break-words whitespace-pre-wrap text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
-        >
-          {revision.data.content}
-        </pre>
+          className="max-h-[28rem] overflow-auto rounded-xl px-1 py-1 text-sm text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+        />
       ) : (
         <p className="text-sm text-slate-400">빈 파일</p>
       )}
@@ -978,8 +979,12 @@ export function RunDetailPage() {
             {r.status === "running" ? "아직 실행 중" : runStatusLabel[r.status]}
           </dd>
           <dt className="text-slate-500">요약</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {r.summary ?? <span className="text-slate-400">없음</span>}
+          <dd className="min-w-0">
+            {r.summary ? (
+              <Markdown text={r.summary} />
+            ) : (
+              <span className="text-slate-400">없음</span>
+            )}
           </dd>
           {r.error && (
             <>
@@ -1013,9 +1018,7 @@ function WakeReasonRow({
     <li className="px-4 py-2.5 text-sm">
       <div className="text-xs text-slate-400">{label}</div>
       {body}
-      {detail && (
-        <div className="mt-0.5 break-words whitespace-pre-wrap">{detail}</div>
-      )}
+      {detail && <Markdown text={detail} className="mt-0.5" />}
     </li>
   );
   const link = (to: string, text: string) => (
@@ -1026,10 +1029,7 @@ function WakeReasonRow({
   const task = (taskId: string) => `/orgs/${orgId}/tasks/${taskId}`;
   switch (reason.kind) {
     case "owner_message":
-      return row(
-        "사용자 메시지",
-        <div className="break-words whitespace-pre-wrap">{reason.body}</div>
-      );
+      return row("사용자 메시지", <Markdown text={reason.body} />);
     case "approval_decision":
       return row(
         "승인 결정",

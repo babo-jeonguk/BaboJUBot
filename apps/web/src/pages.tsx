@@ -29,6 +29,7 @@ import {
   RunningCountText,
 } from "./dashboard.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
+import { Markdown } from "./markdown.tsx";
 import { ResultReviewScreen } from "./results.tsx";
 import { SettingsScreen } from "./settings.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
@@ -417,18 +418,15 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
           {org.goal ? (
             <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[6rem_1fr]">
               <dt className="text-slate-500">연구 목표</dt>
-              <dd
-                className="break-words whitespace-pre-wrap"
-                data-testid="goal"
-              >
-                {org.goal}
+              <dd className="min-w-0">
+                <Markdown text={org.goal} data-testid="goal" />
               </dd>
               <dt className="text-slate-500">완료 기준</dt>
-              <dd
-                className="break-words whitespace-pre-wrap"
-                data-testid="completion-criteria"
-              >
-                {org.completionCriteria}
+              <dd className="min-w-0">
+                <Markdown
+                  text={org.completionCriteria ?? ""}
+                  data-testid="completion-criteria"
+                />
               </dd>
             </dl>
           ) : (

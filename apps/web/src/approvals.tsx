@@ -14,6 +14,7 @@ import {
   useDecideApproval,
   useOrganization,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
   approvalKindLabel,
   approvalStatusLabel,
@@ -111,10 +112,12 @@ function InitialResearchContent({
       <Block label="연구 목표와 완료 기준">
         <dl className="grid gap-x-4 gap-y-2 p-4 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
-          <dd className="break-words whitespace-pre-wrap">{proposal.goal}</dd>
+          <dd className="min-w-0">
+            <Markdown text={proposal.goal} />
+          </dd>
           <dt className="text-slate-500">완료 기준</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {proposal.completionCriteria}
+          <dd className="min-w-0">
+            <Markdown text={proposal.completionCriteria} />
           </dd>
         </dl>
       </Block>
@@ -201,9 +204,10 @@ function AddWorkerContent({
               <summary className="cursor-pointer font-mono break-all text-slate-600">
                 {f.path} ← harness/{f.source} · {f.sourceDigest.slice(0, 12)}
               </summary>
-              <pre className="mt-2 max-h-80 overflow-auto rounded-lg bg-slate-50 p-3 whitespace-pre-wrap text-slate-700">
-                {f.content}
-              </pre>
+              <Markdown
+                text={f.content}
+                className="mt-2 max-h-80 overflow-auto rounded-lg bg-slate-50 p-3 text-slate-700"
+              />
             </details>
           </li>
         ))}
@@ -223,9 +227,7 @@ function Block({ label, children }: { label: string; children: ReactNode }) {
 
 function Text({ children }: { children: string }) {
   return (
-    <div className="px-4 py-3 text-sm break-words whitespace-pre-wrap text-slate-800">
-      {children}
-    </div>
+    <Markdown text={children} className="px-4 py-3 text-sm text-slate-800" />
   );
 }
 

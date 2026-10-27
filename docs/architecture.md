@@ -27,7 +27,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(실행기·job runner adapter)
 | 위치 | 담는 것 | Module |
 |---|---|---|
 | `apps/server` | HTTP·WebSocket API·실행 시도. 첫 판은 한 프로세스, 필요할 때 worker 분리 | Control Plane, Agent Runtime |
-| `apps/web` | 대시보드 | Surface |
+| `apps/web` | 대시보드. 에이전트·사용자가 쓴 긴 글은 react-markdown·remark-gfm·remark-breaks(MIT)로 GFM을 그리고 원문 HTML은 그리지 않음 | Surface |
 | `packages/core` | 생애주기·승인 정책·조직 경계 규칙. 웹 프레임워크·DB 의존 없음 | Control Plane |
 | `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구 | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |

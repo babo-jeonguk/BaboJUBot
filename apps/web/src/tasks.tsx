@@ -17,6 +17,7 @@ import {
   useTask,
   useTasks,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
   formatLabel,
   formatTime,
@@ -138,9 +139,7 @@ export function TaskDetailPage() {
               <h2 className="mb-2 text-sm font-semibold text-slate-600">
                 작업 내용
               </h2>
-              <p className="text-sm break-words whitespace-pre-wrap">
-                {t.description}
-              </p>
+              <Markdown text={t.description} className="text-sm" />
             </section>
           )}
           <SelfReport orgId={orgId} task={t} agents={agents} />
@@ -215,12 +214,11 @@ function SelfReport({
           <p className="mb-2 text-xs text-slate-400">
             작업을 완료한 에이전트가 남긴 요약입니다. 검증된 결과가 아닙니다.
           </p>
-          <p
-            className="text-sm break-words whitespace-pre-wrap"
+          <Markdown
+            text={report.summary}
+            className="text-sm"
             data-testid="task-report"
-          >
-            {report.summary}
-          </p>
+          />
           <div className="mt-2 text-xs text-slate-500">
             {nameOf(agents, report.agentId)} · {formatTime(report.completedAt)}{" "}
             완료 ·{" "}
@@ -329,11 +327,10 @@ function CommentItem({
       <div className="mb-1 text-[11px] text-slate-400">
         {mine ? "나" : nameOf(agents, c.agentId)} · {formatTime(c.createdAt)}
       </div>
-      <div
-        className={`rounded-xl px-3 py-2 break-words whitespace-pre-wrap ${mine ? "bg-brand-50 text-slate-800" : "bg-slate-50 text-slate-800"}`}
-      >
-        {c.body}
-      </div>
+      <Markdown
+        text={c.body}
+        className={`rounded-xl px-3 py-2 ${mine ? "bg-brand-50 text-slate-800" : "bg-slate-50 text-slate-800"}`}
+      />
       <div className="mt-1 text-[11px] text-slate-400">
         {runId ? (
           <Link
@@ -481,12 +478,20 @@ export function ArtifactPage() {
         에이전트가 남긴 원문 그대로입니다. 산출물이 있다고 결과가 확인된 것은
         아닙니다.
       </p>
-      <pre
-        className="card overflow-auto p-4 font-sans text-sm break-words whitespace-pre-wrap text-slate-800"
-        data-testid="artifact-content"
-      >
-        {a.content}
-      </pre>
+      {a.format === "markdown" ? (
+        <Markdown
+          text={a.content}
+          className="card p-4 text-sm text-slate-800"
+          data-testid="artifact-content"
+        />
+      ) : (
+        <pre
+          className="card overflow-auto p-4 font-sans text-sm break-words whitespace-pre-wrap text-slate-800"
+          data-testid="artifact-content"
+        >
+          {a.content}
+        </pre>
+      )}
     </Page>
   );
 }

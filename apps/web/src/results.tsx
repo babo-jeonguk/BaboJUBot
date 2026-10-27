@@ -14,6 +14,7 @@ import {
   useResultSubmission,
   useResultSubmissions,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
   formatLabel,
   formatTime,
@@ -151,20 +152,21 @@ export function ResultSubmissionPage() {
       </div>
 
       <Block label="결과 요약">
-        <div
-          className="px-4 py-3 text-sm break-words whitespace-pre-wrap text-slate-800"
+        <Markdown
+          text={s.summary}
+          className="px-4 py-3 text-sm text-slate-800"
           data-testid="result-summary"
-        >
-          {s.summary}
-        </div>
+        />
       </Block>
       <Block label="완료 기준">
         <dl className="grid gap-x-4 gap-y-2 p-4 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
-          <dd className="break-words whitespace-pre-wrap">{s.goal}</dd>
+          <dd className="min-w-0">
+            <Markdown text={s.goal} />
+          </dd>
           <dt className="text-slate-500">완료 기준</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {s.completionCriteria}
+          <dd className="min-w-0">
+            <Markdown text={s.completionCriteria} />
           </dd>
         </dl>
         <p className="border-t border-slate-100 px-4 py-2 text-xs text-slate-400">

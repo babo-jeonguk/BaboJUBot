@@ -72,9 +72,11 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(evidence.getByRole("link")).toHaveCount(2);
   await evidence.getByRole("link", { name: /연구 문제 정리 1 메모/ }).click();
   await expect(page).toHaveURL(/\/artifacts\/[0-9a-f-]{36}$/);
-  await expect(page.getByTestId("artifact-content")).toContainText(
-    "# 연구 문제 정리 1 메모"
-  );
+  await expect(
+    page
+      .getByTestId("artifact-content")
+      .getByRole("heading", { name: "연구 문제 정리 1 메모" })
+  ).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(firstUrl);
 
