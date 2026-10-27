@@ -97,6 +97,33 @@ export function ApprovalDetailPage() {
   );
 }
 
+/**
+ * 초기 연구 승인 요청의 완료 기준 항목(`dt`·`dd`). 사용자가 비워 둬 Lead가 이 요청에서 제안한 기준이면
+ * `Lead 제안` 표시를 붙인다. 승인하면 조직의 완료 기준이 된다. Inbox 상세와 같이 쓴다.
+ */
+export function ProposedCriteria({
+  proposal,
+}: {
+  proposal: Pick<
+    ProposalOf<"initial_research">,
+    "completionCriteria" | "completionCriteriaProposed"
+  >;
+}) {
+  return (
+    <>
+      <dt className="text-slate-500">완료 기준</dt>
+      <dd className="min-w-0" data-testid="proposal-completion-criteria">
+        {proposal.completionCriteriaProposed && (
+          <span className="mb-1 inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200">
+            Lead 제안
+          </span>
+        )}
+        <Markdown text={proposal.completionCriteria} />
+      </dd>
+    </>
+  );
+}
+
 type ProposalOf<K extends ApprovalKind> = Extract<
   Approval,
   { kind: K }
@@ -115,10 +142,7 @@ function InitialResearchContent({
           <dd className="min-w-0">
             <Markdown text={proposal.goal} />
           </dd>
-          <dt className="text-slate-500">완료 기준</dt>
-          <dd className="min-w-0">
-            <Markdown text={proposal.completionCriteria} />
-          </dd>
+          <ProposedCriteria proposal={proposal} />
         </dl>
       </Block>
       <Block label="초기 연구 계획">

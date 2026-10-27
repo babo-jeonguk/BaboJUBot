@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /** 스크린샷을 남길 곳. 지정하면 조직도·꾸미기 창을 찍는다(사람이 보는 확인용이며 비교하지 않는다). */
@@ -14,13 +15,10 @@ type Org = { id: string; agents: { id: string; role: string; name: string }[] };
 /** 초기 연구 승인까지 마쳐 작업자 두 명이 있는 조직. */
 async function teamOrganization(page: Page, name: string) {
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const { id } = (await created.json()) as Org;
   const api = (path: string) => `/api/organizations/${id}${path}`;
-  await page.request.post(api("/messages"), {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {

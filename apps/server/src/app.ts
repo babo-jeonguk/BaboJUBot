@@ -199,7 +199,12 @@ export async function startServer({
     }
     res
       .status(201)
-      .json(await createOrganization({ db, hub, harnessDir }, input.data));
+      .json(
+        await createOrganization(
+          { db, hub, dispatcher, harnessDir },
+          input.data
+        )
+      );
   });
 
   /** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 합계(취소 정리 중은 따로 센 수도). */

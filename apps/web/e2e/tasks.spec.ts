@@ -1,17 +1,14 @@
 import { expect, test } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 test("the owner watches tasks appear and complete live, reads the self-report and artifact, and comments to wake the worker", async ({
   page,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "작업 E2E 조직" },
+    data: { name: "작업 E2E 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  // 가짜 Lead가 목표를 기록하고 초기 연구 승인을 요청한다.
-  await page.request.post(`/api/organizations/${org.id}/messages`, {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {
@@ -121,7 +118,7 @@ test("the owner watches tasks appear and complete live, reads the self-report an
 
 test("shows a missing task or artifact as not found", async ({ page }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "없는 작업 조직" },
+    data: { name: "없는 작업 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   await page.goto(`/orgs/${org.id}/tasks/${crypto.randomUUID()}`);

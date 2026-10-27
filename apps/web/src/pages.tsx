@@ -274,10 +274,19 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
               </dd>
               <dt className="text-slate-500">완료 기준</dt>
               <dd className="min-w-0">
-                <Markdown
-                  text={org.completionCriteria ?? ""}
-                  data-testid="completion-criteria"
-                />
+                {org.completionCriteria ? (
+                  <Markdown
+                    text={org.completionCriteria}
+                    data-testid="completion-criteria"
+                  />
+                ) : (
+                  <span
+                    className="text-slate-500"
+                    data-testid="completion-criteria"
+                  >
+                    아직 정하지 않았습니다
+                  </span>
+                )}
               </dd>
             </dl>
           ) : (

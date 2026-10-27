@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 type Copy = { id: string; path: string; content: string; revision: number };
@@ -8,7 +9,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   context,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "사본 편집 E2E 조직" },
+    data: { name: "사본 편집 E2E 조직", ...goalInput },
   });
   expect(created.status()).toBe(201);
   const org = (await created.json()) as {

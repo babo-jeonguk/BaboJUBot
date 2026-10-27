@@ -9,7 +9,11 @@ import {
   runDetailSchema,
   runSummaryListSchema,
 } from "@babojubot/contracts";
-import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
+import {
+  createTestDatabase,
+  insertLegacyOrganization,
+  type TestDatabase,
+} from "@babojubot/db/testing";
 import {
   createScriptedRuntime,
   defaultScriptSelector,
@@ -18,7 +22,13 @@ import {
 import { createGate, holdAfter, writes } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
-import { calls, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import {
+  calls,
+  goal,
+  quietCreation,
+  scriptedAgents,
+  serverHelpers,
+} from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 // 서버 재시작 복구. 실행 중 서버가 멈추면 그 실행 시도는 `server_restart`로 끝나고, 받은 깨우기는 다시 처리되어 새 실행 시도가 생긴다.
@@ -46,9 +56,10 @@ const api = (base: () => string) => {
   };
   return {
     call,
+    /** 사용자가 목표를 적어 만든 조직. 생성으로 깨어난 Lead의 실행 시도를 기다리지 않는다. */
     async createOrganization(name: string) {
       const org = organizationDetailSchema.parse(
-        (await call("POST", "/api/organizations", { name })).body
+        (await call("POST", "/api/organizations", { name, ...goal })).body
       );
       return { id: org.id, lead: org.agents.find((a) => a.role === "lead")! };
     },
@@ -89,15 +100,18 @@ describe("server restart recovery", () => {
     server = await startServer({
       db: database.db,
       port: 0,
-      runtime: createScriptedRuntime({
-        select: () => ({
-          ...leadReplyScript,
-          steps: [{ do: "hold", until: gate.wait }, ...leadReplyScript.steps],
-        }),
-      }),
+      runtime: quietCreation(
+        createScriptedRuntime({
+          select: () => ({
+            ...leadReplyScript,
+            steps: [{ do: "hold", until: gate.wait }, ...leadReplyScript.steps],
+          }),
+        })
+      ),
     });
     const http = api(() => server!.url);
     const org = await http.createOrganization("재시작 조직");
+    await server.drain();
     await http.say(org.id, "재시작 뒤에도 처리해 줘");
     await gate.reached;
     const [interrupted] = await http.runs(org.id);
@@ -130,16 +144,15 @@ describe("server restart recovery", () => {
   });
 
   it("recovers after the server process is killed mid-run without repeating the reply it already sent", async () => {
-    const { http, org, old } = await crashAndRestart(
-      "send_message",
-      "답장하고 멈춰",
-      async (http, orgId) => (await http.conversation(orgId)).length === 2
-    );
+    const { http, org, old } = await crashAndRestart("send_message", {
+      committed: async (http, orgId) =>
+        (await http.conversation(orgId)).length === 1,
+    });
     expect(old.error).toContain("서버가 멈춰");
     // 새 실행 시도는 같은 깨우기를 받아 같은 답장을 보내지만, 같은 호출 키라 이미 남긴 답장을 돌려받는다.
     const conversation = await http.conversation(org.id);
-    expect(conversation.map((m) => m.author)).toEqual(["owner", "agent"]);
-    expect(conversation[1]!.sentByRunId).toBe(old.id);
+    expect(conversation.map((m) => m.author)).toEqual(["agent"]);
+    expect(conversation[0]!.sentByRunId).toBe(old.id);
     // 돌려받은 호출은 기록·Event를 새로 남기지 않는다.
     const replies = (await http.events(org.id)).filter(
       (e) =>
@@ -153,25 +166,28 @@ describe("server restart recovery", () => {
     ]);
     expect(
       (await http.events(org.id)).filter((e) => e.type === "message.created")
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   // 단계를 바꾸는 쓰기 뒤에 죽으면 새 실행 시도는 바뀐 단계에서 시작한다. 그래도 초기 연구 승인 흐름의 남은 단계를 이어 간다.
+  // 새 조직은 생성으로 깨어난 Lead가 곧바로 요청한다. 목표 없이 만든 예전 조직은 목표 메시지로 목표를 기록하고 요청한다.
   it.each([
-    ["record_goal", "planning"],
-    ["request_initial_approval", "awaiting_approval"],
-    ["send_message", "awaiting_approval"],
+    ["request_initial_approval", "awaiting_approval", false],
+    ["send_message", "awaiting_approval", false],
+    ["record_goal", "planning", true],
+    ["request_initial_approval", "awaiting_approval", true],
   ] as const)(
-    "continues the initial research approval flow after the server is killed right after %s",
-    async (stopAfter, stageAtCrash) => {
-      const { http, org, old, next } = await crashAndRestart(
-        stopAfter,
-        "목표: 음성 인식 오류율을 절반으로 줄인다\n완료 기준: 공개 평가셋 WER 10% 이하",
-        async (http, orgId) =>
+    "continues the initial research approval flow after the server is killed right after %s (legacy organization: %s)",
+    async (stopAfter, stageAtCrash, legacy) => {
+      const owner = legacy ? ["owner"] : [];
+      const { http, org, old, next } = await crashAndRestart(stopAfter, {
+        legacy,
+        say: legacy ? goalMessage : undefined,
+        committed: async (http, orgId) =>
           (await http.organization(orgId)).stage === stageAtCrash &&
           (stopAfter !== "send_message" ||
-            (await http.conversation(orgId)).length === 2)
-      );
+            (await http.conversation(orgId)).length === owner.length + 1),
+      });
       const detail = await http.organization(org.id);
       expect(detail).toMatchObject({
         stage: "awaiting_approval",
@@ -184,30 +200,31 @@ describe("server restart recovery", () => {
         ["initial_research", "pending"],
       ]);
       const conversation = await http.conversation(org.id);
-      expect(conversation.map((m) => m.author)).toEqual(["owner", "agent"]);
-      expect(conversation[1]!.body).toContain("초기 연구 승인을 요청했습니다");
-      expect(conversation[1]!.sentByRunId).toBe(
+      expect(conversation.map((m) => m.author)).toEqual([...owner, "agent"]);
+      const reply = conversation.at(-1)!;
+      expect(reply.body).toContain("초기 연구 승인을 요청했습니다");
+      expect(reply.sentByRunId).toBe(
         stopAfter === "send_message" ? old.id : next.id
       );
       // 목표 기록·승인 요청·답장은 한 번씩만 남고, 새 실행 시도는 끝난 단계의 도구를 부르다 거부되지 않는다.
       const types = (await http.events(org.id)).map((e) => e.type);
-      for (const type of [
-        "organization.goal_recorded",
-        "approval.requested",
-      ] as const)
-        expect(types.filter((t) => t === type)).toHaveLength(1);
+      expect(types.filter((t) => t === "approval.requested")).toHaveLength(1);
+      expect(
+        types.filter((t) => t === "organization.goal_recorded")
+      ).toHaveLength(legacy ? 1 : 0);
       expect(types).not.toContain("tool.refused");
     }
   );
 
-  it("continues the recorded goal's approval request when a different goal message joins the redelivered wake", async () => {
-    const { http, org } = await crashAndRestart(
-      "record_goal",
-      "목표: 음성 인식 오류율을 절반으로 줄인다\n완료 기준: 공개 평가셋 WER 10% 이하",
-      async (http, orgId) =>
+  it("continues the recorded goal's approval request when a different goal message joins the redelivered wake of a legacy organization", async () => {
+    const { http, org } = await crashAndRestart("record_goal", {
+      legacy: true,
+      say: goalMessage,
+      committed: async (http, orgId) =>
         (await http.organization(orgId)).stage === "planning",
-      "목표: 음성 인식 지연시간을 줄인다\n완료 기준: 지연시간 100ms 이하"
-    );
+      alsoSay:
+        "목표: 음성 인식 지연시간을 줄인다\n완료 기준: 지연시간 100ms 이하",
+    });
     expect(await http.organization(org.id)).toMatchObject({
       stage: "awaiting_approval",
       goal: "음성 인식 오류율을 절반으로 줄인다",
@@ -235,16 +252,28 @@ describe("server restart recovery", () => {
   });
 });
 
+const goalMessage =
+  "목표: 음성 인식 오류율을 절반으로 줄인다\n완료 기준: 공개 평가셋 WER 10% 이하";
+
 /**
- * 자식 서버 프로세스에서 Lead에게 `say`를 보내고, `stopAfter` 쓰기가 commit된 것을 `committed`로 확인한 뒤 SIGKILL한다.
+ * 자식 서버 프로세스에서 조직을 만들고(새 조직이면 생성으로 깨어난 Lead가, `legacy`면 목표 없이 만든 예전 조직의 Lead가 `say`를 받아)
+ * `stopAfter` 쓰기가 commit된 것을 `committed`로 확인한 뒤 SIGKILL한다.
  * `alsoSay`가 있으면 SIGKILL 전에 보내, 다시 대기한 깨우기와 새 깨우기가 한 실행 시도로 합쳐지게 한다.
  * 같은 DB로 기본 가짜 실행기 서버를 다시 띄워 재처리가 끝날 때까지 기다린다.
  */
 async function crashAndRestart(
   stopAfter: string,
-  say: string,
-  committed: (http: Api, orgId: string) => Promise<boolean>,
-  alsoSay?: string
+  {
+    legacy = false,
+    say,
+    committed,
+    alsoSay,
+  }: {
+    legacy?: boolean;
+    say?: string;
+    committed: (http: Api, orgId: string) => Promise<boolean>;
+    alsoSay?: string;
+  }
 ) {
   database = await createTestDatabase();
   const child = spawn(
@@ -261,9 +290,11 @@ async function crashAndRestart(
     const [line] = (await once(child.stdout!, "data")) as [Buffer];
     const crashed = JSON.parse(String(line)) as { url: string };
     const before = api(() => crashed.url);
-    const org = await before.createOrganization("crash 조직");
+    const org = legacy
+      ? await insertLegacyOrganization(database.db, "crash 조직")
+      : await before.createOrganization("crash 조직");
     orgId = org.id;
-    await before.say(org.id, say);
+    if (say) await before.say(org.id, say);
     for (let i = 0; !(await committed(before, org.id)); i++) {
       if (i > 200) throw new Error(`${stopAfter} never committed`);
       await new Promise((r) => setTimeout(r, 25));
@@ -322,10 +353,6 @@ describe("demo Lead flows across a restart right after a stage-changing write", 
     t = await startTestServer({ runtime: agents.runtime });
     const before = api(() => t!.baseUrl);
     const org = await before.createOrganization("재요청 조직");
-    await before.say(
-      org.id,
-      "목표: 음성 인식 오류율을 절반으로 줄인다\n완료 기준: 공개 평가셋 WER 10% 이하"
-    );
     await t.drain();
     const [first] = approvalSummaryListSchema.parse(
       (await before.call("GET", `/api/organizations/${org.id}/approvals`)).body

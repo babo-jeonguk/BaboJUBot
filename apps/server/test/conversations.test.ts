@@ -8,6 +8,8 @@ import {
 import { createScriptedRuntime, leadReplyScript } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { insertLegacyOrganization } from "@babojubot/db/testing";
+import { goal, quietCreation } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -16,9 +18,11 @@ afterEach(async () => {
   t = undefined;
 });
 
+/** 사용자가 목표를 적어 만든 조직. 이 파일의 서버는 `quietCreation`이라 생성으로 깨어난 Lead는 맥락만 읽고 끝난다. */
 async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+  const res = await t!.request("POST", "/api/organizations", { name, ...goal });
   expect(res.status).toBe(201);
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { ...org, lead: org.agents.find((a) => a.role === "lead")! };
 }
@@ -78,7 +82,7 @@ function holdFirstRun(gate: Gate) {
 describe("Lead conversations", () => {
   it("starts a conversation on the first send, and the Lead replies there while the default conversation stays as it was", async () => {
     const now = new Date("2026-10-27T09:00:00.000Z");
-    t = await startTestServer({ now: () => now });
+    t = await startTestServer({ now: () => now, runtime: quietCreation() });
     const org = await createOrganization("여러 대화 조직");
 
     // 처음에는 기본 대화 하나뿐이다.
@@ -189,7 +193,7 @@ describe("Lead conversations", () => {
 
   it("lets one run reply to each conversation whose messages woke it, keeping delivery per message", async () => {
     const gate = createGate();
-    t = await startTestServer({ runtime: holdFirstRun(gate) });
+    t = await startTestServer({ runtime: quietCreation(holdFirstRun(gate)) });
     const org = await createOrganization("여러 대화 깨우기");
 
     await t.request("POST", `/api/organizations/${org.id}/messages`, {
@@ -205,8 +209,13 @@ describe("Lead conversations", () => {
     gate.open();
     await t.drain();
 
-    const runs = (await t.request("GET", `/api/organizations/${org.id}/runs`))
-      .body as { id: string; wakeCount: number }[];
+    // 가장 오래된 실행 시도는 생성 깨우기를 받은 것이다.
+    const runs = (
+      (await t.request("GET", `/api/organizations/${org.id}/runs`)).body as {
+        id: string;
+        wakeCount: number;
+      }[]
+    ).slice(0, -1);
     expect(runs.map((r) => r.wakeCount)).toEqual([3, 1]);
     const bodies = async (conversationId: string) =>
       (await messagesOf(org.id, conversationId)).map((m) => m.body);
@@ -232,9 +241,23 @@ describe("Lead conversations", () => {
     ).toEqual([runs[0]!.id, runs[0]!.id]);
   });
 
-  it("answers the goal in the conversation it came from and reports work it starts on its own in the default conversation", async () => {
+  it("reports the initial research request drafted on creation in the default conversation", async () => {
     t = await startTestServer();
-    const org = await createOrganization("기본 대화로 알리는 조직");
+    const res = await t.request("POST", "/api/organizations", {
+      name: "생성 뒤 알리는 조직",
+      ...goal,
+    });
+    const org = organizationDetailSchema.parse(res.body);
+    await t.drain();
+    const inDefault = await messagesOf(org.id);
+    expect(inDefault.map((m) => m.author)).toEqual(["agent"]);
+    expect(inDefault[0]!.body).toContain("초기 연구 승인을 요청했습니다");
+    expect(await conversationsOf(org.id)).toHaveLength(1);
+  });
+
+  it("answers the goal of an organization created without one in the conversation it came from and reports work it starts on its own in the default conversation", async () => {
+    t = await startTestServer({ runtime: quietCreation() });
+    const org = await insertLegacyOrganization(t.db, "기본 대화로 알리는 조직");
     const thread = await startOk(
       org.id,
       "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록"
@@ -269,7 +292,7 @@ describe("Lead conversations", () => {
   });
 
   it("treats another organization's conversation as nonexistent everywhere", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const a = await createOrganization("조직 A");
     const b = await createOrganization("조직 B");
     const bThread = await startOk(b.id, "B의 비밀 대화");
@@ -322,7 +345,7 @@ describe("Lead conversations", () => {
   });
 
   it("refuses input outside the contract without leaving an empty conversation", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("입력 조직");
     for (const body of [
       { body: "  " },
@@ -343,7 +366,7 @@ describe("Lead conversations", () => {
   });
 
   it("keeps conversations of a stopped organization readable and applies today's sending rules", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("끝난 조직");
     const thread = await startOk(org.id, "중단 전 대화");
     await t.drain();

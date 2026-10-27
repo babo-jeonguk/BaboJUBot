@@ -213,6 +213,8 @@ export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
  * 폐기된 노드의 편집(폐기 취소 제외)·폐기된 노드로의 새 연결은 409 `node_discarded`.
  * 같은 `Idempotency-Key`로 다른 도구·입력을 보내면 409 `idempotency_conflict`({@link idempotencyKeyHeader}).
  * 답장(`send_message`)의 대화가 같은 조직에 없으면 404 `not_found`, 여러 대화의 사용자 메시지를 받은 실행 시도가 대화를 고르지 않으면 422 `invalid_input`.
+ * 초기 연구 승인 요청의 완료 기준: 조직에 완료 기준이 없는데 제안하지 않으면 422 `completion_criteria_required`,
+ * 조직에 이미 완료 기준이 있는데 완료 기준을 함께 내면 409 `completion_criteria_set`.
  */
 export const orgToolErrorCodes = [
   "invalid_token",
@@ -230,6 +232,8 @@ export const orgToolErrorCodes = [
   "task_already_linked",
   "node_discarded",
   "idempotency_conflict",
+  "completion_criteria_required",
+  "completion_criteria_set",
 ] as const;
 export type OrgToolErrorCode = (typeof orgToolErrorCodes)[number];
 export const orgToolErrorSchema = z.object({

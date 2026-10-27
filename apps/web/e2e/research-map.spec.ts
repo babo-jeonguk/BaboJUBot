@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /**
@@ -48,12 +49,9 @@ async function watchSelectionLag(page: Page) {
 /** 승인을 받아 가짜 작업자들이 작업마다 연구 노드를 만든 조직. */
 async function researchingOrganization(page: Page, name: string) {
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  await page.request.post(`/api/organizations/${org.id}/messages`, {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {

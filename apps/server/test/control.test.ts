@@ -15,10 +15,12 @@ import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { startServer } from "../src/index.ts";
+import { insertLegacyOrganization } from "@babojubot/db/testing";
 import {
   calls,
+  goal,
   idle,
-  proposeScript,
+  quietCreation,
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
@@ -40,12 +42,20 @@ const agentDetail = async (orgId: string, agentId: string) =>
   agentDetailSchema.parse(
     await get(`/api/organizations/${orgId}/agents/${agentId}`)
   );
-const runsOf = async (orgId: string, agentId?: string) =>
-  runSummaryListSchema.parse(
-    await get(
-      `/api/organizations/${orgId}/runs${agentId ? `?agentId=${agentId}` : ""}`
-    )
+/**
+ * 조직(또는 에이전트 하나)의 실행 시도, 최근 것부터. 생성으로 깨어난 Lead의 첫 실행 시도(조직에서 가장 오래된 실행 시도)는 뺀다.
+ */
+const runsOf = async (orgId: string, agentId?: string) => {
+  const all = runSummaryListSchema.parse(
+    await get(`/api/organizations/${orgId}/runs`)
   );
+  const list = agentId
+    ? runSummaryListSchema.parse(
+        await get(`/api/organizations/${orgId}/runs?agentId=${agentId}`)
+      )
+    : all;
+  return list.filter((r) => r.id !== all.at(-1)?.id);
+};
 const control = (
   orgId: string,
   command: OrganizationCommand,
@@ -77,16 +87,18 @@ const holding = (gate: Gate): Script => ({
   steps: [{ do: "hold", until: gate.wait }, ...leadReplyScript.steps],
 });
 
+/** 사용자가 목표를 적어 만든 조직. 생성으로 깨어난 Lead의 실행 시도가 끝날 때까지 기다린다. */
 async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+  const res = await t!.request("POST", "/api/organizations", { name, ...goal });
   expect(res.status).toBe(201);
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { ...org, lead: org.agents.find((a) => a.role === "lead")! };
 }
 
 describe("organization pause and resume", () => {
   it("cancels the running run, holds wakes while paused, and delivers them in one run on resume", async () => {
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("일시정지 조직");
     const other = await createOrganization("옆 조직");
@@ -100,7 +112,7 @@ describe("organization pause and resume", () => {
     expect(paused.status).toBe(200);
     expect(organizationSchema.parse(paused.body)).toMatchObject({
       stage: "paused",
-      pausedFrom: "goal_setting",
+      pausedFrom: "planning",
     });
     await t.drain();
     expect(await runsOf(org.id)).toEqual([
@@ -124,7 +136,7 @@ describe("organization pause and resume", () => {
     const resumed = await control(org.id, "resume");
     expect(resumed.status).toBe(200);
     expect(organizationSchema.parse(resumed.body)).toMatchObject({
-      stage: "goal_setting",
+      stage: "planning",
       pausedFrom: null,
     });
     await t.drain();
@@ -141,19 +153,19 @@ describe("organization pause and resume", () => {
         type: "organization.paused",
         payload: {
           by: "owner",
-          from: "goal_setting",
+          from: "planning",
           cancelledRunIds: [running!.id],
         },
       },
       {
         type: "organization.resumed",
-        payload: { by: "owner", stage: "goal_setting" },
+        payload: { by: "owner", stage: "planning" },
       },
     ]);
   });
 
   it("wakes the held agents after a resume even when finding them fails once", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("재개 뒤 깨우기 복구");
     await control(org.id, "pause");
     await say(org.id, "멈춘 동안 보낸 메시지");
@@ -202,13 +214,13 @@ describe("organization pause and resume", () => {
       expect(unchanged.body).toMatchObject({ stage, pausedFrom: null });
     };
 
-    const fresh = await createOrganization("목표 설정 조직");
-    await pauseAndResume(fresh.id, "goal_setting");
+    // 목표를 생성 때 받기 전에 만든 예전 조직.
+    const legacy = await insertLegacyOrganization(t.db, "목표 설정 조직");
+    await pauseAndResume(legacy.id, "goal_setting");
 
+    // 생성으로 깨어난 Lead가 초기 연구 승인을 요청한 조직.
     const proposing = await createOrganization("승인 대기 조직");
-    agents.queue(proposing.lead.id, proposeScript, idle);
-    await say(proposing.id, "목표를 정했어요");
-    await t.drain();
+    agents.queue(proposing.lead.id, idle);
     await pauseAndResume(proposing.id, "awaiting_approval");
     // 수정 요청을 받아 계획 수립으로 돌아간 조직(Lead는 읽기만 한다).
     const [approval] = await get(
@@ -338,7 +350,7 @@ describe("agent pause and resume", () => {
   });
 
   it("cancels the agent's running run", async () => {
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("실행 중 에이전트 일시정지");
     const gate = createGate();
@@ -355,7 +367,7 @@ describe("agent pause and resume", () => {
         cancelReason: "agent_paused",
       }),
     ]);
-    expect((await organization(org.id)).stage).toBe("goal_setting");
+    expect((await organization(org.id)).stage).toBe("planning");
     const [event] = (await eventsOf(org.id)).filter(
       (e) => e.type === "agent.paused"
     );
@@ -365,7 +377,7 @@ describe("agent pause and resume", () => {
   });
 
   it("does not reach an agent of another organization", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const a = await createOrganization("조직 A");
     const b = await createOrganization("조직 B");
     expect((await control(a.id, "pause", b.lead.id)).status).toBe(404);
@@ -379,7 +391,7 @@ describe("agent pause and resume", () => {
 
 describe("organization stop", () => {
   it("cancels running runs, starts no run afterwards even across a restart, and cannot be resumed", async () => {
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("중단 조직");
     const gate = createGate();
@@ -427,7 +439,7 @@ describe("organization stop", () => {
       {
         payload: {
           by: "owner",
-          from: "goal_setting",
+          from: "planning",
           cancelledRunIds: [running!.id],
         },
       },
@@ -446,11 +458,12 @@ describe("organization stop", () => {
       await restarted.close();
     }
     const { listRuns } = await import("@babojubot/db");
-    expect(await listRuns(t.db, org.id)).toHaveLength(1);
+    // 생성 깨우기를 받은 실행 시도와 중단으로 취소된 실행 시도뿐이다.
+    expect(await listRuns(t.db, org.id)).toHaveLength(2);
   });
 
   it("can stop a paused organization", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("일시정지 뒤 중단");
     await control(org.id, "pause");
     expect((await control(org.id, "stop")).body).toMatchObject({
@@ -465,7 +478,7 @@ describe("organization stop", () => {
 
 describe("interrupt and deliver", () => {
   it("cancels the running run, records the control command and the message, and hands the message to the next run", async () => {
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("중단하고 반영 조직");
     const gate = createGate();
@@ -519,12 +532,12 @@ describe("interrupt and deliver", () => {
       conversation.find((m: { id: string }) => m.id === message.id)
     ).toMatchObject({ deliveredToRunId: next!.id });
     // 조직과 에이전트는 계속 쓸 수 있다.
-    expect((await organization(org.id)).stage).toBe("goal_setting");
+    expect((await organization(org.id)).stage).toBe("planning");
     expect((await agentDetail(org.id, org.lead.id)).paused).toBe(false);
   });
 
   it("records the control command without a run when the Lead is idle", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("쉬는 Lead");
     const message = await interrupt(org.id, "바로 반영해 주세요");
     await t.drain();
@@ -561,7 +574,7 @@ describe("interrupt and deliver", () => {
         };
       },
     };
-    t = await startTestServer({ runtime: slow });
+    t = await startTestServer({ runtime: quietCreation(slow) });
     const org = await createOrganization("정리 중 중단하고 반영");
     await say(org.id, "긴 일을 시작해 주세요");
     await holdReached;
@@ -635,7 +648,7 @@ describe("cancellation boundary", () => {
         };
       },
     };
-    t = await startTestServer({ runtime: stubborn });
+    t = await startTestServer({ runtime: quietCreation(stubborn) });
     const org = await createOrganization("늦은 결과");
     await say(org.id, "일해 주세요");
     await holdReached;
@@ -658,7 +671,11 @@ describe("cancellation boundary", () => {
       (e): e is Extract<Event, { type: "run.finished" }> =>
         e.type === "run.finished"
     );
-    expect(finished.map((e) => e.payload.stopReason)).toEqual(["cancelled"]);
+    // 생성 깨우기를 받은 실행 시도는 맥락만 읽고 끝났다.
+    expect(finished.map((e) => e.payload.stopReason)).toEqual([
+      "completed",
+      "cancelled",
+    ]);
   });
 });
 
@@ -667,9 +684,7 @@ describe("decisions while paused", () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("멈춘 채 승인");
-    agents.queue(org.lead.id, proposeScript, leadReplyScript);
-    await say(org.id, "목표를 정했어요");
-    await t.drain();
+    agents.queue(org.lead.id, leadReplyScript);
     const [approval] = await get(`/api/organizations/${org.id}/approvals`);
     await control(org.id, "pause");
 
@@ -698,9 +713,6 @@ describe("decisions while paused", () => {
     ]);
 
     const stopping = await createOrganization("중단 뒤 승인");
-    agents.queue(stopping.lead.id, proposeScript);
-    await say(stopping.id, "목표를 정했어요");
-    await t.drain();
     const [pending] = await get(`/api/organizations/${stopping.id}/approvals`);
     await control(stopping.id, "stop");
     const refused = await t.request(

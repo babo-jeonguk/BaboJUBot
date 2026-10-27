@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 15_000 };
@@ -11,7 +12,7 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
 }) => {
   const name = "Inbox E2E 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const say = (body: string) =>
@@ -21,14 +22,15 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
 
   await openWithLiveEvents(page, `/orgs/${org.id}`);
   const card = page.getByRole("navigation", { name: "조직 화면" });
+  // 조직을 만들면 가짜 Lead가 곧바로 초기 연구 승인을 요청해 주의 필요가 하나 생긴다.
   await expect(
-    card.getByRole("button", { name: /이 조직의 Inbox 열기 · 주의 필요 0개/ })
-  ).toBeVisible();
+    card.getByRole("button", { name: /이 조직의 Inbox 열기 · 주의 필요 1개/ })
+  ).toBeVisible(runs);
 
   // 가짜 Lead에게 실패 연습을 부탁하면 실패한 실행 시도가 새로고침 없이 주의 필요로 뜬다.
   await say("실패 연습");
   const openForOrg = card.getByRole("button", {
-    name: /이 조직의 Inbox 열기 · 주의 필요 1개/,
+    name: /이 조직의 Inbox 열기 · 주의 필요 2개/,
   });
   await expect(openForOrg).toBeVisible(runs);
   await openForOrg.click();
@@ -46,11 +48,10 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
   // 읽지 않은 항목에는 읽음 버튼이 따로 없다(열거나 체크해 읽는다).
   await expect(failure.getByRole("button", { name: /읽/ })).toHaveCount(0);
   await expect(
-    panel.getByRole("button", { name: "주의 필요 1" })
+    panel.getByRole("button", { name: "주의 필요 2" })
   ).toBeVisible();
 
   // 초기 연구 승인 요청도 주의 필요다. 체크해 읽음으로 해도 결정이 남아 있어 주의 필요에서 빠지지 않는다.
-  await say("목표: Inbox 정리\n완료 기준: 읽음과 보관이 구분된다");
   const request = attention
     .getByRole("listitem")
     .filter({ hasText: "초기 연구 승인 요청" });
@@ -175,7 +176,7 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
   await page.setViewportSize({ width: 390, height: 800 });
   const name = "Inbox 모바일 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   await page.request.post(`/api/organizations/${org.id}/messages`, {
@@ -188,11 +189,13 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
     .first()
     .click();
   const drawer = page.getByRole("dialog", { name: "Inbox" });
+  // 이 조직에는 생성 뒤 가짜 Lead가 낸 초기 연구 승인 요청도 있다.
   const item = drawer
     .getByRole("list", { name: "주의 필요" })
     .getByRole("listitem")
-    .filter({ hasText: name });
-  await expect(item).toContainText("실행 시도 실패", runs);
+    .filter({ hasText: name })
+    .filter({ hasText: "실행 시도 실패" });
+  await expect(item).toBeVisible(runs);
   await item.getByRole("link").click();
   await expect(drawer).toBeHidden();
   await expect(page).toHaveURL(new RegExp(`/inbox/${org.id}/run_failure/`));
@@ -209,7 +212,11 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
 }) => {
   const name = "Inbox 상세 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: {
+      name,
+      goal: "Inbox 상세 확인",
+      completionCriteria: "요약에서 결정한다",
+    },
   });
   const org = (await created.json()) as { id: string };
   const say = (body: string) =>
@@ -218,7 +225,6 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
     });
   await openWithLiveEvents(page, "/");
   await say("실패 연습");
-  await say("목표: Inbox 상세 확인\n완료 기준: 요약에서 결정한다");
   await page
     .getByRole("button", { name: /^Inbox · 주의 필요/ })
     .first()
@@ -274,12 +280,13 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   const otherName = "Inbox 상세 다른 조직";
   const other = (await (
     await page.request.post("/api/organizations", {
-      data: { name: otherName },
+      data: {
+        name: otherName,
+        goal: "다른 조직 확인",
+        completionCriteria: "사유가 섞이지 않는다",
+      },
     })
   ).json()) as { id: string };
-  await page.request.post(`/api/organizations/${other.id}/messages`, {
-    data: { body: "목표: 다른 조직 확인\n완료 기준: 사유가 섞이지 않는다" },
-  });
   const otherRequest = attention
     .getByRole("listitem")
     .filter({ hasText: otherName })
@@ -371,7 +378,9 @@ test("when marking an opened item read fails, the Inbox detail says so and retri
 }) => {
   const name = "Inbox 읽음 실패 조직";
   const org = (await (
-    await page.request.post("/api/organizations", { data: { name } })
+    await page.request.post("/api/organizations", {
+      data: { name, ...goalInput },
+    })
   ).json()) as { id: string };
   await page.request.post(`/api/organizations/${org.id}/messages`, {
     data: { body: "실패 연습" },
@@ -412,7 +421,9 @@ test("when the read-on-open reply is lost after the server marked the item read,
 }) => {
   const name = "Inbox 읽음 응답 유실 조직";
   const org = (await (
-    await page.request.post("/api/organizations", { data: { name } })
+    await page.request.post("/api/organizations", {
+      data: { name, ...goalInput },
+    })
   ).json()) as { id: string };
   await page.request.post(`/api/organizations/${org.id}/messages`, {
     data: { body: "실패 연습" },
@@ -453,10 +464,11 @@ test("when the read-on-open reply is lost after the server marked the item read,
   await expect(main.getByRole("alert")).toHaveCount(0);
 
   // 그 뒤 읽지 않음으로 되돌려도 지난 실패 안내가 다시 나타나지 않는다.
+  // 주의 필요에는 생성 뒤 가짜 Lead가 낸 초기 연구 승인 요청과 되돌린 실패가 있다.
   await organize.getByRole("button", { name: "읽지 않음" }).click();
   await expect(
     panel.getByRole("list", { name: "주의 필요" }).getByRole("listitem")
-  ).toHaveCount(1);
+  ).toHaveCount(2);
   await expect(main.getByRole("alert")).toHaveCount(0);
 });
 
@@ -464,12 +476,9 @@ test("deciding from the Inbox detail after another surface decided first shows t
   page,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "Inbox 상세 경합 조직" },
+    data: { name: "Inbox 상세 경합 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  await page.request.post(`/api/organizations/${org.id}/messages`, {
-    data: { body: "목표: 경합 확인\n완료 기준: 먼저 온 결정이 남는다" },
-  });
   const pending = async () =>
     (
       (await (await page.request.get("/api/inbox")).json()) as {

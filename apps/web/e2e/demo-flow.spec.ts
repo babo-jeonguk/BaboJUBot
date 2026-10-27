@@ -14,7 +14,7 @@ const runs = { timeout: 20_000 };
 
 // README의 손 조작 순서와 같은 판 1 데모 시나리오를 대시보드에서 처음부터 끝까지 누른다.
 // 주요 사용자 행동은 모두 화면으로 하고, 조회 API는 쓰지 않는다.
-test("the demo scenario walks one organization from creation through the Lead chat, initial approval, worker results, pause and resume, a worker approval and the result review to final completion", async ({
+test("the demo scenario walks one organization from creation with a goal through the initial approval, worker results, pause and resume, a worker approval and the result review to final completion", async ({
   page,
   context,
 }) => {
@@ -42,19 +42,19 @@ test("the demo scenario walks one organization from creation through the Lead ch
     await page.getByRole("button", { name: "보내기" }).click();
   };
 
-  await test.step("조직을 만들고 Lead 대화로 목표와 완료 기준을 보낸다", async () => {
+  await test.step("연구 목표와 완료 기준을 적어 조직을 만들면 Lead가 초기 연구 승인을 요청한다", async () => {
     await openWithLiveEvents(page, "/");
     await rail.getByRole("button", { name: "새 연구 조직" }).click();
     const dialog = page.getByRole("dialog", { name: "새 연구 조직" });
     await dialog.getByLabel("조직 이름").fill(name);
-    await dialog.getByRole("button", { name: "만들고 Lead 대화로" }).click();
+    await dialog
+      .getByLabel("연구 목표")
+      .fill("공개 자료로 오류 유형을 정리한다");
+    await dialog.getByLabel(/완료 기준/).fill("유형 목록과 근거 메모");
+    await dialog.getByRole("button", { name: "만들기" }).click();
     await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/chat$/);
     orgId = new URL(page.url()).pathname.split("/")[2]!;
-    await expect(stageLink("목표 설정")).toBeVisible();
 
-    await send(
-      "목표: 공개 자료로 오류 유형을 정리한다\n완료 기준: 유형 목록과 근거 메모"
-    );
     await expect(leadSaid("초기 연구 승인을 요청했습니다")).toHaveCount(
       1,
       runs

@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
   calls,
+  goal,
   proposeScript,
   scriptedAgents,
   serverHelpers,
@@ -30,9 +31,8 @@ afterEach(async () => {
   t = undefined;
 });
 
-const { get, say, tasksOf, taskDetail, eventsOf, researching } = serverHelpers(
-  () => t!
-);
+const { get, create, say, tasksOf, taskDetail, eventsOf, researching } =
+  serverHelpers(() => t!);
 
 const outboxOf = async (orgId: string) =>
   outboxSchema
@@ -73,17 +73,14 @@ const failing = (error: string) => ({
   steps: [{ do: "fail" as const, error }],
 });
 
-/** 조직을 만들고 Lead가 목표를 기록해 초기 연구 승인을 요청하게 한다. */
+/** 사용자가 목표를 적어 조직을 만들고, 생성으로 깨어난 Lead가 초기 연구 승인을 요청한 상태. 결정에는 Lead가 답장만 한다. */
 async function awaitingApproval(
   agents: ReturnType<typeof scriptedAgents>,
   name: string
 ) {
-  const res = await t!.request("POST", "/api/organizations", { name });
-  const org = organizationDetailSchema.parse(res.body);
+  const org = await create(name);
   const lead = org.agents.find((a) => a.role === "lead")!;
-  agents.queue(lead.id, proposeScript, leadReplyScript);
-  await say(org.id, "목표를 정했어요");
-  await t!.drain();
+  agents.queue(lead.id, leadReplyScript);
   const [approval] = await approvalsOf(org.id);
   return { id: org.id, lead, approvalId: approval!.id };
 }
@@ -228,7 +225,8 @@ describe("notification outbox and fake channel", () => {
         delivered.push(notification);
       },
     };
-    const agents = scriptedAgents();
+    // 생성으로 깨어난 Lead는 Lead 대화 답장 없이 요청만 해, 알림은 승인 요청 하나다.
+    const agents = scriptedAgents({ created: proposeScript });
     t = await startTestServer({
       runtime: agents.runtime,
       now: () => now,
@@ -262,7 +260,7 @@ describe("notification outbox and fake channel", () => {
   });
 
   it("delivers after a restart what was stored but never sent", async () => {
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: proposeScript });
     t = await startTestServer({
       runtime: agents.runtime,
       notificationChannel: {
@@ -575,6 +573,7 @@ describe("Inbox", () => {
       (
         await t.request("POST", "/api/organizations", {
           name: "다른 보관 조직",
+          ...goal,
         })
       ).body
     );

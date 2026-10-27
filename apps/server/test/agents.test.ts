@@ -7,7 +7,7 @@ import {
 } from "@babojubot/contracts";
 import { leadReplyScript } from "@babojubot/runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import { scriptedAgents, serverHelpers } from "./scenarios.ts";
+import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -140,6 +140,7 @@ describe("agent profile", () => {
     t = await startTestServer({ runtime: agents.runtime });
     const res = await t.request("POST", "/api/organizations", {
       name: "검증 조직",
+      ...goal,
     });
     const org = organizationDetailSchema.parse(res.body);
     const lead = org.agents[0]!;

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const uuidPath = /\/chat\/[0-9a-f-]{36}$/;
@@ -13,7 +14,7 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   context,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "여러 대화 E2E 조직" },
+    data: { name: "여러 대화 E2E 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const input = page.getByLabel("Lead에게 보낼 메시지");
@@ -22,13 +23,19 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     await p.getByRole("button", { name: "보내기" }).click();
   };
 
-  // 기본 대화에서 한 번 주고받는다.
+  // 생성으로 깨어난 Lead는 사용자 메시지 없이 한 일(초기 연구 승인 요청)을 기본 대화로 알린다.
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
   await expect(page.getByRole("heading", { name: "기본 대화" })).toBeVisible();
-  await send(page, "기본 대화의 질문입니다");
   await expect(thread(page).locator('[data-author="agent"]')).toContainText(
-    "기본 대화의 질문입니다"
+    "초기 연구 승인을 요청했습니다"
   );
+  // 기본 대화에서 한 번 주고받는다.
+  await send(page, "기본 대화의 질문입니다");
+  await expect(
+    thread(page)
+      .locator('[data-author="agent"]')
+      .filter({ hasText: "기본 대화의 질문입니다" })
+  ).toBeVisible();
 
   // 다른 탭은 기본 대화를 보고 있다.
   const other = await context.newPage();
@@ -71,8 +78,8 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     /기본 대화/,
     /학습 데이터 후보를 비교해 주세요/,
   ]);
-  // 기본 대화는 그대로다.
-  await expect(thread(other).locator("[data-author]")).toHaveCount(2);
+  // 기본 대화는 그대로다(생성 알림과 처음 주고받은 두 메시지).
+  await expect(thread(other).locator("[data-author]")).toHaveCount(3);
   await expect(thread(other)).not.toContainText("학습 데이터 후보");
 
   // 다른 탭이 새 대화를 열면, 이 탭에서 이어 보낸 메시지와 Lead의 답을 새로고침 없이 따라간다.
@@ -105,12 +112,12 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   );
   await expect(unseen.getByTestId("conversation-unread")).toHaveCount(0);
 
-  // 기본 대화로 돌아가도 처음 주고받은 두 메시지뿐이다.
+  // 기본 대화로 돌아가도 생성 알림과 처음 주고받은 두 메시지뿐이다.
   await listOf(page)
     .getByRole("link", { name: /기본 대화/ })
     .click();
   await expect(page).toHaveURL(new RegExp(`/orgs/${org.id}/chat$`));
-  await expect(thread(page).locator("[data-author]")).toHaveCount(2);
+  await expect(thread(page).locator("[data-author]")).toHaveCount(3);
   await expect(thread(page)).not.toContainText("학습 데이터 후보");
   await other.close();
 });
@@ -119,7 +126,7 @@ test("on a narrow screen the conversation list opens from the chat header and th
   page,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "좁은 화면 대화 조직" },
+    data: { name: "좁은 화면 대화 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const started = await page.request.post(

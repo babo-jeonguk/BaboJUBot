@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 
 // 연구 지도 성능 측정(#51 통과 기준 조합). 기본 검사에서는 건너뛰고 `MAP_PERF=1 pnpm test:e2e research-map-perf`로 실행한다(노드 수는 MAP_PERF_SIZES=50,200).
 // Playwright 설정은 화면을 프로덕션 빌드(vite preview)로 띄운다. 헤드리스 Chromium 소프트웨어 렌더링 값이라 실제 GPU
@@ -28,11 +29,10 @@ function random(seed: number) {
 
 async function researchingOrganization(page: Page, name: string) {
   const org = (await (
-    await page.request.post("/api/organizations", { data: { name } })
+    await page.request.post("/api/organizations", {
+      data: { name, ...goalInput },
+    })
   ).json()) as { id: string };
-  await page.request.post(`/api/organizations/${org.id}/messages`, {
-    data: { body: "목표: 성능 측정\n완료 기준: 측정값" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {

@@ -382,11 +382,9 @@ function Thread({
               data-testid="lead-chat-empty"
             >
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-50 text-xl">
-                🎯
+                💬
               </div>
-              <div className="font-semibold">
-                연구 목표와 완료 기준을 정하세요
-              </div>
+              <div className="font-semibold">아직 대화가 없습니다</div>
             </div>
           ) : null
         ) : (

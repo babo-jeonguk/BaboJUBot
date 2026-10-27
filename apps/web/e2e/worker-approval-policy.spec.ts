@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
@@ -19,14 +20,10 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   test.setTimeout(120_000);
   const name = "작업자 정책 E2E 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  // 가짜 Lead가 목표를 기록하고 초기 연구 승인을 요청한다. 승인해 연구 진행에 들어선다.
-  await page.request.post(api("/messages"), {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {

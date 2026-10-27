@@ -1,34 +1,61 @@
 import { describe, expect, it } from "vitest";
 import { planOrganizationCreation } from "./organization.ts";
 
-const ids = ["org-1", "lead-1", "copy-1", "copy-2", "conversation-1"];
+const ids = () => {
+  const queue = [
+    "org-1",
+    "lead-1",
+    "copy-1",
+    "copy-2",
+    "conversation-1",
+    "wake-1",
+  ];
+  return () => queue.shift()!;
+};
 const leadFiles = ["AGENTS.md", "SOUL.md"].map((path) => ({
   path,
   content: `${path} 내용`,
   source: `roles/lead/${path}`,
   sourceDigest: "d",
 }));
-const deps = {
-  newId: () => ids.shift()!,
-  now: () => new Date("2026-10-16T00:00:00.000Z"),
-};
-
-describe("planOrganizationCreation", () => {
-  const plan = planOrganizationCreation(
-    { name: "음성 인식 오류 분석" },
+const now = () => new Date("2026-10-16T00:00:00.000Z");
+const create = (input: { completionCriteria?: string }) =>
+  planOrganizationCreation(
+    { name: "음성 인식 오류 분석", goal: "오류율을 절반으로", ...input },
     { files: leadFiles, heartbeatMinutes: 90 },
-    deps
+    { newId: ids(), now }
   );
 
-  it("starts the organization in goal setting with every approval policy off", () => {
+describe("planOrganizationCreation", () => {
+  const plan = create({ completionCriteria: "WER 10% 이하" });
+
+  it("starts the organization in planning with the owner's goal and criteria and every approval policy off", () => {
     expect(plan.organization).toEqual({
       id: "org-1",
       name: "음성 인식 오류 분석",
-      stage: "goal_setting",
-      goal: null,
-      completionCriteria: null,
+      stage: "planning",
+      goal: "오류율을 절반으로",
+      completionCriteria: "WER 10% 이하",
       approvalPolicy: { addWorker: false },
       pausedFrom: null,
+      createdAt: "2026-10-16T00:00:00.000Z",
+    });
+  });
+
+  it("leaves the completion criteria unset when the owner left them empty", () => {
+    for (const completionCriteria of [undefined, ""]) {
+      const { organization, event } = create({ completionCriteria });
+      expect(organization.completionCriteria).toBeNull();
+      expect(event.payload).toMatchObject({ completionCriteria: null });
+    }
+  });
+
+  it("wakes the new Lead to draft the initial research request", () => {
+    expect(plan.wake).toEqual({
+      id: "wake-1",
+      organizationId: "org-1",
+      agentId: "lead-1",
+      kind: "organization_created",
       createdAt: "2026-10-16T00:00:00.000Z",
     });
   });
@@ -70,14 +97,17 @@ describe("planOrganizationCreation", () => {
     });
   });
 
-  it("records an organization.created Event bound to the new organization", () => {
+  it("records an organization.created Event carrying the owner's goal and the woken Lead", () => {
     expect(plan.event).toEqual({
       organizationId: "org-1",
       type: "organization.created",
       payload: {
         name: "음성 인식 오류 분석",
-        stage: "goal_setting",
+        stage: "planning",
         leadAgentId: "lead-1",
+        goal: "오류율을 절반으로",
+        completionCriteria: "WER 10% 이하",
+        wokenAgentId: "lead-1",
       },
     });
   });

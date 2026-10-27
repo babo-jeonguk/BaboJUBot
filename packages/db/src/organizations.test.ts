@@ -13,7 +13,8 @@ import { migrateDatabase } from "./client.ts";
 import { updateAgentProfile } from "./agents.ts";
 import { findAgentInstructions } from "./harness.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
-import { agents, organizations } from "./schema.ts";
+import { listAgentsWithPendingWakes } from "./runs.ts";
+import { agents, organizations, wakes } from "./schema.ts";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -23,9 +24,9 @@ afterAll(async () => {
   await t?.close();
 });
 
-const plan = (name: string) =>
+const plan = (name: string, completionCriteria?: string) =>
   planOrganizationCreation(
-    { name },
+    { name, goal: `${name}의 목표`, completionCriteria },
     { files: leadFiles },
     {
       newId: randomUUID,
@@ -57,7 +58,9 @@ describe("organization records", () => {
     expect(detail).toMatchObject({
       id: creation.organization.id,
       name: "조직 A",
-      stage: "goal_setting",
+      stage: "planning",
+      goal: "조직 A의 목표",
+      completionCriteria: null,
     });
     expect(detail?.agents.map((a) => a.role)).toEqual(["lead"]);
     expect(
@@ -66,6 +69,24 @@ describe("organization records", () => {
     expect((await listOrganizations(t.db)).map((o) => o.id)).toContain(
       creation.organization.id
     );
+  });
+
+  it("stores the owner's criteria and queues one creation wake for the Lead", async () => {
+    const creation = plan("조직 깨우기", "WER 10% 이하");
+    await insertOrganizationCreation(t.db, creation);
+    expect(
+      await findOrganization(t.db, creation.organization.id)
+    ).toMatchObject({ completionCriteria: "WER 10% 이하" });
+    const lead = creation.agents[0]!;
+    expect(await listAgentsWithPendingWakes(t.db)).toContain(lead.id);
+    // 조직 생성은 깨우기 하나만 만든다.
+    await expect(
+      t.db.insert(wakes).values({
+        ...creation.wake,
+        id: randomUUID(),
+        createdAt: new Date(),
+      })
+    ).rejects.toThrow();
   });
 
   it("rolls everything back when one write fails", async () => {

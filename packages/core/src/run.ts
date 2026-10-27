@@ -34,6 +34,7 @@ export type Wake = {
   | { kind: "research_map_edit"; mapEditId: string }
   | { kind: "instruction_edit"; instructionRevisionId: string }
   | { kind: "result_changes_requested"; resultSubmissionId: string }
+  | { kind: "organization_created" }
   | { kind: "heartbeat" }
 );
 /** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. */

@@ -1,6 +1,11 @@
 import type { InitialResearchProposal } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
-import { checkToolCall, planApprovalDecision } from "./approval.ts";
+import {
+  buildInitialResearchProposal,
+  checkToolCall,
+  planApprovalDecision,
+} from "./approval.ts";
+import type { HarnessLibraryContents } from "./harness.ts";
 
 const at = "2026-10-18T00:00:00.000Z";
 let n = 0;
@@ -166,11 +171,123 @@ describe("planApprovalDecision", () => {
       expect(plan).toMatchObject({
         status,
         stage: "planning",
+        completionCriteria: null,
         workers: [],
         copies: [],
         template: null,
       });
       expect(plan.event.payload).toMatchObject({ decision, note: "사유" });
     }
+  });
+
+  it("leaves the organization's own criteria alone when approving", () => {
+    const plan = decide({ decision: "approve" });
+    expect(plan.completionCriteria).toBeNull();
+    expect(plan.event.payload).not.toHaveProperty("completionCriteria");
+  });
+
+  it("fixes the Lead's proposed criteria only on approval", () => {
+    const proposed = {
+      ...approval,
+      proposal: {
+        ...proposal,
+        completionCriteria: "Lead 기준",
+        completionCriteriaProposed: true,
+      },
+    };
+    const plan = (input: Parameters<typeof planApprovalDecision>[1]) => {
+      const p = planApprovalDecision(proposed, input, awaiting, source);
+      if (typeof p === "string") throw new Error(p);
+      return p;
+    };
+    const approved = plan({ decision: "approve" });
+    expect(approved.completionCriteria).toBe("Lead 기준");
+    expect(approved.event.payload).toMatchObject({
+      completionCriteria: "Lead 기준",
+    });
+    for (const decision of ["reject", "request_changes"] as const) {
+      const sentBack = plan({ decision, note: "사유" });
+      expect(sentBack.completionCriteria).toBeNull();
+      expect(sentBack.event.payload).not.toHaveProperty("completionCriteria");
+    }
+  });
+});
+
+describe("buildInitialResearchProposal", () => {
+  const library: HarnessLibraryContents = {
+    roles: new Map([
+      [
+        "researcher",
+        { agent: "worker", label: "연구원", files: [], heartbeatMinutes: 60 },
+      ],
+    ]),
+    templates: new Map([
+      [
+        "basic-research",
+        {
+          name: "basic-research",
+          label: "기본",
+          description: "",
+          nodeKinds: [],
+          linkKinds: [],
+          source: "templates/basic-research/template.json",
+          sourceDigest: "t",
+        },
+      ],
+    ]),
+  } as unknown as HarnessLibraryContents;
+  const input = {
+    plan: "계획",
+    environment: "환경",
+    team: [{ role: "researcher", count: 1 }],
+    template: "basic-research",
+  };
+
+  it("refuses a request without proposed criteria when the organization has none", () => {
+    expect(
+      buildInitialResearchProposal(
+        { goal: "목표", completionCriteria: null },
+        input,
+        library
+      )
+    ).toBe("completion_criteria_required");
+  });
+
+  it("marks criteria the Lead proposed for an organization without any", () => {
+    expect(
+      buildInitialResearchProposal(
+        { goal: "목표", completionCriteria: null },
+        { ...input, completionCriteria: "Lead 기준" },
+        library
+      )
+    ).toMatchObject({
+      goal: "목표",
+      completionCriteria: "Lead 기준",
+      completionCriteriaProposed: true,
+    });
+  });
+
+  it("keeps the owner's criteria and refuses a request that tries to replace them", () => {
+    const owner = { goal: "목표", completionCriteria: "사용자 기준" };
+    const built = buildInitialResearchProposal(owner, input, library);
+    expect(built).toMatchObject({ completionCriteria: "사용자 기준" });
+    expect(built).not.toHaveProperty("completionCriteriaProposed");
+    expect(
+      buildInitialResearchProposal(
+        owner,
+        { ...input, completionCriteria: "Lead 기준" },
+        library
+      )
+    ).toBe("completion_criteria_set");
+  });
+
+  it("still requires a goal", () => {
+    expect(
+      buildInitialResearchProposal(
+        { goal: null, completionCriteria: null },
+        { ...input, completionCriteria: "Lead 기준" },
+        library
+      )
+    ).toBe("goal_missing");
   });
 });

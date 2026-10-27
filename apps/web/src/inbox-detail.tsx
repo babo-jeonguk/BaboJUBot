@@ -26,7 +26,7 @@ import {
   useResultSubmission,
   useRun,
 } from "./api.ts";
-import { ApprovalDecision } from "./approvals.tsx";
+import { ApprovalDecision, ProposedCriteria } from "./approvals.tsx";
 import { InboxItemOrganize, useInboxPanel } from "./inbox.tsx";
 import { Markdown } from "./markdown.tsx";
 import { ResultDecision } from "./results.tsx";
@@ -252,10 +252,7 @@ function ProposalSummary({ approval: a }: { approval: Approval }) {
           <dd className="min-w-0">
             <Markdown text={p.goal} />
           </dd>
-          <dt className="text-slate-500">완료 기준</dt>
-          <dd className="min-w-0">
-            <Markdown text={p.completionCriteria} />
-          </dd>
+          <ProposedCriteria proposal={p} />
         </dl>
       </section>
       <Block label="팀 구성">

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { isReadyFrame, openWithLiveEvents } from "./support/live-events.ts";
 
 /**
@@ -31,13 +32,10 @@ async function slowGets(page: Page, url: string) {
 /** 가짜 Lead가 목표를 기록하고 초기 연구 승인을 요청한 조직. */
 async function awaitingApproval(page: Page, name: string) {
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  await page.request.post(api("/messages"), {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {
@@ -81,7 +79,7 @@ test("another tab editing an agent's copy follows a save elsewhere while its cop
   context,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "느린 사본 E2E 조직" },
+    data: { name: "느린 사본 E2E 조직", ...goalInput },
   });
   const org = (await created.json()) as {
     id: string;
@@ -130,7 +128,7 @@ test("after the Event stream drops and reconnects, another tab shows what change
   context,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "재연결 E2E 조직" },
+    data: { name: "재연결 E2E 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
 

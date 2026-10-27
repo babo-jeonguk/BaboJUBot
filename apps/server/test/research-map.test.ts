@@ -24,7 +24,9 @@ afterEach(async () => {
   t = undefined;
 });
 
-const { get, say, tasksOf, eventsOf, researching } = serverHelpers(() => t!);
+const { get, create, say, tasksOf, eventsOf, researching } = serverHelpers(
+  () => t!
+);
 
 const mapOf = async (orgId: string) =>
   researchMapSchema.parse(
@@ -601,13 +603,11 @@ describe("research map", () => {
   });
 
   it("refuses map edits before the initial research approval and keeps the map empty", async () => {
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
-    const res = await t.request("POST", "/api/organizations", {
-      name: "승인 전",
-    });
-    const orgId = res.body.id as string;
-    const lead = res.body.agents[0].id as string;
+    const created = await create("승인 전");
+    const orgId = created.id;
+    const lead = created.agents[0]!.id;
     agents.queue(
       lead,
       calls(

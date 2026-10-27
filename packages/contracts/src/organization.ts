@@ -38,10 +38,17 @@ export const agentRoleSchema = z.enum(agentRoles);
 export type AgentRole = z.infer<typeof agentRoleSchema>;
 
 export const organizationNameMaxLength = 120;
+/** 연구 목표·완료 기준 한 칸의 최대 글자 수. */
+export const goalMaxLength = 4_000;
 
-/** 조직 생성 입력. 이름만 받고 ID·단계·Lead는 서버가 정한다. */
+/**
+ * 조직 생성 입력. 사용자가 이름·연구 목표와, 정했다면 완료 기준을 적는다. ID·단계·Lead는 서버가 정한다.
+ * 완료 기준을 비우면(빈 칸·생략) 조직은 완료 기준 없이 시작하고, Lead가 초기 연구 승인 요청에서 제안한다.
+ */
 export const createOrganizationInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(organizationNameMaxLength),
+  goal: z.string().trim().min(1).max(goalMaxLength),
+  completionCriteria: z.string().trim().max(goalMaxLength).optional(),
 });
 export type CreateOrganizationInput = z.infer<
   typeof createOrganizationInputSchema
@@ -74,7 +81,10 @@ export type UpdateApprovalPolicyInput = z.infer<
   typeof updateApprovalPolicyInputSchema
 >;
 
-/** 연구 조직. 연구 목표와 완료 기준은 목표 설정에서 Lead가 기록하기 전에는 없다. */
+/**
+ * 연구 조직. 연구 목표는 사용자가 생성 때 적는다. 완료 기준은 사용자가 비워 두었으면 Lead가 제안한 기준을
+ * 초기 연구 승인으로 정하기 전까지 없다. 이 규칙 전에 만든 `목표 설정` 조직은 Lead가 기록하기 전까지 둘 다 없다.
+ */
 export const organizationSchema = z.object({
   id: z.uuid(),
   name: z.string(),

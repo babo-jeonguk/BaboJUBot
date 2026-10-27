@@ -107,6 +107,8 @@ export function describeWakeReason(reason: WakeReason): string {
       return `사용자가 지침 사본 ${reason.path}을 revision ${reason.revision}으로 저장함`;
     case "result_changes_requested":
       return `제출한 결과에 수정 요청: ${quote(reason.note)}`;
+    case "organization_created":
+      return "사용자가 연구 목표를 적어 조직을 만듦";
     case "heartbeat":
       return "heartbeat 간격이 지남";
   }
@@ -193,14 +195,20 @@ export const leadReplyScript: Script = {
     `깨우기 ${request.wakeReasons.length}개에 답장 ${sent.length}개를 보냈습니다.`,
 };
 
+/** 가짜 Lead가 목표에서 만드는 예시 완료 기준. 사용자가 완료 기준을 비워 둔 조직의 초기 연구 승인 요청에 낸다. */
+export function demoCompletionCriteria(goal: string): string {
+  return `“${goal}”을 달성했음을 보여 주는 결과 요약과 근거 산출물이 있다. (가짜 실행기가 목표에서 만든 예시 기준입니다.)`;
+}
+
 /**
  * 데모용 초기 연구 승인 요청. 목표를 그대로 옮긴 계획, 연구원 두 명, 기본 연구 흐름 템플릿.
- * 반려·수정 요청을 받았으면 그 사유를 계획에 적는다.
+ * 조직에 완료 기준이 없으면 목표에서 만든 완료 기준을 제안한다. 반려·수정 요청을 받았으면 그 사유를 계획에 적는다.
  */
 export function demoProposal(
-  goal: string,
+  organization: { goal: string; completionCriteria: string | null },
   feedback?: string | null
 ): RequestInitialApprovalInput {
+  const { goal } = organization;
   return {
     plan: [
       `# 초기 연구 계획`,
@@ -212,6 +220,9 @@ export function demoProposal(
       `3. 연구원 두 명이 실험·검증을 나눠 수행하고 결과를 평가한다.`,
       ...(feedback ? [``, `반영한 사용자 의견: ${feedback}`] : []),
     ].join("\n"),
+    ...(organization.completionCriteria
+      ? {}
+      : { completionCriteria: demoCompletionCriteria(goal) }),
     environment: [
       `# 연구 환경 명세`,
       ``,
@@ -238,8 +249,10 @@ export function parseGoalMessage(
 
 /**
  * 가짜 Lead의 데모 흐름. 실제 판단 없이 단계와 깨우기 사유로 정한다.
- * - 목표 설정: `목표:`·`완료 기준:` 줄이 있는 메시지를 받으면 목표를 기록하고 곧바로 초기 연구 승인을 요청한다.
- * - 계획 수립(반려·수정 요청을 받음): 사유를 반영한 새 요청을 제출한다.
+ * - 계획 수립(조직 생성으로 깨어남): 사용자가 생성 때 적은 목표로 곧바로 초기 연구 승인을 요청한다.
+ *   사용자가 완료 기준을 비워 두었으면 목표에서 만든 완료 기준을 함께 제안한다(`demoProposal`).
+ * - 목표 설정(목표 없이 만든 예전 조직): `목표:`·`완료 기준:` 줄이 있는 메시지를 받으면 목표를 기록하고 곧바로 초기 연구 승인을 요청한다.
+ * - 계획 수립(반려·수정 요청을 받음): 사유를 반영한 새 요청을 제출한다. 완료 기준이 아직 없으면 다시 제안한다.
  * - 연구 진행(초기 연구 승인을 받음): 작업자마다 작업을 하나씩 만들어 맡긴다.
  * - 부탁은 메시지 전체가 명령일 때만 인정한다(`requestMessage`). 부정문이나 단순 언급은 그 밖의 메시지로 답장만 한다.
  * - 연구 진행(사용자가 `작업자 추가`를 부탁함): `작업자 추가: <Role>` 줄의 Role(없으면 researcher)로 작업자를 추가한다.
@@ -288,7 +301,31 @@ export function demoLeadScript(request: RunRequest): Script {
   if (messages.some((m) => holdDrill.test(m)))
     return { steps: [{ do: "hold", until: untilCancelled }] };
 
-  // 목표 설정에서는 마지막 목표 메시지를 기록한다. 계획 수립·승인 대기에서는 받은 목표 메시지 중 이미 기록한 목표가 있으면
+  const created = request.wakeReasons.some(
+    (r) => r.kind === "organization_created"
+  );
+  if (created && proposing && !sentBack && recorded)
+    return {
+      steps: [
+        { do: "read_context" },
+        {
+          do: "call",
+          tool: "request_initial_approval",
+          input: () => demoProposal({ goal: recorded, completionCriteria }),
+          when: () => stage === "planning",
+        },
+        {
+          // 사용자 메시지 없이 깨어나 한 일이므로 기본 대화로 알린다.
+          do: "send_message",
+          conversationId: defaultConversation,
+          body: () =>
+            `(가짜 실행기) 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세${completionCriteria ? "" : "와 제가 제안한 완료 기준"}을 검토해 주세요.`,
+        },
+      ],
+      summary: () => "초기 연구 승인을 요청했습니다.",
+    };
+
+  // 아래 목표 메시지 흐름은 목표 없이 만든 예전 조직용이다. 목표 설정에서는 마지막 목표 메시지를 기록한다. 계획 수립·승인 대기에서는 받은 목표 메시지 중 이미 기록한 목표가 있으면
   // 그 흐름을 이어 간다. 다시 대기한 깨우기에 새 메시지가 합쳐져도 마지막 메시지와 상관없이 기록한 목표를 찾는다.
   const goal =
     stage === "goal_setting"
@@ -320,7 +357,7 @@ export function demoLeadScript(request: RunRequest): Script {
         {
           do: "call",
           tool: "request_initial_approval",
-          input: () => demoProposal(goal.goal),
+          input: () => demoProposal(goal),
           when: () => stage !== "awaiting_approval",
         },
         {
@@ -346,7 +383,8 @@ export function demoLeadScript(request: RunRequest): Script {
         {
           do: "call",
           tool: "request_initial_approval",
-          input: () => demoProposal(recorded, sentBack.note),
+          input: () =>
+            demoProposal({ goal: recorded, completionCriteria }, sentBack.note),
           when: () => stage === "planning",
         },
         {

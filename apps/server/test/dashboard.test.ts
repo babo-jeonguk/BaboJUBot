@@ -11,7 +11,7 @@ import {
 import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { calls, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import { calls, goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 // 조직 대시보드 요약과 홈 개요(#62). 수는 조직 원장에서 바로 센 값과 같아야 하고 다른 조직을 섞지 않는다.
@@ -43,9 +43,11 @@ const runningRuns = async (orgId: string) =>
 const allRuns = async (orgId: string) =>
   runSummaryListSchema.parse(await get(`/api/organizations/${orgId}/runs`));
 
+/** 사용자가 목표를 적어 만든 조직. 생성으로 깨어난 Lead의 실행 시도가 끝날 때까지 기다린다. */
 async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+  const res = await t!.request("POST", "/api/organizations", { name, ...goal });
   expect(res.status).toBe(201);
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { ...org, lead: org.agents.find((a) => a.role === "lead")! };
 }
@@ -163,7 +165,7 @@ describe("organization dashboard", () => {
       expect(res.status, timeZone).toBe(422);
       expect(res.body).toEqual({ error: { code: "invalid_time_zone" } });
     }
-    // 시간대를 주지 않으면 UTC다. 기록이 없는 조직도 14일이 모두 0으로 있다.
+    // 시간대를 주지 않으면 UTC다. 작업·산출물이 없는 조직도 14일이 모두 있다. 실행 시도는 생성으로 깨어난 Lead의 것 하나다.
     const empty = organizationDashboardSchema.parse(
       await get(`/api/organizations/${org.id}/dashboard`)
     );
@@ -172,7 +174,7 @@ describe("organization dashboard", () => {
     expect(empty.days.every((d) => d.artifactsRecorded === 0)).toBe(true);
     expect(empty).toMatchObject({
       tasks: { open: 0, in_progress: 0, completed: 0 },
-      runs: { running: 0, completed: 0 },
+      runs: { running: 0, completed: 1 },
       artifacts: 0,
       runningRuns: [],
     });
@@ -181,7 +183,8 @@ describe("organization dashboard", () => {
   it("cuts the 14 days at the given time zone's midnights, counting starts and ends on their own days", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime, now: () => clock });
-    at("2026-10-14T14:59:59.999Z");
+    // 생성으로 깨어난 Lead의 실행 시도는 14일 밖에 둔다.
+    at("2026-10-01T00:00:00.000Z");
     const org = await createOrganization("날짜 조직");
     const reply = async (iso: string, body = "안녕하세요") => {
       at(iso);
@@ -245,13 +248,15 @@ describe("organization dashboard", () => {
       "2026-10-27": 2,
       "2026-10-28": 1,
     });
-    // 전체 수는 기간과 상관없는 원장 전체다.
-    expect(utc.runs).toMatchObject({ completed: 5, failed: 1 });
+    // 전체 수는 기간과 상관없는 원장 전체다(생성 깨우기를 받은 실행 시도 포함).
+    expect(utc.runs).toMatchObject({ completed: 6, failed: 1 });
   });
 
   it("keeps the 14 calendar days whole across a daylight saving change", async () => {
     at("2026-11-02T00:30:00Z"); // 뉴욕 11/1 19:30, 그날 새벽 2시에 서머타임이 끝났다.
     t = await startTestServer({ now: () => clock });
+    // 생성으로 깨어난 Lead의 실행 시도는 14일 밖에 둔다.
+    at("2026-10-01T00:00:00Z");
     const org = await createOrganization("서머타임 조직");
     at("2026-11-01T03:59:59.999Z"); // 뉴욕 10/31 23:59 EDT
     await say(org.id, "하나");

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
@@ -10,14 +11,10 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   test.setTimeout(120_000);
   const name = "결과 검토 E2E 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  // 가짜 Lead가 목표를 기록하고 승인을 요청하며, 승인 뒤 작업자들이 작업을 끝내 산출물을 남긴다.
-  await page.request.post(api("/messages"), {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {
@@ -182,7 +179,7 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
 
 test("shows a missing result submission as not found", async ({ page }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "없는 결과 조직" },
+    data: { name: "없는 결과 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   await page.goto(`/orgs/${org.id}/results/${crypto.randomUUID()}`);

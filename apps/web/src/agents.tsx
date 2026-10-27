@@ -1009,6 +1009,13 @@ function WakeReasonRow({
         link(`/orgs/${orgId}/results/${reason.submissionId}`, "제출 보기"),
         reason.note
       );
+    case "organization_created":
+      return row(
+        "조직 생성",
+        <span className="text-slate-700">
+          사용자가 연구 목표를 적어 조직을 만들었습니다
+        </span>
+      );
     case "heartbeat":
       return row(
         "Heartbeat",

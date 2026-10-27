@@ -119,6 +119,11 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     submissionId: z.uuid(),
     note: z.string(),
   }),
+  /**
+   * 사용자가 연구 목표를 적어 조직을 만들었다(Lead에게). 목표·완료 기준은 실행 맥락의 조직에 있다.
+   * 조직마다 한 번뿐이며 가리키는 기록은 없다.
+   */
+  z.object({ kind: z.literal("organization_created"), wakeId: z.uuid() }),
   /** 켜 둔 heartbeat의 간격이 지났다. 가리키는 기록은 없다. */
   z.object({ kind: z.literal("heartbeat"), wakeId: z.uuid() }),
 ]);

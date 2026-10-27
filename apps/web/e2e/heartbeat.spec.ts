@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 test("the owner turns an agent's heartbeat on, changes its interval, sees the next heartbeat in another tab, and turns it off", async ({
@@ -6,7 +7,7 @@ test("the owner turns an agent's heartbeat on, changes its interval, sees the ne
   context,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "heartbeat E2E 조직" },
+    data: { name: "heartbeat E2E 조직", ...goalInput },
   });
   expect(created.status()).toBe(201);
   const org = (await created.json()) as {

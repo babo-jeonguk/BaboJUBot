@@ -60,8 +60,9 @@ export const organizations = pgTable(
     id: uuid("id").primaryKey(),
     name: text("name").notNull(),
     stage: text("stage", { enum: lifecycleStages }).notNull(),
-    /** Lead가 목표 설정에서 기록한다. 기록 전에는 없다. */
+    /** 사용자가 생성 때 적는다. 목표 없이 만든 예전 조직은 Lead가 목표 설정에서 기록하기 전까지 없다. */
     goal: text("goal"),
+    /** 사용자가 생성 때 적거나, 비워 두었으면 승인된 Lead 제안이다. 그 전에는 없다. */
     completionCriteria: text("completion_criteria"),
     /** 승인 정책 `작업자 추가`. 켜져 있으면 Lead의 작업자 추가가 승인 요청이 된다. 사용자 제어 명령만 바꾼다. */
     addWorkerApproval: boolean("add_worker_approval").notNull().default(false),
@@ -78,9 +79,10 @@ export const organizations = pgTable(
       sql`(${t.stage} = 'paused') = (${t.pausedFrom} is not null)
         and ${t.pausedFrom} not in ('paused', 'completed', 'stopped')`
     ),
+    // 완료 기준은 목표가 있을 때만 있다. 사용자가 비워 둔 완료 기준은 Lead 제안을 승인할 때까지 없다.
     check(
       "organizations_goal_check",
-      sql`(${t.goal} is null) = (${t.completionCriteria} is null)`
+      sql`${t.completionCriteria} is null or ${t.goal} is not null`
     ),
     check(
       "organizations_stage_check",
@@ -928,7 +930,11 @@ export const instructionRevisions = pgTable(
   ]
 );
 
-/** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채우고, heartbeat는 가리키는 기록이 없다. */
+/** 가리키는 기록이 없는 깨우기 종류: 조직 생성(목표는 조직 행에 있음)과 heartbeat. */
+const sourcelessWakeKinds = ["organization_created", "heartbeat"] as const;
+type SourcelessWakeKind = (typeof sourcelessWakeKinds)[number];
+
+/** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채우고, 조직 생성·heartbeat는 가리키는 기록이 없다. */
 const wakeSourceColumns = {
   owner_message: "message_id",
   approval_decision: "approval_id",
@@ -939,10 +945,10 @@ const wakeSourceColumns = {
   research_map_edit: "map_edit_id",
   instruction_edit: "instruction_revision_id",
   result_changes_requested: "result_submission_id",
-} as const satisfies Record<Exclude<WakeKind, "heartbeat">, string>;
+} as const satisfies Record<Exclude<WakeKind, SourcelessWakeKind>, string>;
 const wakeKinds = [
   ...Object.keys(wakeSourceColumns),
-  "heartbeat",
+  ...sourcelessWakeKinds,
 ] as WakeKind[];
 
 /**
@@ -976,7 +982,7 @@ export const wakes = pgTable(
     check("wakes_kind_check", sql`${t.kind} in (${inList(wakeKinds)})`),
     check(
       "wakes_source_check",
-      sql`(${t.kind} = 'heartbeat'
+      sql`(${t.kind} in (${inList([...sourcelessWakeKinds])})
           and num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 0)
         or num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 1
         and (${sql.raw(
@@ -1043,6 +1049,10 @@ export const wakes = pgTable(
     uniqueIndex("wakes_one_pending_heartbeat_per_agent")
       .on(t.agentId)
       .where(sql`${t.kind} = 'heartbeat' and ${t.runId} is null`),
+    // 조직 생성은 Lead 깨우기 하나만 만든다.
+    uniqueIndex("wakes_one_organization_created_per_organization")
+      .on(t.organizationId)
+      .where(sql`${t.kind} = 'organization_created'`),
     // 메시지 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_message_unique").on(t.messageId),
     // 승인 결정 하나는 깨우기 하나만 만든다.

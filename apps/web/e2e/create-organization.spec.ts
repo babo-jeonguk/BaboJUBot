@@ -11,7 +11,7 @@ async function openMarked(page: Page, path: string) {
 const notReloaded = (page: Page) =>
   page.evaluate(() => (window as unknown as { marker?: number }).marker === 1);
 
-test("creating an organization opens its Lead chat and shows up everywhere without reload", async ({
+test("creating an organization with a goal opens its Lead chat, wakes the Lead and shows up everywhere without reload", async ({
   page,
   context,
 }) => {
@@ -19,46 +19,73 @@ test("creating an organization opens its Lead chat and shows up everywhere witho
   await openMarked(watcher, "/");
   await openMarked(page, "/");
 
-  // 조직 없음 빈 상태에서 dialog를 연다.
+  // 조직 없음 빈 상태에서 dialog를 연다. 이름과 연구 목표가 있어야 만들 수 있고 완료 기준은 비워도 된다.
   await expect(page.getByText("아직 연구 조직이 없습니다")).toBeVisible();
   await page.getByRole("button", { name: "＋ 새 연구 조직" }).click();
   const dialog = page.getByRole("dialog", { name: "새 연구 조직" });
-  await expect(
-    dialog.getByRole("button", { name: "만들고 Lead 대화로" })
-  ).toBeDisabled();
+  const create = dialog.getByRole("button", { name: "만들기" });
+  await expect(create).toBeDisabled();
   await dialog.getByLabel("조직 이름").fill("  음성 인식 오류 분석 ");
-  await dialog.getByRole("button", { name: "만들고 Lead 대화로" }).click();
+  await expect(create).toBeDisabled();
+  await dialog
+    .getByLabel("연구 목표")
+    .fill("한국어 음성 인식 오류율을\n절반으로 줄인다");
+  await expect(dialog.getByLabel(/완료 기준/)).toHaveAttribute(
+    "placeholder",
+    "비워 두면 Lead가 제안합니다"
+  );
+  await dialog.getByLabel(/완료 기준/).fill("공개 평가셋 WER 10% 이하");
+  await create.click();
 
   await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/chat$/);
   await expect(dialog).toBeHidden();
-  await expect(page.getByTestId("lead-chat-empty")).toContainText(
-    "연구 목표와 완료 기준을 정하세요"
-  );
   await expect(page.getByText("Research Lead", { exact: true })).toBeVisible();
+  // Lead 대화로 목표를 보내지 않아도 생성으로 깨어난 Lead가 초기 연구 승인을 요청한다.
+  await expect(
+    page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
+  ).toContainText("초기 연구 승인을 요청했습니다");
   const rail = page.getByRole("navigation", { name: "연구 조직" });
   await expect(
-    rail.getByRole("link", { name: "음성 인식 오류 분석 · 목표 설정" })
-  ).toBeVisible();
-  await expect(
-    page.getByRole("navigation", { name: "조직 화면" }).getByText("목표 설정")
+    rail.getByRole("link", { name: "음성 인식 오류 분석 · 승인 대기" })
   ).toBeVisible();
 
-  // 다른 탭의 홈과 사이드바는 Event stream으로 갱신된다.
+  // 다른 탭의 홈과 사이드바는 Event stream으로 갱신된다. 초기 연구 승인 요청이 있어 홈의 주의 필요에 놓인다.
   await expect(
     watcher
-      .getByRole("region", { name: "진행 중" })
+      .getByRole("region", { name: "주의 필요" })
       .getByText("음성 인식 오류 분석")
   ).toBeVisible();
   await expect(
     watcher
       .getByRole("navigation", { name: "연구 조직" })
-      .getByRole("link", { name: "음성 인식 오류 분석 · 목표 설정" })
+      .getByRole("link", { name: "음성 인식 오류 분석 · 승인 대기" })
   ).toBeVisible();
 
-  // 레일 ＋에서 두 번째 조직을 만든다.
+  // 사용자가 적은 목표와 완료 기준이 대시보드와 Event log에 사용자 입력으로 남는다.
+  await page
+    .getByRole("navigation", { name: "조직 화면" })
+    .getByRole("link", { name: "대시보드" })
+    .click();
+  await expect(page.getByTestId("goal")).toHaveText(
+    "한국어 음성 인식 오류율을\n절반으로 줄인다"
+  );
+  await expect(page.getByTestId("completion-criteria")).toHaveText(
+    "공개 평가셋 WER 10% 이하"
+  );
+
+  await page
+    .getByRole("navigation", { name: "조직 화면" })
+    .getByRole("link", { name: "활동" })
+    .click();
+  await expect(page.getByRole("main")).toContainText(
+    "사용자가 조직 “음성 인식 오류 분석”을 만들고 연구 목표를 정했습니다"
+  );
+
+  // 레일 ＋에서 두 번째 조직을 만든다. 완료 기준은 비워 둔다.
   await rail.getByRole("button", { name: "새 연구 조직" }).click();
   await dialog.getByLabel("조직 이름").fill("두 번째 연구");
-  await dialog.getByRole("button", { name: "만들고 Lead 대화로" }).click();
+  await dialog.getByLabel("연구 목표").fill("두 번째 목표");
+  await create.click();
   await expect(
     page
       .getByRole("navigation", { name: "조직 화면" })

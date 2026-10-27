@@ -23,10 +23,13 @@ const cancelledRuns = (count: number) =>
 export function describeEvent(event: Event, agentName: string): Described {
   switch (event.type) {
     case "organization.created":
-      return {
-        icon: "🧭",
-        title: `조직 “${event.payload.name}”을 만들었습니다`,
-      };
+      return event.payload.goal === undefined
+        ? { icon: "🧭", title: `조직 “${event.payload.name}”을 만들었습니다` }
+        : {
+            icon: "🧭",
+            title: `사용자가 조직 “${event.payload.name}”을 만들고 연구 목표를 정했습니다 → ${stageLabel[event.payload.stage]}`,
+            detail: `목표: ${event.payload.goal}\n완료 기준: ${event.payload.completionCriteria ?? "비워 둠(Lead가 제안)"}`,
+          };
     case "message.created":
       return event.payload.author === "owner"
         ? { icon: "💬", title: `사용자가 ${agentName}에게 메시지를 보냈습니다` }
@@ -156,6 +159,8 @@ export function describeEvent(event: Event, agentName: string): Described {
         detail:
           [
             event.payload.note && `사유: ${event.payload.note}`,
+            event.payload.completionCriteria &&
+              `Lead가 제안한 완료 기준을 정함: ${event.payload.completionCriteria}`,
             event.payload.createdAgentIds.length &&
               `작업자 ${event.payload.createdAgentIds.length}명 생성`,
           ]

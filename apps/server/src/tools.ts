@@ -318,7 +318,7 @@ export function orgToolsRouter({
           ...callOf(
             res,
             "request_initial_approval",
-            `초기 연구 승인 요청: 작업자 ${heads}명, 템플릿 ${input.data.template}`
+            `초기 연구 승인 요청: 작업자 ${heads}명, 템플릿 ${input.data.template}${input.data.completionCriteria ? ", 완료 기준 제안" : ""}`
           ),
         })
       );

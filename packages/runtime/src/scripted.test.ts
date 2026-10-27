@@ -210,7 +210,8 @@ describe("demo Lead scenario", () => {
   const at = (
     stage: RunRequest["context"]["organization"]["stage"],
     wakeReasons: RunRequest["wakeReasons"],
-    goal: string | null = null
+    goal: string | null = null,
+    completionCriteria: string | null = goal && "기준"
   ): RunRequest => ({
     ...request,
     wakeReasons,
@@ -220,9 +221,23 @@ describe("demo Lead scenario", () => {
         ...request.context.organization,
         stage,
         goal,
-        completionCriteria: goal && "기준",
+        completionCriteria,
       },
     },
+  });
+  const inputOf = (script: Script) => {
+    const step = script.steps.find((s) => s.do === "call");
+    if (step?.do !== "call") throw new Error("no tool call");
+    return step.input?.({
+      request,
+      context: undefined,
+      sent: [],
+      calls: [],
+    }) as { plan: string; completionCriteria?: string };
+  };
+  const created = () => ({
+    kind: "organization_created" as const,
+    wakeId: crypto.randomUUID(),
   });
   const message = (body: string, conversationId = defaultConversationId) => ({
     kind: "owner_message" as const,
@@ -230,6 +245,54 @@ describe("demo Lead scenario", () => {
     messageId: crypto.randomUUID(),
     conversationId,
     body,
+  });
+
+  it("requests the initial approval right after the owner creates the organization, proposing criteria only when the owner left them empty", () => {
+    const withCriteria = demoLeadScript(
+      at("planning", [created()], "오류 절반", "WER 10%")
+    );
+    expect(calls(withCriteria)).toEqual(["request_initial_approval"]);
+    expect(inputOf(withCriteria)).not.toHaveProperty("completionCriteria");
+
+    const without = demoLeadScript(
+      at("planning", [created()], "오류 절반", null)
+    );
+    expect(calls(without)).toEqual(["request_initial_approval"]);
+    expect(inputOf(without).completionCriteria).toContain("오류 절반");
+    expect(
+      without.steps.some(
+        (s) =>
+          s.do === "send_message" &&
+          s
+            .body({ request, context: undefined, sent: [], calls: [] })
+            .includes("제안한 완료 기준")
+      )
+    ).toBe(true);
+
+    // 요청 뒤 서버가 멈춰 같은 깨우기를 다시 받으면 이미 한 요청은 건너뛴다.
+    const resumed = demoLeadScript(
+      at("awaiting_approval", [created()], "오류 절반", null)
+    );
+    const step = resumed.steps.find((s) => s.do === "call");
+    expect(step?.do === "call" && step.when?.({} as never)).toBe(false);
+  });
+
+  it("proposes criteria again when resubmitting for an organization still without any", () => {
+    const sentBack = {
+      kind: "approval_decision" as const,
+      wakeId: crypto.randomUUID(),
+      approvalId: crypto.randomUUID(),
+      approvalKind: "initial_research" as const,
+      decision: "request_changes" as const,
+      note: "기준을 구체적으로",
+    };
+    const resubmit = demoLeadScript(
+      at("planning", [sentBack], "오류 절반", null)
+    );
+    expect(inputOf(resubmit)).toMatchObject({
+      plan: expect.stringContaining("기준을 구체적으로"),
+      completionCriteria: expect.stringContaining("오류 절반"),
+    });
   });
 
   it("reads a goal only from both `목표:` and `완료 기준:` lines", () => {
@@ -241,7 +304,7 @@ describe("demo Lead scenario", () => {
     expect(parseGoalMessage("목표: 오류 절반")).toBeUndefined();
   });
 
-  it("records the goal and requests approval, resubmits after changes are requested, and otherwise replies", () => {
+  it("records the goal of an organization created without one and requests approval, resubmits after changes are requested, and otherwise replies", () => {
     expect(
       calls(
         demoLeadScript(
@@ -262,20 +325,8 @@ describe("demo Lead scenario", () => {
     };
     const resubmit = demoLeadScript(at("planning", [sentBack], "오류 절반"));
     expect(calls(resubmit)).toEqual(["request_initial_approval"]);
-    const step = resubmit.steps.find((s) => s.do === "call");
-    expect(
-      step?.do === "call" &&
-        (
-          step.input?.({
-            request,
-            context: undefined,
-            sent: [],
-            calls: [],
-          }) as {
-            plan: string;
-          }
-        ).plan
-    ).toContain("줄여 주세요");
+    expect(inputOf(resubmit).plan).toContain("줄여 주세요");
+    expect(inputOf(resubmit)).not.toHaveProperty("completionCriteria");
     expect(demoLeadScript(at("researching", [message("진행 상황은?")]))).toBe(
       leadReplyScript
     );

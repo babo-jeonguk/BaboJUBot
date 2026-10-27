@@ -16,6 +16,8 @@ export type ToolProblem =
 export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
   {
     goal_missing: ["invalid_input", 422],
+    completion_criteria_required: ["completion_criteria_required", 422],
+    completion_criteria_set: ["completion_criteria_set", 409],
     unknown_role: ["invalid_input", 422],
     unknown_template: ["invalid_input", 422],
     self_message: ["invalid_input", 422],

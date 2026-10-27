@@ -14,7 +14,13 @@ import {
 } from "@babojubot/contracts";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { idle, reasons, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import {
+  goal,
+  idle,
+  reasons,
+  scriptedAgents,
+  serverHelpers,
+} from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -498,8 +504,12 @@ describe("add_worker approval policy", () => {
   it("keeps the policy and worker approvals inside their organization", async () => {
     const s = await leadSession("경계 조직 A");
     const other = organizationDetailSchema.parse(
-      (await t!.request("POST", "/api/organizations", { name: "경계 조직 B" }))
-        .body
+      (
+        await t!.request("POST", "/api/organizations", {
+          name: "경계 조직 B",
+          ...goal,
+        })
+      ).body
     );
     await setPolicy(s.org.id, { addWorker: true });
     expect((await organization(other.id)).approvalPolicy).toEqual({
@@ -521,9 +531,12 @@ describe("add_worker approval policy", () => {
       ).status
     ).toBe(404);
     expect((await organization(other.id)).agents).toHaveLength(1);
-    expect((await eventsOf(other.id)).map((e) => e.type)).toEqual([
-      "organization.created",
-    ]);
+    // B에는 자기 생성·초기 연구 승인 요청 기록만 있고 A의 정책 변경·작업자 추가 요청은 없다.
+    const otherEvents = await eventsOf(other.id);
+    expect(otherEvents.map((e) => e.type)).not.toContain(
+      "organization.approval_policy_changed"
+    );
+    expect(JSON.stringify(otherEvents)).not.toContain(approvalId);
   });
 
   it("lets the demo Lead add a worker when the owner asks, following the policy", async () => {

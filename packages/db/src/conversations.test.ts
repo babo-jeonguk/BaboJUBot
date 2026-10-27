@@ -46,12 +46,18 @@ const completed: RunResult = {
 
 async function organization() {
   const creation = planOrganizationCreation(
-    { name: "대화 조직" },
+    { name: "대화 조직", goal: "목표" },
     { files: [] },
     source
   );
   await insertOrganizationCreation(t.db, creation);
   const lead = creation.agents[0]!;
+  // 생성 깨우기는 첫 실행 시도가 받는다. 아래 검사는 그 실행 시도가 끝난 뒤의 대기열에서 시작한다.
+  const created = await claimNextRun(t.db, lead.id, {
+    tokenDigest: randomUUID(),
+    source,
+  });
+  await finishRun(t.db, created!.run.id, completed, source);
   const organizationId = lead.organizationId;
   const defaultConversation = creation.defaultConversation;
   /** 사용자 메시지. `new`면 새 대화를 시작한다. */

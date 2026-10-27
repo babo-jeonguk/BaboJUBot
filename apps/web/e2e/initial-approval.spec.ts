@@ -14,17 +14,17 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   page,
 }) => {
   const name = "승인 E2E 조직";
+  // 사용자가 목표와 완료 기준을 적어 조직을 만들면 가짜 Lead가 깨어나 곧바로 초기 연구 승인을 요청한다.
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: {
+      name,
+      goal: "음성 인식 오류율을 절반으로 줄인다",
+      completionCriteria: "WER 10% 이하",
+    },
   });
   const org = (await created.json()) as { id: string };
 
-  // Lead 대화에서 목표를 합의하면 가짜 Lead가 기록하고 초기 연구 승인을 요청한다.
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
-  await page
-    .getByLabel("Lead에게 보낼 메시지")
-    .fill("목표: 음성 인식 오류율을 절반으로 줄인다\n완료 기준: WER 10% 이하");
-  await page.getByRole("button", { name: "보내기" }).click();
   await expect(
     page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
   ).toContainText("초기 연구 승인을 요청했습니다");
@@ -42,6 +42,10 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   await expect(
     page.getByRole("region", { name: "연구 목표와 완료 기준" })
   ).toContainText("WER 10% 이하");
+  // 사용자가 정한 완료 기준은 Lead 제안이 아니다.
+  await expect(
+    page.getByRole("region", { name: "연구 목표와 완료 기준" })
+  ).not.toContainText("Lead 제안");
   await expect(
     page.getByRole("region", { name: "초기 연구 계획" })
   ).toContainText("음성 인식 오류율을 절반으로 줄인다");
@@ -162,4 +166,50 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   await expect(
     page.getByRole("main").getByText("연구 진행", { exact: true })
   ).toBeVisible();
+});
+
+test("an organization created with empty completion criteria gets the Lead's proposal, which the owner approves from the Inbox", async ({
+  page,
+}) => {
+  const name = "기준 제안 E2E 조직";
+  await openWithLiveEvents(page, "/");
+  await page
+    .getByRole("navigation", { name: "연구 조직" })
+    .getByRole("button", { name: "새 연구 조직" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "새 연구 조직" });
+  await dialog.getByLabel("조직 이름").fill(name);
+  await dialog.getByLabel("연구 목표").fill("공개 자료로 오류 유형을 정리한다");
+  await expect(dialog.getByLabel(/완료 기준/)).toHaveValue("");
+  await dialog.getByRole("button", { name: "만들기" }).click();
+  await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/chat$/);
+  await expect(
+    page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
+  ).toContainText("제가 제안한 완료 기준");
+
+  // Inbox 상세의 요약에서 Lead가 제안한 완료 기준을 보고 승인한다.
+  await openInbox(page);
+  await page
+    .getByRole("list", { name: "주의 필요" })
+    .getByRole("link", { name: new RegExp(name) })
+    .click();
+  const criteria = page.getByTestId("proposal-completion-criteria");
+  await expect(criteria).toContainText("Lead 제안");
+  await expect(criteria).toContainText(
+    "“공개 자료로 오류 유형을 정리한다”을 달성했음을 보여 주는 결과 요약과 근거 산출물이 있다"
+  );
+  const decision = page.getByRole("region", { name: "결정" });
+  await decision.getByRole("button", { name: "승인" }).click();
+  await expect(decision).toContainText("승인됨");
+
+  // 원래 화면도 Lead 제안으로 표시하고, 승인한 제안이 조직의 완료 기준이 된다.
+  await page.getByRole("link", { name: /원래 화면에서 자세히 보기/ }).click();
+  await expect(page.getByTestId("proposal-completion-criteria")).toContainText(
+    "Lead 제안"
+  );
+  const orgId = page.url().match(/\/orgs\/([0-9a-f-]{36})\//)![1];
+  await page.goto(`/orgs/${orgId}`);
+  await expect(page.getByTestId("completion-criteria")).toContainText(
+    "결과 요약과 근거 산출물이 있다"
+  );
 });

@@ -27,10 +27,17 @@ const eventBase = {
 export const organizationCreatedEventSchema = z.object({
   ...eventBase,
   type: z.literal("organization.created"),
+  /**
+   * 사용자가 조직을 만들며 적은 연구 목표·완료 기준(비웠으면 `null`)과 그 목표로 깨운 Lead(`wokenAgentId`).
+   * 목표를 생성 때 받기 전의 Event에는 `goal`·`completionCriteria`·`wokenAgentId`가 없다.
+   */
   payload: z.object({
     name: z.string(),
     stage: lifecycleStageSchema,
     leadAgentId: z.uuid(),
+    goal: z.string().optional(),
+    completionCriteria: z.string().nullable().optional(),
+    wokenAgentId: z.uuid().optional(),
   }),
 });
 
@@ -277,6 +284,8 @@ export const approvalDecidedEventSchema = z.object({
     stage: lifecycleStageSchema,
     createdAgentIds: z.array(z.uuid()),
     wokenAgentId: z.uuid(),
+    /** 이 승인으로 조직의 완료 기준이 된 Lead 제안. 제안을 승인한 결정에만 있다. */
+    completionCriteria: z.string().optional(),
   }),
 });
 

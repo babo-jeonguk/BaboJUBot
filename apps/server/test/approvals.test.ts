@@ -21,6 +21,7 @@ import {
   type ScriptState,
 } from "@babojubot/runtime";
 import { afterEach, describe, expect, it } from "vitest";
+import { insertLegacyOrganization } from "@babojubot/db/testing";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -44,10 +45,9 @@ const proposal: RequestInitialApprovalInput = {
   template: "basic-research",
 };
 
-/** Lead가 목표를 기록하고 곧바로 초기 연구 승인을 요청하는 시나리오. */
+/** 생성으로 깨어난 Lead가 사용자의 목표로 곧바로 초기 연구 승인을 요청하는 시나리오. */
 const proposeScript: Script = {
   steps: [
-    { do: "call", tool: "record_goal", input: () => goal },
     { do: "call", tool: "request_initial_approval", input: () => proposal },
   ],
 };
@@ -85,9 +85,21 @@ function leadRuns(...scripts: Script[]) {
   };
 }
 
-async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+/**
+ * 사용자가 목표와 완료 기준(`null`이면 비움)을 적어 만든 조직. 생성으로 깨어난 Lead의 실행 시도(`leadRuns`의 다음 시나리오)가
+ * 끝날 때까지 기다린다.
+ */
+async function createOrganization(
+  name: string,
+  completionCriteria: string | null = goal.completionCriteria
+) {
+  const res = await t!.request("POST", "/api/organizations", {
+    name,
+    goal: goal.goal,
+    ...(completionCriteria === null ? {} : { completionCriteria }),
+  });
   expect(res.status).toBe(201);
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { ...org, lead: org.agents.find((a) => a.role === "lead")! };
 }
@@ -129,11 +141,9 @@ const say = async (orgId: string, body: string) => {
   expect(res.status).toBe(201);
 };
 
-/** 새 조직의 Lead가 목표를 기록하고 초기 연구 승인을 요청한 상태까지. */
+/** 새 조직의 Lead가 생성으로 깨어나 초기 연구 승인을 요청한 상태까지. */
 async function awaitingApproval(name: string) {
   const org = await createOrganization(name);
-  await say(org.id, "목표를 정했어요");
-  await t!.drain();
   const [pending] = await approvals(org.id);
   expect(pending).toMatchObject({ status: "pending" });
   return { org, approvalId: pending!.id };
@@ -144,9 +154,15 @@ describe("goal and initial research approval", () => {
     const lead = leadRuns(proposeScript);
     t = await startTestServer({ runtime: lead.runtime });
     const org = await createOrganization("승인 조직");
-    await say(org.id, "목표: …");
-    await t.drain();
 
+    // Lead는 사용자가 조직을 만들며 적은 목표로 깨어나 Lead 대화 없이 요청한다.
+    expect(lead.requests[0]!.wakeReasons).toEqual([
+      expect.objectContaining({ kind: "organization_created" }),
+    ]);
+    expect(lead.requests[0]!.context.organization).toMatchObject({
+      stage: "planning",
+      ...goal,
+    });
     expect(await organization(org.id)).toMatchObject({
       stage: "awaiting_approval",
       ...goal,
@@ -321,7 +337,6 @@ describe("goal and initial research approval", () => {
   it("refuses re-recording the goal, task creation and worker addition while planning, records each refusal and changes nothing", async () => {
     const lead = leadRuns({
       steps: [
-        { do: "call", tool: "record_goal", input: () => goal },
         {
           do: "call",
           tool: "record_goal",
@@ -344,17 +359,14 @@ describe("goal and initial research approval", () => {
     });
     t = await startTestServer({ runtime: lead.runtime });
     const org = await createOrganization("계획 조직");
-    await say(org.id, "시작");
-    await t.drain();
 
     expect(lead.states[0]!.calls).toEqual([
-      expect.objectContaining({ tool: "record_goal", ok: true }),
       { tool: "record_goal", ok: false, status: 409, code: "stage_closed" },
       { tool: "create_task", ok: false, status: 409, code: "stage_closed" },
       { tool: "add_worker", ok: false, status: 409, code: "stage_closed" },
     ]);
     const after = await organization(org.id);
-    // 합의한 목표는 계획 수립에서 다시 기록해도 바뀌지 않는다.
+    // 사용자가 정한 목표는 계획 수립에서 다시 기록해도 바뀌지 않는다.
     expect(after).toMatchObject({ stage: "planning", ...goal });
     expect(after.agents).toHaveLength(1);
     const [run] = runSummaryListSchema.parse(
@@ -387,6 +399,196 @@ describe("goal and initial research approval", () => {
         reason: "stage",
       },
     ]);
+  });
+
+  it("refuses an initial request without proposed criteria when the owner left them empty, and fixes the Lead's proposal as the criteria on approval", async () => {
+    const lead = leadRuns({
+      steps: [
+        {
+          do: "call",
+          tool: "request_initial_approval",
+          input: () => proposal,
+          allowRefusal: true,
+        },
+        {
+          do: "call",
+          tool: "request_initial_approval",
+          input: () => ({
+            ...proposal,
+            completionCriteria: "Lead가 제안한 기준",
+          }),
+        },
+      ],
+    });
+    t = await startTestServer({ runtime: lead.runtime });
+    const org = await createOrganization("기준 제안 조직", null);
+
+    expect(lead.states[0]!.calls[0]).toEqual({
+      tool: "request_initial_approval",
+      ok: false,
+      status: 422,
+      code: "completion_criteria_required",
+    });
+    expect(await organization(org.id)).toMatchObject({
+      stage: "awaiting_approval",
+      goal: goal.goal,
+      completionCriteria: null,
+    });
+    const [summary, ...others] = await approvals(org.id);
+    expect(others).toEqual([]);
+    expect(await approval(org.id, summary!.id)).toMatchObject({
+      proposal: {
+        goal: goal.goal,
+        completionCriteria: "Lead가 제안한 기준",
+        completionCriteriaProposed: true,
+      },
+    });
+
+    const res = await decide(org.id, summary!.id, { decision: "approve" });
+    expect(res.status).toBe(200);
+    await t.drain();
+    expect(await organization(org.id)).toMatchObject({
+      stage: "researching",
+      completionCriteria: "Lead가 제안한 기준",
+    });
+    expect(
+      (await events(org.id)).find((e) => e.type === "approval.decided")?.payload
+    ).toMatchObject({
+      decision: "approve",
+      completionCriteria: "Lead가 제안한 기준",
+    });
+    expect(lead.requests.at(-1)!.context.organization).toMatchObject({
+      completionCriteria: "Lead가 제안한 기준",
+    });
+  });
+
+  it("does not let the Lead replace the owner's criteria through the initial request", async () => {
+    const lead = leadRuns({
+      steps: [
+        {
+          do: "call",
+          tool: "request_initial_approval",
+          input: () => ({ ...proposal, completionCriteria: "Lead 기준" }),
+          allowRefusal: true,
+        },
+      ],
+    });
+    t = await startTestServer({ runtime: lead.runtime });
+    const org = await createOrganization("사용자 기준 조직");
+
+    expect(lead.states[0]!.calls).toEqual([
+      {
+        tool: "request_initial_approval",
+        ok: false,
+        status: 409,
+        code: "completion_criteria_set",
+      },
+    ]);
+    expect(await organization(org.id)).toMatchObject({
+      stage: "planning",
+      ...goal,
+    });
+    expect(await approvals(org.id)).toEqual([]);
+  });
+
+  it.each([
+    ["reject", "방향이 다릅니다"],
+    ["request_changes", "기준을 숫자로 적어 주세요"],
+  ] as const)(
+    "%s of a request with proposed criteria leaves the criteria unset, and the resubmission must propose them again",
+    async (decision, note) => {
+      const proposing = (criteria: string): Script => ({
+        steps: [
+          {
+            do: "call",
+            tool: "request_initial_approval",
+            input: () => ({ ...proposal, completionCriteria: criteria }),
+          },
+        ],
+      });
+      const lead = leadRuns(proposing("첫 제안"), {
+        steps: [
+          {
+            do: "call",
+            tool: "request_initial_approval",
+            input: () => proposal,
+            allowRefusal: true,
+          },
+          {
+            do: "call",
+            tool: "request_initial_approval",
+            input: () => ({ ...proposal, completionCriteria: "고친 제안" }),
+          },
+        ],
+      });
+      t = await startTestServer({ runtime: lead.runtime });
+      const org = await createOrganization("기준 재제안 조직", null);
+      const [first] = await approvals(org.id);
+
+      expect((await decide(org.id, first!.id, { decision, note })).status).toBe(
+        200
+      );
+      await t.drain();
+
+      expect(lead.requests.at(-1)!.wakeReasons).toEqual([
+        expect.objectContaining({ kind: "approval_decision", decision, note }),
+      ]);
+      expect(lead.states.at(-1)!.calls[0]).toMatchObject({
+        ok: false,
+        code: "completion_criteria_required",
+      });
+      expect(await organization(org.id)).toMatchObject({
+        stage: "awaiting_approval",
+        completionCriteria: null,
+      });
+      const [resubmitted] = await approvals(org.id);
+      expect(await approval(org.id, resubmitted!.id)).toMatchObject({
+        previousApprovalId: first!.id,
+        proposal: {
+          completionCriteria: "고친 제안",
+          completionCriteriaProposed: true,
+        },
+      });
+    }
+  );
+
+  it("keeps the goal recording path for an organization created before goals were set at creation", async () => {
+    const lead = leadRuns({
+      steps: [
+        { do: "call", tool: "record_goal", input: () => goal },
+        { do: "call", tool: "request_initial_approval", input: () => proposal },
+        {
+          do: "call",
+          tool: "record_goal",
+          input: () => ({ goal: "다른 목표", completionCriteria: "다른 기준" }),
+          allowRefusal: true,
+        },
+      ],
+    });
+    t = await startTestServer({ runtime: lead.runtime });
+    const legacy = await insertLegacyOrganization(t.db, "예전 조직");
+    expect(await organization(legacy.id)).toMatchObject({
+      stage: "goal_setting",
+      goal: null,
+      completionCriteria: null,
+    });
+
+    await say(legacy.id, "목표를 정했어요");
+    await t.drain();
+
+    expect(lead.states[0]!.calls.map((c) => [c.tool, c.ok])).toEqual([
+      ["record_goal", true],
+      ["request_initial_approval", true],
+      ["record_goal", false],
+    ]);
+    expect(await organization(legacy.id)).toMatchObject({
+      stage: "awaiting_approval",
+      ...goal,
+    });
+    const [summary] = await approvals(legacy.id);
+    const requested = await approval(legacy.id, summary!.id);
+    expect(requested.proposal).toMatchObject(goal);
+    expect(requested.proposal).not.toHaveProperty("completionCriteriaProposed");
   });
 
   it.each([

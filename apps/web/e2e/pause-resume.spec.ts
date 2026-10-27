@@ -1,11 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
 
 async function createOrganization(page: Page, name: string) {
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   expect(created.status()).toBe(201);
   const org = (await created.json()) as {
@@ -14,6 +15,14 @@ async function createOrganization(page: Page, name: string) {
   };
   const leadId = org.agents.find((a) => a.role === "lead")!.id;
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
+  // 생성으로 깨어난 가짜 Lead가 초기 연구 승인을 요청하고 실행 시도를 끝낼 때까지 기다린다.
+  await expect
+    .poll(async () => {
+      const res = await page.request.get(api("/runs"));
+      const list = (await res.json()) as { status: string }[];
+      return list.length > 0 && list.every((r) => r.status === "completed");
+    }, runs)
+    .toBe(true);
   /** 보낸 사용자 메시지가 실행 시도에 전달됐는가. */
   const delivered = async (body: string) => {
     const res = await page.request.get(api("/messages"));
@@ -46,7 +55,7 @@ test("the owner pauses the organization from the dashboard, sees it in another t
     ).toBeVisible();
     await expect(p.getByTestId("org-stage")).toHaveAttribute(
       "title",
-      "목표 설정에서 멈춤"
+      "승인 대기에서 멈춤"
     );
   }
 
@@ -62,7 +71,7 @@ test("the owner pauses the organization from the dashboard, sees it in another t
   expect(await org.delivered("멈춘 동안 보낸 메시지")).toBeNull();
 
   await controls(page).getByRole("button", { name: /재개/ }).click();
-  await expect(page.getByTestId("org-stage")).toHaveText("목표 설정");
+  await expect(page.getByTestId("org-stage")).toHaveText("승인 대기");
   // 재개하면 기다리던 메시지가 실행 시도에 전달되고 다른 탭의 대화에도 보인다.
   await expect
     .poll(() => org.delivered("멈춘 동안 보낸 메시지"), runs)
@@ -120,7 +129,7 @@ test("pausing one agent from its detail page holds its messages until it resumes
   });
   // 조직은 그대로 진행 중이다.
   const detail = await (await page.request.get(org.api(""))).json();
-  expect(detail.stage).toBe("goal_setting");
+  expect(detail.stage).toBe("awaiting_approval");
   expect(await org.delivered("Lead가 멈춘 동안 보낸 메시지")).toBeNull();
 
   await control.getByRole("button", { name: /에이전트 재개/ }).click();

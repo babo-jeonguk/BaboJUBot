@@ -34,7 +34,7 @@ const lease = 30_000;
 /** 조직 하나와, 그 Lead가 실행 시도 안에서 대화 메시지를 보내는 함수. */
 async function organization() {
   const creation = planOrganizationCreation(
-    { name: "알림 조직" },
+    { name: "알림 조직", goal: "목표" },
     { files: [] },
     source
   );

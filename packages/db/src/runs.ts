@@ -881,6 +881,7 @@ async function selectWakes(
               submissionId: wake.resultSubmissionId!,
               note: resultNote!,
             };
+          case "organization_created":
           case "heartbeat":
             return { kind: wake.kind, wakeId };
         }

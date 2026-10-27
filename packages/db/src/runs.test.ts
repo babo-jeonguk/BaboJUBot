@@ -49,13 +49,22 @@ const messageIdOf = (reason: WakeReason) =>
 
 async function organization() {
   const creation = planOrganizationCreation(
-    { name: "조직" },
+    { name: "조직", goal: "목표" },
     { files: [] },
     source
   );
   await insertOrganizationCreation(t.db, creation);
   const lead = creation.agents[0]!;
   const defaultConversation = creation.defaultConversation;
+  // 생성 깨우기는 첫 실행 시도가 받는다. 아래 검사는 그 실행 시도가 끝난 뒤의 대기열에서 시작한다.
+  const created = await claimNextRun(t.db, lead.id, {
+    tokenDigest: randomUUID(),
+    source,
+  });
+  expect(created?.wakeReasons.map((r) => r.kind)).toEqual([
+    "organization_created",
+  ]);
+  await finishRun(t.db, created!.run.id, completed, source);
   const send = async (body: string) => {
     const plan = planOwnerMessage(
       { organizationId: lead.organizationId, agents: creation.agents },
@@ -129,7 +138,8 @@ describe("wake queue admission", () => {
     const runs = await listRuns(t.db, lead.organizationId, {
       agentId: lead.id,
     });
-    expect(runs.map((r) => r.status)).toEqual(["running"]);
+    // 생성 깨우기를 받은 첫 실행 시도는 이미 끝났다.
+    expect(runs.map((r) => r.status).sort()).toEqual(["completed", "running"]);
   });
 
   it("does not let one agent's run hold back another agent", async () => {
@@ -263,7 +273,9 @@ describe("control commands", () => {
     await send("y");
     expect(await claim()).toBeUndefined();
     await finishRun(t.db, runId, completed, source);
-    expect((await listRuns(t.db, lead.organizationId)).at(-1)).toMatchObject({
+    expect(
+      (await listRuns(t.db, lead.organizationId)).find((r) => r.id === runId)
+    ).toMatchObject({
       id: runId,
       status: "cancelled",
       cancelReason: "organization_paused",
