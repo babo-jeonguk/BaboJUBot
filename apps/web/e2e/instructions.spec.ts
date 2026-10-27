@@ -37,7 +37,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await expect(page).toHaveURL(new RegExp(`/agents/${leadId}/instructions$`));
   const section = (p: Page) =>
     p.getByRole("region", { name: "Role·Soul·Skill 사본" });
-  await expect(section(page)).toContainText("이 에이전트만의 사본입니다");
+  await expect(section(page)).toBeVisible();
   const revisions = (p: Page) =>
     section(p)
       .getByRole("region", { name: "revision 목록" })
@@ -103,7 +103,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   const save = section(page).getByRole("button", { name: "저장", exact: true });
   await save.click();
   await expect(section(page).getByRole("alert")).toContainText(
-    "편집 내용은 그대로이니"
+    "저장하지 못했습니다"
   );
   await expect(editor).toHaveValue(edited);
 
@@ -140,7 +140,9 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   });
   expect(elsewhere.status()).toBe(200);
   const conflict = section(page).getByRole("alert");
-  await expect(conflict).toContainText("지금은 revision 3입니다");
+  await expect(conflict).toContainText(
+    "다른 곳에서 먼저 저장했습니다 (revision 3)"
+  );
   await expect(save).toBeDisabled();
   await expect(editor).toHaveValue(mine);
   // 편집 중에도 먼저 저장된 revision을 읽어 보고, 돌아오면 편집 내용이 그대로다.

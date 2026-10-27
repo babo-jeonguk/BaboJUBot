@@ -148,10 +148,10 @@ test("the demo scenario walks one organization from creation through the Lead ch
     const save = heartbeat.getByRole("button", { name: "저장" });
     await toggle.check();
     await save.click();
-    await expect(heartbeat.getByRole("status")).toContainText("다음 heartbeat");
+    await expect(heartbeat.getByRole("status")).toContainText("분마다");
     await toggle.uncheck();
     await save.click();
-    await expect(heartbeat.getByRole("status")).toHaveText("꺼져 있습니다.");
+    await expect(heartbeat.getByRole("status")).toHaveText("꺼짐");
   });
 
   await test.step("조직 설정에서 작업자 추가 승인 정책을 켠다", async () => {

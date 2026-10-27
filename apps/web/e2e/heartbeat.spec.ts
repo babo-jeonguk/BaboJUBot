@@ -29,9 +29,8 @@ test("the owner turns an agent's heartbeat on, changes its interval, sees the ne
   const status = (p: Page) => section(p).getByRole("status");
 
   // 새 에이전트는 꺼져 있고 간격은 Role 기본값이다.
-  await expect(status(page)).toHaveText("꺼져 있습니다.");
+  await expect(status(page)).toHaveText("꺼짐");
   await expect(interval(page)).toHaveValue("60");
-  await expect(section(page)).toContainText("Role 기본값 60분");
   await expect(save(page)).toBeDisabled();
 
   // 계약 밖의 간격은 저장할 수 없고 무엇이 틀렸는지 보인다.
@@ -39,7 +38,7 @@ test("the owner turns an agent's heartbeat on, changes its interval, sees the ne
   await interval(page).fill("0");
   await expect(save(page)).toBeDisabled();
   await expect(interval(page)).toHaveAttribute("aria-invalid", "true");
-  await expect(section(page)).toContainText("1분부터 10080분(7일)까지");
+  await expect(section(page)).toContainText("1~10080분");
 
   // 저장이 실패하면 입력은 그대로이고 저장된 설정을 알린다.
   await interval(page).fill("15");
@@ -55,15 +54,15 @@ test("the owner turns an agent's heartbeat on, changes its interval, sees the ne
   });
   await save(page).click();
   await expect(section(page).getByRole("alert")).toContainText(
-    "저장된 설정(꺼짐)은 그대로"
+    "저장하지 못했습니다"
   );
   await expect(toggle(page)).toBeChecked();
   await expect(interval(page)).toHaveValue("15");
-  await expect(status(page)).toHaveText("꺼져 있습니다.");
+  await expect(status(page)).toHaveText("꺼짐");
 
   await save(page).click();
   for (const p of [page, other]) {
-    await expect(status(p)).toContainText("다음 heartbeat");
+    await expect(status(p)).toContainText("분마다");
     await expect(status(p)).toContainText("15분마다");
     await expect(toggle(p)).toBeChecked();
     await expect(interval(p)).toHaveValue("15");
@@ -89,7 +88,7 @@ test("the owner turns an agent's heartbeat on, changes its interval, sees the ne
     .getByRole("region", { name: "에이전트 제어" })
     .getByRole("button", { name: /에이전트 일시정지/ })
     .click();
-  await expect(status(other)).toContainText("일시정지 중이라 깨우지 않으며");
+  await expect(status(other)).toContainText("일시정지 중");
   await page
     .getByRole("region", { name: "에이전트 제어" })
     .getByRole("button", { name: /에이전트 재개/ })
@@ -97,6 +96,5 @@ test("the owner turns an agent's heartbeat on, changes its interval, sees the ne
 
   await toggle(other).uncheck();
   await save(other).click();
-  for (const p of [page, other])
-    await expect(status(p)).toHaveText("꺼져 있습니다.");
+  for (const p of [page, other]) await expect(status(p)).toHaveText("꺼짐");
 });

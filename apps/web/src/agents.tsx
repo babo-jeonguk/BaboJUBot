@@ -152,10 +152,7 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
             </h2>
             {!a.recentRuns.length ? (
               <div className="card p-6 text-sm text-slate-500">
-                아직 실행 시도가 없습니다.{" "}
-                {a.role === "lead"
-                  ? "Lead 대화에 메시지를 보내면 깨어납니다."
-                  : "작업을 맡거나 작업 댓글·메시지를 받으면 깨어납니다."}
+                아직 실행 시도가 없습니다.
               </div>
             ) : (
               <ul className="card divide-y divide-slate-100">
@@ -210,19 +207,12 @@ function AgentControl({
           </span>
         )}
       </div>
-      <p className="mt-2 text-xs text-slate-500">
-        {closed
-          ? "끝난 조직의 에이전트는 일시정지·재개할 수 없습니다."
-          : agent.paused
-            ? "이 에이전트만 멈춰 있습니다. 그동안 받은 깨우기는 재개하면 실행 시도 하나로 전달됩니다. 조직을 재개해도 풀리지 않습니다."
-            : "이 에이전트 하나만 멈춥니다. 진행 중 실행 시도는 취소하고, 다른 에이전트는 계속 일합니다."}
-      </p>
       {!control.isPending && control.isError && (
         <p role="alert" className="mt-2 text-xs text-rose-600">
           {control.error instanceof ApiError &&
           control.error.code === "organization_closed"
-            ? "조직이 이미 끝나 명령을 받지 않았습니다."
-            : "명령을 처리하지 못했습니다. 상태는 그대로이니 다시 시도하세요."}
+            ? "이미 끝난 조직입니다."
+            : "처리하지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -268,20 +258,14 @@ function HeartbeatSettings({
       { onSuccess: () => setDraft(null) }
     );
   const status = () => {
-    if (closed) return "끝난 조직이라 heartbeat로 깨우지 않습니다.";
-    if (!saved.enabled || !saved.nextAt) return "꺼져 있습니다.";
-    const next = `다음 heartbeat ${formatTime(saved.nextAt)} · ${saved.intervalMinutes}분마다`;
-    return held
-      ? `${next}. 일시정지 중이라 깨우지 않으며, 재개 뒤 예정이 지나 있으면 한 번 깨웁니다.`
-      : next;
+    if (closed) return "끝난 조직";
+    if (!saved.enabled || !saved.nextAt) return "꺼짐";
+    const next = `다음 ${formatTime(saved.nextAt)} · ${saved.intervalMinutes}분마다`;
+    return held ? `${next} · 일시정지 중` : next;
   };
   return (
     <section aria-label="Heartbeat" className="card mb-6 p-4 text-sm">
-      <h2 className="mb-1 text-sm font-semibold">Heartbeat</h2>
-      <p className="mb-3 text-xs text-slate-500">
-        사건이 없어도 간격마다 이 에이전트를 깨웁니다. 깨울 때 기다리는 다른
-        깨우기가 있으면 실행 시도 하나로 합칩니다.
-      </p>
+      <h2 className="mb-3 text-sm font-semibold">Heartbeat</h2>
       <form
         className="flex flex-wrap items-end gap-x-4 gap-y-3"
         onSubmit={(e) => {
@@ -292,7 +276,7 @@ function HeartbeatSettings({
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
-            className="h-4 w-4 accent-brand-600"
+            className="switch"
             checked={enabled}
             disabled={closed || update.isPending}
             onChange={(e) => edit({ enabled: e.currentTarget.checked })}
@@ -311,7 +295,8 @@ function HeartbeatSettings({
             value={interval}
             disabled={closed || update.isPending}
             aria-invalid={!valid}
-            aria-describedby="heartbeat-interval-help"
+            aria-describedby={valid ? undefined : "heartbeat-interval-help"}
+            placeholder={String(saved.roleDefaultMinutes)}
             onChange={(e) => edit({ interval: e.currentTarget.value })}
           />
         </label>
@@ -335,11 +320,11 @@ function HeartbeatSettings({
           </button>
         )}
       </form>
-      <p id="heartbeat-interval-help" className="mt-2 text-xs text-slate-500">
-        {valid
-          ? `Role 기본값 ${saved.roleDefaultMinutes}분. 켜거나 간격을 바꾸면 그때부터 간격만큼 뒤에 깨웁니다.`
-          : `간격은 1분부터 ${heartbeatIntervalMaxMinutes}분(7일)까지 분 단위 정수로 적으세요.`}
-      </p>
+      {!valid && (
+        <p id="heartbeat-interval-help" className="mt-2 text-xs text-rose-600">
+          1~{heartbeatIntervalMaxMinutes}분
+        </p>
+      )}
       <p role="status" className="mt-2 text-xs text-slate-700">
         {status()}
       </p>
@@ -347,8 +332,8 @@ function HeartbeatSettings({
         <p role="alert" className="mt-2 text-xs text-rose-600">
           {update.error instanceof ApiError &&
           update.error.code === "organization_closed"
-            ? "조직이 이미 끝나 설정을 바꾸지 않았습니다."
-            : `저장하지 못했습니다. 저장된 설정(${saved.enabled ? `켜짐, ${saved.intervalMinutes}분` : "꺼짐"})은 그대로이니 다시 시도하세요.`}
+            ? "이미 끝난 조직입니다."
+            : "저장하지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -386,7 +371,7 @@ const saveErrorText = (code: string | undefined) => {
     case "not_found":
       return "이 사본을 찾지 못했습니다.";
     default:
-      return "저장하지 못했습니다. 편집 내용은 그대로이니 다시 시도하세요.";
+      return "저장하지 못했습니다. 다시 시도하세요.";
   }
 };
 
@@ -450,10 +435,7 @@ function InstructionCopies({
     const { copies, bundleVersion } = found.data;
     if (!copies.length)
       return (
-        <div className="card p-6 text-sm text-slate-500">
-          이 에이전트에게는 사본이 없습니다. 사본이 생기기 전에 만든 에이전트일
-          수 있습니다.
-        </div>
+        <div className="card p-6 text-sm text-slate-500">사본이 없습니다.</div>
       );
     const copy = copies.find((c) => c.path === selectedPath) ?? copies[0]!;
     const editing = draft?.copyId === copy.id ? draft : null;
@@ -544,10 +526,7 @@ function InstructionCopies({
                   role="alert"
                   className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-200"
                 >
-                  편집하는 동안 다른 곳에서 이 사본을 저장해 지금은 revision{" "}
-                  {copy.revision}입니다. 편집 내용은 그대로 두었습니다. 아래
-                  목록에서 최신 내용을 확인할 수 있고, 이 편집으로 덮어쓰려면
-                  다시 저장하세요.
+                  다른 곳에서 먼저 저장했습니다 (revision {copy.revision}).
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -639,12 +618,6 @@ function InstructionCopies({
   const asking = switchTo !== null || blocker.state === "blocked";
   return (
     <section aria-label="Role·Soul·Skill 사본" className="mb-6">
-      <p className="mb-2 text-xs text-slate-500">
-        이 에이전트만의 사본입니다. 고쳐도 같은 Role의 다른 에이전트와 하네스
-        라이브러리는 바뀌지 않습니다. 저장할 때마다 revision이 남고 Lead가
-        깨어나며, 이 에이전트의 다음 실행 시도는 바뀐 지침으로 새 세션에서
-        시작합니다. 진행 중인 실행 시도는 시작할 때 받은 지침 그대로입니다.
-      </p>
       {body()}
       <Dialog.Root
         open={asking}
@@ -661,8 +634,7 @@ function InstructionCopies({
               저장하지 않은 편집이 있습니다
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-sm text-slate-500">
-              옮기면 지금 편집한 내용을 버립니다. 사본과 revision은 바뀌지
-              않습니다.
+              옮기면 편집한 내용을 버립니다.
             </Dialog.Description>
             <div className="mt-5 flex justify-end gap-2">
               <Dialog.Close className="btn-soft">계속 편집</Dialog.Close>
@@ -906,10 +878,6 @@ export function RunDetailPage() {
         <h2 className="mb-2 text-sm font-semibold text-slate-600">
           활동 transcript
         </h2>
-        <p className="mb-2 text-xs text-slate-400">
-          실행기가 공개로 낸 활동과 조직 도구 호출 요약만 보입니다. 모델 내부
-          추론은 담지 않습니다.
-        </p>
         <ol className="card divide-y divide-slate-100">
           {r.transcript.map((e) => (
             <EventRow
