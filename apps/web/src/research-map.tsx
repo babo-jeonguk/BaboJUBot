@@ -93,11 +93,6 @@ const kindTones = [
   "bg-slate-100 text-slate-700 ring-slate-200",
 ];
 const linkColors = ["#059669", "#e11d48", "#64748b", "#d97706", "#0284c7"];
-const secLabel: Record<SecMode, string> = {
-  all: "보조 전체(연하게)",
-  focus: "보조: 선택 주변만",
-  off: "보조 숨김",
-};
 const shortId = (id: string) => id.slice(0, 8);
 const discarded = (n: ResearchNode) => n.status === "discarded";
 
@@ -330,7 +325,6 @@ const ResearchCard = memo(function ResearchCard({
         >
           {kind}
         </span>
-        <span className="text-[10px] text-slate-400">{shortId(node.id)}</span>
         <span className={`text-[11px] font-medium ${statusTone[node.status]}`}>
           {researchNodeStatusLabel[node.status]}
         </span>
@@ -653,12 +647,12 @@ function MapWorkspace({
   agents: Agent[];
   index: MapIndex;
 }) {
-  const [dir, setDir] = useState<Dir>("LR");
-  const [secMode, setSecMode] = useState<SecMode>("all");
-  const [hideDiscarded, setHideDiscarded] = useState(false);
+  const dir = "LR" as Dir;
+  const secMode = "all" as SecMode;
+  const hideDiscarded = false as boolean;
   // 직접 옮긴 위치(카드 왼쪽 위). 보기 상태이며 저장하지 않는다. 자동 재배치에도 유지하고 방향을 바꾸면 지운다.
   const [pinned, setPinned] = useState<Map<string, XY>>(new Map());
-  const [follow, setFollow] = useState(true);
+  const follow = true as boolean;
   const [live, setLive] = useState<Map<string, XY> | null>(null);
   const drag = useRef<{
     id: string;
@@ -964,9 +958,6 @@ function MapWorkspace({
   }, [pin]);
 
   const node = selected ? index.byId.get(selected) : undefined;
-  const discardedCount = index.map.nodes.filter(discarded).length;
-  const seg = (on: boolean) =>
-    `rounded-lg px-2 py-1 text-xs transition ${on ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`;
 
   return (
     <div className="flex flex-1 flex-col gap-3">
@@ -983,73 +974,6 @@ function MapWorkspace({
             ＋ 최상위 노드
           </button>
         )}
-        <Seg label="배치 방향">
-          <button
-            className={seg(dir === "LR")}
-            aria-pressed={dir === "LR"}
-            onClick={() => {
-              setDir("LR");
-              setPinned(new Map());
-            }}
-          >
-            좌→우
-          </button>
-          <button
-            className={seg(dir === "TB")}
-            aria-pressed={dir === "TB"}
-            onClick={() => {
-              setDir("TB");
-              setPinned(new Map());
-            }}
-          >
-            위→아래
-          </button>
-        </Seg>
-        <Seg label="보조 연결 표시">
-          {(Object.keys(secLabel) as SecMode[]).map((m) => (
-            <button
-              key={m}
-              className={seg(secMode === m)}
-              aria-pressed={secMode === m}
-              onClick={() => setSecMode(m)}
-            >
-              {secLabel[m]}
-            </button>
-          ))}
-        </Seg>
-        <Seg label="폐기 노드 표시">
-          <button
-            className={seg(!hideDiscarded)}
-            aria-pressed={!hideDiscarded}
-            onClick={() => setHideDiscarded(false)}
-          >
-            폐기 흐리게
-          </button>
-          <button
-            className={seg(hideDiscarded)}
-            aria-pressed={hideDiscarded}
-            onClick={() => setHideDiscarded(true)}
-          >
-            폐기 숨김 ({discardedCount})
-          </button>
-        </Seg>
-        <Seg label="노드 끌기">
-          <button
-            className={seg(follow)}
-            aria-pressed={follow}
-            onClick={() => setFollow(true)}
-            title="노드를 끌면 그 아래 주 연결 하위 노드도 함께 움직입니다"
-          >
-            끌면 하위도 함께
-          </button>
-          <button
-            className={seg(!follow)}
-            aria-pressed={!follow}
-            onClick={() => setFollow(false)}
-          >
-            그 노드만
-          </button>
-        </Seg>
         {pinned.size > 0 && (
           <button
             className="btn-soft py-1 text-xs"
@@ -1208,7 +1132,6 @@ function NodeDetail({
         className="block max-w-full truncate text-left text-brand-600 hover:underline"
         title={x?.title}
       >
-        {shortId(id)}{" "}
         <span
           className={
             x && discarded(x) ? "text-slate-400 line-through" : "text-slate-600"
@@ -1234,13 +1157,6 @@ function NodeDetail({
         <span className="min-w-0 flex-1">
           {ref(outgoing ? l.targetNodeId : l.sourceNodeId)}
         </span>
-        <span
-          className="shrink-0 text-[10px] text-slate-400"
-          title={`관계 ID ${l.id}`}
-          data-testid="link-id"
-        >
-          {shortId(l.id)}
-        </span>
       </div>
     );
   };
@@ -1249,20 +1165,13 @@ function NodeDetail({
     actor.author === "owner" ? "사용자" : agentName(actor.agentId);
 
   return (
-    <div className="space-y-4" data-testid="node-detail">
+    <div className="space-y-4" data-testid="node-detail" data-node-id={node.id}>
       <div>
         <div className="flex items-center gap-1.5">
           <span
             className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${kindTone(index.nodeKinds, node.kind)}`}
           >
             {kindLabel(index.nodeKinds, node.kind)}
-          </span>
-          <span
-            className="text-xs text-slate-400"
-            title={node.id}
-            data-testid="node-id"
-          >
-            {shortId(node.id)}
           </span>
           <span
             className={`text-[11px] font-medium ${statusTone[node.status]}`}
@@ -1735,7 +1644,6 @@ function NodePicker({
               >
                 {kindLabel(kinds, n.kind)}
               </span>
-              <span className="shrink-0 text-slate-400">{shortId(n.id)}</span>
               <span className="truncate">{n.title}</span>
             </button>
           </li>
@@ -1781,7 +1689,7 @@ function ParentForm({
         kinds={index.nodeKinds}
         value={value}
         onChange={setValue}
-        placeholder="새 주 부모 검색 (ID·제목)"
+        placeholder="새 주 부모 검색"
         none="주 부모 없음 (최상위로)"
       />
       <button
@@ -1838,7 +1746,7 @@ function LinkForm({
         kinds={index.nodeKinds}
         value={target}
         onChange={setTarget}
-        placeholder="연결할 노드 검색 (ID·제목)"
+        placeholder="연결할 노드 검색"
       />
       <div
         className="flex flex-wrap items-center gap-1.5 text-xs"
@@ -1996,18 +1904,6 @@ function Section({
           ✕
         </button>
       </div>
-      {children}
-    </div>
-  );
-}
-
-function Seg({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div
-      className="flex rounded-xl bg-white p-0.5 shadow-xs ring-1 ring-slate-200"
-      role="group"
-      aria-label={label}
-    >
       {children}
     </div>
   );

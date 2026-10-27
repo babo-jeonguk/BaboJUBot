@@ -38,9 +38,7 @@ type AgentNodeData = {
   layout: Layout;
   width: number;
 };
-type ChartNode =
-  | Node<AgentNodeData, "agent">
-  | Node<{ width: number; layout: Layout }, "empty">;
+type ChartNode = Node<AgentNodeData, "agent">;
 
 const ariaLabelConfig = {
   "controls.ariaLabel": "보기 조절",
@@ -182,15 +180,8 @@ function treeLayout(orgId: string, lead: Agent, workers: Agent[]) {
       data: { orgId, agent, layout: "tree", width: treeNodeWidth },
     })),
   ];
-  if (!workers.length)
-    nodes.push({
-      id: "empty",
-      type: "empty",
-      position: { x: 0, y },
-      data: { width: treeNodeWidth, layout: "tree" },
-    });
   const edges = nodes.slice(1).map((n) => edgeOf(lead.id, n.id, "tree"));
-  return { nodes, edges, height: y + nodeHeight };
+  return { nodes, edges, height: workers.length ? y + nodeHeight : nodeHeight };
 }
 
 function stackLayout(
@@ -216,13 +207,6 @@ function stackLayout(
       data: { orgId, agent, layout: "stack", width: full - stackIndent },
     })),
   ];
-  if (!workers.length)
-    nodes.push({
-      id: "empty",
-      type: "empty",
-      position: { x: pad + stackIndent, y: row(1) },
-      data: { width: full - stackIndent, layout: "stack" },
-    });
   const edges = nodes.slice(1).map((n) => edgeOf(lead.id, n.id, "stack"));
   return { nodes, edges, height: row(nodes.length) - stackGap + pad };
 }
@@ -237,7 +221,7 @@ const edgeOf = (source: string, target: string, layout: Layout): Edge => ({
   className: "org-chart-edge",
 });
 
-const nodeTypes = { agent: AgentNode, empty: EmptyNode };
+const nodeTypes = { agent: AgentNode };
 
 /** 그래프의 에이전트 카드. 카드 전체가 에이전트 상세로 가는 링크이고, 실행 중인 작업자로 가는 연결은 흐른다. */
 function AgentNode({ data }: NodeProps<Node<AgentNodeData, "agent">>) {
@@ -274,22 +258,6 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData, "agent">>) {
           </span>
         </span>
       </Link>
-    </>
-  );
-}
-
-function EmptyNode({
-  data,
-}: NodeProps<Node<{ width: number; layout: Layout }, "empty">>) {
-  return (
-    <>
-      <Handles layout={data.layout} />
-      <div
-        className="flex items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 text-sm text-slate-400"
-        style={{ width: data.width, height: nodeHeight }}
-      >
-        아직 작업자가 없습니다
-      </div>
     </>
   );
 }

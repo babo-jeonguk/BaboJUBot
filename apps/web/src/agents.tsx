@@ -63,9 +63,11 @@ export function AgentsScreen({
     <section aria-label="조직도">
       <h1 className="mb-4 flex items-baseline gap-2 text-xl font-semibold">
         에이전트
-        <span className="text-sm font-normal text-slate-500">
-          작업자 {workers}명
-        </span>
+        {workers > 0 && (
+          <span className="text-sm font-normal text-slate-500">
+            작업자 {workers}명
+          </span>
+        )}
       </h1>
       <Suspense fallback={<Loading />}>
         <OrgChart orgId={orgId} agents={agents} />

@@ -25,8 +25,8 @@ async function watchSelectionLag(page: Page) {
     const tick = (t: number) => {
       const wanted = new URL(location.href).searchParams.get("node");
       const shown = document
-        .querySelector('[data-testid="node-detail"] [data-testid="node-id"]')
-        ?.getAttribute("title");
+        .querySelector('[data-testid="node-detail"]')
+        ?.getAttribute("data-node-id");
       if (wanted && shown && wanted !== shown) {
         since ??= t;
         lag.max = Math.max(lag.max, t - since);
@@ -165,7 +165,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
 
   // 주 부모 변경: 다른 문제 아래로.
   await panel.getByRole("button", { name: "주 부모 변경" }).click();
-  await panel.getByLabel("새 주 부모 검색 (ID·제목)").fill("정리 2");
+  await panel.getByLabel("새 주 부모 검색").fill("정리 2");
   await panel.getByRole("option", { name: /연구 문제 정리 2/ }).click();
   await panel
     .getByRole("button", { name: /주 부모를 .*연구 문제 정리 2/ })
@@ -178,7 +178,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   // 보조 연결 추가: 원래 문제를 뒷받침한다. 주 배치는 바뀌지 않는다.
   const before = await first.boundingBox();
   await panel.getByRole("button", { name: "보조 연결" }).click();
-  await panel.getByLabel("연결할 노드 검색 (ID·제목)").fill("정리 1");
+  await panel.getByLabel("연결할 노드 검색").fill("정리 1");
   await panel.getByRole("option", { name: /연구 문제 정리 1/ }).click();
   await panel.getByRole("radio", { name: "뒷받침" }).click();
   await panel.getByRole("button", { name: "보조 연결 추가" }).click();
@@ -224,9 +224,6 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(
     linked.getByRole("link", { name: /연구 문제 정리 1/ })
   ).toHaveCount(2);
-  await page.getByRole("button", { name: /폐기 숨김/ }).click();
-  await expect(cards).toHaveCount(2);
-  await page.getByRole("button", { name: "폐기 흐리게" }).click();
   await panel.getByRole("button", { name: /폐기 취소/ }).click();
   await expect(first).toHaveAttribute("data-status", "proposed");
 
@@ -365,34 +362,11 @@ test("parallel secondary links between the same two nodes are drawn apart and li
   };
   await labelsApart();
 
-  // 위→아래로 바꾸면 연결은 출발 카드의 아래쪽 가운데에서 나간다.
-  await page.getByRole("button", { name: "위→아래" }).click();
-  const card = page.locator(`.react-flow__node[data-id="${from!.id}"]`);
-  await expect
-    .poll(async () => {
-      const [x, y] = ((await card.getAttribute("style")) ?? "")
-        .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)/)!
-        .slice(1)
-        .map(Number);
-      const [sx, sy] = ((await paths[0]!.getAttribute("d")) ?? "")
-        .match(/^M([-\d.]+),([-\d.]+)/)!
-        .slice(1)
-        .map(Number);
-      return [Math.round(sx! - x!), sy! > y! + 70];
-    })
-    .toEqual([116, true]);
-  await labelsApart();
-  await sameCurves();
-
-  // 상세 패널은 관계 ID별로 한 행씩 보이고, 같은 종류의 두 연결도 짧은 ID로 구분된다.
+  // 상세 패널은 관계마다 한 행씩 보인다. 같은 종류의 두 연결도 따로 보인다.
   const panel = page.getByRole("complementary", { name: "노드 상세" });
   const rows = panel.locator("[data-link-id]");
   await expect(rows).toHaveCount(4);
   await expect(rows.filter({ hasText: "─관련→" })).toHaveCount(2);
-  const shown = await rows.getByTestId("link-id").allTextContents();
-  expect(new Set(shown).size).toBe(4);
   for (const l of links)
-    await expect(panel.locator(`[data-link-id="${l.id}"]`)).toContainText(
-      l.id.slice(0, 8)
-    );
+    await expect(panel.locator(`[data-link-id="${l.id}"]`)).toHaveCount(1);
 });

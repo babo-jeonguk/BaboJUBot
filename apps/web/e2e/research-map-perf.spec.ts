@@ -272,7 +272,7 @@ async function measure(
   const panel = page.getByRole("complementary", { name: "노드 상세" });
   await panel.getByRole("button", { name: "보조 연결" }).click();
   const findStart = Date.now();
-  await panel.getByLabel("연결할 노드 검색 (ID·제목)").fill(far.id.slice(0, 8));
+  await panel.getByLabel("연결할 노드 검색").fill(far.id.slice(0, 8));
   await expect(
     panel.getByRole("option", { name: new RegExp(far.id.slice(0, 8)) })
   ).toBeVisible();

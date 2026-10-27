@@ -78,9 +78,11 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
   await expect(selection).toContainText("1개 선택");
   await selection.getByRole("button", { name: "모두 읽음" }).click();
   await expect(selection).toHaveCount(0);
-  await expect(
-    request.getByRole("button", { name: "읽지 않음" })
-  ).toBeVisible();
+  // 승인 요청은 결정 여부가 주의를 정하므로 읽음을 되돌리는 버튼이 없고, 읽지 않음 표시만 사라진다.
+  await expect(request).not.toContainText("읽지 않음");
+  await expect(request.getByRole("button", { name: "읽지 않음" })).toHaveCount(
+    0
+  );
   await expect(request).toBeVisible();
   // 결정을 기다리는 항목은 보관할 수 없다(결정해야 한다). 실패는 보관할 수 있다.
   await expect(request.getByRole("button", { name: "보관" })).toHaveCount(0);
@@ -261,9 +263,11 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await expect(selection).toContainText("2개 선택");
   await selection.getByRole("button", { name: "모두 읽음" }).click();
   await expect(failure).toHaveCount(0);
-  await expect(
-    request.getByRole("button", { name: "읽지 않음" })
-  ).toBeVisible();
+  // 승인 요청은 결정 여부가 주의를 정하므로 읽음을 되돌리는 버튼이 없고, 읽지 않음 표시만 사라진다.
+  await expect(request).not.toContainText("읽지 않음");
+  await expect(request.getByRole("button", { name: "읽지 않음" })).toHaveCount(
+    0
+  );
   expect(await failureRead()).toBe(true);
 
   // 다른 조직의 승인 요청도 기다린다. 한 요청에 쓰던 사유는 패널에서 다른 요청을 열면 따라가지 않는다.

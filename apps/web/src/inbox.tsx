@@ -437,7 +437,7 @@ function InboxRow({
   const at = inboxItemTime(item);
   return (
     <div
-      className={`flex items-start gap-2 px-3 py-3 transition ${checked ? "bg-brand-50/50" : ""}`}
+      className={`group/row relative flex items-start gap-2 px-3 py-3 transition ${checked ? "bg-brand-50/50" : ""}`}
     >
       <SelectToggle
         label={`${title} · ${item.organizationName} 선택`}
@@ -456,9 +456,14 @@ function InboxRow({
         >
           <span className="block min-w-0">
             <span
-              className={`block ${item.read ? "text-slate-600" : "font-semibold text-slate-900"}`}
+              className={`flex items-center gap-1.5 ${item.read ? "text-slate-600" : "font-semibold text-slate-900"}`}
             >
-              {title}
+              {!item.read && (
+                <span className="h-2 w-2 shrink-0 rounded-full bg-brand-600">
+                  <span className="sr-only">읽지 않음</span>
+                </span>
+              )}
+              <span className="min-w-0">{title}</span>
             </span>
             <span className="block truncate text-xs text-slate-500">
               {item.organizationName}
@@ -471,11 +476,6 @@ function InboxRow({
                 </span>
               )}
               <DecidedBadge item={item} />
-              {!item.read && (
-                <span className="chip bg-brand-50 text-brand-700">
-                  읽지 않음
-                </span>
-              )}
               {item.archived && (
                 <span className="chip bg-slate-100 text-slate-600">보관됨</span>
               )}
@@ -488,8 +488,8 @@ function InboxRow({
             </span>
           </span>
         </Link>
-        <div className="mt-1">
-          <InboxItemOrganize item={item} label={`${title} 정리`} />
+        <div className="absolute top-2.5 right-2 opacity-0 transition group-focus-within/row:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
+          <InboxItemOrganize item={item} label={`${title} 정리`} compact />
         </div>
       </div>
     </div>
@@ -497,42 +497,64 @@ function InboxRow({
 }
 
 /**
- * 알림 정리 버튼. 읽은 항목은 읽지 않음으로 되돌릴 수 있고(읽음은 항목을 열거나 체크해 한꺼번에),
+ * 알림 정리 버튼. 읽음이 주의 필요를 정하는 실패한 실행 시도만 읽지 않음으로 되돌릴 수 있다(읽음은 항목을 열거나
+ * 체크해 한꺼번에). 승인 요청·결과 제출은 결정 여부가 주의를 정하므로 읽음을 되돌리지 않는다.
  * 결정을 기다리지 않는 항목(결정한 승인 요청·결과 제출, 실패한 실행 시도)은 보관·보관 해제한다.
  * 결정을 기다리는 항목은 보관 버튼이 없다(결정해야 한다).
- * 패널 행과 Inbox 상세가 같은 명령으로 쓴다. 업무 결정과 따로다.
+ * 패널 행은 마우스를 올렸을 때 오른쪽 위에 아이콘으로(`compact`), Inbox 상세는 글자 버튼으로 같은 명령을 쓴다.
  */
 export function InboxItemOrganize({
   item,
   label,
+  compact = false,
 }: {
   item: InboxItem;
   label: string;
+  compact?: boolean;
 }) {
   const update = useUpdateInboxItem({
     organizationId: inboxOrganizationId(item),
     kind: item.kind,
     sourceId: inboxSourceId(item),
   });
+  const canUnread = item.kind === "run_failure" && item.read;
+  const canArchive = canArchiveInboxItem(item);
+  if (!canUnread && !canArchive) return null;
+  const archiveLabel = item.archived ? "보관 해제" : "보관";
+  const button = compact
+    ? "flex h-7 w-7 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
+    : "btn-ghost px-2 py-1 text-xs";
   return (
     <>
-      <div className="flex gap-1" role="group" aria-label={label}>
-        {item.read && (
+      <div
+        className={
+          compact
+            ? "flex gap-0.5 rounded-lg bg-white p-0.5 shadow-sm ring-1 ring-slate-200"
+            : "flex gap-1"
+        }
+        role="group"
+        aria-label={label}
+      >
+        {canUnread && (
           <button
-            className="btn-ghost px-2 py-1 text-xs"
+            className={button}
             disabled={update.isPending}
             onClick={() => update.mutate({ read: false })}
+            aria-label={compact ? "읽지 않음" : undefined}
+            title={compact ? "읽지 않음" : undefined}
           >
-            읽지 않음
+            {compact ? <EnvelopeIcon /> : "읽지 않음"}
           </button>
         )}
-        {canArchiveInboxItem(item) && (
+        {canArchive && (
           <button
-            className="btn-ghost px-2 py-1 text-xs"
+            className={button}
             disabled={update.isPending}
             onClick={() => update.mutate({ archived: !item.archived })}
+            aria-label={compact ? archiveLabel : undefined}
+            title={compact ? archiveLabel : undefined}
           >
-            {item.archived ? "보관 해제" : "보관"}
+            {compact ? <ArchiveIcon restore={item.archived} /> : archiveLabel}
           </button>
         )}
       </div>
@@ -542,5 +564,37 @@ export function InboxItemOrganize({
         </p>
       )}
     </>
+  );
+}
+
+const iconProps = {
+  width: 16,
+  height: 16,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  "aria-hidden": true,
+} as const;
+
+function EnvelopeIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="m3 7 9 6 9-6" />
+    </svg>
+  );
+}
+
+/** 보관함 상자. 보관 해제는 화살표가 위로 나온다. */
+function ArchiveIcon({ restore }: { restore: boolean }) {
+  return (
+    <svg {...iconProps}>
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+      <path d={restore ? "M12 17v-6m-3 3 3-3 3 3" : "M12 11v6m-3-3 3 3 3-3"} />
+    </svg>
   );
 }

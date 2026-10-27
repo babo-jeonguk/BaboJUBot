@@ -16,7 +16,7 @@ export function SettingsScreen({ org }: { org: OrganizationDetail }) {
     <div className="space-y-5">
       <h1 className="text-xl font-semibold">설정</h1>
       <section aria-label="승인 정책" className="card p-4">
-        <h2 className="mb-2 text-sm font-semibold">승인 받을 행동</h2>
+        <h2 className="mb-2 text-sm font-semibold">내 승인이 필요한 일</h2>
         <ul className="divide-y divide-slate-100 text-sm">
           <li>
             <label className="flex items-center gap-3 py-2.5">
