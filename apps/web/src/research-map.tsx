@@ -118,7 +118,7 @@ const editFailure = (error: unknown) =>
   (error instanceof ApiError &&
     error.code &&
     problemText[error.code as keyof typeof problemText]) ||
-  "저장했는지 확인하지 못했습니다. 입력은 그대로 두었으니 지도를 확인하고 다시 시도하세요.";
+  "저장했는지 확인하지 못했습니다. 다시 시도하세요.";
 
 /** 지도의 파생 조회: 노드·자식·보조 연결·종류. */
 type MapIndex = {
@@ -278,8 +278,7 @@ export function ResearchMapScreen({
       <>
         <h1 className="mb-4 text-xl font-semibold">연구 지도</h1>
         <div className="card p-6 text-sm text-slate-500">
-          초기 연구 승인 뒤 조직의 연구 흐름 템플릿이 정해지면 Lead와 작업자가
-          연구 노드를 만듭니다.
+          아직 연구 지도가 없습니다.
         </div>
       </>
     );
@@ -1061,12 +1060,6 @@ function MapWorkspace({
           </button>
         )}
       </div>
-      {!canEdit && (
-        <p className="text-xs text-slate-500">
-          지금 조직 단계에서는 보기만 할 수 있습니다. 연구 지도는 초기 연구 승인
-          뒤, 최종 완료·중단 전에 편집합니다.
-        </p>
-      )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
         <div
@@ -1078,8 +1071,7 @@ function MapWorkspace({
           {!index.map.nodes.length ? (
             <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-slate-500">
               <div>
-                아직 연구 노드가 없습니다. Lead와 작업자가 연구를 진행하며
-                노드를 만듭니다.
+                아직 연구 노드가 없습니다.
                 {canEdit && (
                   <div className="mt-3">
                     <button
@@ -1092,14 +1084,7 @@ function MapWorkspace({
                 )}
               </div>
             </div>
-          ) : (
-            !selected && (
-              <div className="pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 rounded-lg bg-white/85 px-2 py-1 text-center text-[11px] text-slate-500">
-                노드를 누르면 상세·편집 패널이 열립니다 · 끌어서 옮긴 위치는
-                보기에만 남습니다
-              </div>
-            )
-          )}
+          ) : null}
           <ReactFlow<CardNode>
             nodes={nodes}
             edges={edges}
@@ -1785,9 +1770,6 @@ function ParentForm({
   const candidates = index.map.nodes.filter(
     (n) => n.id !== node.id && !blocked.has(n.id) && !discarded(n)
   );
-  const discardedCount = index.map.nodes.filter(
-    (n) => n.id !== node.id && !blocked.has(n.id) && discarded(n)
-  ).length;
   const [value, setValue] = useState<string | null>(node.parentNodeId);
   const change = useEditResearchMap(orgId);
   const target = value ? index.byId.get(value) : undefined;
@@ -1801,10 +1783,6 @@ function ParentForm({
         placeholder="새 주 부모 검색 (ID·제목)"
         none="주 부모 없음 (최상위로)"
       />
-      <p className="text-[11px] text-slate-400">
-        자기 자신과 후손 {blocked.size + 1}개는 순환이 되므로 목록에서 뺐습니다.
-        {discardedCount > 0 && ` 폐기된 노드 ${discardedCount}개도 뺐습니다.`}
-      </p>
       <button
         className="btn-primary w-full"
         disabled={value === node.parentNodeId || change.isPending}
@@ -1892,8 +1870,7 @@ function LinkForm({
         </button>
       </div>
       <div className="rounded-lg bg-slate-50 px-2 py-1.5 text-xs break-words text-slate-600">
-        {title(from)} ─{kindLabel(index.linkKinds, kind)}→ {title(to)}{" "}
-        <span className="text-slate-400">· 주 배치는 바뀌지 않습니다</span>
+        {title(from)} ─{kindLabel(index.linkKinds, kind)}→ {title(to)}
       </div>
       <button
         className="btn-primary w-full"

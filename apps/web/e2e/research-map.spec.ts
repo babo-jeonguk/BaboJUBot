@@ -81,7 +81,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   const org = await researchingOrganization(page, "지도 E2E 조직");
   await openMap(page, `/orgs/${org.id}/map`);
   await expect(page.getByRole("main")).toContainText(
-    "초기 연구 승인 뒤 조직의 연구 흐름 템플릿이 정해지면"
+    "아직 연구 지도가 없습니다"
   );
 
   // 승인하면 가짜 작업자가 작업마다 연구 노드를 만들어 작업을 잇는다. 새로고침 없이 지도에 나타난다.

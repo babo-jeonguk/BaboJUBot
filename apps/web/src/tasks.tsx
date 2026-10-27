@@ -49,8 +49,7 @@ export function TasksScreen({
         <LoadError what="작업 목록" onRetry={() => void tasks.refetch()} />
       ) : !tasks.data.length ? (
         <div className="card p-6 text-sm text-slate-500">
-          아직 작업이 없습니다. 연구 진행 단계에서 Lead가 작업을 만들어
-          작업자에게 맡깁니다.
+          아직 작업이 없습니다.
         </div>
       ) : (
         <ul className="card divide-y divide-slate-100" aria-label="작업 목록">
@@ -211,29 +210,24 @@ function SelfReport({
       <h2 className="mb-1 text-sm font-semibold text-slate-600">자기 보고</h2>
       {report ? (
         <>
-          <p className="mb-2 text-xs text-slate-400">
-            작업을 완료한 에이전트가 남긴 요약입니다. 검증된 결과가 아닙니다.
-          </p>
           <Markdown
             text={report.summary}
             className="text-sm"
             data-testid="task-report"
           />
           <div className="mt-2 text-xs text-slate-500">
-            {nameOf(agents, report.agentId)} · {formatTime(report.completedAt)}{" "}
-            완료 ·{" "}
+            {nameOf(agents, report.agentId)} ·{" "}
             <Link
               to={`/orgs/${orgId}/runs/${report.runId}`}
-              className="text-brand-600 hover:underline"
+              title={runLabel(report.runId)}
+              className="hover:text-brand-600 hover:underline"
             >
-              {runLabel(report.runId)}
+              {formatTime(report.completedAt)} 완료
             </Link>
           </div>
         </>
       ) : (
-        <p className="text-sm text-slate-500">
-          아직 완료되지 않았습니다. 완료하면 담당자의 요약이 여기에 보입니다.
-        </p>
+        <p className="text-sm text-slate-500">아직 완료되지 않았습니다.</p>
       )}
     </section>
   );
@@ -325,24 +319,38 @@ function CommentItem({
   return (
     <li data-author={c.author} className="text-sm">
       <div className="mb-1 text-[11px] text-slate-400">
-        {mine ? "나" : nameOf(agents, c.agentId)} · {formatTime(c.createdAt)}
+        {mine ? "나" : nameOf(agents, c.agentId)} ·{" "}
+        {!mine && runId ? (
+          <Link
+            to={`/orgs/${orgId}/runs/${runId}`}
+            title={runLabel(runId)}
+            className="hover:text-brand-600 hover:underline"
+          >
+            {formatTime(c.createdAt)}
+          </Link>
+        ) : (
+          formatTime(c.createdAt)
+        )}
       </div>
       <Markdown
         text={c.body}
         className={`rounded-xl px-3 py-2 ${mine ? "bg-brand-50 text-slate-800" : "bg-slate-50 text-slate-800"}`}
       />
-      <div className="mt-1 text-[11px] text-slate-400">
-        {runId ? (
-          <Link
-            to={`/orgs/${orgId}/runs/${runId}`}
-            className="hover:text-brand-600 hover:underline"
-          >
-            {mine ? `${runLabel(runId)}에 전달됨` : `${runLabel(runId)}에서 씀`}
-          </Link>
-        ) : (
-          mine && <span>다음 실행 시도 대기</span>
-        )}
-      </div>
+      {mine && (
+        <div className="mt-1 text-[11px] text-slate-400">
+          {runId ? (
+            <Link
+              to={`/orgs/${orgId}/runs/${runId}`}
+              title={runLabel(runId)}
+              className="hover:text-brand-600 hover:underline"
+            >
+              ✓ 전달됨
+            </Link>
+          ) : (
+            <span>다음 실행 시도 대기</span>
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -388,13 +396,10 @@ function CommentComposer({
         maxLength={messageBodyMaxLength}
         onChange={(e) => setText(e.target.value)}
         className="w-full resize-y rounded-xl bg-white px-3 py-2 text-sm ring-1 ring-slate-200 outline-none focus:ring-brand-400"
-        placeholder="담당자에게 남길 댓글"
+        placeholder={`${assignee}에게 남길 댓글`}
       />
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <p className="min-w-0 flex-1 text-xs text-slate-400">
-          댓글은 담당자 {assignee}에게 전달되어 깨웁니다. 실행 중이면 다음 실행
-          시도에 반영됩니다.
-        </p>
+        <span className="flex-1" />
         {add.isPending && (
           <span className="text-xs text-slate-400" role="status">
             저장 중…
@@ -411,7 +416,7 @@ function CommentComposer({
         <p role="alert" className="mt-2 text-xs text-rose-600">
           {add.error instanceof ApiError && add.error.status === 404
             ? "작업을 찾을 수 없어 댓글을 저장하지 못했습니다."
-            : "댓글을 저장했는지 확인하지 못했습니다. 입력은 그대로 두었으니 thread를 확인하고 다시 시도하세요."}
+            : "저장했는지 확인하지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </form>
@@ -463,21 +468,18 @@ export function ArtifactPage() {
           >
             {nameOf(agents, a.createdByAgentId)}
           </Link>
-          {" · "}
-          <Link
-            to={`/orgs/${orgId}/runs/${a.createdByRunId}`}
-            className="text-brand-600 hover:underline"
-          >
-            {runLabel(a.createdByRunId)}
-          </Link>
         </dd>
         <dt className="text-slate-500">기록</dt>
-        <dd>{formatTime(a.createdAt)}</dd>
+        <dd>
+          <Link
+            to={`/orgs/${orgId}/runs/${a.createdByRunId}`}
+            title={runLabel(a.createdByRunId)}
+            className="hover:text-brand-600 hover:underline"
+          >
+            {formatTime(a.createdAt)}
+          </Link>
+        </dd>
       </dl>
-      <p className="mb-2 text-xs text-slate-400">
-        에이전트가 남긴 원문 그대로입니다. 산출물이 있다고 결과가 확인된 것은
-        아닙니다.
-      </p>
       {a.format === "markdown" ? (
         <Markdown
           text={a.content}

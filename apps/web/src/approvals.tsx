@@ -193,8 +193,7 @@ function AddWorkerContent({
           <span className="ml-auto tabular-nums">1명</span>
         </div>
         <p className="mt-1 text-xs text-slate-500">
-          받을 사본 {proposal.files.length}개. 요청 때 하네스 라이브러리에서
-          읽은 내용이며, 승인하면 이 내용으로 새 작업자만의 사본을 만듭니다.
+          받을 사본 {proposal.files.length}개
         </p>
       </div>
       <ul className="divide-y divide-slate-100 border-t border-slate-100">
@@ -254,18 +253,7 @@ const decisionStyle: Record<ApprovalDecision, string> = {
   reject: "btn-danger",
 };
 
-const decisionHelp: Record<ApprovalKind, { effect: string; note: string }> = {
-  initial_research: {
-    effect:
-      "승인하면 조직이 연구 진행으로 넘어가고 요청한 팀 구성대로 작업자가 생깁니다. 반려와 수정 요청은 계획 수립으로 돌아가며 사유와 함께 Lead를 깨웁니다.",
-    note: "결정 사유 (반려·수정 요청에는 필요)",
-  },
-  add_worker: {
-    effect:
-      "승인하면 요청한 사본을 받은 작업자 한 명이 생기고, 반려하면 아무것도 만들지 않습니다. 어느 쪽이든 연구 단계는 그대로이며 결정과 사유로 Lead를 깨웁니다.",
-    note: "결정 사유 (반려에는 필요)",
-  },
-};
+const noteLabel = "결정 사유";
 
 /**
  * 결정 영역: 결정 대기면 결정 폼, 아니면 결정 기록. 승인 요청 상세와 Inbox 상세가 함께 쓴다.
@@ -325,18 +313,15 @@ function DecisionForm({
     stage !== "paused"
       ? null
       : changesStage
-        ? "조직이 일시정지 중입니다. 결정하면 일시정지가 풀리고 연구가 다시 진행됩니다."
-        : "조직이 일시정지 중입니다. 이 결정은 일시정지를 풀지 않으며, Lead는 재개한 뒤 결정을 받습니다.";
+        ? "조직이 일시정지 중입니다 · 결정하면 재개"
+        : "조직이 일시정지 중입니다";
   return (
     <section
       id="decision"
       aria-label="결정"
       className="card scroll-mt-4 p-4 ring-2 ring-amber-200"
     >
-      <h2 className="mb-1 text-sm font-semibold">결정</h2>
-      <p className="mb-3 text-xs text-slate-500">
-        {decisionHelp[kind].effect} 결정은 한 번만 할 수 있습니다.
-      </p>
+      <h2 className="mb-3 text-sm font-semibold">결정</h2>
       {(pausedNotice || closed) && (
         <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
           {closed ? "중단된 조직이라 결정할 수 없습니다." : pausedNotice}
@@ -346,7 +331,7 @@ function DecisionForm({
         htmlFor="decision-note"
         className="mb-1 block text-xs text-slate-600"
       >
-        {decisionHelp[kind].note}
+        {noteLabel}
       </label>
       <textarea
         id="decision-note"
@@ -387,7 +372,7 @@ function DecisionForm({
             : decide.error instanceof ApiError &&
                 decide.error.code === "organization_closed"
               ? "조직이 중단되어 결정을 받지 않았습니다."
-              : "결정을 보내지 못했습니다. 사유는 그대로 두었으니 다시 시도하세요."}
+              : "보내지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -441,9 +426,9 @@ function DecisionReceipt({
             </Link>
           </>
         ) : a.kind === "initial_research" ? (
-          "계획 수립으로 돌아갔고 Lead가 사유를 받아 다시 계획합니다."
+          "계획 수립으로 돌아갔습니다."
         ) : (
-          "작업자를 만들지 않았고 Lead가 사유를 받았습니다."
+          "작업자를 만들지 않았습니다."
         )}
       </p>
     </section>

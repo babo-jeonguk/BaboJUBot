@@ -114,7 +114,6 @@ test("the demo scenario walks one organization from creation through the Lead ch
       "연구 문제 정리 1"
     );
     const report = page.getByRole("region", { name: "자기 보고" });
-    await expect(report).toContainText("검증된 결과가 아닙니다");
     await expect(report.getByTestId("task-report")).toContainText(
       "메모를 산출물로 남겼습니다"
     );
@@ -128,9 +127,6 @@ test("the demo scenario walks one organization from creation through the Lead ch
         .getByTestId("artifact-content")
         .getByRole("heading", { name: "연구 문제 정리 1 메모" })
     ).toBeVisible();
-    await expect(main).toContainText(
-      "산출물이 있다고 결과가 확인된 것은 아닙니다"
-    );
     await page.goBack();
 
     const node = page.getByRole("region", { name: "연결된 연구 노드" });
@@ -257,7 +253,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
   await test.step("사용자가 최종 완료를 확정한다", async () => {
     await decision.getByRole("button", { name: "최종 완료" }).click();
     await decision.getByRole("button", { name: "최종 완료 확정" }).click();
-    await expect(decision).toContainText("새 실행 시도가 시작되지 않습니다");
+    await expect(decision).toContainText("연구를 최종 완료했습니다");
     await expect(decision.getByRole("button")).toHaveCount(0);
     await expect(stageLink("최종 완료")).toBeVisible();
 

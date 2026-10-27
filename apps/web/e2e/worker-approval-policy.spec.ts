@@ -106,7 +106,7 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   await decision.getByRole("button", { name: "반려" }).click();
   await expect(decision).toContainText("반려됨");
   await expect(decision).toContainText("지금은 인원이 충분합니다");
-  await expect(decision).toContainText("작업자를 만들지 않았고");
+  await expect(decision).toContainText("작업자를 만들지 않았습니다");
   expect(await workerCount()).toBe(2);
 
   // 다시 부탁해 승인하면 작업자가 생긴다.

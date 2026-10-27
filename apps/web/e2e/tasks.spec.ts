@@ -50,7 +50,6 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   );
   await expect(page.getByTestId("task-assignee")).toHaveText("연구원 1");
   const report = page.getByRole("region", { name: "자기 보고" });
-  await expect(report).toContainText("검증된 결과가 아닙니다");
   await expect(report.getByTestId("task-report")).toContainText(
     "메모를 산출물로 남겼습니다"
   );
@@ -71,7 +70,7 @@ test("the owner watches tasks appear and complete live, reads the self-report an
     runs
   );
   await expect(thread.locator('[data-author="owner"]')).toContainText(
-    "에 전달됨"
+    "✓ 전달됨"
   );
   await expect(comments.getByLabel("작업 댓글")).toHaveValue("");
   await expect(page.getByRole("main").getByTestId("task-status")).toHaveText(
@@ -101,9 +100,6 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   ).toBeVisible();
   await expect(content.getByRole("listitem")).toHaveCount(2);
   await expect(content).not.toContainText("#");
-  await expect(page.getByRole("main")).toContainText(
-    "산출물이 있다고 결과가 확인된 것은 아닙니다"
-  );
   await page.reload();
   await expect(page.getByTestId("artifact-content")).toContainText(
     "검증된 결과가 아닙니다"
