@@ -56,7 +56,7 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
   await expect(reply).toContainText("음성 인식 오류를 줄이는 것이 목표입니다");
   await expect(input).toHaveValue("");
   const owner = conversation.locator('[data-author="owner"]');
-  await expect(owner.getByRole("link", { name: /에 전달됨$/ })).toBeVisible();
+  await expect(owner.getByRole("link", { name: "✓ 전달됨" })).toBeVisible();
 
   // 활동에서 실행 시도와 도구 호출 요약을 보고 실행 시도 상세로 간다.
   const sections = page.getByRole("navigation", { name: "조직 화면" });

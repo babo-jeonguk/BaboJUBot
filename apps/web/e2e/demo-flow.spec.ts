@@ -174,9 +174,10 @@ test("the demo scenario walks one organization from creation through the Lead ch
 
   await test.step("조직을 일시정지하고 작업자 추가를 부탁하면 메시지가 재개를 기다린다", async () => {
     await openWithLiveEvents(page, orgPath("/dashboard"));
-    await controls.getByRole("button", { name: /조직 일시정지/ }).click();
-    await expect(page.getByTestId("control-help")).toContainText(
-      "연구 진행에서 멈춰 있습니다"
+    await controls.getByRole("button", { name: /일시정지/ }).click();
+    await expect(page.getByTestId("org-stage")).toHaveAttribute(
+      "title",
+      "연구 진행에서 멈춤"
     );
     await expect(stageLink("일시정지")).toBeVisible();
 
@@ -195,7 +196,7 @@ test("the demo scenario walks one organization from creation through the Lead ch
 
   await test.step("재개하면 Lead가 부탁을 받아 작업자 추가 승인을 요청하고, 팀은 승인 전까지 그대로다", async () => {
     await openWithLiveEvents(page, orgPath("/dashboard"));
-    await controls.getByRole("button", { name: /조직 재개/ }).click();
+    await controls.getByRole("button", { name: /재개/ }).click();
     await expect(stageLink("연구 진행")).toBeVisible();
 
     await page.goto(orgPath("/chat"));

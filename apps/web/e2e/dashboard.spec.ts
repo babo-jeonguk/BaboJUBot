@@ -128,9 +128,7 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   // 성공률은 완료 / (완료 + 실패)이며 취소는 세지 않는다. 취소만 있는 날은 0%가 아니라 —다.
   const rateChart = page.getByRole("figure", { name: "실행 성공률" });
   const rateToday = rateChart.locator("[data-date]").last();
-  await expect(page.getByTestId("metric-success")).toContainText(
-    "취소 1 · 서버 재시작 0은 세지 않습니다"
-  );
+  await expect(page.getByTestId("metric-success")).toContainText("—");
   await expect(rateToday).toHaveAttribute(
     "aria-label",
     /— \(완료·실패 없음, 취소 1 · 서버 재시작 0 제외\)/
@@ -140,7 +138,7 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   await org.say("실패 연습");
   await expect(page.getByTestId("metric-success")).toContainText("0%", runs);
   await expect(page.getByTestId("metric-success")).toContainText(
-    "완료 0 / (완료 0 + 실패 1)"
+    "완료 0 · 실패 1"
   );
   await expect(rateToday).toHaveAttribute("aria-label", /0% \(완료 0 \/ 1,/);
   await expect(rateToday).not.toContainText("—");

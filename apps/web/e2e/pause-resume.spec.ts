@@ -38,14 +38,15 @@ test("the owner pauses the organization from the dashboard, sees it in another t
   const controls = (p: Page) => p.getByRole("region", { name: "조직 제어" });
 
   await controls(page)
-    .getByRole("button", { name: /조직 일시정지/ })
+    .getByRole("button", { name: /일시정지/ })
     .click();
   for (const p of [page, other]) {
     await expect(
-      controls(p).getByRole("button", { name: /조직 재개/ })
+      controls(p).getByRole("button", { name: /재개/ })
     ).toBeVisible();
-    await expect(p.getByTestId("control-help")).toContainText(
-      "목표 설정에서 멈춰 있습니다"
+    await expect(p.getByTestId("org-stage")).toHaveAttribute(
+      "title",
+      "목표 설정에서 멈춤"
     );
   }
 
@@ -60,19 +61,15 @@ test("the owner pauses the organization from the dashboard, sees it in another t
   ).toBeVisible();
   expect(await org.delivered("멈춘 동안 보낸 메시지")).toBeNull();
 
-  await controls(page)
-    .getByRole("button", { name: /조직 재개/ })
-    .click();
-  await expect(page.getByTestId("control-help")).toContainText(
-    "일시정지하면 진행 중 실행 시도를 모두 취소"
-  );
+  await controls(page).getByRole("button", { name: /재개/ }).click();
+  await expect(page.getByTestId("org-stage")).toHaveText("목표 설정");
   // 재개하면 기다리던 메시지가 실행 시도에 전달되고 다른 탭의 대화에도 보인다.
   await expect
     .poll(() => org.delivered("멈춘 동안 보낸 메시지"), runs)
     .not.toBeNull();
   await expect(
     other.locator('[data-author="owner"]').getByRole("link", {
-      name: /에 전달됨$/,
+      name: "✓ 전달됨",
     })
   ).toBeVisible(runs);
 });
@@ -85,23 +82,19 @@ test("stopping asks once more and then leaves every control disabled", async ({
   await openWithLiveEvents(page, `/orgs/${org.id}/dashboard`);
   const controls = page.getByRole("region", { name: "조직 제어" });
 
-  await controls.getByRole("button", { name: /조직 중단/ }).click();
+  await controls.getByRole("button", { name: /중단/ }).click();
   const confirm = controls.getByRole("group", { name: "조직 중단 확인" });
   await expect(confirm).toContainText("되돌릴 수 없습니다");
   await confirm.getByRole("button", { name: "취소" }).click();
   await expect(confirm).toHaveCount(0);
 
-  await controls.getByRole("button", { name: /조직 중단/ }).click();
+  await controls.getByRole("button", { name: /중단/ }).click();
   await confirm.getByRole("button", { name: "중단 확정" }).click();
-  await expect(page.getByTestId("control-help")).toContainText(
-    "중단된 조직입니다"
-  );
+  await expect(page.getByTestId("org-stage")).toHaveText("중단됨");
   await expect(
-    controls.getByRole("button", { name: /조직 일시정지/ })
+    controls.getByRole("button", { name: /일시정지/ })
   ).toBeDisabled();
-  await expect(
-    controls.getByRole("button", { name: /조직 중단/ })
-  ).toBeDisabled();
+  await expect(controls.getByRole("button", { name: /중단/ })).toBeDisabled();
 
   // 에이전트 상세의 일시정지도 보이지만 누를 수 없다.
   await page.goto(`/orgs/${org.id}/agents/${org.leadId}`);
@@ -159,14 +152,9 @@ test("the owner picks interrupt-and-deliver in the Lead chat, keeps the choice w
       : route.continue()
   );
   await interrupt.check();
-  await expect(
-    page.getByText("Lead가 실행 중이 아니므로 취소할 것 없이")
-  ).toBeVisible();
   await input.fill("방향을 바꿔 주세요");
   await page.getByRole("button", { name: "보내기" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "입력과 전달 방식은 그대로"
-  );
+  await expect(page.getByRole("alert")).toContainText("보내지 못했습니다");
   await expect(input).toHaveValue("방향을 바꿔 주세요");
   await expect(interrupt).toBeChecked();
   await page.unrouteAll({ behavior: "wait" });
@@ -176,9 +164,7 @@ test("the owner picks interrupt-and-deliver in the Lead chat, keeps the choice w
   await expect(owner.getByText("⤵ 중단하고 반영")).toBeVisible();
   await expect(input).toHaveValue("");
   await expect(nextRun).toBeChecked();
-  await expect(owner.getByRole("link", { name: /에 전달됨$/ })).toBeVisible(
-    runs
-  );
+  await expect(owner.getByRole("link", { name: "✓ 전달됨" })).toBeVisible(runs);
   const events = (await (
     await page.request.get(org.api("/events"))
   ).json()) as {

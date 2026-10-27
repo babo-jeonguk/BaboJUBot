@@ -331,7 +331,7 @@ export function LoadError({
       role="alert"
       className="animate-fade-up m-4 rounded-2xl bg-rose-50 p-4 text-sm text-rose-800 ring-1 ring-rose-200"
     >
-      {what}을 불러오지 못했습니다. 없다는 뜻이 아닙니다.{" "}
+      {what}을 불러오지 못했습니다.{" "}
       <button
         className="font-semibold underline underline-offset-2"
         onClick={onRetry}
@@ -346,9 +346,6 @@ export function NotFound({ what }: { what: string }) {
   return (
     <div className="card animate-fade-up m-4 max-w-lg p-6 text-sm">
       <div className="font-semibold">찾을 수 없는 {what}</div>
-      <p className="mt-1 text-slate-500">
-        다른 조직으로 자동 이동하지 않습니다. 직접 고르세요.
-      </p>
       <Link to="/" className="btn-soft mt-4">
         홈으로
       </Link>

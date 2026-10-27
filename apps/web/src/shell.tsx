@@ -257,7 +257,7 @@ function Rail() {
       aria-label="연구 조직"
       className="scrollbar-thin flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto bg-gradient-to-b from-brand-950 to-slate-950 py-3 pb-24 text-white"
     >
-      <Tip content="홈 · 전체 조직 개요">
+      <Tip content="홈">
         <Link
           to="/"
           className={railItem(home)}
@@ -312,7 +312,7 @@ function Rail() {
         </button>
       </Tip>
       <div className="flex-1" />
-      <Tip content="전역 설정 · 실행기·환경 템플릿·비밀값·메시지 앱">
+      <Tip content="전역 설정">
         <Link
           to="/settings"
           className={railItem(settings)}

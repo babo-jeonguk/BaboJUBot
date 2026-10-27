@@ -54,14 +54,13 @@ export function CreateOrganizationProvider({
       <Dialog.Root open={open} onOpenChange={changeOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
-          <Dialog.Content className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(440px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop">
+          <Dialog.Content
+            aria-describedby={undefined}
+            className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(440px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop"
+          >
             <Dialog.Title className="text-lg font-semibold">
               새 연구 조직
             </Dialog.Title>
-            <Dialog.Description className="mt-1 text-sm text-slate-500">
-              연구 목표 하나가 조직 하나가 됩니다. 이름만 정하면 전용 Research
-              Lead가 함께 생기고, 목표와 완료 기준은 Lead 대화에서 정합니다.
-            </Dialog.Description>
             <form
               className="mt-4"
               onSubmit={(e) => {
@@ -86,8 +85,7 @@ export function CreateOrganizationProvider({
               />
               {create.isError && (
                 <p role="alert" className="mt-2 text-xs text-rose-600">
-                  조직을 만들지 못했습니다. 입력은 그대로 두었으니 다시
-                  시도하세요.
+                  만들지 못했습니다. 다시 시도하세요.
                 </p>
               )}
               <div className="mt-5 flex justify-end gap-2">

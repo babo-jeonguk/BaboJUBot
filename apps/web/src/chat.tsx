@@ -89,10 +89,6 @@ export function LeadChat({ orgId, lead }: { orgId: string; lead: Agent }) {
             <div className="font-semibold">
               연구 목표와 완료 기준을 정하세요
             </div>
-            <p className="mt-1 text-sm text-slate-500">
-              Research Lead와 대화로 이 조직의 연구 목표와 완료 기준을 합의하는
-              것부터 시작합니다.
-            </p>
           </div>
         ) : (
           <ol className="space-y-3" aria-label="대화">
@@ -105,9 +101,6 @@ export function LeadChat({ orgId, lead }: { orgId: string; lead: Agent }) {
       </div>
       <Composer
         orgId={orgId}
-        leadRun={
-          !running ? "idle" : running.cancelReason ? "cancelling" : "running"
-        }
         held={heldBy(stage, agent.data?.paused ?? false)}
         stage={stage}
       />
@@ -132,7 +125,18 @@ function MessageBubble({
       data-author={m.author}
     >
       <div className="mb-1 text-[11px] text-slate-400">
-        {mine ? "나" : lead.name} · {formatTime(m.createdAt)}
+        {mine ? "나" : lead.name} ·{" "}
+        {!mine && runId ? (
+          <Link
+            to={`/orgs/${orgId}/runs/${runId}`}
+            title={runLabel(runId)}
+            className="hover:text-brand-600 hover:underline"
+          >
+            {formatTime(m.createdAt)}
+          </Link>
+        ) : (
+          formatTime(m.createdAt)
+        )}
       </div>
       <div
         className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm break-words whitespace-pre-wrap ${mine ? "bg-brand-600 text-white" : "card text-slate-800"}`}
@@ -144,46 +148,40 @@ function MessageBubble({
           ⤵ {deliveryLabel.interrupt}
         </div>
       )}
-      <div className="mt-1 text-[11px] text-slate-400">
-        {runId ? (
-          <Link
-            to={`/orgs/${orgId}/runs/${runId}`}
-            className="hover:text-brand-600 hover:underline"
-          >
-            {mine
-              ? `${runLabel(runId)}에 전달됨`
-              : `${runLabel(runId)}에서 보냄`}
-          </Link>
-        ) : (
-          mine && <span>다음 실행 시도 대기</span>
-        )}
-      </div>
+      {mine && (
+        <div className="mt-1 text-[11px] text-slate-400">
+          {runId ? (
+            <Link
+              to={`/orgs/${orgId}/runs/${runId}`}
+              title={runLabel(runId)}
+              className="hover:text-brand-600 hover:underline"
+            >
+              ✓ 전달됨
+            </Link>
+          ) : (
+            <span>다음 실행 시도 대기</span>
+          )}
+        </div>
+      )}
     </li>
   );
 }
 
 /** 메시지가 지금 Lead를 깨우지 못하는 이유. 메시지는 남아 재개 뒤(중단·완료면 전달되지 않음) 전달된다. */
 function heldBy(stage: LifecycleStage | undefined, leadPaused: boolean) {
-  if (stage === "paused")
-    return "조직이 일시정지 중입니다. 보낸 메시지는 재개한 뒤 Lead에게 전달됩니다.";
-  if (stage === "stopped")
-    return "중단된 조직입니다. 메시지는 남지만 Lead는 더 실행되지 않습니다.";
-  if (stage === "completed")
-    return "최종 완료된 조직입니다. 메시지는 남지만 Lead는 더 실행되지 않습니다.";
-  if (leadPaused)
-    return "Lead가 일시정지 중입니다. 보낸 메시지는 Lead를 재개한 뒤 전달됩니다.";
+  if (stage === "paused") return "조직이 일시정지 중입니다 · 재개하면 전달";
+  if (stage === "stopped") return "중단된 조직입니다";
+  if (stage === "completed") return "최종 완료된 조직입니다";
+  if (leadPaused) return "Lead가 일시정지 중입니다 · 재개하면 전달";
   return null;
 }
 
 function Composer({
   orgId,
-  leadRun,
   held,
   stage,
 }: {
   orgId: string;
-  /** 취소 정리 중인 실행 시도도 끝날 때까지 실행 중이며, 다음 실행 시도는 그 정리 뒤에 시작한다. */
-  leadRun: "idle" | "running" | "cancelling";
   held: string | null;
   stage: LifecycleStage | undefined;
 }) {
@@ -238,7 +236,7 @@ function Composer({
               void submit();
             }
           }}
-          placeholder="Research Lead에게 메시지 (Enter 보내기, Shift+Enter 줄바꿈)"
+          placeholder="Research Lead에게 메시지"
           className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
         />
         <button
@@ -267,24 +265,14 @@ function Composer({
       </fieldset>
       {send.isError && (
         <p role="alert" className="mt-2 text-xs text-rose-600">
-          메시지를 보내지 못했습니다. 입력과 전달 방식은 그대로 두었으니 다시
-          시도하세요.
+          보내지 못했습니다. 다시 시도하세요.
         </p>
       )}
-      <p className="mt-2 text-xs text-slate-400">
-        {held ??
-          (chosen === "interrupt"
-            ? {
-                idle: "Lead가 실행 중이 아니므로 취소할 것 없이 이 메시지로 Lead를 깨웁니다.",
-                running:
-                  "Lead의 진행 중 실행 시도를 취소하고, 정리가 끝나면 이 메시지로 다음 실행 시도를 시작합니다.",
-                cancelling:
-                  "Lead의 실행 시도가 이미 취소 정리 중입니다. 정리가 끝나면 이 메시지로 다음 실행 시도를 시작합니다.",
-              }[leadRun]
-            : leadRun === "idle"
-              ? "보낸 메시지는 Lead를 깨워 다음 실행 시도에 반영됩니다."
-              : "Lead가 실행 중입니다. 지금 보내는 메시지는 다음 실행 시도에 반영됩니다.")}
-      </p>
+      {held && (
+        <p role="status" className="mt-2 text-xs text-amber-700">
+          {held}
+        </p>
+      )}
     </form>
   );
 }

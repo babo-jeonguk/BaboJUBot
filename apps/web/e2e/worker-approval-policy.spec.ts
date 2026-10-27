@@ -57,9 +57,13 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
       .getByRole("checkbox", { name: /작업자 추가/ });
   await expect(policy(page)).not.toBeChecked();
   await expect(policy(other)).not.toBeChecked();
-  await expect(page.getByRole("region", { name: "승인 정책" })).toContainText(
-    "초기 연구 승인과 최종 완료는 항상 사용자가 결정"
-  );
+  for (const locked of ["초기 연구 승인", "최종 완료"]) {
+    const box = page
+      .getByRole("region", { name: "승인 정책" })
+      .getByRole("checkbox", { name: locked });
+    await expect(box).toBeChecked();
+    await expect(box).toBeDisabled();
+  }
 
   await policy(page).check();
   await expect(policy(page)).toBeChecked();

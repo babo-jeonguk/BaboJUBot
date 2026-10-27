@@ -139,6 +139,14 @@
 @utility btn-ghost {
   @apply btn text-slate-600 hover:bg-slate-900/5;
 }
+/* 켜고 끄는 설정. 네이티브 체크박스라 키보드·접근성 이름은 그대로다. */
+@utility switch {
+  @apply relative h-5 w-9 shrink-0 cursor-pointer appearance-none rounded-full bg-slate-300 transition duration-150
+      before:absolute before:top-0.5 before:left-0.5 before:h-4 before:w-4 before:rounded-full before:bg-white before:shadow-sm before:transition before:duration-150 before:content-['']
+      checked:bg-brand-600 checked:before:translate-x-4
+      focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500
+      disabled:cursor-default disabled:opacity-50;
+}
 @utility chip {
   @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition duration-150 active:scale-95;
 }
