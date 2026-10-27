@@ -293,11 +293,17 @@ export function planApprovalDecision(
     if (approved)
       for (const member of proposal.team)
         for (let i = 1; i <= member.count; i++) {
+          // 함께 들어오는 작업자도 팀 순서대로 홈 자리를 받도록 1ms씩 늦춰 들어온 순서를 남긴다.
           const added = planWorker(
             organizationId,
             member,
             workers.map((w) => w.name),
-            { newId, createdAt }
+            {
+              newId,
+              createdAt: new Date(
+                Date.parse(createdAt) + workers.length
+              ).toISOString(),
+            }
           );
           workers.push(added.worker);
           copies.push(...added.copies);

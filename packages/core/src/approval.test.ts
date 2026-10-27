@@ -138,6 +138,8 @@ describe("planApprovalDecision", () => {
     expect(plan.stage).toBe("researching");
     expect(plan.workers.map((w) => w.name)).toEqual(["연구원 1", "연구원 2"]);
     const [a, b] = plan.workers;
+    // 함께 들어와도 팀 순서가 들어온 시각에 남아 홈 자리가 이름과 상관없이 정해진다.
+    expect(Date.parse(a!.createdAt)).toBeLessThan(Date.parse(b!.createdAt));
     const copiesOf = (id: string) =>
       plan.copies.filter((c) => c.agentId === id);
     expect(copiesOf(a!.id).map((c) => c.path)).toEqual([

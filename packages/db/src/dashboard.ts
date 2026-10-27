@@ -257,14 +257,12 @@ export async function getOverview(db: Database, now: Date): Promise<Overview> {
         name: string;
         appearance: unknown;
         paused: boolean;
-        joined_at: number;
         running: boolean;
         last_run_failed: boolean;
         task_title: string | null;
         wake_kind: WakeKind | null;
       }>(sql`
         select a.id, a.organization_id, a.role, a.name, a.appearance, a.paused,
-          extract(epoch from a.created_at)::float8 as joined_at,
           r.id is not null as running,
           coalesce(last_run.status = 'failed', false) as last_run_failed,
           doing.task_title, doing.wake_kind
@@ -298,15 +296,6 @@ export async function getOverview(db: Database, now: Date): Promise<Overview> {
           where r.id is not null
         ) doing on true
         order by a.organization_id, a.role <> 'lead', a.created_at, a.id`);
-      // 함께 들어온 작업자(초기 연구 승인의 팀)는 시각이 같으므로 처음 받은 이름의 번호 순으로 앉힌다.
-      agentRows.sort(
-        (a, b) =>
-          a.organization_id.localeCompare(b.organization_id) ||
-          Number(a.role !== "lead") - Number(b.role !== "lead") ||
-          a.joined_at - b.joined_at ||
-          joinCollator.compare(a.name, b.name) ||
-          a.id.localeCompare(b.id)
-      );
 
       // 끝난 조직의 결정은 화면에서 할 수 없으므로 뺀다(Inbox와 같은 기준).
       const { rows: decisionRows } = await tx.execute<{
@@ -362,8 +351,6 @@ export async function getOverview(db: Database, now: Date): Promise<Overview> {
     { isolationLevel: "repeatable read", accessMode: "read only" }
   );
 }
-
-const joinCollator = new Intl.Collator("ko", { numeric: true });
 
 /** 행을 조직별로 묶는다. 조직 안의 순서는 행의 순서 그대로다. */
 function byOrganization<T extends { organization_id: string }>(rows: T[]) {
