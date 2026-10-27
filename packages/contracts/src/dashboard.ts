@@ -75,13 +75,17 @@ export const runningCountSchema = z.object({
 });
 export type RunningCount = z.infer<typeof runningCountSchema>;
 
-/** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 그 합계를 한 조회에서 센다. */
+/** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 그 합계, 조직별 마지막 활동 시각을 한 조회에서 센다. */
 export const overviewSchema = z.object({
   asOf: z.iso.datetime({ offset: true }),
   runs: runningCountSchema,
   /** 모든 조직. 진행 중 실행 시도가 없으면 0이다. */
   organizations: z.array(
-    runningCountSchema.extend({ organizationId: z.uuid() })
+    runningCountSchema.extend({
+      organizationId: z.uuid(),
+      /** 그 조직의 가장 최근 Event 시각. Event가 하나도 없으면 없다. */
+      lastActivityAt: z.iso.datetime({ offset: true }).nullable(),
+    })
   ),
 });
 export type Overview = z.infer<typeof overviewSchema>;

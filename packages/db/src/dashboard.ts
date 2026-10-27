@@ -209,7 +209,7 @@ export async function getOrganizationDashboard(
 
 /**
  * 홈 개요: 모든 조직의 진행 중 실행 시도 수(취소 정리 중 포함)와 그 가운데 정리 중인 수. 조직별 수와 합계를 같은
- * SQL 하나의 결과에서 내므로 서로 맞는다. 진행 중 실행 시도가 없는 조직도 0으로 있다.
+ * SQL 하나의 결과에서 내므로 서로 맞는다. 진행 중 실행 시도가 없는 조직도 0으로 있다. 조직마다 마지막 Event 시각도 함께 낸다.
  */
 export async function getOverview(db: Database, now: Date): Promise<Overview> {
   const rows = await db
@@ -219,6 +219,11 @@ export async function getOverview(db: Database, now: Date): Promise<Overview> {
       cancelling:
         sql<number>`count(${runs.id}) filter (where ${runs.cancelReason} is not null)`.mapWith(
           Number
+        ),
+      // 조직별 마지막 Event. id 순서가 기록 순서라 조직 index(organization_id, id)로 한 행만 읽는다.
+      lastActivityAt:
+        sql<Date | null>`(select ${events.createdAt} from ${events} where ${events.organizationId} = ${organizations.id} order by ${events.id} desc limit 1)`.mapWith(
+          events.createdAt
         ),
     })
     .from(organizations)
@@ -234,6 +239,9 @@ export async function getOverview(db: Database, now: Date): Promise<Overview> {
       running: rows.reduce((n, r) => n + r.running, 0),
       cancelling: rows.reduce((n, r) => n + r.cancelling, 0),
     },
-    organizations: rows,
+    organizations: rows.map(({ lastActivityAt, ...r }) => ({
+      ...r,
+      lastActivityAt: lastActivityAt?.toISOString() ?? null,
+    })),
   };
 }
