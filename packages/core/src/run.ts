@@ -51,7 +51,10 @@ export type OwnerMessagePlan = {
 
 /** 사용자 메시지는 그 조직의 Lead에게 가고 Lead를 깨운다. 실행 중이면 다음 실행 시도로 미룬다. */
 export function planOwnerMessage(
-  organization: { organizationId: string; agents: Agent[] },
+  organization: {
+    organizationId: string;
+    agents: Pick<Agent, "id" | "role">[];
+  },
   input: Required<SendOwnerMessageInput>,
   { newId, now }: RecordSource
 ): OwnerMessagePlan {

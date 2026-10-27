@@ -1,11 +1,13 @@
-import type {
-  Agent,
-  AgentHeartbeat,
-  Event,
-  InstructionCopy,
-  NewEvent,
-  Organization,
-  Task,
+import {
+  agentAppearanceSchema,
+  defaultAgentAppearance,
+  type Agent,
+  type AgentHeartbeat,
+  type Event,
+  type InstructionCopy,
+  type NewEvent,
+  type Organization,
+  type Task,
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
@@ -87,9 +89,22 @@ export const toAgent = ({
   organizationId,
   role,
   name,
+  appearance,
   createdAt,
 }: typeof agents.$inferSelect): Agent =>
-  withIsoTime({ id, organizationId, role, name, createdAt });
+  withIsoTime({
+    id,
+    organizationId,
+    role,
+    name,
+    appearance: resolveAppearance(id, appearance),
+    createdAt,
+  });
+/** 저장한 얼굴이 없거나 지금 프리셋에 없는 값이면 ID에서 정한 기본 얼굴이다. */
+const resolveAppearance = (id: string, stored: unknown) => {
+  const parsed = agentAppearanceSchema.safeParse(stored);
+  return parsed.success ? parsed.data : defaultAgentAppearance(id);
+};
 /** 새 에이전트 행. heartbeat는 꺼져 있고 간격은 Role의 기본 간격이다. */
 export const agentRow = ({
   heartbeatMinutes,

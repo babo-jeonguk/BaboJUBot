@@ -116,6 +116,16 @@ export function describeEvent(event: Event, agentName: string): Described {
           ? `다음 heartbeat ${formatTime(event.payload.nextAt)}`
           : undefined,
       };
+    case "agent.profile_changed": {
+      const { name, appearance } = event.payload;
+      return {
+        icon: "✎",
+        title: name
+          ? `사용자가 에이전트 이름을 바꿨습니다${appearance ? ". 얼굴도 바꿨습니다" : ""}`
+          : `사용자가 ${agentName}의 얼굴을 바꿨습니다`,
+        detail: name ? `${name.from} → ${name.to}` : undefined,
+      };
+    }
     case "agent.heartbeat":
       return {
         icon: "⏱",

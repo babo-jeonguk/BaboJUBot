@@ -19,6 +19,7 @@ import {
   runCancelReasons,
   runStatuses,
   taskStatuses,
+  type AgentAppearance,
   type ApprovalProposal,
   type FlowKind,
   type NewEvent,
@@ -114,6 +115,8 @@ export const agents = pgTable(
       withTimezone: true,
       mode: "date",
     }),
+    /** 사용자가 고른 얼굴. 고르지 않았으면 없고, 화면에는 ID에서 정한 기본 얼굴이 보인다. 사용자 변경만 바꾼다. */
+    appearance: jsonb("appearance").$type<AgentAppearance>(),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",

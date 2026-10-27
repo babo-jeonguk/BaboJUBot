@@ -23,6 +23,7 @@ import {
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
   timeZoneSchema,
+  updateAgentProfileInputSchema,
   updateApprovalPolicyInputSchema,
   updateHeartbeatInputSchema,
   updateInboxItemInputSchema,
@@ -74,6 +75,7 @@ import {
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
+import { updateAgentProfile } from "./agents.ts";
 import { decideApproval } from "./approvals.ts";
 import { controlAgent, controlOrganization } from "./control.ts";
 import { sendOwnerMessage } from "./conversation.ts";
@@ -363,6 +365,32 @@ export async function startServer({
       res.json(result.agent);
     }
   );
+
+  /**
+   * 에이전트 이름·얼굴 변경. 사용자만 바꾸며 조직 도구가 없다. 변경 뒤의 에이전트 상세를 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
+   * 연구 진행에 닿지 않는 표시 정보라 어느 단계에서든 바꿀 수 있다. 같은 조직의 다른 에이전트와 겹치는 이름은 409 `name_taken`이다.
+   */
+  app.patch("/api/organizations/:id/agents/:agentId", async (req, res) => {
+    const input = updateAgentProfileInputSchema.safeParse(req.body);
+    if (!input.success) {
+      res.status(422).json({
+        error: { code: "invalid_input", issues: input.error.issues },
+      });
+      return;
+    }
+    const result = await updateAgentProfile(
+      { db, hub },
+      req.params.id,
+      req.params.agentId,
+      input.data
+    );
+    if (result.kind === "not_found") return notFound(res);
+    if (result.kind === "name_taken") {
+      res.status(409).json({ error: { code: "name_taken" } });
+      return;
+    }
+    res.json(result.agent);
+  });
 
   /**
    * 조직 대시보드 요약. `timeZone`(IANA 이름, 기본 UTC)의 달력 날짜로 오늘까지 14일을 자른다.

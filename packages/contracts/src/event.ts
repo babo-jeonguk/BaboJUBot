@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentAppearanceSchema } from "./agent-profile.ts";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
 import { harnessNameSchema } from "./harness.ts";
@@ -190,6 +191,21 @@ export const agentHeartbeatChangedEventSchema = z.object({
     enabled: z.boolean(),
     intervalMinutes: z.number().int().positive(),
     nextAt: z.iso.datetime({ offset: true }).nullable(),
+  }),
+});
+
+/**
+ * 사용자의 에이전트 이름·얼굴 변경. 바뀐 항목만 담고 바뀌지 않은 항목은 없다(`null`). 값이 그대로인 변경은 남지 않는다.
+ * `name.from`은 바꾸기 전 이름이라, 활동 기록이 지금 이름과 함께 예전 이름을 보일 수 있다.
+ */
+export const agentProfileChangedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.profile_changed"),
+  payload: z.object({
+    by: z.literal("owner"),
+    agentId: z.uuid(),
+    name: z.object({ from: z.string(), to: z.string() }).nullable(),
+    appearance: agentAppearanceSchema.nullable(),
   }),
 });
 
@@ -444,6 +460,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   agentResumedEventSchema,
   agentInterruptedEventSchema,
   agentHeartbeatChangedEventSchema,
+  agentProfileChangedEventSchema,
   agentHeartbeatEventSchema,
   memoryWrittenEventSchema,
   goalRecordedEventSchema,

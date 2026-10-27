@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { flowKindSchema, instructionFileSchema } from "./harness.ts";
+import { agentAppearanceSchema } from "./agent-profile.ts";
 import { agentHeartbeatSchema } from "./heartbeat.ts";
 import { conversationMessageSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
@@ -288,6 +289,7 @@ export const agentDetailSchema = z.object({
   organizationId: z.uuid(),
   role: agentRoleSchema,
   name: z.string(),
+  appearance: agentAppearanceSchema,
   createdAt: z.iso.datetime({ offset: true }),
   status: agentStatusSchema,
   /** 사용자가 이 에이전트를 일시정지했다. 조직 일시정지와 따로이며, 에이전트 재개로만 풀린다. */
