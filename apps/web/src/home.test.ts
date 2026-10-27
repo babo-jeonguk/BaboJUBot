@@ -34,7 +34,7 @@ const approval = (o: Organization) =>
     kind: "approval",
     read: true,
     archived: false,
-    approval: { organizationId: o.id },
+    approval: { organizationId: o.id, status: "pending" },
   }) as unknown as InboxItem;
 const failure = (
   o: Organization,
