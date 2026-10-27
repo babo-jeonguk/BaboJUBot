@@ -204,6 +204,7 @@ export function parseGoalMessage(
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
  *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
  * - 어느 단계든 사용자가 `실패 연습`을 부탁함: 아무것도 쓰지 않고 실행 시도를 실패로 끝낸다(Inbox·알림의 실패 항목 확인용).
+ * - 어느 단계든 사용자가 `실행 유지 연습`을 부탁함: 아무것도 쓰지 않고 취소될 때까지 실행 시도를 끝내지 않는다(대시보드의 실행 중 확인용).
  * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
  *
@@ -231,6 +232,8 @@ export function demoLeadScript(request: RunRequest): Script {
         { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
       ],
     };
+  if (messages.some((m) => holdDrill.test(m)))
+    return { steps: [{ do: "hold", until: untilCancelled }] };
 
   // 목표 설정에서는 마지막 목표 메시지를 기록한다. 계획 수립·승인 대기에서는 받은 목표 메시지 중 이미 기록한 목표가 있으면
   // 그 흐름을 이어 간다. 다시 대기한 깨우기에 새 메시지가 합쳐져도 마지막 메시지와 상관없이 기록한 목표를 찾는다.
@@ -411,6 +414,18 @@ function addWorkerScript(role: string): Script {
 
 /** 사용자가 실패한 실행 시도를 보고 싶어 부탁하는 메시지. */
 const failureDrill = requestMessage(String.raw`실패\s*연습`);
+
+/** 사용자가 실행 중인 실행 시도를 보고 싶어 부탁하는 메시지. */
+const holdDrill = requestMessage(String.raw`실행\s*유지\s*연습`);
+
+/** 취소될 때까지 기다린다. 취소되면 reject해 실행 시도가 `취소됨`으로 끝난다. */
+const untilCancelled = (signal: AbortSignal) =>
+  new Promise<void>((_, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    signal.addEventListener("abort", () => reject(signal.reason), {
+      once: true,
+    });
+  });
 
 /** 사용자가 결과 제출을 부탁하는 메시지. */
 const resultRequest = requestMessage(String.raw`결과(?:를)?\s*제출`);

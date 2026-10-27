@@ -167,6 +167,18 @@
 | Inbox 패널(붙음/drawer·범위·필터 개수·정리 버튼·체크해 읽음), 레일·상단 바·조직 카드 진입점과 주의 수, 전역 설정 자리, 가짜 Lead `실패 연습` | [web/inbox.tsx](../../apps/web/src/inbox.tsx), shell.tsx, [global-settings.tsx](../../apps/web/src/global-settings.tsx), api.ts `useUpdateInboxItem`(한 항목 읽음·보관)·`useMarkInboxItemsRead`(체크한 항목 읽음); runtime/scripted.ts `demoLeadScript` | Inbox E2E(다른 탭·390px drawer 포함) |
 | Inbox 상세 `/inbox/:orgId/:kind/:sourceId`(요약·그 자리 결정·원래 화면 링크·정리 버튼, 결정 뒤 제자리 결정 기록, 실패가 아닌 실행 시도는 없음) — 결정 영역은 원래 상세와 공유 | [web/inbox-detail.tsx](../../apps/web/src/inbox-detail.tsx) `InboxDetailPage`; inbox.tsx `InboxItemOrganize`(패널 행과 공유, 읽지 않음·보관)·체크한 항목 `모두 읽음`(api.ts `useMarkInboxItemsRead`), inbox-detail.tsx `Organize`(열면 읽음, 실패하면 알리고 다시 시도, 다시 불러온 항목이 읽음이면 안내 지움); approvals.tsx `ApprovalDecision`, results.tsx `ResultDecision`(원래 상세와 공유); 근거 [inbox-detail 조사](../research/inbox-detail-references.md) | Inbox E2E, 초기 승인·작업자 추가·결과 검토 E2E |
 
+## 대시보드 지표·홈 개요
+
+통합 검증: [대시보드 API](../../apps/server/test/dashboard.test.ts), [대시보드 E2E](../../apps/web/e2e/dashboard.spec.ts).
+
+| 작업·증상 | 진입점·계약 | 추가 검증·범위 |
+| --- | --- | --- |
+| 요약·개요 모양, 14일·최근 활동 수, 시간대 이름 모양, 성공률(완료 / (완료 + 실패), 합칠 때 분자·분모 따로)·화면의 `실행 중`(취소 정리 중 뺌) | [contracts/dashboard.ts](../../packages/contracts/src/dashboard.ts) `organizationDashboardSchema`·`overviewSchema`·`runSuccessRate`·`activeRunCount` | [계약](../../packages/contracts/src/dashboard.test.ts) |
+| 조직 범위 수·날짜 bucket(시간대 자정, 0인 날, 오늘이 끝나는 `nextDayAt`)·진행 중 목록·최근 Event를 한 READ ONLY REPEATABLE READ snapshot에서, 서버가 모르는 시간대 거부(`pg_timezone_names`), 모든 조직의 진행 중 수를 SQL 하나로 | [db/dashboard.ts](../../packages/db/src/dashboard.ts) `getOrganizationDashboard`·`getOverview`; 진행 중 목록은 db/runs.ts `listRunningRuns` | 대시보드 API(서울·UTC·뉴욕 서머타임 경계, 취소 정리 중, 다른 조직 제외) |
+| 조회 API·404·422 `invalid_time_zone`·기준 시각(주입 시계) | server/app.ts `GET /api/organizations/:id/dashboard`·`GET /api/overview` | 대시보드 API |
+| 지표·14일 차트(막대 hover/focus·`숫자로 보기` 표)·실행 중인 에이전트·최근 활동, 홈 실행 중 수·조직 카드, 활동 필터 주소(`?agent=`) | [web/dashboard.tsx](../../apps/web/src/dashboard.tsx), pages.tsx `Home`·`OrganizationDashboard`, activity.tsx `ActivityScreen`; api.ts `useOrganizationDashboard`(`dashboardQuery`: 브라우저 시간대, 서버가 모르는 이름이면 UTC, 응답의 `asOf`→`nextDayAt`만큼 기다려 재조회)·dashboard.tsx `RunningCountText`(실행 중·취소 정리 중 문구 하나)·`useOverview` | 대시보드 E2E(다른 탭 390px 홈·다른 조직·필터·390px 넘침 없음), web dashboard-query(UTC 대체 뒤 UTC 자정·브라우저 시계 앞섬) |
+| Event 뒤 홈 개요 재조회(전역 key라 조직 prefix에 들지 않음), 가짜 Lead `실행 유지 연습` | live-events.ts `queryKeys.overview`; runtime/scripted.ts `demoLeadScript` | 대시보드 E2E, [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
+
 ## 개발 환경
 
 | 작업 | 진입점·검증 |

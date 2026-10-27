@@ -12,3 +12,4 @@ export * from "./memory.ts";
 export * from "./run.ts";
 export * from "./tools.ts";
 export * from "./event.ts";
+export * from "./dashboard.ts";

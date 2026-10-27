@@ -41,6 +41,7 @@ export function useLiveEvents() {
           queryKey: queryKeys.organization(event.organizationId),
         });
         live.refresh({ queryKey: queryKeys.inbox });
+        live.refresh({ queryKey: queryKeys.overview });
       };
       socket.onclose = () => {
         if (stopped) return;

@@ -14,8 +14,10 @@ import {
   instructionRevisionSchema,
   instructionRevisionSummarySchema,
   organizationDetailSchema,
+  organizationDashboardSchema,
   organizationListSchema,
   organizationSchema,
+  overviewSchema,
   researchLinkSchema,
   researchMapSchema,
   researchNodeDetailSchema,
@@ -44,7 +46,12 @@ import {
   type UpdateInboxItemInput,
   type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { z } from "zod";
 
 /** 조직 범위 조회는 모두 그 조직 key 아래에 두어, 조직 Event가 오면 한꺼번에 다시 불러온다. */
@@ -54,6 +61,8 @@ export const queryKeys = {
   conversation: (id: string) => ["organizations", id, "messages"] as const,
   events: (id: string, agentId?: string) =>
     ["organizations", id, "events", agentId ?? "all"] as const,
+  dashboard: (id: string, timeZone: string) =>
+    ["organizations", id, "dashboard", timeZone] as const,
   runs: (id: string) => ["organizations", id, "runs"] as const,
   runningRuns: (id: string) =>
     ["organizations", id, "runs", { status: "running" }] as const,
@@ -97,6 +106,8 @@ export const queryKeys = {
     ["organizations", id, "research-nodes", nodeId] as const,
   /** 조직을 가로지르는 대기열. 어느 조직의 Event든 다시 불러온다. */
   inbox: ["inbox"] as const,
+  /** 홈 개요(모든 조직의 진행 중 실행 시도 수). 어느 조직의 Event든 다시 불러온다. */
+  overview: ["overview"] as const,
 };
 
 const orgPath = (id: string, rest = "") =>
@@ -219,6 +230,46 @@ export function useEvents(orgId: string, agentId?: string) {
           agentId ? `/events?agentId=${encodeURIComponent(agentId)}` : "/events"
         )
       ),
+  });
+}
+
+/** 화면을 보는 브라우저의 시간대. 대시보드 날짜를 이 시계로 자른다. */
+const browserTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/**
+ * 조직 대시보드 요약 조회. 서버가 모르는 시간대 이름이면 UTC로 다시 불러오며, 응답의 시간대를 화면에 밝힌다.
+ * 날짜가 바뀌면 Event가 없어도 14일이 하루 밀리므로 응답이 자른 오늘이 끝날 때 다시 불러온다. 기다릴 시간은
+ * 서버 시각(`asOf`→`nextDayAt`)으로 재므로 대체한 시간대·브라우저 시계와 어긋나지 않는다.
+ */
+export const dashboardQuery = (orgId: string, timeZone: string) =>
+  queryOptions({
+    queryKey: queryKeys.dashboard(orgId, timeZone),
+    queryFn: () => {
+      const get = (tz: string) =>
+        request(
+          organizationDashboardSchema,
+          orgPath(orgId, `/dashboard?timeZone=${encodeURIComponent(tz)}`)
+        );
+      return get(timeZone).catch((error: unknown) => {
+        if (error instanceof ApiError && error.code === "invalid_time_zone")
+          return get("UTC");
+        throw error;
+      });
+    },
+    refetchInterval: ({ state: { data } }) =>
+      data ? Date.parse(data.nextDayAt) - Date.parse(data.asOf) + 1_000 : false,
+  });
+
+/** 조직 대시보드 요약(지표·14일·진행 중 실행 시도·최근 활동). 조직 Event와 날짜가 바뀔 때 다시 불러온다. */
+export function useOrganizationDashboard(orgId: string) {
+  return useQuery(dashboardQuery(orgId, browserTimeZone()));
+}
+
+/** 홈 개요. 조직 목록과 따로 오므로 목록에만 있는 새 조직은 0으로 본다. */
+export function useOverview() {
+  return useQuery({
+    queryKey: queryKeys.overview,
+    queryFn: () => request(overviewSchema, "/api/overview"),
   });
 }
 

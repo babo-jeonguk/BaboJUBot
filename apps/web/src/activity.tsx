@@ -1,6 +1,5 @@
 import type { Agent, Event } from "@babojubot/contracts";
-import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useEvents } from "./api.ts";
 import {
   decisionLabel,
@@ -310,7 +309,10 @@ export function EventRow({
   );
 }
 
-/** 조직 › 활동: 실행 시도·도구 호출 요약·메시지·상태 변화 stream. 최근 것이 위. */
+/**
+ * 조직 › 활동: 실행 시도·도구 호출 요약·메시지·상태 변화 stream. 최근 것이 위.
+ * 에이전트 필터는 주소(`?agent=`)에 두어 대시보드에서 그 에이전트의 활동으로 바로 올 수 있다. 서버가 조직과 함께 거른다.
+ */
 export function ActivityScreen({
   orgId,
   agents,
@@ -318,7 +320,10 @@ export function ActivityScreen({
   orgId: string;
   agents: Agent[];
 }) {
-  const [agentId, setAgentId] = useState<string>("");
+  const [params, setParams] = useSearchParams();
+  const agentId = params.get("agent") ?? "";
+  const setAgentId = (id: string) =>
+    setParams(id ? { agent: id } : {}, { replace: true });
   const events = useEvents(orgId, agentId || undefined);
   return (
     <>
@@ -346,7 +351,19 @@ export function ActivityScreen({
         <LoadError what="활동" onRetry={() => void events.refetch()} />
       ) : !events.data.length ? (
         <div className="card p-6 text-sm text-slate-500">
-          아직 활동이 없습니다.
+          {agentId ? (
+            <>
+              이 에이전트의 활동이 없습니다.{" "}
+              <button
+                className="text-brand-600 hover:underline"
+                onClick={() => setAgentId("")}
+              >
+                전체 보기
+              </button>
+            </>
+          ) : (
+            "아직 활동이 없습니다."
+          )}
         </div>
       ) : (
         <ol className="card divide-y divide-slate-100" aria-label="활동 stream">

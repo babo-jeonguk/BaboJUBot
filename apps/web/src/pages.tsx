@@ -1,4 +1,8 @@
-import { isClosedStage, lifecycleStages } from "@babojubot/contracts";
+import {
+  activeRunCount,
+  isClosedStage,
+  lifecycleStages,
+} from "@babojubot/contracts";
 import { lazy, Suspense, useState } from "react";
 import { Link, useParams } from "react-router";
 import type {
@@ -15,10 +19,18 @@ import {
   useResultSubmissions,
   useOrganization,
   useOrganizations,
+  useOverview,
   useRunningRuns,
 } from "./api.ts";
 import { approvalKindHint } from "./approvals.tsx";
 import { LeadChat } from "./chat.tsx";
+import {
+  DashboardCharts,
+  DashboardMetrics,
+  RecentActivity,
+  RunningAgents,
+  RunningCountText,
+} from "./dashboard.tsx";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { ResultReviewScreen } from "./results.tsx";
 import { SettingsScreen } from "./settings.tsx";
@@ -47,6 +59,7 @@ const ResearchMapScreen = lazy(() =>
 
 export function Home() {
   const orgs = useOrganizations();
+  const overview = useOverview();
   const openCreate = useOpenCreateOrganization();
   if (orgs.isPending) return <Loading />;
   if (orgs.isError)
@@ -63,6 +76,39 @@ export function Home() {
           >
             {orgs.data.length}
           </div>
+        </div>
+        <div className="card px-4 py-3">
+          <div className="text-[13px] text-slate-500">실행 중인 실행 시도</div>
+          {overview.data ? (
+            <>
+              <div
+                className="text-2xl font-semibold tabular-nums"
+                data-testid="running-run-count"
+              >
+                {activeRunCount(overview.data.runs)}
+              </div>
+              {overview.data.runs.cancelling > 0 && (
+                <div
+                  className="text-xs text-amber-700"
+                  data-testid="cancelling-run-count"
+                >
+                  취소 정리 중 {overview.data.runs.cancelling}
+                </div>
+              )}
+            </>
+          ) : overview.isError ? (
+            <button
+              role="alert"
+              className="text-sm text-rose-700 underline underline-offset-2"
+              onClick={() => void overview.refetch()}
+            >
+              불러오지 못함 · 다시 시도
+            </button>
+          ) : (
+            <div className="text-2xl font-semibold text-slate-300" aria-busy>
+              …
+            </div>
+          )}
         </div>
         <button className="btn-primary ml-auto" onClick={openCreate}>
           ＋ 새 연구 조직
@@ -95,25 +141,38 @@ export function Home() {
                 <span className="text-xs text-slate-400">{xs.length}</span>
               </div>
               <div className="space-y-2">
-                {xs.map((o) => (
-                  <Link
-                    key={o.id}
-                    to={`/orgs/${o.id}`}
-                    className="card card-hover block p-3 text-sm"
-                  >
-                    <div className="flex items-start gap-2.5">
-                      <span
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"
-                        style={avatarStyle(o.id)}
-                      >
-                        {abbr(o.name)}
-                      </span>
-                      <div className="line-clamp-3 font-medium text-slate-800">
-                        {o.name}
+                {xs.map((o) => {
+                  const runs = overview.data?.organizations.find(
+                    (r) => r.organizationId === o.id
+                  );
+                  return (
+                    <Link
+                      key={o.id}
+                      to={`/orgs/${o.id}`}
+                      className="card card-hover block p-3 text-sm"
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <span
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-semibold text-white"
+                          style={avatarStyle(o.id)}
+                        >
+                          {abbr(o.name)}
+                        </span>
+                        <div className="line-clamp-3 font-medium text-slate-800">
+                          {o.name}
+                        </div>
                       </div>
-                    </div>
-                  </Link>
-                ))}
+                      {runs && runs.running > 0 && (
+                        <div
+                          className="mt-2 text-xs text-brand-700 tabular-nums"
+                          data-testid="organization-running"
+                        >
+                          <RunningCountText count={runs} />
+                        </div>
+                      )}
+                    </Link>
+                  );
+                })}
               </div>
             </section>
           );
@@ -327,8 +386,8 @@ export function OrganizationScreen() {
 }
 
 /**
- * 조직 › 대시보드: 단계와 조직 제어(일시정지·재개·중단), 연구 목표·완료 기준, 결정을 기다리는 승인 요청·결과 제출과 승인 이력,
- * 팀과 연구 흐름 템플릿.
+ * 조직 › 대시보드: 단계와 조직 제어(일시정지·재개·중단), 결정을 기다리는 승인 요청·결과 제출, 지표·14일 차트·최근 활동,
+ * 연구 목표·완료 기준, 실행 중인 에이전트, 팀과 연구 흐름 템플릿, 승인 이력.
  */
 function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
   const approvals = useApprovals(org.id);
@@ -379,6 +438,9 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
             <span className="text-sm text-brand-600">검토하기 →</span>
           </Link>
         )}
+        <DashboardMetrics orgId={org.id} />
+        <DashboardCharts orgId={org.id} />
+        <RecentActivity org={org} />
         <section aria-label="연구 목표" className="card p-4">
           <h2 className="mb-2 text-sm font-semibold text-slate-600">
             연구 목표와 완료 기준
@@ -415,6 +477,7 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
         </section>
       </div>
       <div className="space-y-4">
+        <RunningAgents org={org} />
         <section aria-label="팀" className="card p-4 text-sm">
           <h2 className="mb-2 font-semibold text-slate-600">팀</h2>
           <Link
