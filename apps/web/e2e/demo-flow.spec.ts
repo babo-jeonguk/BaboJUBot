@@ -98,9 +98,13 @@ test("the demo scenario walks one organization from creation through the Lead ch
     await expect(page.getByRole("region", { name: "팀 구성" })).toContainText(
       "연구원 2명"
     );
+    // Inbox 상세는 계획·명세의 앞 네 줄만 보이므로 그 안의 줄로 확인한다.
+    await expect(
+      page.getByRole("region", { name: "초기 연구 계획" })
+    ).toContainText("공개 자료로 오류 유형을 정리한다");
     await expect(
       page.getByRole("region", { name: "연구 환경 명세" })
-    ).toBeVisible();
+    ).toContainText("compute: 로컬 CPU");
     await decision.getByRole("button", { name: "승인" }).click();
     await expect(decision).toContainText("승인됨");
     await expect(stageLink("연구 진행")).toBeVisible();
