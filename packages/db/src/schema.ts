@@ -299,6 +299,11 @@ export const messages = pgTable(
      * 서버 재시작으로 다시 대기한 동안은 비어 있다.
      */
     deliveredSeq: bigint("delivered_seq", { mode: "number" }),
+    /** 실행 시도가 사용자 메시지를 받은 시각(그 실행 시도의 시작 시각). `delivered_seq`와 함께 적고 함께 비운다. */
+    deliveredAt: timestamp("delivered_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
     /** 사용자가 줄 세운 메시지를 거둔 시각. 거둔 메시지는 남지만 대화·Lead 맥락에서 빠지고 그 깨우기는 지운다. */
     withdrawnAt: timestamp("withdrawn_at", {
       withTimezone: true,
@@ -310,6 +315,10 @@ export const messages = pgTable(
     check(
       "messages_delivered_check",
       sql`${t.deliveredSeq} is null or ${t.author} = 'owner'`
+    ),
+    check(
+      "messages_delivered_at_check",
+      sql`(${t.deliveredSeq} is null) = (${t.deliveredAt} is null)`
     ),
     check(
       "messages_withdrawn_check",

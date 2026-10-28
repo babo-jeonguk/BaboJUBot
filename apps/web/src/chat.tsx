@@ -711,6 +711,8 @@ function MessageBubble({
 }) {
   const mine = m.author === "owner";
   const runId = mine ? m.deliveredToRunId : m.sentByRunId;
+  // 사용자 메시지는 Lead에게 전해진 시각이다(줄 세웠다가 전해졌으면 보낸 때가 아니라 받은 때).
+  const time = mine ? (m.deliveredAt ?? m.createdAt) : m.createdAt;
   return (
     <li
       className={`flex flex-col ${mine ? "items-end" : "items-start"}`}
@@ -725,10 +727,10 @@ function MessageBubble({
             title={runLabel(runId)}
             className="hover:text-brand-600 hover:underline"
           >
-            {formatTime(m.createdAt)}
+            {formatTime(time)}
           </Link>
         ) : (
-          formatTime(m.createdAt)
+          formatTime(time)
         )}
       </div>
       <Markdown

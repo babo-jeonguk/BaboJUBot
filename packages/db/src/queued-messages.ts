@@ -183,6 +183,7 @@ async function readQueuedMessage(
     message: {
       seq: _seq,
       deliveredSeq: _deliveredSeq,
+      deliveredAt,
       withdrawnAt,
       createdAt,
       ...rest
@@ -192,6 +193,7 @@ async function readQueuedMessage(
   const message: ConversationMessage = {
     ...rest,
     deliveredToRunId,
+    deliveredAt: deliveredAt?.toISOString() ?? null,
     createdAt: createdAt.toISOString(),
   };
   return {

@@ -119,6 +119,7 @@ export function planOwnerMessage(
     delivery: input.delivery,
     sentByRunId: null,
     deliveredToRunId: null,
+    deliveredAt: null,
     createdAt,
   };
   return {
@@ -169,6 +170,7 @@ export function planAgentMessage(
     delivery: null,
     sentByRunId: run.id,
     deliveredToRunId: null,
+    deliveredAt: null,
     createdAt: now().toISOString(),
   };
   return { message, event: messageCreatedEvent(message) };

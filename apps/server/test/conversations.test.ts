@@ -234,6 +234,45 @@ describe("Lead conversations", () => {
     ).toEqual([runs[0]!.id, runs[0]!.id]);
   });
 
+  it("shows when the Lead received each owner message: a message queued while it runs gets the later run's start time", async () => {
+    const gate = createGate();
+    let now = new Date("2026-10-27T09:00:00.000Z");
+    t = await startTestServer({
+      now: () => now,
+      runtime: quietCreation(holdFirstRun(gate)),
+    });
+    const org = await createOrganization("받은 시각 조직");
+    await t.request("POST", `/api/organizations/${org.id}/messages`, {
+      body: "첫 메시지",
+    });
+    await gate.reached;
+    now = new Date("2026-10-27T09:05:00.000Z");
+    await t.request("POST", `/api/organizations/${org.id}/messages`, {
+      body: "줄 세운 메시지",
+    });
+    now = new Date("2026-10-27T09:30:00.000Z");
+    gate.open();
+    await t.drain();
+
+    const [first, , queued] = await messagesOf(org.id);
+    expect(first).toMatchObject({
+      body: "첫 메시지",
+      createdAt: "2026-10-27T09:00:00.000Z",
+      deliveredAt: "2026-10-27T09:00:00.000Z",
+    });
+    expect(queued).toMatchObject({
+      body: "줄 세운 메시지",
+      createdAt: "2026-10-27T09:05:00.000Z",
+      deliveredAt: "2026-10-27T09:30:00.000Z",
+    });
+    // Lead 메시지는 받은 시각이 없다.
+    expect(
+      (await messagesOf(org.id))
+        .filter((m) => m.author === "agent")
+        .map((m) => m.deliveredAt)
+    ).toEqual([null, null]);
+  });
+
   it("reports the initial research request drafted on creation in the default conversation", async () => {
     t = await startTestServer();
     const res = await t.request("POST", "/api/organizations", {

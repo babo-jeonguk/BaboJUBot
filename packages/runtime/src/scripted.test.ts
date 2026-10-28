@@ -101,6 +101,7 @@ function toolServer(status = 200) {
         delivery: null,
         sentByRunId: ids.runId,
         deliveredToRunId: null,
+        deliveredAt: null,
         createdAt: new Date().toISOString(),
       },
       { status: 201 }
@@ -658,6 +659,7 @@ describe("demo Lead scenario", () => {
             delivery: null,
             sentByRunId: ids.runId,
             deliveredToRunId: null,
+            deliveredAt: null,
             createdAt: now,
           },
           { status: 201 }

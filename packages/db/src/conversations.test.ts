@@ -555,6 +555,94 @@ describe("delivery order", () => {
   });
 });
 
+// 사용자 메시지의 받은 시각은 그 메시지를 받은 실행 시도가 시작한 시각이다(보낸 시각과 따로).
+describe("delivery time", () => {
+  /** 대화 기록과 줄 세운 메시지에서 본문으로 찾은 메시지의 [보낸 시각, 받은 시각]. */
+  const times = async (
+    org: Awaited<ReturnType<typeof organization>>,
+    body: string
+  ) => {
+    const found = (
+      await listConversationMessages(
+        t.db,
+        org.organizationId,
+        org.defaultConversation.id
+      )
+    ).find((m) => m.body === body)!;
+    return { createdAt: found.createdAt, deliveredAt: found.deliveredAt };
+  };
+  /** 보낸 시각을 한 시간 앞으로 옮겨 받은 시각과 겹치지 않게 한다. */
+  const sentAnHourAgo = (messageId: string) =>
+    t.db.execute(
+      sql`update messages set created_at = created_at - interval '1 hour' where id = ${messageId}`
+    );
+
+  it("stamps a message queued while the Lead runs with the start of the later run that takes it", async () => {
+    const org = await organization();
+    await org.send(org.defaultConversation, "H");
+    const run0 = await org.claim();
+    expect((await times(org, "H")).deliveredAt).toBe(
+      run0.claimed.run.startedAt
+    );
+    const { plan } = await org.send(org.defaultConversation, "A");
+    await sentAnHourAgo(plan.message.id);
+    expect((await times(org, "A")).deliveredAt).toBeNull();
+
+    await run0.finish();
+    const run1 = await org.claim();
+    const a = await times(org, "A");
+    expect(a.deliveredAt).toBe(run1.claimed.run.startedAt);
+    expect(Date.parse(a.deliveredAt!)).toBeGreaterThan(Date.parse(a.createdAt));
+    expect(
+      (await loadRunContext(t.db, run1.run.id))!.context.conversation.find(
+        (m) => m.body === "A"
+      )?.deliveredAt
+    ).toBe(run1.claimed.run.startedAt);
+  });
+
+  it("stamps a queued message sent now with the start of the run after the interruption", async () => {
+    const org = await organization();
+    await org.send(org.defaultConversation, "H");
+    const run0 = await org.claim();
+    const { plan } = await org.send(org.defaultConversation, "B");
+    await sentAnHourAgo(plan.message.id);
+    await sendQueuedMessageNow(t.db, org.organizationId, plan.message.id);
+    await run0.finish();
+    const run1 = await org.claim();
+    expect((await times(org, "B")).deliveredAt).toBe(
+      run1.claimed.run.startedAt
+    );
+  });
+
+  it("clears the delivery time when a server restart requeues the message and stamps it again on the next run", async () => {
+    const org = await organization();
+    await org.send(org.defaultConversation, "A");
+    const run0 = await org.claim();
+    await interruptRun(t.db, run0.run.id, source);
+    expect((await times(org, "A")).deliveredAt).toBeNull();
+    const run1 = await org.claim();
+    expect((await times(org, "A")).deliveredAt).toBe(
+      run1.claimed.run.startedAt
+    );
+  });
+
+  it("refuses a delivery position without a delivery time and the other way round", async () => {
+    const org = await organization();
+    await org.send(org.defaultConversation, "A");
+    await org.claim();
+    await expect(
+      t.db.execute(
+        sql`update messages set delivered_at = null where body = 'A' and organization_id = ${org.organizationId}`
+      )
+    ).rejects.toThrow();
+    await expect(
+      t.db.execute(
+        sql`update messages set delivered_seq = null where body = 'A' and organization_id = ${org.organizationId}`
+      )
+    ).rejects.toThrow();
+  });
+});
+
 // 대화 기록은 받은 순서 열쇠로 자르는 쪽(keyset)으로 읽는다. 줄 세운 메시지는 쪽과 따로다.
 describe("transcript pages", () => {
   it("pages back through ties in delivery order, ends with hasMore false, and keeps older pages stable as new messages arrive", async () => {
@@ -685,13 +773,104 @@ describe("migration 0018_delivered_message_order", () => {
       "utf8"
     );
     const backfill = file.split("--> statement-breakpoint").at(-1)!;
-    await t.db.execute(
-      sql`update messages set delivered_seq = null where organization_id = ${org.organizationId}`
-    );
-    await t.db.execute(sql.raw(backfill));
+    await withoutDeliveredAtCheck(async () => {
+      await t.db.execute(
+        sql`update messages set delivered_seq = null, delivered_at = null where organization_id = ${org.organizationId}`
+      );
+      await t.db.execute(sql.raw(backfill));
+      await t.db.execute(sql.raw(await migrationStatement("0019", 1)));
+    });
     expect(await transcript()).toEqual(expected);
   });
 });
+
+describe("migration 0019_delivered_message_time", () => {
+  it("stamps messages delivered before the migration with the start of the run that took them", async () => {
+    const org = await organization();
+    await org.send(org.defaultConversation, "H");
+    const run0 = await org.claim();
+    await run0.reply("L0");
+    await org.send(org.defaultConversation, "A");
+    await org.send(org.defaultConversation, "Q");
+    await run0.finish();
+    const run1 = await org.claim();
+    await run1.finish();
+    const expected = (
+      await listConversationMessages(
+        t.db,
+        org.organizationId,
+        org.defaultConversation.id
+      )
+    ).map((m) => [m.body, m.deliveredAt]);
+    expect(expected).toEqual([
+      ["H", run0.claimed.run.startedAt],
+      ["L0", null],
+      ["A", run1.claimed.run.startedAt],
+      ["Q", run1.claimed.run.startedAt],
+    ]);
+    // 받은 실행 시도를 찾지 못한 메시지는 보낸 시각을 쓴다.
+    const [q] = (
+      await t.db.execute<{ created_at: string }>(
+        sql`select created_at from messages where body = 'Q' and organization_id = ${org.organizationId}`
+      )
+    ).rows;
+
+    await withoutDeliveredAtCheck(async () => {
+      await t.db.execute(
+        sql`update messages set delivered_at = null where organization_id = ${org.organizationId}`
+      );
+      await t.db.execute(
+        sql`update wakes set run_id = null from messages where wakes.message_id = messages.id and messages.body = 'Q' and messages.organization_id = ${org.organizationId}`
+      );
+      await t.db.execute(sql.raw(await migrationStatement("0019", 1)));
+    });
+    expect(
+      (
+        await t.db.execute<{ body: string; delivered_at: string | null }>(
+          sql`select body, delivered_at from messages where organization_id = ${org.organizationId} order by seq`
+        )
+      ).rows.map((r) => [
+        r.body,
+        r.delivered_at && new Date(r.delivered_at).toISOString(),
+      ])
+    ).toEqual([
+      ["H", run0.claimed.run.startedAt],
+      ["L0", null],
+      ["A", run1.claimed.run.startedAt],
+      ["Q", new Date(q!.created_at).toISOString()],
+    ]);
+  });
+});
+
+/** migration 파일(`prefix`가 `0019`면 `0019_…`)의 `index`번째 문장(0부터). */
+async function migrationStatement(prefix: string, index: number) {
+  const dir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../migrations"
+  );
+  const name = (await fsp.readdir(dir)).find((f) =>
+    f.startsWith(`${prefix}_`)
+  )!;
+  const file = await fsp.readFile(path.join(dir, name), "utf8");
+  return file.split("--> statement-breakpoint")[index]!;
+}
+
+/**
+ * 받은 위치와 받은 시각이 함께 있어야 한다는 제약을 잠시 빼고 `fn`을 돌린다(backfill 문만 다시 돌릴 때). 끝나면 제약을 되살리므로
+ * backfill 결과가 제약을 지키는지도 확인한다. 이 파일의 검사는 차례로 돌아 다른 검사와 겹치지 않는다.
+ */
+async function withoutDeliveredAtCheck(fn: () => Promise<void>) {
+  await t.db.execute(
+    sql`alter table messages drop constraint messages_delivered_at_check`
+  );
+  try {
+    await fn();
+  } finally {
+    await t.db.execute(
+      sql`alter table messages add constraint messages_delivered_at_check check ((delivered_seq is null) = (delivered_at is null))`
+    );
+  }
+}
 
 // 조직의 기본 대화는 하나뿐이다.
 describe("default conversation", () => {

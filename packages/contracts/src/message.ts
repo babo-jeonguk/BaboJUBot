@@ -82,8 +82,8 @@ export type MarkConversationReadInput = z.infer<
 
 /**
  * Lead 대화의 메시지 하나. `agentId`는 대화 상대 에이전트(Lead), `conversationId`는 메시지가 속한 대화다.
- * 사용자 메시지는 받은 실행 시도(`deliveredToRunId`, 아직 없으면 줄 세운 메시지)를,
- * 에이전트 메시지는 보낸 실행 시도(`sentByRunId`)를 가리킨다.
+ * 사용자 메시지는 받은 실행 시도(`deliveredToRunId`, 아직 없으면 줄 세운 메시지)와 받은 시각(`deliveredAt`, 그 실행 시도가
+ * 시작한 시각)을, 에이전트 메시지는 보낸 실행 시도(`sentByRunId`)를 가리킨다. `createdAt`은 저장한(보낸) 시각이다.
  */
 export const conversationMessageSchema = z.object({
   id: z.uuid(),
@@ -95,6 +95,7 @@ export const conversationMessageSchema = z.object({
   delivery: messageDeliverySchema.nullable(),
   sentByRunId: z.uuid().nullable(),
   deliveredToRunId: z.uuid().nullable(),
+  deliveredAt: z.iso.datetime({ offset: true }).nullable(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 export type ConversationMessage = z.infer<typeof conversationMessageSchema>;

@@ -253,7 +253,7 @@ export async function claimNextRun(
       .returning({ id: wakes.id });
     if (claimed.length !== ids.length)
       throw new Error("wake bundle changed while claiming a run");
-    await markDelivered(tx, ids);
+    await markDelivered(tx, ids, new Date(plan.run.startedAt));
     await tx.insert(runWakes).values(
       ids.map((wakeId) => ({
         organizationId: plan.run.organizationId,
@@ -368,7 +368,7 @@ export async function interruptRun(
       if (messageIds.length)
         await tx
           .update(messages)
-          .set({ deliveredSeq: null })
+          .set({ deliveredSeq: null, deliveredAt: null })
           .where(inArray(messages.id, messageIds));
     }
     return insertEvent(tx, plan.event);
@@ -1008,10 +1008,11 @@ const sentBy = alias(runs, "sent_by");
 const deliveredTo = alias(runs, "delivered_to");
 
 /**
- * 실행 시도가 받은 사용자 메시지에 받은 순간의 위치(`delivered_seq`)를 적는다. admission transaction 안에서 실행 시도마다
- * `messages.seq`의 sequence에서 값 하나를 뽑으므로 그 뒤 Lead가 쓰는 메시지보다 앞, 그 전에 쓴 메시지보다 뒤에 놓인다.
+ * 실행 시도가 받은 사용자 메시지에 받은 순간의 위치(`delivered_seq`)와 시각(`delivered_at`, 실행 시도의 시작 시각)을 적는다.
+ * admission transaction 안에서 실행 시도마다 `messages.seq`의 sequence에서 값 하나를 뽑으므로 그 뒤 Lead가 쓰는 메시지보다 앞,
+ * 그 전에 쓴 메시지보다 뒤에 놓인다.
  */
-async function markDelivered(tx: Executor, wakeIds: string[]) {
+async function markDelivered(tx: Executor, wakeIds: string[], at: Date) {
   const received = await tx
     .select({ messageId: wakes.messageId })
     .from(wakes)
@@ -1027,7 +1028,7 @@ async function markDelivered(tx: Executor, wakeIds: string[]) {
   );
   await tx
     .update(messages)
-    .set({ deliveredSeq: Number(next!.position) })
+    .set({ deliveredSeq: Number(next!.position), deliveredAt: at })
     .where(inArray(messages.id, messageIds));
 }
 
@@ -1141,6 +1142,7 @@ const toMessage = ({
     createdAt,
     withdrawnAt: _withdrawnAt,
     deliveredSeq: _deliveredSeq,
+    deliveredAt,
     ...message
   },
   deliveredToRunId,
@@ -1154,6 +1156,7 @@ const toMessage = ({
 }): OrderedMessage => ({
   ...message,
   deliveredToRunId,
+  deliveredAt: deliveredAt?.toISOString() ?? null,
   createdAt: createdAt.toISOString(),
   order: [position ?? Number.POSITIVE_INFINITY, rank, seq],
 });
