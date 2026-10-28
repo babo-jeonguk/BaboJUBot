@@ -206,3 +206,38 @@ test("keeps only the latest window while following live messages at the bottom, 
   }
   await expect(scroller.getByText("기록 1-1", { exact: true })).toHaveCount(1);
 });
+
+test("stays at the bottom while the queue above the composer and the composer itself grow", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const org = await createOrganization(page, "바닥 유지 E2E 조직");
+  await seedTranscript(page, org, 1);
+  await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
+  const scroller = page.getByTestId("transcript-scroller");
+  await expect(scroller.getByText("기록 1-20", { exact: true })).toBeVisible();
+  /** 맨 아래에서 떨어진 거리. 따라가는 동안은 0이다. */
+  const gap = () =>
+    scroller.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+  await expect.poll(gap).toBeLessThanOrEqual(1);
+
+  // 입력창 위 줄 세운 메시지 목록이 자라면 대화 영역이 줄어든다. 사용자가 스크롤하지 않았으니 맨 아래에 남는다.
+  await post(page, org.api("/messages"), { body: "실행 유지 연습" });
+  await expect(
+    scroller.getByText("실행 유지 연습", { exact: true })
+  ).toBeVisible(runs);
+  for (let i = 1; i <= 5; i++)
+    await post(page, org.api("/messages"), { body: `줄 ${i}` });
+  await expect(page.getByText("줄 세운 메시지 5/20")).toBeVisible();
+  await expect.poll(gap).toBeLessThanOrEqual(1);
+
+  // 여러 줄을 입력해 입력창이 자라도 마찬가지다.
+  await page
+    .getByRole("textbox", { name: "Lead에게 보낼 메시지" })
+    .fill(Array.from({ length: 8 }, (_, i) => `줄 ${i + 1}`).join("\n"));
+  await expect.poll(gap).toBeLessThanOrEqual(1);
+  await expect(page.getByRole("button", { name: "맨 아래로" })).toHaveCount(0);
+
+  await post(page, org.api(`/agents/${org.leadId}/interrupt`));
+  await settled(page, org);
+});

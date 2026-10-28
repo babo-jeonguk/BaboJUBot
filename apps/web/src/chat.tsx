@@ -491,6 +491,8 @@ const prefersReducedMotion = () =>
  * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
  * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
  * 맨 아래 근처(`followThreshold`)에 있을 때만 새 메시지를 따라 내려가고, 그보다 위에 있으면 `맨 아래로` 버튼을 보인다.
+ * 따라가는 동안에는 대화 영역이나 내용의 크기가 바뀌어도(줄 세운 메시지 목록·입력창이 자람 등) 맨 아래에 남는다. 따라가기를
+ * 멈추는 것은 사용자의 스크롤뿐이다.
  * 맨 아래를 따라가는 동안 불러 둔 메시지가 많아지면 오래된 쪽을 덜어 낸다(`trim`). 위를 읽는 동안에는 덜어 내지 않는다.
  * 위에 붙인 메시지는 읽어 주지 않고 새로 온 메시지만 조용히 알린다.
  */
@@ -513,6 +515,7 @@ function Transcript({
   lead: Agent;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   const toast = useToast();
   /** 위에 붙이기 직전 보이던 맨 위 메시지와 그 위치. 붙인 뒤 같은 자리로 되돌린다. */
@@ -521,6 +524,8 @@ function Transcript({
   const armed = useRef(true);
   /** 코드가 바꾼 스크롤은 사용자의 스크롤로 치지 않는다. */
   const programmatic = useRef(false);
+  /** 맨 아래에 붙이는 중이다. 그사이 크기가 바뀌어 맨 아래가 아니게 읽혀도 따라가기를 멈추지 않는다(크기 변화가 다시 붙인다). */
+  const pinning = useRef(false);
   /** 맨 아래 근처라 새 메시지를 따라간다. 그리기 전에 읽어야 하므로 ref로 두고, 버튼은 `away`가 맡는다. */
   const atBottom = useRef(true);
   /** `맨 아래로`를 눌러 내려가는 중이다. 도착하거나 사용자가 스크롤을 잡으면 끝난다. */
@@ -542,6 +547,16 @@ function Transcript({
     programmatic.current = true;
     el.scrollTop = top;
     requestAnimationFrame(() => (programmatic.current = false));
+  };
+  /** 따라가는 중에 맨 아래로 바로 간다. */
+  const pinToBottom = () => {
+    const el = scroller.current;
+    if (!el) return;
+    programmatic.current = pinning.current = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(
+      () => (programmatic.current = pinning.current = false)
+    );
   };
   /** 부드럽게(움직임 줄이기 설정이면 바로) 맨 아래로 간다. */
   const glideToBottom = () => {
@@ -591,7 +606,7 @@ function Transcript({
     previous.current = { first, last, count: messages.length };
     if (!el) return;
     if (before.count === 0) {
-      scrollTo(el.scrollHeight);
+      pinToBottom();
       return;
     }
     if (first !== before.first && anchor.current) {
@@ -603,10 +618,13 @@ function Transcript({
           target.getBoundingClientRect().top - el.getBoundingClientRect().top;
         scrollTo(el.scrollTop + offset - anchor.current.offset);
       }
+      // 되돌린 자리에서 따라가기를 다시 정한다. 그러지 않으면 크기 변화가 맨 아래로 끌고 간다.
+      atBottom.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
       anchor.current = null;
     } else if (atBottom.current) {
       if (jumping.current) glideToBottom();
-      else scrollTo(el.scrollHeight);
+      else pinToBottom();
     }
     if (last !== before.last) {
       const index = messages.findIndex((m) => m.id === before.last);
@@ -614,6 +632,22 @@ function Transcript({
       if (added > 0) setArrivals((n) => n + added);
     }
   }, [first, last, messages]);
+
+  // 따라가는 동안 대화 영역(입력창 위 목록·입력창이 자라거나 줄어듦)이나 내용(그린 뒤 자란 메시지)의 크기가 바뀌면 다시 맨 아래로
+  // 간다. 영역이 줄어들 때는 스크롤 Event가 없어 이렇게 하지 않으면 맨 아래 메시지가 가려진 채 남는다.
+  useEffect(() => {
+    const el = scroller.current;
+    const inner = content.current;
+    if (!el || !inner) return;
+    const observer = new ResizeObserver(() => {
+      if (!atBottom.current) return;
+      if (jumping.current) glideToBottom();
+      else pinToBottom();
+    });
+    observer.observe(el);
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
 
   // 맨 아래를 따라가는 동안 불러 둔 메시지가 창보다 많아지면 오래된 쪽을 덜어 낸다. 위를 읽거나 더 오래된 쪽을 받는 중에는 덜어 내지 않는다.
   const overflow = messages.length > transcriptWindowMax;
@@ -652,33 +686,35 @@ function Transcript({
           const el = e.currentTarget;
           const near =
             el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
-          // 내려가는 동안의 중간 위치로는 따라가기·버튼을 바꾸지 않는다.
-          if (jumping.current && !near) return;
+          // 내려가는 동안의 중간 위치나 붙이는 사이 크기가 바뀐 위치로는 따라가기·버튼을 바꾸지 않는다.
+          if ((jumping.current || pinning.current) && !near) return;
           jumping.current = false;
           atBottom.current = near;
           setAway(!near);
           if (!programmatic.current && !loadingOlder) armed.current = true;
         }}
       >
-        <div ref={sentinel} />
-        {hasOlder && (
-          <div className="mb-3 flex justify-center">
-            <button
-              type="button"
-              className="btn-ghost px-3 py-1 text-xs text-slate-500"
-              disabled={loadingOlder}
-              onClick={() => void older()}
-            >
-              {loadingOlder ? "불러오는 중…" : "이전 메시지 보기"}
-            </button>
-          </div>
-        )}
-        <MessageList
-          messages={messages}
-          orgId={orgId}
-          lead={lead}
-          busy={loadingOlder}
-        />
+        <div ref={content}>
+          <div ref={sentinel} />
+          {hasOlder && (
+            <div className="mb-3 flex justify-center">
+              <button
+                type="button"
+                className="btn-ghost px-3 py-1 text-xs text-slate-500"
+                disabled={loadingOlder}
+                onClick={() => void older()}
+              >
+                {loadingOlder ? "불러오는 중…" : "이전 메시지 보기"}
+              </button>
+            </div>
+          )}
+          <MessageList
+            messages={messages}
+            orgId={orgId}
+            lead={lead}
+            busy={loadingOlder}
+          />
+        </div>
       </div>
       <p className="sr-only" aria-live="polite">
         {arrivals > 0 ? `새 메시지 ${arrivals}개` : ""}
