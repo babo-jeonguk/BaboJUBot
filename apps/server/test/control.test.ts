@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { startServer } from "../src/index.ts";
 import { insertLegacyOrganization } from "@babojubot/db/testing";
 import {
+  chatMessages,
   calls,
   goal,
   idle,
@@ -412,17 +413,16 @@ describe("organization stop", () => {
       }),
     ]);
 
-    await say(org.id, "중단 뒤 메시지");
-    // `중단하고 보내기`는 제어 명령이라 끝난 조직에서는 메시지도 남기지 않는다.
-    const refusedInterrupt = await t.request(
-      "POST",
-      `/api/organizations/${org.id}/messages`,
-      { body: "중단 뒤 중단하고 보내기", delivery: "interrupt" }
-    );
-    expect(refusedInterrupt.status).toBe(409);
-    expect(refusedInterrupt.body).toEqual({
-      error: { code: "organization_closed" },
-    });
+    // 끝난 조직은 줄 세우기·중단하고 보내기 모두 받지 않는다.
+    for (const delivery of ["next_run", "interrupt"] as const) {
+      const refused = await t.request(
+        "POST",
+        `/api/organizations/${org.id}/messages`,
+        { body: "중단 뒤 메시지", delivery }
+      );
+      expect(refused.status).toBe(409);
+      expect(refused.body).toEqual({ error: { code: "organization_closed" } });
+    }
     await t.drain();
     expect(await runsOf(org.id)).toHaveLength(1);
 
@@ -531,7 +531,7 @@ describe("interrupt and send", () => {
     expect(bodies(agents.of(org.lead.id).at(-1)!.request.wakeReasons)).toEqual([
       "방향을 바꿔 주세요",
     ]);
-    const conversation = await get(`/api/organizations/${org.id}/messages`);
+    const conversation = await chatMessages(t, org.id);
     expect(
       conversation.find((m: { id: string }) => m.id === message.id)
     ).toMatchObject({ deliveredToRunId: next!.id });
@@ -627,7 +627,7 @@ describe("stop the current run", () => {
     await say(org.id, "긴 일을 시작해 주세요");
     await gate.reached;
     const [running] = await runsOf(org.id);
-    const before = (await get(`/api/organizations/${org.id}/messages`)).length;
+    const before = (await chatMessages(t, org.id)).length;
     const stream = await t.subscribe({
       kind: "organization",
       organizationId: org.id,
@@ -659,9 +659,7 @@ describe("stop the current run", () => {
         cancelReason: "owner_interrupt",
       }),
     ]);
-    expect(await get(`/api/organizations/${org.id}/messages`)).toHaveLength(
-      before
-    );
+    expect(await chatMessages(t, org.id)).toHaveLength(before);
     expect((await organization(org.id)).stage).toBe("planning");
 
     // 일시정지가 아니므로 다음 메시지는 평소처럼 실행 시도를 시작한다.
@@ -776,7 +774,7 @@ describe("cancellation boundary", () => {
         cancelReason: "organization_paused",
       }),
     ]);
-    const conversation = await get(`/api/organizations/${org.id}/messages`);
+    const conversation = await chatMessages(t, org.id);
     expect(conversation.map((m: { author: string }) => m.author)).toEqual([
       "owner",
     ]);

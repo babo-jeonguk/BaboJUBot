@@ -1,5 +1,6 @@
 import {
   conversationMessageListSchema,
+  conversationPageSchema,
   conversationSummaryListSchema,
   organizationDetailSchema,
   outboxSchema,
@@ -9,7 +10,7 @@ import { createScriptedRuntime, leadReplyScript } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { insertLegacyOrganization } from "@babojubot/db/testing";
-import { goal, quietCreation } from "./scenarios.ts";
+import { chatMessages, goal, quietCreation } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -34,16 +35,8 @@ const conversationsOf = async (orgId: string) => {
   expect(res.status).toBe(200);
   return conversationSummaryListSchema.parse(res.body);
 };
-const messagesOf = async (orgId: string, conversationId?: string) => {
-  const res = await t!.request(
-    "GET",
-    conversationId
-      ? `/api/organizations/${orgId}/conversations/${conversationId}/messages`
-      : `/api/organizations/${orgId}/messages`
-  );
-  expect(res.status).toBe(200);
-  return conversationMessageListSchema.parse(res.body);
-};
+const messagesOf = (orgId: string, conversationId?: string) =>
+  chatMessages(t!, orgId, conversationId);
 const start = async (
   orgId: string,
   body: string,
@@ -363,6 +356,58 @@ describe("Lead conversations", () => {
         ).status
       ).toBe(422);
     expect(await conversationsOf(org.id)).toHaveLength(1);
+  });
+
+  it("serves the transcript in pages with before/after cursors and the queue apart", async () => {
+    t = await startTestServer({ runtime: quietCreation() });
+    const org = await createOrganization("쪽 나누기 조직");
+    const base = `/api/organizations/${org.id}`;
+    const page = async (query = "") => {
+      const res = await t!.request("GET", `${base}/messages${query}`);
+      expect(res.status).toBe(200);
+      return conversationPageSchema.parse(res.body);
+    };
+    expect(
+      (await t.request("POST", `${base}/messages`, { body: "첫 말" })).status
+    ).toBe(201);
+    await t.drain();
+
+    const first = await page();
+    expect(first.messages.map((m) => m.author)).toEqual(["owner", "agent"]);
+    expect(first).toMatchObject({ hasMore: false, before: null });
+    expect(first.after).not.toBeNull();
+
+    // 새로 온 것만 `after`로 이어 받는다.
+    expect(
+      (await t.request("POST", `${base}/messages`, { body: "둘째 말" })).status
+    ).toBe(201);
+    await t.drain();
+    const newer = await page(`?after=${encodeURIComponent(first.after!)}`);
+    expect(newer.messages.map((m) => m.body)[0]).toBe("둘째 말");
+    expect(newer.messages).toHaveLength(2);
+    expect(newer.hasMore).toBe(false);
+
+    for (const query of [
+      "?before=nope",
+      `?before=${first.after}&after=${first.after}`,
+      "?cursor=1",
+    ])
+      expect((await t.request("GET", `${base}/messages${query}`)).status).toBe(
+        422
+      );
+    expect(
+      conversationMessageListSchema.parse(
+        (await t.request("GET", `${base}/queued-messages`)).body
+      )
+    ).toEqual([]);
+    expect(
+      (
+        await t.request(
+          "GET",
+          `/api/organizations/${crypto.randomUUID()}/queued-messages`
+        )
+      ).status
+    ).toBe(404);
   });
 
   it("keeps conversations of a stopped organization readable and takes no more messages there", async () => {

@@ -1,5 +1,4 @@
 import {
-  conversationMessageListSchema,
   organizationDetailSchema,
   runDetailSchema,
   runSummaryListSchema,
@@ -14,7 +13,7 @@ import {
 } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { goal, quietCreation } from "./scenarios.ts";
+import { chatMessages, goal, quietCreation } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -80,10 +79,7 @@ const say = async (orgId: string, body: string) => {
   expect(res.status).toBe(201);
   return res.body;
 };
-const conversation = async (orgId: string) =>
-  conversationMessageListSchema.parse(
-    (await t!.request("GET", `/api/organizations/${orgId}/messages`)).body
-  );
+const conversation = (orgId: string) => chatMessages(t!, orgId);
 /** 조직의 실행 시도(최근 것부터). 생성 깨우기를 받은 첫 실행 시도는 뺀다. */
 const runs = async (orgId: string) =>
   runSummaryListSchema

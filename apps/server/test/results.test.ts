@@ -17,6 +17,7 @@ import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
+  chatMessages,
   calls,
   idle,
   ok,
@@ -337,8 +338,14 @@ describe("result submission and final completion", () => {
     await t.drain();
     const runsAfterCompletion = await runsOf(org.id);
 
-    // 완료 뒤에도 메시지·작업 댓글은 깨우기로 남지만 실행 시도는 시작되지 않는다.
-    await say(org.id, "완료 뒤 메시지");
+    // 완료 뒤 Lead 대화는 메시지를 받지 않는다. 작업 댓글은 깨우기로 남지만 실행 시도는 시작되지 않는다.
+    const late = await t.request(
+      "POST",
+      `/api/organizations/${org.id}/messages`,
+      { body: "완료 뒤 메시지" }
+    );
+    expect(late.status).toBe(409);
+    expect(late.body).toEqual({ error: { code: "organization_closed" } });
     const comment = await t.request(
       "POST",
       `/api/organizations/${org.id}/tasks/${org.task.id}/comments`,
@@ -347,11 +354,9 @@ describe("result submission and final completion", () => {
     expect(comment.status).toBe(201);
     await t.drain();
     expect(await runsOf(org.id)).toEqual(runsAfterCompletion);
-    const conversation = await get(`/api/organizations/${org.id}/messages`);
-    expect(conversation.at(-1)).toMatchObject({
-      body: "완료 뒤 메시지",
-      deliveredToRunId: null,
-    });
+    expect((await chatMessages(t, org.id)).map((m) => m.body)).not.toContain(
+      "완료 뒤 메시지"
+    );
     // 같은 결정을 다시 보내도 효과가 없다.
     expect(
       (await decide(org.id, org.submissionId, { decision: "complete" })).status
@@ -400,7 +405,14 @@ describe("result submission and final completion", () => {
     expect(
       (await decide(org.id, org.submissionId, { decision: "complete" })).status
     ).toBe(200);
-    await say(org.id, "완료 뒤 메시지");
+    // 완료 뒤에는 Lead 대화가 메시지를 받지 않는다.
+    expect(
+      (
+        await t.request("POST", `/api/organizations/${org.id}/messages`, {
+          body: "완료 뒤 메시지",
+        })
+      ).status
+    ).toBe(409);
     gate.open();
     await t.drain();
 
@@ -414,7 +426,7 @@ describe("result submission and final completion", () => {
       id: held.request.identity.runId,
       status: "completed",
     });
-    // 완료 뒤 메시지는 새 실행 시도가 되지 않는다.
+    // 완료 뒤에는 새 실행 시도가 없다.
     expect(agents.of(org.lead.id).at(-1)).toBe(held);
     expect(await tasksOf(org.id)).toHaveLength(1);
   });

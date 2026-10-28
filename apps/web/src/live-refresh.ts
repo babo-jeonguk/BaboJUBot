@@ -8,6 +8,8 @@ import type { Query, QueryClient, QueryFilters } from "@tanstack/react-query";
  * 이미 진행 중인 조회(첫 로드·화면 이동·mutation 등이 시작한 것)는 신호 이전 상태일 수 있으므로,
  * 거기에 합류해도 dirty를 지우지 않고 끝난 뒤 새로 불러온다. 오프라인으로 멈춘 조회도 끝날 때까지 기다린다.
  * 보고 있는 화면이 없는 조회는 오래됨으로만 표시해 다음에 볼 때 다시 불러오게 한다.
+ * 조회의 `meta.liveRefresh`가 함수면 다시 불러오는 대신 그것을 부른다(쪽으로 나눈 대화 기록은 새 메시지만 이어 받는다).
+ * 그사이 그 조회가 스스로 불러오기 시작했으면(더 오래된 쪽 등) 그 결과가 덮어쓸 수 있으므로 끝난 뒤 한 번 더 부른다.
  */
 export function createLiveRefresh(queryClient: QueryClient) {
   const cache = queryClient.getQueryCache();
@@ -46,6 +48,16 @@ export function createLiveRefresh(queryClient: QueryClient) {
           continue;
         }
         dirty.delete(query);
+        const custom = query.meta?.liveRefresh;
+        if (typeof custom === "function") {
+          try {
+            await (custom as () => Promise<unknown>)();
+          } catch {
+            // 다음 Event나 재연결이 다시 맞춘다.
+          }
+          if (query.state.fetchStatus !== "idle") dirty.add(query);
+          continue;
+        }
         // 진행 중인 조회가 없음을 확인했으므로 취소 없이 새 요청이 시작된다. 보는 화면이 없으면 표시만 한다.
         void queryClient.invalidateQueries(
           { predicate: (q) => q === query },

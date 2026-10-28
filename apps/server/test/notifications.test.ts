@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   type NotificationChannel,
   approvalSummaryListSchema,
-  conversationMessageListSchema,
   fakeChannelMessagesSchema,
   inboxSchema,
   needsAttention,
@@ -17,6 +16,7 @@ import { leadReplyScript } from "@babojubot/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
+  chatMessages,
   calls,
   goal,
   proposeScript,
@@ -146,9 +146,9 @@ describe("notification outbox and fake channel", () => {
       body: { error: { code: "archive_not_allowed" } },
     });
     const failed = (await runsOf(org.id)).filter((r) => r.status === "failed");
-    const leadMessages = conversationMessageListSchema
-      .parse(await get(`/api/organizations/${org.id}/messages`))
-      .filter((m) => m.author === "agent");
+    const leadMessages = (await chatMessages(t!, org.id)).filter(
+      (m) => m.author === "agent"
+    );
     expect(failed).toHaveLength(1);
     expect(leadMessages.length).toBeGreaterThan(0);
 

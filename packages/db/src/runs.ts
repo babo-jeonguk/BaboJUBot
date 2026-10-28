@@ -1,7 +1,9 @@
 import {
+  conversationPageSize,
   type AgentDetail,
   type AgentRole,
   type ConversationMessage,
+  type ConversationPage,
   type Event,
   type InstructionFile,
   type PublicActivity,
@@ -625,20 +627,68 @@ export async function findMessage(
 // ---------- Surface 조회 ----------
 
 /**
- * 같은 조직 대화 하나의 메시지. 대화 기록(Lead 메시지와 받은 사용자 메시지, Lead가 받은 순서로 최근 `limit`개) 뒤에
- * 줄 세운 메시지 전부(보낸 순서)가 온다. 줄 세운 메시지는 대화 기록의 개수 제한과 상관없이 모두 담는다.
+ * 같은 조직 대화 하나의 기록 한 쪽(Lead가 받은 순서, 오래된 것부터). 커서가 없으면 가장 최근 `limit`개, `before`는 그보다 오래된
+ * `limit`개, `after`는 그보다 새 `limit`개다. 열쇠(받은 순서의 [위치, 같은 위치 안의 순서, 저장 순서])로 자르는 keyset 방식이라
+ * 그사이 새 메시지가 와도 쪽이 밀리지 않는다. 메시지의 위치는 받은 뒤 바뀌지 않고 새로 받은 메시지는 늘 맨 뒤에 놓인다.
+ * 서버가 준 것이 아닌 커서는 `invalid_cursor`다. 줄 세운 메시지는 `listQueuedMessages`가 따로 준다.
  */
+export async function listConversationPage(
+  db: Database,
+  organizationId: string,
+  conversationId: string,
+  {
+    before,
+    after,
+    limit = conversationPageSize,
+  }: { before?: string; after?: string; limit?: number } = {}
+): Promise<ConversationPage | "invalid_cursor"> {
+  const beforeKey = before === undefined ? undefined : decodeCursor(before);
+  const afterKey = after === undefined ? undefined : decodeCursor(after);
+  if (beforeKey === null || afterKey === null) return "invalid_cursor";
+  const rows = await selectConversation(db, organizationId, conversationId, {
+    before: beforeKey,
+    after: afterKey,
+    limit: limit + 1,
+  });
+  const hasMore = rows.length > limit;
+  // 한 개 더 읽어 다음 쪽이 있는지 본다. 고른 방향의 끝(오래된 쪽이면 맨 앞, 새 쪽이면 맨 뒤)에서 덜어 낸다.
+  const page = !hasMore
+    ? rows
+    : afterKey
+      ? rows.slice(0, limit)
+      : rows.slice(1);
+  const newest = page.at(-1);
+  return {
+    messages: page.map(withoutOrder),
+    hasMore,
+    before: !afterKey && hasMore ? encodeCursor(page[0]!.order) : null,
+    after: newest ? encodeCursor(newest.order) : (after ?? null),
+  };
+}
+
+/** 같은 조직 대화 하나의 줄 세운 메시지 전부. 보낸 순서이며 상한(`maxQueuedMessages`)이 있어 쪽을 나누지 않는다. */
+export async function listQueuedMessages(
+  db: Database,
+  organizationId: string,
+  conversationId: string
+): Promise<ConversationMessage[]> {
+  return (await selectQueuedMessages(db, organizationId, conversationId)).map(
+    withoutOrder
+  );
+}
+
+/** 처음 연 대화 화면이 보는 것: 대화 기록의 가장 최근 쪽 뒤에 줄 세운 메시지 전부. 검사와 도구가 쓴다. */
 export async function listConversationMessages(
   db: Database,
   organizationId: string,
   conversationId: string,
-  { limit = 200 }: { limit?: number } = {}
+  { limit = conversationPageSize }: { limit?: number } = {}
 ): Promise<ConversationMessage[]> {
-  const [transcript, queued] = await Promise.all([
-    selectConversation(db, organizationId, conversationId, { limit }),
-    selectQueuedMessages(db, organizationId, conversationId),
+  const [page, queued] = await Promise.all([
+    listConversationPage(db, organizationId, conversationId, { limit }),
+    listQueuedMessages(db, organizationId, conversationId),
   ]);
-  return [...transcript, ...queued].map(withoutOrder);
+  return [...(page === "invalid_cursor" ? [] : page.messages), ...queued];
 }
 
 /** 조직의 실행 시도. 최근 것부터. */
@@ -1006,8 +1056,16 @@ async function selectConversation(
   {
     agentId,
     upToRunSeq,
+    before,
+    after,
     limit,
-  }: { agentId?: string; upToRunSeq?: number; limit: number }
+  }: {
+    agentId?: string;
+    upToRunSeq?: number;
+    before?: OrderKey;
+    after?: OrderKey;
+    limit: number;
+  }
 ): Promise<OrderedMessage[]> {
   if (!isUuid(organizationId) || !isUuid(conversationId)) return [];
   const rows = await conversationQuery(db)
@@ -1020,12 +1078,34 @@ async function selectConversation(
         agentId === undefined ? undefined : eq(messages.agentId, agentId),
         upToRunSeq === undefined
           ? undefined
-          : or(lte(sentBy.seq, upToRunSeq), lte(deliveredTo.seq, upToRunSeq))
+          : or(lte(sentBy.seq, upToRunSeq), lte(deliveredTo.seq, upToRunSeq)),
+        before && sql`${orderKey} < (${before[0]}, ${before[1]}, ${before[2]})`,
+        after && sql`${orderKey} > (${after[0]}, ${after[1]}, ${after[2]})`
       )
     )
-    .orderBy(...latestFirst)
+    .orderBy(...(after ? oldestFirst : latestFirst))
     .limit(limit);
-  return rows.reverse().map(toMessage);
+  return (after ? rows : rows.reverse()).map(toMessage);
+}
+
+/** 받은 순서 열쇠 [위치, 같은 위치 안의 순서, 저장 순서]. 대화 기록(받은 메시지)에서는 위치가 늘 있다. */
+type OrderKey = [number, number, number];
+const orderKey = sql`(${messagePosition}, ${positionRank}, ${messages.seq})`;
+const oldestFirst = [
+  asc(messagePosition),
+  asc(positionRank),
+  asc(messages.seq),
+];
+
+/** 대화 기록 커서: 받은 순서 열쇠를 감춘 글. 화면은 뜻을 해석하지 않고 그대로 돌려준다. */
+const encodeCursor = (key: OrderKey) =>
+  Buffer.from(key.join(".")).toString("base64url");
+/** 서버가 준 커서가 아니면 null이다. */
+function decodeCursor(cursor: string): OrderKey | null {
+  const parts = Buffer.from(cursor, "base64url").toString().split(".");
+  if (parts.length !== 3 || !parts.every((p) => /^\d{1,18}$/.test(p)))
+    return null;
+  return parts.map(Number) as OrderKey;
 }
 
 /** 대화 하나의 줄 세운 메시지 전부. 보낸 순서이며 개수를 자르지 않는다. 거둔 메시지는 없다. */
@@ -1049,8 +1129,8 @@ async function selectQueuedMessages(
   return rows.map(toMessage);
 }
 
-/** 순서 열쇠를 붙인 메시지. 열쇠는 `latestFirst`를 뒤집은 [위치(줄 세운 메시지는 맨 뒤), 같은 위치 안의 순서, 저장 순서]다. */
-type OrderedMessage = ConversationMessage & { order: [number, number, number] };
+/** 순서 열쇠를 붙인 메시지. 열쇠는 받은 순서의 [위치(줄 세운 메시지는 맨 뒤), 같은 위치 안의 순서, 저장 순서]다. */
+type OrderedMessage = ConversationMessage & { order: OrderKey };
 
 const byDeliveryOrder = (a: OrderedMessage, b: OrderedMessage) =>
   a.order[0] - b.order[0] || a.order[1] - b.order[1] || a.order[2] - b.order[2];

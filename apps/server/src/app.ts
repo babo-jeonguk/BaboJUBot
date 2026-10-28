@@ -24,6 +24,7 @@ import {
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
   editQueuedMessageInputSchema,
+  conversationPageQuerySchema,
   timeZoneSchema,
   updateAgentProfileInputSchema,
   updateApprovalPolicyInputSchema,
@@ -53,7 +54,8 @@ import {
   listApprovals,
   findConversation,
   findDefaultConversation,
-  listConversationMessages,
+  listConversationPage,
+  listQueuedMessages,
   listConversations,
   markConversationRead,
   listFakeChannelMessages,
@@ -459,16 +461,46 @@ export async function startServer({
       .json({ error: { code: "invalid_input", issues: input.error.issues } });
     return undefined;
   };
+  /**
+   * 대화 기록 한 쪽(`?before=`·`?after=` 커서, 없으면 가장 최근 쪽). 줄 세운 메시지는 따로 `queued-messages`가 준다.
+   * 서버가 준 것이 아닌 커서나 둘을 함께 쓴 조회는 422 `invalid_input`이다.
+   */
   const listChatMessages = async (
+    req: express.Request,
     res: express.Response,
-    organizationId: string,
     conversationId?: string
   ) => {
-    const chat = await findChat(organizationId, conversationId);
+    const chat = await findChat(String(req.params.id), conversationId);
     if (!chat) return notFound(res);
-    res.json(
-      await listConversationMessages(db, chat.org.id, chat.conversation.id)
-    );
+    const query = conversationPageQuerySchema.safeParse(req.query);
+    const page =
+      query.success &&
+      (await listConversationPage(
+        db,
+        chat.org.id,
+        chat.conversation.id,
+        query.data
+      ));
+    if (!page || page === "invalid_cursor") {
+      res.status(422).json({
+        error: {
+          code: "invalid_input",
+          issues: query.success ? [] : query.error.issues,
+        },
+      });
+      return;
+    }
+    res.json(page);
+  };
+  /** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 기록의 쪽과 상관없다. */
+  const listChatQueue = async (
+    req: express.Request,
+    res: express.Response,
+    conversationId?: string
+  ) => {
+    const chat = await findChat(String(req.params.id), conversationId);
+    if (!chat) return notFound(res);
+    res.json(await listQueuedMessages(db, chat.org.id, chat.conversation.id));
   };
   const sendChatMessage = async (
     req: express.Request,
@@ -514,8 +546,12 @@ export async function startServer({
 
   app.get(
     "/api/organizations/:id/conversations/:conversationId/messages",
-    (req, res) =>
-      listChatMessages(res, req.params.id, req.params.conversationId)
+    (req, res) => listChatMessages(req, res, req.params.conversationId)
+  );
+
+  app.get(
+    "/api/organizations/:id/conversations/:conversationId/queued-messages",
+    (req, res) => listChatQueue(req, res, req.params.conversationId)
   );
 
   app.post(
@@ -547,7 +583,11 @@ export async function startServer({
 
   // 기본 대화. 대화 경로가 생기기 전의 조회·보내기와 같다.
   app.get("/api/organizations/:id/messages", (req, res) =>
-    listChatMessages(res, req.params.id)
+    listChatMessages(req, res)
+  );
+
+  app.get("/api/organizations/:id/queued-messages", (req, res) =>
+    listChatQueue(req, res)
   );
 
   app.post("/api/organizations/:id/messages", (req, res) =>

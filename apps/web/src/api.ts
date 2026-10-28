@@ -6,6 +6,7 @@ import {
   artifactSchema,
   conversationMessageListSchema,
   conversationMessageSchema,
+  conversationPageSchema,
   conversationSummaryListSchema,
   eventListSchema,
   flowTemplateCopySchema,
@@ -33,6 +34,8 @@ import {
   taskListSchema,
   type AddResearchLinkInput,
   type AgentCommand,
+  type ConversationMessage,
+  type ConversationPage,
   type CreateOrganizationInput,
   type CreateResearchNodeInput,
   type DecideApprovalInput,
@@ -51,9 +54,12 @@ import {
 } from "@babojubot/contracts";
 import {
   queryOptions,
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type QueryClient,
 } from "@tanstack/react-query";
 import { z } from "zod";
 
@@ -63,7 +69,7 @@ export const queryKeys = {
   organization: (id: string) => ["organizations", id] as const,
   conversations: (id: string) =>
     ["organizations", id, "conversations"] as const,
-  /** 대화 하나의 메시지. 대화 ID가 없으면 기본 대화다. */
+  /** 대화 하나의 기록(쪽 단위). 대화 ID가 없으면 기본 대화다. */
   conversation: (id: string, conversationId?: string) =>
     [
       "organizations",
@@ -71,6 +77,15 @@ export const queryKeys = {
       "conversations",
       conversationId ?? "default",
       "messages",
+    ] as const,
+  /** 대화 하나의 줄 세운 메시지. */
+  queuedMessages: (id: string, conversationId?: string) =>
+    [
+      "organizations",
+      id,
+      "conversations",
+      conversationId ?? "default",
+      "queued",
     ] as const,
   events: (id: string, agentId?: string) =>
     ["organizations", id, "events", agentId ?? "all"] as const,
@@ -81,6 +96,7 @@ export const queryKeys = {
     ["organizations", id, "runs", { status: "running" }] as const,
   run: (id: string, runId: string) =>
     ["organizations", id, "runs", runId] as const,
+  agents: (id: string) => ["organizations", id, "agents"] as const,
   agent: (id: string, agentId: string) =>
     ["organizations", id, "agents", agentId] as const,
   instructions: (id: string, agentId: string) =>
@@ -207,23 +223,119 @@ export function useConversations(orgId: string) {
   });
 }
 
-/** 대화가 없으면 기본 대화의 경로. */
-const messagesPath = (orgId: string, conversationId?: string) =>
+/** 대화의 경로. 대화가 없으면 기본 대화다. */
+const chatPath = (orgId: string, conversationId?: string) =>
   orgPath(
     orgId,
-    conversationId
-      ? `/conversations/${encodeURIComponent(conversationId)}/messages`
-      : "/messages"
+    conversationId ? `/conversations/${encodeURIComponent(conversationId)}` : ""
   );
+const messagesPath = (orgId: string, conversationId?: string) =>
+  `${chatPath(orgId, conversationId)}/messages`;
+const pagePath = (
+  orgId: string,
+  conversationId: string | undefined,
+  cursor?: { before?: string; after?: string }
+) => {
+  const query = new URLSearchParams(cursor);
+  return `${messagesPath(orgId, conversationId)}${query.size ? `?${query}` : ""}`;
+};
 
-/** 대화 하나의 메시지. 대화 ID가 없으면 기본 대화다. */
+/** 불러온 대화 기록. 첫 쪽이 가장 최근 것이고 뒤로 갈수록 오래된 쪽이다. 쪽 안은 오래된 것부터다. */
+export type TranscriptData = InfiniteData<ConversationPage, string | null>;
+
+/**
+ * 대화 기록. 대화 ID가 없으면 기본 대화다. 처음에는 가장 최근 쪽만 받고 `fetchNextPage`가 더 오래된 쪽을 받는다.
+ * 새 메시지는 Event가 올 때 `catchUpConversation`이 가장 새 메시지 뒤의 것만 받아 붙이므로(불러온 쪽 전체를 다시 받지 않는다)
+ * 창 focus·재연결의 다시 불러오기를 끄고 오래됨으로 보지 않는다. 줄 세운 메시지는 `useQueuedMessages`가 따로 받는다.
+ */
 export function useConversation(orgId: string, conversationId?: string) {
-  return useQuery({
+  const queryClient = useQueryClient();
+  return useInfiniteQuery({
     queryKey: queryKeys.conversation(orgId, conversationId),
+    queryFn: ({ pageParam }) =>
+      request(
+        conversationPageSchema,
+        pagePath(orgId, conversationId, pageParam ? { before: pageParam } : {})
+      ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => (last.hasMore ? last.before : undefined),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: notFoundIsFinal,
+    meta: {
+      liveRefresh: () =>
+        catchUpConversation(queryClient, orgId, conversationId),
+    },
+  });
+}
+
+/**
+ * 불러온 대화 기록에 그 뒤에 온 메시지만 이어 붙인다(`?after=` 커서, 남으면 이어서). 아직 첫 쪽을 받지 않았으면 아무것도 하지 않고,
+ * 비어 있던 대화면 가장 최근 쪽을 새로 받는다. 서버의 새 메시지는 늘 받은 순서의 맨 뒤에 놓이므로 붙이기만 하면 된다.
+ */
+export async function catchUpConversation(
+  queryClient: QueryClient,
+  orgId: string,
+  conversationId?: string
+) {
+  const key = queryKeys.conversation(orgId, conversationId);
+  const data = queryClient.getQueryData<TranscriptData>(key);
+  if (!data) return;
+  const newestCursor = data.pages[0]?.after ?? null;
+  if (newestCursor === null) {
+    const fresh = await request(
+      conversationPageSchema,
+      pagePath(orgId, conversationId)
+    );
+    queryClient.setQueryData<TranscriptData>(key, (old) =>
+      old && (old.pages[0]?.after ?? null) === null
+        ? { pages: [fresh], pageParams: [null] }
+        : old
+    );
+    return;
+  }
+  let cursor: string = newestCursor;
+  const arrived: ConversationMessage[] = [];
+  for (;;) {
+    const page: ConversationPage = await request(
+      conversationPageSchema,
+      pagePath(orgId, conversationId, { after: cursor })
+    );
+    arrived.push(...page.messages);
+    cursor = page.after ?? cursor;
+    if (!page.hasMore) break;
+  }
+  if (!arrived.length) return;
+  queryClient.setQueryData<TranscriptData>(key, (old) => {
+    const newest = old?.pages[0];
+    if (!old || !newest) return old;
+    const seen = new Set(newest.messages.map((m) => m.id));
+    return {
+      ...old,
+      pages: [
+        {
+          ...newest,
+          messages: [
+            ...newest.messages,
+            ...arrived.filter((m) => !seen.has(m.id)),
+          ],
+          after: cursor,
+        },
+        ...old.pages.slice(1),
+      ],
+    };
+  });
+}
+
+/** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 ID가 없으면 기본 대화다. */
+export function useQueuedMessages(orgId: string, conversationId?: string) {
+  return useQuery({
+    queryKey: queryKeys.queuedMessages(orgId, conversationId),
     queryFn: () =>
       request(
         conversationMessageListSchema,
-        messagesPath(orgId, conversationId)
+        `${chatPath(orgId, conversationId)}/queued-messages`
       ),
     retry: notFoundIsFinal,
   });
@@ -252,11 +364,14 @@ export function useSendMessage(orgId: string, conversationId?: string) {
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: queryKeys.conversation(orgId, conversationId),
+          queryKey: queryKeys.queuedMessages(orgId, conversationId),
         }),
         queryClient.invalidateQueries({
           queryKey: queryKeys.conversations(orgId),
           exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents(orgId),
         }),
       ]),
   });
@@ -301,14 +416,17 @@ export function useQueuedMessageCommand(
     onSettled: () =>
       Promise.all([
         queryClient.invalidateQueries({
-          queryKey: queryKeys.conversation(orgId, conversationId),
+          queryKey: queryKeys.queuedMessages(orgId, conversationId),
         }),
+        catchUpConversation(queryClient, orgId, conversationId).catch(
+          () => undefined
+        ),
         queryClient.invalidateQueries({
           queryKey: queryKeys.conversations(orgId),
           exact: true,
         }),
         queryClient.invalidateQueries({
-          queryKey: [...queryKeys.organization(orgId), "agents"],
+          queryKey: queryKeys.agents(orgId),
         }),
       ]),
   });

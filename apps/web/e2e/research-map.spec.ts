@@ -241,8 +241,8 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
         (
           (await (
             await page.request.get(`/api/organizations/${org.id}/messages`)
-          ).json()) as { body: string }[]
-        ).some((m) => m.body.includes("사용자의 연구 지도 편집")),
+          ).json()) as { messages: { body: string }[] }
+        ).messages.some((m) => m.body.includes("사용자의 연구 지도 편집")),
       runs
     )
     .toBe(true);

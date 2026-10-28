@@ -1,4 +1,6 @@
 import {
+  conversationMessageListSchema,
+  conversationPageSchema,
   eventListSchema,
   organizationDetailSchema,
   taskDetailSchema,
@@ -17,6 +19,28 @@ import {
 } from "@babojubot/runtime";
 import { expect } from "vitest";
 import type { TestServer } from "./support.ts";
+
+/**
+ * 처음 연 대화 화면이 보는 메시지: 대화 기록의 가장 최근 쪽(Lead가 받은 순서) 뒤에 줄 세운 메시지 전부.
+ * `conversationId`를 비우면 기본 대화다.
+ */
+export async function chatMessages(
+  server: TestServer,
+  orgId: string,
+  conversationId?: string
+) {
+  const base = conversationId
+    ? `/api/organizations/${orgId}/conversations/${conversationId}`
+    : `/api/organizations/${orgId}`;
+  const page = await server.request("GET", `${base}/messages`);
+  expect(page.status).toBe(200);
+  const queued = await server.request("GET", `${base}/queued-messages`);
+  expect(queued.status).toBe(200);
+  return [
+    ...conversationPageSchema.parse(page.body).messages,
+    ...conversationMessageListSchema.parse(queued.body),
+  ];
+}
 
 // 가짜 실행기 시나리오로 조직을 진행시키는 API 테스트 helper. 실제 HTTP·조직 도구 경로만 쓴다.
 

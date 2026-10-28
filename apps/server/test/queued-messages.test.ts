@@ -1,7 +1,6 @@
 import {
   agentDetailSchema,
   maxQueuedMessages,
-  conversationMessageListSchema,
   conversationMessageSchema,
   organizationDetailSchema,
   runSummaryListSchema,
@@ -10,7 +9,13 @@ import {
 import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { goal, idle, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import {
+  chatMessages,
+  goal,
+  idle,
+  scriptedAgents,
+  serverHelpers,
+} from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 // 줄 세운 메시지: `중단하고 보내기`가 먼저 가고 줄 세운 메시지는 그 뒤 실행 시도가 받는다, 거두기·지금 보내기 API.
@@ -40,10 +45,7 @@ const sendNow = (orgId: string, messageId: string) =>
   post(orgId, `/messages/${messageId}/send-now`);
 const edit = (orgId: string, messageId: string, body: string) =>
   post(orgId, `/messages/${messageId}/edit`, { body });
-const conversation = async (orgId: string) =>
-  conversationMessageListSchema.parse(
-    await get(`/api/organizations/${orgId}/messages`)
-  );
+const conversation = (orgId: string) => chatMessages(t!, orgId);
 const runsOf = async (orgId: string) =>
   runSummaryListSchema.parse(await get(`/api/organizations/${orgId}/runs`));
 const bodies = (reasons: WakeReason[]) =>

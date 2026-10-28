@@ -1,6 +1,5 @@
 import {
   agentDetailSchema,
-  conversationMessageListSchema,
   organizationDetailSchema,
   runSummaryListSchema,
 } from "@babojubot/contracts";
@@ -9,6 +8,7 @@ import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
+  chatMessages,
   goal,
   idle,
   quietCreation,
@@ -122,11 +122,7 @@ describe("heartbeat", () => {
       { kind: "heartbeat", wakeId: expect.any(String) },
     ]);
     // heartbeat만으로 깨어난 가짜 Lead는 사용자에게 답장하지 않는다.
-    expect(
-      conversationMessageListSchema.parse(
-        (await t.request("GET", `/api/organizations/${org.id}/messages`)).body
-      )
-    ).toEqual([]);
+    expect(await chatMessages(t, org.id)).toEqual([]);
     expect((await agent(org.id, org.lead.id)).heartbeat.nextAt).toBe(
       time.iso(minutes(30))
     );

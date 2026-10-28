@@ -23,13 +23,12 @@ async function createOrganization(page: Page, name: string) {
       return list.length > 0 && list.every((r) => r.status === "completed");
     }, runs)
     .toBe(true);
-  /** 보낸 사용자 메시지가 실행 시도에 전달됐는가. */
+  /** 보낸 사용자 메시지가 실행 시도에 전달됐는가(대화 기록의 가장 최근 쪽에 있는가). */
   const delivered = async (body: string) => {
     const res = await page.request.get(api("/messages"));
-    const messages = (await res.json()) as {
-      body: string;
-      deliveredToRunId: string | null;
-    }[];
+    const { messages } = (await res.json()) as {
+      messages: { body: string; deliveredToRunId: string | null }[];
+    };
     return messages.find((m) => m.body === body)?.deliveredToRunId ?? null;
   };
   return { id: org.id, leadId, api, delivered };
@@ -256,9 +255,11 @@ async function deliveryOrder(
   page: Page,
   org: { api: (path: string) => string }
 ) {
-  const messages = (await (
+  const { messages } = (await (
     await page.request.get(org.api("/messages"))
-  ).json()) as { body: string; deliveredToRunId: string | null }[];
+  ).json()) as {
+    messages: { body: string; deliveredToRunId: string | null }[];
+  };
   const runIds = (
     (await (await page.request.get(org.api("/runs"))).json()) as {
       id: string;
@@ -304,7 +305,8 @@ test("queued messages wait above the composer where the owner can edit one in pl
   await expect(edit).toBeVisible();
   await edit.hover();
   await expect(page.getByRole("tooltip", { name: "고치기" })).toBeVisible();
-  await page.mouse.move(0, 0);
+  // tooltip이 위 항목의 버튼을 가리지 않게 닫는다.
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("tooltip")).toHaveCount(0);
 
   // 고치기는 그 항목을 그 자리에서 고치는 입력으로 바꾼다. Esc는 그대로 두고, 비우면 저장할 수 없다.

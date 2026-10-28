@@ -15,6 +15,7 @@ import {
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  chatMessages,
   goal,
   idle,
   reasons,
@@ -557,9 +558,9 @@ describe("add_worker approval policy", () => {
       kind: "approval",
       approval: { kind: "add_worker", organizationId: org.id },
     });
-    const replies = (await get(`/api/organizations/${org.id}/messages`)).filter(
-      (m: { author: string }) => m.author === "agent"
+    const replies = (await chatMessages(t!, org.id)).filter(
+      (m) => m.author === "agent"
     );
-    expect(replies.at(-1).body).toContain("승인을 요청했습니다");
+    expect(replies.at(-1)?.body).toContain("승인을 요청했습니다");
   });
 });

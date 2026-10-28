@@ -12,6 +12,8 @@ import {
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -27,6 +29,7 @@ import {
   useMarkConversationRead,
   useOrganization,
   useQueuedMessageCommand,
+  useQueuedMessages,
   useSendMessage,
   useStartConversation,
   type QueuedMessageCommand,
@@ -375,7 +378,11 @@ function usePageVisible() {
   );
 }
 
-/** 저장된 대화 하나: 메시지 목록과 입력창. 보이는 동안 Lead가 보낸 메시지를 읽은 것으로 표시한다. */
+/**
+ * 저장된 대화 하나: 대화 기록과 입력창. 보이는 동안 Lead가 보낸 메시지를 읽은 것으로 표시한다.
+ * 대화 기록은 Lead가 받은 순서이며 처음에는 가장 최근 쪽만 받고, 위로 올리면 더 오래된 쪽을 받는다(`Transcript`).
+ * 줄 세운 메시지는 대화 기록과 따로 받아 입력창 위에 둔다.
+ */
 function Thread({
   orgId,
   lead,
@@ -387,17 +394,24 @@ function Thread({
   conversationId: string | undefined;
   summary: ConversationSummary | undefined;
 }) {
-  const messages = useConversation(orgId, conversationId);
+  const history = useConversation(orgId, conversationId);
+  const queuedQuery = useQueuedMessages(orgId, conversationId);
   const send = useSendMessage(orgId, conversationId);
   const { mutate: markRead } = useMarkConversationRead(orgId);
   const visible = usePageVisible();
-  // 서버는 Lead가 받은 순서로 주며 줄 세운 메시지는 맨 뒤다. 본 위치도 받은 순서의 마지막 메시지까지다.
-  const transcript = messages.data?.filter((m) => !isQueued(m)) ?? [];
-  const queued = messages.data?.filter(isQueued) ?? [];
-  const last = transcript.at(-1);
+  const transcript = useMemo(
+    () =>
+      history.data?.pages
+        .slice()
+        .reverse()
+        .flatMap((p) => p.messages) ?? [],
+    [history.data]
+  );
+  const queued = queuedQuery.data ?? [];
   const marked = useRef<string | null>(null);
   const unreadId = summary?.unread ? summary.id : undefined;
-  const lastId = last?.id;
+  // 본 위치는 받은 순서의 마지막 메시지까지다.
+  const lastId = transcript.at(-1)?.id;
   useEffect(() => {
     // 같은 메시지까지는 한 번만 표시한다.
     if (!unreadId || !lastId || !visible || marked.current === lastId) return;
@@ -406,20 +420,24 @@ function Thread({
   }, [unreadId, lastId, visible, markRead]);
 
   if (
-    messages.isError &&
-    messages.error instanceof ApiError &&
-    messages.error.status === 404
+    history.isError &&
+    history.error instanceof ApiError &&
+    history.error.status === 404
   )
     return <NotFound what="대화" />;
   return (
     <>
-      <MessageScroller count={transcript.length}>
-        {messages.isPending ? (
+      {history.isPending ? (
+        <div className="min-h-0 flex-1">
           <Loading />
-        ) : messages.isError ? (
-          <LoadError what="대화" onRetry={() => void messages.refetch()} />
-        ) : !transcript.length ? (
-          conversationId === undefined || summary?.isDefault ? (
+        </div>
+      ) : history.isError && !history.data ? (
+        <div className="min-h-0 flex-1">
+          <LoadError what="대화" onRetry={() => void history.refetch()} />
+        </div>
+      ) : !transcript.length ? (
+        <div className="min-h-0 flex-1">
+          {(conversationId === undefined || summary?.isDefault) && (
             <div
               className="card animate-fade-up p-8 text-center"
               data-testid="lead-chat-empty"
@@ -429,11 +447,18 @@ function Thread({
               </div>
               <div className="font-semibold">아직 대화가 없습니다</div>
             </div>
-          ) : null
-        ) : (
-          <MessageList messages={transcript} orgId={orgId} lead={lead} />
-        )}
-      </MessageScroller>
+          )}
+        </div>
+      ) : (
+        <Transcript
+          messages={transcript}
+          hasOlder={history.hasNextPage}
+          loadingOlder={history.isFetchingNextPage}
+          loadOlder={() => history.fetchNextPage({ cancelRefetch: false })}
+          orgId={orgId}
+          lead={lead}
+        />
+      )}
       <Composer
         orgId={orgId}
         lead={lead}
@@ -445,9 +470,189 @@ function Thread({
   );
 }
 
-/** 줄 세운 메시지: 실행 시도가 아직 받지 않은 사용자 메시지. 조직·Lead가 일시정지라 기다리는 메시지도 같다. */
-const isQueued = (m: ConversationMessage) =>
-  m.author === "owner" && m.deliveredToRunId === null;
+/** 맨 아래에서 이만큼(px) 안이면 새 메시지를 따라 내려간다. */
+const followThreshold = 64;
+
+/**
+ * 대화 기록의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
+ * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
+ * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
+ * 새 메시지는 맨 아래 근처에 있을 때만 따라 내려가고, 아니면 `최신 메시지로` 버튼에 새로 온 수를 보인다.
+ * 위에 붙인 메시지는 읽어 주지 않고 새로 온 메시지만 조용히 알린다.
+ */
+function Transcript({
+  messages,
+  hasOlder,
+  loadingOlder,
+  loadOlder,
+  orgId,
+  lead,
+}: {
+  messages: ConversationMessage[];
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  loadOlder: () => Promise<{ isError: boolean }>;
+  orgId: string;
+  lead: Agent;
+}) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const sentinel = useRef<HTMLDivElement>(null);
+  const toast = useToast();
+  /** 위에 붙이기 직전 보이던 맨 위 메시지와 그 위치. 붙인 뒤 같은 자리로 되돌린다. */
+  const anchor = useRef<{ id: string; offset: number } | null>(null);
+  /** 받은 뒤 사용자가 새로 스크롤해야 다시 받는다. */
+  const armed = useRef(true);
+  /** 코드가 바꾼 스크롤은 사용자의 스크롤로 치지 않는다. */
+  const programmatic = useRef(false);
+  const atBottom = useRef(true);
+  const [unseen, setUnseen] = useState(0);
+  const [arrivals, setArrivals] = useState(0);
+  const first = messages[0]?.id;
+  const last = messages.at(-1)?.id;
+  // 처음 그릴 때는 맨 아래로 간다(빈 것에서 시작한 것으로 본다).
+  const previous = useRef<{
+    first: string | undefined;
+    last: string | undefined;
+    count: number;
+  }>({ first: undefined, last: undefined, count: 0 });
+
+  const scrollTo = (top: number) => {
+    const el = scroller.current;
+    if (!el) return;
+    programmatic.current = true;
+    el.scrollTop = top;
+    requestAnimationFrame(() => (programmatic.current = false));
+  };
+  const toBottom = () => {
+    scrollTo(scroller.current?.scrollHeight ?? 0);
+    atBottom.current = true;
+    setUnseen(0);
+  };
+
+  const older = async () => {
+    const el = scroller.current;
+    if (!el || loadingOlder || !hasOlder) return;
+    armed.current = false;
+    const top = el.getBoundingClientRect().top;
+    const visible = [
+      ...el.querySelectorAll<HTMLElement>("[data-message-id]"),
+    ].find((m) => m.getBoundingClientRect().bottom > top);
+    anchor.current = visible
+      ? {
+          id: visible.dataset.messageId!,
+          offset: visible.getBoundingClientRect().top - top,
+        }
+      : null;
+    const result = await loadOlder();
+    if (result.isError) {
+      anchor.current = null;
+      toast({ message: "이전 메시지를 불러오지 못했습니다" });
+    }
+  };
+  const olderRef = useRef(older);
+  useLayoutEffect(() => {
+    olderRef.current = older;
+  });
+
+  // 메시지가 바뀐 직후 그리기 전에: 위에 붙었으면 보던 메시지를 같은 자리로, 아래에 붙었으면 따라가거나 새로 온 수를 센다.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const before = previous.current;
+    previous.current = { first, last, count: messages.length };
+    if (!el) return;
+    if (before.count === 0) {
+      scrollTo(el.scrollHeight);
+      return;
+    }
+    if (first !== before.first && anchor.current) {
+      const target = el.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(anchor.current.id)}"]`
+      );
+      if (target) {
+        const offset =
+          target.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        scrollTo(el.scrollTop + offset - anchor.current.offset);
+      }
+      anchor.current = null;
+    }
+    if (last !== before.last) {
+      const index = messages.findIndex((m) => m.id === before.last);
+      const added = index === -1 ? 1 : messages.length - 1 - index;
+      if (added > 0) {
+        setArrivals((n) => n + added);
+        if (atBottom.current) scrollTo(el.scrollHeight);
+        else setUnseen((n) => n + added);
+      }
+    }
+  }, [first, last, messages]);
+
+  // 맨 위 sentinel이 300px 안에 들어오면 더 오래된 쪽을 받는다.
+  useEffect(() => {
+    const root = scroller.current;
+    const target = sentinel.current;
+    if (!root || !target || !hasOlder) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting && armed.current) void olderRef.current();
+      },
+      { root, rootMargin: "300px 0px 0px 0px" }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasOlder]);
+
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scroller}
+        data-testid="transcript-scroller"
+        className="scrollbar-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1 [overflow-anchor:none]"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          atBottom.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
+          if (atBottom.current) setUnseen(0);
+          if (!programmatic.current && !loadingOlder) armed.current = true;
+        }}
+      >
+        <div ref={sentinel} />
+        {hasOlder && (
+          <div className="mb-3 flex justify-center">
+            <button
+              type="button"
+              className="btn-ghost px-3 py-1 text-xs text-slate-500"
+              disabled={loadingOlder}
+              onClick={() => void older()}
+            >
+              {loadingOlder ? "불러오는 중…" : "이전 메시지 보기"}
+            </button>
+          </div>
+        )}
+        <MessageList
+          messages={messages}
+          orgId={orgId}
+          lead={lead}
+          busy={loadingOlder}
+        />
+      </div>
+      <p className="sr-only" aria-live="polite">
+        {arrivals > 0 ? `새 메시지 ${arrivals}개` : ""}
+      </p>
+      {unseen > 0 && (
+        <button
+          type="button"
+          onClick={toBottom}
+          className="absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-pop"
+        >
+          최신 메시지로
+          <span className="rounded-full bg-white/20 px-1.5 tabular-nums">
+            {unseen}
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
 
 /** 아직 저장하지 않은 새 대화. 첫 메시지를 보내면 대화가 생기고 그 대화의 주소로 옮긴다. */
 function DraftThread({ orgId, lead }: { orgId: string; lead: Agent }) {
@@ -455,7 +660,7 @@ function DraftThread({ orgId, lead }: { orgId: string; lead: Agent }) {
   const navigate = useNavigate();
   return (
     <>
-      <MessageScroller count={0} />
+      <div className="min-h-0 flex-1" />
       <Composer
         orgId={orgId}
         lead={lead}
@@ -475,36 +680,19 @@ function DraftThread({ orgId, lead }: { orgId: string; lead: Agent }) {
   );
 }
 
-function MessageScroller({
-  count,
-  children,
-}: {
-  count: number;
-  children?: ReactNode;
-}) {
-  const end = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    end.current?.scrollIntoView?.({ block: "end" });
-  }, [count]);
-  return (
-    <div className="scrollbar-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1">
-      {children}
-      <div ref={end} />
-    </div>
-  );
-}
-
 function MessageList({
   messages,
   orgId,
   lead,
+  busy,
 }: {
   messages: ConversationMessage[];
   orgId: string;
   lead: Agent;
+  busy: boolean;
 }) {
   return (
-    <ol className="space-y-3" aria-label="대화">
+    <ol className="space-y-3" aria-label="대화" aria-busy={busy || undefined}>
       {messages.map((m) => (
         <MessageBubble key={m.id} message={m} orgId={orgId} lead={lead} />
       ))}
@@ -527,6 +715,7 @@ function MessageBubble({
     <li
       className={`flex flex-col ${mine ? "items-end" : "items-start"}`}
       data-author={m.author}
+      data-message-id={m.id}
     >
       <div className="mb-1 text-[11px] text-slate-400">
         {mine ? "나" : lead.name} ·{" "}

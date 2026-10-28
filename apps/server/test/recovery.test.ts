@@ -4,6 +4,7 @@ import { once } from "node:events";
 import {
   approvalSummaryListSchema,
   conversationMessageListSchema,
+  conversationPageSchema,
   eventListSchema,
   organizationDetailSchema,
   runDetailSchema,
@@ -81,10 +82,14 @@ const api = (base: () => string) => {
       runDetailSchema.parse(
         (await call("GET", `/api/organizations/${orgId}/runs/${runId}`)).body
       ),
-    conversation: async (orgId: string) =>
-      conversationMessageListSchema.parse(
+    conversation: async (orgId: string) => [
+      ...conversationPageSchema.parse(
         (await call("GET", `/api/organizations/${orgId}/messages`)).body
+      ).messages,
+      ...conversationMessageListSchema.parse(
+        (await call("GET", `/api/organizations/${orgId}/queued-messages`)).body
       ),
+    ],
     events: async (orgId: string) =>
       eventListSchema.parse(
         (await call("GET", `/api/organizations/${orgId}/events`)).body

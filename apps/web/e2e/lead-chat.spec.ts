@@ -130,7 +130,9 @@ test("an empty Lead chat shows a neutral empty state", async ({ page }) => {
   // 가짜 Lead가 곧바로 답장하므로 대화 조회만 빈 목록으로 바꿔 빈 상태를 본다.
   await page.route(`**/api/organizations/${org.id}/messages`, (route) =>
     route.request().method() === "GET"
-      ? route.fulfill({ json: [] })
+      ? route.fulfill({
+          json: { messages: [], hasMore: false, before: null, after: null },
+        })
       : route.continue()
   );
   await page.goto(`/orgs/${org.id}/chat`);

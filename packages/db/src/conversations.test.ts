@@ -24,6 +24,8 @@ import {
   insertOwnerMessage,
   interruptRun,
   listConversationMessages,
+  listConversationPage,
+  listQueuedMessages,
   loadRunContext,
 } from "./runs.ts";
 import { conversations, organizations, wakes } from "./schema.ts";
@@ -550,6 +552,95 @@ describe("delivery order", () => {
       ["L0", false],
       ["A", true],
     ]);
+  });
+});
+
+// 대화 기록은 받은 순서 열쇠로 자르는 쪽(keyset)으로 읽는다. 줄 세운 메시지는 쪽과 따로다.
+describe("transcript pages", () => {
+  it("pages back through ties in delivery order, ends with hasMore false, and keeps older pages stable as new messages arrive", async () => {
+    const org = await organization();
+    const page = async (cursor: { before?: string; after?: string } = {}) => {
+      const result = await listConversationPage(
+        t.db,
+        org.organizationId,
+        org.defaultConversation.id,
+        { ...cursor, limit: 3 }
+      );
+      if (result === "invalid_cursor") throw new Error(result);
+      return { ...result, bodies: result.messages.map((m) => m.body) };
+    };
+    // 한 실행 시도가 받은 일곱 메시지는 위치가 같다. 같은 위치 안은 보낸 순서다.
+    for (let i = 1; i <= 7; i++)
+      await org.send(org.defaultConversation, `m${i}`);
+    const run = await org.claim();
+    await run.reply("L1");
+    await run.reply("L2");
+    await org.send(org.defaultConversation, "줄 선 말");
+
+    const latest = await page();
+    expect(latest).toMatchObject({ bodies: ["m7", "L1", "L2"], hasMore: true });
+    const middle = await page({ before: latest.before! });
+    expect(middle).toMatchObject({ bodies: ["m4", "m5", "m6"], hasMore: true });
+    const oldest = await page({ before: middle.before! });
+    expect(oldest).toMatchObject({
+      bodies: ["m1", "m2", "m3"],
+      hasMore: false,
+      before: null,
+    });
+
+    // 새 메시지가 와도 이미 받은 커서의 쪽은 그대로이고, `after`로 새 것만 이어 받는다.
+    await run.finish();
+    const next = await org.claim();
+    await next.reply("L3");
+    expect((await page({ before: latest.before! })).bodies).toEqual([
+      "m4",
+      "m5",
+      "m6",
+    ]);
+    const newer = await page({ after: latest.after! });
+    expect(newer).toMatchObject({
+      bodies: ["줄 선 말", "L3"],
+      hasMore: false,
+      before: null,
+    });
+    expect(await page({ after: newer.after! })).toMatchObject({
+      bodies: [],
+      hasMore: false,
+      after: newer.after,
+    });
+    for (const cursor of ["nope", Buffer.from("1.2").toString("base64url")])
+      expect(
+        await listConversationPage(
+          t.db,
+          org.organizationId,
+          org.defaultConversation.id,
+          { before: cursor }
+        )
+      ).toBe("invalid_cursor");
+  });
+
+  it("keeps queued messages out of the transcript pages and lists them apart", async () => {
+    const org = await organization();
+    await org.send(org.defaultConversation, "받은 말");
+    await org.claim();
+    await org.send(org.defaultConversation, "줄 선 말");
+    const result = await listConversationPage(
+      t.db,
+      org.organizationId,
+      org.defaultConversation.id
+    );
+    expect(
+      result !== "invalid_cursor" && result.messages.map((m) => m.body)
+    ).toEqual(["받은 말"]);
+    expect(
+      (
+        await listQueuedMessages(
+          t.db,
+          org.organizationId,
+          org.defaultConversation.id
+        )
+      ).map((m) => m.body)
+    ).toEqual(["줄 선 말"]);
   });
 });
 
