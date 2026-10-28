@@ -1,7 +1,6 @@
 import type {
   ArtifactSummary,
   DecideResultInput,
-  Event,
   ResultSubmission,
   ResultSubmissionSummary,
   SubmitResultInput,
@@ -11,10 +10,10 @@ import {
   planResultDecision,
   planResultSubmission,
   type RecordSource,
-  type Wake,
 } from "@babojubot/core";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { refused, stored, type Stored } from "./stored.ts";
 import {
   artifactSummaryColumns,
   insertEvent,
@@ -103,24 +102,16 @@ export function submitResult(
   });
 }
 
-/** 결정 결과. `resumed`면 일시정지 중이던 조직을 이 결정이 재개했고, `events`는 재개·결정 Event 순서다. */
-export type ResultDecisionResult =
-  | {
-      kind: "decided";
-      submission: ResultSubmission;
-      events: Event[];
-      wake: Wake | null;
-      resumed: boolean;
-    }
-  | { kind: "already_decided"; submission: ResultSubmission }
-  | { kind: "organization_closed" }
-  | { kind: "not_found" };
+export type ResultDecisionRefusal =
+  "already_decided" | "organization_closed" | "not_found";
 
 /**
  * 사용자의 결과 검토 제어 명령(수정 요청·최종 완료). 조직 행을 잠근 뒤 결정을 기다리는 제출에만 조건부로 결정을 적용하고,
  * 단계·(수정 요청이면) Lead 깨우기·Event를 같은 transaction에 저장한다. 이미 결정한 제출은 같은 결정이라도
  * 다시 적용하지 않는다(재제출 뒤 옛 제출에 대한 결정도 여기서 거부된다). 다른 조직의 제출과 없는 제출은 같은 `not_found`다.
  * 일시정지 중이면 조직을 재개하며 결정하고(최종 완료는 곧바로 완료), 중단된 조직에서는 `organization_closed`다.
+ * commit 뒤에는 재개·결정 Event 순서로 알리고, 재개했으면 그 조직의 대기 깨우기를 다시 처리한 뒤 수정 요청이면 Lead를 깨운다.
+ * 최종 완료 뒤에는 남은 깨우기가 있어도 admission이 실행 시도를 시작하지 않는다.
  */
 export async function decideResult(
   db: Database,
@@ -128,19 +119,18 @@ export async function decideResult(
   submissionId: string,
   input: DecideResultInput,
   source: RecordSource
-): Promise<ResultDecisionResult> {
+): Promise<Stored<ResultSubmission, ResultDecisionRefusal>> {
   if (!isUuid(organizationId) || !isUuid(submissionId))
-    return { kind: "not_found" };
+    return refused("not_found");
   return db.transaction(async (tx) => {
     const org = await lockOrganization(tx, organizationId);
-    if (!org) return { kind: "not_found" };
+    if (!org) return refused("not_found");
     const current = await selectSubmission(tx, organizationId, submissionId);
-    if (!current) return { kind: "not_found" };
-    if (current.status !== "pending")
-      return { kind: "already_decided", submission: current };
+    if (!current) return refused("not_found");
+    if (current.status !== "pending") return refused("already_decided");
     const decisionStage = planDecisionStage(org, "result_review");
     if (decisionStage.kind === "organization_closed")
-      return { kind: decisionStage.kind };
+      return refused(decisionStage.kind);
     if (decisionStage.kind === "stage_mismatch")
       throw new Error(
         `pending result submission ${submissionId} in an organization at ${org.stage}`
@@ -179,13 +169,11 @@ export async function decideResult(
       ...(resumed ? [await insertEvent(tx, resumed)] : []),
       await insertEvent(tx, plan.event),
     ];
-    return {
-      kind: "decided",
-      submission: toResultSubmission(decided, current.artifacts),
+    return stored(toResultSubmission(decided, current.artifacts), {
       events,
-      wake: plan.wake,
-      resumed: resumed !== null,
-    };
+      ...(resumed ? { resumedOrganizationId: organizationId } : {}),
+      woken: plan.wake ? [plan.wake.agentId] : [],
+    });
   });
 }
 

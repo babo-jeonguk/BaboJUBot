@@ -54,13 +54,20 @@ describe("organization records", () => {
 
   it("stores the organization, its Lead and the Event together", async () => {
     const creation = plan("조직 A");
-    const event = await insertOrganizationCreation(t.db, creation);
+    const created = await insertOrganizationCreation(t.db, creation);
+    if (created.kind !== "ok") throw new Error(created.reason);
+    expect(created.value).toMatchObject({
+      id: creation.organization.id,
+      agents: [{ role: "lead" }],
+    });
+    expect(created.after.woken).toEqual([creation.wake.agentId]);
+    const [event] = created.after.events;
 
     expect(event).toMatchObject({
       organizationId: creation.organization.id,
       type: "organization.created",
     });
-    expect(event.id).toBeGreaterThan(0);
+    expect(event!.id).toBeGreaterThan(0);
     const detail = await findOrganization(t.db, creation.organization.id);
     expect(detail).toMatchObject({
       id: creation.organization.id,
@@ -188,26 +195,35 @@ describe("organization records", () => {
     // 다른 조직의 에이전트는 없는 에이전트와 같다.
     expect(
       await updateAgentProfile(t.db, orgA, leadB.id, { name: "가로채기" })
-    ).toEqual({ kind: "not_found" });
+    ).toEqual({ kind: "refused", reason: "not_found" });
     const changed = await updateAgentProfile(t.db, orgA, leadA.id, {
       name: "총괄",
       appearance: face,
     });
     expect(changed).toMatchObject({
-      kind: "changed",
-      event: {
-        organizationId: orgA,
-        type: "agent.profile_changed",
-        payload: {
-          agentId: leadA.id,
-          name: { from: leadA.name, to: "총괄" },
-          appearance: face,
-        },
+      kind: "ok",
+      value: { id: leadA.id, name: "총괄", appearance: face },
+      after: {
+        events: [
+          {
+            organizationId: orgA,
+            type: "agent.profile_changed",
+            payload: {
+              agentId: leadA.id,
+              name: { from: leadA.name, to: "총괄" },
+              appearance: face,
+            },
+          },
+        ],
       },
     });
     expect(
       await updateAgentProfile(t.db, orgA, leadA.id, { appearance: face })
-    ).toEqual({ kind: "unchanged" });
+    ).toMatchObject({
+      kind: "ok",
+      value: { name: "총괄" },
+      after: { events: [] },
+    });
     expect((await findOrganization(t.db, orgA))?.agents[0]).toMatchObject({
       name: "총괄",
       appearance: face,
@@ -280,10 +296,9 @@ describe("agent names", () => {
       updateAgentProfile(t.db, orgId, lead.id, { name: "Analyst 2" }),
       updateAgentProfile(t.db, orgId, worker.id, { name: "analyst 2" }),
     ]);
-    expect(results.map((r) => r.kind).sort()).toEqual([
-      "changed",
-      "name_taken",
-    ]);
+    expect(
+      results.map((r) => (r.kind === "ok" ? r.kind : r.reason)).sort()
+    ).toEqual(["name_taken", "ok"]);
     const names = (await namesOf(orgId))!.map((n) => n.toLowerCase());
     expect(names.filter((n) => n === "analyst 2")).toHaveLength(1);
   });
@@ -315,7 +330,7 @@ describe("agent names", () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       await other.query("commit");
-      expect(await renaming).toEqual({ kind: "name_taken" });
+      expect(await renaming).toEqual({ kind: "refused", reason: "name_taken" });
     } finally {
       await other.end();
     }

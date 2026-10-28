@@ -24,6 +24,7 @@ import {
   loadRunContext,
 } from "./runs.ts";
 import { organizations } from "./schema.ts";
+import { refused } from "./stored.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 
 // 줄 세운 메시지: `중단하고 보내기` 실행 시도의 깨우기 묶음, 거두기·지금 보내기와 admission의 직렬화.
@@ -77,7 +78,7 @@ async function organization() {
   };
   const send = async (body: string, delivery: MessageDelivery = "next_run") => {
     const { plan, stored } = await attempt(body, delivery);
-    expect(stored.kind).toBe("sent");
+    expect(stored.kind).toBe("ok");
     return plan.message;
   };
   const listed = async () =>
@@ -112,12 +113,12 @@ describe("interrupt runs", () => {
 
     const sent = await sendQueuedMessageNow(t.db, orgId, now.id);
     expect(sent).toMatchObject({
-      kind: "changed",
-      message: { id: now.id, delivery: "interrupt" },
-      cancellation: null,
+      kind: "ok",
+      value: { id: now.id, delivery: "interrupt" },
+      after: { cancellation: null, woken: [now.agentId] },
     });
     expect(
-      sent.kind === "changed" ? sent.events.map((e) => e.type) : []
+      sent.kind === "ok" ? sent.after.events.map((e) => e.type) : []
     ).toEqual(["message.sent_now", "agent.interrupted"]);
 
     const first = await claim();
@@ -153,7 +154,7 @@ describe("the queued message list", () => {
     ]);
     expect(
       await withdrawQueuedMessage(t.db, orgId, oldest.id, source)
-    ).toMatchObject({ kind: "changed" });
+    ).toMatchObject({ kind: "ok" });
     expect(await listed()).toEqual([
       "받은 둘",
       "받은 셋",
@@ -179,7 +180,7 @@ describe("the queue cap", () => {
       ["next_run", "new"],
     ] as const) {
       const { plan, stored } = await attempt("하나 더", delivery, to);
-      expect(stored).toEqual({ kind: "queue_full" });
+      expect(stored).toEqual(refused("queue_full"));
       if (plan.conversation)
         expect(
           await findConversation(t.db, orgId, plan.conversation.id)
@@ -187,15 +188,15 @@ describe("the queue cap", () => {
     }
 
     await withdrawQueuedMessage(t.db, orgId, first.id, source);
-    expect((await attempt("자리가 났다")).stored.kind).toBe("sent");
-    expect((await attempt("다시 가득")).stored.kind).toBe("queue_full");
+    expect((await attempt("자리가 났다")).stored.kind).toBe("ok");
+    expect((await attempt("다시 가득")).stored).toEqual(refused("queue_full"));
   });
 
   it("frees slots once a run takes the messages", async () => {
     const { attempt, send, claim } = await organization();
     for (let i = 0; i < maxQueuedMessages; i++) await send(`줄 ${i}`);
     await claim();
-    expect((await attempt("받은 뒤")).stored.kind).toBe("sent");
+    expect((await attempt("받은 뒤")).stored.kind).toBe("ok");
   });
 });
 
@@ -208,10 +209,10 @@ describe("editing a queued message", () => {
 
     const edited = await editQueuedMessage(t.db, orgId, middle.id, "둘 고침");
     expect(edited).toMatchObject({
-      kind: "changed",
-      message: { id: middle.id, body: "둘 고침", delivery: "interrupt" },
+      kind: "ok",
+      value: { id: middle.id, body: "둘 고침", delivery: "interrupt" },
     });
-    expect(edited.kind === "changed" ? edited.events : []).toMatchObject([
+    expect(edited.kind === "ok" ? edited.after.events : []).toMatchObject([
       {
         type: "message.edited",
         payload: {
@@ -225,9 +226,9 @@ describe("editing a queued message", () => {
     expect(await listed()).toEqual(["하나", "둘 고침", "셋"]);
     // Lead는 고친 글을 받는다.
     expect(bodies((await claim())?.wakeReasons)).toEqual(["둘 고침"]);
-    expect(await editQueuedMessage(t.db, orgId, middle.id, "늦음")).toEqual({
-      kind: "message_delivered",
-    });
+    expect(await editQueuedMessage(t.db, orgId, middle.id, "늦음")).toEqual(
+      refused("message_delivered")
+    );
   });
 
   it("allows editing while paused but not in a closed organization, where withdrawing still works", async () => {
@@ -239,20 +240,20 @@ describe("editing a queued message", () => {
       .where(eq(organizations.id, orgId));
     expect(
       (await editQueuedMessage(t.db, orgId, message.id, "멈춘 동안 고침")).kind
-    ).toBe("changed");
+    ).toBe("ok");
     await t.db
       .update(organizations)
       .set({ stage: "stopped", pausedFrom: null })
       .where(eq(organizations.id, orgId));
-    expect(await editQueuedMessage(t.db, orgId, message.id, "x")).toEqual({
-      kind: "organization_closed",
-    });
+    expect(await editQueuedMessage(t.db, orgId, message.id, "x")).toEqual(
+      refused("organization_closed")
+    );
     expect(
       (await withdrawQueuedMessage(t.db, orgId, message.id, source)).kind
-    ).toBe("changed");
+    ).toBe("ok");
     expect(
       await editQueuedMessage(t.db, randomUUID(), message.id, "x")
-    ).toEqual({ kind: "not_found" });
+    ).toEqual(refused("not_found"));
   });
 });
 
@@ -269,23 +270,25 @@ describe("withdrawing a queued message", () => {
       source
     );
     expect(result).toMatchObject({
-      kind: "changed",
-      message: { id: withdrawn.id, body: "거둘 말", deliveredToRunId: null },
-      events: [
-        {
-          type: "message.withdrawn",
-          payload: { by: "owner", messageId: withdrawn.id },
-        },
-      ],
+      kind: "ok",
+      value: { id: withdrawn.id, body: "거둘 말", deliveredToRunId: null },
+      after: {
+        events: [
+          {
+            type: "message.withdrawn",
+            payload: { by: "owner", messageId: withdrawn.id },
+          },
+        ],
+      },
     });
     expect(await listed()).toEqual(["남길 말"]);
     // 다시 거두거나 지금 보낼 수 없다.
     expect(
       await withdrawQueuedMessage(t.db, orgId, withdrawn.id, source)
-    ).toEqual({ kind: "not_found" });
-    expect(await sendQueuedMessageNow(t.db, orgId, withdrawn.id)).toEqual({
-      kind: "not_found",
-    });
+    ).toEqual(refused("not_found"));
+    expect(await sendQueuedMessageNow(t.db, orgId, withdrawn.id)).toEqual(
+      refused("not_found")
+    );
 
     const run = await claim();
     expect(bodies(run?.wakeReasons)).toEqual(["남길 말"]);
@@ -294,12 +297,12 @@ describe("withdrawing a queued message", () => {
       "남길 말",
     ]);
     // 실행 시도가 받은 메시지는 거두거나 지금 보낼 수 없다.
-    expect(await withdrawQueuedMessage(t.db, orgId, kept.id, source)).toEqual({
-      kind: "message_delivered",
-    });
-    expect(await sendQueuedMessageNow(t.db, orgId, kept.id)).toEqual({
-      kind: "message_delivered",
-    });
+    expect(await withdrawQueuedMessage(t.db, orgId, kept.id, source)).toEqual(
+      refused("message_delivered")
+    );
+    expect(await sendQueuedMessageNow(t.db, orgId, kept.id)).toEqual(
+      refused("message_delivered")
+    );
   });
 
   it("moves the conversation's last activity back when its newest message is withdrawn", async () => {
@@ -318,13 +321,13 @@ describe("withdrawing a queued message", () => {
     const message = await a.send("a의 말");
     expect(
       await withdrawQueuedMessage(t.db, b.orgId, message.id, source)
-    ).toEqual({ kind: "not_found" });
-    expect(await sendQueuedMessageNow(t.db, b.orgId, message.id)).toEqual({
-      kind: "not_found",
-    });
+    ).toEqual(refused("not_found"));
+    expect(await sendQueuedMessageNow(t.db, b.orgId, message.id)).toEqual(
+      refused("not_found")
+    );
     expect(
       await withdrawQueuedMessage(t.db, a.orgId, "not-a-uuid", source)
-    ).toEqual({ kind: "not_found" });
+    ).toEqual(refused("not_found"));
   });
 
   it("is serialized with admission: either the run takes the message or the withdrawal does, never both", async () => {
@@ -335,9 +338,9 @@ describe("withdrawing a queued message", () => {
         claim(),
         withdrawQueuedMessage(t.db, orgId, message.id, source),
       ]);
-      if (result.kind === "changed") expect(run).toBeUndefined();
+      if (result.kind === "ok") expect(run).toBeUndefined();
       else {
-        expect(result).toEqual({ kind: "message_delivered" });
+        expect(result).toEqual(refused("message_delivered"));
         expect(bodies(run?.wakeReasons)).toEqual(["경주하는 말"]);
       }
     }

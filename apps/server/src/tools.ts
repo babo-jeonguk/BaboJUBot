@@ -65,6 +65,7 @@ import {
 } from "@babojubot/db";
 import express from "express";
 import type { z } from "zod";
+import { applyAfterCommit } from "./after-commit.ts";
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
 import { listHarnessLibrary, loadHarnessLibrary } from "./harness.ts";
@@ -198,15 +199,14 @@ export function orgToolsRouter({
    * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다.
    * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
    */
-  const respondWrite = <T, P extends ToolProblem>(
+  const respondWrite = async <T, P extends ToolProblem>(
     res: express.Response,
     result: ToolWrite<T, P>,
     status = 201
   ) => {
     switch (result.kind) {
       case "ok":
-        hub.publish(...result.events);
-        for (const agentId of result.woken ?? []) dispatcher.kick(agentId);
+        await applyAfterCommit({ hub, dispatcher }, result);
         return res.status(status).json(result.value);
       case "run_finished":
         return refuse(res, 401, "invalid_token");
@@ -259,7 +259,7 @@ export function orgToolsRouter({
     tool("send_message", async (req, res, run) => {
       const input = sendAgentMessageInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await insertAgentMessage(db, run, input.data, {
           source,
@@ -292,7 +292,7 @@ export function orgToolsRouter({
     tool("record_goal", async (req, res, run) => {
       const input = recordGoalInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await recordGoal(
           db,
@@ -310,7 +310,7 @@ export function orgToolsRouter({
       const input = requestInitialApprovalInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
       const heads = input.data.team.reduce((n, m) => n + m.count, 0);
-      respondWrite(
+      await respondWrite(
         res,
         await insertInitialApprovalRequest(db, run, input.data, {
           library: await loadHarnessLibrary(harnessDir),
@@ -330,7 +330,7 @@ export function orgToolsRouter({
     tool("create_task", async (req, res, run) => {
       const input = createTaskInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await createTask(db, run, input.data, {
           source,
@@ -383,7 +383,7 @@ export function orgToolsRouter({
     tool("start_task", async (req, res, run) => {
       if (!startTaskInputSchema.safeParse(req.body ?? {}).success)
         return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await startTask(db, run, param(req, "taskId"), {
           source,
@@ -399,7 +399,7 @@ export function orgToolsRouter({
     tool("complete_task", async (req, res, run) => {
       const input = completeTaskInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await completeTask(db, run, param(req, "taskId"), input.data.summary, {
           source,
@@ -419,7 +419,7 @@ export function orgToolsRouter({
     tool("comment_task", async (req, res, run) => {
       const input = addTaskCommentInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await commentTask(db, run, param(req, "taskId"), input.data.body, {
           source,
@@ -438,7 +438,7 @@ export function orgToolsRouter({
     tool("record_artifact", async (req, res, run) => {
       const input = recordArtifactInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await recordArtifact(db, run, input.data, {
           source,
@@ -478,7 +478,7 @@ export function orgToolsRouter({
     tool("message_agent", async (req, res, run) => {
       const input = sendAgentToAgentMessageInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await sendAgentToAgentMessage(db, run, input.data, {
           source,
@@ -539,7 +539,7 @@ export function orgToolsRouter({
     tool(name, async (req, res, run) => {
       const input = schema.safeParse(req.body ?? {});
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await writeResearchMap(db, run, command(input.data, req), {
           source,
@@ -663,7 +663,7 @@ export function orgToolsRouter({
         source,
         ...callOf(res, "add_worker", `작업자 추가: ${input.data.role}`),
       });
-      respondWrite(
+      await respondWrite(
         res,
         result,
         result.kind === "ok" && result.value.status === "pending_approval"
@@ -678,7 +678,7 @@ export function orgToolsRouter({
     tool("submit_result", async (req, res, run) => {
       const input = submitResultInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await submitResult(db, run, input.data, {
           source,
@@ -698,7 +698,7 @@ export function orgToolsRouter({
     tool("write_memory", async (req, res, run) => {
       const input = writeMemoryInputSchema.safeParse(req.body);
       if (!input.success) return refuse(res, 422, "invalid_input");
-      respondWrite(
+      await respondWrite(
         res,
         await writeMemory(db, run, input.data, {
           source,

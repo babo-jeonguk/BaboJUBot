@@ -3,7 +3,6 @@ import type {
   Artifact,
   ArtifactSummary,
   CreateTaskInput,
-  Event,
   RecordArtifactInput,
   SendAgentToAgentMessageInput,
   Task,
@@ -20,13 +19,14 @@ import {
   planTaskStart,
   taskNodeProblem,
   type RecordSource,
+  type Wake,
   type TaskRuleProblem,
   type TaskState,
-  type Wake,
 } from "@babojubot/core";
 import { and, asc, eq, ne } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
+import { refused, stored, type Stored } from "./stored.ts";
 import {
   artifactSummaryColumns,
   insertEvent,
@@ -245,13 +245,9 @@ export function sendAgentToAgentMessage(
   });
 }
 
-export type OwnerCommentResult =
-  | { kind: "ok"; comment: TaskComment; event: Event; wake: Wake }
-  | { kind: "not_found" };
-
 /**
- * 사용자의 작업 댓글. 댓글·담당자 깨우기·Event를 한 transaction으로 저장한다. 완료된 작업에도 남길 수 있으며
- * 작업 상태는 바꾸지 않는다. 다른 조직의 작업과 없는 작업은 같은 `not_found`다.
+ * 사용자의 작업 댓글. 댓글·담당자 깨우기·Event를 한 transaction으로 저장하고 commit 뒤 담당자를 깨운다. 완료된 작업에도 남길 수 있으며
+ * 작업 상태는 바꾸지 않는다. 담당자가 실행 중이면 댓글은 다음 실행 시도에 반영된다. 다른 조직의 작업과 없는 작업은 같은 `not_found`다.
  */
 export async function insertOwnerTaskComment(
   db: Database,
@@ -259,16 +255,19 @@ export async function insertOwnerTaskComment(
   taskId: string,
   body: string,
   source: RecordSource
-): Promise<OwnerCommentResult> {
-  if (!isUuid(organizationId) || !isUuid(taskId)) return { kind: "not_found" };
+): Promise<Stored<TaskComment, "not_found">> {
+  if (!isUuid(organizationId) || !isUuid(taskId)) return refused("not_found");
   return db.transaction(async (tx) => {
     const task = await selectTask(tx, organizationId, taskId);
-    if (!task) return { kind: "not_found" };
+    if (!task) return refused("not_found");
     const plan = planOwnerTaskComment(task, body, source);
     await tx.insert(taskComments).values(commentRow(plan.comment));
     await insertWake(tx, plan.wake);
     const event = await insertEvent(tx, plan.event);
-    return { kind: "ok", comment: plan.comment, event, wake: plan.wake };
+    return stored(plan.comment, {
+      events: [event],
+      woken: [plan.wake.agentId],
+    });
   });
 }
 

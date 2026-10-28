@@ -120,7 +120,7 @@ describe("Lead conversations", () => {
   it("stores a new conversation only together with its first owner message", async () => {
     const org = await organization();
     const { plan, stored } = await org.send("new", "데이터셋 후보를 찾아 줘");
-    expect(stored.kind).toBe("sent");
+    expect(stored.kind).toBe("ok");
     expect(
       await findConversation(t.db, org.organizationId, plan.conversation!.id)
     ).toEqual(plan.conversation);
@@ -140,7 +140,10 @@ describe("Lead conversations", () => {
       .set({ stage: "stopped" })
       .where(eq(organizations.id, org.organizationId));
     const refused = await org.send("new", "멈춰", "interrupt");
-    expect(refused.stored.kind).toBe("organization_closed");
+    expect(refused.stored).toEqual({
+      kind: "refused",
+      reason: "organization_closed",
+    });
     expect(
       await findConversation(
         t.db,
@@ -149,9 +152,10 @@ describe("Lead conversations", () => {
       )
     ).toBeUndefined();
     // 줄 세우기도 같다.
-    expect((await org.send("new", "나중에 읽어 줘")).stored.kind).toBe(
-      "organization_closed"
-    );
+    expect((await org.send("new", "나중에 읽어 줘")).stored).toEqual({
+      kind: "refused",
+      reason: "organization_closed",
+    });
   });
 
   it("routes the Lead's reply to the conversation the owner messages came from, and other replies to the default conversation", async () => {
@@ -440,7 +444,7 @@ describe("delivery order", () => {
       const { plan } = await org.send(org.defaultConversation, body);
       ids[body] = plan.message.id;
     }
-    expect(stored.kind).toBe("sent");
+    expect(stored.kind).toBe("ok");
     return { org, run0, ids, transcript };
   }
 
@@ -450,7 +454,7 @@ describe("delivery order", () => {
     expect(await transcript()).toEqual(["H", "L0", "A", "B", "C"]);
 
     const sent = await sendQueuedMessageNow(t.db, org.organizationId, ids.B!);
-    expect(sent.kind).toBe("changed");
+    expect(sent.kind).toBe("ok");
     expect(await transcript()).toEqual(["H", "L0", "A", "B", "C"]);
     await run0.finish();
     const run1 = await org.claim();

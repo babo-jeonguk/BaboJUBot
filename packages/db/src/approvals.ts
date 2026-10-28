@@ -2,7 +2,6 @@ import type {
   Approval,
   ApprovalSummary,
   DecideApprovalInput,
-  Event,
   Organization,
   RecordGoalInput,
   RequestInitialApprovalInput,
@@ -17,10 +16,10 @@ import {
   type PendingApproval,
   type ProposalProblem,
   type RecordSource,
-  type Wake,
 } from "@babojubot/core";
 import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { refused, stored, type Stored } from "./stored.ts";
 import { insertInstructionCopies } from "./harness.ts";
 import {
   agentRow,
@@ -128,19 +127,11 @@ export function insertInitialApprovalRequest(
   );
 }
 
-/** 결정 결과. `resumed`면 일시정지 중이던 조직을 이 결정이 재개했고, `events`는 재개·결정 Event 순서다. */
-export type DecisionResult =
-  | {
-      kind: "decided";
-      approval: Approval;
-      events: Event[];
-      wake: Wake;
-      resumed: boolean;
-    }
-  | { kind: "already_decided"; approval: Approval }
-  | { kind: "decision_not_allowed" }
-  | { kind: "organization_closed" }
-  | { kind: "not_found" };
+export type DecisionRefusal =
+  | "already_decided"
+  | "decision_not_allowed"
+  | "organization_closed"
+  | "not_found";
 
 /**
  * 사용자의 승인 결정 제어 명령. 조직 행을 잠근 뒤 결정을 기다리는 요청에만 조건부로 결정을 적용하고,
@@ -149,6 +140,7 @@ export type DecisionResult =
  * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 `decision_not_allowed`이며 아무것도 남기지 않는다.
  * 초기 연구 승인 결정은 단계를 바꾸므로, 일시정지 중이면 조직을 재개하며 결정하고 중단된 조직에서는 `organization_closed`다.
  * 작업자 추가 결정은 단계와 상관없이 받으며 일시정지를 풀지 않는다(#58).
+ * commit 뒤에는 재개·결정 Event 순서로 알리고, 재개했으면 그 조직의 대기 깨우기를 다시 처리한 뒤 Lead를 깨운다.
  */
 export async function decideApproval(
   db: Database,
@@ -156,12 +148,12 @@ export async function decideApproval(
   approvalId: string,
   input: DecideApprovalInput,
   source: RecordSource
-): Promise<DecisionResult> {
+): Promise<Stored<Approval, DecisionRefusal>> {
   if (!isUuid(organizationId) || !isUuid(approvalId))
-    return { kind: "not_found" };
+    return refused("not_found");
   return db.transaction(async (tx) => {
     const org = await lockOrganization(tx, organizationId);
-    if (!org) return { kind: "not_found" };
+    if (!org) return refused("not_found");
     const [current] = await tx
       .select()
       .from(approvals)
@@ -171,15 +163,14 @@ export async function decideApproval(
           eq(approvals.id, approvalId)
         )
       );
-    if (!current) return { kind: "not_found" };
-    if (current.status !== "pending")
-      return { kind: "already_decided", approval: toApproval(current) };
+    if (!current) return refused("not_found");
+    if (current.status !== "pending") return refused("already_decided");
     const decisionStage = planDecisionStage(
       org,
       current.kind === "initial_research" ? "awaiting_approval" : null
     );
     if (decisionStage.kind === "organization_closed")
-      return { kind: decisionStage.kind };
+      return refused(decisionStage.kind);
     if (decisionStage.kind === "stage_mismatch")
       throw new Error(
         `pending approval ${approvalId} in an organization at ${org.stage}`
@@ -196,7 +187,7 @@ export async function decideApproval(
       },
       source
     );
-    if (plan === "decision_not_allowed") return { kind: plan };
+    if (plan === "decision_not_allowed") return refused(plan);
     const [decided] = await tx
       .update(approvals)
       .set({
@@ -239,13 +230,11 @@ export async function decideApproval(
       ...(resumed ? [await insertEvent(tx, resumed)] : []),
       await insertEvent(tx, plan.event),
     ];
-    return {
-      kind: "decided",
-      approval: toApproval(decided),
+    return stored(toApproval(decided), {
       events,
-      wake: plan.wake,
-      resumed: resumed !== null,
-    };
+      ...(resumed ? { resumedOrganizationId: organizationId } : {}),
+      woken: [plan.wake.agentId],
+    });
   });
 }
 

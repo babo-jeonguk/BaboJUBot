@@ -31,6 +31,7 @@ import {
 } from "@babojubot/core";
 import { and, asc, eq, inArray, or } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { refused, stored, type Stored } from "./stored.ts";
 import {
   artifactSummaryColumns,
   insertEvent,
@@ -135,28 +136,25 @@ export function writeResearchMap<C extends MapCommand>(
   );
 }
 
-export type OwnerMapEditResult<T> =
-  | { kind: "ok"; value: T; event: Event | undefined; wake: Wake | undefined }
-  | { kind: "invalid"; problem: MapRuleProblem }
-  | { kind: "stage_closed" };
+export type OwnerMapEditRefusal = MapRuleProblem | "stage_closed";
 
 /**
  * 사용자의 연구 지도 편집. 조직 행을 잠근 뒤 편집을 받는 단계(초기 연구 승인 뒤, 최종 완료·중단 전)인지 확인하고, 변경·편집 기록·
  * Lead 깨우기·Event를 한 transaction에 저장한다. 지금과 같은 값이면 아무것도 남기지 않는다. 없는 조직은 `not_found`다.
+ * Lead가 실행 중이면 편집은 다음 실행 시도에 반영된다.
  */
 export async function editResearchMap<C extends MapCommand>(
   db: Database,
   organizationId: string,
   command: C,
   source: RecordSource
-): Promise<OwnerMapEditResult<MapCommandValue<C>>> {
-  if (!isUuid(organizationId)) return { kind: "invalid", problem: "not_found" };
+): Promise<Stored<MapCommandValue<C>, OwnerMapEditRefusal>> {
+  if (!isUuid(organizationId)) return refused("not_found");
   return db.transaction(async (tx) => {
     const org = await lockOrganization(tx, organizationId);
-    if (!org) return { kind: "invalid", problem: "not_found" };
+    if (!org) return refused("not_found");
     const map = await loadMap(tx, organizationId);
-    if (!acceptsOwnerMapEdit(org.stage) || !map)
-      return { kind: "stage_closed" };
+    if (!acceptsOwnerMapEdit(org.stage) || !map) return refused("stage_closed");
     const lead = findLead(
       await tx
         .select({ id: agents.id, role: agents.role })
@@ -164,13 +162,18 @@ export async function editResearchMap<C extends MapCommand>(
         .where(eq(agents.organizationId, organizationId))
     );
     if (!lead) throw new Error(`organization ${organizationId} has no Lead`);
-    return apply(
+    const applied = await apply(
       tx,
       map,
       { author: "owner", leadAgentId: lead.id },
       command,
       source
     );
+    if (applied.kind === "invalid") return refused(applied.problem);
+    return stored(applied.value, {
+      events: applied.event ? [applied.event] : [],
+      woken: applied.wake ? [applied.wake.agentId] : [],
+    });
   });
 }
 

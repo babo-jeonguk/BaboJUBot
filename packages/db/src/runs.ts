@@ -2,6 +2,7 @@ import {
   conversationPageSize,
   type AgentDetail,
   type AgentRole,
+  type Conversation,
   type ConversationMessage,
   type ConversationPage,
   type Event,
@@ -32,7 +33,6 @@ import {
   type PendingWake,
   runBlockingStages,
   type RecordSource,
-  type RunCancellation,
 } from "@babojubot/core";
 import {
   and,
@@ -49,6 +49,7 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
+import { refused, stored, type Stored } from "./stored.ts";
 import {
   contextConversations,
   conversationRow,
@@ -105,29 +106,31 @@ import {
  * 다른 보내기·거두기·admission과 직렬화하므로 센 수가 상한을 넘지 않는다.
  * `중단하고 보내기`면 같은 transaction에서 받는 에이전트의 진행 중 실행 시도에 취소를 요청하고 그 제어 명령 Event도 남긴다.
  * 조직 행을 먼저 잠가 admission과 직렬화하므로, 메시지는 취소된 실행 시도가 아니라 그 뒤의 실행 시도에 묶인다.
- * 실행기에 취소를 보내는 일은 commit 뒤 호출자가 `cancellation`으로 한다.
+ * commit 뒤 실행기에 취소를 보내고 받는 에이전트를 깨운다. 값은 계획한 새 대화(있으면)와 메시지다.
  */
 export async function insertOwnerMessage(
   db: Database,
   plan: OwnerMessagePlan
 ): Promise<
-  | { kind: "sent"; events: Event[]; cancellation: RunCancellation | null }
-  | { kind: "organization_closed" | "queue_full" }
+  Stored<
+    { conversation: Conversation | null; message: ConversationMessage },
+    "organization_closed" | "queue_full"
+  >
 > {
   return db.transaction(async (tx) => {
     const { organizationId, agentId } = plan.message;
     const org = await lockOrganization(tx, organizationId);
     await lockAgent(tx, organizationId, agentId);
-    const refused = ownerMessageRefusal({
+    const refusal = ownerMessageRefusal({
       stage: org!.stage,
       queuedCount: await countQueuedMessages(tx, agentId),
     });
-    if (refused) return { kind: refused };
+    if (refusal) return refused(refusal);
     let control: InterruptPlan | null = null;
     if (plan.message.delivery === "interrupt") {
       const running = await lockRunningRunOfAgent(tx, agentId);
       const planned = planInterrupt(plan.message, org!.stage, running);
-      if (planned === "organization_closed") return { kind: planned };
+      if (planned === "organization_closed") return refused(planned);
       control = planned;
     }
     if (plan.conversation)
@@ -136,15 +139,16 @@ export async function insertOwnerMessage(
     await tx
       .insert(wakes)
       .values({ ...plan.wake, createdAt: new Date(plan.wake.createdAt) });
+    const value = { conversation: plan.conversation, message: plan.message };
+    const woken = [plan.wake.agentId];
     const created = await insertEvent(tx, plan.event);
-    if (!control)
-      return { kind: "sent", events: [created], cancellation: null };
+    if (!control) return stored(value, { events: [created], woken });
     await requestCancellation(tx, control.cancellation);
-    return {
-      kind: "sent",
+    return stored(value, {
       events: [created, await insertEvent(tx, control.event)],
       cancellation: control.cancellation,
-    };
+      woken,
+    });
   });
 }
 
@@ -695,7 +699,7 @@ export async function listConversationMessages(
 
 /** 조직의 실행 시도. 최근 것부터. */
 export async function listRuns(
-  db: Database,
+  db: Executor,
   organizationId: string,
   { agentId, limit = 50 }: { agentId?: string; limit?: number } = {}
 ): Promise<RunSummary[]> {
@@ -763,9 +767,9 @@ export async function findRunDetail(
   };
 }
 
-/** 에이전트 상세: 상태와 최근 실행 시도. */
+/** 에이전트 상세: 상태와 최근 실행 시도. 사용자 명령이 바꾼 뒤의 상세는 그 transaction 안에서 읽는다. */
 export async function findAgentDetail(
-  db: Database,
+  db: Executor,
   organizationId: string,
   agentId: string,
   { recentRuns = 10 }: { recentRuns?: number } = {}
