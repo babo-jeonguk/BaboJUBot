@@ -6,6 +6,7 @@ import {
   nextExpiry,
   pushToast,
   releaseToast,
+  visibleToasts,
   toastDurationMs,
   toastStackLimit,
   type ToastEntry,
@@ -54,11 +55,32 @@ describe("toast stack", () => {
     expect(expireToasts(stack, toastDurationMs - 1)).toBe(stack);
   });
 
-  test(`shows at most ${toastStackLimit} toasts, dropping the oldest, newest last`, () => {
+  test(`shows at most ${toastStackLimit} toasts and keeps the rest waiting without their time running`, () => {
     let stack: readonly Entry[] = [];
-    for (let id = 1; id <= toastStackLimit + 1; id++)
-      stack = push(stack, id, id);
-    expect(ids(stack)).toEqual([2, 3, 4]);
-    expect(ids(dismissToast(stack, 3))).toEqual([2, 4]);
+    for (let id = 1; id <= toastStackLimit + 2; id++)
+      stack = push(stack, id, 0);
+    expect(ids(visibleToasts(stack))).toEqual([1, 2, 3]);
+    expect(nextExpiry(stack)).toBe(toastDurationMs);
+    // 기다리는 토스트는 멈추거나 놓아도 바뀌지 않는다.
+    expect(holdToast(stack, 4, 5)).toBe(stack);
+    expect(releaseToast(stack, 4, 5)).toBe(stack);
+  });
+
+  test("a waiting toast appears at the bottom when a shown one closes and gets its full time from then", () => {
+    let stack: readonly Entry[] = [];
+    for (let id = 1; id <= toastStackLimit + 2; id++)
+      stack = push(stack, id, 0);
+
+    // 가운데 토스트를 닫으면 남은 둘은 위로 붙고, 기다리던 4가 맨 아래에 나타난다.
+    stack = dismissToast(stack, 2, 3_000);
+    expect(ids(visibleToasts(stack))).toEqual([1, 3, 4]);
+    // 시간이 다 된 1·3이 닫히면 5가 나타나고, 4·5는 나타난 때부터 10초를 받는다.
+    stack = expireToasts(stack, toastDurationMs);
+    expect(ids(visibleToasts(stack))).toEqual([4, 5]);
+    expect(nextExpiry(stack)).toBe(3_000 + toastDurationMs);
+    stack = expireToasts(stack, 3_000 + toastDurationMs);
+    expect(ids(visibleToasts(stack))).toEqual([5]);
+    expect(nextExpiry(stack)).toBe(2 * toastDurationMs);
+    expect(dismissToast(stack, 99, 0)).toBe(stack);
   });
 });
