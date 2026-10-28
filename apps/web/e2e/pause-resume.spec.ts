@@ -291,6 +291,8 @@ test("queued messages wait above the composer where the owner can pull one back,
   for (const body of ["첫 번째 줄", "두 번째 줄", "세 번째 줄"]) {
     await input.fill(body);
     await input.press("Enter");
+    // 보내기가 끝나야 입력창이 비고 다음 보내기를 받는다.
+    await expect(input).toHaveValue("");
   }
   await expect(list.getByRole("heading")).toHaveText("줄 세운 메시지 3");
   await expect(queued).toHaveText(["첫 번째 줄", "두 번째 줄", "세 번째 줄"]);
@@ -318,8 +320,10 @@ test("queued messages wait above the composer where the owner can pull one back,
   await expect(queued).toHaveText(["첫 번째 줄"]);
   await input.fill("두 번째 줄 고침");
   await input.press("Enter");
+  await expect(input).toHaveValue("");
   await input.fill("네 번째 줄");
   await input.press("Enter");
+  await expect(input).toHaveValue("");
   await expect(queued).toHaveText([
     "첫 번째 줄",
     "두 번째 줄 고침",
@@ -369,6 +373,7 @@ test("messages held by a paused organization wait in the queue, can be withdrawn
   for (const body of ["멈춘 동안 하나", "멈춘 동안 둘"]) {
     await input.fill(body);
     await input.press("Enter");
+    await expect(input).toHaveValue("");
   }
   await expect(queued).toHaveText(["멈춘 동안 하나", "멈춘 동안 둘"]);
   await expect(page.getByText("조직이 일시정지 중입니다")).toBeVisible();
