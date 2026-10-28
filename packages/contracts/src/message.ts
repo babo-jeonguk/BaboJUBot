@@ -9,6 +9,8 @@ export type MessageAuthor = z.infer<typeof messageAuthorSchema>;
 /**
  * 사용자 메시지 전달 방식. `next_run`은 `줄 세우기`(기본, 실행 중이 아니면 그냥 보내기)이고, `interrupt`는 `중단하고 보내기`다.
  * `중단하고 보내기`는 받는 에이전트의 진행 중 실행 시도를 취소하는 제어 명령을 함께 남기고, 메시지는 다음 실행 시도가 받는다.
+ * 그 실행 시도는 `중단하고 보내기` 메시지만 받으며, 먼저 줄 세운 메시지와 다른 깨우기는 그다음 실행 시도가 받는다(core `bundleWakes`).
+ * 아직 실행 시도가 받지 않은 메시지는 사용자가 거두거나(`취소`·`고치기`) `지금 보내기`로 `중단하고 보내기`로 바꿀 수 있다.
  * steer는 실행기 지원과 함께 더한다(판 2).
  */
 export const messageDeliveries = ["next_run", "interrupt"] as const;
@@ -66,7 +68,7 @@ export type MarkConversationReadInput = z.infer<
 
 /**
  * Lead 대화의 메시지 하나. `agentId`는 대화 상대 에이전트(Lead), `conversationId`는 메시지가 속한 대화다.
- * 사용자 메시지는 받은 실행 시도(`deliveredToRunId`, 아직 없으면 다음 실행 시도 대기)를,
+ * 사용자 메시지는 받은 실행 시도(`deliveredToRunId`, 아직 없으면 줄 세운 메시지)를,
  * 에이전트 메시지는 보낸 실행 시도(`sentByRunId`)를 가리킨다.
  */
 export const conversationMessageSchema = z.object({
@@ -83,6 +85,7 @@ export const conversationMessageSchema = z.object({
 });
 export type ConversationMessage = z.infer<typeof conversationMessageSchema>;
 
+/** 대화의 메시지. 사용자가 거둔 메시지는 빠진다. */
 export const conversationMessageListSchema = z.array(conversationMessageSchema);
 
 /** 새 대화를 시작한 결과: 생긴 대화와 그 첫 사용자 메시지. */

@@ -5,6 +5,7 @@ import {
   type Conversation,
   type ConversationMessage,
   type LifecycleStage,
+  type MessageDelivery,
   type NewEvent,
   type RunCancelReason,
   type RunResult,
@@ -37,13 +38,14 @@ export type Wake = {
   | { kind: "organization_created" }
   | { kind: "heartbeat" }
 );
-/** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. */
+/** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. `delivery`는 사용자 메시지 깨우기면 그 메시지의 전달 방식이고 그 밖에는 없다. */
 export type PendingWake = {
   id: string;
   organizationId: string;
   agentId: string;
   createdAt: string;
   reason: WakeReason;
+  delivery: MessageDelivery | null;
 };
 
 /**
@@ -82,7 +84,7 @@ export function conversationTitle(body: string): string {
 }
 
 /**
- * 사용자 메시지는 그 조직의 Lead에게 가고 Lead를 깨운다. 실행 중이면 다음 실행 시도로 미룬다.
+ * 사용자 메시지는 그 조직의 Lead에게 가고 Lead를 깨운다. 실행 중이면 다음 실행 시도로 미룬다(줄 세운 메시지).
  * `conversation`은 메시지를 남길 같은 조직의 대화이고, `new`면 이 메시지로 새 대화를 시작한다.
  */
 export function planOwnerMessage(
@@ -199,6 +201,8 @@ export type NewRun = {
 
 export type RunStartPlan = {
   run: NewRun;
+  /** 이 실행 시도가 받는 깨우기(`bundleWakes`). 나머지는 대기한 채 다음 실행 시도를 기다린다. */
+  wakeIds: string[];
   wakeReasons: WakeReason[];
   event: NewEvent;
 };
@@ -218,8 +222,19 @@ export const admitsRuns = (stage: LifecycleStage) =>
   !(runBlockingStages as readonly LifecycleStage[]).includes(stage);
 
 /**
- * 대기 중인 깨우기를 모두 실행 시도 하나로 묶는다. 묶음은 이 시점에 고정되며,
- * 이후 도착한 깨우기는 다음 실행 시도가 받는다. 지침 bundle 버전이 같을 때만 이전 세션을 이어 간다.
+ * 실행 시도 하나가 받을 대기 깨우기(저장 순서). 보통은 대기 깨우기를 모두 합친다.
+ * `중단하고 보내기` 메시지(지금 보내기로 바꾼 줄 세운 메시지 포함)가 기다리면 그 메시지 깨우기만 받는다.
+ * 사용자가 지금 실행 시도를 끊고 먼저 넣은 말이므로 그 말만 먼저 다루게 하고, 먼저 줄 세운 메시지와
+ * 다른 깨우기(승인 결정·작업 사건·heartbeat 등)는 대기한 채 그 실행 시도가 끝난 뒤의 실행 시도가 평소처럼 합쳐 받는다.
+ */
+export function bundleWakes(pending: readonly PendingWake[]): PendingWake[] {
+  const interrupts = pending.filter((w) => w.delivery === "interrupt");
+  return interrupts.length ? interrupts : [...pending];
+}
+
+/**
+ * 대기 중인 깨우기를 실행 시도 하나로 묶는다(`bundleWakes`). 묶음은 이 시점에 고정되며,
+ * 이후 도착한 깨우기와 묶지 않은 깨우기는 다음 실행 시도가 받는다. 지침 bundle 버전이 같을 때만 이전 세션을 이어 간다.
  */
 export function planRunStart(
   input: {
@@ -235,8 +250,9 @@ export function planRunStart(
   },
   { newId, now }: RecordSource
 ): RunStartPlan | undefined {
-  const { agent, pendingWakes, instructionsBundleVersion, previousRun } = input;
-  if (!pendingWakes.length) return undefined;
+  const { agent, instructionsBundleVersion, previousRun } = input;
+  const bundle = bundleWakes(input.pendingWakes);
+  if (!bundle.length) return undefined;
   const run: NewRun = {
     id: newId(),
     organizationId: agent.organizationId,
@@ -251,14 +267,15 @@ export function planRunStart(
   };
   return {
     run,
-    wakeReasons: pendingWakes.map((w) => w.reason),
+    wakeIds: bundle.map((w) => w.id),
+    wakeReasons: bundle.map((w) => w.reason),
     event: {
       organizationId: run.organizationId,
       type: "run.started",
       payload: {
         runId: run.id,
         agentId: run.agentId,
-        wakeIds: pendingWakes.map((w) => w.id),
+        wakeIds: bundle.map((w) => w.id),
       },
     },
   };

@@ -54,6 +54,36 @@ export const messageCreatedEventSchema = z.object({
   }),
 });
 
+/**
+ * 사용자가 줄 세운 메시지를 거두었다(`취소`·`고치기`). 아직 실행 시도가 받지 않은 사용자 메시지만 거둘 수 있다.
+ * 메시지는 지우지 않고 남지만 대화와 Lead의 맥락에서 빠지며, 그 깨우기는 더는 실행 시도를 시작하지 않는다.
+ */
+export const messageWithdrawnEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("message.withdrawn"),
+  payload: z.object({
+    by: z.literal("owner"),
+    messageId: z.uuid(),
+    agentId: z.uuid(),
+    conversationId: z.uuid(),
+  }),
+});
+
+/**
+ * 사용자가 줄 세운 메시지를 `지금 보내기`로 바꾸었다. 그 메시지의 전달 방식은 `중단하고 보내기`가 되고,
+ * 진행 중 실행 시도를 끊는 제어 명령은 따로 `agent.interrupted`(같은 `messageId`)로 남는다.
+ */
+export const messageSentNowEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("message.sent_now"),
+  payload: z.object({
+    by: z.literal("owner"),
+    messageId: z.uuid(),
+    agentId: z.uuid(),
+    conversationId: z.uuid(),
+  }),
+});
+
 /** 실행 시도 시작. 묶은 깨우기 ID를 순서대로 담는다. */
 export const runStartedEventSchema = z.object({
   ...eventBase,
@@ -175,6 +205,7 @@ export const agentResumedEventSchema = z.object({
 
 /**
  * 실행 시도 중단 제어 명령. `중단하고 보내기`면 함께 보낸 메시지(`messageId`)가 따로 `message.created`로 남고 다음 실행 시도가 받는다.
+ * 줄 세운 메시지의 `지금 보내기`면 그 메시지가 `message.sent_now`로 남는다.
  * `runId`는 취소를 요청한 받는 에이전트의 진행 중 실행 시도이며, 실행 중이 아니었으면 없다. 이미 취소 정리 중인 실행 시도면
  * 그 정리에 합류하므로 그 실행 시도이고, 취소 사유는 처음 것을 그대로 둔다.
  * 메시지 없는 `실행 중단`(에이전트 제어 명령 `interrupt`)은 `messageId`가 없고, 취소할 실행 시도가 있을 때만 남는다.
@@ -482,6 +513,8 @@ export const eventSchema = z.discriminatedUnion("type", [
   resultDecidedEventSchema,
   toolRefusedEventSchema,
   messageCreatedEventSchema,
+  messageWithdrawnEventSchema,
+  messageSentNowEventSchema,
   taskCreatedEventSchema,
   taskStartedEventSchema,
   taskCompletedEventSchema,

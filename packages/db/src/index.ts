@@ -18,6 +18,7 @@ export * from "./results.ts";
 export * from "./inbox.ts";
 export * from "./workers.ts";
 export * from "./control.ts";
+export * from "./queued-messages.ts";
 export * from "./heartbeat.ts";
 export * from "./agents.ts";
 export * from "./memories.ts";

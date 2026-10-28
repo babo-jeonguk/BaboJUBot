@@ -25,8 +25,10 @@ import {
   useConversations,
   useMarkConversationRead,
   useOrganization,
+  useQueuedMessageCommand,
   useSendMessage,
   useStartConversation,
+  type QueuedMessageCommand,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
 import {
@@ -40,6 +42,7 @@ import {
   RunStatusBadge,
   Tip,
 } from "./ui.tsx";
+import { useToast } from "./toast.tsx";
 
 /** 아직 보내지 않은 새 대화의 주소 조각. 첫 메시지를 보내면 그 대화의 주소로 바뀐다. */
 export const newConversationSlug = "new";
@@ -55,7 +58,8 @@ const chatPath = (orgId: string, conversation?: ConversationSummary | "new") =>
  * 조직 › Lead 대화. 왼쪽(좁은 화면은 머리의 목록 버튼)에서 대화를 고르고, 오른쪽에서 고른 대화를 주고받는다.
  * `conversationId`가 없으면 기본 대화, `new`면 아직 저장하지 않은 새 대화다. 새 대화는 첫 메시지와 함께 생긴다.
  * 사용자 메시지는 저장되면 Lead를 깨운다. Lead가 실행 중이면 입력창 버튼으로 `줄 세우기`(다음 실행 시도에 담음)와
- * `중단하고 보내기`(진행 중 실행 시도를 취소하고 그 메시지를 다음 실행 시도에 담음)를 고르고, 입력이 비면 `실행 중단`만 한다.
+ * `중단하고 보내기`(진행 중 실행 시도를 취소하고 그 메시지만 다음 실행 시도에 담음)를 고르고, 입력이 비면 `실행 중단`만 한다.
+ * 아직 실행 시도가 받지 않은 사용자 메시지(줄 세운 메시지)는 대화가 아니라 입력창 바로 위 목록에 있고, 받으면 대화로 옮겨진다.
  */
 export function LeadChat({
   orgId,
@@ -349,6 +353,8 @@ function Thread({
   const { mutate: markRead } = useMarkConversationRead(orgId);
   const visible = usePageVisible();
   const last = messages.data?.at(-1);
+  const transcript = messages.data?.filter((m) => !isQueued(m)) ?? [];
+  const queued = messages.data?.filter(isQueued) ?? [];
   const marked = useRef<string | null>(null);
   const unreadId = summary?.unread ? summary.id : undefined;
   const lastId = last?.id;
@@ -367,12 +373,12 @@ function Thread({
     return <NotFound what="대화" />;
   return (
     <>
-      <MessageScroller count={messages.data?.length ?? 0}>
+      <MessageScroller count={transcript.length}>
         {messages.isPending ? (
           <Loading />
         ) : messages.isError ? (
           <LoadError what="대화" onRetry={() => void messages.refetch()} />
-        ) : !messages.data.length ? (
+        ) : !transcript.length ? (
           conversationId === undefined || summary?.isDefault ? (
             <div
               className="card animate-fade-up p-8 text-center"
@@ -385,13 +391,23 @@ function Thread({
             </div>
           ) : null
         ) : (
-          <MessageList messages={messages.data} orgId={orgId} lead={lead} />
+          <MessageList messages={transcript} orgId={orgId} lead={lead} />
         )}
       </MessageScroller>
-      <Composer orgId={orgId} lead={lead} send={send} />
+      <Composer
+        orgId={orgId}
+        lead={lead}
+        send={send}
+        conversationId={conversationId}
+        queued={queued}
+      />
     </>
   );
 }
+
+/** 줄 세운 메시지: 실행 시도가 아직 받지 않은 사용자 메시지. 조직·Lead가 일시정지라 기다리는 메시지도 같다. */
+const isQueued = (m: ConversationMessage) =>
+  m.author === "owner" && m.deliveredToRunId === null;
 
 /** 아직 저장하지 않은 새 대화. 첫 메시지를 보내면 대화가 생기고 그 대화의 주소로 옮긴다. */
 function DraftThread({ orgId, lead }: { orgId: string; lead: Agent }) {
@@ -497,19 +513,15 @@ function MessageBubble({
           중단하고 보냄
         </div>
       )}
-      {mine && (
+      {mine && runId && (
         <div className="mt-1 text-[11px] text-slate-400">
-          {runId ? (
-            <Link
-              to={`/orgs/${orgId}/runs/${runId}`}
-              title={runLabel(runId)}
-              className="hover:text-brand-600 hover:underline"
-            >
-              ✓ 전달됨
-            </Link>
-          ) : (
-            <span>다음 실행 시도 대기</span>
-          )}
+          <Link
+            to={`/orgs/${orgId}/runs/${runId}`}
+            title={runLabel(runId)}
+            className="hover:text-brand-600 hover:underline"
+          >
+            ✓ 전달됨
+          </Link>
         </div>
       )}
     </li>
@@ -539,16 +551,24 @@ type OwnerMessageSender = {
  * 입력이 있으면 `중단하고 보내기`와 `줄 세우기`다. Enter는 언제나 `줄 세우기`(실행 중이 아니면 그냥 보내기)다.
  * 고른 방식은 메시지마다 새로 정하며 남지 않는다. 실행 중 여부는 Lead 상세의 진행 중 실행 시도로 보고 Event로 바로 바뀐다.
  * 이미 취소 정리 중인 실행 시도나 끝난 조직은 실행 중으로 치지 않는다(끝난 조직은 중단이 제어 명령이라 서버도 409).
+ *
+ * 바로 위에는 이 대화의 줄 세운 메시지가 오래된 것부터 있다. `고치기`는 메시지를 거두고 그 글을 입력창 맨 앞에 되돌리며,
+ * 입력창이 비었을 때 ↑ 키는 가장 최근 메시지를 같은 방식으로 되돌린다. `취소`는 거두기만 하고, `지금 보내기`는
+ * Lead가 실행 중이고 조직·Lead가 일시정지가 아닐 때만 보인다. 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
  */
 function Composer({
   orgId,
   lead,
   send,
+  conversationId,
+  queued = [],
   autoFocus = false,
 }: {
   orgId: string;
   lead: Agent;
   send: OwnerMessageSender;
+  conversationId?: string;
+  queued?: ConversationMessage[];
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
@@ -579,6 +599,40 @@ function Composer({
   };
   const stopRun = () =>
     stop.mutate("interrupt", { onSuccess: () => input.current?.focus() });
+  const command = useQueuedMessageCommand(orgId, conversationId);
+  const toast = useToast();
+  const queuedBusy = command.isPending;
+  const runQueued = async (
+    message: ConversationMessage,
+    kind: QueuedMessageCommand
+  ) => {
+    if (queuedBusy) return undefined;
+    try {
+      return await command.mutateAsync({
+        messageId: message.id,
+        command: kind,
+      });
+    } catch (error) {
+      toast({
+        message:
+          error instanceof ApiError && error.code === "message_delivered"
+            ? "이미 전달된 메시지입니다"
+            : kind === "send_now"
+              ? "보내지 못했습니다. 다시 시도하세요."
+              : "취소하지 못했습니다. 다시 시도하세요.",
+      });
+      return undefined;
+    }
+  };
+  /** 거둔 메시지의 글을 입력창 맨 앞에 되돌린다. 쓰던 글은 빈 줄 하나 뒤에 남는다. */
+  const pullBack = async (message: ConversationMessage) => {
+    const withdrawn = await runQueued(message, "withdraw");
+    if (!withdrawn) return;
+    setText((current) =>
+      current.trim() ? `${withdrawn.body}\n\n${current}` : withdrawn.body
+    );
+    input.current?.focus();
+  };
   return (
     <form
       className="shrink-0 pt-3"
@@ -587,6 +641,16 @@ function Composer({
         void submit("next_run");
       }}
     >
+      {queued.length > 0 && (
+        <QueuedMessages
+          messages={queued}
+          canSendNow={running && !held}
+          busy={queuedBusy}
+          onEdit={(m) => void pullBack(m)}
+          onCancel={(m) => void runQueued(m, "withdraw")}
+          onSendNow={(m) => void runQueued(m, "send_now")}
+        />
+      )}
       {send.isPending && (
         <p className="mb-2 text-right text-xs text-slate-400" role="status">
           전송 중…
@@ -605,6 +669,21 @@ function Composer({
           maxLength={messageBodyMaxLength}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
+            const latest = queued.at(-1);
+            if (
+              e.key === "ArrowUp" &&
+              latest &&
+              text.trim() === "" &&
+              !e.shiftKey &&
+              !e.altKey &&
+              !e.ctrlKey &&
+              !e.metaKey &&
+              !e.nativeEvent.isComposing
+            ) {
+              e.preventDefault();
+              void pullBack(latest);
+              return;
+            }
             if (
               e.key === "Enter" &&
               !e.shiftKey &&
@@ -674,6 +753,115 @@ function Composer({
         </p>
       )}
     </form>
+  );
+}
+
+/**
+ * 입력창 바로 위의 줄 세운 메시지 목록. 오래된 것이 위, 가장 최근 것이 입력창 바로 위다.
+ * 항목 버튼은 오른쪽 위에 작게, 마우스를 올리거나 키보드 초점이 항목 안에 있을 때 보이고 마우스가 없는 화면에서는 늘 보인다.
+ */
+function QueuedMessages({
+  messages,
+  canSendNow,
+  busy,
+  onEdit,
+  onCancel,
+  onSendNow,
+}: {
+  messages: ConversationMessage[];
+  canSendNow: boolean;
+  busy: boolean;
+  onEdit: (message: ConversationMessage) => void;
+  onCancel: (message: ConversationMessage) => void;
+  onSendNow: (message: ConversationMessage) => void;
+}) {
+  return (
+    <section aria-labelledby="queued-messages-title" className="mb-2">
+      <h2
+        id="queued-messages-title"
+        className="mb-1.5 flex items-center gap-1.5 px-1 text-xs font-medium text-slate-500"
+      >
+        <QueueIcon className="h-3.5 w-3.5" />줄 세운 메시지{" "}
+        <span className="tabular-nums text-slate-400">{messages.length}</span>
+      </h2>
+      <ol className="scrollbar-thin -mx-1 max-h-44 space-y-1 overflow-y-auto px-1 pb-0.5">
+        {messages.map((m) => (
+          <li
+            key={m.id}
+            data-testid="queued-message"
+            className="group/row relative rounded-xl bg-white/80 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200/80"
+          >
+            <p className="line-clamp-2 break-words whitespace-pre-wrap [@media(hover:none)]:pr-24">
+              {m.delivery === "interrupt" && (
+                <BoltIcon className="mr-1 -mt-0.5 inline h-3 w-3 text-rose-600" />
+              )}
+              {m.body}
+            </p>
+            <div className="absolute top-1 right-1 opacity-0 transition group-focus-within/row:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
+              <div
+                role="group"
+                aria-label={`줄 세운 메시지: ${m.body.slice(0, 30)}`}
+                className="flex gap-0.5 rounded-lg bg-white p-0.5 shadow-sm ring-1 ring-slate-200"
+              >
+                <QueuedAction
+                  label="고치기"
+                  disabled={busy}
+                  onClick={() => onEdit(m)}
+                >
+                  <PencilIcon />
+                </QueuedAction>
+                <QueuedAction
+                  label="취소"
+                  disabled={busy}
+                  onClick={() => onCancel(m)}
+                >
+                  <CrossIcon />
+                </QueuedAction>
+                {canSendNow && m.delivery !== "interrupt" && (
+                  <QueuedAction
+                    label="지금 보내기"
+                    tone="danger"
+                    disabled={busy}
+                    onClick={() => onSendNow(m)}
+                  >
+                    <BoltIcon className="h-3.5 w-3.5" />
+                  </QueuedAction>
+                )}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+/** 줄 세운 메시지 항목의 작은 아이콘 버튼. 이름은 `aria-label`과 tooltip에 같은 글로 보인다. */
+function QueuedAction({
+  label,
+  tone = "default",
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  tone?: "default" | "danger";
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tip content={label}>
+      <button
+        type="button"
+        aria-label={label}
+        disabled={disabled}
+        onClick={onClick}
+        className={`flex h-7 w-7 items-center justify-center rounded-md transition focus-visible:outline-2 focus-visible:outline-brand-500 disabled:opacity-40 ${tone === "danger" ? "text-rose-600 hover:bg-rose-50" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`}
+      >
+        {children}
+      </button>
+    </Tip>
   );
 }
 
@@ -760,19 +948,58 @@ function BoltIcon({ className }: { className: string }) {
   );
 }
 
-/** 목록 끝에 더한다: 줄 셋과 더하기. */
-function QueueIcon() {
+/** 목록 끝에 더한다: 줄 셋과 더하기. 줄 세운 메시지 목록의 머리에도 쓴다. */
+function QueueIcon({
+  className = "h-[18px] w-[18px]",
+}: {
+  className?: string;
+}) {
   return (
     <svg
       aria-hidden
       viewBox="0 0 20 20"
-      className="h-[18px] w-[18px]"
+      className={className}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.9"
       strokeLinecap="round"
     >
       <path d="M3.5 5h10M3.5 9.5h10M3.5 14h5.5M15 11.5v6M12 14.5h6" />
+    </svg>
+  );
+}
+
+/** 고치기: 연필. */
+function PencilIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12.5 4.5l3 3L7 16H4v-3l8.5-8.5Z" />
+    </svg>
+  );
+}
+
+/** 취소: 엑스. */
+function CrossIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    >
+      <path d="M5.5 5.5l9 9M14.5 5.5l-9 9" />
     </svg>
   );
 }

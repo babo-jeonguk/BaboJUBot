@@ -269,7 +269,7 @@ export const conversations = pgTable(
   ]
 );
 
-/** Lead 대화의 메시지. 대화 하나에 속하며, 사용자 메시지는 전달 방식을, 에이전트 메시지는 보낸 실행 시도를 갖는다. */
+/** Lead 대화의 메시지. 대화 하나에 속하며, 사용자 메시지는 전달 방식(과 거두었으면 그 시각)을, 에이전트 메시지는 보낸 실행 시도를 갖는다. */
 export const messages = pgTable(
   "messages",
   {
@@ -284,9 +284,18 @@ export const messages = pgTable(
     body: text("body").notNull(),
     delivery: text("delivery", { enum: messageDeliveries }),
     sentByRunId: uuid("sent_by_run_id"),
+    /** 사용자가 줄 세운 메시지를 거둔 시각. 거둔 메시지는 남지만 대화·Lead 맥락에서 빠지고 그 깨우기는 지운다. */
+    withdrawnAt: timestamp("withdrawn_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
     createdAt: createdAt(),
   },
   (t) => [
+    check(
+      "messages_withdrawn_check",
+      sql`${t.withdrawnAt} is null or ${t.author} = 'owner'`
+    ),
     check(
       "messages_author_check",
       sql`${t.author} in (${inList(messageAuthors)})`

@@ -143,7 +143,8 @@ export type ClaimedRun = {
 };
 
 /**
- * 에이전트의 대기 중인 깨우기를 모두 새 실행 시도 하나에 고정한다. 에이전트 행을 잠근 뒤 실행 중인 실행 시도가
+ * 에이전트의 대기 중인 깨우기를 새 실행 시도 하나에 고정한다. 보통은 모두이고, `중단하고 보내기` 메시지가 기다리면
+ * 그 메시지 깨우기만이다(core `bundleWakes`). 나머지는 대기한 채 그 실행 시도가 끝난 뒤의 실행 시도가 받는다. 에이전트 행을 잠근 뒤 실행 중인 실행 시도가
  * 있는지 다시 보므로 여러 호출자가 동시에 불러도 실행 시도는 하나만 생긴다(부분 unique가 마지막 방어선).
  * 실행 중이거나 대기 중인 깨우기가 없으면 아무것도 하지 않는다. 실행기는 commit 뒤에 부른다.
  * 지침 bundle 버전은 같은 transaction에서 읽은 그 에이전트의 사본 내용으로 정한다.
@@ -211,7 +212,7 @@ export async function claimNextRun(
       tokenDigest: options.tokenDigest,
       startedAt: new Date(plan.run.startedAt),
     });
-    const ids = pendingWakes.map((w) => w.id);
+    const ids = plan.wakeIds;
     const claimed = await tx
       .update(wakes)
       .set({ runId: plan.run.id })
@@ -561,7 +562,7 @@ async function runConversations(
   };
 }
 
-/** 조직 안의 메시지 하나. 다른 조직의 메시지와 없는 메시지를 구별하지 않는다. */
+/** 조직 안의 메시지 하나. 다른 조직의 메시지·거둔 메시지와 없는 메시지를 구별하지 않는다. */
 export async function findMessage(
   db: Database,
   organizationId: string,
@@ -569,7 +570,11 @@ export async function findMessage(
 ): Promise<ConversationMessage | undefined> {
   if (!isUuid(messageId)) return undefined;
   const [row] = await conversationQuery(db).where(
-    and(eq(messages.organizationId, organizationId), eq(messages.id, messageId))
+    and(
+      eq(messages.organizationId, organizationId),
+      eq(messages.id, messageId),
+      isNull(messages.withdrawnAt)
+    )
   );
   return row && withoutSeq(toMessage(row));
 }
@@ -737,6 +742,7 @@ async function selectWakes(
     .select({
       wake: wakes,
       body: messages.body,
+      delivery: messages.delivery,
       conversationId: messages.conversationId,
       approvalKind: approvals.kind,
       decision: approvals.status,
@@ -792,6 +798,7 @@ async function selectWakes(
     ({
       wake,
       body,
+      delivery,
       conversationId,
       approvalKind,
       decision,
@@ -892,6 +899,7 @@ async function selectWakes(
         agentId: wake.agentId,
         createdAt: wake.createdAt.toISOString(),
         reason,
+        delivery: wake.kind === "owner_message" ? delivery : null,
       };
     }
   );
@@ -909,7 +917,7 @@ const conversationQuery = (db: Executor) =>
     .leftJoin(deliveredTo, eq(deliveredTo.id, wakes.runId))
     .$dynamic();
 
-/** 대화 하나의 메시지. 저장 순서(`seq`)를 붙여 여러 대화를 합칠 수 있게 한다. */
+/** 대화 하나의 메시지. 저장 순서(`seq`)를 붙여 여러 대화를 합칠 수 있게 한다. 사용자가 거둔 메시지는 빠진다(화면과 Lead 맥락 모두). */
 async function selectConversation(
   db: Executor,
   organizationId: string,
@@ -926,6 +934,7 @@ async function selectConversation(
       and(
         eq(messages.organizationId, organizationId),
         eq(messages.conversationId, conversationId),
+        isNull(messages.withdrawnAt),
         agentId === undefined ? undefined : eq(messages.agentId, agentId),
         upToRunSeq === undefined
           ? undefined
@@ -938,7 +947,7 @@ async function selectConversation(
 }
 
 const toMessage = ({
-  message: { createdAt, ...message },
+  message: { createdAt, withdrawnAt: _withdrawnAt, ...message },
   deliveredToRunId,
 }: {
   message: typeof messages.$inferSelect;

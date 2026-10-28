@@ -1,6 +1,7 @@
 import { defaultAgentAppearance, type Agent } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  bundleWakes,
   chooseReplyConversation,
   conversationTitle,
   planOwnerMessage,
@@ -86,7 +87,11 @@ describe("Lead conversations", () => {
 });
 
 describe("planRunStart", () => {
-  const wake = (id: string, body: string): PendingWake => ({
+  const wake = (
+    id: string,
+    body: string,
+    delivery: "next_run" | "interrupt" = "next_run"
+  ): PendingWake => ({
     id,
     organizationId: "org-1",
     agentId: "lead-1",
@@ -98,6 +103,55 @@ describe("planRunStart", () => {
       conversationId: "conversation-1",
       body,
     },
+    delivery,
+  });
+  const heartbeat = (id: string): PendingWake => ({
+    id,
+    organizationId: "org-1",
+    agentId: "lead-1",
+    createdAt: at,
+    reason: { kind: "heartbeat", wakeId: id },
+    delivery: null,
+  });
+  const plan = (pendingWakes: PendingWake[]) =>
+    planRunStart(
+      {
+        agent: lead,
+        pendingWakes,
+        instructionsBundleVersion: null,
+        previousRun: undefined,
+      },
+      sequence("run-2")
+    );
+
+  it("bundles every pending wake when no interrupt message waits", () => {
+    const started = plan([
+      wake("w1", "하나"),
+      heartbeat("w2"),
+      wake("w3", "셋"),
+    ]);
+    expect(started?.wakeIds).toEqual(["w1", "w2", "w3"]);
+    expect(started?.event.payload).toMatchObject({
+      wakeIds: ["w1", "w2", "w3"],
+    });
+  });
+
+  it("gives an interrupt run only the interrupt messages and leaves queued messages and other wakes for the following run", () => {
+    const pending = [
+      wake("w1", "줄 선 하나"),
+      heartbeat("w2"),
+      wake("w3", "중단하고 보낸 말", "interrupt"),
+      wake("w4", "줄 선 둘"),
+      wake("w5", "또 중단하고 보낸 말", "interrupt"),
+    ];
+    expect(bundleWakes(pending).map((w) => w.id)).toEqual(["w3", "w5"]);
+    const started = plan(pending);
+    expect(started?.wakeIds).toEqual(["w3", "w5"]);
+    expect(started?.wakeReasons).toMatchObject([
+      { body: "중단하고 보낸 말" },
+      { body: "또 중단하고 보낸 말" },
+    ]);
+    expect(plan([])).toBeUndefined();
   });
 
   it("resumes the previous session only under the same instructions bundle", () => {

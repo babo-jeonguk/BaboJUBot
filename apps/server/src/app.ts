@@ -83,7 +83,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { updateAgentProfile } from "./agents.ts";
 import { decideApproval } from "./approvals.ts";
 import { controlAgent, controlOrganization } from "./control.ts";
-import { sendOwnerMessage } from "./conversation.ts";
+import { commandQueuedMessage, sendOwnerMessage } from "./conversation.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
@@ -552,6 +552,39 @@ export async function startServer({
   app.post("/api/organizations/:id/messages", (req, res) =>
     sendChatMessage(req, res)
   );
+
+  /**
+   * 줄 세운 메시지(아직 실행 시도가 받지 않은 Lead 대화의 사용자 메시지) 거두기·지금 보내기. 바뀐 메시지를 돌려준다(거두기는 거두기 전 모양).
+   * 실행 시도가 이미 받았으면 409 `message_delivered`, 다른 조직·거둔 메시지는 404다. 지금 보내기는 끝난 조직이면 409 `organization_closed`,
+   * 조직이나 Lead가 일시정지 중이면 409 `paused`다(거두기는 일시정지 중에도, 끝난 조직에서도 된다).
+   */
+  for (const [path, command] of [
+    ["withdraw", "withdraw"],
+    ["send-now", "send_now"],
+  ] as const)
+    app.post(
+      `/api/organizations/:id/messages/:messageId/${path}`,
+      async (req, res) => {
+        if (!emptyCommand(req, res)) return;
+        const result = await commandQueuedMessage(
+          { db, hub, dispatcher, now },
+          req.params.id,
+          req.params.messageId,
+          command
+        );
+        switch (result.kind) {
+          case "changed":
+            return void res.json(result.message);
+          case "not_found":
+            return notFound(res);
+          case "organization_closed":
+            return closed(res);
+          case "message_delivered":
+          case "paused":
+            return void res.status(409).json({ error: { code: result.kind } });
+        }
+      }
+    );
 
   // `?status=running`은 최근 목록과 달리 진행 중 실행 시도를 모두 돌려준다(대시보드의 실행 중·취소 정리 중 개수).
   app.get("/api/organizations/:id/runs", async (req, res) => {

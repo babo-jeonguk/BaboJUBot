@@ -1,5 +1,5 @@
 import type { Conversation, ConversationSummary } from "@babojubot/contracts";
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import { isUuid, type Executor } from "./rows.ts";
 import { conversations, messages, runWakes, wakes } from "./schema.ts";
@@ -106,7 +106,7 @@ export async function contextConversations(
 }
 
 /**
- * 조직의 대화 목록. 기본 대화가 맨 위이고 나머지는 마지막 활동(마지막 메시지, 없으면 생긴 시각)이 최근인 것부터다.
+ * 조직의 대화 목록. 기본 대화가 맨 위이고 나머지는 마지막 활동(거두지 않은 마지막 메시지, 없으면 생긴 시각)이 최근인 것부터다.
  * 사용자가 본 위치 뒤에 Lead가 보낸 메시지가 있으면 `unread`다.
  */
 export async function listConversations(
@@ -122,7 +122,13 @@ export async function listConversations(
       unread: sql<boolean>`coalesce(bool_or(${messages.author} = 'agent' and ${messages.seq} > coalesce(${conversations.readMessageSeq}, 0)), false)`,
     })
     .from(conversations)
-    .leftJoin(messages, eq(messages.conversationId, conversations.id))
+    .leftJoin(
+      messages,
+      and(
+        eq(messages.conversationId, conversations.id),
+        isNull(messages.withdrawnAt)
+      )
+    )
     .where(eq(conversations.organizationId, organizationId))
     .groupBy(conversations.id)
     .orderBy(
