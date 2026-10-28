@@ -179,12 +179,9 @@ test("the demo scenario walks one organization from creation with a goal through
     await page.goto(orgPath("/chat"));
     await expect(page.getByText("조직이 일시정지 중입니다")).toBeVisible();
     await send("작업자 추가: researcher");
-    await expect(
-      page
-        .locator('[data-author="owner"]')
-        .filter({ hasText: "작업자 추가: researcher" })
-        .getByText("다음 실행 시도 대기")
-    ).toBeVisible();
+    await expect(page.getByTestId("queued-message")).toHaveText([
+      "작업자 추가: researcher",
+    ]);
     await page.goto(orgPath("/agents"));
     await expect(workerTeam).toContainText("작업자 2명");
   });
