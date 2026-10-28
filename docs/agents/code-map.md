@@ -132,9 +132,9 @@
 | 가짜 Lead의 `작업자 추가: <Role>` 부탁·작업자 추가 결정 답장 | runtime/scripted.ts `demoLeadScript`·`addWorkerScript` | 가짜 실행기 테스트, 작업자 추가 API |
 | 설정 스위치(저장 중·실패·서버 값, 끌 수 없는 초기 연구 승인·최종 완료는 잠긴 스위치)·종류별 승인 상세·결정 폼·대시보드 대기 요청 | [web/settings.tsx](../../apps/web/src/settings.tsx), approvals.tsx, pages.tsx, api.ts `useUpdateApprovalPolicy` | 작업자 승인 정책 E2E(다른 탭·390px 반영 포함) |
 
-## 일시정지·재개·중단과 실행 중단·중단하고 보내기
+## 일시정지·재개·중단과 실행 중단·중단하고 보내기·줄 세운 메시지
 
-통합 검증: [제어 API](../../apps/server/test/control.test.ts), [제어 E2E](../../apps/web/e2e/pause-resume.spec.ts).
+통합 검증: [제어 API](../../apps/server/test/control.test.ts), [줄 세운 메시지 API](../../apps/server/test/queued-messages.test.ts), [제어 E2E](../../apps/web/e2e/pause-resume.spec.ts)(줄 세운 메시지 목록 포함).
 
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
@@ -142,8 +142,12 @@
 | 명령별 전이·no-op·`organization_closed`, 일시정지 중 결정의 재개(`planDecisionStage`), 실행 중단(`planAgentControl` `interrupt`, 취소할 실행 시도가 없으면 no-op)·`중단하고 보내기`(`planInterrupt`) 계획 | [core/control.ts](../../packages/core/src/control.ts)([단위](../../packages/core/src/control.test.ts)); 토큰 닫힘 `acceptsToolCalls`·취소 우선 종료 `planRunFinish`는 core/run.ts | 제어 API, 결과 API·작업자 추가 API의 일시정지 중 결정 |
 | 조직 → 에이전트 → 실행 시도 잠금 아래 단계·일시정지·취소 요청·Event 한 transaction, 중단된 조직의 결정할 수 없는 Inbox 항목 제외 | [db/control.ts](../../packages/db/src/control.ts) `controlOrganization`·`controlAgent`, rows.ts `lockCancellableRuns`·`requestCancellation`; db/inbox.ts; 메시지와 중단은 db/runs.ts `insertOwnerMessage`; 결정의 재개는 db/approvals.ts·results.ts; schema `paused_from`·`paused`·`cancel_reason` | [DB 잠금 순서](../../packages/db/src/runs.test.ts) `control commands` |
 | 일시정지한 에이전트 admission·재개 대상 목록, 취소 요청 실행 시도의 토큰 거부·종료 저장, 개수를 자르지 않는 진행 중 실행 시도(`/runs?status=running`) | db/runs.ts `claimNextRun`·`listAgentsWithPendingWakes`·`authenticateRun`·`finishRun`·`listRunningRuns`, rows.ts `lockRunningRun`·`lockRunningRunOfAgent` | 제어 API `cancellation boundary`·`running runs` |
+| `중단하고 보내기` 실행 시도가 그 메시지만 받고 나머지 깨우기는 다음 실행 시도로(대기 깨우기의 `delivery`) | core/run.ts `bundleWakes`·`planRunStart`([단위](../../packages/core/src/run.test.ts)), db/runs.ts `selectWakes`·`claimNextRun` | [DB](../../packages/db/src/queued-messages.test.ts) `interrupt runs`, 줄 세운 메시지 API `interrupt order` |
+| 줄 세운 메시지 거두기·지금 보내기: 거부(`not_found`·`message_delivered`·`organization_closed`·`paused`)·Event `message.withdrawn`·`message.sent_now`(+`agent.interrupted`) 계획 | [core/queued-message.ts](../../packages/core/src/queued-message.ts) `planWithdrawal`·`planSendNow`([단위](../../packages/core/src/queued-message.test.ts)); contracts event.ts | 줄 세운 메시지 API |
+| 조직 → 에이전트 → 실행 시도 잠금 아래 거두기(`withdrawn_at`·깨우기 삭제)·지금 보내기(`delivery`·취소 요청)와 admission 직렬화, 거둔 메시지를 대화·Lead 맥락·대화 목록 마지막 활동에서 뺌 | [db/queued-messages.ts](../../packages/db/src/queued-messages.ts) `withdrawQueuedMessage`·`sendQueuedMessageNow`; db/runs.ts `selectConversation`·`findMessage`, conversations.ts `listConversations`; schema `messages.withdrawn_at`·migration 0016 | [DB](../../packages/db/src/queued-messages.test.ts)(admission 경주 포함) |
+| 줄 세운 메시지 API: `POST /api/organizations/:id/messages/:messageId/{withdraw,send-now}`, commit 뒤 알림·취소·촉진 | server/app.ts, conversation.ts `commandQueuedMessage` | 줄 세운 메시지 API |
 | commit 뒤 실행기 취소·등록 직후 취소 재확인·재개 뒤 촉진과 그 조회 실패의 backoff 재시도 | server/dispatcher.ts `cancel`·`kickOrganization`·`#retrying`·`#execute`, [server/control.ts](../../apps/server/src/control.ts), conversation.ts, app.ts `/pause`·`/resume`·`/stop`·`/agents/:agentId/interrupt` | 제어 API. 등록 틈은 API로 재현하지 않음 |
-| 조직 제어(중단 짧은 확인)·실행 중/취소 정리 중 개수, 에이전트 제어, 입력창 버튼(쉬면 보내기, 실행 중이면 실행 중단 또는 중단하고 보내기·줄 세우기)·실패 시 입력 보존·끝난 조직에서 보내기로 복귀, 결정 폼의 일시정지·중단 안내 | pages.tsx `OrganizationControl`, agents.tsx `AgentControl`, chat.tsx `Composer`·`IconButton`, approvals.tsx·results.tsx `DecisionForm`, ui.tsx `RunStatusBadge`·`PausedBadge`, activity.tsx; api.ts `useControlOrganization`·`useControlAgent`·`useRunningRuns` | 제어 E2E(다른 탭·390px 포함) |
+| 조직 제어(중단 짧은 확인)·실행 중/취소 정리 중 개수, 에이전트 제어, 입력창 버튼(쉬면 보내기, 실행 중이면 실행 중단 또는 중단하고 보내기·줄 세우기)·실패 시 입력 보존·끝난 조직에서 보내기로 복귀, 입력창 위 줄 세운 메시지 목록(오른쪽 위 hover·focus·`hover: none` 아이콘 고치기·취소·지금 보내기, 빈 입력창 ↑, 이미 전달됨 토스트), 결정 폼의 일시정지·중단 안내 | pages.tsx `OrganizationControl`, agents.tsx `AgentControl`, chat.tsx `Composer`·`QueuedMessages`·`QueuedAction`·`IconButton`·`isQueued`, api.ts `useQueuedMessageCommand`, approvals.tsx·results.tsx `DecisionForm`, ui.tsx `RunStatusBadge`·`PausedBadge`, activity.tsx; api.ts `useControlOrganization`·`useControlAgent`·`useRunningRuns` | 제어 E2E(다른 탭·390px 포함) |
 
 ## Heartbeat·기억·서버 재시작 복구
 
@@ -317,7 +321,12 @@ scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite: 
   → 단계·pausedFrom / paused, 실행 시도 cancel_reason, Event 함께 저장
   → EventHub → dispatcher.cancel(commit 뒤 abort) → 실행기 정리 → finishRun(cancelled) → 재개면 kickOrganization·kick
 Lead 대화(중단하고 보내기) → POST /messages {delivery: interrupt} → insertOwnerMessage(조직 잠금·메시지·깨우기·두 Event·취소 요청)
-  → dispatcher.cancel → 취소된 실행 시도 종료 뒤 claimNextRun이 메시지 깨우기를 다음 실행 시도에 묶음
+  → dispatcher.cancel → 취소된 실행 시도 종료 뒤 claimNextRun이 그 메시지 깨우기만 다음 실행 시도에 묶음(core bundleWakes)
+  → 그 실행 시도 종료 뒤 claimNextRun이 남은 줄 세운 메시지·다른 깨우기를 합쳐 묶음
+줄 세운 메시지(고치기·취소·빈 입력창 ↑ / 지금 보내기) → POST /messages/:messageId/{withdraw,send-now} → commandQueuedMessage
+  → withdrawQueuedMessage·sendQueuedMessageNow(조직 → 에이전트 → 실행 시도 잠금, core planWithdrawal·planSendNow)
+  → 거두기: withdrawn_at·깨우기 삭제·message.withdrawn / 지금 보내기: delivery interrupt·취소 요청·message.sent_now·agent.interrupted
+  → EventHub → (지금 보내기) dispatcher.cancel·kick. 실행 시도가 먼저 받았으면 409 message_delivered
 Lead 대화(실행 중단) → POST /agents/:agentId/interrupt → controlAgent(조직 → 에이전트 → 취소 요청 없는 진행 중 실행 시도, 없으면 no-op)
   → 취소 요청·agent.interrupted(messageId 없음) → dispatcher.cancel. 일시정지가 아니므로 남은 깨우기는 정리 뒤 평소처럼 처리
 ```
