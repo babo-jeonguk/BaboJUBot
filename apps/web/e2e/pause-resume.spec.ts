@@ -273,7 +273,7 @@ async function deliveryOrder(
   };
 }
 
-test("queued messages wait above the composer where the owner can pull one back, cancel one, or send one now", async ({
+test("queued messages wait above the composer where the owner can edit one in place, pull one back, cancel one, or send one now", async ({
   page,
 }) => {
   const org = await createOrganization(page, "줄 세운 메시지 E2E 조직");
@@ -294,7 +294,7 @@ test("queued messages wait above the composer where the owner can pull one back,
     // 보내기가 끝나야 입력창이 비고 다음 보내기를 받는다.
     await expect(input).toHaveValue("");
   }
-  await expect(list.getByRole("heading")).toHaveText("줄 세운 메시지 3");
+  await expect(list.getByRole("heading")).toHaveText("줄 세운 메시지 3/20");
   await expect(queued).toHaveText(["첫 번째 줄", "두 번째 줄", "세 번째 줄"]);
   await expect(owner.getByText(/번째 줄/)).toHaveCount(0);
 
@@ -305,77 +305,88 @@ test("queued messages wait above the composer where the owner can pull one back,
   await edit.hover();
   await expect(page.getByRole("tooltip", { name: "고치기" })).toBeVisible();
 
-  // 쓰던 글이 있으면 ↑는 줄을 건드리지 않는다. 고치기는 그 글 앞에 빈 줄을 두고 거둔 글을 놓는다.
+  // 고치기는 그 항목을 그 자리에서 고치는 입력으로 바꾼다. Esc는 그대로 두고, 비우면 저장할 수 없다.
+  await item("두 번째 줄").hover();
+  await item("두 번째 줄").getByRole("button", { name: "고치기" }).click();
+  const editor = list.getByLabel("줄 세운 메시지 고치기");
+  await expect(editor).toBeFocused();
+  await expect(editor).toHaveValue("두 번째 줄");
+  await editor.fill("");
+  await expect(list.getByRole("button", { name: "저장" })).toBeDisabled();
+  await editor.press("Escape");
+  await expect(editor).toHaveCount(0);
+  await expect(queued).toHaveText(["첫 번째 줄", "두 번째 줄", "세 번째 줄"]);
+  await item("두 번째 줄").hover();
+  await item("두 번째 줄").getByRole("button", { name: "고치기" }).click();
+  await editor.fill("두 번째 줄 고침");
+  await editor.press("Shift+Enter");
+  await editor.pressSequentially("둘째 줄");
+  await editor.press("Enter");
+  await expect(editor).toHaveCount(0);
+  // 고친 메시지는 줄 속 자리를 지킨다.
+  await expect(queued).toHaveText([
+    "첫 번째 줄",
+    "두 번째 줄 고침\n둘째 줄",
+    "세 번째 줄",
+  ]);
+
+  // 쓰던 글이 있으면 ↑는 줄을 건드리지 않는다. 빈 입력창의 ↑는 가장 최근 메시지를 입력창에 되돌린다.
   await input.fill("쓰던 글");
   await input.press("ArrowUp");
   await expect(queued).toHaveCount(3);
-  await edit.click();
-  await expect(input).toHaveValue("세 번째 줄\n\n쓰던 글");
-  await expect(queued).toHaveText(["첫 번째 줄", "두 번째 줄"]);
-
-  // 빈 입력창의 ↑는 가장 최근 메시지를 되돌린다. 고쳐서 다시 줄 세우면 맨 뒤로 간다.
   await input.fill("");
   await input.press("ArrowUp");
-  await expect(input).toHaveValue("두 번째 줄");
-  await expect(queued).toHaveText(["첫 번째 줄"]);
-  await input.fill("두 번째 줄 고침");
+  await expect(input).toHaveValue("세 번째 줄");
+  await expect(queued).toHaveText(["첫 번째 줄", "두 번째 줄 고침\n둘째 줄"]);
   await input.press("Enter");
   await expect(input).toHaveValue("");
-  await input.fill("네 번째 줄");
-  await input.press("Enter");
-  await expect(input).toHaveValue("");
-  await expect(queued).toHaveText([
-    "첫 번째 줄",
-    "두 번째 줄 고침",
-    "네 번째 줄",
-  ]);
 
   // 취소는 거두기만 한다.
   await item("첫 번째 줄").hover();
   await item("첫 번째 줄").getByRole("button", { name: "취소" }).click();
-  await expect(queued).toHaveText(["두 번째 줄 고침", "네 번째 줄"]);
-  await input.fill("다섯 번째 줄");
+  await expect(queued).toHaveText(["두 번째 줄 고침\n둘째 줄", "세 번째 줄"]);
+  await input.fill("네 번째 줄");
   await input.press("Enter");
   await expect(input).toHaveValue("");
   await expect(queued).toHaveText([
-    "두 번째 줄 고침",
+    "두 번째 줄 고침\n둘째 줄",
+    "세 번째 줄",
     "네 번째 줄",
-    "다섯 번째 줄",
   ]);
 
   // 지금 보내기는 지금 실행 시도를 끊고 그 메시지만 다음 실행 시도에 보낸다. 남은 줄은 그다음 실행 시도가 받는다.
-  await item("네 번째 줄").hover();
-  await item("네 번째 줄").getByRole("button", { name: "지금 보내기" }).click();
-  await expect(owner.filter({ hasText: "네 번째 줄" })).toContainText(
+  await item("세 번째 줄").hover();
+  await item("세 번째 줄").getByRole("button", { name: "지금 보내기" }).click();
+  await expect(owner.filter({ hasText: "세 번째 줄" })).toContainText(
     "중단하고 보냄",
     runs
   );
-  for (const body of ["두 번째 줄 고침", "다섯 번째 줄"])
+  for (const body of ["두 번째 줄 고침", "네 번째 줄"])
     await expect(
       owner.filter({ hasText: body }).getByRole("link", { name: "✓ 전달됨" })
     ).toBeVisible(runs);
   await expect(list).toHaveCount(0);
   const order = await deliveryOrder(page, org);
-  expect(order("네 번째 줄")).toBeLessThan(order("두 번째 줄 고침"));
-  expect(order("두 번째 줄 고침")).toBe(order("다섯 번째 줄"));
+  expect(order("세 번째 줄")).toBeLessThan(order("두 번째 줄 고침\n둘째 줄"));
+  expect(order("두 번째 줄 고침\n둘째 줄")).toBe(order("네 번째 줄"));
   // 대화는 Lead가 받은 순서다. 먼저 보낸 줄도 지금 보낸 메시지 뒤에 온다.
   await expect(owner.getByTestId("message-body")).toHaveText([
     "실행 유지 연습",
+    "세 번째 줄",
+    /^두 번째 줄 고침\s*둘째 줄$/,
     "네 번째 줄",
-    "두 번째 줄 고침",
-    "다섯 번째 줄",
   ]);
   // 거둔 메시지는 대화에 없다.
   await expect(owner.getByText("첫 번째 줄")).toHaveCount(0);
-  await expect(owner.getByText("세 번째 줄")).toHaveCount(0);
   const events = (await (
     await page.request.get(org.api("/events"))
   ).json()) as { type: string }[];
-  expect(events.filter((e) => e.type === "message.withdrawn")).toHaveLength(3);
+  expect(events.filter((e) => e.type === "message.edited")).toHaveLength(1);
+  expect(events.filter((e) => e.type === "message.withdrawn")).toHaveLength(2);
   expect(events.filter((e) => e.type === "message.sent_now")).toHaveLength(1);
 });
 
-test("messages held by a paused organization wait in the queue, can be withdrawn, and cannot be sent now", async ({
+test("messages held by a paused organization wait in the queue, can be edited or withdrawn, and cannot be sent now", async ({
   page,
 }) => {
   const org = await createOrganization(page, "일시정지 줄 E2E 조직");
@@ -393,55 +404,108 @@ test("messages held by a paused organization wait in the queue, can be withdrawn
   await expect(queued).toHaveText(["멈춘 동안 하나", "멈춘 동안 둘"]);
   await expect(page.getByText("조직이 일시정지 중입니다")).toBeVisible();
   await queued.first().hover();
-  await expect(
-    queued.first().getByRole("button", { name: "고치기" })
-  ).toBeVisible();
   await expect(page.getByRole("button", { name: "지금 보내기" })).toHaveCount(
     0
   );
   await queued.first().getByRole("button", { name: "취소" }).click();
   await expect(queued).toHaveText(["멈춘 동안 둘"]);
 
-  // 재개하면 남은 메시지가 전달되어 대화로 옮겨진다.
-  expect(
-    (await page.request.post(org.api("/resume"), { data: {} })).status()
-  ).toBe(200);
+  // 일시정지 중에도 그 자리에서 고칠 수 있다. 저장하는 사이 실행 시도가 먼저 받으면 토스트로 알리고 대화로 옮긴다.
+  await queued.first().hover();
+  await queued.first().getByRole("button", { name: "고치기" }).click();
+  const editor = page.getByLabel("줄 세운 메시지 고치기");
+  await editor.fill("멈춘 동안 둘 고침");
+  await page.route(`**/messages/*/edit`, async (route) => {
+    expect(
+      (await page.request.post(org.api("/resume"), { data: {} })).status()
+    ).toBe(200);
+    await expect.poll(() => org.delivered("멈춘 동안 둘"), runs).not.toBeNull();
+    await route.continue();
+  });
+  await editor.press("Enter");
+  await expect(page.getByText("이미 전달된 메시지입니다")).toBeVisible(runs);
   await expect(queued).toHaveCount(0, runs);
   await expect(
     page.locator('[data-author="owner"]').filter({ hasText: "멈춘 동안 둘" })
   ).toBeVisible();
   expect(await org.delivered("멈춘 동안 하나")).toBeNull();
+  await page.unroute(`**/messages/*/edit`);
 });
 
-test("the Lead chat falls back to plain sending when another tab stops the organization", async ({
+test("a full queue shows its count against the cap and disables sending until one is withdrawn", async ({
+  page,
+}) => {
+  const org = await createOrganization(page, "가득 찬 줄 E2E 조직");
+  expect(
+    (await page.request.post(org.api("/pause"), { data: {} })).status()
+  ).toBe(200);
+  for (let i = 1; i <= 20; i++)
+    expect(
+      (
+        await page.request.post(org.api("/messages"), {
+          data: { body: `줄 ${i}` },
+        })
+      ).status()
+    ).toBe(201);
+  await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
+  const list = page.getByRole("region", { name: /줄 세운 메시지/ });
+  const queued = list.getByTestId("queued-message");
+  await expect(list.getByRole("heading")).toHaveText("줄 세운 메시지 20/20");
+  await expect(queued).toHaveCount(20);
+  const input = page.getByLabel("Lead에게 보낼 메시지");
+  await input.fill("하나 더");
+  const send = page.getByRole("button", { name: "보내기", exact: true });
+  await expect(send).toBeDisabled();
+  await input.press("Enter");
+  await expect(input).toHaveValue("하나 더");
+
+  await queued.first().hover();
+  await queued.first().getByRole("button", { name: "취소" }).click();
+  await expect(list.getByRole("heading")).toHaveText("줄 세운 메시지 19/20");
+  await send.click();
+  await expect(input).toHaveValue("");
+  await expect(queued.last()).toHaveText("하나 더");
+});
+
+test("the Lead chat stops taking messages when another tab stops the organization, but queued ones can still be cancelled", async ({
   page,
 }) => {
   const org = await createOrganization(page, "다른 탭 중단 E2E 조직");
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
   const input = page.getByLabel("Lead에게 보낼 메시지");
   await holdLead(page, org);
-  await input.fill("중단 직전에 쓴 메시지");
+  await input.fill("중단 전에 줄 세운 메시지");
   await expect(
     page.getByRole("button", { name: "중단하고 보내기" })
   ).toBeVisible(runs);
+  await input.press("Enter");
+  await expect(input).toHaveValue("");
+  const queued = page.getByTestId("queued-message");
+  await expect(queued).toHaveText(["중단 전에 줄 세운 메시지"]);
 
-  // 다른 탭의 중단은 Event로 이 탭에 반영된다. 끝난 조직에는 중단할 실행이 없다.
+  // 다른 탭의 중단은 Event로 이 탭에 반영된다. 끝난 조직은 메시지를 받지 않으므로 입력창 대신 상태만 보인다.
   expect(
     (await page.request.post(org.api("/stop"), { data: {} })).status()
   ).toBe(200);
-  await expect(
-    page.getByRole("button", { name: "중단하고 보내기" })
-  ).toHaveCount(0);
-  await expect(input).toHaveValue("중단 직전에 쓴 메시지");
+  await expect(page.getByTestId("composer-closed")).toHaveText("중단된 조직");
+  await expect(input).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "새 대화" })).toBeDisabled();
+  expect(
+    (
+      await page.request.post(org.api("/messages"), {
+        data: { body: "끝난 뒤" },
+      })
+    ).status()
+  ).toBe(409);
 
-  // 중단된 조직의 메시지는 전달되지 않으므로 줄에 남고, 지금 보낼 수는 없다.
-  await page.getByRole("button", { name: "보내기", exact: true }).click();
-  const queued = page.getByTestId("queued-message");
-  await expect(queued).toHaveText(["중단 직전에 쓴 메시지"]);
+  // 줄 세운 메시지는 취소만 된다.
   await queued.hover();
   await expect(queued.getByRole("button", { name: "취소" })).toBeVisible();
+  await expect(queued.getByRole("button", { name: "고치기" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "지금 보내기" })).toHaveCount(
     0
   );
+  await queued.getByRole("button", { name: "취소" }).click();
+  await expect(queued).toHaveCount(0);
   await expect(page.getByRole("alert")).toHaveCount(0);
 });

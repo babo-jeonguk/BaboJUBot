@@ -365,7 +365,7 @@ describe("Lead conversations", () => {
     expect(await conversationsOf(org.id)).toHaveLength(1);
   });
 
-  it("keeps conversations of a stopped organization readable and applies today's sending rules", async () => {
+  it("keeps conversations of a stopped organization readable and takes no more messages there", async () => {
     t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("끝난 조직");
     const thread = await startOk(org.id, "중단 전 대화");
@@ -375,14 +375,16 @@ describe("Lead conversations", () => {
     ).toBe(200);
 
     expect(await messagesOf(org.id, thread.conversation.id)).toHaveLength(2);
-    // 중단하고 반영은 제어 명령이라 받지 않고, 새 대화도 남지 않는다.
-    expect((await start(org.id, "멈춰", "interrupt")).status).toBe(409);
+    // 끝난 조직은 줄 세우기·중단하고 보내기 모두 받지 않고, 새 대화도 남지 않는다.
+    for (const delivery of ["next_run", "interrupt"] as const) {
+      const refused = await start(org.id, "멈춰", delivery);
+      expect(refused.status).toBe(409);
+      expect(refused.body).toEqual({ error: { code: "organization_closed" } });
+    }
+    const followUp = await sendTo(org.id, thread.conversation.id, "이어서");
+    expect(followUp.status).toBe(409);
+    expect(followUp.body).toEqual({ error: { code: "organization_closed" } });
     expect(await conversationsOf(org.id)).toHaveLength(2);
-    // 다음 실행 시도에 반영은 지금처럼 남는다(끝난 조직이라 전달되지 않는다).
-    expect((await start(org.id, "기록만 남겨요")).status).toBe(201);
-    expect(
-      (await sendTo(org.id, thread.conversation.id, "이어서")).status
-    ).toBe(201);
-    expect(await conversationsOf(org.id)).toHaveLength(3);
+    expect(await messagesOf(org.id, thread.conversation.id)).toHaveLength(2);
   });
 });

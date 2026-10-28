@@ -1,5 +1,6 @@
 import {
   isClosedStage,
+  maxQueuedMessages,
   type ConversationMessage,
   type LifecycleStage,
   type NewEvent,
@@ -7,7 +8,8 @@ import {
 import { planInterrupt, type RunCancellation } from "./control.ts";
 
 // 줄 세운 메시지: 아직 실행 시도가 받지 않은 Lead 대화의 사용자 메시지. 조직·에이전트가 일시정지라 기다리는 메시지도 같다.
-// 사용자는 그 메시지를 거두거나(`취소`, 글을 입력창으로 되돌리는 `고치기`) `지금 보내기`로 `중단하고 보내기`로 바꾼다.
+// 사용자는 그 메시지를 그 자리에서 고치거나(`고치기`) 거두거나(`취소`, 빈 입력창의 ↑는 글을 입력창으로 되돌린다)
+// `지금 보내기`로 `중단하고 보내기`로 바꾼다. Lead 하나에 줄 세울 수 있는 메시지 수에는 상한(`maxQueuedMessages`)이 있다.
 // 저장 쪽은 조직 → 에이전트 → 실행 시도 순으로 잠근 뒤 메시지와 그 깨우기를 읽어 여기에 넘긴다. 에이전트 행 잠금이
 // admission(`claimNextRun`)과 직렬화하므로, 실행 시도가 먼저 깨우기를 받았으면 여기서 `message_delivered`로 본다.
 
@@ -40,8 +42,51 @@ const queuedRefusal = (
 };
 
 /**
+ * 새 사용자 메시지를 받지 않는 이유. 최종 완료·중단 조직이면 `organization_closed`(되살리지 않는다),
+ * 받는 Lead에게 이미 상한(`maxQueuedMessages`)만큼 줄 서 있으면 `queue_full`이다. 줄 세우기와 중단하고 보내기 모두 같다.
+ * `queuedCount`는 저장 쪽이 조직 → 에이전트 잠금 아래에서 센 그 에이전트의 줄 세운 메시지 수(모든 대화)다.
+ */
+export function ownerMessageRefusal(state: {
+  stage: LifecycleStage;
+  queuedCount: number;
+}): "organization_closed" | "queue_full" | null {
+  if (isClosedStage(state.stage)) return "organization_closed";
+  if (state.queuedCount >= maxQueuedMessages) return "queue_full";
+  return null;
+}
+
+/**
+ * 줄 세운 메시지를 그 자리에서 고친다. 글만 바뀌고 전달 방식·줄 속 위치(보낸 순서)·깨우기는 그대로다.
+ * 일시정지 중에도 고칠 수 있고, 끝난 조직에서는 거두기만 된다(`organization_closed`). 고치기 전 글은 `message.edited`에 남는다.
+ */
+export function planEdit(
+  message: (QueuedMessageState & { body: string }) | undefined,
+  stage: LifecycleStage,
+  body: string
+): { event: NewEvent } | QueuedMessageRefusal {
+  if (queuedRefusal(message) === "not_found") return "not_found";
+  if (isClosedStage(stage)) return "organization_closed";
+  if (message!.deliveredToRunId) return "message_delivered";
+  const m = message!;
+  return {
+    event: {
+      organizationId: m.organizationId,
+      type: "message.edited",
+      payload: {
+        by: "owner",
+        messageId: m.id,
+        agentId: m.agentId,
+        conversationId: m.conversationId,
+        previousBody: m.body,
+        body,
+      },
+    },
+  };
+}
+
+/**
  * 줄 세운 메시지 거두기. 메시지는 지우지 않고 거둔 시각을 남기며, 그 깨우기는 지워 더는 실행 시도를 시작하지 않는다.
- * 일시정지 중에도, 끝난 조직에서도 거둘 수 있다(끝난 조직에서도 줄 세우기는 받으므로).
+ * 일시정지 중에도, 끝난 조직에서도 거둘 수 있다(끝나기 전에 줄 세운 메시지가 남아 있을 수 있으므로).
  */
 export function planWithdrawal(
   message: QueuedMessageState | undefined

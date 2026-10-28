@@ -23,6 +23,7 @@ import {
   organizationCommands,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
+  editQueuedMessageInputSchema,
   timeZoneSchema,
   updateAgentProfileInputSchema,
   updateApprovalPolicyInputSchema,
@@ -484,7 +485,7 @@ export async function startServer({
       chat.conversation,
       input
     );
-    if (sent.kind === "organization_closed") return closed(res);
+    if (sent.kind !== "sent") return refusedMessage(res, sent.kind);
     res.status(201).json(sent.message);
   };
 
@@ -505,7 +506,7 @@ export async function startServer({
       "new",
       input
     );
-    if (sent.kind === "organization_closed") return closed(res);
+    if (sent.kind !== "sent") return refusedMessage(res, sent.kind);
     res
       .status(201)
       .json({ conversation: sent.conversation, message: sent.message });
@@ -554,18 +555,29 @@ export async function startServer({
   );
 
   /**
-   * 줄 세운 메시지(아직 실행 시도가 받지 않은 Lead 대화의 사용자 메시지) 거두기·지금 보내기. 바뀐 메시지를 돌려준다(거두기는 거두기 전 모양).
-   * 실행 시도가 이미 받았으면 409 `message_delivered`, 다른 조직·거둔 메시지는 404다. 지금 보내기는 끝난 조직이면 409 `organization_closed`,
-   * 조직이나 Lead가 일시정지 중이면 409 `paused`다(거두기는 일시정지 중에도, 끝난 조직에서도 된다).
+   * 줄 세운 메시지(아직 실행 시도가 받지 않은 Lead 대화의 사용자 메시지) 고치기·거두기·지금 보내기. 바뀐 메시지를 돌려준다(거두기는 거두기 전 모양).
+   * 고치기는 `{ body }`(보내기와 같은 검사)로 글만 바꾸고 전달 방식·줄 속 위치는 그대로다. 실행 시도가 이미 받았으면 409 `message_delivered`,
+   * 다른 조직·거둔 메시지는 404다. 고치기·지금 보내기는 끝난 조직이면 409 `organization_closed`이고, 지금 보내기는 조직이나 Lead가
+   * 일시정지 중이면 409 `paused`다(고치기는 일시정지 중에도, 거두기는 일시정지 중에도 끝난 조직에서도 된다).
    */
-  for (const [path, command] of [
-    ["withdraw", "withdraw"],
-    ["send-now", "send_now"],
-  ] as const)
+  for (const path of ["edit", "withdraw", "send-now"] as const)
     app.post(
       `/api/organizations/:id/messages/:messageId/${path}`,
       async (req, res) => {
-        if (!emptyCommand(req, res)) return;
+        let command: Parameters<typeof commandQueuedMessage>[3];
+        if (path === "edit") {
+          const input = editQueuedMessageInputSchema.safeParse(req.body);
+          if (!input.success) {
+            res.status(422).json({
+              error: { code: "invalid_input", issues: input.error.issues },
+            });
+            return;
+          }
+          command = { kind: "edit", body: input.data.body };
+        } else {
+          if (!emptyCommand(req, res)) return;
+          command = { kind: path === "withdraw" ? "withdraw" : "send_now" };
+        }
         const result = await commandQueuedMessage(
           { db, hub, dispatcher, now },
           req.params.id,
@@ -1033,6 +1045,14 @@ function notFound(res: express.Response) {
 }
 
 /** 최종 완료·중단 조직이라 받을 수 없는 제어 명령·결정. */
+/** 사용자 메시지를 받지 않음: 끝난 조직(`organization_closed`)이나 Lead의 줄이 상한(`queue_full`). 둘 다 409다. */
+function refusedMessage(
+  res: express.Response,
+  code: "organization_closed" | "queue_full"
+) {
+  res.status(409).json({ error: { code } });
+}
+
 function closed(res: express.Response) {
   res.status(409).json({ error: { code: "organization_closed" } });
 }

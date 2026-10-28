@@ -307,5 +307,7 @@ export const agentDetailSchema = z.object({
   instructionsBundleVersion: z.string().nullable(),
   heartbeat: agentHeartbeatSchema,
   recentRuns: z.array(runSummarySchema),
+  /** 이 에이전트에게 줄 세운 사용자 메시지 수(모든 대화). 상한은 `maxQueuedMessages`다. Lead가 아니면 0이다. */
+  queuedMessageCount: z.number().int().nonnegative(),
 });
 export type AgentDetail = z.infer<typeof agentDetailSchema>;

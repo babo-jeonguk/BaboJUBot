@@ -1,24 +1,29 @@
 import { randomUUID } from "node:crypto";
-import type {
-  MessageDelivery,
-  RunResult,
-  WakeReason,
+import {
+  maxQueuedMessages,
+  type MessageDelivery,
+  type RunResult,
+  type WakeReason,
 } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { listConversations } from "./conversations.ts";
+import { findConversation, listConversations } from "./conversations.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
 import {
+  editQueuedMessage,
   sendQueuedMessageNow,
   withdrawQueuedMessage,
 } from "./queued-messages.ts";
 import {
   claimNextRun,
+  findAgentDetail,
   finishRun,
   insertOwnerMessage,
   listConversationMessages,
   loadRunContext,
 } from "./runs.ts";
+import { organizations } from "./schema.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 
 // 줄 세운 메시지: `중단하고 보내기` 실행 시도의 깨우기 묶음, 거두기·지금 보내기와 admission의 직렬화.
@@ -56,14 +61,22 @@ async function organization() {
     claimNextRun(t.db, lead.id, { tokenDigest: randomUUID(), source });
   const created = await claim();
   await finishRun(t.db, created!.run.id, completed, source);
-  const send = async (body: string, delivery: MessageDelivery = "next_run") => {
+  /** 보내 보고 저장 결과를 돌려준다. `new`면 새 대화를 시작한다. */
+  const attempt = async (
+    body: string,
+    delivery: MessageDelivery = "next_run",
+    to: { id: string } | "new" = conversation
+  ) => {
     const plan = planOwnerMessage(
       { organizationId: orgId, agents: creation.agents },
-      conversation,
+      to,
       { body, delivery },
       source
     );
-    const stored = await insertOwnerMessage(t.db, plan);
+    return { plan, stored: await insertOwnerMessage(t.db, plan) };
+  };
+  const send = async (body: string, delivery: MessageDelivery = "next_run") => {
+    const { plan, stored } = await attempt(body, delivery);
     expect(stored.kind).toBe("sent");
     return plan.message;
   };
@@ -71,7 +84,7 @@ async function organization() {
     (await listConversationMessages(t.db, orgId, conversation.id)).map(
       (m) => m.body
     );
-  return { lead, orgId, conversation, send, claim, listed };
+  return { lead, orgId, conversation, attempt, send, claim, listed };
 }
 
 describe("interrupt runs", () => {
@@ -148,6 +161,98 @@ describe("the queued message list", () => {
       "줄 2",
       "줄 3",
     ]);
+  });
+});
+
+describe("the queue cap", () => {
+  it("refuses another message for the Lead at the cap in any conversation and either delivery, until one is withdrawn", async () => {
+    const { lead, orgId, attempt, send } = await organization();
+    const first = await send("줄 0");
+    for (let i = 1; i < maxQueuedMessages; i++) await send(`줄 ${i}`);
+    expect(
+      (await findAgentDetail(t.db, orgId, lead.id))?.queuedMessageCount
+    ).toBe(maxQueuedMessages);
+
+    for (const [delivery, to] of [
+      ["next_run", undefined],
+      ["interrupt", undefined],
+      ["next_run", "new"],
+    ] as const) {
+      const { plan, stored } = await attempt("하나 더", delivery, to);
+      expect(stored).toEqual({ kind: "queue_full" });
+      if (plan.conversation)
+        expect(
+          await findConversation(t.db, orgId, plan.conversation.id)
+        ).toBeUndefined();
+    }
+
+    await withdrawQueuedMessage(t.db, orgId, first.id, source);
+    expect((await attempt("자리가 났다")).stored.kind).toBe("sent");
+    expect((await attempt("다시 가득")).stored.kind).toBe("queue_full");
+  });
+
+  it("frees slots once a run takes the messages", async () => {
+    const { attempt, send, claim } = await organization();
+    for (let i = 0; i < maxQueuedMessages; i++) await send(`줄 ${i}`);
+    await claim();
+    expect((await attempt("받은 뒤")).stored.kind).toBe("sent");
+  });
+});
+
+describe("editing a queued message", () => {
+  it("changes only the text in place, keeps the delivery and the queue position, and records the previous text", async () => {
+    const { orgId, send, claim, listed } = await organization();
+    await send("하나");
+    const middle = await send("둘", "interrupt");
+    await send("셋");
+
+    const edited = await editQueuedMessage(t.db, orgId, middle.id, "둘 고침");
+    expect(edited).toMatchObject({
+      kind: "changed",
+      message: { id: middle.id, body: "둘 고침", delivery: "interrupt" },
+    });
+    expect(edited.kind === "changed" ? edited.events : []).toMatchObject([
+      {
+        type: "message.edited",
+        payload: {
+          by: "owner",
+          messageId: middle.id,
+          previousBody: "둘",
+          body: "둘 고침",
+        },
+      },
+    ]);
+    expect(await listed()).toEqual(["하나", "둘 고침", "셋"]);
+    // Lead는 고친 글을 받는다.
+    expect(bodies((await claim())?.wakeReasons)).toEqual(["둘 고침"]);
+    expect(await editQueuedMessage(t.db, orgId, middle.id, "늦음")).toEqual({
+      kind: "message_delivered",
+    });
+  });
+
+  it("allows editing while paused but not in a closed organization, where withdrawing still works", async () => {
+    const { orgId, send } = await organization();
+    const message = await send("기다리는 말");
+    await t.db
+      .update(organizations)
+      .set({ stage: "paused", pausedFrom: "goal_setting" })
+      .where(eq(organizations.id, orgId));
+    expect(
+      (await editQueuedMessage(t.db, orgId, message.id, "멈춘 동안 고침")).kind
+    ).toBe("changed");
+    await t.db
+      .update(organizations)
+      .set({ stage: "stopped", pausedFrom: null })
+      .where(eq(organizations.id, orgId));
+    expect(await editQueuedMessage(t.db, orgId, message.id, "x")).toEqual({
+      kind: "organization_closed",
+    });
+    expect(
+      (await withdrawQueuedMessage(t.db, orgId, message.id, source)).kind
+    ).toBe("changed");
+    expect(
+      await editQueuedMessage(t.db, randomUUID(), message.id, "x")
+    ).toEqual({ kind: "not_found" });
   });
 });
 

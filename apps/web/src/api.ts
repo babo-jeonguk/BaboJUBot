@@ -262,16 +262,18 @@ export function useSendMessage(orgId: string, conversationId?: string) {
   });
 }
 
-/** 줄 세운 메시지에 대한 명령: 거두기(`취소`·`고치기`)와 `지금 보내기`. */
-export type QueuedMessageCommand = "withdraw" | "send_now";
+/** 줄 세운 메시지에 대한 명령: 그 자리에서 고치기, 거두기(`취소`, 빈 입력창의 ↑)와 `지금 보내기`. */
+export type QueuedMessageCommand = "edit" | "withdraw" | "send_now";
 const queuedMessagePath: Record<QueuedMessageCommand, string> = {
+  edit: "edit",
   withdraw: "withdraw",
   send_now: "send-now",
 };
 
 /**
- * 줄 세운 메시지 하나를 거두거나 지금 보낸다. 돌려받는 메시지는 거두기 전 모양이라 `고치기`가 그 글을 입력창에 되돌린다.
- * 실행 시도가 먼저 받았으면 409 `message_delivered`이며, 성공하든 실패하든 대화를 다시 불러와 전달된 메시지는 대화로 옮겨 보인다.
+ * 줄 세운 메시지 하나를 고치거나 거두거나 지금 보낸다. 고치기는 `body`로 글만 바꾼다. 거두기가 돌려받는 메시지는 거두기 전 모양이라
+ * 빈 입력창의 ↑가 그 글을 입력창에 되돌린다. 실행 시도가 먼저 받았으면 409 `message_delivered`이며, 성공하든 실패하든 대화와
+ * Lead(줄 세운 메시지 수)를 다시 불러와 전달된 메시지는 대화로 옮겨 보인다.
  */
 export function useQueuedMessageCommand(
   orgId: string,
@@ -282,9 +284,11 @@ export function useQueuedMessageCommand(
     mutationFn: ({
       messageId,
       command,
+      body,
     }: {
       messageId: string;
       command: QueuedMessageCommand;
+      body?: string;
     }) =>
       request(
         conversationMessageSchema,
@@ -292,7 +296,7 @@ export function useQueuedMessageCommand(
           orgId,
           `/messages/${encodeURIComponent(messageId)}/${queuedMessagePath[command]}`
         ),
-        jsonPost({})
+        jsonPost(command === "edit" ? { body } : {})
       ),
     onSettled: () =>
       Promise.all([
@@ -302,6 +306,9 @@ export function useQueuedMessageCommand(
         queryClient.invalidateQueries({
           queryKey: queryKeys.conversations(orgId),
           exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: [...queryKeys.organization(orgId), "agents"],
         }),
       ]),
   });

@@ -132,7 +132,7 @@ describe("Lead conversations", () => {
       ).map((m) => m.body)
     ).toEqual(["데이터셋 후보를 찾아 줘"]);
 
-    // 끝난 조직의 `중단하고 반영`은 받지 않으므로 새 대화도 남지 않는다.
+    // 끝난 조직은 사용자 메시지를 받지 않으므로 새 대화도 남지 않는다.
     await t.db
       .update(organizations)
       .set({ stage: "stopped" })
@@ -146,8 +146,10 @@ describe("Lead conversations", () => {
         refused.plan.conversation!.id
       )
     ).toBeUndefined();
-    // 다음 실행 시도에 반영은 지금처럼 남는다.
-    expect((await org.send("new", "나중에 읽어 줘")).stored.kind).toBe("sent");
+    // 줄 세우기도 같다.
+    expect((await org.send("new", "나중에 읽어 줘")).stored.kind).toBe(
+      "organization_closed"
+    );
   });
 
   it("routes the Lead's reply to the conversation the owner messages came from, and other replies to the default conversation", async () => {

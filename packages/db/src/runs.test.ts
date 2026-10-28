@@ -213,12 +213,12 @@ describe("admission and organization stage", () => {
     await send("먼저 온 메시지");
     const run = await claim();
     expect(run).toBeDefined();
+    await send("실행 중 메시지");
     await t.db
       .update(organizations)
       .set({ stage: "completed" })
       .where(eq(organizations.id, lead.organizationId));
-    // 이미 시작한 실행 시도는 그대로이고, 끝난 뒤 새 깨우기는 실행 시도가 되지 않는다.
-    await send("완료 뒤 메시지");
+    // 이미 시작한 실행 시도는 그대로이고, 남은 깨우기는 끝난 뒤 실행 시도가 되지 않는다.
     expect(await finishRun(t.db, run!.run.id, completed, source)).toBeDefined();
     expect(await claim()).toBeUndefined();
   });

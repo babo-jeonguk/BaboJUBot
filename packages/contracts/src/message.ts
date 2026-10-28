@@ -10,7 +10,7 @@ export type MessageAuthor = z.infer<typeof messageAuthorSchema>;
  * 사용자 메시지 전달 방식. `next_run`은 `줄 세우기`(기본, 실행 중이 아니면 그냥 보내기)이고, `interrupt`는 `중단하고 보내기`다.
  * `중단하고 보내기`는 받는 에이전트의 진행 중 실행 시도를 취소하는 제어 명령을 함께 남기고, 메시지는 다음 실행 시도가 받는다.
  * 그 실행 시도는 `중단하고 보내기` 메시지만 받으며, 먼저 줄 세운 메시지와 다른 깨우기는 그다음 실행 시도가 받는다(core `bundleWakes`).
- * 아직 실행 시도가 받지 않은 메시지는 사용자가 거두거나(`취소`·`고치기`) `지금 보내기`로 `중단하고 보내기`로 바꿀 수 있다.
+ * 아직 실행 시도가 받지 않은 메시지는 사용자가 그 자리에서 고치거나(`고치기`) 거두거나(`취소`) `지금 보내기`로 `중단하고 보내기`로 바꿀 수 있다.
  * steer는 실행기 지원과 함께 더한다(판 2).
  */
 export const messageDeliveries = ["next_run", "interrupt"] as const;
@@ -28,6 +28,20 @@ export const sendOwnerMessageInputSchema = z.strictObject({
   delivery: messageDeliverySchema.default("next_run"),
 });
 export type SendOwnerMessageInput = z.input<typeof sendOwnerMessageInputSchema>;
+
+/**
+ * Lead 하나에 줄 세울 수 있는 사용자 메시지(아직 실행 시도가 받지 않았고 거두지 않은 메시지)의 상한. 모든 대화를 합해 센다.
+ * 상한이면 줄 세우기·중단하고 보내기 모두 받지 않는다(409 `queue_full`). 거두면 자리가 난다.
+ */
+export const maxQueuedMessages = 20;
+
+/** 줄 세운 메시지를 그 자리에서 고치는 입력. 전달 방식과 줄 속 위치는 그대로다. */
+export const editQueuedMessageInputSchema = z.strictObject({
+  body: messageBodySchema,
+});
+export type EditQueuedMessageInput = z.infer<
+  typeof editQueuedMessageInputSchema
+>;
 
 /** 대화 제목의 최대 글자 수. 새 대화의 제목은 첫 사용자 메시지를 이 길이로 줄인 것이다. */
 export const conversationTitleMaxLength = 30;

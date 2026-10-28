@@ -18,6 +18,7 @@ import {
   chooseReplyConversation,
   decisionOfStatus,
   instructionsBundleVersion,
+  ownerMessageRefusal,
   planAgentMessage,
   planInterrupt,
   planRunFinish,
@@ -97,9 +98,11 @@ import {
 /**
  * 사용자 메시지·깨우기·Event를 한 transaction으로 저장한다. 하나라도 실패하면 아무것도 남지 않는다.
  * 새 대화의 첫 메시지면 그 대화도 같은 transaction에 남기므로, 메시지가 남지 않으면 빈 대화도 남지 않는다.
+ * 조직 → 받는 에이전트 순으로 잠근 뒤 받을지 정한다(core `ownerMessageRefusal`). 최종 완료·중단 조직이면 `organization_closed`,
+ * 그 에이전트에게 줄 세운 메시지가 상한이면 `queue_full`이고 아무것도 남기지 않는다. 에이전트 행 잠금이 같은 에이전트에게 가는
+ * 다른 보내기·거두기·admission과 직렬화하므로 센 수가 상한을 넘지 않는다.
  * `중단하고 보내기`면 같은 transaction에서 받는 에이전트의 진행 중 실행 시도에 취소를 요청하고 그 제어 명령 Event도 남긴다.
  * 조직 행을 먼저 잠가 admission과 직렬화하므로, 메시지는 취소된 실행 시도가 아니라 그 뒤의 실행 시도에 묶인다.
- * 중단은 제어 명령이므로 최종 완료·중단 조직에서는 메시지도 남기지 않고 `organization_closed`다.
  * 실행기에 취소를 보내는 일은 commit 뒤 호출자가 `cancellation`으로 한다.
  */
 export async function insertOwnerMessage(
@@ -107,13 +110,20 @@ export async function insertOwnerMessage(
   plan: OwnerMessagePlan
 ): Promise<
   | { kind: "sent"; events: Event[]; cancellation: RunCancellation | null }
-  | { kind: "organization_closed" }
+  | { kind: "organization_closed" | "queue_full" }
 > {
   return db.transaction(async (tx) => {
+    const { organizationId, agentId } = plan.message;
+    const org = await lockOrganization(tx, organizationId);
+    await lockAgent(tx, organizationId, agentId);
+    const refused = ownerMessageRefusal({
+      stage: org!.stage,
+      queuedCount: await countQueuedMessages(tx, agentId),
+    });
+    if (refused) return { kind: refused };
     let control: InterruptPlan | null = null;
     if (plan.message.delivery === "interrupt") {
-      const org = await lockOrganization(tx, plan.message.organizationId);
-      const running = await lockRunningRunOfAgent(tx, plan.message.agentId);
+      const running = await lockRunningRunOfAgent(tx, agentId);
       const planned = planInterrupt(plan.message, org!.stage, running);
       if (planned === "organization_closed") return { kind: planned };
       control = planned;
@@ -134,6 +144,23 @@ export async function insertOwnerMessage(
       cancellation: control.cancellation,
     };
   });
+}
+
+/** 에이전트에게 줄 세운 사용자 메시지 수: 아직 실행 시도가 받지 않았고 거두지 않은 메시지(모든 대화). */
+export async function countQueuedMessages(db: Executor, agentId: string) {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(messages)
+    .innerJoin(wakes, eq(wakes.messageId, messages.id))
+    .where(
+      and(
+        eq(messages.agentId, agentId),
+        eq(messages.author, "owner"),
+        isNull(messages.withdrawnAt),
+        isNull(wakes.runId)
+      )
+    );
+  return row!.count;
 }
 
 // ---------- 실행 시도 admission ----------
@@ -712,6 +739,7 @@ export async function findAgentDetail(
     ),
     heartbeat: toAgentHeartbeat(agent),
     recentRuns: recent,
+    queuedMessageCount: await countQueuedMessages(db, agentId),
   };
 }
 

@@ -55,7 +55,23 @@ export const messageCreatedEventSchema = z.object({
 });
 
 /**
- * 사용자가 줄 세운 메시지를 거두었다(`취소`·`고치기`). 아직 실행 시도가 받지 않은 사용자 메시지만 거둘 수 있다.
+ * 사용자가 줄 세운 메시지를 그 자리에서 고쳤다(`고치기`). 전달 방식과 줄 속 위치는 그대로이며, 고치기 전 글(`previousBody`)을 남긴다.
+ */
+export const messageEditedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("message.edited"),
+  payload: z.object({
+    by: z.literal("owner"),
+    messageId: z.uuid(),
+    agentId: z.uuid(),
+    conversationId: z.uuid(),
+    previousBody: z.string(),
+    body: z.string(),
+  }),
+});
+
+/**
+ * 사용자가 줄 세운 메시지를 거두었다(`취소`, 빈 입력창의 ↑). 아직 실행 시도가 받지 않은 사용자 메시지만 거둘 수 있다.
  * 메시지는 지우지 않고 남지만 대화와 Lead의 맥락에서 빠지며, 그 깨우기는 더는 실행 시도를 시작하지 않는다.
  */
 export const messageWithdrawnEventSchema = z.object({
@@ -513,6 +529,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   resultDecidedEventSchema,
   toolRefusedEventSchema,
   messageCreatedEventSchema,
+  messageEditedEventSchema,
   messageWithdrawnEventSchema,
   messageSentNowEventSchema,
   taskCreatedEventSchema,

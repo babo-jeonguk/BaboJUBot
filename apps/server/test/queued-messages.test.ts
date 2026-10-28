@@ -1,4 +1,6 @@
 import {
+  agentDetailSchema,
+  maxQueuedMessages,
   conversationMessageListSchema,
   conversationMessageSchema,
   organizationDetailSchema,
@@ -36,6 +38,8 @@ const withdraw = (orgId: string, messageId: string) =>
   post(orgId, `/messages/${messageId}/withdraw`);
 const sendNow = (orgId: string, messageId: string) =>
   post(orgId, `/messages/${messageId}/send-now`);
+const edit = (orgId: string, messageId: string, body: string) =>
+  post(orgId, `/messages/${messageId}/edit`, { body });
 const conversation = async (orgId: string) =>
   conversationMessageListSchema.parse(
     await get(`/api/organizations/${orgId}/messages`)
@@ -236,20 +240,109 @@ describe("paused and finished organizations", () => {
     ).toEqual([["멈춘 동안 둘"], ["Lead가 멈춘 동안"]]);
   });
 
-  it("lets the owner withdraw in a finished organization but refuses sending now as organization_closed", async () => {
+  it("in a finished organization refuses new messages, sending now and editing, but still lets the owner withdraw", async () => {
     const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("끝난 조직");
+    expect((await post(org.id, "/pause")).status).toBe(200);
+    const one = await send(org.id, "멈춘 동안 하나");
+    const two = await send(org.id, "멈춘 동안 둘");
     expect((await post(org.id, "/stop")).status).toBe(200);
-    const one = await send(org.id, "끝난 뒤 하나");
-    const two = await send(org.id, "끝난 뒤 둘");
-    const refused = await sendNow(org.id, one.id);
-    expect(refused.status).toBe(409);
-    expect(refused.body).toEqual({ error: { code: "organization_closed" } });
+
+    const closedRefusal = { error: { code: "organization_closed" } };
+    const late = await post(org.id, "/messages", { body: "끝난 뒤" });
+    expect(late.status).toBe(409);
+    expect(late.body).toEqual(closedRefusal);
+    for (const res of [
+      await sendNow(org.id, one.id),
+      await edit(org.id, one.id, "끝난 뒤 고침"),
+    ]) {
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual(closedRefusal);
+    }
     expect((await withdraw(org.id, two.id)).status).toBe(200);
-    expect((await conversation(org.id)).map((m) => m.body)).not.toContain(
-      "끝난 뒤 둘"
-    );
+    expect((await conversation(org.id)).map((m) => m.body)).toEqual([
+      "멈춘 동안 하나",
+    ]);
+  });
+});
+
+describe("editing a queued message", () => {
+  it("changes the text in place while paused, keeps its delivery and position, records the previous text, and the Lead gets the new text", async () => {
+    const agents = scriptedAgents({ created: idle });
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await createOrganization("고치기 조직");
+    expect((await post(org.id, "/pause")).status).toBe(200);
+    await send(org.id, "하나");
+    const middle = await send(org.id, "둘");
+    await send(org.id, "셋");
+    const stream = await t!.subscribe({
+      kind: "organization",
+      organizationId: org.id,
+    });
+
+    const res = await edit(org.id, middle.id, "둘 고침");
+    expect(res.status).toBe(200);
+    expect(conversationMessageSchema.parse(res.body)).toMatchObject({
+      id: middle.id,
+      body: "둘 고침",
+      delivery: "next_run",
+      deliveredToRunId: null,
+    });
+    expect(await stream.next()).toMatchObject({
+      type: "message.edited",
+      payload: { messageId: middle.id, previousBody: "둘", body: "둘 고침" },
+    });
+    stream.close();
+    expect((await conversation(org.id)).map((m) => m.body)).toEqual([
+      "하나",
+      "둘 고침",
+      "셋",
+    ]);
+    for (const body of [{ body: "  " }, { body: "x", extra: 1 }, {}])
+      expect(
+        (await post(org.id, `/messages/${middle.id}/edit`, body)).status
+      ).toBe(422);
+
+    expect((await post(org.id, "/resume")).status).toBe(200);
+    await t.drain();
+    expect(
+      agents.of(org.lead.id).map((r) => bodies(r.request.wakeReasons))
+    ).toEqual([["하나", "둘 고침", "셋"]]);
+    const late = await edit(org.id, middle.id, "늦음");
+    expect(late.status).toBe(409);
+    expect(late.body).toEqual({ error: { code: "message_delivered" } });
+  });
+});
+
+describe("the queue cap", () => {
+  it("answers 409 queue_full at the cap for any conversation and delivery, frees a slot on withdraw, and counts it on the Lead", async () => {
+    const agents = scriptedAgents({ created: idle });
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await createOrganization("가득 찬 줄 조직");
+    expect((await post(org.id, "/pause")).status).toBe(200);
+    const first = await send(org.id, "줄 0");
+    for (let i = 1; i < maxQueuedMessages; i++) await send(org.id, `줄 ${i}`);
+    expect(
+      agentDetailSchema.parse(
+        await get(`/api/organizations/${org.id}/agents/${org.lead.id}`)
+      ).queuedMessageCount
+    ).toBe(maxQueuedMessages);
+
+    for (const [path, body] of [
+      ["/messages", { body: "하나 더" }],
+      ["/messages", { body: "하나 더", delivery: "interrupt" }],
+      ["/conversations", { body: "새 대화로" }],
+    ] as const) {
+      const refused = await post(org.id, path, body);
+      expect(refused.status).toBe(409);
+      expect(refused.body).toEqual({ error: { code: "queue_full" } });
+    }
+    expect(await conversation(org.id)).toHaveLength(maxQueuedMessages);
+
+    expect((await withdraw(org.id, first.id)).status).toBe(200);
+    await send(org.id, "자리가 났다");
+    expect((await conversation(org.id)).at(-1)?.body).toBe("자리가 났다");
   });
 });
 

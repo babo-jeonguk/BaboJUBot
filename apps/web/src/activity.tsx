@@ -34,6 +34,8 @@ export function describeEvent(event: Event, agentName: string): Described {
       return event.payload.author === "owner"
         ? { icon: "💬", title: `사용자가 ${agentName}에게 메시지를 보냈습니다` }
         : { icon: "↩", title: `${agentName}가 Lead 대화에 답장했습니다` };
+    case "message.edited":
+      return { icon: "✎", title: "사용자가 줄 세운 메시지를 고쳤습니다" };
     case "message.withdrawn":
       return { icon: "↶", title: "사용자가 줄 세운 메시지를 취소했습니다" };
     case "message.sent_now":

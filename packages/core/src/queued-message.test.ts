@@ -1,5 +1,8 @@
+import { maxQueuedMessages } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  ownerMessageRefusal,
+  planEdit,
   planSendNow,
   planWithdrawal,
   type QueuedMessageState,
@@ -42,6 +45,66 @@ describe("planWithdrawal", () => {
     expect(planWithdrawal(undefined)).toBe("not_found");
     expect(planWithdrawal(queued({ withdrawn: true }))).toBe("not_found");
     expect(planWithdrawal(queued({ author: "agent", delivery: null }))).toBe(
+      "not_found"
+    );
+  });
+});
+
+describe("ownerMessageRefusal", () => {
+  it("accepts a message below the queue cap and refuses closed organizations and a full queue", () => {
+    expect(
+      ownerMessageRefusal({ stage: "researching", queuedCount: 0 })
+    ).toBeNull();
+    expect(
+      ownerMessageRefusal({
+        stage: "paused",
+        queuedCount: maxQueuedMessages - 1,
+      })
+    ).toBeNull();
+    expect(
+      ownerMessageRefusal({
+        stage: "researching",
+        queuedCount: maxQueuedMessages,
+      })
+    ).toBe("queue_full");
+    expect(ownerMessageRefusal({ stage: "stopped", queuedCount: 0 })).toBe(
+      "organization_closed"
+    );
+    expect(ownerMessageRefusal({ stage: "completed", queuedCount: 0 })).toBe(
+      "organization_closed"
+    );
+  });
+});
+
+describe("planEdit", () => {
+  const editable = (overrides: Partial<QueuedMessageState> = {}) => ({
+    ...queued(overrides),
+    body: "처음 글",
+  });
+
+  it("records the previous and new text, also while paused", () => {
+    for (const stage of ["researching", "paused"] as const)
+      expect(planEdit(editable(), stage, "고친 글")).toEqual({
+        event: {
+          organizationId: "org-1",
+          type: "message.edited",
+          payload: {
+            by: "owner",
+            ...ids,
+            previousBody: "처음 글",
+            body: "고친 글",
+          },
+        },
+      });
+  });
+
+  it("refuses delivered messages and closed organizations, and hides missing or withdrawn ones", () => {
+    expect(
+      planEdit(editable({ deliveredToRunId: "run-1" }), "researching", "x")
+    ).toBe("message_delivered");
+    expect(planEdit(editable(), "stopped", "x")).toBe("organization_closed");
+    expect(planEdit(undefined, "researching", "x")).toBe("not_found");
+    expect(planEdit(editable({ withdrawn: true }), "researching", "x")).toBe(
       "not_found"
     );
   });

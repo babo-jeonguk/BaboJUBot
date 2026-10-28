@@ -1,5 +1,6 @@
 import type { ConversationMessage, Event } from "@babojubot/contracts";
 import {
+  planEdit,
   planSendNow,
   planWithdrawal,
   type QueuedMessageRefusal,
@@ -20,7 +21,7 @@ import {
 } from "./rows.ts";
 import { messages, wakes } from "./schema.ts";
 
-// 줄 세운 메시지 거두기·지금 보내기(core queued-message.ts). 잠금 순서는 조직 → 에이전트 → 실행 시도다.
+// 줄 세운 메시지 고치기·거두기·지금 보내기(core queued-message.ts). 잠금 순서는 조직 → 에이전트 → 실행 시도다.
 // 에이전트 행 잠금이 admission(`claimNextRun`의 에이전트 `FOR UPDATE`)과 직렬화하므로, 잠근 뒤 읽은 깨우기가
 // 아직 실행 시도에 묶이지 않았으면 이 transaction이 끝날 때까지 어떤 실행 시도도 그 깨우기를 받지 못한다.
 
@@ -61,6 +62,34 @@ export async function withdrawQueuedMessage(
     return {
       kind: "changed",
       message: found!.message,
+      events: [await insertEvent(tx, plan.event)],
+      cancellation: null,
+    };
+  });
+}
+
+/**
+ * 줄 세운 메시지를 그 자리에서 고친다. 글만 바꾸고 전달 방식·줄 속 위치·깨우기는 그대로이며 `message.edited`에 고치기 전 글을 남긴다.
+ * 일시정지 중에도 고칠 수 있다. 실행 시도가 먼저 받았으면 `message_delivered`, 끝난 조직이면 `organization_closed`다.
+ */
+export async function editQueuedMessage(
+  db: Database,
+  organizationId: string,
+  messageId: string,
+  body: string
+): Promise<QueuedMessageResult> {
+  if (!isUuid(organizationId) || !isUuid(messageId))
+    return { kind: "not_found" };
+  return db.transaction(async (tx) => {
+    const locked = await lockMessageAgent(tx, organizationId, messageId);
+    if (!locked) return { kind: "not_found" };
+    const found = await readQueuedMessage(tx, organizationId, messageId);
+    const plan = planEdit(found?.state, locked.stage, body);
+    if (typeof plan === "string") return { kind: plan };
+    await tx.update(messages).set({ body }).where(eq(messages.id, messageId));
+    return {
+      kind: "changed",
+      message: { ...found!.message, body },
       events: [await insertEvent(tx, plan.event)],
       cancellation: null,
     };
@@ -133,7 +162,11 @@ async function readQueuedMessage(
   organizationId: string,
   messageId: string
 ): Promise<
-  { state: QueuedMessageState; message: ConversationMessage } | undefined
+  | {
+      state: QueuedMessageState & { body: string };
+      message: ConversationMessage;
+    }
+  | undefined
 > {
   const [row] = await tx
     .select({ message: messages, deliveredToRunId: wakes.runId })

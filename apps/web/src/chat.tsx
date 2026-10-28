@@ -1,6 +1,7 @@
 import {
   defaultConversationTitle,
   isClosedStage,
+  maxQueuedMessages,
   messageBodyMaxLength,
   type Agent,
   type ConversationMessage,
@@ -60,6 +61,7 @@ const chatPath = (orgId: string, conversation?: ConversationSummary | "new") =>
  * 사용자 메시지는 저장되면 Lead를 깨운다. Lead가 실행 중이면 입력창 버튼으로 `줄 세우기`(다음 실행 시도에 담음)와
  * `중단하고 보내기`(진행 중 실행 시도를 취소하고 그 메시지만 다음 실행 시도에 담음)를 고르고, 입력이 비면 `실행 중단`만 한다.
  * 아직 실행 시도가 받지 않은 사용자 메시지(줄 세운 메시지)는 대화가 아니라 입력창 바로 위 목록에 있고, 받으면 대화로 옮겨진다.
+ * 대화는 Lead가 받은 순서다. 끝난 조직(중단·최종 완료)은 메시지를 받지 않으므로 입력창 대신 상태만 보이고 새 대화도 시작할 수 없다.
  */
 export function LeadChat({
   orgId,
@@ -71,6 +73,8 @@ export function LeadChat({
   conversationId?: string;
 }) {
   const conversations = useConversations(orgId);
+  const stage = useOrganization(orgId).data?.stage;
+  const closed = stage !== undefined && isClosedStage(stage);
   const drafting = conversationId === newConversationSlug;
   const current = drafting
     ? undefined
@@ -89,6 +93,7 @@ export function LeadChat({
       conversations={conversations}
       activeId={drafting ? undefined : current?.id}
       drafting={drafting}
+      closed={closed}
     />
   );
 
@@ -115,6 +120,7 @@ export function LeadChat({
           orgId={orgId}
           lead={lead}
           title={title}
+          closed={closed}
           unreadElsewhere={
             conversations.data?.some((c) => c.unread && c.id !== current?.id) ??
             false
@@ -137,30 +143,50 @@ export function LeadChat({
   );
 }
 
-/** 대화 목록: 새 대화 버튼, 맨 위의 기본 대화, 그 아래 마지막 활동 순의 대화. Lead가 답한 뒤 보지 않은 대화에는 점이 붙는다. */
+/**
+ * 대화 목록: 새 대화 버튼, 맨 위의 기본 대화, 그 아래 마지막 활동 순의 대화. Lead가 답한 뒤 보지 않은 대화에는 점이 붙는다.
+ * 끝난 조직에서는 새 대화 버튼이 비활성이다.
+ */
 function ConversationList({
   orgId,
   conversations,
   activeId,
   drafting,
+  closed,
 }: {
   orgId: string;
   conversations: ReturnType<typeof useConversations>;
   activeId: string | undefined;
   drafting: boolean;
+  closed: boolean;
 }) {
+  const label = (
+    <>
+      <span aria-hidden className="text-base leading-none text-brand-600">
+        ＋
+      </span>
+      새 대화
+    </>
+  );
   return (
     <nav aria-label="대화 목록" className="flex min-h-0 flex-1 flex-col">
-      <Link
-        to={chatPath(orgId, "new")}
-        aria-current={drafting ? "page" : undefined}
-        className="btn-soft w-full justify-start aria-[current=page]:bg-brand-50 aria-[current=page]:ring-brand-200"
-      >
-        <span aria-hidden className="text-base leading-none text-brand-600">
-          ＋
-        </span>
-        새 대화
-      </Link>
+      {closed ? (
+        <button
+          type="button"
+          disabled
+          className="btn-soft w-full justify-start disabled:opacity-50"
+        >
+          {label}
+        </button>
+      ) : (
+        <Link
+          to={chatPath(orgId, "new")}
+          aria-current={drafting ? "page" : undefined}
+          className="btn-soft w-full justify-start aria-[current=page]:bg-brand-50 aria-[current=page]:ring-brand-200"
+        >
+          {label}
+        </Link>
+      )}
       <div className="scrollbar-thin -mx-1 mt-3 min-h-0 flex-1 overflow-y-auto px-1">
         {conversations.isPending ? (
           <Loading />
@@ -256,12 +282,14 @@ function ChatHeader({
   orgId,
   lead,
   title,
+  closed,
   unreadElsewhere,
   onOpenList,
 }: {
   orgId: string;
   lead: Agent;
   title: string;
+  closed: boolean;
   unreadElsewhere: boolean;
   onOpenList: () => void;
 }) {
@@ -314,13 +342,24 @@ function ChatHeader({
           )}
         </Link>
       )}
-      <Link
-        to={chatPath(orgId, "new")}
-        aria-label="새 대화"
-        className="btn-ghost ml-auto px-2 text-lg leading-none text-brand-600 md:hidden"
-      >
-        ＋
-      </Link>
+      {closed ? (
+        <button
+          type="button"
+          disabled
+          aria-label="새 대화"
+          className="btn-ghost ml-auto px-2 text-lg leading-none text-brand-600 disabled:opacity-40 md:hidden"
+        >
+          ＋
+        </button>
+      ) : (
+        <Link
+          to={chatPath(orgId, "new")}
+          aria-label="새 대화"
+          className="btn-ghost ml-auto px-2 text-lg leading-none text-brand-600 md:hidden"
+        >
+          ＋
+        </Link>
+      )}
     </div>
   );
 }
@@ -530,14 +569,18 @@ function MessageBubble({
   );
 }
 
-/** 메시지가 지금 Lead를 깨우지 못하는 이유. 메시지는 남아 재개 뒤(중단·완료면 전달되지 않음) 전달된다. */
+/** 메시지가 지금 Lead를 깨우지 못하는 이유. 메시지는 남아 재개 뒤 전달된다. */
 function heldBy(stage: LifecycleStage | undefined, leadPaused: boolean) {
   if (stage === "paused") return "조직이 일시정지 중입니다 · 재개하면 전달";
-  if (stage === "stopped") return "중단된 조직입니다";
-  if (stage === "completed") return "최종 완료된 조직입니다";
   if (leadPaused) return "Lead가 일시정지 중입니다 · 재개하면 전달";
   return null;
 }
+
+/** 끝난 조직의 입력창 자리에 보이는 상태. */
+const closedLabel: Partial<Record<LifecycleStage, string>> = {
+  stopped: "중단된 조직",
+  completed: "최종 완료된 조직",
+};
 
 type OwnerMessageSender = {
   mutateAsync: (input: {
@@ -552,11 +595,13 @@ type OwnerMessageSender = {
  * 입력창. 버튼은 Lead 상태를 따라 바뀐다. 실행 중이 아니면 `보내기` 하나, 실행 중이면 입력이 빌 때 `실행 중단`,
  * 입력이 있으면 `중단하고 보내기`와 `줄 세우기`다. Enter는 언제나 `줄 세우기`(실행 중이 아니면 그냥 보내기)다.
  * 고른 방식은 메시지마다 새로 정하며 남지 않는다. 실행 중 여부는 Lead 상세의 진행 중 실행 시도로 보고 Event로 바로 바뀐다.
- * 이미 취소 정리 중인 실행 시도나 끝난 조직은 실행 중으로 치지 않는다(끝난 조직은 중단이 제어 명령이라 서버도 409).
+ * 이미 취소 정리 중인 실행 시도는 실행 중으로 치지 않는다. 끝난 조직(중단·최종 완료)은 메시지를 받지 않으므로 입력창 대신
+ * 그 상태만 보인다. Lead에게 줄 세운 메시지가 상한(`maxQueuedMessages`, 모든 대화)이면 보내는 버튼이 모두 비활성이다.
  *
- * 바로 위에는 이 대화의 줄 세운 메시지가 오래된 것부터 있다. `고치기`는 메시지를 거두고 그 글을 입력창 맨 앞에 되돌리며,
- * 입력창이 비었을 때 ↑ 키는 가장 최근 메시지를 같은 방식으로 되돌린다. `취소`는 거두기만 하고, `지금 보내기`는
- * Lead가 실행 중이고 조직·Lead가 일시정지가 아닐 때만 보인다. 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
+ * 바로 위에는 이 대화의 줄 세운 메시지가 오래된 것부터 있다. `고치기`는 그 항목을 그 자리에서 고치는 입력으로 바꾸며
+ * (Enter 저장, Shift+Enter 줄바꿈, Esc 취소) 줄 속 위치와 전달 방식은 그대로다. 입력창이 비었을 때 ↑ 키는 가장 최근 메시지를
+ * 거두고 그 글을 입력창에 되돌린다. `취소`는 거두기만 하고, `지금 보내기`는 Lead가 실행 중이고 조직·Lead가 일시정지가 아닐 때만 보인다.
+ * 끝난 조직에서는 `취소`만 된다. 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
  */
 function Composer({
   orgId,
@@ -587,11 +632,13 @@ function Composer({
       (r) => r.status === "running" && r.cancelReason === null
     ) ??
       false);
+  const queuedCount = Math.max(agent?.queuedMessageCount ?? 0, queued.length);
+  const full = queuedCount >= maxQueuedMessages;
   const typed = text.trim() !== "";
   const busy = send.isPending || stop.isPending;
   const submit = async (delivery: MessageDelivery) => {
     const body = text.trim();
-    if (!body || busy) return;
+    if (!body || busy || full) return;
     try {
       await send.mutateAsync({ body, delivery });
       setText((current) => (current.trim() === body ? "" : current));
@@ -604,24 +651,30 @@ function Composer({
   const command = useQueuedMessageCommand(orgId, conversationId);
   const toast = useToast();
   const queuedBusy = command.isPending;
+  const failed: Record<QueuedMessageCommand, string> = {
+    edit: "고치지 못했습니다. 다시 시도하세요.",
+    withdraw: "취소하지 못했습니다. 다시 시도하세요.",
+    send_now: "보내지 못했습니다. 다시 시도하세요.",
+  };
+  /** 줄 세운 메시지 명령. 실패하면 토스트로 알리고 `undefined`다(이미 전달됐으면 그 사실을). */
   const runQueued = async (
     message: ConversationMessage,
-    kind: QueuedMessageCommand
+    kind: QueuedMessageCommand,
+    body?: string
   ) => {
     if (queuedBusy) return undefined;
     try {
       return await command.mutateAsync({
         messageId: message.id,
         command: kind,
+        body,
       });
     } catch (error) {
       toast({
         message:
           error instanceof ApiError && error.code === "message_delivered"
             ? "이미 전달된 메시지입니다"
-            : kind === "send_now"
-              ? "보내지 못했습니다. 다시 시도하세요."
-              : "취소하지 못했습니다. 다시 시도하세요.",
+            : failed[kind],
       });
       return undefined;
     }
@@ -635,6 +688,7 @@ function Composer({
     );
     input.current?.focus();
   };
+  const closedStatus = closed ? closedLabel[stage!] : undefined;
   return (
     <form
       className="shrink-0 pt-3"
@@ -646,124 +700,141 @@ function Composer({
       {queued.length > 0 && (
         <QueuedMessages
           messages={queued}
+          count={queuedCount}
+          canEdit={!closed}
           canSendNow={running && !held}
           busy={queuedBusy}
-          onEdit={(m) => void pullBack(m)}
+          onEdit={(m, body) => runQueued(m, "edit", body)}
           onCancel={(m) => void runQueued(m, "withdraw")}
           onSendNow={(m) => void runQueued(m, "send_now")}
         />
       )}
-      {send.isPending && (
-        <p className="mb-2 text-right text-xs text-slate-400" role="status">
-          전송 중…
+      {closedStatus ? (
+        <p
+          role="status"
+          data-testid="composer-closed"
+          className="card px-4 py-3 text-center text-sm text-slate-500"
+        >
+          {closedStatus}
         </p>
-      )}
-      <div className="card flex items-end gap-2 p-2">
-        <label htmlFor="lead-message" className="sr-only">
-          Lead에게 보낼 메시지
-        </label>
-        <textarea
-          id="lead-message"
-          ref={input}
-          value={text}
-          rows={1}
-          autoFocus={autoFocus}
-          maxLength={messageBodyMaxLength}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            const latest = queued.at(-1);
-            if (
-              e.key === "ArrowUp" &&
-              latest &&
-              text.trim() === "" &&
-              !e.shiftKey &&
-              !e.altKey &&
-              !e.ctrlKey &&
-              !e.metaKey &&
-              !e.nativeEvent.isComposing
-            ) {
-              e.preventDefault();
-              void pullBack(latest);
-              return;
-            }
-            if (
-              e.key === "Enter" &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing
-            ) {
-              e.preventDefault();
-              void submit("next_run");
-            }
-          }}
-          placeholder="Research Lead에게 메시지"
-          className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
-        />
-        <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
-          {!running ? (
-            <IconButton
-              label="보내기"
-              type="submit"
-              tone="primary"
-              disabled={!typed || busy}
-            >
-              <ArrowUpIcon />
-            </IconButton>
-          ) : !typed ? (
-            <IconButton
-              label="실행 중단"
-              tone="stop"
-              disabled={busy}
-              onClick={stopRun}
-            >
-              <StopIcon />
-            </IconButton>
-          ) : (
-            <>
-              <IconButton
-                label="중단하고 보내기"
-                tone="danger"
-                disabled={busy}
-                onClick={() => void submit("interrupt")}
-              >
-                <BoltIcon className="h-[18px] w-[18px]" />
-              </IconButton>
-              <IconButton
-                label="줄 세우기"
-                type="submit"
-                tone="primary"
-                disabled={busy}
-              >
-                <QueueIcon />
-              </IconButton>
-            </>
+      ) : (
+        <>
+          {send.isPending && (
+            <p className="mb-2 text-right text-xs text-slate-400" role="status">
+              전송 중…
+            </p>
           )}
-        </div>
-      </div>
-      {send.isError && (
-        <p role="alert" className="mt-2 text-xs text-rose-600">
-          보내지 못했습니다. 다시 시도하세요.
-        </p>
-      )}
-      {stop.isError && !stop.isPending && (
-        <p role="alert" className="mt-2 text-xs text-rose-600">
-          중단하지 못했습니다. 다시 시도하세요.
-        </p>
-      )}
-      {held && (
-        <p role="status" className="mt-2 text-xs text-amber-700">
-          {held}
-        </p>
+          <div className="card flex items-end gap-2 p-2">
+            <label htmlFor="lead-message" className="sr-only">
+              Lead에게 보낼 메시지
+            </label>
+            <textarea
+              id="lead-message"
+              ref={input}
+              value={text}
+              rows={1}
+              autoFocus={autoFocus}
+              maxLength={messageBodyMaxLength}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                const latest = queued.at(-1);
+                if (
+                  e.key === "ArrowUp" &&
+                  latest &&
+                  text.trim() === "" &&
+                  !e.shiftKey &&
+                  !e.altKey &&
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault();
+                  void pullBack(latest);
+                  return;
+                }
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault();
+                  void submit("next_run");
+                }
+              }}
+              placeholder="Research Lead에게 메시지"
+              className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
+            />
+            <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
+              {!running ? (
+                <IconButton
+                  label="보내기"
+                  type="submit"
+                  tone="primary"
+                  disabled={!typed || busy || full}
+                >
+                  <ArrowUpIcon />
+                </IconButton>
+              ) : !typed ? (
+                <IconButton
+                  label="실행 중단"
+                  tone="stop"
+                  disabled={busy}
+                  onClick={stopRun}
+                >
+                  <StopIcon />
+                </IconButton>
+              ) : (
+                <>
+                  <IconButton
+                    label="중단하고 보내기"
+                    tone="danger"
+                    disabled={busy || full}
+                    onClick={() => void submit("interrupt")}
+                  >
+                    <BoltIcon className="h-[18px] w-[18px]" />
+                  </IconButton>
+                  <IconButton
+                    label="줄 세우기"
+                    type="submit"
+                    tone="primary"
+                    disabled={busy || full}
+                  >
+                    <QueueIcon />
+                  </IconButton>
+                </>
+              )}
+            </div>
+          </div>
+          {send.isError && (
+            <p role="alert" className="mt-2 text-xs text-rose-600">
+              보내지 못했습니다. 다시 시도하세요.
+            </p>
+          )}
+          {stop.isError && !stop.isPending && (
+            <p role="alert" className="mt-2 text-xs text-rose-600">
+              중단하지 못했습니다. 다시 시도하세요.
+            </p>
+          )}
+          {held && (
+            <p role="status" className="mt-2 text-xs text-amber-700">
+              {held}
+            </p>
+          )}
+        </>
       )}
     </form>
   );
 }
 
 /**
- * 입력창 바로 위의 줄 세운 메시지 목록. 오래된 것이 위, 가장 최근 것이 입력창 바로 위다.
- * 항목 버튼은 오른쪽 위에 작게, 마우스를 올리거나 키보드 초점이 항목 안에 있을 때 보이고 마우스가 없는 화면에서는 늘 보인다.
+ * 입력창 바로 위의 줄 세운 메시지 목록. 오래된 것이 위, 가장 최근 것이 입력창 바로 위다. 머리에는 Lead에게 줄 세운 메시지 수와
+ * 상한이 있다. 항목 버튼은 오른쪽 위에 작게, 마우스를 올리거나 키보드 초점이 항목 안에 있을 때 보이고 마우스가 없는 화면에서는 늘 보인다.
+ * 고치는 항목은 그 자리의 입력이 된다.
  */
 function QueuedMessages({
   messages,
+  count,
+  canEdit,
   canSendNow,
   busy,
   onEdit,
@@ -771,12 +842,20 @@ function QueuedMessages({
   onSendNow,
 }: {
   messages: ConversationMessage[];
+  count: number;
+  canEdit: boolean;
   canSendNow: boolean;
   busy: boolean;
-  onEdit: (message: ConversationMessage) => void;
+  onEdit: (
+    message: ConversationMessage,
+    body: string
+  ) => Promise<ConversationMessage | undefined>;
   onCancel: (message: ConversationMessage) => void;
   onSendNow: (message: ConversationMessage) => void;
 }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  // 고치던 메시지가 전달되거나 거둬져 목록에서 빠지면 고치기도 끝난다.
+  const editingId = messages.some((m) => m.id === editing) ? editing : null;
   return (
     <section aria-labelledby="queued-messages-title" className="mb-2">
       <h2
@@ -784,57 +863,142 @@ function QueuedMessages({
         className="mb-1.5 flex items-center gap-1.5 px-1 text-xs font-medium text-slate-500"
       >
         <QueueIcon className="h-3.5 w-3.5" />줄 세운 메시지{" "}
-        <span className="tabular-nums text-slate-400">{messages.length}</span>
+        <span
+          className={`tabular-nums ${count >= maxQueuedMessages ? "text-rose-600" : "text-slate-400"}`}
+        >
+          {count}/{maxQueuedMessages}
+        </span>
       </h2>
       <ol className="scrollbar-thin -mx-1 max-h-44 space-y-1 overflow-y-auto px-1 pb-0.5">
-        {messages.map((m) => (
-          <li
-            key={m.id}
-            data-testid="queued-message"
-            className="group/row relative rounded-xl bg-white/80 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200/80"
-          >
-            <p className="line-clamp-2 break-words whitespace-pre-wrap [@media(hover:none)]:pr-24">
-              {m.delivery === "interrupt" && (
-                <BoltIcon className="mr-1 -mt-0.5 inline h-3 w-3 text-rose-600" />
-              )}
-              {m.body}
-            </p>
-            <div className="absolute top-1 right-1 opacity-0 transition group-focus-within/row:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
-              <div
-                role="group"
-                aria-label={`줄 세운 메시지: ${m.body.slice(0, 30)}`}
-                className="flex gap-0.5 rounded-lg bg-white p-0.5 shadow-sm ring-1 ring-slate-200"
-              >
-                <QueuedAction
-                  label="고치기"
-                  disabled={busy}
-                  onClick={() => onEdit(m)}
-                >
-                  <PencilIcon />
-                </QueuedAction>
-                <QueuedAction
-                  label="취소"
-                  disabled={busy}
-                  onClick={() => onCancel(m)}
-                >
-                  <CrossIcon />
-                </QueuedAction>
-                {canSendNow && m.delivery !== "interrupt" && (
-                  <QueuedAction
-                    label="지금 보내기"
-                    tone="danger"
-                    disabled={busy}
-                    onClick={() => onSendNow(m)}
-                  >
-                    <BoltIcon className="h-3.5 w-3.5" />
-                  </QueuedAction>
+        {messages.map((m) =>
+          m.id === editingId ? (
+            <QueuedEditor
+              key={m.id}
+              message={m}
+              busy={busy}
+              onSave={async (body) => {
+                if (body === m.body) return setEditing(null);
+                // 저장하든 이미 전달됐든 고치기를 끝낸다. 그 밖의 실패는 고치던 글을 남긴다.
+                const saved = await onEdit(m, body);
+                if (saved) setEditing(null);
+              }}
+              onClose={() => setEditing(null)}
+            />
+          ) : (
+            <li
+              key={m.id}
+              data-testid="queued-message"
+              className="group/row relative rounded-xl bg-white/80 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200/80"
+            >
+              <p className="line-clamp-2 break-words whitespace-pre-wrap [@media(hover:none)]:pr-24">
+                {m.delivery === "interrupt" && (
+                  <BoltIcon className="mr-1 -mt-0.5 inline h-3 w-3 text-rose-600" />
                 )}
+                {m.body}
+              </p>
+              <div className="absolute top-1 right-1 opacity-0 transition group-focus-within/row:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
+                <div
+                  role="group"
+                  aria-label={`줄 세운 메시지: ${m.body.slice(0, 30)}`}
+                  className="flex gap-0.5 rounded-lg bg-white p-0.5 shadow-sm ring-1 ring-slate-200"
+                >
+                  {canEdit && (
+                    <QueuedAction
+                      label="고치기"
+                      disabled={busy}
+                      onClick={() => setEditing(m.id)}
+                    >
+                      <PencilIcon />
+                    </QueuedAction>
+                  )}
+                  <QueuedAction
+                    label="취소"
+                    disabled={busy}
+                    onClick={() => onCancel(m)}
+                  >
+                    <CrossIcon />
+                  </QueuedAction>
+                  {canSendNow && m.delivery !== "interrupt" && (
+                    <QueuedAction
+                      label="지금 보내기"
+                      tone="danger"
+                      disabled={busy}
+                      onClick={() => onSendNow(m)}
+                    >
+                      <BoltIcon className="h-3.5 w-3.5" />
+                    </QueuedAction>
+                  )}
+                </div>
               </div>
-            </div>
-          </li>
-        ))}
+            </li>
+          )
+        )}
       </ol>
     </section>
+  );
+}
+
+/** 줄 세운 메시지를 그 자리에서 고치는 입력. Enter 저장, Shift+Enter 줄바꿈, Esc 취소. 비우면 저장할 수 없다. */
+function QueuedEditor({
+  message,
+  busy,
+  onSave,
+  onClose,
+}: {
+  message: ConversationMessage;
+  busy: boolean;
+  onSave: (body: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(message.body);
+  const body = draft.trim();
+  const save = () => {
+    if (body && !busy) void onSave(body);
+  };
+  return (
+    <li
+      data-testid="queued-message"
+      data-editing
+      className="relative rounded-xl bg-white px-3 py-2 text-sm ring-2 ring-brand-400"
+    >
+      <label htmlFor={`queued-edit-${message.id}`} className="sr-only">
+        줄 세운 메시지 고치기
+      </label>
+      <textarea
+        id={`queued-edit-${message.id}`}
+        value={draft}
+        autoFocus
+        rows={2}
+        maxLength={messageBodyMaxLength}
+        onFocus={(e) =>
+          e.currentTarget.setSelectionRange(
+            e.currentTarget.value.length,
+            e.currentTarget.value.length
+          )
+        }
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return;
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            onClose();
+          } else if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            save();
+          }
+        }}
+        className="block max-h-40 w-full resize-none bg-transparent pr-16 text-slate-800 outline-none"
+      />
+      <div className="absolute top-1 right-1 flex gap-0.5 rounded-lg bg-white p-0.5 shadow-sm ring-1 ring-slate-200">
+        <QueuedAction label="저장" disabled={!body || busy} onClick={save}>
+          <CheckIcon />
+        </QueuedAction>
+        <QueuedAction label="고치기 취소" disabled={false} onClick={onClose}>
+          <CrossIcon />
+        </QueuedAction>
+      </div>
+    </li>
   );
 }
 
@@ -985,6 +1149,24 @@ function PencilIcon() {
       strokeLinejoin="round"
     >
       <path d="M12.5 4.5l3 3L7 16H4v-3l8.5-8.5Z" />
+    </svg>
+  );
+}
+
+/** 저장: 체크. */
+function CheckIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4.5 10.5l3.5 3.5 7.5-8" />
     </svg>
   );
 }
