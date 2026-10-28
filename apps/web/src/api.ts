@@ -279,6 +279,8 @@ export function useConversation(orgId: string, conversationId?: string) {
 /**
  * 불러온 대화 기록에 그 뒤에 온 메시지만 이어 붙인다(`?after=` 커서, 남으면 이어서). 아직 첫 쪽을 받지 않았으면 아무것도 하지 않고,
  * 비어 있던 대화면 가장 최근 쪽을 새로 받는다. 서버의 새 메시지는 늘 받은 순서의 맨 뒤에 놓이므로 붙이기만 하면 된다.
+ * 응답을 기다리는 사이 다른 이어 받기가 가장 새 쪽을 바꿨으면 그 응답은 붙일 자리가 지났으므로 버리고, 지금 가장 새 메시지
+ * 뒤부터 다시 받는다(늦게 온 응답이 순서를 뒤집거나 그보다 새 메시지를 버리지 않도록).
  */
 export async function catchUpConversation(
   queryClient: QueryClient,
@@ -286,22 +288,40 @@ export async function catchUpConversation(
   conversationId?: string
 ) {
   const key = queryKeys.conversation(orgId, conversationId);
-  const data = queryClient.getQueryData<TranscriptData>(key);
-  if (!data) return;
-  const newestCursor = data.pages[0]?.after ?? null;
-  if (newestCursor === null) {
-    const fresh = await request(
-      conversationPageSchema,
-      pagePath(orgId, conversationId)
-    );
-    queryClient.setQueryData<TranscriptData>(key, (old) =>
-      old && (old.pages[0]?.after ?? null) === null
-        ? { pages: [fresh], pageParams: [null] }
-        : old
-    );
-    return;
+  const newestCursor = (data: TranscriptData) => data.pages[0]?.after ?? null;
+  for (;;) {
+    const data = queryClient.getQueryData<TranscriptData>(key);
+    if (!data) return;
+    const base = newestCursor(data);
+    const update = await (base === null
+      ? fetchFirstPage(orgId, conversationId)
+      : fetchArrivals(orgId, conversationId, base));
+    let applied = false;
+    queryClient.setQueryData<TranscriptData>(key, (old) => {
+      if (!old || newestCursor(old) !== base) return old;
+      applied = true;
+      return update(old);
+    });
+    if (applied) return;
   }
-  let cursor: string = newestCursor;
+}
+
+/** 비어 있던 대화의 가장 최근 쪽을 받아 대화 기록을 그것으로 바꾸는 갱신. */
+async function fetchFirstPage(orgId: string, conversationId?: string) {
+  const fresh = await request(
+    conversationPageSchema,
+    pagePath(orgId, conversationId)
+  );
+  return (): TranscriptData => ({ pages: [fresh], pageParams: [null] });
+}
+
+/** `after` 커서 뒤에 온 쪽을 끝까지 받아 대화 기록에 붙이는 갱신(`appendArrivals`). */
+async function fetchArrivals(
+  orgId: string,
+  conversationId: string | undefined,
+  after: string
+) {
+  let cursor = after;
   const arrived: ConversationPage[] = [];
   for (;;) {
     const page: ConversationPage = await request(
@@ -312,9 +332,7 @@ export async function catchUpConversation(
     cursor = page.after ?? cursor;
     if (!page.hasMore) break;
   }
-  queryClient.setQueryData<TranscriptData>(key, (old) =>
-    old ? appendArrivals(old, arrived) : old
-  );
+  return (old: TranscriptData) => appendArrivals(old, arrived);
 }
 
 /**
@@ -438,8 +456,9 @@ const queuedMessagePath: Record<QueuedMessageCommand, string> = {
 
 /**
  * 줄 세운 메시지 하나를 고치거나 거두거나 지금 보낸다. 고치기는 `body`로 글만 바꾼다. 거두기가 돌려받는 메시지는 거두기 전 모양이라
- * 빈 입력창의 ↑가 그 글을 입력창에 되돌린다. 실행 시도가 먼저 받았으면 409 `message_delivered`이며, 성공하든 실패하든 대화와
- * Lead(줄 세운 메시지 수)를 다시 불러와 전달된 메시지는 대화로 옮겨 보인다.
+ * 빈 입력창의 ↑가 그 글을 입력창에 되돌린다. 실행 시도가 먼저 받았으면 409 `message_delivered`이며, 성공하든 실패하든 줄 세운
+ * 메시지와 Lead(줄 세운 메시지 수)를 다시 불러온다. 대화 기록은 여기서 이어 받지 않는다: 메시지를 받은 실행 시도는 늘 Event를
+ * 남기고, 이어 받기는 Event가 부르는 `createLiveRefresh`가 하나씩 맡는다(더 오래된 쪽 불러오기와 겹치면 끝난 뒤 다시).
  */
 export function useQueuedMessageCommand(
   orgId: string,
@@ -469,9 +488,6 @@ export function useQueuedMessageCommand(
         queryClient.invalidateQueries({
           queryKey: queryKeys.queuedMessages(orgId, conversationId),
         }),
-        catchUpConversation(queryClient, orgId, conversationId).catch(
-          () => undefined
-        ),
         queryClient.invalidateQueries({
           queryKey: queryKeys.conversations(orgId),
           exact: true,

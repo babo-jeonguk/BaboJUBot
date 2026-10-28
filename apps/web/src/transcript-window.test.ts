@@ -2,8 +2,15 @@ import type {
   ConversationMessage,
   ConversationPage,
 } from "@babojubot/contracts";
-import { expect, test } from "vitest";
-import { appendArrivals, trimTranscript, type TranscriptData } from "./api.ts";
+import { QueryClient } from "@tanstack/react-query";
+import { afterEach, expect, test, vi } from "vitest";
+import {
+  appendArrivals,
+  catchUpConversation,
+  queryKeys,
+  trimTranscript,
+  type TranscriptData,
+} from "./api.ts";
 
 // 맨 아래를 따라가는 동안 불러 둔 대화 기록은 가장 최근 창만 남기고, 덜어 낸 쪽은 커서로 다시 받는다.
 
@@ -112,4 +119,98 @@ test("stops trimming at a page without a cursor to older messages", () => {
       pageParams: [null, null],
     }).pages
   ).toHaveLength(2);
+});
+
+/**
+ * `?after=` 커서로 새 메시지를 돌려주는 가짜 서버. 응답 내용은 요청이 시작될 때의 가장 새 메시지(`newest`)로 고정된다.
+ * 처음 `gated`개 요청의 응답은 `respond(i)`로 원하는 순서에 돌려주고, 그 뒤 요청은 바로 돌려준다.
+ */
+function fakeCatchUpServer(newest: number, gated = 2) {
+  const pending: { resolve: () => void }[] = [];
+  const server = {
+    newest,
+    requests: [] as string[],
+    fetch: vi.fn((url: string) => {
+      const after = new URL(url, "http://x").searchParams.get("after");
+      server.requests.push(after ?? "first");
+      const from = Number(after?.slice(1) ?? 0) + 1;
+      const to = server.newest;
+      const body: ConversationPage =
+        from > to
+          ? { messages: [], hasMore: false, before: null, after }
+          : { ...page(from, to, true), hasMore: false };
+      if (server.requests.length > gated)
+        return Promise.resolve(Response.json(body));
+      return new Promise<Response>((resolve) =>
+        pending.push({ resolve: () => resolve(Response.json(body)) })
+      );
+    }),
+    async respond(i: number) {
+      await vi.waitFor(() => expect(pending[i]).toBeDefined());
+      pending[i]!.resolve();
+    },
+  };
+  vi.stubGlobal("fetch", server.fetch);
+  return server;
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+test("a catch-up whose response comes back after a later one's keeps the delivery order and the newest cursor", async () => {
+  const client = new QueryClient();
+  const key = queryKeys.conversation("org");
+  client.setQueryData<TranscriptData>(key, {
+    pages: [page(51, 100, true)],
+    pageParams: [null],
+  });
+  const server = fakeCatchUpServer(102);
+  const first = catchUpConversation(client, "org");
+  await vi.waitFor(() => expect(server.requests).toHaveLength(1));
+  server.newest = 103;
+  const second = catchUpConversation(client, "org");
+  await vi.waitFor(() => expect(server.requests).toHaveLength(2));
+
+  // 늦게 시작한 쪽(101~103)이 먼저 오고, 먼저 시작한 쪽(101~102)이 나중에 온다.
+  await server.respond(1);
+  await second;
+  // 먼저 시작한 쪽은 기준 커서가 지난 응답이라 버리고, 지금 가장 새 메시지 뒤를 다시 받는다.
+  await server.respond(0);
+  await first;
+
+  const data = client.getQueryData<TranscriptData>(key)!;
+  expect(bodies(data).slice(-4)).toEqual(["m100", "m101", "m102", "m103"]);
+  expect(data.pages[0]!.after).toBe("a103");
+  expect(server.requests).toEqual(["a100", "a100", "a103"]);
+});
+
+test("an empty conversation's first page that comes back after another catch-up filled it still brings its newer message", async () => {
+  const client = new QueryClient();
+  const key = queryKeys.conversation("org");
+  const empty: ConversationPage = {
+    messages: [],
+    hasMore: false,
+    before: null,
+    after: null,
+  };
+  client.setQueryData<TranscriptData>(key, {
+    pages: [empty],
+    pageParams: [null],
+  });
+  const server = fakeCatchUpServer(1);
+  const first = catchUpConversation(client, "org");
+  await vi.waitFor(() => expect(server.requests).toHaveLength(1));
+  server.newest = 2;
+  const second = catchUpConversation(client, "org");
+  await vi.waitFor(() => expect(server.requests).toHaveLength(2));
+
+  // 먼저 시작한 쪽(m1)이 먼저 채운다. 늦게 시작한 쪽(m1·m2)은 기준이 지났지만 버리면 m2를 잃으므로 m1 뒤를 다시 받는다.
+  await server.respond(0);
+  await first;
+  await server.respond(1);
+  await second;
+
+  const data = client.getQueryData<TranscriptData>(key)!;
+  expect(bodies(data)).toEqual(["m1", "m2"]);
+  expect(data.pages[0]!.after).toBe("a2");
+  expect(server.requests).toEqual(["first", "first", "a1"]);
 });
