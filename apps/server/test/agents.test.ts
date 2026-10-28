@@ -7,7 +7,7 @@ import {
 } from "@babojubot/contracts";
 import { leadReplyScript } from "@babojubot/runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import { calls, goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -15,7 +15,7 @@ afterEach(async () => {
   await t?.close();
   t = undefined;
 });
-const { get, say, researching, eventsOf } = serverHelpers(() => t!);
+const { get, create, say, researching, eventsOf } = serverHelpers(() => t!);
 
 const agentPath = (orgId: string, agentId: string) =>
   `/api/organizations/${orgId}/agents/${agentId}`;
@@ -133,6 +133,48 @@ describe("agent profile", () => {
     expect(
       (await patch(org.id, worker!.id, { name: other.workers[0]!.name })).status
     ).toBe(200);
+  });
+
+  it("names new workers apart from every agent in the organization, even after a rename", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const created = await create("이름 겹침 조직");
+    const lead = created.agents[0]!;
+    // 팀 승인 전에 Lead가 작업자 이름 모양을 가져도 새 팀은 그 이름을 피한다.
+    expect(
+      (await patch(created.id, lead.id, { name: "연구원 1" })).status
+    ).toBe(200);
+    agents.queue(
+      lead.id,
+      calls(),
+      calls({ tool: "add_worker", input: { role: "researcher" } })
+    );
+    const [approval] = await get(`/api/organizations/${created.id}/approvals`);
+    expect(
+      (
+        await t.request(
+          "POST",
+          `/api/organizations/${created.id}/approvals/${approval.id}/decision`,
+          { decision: "approve" }
+        )
+      ).status
+    ).toBe(200);
+    await t.drain();
+    expect((await organization(created.id)).agents.map((a) => a.name)).toEqual([
+      "연구원 1",
+      "연구원 2",
+      "연구원 3",
+    ]);
+
+    // 작업자 이름을 Lead가 다음에 받을 번호로 바꿔 두어도 작업자 추가는 그 이름을 피한다.
+    const [, second] = (await organization(created.id)).agents;
+    expect(
+      (await patch(created.id, second!.id, { name: "연구원 4" })).status
+    ).toBe(200);
+    await say(created.id, "작업자를 하나 더 두세요");
+    await t.drain();
+    const names = (await organization(created.id)).agents.map((a) => a.name);
+    expect(names).toEqual(["연구원 1", "연구원 4", "연구원 3", "연구원 5"]);
   });
 
   it("refuses invalid names and faces with 422", async () => {

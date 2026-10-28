@@ -1,5 +1,5 @@
 {
-  "id": "25d5f55c-ca80-48f2-b81d-ee4b67ad6b9e",
+  "id": "83cf1818-2da8-403b-bce2-8a0a8df91ac1",
   "prevId": "bb98930d-4364-4210-9287-ad0b42069468",
   "version": "7",
   "dialect": "postgresql",
@@ -268,6 +268,27 @@
           ],
           "isUnique": true,
           "where": "\"agents\".\"role\" = 'lead'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agents_organization_name_unique": {
+          "name": "agents_organization_name_unique",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(\"name\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2032,12 +2053,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "delivered_seq": {
-          "name": "delivered_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
         "withdrawn_at": {
           "name": "withdrawn_at",
           "type": "timestamp with time zone",
@@ -2174,10 +2189,6 @@
       },
       "policies": {},
       "checkConstraints": {
-        "messages_delivered_check": {
-          "name": "messages_delivered_check",
-          "value": "\"messages\".\"delivered_seq\" is null or \"messages\".\"author\" = 'owner'"
-        },
         "messages_withdrawn_check": {
           "name": "messages_withdrawn_check",
           "value": "\"messages\".\"withdrawn_at\" is null or \"messages\".\"author\" = 'owner'"

@@ -7,6 +7,7 @@ import {
   type LifecycleStage,
   type NewEvent,
 } from "@babojubot/contracts";
+import { agentNameKey, isAgentNameTaken } from "./agent-profile.ts";
 import type { NewApproval, RunRef } from "./approval.ts";
 import { copyInstructions, type HarnessLibraryContents } from "./harness.ts";
 import type { NewAgent, RecordSource } from "./organization.ts";
@@ -32,17 +33,27 @@ export function buildAddWorkerProposal(
   };
 }
 
-/** 새 작업자의 이름: Role 표시 이름 뒤에 같은 이름의 작업자 중 가장 큰 번호 + 1. */
-export function nextWorkerName(label: string, existingNames: string[]) {
-  const prefix = `${label} `;
-  const taken = existingNames.flatMap((name) => {
-    const rest = name.startsWith(prefix) ? name.slice(prefix.length) : "";
+/**
+ * 새 작업자의 이름 `<Role 표시 이름> N`. `agentNames`는 조직의 모든 에이전트(Lead·작업자) 이름이다.
+ * N은 같은 표시 이름을 쓰는 이름(`agentNameKey` 기준) 가운데 가장 큰 번호 + 1이며, 그 이름을 다른 에이전트가 이미 쓰면
+ * 다음 번호로 넘어가 조직 안에서 겹치지 않는 이름을 낸다.
+ */
+export function nextWorkerName(label: string, agentNames: string[]) {
+  const prefix = `${agentNameKey(label)} `;
+  const numbers = agentNames.flatMap((name) => {
+    const key = agentNameKey(name);
+    const rest = key.startsWith(prefix) ? key.slice(prefix.length) : "";
     return /^[1-9]\d*$/.test(rest) ? [Number(rest)] : [];
   });
-  return `${prefix}${Math.max(0, ...taken) + 1}`;
+  let n = Math.max(0, ...numbers) + 1;
+  while (isAgentNameTaken(`${label.trim()} ${n}`, agentNames)) n++;
+  return `${label.trim()} ${n}`;
 }
 
-/** snapshot에서 작업자 한 명과 그 작업자만의 Role·Soul·Skill 사본을 만든다. 기본 heartbeat 간격도 snapshot의 Role 값이다. */
+/**
+ * snapshot에서 작업자 한 명과 그 작업자만의 Role·Soul·Skill 사본을 만든다. 기본 heartbeat 간격도 snapshot의 Role 값이다.
+ * `agentNames`는 조직의 모든 에이전트 이름이며 함께 만드는 작업자가 있으면 그 이름도 넣는다(`nextWorkerName`).
+ */
 export function planWorker(
   organizationId: string,
   proposal: Pick<AddWorkerProposal, "label" | "files" | "heartbeatMinutes">,

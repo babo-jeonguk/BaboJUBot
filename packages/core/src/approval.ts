@@ -268,6 +268,8 @@ export type PendingApproval = {
  *   반려·수정 요청은 아무것도 만들지 않고(제안한 완료 기준도 정하지 않음) `계획 수립`으로 돌린다.
  * - 작업자 추가: 승인하면 snapshot으로 작업자 한 명과 그 사본을 만든다. 단계와 상관없이 승인할 수 있고(#58 사용자 결정),
  *   반려는 아무것도 만들지 않는다. 어느 결정도 조직 단계를 바꾸지 않는다.
+ *
+ * `agentNames`는 결정 때 조직의 모든 에이전트 이름이다. 새 작업자 이름은 이 이름들·함께 만드는 작업자 이름과 겹치지 않는다.
  */
 export function planApprovalDecision(
   approval: PendingApproval,
@@ -297,7 +299,7 @@ export function planApprovalDecision(
           const added = planWorker(
             organizationId,
             member,
-            workers.map((w) => w.name),
+            [...agentNames, ...workers.map((w) => w.name)],
             {
               newId,
               createdAt: new Date(

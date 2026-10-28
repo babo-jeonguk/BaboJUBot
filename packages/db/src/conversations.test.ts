@@ -553,7 +553,7 @@ describe("delivery order", () => {
   });
 });
 
-describe("migration 0017_delivered_message_order", () => {
+describe("migration 0018_delivered_message_order", () => {
   it("places messages delivered before the migration where their run took them", async () => {
     // 지금 코드로 만든 기록에서 위치를 지우고 migration의 backfill 문만 다시 돌린다.
     const { org, run0, ids, transcript } = await (async () => {
@@ -589,7 +589,7 @@ describe("migration 0017_delivered_message_order", () => {
     const file = await fsp.readFile(
       path.resolve(
         path.dirname(fileURLToPath(import.meta.url)),
-        "../migrations/0017_delivered_message_order.sql"
+        "../migrations/0018_delivered_message_order.sql"
       ),
       "utf8"
     );

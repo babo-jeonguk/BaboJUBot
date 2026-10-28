@@ -8,6 +8,7 @@ import {
   lockAgent,
   lockOrganization,
   toAgent,
+  violatesUnique,
 } from "./rows.ts";
 import { agents } from "./schema.ts";
 
@@ -19,7 +20,8 @@ export type AgentProfileChangeResult =
 
 /**
  * 사용자의 에이전트 이름·얼굴 변경. 조직 행 → 에이전트 행 잠금 아래에서 같은 조직의 다른 이름을 읽고 바꾸며 그 Event를 같은
- * transaction에 남긴다. 작업자 추가도 조직 행을 잠근 뒤 이름을 읽으므로, 새 작업자와 바꾼 이름이 겹치지 않는다.
+ * transaction에 남긴다. 작업자 추가·승인 결정도 조직 행을 잠근 뒤 이름을 읽으므로, 새 작업자와 바꾼 이름이 겹치지 않는다.
+ * 그 잠금을 거치지 않은 쓰기와 겹쳐 DB의 이름 unique index에 걸려도 같은 `name_taken`이다.
  * 다른 조직의 에이전트와 없는 에이전트는 같은 `not_found`다.
  */
 export async function updateAgentProfile(
@@ -29,6 +31,21 @@ export async function updateAgentProfile(
   input: UpdateAgentProfileInput
 ): Promise<AgentProfileChangeResult> {
   if (!isUuid(organizationId) || !isUuid(agentId)) return { kind: "not_found" };
+  try {
+    return await changeAgentProfile(db, organizationId, agentId, input);
+  } catch (error) {
+    if (violatesUnique(error, "agents_organization_name_unique"))
+      return { kind: "name_taken" };
+    throw error;
+  }
+}
+
+function changeAgentProfile(
+  db: Database,
+  organizationId: string,
+  agentId: string,
+  input: UpdateAgentProfileInput
+): Promise<AgentProfileChangeResult> {
   return db.transaction(async (tx) => {
     if (!(await lockOrganization(tx, organizationId)))
       return { kind: "not_found" };

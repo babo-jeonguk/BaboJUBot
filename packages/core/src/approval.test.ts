@@ -164,6 +164,18 @@ describe("planApprovalDecision", () => {
     });
   });
 
+  it("names the team apart from every agent already in the organization", () => {
+    // Lead를 작업자 이름 모양으로 바꾼 뒤 팀을 승인해도 이름이 겹치지 않는다.
+    const plan = planApprovalDecision(
+      approval,
+      { decision: "approve" },
+      { stage: "awaiting_approval", agentNames: ["연구원 1"] },
+      source
+    );
+    if (typeof plan === "string") throw new Error(plan);
+    expect(plan.workers.map((w) => w.name)).toEqual(["연구원 2", "연구원 3"]);
+  });
+
   it("sends the organization back to planning with the reason and creates nothing on reject or change request", () => {
     for (const [decision, status] of [
       ["reject", "rejected"],

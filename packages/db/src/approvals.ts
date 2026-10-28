@@ -192,10 +192,7 @@ export async function decideApproval(
       input,
       {
         stage: resumed ? "awaiting_approval" : org.stage,
-        agentNames:
-          current.kind === "add_worker"
-            ? await agentNamesOf(tx, organizationId)
-            : [],
+        agentNames: await agentNamesOf(tx, organizationId),
       },
       source
     );

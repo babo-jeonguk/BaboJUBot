@@ -12,8 +12,20 @@ type ProfileAgent = {
   appearance: AgentAppearance;
 };
 
-/** 대소문자만 다른 이름은 같은 이름이다. 조직 안에서 이름이 하나의 팀원을 가리켜야 한다. */
-const nameKey = (name: string) => name.toLocaleLowerCase("und");
+/**
+ * 같은 이름인가를 정하는 열쇠. 앞뒤 공백을 지운 뒤(이름 입력 계약과 같음) 대소문자만 다른 이름은 같은 이름이다.
+ * 조직 안에서 이름이 하나의 팀원을 가리켜야 하므로(Lead가 이름으로 팀원을 부름) 이름을 바꾸는 길과 만드는 길이 모두 이 규칙을 쓴다.
+ * DB의 `agents_organization_name_unique`(조직, `lower(name)`)는 경합의 마지막 방어선이다.
+ */
+export const agentNameKey = (name: string) =>
+  name.trim().toLocaleLowerCase("und");
+
+/** `names` 가운데 `name`과 같은 이름(`agentNameKey`)이 있는가. */
+export const isAgentNameTaken = (name: string, names: Iterable<string>) => {
+  const key = agentNameKey(name);
+  for (const other of names) if (agentNameKey(other) === key) return true;
+  return false;
+};
 
 const sameAppearance = (a: AgentAppearance, b: AgentAppearance) =>
   a.color === b.color &&
@@ -41,10 +53,7 @@ export function planAgentProfileChange(
     input.name !== undefined && input.name !== agent.name
       ? input.name
       : undefined;
-  if (
-    name !== undefined &&
-    otherNames.some((other) => nameKey(other) === nameKey(name))
-  )
+  if (name !== undefined && isAgentNameTaken(name, otherNames))
     return "name_taken";
   const appearance =
     input.appearance && !sameAppearance(input.appearance, agent.appearance)
