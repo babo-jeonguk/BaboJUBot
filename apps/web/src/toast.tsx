@@ -15,12 +15,13 @@ import {
   nextExpiry,
   pushToast,
   releaseToast,
+  visibleToasts,
   type ToastEntry,
 } from "./toast-stack.ts";
 import { Tip } from "./ui.tsx";
 
 // 화면 아래 가운데의 토스트 더미. 되돌릴 수 있는 일은 묻지 않고 바로 한 뒤 여기서 되돌리기를 준다.
-// 새 토스트는 맨 아래에 붙고 앞 토스트는 제 시간대로 남는다(규칙은 toast-stack.ts). 마우스를 올리거나 포커스가 안에 있는
+// 새 토스트는 맨 아래에 붙고 앞 토스트는 위로 밀리며 제 시간대로 남는다. 넘친 토스트는 차례를 기다린다(규칙은 toast-stack.ts). 마우스를 올리거나 포커스가 안에 있는
 // 토스트만 시간이 멈추고, 그 토스트는 Esc나 닫기 버튼으로 닫는다.
 
 export { toastDurationMs } from "./toast-stack.ts";
@@ -48,7 +49,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     []
   );
   const dismiss = useCallback(
-    (id: number) => setToasts((stack) => dismissToast(stack, id)),
+    (id: number) => setToasts((stack) => dismissToast(stack, id, Date.now())),
     []
   );
   const hold = useCallback(
@@ -78,7 +79,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       >
         {toasts.length > 0 && (
           <Tooltip.Provider delayDuration={150}>
-            {toasts.map((toast) => (
+            {visibleToasts(toasts).map((toast) => (
               <Toast
                 key={toast.id}
                 toast={toast}
