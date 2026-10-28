@@ -71,7 +71,7 @@ async function organization() {
     (await listConversationMessages(t.db, orgId, conversation.id)).map(
       (m) => m.body
     );
-  return { lead, orgId, send, claim, listed };
+  return { lead, orgId, conversation, send, claim, listed };
 }
 
 describe("interrupt runs", () => {
@@ -111,6 +111,43 @@ describe("interrupt runs", () => {
     expect(bodies(first?.wakeReasons)).toEqual(["지금 보낼 말"]);
     await finishRun(t.db, first!.run.id, completed, source);
     expect(bodies((await claim())?.wakeReasons)).toEqual(["줄 선 하나"]);
+  });
+});
+
+describe("the queued message list", () => {
+  it("lists every queued message after the transcript window, whatever the window size, and the oldest stays actionable", async () => {
+    const { orgId, conversation, send, claim } = await organization();
+    for (const body of ["받은 하나", "받은 둘", "받은 셋"]) await send(body);
+    const run = await claim();
+    await finishRun(t.db, run!.run.id, completed, source);
+    const oldest = await send("줄 0");
+    for (const body of ["줄 1", "줄 2", "줄 3"]) await send(body);
+    const listed = async () =>
+      (
+        await listConversationMessages(t.db, orgId, conversation.id, {
+          limit: 2,
+        })
+      ).map((m) => m.body);
+
+    // 대화 기록은 최근 2개로 잘려도 줄 세운 메시지는 대화 기록과 따로 모두 온다.
+    expect(await listed()).toEqual([
+      "받은 둘",
+      "받은 셋",
+      "줄 0",
+      "줄 1",
+      "줄 2",
+      "줄 3",
+    ]);
+    expect(
+      await withdrawQueuedMessage(t.db, orgId, oldest.id, source)
+    ).toMatchObject({ kind: "changed" });
+    expect(await listed()).toEqual([
+      "받은 둘",
+      "받은 셋",
+      "줄 1",
+      "줄 2",
+      "줄 3",
+    ]);
   });
 });
 

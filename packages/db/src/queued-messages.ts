@@ -147,7 +147,13 @@ async function readQueuedMessage(
     );
   if (!row) return undefined;
   const {
-    message: { seq: _seq, withdrawnAt, createdAt, ...rest },
+    message: {
+      seq: _seq,
+      deliveredSeq: _deliveredSeq,
+      withdrawnAt,
+      createdAt,
+      ...rest
+    },
     deliveredToRunId,
   } = row;
   const message: ConversationMessage = {

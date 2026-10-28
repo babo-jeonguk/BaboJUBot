@@ -281,6 +281,19 @@ describe("sending a queued message now", () => {
 
     await t!.drain();
     expect(received()).toEqual([["지금 보낼 말"], ["줄 선 하나", "줄 선 셋"]]);
+    // 대화는 Lead가 받은 순서다. 지금 보낸 메시지와 그 답장이 먼저 보낸 줄 세운 메시지보다 앞에 온다.
+    expect(
+      (await conversation(org.id)).map((m) =>
+        m.author === "owner" ? m.body : "Lead"
+      )
+    ).toEqual([
+      "긴 일을 시작해 주세요",
+      "지금 보낼 말",
+      "Lead",
+      "줄 선 하나",
+      "줄 선 셋",
+      "Lead",
+    ]);
     expect((await runsOf(org.id))[2]).toMatchObject({
       id: running.id,
       status: "cancelled",

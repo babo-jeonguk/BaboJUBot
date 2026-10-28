@@ -6,6 +6,27 @@ import { conversations, messages, runWakes, wakes } from "./schema.ts";
 
 // 사용자와 Research Lead의 대화. 메시지 저장·조회는 runs.ts가, 대화 자체의 조회와 사용자가 본 위치는 여기서 맡는다.
 
+/**
+ * 대화 속 메시지 위치. 대화는 Lead가 받은 순서다. Lead 메시지는 저장 순서(`seq`), 사용자 메시지는 실행 시도가 받은 순간(`delivered_seq`,
+ * 같은 sequence)에 놓이므로 먼저 보냈어도 나중에 받은 메시지는 뒤에 온다. 줄 세운 메시지는 아직 위치가 없다.
+ */
+export const messagePosition = sql<
+  number | null
+>`case when ${messages.author} = 'agent' then ${messages.seq} else ${messages.deliveredSeq} end`.mapWith(
+  Number
+);
+/** 같은 위치 안의 순서: Lead 메시지, `중단하고 보내기`로 받은 메시지, 줄 세워 받은 메시지. 그다음은 보낸 순서(`seq`)다. */
+export const positionRank =
+  sql<number>`case when ${messages.author} = 'agent' then 0 when ${messages.delivery} = 'interrupt' then 1 else 2 end`.mapWith(
+    Number
+  );
+/** 받은 순서의 반대: 최근 것부터. */
+export const latestFirst = [
+  desc(messagePosition),
+  desc(positionRank),
+  desc(messages.seq),
+];
+
 export const conversationRow = (c: Conversation) => ({
   id: c.id,
   organizationId: c.organizationId,
@@ -144,7 +165,7 @@ export async function listConversations(
 }
 
 /**
- * 사용자가 대화를 메시지 하나까지 보았다. 본 위치는 앞으로만 가며, 그 메시지가 같은 조직의 그 대화에 없으면 `not_found`다.
+ * 사용자가 대화를 메시지 하나까지(받은 순서로) 보았다. 본 위치는 앞으로만 가며, 그 메시지가 같은 조직의 그 대화에 없으면 `not_found`다.
  * 사용자의 보기만 바꾸고 연구 기록·Event·깨우기는 남기지 않는다.
  */
 export async function markConversationRead(
@@ -155,8 +176,14 @@ export async function markConversationRead(
 ): Promise<"ok" | "not_found"> {
   if (![organizationId, conversationId, upToMessageId].every(isUuid))
     return "not_found";
+  // 받은 순서의 위치로 본다. 줄 세운 메시지는 위치가 없어 보낸 순서를 쓴다.
   const [message] = await db
-    .select({ seq: messages.seq })
+    .select({
+      position:
+        sql<number>`coalesce(${messagePosition}, ${messages.seq})`.mapWith(
+          Number
+        ),
+    })
     .from(messages)
     .where(
       and(
@@ -169,7 +196,7 @@ export async function markConversationRead(
   await db
     .update(conversations)
     .set({
-      readMessageSeq: sql`greatest(coalesce(${conversations.readMessageSeq}, 0), ${message.seq})`,
+      readMessageSeq: sql`greatest(coalesce(${conversations.readMessageSeq}, 0), ${message.position})`,
     })
     .where(
       and(

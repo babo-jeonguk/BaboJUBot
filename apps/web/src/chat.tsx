@@ -352,9 +352,10 @@ function Thread({
   const send = useSendMessage(orgId, conversationId);
   const { mutate: markRead } = useMarkConversationRead(orgId);
   const visible = usePageVisible();
-  const last = messages.data?.at(-1);
+  // 서버는 Lead가 받은 순서로 주며 줄 세운 메시지는 맨 뒤다. 본 위치도 받은 순서의 마지막 메시지까지다.
   const transcript = messages.data?.filter((m) => !isQueued(m)) ?? [];
   const queued = messages.data?.filter(isQueued) ?? [];
+  const last = transcript.at(-1);
   const marked = useRef<string | null>(null);
   const unreadId = summary?.unread ? summary.id : undefined;
   const lastId = last?.id;
@@ -504,6 +505,7 @@ function MessageBubble({
       </div>
       <Markdown
         text={m.body}
+        data-testid="message-body"
         tone={mine ? "inverse" : "default"}
         className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${mine ? "bg-brand-600 text-white" : "card text-slate-800"}`}
       />

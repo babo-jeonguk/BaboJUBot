@@ -16,11 +16,13 @@ import {
   markConversationRead,
 } from "./conversations.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
+import { sendQueuedMessageNow } from "./queued-messages.ts";
 import {
   claimNextRun,
   finishRun,
   insertAgentMessage,
   insertOwnerMessage,
+  interruptRun,
   listConversationMessages,
   loadRunContext,
 } from "./runs.ts";
@@ -291,114 +293,310 @@ describe("Lead conversations", () => {
   });
 });
 
+/**
+ * `tag` 직전까지만 적용한 DB를 같은 cluster에 따로 만들어 `fn`에 넘긴다. `fn`은 옛 모양의 행을 넣고 `migrateAll`로 끝까지 올린다.
+ */
+async function withDatabaseBefore(
+  tag: string,
+  fn: (pool: pg.Pool, migrateAll: () => Promise<void>) => Promise<void>
+) {
+  const migrations = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../migrations"
+  );
+  const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
+  await fsp.cp(migrations, before, { recursive: true });
+  const journalPath = path.join(before, "meta/_journal.json");
+  const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
+    entries: { tag: string }[];
+  };
+  const index = journal.entries.findIndex((e) => e.tag === tag);
+  journal.entries = journal.entries.slice(0, index);
+  await fsp.writeFile(journalPath, JSON.stringify(journal));
+
+  const name = `backfill_${randomUUID().replaceAll("-", "")}`;
+  await t.db.execute(sql.raw(`create database ${name}`));
+  const url = new URL(t.url);
+  url.pathname = `/${name}`;
+  const pool = new pg.Pool({ connectionString: url.toString() });
+  try {
+    const db = drizzle(pool);
+    await migrate(db, { migrationsFolder: before });
+    await fn(pool, () => migrate(db, { migrationsFolder: migrations }));
+  } finally {
+    await pool.end();
+    await t.db.execute(sql.raw(`drop database ${name}`));
+    await fsp.rm(before, { recursive: true, force: true });
+  }
+}
+
 describe("migration 0014_lead_conversations", () => {
   it("gives every existing organization a default conversation holding its earlier messages", async () => {
-    const migrations = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../migrations"
-    );
-    // 0014 직전까지만 적용한 DB를 같은 cluster에 따로 만든다.
-    const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
-    await fsp.cp(migrations, before, { recursive: true });
-    const journalPath = path.join(before, "meta/_journal.json");
-    const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
-      entries: { tag: string }[];
-    };
-    const index = journal.entries.findIndex(
-      (e) => e.tag === "0014_lead_conversations"
-    );
-    journal.entries = journal.entries.slice(0, index);
-    await fsp.writeFile(journalPath, JSON.stringify(journal));
-
-    const name = `backfill_${randomUUID().replaceAll("-", "")}`;
-    await t.db.execute(sql.raw(`create database ${name}`));
-    const url = new URL(t.url);
-    url.pathname = `/${name}`;
-    const pool = new pg.Pool({ connectionString: url.toString() });
-    try {
-      const db = drizzle(pool);
-      await migrate(db, { migrationsFolder: before });
-
-      const orgA = randomUUID();
-      const orgB = randomUUID();
-      const leadA = randomUUID();
-      const leadB = randomUUID();
-      const messageA = randomUUID();
-      await pool.query(
-        `insert into organizations (id, name, stage, created_at) values
+    await withDatabaseBefore(
+      "0014_lead_conversations",
+      async (pool, migrateAll) => {
+        const orgA = randomUUID();
+        const orgB = randomUUID();
+        const leadA = randomUUID();
+        const leadB = randomUUID();
+        const messageA = randomUUID();
+        await pool.query(
+          `insert into organizations (id, name, stage, created_at) values
           ($1, 'A', 'goal_setting', now()), ($2, 'B', 'goal_setting', now())`,
-        [orgA, orgB]
-      );
-      await pool.query(
-        `insert into agents (id, organization_id, role, name, created_at) values
+          [orgA, orgB]
+        );
+        await pool.query(
+          `insert into agents (id, organization_id, role, name, created_at) values
           ($1, $2, 'lead', 'Research Lead', now()), ($3, $4, 'lead', 'Research Lead', now())`,
-        [leadA, orgA, leadB, orgB]
-      );
-      await pool.query(
-        `insert into messages (id, organization_id, agent_id, author, body, delivery, created_at)
-          values ($1, $2, $3, 'owner', '예전 메시지', 'next_run', now())`,
-        [messageA, orgA, leadA]
-      );
-      await pool.query(
-        `insert into events (organization_id, type, payload) values
-          ($1, 'message.created', $2)`,
-        [
-          orgA,
-          JSON.stringify({
-            messageId: messageA,
-            agentId: leadA,
-            author: "owner",
-            runId: null,
-          }),
-        ]
-      );
-
-      await migrate(db, { migrationsFolder: migrations });
-
-      const { rows: created } = await pool.query<{
-        id: string;
-        organization_id: string;
-        title: string;
-        is_default: boolean;
-        read_message_seq: string | null;
-      }>(
-        `select id, organization_id, title, is_default, read_message_seq from conversations order by title, organization_id`
-      );
-      expect(created).toHaveLength(2);
-      expect(
-        created.every((c) => c.is_default && c.title === "기본 대화")
-      ).toBe(true);
-      const defaultA = created.find((c) => c.organization_id === orgA)!;
-      const defaultB = created.find((c) => c.organization_id === orgB)!;
-      // 예전 메시지는 이미 본 것으로 두고, 메시지가 없던 조직은 본 위치가 없다.
-      expect(defaultA.read_message_seq).not.toBeNull();
-      expect(defaultB.read_message_seq).toBeNull();
-      const { rows: moved } = await pool.query(
-        `select conversation_id from messages where id = $1`,
-        [messageA]
-      );
-      expect(moved).toEqual([{ conversation_id: defaultA.id }]);
-      const { rows: events } = await pool.query(
-        `select payload from events where organization_id = $1 and type = 'message.created'`,
-        [orgA]
-      );
-      expect(events[0].payload).toMatchObject({
-        messageId: messageA,
-        conversationId: defaultA.id,
-      });
-      // 옮긴 뒤에는 대화 없는 메시지를 남길 수 없다.
-      await expect(
-        pool.query(
+          [leadA, orgA, leadB, orgB]
+        );
+        await pool.query(
           `insert into messages (id, organization_id, agent_id, author, body, delivery, created_at)
+          values ($1, $2, $3, 'owner', '예전 메시지', 'next_run', now())`,
+          [messageA, orgA, leadA]
+        );
+        await pool.query(
+          `insert into events (organization_id, type, payload) values
+          ($1, 'message.created', $2)`,
+          [
+            orgA,
+            JSON.stringify({
+              messageId: messageA,
+              agentId: leadA,
+              author: "owner",
+              runId: null,
+            }),
+          ]
+        );
+
+        await migrateAll();
+
+        const { rows: created } = await pool.query<{
+          id: string;
+          organization_id: string;
+          title: string;
+          is_default: boolean;
+          read_message_seq: string | null;
+        }>(
+          `select id, organization_id, title, is_default, read_message_seq from conversations order by title, organization_id`
+        );
+        expect(created).toHaveLength(2);
+        expect(
+          created.every((c) => c.is_default && c.title === "기본 대화")
+        ).toBe(true);
+        const defaultA = created.find((c) => c.organization_id === orgA)!;
+        const defaultB = created.find((c) => c.organization_id === orgB)!;
+        // 예전 메시지는 이미 본 것으로 두고, 메시지가 없던 조직은 본 위치가 없다.
+        expect(defaultA.read_message_seq).not.toBeNull();
+        expect(defaultB.read_message_seq).toBeNull();
+        const { rows: moved } = await pool.query(
+          `select conversation_id from messages where id = $1`,
+          [messageA]
+        );
+        expect(moved).toEqual([{ conversation_id: defaultA.id }]);
+        const { rows: events } = await pool.query(
+          `select payload from events where organization_id = $1 and type = 'message.created'`,
+          [orgA]
+        );
+        expect(events[0].payload).toMatchObject({
+          messageId: messageA,
+          conversationId: defaultA.id,
+        });
+        // 옮긴 뒤에는 대화 없는 메시지를 남길 수 없다.
+        await expect(
+          pool.query(
+            `insert into messages (id, organization_id, agent_id, author, body, delivery, created_at)
             values ($1, $2, $3, 'owner', 'x', 'next_run', now())`,
-          [randomUUID(), orgB, leadB]
+            [randomUUID(), orgB, leadB]
+          )
+        ).rejects.toThrow();
+      }
+    );
+  });
+});
+
+// 대화는 Lead가 받은 순서다. 먼저 보냈어도 나중에 받은 사용자 메시지는 그사이 받은 메시지와 Lead 답장 뒤에 온다.
+describe("delivery order", () => {
+  /** 실행 중인 Lead에게 `H`를 주고 `L0`로 답한 상태에서 A·B·C를 줄 세운다. */
+  async function queuedWhileRunning() {
+    const org = await organization();
+    const transcript = async () =>
+      (
+        await listConversationMessages(
+          t.db,
+          org.organizationId,
+          org.defaultConversation.id
         )
-      ).rejects.toThrow();
-    } finally {
-      await pool.end();
-      await t.db.execute(sql.raw(`drop database ${name}`));
-      await fsp.rm(before, { recursive: true, force: true });
+      ).map((m) => m.body);
+    const { stored } = await org.send(org.defaultConversation, "H");
+    const run0 = await org.claim();
+    await run0.reply("L0");
+    const ids: Record<string, string> = {};
+    for (const body of ["A", "B", "C"]) {
+      const { plan } = await org.send(org.defaultConversation, body);
+      ids[body] = plan.message.id;
     }
+    expect(stored.kind).toBe("sent");
+    return { org, run0, ids, transcript };
+  }
+
+  it("shows a message sent now where the Lead received it, before the earlier queued messages, and the Lead context agrees", async () => {
+    const { org, run0, ids, transcript } = await queuedWhileRunning();
+    // 받기 전에는 보낸 순서로 맨 뒤에 있다(줄 세운 메시지).
+    expect(await transcript()).toEqual(["H", "L0", "A", "B", "C"]);
+
+    const sent = await sendQueuedMessageNow(t.db, org.organizationId, ids.B!);
+    expect(sent.kind).toBe("changed");
+    expect(await transcript()).toEqual(["H", "L0", "A", "B", "C"]);
+    await run0.finish();
+    const run1 = await org.claim();
+    expect(await transcript()).toEqual(["H", "L0", "B", "A", "C"]);
+    await run1.reply("L1");
+    await run1.finish();
+    const run2 = await org.claim();
+    await run2.reply("L2");
+    expect(await transcript()).toEqual(["H", "L0", "B", "L1", "A", "C", "L2"]);
+    expect(
+      (await loadRunContext(t.db, run2.run.id))!.context.conversation.map(
+        (m) => m.body
+      )
+    ).toEqual(["H", "L0", "B", "L1", "A", "C", "L2"]);
+    // 이전 실행 시도의 맥락에는 그때까지 받은 메시지만 있다.
+    expect(
+      (await loadRunContext(t.db, run1.run.id))!.context.conversation.map(
+        (m) => m.body
+      )
+    ).toEqual(["H", "L0", "B", "L1"]);
+  });
+
+  it("keeps send order within one run and puts an interrupt message first when it arrives after queued ones", async () => {
+    const org = await organization();
+    const list = async () =>
+      (
+        await listConversationMessages(
+          t.db,
+          org.organizationId,
+          org.defaultConversation.id
+        )
+      ).map((m) => m.body);
+    await org.send(org.defaultConversation, "H");
+    const run0 = await org.claim();
+    await org.send(org.defaultConversation, "A");
+    await org.send(org.defaultConversation, "B");
+    await run0.finish();
+    const run1 = await org.claim();
+    await run1.reply("L1");
+    expect(await list()).toEqual(["H", "A", "B", "L1"]);
+
+    await org.send(org.defaultConversation, "C");
+    await org.send(org.defaultConversation, "I", "interrupt");
+    await run1.finish();
+    await (await org.claim()).finish();
+    await org.claim();
+    expect(await list()).toEqual(["H", "A", "B", "L1", "I", "C"]);
+  });
+
+  it("marks the Lead reply read when the owner has seen a later-received message that was sent before it", async () => {
+    const { org, run0, ids } = await queuedWhileRunning();
+    await sendQueuedMessageNow(t.db, org.organizationId, ids.B!);
+    await run0.finish();
+    const run1 = await org.claim();
+    await run1.reply("L1");
+    await run1.finish();
+    await org.claim();
+    // C는 L1보다 먼저 저장됐지만 L1 뒤에 받았다. C까지 보았으면 L1도 보았다.
+    expect(
+      await markConversationRead(
+        t.db,
+        org.organizationId,
+        org.defaultConversation.id,
+        ids.C!
+      )
+    ).toBe("ok");
+    expect(
+      (await listConversations(t.db, org.organizationId)).map((c) => c.unread)
+    ).toEqual([false]);
+  });
+
+  it("puts a message back in the queue when a server restart requeues it, and places it where the next run takes it", async () => {
+    const org = await organization();
+    const list = async () =>
+      (
+        await listConversationMessages(
+          t.db,
+          org.organizationId,
+          org.defaultConversation.id
+        )
+      ).map((m) => [m.body, m.deliveredToRunId !== null]);
+    // Lead 메시지는 받는 실행 시도가 없다(`false`). A가 줄 세운 메시지로 돌아가도 L0 뒤 맨 끝이다.
+    await org.send(org.defaultConversation, "A");
+    const run0 = await org.claim();
+    await run0.reply("L0");
+    await interruptRun(t.db, run0.run.id, source);
+    expect(await list()).toEqual([
+      ["L0", false],
+      ["A", false],
+    ]);
+    const [{ delivered_seq }] = (
+      await t.db.execute<{ delivered_seq: string | null }>(
+        sql`select delivered_seq from messages where body = 'A' and organization_id = ${org.organizationId}`
+      )
+    ).rows as [{ delivered_seq: string | null }];
+    expect(delivered_seq).toBeNull();
+    await org.claim();
+    expect(await list()).toEqual([
+      ["L0", false],
+      ["A", true],
+    ]);
+  });
+});
+
+describe("migration 0017_delivered_message_order", () => {
+  it("places messages delivered before the migration where their run took them", async () => {
+    // 지금 코드로 만든 기록에서 위치를 지우고 migration의 backfill 문만 다시 돌린다.
+    const { org, run0, ids, transcript } = await (async () => {
+      const org = await organization();
+      const transcript = async () =>
+        (
+          await listConversationMessages(
+            t.db,
+            org.organizationId,
+            org.defaultConversation.id
+          )
+        ).map((m) => m.body);
+      await org.send(org.defaultConversation, "H");
+      const run0 = await org.claim();
+      await run0.reply("L0");
+      const ids: Record<string, string> = {};
+      for (const body of ["A", "B", "C"]) {
+        const { plan } = await org.send(org.defaultConversation, body);
+        ids[body] = plan.message.id;
+      }
+      return { org, run0, ids, transcript };
+    })();
+    await sendQueuedMessageNow(t.db, org.organizationId, ids.B!);
+    await run0.finish();
+    const run1 = await org.claim();
+    await run1.reply("L1");
+    await run1.finish();
+    const run2 = await org.claim();
+    await run2.reply("L2");
+    const expected = ["H", "L0", "B", "L1", "A", "C", "L2"];
+    expect(await transcript()).toEqual(expected);
+
+    const file = await fsp.readFile(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../migrations/0017_delivered_message_order.sql"
+      ),
+      "utf8"
+    );
+    const backfill = file.split("--> statement-breakpoint").at(-1)!;
+    await t.db.execute(
+      sql`update messages set delivered_seq = null where organization_id = ${org.organizationId}`
+    );
+    await t.db.execute(sql.raw(backfill));
+    expect(await transcript()).toEqual(expected);
   });
 });
 

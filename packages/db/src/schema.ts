@@ -241,8 +241,8 @@ export const runs = pgTable(
 
 /**
  * 사용자와 조직 Research Lead의 대화. 조직마다 기본 대화(`is_default`) 하나가 조직과 함께 생기고,
- * 새 대화는 첫 사용자 메시지와 함께 생긴다. `read_message_seq`는 사용자가 마지막으로 본 메시지의 저장 순서이며
- * 사용자의 보기만 바꾸고 앞으로만 간다.
+ * 새 대화는 첫 사용자 메시지와 함께 생긴다. `read_message_seq`는 사용자가 마지막으로 본 메시지의 대화 속 위치
+ * (`messages`의 받은 순서 값: Lead 메시지는 `seq`, 받은 사용자 메시지는 `delivered_seq`)이며 사용자의 보기만 바꾸고 앞으로만 간다.
  */
 export const conversations = pgTable(
   "conversations",
@@ -269,7 +269,10 @@ export const conversations = pgTable(
   ]
 );
 
-/** Lead 대화의 메시지. 대화 하나에 속하며, 사용자 메시지는 전달 방식(과 거두었으면 그 시각)을, 에이전트 메시지는 보낸 실행 시도를 갖는다. */
+/**
+ * Lead 대화의 메시지. 대화 하나에 속하며, 사용자 메시지는 전달 방식(과 거두었으면 그 시각)을, 에이전트 메시지는 보낸 실행 시도를 갖는다.
+ * 대화는 Lead가 받은 순서로 보인다. Lead 메시지는 저장 순서(`seq`)에, 사용자 메시지는 실행 시도가 받은 순간(`delivered_seq`)에 놓인다.
+ */
 export const messages = pgTable(
   "messages",
   {
@@ -284,6 +287,12 @@ export const messages = pgTable(
     body: text("body").notNull(),
     delivery: text("delivery", { enum: messageDeliveries }),
     sentByRunId: uuid("sent_by_run_id"),
+    /**
+     * 실행 시도가 사용자 메시지를 받은 순간의 위치. admission이 깨우기를 가져가는 transaction에서 `seq`와 같은 sequence의
+     * 다음 값을 실행 시도마다 하나 뽑아 그 실행 시도가 받은 메시지에 함께 적는다. 받기 전(줄 세운 메시지)과
+     * 서버 재시작으로 다시 대기한 동안은 비어 있다.
+     */
+    deliveredSeq: bigint("delivered_seq", { mode: "number" }),
     /** 사용자가 줄 세운 메시지를 거둔 시각. 거둔 메시지는 남지만 대화·Lead 맥락에서 빠지고 그 깨우기는 지운다. */
     withdrawnAt: timestamp("withdrawn_at", {
       withTimezone: true,
@@ -292,6 +301,10 @@ export const messages = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
+    check(
+      "messages_delivered_check",
+      sql`${t.deliveredSeq} is null or ${t.author} = 'owner'`
+    ),
     check(
       "messages_withdrawn_check",
       sql`${t.withdrawnAt} is null or ${t.author} = 'owner'`

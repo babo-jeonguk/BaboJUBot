@@ -37,6 +37,7 @@ import {
   desc,
   eq,
   inArray,
+  isNotNull,
   isNull,
   lte,
   notInArray,
@@ -50,6 +51,9 @@ import {
   conversationRow,
   findConversation,
   findDefaultConversation,
+  latestFirst,
+  messagePosition,
+  positionRank,
   receivedConversationIds,
 } from "./conversations.ts";
 import { toolWrite, type ToolCall, type ToolWrite } from "./tool-calls.ts";
@@ -220,6 +224,7 @@ export async function claimNextRun(
       .returning({ id: wakes.id });
     if (claimed.length !== ids.length)
       throw new Error("wake bundle changed while claiming a run");
+    await markDelivered(tx, ids);
     await tx.insert(runWakes).values(
       ids.map((wakeId) => ({
         organizationId: plan.run.organizationId,
@@ -319,13 +324,24 @@ export async function interruptRun(
       .update(runs)
       .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
       .where(eq(runs.id, runId));
-    if (plan.requeueWakeIds.length)
-      await tx
+    if (plan.requeueWakeIds.length) {
+      const requeued = await tx
         .update(wakes)
         .set({ runId: null })
         .where(
           and(inArray(wakes.id, plan.requeueWakeIds), eq(wakes.runId, runId))
-        );
+        )
+        .returning({ messageId: wakes.messageId });
+      // 다시 대기한 사용자 메시지는 줄 세운 메시지로 돌아가고, 다음 실행 시도가 받은 순간에 다시 놓인다.
+      const messageIds = requeued.flatMap((w) =>
+        w.messageId ? [w.messageId] : []
+      );
+      if (messageIds.length)
+        await tx
+          .update(messages)
+          .set({ deliveredSeq: null })
+          .where(inArray(messages.id, messageIds));
+    }
     return insertEvent(tx, plan.event);
   });
 }
@@ -533,7 +549,7 @@ export async function loadRunContext(
 
 /**
  * 실행 시도 맥락의 대화. Lead만 대화를 가지며, 기본 대화와 그 실행 시도가 받은 사용자 메시지의 대화마다
- * 이 실행 시도까지 전달된 최근 메시지 50개를 저장 순서대로 합친다.
+ * 이 실행 시도까지 전달된 최근 메시지 50개를 대화 화면과 같은 받은 순서로 합친다.
  */
 async function runConversations(
   db: Executor,
@@ -557,8 +573,8 @@ async function runConversations(
     conversations: found.map(({ organizationId: _org, ...c }) => c),
     conversation: perConversation
       .flat()
-      .sort((a, b) => a.seq - b.seq)
-      .map(({ seq: _seq, ...m }) => m),
+      .sort(byDeliveryOrder)
+      .map(withoutOrder),
   };
 }
 
@@ -576,21 +592,26 @@ export async function findMessage(
       isNull(messages.withdrawnAt)
     )
   );
-  return row && withoutSeq(toMessage(row));
+  return row && withoutOrder(toMessage(row));
 }
 
 // ---------- Surface 조회 ----------
 
-/** 같은 조직 대화 하나의 메시지. 오래된 것부터 최근 `limit`개. */
+/**
+ * 같은 조직 대화 하나의 메시지. 대화 기록(Lead 메시지와 받은 사용자 메시지, Lead가 받은 순서로 최근 `limit`개) 뒤에
+ * 줄 세운 메시지 전부(보낸 순서)가 온다. 줄 세운 메시지는 대화 기록의 개수 제한과 상관없이 모두 담는다.
+ */
 export async function listConversationMessages(
   db: Database,
   organizationId: string,
   conversationId: string,
   { limit = 200 }: { limit?: number } = {}
 ): Promise<ConversationMessage[]> {
-  return (
-    await selectConversation(db, organizationId, conversationId, { limit })
-  ).map(withoutSeq);
+  const [transcript, queued] = await Promise.all([
+    selectConversation(db, organizationId, conversationId, { limit }),
+    selectQueuedMessages(db, organizationId, conversationId),
+  ]);
+  return [...transcript, ...queued].map(withoutOrder);
 }
 
 /** 조직의 실행 시도. 최근 것부터. */
@@ -908,16 +929,48 @@ async function selectWakes(
 const sentBy = alias(runs, "sent_by");
 const deliveredTo = alias(runs, "delivered_to");
 
+/**
+ * 실행 시도가 받은 사용자 메시지에 받은 순간의 위치(`delivered_seq`)를 적는다. admission transaction 안에서 실행 시도마다
+ * `messages.seq`의 sequence에서 값 하나를 뽑으므로 그 뒤 Lead가 쓰는 메시지보다 앞, 그 전에 쓴 메시지보다 뒤에 놓인다.
+ */
+async function markDelivered(tx: Executor, wakeIds: string[]) {
+  const received = await tx
+    .select({ messageId: wakes.messageId })
+    .from(wakes)
+    .where(inArray(wakes.id, wakeIds));
+  const messageIds = received.flatMap((w) =>
+    w.messageId ? [w.messageId] : []
+  );
+  if (!messageIds.length) return;
+  const {
+    rows: [next],
+  } = await tx.execute<{ position: string }>(
+    sql`select nextval(pg_get_serial_sequence('messages', 'seq')) as position`
+  );
+  await tx
+    .update(messages)
+    .set({ deliveredSeq: Number(next!.position) })
+    .where(inArray(messages.id, messageIds));
+}
+
 const conversationQuery = (db: Executor) =>
   db
-    .select({ message: messages, deliveredToRunId: wakes.runId })
+    .select({
+      message: messages,
+      deliveredToRunId: wakes.runId,
+      position: messagePosition,
+      rank: positionRank,
+    })
     .from(messages)
     .leftJoin(wakes, eq(wakes.messageId, messages.id))
     .leftJoin(sentBy, eq(sentBy.id, messages.sentByRunId))
     .leftJoin(deliveredTo, eq(deliveredTo.id, wakes.runId))
     .$dynamic();
 
-/** 대화 하나의 메시지. 저장 순서(`seq`)를 붙여 여러 대화를 합칠 수 있게 한다. 사용자가 거둔 메시지는 빠진다(화면과 Lead 맥락 모두). */
+/**
+ * 대화 하나의 기록: Lead 메시지와 실행 시도가 받은 사용자 메시지. Lead가 받은 순서이며(`messagePosition`), 순서 열쇠(`order`)를
+ * 붙여 여러 대화를 합칠 수 있게 한다. 줄 세운 메시지(`selectQueuedMessages`)와 사용자가 거둔 메시지는 없다(화면과 Lead 맥락 모두).
+ */
 async function selectConversation(
   db: Executor,
   organizationId: string,
@@ -927,7 +980,7 @@ async function selectConversation(
     upToRunSeq,
     limit,
   }: { agentId?: string; upToRunSeq?: number; limit: number }
-): Promise<(ConversationMessage & { seq: number })[]> {
+): Promise<OrderedMessage[]> {
   if (!isUuid(organizationId) || !isUuid(conversationId)) return [];
   const rows = await conversationQuery(db)
     .where(
@@ -935,33 +988,72 @@ async function selectConversation(
         eq(messages.organizationId, organizationId),
         eq(messages.conversationId, conversationId),
         isNull(messages.withdrawnAt),
+        or(eq(messages.author, "agent"), isNotNull(wakes.runId)),
         agentId === undefined ? undefined : eq(messages.agentId, agentId),
         upToRunSeq === undefined
           ? undefined
           : or(lte(sentBy.seq, upToRunSeq), lte(deliveredTo.seq, upToRunSeq))
       )
     )
-    .orderBy(desc(messages.seq))
+    .orderBy(...latestFirst)
     .limit(limit);
   return rows.reverse().map(toMessage);
 }
 
+/** 대화 하나의 줄 세운 메시지 전부. 보낸 순서이며 개수를 자르지 않는다. 거둔 메시지는 없다. */
+async function selectQueuedMessages(
+  db: Executor,
+  organizationId: string,
+  conversationId: string
+): Promise<OrderedMessage[]> {
+  if (!isUuid(organizationId) || !isUuid(conversationId)) return [];
+  const rows = await conversationQuery(db)
+    .where(
+      and(
+        eq(messages.organizationId, organizationId),
+        eq(messages.conversationId, conversationId),
+        eq(messages.author, "owner"),
+        isNull(messages.withdrawnAt),
+        isNull(wakes.runId)
+      )
+    )
+    .orderBy(asc(messages.seq));
+  return rows.map(toMessage);
+}
+
+/** 순서 열쇠를 붙인 메시지. 열쇠는 `latestFirst`를 뒤집은 [위치(줄 세운 메시지는 맨 뒤), 같은 위치 안의 순서, 저장 순서]다. */
+type OrderedMessage = ConversationMessage & { order: [number, number, number] };
+
+const byDeliveryOrder = (a: OrderedMessage, b: OrderedMessage) =>
+  a.order[0] - b.order[0] || a.order[1] - b.order[1] || a.order[2] - b.order[2];
+
 const toMessage = ({
-  message: { createdAt, withdrawnAt: _withdrawnAt, ...message },
+  message: {
+    seq,
+    createdAt,
+    withdrawnAt: _withdrawnAt,
+    deliveredSeq: _deliveredSeq,
+    ...message
+  },
   deliveredToRunId,
+  position,
+  rank,
 }: {
   message: typeof messages.$inferSelect;
   deliveredToRunId: string | null;
-}): ConversationMessage & { seq: number } => ({
+  position: number | null;
+  rank: number;
+}): OrderedMessage => ({
   ...message,
   deliveredToRunId,
   createdAt: createdAt.toISOString(),
+  order: [position ?? Number.POSITIVE_INFINITY, rank, seq],
 });
 
-const withoutSeq = ({
-  seq: _seq,
+const withoutOrder = ({
+  order: _order,
   ...message
-}: ConversationMessage & { seq: number }): ConversationMessage => message;
+}: OrderedMessage): ConversationMessage => message;
 
 const messageRow = (m: ConversationMessage) => ({
   id: m.id,

@@ -334,6 +334,14 @@ test("queued messages wait above the composer where the owner can pull one back,
   await item("첫 번째 줄").hover();
   await item("첫 번째 줄").getByRole("button", { name: "취소" }).click();
   await expect(queued).toHaveText(["두 번째 줄 고침", "네 번째 줄"]);
+  await input.fill("다섯 번째 줄");
+  await input.press("Enter");
+  await expect(input).toHaveValue("");
+  await expect(queued).toHaveText([
+    "두 번째 줄 고침",
+    "네 번째 줄",
+    "다섯 번째 줄",
+  ]);
 
   // 지금 보내기는 지금 실행 시도를 끊고 그 메시지만 다음 실행 시도에 보낸다. 남은 줄은 그다음 실행 시도가 받는다.
   await item("네 번째 줄").hover();
@@ -342,14 +350,21 @@ test("queued messages wait above the composer where the owner can pull one back,
     "중단하고 보냄",
     runs
   );
-  await expect(
-    owner.filter({ hasText: "두 번째 줄 고침" }).getByRole("link", {
-      name: "✓ 전달됨",
-    })
-  ).toBeVisible(runs);
+  for (const body of ["두 번째 줄 고침", "다섯 번째 줄"])
+    await expect(
+      owner.filter({ hasText: body }).getByRole("link", { name: "✓ 전달됨" })
+    ).toBeVisible(runs);
   await expect(list).toHaveCount(0);
   const order = await deliveryOrder(page, org);
   expect(order("네 번째 줄")).toBeLessThan(order("두 번째 줄 고침"));
+  expect(order("두 번째 줄 고침")).toBe(order("다섯 번째 줄"));
+  // 대화는 Lead가 받은 순서다. 먼저 보낸 줄도 지금 보낸 메시지 뒤에 온다.
+  await expect(owner.getByTestId("message-body")).toHaveText([
+    "실행 유지 연습",
+    "네 번째 줄",
+    "두 번째 줄 고침",
+    "다섯 번째 줄",
+  ]);
   // 거둔 메시지는 대화에 없다.
   await expect(owner.getByText("첫 번째 줄")).toHaveCount(0);
   await expect(owner.getByText("세 번째 줄")).toHaveCount(0);
