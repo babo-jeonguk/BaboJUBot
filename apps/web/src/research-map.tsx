@@ -31,7 +31,6 @@ import {
   useNodesInitialized,
   useReactFlow,
   useStore,
-  useUpdateNodeInternals,
   ViewportPortal,
   getSmoothStepPath,
   type Edge,
@@ -73,8 +72,6 @@ import {
 
 const NODE_W = 232;
 const NODE_H = 76;
-type Dir = "LR" | "TB";
-type SecMode = "all" | "focus" | "off";
 type XY = { x: number; y: number };
 
 const statusTone: Record<ResearchNodeStatus, string> = {
@@ -203,29 +200,15 @@ const linkColorIndex = (kinds: FlowKind[], name: string) => {
 const linkColor = (kinds: FlowKind[], name: string) =>
   linkColors[linkColorIndex(kinds, name)]!;
 
-/** 배치 입력(방향, 보이는 노드와 그 안의 주 부모)의 문자열. 제목·상태·보조 연결은 들어가지 않는다. */
-function layoutKey(visible: ResearchNode[], dir: Dir) {
-  const ids = new Set(visible.map((n) => n.id));
-  return JSON.stringify({
-    dir,
-    items: visible.map((n) => [
-      n.id,
-      n.parentNodeId && ids.has(n.parentNodeId) ? n.parentNodeId : null,
-    ]),
-  });
+/** 배치 입력(노드와 그 주 부모)의 문자열. 제목·상태·보조 연결은 들어가지 않는다. */
+function layoutKey(nodes: ResearchNode[]) {
+  return JSON.stringify(nodes.map((n) => [n.id, n.parentNodeId]));
 }
-/** Dagre 배치. 주 부모가 보이지 않는 노드는 root로 둔다. 좌표는 카드 왼쪽 위다. */
+/** Dagre 배치. 주 연결 트리를 왼쪽에서 오른쪽으로 놓는다. 좌표는 카드 왼쪽 위다. */
 function layoutOf(key: string): Map<string, XY> {
-  const { dir, items } = JSON.parse(key) as {
-    dir: Dir;
-    items: [string, string | null][];
-  };
+  const items = JSON.parse(key) as [string, string | null][];
   const g = new dagre.graphlib.Graph();
-  g.setGraph({
-    rankdir: dir,
-    nodesep: dir === "LR" ? 14 : 28,
-    ranksep: dir === "LR" ? 72 : 56,
-  });
+  g.setGraph({ rankdir: "LR", nodesep: 14, ranksep: 72 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const [id] of items) g.setNode(id, { width: NODE_W, height: NODE_H });
   for (const [id, parent] of items) if (parent) g.setEdge(parent, id);
@@ -295,7 +278,6 @@ type CardData = {
   kind: string;
   tone: string;
   tasks: number;
-  dir: Dir;
 };
 type CardNode = Node<CardData, "research">;
 
@@ -303,7 +285,7 @@ const ResearchCard = memo(function ResearchCard({
   data,
   selected,
 }: NodeProps<CardNode>) {
-  const { node, kind, tone, tasks, dir } = data;
+  const { node, kind, tone, tasks } = data;
   const gone = discarded(node);
   const handle = "!h-1.5 !w-1.5 !min-w-0 !border-0 !opacity-0";
   return (
@@ -316,7 +298,7 @@ const ResearchCard = memo(function ResearchCard({
     >
       <Handle
         type="target"
-        position={dir === "LR" ? Position.Left : Position.Top}
+        position={Position.Left}
         isConnectable={false}
         className={handle}
       />
@@ -341,7 +323,7 @@ const ResearchCard = memo(function ResearchCard({
       </div>
       <Handle
         type="source"
-        position={dir === "LR" ? Position.Right : Position.Bottom}
+        position={Position.Right}
         isConnectable={false}
         className={handle}
       />
@@ -355,43 +337,28 @@ const AROUND = 20_000;
 const FOCUS_Z = 2;
 const TOUCH_Z = 5;
 
-// 같은 두 노드 사이 차선의 축별 간격. 종류 이름표가 겹치지 않도록 위아래로 벌릴 때는 이름표 높이, 좌우로 벌릴 때는 폭 기준이다.
-const LANE_GAP = { y: 24, x: 44 };
-// 연결 핸들에서 나가는 방향으로 둔 bezier 제어점. React Flow 기본 bezier(curvature 0.25)와 같은 식이다.
-const outward: Record<Position, XY> = {
-  [Position.Left]: { x: -1, y: 0 },
-  [Position.Right]: { x: 1, y: 0 },
-  [Position.Top]: { x: 0, y: -1 },
-  [Position.Bottom]: { x: 0, y: 1 },
-};
+// 같은 두 노드 사이 차선의 간격. 종류 이름표가 겹치지 않도록 이름표 높이만큼 위아래로 벌린다.
+const LANE_GAP = 24;
+// 연결 핸들에서 나가는 쪽으로 둔 bezier 제어점의 거리. React Flow 기본 bezier(curvature 0.25)와 같은 식이다.
 const reach = (distance: number) =>
   distance >= 0 ? distance / 2 : 0.25 * 25 * Math.sqrt(-distance);
 
-/** 보조 연결 곡선. 같은 두 노드 사이의 연결마다 진행 방향에 수직인 차선(lane)을 두어 선과 종류 이름이 겹치지 않게 한다. */
+/**
+ * 보조 연결 곡선. 카드 오른쪽 핸들에서 나가 왼쪽 핸들로 들어가며, 같은 두 노드 사이의 연결마다 위아래 차선(lane)을 두어
+ * 선과 종류 이름이 겹치지 않게 한다.
+ */
 function lanePath(
   sx: number,
   sy: number,
   tx: number,
   ty: number,
-  sourcePosition: Position,
-  targetPosition: Position,
   lane: number
 ) {
-  const out = outward[sourcePosition];
-  const into = outward[targetPosition];
-  const a = reach((tx - sx) * out.x + (ty - sy) * out.y);
-  const b = reach((sx - tx) * into.x + (sy - ty) * into.y);
+  const a = reach(tx - sx);
   // 두 제어점을 같이 옮기면 곡선 가운데가 3/4만큼 움직인다.
-  const gap = out.x !== 0 ? LANE_GAP.y : LANE_GAP.x;
-  const shift = (lane * gap) / 0.75;
-  const c1 = {
-    x: sx + out.x * a + out.y * shift,
-    y: sy + out.y * a + out.x * shift,
-  };
-  const c2 = {
-    x: tx + into.x * b + out.y * shift,
-    y: ty + into.y * b + out.x * shift,
-  };
+  const shift = (lane * LANE_GAP) / 0.75;
+  const c1 = { x: sx + a, y: sy + shift };
+  const c2 = { x: tx - a, y: ty + shift };
   return {
     path: `M${sx},${sy} C${c1.x},${c1.y} ${c2.x},${c2.y} ${tx},${ty}`,
     labelX: (sx + 3 * c1.x + 3 * c2.x + tx) / 8,
@@ -407,8 +374,6 @@ const LinkEdge = memo(function LinkEdge({
   sourceY,
   targetX,
   targetY,
-  sourcePosition,
-  targetPosition,
   data,
   style,
   markerEnd,
@@ -419,15 +384,7 @@ const LinkEdge = memo(function LinkEdge({
   return (
     <BaseEdge
       id={id}
-      {...lanePath(
-        sourceX,
-        sourceY,
-        targetX,
-        targetY,
-        sourcePosition,
-        targetPosition,
-        data?.lane ?? 0
-      )}
+      {...lanePath(sourceX, sourceY, targetX, targetY, data?.lane ?? 0)}
       label={label}
       labelStyle={labelStyle}
       labelBgStyle={labelBgStyle}
@@ -440,24 +397,15 @@ const edgeTypes = { link: LinkEdge };
 
 // React Flow는 카드 핸들(6px) 바깥 끝을 연결 끝점으로 쓴다. 카드 크기가 고정이라 정적 레이어도 같은 끝점을 계산한다.
 const HANDLE_HALF = 3;
-function ends(source: XY, target: XY, dir: Dir) {
-  return dir === "LR"
-    ? {
-        sourceX: source.x + NODE_W + HANDLE_HALF,
-        sourceY: source.y + NODE_H / 2,
-        targetX: target.x - HANDLE_HALF,
-        targetY: target.y + NODE_H / 2,
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
-      }
-    : {
-        sourceX: source.x + NODE_W / 2,
-        sourceY: source.y + NODE_H + HANDLE_HALF,
-        targetX: target.x + NODE_W / 2,
-        targetY: target.y - HANDLE_HALF,
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
-      };
+function ends(source: XY, target: XY) {
+  return {
+    sourceX: source.x + NODE_W + HANDLE_HALF,
+    sourceY: source.y + NODE_H / 2,
+    targetX: target.x - HANDLE_HALF,
+    targetY: target.y + NODE_H / 2,
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+  };
 }
 
 /** React Flow 화살표 marker와 같은 모양(viewBox -10..10, 선 굵기 단위). */
@@ -506,17 +454,15 @@ const PrimaryPath = memo(function PrimaryPath({
   id,
   from,
   to,
-  dir,
 }: {
   id: string;
   from: XY;
   to: XY;
-  dir: Dir;
 }) {
   return (
     <path
       data-id={id}
-      d={getSmoothStepPath(ends(from, to, dir))[0]}
+      d={getSmoothStepPath(ends(from, to))[0]}
       fill="none"
       stroke="#94a3b8"
       strokeWidth={1.5}
@@ -528,32 +474,20 @@ const LinkPath = memo(function LinkPath({
   id,
   from,
   to,
-  dir,
   lane,
   color,
 }: {
   id: string;
   from: XY;
   to: XY;
-  dir: Dir;
   lane: number;
   color: number;
 }) {
-  const e = ends(from, to, dir);
+  const e = ends(from, to);
   return (
     <path
       data-id={id}
-      d={
-        lanePath(
-          e.sourceX,
-          e.sourceY,
-          e.targetX,
-          e.targetY,
-          e.sourcePosition,
-          e.targetPosition,
-          lane
-        ).path
-      }
+      d={lanePath(e.sourceX, e.sourceY, e.targetX, e.targetY, lane).path}
       fill="none"
       stroke={linkColors[color]}
       strokeWidth={1.2}
@@ -569,16 +503,12 @@ type EdgeSet = { primary: [string, string][]; links: StaticLink[] };
  */
 const EdgeLayer = memo(function EdgeLayer({
   moving = false,
-  dir,
   positions,
   edges,
-  showLinks,
 }: {
   moving?: boolean;
-  dir: Dir;
   positions: Map<string, XY>;
   edges: EdgeSet;
-  showLinks: boolean;
 }) {
   const at = (id: string) => positions.get(id) ?? MISSING;
   const primary = edges.primary.map(([parent, child]) => (
@@ -587,22 +517,18 @@ const EdgeLayer = memo(function EdgeLayer({
       id={`primary:${child}`}
       from={at(parent)}
       to={at(child)}
-      dir={dir}
     />
   ));
-  const links =
-    showLinks &&
-    edges.links.map((l) => (
-      <LinkPath
-        key={l.id}
-        id={l.id}
-        from={at(l.source)}
-        to={at(l.target)}
-        dir={dir}
-        lane={l.lane}
-        color={l.color}
-      />
-    ));
+  const links = edges.links.map((l) => (
+    <LinkPath
+      key={l.id}
+      id={l.id}
+      from={at(l.source)}
+      to={at(l.target)}
+      lane={l.lane}
+      color={l.color}
+    />
+  ));
   // 화살표 marker는 정적 레이어에만 정의하고 moving 레이어도 같은 ID로 쓴다.
   if (moving)
     return (
@@ -648,12 +574,8 @@ function MapWorkspace({
   agents: Agent[];
   index: MapIndex;
 }) {
-  const dir = "LR" as Dir;
-  const secMode = "all" as SecMode;
-  const hideDiscarded = false as boolean;
-  // 직접 옮긴 위치(카드 왼쪽 위). 보기 상태이며 저장하지 않는다. 자동 재배치에도 유지하고 방향을 바꾸면 지운다.
+  // 직접 옮긴 위치(카드 왼쪽 위). 보기 상태이며 저장하지 않는다. 자동 재배치에도 유지하고 `자동 정렬로 되돌리기`로 지운다.
   const [pinned, setPinned] = useState<Map<string, XY>>(new Map());
-  const follow = true as boolean;
   const [live, setLive] = useState<Map<string, XY> | null>(null);
   const drag = useRef<{
     id: string;
@@ -691,14 +613,9 @@ function MapWorkspace({
       ? { mode: "add_root" }
       : null;
 
-  const visible = useMemo(
-    () =>
-      hideDiscarded
-        ? index.map.nodes.filter((n) => !discarded(n))
-        : index.map.nodes,
-    [index.map.nodes, hideDiscarded]
-  );
-  const key = useMemo(() => layoutKey(visible, dir), [visible, dir]);
+  // 폐기한 노드도 지도에 남는다(카드를 흐리게 그림).
+  const mapNodes = index.map.nodes;
+  const key = useMemo(() => layoutKey(mapNodes), [mapNodes]);
   const laidOut = useMemo(() => layoutOf(key), [key]);
 
   // 선택한 노드의 root까지 경로·하위 노드 전체·보조 연결 이웃을 강조하고 나머지를 흐리게 한다.
@@ -731,12 +648,12 @@ function MapWorkspace({
   const settled = useMemo(
     () =>
       new Map(
-        visible.map((n) => [
+        mapNodes.map((n) => [
           n.id,
           pinned.get(n.id) ?? laidOut.get(n.id) ?? MISSING,
         ])
       ),
-    [visible, pinned, laidOut]
+    [mapNodes, pinned, laidOut]
   );
   const positions = useMemo(
     () => (live ? new Map([...settled, ...live]) : settled),
@@ -748,7 +665,7 @@ function MapWorkspace({
     () =>
       reuse(
         cardCache,
-        visible.map((n): CardNode => ({
+        mapNodes.map((n): CardNode => ({
           id: n.id,
           type: "research",
           position: positions.get(n.id)!,
@@ -760,23 +677,18 @@ function MapWorkspace({
             kind: kindLabel(index.nodeKinds, n.kind),
             tone: kindTone(index.nodeKinds, n.kind),
             tasks: index.tasksByNode.get(n.id)?.length ?? 0,
-            dir,
           },
         }))
       ),
-    [cardCache, visible, positions, selected, index, dir]
+    [cardCache, mapNodes, positions, selected, index]
   );
 
-  // 보이는 주 연결(부모, 자식)과 보조 연결. 같은 방향으로 같은 두 노드를 잇는 보조 연결은 순서대로 차선을 나눠 벌려 그린다.
+  // 주 연결(부모, 자식)과 보조 연결. 같은 방향으로 같은 두 노드를 잇는 보조 연결은 순서대로 차선을 나눠 벌려 그린다.
   const structure = useMemo(() => {
-    const visibleIds = new Set(visible.map((n) => n.id));
     const primary: [string, string][] = [];
-    for (const n of visible)
-      if (n.parentNodeId && visibleIds.has(n.parentNodeId))
-        primary.push([n.parentNodeId, n.id]);
-    const shown = index.map.links.filter(
-      (l) => visibleIds.has(l.sourceNodeId) && visibleIds.has(l.targetNodeId)
-    );
+    for (const n of mapNodes)
+      if (n.parentNodeId) primary.push([n.parentNodeId, n.id]);
+    const shown = index.map.links;
     const pair = (l: ResearchLink) => `${l.sourceNodeId}>${l.targetNodeId}`;
     const parallel = new Map<string, number>();
     for (const l of shown)
@@ -795,7 +707,7 @@ function MapWorkspace({
       };
     });
     return { primary, links };
-  }, [visible, index]);
+  }, [mapNodes, index]);
 
   // React Flow edge는 강조할 연결만이다: 선택한 노드의 경로·하위 주 연결과 선택한 노드에 닿은 보조 연결.
   const [edgeCache] = useState(() => new Map<string, Edge>());
@@ -820,29 +732,28 @@ function MapWorkspace({
             height: 14,
           },
         });
-    if (secMode !== "off")
-      for (const l of structure.links) {
-        if (l.source !== selected && l.target !== selected) continue;
-        const color = linkColors[l.color]!;
-        fresh.push({
-          // 관계 ID를 그대로 쓴다. 같은 두 노드 사이의 여러 연결이 합쳐지지 않는다.
-          id: l.id,
-          source: l.source,
-          target: l.target,
-          type: "link",
-          data: { lane: l.lane },
-          selectable: false,
-          zIndex: TOUCH_Z,
-          className: "rm-link",
-          label: kindLabel(index.linkKinds, l.link.kind),
-          labelStyle: { fill: color, fontWeight: 600, fontSize: 11 },
-          labelBgStyle: { fill: "white" },
-          style: { stroke: color, strokeWidth: 2, strokeOpacity: 0.95 },
-          markerEnd: { type: MarkerType.Arrow, color, width: 12, height: 12 },
-        });
-      }
+    for (const l of structure.links) {
+      if (l.source !== selected && l.target !== selected) continue;
+      const color = linkColors[l.color]!;
+      fresh.push({
+        // 관계 ID를 그대로 쓴다. 같은 두 노드 사이의 여러 연결이 합쳐지지 않는다.
+        id: l.id,
+        source: l.source,
+        target: l.target,
+        type: "link",
+        data: { lane: l.lane },
+        selectable: false,
+        zIndex: TOUCH_Z,
+        className: "rm-link",
+        label: kindLabel(index.linkKinds, l.link.kind),
+        labelStyle: { fill: color, fontWeight: 600, fontSize: 11 },
+        labelBgStyle: { fill: "white" },
+        style: { stroke: color, strokeWidth: 2, strokeOpacity: 0.95 },
+        markerEnd: { type: MarkerType.Arrow, color, width: 12, height: 12 },
+      });
+    }
     return reuse(edgeCache, fresh);
-  }, [edgeCache, structure, focus, secMode, index, selected]);
+  }, [edgeCache, structure, focus, index, selected]);
   // 끄는 동안 움직이는 노드에 닿은 연결과 나머지. 움직이는 노드 집합은 끄는 동안 그대로다.
   const movingIds = live ? [...live.keys()].join() : "";
   const split = useMemo(() => {
@@ -860,17 +771,9 @@ function MapWorkspace({
       },
     };
   }, [structure, movingIds]);
-  const showLinks = secMode === "all";
   const staticEdges = useMemo(
-    () => (
-      <EdgeLayer
-        dir={dir}
-        positions={settled}
-        edges={split.fixed}
-        showLinks={showLinks}
-      />
-    ),
-    [dir, settled, split.fixed, showLinks]
+    () => <EdgeLayer positions={settled} edges={split.fixed} />,
+    [settled, split.fixed]
   );
 
   // 점선 간격은 화면에서 일정하게 둔다. 축소해도 점선 조각이 촘촘해지지 않아 그리는 비용이 늘지 않는다.
@@ -892,24 +795,15 @@ function MapWorkspace({
     };
   }, [laidOut]);
 
-  // 방향을 바꾸면 카드의 연결 핸들이 옮겨 간다. 카드 크기는 그대로라 React Flow가 핸들 위치를 다시 재도록 알린다.
-  const updateNodeInternals = useUpdateNodeInternals();
-  const handlesDir = useRef(dir);
+  // 화면 맞춤은 처음 열 때만 한다. 이후 재배치는 사용자의 viewport를 유지한다.
+  const fitted = useRef(false);
   useEffect(() => {
-    if (handlesDir.current === dir) return;
-    handlesDir.current = dir;
-    updateNodeInternals(visible.map((n) => n.id));
-  }, [dir, visible, updateNodeInternals]);
-
-  // 화면 맞춤은 처음 열 때와 방향을 바꿀 때만 한다. 이후 재배치는 사용자의 viewport를 유지한다.
-  const fitted = useRef<Dir | null>(null);
-  useEffect(() => {
-    if (!initialized || fitted.current === dir) return;
-    fitted.current = dir;
+    if (!initialized || fitted.current) return;
+    fitted.current = true;
     requestAnimationFrame(
       () => void rf.fitView({ padding: 0.12, maxZoom: 1, minZoom: 0.45 })
     );
-  }, [initialized, dir, rf]);
+  }, [initialized, rf]);
 
   // 끄는 동안 처리 함수가 바뀌지 않게 한다. 바뀌면 React Flow가 store를 갱신해 모든 노드의 구독을 다시 계산한다.
   const pin = useCallback(
@@ -941,7 +835,8 @@ function MapWorkspace({
   );
   const onNodeDragStart = useCallback(
     (_: unknown, n: CardNode) => {
-      const ids = [n.id, ...(follow ? descendantsOf(index, n.id) : [])];
+      // 끄는 노드의 하위 노드도 함께 옮긴다.
+      const ids = [n.id, ...descendantsOf(index, n.id)];
       drag.current = {
         id: n.id,
         start: new Map(
@@ -949,7 +844,7 @@ function MapWorkspace({
         ),
       };
     },
-    [follow, index, settled]
+    [index, settled]
   );
   const onNodeDragStop = useCallback(() => {
     const moved = drag.current?.moved;
@@ -1034,13 +929,7 @@ function MapWorkspace({
             <ViewportPortal>
               {staticEdges}
               {split.moving && (
-                <EdgeLayer
-                  moving
-                  dir={dir}
-                  positions={positions}
-                  edges={split.moving}
-                  showLinks={showLinks}
-                />
+                <EdgeLayer moving positions={positions} edges={split.moving} />
               )}
               <div className="rm-dots" style={around} />
               <div className="rm-veil" style={around} />
