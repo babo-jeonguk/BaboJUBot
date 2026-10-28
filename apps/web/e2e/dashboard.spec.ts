@@ -1,11 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
 
 async function createOrganization(page: Page, name: string) {
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   expect(created.status()).toBe(201);
   const org = (await created.json()) as {
@@ -14,6 +15,14 @@ async function createOrganization(page: Page, name: string) {
   };
   const leadId = org.agents.find((a) => a.role === "lead")!.id;
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
+  // 생성으로 깨어난 가짜 Lead가 초기 연구 승인을 요청하고 실행 시도를 끝낼 때까지 기다린다.
+  await expect
+    .poll(async () => {
+      const res = await page.request.get(api("/runs"));
+      const list = (await res.json()) as { status: string }[];
+      return list.length > 0 && list.every((r) => r.status === "completed");
+    }, runs)
+    .toBe(true);
   const say = async (body: string) =>
     expect(
       (await page.request.post(api("/messages"), { data: { body } })).status()
@@ -34,7 +43,11 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
 
   const running = page.getByRole("region", { name: "실행 중인 에이전트" });
   await expect(running).toContainText("지금 실행 중인 에이전트가 없습니다");
-  await expect(page.getByTestId("metric-success")).toContainText("—");
+  // 생성으로 깨어난 Lead의 실행 시도 하나가 완료로 끝나 있다.
+  await expect(page.getByTestId("metric-success")).toContainText("100%");
+  await expect(page.getByTestId("metric-success")).toContainText(
+    "완료 1 · 실패 0"
+  );
   // 14일 막대가 브라우저 시간대의 오늘까지 있다.
   const runChart = page.getByRole("figure", { name: "실행 시도" });
   await expect(runChart.locator("[data-date]")).toHaveCount(14);
@@ -57,19 +70,20 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
     page
       .getByRole("region", { name: "최근 활동" })
       .locator('[data-event-type="run.started"]')
-  ).toHaveCount(1);
+      .first()
+  ).toBeVisible();
 
-  // 홈은 조직 카드와 전체 수에 진행 중 실행 시도를 보인다. 전체 수는 서버의 실제 진행 중 수와 같다.
+  // 홈은 조직의 방과 전체 수에 작업 중인 에이전트를 보인다. 전체 수는 서버의 실제 진행 중 수와 같다.
   const orgCard = (id: string) =>
-    home.getByRole("main").locator(`a[href="/orgs/${id}"]`);
+    home.getByRole("main").locator(`section[data-org-id="${id}"]`);
   const homeCard = orgCard(org.id);
-  await expect(homeCard.getByTestId("organization-running")).toHaveText(
-    "실행 중 1",
+  await expect(homeCard.getByTestId("room-headcount")).toHaveText(
+    /^작업 중 1/,
     runs
   );
-  await expect(
-    orgCard(other.id).getByTestId("organization-running")
-  ).toHaveCount(0);
+  await expect(orgCard(other.id).getByTestId("room-headcount")).toHaveText(
+    /^작업 중 0/
+  );
   const overview = (await (await page.request.get("/api/overview")).json()) as {
     runs: { running: number; cancelling: number };
   };
@@ -90,8 +104,9 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   await expect(page).toHaveURL(new RegExp(`/activity\\?agent=${org.leadId}$`));
   await expect(page.getByLabel("에이전트")).toHaveValue(org.leadId);
   const stream = page.getByRole("list", { name: "활동 stream" });
+  // 생성으로 깨어난 첫 실행 시도와 지금 실행 중인 실행 시도다.
   await expect(stream.locator('[data-event-type="run.started"]')).toHaveCount(
-    1
+    2
   );
   await expect(
     stream.locator('[data-event-type="organization.created"]')
@@ -117,42 +132,45 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
     runs
   );
   await expect(page.getByTestId("metric-runs")).toContainText("취소됨 1");
-  await expect(homeCard.getByTestId("organization-running")).toHaveCount(
-    0,
+  await expect(homeCard.getByTestId("room-headcount")).toHaveText(
+    /^작업 중 0/,
     runs
   );
   await page.request.post(org.api(`/agents/${org.leadId}/resume`), {
     data: {},
   });
 
-  // 성공률은 완료 / (완료 + 실패)이며 취소는 세지 않는다. 취소만 있는 날은 0%가 아니라 —다.
+  // 성공률은 완료 / (완료 + 실패)이며 취소는 세지 않는다. 실행 시도가 없던 날은 0%가 아니라 —다.
   const rateChart = page.getByRole("figure", { name: "실행 성공률" });
   const rateToday = rateChart.locator("[data-date]").last();
-  await expect(page.getByTestId("metric-success")).toContainText(
-    "취소 1 · 서버 재시작 0은 세지 않습니다"
-  );
+  await expect(page.getByTestId("metric-success")).toContainText("100%");
   await expect(rateToday).toHaveAttribute(
     "aria-label",
-    /— \(완료·실패 없음, 취소 1 · 서버 재시작 0 제외\)/
+    /100% \(완료 1 \/ 1, 취소 1 · 서버 재시작 0 제외\)/
   );
-  await expect(rateToday).toContainText("—");
-  // 실패 하나, 완료 하나가 차례로 반영된다. 0%인 날은 막대 자리를 남겨 —인 날과 구별한다.
+  await expect(rateChart.locator("[data-date]").nth(-2)).toHaveAttribute(
+    "aria-label",
+    /— \(완료·실패 없음, 취소 0 · 서버 재시작 0 제외\)/
+  );
+  // 실패 하나, 완료 하나가 차례로 반영된다.
   await org.say("실패 연습");
-  await expect(page.getByTestId("metric-success")).toContainText("0%", runs);
-  await expect(page.getByTestId("metric-success")).toContainText(
-    "완료 0 / (완료 0 + 실패 1)"
-  );
-  await expect(rateToday).toHaveAttribute("aria-label", /0% \(완료 0 \/ 1,/);
-  await expect(rateToday).not.toContainText("—");
-  await org.say("안녕하세요");
   await expect(page.getByTestId("metric-success")).toContainText("50%", runs);
+  await expect(page.getByTestId("metric-success")).toContainText(
+    "완료 1 · 실패 1"
+  );
+  await expect(rateToday).toHaveAttribute("aria-label", /50% \(완료 1 \/ 2,/);
+  await org.say("안녕하세요");
+  await expect(page.getByTestId("metric-success")).toContainText("67%", runs);
   await rateChart.getByText("숫자로 보기").click();
   await expect(rateChart.getByRole("table")).toContainText(
-    "50% (완료 1 / 2, 취소 1 · 서버 재시작 0 제외)"
+    "67% (완료 2 / 3, 취소 1 · 서버 재시작 0 제외)"
   );
 
-  // 서버가 모르는 브라우저 시간대면 UTC로 잘라 보이고 그 사실을 밝힌다.
+  // 서버가 모르는 브라우저 시간대면 UTC로 잘라 보이고 그 사실을 밝힌다. 실행 환경의 시간대가 UTC여도 대체가 일어나게 브라우저 시간대를 정한다.
   const unknownZone = await context.newPage();
+  await (
+    await context.newCDPSession(unknownZone)
+  ).send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Seoul" });
   await unknownZone.route(/\/dashboard\?timeZone=(?!UTC$)/, (route) =>
     route.fulfill({
       status: 422,
@@ -164,7 +182,7 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   await expect(
     unknownZone.getByRole("region", { name: "14일 차트" })
   ).toContainText("UTC 기준");
-  await expect(unknownZone.getByTestId("metric-success")).toContainText("50%");
+  await expect(unknownZone.getByTestId("metric-success")).toContainText("67%");
   await unknownZone.close();
 
   // 좁은 화면에서도 대시보드가 가로로 넘치지 않는다.

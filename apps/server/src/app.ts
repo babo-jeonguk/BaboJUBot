@@ -19,10 +19,14 @@ import {
   editInstructionCopyInputSchema,
   eventStreamPath,
   inboxItemKindSchema,
+  markConversationReadInputSchema,
   organizationCommands,
   orgToolsBasePath,
   sendOwnerMessageInputSchema,
+  editQueuedMessageInputSchema,
+  conversationPageQuerySchema,
   timeZoneSchema,
+  updateAgentProfileInputSchema,
   updateApprovalPolicyInputSchema,
   updateHeartbeatInputSchema,
   updateInboxItemInputSchema,
@@ -48,7 +52,12 @@ import {
   getOverview,
   getResearchMap,
   listApprovals,
-  listConversation,
+  findConversation,
+  findDefaultConversation,
+  listConversationPage,
+  listQueuedMessages,
+  listConversations,
+  markConversationRead,
   listFakeChannelMessages,
   listInbox,
   listInstructionRevisions,
@@ -74,9 +83,10 @@ import {
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
+import { updateAgentProfile } from "./agents.ts";
 import { decideApproval } from "./approvals.ts";
 import { controlAgent, controlOrganization } from "./control.ts";
-import { sendOwnerMessage } from "./conversation.ts";
+import { commandQueuedMessage, sendOwnerMessage } from "./conversation.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import { defaultHarnessDir } from "./harness.ts";
@@ -192,7 +202,12 @@ export async function startServer({
     }
     res
       .status(201)
-      .json(await createOrganization({ db, hub, harnessDir }, input.data));
+      .json(
+        await createOrganization(
+          { db, hub, dispatcher, harnessDir },
+          input.data
+        )
+      );
   });
 
   /** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 합계(취소 정리 중은 따로 센 수도). */
@@ -200,14 +215,15 @@ export async function startServer({
     res.json(await getOverview(db, now()));
   });
 
-  /** Inbox. 모든 조직의 결정을 기다리는 승인 요청·결과 제출과 실패한 실행 시도, 각 항목의 읽음·보관. */
+  /** Inbox. 모든 조직의 승인 요청·결과 제출(결정한 것 포함)과 실패한 실행 시도, 각 항목의 읽음·보관. */
   app.get("/api/inbox", async (_req, res) => {
     res.json(await listInbox(db));
   });
 
   /**
    * 알림 정리 명령(읽음·보관). 준 값을 그대로 대입하고 정리 뒤 상태를 돌려준다. 원본의 결정·단계·깨우기는 바뀌지 않는다.
-   * 다른 조직의 원본, 없는 원본·종류는 404다. 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   * 다른 조직의 원본, 없는 원본·종류는 404다. 결정을 기다리는 승인 요청·결과 제출의 보관은 422 `archive_not_allowed`다.
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
    */
   app.put("/api/organizations/:id/inbox/:kind/:sourceId", async (req, res) => {
     const kind = inboxItemKindSchema.safeParse(req.params.kind);
@@ -320,7 +336,10 @@ export async function startServer({
       res.json(result.value);
     });
 
-  /** 에이전트 일시정지·재개 제어 명령. 명령 뒤의 에이전트 상세를 돌려준다. 끝난 조직의 에이전트는 409 `organization_closed`다. */
+  /**
+   * 에이전트 일시정지·재개·실행 중단(`interrupt`) 제어 명령. 명령 뒤의 에이전트 상세를 돌려준다. 끝난 조직의 에이전트는 409 `organization_closed`다.
+   * 실행 중단은 메시지 없이 진행 중 실행 시도만 취소하며, 실행 중이 아니면 아무것도 남기지 않는다.
+   */
   for (const command of agentCommands)
     app.post(
       `/api/organizations/:id/agents/:agentId/${command}`,
@@ -365,6 +384,32 @@ export async function startServer({
   );
 
   /**
+   * 에이전트 이름·얼굴 변경. 사용자만 바꾸며 조직 도구가 없다. 변경 뒤의 에이전트 상세를 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
+   * 연구 진행에 닿지 않는 표시 정보라 어느 단계에서든 바꿀 수 있다. 같은 조직의 다른 에이전트와 겹치는 이름은 409 `name_taken`이다.
+   */
+  app.patch("/api/organizations/:id/agents/:agentId", async (req, res) => {
+    const input = updateAgentProfileInputSchema.safeParse(req.body);
+    if (!input.success) {
+      res.status(422).json({
+        error: { code: "invalid_input", issues: input.error.issues },
+      });
+      return;
+    }
+    const result = await updateAgentProfile(
+      { db, hub },
+      req.params.id,
+      req.params.agentId,
+      input.data
+    );
+    if (result.kind === "not_found") return notFound(res);
+    if (result.kind === "name_taken") {
+      res.status(409).json({ error: { code: "name_taken" } });
+      return;
+    }
+    res.json(result.agent);
+  });
+
+  /**
    * 조직 대시보드 요약. `timeZone`(IANA 이름, 기본 UTC)의 달력 날짜로 오늘까지 14일을 자른다.
    * 서버가 모르는 시간대는 422 `invalid_time_zone`이다.
    */
@@ -395,31 +440,203 @@ export async function startServer({
     );
   });
 
-  app.get("/api/organizations/:id/messages", async (req, res) => {
-    const org = await findOrganization(db, req.params.id);
-    const lead = org && findLead(org.agents);
-    if (!org || !lead) return notFound(res);
-    res.json(await listConversation(db, org.id, lead.id));
-  });
-
-  app.post("/api/organizations/:id/messages", async (req, res) => {
-    const org = await findOrganization(db, req.params.id);
-    if (!org) return notFound(res);
+  /**
+   * 조직 안의 대화. 경로에 대화가 없으면 기본 대화다. 다른 조직의 대화는 없는 대화와 같은 404다.
+   * 끝난 조직의 대화도 읽을 수 있고, 보내기는 기존 규칙(끝난 조직의 `중단하고 보내기`만 409)을 따른다.
+   */
+  const findChat = async (organizationId: string, conversationId?: string) => {
+    const org = await findOrganization(db, organizationId);
+    if (!org || !findLead(org.agents)) return undefined;
+    const conversation =
+      conversationId === undefined
+        ? await findDefaultConversation(db, org.id)
+        : await findConversation(db, org.id, conversationId);
+    return conversation && { org, conversation };
+  };
+  const ownerMessageInput = (req: express.Request, res: express.Response) => {
     const input = sendOwnerMessageInputSchema.safeParse(req.body);
-    if (!input.success) {
-      res
-        .status(422)
-        .json({ error: { code: "invalid_input", issues: input.error.issues } });
+    if (input.success) return input.data;
+    res
+      .status(422)
+      .json({ error: { code: "invalid_input", issues: input.error.issues } });
+    return undefined;
+  };
+  /**
+   * 대화 기록 한 쪽(`?before=`·`?after=` 커서, 없으면 가장 최근 쪽). 줄 세운 메시지는 따로 `queued-messages`가 준다.
+   * 서버가 준 것이 아닌 커서나 둘을 함께 쓴 조회는 422 `invalid_input`이다.
+   */
+  const listChatMessages = async (
+    req: express.Request,
+    res: express.Response,
+    conversationId?: string
+  ) => {
+    const chat = await findChat(String(req.params.id), conversationId);
+    if (!chat) return notFound(res);
+    const query = conversationPageQuerySchema.safeParse(req.query);
+    const page =
+      query.success &&
+      (await listConversationPage(
+        db,
+        chat.org.id,
+        chat.conversation.id,
+        query.data
+      ));
+    if (!page || page === "invalid_cursor") {
+      res.status(422).json({
+        error: {
+          code: "invalid_input",
+          issues: query.success ? [] : query.error.issues,
+        },
+      });
       return;
     }
+    res.json(page);
+  };
+  /** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 기록의 쪽과 상관없다. */
+  const listChatQueue = async (
+    req: express.Request,
+    res: express.Response,
+    conversationId?: string
+  ) => {
+    const chat = await findChat(String(req.params.id), conversationId);
+    if (!chat) return notFound(res);
+    res.json(await listQueuedMessages(db, chat.org.id, chat.conversation.id));
+  };
+  const sendChatMessage = async (
+    req: express.Request,
+    res: express.Response,
+    conversationId?: string
+  ) => {
+    const chat = await findChat(String(req.params.id), conversationId);
+    if (!chat) return notFound(res);
+    const input = ownerMessageInput(req, res);
+    if (!input) return;
+    const sent = await sendOwnerMessage(
+      { db, hub, dispatcher, now },
+      chat.org,
+      chat.conversation,
+      input
+    );
+    if (sent.kind !== "sent") return refusedMessage(res, sent.kind);
+    res.status(201).json(sent.message);
+  };
+
+  app.get("/api/organizations/:id/conversations", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(await listConversations(db, req.params.id));
+  });
+
+  /** 새 대화를 첫 사용자 메시지와 함께 시작한다. 빈 대화는 만들지 않는다. */
+  app.post("/api/organizations/:id/conversations", async (req, res) => {
+    const org = await findOrganization(db, req.params.id);
+    if (!org || !findLead(org.agents)) return notFound(res);
+    const input = ownerMessageInput(req, res);
+    if (!input) return;
     const sent = await sendOwnerMessage(
       { db, hub, dispatcher, now },
       org,
-      input.data
+      "new",
+      input
     );
-    if (sent.kind === "organization_closed") return closed(res);
-    res.status(201).json(sent.message);
+    if (sent.kind !== "sent") return refusedMessage(res, sent.kind);
+    res
+      .status(201)
+      .json({ conversation: sent.conversation, message: sent.message });
   });
+
+  app.get(
+    "/api/organizations/:id/conversations/:conversationId/messages",
+    (req, res) => listChatMessages(req, res, req.params.conversationId)
+  );
+
+  app.get(
+    "/api/organizations/:id/conversations/:conversationId/queued-messages",
+    (req, res) => listChatQueue(req, res, req.params.conversationId)
+  );
+
+  app.post(
+    "/api/organizations/:id/conversations/:conversationId/messages",
+    (req, res) => sendChatMessage(req, res, req.params.conversationId)
+  );
+
+  /** 사용자가 대화를 메시지 하나까지 보았다. 목록의 읽지 않음 표시만 바꾸며 Event를 남기지 않는다. 바뀐 대화 목록을 돌려준다. */
+  app.put(
+    "/api/organizations/:id/conversations/:conversationId/read",
+    async (req, res) => {
+      const input = markConversationReadInputSchema.safeParse(req.body);
+      if (!input.success) {
+        res.status(422).json({
+          error: { code: "invalid_input", issues: input.error.issues },
+        });
+        return;
+      }
+      const marked = await markConversationRead(
+        db,
+        req.params.id,
+        req.params.conversationId,
+        input.data.upToMessageId
+      );
+      if (marked === "not_found") return notFound(res);
+      res.json(await listConversations(db, req.params.id));
+    }
+  );
+
+  // 기본 대화. 대화 경로가 생기기 전의 조회·보내기와 같다.
+  app.get("/api/organizations/:id/messages", (req, res) =>
+    listChatMessages(req, res)
+  );
+
+  app.get("/api/organizations/:id/queued-messages", (req, res) =>
+    listChatQueue(req, res)
+  );
+
+  app.post("/api/organizations/:id/messages", (req, res) =>
+    sendChatMessage(req, res)
+  );
+
+  /**
+   * 줄 세운 메시지(아직 실행 시도가 받지 않은 Lead 대화의 사용자 메시지) 고치기·거두기·지금 보내기. 바뀐 메시지를 돌려준다(거두기는 거두기 전 모양).
+   * 고치기는 `{ body }`(보내기와 같은 검사)로 글만 바꾸고 전달 방식·줄 속 위치는 그대로다. 실행 시도가 이미 받았으면 409 `message_delivered`,
+   * 다른 조직·거둔 메시지는 404다. 고치기·지금 보내기는 끝난 조직이면 409 `organization_closed`이고, 지금 보내기는 조직이나 Lead가
+   * 일시정지 중이면 409 `paused`다(고치기는 일시정지 중에도, 거두기는 일시정지 중에도 끝난 조직에서도 된다).
+   */
+  for (const path of ["edit", "withdraw", "send-now"] as const)
+    app.post(
+      `/api/organizations/:id/messages/:messageId/${path}`,
+      async (req, res) => {
+        let command: Parameters<typeof commandQueuedMessage>[3];
+        if (path === "edit") {
+          const input = editQueuedMessageInputSchema.safeParse(req.body);
+          if (!input.success) {
+            res.status(422).json({
+              error: { code: "invalid_input", issues: input.error.issues },
+            });
+            return;
+          }
+          command = { kind: "edit", body: input.data.body };
+        } else {
+          if (!emptyCommand(req, res)) return;
+          command = { kind: path === "withdraw" ? "withdraw" : "send_now" };
+        }
+        const result = await commandQueuedMessage(
+          { db, hub, dispatcher, now },
+          req.params.id,
+          req.params.messageId,
+          command
+        );
+        switch (result.kind) {
+          case "changed":
+            return void res.json(result.message);
+          case "not_found":
+            return notFound(res);
+          case "organization_closed":
+            return closed(res);
+          case "message_delivered":
+          case "paused":
+            return void res.status(409).json({ error: { code: result.kind } });
+        }
+      }
+    );
 
   // `?status=running`은 최근 목록과 달리 진행 중 실행 시도를 모두 돌려준다(대시보드의 실행 중·취소 정리 중 개수).
   app.get("/api/organizations/:id/runs", async (req, res) => {
@@ -868,6 +1085,14 @@ function notFound(res: express.Response) {
 }
 
 /** 최종 완료·중단 조직이라 받을 수 없는 제어 명령·결정. */
+/** 사용자 메시지를 받지 않음: 끝난 조직(`organization_closed`)이나 Lead의 줄이 상한(`queue_full`). 둘 다 409다. */
+function refusedMessage(
+  res: express.Response,
+  code: "organization_closed" | "queue_full"
+) {
+  res.status(409).json({ error: { code } });
+}
+
 function closed(res: express.Response) {
   res.status(409).json({ error: { code: "organization_closed" } });
 }

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
@@ -10,14 +11,10 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   test.setTimeout(120_000);
   const name = "결과 검토 E2E 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  // 가짜 Lead가 목표를 기록하고 승인을 요청하며, 승인 뒤 작업자들이 작업을 끝내 산출물을 남긴다.
-  await page.request.post(api("/messages"), {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {
@@ -72,9 +69,11 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(evidence.getByRole("link")).toHaveCount(2);
   await evidence.getByRole("link", { name: /연구 문제 정리 1 메모/ }).click();
   await expect(page).toHaveURL(/\/artifacts\/[0-9a-f-]{36}$/);
-  await expect(page.getByTestId("artifact-content")).toContainText(
-    "# 연구 문제 정리 1 메모"
-  );
+  await expect(
+    page
+      .getByTestId("artifact-content")
+      .getByRole("heading", { name: "연구 문제 정리 1 메모" })
+  ).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(firstUrl);
 
@@ -137,8 +136,11 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   ).toBeVisible();
   const otherDecision = other.getByRole("region", { name: "결정" });
   await otherDecision.getByRole("button", { name: "최종 완료" }).click();
-  await otherDecision.getByRole("button", { name: "최종 완료 확정" }).click();
-  await expect(otherDecision).toContainText("새 실행 시도가 시작되지 않습니다");
+  await otherDecision
+    .getByRole("group", { name: "최종 완료할까요?" })
+    .getByRole("button", { name: "최종 완료" })
+    .click();
+  await expect(otherDecision).toContainText("연구를 최종 완료했습니다");
   await expect(otherDecision).toBeFocused();
   await other.close();
   await expect(decision).toContainText("최종 완료", runs);
@@ -156,7 +158,7 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await page.waitForTimeout(1_000);
   expect(await runCount()).toBe(before);
 
-  // 결과 검토 목록에는 두 제출과 각 결정이 남고, Inbox에서는 빠졌다.
+  // 결과 검토 목록에는 두 제출과 각 결정이 남고, Inbox에서도 주의 필요에서만 빠져 전체에 결정 상태와 함께 남는다.
   await page.goto(`/orgs/${org.id}/review`);
   const list = page.getByRole("list", { name: "결과 제출" });
   await expect(list.getByRole("link")).toHaveCount(2);
@@ -164,13 +166,23 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(list.getByRole("link").nth(1)).toContainText("수정 요청됨");
   await page.goto("/inbox");
   const panel = page.getByRole("complementary", { name: "Inbox" });
+  await expect(
+    panel.getByRole("list", { name: "주의 필요" }).filter({ hasText: name })
+  ).toHaveCount(0);
   await panel.getByRole("button", { name: /^전체 \d/ }).click();
-  await expect(panel).not.toContainText(name);
+  const kept = panel
+    .getByRole("list", { name: "전체" })
+    .getByRole("listitem")
+    .filter({ hasText: name })
+    .filter({ hasText: "결과 제출" });
+  await expect(kept).toHaveCount(2);
+  await expect(kept.filter({ hasText: "최종 완료" })).toHaveCount(1);
+  await expect(kept.filter({ hasText: "수정 요청됨" })).toHaveCount(1);
 });
 
 test("shows a missing result submission as not found", async ({ page }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "없는 결과 조직" },
+    data: { name: "없는 결과 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   await page.goto(`/orgs/${org.id}/results/${crypto.randomUUID()}`);

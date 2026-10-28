@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentAppearanceSchema } from "./agent-profile.ts";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { messageAuthorSchema } from "./message.ts";
 import { harnessNameSchema } from "./harness.ts";
@@ -26,22 +27,76 @@ const eventBase = {
 export const organizationCreatedEventSchema = z.object({
   ...eventBase,
   type: z.literal("organization.created"),
+  /**
+   * 사용자가 조직을 만들며 적은 연구 목표·완료 기준(비웠으면 `null`)과 그 목표로 깨운 Lead(`wokenAgentId`).
+   * 목표를 생성 때 받기 전의 Event에는 `goal`·`completionCriteria`·`wokenAgentId`가 없다.
+   */
   payload: z.object({
     name: z.string(),
     stage: lifecycleStageSchema,
     leadAgentId: z.uuid(),
+    goal: z.string().optional(),
+    completionCriteria: z.string().nullable().optional(),
+    wokenAgentId: z.uuid().optional(),
   }),
 });
 
-/** Lead 대화의 메시지 저장. 에이전트 메시지는 보낸 실행 시도(`runId`)를 가리킨다. */
+/** Lead 대화의 메시지 저장. 메시지가 속한 대화(`conversationId`)를 담고, 에이전트 메시지는 보낸 실행 시도(`runId`)를 가리킨다. */
 export const messageCreatedEventSchema = z.object({
   ...eventBase,
   type: z.literal("message.created"),
   payload: z.object({
     messageId: z.uuid(),
     agentId: z.uuid(),
+    conversationId: z.uuid(),
     author: messageAuthorSchema,
     runId: z.uuid().nullable(),
+  }),
+});
+
+/**
+ * 사용자가 줄 세운 메시지를 그 자리에서 고쳤다(`고치기`). 전달 방식과 줄 속 위치는 그대로이며, 고치기 전 글(`previousBody`)을 남긴다.
+ */
+export const messageEditedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("message.edited"),
+  payload: z.object({
+    by: z.literal("owner"),
+    messageId: z.uuid(),
+    agentId: z.uuid(),
+    conversationId: z.uuid(),
+    previousBody: z.string(),
+    body: z.string(),
+  }),
+});
+
+/**
+ * 사용자가 줄 세운 메시지를 거두었다(`취소`, 빈 입력창의 ↑). 아직 실행 시도가 받지 않은 사용자 메시지만 거둘 수 있다.
+ * 메시지는 지우지 않고 남지만 대화와 Lead의 맥락에서 빠지며, 그 깨우기는 더는 실행 시도를 시작하지 않는다.
+ */
+export const messageWithdrawnEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("message.withdrawn"),
+  payload: z.object({
+    by: z.literal("owner"),
+    messageId: z.uuid(),
+    agentId: z.uuid(),
+    conversationId: z.uuid(),
+  }),
+});
+
+/**
+ * 사용자가 줄 세운 메시지를 `지금 보내기`로 바꾸었다. 그 메시지의 전달 방식은 `중단하고 보내기`가 되고,
+ * 진행 중 실행 시도를 끊는 제어 명령은 따로 `agent.interrupted`(같은 `messageId`)로 남는다.
+ */
+export const messageSentNowEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("message.sent_now"),
+  payload: z.object({
+    by: z.literal("owner"),
+    messageId: z.uuid(),
+    agentId: z.uuid(),
+    conversationId: z.uuid(),
   }),
 });
 
@@ -165,9 +220,11 @@ export const agentResumedEventSchema = z.object({
 });
 
 /**
- * `중단하고 반영`의 실행 시도 중단 제어 명령. 함께 보낸 메시지(`messageId`)는 따로 `message.created`로 남고 다음 실행 시도가 받는다.
+ * 실행 시도 중단 제어 명령. `중단하고 보내기`면 함께 보낸 메시지(`messageId`)가 따로 `message.created`로 남고 다음 실행 시도가 받는다.
+ * 줄 세운 메시지의 `지금 보내기`면 그 메시지가 `message.sent_now`로 남는다.
  * `runId`는 취소를 요청한 받는 에이전트의 진행 중 실행 시도이며, 실행 중이 아니었으면 없다. 이미 취소 정리 중인 실행 시도면
  * 그 정리에 합류하므로 그 실행 시도이고, 취소 사유는 처음 것을 그대로 둔다.
+ * 메시지 없는 `실행 중단`(에이전트 제어 명령 `interrupt`)은 `messageId`가 없고, 취소할 실행 시도가 있을 때만 남는다.
  */
 export const agentInterruptedEventSchema = z.object({
   ...eventBase,
@@ -176,7 +233,7 @@ export const agentInterruptedEventSchema = z.object({
     by: z.literal("owner"),
     agentId: z.uuid(),
     runId: z.uuid().nullable(),
-    messageId: z.uuid(),
+    messageId: z.uuid().nullable(),
   }),
 });
 
@@ -190,6 +247,21 @@ export const agentHeartbeatChangedEventSchema = z.object({
     enabled: z.boolean(),
     intervalMinutes: z.number().int().positive(),
     nextAt: z.iso.datetime({ offset: true }).nullable(),
+  }),
+});
+
+/**
+ * 사용자의 에이전트 이름·얼굴 변경. 바뀐 항목만 담고 바뀌지 않은 항목은 없다(`null`). 값이 그대로인 변경은 남지 않는다.
+ * `name.from`은 바꾸기 전 이름이라, 활동 기록이 지금 이름과 함께 예전 이름을 보일 수 있다.
+ */
+export const agentProfileChangedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.profile_changed"),
+  payload: z.object({
+    by: z.literal("owner"),
+    agentId: z.uuid(),
+    name: z.object({ from: z.string(), to: z.string() }).nullable(),
+    appearance: agentAppearanceSchema.nullable(),
   }),
 });
 
@@ -260,6 +332,8 @@ export const approvalDecidedEventSchema = z.object({
     stage: lifecycleStageSchema,
     createdAgentIds: z.array(z.uuid()),
     wokenAgentId: z.uuid(),
+    /** 이 승인으로 조직의 완료 기준이 된 Lead 제안. 제안을 승인한 결정에만 있다. */
+    completionCriteria: z.string().optional(),
   }),
 });
 
@@ -444,6 +518,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   agentResumedEventSchema,
   agentInterruptedEventSchema,
   agentHeartbeatChangedEventSchema,
+  agentProfileChangedEventSchema,
   agentHeartbeatEventSchema,
   memoryWrittenEventSchema,
   goalRecordedEventSchema,
@@ -454,6 +529,9 @@ export const eventSchema = z.discriminatedUnion("type", [
   resultDecidedEventSchema,
   toolRefusedEventSchema,
   messageCreatedEventSchema,
+  messageEditedEventSchema,
+  messageWithdrawnEventSchema,
+  messageSentNowEventSchema,
   taskCreatedEventSchema,
   taskStartedEventSchema,
   taskCompletedEventSchema,

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
@@ -19,14 +20,10 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   test.setTimeout(120_000);
   const name = "작업자 정책 E2E 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  // 가짜 Lead가 목표를 기록하고 초기 연구 승인을 요청한다. 승인해 연구 진행에 들어선다.
-  await page.request.post(api("/messages"), {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {
@@ -57,9 +54,13 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
       .getByRole("checkbox", { name: /작업자 추가/ });
   await expect(policy(page)).not.toBeChecked();
   await expect(policy(other)).not.toBeChecked();
-  await expect(page.getByRole("region", { name: "승인 정책" })).toContainText(
-    "초기 연구 승인과 최종 완료는 항상 사용자가 결정"
-  );
+  for (const locked of ["초기 연구 승인", "최종 완료"]) {
+    const box = page
+      .getByRole("region", { name: "승인 정책" })
+      .getByRole("checkbox", { name: locked });
+    await expect(box).toBeChecked();
+    await expect(box).toBeDisabled();
+  }
 
   await policy(page).check();
   await expect(policy(page)).toBeChecked();
@@ -68,7 +69,7 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   // 정책이 켜져 있으니 Lead의 작업자 추가는 승인 요청이 되고 작업자는 아직 없다.
   await page.goto(`/orgs/${org.id}/chat`);
   await page.getByLabel("Lead에게 보낼 메시지").fill("작업자 추가: researcher");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
   const requested = page
     .getByRole("list", { name: "대화" })
     .locator('[data-author="agent"]')
@@ -102,13 +103,13 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   await decision.getByRole("button", { name: "반려" }).click();
   await expect(decision).toContainText("반려됨");
   await expect(decision).toContainText("지금은 인원이 충분합니다");
-  await expect(decision).toContainText("작업자를 만들지 않았고");
+  await expect(decision).toContainText("작업자를 만들지 않았습니다");
   expect(await workerCount()).toBe(2);
 
   // 다시 부탁해 승인하면 작업자가 생긴다.
   await page.goto(`/orgs/${org.id}/chat`);
   await page.getByLabel("Lead에게 보낼 메시지").fill("작업자 추가: researcher");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
   await expect(requested).toHaveCount(2, runs);
   // 이번에는 원래 화면에서 사본 내용을 보고 승인한다.
   await openRequest();

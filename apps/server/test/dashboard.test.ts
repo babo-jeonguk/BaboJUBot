@@ -11,7 +11,7 @@ import {
 import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { calls, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import { calls, goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 // 조직 대시보드 요약과 홈 개요(#62). 수는 조직 원장에서 바로 센 값과 같아야 하고 다른 조직을 섞지 않는다.
@@ -43,9 +43,11 @@ const runningRuns = async (orgId: string) =>
 const allRuns = async (orgId: string) =>
   runSummaryListSchema.parse(await get(`/api/organizations/${orgId}/runs`));
 
+/** 사용자가 목표를 적어 만든 조직. 생성으로 깨어난 Lead의 실행 시도가 끝날 때까지 기다린다. */
 async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+  const res = await t!.request("POST", "/api/organizations", { name, ...goal });
   expect(res.status).toBe(201);
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { ...org, lead: org.agents.find((a) => a.role === "lead")! };
 }
@@ -163,7 +165,7 @@ describe("organization dashboard", () => {
       expect(res.status, timeZone).toBe(422);
       expect(res.body).toEqual({ error: { code: "invalid_time_zone" } });
     }
-    // 시간대를 주지 않으면 UTC다. 기록이 없는 조직도 14일이 모두 0으로 있다.
+    // 시간대를 주지 않으면 UTC다. 작업·산출물이 없는 조직도 14일이 모두 있다. 실행 시도는 생성으로 깨어난 Lead의 것 하나다.
     const empty = organizationDashboardSchema.parse(
       await get(`/api/organizations/${org.id}/dashboard`)
     );
@@ -172,7 +174,7 @@ describe("organization dashboard", () => {
     expect(empty.days.every((d) => d.artifactsRecorded === 0)).toBe(true);
     expect(empty).toMatchObject({
       tasks: { open: 0, in_progress: 0, completed: 0 },
-      runs: { running: 0, completed: 0 },
+      runs: { running: 0, completed: 1 },
       artifacts: 0,
       runningRuns: [],
     });
@@ -181,7 +183,8 @@ describe("organization dashboard", () => {
   it("cuts the 14 days at the given time zone's midnights, counting starts and ends on their own days", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime, now: () => clock });
-    at("2026-10-14T14:59:59.999Z");
+    // 생성으로 깨어난 Lead의 실행 시도는 14일 밖에 둔다.
+    at("2026-10-01T00:00:00.000Z");
     const org = await createOrganization("날짜 조직");
     const reply = async (iso: string, body = "안녕하세요") => {
       at(iso);
@@ -245,13 +248,15 @@ describe("organization dashboard", () => {
       "2026-10-27": 2,
       "2026-10-28": 1,
     });
-    // 전체 수는 기간과 상관없는 원장 전체다.
-    expect(utc.runs).toMatchObject({ completed: 5, failed: 1 });
+    // 전체 수는 기간과 상관없는 원장 전체다(생성 깨우기를 받은 실행 시도 포함).
+    expect(utc.runs).toMatchObject({ completed: 6, failed: 1 });
   });
 
   it("keeps the 14 calendar days whole across a daylight saving change", async () => {
     at("2026-11-02T00:30:00Z"); // 뉴욕 11/1 19:30, 그날 새벽 2시에 서머타임이 끝났다.
     t = await startTestServer({ now: () => clock });
+    // 생성으로 깨어난 Lead의 실행 시도는 14일 밖에 둔다.
+    at("2026-10-01T00:00:00Z");
     const org = await createOrganization("서머타임 조직");
     at("2026-11-01T03:59:59.999Z"); // 뉴욕 10/31 23:59 EDT
     await say(org.id, "하나");
@@ -322,9 +327,21 @@ describe("running runs on the dashboard and home", () => {
       );
       expect(before.organizations).toEqual(
         expect.arrayContaining([
-          { organizationId: a.id, running: 2, cancelling: 0 },
-          { organizationId: b.id, running: 1, cancelling: 0 },
-          { organizationId: idleOrg.id, running: 0, cancelling: 0 },
+          expect.objectContaining({
+            organizationId: a.id,
+            running: 2,
+            cancelling: 0,
+          }),
+          expect.objectContaining({
+            organizationId: b.id,
+            running: 1,
+            cancelling: 0,
+          }),
+          expect.objectContaining({
+            organizationId: idleOrg.id,
+            running: 0,
+            cancelling: 0,
+          }),
         ])
       );
 
@@ -339,7 +356,11 @@ describe("running runs on the dashboard and home", () => {
       expect(after.runs).toEqual({ running: 3, cancelling: 1 });
       expect(after.organizations).toEqual(
         expect.arrayContaining([
-          { organizationId: a.id, running: 2, cancelling: 1 },
+          expect.objectContaining({
+            organizationId: a.id,
+            running: 2,
+            cancelling: 1,
+          }),
         ])
       );
       // 대시보드의 진행 중 수·목록은 실제 진행 중 실행 시도와 같다.
@@ -367,5 +388,215 @@ describe("running runs on the dashboard and home", () => {
       running: 0,
       cancelled: 1,
     });
+  });
+});
+
+describe("last activity on the home", () => {
+  it("gives each organization the time of its own latest event", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const quiet = await createOrganization("조용한 조직");
+    const busy = await createOrganization("바쁜 조직");
+    await say(busy.id, "안녕하세요");
+    await t.drain();
+    const latest = async (orgId: string) =>
+      (await eventsOf(orgId))
+        .map((e) => e.createdAt)
+        .reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
+    const at = Object.fromEntries(
+      (await overview()).organizations.map((o) => [
+        o.organizationId,
+        o.lastActivityAt,
+      ])
+    );
+    expect(Date.parse(at[quiet.id]!)).toBe(Date.parse(await latest(quiet.id)));
+    expect(Date.parse(at[busy.id]!)).toBe(Date.parse(await latest(busy.id)));
+    // 다른 조직의 Event는 조용한 조직의 시각을 바꾸지 않는다.
+    expect(Date.parse(at[busy.id]!)).toBeGreaterThan(Date.parse(at[quiet.id]!));
+  });
+});
+
+describe("rooms on the home", () => {
+  it("lists organizations in creation order with their agents in join order, each agent's state and what a working agent holds, and the owner decisions still open", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const awaiting = await createOrganization("승인 기다리는 방");
+    const room = await researching(agents, "작업하는 방");
+    const closed = await createOrganization("끝난 방");
+    expect(
+      (await t.request("POST", `/api/organizations/${closed.id}/stop`, {}))
+        .status
+    ).toBe(200);
+    // 함께 들어온 작업자는 처음 받은 이름의 번호 순으로 앉는다.
+    const [first, second] = [...room.workers].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    ) as [(typeof room.workers)[number], (typeof room.workers)[number]];
+
+    // 작업자 1은 맡은 작업에 착수한 채 붙잡히고, 작업자 2는 실패로 끝난다.
+    const held = createGate();
+    const heldComment = createGate();
+    try {
+      agents.queue(first.id, (request) => {
+        const assigned = request.wakeReasons.find(
+          (r) => r.kind === "task_assigned"
+        )!;
+        return {
+          steps: [
+            {
+              do: "call",
+              tool: "start_task",
+              params: () => ({ taskId: assigned.taskId }),
+            },
+            { do: "hold", until: held.wait },
+          ],
+        };
+      });
+      agents.queue(second.id, {
+        steps: [{ do: "fail", error: "일부러 실패" }],
+      });
+      agents.queue(
+        room.lead.id,
+        calls(
+          {
+            tool: "create_task",
+            input: { title: "긴 문헌 조사", assigneeAgentId: first.id },
+          },
+          {
+            tool: "create_task",
+            input: { title: "실패할 분석", assigneeAgentId: second.id },
+          }
+        )
+      );
+      await say(room.id, "작업을 맡겨 주세요");
+      await held.reached;
+      await expect
+        .poll(async () =>
+          (await allRuns(room.id)).some(
+            (r) => r.agentId === second.id && r.status === "failed"
+          )
+        )
+        .toBe(true);
+      await expect
+        .poll(async () => (await runningRuns(room.id)).length)
+        .toBe(1);
+      expect(
+        (
+          await t.request(
+            "POST",
+            `/api/organizations/${room.id}/agents/${room.lead.id}/pause`,
+            {}
+          )
+        ).status
+      ).toBe(200);
+
+      const before = await overview();
+      const orgs = (await get("/api/organizations")) as { id: string }[];
+      // 만든 순서(목록 API와 같은 순서). 상태가 바뀌어도 순서는 그대로다.
+      expect(before.organizations.map((o) => o.organizationId)).toEqual(
+        orgs.map((o) => o.id)
+      );
+      const ids = before.organizations.map((o) => o.organizationId);
+      expect(ids.indexOf(awaiting.id)).toBeLessThan(ids.indexOf(room.id));
+      expect(ids.indexOf(room.id)).toBeLessThan(ids.indexOf(closed.id));
+      const of = (id: string) =>
+        before.organizations.find((o) => o.organizationId === id)!;
+
+      expect(of(awaiting.id)).toMatchObject({
+        name: "승인 기다리는 방",
+        goal: goal.goal,
+        stage: "awaiting_approval",
+        createdAt: awaiting.createdAt,
+        pendingDecisions: [
+          { kind: "initial_research", createdAt: expect.any(String) },
+        ],
+        agents: [
+          {
+            id: awaiting.lead.id,
+            role: "lead",
+            name: awaiting.lead.name,
+            appearance: awaiting.lead.appearance,
+            status: "idle",
+            paused: false,
+            lastRunFailed: false,
+            currentTask: null,
+            wakeKind: null,
+          },
+        ],
+      });
+      // 끝난 조직의 승인 요청은 결정할 수 없으므로 기다리는 결정이 아니다.
+      expect(of(closed.id)).toMatchObject({
+        stage: "stopped",
+        pendingDecisions: [],
+      });
+
+      const working = of(room.id);
+      expect(working.stage).toBe("researching");
+      expect(working.pendingDecisions).toEqual([]);
+      expect(working.agents.map((a) => a.id)).toEqual([
+        room.lead.id,
+        first.id,
+        second.id,
+      ]);
+      expect(working.agents).toEqual([
+        expect.objectContaining({
+          role: "lead",
+          status: "idle",
+          paused: true,
+          lastRunFailed: false,
+          currentTask: null,
+        }),
+        expect.objectContaining({
+          role: "worker",
+          status: "running",
+          paused: false,
+          lastRunFailed: false,
+          currentTask: "긴 문헌 조사",
+          wakeKind: "task_assigned",
+        }),
+        expect.objectContaining({
+          role: "worker",
+          status: "idle",
+          lastRunFailed: true,
+          currentTask: null,
+          wakeKind: null,
+        }),
+      ]);
+
+      // 작업이 진행 중이 아니어도 실행 시도가 받은 댓글의 작업을 붙잡고 있다. 다시 실행하면 실패 표시는 사라진다.
+      agents.queue(second.id, {
+        steps: [{ do: "hold", until: heldComment.wait }],
+      });
+      const failedTask = (await tasksOf(room.id)).find(
+        (task) => task.title === "실패할 분석"
+      )!;
+      expect(
+        (
+          await t.request(
+            "POST",
+            `/api/organizations/${room.id}/tasks/${failedTask.id}/comments`,
+            { body: "다시 봐 주세요" }
+          )
+        ).status
+      ).toBe(201);
+      await heldComment.reached;
+      const retried = (await overview()).organizations
+        .find((o) => o.organizationId === room.id)!
+        .agents.find((a) => a.id === second.id);
+      expect(retried).toMatchObject({
+        status: "running",
+        lastRunFailed: false,
+        currentTask: "실패할 분석",
+        wakeKind: "task_comment",
+      });
+    } finally {
+      held.open();
+      heldComment.open();
+    }
+    await t.drain();
+    const after = (await overview()).organizations.find(
+      (o) => o.organizationId === room.id
+    )!;
+    expect(after.agents.every((a) => a.status === "idle")).toBe(true);
+    expect(after.agents.every((a) => a.currentTask === null)).toBe(true);
   });
 });

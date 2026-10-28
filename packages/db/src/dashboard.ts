@@ -1,14 +1,18 @@
 import {
+  closedStages,
   dashboardDays,
   dashboardRecentEventLimit,
   runStatuses,
   taskStatuses,
   type DashboardDay,
+  type AgentRole,
   type OrganizationDashboard,
   type Overview,
+  type PendingDecisionKind,
   type RunEndReason,
   type RunStatus,
   type TaskStatus,
+  type WakeKind,
 } from "@babojubot/contracts";
 import {
   and,
@@ -24,7 +28,7 @@ import {
 } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
-import { isUuid, toEvent } from "./rows.ts";
+import { isUuid, resolveAppearance, toEvent } from "./rows.ts";
 import { listRunningRuns } from "./runs.ts";
 import { artifacts, events, organizations, runs, tasks } from "./schema.ts";
 
@@ -208,32 +212,153 @@ export async function getOrganizationDashboard(
 }
 
 /**
- * 홈 개요: 모든 조직의 진행 중 실행 시도 수(취소 정리 중 포함)와 그 가운데 정리 중인 수. 조직별 수와 합계를 같은
- * SQL 하나의 결과에서 내므로 서로 맞는다. 진행 중 실행 시도가 없는 조직도 0으로 있다.
+ * 홈 개요: 모든 조직의 진행 중 실행 시도 수(취소 정리 중 포함)와 그 가운데 정리 중인 수, 조직마다 마지막 Event 시각,
+ * 방을 그릴 조직·에이전트 상태와 사용자 결정을 기다리는 일. 조직 수와 상관없이 SQL 세 개를 한 읽기 snapshot에서
+ * 실행하므로 수·상태가 서로 맞는다. 조직은 만든 순서, 에이전트는 들어온 순서(Lead가 먼저)다.
  */
 export async function getOverview(db: Database, now: Date): Promise<Overview> {
-  const rows = await db
-    .select({
-      organizationId: organizations.id,
-      running: count(runs.id),
-      cancelling:
-        sql<number>`count(${runs.id}) filter (where ${runs.cancelReason} is not null)`.mapWith(
-          Number
-        ),
-    })
-    .from(organizations)
-    .leftJoin(
-      runs,
-      and(eq(runs.organizationId, organizations.id), eq(runs.status, "running"))
-    )
-    .groupBy(organizations.id)
-    .orderBy(asc(organizations.createdAt), asc(organizations.id));
-  return {
-    asOf: now.toISOString(),
-    runs: {
-      running: rows.reduce((n, r) => n + r.running, 0),
-      cancelling: rows.reduce((n, r) => n + r.cancelling, 0),
+  return db.transaction(
+    async (tx) => {
+      const orgRows = await tx
+        .select({
+          organizationId: organizations.id,
+          name: organizations.name,
+          goal: organizations.goal,
+          stage: organizations.stage,
+          createdAt: organizations.createdAt,
+          running: count(runs.id),
+          cancelling:
+            sql<number>`count(${runs.id}) filter (where ${runs.cancelReason} is not null)`.mapWith(
+              Number
+            ),
+          // 조직별 마지막 Event. id 순서가 기록 순서라 조직 index(organization_id, id)로 한 행만 읽는다.
+          lastActivityAt:
+            sql<Date | null>`(select ${events.createdAt} from ${events} where ${events.organizationId} = ${organizations.id} order by ${events.id} desc limit 1)`.mapWith(
+              events.createdAt
+            ),
+        })
+        .from(organizations)
+        .leftJoin(
+          runs,
+          and(
+            eq(runs.organizationId, organizations.id),
+            eq(runs.status, "running")
+          )
+        )
+        .groupBy(organizations.id)
+        .orderBy(asc(organizations.createdAt), asc(organizations.id));
+
+      // 에이전트마다 진행 중 실행 시도(에이전트당 하나), 가장 최근 실행 시도의 상태, 실행 중이면 붙잡은 작업과 깨우기.
+      // 마지막 실행 시도는 (조직, 에이전트, seq) index로 한 행만 읽고, 하는 일은 실행 중인 에이전트만 찾는다.
+      const { rows: agentRows } = await tx.execute<{
+        id: string;
+        organization_id: string;
+        role: AgentRole;
+        name: string;
+        appearance: unknown;
+        paused: boolean;
+        running: boolean;
+        last_run_failed: boolean;
+        task_title: string | null;
+        wake_kind: WakeKind | null;
+      }>(sql`
+        select a.id, a.organization_id, a.role, a.name, a.appearance, a.paused,
+          r.id is not null as running,
+          coalesce(last_run.status = 'failed', false) as last_run_failed,
+          doing.task_title, doing.wake_kind
+        from agents a
+        left join runs r on r.agent_id = a.id and r.status = 'running'
+        left join lateral (
+          select lr.status from runs lr
+          where lr.organization_id = a.organization_id and lr.agent_id = a.id
+          order by lr.seq desc limit 1
+        ) last_run on true
+        left join lateral (
+          select
+            coalesce(
+              (select t.title from tasks t
+                where t.organization_id = a.organization_id
+                  and t.assignee_agent_id = a.id
+                  and t.status = 'in_progress'
+                order by t.started_at desc, t.seq desc limit 1),
+              wake_task.title
+            ) as task_title,
+            w.kind as wake_kind
+          from (select 1) as one
+          left join lateral (
+            select w.kind, coalesce(w.task_id, c.task_id) as task_id
+            from wakes w
+            left join task_comments c on c.id = w.comment_id
+            where w.run_id = r.id
+            order by w.seq desc limit 1
+          ) w on true
+          left join tasks wake_task on wake_task.id = w.task_id
+          where r.id is not null
+        ) doing on true
+        order by a.organization_id, a.role <> 'lead', a.created_at, a.id`);
+
+      // 끝난 조직의 결정은 화면에서 할 수 없으므로 뺀다(Inbox와 같은 기준).
+      const { rows: decisionRows } = await tx.execute<{
+        organization_id: string;
+        kind: PendingDecisionKind;
+        created_at: Date | string;
+      }>(sql`
+        select d.organization_id, d.kind, d.created_at
+        from (
+          select organization_id, kind, created_at, seq from approvals where status = 'pending'
+          union all
+          select organization_id, 'result_submission', created_at, seq from result_submissions where status = 'pending'
+        ) d
+        join organizations o on o.id = d.organization_id
+        where o.stage not in (${sql.join(
+          closedStages.map((s) => sql`${s}`),
+          sql`, `
+        )})
+        order by d.created_at, d.seq`);
+
+      const agentsOf = byOrganization(agentRows);
+      const decisionsOf = byOrganization(decisionRows);
+      return {
+        asOf: now.toISOString(),
+        runs: {
+          running: orgRows.reduce((n, r) => n + r.running, 0),
+          cancelling: orgRows.reduce((n, r) => n + r.cancelling, 0),
+        },
+        organizations: orgRows.map(({ lastActivityAt, createdAt, ...r }) => ({
+          ...r,
+          createdAt: createdAt.toISOString(),
+          lastActivityAt: lastActivityAt?.toISOString() ?? null,
+          agents: (agentsOf.get(r.organizationId) ?? []).map((a) => ({
+            id: a.id,
+            role: a.role,
+            name: a.name,
+            appearance: resolveAppearance(a.id, a.appearance),
+            status: a.running ? ("running" as const) : ("idle" as const),
+            paused: a.paused,
+            lastRunFailed: a.last_run_failed,
+            currentTask: a.running ? a.task_title : null,
+            wakeKind: a.running ? a.wake_kind : null,
+          })),
+          pendingDecisions: (decisionsOf.get(r.organizationId) ?? []).map(
+            (d) => ({
+              kind: d.kind,
+              createdAt: new Date(d.created_at).toISOString(),
+            })
+          ),
+        })),
+      };
     },
-    organizations: rows,
-  };
+    { isolationLevel: "repeatable read", accessMode: "read only" }
+  );
+}
+
+/** 행을 조직별로 묶는다. 조직 안의 순서는 행의 순서 그대로다. */
+function byOrganization<T extends { organization_id: string }>(rows: T[]) {
+  const map = new Map<string, T[]>();
+  for (const row of rows) {
+    const list = map.get(row.organization_id);
+    if (list) list.push(row);
+    else map.set(row.organization_id, [row]);
+  }
+  return map;
 }

@@ -14,8 +14,49 @@ import type {
   RunStatus,
   TaskStatus,
 } from "@babojubot/contracts";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
+
+/**
+ * 아이콘만 있는 버튼 등의 tooltip. 접근성 이름은 버튼의 `aria-label`이 맡고 tooltip은 보이는 이름이다.
+ * 셸의 `Tooltip.Provider` 아래에서 쓴다.
+ */
+export function Tip({
+  children,
+  content,
+  side = "top",
+  tone = "dark",
+}: {
+  children: ReactNode;
+  content: ReactNode;
+  side?: "top" | "right" | "bottom" | "left";
+  /** `speech`는 캐릭터 머리 위 말풍선(흰 바탕, 한 줄). */
+  tone?: "dark" | "speech";
+}) {
+  return (
+    <Tooltip.Root disableHoverableContent={tone === "speech"}>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side={side}
+          sideOffset={side === "right" ? 10 : 6}
+          collisionPadding={8}
+          className={
+            tone === "speech"
+              ? "animate-pop-in z-[80] max-w-56 truncate rounded-2xl bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-pop ring-1 ring-slate-900/10"
+              : "animate-pop-in z-[80] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
+          }
+        >
+          {content}
+          <Tooltip.Arrow
+            className={tone === "speech" ? "fill-white" : "fill-slate-900"}
+          />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
 
 export const stageLabel: Record<LifecycleStage, string> = {
   goal_setting: "목표 설정",
@@ -78,7 +119,7 @@ export const runCancelReasonLabel: Record<RunCancelReason, string> = {
   organization_paused: "조직 일시정지",
   organization_stopped: "조직 중단",
   agent_paused: "에이전트 일시정지",
-  owner_interrupt: "중단하고 반영",
+  owner_interrupt: "실행 중단",
 };
 
 /**
@@ -273,18 +314,22 @@ const widthClass: Record<Width, string> = {
   full: "max-w-none",
 };
 
+/** `fill`이면 본문 높이를 창에 맞추고 스크롤은 화면 안쪽이 맡는다(대화처럼 입력창이 아래에 붙는 화면). */
 export function Page({
   width,
   children,
   className = "",
+  fill = false,
 }: {
   width: Width;
   children: ReactNode;
   className?: string;
+  fill?: boolean;
 }) {
   return (
     <div
-      className={`mx-auto w-full px-4 py-5 sm:px-6 ${widthClass[width]} ${className}`}
+      data-fill-height={fill || undefined}
+      className={`mx-auto w-full px-4 sm:px-6 ${fill ? "flex min-h-0 flex-1 flex-col pt-5 pb-3" : "py-5"} ${widthClass[width]} ${className}`}
     >
       {children}
     </div>
@@ -327,7 +372,7 @@ export function LoadError({
       role="alert"
       className="animate-fade-up m-4 rounded-2xl bg-rose-50 p-4 text-sm text-rose-800 ring-1 ring-rose-200"
     >
-      {what}을 불러오지 못했습니다. 없다는 뜻이 아닙니다.{" "}
+      {what}을 불러오지 못했습니다.{" "}
       <button
         className="font-semibold underline underline-offset-2"
         onClick={onRetry}
@@ -342,9 +387,6 @@ export function NotFound({ what }: { what: string }) {
   return (
     <div className="card animate-fade-up m-4 max-w-lg p-6 text-sm">
       <div className="font-semibold">찾을 수 없는 {what}</div>
-      <p className="mt-1 text-slate-500">
-        다른 조직으로 자동 이동하지 않습니다. 직접 고르세요.
-      </p>
       <Link to="/" className="btn-soft mt-4">
         홈으로
       </Link>

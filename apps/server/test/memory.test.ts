@@ -6,7 +6,7 @@ import {
 } from "@babojubot/contracts";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { calls, ok, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import { calls, goal, ok, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -33,8 +33,10 @@ const lastCalls = (
 const recalled = (output: unknown) =>
   memoryEntryListSchema.parse(output).map((m: MemoryEntry) => m.content);
 
+/** 사용자가 목표를 적어 만든 조직. 생성으로 깨어난 Lead의 실행 시도가 끝날 때까지 기다린다. */
 async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+  const res = await t!.request("POST", "/api/organizations", { name, ...goal });
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { id: org.id, lead: org.agents.find((a) => a.role === "lead")! };
 }

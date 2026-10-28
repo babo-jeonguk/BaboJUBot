@@ -23,19 +23,27 @@ const cancelledRuns = (count: number) =>
 export function describeEvent(event: Event, agentName: string): Described {
   switch (event.type) {
     case "organization.created":
-      return {
-        icon: "🧭",
-        title: `조직 “${event.payload.name}”을 만들었습니다`,
-      };
+      return event.payload.goal === undefined
+        ? { icon: "🧭", title: `조직 “${event.payload.name}”을 만들었습니다` }
+        : {
+            icon: "🧭",
+            title: `사용자가 조직 “${event.payload.name}”을 만들고 연구 목표를 정했습니다 → ${stageLabel[event.payload.stage]}`,
+            detail: `목표: ${event.payload.goal}\n완료 기준: ${event.payload.completionCriteria ?? "비워 둠(Lead가 제안)"}`,
+          };
     case "message.created":
       return event.payload.author === "owner"
         ? { icon: "💬", title: `사용자가 ${agentName}에게 메시지를 보냈습니다` }
         : { icon: "↩", title: `${agentName}가 Lead 대화에 답장했습니다` };
+    case "message.edited":
+      return { icon: "✎", title: "사용자가 줄 세운 메시지를 고쳤습니다" };
+    case "message.withdrawn":
+      return { icon: "↶", title: "사용자가 줄 세운 메시지를 취소했습니다" };
+    case "message.sent_now":
+      return { icon: "⚡", title: "사용자가 줄 세운 메시지를 지금 보냈습니다" };
     case "run.started":
       return {
         icon: "▶",
         title: `${agentName} 실행 시도 시작`,
-        detail: `깨우기 ${event.payload.wakeIds.length}개를 묶었습니다`,
       };
     case "run.activity": {
       const { activity } = event.payload;
@@ -74,38 +82,44 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "⏸",
         title: "사용자가 조직을 일시정지했습니다",
-        detail: `${stageLabel[event.payload.from]}에서 멈춤${cancelledRuns(event.payload.cancelledRunIds.length)}. 재개하면 이 단계로 돌아갑니다`,
+        detail: `${stageLabel[event.payload.from]}에서 멈춤${cancelledRuns(event.payload.cancelledRunIds.length)}`,
       };
     case "organization.resumed":
       return {
         icon: "▶",
         title: "조직을 재개했습니다",
-        detail: `${stageLabel[event.payload.stage]}로 돌아감. 그동안 쌓인 깨우기를 전달합니다`,
+        detail: `${stageLabel[event.payload.stage]}로 돌아감`,
       };
     case "organization.stopped":
       return {
         icon: "⏹",
         title: "사용자가 조직을 중단했습니다",
-        detail: `${stageLabel[event.payload.from]}에서 중단${cancelledRuns(event.payload.cancelledRunIds.length)}. 되돌릴 수 없습니다`,
+        detail: `${stageLabel[event.payload.from]}에서 중단${cancelledRuns(event.payload.cancelledRunIds.length)}`,
       };
     case "agent.paused":
       return {
         icon: "⏸",
         title: `사용자가 ${agentName}를 일시정지했습니다`,
-        detail: event.payload.runId
-          ? `${runLabel(event.payload.runId)} 취소 요청`
-          : undefined,
+        detail: event.payload.runId ? "실행 시도 취소 요청" : undefined,
       };
     case "agent.resumed":
       return { icon: "▶", title: `사용자가 ${agentName}를 재개했습니다` };
     case "agent.interrupted":
-      return {
-        icon: "⤵",
-        title: `사용자가 ${agentName}에게 중단하고 반영을 요청했습니다`,
-        detail: event.payload.runId
-          ? `${runLabel(event.payload.runId)} 취소 요청. 함께 보낸 메시지는 다음 실행 시도가 받습니다`
-          : "실행 중이 아니어서 취소할 실행 시도가 없었습니다. 메시지는 다음 실행 시도가 받습니다",
-      };
+      if (!event.payload.messageId)
+        return {
+          icon: "■",
+          title: `사용자가 ${agentName}의 현재 실행 시도를 중단했습니다`,
+        };
+      return event.payload.runId
+        ? {
+            icon: "⚡",
+            title: `사용자가 ${agentName}의 현재 실행 시도를 중단하고 메시지를 보냈습니다`,
+          }
+        : {
+            icon: "⚡",
+            title: `사용자가 ${agentName}에게 중단하고 보내기를 요청했습니다`,
+            detail: "실행 중이 아님",
+          };
     case "agent.heartbeat_changed":
       return {
         icon: "⏱",
@@ -116,11 +130,21 @@ export function describeEvent(event: Event, agentName: string): Described {
           ? `다음 heartbeat ${formatTime(event.payload.nextAt)}`
           : undefined,
       };
+    case "agent.profile_changed": {
+      const { name, appearance } = event.payload;
+      return {
+        icon: "✎",
+        title: name
+          ? `사용자가 에이전트 이름을 바꿨습니다${appearance ? ". 얼굴도 바꿨습니다" : ""}`
+          : `사용자가 ${agentName}의 얼굴을 바꿨습니다`,
+        detail: name ? `${name.from} → ${name.to}` : undefined,
+      };
+    }
     case "agent.heartbeat":
       return {
         icon: "⏱",
         title: `${agentName} heartbeat`,
-        detail: `${event.payload.wakeId ? "깨우기를 남겼습니다" : "기다리는 heartbeat 깨우기가 있어 합쳤습니다"}. 다음 heartbeat ${formatTime(event.payload.nextAt)}`,
+        detail: `다음 heartbeat ${formatTime(event.payload.nextAt)}`,
       };
     case "memory.written":
       return {
@@ -151,6 +175,8 @@ export function describeEvent(event: Event, agentName: string): Described {
         detail:
           [
             event.payload.note && `사유: ${event.payload.note}`,
+            event.payload.completionCriteria &&
+              `Lead가 제안한 완료 기준을 정함: ${event.payload.completionCriteria}`,
             event.payload.createdAgentIds.length &&
               `작업자 ${event.payload.createdAgentIds.length}명 생성`,
           ]
@@ -187,7 +213,6 @@ export function describeEvent(event: Event, agentName: string): Described {
       return {
         icon: "☑",
         title: `${agentName}가 작업을 완료했습니다`,
-        detail: "자기 보고와 함께 완료했습니다. 검증된 결과가 아닙니다.",
       };
     case "task.commented":
       return event.payload.author === "owner"
@@ -293,9 +318,10 @@ export function EventRow({
         {showRunLink && runId && (
           <Link
             to={`/orgs/${orgId}/runs/${runId}`}
+            title={runLabel(runId)}
             className="mt-0.5 inline-block text-xs text-brand-600 hover:underline"
           >
-            {runLabel(runId)}
+            실행 시도 보기
           </Link>
         )}
       </div>

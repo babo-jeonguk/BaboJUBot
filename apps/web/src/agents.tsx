@@ -11,9 +11,10 @@ import {
   type WakeReason,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useCallback, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useState, type ReactNode } from "react";
 import { Link, useBeforeUnload, useBlocker, useParams } from "react-router";
 import { EventRow } from "./activity.tsx";
+import { AgentNameEditor, FaceCustomizer } from "./agent-profile.tsx";
 import {
   ApiError,
   useAgent,
@@ -26,11 +27,10 @@ import {
   useRun,
   useUpdateHeartbeat,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
-  abbr,
   AgentStatusBadge,
   approvalKindLabel,
-  avatarStyle,
   decisionLabel,
   formatTime,
   Loading,
@@ -43,9 +43,14 @@ import {
   RunStatusBadge,
 } from "./ui.tsx";
 
-const roleLabel = { lead: "Research Lead", worker: "작업자" } as const;
+export const roleLabel = { lead: "Research Lead", worker: "작업자" } as const;
 
-/** 조직 › 에이전트: Lead·작업자 팀과 상태. 작업자는 초기 연구 승인 때 생기고, 연구 진행 중 Lead가 더한다. */
+const OrgChart = lazy(() => import("./org-chart.tsx"));
+
+/**
+ * 조직 › 에이전트: Lead 아래 작업자 팀을 잇는 팀 그래프(org-chart.tsx). 카드마다 얼굴·이름·역할·상태가 보이고 누르면 상세로 간다.
+ * 작업자는 초기 연구 승인 때 생기고, 연구 진행 중 Lead가 더한다.
+ */
 export function AgentsScreen({
   orgId,
   agents,
@@ -53,66 +58,21 @@ export function AgentsScreen({
   orgId: string;
   agents: Agent[];
 }) {
-  const leads = agents.filter((a) => a.role === "lead");
-  const workers = agents.filter((a) => a.role === "worker");
+  const workers = agents.filter((a) => a.role === "worker").length;
   return (
-    <>
-      <h1 className="mb-4 text-xl font-semibold">에이전트</h1>
-      <section aria-label="Research Lead" className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold text-slate-600">
-          Research Lead
-        </h2>
-        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {leads.map((a) => (
-            <AgentCard key={a.id} orgId={orgId} agent={a} />
-          ))}
-        </ul>
-      </section>
-      <section aria-label="작업자 팀">
-        <h2 className="mb-2 text-sm font-semibold text-slate-600">
-          작업자 팀 {workers.length}명
-        </h2>
-        {!workers.length ? (
-          <div className="card p-6 text-sm text-slate-500">
-            아직 작업자가 없습니다. 초기 연구 승인 요청을 승인하면 제안된 팀이
-            생깁니다.
-          </div>
-        ) : (
-          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {workers.map((a) => (
-              <AgentCard key={a.id} orgId={orgId} agent={a} />
-            ))}
-          </ul>
+    <section aria-label="조직도">
+      <h1 className="mb-4 flex items-baseline gap-2 text-xl font-semibold">
+        에이전트
+        {workers > 0 && (
+          <span className="text-sm font-normal text-slate-500">
+            작업자 {workers}명
+          </span>
         )}
-      </section>
-    </>
-  );
-}
-
-function AgentCard({ orgId, agent }: { orgId: string; agent: Agent }) {
-  const detail = useAgent(orgId, agent.id);
-  return (
-    <li>
-      <Link
-        to={`/orgs/${orgId}/agents/${agent.id}`}
-        className="card card-hover flex items-center gap-3 p-4"
-      >
-        <span
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-semibold text-white"
-          style={avatarStyle(agent.id)}
-        >
-          {abbr(agent.name)}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{agent.name}</div>
-          <div className="text-xs text-slate-500">{roleLabel[agent.role]}</div>
-        </div>
-        <span className="flex flex-col items-end gap-1">
-          {detail.data && <AgentStatusBadge status={detail.data.status} />}
-          {detail.data?.paused && <PausedBadge />}
-        </span>
-      </Link>
-    </li>
+      </h1>
+      <Suspense fallback={<Loading />}>
+        <OrgChart orgId={orgId} agents={agents} />
+      </Suspense>
+    </section>
   );
 }
 
@@ -142,15 +102,10 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
   const live = a.recentRuns.find((r) => r.status === "running");
   return (
     <Page width="standard">
-      <div className="mb-4 flex items-center gap-3">
-        <span
-          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-base font-semibold text-white"
-          style={avatarStyle(a.id)}
-        >
-          {abbr(a.name)}
-        </span>
+      <div className="mb-4 flex items-center gap-4">
+        <FaceCustomizer orgId={orgId} agent={a} />
         <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-semibold">{a.name}</h1>
+          <AgentNameEditor key={a.name} orgId={orgId} agent={a} />
           <div className="text-sm text-slate-500">{roleLabel[a.role]}</div>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -161,9 +116,10 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
           {live && (
             <Link
               to={`/orgs/${orgId}/runs/${live.id}`}
+              title={runLabel(live.id)}
               className="flex items-center gap-1.5 text-xs text-brand-600 hover:underline"
             >
-              {runLabel(live.id)} 보기
+              실행 중 →
               {live.cancelReason && (
                 <RunStatusBadge
                   status={live.status}
@@ -199,10 +155,7 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
             </h2>
             {!a.recentRuns.length ? (
               <div className="card p-6 text-sm text-slate-500">
-                아직 실행 시도가 없습니다.{" "}
-                {a.role === "lead"
-                  ? "Lead 대화에 메시지를 보내면 깨어납니다."
-                  : "작업을 맡거나 작업 댓글·메시지를 받으면 깨어납니다."}
+                아직 실행 시도가 없습니다.
               </div>
             ) : (
               <ul className="card divide-y divide-slate-100">
@@ -257,19 +210,12 @@ function AgentControl({
           </span>
         )}
       </div>
-      <p className="mt-2 text-xs text-slate-500">
-        {closed
-          ? "끝난 조직의 에이전트는 일시정지·재개할 수 없습니다."
-          : agent.paused
-            ? "이 에이전트만 멈춰 있습니다. 그동안 받은 깨우기는 재개하면 실행 시도 하나로 전달됩니다. 조직을 재개해도 풀리지 않습니다."
-            : "이 에이전트 하나만 멈춥니다. 진행 중 실행 시도는 취소하고, 다른 에이전트는 계속 일합니다."}
-      </p>
       {!control.isPending && control.isError && (
         <p role="alert" className="mt-2 text-xs text-rose-600">
           {control.error instanceof ApiError &&
           control.error.code === "organization_closed"
-            ? "조직이 이미 끝나 명령을 받지 않았습니다."
-            : "명령을 처리하지 못했습니다. 상태는 그대로이니 다시 시도하세요."}
+            ? "이미 끝난 조직입니다."
+            : "처리하지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -315,20 +261,14 @@ function HeartbeatSettings({
       { onSuccess: () => setDraft(null) }
     );
   const status = () => {
-    if (closed) return "끝난 조직이라 heartbeat로 깨우지 않습니다.";
-    if (!saved.enabled || !saved.nextAt) return "꺼져 있습니다.";
-    const next = `다음 heartbeat ${formatTime(saved.nextAt)} · ${saved.intervalMinutes}분마다`;
-    return held
-      ? `${next}. 일시정지 중이라 깨우지 않으며, 재개 뒤 예정이 지나 있으면 한 번 깨웁니다.`
-      : next;
+    if (closed) return "끝난 조직";
+    if (!saved.enabled || !saved.nextAt) return "꺼짐";
+    const next = `다음 ${formatTime(saved.nextAt)} · ${saved.intervalMinutes}분마다`;
+    return held ? `${next} · 일시정지 중` : next;
   };
   return (
     <section aria-label="Heartbeat" className="card mb-6 p-4 text-sm">
-      <h2 className="mb-1 text-sm font-semibold">Heartbeat</h2>
-      <p className="mb-3 text-xs text-slate-500">
-        사건이 없어도 간격마다 이 에이전트를 깨웁니다. 깨울 때 기다리는 다른
-        깨우기가 있으면 실행 시도 하나로 합칩니다.
-      </p>
+      <h2 className="mb-3 text-sm font-semibold">Heartbeat</h2>
       <form
         className="flex flex-wrap items-end gap-x-4 gap-y-3"
         onSubmit={(e) => {
@@ -339,7 +279,7 @@ function HeartbeatSettings({
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
-            className="h-4 w-4 accent-brand-600"
+            className="switch"
             checked={enabled}
             disabled={closed || update.isPending}
             onChange={(e) => edit({ enabled: e.currentTarget.checked })}
@@ -358,7 +298,8 @@ function HeartbeatSettings({
             value={interval}
             disabled={closed || update.isPending}
             aria-invalid={!valid}
-            aria-describedby="heartbeat-interval-help"
+            aria-describedby={valid ? undefined : "heartbeat-interval-help"}
+            placeholder={String(saved.roleDefaultMinutes)}
             onChange={(e) => edit({ interval: e.currentTarget.value })}
           />
         </label>
@@ -382,11 +323,11 @@ function HeartbeatSettings({
           </button>
         )}
       </form>
-      <p id="heartbeat-interval-help" className="mt-2 text-xs text-slate-500">
-        {valid
-          ? `Role 기본값 ${saved.roleDefaultMinutes}분. 켜거나 간격을 바꾸면 그때부터 간격만큼 뒤에 깨웁니다.`
-          : `간격은 1분부터 ${heartbeatIntervalMaxMinutes}분(7일)까지 분 단위 정수로 적으세요.`}
-      </p>
+      {!valid && (
+        <p id="heartbeat-interval-help" className="mt-2 text-xs text-rose-600">
+          1~{heartbeatIntervalMaxMinutes}분
+        </p>
+      )}
       <p role="status" className="mt-2 text-xs text-slate-700">
         {status()}
       </p>
@@ -394,8 +335,8 @@ function HeartbeatSettings({
         <p role="alert" className="mt-2 text-xs text-rose-600">
           {update.error instanceof ApiError &&
           update.error.code === "organization_closed"
-            ? "조직이 이미 끝나 설정을 바꾸지 않았습니다."
-            : `저장하지 못했습니다. 저장된 설정(${saved.enabled ? `켜짐, ${saved.intervalMinutes}분` : "꺼짐"})은 그대로이니 다시 시도하세요.`}
+            ? "이미 끝난 조직입니다."
+            : "저장하지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -433,7 +374,7 @@ const saveErrorText = (code: string | undefined) => {
     case "not_found":
       return "이 사본을 찾지 못했습니다.";
     default:
-      return "저장하지 못했습니다. 편집 내용은 그대로이니 다시 시도하세요.";
+      return "저장하지 못했습니다. 다시 시도하세요.";
   }
 };
 
@@ -497,10 +438,7 @@ function InstructionCopies({
     const { copies, bundleVersion } = found.data;
     if (!copies.length)
       return (
-        <div className="card p-6 text-sm text-slate-500">
-          이 에이전트에게는 사본이 없습니다. 사본이 생기기 전에 만든 에이전트일
-          수 있습니다.
-        </div>
+        <div className="card p-6 text-sm text-slate-500">사본이 없습니다.</div>
       );
     const copy = copies.find((c) => c.path === selectedPath) ?? copies[0]!;
     const editing = draft?.copyId === copy.id ? draft : null;
@@ -591,10 +529,7 @@ function InstructionCopies({
                   role="alert"
                   className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-200"
                 >
-                  편집하는 동안 다른 곳에서 이 사본을 저장해 지금은 revision{" "}
-                  {copy.revision}입니다. 편집 내용은 그대로 두었습니다. 아래
-                  목록에서 최신 내용을 확인할 수 있고, 이 편집으로 덮어쓰려면
-                  다시 저장하세요.
+                  다른 곳에서 먼저 저장했습니다 (revision {copy.revision}).
                   <div className="mt-2 flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -659,9 +594,10 @@ function InstructionCopies({
                 )}
               </div>
               {copy.content ? (
-                <pre className="max-h-[28rem] overflow-auto px-4 py-3 font-sans text-sm break-words whitespace-pre-wrap text-slate-800">
-                  {copy.content}
-                </pre>
+                <Markdown
+                  text={copy.content}
+                  className="max-h-[28rem] overflow-auto px-4 py-3 text-sm text-slate-800"
+                />
               ) : (
                 <p className="px-4 py-3 text-sm text-slate-400">빈 파일</p>
               )}
@@ -685,12 +621,6 @@ function InstructionCopies({
   const asking = switchTo !== null || blocker.state === "blocked";
   return (
     <section aria-label="Role·Soul·Skill 사본" className="mb-6">
-      <p className="mb-2 text-xs text-slate-500">
-        이 에이전트만의 사본입니다. 고쳐도 같은 Role의 다른 에이전트와 하네스
-        라이브러리는 바뀌지 않습니다. 저장할 때마다 revision이 남고 Lead가
-        깨어나며, 이 에이전트의 다음 실행 시도는 바뀐 지침으로 새 세션에서
-        시작합니다. 진행 중인 실행 시도는 시작할 때 받은 지침 그대로입니다.
-      </p>
       {body()}
       <Dialog.Root
         open={asking}
@@ -702,14 +632,13 @@ function InstructionCopies({
       >
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px]" />
-          <Dialog.Content className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop">
+          <Dialog.Content
+            aria-describedby={undefined}
+            className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop"
+          >
             <Dialog.Title className="text-base font-semibold">
-              저장하지 않은 편집이 있습니다
+              편집한 내용을 버릴까요?
             </Dialog.Title>
-            <Dialog.Description className="mt-1 text-sm text-slate-500">
-              옮기면 지금 편집한 내용을 버립니다. 사본과 revision은 바뀌지
-              않습니다.
-            </Dialog.Description>
             <div className="mt-5 flex justify-end gap-2">
               <Dialog.Close className="btn-soft">계속 편집</Dialog.Close>
               <button
@@ -724,7 +653,7 @@ function InstructionCopies({
                   }
                 }}
               >
-                편집 버리고 이동
+                버리기
               </button>
             </div>
           </Dialog.Content>
@@ -808,11 +737,6 @@ function RevisionList({
       className="border-t border-slate-100 px-4 py-3"
     >
       <h3 className="mb-2 text-xs font-semibold text-slate-600">revision</h3>
-      {editing && (
-        <p className="mb-2 text-xs text-slate-400">
-          revision을 열어 봐도 편집 중인 내용은 그대로 남습니다.
-        </p>
-      )}
       {items()}
     </section>
   );
@@ -865,13 +789,12 @@ function RevisionView({
           />
         )
       ) : revision.data.content ? (
-        <pre
+        <Markdown
+          text={revision.data.content}
           tabIndex={0}
           aria-label={`revision ${number} 본문`}
-          className="max-h-[28rem] overflow-auto rounded-xl px-1 py-1 font-sans text-sm break-words whitespace-pre-wrap text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
-        >
-          {revision.data.content}
-        </pre>
+          className="max-h-[28rem] overflow-auto rounded-xl px-1 py-1 text-sm text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+        />
       ) : (
         <p className="text-sm text-slate-400">빈 파일</p>
       )}
@@ -884,15 +807,15 @@ function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
     <li>
       <Link
         to={`/orgs/${orgId}/runs/${run.id}`}
+        title={runLabel(run.id)}
         className="flex items-center gap-3 px-4 py-3 text-sm transition hover:bg-slate-50"
       >
         <RunStatusBadge status={run.status} cancelReason={run.cancelReason} />
         <div className="min-w-0 flex-1">
-          <div className="font-medium text-slate-800">{runLabel(run.id)}</div>
-          <div className="truncate text-xs text-slate-500">
-            깨우기 {run.wakeCount}개
-            {(run.error ?? run.summary) && ` · ${run.error ?? run.summary}`}
+          <div className="truncate text-slate-800">
+            {run.error ?? run.summary ?? "실행 시도"}
           </div>
+          <div className="text-xs text-slate-500">깨우기 {run.wakeCount}개</div>
         </div>
         <time
           dateTime={run.startedAt}
@@ -923,7 +846,9 @@ export function RunDetailPage() {
   return (
     <Page width="standard">
       <div className="mb-6 flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold">{runLabel(r.id)}</h1>
+        <h1 className="text-xl font-semibold" title={runLabel(r.id)}>
+          실행 시도
+        </h1>
         <RunStatusBadge status={r.status} cancelReason={r.cancelReason} />
         <div className="w-full text-sm text-slate-500">
           <Link
@@ -953,10 +878,6 @@ export function RunDetailPage() {
         <h2 className="mb-2 text-sm font-semibold text-slate-600">
           활동 transcript
         </h2>
-        <p className="mb-2 text-xs text-slate-400">
-          실행기가 공개로 낸 활동과 조직 도구 호출 요약만 보입니다. 모델 내부
-          추론은 담지 않습니다.
-        </p>
         <ol className="card divide-y divide-slate-100">
           {r.transcript.map((e) => (
             <EventRow
@@ -978,8 +899,12 @@ export function RunDetailPage() {
             {r.status === "running" ? "아직 실행 중" : runStatusLabel[r.status]}
           </dd>
           <dt className="text-slate-500">요약</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {r.summary ?? <span className="text-slate-400">없음</span>}
+          <dd className="min-w-0">
+            {r.summary ? (
+              <Markdown text={r.summary} />
+            ) : (
+              <span className="text-slate-400">없음</span>
+            )}
           </dd>
           {r.error && (
             <>
@@ -1013,9 +938,7 @@ function WakeReasonRow({
     <li className="px-4 py-2.5 text-sm">
       <div className="text-xs text-slate-400">{label}</div>
       {body}
-      {detail && (
-        <div className="mt-0.5 break-words whitespace-pre-wrap">{detail}</div>
-      )}
+      {detail && <Markdown text={detail} className="mt-0.5" />}
     </li>
   );
   const link = (to: string, text: string) => (
@@ -1026,10 +949,7 @@ function WakeReasonRow({
   const task = (taskId: string) => `/orgs/${orgId}/tasks/${taskId}`;
   switch (reason.kind) {
     case "owner_message":
-      return row(
-        "사용자 메시지",
-        <div className="break-words whitespace-pre-wrap">{reason.body}</div>
-      );
+      return row("사용자 메시지", <Markdown text={reason.body} />);
     case "approval_decision":
       return row(
         "승인 결정",
@@ -1083,6 +1003,13 @@ function WakeReasonRow({
         "결과 수정 요청",
         link(`/orgs/${orgId}/results/${reason.submissionId}`, "제출 보기"),
         reason.note
+      );
+    case "organization_created":
+      return row(
+        "조직 생성",
+        <span className="text-slate-700">
+          사용자가 연구 목표를 적어 조직을 만들었습니다
+        </span>
       );
     case "heartbeat":
       return row(

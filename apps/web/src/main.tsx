@@ -14,24 +14,37 @@ import { GlobalSettingsPage } from "./global-settings.tsx";
 import { InboxDetailPage } from "./inbox-detail.tsx";
 import { InboxPanelProvider, InboxRedirect } from "./inbox.tsx";
 import { useLiveEvents } from "./live-events.ts";
-import { Home, OrganizationScreen } from "./pages.tsx";
+import { Home } from "./home.tsx";
+import { OrganizationScreen } from "./pages.tsx";
 import { ResultSubmissionPage } from "./results.tsx";
 import { Shell } from "./shell.tsx";
+import { ToastProvider } from "./toast.tsx";
 import { ArtifactPage, TaskDetailPage } from "./tasks.tsx";
 import { NotFound } from "./ui.tsx";
 import "./index.css";
 
 const queryClient = new QueryClient();
 
+// `field-sizing: content`(index.css)가 없는 브라우저에서 textarea 높이를 입력에 맞춘다.
+if (!CSS.supports("field-sizing", "content"))
+  document.addEventListener("input", (e) => {
+    if (!(e.target instanceof HTMLTextAreaElement)) return;
+    const el = e.target;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  });
+
 /**
- * 셸 바깥의 공통: 실시간 Event 구독, 조직 생성 dialog, Inbox 패널 상태. data router라서 화면은 이동 차단(`useBlocker`)을 쓸 수 있다.
+ * 셸 바깥의 공통: 실시간 Event 구독, 조직 생성 dialog, Inbox 패널 상태, 되돌리기 토스트. data router라서 화면은 이동 차단(`useBlocker`)을 쓸 수 있다.
  */
 function Root() {
   useLiveEvents();
   return (
     <CreateOrganizationProvider>
       <InboxPanelProvider>
-        <Shell />
+        <ToastProvider>
+          <Shell />
+        </ToastProvider>
       </InboxPanelProvider>
     </CreateOrganizationProvider>
   );
@@ -68,6 +81,10 @@ const router = createBrowserRouter(
       <Route
         path="orgs/:orgId/artifacts/:artifactId"
         element={<ArtifactPage />}
+      />
+      <Route
+        path="orgs/:orgId/chat/:conversationId"
+        element={<OrganizationScreen section="chat" />}
       />
       <Route path="orgs/:orgId/:section?" element={<OrganizationScreen />} />
       <Route path="*" element={<NotFound what="화면" />} />

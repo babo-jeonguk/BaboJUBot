@@ -19,6 +19,7 @@ import {
   runCancelReasons,
   runStatuses,
   taskStatuses,
+  type AgentAppearance,
   type ApprovalProposal,
   type FlowKind,
   type NewEvent,
@@ -59,8 +60,9 @@ export const organizations = pgTable(
     id: uuid("id").primaryKey(),
     name: text("name").notNull(),
     stage: text("stage", { enum: lifecycleStages }).notNull(),
-    /** Lead가 목표 설정에서 기록한다. 기록 전에는 없다. */
+    /** 사용자가 생성 때 적는다. 목표 없이 만든 예전 조직은 Lead가 목표 설정에서 기록하기 전까지 없다. */
     goal: text("goal"),
+    /** 사용자가 생성 때 적거나, 비워 두었으면 승인된 Lead 제안이다. 그 전에는 없다. */
     completionCriteria: text("completion_criteria"),
     /** 승인 정책 `작업자 추가`. 켜져 있으면 Lead의 작업자 추가가 승인 요청이 된다. 사용자 제어 명령만 바꾼다. */
     addWorkerApproval: boolean("add_worker_approval").notNull().default(false),
@@ -77,9 +79,10 @@ export const organizations = pgTable(
       sql`(${t.stage} = 'paused') = (${t.pausedFrom} is not null)
         and ${t.pausedFrom} not in ('paused', 'completed', 'stopped')`
     ),
+    // 완료 기준은 목표가 있을 때만 있다. 사용자가 비워 둔 완료 기준은 Lead 제안을 승인할 때까지 없다.
     check(
       "organizations_goal_check",
-      sql`(${t.goal} is null) = (${t.completionCriteria} is null)`
+      sql`${t.completionCriteria} is null or ${t.goal} is not null`
     ),
     check(
       "organizations_stage_check",
@@ -114,6 +117,8 @@ export const agents = pgTable(
       withTimezone: true,
       mode: "date",
     }),
+    /** 사용자가 고른 얼굴. 고르지 않았으면 없고, 화면에는 ID에서 정한 기본 얼굴이 보인다. 사용자 변경만 바꾼다. */
+    appearance: jsonb("appearance").$type<AgentAppearance>(),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -138,6 +143,12 @@ export const agents = pgTable(
     uniqueIndex("agents_one_lead_per_organization")
       .on(t.organizationId)
       .where(sql`${t.role} = 'lead'`),
+    // 조직 안에서 대소문자만 다른 이름도 겹친다(core `agentNameKey`). 이름을 정하는 규칙은 core가 맡고, 이 index는
+    // 그 규칙을 거치지 않거나 경합한 쓰기를 막는 마지막 방어선이다. locale C의 lower()는 ASCII만 바꾸므로 core 규칙보다 넓지 않다.
+    uniqueIndex("agents_organization_name_unique").on(
+      t.organizationId,
+      sql`lower(${t.name})`
+    ),
   ]
 );
 
@@ -234,7 +245,40 @@ export const runs = pgTable(
   ]
 );
 
-/** Lead 대화의 메시지. 사용자 메시지는 전달 방식을, 에이전트 메시지는 보낸 실행 시도를 갖는다. */
+/**
+ * 사용자와 조직 Research Lead의 대화. 조직마다 기본 대화(`is_default`) 하나가 조직과 함께 생기고,
+ * 새 대화는 첫 사용자 메시지와 함께 생긴다. `read_message_seq`는 사용자가 마지막으로 본 메시지의 대화 속 위치
+ * (`messages`의 받은 순서 값: Lead 메시지는 `seq`, 받은 사용자 메시지는 `delivered_seq`)이며 사용자의 보기만 바꾸고 앞으로만 간다.
+ */
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: uuid("id").primaryKey(),
+    seq: sequence(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    title: text("title").notNull(),
+    isDefault: boolean("is_default").notNull().default(false),
+    readMessageSeq: bigint("read_message_seq", { mode: "number" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("conversations_organization_id_id_unique").on(
+      t.organizationId,
+      t.id
+    ),
+    // 조직마다 기본 대화는 하나뿐이다.
+    uniqueIndex("conversations_one_default_per_organization")
+      .on(t.organizationId)
+      .where(sql`${t.isDefault}`),
+  ]
+);
+
+/**
+ * Lead 대화의 메시지. 대화 하나에 속하며, 사용자 메시지는 전달 방식(과 거두었으면 그 시각)을, 에이전트 메시지는 보낸 실행 시도를 갖는다.
+ * 대화는 Lead가 받은 순서로 보인다. Lead 메시지는 저장 순서(`seq`)에, 사용자 메시지는 실행 시도가 받은 순간(`delivered_seq`)에 놓인다.
+ */
 export const messages = pgTable(
   "messages",
   {
@@ -244,13 +288,42 @@ export const messages = pgTable(
       .notNull()
       .references(() => organizations.id),
     agentId: uuid("agent_id").notNull(),
+    conversationId: uuid("conversation_id").notNull(),
     author: text("author", { enum: messageAuthors }).notNull(),
     body: text("body").notNull(),
     delivery: text("delivery", { enum: messageDeliveries }),
     sentByRunId: uuid("sent_by_run_id"),
+    /**
+     * 실행 시도가 사용자 메시지를 받은 순간의 위치. admission이 깨우기를 가져가는 transaction에서 `seq`와 같은 sequence의
+     * 다음 값을 실행 시도마다 하나 뽑아 그 실행 시도가 받은 메시지에 함께 적는다. 받기 전(줄 세운 메시지)과
+     * 서버 재시작으로 다시 대기한 동안은 비어 있다.
+     */
+    deliveredSeq: bigint("delivered_seq", { mode: "number" }),
+    /** 실행 시도가 사용자 메시지를 받은 시각(그 실행 시도의 시작 시각). `delivered_seq`와 함께 적고 함께 비운다. */
+    deliveredAt: timestamp("delivered_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    /** 사용자가 줄 세운 메시지를 거둔 시각. 거둔 메시지는 남지만 대화·Lead 맥락에서 빠지고 그 깨우기는 지운다. */
+    withdrawnAt: timestamp("withdrawn_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
     createdAt: createdAt(),
   },
   (t) => [
+    check(
+      "messages_delivered_check",
+      sql`${t.deliveredSeq} is null or ${t.author} = 'owner'`
+    ),
+    check(
+      "messages_delivered_at_check",
+      sql`(${t.deliveredSeq} is null) = (${t.deliveredAt} is null)`
+    ),
+    check(
+      "messages_withdrawn_check",
+      sql`${t.withdrawnAt} is null or ${t.author} = 'owner'`
+    ),
     check(
       "messages_author_check",
       sql`${t.author} in (${inList(messageAuthors)})`
@@ -269,11 +342,16 @@ export const messages = pgTable(
       foreignColumns: [agents.organizationId, agents.id],
     }),
     foreignKey({
+      columns: [t.organizationId, t.conversationId],
+      foreignColumns: [conversations.organizationId, conversations.id],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.sentByRunId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
     unique("messages_organization_id_id_unique").on(t.organizationId, t.id),
     index("messages_conversation_idx").on(t.organizationId, t.agentId, t.seq),
+    index("messages_conversation_id_idx").on(t.conversationId, t.seq),
   ]
 );
 
@@ -889,7 +967,11 @@ export const instructionRevisions = pgTable(
   ]
 );
 
-/** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채우고, heartbeat는 가리키는 기록이 없다. */
+/** 가리키는 기록이 없는 깨우기 종류: 조직 생성(목표는 조직 행에 있음)과 heartbeat. */
+const sourcelessWakeKinds = ["organization_created", "heartbeat"] as const;
+type SourcelessWakeKind = (typeof sourcelessWakeKinds)[number];
+
+/** 깨우기 종류마다 사유가 된 기록을 가리키는 열. 깨우기는 이 열 하나만 채우고, 조직 생성·heartbeat는 가리키는 기록이 없다. */
 const wakeSourceColumns = {
   owner_message: "message_id",
   approval_decision: "approval_id",
@@ -900,10 +982,10 @@ const wakeSourceColumns = {
   research_map_edit: "map_edit_id",
   instruction_edit: "instruction_revision_id",
   result_changes_requested: "result_submission_id",
-} as const satisfies Record<Exclude<WakeKind, "heartbeat">, string>;
+} as const satisfies Record<Exclude<WakeKind, SourcelessWakeKind>, string>;
 const wakeKinds = [
   ...Object.keys(wakeSourceColumns),
-  "heartbeat",
+  ...sourcelessWakeKinds,
 ] as WakeKind[];
 
 /**
@@ -937,7 +1019,7 @@ export const wakes = pgTable(
     check("wakes_kind_check", sql`${t.kind} in (${inList(wakeKinds)})`),
     check(
       "wakes_source_check",
-      sql`(${t.kind} = 'heartbeat'
+      sql`(${t.kind} in (${inList([...sourcelessWakeKinds])})
           and num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 0)
         or num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 1
         and (${sql.raw(
@@ -1004,6 +1086,10 @@ export const wakes = pgTable(
     uniqueIndex("wakes_one_pending_heartbeat_per_agent")
       .on(t.agentId)
       .where(sql`${t.kind} = 'heartbeat' and ${t.runId} is null`),
+    // 조직 생성은 Lead 깨우기 하나만 만든다.
+    uniqueIndex("wakes_one_organization_created_per_organization")
+      .on(t.organizationId)
+      .where(sql`${t.kind} = 'organization_created'`),
     // 메시지 하나는 깨우기 하나만 만든다.
     uniqueIndex("wakes_message_unique").on(t.messageId),
     // 승인 결정 하나는 깨우기 하나만 만든다.
@@ -1285,11 +1371,8 @@ export const inboxStates = pgTable(
       "inbox_states_kind_check",
       sql`${t.kind} in (${inList(inboxItemKinds)})`
     ),
-    // 보관은 실패한 실행 시도에만 있다(contracts `canArchiveInboxItem`).
-    check(
-      "inbox_states_archive_check",
-      sql`${t.archived} = false or ${t.kind} = 'run_failure'`
-    ),
+    // 보관할 수 있는가(결정을 기다리지 않는 원본인가)는 원본 상태에 달려 있어 열 제약으로 쓰지 못한다.
+    // db/inbox.ts `updateInboxItem`이 원본을 읽어 지킨다(contracts `canArchiveInboxItem`).
     check(
       "inbox_states_source_check",
       sql`num_nonnulls(${t.approvalId}, ${t.resultSubmissionId}, ${t.runId}) = 1

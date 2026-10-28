@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type {
-  CreateOrganizationInput,
-  OrganizationDetail,
-  UpdateApprovalPolicyInput,
+import {
+  defaultAgentAppearance,
+  type CreateOrganizationInput,
+  type OrganizationDetail,
+  type UpdateApprovalPolicyInput,
 } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
 import {
@@ -11,16 +12,28 @@ import {
   type Database,
   type PolicyChange,
 } from "@babojubot/db";
+import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
 import { leadRoleOf, loadHarnessLibrary } from "./harness.ts";
 
 /**
- * 조직 생성. 조직·Lead·Lead의 Role·Soul 사본·Event를 한 transaction으로 저장한 뒤에만 Event를 알린다.
+ * 조직 생성. 사용자가 적은 연구 목표·완료 기준과 함께 조직·Lead·Lead의 Role·Soul 사본·Lead 깨우기·Event를
+ * 한 transaction으로 저장한 뒤에만 Event를 알리고 Lead의 실행 시도를 촉진한다.
  * Lead 사본과 기본 heartbeat 간격은 지금의 하네스 라이브러리 Lead Role에서 받는다.
  * 알림이 실패해도 이미 저장된 생성은 성공으로 돌려준다. 화면은 다시 조회해 맞춘다.
  */
 export async function createOrganization(
-  { db, hub, harnessDir }: { db: Database; hub: EventHub; harnessDir: string },
+  {
+    db,
+    hub,
+    dispatcher,
+    harnessDir,
+  }: {
+    db: Database;
+    hub: EventHub;
+    dispatcher: Pick<RunDispatcher, "kick">;
+    harnessDir: string;
+  },
   input: CreateOrganizationInput
 ): Promise<OrganizationDetail> {
   const library = await loadHarnessLibrary(harnessDir);
@@ -30,9 +43,13 @@ export async function createOrganization(
   });
   const event = await insertOrganizationCreation(db, creation);
   hub.publish(event);
+  dispatcher.kick(creation.wake.agentId);
   return {
     ...creation.organization,
-    agents: creation.agents.map(({ heartbeatMinutes: _h, ...agent }) => agent),
+    agents: creation.agents.map(({ heartbeatMinutes: _h, ...agent }) => ({
+      ...agent,
+      appearance: defaultAgentAppearance(agent.id),
+    })),
   };
 }
 

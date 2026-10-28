@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { flowKindSchema, instructionFileSchema } from "./harness.ts";
+import { agentAppearanceSchema } from "./agent-profile.ts";
 import { agentHeartbeatSchema } from "./heartbeat.ts";
-import { conversationMessageSchema } from "./message.ts";
+import { conversationMessageSchema, conversationSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
 
@@ -44,6 +45,8 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     kind: z.literal("owner_message"),
     wakeId: z.uuid(),
     messageId: z.uuid(),
+    /** 메시지가 속한 대화. Lead는 이 대화로 답장한다. */
+    conversationId: z.uuid(),
     body: z.string(),
   }),
   /** 사용자가 승인 요청을 결정했다. 반려·수정 요청의 사유가 `note`에 있다. */
@@ -116,6 +119,11 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
     submissionId: z.uuid(),
     note: z.string(),
   }),
+  /**
+   * 사용자가 연구 목표를 적어 조직을 만들었다(Lead에게). 목표·완료 기준은 실행 맥락의 조직에 있다.
+   * 조직마다 한 번뿐이며 가리키는 기록은 없다.
+   */
+  z.object({ kind: z.literal("organization_created"), wakeId: z.uuid() }),
   /** 켜 둔 heartbeat의 간격이 지났다. 가리키는 기록은 없다. */
   z.object({ kind: z.literal("heartbeat"), wakeId: z.uuid() }),
 ]);
@@ -132,6 +140,7 @@ export type RunIdentity = z.infer<typeof runIdentitySchema>;
 /**
  * 맥락 묶음. Lead 대화는 이 실행 시도까지 전달된 메시지만 담고,
  * 실행 중 도착해 다음 실행 시도를 기다리는 사용자 메시지는 담지 않는다.
+ * `conversations`는 기본 대화와 이 실행 시도가 받은 사용자 메시지의 대화이고, `conversation`은 그 대화들의 최근 메시지다.
  */
 export const runContextSchema = z.object({
   organization: z.object({
@@ -146,6 +155,7 @@ export const runContextSchema = z.object({
   team: z.array(
     z.object({ id: z.uuid(), role: agentRoleSchema, name: z.string() })
   ),
+  conversations: z.array(conversationSchema.omit({ organizationId: true })),
   conversation: z.array(conversationMessageSchema),
   /** 조직 사본 흐름 템플릿이 선언한 연구 노드·보조 연결 종류. 초기 연구 승인 전에는 없다. */
   researchFlow: z
@@ -228,7 +238,7 @@ export const runResultSchema = z.strictObject({
 export type RunResult = z.infer<typeof runResultSchema>;
 
 /**
- * 사용자 제어 명령이 실행 시도를 취소한 사유: 조직 일시정지·조직 중단·에이전트 일시정지·`중단하고 반영`.
+ * 사용자 제어 명령이 실행 시도를 취소한 사유: 조직 일시정지·조직 중단·에이전트 일시정지·실행 중단(`owner_interrupt`, 메시지 없는 `실행 중단`과 `중단하고 보내기`).
  * 실행 시도에 영속하며, 요청한 순간 그 실행 시도의 토큰은 조직 도구를 쓸 수 없다.
  */
 export const runCancelReasons = [
@@ -288,6 +298,7 @@ export const agentDetailSchema = z.object({
   organizationId: z.uuid(),
   role: agentRoleSchema,
   name: z.string(),
+  appearance: agentAppearanceSchema,
   createdAt: z.iso.datetime({ offset: true }),
   status: agentStatusSchema,
   /** 사용자가 이 에이전트를 일시정지했다. 조직 일시정지와 따로이며, 에이전트 재개로만 풀린다. */
@@ -296,5 +307,7 @@ export const agentDetailSchema = z.object({
   instructionsBundleVersion: z.string().nullable(),
   heartbeat: agentHeartbeatSchema,
   recentRuns: z.array(runSummarySchema),
+  /** 이 에이전트에게 줄 세운 사용자 메시지 수(모든 대화). 상한은 `maxQueuedMessages`다. Lead가 아니면 0이다. */
+  queuedMessageCount: z.number().int().nonnegative(),
 });
 export type AgentDetail = z.infer<typeof agentDetailSchema>;

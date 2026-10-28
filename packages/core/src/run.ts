@@ -1,17 +1,21 @@
-import type {
-  Agent,
-  ConversationMessage,
-  LifecycleStage,
-  NewEvent,
-  RunCancelReason,
-  RunResult,
-  RunEndReason,
-  RunStatus,
-  SendOwnerMessageInput,
-  SessionState,
-  Usage,
-  WakeKind,
-  WakeReason,
+import {
+  conversationTitleMaxLength,
+  defaultConversationTitle,
+  type Agent,
+  type Conversation,
+  type ConversationMessage,
+  type LifecycleStage,
+  type MessageDelivery,
+  type NewEvent,
+  type RunCancelReason,
+  type RunResult,
+  type RunEndReason,
+  type RunStatus,
+  type SendOwnerMessageInput,
+  type SessionState,
+  type Usage,
+  type WakeKind,
+  type WakeReason,
 } from "@babojubot/contracts";
 import type { RecordSource } from "./organization.ts";
 
@@ -31,45 +35,95 @@ export type Wake = {
   | { kind: "research_map_edit"; mapEditId: string }
   | { kind: "instruction_edit"; instructionRevisionId: string }
   | { kind: "result_changes_requested"; resultSubmissionId: string }
+  | { kind: "organization_created" }
   | { kind: "heartbeat" }
 );
-/** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. */
+/** 대기 중인 깨우기와 실행 시도에 넘길 그 사유. `delivery`는 사용자 메시지 깨우기면 그 메시지의 전달 방식이고 그 밖에는 없다. */
 export type PendingWake = {
   id: string;
   organizationId: string;
   agentId: string;
   createdAt: string;
   reason: WakeReason;
+  delivery: MessageDelivery | null;
 };
 
-/** 사용자 메시지 기록. 메시지·깨우기·Event는 함께 저장되어야 한다. */
+/**
+ * 사용자 메시지 기록. 메시지·깨우기·Event는 함께 저장되어야 한다.
+ * 새 대화의 첫 메시지면 `conversation`이 그 대화이고 메시지보다 먼저 함께 저장한다.
+ */
 export type OwnerMessagePlan = {
+  conversation: Conversation | null;
   message: ConversationMessage;
   wake: Wake;
   event: NewEvent;
 };
 
-/** 사용자 메시지는 그 조직의 Lead에게 가고 Lead를 깨운다. 실행 중이면 다음 실행 시도로 미룬다. */
+/** 조직과 함께 생기는 기본 대화. */
+export const planDefaultConversation = (
+  organizationId: string,
+  { id, createdAt }: { id: string; createdAt: string }
+): Conversation => ({
+  id,
+  organizationId,
+  title: defaultConversationTitle,
+  isDefault: true,
+  createdAt,
+});
+
+/** 새 대화의 제목: 첫 사용자 메시지의 공백을 한 칸으로 줄이고, 길면 잘라 말줄임표를 붙인다. */
+export function conversationTitle(body: string): string {
+  const text = body.replace(/\s+/g, " ").trim();
+  const chars = [...text];
+  return chars.length > conversationTitleMaxLength
+    ? `${chars
+        .slice(0, conversationTitleMaxLength - 1)
+        .join("")
+        .trimEnd()}…`
+    : text;
+}
+
+/**
+ * 사용자 메시지는 그 조직의 Lead에게 가고 Lead를 깨운다. 실행 중이면 다음 실행 시도로 미룬다(줄 세운 메시지).
+ * `conversation`은 메시지를 남길 같은 조직의 대화이고, `new`면 이 메시지로 새 대화를 시작한다.
+ */
 export function planOwnerMessage(
-  organization: { organizationId: string; agents: Agent[] },
+  organization: {
+    organizationId: string;
+    agents: Pick<Agent, "id" | "role">[];
+  },
+  conversation: { id: string } | "new",
   input: Required<SendOwnerMessageInput>,
   { newId, now }: RecordSource
 ): OwnerMessagePlan {
   const lead = findLead(organization.agents);
   if (!lead) throw new Error("organization has no Research Lead");
   const createdAt = now().toISOString();
+  const started: Conversation | null =
+    conversation === "new"
+      ? {
+          id: newId(),
+          organizationId: organization.organizationId,
+          title: conversationTitle(input.body),
+          isDefault: false,
+          createdAt,
+        }
+      : null;
   const message: ConversationMessage = {
     id: newId(),
     organizationId: organization.organizationId,
     agentId: lead.id,
+    conversationId: started?.id ?? (conversation as { id: string }).id,
     author: "owner",
     body: input.body,
     delivery: input.delivery,
     sentByRunId: null,
     deliveredToRunId: null,
+    deliveredAt: null,
     createdAt,
   };
   return {
+    conversation: started,
     message,
     wake: {
       id: newId(),
@@ -83,9 +137,26 @@ export function planOwnerMessage(
   };
 }
 
+/**
+ * 에이전트 답장이 갈 대화. 고른 대화(`requested`, 같은 조직인지는 저장 쪽이 확인)가 있으면 그 대화이고,
+ * 없으면 이 실행 시도가 받은 사용자 메시지의 대화(`received`)다. 사용자 메시지 없이 깨어났으면(승인 결정·작업 완료·heartbeat 등)
+ * 스스로 보내는 메시지라 기본 대화로 간다. 여러 대화의 사용자 메시지를 받았으면 어느 대화인지 골라야 한다.
+ */
+export function chooseReplyConversation(
+  requested: string | undefined,
+  received: readonly string[],
+  defaultConversationId: string
+): string | "conversation_required" {
+  if (requested) return requested;
+  const distinct = [...new Set(received)];
+  if (distinct.length > 1) return "conversation_required";
+  return distinct[0] ?? defaultConversationId;
+}
+
 /** 에이전트가 조직 도구로 보낸 Lead 대화 답장. 사용자에게 가므로 아무도 깨우지 않는다. */
 export function planAgentMessage(
   run: { id: string; organizationId: string; agentId: string },
+  conversationId: string,
   body: string,
   { newId, now }: RecordSource
 ): { message: ConversationMessage; event: NewEvent } {
@@ -93,11 +164,13 @@ export function planAgentMessage(
     id: newId(),
     organizationId: run.organizationId,
     agentId: run.agentId,
+    conversationId,
     author: "agent",
     body,
     delivery: null,
     sentByRunId: run.id,
     deliveredToRunId: null,
+    deliveredAt: null,
     createdAt: now().toISOString(),
   };
   return { message, event: messageCreatedEvent(message) };
@@ -113,6 +186,7 @@ const messageCreatedEvent = (message: ConversationMessage): NewEvent => ({
   payload: {
     messageId: message.id,
     agentId: message.agentId,
+    conversationId: message.conversationId,
     author: message.author,
     runId: message.sentByRunId,
   },
@@ -129,6 +203,8 @@ export type NewRun = {
 
 export type RunStartPlan = {
   run: NewRun;
+  /** 이 실행 시도가 받는 깨우기(`bundleWakes`). 나머지는 대기한 채 다음 실행 시도를 기다린다. */
+  wakeIds: string[];
   wakeReasons: WakeReason[];
   event: NewEvent;
 };
@@ -148,8 +224,19 @@ export const admitsRuns = (stage: LifecycleStage) =>
   !(runBlockingStages as readonly LifecycleStage[]).includes(stage);
 
 /**
- * 대기 중인 깨우기를 모두 실행 시도 하나로 묶는다. 묶음은 이 시점에 고정되며,
- * 이후 도착한 깨우기는 다음 실행 시도가 받는다. 지침 bundle 버전이 같을 때만 이전 세션을 이어 간다.
+ * 실행 시도 하나가 받을 대기 깨우기(저장 순서). 보통은 대기 깨우기를 모두 합친다.
+ * `중단하고 보내기` 메시지(지금 보내기로 바꾼 줄 세운 메시지 포함)가 기다리면 그 메시지 깨우기만 받는다.
+ * 사용자가 지금 실행 시도를 끊고 먼저 넣은 말이므로 그 말만 먼저 다루게 하고, 먼저 줄 세운 메시지와
+ * 다른 깨우기(승인 결정·작업 사건·heartbeat 등)는 대기한 채 그 실행 시도가 끝난 뒤의 실행 시도가 평소처럼 합쳐 받는다.
+ */
+export function bundleWakes(pending: readonly PendingWake[]): PendingWake[] {
+  const interrupts = pending.filter((w) => w.delivery === "interrupt");
+  return interrupts.length ? interrupts : [...pending];
+}
+
+/**
+ * 대기 중인 깨우기를 실행 시도 하나로 묶는다(`bundleWakes`). 묶음은 이 시점에 고정되며,
+ * 이후 도착한 깨우기와 묶지 않은 깨우기는 다음 실행 시도가 받는다. 지침 bundle 버전이 같을 때만 이전 세션을 이어 간다.
  */
 export function planRunStart(
   input: {
@@ -165,8 +252,9 @@ export function planRunStart(
   },
   { newId, now }: RecordSource
 ): RunStartPlan | undefined {
-  const { agent, pendingWakes, instructionsBundleVersion, previousRun } = input;
-  if (!pendingWakes.length) return undefined;
+  const { agent, instructionsBundleVersion, previousRun } = input;
+  const bundle = bundleWakes(input.pendingWakes);
+  if (!bundle.length) return undefined;
   const run: NewRun = {
     id: newId(),
     organizationId: agent.organizationId,
@@ -181,14 +269,15 @@ export function planRunStart(
   };
   return {
     run,
-    wakeReasons: pendingWakes.map((w) => w.reason),
+    wakeIds: bundle.map((w) => w.id),
+    wakeReasons: bundle.map((w) => w.reason),
     event: {
       organizationId: run.organizationId,
       type: "run.started",
       payload: {
         runId: run.id,
         agentId: run.agentId,
-        wakeIds: pendingWakes.map((w) => w.id),
+        wakeIds: bundle.map((w) => w.id),
       },
     },
   };

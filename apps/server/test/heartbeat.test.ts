@@ -1,6 +1,5 @@
 import {
   agentDetailSchema,
-  conversationMessageListSchema,
   organizationDetailSchema,
   runSummaryListSchema,
 } from "@babojubot/contracts";
@@ -8,7 +7,14 @@ import { leadReplyScript } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer } from "../src/index.ts";
-import { reasons, scriptedAgents } from "./scenarios.ts";
+import {
+  chatMessages,
+  goal,
+  idle,
+  quietCreation,
+  reasons,
+  scriptedAgents,
+} from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -31,9 +37,11 @@ function clock(start = "2026-10-22T00:00:00.000Z") {
   };
 }
 
+/** 사용자가 목표를 적어 만든 조직. 생성으로 깨어난 Lead의 실행 시도가 끝날 때까지 기다린다. */
 async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+  const res = await t!.request("POST", "/api/organizations", { name, ...goal });
   expect(res.status).toBe(201);
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { ...org, lead: org.agents.find((a) => a.role === "lead")! };
 }
@@ -48,10 +56,11 @@ const setHeartbeat = (
   agentId: string,
   input: { enabled: boolean; intervalMinutes: number }
 ) => t!.request("PUT", `${agentPath(orgId, agentId)}/heartbeat`, input);
+/** 조직의 실행 시도(최근 것부터). 생성 깨우기를 받은 첫 실행 시도는 뺀다. */
 const runs = async (orgId: string) =>
-  runSummaryListSchema.parse(
-    (await t!.request("GET", `/api/organizations/${orgId}/runs`)).body
-  );
+  runSummaryListSchema
+    .parse((await t!.request("GET", `/api/organizations/${orgId}/runs`)).body)
+    .slice(0, -1);
 const say = async (orgId: string, body: string) => {
   const res = await t!.request("POST", `/api/organizations/${orgId}/messages`, {
     body,
@@ -62,7 +71,7 @@ const say = async (orgId: string, body: string) => {
 describe("heartbeat", () => {
   it("wakes the agent with a heartbeat once the interval passes and stops when turned off", async () => {
     const time = clock();
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime, now: time.now });
     const org = await createOrganization("heartbeat 조직");
 
@@ -113,11 +122,7 @@ describe("heartbeat", () => {
       { kind: "heartbeat", wakeId: expect.any(String) },
     ]);
     // heartbeat만으로 깨어난 가짜 Lead는 사용자에게 답장하지 않는다.
-    expect(
-      conversationMessageListSchema.parse(
-        (await t.request("GET", `/api/organizations/${org.id}/messages`)).body
-      )
-    ).toEqual([]);
+    expect(await chatMessages(t, org.id)).toEqual([]);
     expect((await agent(org.id, org.lead.id)).heartbeat.nextAt).toBe(
       time.iso(minutes(30))
     );
@@ -140,7 +145,7 @@ describe("heartbeat", () => {
   it("merges a heartbeat with other wakes waiting for the agent into one run", async () => {
     const time = clock();
     const gate = createGate();
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime, now: time.now });
     const org = await createOrganization("병합 조직");
     agents.queue(org.lead.id, {
@@ -173,7 +178,7 @@ describe("heartbeat", () => {
 
   it("wakes once after the server was down for many intervals and keeps the schedule across a restart", async () => {
     const time = clock();
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime, now: time.now });
     const org = await createOrganization("재시작 heartbeat");
     await setHeartbeat(org.id, org.lead.id, {
@@ -207,7 +212,7 @@ describe("heartbeat", () => {
 
   it("holds heartbeats while the agent or the organization is paused and wakes once after resuming", async () => {
     const time = clock();
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime, now: time.now });
     const org = await createOrganization("일시정지 heartbeat");
     await setHeartbeat(org.id, org.lead.id, {
@@ -237,7 +242,7 @@ describe("heartbeat", () => {
   });
 
   it("checks the input, the organization, and closed organizations", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("설정 검사");
     const other = await createOrganization("다른 조직");
     for (const input of [

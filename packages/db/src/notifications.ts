@@ -139,13 +139,16 @@ async function factsOf(
   switch (row.kind) {
     case "lead_message": {
       const [m] = await db
-        .select({ body: messages.body })
+        .select({
+          body: messages.body,
+          conversationId: messages.conversationId,
+        })
         .from(messages)
         .where(
           and(eq(messages.organizationId, inOrg), eq(messages.id, row.sourceId))
         );
       if (!m) throw missingSource(row);
-      return { kind: row.kind, body: m.body };
+      return { kind: row.kind, body: m.body, conversationId: m.conversationId };
     }
     case "approval_request": {
       const [a] = await db

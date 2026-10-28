@@ -1,7 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 15_000 };
+/** 행 앞 선택 단추의 체크박스 모양. 선택 중이 아니면 조직 아바타가 보이고 이 모양은 숨는다. */
+const boxOf = (row: Locator) => row.getByRole("checkbox").getByText("✓");
 
 test("the owner sorts failed runs and approval requests in the Inbox panel by attention, unread and archive, and another tab follows", async ({
   page,
@@ -9,7 +12,7 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
 }) => {
   const name = "Inbox E2E 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   const say = (body: string) =>
@@ -19,14 +22,15 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
 
   await openWithLiveEvents(page, `/orgs/${org.id}`);
   const card = page.getByRole("navigation", { name: "조직 화면" });
+  // 조직을 만들면 가짜 Lead가 곧바로 초기 연구 승인을 요청해 주의 필요가 하나 생긴다.
   await expect(
-    card.getByRole("button", { name: /이 조직의 Inbox 열기 · 주의 필요 0개/ })
-  ).toBeVisible();
+    card.getByRole("button", { name: /이 조직의 Inbox 열기 · 주의 필요 1개/ })
+  ).toBeVisible(runs);
 
   // 가짜 Lead에게 실패 연습을 부탁하면 실패한 실행 시도가 새로고침 없이 주의 필요로 뜬다.
   await say("실패 연습");
   const openForOrg = card.getByRole("button", {
-    name: /이 조직의 Inbox 열기 · 주의 필요 1개/,
+    name: /이 조직의 Inbox 열기 · 주의 필요 2개/,
   });
   await expect(openForOrg).toBeVisible(runs);
   await openForOrg.click();
@@ -44,26 +48,44 @@ test("the owner sorts failed runs and approval requests in the Inbox panel by at
   // 읽지 않은 항목에는 읽음 버튼이 따로 없다(열거나 체크해 읽는다).
   await expect(failure.getByRole("button", { name: /읽/ })).toHaveCount(0);
   await expect(
-    panel.getByRole("button", { name: "주의 필요 1" })
+    panel.getByRole("button", { name: "주의 필요 2" })
   ).toBeVisible();
 
   // 초기 연구 승인 요청도 주의 필요다. 체크해 읽음으로 해도 결정이 남아 있어 주의 필요에서 빠지지 않는다.
-  await say("목표: Inbox 정리\n완료 기준: 읽음과 보관이 구분된다");
   const request = attention
     .getByRole("listitem")
     .filter({ hasText: "초기 연구 승인 요청" });
   await expect(request).toBeVisible(runs);
   const selection = panel.getByRole("group", { name: "선택한 항목" });
   await expect(selection).toHaveCount(0);
-  await request.getByRole("checkbox").check();
+  // 행 앞에는 체크박스 대신 조직 아바타가 있다. 아바타를 누르면 그 행이 체크되고,
+  // 하나라도 체크돼 있는 동안 다른 행도 아바타 대신 체크박스를 보인다.
+  await expect(boxOf(failure)).toBeHidden();
+  await expect(boxOf(request)).toBeHidden();
+  await request
+    .getByRole("checkbox", { name: `초기 연구 승인 요청 · ${name} 선택` })
+    .click();
+  await expect(request.getByRole("checkbox")).toBeChecked();
+  await expect(selection).toContainText("1개 선택");
+  await expect(boxOf(failure)).toBeVisible();
+  await expect(failure.getByRole("checkbox")).not.toBeChecked();
+  // 마지막 체크를 풀면 다른 행은 아바타로 돌아온다. 키보드(Space)로도 체크한다.
+  await request.getByRole("checkbox").click();
+  await expect(selection).toHaveCount(0);
+  await expect(boxOf(failure)).toBeHidden();
+  await request.getByRole("checkbox").focus();
+  await page.keyboard.press("Space");
+  await expect(request.getByRole("checkbox")).toBeChecked();
   await expect(selection).toContainText("1개 선택");
   await selection.getByRole("button", { name: "모두 읽음" }).click();
   await expect(selection).toHaveCount(0);
-  await expect(
-    request.getByRole("button", { name: "읽지 않음" })
-  ).toBeVisible();
+  // 승인 요청은 결정 여부가 주의를 정하므로 읽음을 되돌리는 버튼이 없고, 읽지 않음 표시만 사라진다.
+  await expect(request).not.toContainText("읽지 않음");
+  await expect(request.getByRole("button", { name: "읽지 않음" })).toHaveCount(
+    0
+  );
   await expect(request).toBeVisible();
-  // 결정을 기다리는 항목은 보관할 수 없다. 보관은 끝난 일인 실패에만 있다.
+  // 결정을 기다리는 항목은 보관할 수 없다(결정해야 한다). 실패는 보관할 수 있다.
   await expect(request.getByRole("button", { name: "보관" })).toHaveCount(0);
   await expect(failure.getByRole("button", { name: "보관" })).toBeVisible();
   // 필터는 주의 필요·전체·읽지 않음·보관됨이다.
@@ -154,7 +176,7 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
   await page.setViewportSize({ width: 390, height: 800 });
   const name = "Inbox 모바일 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   await page.request.post(`/api/organizations/${org.id}/messages`, {
@@ -167,11 +189,13 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
     .first()
     .click();
   const drawer = page.getByRole("dialog", { name: "Inbox" });
+  // 이 조직에는 생성 뒤 가짜 Lead가 낸 초기 연구 승인 요청도 있다.
   const item = drawer
     .getByRole("list", { name: "주의 필요" })
     .getByRole("listitem")
-    .filter({ hasText: name });
-  await expect(item).toContainText("실행 시도 실패", runs);
+    .filter({ hasText: name })
+    .filter({ hasText: "실행 시도 실패" });
+  await expect(item).toBeVisible(runs);
   await item.getByRole("link").click();
   await expect(drawer).toBeHidden();
   await expect(page).toHaveURL(new RegExp(`/inbox/${org.id}/run_failure/`));
@@ -188,7 +212,11 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
 }) => {
   const name = "Inbox 상세 조직";
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: {
+      name,
+      goal: "Inbox 상세 확인",
+      completionCriteria: "요약에서 결정한다",
+    },
   });
   const org = (await created.json()) as { id: string };
   const say = (body: string) =>
@@ -197,7 +225,6 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
     });
   await openWithLiveEvents(page, "/");
   await say("실패 연습");
-  await say("목표: Inbox 상세 확인\n완료 기준: 요약에서 결정한다");
   await page
     .getByRole("button", { name: /^Inbox · 주의 필요/ })
     .first()
@@ -242,21 +269,24 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await expect(selection).toContainText("2개 선택");
   await selection.getByRole("button", { name: "모두 읽음" }).click();
   await expect(failure).toHaveCount(0);
-  await expect(
-    request.getByRole("button", { name: "읽지 않음" })
-  ).toBeVisible();
+  // 승인 요청은 결정 여부가 주의를 정하므로 읽음을 되돌리는 버튼이 없고, 읽지 않음 표시만 사라진다.
+  await expect(request).not.toContainText("읽지 않음");
+  await expect(request.getByRole("button", { name: "읽지 않음" })).toHaveCount(
+    0
+  );
   expect(await failureRead()).toBe(true);
 
   // 다른 조직의 승인 요청도 기다린다. 한 요청에 쓰던 사유는 패널에서 다른 요청을 열면 따라가지 않는다.
   const otherName = "Inbox 상세 다른 조직";
   const other = (await (
     await page.request.post("/api/organizations", {
-      data: { name: otherName },
+      data: {
+        name: otherName,
+        goal: "다른 조직 확인",
+        completionCriteria: "사유가 섞이지 않는다",
+      },
     })
   ).json()) as { id: string };
-  await page.request.post(`/api/organizations/${other.id}/messages`, {
-    data: { body: "목표: 다른 조직 확인\n완료 기준: 사유가 섞이지 않는다" },
-  });
   const otherRequest = attention
     .getByRole("listitem")
     .filter({ hasText: otherName })
@@ -293,11 +323,33 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await expect(decision).toContainText("반려됨");
   await expect(decision).toContainText("목표를 더 좁혀 주세요");
   await expect(decision.getByRole("button")).toHaveCount(0);
-  // 결정한 승인 요청은 Inbox에서 빠지고, 정리 버튼도 사라진다(Lead가 다시 낸 요청은 새 항목이다).
-  await expect(
-    panel.locator(`a[href="${new URL(decidedUrl).pathname}"]`)
-  ).toHaveCount(0);
-  await expect(main.getByRole("group", { name: "알림 정리" })).toHaveCount(0);
+  // 결정한 승인 요청은 주의 필요에서 빠지지만 전체에 결정 상태와 함께 남는다(Lead가 다시 낸 요청은 새 항목이다).
+  const decidedLink = `a[href="${new URL(decidedUrl).pathname}"]`;
+  await expect(attention.locator(decidedLink)).toHaveCount(0);
+  await panel.getByRole("button", { name: /^전체 \d/ }).click();
+  const decidedItem = panel
+    .getByRole("list", { name: "전체" })
+    .getByRole("listitem")
+    .filter({ has: page.locator(decidedLink) });
+  await expect(decidedItem).toContainText("반려됨");
+  await expect(decidedItem).not.toContainText("주의 필요");
+  // 결정한 항목은 상세에서 보관할 수 있고, 보관됨에서 다시 열면 결정 기록이 보인다.
+  await main
+    .getByRole("group", { name: "알림 정리" })
+    .getByRole("button", { name: "보관" })
+    .click();
+  await expect(decidedItem).toHaveCount(0);
+  await panel.getByRole("button", { name: /^보관됨 \d/ }).click();
+  const archivedDecided = panel
+    .getByRole("list", { name: "보관됨" })
+    .getByRole("listitem")
+    .filter({ has: page.locator(decidedLink) });
+  await expect(archivedDecided).toContainText("반려됨");
+  await archivedDecided.getByRole("link").click();
+  await expect(page).toHaveURL(decidedUrl);
+  await expect(main.getByRole("region", { name: "결정" })).toContainText(
+    "반려됨"
+  );
 
   // 결정한 항목의 주소를 다시 열어도 결정 기록이 보인다.
   await page.goto(decidedUrl);
@@ -326,7 +378,9 @@ test("when marking an opened item read fails, the Inbox detail says so and retri
 }) => {
   const name = "Inbox 읽음 실패 조직";
   const org = (await (
-    await page.request.post("/api/organizations", { data: { name } })
+    await page.request.post("/api/organizations", {
+      data: { name, ...goalInput },
+    })
   ).json()) as { id: string };
   await page.request.post(`/api/organizations/${org.id}/messages`, {
     data: { body: "실패 연습" },
@@ -367,7 +421,9 @@ test("when the read-on-open reply is lost after the server marked the item read,
 }) => {
   const name = "Inbox 읽음 응답 유실 조직";
   const org = (await (
-    await page.request.post("/api/organizations", { data: { name } })
+    await page.request.post("/api/organizations", {
+      data: { name, ...goalInput },
+    })
   ).json()) as { id: string };
   await page.request.post(`/api/organizations/${org.id}/messages`, {
     data: { body: "실패 연습" },
@@ -408,10 +464,11 @@ test("when the read-on-open reply is lost after the server marked the item read,
   await expect(main.getByRole("alert")).toHaveCount(0);
 
   // 그 뒤 읽지 않음으로 되돌려도 지난 실패 안내가 다시 나타나지 않는다.
+  // 주의 필요에는 생성 뒤 가짜 Lead가 낸 초기 연구 승인 요청과 되돌린 실패가 있다.
   await organize.getByRole("button", { name: "읽지 않음" }).click();
   await expect(
     panel.getByRole("list", { name: "주의 필요" }).getByRole("listitem")
-  ).toHaveCount(1);
+  ).toHaveCount(2);
   await expect(main.getByRole("alert")).toHaveCount(0);
 });
 
@@ -419,12 +476,9 @@ test("deciding from the Inbox detail after another surface decided first shows t
   page,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "Inbox 상세 경합 조직" },
+    data: { name: "Inbox 상세 경합 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  await page.request.post(`/api/organizations/${org.id}/messages`, {
-    data: { body: "목표: 경합 확인\n완료 기준: 먼저 온 결정이 남는다" },
-  });
   const pending = async () =>
     (
       (await (await page.request.get("/api/inbox")).json()) as {
@@ -465,7 +519,7 @@ test("global settings shows the places for the runtime, environment templates, s
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole("heading", { name: "전역 설정" })).toBeVisible();
   for (const region of [
-    "실행기 adapter",
+    "실행기",
     "연구 환경 템플릿",
     "비밀값",
     "메시지 앱 연결",

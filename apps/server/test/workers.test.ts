@@ -3,7 +3,9 @@ import path from "node:path";
 import {
   agentInstructionsSchema,
   approvalSchema,
+  awaitsDecision,
   inboxSchema,
+  needsAttention,
   orgToolNames,
   orgToolPaths,
   organizationDetailSchema,
@@ -12,7 +14,14 @@ import {
 } from "@babojubot/contracts";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { idle, reasons, scriptedAgents, serverHelpers } from "./scenarios.ts";
+import {
+  chatMessages,
+  goal,
+  idle,
+  reasons,
+  scriptedAgents,
+  serverHelpers,
+} from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -31,7 +40,9 @@ const organization = async (orgId: string) =>
   organizationDetailSchema.parse(await get(`/api/organizations/${orgId}`));
 const workersOf = async (orgId: string) =>
   (await organization(orgId)).agents.filter((a) => a.role === "worker");
-const inbox = async () => inboxSchema.parse(await get("/api/inbox"));
+const fullInbox = async () => inboxSchema.parse(await get("/api/inbox"));
+/** 결정을 기다리는 Inbox 항목. 앞서 결정한 초기 연구 승인 요청은 결정 기록으로 남아 있다. */
+const inbox = async () => (await fullInbox()).filter(awaitsDecision);
 const approval = async (orgId: string, approvalId: string) =>
   approvalSchema.parse(
     await get(`/api/organizations/${orgId}/approvals/${approvalId}`)
@@ -211,6 +222,16 @@ describe("add_worker approval policy", () => {
       wokenAgentId: s.org.lead.id,
     });
     expect(await inbox()).toEqual([]);
+    // 결정한 요청은 결정 상태와 함께 Inbox에 남고, 결정했으니 읽음이며 주의 필요가 아니다.
+    const kept = (await fullInbox()).find(
+      (i) => i.kind === "approval" && i.approval.id === approvalId
+    )!;
+    expect(kept).toMatchObject({
+      read: true,
+      archived: false,
+      approval: { status: "approved" },
+    });
+    expect(needsAttention(kept)).toBe(false);
   });
 
   it("rejecting creates no worker and wakes the Lead with the reason; a worker addition has no change request", async () => {
@@ -484,8 +505,12 @@ describe("add_worker approval policy", () => {
   it("keeps the policy and worker approvals inside their organization", async () => {
     const s = await leadSession("경계 조직 A");
     const other = organizationDetailSchema.parse(
-      (await t!.request("POST", "/api/organizations", { name: "경계 조직 B" }))
-        .body
+      (
+        await t!.request("POST", "/api/organizations", {
+          name: "경계 조직 B",
+          ...goal,
+        })
+      ).body
     );
     await setPolicy(s.org.id, { addWorker: true });
     expect((await organization(other.id)).approvalPolicy).toEqual({
@@ -507,9 +532,12 @@ describe("add_worker approval policy", () => {
       ).status
     ).toBe(404);
     expect((await organization(other.id)).agents).toHaveLength(1);
-    expect((await eventsOf(other.id)).map((e) => e.type)).toEqual([
-      "organization.created",
-    ]);
+    // B에는 자기 생성·초기 연구 승인 요청 기록만 있고 A의 정책 변경·작업자 추가 요청은 없다.
+    const otherEvents = await eventsOf(other.id);
+    expect(otherEvents.map((e) => e.type)).not.toContain(
+      "organization.approval_policy_changed"
+    );
+    expect(JSON.stringify(otherEvents)).not.toContain(approvalId);
   });
 
   it("lets the demo Lead add a worker when the owner asks, following the policy", async () => {
@@ -530,9 +558,9 @@ describe("add_worker approval policy", () => {
       kind: "approval",
       approval: { kind: "add_worker", organizationId: org.id },
     });
-    const replies = (await get(`/api/organizations/${org.id}/messages`)).filter(
-      (m: { author: string }) => m.author === "agent"
+    const replies = (await chatMessages(t!, org.id)).filter(
+      (m) => m.author === "agent"
     );
-    expect(replies.at(-1).body).toContain("승인을 요청했습니다");
+    expect(replies.at(-1)?.body).toContain("승인을 요청했습니다");
   });
 });

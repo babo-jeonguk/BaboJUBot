@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import {
   type NotificationChannel,
   approvalSummaryListSchema,
-  conversationMessageListSchema,
   fakeChannelMessagesSchema,
   inboxSchema,
+  needsAttention,
   organizationDetailSchema,
   outboxSchema,
   resultSubmissionSummaryListSchema,
@@ -16,7 +16,9 @@ import { leadReplyScript } from "@babojubot/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
+  chatMessages,
   calls,
+  goal,
   proposeScript,
   scriptedAgents,
   serverHelpers,
@@ -29,9 +31,8 @@ afterEach(async () => {
   t = undefined;
 });
 
-const { get, say, tasksOf, taskDetail, eventsOf, researching } = serverHelpers(
-  () => t!
-);
+const { get, create, say, tasksOf, taskDetail, eventsOf, researching } =
+  serverHelpers(() => t!);
 
 const outboxOf = async (orgId: string) =>
   outboxSchema
@@ -72,17 +73,14 @@ const failing = (error: string) => ({
   steps: [{ do: "fail" as const, error }],
 });
 
-/** 조직을 만들고 Lead가 목표를 기록해 초기 연구 승인을 요청하게 한다. */
+/** 사용자가 목표를 적어 조직을 만들고, 생성으로 깨어난 Lead가 초기 연구 승인을 요청한 상태. 결정에는 Lead가 답장만 한다. */
 async function awaitingApproval(
   agents: ReturnType<typeof scriptedAgents>,
   name: string
 ) {
-  const res = await t!.request("POST", "/api/organizations", { name });
-  const org = organizationDetailSchema.parse(res.body);
+  const org = await create(name);
   const lead = org.agents.find((a) => a.role === "lead")!;
-  agents.queue(lead.id, proposeScript, leadReplyScript);
-  await say(org.id, "목표를 정했어요");
-  await t!.drain();
+  agents.queue(lead.id, leadReplyScript);
   const [approval] = await approvalsOf(org.id);
   return { id: org.id, lead, approvalId: approval!.id };
 }
@@ -148,9 +146,9 @@ describe("notification outbox and fake channel", () => {
       body: { error: { code: "archive_not_allowed" } },
     });
     const failed = (await runsOf(org.id)).filter((r) => r.status === "failed");
-    const leadMessages = conversationMessageListSchema
-      .parse(await get(`/api/organizations/${org.id}/messages`))
-      .filter((m) => m.author === "agent");
+    const leadMessages = (await chatMessages(t!, org.id)).filter(
+      (m) => m.author === "agent"
+    );
     expect(failed).toHaveLength(1);
     expect(leadMessages.length).toBeGreaterThan(0);
 
@@ -201,7 +199,15 @@ describe("notification outbox and fake channel", () => {
     // 알림을 누르면 Inbox 상세(요약)가 열린다. Lead 메시지는 Inbox 항목이 아니라 대화로 간다.
     for (const m of channel.filter((m) => m.kind === "approval_request"))
       expect(m.link).toBe(`/inbox/${org.id}/approval/${m.sourceId}`);
-    expect(recordOf("lead_message").link).toBe(`/orgs/${org.id}/chat`);
+    // 이 조직의 Lead 메시지는 모두 기본 대화에 있다.
+    const [chat] = (await get(
+      `/api/organizations/${org.id}/conversations`
+    )) as {
+      id: string;
+    }[];
+    expect(recordOf("lead_message").link).toBe(
+      `/orgs/${org.id}/chat/${chat!.id}`
+    );
 
     // 다시 보내도 전송 기록은 늘지 않는다.
     await t.deliverNotifications();
@@ -219,7 +225,8 @@ describe("notification outbox and fake channel", () => {
         delivered.push(notification);
       },
     };
-    const agents = scriptedAgents();
+    // 생성으로 깨어난 Lead는 Lead 대화 답장 없이 요청만 해, 알림은 승인 요청 하나다.
+    const agents = scriptedAgents({ created: proposeScript });
     t = await startTestServer({
       runtime: agents.runtime,
       now: () => now,
@@ -253,7 +260,7 @@ describe("notification outbox and fake channel", () => {
   });
 
   it("delivers after a restart what was stored but never sent", async () => {
-    const agents = scriptedAgents();
+    const agents = scriptedAgents({ created: proposeScript });
     t = await startTestServer({
       runtime: agents.runtime,
       notificationChannel: {
@@ -555,7 +562,7 @@ describe("Inbox", () => {
     ).toBe(422);
   });
 
-  it("reading a pending approval request leaves the decision, the stage and the Lead alone, and archiving it is refused", async () => {
+  it("reading a pending approval request leaves the decision, the stage and the Lead alone, archiving it is refused until it is decided, and it stays after the decision", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });
     const org = await awaitingApproval(agents, "보관 조직");
@@ -566,6 +573,7 @@ describe("Inbox", () => {
       (
         await t.request("POST", "/api/organizations", {
           name: "다른 보관 조직",
+          ...goal,
         })
       ).body
     );
@@ -613,7 +621,7 @@ describe("Inbox", () => {
     expect((await organization(org.id)).stage).toBe("awaiting_approval");
     expect(await runsOf(org.id)).toHaveLength(runsBefore);
 
-    // 결정하면 Inbox에서 빠진다.
+    // 결정해도 Inbox에 결정 상태와 함께 남고, 주의 필요에서만 빠진다. 사용자가 붙인 읽음은 그대로다.
     expect(
       (
         await t.request(
@@ -623,6 +631,67 @@ describe("Inbox", () => {
         )
       ).status
     ).toBe(200);
-    expect(await inboxOf(org.id)).toEqual([]);
+    const [decided] = await inboxOf(org.id);
+    expect(decided).toMatchObject({
+      kind: "approval",
+      read: true,
+      archived: false,
+      approval: { id: org.approvalId, status: "approved" },
+    });
+    expect(needsAttention(decided!)).toBe(false);
+
+    // 결정한 항목은 보관하고 되돌릴 수 있으며, 결정은 그대로다.
+    expect(
+      await tidy(org.id, "approval", org.approvalId, { archived: true })
+    ).toMatchObject({ status: 200, body: { read: true, archived: true } });
+    expect(await inboxOf(org.id)).toEqual([
+      expect.objectContaining({
+        archived: true,
+        approval: expect.objectContaining({ status: "approved" }),
+      }),
+    ]);
+    expect(
+      await tidy(org.id, "approval", org.approvalId, { archived: false })
+    ).toMatchObject({ status: 200, body: { read: true, archived: false } });
+
+    // 중단된 조직의 결정한 항목도 기록으로 남는다.
+    expect(
+      (await t.request("POST", `/api/organizations/${org.id}/stop`, {})).status
+    ).toBe(200);
+    expect(await inboxOf(org.id)).toEqual([
+      expect.objectContaining({
+        approval: expect.objectContaining({
+          id: org.approvalId,
+          status: "approved",
+        }),
+      }),
+    ]);
+  });
+
+  it("shows a decided item nobody organized as read, and archiving it keeps it read", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await awaitingApproval(agents, "정리하지 않은 조직");
+    expect(
+      (
+        await t.request(
+          "POST",
+          `/api/organizations/${org.id}/approvals/${org.approvalId}/decision`,
+          { decision: "reject", note: "범위를 줄여 주세요" }
+        )
+      ).status
+    ).toBe(200);
+    await t.drain();
+    const rejected = (await inboxOf(org.id)).find(
+      (i) => i.kind === "approval" && i.approval.id === org.approvalId
+    );
+    expect(rejected).toMatchObject({
+      read: true,
+      archived: false,
+      approval: { status: "rejected" },
+    });
+    expect(
+      await tidy(org.id, "approval", org.approvalId, { archived: true })
+    ).toMatchObject({ status: 200, body: { read: true, archived: true } });
   });
 });

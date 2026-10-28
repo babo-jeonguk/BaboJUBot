@@ -85,6 +85,19 @@ describe("nextWorkerName", () => {
       ])
     ).toBe("문헌 조사자 4");
   });
+
+  it("never takes a name any agent of the organization already has, ignoring case", () => {
+    // Lead가 작업자 이름 모양으로 이름을 바꿨으면 그 번호도 쓰인 번호다.
+    expect(nextWorkerName("연구원", ["연구원 1"])).toBe("연구원 2");
+    // 대소문자만 다른 이름도 같은 표시 이름의 번호로 센다.
+    expect(nextWorkerName("Analyst", ["analyst 1", "ANALYST 3"])).toBe(
+      "Analyst 4"
+    );
+    // 가장 큰 번호 + 1을 누가 쓰면 다음 번호로 넘어간다.
+    expect(nextWorkerName("Analyst", ["Analyst 1", " analyst 2 "])).toBe(
+      "Analyst 3"
+    );
+  });
 });
 
 describe("planAddWorker", () => {
@@ -174,6 +187,17 @@ describe("planApprovalDecision for add_worker", () => {
       stage: "result_review",
       createdAgentIds: [plan.workers[0]!.id],
     });
+  });
+
+  it("names the new worker apart from a Lead renamed to a worker-shaped name", () => {
+    const plan = planApprovalDecision(
+      approval,
+      { decision: "approve" },
+      { stage: "researching", agentNames: ["문헌 조사자 1"] },
+      source
+    );
+    if (typeof plan === "string") throw new Error(plan);
+    expect(plan.workers.map((w) => w.name)).toEqual(["문헌 조사자 2"]);
   });
 
   it("rejecting creates nothing, keeps the stage and wakes the Lead with the reason", () => {

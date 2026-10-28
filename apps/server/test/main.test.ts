@@ -34,7 +34,7 @@ it("starts against an external Postgres URL and leaves that Postgres running on 
     const res = await fetch(`http://127.0.0.1:${port}/api/organizations`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "외부 DB 조직" }),
+      body: JSON.stringify({ name: "외부 DB 조직", goal: "외부 DB 목표" }),
     });
     expect(res.status).toBe(201);
   } finally {

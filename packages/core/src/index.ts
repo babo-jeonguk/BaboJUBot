@@ -7,7 +7,9 @@ export * from "./task.ts";
 export * from "./research-map.ts";
 export * from "./worker.ts";
 export * from "./control.ts";
+export * from "./queued-message.ts";
 export * from "./heartbeat.ts";
+export * from "./agent-profile.ts";
 export * from "./memory.ts";
 
 export * from "./notification.ts";

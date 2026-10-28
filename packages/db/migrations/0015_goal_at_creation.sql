@@ -1,0 +1,10 @@
+ALTER TABLE "organizations" DROP CONSTRAINT "organizations_goal_check";--> statement-breakpoint
+ALTER TABLE "wakes" DROP CONSTRAINT "wakes_kind_check";--> statement-breakpoint
+ALTER TABLE "wakes" DROP CONSTRAINT "wakes_source_check";--> statement-breakpoint
+CREATE UNIQUE INDEX "wakes_one_organization_created_per_organization" ON "wakes" USING btree ("organization_id") WHERE "wakes"."kind" = 'organization_created';--> statement-breakpoint
+ALTER TABLE "organizations" ADD CONSTRAINT "organizations_goal_check" CHECK ("organizations"."completion_criteria" is null or "organizations"."goal" is not null);--> statement-breakpoint
+ALTER TABLE "wakes" ADD CONSTRAINT "wakes_kind_check" CHECK ("wakes"."kind" in ('owner_message', 'approval_decision', 'task_assigned', 'task_completed', 'task_comment', 'agent_to_agent_message', 'research_map_edit', 'instruction_edit', 'result_changes_requested', 'organization_created', 'heartbeat'));--> statement-breakpoint
+ALTER TABLE "wakes" ADD CONSTRAINT "wakes_source_check" CHECK (("wakes"."kind" in ('organization_created', 'heartbeat')
+          and num_nonnulls("wakes"."message_id", "wakes"."approval_id", "wakes"."task_id", "wakes"."comment_id", "wakes"."agent_to_agent_message_id", "wakes"."map_edit_id", "wakes"."instruction_revision_id", "wakes"."result_submission_id") = 0)
+        or num_nonnulls("wakes"."message_id", "wakes"."approval_id", "wakes"."task_id", "wakes"."comment_id", "wakes"."agent_to_agent_message_id", "wakes"."map_edit_id", "wakes"."instruction_revision_id", "wakes"."result_submission_id") = 1
+        and (("kind" = 'owner_message' and "message_id" is not null) or ("kind" = 'approval_decision' and "approval_id" is not null) or ("kind" = 'task_assigned' and "task_id" is not null) or ("kind" = 'task_completed' and "task_id" is not null) or ("kind" = 'task_comment' and "comment_id" is not null) or ("kind" = 'agent_to_agent_message' and "agent_to_agent_message_id" is not null) or ("kind" = 'research_map_edit' and "map_edit_id" is not null) or ("kind" = 'instruction_edit' and "instruction_revision_id" is not null) or ("kind" = 'result_changes_requested' and "result_submission_id" is not null)));

@@ -1,0 +1,13 @@
+/* 조직도(org-chart.tsx). 노드는 고르거나 끌 수 없어 React Flow가 포인터를 끄지만(inline style), 카드 링크는 눌려야 한다. */
+.org-chart .react-flow__node {
+  pointer-events: all !important;
+  cursor: default;
+}
+.org-chart-edge .react-flow__edge-path {
+  stroke: var(--color-slate-300);
+  stroke-width: 1.5;
+}
+/* 실행 중인 작업자로 가는 연결은 흐른다. */
+.org-chart-edge.animated .react-flow__edge-path {
+  stroke: var(--color-brand-400);
+}

@@ -1,5 +1,4 @@
 import {
-  conversationMessageListSchema,
   organizationDetailSchema,
   runDetailSchema,
   runSummaryListSchema,
@@ -14,6 +13,7 @@ import {
 } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { chatMessages, goal, quietCreation } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -60,9 +60,14 @@ function holdFirstRun(gate: Gate) {
   });
 }
 
+/**
+ * 사용자가 목표를 적어 만든 조직. 이 파일의 서버는 모두 `quietCreation`이라 생성으로 깨어난 Lead는 맥락만 읽고 끝난다.
+ * 그 실행 시도가 끝날 때까지 기다리므로 이어지는 메시지는 다음 실행 시도가 받는다.
+ */
 async function createOrganization(name: string) {
-  const res = await t!.request("POST", "/api/organizations", { name });
+  const res = await t!.request("POST", "/api/organizations", { name, ...goal });
   expect(res.status).toBe(201);
+  await t!.drain();
   const org = organizationDetailSchema.parse(res.body);
   return { ...org, lead: org.agents.find((a) => a.role === "lead")! };
 }
@@ -74,14 +79,12 @@ const say = async (orgId: string, body: string) => {
   expect(res.status).toBe(201);
   return res.body;
 };
-const conversation = async (orgId: string) =>
-  conversationMessageListSchema.parse(
-    (await t!.request("GET", `/api/organizations/${orgId}/messages`)).body
-  );
+const conversation = (orgId: string) => chatMessages(t!, orgId);
+/** 조직의 실행 시도(최근 것부터). 생성 깨우기를 받은 첫 실행 시도는 뺀다. */
 const runs = async (orgId: string) =>
-  runSummaryListSchema.parse(
-    (await t!.request("GET", `/api/organizations/${orgId}/runs`)).body
-  );
+  runSummaryListSchema
+    .parse((await t!.request("GET", `/api/organizations/${orgId}/runs`)).body)
+    .slice(0, -1);
 const runDetail = async (orgId: string, runId: string) =>
   runDetailSchema.parse(
     (await t!.request("GET", `/api/organizations/${orgId}/runs/${runId}`)).body
@@ -89,7 +92,7 @@ const runDetail = async (orgId: string, runId: string) =>
 
 describe("Lead conversation", () => {
   it("recovers a failed admission without another message or a drain kick", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("디스패치 복구");
     const stream = await t.subscribe({
       kind: "organization",
@@ -111,7 +114,7 @@ describe("Lead conversation", () => {
   });
 
   it("stops retrying admission on shutdown even while the database still fails", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("복구 중 종료");
     let failed!: () => void;
     const failure = new Promise<void>((resolve) => {
@@ -129,7 +132,10 @@ describe("Lead conversation", () => {
     await t.stopServer();
 
     const { listRuns } = await import("@babojubot/db");
-    expect(await listRuns(t.db, org.id)).toEqual([]);
+    // 생성 깨우기를 받은 실행 시도 밖에는 실행 시도가 생기지 않았다.
+    expect((await listRuns(t.db, org.id)).map((r) => r.status)).toEqual([
+      "completed",
+    ]);
   });
 
   it("saves the original result after repeated finish failures and admits the next run", async () => {
@@ -137,7 +143,7 @@ describe("Lead conversation", () => {
     const inner = holdFirstRun(gate);
     let executions = 0;
     t = await startTestServer({
-      runtime: {
+      runtime: quietCreation({
         async execute(request, control) {
           executions++;
           const result = await inner.execute(request, control);
@@ -150,7 +156,7 @@ describe("Lead conversation", () => {
           }
           return { ...result, summary: "원래 종료 결과" };
         },
-      },
+      }),
     });
     const org = await createOrganization("종료 저장 복구");
     const stream = await t.subscribe({
@@ -183,7 +189,7 @@ describe("Lead conversation", () => {
 
   it("wakes the Lead into one run whose scripted reply shows in the conversation and the Event stream", async () => {
     const now = new Date("2026-10-18T09:00:00.000Z");
-    t = await startTestServer({ now: () => now });
+    t = await startTestServer({ now: () => now, runtime: quietCreation() });
     const org = await createOrganization("대화 조직");
     const stream = await t.subscribe({
       kind: "organization",
@@ -227,6 +233,7 @@ describe("Lead conversation", () => {
         payload: {
           messageId: messages[1]!.id,
           agentId: org.lead.id,
+          conversationId: messages[0]!.conversationId,
           author: "agent",
           runId: run!.id,
         },
@@ -238,7 +245,7 @@ describe("Lead conversation", () => {
   it("merges messages sent during a run into one next run, never running the agent twice at once", async () => {
     const gate = createGate();
     const watch = observed(holdFirstRun(gate));
-    t = await startTestServer({ runtime: watch.runtime });
+    t = await startTestServer({ runtime: quietCreation(watch.runtime) });
     const org = await createOrganization("병합 조직");
 
     await say(org.id, "첫 메시지");
@@ -265,7 +272,7 @@ describe("Lead conversation", () => {
   });
 
   it("rejects input outside the message contract and unknown organizations", async () => {
-    t = await startTestServer();
+    t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("입력 조직");
     for (const body of [
       { body: "  " },
@@ -322,7 +329,7 @@ describe("organization tools", () => {
     async (stopReason) => {
       const gate = createGate();
       const capture = tokenCapture(gate, stopReason);
-      t = await startTestServer({ runtime: capture.runtime });
+      t = await startTestServer({ runtime: quietCreation(capture.runtime) });
       const org = await createOrganization("토큰 조직");
       const token = await heldRun(org.id, capture.tokens, gate);
       const ownMessage = (await conversation(org.id))[0]!;
@@ -355,7 +362,7 @@ describe("organization tools", () => {
   it("treats another organization's records as nonexistent and takes no organization selector", async () => {
     const gate = createGate();
     const capture = tokenCapture(gate);
-    t = await startTestServer({ runtime: capture.runtime });
+    t = await startTestServer({ runtime: quietCreation(capture.runtime) });
     // B의 실행 시도를 먼저 끝내 두고(첫 실행 시도만 멈춘다) A의 실행 시도를 멈춰 둔다.
     const b = await createOrganization("조직 B");
     await say(b.id, "B의 비밀 메시지");
@@ -445,12 +452,12 @@ describe("run activity", () => {
     };
     const inner = createScriptedRuntime({ select: () => script });
     t = await startTestServer({
-      runtime: {
+      runtime: quietCreation({
         execute(request, control) {
           tokens.push(request.access.token);
           return inner.execute(request, control);
         },
-      },
+      }),
     });
     const org = await createOrganization("활동 조직");
     await say(org.id, "시작");
@@ -506,12 +513,12 @@ describe("run activity", () => {
   it("records a runtime failure as the run's stop reason and frees the agent for the next run", async () => {
     let calls = 0;
     t = await startTestServer({
-      runtime: {
+      runtime: quietCreation({
         async execute(request, control) {
           if (calls++ === 0) throw new Error("adapter crashed");
           return createScriptedRuntime().execute(request, control);
         },
-      },
+      }),
     });
     const org = await createOrganization("실패 조직");
     await say(org.id, "하나");
@@ -529,7 +536,7 @@ describe("run activity", () => {
 
   it("filters the organization activity by agent and shows the Lead's status and recent runs", async () => {
     const gate = createGate();
-    t = await startTestServer({ runtime: holdFirstRun(gate) });
+    t = await startTestServer({ runtime: quietCreation(holdFirstRun(gate)) });
     const org = await createOrganization("에이전트 조직");
     await say(org.id, "일해 줘");
     await gate.reached;
@@ -539,14 +546,14 @@ describe("run activity", () => {
       id: org.lead.id,
       role: "lead",
       status: "running",
-      recentRuns: [{ status: "running" }],
+      recentRuns: [{ status: "running" }, { status: "completed" }],
     });
     gate.open();
     await t.drain();
     const agent = (await t.request("GET", agentPath)).body;
     expect(agent).toMatchObject({
       status: "idle",
-      recentRuns: [{ status: "completed" }],
+      recentRuns: [{ status: "completed" }, { status: "completed" }],
     });
 
     const leadEvents = (
@@ -571,21 +578,29 @@ describe("run activity", () => {
 
   it("cancels a running run on shutdown, waits for the runtime to settle, and keeps its wakes for the next start", async () => {
     const gate = createGate();
-    t = await startTestServer({ runtime: holdFirstRun(gate) });
+    t = await startTestServer({ runtime: quietCreation(holdFirstRun(gate)) });
     const org = await createOrganization("종료 조직");
     await say(org.id, "멈춰도 돼");
     await gate.reached;
 
     await t.stopServer();
 
-    const { listAgentsWithPendingWakes, listRuns, listConversation } =
-      await import("@babojubot/db");
+    const {
+      findDefaultConversation,
+      listAgentsWithPendingWakes,
+      listRuns,
+      listConversationMessages,
+    } = await import("@babojubot/db");
+    const chat = await findDefaultConversation(t.db, org.id);
     expect((await listRuns(t.db, org.id)).map((r) => r.status)).toEqual([
       "server_restart",
+      "completed",
     ]);
     expect(await listAgentsWithPendingWakes(t.db)).toEqual([org.lead.id]);
     expect(
-      (await listConversation(t.db, org.id, org.lead.id)).map((m) => m.author)
+      (await listConversationMessages(t.db, org.id, chat!.id)).map(
+        (m) => m.author
+      )
     ).toEqual(["owner"]);
   });
 });

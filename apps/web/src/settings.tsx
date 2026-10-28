@@ -16,52 +16,49 @@ export function SettingsScreen({ org }: { org: OrganizationDetail }) {
     <div className="space-y-5">
       <h1 className="text-xl font-semibold">설정</h1>
       <section aria-label="승인 정책" className="card p-4">
-        <h2 className="mb-1 text-sm font-semibold">승인 정책</h2>
-        <p className="mb-3 text-xs text-slate-500">
-          체크한 행동은 Lead가 바로 하지 않고 Inbox에 승인 요청을 올립니다. 새
-          조직은 모두 꺼져 있습니다.
-        </p>
-        <label className="flex items-start gap-3 rounded-xl px-1 py-2 text-sm">
-          <input
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 accent-brand-600"
-            checked={checked}
-            disabled={saving}
-            aria-describedby="add-worker-help"
-            onChange={(e) => {
-              const addWorker = e.currentTarget.checked;
-              setRequested(addWorker);
-              update.mutate(
-                { addWorker },
-                { onSettled: () => setRequested(null) }
-              );
-            }}
-          />
-          <span>
-            <span className="font-medium">작업자 추가</span>
-            <span
-              id="add-worker-help"
-              className="mt-0.5 block text-xs text-slate-500"
-            >
-              켜면 Lead가 작업자를 추가할 때마다 승인을 받습니다. 끄면 바로
-              추가됩니다. 끄더라도 이미 기다리는 요청은 그대로 남아 직접
-              결정합니다.
-            </span>
-          </span>
-        </label>
-        {saving && (
-          <p role="status" className="mt-2 text-xs text-slate-500">
-            저장하는 중…
-          </p>
-        )}
+        <h2 className="mb-2 text-sm font-semibold">내 승인이 필요한 일</h2>
+        <ul className="divide-y divide-slate-100 text-sm">
+          <li>
+            <label className="flex items-center gap-3 py-2.5">
+              <span className="flex-1 font-medium">작업자 추가</span>
+              {saving && (
+                <span role="status" className="text-xs text-slate-400">
+                  저장하는 중…
+                </span>
+              )}
+              <input
+                type="checkbox"
+                className="switch"
+                checked={checked}
+                disabled={saving}
+                onChange={(e) => {
+                  const addWorker = e.currentTarget.checked;
+                  setRequested(addWorker);
+                  update.mutate(
+                    { addWorker },
+                    { onSettled: () => setRequested(null) }
+                  );
+                }}
+              />
+            </label>
+          </li>
+          {["초기 연구 승인", "최종 완료"].map((label) => (
+            <li key={label}>
+              <label className="flex items-center gap-3 py-2.5 text-slate-500">
+                <span className="flex-1">{label}</span>
+                <span aria-hidden className="text-xs">
+                  🔒
+                </span>
+                <input type="checkbox" className="switch" checked disabled />
+              </label>
+            </li>
+          ))}
+        </ul>
         {!saving && update.isError && (
           <p role="alert" className="mt-2 text-xs text-rose-600">
-            정책을 저장하지 못했습니다. 저장된 값은 그대로이니 다시 시도하세요.
+            저장하지 못했습니다. 다시 시도하세요.
           </p>
         )}
-        <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">
-          초기 연구 승인과 최종 완료는 항상 사용자가 결정하며 끌 수 없습니다.
-        </p>
       </section>
     </div>
   );

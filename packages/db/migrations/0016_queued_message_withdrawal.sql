@@ -1,0 +1,2 @@
+ALTER TABLE "messages" ADD COLUMN "withdrawn_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "messages" ADD CONSTRAINT "messages_withdrawn_check" CHECK ("messages"."withdrawn_at" is null or "messages"."author" = 'owner');

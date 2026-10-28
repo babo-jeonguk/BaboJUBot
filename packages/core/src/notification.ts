@@ -42,7 +42,7 @@ export const retryDelayMs = (attempts: number) =>
 
 /** 알림 내용을 만들 원본의 사실. 전송할 때 원본에서 읽는다. */
 export type NotificationFacts =
-  | { kind: "lead_message"; body: string }
+  | { kind: "lead_message"; body: string; conversationId: string }
   | { kind: "approval_request"; approvalKind: ApprovalKind }
   | { kind: "result_submission"; summary: string }
   | { kind: "run_failure"; agentName: string; error: string | null };
@@ -55,7 +55,7 @@ const bodyMaxLength = 500;
 const clip = (text: string) =>
   text.length > bodyMaxLength ? `${text.slice(0, bodyMaxLength - 1)}…` : text;
 
-/** 알림의 제목·본문·대시보드 경로. Inbox 항목이 되는 사건은 Inbox 상세(요약), Lead 메시지는 대화로 간다. 본문은 길면 자르고, 전체는 상세에서 본다. */
+/** 알림의 제목·본문·대시보드 경로. Inbox 항목이 되는 사건은 Inbox 상세(요약), Lead 메시지는 그 메시지가 속한 대화로 간다. 본문은 길면 자르고, 전체는 상세에서 본다. */
 export function notificationContent(
   organizationId: string,
   sourceId: string,
@@ -66,7 +66,7 @@ export function notificationContent(
       return {
         title: "Research Lead 메시지",
         body: clip(facts.body),
-        link: `/orgs/${organizationId}/chat`,
+        link: `/orgs/${organizationId}/chat/${facts.conversationId}`,
       };
     case "approval_request":
       return {

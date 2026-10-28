@@ -14,6 +14,7 @@ import {
   useResultSubmission,
   useResultSubmissions,
 } from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import {
   formatLabel,
   formatTime,
@@ -41,14 +42,10 @@ export function ResultReviewScreen({
   const list = useResultSubmissions(orgId);
   return (
     <div>
-      <div className="mb-1 flex flex-wrap items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">결과 검토</h1>
         <StageBadge stage={stage} />
       </div>
-      <p className="mb-4 text-sm text-slate-500">
-        Lead가 완료 기준을 충족했다고 판단하면 요약과 근거 산출물을 묶어
-        제출합니다. 수정 요청과 최종 완료는 사용자만 결정합니다.
-      </p>
       {list.isPending ? (
         <Loading />
       ) : list.isError ? (
@@ -151,25 +148,23 @@ export function ResultSubmissionPage() {
       </div>
 
       <Block label="결과 요약">
-        <div
-          className="px-4 py-3 text-sm break-words whitespace-pre-wrap text-slate-800"
+        <Markdown
+          text={s.summary}
+          className="px-4 py-3 text-sm text-slate-800"
           data-testid="result-summary"
-        >
-          {s.summary}
-        </div>
+        />
       </Block>
       <Block label="완료 기준">
         <dl className="grid gap-x-4 gap-y-2 p-4 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
-          <dd className="break-words whitespace-pre-wrap">{s.goal}</dd>
+          <dd className="min-w-0">
+            <Markdown text={s.goal} />
+          </dd>
           <dt className="text-slate-500">완료 기준</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {s.completionCriteria}
+          <dd className="min-w-0">
+            <Markdown text={s.completionCriteria} />
           </dd>
         </dl>
-        <p className="border-t border-slate-100 px-4 py-2 text-xs text-slate-400">
-          제출 때 기록된 목표와 완료 기준입니다.
-        </p>
       </Block>
       <Block label={`근거 산출물 ${s.artifacts.length}개`}>
         <Evidence orgId={orgId} submission={s} agents={agents} />
@@ -286,24 +281,19 @@ function DecisionForm({
       aria-label="결정"
       className="card scroll-mt-4 p-4 ring-2 ring-amber-200"
     >
-      <h2 className="mb-1 text-sm font-semibold">결정</h2>
-      <p className="mb-3 text-xs text-slate-500">
-        수정 요청은 조직을 연구 진행으로 돌리고 의견과 함께 Lead를 깨웁니다.
-        최종 완료는 연구를 닫으며, 이후에는 어떤 에이전트도 새로 실행되지
-        않습니다. 결정은 한 번만 할 수 있습니다.
-      </p>
+      <h2 className="mb-3 text-sm font-semibold">결정</h2>
       {(stage === "paused" || closed) && (
         <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
           {closed
             ? "중단된 조직이라 결정할 수 없습니다."
-            : "조직이 일시정지 중입니다. 수정 요청하면 일시정지가 풀리고 연구 진행으로 돌아가며, 최종 완료하면 바로 완료됩니다."}
+            : "조직이 일시정지 중입니다"}
         </p>
       )}
       <label
         htmlFor="result-note"
         className="mb-1 block text-xs text-slate-600"
       >
-        의견 (수정 요청에는 필요)
+        의견
       </label>
       <textarea
         id="result-note"
@@ -322,22 +312,33 @@ function DecisionForm({
           수정 요청
         </button>
         {confirming ? (
-          <>
+          <span
+            role="group"
+            aria-labelledby="complete-confirm-title"
+            className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-100 py-1 pr-1 pl-3"
+          >
+            <span className="text-xs text-slate-700">
+              <strong id="complete-confirm-title" className="font-semibold">
+                최종 완료할까요?
+              </strong>{" "}
+              되돌릴 수 없습니다.
+            </span>
+            <button
+              className="btn-ghost"
+              disabled={decide.isPending}
+              onClick={() => setConfirming(false)}
+              autoFocus
+            >
+              취소
+            </button>
             <button
               className="btn-primary"
               disabled={closed || decide.isPending}
               onClick={() => send("complete")}
             >
-              최종 완료 확정
+              최종 완료
             </button>
-            <button
-              className="btn-ghost"
-              disabled={decide.isPending}
-              onClick={() => setConfirming(false)}
-            >
-              취소
-            </button>
-          </>
+          </span>
         ) : (
           <button
             className="btn-primary"
@@ -348,11 +349,6 @@ function DecisionForm({
           </button>
         )}
       </div>
-      {confirming && !decide.isPending && (
-        <p className="mt-2 text-xs text-slate-600">
-          최종 완료하면 되돌릴 수 없습니다. 확정하려면 한 번 더 누르세요.
-        </p>
-      )}
       {decide.isPending && (
         <p role="status" className="mt-2 text-xs text-slate-500">
           결정을 보내는 중…
@@ -365,7 +361,7 @@ function DecisionForm({
             : decide.error instanceof ApiError &&
                 decide.error.code === "organization_closed"
               ? "조직이 중단되어 결정을 받지 않았습니다."
-              : "결정을 보내지 못했습니다. 의견은 그대로 두었으니 다시 시도하세요."}
+              : "보내지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -406,8 +402,8 @@ function DecisionReceipt({
       )}
       <p className="text-slate-500">
         {s.status === "completed"
-          ? "연구를 최종 완료했습니다. 이후에는 새 실행 시도가 시작되지 않습니다."
-          : "연구 진행으로 돌아갔고 Lead가 의견을 받아 연구를 이어 갑니다."}
+          ? "연구를 최종 완료했습니다."
+          : "연구 진행으로 돌아갔습니다."}
       </p>
     </section>
   );

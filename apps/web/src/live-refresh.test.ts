@@ -247,6 +247,42 @@ describe("live refresh", () => {
     expect(data(key)).toBe(3);
   });
 
+  test("a query with its own live refresh calls it instead of refetching, and again after a fetch it started meanwhile", async () => {
+    const server = fakeServer();
+    const key = ["organizations", "a", "conversations", "default", "messages"];
+    let catchUps = 0;
+    let finishCatchUp = () => {};
+    const observer = new QueryObserver(client, {
+      queryKey: key,
+      queryFn: server.queryFn,
+      meta: {
+        liveRefresh: () => {
+          catchUps++;
+          return new Promise<void>((r) => (finishCatchUp = r));
+        },
+      },
+    });
+    cleanups.push(observer.subscribe(() => {}));
+    await server.release();
+    const live = startLiveRefresh();
+
+    live.refresh({ queryKey: key });
+    await flush();
+    expect(catchUps).toBe(1);
+    // 이어 받는 동안 화면이 스스로 불러오기 시작하면(더 오래된 쪽) 그 결과가 덮어쓸 수 있으므로 끝난 뒤 한 번 더 이어 받는다.
+    void client.refetchQueries({ queryKey: key });
+    await flush();
+    finishCatchUp();
+    await flush();
+    expect(catchUps).toBe(1);
+    await server.release();
+    expect(catchUps).toBe(2);
+    finishCatchUp();
+    await flush();
+    expect(server.calls).toBe(2);
+    expect(catchUps).toBe(2);
+  });
+
   test("a query no screen is watching is only marked stale", async () => {
     const server = fakeServer();
     const key = ["organizations", "a"];

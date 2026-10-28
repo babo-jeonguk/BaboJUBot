@@ -1,11 +1,13 @@
-import type {
-  Agent,
-  AgentHeartbeat,
-  Event,
-  InstructionCopy,
-  NewEvent,
-  Organization,
-  Task,
+import {
+  agentAppearanceSchema,
+  defaultAgentAppearance,
+  type Agent,
+  type AgentHeartbeat,
+  type Event,
+  type InstructionCopy,
+  type NewEvent,
+  type Organization,
+  type Task,
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
@@ -62,6 +64,16 @@ export async function insertEvent(
 export const isUuid = (s: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
+/** `error`(drizzle이 감싼 원인 포함)가 이름이 `constraint`인 unique 제약 위반(23505)인가. */
+export function violatesUnique(error: unknown, constraint: string): boolean {
+  for (let e = error; e instanceof Error; e = e.cause) {
+    const pgError = e as Error & { code?: unknown; constraint?: unknown };
+    if (pgError.code === "23505" && pgError.constraint === constraint)
+      return true;
+  }
+  return false;
+}
+
 /** DB 행의 시각을 계약의 ISO 문자열로 바꾼다. */
 export const withIsoTime = <T extends { createdAt: Date }>(row: T) => ({
   ...row,
@@ -87,9 +99,22 @@ export const toAgent = ({
   organizationId,
   role,
   name,
+  appearance,
   createdAt,
 }: typeof agents.$inferSelect): Agent =>
-  withIsoTime({ id, organizationId, role, name, createdAt });
+  withIsoTime({
+    id,
+    organizationId,
+    role,
+    name,
+    appearance: resolveAppearance(id, appearance),
+    createdAt,
+  });
+/** 저장한 얼굴이 없거나 지금 프리셋에 없는 값이면 ID에서 정한 기본 얼굴이다. */
+export const resolveAppearance = (id: string, stored: unknown) => {
+  const parsed = agentAppearanceSchema.safeParse(stored);
+  return parsed.success ? parsed.data : defaultAgentAppearance(id);
+};
 /** 새 에이전트 행. heartbeat는 꺼져 있고 간격은 Role의 기본 간격이다. */
 export const agentRow = ({
   heartbeatMinutes,
@@ -168,7 +193,7 @@ export async function lockCancellableRuns(
 
 /**
  * 에이전트의 진행 중 실행 시도를 잠그고 ID를 돌려준다. 취소 정리 중인 실행 시도도 끝날 때까지 진행 중이므로 포함한다.
- * `중단하고 반영`은 그 정리에 합류하고, 취소 사유는 `requestCancellation`이 처음 것을 그대로 둔다.
+ * `중단하고 보내기`는 그 정리에 합류하고, 취소 사유는 `requestCancellation`이 처음 것을 그대로 둔다.
  */
 export async function lockRunningRunOfAgent(
   tx: Executor,
@@ -234,7 +259,7 @@ export async function hasPendingHeartbeat(tx: Executor, agentId: string) {
   return pending !== undefined;
 }
 
-/** 조직 에이전트의 이름. 새 작업자 번호를 정할 때 쓴다. */
+/** 조직의 모든 에이전트(Lead·작업자) 이름. 새 작업자 이름이 이 가운데 어느 것과도 겹치지 않게 정할 때 쓴다(core `nextWorkerName`). */
 export const agentNamesOf = async (tx: Executor, organizationId: string) =>
   (
     await tx

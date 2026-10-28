@@ -17,8 +17,8 @@ import { InboxPanel, useAttention, useInboxPanel } from "./inbox.tsx";
 import {
   abbr,
   avatarStyle,
-  runLabel,
   StageBadge,
+  Tip,
   stageLabel,
   stageShortLabel,
   type Width,
@@ -30,7 +30,7 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
   {
     items: [
       { slug: "dashboard", label: "대시보드", width: "full" },
-      { slug: "chat", label: "Lead 대화", width: "reading" },
+      { slug: "chat", label: "Lead 대화", width: "standard" },
     ],
   },
   {
@@ -113,8 +113,8 @@ export function Shell() {
           </Dialog.Portal>
         </Dialog.Root>
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-auto pb-20">
-          <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur md:hidden">
+        <main className="flex min-w-0 flex-1 flex-col overflow-auto pb-20 has-[[data-fill-height]]:pb-0">
+          <div className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur md:hidden">
             <button
               aria-label="탐색 열기"
               onClick={() => setSheet(true)}
@@ -134,13 +134,13 @@ export function Shell() {
             <InboxButton className="btn-ghost relative px-2" />
           </div>
           {orgId && (
-            <div className="hidden truncate border-b border-slate-200/70 bg-white/60 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
+            <div className="sticky top-0 z-20 hidden shrink-0 truncate border-b border-slate-200/70 bg-white/80 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
               <Crumbs orgId={orgId} />
             </div>
           )}
           <div
             key={useLocation().pathname}
-            className="animate-fade-up flex flex-1 flex-col"
+            className="animate-fade-up flex flex-1 flex-col has-[[data-fill-height]]:min-h-0"
           >
             <Outlet />
           </div>
@@ -148,30 +148,6 @@ export function Shell() {
         <InboxPanel />
       </div>
     </Tooltip.Provider>
-  );
-}
-
-function Tip({
-  children,
-  content,
-}: {
-  children: ReactNode;
-  content: ReactNode;
-}) {
-  return (
-    <Tooltip.Root>
-      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Content
-          side="right"
-          sideOffset={10}
-          className="animate-pop-in z-[60] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
-        >
-          {content}
-          <Tooltip.Arrow className="fill-slate-900" />
-        </Tooltip.Content>
-      </Tooltip.Portal>
-    </Tooltip.Root>
   );
 }
 
@@ -257,7 +233,7 @@ function Rail() {
       aria-label="연구 조직"
       className="scrollbar-thin flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto bg-gradient-to-b from-brand-950 to-slate-950 py-3 pb-24 text-white"
     >
-      <Tip content="홈 · 전체 조직 개요">
+      <Tip side="right" content="홈">
         <Link
           to="/"
           className={railItem(home)}
@@ -270,7 +246,7 @@ function Rail() {
           <span className="text-[10px] text-white/60">홈</span>
         </Link>
       </Tip>
-      <Tip content={`Inbox · ${attentionText(attention)}`}>
+      <Tip side="right" content={`Inbox · ${attentionText(attention)}`}>
         <InboxButton className={railItem(panel.open)}>
           <ActiveBar on={panel.open} />
           <span className="relative flex h-9 w-9 items-center justify-center rounded-xl text-lg">
@@ -288,7 +264,7 @@ function Rail() {
         />
       )}
       {orgs.isError && (
-        <Tip content="조직 목록을 불러오지 못했습니다">
+        <Tip side="right" content="조직 목록을 불러오지 못했습니다">
           <button
             onClick={() => void orgs.refetch()}
             className="text-xs text-rose-300"
@@ -301,7 +277,7 @@ function Rail() {
       {orgs.data?.map((o) => (
         <RailOrganization key={o.id} org={o} on={orgId === o.id} />
       ))}
-      <Tip content="새 연구 조직">
+      <Tip side="right" content="새 연구 조직">
         <button
           onClick={openCreate}
           data-closes-sheet
@@ -312,7 +288,7 @@ function Rail() {
         </button>
       </Tip>
       <div className="flex-1" />
-      <Tip content="전역 설정 · 실행기·환경 템플릿·비밀값·메시지 앱">
+      <Tip side="right" content="전역 설정">
         <Link
           to="/settings"
           className={railItem(settings)}
@@ -480,7 +456,7 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
   ];
   if (agent)
     trail.push({ label: agent.name, to: `/orgs/${orgId}/agents/${agent.id}` });
-  if (runMatch) trail.push({ label: runLabel(runMatch) });
+  if (runMatch) trail.push({ label: "실행 시도" });
   if (approvalMatch) trail.push({ label: "승인 요청" });
   if (resultMatch) trail.push({ label: "결과 제출" });
   if (taskId)

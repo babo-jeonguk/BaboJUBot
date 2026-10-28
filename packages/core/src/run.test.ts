@@ -1,6 +1,14 @@
-import type { Agent } from "@babojubot/contracts";
+import { defaultAgentAppearance, type Agent } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
-import { planRunInterruption, planRunStart, type PendingWake } from "./run.ts";
+import {
+  bundleWakes,
+  chooseReplyConversation,
+  conversationTitle,
+  planOwnerMessage,
+  planRunInterruption,
+  planRunStart,
+  type PendingWake,
+} from "./run.ts";
 
 const at = "2026-10-18T00:00:00.000Z";
 const sequence = (...ids: string[]) => ({
@@ -13,15 +21,137 @@ const lead: Agent = {
   organizationId: "org-1",
   role: "lead",
   name: "Research Lead",
+  appearance: defaultAgentAppearance("lead-1"),
   createdAt: at,
 };
+describe("Lead conversations", () => {
+  const organization = { organizationId: "org-1", agents: [lead] };
+
+  it("starts a new conversation with its first owner message, titled after the message", () => {
+    const plan = planOwnerMessage(
+      organization,
+      "new",
+      { body: "  데이터셋\n후보를   정리해 줄래요?  ", delivery: "next_run" },
+      sequence("conversation-2", "msg-1", "wake-1")
+    );
+    expect(plan.conversation).toEqual({
+      id: "conversation-2",
+      organizationId: "org-1",
+      title: "데이터셋 후보를 정리해 줄래요?",
+      isDefault: false,
+      createdAt: at,
+    });
+    expect(plan.message).toMatchObject({
+      id: "msg-1",
+      conversationId: "conversation-2",
+      author: "owner",
+    });
+    expect(plan.wake).toMatchObject({ messageId: "msg-1", agentId: "lead-1" });
+    expect(plan.event.payload).toMatchObject({
+      messageId: "msg-1",
+      conversationId: "conversation-2",
+    });
+  });
+
+  it("adds a message to an existing conversation without starting another", () => {
+    const plan = planOwnerMessage(
+      organization,
+      { id: "conversation-1" },
+      { body: "이어서", delivery: "interrupt" },
+      sequence("msg-2", "wake-2")
+    );
+    expect(plan.conversation).toBeNull();
+    expect(plan.message).toMatchObject({
+      conversationId: "conversation-1",
+      delivery: "interrupt",
+    });
+  });
+
+  it("cuts a long first message to the title length", () => {
+    const title = conversationTitle("가".repeat(40));
+    expect([...title]).toHaveLength(30);
+    expect(title.endsWith("…")).toBe(true);
+    expect(conversationTitle("짧은 제목")).toBe("짧은 제목");
+  });
+
+  it("replies where the owner messages came from, sends self-initiated replies to the default conversation, and asks for a choice across conversations", () => {
+    expect(chooseReplyConversation(undefined, ["c-2", "c-2"], "c-1")).toBe(
+      "c-2"
+    );
+    expect(chooseReplyConversation(undefined, [], "c-1")).toBe("c-1");
+    expect(chooseReplyConversation(undefined, ["c-2", "c-3"], "c-1")).toBe(
+      "conversation_required"
+    );
+    expect(chooseReplyConversation("c-3", ["c-2", "c-3"], "c-1")).toBe("c-3");
+  });
+});
+
 describe("planRunStart", () => {
-  const wake = (id: string, body: string): PendingWake => ({
+  const wake = (
+    id: string,
+    body: string,
+    delivery: "next_run" | "interrupt" = "next_run"
+  ): PendingWake => ({
     id,
     organizationId: "org-1",
     agentId: "lead-1",
     createdAt: at,
-    reason: { kind: "owner_message", wakeId: id, messageId: `msg-${id}`, body },
+    reason: {
+      kind: "owner_message",
+      wakeId: id,
+      messageId: `msg-${id}`,
+      conversationId: "conversation-1",
+      body,
+    },
+    delivery,
+  });
+  const heartbeat = (id: string): PendingWake => ({
+    id,
+    organizationId: "org-1",
+    agentId: "lead-1",
+    createdAt: at,
+    reason: { kind: "heartbeat", wakeId: id },
+    delivery: null,
+  });
+  const plan = (pendingWakes: PendingWake[]) =>
+    planRunStart(
+      {
+        agent: lead,
+        pendingWakes,
+        instructionsBundleVersion: null,
+        previousRun: undefined,
+      },
+      sequence("run-2")
+    );
+
+  it("bundles every pending wake when no interrupt message waits", () => {
+    const started = plan([
+      wake("w1", "하나"),
+      heartbeat("w2"),
+      wake("w3", "셋"),
+    ]);
+    expect(started?.wakeIds).toEqual(["w1", "w2", "w3"]);
+    expect(started?.event.payload).toMatchObject({
+      wakeIds: ["w1", "w2", "w3"],
+    });
+  });
+
+  it("gives an interrupt run only the interrupt messages and leaves queued messages and other wakes for the following run", () => {
+    const pending = [
+      wake("w1", "줄 선 하나"),
+      heartbeat("w2"),
+      wake("w3", "중단하고 보낸 말", "interrupt"),
+      wake("w4", "줄 선 둘"),
+      wake("w5", "또 중단하고 보낸 말", "interrupt"),
+    ];
+    expect(bundleWakes(pending).map((w) => w.id)).toEqual(["w3", "w5"]);
+    const started = plan(pending);
+    expect(started?.wakeIds).toEqual(["w3", "w5"]);
+    expect(started?.wakeReasons).toMatchObject([
+      { body: "중단하고 보낸 말" },
+      { body: "또 중단하고 보낸 말" },
+    ]);
+    expect(plan([])).toBeUndefined();
   });
 
   it("resumes the previous session only under the same instructions bundle", () => {

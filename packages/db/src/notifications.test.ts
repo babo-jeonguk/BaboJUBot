@@ -34,7 +34,7 @@ const lease = 30_000;
 /** 조직 하나와, 그 Lead가 실행 시도 안에서 대화 메시지를 보내는 함수. */
 async function organization() {
   const creation = planOrganizationCreation(
-    { name: "알림 조직" },
+    { name: "알림 조직", goal: "목표" },
     { files: [] },
     source
   );
@@ -44,6 +44,7 @@ async function organization() {
     t.db,
     planOwnerMessage(
       { organizationId: lead.organizationId, agents: creation.agents },
+      creation.defaultConversation,
       { body: "시작", delivery: "next_run" },
       source
     )
@@ -59,13 +60,18 @@ async function organization() {
     agentRole: "lead" as const,
   };
   const leadMessage = async (body: string) => {
-    const written = await insertAgentMessage(t.db, run, body, {
-      activity: {
-        source: "control_plane",
-        activity: { type: "org_tool", tool: "send_message", summary: body },
-      },
-      source,
-    });
+    const written = await insertAgentMessage(
+      t.db,
+      run,
+      { body },
+      {
+        activity: {
+          source: "control_plane",
+          activity: { type: "org_tool", tool: "send_message", summary: body },
+        },
+        source,
+      }
+    );
     if (written.kind !== "ok") throw new Error(written.kind);
     const [event] = written.events;
     return { messageId: written.value.id, event: event! };
@@ -134,6 +140,7 @@ describe("notification outbox", () => {
         organizationId: org.organizationId,
         agents: org.creation.agents,
       },
+      org.creation.defaultConversation,
       { body: "안녕", delivery: "next_run" },
       source
     );
@@ -185,7 +192,7 @@ describe("notification outbox", () => {
       sourceId: messageId,
       title: "Research Lead 메시지",
       body: "실험 결과를 보고합니다",
-      link: `/orgs/${org.organizationId}/chat`,
+      link: `/orgs/${org.organizationId}/chat/${org.creation.defaultConversation.id}`,
       createdAt: expect.any(String),
     });
     expect(claim.attempts).toBe(1);
@@ -359,7 +366,7 @@ describe("fake channel record", () => {
         sourceId: claim!.notification.sourceId,
         title: "Research Lead 메시지",
         body: "두 번 보낼 보고",
-        link: `/orgs/${org.organizationId}/chat`,
+        link: `/orgs/${org.organizationId}/chat/${org.creation.defaultConversation.id}`,
         deliveredAt: expect.any(String),
       },
     ]);

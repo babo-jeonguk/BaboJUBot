@@ -5,7 +5,7 @@ import type {
   InboxItemState,
   UpdateInboxItemInput,
 } from "@babojubot/contracts";
-import { canArchiveInboxItem, inboxItemTime } from "@babojubot/contracts";
+import { inboxItemTime } from "@babojubot/contracts";
 import { and, asc, eq, ne, or } from "drizzle-orm";
 import { toApprovalSummary } from "./approvals.ts";
 import type { Database } from "./client.ts";
@@ -21,20 +21,27 @@ import {
   runs,
 } from "./schema.ts";
 
-const stateOf = (row: { read: boolean | null; archived: boolean | null }) => ({
-  read: row.read ?? false,
+/**
+ * 정리 상태. 정리한 적 없는 항목은 보관 안 함이고, 결정한 승인 요청·결과 제출이면 읽음(결정하려면 본다), 아니면 읽지 않음이다.
+ * `updateInboxItem`이 처음 정리할 때 같은 기본값으로 행을 만든다.
+ */
+const stateOf = (
+  row: { read: boolean | null; archived: boolean | null },
+  decided: boolean
+) => ({
+  read: row.read ?? decided,
   archived: row.archived ?? false,
 });
 const stateColumns = { read: inboxStates.read, archived: inboxStates.archived };
 
 /**
- * Inbox: 모든 조직의 결정을 기다리는 승인 요청·결과 제출과 실패한 실행 시도, 각 항목의 읽음·보관. 오래된 것부터.
- * 승인 요청·결과 제출은 결정을 기다리는 기록에서 바로 읽으므로 결정하면 빠지고, 알림 전송 여부와 상관없이 나온다.
- * 중단된 조직의 초기 연구 승인 요청·결과 제출은 결정을 받지 않으므로 빠진다. 작업자 추가 요청은 단계와 상관없이 결정하므로 남는다.
- * 실패한 실행 시도는 실행 시도마다 남으며 보관해도 보관됨에 남는다.
+ * Inbox: 모든 조직의 승인 요청·결과 제출과 실패한 실행 시도, 각 항목의 읽음·보관. 오래된 것부터.
+ * 승인 요청·결과 제출은 원본 기록에서 바로 읽으므로 알림 전송 여부와 상관없이 나오고, 결정한 뒤에도 결정 상태와 함께 남는다.
+ * 중단된 조직의 결정을 기다리는 초기 연구 승인 요청·결과 제출은 결정을 받지 않으므로 빠진다(결정한 것은 남는다).
+ * 작업자 추가 요청은 단계와 상관없이 결정하므로 남는다. 실패한 실행 시도는 실행 시도마다 남는다. 보관한 항목은 보관됨에 남는다.
  */
 export async function listInbox(db: Database): Promise<InboxItem[]> {
-  const pendingApprovals = await db
+  const approvalRows = await db
     .select({
       approval: approvals,
       organizationName: organizations.name,
@@ -44,13 +51,14 @@ export async function listInbox(db: Database): Promise<InboxItem[]> {
     .innerJoin(organizations, eq(organizations.id, approvals.organizationId))
     .leftJoin(inboxStates, eq(inboxStates.approvalId, approvals.id))
     .where(
-      and(
-        eq(approvals.status, "pending"),
-        or(eq(approvals.kind, "add_worker"), ne(organizations.stage, "stopped"))
+      or(
+        ne(approvals.status, "pending"),
+        eq(approvals.kind, "add_worker"),
+        ne(organizations.stage, "stopped")
       )
     )
     .orderBy(asc(approvals.seq));
-  const pendingResults = await db
+  const resultRows = await db
     .select({
       submission: resultSubmissions,
       organizationName: organizations.name,
@@ -66,8 +74,8 @@ export async function listInbox(db: Database): Promise<InboxItem[]> {
       eq(inboxStates.resultSubmissionId, resultSubmissions.id)
     )
     .where(
-      and(
-        eq(resultSubmissions.status, "pending"),
+      or(
+        ne(resultSubmissions.status, "pending"),
         ne(organizations.stage, "stopped")
       )
     )
@@ -86,22 +94,22 @@ export async function listInbox(db: Database): Promise<InboxItem[]> {
     .where(eq(runs.status, "failed"))
     .orderBy(asc(runs.seq));
   const items: InboxItem[] = [
-    ...pendingApprovals.map((row) => ({
+    ...approvalRows.map((row) => ({
       kind: "approval" as const,
       organizationName: row.organizationName,
-      ...stateOf(row),
+      ...stateOf(row, row.approval.status !== "pending"),
       approval: toApprovalSummary(row.approval),
     })),
-    ...pendingResults.map((row) => ({
+    ...resultRows.map((row) => ({
       kind: "result_submission" as const,
       organizationName: row.organizationName,
-      ...stateOf(row),
+      ...stateOf(row, row.submission.status !== "pending"),
       submission: toResultSubmissionSummary(row.submission),
     })),
     ...failedRuns.map((row) => ({
       kind: "run_failure" as const,
       organizationName: row.organizationName,
-      ...stateOf(row),
+      ...stateOf(row, false),
       agentName: row.agentName,
       run: toRunSummary(row.run),
     })),
@@ -120,17 +128,20 @@ const sourceField = {
   run_failure: "runId",
 } as const;
 
-/** 정리할 수 있는 원본인가: 그 조직의 승인 요청·결과 제출, 또는 그 조직의 실패한 실행 시도. */
-async function sourceExists(
+/**
+ * 정리할 수 있는 원본: 그 조직의 승인 요청·결과 제출, 또는 그 조직의 실패한 실행 시도. 없으면 `null`이다.
+ * `awaitsDecision`은 `pending`인 승인 요청·결과 제출인가다(실패한 실행 시도는 결정할 것이 없다).
+ */
+async function findSource(
   tx: Executor,
   organizationId: string,
   kind: InboxItemKind,
   sourceId: string
-) {
-  const rows =
+): Promise<{ awaitsDecision: boolean } | null> {
+  const [row] =
     kind === "approval"
       ? await tx
-          .select({ id: approvals.id })
+          .select({ status: approvals.status })
           .from(approvals)
           .where(
             and(
@@ -140,7 +151,7 @@ async function sourceExists(
           )
       : kind === "result_submission"
         ? await tx
-            .select({ id: resultSubmissions.id })
+            .select({ status: resultSubmissions.status })
             .from(resultSubmissions)
             .where(
               and(
@@ -149,7 +160,7 @@ async function sourceExists(
               )
             )
         : await tx
-            .select({ id: runs.id })
+            .select({ status: runs.status })
             .from(runs)
             .where(
               and(
@@ -158,13 +169,14 @@ async function sourceExists(
                 eq(runs.status, "failed")
               )
             );
-  return rows.length > 0;
+  return row ? { awaitsDecision: row.status === "pending" } : null;
 }
 
 /**
  * 사용자의 알림 정리 명령. 준 값(읽음·보관)을 그대로 대입하고, 바뀌었으면 정리 뒤 상태로 `inbox_item.updated` Event를 남긴다.
  * 원본의 결정·단계·깨우기는 건드리지 않는다. 다른 조직의 원본과 없는 원본은 `not_found`다.
- * 보관할 수 없는 종류(결정을 기다리는 승인 요청·결과 제출)를 보관하라는 명령은 아무것도 바꾸지 않고 `archive_not_allowed`다.
+ * 결정을 기다리는 승인 요청·결과 제출을 보관하라는 명령은 아무것도 바꾸지 않고 `archive_not_allowed`다(contracts `canArchiveInboxItem`).
+ * 결정은 다시 `pending`으로 돌아가지 않으므로, 동시에 결정이 일어나도 결정한 것으로 읽은 원본은 그대로 결정한 상태다.
  * 같은 항목의 동시 명령은 정리 상태 행 잠금으로 직렬화되어 서로의 값을 잃지 않는다.
  */
 export async function updateInboxItem(
@@ -182,13 +194,19 @@ export async function updateInboxItem(
     return { kind: "not_found" };
   return db.transaction(async (tx) => {
     // 조직·원본을 먼저 확인한다. 다른 조직의 원본과 없는 원본은 보관 여부와 상관없이 `not_found`다.
-    if (!(await sourceExists(tx, organizationId, kind, sourceId)))
-      return { kind: "not_found" as const };
-    if (input.archived && !canArchiveInboxItem(kind))
+    const source = await findSource(tx, organizationId, kind, sourceId);
+    if (!source) return { kind: "not_found" as const };
+    if (input.archived && source.awaitsDecision)
       return { kind: "archive_not_allowed" as const };
+    // 처음 정리하는 항목의 행은 목록이 보이던 기본값(`stateOf`)으로 만든다.
     await tx
       .insert(inboxStates)
-      .values({ organizationId, kind, [sourceField[kind]]: sourceId })
+      .values({
+        organizationId,
+        kind,
+        [sourceField[kind]]: sourceId,
+        read: kind !== "run_failure" && !source.awaitsDecision,
+      })
       .onConflictDoNothing({ target: sourceColumn[kind] });
     const [current] = await tx
       .select({ id: inboxStates.id, ...stateColumns })

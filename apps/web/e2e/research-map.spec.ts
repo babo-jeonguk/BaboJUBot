@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /**
@@ -25,8 +26,8 @@ async function watchSelectionLag(page: Page) {
     const tick = (t: number) => {
       const wanted = new URL(location.href).searchParams.get("node");
       const shown = document
-        .querySelector('[data-testid="node-detail"] [data-testid="node-id"]')
-        ?.getAttribute("title");
+        .querySelector('[data-testid="node-detail"]')
+        ?.getAttribute("data-node-id");
       if (wanted && shown && wanted !== shown) {
         since ??= t;
         lag.max = Math.max(lag.max, t - since);
@@ -48,12 +49,9 @@ async function watchSelectionLag(page: Page) {
 /** 승인을 받아 가짜 작업자들이 작업마다 연구 노드를 만든 조직. */
 async function researchingOrganization(page: Page, name: string) {
   const created = await page.request.post("/api/organizations", {
-    data: { name },
+    data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  await page.request.post(`/api/organizations/${org.id}/messages`, {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {
@@ -81,7 +79,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   const org = await researchingOrganization(page, "지도 E2E 조직");
   await openMap(page, `/orgs/${org.id}/map`);
   await expect(page.getByRole("main")).toContainText(
-    "초기 연구 승인 뒤 조직의 연구 흐름 템플릿이 정해지면"
+    "아직 연구 지도가 없습니다"
   );
 
   // 승인하면 가짜 작업자가 작업마다 연구 노드를 만들어 작업을 잇는다. 새로고침 없이 지도에 나타난다.
@@ -165,7 +163,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
 
   // 주 부모 변경: 다른 문제 아래로.
   await panel.getByRole("button", { name: "주 부모 변경" }).click();
-  await panel.getByLabel("새 주 부모 검색 (ID·제목)").fill("정리 2");
+  await panel.getByLabel("새 주 부모 검색").fill("정리 2");
   await panel.getByRole("option", { name: /연구 문제 정리 2/ }).click();
   await panel
     .getByRole("button", { name: /주 부모를 .*연구 문제 정리 2/ })
@@ -178,7 +176,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   // 보조 연결 추가: 원래 문제를 뒷받침한다. 주 배치는 바뀌지 않는다.
   const before = await first.boundingBox();
   await panel.getByRole("button", { name: "보조 연결" }).click();
-  await panel.getByLabel("연결할 노드 검색 (ID·제목)").fill("정리 1");
+  await panel.getByLabel("연결할 노드 검색").fill("정리 1");
   await panel.getByRole("option", { name: /연구 문제 정리 1/ }).click();
   await panel.getByRole("radio", { name: "뒷받침" }).click();
   await panel.getByRole("button", { name: "보조 연결 추가" }).click();
@@ -215,18 +213,24 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(panel.getByLabel("제목", { exact: true })).toHaveValue(
     "연구 문제 정리 1"
   );
-  await panel.getByRole("button", { name: "폐기…" }).click();
-  const confirm = panel.getByRole("group", { name: "폐기 확인" });
-  await expect(confirm).toContainText("보조 연결 1개, 연결 작업 1개");
-  await confirm.getByRole("button", { name: "폐기", exact: true }).click();
+  // 폐기는 되돌릴 수 있어 묻지 않고 바로 하고, 화면 아래 토스트에서 폐기 취소를 준다.
+  await panel.getByRole("button", { name: "폐기", exact: true }).click();
   await expect(first).toHaveAttribute("data-status", "discarded");
   await expect(panel.getByTestId("node-status")).toHaveText("폐기");
+  const toast = page.getByTestId("toast");
+  await expect(toast).toContainText("노드를 폐기했습니다");
   await expect(
     linked.getByRole("link", { name: /연구 문제 정리 1/ })
   ).toHaveCount(2);
-  await page.getByRole("button", { name: /폐기 숨김/ }).click();
-  await expect(cards).toHaveCount(2);
-  await page.getByRole("button", { name: "폐기 흐리게" }).click();
+  await toast.getByRole("button", { name: "폐기 취소" }).click();
+  await expect(first).toHaveAttribute("data-status", "proposed");
+  await expect(toast).toHaveCount(0);
+
+  // 패널의 폐기 취소도 그대로 있다. 토스트는 닫기로 닫는다.
+  await panel.getByRole("button", { name: "폐기", exact: true }).click();
+  await expect(first).toHaveAttribute("data-status", "discarded");
+  await toast.getByRole("button", { name: "닫기" }).click();
+  await expect(toast).toHaveCount(0);
   await panel.getByRole("button", { name: /폐기 취소/ }).click();
   await expect(first).toHaveAttribute("data-status", "proposed");
 
@@ -237,8 +241,8 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
         (
           (await (
             await page.request.get(`/api/organizations/${org.id}/messages`)
-          ).json()) as { body: string }[]
-        ).some((m) => m.body.includes("사용자의 연구 지도 편집")),
+          ).json()) as { messages: { body: string }[] }
+        ).messages.some((m) => m.body.includes("사용자의 연구 지도 편집")),
       runs
     )
     .toBe(true);
@@ -278,6 +282,61 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(
     panel.getByRole("button", { name: "＋ 하위 노드" })
   ).toBeInViewport();
+});
+
+test("discarding two nodes in a row keeps both undo toasts, each undoing its own node", async ({
+  page,
+}) => {
+  const org = await researchingOrganization(page, "토스트 더미 조직");
+  await openMap(page, `/orgs/${org.id}/map`);
+  await page.request.post(
+    `/api/organizations/${org.id}/approvals/${org.approvalId}/decision`,
+    { data: { decision: "approve" } }
+  );
+  const cards = page.getByTestId("map-node");
+  await expect(cards).toHaveCount(2, { timeout: 20_000 });
+  // 화면 시계를 멈춰 토스트가 제 10초에 닫히지 않게 한다(타이머는 그대로 돈다). 부하가 큰 기기에서 두 번째 폐기까지
+  // 10초를 넘겨 앞 토스트가 닫히면 검사가 수명이 아니라 더미를 보지 못한다. 토스트마다의 수명은 toast-stack 단위 검사가 본다.
+  await page.clock.setFixedTime(new Date());
+  const panel = page.getByRole("complementary", { name: "노드 상세" });
+  const discard = async (title: string) => {
+    const card = cards.filter({ hasText: title });
+    await card.click();
+    // 패널이 그 노드를 보일 때까지 기다린다. 그 전에 누르면 이전 노드를 폐기하려 한다.
+    await expect(page).toHaveURL(
+      new RegExp(`[?&]node=${await card.getAttribute("data-node-id")}`)
+    );
+    await expect(panel.getByLabel("제목", { exact: true })).toHaveValue(title);
+    await panel.getByRole("button", { name: "폐기", exact: true }).click();
+    await expect(card).toHaveAttribute("data-status", "discarded");
+    return card;
+  };
+  const a = await discard("연구 문제 정리 1");
+  const b = await discard("연구 문제 정리 2");
+
+  // 새 토스트가 와도 앞 토스트는 남는다. 먼저 폐기한 노드의 토스트가 위, 새 토스트가 맨 아래다.
+  const toasts = page.getByTestId("toast");
+  await expect(toasts).toHaveCount(2);
+  await expect(toasts.nth(0)).toContainText("연구 문제 정리 1");
+  await expect(toasts.nth(1)).toContainText("연구 문제 정리 2");
+  const [top, bottom] = [
+    (await toasts.nth(0).boundingBox())!,
+    (await toasts.nth(1).boundingBox())!,
+  ];
+  expect(bottom.y).toBeGreaterThan(top.y);
+  await expect(
+    toasts.getByRole("button", { name: "폐기 취소", exact: true })
+  ).toHaveCount(2);
+
+  // 앞 토스트의 폐기 취소는 그 노드만 되돌리고, 뒤 토스트는 남는다.
+  await toasts
+    .filter({ hasText: "연구 문제 정리 1" })
+    .getByRole("button", { name: "폐기 취소" })
+    .click();
+  await expect(a).toHaveAttribute("data-status", "proposed");
+  await expect(b).toHaveAttribute("data-status", "discarded");
+  await expect(toasts).toHaveCount(1);
+  await expect(toasts).toContainText("연구 문제 정리 2");
 });
 
 test("parallel secondary links between the same two nodes are drawn apart and listed by link ID", async ({
@@ -365,34 +424,11 @@ test("parallel secondary links between the same two nodes are drawn apart and li
   };
   await labelsApart();
 
-  // 위→아래로 바꾸면 연결은 출발 카드의 아래쪽 가운데에서 나간다.
-  await page.getByRole("button", { name: "위→아래" }).click();
-  const card = page.locator(`.react-flow__node[data-id="${from!.id}"]`);
-  await expect
-    .poll(async () => {
-      const [x, y] = ((await card.getAttribute("style")) ?? "")
-        .match(/translate\(([-\d.]+)px, ([-\d.]+)px\)/)!
-        .slice(1)
-        .map(Number);
-      const [sx, sy] = ((await paths[0]!.getAttribute("d")) ?? "")
-        .match(/^M([-\d.]+),([-\d.]+)/)!
-        .slice(1)
-        .map(Number);
-      return [Math.round(sx! - x!), sy! > y! + 70];
-    })
-    .toEqual([116, true]);
-  await labelsApart();
-  await sameCurves();
-
-  // 상세 패널은 관계 ID별로 한 행씩 보이고, 같은 종류의 두 연결도 짧은 ID로 구분된다.
+  // 상세 패널은 관계마다 한 행씩 보인다. 같은 종류의 두 연결도 따로 보인다.
   const panel = page.getByRole("complementary", { name: "노드 상세" });
   const rows = panel.locator("[data-link-id]");
   await expect(rows).toHaveCount(4);
   await expect(rows.filter({ hasText: "─관련→" })).toHaveCount(2);
-  const shown = await rows.getByTestId("link-id").allTextContents();
-  expect(new Set(shown).size).toBe(4);
   for (const l of links)
-    await expect(panel.locator(`[data-link-id="${l.id}"]`)).toContainText(
-      l.id.slice(0, 8)
-    );
+    await expect(panel.locator(`[data-link-id="${l.id}"]`)).toHaveCount(1);
 });

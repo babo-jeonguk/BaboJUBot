@@ -98,8 +98,6 @@ export function DashboardMetrics({ orgId }: { orgId: string }) {
         {({ tasks, runs, cancelling, artifacts, days }) => {
           const finished = days.map((d) => d.runsFinished);
           const success = runSuccessRate(finished);
-          const excluded = (reason: "cancelled" | "server_restart") =>
-            finished.reduce((n, f) => n + f[reason], 0);
           return (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <Metric label="작업" value={sum(tasks)} testId="metric-tasks">
@@ -113,6 +111,7 @@ export function DashboardMetrics({ orgId }: { orgId: string }) {
                 />
                 <br />
                 {endReasons
+                  .filter((s) => runs[s] > 0)
                   .map((s) => `${runStatusLabel[s]} ${runs[s]}`)
                   .join(" · ")}
               </Metric>
@@ -120,21 +119,14 @@ export function DashboardMetrics({ orgId }: { orgId: string }) {
                 label="산출물"
                 value={artifacts}
                 testId="metric-artifacts"
-              >
-                작업자가 기록한 산출물. 검증된 결과가 아닙니다.
-              </Metric>
+              />
               <Metric
                 label="실행 성공률 · 14일"
                 value={success.rate === null ? "—" : percent(success.rate)}
                 testId="metric-success"
               >
-                {success.rate === null
-                  ? "완료·실패로 끝난 실행 시도가 없습니다"
-                  : `완료 ${success.completed} / (완료 ${success.completed} + 실패 ${success.failed})`}
-                <br />
-                취소 {excluded("cancelled")} · 서버 재시작{" "}
-                {excluded("server_restart")}은 세지 않습니다. 연구 최종 완료와
-                다릅니다.
+                {success.rate !== null &&
+                  `완료 ${success.completed} · 실패 ${success.failed}`}
               </Metric>
             </div>
           );
@@ -202,13 +194,11 @@ const shortDate = (date: string) => {
  */
 function DayChart({
   title,
-  caption,
   days,
   series,
   display,
 }: {
   title: string;
-  caption: string;
   days: DashboardDay[];
   series: Series[];
   display?: (day: DashboardDay) => { height: number | null; label: string };
@@ -224,9 +214,8 @@ function DayChart({
       : `${shortDate(d.date)}: ${series.map((s) => `${s.label} ${s.value(d)}`).join(", ")}`;
   return (
     <figure className="card min-w-0 p-4" aria-label={title}>
-      <figcaption>
-        <div className="text-sm font-semibold text-slate-700">{title}</div>
-        <div className="text-xs text-slate-500">{caption}</div>
+      <figcaption className="text-sm font-semibold text-slate-700">
+        {title}
       </figcaption>
       {series.length > 1 && (
         <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600">
@@ -373,6 +362,8 @@ function DayChart({
   );
 }
 
+const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 /** 실행 시도·성공률·작업·산출물의 14일. 날짜는 브라우저 시간대로 자른다. */
 export function DashboardCharts({ orgId }: { orgId: string }) {
   return (
@@ -380,19 +371,17 @@ export function DashboardCharts({ orgId }: { orgId: string }) {
       <WithDashboard orgId={orgId}>
         {({ days, timeZone }) => (
           <>
-            <p className="mb-2 text-xs text-slate-500">
-              최근 14일 · {timeZone} 기준 · 오늘은 지금까지
-            </p>
+            <h2
+              className="mb-2 text-xs font-medium text-slate-500"
+              title={timeZone}
+            >
+              최근 14일
+              {timeZone !== browserTimeZone && ` · ${timeZone} 기준`}
+            </h2>
             <div className="grid gap-3 md:grid-cols-2">
-              <DayChart
-                title="실행 시도"
-                caption="시작한 날 기준, 지금 상태별"
-                days={days}
-                series={runSeries}
-              />
+              <DayChart title="실행 시도" days={days} series={runSeries} />
               <DayChart
                 title="실행 성공률"
-                caption="끝난 날 기준 완료 / (완료 + 실패). 취소·서버 재시작은 빼고 셉니다"
                 days={days}
                 series={[]}
                 display={(d) => {
@@ -409,18 +398,8 @@ export function DashboardCharts({ orgId }: { orgId: string }) {
                       };
                 }}
               />
-              <DayChart
-                title="작업"
-                caption="만든 날 기준, 지금 상태별(그날의 상태가 아닙니다)"
-                days={days}
-                series={taskSeries}
-              />
-              <DayChart
-                title="산출물"
-                caption="기록한 날 기준"
-                days={days}
-                series={artifactSeries}
-              />
+              <DayChart title="작업" days={days} series={taskSeries} />
+              <DayChart title="산출물" days={days} series={artifactSeries} />
             </div>
           </>
         )}
@@ -487,9 +466,10 @@ export function RunningAgents({ org }: { org: OrganizationDetail }) {
                       </span>
                       <Link
                         to={`/orgs/${org.id}/runs/${run.id}`}
+                        title={runLabel(run.id)}
                         className="text-brand-600 hover:underline"
                       >
-                        {runLabel(run.id)}
+                        실행 보기
                       </Link>
                       <Link
                         to={`/orgs/${org.id}/activity?agent=${run.agentId}`}

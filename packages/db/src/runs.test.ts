@@ -12,7 +12,7 @@ import {
   finishRun,
   insertOwnerMessage,
   listAgentsWithPendingWakes,
-  listConversation,
+  listConversationMessages,
   listRuns,
   loadRunContext,
   recoverInterruptedRuns,
@@ -49,32 +49,45 @@ const messageIdOf = (reason: WakeReason) =>
 
 async function organization() {
   const creation = planOrganizationCreation(
-    { name: "조직" },
+    { name: "조직", goal: "목표" },
     { files: [] },
     source
   );
   await insertOrganizationCreation(t.db, creation);
   const lead = creation.agents[0]!;
+  const defaultConversation = creation.defaultConversation;
+  // 생성 깨우기는 첫 실행 시도가 받는다. 아래 검사는 그 실행 시도가 끝난 뒤의 대기열에서 시작한다.
+  const created = await claimNextRun(t.db, lead.id, {
+    tokenDigest: randomUUID(),
+    source,
+  });
+  expect(created?.wakeReasons.map((r) => r.kind)).toEqual([
+    "organization_created",
+  ]);
+  await finishRun(t.db, created!.run.id, completed, source);
   const send = async (body: string) => {
     const plan = planOwnerMessage(
       { organizationId: lead.organizationId, agents: creation.agents },
+      defaultConversation,
       { body, delivery: "next_run" },
       source
     );
     await insertOwnerMessage(t.db, plan);
     return plan.message;
   };
+  const listConversation = () =>
+    listConversationMessages(t.db, lead.organizationId, defaultConversation.id);
   const claim = (tokenDigest = randomUUID()) =>
     claimNextRun(t.db, lead.id, {
       tokenDigest,
       source,
     });
-  return { lead, send, claim };
+  return { lead, send, claim, listConversation };
 }
 
 describe("wake queue admission", () => {
   it("bundles every pending wake into one run and holds later wakes for the next run", async () => {
-    const { lead, send, claim } = await organization();
+    const { send, claim, listConversation } = await organization();
     const first = await send("하나");
     const second = await send("둘");
 
@@ -105,11 +118,7 @@ describe("wake queue admission", () => {
     const run2 = await claim();
     expect(run2?.wakeReasons.map(messageIdOf)).toEqual([third.id]);
 
-    const conversation = await listConversation(
-      t.db,
-      lead.organizationId,
-      lead.id
-    );
+    const conversation = await listConversation();
     expect(conversation.map((m) => [m.body, m.deliveredToRunId])).toEqual([
       ["하나", run1!.run.id],
       ["둘", run1!.run.id],
@@ -129,7 +138,8 @@ describe("wake queue admission", () => {
     const runs = await listRuns(t.db, lead.organizationId, {
       agentId: lead.id,
     });
-    expect(runs.map((r) => r.status)).toEqual(["running"]);
+    // 생성 깨우기를 받은 첫 실행 시도는 이미 끝났다.
+    expect(runs.map((r) => r.status).sort()).toEqual(["completed", "running"]);
   });
 
   it("does not let one agent's run hold back another agent", async () => {
@@ -176,6 +186,7 @@ describe("admission and organization stage", () => {
         payload: {
           messageId: randomUUID(),
           agentId: lead.id,
+          conversationId: randomUUID(),
           author: "owner",
           runId: null,
         },
@@ -202,12 +213,12 @@ describe("admission and organization stage", () => {
     await send("먼저 온 메시지");
     const run = await claim();
     expect(run).toBeDefined();
+    await send("실행 중 메시지");
     await t.db
       .update(organizations)
       .set({ stage: "completed" })
       .where(eq(organizations.id, lead.organizationId));
-    // 이미 시작한 실행 시도는 그대로이고, 끝난 뒤 새 깨우기는 실행 시도가 되지 않는다.
-    await send("완료 뒤 메시지");
+    // 이미 시작한 실행 시도는 그대로이고, 남은 깨우기는 끝난 뒤 실행 시도가 되지 않는다.
     expect(await finishRun(t.db, run!.run.id, completed, source)).toBeDefined();
     expect(await claim()).toBeUndefined();
   });
@@ -262,7 +273,9 @@ describe("control commands", () => {
     await send("y");
     expect(await claim()).toBeUndefined();
     await finishRun(t.db, runId, completed, source);
-    expect((await listRuns(t.db, lead.organizationId)).at(-1)).toMatchObject({
+    expect(
+      (await listRuns(t.db, lead.organizationId)).find((r) => r.id === runId)
+    ).toMatchObject({
       id: runId,
       status: "cancelled",
       cancelReason: "organization_paused",
@@ -299,7 +312,7 @@ describe("run termination", () => {
   });
 
   it("ends runs a stopped server left running and hands their wakes to a new run", async () => {
-    const { lead, send, claim } = await organization();
+    const { lead, send, claim, listConversation } = await organization();
     const message = await send("x");
     const digest = randomUUID();
     const interrupted = await claim(digest);
@@ -333,11 +346,9 @@ describe("run termination", () => {
     );
     expect(old).toMatchObject({ status: "server_restart", wakeCount: 1 });
     expect(old?.wakeReasons.map(messageIdOf)).toEqual([message.id]);
-    expect(
-      (await listConversation(t.db, lead.organizationId, lead.id)).map(
-        (m) => m.deliveredToRunId
-      )
-    ).toEqual([next!.run.id]);
+    expect((await listConversation()).map((m) => m.deliveredToRunId)).toEqual([
+      next!.run.id,
+    ]);
   });
 
   it("keeps an owner cancellation requested before the server stopped and does not hand its wakes over again", async () => {

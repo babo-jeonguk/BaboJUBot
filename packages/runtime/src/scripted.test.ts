@@ -11,6 +11,7 @@ import {
   createScriptedRuntime,
   defaultScriptSelector,
   demoLeadScript,
+  demoWorkerScript,
   leadReplyScript,
   parseGoalMessage,
   type Script,
@@ -22,6 +23,7 @@ const ids = {
   agentId: crypto.randomUUID(),
   runId: crypto.randomUUID(),
 };
+const defaultConversationId = crypto.randomUUID();
 const request: RunRequest = {
   identity: ids,
   access: { toolsBaseUrl: "http://tools.test", token: "secret-token" },
@@ -30,6 +32,7 @@ const request: RunRequest = {
       kind: "owner_message",
       wakeId: crypto.randomUUID(),
       messageId: crypto.randomUUID(),
+      conversationId: defaultConversationId,
       body: "목표를 정하자",
     },
   ],
@@ -43,6 +46,14 @@ const request: RunRequest = {
     },
     agent: { id: ids.agentId, role: "lead", name: "Research Lead" },
     team: [{ id: ids.agentId, role: "lead", name: "Research Lead" }],
+    conversations: [
+      {
+        id: defaultConversationId,
+        title: "기본 대화",
+        isDefault: true,
+        createdAt: new Date().toISOString(),
+      },
+    ],
     conversation: [],
     researchFlow: null,
   },
@@ -82,11 +93,15 @@ function toolServer(status = 200) {
         id: crypto.randomUUID(),
         organizationId: ids.organizationId,
         agentId: ids.agentId,
+        conversationId:
+          (calls.at(-1)!.body as { conversationId?: string }).conversationId ??
+          defaultConversationId,
         author: "agent",
         body: (calls.at(-1)!.body as { body: string }).body,
         delivery: null,
         sentByRunId: ids.runId,
         deliveredToRunId: null,
+        deliveredAt: null,
         createdAt: new Date().toISOString(),
       },
       { status: 201 }
@@ -125,6 +140,7 @@ describe("scripted runtime", () => {
     ]);
     expect(tools.calls[1]!.body).toEqual({
       body: expect.stringContaining("목표를 정하자"),
+      conversationId: defaultConversationId,
     });
     expect(c.emitted).toEqual([{ type: "progress", text: expect.any(String) }]);
   });
@@ -196,7 +212,8 @@ describe("demo Lead scenario", () => {
   const at = (
     stage: RunRequest["context"]["organization"]["stage"],
     wakeReasons: RunRequest["wakeReasons"],
-    goal: string | null = null
+    goal: string | null = null,
+    completionCriteria: string | null = goal && "기준"
   ): RunRequest => ({
     ...request,
     wakeReasons,
@@ -206,15 +223,78 @@ describe("demo Lead scenario", () => {
         ...request.context.organization,
         stage,
         goal,
-        completionCriteria: goal && "기준",
+        completionCriteria,
       },
     },
   });
-  const message = (body: string) => ({
+  const inputOf = (script: Script) => {
+    const step = script.steps.find((s) => s.do === "call");
+    if (step?.do !== "call") throw new Error("no tool call");
+    return step.input?.({
+      request,
+      context: undefined,
+      sent: [],
+      calls: [],
+    }) as { plan: string; completionCriteria?: string };
+  };
+  const created = () => ({
+    kind: "organization_created" as const,
+    wakeId: crypto.randomUUID(),
+  });
+  const message = (body: string, conversationId = defaultConversationId) => ({
     kind: "owner_message" as const,
     wakeId: crypto.randomUUID(),
     messageId: crypto.randomUUID(),
+    conversationId,
     body,
+  });
+
+  it("requests the initial approval right after the owner creates the organization, proposing criteria only when the owner left them empty", () => {
+    const withCriteria = demoLeadScript(
+      at("planning", [created()], "오류 절반", "WER 10%")
+    );
+    expect(calls(withCriteria)).toEqual(["request_initial_approval"]);
+    expect(inputOf(withCriteria)).not.toHaveProperty("completionCriteria");
+
+    const without = demoLeadScript(
+      at("planning", [created()], "오류 절반", null)
+    );
+    expect(calls(without)).toEqual(["request_initial_approval"]);
+    expect(inputOf(without).completionCriteria).toContain("오류 절반");
+    expect(
+      without.steps.some(
+        (s) =>
+          s.do === "send_message" &&
+          s
+            .body({ request, context: undefined, sent: [], calls: [] })
+            .includes("제안한 완료 기준")
+      )
+    ).toBe(true);
+
+    // 요청 뒤 서버가 멈춰 같은 깨우기를 다시 받으면 이미 한 요청은 건너뛴다.
+    const resumed = demoLeadScript(
+      at("awaiting_approval", [created()], "오류 절반", null)
+    );
+    const step = resumed.steps.find((s) => s.do === "call");
+    expect(step?.do === "call" && step.when?.({} as never)).toBe(false);
+  });
+
+  it("proposes criteria again when resubmitting for an organization still without any", () => {
+    const sentBack = {
+      kind: "approval_decision" as const,
+      wakeId: crypto.randomUUID(),
+      approvalId: crypto.randomUUID(),
+      approvalKind: "initial_research" as const,
+      decision: "request_changes" as const,
+      note: "기준을 구체적으로",
+    };
+    const resubmit = demoLeadScript(
+      at("planning", [sentBack], "오류 절반", null)
+    );
+    expect(inputOf(resubmit)).toMatchObject({
+      plan: expect.stringContaining("기준을 구체적으로"),
+      completionCriteria: expect.stringContaining("오류 절반"),
+    });
   });
 
   it("reads a goal only from both `목표:` and `완료 기준:` lines", () => {
@@ -226,7 +306,7 @@ describe("demo Lead scenario", () => {
     expect(parseGoalMessage("목표: 오류 절반")).toBeUndefined();
   });
 
-  it("records the goal and requests approval, resubmits after changes are requested, and otherwise replies", () => {
+  it("records the goal of an organization created without one and requests approval, resubmits after changes are requested, and otherwise replies", () => {
     expect(
       calls(
         demoLeadScript(
@@ -247,23 +327,64 @@ describe("demo Lead scenario", () => {
     };
     const resubmit = demoLeadScript(at("planning", [sentBack], "오류 절반"));
     expect(calls(resubmit)).toEqual(["request_initial_approval"]);
-    const step = resubmit.steps.find((s) => s.do === "call");
-    expect(
-      step?.do === "call" &&
-        (
-          step.input?.({
-            request,
-            context: undefined,
-            sent: [],
-            calls: [],
-          }) as {
-            plan: string;
-          }
-        ).plan
-    ).toContain("줄여 주세요");
+    expect(inputOf(resubmit).plan).toContain("줄여 주세요");
+    expect(inputOf(resubmit)).not.toHaveProperty("completionCriteria");
     expect(demoLeadScript(at("researching", [message("진행 상황은?")]))).toBe(
       leadReplyScript
     );
+  });
+
+  it("replies in the conversation each owner message came from and sends what it does on its own to the default conversation", () => {
+    const other = crypto.randomUUID();
+    // `then` 단계를 펼친 답장들. 앞 단계의 도구 결과에 기대지 않는 시나리오만 펼친다.
+    const replies = (script: Script, r: RunRequest) => {
+      const state = { request: r, context: undefined, sent: [], calls: [] };
+      return script.steps
+        .flatMap((s) => (s.do === "then" ? s.steps(state) : [s]))
+        .flatMap((s) =>
+          s.do === "send_message"
+            ? [{ conversationId: s.conversationId, body: s.body(state) }]
+            : []
+        );
+    };
+    const sentTo = (r: RunRequest) =>
+      replies(demoLeadScript(r), r).map((m) => m.conversationId);
+    const decision = {
+      kind: "approval_decision" as const,
+      wakeId: crypto.randomUUID(),
+      approvalId: crypto.randomUUID(),
+      approvalKind: "add_worker" as const,
+      decision: "approve" as const,
+      note: null,
+    };
+    // 두 대화의 메시지와 승인 결정을 함께 받으면 대화마다 답장하고, 승인 결정은 기본 대화에서 짚는다.
+    const mixed = at(
+      "researching",
+      [message("진행 상황은?", other), message("안녕"), decision],
+      "오류 절반"
+    );
+    expect(sentTo(mixed)).toEqual([other, defaultConversationId]);
+    const bodies = replies(demoLeadScript(mixed), mixed).map((m) => m.body);
+    expect(bodies[0]).toContain("진행 상황은?");
+    expect(bodies[0]).not.toContain("안녕");
+    expect(bodies[1]).toContain("안녕");
+    expect(bodies[1]).toContain("작업자 추가 승인 요청 승인");
+    // 부탁받은 일은 부탁한 대화로, 승인 직후의 분담은 기본 대화로 알린다.
+    expect(sentTo(at("researching", [message("작업자 추가", other)]))).toEqual([
+      other,
+    ]);
+    expect(
+      sentTo(
+        at("goal_setting", [
+          message("목표: 오류 절반\n완료 기준: WER 10%", other),
+        ])
+      )
+    ).toEqual([other]);
+    expect(
+      sentTo(
+        at("researching", [{ ...decision, approvalKind: "initial_research" }])
+      )
+    ).toEqual([defaultConversationId]);
   });
 
   it("hands one task to each worker after the initial research approval", () => {
@@ -429,6 +550,7 @@ describe("demo Lead scenario", () => {
           kind: "owner_message",
           wakeId: crypto.randomUUID(),
           messageId: crypto.randomUUID(),
+          conversationId: defaultConversationId,
           body: "결과 제출 부탁해요",
         },
       ],
@@ -531,11 +653,13 @@ describe("demo Lead scenario", () => {
             id: crypto.randomUUID(),
             organizationId: ids.organizationId,
             agentId: lead,
+            conversationId: body.conversationId,
             author: "agent",
             body: body.body,
             delivery: null,
             sentByRunId: ids.runId,
             deliveredToRunId: null,
+            deliveredAt: null,
             createdAt: now,
           },
           { status: 201 }
@@ -581,6 +705,34 @@ describe("demo worker scenario", () => {
         linkKinds: [],
       },
     },
+  });
+
+  it("fails or holds the run when the owner asks for a drill in a task comment, and only replies when the drill is merely mentioned", async () => {
+    const comment = (body: string) =>
+      worker([
+        {
+          kind: "task_comment",
+          wakeId: crypto.randomUUID(),
+          taskId: crypto.randomUUID(),
+          commentId: crypto.randomUUID(),
+          body,
+        },
+      ]);
+    expect(demoWorkerScript(comment("실패 연습 해 주세요")).steps).toEqual([
+      { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+    ]);
+    const { steps } = demoWorkerScript(comment("실행 유지 연습"));
+    expect(steps).toEqual([{ do: "hold", until: expect.any(Function) }]);
+    const hold = steps[0] as Extract<(typeof steps)[number], { do: "hold" }>;
+    const controller = new AbortController();
+    const held = hold.until(controller.signal);
+    controller.abort("cancel");
+    await expect(held).rejects.toBe("cancel");
+    expect(
+      demoWorkerScript(comment("실행 유지 연습은 하지 마세요")).steps.map(
+        (s) => s.do
+      )
+    ).toEqual(["read_context", "call"]);
   });
 
   it("starts an assigned task, records an artifact and a research node linked to the task, and completes it with a self-report, replying to comments on the task", () => {

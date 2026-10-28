@@ -1,0 +1,133 @@
+/* Markdown 보기(markdown.tsx). 글자 크기·색은 놓인 자리에서 받고, 여기서는 문서 구조의 간격·코드·표·인용만 정한다. */
+@reference "./index.css";
+
+.md {
+  @apply leading-relaxed break-words whitespace-normal;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md :where(p, ul, ol, pre, blockquote, .md-table, hr) {
+  margin-block: 0.6em;
+}
+.md :where(h1, h2, h3, h4, h5, h6) {
+  @apply font-semibold text-slate-900;
+  margin-top: 1.1em;
+  margin-bottom: 0.4em;
+  line-height: 1.35;
+}
+/* 제목 태그는 두 단계 내려 그리므로(markdown.tsx) 크기는 원래 단계 class로 정한다. */
+.md .md-h1 {
+  font-size: 1.3em;
+}
+.md .md-h2 {
+  font-size: 1.15em;
+}
+.md .md-h3 {
+  font-size: 1.05em;
+}
+.md .md-h4 {
+  font-size: 1em;
+}
+.md :where(ul, ol) {
+  padding-left: 1.4em;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li + li,
+.md li > :where(ul, ol) {
+  margin-top: 0.2em;
+}
+.md li > :where(ul, ol) {
+  margin-bottom: 0;
+}
+.md li::marker {
+  @apply text-slate-400;
+}
+.md .contains-task-list {
+  list-style: none;
+  padding-left: 0.2em;
+}
+.md .task-list-item > :where(ul, ol) {
+  margin-left: 1.3em;
+}
+.md .task-list-item input {
+  @apply mr-1.5 align-middle accent-brand-600;
+}
+.md a {
+  @apply text-brand-700 underline decoration-brand-200 underline-offset-2 hover:decoration-brand-600;
+}
+.md strong {
+  @apply font-semibold;
+}
+.md del {
+  @apply text-slate-500;
+}
+.md code {
+  @apply rounded-md bg-slate-900/[0.06] px-1 py-0.5 font-mono text-[0.9em];
+}
+.md pre {
+  @apply overflow-x-auto rounded-lg bg-slate-50 p-3 ring-1 ring-slate-200;
+}
+.md pre code {
+  @apply bg-transparent p-0 text-[0.9em];
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.md blockquote {
+  @apply border-l-[3px] border-slate-200 pl-3 text-slate-600;
+}
+.md hr {
+  @apply border-slate-200;
+}
+/* 넓은 표는 글 폭 안에서 가로로 민다. */
+.md .md-table {
+  @apply overflow-x-auto;
+}
+.md table {
+  @apply border-collapse text-[0.95em];
+}
+.md :where(th, td) {
+  @apply border border-slate-200 px-2.5 py-1.5 text-left align-top;
+}
+.md th {
+  @apply bg-slate-50 font-semibold;
+}
+
+/* 진한 바탕(내 대화 말풍선) 위 */
+.md-inverse :where(h1, h2, h3, h4, h5, h6),
+.md-inverse a {
+  @apply text-white;
+}
+.md-inverse a {
+  @apply decoration-white/50 hover:decoration-white;
+}
+.md-inverse li::marker,
+.md-inverse del {
+  @apply text-white/70;
+}
+.md-inverse code {
+  @apply bg-white/15;
+}
+.md-inverse pre {
+  @apply bg-white/10 ring-white/20;
+}
+.md-inverse pre code {
+  @apply bg-transparent;
+}
+.md-inverse blockquote {
+  @apply border-white/40 text-white/85;
+}
+.md-inverse :where(hr, th, td) {
+  @apply border-white/25;
+}
+.md-inverse th {
+  @apply bg-white/10;
+}

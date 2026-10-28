@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 type Copy = { id: string; path: string; content: string; revision: number };
@@ -8,7 +9,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   context,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "사본 편집 E2E 조직" },
+    data: { name: "사본 편집 E2E 조직", ...goalInput },
   });
   expect(created.status()).toBe(201);
   const org = (await created.json()) as {
@@ -37,7 +38,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await expect(page).toHaveURL(new RegExp(`/agents/${leadId}/instructions$`));
   const section = (p: Page) =>
     p.getByRole("region", { name: "Role·Soul·Skill 사본" });
-  await expect(section(page)).toContainText("이 에이전트만의 사본입니다");
+  await expect(section(page)).toBeVisible();
   const revisions = (p: Page) =>
     section(p)
       .getByRole("region", { name: "revision 목록" })
@@ -56,7 +57,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
 
   // 저장하지 않은 편집이 있으면 다른 파일이나 화면으로 옮기기 전에 묻고, 계속 편집하면 그대로다.
   const ask = page.getByRole("dialog", {
-    name: "저장하지 않은 편집이 있습니다",
+    name: "편집한 내용을 버릴까요?",
   });
   await section(page).getByRole("tab", { name: "Soul · SOUL.md" }).click();
   await expect(ask).toBeVisible();
@@ -103,7 +104,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   const save = section(page).getByRole("button", { name: "저장", exact: true });
   await save.click();
   await expect(section(page).getByRole("alert")).toContainText(
-    "편집 내용은 그대로이니"
+    "저장하지 못했습니다"
   );
   await expect(editor).toHaveValue(edited);
 
@@ -140,7 +141,9 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   });
   expect(elsewhere.status()).toBe(200);
   const conflict = section(page).getByRole("alert");
-  await expect(conflict).toContainText("지금은 revision 3입니다");
+  await expect(conflict).toContainText(
+    "다른 곳에서 먼저 저장했습니다 (revision 3)"
+  );
   await expect(save).toBeDisabled();
   await expect(editor).toHaveValue(mine);
   // 편집 중에도 먼저 저장된 revision을 읽어 보고, 돌아오면 편집 내용이 그대로다.
@@ -163,7 +166,7 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await editor.fill("버릴 편집");
   await page.goBack();
   await expect(ask).toBeVisible();
-  await ask.getByRole("button", { name: "편집 버리고 이동" }).click();
+  await ask.getByRole("button", { name: "버리기" }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${leadId}$`));
   await expect(page.getByRole("region", { name: "Heartbeat" })).toBeVisible();
   expect((await copies()).find((c) => c.id === original.id)).toMatchObject({

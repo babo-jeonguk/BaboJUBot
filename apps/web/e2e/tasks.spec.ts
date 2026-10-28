@@ -1,17 +1,14 @@
 import { expect, test } from "@playwright/test";
+import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 test("the owner watches tasks appear and complete live, reads the self-report and artifact, and comments to wake the worker", async ({
   page,
 }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "작업 E2E 조직" },
+    data: { name: "작업 E2E 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  // 가짜 Lead가 목표를 기록하고 초기 연구 승인을 요청한다.
-  await page.request.post(`/api/organizations/${org.id}/messages`, {
-    data: { body: "목표: 오류 유형을 정리한다\n완료 기준: 유형 목록" },
-  });
   let approvalId = "";
   await expect
     .poll(async () => {
@@ -50,7 +47,6 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   );
   await expect(page.getByTestId("task-assignee")).toHaveText("연구원 1");
   const report = page.getByRole("region", { name: "자기 보고" });
-  await expect(report).toContainText("검증된 결과가 아닙니다");
   await expect(report.getByTestId("task-report")).toContainText(
     "메모를 산출물로 남겼습니다"
   );
@@ -71,7 +67,7 @@ test("the owner watches tasks appear and complete live, reads the self-report an
     runs
   );
   await expect(thread.locator('[data-author="owner"]')).toContainText(
-    "에 전달됨"
+    "✓ 전달됨"
   );
   await expect(comments.getByLabel("작업 댓글")).toHaveValue("");
   await expect(page.getByRole("main").getByTestId("task-status")).toHaveText(
@@ -94,12 +90,13 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   const artifacts = page.getByRole("region", { name: "산출물" });
   await artifacts.getByRole("link", { name: /연구 문제 정리 1 메모/ }).click();
   await expect(page).toHaveURL(/\/artifacts\/[0-9a-f-]{36}$/);
-  await expect(page.getByTestId("artifact-content")).toContainText(
-    "# 연구 문제 정리 1 메모"
-  );
-  await expect(page.getByRole("main")).toContainText(
-    "산출물이 있다고 결과가 확인된 것은 아닙니다"
-  );
+  // Markdown 산출물은 기호가 아니라 제목·목록으로 보인다.
+  const content = page.getByTestId("artifact-content");
+  await expect(
+    content.getByRole("heading", { name: "연구 문제 정리 1 메모" })
+  ).toBeVisible();
+  await expect(content.getByRole("listitem")).toHaveCount(2);
+  await expect(content).not.toContainText("#");
   await page.reload();
   await expect(page.getByTestId("artifact-content")).toContainText(
     "검증된 결과가 아닙니다"
@@ -121,7 +118,7 @@ test("the owner watches tasks appear and complete live, reads the self-report an
 
 test("shows a missing task or artifact as not found", async ({ page }) => {
   const created = await page.request.post("/api/organizations", {
-    data: { name: "없는 작업 조직" },
+    data: { name: "없는 작업 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
   await page.goto(`/orgs/${org.id}/tasks/${crypto.randomUUID()}`);

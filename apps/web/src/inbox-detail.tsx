@@ -9,7 +9,13 @@ import {
   type InboxItemKind,
   type ResultSubmission,
 } from "@babojubot/contracts";
-import { useEffect, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
@@ -20,8 +26,9 @@ import {
   useResultSubmission,
   useRun,
 } from "./api.ts";
-import { ApprovalDecision } from "./approvals.tsx";
+import { ApprovalDecision, ProposedCriteria } from "./approvals.tsx";
 import { InboxItemOrganize, useInboxPanel } from "./inbox.tsx";
+import { Markdown } from "./markdown.tsx";
 import { ResultDecision } from "./results.tsx";
 import {
   approvalKindLabel,
@@ -63,7 +70,7 @@ type Props = { orgId: string; sourceId: string };
 
 /**
  * 머리: 종류·상태·조직·시각, 원래 화면 링크, 알림 정리(읽음·보관).
- * 정리 버튼은 Inbox에 아직 있는 항목에만 보인다(결정한 승인 요청·결과 제출은 Inbox에서 빠진다).
+ * 정리 버튼은 Inbox 항목에만 보인다(결정한 승인 요청·결과 제출도 Inbox에 남아 결정 뒤에는 보관할 수 있다).
  */
 function Header({
   orgId,
@@ -116,7 +123,7 @@ function Header({
 }
 
 /**
- * 알림 정리. Inbox에 아직 있는 항목에만 보인다(결정한 승인 요청·결과 제출은 Inbox에서 빠진다).
+ * 알림 정리. Inbox 항목에만 보인다(중단된 조직의 결정을 기다리는 요청처럼 Inbox에 없는 원본에는 없다).
  * 열 때 읽지 않은 항목이면 한 번 읽음으로 바꾼다. 이 화면에서 읽지 않음으로 되돌리면 다시 바꾸지 않는다.
  * 읽음 명령이 실패하면 저절로 다시 보내지 않고 알린 뒤, 사용자가 다시 시도하게 한다.
  * 다시 불러온 항목이 이미 읽음이면 그 안내를 지운다.
@@ -169,16 +176,24 @@ function Block({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** 긴 글은 앞부분만 보이고, 줄였다는 것을 숨기지 않는다. */
+/** 긴 글은 앞부분만 보이고, 잘린 글은 아래가 흐려져 줄였다는 것을 숨기지 않는다. */
 function Excerpt({ label, text }: { label: string; text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [clipped, setClipped] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) setClipped(el.scrollHeight > el.clientHeight);
+  }, [text]);
   return (
     <section aria-label={label} className="mb-4">
       <h2 className="mb-1.5 text-sm font-semibold text-slate-600">{label}</h2>
       <div className="card px-4 py-3 text-sm text-slate-800">
-        <p className="line-clamp-4 break-words whitespace-pre-wrap">{text}</p>
-        <p className="mt-1 text-xs text-slate-400">
-          길면 앞부분만 보입니다. 전문은 원래 화면에서 볼 수 있습니다.
-        </p>
+        <Markdown
+          ref={ref}
+          text={text}
+          data-clipped={clipped || undefined}
+          className={`max-h-24 overflow-hidden ${clipped ? "[mask-image:linear-gradient(to_bottom,black_55%,transparent)]" : ""}`}
+        />
       </div>
     </section>
   );
@@ -234,11 +249,10 @@ function ProposalSummary({ approval: a }: { approval: Approval }) {
         </h2>
         <dl className="card grid gap-x-4 gap-y-2 px-4 py-3 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
-          <dd className="break-words whitespace-pre-wrap">{p.goal}</dd>
-          <dt className="text-slate-500">완료 기준</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {p.completionCriteria}
+          <dd className="min-w-0">
+            <Markdown text={p.goal} />
           </dd>
+          <ProposedCriteria proposal={p} />
         </dl>
       </section>
       <Block label="팀 구성">
@@ -297,10 +311,12 @@ function SubmissionSummary({
         </h2>
         <dl className="card grid gap-x-4 gap-y-2 px-4 py-3 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
-          <dd className="break-words whitespace-pre-wrap">{s.goal}</dd>
+          <dd className="min-w-0">
+            <Markdown text={s.goal} />
+          </dd>
           <dt className="text-slate-500">완료 기준</dt>
-          <dd className="break-words whitespace-pre-wrap">
-            {s.completionCriteria}
+          <dd className="min-w-0">
+            <Markdown text={s.completionCriteria} />
           </dd>
         </dl>
       </section>
@@ -339,7 +355,11 @@ function RunFailureSummary({ orgId, sourceId }: Props) {
         originalLabel="실행 기록 보기"
       />
       <Block label="실패 사유">{r.error ?? "사유가 남지 않았습니다."}</Block>
-      {r.summary && <Block label="실행 요약">{r.summary}</Block>}
+      {r.summary && (
+        <Block label="실행 요약">
+          <Markdown text={r.summary} />
+        </Block>
+      )}
     </Page>
   );
 }
