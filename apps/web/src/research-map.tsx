@@ -1812,7 +1812,7 @@ function DiscardControl({
     void edit.mutateAsync({ op: "discard_node", nodeId: node.id }).then(
       () =>
         toast({
-          message: "노드를 폐기했습니다",
+          message: `'${node.title}' 노드를 폐기했습니다`,
           action: {
             label: "폐기 취소",
             onAction: () =>

@@ -284,6 +284,61 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   ).toBeInViewport();
 });
 
+test("discarding two nodes in a row keeps both undo toasts, each undoing its own node", async ({
+  page,
+}) => {
+  const org = await researchingOrganization(page, "토스트 더미 조직");
+  await openMap(page, `/orgs/${org.id}/map`);
+  await page.request.post(
+    `/api/organizations/${org.id}/approvals/${org.approvalId}/decision`,
+    { data: { decision: "approve" } }
+  );
+  const cards = page.getByTestId("map-node");
+  await expect(cards).toHaveCount(2, { timeout: 20_000 });
+  // 화면 시계를 멈춰 토스트가 제 10초에 닫히지 않게 한다(타이머는 그대로 돈다). 부하가 큰 기기에서 두 번째 폐기까지
+  // 10초를 넘겨 앞 토스트가 닫히면 검사가 수명이 아니라 더미를 보지 못한다. 토스트마다의 수명은 toast-stack 단위 검사가 본다.
+  await page.clock.setFixedTime(new Date());
+  const panel = page.getByRole("complementary", { name: "노드 상세" });
+  const discard = async (title: string) => {
+    const card = cards.filter({ hasText: title });
+    await card.click();
+    // 패널이 그 노드를 보일 때까지 기다린다. 그 전에 누르면 이전 노드를 폐기하려 한다.
+    await expect(page).toHaveURL(
+      new RegExp(`[?&]node=${await card.getAttribute("data-node-id")}`)
+    );
+    await expect(panel.getByLabel("제목", { exact: true })).toHaveValue(title);
+    await panel.getByRole("button", { name: "폐기", exact: true }).click();
+    await expect(card).toHaveAttribute("data-status", "discarded");
+    return card;
+  };
+  const a = await discard("연구 문제 정리 1");
+  const b = await discard("연구 문제 정리 2");
+
+  // 새 토스트가 와도 앞 토스트는 남는다. 먼저 폐기한 노드의 토스트가 위, 새 토스트가 맨 아래다.
+  const toasts = page.getByTestId("toast");
+  await expect(toasts).toHaveCount(2);
+  await expect(toasts.nth(0)).toContainText("연구 문제 정리 1");
+  await expect(toasts.nth(1)).toContainText("연구 문제 정리 2");
+  const [top, bottom] = [
+    (await toasts.nth(0).boundingBox())!,
+    (await toasts.nth(1).boundingBox())!,
+  ];
+  expect(bottom.y).toBeGreaterThan(top.y);
+  await expect(
+    toasts.getByRole("button", { name: "폐기 취소", exact: true })
+  ).toHaveCount(2);
+
+  // 앞 토스트의 폐기 취소는 그 노드만 되돌리고, 뒤 토스트는 남는다.
+  await toasts
+    .filter({ hasText: "연구 문제 정리 1" })
+    .getByRole("button", { name: "폐기 취소" })
+    .click();
+  await expect(a).toHaveAttribute("data-status", "proposed");
+  await expect(b).toHaveAttribute("data-status", "discarded");
+  await expect(toasts).toHaveCount(1);
+  await expect(toasts).toContainText("연구 문제 정리 2");
+});
+
 test("parallel secondary links between the same two nodes are drawn apart and listed by link ID", async ({
   page,
 }) => {
