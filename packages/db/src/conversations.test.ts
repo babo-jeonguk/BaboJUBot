@@ -689,11 +689,17 @@ describe("transcript pages", () => {
     expect(newer).toMatchObject({
       bodies: ["줄 선 말", "L3"],
       hasMore: false,
-      before: null,
     });
+    // `after` 쪽도 그보다 오래된 쪽의 커서를 준다(화면이 오래된 쪽을 덜어 낸 뒤 다시 받는다).
+    expect((await page({ before: newer.before! })).bodies).toEqual([
+      "m7",
+      "L1",
+      "L2",
+    ]);
     expect(await page({ after: newer.after! })).toMatchObject({
       bodies: [],
       hasMore: false,
+      before: null,
       after: newer.after,
     });
     for (const cursor of ["nope", Buffer.from("1.2").toString("base64url")])

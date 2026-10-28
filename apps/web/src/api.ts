@@ -7,6 +7,7 @@ import {
   conversationMessageListSchema,
   conversationMessageSchema,
   conversationPageSchema,
+  conversationPageSize,
   conversationSummaryListSchema,
   eventListSchema,
   flowTemplateCopySchema,
@@ -34,7 +35,6 @@ import {
   taskListSchema,
   type AddResearchLinkInput,
   type AgentCommand,
-  type ConversationMessage,
   type ConversationPage,
   type CreateOrganizationInput,
   type CreateResearchNodeInput,
@@ -240,8 +240,14 @@ const pagePath = (
   return `${messagesPath(orgId, conversationId)}${query.size ? `?${query}` : ""}`;
 };
 
-/** 불러온 대화 기록. 첫 쪽이 가장 최근 것이고 뒤로 갈수록 오래된 쪽이다. 쪽 안은 오래된 것부터다. */
+/**
+ * 불러온 대화 기록. 첫 쪽이 가장 최근 것이고 뒤로 갈수록 오래된 쪽이다. 쪽 안은 오래된 것부터다.
+ * 쪽마다 `hasMore`는 그보다 오래된 메시지가 있는가, `before`는 그것을 받을 커서다(마지막 쪽의 것으로 더 오래된 쪽을 받는다).
+ */
 export type TranscriptData = InfiniteData<ConversationPage, string | null>;
+
+/** 맨 아래를 따라가는 동안 불러 둔 대화 기록이 이보다 많으면 오래된 쪽을 덜어 낸다(`trimTranscript`). */
+export const transcriptWindowMax = 100;
 
 /**
  * 대화 기록. 대화 ID가 없으면 기본 대화다. 처음에는 가장 최근 쪽만 받고 `fetchNextPage`가 더 오래된 쪽을 받는다.
@@ -296,36 +302,81 @@ export async function catchUpConversation(
     return;
   }
   let cursor: string = newestCursor;
-  const arrived: ConversationMessage[] = [];
+  const arrived: ConversationPage[] = [];
   for (;;) {
     const page: ConversationPage = await request(
       conversationPageSchema,
       pagePath(orgId, conversationId, { after: cursor })
     );
-    arrived.push(...page.messages);
+    arrived.push(page);
     cursor = page.after ?? cursor;
     if (!page.hasMore) break;
   }
-  if (!arrived.length) return;
-  queryClient.setQueryData<TranscriptData>(key, (old) => {
-    const newest = old?.pages[0];
-    if (!old || !newest) return old;
-    const seen = new Set(newest.messages.map((m) => m.id));
-    return {
-      ...old,
-      pages: [
-        {
-          ...newest,
-          messages: [
-            ...newest.messages,
-            ...arrived.filter((m) => !seen.has(m.id)),
-          ],
-          after: cursor,
-        },
-        ...old.pages.slice(1),
-      ],
-    };
-  });
+  queryClient.setQueryData<TranscriptData>(key, (old) =>
+    old ? appendArrivals(old, arrived) : old
+  );
+}
+
+/**
+ * 새로 받은 쪽(`?after=` 응답, 오래된 것부터)을 대화 기록 앞(가장 새 쪽)에 붙인다. 받은 쪽마다 따로 두어 그 쪽의 `before` 커서를
+ * 남기므로 나중에 오래된 쪽을 덜어 내도(`trimTranscript`) 다시 받을 수 있다. 이미 불러 둔 같은 메시지는 예전 쪽에서 뺀다.
+ */
+export function appendArrivals(
+  data: TranscriptData,
+  arrived: readonly ConversationPage[]
+): TranscriptData {
+  const fresh = arrived.filter((p) => p.messages.length);
+  if (!fresh.length) return data;
+  const ids = new Set(fresh.flatMap((p) => p.messages.map((m) => m.id)));
+  const pages = fresh
+    .map((p) => ({ ...p, hasMore: p.before !== null }))
+    .reverse();
+  return {
+    pages: [
+      ...pages,
+      ...data.pages.map((p) =>
+        p.messages.some((m) => ids.has(m.id))
+          ? { ...p, messages: p.messages.filter((m) => !ids.has(m.id)) }
+          : p
+      ),
+    ],
+    pageParams: [...pages.map(() => null), ...data.pageParams],
+  };
+}
+
+/**
+ * 맨 아래를 따라가는 동안 불러 둔 대화 기록이 `max`개를 넘으면 가장 최근 `keep`개 이상이 남을 때까지 오래된 쪽을 통째로 덜어 낸다.
+ * 남은 마지막 쪽의 `before` 커서로 위로 올리면 덜어 낸 쪽을 다시 받는다. 커서가 없는 쪽에서는 멈춘다.
+ */
+export function trimTranscript(
+  data: TranscriptData,
+  { max = transcriptWindowMax, keep = conversationPageSize } = {}
+): TranscriptData {
+  let total = data.pages.reduce((n, p) => n + p.messages.length, 0);
+  if (total <= max) return data;
+  let end = data.pages.length;
+  while (end > 1) {
+    const dropped = data.pages[end - 1]!.messages.length;
+    if (total - dropped < keep || data.pages[end - 2]!.before === null) break;
+    total -= dropped;
+    end--;
+  }
+  if (end === data.pages.length) return data;
+  const pages = data.pages.slice(0, end);
+  pages[end - 1] = { ...pages[end - 1]!, hasMore: true };
+  return { pages, pageParams: data.pageParams.slice(0, end) };
+}
+
+/** 불러 둔 대화 기록의 오래된 쪽을 덜어 낸다(`trimTranscript`). 맨 아래를 따라가는 화면만 부른다. */
+export function trimConversation(
+  queryClient: QueryClient,
+  orgId: string,
+  conversationId?: string
+) {
+  queryClient.setQueryData<TranscriptData>(
+    queryKeys.conversation(orgId, conversationId),
+    (old) => old && trimTranscript(old)
+  );
 }
 
 /** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 ID가 없으면 기본 대화다. */

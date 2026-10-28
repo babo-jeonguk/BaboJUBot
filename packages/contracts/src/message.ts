@@ -123,7 +123,7 @@ export type ConversationPageQuery = z.infer<typeof conversationPageQuerySchema>;
 /**
  * 대화 기록 한 쪽: Lead 메시지와 실행 시도가 받은 사용자 메시지를 Lead가 받은 순서로, 오래된 것부터 담는다. 줄 세운 메시지는 없다.
  * `hasMore`는 고른 방향(커서 없음·`before`는 더 오래된 쪽, `after`는 더 새 쪽)에 메시지가 더 있는가다.
- * `before`는 이보다 오래된 쪽을 받을 커서(더 오래된 메시지가 없거나 `after` 조회면 null),
+ * `before`는 이 쪽보다 오래된 쪽을 받을 커서(더 오래된 메시지가 없거나 쪽이 비었으면 null, `after` 조회의 쪽에도 있다),
  * `after`는 이보다 새 메시지를 이어 받을 커서(이 쪽의 가장 새 메시지, 비었으면 받은 커서 그대로이고 처음부터 비었으면 null)다.
  */
 export const conversationPageSchema = z.object({

@@ -658,10 +658,12 @@ export async function listConversationPage(
       ? rows.slice(0, limit)
       : rows.slice(1);
   const newest = page.at(-1);
+  // `after` 쪽 앞에는 늘 커서의 메시지가 있으므로 비지 않았으면 더 오래된 쪽이 있다.
+  const hasOlder = afterKey ? page.length > 0 : hasMore;
   return {
     messages: page.map(withoutOrder),
     hasMore,
-    before: !afterKey && hasMore ? encodeCursor(page[0]!.order) : null,
+    before: hasOlder ? encodeCursor(page[0]!.order) : null,
     after: newest ? encodeCursor(newest.order) : (after ?? null),
   };
 }

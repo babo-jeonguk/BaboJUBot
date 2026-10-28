@@ -3,6 +3,7 @@ import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput } from "./support/organization.ts";
 
 // Lead 대화 기록은 가장 최근 쪽(50개)만 먼저 그리고, 위로 올리면 더 오래된 쪽을 붙인다.
+// 맨 아래를 따라가는 동안에는 가장 최근 창(100개 이하)만 남기고, 위로 올리면 덜어 낸 쪽을 다시 받는다.
 
 const runs = { timeout: 30_000 };
 
@@ -136,18 +137,72 @@ test("the Lead chat shows the latest 50 messages and loads older ones on scroll-
   await expect(older).toHaveCount(0);
   await expect(scroller.getByText("기록 1-1", { exact: true })).toHaveCount(1);
 
-  // 위를 보고 있을 때 새 메시지가 오면 따라 내려가지 않고 `최신 메시지로` 버튼에 새로 온 수를 보인다.
+  // 위를 보고 있을 때 새 메시지가 와도 따라 내려가지 않고, 불러 둔 메시지를 덜어 내지도 않는다.
+  const toBottom = page.getByRole("button", { name: "맨 아래로" });
   await scroller.evaluate((el) => el.scrollTo(0, 0));
+  await expect(toBottom).toBeVisible();
+  const loaded = await messages.count();
   await post(page, org.api("/messages"), { body: "새 소식이 있나요?" });
-  const latest = page.getByRole("button", { name: /최신 메시지로/ });
-  await expect(latest).toBeVisible(runs);
+  const asked = scroller.locator('[data-author="owner"]').last();
+  await expect(asked).toContainText("새 소식이 있나요?", runs);
   expect(await scroller.evaluate((el) => el.scrollTop)).toBeLessThan(200);
-  await latest.click();
-  await expect(latest).toHaveCount(0);
-  await expect(scroller.locator('[data-author="owner"]').last()).toContainText(
-    "새 소식이 있나요?"
+  expect(await messages.count()).toBeGreaterThan(loaded);
+
+  // 맨 아래에서 64px보다 멀면 버튼이 있고 그 안이면 없다. 맨 아래로 돌아오면 가장 최근 창(100개 이하)만 남긴다.
+  await scroller.evaluate((el) =>
+    el.scrollTo(0, el.scrollHeight - el.clientHeight - 30)
   );
-  await expect(
-    scroller.locator('[data-author="owner"]').last()
-  ).toBeInViewport();
+  await expect(toBottom).toHaveCount(0);
+  await expect.poll(() => messages.count()).toBeLessThanOrEqual(100);
+  await expect(older).toBeVisible();
+  await expect(asked).toBeInViewport();
+
+  // 조금 올라가도 버튼이 있고, 누르면 맨 아래로 내려가고 버튼이 사라진다.
+  await scroller.evaluate((el) =>
+    el.scrollTo(0, el.scrollHeight - el.clientHeight - 400)
+  );
+  await expect(toBottom).toBeVisible();
+  await toBottom.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("맨 아래로");
+  await toBottom.click();
+  await expect(toBottom).toHaveCount(0);
+  await expect(asked).toBeInViewport();
+});
+
+test("keeps only the latest window while following live messages at the bottom, and loads the trimmed ones again on scroll-up", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const org = await createOrganization(page, "따라가는 대화 E2E 조직");
+  await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
+  const scroller = page.getByTestId("transcript-scroller");
+  const messages = scroller.locator("[data-message-id]");
+  const older = page.getByRole("button", { name: "이전 메시지 보기" });
+  await expect(messages.first()).toBeVisible();
+  await expect(older).toHaveCount(0);
+
+  // 화면을 맨 아래에 둔 채 100개 넘게 받는다. 받는 동안 따라 내려가고, 불러 둔 메시지는 100개를 넘지 않는다.
+  await seedTranscript(page, org, 5);
+  await expect(scroller.getByText("기록 5-20", { exact: true })).toHaveCount(
+    1,
+    runs
+  );
+  await expect.poll(() => messages.count()).toBeLessThanOrEqual(100);
+  await expect(messages.last()).toBeInViewport();
+  await expect(page.getByRole("button", { name: "맨 아래로" })).toHaveCount(0);
+  await expect(scroller.getByText("기록 1-1", { exact: true })).toHaveCount(0);
+  await expect(older).toBeVisible();
+
+  // 위로 올리면 덜어 낸 쪽을 다시 받는다.
+  const trimmed = await messages.count();
+  await scroller.hover();
+  await page.mouse.wheel(0, -100_000);
+  await expect.poll(() => messages.count(), runs).toBeGreaterThan(trimmed);
+  while (await older.count()) {
+    await older.click();
+    await expect(page.getByRole("list", { name: "대화" })).not.toHaveAttribute(
+      "aria-busy"
+    );
+  }
+  await expect(scroller.getByText("기록 1-1", { exact: true })).toHaveCount(1);
 });

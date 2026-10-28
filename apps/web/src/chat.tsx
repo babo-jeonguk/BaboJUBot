@@ -10,7 +10,9 @@ import {
   type MessageDelivery,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useQueryClient } from "@tanstack/react-query";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -32,6 +34,8 @@ import {
   useQueuedMessages,
   useSendMessage,
   useStartConversation,
+  transcriptWindowMax,
+  trimConversation,
   type QueuedMessageCommand,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
@@ -408,6 +412,11 @@ function Thread({
     [history.data]
   );
   const queued = queuedQuery.data ?? [];
+  const queryClient = useQueryClient();
+  const trim = useCallback(
+    () => trimConversation(queryClient, orgId, conversationId),
+    [queryClient, orgId, conversationId]
+  );
   const marked = useRef<string | null>(null);
   const unreadId = summary?.unread ? summary.id : undefined;
   // 본 위치는 받은 순서의 마지막 메시지까지다.
@@ -455,6 +464,7 @@ function Thread({
           hasOlder={history.hasNextPage}
           loadingOlder={history.isFetchingNextPage}
           loadOlder={() => history.fetchNextPage({ cancelRefetch: false })}
+          trim={trim}
           orgId={orgId}
           lead={lead}
         />
@@ -470,14 +480,18 @@ function Thread({
   );
 }
 
-/** 맨 아래에서 이만큼(px) 안이면 새 메시지를 따라 내려간다. */
+/** 맨 아래에서 이만큼(px) 안이면 새 메시지를 따라 내려가고, 더 멀면 `맨 아래로` 버튼을 보인다. */
 const followThreshold = 64;
+
+const prefersReducedMotion = () =>
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
  * 대화 기록의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
  * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
  * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
- * 새 메시지는 맨 아래 근처에 있을 때만 따라 내려가고, 아니면 `최신 메시지로` 버튼에 새로 온 수를 보인다.
+ * 맨 아래 근처(`followThreshold`)에 있을 때만 새 메시지를 따라 내려가고, 그보다 위에 있으면 `맨 아래로` 버튼을 보인다.
+ * 맨 아래를 따라가는 동안 불러 둔 메시지가 많아지면 오래된 쪽을 덜어 낸다(`trim`). 위를 읽는 동안에는 덜어 내지 않는다.
  * 위에 붙인 메시지는 읽어 주지 않고 새로 온 메시지만 조용히 알린다.
  */
 function Transcript({
@@ -485,6 +499,7 @@ function Transcript({
   hasOlder,
   loadingOlder,
   loadOlder,
+  trim,
   orgId,
   lead,
 }: {
@@ -492,6 +507,8 @@ function Transcript({
   hasOlder: boolean;
   loadingOlder: boolean;
   loadOlder: () => Promise<{ isError: boolean }>;
+  /** 불러 둔 오래된 쪽을 덜어 낸다. 맨 아래를 따라가며 `transcriptWindowMax`개를 넘었을 때만 부른다. */
+  trim: () => void;
   orgId: string;
   lead: Agent;
 }) {
@@ -504,8 +521,11 @@ function Transcript({
   const armed = useRef(true);
   /** 코드가 바꾼 스크롤은 사용자의 스크롤로 치지 않는다. */
   const programmatic = useRef(false);
+  /** 맨 아래 근처라 새 메시지를 따라간다. 그리기 전에 읽어야 하므로 ref로 두고, 버튼은 `away`가 맡는다. */
   const atBottom = useRef(true);
-  const [unseen, setUnseen] = useState(0);
+  /** `맨 아래로`를 눌러 내려가는 중이다. 도착하거나 사용자가 스크롤을 잡으면 끝난다. */
+  const jumping = useRef(false);
+  const [away, setAway] = useState(false);
   const [arrivals, setArrivals] = useState(0);
   const first = messages[0]?.id;
   const last = messages.at(-1)?.id;
@@ -523,10 +543,19 @@ function Transcript({
     el.scrollTop = top;
     requestAnimationFrame(() => (programmatic.current = false));
   };
-  const toBottom = () => {
-    scrollTo(scroller.current?.scrollHeight ?? 0);
+  /** 부드럽게(움직임 줄이기 설정이면 바로) 맨 아래로 간다. */
+  const glideToBottom = () => {
+    const el = scroller.current;
+    el?.scrollTo({
+      top: el.scrollHeight,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  };
+  const jumpToBottom = () => {
     atBottom.current = true;
-    setUnseen(0);
+    jumping.current = true;
+    setAway(false);
+    glideToBottom();
   };
 
   const older = async () => {
@@ -554,7 +583,8 @@ function Transcript({
     olderRef.current = older;
   });
 
-  // 메시지가 바뀐 직후 그리기 전에: 위에 붙었으면 보던 메시지를 같은 자리로, 아래에 붙었으면 따라가거나 새로 온 수를 센다.
+  // 메시지가 바뀐 직후 그리기 전에: 위에 붙었으면 보던 메시지를 같은 자리로, 맨 아래를 따라가는 중이면(새 메시지가 붙었거나
+  // 오래된 쪽을 덜어 냈거나) 다시 맨 아래로 간다. 새로 온 메시지 수는 화면 읽기 도구에 알린다.
   useLayoutEffect(() => {
     const el = scroller.current;
     const before = previous.current;
@@ -574,17 +604,22 @@ function Transcript({
         scrollTo(el.scrollTop + offset - anchor.current.offset);
       }
       anchor.current = null;
+    } else if (atBottom.current) {
+      if (jumping.current) glideToBottom();
+      else scrollTo(el.scrollHeight);
     }
     if (last !== before.last) {
       const index = messages.findIndex((m) => m.id === before.last);
       const added = index === -1 ? 1 : messages.length - 1 - index;
-      if (added > 0) {
-        setArrivals((n) => n + added);
-        if (atBottom.current) scrollTo(el.scrollHeight);
-        else setUnseen((n) => n + added);
-      }
+      if (added > 0) setArrivals((n) => n + added);
     }
   }, [first, last, messages]);
+
+  // 맨 아래를 따라가는 동안 불러 둔 메시지가 창보다 많아지면 오래된 쪽을 덜어 낸다. 위를 읽거나 더 오래된 쪽을 받는 중에는 덜어 내지 않는다.
+  const overflow = messages.length > transcriptWindowMax;
+  useEffect(() => {
+    if (overflow && !away && !loadingOlder && atBottom.current) trim();
+  }, [overflow, away, loadingOlder, trim]);
 
   // 맨 위 sentinel이 300px 안에 들어오면 더 오래된 쪽을 받는다.
   useEffect(() => {
@@ -601,17 +636,27 @@ function Transcript({
     return () => observer.disconnect();
   }, [hasOlder]);
 
+  /** 사용자가 스크롤을 잡으면 `맨 아래로`의 내려가기를 멈춘다. */
+  const takeOver = () => (jumping.current = false);
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scroller}
         data-testid="transcript-scroller"
         className="scrollbar-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1 [overflow-anchor:none]"
+        onWheel={takeOver}
+        onTouchStart={takeOver}
+        onKeyDown={takeOver}
         onScroll={(e) => {
           const el = e.currentTarget;
-          atBottom.current =
+          const near =
             el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
-          if (atBottom.current) setUnseen(0);
+          // 내려가는 동안의 중간 위치로는 따라가기·버튼을 바꾸지 않는다.
+          if (jumping.current && !near) return;
+          jumping.current = false;
+          atBottom.current = near;
+          setAway(!near);
           if (!programmatic.current && !loadingOlder) armed.current = true;
         }}
       >
@@ -638,17 +683,19 @@ function Transcript({
       <p className="sr-only" aria-live="polite">
         {arrivals > 0 ? `새 메시지 ${arrivals}개` : ""}
       </p>
-      {unseen > 0 && (
-        <button
-          type="button"
-          onClick={toBottom}
-          className="absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-pop"
-        >
-          최신 메시지로
-          <span className="rounded-full bg-white/20 px-1.5 tabular-nums">
-            {unseen}
-          </span>
-        </button>
+      {away && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
+          <Tip content="맨 아래로">
+            <button
+              type="button"
+              aria-label="맨 아래로"
+              onClick={jumpToBottom}
+              className="animate-fade-in pointer-events-auto inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-700 shadow-pop ring-1 ring-slate-900/10 transition duration-150 ease-out select-none hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 active:scale-[0.94]"
+            >
+              <ArrowDownIcon />
+            </button>
+          </Tip>
+        </div>
       )}
     </div>
   );
@@ -1281,6 +1328,23 @@ function ArrowUpIcon() {
       strokeLinejoin="round"
     >
       <path d="M10 16V4.5M5 9.5l5-5 5 5" />
+    </svg>
+  );
+}
+
+function ArrowDownIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10 4v11.5M5 10.5l5 5 5-5" />
     </svg>
   );
 }
