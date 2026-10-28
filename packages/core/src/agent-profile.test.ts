@@ -62,6 +62,15 @@ describe("planAgentProfileChange", () => {
     ).toBe("name_taken");
   });
 
+  it("treats names that differ only in case as the same name, both ways", () => {
+    expect(
+      planAgentProfileChange(agent, { name: "ANALYST 2" }, ["analyst 2"])
+    ).toBe("name_taken");
+    expect(
+      planAgentProfileChange(agent, { name: "analyst 2" }, ["Analyst 2"])
+    ).toBe("name_taken");
+  });
+
   it("lets an agent change only the case of its own name", () => {
     expect(
       planAgentProfileChange(agent, { name: "ANALYST 1" }, ["Research Lead"])

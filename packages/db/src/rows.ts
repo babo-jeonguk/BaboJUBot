@@ -64,6 +64,16 @@ export async function insertEvent(
 export const isUuid = (s: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
+/** `error`(drizzle이 감싼 원인 포함)가 이름이 `constraint`인 unique 제약 위반(23505)인가. */
+export function violatesUnique(error: unknown, constraint: string): boolean {
+  for (let e = error; e instanceof Error; e = e.cause) {
+    const pgError = e as Error & { code?: unknown; constraint?: unknown };
+    if (pgError.code === "23505" && pgError.constraint === constraint)
+      return true;
+  }
+  return false;
+}
+
 /** DB 행의 시각을 계약의 ISO 문자열로 바꾼다. */
 export const withIsoTime = <T extends { createdAt: Date }>(row: T) => ({
   ...row,
@@ -249,7 +259,7 @@ export async function hasPendingHeartbeat(tx: Executor, agentId: string) {
   return pending !== undefined;
 }
 
-/** 조직 에이전트의 이름. 새 작업자 번호를 정할 때 쓴다. */
+/** 조직의 모든 에이전트(Lead·작업자) 이름. 새 작업자 이름이 이 가운데 어느 것과도 겹치지 않게 정할 때 쓴다(core `nextWorkerName`). */
 export const agentNamesOf = async (tx: Executor, organizationId: string) =>
   (
     await tx

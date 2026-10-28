@@ -126,7 +126,7 @@
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
 | 정책 모양·기본값·변경 입력, 작업자 추가 입력·결과(`added`/`pending_approval`)·snapshot, 종류별 결정(`approvalKindDecisions`)·Event `organization.approval_policy_changed`·`worker.added` | [contracts/organization.ts](../../packages/contracts/src/organization.ts), contracts/approval.ts, event.ts, run.ts `approval_decision.approvalKind` | 작업자 추가 API |
-| 정책 분기·작업자 이름 번호·사본 계획, 종류별 결정 효과(작업자 추가는 단계 유지·수정 요청 없음) | [core/worker.ts](../../packages/core/src/worker.ts), core/approval.ts `planApprovalDecision`, core/organization.ts `planApprovalPolicyChange` | [core](../../packages/core/src/worker.test.ts) |
+| 정책 분기·작업자 이름 번호(조직 모든 이름을 피함, `nextWorkerName`)·사본 계획, 종류별 결정 효과(작업자 추가는 단계 유지·수정 요청 없음) | [core/worker.ts](../../packages/core/src/worker.ts), core/approval.ts `planApprovalDecision`, core/organization.ts `planApprovalPolicyChange` | [core](../../packages/core/src/worker.test.ts) |
 | 정책 저장(조직 잠금·같은 값 무변경)·도구 쓰기 안 최신 정책 읽기·결정 단일 적용 | db/organizations.ts `updateApprovalPolicy`, [db/workers.ts](../../packages/db/src/workers.ts) `addWorker`(toolWrite), db/approvals.ts `decideApproval`; 초기 승인만 pending 하나(부분 unique)는 schema·migrations | 작업자 추가 API의 정책 경합·동시 결정 |
 | 사용자 정책 명령·도구 HTTP(201/202)·결정 422 `decision_not_allowed` | server/app.ts `/approval-policy`, server/organizations.ts, server/tools.ts `add_worker` | 작업자 추가 API |
 | 가짜 Lead의 `작업자 추가: <Role>` 부탁·작업자 추가 결정 답장 | runtime/scripted.ts `demoLeadScript`·`addWorkerScript` | 가짜 실행기 테스트, 작업자 추가 API |
@@ -202,8 +202,8 @@
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
 | 이름 규칙(trim·1~40자·제어 문자 거부)·얼굴 프리셋·ID에서 정한 기본 얼굴·변경 입력, Event `agent.profile_changed`, `Agent`·`AgentDetail`의 `appearance` | [contracts/agent-profile.ts](../../packages/contracts/src/agent-profile.ts) `agentNameSchema`·`agentAppearanceSchema`·`defaultAgentAppearance`·`updateAgentProfileInputSchema`, event.ts, organization.ts `agentSchema` | [core](../../packages/core/src/agent-profile.test.ts) `defaultAgentAppearance` |
-| 바뀐 항목만 저장·Event, 같은 값 무변경, 같은 조직 이름 겹침(대소문자 무시, 자기 이름 대소문자 바꾸기는 허용) | [core/agent-profile.ts](../../packages/core/src/agent-profile.ts) `planAgentProfileChange` | core |
-| 저장(조직 → 에이전트 잠금 아래 다른 이름 읽기, 작업자 추가와 직렬화)·다른 조직 `not_found`, 저장 얼굴이 없거나 옛 값이면 기본 얼굴 | [db/agents.ts](../../packages/db/src/agents.ts) `updateAgentProfile`, rows.ts `toAgent`; schema `agents.appearance`(migration 0013) | [DB](../../packages/db/src/organizations.test.ts) |
+| 바뀐 항목만 저장·Event, 같은 값 무변경, 같은 조직 이름 겹침(대소문자 무시, 자기 이름 대소문자 바꾸기는 허용) — 이름 바꾸기와 작업자 만들기(초기 팀 승인·작업자 추가)가 같은 규칙 | [core/agent-profile.ts](../../packages/core/src/agent-profile.ts) `agentNameKey`·`isAgentNameTaken`·`planAgentProfileChange`, core/worker.ts `nextWorkerName`(db rows.ts `agentNamesOf`로 조직 모든 이름) | core, 이름·얼굴 API의 이름 바꾼 뒤 작업자 만들기 |
+| 저장(조직 → 에이전트 잠금 아래 다른 이름 읽기, 작업자 추가·승인 결정과 직렬화, unique index 위반도 `name_taken`)·다른 조직 `not_found`, 저장 얼굴이 없거나 옛 값이면 기본 얼굴 | [db/agents.ts](../../packages/db/src/agents.ts) `updateAgentProfile`, rows.ts `toAgent`·`violatesUnique`; schema `agents.appearance`(migration 0013)·`agents_organization_name_unique`(조직, `lower(name)`; migration 0017이 겹친 이름을 먼저 풂) | [DB](../../packages/db/src/organizations.test.ts) `agent names`(동시 이름 바꾸기·잠금 밖 쓰기·migration 0017) |
 | API(404·409 `name_taken`·422)·commit 뒤 Event, 조직 생성 응답의 기본 얼굴 | [server/agents.ts](../../apps/server/src/agents.ts), app.ts `PATCH …/agents/:agentId`, server/organizations.ts `createOrganization` | 이름·얼굴 API(다음 실행 시도 팀 맥락의 새 이름 포함) |
 | 조직도 배치(넓으면 위→아래 나무·끌기·확대·한눈에 보기, 좁으면 들여 쌓기)·카드 링크·실행 중 연결 | [web/org-chart.tsx](../../apps/web/src/org-chart.tsx)(agents.tsx `AgentsScreen`이 lazy로 불러옴), org-chart.css, api.ts `useRunningRuns` | 조직도 E2E |
 | 얼굴 그리기·깜빡임·포인터 따라보기(창 listener 하나)·상태별 표정·움직임 줄이기 | [web/agent-face.tsx](../../apps/web/src/agent-face.tsx) `AgentFace`·`faceMoodOf`, agent-face.css | 조직도 E2E(따라보기·움직임 줄이기) |

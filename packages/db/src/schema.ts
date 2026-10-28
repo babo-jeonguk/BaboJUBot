@@ -143,6 +143,12 @@ export const agents = pgTable(
     uniqueIndex("agents_one_lead_per_organization")
       .on(t.organizationId)
       .where(sql`${t.role} = 'lead'`),
+    // 조직 안에서 대소문자만 다른 이름도 겹친다(core `agentNameKey`). 이름을 정하는 규칙은 core가 맡고, 이 index는
+    // 그 규칙을 거치지 않거나 경합한 쓰기를 막는 마지막 방어선이다. locale C의 lower()는 ASCII만 바꾸므로 core 규칙보다 넓지 않다.
+    uniqueIndex("agents_organization_name_unique").on(
+      t.organizationId,
+      sql`lower(${t.name})`
+    ),
   ]
 );
 
