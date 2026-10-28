@@ -57,8 +57,8 @@ export type TestServerOptions = {
   runtime?: RuntimeAdapter;
   /** 기록 시각에 쓰는 시계. */
   now?: () => Date;
-  /** 알림을 보낼 채널. 기본은 가짜 채널이다. */
-  notificationChannel?: NotificationChannel;
+  /** 알림을 보내고 답을 받는 채널. 기본은 가짜 채널이다. */
+  notificationChannels?: NotificationChannel[];
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */

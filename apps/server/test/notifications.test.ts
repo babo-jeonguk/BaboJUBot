@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type ChannelInlet,
   type NotificationChannel,
   approvalSummaryListSchema,
   fakeChannelMessagesSchema,
@@ -13,7 +14,8 @@ import {
   type WakeReason,
 } from "@babojubot/contracts";
 import { leadReplyScript } from "@babojubot/runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { createTestDatabase } from "@babojubot/db/testing";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
   chatMessages,
@@ -230,7 +232,7 @@ describe("notification outbox and fake channel", () => {
     t = await startTestServer({
       runtime: agents.runtime,
       now: () => now,
-      notificationChannel: flaky,
+      notificationChannels: [flaky],
     });
     const org = await awaitingApproval(agents, "재시도 조직");
     await t.deliverNotifications();
@@ -263,10 +265,12 @@ describe("notification outbox and fake channel", () => {
     const agents = scriptedAgents({ created: proposeScript });
     t = await startTestServer({
       runtime: agents.runtime,
-      notificationChannel: {
-        name: "off",
-        deliver: () => Promise.reject(new Error("꺼짐")),
-      },
+      notificationChannels: [
+        {
+          name: "off",
+          deliver: () => Promise.reject(new Error("꺼짐")),
+        },
+      ],
     });
     const org = await awaitingApproval(agents, "재시작 조직");
     await t.deliverNotifications();
@@ -464,6 +468,306 @@ describe("notification outbox and fake channel", () => {
     );
     expect((await organization(org.id)).stage).toBe("awaiting_approval");
     expect((await approvalsOf(org.id))[0]!.status).toBe("pending");
+  });
+});
+
+describe("channel replies", () => {
+  /** 사용자가 새 대화로 말을 걸고 Lead가 그 대화에 답한 상태. 그 답의 가짜 채널 기록을 돌려준다. */
+  async function leadAnsweredInNewConversation(
+    agents: ReturnType<typeof scriptedAgents>,
+    name: string
+  ) {
+    const org = await researching(agents, name);
+    const started = await t!.request(
+      "POST",
+      `/api/organizations/${org.id}/conversations`,
+      { body: "새 주제로 이야기해요" }
+    );
+    expect(started.status).toBe(201);
+    const conversationId = (started.body as { conversation: { id: string } })
+      .conversation.id;
+    await t!.drain();
+    await t!.deliverNotifications();
+    const message = (await channelOf(org.id)).find(
+      (m) =>
+        m.kind === "lead_message" && m.link.endsWith(`/chat/${conversationId}`)
+    )!;
+    expect(message).toBeDefined();
+    return { org, conversationId, message };
+  }
+
+  it("puts a text reply to a Lead message into that message's conversation as a queued owner message", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const { org, conversationId, message } =
+      await leadAnsweredInNewConversation(agents, "답장 조직");
+    const before = await chatMessages(t, org.id);
+
+    const replied = await reply(message.id, { body: "좋아, 진행해" });
+    expect(replied).toMatchObject({
+      status: 201,
+      body: {
+        organizationId: org.id,
+        conversationId,
+        author: "owner",
+        body: "좋아, 진행해",
+        delivery: "next_run",
+      },
+    });
+    await t.drain();
+    expect(
+      (await chatMessages(t, org.id, conversationId)).map((m) => m.body)
+    ).toContain("좋아, 진행해");
+    // 기본 대화에는 들어가지 않는다.
+    expect(await chatMessages(t, org.id)).toEqual(before);
+    expect(
+      agents
+        .of(org.lead.id)
+        .flatMap((r) => r.request.wakeReasons)
+        .filter((r) => r.kind === "owner_message")
+        .map((r) => r.kind === "owner_message" && r.body)
+    ).toContain("좋아, 진행해");
+
+    // 대시보드처럼 중단하고 보내기도 고를 수 있다.
+    expect(
+      await reply(message.id, {
+        body: "멈추고 이것부터",
+        delivery: "interrupt",
+      })
+    ).toMatchObject({ status: 201, body: { delivery: "interrupt" } });
+  });
+
+  it("decides a result submission like the dashboard and refuses a text reply to it", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await researching(agents, "결과 채널 조직");
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "create_task",
+        input: { title: "오류 분류", assigneeAgentId: org.workers[0]!.id },
+      })
+    );
+    await say(org.id, "작업을 맡겨 주세요");
+    await t.drain();
+    const [task] = await tasksOf(org.id);
+    const [artifact] = (await taskDetail(org.id, task!.id)).artifacts;
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "submit_result",
+        input: { summary: "오류 유형 세 가지", artifactIds: [artifact!.id] },
+      })
+    );
+    await say(org.id, "결과를 정리해 주세요");
+    await t.drain();
+    await t.deliverNotifications();
+    const message = (await channelOf(org.id)).find(
+      (m) => m.kind === "result_submission"
+    )!;
+    const eventCount = (await eventsOf(org.id)).length;
+
+    expect(await reply(message.id, { body: "좋아요" })).toMatchObject({
+      status: 422,
+      body: { error: { code: "reply_not_allowed" } },
+    });
+    // 수정 요청의 의견 필수는 대시보드와 같다.
+    expect(
+      (await reply(message.id, { decision: "request_changes" })).status
+    ).toBe(422);
+    expect((await eventsOf(org.id)).length).toBe(eventCount);
+
+    expect(await reply(message.id, { decision: "complete" })).toMatchObject({
+      status: 200,
+      body: { id: message.sourceId, status: "completed" },
+    });
+    expect((await organization(org.id)).stage).toBe("completed");
+    // 이미 한 결정은 대시보드처럼 다시 하지 않는다.
+    expect(await reply(message.id, { decision: "complete" })).toMatchObject({
+      status: 409,
+      body: { error: { code: "already_decided" } },
+    });
+  });
+
+  it("refuses replies to failed runs, text replies to approval requests and replies in a closed organization, leaving nothing behind", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await awaitingApproval(agents, "거부 답 조직");
+    await say(org.id, "진행 상황을 알려 주세요");
+    await t.drain();
+    agents.queue(org.lead.id, failing("가짜 실행기 사고"));
+    await say(org.id, "실패해 보세요");
+    await t.drain();
+    await t.deliverNotifications();
+    const records = await channelOf(org.id);
+    const approvalMessage = records.find((m) => m.kind === "approval_request")!;
+    const failureMessage = records.find((m) => m.kind === "run_failure")!;
+    const leadMessage = records.find((m) => m.kind === "lead_message")!;
+    const notAllowed = {
+      status: 422,
+      body: { error: { code: "reply_not_allowed" } },
+    };
+
+    expect(await reply(failureMessage.id, { body: "괜찮아요" })).toMatchObject(
+      notAllowed
+    );
+    expect(
+      await reply(failureMessage.id, { decision: "approve" })
+    ).toMatchObject(notAllowed);
+    expect(
+      await reply(approvalMessage.id, { body: "좋아, 진행해" })
+    ).toMatchObject(notAllowed);
+    expect((await approvalsOf(org.id))[0]!.status).toBe("pending");
+
+    expect(
+      (await t.request("POST", `/api/organizations/${org.id}/stop`)).status
+    ).toBe(200);
+    const events = (await eventsOf(org.id)).length;
+    const messages = (await chatMessages(t, org.id)).length;
+    expect(await reply(leadMessage.id, { body: "아직 있나요" })).toMatchObject({
+      status: 409,
+      body: { error: { code: "organization_closed" } },
+    });
+    expect(
+      await reply(approvalMessage.id, { decision: "approve" })
+    ).toMatchObject({
+      status: 409,
+      body: { error: { code: "organization_closed" } },
+    });
+    expect((await eventsOf(org.id)).length).toBe(events);
+    expect((await chatMessages(t, org.id)).length).toBe(messages);
+  });
+
+  it("follows the dashboard's rules in a closed organization: a pending worker request can still be decided", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await researching(agents, "멈춘 작업자 조직");
+    await t.request("PUT", `/api/organizations/${org.id}/approval-policy`, {
+      addWorker: true,
+    });
+    agents.queue(
+      org.lead.id,
+      calls({ tool: "add_worker", input: { role: "researcher" } })
+    );
+    await say(org.id, "작업자를 더 두세요");
+    await t.drain();
+    await t.deliverNotifications();
+    const request = (await approvalsOf(org.id)).find(
+      (a) => a.kind === "add_worker"
+    )!;
+    const message = (await channelOf(org.id)).find(
+      (m) => m.kind === "approval_request" && m.sourceId === request.id
+    )!;
+    expect(
+      (await t.request("POST", `/api/organizations/${org.id}/stop`)).status
+    ).toBe(200);
+
+    // 대시보드의 작업자 추가 결정은 단계와 상관없이 받으므로(#58) 채널도 같다.
+    expect(await reply(message.id, { decision: "approve" })).toMatchObject({
+      status: 200,
+      body: { id: request.id, status: "approved" },
+    });
+    expect((await organization(org.id)).stage).toBe("stopped");
+  });
+
+  it("hands the channel an inlet that takes button and text replies without calling the server over HTTP, and logs each reply without its text", async () => {
+    const delivered: Notification[] = [];
+    let inlet: ChannelInlet | undefined;
+    const phone: NotificationChannel = {
+      name: "phone",
+      async deliver(notification) {
+        delivered.push(notification);
+        return { appMessageId: `m-${delivered.length}` };
+      },
+      listen: (context) => {
+        inlet = context.inlet;
+      },
+    };
+    const agents = scriptedAgents();
+    t = await startTestServer({
+      runtime: agents.runtime,
+      notificationChannels: [phone],
+    });
+    const org = await awaitingApproval(agents, "입구 조직");
+    await say(org.id, "진행 상황을 알려 주세요");
+    await t.drain();
+    await t.deliverNotifications();
+    const approvalNotice = delivered.find(
+      (n) => n.kind === "approval_request" && n.organizationId === org.id
+    )!;
+    const leadIndex = delivered.findIndex(
+      (n) => n.kind === "lead_message" && n.organizationId === org.id
+    );
+
+    const fetched = vi.spyOn(globalThis, "fetch");
+    const logged = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      // 어느 알림도 가리키지 않는 글은 받지 않는다.
+      expect(
+        await inlet!({
+          to: null,
+          answer: { kind: "text", input: { body: "아무에게나" } },
+        })
+      ).toEqual({ kind: "refused", reason: "reply_not_allowed" });
+      // 다른 채널의 앱 메시지 번호처럼 모르는 번호도 받지 않는다.
+      expect(
+        await inlet!({
+          to: { appMessageId: "m-없음" },
+          answer: { kind: "text", input: { body: "누구세요" } },
+        })
+      ).toEqual({ kind: "refused", reason: "not_found" });
+      // 버튼은 값에 넣은 알림 ID로 답한다.
+      expect(
+        await inlet!({
+          to: { notificationId: approvalNotice.id },
+          answer: { kind: "decision", input: { decision: "approve" } },
+        })
+      ).toMatchObject({
+        kind: "ok",
+        value: { id: approvalNotice.sourceId, status: "approved" },
+      });
+      // 글 답장은 adapter가 돌려준 앱 메시지 번호로 답한다.
+      expect(
+        await inlet!({
+          to: { appMessageId: `m-${leadIndex + 1}` },
+          answer: { kind: "text", input: { body: "비밀스러운 답장" } },
+        })
+      ).toMatchObject({ kind: "ok", value: { body: "비밀스러운 답장" } });
+      expect(fetched).not.toHaveBeenCalled();
+
+      const lines = logged.mock.calls.map((c) => String(c[0]));
+      expect(lines).toEqual([
+        "[channel] phone notification=- answer=text refused=reply_not_allowed",
+        "[channel] phone notification=- answer=text refused=not_found",
+        `[channel] phone notification=${approvalNotice.id} answer=decision accepted`,
+        `[channel] phone notification=${delivered[leadIndex]!.id} answer=text accepted`,
+      ]);
+      expect(lines.join("\n")).not.toContain("비밀스러운");
+    } finally {
+      fetched.mockRestore();
+      logged.mockRestore();
+    }
+    await t.drain();
+    expect((await organization(org.id)).stage).toBe("researching");
+  });
+
+  it("refuses to start with more than one channel", async () => {
+    const database = await createTestDatabase();
+    try {
+      const quiet = (name: string): NotificationChannel => ({
+        name,
+        deliver: async () => {},
+      });
+      await expect(
+        startServer({
+          db: database.db,
+          port: 0,
+          notificationChannels: [quiet("a"), quiet("b")],
+        })
+      ).rejects.toThrow("exactly one notification channel");
+    } finally {
+      await database.close();
+    }
   });
 });
 

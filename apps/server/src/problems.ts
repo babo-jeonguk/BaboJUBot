@@ -43,7 +43,7 @@ export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
   };
 
 /**
- * 사용자가 대시보드(사용자 HTTP)에서 한 일의 거부 → 응답 코드·HTTP 상태. 응답 본문은 `{ error: { code } }`다.
+ * 사용자가 대시보드(사용자 HTTP)나 가짜 채널에서 한 일의 거부 → 응답 코드·HTTP 상태. 응답 본문은 `{ error: { code } }`다.
  * 지도 규칙의 거부는 조직 도구 표를 그대로 쓴다.
  */
 export type OwnerRefusal =
@@ -56,7 +56,8 @@ export type OwnerRefusal =
   | "name_taken"
   | "revision_conflict"
   | "invalid_skill"
-  | "archive_not_allowed";
+  | "archive_not_allowed"
+  | "reply_not_allowed";
 export const ownerRefusalResponses: Record<OwnerRefusal, [string, number]> = {
   not_found: ["not_found", 404],
   organization_closed: ["organization_closed", 409],
@@ -70,6 +71,7 @@ export const ownerRefusalResponses: Record<OwnerRefusal, [string, number]> = {
   revision_conflict: ["revision_conflict", 409],
   invalid_skill: ["invalid_skill", 422],
   archive_not_allowed: ["archive_not_allowed", 422],
+  reply_not_allowed: ["reply_not_allowed", 422],
   unknown_kind: problemResponses.unknown_kind,
   self_link: problemResponses.self_link,
   primary_cycle: problemResponses.primary_cycle,

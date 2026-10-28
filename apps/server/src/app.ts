@@ -31,6 +31,10 @@ import {
   updateApprovalPolicyInputSchema,
   updateHeartbeatInputSchema,
   updateInboxItemInputSchema,
+  type ChannelAnswer,
+  type ChannelReplyResult,
+  type ChannelResponse,
+  type ChannelRoute,
   type Conversation,
   type NotificationChannel,
   type OrganizationDetail,
@@ -51,7 +55,6 @@ import {
   findAgentInstructions,
   findApproval,
   findArtifact,
-  findFakeChannelMessage,
   findFlowTemplate,
   findInstructionRevision,
   findOrganization,
@@ -98,15 +101,12 @@ import {
   planOrganizationCreation,
   planOwnerMessage,
 } from "@babojubot/core";
-import {
-  createFakeChannel,
-  createScriptedRuntime,
-  replyThroughFakeChannel,
-} from "@babojubot/runtime";
+import { createFakeChannel, createScriptedRuntime } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
 import { completeStored, type Outcome } from "./after-commit.ts";
+import { channelInlet } from "./channel-replies.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
 import {
@@ -141,8 +141,11 @@ export type ServerOptions = {
   harnessDir?: string;
   /** 지난 heartbeat를 확인하는 간격(ms). heartbeat 간격은 분 단위이므로 그보다 충분히 짧다. */
   heartbeatPollMs?: number;
-  /** 알림을 보낼 메시지 앱 채널. 첫 판은 가짜 채널뿐이고, 테스트는 실패하는 채널을 주입한다. */
-  notificationChannel?: NotificationChannel;
+  /**
+   * 알림을 보내고 답을 받는 메시지 앱 채널. 목록으로 받지만 지금은 하나만 허용하며 둘 이상이면 시작 오류다
+   * (여러 채널 동시 전송은 후속). 기본은 가짜 채널이고, 테스트는 실패하는 채널을 주입한다.
+   */
+  notificationChannels?: NotificationChannel[];
   /** 신호 없이 알림 outbox를 확인하는 간격(ms). 실패한 전송의 재시도 예정도 이때 확인한다. */
   notificationPollMs?: number;
 };
@@ -168,11 +171,20 @@ export async function startServer({
   now = () => new Date(),
   harnessDir = defaultHarnessDir,
   heartbeatPollMs = 5_000,
-  notificationChannel = createFakeChannel((n) =>
-    recordFakeChannelMessage(db, n)
-  ),
+  notificationChannels = [
+    createFakeChannel({
+      record: (n) => recordFakeChannelMessage(db, n),
+      list: () => listFakeChannelMessages(db),
+      respond: fakeChannelResponse,
+    }),
+  ],
   notificationPollMs = 5_000,
 }: ServerOptions): Promise<RunningServer> {
+  if (notificationChannels.length !== 1)
+    throw new Error(
+      `exactly one notification channel is supported, got ${notificationChannels.length}`
+    );
+  const channel = notificationChannels[0]!;
   const hub = new EventHub();
   let url = "";
   const dispatcher = new RunDispatcher({
@@ -192,7 +204,7 @@ export async function startServer({
   const notifications = new NotificationRelay({
     db,
     hub,
-    channel: notificationChannel,
+    channel,
     now,
     pollMs: notificationPollMs,
   });
@@ -295,31 +307,19 @@ export async function startServer({
     res.json(await listOutbox(db));
   });
 
-  /** 가짜 채널이 받은 알림의 전송 기록. 받은 순서다. */
-  app.get("/api/channels/fake/messages", async (_req, res) => {
-    res.json(await listFakeChannelMessages(db));
-  });
-
-  /**
-   * 가짜 채널의 알림에 사용자가 답한다. 승인 요청 알림에만 승인 결정 입력으로 답하며, 대시보드와 같은 승인 결정 명령으로
-   * 보내 그 응답(200·409·422 등)을 그대로 돌려준다. 다른 알림은 422 `reply_not_allowed`다.
-   */
-  app.post("/api/channels/fake/messages/:messageId/reply", async (req, res) => {
-    const message = await findFakeChannelMessage(db, req.params.messageId);
-    if (!message) return notFound(res);
-    const result = await replyThroughFakeChannel(url, message, req.body);
-    if (result.kind === "reply_not_allowed") {
-      res.status(422).json({ error: { code: "reply_not_allowed" } });
-      return;
-    }
-    if (result.kind === "invalid_input") {
-      res
-        .status(422)
-        .json({ error: { code: "invalid_input", issues: result.issues } });
-      return;
-    }
-    res.status(result.status).json(result.body);
-  });
+  // 채널 adapter의 경로(webhook·가짜 채널 화면 등)는 `/api/channels/<채널 이름>` 아래다. adapter가 받기를 시작할 때 건다.
+  const channelRouter = express.Router();
+  app.use(`/api/channels/${encodeURIComponent(channel.name)}`, channelRouter);
+  const channelRoute =
+    (route: ChannelRoute): express.RequestHandler =>
+    async (req, res) => {
+      const { status, body } = await route({
+        params: req.params as Record<string, string>,
+        headers: req.headers,
+        body: req.body,
+      });
+      res.status(status).json(body);
+    };
 
   app.get("/api/organizations/:id", async (req, res) => {
     const org = await findOrganization(db, req.params.id);
@@ -968,6 +968,19 @@ export async function startServer({
     await dispatcher.start();
     heartbeats.start();
     notifications.start();
+    await channel.listen?.({
+      inlet: channelInlet({
+        channel: channel.name,
+        db,
+        source,
+        complete,
+        sendOwnerMessage,
+      }),
+      routes: {
+        get: (path, route) => channelRouter.get(path, channelRoute(route)),
+        post: (path, route) => channelRouter.post(path, channelRoute(route)),
+      },
+    });
   } catch (error) {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -984,6 +997,7 @@ export async function startServer({
       await dispatcher.close();
       // 실행 시도를 끝내며 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
       await notifications.close();
+      await channel.close?.();
       for (const client of wss.clients) client.terminate();
       wss.close();
       server.closeAllConnections();
@@ -994,6 +1008,31 @@ export async function startServer({
 
 const queryString = (value: unknown) =>
   typeof value === "string" ? value : undefined;
+
+/**
+ * 가짜 채널 답장의 응답. 대시보드 명령과 같은 응답 코드·본문이며, 글 답장은 사용자 메시지 보내기처럼 201이다.
+ * 알림 종류에 맞지 않는 답은 422 `reply_not_allowed`다.
+ */
+function fakeChannelResponse(
+  result: ChannelReplyResult,
+  answer: ChannelAnswer
+): ChannelResponse {
+  switch (result.kind) {
+    case "ok":
+      return { status: answer.kind === "text" ? 201 : 200, body: result.value };
+    case "invalid_input":
+      return { status: 422, body: invalidInputBody(result.issues) };
+    case "refused": {
+      const response = ownerRefusalResponses[result.reason as OwnerRefusal];
+      if (!response)
+        throw new Error(
+          `no response code for channel refusal ${result.reason}`
+        );
+      const [code, status] = response;
+      return { status, body: { error: { code } } };
+    }
+  }
+}
 
 /** 조회 경로의 없음(다른 조직의 것도 같다). 명령 경로의 없음은 `refuseOwner`의 표를 거친다. */
 function notFound(res: express.Response) {
@@ -1008,11 +1047,13 @@ function parseInput<S extends z.ZodType>(
 ): z.infer<S> | undefined {
   const input = schema.safeParse(body);
   if (input.success) return input.data;
-  res
-    .status(422)
-    .json({ error: { code: "invalid_input", issues: input.error.issues } });
+  res.status(422).json(invalidInputBody(input.error.issues));
   return undefined;
 }
+
+const invalidInputBody = (issues: unknown) => ({
+  error: { code: "invalid_input", issues },
+});
 
 /** 사용자가 한 일의 거부를 `ownerRefusalResponses`의 응답 코드로 답한다. */
 function refuseOwner(res: express.Response, reason: OwnerRefusal) {
