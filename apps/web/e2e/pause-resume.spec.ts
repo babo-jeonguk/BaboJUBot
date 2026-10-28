@@ -304,6 +304,8 @@ test("queued messages wait above the composer where the owner can edit one in pl
   await expect(edit).toBeVisible();
   await edit.hover();
   await expect(page.getByRole("tooltip", { name: "고치기" })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
 
   // 고치기는 그 항목을 그 자리에서 고치는 입력으로 바꾼다. Esc는 그대로 두고, 비우면 저장할 수 없다.
   await item("두 번째 줄").hover();
