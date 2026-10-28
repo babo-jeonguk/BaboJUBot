@@ -471,6 +471,48 @@ test("a full queue shows its count against the cap and disables sending until on
   await expect(queued.last()).toHaveText("하나 더");
 });
 
+test("a conversation with nothing queued says the queue is full when other conversations filled the Lead's cap", async ({
+  page,
+}) => {
+  const org = await createOrganization(page, "다른 대화로 찬 줄 E2E 조직");
+  expect(
+    (await page.request.post(org.api("/pause"), { data: {} })).status()
+  ).toBe(200);
+  const started = await page.request.post(org.api("/conversations"), {
+    data: { body: "새 대화의 첫 메시지" },
+  });
+  expect(started.status()).toBe(201);
+  const { conversation, message } = (await started.json()) as {
+    conversation: { id: string };
+    message: { id: string };
+  };
+  expect(
+    (
+      await page.request.post(org.api(`/messages/${message.id}/withdraw`), {
+        data: {},
+      })
+    ).status()
+  ).toBe(200);
+  for (let i = 1; i <= 20; i++)
+    expect(
+      (
+        await page.request.post(org.api("/messages"), {
+          data: { body: `줄 ${i}` },
+        })
+      ).status()
+    ).toBe(201);
+
+  await openWithLiveEvents(page, `/orgs/${org.id}/chat/${conversation.id}`);
+  await expect(page.getByTestId("queued-message")).toHaveCount(0);
+  await expect(
+    page.getByText("다른 대화에 줄 세운 메시지가 가득 찼습니다 · 20/20")
+  ).toBeVisible();
+  await page.getByLabel("Lead에게 보낼 메시지").fill("하나 더");
+  await expect(
+    page.getByRole("button", { name: "보내기", exact: true })
+  ).toBeDisabled();
+});
+
 test("the Lead chat stops taking messages when another tab stops the organization, but queued ones can still be cancelled", async ({
   page,
 }) => {

@@ -1009,6 +1009,13 @@ function Composer({
               {held}
             </p>
           )}
+          {/* 상한은 Lead의 모든 대화를 합친 수라, 이 대화에 목록이 없어도 가득 찰 수 있다. */}
+          {full && queued.length === 0 && (
+            <p role="status" className="mt-2 text-xs text-rose-600">
+              다른 대화에 줄 세운 메시지가 가득 찼습니다 · {queuedCount}/
+              {maxQueuedMessages}
+            </p>
+          )}
         </>
       )}
     </form>
