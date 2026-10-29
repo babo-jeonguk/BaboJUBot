@@ -36,7 +36,7 @@
 | 메시지·깨우기·bundle·세션 이어 가기·토큰 규칙 | [core/run.ts](../../packages/core/src/run.ts) | 실행 API; API로 어려운 bundle 버전별 세션은 [core](../../packages/core/src/run.test.ts) |
 | 대기열·에이전트당 실행 하나·bundle 고정·종료/쓰기 직렬화 | [db/runs.ts](../../packages/db/src/runs.ts) `claimNextRun`·`finishRun`, conversations.ts `insertAgentMessage`; schema·migrations | [DB admission·동시성](../../packages/db/src/runs.test.ts) |
 | 깨우기·DB admission/종료 저장 재시도·실행기 호출·활동 필터·종료 취소 | [server/dispatcher.ts](../../apps/server/src/dispatcher.ts) `RunDispatcher`, [run-token.ts](../../apps/server/src/run-token.ts) | 실행 API |
-| 실행 시도 요청 한 장 조립(admission 결과 + 실행 맥락 + 토큰·도구 주소 + workspace) | [server/run-request.ts](../../apps/server/src/run-request.ts) `assembleRunRequest`, db/runs.ts `loadRunContext` | 실행 API |
+| 실행 시도 요청 한 장 조립(admission 결과 + 실행 맥락 + 토큰·도구 주소 + workspace) | [server/run-request.ts](../../apps/server/src/run-request.ts) `createRunRequestAssembler`(app.ts가 도구 주소와 함께 만들어 dispatcher에 넘김), db/runs.ts `loadRunContext` | 실행 API |
 | HTTP 토큰 인증·교차 조직 404·종료 토큰 거부, 목록에서 거는 경로·공통 입력 검사·도구별 처리 함수 표 | [server/tools.ts](../../apps/server/src/tools.ts) `orgToolsRouter`, db/runs.ts `authenticateRun` | 실행 API `organization tools`, [경로·목록 대조](../../apps/server/src/tools.test.ts) |
 | 대화·실행 시도·에이전트 조회 | server/app.ts, [db/run-views.ts](../../packages/db/src/run-views.ts) `listRuns`·`listRunningRuns`·`findRunDetail`·`findAgentDetail`(admission·화면이 함께 쓰는 깨우기 사유·진행 중 여부·지침 읽기는 DB 안에서만 쓰는 run-reads.ts) | 실행 API |
 | 여러 대화: 대화·목록 모양, 새 대화 시작 입력·결과, 본 위치, 답장의 `conversationId` | contracts message.ts `conversationSchema`·`conversationSummarySchema`·`startConversationResultSchema`·`sendAgentMessageInputSchema`, run.ts 깨우기 `owner_message.conversationId`·맥락 `conversations`, event.ts `message.created.conversationId` | [계약](../../packages/contracts/src/run.test.ts) |
@@ -247,7 +247,7 @@ EventHub → WebSocket /api/events → live-events → live-refresh → 다른 �
 chat → POST /api/organizations/:id/messages(기본 대화)·/conversations(새 대화)·/conversations/:id/messages(app) `sendOwnerMessage`
   → core planOwnerMessage → db insertOwnerMessage(새 대화·메시지·깨우기·Event) → dispatcher kick
   → claimNextRun(에이전트 잠금·실행 중 재확인·대기 깨우기 고정)
-  → assembleRunRequest(신원·맥락·토큰·도구 주소·workspace) → runtime execute
+  → 요청 조립(createRunRequestAssembler: 신원·맥락·토큰·도구 주소·workspace) → runtime execute
       → 토큰으로 /api/tools/* → 메시지·도구 요약 Event(send_message는 core chooseReplyConversation으로 대화를 정함)
       → emit → 공개 활동 허용 종류만 run.activity
   → finishRun → run.finished → 다음 깨우기 처리

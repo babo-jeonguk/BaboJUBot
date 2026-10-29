@@ -33,10 +33,9 @@ export type RuntimeContractOptions = {
   startupMs?: number;
 };
 
-/** 가짜 도구 서버. 지금 실행 시도의 요청 하나로 답하고, 받은 도구 호출을 센다. */
+/** 가짜 도구 서버. 지금 실행 시도의 요청 하나로 답하고, 도구 호출을 받을 때마다 알린다. */
 async function startFakeToolServer() {
   let current: RunRequest | undefined;
-  let requests = 0;
   const onRequest = new Set<() => void>();
   const route = (tool: "get_run_context" | "send_message") =>
     `${orgTools[tool].method} ${orgToolsBasePath}${orgTools[tool].path}`;
@@ -44,7 +43,6 @@ async function startFakeToolServer() {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
-      requests++;
       for (const notify of onRequest) notify();
       const reply = (status: number, body: unknown) => {
         res.writeHead(status, { "content-type": "application/json" });
@@ -101,10 +99,6 @@ async function startFakeToolServer() {
     baseUrl: `http://127.0.0.1:${port}`,
     serve(request: RunRequest) {
       current = request;
-      requests = 0;
-    },
-    get requests() {
-      return requests;
     },
     onRequest,
     close: () =>
@@ -163,19 +157,21 @@ export function describeRuntimeContract(
       const controller = new AbortController();
       const activities: unknown[] = [];
       const late: unknown[] = [];
-      const working = new Set<() => void>();
       let returned = false;
+      // 도구 호출이나 활동이 일을 시작했다는 신호다. 신호가 없으면 `startupMs` 뒤에 취소한다.
+      let markStarted!: () => void;
       const started = new Promise<void>((resolve) => {
-        working.add(resolve);
-        tools.onRequest.add(resolve);
+        markStarted = resolve;
         setTimeout(resolve, startupMs);
       });
+      tools.onRequest.add(markStarted);
+      void started.then(() => tools.onRequest.delete(markStarted));
       const result = adapter
         .execute(request, {
           signal: controller.signal,
           emit: async (activity) => {
             (returned ? late : activities).push(activity);
-            for (const notify of working) notify();
+            markStarted();
           },
         })
         .finally(() => {

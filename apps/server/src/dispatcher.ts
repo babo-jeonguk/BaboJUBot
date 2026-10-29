@@ -20,7 +20,7 @@ import {
   type Database,
 } from "@babojubot/db";
 import type { EventHub } from "./event-hub.ts";
-import { assembleRunRequest } from "./run-request.ts";
+import type { RunRequestAssembler } from "./run-request.ts";
 import { issueRunToken } from "./run-token.ts";
 
 const failed = (error: string): RunResult => ({
@@ -38,7 +38,7 @@ const cancelled: RunResult = {
 };
 
 /**
- * 깨우기를 실행 시도로 만들어 실행기에 맡긴다. admission → 요청 조립(`assembleRunRequest`) → 실행기 호출·취소 → 종료 저장만 한다.
+ * 깨우기를 실행 시도로 만들어 실행기에 맡긴다. admission → 요청 조립(`createRunRequestAssembler`) → 실행기 호출·취소 → 종료 저장만 한다.
  * 에이전트당 실행 시도 하나는 DB admission(`claimNextRun`)이 보장하고, 이 객체는 같은 프로세스 안에서 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다.
  * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행한다.
  */
@@ -47,7 +47,7 @@ export class RunDispatcher {
   readonly #hub: EventHub;
   readonly #runtime: RuntimeAdapter;
   readonly #now: () => Date;
-  readonly #toolsBaseUrl: () => string;
+  readonly #assemble: RunRequestAssembler;
   readonly #pumps = new Map<string, Promise<void>>();
   readonly #kickedAgain = new Set<string>();
   readonly #active = new Map<string, AbortController>();
@@ -64,13 +64,14 @@ export class RunDispatcher {
     hub: EventHub;
     runtime: RuntimeAdapter;
     now: () => Date;
-    toolsBaseUrl: () => string;
+    /** 실행 시도 요청 조립(`createRunRequestAssembler`). */
+    assemble: RunRequestAssembler;
   }) {
     this.#db = options.db;
     this.#hub = options.hub;
     this.#runtime = options.runtime;
     this.#now = options.now;
-    this.#toolsBaseUrl = options.toolsBaseUrl;
+    this.#assemble = options.assemble;
   }
 
   /**
@@ -208,7 +209,7 @@ export class RunDispatcher {
     }
   }
 
-  /** 실행 시도 하나: 요청 조립(`assembleRunRequest`) → 실행기 호출·취소 → 종료 저장. */
+  /** 실행 시도 하나: 요청 조립(`createRunRequestAssembler`) → 실행기 호출·취소 → 종료 저장. */
   async #execute(claimed: ClaimedRun, token: string) {
     const { run } = claimed;
     const controller = new AbortController();
@@ -224,10 +225,7 @@ export class RunDispatcher {
           type: "cancel",
           reason: cancelReason,
         } satisfies RunCancel);
-      const request = await assembleRunRequest(this.#db, claimed, {
-        toolsBaseUrl: this.#toolsBaseUrl(),
-        token,
-      });
+      const request = await this.#assemble(claimed, token);
       const raw = await this.#runtime.execute(request, {
         signal: controller.signal,
         emit: (activity) => this.#emit(run.id, activity),

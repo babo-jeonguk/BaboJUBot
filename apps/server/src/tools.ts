@@ -172,10 +172,13 @@ export function orgToolsRouter({
    * 본문이 객체가 아니거나 경로 변수와 같은 이름의 칸이 있으면 계약 밖이다(`undefined`).
    */
   const inputOf = (tool: OrgToolName, req: express.Request) => {
-    const { method, params, bodyFields } = orgTools[tool];
+    const { params, bodyFields } = orgTools[tool];
     const names: readonly string[] = params;
-    const rest: unknown =
-      method !== "GET" ? (req.body ?? {}) : bodyFields.length ? req.query : {};
+    const rest: unknown = !isOrgToolRead(tool)
+      ? (req.body ?? {})
+      : bodyFields.length
+        ? req.query
+        : {};
     if (typeof rest !== "object" || rest === null || Array.isArray(rest))
       return undefined;
     if (Object.keys(rest).some((key) => names.includes(key))) return undefined;
@@ -484,10 +487,7 @@ export function orgToolsRouter({
           void (await respondWrite(res, result, status)),
       });
     };
-    router[method === "GET" ? "get" : method === "POST" ? "post" : "patch"](
-      path,
-      route
-    );
+    router[method.toLowerCase() as Lowercase<typeof method>](path, route);
   }
 
   router.use((_req, res) => refuse(res, 404, "not_found"));

@@ -1,5 +1,6 @@
 import {
   idempotencyKeyHeader,
+  isOrgToolRead,
   orgToolErrorSchema,
   orgTools,
   orgToolsBasePath,
@@ -61,7 +62,7 @@ export function createOrgToolClient({
   ): Promise<OrgToolOutput<T>> {
     const { method, output } = orgTools[tool];
     const { path, rest } = splitOrgToolInput(tool, input ?? {});
-    const post = method !== "GET";
+    const post = !isOrgToolRead(tool);
     const url = new URL(orgToolsBasePath + path, baseUrl);
     if (!post)
       for (const [key, value] of Object.entries(rest))
