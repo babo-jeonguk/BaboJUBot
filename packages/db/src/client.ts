@@ -20,11 +20,16 @@ export type DatabaseHandle = {
   close: () => Promise<void>;
 };
 
+/** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 정지 때 dataDir를 지운다. */
+export type EmbeddedOptions = {
+  dataDir: string;
+  port: number;
+  persistent: boolean;
+};
+
 export type DatabaseOptions =
   /** 외부 Postgres. 연결만 소유하며 서버를 멈추거나 지우지 않는다. */
-  | { url: string }
-  /** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 정지 때 dataDir를 지운다. */
-  | { embedded: { dataDir: string; port: number; persistent: boolean } };
+  { url: string } | { embedded: EmbeddedOptions };
 
 const migrationsFolder = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -42,7 +47,29 @@ export async function openDatabase(
 ): Promise<DatabaseHandle> {
   if ("url" in options) return connect(options.url, async () => {});
 
-  const { dataDir, port, persistent } = options.embedded;
+  const { port } = options.embedded;
+  const stop = await startEmbeddedCluster(options.embedded);
+  try {
+    await ensureDatabase(clusterUrl(port, "postgres"));
+    return await connect(clusterUrl(port, databaseName), stop);
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+}
+
+/** embedded cluster의 DB 하나에 연결할 주소. */
+export const clusterUrl = (port: number, database: string) =>
+  `postgres://postgres:postgres@127.0.0.1:${port}/${database}`;
+
+/**
+ * embedded cluster를 띄우고 멈추는 함수를 돌려준다. `stop`이 돌아오면 postgres는 끝났다.
+ * `settings`는 postgres 설정(`이름=값`)이다.
+ */
+export async function startEmbeddedCluster(
+  { dataDir, port, persistent }: EmbeddedOptions,
+  settings: string[] = []
+): Promise<() => Promise<void>> {
   const cluster = new EmbeddedPostgres({
     databaseDir: dataDir,
     port,
@@ -50,11 +77,11 @@ export async function openDatabase(
     password: "postgres",
     persistent,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
+    postgresFlags: settings.flatMap((setting) => ["-c", setting]),
     onLog: () => {},
     onError: (error) => console.error("[embedded-postgres]", error),
   });
   // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
-  // `stop`이 돌아오면 postgres는 끝났다.
   const stop = async () => {
     await cluster.stop();
     if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });
@@ -63,11 +90,7 @@ export async function openDatabase(
     if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
       await cluster.initialise();
     await startCluster(cluster);
-    await ensureDatabase(cluster);
-    return await connect(
-      `postgres://postgres:postgres@127.0.0.1:${port}/${databaseName}`,
-      stop
-    );
+    return stop;
   } catch (error) {
     await stop();
     throw error;
@@ -101,8 +124,8 @@ async function startCluster(cluster: EmbeddedPostgres) {
   forgetWhenExited();
 }
 
-async function ensureDatabase(cluster: EmbeddedPostgres) {
-  const client = cluster.getPgClient("postgres", "127.0.0.1");
+async function ensureDatabase(url: string) {
+  const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
     const { rowCount } = await client.query(
