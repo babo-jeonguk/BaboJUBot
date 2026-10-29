@@ -26,7 +26,6 @@ import {
   ApiError,
   useAgent,
   useControlAgent,
-  useConversation,
   useConversations,
   useMarkConversationRead,
   useOrganization,
@@ -34,11 +33,17 @@ import {
   useQueuedMessages,
   useSendMessage,
   useStartConversation,
-  transcriptWindowMax,
-  trimConversation,
   type QueuedMessageCommand,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
+import {
+  afterListChange,
+  listShape,
+  shouldTrim,
+  trimConversation,
+  useConversation,
+  type ListShape,
+} from "./transcript-window.ts";
 import {
   AgentStatusBadge,
   formatTime,
@@ -383,9 +388,9 @@ function usePageVisible() {
 }
 
 /**
- * 저장된 대화 하나: 대화 기록과 입력창. 보이는 동안 Lead가 보낸 메시지를 읽은 것으로 표시한다.
- * 대화 기록은 Lead가 받은 순서이며 처음에는 가장 최근 쪽만 받고, 위로 올리면 더 오래된 쪽을 받는다(`Transcript`).
- * 줄 세운 메시지는 대화 기록과 따로 받아 입력창 위에 둔다.
+ * 저장된 대화 하나: 대화에 놓인 메시지와 입력창. 보이는 동안 Lead가 보낸 메시지를 읽은 것으로 표시한다.
+ * 메시지는 받은 순서이며 처음에는 가장 최근 쪽만 받고, 위로 올리면 더 오래된 쪽을 받는다(`Transcript`).
+ * 줄 세운 메시지는 따로 받아 입력창 위에 둔다.
  */
 function Thread({
   orgId,
@@ -487,7 +492,7 @@ const prefersReducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * 대화 기록의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
+ * 대화에 놓인 메시지의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
  * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
  * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
  * 맨 아래 근처(`followThreshold`)에 있을 때만 새 메시지를 따라 내려가고, 그보다 위에 있으면 `맨 아래로` 버튼을 보인다.
@@ -532,14 +537,8 @@ function Transcript({
   const jumping = useRef(false);
   const [away, setAway] = useState(false);
   const [arrivals, setArrivals] = useState(0);
-  const first = messages[0]?.id;
-  const last = messages.at(-1)?.id;
   // 처음 그릴 때는 맨 아래로 간다(빈 것에서 시작한 것으로 본다).
-  const previous = useRef<{
-    first: string | undefined;
-    last: string | undefined;
-    count: number;
-  }>({ first: undefined, last: undefined, count: 0 });
+  const previous = useRef<ListShape>(listShape([]));
 
   const scrollTo = (top: number) => {
     const el = scroller.current;
@@ -598,40 +597,34 @@ function Transcript({
     olderRef.current = older;
   });
 
-  // 메시지가 바뀐 직후 그리기 전에: 위에 붙었으면 보던 메시지를 같은 자리로, 맨 아래를 따라가는 중이면(새 메시지가 붙었거나
-  // 오래된 쪽을 덜어 냈거나) 다시 맨 아래로 간다. 새로 온 메시지 수는 화면 읽기 도구에 알린다.
+  // 메시지가 바뀐 직후 그리기 전에 대화 창의 판단(`afterListChange`)을 DOM에 적용한다. 새로 온 메시지 수는 화면 읽기 도구에 알린다.
   useLayoutEffect(() => {
     const el = scroller.current;
     const before = previous.current;
-    previous.current = { first, last, count: messages.length };
+    previous.current = listShape(messages);
     if (!el) return;
-    if (before.count === 0) {
-      pinToBottom();
-      return;
-    }
-    if (first !== before.first && anchor.current) {
+    const { scroll, arrivals } = afterListChange(before, messages, {
+      anchored: anchor.current !== null,
+      following: atBottom.current,
+      jumping: jumping.current,
+    });
+    if (scroll === "restore_anchor") {
       const target = el.querySelector<HTMLElement>(
-        `[data-message-id="${CSS.escape(anchor.current.id)}"]`
+        `[data-message-id="${CSS.escape(anchor.current!.id)}"]`
       );
       if (target) {
         const offset =
           target.getBoundingClientRect().top - el.getBoundingClientRect().top;
-        scrollTo(el.scrollTop + offset - anchor.current.offset);
+        scrollTo(el.scrollTop + offset - anchor.current!.offset);
       }
       // 되돌린 자리에서 따라가기를 다시 정한다. 그러지 않으면 크기 변화가 맨 아래로 끌고 간다.
       atBottom.current =
         el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
       anchor.current = null;
-    } else if (atBottom.current) {
-      if (jumping.current) glideToBottom();
-      else pinToBottom();
-    }
-    if (last !== before.last) {
-      const index = messages.findIndex((m) => m.id === before.last);
-      const added = index === -1 ? 1 : messages.length - 1 - index;
-      if (added > 0) setArrivals((n) => n + added);
-    }
-  }, [first, last, messages]);
+    } else if (scroll === "glide_bottom") glideToBottom();
+    else if (scroll === "pin_bottom") pinToBottom();
+    if (arrivals > 0) setArrivals((n) => n + arrivals);
+  }, [messages]);
 
   // 따라가는 동안 대화 영역(입력창 위 목록·입력창이 자라거나 줄어듦)이나 내용(그린 뒤 자란 메시지)의 크기가 바뀌면 다시 맨 아래로
   // 간다. 영역이 줄어들 때는 스크롤 Event가 없어 이렇게 하지 않으면 맨 아래 메시지가 가려진 채 남는다.
@@ -649,11 +642,14 @@ function Transcript({
     return () => observer.disconnect();
   }, []);
 
-  // 맨 아래를 따라가는 동안 불러 둔 메시지가 창보다 많아지면 오래된 쪽을 덜어 낸다. 위를 읽거나 더 오래된 쪽을 받는 중에는 덜어 내지 않는다.
-  const overflow = messages.length > transcriptWindowMax;
+  // 맨 아래를 따라가는 동안 불러 둔 메시지가 창보다 많아지면 오래된 쪽을 덜어 낸다(`shouldTrim`).
+  const count = messages.length;
   useEffect(() => {
-    if (overflow && !away && !loadingOlder && atBottom.current) trim();
-  }, [overflow, away, loadingOlder, trim]);
+    if (
+      shouldTrim(count, { following: !away && atBottom.current, loadingOlder })
+    )
+      trim();
+  }, [count, away, loadingOlder, trim]);
 
   // 맨 위 sentinel이 300px 안에 들어오면 더 오래된 쪽을 받는다.
   useEffect(() => {
