@@ -8,6 +8,7 @@ export {
 } from "./client.ts";
 export * from "./organizations.ts";
 export * from "./runs.ts";
+export * from "./run-views.ts";
 export * from "./conversations.ts";
 export * from "./harness.ts";
 export * from "./approvals.ts";

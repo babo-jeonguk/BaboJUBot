@@ -29,7 +29,7 @@ import {
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import type { Database } from "./client.ts";
 import { isUuid, resolveAppearance, toEvent } from "./rows.ts";
-import { listRunningRuns } from "./runs.ts";
+import { listRunningRuns } from "./run-views.ts";
 import { artifacts, events, organizations, runs, tasks } from "./schema.ts";
 
 /** 서버 Postgres가 아는 시간대 이름. tz 자료는 서버가 도는 동안 바뀌지 않으므로 처음 한 번 읽는다. */

@@ -1,79 +1,57 @@
 import type {
-  AgentDetail,
   AgentRole,
   Event,
   InstructionFile,
   PublicActivity,
   RunCancelReason,
   RunContextResponse,
-  RunDetail,
   RunResult,
-  RunSummary,
   WakeReason,
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
   admitsRuns,
-  decisionOfStatus,
   instructionsBundleVersion,
   planRunFinish,
   planRunInterruption,
   planRunStart,
   type NewRun,
-  type PendingWake,
   runBlockingStages,
   type RecordSource,
 } from "@babojubot/core";
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  inArray,
-  isNull,
-  notInArray,
-  sql,
-} from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
-  countQueuedMessages,
   markDelivered,
   markRequeued,
   runConversations,
 } from "./conversations.ts";
 import {
+  findRunningRunId,
+  selectInstructions,
+  selectRunWakes,
+  selectWakes,
+} from "./run-reads.ts";
+import {
   hasPendingHeartbeat,
   insertEvent,
   lockAgent,
-  isUuid,
   lockRunningRun,
   toAgent,
-  toAgentHeartbeat,
-  toEvent,
   toOrganization,
-  type Executor,
 } from "./rows.ts";
 import {
-  agentToAgentMessages,
   agents,
-  approvals,
-  events,
   flowTemplates,
-  instructionCopies,
-  instructionRevisions,
-  messages,
   organizations,
-  researchMapEdits,
-  resultSubmissions,
   runs,
   runWakes,
-  taskComments,
-  tasks,
   wakes,
 } from "./schema.ts";
 
-// 실행 시도의 admission·종료·인증과 실행 시도 화면 조회. 대화와 그 메시지(받은 순서·쪽 커서·줄 세운 메시지)는 conversations.ts가 맡고,
-// admission은 실행 시도가 받은 깨우기를 그 module에 한 번 알린다(`markDelivered`).
+// 실행 시도의 admission·종료·인증(토큰, 그 실행 시도의 활동·맥락). 대화와 그 메시지(받은 순서·쪽 커서·줄 세운 메시지)는
+// conversations.ts가, 실행 시도·에이전트 화면 조회는 run-views.ts가 맡는다. admission은 실행 시도가 받은 깨우기를 대화 module에
+// 한 번 알린다(`markDelivered`).
 
 // ---------- 실행 시도 admission ----------
 
@@ -438,349 +416,3 @@ export async function loadRunContext(
     },
   };
 }
-
-// ---------- Surface 조회 ----------
-
-/** 조직의 실행 시도. 최근 것부터. */
-export async function listRuns(
-  db: Executor,
-  organizationId: string,
-  { agentId, limit = 50 }: { agentId?: string; limit?: number } = {}
-): Promise<RunSummary[]> {
-  if (!isUuid(organizationId)) return [];
-  if (agentId !== undefined && !isUuid(agentId)) return [];
-  const rows = await db
-    .select(runSummaryColumns)
-    .from(runs)
-    .where(
-      and(
-        eq(runs.organizationId, organizationId),
-        agentId === undefined ? undefined : eq(runs.agentId, agentId)
-      )
-    )
-    .orderBy(desc(runs.seq))
-    .limit(limit);
-  return rows.map(toRunSummary);
-}
-
-/**
- * 조직의 진행 중 실행 시도(취소 정리 중 포함). 최근 목록(`listRuns`)은 개수를 자르므로 오래 실행 중인 것이 빠질 수 있다.
- * 진행 중 실행 시도는 에이전트당 하나뿐이라 자르지 않는다.
- */
-export async function listRunningRuns(
-  db: Executor,
-  organizationId: string
-): Promise<RunSummary[]> {
-  if (!isUuid(organizationId)) return [];
-  const rows = await db
-    .select(runSummaryColumns)
-    .from(runs)
-    .where(
-      and(eq(runs.organizationId, organizationId), eq(runs.status, "running"))
-    )
-    .orderBy(desc(runs.seq));
-  return rows.map(toRunSummary);
-}
-
-/** 실행 시도 상세. 다른 조직의 실행 시도와 없는 실행 시도를 구별하지 않는다. */
-export async function findRunDetail(
-  db: Database,
-  organizationId: string,
-  runId: string
-): Promise<RunDetail | undefined> {
-  if (!isUuid(organizationId) || !isUuid(runId)) return undefined;
-  const [row] = await db
-    .select({ ...runSummaryColumns, usage: runs.usage })
-    .from(runs)
-    .where(and(eq(runs.organizationId, organizationId), eq(runs.id, runId)));
-  if (!row) return undefined;
-  const { usage, ...summary } = row;
-  const wakeReasons = (await selectRunWakes(db, runId)).map((w) => w.reason);
-  const transcript = await db
-    .select()
-    .from(events)
-    .where(
-      and(eq(events.organizationId, organizationId), eq(events.runId, runId))
-    )
-    .orderBy(asc(events.id));
-  return {
-    ...toRunSummary(summary),
-    wakeReasons,
-    usage,
-    transcript: transcript.map(toEvent),
-  };
-}
-
-/** 에이전트 상세: 상태와 최근 실행 시도. 사용자 명령이 바꾼 뒤의 상세는 그 transaction 안에서 읽는다. */
-export async function findAgentDetail(
-  db: Executor,
-  organizationId: string,
-  agentId: string,
-  { recentRuns = 10 }: { recentRuns?: number } = {}
-): Promise<AgentDetail | undefined> {
-  if (!isUuid(organizationId) || !isUuid(agentId)) return undefined;
-  const [agent] = await db
-    .select()
-    .from(agents)
-    .where(
-      and(eq(agents.organizationId, organizationId), eq(agents.id, agentId))
-    );
-  if (!agent) return undefined;
-  const recent = await listRuns(db, organizationId, {
-    agentId,
-    limit: recentRuns,
-  });
-  return {
-    ...toAgent(agent),
-    status: (await findRunningRunId(db, agentId)) ? "running" : "idle",
-    paused: agent.paused,
-    instructionsBundleVersion: instructionsBundleVersion(
-      await selectInstructions(db, agentId)
-    ),
-    heartbeat: toAgentHeartbeat(agent),
-    recentRuns: recent,
-    queuedMessageCount: await countQueuedMessages(db, agentId),
-  };
-}
-
-// ---------- 내부 ----------
-
-async function findRunningRunId(db: Executor, agentId: string) {
-  const [active] = await db
-    .select({ id: runs.id })
-    .from(runs)
-    .where(and(eq(runs.agentId, agentId), eq(runs.status, "running")))
-    .limit(1);
-  return active?.id;
-}
-
-/** 에이전트의 지침 사본. bundle 버전 계산과 실행기 전달에 쓴다. */
-async function selectInstructions(
-  db: Executor,
-  agentId: string
-): Promise<InstructionFile[]> {
-  return db
-    .select({
-      path: instructionCopies.path,
-      content: instructionCopies.content,
-    })
-    .from(instructionCopies)
-    .where(eq(instructionCopies.agentId, agentId))
-    .orderBy(asc(instructionCopies.path));
-}
-
-/** 실행 시도가 받은 깨우기. 서버 재시작으로 다시 대기한 깨우기도 받았던 실행 시도의 기록에 남는다. */
-const selectRunWakes = (db: Executor, runId: string) =>
-  selectWakes(
-    db,
-    inArray(
-      wakes.id,
-      db
-        .select({ id: runWakes.wakeId })
-        .from(runWakes)
-        .where(eq(runWakes.runId, runId))
-    )
-  );
-
-/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집, 결과 수정 요청)에서 읽는다. heartbeat는 가리키는 기록이 없다. */
-async function selectWakes(
-  db: Executor,
-  where: ReturnType<typeof and> | ReturnType<typeof inArray>
-): Promise<PendingWake[]> {
-  const rows = await db
-    .select({
-      wake: wakes,
-      body: messages.body,
-      delivery: messages.delivery,
-      conversationId: messages.conversationId,
-      approvalKind: approvals.kind,
-      decision: approvals.status,
-      note: approvals.decisionNote,
-      task: {
-        title: tasks.title,
-        summary: tasks.reportSummary,
-        completedBy: tasks.completedByAgentId,
-      },
-      comment: { taskId: taskComments.taskId, body: taskComments.body },
-      agentToAgent: {
-        sender: agentToAgentMessages.senderAgentId,
-        body: agentToAgentMessages.body,
-      },
-      mapEdit: {
-        operation: researchMapEdits.operation,
-        nodeId: researchMapEdits.nodeId,
-        summary: researchMapEdits.summary,
-      },
-      instructionEdit: {
-        agentId: instructionRevisions.agentId,
-        copyId: instructionRevisions.copyId,
-        number: instructionRevisions.number,
-        path: instructionCopies.path,
-      },
-      resultNote: resultSubmissions.decisionNote,
-    })
-    .from(wakes)
-    .leftJoin(messages, eq(messages.id, wakes.messageId))
-    .leftJoin(approvals, eq(approvals.id, wakes.approvalId))
-    .leftJoin(tasks, eq(tasks.id, wakes.taskId))
-    .leftJoin(taskComments, eq(taskComments.id, wakes.commentId))
-    .leftJoin(
-      agentToAgentMessages,
-      eq(agentToAgentMessages.id, wakes.agentToAgentMessageId)
-    )
-    .leftJoin(researchMapEdits, eq(researchMapEdits.id, wakes.mapEditId))
-    .leftJoin(
-      instructionRevisions,
-      eq(instructionRevisions.id, wakes.instructionRevisionId)
-    )
-    .leftJoin(
-      instructionCopies,
-      eq(instructionCopies.id, instructionRevisions.copyId)
-    )
-    .leftJoin(
-      resultSubmissions,
-      eq(resultSubmissions.id, wakes.resultSubmissionId)
-    )
-    .where(where)
-    .orderBy(asc(wakes.seq));
-  return rows.map(
-    ({
-      wake,
-      body,
-      delivery,
-      conversationId,
-      approvalKind,
-      decision,
-      note,
-      task,
-      comment,
-      agentToAgent,
-      mapEdit,
-      instructionEdit,
-      resultNote,
-    }) => {
-      const wakeId = wake.id;
-      const reason = ((): WakeReason => {
-        switch (wake.kind) {
-          case "owner_message":
-            return {
-              kind: wake.kind,
-              wakeId,
-              messageId: wake.messageId!,
-              conversationId: conversationId!,
-              body: body!,
-            };
-          case "approval_decision":
-            return {
-              kind: wake.kind,
-              wakeId,
-              approvalId: wake.approvalId!,
-              approvalKind: approvalKind!,
-              decision: decisionOfStatus(decision!),
-              note,
-            };
-          case "task_assigned":
-            return {
-              kind: wake.kind,
-              wakeId,
-              taskId: wake.taskId!,
-              title: task!.title,
-            };
-          case "task_completed":
-            return {
-              kind: wake.kind,
-              wakeId,
-              taskId: wake.taskId!,
-              title: task!.title,
-              summary: task!.summary!,
-              completedByAgentId: task!.completedBy!,
-            };
-          case "task_comment":
-            return {
-              kind: wake.kind,
-              wakeId,
-              taskId: comment!.taskId,
-              commentId: wake.commentId!,
-              body: comment!.body,
-            };
-          case "agent_to_agent_message":
-            return {
-              kind: wake.kind,
-              wakeId,
-              messageId: wake.agentToAgentMessageId!,
-              senderAgentId: agentToAgent!.sender,
-              body: agentToAgent!.body,
-            };
-          case "research_map_edit":
-            return {
-              kind: wake.kind,
-              wakeId,
-              editId: wake.mapEditId!,
-              operation: mapEdit!.operation,
-              nodeId: mapEdit!.nodeId,
-              summary: mapEdit!.summary,
-            };
-          case "instruction_edit":
-            return {
-              kind: wake.kind,
-              wakeId,
-              revisionId: wake.instructionRevisionId!,
-              agentId: instructionEdit!.agentId!,
-              copyId: instructionEdit!.copyId!,
-              path: instructionEdit!.path!,
-              revision: instructionEdit!.number!,
-            };
-          case "result_changes_requested":
-            return {
-              kind: wake.kind,
-              wakeId,
-              submissionId: wake.resultSubmissionId!,
-              note: resultNote!,
-            };
-          case "organization_created":
-          case "heartbeat":
-            return { kind: wake.kind, wakeId };
-        }
-      })();
-      return {
-        id: wake.id,
-        organizationId: wake.organizationId,
-        agentId: wake.agentId,
-        createdAt: wake.createdAt.toISOString(),
-        reason,
-        delivery: wake.kind === "owner_message" ? delivery : null,
-      };
-    }
-  );
-}
-
-export const runSummaryColumns = {
-  id: runs.id,
-  organizationId: runs.organizationId,
-  agentId: runs.agentId,
-  status: runs.status,
-  cancelReason: runs.cancelReason,
-  summary: runs.summary,
-  error: runs.error,
-  startedAt: runs.startedAt,
-  finishedAt: runs.finishedAt,
-  // drizzle은 select 안의 열을 테이블 없이 쓰므로 상관 subquery는 이름을 직접 밝힌다.
-  wakeCount: sql<number>`(select count(*) from "run_wakes" where "run_wakes"."run_id" = "runs"."id")::int`,
-};
-
-export const toRunSummary = (row: {
-  id: string;
-  organizationId: string;
-  agentId: string;
-  status: RunSummary["status"];
-  cancelReason: RunSummary["cancelReason"];
-  summary: string | null;
-  error: string | null;
-  startedAt: Date;
-  finishedAt: Date | null;
-  wakeCount: number;
-}): RunSummary => ({
-  ...row,
-  startedAt: row.startedAt.toISOString(),
-  finishedAt: row.finishedAt?.toISOString() ?? null,
-});

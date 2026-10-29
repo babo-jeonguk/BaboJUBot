@@ -20,12 +20,8 @@ import {
   sendQueuedMessageNow,
   withdrawQueuedMessage,
 } from "./queued-messages.ts";
-import {
-  claimNextRun,
-  findAgentDetail,
-  finishRun,
-  loadRunContext,
-} from "./runs.ts";
+import { claimNextRun, finishRun, loadRunContext } from "./runs.ts";
+import { findAgentDetail } from "./run-views.ts";
 import { organizations } from "./schema.ts";
 import { refused } from "./stored.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
