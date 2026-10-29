@@ -21,7 +21,7 @@ import { expect } from "vitest";
 import type { TestServer } from "./support.ts";
 
 /**
- * 처음 연 대화 화면이 보는 메시지: 대화 기록의 가장 최근 쪽(Lead가 받은 순서) 뒤에 줄 세운 메시지 전부.
+ * 처음 연 대화 화면이 보는 메시지: 대화에 놓인 메시지의 가장 최근 쪽(받은 순서) 뒤에 줄 세운 메시지 전부.
  * `conversationId`를 비우면 기본 대화다.
  */
 export async function chatMessages(

@@ -285,7 +285,7 @@ const queuedMessagePath: Record<QueuedMessageCommand, string> = {
 /**
  * 줄 세운 메시지 하나를 고치거나 거두거나 지금 보낸다. 고치기는 `body`로 글만 바꾼다. 거두기가 돌려받는 메시지는 거두기 전 모양이라
  * 빈 입력창의 ↑가 그 글을 입력창에 되돌린다. 실행 시도가 먼저 받았으면 409 `message_delivered`이며, 성공하든 실패하든 줄 세운
- * 메시지와 Lead(줄 세운 메시지 수)를 다시 불러온다. 대화 기록은 여기서 이어 받지 않는다: 메시지를 받은 실행 시도는 늘 Event를
+ * 메시지와 Lead(줄 세운 메시지 수)를 다시 불러온다. 대화에 놓인 메시지는 여기서 이어 받지 않는다: 메시지를 받은 실행 시도는 늘 Event를
  * 남기고, 이어 받기는 Event가 부르는 `createLiveRefresh`가 하나씩 맡는다(더 오래된 쪽 불러오기와 겹치면 끝난 뒤 다시).
  */
 export function useQueuedMessageCommand(

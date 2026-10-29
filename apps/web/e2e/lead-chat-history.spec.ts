@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput } from "./support/organization.ts";
 
-// Lead 대화 기록은 가장 최근 쪽(50개)만 먼저 그리고, 위로 올리면 더 오래된 쪽을 붙인다.
+// Lead 대화는 가장 최근 쪽(50개)만 먼저 그리고, 위로 올리면 더 오래된 쪽을 붙인다.
 // 맨 아래를 따라가는 동안에는 가장 최근 창(100개 이하)만 남기고, 위로 올리면 덜어 낸 쪽을 다시 받는다.
 
 const runs = { timeout: 30_000 };
@@ -54,7 +54,7 @@ const post = async (page: Page, url: string, data: unknown = {}) =>
 
 /**
  * 받은 메시지를 API로 쌓는다. 가짜 Lead를 `실행 유지 연습`으로 붙잡아 둔 채 상한(20)만큼 줄 세우고 실행을 중단하면
- * 다음 실행 시도가 그 20개를 한꺼번에 받고 답장한다. 한 번에 22개 남짓이 대화 기록에 쌓인다.
+ * 다음 실행 시도가 그 20개를 한꺼번에 받고 답장한다. 한 번에 22개 남짓이 대화에 쌓인다.
  */
 async function seedTranscript(page: Page, org: Org, rounds: number) {
   for (let round = 0; round < rounds; round++) {

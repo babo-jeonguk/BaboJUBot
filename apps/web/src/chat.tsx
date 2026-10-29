@@ -24,6 +24,7 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type UIEvent,
 } from "react";
 import { Link, useNavigate } from "react-router";
 import {
@@ -496,32 +497,21 @@ const prefersReducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * 대화에 놓인 메시지의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
- * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
- * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
- * 맨 아래 근처(`followThreshold`)에 있을 때만 새 메시지를 따라 내려가고, 그보다 위에 있으면 `맨 아래로` 버튼을 보인다.
- * 따라가는 동안에는 대화 영역이나 내용의 크기가 바뀌어도(줄 세운 메시지 목록·입력창이 자람 등) 맨 아래에 남는다. 따라가기를
- * 멈추는 것은 사용자의 스크롤뿐이다.
- * 맨 아래를 따라가는 동안 불러 둔 메시지가 많아지면 오래된 쪽을 덜어 낸다(`trim`). 위를 읽는 동안에는 덜어 내지 않는다.
- * 위에 붙인 메시지는 읽어 주지 않고 새로 온 메시지만 조용히 알린다.
+ * 대화 스크롤 영역의 DOM 쪽. 목록이 바뀐 뒤 할 스크롤·새 메시지 수·덜어 내기는 대화 창의 판단(`afterListChange`·`shouldTrim`)이
+ * 정하고, 이 hook은 스크롤 위치·크기 변화·맨 위 sentinel을 읽어 그 판단에 넘기고 결과를 DOM에 적용한다.
  */
-function Transcript({
+function useTranscriptScroll({
   messages,
   hasOlder,
   loadingOlder,
   loadOlder,
   trim,
-  orgId,
-  lead,
 }: {
   messages: ConversationMessage[];
   hasOlder: boolean;
   loadingOlder: boolean;
   loadOlder: () => Promise<{ isError: boolean }>;
-  /** 불러 둔 오래된 쪽을 덜어 낸다. 맨 아래를 따라가며 `transcriptWindowMax`개를 넘었을 때만 부른다. */
   trim: () => void;
-  orgId: string;
-  lead: Agent;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -673,6 +663,77 @@ function Transcript({
   /** 사용자가 스크롤을 잡으면 `맨 아래로`의 내려가기를 멈춘다. */
   const takeOver = () => (jumping.current = false);
 
+  /** 사용자나 코드가 스크롤했다. 맨 아래 근처인가로 따라가기와 `맨 아래로` 버튼을 정한다. */
+  const onScroll = (e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const near =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
+    // 내려가는 동안의 중간 위치나 붙이는 사이 크기가 바뀐 위치로는 따라가기·버튼을 바꾸지 않는다.
+    if ((jumping.current || pinning.current) && !near) return;
+    jumping.current = false;
+    atBottom.current = near;
+    setAway(!near);
+    if (!programmatic.current && !loadingOlder) armed.current = true;
+  };
+
+  return {
+    scroller,
+    content,
+    sentinel,
+    away,
+    arrivals,
+    older,
+    jumpToBottom,
+    takeOver,
+    onScroll,
+  };
+}
+
+/**
+ * 대화에 놓인 메시지의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
+ * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
+ * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
+ * 맨 아래 근처(`followThreshold`)에 있을 때만 새 메시지를 따라 내려가고, 그보다 위에 있으면 `맨 아래로` 버튼을 보인다.
+ * 따라가는 동안에는 대화 영역이나 내용의 크기가 바뀌어도(줄 세운 메시지 목록·입력창이 자람 등) 맨 아래에 남는다. 따라가기를
+ * 멈추는 것은 사용자의 스크롤뿐이다.
+ * 맨 아래를 따라가는 동안 불러 둔 메시지가 많아지면 오래된 쪽을 덜어 낸다(`trim`). 위를 읽는 동안에는 덜어 내지 않는다.
+ * 위에 붙인 메시지는 읽어 주지 않고 새로 온 메시지만 조용히 알린다.
+ */
+function Transcript({
+  messages,
+  hasOlder,
+  loadingOlder,
+  loadOlder,
+  trim,
+  orgId,
+  lead,
+}: {
+  messages: ConversationMessage[];
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  loadOlder: () => Promise<{ isError: boolean }>;
+  /** 불러 둔 오래된 쪽을 덜어 낸다. 맨 아래를 따라가며 `transcriptWindowMax`개를 넘었을 때만 부른다. */
+  trim: () => void;
+  orgId: string;
+  lead: Agent;
+}) {
+  const {
+    scroller,
+    content,
+    sentinel,
+    away,
+    arrivals,
+    older,
+    jumpToBottom,
+    takeOver,
+    onScroll,
+  } = useTranscriptScroll({
+    messages,
+    hasOlder,
+    loadingOlder,
+    loadOlder,
+    trim,
+  });
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -682,17 +743,7 @@ function Transcript({
         onWheel={takeOver}
         onTouchStart={takeOver}
         onKeyDown={takeOver}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          const near =
-            el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
-          // 내려가는 동안의 중간 위치나 붙이는 사이 크기가 바뀐 위치로는 따라가기·버튼을 바꾸지 않는다.
-          if ((jumping.current || pinning.current) && !near) return;
-          jumping.current = false;
-          atBottom.current = near;
-          setAway(!near);
-          if (!programmatic.current && !loadingOlder) armed.current = true;
-        }}
+        onScroll={onScroll}
       >
         <div ref={content}>
           <div ref={sentinel} />

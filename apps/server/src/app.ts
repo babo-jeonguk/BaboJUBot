@@ -458,7 +458,7 @@ export async function startServer({
     return conversation && { org, conversation };
   };
   /**
-   * 대화 기록 한 쪽(`?before=`·`?after=` 커서, 없으면 가장 최근 쪽). 줄 세운 메시지는 따로 `queued-messages`가 준다.
+   * 대화에 놓인 메시지 한 쪽(`?before=`·`?after=` 커서, 없으면 가장 최근 쪽). 줄 세운 메시지는 따로 `queued-messages`가 준다.
    * 서버가 준 것이 아닌 커서나 둘을 함께 쓴 조회는 422 `invalid_input`이다.
    */
   const listChatMessages = async (
@@ -488,7 +488,7 @@ export async function startServer({
     }
     res.json(page);
   };
-  /** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 기록의 쪽과 상관없다. */
+  /** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 쪽과 상관없다. */
   const listChatQueue = async (
     req: express.Request,
     res: express.Response,

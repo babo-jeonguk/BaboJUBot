@@ -23,7 +23,7 @@ async function createOrganization(page: Page, name: string) {
       return list.length > 0 && list.every((r) => r.status === "completed");
     }, runs)
     .toBe(true);
-  /** 보낸 사용자 메시지가 실행 시도에 전달됐는가(대화 기록의 가장 최근 쪽에 있는가). */
+  /** 보낸 사용자 메시지가 실행 시도에 전달됐는가(대화의 가장 최근 쪽에 있는가). */
   const delivered = async (body: string) => {
     const res = await page.request.get(api("/messages"));
     const { messages } = (await res.json()) as {
@@ -428,6 +428,7 @@ test("messages held by a paused organization wait in the queue, can be edited, w
   await queued.last().hover();
   const sendNow = queued.last().getByRole("button", { name: "지금 보내기" });
   await expect(sendNow).toHaveAccessibleDescription("재개하면 먼저 전달");
+  await expect(queued.last().locator("p svg")).toHaveCount(0);
   await sendNow.click();
   await expect(queued.last().locator("p svg")).toBeVisible();
   await expect(sendNow).toHaveCount(0);

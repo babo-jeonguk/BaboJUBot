@@ -31,11 +31,14 @@ export type QueuedMessageState = Pick<
 export type QueuedMessageRefusal =
   "not_found" | "message_delivered" | "organization_closed";
 
-const queuedRefusal = (
-  message: QueuedMessageState | undefined
-): "not_found" | "message_delivered" | null => {
+/** 메시지 하나의 상태와 조직 상태(contracts 판정의 거부)를 합친 거부. 없음 → 조직 상태 → 이미 전달됨 순으로 본다. */
+const queuedRefusal = <R extends "organization_closed" = never>(
+  message: QueuedMessageState | undefined,
+  stateRefusal: R | null = null
+): "not_found" | "message_delivered" | R | null => {
   if (!message || message.author !== "owner" || message.withdrawn)
     return "not_found";
+  if (stateRefusal) return stateRefusal;
   if (message.deliveredToRunId) return "message_delivered";
   return null;
 };
@@ -49,10 +52,11 @@ export function planEdit(
   stage: LifecycleStage,
   body: string
 ): { event: NewEvent } | QueuedMessageRefusal {
-  if (queuedRefusal(message) === "not_found") return "not_found";
-  const refusal = queuedMessageRefusal("edit", { stage });
-  if (refusal) return refusal;
-  if (message!.deliveredToRunId) return "message_delivered";
+  const refused = queuedRefusal(
+    message,
+    queuedMessageRefusal("edit", { stage })
+  );
+  if (refused) return refused;
   const m = message!;
   return {
     event: {
@@ -113,10 +117,11 @@ export function planSendNow(
 ):
   | { cancellation: RunCancellation | null; events: NewEvent[] }
   | QueuedMessageRefusal {
-  if (queuedRefusal(message) === "not_found") return "not_found";
-  const refusal = queuedMessageRefusal("send_now", { stage: state.stage });
-  if (refusal) return refusal;
-  if (message!.deliveredToRunId) return "message_delivered";
+  const refused = queuedRefusal(
+    message,
+    queuedMessageRefusal("send_now", { stage: state.stage })
+  );
+  if (refused) return refused;
   const m = message!;
   const interrupt = planInterrupt(m, state.stage, state.runningRunId);
   if (interrupt === "organization_closed") return interrupt;

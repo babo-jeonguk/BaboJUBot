@@ -37,7 +37,7 @@ import {
 import type { Database } from "./client.ts";
 import {
   countQueuedMessages,
-  markReceived,
+  markDelivered,
   markRequeued,
   runConversations,
 } from "./conversations.ts";
@@ -73,7 +73,7 @@ import {
 } from "./schema.ts";
 
 // 실행 시도의 admission·종료·인증과 실행 시도 화면 조회. 대화와 그 메시지(받은 순서·쪽 커서·줄 세운 메시지)는 conversations.ts가 맡고,
-// admission은 실행 시도가 받은 깨우기를 그 module에 한 번 알린다(`markReceived`).
+// admission은 실행 시도가 받은 깨우기를 그 module에 한 번 알린다(`markDelivered`).
 
 // ---------- 실행 시도 admission ----------
 
@@ -163,7 +163,7 @@ export async function claimNextRun(
       .returning({ id: wakes.id });
     if (claimed.length !== ids.length)
       throw new Error("wake bundle changed while claiming a run");
-    await markReceived(tx, plan.run, ids);
+    await markDelivered(tx, plan.run, ids);
     await tx.insert(runWakes).values(
       ids.map((wakeId) => ({
         organizationId: plan.run.organizationId,

@@ -9,14 +9,7 @@ import { isClosedStage, type LifecycleStage } from "./organization.ts";
  * 입력창의 `보내기`(`send`)·`줄 세우기`(`queue`)·`중단하고 보내기`(`interrupt_send`)·`실행 중단`(`stop_run`)과
  * 줄 세운 메시지의 `고치기`(`edit`)·`취소`(`withdraw`)·`지금 보내기`(`send_now`).
  */
-export type OwnerAction =
-  | "send"
-  | "queue"
-  | "interrupt_send"
-  | "stop_run"
-  | "edit"
-  | "withdraw"
-  | "send_now";
+export type OwnerAction = NewMessageAction | "stop_run" | QueuedMessageAction;
 
 export type NewMessageAction = "send" | "queue" | "interrupt_send";
 export type QueuedMessageAction = "edit" | "withdraw" | "send_now";

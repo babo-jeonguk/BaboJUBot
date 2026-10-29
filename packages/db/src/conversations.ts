@@ -50,7 +50,7 @@ import {
 
 // 사용자와 Research Lead의 대화와 그 안의 메시지. 대화 목록·본 위치, 메시지 저장(사용자·Lead), 받은 순서, 쪽 커서,
 // 줄 세운 메시지 수·조회, Lead 실행 맥락의 대화를 맡는다. 받은 순서 열쇠·쪽 커서 형식·전달 sequence(`delivered_seq`)와
-// 거둔 메시지 제외는 이 파일 밖에 드러내지 않는다. admission은 실행 시도가 받은 깨우기를 `markReceived`로 한 번 알리고,
+// 거둔 메시지 제외는 이 파일 밖에 드러내지 않는다. admission은 실행 시도가 받은 깨우기를 `markDelivered`로 한 번 알리고,
 // 서버 재시작 재대기는 `markRequeued`로 되돌린다. 줄 세운 메시지 명령은 queued-messages.ts가 이 파일의 조회로 맡는다.
 
 // ---------- 대화 ----------
@@ -352,7 +352,7 @@ const messageRow = (m: ConversationMessage) => ({
  * 시작 시각)을 적는다. admission transaction 안에서 실행 시도마다 `messages.seq`의 sequence에서 값 하나를 뽑으므로 그 뒤 Lead가
  * 쓰는 메시지보다 앞, 그 전에 쓴 메시지보다 뒤에 놓인다.
  */
-export async function markReceived(
+export async function markDelivered(
   tx: Executor,
   run: { startedAt: string },
   wakeIds: string[]
@@ -407,7 +407,7 @@ const positionRank =
     Number
   );
 
-/** 받은 순서 열쇠 [위치, 같은 위치 안의 순서, 저장 순서]. 대화 기록(받은 메시지)에서는 위치가 늘 있다. */
+/** 받은 순서 열쇠 [위치, 같은 위치 안의 순서, 저장 순서]. 대화에 놓인(받은) 메시지에는 위치가 늘 있다. */
 type OrderKey = [number, number, number];
 const orderKey = sql`(${messagePosition}, ${positionRank}, ${messages.seq})`;
 const oldestFirst = [
@@ -428,7 +428,7 @@ type OrderedMessage = ConversationMessage & { order: OrderKey };
 const byDeliveryOrder = (a: OrderedMessage, b: OrderedMessage) =>
   a.order[0] - b.order[0] || a.order[1] - b.order[1] || a.order[2] - b.order[2];
 
-/** 대화 기록 커서: 받은 순서 열쇠를 감춘 글. 화면은 뜻을 해석하지 않고 그대로 돌려준다. */
+/** 대화 쪽 커서: 받은 순서 열쇠를 감춘 글. 화면은 뜻을 해석하지 않고 그대로 돌려준다. */
 const encodeCursor = (key: OrderKey) =>
   Buffer.from(key.join(".")).toString("base64url");
 /** 서버가 준 커서가 아니면 null이다. */
@@ -511,7 +511,7 @@ export async function listQueuedMessages(
   );
 }
 
-/** 처음 연 대화 화면이 보는 것: 대화 기록의 가장 최근 쪽 뒤에 줄 세운 메시지 전부. 검사와 도구가 쓴다. */
+/** 처음 연 대화 화면이 보는 것: 대화의 가장 최근 쪽 뒤에 줄 세운 메시지 전부. 검사와 도구가 쓴다. */
 export async function listConversationMessages(
   db: Database,
   organizationId: string,

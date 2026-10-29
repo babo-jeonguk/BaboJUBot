@@ -146,7 +146,7 @@ describe("the queued message list", () => {
         })
       ).map((m) => m.body);
 
-    // 대화 기록은 최근 2개로 잘려도 줄 세운 메시지는 대화 기록과 따로 모두 온다.
+    // 대화 쪽은 최근 2개로 잘려도 줄 세운 메시지는 쪽과 따로 모두 온다.
     expect(await listed()).toEqual([
       "받은 둘",
       "받은 셋",
