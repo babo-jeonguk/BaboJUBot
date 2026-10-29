@@ -122,6 +122,18 @@ describe("ownerActions", () => {
     expect(ownerActions(state()).heldBy).toBeNull();
   });
 
+  it("keeps the composer at one send button while paused, even if the screen still sees the run the pause cancelled as running", () => {
+    // 일시정지는 같은 저장에서 진행 중 실행 시도를 모두 취소하고 새 실행 시도를 막는다. 조직과 Lead 상세를 따로 받는 화면이
+    // 잠깐 이전 실행 상태를 보더라도, 붙잡힌 Lead에게 중단할 실행 시도는 없다.
+    for (const held of [{ stage: "paused" as const }, { leadPaused: true }])
+      expect(visible(state({ ...held, run: "running" }))).toEqual([
+        "edit",
+        "send",
+        "send_now",
+        "withdraw",
+      ]);
+  });
+
   it("keeps new message buttons visible but refused when the queue is full", () => {
     const { actions } = ownerActions(
       state({ run: "running", queuedCount: maxQueuedMessages })

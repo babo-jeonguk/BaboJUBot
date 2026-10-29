@@ -92,13 +92,15 @@ export type OwnerActionsDecision = {
  * 지금 상태에서 사용자 행동마다 서버가 받는가와 화면에 보이는가. 끝난 조직은 입력창이 없고 줄 세운 메시지의 `취소`만 보인다.
  * 실행 중이 아니면 `보내기` 하나, 실행 중이면 `실행 중단`(입력이 빌 때) 또는 `중단하고 보내기`·`줄 세우기`(입력이 있을 때)다.
  * 입력이 비었는가는 화면이 고른다. `지금 보내기`는 Lead가 실행 중이거나 조직·Lead가 일시정지 중일 때 보인다(일시정지 중이면
- * 재개 뒤 먼저 전달된다). 일시정지 중 입력창은 `보내기` 하나다.
+ * 재개 뒤 먼저 전달된다). 일시정지 중 입력창은 `보내기` 하나다(일시정지 중에는 실행 중으로 치지 않는다).
  * 보이는 버튼을 서버가 받지 않는 것은 줄이 가득 찬 새 메시지뿐이며, 화면은 그 버튼을 비활성으로 둔다.
  */
 export function ownerActions(state: OwnerActionState): OwnerActionsDecision {
   const closed = isClosedStage(state.stage);
   const heldBy = messageHeldBy(state);
-  const running = !closed && state.run === "running";
+  // 일시정지는 같은 저장에서 진행 중 실행 시도를 모두 취소하고 새 실행 시도를 막으므로, 붙잡힌 Lead에게 실행 중인 실행 시도는 없다.
+  // 조직과 Lead 상세를 따로 받는 화면이 잠깐 이전 실행 상태를 보더라도 실행 중으로 치지 않는다(`planInterrupt`와 같은 전제).
+  const running = !closed && heldBy === null && state.run === "running";
   const newMessage = newMessageRefusal(state);
   const queued = (action: QueuedMessageAction) =>
     queuedMessageRefusal(action, state);
