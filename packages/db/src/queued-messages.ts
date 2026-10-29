@@ -107,7 +107,6 @@ export async function sendQueuedMessageNow(
     const found = await readQueuedMessage(tx, organizationId, messageId);
     const plan = planSendNow(found?.state, {
       stage: locked.stage,
-      agentPaused: locked.agent.paused,
       runningRunId: running,
     });
     if (typeof plan === "string") return refused(plan);

@@ -24,10 +24,8 @@ export type QueuedMessageAction = "edit" | "withdraw" | "send_now";
 /**
  * - `organization_closed`: 최종 완료·중단 조직이다. 줄 세운 메시지는 거두기만 된다.
  * - `queue_full`: Lead에게 이미 상한(`maxQueuedMessages`, 모든 대화)만큼 줄 서 있다. 새 메시지만 받지 않는다.
- * - `paused`: 조직이나 Lead가 일시정지 중이다. `지금 보내기`만 받지 않는다.
  */
-export type OwnerActionRefusal =
-  "organization_closed" | "queue_full" | "paused";
+export type OwnerActionRefusal = "organization_closed" | "queue_full";
 
 /**
  * 새 사용자 메시지를 받지 않는 이유. 전달 방식(`보내기`·`줄 세우기`는 `next_run`, `중단하고 보내기`는 `interrupt`)과
@@ -43,17 +41,16 @@ export function newMessageRefusal(state: {
 }
 
 /**
- * 줄 세운 메시지 명령을 받지 않는 이유. 끝난 조직에서는 거두기만 되고(끝나기 전에 줄 세운 메시지가 남아 있을 수 있으므로),
- * 일시정지 중에는 `지금 보내기`만 받지 않는다(재개하면 줄 선 순서대로 전달된다). 고치기·거두기는 일시정지 중에도 된다.
+ * 줄 세운 메시지 명령을 받지 않는 이유. 끝난 조직에서는 거두기만 된다(끝나기 전에 줄 세운 메시지가 남아 있을 수 있으므로).
+ * 일시정지 중에도 고치기·거두기·지금 보내기 모두 된다. 일시정지 중 `지금 보내기`는 취소할 실행 시도 없이 전달 방식만
+ * `중단하고 보내기`로 바꿔 재개 뒤 먼저 전달된다(새 메시지의 `중단하고 보내기`와 같은 결과).
  */
 export function queuedMessageRefusal(
   action: QueuedMessageAction,
-  state: { stage: LifecycleStage; leadPaused: boolean }
-): "organization_closed" | "paused" | null {
-  if (action === "withdraw") return null;
-  if (isClosedStage(state.stage)) return "organization_closed";
-  if (action === "send_now" && (state.stage === "paused" || state.leadPaused))
-    return "paused";
+  state: { stage: LifecycleStage }
+): "organization_closed" | null {
+  if (action !== "withdraw" && isClosedStage(state.stage))
+    return "organization_closed";
   return null;
 }
 
@@ -88,7 +85,8 @@ export type OwnerActionsDecision = {
 /**
  * 지금 상태에서 사용자 행동마다 서버가 받는가와 화면에 보이는가. 끝난 조직은 입력창이 없고 줄 세운 메시지의 `취소`만 보인다.
  * 실행 중이 아니면 `보내기` 하나, 실행 중이면 `실행 중단`(입력이 빌 때) 또는 `중단하고 보내기`·`줄 세우기`(입력이 있을 때)다.
- * 입력이 비었는가는 화면이 고른다. `지금 보내기`는 Lead가 실행 중이고 조직·Lead가 일시정지가 아닐 때만 보인다.
+ * 입력이 비었는가는 화면이 고른다. `지금 보내기`는 Lead가 실행 중이거나 조직·Lead가 일시정지 중일 때 보인다(일시정지 중이면
+ * 재개 뒤 먼저 전달된다). 일시정지 중 입력창은 `보내기` 하나다.
  * 보이는 버튼을 서버가 받지 않는 것은 줄이 가득 찬 새 메시지뿐이며, 화면은 그 버튼을 비활성으로 둔다.
  */
 export function ownerActions(state: OwnerActionState): OwnerActionsDecision {
@@ -113,7 +111,7 @@ export function ownerActions(state: OwnerActionState): OwnerActionsDecision {
       edit: { visible: !closed, refusal: queued("edit") },
       withdraw: { visible: true, refusal: queued("withdraw") },
       send_now: {
-        visible: running && heldBy === null,
+        visible: !closed && (running || heldBy !== null),
         refusal: queued("send_now"),
       },
     },

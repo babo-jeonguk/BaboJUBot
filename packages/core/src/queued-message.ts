@@ -27,10 +27,9 @@ export type QueuedMessageState = Pick<
  * - `not_found`: 같은 조직에 그런 사용자 메시지가 없거나 이미 거두었다(거둔 메시지는 대화에서 빠진다).
  * - `message_delivered`: 실행 시도가 이미 받았다. 받은 메시지는 거두거나 바꿀 수 없다.
  * - `organization_closed`: 최종 완료·중단 조직이다(`지금 보내기`는 중단 제어 명령이라 받지 않는다).
- * - `paused`: 조직이나 받는 에이전트가 일시정지 중이라 지금 보낼 수 없다. 재개하면 줄 선 순서대로 전달된다.
  */
 export type QueuedMessageRefusal =
-  "not_found" | "message_delivered" | "organization_closed" | "paused";
+  "not_found" | "message_delivered" | "organization_closed";
 
 const queuedRefusal = (
   message: QueuedMessageState | undefined
@@ -51,7 +50,7 @@ export function planEdit(
   body: string
 ): { event: NewEvent } | QueuedMessageRefusal {
   if (queuedRefusal(message) === "not_found") return "not_found";
-  const refusal = queuedMessageRefusal("edit", { stage, leadPaused: false });
+  const refusal = queuedMessageRefusal("edit", { stage });
   if (refusal) return refusal;
   if (message!.deliveredToRunId) return "message_delivered";
   const m = message!;
@@ -102,26 +101,22 @@ export function planWithdrawal(
 /**
  * 줄 세운 메시지 `지금 보내기`. 그 메시지의 전달 방식을 `중단하고 보내기`로 바꾸고 받는 에이전트의 진행 중 실행 시도를 취소한다.
  * 다음 실행 시도는 그 메시지(와 다른 `중단하고 보내기` 메시지)만 받고, 나머지 줄 세운 메시지는 그 뒤에 받는다(`bundleWakes`).
- * 실행 중이 아니면 취소할 것 없이 전달 방식만 바뀌어 다음 실행 시도에서 먼저 받는다.
+ * 실행 중이 아니면(조직·에이전트 일시정지 중 포함) 취소할 것 없이 전달 방식만 바뀌어 다음 실행 시도(일시정지면 재개 뒤)에서
+ * 먼저 받는다. 그때 제어 명령 Event는 실행 시도 없이(`runId: null`) 남아 활동 기록에 "실행 중이 아님"으로 보인다.
  */
 export function planSendNow(
   message: QueuedMessageState | undefined,
   state: {
     stage: LifecycleStage;
-    agentPaused: boolean;
     runningRunId: string | null;
   }
 ):
   | { cancellation: RunCancellation | null; events: NewEvent[] }
   | QueuedMessageRefusal {
   if (queuedRefusal(message) === "not_found") return "not_found";
-  const refusal = queuedMessageRefusal("send_now", {
-    stage: state.stage,
-    leadPaused: state.agentPaused,
-  });
-  if (refusal === "organization_closed") return refusal;
-  if (message!.deliveredToRunId) return "message_delivered";
+  const refusal = queuedMessageRefusal("send_now", { stage: state.stage });
   if (refusal) return refusal;
+  if (message!.deliveredToRunId) return "message_delivered";
   const m = message!;
   const interrupt = planInterrupt(m, state.stage, state.runningRunId);
   if (interrupt === "organization_closed") return interrupt;

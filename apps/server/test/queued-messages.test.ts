@@ -209,37 +209,51 @@ describe("withdrawing a queued message", () => {
 });
 
 describe("paused and finished organizations", () => {
-  it("lets the owner withdraw a message held by a pause but not send it now", async () => {
+  it("lets the owner withdraw a message held by a pause or send it now to be delivered first after resuming", async () => {
     const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("일시정지 줄 조직");
     expect((await post(org.id, "/pause")).status).toBe(200);
     const one = await send(org.id, "멈춘 동안 하나");
-    const two = await send(org.id, "멈춘 동안 둘");
+    await send(org.id, "멈춘 동안 둘");
+    const three = await send(org.id, "멈춘 동안 셋");
 
-    const refused = await sendNow(org.id, two.id);
-    expect(refused.status).toBe(409);
-    expect(refused.body).toEqual({ error: { code: "paused" } });
+    // 진행 중 실행 시도가 없으니 취소할 것 없이 전달 방식만 바뀐다. 활동 기록에는 실행 중이 아니었다고 남는다.
+    const sentNow = await sendNow(org.id, three.id);
+    expect(sentNow.status).toBe(200);
+    expect(sentNow.body).toMatchObject({ id: three.id, delivery: "interrupt" });
+    expect(
+      (await eventsOf(org.id))
+        .filter((e) => e.type === "agent.interrupted")
+        .map((e) => e.payload)
+    ).toEqual([
+      { by: "owner", agentId: org.lead.id, runId: null, messageId: three.id },
+    ]);
     expect((await withdraw(org.id, one.id)).status).toBe(200);
 
-    // 조직이 아니라 Lead만 일시정지여도 지금 보낼 수 없다.
     expect((await post(org.id, "/resume")).status).toBe(200);
     await t.drain();
+    expect(
+      agents.of(org.lead.id).map((r) => bodies(r.request.wakeReasons))
+    ).toEqual([["멈춘 동안 셋"], ["멈춘 동안 둘"]]);
+
+    // 조직이 아니라 Lead만 일시정지여도 같다.
     expect((await post(org.id, `/agents/${org.lead.id}/pause`)).status).toBe(
       200
     );
-    const three = await send(org.id, "Lead가 멈춘 동안");
-    expect((await sendNow(org.id, three.id)).body).toEqual({
-      error: { code: "paused" },
-    });
-
+    await send(org.id, "Lead가 멈춘 동안 하나");
+    const five = await send(org.id, "Lead가 멈춘 동안 둘");
+    expect((await sendNow(org.id, five.id)).status).toBe(200);
     expect((await post(org.id, `/agents/${org.lead.id}/resume`)).status).toBe(
       200
     );
     await t.drain();
     expect(
-      agents.of(org.lead.id).map((r) => bodies(r.request.wakeReasons))
-    ).toEqual([["멈춘 동안 둘"], ["Lead가 멈춘 동안"]]);
+      agents
+        .of(org.lead.id)
+        .slice(2)
+        .map((r) => bodies(r.request.wakeReasons))
+    ).toEqual([["Lead가 멈춘 동안 둘"], ["Lead가 멈춘 동안 하나"]]);
   });
 
   it("in a finished organization refuses new messages, sending now and editing, but still lets the owner withdraw", async () => {

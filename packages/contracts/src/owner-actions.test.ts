@@ -62,28 +62,19 @@ describe("newMessageRefusal", () => {
 describe("queuedMessageRefusal", () => {
   it("lets a closed organization only withdraw", () => {
     for (const stage of ["completed", "stopped"] as const) {
-      const s = { stage, leadPaused: false };
-      expect(queuedMessageRefusal("withdraw", s)).toBeNull();
-      expect(queuedMessageRefusal("edit", s)).toBe("organization_closed");
-      expect(queuedMessageRefusal("send_now", s)).toBe("organization_closed");
+      expect(queuedMessageRefusal("withdraw", { stage })).toBeNull();
+      expect(queuedMessageRefusal("edit", { stage })).toBe(
+        "organization_closed"
+      );
+      expect(queuedMessageRefusal("send_now", { stage })).toBe(
+        "organization_closed"
+      );
     }
   });
 
-  it("refuses only send-now while the organization or the Lead is paused", () => {
-    for (const s of [
-      { stage: "paused" as const, leadPaused: false },
-      { stage: "researching" as const, leadPaused: true },
-    ]) {
-      expect(queuedMessageRefusal("send_now", s)).toBe("paused");
-      expect(queuedMessageRefusal("edit", s)).toBeNull();
-      expect(queuedMessageRefusal("withdraw", s)).toBeNull();
-    }
-    expect(
-      queuedMessageRefusal("send_now", {
-        stage: "researching",
-        leadPaused: false,
-      })
-    ).toBeNull();
+  it("accepts every queued message command while paused", () => {
+    for (const action of ["edit", "withdraw", "send_now"] as const)
+      expect(queuedMessageRefusal(action, { stage: "paused" })).toBeNull();
   });
 });
 
@@ -115,13 +106,19 @@ describe("ownerActions", () => {
         expect(visible(state({ stage, run }))).toEqual(["withdraw"]);
   });
 
-  it("says why a message is held and hides send-now while paused", () => {
+  it("says why a message is held and shows send-now while paused, keeping the composer at one send button", () => {
     const org = ownerActions(state({ stage: "paused" }));
     expect(org.heldBy).toBe("organization_paused");
-    expect(org.actions.send_now.visible).toBe(false);
-    const lead = ownerActions(state({ leadPaused: true, run: "running" }));
+    expect(org.actions.send_now).toEqual({ visible: true, refusal: null });
+    expect(visible(state({ stage: "paused" }))).toEqual([
+      "edit",
+      "send",
+      "send_now",
+      "withdraw",
+    ]);
+    const lead = ownerActions(state({ leadPaused: true, run: "cancelling" }));
     expect(lead.heldBy).toBe("lead_paused");
-    expect(lead.actions.send_now.visible).toBe(false);
+    expect(lead.actions.send_now).toEqual({ visible: true, refusal: null });
     expect(ownerActions(state()).heldBy).toBeNull();
   });
 

@@ -390,7 +390,7 @@ test("queued messages wait above the composer where the owner can edit one in pl
   expect(events.filter((e) => e.type === "message.sent_now")).toHaveLength(1);
 });
 
-test("messages held by a paused organization wait in the queue, can be edited or withdrawn, and cannot be sent now", async ({
+test("messages held by a paused organization wait in the queue, can be edited, withdrawn, or sent now to be delivered first after resuming", async ({
   page,
 }) => {
   const org = await createOrganization(page, "일시정지 줄 E2E 조직");
@@ -400,19 +400,40 @@ test("messages held by a paused organization wait in the queue, can be edited or
   ).toBe(200);
   const input = page.getByLabel("Lead에게 보낼 메시지");
   const queued = page.getByTestId("queued-message");
-  for (const body of ["멈춘 동안 하나", "멈춘 동안 둘"]) {
+  for (const body of ["멈춘 동안 하나", "멈춘 동안 둘", "멈춘 동안 셋"]) {
     await input.fill(body);
     await input.press("Enter");
     await expect(input).toHaveValue("");
   }
-  await expect(queued).toHaveText(["멈춘 동안 하나", "멈춘 동안 둘"]);
+  await expect(queued).toHaveText([
+    "멈춘 동안 하나",
+    "멈춘 동안 둘",
+    "멈춘 동안 셋",
+  ]);
   await expect(page.getByText("조직이 일시정지 중입니다")).toBeVisible();
+  // 일시정지 중 입력창은 `보내기` 하나다.
+  await input.fill("쓰는 중");
+  await expect(
+    page.getByRole("button", { name: "중단하고 보내기" })
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "보내기", exact: true })
+  ).toBeVisible();
+  await input.fill("");
   await queued.first().hover();
-  await expect(page.getByRole("button", { name: "지금 보내기" })).toHaveCount(
-    0
-  );
   await queued.first().getByRole("button", { name: "취소" }).click();
-  await expect(queued).toHaveText(["멈춘 동안 둘"]);
+  await expect(queued).toHaveText(["멈춘 동안 둘", "멈춘 동안 셋"]);
+
+  // 일시정지 중 `지금 보내기`는 재개하면 먼저 전달된다고 알리고, 누르면 그 항목에 번개 표시가 붙는다.
+  await queued.last().hover();
+  const sendNow = queued.last().getByRole("button", { name: "지금 보내기" });
+  await expect(sendNow).toHaveAccessibleDescription("재개하면 먼저 전달");
+  await sendNow.click();
+  await expect(queued.last().locator("p svg")).toBeVisible();
+  await expect(sendNow).toHaveCount(0);
+  await expect(
+    queued.first().getByRole("button", { name: "지금 보내기" })
+  ).toHaveCount(1);
 
   // 일시정지 중에도 그 자리에서 고칠 수 있다. 저장하는 사이 실행 시도가 먼저 받으면 토스트로 알리고 대화로 옮긴다.
   await queued.first().hover();
@@ -429,9 +450,13 @@ test("messages held by a paused organization wait in the queue, can be edited or
   await editor.press("Enter");
   await expect(page.getByText("이미 전달된 메시지입니다")).toBeVisible(runs);
   await expect(queued).toHaveCount(0, runs);
+  // 재개 뒤 지금 보낸 메시지를 먼저 받으므로 대화에서 먼저 줄 세운 메시지보다 앞에 놓인다.
   await expect(
-    page.locator('[data-author="owner"]').filter({ hasText: "멈춘 동안 둘" })
-  ).toBeVisible();
+    page
+      .locator('[data-author="owner"]')
+      .filter({ hasText: /멈춘 동안 (둘|셋)/ })
+      .getByTestId("message-body")
+  ).toHaveText(["멈춘 동안 셋", "멈춘 동안 둘"], runs);
   expect(await org.delivered("멈춘 동안 하나")).toBeNull();
   await page.unroute(`**/messages/*/edit`);
 });

@@ -85,7 +85,6 @@ describe("planEdit", () => {
 describe("planSendNow", () => {
   const running = {
     stage: "researching" as const,
-    agentPaused: false,
     runningRunId: "run-1",
   };
 
@@ -118,7 +117,32 @@ describe("planSendNow", () => {
     ).toMatchObject({ cancellation: null });
   });
 
-  it("refuses delivered messages, finished organizations and paused organizations or Leads", () => {
+  it("changes only the delivery while the organization is paused, to be delivered first after resuming", () => {
+    expect(
+      planSendNow(queued(), { stage: "paused", runningRunId: null })
+    ).toEqual({
+      cancellation: null,
+      events: [
+        {
+          organizationId: "org-1",
+          type: "message.sent_now",
+          payload: { by: "owner", ...ids },
+        },
+        {
+          organizationId: "org-1",
+          type: "agent.interrupted",
+          payload: {
+            by: "owner",
+            agentId: "lead-1",
+            runId: null,
+            messageId: "msg-1",
+          },
+        },
+      ],
+    });
+  });
+
+  it("refuses delivered messages and finished organizations", () => {
     expect(planSendNow(queued({ deliveredToRunId: "run-1" }), running)).toBe(
       "message_delivered"
     );
@@ -127,15 +151,5 @@ describe("planSendNow", () => {
       expect(planSendNow(queued(), { ...running, stage })).toBe(
         "organization_closed"
       );
-    expect(
-      planSendNow(queued(), {
-        stage: "paused",
-        agentPaused: false,
-        runningRunId: null,
-      })
-    ).toBe("paused");
-    expect(planSendNow(queued(), { ...running, agentPaused: true })).toBe(
-      "paused"
-    );
   });
 });
