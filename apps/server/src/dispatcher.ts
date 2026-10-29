@@ -15,12 +15,12 @@ import {
   finishRun,
   interruptRun,
   listAgentsWithPendingWakes,
-  loadRunContext,
   recoverInterruptedRuns,
   type ClaimedRun,
   type Database,
 } from "@babojubot/db";
 import type { EventHub } from "./event-hub.ts";
+import { assembleRunRequest } from "./run-request.ts";
 import { issueRunToken } from "./run-token.ts";
 
 const failed = (error: string): RunResult => ({
@@ -38,8 +38,8 @@ const cancelled: RunResult = {
 };
 
 /**
- * 깨우기를 실행 시도로 만들어 실행기에 맡긴다. 에이전트당 실행 시도 하나는 DB admission(`claimNextRun`)이
- * 보장하고, 이 객체는 같은 프로세스 안에서 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다.
+ * 깨우기를 실행 시도로 만들어 실행기에 맡긴다. admission → 요청 조립(`assembleRunRequest`) → 실행기 호출·취소 → 종료 저장만 한다.
+ * 에이전트당 실행 시도 하나는 DB admission(`claimNextRun`)이 보장하고, 이 객체는 같은 프로세스 안에서 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다.
  * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행한다.
  */
 export class RunDispatcher {
@@ -208,10 +208,9 @@ export class RunDispatcher {
     }
   }
 
-  async #execute(
-    { run, wakeReasons, instructions }: ClaimedRun,
-    token: string
-  ) {
+  /** 실행 시도 하나: 요청 조립(`assembleRunRequest`) → 실행기 호출·취소 → 종료 저장. */
+  async #execute(claimed: ClaimedRun, token: string) {
+    const { run } = claimed;
     const controller = new AbortController();
     this.#active.set(run.id, controller);
     // 닫는 중에 admission이 끝난 실행 시도도 바로 취소를 받는다.
@@ -225,24 +224,14 @@ export class RunDispatcher {
           type: "cancel",
           reason: cancelReason,
         } satisfies RunCancel);
-      const loaded = await loadRunContext(this.#db, run.id);
-      if (!loaded) throw new Error(`run ${run.id} disappeared`);
-      const raw = await this.#runtime.execute(
-        {
-          identity: loaded.identity,
-          access: { toolsBaseUrl: this.#toolsBaseUrl(), token },
-          wakeReasons,
-          context: loaded.context,
-          instructionsBundleVersion: run.instructionsBundleVersion,
-          instructions,
-          workspace: null,
-          previousSession: run.sessionBefore,
-        },
-        {
-          signal: controller.signal,
-          emit: (activity) => this.#emit(run.id, activity),
-        }
-      );
+      const request = await assembleRunRequest(this.#db, claimed, {
+        toolsBaseUrl: this.#toolsBaseUrl(),
+        token,
+      });
+      const raw = await this.#runtime.execute(request, {
+        signal: controller.signal,
+        emit: (activity) => this.#emit(run.id, activity),
+      });
       const parsed = runResultSchema.safeParse(raw);
       if (parsed.success) result = parsed.data;
       else {

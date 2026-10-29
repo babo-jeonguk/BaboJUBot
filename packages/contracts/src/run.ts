@@ -177,7 +177,10 @@ export const runRequestSchema = z.object({
   access: z.object({ toolsBaseUrl: z.url(), token: z.string().min(1) }),
   wakeReasons: z.array(wakeReasonSchema).min(1),
   context: runContextSchema,
-  /** 지침 bundle 버전. 에이전트의 Role·Soul·Skill 사본 내용에서 정하며, 사본이 없으면 없다. 바뀌면 이전 세션을 이어 가지 않는다. */
+  /**
+   * 지침 bundle 버전. 에이전트의 Role·Soul·Skill 사본 내용에서 정하며, 사본이 없으면 없다. 이전 실행 시도와 버전이 다르면
+   * admission(core `planRunStart`)이 `previousSession`을 비워 넘기므로 실행기가 따로 가리지 않는다.
+   */
   instructionsBundleVersion: z.string().nullable(),
   /** 그 버전을 정한 사본 내용. 실행기가 자기 방식으로 주입한다. */
   instructions: z.array(instructionFileSchema),
@@ -263,6 +266,9 @@ export type RunCancel = z.infer<typeof runCancelSchema>;
 /**
  * 실행기 adapter. `signal`이 취소(`reason`은 {@link RunCancel})를 전하고, adapter는 진행 중인 일을 멈추고 정리한 뒤에 결과를 돌려준다.
  * `emit`은 공개 활동을 순서대로 기록하며, 돌아온 뒤에 다음 활동을 낸다.
+ * adapter는 다음을 지킨다: 취소를 받으면 곧 `cancelled`로 끝나고, 돌아온 뒤 활동을 내지 않으며, 활동은 {@link runtimeActivitySchema},
+ * 종료는 {@link runResultSchema}에 맞고, 실행 시도 토큰을 오류 문구·요약·활동에 싣지 않는다.
+ * 이 약속은 `@babojubot/runtime/runtime-contract`의 공통 검사(`describeRuntimeContract`)가 adapter마다 확인한다.
  */
 export type RuntimeAdapter = {
   execute(
