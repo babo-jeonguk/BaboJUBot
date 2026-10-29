@@ -135,15 +135,13 @@ export const proposeScript: Script = {
 export const calls = (
   ...steps: {
     tool: Extract<Script["steps"][number], { do: "call" }>["tool"];
-    input?: unknown;
-    params?: Record<string, string>;
+    input?: Record<string, unknown>;
   }[]
 ): Script => ({
   steps: steps.map((s) => ({
     do: "call",
     tool: s.tool,
-    input: s.input === undefined ? undefined : () => s.input,
-    params: s.params && (() => s.params!),
+    input: s.input === undefined ? undefined : () => s.input!,
     allowRefusal: true,
   })),
 });

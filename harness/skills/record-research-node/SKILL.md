@@ -1,22 +1,21 @@
 ---
 name: record-research-node
-description: 연구 문제·가설·검증 방법·실험·결과를 연구 지도의 노드와 연결로 기록한다. 작업에서 새 문제나 가설을 찾았거나 실험 결과가 나왔을 때 쓴다.
+description: Records research problems, hypotheses, verification methods, experiments and results as nodes and links on the research map. Use it when a task turns up a new problem or hypothesis, or when an experiment produces a result.
 ---
 
-# 연구 노드 기록
+# Recording research nodes
 
-연구 지도는 조직의 연구 흐름 템플릿이 선언한 노드 종류와 연결 종류만 받습니다. 기록하기 전에 실행 맥락에서 템플릿을 확인합니다.
+Check the node and link kinds of the organization's research flow template in the run context (`researchFlow`) before you record.
 
-## 절차
+## Steps
 
-1. 기록할 것이 어떤 종류인지 정합니다: 연구 문제, 가설·아이디어, 검증 방법, 실험·검증, 결과.
-2. 주 부모를 하나 고릅니다. 가설은 그 가설이 답하려는 문제, 검증 방법은 그 가설, 실험은 그 방법, 결과는 그 실험이 주 부모입니다. 맞는 부모가 없으면 비워 둡니다. 이미 주 부모가 있는 노드는 지정이 아니라 변경으로만 바꿉니다.
-3. 다른 노드와의 관계는 보조 연결로 남깁니다. 결과가 다른 가설을 뒷받침하거나 반박하면 그 가설에 연결합니다.
-4. 제목은 한 문장으로, 본문에는 근거와 출처(산출물·작업)를 적습니다.
-5. 작업에서 나온 노드면 그 작업을 노드에 연결합니다. 작업은 노드 하나에만 연결되며, 다른 노드로 옮기려면 재연결합니다.
+1. Decide what kind it is: research problem, hypothesis or idea, verification method, experiment, or result.
+2. Pick one primary parent: a hypothesis's parent is the problem it answers, a method's is its hypothesis, an experiment's is its method, and a result's is its experiment. Leave it empty when none fits. Create the node with `create_research_node`, or set the parent of an existing node with `assign_research_node_parent` or `change_research_node_parent`.
+3. Record other relations as secondary links (`add_research_link`). When a result supports or refutes another hypothesis, link it to that hypothesis.
+4. Keep the title to one sentence. Put the evidence and its sources (artifacts, tasks) in the body.
+5. When the node came from a task, link the task to it (`link_task_research_node`).
 
-## 주의
+## Cautions
 
-- 검증하지 않은 가설을 결과로 기록하지 않습니다.
-- 노드를 지우지 않습니다. 더 이상 쓰지 않으면 `폐기` 상태로 둡니다. 폐기된 노드는 폐기 취소 전에는 고치거나 새로 연결할 수 없습니다.
-- 사용자가 지도를 고치면 Lead가 그 편집 요약을 깨우기 사유로 받습니다.
+- Do not record an unverified hypothesis as a result.
+- Never delete a node. Discard one that is no longer used (`discard_research_node`).

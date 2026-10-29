@@ -125,7 +125,9 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await revisions(other).filter({ hasText: "revision 1" }).click();
   const view = section(other).getByTestId("revision-view");
   await expect(view).toContainText("revision 1 · 읽기 전용");
-  await expect(view).toContainText("당신은 연구 조직 하나의 Research Lead");
+  await expect(view).toContainText(
+    "You are the Research Lead of one research organization"
+  );
   await expect(
     section(other).locator("textarea, input, [contenteditable]")
   ).toHaveCount(0);

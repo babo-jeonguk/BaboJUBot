@@ -445,7 +445,7 @@ describe("rooms on the home", () => {
             {
               do: "call",
               tool: "start_task",
-              params: () => ({ taskId: assigned.taskId }),
+              input: () => ({ taskId: assigned.taskId }),
             },
             { do: "hold", until: held.wait },
           ],

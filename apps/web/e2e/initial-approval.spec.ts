@@ -138,7 +138,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
       "Skill · skills/record-research-node/SKILL.md",
     ]);
     await expect(
-      copies.getByRole("tabpanel").getByRole("heading", { name: "연구원" })
+      copies.getByRole("tabpanel").getByRole("heading", { name: "Researcher" })
     ).toBeVisible();
     await copies.getByRole("tab", { name: "Soul · SOUL.md" }).click();
     await expect(

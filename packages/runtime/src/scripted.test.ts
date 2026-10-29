@@ -757,12 +757,12 @@ describe("demo worker scenario", () => {
     const state = { request, context: undefined, sent: [], calls: [] };
     expect(
       script.steps.flatMap((s) =>
-        s.do === "call" ? [[s.tool, s.params?.(state)?.taskId]] : []
+        s.do === "call" ? [[s.tool, s.input?.(state)?.taskId]] : []
       )
     ).toEqual([
       ["get_task", taskId],
       ["start_task", taskId],
-      ["record_artifact", undefined],
+      ["record_artifact", taskId],
       ["create_research_node", undefined],
       ["link_task_research_node", taskId],
       ["complete_task", taskId],
@@ -796,6 +796,7 @@ describe("demo worker scenario", () => {
       title: "자료 조사",
     });
     expect(step("link_task_research_node").input!(started)).toEqual({
+      taskId,
       researchNodeId: nodeId,
     });
     expect(step("link_task_research_node").when!(state)).toBe(false);

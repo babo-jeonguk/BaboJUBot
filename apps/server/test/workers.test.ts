@@ -7,7 +7,7 @@ import {
   inboxSchema,
   needsAttention,
   orgToolNames,
-  orgToolPaths,
+  orgTools,
   organizationDetailSchema,
   type RuntimeAdapter,
   type WakeReason,
@@ -91,7 +91,7 @@ async function leadSession(name: string) {
   await gate.reached;
   const token = capture.tokenOf(org.lead.id);
   const addWorker = (body: unknown = { role: "researcher" }) =>
-    t!.tool(token, "POST", orgToolPaths.add_worker, body);
+    t!.tool(token, "POST", orgTools.add_worker.path, body);
   /** 멈춰 둔 실행 시도를 끝내고, 그 뒤 깨운 실행 시도까지 모두 처리한다. 다음 Lead 실행 시도는 읽기만 한다. */
   const finish = async () => {
     agents.queue(org.lead.id, idle, idle);
@@ -287,17 +287,22 @@ describe("add_worker approval policy", () => {
     const approvalId = (await s.addWorker()).body.approval.id as string;
     // 요청이 기다리는 사이 Lead가 결과를 제출해 결과 검토 중이 된다.
     const lead = s.capture.tokenOf(s.org.lead.id);
-    const task = await t!.tool(lead, "POST", orgToolPaths.create_task, {
+    const task = await t!.tool(lead, "POST", orgTools.create_task.path, {
       title: "정리",
       assigneeAgentId: s.org.lead.id,
     });
-    const artifact = await t!.tool(lead, "POST", orgToolPaths.record_artifact, {
-      taskId: task.body.id,
-      title: "메모",
-      format: "markdown",
-      content: "# 메모",
-    });
-    const submitted = await t!.tool(lead, "POST", orgToolPaths.submit_result, {
+    const artifact = await t!.tool(
+      lead,
+      "POST",
+      orgTools.record_artifact.path,
+      {
+        taskId: task.body.id,
+        title: "메모",
+        format: "markdown",
+        content: "# 메모",
+      }
+    );
+    const submitted = await t!.tool(lead, "POST", orgTools.submit_result.path, {
       summary: "정리했다",
       artifactIds: [artifact.body.id],
     });

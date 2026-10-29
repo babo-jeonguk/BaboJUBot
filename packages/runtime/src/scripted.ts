@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import {
-  orgToolMethods,
+  isOrgToolRead,
   resultArtifactsMax,
   type AddWorkerResult,
   resultSummaryMaxLength,
   type ConversationMessage,
+  type OrgToolInput,
   type OrgToolName,
   type RequestInitialApprovalInput,
   type RunContextResponse,
@@ -47,14 +48,13 @@ export type ScriptStep =
   /** 조직 안의 메시지 하나를 조회한다. */
   | { do: "read_message"; messageId: (state: ScriptState) => string }
   /**
-   * 조직 도구 하나를 부른다. `params`는 경로 변수(`taskId` 등)다.
+   * 조직 도구 하나를 부른다. 입력은 경로 변수(`taskId` 등)까지 담은 하나다.
    * `allowRefusal`이면 거부돼도 결과로 남기고 다음 단계로 간다. `when`이 거짓이면 부르지 않고 건너뛴다.
    */
   | {
       do: "call";
       tool: OrgToolName;
-      input?: (state: ScriptState) => unknown;
-      params?: (state: ScriptState) => Record<string, string>;
+      input?: (state: ScriptState) => Record<string, unknown>;
       allowRefusal?: boolean;
       when?: (state: ScriptState) => boolean;
     }
@@ -560,7 +560,7 @@ function submitResultScript(
             .map((task) => ({
               do: "call",
               tool: "get_task",
-              params: () => ({ taskId: task.id }),
+              input: () => ({ taskId: task.id }),
             })),
       },
       {
@@ -664,7 +664,7 @@ export function demoWorkerScript(request: RunRequest): Script {
   const firstNodeKind = request.context.researchFlow?.nodeKinds[0]?.name;
   for (const reason of request.wakeReasons) {
     if (reason.kind === "task_assigned") {
-      const params = () => ({ taskId: reason.taskId });
+      const taskId = { taskId: reason.taskId };
       // 이 작업으로 만든 연구 노드.
       const recordedNode = ({ calls }: ScriptState) =>
         (
@@ -684,8 +684,13 @@ export function demoWorkerScript(request: RunRequest): Script {
             (c.output as { id: string }).id === reason.taskId
         );
       steps.push(
-        { do: "call", tool: "get_task", params },
-        { do: "call", tool: "start_task", params, allowRefusal: true },
+        { do: "call", tool: "get_task", input: () => taskId },
+        {
+          do: "call",
+          tool: "start_task",
+          input: () => taskId,
+          allowRefusal: true,
+        },
         {
           do: "call",
           tool: "record_artifact",
@@ -718,14 +723,16 @@ export function demoWorkerScript(request: RunRequest): Script {
           do: "call",
           tool: "link_task_research_node",
           when: (state) => recordedNode(state) !== undefined,
-          params,
-          input: (state) => ({ researchNodeId: recordedNode(state) }),
+          input: (state) => ({
+            ...taskId,
+            researchNodeId: recordedNode(state),
+          }),
         },
         {
           do: "call",
           tool: "complete_task",
-          params,
           input: () => ({
+            ...taskId,
             summary: `(가짜 실행기) ${quote(reason.title)}을 정리해 메모를 산출물로 남겼습니다.`,
           }),
           when: started,
@@ -737,8 +744,8 @@ export function demoWorkerScript(request: RunRequest): Script {
       steps.push({
         do: "call",
         tool: "comment_task",
-        params: () => ({ taskId: reason.taskId }),
         input: () => ({
+          taskId: reason.taskId,
           body: `(가짜 실행기) 댓글을 받았습니다: ${quote(reason.body)} 다음 작업에 반영하겠습니다.`,
         }),
       });
@@ -848,9 +855,8 @@ export function createScriptedRuntime({
               try {
                 const output = await tools.call(
                   step.tool,
-                  step.input?.(state),
-                  step.params?.(state),
-                  orgToolMethods[step.tool] === "GET" ? {} : once(step.tool)
+                  step.input?.(state) as OrgToolInput<typeof step.tool>,
+                  isOrgToolRead(step.tool) ? {} : once(step.tool)
                 );
                 state.calls.push({ tool: step.tool, ok: true, output });
               } catch (error) {

@@ -22,3 +22,11 @@ templates/<name>/template.json  연구 흐름 템플릿: label, description, nod
 | `roles/researcher` | 작업자 연구원. `record-research-node` Skill을 받음 |
 | `skills/record-research-node` | 연구 노드와 연결 기록 절차 |
 | `templates/basic-research` | 기본 연구 흐름: 연구 문제 → 가설·아이디어 → 검증 방법 → 실험·검증 → 결과 |
+
+## 언어와 쓰는 자리
+
+- 에이전트가 읽는 지침(역할 문서·Soul·Skill)은 영어로 씁니다. 영어 지침은 [GLOSSARY](../GLOSSARY.md)의 영어 표기를 씁니다(예: 사용자는 the Owner).
+- 사용자가 보는 조직 기록은 한국어입니다(어떤 기록인지는 [기능 범위](../docs/features.md)의 `언어`). 그래서 역할 문서마다 "사용자와의 대화와 작업물은 한국어로 쓴다"는 지시를 둡니다. 새 Role을 더할 때도 그 역할 문서에 이 지시를 넣습니다.
+- `role.json`의 `label`과 템플릿의 `label`·`description`은 사용자에게 보이므로 한국어로 둡니다. 이름(식별자)은 영어입니다.
+- 도구의 사실(하는 일, 남기는 기록, 거부 조건, 입력 칸의 규칙)은 도구 목록(`packages/contracts/src/tools.ts`)의 설명에만 씁니다. 역할 문서는 단계별 흐름·도구를 쓰는 순서·제출물 품질 기준을 쓰고 도구는 이름으로만 가리키며, Skill은 여러 도구를 잇는 절차, Soul은 태도만 씁니다.
+- 라이브러리를 바꿔도 이미 있는 조직의 사본은 바뀌지 않습니다. 새 조직과 새 작업자만 바뀐 내용을 받습니다.

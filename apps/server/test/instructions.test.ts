@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   agentInstructionsSchema,
@@ -7,7 +8,7 @@ import {
   instructionRevisionSchema,
   instructionRevisionSummarySchema,
   orgToolNames,
-  orgToolPaths,
+  orgTools,
   resultSubmissionSummaryListSchema,
   type Event,
   type InstructionCopy,
@@ -32,7 +33,11 @@ afterEach(async () => {
   t = undefined;
 });
 
-const { get, say, tasksOf, eventsOf, researching } = serverHelpers(() => t!);
+const leadOf = (org: { agents: { id: string; role: string }[] }) =>
+  org.agents.find((a) => a.role === "lead")!.id;
+const { get, create, say, tasksOf, eventsOf, researching } = serverHelpers(
+  () => t!
+);
 
 const harnessDir = path.resolve(import.meta.dirname, "../../../harness");
 const library = (file: string) =>
@@ -151,6 +156,32 @@ describe("Role·Soul·Skill copy editing", () => {
         revision: 2,
       },
     ]);
+  });
+
+  it("a changed library reaches only organizations made after the change; existing copies stay as they were", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "harness-"));
+    try {
+      fs.cpSync(harnessDir, dir, { recursive: true });
+      t = await startTestServer({ harnessDir: dir });
+      const before = await create("바뀌기 전 조직");
+      const original = await copyAt(before.id, leadOf(before), "AGENTS.md");
+      fs.writeFileSync(
+        path.join(dir, "roles/lead/AGENTS.md"),
+        "# Research Lead\n\nRevised guidance.\n"
+      );
+      const after = await create("바뀐 뒤 조직");
+      expect((await copyAt(after.id, leadOf(after), "AGENTS.md")).content).toBe(
+        "# Research Lead\n\nRevised guidance.\n"
+      );
+      expect(await copyAt(before.id, leadOf(before), "AGENTS.md")).toEqual(
+        original
+      );
+      expect(original.content).toBe(library("roles/lead/AGENTS.md"));
+    } finally {
+      await t?.close();
+      t = undefined;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("editing one worker's copy leaves the other worker of the same Role and the harness library unchanged", async () => {
@@ -466,9 +497,9 @@ describe("Role·Soul·Skill copy editing", () => {
       )
     ).toEqual([]);
     expect(
-      Object.values(orgToolPaths).filter((p) =>
-        /instruction|copies|revision/.test(p)
-      )
+      Object.values(orgTools)
+        .map((tool) => tool.path)
+        .filter((p) => /instruction|copies|revision/.test(p))
     ).toEqual([]);
   });
 });

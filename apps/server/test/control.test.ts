@@ -3,7 +3,7 @@ import {
   conversationMessageSchema,
   organizationDetailSchema,
   organizationSchema,
-  orgToolPaths,
+  orgTools,
   runSummaryListSchema,
   type AgentCommand,
   type Event,
@@ -736,17 +736,15 @@ describe("cancellation boundary", () => {
       async execute(request): Promise<RunResult> {
         reachedHold();
         await released;
-        for (const path of [
-          orgToolPaths.get_run_context,
-          orgToolPaths.send_message,
+        for (const { method, path } of [
+          orgTools.get_run_context,
+          orgTools.send_message,
         ]) {
           const res = await t!.tool(
             request.access.token,
-            path === orgToolPaths.send_message ? "POST" : "GET",
+            method,
             path,
-            path === orgToolPaths.send_message
-              ? { body: "취소 뒤 답장" }
-              : undefined
+            method === "POST" ? { body: "취소 뒤 답장" } : undefined
           );
           late.push({ status: res.status });
         }

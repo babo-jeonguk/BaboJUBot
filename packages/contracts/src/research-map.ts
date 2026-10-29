@@ -38,7 +38,7 @@ export type ResearchNodeWorkStatus = z.infer<
 
 /**
  * 사용자가 연구 지도를 편집할 수 있는 조직 단계: 초기 연구 승인 뒤, 최종 완료·중단 전. 에이전트의 지도 쓰기 도구는
- * 다른 쓰기 도구처럼 `연구 진행`에서만 열린다(core `toolRules`).
+ * 다른 쓰기 도구처럼 `연구 진행`에서만 열린다(`orgTools`).
  */
 export const ownerMapEditStages = [
   "researching",

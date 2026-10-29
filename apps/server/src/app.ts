@@ -117,6 +117,7 @@ import {
 import { HeartbeatScheduler } from "./heartbeat.ts";
 import { NotificationRelay } from "./notifications.ts";
 import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
+import { createRunRequestAssembler } from "./run-request.ts";
 import { orgToolsRouter } from "./tools.ts";
 
 /**
@@ -195,7 +196,7 @@ export async function startServer({
     hub,
     runtime,
     now,
-    toolsBaseUrl: () => url,
+    assemble: createRunRequestAssembler({ db, toolsBaseUrl: () => url }),
   });
   const heartbeats = new HeartbeatScheduler({
     db,
