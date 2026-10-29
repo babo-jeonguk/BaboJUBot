@@ -1,5 +1,5 @@
 pnpm exec lint-staged
 # 타입에 영향을 주는 파일이 커밋에 있을 때만 전체 타입 검사를 돌린다. 문서만 바꾼 커밋은 건너뛴다.
-if git diff --cached --name-only | grep -qE '\.(ts|tsx|mts|cts)$|(^|/)(tsconfig[^/]*\.json|package\.json|pnpm-lock\.yaml)$'; then
+if git diff --cached --name-only --no-renames | grep -qE '\.(ts|tsx|mts|cts)$|(^|/)(tsconfig[^/]*\.json|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc)$'; then
   pnpm typecheck
 fi
