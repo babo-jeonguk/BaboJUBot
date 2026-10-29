@@ -1,6 +1,12 @@
-import type { InitialResearchProposal } from "@babojubot/contracts";
+import {
+  agentRoles,
+  lifecycleStages,
+  orgToolNames,
+  type InitialResearchProposal,
+} from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  availableOrgTools,
   buildInitialResearchProposal,
   checkToolCall,
   planApprovalDecision,
@@ -85,6 +91,37 @@ describe("checkToolCall", () => {
     expect(
       checkToolCall("record_goal", { role: "worker", stage: "goal_setting" })
     ).toEqual({ ok: false, reason: "role" });
+  });
+});
+
+describe("availableOrgTools", () => {
+  it("lists exactly the tools checkToolCall lets each role use in each stage", () => {
+    for (const role of agentRoles)
+      for (const stage of lifecycleStages)
+        expect(availableOrgTools({ role, stage }), `${role} ${stage}`).toEqual(
+          orgToolNames.filter((tool) => checkToolCall(tool, { role, stage }).ok)
+        );
+  });
+
+  it("shows a worker in planning reads but no writes or Lead tools", () => {
+    const tools = availableOrgTools({ role: "worker", stage: "planning" });
+    expect(tools).toContain("get_task");
+    expect(tools).toContain("get_run_context");
+    for (const tool of [
+      "add_worker",
+      "create_task",
+      "send_message",
+      "request_initial_approval",
+    ] as const)
+      expect(tools).not.toContain(tool);
+  });
+
+  it("leaves only reads and the Lead's replies once the result is under review", () => {
+    expect(
+      availableOrgTools({ role: "lead", stage: "result_review" }).filter(
+        (tool) => !/^(get|list|recall)_/.test(tool)
+      )
+    ).toEqual(["send_message", "write_memory"]);
   });
 });
 

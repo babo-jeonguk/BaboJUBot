@@ -1,12 +1,13 @@
 import {
   idempotencyKeyHeader,
   orgToolErrorSchema,
-  orgToolMethods,
-  orgToolOutputSchemas,
-  orgToolPaths,
+  orgTools,
   orgToolsBasePath,
+  splitOrgToolInput,
   type ConversationMessage,
+  type OrgToolInput,
   type OrgToolName,
+  type OrgToolOutput,
   type RunContextResponse,
 } from "@babojubot/contracts";
 
@@ -21,19 +22,15 @@ export class OrgToolError extends Error {
   }
 }
 
-export type OrgToolOutput<T extends OrgToolName> = ReturnType<
-  (typeof orgToolOutputSchemas)[T]["parse"]
->;
-
 export type OrgToolClient = {
   /**
-   * 도구 하나를 부른다. GET은 `input`을 query string으로, 그 밖은 본문으로 보낸다. 거부되면 {@link OrgToolError}.
+   * 도구 하나를 부른다. 입력은 경로 변수까지 담은 하나이며, 도구 목록대로 경로 변수를 경로에 채우고
+   * 나머지를 GET은 query string으로, 그 밖은 본문으로 보낸다. 거부되면 {@link OrgToolError}.
    * `idempotencyKey`는 같은 효과를 한 번만 남기는 호출 키다(contracts `idempotencyKeyHeader`).
    */
   call<T extends OrgToolName>(
     tool: T,
-    input?: unknown,
-    params?: Record<string, string>,
+    input?: OrgToolInput<T>,
     options?: { idempotencyKey?: string }
   ): Promise<OrgToolOutput<T>>;
   getRunContext(): Promise<RunContextResponse>;
@@ -59,29 +56,24 @@ export function createOrgToolClient({
 }): OrgToolClient {
   async function call<T extends OrgToolName>(
     tool: T,
-    input?: unknown,
-    params: Record<string, string> = {},
+    input?: OrgToolInput<T>,
     { idempotencyKey }: { idempotencyKey?: string } = {}
   ): Promise<OrgToolOutput<T>> {
-    const path = Object.entries(params).reduce<string>(
-      (p, [key, value]) => p.replace(`:${key}`, encodeURIComponent(value)),
-      orgToolPaths[tool]
-    );
-    const post = orgToolMethods[tool] !== "GET";
+    const { method, output } = orgTools[tool];
+    const { path, rest } = splitOrgToolInput(tool, input ?? {});
+    const post = method !== "GET";
     const url = new URL(orgToolsBasePath + path, baseUrl);
-    if (!post && input !== undefined)
-      for (const [key, value] of Object.entries(
-        input as Record<string, string | number>
-      ))
+    if (!post)
+      for (const [key, value] of Object.entries(rest))
         url.searchParams.set(key, String(value));
     const res = await fetch(url, {
-      method: orgToolMethods[tool],
+      method,
       headers: {
         authorization: `Bearer ${token}`,
         ...(post ? { "content-type": "application/json" } : {}),
         ...(idempotencyKey ? { [idempotencyKeyHeader]: idempotencyKey } : {}),
       },
-      body: post ? JSON.stringify(input ?? {}) : undefined,
+      body: post ? JSON.stringify(rest) : undefined,
       signal,
     });
     const json: unknown = await res.json().catch(() => undefined);
@@ -93,12 +85,12 @@ export function createOrgToolClient({
         refusal.success ? refusal.data.error.code : undefined
       );
     }
-    return orgToolOutputSchemas[tool].parse(json) as OrgToolOutput<T>;
+    return output.parse(json) as OrgToolOutput<T>;
   }
   return {
     call,
     getRunContext: () => call("get_run_context"),
-    sendMessage: (input, options) => call("send_message", input, {}, options),
-    getMessage: (messageId) => call("get_message", undefined, { messageId }),
+    sendMessage: (input, options) => call("send_message", input, options),
+    getMessage: (messageId) => call("get_message", { messageId }),
   };
 }

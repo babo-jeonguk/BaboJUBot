@@ -7,7 +7,7 @@ import {
   instructionRevisionSchema,
   instructionRevisionSummarySchema,
   orgToolNames,
-  orgToolPaths,
+  orgTools,
   resultSubmissionSummaryListSchema,
   type Event,
   type InstructionCopy,
@@ -466,9 +466,9 @@ describe("Role·Soul·Skill copy editing", () => {
       )
     ).toEqual([]);
     expect(
-      Object.values(orgToolPaths).filter((p) =>
-        /instruction|copies|revision/.test(p)
-      )
+      Object.values(orgTools)
+        .map((tool) => tool.path)
+        .filter((p) => /instruction|copies|revision/.test(p))
     ).toEqual([]);
   });
 });

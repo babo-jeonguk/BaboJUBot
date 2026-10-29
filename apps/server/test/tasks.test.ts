@@ -176,13 +176,13 @@ describe("tasks and worker runs", () => {
           ...[0, 1].map((): Script["steps"][number] => ({
             do: "call",
             tool: "complete_task",
-            params: (state) => ({
+            input: (state) => ({
               taskId: state.request.wakeReasons.find(
                 (r): r is Extract<WakeReason, { kind: "task_assigned" }> =>
                   r.kind === "task_assigned" && r.title === "하위 A"
               )!.taskId,
+              summary: "하위 A를 끝냈습니다",
             }),
-            input: () => ({ summary: "하위 A를 끝냈습니다" }),
             allowRefusal: true,
           })),
         ],
@@ -246,8 +246,8 @@ describe("tasks and worker runs", () => {
     agents.queue(
       w2!.id,
       calls(
-        { tool: "start_task", params, input: {} },
-        { tool: "complete_task", params, input: { summary: "남의 작업" } }
+        { tool: "start_task", input: params },
+        { tool: "complete_task", input: { ...params, summary: "남의 작업" } }
       )
     );
     agents.queue(
@@ -266,11 +266,10 @@ describe("tasks and worker runs", () => {
           tool: "message_agent",
           input: { recipientAgentId: w1!.id, body: "진행해 주세요" },
         },
-        { tool: "start_task", params, input: {} },
+        { tool: "start_task", input: params },
         {
           tool: "complete_task",
-          params,
-          input: { summary: "Lead가 정리했습니다" },
+          input: { ...params, summary: "Lead가 정리했습니다" },
         },
         {
           tool: "message_agent",
@@ -339,8 +338,10 @@ describe("tasks and worker runs", () => {
         {
           do: "call",
           tool: "complete_task",
-          params: (state) => ({ taskId: ok(state.calls[1]).id }),
-          input: () => ({ summary: "Lead가 먼저 정리했습니다" }),
+          input: (state) => ({
+            taskId: ok(state.calls[1]).id,
+            summary: "Lead가 먼저 정리했습니다",
+          }),
         },
         { do: "hold", until: leadDone.wait },
       ],
@@ -629,14 +630,13 @@ describe("tasks and worker runs", () => {
           tool: "message_agent",
           input: { recipientAgentId: b.workers[0]!.id, body: "안녕" },
         },
-        { tool: "get_task", params: forged },
-        { tool: "start_task", params: forged, input: {} },
+        { tool: "get_task", input: forged },
+        { tool: "start_task", input: forged },
         {
           tool: "complete_task",
-          params: forged,
-          input: { summary: "남의 조직" },
+          input: { ...forged, summary: "남의 조직" },
         },
-        { tool: "comment_task", params: forged, input: { body: "남의 조직" } },
+        { tool: "comment_task", input: { ...forged, body: "남의 조직" } },
         {
           tool: "record_artifact",
           input: {
@@ -646,7 +646,7 @@ describe("tasks and worker runs", () => {
             content: "x",
           },
         },
-        { tool: "get_artifact", params: { artifactId: bArtifact.id } },
+        { tool: "get_artifact", input: { artifactId: bArtifact.id } },
         {
           tool: "create_task",
           input: { title: "x", assigneeAgentId: b.workers[0]!.id },

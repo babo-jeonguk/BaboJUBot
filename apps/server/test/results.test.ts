@@ -1,9 +1,8 @@
 import {
   inboxSchema,
   needsAttention,
-  orgToolMethods,
   orgToolNames,
-  orgToolPaths,
+  orgTools,
   organizationDetailSchema,
   resultSubmissionSchema,
   resultSubmissionSummaryListSchema,
@@ -523,8 +522,8 @@ describe("result submission and final completion", () => {
     };
     const id = pending!.id;
     for (const name of orgToolNames) {
-      const path = orgToolPaths[name].replace(/:\w+/g, id);
-      const method = orgToolMethods[name];
+      const { method } = orgTools[name];
+      const path = orgTools[name].path.replace(/:\w+/g, id);
       const res = await t.tool(
         token,
         method,

@@ -1,5 +1,7 @@
 import {
   approvalKindDecisions,
+  orgToolNames,
+  orgTools,
   type AddWorkerProposal,
   type AgentRole,
   type ApprovalDecision,
@@ -21,74 +23,34 @@ import { planWorker } from "./worker.ts";
 
 // (조직 생성 때 사용자가 적은 목표 →) 초기 연구 승인 요청 → 사용자 결정. 초기 연구 승인은 끌 수 없는 제품 규칙이다(ADR-0003).
 // 목표 기록 도구는 목표 없이 만든 예전 조직(`목표 설정`)에만 남아 있다.
-// 역할 문서가 아니라 여기의 도구 규칙과 저장 쪽의 조건부 갱신이 승인 전 실행을 막는다.
-
-const anyStage = "any" as const;
-type ToolRule = {
-  roles: readonly AgentRole[];
-  stages: readonly LifecycleStage[] | typeof anyStage;
-};
-const everyone = ["lead", "worker"] as const;
-const leadOnly = ["lead"] as const;
-
-/**
- * Role·생애주기 단계별 조직 도구 규칙. `목표 설정`·`계획 수립`·`승인 대기`에는 조회·메시지·계획 도구만 열리고,
- * 작업·산출물·연구 지도·에이전트 간 메시지 쓰기, 작업자 추가와 결과 제출은 `연구 진행`에서만 열린다. 작업·산출물·연구 지도 조회는 언제나 열린다.
- * 그래서 `결과 검토 중`·`최종 완료`에는 조회와 Lead 대화 답장만 남는다.
- */
-export const toolRules: Record<OrgToolName, ToolRule> = {
-  get_run_context: { roles: everyone, stages: anyStage },
-  get_message: { roles: everyone, stages: anyStage },
-  // 첫 판은 Lead만 사용자와 대화한다. 작업자는 작업 댓글로만 사용자와 이어진다(docs/features.md).
-  send_message: { roles: leadOnly, stages: anyStage },
-  get_harness_library: { roles: leadOnly, stages: anyStage },
-  // 합의한 목표·완료 기준의 변경은 승인 정책 항목이다(ADR-0003, #58). 그 전에는 목표 설정에서만 기록한다.
-  // 새 조직은 생성 때 목표를 받아 계획 수립에서 시작하므로, 이 도구는 목표 없이 만든 예전 조직에만 열린다.
-  record_goal: { roles: leadOnly, stages: ["goal_setting"] },
-  request_initial_approval: { roles: leadOnly, stages: ["planning"] },
-  create_task: { roles: everyone, stages: ["researching"] },
-  list_tasks: { roles: everyone, stages: anyStage },
-  get_task: { roles: everyone, stages: anyStage },
-  start_task: { roles: everyone, stages: ["researching"] },
-  complete_task: { roles: everyone, stages: ["researching"] },
-  // 작업 댓글은 작업자가 사용자에게 답하는 통로다.
-  comment_task: { roles: everyone, stages: ["researching"] },
-  record_artifact: { roles: everyone, stages: ["researching"] },
-  get_artifact: { roles: everyone, stages: anyStage },
-  message_agent: { roles: everyone, stages: ["researching"] },
-  add_worker: { roles: leadOnly, stages: ["researching"] },
-  get_research_map: { roles: everyone, stages: anyStage },
-  get_research_node: { roles: everyone, stages: anyStage },
-  create_research_node: { roles: everyone, stages: ["researching"] },
-  update_research_node: { roles: everyone, stages: ["researching"] },
-  assign_research_node_parent: { roles: everyone, stages: ["researching"] },
-  change_research_node_parent: { roles: everyone, stages: ["researching"] },
-  add_research_link: { roles: everyone, stages: ["researching"] },
-  discard_research_node: { roles: everyone, stages: ["researching"] },
-  restore_research_node: { roles: everyone, stages: ["researching"] },
-  link_task_research_node: { roles: everyone, stages: ["researching"] },
-  relink_task_research_node: { roles: everyone, stages: ["researching"] },
-  unlink_task_research_node: { roles: everyone, stages: ["researching"] },
-  // 결과 제출은 Lead의 판단이다. 최종 완료는 사용자 결정뿐이라 도구가 없다.
-  submit_result: { roles: leadOnly, stages: ["researching"] },
-  // 기억은 연구 기록이 아니라 에이전트가 다시 꺼내 쓰는 맥락이다. 단계와 상관없이 자기 조직·자기 에이전트 범위에서만 쓴다.
-  write_memory: { roles: everyone, stages: anyStage },
-  recall_memory: { roles: everyone, stages: anyStage },
-};
+// 역할 문서가 아니라 도구 목록의 Role·단계 데이터로 하는 판정(`checkToolCall`)과 저장 쪽의 조건부 갱신이 승인 전 실행을 막는다.
 
 export type ToolCheck = { ok: true } | { ok: false; reason: ToolRefusalReason };
 
-/** 이 Role의 에이전트가 이 단계의 조직에서 이 도구를 쓸 수 있는가. Role 거부가 단계 거부보다 먼저다. */
+/**
+ * 이 Role의 에이전트가 이 단계의 조직에서 이 도구를 쓸 수 있는가. 도구 목록(contracts `orgTools`) 한 줄의 Role·단계 데이터로
+ * 판정하는 유일한 곳이다. Role 거부가 단계 거부보다 먼저다.
+ */
 export function checkToolCall(
   tool: OrgToolName,
   { role, stage }: { role: AgentRole; stage: LifecycleStage }
 ): ToolCheck {
-  const rule = toolRules[tool];
-  if (!rule.roles.includes(role)) return { ok: false, reason: "role" };
-  if (rule.stages !== anyStage && !rule.stages.includes(stage))
+  const { roles, stages } = orgTools[tool];
+  if (!roles.includes(role)) return { ok: false, reason: "role" };
+  if (stages !== "any" && !stages.includes(stage))
     return { ok: false, reason: "stage" };
   return { ok: true };
 }
+
+/**
+ * 이 Role·단계에서 지금 쓸 수 있는 도구. `checkToolCall`로 거르므로 호출 판정과 어긋나지 않는다.
+ * 목록에 있다고 권한이 생기지 않으며, 서버는 호출마다 다시 판정한다(단계는 목록을 받은 뒤에도 바뀐다).
+ */
+export const availableOrgTools = (actor: {
+  role: AgentRole;
+  stage: LifecycleStage;
+}): OrgToolName[] =>
+  orgToolNames.filter((tool) => checkToolCall(tool, actor).ok);
 
 export type RunRef = { id: string; organizationId: string; agentId: string };
 

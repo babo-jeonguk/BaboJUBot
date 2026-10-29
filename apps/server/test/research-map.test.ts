@@ -88,9 +88,8 @@ describe("research map", () => {
       ).taskId;
     const step = (
       tool: Extract<Script["steps"][number], { do: "call" }>["tool"],
-      input?: (state: ScriptState) => unknown,
-      params?: (state: ScriptState) => Record<string, string>
-    ): Script["steps"][number] => ({ do: "call", tool, input, params });
+      input?: (state: ScriptState) => Record<string, unknown>
+    ): Script["steps"][number] => ({ do: "call", tool, input });
     agents.queue(w1!.id, {
       steps: [
         { do: "read_context" },
@@ -103,11 +102,10 @@ describe("research map", () => {
           title: "잡음이 많은 구간이 원인이다",
           body: "평가셋 오류의 절반이 잡음 구간에 몰려 있다.",
         })),
-        step(
-          "assign_research_node_parent",
-          (s) => ({ parentNodeId: id(0)(s) }),
-          (s) => ({ nodeId: id(1)(s) })
-        ),
+        step("assign_research_node_parent", (s) => ({
+          nodeId: id(1)(s),
+          parentNodeId: id(0)(s),
+        })),
         step("create_research_node", (s) => ({
           kind: "experiment",
           title: "잡음 구간 제거 후 재평가",
@@ -125,12 +123,11 @@ describe("research map", () => {
             kind,
           }))
         ),
-        step(
-          "link_task_research_node",
-          (s) => ({ researchNodeId: id(1)(s) }),
-          (s) => ({ taskId: assignedTask(s) })
-        ),
-        step("get_research_node", undefined, (s) => ({ nodeId: id(1)(s) })),
+        step("link_task_research_node", (s) => ({
+          taskId: assignedTask(s),
+          researchNodeId: id(1)(s),
+        })),
+        step("get_research_node", (s) => ({ nodeId: id(1)(s) })),
         step("get_research_map"),
       ],
     });
@@ -232,25 +229,22 @@ describe("research map", () => {
     });
     const tries: {
       tool: Extract<Script["steps"][number], { do: "call" }>["tool"];
-      input?: unknown;
-      params?: (s: ScriptState) => Record<string, string>;
+      input:
+        Record<string, unknown> | ((s: ScriptState) => Record<string, unknown>);
     }[] = [
       // 주 부모 두 개: 지정은 주 부모가 없는 노드에만.
       {
         tool: "assign_research_node_parent",
-        params: () => ({ nodeId: H }),
-        input: { parentNodeId: E },
+        input: () => ({ nodeId: H, parentNodeId: E }),
       },
       // 주 연결 순환: 자기 자신·후손(폐기된 노드를 거쳐도)을 주 부모로.
       {
         tool: "change_research_node_parent",
-        params: () => ({ nodeId: P }),
-        input: { parentNodeId: E },
+        input: () => ({ nodeId: P, parentNodeId: E }),
       },
       {
         tool: "change_research_node_parent",
-        params: () => ({ nodeId: P }),
-        input: { parentNodeId: P },
+        input: () => ({ nodeId: P, parentNodeId: P }),
       },
       // 템플릿에 없는 노드·연결 종류.
       { tool: "create_research_node", input: { kind: "theory", title: "x" } },
@@ -266,35 +260,29 @@ describe("research map", () => {
       // 작업의 두 번째 노드 연결은 거부하고, 재연결·해제는 명시해야 한다.
       {
         tool: "link_task_research_node",
-        params: taskParams,
-        input: { researchNodeId: H },
+        input: (s) => ({ ...taskParams(s), researchNodeId: H }),
       },
       {
         tool: "link_task_research_node",
-        params: taskParams,
-        input: { researchNodeId: H },
+        input: (s) => ({ ...taskParams(s), researchNodeId: H }),
       },
       {
         tool: "link_task_research_node",
-        params: taskParams,
-        input: { researchNodeId: E },
+        input: (s) => ({ ...taskParams(s), researchNodeId: E }),
       },
       {
         tool: "relink_task_research_node",
-        params: taskParams,
-        input: { researchNodeId: E },
+        input: (s) => ({ ...taskParams(s), researchNodeId: E }),
       },
-      { tool: "unlink_task_research_node", params: taskParams, input: {} },
+      { tool: "unlink_task_research_node", input: taskParams },
       // 폐기된 노드는 폐기 취소만 받고 새 연결의 대상이 되지 않는다.
       {
         tool: "link_task_research_node",
-        params: taskParams,
-        input: { researchNodeId: D },
+        input: (s) => ({ ...taskParams(s), researchNodeId: D }),
       },
       {
         tool: "update_research_node",
-        params: () => ({ nodeId: D }),
-        input: { title: "다시 쓰기" },
+        input: () => ({ nodeId: D, title: "다시 쓰기" }),
       },
       {
         tool: "create_research_node",
@@ -306,8 +294,7 @@ describe("research map", () => {
       },
       {
         tool: "change_research_node_parent",
-        params: () => ({ nodeId: E }),
-        input: { parentNodeId: D },
+        input: () => ({ nodeId: E, parentNodeId: D }),
       },
       {
         tool: "create_task",
@@ -318,8 +305,8 @@ describe("research map", () => {
       steps: tries.map((x) => ({
         do: "call",
         tool: x.tool,
-        input: x.input === undefined ? undefined : () => x.input,
-        params: x.params,
+        input: (s: ScriptState) =>
+          typeof x.input === "function" ? x.input(s) : x.input,
         allowRefusal: true,
       })),
     });
@@ -673,16 +660,14 @@ describe("research map", () => {
     agents.queue(
       a.lead.id,
       calls(
-        { tool: "get_research_node", params: { nodeId: foreign } },
+        { tool: "get_research_node", input: { nodeId: foreign } },
         {
           tool: "update_research_node",
-          params: { nodeId: foreign },
-          input: { title: "x" },
+          input: { nodeId: foreign, title: "x" },
         },
         {
           tool: "discard_research_node",
-          params: { nodeId: foreign },
-          input: {},
+          input: { nodeId: foreign },
         },
         {
           tool: "create_research_node",
@@ -690,8 +675,7 @@ describe("research map", () => {
         },
         {
           tool: "change_research_node_parent",
-          params: { nodeId: aMap.E },
-          input: { parentNodeId: foreign },
+          input: { nodeId: aMap.E, parentNodeId: foreign },
         },
         {
           tool: "add_research_link",
@@ -703,8 +687,7 @@ describe("research map", () => {
         },
         {
           tool: "link_task_research_node",
-          params: { taskId: bTask!.id },
-          input: { researchNodeId: aMap.H },
+          input: { taskId: bTask!.id, researchNodeId: aMap.H },
         },
         {
           tool: "create_task",
