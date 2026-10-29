@@ -20,11 +20,16 @@ export type DatabaseHandle = {
   close: () => Promise<void>;
 };
 
+/** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 정지 때 dataDir를 지운다. */
+export type EmbeddedOptions = {
+  dataDir: string;
+  port: number;
+  persistent: boolean;
+};
+
 export type DatabaseOptions =
   /** 외부 Postgres. 연결만 소유하며 서버를 멈추거나 지우지 않는다. */
-  | { url: string }
-  /** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 정지 때 dataDir를 지운다. */
-  | { embedded: { dataDir: string; port: number; persistent: boolean } };
+  { url: string } | { embedded: EmbeddedOptions };
 
 const migrationsFolder = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -42,7 +47,29 @@ export async function openDatabase(
 ): Promise<DatabaseHandle> {
   if ("url" in options) return connect(options.url, async () => {});
 
-  const { dataDir, port, persistent } = options.embedded;
+  const { port } = options.embedded;
+  const stop = await startEmbeddedCluster(options.embedded);
+  try {
+    await ensureDatabase(clusterUrl(port, "postgres"));
+    return await connect(clusterUrl(port, databaseName), stop);
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+}
+
+/** embedded cluster의 DB 하나에 연결할 주소. */
+export const clusterUrl = (port: number, database: string) =>
+  `postgres://postgres:postgres@127.0.0.1:${port}/${database}`;
+
+/**
+ * embedded cluster를 띄우고 멈추는 함수를 돌려준다. `stop`이 돌아오면 postgres는 끝났다.
+ * `settings`는 postgres 설정(`이름=값`)이다.
+ */
+export async function startEmbeddedCluster(
+  { dataDir, port, persistent }: EmbeddedOptions,
+  settings: string[] = []
+): Promise<() => Promise<void>> {
   const cluster = new EmbeddedPostgres({
     databaseDir: dataDir,
     port,
@@ -50,11 +77,11 @@ export async function openDatabase(
     password: "postgres",
     persistent,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
+    postgresFlags: settings.flatMap((setting) => ["-c", setting]),
     onLog: () => {},
     onError: (error) => console.error("[embedded-postgres]", error),
   });
   // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
-  // `stop`이 돌아오면 postgres는 끝났다.
   const stop = async () => {
     await cluster.stop();
     if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });
@@ -63,11 +90,7 @@ export async function openDatabase(
     if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
       await cluster.initialise();
     await startCluster(cluster);
-    await ensureDatabase(cluster);
-    return await connect(
-      `postgres://postgres:postgres@127.0.0.1:${port}/${databaseName}`,
-      stop
-    );
+    return stop;
   } catch (error) {
     await stop();
     throw error;
@@ -101,15 +124,25 @@ async function startCluster(cluster: EmbeddedPostgres) {
   forgetWhenExited();
 }
 
-async function ensureDatabase(cluster: EmbeddedPostgres) {
-  const client = cluster.getPgClient("postgres", "127.0.0.1");
-  await client.connect();
-  try {
+async function ensureDatabase(url: string) {
+  await withClient(url, async (client) => {
     const { rowCount } = await client.query(
       "select 1 from pg_database where datname = $1",
       [databaseName]
     );
     if (!rowCount) await client.query(`create database ${databaseName}`);
+  });
+}
+
+/** 연결 하나를 열어 쓰고 닫는다. DB 만들기·지우기처럼 pool 밖에서 하는 일에 쓴다. */
+export async function withClient<T>(
+  url: string,
+  use: (client: pg.Client) => Promise<T>
+): Promise<T> {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    return await use(client);
   } finally {
     await client.end();
   }
@@ -141,11 +174,14 @@ async function connect(
 
 /** 임시 dataDir와 빈 port에 embedded Postgres를 띄운다. `close`가 cluster와 dataDir를 지운다. 테스트와 E2E용. */
 export async function openEphemeralDatabase(): Promise<DatabaseHandle> {
+  return openDatabase({ embedded: await ephemeralCluster() });
+}
+
+/** 임시 dataDir와 빈 port. 정지 때 dataDir를 지우며, port를 못 구하면 바로 지운다. */
+export async function ephemeralCluster(): Promise<EmbeddedOptions> {
   const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
   try {
-    return await openDatabase({
-      embedded: { dataDir, port: await freePort(), persistent: false },
-    });
+    return { dataDir, port: await freePort(), persistent: false };
   } catch (error) {
     await fsp.rm(dataDir, { recursive: true, force: true });
     throw error;

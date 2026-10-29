@@ -20,7 +20,7 @@
 | 어떤 규칙·문서를 읽는가? | [AGENTS](../AGENTS.md): 공통 규칙·제품 불변 조건 요약·Routing. [CLAUDE](../CLAUDE.md)는 참조만 유지 |
 | 어디에 어떻게 기록하는가? | 이 문서: 문서 책임·작성·갱신 기준 |
 | 용어 충돌·컨텍스트·ADR을 어떻게 다루는가? | [domain](agents/domain.md): 의미 확정·작성 조건 |
-| 수정할 코드·테스트는 어디인가? | [code-map](agents/code-map.md): 작업별 진입점·연결 경로·현재 검증 위치 |
+| 수정할 코드·테스트는 어디인가? | [code-map](agents/code-map.md): 영역별 절 파일 목차. 절 파일마다 작업별 진입점·연결 경로·현재 검증 위치 |
 | 구현은 언제 시작·완료하는가? | [implementation](agents/implementation.md): 브랜치→구현→리뷰→커밋→push→PR·외부 리뷰 인계 |
 | 리뷰 결과를 어떻게 처리하는가? | [review-fixes](agents/review-fixes.md): finding 판정→실패 유형 검증·수정→재검토·외부 요청 형식 |
 | 병합은 언제·어떻게 완료하는가? | [pr-merge](agents/pr-merge.md): 병합 판단→기록 정합성·최종 검증 확인→병합→후처리·보고 |
@@ -43,6 +43,7 @@
 | [paperclip-dashboard.md](research/paperclip-dashboard.md) | Paperclip의 운영자 화면·기능에는 무엇이 있는가? |
 | [dashboard-references.md](research/dashboard-references.md) | 다른 제품의 운영자 UI에서 무엇을 추가로 참고할 수 있는가? |
 | [issue-1](research/issue-1-references.md)·[issue-50](research/issue-50-references.md)·[issue-51](research/issue-51-references.md)·[issue-52](research/issue-52-references.md)·[issue-53](research/issue-53-references.md)·[issue-54](research/issue-54-references.md)·[issue-55](research/issue-55-references.md)·[issue-56](research/issue-56-references.md)·[issue-57](research/issue-57-references.md)·[issue-58](research/issue-58-references.md)·[issue-59](research/issue-59-references.md)·[issue-60](research/issue-60-references.md)·[issue-61](research/issue-61-references.md)·[issue-62](research/issue-62-references.md)·[issue-63](research/issue-63-references.md)·[issue-64](research/issue-64-references.md)·[issue-77](research/issue-77-references.md)·[issue-84](research/issue-84-references.md)·[issue-86](research/issue-86-references.md)·[inbox-detail](research/inbox-detail-references.md)·[home](research/home-references.md) | 각 이슈·주제의 구현 전 조사에서 어떤 근거와 권고를 얻었는가? |
+| [coding-standards-references.md](research/coding-standards-references.md) | mattpocock-skills의 code-review는 `CODING_STANDARDS.md`를 누가·언제 읽고 어떤 모양을 기대하는가? |
 
 [harness/README.md](../harness/README.md)는 연구 하네스 디렉터리의 안내입니다.
 각 Role·Soul·Skill·템플릿이 해당 연구 절차를 소유하고, 개발 에이전트의 운영 규칙과 구분합니다.
