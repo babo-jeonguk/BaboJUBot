@@ -126,7 +126,7 @@ export function orgToolsRouter({
       run.id,
       toolActivity(tool, summary)
     );
-    if (event) hub.publish(event);
+    if (event) await applyAfterCommit({ hub, dispatcher }, { events: [event] });
     return event !== undefined;
   };
 
@@ -154,7 +154,7 @@ export function orgToolsRouter({
       const gate = await gateToolCall(db, run, name);
       if (!gate) return refuse(res, 401, "invalid_token");
       if (!gate.ok) {
-        hub.publish(gate.event);
+        await applyAfterCommit({ hub, dispatcher }, gate.after);
         return refuseByRule(res, gate.reason);
       }
       if (orgToolMethods[name] !== "GET") {
@@ -196,7 +196,7 @@ export function orgToolsRouter({
     operation: res.locals.operation as ToolOperation | undefined,
   });
   /**
-   * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부를 알린다.
+   * 조직 도구 쓰기 결과를 응답으로. 저장 때 단계가 바뀌어 거부됐어도 그 거부의 Event를 같은 commit 뒤 할 일로 알린다.
    * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
    */
   const respondWrite = async <T, P extends ToolProblem>(
@@ -206,12 +206,12 @@ export function orgToolsRouter({
   ) => {
     switch (result.kind) {
       case "ok":
-        await applyAfterCommit({ hub, dispatcher }, result);
+        await applyAfterCommit({ hub, dispatcher }, result.after);
         return res.status(status).json(result.value);
       case "run_finished":
         return refuse(res, 401, "invalid_token");
       case "refused":
-        hub.publish(...result.events);
+        await applyAfterCommit({ hub, dispatcher }, result.after);
         return refuseByRule(res, result.reason);
       case "invalid": {
         const [code, httpStatus] = problemResponses[result.problem];

@@ -74,7 +74,7 @@ async function organization() {
       }
     );
     if (written.kind !== "ok") throw new Error(written.kind);
-    const [event] = written.events;
+    const [event] = written.after.events;
     return { messageId: written.value.id, event: event! };
   };
   return { organizationId: lead.organizationId, lead, creation, leadMessage };

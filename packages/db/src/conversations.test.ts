@@ -180,13 +180,15 @@ describe("Lead conversations", () => {
     expect(reply).toMatchObject({
       kind: "ok",
       value: { conversationId: started.id },
-      events: [
-        expect.objectContaining({
-          type: "message.created",
-          payload: expect.objectContaining({ conversationId: started.id }),
-        }),
-        expect.anything(),
-      ],
+      after: {
+        events: [
+          expect.objectContaining({
+            type: "message.created",
+            payload: expect.objectContaining({ conversationId: started.id }),
+          }),
+          expect.anything(),
+        ],
+      },
     });
     // 다른 조직의 대화로는 보낼 수 없다.
     expect(
