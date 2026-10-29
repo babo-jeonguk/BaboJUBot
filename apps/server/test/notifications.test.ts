@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import net from "node:net";
 import {
   type ChannelInlet,
   type NotificationChannel,
@@ -826,6 +827,47 @@ describe("channel replies", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(attempts).toBe(seen);
     expect(closed).toBe(1);
+  });
+
+  it("still frees the port and reports the start error when closing the failed channel also throws", async () => {
+    const database = await createTestDatabase();
+    const listening = (port: number) =>
+      new Promise<net.Server>((resolve, reject) => {
+        const probe = net.createServer();
+        probe.once("error", reject);
+        probe.listen(port, "127.0.0.1", () => resolve(probe));
+      });
+    const closing = (probe: net.Server) =>
+      new Promise<void>((resolve) => probe.close(() => resolve()));
+    try {
+      const probe = await listening(0);
+      const { port } = probe.address() as net.AddressInfo;
+      await closing(probe);
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(
+          startServer({
+            db: database.db,
+            port,
+            notificationChannels: [
+              {
+                name: "broken",
+                deliver: async () => {},
+                listen: () => {
+                  throw new Error("토큰 거부");
+                },
+                close: () => Promise.reject(new Error("끊기 실패")),
+              },
+            ],
+          })
+        ).rejects.toThrow("토큰 거부");
+      } finally {
+        logged.mockRestore();
+      }
+      await closing(await listening(port));
+    } finally {
+      await database.close();
+    }
   });
 });
 

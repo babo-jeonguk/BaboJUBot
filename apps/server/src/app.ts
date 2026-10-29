@@ -158,7 +158,10 @@ export type RunningServer = {
   tickHeartbeats: () => Promise<void>;
   /** 주입한 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. 테스트 helper(서버는 스스로 보낸다). */
   deliverNotifications: () => Promise<void>;
-  /** 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다. */
+  /**
+   * 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다.
+   * 한 부분을 닫다 실패해도 나머지를 닫고, 모두 닫은 뒤 그 실패들을 던진다.
+   */
   close: () => Promise<void>;
 };
 
@@ -968,14 +971,27 @@ export async function startServer({
    * heartbeat가 새 깨우기를 만들지 않게 한 뒤 실행 시도를 끝내고, 그 사이 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
    */
   const stop = async () => {
-    await heartbeats.close();
-    await dispatcher.close();
-    await notifications.close();
-    await channel.close();
-    for (const client of wss.clients) client.terminate();
-    wss.close();
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // 한 부분을 닫다 실패해도 나머지(특히 포트)는 닫고, 실패는 모두 닫은 뒤에 알린다.
+    const failures: unknown[] = [];
+    for (const close of [
+      () => heartbeats.close(),
+      () => dispatcher.close(),
+      () => notifications.close(),
+      () => channel.close(),
+      async () => {
+        for (const client of wss.clients) client.terminate();
+        wss.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    ])
+      try {
+        await close();
+      } catch (error) {
+        failures.push(error);
+      }
+    if (failures.length)
+      throw new AggregateError(failures, "stopping the server failed");
   };
   try {
     // 남은 실행 시도 복구가 끝난 뒤에 heartbeat가 새 깨우기를 만든다.
