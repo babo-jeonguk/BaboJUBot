@@ -259,7 +259,7 @@ export async function insertOwnerMessage(
   return db.transaction(async (tx) => {
     const { organizationId, agentId } = plan.message;
     const org = await lockOrganization(tx, organizationId);
-    await lockAgent(tx, organizationId, agentId);
+    const agent = await lockAgent(tx, organizationId, agentId);
     const refusal = newMessageRefusal({
       stage: org!.stage,
       queuedCount: await countQueuedMessages(tx, agentId),
@@ -268,7 +268,11 @@ export async function insertOwnerMessage(
     let control: InterruptPlan | null = null;
     if (plan.message.delivery === "interrupt") {
       const running = await lockRunningRunOfAgent(tx, agentId);
-      const planned = planInterrupt(plan.message, org!.stage, running);
+      const planned = planInterrupt(plan.message, {
+        stage: org!.stage,
+        leadPaused: agent!.paused,
+        runningRunId: running,
+      });
       if (planned === "organization_closed") return refused(planned);
       control = planned;
     }

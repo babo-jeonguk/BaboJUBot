@@ -1,5 +1,6 @@
 import {
   isClosedStage,
+  messageHeldBy,
   type AgentCommand,
   type ConversationMessage,
   type LifecycleStage,
@@ -174,15 +175,22 @@ export type InterruptPlan = {
 };
 
 /**
- * `중단하고 보내기`의 실행 시도 중단 제어 명령. 받는 에이전트의 진행 중 실행 시도를 취소하고, 메시지는 깨우기로 남아 다음 실행 시도가 받는다.
- * 조직·에이전트는 일시정지하지 않는다. 실행 중이 아니면 취소할 것 없이 제어 기록만 남는다. 끝난 조직은 받지 않는다.
+ * `중단하고 보내기`의 실행 시도 중단 제어 명령. 메시지는 깨우기로 남아 다음 실행 시도가 받고, 조직·에이전트는 일시정지하지 않는다.
+ * 중단하는 것은 메시지가 그 뒤를 기다릴 실행 시도다. 받는 에이전트의 진행 중 실행 시도(`runningRunId`, 이미 취소 정리 중이면 그
+ * 정리에 합류해 처음 취소 사유를 그대로 둔다)에 취소를 요청한다. 조직이나 Lead가 일시정지 중이면(contracts `messageHeldBy`) 메시지는
+ * 재개를 기다리므로 일시정지가 취소한 실행 시도가 아직 정리 중이어도 중단할 것이 없다. 중단할 것이 없으면 제어 기록만 남는다.
+ * 끝난 조직은 받지 않는다.
  */
 export function planInterrupt(
   message: Pick<ConversationMessage, "id" | "organizationId" | "agentId">,
-  organizationStage: LifecycleStage,
-  runningRunId: string | null
+  state: {
+    stage: LifecycleStage;
+    leadPaused: boolean;
+    runningRunId: string | null;
+  }
 ): InterruptPlan | "organization_closed" {
-  if (isClosedStage(organizationStage)) return "organization_closed";
+  if (isClosedStage(state.stage)) return "organization_closed";
+  const runningRunId = messageHeldBy(state) ? null : state.runningRunId;
   return {
     cancellation: runningRunId
       ? { reason: "owner_interrupt", runIds: [runningRunId] }

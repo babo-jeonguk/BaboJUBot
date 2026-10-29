@@ -105,13 +105,15 @@ export function planWithdrawal(
 /**
  * 줄 세운 메시지 `지금 보내기`. 그 메시지의 전달 방식을 `중단하고 보내기`로 바꾸고 받는 에이전트의 진행 중 실행 시도를 취소한다.
  * 다음 실행 시도는 그 메시지(와 다른 `중단하고 보내기` 메시지)만 받고, 나머지 줄 세운 메시지는 그 뒤에 받는다(`bundleWakes`).
- * 실행 중이 아니면(조직·에이전트 일시정지 중 포함) 취소할 것 없이 전달 방식만 바뀌어 다음 실행 시도(일시정지면 재개 뒤)에서
- * 먼저 받는다. 그때 제어 명령 Event는 실행 시도 없이(`runId: null`) 남아 활동 기록에 "실행 중이 아님"으로 보인다.
+ * 실행 중이 아니거나 조직·Lead가 일시정지 중이면(일시정지가 취소한 실행 시도가 아직 정리 중이어도, `planInterrupt`) 취소할 것 없이
+ * 전달 방식만 바뀌어 다음 실행 시도(일시정지면 재개 뒤)에서 먼저 받는다. 그때 제어 명령 Event는 실행 시도 없이(`runId: null`)
+ * 남아 활동 기록에 "실행 중이 아님"으로 보인다.
  */
 export function planSendNow(
   message: QueuedMessageState | undefined,
   state: {
     stage: LifecycleStage;
+    leadPaused: boolean;
     runningRunId: string | null;
   }
 ):
@@ -123,7 +125,7 @@ export function planSendNow(
   );
   if (refused) return refused;
   const m = message!;
-  const interrupt = planInterrupt(m, state.stage, state.runningRunId);
+  const interrupt = planInterrupt(m, state);
   if (interrupt === "organization_closed") return interrupt;
   return {
     cancellation: interrupt.cancellation,

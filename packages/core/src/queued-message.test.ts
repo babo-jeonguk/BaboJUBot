@@ -85,6 +85,7 @@ describe("planEdit", () => {
 describe("planSendNow", () => {
   const running = {
     stage: "researching" as const,
+    leadPaused: false,
     runningRunId: "run-1",
   };
 
@@ -118,9 +119,7 @@ describe("planSendNow", () => {
   });
 
   it("changes only the delivery while the organization is paused, to be delivered first after resuming", () => {
-    expect(
-      planSendNow(queued(), { stage: "paused", runningRunId: null })
-    ).toEqual({
+    expect(planSendNow(queued(), { ...running, stage: "paused" })).toEqual({
       cancellation: null,
       events: [
         {

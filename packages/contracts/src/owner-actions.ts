@@ -48,6 +48,19 @@ export function queuedMessageRefusal(
 }
 
 /**
+ * 사용자 메시지가 지금 Lead를 깨우지 못하는 이유. 조직이나 Lead가 일시정지 중이면 메시지는 재개를 기다리며, 그사이 정리 중인
+ * 실행 시도가 있어도 그 뒤를 기다리는 것이 아니다. 화면은 안내를, 서버는 `중단하고 보내기`가 중단할 실행 시도가 없음을 여기서 본다.
+ */
+export function messageHeldBy(state: {
+  stage: LifecycleStage;
+  leadPaused: boolean;
+}): "organization_paused" | "lead_paused" | null {
+  if (state.stage === "paused") return "organization_paused";
+  if (state.leadPaused) return "lead_paused";
+  return null;
+}
+
+/**
  * Lead의 실행 상태. `cancelling`은 진행 중이지만 이미 취소를 요청받아 정리 중인 실행 시도다.
  * 화면은 취소 정리 중을 실행 중으로 치지 않는다(`보내기` 하나).
  */
@@ -67,8 +80,8 @@ export type OwnerActionVerdict = {
 };
 
 export type OwnerActionsDecision = {
-  /** 메시지가 지금 Lead를 깨우지 못하는 이유. 메시지는 남아 재개 뒤 전달된다. */
-  heldBy: "organization_paused" | "lead_paused" | null;
+  /** 메시지가 지금 Lead를 깨우지 못하는 이유(`messageHeldBy`). 메시지는 남아 재개 뒤 전달된다. */
+  heldBy: ReturnType<typeof messageHeldBy>;
   /** `stop_run`의 서버 거부는 제어 명령 규칙(core `planAgentControl`)이 정하므로 보이는가만 낸다. */
   actions: Record<Exclude<OwnerAction, "stop_run">, OwnerActionVerdict> & {
     stop_run: { visible: boolean };
@@ -84,12 +97,7 @@ export type OwnerActionsDecision = {
  */
 export function ownerActions(state: OwnerActionState): OwnerActionsDecision {
   const closed = isClosedStage(state.stage);
-  const heldBy =
-    state.stage === "paused"
-      ? "organization_paused"
-      : state.leadPaused
-        ? "lead_paused"
-        : null;
+  const heldBy = messageHeldBy(state);
   const running = !closed && state.run === "running";
   const newMessage = newMessageRefusal(state);
   const queued = (action: QueuedMessageAction) =>

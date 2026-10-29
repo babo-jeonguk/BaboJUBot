@@ -223,7 +223,8 @@ export const agentResumedEventSchema = z.object({
  * 실행 시도 중단 제어 명령. `중단하고 보내기`면 함께 보낸 메시지(`messageId`)가 따로 `message.created`로 남고 다음 실행 시도가 받는다.
  * 줄 세운 메시지의 `지금 보내기`면 그 메시지가 `message.sent_now`로 남는다.
  * `runId`는 취소를 요청한 받는 에이전트의 진행 중 실행 시도이며, 실행 중이 아니었으면 없다. 이미 취소 정리 중인 실행 시도면
- * 그 정리에 합류하므로 그 실행 시도이고, 취소 사유는 처음 것을 그대로 둔다.
+ * 그 정리에 합류하므로 그 실행 시도이고, 취소 사유는 처음 것을 그대로 둔다. 조직이나 Lead가 일시정지 중이면 메시지는 재개를
+ * 기다리므로, 일시정지가 취소한 실행 시도가 아직 정리 중이어도 없다.
  * 메시지 없는 `실행 중단`(에이전트 제어 명령 `interrupt`)은 `messageId`가 없고, 취소할 실행 시도가 있을 때만 남는다.
  */
 export const agentInterruptedEventSchema = z.object({
