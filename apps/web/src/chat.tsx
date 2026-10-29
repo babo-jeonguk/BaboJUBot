@@ -3,11 +3,15 @@ import {
   isClosedStage,
   maxQueuedMessages,
   messageBodyMaxLength,
+  ownerActions,
   type Agent,
+  type AgentDetail,
   type ConversationMessage,
   type ConversationSummary,
   type LifecycleStage,
+  type LeadRunState,
   type MessageDelivery,
+  type OwnerActionsDecision,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient } from "@tanstack/react-query";
@@ -839,11 +843,17 @@ function MessageBubble({
   );
 }
 
-/** 메시지가 지금 Lead를 깨우지 못하는 이유. 메시지는 남아 재개 뒤 전달된다. */
-function heldBy(stage: LifecycleStage | undefined, leadPaused: boolean) {
-  if (stage === "paused") return "조직이 일시정지 중입니다 · 재개하면 전달";
-  if (leadPaused) return "Lead가 일시정지 중입니다 · 재개하면 전달";
-  return null;
+/** 메시지가 지금 Lead를 깨우지 못하는 이유의 안내. 메시지는 남아 재개 뒤 전달된다. */
+const heldLabel: Record<NonNullable<OwnerActionsDecision["heldBy"]>, string> = {
+  organization_paused: "조직이 일시정지 중입니다 · 재개하면 전달",
+  lead_paused: "Lead가 일시정지 중입니다 · 재개하면 전달",
+};
+
+/** Lead 상세의 최근 실행 시도에서 본 실행 상태. 취소를 요청받은 진행 중 실행 시도는 정리 중이다. */
+function leadRunState(agent: AgentDetail | undefined): LeadRunState {
+  const running = agent?.recentRuns.filter((r) => r.status === "running");
+  if (running?.some((r) => r.cancelReason === null)) return "running";
+  return running?.length ? "cancelling" : "idle";
 }
 
 /** 끝난 조직의 입력창 자리에 보이는 상태. */
@@ -862,16 +872,14 @@ type OwnerMessageSender = {
 };
 
 /**
- * 입력창. 버튼은 Lead 상태를 따라 바뀐다. 실행 중이 아니면 `보내기` 하나, 실행 중이면 입력이 빌 때 `실행 중단`,
- * 입력이 있으면 `중단하고 보내기`와 `줄 세우기`다. Enter는 언제나 `줄 세우기`(실행 중이 아니면 그냥 보내기)다.
- * 고른 방식은 메시지마다 새로 정하며 남지 않는다. 실행 중 여부는 Lead 상세의 진행 중 실행 시도로 보고 Event로 바로 바뀐다.
- * 이미 취소 정리 중인 실행 시도는 실행 중으로 치지 않는다. 끝난 조직(중단·최종 완료)은 메시지를 받지 않으므로 입력창 대신
- * 그 상태만 보인다. Lead에게 줄 세운 메시지가 상한(`maxQueuedMessages`, 모든 대화)이면 보내는 버튼이 모두 비활성이다.
+ * 입력창. 어떤 버튼이 보이고 서버가 받는지는 서버와 같은 contracts 판정(`ownerActions`)을 따른다. 실행 중이 아니면 `보내기` 하나,
+ * 실행 중이면 입력이 빌 때 `실행 중단`, 입력이 있으면 `중단하고 보내기`와 `줄 세우기`다. Enter는 언제나 `줄 세우기`(실행 중이
+ * 아니면 그냥 보내기)다. 고른 방식은 메시지마다 새로 정하며 남지 않는다. 실행 상태는 Lead 상세의 진행 중 실행 시도로 보고 Event로
+ * 바로 바뀐다. 끝난 조직(중단·최종 완료)은 입력창 대신 그 상태만 보인다. 서버가 받지 않는 보이는 버튼(줄이 가득 참)은 비활성이다.
  *
  * 바로 위에는 이 대화의 줄 세운 메시지가 오래된 것부터 있다. `고치기`는 그 항목을 그 자리에서 고치는 입력으로 바꾸며
  * (Enter 저장, Shift+Enter 줄바꿈, Esc 취소) 줄 속 위치와 전달 방식은 그대로다. 입력창이 비었을 때 ↑ 키는 가장 최근 메시지를
- * 거두고 그 글을 입력창에 되돌린다. `취소`는 거두기만 하고, `지금 보내기`는 Lead가 실행 중이고 조직·Lead가 일시정지가 아닐 때만 보인다.
- * 끝난 조직에서는 `취소`만 된다. 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
+ * 거두고 그 글을 입력창에 되돌린다. `취소`는 거두기만 한다. 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
  */
 function Composer({
   orgId,
@@ -893,17 +901,17 @@ function Composer({
   const stage = useOrganization(orgId).data?.stage;
   const agent = useAgent(orgId, lead.id).data;
   const stop = useControlAgent(orgId, lead.id);
-  const paused = agent?.paused ?? false;
-  const held = heldBy(stage, paused);
-  const closed = stage !== undefined && isClosedStage(stage);
-  const running =
-    !closed &&
-    (agent?.recentRuns.some(
-      (r) => r.status === "running" && r.cancelReason === null
-    ) ??
-      false);
   const queuedCount = Math.max(agent?.queuedMessageCount ?? 0, queued.length);
-  const full = queuedCount >= maxQueuedMessages;
+  // 조직을 아직 읽지 못했으면 끝나지 않은 조직으로 본다.
+  const { heldBy, actions } = ownerActions({
+    stage: stage ?? "researching",
+    leadPaused: agent?.paused ?? false,
+    run: leadRunState(agent),
+    queuedCount,
+  });
+  const held = heldBy && heldLabel[heldBy];
+  const closed = stage !== undefined && isClosedStage(stage);
+  const full = actions.send.refusal === "queue_full";
   const typed = text.trim() !== "";
   const busy = send.isPending || stop.isPending;
   const submit = async (delivery: MessageDelivery) => {
@@ -971,8 +979,8 @@ function Composer({
         <QueuedMessages
           messages={queued}
           count={queuedCount}
-          canEdit={!closed}
-          canSendNow={running && !held}
+          canEdit={actions.edit.visible}
+          canSendNow={actions.send_now.visible}
           busy={queuedBusy}
           onEdit={(m, body) => runQueued(m, "edit", body)}
           onCancel={(m) => void runQueued(m, "withdraw")}
@@ -1035,12 +1043,12 @@ function Composer({
               className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
             />
             <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
-              {!running ? (
+              {actions.send.visible ? (
                 <IconButton
                   label="보내기"
                   type="submit"
                   tone="primary"
-                  disabled={!typed || busy || full}
+                  disabled={!typed || busy || !!actions.send.refusal}
                 >
                   <ArrowUpIcon />
                 </IconButton>
@@ -1058,7 +1066,7 @@ function Composer({
                   <IconButton
                     label="중단하고 보내기"
                     tone="danger"
-                    disabled={busy || full}
+                    disabled={busy || !!actions.interrupt_send.refusal}
                     onClick={() => void submit("interrupt")}
                   >
                     <BoltIcon className="h-[18px] w-[18px]" />
@@ -1067,7 +1075,7 @@ function Composer({
                     label="줄 세우기"
                     type="submit"
                     tone="primary"
-                    disabled={busy || full}
+                    disabled={busy || !!actions.queue.refusal}
                   >
                     <QueueIcon />
                   </IconButton>

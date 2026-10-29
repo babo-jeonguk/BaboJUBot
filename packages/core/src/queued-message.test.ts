@@ -1,7 +1,5 @@
-import { maxQueuedMessages } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
-  ownerMessageRefusal,
   planEdit,
   planSendNow,
   planWithdrawal,
@@ -46,32 +44,6 @@ describe("planWithdrawal", () => {
     expect(planWithdrawal(queued({ withdrawn: true }))).toBe("not_found");
     expect(planWithdrawal(queued({ author: "agent", delivery: null }))).toBe(
       "not_found"
-    );
-  });
-});
-
-describe("ownerMessageRefusal", () => {
-  it("accepts a message below the queue cap and refuses closed organizations and a full queue", () => {
-    expect(
-      ownerMessageRefusal({ stage: "researching", queuedCount: 0 })
-    ).toBeNull();
-    expect(
-      ownerMessageRefusal({
-        stage: "paused",
-        queuedCount: maxQueuedMessages - 1,
-      })
-    ).toBeNull();
-    expect(
-      ownerMessageRefusal({
-        stage: "researching",
-        queuedCount: maxQueuedMessages,
-      })
-    ).toBe("queue_full");
-    expect(ownerMessageRefusal({ stage: "stopped", queuedCount: 0 })).toBe(
-      "organization_closed"
-    );
-    expect(ownerMessageRefusal({ stage: "completed", queuedCount: 0 })).toBe(
-      "organization_closed"
     );
   });
 });

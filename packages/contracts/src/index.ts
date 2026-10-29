@@ -6,6 +6,7 @@ export * from "./result.ts";
 export * from "./inbox.ts";
 export * from "./notification.ts";
 export * from "./message.ts";
+export * from "./owner-actions.ts";
 export * from "./task.ts";
 export * from "./research-map.ts";
 export * from "./heartbeat.ts";

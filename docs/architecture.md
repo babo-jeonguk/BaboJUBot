@@ -29,7 +29,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(실행기·job runner adapter)
 | `apps/server` | HTTP·WebSocket API·실행 시도. 첫 판은 한 프로세스, 필요할 때 worker 분리 | Control Plane, Agent Runtime |
 | `apps/web` | 대시보드. 에이전트·사용자가 쓴 긴 글은 react-markdown·remark-gfm·remark-breaks(MIT)로 GFM을 그리고 원문 HTML은 그리지 않음 | Surface |
 | `packages/core` | 생애주기·승인 정책·조직 경계 규칙. 웹 프레임워크·DB 의존 없음 | Control Plane |
-| `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구 | 모든 seam |
+| `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구. 웹과 서버가 함께 쓰는 순수 판정(예: 입력창 버튼과 서버 거부의 `ownerActions`) | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
 | `packages/runtime` | 실행기 adapter(가짜부터), job runner adapter, 채널 adapter | Agent Runtime, Surface |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |

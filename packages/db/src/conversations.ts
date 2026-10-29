@@ -1,5 +1,6 @@
 import {
   conversationPageSize,
+  newMessageRefusal,
   type AgentRole,
   type Conversation,
   type ConversationMessage,
@@ -9,7 +10,6 @@ import {
 } from "@babojubot/contracts";
 import {
   chooseReplyConversation,
-  ownerMessageRefusal,
   planAgentMessage,
   planInterrupt,
   type InterruptPlan,
@@ -240,7 +240,7 @@ export async function markConversationRead(
 /**
  * 사용자 메시지·깨우기·Event를 한 transaction으로 저장한다. 하나라도 실패하면 아무것도 남지 않는다.
  * 새 대화의 첫 메시지면 그 대화도 같은 transaction에 남기므로, 메시지가 남지 않으면 빈 대화도 남지 않는다.
- * 조직 → 받는 에이전트 순으로 잠근 뒤 받을지 정한다(core `ownerMessageRefusal`). 최종 완료·중단 조직이면 `organization_closed`,
+ * 조직 → 받는 에이전트 순으로 잠근 뒤 받을지 정한다(contracts `newMessageRefusal`, 웹 입력창과 같은 판정). 최종 완료·중단 조직이면 `organization_closed`,
  * 그 에이전트에게 줄 세운 메시지가 상한이면 `queue_full`이고 아무것도 남기지 않는다. 에이전트 행 잠금이 같은 에이전트에게 가는
  * 다른 보내기·거두기·admission과 직렬화하므로 센 수가 상한을 넘지 않는다.
  * `중단하고 보내기`면 같은 transaction에서 받는 에이전트의 진행 중 실행 시도에 취소를 요청하고 그 제어 명령 Event도 남긴다.
@@ -260,7 +260,7 @@ export async function insertOwnerMessage(
     const { organizationId, agentId } = plan.message;
     const org = await lockOrganization(tx, organizationId);
     await lockAgent(tx, organizationId, agentId);
-    const refusal = ownerMessageRefusal({
+    const refusal = newMessageRefusal({
       stage: org!.stage,
       queuedCount: await countQueuedMessages(tx, agentId),
     });
