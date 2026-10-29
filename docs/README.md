@@ -20,7 +20,7 @@
 | 어떤 규칙·문서를 읽는가? | [AGENTS](../AGENTS.md): 공통 규칙·제품 불변 조건 요약·Routing. [CLAUDE](../CLAUDE.md)는 참조만 유지 |
 | 어디에 어떻게 기록하는가? | 이 문서: 문서 책임·작성·갱신 기준 |
 | 용어 충돌·컨텍스트·ADR을 어떻게 다루는가? | [domain](agents/domain.md): 의미 확정·작성 조건 |
-| 수정할 코드·테스트는 어디인가? | [code-map](agents/code-map.md): 작업별 진입점·연결 경로·현재 검증 위치 |
+| 수정할 코드·테스트는 어디인가? | [code-map](agents/code-map.md): 영역별 절 파일 목차. 절 파일마다 작업별 진입점·연결 경로·현재 검증 위치 |
 | 구현은 언제 시작·완료하는가? | [implementation](agents/implementation.md): 브랜치→구현→리뷰→커밋→push→PR·외부 리뷰 인계 |
 | 리뷰 결과를 어떻게 처리하는가? | [review-fixes](agents/review-fixes.md): finding 판정→실패 유형 검증·수정→재검토·외부 요청 형식 |
 | 병합은 언제·어떻게 완료하는가? | [pr-merge](agents/pr-merge.md): 병합 판단→기록 정합성·최종 검증 확인→병합→후처리·보고 |

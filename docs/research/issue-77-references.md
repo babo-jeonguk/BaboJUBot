@@ -114,7 +114,7 @@
 
 ## 구현 참고
 
-[코드 지도](../agents/code-map.md#조직-생성event공통-화면) 기준 `apps/web/src/live-events.ts`가 Event/ready 진입점, `api.ts`가 queryKeys·queryFn·mutation invalidation, `main.tsx`가 QueryClient/구독 생애주기다. 조율 책임은 `apps/web` 안에 둔다. `packages/core/db/runtime`로 웹 cache 의존성을 끌어들이지 않고 승인·최종 완료·조직 격리 정책을 바꾸지 않는다. helper 파일 분리·정확한 알고리즘은 #77 구현에서 결정한다.
+[코드 지도](../agents/code-map/organizations.md) 기준 `apps/web/src/live-events.ts`가 Event/ready 진입점, `api.ts`가 queryKeys·queryFn·mutation invalidation, `main.tsx`가 QueryClient/구독 생애주기다. 조율 책임은 `apps/web` 안에 둔다. `packages/core/db/runtime`로 웹 cache 의존성을 끌어들이지 않고 승인·최종 완료·조직 격리 정책을 바꾸지 않는다. helper 파일 분리·정확한 알고리즘은 #77 구현에서 결정한다.
 
 비공식 상태 모형: **신호→해당 조회 dirty 표시→idle이면 조회 시작→현재 응답 즉시 반영→그사이 dirty면 후속 조회**. 이미 진행 중인 외부 조회에 합류하면 그 합류로 dirty를 지우지 않는다. paused는 idle/성공과 다르다. p-debounce의 최신 인자 한 슬롯은 **같은 key 안에서만** 참고하며 전체 조직을 한 슬롯에 넣지 않는다.
 
