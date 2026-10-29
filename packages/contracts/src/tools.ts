@@ -173,7 +173,7 @@ const nodeBody = "Node content in Markdown.";
 /**
  * 조직 도구 목록. Role·단계 데이터: `목표 설정`·`계획 수립`·`승인 대기`에는 조회·메시지·계획 도구만 열리고,
  * 작업·산출물·연구 지도·에이전트 간 메시지 쓰기, 작업자 추가와 결과 제출은 `연구 진행`에서만 열린다. 작업·산출물·연구 지도 조회는 언제나 열린다.
- * 그래서 `결과 검토 중`·`최종 완료`에는 조회와 Lead 대화 답장만 남는다.
+ * 그래서 `결과 검토 중`·`최종 완료`에는 조회, Lead 대화 답장과 기억(쓰기 포함)만 남는다. 기억은 연구 기록이 아니라서 단계와 상관없이 열린다.
  * 공개 활동 요약은 처리 결과에 달려 있으므로 여기가 아니라 서버의 처리 함수에 있다.
  */
 export const orgTools = {
@@ -192,7 +192,7 @@ export const orgTools = {
   // 첫 판은 Lead만 사용자와 대화한다. 작업자는 작업 댓글로만 사용자와 이어진다(docs/features.md).
   send_message: orgTool({
     description:
-      "Replies to the Owner in a Lead conversation and records the message there. Without `conversationId` the reply goes to the conversation of the Owner message this run received, or to the default conversation when the run woke without one. Refused with `invalid_input` when this run received Owner messages from several conversations and no `conversationId` is given, and with `not_found` when the conversation is not in this organization. To reach another agent use `message_agent`; to answer about a task use `comment_task`.",
+      "Replies to the Owner in a Lead conversation, records the message there and returns it. Without `conversationId` the reply goes to the conversation of the Owner message this run received, or to the default conversation when the run woke without one. Refused with `invalid_input` when this run received Owner messages from several conversations and no `conversationId` is given, and with `not_found` when the conversation is not in this organization. To reach another agent use `message_agent`; to answer about a task use `comment_task`.",
     method: "POST",
     path: "/messages",
     params: {},
@@ -221,7 +221,7 @@ export const orgTools = {
   }),
   get_harness_library: orgTool({
     description:
-      "Lists the Roles and research flow templates in the harness library. Choose the team and template for `request_initial_approval`, or the Role for `add_worker`, from this list.",
+      "Returns the Roles and research flow templates in the harness library, with each Role's label and Skills and each template's node and link kinds. Choose the team and template for `request_initial_approval`, or the Role for `add_worker`, from this list.",
     method: "GET",
     path: "/harness-library",
     params: {},
@@ -235,7 +235,7 @@ export const orgTools = {
   // 새 조직은 생성 때 목표를 받아 계획 수립에서 시작하므로, 이 도구는 목표 없이 만든 예전 조직에만 열린다.
   record_goal: orgTool({
     description:
-      "Records the research goal and completion criteria of an organization that was created without a goal, and moves it from goal setting to planning. Organizations created with a goal start in planning and never need it.",
+      "Records the research goal and completion criteria of an organization that was created without a goal, moves it from goal setting to planning, and returns the organization. Organizations created with a goal start in planning and never need it.",
     method: "POST",
     path: "/goal",
     params: {},
@@ -252,7 +252,7 @@ export const orgTools = {
   }),
   request_initial_approval: orgTool({
     description:
-      "Submits the initial research plan, team, research environment specification and research flow template as one approval request to the Owner, and moves the organization to awaiting approval. Nothing is created before the Owner approves; on approval the team is hired and the template copied to the organization exactly as submitted. When the Owner rejects or requests changes you are woken in planning with their note and submit a new request. Refused with `invalid_input` when a Role or the template is not in the harness library (see `get_harness_library`).",
+      "Submits the initial research plan, team, research environment specification and research flow template as one approval request to the Owner, moves the organization to awaiting approval, and returns the pending request. Nothing is created before the Owner approves; on approval the team is hired and the template copied to the organization exactly as submitted. When the Owner rejects or requests changes you are woken in planning with their note and submit a new request. Refused with `invalid_input` when a Role or the template is not in the harness library (see `get_harness_library`).",
     method: "POST",
     path: "/initial-approval",
     params: {},
@@ -273,7 +273,7 @@ export const orgTools = {
   }),
   create_task: orgTool({
     description:
-      "Creates a task assigned to an agent of this organization and wakes the assignee unless it is you. A task can be a subtask of another task and can be linked to a research node when created. Refused with `not_found` when the assignee, parent task or research node is not in this organization, and with `node_discarded` when the research node is discarded.",
+      "Creates a task assigned to an agent of this organization, wakes the assignee unless it is you, and returns the task. A task can be a subtask of another task and can be linked to a research node when created. Refused with `not_found` when the assignee, parent task or research node is not in this organization, and with `node_discarded` when the research node is discarded.",
     method: "POST",
     path: "/tasks",
     params: {},
@@ -293,7 +293,7 @@ export const orgTools = {
   }),
   list_tasks: orgTool({
     description:
-      "Lists every task of this organization with its status, assignee and completion report. Use `get_task` for the comments and artifacts of one task.",
+      "Returns every task of this organization with its status, assignee and completion report. Use `get_task` for the comments and artifacts of one task.",
     method: "GET",
     path: "/tasks",
     params: {},
@@ -317,7 +317,7 @@ export const orgTools = {
   }),
   start_task: orgTool({
     description:
-      "Marks an open task assigned to you as in progress. Refused with `not_assignee` when you are not the assignee and with `invalid_transition` when the task is no longer open.",
+      "Marks an open task assigned to you as in progress and returns the task. Refused with `not_assignee` when you are not the assignee and with `invalid_transition` when the task is no longer open.",
     method: "POST",
     path: "/tasks/:taskId/start",
     params: taskIdParam,
@@ -329,7 +329,7 @@ export const orgTools = {
   }),
   complete_task: orgTool({
     description:
-      "Completes a task with a self-report and wakes the assignee of its parent task, or the agent that created it when it has no parent (never you). The assignee or the Lead can complete it (`not_assignee` otherwise); a completed task is refused with `already_completed`. The self-report is your account of the work, not a verified result.",
+      "Completes a task with a self-report, wakes the assignee of its parent task, or the agent that created it when it has no parent (never you), and returns the task. The assignee or the Lead can complete it (`not_assignee` otherwise); a completed task is refused with `already_completed`. The self-report is your account of the work, not a verified result.",
     method: "POST",
     path: "/tasks/:taskId/complete",
     params: taskIdParam,
@@ -346,7 +346,7 @@ export const orgTools = {
   // 작업 댓글은 작업자가 사용자에게 답하는 통로다.
   comment_task: orgTool({
     description:
-      "Adds a comment to a task. Comments are how a worker answers the Owner about a task; an agent's comment wakes no one and does not change the task's status.",
+      "Adds a comment to a task and returns the comment. Comments are how a worker answers the Owner about a task; an agent's comment wakes no one and does not change the task's status. Refused with `not_found` when the task is not in this organization.",
     method: "POST",
     path: "/tasks/:taskId/comments",
     params: taskIdParam,
@@ -359,7 +359,7 @@ export const orgTools = {
   }),
   record_artifact: orgTool({
     description:
-      "Records an artifact on a task of this organization. Artifacts hold the evidence that `complete_task` reports and `submit_result` cites. Refused with `not_found` when the task is not in this organization.",
+      "Records an artifact on a task of this organization and returns it. Artifacts hold the evidence that `complete_task` reports and `submit_result` cites. Refused with `not_found` when the task is not in this organization.",
     method: "POST",
     path: "/artifacts",
     params: {},
@@ -389,7 +389,7 @@ export const orgTools = {
   }),
   message_agent: orgTool({
     description:
-      "Sends a message to another agent of this organization and wakes it. Use it to coordinate with other agents; the Owner is answered with `send_message` or `comment_task` instead. Refused with `invalid_input` when the recipient is you and with `not_found` when the recipient is not in this organization.",
+      "Sends a message to another agent of this organization, wakes it, and returns the message. Use it to coordinate with other agents; the Owner is answered with `send_message` or `comment_task` instead. Refused with `invalid_input` when the recipient is you and with `not_found` when the recipient is not in this organization.",
     method: "POST",
     path: "/agent-messages",
     params: {},
@@ -405,7 +405,7 @@ export const orgTools = {
   }),
   add_worker: orgTool({
     description:
-      "Adds one worker with a worker Role from the harness library. When the organization's approval policy covers adding workers, the result is `pending_approval` and the worker joins only after the Owner approves; otherwise it is `added` at once. Refused with `invalid_input` when the Role is not a worker Role in the harness library (see `get_harness_library`).",
+      "Adds one worker with a worker Role from the harness library and returns the outcome. When the organization's approval policy covers adding workers, the outcome is `pending_approval` with the request, and the worker joins only after the Owner approves; otherwise it is `added` with the new agent. Refused with `invalid_input` when the Role is not a worker Role in the harness library (see `get_harness_library`).",
     method: "POST",
     path: "/workers",
     params: {},
@@ -441,7 +441,7 @@ export const orgTools = {
   }),
   create_research_node: orgTool({
     description:
-      "Creates a research node, optionally under a primary parent. The kind must be one the organization's research flow template declares (`researchFlow.nodeKinds` in the run context), otherwise `unknown_kind`. Refused with `not_found` when the parent is not in this organization and with `node_discarded` when it is discarded.",
+      "Creates a research node, optionally under a primary parent, records the edit in the map's edit history, and returns the node. The kind must be one the organization's research flow template declares (`researchFlow.nodeKinds` in the run context), otherwise `unknown_kind`. Refused with `not_found` when the parent is not in this organization and with `node_discarded` when it is discarded.",
     method: "POST",
     path: "/research-nodes",
     params: {},
@@ -459,7 +459,7 @@ export const orgTools = {
   }),
   update_research_node: orgTool({
     description:
-      "Changes the title, body or work status of a research node; send at least one. Sending only the current values records nothing. A discarded node is refused with `node_discarded`; restore it with `restore_research_node` first.",
+      "Changes the title, body or work status of a research node and returns the node; send at least one. Each change is recorded in the map's edit history; sending only the current values records nothing. A discarded node is refused with `node_discarded`; restore it with `restore_research_node` first.",
     method: "PATCH",
     path: "/research-nodes/:nodeId",
     params: nodeIdParam,
@@ -477,7 +477,7 @@ export const orgTools = {
   }),
   assign_research_node_parent: orgTool({
     description:
-      "Sets the primary parent of a node that has none. Refused with `primary_parent_exists` when the node already has one (use `change_research_node_parent`), with `primary_cycle` when the parent is the node itself or one of its descendants, and with `node_discarded` when either node is discarded.",
+      "Sets the primary parent of a node that has none and returns the node. Refused with `primary_parent_exists` when the node already has one (use `change_research_node_parent`), with `primary_cycle` when the parent is the node itself or one of its descendants, and with `node_discarded` when either node is discarded.",
     method: "POST",
     path: "/research-nodes/:nodeId/parent",
     params: nodeIdParam,
@@ -489,7 +489,7 @@ export const orgTools = {
   }),
   change_research_node_parent: orgTool({
     description:
-      "Replaces or removes the primary parent of a node. Refused with `primary_cycle` when the new parent is the node itself or one of its descendants, and with `node_discarded` when either node is discarded.",
+      "Replaces or removes the primary parent of a node and returns the node. Refused with `primary_cycle` when the new parent is the node itself or one of its descendants, and with `node_discarded` when either node is discarded.",
     method: "POST",
     path: "/research-nodes/:nodeId/parent/change",
     params: nodeIdParam,
@@ -503,7 +503,7 @@ export const orgTools = {
   }),
   add_research_link: orgTool({
     description:
-      "Adds a secondary link from one research node to another. The kind must be one the template declares (`researchFlow.linkKinds` in the run context), otherwise `unknown_kind`. Secondary links have no count limit and no cycle check, and the same two nodes can have several; a link from a node to itself is refused with `invalid_input`, and a link to a discarded node with `node_discarded`.",
+      "Adds a secondary link from one research node to another and returns the link. The kind must be one the template declares (`researchFlow.linkKinds` in the run context), otherwise `unknown_kind`. Secondary links have no count limit and no cycle check, and the same two nodes can have several; a link from a node to itself is refused with `invalid_input`, and a link to a discarded node with `node_discarded`.",
     method: "POST",
     path: "/research-links",
     params: {},
@@ -519,7 +519,7 @@ export const orgTools = {
   }),
   discard_research_node: orgTool({
     description:
-      "Discards a research node instead of deleting it. Its status before discarding is kept so `restore_research_node` can bring it back; until then the node cannot be edited or linked to.",
+      "Discards a research node instead of deleting it and returns the node. Its children, links and linked tasks stay, and its status before discarding is kept so `restore_research_node` can bring it back; until then the node cannot be edited or linked to. Discarding a discarded node changes nothing.",
     method: "POST",
     path: "/research-nodes/:nodeId/discard",
     params: nodeIdParam,
@@ -531,7 +531,7 @@ export const orgTools = {
   }),
   restore_research_node: orgTool({
     description:
-      "Restores a discarded research node to the status it had before it was discarded.",
+      "Restores a discarded research node to the status it had before it was discarded and returns the node. Restoring a node that is not discarded changes nothing.",
     method: "POST",
     path: "/research-nodes/:nodeId/restore",
     params: nodeIdParam,
@@ -543,7 +543,7 @@ export const orgTools = {
   }),
   link_task_research_node: orgTool({
     description:
-      "Links a task to a research node. A task links to at most one node: refused with `task_already_linked` when it already has one (use `relink_task_research_node`), and with `node_discarded` when the node is discarded.",
+      "Links a task to a research node and returns the task. A task links to at most one node: refused with `task_already_linked` when it already has one (use `relink_task_research_node`), and with `node_discarded` when the node is discarded.",
     method: "POST",
     path: "/tasks/:taskId/research-node",
     params: taskIdParam,
@@ -555,7 +555,7 @@ export const orgTools = {
   }),
   relink_task_research_node: orgTool({
     description:
-      "Moves a task's research node link to another node. Refused with `node_discarded` when the new node is discarded.",
+      "Links a task to another research node, replacing its current link if it has one, and returns the task. Refused with `node_discarded` when the new node is discarded.",
     method: "POST",
     path: "/tasks/:taskId/research-node/relink",
     params: taskIdParam,
@@ -566,7 +566,8 @@ export const orgTools = {
     stages: researching,
   }),
   unlink_task_research_node: orgTool({
-    description: "Removes a task's research node link.",
+    description:
+      "Removes a task's research node link and returns the task. The node itself stays; a task with no link is returned unchanged. To move the task to another node use `relink_task_research_node` instead.",
     method: "POST",
     path: "/tasks/:taskId/research-node/unlink",
     params: taskIdParam,
@@ -579,7 +580,7 @@ export const orgTools = {
   // 결과 제출은 Lead의 판단이다. 최종 완료는 사용자 결정뿐이라 도구가 없다.
   submit_result: orgTool({
     description:
-      "Submits the research result for the Owner's review once you judge the completion criteria met, and moves the organization to result review. The Owner either requests changes (you are woken with their note and research resumes) or completes the research; only the Owner can complete it. Refused with `not_found` when an artifact is not in this organization.",
+      "Submits the research result for the Owner's review once you judge the completion criteria met, moves the organization to result review, and returns the submission. The Owner either requests changes (you are woken with their note and research resumes) or completes the research; only the Owner can complete it. Refused with `not_found` when an artifact is not in this organization.",
     method: "POST",
     path: "/results",
     params: {},
@@ -598,7 +599,7 @@ export const orgTools = {
   // 기억은 연구 기록이 아니라 에이전트가 다시 꺼내 쓰는 맥락이다. 단계와 상관없이 자기 조직·자기 에이전트 범위에서만 쓴다.
   write_memory: orgTool({
     description:
-      "Saves a memory entry for later runs. `organization` memory is shared with every agent of this organization; `agent` memory is yours alone. Memory is context to recall, not a research record: record research in tasks, artifacts and research nodes.",
+      "Saves a memory entry for later runs and returns it. `organization` memory is shared with every agent of this organization; `agent` memory is yours alone. Memory is context to recall, not a research record: record research in tasks, artifacts and research nodes.",
     method: "POST",
     path: "/memories",
     params: {},

@@ -19,6 +19,8 @@ describe("organization tool list", () => {
     for (const tool of orgToolNames) {
       expect(orgTools[tool].description, tool).not.toBe("");
       expect(orgTools[tool].description, tool).not.toMatch(hangul);
+      // 도구 설명은 돌려주는 것을 말한다(#86 「도구 설명과 지침의 분담」).
+      expect(orgTools[tool].description, tool).toMatch(/\breturns\b/i);
       for (const [field, schema] of Object.entries(
         inputSchemaOf(tool).properties ?? {}
       )) {
