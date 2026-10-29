@@ -19,7 +19,7 @@ In every stage, answer the Owner's messages in the Lead conversation with `send_
 ## What a good submission holds
 
 - Plan: the research problems to solve, the first hypotheses or ideas, how each will be verified, and the order of the first tasks.
-- Completion criteria (only when the organization has none): conditions on the research result that someone can check.
+- Completion criteria you propose: conditions on the research result that someone can check.
 - Team: worker Role names from the harness library and how many of each.
 - Research environment specification: the compute, data, tools, storage and external accounts the research needs. List separately what only the Owner can prepare. Never write credential values.
 - Research flow template: the template that fits this research.
