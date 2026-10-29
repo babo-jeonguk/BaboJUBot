@@ -125,14 +125,24 @@ async function startCluster(cluster: EmbeddedPostgres) {
 }
 
 async function ensureDatabase(url: string) {
-  const client = new pg.Client({ connectionString: url });
-  await client.connect();
-  try {
+  await withClient(url, async (client) => {
     const { rowCount } = await client.query(
       "select 1 from pg_database where datname = $1",
       [databaseName]
     );
     if (!rowCount) await client.query(`create database ${databaseName}`);
+  });
+}
+
+/** 연결 하나를 열어 쓰고 닫는다. DB 만들기·지우기처럼 pool 밖에서 하는 일에 쓴다. */
+export async function withClient<T>(
+  url: string,
+  use: (client: pg.Client) => Promise<T>
+): Promise<T> {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    return await use(client);
   } finally {
     await client.end();
   }
@@ -164,11 +174,14 @@ async function connect(
 
 /** 임시 dataDir와 빈 port에 embedded Postgres를 띄운다. `close`가 cluster와 dataDir를 지운다. 테스트와 E2E용. */
 export async function openEphemeralDatabase(): Promise<DatabaseHandle> {
+  return openDatabase({ embedded: await ephemeralCluster() });
+}
+
+/** 임시 dataDir와 빈 port. 정지 때 dataDir를 지우며, port를 못 구하면 바로 지운다. */
+export async function ephemeralCluster(): Promise<EmbeddedOptions> {
   const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
   try {
-    return await openDatabase({
-      embedded: { dataDir, port: await freePort(), persistent: false },
-    });
+    return { dataDir, port: await freePort(), persistent: false };
   } catch (error) {
     await fsp.rm(dataDir, { recursive: true, force: true });
     throw error;
