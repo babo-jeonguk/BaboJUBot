@@ -49,7 +49,7 @@ Node.js 24.x, pnpm 10.33.0 및 Git을 사용합니다. GitHub 이슈 작업에�
 ```bash
 pnpm install
 pnpm dev          # 서버(http://127.0.0.1:3100, 가짜 실행기 데모 시나리오)와 대시보드(http://127.0.0.1:5173)
-pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 임시 embedded Postgres를 띄웁니다.
+pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 embedded Postgres 하나를 띄우고 테스트마다 DB를 복제합니다.
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
 pnpm lint
