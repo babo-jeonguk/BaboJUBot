@@ -103,11 +103,11 @@ export type ConversationMessage = z.infer<typeof conversationMessageSchema>;
 /** 대화의 메시지 목록(줄 세운 메시지 등). 사용자가 거둔 메시지는 빠진다. */
 export const conversationMessageListSchema = z.array(conversationMessageSchema);
 
-/** 대화 기록 한 쪽의 메시지 수. 첫 쪽과 더 오래된 쪽이 같다. */
+/** 대화 한 쪽의 메시지 수. 첫 쪽과 더 오래된 쪽이 같다. */
 export const conversationPageSize = 50;
 
 /**
- * 대화 기록 한 쪽을 고르는 조회 조건. 커서가 없으면 가장 최근 쪽, `before`는 그보다 오래된 쪽, `after`는 그보다 새 쪽이다.
+ * 대화 한 쪽을 고르는 조회 조건. 커서가 없으면 가장 최근 쪽, `before`는 그보다 오래된 쪽, `after`는 그보다 새 쪽이다.
  * 커서는 서버가 준 값을 그대로 쓴다(뜻을 해석하지 않는다).
  */
 export const conversationPageQuerySchema = z
@@ -121,7 +121,7 @@ export const conversationPageQuerySchema = z
 export type ConversationPageQuery = z.infer<typeof conversationPageQuerySchema>;
 
 /**
- * 대화 기록 한 쪽: Lead 메시지와 실행 시도가 받은 사용자 메시지를 Lead가 받은 순서로, 오래된 것부터 담는다. 줄 세운 메시지는 없다.
+ * 대화 한 쪽: Lead 메시지와 실행 시도가 받은 사용자 메시지를 Lead가 받은 순서로, 오래된 것부터 담는다. 줄 세운 메시지는 없다.
  * `hasMore`는 고른 방향(커서 없음·`before`는 더 오래된 쪽, `after`는 더 새 쪽)에 메시지가 더 있는가다.
  * `before`는 이 쪽보다 오래된 쪽을 받을 커서(더 오래된 메시지가 없거나 쪽이 비었으면 null, `after` 조회의 쪽에도 있다),
  * `after`는 이보다 새 메시지를 이어 받을 커서(이 쪽의 가장 새 메시지, 비었으면 받은 커서 그대로이고 처음부터 비었으면 null)다.

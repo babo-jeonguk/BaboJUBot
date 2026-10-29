@@ -29,7 +29,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(실행기·job runner adapter)
 | `apps/server` | HTTP·WebSocket API·실행 시도. 첫 판은 한 프로세스, 필요할 때 worker 분리 | Control Plane, Agent Runtime |
 | `apps/web` | 대시보드. 에이전트·사용자가 쓴 긴 글은 react-markdown·remark-gfm·remark-breaks(MIT)로 GFM을 그리고 원문 HTML은 그리지 않음 | Surface |
 | `packages/core` | 생애주기·승인 정책·조직 경계 규칙. 웹 프레임워크·DB 의존 없음 | Control Plane |
-| `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구 | 모든 seam |
+| `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구. 웹과 서버가 함께 쓰는 순수 판정(예: 입력창 버튼과 서버 거부의 `ownerActions`) | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
 | `packages/runtime` | 실행기 adapter(가짜부터), job runner adapter, 채널 adapter | Agent Runtime, Surface |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
@@ -44,7 +44,7 @@ Surface가 보내는 것:
 
 - **제어 명령**: 승인·반려·수정 요청, 결과 검토·최종 완료, 에이전트/조직 일시정지·재개·중단, 실행 중단, 예산·승인 정책 변경. 즉시 효력·감사 기록.
 - **사용자 메시지**: Lead 대화·작업 댓글. `줄 세우기`(기본), `steer`(Lead 대화·실행기 지원 시), `중단하고 보내기` 중 선택. 마지막은 중단 명령·메시지를 각각 기록하고, 다음 실행 시도는 그 메시지만 받습니다. 실행 시도가 아직 받지 않은 Lead 대화 메시지(줄 세운 메시지)는 사용자가 그 자리에서 고치거나(`고치기`, 줄 속 위치·전달 방식 유지, 고치기 전 글은 Event에 남음) 거두거나(`취소`, 메시지는 남고 대화·Lead 맥락에서 빠짐) `지금 보내기`로 `중단하고 보내기`로 바꿉니다. Lead 하나에 줄 세울 수 있는 메시지는 상한(`maxQueuedMessages`, 20)까지이고 넘으면 받지 않습니다(`queue_full`). 끝난 조직(중단·최종 완료)은 사용자 메시지를 받지 않고(`organization_closed`) 줄 세운 메시지는 거두기만 됩니다. 메시지 없이 진행 중 실행 시도만 끊는 `실행 중단`은 제어 명령입니다.
-- **대화 순서**: Lead 대화는 Lead가 받은 순서입니다. 사용자 메시지는 실행 시도가 받은 순간(admission이 같은 transaction에서 매기는 위치)에, Lead 메시지는 저장 순서에 놓입니다. 그래서 먼저 보냈어도 나중에 받은 메시지는 그사이 받은 메시지와 답장 뒤에 오고, Lead의 실행 맥락도 같은 순서입니다. 화면은 대화 기록을 받은 순서의 열쇠로 자른 쪽(최근 50개부터, 위로 올리면 더 오래된 쪽)으로 읽고, 줄 세운 메시지는 따로 받습니다.
+- **대화 순서**: Lead 대화는 Lead가 받은 순서입니다. 사용자 메시지는 실행 시도가 받은 순간(admission이 같은 transaction에서 매기는 위치)에, Lead 메시지는 저장 순서에 놓입니다. 그래서 먼저 보냈어도 나중에 받은 메시지는 그사이 받은 메시지와 답장 뒤에 오고, Lead의 실행 맥락도 같은 순서입니다. 화면은 대화에 놓인 메시지를 받은 순서의 열쇠로 자른 쪽(최근 50개부터, 위로 올리면 더 오래된 쪽)으로 읽고, 줄 세운 메시지는 따로 받습니다.
 - **사용자 편집**: 연구 지도·에이전트별 Role·Soul·Skill 사본. 즉시 반영·편집자 기록·Lead 깨우기. 연구 노드 삭제는 `폐기` 전이입니다.
 - **조회**: 화면에 필요한 조직 범위 데이터.
 

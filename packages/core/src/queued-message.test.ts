@@ -1,7 +1,5 @@
-import { maxQueuedMessages } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
-  ownerMessageRefusal,
   planEdit,
   planSendNow,
   planWithdrawal,
@@ -50,32 +48,6 @@ describe("planWithdrawal", () => {
   });
 });
 
-describe("ownerMessageRefusal", () => {
-  it("accepts a message below the queue cap and refuses closed organizations and a full queue", () => {
-    expect(
-      ownerMessageRefusal({ stage: "researching", queuedCount: 0 })
-    ).toBeNull();
-    expect(
-      ownerMessageRefusal({
-        stage: "paused",
-        queuedCount: maxQueuedMessages - 1,
-      })
-    ).toBeNull();
-    expect(
-      ownerMessageRefusal({
-        stage: "researching",
-        queuedCount: maxQueuedMessages,
-      })
-    ).toBe("queue_full");
-    expect(ownerMessageRefusal({ stage: "stopped", queuedCount: 0 })).toBe(
-      "organization_closed"
-    );
-    expect(ownerMessageRefusal({ stage: "completed", queuedCount: 0 })).toBe(
-      "organization_closed"
-    );
-  });
-});
-
 describe("planEdit", () => {
   const editable = (overrides: Partial<QueuedMessageState> = {}) => ({
     ...queued(overrides),
@@ -113,7 +85,7 @@ describe("planEdit", () => {
 describe("planSendNow", () => {
   const running = {
     stage: "researching" as const,
-    agentPaused: false,
+    leadPaused: false,
     runningRunId: "run-1",
   };
 
@@ -146,7 +118,30 @@ describe("planSendNow", () => {
     ).toMatchObject({ cancellation: null });
   });
 
-  it("refuses delivered messages, finished organizations and paused organizations or Leads", () => {
+  it("changes only the delivery while the organization is paused, to be delivered first after resuming", () => {
+    expect(planSendNow(queued(), { ...running, stage: "paused" })).toEqual({
+      cancellation: null,
+      events: [
+        {
+          organizationId: "org-1",
+          type: "message.sent_now",
+          payload: { by: "owner", ...ids },
+        },
+        {
+          organizationId: "org-1",
+          type: "agent.interrupted",
+          payload: {
+            by: "owner",
+            agentId: "lead-1",
+            runId: null,
+            messageId: "msg-1",
+          },
+        },
+      ],
+    });
+  });
+
+  it("refuses delivered messages and finished organizations", () => {
     expect(planSendNow(queued({ deliveredToRunId: "run-1" }), running)).toBe(
       "message_delivered"
     );
@@ -155,15 +150,5 @@ describe("planSendNow", () => {
       expect(planSendNow(queued(), { ...running, stage })).toBe(
         "organization_closed"
       );
-    expect(
-      planSendNow(queued(), {
-        stage: "paused",
-        agentPaused: false,
-        runningRunId: null,
-      })
-    ).toBe("paused");
-    expect(planSendNow(queued(), { ...running, agentPaused: true })).toBe(
-      "paused"
-    );
   });
 });

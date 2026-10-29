@@ -13,7 +13,7 @@ import {
   toAgent,
   violatesUnique,
 } from "./rows.ts";
-import { findAgentDetail } from "./runs.ts";
+import { findAgentDetail } from "./run-views.ts";
 import { agents } from "./schema.ts";
 import { refused, stored, type Stored } from "./stored.ts";
 

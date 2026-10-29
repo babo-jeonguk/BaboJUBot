@@ -19,7 +19,7 @@ import {
   lockOrganization,
   toAgentHeartbeat,
 } from "./rows.ts";
-import { findAgentDetail } from "./runs.ts";
+import { findAgentDetail } from "./run-views.ts";
 import { agents, organizations, wakes } from "./schema.ts";
 import { refused, stored, type AfterCommit, type Stored } from "./stored.ts";
 

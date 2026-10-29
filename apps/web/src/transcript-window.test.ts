@@ -3,16 +3,21 @@ import type {
   ConversationPage,
 } from "@babojubot/contracts";
 import { QueryClient } from "@tanstack/react-query";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { queryKeys } from "./api.ts";
 import {
+  afterListChange,
   appendArrivals,
   catchUpConversation,
-  queryKeys,
+  listShape,
+  shouldTrim,
+  transcriptWindowMax,
   trimTranscript,
+  type ScrollSituation,
   type TranscriptData,
-} from "./api.ts";
+} from "./transcript-window.ts";
 
-// 맨 아래를 따라가는 동안 불러 둔 대화 기록은 가장 최근 창만 남기고, 덜어 낸 쪽은 커서로 다시 받는다.
+// 맨 아래를 따라가는 동안 불러 둔 메시지는 가장 최근 창만 남기고, 덜어 낸 쪽은 커서로 다시 받는다.
 
 const message = (n: number): ConversationMessage => ({
   id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
@@ -213,4 +218,82 @@ test("an empty conversation's first page that comes back after another catch-up 
   expect(bodies(data)).toEqual(["m1", "m2"]);
   expect(data.pages[0]!.after).toBe("a2");
   expect(server.requests).toEqual(["first", "first", "a1"]);
+});
+
+describe("afterListChange", () => {
+  const list = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => message(from + i));
+  const reading: ScrollSituation = {
+    anchored: false,
+    following: false,
+    jumping: false,
+  };
+  const following = { ...reading, following: true };
+
+  test("pins to the bottom on the first draw without counting arrivals", () => {
+    expect(afterListChange(listShape([]), list(1, 50), reading)).toEqual({
+      scroll: "pin_bottom",
+      arrivals: 0,
+    });
+  });
+
+  test("restores the message being read after older ones are put on top", () => {
+    expect(
+      afterListChange(listShape(list(51, 100)), list(1, 100), {
+        ...reading,
+        anchored: true,
+      })
+    ).toEqual({ scroll: "restore_anchor", arrivals: 0 });
+  });
+
+  test("sticks to the bottom while following and counts the new messages", () => {
+    expect(
+      afterListChange(listShape(list(1, 50)), list(1, 53), following)
+    ).toEqual({ scroll: "pin_bottom", arrivals: 3 });
+  });
+
+  test("glides down after the jump-to-bottom button", () => {
+    expect(
+      afterListChange(listShape(list(1, 50)), list(1, 51), {
+        ...following,
+        jumping: true,
+      })
+    ).toEqual({ scroll: "glide_bottom", arrivals: 1 });
+  });
+
+  test("stays put while reading above, still counting new messages", () => {
+    expect(
+      afterListChange(listShape(list(1, 50)), list(1, 52), reading)
+    ).toEqual({ scroll: "stay", arrivals: 2 });
+  });
+
+  test("sticks to the bottom after trimming older pages while following", () => {
+    expect(
+      afterListChange(listShape(list(1, 120)), list(71, 120), following)
+    ).toEqual({ scroll: "pin_bottom", arrivals: 0 });
+  });
+
+  test("counts one arrival when the last message seen is gone from the list", () => {
+    expect(
+      afterListChange(listShape(list(1, 50)), list(60, 61), reading)
+    ).toEqual({ scroll: "stay", arrivals: 1 });
+  });
+
+  test("keeps following when an anchor is set but nothing was put on top", () => {
+    expect(
+      afterListChange(listShape(list(1, 50)), list(1, 51), {
+        ...following,
+        anchored: true,
+      })
+    ).toEqual({ scroll: "pin_bottom", arrivals: 1 });
+  });
+});
+
+test("trims only when over the window while following and not loading older pages", () => {
+  const over = transcriptWindowMax + 1;
+  const quiet = { following: true, loadingOlder: false };
+  expect(shouldTrim(over, quiet)).toBe(true);
+  expect(shouldTrim(transcriptWindowMax, quiet)).toBe(false);
+  expect(shouldTrim(over, { ...quiet, following: false })).toBe(false);
+  expect(shouldTrim(over, { ...quiet, loadingOlder: true })).toBe(false);
 });

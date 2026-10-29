@@ -3,20 +3,21 @@ import type { RunResult, WakeReason } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  insertOwnerMessage,
+  listConversationMessages,
+} from "./conversations.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
 import {
   appendRunActivity,
   authenticateRun,
   claimNextRun,
-  findRunDetail,
   finishRun,
-  insertOwnerMessage,
   listAgentsWithPendingWakes,
-  listConversationMessages,
-  listRuns,
   loadRunContext,
   recoverInterruptedRuns,
 } from "./runs.ts";
+import { findRunDetail, listRuns } from "./run-views.ts";
 import {
   insertEvent,
   lockOrganization,

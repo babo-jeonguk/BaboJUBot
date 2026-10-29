@@ -66,7 +66,6 @@ export const ownerRefusalResponses: Record<OwnerRefusal, [string, number]> = {
   stage_closed: ["stage_closed", 409],
   queue_full: ["queue_full", 409],
   message_delivered: ["message_delivered", 409],
-  paused: ["paused", 409],
   name_taken: ["name_taken", 409],
   revision_conflict: ["revision_conflict", 409],
   invalid_skill: ["invalid_skill", 422],

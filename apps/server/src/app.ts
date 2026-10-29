@@ -458,7 +458,7 @@ export async function startServer({
     return conversation && { org, conversation };
   };
   /**
-   * 대화 기록 한 쪽(`?before=`·`?after=` 커서, 없으면 가장 최근 쪽). 줄 세운 메시지는 따로 `queued-messages`가 준다.
+   * 대화에 놓인 메시지 한 쪽(`?before=`·`?after=` 커서, 없으면 가장 최근 쪽). 줄 세운 메시지는 따로 `queued-messages`가 준다.
    * 서버가 준 것이 아닌 커서나 둘을 함께 쓴 조회는 422 `invalid_input`이다.
    */
   const listChatMessages = async (
@@ -488,7 +488,7 @@ export async function startServer({
     }
     res.json(page);
   };
-  /** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 기록의 쪽과 상관없다. */
+  /** 대화 하나의 줄 세운 메시지 전부(보낸 순서). 대화 쪽과 상관없다. */
   const listChatQueue = async (
     req: express.Request,
     res: express.Response,
@@ -577,8 +577,8 @@ export async function startServer({
   /**
    * 줄 세운 메시지(아직 실행 시도가 받지 않은 Lead 대화의 사용자 메시지) 고치기·거두기·지금 보내기. 바뀐 메시지를 돌려준다(거두기는 거두기 전 모양).
    * 고치기는 `{ body }`(보내기와 같은 검사)로 글만 바꾸고 전달 방식·줄 속 위치는 그대로다. 실행 시도가 이미 받았으면 409 `message_delivered`,
-   * 다른 조직·거둔 메시지는 404다. 고치기·지금 보내기는 끝난 조직이면 409 `organization_closed`이고, 지금 보내기는 조직이나 Lead가
-   * 일시정지 중이면 409 `paused`다(고치기는 일시정지 중에도, 거두기는 일시정지 중에도 끝난 조직에서도 된다).
+   * 다른 조직·거둔 메시지는 404다. 고치기·지금 보내기는 끝난 조직이면 409 `organization_closed`다.
+   * 셋 다 일시정지 중에도 되고(일시정지 중 지금 보내기는 재개 뒤 먼저 전달), 거두기는 끝난 조직에서도 된다.
    */
   for (const path of ["edit", "withdraw", "send-now"] as const)
     app.post(

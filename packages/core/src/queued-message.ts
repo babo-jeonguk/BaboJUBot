@@ -1,6 +1,5 @@
 import {
-  isClosedStage,
-  maxQueuedMessages,
+  queuedMessageRefusal,
   type ConversationMessage,
   type LifecycleStage,
   type NewEvent,
@@ -9,7 +8,8 @@ import { planInterrupt, type RunCancellation } from "./control.ts";
 
 // 줄 세운 메시지: 아직 실행 시도가 받지 않은 Lead 대화의 사용자 메시지. 조직·에이전트가 일시정지라 기다리는 메시지도 같다.
 // 사용자는 그 메시지를 그 자리에서 고치거나(`고치기`) 거두거나(`취소`, 빈 입력창의 ↑는 글을 입력창으로 되돌린다)
-// `지금 보내기`로 `중단하고 보내기`로 바꾼다. Lead 하나에 줄 세울 수 있는 메시지 수에는 상한(`maxQueuedMessages`)이 있다.
+// `지금 보내기`로 `중단하고 보내기`로 바꾼다. 조직·Lead 상태로 받지 않는 이유는 웹 입력창과 같은 contracts 판정
+// (`queuedMessageRefusal`)이 정하고, 여기서는 메시지 하나의 상태(없음·이미 전달됨)를 더한다.
 // 저장 쪽은 조직 → 에이전트 → 실행 시도 순으로 잠근 뒤 메시지와 그 깨우기를 읽어 여기에 넘긴다. 에이전트 행 잠금이
 // admission(`claimNextRun`)과 직렬화하므로, 실행 시도가 먼저 깨우기를 받았으면 여기서 `message_delivered`로 본다.
 
@@ -27,33 +27,21 @@ export type QueuedMessageState = Pick<
  * - `not_found`: 같은 조직에 그런 사용자 메시지가 없거나 이미 거두었다(거둔 메시지는 대화에서 빠진다).
  * - `message_delivered`: 실행 시도가 이미 받았다. 받은 메시지는 거두거나 바꿀 수 없다.
  * - `organization_closed`: 최종 완료·중단 조직이다(`지금 보내기`는 중단 제어 명령이라 받지 않는다).
- * - `paused`: 조직이나 받는 에이전트가 일시정지 중이라 지금 보낼 수 없다. 재개하면 줄 선 순서대로 전달된다.
  */
 export type QueuedMessageRefusal =
-  "not_found" | "message_delivered" | "organization_closed" | "paused";
+  "not_found" | "message_delivered" | "organization_closed";
 
-const queuedRefusal = (
-  message: QueuedMessageState | undefined
-): "not_found" | "message_delivered" | null => {
+/** 메시지 하나의 상태와 조직 상태(contracts 판정의 거부)를 합친 거부. 없음 → 조직 상태 → 이미 전달됨 순으로 본다. */
+const queuedRefusal = <R extends "organization_closed" = never>(
+  message: QueuedMessageState | undefined,
+  stateRefusal: R | null = null
+): "not_found" | "message_delivered" | R | null => {
   if (!message || message.author !== "owner" || message.withdrawn)
     return "not_found";
+  if (stateRefusal) return stateRefusal;
   if (message.deliveredToRunId) return "message_delivered";
   return null;
 };
-
-/**
- * 새 사용자 메시지를 받지 않는 이유. 최종 완료·중단 조직이면 `organization_closed`(되살리지 않는다),
- * 받는 Lead에게 이미 상한(`maxQueuedMessages`)만큼 줄 서 있으면 `queue_full`이다. 줄 세우기와 중단하고 보내기 모두 같다.
- * `queuedCount`는 저장 쪽이 조직 → 에이전트 잠금 아래에서 센 그 에이전트의 줄 세운 메시지 수(모든 대화)다.
- */
-export function ownerMessageRefusal(state: {
-  stage: LifecycleStage;
-  queuedCount: number;
-}): "organization_closed" | "queue_full" | null {
-  if (isClosedStage(state.stage)) return "organization_closed";
-  if (state.queuedCount >= maxQueuedMessages) return "queue_full";
-  return null;
-}
 
 /**
  * 줄 세운 메시지를 그 자리에서 고친다. 글만 바뀌고 전달 방식·줄 속 위치(보낸 순서)·깨우기는 그대로다.
@@ -64,9 +52,11 @@ export function planEdit(
   stage: LifecycleStage,
   body: string
 ): { event: NewEvent } | QueuedMessageRefusal {
-  if (queuedRefusal(message) === "not_found") return "not_found";
-  if (isClosedStage(stage)) return "organization_closed";
-  if (message!.deliveredToRunId) return "message_delivered";
+  const refused = queuedRefusal(
+    message,
+    queuedMessageRefusal("edit", { stage })
+  );
+  if (refused) return refused;
   const m = message!;
   return {
     event: {
@@ -115,24 +105,27 @@ export function planWithdrawal(
 /**
  * 줄 세운 메시지 `지금 보내기`. 그 메시지의 전달 방식을 `중단하고 보내기`로 바꾸고 받는 에이전트의 진행 중 실행 시도를 취소한다.
  * 다음 실행 시도는 그 메시지(와 다른 `중단하고 보내기` 메시지)만 받고, 나머지 줄 세운 메시지는 그 뒤에 받는다(`bundleWakes`).
- * 실행 중이 아니면 취소할 것 없이 전달 방식만 바뀌어 다음 실행 시도에서 먼저 받는다.
+ * 실행 중이 아니거나 조직·Lead가 일시정지 중이면(일시정지가 취소한 실행 시도가 아직 정리 중이어도, `planInterrupt`) 취소할 것 없이
+ * 전달 방식만 바뀌어 다음 실행 시도(일시정지면 재개 뒤)에서 먼저 받는다. 그때 제어 명령 Event는 실행 시도 없이(`runId: null`)
+ * 남아 활동 기록에 "실행 중이 아님"으로 보인다.
  */
 export function planSendNow(
   message: QueuedMessageState | undefined,
   state: {
     stage: LifecycleStage;
-    agentPaused: boolean;
+    leadPaused: boolean;
     runningRunId: string | null;
   }
 ):
   | { cancellation: RunCancellation | null; events: NewEvent[] }
   | QueuedMessageRefusal {
-  if (queuedRefusal(message) === "not_found") return "not_found";
-  if (isClosedStage(state.stage)) return "organization_closed";
-  if (message!.deliveredToRunId) return "message_delivered";
-  if (state.stage === "paused" || state.agentPaused) return "paused";
+  const refused = queuedRefusal(
+    message,
+    queuedMessageRefusal("send_now", { stage: state.stage })
+  );
+  if (refused) return refused;
   const m = message!;
-  const interrupt = planInterrupt(m, state.stage, state.runningRunId);
+  const interrupt = planInterrupt(m, state);
   if (interrupt === "organization_closed") return interrupt;
   return {
     cancellation: interrupt.cancellation,

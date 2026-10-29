@@ -9,6 +9,7 @@ import {
 } from "@babojubot/core";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { readMessage } from "./conversations.ts";
 import {
   insertEvent,
   isUuid,
@@ -106,7 +107,7 @@ export async function sendQueuedMessageNow(
     const found = await readQueuedMessage(tx, organizationId, messageId);
     const plan = planSendNow(found?.state, {
       stage: locked.stage,
-      agentPaused: locked.agent.paused,
+      leadPaused: locked.agent.paused,
       runningRunId: running,
     });
     if (typeof plan === "string") return refused(plan);
@@ -158,36 +159,8 @@ async function readQueuedMessage(
     }
   | undefined
 > {
-  const [row] = await tx
-    .select({ message: messages, deliveredToRunId: wakes.runId })
-    .from(messages)
-    .leftJoin(wakes, eq(wakes.messageId, messages.id))
-    .where(
-      and(
-        eq(messages.organizationId, organizationId),
-        eq(messages.id, messageId)
-      )
-    );
-  if (!row) return undefined;
-  const {
-    message: {
-      seq: _seq,
-      deliveredSeq: _deliveredSeq,
-      deliveredAt,
-      withdrawnAt,
-      createdAt,
-      ...rest
-    },
-    deliveredToRunId,
-  } = row;
-  const message: ConversationMessage = {
-    ...rest,
-    deliveredToRunId,
-    deliveredAt: deliveredAt?.toISOString() ?? null,
-    createdAt: createdAt.toISOString(),
-  };
-  return {
-    message,
-    state: { ...message, withdrawn: withdrawnAt !== null },
-  };
+  const found = await readMessage(tx, organizationId, messageId);
+  if (!found) return undefined;
+  const { message, withdrawn } = found;
+  return { message, state: { ...message, withdrawn } };
 }

@@ -8,21 +8,20 @@ import {
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { findConversation, listConversations } from "./conversations.ts";
+import {
+  findConversation,
+  insertOwnerMessage,
+  listConversationMessages,
+  listConversations,
+} from "./conversations.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
 import {
   editQueuedMessage,
   sendQueuedMessageNow,
   withdrawQueuedMessage,
 } from "./queued-messages.ts";
-import {
-  claimNextRun,
-  findAgentDetail,
-  finishRun,
-  insertOwnerMessage,
-  listConversationMessages,
-  loadRunContext,
-} from "./runs.ts";
+import { claimNextRun, finishRun, loadRunContext } from "./runs.ts";
+import { findAgentDetail } from "./run-views.ts";
 import { organizations } from "./schema.ts";
 import { refused } from "./stored.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
@@ -143,7 +142,7 @@ describe("the queued message list", () => {
         })
       ).map((m) => m.body);
 
-    // 대화 기록은 최근 2개로 잘려도 줄 세운 메시지는 대화 기록과 따로 모두 온다.
+    // 대화 쪽은 최근 2개로 잘려도 줄 세운 메시지는 쪽과 따로 모두 온다.
     expect(await listed()).toEqual([
       "받은 둘",
       "받은 셋",

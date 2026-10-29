@@ -12,7 +12,12 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   findConversation,
+  insertAgentMessage,
+  insertOwnerMessage,
+  listConversationMessages,
+  listConversationPage,
   listConversations,
+  listQueuedMessages,
   markConversationRead,
 } from "./conversations.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
@@ -20,12 +25,7 @@ import { sendQueuedMessageNow } from "./queued-messages.ts";
 import {
   claimNextRun,
   finishRun,
-  insertAgentMessage,
-  insertOwnerMessage,
   interruptRun,
-  listConversationMessages,
-  listConversationPage,
-  listQueuedMessages,
   loadRunContext,
 } from "./runs.ts";
 import { conversations, organizations, wakes } from "./schema.ts";
@@ -563,7 +563,7 @@ describe("delivery order", () => {
 
 // 사용자 메시지의 받은 시각은 그 메시지를 받은 실행 시도가 시작한 시각이다(보낸 시각과 따로).
 describe("delivery time", () => {
-  /** 대화 기록과 줄 세운 메시지에서 본문으로 찾은 메시지의 [보낸 시각, 받은 시각]. */
+  /** 대화와 줄 세운 메시지에서 본문으로 찾은 메시지의 [보낸 시각, 받은 시각]. */
   const times = async (
     org: Awaited<ReturnType<typeof organization>>,
     body: string
@@ -649,7 +649,7 @@ describe("delivery time", () => {
   });
 });
 
-// 대화 기록은 받은 순서 열쇠로 자르는 쪽(keyset)으로 읽는다. 줄 세운 메시지는 쪽과 따로다.
+// 대화는 받은 순서 열쇠로 자르는 쪽(keyset)으로 읽는다. 줄 세운 메시지는 쪽과 따로다.
 describe("transcript pages", () => {
   it("pages back through ties in delivery order, ends with hasMore false, and keeps older pages stable as new messages arrive", async () => {
     const org = await organization();

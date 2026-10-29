@@ -3,11 +3,15 @@ import {
   isClosedStage,
   maxQueuedMessages,
   messageBodyMaxLength,
+  ownerActions,
   type Agent,
+  type AgentDetail,
   type ConversationMessage,
   type ConversationSummary,
   type LifecycleStage,
+  type LeadRunState,
   type MessageDelivery,
+  type OwnerActionsDecision,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient } from "@tanstack/react-query";
@@ -20,13 +24,13 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type UIEvent,
 } from "react";
 import { Link, useNavigate } from "react-router";
 import {
   ApiError,
   useAgent,
   useControlAgent,
-  useConversation,
   useConversations,
   useMarkConversationRead,
   useOrganization,
@@ -34,11 +38,17 @@ import {
   useQueuedMessages,
   useSendMessage,
   useStartConversation,
-  transcriptWindowMax,
-  trimConversation,
   type QueuedMessageCommand,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
+import {
+  afterListChange,
+  listShape,
+  shouldTrim,
+  trimConversation,
+  useConversation,
+  type ListShape,
+} from "./transcript-window.ts";
 import {
   AgentStatusBadge,
   formatTime,
@@ -383,9 +393,9 @@ function usePageVisible() {
 }
 
 /**
- * 저장된 대화 하나: 대화 기록과 입력창. 보이는 동안 Lead가 보낸 메시지를 읽은 것으로 표시한다.
- * 대화 기록은 Lead가 받은 순서이며 처음에는 가장 최근 쪽만 받고, 위로 올리면 더 오래된 쪽을 받는다(`Transcript`).
- * 줄 세운 메시지는 대화 기록과 따로 받아 입력창 위에 둔다.
+ * 저장된 대화 하나: 대화에 놓인 메시지와 입력창. 보이는 동안 Lead가 보낸 메시지를 읽은 것으로 표시한다.
+ * 메시지는 받은 순서이며 처음에는 가장 최근 쪽만 받고, 위로 올리면 더 오래된 쪽을 받는다(`Transcript`).
+ * 줄 세운 메시지는 따로 받아 입력창 위에 둔다.
  */
 function Thread({
   orgId,
@@ -487,32 +497,21 @@ const prefersReducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * 대화 기록의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
- * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
- * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
- * 맨 아래 근처(`followThreshold`)에 있을 때만 새 메시지를 따라 내려가고, 그보다 위에 있으면 `맨 아래로` 버튼을 보인다.
- * 따라가는 동안에는 대화 영역이나 내용의 크기가 바뀌어도(줄 세운 메시지 목록·입력창이 자람 등) 맨 아래에 남는다. 따라가기를
- * 멈추는 것은 사용자의 스크롤뿐이다.
- * 맨 아래를 따라가는 동안 불러 둔 메시지가 많아지면 오래된 쪽을 덜어 낸다(`trim`). 위를 읽는 동안에는 덜어 내지 않는다.
- * 위에 붙인 메시지는 읽어 주지 않고 새로 온 메시지만 조용히 알린다.
+ * 대화 스크롤 영역의 DOM 쪽. 목록이 바뀐 뒤 할 스크롤·새 메시지 수·덜어 내기는 대화 창의 판단(`afterListChange`·`shouldTrim`)이
+ * 정하고, 이 hook은 스크롤 위치·크기 변화·맨 위 sentinel을 읽어 그 판단에 넘기고 결과를 DOM에 적용한다.
  */
-function Transcript({
+function useTranscriptScroll({
   messages,
   hasOlder,
   loadingOlder,
   loadOlder,
   trim,
-  orgId,
-  lead,
 }: {
   messages: ConversationMessage[];
   hasOlder: boolean;
   loadingOlder: boolean;
   loadOlder: () => Promise<{ isError: boolean }>;
-  /** 불러 둔 오래된 쪽을 덜어 낸다. 맨 아래를 따라가며 `transcriptWindowMax`개를 넘었을 때만 부른다. */
   trim: () => void;
-  orgId: string;
-  lead: Agent;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -532,14 +531,8 @@ function Transcript({
   const jumping = useRef(false);
   const [away, setAway] = useState(false);
   const [arrivals, setArrivals] = useState(0);
-  const first = messages[0]?.id;
-  const last = messages.at(-1)?.id;
   // 처음 그릴 때는 맨 아래로 간다(빈 것에서 시작한 것으로 본다).
-  const previous = useRef<{
-    first: string | undefined;
-    last: string | undefined;
-    count: number;
-  }>({ first: undefined, last: undefined, count: 0 });
+  const previous = useRef<ListShape>(listShape([]));
 
   const scrollTo = (top: number) => {
     const el = scroller.current;
@@ -598,40 +591,34 @@ function Transcript({
     olderRef.current = older;
   });
 
-  // 메시지가 바뀐 직후 그리기 전에: 위에 붙었으면 보던 메시지를 같은 자리로, 맨 아래를 따라가는 중이면(새 메시지가 붙었거나
-  // 오래된 쪽을 덜어 냈거나) 다시 맨 아래로 간다. 새로 온 메시지 수는 화면 읽기 도구에 알린다.
+  // 메시지가 바뀐 직후 그리기 전에 대화 창의 판단(`afterListChange`)을 DOM에 적용한다. 새로 온 메시지 수는 화면 읽기 도구에 알린다.
   useLayoutEffect(() => {
     const el = scroller.current;
     const before = previous.current;
-    previous.current = { first, last, count: messages.length };
+    previous.current = listShape(messages);
     if (!el) return;
-    if (before.count === 0) {
-      pinToBottom();
-      return;
-    }
-    if (first !== before.first && anchor.current) {
+    const { scroll, arrivals } = afterListChange(before, messages, {
+      anchored: anchor.current !== null,
+      following: atBottom.current,
+      jumping: jumping.current,
+    });
+    if (scroll === "restore_anchor") {
       const target = el.querySelector<HTMLElement>(
-        `[data-message-id="${CSS.escape(anchor.current.id)}"]`
+        `[data-message-id="${CSS.escape(anchor.current!.id)}"]`
       );
       if (target) {
         const offset =
           target.getBoundingClientRect().top - el.getBoundingClientRect().top;
-        scrollTo(el.scrollTop + offset - anchor.current.offset);
+        scrollTo(el.scrollTop + offset - anchor.current!.offset);
       }
       // 되돌린 자리에서 따라가기를 다시 정한다. 그러지 않으면 크기 변화가 맨 아래로 끌고 간다.
       atBottom.current =
         el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
       anchor.current = null;
-    } else if (atBottom.current) {
-      if (jumping.current) glideToBottom();
-      else pinToBottom();
-    }
-    if (last !== before.last) {
-      const index = messages.findIndex((m) => m.id === before.last);
-      const added = index === -1 ? 1 : messages.length - 1 - index;
-      if (added > 0) setArrivals((n) => n + added);
-    }
-  }, [first, last, messages]);
+    } else if (scroll === "glide_bottom") glideToBottom();
+    else if (scroll === "pin_bottom") pinToBottom();
+    if (arrivals > 0) setArrivals((n) => n + arrivals);
+  }, [messages]);
 
   // 따라가는 동안 대화 영역(입력창 위 목록·입력창이 자라거나 줄어듦)이나 내용(그린 뒤 자란 메시지)의 크기가 바뀌면 다시 맨 아래로
   // 간다. 영역이 줄어들 때는 스크롤 Event가 없어 이렇게 하지 않으면 맨 아래 메시지가 가려진 채 남는다.
@@ -649,11 +636,14 @@ function Transcript({
     return () => observer.disconnect();
   }, []);
 
-  // 맨 아래를 따라가는 동안 불러 둔 메시지가 창보다 많아지면 오래된 쪽을 덜어 낸다. 위를 읽거나 더 오래된 쪽을 받는 중에는 덜어 내지 않는다.
-  const overflow = messages.length > transcriptWindowMax;
+  // 맨 아래를 따라가는 동안 불러 둔 메시지가 창보다 많아지면 오래된 쪽을 덜어 낸다(`shouldTrim`).
+  const count = messages.length;
   useEffect(() => {
-    if (overflow && !away && !loadingOlder && atBottom.current) trim();
-  }, [overflow, away, loadingOlder, trim]);
+    if (
+      shouldTrim(count, { following: !away && atBottom.current, loadingOlder })
+    )
+      trim();
+  }, [count, away, loadingOlder, trim]);
 
   // 맨 위 sentinel이 300px 안에 들어오면 더 오래된 쪽을 받는다.
   useEffect(() => {
@@ -673,6 +663,77 @@ function Transcript({
   /** 사용자가 스크롤을 잡으면 `맨 아래로`의 내려가기를 멈춘다. */
   const takeOver = () => (jumping.current = false);
 
+  /** 사용자나 코드가 스크롤했다. 맨 아래 근처인가로 따라가기와 `맨 아래로` 버튼을 정한다. */
+  const onScroll = (e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const near =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
+    // 내려가는 동안의 중간 위치나 붙이는 사이 크기가 바뀐 위치로는 따라가기·버튼을 바꾸지 않는다.
+    if ((jumping.current || pinning.current) && !near) return;
+    jumping.current = false;
+    atBottom.current = near;
+    setAway(!near);
+    if (!programmatic.current && !loadingOlder) armed.current = true;
+  };
+
+  return {
+    scroller,
+    content,
+    sentinel,
+    away,
+    arrivals,
+    older,
+    jumpToBottom,
+    takeOver,
+    onScroll,
+  };
+}
+
+/**
+ * 대화에 놓인 메시지의 스크롤 영역. 맨 위 근처(300px)에 오면 더 오래된 쪽을 하나 받는다. 한 번에 하나만 받고, 받은 뒤에는 사용자가 새로
+ * 스크롤해야 다시 받는다. 키보드·내용이 화면보다 짧을 때·실패했을 때를 위해 맨 위에 `이전 메시지 보기` 버튼도 둔다.
+ * 위에 붙일 때는 브라우저의 스크롤 고정을 끄고(`overflow-anchor: none`) 보이던 맨 위 메시지의 자리를 직접 되돌린다.
+ * 맨 아래 근처(`followThreshold`)에 있을 때만 새 메시지를 따라 내려가고, 그보다 위에 있으면 `맨 아래로` 버튼을 보인다.
+ * 따라가는 동안에는 대화 영역이나 내용의 크기가 바뀌어도(줄 세운 메시지 목록·입력창이 자람 등) 맨 아래에 남는다. 따라가기를
+ * 멈추는 것은 사용자의 스크롤뿐이다.
+ * 맨 아래를 따라가는 동안 불러 둔 메시지가 많아지면 오래된 쪽을 덜어 낸다(`trim`). 위를 읽는 동안에는 덜어 내지 않는다.
+ * 위에 붙인 메시지는 읽어 주지 않고 새로 온 메시지만 조용히 알린다.
+ */
+function Transcript({
+  messages,
+  hasOlder,
+  loadingOlder,
+  loadOlder,
+  trim,
+  orgId,
+  lead,
+}: {
+  messages: ConversationMessage[];
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  loadOlder: () => Promise<{ isError: boolean }>;
+  /** 불러 둔 오래된 쪽을 덜어 낸다. 맨 아래를 따라가며 `transcriptWindowMax`개를 넘었을 때만 부른다. */
+  trim: () => void;
+  orgId: string;
+  lead: Agent;
+}) {
+  const {
+    scroller,
+    content,
+    sentinel,
+    away,
+    arrivals,
+    older,
+    jumpToBottom,
+    takeOver,
+    onScroll,
+  } = useTranscriptScroll({
+    messages,
+    hasOlder,
+    loadingOlder,
+    loadOlder,
+    trim,
+  });
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -682,17 +743,7 @@ function Transcript({
         onWheel={takeOver}
         onTouchStart={takeOver}
         onKeyDown={takeOver}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          const near =
-            el.scrollHeight - el.scrollTop - el.clientHeight <= followThreshold;
-          // 내려가는 동안의 중간 위치나 붙이는 사이 크기가 바뀐 위치로는 따라가기·버튼을 바꾸지 않는다.
-          if ((jumping.current || pinning.current) && !near) return;
-          jumping.current = false;
-          atBottom.current = near;
-          setAway(!near);
-          if (!programmatic.current && !loadingOlder) armed.current = true;
-        }}
+        onScroll={onScroll}
       >
         <div ref={content}>
           <div ref={sentinel} />
@@ -843,11 +894,17 @@ function MessageBubble({
   );
 }
 
-/** 메시지가 지금 Lead를 깨우지 못하는 이유. 메시지는 남아 재개 뒤 전달된다. */
-function heldBy(stage: LifecycleStage | undefined, leadPaused: boolean) {
-  if (stage === "paused") return "조직이 일시정지 중입니다 · 재개하면 전달";
-  if (leadPaused) return "Lead가 일시정지 중입니다 · 재개하면 전달";
-  return null;
+/** 메시지가 지금 Lead를 깨우지 못하는 이유의 안내. 메시지는 남아 재개 뒤 전달된다. */
+const heldLabel: Record<NonNullable<OwnerActionsDecision["heldBy"]>, string> = {
+  organization_paused: "조직이 일시정지 중입니다 · 재개하면 전달",
+  lead_paused: "Lead가 일시정지 중입니다 · 재개하면 전달",
+};
+
+/** Lead 상세의 최근 실행 시도에서 본 실행 상태. 취소를 요청받은 진행 중 실행 시도는 정리 중이다. */
+function leadRunState(agent: AgentDetail | undefined): LeadRunState {
+  const running = agent?.recentRuns.filter((r) => r.status === "running");
+  if (running?.some((r) => r.cancelReason === null)) return "running";
+  return running?.length ? "cancelling" : "idle";
 }
 
 /** 끝난 조직의 입력창 자리에 보이는 상태. */
@@ -866,16 +923,15 @@ type OwnerMessageSender = {
 };
 
 /**
- * 입력창. 버튼은 Lead 상태를 따라 바뀐다. 실행 중이 아니면 `보내기` 하나, 실행 중이면 입력이 빌 때 `실행 중단`,
- * 입력이 있으면 `중단하고 보내기`와 `줄 세우기`다. Enter는 언제나 `줄 세우기`(실행 중이 아니면 그냥 보내기)다.
- * 고른 방식은 메시지마다 새로 정하며 남지 않는다. 실행 중 여부는 Lead 상세의 진행 중 실행 시도로 보고 Event로 바로 바뀐다.
- * 이미 취소 정리 중인 실행 시도는 실행 중으로 치지 않는다. 끝난 조직(중단·최종 완료)은 메시지를 받지 않으므로 입력창 대신
- * 그 상태만 보인다. Lead에게 줄 세운 메시지가 상한(`maxQueuedMessages`, 모든 대화)이면 보내는 버튼이 모두 비활성이다.
+ * 입력창. 어떤 버튼이 보이고 서버가 받는지는 서버와 같은 contracts 판정(`ownerActions`)을 따른다. 실행 중이 아니면 `보내기` 하나,
+ * 실행 중이면 입력이 빌 때 `실행 중단`, 입력이 있으면 `중단하고 보내기`와 `줄 세우기`다. Enter는 언제나 `줄 세우기`(실행 중이
+ * 아니면 그냥 보내기)다. 고른 방식은 메시지마다 새로 정하며 남지 않는다. 실행 상태는 Lead 상세의 진행 중 실행 시도로 보고 Event로
+ * 바로 바뀐다. 끝난 조직(중단·최종 완료)은 입력창 대신 그 상태만 보인다. 서버가 받지 않는 보이는 버튼(줄이 가득 참)은 비활성이다.
  *
  * 바로 위에는 이 대화의 줄 세운 메시지가 오래된 것부터 있다. `고치기`는 그 항목을 그 자리에서 고치는 입력으로 바꾸며
  * (Enter 저장, Shift+Enter 줄바꿈, Esc 취소) 줄 속 위치와 전달 방식은 그대로다. 입력창이 비었을 때 ↑ 키는 가장 최근 메시지를
- * 거두고 그 글을 입력창에 되돌린다. `취소`는 거두기만 하고, `지금 보내기`는 Lead가 실행 중이고 조직·Lead가 일시정지가 아닐 때만 보인다.
- * 끝난 조직에서는 `취소`만 된다. 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
+ * 거두고 그 글을 입력창에 되돌린다. `취소`는 거두기만 한다. 일시정지 중 `지금 보내기`에는 "재개하면 먼저 전달" 설명이 붙는다.
+ * 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
  */
 function Composer({
   orgId,
@@ -897,17 +953,17 @@ function Composer({
   const stage = useOrganization(orgId).data?.stage;
   const agent = useAgent(orgId, lead.id).data;
   const stop = useControlAgent(orgId, lead.id);
-  const paused = agent?.paused ?? false;
-  const held = heldBy(stage, paused);
-  const closed = stage !== undefined && isClosedStage(stage);
-  const running =
-    !closed &&
-    (agent?.recentRuns.some(
-      (r) => r.status === "running" && r.cancelReason === null
-    ) ??
-      false);
   const queuedCount = Math.max(agent?.queuedMessageCount ?? 0, queued.length);
-  const full = queuedCount >= maxQueuedMessages;
+  // 조직을 아직 읽지 못했으면 끝나지 않은 조직으로 본다.
+  const { heldBy, actions } = ownerActions({
+    stage: stage ?? "researching",
+    leadPaused: agent?.paused ?? false,
+    run: leadRunState(agent),
+    queuedCount,
+  });
+  const held = heldBy && heldLabel[heldBy];
+  const closed = stage !== undefined && isClosedStage(stage);
+  const full = actions.send.refusal === "queue_full";
   const typed = text.trim() !== "";
   const busy = send.isPending || stop.isPending;
   const submit = async (delivery: MessageDelivery) => {
@@ -975,8 +1031,9 @@ function Composer({
         <QueuedMessages
           messages={queued}
           count={queuedCount}
-          canEdit={!closed}
-          canSendNow={running && !held}
+          canEdit={actions.edit.visible}
+          canSendNow={actions.send_now.visible}
+          sendNowHint={heldBy ? "재개하면 먼저 전달" : undefined}
           busy={queuedBusy}
           onEdit={(m, body) => runQueued(m, "edit", body)}
           onCancel={(m) => void runQueued(m, "withdraw")}
@@ -1039,12 +1096,12 @@ function Composer({
               className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
             />
             <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
-              {!running ? (
+              {actions.send.visible ? (
                 <IconButton
                   label="보내기"
                   type="submit"
                   tone="primary"
-                  disabled={!typed || busy || full}
+                  disabled={!typed || busy || !!actions.send.refusal}
                 >
                   <ArrowUpIcon />
                 </IconButton>
@@ -1062,7 +1119,7 @@ function Composer({
                   <IconButton
                     label="중단하고 보내기"
                     tone="danger"
-                    disabled={busy || full}
+                    disabled={busy || !!actions.interrupt_send.refusal}
                     onClick={() => void submit("interrupt")}
                   >
                     <BoltIcon className="h-[18px] w-[18px]" />
@@ -1071,7 +1128,7 @@ function Composer({
                     label="줄 세우기"
                     type="submit"
                     tone="primary"
-                    disabled={busy || full}
+                    disabled={busy || !!actions.queue.refusal}
                   >
                     <QueueIcon />
                   </IconButton>
@@ -1117,6 +1174,7 @@ function QueuedMessages({
   count,
   canEdit,
   canSendNow,
+  sendNowHint,
   busy,
   onEdit,
   onCancel,
@@ -1126,6 +1184,8 @@ function QueuedMessages({
   count: number;
   canEdit: boolean;
   canSendNow: boolean;
+  /** `지금 보내기`가 바로 전달되지 않을 때(일시정지 중) 붙이는 설명. */
+  sendNowHint?: string;
   busy: boolean;
   onEdit: (
     message: ConversationMessage,
@@ -1202,6 +1262,7 @@ function QueuedMessages({
                   {canSendNow && m.delivery !== "interrupt" && (
                     <QueuedAction
                       label="지금 보내기"
+                      description={sendNowHint}
                       tone="danger"
                       disabled={busy}
                       onClick={() => onSendNow(m)}
@@ -1283,25 +1344,29 @@ function QueuedEditor({
   );
 }
 
-/** 줄 세운 메시지 항목의 작은 아이콘 버튼. 이름은 `aria-label`과 tooltip에 같은 글로 보인다. */
+/** 줄 세운 메시지 항목의 작은 아이콘 버튼. 이름은 `aria-label`과 tooltip에 같은 글로 보이고, 설명은 tooltip 이름 뒤와 `aria-description`에 붙는다. */
 function QueuedAction({
   label,
+  description,
   tone = "default",
   disabled,
   onClick,
   children,
 }: {
   label: string;
+  /** 이름 뒤에 tooltip과 화면 읽기 도구로 덧붙이는 설명. */
+  description?: string;
   tone?: "default" | "danger";
   disabled: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
-    <Tip content={label}>
+    <Tip content={description ? `${label} · ${description}` : label}>
       <button
         type="button"
         aria-label={label}
+        aria-description={description}
         disabled={disabled}
         onClick={onClick}
         className={`flex h-7 w-7 items-center justify-center rounded-md transition focus-visible:outline-2 focus-visible:outline-brand-500 disabled:opacity-40 ${tone === "danger" ? "text-rose-600 hover:bg-rose-50" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`}

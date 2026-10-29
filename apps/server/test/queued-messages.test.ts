@@ -4,15 +4,18 @@ import {
   conversationMessageSchema,
   organizationDetailSchema,
   runSummaryListSchema,
+  type RunResult,
+  type RuntimeAdapter,
   type WakeReason,
 } from "@babojubot/contracts";
 import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import {
   chatMessages,
   goal,
   idle,
+  quietCreation,
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
@@ -209,37 +212,112 @@ describe("withdrawing a queued message", () => {
 });
 
 describe("paused and finished organizations", () => {
-  it("lets the owner withdraw a message held by a pause but not send it now", async () => {
+  it("lets the owner withdraw a message held by a pause or send it now to be delivered first after resuming", async () => {
     const agents = scriptedAgents({ created: idle });
     t = await startTestServer({ runtime: agents.runtime });
     const org = await createOrganization("일시정지 줄 조직");
     expect((await post(org.id, "/pause")).status).toBe(200);
     const one = await send(org.id, "멈춘 동안 하나");
-    const two = await send(org.id, "멈춘 동안 둘");
+    await send(org.id, "멈춘 동안 둘");
+    const three = await send(org.id, "멈춘 동안 셋");
 
-    const refused = await sendNow(org.id, two.id);
-    expect(refused.status).toBe(409);
-    expect(refused.body).toEqual({ error: { code: "paused" } });
+    // 진행 중 실행 시도가 없으니 취소할 것 없이 전달 방식만 바뀐다. 활동 기록에는 실행 중이 아니었다고 남는다.
+    const sentNow = await sendNow(org.id, three.id);
+    expect(sentNow.status).toBe(200);
+    expect(sentNow.body).toMatchObject({ id: three.id, delivery: "interrupt" });
+    expect(
+      (await eventsOf(org.id))
+        .filter((e) => e.type === "agent.interrupted")
+        .map((e) => e.payload)
+    ).toEqual([
+      { by: "owner", agentId: org.lead.id, runId: null, messageId: three.id },
+    ]);
     expect((await withdraw(org.id, one.id)).status).toBe(200);
 
-    // 조직이 아니라 Lead만 일시정지여도 지금 보낼 수 없다.
     expect((await post(org.id, "/resume")).status).toBe(200);
     await t.drain();
+    expect(
+      agents.of(org.lead.id).map((r) => bodies(r.request.wakeReasons))
+    ).toEqual([["멈춘 동안 셋"], ["멈춘 동안 둘"]]);
+
+    // 조직이 아니라 Lead만 일시정지여도 같다.
     expect((await post(org.id, `/agents/${org.lead.id}/pause`)).status).toBe(
       200
     );
-    const three = await send(org.id, "Lead가 멈춘 동안");
-    expect((await sendNow(org.id, three.id)).body).toEqual({
-      error: { code: "paused" },
-    });
-
+    await send(org.id, "Lead가 멈춘 동안 하나");
+    const five = await send(org.id, "Lead가 멈춘 동안 둘");
+    expect((await sendNow(org.id, five.id)).status).toBe(200);
     expect((await post(org.id, `/agents/${org.lead.id}/resume`)).status).toBe(
       200
     );
     await t.drain();
     expect(
-      agents.of(org.lead.id).map((r) => bodies(r.request.wakeReasons))
-    ).toEqual([["멈춘 동안 둘"], ["Lead가 멈춘 동안"]]);
+      agents
+        .of(org.lead.id)
+        .slice(2)
+        .map((r) => bodies(r.request.wakeReasons))
+    ).toEqual([["Lead가 멈춘 동안 둘"], ["Lead가 멈춘 동안 하나"]]);
+  });
+
+  it("interrupts no run while paused, even when the run the pause cancelled is still cleaning up", async () => {
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    onTestFinished(() => release());
+    let reached!: () => void;
+    const holdReached = new Promise<void>((r) => (reached = r));
+    const received: string[][] = [];
+    let executed = 0;
+    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 실행기. 뒤 실행 시도는 받은 메시지만 남긴다.
+    const slow: RuntimeAdapter = {
+      async execute(request): Promise<RunResult> {
+        if (++executed === 1) {
+          reached();
+          await released;
+        } else received.push(bodies(request.wakeReasons));
+        return {
+          stopReason: "completed",
+          error: null,
+          summary: null,
+          usage: null,
+          nextSession: null,
+        };
+      },
+    };
+    t = await startTestServer({ runtime: quietCreation(slow) });
+    const org = await createOrganization("정리 중 일시정지 조직");
+    await send(org.id, "긴 일을 시작해 주세요");
+    await holdReached;
+    const running = (await runsOf(org.id)).find((r) => r.status === "running");
+    expect((await post(org.id, "/pause")).status).toBe(200);
+
+    // 일시정지가 취소한 실행 시도가 아직 정리 중이어도, 붙잡힌 메시지가 중단할 실행 시도는 없다.
+    await send(org.id, "멈춘 동안 줄 선 말");
+    const later = await send(org.id, "멈춘 동안 지금 보낸 말");
+    expect((await sendNow(org.id, later.id)).status).toBe(200);
+    const fresh = await send(org.id, "멈춘 동안 중단하고 보낸 말", "interrupt");
+    expect(
+      (await eventsOf(org.id))
+        .filter((e) => e.type === "agent.interrupted")
+        .map((e) => e.payload)
+    ).toEqual([
+      { by: "owner", agentId: org.lead.id, runId: null, messageId: later.id },
+      { by: "owner", agentId: org.lead.id, runId: null, messageId: fresh.id },
+    ]);
+
+    release();
+    await t.drain();
+    expect((await runsOf(org.id)).find((r) => r.id === running!.id)).toEqual(
+      expect.objectContaining({
+        status: "cancelled",
+        cancelReason: "organization_paused",
+      })
+    );
+    expect((await post(org.id, "/resume")).status).toBe(200);
+    await t.drain();
+    expect(received).toEqual([
+      ["멈춘 동안 지금 보낸 말", "멈춘 동안 중단하고 보낸 말"],
+      ["멈춘 동안 줄 선 말"],
+    ]);
   });
 
   it("in a finished organization refuses new messages, sending now and editing, but still lets the owner withdraw", async () => {

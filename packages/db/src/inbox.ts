@@ -11,7 +11,7 @@ import type { Database } from "./client.ts";
 import { refused, stored, type Stored } from "./stored.ts";
 import { toResultSubmissionSummary } from "./results.ts";
 import { insertEvent, isUuid, type Executor } from "./rows.ts";
-import { runSummaryColumns, toRunSummary } from "./runs.ts";
+import { runSummaryColumns, toRunSummary } from "./run-views.ts";
 import {
   agents,
   approvals,
