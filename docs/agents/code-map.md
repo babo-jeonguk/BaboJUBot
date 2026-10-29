@@ -10,7 +10,7 @@
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
 | 생성 입력(이름·연구 목표·선택 완료 기준)·응답·생애주기 값 | [contracts/organization.ts](../../packages/contracts/src/organization.ts); core·DB schema·웹 표시 | [계약](../../packages/contracts/src/organization.test.ts) |
-| 초기 상태(`계획 수립`·사용자 목표)·전용 Lead·생성 깨우기·생성 Event | [core/organization.ts](../../packages/core/src/organization.ts) `planOrganizationCreation` → [server/organizations.ts](../../apps/server/src/organizations.ts)(commit 뒤 Lead `kick`) | [core](../../packages/core/src/organization.test.ts), 조직 API |
+| 초기 상태(`계획 수립`·사용자 목표)·전용 Lead·생성 깨우기·생성 Event | [core/organization.ts](../../packages/core/src/organization.ts) `planOrganizationCreation` → server/app.ts `POST /api/organizations`(commit 뒤 Lead `kick`) | [core](../../packages/core/src/organization.test.ts), 조직 API |
 | 생성 저장·rollback, 생성 깨우기 하나 | [db/organizations.ts](../../packages/db/src/organizations.ts) `insertOrganizationCreation`; [schema](../../packages/db/src/schema.ts)·[migrations](../../packages/db/migrations/)(`wakes` 조직 생성 부분 unique, 목표 없는 완료 기준 금지) | [DB 제약](../../packages/db/src/organizations.test.ts) |
 | 목표 없이 만든 예전 조직(`목표 설정`)의 검사 준비 | [db/testing.ts](../../packages/db/src/testing.ts) `insertLegacyOrganization` | 승인·제어·재시작 복구 API |
 | 생성·조회 API·입력 오류·404 | [server/app.ts](../../apps/server/src/app.ts) `startServer` → 생성 서비스·DB·contracts | 조직 API |
@@ -36,11 +36,11 @@
 | 대기열·에이전트당 실행 하나·bundle 고정·종료/쓰기 직렬화 | [db/runs.ts](../../packages/db/src/runs.ts) `claimNextRun`·`finishRun`·`insertAgentMessage`; schema·migrations | [DB admission·동시성](../../packages/db/src/runs.test.ts) |
 | 깨우기·DB admission/종료 저장 재시도·실행기 호출·활동 필터·종료 취소 | [server/dispatcher.ts](../../apps/server/src/dispatcher.ts) `RunDispatcher`, [run-token.ts](../../apps/server/src/run-token.ts) | 실행 API |
 | HTTP 토큰 인증·교차 조직 404·종료 토큰 거부 | [server/tools.ts](../../apps/server/src/tools.ts), db/runs.ts `authenticateRun` | 실행 API `organization tools` |
-| 대화·실행 시도·에이전트 조회 | server/app.ts, [conversation.ts](../../apps/server/src/conversation.ts) | 실행 API |
+| 대화·실행 시도·에이전트 조회 | server/app.ts | 실행 API |
 | 여러 대화: 대화·목록 모양, 새 대화 시작 입력·결과, 본 위치, 답장의 `conversationId` | contracts message.ts `conversationSchema`·`conversationSummarySchema`·`startConversationResultSchema`·`sendAgentMessageInputSchema`, run.ts 깨우기 `owner_message.conversationId`·맥락 `conversations`, event.ts `message.created.conversationId` | [계약](../../packages/contracts/src/run.test.ts) |
 | 새 대화 제목·기본 대화(조직 생성 때), 답장이 갈 대화(고른 대화 → 받은 사용자 메시지의 대화 → 기본 대화, 여러 대화면 골라야 함) | core run.ts `planOwnerMessage`(`new`면 대화도 계획)·`conversationTitle`·`chooseReplyConversation`·`planDefaultConversation`, organization.ts `planOrganizationCreation` | [core](../../packages/core/src/run.test.ts) |
 | 대화 저장(새 대화는 첫 메시지와 한 transaction)·목록 순서·읽지 않음·본 위치·실행 시도 맥락의 대화, 다른 조직 대화 404, migration 0014 backfill | [db/conversations.ts](../../packages/db/src/conversations.ts), db/runs.ts `insertOwnerMessage`·`insertAgentMessage`·`loadRunContext`; schema `conversations`·`messages.conversation_id`(복합 FK)·migration 0014 | [DB](../../packages/db/src/conversations.test.ts) |
-| 대화 API: `GET/POST /api/organizations/:id/conversations`, `GET/POST …/conversations/:conversationId/messages`, `PUT …/read`, 기본 대화는 `/messages`로도 | server/app.ts `findChat`, conversation.ts `sendOwnerMessage`; 도구 오류는 problems.ts `conversation_required`(422) | 여러 대화 API |
+| 대화 API: `GET/POST /api/organizations/:id/conversations`, `GET/POST …/conversations/:conversationId/messages`, `PUT …/read`, 기본 대화는 `/messages`로도 | server/app.ts `findChat`·`sendOwnerMessage`; 도구 오류는 problems.ts `conversation_required`(422) | 여러 대화 API |
 | 가짜 실행기·도구 client·테스트 gate | [runtime/scripted.ts](../../packages/runtime/src/scripted.ts), [tools-client.ts](../../packages/runtime/src/tools-client.ts), [testing.ts](../../packages/runtime/src/testing.ts) | [가짜 실행기](../../packages/runtime/src/scripted.test.ts) |
 | README 데모 시나리오(목표를 적어 생성→초기 승인→작업 결과→일시정지·재개·작업자 추가 승인→결과 제출→최종 완료)가 이어지지 않음 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript`, 각 단계의 화면 | [데모 흐름 E2E](../../apps/web/e2e/demo-flow.spec.ts)(주요 사용자 행동을 모두 화면으로 한 조직에서). 직접 거부·조직 격리·heartbeat due·복구는 각 절의 API 검증 |
 | 대화·활동·실행 시도 상세·에이전트 화면(조직도는 아래 [에이전트 조직도·이름·얼굴](#에이전트-조직도이름얼굴)) | [chat.tsx](../../apps/web/src/chat.tsx), [activity.tsx](../../apps/web/src/activity.tsx), [agents.tsx](../../apps/web/src/agents.tsx); api.ts query key | Lead 대화 E2E |
@@ -61,7 +61,7 @@
 | 라이브러리 구조·읽기 실패·Lead Role | [harness 안내](../../harness/README.md), [server/harness.ts](../../apps/server/src/harness.ts) `loadHarnessLibrary` | 승인 API에서 라이브러리와 사본 비교 |
 | 거부 Event·전이 경합·결정 단일 적용/rollback | [db/tool-calls.ts](../../packages/db/src/tool-calls.ts) `gateToolCall`·`toolWrite`, [db/approvals.ts](../../packages/db/src/approvals.ts) `decideApproval`; [rows.ts](../../packages/db/src/rows.ts) `lockOrganization` | 승인 API 동시 결정·거부 기록 |
 | 에이전트/조직 템플릿 사본·admission bundle 버전 | [db/harness.ts](../../packages/db/src/harness.ts), db/runs.ts `claimNextRun`·`selectWakes` | DB 조직 저장 테스트, 승인 API |
-| 결정 명령·Inbox·요청/사본 조회 API | server/app.ts, [server/approvals.ts](../../apps/server/src/approvals.ts); 도구 handler는 server/tools.ts | 승인 API |
+| 결정 명령·Inbox·요청/사본 조회 API | server/app.ts, db/approvals.ts `decideApproval`; 도구 handler는 server/tools.ts | 승인 API |
 | 가짜 Lead 생성 깨우기→승인 요청(완료 기준이 없으면 `demoCompletionCriteria` 제안)→재제출, 예전 조직의 목표 메시지 | runtime/scripted.ts `demoLeadScript`·`demoProposal` | 가짜 실행기 테스트 |
 | 결정 폼·`Lead 제안` 완료 기준(`ProposedCriteria`, Inbox 상세와 공유)·조직 대시보드·팀 | [web/approvals.tsx](../../apps/web/src/approvals.tsx), pages.tsx `OrganizationDashboard`; Inbox 패널은 아래 [알림 outbox·가짜 채널·Inbox](#알림-outbox가짜-채널inbox) | 초기 승인 E2E |
 
@@ -74,7 +74,7 @@
 | 사본 revision 번호·revision 모양·편집 입력·크기 상한, 깨우기 사유·Event | contracts/harness.ts `instructionCopySchema`·`instructionRevisionSchema`·`editInstructionCopyInputSchema`, run.ts `instruction_edit`, event.ts `instruction_copy.edited` | 사본 편집 API |
 | 종료 조직·오래된 기준 revision·Skill frontmatter 거부, revision·Lead 깨우기·Event 계획 | core/harness.ts `planInstructionEdit` | [core](../../packages/core/src/harness.test.ts) |
 | 조직 잠금 아래 사본·revision·깨우기·Event 한 transaction, 교차 조직 404, 처음 사본의 revision 1 | db/harness.ts `editInstructionCopy`·`insertInstructionCopies`·`listInstructionRevisions`·`findInstructionRevision`; schema `instructionRevisions`(복합 FK)·migration 0009 | 사본 편집 API의 동시 저장·종료 조직 |
-| 편집 API·거부 코드·commit 뒤 Lead 촉진·본문 크기 상한 | server/app.ts `/agents/:agentId/instructions/:copyId`, [server/instructions.ts](../../apps/server/src/instructions.ts), app.ts `jsonBodyLimitBytes` | 사본 편집 API |
+| 편집 API·거부 코드·commit 뒤 Lead 촉진·본문 크기 상한 | server/app.ts `/agents/:agentId/instructions/:copyId`, db/harness.ts `editInstructionCopy`, app.ts `jsonBodyLimitBytes` | 사본 편집 API |
 | 편집 뒤 다음 실행 시도의 bundle·새 세션 | db/runs.ts `claimNextRun`(사본 내용으로 bundle) → core/run.ts `planRunStart`(버전이 다르면 이전 세션 없음) | 사본 편집 API의 진행 중·다음 실행 시도 |
 | 에이전트 상세 탭·사본 편집기·draft/충돌·이동 차단·revision 목록·예전 revision 보기 | agents.tsx `AgentDetailPage`·`InstructionCopies`·`RevisionList`·`RevisionView`, api.ts `useEditInstructionCopy`·`useInstructionRevisions`·`useInstructionRevision`; 이동 차단은 main.tsx data router의 `useBlocker` | 사본 편집 E2E(390px 다른 탭 포함), 초기 승인 E2E의 사본 독립 |
 
@@ -88,7 +88,7 @@
 | 깨울 에이전트(부모 담당자·생성자·담당자·수신자, 자기 자신 제외)·착수/완료 권한·중복 완료 | [core/task.ts](../../packages/core/src/task.ts); 단계 규칙은 core/approval.ts `toolRules` | [core](../../packages/core/src/task.test.ts), 작업 API |
 | 같은 조직 참조 확인·기록과 깨우기·Event의 한 transaction·조건부 완료 | [db/tasks.ts](../../packages/db/src/tasks.ts), [db/tool-calls.ts](../../packages/db/src/tool-calls.ts) `toolWrite`(조직→실행 시도 잠금·취소·단계 재확인); 복합 FK는 schema·migrations | 작업 API의 교차 조직·중복 완료 |
 | 깨우기 사유 읽기·실행 맥락의 팀 | db/runs.ts `selectWakes`·`loadRunContext` | 작업 API, 실행 API |
-| 작업 도구 HTTP·거부 코드·commit 뒤 깨운 에이전트 촉진 | server/tools.ts `respondWrite`; 사용자 댓글은 [server/tasks.ts](../../apps/server/src/tasks.ts)·app.ts | 작업 API |
+| 작업 도구 HTTP·거부 코드·commit 뒤 깨운 에이전트 촉진 | server/tools.ts `respondWrite`; 사용자 댓글은 app.ts·db/tasks.ts `insertOwnerTaskComment` | 작업 API |
 | 가짜 Lead 분담·가짜 작업자 착수→산출물→완료·댓글 답장 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript` | 가짜 실행기 테스트, 작업 화면 E2E |
 | 작업 목록·상세·댓글 입력·산출물 단건·이동 경로 | [web/tasks.tsx](../../apps/web/src/tasks.tsx), main.tsx routes, shell.tsx 경로 표시; api.ts query key | 작업 화면 E2E(390px·댓글 실패 시 입력 유지 포함) |
 
@@ -101,7 +101,7 @@
 | 노드·보조 연결·편집 기록 모양, 입력, 사용자 편집 단계, 도구 이름·경로·오류 코드, 깨우기 사유·Event | [contracts/research-map.ts](../../packages/contracts/src/research-map.ts), tools.ts, run.ts `research_map_edit`·`researchFlow`, event.ts `research_map.edited` | 연구 지도 API |
 | 종류 선언·주 부모 지정/변경·순환·자기 연결·폐기/폐기 취소·작업 연결 0~1·같은 값 무변경·사용자 편집의 Lead 깨우기 | [core/research-map.ts](../../packages/core/src/research-map.ts) `plan*`; 도구 단계 규칙은 core/approval.ts `toolRules` | [core](../../packages/core/src/research-map.test.ts) |
 | 조직 잠금 아래 최신 지도 읽기·변경·편집 기록·깨우기·Event 한 transaction, 교차 조직 404 | [db/research-map.ts](../../packages/db/src/research-map.ts) `writeResearchMap`(도구)·`editResearchMap`(사용자); 복합 FK·노드당 주 부모 열은 schema·migrations | 연구 지도 API의 교차 조직·동시 주 부모 변경 |
-| 도구 HTTP·사용자 편집 API·거부 코드표·commit 뒤 Lead 촉진 | server/tools.ts 연구 지도 도구, app.ts `/research-*`, [server/research-map.ts](../../apps/server/src/research-map.ts), [server/problems.ts](../../apps/server/src/problems.ts) | 연구 지도 API |
+| 도구 HTTP·사용자 편집 API·거부 코드표·commit 뒤 Lead 촉진 | server/tools.ts 연구 지도 도구, app.ts `/research-*`, [server/problems.ts](../../apps/server/src/problems.ts)(`problemResponses`를 `ownerRefusalResponses`가 가져다 씀) | 연구 지도 API |
 | 지도 화면·배치·보조 연결 표시·상세 패널·편집 폼·드래그(보기 상태)·묻지 않는 폐기와 토스트의 폐기 취소 | [web/research-map.tsx](../../apps/web/src/research-map.tsx) `DiscardControl`, api.ts `useResearchMap`·`useEditResearchMap`; 작업 상세의 연결 노드는 tasks.tsx | 연구 지도 E2E(390px·실패 시 입력 유지 포함) |
 | 큰 지도의 화면 끌기·선택·노드 끌기 비용 | research-map.tsx `EdgeLayer`(연결 전체를 노드 아래 SVG로)·`focusCss`(강조 노드를 덮개 위로)·`reuse`(바뀐 노드·연결 객체만 새로); [web/research-map.css](../../apps/web/src/research-map.css) 덮개·점선·합성 레이어. React Flow edge는 강조할 연결만 | [성능 측정](../../apps/web/e2e/research-map-perf.spec.ts) `MAP_PERF=1`(프로덕션 빌드, 50/200/500노드·보조 0/20/100%·1280/390px). 연구 지도 E2E의 정적·강조 경로 일치 |
 
@@ -116,7 +116,7 @@
 | admission을 막는 단계(최종 완료·일시정지·중단) | core/run.ts `admitsRuns`·`runBlockingStages` → db/runs.ts `claimNextRun`(조직 `FOR SHARE` → 에이전트 잠금)·`listAgentsWithPendingWakes` | [DB 잠금 순서](../../packages/db/src/runs.test.ts) `admission and organization stage`, 결과 API 재시작 |
 | 같은 조직 근거 확인·제출과 단계·Event 한 transaction, 결정 단일 적용·옛 제출 409 | [db/results.ts](../../packages/db/src/results.ts) `submitResult`(toolWrite)·`decideResult`(조직 잠금·pending 조건부); 복합 FK는 schema·migrations | 결과 API 동시 결정·교차 조직 |
 | Inbox 조회(승인 요청·결과 제출·실패한 실행 시도) | [db/inbox.ts](../../packages/db/src/inbox.ts) `listInbox` | 결과 API, 승인 API, 알림 API |
-| 결정 명령·조회 API·commit 뒤 Lead 촉진 | server/app.ts `/results`, [server/results.ts](../../apps/server/src/results.ts); 도구 handler는 server/tools.ts | 결과 API |
+| 결정 명령·조회 API·commit 뒤 Lead 촉진 | server/app.ts `/results`, db/results.ts `decideResult`; 도구 handler는 server/tools.ts | 결과 API |
 | 가짜 Lead의 `결과 제출` 부탁 → 제출, 수정 요청 → 재제출 | runtime/scripted.ts `demoLeadScript`·`submitResultScript`(`then` 단계) | 결과 API `demo Lead result submission` |
 | 결과 검토 목록·상세·결정 폼/기록·Inbox 항목·대시보드 안내 | [web/results.tsx](../../apps/web/src/results.tsx), inbox.tsx `InboxPanel`, pages.tsx, api.ts `useDecideResult` | 결과 검토 E2E(390px·실패 시 의견 유지·다른 탭 결정 포함) |
 
@@ -129,7 +129,7 @@
 | 정책 모양·기본값·변경 입력, 작업자 추가 입력·결과(`added`/`pending_approval`)·snapshot, 종류별 결정(`approvalKindDecisions`)·Event `organization.approval_policy_changed`·`worker.added` | [contracts/organization.ts](../../packages/contracts/src/organization.ts), contracts/approval.ts, event.ts, run.ts `approval_decision.approvalKind` | 작업자 추가 API |
 | 정책 분기·작업자 이름 번호(조직 모든 이름을 피함, `nextWorkerName`)·사본 계획, 종류별 결정 효과(작업자 추가는 단계 유지·수정 요청 없음) | [core/worker.ts](../../packages/core/src/worker.ts), core/approval.ts `planApprovalDecision`, core/organization.ts `planApprovalPolicyChange` | [core](../../packages/core/src/worker.test.ts) |
 | 정책 저장(조직 잠금·같은 값 무변경)·도구 쓰기 안 최신 정책 읽기·결정 단일 적용 | db/organizations.ts `updateApprovalPolicy`, [db/workers.ts](../../packages/db/src/workers.ts) `addWorker`(toolWrite), db/approvals.ts `decideApproval`; 초기 승인만 pending 하나(부분 unique)는 schema·migrations | 작업자 추가 API의 정책 경합·동시 결정 |
-| 사용자 정책 명령·도구 HTTP(201/202)·결정 422 `decision_not_allowed` | server/app.ts `/approval-policy`, server/organizations.ts, server/tools.ts `add_worker` | 작업자 추가 API |
+| 사용자 정책 명령·도구 HTTP(201/202)·결정 422 `decision_not_allowed` | server/app.ts `/approval-policy`, db/organizations.ts `updateApprovalPolicy`, server/tools.ts `add_worker` | 작업자 추가 API |
 | 가짜 Lead의 `작업자 추가: <Role>` 부탁·작업자 추가 결정 답장 | runtime/scripted.ts `demoLeadScript`·`addWorkerScript` | 가짜 실행기 테스트, 작업자 추가 API |
 | 설정 스위치(저장 중·실패·서버 값, 끌 수 없는 초기 연구 승인·최종 완료는 잠긴 스위치)·종류별 승인 상세·결정 폼·대시보드 대기 요청 | [web/settings.tsx](../../apps/web/src/settings.tsx), approvals.tsx, pages.tsx, api.ts `useUpdateApprovalPolicy` | 작업자 승인 정책 E2E(다른 탭·390px 반영 포함) |
 
@@ -148,8 +148,8 @@
 | 조직 → 에이전트 → 실행 시도 잠금 아래 고치기(`body`)·거두기(`withdrawn_at`·깨우기 삭제)·지금 보내기(`delivery`·취소 요청)와 admission 직렬화, 보내기의 조직 → 에이전트 잠금 아래 줄 수 세기(`countQueuedMessages`, 에이전트 상세 `queuedMessageCount`), 거둔 메시지를 대화·Lead 맥락·대화 목록 마지막 활동에서 뺌 | [db/queued-messages.ts](../../packages/db/src/queued-messages.ts) `editQueuedMessage`·`withdrawQueuedMessage`·`sendQueuedMessageNow`; db/runs.ts `insertOwnerMessage`·`countQueuedMessages`·`selectConversation`·`findMessage`, conversations.ts `listConversations`; schema `messages.withdrawn_at`·migration 0016 | [DB](../../packages/db/src/queued-messages.test.ts)(admission 경주·상한 포함) |
 | 대화의 받은 순서·받은 시각: admission이 실행 시도마다 `messages.seq` sequence에서 뽑는 `delivered_seq`와 그 실행 시도의 시작 시각 `delivered_at`(함께 적고 함께 비우는 CHECK), 서버 재시작 재대기 때 지움, 순서 열쇠(위치·같은 위치 안의 순서·`seq`), Lead 맥락의 같은 순서, 본 위치(받은 순서의 위치), migration 0018·0019 backfill | db/runs.ts `markDelivered`·`interruptRun`·`selectConversation`·`runConversations`, conversations.ts `messagePosition`·`positionRank`·`latestFirst`·`markConversationRead`; schema `messages.delivered_seq`·`delivered_at`; contracts `deliveredAt` | [DB](../../packages/db/src/conversations.test.ts) `delivery order`·`delivery time`·`migration 0018`·`migration 0019`, 줄 세운 메시지 API `delivers the rest of the queue afterwards`, [여러 대화 API](../../apps/server/test/conversations.test.ts) `shows when the Lead received each owner message` |
 | 대화 기록 쪽(keyset 커서 `before`·`after`, `after` 쪽에도 `before`, `hasMore`, 50개)과 따로 받는 줄 세운 메시지: `GET …/messages?before=|after=`, `GET …/queued-messages` | contracts message.ts `conversationPageSchema`·`conversationPageQuerySchema`; db/runs.ts `listConversationPage`·`listQueuedMessages`; server/app.ts `listChatMessages`·`listChatQueue` | [DB](../../packages/db/src/conversations.test.ts) `transcript pages`, [여러 대화 API](../../apps/server/test/conversations.test.ts) `serves the transcript in pages` |
-| 줄 세운 메시지 API: `POST /api/organizations/:id/messages/:messageId/{edit,withdraw,send-now}`, 보내기의 409 `queue_full`·`organization_closed`, commit 뒤 알림·취소·촉진 | server/app.ts `refusedMessage`, conversation.ts `commandQueuedMessage`·`sendOwnerMessage` | 줄 세운 메시지 API |
-| commit 뒤 실행기 취소·등록 직후 취소 재확인·재개 뒤 촉진과 그 조회 실패의 backoff 재시도 | server/dispatcher.ts `cancel`·`kickOrganization`·`#retrying`·`#execute`, [server/control.ts](../../apps/server/src/control.ts), conversation.ts, app.ts `/pause`·`/resume`·`/stop`·`/agents/:agentId/interrupt` | 제어 API. 등록 틈은 API로 재현하지 않음 |
+| 줄 세운 메시지 API: `POST /api/organizations/:id/messages/:messageId/{edit,withdraw,send-now}`, 보내기의 409 `queue_full`·`organization_closed`, commit 뒤 알림·취소·촉진 | server/app.ts `sendOwnerMessage`·`/messages/:messageId/*`, db/queued-messages.ts | 줄 세운 메시지 API |
+| commit 뒤 실행기 취소·등록 직후 취소 재확인·재개 뒤 촉진과 그 조회 실패의 backoff 재시도 | server/dispatcher.ts `cancel`·`kickOrganization`·`#retrying`·`#execute`, db/control.ts, app.ts `/pause`·`/resume`·`/stop`·`/agents/:agentId/interrupt` | 제어 API. 등록 틈은 API로 재현하지 않음 |
 | 조직 제어(중단 짧은 확인)·실행 중/취소 정리 중 개수, 에이전트 제어, 입력창 버튼(쉬면 보내기, 실행 중이면 실행 중단 또는 중단하고 보내기·줄 세우기, 줄이 가득 차면 비활성)·실패 시 입력 보존·끝난 조직은 입력창 대신 상태와 비활성 새 대화, 입력창 위 줄 세운 메시지 목록(`N/20`, 오른쪽 위 hover·focus·`hover: none` 아이콘 고치기·취소·지금 보내기, 그 자리 고치기 입력, 빈 입력창 ↑, 이미 전달됨 토스트), 결정 폼의 일시정지·중단 안내 | pages.tsx `OrganizationControl`, agents.tsx `AgentControl`, chat.tsx `Composer`·`QueuedMessages`·`QueuedEditor`·`QueuedAction`·`IconButton`·`closedLabel`, api.ts `useQueuedMessageCommand`·`useQueuedMessages`, approvals.tsx·results.tsx `DecisionForm`, ui.tsx `RunStatusBadge`·`PausedBadge`, activity.tsx; api.ts `useControlOrganization`·`useControlAgent`·`useRunningRuns` | 제어 E2E(다른 탭·390px 포함) |
 
 ## Heartbeat·기억·서버 재시작 복구
@@ -176,12 +176,12 @@
 
 | 작업·증상 | 진입점·계약 | 추가 검증·범위 |
 | --- | --- | --- |
-| 알림 종류·알림·outbox 전송 상태·가짜 채널 기록 모양, Inbox 항목 종류·정리 상태·결정 대기·필터 판정(`awaitsDecision`·`needsAttention`·`inboxFilters`)·정리 입력·Inbox 상세 경로(`inboxDetailPath`), Event `inbox_item.updated`, 채널 port `NotificationChannel` | [contracts/notification.ts](../../packages/contracts/src/notification.ts), [inbox.ts](../../packages/contracts/src/inbox.ts), event.ts | 알림 API |
+| 알림 종류·알림·outbox 전송 상태·가짜 채널 기록 모양, Inbox 항목 종류·정리 상태·결정 대기·필터 판정(`awaitsDecision`·`needsAttention`·`inboxFilters`)·정리 입력·Inbox 상세 경로(`inboxDetailPath`), Event `inbox_item.updated`, 채널 port `NotificationChannel`(보내기·`listen`·`close`)·받는 입구 `ChannelInlet`·답 모양 `ChannelReply` | [contracts/notification.ts](../../packages/contracts/src/notification.ts), [inbox.ts](../../packages/contracts/src/inbox.ts), event.ts | 알림 API |
 | 어떤 Event가 알림인가(에이전트 대화 메시지·승인 요청·결과 제출·`failed` 실행 시도), 재시도 간격, 알림 내용(링크: Inbox 항목이 되는 사건은 Inbox 상세, Lead 메시지는 그 메시지의 대화) | [core/notification.ts](../../packages/core/src/notification.ts) `notificationOf`·`retryDelayMs`·`notificationContent` | [core](../../packages/core/src/notification.test.ts) |
-| Event와 같은 transaction의 outbox 항목, claim(`SKIP LOCKED`·만료·새 token, 내용을 못 만든 항목은 그 claim의 실패로 정산)·같은 claim일 때만 정산·재시도 예정, 가짜 채널 기록(알림마다 하나) | [db/notifications.ts](../../packages/db/src/notifications.ts), rows.ts `insertEvent`; schema `notification_outbox`·`fake_channel_messages`(복합 FK)·migration 0010 | [DB](../../packages/db/src/notifications.test.ts) |
+| Event와 같은 transaction의 outbox 항목, claim(`SKIP LOCKED`·만료·새 token, 내용을 못 만든 항목은 그 claim의 실패로 정산)·같은 claim일 때만 정산·재시도 예정, 가짜 채널 기록(알림마다 하나, 기록 ID가 앱 메시지 번호), 전송 성공과 함께 남기는 앱 메시지 → 알림 연결(채널 이름 + 앱 메시지 번호)·답한 알림 찾기 | [db/notifications.ts](../../packages/db/src/notifications.ts) `settleNotification`·`findRepliedNotification`, rows.ts `insertEvent`; schema `notification_outbox`·`fake_channel_messages`·`channel_messages`(복합 FK)·migration 0010·0020 | [DB](../../packages/db/src/notifications.test.ts) |
 | Inbox 목록(결정한 승인 요청·결과 제출도 남음, 중단된 조직의 결정 대기 요청만 빠짐, 정리한 적 없는 결정한 항목은 읽음), 정리 상태 저장(원본 열 하나·같은 조직 복합 FK·행 잠금 아래 대입·바뀐 때만 Event, 결정 대기 항목의 보관은 원본 상태를 읽어 `archive_not_allowed`), 이 판 전 실패의 읽음 backfill | db/inbox.ts `listInbox`·`updateInboxItem`, contracts `awaitsDecision`·`canArchiveInboxItem`; schema `inbox_states`·migration 0010·0011·0012(보관 열 제약 없앰) | 알림 API `Inbox`, [contracts](../../packages/contracts/src/inbox.test.ts) |
-| 전송 수명(Event 신호·시작·주기 확인·한 차례씩), outbox·전송 기록·정리 API | [server/notifications.ts](../../apps/server/src/notifications.ts) `NotificationRelay`, app.ts `GET /api/notifications`·`/api/channels/fake/*`·`PUT /api/organizations/:id/inbox/:kind/:sourceId`(결정 대기 항목의 보관은 422 `archive_not_allowed`, 다른 조직·없는 원본은 404) | 알림 API(재시도·재시작·대시보드와 같은 효과) |
-| 가짜 채널 adapter(기록 저장 주입), 채널 답의 승인 결정 HTTP 전달(승인 요청 알림만·결정 입력 계약 그대로) | [runtime/fake-channel.ts](../../packages/runtime/src/fake-channel.ts) `createFakeChannel`·`replyThroughFakeChannel`; 기록 조회는 db/notifications.ts | 알림 API(대시보드와 같은 효과·거부) |
+| 전송 수명(Event 신호·시작·주기 확인·한 차례씩), outbox·전송 기록·정리 API | [server/notifications.ts](../../apps/server/src/notifications.ts) `NotificationRelay`, app.ts `GET /api/notifications`·채널 경로 `/api/channels/<이름>/*`(adapter가 `listen`에서 검)·채널 하나만 허용·`PUT /api/organizations/:id/inbox/:kind/:sourceId`(결정 대기 항목의 보관은 422 `archive_not_allowed`, 다른 조직·없는 원본은 404) | 알림 API(재시도·재시작·대시보드와 같은 효과) |
+| 가짜 채널 adapter(기록 저장·목록·응답 모양 주입, 본문의 `decision` 유무로 결정/글 답장), 받는 입구(알림 종류별 받는 답·입력 검사·대시보드와 같은 저장 → commit 뒤 할 일·로그 한 줄), 가짜 채널 응답 코드 | [runtime/fake-channel.ts](../../packages/runtime/src/fake-channel.ts) `createFakeChannel`, [server/channel-replies.ts](../../apps/server/src/channel-replies.ts) `channelInlet`, app.ts `fakeChannelResponse`(problems.ts `ownerRefusalResponses`) | 알림 API `channel replies`(대시보드와 같은 효과·거부·로그·채널 하나) |
 | Inbox 패널(붙음/drawer·범위·필터 개수·정리 버튼·결정 상태 배지·아바타를 눌러 체크·선택 중 체크박스·체크해 읽음), 레일·상단 바·조직 카드 진입점과 주의 수, 전역 설정 자리, 가짜 Lead `실패 연습` | [web/inbox.tsx](../../apps/web/src/inbox.tsx), shell.tsx, [global-settings.tsx](../../apps/web/src/global-settings.tsx), api.ts `useUpdateInboxItem`(한 항목 읽음·보관)·`useMarkInboxItemsRead`(체크한 항목 읽음); runtime/scripted.ts `demoLeadScript` | Inbox E2E(다른 탭·390px drawer 포함) |
 | Inbox 상세 `/inbox/:orgId/:kind/:sourceId`(요약·그 자리 결정·원래 화면 링크·정리 버튼, 결정 뒤 제자리 결정 기록과 보관, 실패가 아닌 실행 시도는 없음) — 결정 영역은 원래 상세와 공유 | [web/inbox-detail.tsx](../../apps/web/src/inbox-detail.tsx) `InboxDetailPage`; inbox.tsx `InboxItemOrganize`(패널 행과 공유, 읽지 않음·보관)·체크한 항목 `모두 읽음`(api.ts `useMarkInboxItemsRead`), inbox-detail.tsx `Organize`(열면 읽음, 실패하면 알리고 다시 시도, 다시 불러온 항목이 읽음이면 안내 지움); approvals.tsx `ApprovalDecision`, results.tsx `ResultDecision`(원래 상세와 공유); 근거 [inbox-detail 조사](../research/inbox-detail-references.md) | Inbox E2E, 초기 승인·작업자 추가·결과 검토 E2E |
 
@@ -207,7 +207,7 @@
 | 이름 규칙(trim·1~40자·제어 문자 거부)·얼굴 프리셋·ID에서 정한 기본 얼굴·변경 입력, Event `agent.profile_changed`, `Agent`·`AgentDetail`의 `appearance` | [contracts/agent-profile.ts](../../packages/contracts/src/agent-profile.ts) `agentNameSchema`·`agentAppearanceSchema`·`defaultAgentAppearance`·`updateAgentProfileInputSchema`, event.ts, organization.ts `agentSchema` | [core](../../packages/core/src/agent-profile.test.ts) `defaultAgentAppearance` |
 | 바뀐 항목만 저장·Event, 같은 값 무변경, 같은 조직 이름 겹침(대소문자 무시, 자기 이름 대소문자 바꾸기는 허용) — 이름 바꾸기와 작업자 만들기(초기 팀 승인·작업자 추가)가 같은 규칙 | [core/agent-profile.ts](../../packages/core/src/agent-profile.ts) `agentNameKey`·`isAgentNameTaken`·`planAgentProfileChange`, core/worker.ts `nextWorkerName`(db rows.ts `agentNamesOf`로 조직 모든 이름) | core, 이름·얼굴 API의 이름 바꾼 뒤 작업자 만들기 |
 | 저장(조직 → 에이전트 잠금 아래 다른 이름 읽기, 작업자 추가·승인 결정과 직렬화, unique index 위반도 `name_taken`)·다른 조직 `not_found`, 저장 얼굴이 없거나 옛 값이면 기본 얼굴 | [db/agents.ts](../../packages/db/src/agents.ts) `updateAgentProfile`, rows.ts `toAgent`·`violatesUnique`; schema `agents.appearance`(migration 0013)·`agents_organization_name_unique`(조직, `lower(name)`; migration 0017이 겹친 이름을 먼저 풂) | [DB](../../packages/db/src/organizations.test.ts) `agent names`(동시 이름 바꾸기·잠금 밖 쓰기·migration 0017) |
-| API(404·409 `name_taken`·422)·commit 뒤 Event, 조직 생성 응답의 기본 얼굴 | [server/agents.ts](../../apps/server/src/agents.ts), app.ts `PATCH …/agents/:agentId`, server/organizations.ts `createOrganization` | 이름·얼굴 API(다음 실행 시도 팀 맥락의 새 이름 포함) |
+| API(404·409 `name_taken`·422)·commit 뒤 Event, 조직 생성 응답의 기본 얼굴 | app.ts `PATCH …/agents/:agentId`·`POST /api/organizations`, db/agents.ts `updateAgentProfile`·db/organizations.ts `insertOrganizationCreation` | 이름·얼굴 API(다음 실행 시도 팀 맥락의 새 이름 포함) |
 | 조직도 배치(넓으면 위→아래 나무·끌기·확대·한눈에 보기, 좁으면 들여 쌓기)·카드 링크·실행 중 연결 | [web/org-chart.tsx](../../apps/web/src/org-chart.tsx)(agents.tsx `AgentsScreen`이 lazy로 불러옴), org-chart.css, api.ts `useRunningRuns` | 조직도 E2E |
 | 얼굴 그리기·깜빡임·포인터 따라보기(창 listener 하나)·상태별 표정·움직임 줄이기 | [web/agent-face.tsx](../../apps/web/src/agent-face.tsx) `AgentFace`·`faceMoodOf`, agent-face.css | 조직도 E2E(따라보기·움직임 줄이기) |
 | 상세 머리의 이름 바꾸기(Enter·포커스 이동 저장, Esc 취소)·얼굴 꾸미기 창, 활동 문장 | [web/agent-profile.tsx](../../apps/web/src/agent-profile.tsx) `AgentNameEditor`·`FaceCustomizer`, api.ts `useUpdateAgentProfile`, activity.tsx | 조직도 E2E |
@@ -223,23 +223,24 @@
 ## 경계를 가로지르는 연결 경로
 
 저장은 transaction, 알림은 commit 뒤입니다. 계약·schema·웹 응답을 함께 바꾸면 각 경계를 확인합니다.
+사용자 HTTP 경로는 입력 검사(app.ts `parseInput`, 422) → db 저장 함수(`Stored`: 값 + commit 뒤 할 일, 또는 거부 이유) → [server/after-commit.ts](../../apps/server/src/after-commit.ts) `completeStored` → app.ts `respond`(거부는 problems.ts `ownerRefusalResponses`) 순서입니다. commit 뒤 할 일은 Event 알리기 → 취소 → 재개한 조직의 대기 깨우기(기다림) → 깨운 에이전트 촉진 순서로 `applyAfterCommit`이 하며, 조직 도구 쪽(tools.ts `respondWrite`의 저장·`tool.refused` 거부, 도구 검사 거부, 읽기 도구 기록)과 heartbeat 확인도 같은 함수를 씁니다([단위](../../apps/server/src/after-commit.test.ts)). server에서 이 함수와 dispatcher 밖의 직접 `hub.publish`·`dispatcher.kick`류 호출은 lint가 막습니다([eslint.config.js](../../eslint.config.js)). 아래 경로의 `EventHub → kick`은 이 단계입니다.
 
 ### 조직 생성
 
 ```text
-create-organization → api → POST /api/organizations(app) → server/organizations
+create-organization → api → POST /api/organizations(app)
   → harness loadHarnessLibrary·leadInstructionsOf(Lead Role·Soul)
   → core planOrganizationCreation(사용자 목표를 가진 조직·Lead·사본·생성 깨우기·Event)
   → db insertOrganizationCreation → EventHub → dispatcher.kick(Lead) → HTTP 응답 캐시
 EventHub → WebSocket /api/events → live-events → live-refresh → 다른 탭 query 재조회
 ```
 
-저장·알림 순서는 server/organizations, Event 재연결 복구는 useLiveEvents에서 시작합니다.
+저장·알림 순서는 server/after-commit, Event 재연결 복구는 useLiveEvents에서 시작합니다.
 
 ### Lead 대화·실행 시도
 
 ```text
-chat → POST /api/organizations/:id/messages(기본 대화)·/conversations(새 대화)·/conversations/:id/messages(app) → conversation
+chat → POST /api/organizations/:id/messages(기본 대화)·/conversations(새 대화)·/conversations/:id/messages(app) `sendOwnerMessage`
   → core planOwnerMessage → db insertOwnerMessage(새 대화·메시지·깨우기·Event) → dispatcher kick
   → claimNextRun(에이전트 잠금·실행 중 재확인·대기 깨우기 고정)
   → runtime execute(신원·토큰·깨우기·맥락)
@@ -256,7 +257,7 @@ chat → POST /api/organizations/:id/messages(기본 대화)·/conversations(새
 scripted(생성 깨우기) → /api/tools/initial-approval(server/tools; 예전 조직은 먼저 /api/tools/goal)
   → gateToolCall(core checkToolCall; 거부 시 tool.refused)
   → toolWrite(조직→실행 시도 잠금·취소·단계 재확인) → 완료 기준 규칙·라이브러리 snapshot 승인 요청
-결정 폼 → POST /api/organizations/:id/approvals/:approvalId/decision(app) → server/approvals
+결정 폼 → POST /api/organizations/:id/approvals/:approvalId/decision(app)
   → decideApproval(조직 잠금·pending·core planApprovalDecision·조건부 결정)
   → 작업자·사본·템플릿·단계·승인한 Lead 제안 완료 기준·Lead 깨우기·approval.decided 함께 저장
   → EventHub → kick → claim 시 사본의 bundle 버전
@@ -272,7 +273,7 @@ scripted(Lead) → /api/tools/tasks(server/tools) → toolWrite(조직→실행 
   → EventHub → dispatcher.kick(담당자) → claimNextRun → scripted(작업자)
       → /tasks/:id/start → /artifacts → /tasks/:id/complete(core planTaskCompletion·조건부 완료)
       → 부모 담당자 또는 생성자 깨우기 → kick → 그 에이전트의 실행 시도
-작업 상세 댓글 → POST /api/organizations/:id/tasks/:taskId/comments(app) → server/tasks
+작업 상세 댓글 → POST /api/organizations/:id/tasks/:taskId/comments(app)
   → insertOwnerTaskComment(댓글·담당자 깨우기·Event) → kick(담당자)
 ```
 
@@ -284,7 +285,7 @@ scripted(Lead) → /api/tools/tasks(server/tools) → toolWrite(조직→실행 
 scripted(작업자) → /api/tools/research-nodes·research-links·tasks/:id/research-node(server/tools)
   → writeResearchMap(toolWrite: 조직→실행 시도 잠금·취소·단계 재확인) → 최신 지도 읽기 → core plan*
   → 변경·편집 기록·Event 함께 저장(에이전트 편집은 아무도 깨우지 않음)
-지도 패널 폼 → /api/organizations/:id/research-*(app) → server/research-map
+지도 패널 폼 → /api/organizations/:id/research-*(app)
   → editResearchMap(조직 잠금·편집 단계·최신 지도·core plan*) → 변경·편집 기록·Lead 깨우기·Event
   → EventHub → kick(Lead) → 지도·노드 상세 재조회
 ```
@@ -294,7 +295,7 @@ scripted(작업자) → /api/tools/research-nodes·research-links·tasks/:id/res
 ### Role·Soul·Skill 사본 편집
 
 ```text
-사본 편집기(base revision·draft) → PUT /api/organizations/:id/agents/:agentId/instructions/:copyId(app) → server/instructions
+사본 편집기(base revision·draft) → PUT /api/organizations/:id/agents/:agentId/instructions/:copyId(app)
   → editInstructionCopy(조직 잠금·조직/에이전트/사본 범위·core planInstructionEdit)
   → 사본·revision·Lead 깨우기·instruction_copy.edited 함께 저장 → EventHub → kick(Lead)
   → 다른 탭: 조직 Event → 사본·revision 목록 재조회(편집 중 draft는 그대로)
@@ -308,7 +309,7 @@ scripted(작업자) → /api/tools/research-nodes·research-links·tasks/:id/res
 ```text
 scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite: 조직→실행 시도 잠금·취소·단계 재확인)
   → 같은 조직 산출물 확인 → core planResultSubmission → 제출·근거·결과 검토 중·result.submitted 함께 저장
-결정 폼 → POST /api/organizations/:id/results/:submissionId/decision(app) → server/results
+결정 폼 → POST /api/organizations/:id/results/:submissionId/decision(app)
   → decideResult(조직 잠금·pending·core planResultDecision·조건부 결정)
   → 단계·(수정 요청이면) Lead 깨우기·result.decided 함께 저장 → EventHub → kick(Lead)
 최종 완료 뒤 깨우기 → claimNextRun(조직 FOR SHARE·admitsRuns) → 실행 시도 없음, 깨우기는 남음
@@ -319,14 +320,14 @@ scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite: 
 ### 일시정지·재개·중단
 
 ```text
-대시보드·에이전트 상세 → POST /api/organizations/:id/{pause,resume,stop}·/agents/:agentId/{pause,resume}(app) → server/control
+대시보드·에이전트 상세 → POST /api/organizations/:id/{pause,resume,stop}·/agents/:agentId/{pause,resume}(app)
   → controlOrganization·controlAgent(조직 잠금 → 에이전트 → 진행 중 실행 시도 FOR UPDATE, core plan*)
   → 단계·pausedFrom / paused, 실행 시도 cancel_reason, Event 함께 저장
   → EventHub → dispatcher.cancel(commit 뒤 abort) → 실행기 정리 → finishRun(cancelled) → 재개면 kickOrganization·kick
 Lead 대화(중단하고 보내기) → POST /messages {delivery: interrupt} → insertOwnerMessage(조직 잠금·메시지·깨우기·두 Event·취소 요청)
   → dispatcher.cancel → 취소된 실행 시도 종료 뒤 claimNextRun이 그 메시지 깨우기만 다음 실행 시도에 묶음(core bundleWakes)
   → 그 실행 시도 종료 뒤 claimNextRun이 남은 줄 세운 메시지·다른 깨우기를 합쳐 묶음
-줄 세운 메시지(고치기 / 취소·빈 입력창 ↑ / 지금 보내기) → POST /messages/:messageId/{edit,withdraw,send-now} → commandQueuedMessage
+줄 세운 메시지(고치기 / 취소·빈 입력창 ↑ / 지금 보내기) → POST /messages/:messageId/{edit,withdraw,send-now}(app)
   → withdrawQueuedMessage·sendQueuedMessageNow(조직 → 에이전트 → 실행 시도 잠금, core planWithdrawal·planSendNow)
   → 거두기: withdrawn_at·깨우기 삭제·message.withdrawn / 지금 보내기: delivery interrupt·취소 요청·message.sent_now·agent.interrupted
   → EventHub → (지금 보내기) dispatcher.cancel·kick. 실행 시도가 먼저 받았으면 409 message_delivered
@@ -352,7 +353,7 @@ HeartbeatScheduler.tick(주입 시계) → runDueHeartbeats(에이전트마다: 
 ### 에이전트 이름·얼굴
 
 ```text
-상세 머리(이름 입력·얼굴 꾸미기 창) → PATCH /api/organizations/:id/agents/:agentId(app) → server/agents
+상세 머리(이름 입력·얼굴 꾸미기 창) → PATCH /api/organizations/:id/agents/:agentId(app)
   → updateAgentProfile(조직 → 에이전트 잠금·같은 조직 다른 이름, core planAgentProfileChange) → 이름·appearance·Event
   → EventHub → 다른 탭 조직 재조회(조직도·사이드바·이동 경로) / 다음 실행 시도의 runContext.team
 ```
@@ -362,7 +363,7 @@ HeartbeatScheduler.tick(주입 시계) → runDueHeartbeats(에이전트마다: 
 ### 작업자 추가와 승인 정책
 
 ```text
-설정 스위치 → PUT /api/organizations/:id/approval-policy(app) → server/organizations
+설정 스위치 → PUT /api/organizations/:id/approval-policy(app)
   → updateApprovalPolicy(조직 잠금·core planApprovalPolicyChange) → 정책·Event → EventHub → 다른 탭 재조회
 scripted(Lead) → /api/tools/workers(server/tools) → addWorker(toolWrite: 조직→실행 시도 잠금·취소·단계 재확인)
   → core buildAddWorkerProposal(라이브러리 snapshot) → planAddWorker(잠금 아래 최신 정책)
@@ -377,10 +378,12 @@ scripted(Lead) → /api/tools/workers(server/tools) → addWorker(toolWrite: 조
 ```text
 사건 기록(toolWrite·finishRun 등) → insertEvent → core notificationOf → notification_outbox(같은 transaction)
 commit 뒤 EventHub → NotificationRelay.kick(시작·5초 주기도) → claimNotifications(SKIP LOCKED·만료·새 token)
-  → channel.deliver(transaction 밖; 가짜 채널은 fake_channel_messages에 알림마다 하나)
-  → settleNotification(같은 claim일 때만: 보냄 / 실패면 retryDelayMs 뒤 재시도)
-가짜 채널 답 → POST /api/channels/fake/messages/:id/reply → 기록의 조직·승인 요청으로
-  POST /api/organizations/:id/approvals/:approvalId/decision(대시보드와 같은 명령) → 응답 그대로
+  → channel.deliver(transaction 밖; 가짜 채널은 fake_channel_messages에 알림마다 하나, 그 ID를 앱 메시지 번호로 돌려줌)
+  → settleNotification(같은 claim일 때만: 보냄 / 실패면 retryDelayMs 뒤 재시도; 앱 메시지 번호는 channel_messages에)
+서버 시작 → channel.listen({ inlet: channelInlet, routes: /api/channels/<이름> })(실패하면 종료와 같은 stop: heartbeat·dispatcher·relay·channel.close·HTTP, 한 단계가 실패해도 나머지를 닫음)
+가짜 채널 답 → POST /api/channels/fake/messages/:id/reply → createFakeChannel(글 답장/결정) → inlet({ to: 앱 메시지 번호, answer })
+  → findRepliedNotification(채널 + 번호 또는 알림 ID → 조직·종류·원본·대화) → 받는 답·입력 확인
+  → insertOwnerMessage·decideApproval·decideResult → completeStored → 로그 한 줄 → fakeChannelResponse(대시보드와 같은 응답)
 Inbox 패널 정리 → PUT /api/organizations/:id/inbox/:kind/:sourceId → updateInboxItem → inbox_item.updated → 다른 탭 재조회
 ```
 

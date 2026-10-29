@@ -55,6 +55,33 @@ export default defineConfig([
     },
   },
   {
+    // commit 뒤 할 일(Event 알리기·취소·조직 재개·깨우기)은 저장 결과에 담아 applyAfterCommit 한 곳이 적용한다(#84).
+    // 실행 시도 자체의 흐름은 dispatcher가 맡는다.
+    files: ["apps/server/src/**/*.ts"],
+    ignores: [
+      "apps/server/src/after-commit.ts",
+      "apps/server/src/dispatcher.ts",
+      "**/*.test.ts",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.object.name='hub'][callee.property.name='publish']",
+          message:
+            "저장 결과의 commit 뒤 할 일로 담아 applyAfterCommit으로 알립니다.",
+        },
+        {
+          selector:
+            "CallExpression[callee.object.name='dispatcher'][callee.property.name=/^(cancel|kick|kickOrganization)$/]",
+          message:
+            "저장 결과의 commit 뒤 할 일로 담아 applyAfterCommit으로 적용합니다.",
+        },
+      ],
+    },
+  },
+  {
     // 테스트는 응답 JSON을 그대로 다룬다.
     files: ["**/test/**", "**/*.test.ts"],
     rules: { "@typescript-eslint/no-explicit-any": "off" },

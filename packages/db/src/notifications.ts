@@ -1,6 +1,7 @@
 import type {
   FakeChannelMessage,
   Notification,
+  NotificationKind,
   OutboxEntry,
 } from "@babojubot/contracts";
 import {
@@ -10,10 +11,11 @@ import {
 } from "@babojubot/core";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Database } from "./client.ts";
-import { isUuid } from "./rows.ts";
+import { isUuid, type Executor } from "./rows.ts";
 import {
   agents,
   approvals,
+  channelMessages,
   fakeChannelMessages,
   messages,
   notificationOutbox,
@@ -188,12 +190,44 @@ async function factsOf(
   }
 }
 
+/** 채널이 보낸 앱 메시지. 그 메시지에 대한 글 답장이 이 알림을 가리킨다. */
+export type ChannelMessageLink = { channel: string; appMessageId: string };
+
 /**
  * claim의 전송 결과를 남긴다. 그 claim의 token이 아직 항목에 있을 때만 반영하고(`true`), 만료 뒤 다른 claim이 가져갔거나
  * 이미 정산했으면 아무것도 바꾸지 않는다(`false`). 만료됐어도 아직 아무도 다시 가져가지 않았으면 그 결과가 유효하므로 반영한다. 실패면 시도 횟수에 따라 다음 시도를 미룬다.
+ * 보낸 앱 메시지(`link`)는 같은 transaction에서 그 알림에 잇는다. 메시지는 이미 앱에 있으므로 claim을 잃었어도 남기며, 다시 보낸 같은 메시지는 처음 연결을 그대로 둔다.
  */
 export async function settleNotification(
   db: Database,
+  claim: Pick<ClaimedNotification, "id" | "claimToken" | "attempts">,
+  outcome:
+    | { kind: "sent"; link?: ChannelMessageLink }
+    | { kind: "failed"; error: string },
+  now: Date
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    if (outcome.kind === "sent" && outcome.link) {
+      const [entry] = await tx
+        .select({ organizationId: notificationOutbox.organizationId })
+        .from(notificationOutbox)
+        .where(eq(notificationOutbox.id, claim.id));
+      if (entry)
+        await tx
+          .insert(channelMessages)
+          .values({
+            ...outcome.link,
+            organizationId: entry.organizationId,
+            notificationId: claim.id,
+          })
+          .onConflictDoNothing();
+    }
+    return settleClaim(tx, claim, outcome, now);
+  });
+}
+
+async function settleClaim(
+  db: Executor,
   claim: Pick<ClaimedNotification, "id" | "claimToken" | "attempts">,
   outcome: { kind: "sent" } | { kind: "failed"; error: string },
   now: Date
@@ -251,16 +285,78 @@ export async function listOutbox(db: Database): Promise<OutboxEntry[]> {
   }));
 }
 
-/** 가짜 채널의 전송 기록. 같은 알림을 다시 받으면 처음 기록을 그대로 둔다. */
+/**
+ * 답한 알림과 그 원본. 알림 ID(버튼)나 그 채널이 보낸 앱 메시지 번호(글 답장)로 찾는다. 다른 채널의 앱 메시지 번호와 모르는 알림은 없다.
+ * Lead 메시지 알림이면 그 메시지가 있는 대화도 준다.
+ */
+export async function findRepliedNotification(
+  db: Database,
+  channel: string,
+  to: { notificationId: string } | { appMessageId: string }
+): Promise<
+  | {
+      notificationId: string;
+      organizationId: string;
+      kind: NotificationKind;
+      sourceId: string;
+      conversationId: string | null;
+    }
+  | undefined
+> {
+  let notificationId: string;
+  if ("notificationId" in to) {
+    if (!isUuid(to.notificationId)) return undefined;
+    notificationId = to.notificationId;
+  } else {
+    const [link] = await db
+      .select({ notificationId: channelMessages.notificationId })
+      .from(channelMessages)
+      .where(
+        and(
+          eq(channelMessages.channel, channel),
+          eq(channelMessages.appMessageId, to.appMessageId)
+        )
+      );
+    if (!link) return undefined;
+    notificationId = link.notificationId;
+  }
+  const [entry] = await db
+    .select({
+      organizationId: notificationOutbox.organizationId,
+      kind: notificationOutbox.kind,
+      sourceId: notificationOutbox.sourceId,
+      conversationId: messages.conversationId,
+    })
+    .from(notificationOutbox)
+    .leftJoin(
+      messages,
+      and(
+        eq(notificationOutbox.kind, "lead_message"),
+        eq(messages.organizationId, notificationOutbox.organizationId),
+        eq(messages.id, notificationOutbox.sourceId)
+      )
+    )
+    .where(eq(notificationOutbox.id, notificationId));
+  return entry && { notificationId, ...entry };
+}
+
+/** 가짜 채널의 전송 기록을 남기고 그 기록 ID(가짜 채널의 앱 메시지 번호)를 돌려준다. 같은 알림을 다시 받으면 처음 기록을 그대로 둔다. */
 export async function recordFakeChannelMessage(
   db: Database,
   notification: Notification
-): Promise<void> {
+): Promise<string> {
   const { id, createdAt: _createdAt, ...content } = notification;
-  await db
+  const [inserted] = await db
     .insert(fakeChannelMessages)
     .values({ ...content, notificationId: id })
-    .onConflictDoNothing({ target: fakeChannelMessages.notificationId });
+    .onConflictDoNothing({ target: fakeChannelMessages.notificationId })
+    .returning({ id: fakeChannelMessages.id });
+  if (inserted) return inserted.id;
+  const [kept] = await db
+    .select({ id: fakeChannelMessages.id })
+    .from(fakeChannelMessages)
+    .where(eq(fakeChannelMessages.notificationId, id));
+  return kept!.id;
 }
 
 const toFakeChannelMessage = ({
@@ -281,16 +377,4 @@ export async function listFakeChannelMessages(
     .from(fakeChannelMessages)
     .orderBy(asc(fakeChannelMessages.seq));
   return rows.map(toFakeChannelMessage);
-}
-
-export async function findFakeChannelMessage(
-  db: Database,
-  id: string
-): Promise<FakeChannelMessage | undefined> {
-  if (!isUuid(id)) return undefined;
-  const [row] = await db
-    .select()
-    .from(fakeChannelMessages)
-    .where(eq(fakeChannelMessages.id, id));
-  return row && toFakeChannelMessage(row);
 }

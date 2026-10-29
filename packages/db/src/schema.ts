@@ -1344,6 +1344,35 @@ export const fakeChannelMessages = pgTable(
 );
 
 /**
+ * 채널에 보낸 앱 메시지 → 알림. 글 답장은 원본을 답장한 앱 메시지로만 알 수 있으므로, 전송 성공을 적을 때 adapter가 돌려준
+ * 앱 메시지 번호를 남긴다. 번호는 채널마다 따로라 채널 이름과 함께 열쇠다.
+ */
+export const channelMessages = pgTable(
+  "channel_messages",
+  {
+    channel: text("channel").notNull(),
+    appMessageId: text("app_message_id").notNull(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    notificationId: uuid("notification_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.channel, t.appMessageId] }),
+    foreignKey({
+      columns: [t.organizationId, t.notificationId],
+      foreignColumns: [
+        notificationOutbox.organizationId,
+        notificationOutbox.id,
+      ],
+    }),
+  ]
+);
+
+/**
  * 사용자의 알림 정리 상태(읽음·보관). 원본과 따로 두며, 원본 열 하나만 종류에 맞게 채워 같은 조직의 원본을 FK로 가리킨다.
  * 행이 없으면 안 읽음·보관 안 함이다.
  */

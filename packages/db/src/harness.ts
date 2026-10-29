@@ -1,7 +1,6 @@
 import type {
   AgentInstructions,
   EditInstructionCopyInput,
-  Event,
   FlowTemplateCopy,
   InstructionCopy,
   InstructionEditor,
@@ -14,10 +13,10 @@ import {
   planInstructionEdit,
   type InstructionEditProblem,
   type RecordSource,
-  type Wake,
 } from "@babojubot/core";
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { refused, stored, type Stored } from "./stored.ts";
 import {
   insertEvent,
   instructionCopyRow,
@@ -100,38 +99,28 @@ export async function findAgentInstructions(
   };
 }
 
-export type InstructionEditResult =
-  | {
-      kind: "ok";
-      copy: InstructionCopy;
-      revision: InstructionRevisionSummary;
-      event: Event;
-      wake: Wake;
-    }
-  | { kind: "not_found" }
-  | { kind: InstructionEditProblem };
-
 /**
  * 사용자의 사본 편집. 조직 행을 잠근 뒤 그 조직·에이전트의 사본을 읽어 core 규칙을 적용하고, 바뀐 사본·새 revision·편집 사유의
- * Lead 깨우기·Event를 한 transaction에 저장한다. 실행 시도 admission도 조직 행을 잠근 뒤 사본을 읽으므로 실행 시도는 편집 전이나
- * 뒤의 사본 하나를 받는다. 다른 조직·다른 에이전트의 사본과 없는 사본은 같은 `not_found`다.
+ * Lead 깨우기·Event를 한 transaction에 저장한 뒤 commit 뒤 Lead를 깨운다. 값은 바뀐 사본이다. 실행 시도 admission도 조직 행을 잠근 뒤
+ * 사본을 읽으므로 실행 시도는 편집 전이나 뒤의 사본 하나를 받는다. 진행 중 실행 시도는 시작할 때 받은 지침으로 끝까지 간다.
+ * 다른 조직·다른 에이전트의 사본과 없는 사본은 같은 `not_found`다.
  */
 export async function editInstructionCopy(
   db: Database,
   ref: InstructionCopyRef,
   input: EditInstructionCopyInput,
   source: RecordSource
-): Promise<InstructionEditResult> {
+): Promise<Stored<InstructionCopy, "not_found" | InstructionEditProblem>> {
   const { organizationId, agentId, copyId } = ref;
-  if (!isCopyRef(ref)) return { kind: "not_found" };
+  if (!isCopyRef(ref)) return refused("not_found");
   return db.transaction(async (tx) => {
     const org = await lockOrganization(tx, organizationId);
-    if (!org) return { kind: "not_found" };
+    if (!org) return refused("not_found");
     const [row] = await tx
       .select()
       .from(instructionCopies)
       .where(copyWhere(ref));
-    if (!row) return { kind: "not_found" };
+    if (!row) return refused("not_found");
     const lead = findLead(
       await tx
         .select({ id: agents.id, role: agents.role })
@@ -144,7 +133,7 @@ export async function editInstructionCopy(
       input,
       source
     );
-    if (typeof plan === "string") return { kind: plan };
+    if (typeof plan === "string") return refused(plan);
     const [updated] = await tx
       .update(instructionCopies)
       .set({ content: plan.copy.content, revision: plan.copy.revision })
@@ -171,14 +160,10 @@ export async function editInstructionCopy(
     await tx
       .insert(wakes)
       .values({ ...plan.wake, createdAt: new Date(plan.wake.createdAt) });
-    const { path: _path, content: _content, ...summary } = revision;
-    return {
-      kind: "ok",
-      copy: plan.copy,
-      revision: summary,
-      event: await insertEvent(tx, plan.event),
-      wake: plan.wake,
-    };
+    return stored(plan.copy, {
+      events: [await insertEvent(tx, plan.event)],
+      woken: [plan.wake.agentId],
+    });
   });
 }
 

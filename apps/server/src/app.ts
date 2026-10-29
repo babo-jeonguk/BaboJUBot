@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import type net from "node:net";
@@ -30,17 +31,30 @@ import {
   updateApprovalPolicyInputSchema,
   updateHeartbeatInputSchema,
   updateInboxItemInputSchema,
+  type ChannelAnswer,
+  type ChannelReplyResult,
+  type ChannelResponse,
+  type ChannelRoute,
+  type Conversation,
   type NotificationChannel,
+  type OrganizationDetail,
   type RuntimeAdapter,
+  type SendOwnerMessageInput,
   type StreamFrame,
   type StreamScope,
 } from "@babojubot/contracts";
 import {
+  controlAgent,
+  controlOrganization,
+  decideApproval,
+  decideResult,
+  editInstructionCopy,
+  editQueuedMessage,
+  editResearchMap,
   findAgentDetail,
   findAgentInstructions,
   findApproval,
   findArtifact,
-  findFakeChannelMessage,
   findFlowTemplate,
   findInstructionRevision,
   findOrganization,
@@ -68,36 +82,41 @@ import {
   listRunningRuns,
   listRuns,
   listTasks,
+  insertOrganizationCreation,
+  insertOwnerMessage,
+  insertOwnerTaskComment,
   recordFakeChannelMessage,
+  sendQueuedMessageNow,
+  updateAgentProfile,
+  updateApprovalPolicy,
+  updateHeartbeat,
   updateInboxItem,
+  withdrawQueuedMessage,
   type Database,
   type MapCommand,
-  type OwnerMapEditResult,
+  type Stored,
 } from "@babojubot/db";
-import { findLead } from "@babojubot/core";
 import {
-  createFakeChannel,
-  createScriptedRuntime,
-  replyThroughFakeChannel,
-} from "@babojubot/runtime";
+  findLead,
+  planOrganizationCreation,
+  planOwnerMessage,
+} from "@babojubot/core";
+import { createFakeChannel, createScriptedRuntime } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
-import { updateAgentProfile } from "./agents.ts";
-import { decideApproval } from "./approvals.ts";
-import { controlAgent, controlOrganization } from "./control.ts";
-import { commandQueuedMessage, sendOwnerMessage } from "./conversation.ts";
+import { completeStored, type Outcome } from "./after-commit.ts";
+import { channelInlet } from "./channel-replies.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
-import { defaultHarnessDir } from "./harness.ts";
-import { HeartbeatScheduler, updateHeartbeat } from "./heartbeat.ts";
-import { editInstructionCopyAsOwner } from "./instructions.ts";
-import { createOrganization, updateApprovalPolicy } from "./organizations.ts";
+import {
+  defaultHarnessDir,
+  leadRoleOf,
+  loadHarnessLibrary,
+} from "./harness.ts";
+import { HeartbeatScheduler } from "./heartbeat.ts";
 import { NotificationRelay } from "./notifications.ts";
-import { editResearchMapAsOwner } from "./research-map.ts";
-import { decideResult } from "./results.ts";
-import { addOwnerTaskComment } from "./tasks.ts";
-import { problemResponses } from "./problems.ts";
+import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
 import { orgToolsRouter } from "./tools.ts";
 
 /**
@@ -122,8 +141,11 @@ export type ServerOptions = {
   harnessDir?: string;
   /** 지난 heartbeat를 확인하는 간격(ms). heartbeat 간격은 분 단위이므로 그보다 충분히 짧다. */
   heartbeatPollMs?: number;
-  /** 알림을 보낼 메시지 앱 채널. 첫 판은 가짜 채널뿐이고, 테스트는 실패하는 채널을 주입한다. */
-  notificationChannel?: NotificationChannel;
+  /**
+   * 알림을 보내고 답을 받는 메시지 앱 채널. 목록으로 받지만 지금은 하나만 허용하며 둘 이상이면 시작 오류다
+   * (여러 채널 동시 전송은 후속). 기본은 가짜 채널이고, 테스트는 실패하는 채널을 주입한다.
+   */
+  notificationChannels?: NotificationChannel[];
   /** 신호 없이 알림 outbox를 확인하는 간격(ms). 실패한 전송의 재시도 예정도 이때 확인한다. */
   notificationPollMs?: number;
 };
@@ -136,7 +158,10 @@ export type RunningServer = {
   tickHeartbeats: () => Promise<void>;
   /** 주입한 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. 테스트 helper(서버는 스스로 보낸다). */
   deliverNotifications: () => Promise<void>;
-  /** 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다. */
+  /**
+   * 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다.
+   * 한 부분을 닫다 실패해도 나머지를 닫고, 모두 닫은 뒤 그 실패들을 던진다.
+   */
   close: () => Promise<void>;
 };
 
@@ -149,11 +174,20 @@ export async function startServer({
   now = () => new Date(),
   harnessDir = defaultHarnessDir,
   heartbeatPollMs = 5_000,
-  notificationChannel = createFakeChannel((n) =>
-    recordFakeChannelMessage(db, n)
-  ),
+  notificationChannels = [
+    createFakeChannel({
+      record: (n) => recordFakeChannelMessage(db, n),
+      list: () => listFakeChannelMessages(db),
+      respond: fakeChannelResponse,
+    }),
+  ],
   notificationPollMs = 5_000,
 }: ServerOptions): Promise<RunningServer> {
+  if (notificationChannels.length !== 1)
+    throw new Error(
+      `exactly one notification channel is supported, got ${notificationChannels.length}`
+    );
+  const channel = notificationChannels[0]!;
   const hub = new EventHub();
   let url = "";
   const dispatcher = new RunDispatcher({
@@ -173,10 +207,40 @@ export async function startServer({
   const notifications = new NotificationRelay({
     db,
     hub,
-    channel: notificationChannel,
+    channel,
     now,
     pollMs: notificationPollMs,
   });
+  const source = { newId: randomUUID, now };
+  /**
+   * 사용자가 한 일 하나: 저장한 뒤 commit 뒤 할 일(Event 알리기·취소·조직 재개·깨우기)을 하고 돌려줄 값 또는 거부 이유를 돌려준다.
+   * 사용자 HTTP 경로가 모두 이 길을 쓴다. 알림이 실패해도 저장된 결과는 그대로다.
+   */
+  const complete = async <T, R extends string>(result: Promise<Stored<T, R>>) =>
+    completeStored({ hub, dispatcher }, await result);
+  /**
+   * Lead 대화에 사용자 메시지를 남긴다. `conversation`은 같은 조직의 대화(호출한 쪽이 조직 안에서 찾은 것)이고, `new`면 이 메시지로
+   * 새 대화를 시작한다. 새 대화는 메시지와 같은 transaction에 남으므로 메시지를 받지 않으면 대화도 남지 않는다.
+   * Lead가 실행 중이면 메시지는 다음 실행 시도에 반영된다. `중단하고 보내기`면 commit 뒤 진행 중 실행 시도에 취소를 보내고,
+   * 그 실행 시도가 정리를 끝내면 다음 실행 시도가 메시지를 받는다.
+   */
+  const sendOwnerMessage = (
+    organization: OrganizationDetail,
+    conversation: Pick<Conversation, "id"> | "new",
+    input: Required<SendOwnerMessageInput>
+  ) =>
+    complete(
+      insertOwnerMessage(
+        db,
+        planOwnerMessage(
+          { organizationId: organization.id, agents: organization.agents },
+          conversation,
+          input,
+          source
+        )
+      )
+    );
+
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
   app.use(
@@ -192,22 +256,19 @@ export async function startServer({
     res.json(await listOrganizations(db));
   });
 
+  /**
+   * 조직 생성. 사용자가 적은 연구 목표·완료 기준과 함께 조직·Lead·Lead의 Role·Soul 사본·Lead 깨우기·Event를 한 transaction으로
+   * 저장한 뒤에만 Event를 알리고 Lead의 실행 시도를 촉진한다. Lead 사본과 기본 heartbeat 간격은 지금의 하네스 라이브러리 Lead Role에서 받는다.
+   */
   app.post("/api/organizations", async (req, res) => {
-    const input = createOrganizationInputSchema.safeParse(req.body);
-    if (!input.success) {
-      res
-        .status(422)
-        .json({ error: { code: "invalid_input", issues: input.error.issues } });
-      return;
-    }
-    res
-      .status(201)
-      .json(
-        await createOrganization(
-          { db, hub, dispatcher, harnessDir },
-          input.data
-        )
-      );
+    const input = parseInput(res, createOrganizationInputSchema, req.body);
+    if (!input) return;
+    const library = await loadHarnessLibrary(harnessDir);
+    const creation = planOrganizationCreation(input, leadRoleOf(library), {
+      newId: randomUUID,
+      now: () => new Date(),
+    });
+    respond(res, await complete(insertOrganizationCreation(db, creation)), 201);
   });
 
   /** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 합계(취소 정리 중은 따로 센 수도). */
@@ -227,28 +288,21 @@ export async function startServer({
    */
   app.put("/api/organizations/:id/inbox/:kind/:sourceId", async (req, res) => {
     const kind = inboxItemKindSchema.safeParse(req.params.kind);
-    if (!kind.success) return notFound(res);
-    const input = updateInboxItemInputSchema.safeParse(req.body);
-    if (!input.success) {
-      res.status(422).json({
-        error: { code: "invalid_input", issues: input.error.issues },
-      });
-      return;
-    }
-    const result = await updateInboxItem(
-      db,
-      req.params.id,
-      kind.data,
-      req.params.sourceId,
-      input.data
+    if (!kind.success) return refuseOwner(res, "not_found");
+    const input = parseInput(res, updateInboxItemInputSchema, req.body);
+    if (!input) return;
+    respond(
+      res,
+      await complete(
+        updateInboxItem(
+          db,
+          req.params.id,
+          kind.data,
+          req.params.sourceId,
+          input
+        )
+      )
     );
-    if (result.kind === "not_found") return notFound(res);
-    if (result.kind === "archive_not_allowed") {
-      res.status(422).json({ error: { code: "archive_not_allowed" } });
-      return;
-    }
-    if (result.event) hub.publish(result.event);
-    res.json(result.state);
   });
 
   /** 알림 outbox와 각 항목의 전송 상태. 쌓인 순서다. */
@@ -256,31 +310,19 @@ export async function startServer({
     res.json(await listOutbox(db));
   });
 
-  /** 가짜 채널이 받은 알림의 전송 기록. 받은 순서다. */
-  app.get("/api/channels/fake/messages", async (_req, res) => {
-    res.json(await listFakeChannelMessages(db));
-  });
-
-  /**
-   * 가짜 채널의 알림에 사용자가 답한다. 승인 요청 알림에만 승인 결정 입력으로 답하며, 대시보드와 같은 승인 결정 명령으로
-   * 보내 그 응답(200·409·422 등)을 그대로 돌려준다. 다른 알림은 422 `reply_not_allowed`다.
-   */
-  app.post("/api/channels/fake/messages/:messageId/reply", async (req, res) => {
-    const message = await findFakeChannelMessage(db, req.params.messageId);
-    if (!message) return notFound(res);
-    const result = await replyThroughFakeChannel(url, message, req.body);
-    if (result.kind === "reply_not_allowed") {
-      res.status(422).json({ error: { code: "reply_not_allowed" } });
-      return;
-    }
-    if (result.kind === "invalid_input") {
-      res
-        .status(422)
-        .json({ error: { code: "invalid_input", issues: result.issues } });
-      return;
-    }
-    res.status(result.status).json(result.body);
-  });
+  // 채널 adapter의 경로(webhook·가짜 채널 화면 등)는 `/api/channels/<채널 이름>` 아래다. adapter가 받기를 시작할 때 건다.
+  const channelRouter = express.Router();
+  app.use(`/api/channels/${encodeURIComponent(channel.name)}`, channelRouter);
+  const channelRoute =
+    (route: ChannelRoute): express.RequestHandler =>
+    async (req, res) => {
+      const { status, body } = await route({
+        params: req.params as Record<string, string>,
+        headers: req.headers,
+        body: req.body,
+      });
+      res.status(status).json(body);
+    };
 
   app.get("/api/organizations/:id", async (req, res) => {
     const org = await findOrganization(db, req.params.id);
@@ -293,31 +335,17 @@ export async function startServer({
    * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
    */
   app.put("/api/organizations/:id/approval-policy", async (req, res) => {
-    const input = updateApprovalPolicyInputSchema.safeParse(req.body);
-    if (!input.success) {
-      res
-        .status(422)
-        .json({ error: { code: "invalid_input", issues: input.error.issues } });
-      return;
-    }
-    const result = await updateApprovalPolicy(
-      { db, hub },
-      req.params.id,
-      input.data
+    const input = parseInput(res, updateApprovalPolicyInputSchema, req.body);
+    if (!input) return;
+    respond(
+      res,
+      await complete(updateApprovalPolicy(db, req.params.id, input))
     );
-    if (result.kind === "not_found") return notFound(res);
-    res.json(result.organization);
   });
 
   /** 본문 없는 제어 명령의 입력 검사. 다른 입력 오류와 같은 응답 모양이다. */
-  const emptyCommand = (req: express.Request, res: express.Response) => {
-    const input = emptyCommandInputSchema.safeParse(req.body ?? {});
-    if (!input.success)
-      res
-        .status(422)
-        .json({ error: { code: "invalid_input", issues: input.error.issues } });
-    return input.success;
-  };
+  const emptyCommand = (req: express.Request, res: express.Response) =>
+    parseInput(res, emptyCommandInputSchema, req.body ?? {}) !== undefined;
 
   /**
    * 조직 일시정지·재개·중단 제어 명령. 사용자만 내리며 조직 도구가 없다. 명령 뒤의 조직을 돌려주고, 이미 그 상태면 아무것도 남기지 않는다.
@@ -326,14 +354,10 @@ export async function startServer({
   for (const command of organizationCommands)
     app.post(`/api/organizations/:id/${command}`, async (req, res) => {
       if (!emptyCommand(req, res)) return;
-      const result = await controlOrganization(
-        { db, hub, dispatcher },
-        req.params.id,
-        command
+      respond(
+        res,
+        await complete(controlOrganization(db, req.params.id, command))
       );
-      if (result.kind === "not_found") return notFound(res);
-      if (result.kind === "organization_closed") return closed(res);
-      res.json(result.value);
     });
 
   /**
@@ -345,15 +369,12 @@ export async function startServer({
       `/api/organizations/:id/agents/:agentId/${command}`,
       async (req, res) => {
         if (!emptyCommand(req, res)) return;
-        const result = await controlAgent(
-          { db, hub, dispatcher },
-          req.params.id,
-          req.params.agentId,
-          command
+        respond(
+          res,
+          await complete(
+            controlAgent(db, req.params.id, req.params.agentId, command)
+          )
         );
-        if (result.kind === "not_found") return notFound(res);
-        if (result.kind === "organization_closed") return closed(res);
-        res.json(result.value);
       }
     );
 
@@ -364,22 +385,16 @@ export async function startServer({
   app.put(
     "/api/organizations/:id/agents/:agentId/heartbeat",
     async (req, res) => {
-      const input = updateHeartbeatInputSchema.safeParse(req.body);
-      if (!input.success) {
-        res.status(422).json({
-          error: { code: "invalid_input", issues: input.error.issues },
-        });
-        return;
-      }
-      const result = await updateHeartbeat(
-        { db, hub, now },
-        req.params.id,
-        req.params.agentId,
-        input.data
+      const input = parseInput(res, updateHeartbeatInputSchema, req.body);
+      if (!input) return;
+      respond(
+        res,
+        await complete(
+          updateHeartbeat(db, req.params.id, req.params.agentId, input, {
+            now,
+          })
+        )
       );
-      if (result.kind === "not_found") return notFound(res);
-      if (result.kind === "organization_closed") return closed(res);
-      res.json(result.agent);
     }
   );
 
@@ -388,25 +403,14 @@ export async function startServer({
    * 연구 진행에 닿지 않는 표시 정보라 어느 단계에서든 바꿀 수 있다. 같은 조직의 다른 에이전트와 겹치는 이름은 409 `name_taken`이다.
    */
   app.patch("/api/organizations/:id/agents/:agentId", async (req, res) => {
-    const input = updateAgentProfileInputSchema.safeParse(req.body);
-    if (!input.success) {
-      res.status(422).json({
-        error: { code: "invalid_input", issues: input.error.issues },
-      });
-      return;
-    }
-    const result = await updateAgentProfile(
-      { db, hub },
-      req.params.id,
-      req.params.agentId,
-      input.data
+    const input = parseInput(res, updateAgentProfileInputSchema, req.body);
+    if (!input) return;
+    respond(
+      res,
+      await complete(
+        updateAgentProfile(db, req.params.id, req.params.agentId, input)
+      )
     );
-    if (result.kind === "not_found") return notFound(res);
-    if (result.kind === "name_taken") {
-      res.status(409).json({ error: { code: "name_taken" } });
-      return;
-    }
-    res.json(result.agent);
   });
 
   /**
@@ -452,14 +456,6 @@ export async function startServer({
         ? await findDefaultConversation(db, org.id)
         : await findConversation(db, org.id, conversationId);
     return conversation && { org, conversation };
-  };
-  const ownerMessageInput = (req: express.Request, res: express.Response) => {
-    const input = sendOwnerMessageInputSchema.safeParse(req.body);
-    if (input.success) return input.data;
-    res
-      .status(422)
-      .json({ error: { code: "invalid_input", issues: input.error.issues } });
-    return undefined;
   };
   /**
    * 대화 기록 한 쪽(`?before=`·`?after=` 커서, 없으면 가장 최근 쪽). 줄 세운 메시지는 따로 `queued-messages`가 준다.
@@ -508,17 +504,15 @@ export async function startServer({
     conversationId?: string
   ) => {
     const chat = await findChat(String(req.params.id), conversationId);
-    if (!chat) return notFound(res);
-    const input = ownerMessageInput(req, res);
+    if (!chat) return refuseOwner(res, "not_found");
+    const input = parseInput(res, sendOwnerMessageInputSchema, req.body);
     if (!input) return;
-    const sent = await sendOwnerMessage(
-      { db, hub, dispatcher, now },
-      chat.org,
-      chat.conversation,
-      input
+    respond(
+      res,
+      await sendOwnerMessage(chat.org, chat.conversation, input),
+      201,
+      (sent) => sent.message
     );
-    if (sent.kind !== "sent") return refusedMessage(res, sent.kind);
-    res.status(201).json(sent.message);
   };
 
   app.get("/api/organizations/:id/conversations", async (req, res) => {
@@ -529,19 +523,10 @@ export async function startServer({
   /** 새 대화를 첫 사용자 메시지와 함께 시작한다. 빈 대화는 만들지 않는다. */
   app.post("/api/organizations/:id/conversations", async (req, res) => {
     const org = await findOrganization(db, req.params.id);
-    if (!org || !findLead(org.agents)) return notFound(res);
-    const input = ownerMessageInput(req, res);
+    if (!org || !findLead(org.agents)) return refuseOwner(res, "not_found");
+    const input = parseInput(res, sendOwnerMessageInputSchema, req.body);
     if (!input) return;
-    const sent = await sendOwnerMessage(
-      { db, hub, dispatcher, now },
-      org,
-      "new",
-      input
-    );
-    if (sent.kind !== "sent") return refusedMessage(res, sent.kind);
-    res
-      .status(201)
-      .json({ conversation: sent.conversation, message: sent.message });
+    respond(res, await sendOwnerMessage(org, "new", input), 201);
   });
 
   app.get(
@@ -563,20 +548,15 @@ export async function startServer({
   app.put(
     "/api/organizations/:id/conversations/:conversationId/read",
     async (req, res) => {
-      const input = markConversationReadInputSchema.safeParse(req.body);
-      if (!input.success) {
-        res.status(422).json({
-          error: { code: "invalid_input", issues: input.error.issues },
-        });
-        return;
-      }
+      const input = parseInput(res, markConversationReadInputSchema, req.body);
+      if (!input) return;
       const marked = await markConversationRead(
         db,
         req.params.id,
         req.params.conversationId,
-        input.data.upToMessageId
+        input.upToMessageId
       );
-      if (marked === "not_found") return notFound(res);
+      if (marked === "not_found") return refuseOwner(res, "not_found");
       res.json(await listConversations(db, req.params.id));
     }
   );
@@ -604,37 +584,20 @@ export async function startServer({
     app.post(
       `/api/organizations/:id/messages/:messageId/${path}`,
       async (req, res) => {
-        let command: Parameters<typeof commandQueuedMessage>[3];
+        const { id, messageId } = req.params;
+        let result;
         if (path === "edit") {
-          const input = editQueuedMessageInputSchema.safeParse(req.body);
-          if (!input.success) {
-            res.status(422).json({
-              error: { code: "invalid_input", issues: input.error.issues },
-            });
-            return;
-          }
-          command = { kind: "edit", body: input.data.body };
+          const input = parseInput(res, editQueuedMessageInputSchema, req.body);
+          if (!input) return;
+          result = editQueuedMessage(db, id, messageId, input.body);
         } else {
           if (!emptyCommand(req, res)) return;
-          command = { kind: path === "withdraw" ? "withdraw" : "send_now" };
+          result =
+            path === "withdraw"
+              ? withdrawQueuedMessage(db, id, messageId, { now })
+              : sendQueuedMessageNow(db, id, messageId);
         }
-        const result = await commandQueuedMessage(
-          { db, hub, dispatcher, now },
-          req.params.id,
-          req.params.messageId,
-          command
-        );
-        switch (result.kind) {
-          case "changed":
-            return void res.json(result.message);
-          case "not_found":
-            return notFound(res);
-          case "organization_closed":
-            return closed(res);
-          case "message_delivered":
-          case "paused":
-            return void res.status(409).json({ error: { code: result.kind } });
-        }
+        respond(res, await complete(result));
       }
     );
 
@@ -690,33 +653,12 @@ export async function startServer({
   app.put(
     "/api/organizations/:id/agents/:agentId/instructions/:copyId",
     async (req, res) => {
-      const input = editInstructionCopyInputSchema.safeParse(req.body);
-      if (!input.success) {
-        res.status(422).json({
-          error: { code: "invalid_input", issues: input.error.issues },
-        });
-        return;
-      }
-      const result = await editInstructionCopyAsOwner(
-        { db, hub, dispatcher, now },
-        copyRef(req),
-        input.data
+      const input = parseInput(res, editInstructionCopyInputSchema, req.body);
+      if (!input) return;
+      respond(
+        res,
+        await complete(editInstructionCopy(db, copyRef(req), input, source))
       );
-      switch (result.kind) {
-        case "ok":
-          res.json(result.copy);
-          return;
-        case "not_found":
-          return notFound(res);
-        case "organization_closed":
-          return closed(res);
-        case "revision_conflict":
-          res.status(409).json({ error: { code: "revision_conflict" } });
-          return;
-        case "invalid_skill":
-          res.status(422).json({ error: { code: "invalid_skill" } });
-          return;
-      }
     }
   );
 
@@ -764,21 +706,21 @@ export async function startServer({
   app.post(
     "/api/organizations/:id/tasks/:taskId/comments",
     async (req, res) => {
-      const input = addTaskCommentInputSchema.safeParse(req.body);
-      if (!input.success) {
-        res.status(422).json({
-          error: { code: "invalid_input", issues: input.error.issues },
-        });
-        return;
-      }
-      const result = await addOwnerTaskComment(
-        { db, hub, dispatcher, now },
-        req.params.id,
-        req.params.taskId,
-        input.data.body
+      const input = parseInput(res, addTaskCommentInputSchema, req.body);
+      if (!input) return;
+      respond(
+        res,
+        await complete(
+          insertOwnerTaskComment(
+            db,
+            req.params.id,
+            req.params.taskId,
+            input.body,
+            source
+          )
+        ),
+        201
       );
-      if (result.kind === "not_found") return notFound(res);
-      res.status(201).json(result.comment);
     }
   );
 
@@ -818,28 +760,20 @@ export async function startServer({
       status = 200
     ): express.RequestHandler =>
     async (req, res) => {
-      const input = schema.safeParse(req.body ?? {});
-      if (!input.success) {
-        res.status(422).json({
-          error: { code: "invalid_input", issues: input.error.issues },
-        });
-        return;
-      }
-      const result: OwnerMapEditResult<unknown> = await editResearchMapAsOwner(
-        { db, hub, dispatcher, now },
-        String(req.params.id),
-        command(input.data, req)
+      const input = parseInput(res, schema, req.body ?? {});
+      if (input === undefined) return;
+      respond(
+        res,
+        await complete(
+          editResearchMap(
+            db,
+            String(req.params.id),
+            command(input, req),
+            source
+          )
+        ),
+        status
       );
-      if (result.kind === "stage_closed") {
-        res.status(409).json({ error: { code: "stage_closed" } });
-        return;
-      }
-      if (result.kind === "invalid") {
-        const [code, httpStatus] = problemResponses[result.problem];
-        res.status(httpStatus).json({ error: { code } });
-        return;
-      }
-      res.status(status).json(result.value);
     };
   const nodeId = (req: express.Request) => String(req.params.nodeId);
 
@@ -907,30 +841,20 @@ export async function startServer({
   app.post(
     "/api/organizations/:id/approvals/:approvalId/decision",
     async (req, res) => {
-      const input = decideApprovalInputSchema.safeParse(req.body);
-      if (!input.success) {
-        res.status(422).json({
-          error: { code: "invalid_input", issues: input.error.issues },
-        });
-        return;
-      }
-      const result = await decideApproval(
-        { db, hub, dispatcher, now },
-        req.params.id,
-        req.params.approvalId,
-        input.data
+      const input = parseInput(res, decideApprovalInputSchema, req.body);
+      if (!input) return;
+      respond(
+        res,
+        await complete(
+          decideApproval(
+            db,
+            req.params.id,
+            req.params.approvalId,
+            input,
+            source
+          )
+        )
       );
-      if (result.kind === "not_found") return notFound(res);
-      if (result.kind === "already_decided") {
-        res.status(409).json({ error: { code: "already_decided" } });
-        return;
-      }
-      if (result.kind === "decision_not_allowed") {
-        res.status(422).json({ error: { code: "decision_not_allowed" } });
-        return;
-      }
-      if (result.kind === "organization_closed") return closed(res);
-      res.json(result.approval);
     }
   );
 
@@ -958,26 +882,20 @@ export async function startServer({
   app.post(
     "/api/organizations/:id/results/:submissionId/decision",
     async (req, res) => {
-      const input = decideResultInputSchema.safeParse(req.body);
-      if (!input.success) {
-        res.status(422).json({
-          error: { code: "invalid_input", issues: input.error.issues },
-        });
-        return;
-      }
-      const result = await decideResult(
-        { db, hub, dispatcher, now },
-        req.params.id,
-        req.params.submissionId,
-        input.data
+      const input = parseInput(res, decideResultInputSchema, req.body);
+      if (!input) return;
+      respond(
+        res,
+        await complete(
+          decideResult(
+            db,
+            req.params.id,
+            req.params.submissionId,
+            input,
+            source
+          )
+        )
       );
-      if (result.kind === "not_found") return notFound(res);
-      if (result.kind === "already_decided") {
-        res.status(409).json({ error: { code: "already_decided" } });
-        return;
-      }
-      if (result.kind === "organization_closed") return closed(res);
-      res.json(result.submission);
     }
   );
 
@@ -1048,14 +966,56 @@ export async function startServer({
   });
   const address = server.address() as net.AddressInfo;
   url = `http://${host}:${address.port}`;
+  /**
+   * 서버를 끈다. 정상 종료와 시작 실패가 같은 길을 쓴다. 각 부분은 시작하지 않았거나 일부만 시작했어도 닫을 수 있다.
+   * heartbeat가 새 깨우기를 만들지 않게 한 뒤 실행 시도를 끝내고, 그 사이 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
+   */
+  const stop = async () => {
+    // 한 부분을 닫다 실패해도 나머지(특히 포트)는 닫고, 실패는 모두 닫은 뒤에 알린다.
+    const failures: unknown[] = [];
+    for (const close of [
+      () => heartbeats.close(),
+      () => dispatcher.close(),
+      () => notifications.close(),
+      () => channel.close(),
+      async () => {
+        for (const client of wss.clients) client.terminate();
+        wss.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    ])
+      try {
+        await close();
+      } catch (error) {
+        failures.push(error);
+      }
+    if (failures.length)
+      throw new AggregateError(failures, "stopping the server failed");
+  };
   try {
     // 남은 실행 시도 복구가 끝난 뒤에 heartbeat가 새 깨우기를 만든다.
     await dispatcher.start();
     heartbeats.start();
     notifications.start();
+    await channel.listen({
+      inlet: channelInlet({
+        channel: channel.name,
+        db,
+        source,
+        complete,
+        sendOwnerMessage,
+      }),
+      routes: {
+        get: (path, route) => channelRouter.get(path, channelRoute(route)),
+        post: (path, route) => channelRouter.post(path, channelRoute(route)),
+      },
+    });
   } catch (error) {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // 끄다가 난 오류는 남기고, 호출자에게는 시작을 막은 원래 오류를 돌려준다.
+    await stop().catch((stopError) =>
+      console.error("[server] stopping after a failed start failed", stopError)
+    );
     throw error;
   }
 
@@ -1064,37 +1024,74 @@ export async function startServer({
     drain: () => dispatcher.drain(),
     tickHeartbeats: () => heartbeats.tick(),
     deliverNotifications: () => notifications.flush(),
-    close: async () => {
-      await heartbeats.close();
-      await dispatcher.close();
-      // 실행 시도를 끝내며 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
-      await notifications.close();
-      for (const client of wss.clients) client.terminate();
-      wss.close();
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    },
+    close: stop,
   };
 }
 
 const queryString = (value: unknown) =>
   typeof value === "string" ? value : undefined;
 
+/**
+ * 가짜 채널 답장의 응답. 대시보드 명령과 같은 응답 코드·본문이며, 글 답장은 사용자 메시지 보내기처럼 201이다.
+ * 알림 종류에 맞지 않는 답은 422 `reply_not_allowed`다.
+ */
+function fakeChannelResponse(
+  result: ChannelReplyResult,
+  answer: ChannelAnswer
+): ChannelResponse {
+  switch (result.kind) {
+    case "ok":
+      return { status: answer.kind === "text" ? 201 : 200, body: result.value };
+    case "invalid_input":
+      return { status: 422, body: invalidInputBody(result.issues) };
+    case "refused": {
+      const response = ownerRefusalResponses[result.reason as OwnerRefusal];
+      if (!response)
+        throw new Error(
+          `no response code for channel refusal ${result.reason}`
+        );
+      const [code, status] = response;
+      return { status, body: { error: { code } } };
+    }
+  }
+}
+
+/** 조회 경로의 없음(다른 조직의 것도 같다). 명령 경로의 없음은 `refuseOwner`의 표를 거친다. */
 function notFound(res: express.Response) {
   res.status(404).json({ error: { code: "not_found" } });
 }
 
-/** 최종 완료·중단 조직이라 받을 수 없는 제어 명령·결정. */
-/** 사용자 메시지를 받지 않음: 끝난 조직(`organization_closed`)이나 Lead의 줄이 상한(`queue_full`). 둘 다 409다. */
-function refusedMessage(
+/** 입력 계약 검사. 어긋나면 422 `invalid_input`(Zod issues 포함)으로 답하고 `undefined`를 돌려준다. */
+function parseInput<S extends z.ZodType>(
   res: express.Response,
-  code: "organization_closed" | "queue_full"
-) {
-  res.status(409).json({ error: { code } });
+  schema: S,
+  body: unknown
+): z.infer<S> | undefined {
+  const input = schema.safeParse(body);
+  if (input.success) return input.data;
+  res.status(422).json(invalidInputBody(input.error.issues));
+  return undefined;
 }
 
-function closed(res: express.Response) {
-  res.status(409).json({ error: { code: "organization_closed" } });
+const invalidInputBody = (issues: unknown) => ({
+  error: { code: "invalid_input", issues },
+});
+
+/** 사용자가 한 일의 거부를 `ownerRefusalResponses`의 응답 코드로 답한다. */
+function refuseOwner(res: express.Response, reason: OwnerRefusal) {
+  const [code, status] = ownerRefusalResponses[reason];
+  res.status(status).json({ error: { code } });
+}
+
+/** 사용자가 한 일의 결과를 응답으로: 성공이면 `status`와 값(또는 `body`가 고른 것), 거부면 표의 응답 코드. */
+function respond<T>(
+  res: express.Response,
+  outcome: Outcome<T, OwnerRefusal>,
+  status = 200,
+  body: (value: T) => unknown = (value) => value
+) {
+  if (outcome.kind === "refused") return refuseOwner(res, outcome.reason);
+  res.status(status).json(body(outcome.value));
 }
 
 /**

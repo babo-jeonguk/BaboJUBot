@@ -12,6 +12,7 @@ import type { EventHub } from "./event-hub.ts";
  * 알림 outbox를 채널로 보낸다. 원본은 outbox이고 Event 알림은 빨리 보내라는 신호일 뿐이라, 서버 시작과 주기 확인이
  * 신호를 놓친 항목(commit 뒤 서버 종료, 전송 실패 뒤 재시도 예정)을 다시 찾는다.
  * 한 번에 한 차례만 돌며, 도는 동안 온 신호는 그 차례가 끝난 뒤 한 번 더 돌게 한다. 채널 전송은 DB transaction 밖이다.
+ * 채널이 보낸 앱 메시지 번호를 돌려주면 전송 성공을 적을 때 그 알림에 잇는다(글 답장이 가리키는 알림).
  */
 export class NotificationRelay {
   #db: Database;
@@ -100,8 +101,16 @@ export class NotificationRelay {
   async #deliver(claim: ClaimedNotification) {
     let outcome: Parameters<typeof settleNotification>[2];
     try {
-      await this.#channel.deliver(claim.notification);
-      outcome = { kind: "sent" };
+      const sent = await this.#channel.deliver(claim.notification);
+      outcome = sent
+        ? {
+            kind: "sent",
+            link: {
+              channel: this.#channel.name,
+              appMessageId: sent.appMessageId,
+            },
+          }
+        : { kind: "sent" };
     } catch (error) {
       outcome = {
         kind: "failed",

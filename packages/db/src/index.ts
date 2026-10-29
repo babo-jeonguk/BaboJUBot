@@ -24,3 +24,4 @@ export * from "./agents.ts";
 export * from "./memories.ts";
 export * from "./notifications.ts";
 export * from "./dashboard.ts";
+export * from "./stored.ts";

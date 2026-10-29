@@ -1,5 +1,4 @@
 import type {
-  Event,
   InboxItem,
   InboxItemKind,
   InboxItemState,
@@ -9,6 +8,7 @@ import { inboxItemTime } from "@babojubot/contracts";
 import { and, asc, eq, ne, or } from "drizzle-orm";
 import { toApprovalSummary } from "./approvals.ts";
 import type { Database } from "./client.ts";
+import { refused, stored, type Stored } from "./stored.ts";
 import { toResultSubmissionSummary } from "./results.ts";
 import { insertEvent, isUuid, type Executor } from "./rows.ts";
 import { runSummaryColumns, toRunSummary } from "./runs.ts";
@@ -185,19 +185,14 @@ export async function updateInboxItem(
   kind: InboxItemKind,
   sourceId: string,
   input: UpdateInboxItemInput
-): Promise<
-  | { kind: "updated"; state: InboxItemState; event: Event | null }
-  | { kind: "not_found" }
-  | { kind: "archive_not_allowed" }
-> {
-  if (!isUuid(organizationId) || !isUuid(sourceId))
-    return { kind: "not_found" };
+): Promise<Stored<InboxItemState, "not_found" | "archive_not_allowed">> {
+  if (!isUuid(organizationId) || !isUuid(sourceId)) return refused("not_found");
   return db.transaction(async (tx) => {
     // 조직·원본을 먼저 확인한다. 다른 조직의 원본과 없는 원본은 보관 여부와 상관없이 `not_found`다.
     const source = await findSource(tx, organizationId, kind, sourceId);
-    if (!source) return { kind: "not_found" as const };
+    if (!source) return refused("not_found");
     if (input.archived && source.awaitsDecision)
-      return { kind: "archive_not_allowed" as const };
+      return refused("archive_not_allowed");
     // 처음 정리하는 항목의 행은 목록이 보이던 기본값(`stateOf`)으로 만든다.
     await tx
       .insert(inboxStates)
@@ -218,7 +213,7 @@ export async function updateInboxItem(
       archived: input.archived ?? current!.archived,
     };
     if (state.read === current!.read && state.archived === current!.archived)
-      return { kind: "updated" as const, state, event: null };
+      return stored(state);
     await tx
       .update(inboxStates)
       .set({ ...state, updatedAt: new Date() })
@@ -228,6 +223,6 @@ export async function updateInboxItem(
       type: "inbox_item.updated",
       payload: { by: "owner", kind, sourceId, ...state },
     });
-    return { kind: "updated" as const, state, event };
+    return stored(state, { events: [event] });
   });
 }

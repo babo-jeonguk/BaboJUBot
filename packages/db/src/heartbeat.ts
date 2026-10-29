@@ -1,4 +1,8 @@
-import type { Event, UpdateHeartbeatInput } from "@babojubot/contracts";
+import type {
+  AgentDetail,
+  Event,
+  UpdateHeartbeatInput,
+} from "@babojubot/contracts";
 import {
   planHeartbeat,
   planHeartbeatChange,
@@ -15,18 +19,14 @@ import {
   lockOrganization,
   toAgentHeartbeat,
 } from "./rows.ts";
+import { findAgentDetail } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
-
-export type HeartbeatChangeResult =
-  | { kind: "changed"; event: Event }
-  | { kind: "unchanged" }
-  | { kind: "organization_closed" }
-  | { kind: "not_found" };
+import { refused, stored, type AfterCommit, type Stored } from "./stored.ts";
 
 /**
  * 사용자의 heartbeat 설정 변경. 조직 행 → 에이전트 행 잠금 아래에서 바꾸고 그 Event를 같은 transaction에 남긴다.
  * scheduler도 같은 에이전트 행을 잠근 뒤 설정을 다시 읽으므로, 끈 뒤에 옛 설정으로 heartbeat가 생기지 않는다.
- * 다른 조직의 에이전트와 없는 에이전트는 같은 `not_found`다.
+ * 일시정지 중에도 바꿀 수 있다. 다른 조직의 에이전트와 없는 에이전트는 같은 `not_found`다. 값은 변경 뒤의 에이전트 상세다.
  */
 export async function updateHeartbeat(
   db: Database,
@@ -34,20 +34,23 @@ export async function updateHeartbeat(
   agentId: string,
   input: UpdateHeartbeatInput,
   { now }: Pick<RecordSource, "now">
-): Promise<HeartbeatChangeResult> {
-  if (!isUuid(organizationId) || !isUuid(agentId)) return { kind: "not_found" };
+): Promise<Stored<AgentDetail, "organization_closed" | "not_found">> {
+  if (!isUuid(organizationId) || !isUuid(agentId)) return refused("not_found");
   return db.transaction(async (tx) => {
     const org = await lockOrganization(tx, organizationId);
-    if (!org) return { kind: "not_found" };
+    if (!org) return refused("not_found");
     const agent = await lockAgent(tx, organizationId, agentId);
-    if (!agent) return { kind: "not_found" };
+    if (!agent) return refused("not_found");
+    const detail = async () =>
+      (await findAgentDetail(tx, organizationId, agentId))!;
     const plan = planHeartbeatChange(
       { ...agent, heartbeat: toAgentHeartbeat(agent) },
       org.stage,
       input,
       now()
     );
-    if (typeof plan === "string") return { kind: plan };
+    if (plan === "organization_closed") return refused(plan);
+    if (plan === "unchanged") return stored(await detail());
     await tx
       .update(agents)
       .set({
@@ -59,19 +62,20 @@ export async function updateHeartbeat(
             : new Date(plan.heartbeat.nextAt),
       })
       .where(eq(agents.id, agentId));
-    return { kind: "changed", event: await insertEvent(tx, plan.event) };
+    const event = await insertEvent(tx, plan.event);
+    return stored(await detail(), { events: [event] });
   });
 }
 
 /**
  * 예정이 지난 heartbeat를 처리한다. 에이전트마다 따로 저장하며, 깨우기·다음 예정·Event가 한 transaction이다.
  * 여러 호출이 겹쳐도 에이전트 행 잠금 아래에서 예정을 다시 읽으므로 같은 예정은 한 번만 처리된다.
- * 돌려주는 `woken`은 새 heartbeat 깨우기가 생긴 에이전트로, commit 뒤 실행 시도를 촉진한다.
+ * commit 뒤 할 일의 `woken`은 새 heartbeat 깨우기가 생긴 에이전트다.
  */
 export async function runDueHeartbeats(
   db: Database,
   source: RecordSource
-): Promise<{ events: Event[]; woken: string[] }> {
+): Promise<AfterCommit> {
   const due = await db
     .select({ id: agents.id, organizationId: agents.organizationId })
     .from(agents)

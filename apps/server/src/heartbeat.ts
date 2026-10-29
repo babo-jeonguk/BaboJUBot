@@ -1,11 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { AgentDetail, UpdateHeartbeatInput } from "@babojubot/contracts";
-import {
-  findAgentDetail,
-  runDueHeartbeats,
-  updateHeartbeat as storeHeartbeat,
-  type Database,
-} from "@babojubot/db";
+import { runDueHeartbeats, type Database } from "@babojubot/db";
+import { applyAfterCommit } from "./after-commit.ts";
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
 
@@ -53,12 +48,14 @@ export class HeartbeatScheduler {
     if (this.#closed) return;
     this.#running = (async () => {
       try {
-        const { events, woken } = await runDueHeartbeats(this.#db, {
+        const after = await runDueHeartbeats(this.#db, {
           newId: randomUUID,
           now: this.#now,
         });
-        this.#hub.publish(...events);
-        for (const agentId of woken) this.#dispatcher.kick(agentId);
+        await applyAfterCommit(
+          { hub: this.#hub, dispatcher: this.#dispatcher },
+          after
+        );
       } catch (error) {
         console.error("[heartbeat] checking due heartbeats failed", error);
       }
@@ -75,27 +72,4 @@ export class HeartbeatScheduler {
     clearInterval(this.#timer);
     while (this.#running) await this.#running;
   }
-}
-
-type Deps = { db: Database; hub: EventHub; now: () => Date };
-
-/** 사용자의 heartbeat 설정 변경. 저장한 뒤에만 알리고, 돌려주는 값은 변경 뒤의 에이전트 상세다. */
-export async function updateHeartbeat(
-  { db, hub, now }: Deps,
-  organizationId: string,
-  agentId: string,
-  input: UpdateHeartbeatInput
-): Promise<
-  | { kind: "ok"; agent: AgentDetail }
-  | { kind: "not_found" }
-  | { kind: "organization_closed" }
-> {
-  const result = await storeHeartbeat(db, organizationId, agentId, input, {
-    now,
-  });
-  if (result.kind === "not_found" || result.kind === "organization_closed")
-    return result;
-  if (result.kind === "changed") hub.publish(result.event);
-  const agent = await findAgentDetail(db, organizationId, agentId);
-  return agent ? { kind: "ok", agent } : { kind: "not_found" };
 }

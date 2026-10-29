@@ -16,6 +16,7 @@ import {
   type Executor,
 } from "./rows.ts";
 import { organizations, runs, toolOperations } from "./schema.ts";
+import type { AfterCommit } from "./stored.ts";
 
 // 조직 도구 호출의 공통 검사와 쓰기 틀. 모든 쓰기는 조직 행 → 실행 시도 행 순서로 잠그고(제어 명령의 취소 요청과 같은 순서),
 // 잠금 아래에서 실행 시도가 아직 도구를 쓸 수 있는지와 Role·단계 규칙을 다시 확인한다. 같은 조직의 도구 쓰기는 조직 행 잠금으로 직렬화된다.
@@ -29,8 +30,9 @@ export type LockedRun = {
   role: AgentRole;
 };
 
+/** 도구 검사 결과. 거부도 `tool.refused` Event를 남기므로 commit 뒤 할 일(그 Event 알리기)이 있다. */
 export type GateResult =
-  { ok: true } | { ok: false; reason: ToolRefusalReason; event: Event };
+  { ok: true } | { ok: false; reason: ToolRefusalReason; after: AfterCommit };
 
 /** 지금 조직 단계로 Role·단계 규칙을 검사하고, 거부하면 그 실행 시도에 귀속한 `tool.refused` Event를 남긴다. */
 async function checkOrRefuse(
@@ -45,7 +47,7 @@ async function checkOrRefuse(
     tx,
     toolRefusedEvent(locked, tool, stage, check.reason)
   );
-  return { ...check, event };
+  return { ...check, after: { events: [event] } };
 }
 
 const lockRun = async (tx: Executor, run: ActiveRunRef) => {
@@ -74,13 +76,13 @@ export async function gateToolCall(
 }
 
 /**
- * 도구 쓰기의 결과. `woken`은 이 쓰기가 깨운 에이전트로, commit 뒤 실행 시도를 촉진한다.
+ * 도구 쓰기의 결과. 저장한 결과(`ok`)와 규칙 거부(`refused`, `tool.refused` Event를 남김)는 commit 뒤 할 일을 담는다.
  * `invalid`는 도구마다 정한 입력·기록 규칙의 거부이며 아무것도 남기지 않는다. 같은 호출 키에 다른 도구·입력이 오면 `idempotency_conflict`다.
  */
 export type ToolWrite<T, P extends string> =
-  | { kind: "ok"; value: T; events: Event[]; woken?: string[] }
+  | { kind: "ok"; value: T; after: AfterCommit }
   | { kind: "run_finished" }
-  | { kind: "refused"; reason: ToolRefusalReason; events: Event[] }
+  | { kind: "refused"; reason: ToolRefusalReason; after: AfterCommit }
   | { kind: "invalid"; problem: P | "idempotency_conflict" };
 
 /** 같은 효과를 한 번만 남기는 호출의 키와 입력 digest. 키는 에이전트마다 따로다(contracts `idempotencyKeyHeader`). */
@@ -124,7 +126,7 @@ export async function toolWrite<T, P extends string>(
     if (!locked) return { kind: "run_finished" };
     const gate = await checkOrRefuse(tx, locked, org.stage, tool);
     if (!gate.ok)
-      return { kind: "refused", reason: gate.reason, events: [gate.event] };
+      return { kind: "refused", reason: gate.reason, after: gate.after };
     if (operation) {
       const [done] = await tx
         .select()
@@ -138,11 +140,11 @@ export async function toolWrite<T, P extends string>(
       if (done) {
         if (done.tool !== tool || done.requestDigest !== operation.digest)
           return { kind: "invalid", problem: "idempotency_conflict" };
-        return { kind: "ok", value: done.result as T, events: [] };
+        return { kind: "ok", value: done.result as T, after: { events: [] } };
       }
     }
     const result = await write(tx, locked, org);
-    if (result.kind !== "ok") return result;
+    if (result.kind === "invalid") return result;
     if (operation)
       await tx.insert(toolOperations).values({
         organizationId: locked.organizationId,
@@ -158,6 +160,10 @@ export async function toolWrite<T, P extends string>(
       type: "run.activity",
       payload: { runId: locked.id, agentId: locked.agentId, activity },
     });
-    return { ...result, events: [...result.events, summary] };
+    return {
+      kind: "ok",
+      value: result.value,
+      after: { events: [...result.events, summary], woken: result.woken },
+    };
   });
 }

@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   claimNotifications,
+  findRepliedNotification,
   listFakeChannelMessages,
   listOutbox,
   recordFakeChannelMessage,
@@ -73,7 +74,7 @@ async function organization() {
       }
     );
     if (written.kind !== "ok") throw new Error(written.kind);
-    const [event] = written.events;
+    const [event] = written.after.events;
     return { messageId: written.value.id, event: event! };
   };
   return { organizationId: lead.organizationId, lead, creation, leadMessage };
@@ -351,14 +352,16 @@ describe("fake channel record", () => {
       leaseMs: lease,
       limit: 10,
     });
-    await recordFakeChannelMessage(t.db, claim!.notification);
-    await recordFakeChannelMessage(t.db, claim!.notification);
+    const first = await recordFakeChannelMessage(t.db, claim!.notification);
+    expect(await recordFakeChannelMessage(t.db, claim!.notification)).toBe(
+      first
+    );
     const records = (await listFakeChannelMessages(t.db)).filter(
       (m) => m.organizationId === org.organizationId
     );
     expect(records).toEqual([
       {
-        id: expect.any(String),
+        id: first,
         notificationId: claim!.id,
         organizationId: org.organizationId,
         organizationName: "알림 조직",
@@ -377,5 +380,55 @@ describe("fake channel record", () => {
       .update(notificationOutbox)
       .set({ claimToken: null, claimExpiresAt: null })
       .where(eq(notificationOutbox.id, claim!.id));
+  });
+});
+
+describe("app messages linked to notifications", () => {
+  it("links the app message a channel sent to the notification, keyed by the channel name", async () => {
+    await settleEverything();
+    const org = await organization();
+    const { messageId } = await org.leadMessage("답장받을 보고");
+    const [claim] = await claimNotifications(t.db, {
+      now: new Date(),
+      leaseMs: lease,
+      limit: 10,
+    });
+    const appMessageId = `app-${randomUUID()}`;
+    expect(
+      await settleNotification(
+        t.db,
+        claim!,
+        { kind: "sent", link: { channel: "phone", appMessageId } },
+        new Date()
+      )
+    ).toBe(true);
+
+    const replied = {
+      notificationId: claim!.id,
+      organizationId: org.organizationId,
+      kind: "lead_message",
+      sourceId: messageId,
+      conversationId: org.creation.defaultConversation.id,
+    };
+    expect(
+      await findRepliedNotification(t.db, "phone", { appMessageId })
+    ).toEqual(replied);
+    expect(
+      await findRepliedNotification(t.db, "phone", {
+        notificationId: claim!.id,
+      })
+    ).toEqual(replied);
+    // 다른 채널의 같은 번호, 모르는 번호·알림은 가리키는 알림이 없다.
+    expect(
+      await findRepliedNotification(t.db, "other", { appMessageId })
+    ).toBeUndefined();
+    expect(
+      await findRepliedNotification(t.db, "phone", { appMessageId: "모름" })
+    ).toBeUndefined();
+    expect(
+      await findRepliedNotification(t.db, "phone", {
+        notificationId: "not-a-uuid",
+      })
+    ).toBeUndefined();
   });
 });
