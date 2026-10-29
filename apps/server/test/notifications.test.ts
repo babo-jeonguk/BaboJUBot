@@ -226,6 +226,9 @@ describe("notification outbox and fake channel", () => {
         if (down) throw new Error("채널 연결 끊김");
         delivered.push(notification);
       },
+      // 보내기만 확인하는 채널이라 받을 답이 없다.
+      listen: () => {},
+      close: async () => {},
     };
     // 생성으로 깨어난 Lead는 Lead 대화 답장 없이 요청만 해, 알림은 승인 요청 하나다.
     const agents = scriptedAgents({ created: proposeScript });
@@ -269,6 +272,8 @@ describe("notification outbox and fake channel", () => {
         {
           name: "off",
           deliver: () => Promise.reject(new Error("꺼짐")),
+          listen: () => {},
+          close: async () => {},
         },
       ],
     });
@@ -682,6 +687,7 @@ describe("channel replies", () => {
       listen: (context) => {
         inlet = context.inlet;
       },
+      close: async () => {},
     };
     const agents = scriptedAgents();
     t = await startTestServer({
@@ -757,6 +763,8 @@ describe("channel replies", () => {
       const quiet = (name: string): NotificationChannel => ({
         name,
         deliver: async () => {},
+        listen: () => {},
+        close: async () => {},
       });
       await expect(
         startServer({
@@ -768,6 +776,56 @@ describe("channel replies", () => {
     } finally {
       await database.close();
     }
+  });
+
+  it("stops everything it started and closes the channel when the channel fails to start", async () => {
+    const agents = scriptedAgents({ created: proposeScript });
+    t = await startTestServer({
+      runtime: agents.runtime,
+      notificationChannels: [
+        {
+          name: "off",
+          deliver: () => Promise.reject(new Error("꺼짐")),
+          listen: () => {},
+          close: async () => {},
+        },
+      ],
+    });
+    await awaitingApproval(agents, "시작 실패 조직");
+    await t.stopServer();
+
+    // 시계가 부를 때마다 10초씩 가서, 멈추지 않은 relay라면 주기 확인마다 재시도 예정이 지난 알림을 다시 보낸다.
+    let tick = 0;
+    const base = Date.now();
+    let attempts = 0;
+    let closed = 0;
+    const broken: NotificationChannel = {
+      name: "broken",
+      async deliver() {
+        attempts++;
+        throw new Error("꺼짐");
+      },
+      listen: () => {
+        throw new Error("토큰 거부");
+      },
+      close: async () => {
+        closed++;
+      },
+    };
+    await expect(
+      startServer({
+        db: t.db,
+        port: 0,
+        now: () => new Date(base + tick++ * 10_000),
+        notificationChannels: [broken],
+        notificationPollMs: 10,
+        heartbeatPollMs: 10,
+      })
+    ).rejects.toThrow("토큰 거부");
+    const seen = attempts;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(attempts).toBe(seen);
+    expect(closed).toBe(1);
   });
 });
 

@@ -48,6 +48,8 @@ export const createFakeChannel = ({
       );
     });
   },
+  // 기록은 DB에 있고 경로는 서버가 닫으므로 따로 닫을 연결이 없다.
+  close: async () => {},
 });
 
 const answerOf = (body: unknown): ChannelAnswer =>

@@ -113,18 +113,19 @@ export type ChannelRoutes = {
  * 메시지 앱 채널 adapter: 보내기, 받기 시작, 멈춤. `deliver`가 끝나면 채널이 알림을 받은 것이고, 던지면 outbox가 나중에 다시 보낸다.
  * 같은 알림(`id`)을 두 번 받을 수 있으므로(전송 뒤 기록 전 서버 종료) 채널이 `id`로 중복을 거른다. 보낸 앱 메시지 번호를 돌려주면
  * 그 메시지에 대한 글 답장이 그 알림을 가리킨다. `listen`은 서버 시작 때 한 번 받는 입구와 경로 자리를 받고, polling 같은
- * 연결 루프는 adapter가 돌린다. `close`는 서버를 끌 때 부른다.
+ * 연결 루프는 adapter가 돌린다. 세 가지 모두 필수다. 받을 것이 없는 채널도 그 사실을 `listen`에 적는다.
+ * `close`는 서버를 끌 때, 그리고 `listen`이 던져 서버 시작이 실패했을 때도 부르므로 일부만 연 연결도 닫는다.
  */
 export type NotificationChannel = {
   name: string;
   deliver: (
     notification: Notification
   ) => Promise<{ appMessageId: string } | void>;
-  listen?: (context: {
+  listen: (context: {
     inlet: ChannelInlet;
     routes: ChannelRoutes;
   }) => Promise<void> | void;
-  close?: () => Promise<void>;
+  close: () => Promise<void>;
 };
 
 /** 가짜 채널이 받은 알림의 전송 기록. 알림 하나에 기록 하나다. */

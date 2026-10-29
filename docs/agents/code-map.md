@@ -380,7 +380,7 @@ scripted(Lead) → /api/tools/workers(server/tools) → addWorker(toolWrite: 조
 commit 뒤 EventHub → NotificationRelay.kick(시작·5초 주기도) → claimNotifications(SKIP LOCKED·만료·새 token)
   → channel.deliver(transaction 밖; 가짜 채널은 fake_channel_messages에 알림마다 하나, 그 ID를 앱 메시지 번호로 돌려줌)
   → settleNotification(같은 claim일 때만: 보냄 / 실패면 retryDelayMs 뒤 재시도; 앱 메시지 번호는 channel_messages에)
-서버 시작 → channel.listen({ inlet: channelInlet, routes: /api/channels/<이름> })
+서버 시작 → channel.listen({ inlet: channelInlet, routes: /api/channels/<이름> })(실패하면 종료와 같은 stop: heartbeat·dispatcher·relay·channel.close·HTTP)
 가짜 채널 답 → POST /api/channels/fake/messages/:id/reply → createFakeChannel(글 답장/결정) → inlet({ to: 앱 메시지 번호, answer })
   → findRepliedNotification(채널 + 번호 또는 알림 ID → 조직·종류·원본·대화) → 받는 답·입력 확인
   → insertOwnerMessage·decideApproval·decideResult → completeStored → 로그 한 줄 → fakeChannelResponse(대시보드와 같은 응답)

@@ -963,12 +963,26 @@ export async function startServer({
   });
   const address = server.address() as net.AddressInfo;
   url = `http://${host}:${address.port}`;
+  /**
+   * 서버를 끈다. 정상 종료와 시작 실패가 같은 길을 쓴다. 각 부분은 시작하지 않았거나 일부만 시작했어도 닫을 수 있다.
+   * heartbeat가 새 깨우기를 만들지 않게 한 뒤 실행 시도를 끝내고, 그 사이 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
+   */
+  const stop = async () => {
+    await heartbeats.close();
+    await dispatcher.close();
+    await notifications.close();
+    await channel.close();
+    for (const client of wss.clients) client.terminate();
+    wss.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
   try {
     // 남은 실행 시도 복구가 끝난 뒤에 heartbeat가 새 깨우기를 만든다.
     await dispatcher.start();
     heartbeats.start();
     notifications.start();
-    await channel.listen?.({
+    await channel.listen({
       inlet: channelInlet({
         channel: channel.name,
         db,
@@ -982,8 +996,10 @@ export async function startServer({
       },
     });
   } catch (error) {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // 끄다가 난 오류는 남기고, 호출자에게는 시작을 막은 원래 오류를 돌려준다.
+    await stop().catch((stopError) =>
+      console.error("[server] stopping after a failed start failed", stopError)
+    );
     throw error;
   }
 
@@ -992,17 +1008,7 @@ export async function startServer({
     drain: () => dispatcher.drain(),
     tickHeartbeats: () => heartbeats.tick(),
     deliverNotifications: () => notifications.flush(),
-    close: async () => {
-      await heartbeats.close();
-      await dispatcher.close();
-      // 실행 시도를 끝내며 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
-      await notifications.close();
-      await channel.close?.();
-      for (const client of wss.clients) client.terminate();
-      wss.close();
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    },
+    close: stop,
   };
 }
 
