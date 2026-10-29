@@ -59,6 +59,8 @@ export type TestServerOptions = {
   now?: () => Date;
   /** 알림을 보내고 답을 받는 채널. 기본은 가짜 채널이다. */
   notificationChannels?: NotificationChannel[];
+  /** 하네스 라이브러리 디렉터리. 기본은 저장소의 `harness/`다. */
+  harnessDir?: string;
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */

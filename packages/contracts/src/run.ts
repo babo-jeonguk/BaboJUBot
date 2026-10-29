@@ -192,7 +192,8 @@ export type RunRequest = z.infer<typeof runRequestSchema>;
 
 /**
  * 실행기가 공개로 내는 활동. 허용한 종류·필드만 받으며 그 밖의 값(모델 내부 추론, stdout 등)은 공개 기록에 넣지 않는다.
- * 조직·에이전트·실행 시도 귀속은 Control Plane이 붙인다.
+ * 조직·에이전트·실행 시도 귀속은 Control Plane이 붙인다. 진행 문장(`progress.text`)은 사용자가 대시보드에서 읽으므로 한국어로 쓴다.
+ * 도구 입력 칸이 아니라서 이 언어 규칙은 역할 문서의 지시로 에이전트에게 전한다.
  */
 export const runtimeActivitySchema = z.discriminatedUnion("type", [
   z.strictObject({
