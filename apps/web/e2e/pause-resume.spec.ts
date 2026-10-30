@@ -424,10 +424,10 @@ test("messages held by a paused organization wait in the queue, can be edited, w
   await queued.first().getByRole("button", { name: "취소" }).click();
   await expect(queued).toHaveText(["멈춘 동안 둘", "멈춘 동안 셋"]);
 
-  // 일시정지 중 `지금 보내기`는 재개하면 먼저 전달된다고 알리고, 누르면 그 항목에 번개 표시가 붙는다.
+  // 일시정지 중 `지금 보내기`는 설명 없이 이름만 있고, 누르면 그 항목에 번개 표시가 붙는다.
   await queued.last().hover();
   const sendNow = queued.last().getByRole("button", { name: "지금 보내기" });
-  await expect(sendNow).toHaveAccessibleDescription("재개하면 먼저 전달");
+  await expect(sendNow).toHaveAccessibleDescription("");
   await expect(queued.last().locator("p svg")).toHaveCount(0);
   await sendNow.click();
   await expect(queued.last().locator("p svg")).toBeVisible();
