@@ -6,7 +6,7 @@
 
 | 질문 | 기준 문서·책임 |
 | --- | --- |
-| 지금 무엇이 실행되며 어떻게 설치·검증하는가? | [README](../README.md): 현재 구현 요약·환경·명령·검증 기준 |
+| 지금 무엇이 실행되며 어떻게 설치하는가? | [README](../README.md): 현재 구현 요약·환경·명령 |
 | 무엇을 제공하고 제외하는가? | [features](features.md): 확정 기능·화면 범위. 완료 근거는 이슈/PR |
 | 개념은 무엇을 뜻하는가? | [GLOSSARY](../GLOSSARY.md): 공통 용어 정의 |
 | 책임·계약·상태·불변 조건은 어디서 강제하는가? | [architecture](architecture.md): 목표 구조·module·seam. 실제 파일은 코드 지도 |
@@ -22,6 +22,7 @@
 | 용어 충돌·컨텍스트·ADR을 어떻게 다루는가? | [domain](agents/domain.md): 의미 확정·작성 조건 |
 | 수정할 코드·테스트는 어디인가? | [code-map](agents/code-map.md): 영역별 절 파일 목차. 절 파일마다 작업별 진입점·연결 경로·현재 검증 위치 |
 | 구현은 언제 시작·완료하는가? | [implementation](agents/implementation.md): 브랜치→구현→리뷰→커밋→push→PR·외부 리뷰 인계 |
+| 언제 무엇을 검사하고 결과를 재사용하는가? | [verification](agents/verification.md): 검사 시점·완료 검사·결과 재사용 |
 | 리뷰 결과를 어떻게 처리하는가? | [review-fixes](agents/review-fixes.md): finding 판정→실패 유형 검증·수정→재검토·외부 요청 형식 |
 | 병합은 언제·어떻게 완료하는가? | [pr-merge](agents/pr-merge.md): 병합 판단→기록 정합성·최종 검증 확인→병합→후처리·보고 |
 | 이슈·의존성·parent를 어떻게 조작하는가? | [issue-tracker](agents/issue-tracker.md): gh·게시 규칙·skill 작업 매핑 |

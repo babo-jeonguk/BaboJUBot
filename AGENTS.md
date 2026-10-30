@@ -26,6 +26,7 @@
 - 용어·의미 충돌·ADR 작성 → [도메인 규칙](docs/agents/domain.md)
 - 이슈 작업 → [이슈 운영](docs/agents/issue-tracker.md); label·triage 시 [label 표](docs/agents/triage-labels.md)
 - 사용자 요구의 배경 → [인터뷰 기록](docs/project-intent.md)
-- 설치·검증 → [개발 시작](README.md#개발-시작)과 [검증 기준](README.md#검증-기준)
+- 설치 → [개발 시작](README.md#개발-시작)
+- 검증·검사 결과 재사용 → [검증 기준](docs/agents/verification.md)
 - 커밋 메시지 → [커밋 규칙](docs/agents/commit-messages.md)
 - 구현 전 레퍼런스 조사 → [reference-first](.agents/skills/reference-first/SKILL.md) (`/reference-first #<n>`)
