@@ -930,7 +930,7 @@ type OwnerMessageSender = {
  *
  * 바로 위에는 이 대화의 줄 세운 메시지가 오래된 것부터 있다. `고치기`는 그 항목을 그 자리에서 고치는 입력으로 바꾸며
  * (Enter 저장, Shift+Enter 줄바꿈, Esc 취소) 줄 속 위치와 전달 방식은 그대로다. 입력창이 비었을 때 ↑ 키는 가장 최근 메시지를
- * 거두고 그 글을 입력창에 되돌린다. `취소`는 거두기만 한다. 일시정지 중 `지금 보내기`에는 "재개하면 먼저 전달" 설명이 붙는다.
+ * 거두고 그 글을 입력창에 되돌린다. `취소`는 거두기만 한다.
  * 실행 시도가 먼저 받았으면 토스트로 알리고 대화로 옮겨 보인다.
  */
 function Composer({
@@ -1033,7 +1033,6 @@ function Composer({
           count={queuedCount}
           canEdit={actions.edit.visible}
           canSendNow={actions.send_now.visible}
-          sendNowHint={heldBy ? "재개하면 먼저 전달" : undefined}
           busy={queuedBusy}
           onEdit={(m, body) => runQueued(m, "edit", body)}
           onCancel={(m) => void runQueued(m, "withdraw")}
@@ -1174,7 +1173,6 @@ function QueuedMessages({
   count,
   canEdit,
   canSendNow,
-  sendNowHint,
   busy,
   onEdit,
   onCancel,
@@ -1184,8 +1182,6 @@ function QueuedMessages({
   count: number;
   canEdit: boolean;
   canSendNow: boolean;
-  /** `지금 보내기`가 바로 전달되지 않을 때(일시정지 중) 붙이는 설명. */
-  sendNowHint?: string;
   busy: boolean;
   onEdit: (
     message: ConversationMessage,
@@ -1262,7 +1258,6 @@ function QueuedMessages({
                   {canSendNow && m.delivery !== "interrupt" && (
                     <QueuedAction
                       label="지금 보내기"
-                      description={sendNowHint}
                       tone="danger"
                       disabled={busy}
                       onClick={() => onSendNow(m)}
@@ -1344,29 +1339,25 @@ function QueuedEditor({
   );
 }
 
-/** 줄 세운 메시지 항목의 작은 아이콘 버튼. 이름은 `aria-label`과 tooltip에 같은 글로 보이고, 설명은 tooltip 이름 뒤와 `aria-description`에 붙는다. */
+/** 줄 세운 메시지 항목의 작은 아이콘 버튼. 이름은 `aria-label`과 tooltip에 같은 글로 보인다. */
 function QueuedAction({
   label,
-  description,
   tone = "default",
   disabled,
   onClick,
   children,
 }: {
   label: string;
-  /** 이름 뒤에 tooltip과 화면 읽기 도구로 덧붙이는 설명. */
-  description?: string;
   tone?: "default" | "danger";
   disabled: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
-    <Tip content={description ? `${label} · ${description}` : label}>
+    <Tip content={label}>
       <button
         type="button"
         aria-label={label}
-        aria-description={description}
         disabled={disabled}
         onClick={onClick}
         className={`flex h-7 w-7 items-center justify-center rounded-md transition focus-visible:outline-2 focus-visible:outline-brand-500 disabled:opacity-40 ${tone === "danger" ? "text-rose-600 hover:bg-rose-50" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`}
