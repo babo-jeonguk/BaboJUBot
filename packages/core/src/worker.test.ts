@@ -7,6 +7,16 @@ import {
   planAddWorker,
 } from "./worker.ts";
 
+const connections = [
+  {
+    id: "fake",
+    models: [
+      { id: "fake-large", label: "라지" },
+      { id: "fake-max", label: "맥스" },
+    ],
+  },
+  { id: "fake-2", models: [{ id: "fake-2-mini", label: "미니" }] },
+];
 const at = "2026-10-22T00:00:00.000Z";
 let n = 0;
 const source = { newId: () => `id-${++n}`, now: () => new Date(at) };
@@ -68,29 +78,48 @@ describe("buildAddWorkerProposal", () => {
       buildAddWorkerProposal(
         { role: "researcher", provider: "fake", model: "fake-large" },
         library,
-        workerDefault
+        { workerDefault, connections }
       )
     ).toEqual(proposal);
     expect(
-      buildAddWorkerProposal({ role: "lead" }, library, workerDefault)
+      buildAddWorkerProposal({ role: "lead" }, library, {
+        workerDefault,
+        connections,
+      })
     ).toBe("unknown_role");
     expect(
-      buildAddWorkerProposal({ role: "nobody" }, library, workerDefault)
+      buildAddWorkerProposal({ role: "nobody" }, library, {
+        workerDefault,
+        connections,
+      })
     ).toBe("unknown_role");
   });
 
-  it("fixes the worker default as the proposal when the Lead leaves the provider out", () => {
-    const built = buildAddWorkerProposal(
-      { role: "researcher" },
-      library,
-      workerDefault
+  it("refuses a provider or model that is not in the registered connections' lists", () => {
+    const build = (input: object) =>
+      buildAddWorkerProposal({ role: "researcher", ...input }, library, {
+        workerDefault,
+        connections,
+      });
+    expect(build({ provider: "nope" })).toBe("unknown_provider");
+    expect(build({ provider: "fake", model: "fake-2-mini" })).toBe(
+      "unknown_model"
     );
+    // 비운 프로바이더는 확인하지 않고 기본값을 쓴다.
+    expect(build({})).toMatchObject({ choice: workerDefault });
+  });
+
+  it("fixes the worker default as the proposal when the Lead leaves the provider out", () => {
+    const built = buildAddWorkerProposal({ role: "researcher" }, library, {
+      workerDefault,
+      connections,
+    });
     if (typeof built === "string") throw new Error(built);
     expect(built.choice).toEqual(workerDefault);
     const providerOnly = buildAddWorkerProposal(
       { role: "researcher", provider: "fake" },
       library,
-      workerDefault
+      { workerDefault, connections }
     );
     if (typeof providerOnly === "string") throw new Error(providerOnly);
     expect(providerOnly.choice).toEqual({ provider: "fake", model: null });
@@ -206,6 +235,7 @@ describe("planApprovalDecision for add_worker", () => {
         stage: "result_review",
         agentNames: ["문헌 조사자 1"],
         workerDefault,
+        connections,
       },
       source
     );
@@ -236,7 +266,7 @@ describe("planApprovalDecision for add_worker", () => {
     const plan = planApprovalDecision(
       approval,
       { decision: "approve", choices: [{ provider: "fake-2", model: null }] },
-      { stage: "researching", agentNames: [], workerDefault },
+      { stage: "researching", agentNames: [], workerDefault, connections },
       source
     );
     if (typeof plan === "string") throw new Error(plan);
@@ -250,13 +280,27 @@ describe("planApprovalDecision for add_worker", () => {
     });
   });
 
+  it("refuses an Owner's choice that is not in the registered connections' lists", () => {
+    expect(
+      planApprovalDecision(
+        approval,
+        {
+          decision: "approve",
+          choices: [{ provider: "fake-2", model: "fake-large" }],
+        },
+        { stage: "researching", agentNames: [], workerDefault, connections },
+        source
+      )
+    ).toBe("unknown_model");
+  });
+
   it("refuses choices that do not match the one worker", () => {
     const choice = { provider: "fake", model: null };
     expect(
       planApprovalDecision(
         approval,
         { decision: "approve", choices: [choice, choice] },
-        { stage: "researching", agentNames: [], workerDefault },
+        { stage: "researching", agentNames: [], workerDefault, connections },
         source
       )
     ).toBe("choices_mismatch");
@@ -267,7 +311,7 @@ describe("planApprovalDecision for add_worker", () => {
     const plan = planApprovalDecision(
       { ...approval, proposal: legacy },
       { decision: "approve" },
-      { stage: "researching", agentNames: [], workerDefault },
+      { stage: "researching", agentNames: [], workerDefault, connections },
       source
     );
     if (typeof plan === "string") throw new Error(plan);
@@ -282,6 +326,7 @@ describe("planApprovalDecision for add_worker", () => {
         stage: "researching",
         agentNames: ["문헌 조사자 1"],
         workerDefault,
+        connections,
       },
       source
     );
@@ -297,6 +342,7 @@ describe("planApprovalDecision for add_worker", () => {
         stage: "researching",
         agentNames: [],
         workerDefault,
+        connections,
       },
       source
     );
@@ -321,6 +367,7 @@ describe("planApprovalDecision for add_worker", () => {
           stage: "researching",
           agentNames: [],
           workerDefault,
+          connections,
         },
         source
       )

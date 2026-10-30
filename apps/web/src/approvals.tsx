@@ -27,6 +27,11 @@ import {
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
 import {
+  changedChoiceFields,
+  decisionChoices,
+  type ChoiceDraft,
+} from "./worker-choices.ts";
+import {
   ProviderChoiceFields,
   useChoiceLabel,
   useChoiceParts,
@@ -335,7 +340,6 @@ export function ApprovalDecision({
 
 // 작업자마다의 프로바이더·모델 초안. 승인 요청마다 따로 두며, 화면을 닫거나 Inbox와 승인 상세 사이를 오가도 남는다.
 // 바꾸지 않은 작업자는 비어 있고(Lead 제안), 결정에 성공하면 지운다.
-type ChoiceDraft = readonly (ProviderChoice | undefined)[];
 const choiceDrafts = new Map<string, ChoiceDraft>();
 const draftListeners = new Set<() => void>();
 function setChoiceDraft(key: string, draft: ChoiceDraft | undefined) {
@@ -373,6 +377,7 @@ function ChangedBadge() {
 function WorkerChoiceTable({
   idPrefix,
   workers,
+  shown,
   base,
   draft,
   onChange,
@@ -380,6 +385,9 @@ function WorkerChoiceTable({
 }: {
   idPrefix: string;
   workers: ProposedWorker[];
+  /** 표의 값. 아직 모르는 칸은 비어 있다(`decisionChoices`). */
+  shown: (ProviderChoice | undefined)[];
+  /** 바꾸지 않았을 때의 값. 이 값으로 고르면 바꾼 값을 지운다. */
   base: (ProviderChoice | undefined)[];
   draft: ChoiceDraft | undefined;
   onChange: (index: number, choice: ProviderChoice | undefined) => void;
@@ -401,7 +409,7 @@ function WorkerChoiceTable({
         className="divide-y divide-slate-100 rounded-xl ring-1 ring-slate-200"
       >
         {workers.map((w, i) => {
-          const value = draft?.[i] ?? base[i];
+          const value = shown[i];
           const changed = draft?.[i] !== undefined;
           const name = `${w.label} ${w.ordinal}번`;
           return (
@@ -491,13 +499,9 @@ function DecidedWorkerTable({
         {a.decidedWorkers.map((decided, i) => {
           const proposed = workers[i];
           const lead = proposed?.choice;
-          const changed = {
-            provider: !!lead && lead.provider !== decided.provider,
-            model:
-              !!lead &&
-              (lead.provider !== decided.provider ||
-                lead.model !== decided.model),
-          };
+          const changed = lead
+            ? changedChoiceFields(lead, decided)
+            : { provider: false, model: false };
           const name =
             agents?.find((x) => x.id === decided.agentId)?.name ??
             `${proposed?.label ?? ""} ${proposed?.ordinal ?? i + 1}번`;
@@ -564,15 +568,11 @@ function DecisionForm({
   const decide = useDecideApproval(orgId, approvalId);
   const workerDefault = useProviderSettings().data?.workerDefault;
   const workers = proposedWorkers(approval);
-  // Lead 제안이 없는 예전 요청은 지금의 작업자 기본값으로 채운다. 바꾸지 않으면 서버가 결정 때의 기본값을 쓴다.
-  const base = workers.map((w) => w.choice ?? workerDefault);
   const draftKey = `${orgId}/${approvalId}`;
   const draft = useChoiceDraft(draftKey);
-  // 바꾼 작업자가 있거나 Lead 제안이 없는 예전 요청이면, 보이는 값 그대로 승인하도록 모든 작업자의 값을 보낸다.
-  const choices =
-    draft || workers.some((w) => !w.choice)
-      ? workers.map((_, i) => draft?.[i] ?? base[i])
-      : undefined;
+  // 표의 값과 승인할 때 보낼 값은 한 곳에서 나온다. 모르는 칸이 있으면 승인할 수 없다.
+  const choices = decisionChoices(workers, draft, workerDefault);
+  const base = decisionChoices(workers, undefined, workerDefault).shown;
   const trimmed = note.trim();
   const alreadyDecided =
     decide.error instanceof ApiError && decide.error.code === "already_decided";
@@ -599,6 +599,7 @@ function DecisionForm({
       <WorkerChoiceTable
         idPrefix={`worker-choice-${approvalId}`}
         workers={workers}
+        shown={choices.shown}
         base={base}
         draft={draft}
         disabled={decide.isPending}
@@ -629,16 +630,17 @@ function DecisionForm({
             key={decision}
             className={decisionStyle[decision]}
             disabled={
-              closed || decide.isPending || (decision !== "approve" && !trimmed)
+              closed ||
+              decide.isPending ||
+              (decision === "approve" ? !choices.ready : !trimmed)
             }
             onClick={() =>
               decide.mutate(
                 {
                   decision,
                   note: trimmed || undefined,
-                  ...(decision === "approve" &&
-                  choices?.every((c) => c !== undefined)
-                    ? { choices }
+                  ...(decision === "approve" && choices.send
+                    ? { choices: choices.send }
                     : {}),
                 },
                 {

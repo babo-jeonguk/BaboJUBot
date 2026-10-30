@@ -1,5 +1,6 @@
 import {
   defaultHeartbeatMinutes,
+  explicitProposedChoice,
   resolveProposedChoice,
   type AddWorkerInput,
   type AddWorkerProposal,
@@ -13,6 +14,11 @@ import { agentNameKey, isAgentNameTaken } from "./agent-profile.ts";
 import type { NewApproval, RunRef } from "./approval.ts";
 import { copyInstructions, type HarnessLibraryContents } from "./harness.ts";
 import type { NewAgent, RecordSource } from "./organization.ts";
+import {
+  checkProviderChoices,
+  type ProviderChoiceProblem,
+  type ProviderModels,
+} from "./provider.ts";
 
 // Lead의 작업자 추가. 승인 정책(ADR-0003)이 꺼져 있으면 곧바로 작업자를 만들고, 켜져 있으면 승인 요청만 남긴다.
 // 어느 쪽이든 호출할 때 읽은 라이브러리 내용을 고정하며, 승인 때 라이브러리를 다시 읽지 않는다.
@@ -26,14 +32,22 @@ export type AddWorkerProposalWithChoice = AddWorkerProposal & {
  * 작업자 추가 대상 snapshot. Role은 라이브러리의 작업자 Role이어야 한다.
  * 이 snapshot이 곧바로 만드는 작업자의 사본이자 승인 요청에서 사용자가 검토하는 내용이다.
  * 프로바이더를 비웠으면 호출할 때 읽은 전역 작업자 기본값(`workerDefault`)을 Lead 제안으로 고정한다.
+ * Lead가 적은 프로바이더·모델은 등록된 연결과 그 모델 목록(`connections`)에 있어야 한다.
  */
 export function buildAddWorkerProposal(
   input: AddWorkerInput,
   library: HarnessLibraryContents,
-  workerDefault: ProviderChoice
-): AddWorkerProposalWithChoice | "unknown_role" {
+  {
+    workerDefault,
+    connections,
+  }: { workerDefault: ProviderChoice; connections: ProviderModels }
+): AddWorkerProposalWithChoice | "unknown_role" | ProviderChoiceProblem {
   const role = library.roles.get(input.role);
   if (!role || role.agent !== "worker") return "unknown_role";
+  const explicit = explicitProposedChoice(input);
+  const choiceProblem =
+    explicit && checkProviderChoices(connections, [explicit]);
+  if (choiceProblem) return choiceProblem;
   return {
     role: input.role,
     label: role.label,

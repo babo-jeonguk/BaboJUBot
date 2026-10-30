@@ -125,7 +125,7 @@ export const agents = pgTable(
     /** 사용자가 고른 얼굴. 고르지 않았으면 없고, 화면에는 ID에서 정한 기본 얼굴이 보인다. 사용자 변경만 바꾼다. */
     appearance: jsonb("appearance").$type<AgentAppearance>(),
     /**
-     * 실행 시도를 맡는 프로바이더 연결 ID. 만들 때 역할의 전역 기본값을 복사하며 사용자 설정 변경만 바꾼다.
+     * 실행 시도를 맡는 프로바이더 연결 ID. 만들 때의 값은 contracts `agentSchema.provider`를 따르고, 그 뒤에는 사용자 설정 변경만 바꾼다.
      * 이 열 전에 생긴 에이전트는 가짜 프로바이더(migration 0021)다.
      */
     provider: text("provider").notNull(),

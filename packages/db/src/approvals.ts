@@ -15,6 +15,8 @@ import {
   type HarnessLibraryContents,
   type PendingApproval,
   type ProposalProblem,
+  type ProviderChoiceProblem,
+  type ProviderModels,
   type RecordSource,
 } from "@babojubot/core";
 import { and, desc, eq } from "drizzle-orm";
@@ -69,6 +71,8 @@ export function recordGoal(
 
 /**
  * Lead의 초기 연구 승인 요청. 지금의 하네스 라이브러리로 승인 대상 snapshot을 고정해 저장하고 조직을 승인 대기로 넘긴다.
+ * Lead가 적은 프로바이더·모델은 호출한 쪽이 잠금 밖에서 받아 온 연결별 모델 목록(`connections`)으로 확인한다.
+ * 같은 호출 키의 재시도는 이 확인 전에 저장된 결과를 받는다.
  * 반려·수정 요청 뒤의 재제출이면 직전 요청을 가리킨다.
  */
 export function insertInitialApprovalRequest(
@@ -77,6 +81,7 @@ export function insertInitialApprovalRequest(
   input: RequestInitialApprovalInput,
   options: ToolCall & {
     library: HarnessLibraryContents;
+    connections: ProviderModels;
     source: RecordSource;
   }
 ): Promise<ToolWrite<Approval, ProposalProblem>> {
@@ -90,7 +95,10 @@ export function insertInitialApprovalRequest(
         org,
         input,
         options.library,
-        (await readProviderDefaults(tx)).workerDefault
+        {
+          workerDefault: (await readProviderDefaults(tx)).workerDefault,
+          connections: options.connections,
+        }
       );
       if (typeof proposal === "string")
         return { kind: "invalid", problem: proposal };
@@ -133,6 +141,7 @@ export type DecisionRefusal =
   | "already_decided"
   | "decision_not_allowed"
   | "choices_mismatch"
+  | ProviderChoiceProblem
   | "organization_closed"
   | "not_found";
 
@@ -141,7 +150,8 @@ export type DecisionRefusal =
  * 단계·승인한 Lead 제안 완료 기준·작업자·각 작업자의 사본·조직 템플릿 사본·Lead 깨우기·Event를 같은 transaction에 저장한다.
  * 이미 결정한 요청은 같은 결정이라도 다시 적용하지 않는다. 다른 조직의 요청과 없는 요청은 같은 `not_found`다.
  * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 `decision_not_allowed`, 생길 작업자 수와 다른 프로바이더·모델 목록은
- * `choices_mismatch`이며 아무것도 남기지 않는다. 승인하면 작업자마다 정한 프로바이더·모델을 결정에 함께 남긴다.
+ * `choices_mismatch`, 호출한 쪽이 잠금 밖에서 받아 온 연결별 모델 목록(`connections`)에 없는 값은 `unknown_provider`·`unknown_model`이며
+ * 아무것도 남기지 않는다. 이미 결정한 요청은 이 확인 전에 `already_decided`다. 승인하면 작업자마다 정한 프로바이더·모델을 결정에 함께 남긴다.
  * 초기 연구 승인 결정은 단계를 바꾸므로, 일시정지 중이면 조직을 재개하며 결정하고 중단된 조직에서는 `organization_closed`다.
  * 작업자 추가 결정은 단계와 상관없이 받으며 일시정지를 풀지 않는다(#58).
  * commit 뒤에는 재개·결정 Event 순서로 알리고, 재개했으면 그 조직의 대기 깨우기를 다시 처리한 뒤 Lead를 깨운다.
@@ -151,7 +161,8 @@ export async function decideApproval(
   organizationId: string,
   approvalId: string,
   input: DecideApprovalInput,
-  source: RecordSource
+  source: RecordSource,
+  connections: ProviderModels = []
 ): Promise<Stored<Approval, DecisionRefusal>> {
   if (!isUuid(organizationId) || !isUuid(approvalId))
     return refused("not_found");
@@ -189,6 +200,7 @@ export async function decideApproval(
         stage: resumed ? "awaiting_approval" : org.stage,
         agentNames: await agentNamesOf(tx, organizationId),
         workerDefault: (await readProviderDefaults(tx)).workerDefault,
+        connections,
       },
       source
     );

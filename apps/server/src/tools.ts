@@ -268,15 +268,14 @@ export function orgToolsRouter({
         await recordGoal(db, run, input, call("연구 목표와 완료 기준 기록"))
       );
     },
-    async request_initial_approval(input, { run, refuse, call, write }) {
-      const problem = await providers.checkChoices(
-        input.team.flatMap((m) => explicitProposedChoice(m) ?? [])
-      );
-      if (problem) return refuse(422, problem);
+    async request_initial_approval(input, { run, call, write }) {
       const heads = input.team.reduce((n, m) => n + m.count, 0);
       await write(
         await insertInitialApprovalRequest(db, run, input, {
           library: await loadHarnessLibrary(harnessDir),
+          connections: await providers.modelsFor(
+            input.team.flatMap((m) => explicitProposedChoice(m) ?? [])
+          ),
           source: { newId: randomUUID, now },
           ...call(
             `초기 연구 승인 요청: 작업자 ${heads}명, 템플릿 ${input.template}${input.completionCriteria ? ", 완료 기준 제안" : ""}`
@@ -351,13 +350,13 @@ export function orgToolsRouter({
       );
     },
     // 승인 정책이 꺼져 있으면 곧바로 작업자를 만들고(201), 켜져 있으면 승인 요청만 남긴다(202).
-    // Lead가 적은 프로바이더·모델은 저장 전에 등록부로 확인한다(초기 연구 승인 요청도 같다).
-    async add_worker(input, { run, refuse, call, write }) {
+    // Lead가 적은 프로바이더·모델은 하네스 라이브러리처럼 잠금 밖에서 받아 온 모델 목록으로 저장 규칙 안에서 확인한다.
+    // 그래서 같은 호출 키의 재시도는 목록이 바뀌었어도 저장된 결과를 받는다(초기 연구 승인 요청도 같다).
+    async add_worker(input, { run, call, write }) {
       const choice = explicitProposedChoice(input);
-      const problem = choice && (await providers.checkChoice(choice));
-      if (problem) return refuse(422, problem);
       const result = await addWorker(db, run, input, {
         library: await loadHarnessLibrary(harnessDir),
+        connections: await providers.modelsFor(choice ? [choice] : []),
         source,
         ...call(`작업자 추가: ${input.role}`),
       });

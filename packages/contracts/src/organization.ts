@@ -71,7 +71,10 @@ export const agentSchema = z.object({
   name: z.string(),
   /** 얼굴. 사용자가 고르지 않았으면 ID에서 정한 기본 얼굴이다. */
   appearance: agentAppearanceSchema,
-  /** 실행 시도를 맡는 프로바이더 연결. 만들 때 역할의 전역 기본값을 복사하고 사용자만 바꾼다. */
+  /**
+   * 실행 시도를 맡는 프로바이더 연결. 만들 때 Lead는 사용자가 고른 값(없으면 Lead 기본값), 작업자는 승인 결정의 값
+   * (정책이 꺼져 있으면 Lead 제안)이며, 그 뒤에는 사용자만 바꾼다(docs/architecture.md).
+   */
   provider: providerIdSchema,
   /** 모델. 없으면 프로바이더의 기본 모델이다. */
   model: modelIdSchema.nullable(),

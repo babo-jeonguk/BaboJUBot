@@ -49,7 +49,8 @@ export const providerSummarySchema = z.object({
 export type ProviderSummary = z.infer<typeof providerSummarySchema>;
 
 /**
- * 전역 프로바이더 설정. Lead·작업자 기본값은 그 역할의 에이전트를 만들 때 복사하며, 바꿔도 이미 있는 에이전트는 그대로다.
+ * 전역 프로바이더 설정. Lead 기본값은 사용자가 고르지 않은 Lead를 만들 때, 작업자 기본값은 Lead가 작업자의 프로바이더를
+ * 비운 요청을 받을 때 쓴다. 바꿔도 이미 있는 에이전트와 이미 올라온 요청은 그대로다.
  * 연결 목록은 서버에 등록된 순서다.
  */
 export const providerSettingsSchema = z.object({

@@ -28,6 +28,8 @@ export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
     completion_criteria_set: ["completion_criteria_set", 409],
     unknown_role: ["invalid_input", 422],
     unknown_template: ["invalid_input", 422],
+    unknown_provider: ["unknown_provider", 422],
+    unknown_model: ["unknown_model", 422],
     self_message: ["invalid_input", 422],
     conversation_required: ["invalid_input", 422],
     not_found: ["not_found", 404],

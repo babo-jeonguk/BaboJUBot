@@ -254,13 +254,19 @@ describe("Lead provider proposals in the initial research approval", () => {
 async function leadSession(name: string) {
   const agents = scriptedAgents();
   const tokens = new Map<string, string>();
+  // `fake-2`는 받아 오는 모델 목록을 쓴다. 테스트가 목록을 바꿔 연결의 모델이 사라진 뒤를 본다.
+  let fake2Models = [
+    { id: "fake-2-mini", label: "미니" },
+    { id: "fake-2-max", label: "맥스" },
+  ];
+  const [fake, fake2] = createFakeProviders(2, () => ({
+    execute(request, control) {
+      tokens.set(request.identity.agentId, request.access.token);
+      return agents.runtime.execute(request, control);
+    },
+  }));
   t = await startTestServer({
-    providers: createFakeProviders(2, () => ({
-      execute(request, control) {
-        tokens.set(request.identity.agentId, request.access.token);
-        return agents.runtime.execute(request, control);
-      },
-    })),
+    providers: [fake!, { ...fake2!, listModels: async () => fake2Models }],
   });
   const org = await researching(agents, name);
   const gate = createGate();
@@ -272,8 +278,15 @@ async function leadSession(name: string) {
     org,
     tool: (method: string, path: string, body?: unknown) =>
       t!.tool(token, method, path, body),
-    addWorker: (body: unknown) =>
-      t!.tool(token, "POST", orgTools.add_worker.path, body),
+    addWorker: (body: unknown, key?: string) =>
+      t!.request("POST", `/api/tools${orgTools.add_worker.path}`, body, {
+        authorization: `Bearer ${token}`,
+        ...(key ? { "idempotency-key": key } : {}),
+      }),
+    /** `fake-2`의 모델 목록에서 이 모델을 뺀다. */
+    dropFake2Model(id: string) {
+      fake2Models = fake2Models.filter((m) => m.id !== id);
+    },
     async finish() {
       agents.queue(org.lead.id, idle, idle);
       gate.open();
@@ -347,6 +360,52 @@ describe("Lead provider proposals when adding a worker", () => {
     expect(decided.decidedWorkers).toEqual([
       { agentId: added.id, provider: "fake", model: "fake-max" },
     ]);
+  });
+
+  it("returns the stored outcome for a retried call with the same key even after the proposed model left the provider's list", async () => {
+    const s = await leadSession("모델 목록 변동 재시도 조직");
+    const body = {
+      role: "researcher",
+      provider: "fake-2",
+      model: "fake-2-mini",
+    };
+    const first = await s.addWorker(body, "add-1");
+    expect(first.status).toBe(201);
+    s.dropFake2Model("fake-2-mini");
+    // 같은 키·같은 입력은 이미 남긴 결과를 돌려준다. 새 키의 같은 입력은 지금 목록으로 거부한다.
+    const retried = await s.addWorker(body, "add-1");
+    expect([retried.status, retried.body]).toEqual([201, first.body]);
+    const fresh = await s.addWorker(body, "add-2");
+    expect([fresh.status, fresh.body.error?.code]).toEqual([
+      422,
+      "unknown_model",
+    ]);
+    await s.finish();
+    expect(
+      (await workersOf(s.org.id)).filter((w) => w.provider === "fake-2")
+    ).toHaveLength(1);
+  });
+
+  it("answers a repeated approval as already decided even after the chosen model left the provider's list", async () => {
+    const s = await leadSession("결정 재전송 조직");
+    await t!.request("PUT", `/api/organizations/${s.org.id}/approval-policy`, {
+      addWorker: true,
+    });
+    const res = await s.addWorker({ role: "researcher" });
+    const approvalId = res.body.approval.id as string;
+    await s.finish();
+    const body = {
+      decision: "approve",
+      choices: [{ provider: "fake-2", model: "fake-2-mini" }],
+    };
+    expect((await decide(s.org.id, approvalId, body)).status).toBe(200);
+    s.dropFake2Model("fake-2-mini");
+    const again = await decide(s.org.id, approvalId, body);
+    expect([again.status, again.body.error.code]).toEqual([
+      409,
+      "already_decided",
+    ]);
+    await t!.drain();
   });
 
   it("serves the provider list to the Lead only, without any write path", async () => {

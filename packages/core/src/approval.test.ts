@@ -13,6 +13,17 @@ import {
 } from "./approval.ts";
 import type { HarnessLibraryContents } from "./harness.ts";
 
+const connections = [
+  {
+    id: "fake",
+    models: [
+      { id: "fake-large", label: "라지" },
+      { id: "fake-max", label: "맥스" },
+    ],
+  },
+  { id: "fake-2", models: [{ id: "fake-2-mini", label: "미니" }] },
+];
+
 const at = "2026-10-18T00:00:00.000Z";
 let n = 0;
 const source = { newId: () => `id-${++n}`, now: () => new Date(at) };
@@ -167,6 +178,7 @@ describe("planApprovalDecision", () => {
     stage: "awaiting_approval" as const,
     agentNames: [],
     workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+    connections,
   };
   const decide = (input: Parameters<typeof planApprovalDecision>[1]) => {
     const plan = planApprovalDecision(approval, input, awaiting, source);
@@ -257,6 +269,7 @@ describe("planApprovalDecision", () => {
         stage: "awaiting_approval",
         agentNames: ["연구원 1"],
         workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+        connections,
       },
       source
     );
@@ -367,7 +380,7 @@ describe("buildInitialResearchProposal", () => {
           ),
         ]),
       },
-      workerDefault
+      { workerDefault, connections }
     );
     if (typeof built === "string") throw new Error(built);
     expect(built.team.map((m) => m.choice)).toEqual([
@@ -383,7 +396,7 @@ describe("buildInitialResearchProposal", () => {
         { goal: "목표", completionCriteria: null },
         input,
         library,
-        workerDefault
+        { workerDefault, connections }
       )
     ).toBe("completion_criteria_required");
   });
@@ -394,7 +407,7 @@ describe("buildInitialResearchProposal", () => {
         { goal: "목표", completionCriteria: null },
         { ...input, completionCriteria: "Lead 기준" },
         library,
-        workerDefault
+        { workerDefault, connections }
       )
     ).toMatchObject({
       goal: "목표",
@@ -405,12 +418,10 @@ describe("buildInitialResearchProposal", () => {
 
   it("keeps the owner's criteria and refuses a request that tries to replace them", () => {
     const owner = { goal: "목표", completionCriteria: "사용자 기준" };
-    const built = buildInitialResearchProposal(
-      owner,
-      input,
-      library,
-      workerDefault
-    );
+    const built = buildInitialResearchProposal(owner, input, library, {
+      workerDefault,
+      connections,
+    });
     expect(built).toMatchObject({ completionCriteria: "사용자 기준" });
     expect(built).not.toHaveProperty("completionCriteriaProposed");
     expect(
@@ -418,7 +429,7 @@ describe("buildInitialResearchProposal", () => {
         owner,
         { ...input, completionCriteria: "Lead 기준" },
         library,
-        workerDefault
+        { workerDefault, connections }
       )
     ).toBe("completion_criteria_set");
   });
@@ -429,7 +440,7 @@ describe("buildInitialResearchProposal", () => {
         { goal: null, completionCriteria: null },
         { ...input, completionCriteria: "Lead 기준" },
         library,
-        workerDefault
+        { workerDefault, connections }
       )
     ).toBe("goal_missing");
   });

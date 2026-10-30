@@ -936,9 +936,8 @@ export async function startServer({
     async (req, res) => {
       const input = parseInput(res, decideApprovalInputSchema, req.body);
       if (!input) return;
-      const problem =
-        input.choices && (await registry.checkChoices(input.choices));
-      if (problem) return refuseOwner(res, problem);
+      // 모델 목록은 잠금 밖에서 받아 오고, 확인은 이미 결정한 요청인지 본 뒤 결정 규칙 안에서 한다.
+      const connections = await registry.modelsFor(input.choices ?? []);
       respond(
         res,
         await complete(
@@ -947,7 +946,8 @@ export async function startServer({
             req.params.id,
             req.params.approvalId,
             input,
-            source
+            source,
+            connections
           )
         )
       );

@@ -64,12 +64,15 @@ test("the owner changes one worker's model on the approval detail, reverts and c
     "fake-2-mini"
   );
   await expect(second).toContainText("변경");
+  // 첫 작업자는 프로바이더만 바꾼다. 모델은 두 쪽 모두 기본 모델이다.
+  await decision
+    .getByLabel("연구원 1번 프로바이더")
+    .selectOption({ label: "가짜 프로바이더 2" });
 
   await decision.getByRole("button", { name: "승인" }).click();
   const decided = decision.getByTestId("decided-worker");
   await expect(decided).toHaveCount(2);
   await expect(decided.nth(0)).toContainText("연구원 1");
-  await expect(decided.nth(0)).not.toContainText("변경");
   await expect(decided.nth(1)).toContainText("연구원 2");
   const cells = decided.nth(1).locator("td");
   const lead = cells.nth(1);
@@ -81,7 +84,10 @@ test("the owner changes one worker's model on the approval detail, reverts and c
   // 프로바이더를 바꿨으니 프로바이더와 모델 칸 모두 `변경`이다.
   await expect(chosen.locator("[data-changed]")).toHaveCount(2);
   await expect(chosen.locator("[data-changed]").first()).toContainText("변경");
-  await expect(decided.nth(0).locator("[data-changed]")).toHaveCount(0);
+  // 프로바이더만 바꾼 작업자는 프로바이더 칸에만 `변경`이 붙는다.
+  const firstChanged = decided.nth(0).locator("[data-changed]");
+  await expect(firstChanged).toHaveCount(1);
+  await expect(firstChanged).toContainText("가짜 프로바이더 2");
 
   // 결정대로 작업자가 생겼다.
   const detail = (await (await page.request.get(api(""))).json()) as {
@@ -92,7 +98,7 @@ test("the owner changes one worker's model on the approval detail, reverts and c
       .filter((a) => a.role === "worker")
       .map((a) => [a.name, a.provider, a.model])
   ).toEqual([
-    ["연구원 1", "fake", null],
+    ["연구원 1", "fake-2", null],
     ["연구원 2", "fake-2", "fake-2-mini"],
   ]);
 

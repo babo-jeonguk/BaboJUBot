@@ -42,7 +42,7 @@ export async function readProviderDefaults(
 }
 
 /**
- * 사용자의 Lead·작업자 기본값 변경. 이미 있는 에이전트는 바꾸지 않고 이후에 만드는 에이전트만 복사한다.
+ * 사용자의 Lead·작업자 기본값 변경. 이미 있는 에이전트와 이미 올라온 요청은 바꾸지 않고, 이후의 Lead 생성과 작업자 요청만 쓴다.
  * 전역 설정이라 조직 Event는 남기지 않고, commit 뒤 다른 화면에 다시 불러오라는 신호만 보낸다. 값은 변경 뒤의 기본값이다.
  */
 export async function updateProviderDefaults(
