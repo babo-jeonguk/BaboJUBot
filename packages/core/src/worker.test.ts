@@ -1,4 +1,3 @@
-import type { AddWorkerProposal } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import { planApprovalDecision } from "./approval.ts";
 import type { HarnessLibraryContents } from "./harness.ts";
@@ -8,6 +7,16 @@ import {
   planAddWorker,
 } from "./worker.ts";
 
+const connections = [
+  {
+    id: "fake",
+    models: [
+      { id: "fake-large", label: "라지" },
+      { id: "fake-max", label: "맥스" },
+    ],
+  },
+  { id: "fake-2", models: [{ id: "fake-2-mini", label: "미니" }] },
+];
 const at = "2026-10-22T00:00:00.000Z";
 let n = 0;
 const source = { newId: () => `id-${++n}`, now: () => new Date(at) };
@@ -52,24 +61,68 @@ const library: HarnessLibraryContents = {
   ]),
   templates: new Map(),
 };
-const proposal: AddWorkerProposal = {
+const workerDefault = { provider: "fake-2", model: "fake-2-mini" };
+const proposal = {
   role: "researcher",
   label: "문헌 조사자",
   files,
   heartbeatMinutes: 30,
+  choice: { provider: "fake", model: "fake-large" },
 };
+const off = { addWorker: false, publishToGitHub: false };
+const on = { addWorker: true, publishToGitHub: false };
 
 describe("buildAddWorkerProposal", () => {
   it("fixes the library's worker Role contents and refuses Lead or unknown Roles", () => {
-    expect(buildAddWorkerProposal({ role: "researcher" }, library)).toEqual(
-      proposal
+    expect(
+      buildAddWorkerProposal(
+        { role: "researcher", provider: "fake", model: "fake-large" },
+        library,
+        { workerDefault, connections }
+      )
+    ).toEqual(proposal);
+    expect(
+      buildAddWorkerProposal({ role: "lead" }, library, {
+        workerDefault,
+        connections,
+      })
+    ).toBe("unknown_role");
+    expect(
+      buildAddWorkerProposal({ role: "nobody" }, library, {
+        workerDefault,
+        connections,
+      })
+    ).toBe("unknown_role");
+  });
+
+  it("refuses a provider or model that is not in the registered connections' lists", () => {
+    const build = (input: object) =>
+      buildAddWorkerProposal({ role: "researcher", ...input }, library, {
+        workerDefault,
+        connections,
+      });
+    expect(build({ provider: "nope" })).toBe("unknown_provider");
+    expect(build({ provider: "fake", model: "fake-2-mini" })).toBe(
+      "unknown_model"
     );
-    expect(buildAddWorkerProposal({ role: "lead" }, library)).toBe(
-      "unknown_role"
+    // 비운 프로바이더는 확인하지 않고 기본값을 쓴다.
+    expect(build({})).toMatchObject({ choice: workerDefault });
+  });
+
+  it("fixes the worker default as the proposal when the Lead leaves the provider out", () => {
+    const built = buildAddWorkerProposal({ role: "researcher" }, library, {
+      workerDefault,
+      connections,
+    });
+    if (typeof built === "string") throw new Error(built);
+    expect(built.choice).toEqual(workerDefault);
+    const providerOnly = buildAddWorkerProposal(
+      { role: "researcher", provider: "fake" },
+      library,
+      { workerDefault, connections }
     );
-    expect(buildAddWorkerProposal({ role: "nobody" }, library)).toBe(
-      "unknown_role"
-    );
+    if (typeof providerOnly === "string") throw new Error(providerOnly);
+    expect(providerOnly.choice).toEqual({ provider: "fake", model: null });
   });
 });
 
@@ -106,10 +159,9 @@ describe("planAddWorker", () => {
       run,
       proposal,
       {
-        policy: { addWorker: false },
+        policy: off,
         stage: "researching",
         agentNames: [],
-        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
       },
       source
     );
@@ -118,9 +170,9 @@ describe("planAddWorker", () => {
       organizationId: "org-1",
       role: "worker",
       name: "문헌 조사자 1",
-      // 만들 때 읽은 전역 작업자 기본값을 복사한다.
-      provider: "fake-2",
-      model: "fake-2-mini",
+      // Lead가 제안한 프로바이더·모델로 바로 만든다.
+      provider: "fake",
+      model: "fake-large",
     });
     expect(plan.copies.map((c) => [c.agentId, c.path, c.content])).toEqual([
       [plan.worker.id, "AGENTS.md", "# 조사자"],
@@ -144,10 +196,9 @@ describe("planAddWorker", () => {
       run,
       proposal,
       {
-        policy: { addWorker: true },
+        policy: on,
         stage: "researching",
         agentNames: [],
-        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
       },
       source
     );
@@ -183,7 +234,8 @@ describe("planApprovalDecision for add_worker", () => {
       {
         stage: "result_review",
         agentNames: ["문헌 조사자 1"],
-        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+        workerDefault,
+        connections,
       },
       source
     );
@@ -191,6 +243,10 @@ describe("planApprovalDecision for add_worker", () => {
     expect(plan.status).toBe("approved");
     expect(plan.stage).toBe("result_review");
     expect(plan.workers.map((w) => w.name)).toEqual(["문헌 조사자 2"]);
+    // 사용자가 바꾸지 않았으면 Lead 제안이다.
+    expect(plan.decidedWorkers).toEqual([
+      { agentId: plan.workers[0]!.id, provider: "fake", model: "fake-large" },
+    ]);
     expect(plan.copies.map((c) => c.content)).toEqual(["# 조사자", "# 성향"]);
     expect(plan.template).toBeNull();
     expect(plan.wake).toMatchObject({
@@ -206,6 +262,62 @@ describe("planApprovalDecision for add_worker", () => {
     });
   });
 
+  it("creates the worker with the Owner's provider and model, keeping the request as the Lead sent it", () => {
+    const plan = planApprovalDecision(
+      approval,
+      { decision: "approve", choices: [{ provider: "fake-2", model: null }] },
+      { stage: "researching", agentNames: [], workerDefault, connections },
+      source
+    );
+    if (typeof plan === "string") throw new Error(plan);
+    expect(plan.workers[0]).toMatchObject({ provider: "fake-2", model: null });
+    expect(plan.decidedWorkers).toEqual([
+      { agentId: plan.workers[0]!.id, provider: "fake-2", model: null },
+    ]);
+    expect(approval.proposal.choice).toEqual({
+      provider: "fake",
+      model: "fake-large",
+    });
+  });
+
+  it("refuses an Owner's choice that is not in the registered connections' lists", () => {
+    expect(
+      planApprovalDecision(
+        approval,
+        {
+          decision: "approve",
+          choices: [{ provider: "fake-2", model: "fake-large" }],
+        },
+        { stage: "researching", agentNames: [], workerDefault, connections },
+        source
+      )
+    ).toBe("unknown_model");
+  });
+
+  it("refuses choices that do not match the one worker", () => {
+    const choice = { provider: "fake", model: null };
+    expect(
+      planApprovalDecision(
+        approval,
+        { decision: "approve", choices: [choice, choice] },
+        { stage: "researching", agentNames: [], workerDefault, connections },
+        source
+      )
+    ).toBe("choices_mismatch");
+  });
+
+  it("uses the worker default at decision time for a request from before proposals had a provider", () => {
+    const { choice: _choice, ...legacy } = proposal;
+    const plan = planApprovalDecision(
+      { ...approval, proposal: legacy },
+      { decision: "approve" },
+      { stage: "researching", agentNames: [], workerDefault, connections },
+      source
+    );
+    if (typeof plan === "string") throw new Error(plan);
+    expect(plan.workers[0]).toMatchObject(workerDefault);
+  });
+
   it("names the new worker apart from a Lead renamed to a worker-shaped name", () => {
     const plan = planApprovalDecision(
       approval,
@@ -213,7 +325,8 @@ describe("planApprovalDecision for add_worker", () => {
       {
         stage: "researching",
         agentNames: ["문헌 조사자 1"],
-        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+        workerDefault,
+        connections,
       },
       source
     );
@@ -228,7 +341,8 @@ describe("planApprovalDecision for add_worker", () => {
       {
         stage: "researching",
         agentNames: [],
-        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+        workerDefault,
+        connections,
       },
       source
     );
@@ -238,6 +352,7 @@ describe("planApprovalDecision for add_worker", () => {
       note: "지금은 인원이 충분하다",
       stage: "researching",
       workers: [],
+      decidedWorkers: null,
       copies: [],
     });
     expect(plan.event.payload).toMatchObject({ createdAgentIds: [] });
@@ -251,7 +366,8 @@ describe("planApprovalDecision for add_worker", () => {
         {
           stage: "researching",
           agentNames: [],
-          workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+          workerDefault,
+          connections,
         },
         source
       )

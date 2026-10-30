@@ -266,7 +266,14 @@ export async function startServer({
   app.use(express.json({ limit: jsonBodyLimitBytes }));
   app.use(
     orgToolsBasePath,
-    orgToolsRouter({ db, hub, dispatcher, now, harnessDir })
+    orgToolsRouter({
+      db,
+      hub,
+      dispatcher,
+      now,
+      harnessDir,
+      providers: registry,
+    })
   );
 
   app.get("/api/health", (_req, res) => {
@@ -921,12 +928,16 @@ export async function startServer({
    * 승인 결정 제어 명령. 결정은 한 번만 할 수 있고, 이미 결정한 요청은 409 `already_decided`다.
    * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 422 `decision_not_allowed`다.
    * 일시정지 중의 초기 연구 승인 결정은 조직을 재개하고, 중단된 조직의 초기 연구 승인 결정은 409 `organization_closed`다.
+   * 승인하며 정한 작업자마다의 프로바이더·모델은 이 서버에 없는 연결이나 그 연결의 목록에 없는 모델이면
+   * 422 `unknown_provider`·`unknown_model`, 생길 작업자 수와 다르면 422 `invalid_input`이다.
    */
   app.post(
     "/api/organizations/:id/approvals/:approvalId/decision",
     async (req, res) => {
       const input = parseInput(res, decideApprovalInputSchema, req.body);
       if (!input) return;
+      // 모델 목록은 잠금 밖에서 받아 오고, 확인은 이미 결정한 요청인지 본 뒤 결정 규칙 안에서 한다.
+      const connections = await registry.modelsFor(input.choices ?? []);
       respond(
         res,
         await complete(
@@ -935,7 +946,8 @@ export async function startServer({
             req.params.id,
             req.params.approvalId,
             input,
-            source
+            source,
+            connections
           )
         )
       );

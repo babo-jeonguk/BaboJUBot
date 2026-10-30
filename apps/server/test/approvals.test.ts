@@ -723,7 +723,10 @@ describe("goal and initial research approval", () => {
       "stage",
     ]);
     // 승인 정책의 항목은 선택 행동뿐이고, 초기 연구 승인을 끄는 항목은 없다(ADR-0003).
-    expect(Object.keys(detail.approvalPolicy)).toEqual(["addWorker"]);
+    expect(Object.keys(detail.approvalPolicy)).toEqual([
+      "addWorker",
+      "publishToGitHub",
+    ]);
     expect(
       (
         await t.request("PUT", `/api/organizations/${org.id}/approval-policy`, {

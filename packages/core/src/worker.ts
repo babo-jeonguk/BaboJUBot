@@ -1,5 +1,7 @@
 import {
   defaultHeartbeatMinutes,
+  explicitProposedChoice,
+  resolveProposedChoice,
   type AddWorkerInput,
   type AddWorkerProposal,
   type ApprovalPolicy,
@@ -12,25 +14,46 @@ import { agentNameKey, isAgentNameTaken } from "./agent-profile.ts";
 import type { NewApproval, RunRef } from "./approval.ts";
 import { copyInstructions, type HarnessLibraryContents } from "./harness.ts";
 import type { NewAgent, RecordSource } from "./organization.ts";
+import {
+  checkProviderChoices,
+  type ProviderChoiceProblem,
+  type ProviderModels,
+} from "./provider.ts";
 
 // Lead의 작업자 추가. 승인 정책(ADR-0003)이 꺼져 있으면 곧바로 작업자를 만들고, 켜져 있으면 승인 요청만 남긴다.
 // 어느 쪽이든 호출할 때 읽은 라이브러리 내용을 고정하며, 승인 때 라이브러리를 다시 읽지 않는다.
 
+/** 지금 요청으로 만든 작업자 추가 snapshot. Lead 제안 프로바이더·모델이 언제나 있다(예전 요청에만 없음). */
+export type AddWorkerProposalWithChoice = AddWorkerProposal & {
+  choice: ProviderChoice;
+};
+
 /**
  * 작업자 추가 대상 snapshot. Role은 라이브러리의 작업자 Role이어야 한다.
  * 이 snapshot이 곧바로 만드는 작업자의 사본이자 승인 요청에서 사용자가 검토하는 내용이다.
+ * 프로바이더를 비웠으면 호출할 때 읽은 전역 작업자 기본값(`workerDefault`)을 Lead 제안으로 고정한다.
+ * Lead가 적은 프로바이더·모델은 등록된 연결과 그 모델 목록(`connections`)에 있어야 한다.
  */
 export function buildAddWorkerProposal(
   input: AddWorkerInput,
-  library: HarnessLibraryContents
-): AddWorkerProposal | "unknown_role" {
+  library: HarnessLibraryContents,
+  {
+    workerDefault,
+    connections,
+  }: { workerDefault: ProviderChoice; connections: ProviderModels }
+): AddWorkerProposalWithChoice | "unknown_role" | ProviderChoiceProblem {
   const role = library.roles.get(input.role);
   if (!role || role.agent !== "worker") return "unknown_role";
+  const explicit = explicitProposedChoice(input);
+  const choiceProblem =
+    explicit && checkProviderChoices(connections, [explicit]);
+  if (choiceProblem) return choiceProblem;
   return {
     role: input.role,
     label: role.label,
     files: role.files,
     heartbeatMinutes: role.heartbeatMinutes,
+    choice: resolveProposedChoice(input, workerDefault),
   };
 }
 
@@ -54,7 +77,7 @@ export function nextWorkerName(label: string, agentNames: string[]) {
 /**
  * snapshot에서 작업자 한 명과 그 작업자만의 Role·Soul·Skill 사본을 만든다. 기본 heartbeat 간격도 snapshot의 Role 값이다.
  * `agentNames`는 조직의 모든 에이전트 이름이며 함께 만드는 작업자가 있으면 그 이름도 넣는다(`nextWorkerName`).
- * 프로바이더·모델은 만들 때 읽은 전역 작업자 기본값(`workerDefault`)을 복사한다. 나중에 기본값이 바뀌어도 그대로다.
+ * 프로바이더·모델은 결정한 값(`choice`)이다. 나중에 전역 기본값이 바뀌어도 그대로다.
  */
 export function planWorker(
   organizationId: string,
@@ -63,16 +86,16 @@ export function planWorker(
   {
     newId,
     createdAt,
-    workerDefault,
-  }: { newId: () => string; createdAt: string; workerDefault: ProviderChoice }
+    choice,
+  }: { newId: () => string; createdAt: string; choice: ProviderChoice }
 ): { worker: NewAgent; copies: InstructionCopy[] } {
   const worker: NewAgent = {
     id: newId(),
     organizationId,
     role: "worker",
     name: nextWorkerName(proposal.label, agentNames),
-    provider: workerDefault.provider,
-    model: workerDefault.model,
+    provider: choice.provider,
+    model: choice.model,
     createdAt,
     heartbeatMinutes: proposal.heartbeatMinutes ?? defaultHeartbeatMinutes,
   };
@@ -93,21 +116,19 @@ export type AddWorkerPlan =
 
 /**
  * 지금의 승인 정책으로 작업자 추가를 정한다. 정책은 호출한 쪽이 조직 행 잠금 아래에서 읽은 최신 값이어야 한다.
- * 승인 요청은 조직 단계를 바꾸지 않고, 같은 Role이라도 호출마다 따로다. 곧바로 만드는 작업자는 `workerDefault`를 복사한다.
+ * 승인 요청은 조직 단계를 바꾸지 않고, 같은 Role이라도 호출마다 따로다. 곧바로 만드는 작업자는 Lead 제안 프로바이더·모델을 쓴다.
  */
 export function planAddWorker(
   run: RunRef,
-  proposal: AddWorkerProposal,
+  proposal: AddWorkerProposalWithChoice,
   {
     policy,
     stage,
     agentNames,
-    workerDefault,
   }: {
     policy: ApprovalPolicy;
     stage: LifecycleStage;
     agentNames: string[];
-    workerDefault: ProviderChoice;
   },
   { newId, now }: RecordSource
 ): AddWorkerPlan {
@@ -117,7 +138,7 @@ export function planAddWorker(
       run.organizationId,
       proposal,
       agentNames,
-      { newId, createdAt, workerDefault }
+      { newId, createdAt, choice: proposal.choice }
     );
     return {
       kind: "added",

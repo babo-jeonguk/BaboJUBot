@@ -1,11 +1,16 @@
 import {
   approvalKindDecisions,
+  explicitProposedChoice,
+  sameProviderChoice,
+  proposedWorkers,
+  resolveProposedChoice,
   orgToolNames,
   orgTools,
   type AddWorkerProposal,
   type AgentRole,
   type ApprovalDecision,
   type ApprovalStatus,
+  type DecidedWorker,
   type FlowTemplateCopy,
   type InitialResearchProposal,
   type InstructionCopy,
@@ -19,6 +24,11 @@ import {
 } from "@babojubot/contracts";
 import type { HarnessLibraryContents } from "./harness.ts";
 import type { NewAgent, RecordSource } from "./organization.ts";
+import {
+  checkProviderChoices,
+  type ProviderChoiceProblem,
+  type ProviderModels,
+} from "./provider.ts";
 import type { Wake } from "./run.ts";
 import { planWorker } from "./worker.ts";
 
@@ -88,7 +98,8 @@ export type ProposalProblem =
   | "completion_criteria_required"
   | "completion_criteria_set"
   | "unknown_role"
-  | "unknown_template";
+  | "unknown_template"
+  | ProviderChoiceProblem;
 
 /**
  * 제출 내용과 지금의 하네스 라이브러리로 승인 대상 snapshot을 만든다. 팀 구성의 Role은 라이브러리의 작업자 Role이어야 한다.
@@ -96,11 +107,19 @@ export type ProposalProblem =
  *
  * 완료 기준: 조직에 없으면(사용자가 비워 둠) Lead가 이 요청에서 제안해야 하며 snapshot에 Lead 제안으로 표시한다.
  * 조직에 있으면 Lead는 이 요청으로 바꿀 수 없으므로 완료 기준을 함께 내면 거부한다.
+ *
+ * 팀 줄의 프로바이더를 비웠으면 제출할 때 읽은 전역 작업자 기본값(`workerDefault`)을 그 줄의 Lead 제안으로 고정한다.
+ * 화면에 보이는 제안과 승인해서 생기는 작업자가 같도록, 승인 때 기본값을 다시 읽지 않는다.
+ * Lead가 적은 프로바이더·모델은 등록된 연결과 그 모델 목록(`connections`)에 있어야 한다.
  */
 export function buildInitialResearchProposal(
   organization: { goal: string | null; completionCriteria: string | null },
   input: RequestInitialApprovalInput,
-  library: HarnessLibraryContents
+  library: HarnessLibraryContents,
+  {
+    workerDefault,
+    connections,
+  }: { workerDefault: ProviderChoice; connections: ProviderModels }
 ): InitialResearchProposal | ProposalProblem {
   if (!organization.goal) return "goal_missing";
   if (organization.completionCriteria && input.completionCriteria)
@@ -117,10 +136,16 @@ export function buildInitialResearchProposal(
       count: member.count,
       files: role.files,
       heartbeatMinutes: role.heartbeatMinutes,
+      choice: resolveProposedChoice(member, workerDefault),
     });
   }
   const template = library.templates.get(input.template);
   if (!template) return "unknown_template";
+  const choiceProblem = checkProviderChoices(
+    connections,
+    input.team.flatMap((m) => explicitProposedChoice(m) ?? [])
+  );
+  if (choiceProblem) return choiceProblem;
   const proposed = !organization.completionCriteria;
   return {
     goal: organization.goal,
@@ -209,6 +234,8 @@ export type ApprovalDecisionPlan = {
   /** 이 결정으로 조직의 완료 기준이 되는 Lead 제안. 제안을 승인할 때만 있다. */
   completionCriteria: string | null;
   workers: NewAgent[];
+  /** 승인으로 생긴 작업자마다의 프로바이더·모델. 승인할 때만 있다. */
+  decidedWorkers: DecidedWorker[] | null;
   copies: InstructionCopy[];
   template: FlowTemplateCopy | null;
   wake: Wake;
@@ -233,28 +260,56 @@ export type PendingApproval = {
  *   반려는 아무것도 만들지 않는다. 어느 결정도 조직 단계를 바꾸지 않는다.
  *
  * `agentNames`는 결정 때 조직의 모든 에이전트 이름이다. 새 작업자 이름은 이 이름들·함께 만드는 작업자 이름과 겹치지 않는다.
- * 새 작업자는 결정 때 읽은 전역 작업자 기본값(`workerDefault`)의 프로바이더·모델을 복사한다.
+ *
+ * 새 작업자의 프로바이더·모델은 사용자가 승인하며 정한 값(`choices`, `proposedWorkers` 순서로 생길 작업자 수만큼)이고,
+ * 비웠으면 Lead 제안이다. 요청은 바꾸지 않고 결정에 작업자마다의 값을 남긴다(`decidedWorkers`).
+ * `choices`의 수가 생길 작업자 수와 다르면 `choices_mismatch`다. Lead 제안과 다른 값이 등록된 연결과 그 모델 목록
+ * (`connections`)에 없으면 `unknown_provider`·`unknown_model`이며, Lead 제안과 같은 값은 요청 때 확인했으므로 다시 보지 않는다. Lead 제안이 없는 예전 요청은 결정 때 읽은 전역 작업자 기본값(`workerDefault`)을 쓴다.
  */
 export function planApprovalDecision(
   approval: PendingApproval,
-  input: { decision: ApprovalDecision; note?: string },
+  input: {
+    decision: ApprovalDecision;
+    note?: string;
+    choices?: ProviderChoice[];
+  },
   {
     stage,
     agentNames,
     workerDefault,
+    connections,
   }: {
     stage: LifecycleStage;
     agentNames: string[];
     workerDefault: ProviderChoice;
+    connections: ProviderModels;
   },
   { newId, now }: RecordSource
-): ApprovalDecisionPlan | "decision_not_allowed" {
+):
+  | ApprovalDecisionPlan
+  | "decision_not_allowed"
+  | "choices_mismatch"
+  | ProviderChoiceProblem {
   const allowed: readonly ApprovalDecision[] =
     approvalKindDecisions[approval.kind];
   if (!allowed.includes(input.decision)) return "decision_not_allowed";
+  const approved = input.decision === "approve";
+  const proposed = proposedWorkers(approval);
+  if (input.choices && (!approved || input.choices.length !== proposed.length))
+    return "choices_mismatch";
+  // 사용자가 Lead 제안과 다르게 정한 값만 지금 목록으로 확인한다. Lead 제안은 요청 때 확인했으므로, 화면이 그대로 둔
+  // 작업자의 값까지 함께 보내도 다시 확인하지 않는다. Lead 제안이 없는 예전 요청은 보낸 값이 곧 사용자가 정한 값이다.
+  const ownerChoices = (input.choices ?? []).filter((choice, i) => {
+    const lead = proposed[i]!.choice;
+    return !lead || !sameProviderChoice(choice, lead);
+  });
+  const choiceProblem = checkProviderChoices(connections, ownerChoices);
+  if (choiceProblem) return choiceProblem;
+  const choices = proposed.map(
+    (w, i) => input.choices?.[i] ?? w.choice ?? workerDefault
+  );
   const createdAt = now().toISOString();
   const { organizationId } = approval;
-  const approved = input.decision === "approve";
   const workers: NewAgent[] = [];
   const copies: InstructionCopy[] = [];
   let template: FlowTemplateCopy | null = null;
@@ -277,7 +332,7 @@ export function planApprovalDecision(
               createdAt: new Date(
                 Date.parse(createdAt) + workers.length
               ).toISOString(),
-              workerDefault,
+              choice: choices[workers.length]!,
             }
           );
           workers.push(added.worker);
@@ -297,7 +352,7 @@ export function planApprovalDecision(
     const added = planWorker(organizationId, approval.proposal, agentNames, {
       newId,
       createdAt,
-      workerDefault,
+      choice: choices[0]!,
     });
     workers.push(added.worker);
     copies.push(...added.copies);
@@ -310,6 +365,13 @@ export function planApprovalDecision(
     stage: nextStage,
     completionCriteria,
     workers,
+    decidedWorkers: approved
+      ? workers.map((w) => ({
+          agentId: w.id,
+          provider: w.provider,
+          model: w.model,
+        }))
+      : null,
     copies,
     template,
     wake: {

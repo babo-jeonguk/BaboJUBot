@@ -1,4 +1,5 @@
 import {
+  defaultApprovalPolicy,
   resultArtifactsMax,
   resultSubmissionSchema,
   submitResultInputSchema,
@@ -43,6 +44,7 @@ const request: RunRequest = {
       stage: "goal_setting",
       goal: null,
       completionCriteria: null,
+      approvalPolicy: defaultApprovalPolicy,
     },
     agent: { id: ids.agentId, role: "lead", name: "Research Lead" },
     team: [{ id: ids.agentId, role: "lead", name: "Research Lead" }],

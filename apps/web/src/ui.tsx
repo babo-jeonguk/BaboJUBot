@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   ApprovalDecision,
   ApprovalKind,
+  ApprovalPolicyItem,
   ApprovalStatus,
   InboxItemKind,
   LifecycleStage,
@@ -147,6 +148,12 @@ export function RunStatusBadge({
     </span>
   );
 }
+
+/** 승인 정책 항목의 이름. 설정 스위치와 활동 문장이 같이 쓴다. */
+export const approvalPolicyItemLabel: Record<ApprovalPolicyItem, string> = {
+  addWorker: "작업자 추가",
+  publishToGitHub: "GitHub에 올리기",
+};
 
 export const decisionLabel: Record<ApprovalDecision, string> = {
   approve: "승인",

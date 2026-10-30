@@ -1,20 +1,41 @@
 import {
   approvalKindDecisions,
   decisionNoteMaxLength,
+  proposedWorkers,
+  sameProviderChoice,
   type Approval,
   type ApprovalDecision,
   type ApprovalKind,
   type LifecycleStage,
+  type ProposedWorker,
+  type ProviderChoice,
 } from "@babojubot/contracts";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
   useApproval,
   useDecideApproval,
   useOrganization,
+  useProviderSettings,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
+import {
+  changedChoiceFields,
+  decisionChoices,
+  type ChoiceDraft,
+} from "./worker-choices.ts";
+import {
+  ProviderChoiceFields,
+  useChoiceLabel,
+  useChoiceParts,
+} from "./provider-choice.tsx";
 import {
   approvalKindLabel,
   approvalStatusLabel,
@@ -134,6 +155,7 @@ function InitialResearchContent({
 }: {
   proposal: ProposalOf<"initial_research">;
 }) {
+  const choiceLabel = useChoiceLabel();
   return (
     <>
       <Block label="연구 목표와 완료 기준">
@@ -157,6 +179,11 @@ function InitialResearchContent({
                 <span className="text-xs text-slate-400">{m.role}</span>
                 <span className="ml-auto tabular-nums">{m.count}명</span>
               </div>
+              {m.choice && (
+                <div className="mt-0.5 text-xs text-slate-500">
+                  {choiceLabel(m.choice)}
+                </div>
+              )}
               <details className="mt-1 text-xs text-slate-500">
                 <summary className="cursor-pointer">
                   각 작업자가 받을 사본 {m.files.length}개
@@ -208,6 +235,7 @@ function AddWorkerContent({
 }: {
   proposal: ProposalOf<"add_worker">;
 }) {
+  const choiceLabel = useChoiceLabel();
   return (
     <Block label="추가할 작업자">
       <div className="px-4 py-3 text-sm">
@@ -216,6 +244,11 @@ function AddWorkerContent({
           <span className="text-xs text-slate-400">{proposal.role}</span>
           <span className="ml-auto tabular-nums">1명</span>
         </div>
+        {proposal.choice && (
+          <p className="mt-0.5 text-xs text-slate-500">
+            {choiceLabel(proposal.choice)}
+          </p>
+        )}
         <p className="mt-1 text-xs text-slate-500">
           받을 사본 {proposal.files.length}개
         </p>
@@ -296,13 +329,219 @@ export function ApprovalDecision({
   return a.status === "pending" ? (
     <DecisionForm
       orgId={orgId}
-      approvalId={a.id}
-      kind={a.kind}
+      approval={a}
       stage={stage}
       onDecided={() => setDecidedHere(true)}
     />
   ) : (
     <DecisionReceipt orgId={orgId} approval={a} focus={decidedHere} />
+  );
+}
+
+// 작업자마다의 프로바이더·모델 초안. 승인 요청마다 따로 두며, 화면을 닫거나 Inbox와 승인 상세 사이를 오가도 남는다.
+// 바꾸지 않은 작업자는 비어 있고(Lead 제안), 결정에 성공하면 지운다.
+const choiceDrafts = new Map<string, ChoiceDraft>();
+const draftListeners = new Set<() => void>();
+function setChoiceDraft(key: string, draft: ChoiceDraft | undefined) {
+  if (draft?.some(Boolean)) choiceDrafts.set(key, draft);
+  else choiceDrafts.delete(key);
+  for (const listener of draftListeners) listener();
+}
+function useChoiceDraft(key: string) {
+  return useSyncExternalStore(
+    (onChange) => {
+      draftListeners.add(onChange);
+      return () => void draftListeners.delete(onChange);
+    },
+    () => choiceDrafts.get(key)
+  );
+}
+
+/** 바꾼 칸의 배지: 앞 아이콘 + 짧은 라벨. */
+function ChangedBadge() {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-200">
+      <svg aria-hidden viewBox="0 0 12 12" className="h-3 w-3 fill-current">
+        <path d="M8.6 1.2a1 1 0 0 1 1.4 0l.8.8a1 1 0 0 1 0 1.4L4.2 10H2v-2.2z" />
+      </svg>
+      변경
+    </span>
+  );
+}
+
+/**
+ * 결정 전 작업자 표: 승인하면 생길 작업자마다 역할·순번과 프로바이더·모델 Select를 Lead 제안으로 채운다.
+ * 바꾼 줄에는 `변경` 배지와 `되돌리기`가 붙는다. 프로바이더를 바꾸면 모델은 `기본 모델`이 된다.
+ * 프로바이더 설정을 읽기 전에는 값만 보인다.
+ */
+function WorkerChoiceTable({
+  idPrefix,
+  workers,
+  shown,
+  base,
+  draft,
+  onChange,
+  disabled,
+}: {
+  idPrefix: string;
+  workers: ProposedWorker[];
+  /** 표의 값. 아직 모르는 칸은 비어 있다(`decisionChoices`). */
+  shown: (ProviderChoice | undefined)[];
+  /** 바꾸지 않았을 때의 값. 이 값으로 고르면 바꾼 값을 지운다. */
+  base: (ProviderChoice | undefined)[];
+  draft: ChoiceDraft | undefined;
+  onChange: (index: number, choice: ProviderChoice | undefined) => void;
+  disabled: boolean;
+}) {
+  const providers = useProviderSettings().data?.providers;
+  const choiceLabel = useChoiceLabel();
+  return (
+    <div className="mb-4">
+      <div className="mb-1 hidden grid-cols-[minmax(7rem,1fr)_2fr] gap-3 px-1 text-xs text-slate-500 sm:grid">
+        <span>역할</span>
+        <span className="grid grid-cols-2 gap-2">
+          <span>프로바이더</span>
+          <span>모델</span>
+        </span>
+      </div>
+      <ul
+        aria-label="작업자 프로바이더·모델"
+        className="divide-y divide-slate-100 rounded-xl ring-1 ring-slate-200"
+      >
+        {workers.map((w, i) => {
+          const value = shown[i];
+          const changed = draft?.[i] !== undefined;
+          const name = `${w.label} ${w.ordinal}번`;
+          return (
+            <li
+              key={`${w.role}-${w.ordinal}`}
+              data-testid="worker-choice"
+              className="grid gap-2 px-3 py-2.5 sm:grid-cols-[minmax(7rem,1fr)_2fr] sm:items-center sm:gap-3"
+            >
+              <div className="flex min-w-0 items-center gap-2 text-sm">
+                <span className="truncate font-medium">{w.label}</span>
+                <span className="shrink-0 text-xs text-slate-400 tabular-nums">
+                  {w.ordinal}번
+                </span>
+                {changed && <ChangedBadge />}
+                {changed && (
+                  <button
+                    type="button"
+                    className="ml-auto shrink-0 rounded-lg px-1.5 text-base text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                    aria-label={`${name} 되돌리기`}
+                    title="되돌리기"
+                    disabled={disabled}
+                    onClick={() => onChange(i, undefined)}
+                  >
+                    ↺
+                  </button>
+                )}
+              </div>
+              {providers && value ? (
+                <ProviderChoiceFields
+                  idPrefix={`${idPrefix}-${i}`}
+                  label={name}
+                  inTableRow
+                  providers={providers}
+                  value={value}
+                  disabled={disabled}
+                  onChange={(next) =>
+                    onChange(
+                      i,
+                      base[i] && sameProviderChoice(next, base[i]!)
+                        ? undefined
+                        : next
+                    )
+                  }
+                />
+              ) : (
+                <span className="text-sm text-slate-600">
+                  {value ? choiceLabel(value) : "—"}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * 결정 뒤 작업자 표(읽기 전용): 승인으로 생긴 작업자마다 `Lead 제안`과 `결정`의 프로바이더·모델을 나란히 보이고,
+ * 프로바이더와 모델 가운데 다른 칸에만 `변경` 배지를 붙인다.
+ * Lead 제안이 없는 예전 요청은 `—`이다.
+ */
+function DecidedWorkerTable({
+  orgId,
+  approval: a,
+}: {
+  orgId: string;
+  approval: Approval;
+}) {
+  const parts = useChoiceParts();
+  const agents = useOrganization(orgId).data?.agents;
+  if (!a.decidedWorkers?.length) return null;
+  const workers = proposedWorkers(a);
+  return (
+    <table
+      aria-label="작업자 프로바이더·모델"
+      className="mt-3 w-full table-fixed text-left text-sm"
+    >
+      <thead className="text-xs text-slate-500">
+        <tr>
+          <th className="w-1/3 py-1 font-normal">이름</th>
+          <th className="py-1 font-normal">Lead 제안</th>
+          <th className="py-1 font-normal">결정</th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-slate-100">
+        {a.decidedWorkers.map((decided, i) => {
+          const proposed = workers[i];
+          const lead = proposed?.choice;
+          const changed = lead
+            ? changedChoiceFields(lead, decided)
+            : { provider: false, model: false };
+          const name =
+            agents?.find((x) => x.id === decided.agentId)?.name ??
+            `${proposed?.label ?? ""} ${proposed?.ordinal ?? i + 1}번`;
+          return (
+            <tr key={decided.agentId} data-testid="decided-worker">
+              <td className="py-2 pr-2 align-top">
+                <span className="block truncate font-medium">{name}</span>
+                <span className="text-xs text-slate-400">
+                  {proposed?.label}
+                </span>
+              </td>
+              <td className="py-2 pr-2 align-top break-words text-slate-600">
+                {lead
+                  ? parts(lead).map((part, k) => (
+                      <span key={k} className="block">
+                        {part}
+                      </span>
+                    ))
+                  : "—"}
+              </td>
+              <td className="py-2 align-top break-words">
+                {parts(decided).map((part, k) => {
+                  const differs = changed[k === 0 ? "provider" : "model"];
+                  return (
+                    <span
+                      key={k}
+                      data-changed={differs || undefined}
+                      className={`flex flex-wrap items-center gap-1 ${differs ? "font-medium" : "text-slate-600"}`}
+                    >
+                      {part}
+                      {differs && <ChangedBadge />}
+                    </span>
+                  );
+                })}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -315,19 +554,25 @@ export function ApprovalDecision({
  */
 function DecisionForm({
   orgId,
-  approvalId,
-  kind,
+  approval,
   stage,
   onDecided,
 }: {
   orgId: string;
-  approvalId: string;
-  kind: ApprovalKind;
+  approval: Approval;
   stage: LifecycleStage | undefined;
   onDecided: () => void;
 }) {
+  const { id: approvalId, kind } = approval;
   const [note, setNote] = useState("");
   const decide = useDecideApproval(orgId, approvalId);
+  const workerDefault = useProviderSettings().data?.workerDefault;
+  const workers = proposedWorkers(approval);
+  const draftKey = `${orgId}/${approvalId}`;
+  const draft = useChoiceDraft(draftKey);
+  // 표의 값과 승인할 때 보낼 값은 한 곳에서 나온다. 모르는 칸이 있으면 승인할 수 없다.
+  const choices = decisionChoices(workers, draft, workerDefault);
+  const base = decisionChoices(workers, undefined, workerDefault).shown;
   const trimmed = note.trim();
   const alreadyDecided =
     decide.error instanceof ApiError && decide.error.code === "already_decided";
@@ -351,6 +596,20 @@ function DecisionForm({
           {closed ? "중단된 조직이라 결정할 수 없습니다." : pausedNotice}
         </p>
       )}
+      <WorkerChoiceTable
+        idPrefix={`worker-choice-${approvalId}`}
+        workers={workers}
+        shown={choices.shown}
+        base={base}
+        draft={draft}
+        disabled={decide.isPending}
+        onChange={(index, choice) =>
+          setChoiceDraft(
+            draftKey,
+            workers.map((_, i) => (i === index ? choice : draft?.[i]))
+          )
+        }
+      />
       <label
         htmlFor="decision-note"
         className="mb-1 block text-xs text-slate-600"
@@ -371,12 +630,25 @@ function DecisionForm({
             key={decision}
             className={decisionStyle[decision]}
             disabled={
-              closed || decide.isPending || (decision !== "approve" && !trimmed)
+              closed ||
+              decide.isPending ||
+              (decision === "approve" ? !choices.ready : !trimmed)
             }
             onClick={() =>
               decide.mutate(
-                { decision, note: trimmed || undefined },
-                { onSuccess: onDecided }
+                {
+                  decision,
+                  note: trimmed || undefined,
+                  ...(decision === "approve" && choices.send
+                    ? { choices: choices.send }
+                    : {}),
+                },
+                {
+                  onSuccess: () => {
+                    setChoiceDraft(draftKey, undefined);
+                    onDecided();
+                  },
+                }
               )
             }
           >
@@ -436,6 +708,7 @@ function DecisionReceipt({
           사유: {a.decisionNote}
         </p>
       )}
+      <DecidedWorkerTable orgId={orgId} approval={a} />
       <p className="text-slate-500">
         {a.status === "approved" ? (
           <>

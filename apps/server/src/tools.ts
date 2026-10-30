@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  explicitProposedChoice,
   idempotencyKeyHeader,
   idempotencyKeySchema,
   isOrgToolRead,
@@ -50,6 +51,7 @@ import { applyAfterCommit } from "./after-commit.ts";
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
 import { listHarnessLibrary, loadHarnessLibrary } from "./harness.ts";
+import type { ProviderRegistry } from "./providers.ts";
 import { digestRunToken } from "./run-token.ts";
 import { problemResponses, type ToolProblem } from "./problems.ts";
 
@@ -101,12 +103,14 @@ export function orgToolsRouter({
   dispatcher,
   now,
   harnessDir,
+  providers,
 }: {
   db: Database;
   hub: EventHub;
   dispatcher: RunDispatcher;
   now: () => Date;
   harnessDir: string;
+  providers: ProviderRegistry;
 }): express.Router {
   const router = express.Router();
   const refuse = (
@@ -252,6 +256,13 @@ export function orgToolsRouter({
         library
       );
     },
+    async list_providers(_input, { read }) {
+      const catalog = await providers.catalog(db);
+      await read(
+        `프로바이더 목록 조회: 연결 ${catalog.providers.length}개`,
+        catalog
+      );
+    },
     async record_goal(input, { run, call, write }) {
       await write(
         await recordGoal(db, run, input, call("연구 목표와 완료 기준 기록"))
@@ -262,6 +273,9 @@ export function orgToolsRouter({
       await write(
         await insertInitialApprovalRequest(db, run, input, {
           library: await loadHarnessLibrary(harnessDir),
+          connections: await providers.modelsFor(
+            input.team.flatMap((m) => explicitProposedChoice(m) ?? [])
+          ),
           source: { newId: randomUUID, now },
           ...call(
             `초기 연구 승인 요청: 작업자 ${heads}명, 템플릿 ${input.template}${input.completionCriteria ? ", 완료 기준 제안" : ""}`
@@ -336,9 +350,13 @@ export function orgToolsRouter({
       );
     },
     // 승인 정책이 꺼져 있으면 곧바로 작업자를 만들고(201), 켜져 있으면 승인 요청만 남긴다(202).
+    // Lead가 적은 프로바이더·모델은 하네스 라이브러리처럼 잠금 밖에서 받아 온 모델 목록으로 저장 규칙 안에서 확인한다.
+    // 그래서 같은 호출 키의 재시도는 목록이 바뀌었어도 저장된 결과를 받는다(초기 연구 승인 요청도 같다).
     async add_worker(input, { run, call, write }) {
+      const choice = explicitProposedChoice(input);
       const result = await addWorker(db, run, input, {
         library: await loadHarnessLibrary(harnessDir),
+        connections: await providers.modelsFor(choice ? [choice] : []),
         source,
         ...call(`작업자 추가: ${input.role}`),
       });

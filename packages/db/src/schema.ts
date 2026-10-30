@@ -21,6 +21,7 @@ import {
   taskStatuses,
   type AgentAppearance,
   type ApprovalProposal,
+  type DecidedWorker,
   type FlowKind,
   type NewEvent,
   type SessionState,
@@ -66,6 +67,10 @@ export const organizations = pgTable(
     completionCriteria: text("completion_criteria"),
     /** 승인 정책 `작업자 추가`. 켜져 있으면 Lead의 작업자 추가가 승인 요청이 된다. 사용자 제어 명령만 바꾼다. */
     addWorkerApproval: boolean("add_worker_approval").notNull().default(false),
+    /** 승인 정책 `GitHub에 올리기`. 켜져 있으면 Lead가 올리기 전에 사용자에게 확인받는다(에이전트 지침, ADR-0005). 사용자 제어 명령만 바꾼다. */
+    publishToGitHubApproval: boolean("publish_to_github_approval")
+      .notNull()
+      .default(false),
     /** 일시정지 전 단계. 일시정지 중에만 있고 재개하면 이 단계로 돌아간다. */
     pausedFrom: text("paused_from", { enum: lifecycleStages }),
     createdAt: timestamp("created_at", {
@@ -120,7 +125,7 @@ export const agents = pgTable(
     /** 사용자가 고른 얼굴. 고르지 않았으면 없고, 화면에는 ID에서 정한 기본 얼굴이 보인다. 사용자 변경만 바꾼다. */
     appearance: jsonb("appearance").$type<AgentAppearance>(),
     /**
-     * 실행 시도를 맡는 프로바이더 연결 ID. 만들 때 역할의 전역 기본값을 복사하며 사용자 설정 변경만 바꾼다.
+     * 실행 시도를 맡는 프로바이더 연결 ID. 만들 때의 값은 contracts `agentSchema.provider`를 따르고, 그 뒤에는 사용자 설정 변경만 바꾼다.
      * 이 열 전에 생긴 에이전트는 가짜 프로바이더(migration 0021)다.
      */
     provider: text("provider").notNull(),
@@ -389,6 +394,8 @@ export const approvals = pgTable(
     previousApprovalId: uuid("previous_approval_id"),
     proposal: jsonb("proposal").$type<ApprovalProposal>().notNull(),
     decisionNote: text("decision_note"),
+    /** 승인으로 생긴 작업자마다의 프로바이더·모델. 승인한 요청에만 있고, 이 열이 생기기 전에 승인한 요청에는 없다. */
+    decidedWorkers: jsonb("decided_workers").$type<DecidedWorker[]>(),
     decidedAt: timestamp("decided_at", { withTimezone: true, mode: "date" }),
     createdAt: createdAt(),
   },

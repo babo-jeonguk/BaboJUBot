@@ -153,14 +153,19 @@ export const goalRecordedEventSchema = z.object({
   }),
 });
 
+/** Event에 남은 승인 정책. `GitHub에 올리기` 항목이 생기기 전의 Event에는 그 항목이 없다(꺼짐). */
+const recordedApprovalPolicySchema = approvalPolicySchema.partial({
+  publishToGitHub: true,
+});
+
 /** 사용자의 승인 정책 변경 제어 명령. 바꾸기 전 정책과 바꾼 뒤 정책을 함께 남긴다. 값이 그대로인 명령은 남지 않는다. */
 export const approvalPolicyChangedEventSchema = z.object({
   ...eventBase,
   type: z.literal("organization.approval_policy_changed"),
   payload: z.object({
     by: z.literal("owner"),
-    previous: approvalPolicySchema,
-    policy: approvalPolicySchema,
+    previous: recordedApprovalPolicySchema,
+    policy: recordedApprovalPolicySchema,
   }),
 });
 

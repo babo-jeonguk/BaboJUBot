@@ -71,7 +71,10 @@ export const agentSchema = z.object({
   name: z.string(),
   /** 얼굴. 사용자가 고르지 않았으면 ID에서 정한 기본 얼굴이다. */
   appearance: agentAppearanceSchema,
-  /** 실행 시도를 맡는 프로바이더 연결. 만들 때 역할의 전역 기본값을 복사하고 사용자만 바꾼다. */
+  /**
+   * 실행 시도를 맡는 프로바이더 연결. 만들 때 Lead는 사용자가 고른 값(없으면 Lead 기본값), 작업자는 승인 결정의 값
+   * (정책이 꺼져 있으면 Lead 제안)이며, 그 뒤에는 사용자만 바꾼다(docs/architecture.md).
+   */
   provider: providerIdSchema,
   /** 모델. 없으면 프로바이더의 기본 모델이다. */
   model: modelIdSchema.nullable(),
@@ -80,17 +83,32 @@ export const agentSchema = z.object({
 export type Agent = z.infer<typeof agentSchema>;
 
 /**
- * 조직별 승인 정책(ADR-0003). 켜진 항목의 도구 호출은 제품이 승인 요청으로 바꾸고, 새 조직은 모든 항목이 꺼져 있다.
- * 첫 판의 항목은 작업자 추가뿐이다. 초기 연구 승인과 최종 완료는 항상 사용자 결정이라 항목이 아니다.
+ * 조직별 승인 정책(ADR-0003). 새 조직은 모든 항목이 꺼져 있다. 초기 연구 승인과 최종 완료는 항상 사용자 결정이라 항목이 아니다.
+ * - `addWorker`(작업자 추가): 켜지면 제품이 Lead의 작업자 추가를 승인 요청으로 바꾼다.
+ * - `publishToGitHub`(GitHub에 올리기): 켜지면 Lead가 GitHub에 올리기 전에 사용자에게 확인받는다. 에이전트 지침으로 지키며
+ *   제품 코드가 GitHub 올리기를 막지 않는다(ADR-0005).
  */
-export const approvalPolicySchema = z.object({ addWorker: z.boolean() });
-export type ApprovalPolicy = z.infer<typeof approvalPolicySchema>;
-export const defaultApprovalPolicy: ApprovalPolicy = { addWorker: false };
-
-/** 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. */
-export const updateApprovalPolicyInputSchema = z.strictObject({
+export const approvalPolicySchema = z.object({
   addWorker: z.boolean(),
+  publishToGitHub: z.boolean(),
 });
+export type ApprovalPolicy = z.infer<typeof approvalPolicySchema>;
+export const approvalPolicyItems = ["addWorker", "publishToGitHub"] as const;
+export type ApprovalPolicyItem = (typeof approvalPolicyItems)[number];
+export const defaultApprovalPolicy: ApprovalPolicy = {
+  addWorker: false,
+  publishToGitHub: false,
+};
+
+/** 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. 적은 항목만 바꾼다. */
+export const updateApprovalPolicyInputSchema = z
+  .strictObject({
+    addWorker: z.boolean().optional(),
+    publishToGitHub: z.boolean().optional(),
+  })
+  .refine((input) => Object.keys(input).length > 0, {
+    message: "바꿀 항목을 하나 이상 적는다",
+  });
 export type UpdateApprovalPolicyInput = z.infer<
   typeof updateApprovalPolicyInputSchema
 >;

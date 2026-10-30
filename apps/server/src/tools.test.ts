@@ -11,6 +11,7 @@ describe("organization tool routes", () => {
       dispatcher: undefined as never,
       now: () => new Date(),
       harnessDir: "",
+      providers: undefined as never,
     });
     const served = router.stack.flatMap((layer) =>
       layer.route

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { planOrganizationCreation } from "./organization.ts";
+import {
+  planApprovalPolicyChange,
+  planOrganizationCreation,
+} from "./organization.ts";
 
 const ids = () => {
   const queue = [
@@ -41,7 +44,7 @@ describe("planOrganizationCreation", () => {
       stage: "planning",
       goal: "오류율을 절반으로",
       completionCriteria: "WER 10% 이하",
-      approvalPolicy: { addWorker: false },
+      approvalPolicy: { addWorker: false, publishToGitHub: false },
       pausedFrom: null,
       createdAt: "2026-10-16T00:00:00.000Z",
     });
@@ -117,5 +120,38 @@ describe("planOrganizationCreation", () => {
         wokenAgentId: "lead-1",
       },
     });
+  });
+});
+
+describe("planApprovalPolicyChange", () => {
+  const organization = {
+    id: "org-1",
+    approvalPolicy: { addWorker: true, publishToGitHub: false },
+  };
+
+  it("changes only the given item and records both policies", () => {
+    expect(
+      planApprovalPolicyChange(organization, { publishToGitHub: true })
+    ).toEqual({
+      policy: { addWorker: true, publishToGitHub: true },
+      event: {
+        organizationId: "org-1",
+        type: "organization.approval_policy_changed",
+        payload: {
+          by: "owner",
+          previous: organization.approvalPolicy,
+          policy: { addWorker: true, publishToGitHub: true },
+        },
+      },
+    });
+  });
+
+  it("records nothing when every item keeps its value", () => {
+    expect(
+      planApprovalPolicyChange(organization, {
+        addWorker: true,
+        publishToGitHub: false,
+      })
+    ).toBeUndefined();
   });
 });

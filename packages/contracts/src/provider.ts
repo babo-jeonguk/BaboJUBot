@@ -49,7 +49,8 @@ export const providerSummarySchema = z.object({
 export type ProviderSummary = z.infer<typeof providerSummarySchema>;
 
 /**
- * 전역 프로바이더 설정. Lead·작업자 기본값은 그 역할의 에이전트를 만들 때 복사하며, 바꿔도 이미 있는 에이전트는 그대로다.
+ * 전역 프로바이더 설정. Lead 기본값은 사용자가 고르지 않은 Lead를 만들 때, 작업자 기본값은 Lead가 작업자의 프로바이더를
+ * 비운 요청을 받을 때 쓴다. 바꿔도 이미 있는 에이전트와 이미 올라온 요청은 그대로다.
  * 연결 목록은 서버에 등록된 순서다.
  */
 export const providerSettingsSchema = z.object({
@@ -58,6 +59,18 @@ export const providerSettingsSchema = z.object({
   providers: z.array(providerSummarySchema),
 });
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
+
+/**
+ * Lead가 작업자를 제안할 때 읽는 프로바이더 목록: 작업자 기본값과 연결마다 이름·모델 목록. 전역 설정 화면과 같은 목록이며
+ * 동시 실행 상한 같은 운영 설정은 담지 않는다.
+ */
+export const providerCatalogSchema = z.object({
+  workerDefault: providerChoiceSchema,
+  providers: z.array(
+    providerSummarySchema.pick({ id: true, label: true, models: true })
+  ),
+});
+export type ProviderCatalog = z.infer<typeof providerCatalogSchema>;
 
 /** 사용자의 Lead·작업자 기본값 변경. 둘을 함께 저장한다. */
 export const updateProviderDefaultsInputSchema = z.strictObject({
