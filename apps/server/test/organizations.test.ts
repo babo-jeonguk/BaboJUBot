@@ -59,7 +59,7 @@ describe("creating an organization", () => {
       stage: "awaiting_approval",
       goal,
       completionCriteria: "공개 평가셋 WER 10% 이하",
-      approvalPolicy: { addWorker: false },
+      approvalPolicy: { addWorker: false, publishToGitHub: false },
       pausedFrom: null,
       createdAt: org.createdAt,
     });

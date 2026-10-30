@@ -12,24 +12,39 @@ import { useProviderSettings } from "./api.ts";
 /** 모델을 비운 선택. 실행 시도 요청의 모델이 비어 프로바이더가 기본 모델을 쓴다. */
 export const defaultModelLabel = "기본 모델";
 
-/** `프로바이더 · 모델`. 서버에 없는 연결·목록에 없는 모델은 ID 그대로다. */
-export function choiceLabel(
+/** 프로바이더 이름과 모델 이름. 서버에 없는 연결·목록에 없는 모델은 ID 그대로다. */
+export function choiceParts(
   providers: readonly ProviderSummary[] | undefined,
   { provider, model }: ProviderChoice
-) {
+): [provider: string, model: string] {
   const connection = providers?.find((p) => p.id === provider);
   const modelLabel =
     model === null
       ? defaultModelLabel
       : (connection?.models.find((m) => m.id === model)?.label ?? model);
-  return `${connection?.label ?? provider} · ${modelLabel}`;
+  return [connection?.label ?? provider, modelLabel];
 }
+
+/** `프로바이더 · 모델`. */
+export const choiceLabel = (
+  providers: readonly ProviderSummary[] | undefined,
+  choice: ProviderChoice
+) => choiceParts(providers, choice).join(" · ");
 
 /** 지금 프로바이더 설정으로 `프로바이더 · 모델`을 만드는 함수. 설정을 읽기 전에는 ID를 보인다. */
 export function useChoiceLabel() {
   const providers = useProviderSettings().data?.providers;
   return useCallback(
     (choice: ProviderChoice) => choiceLabel(providers, choice),
+    [providers]
+  );
+}
+
+/** 지금 프로바이더 설정으로 프로바이더 이름과 모델 이름을 따로 내는 함수. */
+export function useChoiceParts() {
+  const providers = useProviderSettings().data?.providers;
+  return useCallback(
+    (choice: ProviderChoice) => choiceParts(providers, choice),
     [providers]
   );
 }
@@ -55,6 +70,7 @@ export function ProviderChoiceFields({
   value,
   onChange,
   disabled = false,
+  inTableRow = false,
 }: {
   idPrefix: string;
   /** 칸 이름 앞에 붙는 말(예: `Lead`). 없으면 `프로바이더`·`모델`이다. */
@@ -63,17 +79,25 @@ export function ProviderChoiceFields({
   value: ProviderChoice;
   onChange: (next: ProviderChoice) => void;
   disabled?: boolean;
+  /** 표의 한 줄로 쓴다: 열 머리가 칸 이름을 보이므로 칸 이름은 화면 읽기 프로그램에만 남기고, 두 칸을 늘 나란히 둔다. */
+  inTableRow?: boolean;
 }) {
   const connection = providers.find((p) => p.id === value.provider);
   const models = connection?.models ?? [];
   const named = (name: string) => (label ? `${label} ${name}` : name);
+  const labelClass = inTableRow
+    ? "sr-only"
+    : "text-xs font-medium text-slate-600";
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <div
+      className={
+        inTableRow
+          ? "grid grid-cols-2 gap-2 [&_select]:mt-0"
+          : "grid grid-cols-1 gap-3 sm:grid-cols-2"
+      }
+    >
       <div>
-        <label
-          className="text-xs font-medium text-slate-600"
-          htmlFor={`${idPrefix}-provider`}
-        >
+        <label className={labelClass} htmlFor={`${idPrefix}-provider`}>
           {named("프로바이더")}
         </label>
         <select
@@ -96,10 +120,7 @@ export function ProviderChoiceFields({
         </select>
       </div>
       <div>
-        <label
-          className="text-xs font-medium text-slate-600"
-          htmlFor={`${idPrefix}-model`}
-        >
+        <label className={labelClass} htmlFor={`${idPrefix}-model`}>
           {named("모델")}
         </label>
         <select

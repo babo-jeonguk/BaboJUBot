@@ -143,6 +143,7 @@ describe("planApprovalDecision", () => {
         label: "연구원",
         count: 2,
         files: [file("AGENTS.md"), file("SOUL.md")],
+        choice: { provider: "fake", model: "fake-large" },
       },
     ],
     template: {
@@ -205,6 +206,48 @@ describe("planApprovalDecision", () => {
     });
   });
 
+  it("hires each worker with the Lead's proposal unless the Owner chose otherwise for that worker", () => {
+    const asProposed = decide({ decision: "approve" });
+    expect(asProposed.workers.map((w) => [w.provider, w.model])).toEqual([
+      ["fake", "fake-large"],
+      ["fake", "fake-large"],
+    ]);
+    const changed = decide({
+      decision: "approve",
+      choices: [
+        { provider: "fake", model: "fake-large" },
+        { provider: "fake-2", model: null },
+      ],
+    });
+    expect(changed.workers.map((w) => [w.provider, w.model])).toEqual([
+      ["fake", "fake-large"],
+      ["fake-2", null],
+    ]);
+    expect(changed.decidedWorkers).toEqual(
+      changed.workers.map((w) => ({
+        agentId: w.id,
+        provider: w.provider,
+        model: w.model,
+      }))
+    );
+    // 요청(Lead 제안)은 그대로다.
+    expect(approval.proposal.team[0]!.choice).toEqual({
+      provider: "fake",
+      model: "fake-large",
+    });
+  });
+
+  it("refuses choices that do not cover every worker, or that come with a non-approval", () => {
+    const choice = { provider: "fake", model: null };
+    for (const input of [
+      { decision: "approve" as const, choices: [choice] },
+      { decision: "reject" as const, note: "사유", choices: [choice, choice] },
+    ])
+      expect(planApprovalDecision(approval, input, awaiting, source)).toBe(
+        "choices_mismatch"
+      );
+  });
+
   it("names the team apart from every agent already in the organization", () => {
     // Lead를 작업자 이름 모양으로 바꾼 뒤 팀을 승인해도 이름이 겹치지 않는다.
     const plan = planApprovalDecision(
@@ -232,6 +275,7 @@ describe("planApprovalDecision", () => {
         stage: "planning",
         completionCriteria: null,
         workers: [],
+        decidedWorkers: null,
         copies: [],
         template: null,
       });
@@ -301,13 +345,45 @@ describe("buildInitialResearchProposal", () => {
     team: [{ role: "researcher", count: 1 }],
     template: "basic-research",
   };
+  const workerDefault = { provider: "fake-2", model: "fake-2-mini" };
+
+  it("fixes each team line's provider and model, the worker default when the Lead left it out", () => {
+    const built = buildInitialResearchProposal(
+      { goal: "목표", completionCriteria: "사용자 기준" },
+      {
+        ...input,
+        team: [
+          { role: "researcher", count: 1 },
+          { role: "analyst", count: 2, provider: "fake", model: "fake-large" },
+          { role: "writer", count: 1, provider: "fake" },
+        ],
+      },
+      {
+        ...library,
+        roles: new Map([
+          ...library.roles,
+          ...["analyst", "writer"].map(
+            (name) => [name, library.roles.get("researcher")!] as const
+          ),
+        ]),
+      },
+      workerDefault
+    );
+    if (typeof built === "string") throw new Error(built);
+    expect(built.team.map((m) => m.choice)).toEqual([
+      workerDefault,
+      { provider: "fake", model: "fake-large" },
+      { provider: "fake", model: null },
+    ]);
+  });
 
   it("refuses a request without proposed criteria when the organization has none", () => {
     expect(
       buildInitialResearchProposal(
         { goal: "목표", completionCriteria: null },
         input,
-        library
+        library,
+        workerDefault
       )
     ).toBe("completion_criteria_required");
   });
@@ -317,7 +393,8 @@ describe("buildInitialResearchProposal", () => {
       buildInitialResearchProposal(
         { goal: "목표", completionCriteria: null },
         { ...input, completionCriteria: "Lead 기준" },
-        library
+        library,
+        workerDefault
       )
     ).toMatchObject({
       goal: "목표",
@@ -328,14 +405,20 @@ describe("buildInitialResearchProposal", () => {
 
   it("keeps the owner's criteria and refuses a request that tries to replace them", () => {
     const owner = { goal: "목표", completionCriteria: "사용자 기준" };
-    const built = buildInitialResearchProposal(owner, input, library);
+    const built = buildInitialResearchProposal(
+      owner,
+      input,
+      library,
+      workerDefault
+    );
     expect(built).toMatchObject({ completionCriteria: "사용자 기준" });
     expect(built).not.toHaveProperty("completionCriteriaProposed");
     expect(
       buildInitialResearchProposal(
         owner,
         { ...input, completionCriteria: "Lead 기준" },
-        library
+        library,
+        workerDefault
       )
     ).toBe("completion_criteria_set");
   });
@@ -345,7 +428,8 @@ describe("buildInitialResearchProposal", () => {
       buildInitialResearchProposal(
         { goal: null, completionCriteria: null },
         { ...input, completionCriteria: "Lead 기준" },
-        library
+        library,
+        workerDefault
       )
     ).toBe("goal_missing");
   });

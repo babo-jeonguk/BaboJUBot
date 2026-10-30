@@ -106,6 +106,7 @@ describe("add_worker approval policy", () => {
     const s = await leadSession("정책 꺼짐 조직");
     expect((await organization(s.org.id)).approvalPolicy).toEqual({
       addWorker: false,
+      publishToGitHub: false,
     });
     const before = await workersOf(s.org.id);
 
@@ -480,6 +481,7 @@ describe("add_worker approval policy", () => {
     ).toBe(404);
     expect((await organization(s.org.id)).approvalPolicy).toEqual({
       addWorker: false,
+      publishToGitHub: false,
     });
 
     const on = await setPolicy(s.org.id, { addWorker: true });
@@ -494,8 +496,8 @@ describe("add_worker approval policy", () => {
       type: "organization.approval_policy_changed",
       payload: {
         by: "owner",
-        previous: { addWorker: false },
-        policy: { addWorker: true },
+        previous: { addWorker: false, publishToGitHub: false },
+        policy: { addWorker: true, publishToGitHub: false },
       },
     });
     // 같은 값은 아무것도 남기지 않는다.
@@ -505,6 +507,66 @@ describe("add_worker approval policy", () => {
       (e) => e.type === "organization.approval_policy_changed"
     );
     expect(policyEvents).toHaveLength(1);
+  });
+
+  it("stores the GitHub publishing item per organization by the owner's command only, records it, and shows it to the Lead", async () => {
+    const s = await leadSession("GitHub 정책 조직");
+    // 정책 항목은 에이전트 지침으로 지키므로 GitHub 올리기를 막는 조직 도구나 정책을 바꾸는 조직 도구가 없다.
+    expect(orgToolNames.some((name) => /polic|github/i.test(name))).toBe(false);
+    expect(
+      (
+        await t!.tool(
+          s.capture.tokenOf(s.org.lead.id),
+          "PUT",
+          "/approval-policy",
+          {
+            publishToGitHub: true,
+          }
+        )
+      ).status
+    ).toBe(404);
+    expect((await setPolicy(s.org.id, {})).status).toBe(422);
+    expect((await setPolicy(s.org.id, { publishToGitHub: "yes" })).status).toBe(
+      422
+    );
+
+    const on = await setPolicy(s.org.id, { publishToGitHub: true });
+    expect(on.status).toBe(200);
+    // 적지 않은 항목은 그대로다.
+    expect(on.body.approvalPolicy).toEqual({
+      addWorker: false,
+      publishToGitHub: true,
+    });
+    const other = await t!.request("POST", "/api/organizations", {
+      name: "GitHub 정책 다른 조직",
+      ...goal,
+    });
+    expect(other.body.approvalPolicy).toEqual({
+      addWorker: false,
+      publishToGitHub: false,
+    });
+    // Lead는 실행 맥락 조회로 지금의 정책을 읽는다(실행 중에 바뀐 값도).
+    const context = await t!.tool(
+      s.capture.tokenOf(s.org.lead.id),
+      "GET",
+      orgTools.get_run_context.path
+    );
+    expect(context.body.context.organization.approvalPolicy).toEqual({
+      addWorker: false,
+      publishToGitHub: true,
+    });
+    await s.finish();
+
+    const changes = (await eventsOf(s.org.id)).filter(
+      (e) => e.type === "organization.approval_policy_changed"
+    );
+    expect(changes.map((e) => e.payload)).toEqual([
+      {
+        by: "owner",
+        previous: { addWorker: false, publishToGitHub: false },
+        policy: { addWorker: false, publishToGitHub: true },
+      },
+    ]);
   });
 
   it("keeps the policy and worker approvals inside their organization", async () => {
@@ -520,6 +582,7 @@ describe("add_worker approval policy", () => {
     await setPolicy(s.org.id, { addWorker: true });
     expect((await organization(other.id)).approvalPolicy).toEqual({
       addWorker: false,
+      publishToGitHub: false,
     });
     const res = await s.addWorker();
     const approvalId = res.body.approval.id as string;

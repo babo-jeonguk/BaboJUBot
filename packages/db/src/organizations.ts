@@ -14,6 +14,7 @@ import type { Database } from "./client.ts";
 import { insertInstructionCopies } from "./harness.ts";
 import {
   agentRow,
+  approvalPolicyColumns,
   insertEvent,
   isUuid,
   lockOrganization,
@@ -82,7 +83,7 @@ export async function updateApprovalPolicy(
     if (!change) return stored(organization);
     const [updated] = await tx
       .update(organizations)
-      .set({ addWorkerApproval: change.policy.addWorker })
+      .set(approvalPolicyColumns(change.policy))
       .where(eq(organizations.id, organizationId))
       .returning();
     const event = await insertEvent(tx, change.event);

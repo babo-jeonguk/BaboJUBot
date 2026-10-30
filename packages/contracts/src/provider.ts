@@ -59,6 +59,18 @@ export const providerSettingsSchema = z.object({
 });
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
 
+/**
+ * Lead가 작업자를 제안할 때 읽는 프로바이더 목록: 작업자 기본값과 연결마다 이름·모델 목록. 전역 설정 화면과 같은 목록이며
+ * 동시 실행 상한 같은 운영 설정은 담지 않는다.
+ */
+export const providerCatalogSchema = z.object({
+  workerDefault: providerChoiceSchema,
+  providers: z.array(
+    providerSummarySchema.pick({ id: true, label: true, models: true })
+  ),
+});
+export type ProviderCatalog = z.infer<typeof providerCatalogSchema>;
+
 /** 사용자의 Lead·작업자 기본값 변경. 둘을 함께 저장한다. */
 export const updateProviderDefaultsInputSchema = z.strictObject({
   leadDefault: providerChoiceSchema,

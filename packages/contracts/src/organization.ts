@@ -80,17 +80,32 @@ export const agentSchema = z.object({
 export type Agent = z.infer<typeof agentSchema>;
 
 /**
- * 조직별 승인 정책(ADR-0003). 켜진 항목의 도구 호출은 제품이 승인 요청으로 바꾸고, 새 조직은 모든 항목이 꺼져 있다.
- * 첫 판의 항목은 작업자 추가뿐이다. 초기 연구 승인과 최종 완료는 항상 사용자 결정이라 항목이 아니다.
+ * 조직별 승인 정책(ADR-0003). 새 조직은 모든 항목이 꺼져 있다. 초기 연구 승인과 최종 완료는 항상 사용자 결정이라 항목이 아니다.
+ * - `addWorker`(작업자 추가): 켜지면 제품이 Lead의 작업자 추가를 승인 요청으로 바꾼다.
+ * - `publishToGitHub`(GitHub에 올리기): 켜지면 Lead가 GitHub에 올리기 전에 사용자에게 확인받는다. 에이전트 지침으로 지키며
+ *   제품 코드가 GitHub 올리기를 막지 않는다(ADR-0005).
  */
-export const approvalPolicySchema = z.object({ addWorker: z.boolean() });
-export type ApprovalPolicy = z.infer<typeof approvalPolicySchema>;
-export const defaultApprovalPolicy: ApprovalPolicy = { addWorker: false };
-
-/** 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. */
-export const updateApprovalPolicyInputSchema = z.strictObject({
+export const approvalPolicySchema = z.object({
   addWorker: z.boolean(),
+  publishToGitHub: z.boolean(),
 });
+export type ApprovalPolicy = z.infer<typeof approvalPolicySchema>;
+export const approvalPolicyItems = ["addWorker", "publishToGitHub"] as const;
+export type ApprovalPolicyItem = (typeof approvalPolicyItems)[number];
+export const defaultApprovalPolicy: ApprovalPolicy = {
+  addWorker: false,
+  publishToGitHub: false,
+};
+
+/** 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. 적은 항목만 바꾼다. */
+export const updateApprovalPolicyInputSchema = z
+  .strictObject({
+    addWorker: z.boolean().optional(),
+    publishToGitHub: z.boolean().optional(),
+  })
+  .refine((input) => Object.keys(input).length > 0, {
+    message: "바꿀 항목을 하나 이상 적는다",
+  });
 export type UpdateApprovalPolicyInput = z.infer<
   typeof updateApprovalPolicyInputSchema
 >;

@@ -4,7 +4,11 @@ import { flowKindSchema, instructionFileSchema } from "./harness.ts";
 import { agentAppearanceSchema } from "./agent-profile.ts";
 import { agentHeartbeatSchema } from "./heartbeat.ts";
 import { conversationMessageSchema, conversationSchema } from "./message.ts";
-import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
+import {
+  agentRoleSchema,
+  approvalPolicySchema,
+  lifecycleStageSchema,
+} from "./organization.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
 import {
   modelIdSchema,
@@ -154,6 +158,8 @@ export const runContextSchema = z.object({
     stage: lifecycleStageSchema,
     goal: z.string().nullable(),
     completionCriteria: z.string().nullable(),
+    /** 조직의 승인 정책. `GitHub에 올리기`처럼 에이전트 지침으로 지키는 항목도 여기서 읽는다. */
+    approvalPolicy: approvalPolicySchema,
   }),
   agent: z.object({ id: z.uuid(), role: agentRoleSchema, name: z.string() }),
   /** 같은 조직의 에이전트. 작업 담당·메시지 받는 에이전트를 고를 때 쓴다. */

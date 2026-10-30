@@ -1,8 +1,14 @@
-import type { Agent, Event, ProviderChoice } from "@babojubot/contracts";
+import {
+  approvalPolicyItems,
+  type Agent,
+  type Event,
+  type ProviderChoice,
+} from "@babojubot/contracts";
 import { Link, useSearchParams } from "react-router";
 import { useEvents } from "./api.ts";
 import { defaultModelLabel, useChoiceLabel } from "./provider-choice.tsx";
 import {
+  approvalPolicyItemLabel,
   decisionLabel,
   formatTime,
   inboxKindLabel,
@@ -79,11 +85,22 @@ export function describeEvent(
         title: `${agentName}가 연구 목표와 완료 기준을 기록했습니다 → ${stageLabel[event.payload.stage]}`,
         detail: `목표: ${event.payload.goal}\n완료 기준: ${event.payload.completionCriteria}`,
       };
-    case "organization.approval_policy_changed":
+    case "organization.approval_policy_changed": {
+      // 이 항목이 생기기 전의 Event에는 `GitHub에 올리기`가 없다(꺼짐).
+      const { previous, policy } = event.payload;
+      const changed = approvalPolicyItems.filter(
+        (item) => !!previous[item] !== !!policy[item]
+      );
       return {
         icon: "⚙",
-        title: `사용자가 승인 정책 “작업자 추가”를 ${event.payload.policy.addWorker ? "켰습니다" : "껐습니다"}`,
+        title: `사용자가 승인 정책 ${changed
+          .map(
+            (item) =>
+              `“${approvalPolicyItemLabel[item]}”를 ${policy[item] ? "켰습니다" : "껐습니다"}`
+          )
+          .join(", ")}`,
       };
+    }
     case "organization.paused":
       return {
         icon: "⏸",

@@ -1,4 +1,5 @@
 import {
+  approvalPolicyItems,
   defaultApprovalPolicy,
   defaultHeartbeatMinutes,
   type Agent,
@@ -121,7 +122,8 @@ export function planApprovalPolicyChange(
 ): { policy: ApprovalPolicy; event: NewEvent } | undefined {
   const previous = organization.approvalPolicy;
   const policy: ApprovalPolicy = { ...previous, ...input };
-  if (policy.addWorker === previous.addWorker) return undefined;
+  if (approvalPolicyItems.every((item) => policy[item] === previous[item]))
+    return undefined;
   return {
     policy,
     event: {

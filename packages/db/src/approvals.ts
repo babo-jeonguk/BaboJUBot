@@ -89,7 +89,8 @@ export function insertInitialApprovalRequest(
       const proposal = buildInitialResearchProposal(
         org,
         input,
-        options.library
+        options.library,
+        (await readProviderDefaults(tx)).workerDefault
       );
       if (typeof proposal === "string")
         return { kind: "invalid", problem: proposal };
@@ -131,6 +132,7 @@ export function insertInitialApprovalRequest(
 export type DecisionRefusal =
   | "already_decided"
   | "decision_not_allowed"
+  | "choices_mismatch"
   | "organization_closed"
   | "not_found";
 
@@ -138,7 +140,8 @@ export type DecisionRefusal =
  * 사용자의 승인 결정 제어 명령. 조직 행을 잠근 뒤 결정을 기다리는 요청에만 조건부로 결정을 적용하고,
  * 단계·승인한 Lead 제안 완료 기준·작업자·각 작업자의 사본·조직 템플릿 사본·Lead 깨우기·Event를 같은 transaction에 저장한다.
  * 이미 결정한 요청은 같은 결정이라도 다시 적용하지 않는다. 다른 조직의 요청과 없는 요청은 같은 `not_found`다.
- * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 `decision_not_allowed`이며 아무것도 남기지 않는다.
+ * 그 종류에 없는 결정(작업자 추가의 수정 요청)은 `decision_not_allowed`, 생길 작업자 수와 다른 프로바이더·모델 목록은
+ * `choices_mismatch`이며 아무것도 남기지 않는다. 승인하면 작업자마다 정한 프로바이더·모델을 결정에 함께 남긴다.
  * 초기 연구 승인 결정은 단계를 바꾸므로, 일시정지 중이면 조직을 재개하며 결정하고 중단된 조직에서는 `organization_closed`다.
  * 작업자 추가 결정은 단계와 상관없이 받으며 일시정지를 풀지 않는다(#58).
  * commit 뒤에는 재개·결정 Event 순서로 알리고, 재개했으면 그 조직의 대기 깨우기를 다시 처리한 뒤 Lead를 깨운다.
@@ -189,12 +192,13 @@ export async function decideApproval(
       },
       source
     );
-    if (plan === "decision_not_allowed") return refused(plan);
+    if (typeof plan === "string") return refused(plan);
     const [decided] = await tx
       .update(approvals)
       .set({
         status: plan.status,
         decisionNote: plan.note,
+        decidedWorkers: plan.decidedWorkers,
         decidedAt: new Date(plan.decidedAt),
       })
       .where(
@@ -295,6 +299,7 @@ export const toApprovalSummary = (
   const {
     proposal: _proposal,
     decisionNote: _note,
+    decidedWorkers: _workers,
     ...summary
   } = toApproval(row);
   return summary;

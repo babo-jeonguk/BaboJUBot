@@ -3,6 +3,7 @@ import {
   defaultAgentAppearance,
   type Agent,
   type AgentHeartbeat,
+  type ApprovalPolicy,
   type Event,
   type InstructionCopy,
   type NewEvent,
@@ -81,17 +82,26 @@ export const withIsoTime = <T extends { createdAt: Date }>(row: T) => ({
 });
 export const toOrganization = ({
   addWorkerApproval,
+  publishToGitHubApproval,
   ...row
 }: typeof organizations.$inferSelect): Organization => ({
   ...withIsoTime(row),
-  approvalPolicy: { addWorker: addWorkerApproval },
+  approvalPolicy: {
+    addWorker: addWorkerApproval,
+    publishToGitHub: publishToGitHubApproval,
+  },
+});
+/** 승인 정책 → 조직 행의 정책 열. */
+export const approvalPolicyColumns = (policy: ApprovalPolicy) => ({
+  addWorkerApproval: policy.addWorker,
+  publishToGitHubApproval: policy.publishToGitHub,
 });
 export const organizationRow = ({
   approvalPolicy,
   ...organization
 }: Organization): typeof organizations.$inferInsert => ({
   ...organization,
-  addWorkerApproval: approvalPolicy.addWorker,
+  ...approvalPolicyColumns(approvalPolicy),
   createdAt: new Date(organization.createdAt),
 });
 export const toAgent = ({

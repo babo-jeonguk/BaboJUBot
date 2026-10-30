@@ -423,12 +423,20 @@ export async function loadRunContext(
     },
     wakeReasons,
     context: {
-      organization: (({ id, name, stage, goal, completionCriteria }) => ({
+      organization: (({
         id,
         name,
         stage,
         goal,
         completionCriteria,
+        approvalPolicy,
+      }) => ({
+        id,
+        name,
+        stage,
+        goal,
+        completionCriteria,
+        approvalPolicy,
       }))(toOrganization(organization)),
       agent: { id: agent.id, role: agent.role, name: agent.name },
       team: await db

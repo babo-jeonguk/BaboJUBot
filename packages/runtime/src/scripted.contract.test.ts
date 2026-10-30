@@ -1,4 +1,4 @@
-import type { RunRequest } from "@babojubot/contracts";
+import { defaultApprovalPolicy, type RunRequest } from "@babojubot/contracts";
 import { describeRuntimeContract } from "./runtime-contract.ts";
 import { createScriptedRuntime } from "./scripted.ts";
 
@@ -27,6 +27,7 @@ function leadRequest(access: RunRequest["access"], body: string): RunRequest {
         stage: "researching",
         goal: "목표",
         completionCriteria: "기준",
+        approvalPolicy: defaultApprovalPolicy,
       },
       agent: lead,
       team: [lead],

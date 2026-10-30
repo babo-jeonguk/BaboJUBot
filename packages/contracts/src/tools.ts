@@ -7,6 +7,7 @@ import {
   requestInitialApprovalInputSchema,
 } from "./approval.ts";
 import { harnessLibrarySchema } from "./harness.ts";
+import { providerCatalogSchema } from "./provider.ts";
 import {
   memoryEntryListSchema,
   memoryEntrySchema,
@@ -231,6 +232,18 @@ export const orgTools = {
     roles: leadOnly,
     stages: "any",
   }),
+  list_providers: orgTool({
+    description:
+      "Returns the provider connections you can propose for workers, each with its ID, label and models, and the worker default used when you leave a worker's provider out. Read it before you propose workers in `request_initial_approval` or `add_worker`. The Owner can change any proposed provider or model before approving.",
+    method: "GET",
+    path: "/providers",
+    params: {},
+    body: noQuery,
+    fields: {},
+    output: providerCatalogSchema,
+    roles: leadOnly,
+    stages: "any",
+  }),
   // 합의한 목표·완료 기준의 변경은 승인 정책 항목이다(ADR-0003, #58). 그 전에는 목표 설정에서만 기록한다.
   // 새 조직은 생성 때 목표를 받아 계획 수립에서 시작하므로, 이 도구는 목표 없이 만든 예전 조직에만 열린다.
   record_goal: orgTool({
@@ -252,7 +265,7 @@ export const orgTools = {
   }),
   request_initial_approval: orgTool({
     description:
-      "Submits the initial research plan, team, research environment specification and research flow template as one approval request to the Owner, moves the organization to awaiting approval, and returns the pending request. Nothing is created before the Owner approves; on approval the team is hired and the template copied to the organization exactly as submitted. When the Owner rejects or requests changes you are woken in planning with their note and submit a new request. Refused with `invalid_input` when a Role or the template is not in the harness library (see `get_harness_library`).",
+      "Submits the initial research plan, team, research environment specification and research flow template as one approval request to the Owner, moves the organization to awaiting approval, and returns the pending request. Nothing is created before the Owner approves; on approval the team is hired and the template copied to the organization exactly as submitted. When the Owner rejects or requests changes you are woken in planning with their note and submit a new request. Refused with `invalid_input` when a Role or the template is not in the harness library (see `get_harness_library`), and with `unknown_provider` or `unknown_model` when a proposed provider or model is not in `list_providers`.",
     method: "POST",
     path: "/initial-approval",
     params: {},
@@ -263,7 +276,7 @@ export const orgTools = {
         "Completion criteria you propose. Required when the organization has none (refused with `completion_criteria_required`); leave it out when the organization already has them (refused with `completion_criteria_set`). Becomes the organization's completion criteria once the Owner approves.",
       environment:
         "The research environment specification in Markdown: compute, data, tools, and anything the Owner has to prepare.",
-      team: "Workers to hire: each worker Role from the harness library at most once, with how many (1-10).",
+      team: "Workers to hire: each worker Role from the harness library at most once, with how many (1-10), and optionally the `provider` connection ID and `model` ID for those workers from `list_providers`. Leave `provider` out to use the worker default; give `provider` without `model` (or `model: null`) for that provider's default model. `model` needs `provider`.",
       template: "Name of the research flow template in the harness library.",
     },
     ownerFacing: ["plan", "completionCriteria", "environment"],
@@ -405,12 +418,18 @@ export const orgTools = {
   }),
   add_worker: orgTool({
     description:
-      "Adds one worker with a worker Role from the harness library and returns the outcome. When the organization's approval policy covers adding workers, the outcome is `pending_approval` with the request, and the worker joins only after the Owner approves; otherwise it is `added` with the new agent. Refused with `invalid_input` when the Role is not a worker Role in the harness library (see `get_harness_library`).",
+      "Adds one worker with a worker Role from the harness library and returns the outcome. When the organization's approval policy covers adding workers, the outcome is `pending_approval` with the request, and the worker joins only after the Owner approves; otherwise it is `added` with the new agent. Refused with `invalid_input` when the Role is not a worker Role in the harness library (see `get_harness_library`), and with `unknown_provider` or `unknown_model` when the provider or model is not in `list_providers`.",
     method: "POST",
     path: "/workers",
     params: {},
     body: addWorkerInputSchema,
-    fields: { role: "Name of the worker Role in the harness library." },
+    fields: {
+      role: "Name of the worker Role in the harness library.",
+      provider:
+        "Provider connection ID from `list_providers`. Leave it out to use the worker default.",
+      model:
+        "Model ID of that provider from `list_providers`. Leave it out or null for the provider's default model. Needs `provider`.",
+    },
     output: addWorkerResultSchema,
     roles: leadOnly,
     stages: researching,
@@ -726,6 +745,8 @@ export const orgToolErrorCodes = [
   "idempotency_conflict",
   "completion_criteria_required",
   "completion_criteria_set",
+  "unknown_provider",
+  "unknown_model",
 ] as const;
 export type OrgToolErrorCode = (typeof orgToolErrorCodes)[number];
 export const orgToolErrorSchema = z.object({

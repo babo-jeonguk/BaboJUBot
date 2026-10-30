@@ -25,7 +25,8 @@ import {
 } from "./tool-calls.ts";
 
 /**
- * Lead의 작업자 추가. 조직 행 잠금 아래에서 읽은 최신 승인 정책으로 갈린다. 꺼져 있으면 작업자·그 사본·Event를,
+ * Lead의 작업자 추가. 프로바이더를 비웠으면 지금의 작업자 기본값을 Lead 제안으로 고정한다.
+ * 조직 행 잠금 아래에서 읽은 최신 승인 정책으로 갈린다. 꺼져 있으면 Lead 제안 프로바이더·모델의 작업자·그 사본·Event를,
  * 켜져 있으면 승인 요청·Event만 같은 transaction에 저장하고 조직 단계는 그대로 둔다.
  */
 export function addWorker(
@@ -43,7 +44,11 @@ export function addWorker(
     "add_worker",
     options,
     async (tx, locked, org) => {
-      const proposal = buildAddWorkerProposal(input, options.library);
+      const proposal = buildAddWorkerProposal(
+        input,
+        options.library,
+        (await readProviderDefaults(tx)).workerDefault
+      );
       if (typeof proposal === "string")
         return { kind: "invalid", problem: proposal };
       const { approvalPolicy: policy, stage } = toOrganization(org);
@@ -54,7 +59,6 @@ export function addWorker(
           policy,
           stage,
           agentNames: await agentNamesOf(tx, locked.organizationId),
-          workerDefault: (await readProviderDefaults(tx)).workerDefault,
         },
         options.source
       );
