@@ -5,7 +5,7 @@ import { queryKeys } from "./api.ts";
 import { createLiveRefresh } from "./live-refresh.ts";
 
 /**
- * 셸은 전체 조직 Event stream 하나를 구독한다. Event는 관련 조회를 다시 불러오게 할 뿐이고,
+ * 셸은 전체 조직 Event stream 하나를 구독한다. Event와 전역 설정 변경 신호는 관련 조회를 다시 불러오게 할 뿐이고,
  * 구독이 성립하거나 다시 연결될 때마다 전체를 재조회해 그 사이 놓친 변화를 맞춘다.
  * 재조회 조율은 `createLiveRefresh`가 맡는다.
  */
@@ -33,6 +33,10 @@ export function useLiveEvents() {
         if (frame.data.type === "ready") {
           attempt = 0;
           live.refresh();
+          return;
+        }
+        if (frame.data.type === "settings_changed") {
+          live.refresh({ queryKey: queryKeys.providers, exact: true });
           return;
         }
         const { event } = frame.data;

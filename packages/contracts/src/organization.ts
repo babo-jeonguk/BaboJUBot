@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { agentAppearanceSchema } from "./agent-profile.ts";
+import {
+  modelIdSchema,
+  providerChoiceSchema,
+  providerIdSchema,
+} from "./provider.ts";
 
 /**
  * 조직 생애주기. 일시정지·중단은 최종 완료 전 어느 단계에서든 걸 수 있고, 일시정지는 재개하면 직전 단계로 돌아간다.
@@ -47,11 +52,13 @@ export const goalMaxLength = 4_000;
 /**
  * 조직 생성 입력. 사용자가 이름·연구 목표와, 정했다면 완료 기준을 적는다. ID·단계·Lead는 서버가 정한다.
  * 완료 기준을 비우면(빈 칸·생략) 조직은 완료 기준 없이 시작하고, Lead가 초기 연구 승인 요청에서 제안한다.
+ * `lead`는 Lead의 프로바이더·모델이며, 생략하면 전역 Lead 기본값을 복사한다.
  */
 export const createOrganizationInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(organizationNameMaxLength),
   goal: z.string().trim().min(1).max(goalMaxLength),
   completionCriteria: z.string().trim().max(goalMaxLength).optional(),
+  lead: providerChoiceSchema.optional(),
 });
 export type CreateOrganizationInput = z.infer<
   typeof createOrganizationInputSchema
@@ -64,6 +71,10 @@ export const agentSchema = z.object({
   name: z.string(),
   /** 얼굴. 사용자가 고르지 않았으면 ID에서 정한 기본 얼굴이다. */
   appearance: agentAppearanceSchema,
+  /** 실행 시도를 맡는 프로바이더 연결. 만들 때 역할의 전역 기본값을 복사하고 사용자만 바꾼다. */
+  provider: providerIdSchema,
+  /** 모델. 없으면 프로바이더의 기본 모델이다. */
+  model: modelIdSchema.nullable(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 export type Agent = z.infer<typeof agentSchema>;

@@ -22,6 +22,7 @@ export * from "./control.ts";
 export * from "./queued-messages.ts";
 export * from "./heartbeat.ts";
 export * from "./agents.ts";
+export * from "./providers.ts";
 export * from "./memories.ts";
 export * from "./notifications.ts";
 export * from "./dashboard.ts";

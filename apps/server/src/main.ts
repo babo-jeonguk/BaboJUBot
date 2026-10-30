@@ -5,11 +5,13 @@ import {
   openEphemeralDatabase,
   type DatabaseHandle,
 } from "@babojubot/db";
+import { createFakeProviders } from "@babojubot/runtime";
 import { startServer } from "./app.ts";
 
 // 환경 변수
 // - DATABASE_URL: 외부 Postgres(운영). 없으면 embedded Postgres를 BABOJUBOT_HOME/postgres에 띄운다.
 // - BABOJUBOT_EPHEMERAL_DB=1: 임시 embedded Postgres(E2E). 종료 때 지운다.
+// - BABOJUBOT_FAKE_PROVIDERS: 가짜 프로바이더 연결 수(기본 1). 2 이상이면 `fake-2`(가짜 프로바이더 2)…가 더 생긴다(E2E).
 // - PORT, HOST, EMBEDDED_POSTGRES_PORT, BABOJUBOT_HOME
 //   HOST 기본값은 127.0.0.1이다. 인증이 없으므로 외부 주소로 열면 그 네트워크의 누구나 API와 Event stream을 쓴다.
 const repoRoot = path.resolve(
@@ -52,6 +54,9 @@ try {
     db: handle.db,
     port: Number(env.PORT ?? 3100),
     host: env.HOST ?? "127.0.0.1",
+    providers: createFakeProviders(
+      Math.max(1, Number(env.BABOJUBOT_FAKE_PROVIDERS ?? 1) || 1)
+    ),
     webDistDir: path.join(repoRoot, "apps/web/dist"),
   });
 } catch (error) {

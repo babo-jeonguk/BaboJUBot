@@ -196,6 +196,9 @@ export type NewRun = {
   id: string;
   organizationId: string;
   agentId: string;
+  /** admission 때 에이전트 설정에서 고정한 프로바이더 연결과 모델. */
+  provider: string;
+  model: string | null;
   instructionsBundleVersion: string | null;
   sessionBefore: SessionState | null;
   startedAt: string;
@@ -236,7 +239,9 @@ export function bundleWakes(pending: readonly PendingWake[]): PendingWake[] {
 
 /**
  * 대기 중인 깨우기를 실행 시도 하나로 묶는다(`bundleWakes`). 묶음은 이 시점에 고정되며,
- * 이후 도착한 깨우기와 묶지 않은 깨우기는 다음 실행 시도가 받는다. 지침 bundle 버전이 같을 때만 이전 세션을 이어 간다.
+ * 이후 도착한 깨우기와 묶지 않은 깨우기는 다음 실행 시도가 받는다. 에이전트의 프로바이더 연결·모델을 실행 시도에 고정하고,
+ * 지침 bundle 버전과 프로바이더 연결이 이전 실행 시도와 같을 때만 이전 세션을 이어 간다(모델만 바뀌면 이어 간다).
+ * 다른 연결의 세션은 이어받을 수 없고, 연결이 A→B→A로 돌아와도 바로 앞 실행 시도가 B이므로 새 세션이다.
  */
 export function planRunStart(
   input: {
@@ -245,6 +250,7 @@ export function planRunStart(
     instructionsBundleVersion: string | null;
     previousRun:
       | {
+          provider: string;
           instructionsBundleVersion: string | null;
           nextSession: SessionState | null;
         }
@@ -259,9 +265,12 @@ export function planRunStart(
     id: newId(),
     organizationId: agent.organizationId,
     agentId: agent.id,
+    provider: agent.provider,
+    model: agent.model,
     instructionsBundleVersion,
     sessionBefore:
       previousRun &&
+      previousRun.provider === agent.provider &&
       previousRun.instructionsBundleVersion === instructionsBundleVersion
         ? previousRun.nextSession
         : null,

@@ -1,4 +1,5 @@
 export * from "./agent-profile.ts";
+export * from "./provider.ts";
 export * from "./organization.ts";
 export * from "./harness.ts";
 export * from "./approval.ts";

@@ -19,6 +19,7 @@ import {
 } from "@babojubot/core";
 import { and, desc, eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { readProviderDefaults } from "./providers.ts";
 import { refused, stored, type Stored } from "./stored.ts";
 import { insertInstructionCopies } from "./harness.ts";
 import {
@@ -184,6 +185,7 @@ export async function decideApproval(
       {
         stage: resumed ? "awaiting_approval" : org.stage,
         agentNames: await agentNamesOf(tx, organizationId),
+        workerDefault: (await readProviderDefaults(tx)).workerDefault,
       },
       source
     );

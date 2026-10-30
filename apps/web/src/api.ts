@@ -19,6 +19,7 @@ import {
   organizationListSchema,
   organizationSchema,
   overviewSchema,
+  providerSettingsSchema,
   researchLinkSchema,
   researchMapSchema,
   researchNodeDetailSchema,
@@ -43,7 +44,9 @@ import {
   type Organization,
   type OrganizationCommand,
   type OrganizationDetail,
+  type ProviderChoice,
   type UpdateAgentProfileInput,
+  type UpdateProviderDefaultsInput,
   type UpdateApprovalPolicyInput,
   type UpdateHeartbeatInput,
   type UpdateInboxItemInput,
@@ -131,6 +134,8 @@ export const queryKeys = {
   inbox: ["inbox"] as const,
   /** 홈 개요(모든 조직의 진행 중 실행 시도 수). 어느 조직의 Event든 다시 불러온다. */
   overview: ["overview"] as const,
+  /** 전역 프로바이더 설정(기본값·연결·모델 목록·동시 실행 상한). 조직 Event가 아니라 `settings_changed` 신호로 다시 불러온다. */
+  providers: ["providers"] as const,
 };
 
 const orgPath = (id: string, rest = "") =>
@@ -679,6 +684,73 @@ export function useUpdateHeartbeat(orgId: string, agentId: string) {
       ),
     onSuccess: (agent) => {
       queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+    },
+  });
+}
+
+/** 전역 프로바이더 설정. 고르기 목록·실행 시도 목록의 프로바이더·모델 이름도 여기서 읽는다. */
+export function useProviderSettings() {
+  return useQuery({
+    queryKey: queryKeys.providers,
+    queryFn: () => request(providerSettingsSchema, "/api/providers"),
+  });
+}
+
+/** 전역 설정 변경. 서버가 확정한 설정으로 바꾼다. 다른 탭은 `settings_changed` 신호로 다시 불러온다. */
+function useProviderSettingsMutation<I>(
+  path: (input: I) => string,
+  body: (input: I) => unknown
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: I) =>
+      request(providerSettingsSchema, path(input), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body(input)),
+      }),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(queryKeys.providers, settings);
+    },
+  });
+}
+
+export const useUpdateProviderDefaults = () =>
+  useProviderSettingsMutation(
+    (_: UpdateProviderDefaultsInput) => "/api/providers/defaults",
+    (input) => input
+  );
+
+export const useUpdateProviderLimit = () =>
+  useProviderSettingsMutation(
+    ({ provider }: { provider: string; maxConcurrentRuns: number }) =>
+      `/api/providers/${encodeURIComponent(provider)}/limit`,
+    ({ maxConcurrentRuns }) => ({ maxConcurrentRuns })
+  );
+
+/**
+ * 에이전트 프로바이더·모델 변경. 서버가 확정한 에이전트 상세로 바꾸고 조직 상세를 다시 불러온다.
+ * 다른 탭은 `agent.provider_changed` Event로 같은 조직을 다시 불러온다.
+ */
+export function useUpdateAgentProvider(orgId: string, agentId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ProviderChoice) =>
+      request(
+        agentDetailSchema,
+        orgPath(orgId, `/agents/${encodeURIComponent(agentId)}/provider`),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }
+      ),
+    onSuccess: (agent) => {
+      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.organization(orgId),
+        exact: true,
+      });
     },
   });
 }

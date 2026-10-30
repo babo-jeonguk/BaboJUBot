@@ -22,6 +22,8 @@ const lead: Agent = {
   role: "lead",
   name: "Research Lead",
   appearance: defaultAgentAppearance("lead-1"),
+  provider: "fake",
+  model: null,
   createdAt: at,
 };
 describe("Lead conversations", () => {
@@ -162,6 +164,7 @@ describe("planRunStart", () => {
           pendingWakes: [wake("w1", "x")],
           instructionsBundleVersion: current,
           previousRun: {
+            provider: "fake",
             instructionsBundleVersion: previous,
             nextSession: { turn: 3 },
           },
@@ -173,6 +176,39 @@ describe("planRunStart", () => {
     expect(start(null, null)).toEqual({ turn: 3 });
     expect(start("v2", "v1")).toBeNull();
     expect(start("v1", null)).toBeNull();
+  });
+
+  it("pins the agent's provider and model on the run and starts a new session after a provider change", () => {
+    const start = (
+      agent: Pick<Agent, "provider" | "model">,
+      previousProvider: string
+    ) =>
+      planRunStart(
+        {
+          agent: { ...lead, ...agent },
+          pendingWakes: [wake("w1", "x")],
+          instructionsBundleVersion: "v1",
+          previousRun: {
+            provider: previousProvider,
+            instructionsBundleVersion: "v1",
+            nextSession: { turn: 3 },
+          },
+        },
+        sequence("run-2")
+      )?.run;
+
+    expect(start({ provider: "fake-2", model: "m" }, "fake-2")).toMatchObject({
+      provider: "fake-2",
+      model: "m",
+      sessionBefore: { turn: 3 },
+    });
+    // 모델만 바뀌면 세션을 이어 간다. 프로바이더 연결이 바뀌면 새 세션이다.
+    expect(
+      start({ provider: "fake", model: "other" }, "fake")?.sessionBefore
+    ).toEqual({ turn: 3 });
+    expect(
+      start({ provider: "fake", model: null }, "fake-2")?.sessionBefore
+    ).toBeNull();
   });
 });
 

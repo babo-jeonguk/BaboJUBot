@@ -44,6 +44,7 @@ function leadRequest(access: RunRequest["access"], body: string): RunRequest {
     instructionsBundleVersion: null,
     instructions: [],
     workspace: null,
+    model: null,
     previousSession: null,
   };
 }

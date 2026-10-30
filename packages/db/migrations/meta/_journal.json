@@ -148,6 +148,13 @@
       "when": 1793195792046,
       "tag": "0020_channel_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793358247397,
+      "tag": "0021_agent_providers",
+      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,7 @@ import {
   listConversationMessages,
 } from "./conversations.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
+import { updateAgentProvider, updateProviderLimit } from "./providers.ts";
 import {
   appendRunActivity,
   authenticateRun,
@@ -31,6 +32,8 @@ import { createTestDatabase, type TestDatabase } from "./testing.ts";
 let t: TestDatabase;
 beforeAll(async () => {
   t = await createTestDatabase();
+  // 이 파일의 검사들은 한 DB에 진행 중인 실행 시도를 남긴다. 가짜 연결의 동시 실행 상한을 풀어 서로 막지 않게 한다.
+  await updateProviderLimit(t.db, "fake", 0);
 });
 afterAll(async () => {
   await t?.close();
@@ -48,9 +51,14 @@ const completed: RunResult = {
 const messageIdOf = (reason: WakeReason) =>
   reason.kind === "owner_message" ? reason.messageId : undefined;
 
-async function organization() {
+async function organization(
+  choice: { provider: string; model: string | null } = {
+    provider: "fake",
+    model: null,
+  }
+) {
   const creation = planOrganizationCreation(
-    { name: "조직", goal: "목표" },
+    { name: "조직", goal: "목표", lead: choice },
     { files: [] },
     source
   );
@@ -85,6 +93,133 @@ async function organization() {
     });
   return { lead, send, claim, listConversation };
 }
+
+describe("provider connection admission", () => {
+  // 연결 ID를 테스트마다 따로 써서 같은 DB의 다른 테스트 실행 시도가 세어지지 않게 한다.
+  const connection = () => `p-${randomUUID().slice(0, 8)}`;
+  const waiting = async (provider: string) => {
+    const org = await organization({ provider, model: null });
+    await org.send("일");
+    return org;
+  };
+
+  it("starts no more runs on a connection than its cap across organizations, while other connections run independently", async () => {
+    const shared = connection();
+    const other = connection();
+    await updateProviderLimit(t.db, shared, 1);
+    await updateProviderLimit(t.db, other, 1);
+    const orgs = [
+      await waiting(shared),
+      await waiting(shared),
+      await waiting(shared),
+    ];
+    const elsewhere = await waiting(other);
+
+    const claims = await Promise.all(orgs.map((o) => o.claim()));
+    const started = claims.filter((c) => c !== undefined);
+    expect(started).toHaveLength(1);
+    expect(started[0]!.run).toMatchObject({ provider: shared, model: null });
+    // 다른 연결은 그 연결의 상한만 따른다.
+    expect(await elsewhere.claim()).toBeDefined();
+
+    // 상한을 넘는 깨우기는 그대로 기다리며, 가장 오래 기다린 에이전트부터 다시 촉진할 수 있다.
+    const waiters = orgs
+      .filter((_, i) => claims[i] === undefined)
+      .map((o) => o.lead.id);
+    expect(
+      await listAgentsWithPendingWakes(t.db, { provider: shared })
+    ).toEqual(waiters);
+
+    await finishRun(t.db, started[0]!.run.id, completed, source);
+    const next = await Promise.all(
+      orgs.filter((_, i) => claims[i] === undefined).map((o) => o.claim())
+    );
+    expect(next.filter((c) => c !== undefined)).toHaveLength(1);
+  });
+
+  it("keeps runs going when the cap drops, admits again only below the new cap, and treats 0 as unlimited", async () => {
+    const provider = connection();
+    const [a, b, c] = [
+      await waiting(provider),
+      await waiting(provider),
+      await waiting(provider),
+    ];
+    const runA = await a.claim();
+    const runB = await b.claim();
+    expect(runA && runB).toBeDefined();
+    expect(await c.claim()).toBeUndefined();
+
+    await updateProviderLimit(t.db, provider, 1);
+    // 줄여도 진행 중인 실행 시도는 끊지 않는다.
+    const [stillRunning] = await t.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(runs)
+      .where(
+        sql`${runs.provider} = ${provider} and ${runs.status} = 'running'`
+      );
+    expect(stillRunning!.n).toBe(2);
+    await finishRun(t.db, runA!.run.id, completed, source);
+    expect(await c.claim()).toBeUndefined();
+    await finishRun(t.db, runB!.run.id, completed, source);
+    const runC = await c.claim();
+    expect(runC).toBeDefined();
+
+    await updateProviderLimit(t.db, provider, 0);
+    await a.send("둘");
+    await b.send("둘");
+    expect(await a.claim()).toBeDefined();
+    expect(await b.claim()).toBeDefined();
+  });
+
+  it("pins the agent's provider and model on each run and starts a new session after a provider change", async () => {
+    const provider = connection();
+    const { lead, send, claim } = await organization({
+      provider,
+      model: "m1",
+    });
+    await send("하나");
+    const first = await claim();
+    expect(first?.run).toMatchObject({ provider, model: "m1" });
+    await finishRun(
+      t.db,
+      first!.run.id,
+      { ...completed, nextSession: { turn: 1 } },
+      source
+    );
+
+    // 실행 중에 바꿔도 그 실행 시도는 고정한 값으로 끝나고, 다음 실행 시도가 새 값이다.
+    await send("둘");
+    const second = await claim();
+    expect(second?.run.sessionBefore).toEqual({ turn: 1 });
+    const other = connection();
+    expect(
+      (
+        await updateAgentProvider(t.db, lead.organizationId, lead.id, {
+          provider: other,
+          model: null,
+        })
+      ).kind
+    ).toBe("ok");
+    const [pinned] = await listRuns(t.db, lead.organizationId, {
+      agentId: lead.id,
+      limit: 1,
+    });
+    expect(pinned).toMatchObject({ provider, model: "m1" });
+    await finishRun(
+      t.db,
+      second!.run.id,
+      { ...completed, nextSession: { turn: 2 } },
+      source
+    );
+    await send("셋");
+    const third = await claim();
+    expect(third?.run).toMatchObject({
+      provider: other,
+      model: null,
+      sessionBefore: null,
+    });
+  });
+});
 
 describe("wake queue admission", () => {
   it("bundles every pending wake into one run and holds later wakes for the next run", async () => {

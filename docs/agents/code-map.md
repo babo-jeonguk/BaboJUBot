@@ -17,6 +17,7 @@
 | 연구 지도 | [research-map](code-map/research-map.md) |
 | 결과 제출·최종 완료 | [results](code-map/results.md) |
 | 승인 정책·작업자 추가 | [approval-policy](code-map/approval-policy.md) |
+| 프로바이더 연결·에이전트별 프로바이더·모델·전역 기본값·동시 실행 상한 | [providers](code-map/providers.md) |
 | 일시정지·재개·중단과 실행 중단·중단하고 보내기·줄 세운 메시지 | [control](code-map/control.md) |
 | Heartbeat·기억·서버 재시작 복구 | [heartbeat-and-recovery](code-map/heartbeat-and-recovery.md) |
 | 알림 outbox·가짜 채널·Inbox | [notifications](code-map/notifications.md) |

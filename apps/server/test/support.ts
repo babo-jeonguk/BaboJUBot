@@ -3,6 +3,7 @@ import {
   eventStreamPath,
   streamFrameSchema,
   type Event,
+  type ProviderConnection,
   type RuntimeAdapter,
   type StreamScope,
 } from "@babojubot/contracts";
@@ -17,6 +18,8 @@ export type Subscription = {
   next: (timeoutMs?: number) => Promise<Event>;
   /** 잠시 기다린 뒤 이 구독이 Event를 하나도 받지 않았는지 확인한다. */
   expectNoEvents: (ms?: number) => Promise<void>;
+  /** 받은 전역 설정 변경 신호(`settings_changed`) 수. */
+  settingsSignals: () => number;
   close: () => void;
 };
 
@@ -53,8 +56,10 @@ export type TestServer = {
 };
 
 export type TestServerOptions = {
-  /** 프로바이더 adapter. 기본은 가짜 프로바이더의 기본 시나리오다. */
+  /** 가짜 프로바이더 연결 하나의 adapter. 기본은 가짜 프로바이더의 기본 시나리오다. */
   runtime?: RuntimeAdapter;
+  /** 이름 붙은 프로바이더 연결 여러 개. `runtime`과 함께 쓰지 않는다. */
+  providers?: ProviderConnection[];
   /** 기록 시각에 쓰는 시계. */
   now?: () => Date;
   /** 알림을 보내고 답을 받는 채널. 기본은 가짜 채널이다. */
@@ -131,6 +136,7 @@ export async function startTestServer(
       );
       sockets.add(socket);
       const events: Event[] = [];
+      let settingsSignals = 0;
       let waiter: (() => void) | undefined;
       let taken = 0;
       return new Promise((resolve, reject) => {
@@ -141,6 +147,10 @@ export async function startTestServer(
         socket.on("message", (data) => {
           const frame = streamFrameSchema.parse(JSON.parse(String(data)));
           if (frame.type === "ready") return resolve(subscription);
+          if (frame.type === "settings_changed") {
+            settingsSignals++;
+            return;
+          }
           events.push(frame.event);
           waiter?.();
         });
@@ -167,6 +177,7 @@ export async function startTestServer(
             if (events.length)
               throw new Error(`unexpected Event: ${JSON.stringify(events)}`);
           },
+          settingsSignals: () => settingsSignals,
           close: () => socket.close(),
         };
       });

@@ -105,10 +105,14 @@ export async function insertLegacyOrganization(
   name: string,
   leadRole: AgentRoleSource = { files: [] }
 ) {
-  const creation = planOrganizationCreation({ name, goal: "-" }, leadRole, {
-    newId: randomUUID,
-    now: () => new Date(),
-  });
+  const creation = planOrganizationCreation(
+    { name, goal: "-", lead: { provider: "fake", model: null } },
+    leadRole,
+    {
+      newId: randomUUID,
+      now: () => new Date(),
+    }
+  );
   const organization = {
     ...creation.organization,
     stage: "goal_setting" as const,

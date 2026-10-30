@@ -21,7 +21,12 @@ const leadFiles = ["AGENTS.md", "SOUL.md"].map((path) => ({
 const now = () => new Date("2026-10-16T00:00:00.000Z");
 const create = (input: { completionCriteria?: string }) =>
   planOrganizationCreation(
-    { name: "음성 인식 오류 분석", goal: "오류율을 절반으로", ...input },
+    {
+      name: "음성 인식 오류 분석",
+      goal: "오류율을 절반으로",
+      lead: { provider: "fake-2", model: null },
+      ...input,
+    },
     { files: leadFiles, heartbeatMinutes: 90 },
     { newId: ids(), now }
   );
@@ -81,6 +86,8 @@ describe("planOrganizationCreation", () => {
         organizationId: "org-1",
         role: "lead",
         name: "Research Lead",
+        provider: "fake-2",
+        model: null,
         createdAt: "2026-10-16T00:00:00.000Z",
         heartbeatMinutes: 90,
       },

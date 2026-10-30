@@ -1,6 +1,7 @@
-import type { Agent, Event } from "@babojubot/contracts";
+import type { Agent, Event, ProviderChoice } from "@babojubot/contracts";
 import { Link, useSearchParams } from "react-router";
 import { useEvents } from "./api.ts";
+import { defaultModelLabel, useChoiceLabel } from "./provider-choice.tsx";
 import {
   decisionLabel,
   formatTime,
@@ -19,8 +20,13 @@ type Described = { icon: string; title: string; detail?: string };
 const cancelledRuns = (count: number) =>
   count ? `, 실행 시도 ${count}개 취소 요청` : "";
 
-/** Event 하나를 화면 문장으로. 공개 기록에 있는 값만 보이며 내용을 추측하지 않는다. */
-export function describeEvent(event: Event, agentName: string): Described {
+/** Event 하나를 화면 문장으로. 공개 기록에 있는 값만 보이며 내용을 추측하지 않는다. `choiceLabel`은 `프로바이더 · 모델` 이름이다. */
+export function describeEvent(
+  event: Event,
+  agentName: string,
+  choiceLabel: (choice: ProviderChoice) => string = ({ provider, model }) =>
+    `${provider} · ${model ?? defaultModelLabel}`
+): Described {
   switch (event.type) {
     case "organization.created":
       return event.payload.goal === undefined
@@ -140,6 +146,12 @@ export function describeEvent(event: Event, agentName: string): Described {
         detail: name ? `${name.from} → ${name.to}` : undefined,
       };
     }
+    case "agent.provider_changed":
+      return {
+        icon: "⇄",
+        title: `사용자가 ${agentName}의 프로바이더·모델을 바꿨습니다`,
+        detail: `${choiceLabel(event.payload.from)} → ${choiceLabel(event.payload.to)}`,
+      };
     case "agent.heartbeat":
       return {
         icon: "⏱",
@@ -276,7 +288,8 @@ export function EventRow({
 }) {
   const agentId = agentIdOf(event);
   const agentName = agents.find((a) => a.id === agentId)?.name ?? "에이전트";
-  const { icon, title, detail } = describeEvent(event, agentName);
+  const choiceLabel = useChoiceLabel();
+  const { icon, title, detail } = describeEvent(event, agentName, choiceLabel);
   const runId = runIdOf(event);
   return (
     <li className="flex gap-3 px-4 py-2.5 text-sm" data-event-type={event.type}>

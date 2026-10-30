@@ -10,6 +10,7 @@ import {
   type LifecycleStage,
   type NewEvent,
   type Organization,
+  type ProviderChoice,
   type UpdateApprovalPolicyInput,
 } from "@babojubot/contracts";
 import { copyInstructions } from "./harness.ts";
@@ -48,10 +49,11 @@ export type OrganizationCreation = {
  * 새 조직은 사용자가 적은 연구 목표와 완료 기준(비웠으면 없음)을 가진 채 `계획 수립`에서 시작하고,
  * 전용 Research Lead 하나와 그 Lead와의 기본 대화를 가지며 승인 정책은 모두 꺼져 있다. 목표는 사용자 입력이므로 생성 Event가 그 내용을 남긴다.
  * Lead는 하네스 라이브러리의 Lead Role에서 복사한 자기 Role·Soul 사본과 기본 heartbeat 간격을 받고,
- * 초기 연구 승인 요청을 준비하도록 곧바로 깨어난다.
+ * 초기 연구 승인 요청을 준비하도록 곧바로 깨어난다. Lead의 프로바이더·모델은 `input.lead`이며, 사용자가 고르지 않았으면
+ * 호출한 쪽이 전역 Lead 기본값을 넣는다.
  */
 export function planOrganizationCreation(
-  input: CreateOrganizationInput,
+  input: CreateOrganizationInput & { lead: ProviderChoice },
   leadRole: AgentRoleSource,
   { newId, now }: RecordSource
 ): OrganizationCreation {
@@ -71,6 +73,8 @@ export function planOrganizationCreation(
     organizationId: organization.id,
     role: "lead",
     name: leadAgentName,
+    provider: input.lead.provider,
+    model: input.lead.model,
     createdAt,
     heartbeatMinutes: leadRole.heartbeatMinutes ?? defaultHeartbeatMinutes,
   };

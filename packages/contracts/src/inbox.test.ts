@@ -53,6 +53,8 @@ const failure = (s = state): InboxItem => ({
     organizationId: orgId,
     agentId: "00000000-0000-4000-8000-000000000003",
     status: "failed",
+    provider: "fake",
+    model: null,
     cancelReason: null,
     wakeCount: 1,
     summary: null,

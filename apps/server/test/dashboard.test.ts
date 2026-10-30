@@ -284,6 +284,10 @@ describe("running runs on the dashboard and home", () => {
   it("counts every unfinished run per organization and in total, with those cleaning up after a cancellation apart", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });
+    // 가짜 프로바이더 실행 시도 셋을 함께 붙잡아 두므로 연결의 동시 실행 상한(기본 2)을 푼다.
+    await t.request("PUT", "/api/providers/fake/limit", {
+      maxConcurrentRuns: 0,
+    });
     const a = await researching(agents, "실행 중 A");
     const b = await createOrganization("실행 중 B");
     const idleOrg = await createOrganization("쉬는 조직");

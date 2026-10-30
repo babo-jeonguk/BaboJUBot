@@ -105,7 +105,12 @@ describe("planAddWorker", () => {
     const plan = planAddWorker(
       run,
       proposal,
-      { policy: { addWorker: false }, stage: "researching", agentNames: [] },
+      {
+        policy: { addWorker: false },
+        stage: "researching",
+        agentNames: [],
+        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+      },
       source
     );
     if (plan.kind !== "added") throw new Error(plan.kind);
@@ -113,6 +118,9 @@ describe("planAddWorker", () => {
       organizationId: "org-1",
       role: "worker",
       name: "문헌 조사자 1",
+      // 만들 때 읽은 전역 작업자 기본값을 복사한다.
+      provider: "fake-2",
+      model: "fake-2-mini",
     });
     expect(plan.copies.map((c) => [c.agentId, c.path, c.content])).toEqual([
       [plan.worker.id, "AGENTS.md", "# 조사자"],
@@ -135,7 +143,12 @@ describe("planAddWorker", () => {
     const plan = planAddWorker(
       run,
       proposal,
-      { policy: { addWorker: true }, stage: "researching", agentNames: [] },
+      {
+        policy: { addWorker: true },
+        stage: "researching",
+        agentNames: [],
+        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+      },
       source
     );
     if (plan.kind !== "pending_approval") throw new Error(plan.kind);
@@ -167,7 +180,11 @@ describe("planApprovalDecision for add_worker", () => {
     const plan = planApprovalDecision(
       approval,
       { decision: "approve" },
-      { stage: "result_review", agentNames: ["문헌 조사자 1"] },
+      {
+        stage: "result_review",
+        agentNames: ["문헌 조사자 1"],
+        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+      },
       source
     );
     if (typeof plan === "string") throw new Error(plan);
@@ -193,7 +210,11 @@ describe("planApprovalDecision for add_worker", () => {
     const plan = planApprovalDecision(
       approval,
       { decision: "approve" },
-      { stage: "researching", agentNames: ["문헌 조사자 1"] },
+      {
+        stage: "researching",
+        agentNames: ["문헌 조사자 1"],
+        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+      },
       source
     );
     if (typeof plan === "string") throw new Error(plan);
@@ -204,7 +225,11 @@ describe("planApprovalDecision for add_worker", () => {
     const plan = planApprovalDecision(
       approval,
       { decision: "reject", note: "지금은 인원이 충분하다" },
-      { stage: "researching", agentNames: [] },
+      {
+        stage: "researching",
+        agentNames: [],
+        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+      },
       source
     );
     if (typeof plan === "string") throw new Error(plan);
@@ -223,7 +248,11 @@ describe("planApprovalDecision for add_worker", () => {
       planApprovalDecision(
         approval,
         { decision: "request_changes", note: "다른 Role로" },
-        { stage: "researching", agentNames: [] },
+        {
+          stage: "researching",
+          agentNames: [],
+          workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+        },
         source
       )
     ).toBe("decision_not_allowed");

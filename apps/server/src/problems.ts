@@ -11,6 +11,7 @@ import type {
   OwnerMapEditRefusal,
   ResultDecisionRefusal,
 } from "@babojubot/db";
+import type { ProviderChoiceProblem } from "./providers.ts";
 
 /** 도구 규칙의 거부 → 응답 코드·HTTP 상태. 사용자 지도 편집의 지도 규칙 거부도 이 표를 쓴다. */
 export type ToolProblem =
@@ -57,7 +58,8 @@ export type OwnerRefusal =
   | "revision_conflict"
   | "invalid_skill"
   | "archive_not_allowed"
-  | "reply_not_allowed";
+  | "reply_not_allowed"
+  | ProviderChoiceProblem;
 export const ownerRefusalResponses: Record<OwnerRefusal, [string, number]> = {
   not_found: ["not_found", 404],
   organization_closed: ["organization_closed", 409],
@@ -71,6 +73,8 @@ export const ownerRefusalResponses: Record<OwnerRefusal, [string, number]> = {
   invalid_skill: ["invalid_skill", 422],
   archive_not_allowed: ["archive_not_allowed", 422],
   reply_not_allowed: ["reply_not_allowed", 422],
+  unknown_provider: ["unknown_provider", 422],
+  unknown_model: ["unknown_model", 422],
   unknown_kind: problemResponses.unknown_kind,
   self_link: problemResponses.self_link,
   primary_cycle: problemResponses.primary_cycle,

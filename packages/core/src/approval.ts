@@ -12,6 +12,7 @@ import {
   type LifecycleStage,
   type NewEvent,
   type OrgToolName,
+  type ProviderChoice,
   type RecordGoalInput,
   type RequestInitialApprovalInput,
   type ToolRefusalReason,
@@ -232,11 +233,20 @@ export type PendingApproval = {
  *   반려는 아무것도 만들지 않는다. 어느 결정도 조직 단계를 바꾸지 않는다.
  *
  * `agentNames`는 결정 때 조직의 모든 에이전트 이름이다. 새 작업자 이름은 이 이름들·함께 만드는 작업자 이름과 겹치지 않는다.
+ * 새 작업자는 결정 때 읽은 전역 작업자 기본값(`workerDefault`)의 프로바이더·모델을 복사한다.
  */
 export function planApprovalDecision(
   approval: PendingApproval,
   input: { decision: ApprovalDecision; note?: string },
-  { stage, agentNames }: { stage: LifecycleStage; agentNames: string[] },
+  {
+    stage,
+    agentNames,
+    workerDefault,
+  }: {
+    stage: LifecycleStage;
+    agentNames: string[];
+    workerDefault: ProviderChoice;
+  },
   { newId, now }: RecordSource
 ): ApprovalDecisionPlan | "decision_not_allowed" {
   const allowed: readonly ApprovalDecision[] =
@@ -267,6 +277,7 @@ export function planApprovalDecision(
               createdAt: new Date(
                 Date.parse(createdAt) + workers.length
               ).toISOString(),
+              workerDefault,
             }
           );
           workers.push(added.worker);
@@ -286,6 +297,7 @@ export function planApprovalDecision(
     const added = planWorker(organizationId, approval.proposal, agentNames, {
       newId,
       createdAt,
+      workerDefault,
     });
     workers.push(added.worker);
     copies.push(...added.copies);

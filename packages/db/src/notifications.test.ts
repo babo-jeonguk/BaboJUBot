@@ -17,10 +17,13 @@ import { claimNextRun } from "./runs.ts";
 import { insertEvent } from "./rows.ts";
 import { events, notificationOutbox } from "./schema.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import { updateProviderLimit } from "./providers.ts";
 
 let t: TestDatabase;
 beforeAll(async () => {
   t = await createTestDatabase();
+  // 이 파일의 검사들은 한 DB에 진행 중인 실행 시도를 남긴다. 가짜 연결의 동시 실행 상한을 풀어 서로 막지 않게 한다.
+  await updateProviderLimit(t.db, "fake", 0);
 });
 afterAll(async () => {
   await t?.close();
@@ -32,7 +35,11 @@ const lease = 30_000;
 /** 조직 하나와, 그 Lead가 실행 시도 안에서 대화 메시지를 보내는 함수. */
 async function organization() {
   const creation = planOrganizationCreation(
-    { name: "알림 조직", goal: "목표" },
+    {
+      name: "알림 조직",
+      goal: "목표",
+      lead: { provider: "fake", model: null },
+    },
     { files: [] },
     source
   );

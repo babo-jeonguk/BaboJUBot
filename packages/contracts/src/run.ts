@@ -6,6 +6,11 @@ import { agentHeartbeatSchema } from "./heartbeat.ts";
 import { conversationMessageSchema, conversationSchema } from "./message.ts";
 import { agentRoleSchema, lifecycleStageSchema } from "./organization.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
+import {
+  modelIdSchema,
+  providerIdSchema,
+  type ModelOption,
+} from "./provider.ts";
 
 // Control Plane → Agent Runtime 실행 시도 계약(docs/architecture.md).
 // 요청 · 진행(공개 활동) · 종료 · 제어(취소)의 네 면을 따로 정의한다.
@@ -186,6 +191,11 @@ export const runRequestSchema = z.object({
   instructions: z.array(instructionFileSchema),
   /** 연구 환경 workspace. 연구 환경 구성 전에는 없다. */
   workspace: z.object({ cwd: z.string() }).nullable(),
+  /** admission이 에이전트 설정에서 고정한 모델. 없으면 프로바이더가 기본 모델을 쓴다. */
+  model: modelIdSchema.nullable(),
+  /**
+   * 이어 갈 세션. 이전 실행 시도와 지침 bundle 버전이나 프로바이더 연결이 다르면 admission(core `planRunStart`)이 비워 넘긴다.
+   */
   previousSession: sessionStateSchema.nullable(),
 });
 export type RunRequest = z.infer<typeof runRequestSchema>;
@@ -281,6 +291,20 @@ export type RuntimeAdapter = {
   ): Promise<RunResult>;
 };
 
+/**
+ * 서버에 등록하는 이름 붙은 프로바이더 연결. 실행 시도는 그 에이전트의 연결(`id`)의 adapter가 맡는다.
+ * 같은 adapter 종류라도 ID가 다르면 다른 연결이며 동시 실행 상한도 따로다.
+ * 모델 목록은 `listModels`로 받아 오고, 없거나 실패·시간 초과·빈 목록이면 고정 목록 `models`를 쓴다. 목록 조회는 모델을 부르지 않는다.
+ */
+export type ProviderConnection = {
+  id: string;
+  /** 화면에 보이는 이름. */
+  label: string;
+  adapter: RuntimeAdapter;
+  models: readonly ModelOption[];
+  listModels?: (signal: AbortSignal) => Promise<ModelOption[]>;
+};
+
 // ---------- Surface 조회 모양 ----------
 
 export const runSummarySchema = z.object({
@@ -288,6 +312,9 @@ export const runSummarySchema = z.object({
   organizationId: z.uuid(),
   agentId: z.uuid(),
   status: runStatusSchema,
+  /** admission이 에이전트 설정에서 고정한 프로바이더 연결과 모델(없으면 기본 모델). 에이전트 설정이 나중에 바뀌어도 그대로다. */
+  provider: providerIdSchema,
+  model: modelIdSchema.nullable(),
   /** 사용자 제어가 요청한 취소. 실행 중이면 프로바이더가 정리하는 중이고, 끝나면 `cancelled`다. */
   cancelReason: runCancelReasonSchema.nullable(),
   /** 이 실행 시도가 받은 깨우기 수. 서버 재시작으로 끝나 다시 대기한 깨우기도 이 실행 시도의 기록에 남는다. */
@@ -306,6 +333,9 @@ export const agentDetailSchema = z.object({
   role: agentRoleSchema,
   name: z.string(),
   appearance: agentAppearanceSchema,
+  /** 다음 실행 시도가 쓸 프로바이더 연결과 모델(없으면 기본 모델). 진행 중인 실행 시도의 값은 `recentRuns`에 있다. */
+  provider: providerIdSchema,
+  model: modelIdSchema.nullable(),
   createdAt: z.iso.datetime({ offset: true }),
   status: agentStatusSchema,
   /** 사용자가 이 에이전트를 일시정지했다. 조직 일시정지와 따로이며, 에이전트 재개로만 풀린다. */
