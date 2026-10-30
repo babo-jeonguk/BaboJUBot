@@ -43,6 +43,11 @@
 | [paperclip-dashboard.md](research/paperclip-dashboard.md) | Paperclip의 운영자 화면·기능에는 무엇이 있는가? |
 | [dashboard-references.md](research/dashboard-references.md) | 다른 제품의 운영자 UI에서 무엇을 추가로 참고할 수 있는가? |
 | [issue-1](research/issue-1-references.md)·[issue-50](research/issue-50-references.md)·[issue-51](research/issue-51-references.md)·[issue-52](research/issue-52-references.md)·[issue-53](research/issue-53-references.md)·[issue-54](research/issue-54-references.md)·[issue-55](research/issue-55-references.md)·[issue-56](research/issue-56-references.md)·[issue-57](research/issue-57-references.md)·[issue-58](research/issue-58-references.md)·[issue-59](research/issue-59-references.md)·[issue-60](research/issue-60-references.md)·[issue-61](research/issue-61-references.md)·[issue-62](research/issue-62-references.md)·[issue-63](research/issue-63-references.md)·[issue-64](research/issue-64-references.md)·[issue-77](research/issue-77-references.md)·[issue-84](research/issue-84-references.md)·[issue-86](research/issue-86-references.md)·[inbox-detail](research/inbox-detail-references.md)·[home](research/home-references.md) | 각 이슈·주제의 구현 전 조사에서 어떤 근거와 권고를 얻었는가? |
+| [executor-capabilities.md](research/executor-capabilities.md) | 네 프로바이더(Claude Code·Codex·OpenCode·Antigravity)는 실행·출력·도구·지침·세션·취소·사용량·권한에서 무엇을 지원하는가? |
+| [executor-selection-references.md](research/executor-selection-references.md) | 여러 프로바이더를 쓰는 프로젝트는 에이전트별 프로바이더 선택·변경·준비 확인을 어떻게 다루는가? |
+| [executor-isolation-references.md](research/executor-isolation-references.md) | 프로바이더 실행을 어떻게 격리하고 개인 설정·로그인을 분리하는가? |
+| [provider-connection-references.md](research/provider-connection-references.md) | 프로바이더를 어떤 방식으로 띄워 도구·세션·취소·사용량을 다루는가(Paseo 중심)? |
+| [provider-prompt-caching.md](research/provider-prompt-caching.md) | 프로바이더별 프롬프트 캐시·압축은 세션 이어가기 비용에 어떻게 작용하는가? |
 | [coding-standards-references.md](research/coding-standards-references.md) | mattpocock-skills의 code-review는 `CODING_STANDARDS.md`를 누가·언제 읽고 어떤 모양을 기대하는가? |
 
 [harness/README.md](../harness/README.md)는 연구 하네스 디렉터리의 안내입니다.
