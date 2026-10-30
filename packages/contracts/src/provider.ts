@@ -17,6 +17,10 @@ export const providerChoiceSchema = z.strictObject({
 });
 export type ProviderChoice = z.infer<typeof providerChoiceSchema>;
 
+/** 같은 프로바이더·모델인가. 서버의 변경 판정과 화면의 `저장` 활성이 같은 판정을 쓴다. */
+export const sameProviderChoice = (a: ProviderChoice, b: ProviderChoice) =>
+  a.provider === b.provider && a.model === b.model;
+
 /** 고르기 목록의 모델 하나. */
 export const modelOptionSchema = z.object({
   id: modelIdSchema,

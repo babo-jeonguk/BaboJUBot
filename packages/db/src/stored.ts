@@ -3,7 +3,7 @@ import type { RunCancellation } from "@babojubot/core";
 
 /**
  * commit 뒤 할 일. 저장한 쪽은 무엇을 할지만 담고, 순서(Event·설정 변경 알리기 → 진행 중 실행 시도 취소 → 재개한 조직의 대기 깨우기
- * 다시 처리 → 깨운 에이전트·자리가 는 연결을 기다리는 에이전트 촉진)는 적용하는 쪽(server `applyAfterCommit`)이 정한다. 알림이 실패해도 저장은 이미 끝났고,
+ * 다시 처리 → 깨운 에이전트·자리가 늘어난 연결을 기다리는 에이전트 촉진)는 적용하는 쪽(server `applyAfterCommit`)이 정한다. 알림이 실패해도 저장은 이미 끝났고,
  * 깨우기는 DB에 있어 서버 시작 때 다시 처리된다.
  */
 export type AfterCommit = {

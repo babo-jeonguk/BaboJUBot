@@ -508,7 +508,7 @@ test("deciding from the Inbox detail after another surface decided first shows t
   await expect(decision.getByRole("button")).toHaveCount(0);
 });
 
-test("global settings shows the places for the runtime, environment templates, secrets and messaging apps", async ({
+test("global settings shows the provider settings and the places for environment templates, secrets and messaging apps", async ({
   page,
 }) => {
   await page.goto("/");
@@ -518,12 +518,11 @@ test("global settings shows the places for the runtime, environment templates, s
     .click();
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole("heading", { name: "전역 설정" })).toBeVisible();
-  for (const region of [
-    "프로바이더",
-    "연구 환경 템플릿",
-    "비밀값",
-    "메시지 앱 연결",
-  ])
+  // 프로바이더 칸은 기본값·동시 실행 상한을 바꾸는 화면이다(providers.spec.ts). 나머지는 자리만 있다.
+  await expect(
+    page.getByRole("region", { name: "프로바이더" })
+  ).not.toContainText("준비 중");
+  for (const region of ["연구 환경 템플릿", "비밀값", "메시지 앱 연결"])
     await expect(page.getByRole("region", { name: region })).toContainText(
       "준비 중"
     );

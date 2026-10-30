@@ -19,7 +19,6 @@ export type ProviderChoiceProblem = "unknown_provider" | "unknown_model";
  * 사용자가 고르는 연결·모델은 이 등록부와 연결의 모델 목록으로 확인한다.
  */
 export type ProviderRegistry = {
-  connections: readonly ProviderConnection[];
   adapters: ReadonlyMap<string, RuntimeAdapter>;
   has: (id: string) => boolean;
   /** 등록된 연결이고, 모델을 골랐다면 그 연결의 모델 목록에 있는가. */
@@ -39,7 +38,6 @@ export function createProviderRegistry(
   if (byId.size !== connections.length)
     throw new Error("provider connection IDs must be unique");
   return {
-    connections,
     adapters: new Map(connections.map((c) => [c.id, c.adapter])),
     has: (id) => byId.has(id),
     async checkChoice({ provider, model }) {

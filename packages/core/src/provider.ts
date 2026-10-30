@@ -1,5 +1,6 @@
 import {
   isClosedStage,
+  sameProviderChoice,
   unlimitedConcurrentRuns,
   type Agent,
   type LifecycleStage,
@@ -35,8 +36,8 @@ export function planAgentProviderChange(
   | "unchanged"
   | "organization_closed" {
   if (isClosedStage(stage)) return "organization_closed";
-  if (input.provider === agent.provider && input.model === agent.model)
-    return "unchanged";
+  const current = { provider: agent.provider, model: agent.model };
+  if (sameProviderChoice(input, current)) return "unchanged";
   return {
     update: { provider: input.provider, model: input.model },
     event: {
@@ -45,7 +46,7 @@ export function planAgentProviderChange(
       payload: {
         by: "owner",
         agentId: agent.id,
-        from: { provider: agent.provider, model: agent.model },
+        from: current,
         to: { provider: input.provider, model: input.model },
       },
     },

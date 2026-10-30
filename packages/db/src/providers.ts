@@ -1,5 +1,6 @@
 import {
   defaultMaxConcurrentRuns,
+  sameProviderChoice,
   type AgentDetail,
   type AgentRole,
   type ProviderChoice,
@@ -66,7 +67,9 @@ export async function updateProviderDefaults(
         },
       });
     const after = await readProviderDefaults(tx);
-    const changed = JSON.stringify(before) !== JSON.stringify(after);
+    const changed =
+      !sameProviderChoice(before.leadDefault, after.leadDefault) ||
+      !sameProviderChoice(before.workerDefault, after.workerDefault);
     return stored(after, { events: [], settingsChanged: changed });
   });
 }

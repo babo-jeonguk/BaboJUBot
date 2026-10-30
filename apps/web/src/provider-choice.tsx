@@ -1,7 +1,8 @@
-import type {
-  ProviderChoice,
-  ProviderSettings,
-  ProviderSummary,
+import {
+  sameProviderChoice,
+  type ProviderChoice,
+  type ProviderSettings,
+  type ProviderSummary,
 } from "@babojubot/contracts";
 import { useCallback } from "react";
 import { useProviderSettings } from "./api.ts";
@@ -33,15 +34,12 @@ export function useChoiceLabel() {
   );
 }
 
-export const sameChoice = (a: ProviderChoice, b: ProviderChoice) =>
-  a.provider === b.provider && a.model === b.model;
-
 export const sameDefaults = (
   a: Pick<ProviderSettings, "leadDefault" | "workerDefault">,
   b: Pick<ProviderSettings, "leadDefault" | "workerDefault">
 ) =>
-  sameChoice(a.leadDefault, b.leadDefault) &&
-  sameChoice(a.workerDefault, b.workerDefault);
+  sameProviderChoice(a.leadDefault, b.leadDefault) &&
+  sameProviderChoice(a.workerDefault, b.workerDefault);
 
 const selectClass =
   "mt-1 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm ring-1 ring-slate-200 transition outline-none focus:bg-white focus:ring-2 focus:ring-brand-400 disabled:opacity-60";

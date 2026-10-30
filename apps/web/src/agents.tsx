@@ -2,6 +2,7 @@ import {
   heartbeatIntervalMaxMinutes,
   heartbeatIntervalSchema,
   isClosedStage,
+  sameProviderChoice,
   type Agent,
   type AgentDetail,
   type InstructionEditor,
@@ -29,11 +30,7 @@ import {
   useUpdateAgentProvider,
   useUpdateHeartbeat,
 } from "./api.ts";
-import {
-  ProviderChoiceFields,
-  sameChoice,
-  useChoiceLabel,
-} from "./provider-choice.tsx";
+import { ProviderChoiceFields, useChoiceLabel } from "./provider-choice.tsx";
 import { Markdown } from "./markdown.tsx";
 import {
   AgentStatusBadge,
@@ -155,7 +152,12 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
       {tab === "overview" ? (
         <>
           <AgentControl orgId={orgId} agent={a} stage={stage} />
-          <ProviderSettings key={a.id} orgId={orgId} agent={a} stage={stage} />
+          <AgentProviderSettings
+            key={a.id}
+            orgId={orgId}
+            agent={a}
+            stage={stage}
+          />
           <HeartbeatSettings orgId={orgId} agent={a} stage={stage} />
           <section aria-label="최근 실행 시도">
             <h2 className="mb-2 text-sm font-semibold text-slate-600">
@@ -234,7 +236,7 @@ function AgentControl({
  * 에이전트 프로바이더·모델. 사용자만 바꾸며 다음 실행 시도부터 적용한다. 고치는 동안의 값은 초안으로 두어 다른 탭의 변경이 덮지 않고,
  * 저장에 실패해도 남는다. 바뀐 값이 있을 때만 `저장`을 누를 수 있다. 적용 시점은 실행 시도 목록 행의 `프로바이더 · 모델`로 보인다.
  */
-function ProviderSettings({
+function AgentProviderSettings({
   orgId,
   agent,
   stage,
@@ -248,7 +250,7 @@ function ProviderSettings({
   const saved = { provider: agent.provider, model: agent.model };
   const [draft, setDraft] = useState<typeof saved | null>(null);
   const value = draft ?? saved;
-  const changed = !sameChoice(value, saved);
+  const changed = !sameProviderChoice(value, saved);
   const closed = stage !== undefined && isClosedStage(stage);
   const save = () => update.mutate(value, { onSuccess: () => setDraft(null) });
   return (
