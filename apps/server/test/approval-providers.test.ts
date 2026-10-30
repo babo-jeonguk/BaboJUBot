@@ -61,13 +61,26 @@ const teamOf = (a: Approval) => {
   return a.proposal.team;
 };
 
-/** 생성으로 깨어난 Lead가 이 시나리오로 초기 연구 승인을 요청하는 서버. 연결 둘이 같은 가짜 adapter를 쓴다. */
+/**
+ * 생성으로 깨어난 Lead가 이 시나리오로 초기 연구 승인을 요청하는 서버. 연결 둘이 같은 가짜 adapter를 쓰고,
+ * `fake-2`는 받아 오는 모델 목록을 써서 테스트가 목록에서 모델을 뺄 수 있다.
+ */
 async function leadProposes(created: Script) {
   const agents = scriptedAgents({ created });
+  let fake2Models = [
+    { id: "fake-2-mini", label: "미니" },
+    { id: "fake-2-max", label: "맥스" },
+  ];
+  const [fake, fake2] = createFakeProviders(2, () => agents.runtime);
   t = await startTestServer({
-    providers: createFakeProviders(2, () => agents.runtime),
+    providers: [fake!, { ...fake2!, listModels: async () => fake2Models }],
   });
-  return agents;
+  return Object.assign(agents, {
+    /** `fake-2`의 모델 목록에서 이 모델을 뺀다. */
+    dropFake2Model(id: string) {
+      fake2Models = fake2Models.filter((m) => m.id !== id);
+    },
+  });
 }
 const proposing = (team: object[]): Script => ({
   steps: [
@@ -176,6 +189,54 @@ describe("Lead provider proposals in the initial research approval", () => {
     // 목록에는 결정 기록이 없다.
     const [summary] = await get(`/api/organizations/${org.id}/approvals`);
     expect(summary).not.toHaveProperty("decidedWorkers");
+  });
+
+  it("checks only the workers the Owner changed, so a Lead proposal that left the model list since the request does not block changing another worker", async () => {
+    const agents = await leadProposes(
+      proposing([
+        {
+          role: "researcher",
+          count: 2,
+          provider: "fake-2",
+          model: "fake-2-mini",
+        },
+      ])
+    );
+    const org = await create("일부 작업자 변경 조직");
+    const lead = org.agents.find((a) => a.role === "lead")!;
+    const [pending] = await pendingOf(org.id);
+    const before = await approval(org.id, pending!.id);
+    agents.dropFake2Model("fake-2-mini");
+
+    // 바꾼 값이 목록에 없으면 여전히 거부한다.
+    const unchanged = { provider: "fake-2", model: "fake-2-mini" };
+    const refused = await decide(org.id, pending!.id, {
+      decision: "approve",
+      choices: [unchanged, { provider: "fake-2", model: "fake-2-gone" }],
+    });
+    expect([refused.status, refused.body.error.code]).toEqual([
+      422,
+      "unknown_model",
+    ]);
+
+    // 첫 작업자는 Lead 제안 그대로, 둘째만 바꾼다. 바꾸지 않은 Lead 제안은 요청 때 확인한 그대로다.
+    agents.queue(lead.id, idle);
+    const res = await decide(org.id, pending!.id, {
+      decision: "approve",
+      choices: [unchanged, { provider: "fake", model: "fake-mini" }],
+    });
+    expect(res.status).toBe(200);
+    await t!.drain();
+    const workers = await workersOf(org.id);
+    expect(workers.map(choiceOf)).toEqual([
+      unchanged,
+      { provider: "fake", model: "fake-mini" },
+    ]);
+    const after = await approval(org.id, pending!.id);
+    expect(teamOf(after)).toEqual(teamOf(before));
+    expect(after.decidedWorkers).toEqual(
+      workers.map((w) => ({ agentId: w.id, ...choiceOf(w) }))
+    );
   });
 
   it("fixes the worker default at request time, so changing the default before the decision does not change who is hired", async () => {

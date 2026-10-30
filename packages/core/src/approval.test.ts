@@ -249,6 +249,46 @@ describe("planApprovalDecision", () => {
     });
   });
 
+  it("checks only the choices that differ from the Lead's proposal against the model lists", () => {
+    // Lead 제안(fake·fake-large)이 지금 목록에 없어도, 그대로 둔 작업자는 다시 확인하지 않는다.
+    const listsWithoutLead = [
+      { id: "fake", models: [] },
+      ...connections.slice(1),
+    ];
+    const plan = planApprovalDecision(
+      approval,
+      {
+        decision: "approve",
+        choices: [
+          { provider: "fake", model: "fake-large" },
+          { provider: "fake-2", model: "fake-2-mini" },
+        ],
+      },
+      { ...awaiting, connections: listsWithoutLead },
+      source
+    );
+    if (typeof plan === "string") throw new Error(plan);
+    expect(plan.workers.map((w) => w.model)).toEqual([
+      "fake-large",
+      "fake-2-mini",
+    ]);
+    // 바꾼 값은 지금 목록으로 확인한다.
+    expect(
+      planApprovalDecision(
+        approval,
+        {
+          decision: "approve",
+          choices: [
+            { provider: "fake", model: "fake-large" },
+            { provider: "fake", model: "fake-max" },
+          ],
+        },
+        { ...awaiting, connections: listsWithoutLead },
+        source
+      )
+    ).toBe("unknown_model");
+  });
+
   it("refuses choices that do not cover every worker, or that come with a non-approval", () => {
     const choice = { provider: "fake", model: null };
     for (const input of [

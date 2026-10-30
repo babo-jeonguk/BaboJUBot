@@ -1,6 +1,7 @@
 import {
   approvalKindDecisions,
   explicitProposedChoice,
+  sameProviderChoice,
   proposedWorkers,
   resolveProposedChoice,
   orgToolNames,
@@ -262,8 +263,8 @@ export type PendingApproval = {
  *
  * 새 작업자의 프로바이더·모델은 사용자가 승인하며 정한 값(`choices`, `proposedWorkers` 순서로 생길 작업자 수만큼)이고,
  * 비웠으면 Lead 제안이다. 요청은 바꾸지 않고 결정에 작업자마다의 값을 남긴다(`decidedWorkers`).
- * `choices`의 수가 생길 작업자 수와 다르면 `choices_mismatch`, 등록된 연결과 그 모델 목록(`connections`)에 없으면
- * `unknown_provider`·`unknown_model`이다. Lead 제안이 없는 예전 요청은 결정 때 읽은 전역 작업자 기본값(`workerDefault`)을 쓴다.
+ * `choices`의 수가 생길 작업자 수와 다르면 `choices_mismatch`다. Lead 제안과 다른 값이 등록된 연결과 그 모델 목록
+ * (`connections`)에 없으면 `unknown_provider`·`unknown_model`이며, Lead 제안과 같은 값은 요청 때 확인했으므로 다시 보지 않는다. Lead 제안이 없는 예전 요청은 결정 때 읽은 전역 작업자 기본값(`workerDefault`)을 쓴다.
  */
 export function planApprovalDecision(
   approval: PendingApproval,
@@ -296,8 +297,13 @@ export function planApprovalDecision(
   const proposed = proposedWorkers(approval);
   if (input.choices && (!approved || input.choices.length !== proposed.length))
     return "choices_mismatch";
-  const choiceProblem =
-    input.choices && checkProviderChoices(connections, input.choices);
+  // 사용자가 Lead 제안과 다르게 정한 값만 지금 목록으로 확인한다. Lead 제안은 요청 때 확인했으므로, 화면이 그대로 둔
+  // 작업자의 값까지 함께 보내도 다시 확인하지 않는다. Lead 제안이 없는 예전 요청은 보낸 값이 곧 사용자가 정한 값이다.
+  const ownerChoices = (input.choices ?? []).filter((choice, i) => {
+    const lead = proposed[i]!.choice;
+    return !lead || !sameProviderChoice(choice, lead);
+  });
+  const choiceProblem = checkProviderChoices(connections, ownerChoices);
   if (choiceProblem) return choiceProblem;
   const choices = proposed.map(
     (w, i) => input.choices?.[i] ?? w.choice ?? workerDefault
