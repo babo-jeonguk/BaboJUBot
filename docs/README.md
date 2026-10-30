@@ -49,6 +49,7 @@
 | [executor-isolation-references.md](research/executor-isolation-references.md) | 프로바이더 실행을 어떻게 격리하고 개인 설정·로그인을 분리하는가? |
 | [provider-connection-references.md](research/provider-connection-references.md) | 프로바이더를 어떤 방식으로 띄워 도구·세션·취소·사용량을 다루는가(Paseo 중심)? |
 | [provider-prompt-caching.md](research/provider-prompt-caching.md) | 프로바이더별 프롬프트 캐시·압축은 세션 이어가기 비용에 어떻게 작용하는가? |
+| [design-guidelines-pan2.md](research/design-guidelines-pan2.md) | 판 2 화면은 Apple HIG·One UI·Material 3·SEED·토스 가이드의 어떤 패턴을 따르고, 설명문 없이 상태를 어떻게 보이는가? |
 | [coding-standards-references.md](research/coding-standards-references.md) | mattpocock-skills의 code-review는 `CODING_STANDARDS.md`를 누가·언제 읽고 어떤 모양을 기대하는가? |
 
 [harness/README.md](../harness/README.md)는 연구 하네스 디렉터리의 안내입니다.
