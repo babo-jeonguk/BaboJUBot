@@ -1,6 +1,5 @@
 import {
   defaultMaxConcurrentRuns,
-  sameProviderChoice,
   type AgentDetail,
   type AgentRole,
   type ProviderChoice,
@@ -51,12 +50,13 @@ export async function updateProviderDefaults(
   input: UpdateProviderDefaultsInput
 ): Promise<Stored<ProviderDefaults, never>> {
   return db.transaction(async (tx) => {
-    const before = await readProviderDefaults(tx);
     const rows = [
       { role: "lead" as const, ...input.leadDefault },
       { role: "worker" as const, ...input.workerDefault },
     ];
-    await tx
+    // 변경 판정도 conflict 행의 잠금 아래에서 한다. 먼저 읽은 snapshot과 비교하면
+    // 기다리는 사이 commit된 변경을 되돌려도 같은 값이라고 잘못 판정할 수 있다.
+    const changedRows = await tx
       .insert(providerDefaults)
       .values(rows)
       .onConflictDoUpdate({
@@ -65,12 +65,15 @@ export async function updateProviderDefaults(
           provider: sql`excluded.provider`,
           model: sql`excluded.model`,
         },
-      });
+        setWhere: sql`(${providerDefaults.provider}, ${providerDefaults.model})
+          is distinct from (excluded.provider, excluded.model)`,
+      })
+      .returning({ role: providerDefaults.role });
     const after = await readProviderDefaults(tx);
-    const changed =
-      !sameProviderChoice(before.leadDefault, after.leadDefault) ||
-      !sameProviderChoice(before.workerDefault, after.workerDefault);
-    return stored(after, { events: [], settingsChanged: changed });
+    return stored(after, {
+      events: [],
+      settingsChanged: changedRows.length > 0,
+    });
   });
 }
 
@@ -96,20 +99,23 @@ export async function updateProviderLimit(
   maxConcurrentRuns: number
 ): Promise<Stored<number, never>> {
   return db.transaction(async (tx) => {
-    const [before] = await tx
-      .select({ max: providerLimits.maxConcurrentRuns })
-      .from(providerLimits)
-      .where(eq(providerLimits.provider, provider))
-      .for("update");
-    const previous = before?.max ?? defaultMaxConcurrentRuns;
+    // 없는 행에는 FOR UPDATE가 잠글 대상이 없다. 먼저 암묵적 기본값을 행으로 만들고,
+    // 실제 값을 바꾼 UPDATE 결과로 알림과 대기 촉진 여부를 정한다.
     await tx
       .insert(providerLimits)
-      .values({ provider, maxConcurrentRuns })
-      .onConflictDoUpdate({
-        target: providerLimits.provider,
-        set: { maxConcurrentRuns },
-      });
-    const changed = previous !== maxConcurrentRuns;
+      .values({ provider, maxConcurrentRuns: defaultMaxConcurrentRuns })
+      .onConflictDoNothing();
+    const changedRows = await tx
+      .update(providerLimits)
+      .set({ maxConcurrentRuns })
+      .where(
+        and(
+          eq(providerLimits.provider, provider),
+          sql`${providerLimits.maxConcurrentRuns} <> ${maxConcurrentRuns}`
+        )
+      )
+      .returning({ provider: providerLimits.provider });
+    const changed = changedRows.length > 0;
     return stored(maxConcurrentRuns, {
       events: [],
       settingsChanged: changed,

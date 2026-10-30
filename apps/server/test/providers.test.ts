@@ -84,6 +84,113 @@ const createOrganization = async (
 const leadOf = (org: { agents: { role: string; id: string }[] }) =>
   org.agents.find((a) => a.role === "lead")!;
 
+// 기다리는 DB 요청을 확인해 요청 순서를 고정한다. 시간 지연으로 경합을 추측하지 않는다.
+async function waitForSettingsWriters(count: number) {
+  await expect
+    .poll(async () => {
+      const { rows } = await t!.db.execute<{ waiting: number }>(`
+      select count(*)::int as waiting from pg_stat_activity
+      where datname = current_database() and wait_event_type = 'Lock'
+        and query like '%provider_%' and pid <> pg_backend_pid()
+    `);
+      return rows[0]!.waiting;
+    })
+    .toBe(count);
+}
+
+describe("concurrent global settings writes", () => {
+  it.each([false, true])(
+    "signals only actual replacements when the waiting PUT repeats the first choice: %s",
+    async (repeatChoice) => {
+      t = await startTestServer({ providers: createFakeProviders(2) });
+      const watcher = await t.subscribe({ kind: "all" });
+      const initial = await settings();
+      const original = {
+        leadDefault: initial.leadDefault,
+        workerDefault: initial.workerDefault,
+      };
+      const locked = createGate();
+      const blocker = t.db.transaction(async (tx) => {
+        await tx.execute(
+          `select 1 from provider_defaults where role = 'worker' for update`
+        );
+        await locked.wait(new AbortController().signal);
+      });
+      await locked.reached;
+      const replacement = {
+        ...original,
+        leadDefault: { provider: "fake-2", model: null },
+      };
+      const final = repeatChoice ? replacement : original;
+      const changing = t.request("PUT", "/api/providers/defaults", replacement);
+      let restoring: ReturnType<TestServer["request"]> | undefined;
+      try {
+        // 첫 PUT이 lead를 잡고 worker를 기다리면, 두 번째 PUT은 lead를 기다린다.
+        await waitForSettingsWriters(1);
+        restoring = t.request("PUT", "/api/providers/defaults", final);
+        await waitForSettingsWriters(2);
+      } finally {
+        locked.open();
+        await blocker;
+        await changing;
+        await restoring;
+      }
+      expect((await changing).status).toBe(200);
+      expect((await restoring!).status).toBe(200);
+      expect(await settings()).toMatchObject(final);
+      await expect
+        .poll(() => watcher.settingsSignals())
+        .toBe(repeatChoice ? 1 : 2);
+      expect(watcher.events).toEqual([]);
+    }
+  );
+
+  it("does not signal unchanged defaults or materializing an implicit default limit", async () => {
+    t = await startTestServer();
+    const watcher = await t.subscribe({ kind: "all" });
+    const initial = await settings();
+    const defaults = await t.request("PUT", "/api/providers/defaults", {
+      leadDefault: initial.leadDefault,
+      workerDefault: initial.workerDefault,
+    });
+    expect(defaults.status).toBe(200);
+    for (const maxConcurrentRuns of [2, 2, 1]) {
+      const saved = await t.request("PUT", "/api/providers/fake/limit", {
+        maxConcurrentRuns,
+      });
+      expect(saved.status).toBe(200);
+    }
+    await expect.poll(() => watcher.settingsSignals()).toBe(1);
+  });
+
+  it("signals a limit replacement even when the competing insert was initially invisible", async () => {
+    t = await startTestServer();
+    const watcher = await t.subscribe({ kind: "all" });
+    const inserted = createGate();
+    // 상한 행이 아직 없을 때 다른 transaction이 1을 만들고 commit 직전이다.
+    const inserting = t.db.transaction(async (tx) => {
+      await tx.execute(
+        `insert into provider_limits (provider, max_concurrent_runs) values ('fake', 1)`
+      );
+      await inserted.wait(new AbortController().signal);
+    });
+    await inserted.reached;
+    const saving = t.request("PUT", "/api/providers/fake/limit", {
+      maxConcurrentRuns: 2,
+    });
+    try {
+      await waitForSettingsWriters(1);
+    } finally {
+      inserted.open();
+      await inserting;
+      await saving;
+    }
+    expect((await saving).status).toBe(200);
+    expect((await settings()).providers[0]!.maxConcurrentRuns).toBe(2);
+    await expect.poll(() => watcher.settingsSignals()).toBe(1);
+  });
+});
+
 describe("provider connections and agent choices", () => {
   it("runs the Lead and the workers each on their own connection, copying the role defaults when they are created", async () => {
     const agents = scriptedAgents();
