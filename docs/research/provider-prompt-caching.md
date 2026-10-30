@@ -24,7 +24,7 @@
 | Codex CLI | 0.165.0 | [openai/codex `360319d8dee62d87e2d59fc0c21805d79519cfed`](https://github.com/openai/codex/tree/360319d8dee62d87e2d59fc0c21805d79519cfed) (Apache-2.0) | `core/src/client.rs`, `codex-api/src/common.rs`, `compact_remote_v2*.rs`, `app-server-protocol`, `model-provider` |
 | OpenCode | 1.18.23 | [anomalyco/opencode `ef2880f379129aa048be9e9353e30aa168d42c17`](https://github.com/anomalyco/opencode/tree/ef2880f379129aa048be9e9353e30aa168d42c17) (MIT) | `provider/transform.ts`, `session/{prompt,compaction,overflow,system,message-v2}.ts`, `plugin/openai/codex.ts`, server routes, docs `.mdx` |
 | Antigravity CLI (`agy`) | 1.4.10 | 소스 비공개. 바이너리 문자열·내장 proto 설명자·`agy changelog`, [AG 문서](https://antigravity.google/docs/cli/headless) | 요청 형식, 압축 설정, slash command, 로컬 대화 DB의 사용량 숫자 |
-| 사용자 프로젝트 | Auto Compact for Claude (Paseo 플러그인) | `/home/babo/Projects/paseo-auto-compact-for-claude-dev` | `README.md`, `paseo-auto-compact-for-claude/{README,docs/runtime}.md`, `docs/research/idle-compact-reference-review-2026-10-22.md` |
+| 사용자 프로젝트 | Auto Compact for Claude (Paseo 플러그인) | 공개 저장소 [`babo-jeonguk/paseo-auto-compact-for-claude`](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/tree/4039afd9e5bdc1f9f184541022352bee8d242cde)(v1.0.0)와 비공개 개발 작업 공간(로컬, 2026-10-30 열람) | `README.md`, `paseo-auto-compact-for-claude/{README,docs/runtime}.md`, `docs/research/idle-compact-reference-review-2026-10-22.md` |
 
 링크 약어: **CC** = `https://code.claude.com/docs/en/`, **CX** = `https://github.com/openai/codex/blob/360319d8dee62d87e2d59fc0c21805d79519cfed/codex-rs/`, **OC** = `https://github.com/anomalyco/opencode/blob/ef2880f379129aa048be9e9353e30aa168d42c17/packages/opencode/src/`, **AG** = `https://antigravity.google/docs/`.
 
@@ -45,7 +45,7 @@
 - [문서] 매 요청에 시스템 프롬프트·프로젝트 맥락·이전 대화 전체를 다시 보내고, API가 앞부분(prefix) 일치로 캐시를 읽는다. 층 순서는 시스템 프롬프트(핵심 지침·도구 정의) → 프로젝트 맥락(CLAUDE.md·auto memory) → 대화. 앞부분 어디가 바뀌면 그 뒤가 모두 다시 계산된다. [CC prompt-caching "How the cache is organized"](https://code.claude.com/docs/en/prompt-caching#how-the-cache-is-organized)
 - [문서] TTL은 요청 묶음별로 정해진다. "Main conversation: your interactive turns, non-interactive `-p` runs, and Agent SDK turns"와 "Everything else: … subagents, workflows, … forks, compaction, and session titles". 기본값 표: 구독 한도 안이면 본 대화 1시간, 그 밖은 5분(서버가 정한 일부 보조 요청만 1시간). API key·usage credits·클라우드는 모두 5분. "Once you go over your plan's usage limit and Claude Code draws on usage credits … drops the main conversation to the five-minute TTL." [CC "Which TTL each request gets"](https://code.claude.com/docs/en/prompt-caching#which-ttl-each-request-gets)
 - [문서] 직접 지정(v2.1.242+): 본 대화 `promptCacheTtl` 설정 또는 `CLAUDE_CODE_PROMPT_CACHE_TTL`, 그 밖 `subagentPromptCacheTtl` 또는 `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`. 값은 `5m`·`1h`만. 우선순위: `FORCE_PROMPT_CACHING_5M=1` → 묶음별 env → 묶음별 설정 → 하위 에이전트 frontmatter `cacheTtl` → `ENABLE_PROMPT_CACHING_1H=1` → 기본값. [CC "Choose the TTL yourself"](https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself)
-- [문서] 실제 TTL 확인: 결과의 `usage.cache_creation`에서 `ephemeral_1h_input_tokens`·`ephemeral_5m_input_tokens`. stream-json 결과에도 같은 usage가 실린다. 사용자 프로젝트도 transcript의 이 값으로 TTL을 읽는다([runtime.md "Cache evidence"](/home/babo/Projects/paseo-auto-compact-for-claude-dev/paseo-auto-compact-for-claude/docs/runtime.md)).
+- [문서] 실제 TTL 확인: 결과의 `usage.cache_creation`에서 `ephemeral_1h_input_tokens`·`ephemeral_5m_input_tokens`. stream-json 결과에도 같은 usage가 실린다. 사용자 프로젝트도 transcript의 이 값으로 TTL을 읽는다([runtime.md "Cache evidence"](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/blob/4039afd9e5bdc1f9f184541022352bee8d242cde/docs/runtime.md)).
 - [문서] 캐시 타이머는 "Each request that hits the cache resets the timer". 즉 마지막 요청 시각부터 TTL이 흐른다.
 
 ### Codex
@@ -136,7 +136,7 @@
 
 ## 사용자 프로젝트(Auto Compact for Claude)와의 관계
 
-- 그 프로젝트는 Paseo가 띄운 **대화형** Claude 세션에 Mod(관측기)를 넣어, 응답 완료를 관측한 뒤 마지막 요청 시각 + 사용자 지연(기본 55분, 크기 기본 200,000 토큰)에 Paseo 공개 API로 `/compact`를 보낸다. TTL은 Stop hook이 준 transcript의 `cache_creation` TTL → Claude 설정·env → 1시간 가정 순으로 정한다. 완료는 새 compaction 경계와 관측기 기록이 모두 맞아야 성공으로 친다. 사용자 입력과 압축 전송 사이의 경쟁은 API가 원자적이지 않아 남는다고 스스로 적었다([runtime.md](/home/babo/Projects/paseo-auto-compact-for-claude-dev/paseo-auto-compact-for-claude/docs/runtime.md)).
+- 그 프로젝트는 Paseo가 띄운 **대화형** Claude 세션에 Mod(관측기)를 넣어, 응답 완료를 관측한 뒤 마지막 요청 시각 + 사용자 지연(기본 55분, 크기 기본 200,000 토큰)에 Paseo 공개 API로 `/compact`를 보낸다. TTL은 Stop hook이 준 transcript의 `cache_creation` TTL → Claude 설정·env → 1시간 가정 순으로 정한다. 완료는 새 compaction 경계와 관측기 기록이 모두 맞아야 성공으로 친다. 사용자 입력과 압축 전송 사이의 경쟁은 API가 원자적이지 않아 남는다고 스스로 적었다([runtime.md](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/blob/4039afd9e5bdc1f9f184541022352bee8d242cde/docs/runtime.md)).
 - Claude Code 자체 유휴 압축(0.9 × 1시간 = 54분, 200K)과 기본값이 거의 같다. 사용자 README도 "Claude Code added idle auto-compaction … Paseo does not yet use this feature"라고 적어 이 기능이 SDK 경로에서 안 돈다는 관찰과 맞는다.
 - 그 프로젝트의 README는 Codex 구독 세션은 "caches are retained indefinitely for logged-in Codex users"라며 대상에서 뺐다. 근거는 2절의 같은 X 게시물이다.
 
