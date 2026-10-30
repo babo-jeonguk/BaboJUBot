@@ -25,7 +25,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-/** 가짜 실행기를 감싸 받은 요청과 같은 에이전트의 동시 실행 수를 기록한다. */
+/** 가짜 프로바이더를 감싸 받은 요청과 같은 에이전트의 동시 실행 수를 기록한다. */
 function observed(inner: RuntimeAdapter) {
   const requests: RunRequest[] = [];
   const running = new Map<string, number>();
@@ -46,7 +46,7 @@ function observed(inner: RuntimeAdapter) {
   return { runtime, requests, maxPerAgent: () => maxPerAgent };
 }
 
-/** 첫 실행 시도만 gate에서 멈추고 그 뒤에는 기본 답장 시나리오를 쓰는 가짜 실행기. */
+/** 첫 실행 시도만 gate에서 멈추고 그 뒤에는 기본 답장 시나리오를 쓰는 가짜 프로바이더. */
 function holdFirstRun(gate: Gate) {
   let calls = 0;
   return createScriptedRuntime({

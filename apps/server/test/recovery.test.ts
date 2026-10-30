@@ -264,7 +264,7 @@ const goalMessage =
  * 자식 서버 프로세스에서 조직을 만들고(새 조직이면 생성으로 깨어난 Lead가, `legacy`면 목표 없이 만든 예전 조직의 Lead가 `say`를 받아)
  * `stopAfter` 쓰기가 commit된 것을 `committed`로 확인한 뒤 SIGKILL한다.
  * `alsoSay`가 있으면 SIGKILL 전에 보내, 다시 대기한 깨우기와 새 깨우기가 한 실행 시도로 합쳐지게 한다.
- * 같은 DB로 기본 가짜 실행기 서버를 다시 띄워 재처리가 끝날 때까지 기다린다.
+ * 같은 DB로 기본 가짜 프로바이더 서버를 다시 띄워 재처리가 끝날 때까지 기다린다.
  */
 async function crashAndRestart(
   stopAfter: string,

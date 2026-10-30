@@ -31,7 +31,7 @@ Discovery 관점: (1) OSS agent 도구 승인/채용 정책, (2) 인접 workflow
 | [#50](issue-50-references.md#brief)·[#51](issue-51-references.md#brief)·[#56](issue-56-references.md#brief) | 조직별 query key·realtime·관계 격리 | UI 공통 원리만 재사용. 연구 지도/graph 상세는 제외 |
 | [#1](issue-1-references.md#brief) | 타입/명령/검증 배경 | 과거 고정 승인 권고는 ADR-0003/현 #58과 다르면 배제 |
 | paperclip.md, paperclip-dashboard.md, dashboard-references.md, comparative-survey.md | Paperclip 및 화면 후보 시작점 | 현재 ref 직접 확인, 캡처 재사용 없이 필요한 상태 새 관찰 |
-| agent-runtime-models.md, agent-interaction-models.md, reference-code-structure.md | adapter/영속 기록과 후보 배경 | 실제 실행기/기억/외부 job 범위는 제외 |
+| agent-runtime-models.md, agent-interaction-models.md, reference-code-structure.md | adapter/영속 기록과 후보 배경 | 실제 프로바이더/기억/외부 job 범위는 제외 |
 
 
 ## 레퍼런스
@@ -113,7 +113,7 @@ Discovery 관점: (1) OSS agent 도구 승인/채용 정책, (2) 인접 workflow
 | <a id="D06"></a>D06 | 보류 | 권고안은 정책 OFF 변경을 이후 새 호출에 적용하고 이미 pending인 요청은 사용자 결정까지 보존하는 것이다. OFF가 기존 요청의 일괄 실행/취소를 뜻하도록 자동 연결하지 않는다. 단계가 바뀐 요청의 승인 허용/보류/취소도 명시 계약으로 정한다. | P02,P05,E08,E11 | PG probe는 이 권고 모형이 구현 가능함만 보임. 외부 제품 사례로 제품 정책을 확정할 수 없어 owner에게 남김 | Q2,Q4,Q5 |
 | <a id="D07"></a>D07 | 변형 채택 | 조직 설정에 의미가 분명한 체크박스와 기본 꺼짐 설명을 둔다. 서버 확정값·요청값·저장중·실패를 구별하고 중복 제출을 막는다. 서버 응답 후 확정하고 조직 Event/재연결로 관련 query를 재조회한다. 저장 성공 뒤 조회 실패는 저장 실패와 구별한다. | P06,E03,E12,E14 | 기존 Query/WebSocket 경로 우선. 다른 탭 갱신에 별도 broadcast 의존성이나 매번 확인 모달을 추가할 필요는 없음 | Q1,Q2,Q5 |
 | <a id="D08"></a>D08 | 변형 채택 | Inbox와 별도 승인 상세에 add_worker 종류를 표시하고 요청 Role·고정된 지침 사본·요청 출처를 검토하게 한다. approve/reject만 제공하고 반려 사유는 같은 결정 명령에 필수로 담는다. 공유 pending·실패 초안 유지·409 재조회·조직/요청별 draft 격리·시각/사유/생성 작업자 링크 receipt를 제공한다. | P05–P06,E02,E03,E13,E15; [#57 E17](issue-57-references.md#E17) | 초기 승인 세 결정은 유지. 작업자 추가 설명에 planning 회귀·전체 팀 생성 문구를 쓰지 않음. 제거된 버튼의 포커스는 receipt로 연결 | Q3,Q4,Q5 |
-| <a id="D09"></a>D09 | 채택 | 가짜 실행기의 실제 조직 도구 HTTP로 OFF/ON/승인/반려와 worker·사본·Lead wake·Event를 검증한다. 정책변경/add 및 approve/reject 경합, 저장 실패 rollback, cross-org/worker/종료 토큰/위조 field를 음성 대조한다. 사용자 API의 local_trusted 경계는 현 구조 문서를 따른다. | P01–P06,E01–E03,E11; AGENTS | 조직 도구에 정책 변경이 없다는 검증과 같은 OS 프로세스의 임의 Owner HTTP 차단은 다른 주장. 실제 실행 환경 격리는 이번 조사에서 보장하지 않음 | Q1,Q2,Q3,Q4,Q5 |
+| <a id="D09"></a>D09 | 채택 | 가짜 프로바이더의 실제 조직 도구 HTTP로 OFF/ON/승인/반려와 worker·사본·Lead wake·Event를 검증한다. 정책변경/add 및 approve/reject 경합, 저장 실패 rollback, cross-org/worker/종료 토큰/위조 field를 음성 대조한다. 사용자 API의 local_trusted 경계는 현 구조 문서를 따른다. | P01–P06,E01–E03,E11; AGENTS | 조직 도구에 정책 변경이 없다는 검증과 같은 OS 프로세스의 임의 Owner HTTP 차단은 다른 주장. 실제 실행 환경 격리는 이번 조사에서 보장하지 않음 | Q1,Q2,Q3,Q4,Q5 |
 | <a id="D10"></a>D10 | 배제 | 새 workflow/정책/queue 엔진, 승인 전 worker row, MS의 다음 turn 미응답 자동 반려, 승인 카드 always-allow·Undo, 초기 승인 생략·사용자 최종 완료 대체로 범위를 넓히지 않는다. | P01–P06,E05,E08,E15; ADR1–4 | #58의 한 정책 항목과 제품 불변 조건 보존. 외부 사례의 운영 정책을 자동 채택하지 않음 | Q1,Q2,Q3,Q4,Q5 |
 
 
@@ -177,5 +177,5 @@ Discovery 관점: (1) OSS agent 도구 승인/채용 정책, (2) 인접 workflow
 - 실화면 미확인: 실제 조직 설정 체크박스 저장·실패/권한없음·다른 탭/교차 조직 stale. 이 권고는 고정 소스/계약/공식 문서 기반이다. Carbon Storybook body가 비어 있었으며 화면 근거에서 제외했다. Unleash Enterprise 서버 guard, Infisical PAM entitlement·EE LICENSE·global error UI도 미확인이다.
 - handup/assistant-ui 배포와 source SHA 대응·서버 영속성/권한·실제 agent 전달은 미확인. assistant Denied 재캡처는 demo 자동 reset만 browser clock으로 막았고 fake backend 성공을 넣지 않았다. 회사 캡처는 gitignore cache에만 보관하며 이슈/저장소에 올리지 않는다.
 - 접근 실패: 일반 sandbox GitHub 네트워크/loopback은 허용 환경으로 재시도했고, probe의 prepared-statement 다중 SQL 및 Playwright 상대 경로 오류는 보정했다. 초기 실패 로그도 보존한다. incld/Novu 일부 원문·OPA/Cedar playground·일부 Camunda 문서는 접근/안정버전 확인 실패로 결정 근거에서 제외했다. 이 실패를 기능 부재 증거로 쓰지 않는다.
-- local_trusted 사용자 API는 로그인 없는 loopback 신뢰 모델이다([현재 구조](../architecture.md#제품-불변-조건-강제-위치), [#57 추가 조사](issue-57-references.md#사용자-api-신뢰경계-추가-조사)). 조직 도구에 정책 변경이 없다는 사실로 같은 OS의 임의 HTTP/DB 접근까지 차단했다고 주장하지 않는다. 실제 실행기 격리는 후속 검토 대상이다.
+- local_trusted 사용자 API는 로그인 없는 loopback 신뢰 모델이다([현재 구조](../architecture.md#제품-불변-조건-강제-위치), [#57 추가 조사](issue-57-references.md#사용자-api-신뢰경계-추가-조사)). 조직 도구에 정책 변경이 없다는 사실로 같은 OS의 임의 HTTP/DB 접근까지 차단했다고 주장하지 않는다. 실제 프로바이더 격리는 후속 검토 대상이다.
 - 문서는 커밋하지 않고 구현 변경과 함께 검토하도록 남긴다. 권고가 이슈/AGENTS/GLOSSARY/ADR보다 우선하지 않는다. 정책 의미의 열린 결정은 위 owner가 확정해야 한다.

@@ -6,14 +6,14 @@
 
 - 구현할 문제: 조직·에이전트의 일시정지와 재개, 되돌릴 수 없는 조직 중단, Lead 대화의 `중단하고 반영`을 사용자 API·Event·대시보드에서 일관되게 제공한다.
 - 동종 문제: **영속 inbox를 가진 직렬 작업자의 admission을 닫고, 이미 시작한 attempt를 취소한 뒤 보존한 입력으로 재개하는 제어 프로토콜**이다. 작업자 중지, 실행 시도 취소, 조직 생애주기 종료는 서로 다른 범위다.
-- 고정된 결정: [AGENTS](../../AGENTS.md), [용어](../../GLOSSARY.md), [기능](../features.md), [구조](../architecture.md), [ADR-0001](../adr/0001-adapter-control-plane.md)·[0002](../adr/0002-durable-records-and-wakes.md)를 따른다. 단일 서버·Postgres·에이전트당 실행 시도 하나·미처리 깨우기 전체 병합·기본 다음 실행 반영·가짜 실행기는 확정이다. 조직 잠금 → 에이전트 잠금 순서와 종료 토큰 거부를 유지한다. #57 인계에 따라 최종 완료 전에 시작한 실행 시도는 자연 종료한다. 외부 job·예산은 판 4, 재시작 입력 재처리·heartbeat는 #60, steer·실제 모델은 판 2다.
+- 고정된 결정: [AGENTS](../../AGENTS.md), [용어](../../GLOSSARY.md), [기능](../features.md), [구조](../architecture.md), [ADR-0001](../adr/0001-adapter-control-plane.md)·[0002](../adr/0002-durable-records-and-wakes.md)를 따른다. 단일 서버·Postgres·에이전트당 실행 시도 하나·미처리 깨우기 전체 병합·기본 다음 실행 반영·가짜 프로바이더는 확정이다. 조직 잠금 → 에이전트 잠금 순서와 종료 토큰 거부를 유지한다. #57 인계에 따라 최종 완료 전에 시작한 실행 시도는 자연 종료한다. 외부 job·예산은 판 4, 재시작 입력 재처리·heartbeat는 #60, steer·실제 모델은 판 2다.
 - [#58의 후속 사용자 결정](https://github.com/babo-jeonguk/BaboJUBot/issues/58#issuecomment-6333244951): 기존 작업자 추가 승인 요청은 연구 단계가 바뀌어도 결정할 수 있고, 조직 단계는 바뀌지 않는다. 과거 #58 조사 문서의 「researching에서만 worker 생성」 권고는 이 결정으로 대체됐다. 일시정지·중단 admission 차단과 기존 요청에 대한 사용자 결정은 구분한다.
 
 | ID | 조사 질문 | 출처 | 전략 |
 |---|---|---|---|
 | Q1 | 조직·에이전트 pause/resume/stop과 admission·깨우기 병합을 어떻게 직렬화하고 취소의 claim→등록 틈을 막는가? | #59 실행 시도 admission·AC1/3/4; #57 인계 댓글; #49 깨우기 | Source Recon + runtime/failure + 독립 동시성 probe |
 | Q2 | 어느 단계에서든 pause한 뒤 직전 단계로 복귀하고 stopped를 되돌리지 않으려면 어떤 상태를 보존하고 승인·결과 결정과 어떻게 경합하는가? | #59 조직 일시정지·AC2/4; architecture 생애주기; #57 결과 검토 인계 | Source Recon + persistence/recovery + 상태 전이 비교 |
-| Q3 | 취소 요청·실행기 종료·토큰 차단·늦은 결과를 구별하면서 겹치는 실행 시도를 막는 계약은? | #59 취소·즉시 효력; #53 실행기 계약·종료 토큰; AGENTS 조직 경계 | 프로토콜/계약 + Source Recon + adversarial/failure probe |
+| Q3 | 취소 요청·프로바이더 종료·토큰 차단·늦은 결과를 구별하면서 겹치는 실행 시도를 막는 계약은? | #59 취소·즉시 효력; #53 프로바이더 계약·종료 토큰; AGENTS 조직 경계 | 프로토콜/계약 + Source Recon + adversarial/failure probe |
 | Q4 | `중단하고 반영`의 제어 기록·메시지·깨우기를 원자적으로 남기고 후속 실행에 메시지를 전달하는 방법은? | #59 해당 항목·AC5; architecture Surface seam | Source Recon + persistence/failure + 동작 비교 |
 | Q5 | 조직 대시보드·에이전트 상세·Lead 대화에서 제어 범위·전이 중·실패·좁은 폭·실시간 상태를 어떻게 구별해 보여 주는가? | #59 화면·AC6; features 화면 지도 | Surface Capture + Behavioral Recon + Source Recon |
 
@@ -32,15 +32,15 @@
 | 관점 | 마지막 라운드와 saturation 근거 |
 |---|---|
 | 조직·에이전트 제어 / 큐·controller | 4라운드. agent→큐→Kubernetes/Temporal→실패 이슈로 확장. 마지막 Graphile graceful abort, pg-boss job resume, paused workflow 취소는 admission·협력 취소·종료 확인의 기존 변형이며 새 실패 유형 없음 |
-| 취소 프로토콜 / 실행기 | 4라운드. Hermes/OpenClaw/ACP→공식 실패 이슈→Temporal/논문→소유권·settlement 이슈. 마지막 후보는 정확한 실행 소유권·늦은 결과·종료 대기 유형을 반복. 초록만 읽은 논문은 결정 근거에서 제외 |
+| 취소 프로토콜 / 프로바이더 | 4라운드. Hermes/OpenClaw/ACP→공식 실패 이슈→Temporal/논문→소유권·settlement 이슈. 마지막 후보는 정확한 실행 소유권·늦은 결과·종료 대기 유형을 반복. 초록만 읽은 논문은 결정 근거에서 제외 |
 | 운영 화면 / 대화 | 3라운드. agent 제품→workflow/retry 화면→접근성·실패/연결 표시로 확장. 마지막 W3C alert/status·연결 demo는 범위·전이·오류 알림의 기존 조합이며 새 실패 유형 없음 |
 
 | 레퍼런스 | 분류 | 버전·고정 SHA | 라이선스 | 깊이·선정 이유 |
 |---|---|---|---|---|
 | Paperclip | OSS control plane | `4dfcb4c9b8043d7fadaaed5f6cbab0c1e5cf8f2f` | MIT | 소스·원문 정책 module 실행. 회사/agent hold·직전 상태·늦은 완료·종료 증거와 같은 스택의 UI를 함께 비교 |
 | BullMQ | 큐 부품 | `3cd77f97f9afd3b6dfcb4fe0e1310ef660090fad` | MIT | 소스·테스트 읽기. pause가 active drain이라는 반례, 등록 전 cancel 유실·resume 뒤 실행 루프 깨우기 |
-| Hermes | 실행기 | `4e58c721c8cf9b51c46636ea84ea6a5cb540880a` | MIT | 소스·테스트 읽기. interrupt/redirect/child scope·generation claim·비협조 도구 abandon 반례 |
-| OpenClaw | gateway·실행기 | `1b93d1ea5dee6deaf91c28140571ba5eda00dd68` | MIT | 소스·원문 queue gate 실행. 캡처한 owner의 취소·종료 대기·빈 slot 반례 |
+| Hermes | 프로바이더 | `4e58c721c8cf9b51c46636ea84ea6a5cb540880a` | MIT | 소스·테스트 읽기. interrupt/redirect/child scope·generation claim·비협조 도구 abandon 반례 |
+| OpenClaw | gateway·프로바이더 | `1b93d1ea5dee6deaf91c28140571ba5eda00dd68` | MIT | 소스·원문 queue gate 실행. 캡처한 owner의 취소·종료 대기·빈 slot 반례 |
 | ACP TypeScript SDK | adapter 계약·fixture | `c2b1a8633745dd859a2732b4e17d5ed61e869bb6` / 2.0.0 | Apache-2.0 | 소스·제한 원문 handler 실행. no-op cancel fake와 명세의 차이 |
 | assistant-ui | 공개 UI 부품·scripted demo | `0dd293a8ed894f84bdd32097f841bea5dd52ae71` | MIT | 소스·공개 실화면 조작. 실패/처리중·사용자 중단·연결 복구의 표시를 비교. 공개 배포의 commit은 미공개 |
 | ACP v1 명세 | 프로토콜 | `8e29db79548af94b467dcbb0cc5ffacfe68c90ab` | Apache-2.0 | 문서. cancel notification·최종 cancelled 응답·그 사이 update의 의미 |
@@ -86,7 +86,7 @@ OSS와 ACP 명세의 root LICENSE를 읽었다. **설계 참고만 하며 코드
 |---|---|---|---|---|---|
 | <a id="P01"></a>P01 | admission을 영속 상태로 닫고 입력은 보존 | E02,E04,E06,E07 | Paperclip inactive wake는 skipped, BullMQ pause는 active drain. BaboJUBot은 pending wake 보존+active 취소 | 재개 때 입력 복원·병합 가능 | flag만 메모리에 두거나 wake 생성을 막으면 유실. resume 저장만 하고 dispatch를 깨우지 않으면 정체 |
 | <a id="P02"></a>P02 | 직전 단계와 정지 원인을 별도 보존 | E02–E04,E16 | Paperclip의 executor lifecycle와 우리 연구 생애주기는 상태 집합이 다름 | pause 반복·org/agent pause 중첩에도 정확한 복귀 | 조직 resume이 개별 pause까지 해제하거나 prior를 paused로 덮으면 잘못 실행 |
-| <a id="P03"></a>P03 | 취소 요청·권한 차단·실행기 종료를 분리 | E05,E08,E10–E15 | ACP는 최종 응답 전 update 허용, Hermes는 도구 abandon, OpenClaw는 owner 종료 대기 | 즉시 제품 효력과 실행기 정리 시간을 함께 표현 | abort 호출·terminal DB 상태·빈 Map을 실제 종료 증거로 쓰면 겹침·늦은 쓰기 가능 |
+| <a id="P03"></a>P03 | 취소 요청·권한 차단·프로바이더 종료를 분리 | E05,E08,E10–E15 | ACP는 최종 응답 전 update 허용, Hermes는 도구 abandon, OpenClaw는 owner 종료 대기 | 즉시 제품 효력과 프로바이더 정리 시간을 함께 표현 | abort 호출·terminal DB 상태·빈 Map을 실제 종료 증거로 쓰면 겹침·늦은 쓰기 가능 |
 | <a id="P04"></a>P04 | 취소 대상을 정확한 실행 시도·소유권으로 고정 | E04,E05,E07,E09,E14 | generation/version/owner는 구현 수단이며 연구 판단을 맡는 프롬프트가 아님 | 오래된 제어/완료가 새 실행을 건드리지 못함 | claim commit→controller 등록 틈에서 취소 유실; 빠른 resume이 기존 취소를 지울 위험 |
 | <a id="P05"></a>P05 | 중단 제어와 새 입력을 각각 기록하되 함께 저장 | E02,E09,E14,E17; #59 AC5 | Hermes redirect는 same-turn, UI stop hook은 별도 호출. 두 방식 모두 #59의 두 기록+후속 실행과 동일하지 않음 | 입력·제어·감사 기록의 원자성, 메시지 유실 방지 | stop HTTP 성공 뒤 message HTTP 실패하면 방향 전환 내용 유실; 새 실행을 먼저 깨우면 기존 실행과 중첩 |
 | <a id="P06"></a>P06 | 명령 범위·요청중·확정 상태·연결 상태를 구별 | E17–E19 | bulk agent resume와 조직 resume, retry와 resume, stream 복구와 연구 재개는 서로 다름 | 사용자에게 제어가 어디에 적용됐는지 명료 | 장식 icon·no-op callback·scripted 배너를 실제 제어 동작으로 오해 |
@@ -98,13 +98,13 @@ OSS와 ACP 명세의 root LICENSE를 읽었다. **설계 참고만 하며 코드
 |---|---|---|---|---|---|
 | <a id="D01"></a>D01 | 변형 채택 | 현재 `claimNextRun`의 조직 잠금→agent 잠금·미처리 wake 전체 묶음을 유지하고 agent pause 검사를 추가한다. 조직 paused/stopped/completed 또는 agent paused에서는 wake를 소비하지 않는다. 조직 제어를 agent API 순회로 구현하지 않는다. | P01,P02; #59 AC1/3/4 | 조직 상태 하나로 즉시 admission을 닫아 부분 성공을 피함. 다른 agent·다른 조직은 계속 진행 | Q1,Q2 |
 | <a id="D02"></a>D02 | 변형 채택 | 조직 pause는 비종료 단계와 prior stage를 원자적으로 기록하고 반복 pause로 prior를 덮지 않는다. resume은 그 단계만 복원하며 개별 agent pause는 유지한다. stopped는 재개 불가다. 단계 변경을 동반하는 초기 승인·결과 결정의 paused 동작은 아래 선택을 명시한다. | P02; #59 AC2/4; #58 후속 결정 | Paperclip 상태 이름/허용표를 복사하지 않음. 기존 add_worker pending의 단계무관 사용자 결정은 유지하고 그 wake는 admission에서 막음 | Q1,Q2 |
-| <a id="D03"></a>D03 | 변형 채택 | 제어 transaction에 대상 run ID·취소 요청·Event를 영속화하고 commit 뒤 해당 controller로 보낸다. controller 등록 시 취소 의도를 재확인해 claim→등록 틈을 닫는다. 빠른 resume도 이미 요청한 취소를 지우지 않는다. 실행기 정리·종료 저장 전에는 그 agent의 실행 slot을 유지한다. | P03,P04; E05,E07,E14–E16 | 단일 서버에 필요한 최소 intent·run identity를 우선. Paperclip 전체 lease/plugin/provider 상태기를 들여오지 않음. 취소 무응답을 정상 종료로 간주하지 않음 | Q1,Q3 |
+| <a id="D03"></a>D03 | 변형 채택 | 제어 transaction에 대상 run ID·취소 요청·Event를 영속화하고 commit 뒤 해당 controller로 보낸다. controller 등록 시 취소 의도를 재확인해 claim→등록 틈을 닫는다. 빠른 resume도 이미 요청한 취소를 지우지 않는다. 프로바이더 정리·종료 저장 전에는 그 agent의 실행 slot을 유지한다. | P03,P04; E05,E07,E14–E16 | 단일 서버에 필요한 최소 intent·run identity를 우선. Paperclip 전체 lease/plugin/provider 상태기를 들여오지 않음. 취소 무응답을 정상 종료로 간주하지 않음 | Q1,Q3 |
 | <a id="D04"></a>D04 | 채택 | 취소를 추가하기 전에 도구·admission·제어·종료의 잠금 graph를 정리한다. org→agent→run 순서를 선택한다면 충돌하는 기존 run→org 도구 쓰기도 함께 조정하고 잠금 뒤 신원/권한/상태를 다시 검사한다. 대안으로 단계를 나누려면 같은 시점부터 모든 읽기·쓰기 권한을 막는 별도 검증 근거가 필요하다. | P07; E01,E02 | org 잠금 안에서 run UPDATE만 추가하는 안은 실제 교착. SQL 모형의 org commit→run fence 분리는 교착 해소만 확인했으며 완전한 취소 프로토콜 권고가 아님 | Q1,Q3,Q4 |
 | <a id="D05"></a>D05 | 채택 | `중단하고 반영`은 사용자 전용 한 명령 경로에서 run 취소 제어 기록·사용자 메시지·wake와 제어/메시지 두 Event를 같은 transaction에 남긴다. commit 전 취소 신호를 보내지 않는다. 다음 실행은 정리 완료 뒤 새 메시지를 wake reason으로 받는다. org stop이나 영속 agent pause로 바꾸지 않는다. | P05; #59 AC5; E02 | 별도 두 HTTP 호출의 부분 실패 방지. 정상 run.finished/activity Event는 두 필수 Event와 별도로 생길 수 있음. 실행 중인 run이 없을 때의 제어 결과도 명시적으로 기록 | Q1,Q3,Q4 |
 | <a id="D06"></a>D06 | 변형 채택 | 취소가 확정된 실행 시도의 조직 도구 권한은 즉시 닫고 기존 종료 토큰의 읽기 포함 거부를 유지한다. 인증만 통과한 오래된 요청도 실제 쓰기 시 재검사한다. 늦은 adapter 결과가 수락된 취소를 성공으로 덮거나 새 실행의 상태를 바꾸지 못하게 한다. 이미 commit된 부작용을 취소가 되돌린다고 표시하지 않는다. | P03,P04; E08–E15; #53 계약 | 취소 전달과 제품 권한 차단은 다른 보장. 공개 활동·usage 수집 허용 범위는 명시하되 provider 내부 추론을 공개 로그로 옮기지 않음 | Q3,Q4 |
 | <a id="D07"></a>D07 | 채택 | resume commit 뒤 실행 가능한 agent를 다시 촉진하고, 아직 취소 정리 중이면 정리 완료 뒤 재검사한다. pending wake 전체를 하나로 묶는다. 중단 조직의 wake는 새 실행을 만들지 않는다. 취소된 run에 이미 묶인 입력을 자동 복제하는 재시도 정책은 이번에 추정하지 않는다. | P01,P03,P04; E02,E05,E07,E14 | 상태만 active로 보여 주고 dispatcher가 잠드는 회귀 방지. 재시작 입력 재처리·자동 재시도/부작용 중복은 후속 #60 | Q1,Q3,Q4 |
-| <a id="D08"></a>D08 | 변형 채택 | 고정된 화면 위치에서 조직·agent·run 제어 범위를 이름으로 표시한다. 요청중·서버 확정 pause/stop·실행기 취소중을 구별하고, 응답/Event/재연결 뒤 관련 조직 query를 재조회한다. 실패시 메시지 초안·전달 방식을 유지한다. 390px에서도 명령 이름/접근성 이름과 중단 이유·부분 공개 활동을 읽을 수 있게 한다. | P06; E17–E19; features | 실제 캡처는 실패/부분 답장/연결 표시의 참고다. 조직 dashboard·agent pause·mode selector의 구체 배치와 서버 동작은 구현 때 검증. stream 재연결을 연구 재개로 표시하지 않음 | Q4,Q5 |
-| <a id="D09"></a>D09 | 채택 | 가짜 실행기의 실제 조직 도구 HTTP와 제어 API로 pause/resume/stop·중단하고 반영·조직 경계를 검증한다. cancellation gate로 종료를 보류하고 그 사이 새 실행0·늦은 쓰기 거부를 관찰한다. 응답유실·rollback·양방향 경합도 같은 API seam에서 확인한다. | P01–P07; #49 Testing Decisions; AGENTS | 독립 probe·OSS source test를 제품 AC 통과로 대신하지 않음. 아래 V는 제안이며 이번 제품 테스트 실행 결과가 아님 | Q1–Q5 |
+| <a id="D08"></a>D08 | 변형 채택 | 고정된 화면 위치에서 조직·agent·run 제어 범위를 이름으로 표시한다. 요청중·서버 확정 pause/stop·프로바이더 취소중을 구별하고, 응답/Event/재연결 뒤 관련 조직 query를 재조회한다. 실패시 메시지 초안·전달 방식을 유지한다. 390px에서도 명령 이름/접근성 이름과 중단 이유·부분 공개 활동을 읽을 수 있게 한다. | P06; E17–E19; features | 실제 캡처는 실패/부분 답장/연결 표시의 참고다. 조직 dashboard·agent pause·mode selector의 구체 배치와 서버 동작은 구현 때 검증. stream 재연결을 연구 재개로 표시하지 않음 | Q4,Q5 |
+| <a id="D09"></a>D09 | 채택 | 가짜 프로바이더의 실제 조직 도구 HTTP와 제어 API로 pause/resume/stop·중단하고 반영·조직 경계를 검증한다. cancellation gate로 종료를 보류하고 그 사이 새 실행0·늦은 쓰기 거부를 관찰한다. 응답유실·rollback·양방향 경합도 같은 API seam에서 확인한다. | P01–P07; #49 Testing Decisions; AGENTS | 독립 probe·OSS source test를 제품 AC 통과로 대신하지 않음. 아래 V는 제안이며 이번 제품 테스트 실행 결과가 아님 | Q1–Q5 |
 | <a id="D10"></a>D10 | 배제 | 새 queue/workflow/메모리 제품, 같은 turn steer/redirect, agent subtree 일괄 취소, pause=drain, 임의 timeout 뒤 성공 간주, stopped 조직 Continue/Undo를 들여오지 않는다. 외부 job 취소는 판4, heartbeat·재시작 복구는 #60, 실제 adapter·steer는 판2다. | P01–P06; ADR1/2; #49 범위 | 예산·provider/process kill·재시도 정책과 이번 가짜 실행 제어를 섞지 않음. 사용자 최종 완료·승인·조직 경계를 우회하는 정책 없음 | Q1–Q5 |
 
 ### 배제한 패턴
@@ -112,7 +112,7 @@ OSS와 ACP 명세의 root LICENSE를 읽었다. **설계 참고만 하며 코드
 | 패턴 | 사례 | 이유 |
 |---|---|---|
 | paused 입력을 skipped 처리하거나 active를 자연 종료만 시킴 | Paperclip E06·BullMQ E07 | #59는 깨우기 보존+진행 중 실행 시도 취소 |
-| paused=false 또는 active Map 부재만으로 다음 실행 시작 | E05,E07,E10,E14 | dispatcher kick·실행기 종료는 별도 확인 필요 |
+| paused=false 또는 active Map 부재만으로 다음 실행 시작 | E05,E07,E10,E14 | dispatcher kick·프로바이더 종료는 별도 확인 필요 |
 | run→org 도구를 둔 채 org→run 취소 추가 | E01,E02 | 실제 `40P01` 교착; 기존 조직 잠금만의 해결 범위를 넘음 |
 | UI의 stop과 submit을 별도 요청으로 이어 붙임 | E17; #59 AC5 | 메시지 실패 뒤 취소만 적용되는 부분 성공 |
 | 같은 logical turn redirect·비협조 도구 abandon을 완전 취소로 채택 | E09,E10 | 새 실행 시도 계약·물리 종료와 의미가 다름 |
@@ -121,7 +121,7 @@ OSS와 ACP 명세의 root LICENSE를 읽었다. **설계 참고만 하며 코드
 
 ## 구현 참고
 
-권고의 핵심은 **영속 admission·취소 요청·입력 보존 → 실행기 정리 → 다음 실행**의 순서다. 상태 이름·추가 열·API URL은 구현 계약에서 정하되 아래 책임 경계를 유지한다.
+권고의 핵심은 **영속 admission·취소 요청·입력 보존 → 프로바이더 정리 → 다음 실행**의 순서다. 상태 이름·추가 열·API URL은 구현 계약에서 정하되 아래 책임 경계를 유지한다.
 
 | 위치 | #59에서 검토할 책임 |
 |---|---|
@@ -154,7 +154,7 @@ OSS와 ACP 명세의 root LICENSE를 읽었다. **설계 참고만 하며 코드
 |---|---|---|
 | paused 중 초기 연구 승인·결과 검토 결정 | 사용자 / #59 | **권고:** 해당 단계 변경 결정은409로 보류하고 재개 후 결정. **대안:** 결정은 저장하되 조직 paused는 유지하고 prior stage·승인 적용을 함께 갱신. 후자는 승인/사본/결과와 복귀 목표의 원자성·중단 경합을 더 검증해야 한다. 기존 add_worker pending 단계무관 결정은 이 선택의 대상이 아니다(D02) |
 | 「어느 단계」에 최종 완료까지 포함하는가 | 사용자 / #59 | **권고:** 모든 비종료 단계에서 pause/stop을 제공하고 completed/stopped에서는 종료를 보존. **대안:** completed 위 표시용 정지 상태를 허용하되 completed의 admission 차단과 #57 active run 자연 종료는 유지. stopped의 재개·재활성화는 어느 안에서도 허용하지 않음 |
-| 취소된 run의 기존 입력 재처리·비협조 실행기 timeout | #60 / 실제 adapter 판2 | #59의 미처리 wake 보존은 확정. 이미 run에 묶인 wake 자동 복제는 재시도 정책을 정하기 전 도입하지 않는 안을 권고. 재처리하려면 부작용 중복/멱등성 계약 필요. 실제 adapter의 grace/강제 process 종료·실패 보고도 종료 확인을 생략하는 근거로 쓰지 않음 |
+| 취소된 run의 기존 입력 재처리·비협조 프로바이더 timeout | #60 / 실제 adapter 판2 | #59의 미처리 wake 보존은 확정. 이미 run에 묶인 wake 자동 복제는 재시도 정책을 정하기 전 도입하지 않는 안을 권고. 재처리하려면 부작용 중복/멱등성 계약 필요. 실제 adapter의 grace/강제 process 종료·실패 보고도 종료 확인을 생략하는 근거로 쓰지 않음 |
 
 ## 한계와 미확인
 

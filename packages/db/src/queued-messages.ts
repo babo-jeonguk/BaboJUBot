@@ -91,7 +91,7 @@ export async function editQueuedMessage(
 
 /**
  * 줄 세운 메시지를 `지금 보내기`로 바꾼다. 전달 방식이 `중단하고 보내기`가 되고 받는 에이전트의 진행 중 실행 시도에 취소를 요청한다.
- * commit 뒤 실행기에 취소를 보내고 받는 에이전트를 깨운다.
+ * commit 뒤 프로바이더에 취소를 보내고 받는 에이전트를 깨운다.
  */
 export async function sendQueuedMessageNow(
   db: Database,

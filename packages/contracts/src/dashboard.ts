@@ -61,7 +61,7 @@ export const organizationDashboardSchema = z.object({
   tasks: z.record(taskStatusSchema, count),
   /** 실행 시도 상태별 수. `running`은 아직 끝나지 않은 전부(취소 정리 중 포함)다. */
   runs: z.record(runStatusSchema, count),
-  /** `running` 가운데 사용자 제어로 취소를 요청받아 실행기가 정리 중인 수. */
+  /** `running` 가운데 사용자 제어로 취소를 요청받아 프로바이더가 정리 중인 수. */
   cancelling: count,
   artifacts: count,
   /** 오래된 날부터 오늘까지 {@link dashboardDays}일. 기록이 없는 날도 0으로 있다. */

@@ -29,7 +29,7 @@ export async function findRunningRunId(db: Executor, agentId: string) {
   return active?.id;
 }
 
-/** 에이전트의 지침 사본. bundle 버전 계산과 실행기 전달에 쓴다. */
+/** 에이전트의 지침 사본. bundle 버전 계산과 프로바이더 전달에 쓴다. */
 export async function selectInstructions(
   db: Executor,
   agentId: string

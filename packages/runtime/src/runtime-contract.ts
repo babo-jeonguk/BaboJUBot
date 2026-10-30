@@ -13,7 +13,7 @@ import {
 } from "@babojubot/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-// 실행기 계약(contracts `RuntimeAdapter`)의 공통 검사. 실행기 adapter마다 장면 두 개를 주고 같은 약속을 확인한다.
+// 프로바이더 계약(contracts `RuntimeAdapter`)의 공통 검사. 프로바이더 adapter마다 장면 두 개를 주고 같은 약속을 확인한다.
 // 실행 맥락 조회와 Lead 대화 답장만 받는 작은 가짜 도구 HTTP 서버를 직접 띄우며, 그 밖의 도구는 501 `not_implemented`다.
 
 /** 장면: 가짜 도구 서버의 주소·토큰을 받아 실행 시도 요청 한 장을 만든다. */
@@ -124,7 +124,7 @@ const deadline = <T>(promise: Promise<T>, ms: number, what: string) =>
   ]);
 
 /**
- * 실행기 adapter의 공통 검사를 등록한다. 두 장면에서 다음 약속을 확인한다.
+ * 프로바이더 adapter의 공통 검사를 등록한다. 두 장면에서 다음 약속을 확인한다.
  * 1. 취소를 받으면 정해진 시간 안에 `cancelled`로 끝난다.
  * 2. 돌아온 뒤 활동을 내지 않는다.
  * 3. 내는 활동은 모두 공개 활동 형식(`runtimeActivitySchema`)에 맞는다. 맞지 않으면 dispatcher가 버려 대시보드에서 사라진다.

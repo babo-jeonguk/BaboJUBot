@@ -4,9 +4,9 @@
 
 ## Brief
 
-- 구현할 문제: 도구 하나의 사실(이름·설명·입력·출력·읽기/쓰기·열린 Role·단계)이 contracts의 표 4개, 서버 경로별 입력 import, core `toolRules`로 흩어져 있다. 판 2 실행기에 줄 "지금 쓸 수 있는 도구 목록"을 만들려면 한 줄에 모아야 한다.
+- 구현할 문제: 도구 하나의 사실(이름·설명·입력·출력·읽기/쓰기·열린 Role·단계)이 contracts의 표 4개, 서버 경로별 입력 import, core `toolRules`로 흩어져 있다. 판 2 프로바이더에 줄 "지금 쓸 수 있는 도구 목록"을 만들려면 한 줄에 모아야 한다.
 - 동종 문제: 도구(operation) 목록과, 호출자·상태에 따라 그 목록을 거르고 호출을 거부하는 허용 규칙을 어디에 나눠 두는가.
-- 고정된 결정: 승인·조직 경계는 제품 코드가 강제한다(`AGENTS.md`). 의존 방향은 contracts ← core ← db·server, runtime·web은 contracts만 본다([구조 문서](../architecture.md#패키지-구성)). 도구를 실행기에 어떤 방식(MCP 등)으로 노출할지는 판 2에서 정한다(#86 「순서와 범위」). 승인 정책은 조직별·사용자만 바꾼다([ADR-0003](../adr/0003-configurable-approval-policy.md)).
+- 고정된 결정: 승인·조직 경계는 제품 코드가 강제한다(`AGENTS.md`). 의존 방향은 contracts ← core ← db·server, runtime·web은 contracts만 본다([구조 문서](../architecture.md#패키지-구성)). 도구를 프로바이더에 어떤 방식(MCP 등)으로 노출할지는 판 2에서 정한다(#86 「순서와 범위」). 승인 정책은 조직별·사용자만 바꾼다([ADR-0003](../adr/0003-configurable-approval-policy.md)).
 
 | ID | 조사 질문 | 출처 | 전략 |
 |---|---|---|---|
@@ -23,11 +23,11 @@
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
-| Paperclip runner·server | OSS control plane | `def4726bea0e3b340457100038d80ca55c2b7d4f` | MIT | 소스 | 외부 실행기에 실행 시도별 도구 목록을 투영하는 유일한 동종 |
+| Paperclip runner·server | OSS control plane | `def4726bea0e3b340457100038d80ca55c2b7d4f` | MIT | 소스 | 외부 프로바이더에 실행 시도별 도구 목록을 투영하는 유일한 동종 |
 | Hermes Agent | OSS agent | `4e58c721c8cf9b51c46636ea84ea6a5cb540880a` | MIT | 소스 | 중앙 tool registry와 toolset 선택 |
 | OpenClaw | OSS agent | `1b93d1ea5dee6deaf91c28140571ba5eda00dd68` | MIT | 소스 | 순수 데이터 catalog와 층별 정책 pipeline 분리 |
 | MCP 명세 2025-11-25 | 표준 | `9850cae8923b0ee3d19a4476f1010b97aa161a55` | MIT | 문서 | 판 2 후보 노출 방식의 도구 모양 |
-| Claude Agent SDK permissions | 상용 SDK | 2026-10-29 문서 | — | 문서 | 실행기 쪽 노출·승인 층 |
+| Claude Agent SDK permissions | 상용 SDK | 2026-10-29 문서 | — | 문서 | 프로바이더 쪽 노출·승인 층 |
 | OpenAI Agents JS | 라이브러리 | `52fcb5769c74844b198affe377e75fe04b1732a3` | MIT | 소스 | 도구 정의에 붙은 실행별 노출 함수 |
 | ts-rest | 계약 우선 RPC | `3d572e3336bd998b0c33a9d65b12292b158d0aec` | MIT | 문서 | 공유 계약의 role metadata |
 | oRPC | 계약 우선 RPC | `82a7108d8ced7d7706190f1e164a6f2857eab5f9` | MIT | 문서 | 계약 metadata와 구현 middleware 분리 |
@@ -41,7 +41,7 @@
 | <a id="E01"></a>E01 | Paperclip runner ADR: 패키지가 operation catalog를 정의할 수 있지만 catalog에 있다고 권한이 생기지 않는다. 서버가 실행 시도마다 production binding이 있고 현재 actor가 볼 수 있는 operation만 discovery에 투영하며, 허가 안 된 operation은 discovery에 없다. 조직 범위·승인·예산 같은 불변 조건을 한곳(서버)에 둔다 | [runner ADR L138-L200](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/doc/architecture/paperclip-runner.md#L138-L200) | 문서 주장 |
 | <a id="E02"></a>E02 | Paperclip 도구 한 줄(`CapabilitySemanticToolDescriptor`)에 `operationId`·`description`·`inputSchema`·`outputSchema`와 함께 허용 조건 데이터 `requiredClaims`·`allowedRoles?`·`taskModes`·`sideEffectClass`가 있다. 누가 어떤 claim을 가졌는지·조직 정책(`deniedOperationIds` 등)은 도구 줄이 아니라 호출 맥락(`CapabilityToolAuthorizationContext`)에 있다 | [capability-semantic-tool-types.ts L66-L107](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/packages/paperclip-runner/src/tools/capability-semantic-tool-types.ts#L66-L107), [create-task.ts L1-L34](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/packages/paperclip-runner/src/protocol-actions/create-task.ts#L1-L34) | 소스 확인 |
 | <a id="E03"></a>E03 | Paperclip `CapabilityToolAuthorizationEngine`은 판정 `#evaluate` 하나를 노출 목록(`computeVisibleTools`, 거른 결과 `exposed/absent` 기록)과 호출 허가(`authorizeInvocation`, `allowed/denied`)가 같이 쓴다. 판정 순서: 정책 거부 → 모드 → Role → claim | [capability-tool-authorization.ts L15-L136](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/packages/paperclip-runner/src/tools/capability-tool-authorization.ts#L15-L136) | 소스 확인 |
-| <a id="E04"></a>E04 | Paperclip live 서버도 같은 catalog의 `allowedModes`로 실행기에 줄 도구 정의를 거르고(`definitions()`), 호출 때 다시 같은 필드로 검사해 `paperclip_runner_tool_mode_denied`로 거부한다 | [paperclip-runner-tool-authority.ts L244-L281, L551-L561](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/server/src/services/native-runtime/paperclip-runner-tool-authority.ts#L244-L281) | 소스 확인 |
+| <a id="E04"></a>E04 | Paperclip live 서버도 같은 catalog의 `allowedModes`로 프로바이더에 줄 도구 정의를 거르고(`definitions()`), 호출 때 다시 같은 필드로 검사해 `paperclip_runner_tool_mode_denied`로 거부한다 | [paperclip-runner-tool-authority.ts L244-L281, L551-L561](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/server/src/services/native-runtime/paperclip-runner-tool-authority.ts#L244-L281) | 소스 확인 |
 | <a id="E05"></a>E05 | Paperclip 문서 생성기: grant group은 문서·노출 묶음일 뿐 추가 권한이 아니며 descriptor의 `requiredClaims`가 결정한다 | [operation-groups-doc.ts L359](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/packages/paperclip-runner/src/catalog/operation-groups-doc.ts#L359) | 소스 확인 |
 | <a id="E06"></a>E06 | Hermes: 도구 파일마다 `registry.register()`로 schema·handler·toolset 소속·가용성 검사를 한 entry에 선언하고 다른 곳은 병렬 표 없이 registry를 조회한다. 어떤 도구를 줄지는 entry 밖의 `enabled/disabled_toolsets` 설정으로 고른다. `check_fn`은 환경 가용성(Docker 등)이지 권한이 아니다 | [registry.py L1-L6, L214-L231](https://github.com/NousResearch/hermes-agent/blob/4e58c721c8cf9b51c46636ea84ea6a5cb540880a/tools/registry.py#L214-L231), [model_tools.py L316-L338](https://github.com/NousResearch/hermes-agent/blob/4e58c721c8cf9b51c46636ea84ea6a5cb540880a/model_tools.py#L316-L338) | 소스 확인 |
 | <a id="E07"></a>E07 | OpenClaw: core tool catalog는 UI에도 번들되는 "pure data + tiny pure functions"이고 도구 줄에 기본 profile 소속(`profiles`)만 있다. agent·sender·provider별 허용은 설정 층을 순서대로 적용하는 pipeline이 목록을 거른다 | [tool-catalog.ts L1-L9, L52-L66](https://github.com/openclaw/openclaw/blob/1b93d1ea5dee6deaf91c28140571ba5eda00dd68/src/agents/tool-catalog.ts#L1-L66), [tool-policy-pipeline.ts L57-L115](https://github.com/openclaw/openclaw/blob/1b93d1ea5dee6deaf91c28140571ba5eda00dd68/src/agents/tool-policy-pipeline.ts#L57-L115) | 소스 확인 |
@@ -57,7 +57,7 @@
 |---|---|---|---|---|---|
 | <a id="P01"></a>P01 | 도구 줄에 **정적 허용 조건 데이터**(모드·Role·claim·부작용 종류)를 함께 두고, 판정 함수 하나가 노출 목록과 호출 거부에 같이 쓰인다. 동적 정책·부여(누가 claim을 가졌나, 조직 정책)는 줄 밖 맥락 | E02, E03, E04, E05, E11 | Paperclip은 protocol 패키지에 줄, 서버가 판정. ts-rest는 계약에 role, middleware가 강제 | 한 도구의 사실이 한 줄. 노출과 거부가 어긋날 수 없다 | 공유 계약이라 클라이언트 번들에 노출(E11 경고). 줄의 데이터를 권한 자체로 오해할 위험 → "목록에 있음 ≠ 권한" 명시(E01, E05) |
 | <a id="P02"></a>P02 | 도구 줄은 설명·스키마·그룹 소속만, 누가 쓰나는 **별도 설정 층**이 목록을 거른다 | E06, E07 | Hermes는 toolset 설정, OpenClaw는 profile·agent·sender 층 pipeline | 사용자가 바꾸는 정책과 도구 정의를 떼어 바꿀 수 있다 | 둘 다 사용자·운영자 설정 정책이다. 제품이 고정한 규칙에 쓰면 표가 둘로 나뉘어 #86이 없애려는 분산이 남는다 |
-| <a id="P03"></a>P03 | **노출과 허가는 다른 층**: 목록에서 빼는 것은 편의이고, 호출마다 서버(또는 hook)가 다시 검사한다. 상태가 바뀌면 목록 갱신을 알린다 | E01, E04, E08, E09, E10 | MCP는 서버 MUST 접근 제어 + list_changed. Claude SDK는 disallowedTools(숨김)와 hook(매 호출) 분리 | 실행기가 목록을 캐시하거나 무시해도 경계가 깨지지 않는다 | 노출 목록만으로 막았다고 믿으면 우회된다 |
+| <a id="P03"></a>P03 | **노출과 허가는 다른 층**: 목록에서 빼는 것은 편의이고, 호출마다 서버(또는 hook)가 다시 검사한다. 상태가 바뀌면 목록 갱신을 알린다 | E01, E04, E08, E09, E10 | MCP는 서버 MUST 접근 제어 + list_changed. Claude SDK는 disallowedTools(숨김)와 hook(매 호출) 분리 | 프로바이더가 목록을 캐시하거나 무시해도 경계가 깨지지 않는다 | 노출 목록만으로 막았다고 믿으면 우회된다 |
 
 ## 결정 권고
 
@@ -65,14 +65,14 @@
 |---|---|---|---|---|---|
 | <a id="D01"></a>D01 | 변형 채택 (a) | 도구 줄(contracts)에 열린 Role·단계를 **정적 데이터**로 함께 둔다. core는 그 데이터를 읽는 판정 함수 하나(`checkToolCall`)와, 같은 함수로 거른 "Role·단계별 지금 쓸 수 있는 도구 목록"만 갖는다 | P01, AC 1·3, E12 | 한 줄 요구(AC 1)를 그대로 만족하고, 노출 목록과 호출 거부가 같은 판정에서 나와 어긋날 수 없다. Role·단계 타입이 이미 contracts에 있어 의존 방향이 바뀌지 않는다. 비용: 규칙이 웹 번들에도 실린다(비밀이 아니라 허용 가능, E11) | Q1 |
 | <a id="D02"></a>D02 | 채택 | 판정은 core에만 둔다. contracts에는 판정 함수를 두지 않고 데이터만 둔다. 노출 목록 함수도 core가 `checkToolCall`로 거른다 | E03, E04, AGENTS.md 불변 조건 | 판정이 두 곳에 생기면 노출과 거부가 갈라진다. 강제 지점은 지금처럼 db `checkOrRefuse` → core 하나 | Q1 |
-| <a id="D03"></a>D03 | 채택 | "목록에 있음·노출됨 ≠ 권한"을 목록 module 머리 주석과 검사로 못박는다. 서버는 노출 목록과 상관없이 호출마다 Role·단계를 다시 검사하고, 쓰기 도구의 잠금 아래 재검사·승인 정책·조직 범위는 목록 밖에 그대로 둔다 | P03, E01, E08, E09 | 판 2 실행기가 목록을 캐시하거나 단계가 바뀐 뒤 옛 목록으로 불러도 경계가 유지된다 | Q1 |
+| <a id="D03"></a>D03 | 채택 | "목록에 있음·노출됨 ≠ 권한"을 목록 module 머리 주석과 검사로 못박는다. 서버는 노출 목록과 상관없이 호출마다 Role·단계를 다시 검사하고, 쓰기 도구의 잠금 아래 재검사·승인 정책·조직 범위는 목록 밖에 그대로 둔다 | P03, E01, E08, E09 | 판 2 프로바이더가 목록을 캐시하거나 단계가 바뀐 뒤 옛 목록으로 불러도 경계가 유지된다 | Q1 |
 | <a id="D04"></a>D04 | 보류 | 조직별 승인 정책(ADR-0003)을 도구 줄로 옮기지 않는다. 정책은 사용자가 조직마다 바꾸는 동적 값이라 Paperclip의 맥락 정책(E02)처럼 줄 밖에 둔다 | P02, E02, ADR-0003 | 노출 목록에 "승인 필요"를 표시할지는 판 2 노출 방식과 함께 정한다 | Q1 |
 
 ### 배제한 패턴
 
 | 패턴 | 사례 | 이유 |
 |---|---|---|
-| 노출 목록만으로 막기 | E10(`isEnabled`는 노출만) | 실행기 밖 HTTP·MCP 경계에서는 모델이 목록 밖 이름을 부를 수 있다. 서버 거부가 필요하다(E08 MUST) |
+| 노출 목록만으로 막기 | E10(`isEnabled`는 노출만) | 프로바이더 밖 HTTP·MCP 경계에서는 모델이 목록 밖 이름을 부를 수 있다. 서버 거부가 필요하다(E08 MUST) |
 | MCP annotations(`readOnlyHint`)를 권한 근거로 쓰기 | E08 | 명세가 untrusted hint로 규정한다. 읽기/쓰기 칸은 설명·감사용이다 |
 
 ## 구현 참고
@@ -132,11 +132,11 @@
 | Anthropic "Writing effective tools for agents" | 공식 엔지니어링 글 | 2025-09-11 게시, 2026-10-29 확인 | — | 문서 | 설명·오류 응답 설계 |
 | OpenAI function calling | 상용 공식 문서 | 2026-10-29 확인 | — | 문서 | "언제 쓰나"를 system prompt에 두라는 반대 견해 |
 | MCP schema·공식 블로그 server instructions | 표준 | `9850cae8923b0ee3d19a4476f1010b97aa161a55` | MIT | 문서 | 판 2 후보 노출 방식의 전역 지시 필드와 분담 지침 |
-| Codex | OSS agent | `588a277b301c3994455885d7f771d7d9db5d82b8` | Apache-2.0 | 소스 | 판 2 대상 실행기의 도구 설명·prompt 분담 |
-| Claude Code prompt 수집본 | 저신뢰 수집본(Piebald-AI) | `53c252d35963adced4ca68434c32da6f1cd5fff3`, ccVersion 2.1.84–2.1.286 | MIT(수집본) | 문서 | 판 2 대상 실행기. 공식 공개 아님 |
+| Codex | OSS agent | `588a277b301c3994455885d7f771d7d9db5d82b8` | Apache-2.0 | 소스 | 판 2 대상 프로바이더의 도구 설명·prompt 분담 |
+| Claude Code prompt 수집본 | 저신뢰 수집본(Piebald-AI) | `53c252d35963adced4ca68434c32da6f1cd5fff3`, ccVersion 2.1.84–2.1.286 | MIT(수집본) | 문서 | 판 2 대상 프로바이더. 공식 공개 아님 |
 | Hermes Agent | OSS agent | `4e58c721c8cf9b51c46636ea84ea6a5cb540880a` | MIT | 소스 | 중복 제거 정책과 출력별 언어 규칙 |
 | OpenClaw | OSS agent | `1b93d1ea5dee6deaf91c28140571ba5eda00dd68` | MIT | 소스 | system prompt 도구 요약과 AGENTS.md의 지위 |
-| Paperclip | OSS control plane | `def4726bea0e3b340457100038d80ca55c2b7d4f` | MIT | 소스 | 같은 동종(외부 실행기에 조직 도구 제공)의 skill·설명 분담 |
+| Paperclip | OSS control plane | `def4726bea0e3b340457100038d80ca55c2b7d4f` | MIT | 소스 | 같은 동종(외부 프로바이더에 조직 도구 제공)의 skill·설명 분담 |
 | Agent Skills spec | 표준 | `69ef37e9424c0a7ea9dd2293b559e43ec8176379` | Apache-2.0 | 문서 | skill description의 역할 |
 
 모두 설계 참고이며 문구·코드를 복사하지 않는다.
@@ -177,12 +177,12 @@
 
 | ID | 권고 | 내용 | 근거 | 이유·트레이드오프 | 질문 |
 |---|---|---|---|---|---|
-| <a id="D05"></a>D05 | 채택 | **도구 설명(영어, 도구 줄)**: 하는 일, 돌려주는 것, 남기는 기록, 비슷한 도구와의 구분, 보일 때도 걸릴 수 있는 거부 조건과 회복 방법. 열린 Role·단계는 노출 목록이 거르므로(D01) 설명에 Role·단계 표를 다시 쓰지 않는다. 도구 오류 메시지(영어)는 무엇을 고칠지 말한다 | P04, P06, E13, E14 | 실행기·노출 방식과 무관하게 도구와 함께 간다. 거부 조건은 core 규칙의 서술일 뿐 강제 수단이 아니다(`AGENTS.md`) | Q2 |
+| <a id="D05"></a>D05 | 채택 | **도구 설명(영어, 도구 줄)**: 하는 일, 돌려주는 것, 남기는 기록, 비슷한 도구와의 구분, 보일 때도 걸릴 수 있는 거부 조건과 회복 방법. 열린 Role·단계는 노출 목록이 거르므로(D01) 설명에 Role·단계 표를 다시 쓰지 않는다. 도구 오류 메시지(영어)는 무엇을 고칠지 말한다 | P04, P06, E13, E14 | 프로바이더·노출 방식과 무관하게 도구와 함께 간다. 거부 조건은 core 규칙의 서술일 뿐 강제 수단이 아니다(`AGENTS.md`) | Q2 |
 | <a id="D06"></a>D06 | 채택 | **필드 설명(영어, zod `.describe()` → JSON Schema `description`)**: 뜻, 형식, 선택 필드를 채우는 조건과 서버가 어떻게 다루나. 예: `completionCriteria` — "Required when the organization has no completion criteria; refused when it already has them. Becomes the organization's criteria once the owner approves." | P04, E15, E28 | 지금 Role 문서에만 있는 core 규칙(E28)이 그 칸 옆으로 온다 | Q2 |
 | <a id="D07"></a>D07 | 변형 채택 | **Role 문서·skill·soul**: Role 문서(AGENTS.md)는 단계별 할 일, 도구를 잇는 순서, 제출물의 품질 기준만. 도구는 이름으로 가리키고 필드 규칙·거부 조건을 다시 쓰지 않는다. skill은 여러 도구를 잇는 절차(연구 노드 기록), soul은 태도만. 예: Lead 계획 수립 — "Read the org record and harness library, decide …, then submit them together with `request_initial_approval`; propose completion criteria in the same request if the organization has none." | P05, P07, E17, E22, E25 | "언제 쓰나"는 둘로 나눈다: 비슷한 도구 중 이것을 고르는 기준은 도구 설명, 단계 흐름은 Role 문서(P06의 공통분모). Lead·작업자가 같은 도구를 다른 흐름으로 쓰므로 흐름을 도구 설명에 넣지 않는다 | Q2 |
 | <a id="D08"></a>D08 | 채택 | **중복 규칙**: 한 사실은 한 곳에서 쓴다. 다른 표면(노출 목록 요약, 판 2 서버 instructions 등)이 필요하면 도구 줄에서 생성한다. 손으로 쓴 두 번째 문장은 두지 않는다 | P07 | 31개 도구 × 여러 표면에서 문구가 갈라지는 것을 막는다 | Q2 |
-| <a id="D09"></a>D09 | 채택 | **언어 규칙 두 겹**: (1) 모든 Role이 받는 공통 지침 머리(제품이 붙이는 한 문단, Role 문서마다 복사하지 않음)에 "Instructions are in English. Messages to other agents and memory are in English. Everything the owner sees in organization records is written in Korean, not in the language of these instructions." (2) 소유자가 보는 입력 필드는 도구 줄에서 칸 단위 표시(예: owner-facing)를 두고 필드 설명 끝에 "Shown to the owner. Write in Korean."을 **생성**해 붙인다 | P08, P09, E17, E20, E21, E23 | 전역 규칙만 두면 실행기·host가 지침을 빼거나 도구 칸에 닿지 않을 수 있다(E17 L53). 칸 표시를 데이터로 두면 손 중복 없이(D08) 칸과 규칙이 붙어 다닌다. 칸에 언어를 적은 직접 사례는 못 찾았으므로 P08(청중 표시)과 P09(출력 옆 언어)를 합친 변형이다 | Q3 |
-| <a id="D10"></a>D10 | 보류 | 도구 입력이 아닌 소유자용 글(Lead 대화 답변, 진행 활동 문구)은 필드가 없으므로 D09(1) 공통 머리만 닿는다. 진행 활동 문구를 실행기가 만드는지 서버가 만드는지에 따라 자리가 달라진다 | P09 | 서버가 만드는 문구는 제품 코드의 한국어 문자열로 끝난다 | Q3 |
+| <a id="D09"></a>D09 | 채택 | **언어 규칙 두 겹**: (1) 모든 Role이 받는 공통 지침 머리(제품이 붙이는 한 문단, Role 문서마다 복사하지 않음)에 "Instructions are in English. Messages to other agents and memory are in English. Everything the owner sees in organization records is written in Korean, not in the language of these instructions." (2) 소유자가 보는 입력 필드는 도구 줄에서 칸 단위 표시(예: owner-facing)를 두고 필드 설명 끝에 "Shown to the owner. Write in Korean."을 **생성**해 붙인다 | P08, P09, E17, E20, E21, E23 | 전역 규칙만 두면 프로바이더·host가 지침을 빼거나 도구 칸에 닿지 않을 수 있다(E17 L53). 칸 표시를 데이터로 두면 손 중복 없이(D08) 칸과 규칙이 붙어 다닌다. 칸에 언어를 적은 직접 사례는 못 찾았으므로 P08(청중 표시)과 P09(출력 옆 언어)를 합친 변형이다 | Q3 |
+| <a id="D10"></a>D10 | 보류 | 도구 입력이 아닌 소유자용 글(Lead 대화 답변, 진행 활동 문구)은 필드가 없으므로 D09(1) 공통 머리만 닿는다. 진행 활동 문구를 프로바이더가 만드는지 서버가 만드는지에 따라 자리가 달라진다 | P09 | 서버가 만드는 문구는 제품 코드의 한국어 문자열로 끝난다 | Q3 |
 
 #### 배제한 패턴
 
@@ -190,13 +190,13 @@
 |---|---|---|
 | 단계별 workflow를 도구 설명에 넣기 | E19(Claude Code git 절차) | 같은 도구를 Lead·작업자, 여러 단계가 쓴다. 흐름은 Role·단계마다 다르고 Role 문서에 이미 단계 절이 있다 |
 | Role 문서에 도구 필드 규칙·거부 조건을 다시 적기(지금 모양) | E28, E17 "Don't repeat tool descriptions" | core 규칙과 두 곳에서 어긋난다. 필드 설명(D06)이 유일한 서술 자리 |
-| 언어 규칙을 전역 지시에만 두기 | E17 L53 | 판 2 실행기·host가 지침을 어떻게 싣는지 미정. 칸 단위가 도구와 함께 간다 |
+| 언어 규칙을 전역 지시에만 두기 | E17 L53 | 판 2 프로바이더·host가 지침을 어떻게 싣는지 미정. 칸 단위가 도구와 함께 간다 |
 | 칸마다 언어 문장을 손으로 쓰기 | P07 | 31개 도구에서 문구가 갈린다. 칸 표시에서 생성(D09) |
 
 ### 구현 참고
 
 - 권고 요약: 도구 줄 = 도구 설명(고유 사실·거부·구분) + 필드 설명(뜻·형식·조건) + 소유자 칸 표시. Role 문서 = 단계 흐름·품질 기준·도구 이름. skill = 여러 도구 절차. soul = 태도. 언어 = 공통 머리 한 문단 + 소유자 칸 설명에 생성 문장. 모두 영어로 쓰되 소유자 칸의 **값**은 한국어.
-- 구현 위치: 설명·칸 표시는 1차 D01의 도구 줄(`packages/contracts`). 공통 언어 머리는 지침 묶음을 만드는 곳(`packages/core/src/harness.ts`·`apps/server/src/harness.ts` 쪽, 구조 문서 기준으로 확정). 역할 문서 영어 전환은 지침 bundle 버전을 바꾸므로 이전 세션을 잇지 않는다(실행기 계약 주석).
+- 구현 위치: 설명·칸 표시는 1차 D01의 도구 줄(`packages/contracts`). 공통 언어 머리는 지침 묶음을 만드는 곳(`packages/core/src/harness.ts`·`apps/server/src/harness.ts` 쪽, 구조 문서 기준으로 확정). 역할 문서 영어 전환은 지침 bundle 버전을 바꾸므로 이전 세션을 잇지 않는다(프로바이더 계약 주석).
 
 | ID | 검증할 경계 (입력 → 행동 → 기대) | 근거 |
 |---|---|---|

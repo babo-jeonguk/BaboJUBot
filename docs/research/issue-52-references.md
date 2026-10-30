@@ -22,7 +22,7 @@
 | [#50 조사](issue-50-references.md#brief) | 조직 범위·캐시·빈/오류 상태의 질문과 소스 위치 | A/B 제안보다 이후 C 확정 댓글과 프로토타입을 우선. 실제 backend 생성 근거는 아니므로 이번 원문/실행으로 보강 |
 | [Paperclip 대시보드](paperclip-dashboard.md), [Paperclip](paperclip.md), [코드 구조](reference-code-structure.md) | source 탐색과 MIT 라이선스 출발점 | old `1b4c803`→이번 `78b833c` 파일별 blob 비교. 같아도 이번 SHA 원문을 재열람. 변경 파일의 옛 줄·동작 근거를 그대로 옮기지 않음 |
 | [#1 조사](issue-1-references.md#brief) | 계약·도구 검증 방법만 | 백로그 초기화 전의 storage 명칭·스택 후보·버전 권고는 채택하지 않음. 최신 architecture·ADR-0004·#49/#52 우선 |
-| [실행 모델](agent-runtime-models.md), [상호작용](agent-interaction-models.md) | Control Plane·영속 기록·깨우기 배경 | 실제 실행기·메시지·토큰 구현은 #53 이후. #52 Lead 생성이 실제 모델 호출을 요구한다는 근거로 쓰지 않음 |
+| [실행 모델](agent-runtime-models.md), [상호작용](agent-interaction-models.md) | Control Plane·영속 기록·깨우기 배경 | 실제 프로바이더·메시지·토큰 구현은 #53 이후. #52 Lead 생성이 실제 모델 호출을 요구한다는 근거로 쓰지 않음 |
 | [비교 목록](comparative-survey.md), [기타 대시보드](dashboard-references.md), [#51](issue-51-references.md#brief) | 후보/범위 확인 | 연구 지도·기억·연구 방법론은 이번 문제의 직접 근거가 없어 심층 재사용하지 않음 |
 
 기존 `.reference-cache/issue-{1,50,51}/`, `wayfinder-foundation/`도 질문·소스 위치에만 재사용했다. 새 Evidence ID는 이번 원문/실행 근거다. 이전 조사 자체는 위 anchor로 인용한다.
@@ -107,7 +107,7 @@ Hermes profile·OpenClaw workspace는 tenant DB 경계를 대신할 수 없고, 
 | process counter Event ID + 메모리 event만 원본으로 취급 | E11/E12 | 영속 Event log·재시작 뒤 식별 계약을 충족하지 않음 |
 | public * 스트림을 전체 조직 이벤트로 간주 / 모든 socket 무조건 broadcast | E11/E13, ws README | 구독 scope와 원본 조직 ID·제품 경계가 사라짐 |
 | prototype local store를 제품 생성 API로 사용 | E01 | 영속성·서버 validation·타 탭 갱신 근거 없음 |
-| profile/workspace/Role 지침으로 조직 경계 강제 | Discovery Hermes/OpenClaw, AGENTS/ADR-0001 | 실행기 편의 namespace와 Control Plane 권한 경계가 다름 |
+| profile/workspace/Role 지침으로 조직 경계 강제 | Discovery Hermes/OpenClaw, AGENTS/ADR-0001 | 프로바이더 편의 namespace와 Control Plane 권한 경계가 다름 |
 | Kafka/CDC·새 인증 제품·대형 test template cache를 첫 판 필수로 추가 | Discovery Debezium/Better Auth, E03 | 현재 규모와 확정 스택에 비해 운영·정책 범위가 큼. 원리만 참고 |
 
 ## 구현 참고

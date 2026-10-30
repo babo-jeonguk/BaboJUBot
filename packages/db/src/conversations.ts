@@ -245,7 +245,7 @@ export async function markConversationRead(
  * 다른 보내기·거두기·admission과 직렬화하므로 센 수가 상한을 넘지 않는다.
  * `중단하고 보내기`면 같은 transaction에서 받는 에이전트의 진행 중 실행 시도에 취소를 요청하고 그 제어 명령 Event도 남긴다.
  * 조직 행을 먼저 잠가 admission과 직렬화하므로, 메시지는 취소된 실행 시도가 아니라 그 뒤의 실행 시도에 묶인다.
- * commit 뒤 실행기에 취소를 보내고 받는 에이전트를 깨운다. 값은 계획한 새 대화(있으면)와 메시지다.
+ * commit 뒤 프로바이더에 취소를 보내고 받는 에이전트를 깨운다. 값은 계획한 새 대화(있으면)와 메시지다.
  */
 export async function insertOwnerMessage(
   db: Database,

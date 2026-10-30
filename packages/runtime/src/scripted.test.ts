@@ -495,7 +495,10 @@ describe("demo Lead scenario", () => {
       expect(
         demoLeadScript(at(stage, [message("실패 연습 해 주세요")])).steps
       ).toEqual([
-        { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+        {
+          do: "fail",
+          error: "(가짜 프로바이더) 사용자가 부탁한 실패 연습입니다.",
+        },
       ]);
     expect(
       demoLeadScript(at("researching", [message("실패 연습은 하지 마세요")]))
@@ -719,7 +722,10 @@ describe("demo worker scenario", () => {
         },
       ]);
     expect(demoWorkerScript(comment("실패 연습 해 주세요")).steps).toEqual([
-      { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+      {
+        do: "fail",
+        error: "(가짜 프로바이더) 사용자가 부탁한 실패 연습입니다.",
+      },
     ]);
     const { steps } = demoWorkerScript(comment("실행 유지 연습"));
     expect(steps).toEqual([{ do: "hold", until: expect.any(Function) }]);

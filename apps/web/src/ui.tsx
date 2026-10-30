@@ -124,7 +124,7 @@ export const runCancelReasonLabel: Record<RunCancelReason, string> = {
 
 /**
  * 실행 시도의 성공은 연구 완료가 아니다. 실행 시도 상태만 보인다.
- * 취소를 요청받고 실행기가 정리 중이면 `취소 중`이고, 사용자 제어로 취소됐으면 그 사유를 함께 보인다.
+ * 취소를 요청받고 프로바이더가 정리 중이면 `취소 중`이고, 사용자 제어로 취소됐으면 그 사유를 함께 보인다.
  */
 export function RunStatusBadge({
   status,

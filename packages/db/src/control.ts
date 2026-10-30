@@ -20,8 +20,8 @@ import { agents, organizations, runs } from "./schema.ts";
 import { refused, stored, type Stored } from "./stored.ts";
 
 // 사용자 제어 명령의 저장. 모든 명령은 조직 행 → 에이전트 행 → 실행 시도 행 순서로 잠근다(admission·도구 쓰기와 같은 순서).
-// 단계·일시정지 상태·취소 요청·Event를 한 transaction에 남기고, 실행기에 취소를 보내는 일은 commit 뒤 호출자가 한다.
-// 취소 요청은 실행 시도 행에 남으므로 그 순간부터 토큰이 닫히고, 실행기가 정리를 끝낼 때까지 그 에이전트의 실행 슬롯은 비지 않는다.
+// 단계·일시정지 상태·취소 요청·Event를 한 transaction에 남기고, 프로바이더에 취소를 보내는 일은 commit 뒤 호출자가 한다.
+// 취소 요청은 실행 시도 행에 남으므로 그 순간부터 토큰이 닫히고, 프로바이더가 정리를 끝낼 때까지 그 에이전트의 실행 슬롯은 비지 않는다.
 // 이미 그 상태면 아무것도 남기지 않는 빈 성공이다.
 
 export type ControlRefusal = "organization_closed" | "not_found";
