@@ -6,6 +6,7 @@ import {
   type InstructionCopy,
   type LifecycleStage,
   type NewEvent,
+  type ProviderChoice,
 } from "@babojubot/contracts";
 import { agentNameKey, isAgentNameTaken } from "./agent-profile.ts";
 import type { NewApproval, RunRef } from "./approval.ts";
@@ -53,18 +54,25 @@ export function nextWorkerName(label: string, agentNames: string[]) {
 /**
  * snapshot에서 작업자 한 명과 그 작업자만의 Role·Soul·Skill 사본을 만든다. 기본 heartbeat 간격도 snapshot의 Role 값이다.
  * `agentNames`는 조직의 모든 에이전트 이름이며 함께 만드는 작업자가 있으면 그 이름도 넣는다(`nextWorkerName`).
+ * 프로바이더·모델은 만들 때 읽은 전역 작업자 기본값(`workerDefault`)을 복사한다. 나중에 기본값이 바뀌어도 그대로다.
  */
 export function planWorker(
   organizationId: string,
   proposal: Pick<AddWorkerProposal, "label" | "files" | "heartbeatMinutes">,
   agentNames: string[],
-  { newId, createdAt }: { newId: () => string; createdAt: string }
+  {
+    newId,
+    createdAt,
+    workerDefault,
+  }: { newId: () => string; createdAt: string; workerDefault: ProviderChoice }
 ): { worker: NewAgent; copies: InstructionCopy[] } {
   const worker: NewAgent = {
     id: newId(),
     organizationId,
     role: "worker",
     name: nextWorkerName(proposal.label, agentNames),
+    provider: workerDefault.provider,
+    model: workerDefault.model,
     createdAt,
     heartbeatMinutes: proposal.heartbeatMinutes ?? defaultHeartbeatMinutes,
   };
@@ -85,7 +93,7 @@ export type AddWorkerPlan =
 
 /**
  * 지금의 승인 정책으로 작업자 추가를 정한다. 정책은 호출한 쪽이 조직 행 잠금 아래에서 읽은 최신 값이어야 한다.
- * 승인 요청은 조직 단계를 바꾸지 않고, 같은 Role이라도 호출마다 따로다.
+ * 승인 요청은 조직 단계를 바꾸지 않고, 같은 Role이라도 호출마다 따로다. 곧바로 만드는 작업자는 `workerDefault`를 복사한다.
  */
 export function planAddWorker(
   run: RunRef,
@@ -94,7 +102,13 @@ export function planAddWorker(
     policy,
     stage,
     agentNames,
-  }: { policy: ApprovalPolicy; stage: LifecycleStage; agentNames: string[] },
+    workerDefault,
+  }: {
+    policy: ApprovalPolicy;
+    stage: LifecycleStage;
+    agentNames: string[];
+    workerDefault: ProviderChoice;
+  },
   { newId, now }: RecordSource
 ): AddWorkerPlan {
   const createdAt = now().toISOString();
@@ -103,7 +117,7 @@ export function planAddWorker(
       run.organizationId,
       proposal,
       agentNames,
-      { newId, createdAt }
+      { newId, createdAt, workerDefault }
     );
     return {
       kind: "added",

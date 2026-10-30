@@ -100,6 +100,8 @@ export const toAgent = ({
   role,
   name,
   appearance,
+  provider,
+  model,
   createdAt,
 }: typeof agents.$inferSelect): Agent =>
   withIsoTime({
@@ -108,6 +110,8 @@ export const toAgent = ({
     role,
     name,
     appearance: resolveAppearance(id, appearance),
+    provider,
+    model,
     createdAt,
   });
 /** 저장한 얼굴이 없거나 지금 프리셋에 없는 값이면 ID에서 정한 기본 얼굴이다. */

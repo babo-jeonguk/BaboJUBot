@@ -25,12 +25,15 @@ import { findAgentDetail } from "./run-views.ts";
 import { organizations } from "./schema.ts";
 import { refused } from "./stored.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import { updateProviderLimit } from "./providers.ts";
 
 // 줄 세운 메시지: `중단하고 보내기` 실행 시도의 깨우기 묶음, 거두기·지금 보내기와 admission의 직렬화.
 
 let t: TestDatabase;
 beforeAll(async () => {
   t = await createTestDatabase();
+  // 이 파일의 검사들은 한 DB에 진행 중인 실행 시도를 남긴다. 가짜 연결의 동시 실행 상한을 풀어 서로 막지 않게 한다.
+  await updateProviderLimit(t.db, "fake", 0);
 });
 afterAll(async () => {
   await t?.close();
@@ -49,7 +52,7 @@ const bodies = (reasons: WakeReason[] | undefined) =>
 
 async function organization() {
   const creation = planOrganizationCreation(
-    { name: "조직", goal: "목표" },
+    { name: "조직", goal: "목표", lead: { provider: "fake", model: null } },
     { files: [] },
     source
   );

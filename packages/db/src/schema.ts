@@ -119,6 +119,13 @@ export const agents = pgTable(
     }),
     /** 사용자가 고른 얼굴. 고르지 않았으면 없고, 화면에는 ID에서 정한 기본 얼굴이 보인다. 사용자 변경만 바꾼다. */
     appearance: jsonb("appearance").$type<AgentAppearance>(),
+    /**
+     * 실행 시도를 맡는 프로바이더 연결 ID. 만들 때 역할의 전역 기본값을 복사하며 사용자 설정 변경만 바꾼다.
+     * 이 열 전에 생긴 에이전트는 가짜 프로바이더(migration 0021)다.
+     */
+    provider: text("provider").notNull(),
+    /** 모델. 없으면 프로바이더의 기본 모델이다. */
+    model: text("model"),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -210,6 +217,9 @@ export const runs = pgTable(
     /** 사용자 제어가 요청한 취소. 요청한 순간 토큰이 닫히고, 프로바이더가 정리를 끝내면 `cancelled`로 끝난다. */
     cancelReason: text("cancel_reason", { enum: runCancelReasons }),
     tokenDigest: text("token_digest").notNull().unique(),
+    /** admission이 에이전트 설정에서 고정한 프로바이더 연결과 모델. 이 열 전의 실행 시도는 가짜 프로바이더(migration 0021)다. */
+    provider: text("provider").notNull(),
+    model: text("model"),
     instructionsBundleVersion: text("instructions_bundle_version"),
     sessionBefore: jsonb("session_before").$type<SessionState>(),
     sessionAfter: jsonb("session_after").$type<SessionState>(),
@@ -240,6 +250,10 @@ export const runs = pgTable(
     unique("runs_organization_id_id_unique").on(t.organizationId, t.id),
     uniqueIndex("runs_one_running_per_agent")
       .on(t.agentId)
+      .where(sql`${t.status} = 'running'`),
+    // admission이 프로바이더 연결별 진행 중 실행 시도를 센다.
+    index("runs_running_provider_idx")
+      .on(t.provider)
       .where(sql`${t.status} = 'running'`),
     index("runs_organization_agent_idx").on(t.organizationId, t.agentId, t.seq),
   ]
@@ -1216,6 +1230,43 @@ export const toolOperations = pgTable(
 );
 
 /** Event log. 모든 상태 변화는 조직 ID와 함께 여기에 남고, Event stream은 저장된 행을 알린다. */
+/**
+ * 전역 Lead·작업자 기본 프로바이더·모델. 역할마다 한 행이며 그 역할의 에이전트를 만들 때 복사한다(가짜 프로바이더로 시작, migration 0021).
+ * 바꿔도 이미 있는 에이전트는 그대로다. 전역 설정이라 조직 Event로 남기지 않는다.
+ */
+export const providerDefaults = pgTable(
+  "provider_defaults",
+  {
+    role: text("role", { enum: agentRoles }).primaryKey(),
+    provider: text("provider").notNull(),
+    model: text("model"),
+  },
+  (t) => [
+    check(
+      "provider_defaults_role_check",
+      sql`${t.role} in (${inList(agentRoles)})`
+    ),
+  ]
+);
+
+/**
+ * 프로바이더 연결별 동시 실행 상한. 행이 없으면 기본값(contracts `defaultMaxConcurrentRuns`)이고 0은 무제한이다.
+ * admission이 이 행을 `FOR UPDATE`로 잠근 뒤 진행 중 실행 시도를 세므로 같은 연결의 admission은 서로 직렬화된다.
+ */
+export const providerLimits = pgTable(
+  "provider_limits",
+  {
+    provider: text("provider").primaryKey(),
+    maxConcurrentRuns: integer("max_concurrent_runs").notNull(),
+  },
+  (t) => [
+    check(
+      "provider_limits_max_concurrent_runs_check",
+      sql`${t.maxConcurrentRuns} >= 0`
+    ),
+  ]
+);
+
 export const events = pgTable(
   "events",
   {

@@ -126,6 +126,8 @@ export const runSummaryColumns = {
   organizationId: runs.organizationId,
   agentId: runs.agentId,
   status: runs.status,
+  provider: runs.provider,
+  model: runs.model,
   cancelReason: runs.cancelReason,
   summary: runs.summary,
   error: runs.error,
@@ -140,6 +142,8 @@ export const toRunSummary = (row: {
   organizationId: string;
   agentId: string;
   status: RunSummary["status"];
+  provider: string;
+  model: string | null;
   cancelReason: RunSummary["cancelReason"];
   summary: string | null;
   error: string | null;

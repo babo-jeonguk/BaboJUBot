@@ -8,6 +8,7 @@ import {
 import { toApprovalSummary } from "./approvals.ts";
 import type { Database } from "./client.ts";
 import { insertInstructionCopies } from "./harness.ts";
+import { readProviderDefaults } from "./providers.ts";
 import {
   agentRow,
   agentNamesOf,
@@ -53,6 +54,7 @@ export function addWorker(
           policy,
           stage,
           agentNames: await agentNamesOf(tx, locked.organizationId),
+          workerDefault: (await readProviderDefaults(tx)).workerDefault,
         },
         options.source
       );

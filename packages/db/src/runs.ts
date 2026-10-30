@@ -10,6 +10,7 @@ import type {
 } from "@babojubot/contracts";
 import {
   acceptsToolCalls,
+  admitsProviderRun,
   admitsRuns,
   instructionsBundleVersion,
   planRunFinish,
@@ -19,13 +20,23 @@ import {
   runBlockingStages,
   type RecordSource,
 } from "@babojubot/core";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   markDelivered,
   markRequeued,
   runConversations,
 } from "./conversations.ts";
+import { lockProviderSlot } from "./providers.ts";
 import {
   findRunningRunId,
   selectInstructions,
@@ -75,6 +86,10 @@ export type ClaimedRun = {
  * 단계 검사는 조직 행 `FOR SHARE` 아래에서 하므로 단계 전이(`FOR NO KEY UPDATE`)와 직렬화된다. 전이가 먼저면 바뀐 단계를 보고,
  * admission이 먼저면 전이는 그 실행 시도가 생긴 뒤에 일어난다. 잠금 순서는 조직 → 에이전트다. 에이전트를 먼저 잠그면
  * 조직 행을 잠근 채 깨우기·Event의 FK로 에이전트 행(`KEY SHARE`)을 기다리는 쓰기와 교착한다.
+ *
+ * 에이전트의 프로바이더 연결에 자리가 없으면(진행 중 실행 시도가 동시 실행 상한 이상, core `admitsProviderRun`) 깨우기를 남겨 두고
+ * 아무것도 하지 않는다. 자리 확인은 연결의 상한 행 잠금(`lockProviderSlot`) 아래이므로 조직이 달라도 같은 연결의 admission은
+ * 상한을 넘지 않는다. 잠금 순서는 조직 → 에이전트 → 연결 상한이다. 자리가 나면 dispatcher가 그 연결을 기다리는 에이전트를 다시 촉진한다.
  */
 export async function claimNextRun(
   db: Database,
@@ -108,6 +123,7 @@ export async function claimNextRun(
     );
     const [previous] = await tx
       .select({
+        provider: runs.provider,
         instructionsBundleVersion: runs.instructionsBundleVersion,
         nextSession: runs.sessionAfter,
       })
@@ -126,6 +142,8 @@ export async function claimNextRun(
       options.source
     );
     if (!plan) return undefined;
+    if (!admitsProviderRun(await lockProviderSlot(tx, plan.run.provider)))
+      return undefined;
 
     await tx.insert(runs).values({
       ...plan.run,
@@ -281,15 +299,19 @@ export async function recoverInterruptedRuns(
 }
 
 /**
- * 실행 시도를 받는 조직에서 대기 중인 깨우기가 있는 에이전트. 서버 시작·조직 재개 때 다시 깨운다.
+ * 실행 시도를 받는 조직에서 대기 중인 깨우기가 있는 에이전트. 서버 시작·조직 재개, 프로바이더 연결에 자리가 날 때(`provider`) 다시 깨운다.
  * 최종 완료·일시정지·중단 등 admission을 거부하는 조직과 일시정지한 에이전트의 깨우기는 남아 있어도 지금 처리할 것이 아니므로 빠진다.
+ * 가장 오래 기다린 깨우기가 먼저인 에이전트부터다.
  */
 export async function listAgentsWithPendingWakes(
   db: Database,
-  { organizationId }: { organizationId?: string } = {}
+  {
+    organizationId,
+    provider,
+  }: { organizationId?: string; provider?: string } = {}
 ): Promise<string[]> {
   const rows = await db
-    .selectDistinct({ agentId: wakes.agentId })
+    .select({ agentId: wakes.agentId })
     .from(wakes)
     .innerJoin(organizations, eq(organizations.id, wakes.organizationId))
     .innerJoin(agents, eq(agents.id, wakes.agentId))
@@ -300,9 +322,12 @@ export async function listAgentsWithPendingWakes(
         eq(agents.paused, false),
         organizationId === undefined
           ? undefined
-          : eq(wakes.organizationId, organizationId)
+          : eq(wakes.organizationId, organizationId),
+        provider === undefined ? undefined : eq(agents.provider, provider)
       )
-    );
+    )
+    .groupBy(wakes.agentId)
+    .orderBy(sql`min(${wakes.seq})`);
   return rows.map((r) => r.agentId);
 }
 

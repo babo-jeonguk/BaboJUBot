@@ -162,7 +162,11 @@ describe("planApprovalDecision", () => {
     requestedByAgentId: "lead-1",
     proposal,
   };
-  const awaiting = { stage: "awaiting_approval" as const, agentNames: [] };
+  const awaiting = {
+    stage: "awaiting_approval" as const,
+    agentNames: [],
+    workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+  };
   const decide = (input: Parameters<typeof planApprovalDecision>[1]) => {
     const plan = planApprovalDecision(approval, input, awaiting, source);
     if (typeof plan === "string") throw new Error(plan);
@@ -206,7 +210,11 @@ describe("planApprovalDecision", () => {
     const plan = planApprovalDecision(
       approval,
       { decision: "approve" },
-      { stage: "awaiting_approval", agentNames: ["연구원 1"] },
+      {
+        stage: "awaiting_approval",
+        agentNames: ["연구원 1"],
+        workerDefault: { provider: "fake-2", model: "fake-2-mini" },
+      },
       source
     );
     if (typeof plan === "string") throw new Error(plan);

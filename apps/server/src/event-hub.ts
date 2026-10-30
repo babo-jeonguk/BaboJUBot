@@ -8,6 +8,23 @@ type Listener = (event: Event) => void;
  */
 export class EventHub {
   #subscribers = new Set<{ scope: StreamScope; listener: Listener }>();
+  #settingsListeners = new Set<() => void>();
+
+  /** 전역 설정 변경 신호를 받는다. 조직에 속하지 않으므로 구독 범위와 상관없다. */
+  subscribeSettings(listener: () => void): () => void {
+    this.#settingsListeners.add(listener);
+    return () => this.#settingsListeners.delete(listener);
+  }
+
+  /** commit 뒤 전역 설정(프로바이더 기본값·동시 실행 상한)이 바뀌었다고 알린다. 저장한 기록은 없고 다시 불러오라는 신호다. */
+  publishSettingsChanged(): void {
+    for (const listener of this.#settingsListeners)
+      try {
+        listener();
+      } catch (error) {
+        console.error("[event-hub] settings subscriber failed", error);
+      }
+  }
 
   subscribe(scope: StreamScope, listener: Listener): () => void {
     const entry = { scope, listener };

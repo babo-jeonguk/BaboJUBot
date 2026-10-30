@@ -68,13 +68,13 @@ export default defineConfig([
         "error",
         {
           selector:
-            "CallExpression[callee.object.name='hub'][callee.property.name='publish']",
+            "CallExpression[callee.object.name='hub'][callee.property.name=/^publish/]",
           message:
             "저장 결과의 commit 뒤 할 일로 담아 applyAfterCommit으로 알립니다.",
         },
         {
           selector:
-            "CallExpression[callee.object.name='dispatcher'][callee.property.name=/^(cancel|kick|kickOrganization)$/]",
+            "CallExpression[callee.object.name='dispatcher'][callee.property.name=/^(cancel|kick|kickOrganization|kickProvider)$/]",
           message:
             "저장 결과의 commit 뒤 할 일로 담아 applyAfterCommit으로 적용합니다.",
         },

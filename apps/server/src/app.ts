@@ -30,6 +30,9 @@ import {
   updateAgentProfileInputSchema,
   updateApprovalPolicyInputSchema,
   updateHeartbeatInputSchema,
+  updateProviderDefaultsInputSchema,
+  updateProviderLimitInputSchema,
+  providerChoiceSchema,
   updateInboxItemInputSchema,
   type ChannelAnswer,
   type ChannelReplyResult,
@@ -38,6 +41,7 @@ import {
   type Conversation,
   type NotificationChannel,
   type OrganizationDetail,
+  type ProviderConnection,
   type RuntimeAdapter,
   type SendOwnerMessageInput,
   type StreamFrame,
@@ -88,7 +92,11 @@ import {
   recordFakeChannelMessage,
   sendQueuedMessageNow,
   updateAgentProfile,
+  updateAgentProvider,
   updateApprovalPolicy,
+  updateProviderDefaults,
+  updateProviderLimit,
+  readProviderDefaults,
   updateHeartbeat,
   updateInboxItem,
   withdrawQueuedMessage,
@@ -101,7 +109,7 @@ import {
   planOrganizationCreation,
   planOwnerMessage,
 } from "@babojubot/core";
-import { createFakeChannel, createScriptedRuntime } from "@babojubot/runtime";
+import { createFakeChannel, createFakeProvider } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -117,6 +125,7 @@ import {
 import { HeartbeatScheduler } from "./heartbeat.ts";
 import { NotificationRelay } from "./notifications.ts";
 import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
+import { createProviderRegistry } from "./providers.ts";
 import { createRunRequestAssembler } from "./run-request.ts";
 import { orgToolsRouter } from "./tools.ts";
 
@@ -134,7 +143,12 @@ export type ServerOptions = {
   host?: string;
   /** 빌드한 대시보드. 있으면 API 밖의 경로에 SPA로 제공한다. */
   webDistDir?: string;
-  /** 프로바이더 adapter. 첫 판은 가짜 프로바이더뿐이고, 테스트는 시나리오를 주입한다. */
+  /**
+   * 이름 붙은 프로바이더 연결. 실행 시도마다 그 에이전트의 연결이 맡는다. 기본은 가짜 프로바이더(`fake`) 하나다.
+   * 연결 ID는 겹칠 수 없고, 적어도 하나가 있어야 한다.
+   */
+  providers?: ProviderConnection[];
+  /** 기본 가짜 프로바이더 연결의 adapter만 바꾼다. 테스트가 시나리오를 주입한다. `providers`와 함께 쓰지 않는다. */
   runtime?: RuntimeAdapter;
   /** 기록 시각에 쓰는 시계. 테스트가 주입한다. */
   now?: () => Date;
@@ -171,7 +185,8 @@ export async function startServer({
   port,
   host = "127.0.0.1",
   webDistDir,
-  runtime = createScriptedRuntime(),
+  providers,
+  runtime,
   now = () => new Date(),
   harnessDir = defaultHarnessDir,
   heartbeatPollMs = 5_000,
@@ -189,12 +204,17 @@ export async function startServer({
       `exactly one notification channel is supported, got ${notificationChannels.length}`
     );
   const channel = notificationChannels[0]!;
+  if (providers && runtime)
+    throw new Error("pass either providers or runtime, not both");
+  const registry = createProviderRegistry(
+    providers ?? [createFakeProvider({ adapter: runtime })]
+  );
   const hub = new EventHub();
   let url = "";
   const dispatcher = new RunDispatcher({
     db,
     hub,
-    runtime,
+    providers: registry.adapters,
     now,
     assemble: createRunRequestAssembler({ db, toolsBaseUrl: () => url }),
   });
@@ -260,16 +280,58 @@ export async function startServer({
   /**
    * 조직 생성. 사용자가 적은 연구 목표·완료 기준과 함께 조직·Lead·Lead의 Role·Soul 사본·Lead 깨우기·Event를 한 transaction으로
    * 저장한 뒤에만 Event를 알리고 Lead의 실행 시도를 촉진한다. Lead 사본과 기본 heartbeat 간격은 지금의 하네스 라이브러리 Lead Role에서 받는다.
+   * Lead의 프로바이더·모델은 사용자가 고른 값이고, 고르지 않았으면 지금의 전역 Lead 기본값이다. 이 서버에 없는 연결이나
+   * 그 연결의 목록에 없는 모델은 422 `unknown_provider`·`unknown_model`이다.
    */
   app.post("/api/organizations", async (req, res) => {
     const input = parseInput(res, createOrganizationInputSchema, req.body);
     if (!input) return;
+    const lead = input.lead ?? (await readProviderDefaults(db)).leadDefault;
+    if (input.lead) {
+      const problem = await registry.checkChoice(input.lead);
+      if (problem) return refuseOwner(res, problem);
+    }
     const library = await loadHarnessLibrary(harnessDir);
-    const creation = planOrganizationCreation(input, leadRoleOf(library), {
-      newId: randomUUID,
-      now: () => new Date(),
-    });
+    const creation = planOrganizationCreation(
+      { ...input, lead },
+      leadRoleOf(library),
+      { newId: randomUUID, now: () => new Date() }
+    );
     respond(res, await complete(insertOrganizationCreation(db, creation)), 201);
+  });
+
+  /** 전역 프로바이더 설정: Lead·작업자 기본값과 이 서버에 등록된 연결마다 모델 목록·동시 실행 상한. */
+  app.get("/api/providers", async (_req, res) => {
+    res.json(await registry.settings(db));
+  });
+
+  /**
+   * Lead·작업자 기본값 변경. 사용자만 바꾸며 이미 있는 에이전트는 그대로다. 바꾼 뒤의 프로바이더 설정을 돌려준다.
+   * 전역 설정이라 조직 Event는 남지 않고, 다른 화면에는 `settings_changed` 신호가 간다.
+   */
+  app.put("/api/providers/defaults", async (req, res) => {
+    const input = parseInput(res, updateProviderDefaultsInputSchema, req.body);
+    if (!input) return;
+    for (const choice of [input.leadDefault, input.workerDefault]) {
+      const problem = await registry.checkChoice(choice);
+      if (problem) return refuseOwner(res, problem);
+    }
+    await complete(updateProviderDefaults(db, input));
+    res.json(await registry.settings(db));
+  });
+
+  /**
+   * 프로바이더 연결의 동시 실행 상한 변경(0은 무제한). 줄여도 진행 중인 실행 시도는 끊지 않고, 늘리면 기다리던 깨우기가 곧 시작한다.
+   * 이 서버에 없는 연결은 404다. 바꾼 뒤의 프로바이더 설정을 돌려준다.
+   */
+  app.put("/api/providers/:providerId/limit", async (req, res) => {
+    if (!registry.has(req.params.providerId)) return notFound(res);
+    const input = parseInput(res, updateProviderLimitInputSchema, req.body);
+    if (!input) return;
+    await complete(
+      updateProviderLimit(db, req.params.providerId, input.maxConcurrentRuns)
+    );
+    res.json(await registry.settings(db));
   });
 
   /** 홈 개요. 모든 조직의 진행 중 실행 시도 수와 합계(취소 정리 중은 따로 센 수도). */
@@ -394,6 +456,27 @@ export async function startServer({
           updateHeartbeat(db, req.params.id, req.params.agentId, input, {
             now,
           })
+        )
+      );
+    }
+  );
+
+  /**
+   * 에이전트 프로바이더·모델 변경. 사용자만 바꾸며 조직 도구가 없다. 다음 실행 시도부터 적용하고 진행 중인 실행 시도는 그대로 끝난다.
+   * 변경 뒤의 에이전트 상세를 돌려주고, 값이 그대로면 아무것도 남기지 않는다. 끝난 조직은 409 `organization_closed`,
+   * 이 서버에 없는 연결이나 그 연결의 목록에 없는 모델은 422 `unknown_provider`·`unknown_model`이다.
+   */
+  app.put(
+    "/api/organizations/:id/agents/:agentId/provider",
+    async (req, res) => {
+      const input = parseInput(res, providerChoiceSchema, req.body);
+      if (!input) return;
+      const problem = await registry.checkChoice(input);
+      if (problem) return refuseOwner(res, problem);
+      respond(
+        res,
+        await complete(
+          updateAgentProvider(db, req.params.id, req.params.agentId, input)
         )
       );
     }
@@ -953,9 +1036,16 @@ export async function startServer({
     const send = (frame: StreamFrame) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
     };
-    const unsubscribe = hub.subscribe(scope, (event) =>
+    const unsubscribeEvents = hub.subscribe(scope, (event) =>
       send({ type: "event", event })
     );
+    const unsubscribeSettings = hub.subscribeSettings(() =>
+      send({ type: "settings_changed" })
+    );
+    const unsubscribe = () => {
+      unsubscribeEvents();
+      unsubscribeSettings();
+    };
     ws.on("close", unsubscribe);
     ws.on("error", unsubscribe);
     send({ type: "ready" });

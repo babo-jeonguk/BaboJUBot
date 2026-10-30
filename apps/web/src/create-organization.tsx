@@ -1,4 +1,8 @@
-import { goalMaxLength, organizationNameMaxLength } from "@babojubot/contracts";
+import {
+  goalMaxLength,
+  organizationNameMaxLength,
+  type ProviderChoice,
+} from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   createContext,
@@ -8,7 +12,8 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router";
-import { useCreateOrganization } from "./api.ts";
+import { useCreateOrganization, useProviderSettings } from "./api.ts";
+import { ProviderChoiceFields } from "./provider-choice.tsx";
 
 const labelClass = "text-xs font-medium text-slate-600";
 const fieldClass =
@@ -18,6 +23,10 @@ const OpenCreate = createContext<() => void>(() => {});
 /** 레일 ＋와 조직 없음 빈 상태가 같은 dialog를 연다. */
 export const useOpenCreateOrganization = () => useContext(OpenCreate);
 
+/**
+ * 조직 생성 dialog. 입력은 이 provider가 가지므로 `닫기`·Esc·바깥 누르기로 닫아도 초안으로 남고, 만든 뒤에만 비운다.
+ * Lead 프로바이더·모델은 고르기 전까지 전역 Lead 기본값을 따르고, 고르면 그 값이 초안이다. 좁은 화면에서는 아래에서 올라오는 시트다.
+ */
 export function CreateOrganizationProvider({
   children,
 }: {
@@ -27,6 +36,9 @@ export function CreateOrganizationProvider({
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [criteria, setCriteria] = useState("");
+  const [lead, setLead] = useState<ProviderChoice | null>(null);
+  const providers = useProviderSettings();
+  const leadChoice = lead ?? providers.data?.leadDefault;
   const create = useCreateOrganization();
   const navigate = useNavigate();
   // 닫았다가 다시 연 뒤 도착한 이전 요청의 응답이 지금 화면을 덮지 않게 요청마다 번호를 붙인다.
@@ -36,12 +48,12 @@ export function CreateOrganizationProvider({
     setOpen(next);
     attempt.current++;
     create.reset();
-    if (!next) clear();
   };
   const clear = () => {
     setName("");
     setGoal("");
     setCriteria("");
+    setLead(null);
   };
   const ready = !!name.trim() && !!goal.trim();
 
@@ -54,6 +66,8 @@ export function CreateOrganizationProvider({
         name: name.trim(),
         goal: goal.trim(),
         ...(criteria.trim() ? { completionCriteria: criteria.trim() } : {}),
+        // 설정을 읽지 못했으면 보내지 않는다. 서버가 전역 Lead 기본값을 쓴다.
+        ...(leadChoice ? { lead: leadChoice } : {}),
       });
       if (attempt.current !== mine) return;
       setOpen(false);
@@ -72,7 +86,7 @@ export function CreateOrganizationProvider({
           <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
           <Dialog.Content
             aria-describedby={undefined}
-            className="animate-pop-in fixed top-[max(1rem,10vh)] left-1/2 z-[71] max-h-[calc(100dvh-2rem)] w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 overflow-y-auto rounded-2xl bg-white p-6 shadow-pop"
+            className="fixed inset-x-0 bottom-0 z-[71] max-h-[calc(100dvh-2rem)] animate-fade-up overflow-y-auto rounded-t-2xl bg-white p-6 shadow-pop md:inset-x-auto md:top-[max(1rem,10vh)] md:bottom-auto md:left-1/2 md:w-[min(520px,calc(100vw-2rem))] md:-translate-x-1/2 md:animate-pop-in md:rounded-2xl"
           >
             <Dialog.Title className="text-lg font-semibold">
               새 연구 조직
@@ -129,13 +143,22 @@ export function CreateOrganizationProvider({
                   className={`${fieldClass} resize-y`}
                 />
               </div>
+              {providers.data && leadChoice && (
+                <ProviderChoiceFields
+                  idPrefix="org-lead"
+                  label="Lead"
+                  providers={providers.data.providers}
+                  value={leadChoice}
+                  onChange={setLead}
+                />
+              )}
               {create.isError && (
                 <p role="alert" className="text-xs text-rose-600">
                   만들지 못했습니다. 다시 시도하세요.
                 </p>
               )}
               <div className="flex justify-end gap-2 pt-1">
-                <Dialog.Close className="btn-soft">취소</Dialog.Close>
+                <Dialog.Close className="btn-soft">닫기</Dialog.Close>
                 <button
                   className="btn-primary"
                   disabled={!ready || create.isPending}

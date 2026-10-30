@@ -22,6 +22,8 @@ export default defineConfig({
         PORT: String(apiPort),
         BABOJUBOT_EPHEMERAL_DB: "1",
         DATABASE_URL: "",
+        // 같은 가짜 adapter의 연결 둘로 프로바이더·모델 고르기를 검사한다(providers.spec.ts).
+        BABOJUBOT_FAKE_PROVIDERS: "2",
       },
       gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
       reuseExistingServer: false,

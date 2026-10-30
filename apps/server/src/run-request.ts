@@ -8,7 +8,7 @@ export type RunRequestAssembler = (
 ) => Promise<RunRequest>;
 
 /**
- * 실행 시도 요청 조립. admission(`claimNextRun`)이 고정한 깨우기 묶음·지침 사본·bundle 버전·이전 세션에
+ * 실행 시도 요청 조립. admission(`claimNextRun`)이 고정한 깨우기 묶음·지침 사본·bundle 버전·모델·이전 세션에
  * 실행 맥락 조회와 같은 신원·맥락 묶음, 이 실행 시도의 토큰과 조직 도구 주소, workspace를 더한다.
  * 도구 주소는 서버가 listen한 뒤에 정해지므로 부를 때 읽는다. workspace는 연구 환경 구성을 정하는 판 2 전까지 없다(`null`).
  */
@@ -30,6 +30,7 @@ export function createRunRequestAssembler({
       instructionsBundleVersion: run.instructionsBundleVersion,
       instructions,
       workspace: null,
+      model: run.model,
       previousSession: run.sessionBefore,
     };
   };

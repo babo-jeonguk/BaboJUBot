@@ -9,6 +9,7 @@ import { resultDecisionSchema } from "./result.ts";
 import { orgToolNameSchema, toolRefusalReasonSchema } from "./tools.ts";
 import { researchMapOperationSchema } from "./research-map.ts";
 import { memoryScopeSchema } from "./memory.ts";
+import { providerChoiceSchema } from "./provider.ts";
 import {
   publicActivitySchema,
   runEndReasonSchema,
@@ -267,6 +268,21 @@ export const agentProfileChangedEventSchema = z.object({
 });
 
 /**
+ * 사용자가 에이전트의 프로바이더·모델을 바꿨다. 다음 실행 시도부터 적용하고 진행 중인 실행 시도는 그대로 끝난다.
+ * 프로바이더 연결이 바뀌면 다음 실행 시도는 새 세션으로 시작한다.
+ */
+export const agentProviderChangedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.provider_changed"),
+  payload: z.object({
+    by: z.literal("owner"),
+    agentId: z.uuid(),
+    from: providerChoiceSchema,
+    to: providerChoiceSchema,
+  }),
+});
+
+/**
  * heartbeat 간격이 지나 서버가 깨우기를 만들었다. `wakeId`는 만든 깨우기이며, 아직 실행 시도가 받지 않은 heartbeat 깨우기가
  * 있으면 새로 만들지 않고 없다. `nextAt`은 그다음 heartbeat 예정 시각이다.
  */
@@ -520,6 +536,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   agentInterruptedEventSchema,
   agentHeartbeatChangedEventSchema,
   agentProfileChangedEventSchema,
+  agentProviderChangedEventSchema,
   agentHeartbeatEventSchema,
   memoryWrittenEventSchema,
   goalRecordedEventSchema,
@@ -564,10 +581,15 @@ export type StreamScope =
 
 export const eventStreamPath = "/api/events";
 
-/** 서버 → 화면 frame. `ready`는 구독이 성립한 뒤 한 번 온다. */
+/**
+ * 서버 → 화면 frame. `ready`는 구독이 성립한 뒤 한 번 온다. `settings_changed`는 전역 설정(프로바이더 기본값·동시 실행 상한)이
+ * 바뀌었으니 다시 불러오라는 신호다. 전역 설정은 조직에 속하지 않아 Event로 남기지 않으며, 구독 범위와 상관없이 모두에게 간다.
+ * 놓친 신호는 다시 연결할 때(`ready`)의 전체 재조회가 맞춘다.
+ */
 export const streamFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready") }),
   z.object({ type: z.literal("event"), event: eventSchema }),
+  z.object({ type: z.literal("settings_changed") }),
 ]);
 export type StreamFrame = z.infer<typeof streamFrameSchema>;
 

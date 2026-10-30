@@ -10,6 +10,7 @@ export * from "./control.ts";
 export * from "./queued-message.ts";
 export * from "./heartbeat.ts";
 export * from "./agent-profile.ts";
+export * from "./provider.ts";
 export * from "./memory.ts";
 
 export * from "./notification.ts";

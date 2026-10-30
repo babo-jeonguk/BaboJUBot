@@ -24,6 +24,7 @@ const fakes = () => {
       hub: {
         publish: (...events: Event[]) =>
           calls.push(`publish ${events.map((e) => e.id).join(",")}`),
+        publishSettingsChanged: () => calls.push("settings changed"),
       },
       dispatcher: {
         cancel: (cancellation: RunCancellation | null) =>
@@ -34,6 +35,9 @@ const fakes = () => {
           calls.push(`resumed ${organizationId}`);
         },
         kick: (agentId: string) => calls.push(`kick ${agentId}`),
+        kickProvider: async (provider: string) => {
+          calls.push(`kick waiting for ${provider}`);
+        },
       },
     },
   };
@@ -60,6 +64,21 @@ describe("applyAfterCommit", () => {
       "resumed A",
       "kick lead",
       "kick worker",
+    ]);
+  });
+
+  it("signals a settings change first and kicks agents waiting for a freed provider last", async () => {
+    const f = fakes();
+    await applyAfterCommit(f.deps, {
+      events: [],
+      woken: ["lead"],
+      settingsChanged: true,
+      providersFreed: ["fake-2"],
+    });
+    expect(f.calls).toEqual([
+      "settings changed",
+      "kick lead",
+      "kick waiting for fake-2",
     ]);
   });
 

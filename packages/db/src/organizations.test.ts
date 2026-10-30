@@ -20,12 +20,15 @@ import { migrateDatabase } from "./client.ts";
 import { updateAgentProfile } from "./agents.ts";
 import { findAgentInstructions } from "./harness.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import { updateProviderLimit } from "./providers.ts";
 import { listAgentsWithPendingWakes } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
 
 let t: TestDatabase;
 beforeAll(async () => {
   t = await createTestDatabase();
+  // 이 파일의 검사들은 한 DB에 진행 중인 실행 시도를 남긴다. 가짜 연결의 동시 실행 상한을 풀어 서로 막지 않게 한다.
+  await updateProviderLimit(t.db, "fake", 0);
 });
 afterAll(async () => {
   await t?.close();
@@ -33,7 +36,12 @@ afterAll(async () => {
 
 const plan = (name: string, completionCriteria?: string) =>
   planOrganizationCreation(
-    { name, goal: `${name}의 목표`, completionCriteria },
+    {
+      name,
+      goal: `${name}의 목표`,
+      completionCriteria,
+      lead: { provider: "fake", model: null },
+    },
     { files: leadFiles },
     {
       newId: randomUUID,
@@ -260,6 +268,7 @@ describe("agent names", () => {
       organizationId: creation.organization.id,
       role: "worker" as const,
       name: workerName,
+      provider: "fake",
       createdAt: new Date(),
     };
     await t.db.insert(agents).values(worker);
@@ -280,6 +289,7 @@ describe("agent names", () => {
         organizationId: orgId,
         role: "worker",
         name: "analyst 1",
+        provider: "fake",
         createdAt: new Date(),
       })
     ).rejects.toThrow();
@@ -407,10 +417,15 @@ describe("agent names", () => {
         "analyst 2",
         "연구원 1",
       ]);
+      // migration 0021: 프로바이더 열 전에 생긴 에이전트는 가짜 프로바이더·기본 모델로 채워진다.
+      const { rows: providers } = await pool.query(
+        `select distinct provider, model from agents`
+      );
+      expect(providers).toEqual([{ provider: "fake", model: null }]);
       // index가 생겨 이제 겹치는 이름을 받지 않는다.
       await expect(
         pool.query(
-          `insert into agents (id, organization_id, role, name, created_at) values ($1, $2, 'worker', 'ANALYST', now())`,
+          `insert into agents (id, organization_id, role, name, provider, created_at) values ($1, $2, 'worker', 'ANALYST', 'fake', now())`,
           [randomUUID(), orgA]
         )
       ).rejects.toMatchObject({ code: "23505" });

@@ -60,6 +60,7 @@ const request: RunRequest = {
   instructionsBundleVersion: null,
   instructions: [],
   workspace: null,
+  model: null,
   previousSession: null,
 };
 

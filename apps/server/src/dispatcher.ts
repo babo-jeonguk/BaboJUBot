@@ -30,6 +30,10 @@ const failed = (error: string): RunResult => ({
   usage: null,
   nextSession: null,
 });
+/** 에이전트의 연결이 이 서버에 등록되지 않았다(서버를 다른 연결 목록으로 다시 띄움). 다른 연결로 대신 돌리지 않는다. */
+const missingProvider = failed(
+  "이 실행 시도의 프로바이더 연결이 서버에 없습니다."
+);
 const shutdown: RunCancel = { type: "cancel", reason: "server_shutdown" };
 const cancelled: RunResult = {
   ...failed(""),
@@ -39,13 +43,15 @@ const cancelled: RunResult = {
 
 /**
  * 깨우기를 실행 시도로 만들어 프로바이더에 맡긴다. admission → 요청 조립(`createRunRequestAssembler`) → 프로바이더 호출·취소 → 종료 저장만 한다.
- * 에이전트당 실행 시도 하나는 DB admission(`claimNextRun`)이 보장하고, 이 객체는 같은 프로세스 안에서 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다.
- * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행한다.
+ * 에이전트당 실행 시도 하나와 프로바이더 연결별 동시 실행 상한은 DB admission(`claimNextRun`)이 보장하고, 이 객체는 같은 프로세스 안에서
+ * 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다. 실행 시도는 admission이 고정한 연결의 adapter가 맡는다.
+ * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행하고, 종료를 저장한 뒤 같은 연결의 자리를 기다리던
+ * 다른 에이전트도 다시 촉진한다.
  */
 export class RunDispatcher {
   readonly #db: Database;
   readonly #hub: EventHub;
-  readonly #runtime: RuntimeAdapter;
+  readonly #providers: ReadonlyMap<string, RuntimeAdapter>;
   readonly #now: () => Date;
   readonly #assemble: RunRequestAssembler;
   readonly #pumps = new Map<string, Promise<void>>();
@@ -54,7 +60,7 @@ export class RunDispatcher {
   /** 저장하지 못한 종료. `server_restart`는 서버 종료로 프로바이더가 취소되어 돌아온 실행 시도다(`interruptRun`). */
   readonly #pendingFinishes = new Map<
     string,
-    { runId: string; result: RunResult | "server_restart" }
+    { runId: string; provider: string; result: RunResult | "server_restart" }
   >();
   readonly #recovery = new AbortController();
   #closed = false;
@@ -62,14 +68,15 @@ export class RunDispatcher {
   constructor(options: {
     db: Database;
     hub: EventHub;
-    runtime: RuntimeAdapter;
+    /** 프로바이더 연결 ID → adapter. */
+    providers: ReadonlyMap<string, RuntimeAdapter>;
     now: () => Date;
     /** 실행 시도 요청 조립(`createRunRequestAssembler`). */
     assemble: RunRequestAssembler;
   }) {
     this.#db = options.db;
     this.#hub = options.hub;
-    this.#runtime = options.runtime;
+    this.#providers = options.providers;
     this.#now = options.now;
     this.#assemble = options.assemble;
   }
@@ -119,18 +126,31 @@ export class RunDispatcher {
    * 첫 조회가 실패하면 응답은 기다리지 않고, admission과 같은 backoff로 뒤에서 다시 조회한다.
    * 깨우기는 DB에 남아 있으므로 다시 조회해도 프로바이더를 중복해 부르지 않는다.
    */
-  async kickOrganization(organizationId: string): Promise<void> {
+  kickOrganization(organizationId: string): Promise<void> {
+    return this.#kickWaiting("a resumed organization", { organizationId });
+  }
+
+  /**
+   * 프로바이더 연결에 자리가 났다(실행 시도 종료, 상한 변경). 그 연결의 대기 깨우기가 있는 에이전트를 가장 오래 기다린 쪽부터 깨운다.
+   * 자리를 누가 얻을지는 admission의 연결 잠금이 정하며, 기다린 순서를 보장하지 않는다. 실패하면 `kickOrganization`처럼 뒤에서 다시 조회한다.
+   */
+  kickProvider(provider: string): Promise<void> {
+    return this.#kickWaiting("agents waiting for a provider", { provider });
+  }
+
+  async #kickWaiting(
+    what: string,
+    filter: { organizationId?: string; provider?: string }
+  ) {
     const kickWaiting = async () => {
-      for (const agentId of await listAgentsWithPendingWakes(this.#db, {
-        organizationId,
-      }))
+      for (const agentId of await listAgentsWithPendingWakes(this.#db, filter))
         this.kick(agentId);
     };
     try {
       await kickWaiting();
     } catch (error) {
-      console.error("[runs] kicking a resumed organization failed", error);
-      void this.#retrying("kicking a resumed organization", kickWaiting);
+      console.error(`[runs] kicking ${what} failed`, error);
+      void this.#retrying(`kicking ${what}`, kickWaiting);
     }
   }
 
@@ -191,6 +211,8 @@ export class RunDispatcher {
     const event = await this.#finish(pending.runId, pending.result);
     this.#pendingFinishes.delete(agentId);
     if (event) this.#hub.publish(event);
+    // 종료를 저장해 연결의 자리가 비었다. 이 에이전트의 다음 실행 시도와 같은 자리를 두고 admission에서 겨룬다.
+    await this.kickProvider(pending.provider);
   }
 
   async #pump(agentId: string) {
@@ -225,11 +247,14 @@ export class RunDispatcher {
           type: "cancel",
           reason: cancelReason,
         } satisfies RunCancel);
+      const adapter = this.#providers.get(run.provider);
       const request = await this.#assemble(claimed, token);
-      const raw = await this.#runtime.execute(request, {
-        signal: controller.signal,
-        emit: (activity) => this.#emit(run.id, activity),
-      });
+      const raw = adapter
+        ? await adapter.execute(request, {
+            signal: controller.signal,
+            emit: (activity) => this.#emit(run.id, activity),
+          })
+        : missingProvider;
       const parsed = runResultSchema.safeParse(raw);
       if (parsed.success) result = parsed.data;
       else {
@@ -254,6 +279,7 @@ export class RunDispatcher {
         "server_shutdown";
     this.#pendingFinishes.set(run.agentId, {
       runId: run.id,
+      provider: run.provider,
       // 서버 종료로 끝까지 하지 못한 실행 시도는 받은 깨우기를 다음 실행 시도에 다시 넘긴다. 프로바이더가 끝을 냈으면 그 결과다.
       result:
         shutDown && result.stopReason === "cancelled"

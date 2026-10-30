@@ -2,6 +2,7 @@ import {
   heartbeatIntervalMaxMinutes,
   heartbeatIntervalSchema,
   isClosedStage,
+  sameProviderChoice,
   type Agent,
   type AgentDetail,
   type InstructionEditor,
@@ -24,9 +25,12 @@ import {
   useInstructionRevision,
   useInstructionRevisions,
   useOrganization,
+  useProviderSettings,
   useRun,
+  useUpdateAgentProvider,
   useUpdateHeartbeat,
 } from "./api.ts";
+import { ProviderChoiceFields, useChoiceLabel } from "./provider-choice.tsx";
 import { Markdown } from "./markdown.tsx";
 import {
   AgentStatusBadge,
@@ -148,6 +152,12 @@ export function AgentDetailPage({ tab }: { tab: AgentTab }) {
       {tab === "overview" ? (
         <>
           <AgentControl orgId={orgId} agent={a} stage={stage} />
+          <AgentProviderSettings
+            key={a.id}
+            orgId={orgId}
+            agent={a}
+            stage={stage}
+          />
           <HeartbeatSettings orgId={orgId} agent={a} stage={stage} />
           <section aria-label="최근 실행 시도">
             <h2 className="mb-2 text-sm font-semibold text-slate-600">
@@ -216,6 +226,78 @@ function AgentControl({
           control.error.code === "organization_closed"
             ? "이미 끝난 조직입니다."
             : "처리하지 못했습니다. 다시 시도하세요."}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * 에이전트 프로바이더·모델. 사용자만 바꾸며 다음 실행 시도부터 적용한다. 고치는 동안의 값은 초안으로 두어 다른 탭의 변경이 덮지 않고,
+ * 저장에 실패해도 남는다. 바뀐 값이 있을 때만 `저장`을 누를 수 있다. 적용 시점은 실행 시도 목록 행의 `프로바이더 · 모델`로 보인다.
+ */
+function AgentProviderSettings({
+  orgId,
+  agent,
+  stage,
+}: {
+  orgId: string;
+  agent: AgentDetail;
+  stage: LifecycleStage | undefined;
+}) {
+  const providers = useProviderSettings();
+  const update = useUpdateAgentProvider(orgId, agent.id);
+  const saved = { provider: agent.provider, model: agent.model };
+  const [draft, setDraft] = useState<typeof saved | null>(null);
+  const value = draft ?? saved;
+  const changed = !sameProviderChoice(value, saved);
+  const closed = stage !== undefined && isClosedStage(stage);
+  const save = () => update.mutate(value, { onSuccess: () => setDraft(null) });
+  return (
+    <section aria-label="프로바이더" className="card mb-6 p-4 text-sm">
+      <h2 className="mb-3 text-sm font-semibold">프로바이더</h2>
+      <form
+        className="flex flex-wrap items-end gap-x-4 gap-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (changed && !closed) save();
+        }}
+      >
+        <div className="min-w-0 flex-1 basis-80">
+          <ProviderChoiceFields
+            idPrefix="agent"
+            providers={providers.data?.providers ?? []}
+            value={value}
+            onChange={setDraft}
+            disabled={closed || update.isPending || !providers.data}
+          />
+        </div>
+        <button
+          type="submit"
+          className="btn-soft"
+          disabled={closed || update.isPending || !changed}
+        >
+          {update.isPending ? "저장하는 중…" : "저장"}
+        </button>
+        {draft && !update.isPending && (
+          <button
+            type="button"
+            className="text-xs text-slate-500 hover:text-slate-800"
+            onClick={() => {
+              setDraft(null);
+              update.reset();
+            }}
+          >
+            되돌리기
+          </button>
+        )}
+      </form>
+      {!update.isPending && update.isError && (
+        <p role="alert" className="mt-2 text-xs text-rose-600">
+          {update.error instanceof ApiError &&
+          update.error.code === "organization_closed"
+            ? "이미 끝난 조직입니다."
+            : "저장하지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -803,6 +885,7 @@ function RevisionView({
 }
 
 function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
+  const choiceLabel = useChoiceLabel();
   return (
     <li>
       <Link
@@ -815,7 +898,9 @@ function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
           <div className="truncate text-slate-800">
             {run.error ?? run.summary ?? "실행 시도"}
           </div>
-          <div className="text-xs text-slate-500">깨우기 {run.wakeCount}개</div>
+          <div className="text-xs text-slate-500">
+            {choiceLabel(run)} · 깨우기 {run.wakeCount}개
+          </div>
         </div>
         <time
           dateTime={run.startedAt}
@@ -833,6 +918,7 @@ export function RunDetailPage() {
   const { orgId = "", runId = "" } = useParams();
   const run = useRun(orgId, runId);
   const org = useOrganization(orgId);
+  const choiceLabel = useChoiceLabel();
   if (run.isPending) return <Loading />;
   if (run.isError)
     return run.error instanceof ApiError && run.error.status === 404 ? (
@@ -857,6 +943,8 @@ export function RunDetailPage() {
           >
             {agent?.name ?? "에이전트"}
           </Link>
+          {" · "}
+          {choiceLabel(r)}
           {" · "}
           {formatTime(r.startedAt)} 시작
           {r.finishedAt && ` · ${formatTime(r.finishedAt)} 종료`}
