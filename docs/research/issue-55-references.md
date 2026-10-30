@@ -6,7 +6,7 @@
 
 - 구현할 문제: `연구 진행` 단계에서 Lead가 작업(담당·부모)을 만들고 담당 작업자의 실행 시도가 산출물·자기 보고 요약·완료를 남기며, 완료는 부모 담당자(부모 없으면 생성자)를 깨운다. 같은 조직 메시지와 사용자 작업 댓글도 수신자/담당자를 깨운다. 목록·작업 상세 페이지·산출물 단건 페이지를 실시간 갱신한다.
 - 동종 문제: 조직 범위의 영속 업무 기록 변경을 수신자별 후속 실행으로 연결하면서 산출물 출처와 자기 보고를 보존하는 메커니즘.
-- 고정된 결정: ADR-0001 자체 모델 loop 없음, 가짜 실행기; ADR-0002 영속 기록+깨우기, 실행 중 입력은 다음 실행 시도; ADR-0003 기본 꺼진 승인 정책, 초기 승인은 필수; ADR-0004 기존 TS/Postgres 스택. 도구 범위는 실행 시도 토큰에서만 결정. 사용자는 Lead 대화 또는 작업 댓글. 상세는 별도 경로. 작업은 연구 노드 0~1개. 연구 지도 자체는 후속 #56 범위 확인 예정.
+- 고정된 결정: ADR-0001 자체 모델 loop 없음, 가짜 프로바이더; ADR-0002 영속 기록+깨우기, 실행 중 입력은 다음 실행 시도; ADR-0003 기본 꺼진 승인 정책, 초기 승인은 필수; ADR-0004 기존 TS/Postgres 스택. 도구 범위는 실행 시도 토큰에서만 결정. 사용자는 Lead 대화 또는 작업 댓글. 상세는 별도 경로. 작업은 연구 노드 0~1개. 연구 지도 자체는 후속 #56 범위 확인 예정.
 
 | ID | 조사 질문 | 출처 | 전략 |
 |---|---|---|---|
@@ -15,7 +15,7 @@
 | Q3 | 담당·부모·수신자·산출물의 교차 조직 참조와 종료 토큰·비담당 완료를 어디서 거부하는가? | #55 AC 4; AGENTS 제품 불변 조건 | Source Recon + adversarial scenario |
 | Q4 | 산출물 최소 저장 형식·작업/작성자/실행 시도 출처·자기 보고와 검증 결과 구분은? | #55 도구·화면; GLOSSARY 산출물/연구 기록 | Source Recon + persistence/recovery; protocol contract |
 | Q5 | 목록→작업 상세→산출물 단건과 댓글 thread의 상태·좁은 폭·실시간 갱신은? | #55 화면·AC 5; features 화면 지도 | Surface Capture + Behavioral Recon |
-| Q6 | 기존 가짜 실행기·도구 경계에 협력 시나리오를 어떤 최소 계약으로 붙일까? | #55 AC 1–4; #54 댓글 501·Lead-only | Source Recon + protocol/contract + 음성 대조군 |
+| Q6 | 기존 가짜 프로바이더·도구 경계에 협력 시나리오를 어떤 최소 계약으로 붙일까? | #55 AC 1–4; #54 댓글 501·Lead-only | Source Recon + protocol/contract + 음성 대조군 |
 
 
 부모 #49 본문의 옛 `목록만`·`에이전트 보기만` 범위보다 #55 본문·2026-10-14 범위 갱신 댓글과 현재 [화면 지도](../features.md#웹-대시보드-화면-지도)를 우선한다. #54 댓글의 `create_task`는 아직 501이며 작업자 기본 시나리오도 없다. 확인한 현재 구현 기준은 `f81921b15bec200445c99b7e01cff54b4f5995be`다. 이 조사는 제품 코드·테스트·설정을 바꾸지 않는다.
@@ -23,7 +23,7 @@
 | 재사용한 조사 | 쓰는 범위 | 재확인·판단 |
 |---|---|---|
 | [#53](issue-53-references.md#brief)·[#54](issue-54-references.md#brief) | 실행 토큰·깨우기 묶음·종료와 쓰기의 직렬화, 승인 후 작업자·하네스 사본 | 현재 contracts/run·tools·message, core/approval, db/runs·approvals, server/tools, runtime/scripted·tools-client·testing를 읽어 연결 위치 확인. 과거 실험을 이번 제품 API 검사로 세지 않음 |
-| [#52](issue-52-references.md#brief)·[#1](issue-1-references.md#brief) | 원자적 조직 기록, fake 실행기·계약 검증, 기존 임시 PG 설치 | 확정 스택과 구현을 기준으로 사용. 옛 저장 엔진·backlog·승인 정책 권고는 재채택하지 않음 |
+| [#52](issue-52-references.md#brief)·[#1](issue-1-references.md#brief) | 원자적 조직 기록, fake 프로바이더·계약 검증, 기존 임시 PG 설치 | 확정 스택과 구현을 기준으로 사용. 옛 저장 엔진·backlog·승인 정책 권고는 재채택하지 않음 |
 | [#50](issue-50-references.md#brief)·[Paperclip 화면](paperclip-dashboard.md#22-작업task계획-화면)·[기타 화면](dashboard-references.md#62-관찰-실행-시도-작업자-외부-job) | 작업 상세·댓글·산출물 진입과 scope별 캐시의 질문 출발점 | 화면 지도와 #55의 별도 상세 경로 우선. 과거 캡처를 새 UI 실행으로 세지 않음 |
 | [협력](agent-interaction-models.md#paperclip)·[실행 모델](agent-runtime-models.md#기준-버전과-조사-방식)·[Paperclip](paperclip.md#핵심-판단)·[코드 구조](reference-code-structure.md#프로젝트별-구조와-참고-지점) | 영속 업무 기록·부모 깨우기·자기 보고 경고의 소스 후보 | 결정에 쓰는 Paperclip 파일은 새 SHA로 재독하고 옛 ref와 파일별 blob 비교. 세션 간 직접 메시지는 ADR-0002의 대체 근거로 삼지 않음 |
 | [#51](issue-51-references.md#brief)·[비교 목록](comparative-survey.md#비교-대상의-분류) | 연구 노드 연결·출처 UI의 범위, 후보 목록 | 그래프·템플릿 쓰기와 작업-노드 연결의 실제 검증은 후속 #56. 이번에 그래프 라이브러리를 재선정하지 않음 |
@@ -127,7 +127,7 @@
 | 순수 규칙 — `packages/core` | 완료 wake 대상·허용 전이·대상별 도구 규칙. core→contracts, DB/Express/React에 의존하지 않는 방향 유지 |
 | 저장 — `packages/db` | task/artifact/comment/message schema·migration과 scope 조회, run→조직 잠금 뒤 쓰기·Event/wake transaction. existing db/approvals의 toolWrite는 파일 내부 함수이므로 재사용/추출 범위는 구현에서 결정 |
 | 서버 — `apps/server` | 조직 도구/Owner 댓글 API·조회, commit 뒤 hub publish와 수신자별 dispatcher.kick 연결. 저장 성공 뒤 publish 실패가 중복 쓰기 재시도를 유도하지 않도록 기존 응답 계약 유지 |
-| 실행기 — `packages/runtime` | 기존 `ScriptStep.call`·calls output·createGate로 승인 후 Lead·worker·후속 깨우기 시나리오. 작업자 user 답장은 task 댓글로 제한 |
+| 프로바이더 — `packages/runtime` | 기존 `ScriptStep.call`·calls output·createGate로 승인 후 Lead·worker·후속 깨우기 시나리오. 작업자 user 답장은 task 댓글로 제한 |
 | 화면 — `apps/web` | 별도 task/artifact 상세 route·API query, 목록/댓글/산출물 재조회, 빈/로딩/404/실패·390px 상태. 캐시는 existing org 하위 key를 확장하며 화면에 업무 규칙을 새로 두지 않음 |
 
 | ID | 검증할 경계 — 입력 → 행동 → 기대 | 근거 |

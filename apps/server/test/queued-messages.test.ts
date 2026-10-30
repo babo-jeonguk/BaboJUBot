@@ -267,7 +267,7 @@ describe("paused and finished organizations", () => {
     const holdReached = new Promise<void>((r) => (reached = r));
     const received: string[][] = [];
     let executed = 0;
-    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 실행기. 뒤 실행 시도는 받은 메시지만 남긴다.
+    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더. 뒤 실행 시도는 받은 메시지만 남긴다.
     const slow: RuntimeAdapter = {
       async execute(request): Promise<RunResult> {
         if (++executed === 1) {

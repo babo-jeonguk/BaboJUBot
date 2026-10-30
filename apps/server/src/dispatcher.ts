@@ -38,7 +38,7 @@ const cancelled: RunResult = {
 };
 
 /**
- * 깨우기를 실행 시도로 만들어 실행기에 맡긴다. admission → 요청 조립(`createRunRequestAssembler`) → 실행기 호출·취소 → 종료 저장만 한다.
+ * 깨우기를 실행 시도로 만들어 프로바이더에 맡긴다. admission → 요청 조립(`createRunRequestAssembler`) → 프로바이더 호출·취소 → 종료 저장만 한다.
  * 에이전트당 실행 시도 하나는 DB admission(`claimNextRun`)이 보장하고, 이 객체는 같은 프로세스 안에서 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다.
  * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행한다.
  */
@@ -51,7 +51,7 @@ export class RunDispatcher {
   readonly #pumps = new Map<string, Promise<void>>();
   readonly #kickedAgain = new Set<string>();
   readonly #active = new Map<string, AbortController>();
-  /** 저장하지 못한 종료. `server_restart`는 서버 종료로 실행기가 취소되어 돌아온 실행 시도다(`interruptRun`). */
+  /** 저장하지 못한 종료. `server_restart`는 서버 종료로 프로바이더가 취소되어 돌아온 실행 시도다(`interruptRun`). */
   readonly #pendingFinishes = new Map<
     string,
     { runId: string; result: RunResult | "server_restart" }
@@ -76,7 +76,7 @@ export class RunDispatcher {
 
   /**
    * 이전 프로세스가 실행 중으로 남긴 실행 시도를 `server_restart`로 끝내 그 깨우기를 다시 대기시키고,
-   * 대기 중인 깨우기가 있는 에이전트를 깨운다. 실행기를 부르기 전에 복구를 끝낸다.
+   * 대기 중인 깨우기가 있는 에이전트를 깨운다. 프로바이더를 부르기 전에 복구를 끝낸다.
    */
   async start(): Promise<void> {
     for (const event of await recoverInterruptedRuns(this.#db, {
@@ -102,8 +102,8 @@ export class RunDispatcher {
   }
 
   /**
-   * commit된 사용자 제어 취소를 진행 중인 실행기에 보낸다. 실행기가 정리를 끝내 종료가 저장될 때까지 그 에이전트의 다음 실행 시도는 없다.
-   * admission과 실행기 등록 사이의 실행 시도는 등록 직후 DB의 취소 요청을 다시 읽어 받는다(`#execute`).
+   * commit된 사용자 제어 취소를 진행 중인 프로바이더에 보낸다. 프로바이더가 정리를 끝내 종료가 저장될 때까지 그 에이전트의 다음 실행 시도는 없다.
+   * admission과 프로바이더 등록 사이의 실행 시도는 등록 직후 DB의 취소 요청을 다시 읽어 받는다(`#execute`).
    */
   cancel(cancellation: RunCancellation | null): void {
     for (const runId of cancellation?.runIds ?? [])
@@ -117,7 +117,7 @@ export class RunDispatcher {
    * 조직 재개 뒤, 그 조직에서 대기 중인 깨우기가 있는 에이전트를 모두 깨운다.
    * 호출자는 응답 전에 첫 조회를 기다린다. 그래야 응답 뒤의 관찰(`drain` 등)이 이미 시작한 처리를 본다.
    * 첫 조회가 실패하면 응답은 기다리지 않고, admission과 같은 backoff로 뒤에서 다시 조회한다.
-   * 깨우기는 DB에 남아 있으므로 다시 조회해도 실행기를 중복해 부르지 않는다.
+   * 깨우기는 DB에 남아 있으므로 다시 조회해도 프로바이더를 중복해 부르지 않는다.
    */
   async kickOrganization(organizationId: string): Promise<void> {
     const kickWaiting = async () => {
@@ -150,7 +150,7 @@ export class RunDispatcher {
   }
 
   /**
-   * 새 실행 시도를 받지 않고, 진행 중인 실행 시도를 취소해 실행기가 정리를 끝낼 때까지 기다린다.
+   * 새 실행 시도를 받지 않고, 진행 중인 실행 시도를 취소해 프로바이더가 정리를 끝낼 때까지 기다린다.
    * 취소로 돌아온 실행 시도는 `server_restart`로 끝나고 그 깨우기는 다시 대기해 다음 서버 시작 때 처리된다.
    */
   async close(): Promise<void> {
@@ -160,7 +160,7 @@ export class RunDispatcher {
     while (this.#pumps.size) await Promise.all(this.#pumps.values());
   }
 
-  /** DB 오류 후 같은 admission·종료 저장을 다시 시도한다. 실행기를 재실행하지 않는다. */
+  /** DB 오류 후 같은 admission·종료 저장을 다시 시도한다. 프로바이더를 재실행하지 않는다. */
   #dispatch(agentId: string) {
     return this.#retrying("dispatch", () => this.#pump(agentId));
   }
@@ -195,7 +195,7 @@ export class RunDispatcher {
 
   async #pump(agentId: string) {
     while (!this.#closed) {
-      // 종료 저장을 끝내기 전에는 새 실행 시도를 claim하거나 실행기를 다시 부르지 않는다.
+      // 종료 저장을 끝내기 전에는 새 실행 시도를 claim하거나 프로바이더를 다시 부르지 않는다.
       await this.#settle(agentId);
       if (this.#closed) return;
       const { token, digest } = issueRunToken();
@@ -209,7 +209,7 @@ export class RunDispatcher {
     }
   }
 
-  /** 실행 시도 하나: 요청 조립(`createRunRequestAssembler`) → 실행기 호출·취소 → 종료 저장. */
+  /** 실행 시도 하나: 요청 조립(`createRunRequestAssembler`) → 프로바이더 호출·취소 → 종료 저장. */
   async #execute(claimed: ClaimedRun, token: string) {
     const { run } = claimed;
     const controller = new AbortController();
@@ -237,14 +237,14 @@ export class RunDispatcher {
           "[runs] runtime returned an invalid result",
           parsed.error
         );
-        result = failed("실행기가 계약 밖의 종료 결과를 돌려주었습니다.");
+        result = failed("프로바이더가 계약 밖의 종료 결과를 돌려주었습니다.");
       }
     } catch (error) {
-      // 실행기 오류 내용은 공개 기록에 그대로 옮기지 않는다.
+      // 프로바이더 오류 내용은 공개 기록에 그대로 옮기지 않는다.
       console.error(`[runs] run ${run.id} runtime error`, error);
       result = controller.signal.aborted
         ? cancelled
-        : failed("실행기가 오류로 끝났습니다.");
+        : failed("프로바이더가 오류로 끝났습니다.");
     } finally {
       this.#active.delete(run.id);
     }
@@ -254,7 +254,7 @@ export class RunDispatcher {
         "server_shutdown";
     this.#pendingFinishes.set(run.agentId, {
       runId: run.id,
-      // 서버 종료로 끝까지 하지 못한 실행 시도는 받은 깨우기를 다음 실행 시도에 다시 넘긴다. 실행기가 끝을 냈으면 그 결과다.
+      // 서버 종료로 끝까지 하지 못한 실행 시도는 받은 깨우기를 다음 실행 시도에 다시 넘긴다. 프로바이더가 끝을 냈으면 그 결과다.
       result:
         shutDown && result.stopReason === "cancelled"
           ? "server_restart"

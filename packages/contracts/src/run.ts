@@ -12,7 +12,7 @@ import { researchMapOperationSchema } from "./research-map.ts";
 
 /**
  * 실행 시도 상태. `running` 밖의 값은 모두 종료이며 종료 사유와 같은 말을 쓴다.
- * `server_restart`는 실행기가 아니라 Control Plane이 정한다. 서버가 멈춰(종료·crash) 끝내지 못한 실행 시도이며,
+ * `server_restart`는 프로바이더가 아니라 Control Plane이 정한다. 서버가 멈춰(종료·crash) 끝내지 못한 실행 시도이며,
  * 그 실행 시도가 받은 깨우기는 다시 대기해 다음 실행 시도가 받는다.
  */
 export const runStatuses = [
@@ -25,12 +25,12 @@ export const runStatuses = [
 export const runStatusSchema = z.enum(runStatuses);
 export type RunStatus = z.infer<typeof runStatusSchema>;
 
-/** 실행기가 돌려주는 종료 사유. */
+/** 프로바이더가 돌려주는 종료 사유. */
 export const runStopReasons = ["completed", "failed", "cancelled"] as const;
 export const runStopReasonSchema = z.enum(runStopReasons);
 export type RunStopReason = z.infer<typeof runStopReasonSchema>;
 
-/** 저장한 실행 시도 종료 사유: 실행기의 종료 사유와 서버 재시작. */
+/** 저장한 실행 시도 종료 사유: 프로바이더의 종료 사유와 서버 재시작. */
 export const runEndReasonSchema = runStatusSchema.exclude(["running"]);
 export type RunEndReason = z.infer<typeof runEndReasonSchema>;
 
@@ -167,7 +167,7 @@ export const runContextSchema = z.object({
 });
 export type RunContext = z.infer<typeof runContextSchema>;
 
-/** 실행기가 이어 갈 세션 상태. 내용은 실행기마다 다르고 Control Plane은 해석하지 않는다. */
+/** 프로바이더가 이어 갈 세션 상태. 내용은 프로바이더마다 다르고 Control Plane은 해석하지 않는다. */
 export const sessionStateSchema = z.record(z.string(), z.json());
 export type SessionState = z.infer<typeof sessionStateSchema>;
 
@@ -179,10 +179,10 @@ export const runRequestSchema = z.object({
   context: runContextSchema,
   /**
    * 지침 bundle 버전. 에이전트의 Role·Soul·Skill 사본 내용에서 정하며, 사본이 없으면 없다. 이전 실행 시도와 버전이 다르면
-   * admission(core `planRunStart`)이 `previousSession`을 비워 넘기므로 실행기가 따로 가리지 않는다.
+   * admission(core `planRunStart`)이 `previousSession`을 비워 넘기므로 프로바이더가 따로 가리지 않는다.
    */
   instructionsBundleVersion: z.string().nullable(),
-  /** 그 버전을 정한 사본 내용. 실행기가 자기 방식으로 주입한다. */
+  /** 그 버전을 정한 사본 내용. 프로바이더가 자기 방식으로 주입한다. */
   instructions: z.array(instructionFileSchema),
   /** 연구 환경 workspace. 연구 환경 구성 전에는 없다. */
   workspace: z.object({ cwd: z.string() }).nullable(),
@@ -191,7 +191,7 @@ export const runRequestSchema = z.object({
 export type RunRequest = z.infer<typeof runRequestSchema>;
 
 /**
- * 실행기가 공개로 내는 활동. 허용한 종류·필드만 받으며 그 밖의 값(모델 내부 추론, stdout 등)은 공개 기록에 넣지 않는다.
+ * 프로바이더가 공개로 내는 활동. 허용한 종류·필드만 받으며 그 밖의 값(모델 내부 추론, stdout 등)은 공개 기록에 넣지 않는다.
  * 조직·에이전트·실행 시도 귀속은 Control Plane이 붙인다. 진행 문장(`progress.text`)은 사용자가 대시보드에서 읽으므로 한국어로 쓴다.
  * 도구 입력 칸이 아니라서 이 언어 규칙은 역할 문서의 지시로 에이전트에게 전한다.
  */
@@ -208,7 +208,7 @@ export const runtimeActivitySchema = z.discriminatedUnion("type", [
 ]);
 export type RuntimeActivity = z.infer<typeof runtimeActivitySchema>;
 
-/** 공개 활동 기록. 실행기 활동과 Control Plane이 기록한 조직 도구 호출 요약. */
+/** 공개 활동 기록. 프로바이더 활동과 Control Plane이 기록한 조직 도구 호출 요약. */
 export const publicActivitySchema = z.discriminatedUnion("source", [
   z.object({ source: z.literal("runtime"), activity: runtimeActivitySchema }),
   z.object({
@@ -229,7 +229,7 @@ export const usageSchema = z.strictObject({
 });
 export type Usage = z.infer<typeof usageSchema>;
 
-/** 종료. 실행기는 취소를 받아도 정리를 끝낸 뒤 `cancelled`로 한 번만 돌려준다. */
+/** 종료. 프로바이더는 취소를 받아도 정리를 끝낸 뒤 `cancelled`로 한 번만 돌려준다. */
 export const runResultSchema = z.strictObject({
   stopReason: runStopReasonSchema,
   /** 실패 사유. 공개 기록에 남으므로 비밀값을 넣지 않는다. */
@@ -256,7 +256,7 @@ export type RunCancelReason = z.infer<typeof runCancelReasonSchema>;
 
 /**
  * 제어: 취소. Control Plane은 이 값을 `signal.reason`으로 전한다. 서버 종료 또는 사용자 제어({@link RunCancelReason})가 사유다.
- * 취소는 요청일 뿐이고, 실행 시도는 실행기가 정리를 끝내고 결과를 돌려준 뒤에 끝난다.
+ * 취소는 요청일 뿐이고, 실행 시도는 프로바이더가 정리를 끝내고 결과를 돌려준 뒤에 끝난다.
  */
 export const runCancelSchema = z.strictObject({
   type: z.literal("cancel"),
@@ -265,7 +265,7 @@ export const runCancelSchema = z.strictObject({
 export type RunCancel = z.infer<typeof runCancelSchema>;
 
 /**
- * 실행기 adapter. `signal`이 취소(`reason`은 {@link RunCancel})를 전하고, adapter는 진행 중인 일을 멈추고 정리한 뒤에 결과를 돌려준다.
+ * 프로바이더 adapter. `signal`이 취소(`reason`은 {@link RunCancel})를 전하고, adapter는 진행 중인 일을 멈추고 정리한 뒤에 결과를 돌려준다.
  * `emit`은 공개 활동을 순서대로 기록하며, 돌아온 뒤에 다음 활동을 낸다.
  * adapter는 다음을 지킨다: 취소를 받으면 곧 `cancelled`로 끝나고, 돌아온 뒤 활동을 내지 않으며, 활동은 {@link runtimeActivitySchema},
  * 종료는 {@link runResultSchema}에 맞고, 실행 시도 토큰을 오류 문구·요약·활동에 싣지 않는다.
@@ -288,7 +288,7 @@ export const runSummarySchema = z.object({
   organizationId: z.uuid(),
   agentId: z.uuid(),
   status: runStatusSchema,
-  /** 사용자 제어가 요청한 취소. 실행 중이면 실행기가 정리하는 중이고, 끝나면 `cancelled`다. */
+  /** 사용자 제어가 요청한 취소. 실행 중이면 프로바이더가 정리하는 중이고, 끝나면 `cancelled`다. */
   cancelReason: runCancelReasonSchema.nullable(),
   /** 이 실행 시도가 받은 깨우기 수. 서버 재시작으로 끝나 다시 대기한 깨우기도 이 실행 시도의 기록에 남는다. */
   wakeCount: z.number().int().positive(),

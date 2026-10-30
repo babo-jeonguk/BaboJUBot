@@ -122,7 +122,7 @@
 | <a id="D05"></a>D05 | 변형 채택 | 승인/결과/실패 원본과 별개로 `(organization, kind, sourceId)`에 귀속된 read/archive 상태를 PG에 저장. 사용자 명령은 `read=true/false`, `archived=true/false`의 명시적 대입. 단일 사용자에게 임의 userId를 받지 않음 | P05,E16–E18,E22; AC3 | 실제 source 같은 조직 관계를 서비스 검사·가능한 FK로 검증. 보관은 원본 삭제·승인·최종 완료가 아니다. 처음부터 모든 multi-user/SDK 설정을 들이지 않음 | Q4 |
 | <a id="D06"></a>D06 | 채택 / 일부 보류 | 실패는 실행 시도별 source ID로 보존. 같은 agent의 후속 성공/running으로 숨기는 집계를 복사하지 않음. 사용자 취소 cancelled·정상 완료를 실패로 세지 않음. server_restart 포함 정책은 열린 결정 | E02,E04,E15; AC3 | 원 실패 상세가 항상 남고 보관은 그 항목만 정리한다. 같은 run 종료 재처리로 알림·Inbox가 늘지 않으며 별개 새 실패 run은 새 항목 | Q1,Q4 |
 | <a id="D07"></a>D07 | 변형 채택 | Inbox 목록·각 filter count·레일/조직 주의 수를 같은 서버 scope/predicate에서 파생. 전체/현재 조직을 query key에 포함하고 mutation·조직 Event·ready/reconnect 뒤 목록과 count 재조회 | P06,E19,E20; #50 결정 | 필터는 서로 겹칠 수 있어 합계를 total로 쓰지 않음. attention은 unread와 다른 의미. pending을 읽어도 결정 필요는 남음. working·보관된 pending의 badge 정책은 열린 결정 | Q4,Q5 |
-| <a id="D08"></a>D08 | 채택 | #50 패널/drawer·상세 본문을 따른다. 기존 레일 버튼을 패널 열기에 연결하고 모바일 Inbox·전역 설정 자리 추가. read/archive와 업무 결정의 버튼·pending/error를 분리, 항목 ID별 잠금·실패 초안/원상태·stable focus 유지 | P07,E04,E16,E18,E21,E24; AC4 | 좁은 폭에 scope·count·종류·조직·상세 링크가 남아야 함. 불러오는 중·오류·정상0건을 구분. global 설정은 실행기/환경 템플릿/비밀값/메시지 앱의 미연결 자리만, 작동하지 않는 저장/연결을 성공처럼 표시하지 않음 | Q5 |
+| <a id="D08"></a>D08 | 채택 | #50 패널/drawer·상세 본문을 따른다. 기존 레일 버튼을 패널 열기에 연결하고 모바일 Inbox·전역 설정 자리 추가. read/archive와 업무 결정의 버튼·pending/error를 분리, 항목 ID별 잠금·실패 초안/원상태·stable focus 유지 | P07,E04,E16,E18,E21,E24; AC4 | 좁은 폭에 scope·count·종류·조직·상세 링크가 남아야 함. 불러오는 중·오류·정상0건을 구분. global 설정은 프로바이더/환경 템플릿/비밀값/메시지 앱의 미연결 자리만, 작동하지 않는 저장/연결을 성공처럼 표시하지 않음 | Q5 |
 | <a id="D09"></a>D09 | 배제 / 후속 | 새 notification SaaS·queue broker/Redis·CDC, 실제 Slack/Discord/Telegram 인증·secret 보관·provider 선택·임의 명령 router는 이번에 도입하지 않음. job·예산·사용자 할 일 알림은 후속 판 | ADR4; P01–P07; #61 범위 | #61 본문은 실제 메시지 앱을 두 번째 판으로 쓰지만 현행 architecture는 판3이다. 번호 차이는 #49에서 정리하되 이번 범위는 fake다. 원본 API·조직 경계·초기 승인·최종 완료를 바꾸는 권고 없음 | Q1–Q5 |
 
 ### 배제한 패턴
@@ -163,7 +163,7 @@
 | V09 | 전체/현재 조직+모든 필터+보관 변경·새 사건 → list/count/rail/조직 수가 같은 predicate와 일치. tab 합계가 total과 다를 수 있음. 다른 탭·연결 끊김/복구 → 최신 서버 값 | D07 |
 | V10 | 1440/1280/1279/768/767/390px에서 panel/drawer/sheet·scope·필터·상세 선택·뒤로/Escape → 한 Inbox, 상세 이동 때 drawer 닫힘·포커스 복구·가로 overflow 없음 | D08 |
 | V11 | 정상0건·loading·HTTP 오류·없는 상세·보관 실패·동시 서로 다른 항목 mutation → 오류가0으로 보이지 않음, 성공한 다른 변경 유지, 버튼 중복 제출 방지, 제거된 행의 포커스가 안정적으로 이동 | D07,D08 |
-| V12 | 전역 설정 진입 → 실행기/환경 템플릿/비밀값/메시지 앱 자리 표시 → 실제 secret 입력·provider 연결·모델 호출 없이 상태를 정확히 안내 | D08,D09 |
+| V12 | 전역 설정 진입 → 프로바이더/환경 템플릿/비밀값/메시지 앱 자리 표시 → 실제 secret 입력·provider 연결·모델 호출 없이 상태를 정확히 안내 | D08,D09 |
 
 | 열린 결정 | owner | 선택지와 근거 |
 |---|---|---|

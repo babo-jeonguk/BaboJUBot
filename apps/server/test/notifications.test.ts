@@ -109,7 +109,7 @@ describe("notification outbox and fake channel", () => {
     await say(org.id, "작업자를 더 두세요");
     await t.drain();
     // 실패한 실행 시도.
-    agents.queue(org.lead.id, failing("가짜 실행기 사고"));
+    agents.queue(org.lead.id, failing("가짜 프로바이더 사고"));
     await say(org.id, "실패해 보세요");
     await t.drain();
     // 결과 제출(근거 산출물을 남긴 작업 뒤).
@@ -186,7 +186,7 @@ describe("notification outbox and fake channel", () => {
     expect(recordOf("run_failure")).toMatchObject({
       organizationName: "알림 조직",
       title: "실행 시도 실패",
-      body: "Research Lead: 가짜 실행기 사고",
+      body: "Research Lead: 가짜 프로바이더 사고",
       link: `/inbox/${org.id}/run_failure/${failed[0]!.id}`,
     });
     expect(recordOf("result_submission")).toMatchObject({
@@ -601,7 +601,7 @@ describe("channel replies", () => {
     const org = await awaitingApproval(agents, "거부 답 조직");
     await say(org.id, "진행 상황을 알려 주세요");
     await t.drain();
-    agents.queue(org.lead.id, failing("가짜 실행기 사고"));
+    agents.queue(org.lead.id, failing("가짜 프로바이더 사고"));
     await say(org.id, "실패해 보세요");
     await t.drain();
     await t.deliverNotifications();

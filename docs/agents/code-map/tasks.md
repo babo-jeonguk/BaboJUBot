@@ -9,7 +9,7 @@
 | 같은 조직 참조 확인·기록과 깨우기·Event의 한 transaction·조건부 완료 | [db/tasks.ts](../../../packages/db/src/tasks.ts), [db/tool-calls.ts](../../../packages/db/src/tool-calls.ts) `toolWrite`(조직→실행 시도 잠금·취소·단계 재확인); 복합 FK는 schema·migrations | 작업 API의 교차 조직·중복 완료 |
 | 깨우기 사유 읽기·실행 맥락의 팀 | db/run-reads.ts `selectWakes`, runs.ts `loadRunContext` | 작업 API, 실행 API |
 | 작업 도구 HTTP·거부 코드·commit 뒤 깨운 에이전트 촉진 | server/tools.ts `respondWrite`; 사용자 댓글은 app.ts·db/tasks.ts `insertOwnerTaskComment` | 작업 API |
-| 가짜 Lead 분담·가짜 작업자 착수→산출물→완료·댓글 답장 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript` | 가짜 실행기 테스트, 작업 화면 E2E |
+| 가짜 Lead 분담·가짜 작업자 착수→산출물→완료·댓글 답장 | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript` | 가짜 프로바이더 테스트, 작업 화면 E2E |
 | 작업 목록·상세·댓글 입력·산출물 단건·이동 경로 | [web/tasks.tsx](../../../apps/web/src/tasks.tsx), main.tsx routes, shell.tsx 경로 표시; api.ts query key | 작업 화면 E2E(390px·댓글 실패 시 입력 유지 포함) |
 
 ## 연결 경로

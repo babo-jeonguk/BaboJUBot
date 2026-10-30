@@ -18,7 +18,7 @@ import {
 } from "@babojubot/contracts";
 import { createOrgToolClient, OrgToolError } from "./tools-client.ts";
 
-// 가짜 실행기. 모델을 부르지 않고 에이전트(Role)와 깨우기 사유에 맞는 시나리오 단계를 실행한다.
+// 가짜 프로바이더. 모델을 부르지 않고 에이전트(Role)와 깨우기 사유에 맞는 시나리오 단계를 실행한다.
 // 각 단계는 실행 시도별 토큰으로 실제 조직 도구 HTTP 경로를 부르며 DB를 직접 쓰지 않는다.
 
 /** 조직 도구 호출 하나의 결과. 거부를 허용한 단계는 거부도 결과로 남긴다. */
@@ -62,7 +62,7 @@ export type ScriptStep =
   | { do: "then"; steps: (state: ScriptState) => ScriptStep[] }
   /** 테스트가 정한 조건까지 멈춘다. 취소되면 reject해야 한다. */
   | { do: "hold"; until: (signal: AbortSignal) => Promise<void> }
-  /** 실행기 오류를 흉내 낸다. */
+  /** 프로바이더 오류를 흉내 낸다. */
   | { do: "fail"; error: string };
 
 export type Script = {
@@ -137,7 +137,7 @@ function reasonsByConversation(request: RunRequest) {
 /** 받은 깨우기 사유를 모두 짚는 답장. */
 const replyToWakeReasons = (reasons: WakeReason[]) =>
   [
-    `(가짜 실행기) 메시지 ${reasons.length}개를 받았습니다.`,
+    `(가짜 프로바이더) 메시지 ${reasons.length}개를 받았습니다.`,
     ...reasons.map((r) => `- ${describeWakeReason(r)}`),
   ].join("\n");
 
@@ -197,7 +197,7 @@ export const leadReplyScript: Script = {
 
 /** 가짜 Lead가 목표에서 만드는 예시 완료 기준. 사용자가 완료 기준을 비워 둔 조직의 초기 연구 승인 요청에 낸다. */
 export function demoCompletionCriteria(goal: string): string {
-  return `“${goal}”을 달성했음을 보여 주는 결과 요약과 근거 산출물이 있다. (가짜 실행기가 목표에서 만든 예시 기준입니다.)`;
+  return `“${goal}”을 달성했음을 보여 주는 결과 요약과 근거 산출물이 있다. (가짜 프로바이더가 목표에서 만든 예시 기준입니다.)`;
 }
 
 /**
@@ -229,7 +229,7 @@ export function demoProposal(
       `- compute: 로컬 CPU`,
       `- 데이터: 사용자가 지정할 공개 데이터셋`,
       `- 사용자 할 일: 없음`,
-      `(가짜 실행기가 만든 예시입니다.)`,
+      `(가짜 프로바이더가 만든 예시입니다.)`,
     ].join("\n"),
     team: [{ role: "researcher", count: 2 }],
     template: "basic-research",
@@ -258,7 +258,7 @@ export function parseGoalMessage(
  * - 연구 진행(사용자가 `작업자 추가`를 부탁함): `작업자 추가: <Role>` 줄의 Role(없으면 researcher)로 작업자를 추가한다.
  *   승인 정책이 켜져 있으면 승인 요청이 되었다고 알린다. 작업자 추가 요청의 결정에는 답장만 한다.
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
- *   가짜 실행기는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
+ *   가짜 프로바이더는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
  * - 어느 단계든 사용자가 `실패 연습`을 부탁함: 아무것도 쓰지 않고 실행 시도를 실패로 끝낸다(Inbox·알림의 실패 항목 확인용).
  * - 어느 단계든 사용자가 `실행 유지 연습`을 부탁함: 아무것도 쓰지 않고 취소될 때까지 실행 시도를 끝내지 않는다(대시보드의 실행 중 확인용).
  * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
@@ -295,7 +295,10 @@ export function demoLeadScript(request: RunRequest): Script {
   if (messages.some((m) => failureDrill.test(m)))
     return {
       steps: [
-        { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+        {
+          do: "fail",
+          error: "(가짜 프로바이더) 사용자가 부탁한 실패 연습입니다.",
+        },
       ],
     };
   if (messages.some((m) => holdDrill.test(m)))
@@ -319,7 +322,7 @@ export function demoLeadScript(request: RunRequest): Script {
           do: "send_message",
           conversationId: defaultConversation,
           body: () =>
-            `(가짜 실행기) 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세${completionCriteria ? "" : "와 제가 제안한 완료 기준"}을 검토해 주세요.`,
+            `(가짜 프로바이더) 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세${completionCriteria ? "" : "와 제가 제안한 완료 기준"}을 검토해 주세요.`,
         },
       ],
       summary: () => "초기 연구 승인을 요청했습니다.",
@@ -365,7 +368,7 @@ export function demoLeadScript(request: RunRequest): Script {
           conversationId: goal.conversationId,
           body: () =>
             [
-              `(가짜 실행기) 목표와 완료 기준을 기록하고 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세를 검토해 주세요.`,
+              `(가짜 프로바이더) 목표와 완료 기준을 기록하고 초기 연구 승인을 요청했습니다. Inbox에서 계획·팀·연구 환경 명세를 검토해 주세요.`,
               ...ignoredGoals.map(
                 (g) =>
                   `- 함께 받은 목표 ${quote(g.goal)}는 기록한 목표와 달라 반영하지 않았습니다.`
@@ -391,7 +394,7 @@ export function demoLeadScript(request: RunRequest): Script {
           do: "send_message",
           conversationId: defaultConversation,
           body: () =>
-            `(가짜 실행기) ${describeWakeReason(sentBack)}\n사유를 반영해 계획을 다시 제출했습니다.`,
+            `(가짜 프로바이더) ${describeWakeReason(sentBack)}\n사유를 반영해 계획을 다시 제출했습니다.`,
         },
       ],
       summary: () => "사유를 반영해 초기 연구 승인을 다시 요청했습니다.",
@@ -456,7 +459,7 @@ function assignInitialTasks(request: RunRequest): Script {
         tool: "create_task",
         input: () => ({
           title: `연구 문제 정리 ${i + 1}`,
-          description: `목표 “${goal}”에 필요한 연구 문제를 정리하고 메모를 산출물로 남긴다. (가짜 실행기가 만든 예시 작업입니다.)`,
+          description: `목표 “${goal}”에 필요한 연구 문제를 정리하고 메모를 산출물로 남긴다. (가짜 프로바이더가 만든 예시 작업입니다.)`,
           assigneeAgentId: worker.id,
         }),
       })),
@@ -464,7 +467,7 @@ function assignInitialTasks(request: RunRequest): Script {
         do: "send_message",
         conversationId: defaultConversationOf(request),
         body: () =>
-          `(가짜 실행기) 초기 연구 승인을 받아 작업 ${workers.length}개를 만들어 ${workers.map((w) => w.name).join(", ")}에게 맡겼습니다. 작업 화면에서 진행을 볼 수 있습니다.`,
+          `(가짜 프로바이더) 초기 연구 승인을 받아 작업 ${workers.length}개를 만들어 ${workers.map((w) => w.name).join(", ")}에게 맡겼습니다. 작업 화면에서 진행을 볼 수 있습니다.`,
       },
     ],
     summary: () => `작업 ${workers.length}개를 만들어 맡겼습니다.`,
@@ -503,8 +506,8 @@ function addWorkerScript(role: string, conversationId?: string): Script {
         body: (state) => {
           const worker = added(state);
           return worker
-            ? `(가짜 실행기) 작업자 ${worker.name}을 팀에 추가했습니다.`
-            : `(가짜 실행기) 작업자 추가 승인 정책이 켜져 있어 승인을 요청했습니다. Inbox에서 결정해 주세요.`;
+            ? `(가짜 프로바이더) 작업자 ${worker.name}을 팀에 추가했습니다.`
+            : `(가짜 프로바이더) 작업자 추가 승인 정책이 켜져 있어 승인을 요청했습니다. Inbox에서 결정해 주세요.`;
         },
       },
     ],
@@ -574,7 +577,7 @@ function submitResultScript(
                 do: "send_message",
                 conversationId,
                 body: () =>
-                  "(가짜 실행기) 아직 근거로 묶을 산출물이 없어 결과를 제출하지 않았습니다. 작업이 끝나면 다시 부탁해 주세요.",
+                  "(가짜 프로바이더) 아직 근거로 묶을 산출물이 없어 결과를 제출하지 않았습니다. 작업이 끝나면 다시 부탁해 주세요.",
               },
             ];
           // 제출 계약의 상한 안에서 앞에서부터 고르고, 고르지 못한 수를 요약과 답장에 밝힌다.
@@ -592,7 +595,7 @@ function submitResultScript(
               do: "send_message",
               conversationId,
               body: () =>
-                `(가짜 실행기) ${feedback ? "수정 의견을 반영해 " : ""}결과를 근거 산출물 ${left ? `${evidence.length}개 중 ${artifactIds.length}개(제출 상한)` : `${artifactIds.length}개`}와 함께 제출했습니다. Inbox에서 검토하고 수정 요청 또는 최종 완료를 결정해 주세요.`,
+                `(가짜 프로바이더) ${feedback ? "수정 의견을 반영해 " : ""}결과를 근거 산출물 ${left ? `${evidence.length}개 중 ${artifactIds.length}개(제출 상한)` : `${artifactIds.length}개`}와 함께 제출했습니다. Inbox에서 검토하고 수정 요청 또는 최종 완료를 결정해 주세요.`,
             },
           ];
         },
@@ -619,7 +622,7 @@ function resultSummary(
   const tail = [
     ...(feedback ? [``, `반영한 수정 의견: ${feedback}`] : []),
     ``,
-    `(가짜 실행기가 만든 예시 요약입니다. 완료 기준 충족을 판단하지 않았습니다.)`,
+    `(가짜 프로바이더가 만든 예시 요약입니다. 완료 기준 충족을 판단하지 않았습니다.)`,
   ];
   const reports = done.map((t) => `- ${t.title}: ${t.report?.summary ?? ""}`);
   const lines = (n: number) => [
@@ -654,7 +657,10 @@ export function demoWorkerScript(request: RunRequest): Script {
   if (comments.some((c) => failureDrill.test(c)))
     return {
       steps: [
-        { do: "fail", error: "(가짜 실행기) 사용자가 부탁한 실패 연습입니다." },
+        {
+          do: "fail",
+          error: "(가짜 프로바이더) 사용자가 부탁한 실패 연습입니다.",
+        },
       ],
     };
   if (comments.some((c) => holdDrill.test(c)))
@@ -705,7 +711,7 @@ export function demoWorkerScript(request: RunRequest): Script {
               `- 정리한 연구 문제 후보를 적는다.`,
               `- 다음 단계로 가설·아이디어를 세운다.`,
               ``,
-              `(가짜 실행기가 만든 예시 산출물입니다. 검증된 결과가 아닙니다.)`,
+              `(가짜 프로바이더가 만든 예시 산출물입니다. 검증된 결과가 아닙니다.)`,
             ].join("\n"),
           }),
         },
@@ -716,7 +722,7 @@ export function demoWorkerScript(request: RunRequest): Script {
           input: () => ({
             kind: firstNodeKind,
             title: reason.title,
-            body: `작업 ${quote(reason.title)}에서 정리한 연구 문제 후보. 근거는 이 작업의 산출물에 있습니다. (가짜 실행기가 만든 예시입니다.)`,
+            body: `작업 ${quote(reason.title)}에서 정리한 연구 문제 후보. 근거는 이 작업의 산출물에 있습니다. (가짜 프로바이더가 만든 예시입니다.)`,
           }),
         },
         {
@@ -733,7 +739,7 @@ export function demoWorkerScript(request: RunRequest): Script {
           tool: "complete_task",
           input: () => ({
             ...taskId,
-            summary: `(가짜 실행기) ${quote(reason.title)}을 정리해 메모를 산출물로 남겼습니다.`,
+            summary: `(가짜 프로바이더) ${quote(reason.title)}을 정리해 메모를 산출물로 남겼습니다.`,
           }),
           when: started,
           // 착수 뒤 Lead가 조정으로 먼저 완료했으면 거부를 남긴다.
@@ -746,7 +752,7 @@ export function demoWorkerScript(request: RunRequest): Script {
         tool: "comment_task",
         input: () => ({
           taskId: reason.taskId,
-          body: `(가짜 실행기) 댓글을 받았습니다: ${quote(reason.body)} 다음 작업에 반영하겠습니다.`,
+          body: `(가짜 프로바이더) 댓글을 받았습니다: ${quote(reason.body)} 다음 작업에 반영하겠습니다.`,
         }),
       });
     else
@@ -796,7 +802,7 @@ export function createScriptedRuntime({
       const script = select(request);
       if (!script)
         return end("failed", {
-          error: `가짜 실행기에 ${request.context.agent.role}·${request.wakeReasons.map((r) => r.kind).join(",")} 시나리오가 없습니다.`,
+          error: `가짜 프로바이더에 ${request.context.agent.role}·${request.wakeReasons.map((r) => r.kind).join(",")} 시나리오가 없습니다.`,
         });
       const tools = createOrgToolClient({
         baseUrl: request.access.toolsBaseUrl,
@@ -886,7 +892,8 @@ export function createScriptedRuntime({
         // 취소 중 생긴 오류는 실패가 아니라 취소다(ACP prompt-turn Cancellation과 같은 규칙).
         if (signal.aborted) return end("cancelled");
         return end("failed", {
-          error: error instanceof Error ? error.message : "가짜 실행기 오류",
+          error:
+            error instanceof Error ? error.message : "가짜 프로바이더 오류",
         });
       }
     },

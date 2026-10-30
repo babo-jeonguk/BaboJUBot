@@ -58,7 +58,7 @@ const sendTo = (orgId: string, conversationId: string, body: string) =>
     { body }
   );
 
-/** 첫 실행 시도만 gate에서 멈추고 그 뒤에는 기본 답장 시나리오를 쓰는 가짜 실행기. */
+/** 첫 실행 시도만 gate에서 멈추고 그 뒤에는 기본 답장 시나리오를 쓰는 가짜 프로바이더. */
 function holdFirstRun(gate: Gate) {
   let calls = 0;
   return createScriptedRuntime({

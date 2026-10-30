@@ -22,7 +22,7 @@
 | [#55](issue-55-references.md#구현-참고) | 작업/산출물 출처·조직 scope, 기록과 wake/Event의 원자성 | #55는 #69로 병합됨을 이슈 댓글에서 확인. 과거 미구현 설명 대신 현재 toolWrite·tasks·schema를 직접 읽는다. |
 | [#54](issue-54-references.md#brief)·[#53](issue-53-references.md#brief) | 초기 승인 snapshot·조직 사본, 토큰·종료/쓰기 잠금·pending wake | 구현의 해당 경계를 다시 읽고 연결한다. 이 문서의 새 E로 기존 근거를 복제하지 않는다. |
 | [#52](issue-52-references.md#brief)·[#50](issue-50-references.md#brief)·[#1](issue-1-references.md#brief) | 확정 스택·화면 지도·조직 범위 저장 책임 | 기준선으로만 사용. 기술·셸·Control Plane을 재선정하지 않는다. |
-| [구조 비교](reference-code-structure.md)·[상호작용](agent-interaction-models.md)·[실행기](agent-runtime-models.md)·[비교 목록](comparative-survey.md)·[대시보드](dashboard-references.md)·[Paperclip](paperclip.md)·[Paperclip 대시보드](paperclip-dashboard.md) | 후보 출발점 | 연구 지도의 주/보조 관계 불변 조건을 직접 입증하지 않아 신규 결정 근거로 승격하지 않는다. 기존 캐시는 checkout·실행 도구 위치만 재사용한다. |
+| [구조 비교](reference-code-structure.md)·[상호작용](agent-interaction-models.md)·[프로바이더](agent-runtime-models.md)·[비교 목록](comparative-survey.md)·[대시보드](dashboard-references.md)·[Paperclip](paperclip.md)·[Paperclip 대시보드](paperclip-dashboard.md) | 후보 출발점 | 연구 지도의 주/보조 관계 불변 조건을 직접 입증하지 않아 신규 결정 근거로 승격하지 않는다. 기존 캐시는 checkout·실행 도구 위치만 재사용한다. |
 
 ## 레퍼런스
 
@@ -113,7 +113,7 @@
 | 규칙 — `packages/core` | kind membership·주 연결 cycle·명시 부모 변경·task cardinality·폐기/복원·사용자 편집 효과. 연구 단계 진행이나 가설 정답 판단을 서버 규칙으로 추가하지 않음 |
 | 저장 — `packages/db` | 지도 schema/migration·복합FK/primary unique·조직 scope 조회, `toolWrite`와 같은 org lock을 쓰는 Owner 변경, 변경·편집 출처·Event/wake 한 transaction. agent의 run→org 잠금 순서 유지 |
 | 서버 — `apps/server` | 기존 토큰/gate·조회 scope·strict input·거부 코드, Owner/agent 공통 규칙, commit 뒤 EventHub/dispatcher. 인증·기록 출처·승인 전 쓰기를 새 route가 우회하지 않는지 확인 |
-| 실행기 — `packages/runtime` | 기존 Script 일반 call/gate로 worker 노드→주/보조 연결→task 연결을 실제 HTTP 경로로 호출. 사용자 편집 wake가 실행 중 입력에 섞이지 않고 다음 run에 전달되는 시나리오 |
+| 프로바이더 — `packages/runtime` | 기존 Script 일반 call/gate로 worker 노드→주/보조 연결→task 연결을 실제 HTTP 경로로 호출. 사용자 편집 wake가 실행 중 입력에 섞이지 않고 다음 run에 전달되는 시나리오 |
 | 화면 — `apps/web` | map route·React Flow projection/Dagre, 선택 ID→최신 상세, 폼·실패 초안·충돌 안내, node→task/artifact와 task→node 이동, 조직 query·WS 재조회·390px 하단 패널 |
 
 | ID | 검증할 경계 — 입력 → 행동 → 기대 | 근거 |

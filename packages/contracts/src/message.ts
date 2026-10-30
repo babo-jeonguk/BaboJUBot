@@ -11,7 +11,7 @@ export type MessageAuthor = z.infer<typeof messageAuthorSchema>;
  * `중단하고 보내기`는 받는 에이전트의 진행 중 실행 시도를 취소하는 제어 명령을 함께 남기고, 메시지는 다음 실행 시도가 받는다.
  * 그 실행 시도는 `중단하고 보내기` 메시지만 받으며, 먼저 줄 세운 메시지와 다른 깨우기는 그다음 실행 시도가 받는다(core `bundleWakes`).
  * 아직 실행 시도가 받지 않은 메시지는 사용자가 그 자리에서 고치거나(`고치기`) 거두거나(`취소`) `지금 보내기`로 `중단하고 보내기`로 바꿀 수 있다.
- * steer는 실행기 지원과 함께 더한다(판 2).
+ * steer는 프로바이더 지원과 함께 더한다(판 2).
  */
 export const messageDeliveries = ["next_run", "interrupt"] as const;
 export const messageDeliverySchema = z.enum(messageDeliveries);

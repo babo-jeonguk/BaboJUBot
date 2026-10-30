@@ -556,12 +556,12 @@ describe("interrupt and send", () => {
   it("joins a run still cleaning up after an earlier cancel instead of recording it as idle", async () => {
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
-    // 단언이 실패해도 실행기를 놓아 서버를 닫을 수 있게 한다.
+    // 단언이 실패해도 프로바이더를 놓아 서버를 닫을 수 있게 한다.
     onTestFinished(() => release());
     let reachedHold!: () => void;
     const holdReached = new Promise<void>((r) => (reachedHold = r));
     const received: WakeReason[][] = [];
-    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 실행기.
+    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
     const slow: RuntimeAdapter = {
       async execute(request): Promise<RunResult> {
         received.push(request.wakeReasons);
@@ -679,7 +679,7 @@ describe("stop the current run", () => {
     let reachedHold!: () => void;
     const holdReached = new Promise<void>((r) => (reachedHold = r));
     let executed = 0;
-    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 실행기.
+    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
     const slow: RuntimeAdapter = {
       async execute(): Promise<RunResult> {
         if (++executed === 1) {
@@ -731,7 +731,7 @@ describe("cancellation boundary", () => {
     let reachedHold!: () => void;
     const holdReached = new Promise<void>((r) => (reachedHold = r));
     const late: { status: number }[] = [];
-    // 취소를 무시하고 계속 도구를 쓰려는 실행기.
+    // 취소를 무시하고 계속 도구를 쓰려는 프로바이더.
     const stubborn: RuntimeAdapter = {
       async execute(request): Promise<RunResult> {
         reachedHold();

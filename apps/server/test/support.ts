@@ -53,7 +53,7 @@ export type TestServer = {
 };
 
 export type TestServerOptions = {
-  /** 실행기 adapter. 기본은 가짜 실행기의 기본 시나리오다. */
+  /** 프로바이더 adapter. 기본은 가짜 프로바이더의 기본 시나리오다. */
   runtime?: RuntimeAdapter;
   /** 기록 시각에 쓰는 시계. */
   now?: () => Date;

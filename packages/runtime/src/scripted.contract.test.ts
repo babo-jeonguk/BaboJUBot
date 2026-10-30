@@ -48,7 +48,7 @@ function leadRequest(access: RunRequest["access"], body: string): RunRequest {
   };
 }
 
-// 가짜 실행기가 첫 adapter다. 실제 HTTP로 가짜 도구 서버에 붙는다.
+// 가짜 프로바이더가 첫 adapter다. 실제 HTTP로 가짜 도구 서버에 붙는다.
 describeRuntimeContract("scripted runtime", {
   adapter: createScriptedRuntime(),
   // 사용자 메시지에 답장하고 끝난다(맥락 조회 → 진행 활동 → 답장).

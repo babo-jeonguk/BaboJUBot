@@ -519,7 +519,7 @@ test("global settings shows the places for the runtime, environment templates, s
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole("heading", { name: "전역 설정" })).toBeVisible();
   for (const region of [
-    "실행기",
+    "프로바이더",
     "연구 환경 템플릿",
     "비밀값",
     "메시지 앱 연결",

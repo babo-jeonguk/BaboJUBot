@@ -147,7 +147,7 @@ E2E는 `page.route`에서 서버 응답을 먼저 받아 snapshot을 고정한 �
 
 - 실행: 설치본 Query의 결정적 probe **9개 사례(결과 행10개)**, 원본 p-debounce2개·원본 Paperclip 배처2개의 독립 probe가 통과했다. p-debounce upstream test 파일도 실행했으나 Node reporter는 파일1개 통과만 출력하여 개별 assertion/test 수를 보고하지 않는다. 전체 lint/타입/배포 검사로 확대하지 않았다.
 - **제품 hook·브라우저 다른 탭·느린 실제 HTTP·실제 WS 재연결·기존 제품 E2E는 실행하지 않았다.** 따라서 #77 AC를 충족했다는 보고가 아니다. 위 V01–V14는 구현 때 검증할 항목이다. 모형의 dirty 처리와 실제 React/Query lifecycle의 완전 일치를 주장하지 않는다.
-- workqueue는 Go 실행기가 없어 소스·테스트 읽기만 했다. Paperclip 전체 제품·p-debounce 정식 npm test(lint/type 포함)·TanStack 전체 upstream suite는 실행하지 않았다. Paperclip probe는 visibility stub과 명시 flush를 사용해 타이머 간격·브라우저 시각 효과를 관찰한 것이 아니다.
+- workqueue는 Go 프로바이더가 없어 소스·테스트 읽기만 했다. Paperclip 전체 제품·p-debounce 정식 npm test(lint/type 포함)·TanStack 전체 upstream suite는 실행하지 않았다. Paperclip probe는 visibility stub과 명시 flush를 사용해 타이머 간격·브라우저 시각 효과를 관찰한 것이 아니다.
 - 최초 sandbox GitHub 네트워크가 실패해 승인된 네트워크 확장으로 공개 원문을 읽었다. 일부 RxJS 문서는 JS 요구로 본문 확인이 어려워 안정 tag 소스로 대체했다. 약한 제품 후보는 검색 결과만 있으며 결정 근거에 쓰지 않았다. 로그인·유료 API·실제 모델·실제 연구 데이터는 사용하지 않았다.
 - 조사용 소스·모형은 git 무시 캐시에만 있다. 제품 코드·제품 테스트·설정 변경과 commit/push/PR·이슈 close는 하지 않았다. 조사 문서는 구현 변경과 함께 검토·커밋하도록 남긴다.
 - 재확인 필요: upstream SHA/설치 버전 변경, inactive/paused/오류 소진의 실제 recovery, mutation/focus/route와의 경합. 코드 이식으로 범위가 바뀌면 파일 header·NOTICE·전이 의존성과 `THIRD_PARTY_NOTICES.md`를 별도로 심사한다.

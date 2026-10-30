@@ -6,8 +6,8 @@
 
 ## Brief
 
-- 구현할 문제: 기본 가짜 실행기로 대시보드 조직 생성부터 사용자 최종 완료까지 직접 눌러 보고, Playwright 한 흐름으로 지킨다. 중간에 일시정지·재개와 작업자 추가 정책을 켠 뒤 승인하는 장면을 포함하고 README의 시작·검증 명령과 판 1 상태를 갱신한다.
-- 동종 문제: 비동기 업무의 실제 상태 변경 경로를 통과하는 결정적 fake 실행기와 사용자 승인 경계를 지나는 브라우저 통합 검증.
+- 구현할 문제: 기본 가짜 프로바이더로 대시보드 조직 생성부터 사용자 최종 완료까지 직접 눌러 보고, Playwright 한 흐름으로 지킨다. 중간에 일시정지·재개와 작업자 추가 정책을 켠 뒤 승인하는 장면을 포함하고 README의 시작·검증 명령과 판 1 상태를 갱신한다.
+- 동종 문제: 비동기 업무의 실제 상태 변경 경로를 통과하는 결정적 fake 프로바이더와 사용자 승인 경계를 지나는 브라우저 통합 검증.
 - 고정된 결정: [구조](../architecture.md#제품-불변-조건-강제-위치)·[기능](../features.md#웹-대시보드-화면-지도)·[용어](../../GLOSSARY.md)·[ADR1](../adr/0001-adapter-control-plane.md)·[ADR2](../adr/0002-durable-records-and-wakes.md)·[ADR3](../adr/0003-configurable-approval-policy.md)·[ADR4](../adr/0004-paperclip-aligned-stack.md)를 따른다. 초기 승인은 항상 필요하고 최종 완료는 사용자만 결정한다. fake도 실행 시도 token의 실제 조직 도구 HTTP를 사용한다. 조직별 기록·기억을 분리하고 실제 모델·유료 API·새 workflow/기억 엔진은 포함하지 않는다.
 - 최신 범위: blocker #56/57/58/59/60/61/62/64는 모두 closed. [#63 인계](https://github.com/babo-jeonguk/BaboJUBot/issues/63#issuecomment-6312257963)에 따라 작업 완료 뒤 Lead 대화로 결과 제출을 부탁한다. [#64 제외 확인](https://github.com/babo-jeonguk/BaboJUBot/issues/63#issuecomment-6162232829)에 따라 사본 편집을 새 E2E 단계로 추가하지 않는다. Inbox는 [#61 최신 정정](https://github.com/babo-jeonguk/BaboJUBot/issues/61#issuecomment-6411357116)(주의 필요·전체·읽지 않음·보관됨, 실패만 보관)을 따른다.
 - 현재 차이: 전체 데모의 핵심 동작은 이미 기본 runtime에 있다(E01–E03/E06). 남은 검증 공백은 주요 사용자 행동을 한 테스트에서 모두 UI로 수행하는 연결과 개발 안내다. 이번 조사로 #63을 닫거나 구현을 시작하지 않는다.

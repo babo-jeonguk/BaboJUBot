@@ -6,7 +6,7 @@
 
 - 구현할 문제: Lead의 요약·근거 산출물 제출을 사용자 검토로 연결한다. 수정 요청은 의견과 함께 연구 진행으로 돌리고 Lead를 깨운다. 최종 완료는 사용자만 결정하고 이후 깨우기는 새 실행 시도로 admission되지 않는다.
 - 동종 문제: 제출자와 결정권자를 분리한 불변 검토 대상, 수정·재제출, 닫힌 조직의 실행 admission 경합.
-- 고정된 결정: [AGENTS](../../AGENTS.md), [용어](../../GLOSSARY.md), [기능](../features.md), [구조](../architecture.md), [ADR](../adr/)와 #49 stories61–66. 최종 완료는 일반 승인 요청과 구별한다. PG/Drizzle·Express·React/Query와 실제 모델 없는 가짜 실행기를 유지한다.
+- 고정된 결정: [AGENTS](../../AGENTS.md), [용어](../../GLOSSARY.md), [기능](../features.md), [구조](../architecture.md), [ADR](../adr/)와 #49 stories61–66. 최종 완료는 일반 승인 요청과 구별한다. PG/Drizzle·Express·React/Query와 실제 모델 없는 가짜 프로바이더를 유지한다.
 
 | ID | 조사 질문 | 출처 | 전략 |
 |---|---|---|---|
@@ -14,7 +14,7 @@
 | Q2 | 결정 단일 적용과 단계·의견·Lead 깨우기·Event·Inbox 원본을 어떻게 함께 저장하는가? | #57 AC1/2, ADR-0002 | Source Recon + runtime/failure·PG 음성 대조 |
 | Q3 | 완료와 claim·heartbeat·늦은 도구 경합에서 admission과 완료 권한을 어디서 강제하는가? | #57 AC3/4, AGENTS | Source Recon + adversarial scenario·동시성 |
 | Q4 | Inbox→별도 결과 검토→요약·기준·산출물→수정/완료를 실패·중복·390px에서 어떻게 제공하는가? | #57 AC5, features, #53/55 상세 경로 결정 | Surface Capture + Behavioral Recon + Source Recon |
-| Q5 | 현행 package·도구·가짜 실행기·query/Event를 어떻게 확장하고 무엇을 후속에 남기는가? | architecture, #49 검증 계약 | 현재 소스 대조 + 계약·실패 검증 |
+| Q5 | 현행 package·도구·가짜 프로바이더·query/Event를 어떻게 확장하고 무엇을 후속에 남기는가? | architecture, #49 검증 계약 | 현재 소스 대조 + 계약·실패 검증 |
 
 | 재사용한 조사 | 쓰는 범위 | 재확인 |
 |---|---|---|
@@ -113,8 +113,8 @@
 | 계약 — packages/contracts | 제출/결정/상세·Inbox 판별 union·result wake reason/Event. actor·조직·작성 run·기준 snapshot은 agent가 선택하지 않도록 strict 입력. 실제 도구 이름/경로는 구현에서 확정 |
 | 순수 규칙 — packages/core | Lead 제출·Owner 결정·단계 전이·admission 허용. core→contracts만 유지하고 DB/Express/React에 의존하지 않음 |
 | 저장 — packages/db | 제출·근거 관계·결정 schema/migration·복합 FK·pending 방어·org lock/CAS·Event/wake tx. claimNextRun과 pending/runnable 조회를 함께 검토 |
-| 서버 — apps/server | scoped 제출 도구와 Owner 결정/조회·Inbox. commit 뒤 EventHub/kick. Owner 인증·실행기 접근 경계는 명시적으로 선택. org lock 아래 기존 run 잠금을 역순으로 추가하지 않음 |
-| 실행기 — packages/runtime | scripted call·wake/context 해석·gate로 검증 가능한 시나리오. 기존 adapter seam을 유지하며 자체 agent loop를 만들지 않음 |
+| 서버 — apps/server | scoped 제출 도구와 Owner 결정/조회·Inbox. commit 뒤 EventHub/kick. Owner 인증·프로바이더 접근 경계는 명시적으로 선택. org lock 아래 기존 run 잠금을 역순으로 추가하지 않음 |
+| 프로바이더 — packages/runtime | scripted call·wake/context 해석·gate로 검증 가능한 시나리오. 기존 adapter seam을 유지하며 자체 agent loop를 만들지 않음 |
 | 화면 — apps/web | 별도 결과 검토 route·기존 artifact 단건 링크·query key·live invalidation·결정 폼/receipt·390px. 공개 데모 화면을 제품으로 복사할 필요 없음 |
 
 | ID | 검증할 경계 — 입력 → 행동 → 기대 | 근거 |
@@ -136,7 +136,7 @@
 |---|---|---|
 | 결과 검토 중 새 실행 시도 | 사용자 / #57 | 기존 #49 admission 금지 목록은 paused/stopped/completed이며 result_review는 포함하지 않는다. ① 기존대로 조회·Lead 답장 가능한 실행 허용(연구 쓰기는 닫힘) ② 검토 중 모든 admission 보류. ②는 사용자 지도 편집이 Lead를 깨우는 #56 계약과 함께 결정. 임의로 freeze를 추가하지 않음(E01,E02,E04) |
 | 최종 완료 전에 이미 admission된 run | 사용자 / #57, 취소 기반 #59 | ① 새 admission·연구 쓰기는 막고 기존 run은 자연 종료 ② 완료 때 취소 요청하고 settle 관찰. claim 뒤 adapter 호출 전인 run도 이 범주다. 취소를 선택해도 stage fence를 대신하지 않으며 org→run 역순 잠금 주의(E07,E16) |
-| Owner API의 실제 신뢰경계 | 사용자 / #57, 실제 adapter 도입 전 해결 | ① Owner credential/session과 agent 접근 차단을 제품에 구현 ② 가짜 실행기·신뢰된 로컬 운영 한계를 명시하고 실제 adapter 전에 인증/네트워크 격리를 별도 해결. ② 상태에서 임의 HTTP를 쓰는 agent까지 최종 완료 우회가 불가능하다고 보고할 수 없음(E03,E12) |
+| Owner API의 실제 신뢰경계 | 사용자 / #57, 실제 adapter 도입 전 해결 | ① Owner credential/session과 agent 접근 차단을 제품에 구현 ② 가짜 프로바이더·신뢰된 로컬 운영 한계를 명시하고 실제 adapter 전에 인증/네트워크 격리를 별도 해결. ② 상태에서 임의 HTTP를 쓰는 agent까지 최종 완료 우회가 불가능하다고 보고할 수 없음(E03,E12) |
 
 후속은 #58 선택 승인 정책, #59 일반 일시정지/중단/취소, #60 heartbeat·재시작 재처리, #61 outbox·읽음/보관·실패 Inbox, #63 전체 데모/E2E다. #57의 pending 결과 Inbox·영속 수정 wake·completed admission 거부는 후속으로 미루지 않는다.
 
@@ -150,11 +150,11 @@
 | Jupyter Server | 시작 때 token을 만들어 URL→HttpOnly cookie로 넘기지만 token 파일을 같은 사용자 kernel이 읽을 수 있고, 문서가 "execute 권한 ≈ 모든 권한"이라고 적는다 | `jupyter-server/jupyter_server@f8169d7` `auth/identity.py` L209–280, `docs/source/operators/security.rst` L227–231 |
 | Open WebUI·Ollama | 인증을 끄면(`WEBUI_AUTH=False`) 모든 접속이 관리자이고, Ollama는 인증 없이 Origin·Host 검사만 한다 | `open-webui/open-webui@91ea4e3` `routers/auths.py` L728–758; `ollama/ollama@2cd63f7` `envconfig/config.go` L21–91 |
 | n8n·Home Assistant·OpenHands | 코드 실행 쪽은 별도 프로세스·컨테이너와 전용 토큰, env 허용 목록·비밀 제거로 나눈다. OpenHands 로컬 모드는 key를 HTML에 넣어 사실상 로컬 신뢰다 | `n8n-io/n8n@1ebe2cf` `task-runner-process-js.ts` L53–90; HA developers `docs/apps/communication.md` L18–30; `OpenHands/software-agent-sdk@0996c33` `sdk/utils/command.py` L16–67 |
-| Claude Code sandbox·Codex | 실행기 sandbox를 켜면 Linux/WSL2에서 host loopback 연결이 기본 차단되거나(seccomp) 네트워크가 꺼진다 | code.claude.com/docs/en/sandboxing; `openai/codex@c7234c1` `linux-sandbox/src/seccomp.rs` L100–128 |
+| Claude Code sandbox·Codex | 프로바이더 sandbox를 켜면 Linux/WSL2에서 host loopback 연결이 기본 차단되거나(seccomp) 네트워크가 꺼진다 | code.claude.com/docs/en/sandboxing; `openai/codex@c7234c1` `linux-sandbox/src/seccomp.rs` L100–128 |
 
 - 같은 OS 사용자로 shell을 가진 프로그램을 운영자와 구별하는 도구는 없었다. 로그인·token을 붙여도 그 프로그램은 cookie·파일·DB(현재 embedded Postgres는 loopback `postgres/postgres`, [client.ts](../../packages/db/src/client.ts))에 닿으므로, 실제 경계는 실행 환경 격리다.
-- **사용자 결정(2026-10-21):** Paperclip `local_trusted`처럼 로그인 없이 로컬 신뢰 운영으로 둔다. #57은 조직 도구·실행 토큰 경로에 완료 수단이 없음을 검증하고 이 한계를 [README](../../README.md)에 적는다. 인증·격리는 실제 모델 실행기를 붙일 때 다시 정한다.
-- 미확인: Paperclip이 로컬 모드에서 실행기를 sandbox로 감싸는지, n8n runner 코드의 HTTP 호출 차단 여부, 이 WSL2 기기에서의 cookie·`/proc` 실측.
+- **사용자 결정(2026-10-21):** Paperclip `local_trusted`처럼 로그인 없이 로컬 신뢰 운영으로 둔다. #57은 조직 도구·실행 토큰 경로에 완료 수단이 없음을 검증하고 이 한계를 [README](../../README.md)에 적는다. 인증·격리는 실제 모델 프로바이더를 붙일 때 다시 정한다.
+- 미확인: Paperclip이 로컬 모드에서 프로바이더를 sandbox로 감싸는지, n8n runner 코드의 HTTP 호출 차단 여부, 이 WSL2 기기에서의 cookie·`/proc` 실측.
 
 ## 한계와 미확인
 

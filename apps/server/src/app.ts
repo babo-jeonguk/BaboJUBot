@@ -134,7 +134,7 @@ export type ServerOptions = {
   host?: string;
   /** 빌드한 대시보드. 있으면 API 밖의 경로에 SPA로 제공한다. */
   webDistDir?: string;
-  /** 실행기 adapter. 첫 판은 가짜 실행기뿐이고, 테스트는 시나리오를 주입한다. */
+  /** 프로바이더 adapter. 첫 판은 가짜 프로바이더뿐이고, 테스트는 시나리오를 주입한다. */
   runtime?: RuntimeAdapter;
   /** 기록 시각에 쓰는 시계. 테스트가 주입한다. */
   now?: () => Date;
@@ -160,7 +160,7 @@ export type RunningServer = {
   /** 주입한 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. 테스트 helper(서버는 스스로 보낸다). */
   deliverNotifications: () => Promise<void>;
   /**
-   * 진행 중인 실행 시도를 취소하고 실행기가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다.
+   * 진행 중인 실행 시도를 취소하고 프로바이더가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다.
    * 한 부분을 닫다 실패해도 나머지를 닫고, 모두 닫은 뒤 그 실패들을 던진다.
    */
   close: () => Promise<void>;

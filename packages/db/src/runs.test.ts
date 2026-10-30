@@ -270,7 +270,7 @@ describe("control commands", () => {
     expect(await writing).toEqual({ kind: "run_finished" });
     expect(wrote).toBe(false);
     expect(await authenticateRun(t.db, digest)).toBeUndefined();
-    // 실행기가 돌려준 결과와 상관없이 취소로 끝나고, 그 뒤에야 다음 실행 시도가 생긴다.
+    // 프로바이더가 돌려준 결과와 상관없이 취소로 끝나고, 그 뒤에야 다음 실행 시도가 생긴다.
     await send("y");
     expect(await claim()).toBeUndefined();
     await finishRun(t.db, runId, completed, source);

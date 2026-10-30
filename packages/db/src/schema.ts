@@ -207,7 +207,7 @@ export const runs = pgTable(
       .references(() => organizations.id),
     agentId: uuid("agent_id").notNull(),
     status: text("status", { enum: runStatuses }).notNull(),
-    /** 사용자 제어가 요청한 취소. 요청한 순간 토큰이 닫히고, 실행기가 정리를 끝내면 `cancelled`로 끝난다. */
+    /** 사용자 제어가 요청한 취소. 요청한 순간 토큰이 닫히고, 프로바이더가 정리를 끝내면 `cancelled`로 끝난다. */
     cancelReason: text("cancel_reason", { enum: runCancelReasons }),
     tokenDigest: text("token_digest").notNull().unique(),
     instructionsBundleVersion: text("instructions_bundle_version"),

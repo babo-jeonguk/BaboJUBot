@@ -6,7 +6,7 @@
 
 - 구현할 문제: 에이전트별 선택적 heartbeat와 설정 화면, 조직/자기 에이전트 기억의 최소 write/recall, 서버 재시작 뒤 진행 중 실행 시도의 종료·입력 재처리를 제공한다.
 - 동종 문제: **신원에 묶인 직렬 작업자가 주기 입력과 영속 inbox를 소비하고, 장애 후 입력을 재전달하면서 과거 실행 시도의 권한·부작용과 사적 맥락을 분리하는 메커니즘**이다. 여기서 heartbeat는 장애 감지 신호가 아니라 주기적 깨우기다.
-- 고정된 결정: [AGENTS](../../AGENTS.md), [용어](../../GLOSSARY.md), [기능](../features.md), [구조](../architecture.md), [ADR1](../adr/0001-adapter-control-plane.md)·[ADR2](../adr/0002-durable-records-and-wakes.md)·[ADR3](../adr/0003-configurable-approval-policy.md)·[ADR4](../adr/0004-paperclip-aligned-stack.md)를 따른다. 단일 서버·Postgres·가짜 실행기·에이전트당 실행 시도 하나·미처리 깨우기 전체 병합·실행 중 입력의 다음 실행 반영을 유지한다. 조직 → 에이전트 → 실행 시도 잠금 순서와 종료/취소 토큰 거부를 보존한다.
+- 고정된 결정: [AGENTS](../../AGENTS.md), [용어](../../GLOSSARY.md), [기능](../features.md), [구조](../architecture.md), [ADR1](../adr/0001-adapter-control-plane.md)·[ADR2](../adr/0002-durable-records-and-wakes.md)·[ADR3](../adr/0003-configurable-approval-policy.md)·[ADR4](../adr/0004-paperclip-aligned-stack.md)를 따른다. 단일 서버·Postgres·가짜 프로바이더·에이전트당 실행 시도 하나·미처리 깨우기 전체 병합·실행 중 입력의 다음 실행 반영을 유지한다. 조직 → 에이전트 → 실행 시도 잠금 순서와 종료/취소 토큰 거부를 보존한다.
 - 조직/자기 에이전트 Memory scope는 실행 시도 신원에서 정한다. 연구 기록을 기억으로 대체하지 않는다. 특정 메모리 제품·기법·저장 엔진, 실제 모델, 일반 재시도 정책·worker 분리는 이번 선택 대상이 아니다. 초기 승인·사용자 최종 완료·pause/stop admission을 주기 입력이나 복구가 우회해서는 안 된다.
 - [#53 인계](https://github.com/babo-jeonguk/BaboJUBot/issues/60#issuecomment-6249545547)는 입력 membership·기존 종료 사유·이미 발생한 답장의 멱등성을 요구한다. 메모리의 미저장 실행 결과는 crash 뒤 복구되지 않는다는 제한을 유지한다.
 
@@ -155,9 +155,9 @@
 | `packages/db` | agent 주기 상태·Memory adapter·출처/소유권 복합 참조·run-input 이력·migration/backfill·복구/도구 결과 transaction. 최신 상태는 잠금 아래 재검사 |
 | `apps/server` | clock/scheduler 수명주기·startup recovery 순서·기억 도구 handler·commit 뒤 dispatch/Event. 설정 변경은 사용자 경로·조직/agent 범위 강제 |
 | `apps/web` | `agents.tsx` 상세·API query/Event invalidation·저장 폼·서버 예정 상태. 조직 설정 화면으로 옮기지 않음 |
-| `packages/runtime`, `harness` | 가짜 실행기의 heartbeat/기억·crash replay 시나리오, Role 기본 간격 metadata. 실제 모델 호출 없음. 사본 편집 UI/revision은 후속 #64 |
+| `packages/runtime`, `harness` | 가짜 프로바이더의 heartbeat/기억·crash replay 시나리오, Role 기본 간격 metadata. 실제 모델 호출 없음. 사본 편집 UI/revision은 후속 #64 |
 
-다음 검증은 **#60 구현의 완료 조건을 구체화하는 참고**이며 이번에 제품에서 통과한 테스트 목록이 아니다. 주 seam은 #49의 HTTP API+가짜 실행기+주입 시계이고 고정 sleep·DB 직접 조작으로 성공을 대신하지 않는다. 실제 process crash는 별도 subprocess fixture가 필요하다.
+다음 검증은 **#60 구현의 완료 조건을 구체화하는 참고**이며 이번에 제품에서 통과한 테스트 목록이 아니다. 주 seam은 #49의 HTTP API+가짜 프로바이더+주입 시계이고 고정 sleep·DB 직접 조작으로 성공을 대신하지 않는다. 실제 process crash는 별도 subprocess fixture가 필요하다.
 
 | ID | 검증할 경계 (입력 → 행동 → 기대) | 근거 |
 |---|---|---|

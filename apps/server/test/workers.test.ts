@@ -64,7 +64,7 @@ const workerDecisions = (runs: { request: { wakeReasons: WakeReason[] } }[]) =>
     (r) => r.kind === "approval_decision" && r.approvalKind === "add_worker"
   );
 
-/** 실행 시도마다 받은 토큰을 에이전트별로 모으는 실행기. */
+/** 실행 시도마다 받은 토큰을 에이전트별로 모으는 프로바이더. */
 function capturingTokens(inner: RuntimeAdapter) {
   const tokens = new Map<string, string>();
   const runtime: RuntimeAdapter = {

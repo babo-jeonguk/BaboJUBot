@@ -80,7 +80,7 @@ const resultEvents = async (orgId: string) =>
 const changesRequested = (runs: { request: { wakeReasons: WakeReason[] } }[]) =>
   reasons(runs).filter((r) => r.kind === "result_changes_requested");
 
-/** 실행 시도마다 받은 토큰을 에이전트별로 모으는 실행기. */
+/** 실행 시도마다 받은 토큰을 에이전트별로 모으는 프로바이더. */
 function capturingTokens(inner: RuntimeAdapter) {
   const tokens = new Map<string, string>();
   const runtime: RuntimeAdapter = {

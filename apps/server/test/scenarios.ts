@@ -42,14 +42,14 @@ export async function chatMessages(
   ];
 }
 
-// 가짜 실행기 시나리오로 조직을 진행시키는 API 테스트 helper. 실제 HTTP·조직 도구 경로만 쓴다.
+// 가짜 프로바이더 시나리오로 조직을 진행시키는 API 테스트 helper. 실제 HTTP·조직 도구 경로만 쓴다.
 
 /** 조직 생성 깨우기만 받은 실행 시도인가. 새 조직의 Lead가 처음 받는 실행 시도다. */
 export const onlyCreationWake = (request: RunRequest) =>
   request.wakeReasons.every((r) => r.kind === "organization_created");
 
 /**
- * 조직 생성 깨우기만 받은 실행 시도는 맥락만 읽고 끝내고, 나머지 실행 시도는 `inner`에 넘기는 실행기.
+ * 조직 생성 깨우기만 받은 실행 시도는 맥락만 읽고 끝내고, 나머지 실행 시도는 `inner`에 넘기는 프로바이더.
  * 생성으로 깨어난 Lead의 초기 연구 승인 요청 없이 그 뒤의 흐름만 보는 검사가 쓴다.
  */
 export function quietCreation(
@@ -63,9 +63,9 @@ export function quietCreation(
 }
 
 /**
- * 에이전트마다 쌓아 둔 시나리오를 앞에서부터 하나씩 쓰고, 없으면 가짜 실행기의 기본 시나리오를 쓰는 실행기.
+ * 에이전트마다 쌓아 둔 시나리오를 앞에서부터 하나씩 쓰고, 없으면 가짜 프로바이더의 기본 시나리오를 쓰는 프로바이더.
  * 쌓아 둔 항목이 함수면 받은 요청으로 시나리오를 정한다. 받은 요청과 시나리오 상태를 실행 시도 순서대로 기록한다.
- * 조직 생성 깨우기만 받은 실행 시도는 쌓아 둔 시나리오를 쓰지 않고 `created`(기본은 가짜 실행기의 기본 시나리오:
+ * 조직 생성 깨우기만 받은 실행 시도는 쌓아 둔 시나리오를 쓰지 않고 `created`(기본은 가짜 프로바이더의 기본 시나리오:
  * 초기 연구 승인 요청)를 쓰며 `of`에서 빠진다. 조직을 만든 응답보다 그 실행 시도가 먼저 시작해도 쌓은 순서가 어긋나지 않는다.
  */
 export function scriptedAgents({

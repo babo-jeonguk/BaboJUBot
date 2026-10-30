@@ -53,7 +53,7 @@ const proposeScript: Script = {
 };
 
 /**
- * Lead 실행 시도마다 앞에서부터 시나리오를 하나씩 쓰고, 다 쓰면 기본 답장 시나리오를 쓰는 가짜 실행기.
+ * Lead 실행 시도마다 앞에서부터 시나리오를 하나씩 쓰고, 다 쓰면 기본 답장 시나리오를 쓰는 가짜 프로바이더.
  * 받은 요청과 시나리오 상태를 기록한다.
  */
 function leadRuns(...scripts: Script[]) {

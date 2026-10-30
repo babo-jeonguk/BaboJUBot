@@ -58,7 +58,7 @@ import {
 export type ClaimedRun = {
   run: NewRun;
   wakeReasons: WakeReason[];
-  /** 지침 bundle 버전을 정한 사본 내용. admission 때 고정해 실행기에 그대로 넘긴다. */
+  /** 지침 bundle 버전을 정한 사본 내용. admission 때 고정해 프로바이더에 그대로 넘긴다. */
   instructions: InstructionFile[];
   event: Event;
 };
@@ -67,7 +67,7 @@ export type ClaimedRun = {
  * 에이전트의 대기 중인 깨우기를 새 실행 시도 하나에 고정한다. 보통은 모두이고, `중단하고 보내기` 메시지가 기다리면
  * 그 메시지 깨우기만이다(core `bundleWakes`). 나머지는 대기한 채 그 실행 시도가 끝난 뒤의 실행 시도가 받는다. 에이전트 행을 잠근 뒤 실행 중인 실행 시도가
  * 있는지 다시 보므로 여러 호출자가 동시에 불러도 실행 시도는 하나만 생긴다(부분 unique가 마지막 방어선).
- * 실행 중이거나 대기 중인 깨우기가 없으면 아무것도 하지 않는다. 실행기는 commit 뒤에 부른다.
+ * 실행 중이거나 대기 중인 깨우기가 없으면 아무것도 하지 않는다. 프로바이더는 commit 뒤에 부른다.
  * 지침 bundle 버전은 같은 transaction에서 읽은 그 에이전트의 사본 내용으로 정한다.
  *
  * 조직이 실행 시도를 받지 않는 단계(최종 완료·일시정지·중단, core `admitsRuns`)이거나 에이전트가 일시정지면
@@ -161,7 +161,7 @@ export async function claimNextRun(
 
 /**
  * 종료 결과를 저장한다. 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`를 돌려준다.
- * 취소를 요청받은 실행 시도는 실행기의 결과와 상관없이 `cancelled`로 끝난다(core `planRunFinish`).
+ * 취소를 요청받은 실행 시도는 프로바이더의 결과와 상관없이 `cancelled`로 끝난다(core `planRunFinish`).
  */
 export async function finishRun(
   db: Database,
@@ -191,7 +191,7 @@ export async function finishRun(
 }
 
 /**
- * 서버가 멈춰 실행기 결과 없이 끝나는 실행 시도를 끝낸다(core `planRunInterruption`). 종료·깨우기 복원·Event는 한 transaction이며,
+ * 서버가 멈춰 프로바이더 결과 없이 끝나는 실행 시도를 끝낸다(core `planRunInterruption`). 종료·깨우기 복원·Event는 한 transaction이며,
  * 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`다. 서버 시작의 복구와 서버 종료 때 취소로 돌아온 실행 시도가 쓴다.
  */
 export async function interruptRun(
@@ -261,7 +261,7 @@ export async function interruptRun(
 /**
  * 서버가 멈춰 실행 중으로 남은 실행 시도를 `server_restart`로 끝내고 그 깨우기를 다시 대기시킨다(`interruptRun`).
  * 실행 시도를 돌리는 서버 프로세스가 하나라는 전제다(docs/architecture.md 패키지 구성). worker를 나누면 프로세스별 소유 기록이 필요하다.
- * 서버 시작 때 실행기를 부르기 전에 한 번 부른다. 실행 시도마다 따로 저장하므로 중간에 실패해도 다시 부르면 남은 것만 끝낸다.
+ * 서버 시작 때 프로바이더를 부르기 전에 한 번 부른다. 실행 시도마다 따로 저장하므로 중간에 실패해도 다시 부르면 남은 것만 끝낸다.
  */
 export async function recoverInterruptedRuns(
   db: Database,
@@ -306,7 +306,7 @@ export async function listAgentsWithPendingWakes(
   return rows.map((r) => r.agentId);
 }
 
-/** 실행 시도에 요청된 사용자 제어 취소. 실행기 등록 직후 다시 읽어, 등록 전에 commit된 취소를 놓치지 않는다. */
+/** 실행 시도에 요청된 사용자 제어 취소. 프로바이더 등록 직후 다시 읽어, 등록 전에 commit된 취소를 놓치지 않는다. */
 export async function findRunCancelReason(
   db: Database,
   runId: string
