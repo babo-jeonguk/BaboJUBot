@@ -166,6 +166,12 @@ describe("steering into the running run", () => {
     // 받은 메시지는 다음 실행 시도에 다시 가지 않는다.
     expect(await runsOf(org.id)).toHaveLength(2);
     expect(received()).toEqual([["긴 일을 시작해 주세요"]]);
+    // 받은 실행 시도가 끼워 넣은 말을 반영해 그 대화에 답했다.
+    expect(
+      (await chatMessages(t!, org.id))
+        .filter((m) => m.author === "agent" && m.sentByRunId === running.id)
+        .map((m) => m.body)
+    ).toContainEqual(expect.stringContaining("이 방향으로 가 주세요"));
   });
 
   it("queues a message the provider refuses, and the next run takes it", async () => {
@@ -264,6 +270,41 @@ describe("provider readiness", () => {
       .poll(async () => (await readinessOf("fake-2")).reason)
       .toBe("credentials_unverified");
     expect(watcher.events).toEqual([]);
+  });
+
+  it("saves only the latest check and stops showing it as checking once that check ends, even if an older one is still going", async () => {
+    const older = createGate();
+    const results: ProviderReadinessCheck[] = [];
+    let checks = 0;
+    await serverWith({
+      wrap: (adapter, id) =>
+        id === "fake-2"
+          ? {
+              ...adapter,
+              async checkReadiness(signal): Promise<ProviderReadinessCheck> {
+                const n = ++checks;
+                if (n === 2) await older.wait(signal);
+                return results[n] ?? { status: "ready", reason: null };
+              },
+            }
+          : adapter,
+    });
+    results[2] = { status: "not_ready", reason: "program_missing" };
+    results[3] = { status: "not_ready", reason: "credentials_invalid" };
+    const first = t!.request("POST", "/api/providers/fake-2/readiness");
+    await older.reached;
+    const second = await t!.request("POST", "/api/providers/fake-2/readiness");
+    expect(
+      providerSettingsSchema.parse(second.body).providers[1]!.readiness
+    ).toMatchObject({ reason: "credentials_invalid", checking: false });
+
+    older.open();
+    expect((await first).status).toBe(200);
+    // 먼저 시작해 늦게 끝난 확인은 새 결과를 덮지 않는다.
+    expect(await readinessOf("fake-2")).toMatchObject({
+      reason: "credentials_invalid",
+      checking: false,
+    });
   });
 
   it("does not hold runs for a slow check and never moves an agent off a provider that is not ready", async () => {

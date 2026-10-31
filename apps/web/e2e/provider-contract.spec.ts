@@ -28,14 +28,17 @@ async function createOrganization(page: Page, name: string, provider: string) {
   return { id: org.id, api, runList };
 }
 
-/** 가짜 Lead는 `실행 유지 연습`을 받으면 취소될 때까지 실행 시도를 끝내지 않는다. */
-async function holdLead(page: Page, org: { api: (path: string) => string }) {
+/**
+ * 가짜 Lead를 실행 중으로 붙잡는다. `실행 유지 연습`은 취소될 때까지, `끼워 넣기 연습`은 끼워 넣은 말을 받아 반영해 답할 때까지
+ * 실행 시도를 끝내지 않는다.
+ */
+async function holdLead(
+  page: Page,
+  org: { api: (path: string) => string },
+  body = "실행 유지 연습"
+) {
   expect(
-    (
-      await page.request.post(org.api("/messages"), {
-        data: { body: "실행 유지 연습" },
-      })
-    ).status()
+    (await page.request.post(org.api("/messages"), { data: { body } })).status()
   ).toBe(201);
 }
 
@@ -122,7 +125,7 @@ test("the composer draws steer only for a Lead run whose provider can steer, and
   await stop(page, steerless);
 
   const steering = await createOrganization(page, "끼워 넣기 조직", "fake");
-  await holdLead(page, steering);
+  await holdLead(page, steering, "끼워 넣기 연습");
   await openWithLiveEvents(page, `/orgs/${steering.id}/chat`);
   await expect(page.getByRole("button", { name: "실행 중단" })).toBeVisible(
     runs
@@ -137,7 +140,15 @@ test("the composer draws steer only for a Lead run whose provider can steer, and
     page.locator('[data-author="owner"]').getByText("이 방향으로 가 주세요")
   ).toBeVisible();
   await expect(page.getByTestId("queued-message")).toHaveCount(0);
-  await stop(page, steering);
+  // 그 실행 시도가 끼워 넣은 말을 반영해 답하고 끝난다.
+  await expect(
+    page
+      .locator('[data-author="agent"]')
+      .getByText(/실행 중에 받은 말을 반영했습니다: “이 방향으로 가 주세요”/)
+  ).toBeVisible(runs);
+  await expect(
+    page.getByRole("button", { name: "보내기", exact: true })
+  ).toBeVisible(runs);
 });
 
 test("the run detail shows each usage figure with units, unreported ones apart, and the cost as an estimate", async ({

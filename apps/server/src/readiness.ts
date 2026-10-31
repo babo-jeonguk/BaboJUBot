@@ -21,8 +21,8 @@ export class ReadinessMonitor {
   readonly #timeoutMs: number;
   /** 연결별 마지막으로 시작한 확인의 번호. */
   readonly #latest = new Map<string, number>();
-  /** 연결별 진행 중인 확인 수. */
-  readonly #inFlight = new Map<string, number>();
+  /** 연결별 마지막으로 시작한 확인 가운데 끝난 것의 번호. 마지막에 시작한 확인이 끝나면 확인 중이 아니다. */
+  readonly #settled = new Map<string, number>();
   readonly #pending = new Set<Promise<void>>();
   readonly #stop = new AbortController();
   #seq = 0;
@@ -43,9 +43,10 @@ export class ReadinessMonitor {
     this.#timeoutMs = options.timeoutMs ?? 10_000;
   }
 
-  /** 지금 확인 중인가. */
+  /** 지금 확인 중인가: 마지막에 시작한 확인이 아직 끝나지 않았다. 그보다 먼저 시작한 확인이 남아 있어도 보지 않는다(그 결과는 저장하지 않는다). */
   checking(provider: string): boolean {
-    return (this.#inFlight.get(provider) ?? 0) > 0;
+    const latest = this.#latest.get(provider);
+    return latest !== undefined && this.#settled.get(provider) !== latest;
   }
 
   /** 등록된 연결을 모두 확인한다. 기다리지 않으며 실패는 남기기만 한다. */
@@ -59,7 +60,6 @@ export class ReadinessMonitor {
     if (!connection || this.#stop.signal.aborted) return Promise.resolve();
     const seq = ++this.#seq;
     this.#latest.set(provider, seq);
-    this.#inFlight.set(provider, (this.#inFlight.get(provider) ?? 0) + 1);
     this.#hub.publishSettingsChanged();
     const startedAt = this.#now();
     const task = (async () => {
@@ -71,8 +71,11 @@ export class ReadinessMonitor {
       } catch (error) {
         console.error(`[providers] ${provider} readiness not saved`, error);
       } finally {
-        this.#inFlight.set(provider, this.#inFlight.get(provider)! - 1);
-        if (!this.#stop.signal.aborted) this.#hub.publishSettingsChanged();
+        // 저장한(또는 저장하지 못한) 마지막 확인만 확인 중을 끝낸다. 옛 확인이 끝난 것은 화면에 바뀔 것이 없다.
+        if (this.#latest.get(provider) === seq) {
+          this.#settled.set(provider, seq);
+          if (!this.#stop.signal.aborted) this.#hub.publishSettingsChanged();
+        }
       }
     })();
     this.#pending.add(task);

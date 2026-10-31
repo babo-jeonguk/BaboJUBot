@@ -238,6 +238,8 @@ describe("demo Lead scenario", () => {
       context: undefined,
       sent: [],
       calls: [],
+      steered: [],
+      memory: [],
     }) as { plan: string; completionCriteria?: string };
   };
   const created = () => ({
@@ -269,7 +271,14 @@ describe("demo Lead scenario", () => {
         (s) =>
           s.do === "send_message" &&
           s
-            .body({ request, context: undefined, sent: [], calls: [] })
+            .body({
+              request,
+              context: undefined,
+              sent: [],
+              calls: [],
+              steered: [],
+              memory: [],
+            })
             .includes("제안한 완료 기준")
       )
     ).toBe(true);
@@ -341,7 +350,14 @@ describe("demo Lead scenario", () => {
     const other = crypto.randomUUID();
     // `then` 단계를 펼친 답장들. 앞 단계의 도구 결과에 기대지 않는 시나리오만 펼친다.
     const replies = (script: Script, r: RunRequest) => {
-      const state = { request: r, context: undefined, sent: [], calls: [] };
+      const state = {
+        request: r,
+        context: undefined,
+        sent: [],
+        calls: [],
+        steered: [],
+        memory: [],
+      };
       return script.steps
         .flatMap((s) => (s.do === "then" ? s.steps(state) : [s]))
         .flatMap((s) =>
@@ -420,6 +436,8 @@ describe("demo Lead scenario", () => {
       context: undefined,
       sent: [],
       calls: [],
+      steered: [],
+      memory: [],
     };
     expect(
       script.steps.flatMap((s) =>
@@ -442,6 +460,8 @@ describe("demo Lead scenario", () => {
       context: undefined,
       sent: [],
       calls: [],
+      steered: [],
+      memory: [],
     });
     const asked = at("researching", [message("작업자 추가: researcher")]);
     const script = demoLeadScript(asked);
@@ -763,7 +783,14 @@ describe("demo worker scenario", () => {
         },
       ])
     )!;
-    const state = { request, context: undefined, sent: [], calls: [] };
+    const state = {
+      request,
+      context: undefined,
+      sent: [],
+      calls: [],
+      steered: [],
+      memory: [],
+    };
     expect(
       script.steps.flatMap((s) =>
         s.do === "call" ? [[s.tool, s.input?.(state)?.taskId]] : []
