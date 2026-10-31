@@ -3,7 +3,10 @@ import type {
   ProviderConnection,
   RuntimeAdapter,
 } from "@babojubot/contracts";
-import { createScriptedRuntime } from "./scripted.ts";
+import {
+  createScriptedRuntime,
+  type FakeProviderSettings,
+} from "./scripted.ts";
 
 // 프로바이더 연결 등록부의 항목과 모델 목록(#94). 실제 프로바이더 연결은 판 2 후속 이슈에서 같은 모양으로 더한다.
 
@@ -12,13 +15,19 @@ export const fakeProviderId = "fake";
 
 /**
  * 가짜 프로바이더 연결. 모델을 부르지 않고 시나리오를 연기한다. 모델 목록은 연결 ID를 붙인 고정 목록이라
- * 다른 가짜 연결로 바꾸면 이전 모델이 맞지 않는다.
+ * 다른 가짜 연결로 바꾸면 이전 모델이 맞지 않는다. 지원하는 일·준비 상태·사용량은 `settings`로 바꾼다(`adapter`를 주면 그 adapter의 것).
  */
 export function createFakeProvider({
   id = fakeProviderId,
   label = "가짜 프로바이더",
-  adapter = createScriptedRuntime(),
-}: { id?: string; label?: string; adapter?: RuntimeAdapter } = {}) {
+  settings,
+  adapter = createScriptedRuntime({ settings }),
+}: {
+  id?: string;
+  label?: string;
+  settings?: FakeProviderSettings;
+  adapter?: RuntimeAdapter;
+} = {}) {
   return {
     id,
     label,
@@ -30,17 +39,27 @@ export function createFakeProvider({
   } satisfies ProviderConnection;
 }
 
-/** 가짜 연결 `count`개: `fake`(가짜 프로바이더), `fake-2`(가짜 프로바이더 2), …. 같은 adapter 종류의 연결 여러 개를 검사할 때 쓴다. */
+/**
+ * 가짜 연결 `count`개: `fake`(가짜 프로바이더), `fake-2`(가짜 프로바이더 2), …. 같은 adapter 종류의 연결 여러 개를 검사할 때 쓴다.
+ * `settings`는 연결 ID별 설정이다.
+ */
 export function createFakeProviders(
   count: number,
-  adapter?: (id: string) => RuntimeAdapter
+  {
+    adapter,
+    settings = {},
+  }: {
+    adapter?: (id: string) => RuntimeAdapter;
+    settings?: Record<string, FakeProviderSettings>;
+  } = {}
 ): ProviderConnection[] {
   return Array.from({ length: count }, (_, i) => {
     const id = i === 0 ? fakeProviderId : `${fakeProviderId}-${i + 1}`;
     return createFakeProvider({
       id,
       label: i === 0 ? "가짜 프로바이더" : `가짜 프로바이더 ${i + 1}`,
-      adapter: adapter?.(id),
+      settings: settings[id],
+      ...(adapter ? { adapter: adapter(id) } : {}),
     });
   });
 }

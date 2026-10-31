@@ -50,13 +50,14 @@ export const admitsProviderRun = ({
 /**
  * 사용자의 에이전트 프로바이더·모델 변경. 다음 실행 시도부터 적용한다(admission이 그때의 값을 실행 시도에 고정).
  * 연결·모델이 그 서버에 있는지는 호출한 쪽이 등록부로 확인한다. 값이 그대로면 `unchanged`, 끝난 조직이면 `organization_closed`다.
+ * 프로바이더 연결이 바뀌면 그 에이전트의 세션을 모두 비운다(`resetsSessions`). 모델만 바뀌면 세션은 그대로다.
  */
 export function planAgentProviderChange(
   agent: Pick<Agent, "id" | "organizationId" | "provider" | "model">,
   stage: LifecycleStage,
   input: ProviderChoice
 ):
-  | { update: ProviderChoice; event: NewEvent }
+  | { update: ProviderChoice; resetsSessions: boolean; event: NewEvent }
   | "unchanged"
   | "organization_closed" {
   if (isClosedStage(stage)) return "organization_closed";
@@ -64,6 +65,7 @@ export function planAgentProviderChange(
   if (sameProviderChoice(input, current)) return "unchanged";
   return {
     update: { provider: input.provider, model: input.model },
+    resetsSessions: input.provider !== agent.provider,
     event: {
       organizationId: agent.organizationId,
       type: "agent.provider_changed",

@@ -7,6 +7,8 @@ import {
   planOwnerMessage,
   planRunInterruption,
   planRunStart,
+  planSessionWriteBack,
+  sessionTaskOf,
   type PendingWake,
 } from "./run.ts";
 
@@ -121,7 +123,8 @@ describe("planRunStart", () => {
         agent: lead,
         pendingWakes,
         instructionsBundleVersion: null,
-        previousRun: undefined,
+        session: undefined,
+        sessionGeneration: 0,
       },
       sequence("run-2")
     );
@@ -156,18 +159,19 @@ describe("planRunStart", () => {
     expect(plan([])).toBeUndefined();
   });
 
-  it("resumes the previous session only under the same instructions bundle", () => {
+  it("resumes the stored session only under the same instructions bundle", () => {
     const start = (current: string | null, previous: string | null) =>
       planRunStart(
         {
           agent: lead,
           pendingWakes: [wake("w1", "x")],
           instructionsBundleVersion: current,
-          previousRun: {
+          session: {
             provider: "fake",
             instructionsBundleVersion: previous,
-            nextSession: { turn: 3 },
+            state: { turn: 3 },
           },
+          sessionGeneration: 0,
         },
         sequence("run-2")
       )?.run.sessionBefore;
@@ -178,21 +182,22 @@ describe("planRunStart", () => {
     expect(start("v1", null)).toBeNull();
   });
 
-  it("pins the agent's provider and model on the run and starts a new session after a provider change", () => {
+  it("pins the agent's provider and model on the run and does not resume a session another provider made", () => {
     const start = (
       agent: Pick<Agent, "provider" | "model">,
-      previousProvider: string
+      sessionProvider: string
     ) =>
       planRunStart(
         {
           agent: { ...lead, ...agent },
           pendingWakes: [wake("w1", "x")],
           instructionsBundleVersion: "v1",
-          previousRun: {
-            provider: previousProvider,
+          session: {
+            provider: sessionProvider,
             instructionsBundleVersion: "v1",
-            nextSession: { turn: 3 },
+            state: { turn: 3 },
           },
+          sessionGeneration: 4,
         },
         sequence("run-2")
       )?.run;
@@ -201,14 +206,90 @@ describe("planRunStart", () => {
       provider: "fake-2",
       model: "m",
       sessionBefore: { turn: 3 },
+      sessionTaskId: null,
+      sessionGeneration: 4,
     });
-    // 모델만 바뀌면 세션을 이어 간다. 프로바이더 연결이 바뀌면 새 세션이다.
+    // 모델만 바뀌면 세션을 이어 간다. 세션을 만든 프로바이더 연결이 다르면 새 세션이다.
     expect(
       start({ provider: "fake", model: "other" }, "fake")?.sessionBefore
     ).toEqual({ turn: 3 });
     expect(
       start({ provider: "fake", model: null }, "fake-2")?.sessionBefore
     ).toBeNull();
+  });
+});
+
+describe("sessionTaskOf", () => {
+  const task = (
+    kind: "task_assigned" | "task_completed" | "task_comment",
+    taskId: string
+  ) => {
+    const wakeId = crypto.randomUUID();
+    switch (kind) {
+      case "task_assigned":
+        return { kind, wakeId, taskId, title: "t" } as const;
+      case "task_completed":
+        return {
+          kind,
+          wakeId,
+          taskId,
+          title: "t",
+          summary: "s",
+          completedByAgentId: "a",
+        } as const;
+      case "task_comment":
+        return { kind, wakeId, taskId, commentId: "c", body: "b" } as const;
+    }
+  };
+  const heartbeat = { kind: "heartbeat", wakeId: "h" } as const;
+
+  it("uses the task's session when every wake points at the same task", () => {
+    expect(sessionTaskOf([task("task_assigned", "A")])).toBe("A");
+    expect(
+      sessionTaskOf([task("task_assigned", "A"), task("task_comment", "A")])
+    ).toBe("A");
+    // 작업 완료는 완료된 그 작업이다(부모 작업으로 바꾸지 않는다).
+    expect(sessionTaskOf([task("task_completed", "child")])).toBe("child");
+  });
+
+  it("uses the agent's session for mixed tasks, wakes without a task, or both", () => {
+    expect(
+      sessionTaskOf([task("task_assigned", "A"), task("task_comment", "B")])
+    ).toBeNull();
+    expect(sessionTaskOf([task("task_assigned", "A"), heartbeat])).toBeNull();
+    expect(sessionTaskOf([heartbeat])).toBeNull();
+  });
+});
+
+describe("planSessionWriteBack", () => {
+  const run = {
+    provider: "fake",
+    instructionsBundleVersion: "v1",
+    sessionTaskId: "task-1",
+    sessionGeneration: 2,
+  };
+
+  it("saves the next session where the run took it, with the provider and bundle that made it", () => {
+    expect(planSessionWriteBack(run, 2, { turn: 4 })).toEqual({
+      kind: "save",
+      taskId: "task-1",
+      session: {
+        provider: "fake",
+        instructionsBundleVersion: "v1",
+        state: { turn: 4 },
+      },
+    });
+    expect(planSessionWriteBack(run, 2, null)).toEqual({
+      kind: "clear",
+      taskId: "task-1",
+    });
+  });
+
+  it("does not bring back sessions cleared by a provider change while the run was going", () => {
+    expect(planSessionWriteBack(run, 3, { turn: 4 })).toEqual({
+      kind: "stale",
+    });
+    expect(planSessionWriteBack(run, 3, null)).toEqual({ kind: "stale" });
   });
 });
 

@@ -1,15 +1,23 @@
 import type { ProviderSettings, ProviderSummary } from "@babojubot/contracts";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  useCheckAllReadiness,
   useProviderSettings,
+  useRecheckProvider,
   useUpdateProviderDefaults,
   useUpdateProviderLimit,
 } from "./api.ts";
-import { ProviderChoiceFields, sameDefaults } from "./provider-choice.tsx";
+import {
+  ProviderChoiceFields,
+  ReadinessBadge,
+  readinessReasonLabel,
+  sameDefaults,
+} from "./provider-choice.tsx";
 import { Loading, LoadError, Page } from "./ui.tsx";
 
 /**
- * 전역 설정. 프로바이더 칸은 Lead·작업자 기본 프로바이더·모델과 연결별 동시 실행 상한이다(#94).
+ * 전역 설정. 프로바이더 칸은 Lead·작업자 기본 프로바이더·모델과 연결별 준비 상태·동시 실행 상한이다(#94, #96).
+ * 화면을 열면 서버가 모든 연결의 준비 상태를 다시 확인한다.
  * 나머지 칸(연구 환경 템플릿, 비밀값, 메시지 앱 연결)은 자리만 있고, 지금 쓰는 것을 그대로 알리며 동작하는 것처럼 보이지 않는다.
  */
 export function GlobalSettingsPage() {
@@ -28,6 +36,9 @@ export function GlobalSettingsPage() {
 
 function Providers() {
   const settings = useProviderSettings();
+  const checkAll = useCheckAllReadiness();
+  const { mutate: startChecks } = checkAll;
+  useEffect(() => startChecks(), [startChecks]);
   return (
     <section aria-label="프로바이더" className="card p-4 text-sm">
       <h2 className="mb-3 font-semibold">프로바이더</h2>
@@ -45,7 +56,7 @@ function Providers() {
             <span className="flex-1">연결</span>
             <span>동시 실행 상한</span>
           </div>
-          <ul aria-label="동시 실행 상한" className="divide-y divide-slate-100">
+          <ul aria-label="연결" className="divide-y divide-slate-100">
             {settings.data.providers.map((p) => (
               <ProviderRow key={p.id} provider={p} />
             ))}
@@ -118,7 +129,8 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
 const limitText = (n: number) => (n === 0 ? "무제한" : String(n));
 
 /**
- * 연결 한 줄과 동시 실행 상한 stepper. −·＋와 숫자 칸으로 바꾸며 바꾸면 곧바로 저장한다. 0(무제한)에서 −는 누를 수 없고,
+ * 연결 한 줄: 이름, 준비 상태 배지·이유, `다시 확인`(이유가 제품 로그인 없음이면 `로그인 명령 복사`도), 동시 실행 상한 stepper.
+ * stepper는 −·＋와 숫자 칸으로 바꾸며 바꾸면 곧바로 저장한다. 0(무제한)에서 −는 누를 수 없고,
  * 1에서 −를 누르면 무제한, 무제한에서 ＋를 누르면 1이다. 숫자 칸은 Enter나 칸을 벗어날 때 저장하고, 0 이상 정수가 아니면 되돌린다.
  */
 function ProviderRow({ provider }: { provider: ProviderSummary }) {
@@ -138,8 +150,14 @@ function ProviderRow({ provider }: { provider: ProviderSummary }) {
   };
   const name = `${provider.label} 동시 실행 상한`;
   return (
-    <li className="flex flex-wrap items-center gap-3 py-3">
-      <span className="flex-1 font-medium">{provider.label}</span>
+    <li
+      className="flex flex-wrap items-center gap-3 py-3"
+      aria-label={provider.label}
+    >
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-medium">{provider.label}</span>
+        <Readiness provider={provider} />
+      </div>
       <div className="flex items-center gap-1" role="group" aria-label={name}>
         <button
           type="button"
@@ -180,6 +198,60 @@ function ProviderRow({ provider }: { provider: ProviderSummary }) {
         </p>
       )}
     </li>
+  );
+}
+
+/**
+ * 연결의 준비 상태: 배지와 이유, `다시 확인`, 이유가 제품 로그인 없음이고 연결이 로그인 명령을 줄 때만 `로그인 명령 복사`.
+ * 확인 중에는 배지 자리에 spinner가 있고 이유는 마지막 확인의 것이다.
+ */
+function Readiness({ provider }: { provider: ProviderSummary }) {
+  const recheck = useRecheckProvider();
+  const [copied, setCopied] = useState(false);
+  const { readiness, loginCommand } = provider;
+  const checking = readiness.checking || recheck.isPending;
+  const copy = async () => {
+    if (!loginCommand) return;
+    try {
+      await navigator.clipboard.writeText(loginCommand);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 복사하지 못하면 버튼은 그대로다.
+    }
+  };
+  return (
+    <>
+      <ReadinessBadge
+        provider={provider.label}
+        readiness={readiness}
+        checking={checking}
+      />
+      {readiness.reason && (
+        <span className="text-xs text-slate-500" data-testid="readiness-reason">
+          {readinessReasonLabel[readiness.reason]}
+        </span>
+      )}
+      <button
+        type="button"
+        className="btn-ghost px-2 py-1 text-xs"
+        disabled={checking}
+        aria-label={`${provider.label} 다시 확인`}
+        onClick={() => recheck.mutate(provider.id)}
+      >
+        다시 확인
+      </button>
+      {readiness.reason === "product_login_missing" && loginCommand && (
+        <button
+          type="button"
+          className="btn-ghost px-2 py-1 text-xs"
+          aria-label={`${provider.label} 로그인 명령 복사`}
+          onClick={() => void copy()}
+        >
+          {copied ? "복사됨" : "로그인 명령 복사"}
+        </button>
+      )}
+    </>
   );
 }
 

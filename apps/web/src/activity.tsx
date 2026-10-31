@@ -52,6 +52,13 @@ export function describeEvent(
       return { icon: "↶", title: "사용자가 줄 세운 메시지를 취소했습니다" };
     case "message.sent_now":
       return { icon: "⚡", title: "사용자가 줄 세운 메시지를 지금 보냈습니다" };
+    case "message.steered":
+      return event.payload.outcome === "accepted"
+        ? {
+            icon: "↪",
+            title: `${agentName}가 실행 중 끼워 넣은 메시지를 받았습니다`,
+          }
+        : { icon: "☰", title: "실행 중 끼워 넣은 메시지를 줄 세웠습니다" };
     case "run.started":
       return {
         icon: "▶",

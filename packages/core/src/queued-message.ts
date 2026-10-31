@@ -25,7 +25,7 @@ export type QueuedMessageState = Pick<
 
 /**
  * - `not_found`: 같은 조직에 그런 사용자 메시지가 없거나 이미 거두었다(거둔 메시지는 대화에서 빠진다).
- * - `message_delivered`: 실행 시도가 이미 받았다. 받은 메시지는 거두거나 바꿀 수 없다.
+ * - `message_delivered`: 실행 시도가 이미 받았거나 진행 중 실행 시도에 끼워 넣는 중이다. 받은 메시지는 거두거나 바꿀 수 없다.
  * - `organization_closed`: 최종 완료·중단 조직이다(`지금 보내기`는 중단 제어 명령이라 받지 않는다).
  */
 export type QueuedMessageRefusal =
@@ -39,7 +39,9 @@ const queuedRefusal = <R extends "organization_closed" = never>(
   if (!message || message.author !== "owner" || message.withdrawn)
     return "not_found";
   if (stateRefusal) return stateRefusal;
-  if (message.deliveredToRunId) return "message_delivered";
+  // 끼워 넣는 중인 메시지는 줄 서 있지 않다. 거절되면 `next_run`이 되어 줄 세운 메시지로 돌아온다.
+  if (message.deliveredToRunId || message.delivery === "steer")
+    return "message_delivered";
   return null;
 };
 

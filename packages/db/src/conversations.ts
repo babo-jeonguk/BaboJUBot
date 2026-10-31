@@ -7,11 +7,13 @@ import {
   type ConversationPage,
   type ConversationSummary,
   type RunContextResponse,
+  type SteerOutcome,
 } from "@babojubot/contracts";
 import {
   chooseReplyConversation,
   planAgentMessage,
   planInterrupt,
+  steerTarget,
   type InterruptPlan,
   type OwnerMessagePlan,
   type RecordSource,
@@ -245,14 +247,23 @@ export async function markConversationRead(
  * 다른 보내기·거두기·admission과 직렬화하므로 센 수가 상한을 넘지 않는다.
  * `중단하고 보내기`면 같은 transaction에서 받는 에이전트의 진행 중 실행 시도에 취소를 요청하고 그 제어 명령 Event도 남긴다.
  * 조직 행을 먼저 잠가 admission과 직렬화하므로, 메시지는 취소된 실행 시도가 아니라 그 뒤의 실행 시도에 묶인다.
+ * `실행 중 끼워 넣기`면 같은 잠금 아래에서 넣을 실행 시도(core `steerTarget`, 그 연결의 지원 여부는 `steerable`)를 정해 `steerRunId`로
+ * 돌려준다. 호출한 쪽이 commit 뒤 프로바이더에 넣고 결과를 `settleSteer`로 남긴다. 넣을 실행 시도가 없으면 줄 세운 메시지(`next_run`)로 저장한다.
  * commit 뒤 프로바이더에 취소를 보내고 받는 에이전트를 깨운다. 값은 계획한 새 대화(있으면)와 메시지다.
  */
 export async function insertOwnerMessage(
   db: Database,
-  plan: OwnerMessagePlan
+  plan: OwnerMessagePlan,
+  {
+    steerable = () => false,
+  }: { steerable?: (provider: string) => boolean } = {}
 ): Promise<
   Stored<
-    { conversation: Conversation | null; message: ConversationMessage },
+    {
+      conversation: Conversation | null;
+      message: ConversationMessage;
+      steerRunId: string | null;
+    },
     "organization_closed" | "queue_full"
   >
 > {
@@ -265,6 +276,24 @@ export async function insertOwnerMessage(
       queuedCount: await countQueuedMessages(tx, agentId),
     });
     if (refusal) return refused(refusal);
+    let steerRunId: string | null = null;
+    if (plan.message.delivery === "steer") {
+      const [running] = await tx
+        .select({
+          id: runs.id,
+          provider: runs.provider,
+          cancelReason: runs.cancelReason,
+        })
+        .from(runs)
+        .where(and(eq(runs.agentId, agentId), eq(runs.status, "running")))
+        .for("share");
+      steerRunId = steerTarget(
+        { stage: org!.stage, leadPaused: agent!.paused, running },
+        steerable
+      );
+      if (!steerRunId)
+        plan = { ...plan, message: { ...plan.message, delivery: "next_run" } };
+    }
     let control: InterruptPlan | null = null;
     if (plan.message.delivery === "interrupt") {
       const running = await lockRunningRunOfAgent(tx, agentId);
@@ -282,7 +311,11 @@ export async function insertOwnerMessage(
     await tx
       .insert(wakes)
       .values({ ...plan.wake, createdAt: new Date(plan.wake.createdAt) });
-    const value = { conversation: plan.conversation, message: plan.message };
+    const value = {
+      conversation: plan.conversation,
+      message: plan.message,
+      steerRunId,
+    };
     const woken = [plan.wake.agentId];
     const created = await insertEvent(tx, plan.event);
     if (!control) return stored(value, { events: [created], woken });
@@ -293,6 +326,106 @@ export async function insertOwnerMessage(
       woken,
     });
   });
+}
+
+/**
+ * `실행 중 끼워 넣기`의 결과를 남긴다. 조직 → 에이전트 잠금 아래에서 메시지가 아직 끼워 넣는 중일 때만 바꾼다(이미 정해졌으면 `null`).
+ * - `accepted`: 그 깨우기를 넣은 실행 시도에 묶고, 지금 받은 메시지로 대화에 놓는다. 그 실행 시도가 그사이 끝났어도 받은 것은 그대로다.
+ * - `rejected`: 메시지는 `next_run`(줄 세운 메시지)이 되고 받는 에이전트를 깨운다. 실행 시도가 끝났으면 다음 실행 시도가 받는다.
+ * 어느 쪽이든 `message.steered`를 남긴다. 값은 결과를 반영한 메시지다.
+ */
+export async function settleSteer(
+  db: Database,
+  {
+    organizationId,
+    messageId,
+    runId,
+    outcome,
+  }: {
+    organizationId: string;
+    messageId: string;
+    runId: string;
+    outcome: SteerOutcome;
+  },
+  source: Pick<RecordSource, "now">
+): Promise<Stored<ConversationMessage | null, never>> {
+  return db.transaction(async (tx) => {
+    // 메시지의 에이전트는 바뀌지 않는다. 잠그기 전에 읽어도 된다.
+    const [target] = await tx
+      .select({ agentId: messages.agentId })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.organizationId, organizationId),
+          eq(messages.id, messageId)
+        )
+      );
+    if (!target) return stored(null);
+    await lockOrganization(tx, organizationId);
+    await lockAgent(tx, organizationId, target.agentId);
+    const [steering] = await tx
+      .select({ wakeId: wakes.id, conversationId: messages.conversationId })
+      .from(messages)
+      .innerJoin(wakes, eq(wakes.messageId, messages.id))
+      .where(
+        and(
+          eq(messages.id, messageId),
+          eq(messages.delivery, "steer"),
+          isNull(messages.withdrawnAt),
+          isNull(wakes.runId)
+        )
+      );
+    if (!steering) return stored(null);
+    const accepted = outcome === "accepted";
+    if (accepted) {
+      await tx
+        .update(wakes)
+        .set({ runId })
+        .where(eq(wakes.id, steering.wakeId));
+      await tx
+        .insert(runWakes)
+        .values({ organizationId, runId, wakeId: steering.wakeId });
+      await markDelivered(tx, { startedAt: source.now().toISOString() }, [
+        steering.wakeId,
+      ]);
+    } else
+      await tx
+        .update(messages)
+        .set({ delivery: "next_run" })
+        .where(eq(messages.id, messageId));
+    const event = await insertEvent(tx, {
+      organizationId,
+      type: "message.steered",
+      payload: {
+        messageId,
+        agentId: target.agentId,
+        conversationId: steering.conversationId,
+        runId,
+        outcome: accepted ? "accepted" : "queued",
+      },
+    });
+    const found = await readMessage(tx, organizationId, messageId);
+    return stored(found!.message, {
+      events: [event],
+      woken: accepted ? [] : [target.agentId],
+    });
+  });
+}
+
+/**
+ * 서버가 멈춰 끼워 넣는 중으로 남은 메시지를 줄 세운 메시지로 되돌린다. 넣으려던 실행 시도는 서버 재시작으로 끝나 그 깨우기를 다시
+ * 대기시키므로, 프로바이더가 받았더라도 다음 실행 시도가 다시 받는 것과 같다. 서버 시작 때 실행 시도 복구 전에 한 번 부른다.
+ */
+export async function recoverInterruptedSteers(db: Database): Promise<void> {
+  await db
+    .update(messages)
+    .set({ delivery: "next_run" })
+    .where(
+      and(
+        eq(messages.delivery, "steer"),
+        sql`exists (select 1 from ${wakes} where ${wakes.messageId} = ${messages.id} and ${wakes.runId} is null)`
+      )
+    );
 }
 
 /**
@@ -670,7 +803,9 @@ async function selectQueuedMessages(
         eq(messages.conversationId, conversationId),
         eq(messages.author, "owner"),
         isNull(messages.withdrawnAt),
-        isNull(wakes.runId)
+        isNull(wakes.runId),
+        // 끼워 넣는 중인 메시지는 줄 서 있지 않다.
+        sql`${messages.delivery} <> 'steer'`
       )
     )
     .orderBy(asc(messages.seq));

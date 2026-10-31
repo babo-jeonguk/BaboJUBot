@@ -13,7 +13,11 @@ import {
   type WakeReason,
 } from "@babojubot/contracts";
 import { leadReplyScript, type Script } from "@babojubot/runtime";
-import { createGate, type Gate } from "@babojubot/runtime/testing";
+import {
+  createGate,
+  fakeDeclarations,
+  type Gate,
+} from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { startServer } from "../src/index.ts";
 import { insertLegacyOrganization } from "@babojubot/db/testing";
@@ -563,6 +567,7 @@ describe("interrupt and send", () => {
     const received: WakeReason[][] = [];
     // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
     const slow: RuntimeAdapter = {
+      ...fakeDeclarations(),
       async execute(request): Promise<RunResult> {
         received.push(request.wakeReasons);
         if (received.length === 1) {
@@ -681,6 +686,7 @@ describe("stop the current run", () => {
     let executed = 0;
     // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
     const slow: RuntimeAdapter = {
+      ...fakeDeclarations(),
       async execute(): Promise<RunResult> {
         if (++executed === 1) {
           reachedHold();
@@ -733,6 +739,7 @@ describe("cancellation boundary", () => {
     const late: { status: number }[] = [];
     // 취소를 무시하고 계속 도구를 쓰려는 프로바이더.
     const stubborn: RuntimeAdapter = {
+      ...fakeDeclarations(),
       async execute(request): Promise<RunResult> {
         reachedHold();
         await released;

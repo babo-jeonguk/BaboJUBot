@@ -11,9 +11,11 @@ export type MessageAuthor = z.infer<typeof messageAuthorSchema>;
  * `중단하고 보내기`는 받는 에이전트의 진행 중 실행 시도를 취소하는 제어 명령을 함께 남기고, 메시지는 다음 실행 시도가 받는다.
  * 그 실행 시도는 `중단하고 보내기` 메시지만 받으며, 먼저 줄 세운 메시지와 다른 깨우기는 그다음 실행 시도가 받는다(core `bundleWakes`).
  * 아직 실행 시도가 받지 않은 메시지는 사용자가 그 자리에서 고치거나(`고치기`) 거두거나(`취소`) `지금 보내기`로 `중단하고 보내기`로 바꿀 수 있다.
- * steer는 프로바이더 지원과 함께 더한다(판 2).
+ * `steer`는 `실행 중 끼워 넣기`다. 끼워 넣기를 지원하는 프로바이더의 진행 중 실행 시도에 넣으며, 그 실행 시도가 받으면 그 실행 시도에
+ * 전달된 메시지다. 프로바이더가 거절하거나 넣을 실행 시도가 없으면 `next_run`(줄 세운 메시지)이 된다. 넣는 동안의 메시지는
+ * 줄 세운 메시지가 아니므로 고치거나 거둘 수 없고, 다음 실행 시도도 받지 않는다.
  */
-export const messageDeliveries = ["next_run", "interrupt"] as const;
+export const messageDeliveries = ["next_run", "interrupt", "steer"] as const;
 export const messageDeliverySchema = z.enum(messageDeliveries);
 export type MessageDelivery = z.infer<typeof messageDeliverySchema>;
 

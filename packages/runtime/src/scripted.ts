@@ -9,9 +9,14 @@ import {
   type OrgToolName,
   type RequestInitialApprovalInput,
   type RunContextResponse,
+  type ProviderCapabilities,
+  type ProviderReadinessCheck,
   type RunRequest,
   type RunResult,
   type RuntimeAdapter,
+  type SteerMessage,
+  type SteerOutcome,
+  type Usage,
   type Task,
   type TaskDetail,
   type WakeReason,
@@ -777,125 +782,239 @@ export const defaultScriptSelector: ScriptSelector = (request) =>
     ? demoLeadScript(request)
     : demoWorkerScript(request);
 
+/**
+ * 가짜 프로바이더의 설정(#96). 지원하는 일·준비 상태·사용량·끼워 넣기 응답을 바꿔 공통 검사와 화면을 확인한다.
+ * 실행 시도마다 그때의 값을 읽으므로 테스트가 실행 중에 바꿀 수 있다(지원하는 일은 adapter를 만들 때 정해진다).
+ */
+export type FakeProviderSettings = {
+  /** 바꿀 항목만. 나머지는 {@link defaultFakeCapabilities}다. */
+  capabilities?: Partial<ProviderCapabilities>;
+  /** 준비 확인 결과. 기본은 준비됨이다. */
+  readiness?: ProviderReadinessCheck;
+  /** 실행 시도마다 보고할 사용량. 지원하지 않는 항목은 보고하지 않는다. */
+  usage?: Usage;
+  /** 끼워 넣기를 받을지(`accepted`) 거절할지(`rejected`). 기본은 받는다. */
+  steerOutcome?: SteerOutcome;
+  /** 제품 로그인 명령. */
+  loginCommand?: string | null;
+};
+
+/**
+ * 가짜 프로바이더가 기본으로 지원하는 일. 지침 사본을 주입하지 않으므로 재개 때 다시 넣지도 않고, 미리 압축은 후속(#99)이라
+ * 지원하지 않는다.
+ */
+export const defaultFakeCapabilities: ProviderCapabilities = {
+  steer: true,
+  resume: true,
+  reinjectInstructionsOnResume: false,
+  usageTokens: true,
+  usageCost: true,
+  precompact: false,
+};
+
+/** 가짜 프로바이더가 기본으로 보고하는 사용량. 천 단위·0·보고 안 됨이 모두 보이도록 고른 값이다. */
+export const defaultFakeUsage: Usage = {
+  inputTokens: 1234,
+  outputTokens: 56,
+  cacheReadTokens: 0,
+  cacheWriteTokens: null,
+  costUsd: 0.0012,
+};
+
+/** 가짜 프로바이더가 이어 가지 못하는 세션. 공통 검사가 이어가기 실패를 재현할 때 넘긴다. */
+export const expiredFakeSession = { turns: 1, expired: true } as const;
+
 export function createScriptedRuntime({
   select = defaultScriptSelector,
   fetch,
+  settings = {},
 }: {
   select?: ScriptSelector;
   fetch?: typeof globalThis.fetch;
+  settings?: FakeProviderSettings;
 } = {}): RuntimeAdapter {
+  const capabilities = { ...defaultFakeCapabilities, ...settings.capabilities };
+  /** 끼워 넣기를 받을 수 있는 진행 중 실행 시도와 그 활동 출구. 실행 시도가 끝나 가면 빠진다. */
+  const live = new Map<string, (activity: unknown) => Promise<void>>();
+  const usage = (): Usage => {
+    const reported = { ...defaultFakeUsage, ...settings.usage };
+    return {
+      inputTokens: capabilities.usageTokens ? reported.inputTokens : null,
+      outputTokens: capabilities.usageTokens ? reported.outputTokens : null,
+      cacheReadTokens: capabilities.usageTokens
+        ? reported.cacheReadTokens
+        : null,
+      cacheWriteTokens: capabilities.usageTokens
+        ? reported.cacheWriteTokens
+        : null,
+      costUsd: capabilities.usageCost ? reported.costUsd : null,
+    };
+  };
   return {
-    async execute(request, { signal, emit }) {
-      const turns = Number(request.previousSession?.turns ?? 0);
-      const end = (
-        stopReason: RunResult["stopReason"],
-        fields: Partial<RunResult> = {}
-      ): RunResult => ({
-        stopReason,
-        error: null,
-        summary: null,
-        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
-        nextSession: { turns: turns + 1 },
-        ...fields,
-      });
-
-      const script = select(request);
-      if (!script)
-        return end("failed", {
-          error: `가짜 프로바이더에 ${request.context.agent.role}·${request.wakeReasons.map((r) => r.kind).join(",")} 시나리오가 없습니다.`,
-        });
-      const tools = createOrgToolClient({
-        baseUrl: request.access.toolsBaseUrl,
-        token: request.access.token,
-        signal,
-        fetch,
-      });
-      const state: ScriptState = {
-        request,
-        context: undefined,
-        sent: [],
-        calls: [],
-      };
-      // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
-      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
-      // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
-      const bundle = createHash("sha256")
-        .update(request.wakeReasons.map((r) => r.wakeId).join(","))
-        .digest("hex")
-        .slice(0, 32);
-      const effects = new Map<OrgToolName, number>();
-      const once = (tool: OrgToolName) => {
-        const n = effects.get(tool) ?? 0;
-        effects.set(tool, n + 1);
-        return { idempotencyKey: `${bundle}-${tool}-${n}` };
-      };
-      try {
-        const queue = [...script.steps];
-        for (let step = queue.shift(); step; step = queue.shift()) {
-          signal.throwIfAborted();
-          switch (step.do) {
-            case "read_context":
-              state.context = await tools.getRunContext();
-              break;
-            case "emit":
-              await emit(step.activity);
-              break;
-            case "send_message":
-              state.sent.push(
-                await tools.sendMessage(
-                  {
-                    body: step.body(state),
-                    ...(step.conversationId
-                      ? { conversationId: step.conversationId }
-                      : {}),
-                  },
-                  once("send_message")
-                )
-              );
-              break;
-            case "read_message":
-              await tools.getMessage(step.messageId(state));
-              break;
-            case "call":
-              if (step.when && !step.when(state)) break;
-              try {
-                const output = await tools.call(
-                  step.tool,
-                  step.input?.(state) as OrgToolInput<typeof step.tool>,
-                  isOrgToolRead(step.tool) ? {} : once(step.tool)
-                );
-                state.calls.push({ tool: step.tool, ok: true, output });
-              } catch (error) {
-                if (!(error instanceof OrgToolError) || !step.allowRefusal)
-                  throw error;
-                state.calls.push({
-                  tool: step.tool,
-                  ok: false,
-                  status: error.status,
-                  code: error.code,
-                });
-              }
-              break;
-            case "then":
-              queue.unshift(...step.steps(state));
-              break;
-            case "hold":
-              await step.until(signal);
-              break;
-            case "fail":
-              return end("failed", { error: step.error });
-          }
+    capabilities,
+    loginCommand:
+      settings.loginCommand === undefined
+        ? "babojubot-fake login"
+        : settings.loginCommand,
+    async checkReadiness() {
+      return settings.readiness ?? { status: "ready", reason: null };
+    },
+    ...(capabilities.steer
+      ? {
+          async steer(message: SteerMessage): Promise<SteerOutcome> {
+            const emit = live.get(message.runId);
+            if (!emit || settings.steerOutcome === "rejected")
+              return "rejected";
+            await emit({
+              type: "progress",
+              text: `끼워 넣은 메시지를 받았습니다: ${quote(message.body)}`,
+            });
+            return "accepted";
+          },
         }
-        signal.throwIfAborted();
-        return end("completed", { summary: script.summary?.(state) ?? null });
-      } catch (error) {
-        // 취소 중 생긴 오류는 실패가 아니라 취소다(ACP prompt-turn Cancellation과 같은 규칙).
-        if (signal.aborted) return end("cancelled");
-        return end("failed", {
-          error:
-            error instanceof Error ? error.message : "가짜 프로바이더 오류",
-        });
+      : {}),
+    async execute(request, { signal, emit }) {
+      const runId = request.identity.runId;
+      live.set(runId, emit);
+      try {
+        return await run(request, signal, emit);
+      } finally {
+        live.delete(runId);
       }
     },
   };
+
+  async function run(
+    request: RunRequest,
+    signal: AbortSignal,
+    emit: (activity: unknown) => Promise<void>
+  ): Promise<RunResult> {
+    let previous = capabilities.resume ? request.previousSession : null;
+    if (previous?.expired) {
+      // 이어 가지 못하는 세션: 같은 실행 시도 안에서 새 세션으로 시작하고 그 사실을 남긴다. 취소됐으면 다시 시작하지 않는다.
+      if (signal.aborted) return endWith(0, "cancelled");
+      await emit({
+        type: "progress",
+        text: "이전 세션을 이어 가지 못해 새 세션으로 시작합니다.",
+      });
+      previous = null;
+    }
+    const turns = Number(previous?.turns ?? 0);
+    const end = (
+      stopReason: RunResult["stopReason"],
+      fields: Partial<RunResult> = {}
+    ): RunResult => endWith(turns, stopReason, fields);
+
+    const script = select(request);
+    if (!script)
+      return end("failed", {
+        error: `가짜 프로바이더에 ${request.context.agent.role}·${request.wakeReasons.map((r) => r.kind).join(",")} 시나리오가 없습니다.`,
+      });
+    const tools = createOrgToolClient({
+      baseUrl: request.access.toolsBaseUrl,
+      token: request.access.token,
+      signal,
+      fetch,
+    });
+    const state: ScriptState = {
+      request,
+      context: undefined,
+      sent: [],
+      calls: [],
+    };
+    // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
+    // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
+    // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
+    const bundle = createHash("sha256")
+      .update(request.wakeReasons.map((r) => r.wakeId).join(","))
+      .digest("hex")
+      .slice(0, 32);
+    const effects = new Map<OrgToolName, number>();
+    const once = (tool: OrgToolName) => {
+      const n = effects.get(tool) ?? 0;
+      effects.set(tool, n + 1);
+      return { idempotencyKey: `${bundle}-${tool}-${n}` };
+    };
+    try {
+      const queue = [...script.steps];
+      for (let step = queue.shift(); step; step = queue.shift()) {
+        signal.throwIfAborted();
+        switch (step.do) {
+          case "read_context":
+            state.context = await tools.getRunContext();
+            break;
+          case "emit":
+            await emit(step.activity);
+            break;
+          case "send_message":
+            state.sent.push(
+              await tools.sendMessage(
+                {
+                  body: step.body(state),
+                  ...(step.conversationId
+                    ? { conversationId: step.conversationId }
+                    : {}),
+                },
+                once("send_message")
+              )
+            );
+            break;
+          case "read_message":
+            await tools.getMessage(step.messageId(state));
+            break;
+          case "call":
+            if (step.when && !step.when(state)) break;
+            try {
+              const output = await tools.call(
+                step.tool,
+                step.input?.(state) as OrgToolInput<typeof step.tool>,
+                isOrgToolRead(step.tool) ? {} : once(step.tool)
+              );
+              state.calls.push({ tool: step.tool, ok: true, output });
+            } catch (error) {
+              if (!(error instanceof OrgToolError) || !step.allowRefusal)
+                throw error;
+              state.calls.push({
+                tool: step.tool,
+                ok: false,
+                status: error.status,
+                code: error.code,
+              });
+            }
+            break;
+          case "then":
+            queue.unshift(...step.steps(state));
+            break;
+          case "hold":
+            await step.until(signal);
+            break;
+          case "fail":
+            return end("failed", { error: step.error });
+        }
+      }
+      signal.throwIfAborted();
+      return end("completed", { summary: script.summary?.(state) ?? null });
+    } catch (error) {
+      // 취소 중 생긴 오류는 실패가 아니라 취소다(ACP prompt-turn Cancellation과 같은 규칙).
+      if (signal.aborted) return end("cancelled");
+      return end("failed", {
+        error: error instanceof Error ? error.message : "가짜 프로바이더 오류",
+      });
+    }
+  }
+
+  function endWith(
+    turns: number,
+    stopReason: RunResult["stopReason"],
+    fields: Partial<RunResult> = {}
+  ): RunResult {
+    return {
+      stopReason,
+      error: null,
+      summary: null,
+      usage: usage(),
+      nextSession: capabilities.resume ? { turns: turns + 1 } : null,
+      ...fields,
+    };
+  }
 }

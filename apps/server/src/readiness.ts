@@ -1,0 +1,125 @@
+import {
+  providerReadinessCheckSchema,
+  type ProviderConnection,
+  type ProviderReadinessCheck,
+} from "@babojubot/contracts";
+import { saveProviderReadiness, type Database } from "@babojubot/db";
+import type { EventHub } from "./event-hub.ts";
+
+/**
+ * 프로바이더 연결의 준비 확인(#96). 모델을 부르지 않는 연결의 확인(`checkReadiness`)을 돌려 결과와 시각을 저장하고,
+ * 확인을 시작할 때와 끝낼 때 전역 설정 변경 신호를 보내 화면이 확인 중 표시와 결과를 다시 불러오게 한다.
+ * 확인하는 때는 서버 시작·전역 설정 화면 열기·`다시 확인`·로그인 오류로 끝난 실행 시도 뒤이며, 실행 시도의 admission은 확인을
+ * 기다리지 않고 결과도 보지 않는다. 준비안됨이어도 다른 연결로 대신 돌리지 않는다.
+ * 같은 연결의 확인이 겹치면 마지막에 시작한 확인의 결과만 저장한다(늦게 끝난 옛 확인이 새 결과를 덮지 않음).
+ */
+export class ReadinessMonitor {
+  readonly #db: Database;
+  readonly #connections: ReadonlyMap<string, ProviderConnection>;
+  readonly #hub: Pick<EventHub, "publishSettingsChanged">;
+  readonly #now: () => Date;
+  readonly #timeoutMs: number;
+  /** 연결별 마지막으로 시작한 확인의 번호. */
+  readonly #latest = new Map<string, number>();
+  /** 연결별 진행 중인 확인 수. */
+  readonly #inFlight = new Map<string, number>();
+  readonly #pending = new Set<Promise<void>>();
+  readonly #stop = new AbortController();
+  #seq = 0;
+
+  constructor(options: {
+    db: Database;
+    connections: readonly ProviderConnection[];
+    /** 전역 설정 변경 신호(`settings_changed`)를 보낸다. 확인 중 표시는 저장과 상관없이 바뀌므로 commit 뒤 할 일을 거치지 않는다. */
+    hub: Pick<EventHub, "publishSettingsChanged">;
+    now: () => Date;
+    /** 확인 하나를 기다리는 시간. 넘으면 `unknown`·`check_timeout`이다. */
+    timeoutMs?: number;
+  }) {
+    this.#db = options.db;
+    this.#connections = new Map(options.connections.map((c) => [c.id, c]));
+    this.#hub = options.hub;
+    this.#now = options.now;
+    this.#timeoutMs = options.timeoutMs ?? 10_000;
+  }
+
+  /** 지금 확인 중인가. */
+  checking(provider: string): boolean {
+    return (this.#inFlight.get(provider) ?? 0) > 0;
+  }
+
+  /** 등록된 연결을 모두 확인한다. 기다리지 않으며 실패는 남기기만 한다. */
+  checkAll(): void {
+    for (const id of this.#connections.keys()) void this.check(id);
+  }
+
+  /** 연결 하나를 확인해 저장한다. 끝나면(저장하지 않은 옛 확인이어도) 돌아온다. 던지지 않는다. */
+  check(provider: string): Promise<void> {
+    const connection = this.#connections.get(provider);
+    if (!connection || this.#stop.signal.aborted) return Promise.resolve();
+    const seq = ++this.#seq;
+    this.#latest.set(provider, seq);
+    this.#inFlight.set(provider, (this.#inFlight.get(provider) ?? 0) + 1);
+    this.#hub.publishSettingsChanged();
+    const startedAt = this.#now();
+    const task = (async () => {
+      try {
+        const result = await this.#run(connection);
+        if (this.#latest.get(provider) !== seq || this.#stop.signal.aborted)
+          return;
+        await saveProviderReadiness(this.#db, provider, result, startedAt);
+      } catch (error) {
+        console.error(`[providers] ${provider} readiness not saved`, error);
+      } finally {
+        this.#inFlight.set(provider, this.#inFlight.get(provider)! - 1);
+        if (!this.#stop.signal.aborted) this.#hub.publishSettingsChanged();
+      }
+    })();
+    this.#pending.add(task);
+    void task.finally(() => this.#pending.delete(task));
+    return task;
+  }
+
+  /** 새 확인을 받지 않고 진행 중인 확인을 멈춘 뒤 끝날 때까지 기다린다. */
+  async close(): Promise<void> {
+    this.#stop.abort();
+    await Promise.all(this.#pending);
+  }
+
+  /** 연결의 확인 하나. 시간 초과는 `check_timeout`, 오류·계약 밖의 결과는 `check_failed`다. 오류 원문은 남기지 않는다. */
+  async #run(connection: ProviderConnection): Promise<ProviderReadinessCheck> {
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    this.#stop.signal.addEventListener("abort", stop, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const raw = await Promise.race([
+        connection.adapter.checkReadiness(controller.signal),
+        new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => {
+            resolve("timeout");
+            controller.abort();
+          }, this.#timeoutMs);
+        }),
+      ]);
+      if (raw === "timeout")
+        return { status: "unknown", reason: "check_timeout" };
+      const parsed = providerReadinessCheckSchema.safeParse(raw);
+      if (parsed.success) return parsed.data;
+      console.error(
+        `[providers] ${connection.id} returned an invalid readiness`,
+        parsed.error
+      );
+      return { status: "unknown", reason: "check_failed" };
+    } catch (error) {
+      console.error(
+        `[providers] ${connection.id} readiness check failed`,
+        error
+      );
+      return { status: "unknown", reason: "check_failed" };
+    } finally {
+      clearTimeout(timer);
+      this.#stop.signal.removeEventListener("abort", stop);
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import type { InstructionFile, WakeReason } from "@babojubot/contracts";
 import { decisionOfStatus, type PendingWake } from "@babojubot/core";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { type Executor } from "./rows.ts";
 import {
   agentToAgentMessages,
@@ -19,6 +19,12 @@ import {
 
 // 실행 시도 쪽이 함께 쓰는 읽기: 깨우기와 그 사유, 진행 중 실행 시도, 지침 사본. admission(runs.ts)과 실행 시도·에이전트 화면
 // 조회(run-views.ts)가 쓴다. DB 안에서만 쓰며 패키지 밖으로 내보내지 않는다(index.ts에 없음).
+
+/**
+ * 진행 중 실행 시도에 끼워 넣는 중인 사용자 메시지의 깨우기가 아니다. 끼워 넣는 동안의 깨우기는 대기 중이지만 다음 실행 시도가 받지 않는다.
+ * 그 실행 시도가 받으면 그 실행 시도에 묶이고, 거절되면 메시지가 `next_run`이 되어 평소처럼 대기한다(conversations.ts `settleSteer`).
+ */
+export const notSteering = sql`not exists (select 1 from ${messages} where ${messages.id} = ${wakes.messageId} and ${messages.delivery} = 'steer')`;
 
 export async function findRunningRunId(db: Executor, agentId: string) {
   const [active] = await db

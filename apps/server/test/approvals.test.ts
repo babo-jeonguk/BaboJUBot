@@ -74,6 +74,7 @@ function leadRuns(...scripts: Script[]) {
     requests,
     states,
     runtime: {
+      ...inner,
       execute: (
         request: RunRequest,
         control: Parameters<typeof inner.execute>[1]

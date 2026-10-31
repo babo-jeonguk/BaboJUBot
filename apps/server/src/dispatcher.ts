@@ -6,6 +6,8 @@ import {
   type RunCancel,
   type RunResult,
   type RuntimeAdapter,
+  type SteerMessage,
+  type SteerOutcome,
 } from "@babojubot/contracts";
 import type { RunCancellation } from "@babojubot/core";
 import {
@@ -56,7 +58,12 @@ export class RunDispatcher {
   readonly #assemble: RunRequestAssembler;
   readonly #pumps = new Map<string, Promise<void>>();
   readonly #kickedAgain = new Set<string>();
-  readonly #active = new Map<string, AbortController>();
+  /** 진행 중인 실행 시도와 그 연결의 adapter. 끼워 넣기는 여기 있는 실행 시도에만 간다. */
+  readonly #active = new Map<
+    string,
+    { controller: AbortController; adapter: RuntimeAdapter | undefined }
+  >();
+  readonly #onLoginRequired: (provider: string) => void;
   /** 저장하지 못한 종료. `server_restart`는 서버 종료로 프로바이더가 취소되어 돌아온 실행 시도다(`interruptRun`). */
   readonly #pendingFinishes = new Map<
     string,
@@ -73,12 +80,15 @@ export class RunDispatcher {
     now: () => Date;
     /** 실행 시도 요청 조립(`createRunRequestAssembler`). */
     assemble: RunRequestAssembler;
+    /** 실행 시도가 제품 로그인이 필요해 실패로 끝났다(`errorCode` `login_required`). 종료를 저장한 뒤 부른다. */
+    onLoginRequired?: (provider: string) => void;
   }) {
     this.#db = options.db;
     this.#hub = options.hub;
     this.#providers = options.providers;
     this.#now = options.now;
     this.#assemble = options.assemble;
+    this.#onLoginRequired = options.onLoginRequired ?? (() => {});
   }
 
   /**
@@ -114,10 +124,29 @@ export class RunDispatcher {
    */
   cancel(cancellation: RunCancellation | null): void {
     for (const runId of cancellation?.runIds ?? [])
-      this.#active.get(runId)?.abort({
+      this.#active.get(runId)?.controller.abort({
         type: "cancel",
         reason: cancellation!.reason,
       } satisfies RunCancel);
+  }
+
+  /**
+   * 진행 중인 실행 시도에 사용자 메시지를 끼워 넣는다. 그 실행 시도를 맡은 adapter가 받았다고 확인해야 `accepted`이고,
+   * 이 프로세스에서 진행 중이 아니거나(아직 등록 전·이미 끝남·취소됨) adapter가 거절하거나 오류로 끝나면 `rejected`다.
+   * 오류를 거절로 보는 것은 끼워 넣기를 선언한 adapter가 넣었는지 모르는 실패를 내지 않기 때문이다(contracts `providerCapabilitiesSchema`).
+   */
+  async steer(message: SteerMessage): Promise<SteerOutcome> {
+    const active = this.#active.get(message.runId);
+    if (!active?.adapter?.steer || active.controller.signal.aborted)
+      return "rejected";
+    try {
+      return (await active.adapter.steer(message)) === "accepted"
+        ? "accepted"
+        : "rejected";
+    } catch (error) {
+      console.error(`[runs] run ${message.runId} steer failed`, error);
+      return "rejected";
+    }
   }
 
   /**
@@ -176,7 +205,8 @@ export class RunDispatcher {
   async close(): Promise<void> {
     this.#closed = true;
     this.#recovery.abort();
-    for (const controller of this.#active.values()) controller.abort(shutdown);
+    for (const { controller } of this.#active.values())
+      controller.abort(shutdown);
     while (this.#pumps.size) await Promise.all(this.#pumps.values());
   }
 
@@ -235,7 +265,8 @@ export class RunDispatcher {
   async #execute(claimed: ClaimedRun, token: string) {
     const { run } = claimed;
     const controller = new AbortController();
-    this.#active.set(run.id, controller);
+    const adapter = this.#providers.get(run.provider);
+    this.#active.set(run.id, { controller, adapter });
     // 닫는 중에 admission이 끝난 실행 시도도 바로 취소를 받는다.
     if (this.#closed) controller.abort(shutdown);
     let result: RunResult;
@@ -247,7 +278,6 @@ export class RunDispatcher {
           type: "cancel",
           reason: cancelReason,
         } satisfies RunCancel);
-      const adapter = this.#providers.get(run.provider);
       const request = await this.#assemble(claimed, token);
       const raw = adapter
         ? await adapter.execute(request, {
@@ -287,6 +317,8 @@ export class RunDispatcher {
           : result,
     });
     await this.#settle(run.agentId);
+    if (result.stopReason === "failed" && result.errorCode === "login_required")
+      this.#onLoginRequired(run.provider);
   }
 
   /**

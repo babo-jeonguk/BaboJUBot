@@ -56,11 +56,12 @@ export default defineConfig([
   },
   {
     // commit 뒤 할 일(Event 알리기·취소·조직 재개·깨우기)은 저장 결과에 담아 applyAfterCommit 한 곳이 적용한다(#84).
-    // 실행 시도 자체의 흐름은 dispatcher가 맡는다.
+    // 실행 시도 자체의 흐름은 dispatcher가, 저장과 상관없이 시작·끝나는 준비 확인 중 신호는 readiness가 맡는다.
     files: ["apps/server/src/**/*.ts"],
     ignores: [
       "apps/server/src/after-commit.ts",
       "apps/server/src/dispatcher.ts",
+      "apps/server/src/readiness.ts",
       "**/*.test.ts",
     ],
     rules: {

@@ -9,7 +9,11 @@ import {
   type WakeReason,
 } from "@babojubot/contracts";
 import { leadReplyScript, type Script } from "@babojubot/runtime";
-import { createGate, type Gate } from "@babojubot/runtime/testing";
+import {
+  createGate,
+  fakeDeclarations,
+  type Gate,
+} from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import {
   chatMessages,
@@ -269,6 +273,7 @@ describe("paused and finished organizations", () => {
     let executed = 0;
     // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더. 뒤 실행 시도는 받은 메시지만 남긴다.
     const slow: RuntimeAdapter = {
+      ...fakeDeclarations(),
       async execute(request): Promise<RunResult> {
         if (++executed === 1) {
           reached();

@@ -14,6 +14,8 @@ import {
   modelIdSchema,
   providerIdSchema,
   type ModelOption,
+  type ProviderCapabilities,
+  type ProviderReadinessCheck,
 } from "./provider.ts";
 
 // Control Plane → Agent Runtime 실행 시도 계약(docs/architecture.md).
@@ -189,7 +191,7 @@ export const runRequestSchema = z.object({
   wakeReasons: z.array(wakeReasonSchema).min(1),
   context: runContextSchema,
   /**
-   * 지침 bundle 버전. 에이전트의 Role·Soul·Skill 사본 내용에서 정하며, 사본이 없으면 없다. 이전 실행 시도와 버전이 다르면
+   * 지침 bundle 버전. 에이전트의 Role·Soul·Skill 사본 내용에서 정하며, 사본이 없으면 없다. 이어 갈 세션을 만든 버전과 다르면
    * admission(core `planRunStart`)이 `previousSession`을 비워 넘기므로 프로바이더가 따로 가리지 않는다.
    */
   instructionsBundleVersion: z.string().nullable(),
@@ -200,7 +202,9 @@ export const runRequestSchema = z.object({
   /** admission이 에이전트 설정에서 고정한 모델. 없으면 프로바이더가 기본 모델을 쓴다. */
   model: modelIdSchema.nullable(),
   /**
-   * 이어 갈 세션. 이전 실행 시도와 지침 bundle 버전이나 프로바이더 연결이 다르면 admission(core `planRunStart`)이 비워 넘긴다.
+   * 이어 갈 세션. 세션은 (에이전트, 작업)마다 저장한다. 받은 깨우기가 모두 한 작업이면 그 작업의 세션, 섞였거나 작업이 없으면
+   * 에이전트 세션이다(core `sessionTaskOf`). 세션을 만든 프로바이더 연결이나 지침 bundle 버전이 지금과 다르면 admission이 비워 넘긴다.
+   * 이어 가지 못하면 프로바이더가 같은 실행 시도 안에서 새 세션으로 시작한다.
    */
   previousSession: sessionStateSchema.nullable(),
 });
@@ -238,21 +242,48 @@ export const publicActivitySchema = z.discriminatedUnion("source", [
 ]);
 export type PublicActivity = z.infer<typeof publicActivitySchema>;
 
+const tokenCountSchema = z.number().int().nonnegative().nullable();
+
+/**
+ * 실행 시도 하나의 사용량. 항목마다 보고한 값이거나 `null`(보고 안 됨)이며, 보고한 0은 0이다. 보고하지 않은 항목을 0으로 채우지 않는다.
+ * 프로바이더가 세션 누적값만 주면 adapter가 이 실행 시도 몫으로 바꿔 보고한다. 캐시 읽기·쓰기는 입력과 따로 센 토큰이다.
+ * 비용(USD)은 프로바이더가 알려 준 추정이다.
+ */
 export const usageSchema = z.strictObject({
-  inputTokens: z.number().int().nonnegative(),
-  outputTokens: z.number().int().nonnegative(),
+  inputTokens: tokenCountSchema,
+  outputTokens: tokenCountSchema,
+  cacheReadTokens: tokenCountSchema,
+  cacheWriteTokens: tokenCountSchema,
   costUsd: z.number().nonnegative().nullable(),
 });
 export type Usage = z.infer<typeof usageSchema>;
+
+/** 아무 항목도 보고하지 않은 사용량. */
+export const unreportedUsage: Usage = {
+  inputTokens: null,
+  outputTokens: null,
+  cacheReadTokens: null,
+  cacheWriteTokens: null,
+  costUsd: null,
+};
+
+/**
+ * 실패의 종류. `login_required`는 제품 로그인이 필요해 실패했다는 뜻이며, 서버가 그 연결의 준비 상태를 다시 확인한다.
+ */
+export const runErrorCodes = ["login_required"] as const;
+export const runErrorCodeSchema = z.enum(runErrorCodes);
+export type RunErrorCode = z.infer<typeof runErrorCodeSchema>;
 
 /** 종료. 프로바이더는 취소를 받아도 정리를 끝낸 뒤 `cancelled`로 한 번만 돌려준다. */
 export const runResultSchema = z.strictObject({
   stopReason: runStopReasonSchema,
   /** 실패 사유. 공개 기록에 남으므로 비밀값을 넣지 않는다. */
   error: z.string().max(2_000).nullable(),
+  /** 실패의 종류. 알 수 있을 때만 준다. */
+  errorCode: runErrorCodeSchema.nullable().optional(),
   summary: z.string().max(4_000).nullable(),
   usage: usageSchema.nullable(),
-  /** 다음 세션 상태. `null`이면 세션을 초기화한다. */
+  /** 다음 세션 상태. 이 실행 시도의 세션 자리에 저장하며, `null`이면 그 세션을 비운다. */
   nextSession: sessionStateSchema.nullable(),
 });
 export type RunResult = z.infer<typeof runResultSchema>;
@@ -280,14 +311,31 @@ export const runCancelSchema = z.strictObject({
 });
 export type RunCancel = z.infer<typeof runCancelSchema>;
 
+/** 진행 중인 실행 시도에 끼워 넣는 사용자 메시지. */
+export type SteerMessage = {
+  runId: string;
+  messageId: string;
+  conversationId: string;
+  body: string;
+};
+
+/**
+ * 끼워 넣기의 결과. `accepted`는 그 실행 시도가 받았다는 프로바이더의 확인이고, `rejected`는 넣지 않았다는 확실한 거절이다
+ * (실행 시도가 끝나 가거나 이미 끝남, 프로바이더가 거절). 거절된 메시지는 줄 세운 메시지가 된다.
+ */
+export const steerOutcomes = ["accepted", "rejected"] as const;
+export type SteerOutcome = (typeof steerOutcomes)[number];
+
 /**
  * 프로바이더 adapter. `signal`이 취소(`reason`은 {@link RunCancel})를 전하고, adapter는 진행 중인 일을 멈추고 정리한 뒤에 결과를 돌려준다.
  * `emit`은 공개 활동을 순서대로 기록하며, 돌아온 뒤에 다음 활동을 낸다.
  * adapter는 다음을 지킨다: 취소를 받으면 곧 `cancelled`로 끝나고, 돌아온 뒤 활동을 내지 않으며, 활동은 {@link runtimeActivitySchema},
- * 종료는 {@link runResultSchema}에 맞고, 실행 시도 토큰을 오류 문구·요약·활동에 싣지 않는다.
+ * 종료는 {@link runResultSchema}에 맞고, 실행 시도 토큰을 오류 문구·요약·활동에 싣지 않는다. 선언한 일(`capabilities`)은 그대로 한다.
  * 이 약속은 `@babojubot/runtime/runtime-contract`의 공통 검사(`describeRuntimeContract`)가 adapter마다 확인한다.
  */
 export type RuntimeAdapter = {
+  /** 지원하는 일. 모든 항목을 기본값 없이 선언한다. */
+  capabilities: ProviderCapabilities;
   execute(
     request: RunRequest,
     control: {
@@ -295,6 +343,17 @@ export type RuntimeAdapter = {
       emit: (activity: unknown) => Promise<void>;
     }
   ): Promise<RunResult>;
+  /**
+   * 진행 중인 실행 시도(`message.runId`)에 사용자 메시지를 끼워 넣는다. `capabilities.steer`일 때만 있다.
+   * 그 실행 시도가 받았다고 확인했을 때만 `accepted`이고, 넣지 않았음이 확실하면 `rejected`다. 이 adapter가 돌리지 않는 실행 시도도 `rejected`다.
+   */
+  steer?: (message: SteerMessage) => Promise<SteerOutcome>;
+  /**
+   * 준비 확인. 모델을 부르지 않고(프로그램·버전·로그인 상태 등) 준비 상태와 이유를 돌려준다. 오래 걸리면 `signal`로 멈춘다.
+   */
+  checkReadiness: (signal: AbortSignal) => Promise<ProviderReadinessCheck>;
+  /** 제품 로그인 명령. 준비 상태가 `product_login_missing`일 때 화면이 복사하게 한다. 없으면 `null`이다. */
+  loginCommand: string | null;
 };
 
 /**

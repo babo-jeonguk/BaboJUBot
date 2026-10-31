@@ -6,6 +6,7 @@ import {
   ownerActions,
   type Agent,
   type AgentDetail,
+  type ProviderSummary,
   type ConversationMessage,
   type ConversationSummary,
   type LifecycleStage,
@@ -31,6 +32,7 @@ import {
   ApiError,
   useAgent,
   useControlAgent,
+  useProviderSettings,
   useConversations,
   useMarkConversationRead,
   useOrganization,
@@ -901,6 +903,22 @@ const heldLabel: Record<NonNullable<OwnerActionsDecision["heldBy"]>, string> = {
 };
 
 /** Lead 상세의 최근 실행 시도에서 본 실행 상태. 취소를 요청받은 진행 중 실행 시도는 정리 중이다. */
+/**
+ * Lead의 진행 중 실행 시도를 맡은 연결이 끼워 넣기를 지원하는가. 에이전트 설정이 아니라 그 실행 시도에 고정된 연결로 본다.
+ * 설정을 읽기 전이나 서버에 없는 연결이면 지원하지 않는 것으로 본다.
+ */
+function runSteerable(
+  agent: AgentDetail | undefined,
+  providers: readonly ProviderSummary[] | undefined
+): boolean {
+  const run = agent?.recentRuns.find(
+    (r) => r.status === "running" && r.cancelReason === null
+  );
+  return (
+    !!run && !!providers?.find((p) => p.id === run.provider)?.capabilities.steer
+  );
+}
+
 function leadRunState(agent: AgentDetail | undefined): LeadRunState {
   const running = agent?.recentRuns.filter((r) => r.status === "running");
   if (running?.some((r) => r.cancelReason === null)) return "running";
@@ -953,6 +971,7 @@ function Composer({
   const stage = useOrganization(orgId).data?.stage;
   const agent = useAgent(orgId, lead.id).data;
   const stop = useControlAgent(orgId, lead.id);
+  const providers = useProviderSettings().data?.providers;
   const queuedCount = Math.max(agent?.queuedMessageCount ?? 0, queued.length);
   // 조직을 아직 읽지 못했으면 끝나지 않은 조직으로 본다.
   const { heldBy, actions } = ownerActions({
@@ -960,6 +979,7 @@ function Composer({
     leadPaused: agent?.paused ?? false,
     run: leadRunState(agent),
     queuedCount,
+    runSteerable: runSteerable(agent, providers),
   });
   const held = heldBy && heldLabel[heldBy];
   const closed = stage !== undefined && isClosedStage(stage);
@@ -1123,6 +1143,16 @@ function Composer({
                   >
                     <BoltIcon className="h-[18px] w-[18px]" />
                   </IconButton>
+                  {actions.steer_send.visible && (
+                    <IconButton
+                      label="실행 중 끼워 넣기"
+                      tone="steer"
+                      disabled={busy || !!actions.steer_send.refusal}
+                      onClick={() => void submit("steer")}
+                    >
+                      <SteerIcon />
+                    </IconButton>
+                  )}
                   <IconButton
                     label="줄 세우기"
                     type="submit"
@@ -1374,6 +1404,7 @@ const iconButtonTone = {
   danger:
     "bg-rose-600 text-white shadow-sm shadow-rose-600/30 hover:bg-rose-700",
   stop: "bg-slate-900 text-white hover:bg-slate-700",
+  steer: "bg-white text-brand-700 ring-1 ring-brand-200 hover:bg-brand-50",
 } as const;
 
 /** 아이콘만 있는 둥근 버튼. 이름은 `aria-label`과 tooltip에 같은 글로 보인다. */
@@ -1464,6 +1495,24 @@ function BoltIcon({ className }: { className: string }) {
       fill="currentColor"
     >
       <path d="M11.3 1.8 4 11.2h5.1l-1 7 7.4-9.6h-5.2l1-6.8Z" />
+    </svg>
+  );
+}
+
+/** 끼워 넣기: 흐르는 줄 사이로 들어가는 화살표. */
+function SteerIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="h-[18px] w-[18px]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3.5 5h13M3.5 15h13M3.5 10h7M8 7.2l2.8 2.8L8 12.8" />
     </svg>
   );
 }

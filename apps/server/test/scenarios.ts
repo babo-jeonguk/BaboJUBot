@@ -12,6 +12,7 @@ import {
   createScriptedRuntime,
   defaultScriptSelector,
   leadReplyScript,
+  type FakeProviderSettings,
   type Script,
   type ScriptSelector,
   type ScriptState,
@@ -57,6 +58,7 @@ export function quietCreation(
 ): RuntimeAdapter {
   const quiet = createScriptedRuntime({ select: () => idle });
   return {
+    ...inner,
     execute: (request, control) =>
       (onlyCreationWake(request) ? quiet : inner).execute(request, control),
   };
@@ -73,25 +75,27 @@ export function scriptedAgents({
 }: { created?: Script | ScriptSelector } = {}) {
   const runs: { request: RunRequest; state: ScriptState }[] = [];
   const queued = new Map<string, (Script | ScriptSelector)[]>();
-  const runtime = createScriptedRuntime({
-    select: (request) => {
-      const next = onlyCreationWake(request)
-        ? created
-        : queued.get(request.identity.agentId)?.shift();
-      const script =
-        (typeof next === "function" ? next(request) : next) ??
-        defaultScriptSelector(request)!;
-      return {
-        ...script,
-        summary: (state) => {
-          runs.push({ request, state });
-          return script.summary?.(state) ?? "끝";
-        },
-      };
-    },
-  });
+  const select: ScriptSelector = (request) => {
+    const next = onlyCreationWake(request)
+      ? created
+      : queued.get(request.identity.agentId)?.shift();
+    const script =
+      (typeof next === "function" ? next(request) : next) ??
+      defaultScriptSelector(request)!;
+    return {
+      ...script,
+      summary: (state) => {
+        runs.push({ request, state });
+        return script.summary?.(state) ?? "끝";
+      },
+    };
+  };
+  const runtime = createScriptedRuntime({ select });
   return {
     runtime,
+    /** 같은 시나리오 묶음을 쓰되 가짜 프로바이더 설정을 바꾼 adapter. 연결마다 설정이 다른 검사가 쓴다. */
+    runtimeWith: (settings: FakeProviderSettings) =>
+      createScriptedRuntime({ select, settings }),
     queue(agentId: string, ...scripts: (Script | ScriptSelector)[]) {
       queued.set(agentId, [...(queued.get(agentId) ?? []), ...scripts]);
     },

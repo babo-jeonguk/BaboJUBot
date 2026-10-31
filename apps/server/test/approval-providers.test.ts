@@ -71,7 +71,9 @@ async function leadProposes(created: Script) {
     { id: "fake-2-mini", label: "미니" },
     { id: "fake-2-max", label: "맥스" },
   ];
-  const [fake, fake2] = createFakeProviders(2, () => agents.runtime);
+  const [fake, fake2] = createFakeProviders(2, {
+    adapter: () => agents.runtime,
+  });
   t = await startTestServer({
     providers: [fake!, { ...fake2!, listModels: async () => fake2Models }],
   });
@@ -320,12 +322,15 @@ async function leadSession(name: string) {
     { id: "fake-2-mini", label: "미니" },
     { id: "fake-2-max", label: "맥스" },
   ];
-  const [fake, fake2] = createFakeProviders(2, () => ({
-    execute(request, control) {
-      tokens.set(request.identity.agentId, request.access.token);
-      return agents.runtime.execute(request, control);
-    },
-  }));
+  const [fake, fake2] = createFakeProviders(2, {
+    adapter: () => ({
+      ...agents.runtime,
+      execute(request, control) {
+        tokens.set(request.identity.agentId, request.access.token);
+        return agents.runtime.execute(request, control);
+      },
+    }),
+  });
   t = await startTestServer({
     providers: [fake!, { ...fake2!, listModels: async () => fake2Models }],
   });

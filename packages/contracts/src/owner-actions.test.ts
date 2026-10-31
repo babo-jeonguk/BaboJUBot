@@ -16,6 +16,7 @@ const state = (
   leadPaused: false,
   run: "idle",
   queuedCount: 0,
+  runSteerable: false,
   ...overrides,
 });
 
@@ -29,8 +30,10 @@ const runStates: LeadRunState[] = ["idle", "running", "cancelling"];
 const everyState = lifecycleStages.flatMap((stage) =>
   [false, true].flatMap((leadPaused) =>
     runStates.flatMap((run) =>
-      [0, maxQueuedMessages - 1, maxQueuedMessages].map((queuedCount) =>
-        state({ stage, leadPaused, run, queuedCount })
+      [0, maxQueuedMessages - 1, maxQueuedMessages].flatMap((queuedCount) =>
+        [false, true].map((runSteerable) =>
+          state({ stage, leadPaused, run, queuedCount, runSteerable })
+        )
       )
     )
   )
@@ -94,6 +97,28 @@ describe("ownerActions", () => {
     ]);
   });
 
+  it("adds steer only while a run whose provider supports it is running", () => {
+    expect(visible(state({ run: "running", runSteerable: true }))).toEqual(
+      [...visible(state({ run: "running" })), "steer_send"].sort()
+    );
+    for (const run of ["idle", "cancelling"] as const)
+      expect(visible(state({ run, runSteerable: true }))).not.toContain(
+        "steer_send"
+      );
+    expect(
+      visible(state({ stage: "paused", run: "running", runSteerable: true }))
+    ).not.toContain("steer_send");
+    expect(
+      ownerActions(
+        state({
+          run: "running",
+          runSteerable: true,
+          queuedCount: maxQueuedMessages,
+        })
+      ).actions.steer_send.refusal
+    ).toBe("queue_full");
+  });
+
   it("does not count a run being cancelled as running", () => {
     expect(visible(state({ run: "cancelling" }))).toEqual(
       visible(state({ run: "idle" }))
@@ -153,7 +178,9 @@ describe("ownerActions", () => {
           continue;
         expect({ state: s, action, refusal: verdict.refusal }).toEqual({
           state: s,
-          action: expect.stringMatching(/^(send|queue|interrupt_send)$/),
+          action: expect.stringMatching(
+            /^(send|queue|interrupt_send|steer_send)$/
+          ),
           refusal: "queue_full",
         });
       }

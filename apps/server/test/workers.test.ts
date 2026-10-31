@@ -68,6 +68,7 @@ const workerDecisions = (runs: { request: { wakeReasons: WakeReason[] } }[]) =>
 function capturingTokens(inner: RuntimeAdapter) {
   const tokens = new Map<string, string>();
   const runtime: RuntimeAdapter = {
+    ...inner,
     execute(request, control) {
       tokens.set(request.identity.agentId, request.access.token);
       return inner.execute(request, control);

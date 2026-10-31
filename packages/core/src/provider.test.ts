@@ -24,6 +24,19 @@ describe("admitsProviderRun", () => {
 });
 
 describe("planAgentProviderChange", () => {
+  it("clears the agent's sessions only when the provider changes, not for a model change", () => {
+    const change = (provider: string, model: string | null) => {
+      const plan = planAgentProviderChange(agent, "researching", {
+        provider,
+        model,
+      });
+      return typeof plan === "string" ? plan : plan.resetsSessions;
+    };
+    expect(change("fake-2", "fake-mini")).toBe(true);
+    expect(change("fake", "fake-max")).toBe(false);
+    expect(change("fake", null)).toBe(false);
+  });
+
   it("records the previous and new choice, leaves an unchanged choice alone and refuses a closed organization", () => {
     expect(
       planAgentProviderChange(agent, "researching", {
@@ -32,6 +45,7 @@ describe("planAgentProviderChange", () => {
       })
     ).toEqual({
       update: { provider: "fake-2", model: null },
+      resetsSessions: true,
       event: {
         organizationId: "org-1",
         type: "agent.provider_changed",

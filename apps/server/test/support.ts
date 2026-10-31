@@ -105,6 +105,15 @@ export async function startTestServer(
     const text = await res.text();
     return { status: res.status, body: text ? JSON.parse(text) : undefined };
   };
+  // 서버 시작의 준비 확인이 끝난 뒤에 검사를 시작한다. 그래야 그 확인의 설정 변경 신호가 검사가 센 신호에 섞이지 않는다.
+  for (let settled = false; !settled;) {
+    const { body } = await request("GET", "/api/providers");
+    settled = body.providers.every(
+      (p: { readiness: { checking: boolean; reason: string | null } }) =>
+        !p.readiness.checking && p.readiness.reason !== "not_checked"
+    );
+    if (!settled) await new Promise((r) => setTimeout(r, 10));
+  }
 
   return {
     baseUrl: server.url,

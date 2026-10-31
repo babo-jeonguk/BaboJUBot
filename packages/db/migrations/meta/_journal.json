@@ -162,6 +162,13 @@
       "when": 1793370592677,
       "tag": "0022_approval_provider_choices",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793432233281,
+      "tag": "0023_provider_sessions_readiness",
+      "breakpoints": true
     }
   ]
 }

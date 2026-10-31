@@ -20,6 +20,7 @@ describe("idempotency key on write tools", () => {
     const tokens = new Map<string, string>();
     t = await startTestServer({
       runtime: {
+        ...agents.runtime,
         execute(request, control) {
           tokens.set(request.identity.agentId, request.access.token);
           return agents.runtime.execute(request, control);

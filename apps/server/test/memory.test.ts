@@ -187,6 +187,7 @@ describe("organization and agent memory", () => {
     let token = "";
     t = await startTestServer({
       runtime: {
+        ...agents.runtime,
         execute(request, control) {
           token = request.access.token;
           return agents.runtime.execute(request, control);

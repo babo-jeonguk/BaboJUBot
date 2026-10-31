@@ -382,7 +382,7 @@ describe("Lead conversations", () => {
     for (const body of [
       { body: "  " },
       {},
-      { body: "x", delivery: "steer" },
+      { body: "x", delivery: "later" },
       { body: "x", title: "제목" },
     ])
       expect(
