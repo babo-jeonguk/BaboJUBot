@@ -67,7 +67,7 @@ export type RuntimeContractOptions = {
   /**
    * 끼워 넣은 말이 실행 시도에 들어갔다는 관찰 지점. 끼워 넣기를 선언한 adapter는 꼭 준다. `scene`은 끼워 넣은 말을 받을 때까지
    * 일하다 받으면 스스로 끝나는 요청이고, 받은 말(`body`)이 그 실행 시도의 결과(종료 결과·답장)에 반영되면 `took`이 참이다.
-   * 받았다는 공개 활동은 반영의 근거가 아니므로 넘기지 않는다.
+   * 받았다는 공개 활동은 반영의 근거가 아니므로 넘기지 않는다(받았다는 결정도 그 활동을 기다리지 않는다).
    */
   steers?: {
     scene: RuntimeContractScene;
@@ -192,7 +192,7 @@ const deadline = <T>(promise: Promise<T>, ms: number, what: string) =>
  * 6. 지원하는 일을 모두 기본값 없이 선언하고, 끼워 넣기 선언과 `steer`가 맞고, 지침 다시 넣기·미리 압축은 세션 이어가기와 함께다.
  *    지침 다시 넣기는 프로바이더 안에서 일어나 공개 결과로 보이지 않으므로 adapter 자체 검사가 확인하고, 미리 압축의 실행은 후속(#99)이다.
  * 7. 끼워 넣기: 일하는 실행 시도는 받고(`accepted`) 받은 말이 끝까지 간 그 실행 시도의 결과에 반영되며(`steers.took`),
- *    모르는 실행 시도와 돌아온 실행 시도는 거절한다(`rejected`).
+ *    모르는 실행 시도와 돌아온 실행 시도는 거절한다(`rejected`). 받았다는 결정은 공개 활동 기록을 기다리지 않는다(받았다는 활동은 실행 흐름이 남김).
  * 8. 세션 이어가기: 같은 에이전트의 다음 실행 시도가 받은 세션을 이어 가 그 세션에 맡긴 말을 알고(`resumes`, 다른 세션의 말이나
  *    세션 없이는 모름), 이어 가지 못하는 세션이면 같은 실행 시도 안에서 새 세션으로 시작해 진행 활동을 남긴다.
  *    지원하지 않으면 다음 세션을 돌려주지 않는다.
@@ -250,6 +250,19 @@ export function describeRuntimeContract(
       const activities: unknown[] = [];
       const late: unknown[] = [];
       let returned = false;
+      // 활동 기록을 붙잡아 두면 풀어 줄 때까지 `emit`이 돌아오지 않는다. 기록은 그대로 한다.
+      let gate: Promise<void> | undefined;
+      let open: (() => void) | undefined;
+      const holdActivities = () => {
+        gate ??= new Promise<void>((resolve) => {
+          open = resolve;
+        });
+        return () => {
+          open?.();
+          gate = undefined;
+          open = undefined;
+        };
+      };
       // 도구 호출이나 활동이 일을 시작했다는 신호다. 신호가 없으면 `startupMs` 뒤에 취소한다.
       let markStarted!: () => void;
       const started = new Promise<void>((resolve) => {
@@ -264,6 +277,7 @@ export function describeRuntimeContract(
           emit: async (activity) => {
             (returned ? late : activities).push(activity);
             markStarted();
+            await gate;
           },
         })
         .finally(() => {
@@ -278,6 +292,7 @@ export function describeRuntimeContract(
         late,
         result,
         started,
+        holdActivities,
         get returned() {
           return returned;
         },
@@ -491,7 +506,18 @@ export function describeRuntimeContract(
             });
           const body = `끼워 넣는 말 ${crypto.randomUUID().slice(0, 8)}`;
           expect(await steer(crypto.randomUUID(), body)).toBe("rejected");
-          expect(await steer(attempt.runId, body)).toBe("accepted");
+          const release = attempt.holdActivities();
+          try {
+            expect(
+              await deadline(
+                steer(attempt.runId, body),
+                finishWithinMs,
+                "did not decide the steer without waiting for an activity to be recorded"
+              )
+            ).toBe("accepted");
+          } finally {
+            release();
+          }
           const result = await deadline(
             attempt.result,
             finishWithinMs,
@@ -504,7 +530,7 @@ export function describeRuntimeContract(
           expect(await steer(attempt.runId, "늦은 말")).toBe("rejected");
           await expectSettled(attempt, result);
         },
-        startupMs + finishWithinMs + settleMs
+        startupMs + 2 * finishWithinMs + settleMs
       );
 
     it(

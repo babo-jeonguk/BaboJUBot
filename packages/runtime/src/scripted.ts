@@ -924,19 +924,15 @@ export function createScriptedRuntime({
             const inbox = live.get(message.runId);
             if (!inbox || settings.steerOutcome === "rejected")
               return "rejected";
-            // 시나리오 상태에 넣어 진행 중인 단계가 쓰게 한다. 받았다는 공개 활동은 그 뒤에 남긴다.
+            // 받기로 정한 뒤에는 실패할 수 있는 일을 하지 않는다(던지면 거절로 본다). 받았다는 공개 활동은 실행 흐름이 남긴다.
             inbox.take(message);
-            await inbox.emit({
-              type: "progress",
-              text: `끼워 넣은 메시지를 받았습니다: ${quote(message.body)}`,
-            });
             return "accepted";
           },
         }
       : {}),
     async execute(request, { signal, emit }) {
       const runId = request.identity.runId;
-      const inbox = createSteerInbox(emit);
+      const inbox = createSteerInbox();
       live.set(runId, inbox);
       try {
         return await run(request, signal, emit, inbox);
@@ -993,6 +989,17 @@ export function createScriptedRuntime({
       steered: inbox.steered,
       notes: session.notes,
     };
+    // 받았다는 공개 활동은 steer가 아니라 실행 흐름이 다른 활동과 순서대로 남긴다.
+    let announced = 0;
+    const announceSteered = async () => {
+      while (announced < inbox.steered.length) {
+        const message = inbox.steered[announced++]!;
+        await emit({
+          type: "progress",
+          text: `끼워 넣은 메시지를 받았습니다: ${quote(message.body)}`,
+        });
+      }
+    };
     // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
     // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
     // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
@@ -1010,6 +1017,7 @@ export function createScriptedRuntime({
       const queue = [...script.steps];
       for (let step = queue.shift(); step; step = queue.shift()) {
         signal.throwIfAborted();
+        await announceSteered();
         switch (step.do) {
           case "read_context":
             state.context = await tools.getRunContext();
@@ -1069,6 +1077,7 @@ export function createScriptedRuntime({
             return end("failed", { error: step.error });
         }
       }
+      await announceSteered();
       // 실행 중에 받은 말은 그 대화에 반영했다고 답한다. 받은 말이 이 실행 시도의 결과에 실제로 들어갔다는 관찰 지점이다.
       // 호출 키는 받은 메시지로 정한다. 같은 깨우기 묶음을 다시 받아도 끼워 넣은 말은 실행 시도마다 다를 수 있다.
       for (const message of state.steered) {
@@ -1115,19 +1124,17 @@ export function createScriptedRuntime({
 
 /** 진행 중인 실행 시도 하나가 끼워 넣은 메시지를 받는 곳. 받은 메시지 목록은 시나리오 상태의 `steered`와 같은 배열이다. */
 type SteerInbox = {
-  emit: (activity: unknown) => Promise<void>;
   steered: SteerMessage[];
   take: (message: SteerMessage) => void;
   /** 아직 기다리지 않은 받은 메시지가 생길 때까지 기다린다. 취소되면 reject한다. */
   next: (signal: AbortSignal) => Promise<void>;
 };
 
-function createSteerInbox(emit: SteerInbox["emit"]): SteerInbox {
+function createSteerInbox(): SteerInbox {
   const steered: SteerMessage[] = [];
   let waited = 0;
   let wake: (() => void) | undefined;
   return {
-    emit,
     steered,
     take(message) {
       steered.push(message);

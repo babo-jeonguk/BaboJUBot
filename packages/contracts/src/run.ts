@@ -346,6 +346,8 @@ export type RuntimeAdapter = {
   /**
    * 진행 중인 실행 시도(`message.runId`)에 사용자 메시지를 끼워 넣는다. `capabilities.steer`일 때만 있다.
    * 그 실행 시도가 받았다고 확인했을 때만 `accepted`이고, 넣지 않았음이 확실하면 `rejected`다. 이 adapter가 돌리지 않는 실행 시도도 `rejected`다.
+   * 던지면 넣지 않은 것(`rejected`)으로 본다. 그러니 받기로 정한 뒤에는 실패할 수 있는 일을 하지 않고 바로 `accepted`를 돌려준다.
+   * 받았다는 공개 활동은 실행 흐름(`execute`의 `emit`)이 남긴다.
    */
   steer?: (message: SteerMessage) => Promise<SteerOutcome>;
   /**
