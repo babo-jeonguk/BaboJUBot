@@ -13,6 +13,9 @@ import {
   insertOwnerMessage,
   listConversationMessages,
   listConversations,
+  listQueuedMessages,
+  recoverInterruptedSteers,
+  settleSteer,
 } from "./conversations.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
 import {
@@ -20,7 +23,12 @@ import {
   sendQueuedMessageNow,
   withdrawQueuedMessage,
 } from "./queued-messages.ts";
-import { claimNextRun, finishRun, loadRunContext } from "./runs.ts";
+import {
+  claimNextRun,
+  finishRun,
+  listAgentsWithPendingWakes,
+  loadRunContext,
+} from "./runs.ts";
 import { findAgentDetail } from "./run-views.ts";
 import { organizations } from "./schema.ts";
 import { refused } from "./stored.ts";
@@ -76,7 +84,12 @@ async function organization() {
       { body, delivery },
       source
     );
-    return { plan, stored: await insertOwnerMessage(t.db, plan) };
+    return {
+      plan,
+      stored: await insertOwnerMessage(t.db, plan, {
+        steerable: (provider) => provider === "fake",
+      }),
+    };
   };
   const send = async (body: string, delivery: MessageDelivery = "next_run") => {
     const { plan, stored } = await attempt(body, delivery);
@@ -127,6 +140,114 @@ describe("interrupt runs", () => {
     expect(bodies(first?.wakeReasons)).toEqual(["지금 보낼 말"]);
     await finishRun(t.db, first!.run.id, completed, source);
     expect(bodies((await claim())?.wakeReasons)).toEqual(["줄 선 하나"]);
+  });
+});
+
+describe("steering into the running run", () => {
+  const steer = async (
+    org: Awaited<ReturnType<typeof organization>>,
+    body: string
+  ) => {
+    const { stored } = await org.attempt(body, "steer");
+    if (stored.kind !== "ok") throw new Error("refused");
+    return stored.value;
+  };
+
+  it("hands an accepted message to the running run, in the transcript and the run's context", async () => {
+    const org = await organization();
+    await org.send("일 시작");
+    const running = (await org.claim())!;
+    const sent = await steer(org, "이 방향으로 가 주세요");
+    expect(sent.steerRunId).toBe(running.run.id);
+    // 넣는 동안에는 줄 세운 메시지도, 다음 실행 시도의 깨우기도 아니다.
+    expect(
+      await listQueuedMessages(t.db, org.orgId, org.conversation.id)
+    ).toEqual([]);
+    expect(
+      await listAgentsWithPendingWakes(t.db, { organizationId: org.orgId })
+    ).toEqual([]);
+
+    const settled = await settleSteer(
+      t.db,
+      {
+        organizationId: org.orgId,
+        messageId: sent.message.id,
+        runId: running.run.id,
+        outcome: "accepted",
+      },
+      source
+    );
+    expect(settled.kind === "ok" && settled.value).toMatchObject({
+      delivery: "steer",
+      deliveredToRunId: running.run.id,
+    });
+    expect(await org.listed()).toContain("이 방향으로 가 주세요");
+    const context = await loadRunContext(t.db, running.run.id);
+    expect(context?.context.conversation.map((m) => m.body)).toContain(
+      "이 방향으로 가 주세요"
+    );
+    await finishRun(t.db, running.run.id, completed, source);
+    expect(await org.claim()).toBeUndefined();
+  });
+
+  it("queues a rejected message for the next run and settles only once", async () => {
+    const org = await organization();
+    await org.send("일 시작");
+    const running = (await org.claim())!;
+    const sent = await steer(org, "끼워 넣기 거절");
+    const reject = () =>
+      settleSteer(
+        t.db,
+        {
+          organizationId: org.orgId,
+          messageId: sent.message.id,
+          runId: running.run.id,
+          outcome: "rejected",
+        },
+        source
+      );
+    const settled = await reject();
+    expect(settled.kind === "ok" && settled.value?.delivery).toBe("next_run");
+    expect(settled.kind === "ok" && settled.after.woken).toEqual([org.lead.id]);
+    expect((await reject()).kind === "ok" && (await reject())).toMatchObject({
+      value: null,
+    });
+    expect(
+      (await listQueuedMessages(t.db, org.orgId, org.conversation.id)).map(
+        (m) => m.body
+      )
+    ).toEqual(["끼워 넣기 거절"]);
+    await finishRun(t.db, running.run.id, completed, source);
+    expect(bodies((await org.claim())?.wakeReasons)).toEqual([
+      "끼워 넣기 거절",
+    ]);
+  });
+
+  it("queues instead when the Lead is not running or its run is being cancelled", async () => {
+    const org = await organization();
+    const idle = await steer(org, "쉬는 중");
+    expect(idle).toMatchObject({
+      steerRunId: null,
+      message: { delivery: "next_run" },
+    });
+    await finishRun(t.db, (await org.claim())!.run.id, completed, source);
+    await org.send("일 시작");
+    await org.claim();
+    await org.send("방향 바꿈", "interrupt");
+    expect(await steer(org, "정리 중")).toMatchObject({ steerRunId: null });
+  });
+
+  it("returns a message left steering by a stopped server to the queue", async () => {
+    const org = await organization();
+    await org.send("일 시작");
+    await org.claim();
+    await steer(org, "넣다가 멈춤");
+    await recoverInterruptedSteers(t.db);
+    expect(
+      (await listQueuedMessages(t.db, org.orgId, org.conversation.id)).map(
+        (m) => [m.body, m.delivery]
+      )
+    ).toEqual([["넣다가 멈춤", "next_run"]]);
   });
 });
 

@@ -9,9 +9,14 @@ import {
   type OrgToolName,
   type RequestInitialApprovalInput,
   type RunContextResponse,
+  type ProviderCapabilities,
+  type ProviderReadinessCheck,
   type RunRequest,
   type RunResult,
   type RuntimeAdapter,
+  type SteerMessage,
+  type SteerOutcome,
+  type Usage,
   type Task,
   type TaskDetail,
   type WakeReason,
@@ -32,6 +37,10 @@ export type ScriptState = {
   context: RunContextResponse | undefined;
   sent: ConversationMessage[];
   calls: ToolCallRecord[];
+  /** 이 실행 시도가 실행 중에 받은 끼워 넣은 메시지. 시나리오가 끝나면 받은 말을 반영해 답장한다. */
+  steered: SteerMessage[];
+  /** 세션 메모: 세션에 담아 다음 실행 시도로 이어 가는 말. 이어 간 세션의 메모로 시작한다(에이전트 기억과 다르다). */
+  notes: string[];
 };
 
 export type ScriptStep =
@@ -62,6 +71,10 @@ export type ScriptStep =
   | { do: "then"; steps: (state: ScriptState) => ScriptStep[] }
   /** 테스트가 정한 조건까지 멈춘다. 취소되면 reject해야 한다. */
   | { do: "hold"; until: (signal: AbortSignal) => Promise<void> }
+  /** 끼워 넣은 메시지를 하나 받을 때까지 멈춘다(이미 받았으면 바로 지나간다). 취소되면 취소로 끝난다. */
+  | { do: "until_steered" }
+  /** 세션 메모에 말 하나를 더한다. 세션을 이어 가는 다음 실행 시도가 그 메모를 받는다. */
+  | { do: "note"; note: string }
   /** 프로바이더 오류를 흉내 낸다. */
   | { do: "fail"; error: string };
 
@@ -261,6 +274,9 @@ export function parseGoalMessage(
  *   가짜 프로바이더는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
  * - 어느 단계든 사용자가 `실패 연습`을 부탁함: 아무것도 쓰지 않고 실행 시도를 실패로 끝낸다(Inbox·알림의 실패 항목 확인용).
  * - 어느 단계든 사용자가 `실행 유지 연습`을 부탁함: 아무것도 쓰지 않고 취소될 때까지 실행 시도를 끝내지 않는다(대시보드의 실행 중 확인용).
+ * - 어느 단계든 사용자가 `끼워 넣기 연습`을 부탁함: 실행 중에 끼워 넣은 말을 받을 때까지 끝내지 않는다. 받은 말은 끝날 때 반영했다고
+ *   답한다(실행 중에 받은 말은 어느 시나리오든 이렇게 답한다).
+ * - `메모해 주세요: <말>`: 그 말을 세션 메모에 담고 답한다. `세션 메모를 알려 주세요`: 이어 간 세션의 메모를 알린다(세션 이어가기 확인용).
  * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
  *
@@ -303,6 +319,43 @@ export function demoLeadScript(request: RunRequest): Script {
     };
   if (messages.some((m) => holdDrill.test(m)))
     return { steps: [{ do: "hold", until: untilCancelled }] };
+  if (messages.some((m) => steerDrill.test(m)))
+    return {
+      steps: [{ do: "read_context" }, { do: "until_steered" }],
+      summary: () => "실행 중에 끼워 넣은 말을 받아 반영했습니다.",
+    };
+  const notes = messages.flatMap((m) => {
+    const note = notePattern.exec(m)?.[1]?.trim();
+    return note ? [{ note, message: m }] : [];
+  });
+  if (notes.length)
+    return {
+      steps: notes.flatMap(({ note, message }): ScriptStep[] => [
+        { do: "note", note },
+        {
+          do: "send_message",
+          body: () =>
+            `(가짜 프로바이더) 세션 메모에 담았습니다: ${quote(note)}`,
+          conversationId: conversationOfMessage(message),
+        },
+      ]),
+      summary: () => `말 ${notes.length}개를 세션 메모에 담았습니다.`,
+    };
+  const recall = messages.find((m) => notesDrill.test(m));
+  if (recall)
+    return {
+      steps: [
+        {
+          do: "send_message",
+          body: ({ notes }) =>
+            notes.length
+              ? `(가짜 프로바이더) 세션 메모: ${notes.map(quote).join(", ")}`
+              : "(가짜 프로바이더) 세션 메모가 없습니다.",
+          conversationId: conversationOfMessage(recall),
+        },
+      ],
+      summary: ({ notes }) => `세션 메모 ${notes.length}개를 알렸습니다.`,
+    };
 
   const created = request.wakeReasons.some(
     (r) => r.kind === "organization_created"
@@ -523,6 +576,17 @@ const failureDrill = requestMessage(String.raw`실패\s*연습`);
 
 /** 사용자가 실행 중인 실행 시도를 보고 싶어 부탁하는 메시지. */
 const holdDrill = requestMessage(String.raw`실행\s*유지\s*연습`);
+
+/** 사용자가 끼워 넣기를 보고 싶어 부탁하는 메시지. 끼워 넣은 말을 받을 때까지 끝내지 않고, 받으면 반영해 답장한다. */
+const steerDrill = requestMessage(String.raw`끼워\s*넣기\s*연습`);
+
+/** 세션 메모에 말을 담아 달라는 메시지: `메모해 주세요: <말>`. */
+const notePattern = /^\s*메모해\s*(?:주세요|줘)\s*[:：]\s*(.+)$/s;
+
+/** 이어 간 세션의 메모를 알려 달라는 메시지. */
+const notesDrill = requestMessage(
+  String.raw`세션\s*메모(?:를)?\s*알려\s*(?:주세요|줘)`
+);
 
 /** 취소될 때까지 기다린다. 취소되면 reject해 실행 시도가 `취소됨`으로 끝난다. */
 const untilCancelled = (signal: AbortSignal) =>
@@ -777,125 +841,322 @@ export const defaultScriptSelector: ScriptSelector = (request) =>
     ? demoLeadScript(request)
     : demoWorkerScript(request);
 
+/**
+ * 가짜 프로바이더의 설정(#96). 지원하는 일·준비 상태·사용량·끼워 넣기 응답을 바꿔 공통 검사와 화면을 확인한다.
+ * 실행 시도마다 그때의 값을 읽으므로 테스트가 실행 중에 바꿀 수 있다(지원하는 일은 adapter를 만들 때 정해진다).
+ */
+export type FakeProviderSettings = {
+  /** 바꿀 항목만. 나머지는 {@link defaultFakeCapabilities}다. */
+  capabilities?: Partial<ProviderCapabilities>;
+  /** 준비 확인 결과. 기본은 준비됨이다. */
+  readiness?: ProviderReadinessCheck;
+  /** 실행 시도마다 보고할 사용량. 지원하지 않는 항목은 보고하지 않는다. */
+  usage?: Usage;
+  /** 끼워 넣기를 받을지(`accepted`) 거절할지(`rejected`). 기본은 받는다. */
+  steerOutcome?: SteerOutcome;
+  /** 제품 로그인 명령. */
+  loginCommand?: string | null;
+};
+
+/**
+ * 가짜 프로바이더가 기본으로 지원하는 일. 지침 사본을 주입하지 않으므로 재개 때 다시 넣지도 않고, 미리 압축은 후속(#99)이라
+ * 지원하지 않는다.
+ */
+export const defaultFakeCapabilities: ProviderCapabilities = {
+  steer: true,
+  resume: true,
+  reinjectInstructionsOnResume: false,
+  usageTokens: true,
+  usageCost: true,
+  precompact: false,
+};
+
+/** 가짜 프로바이더가 기본으로 보고하는 사용량. 천 단위·0·보고 안 됨이 모두 보이도록 고른 값이다. */
+export const defaultFakeUsage: Usage = {
+  inputTokens: 1234,
+  outputTokens: 56,
+  cacheReadTokens: 0,
+  cacheWriteTokens: null,
+  costUsd: 0.0012,
+};
+
+/** 가짜 프로바이더가 이어 가지 못하는 세션. 공통 검사가 이어가기 실패를 재현할 때 넘긴다. */
+export const expiredFakeSession = { turns: 1, expired: true } as const;
+
 export function createScriptedRuntime({
   select = defaultScriptSelector,
   fetch,
+  settings = {},
 }: {
   select?: ScriptSelector;
   fetch?: typeof globalThis.fetch;
+  settings?: FakeProviderSettings;
 } = {}): RuntimeAdapter {
+  const capabilities = { ...defaultFakeCapabilities, ...settings.capabilities };
+  /** 끼워 넣기를 받을 수 있는 진행 중 실행 시도의 받은 편지함. 실행 시도가 돌아오면 빠진다. */
+  const live = new Map<string, SteerInbox>();
+  const usage = (): Usage => {
+    const reported = { ...defaultFakeUsage, ...settings.usage };
+    return {
+      inputTokens: capabilities.usageTokens ? reported.inputTokens : null,
+      outputTokens: capabilities.usageTokens ? reported.outputTokens : null,
+      cacheReadTokens: capabilities.usageTokens
+        ? reported.cacheReadTokens
+        : null,
+      cacheWriteTokens: capabilities.usageTokens
+        ? reported.cacheWriteTokens
+        : null,
+      costUsd: capabilities.usageCost ? reported.costUsd : null,
+    };
+  };
   return {
-    async execute(request, { signal, emit }) {
-      const turns = Number(request.previousSession?.turns ?? 0);
-      const end = (
-        stopReason: RunResult["stopReason"],
-        fields: Partial<RunResult> = {}
-      ): RunResult => ({
-        stopReason,
-        error: null,
-        summary: null,
-        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
-        nextSession: { turns: turns + 1 },
-        ...fields,
-      });
-
-      const script = select(request);
-      if (!script)
-        return end("failed", {
-          error: `가짜 프로바이더에 ${request.context.agent.role}·${request.wakeReasons.map((r) => r.kind).join(",")} 시나리오가 없습니다.`,
-        });
-      const tools = createOrgToolClient({
-        baseUrl: request.access.toolsBaseUrl,
-        token: request.access.token,
-        signal,
-        fetch,
-      });
-      const state: ScriptState = {
-        request,
-        context: undefined,
-        sent: [],
-        calls: [],
-      };
-      // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
-      // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
-      // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
-      const bundle = createHash("sha256")
-        .update(request.wakeReasons.map((r) => r.wakeId).join(","))
-        .digest("hex")
-        .slice(0, 32);
-      const effects = new Map<OrgToolName, number>();
-      const once = (tool: OrgToolName) => {
-        const n = effects.get(tool) ?? 0;
-        effects.set(tool, n + 1);
-        return { idempotencyKey: `${bundle}-${tool}-${n}` };
-      };
-      try {
-        const queue = [...script.steps];
-        for (let step = queue.shift(); step; step = queue.shift()) {
-          signal.throwIfAborted();
-          switch (step.do) {
-            case "read_context":
-              state.context = await tools.getRunContext();
-              break;
-            case "emit":
-              await emit(step.activity);
-              break;
-            case "send_message":
-              state.sent.push(
-                await tools.sendMessage(
-                  {
-                    body: step.body(state),
-                    ...(step.conversationId
-                      ? { conversationId: step.conversationId }
-                      : {}),
-                  },
-                  once("send_message")
-                )
-              );
-              break;
-            case "read_message":
-              await tools.getMessage(step.messageId(state));
-              break;
-            case "call":
-              if (step.when && !step.when(state)) break;
-              try {
-                const output = await tools.call(
-                  step.tool,
-                  step.input?.(state) as OrgToolInput<typeof step.tool>,
-                  isOrgToolRead(step.tool) ? {} : once(step.tool)
-                );
-                state.calls.push({ tool: step.tool, ok: true, output });
-              } catch (error) {
-                if (!(error instanceof OrgToolError) || !step.allowRefusal)
-                  throw error;
-                state.calls.push({
-                  tool: step.tool,
-                  ok: false,
-                  status: error.status,
-                  code: error.code,
-                });
-              }
-              break;
-            case "then":
-              queue.unshift(...step.steps(state));
-              break;
-            case "hold":
-              await step.until(signal);
-              break;
-            case "fail":
-              return end("failed", { error: step.error });
-          }
+    capabilities,
+    loginCommand:
+      settings.loginCommand === undefined
+        ? "babojubot-fake login"
+        : settings.loginCommand,
+    async checkReadiness() {
+      return settings.readiness ?? { status: "ready", reason: null };
+    },
+    ...(capabilities.steer
+      ? {
+          async steer(message: SteerMessage): Promise<SteerOutcome> {
+            const inbox = live.get(message.runId);
+            if (!inbox || settings.steerOutcome === "rejected")
+              return "rejected";
+            // 받기로 정한 뒤에는 실패할 수 있는 일을 하지 않는다(던지면 거절로 본다). 받았다는 공개 활동은 실행 흐름이 남긴다.
+            inbox.take(message);
+            return "accepted";
+          },
         }
-        signal.throwIfAborted();
-        return end("completed", { summary: script.summary?.(state) ?? null });
-      } catch (error) {
-        // 취소 중 생긴 오류는 실패가 아니라 취소다(ACP prompt-turn Cancellation과 같은 규칙).
-        if (signal.aborted) return end("cancelled");
-        return end("failed", {
-          error:
-            error instanceof Error ? error.message : "가짜 프로바이더 오류",
+      : {}),
+    async execute(request, { signal, emit }) {
+      const runId = request.identity.runId;
+      const inbox = createSteerInbox();
+      live.set(runId, inbox);
+      try {
+        return await run(request, signal, emit, inbox);
+      } finally {
+        live.delete(runId);
+      }
+    },
+  };
+
+  async function run(
+    request: RunRequest,
+    signal: AbortSignal,
+    emit: (activity: unknown) => Promise<void>,
+    inbox: SteerInbox
+  ): Promise<RunResult> {
+    let previous = capabilities.resume ? request.previousSession : null;
+    if (previous?.expired) {
+      // 이어 가지 못하는 세션: 같은 실행 시도 안에서 새 세션으로 시작하고 그 사실을 남긴다. 취소됐으면 다시 시작하지 않는다.
+      if (signal.aborted) return endWith({ turns: 0, notes: [] }, "cancelled");
+      await emit({
+        type: "progress",
+        text: "이전 세션을 이어 가지 못해 새 세션으로 시작합니다.",
+      });
+      previous = null;
+    }
+    const turns = Number(previous?.turns ?? 0);
+    const session = {
+      turns,
+      notes: Array.isArray(previous?.notes)
+        ? previous.notes.filter((n): n is string => typeof n === "string")
+        : [],
+    };
+    const end = (
+      stopReason: RunResult["stopReason"],
+      fields: Partial<RunResult> = {}
+    ): RunResult => endWith(session, stopReason, fields);
+
+    const script = select(request);
+    if (!script)
+      return end("failed", {
+        error: `가짜 프로바이더에 ${request.context.agent.role}·${request.wakeReasons.map((r) => r.kind).join(",")} 시나리오가 없습니다.`,
+      });
+    const tools = createOrgToolClient({
+      baseUrl: request.access.toolsBaseUrl,
+      token: request.access.token,
+      signal,
+      fetch,
+    });
+    const state: ScriptState = {
+      request,
+      context: undefined,
+      sent: [],
+      calls: [],
+      steered: inbox.steered,
+      notes: session.notes,
+    };
+    // 받았다는 공개 활동은 steer가 아니라 실행 흐름이 다른 활동과 순서대로 남긴다.
+    let announced = 0;
+    const announceSteered = async () => {
+      while (announced < inbox.steered.length) {
+        const message = inbox.steered[announced++]!;
+        await emit({
+          type: "progress",
+          text: `끼워 넣은 메시지를 받았습니다: ${quote(message.body)}`,
         });
       }
+    };
+    // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
+    // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
+    // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
+    const bundle = createHash("sha256")
+      .update(request.wakeReasons.map((r) => r.wakeId).join(","))
+      .digest("hex")
+      .slice(0, 32);
+    const effects = new Map<OrgToolName, number>();
+    const once = (tool: OrgToolName) => {
+      const n = effects.get(tool) ?? 0;
+      effects.set(tool, n + 1);
+      return { idempotencyKey: `${bundle}-${tool}-${n}` };
+    };
+    try {
+      const queue = [...script.steps];
+      for (let step = queue.shift(); step; step = queue.shift()) {
+        signal.throwIfAborted();
+        await announceSteered();
+        switch (step.do) {
+          case "read_context":
+            state.context = await tools.getRunContext();
+            break;
+          case "emit":
+            await emit(step.activity);
+            break;
+          case "send_message":
+            state.sent.push(
+              await tools.sendMessage(
+                {
+                  body: step.body(state),
+                  ...(step.conversationId
+                    ? { conversationId: step.conversationId }
+                    : {}),
+                },
+                once("send_message")
+              )
+            );
+            break;
+          case "read_message":
+            await tools.getMessage(step.messageId(state));
+            break;
+          case "call":
+            if (step.when && !step.when(state)) break;
+            try {
+              const output = await tools.call(
+                step.tool,
+                step.input?.(state) as OrgToolInput<typeof step.tool>,
+                isOrgToolRead(step.tool) ? {} : once(step.tool)
+              );
+              state.calls.push({ tool: step.tool, ok: true, output });
+            } catch (error) {
+              if (!(error instanceof OrgToolError) || !step.allowRefusal)
+                throw error;
+              state.calls.push({
+                tool: step.tool,
+                ok: false,
+                status: error.status,
+                code: error.code,
+              });
+            }
+            break;
+          case "then":
+            queue.unshift(...step.steps(state));
+            break;
+          case "hold":
+            await step.until(signal);
+            break;
+          case "until_steered":
+            await inbox.next(signal);
+            break;
+          case "note":
+            state.notes.push(step.note);
+            break;
+          case "fail":
+            return end("failed", { error: step.error });
+        }
+      }
+      await announceSteered();
+      // 실행 중에 받은 말은 그 대화에 반영했다고 답한다. 받은 말이 이 실행 시도의 결과에 실제로 들어갔다는 관찰 지점이다.
+      // 호출 키는 받은 메시지로 정한다. 같은 깨우기 묶음을 다시 받아도 끼워 넣은 말은 실행 시도마다 다를 수 있다.
+      for (const message of state.steered) {
+        signal.throwIfAborted();
+        state.sent.push(
+          await tools.sendMessage(
+            {
+              body: `(가짜 프로바이더) 실행 중에 받은 말을 반영했습니다: ${quote(message.body)}`,
+              conversationId: message.conversationId,
+            },
+            { idempotencyKey: `steer-reply-${message.messageId}` }
+          )
+        );
+      }
+      signal.throwIfAborted();
+      return end("completed", { summary: script.summary?.(state) ?? null });
+    } catch (error) {
+      // 취소 중 생긴 오류는 실패가 아니라 취소다(ACP prompt-turn Cancellation과 같은 규칙).
+      if (signal.aborted) return end("cancelled");
+      return end("failed", {
+        error: error instanceof Error ? error.message : "가짜 프로바이더 오류",
+      });
+    }
+  }
+
+  /** 종료 결과. 세션을 이어 가면 실행 횟수를 하나 올리고 세션 메모를 담는다. */
+  function endWith(
+    { turns, notes }: { turns: number; notes: readonly string[] },
+    stopReason: RunResult["stopReason"],
+    fields: Partial<RunResult> = {}
+  ): RunResult {
+    return {
+      stopReason,
+      error: null,
+      summary: null,
+      usage: usage(),
+      nextSession: capabilities.resume
+        ? { turns: turns + 1, notes: [...notes] }
+        : null,
+      ...fields,
+    };
+  }
+}
+
+/** 진행 중인 실행 시도 하나가 끼워 넣은 메시지를 받는 곳. 받은 메시지 목록은 시나리오 상태의 `steered`와 같은 배열이다. */
+type SteerInbox = {
+  steered: SteerMessage[];
+  take: (message: SteerMessage) => void;
+  /** 아직 기다리지 않은 받은 메시지가 생길 때까지 기다린다. 취소되면 reject한다. */
+  next: (signal: AbortSignal) => Promise<void>;
+};
+
+function createSteerInbox(): SteerInbox {
+  const steered: SteerMessage[] = [];
+  let waited = 0;
+  let wake: (() => void) | undefined;
+  return {
+    steered,
+    take(message) {
+      steered.push(message);
+      wake?.();
+    },
+    next(signal) {
+      return new Promise<void>((resolve, reject) => {
+        const done = () => {
+          signal.removeEventListener("abort", abort);
+          wake = undefined;
+          waited++;
+          resolve();
+        };
+        const abort = () => {
+          wake = undefined;
+          reject(signal.reason);
+        };
+        if (signal.aborted) return abort();
+        if (steered.length > waited) return done();
+        wake = done;
+        signal.addEventListener("abort", abort, { once: true });
+      });
     },
   };
 }

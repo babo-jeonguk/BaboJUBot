@@ -9,10 +9,18 @@ import {
   type InstructionKind,
   type LifecycleStage,
   type RunSummary,
+  type Usage,
   type WakeReason,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
-import { lazy, Suspense, useCallback, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  lazy,
+  Suspense,
+  useCallback,
+  useState,
+  type ReactNode,
+} from "react";
 import { Link, useBeforeUnload, useBlocker, useParams } from "react-router";
 import { EventRow } from "./activity.tsx";
 import { AgentNameEditor, FaceCustomizer } from "./agent-profile.tsx";
@@ -1000,18 +1008,62 @@ export function RunDetailPage() {
               <dd className="text-rose-700">{r.error}</dd>
             </>
           )}
-          {r.usage && (
-            <>
-              <dt className="text-slate-500">사용량</dt>
-              <dd className="tabular-nums">
-                입력 {r.usage.inputTokens} · 출력 {r.usage.outputTokens} 토큰
-                {r.usage.costUsd !== null && ` · $${r.usage.costUsd}`}
-              </dd>
-            </>
-          )}
         </dl>
       </section>
+
+      {r.status !== "running" && <UsageTable usage={r.usage} />}
     </Page>
+  );
+}
+
+const tokenFormat = new Intl.NumberFormat("ko-KR");
+const costFormat = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 6,
+});
+
+/**
+ * 실행 시도의 사용량: 입력·출력·캐시 읽기·캐시 쓰기 토큰과 비용의 이름-값 표. 보고되지 않은 값은 흐린 `보고 안 됨`이고(0과 다르다),
+ * 비용은 프로바이더가 알려 준 추정이라 `추정` 배지가 붙는다.
+ */
+function UsageTable({ usage }: { usage: Usage | null }) {
+  const unreported = <span className="text-slate-400">보고 안 됨</span>;
+  const tokens = (n: number | null | undefined) =>
+    n == null ? unreported : `${tokenFormat.format(n)} 토큰`;
+  const cost = usage?.costUsd ?? null;
+  const rows: [string, ReactNode][] = [
+    ["입력", tokens(usage?.inputTokens)],
+    ["출력", tokens(usage?.outputTokens)],
+    ["캐시 읽기", tokens(usage?.cacheReadTokens)],
+    ["캐시 쓰기", tokens(usage?.cacheWriteTokens)],
+    [
+      "비용",
+      cost === null ? (
+        unreported
+      ) : (
+        <span className="inline-flex items-center gap-1.5">
+          {costFormat.format(cost)}
+          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
+            추정
+          </span>
+        </span>
+      ),
+    ],
+  ];
+  return (
+    <section aria-label="사용량" className="mt-6">
+      <h2 className="mb-2 text-sm font-semibold text-slate-600">사용량</h2>
+      <dl className="card grid grid-cols-[7rem_1fr] gap-x-4 gap-y-2 p-4 text-sm tabular-nums">
+        {rows.map(([name, value]) => (
+          <Fragment key={name}>
+            <dt className="text-slate-500">{name}</dt>
+            <dd data-testid={`usage-${name}`}>{value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    </section>
   );
 }
 

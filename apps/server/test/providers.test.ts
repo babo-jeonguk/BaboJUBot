@@ -33,14 +33,17 @@ const { get, say, eventsOf, researching } = serverHelpers(() => t!);
 function twoConnections(inner: RuntimeAdapter) {
   const received: { provider: string; request: RunRequest }[] = [];
   const holds = new Map<string, Gate[]>();
-  const providers = createFakeProviders(2, (provider) => ({
-    async execute(request, control) {
-      received.push({ provider, request });
-      const gate = holds.get(provider)?.shift();
-      if (gate) await gate.wait(control.signal);
-      return inner.execute(request, control);
-    },
-  }));
+  const providers = createFakeProviders(2, {
+    adapter: (provider) => ({
+      ...inner,
+      async execute(request, control) {
+        received.push({ provider, request });
+        const gate = holds.get(provider)?.shift();
+        if (gate) await gate.wait(control.signal);
+        return inner.execute(request, control);
+      },
+    }),
+  });
   return {
     providers,
     received,
@@ -199,7 +202,7 @@ describe("provider connections and agent choices", () => {
     const watcher = await t.subscribe({ kind: "all" });
 
     // 처음 기본값은 가짜 프로바이더·기본 모델이고, 연결마다 고정 모델 목록과 기본 상한 2가 있다.
-    expect(await settings()).toEqual({
+    expect(await settings()).toMatchObject({
       leadDefault: { provider: "fake", model: null },
       workerDefault: { provider: "fake", model: null },
       providers: [

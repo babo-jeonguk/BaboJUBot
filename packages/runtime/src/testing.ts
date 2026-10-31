@@ -1,5 +1,23 @@
-import type { OrgToolName } from "@babojubot/contracts";
-import type { Script, ScriptStep } from "./scripted.ts";
+import type { OrgToolName, RuntimeAdapter } from "@babojubot/contracts";
+import {
+  createScriptedRuntime,
+  type FakeProviderSettings,
+  type Script,
+  type ScriptStep,
+} from "./scripted.ts";
+
+/**
+ * 가짜 프로바이더의 선언(지원하는 일·준비 확인·로그인 명령)만. 검사가 `execute`를 직접 쓰는 adapter에 붙인다.
+ * 그 adapter는 가짜 프로바이더의 실행을 쓰지 않으므로 끼워 넣기는 늘 거절된다.
+ */
+export function fakeDeclarations(
+  settings?: FakeProviderSettings
+): Omit<RuntimeAdapter, "execute"> {
+  const { execute: _execute, ...declarations } = createScriptedRuntime({
+    settings,
+  });
+  return declarations;
+}
 
 /**
  * 가짜 프로바이더 시나리오를 멈춰 두는 문. `wait`는 시나리오의 `hold` 단계에 넘기고,

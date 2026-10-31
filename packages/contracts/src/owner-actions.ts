@@ -6,12 +6,13 @@ import { isClosedStage, type LifecycleStage } from "./organization.ts";
 // 메시지 하나의 상태(없음·이미 전달됨)는 여기서 보지 않는다. 그건 core가 잠금 아래 읽은 메시지로 정한다.
 
 /**
- * 입력창의 `보내기`(`send`)·`줄 세우기`(`queue`)·`중단하고 보내기`(`interrupt_send`)·`실행 중단`(`stop_run`)과
+ * 입력창의 `보내기`(`send`)·`줄 세우기`(`queue`)·`중단하고 보내기`(`interrupt_send`)·`실행 중 끼워 넣기`(`steer_send`)·`실행 중단`(`stop_run`)과
  * 줄 세운 메시지의 `고치기`(`edit`)·`취소`(`withdraw`)·`지금 보내기`(`send_now`).
  */
 export type OwnerAction = NewMessageAction | "stop_run" | QueuedMessageAction;
 
-export type NewMessageAction = "send" | "queue" | "interrupt_send";
+export type NewMessageAction =
+  "send" | "queue" | "interrupt_send" | "steer_send";
 export type QueuedMessageAction = "edit" | "withdraw" | "send_now";
 
 /**
@@ -21,8 +22,8 @@ export type QueuedMessageAction = "edit" | "withdraw" | "send_now";
 export type OwnerActionRefusal = "organization_closed" | "queue_full";
 
 /**
- * 새 사용자 메시지를 받지 않는 이유. 전달 방식(`보내기`·`줄 세우기`는 `next_run`, `중단하고 보내기`는 `interrupt`)과
- * 상관없이 같다. 일시정지 중에도 받아 두고 재개 뒤 전달한다. 서버의 `queuedCount`는 조직 → 에이전트 잠금 아래에서 센 수다.
+ * 새 사용자 메시지를 받지 않는 이유. 전달 방식(`보내기`·`줄 세우기`는 `next_run`, `중단하고 보내기`는 `interrupt`, `실행 중 끼워 넣기`는
+ * `steer`)과 상관없이 같다. 끼워 넣기가 거절되면 줄 세운 메시지가 되므로 줄 상한도 같이 센다. 일시정지 중에도 받아 두고 재개 뒤 전달한다. 서버의 `queuedCount`는 조직 → 에이전트 잠금 아래에서 센 수다.
  */
 export function newMessageRefusal(state: {
   stage: LifecycleStage;
@@ -71,6 +72,8 @@ export type OwnerActionState = {
   leadPaused: boolean;
   run: LeadRunState;
   queuedCount: number;
+  /** Lead의 진행 중 실행 시도를 맡은 프로바이더 연결이 끼워 넣기를 지원하는가. 실행 중이 아니면 보지 않는다. */
+  runSteerable: boolean;
 };
 
 /** 행동 하나의 판정. `refusal`이 있으면 서버가 받지 않는다. 보이지만 받지 않는 버튼은 화면이 비활성으로 둔다. */
@@ -90,7 +93,8 @@ export type OwnerActionsDecision = {
 
 /**
  * 지금 상태에서 사용자 행동마다 서버가 받는가와 화면에 보이는가. 끝난 조직은 입력창이 없고 줄 세운 메시지의 `취소`만 보인다.
- * 실행 중이 아니면 `보내기` 하나, 실행 중이면 `실행 중단`(입력이 빌 때) 또는 `중단하고 보내기`·`줄 세우기`(입력이 있을 때)다.
+ * 실행 중이 아니면 `보내기` 하나, 실행 중이면 `실행 중단`(입력이 빌 때) 또는 `중단하고 보내기`·`줄 세우기`(입력이 있을 때)이고,
+ * 그 실행 시도의 프로바이더가 끼워 넣기를 지원하면 `실행 중 끼워 넣기`가 더해진다(지원하지 않으면 그리지 않는다).
  * 입력이 비었는가는 화면이 고른다. `지금 보내기`는 Lead가 실행 중이거나 조직·Lead가 일시정지 중일 때 보인다(일시정지 중이면
  * 재개 뒤 먼저 전달된다). 일시정지 중 입력창은 `보내기` 하나다(일시정지 중에는 실행 중으로 치지 않는다).
  * 보이는 버튼을 서버가 받지 않는 것은 줄이 가득 찬 새 메시지뿐이며, 화면은 그 버튼을 비활성으로 둔다.
@@ -110,6 +114,10 @@ export function ownerActions(state: OwnerActionState): OwnerActionsDecision {
       send: { visible: !closed && !running, refusal: newMessage },
       queue: { visible: running, refusal: newMessage },
       interrupt_send: { visible: running, refusal: newMessage },
+      steer_send: {
+        visible: running && state.runSteerable,
+        refusal: newMessage,
+      },
       stop_run: { visible: running },
       edit: { visible: !closed, refusal: queued("edit") },
       withdraw: { visible: true, refusal: queued("withdraw") },

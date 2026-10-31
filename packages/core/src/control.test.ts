@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planAgentControl, planInterrupt } from "./control.ts";
+import { planAgentControl, planInterrupt, steerTarget } from "./control.ts";
 
 const agent = (paused = false) => ({
   id: "agent-1",
@@ -84,5 +84,30 @@ describe("planInterrupt", () => {
         runningRunId: null,
       })
     ).toBe("organization_closed");
+  });
+});
+
+describe("steerTarget", () => {
+  const running = { id: "run-1", provider: "fake", cancelReason: null };
+  const steerable = (provider: string) => provider === "fake";
+  const target = (state: Partial<Parameters<typeof steerTarget>[0]> = {}) =>
+    steerTarget(
+      { stage: "researching", leadPaused: false, running, ...state },
+      steerable
+    );
+
+  it("steers into the running run when its provider supports it", () => {
+    expect(target()).toBe("run-1");
+  });
+
+  it("queues instead when there is no run to steer into, it is being cancelled, the provider cannot steer, or the message is held", () => {
+    expect(target({ running: undefined })).toBeNull();
+    expect(
+      target({ running: { ...running, cancelReason: "owner_interrupt" } })
+    ).toBeNull();
+    expect(target({ running: { ...running, provider: "fake-2" } })).toBeNull();
+    expect(target({ stage: "paused" })).toBeNull();
+    expect(target({ leadPaused: true })).toBeNull();
+    expect(target({ stage: "stopped" })).toBeNull();
   });
 });

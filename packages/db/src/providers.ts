@@ -3,6 +3,7 @@ import {
   type AgentDetail,
   type AgentRole,
   type ProviderChoice,
+  type ProviderReadinessCheck,
   type UpdateProviderDefaultsInput,
 } from "@babojubot/contracts";
 import { planAgentProviderChange } from "@babojubot/core";
@@ -17,7 +18,14 @@ import {
   type Executor,
 } from "./rows.ts";
 import { findAgentDetail } from "./run-views.ts";
-import { agents, providerDefaults, providerLimits, runs } from "./schema.ts";
+import {
+  agents,
+  providerDefaults,
+  providerLimits,
+  providerReadiness,
+  runs,
+} from "./schema.ts";
+import { resetAgentSessions } from "./sessions.ts";
 import { refused, stored, type Stored } from "./stored.ts";
 
 // 전역 프로바이더 설정(Lead·작업자 기본값, 연결별 동시 실행 상한)과 에이전트별 프로바이더·모델(#94).
@@ -151,7 +159,8 @@ export async function lockProviderSlot(
 
 /**
  * 사용자의 에이전트 프로바이더·모델 변경. 조직 행 → 에이전트 행 잠금 아래에서 바꾸고 그 Event를 같은 transaction에 남긴다.
- * 진행 중인 실행 시도는 admission 때 고정한 값으로 끝나고, 다음 실행 시도부터 새 값이다. commit 뒤 그 에이전트를 촉진해
+ * 진행 중인 실행 시도는 admission 때 고정한 값으로 끝나고, 다음 실행 시도부터 새 값이다. 프로바이더 연결이 바뀌면 그 에이전트의 세션을
+ * 모두 비운다(모델만 바뀌면 그대로). 진행 중이던 실행 시도가 늦게 끝나도 세대가 달라 세션을 되살리지 않는다. commit 뒤 그 에이전트를 촉진해
  * 옛 연결의 자리를 기다리던 깨우기가 새 연결로 시작할 수 있게 한다. 다른 조직의 에이전트와 없는 에이전트는 같은 `not_found`다.
  */
 export async function updateAgentProvider(
@@ -172,7 +181,54 @@ export async function updateAgentProvider(
     if (plan === "organization_closed") return refused(plan);
     if (plan === "unchanged") return stored(await detail());
     await tx.update(agents).set(plan.update).where(eq(agents.id, agentId));
+    if (plan.resetsSessions) await resetAgentSessions(tx, agentId);
     const event = await insertEvent(tx, plan.event);
     return stored(await detail(), { events: [event], woken: [agentId] });
   });
+}
+
+/** 저장한 준비 확인 결과 하나. */
+export type StoredReadiness = ProviderReadinessCheck & { checkedAt: string };
+
+const toReadiness = (
+  row: typeof providerReadiness.$inferSelect
+): StoredReadiness =>
+  ({
+    status: row.status,
+    reason: row.reason,
+    checkedAt: row.checkedAt.toISOString(),
+  }) as StoredReadiness;
+
+/** 연결별 마지막 준비 확인 결과. 확인한 적 없는 연결은 들어 있지 않다. */
+export async function readProviderReadiness(
+  db: Executor
+): Promise<Map<string, StoredReadiness>> {
+  const rows = await db.select().from(providerReadiness);
+  return new Map(rows.map((r) => [r.provider, toReadiness(r)]));
+}
+
+/**
+ * 준비 확인 결과 하나를 저장한다. 전역 설정이라 조직 Event는 남기지 않으며, 다른 화면에 보내는 신호는 확인을 돌린 쪽(server
+ * `ReadinessMonitor`)이 확인 중 표시와 함께 보낸다. 저장 순서는 스스로 정하지 않는다. 부르는 쪽이 연결별 확인을 하나씩
+ * 저장하므로 마지막에 시작한 확인이 마지막에 저장된다.
+ */
+export async function saveProviderReadiness(
+  db: Executor,
+  provider: string,
+  check: ProviderReadinessCheck,
+  checkedAt: Date
+): Promise<StoredReadiness> {
+  const [row] = await db
+    .insert(providerReadiness)
+    .values({ provider, ...check, checkedAt })
+    .onConflictDoUpdate({
+      target: providerReadiness.provider,
+      set: {
+        status: sql`excluded.status`,
+        reason: sql`excluded.reason`,
+        checkedAt: sql`excluded.checked_at`,
+      },
+    })
+    .returning();
+  return toReadiness(row!);
 }

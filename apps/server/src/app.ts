@@ -39,6 +39,7 @@ import {
   type ChannelResponse,
   type ChannelRoute,
   type Conversation,
+  type ConversationMessage,
   type NotificationChannel,
   type OrganizationDetail,
   type ProviderConnection,
@@ -88,6 +89,8 @@ import {
   listTasks,
   insertOrganizationCreation,
   insertOwnerMessage,
+  recoverInterruptedSteers,
+  settleSteer,
   insertOwnerTaskComment,
   recordFakeChannelMessage,
   sendQueuedMessageNow,
@@ -97,6 +100,7 @@ import {
   updateProviderDefaults,
   updateProviderLimit,
   readProviderDefaults,
+  saveProviderReadiness,
   updateHeartbeat,
   updateInboxItem,
   withdrawQueuedMessage,
@@ -126,6 +130,7 @@ import { HeartbeatScheduler } from "./heartbeat.ts";
 import { NotificationRelay } from "./notifications.ts";
 import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
 import { createProviderRegistry } from "./providers.ts";
+import { ReadinessMonitor } from "./readiness.ts";
 import { createRunRequestAssembler } from "./run-request.ts";
 import { orgToolsRouter } from "./tools.ts";
 
@@ -206,10 +211,18 @@ export async function startServer({
   const channel = notificationChannels[0]!;
   if (providers && runtime)
     throw new Error("pass either providers or runtime, not both");
-  const registry = createProviderRegistry(
-    providers ?? [createFakeProvider({ adapter: runtime })]
-  );
+  const connections = providers ?? [createFakeProvider({ adapter: runtime })];
   const hub = new EventHub();
+  const readiness = new ReadinessMonitor({
+    save: (provider, check, checkedAt) =>
+      saveProviderReadiness(db, provider, check, checkedAt),
+    connections,
+    hub,
+    now,
+  });
+  const registry = createProviderRegistry(connections, {
+    checking: (id) => readiness.checking(id),
+  });
   let url = "";
   const dispatcher = new RunDispatcher({
     db,
@@ -217,6 +230,7 @@ export async function startServer({
     providers: registry.adapters,
     now,
     assemble: createRunRequestAssembler({ db, toolsBaseUrl: () => url }),
+    onLoginRequired: (provider) => void readiness.check(provider),
   });
   const heartbeats = new HeartbeatScheduler({
     db,
@@ -243,14 +257,20 @@ export async function startServer({
    * Lead 대화에 사용자 메시지를 남긴다. `conversation`은 같은 조직의 대화(호출한 쪽이 조직 안에서 찾은 것)이고, `new`면 이 메시지로
    * 새 대화를 시작한다. 새 대화는 메시지와 같은 transaction에 남으므로 메시지를 받지 않으면 대화도 남지 않는다.
    * Lead가 실행 중이면 메시지는 다음 실행 시도에 반영된다. `중단하고 보내기`면 commit 뒤 진행 중 실행 시도에 취소를 보내고,
-   * 그 실행 시도가 정리를 끝내면 다음 실행 시도가 메시지를 받는다.
+   * 그 실행 시도가 정리를 끝내면 다음 실행 시도가 메시지를 받는다. `실행 중 끼워 넣기`면 commit 뒤 진행 중 실행 시도의 프로바이더에 넣고
+   * 그 결과(받음, 거절이면 줄 세우기)를 남긴 메시지를 돌려준다. 넣을 실행 시도가 없었으면 처음부터 줄 세운 메시지다.
    */
-  const sendOwnerMessage = (
+  const sendOwnerMessage = async (
     organization: OrganizationDetail,
     conversation: Pick<Conversation, "id"> | "new",
     input: Required<SendOwnerMessageInput>
-  ) =>
-    complete(
+  ): Promise<
+    Outcome<
+      { conversation: Conversation | null; message: ConversationMessage },
+      "organization_closed" | "queue_full"
+    >
+  > => {
+    const sent = await complete(
       insertOwnerMessage(
         db,
         planOwnerMessage(
@@ -258,9 +278,40 @@ export async function startServer({
           conversation,
           input,
           source
-        )
+        ),
+        { steerable: registry.steerable }
       )
     );
+    if (sent.kind !== "ok") return sent;
+    const { steerRunId, ...value } = sent.value;
+    if (!steerRunId) return { kind: "ok", value };
+    const { message } = value;
+    const outcome = await dispatcher.steer({
+      runId: steerRunId,
+      messageId: message.id,
+      conversationId: message.conversationId,
+      body: message.body,
+    });
+    const settled = await complete(
+      settleSteer(
+        db,
+        {
+          organizationId: message.organizationId,
+          messageId: message.id,
+          runId: steerRunId,
+          outcome,
+        },
+        source
+      )
+    );
+    return {
+      kind: "ok",
+      value: {
+        ...value,
+        message: (settled.kind === "ok" && settled.value) || message,
+      },
+    };
+  };
 
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
@@ -307,8 +358,24 @@ export async function startServer({
     respond(res, await complete(insertOrganizationCreation(db, creation)), 201);
   });
 
-  /** 전역 프로바이더 설정: Lead·작업자 기본값과 이 서버에 등록된 연결마다 모델 목록·동시 실행 상한. */
+  /** 전역 프로바이더 설정: Lead·작업자 기본값과 이 서버에 등록된 연결마다 모델 목록·동시 실행 상한·지원하는 일·준비 상태. */
   app.get("/api/providers", async (_req, res) => {
+    res.json(await registry.settings(db));
+  });
+
+  /**
+   * 전역 설정 화면을 열었다: 모든 연결의 준비 확인을 시작하고 기다리지 않는다(202). 확인 중과 결과는 `settings_changed` 신호 뒤
+   * 프로바이더 설정을 다시 불러오면 보인다.
+   */
+  app.post("/api/providers/readiness", (_req, res) => {
+    readiness.checkAll();
+    res.status(202).json({});
+  });
+
+  /** `다시 확인`: 연결 하나를 확인해 저장한 뒤의 프로바이더 설정을 돌려준다. 이 서버에 없는 연결은 404다. */
+  app.post("/api/providers/:providerId/readiness", async (req, res) => {
+    if (!registry.has(req.params.providerId)) return notFound(res);
+    await readiness.check(req.params.providerId);
     res.json(await registry.settings(db));
   });
 
@@ -1078,6 +1145,7 @@ export async function startServer({
     const failures: unknown[] = [];
     for (const close of [
       () => heartbeats.close(),
+      () => readiness.close(),
       () => dispatcher.close(),
       () => notifications.close(),
       () => channel.close(),
@@ -1097,8 +1165,10 @@ export async function startServer({
       throw new AggregateError(failures, "stopping the server failed");
   };
   try {
-    // 남은 실행 시도 복구가 끝난 뒤에 heartbeat가 새 깨우기를 만든다.
+    // 끼워 넣는 중으로 남은 메시지를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.
+    await recoverInterruptedSteers(db);
     await dispatcher.start();
+    readiness.checkAll();
     heartbeats.start();
     notifications.start();
     await channel.listen({

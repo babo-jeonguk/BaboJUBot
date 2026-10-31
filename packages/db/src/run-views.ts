@@ -1,4 +1,9 @@
-import type { AgentDetail, RunDetail, RunSummary } from "@babojubot/contracts";
+import {
+  unreportedUsage,
+  type AgentDetail,
+  type RunDetail,
+  type RunSummary,
+} from "@babojubot/contracts";
 import { instructionsBundleVersion } from "@babojubot/core";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Database } from "./client.ts";
@@ -84,7 +89,8 @@ export async function findRunDetail(
   return {
     ...toRunSummary(summary),
     wakeReasons,
-    usage,
+    // 캐시 항목 전에 저장한 사용량은 그 항목을 보고하지 않은 것이다. 0으로 채우지 않는다.
+    usage: usage && { ...unreportedUsage, ...usage },
     transcript: transcript.map(toEvent),
   };
 }

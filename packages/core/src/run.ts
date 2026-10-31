@@ -201,8 +201,41 @@ export type NewRun = {
   model: string | null;
   instructionsBundleVersion: string | null;
   sessionBefore: SessionState | null;
+  /** 이 실행 시도의 세션 자리: 작업 세션이면 그 작업, 에이전트 세션이면 `null`(`sessionTaskOf`). */
+  sessionTaskId: string | null;
+  /** admission 때의 에이전트 세션 세대. 프로바이더를 바꾸면 세대가 올라가고, 옛 세대의 실행 시도는 세션을 저장하지 않는다. */
+  sessionGeneration: number;
   startedAt: string;
 };
+
+/** 저장한 세션 하나와 그것을 만든 프로바이더 연결·지침 bundle 버전. */
+export type StoredSession = {
+  provider: string;
+  instructionsBundleVersion: string | null;
+  state: SessionState;
+};
+
+/**
+ * 깨우기 묶음이 이어 갈 세션 자리. 받은 깨우기가 모두 같은 작업을 가리키면(작업 배정·작업 완료·작업 댓글) 그 작업이고,
+ * 작업이 없는 깨우기가 섞였거나 작업이 둘 이상이면 `null`(에이전트 세션)이다. 작업 완료 깨우기의 작업은 완료된 그 작업(부모 담당자에게는
+ * 하위 작업)이며 다른 작업으로 바꾸지 않는다.
+ */
+export function sessionTaskOf(reasons: readonly WakeReason[]): string | null {
+  const tasks = new Set(
+    reasons.map((r) =>
+      r.kind === "task_assigned" ||
+      r.kind === "task_completed" ||
+      r.kind === "task_comment"
+        ? r.taskId
+        : null
+    )
+  );
+  return tasks.size === 1 ? ([...tasks][0] ?? null) : null;
+}
+
+/** 대기 깨우기로 시작할 실행 시도의 세션 자리. 저장 쪽이 그 자리의 세션을 읽어 `planRunStart`에 넘길 때 쓴다. */
+export const sessionTaskOfPending = (pending: readonly PendingWake[]) =>
+  sessionTaskOf(bundleWakes(pending).map((w) => w.reason));
 
 export type RunStartPlan = {
   run: NewRun;
@@ -239,26 +272,22 @@ export function bundleWakes(pending: readonly PendingWake[]): PendingWake[] {
 
 /**
  * 대기 중인 깨우기를 실행 시도 하나로 묶는다(`bundleWakes`). 묶음은 이 시점에 고정되며,
- * 이후 도착한 깨우기와 묶지 않은 깨우기는 다음 실행 시도가 받는다. 에이전트의 프로바이더 연결·모델을 실행 시도에 고정하고,
- * 지침 bundle 버전과 프로바이더 연결이 이전 실행 시도와 같을 때만 이전 세션을 이어 간다(모델만 바뀌면 이어 간다).
- * 다른 연결의 세션은 이어받을 수 없고, 연결이 A→B→A로 돌아와도 바로 앞 실행 시도가 B이므로 새 세션이다.
+ * 이후 도착한 깨우기와 묶지 않은 깨우기는 다음 실행 시도가 받는다. 에이전트의 프로바이더 연결·모델을 실행 시도에 고정한다.
+ * 이어 갈 세션은 묶음의 세션 자리(`sessionTaskOf`)에 저장된 세션(`session`, 저장 쪽이 그 자리에서 읽음)이며,
+ * 그 세션을 만든 프로바이더 연결과 지침 bundle 버전이 지금과 같을 때만 이어 간다(모델만 바뀌면 이어 간다).
+ * 에이전트의 프로바이더를 바꾸면 저장 쪽이 그 에이전트의 세션을 모두 비우므로 A→B→A로 돌아와도 새 세션이다.
  */
 export function planRunStart(
   input: {
     agent: Agent;
     pendingWakes: PendingWake[];
     instructionsBundleVersion: string | null;
-    previousRun:
-      | {
-          provider: string;
-          instructionsBundleVersion: string | null;
-          nextSession: SessionState | null;
-        }
-      | undefined;
+    session: StoredSession | undefined;
+    sessionGeneration: number;
   },
   { newId, now }: RecordSource
 ): RunStartPlan | undefined {
-  const { agent, instructionsBundleVersion, previousRun } = input;
+  const { agent, instructionsBundleVersion, session } = input;
   const bundle = bundleWakes(input.pendingWakes);
   if (!bundle.length) return undefined;
   const run: NewRun = {
@@ -269,11 +298,13 @@ export function planRunStart(
     model: agent.model,
     instructionsBundleVersion,
     sessionBefore:
-      previousRun &&
-      previousRun.provider === agent.provider &&
-      previousRun.instructionsBundleVersion === instructionsBundleVersion
-        ? previousRun.nextSession
+      session &&
+      session.provider === agent.provider &&
+      session.instructionsBundleVersion === instructionsBundleVersion
+        ? session.state
         : null,
+    sessionTaskId: sessionTaskOfPending(bundle),
+    sessionGeneration: input.sessionGeneration,
     startedAt: now().toISOString(),
   };
   return {
@@ -338,6 +369,38 @@ export function planRunFinish(
         summary: result.summary,
         error: result.error,
       },
+    },
+  };
+}
+
+/**
+ * 끝난 실행 시도의 다음 세션을 그 세션 자리에 어떻게 남기는가. 실행 시도를 시작한 뒤 에이전트의 프로바이더가 바뀌었으면(세대가 다름)
+ * 아무것도 남기지 않아, 비운 세션을 늦게 끝난 실행 시도가 되살리지 않는다. 다음 세션이 없으면 그 자리를 비운다.
+ */
+export function planSessionWriteBack(
+  run: Pick<
+    NewRun,
+    | "provider"
+    | "instructionsBundleVersion"
+    | "sessionTaskId"
+    | "sessionGeneration"
+  >,
+  agentSessionGeneration: number,
+  nextSession: SessionState | null
+):
+  | { kind: "stale" }
+  | { kind: "clear"; taskId: string | null }
+  | { kind: "save"; taskId: string | null; session: StoredSession } {
+  if (run.sessionGeneration !== agentSessionGeneration)
+    return { kind: "stale" };
+  if (!nextSession) return { kind: "clear", taskId: run.sessionTaskId };
+  return {
+    kind: "save",
+    taskId: run.sessionTaskId,
+    session: {
+      provider: run.provider,
+      instructionsBundleVersion: run.instructionsBundleVersion,
+      state: nextSession,
     },
   };
 }

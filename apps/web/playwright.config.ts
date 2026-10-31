@@ -24,6 +24,13 @@ export default defineConfig({
         DATABASE_URL: "",
         // 같은 가짜 adapter의 연결 둘로 프로바이더·모델 고르기를 검사한다(providers.spec.ts).
         BABOJUBOT_FAKE_PROVIDERS: "2",
+        // `fake-2`는 끼워 넣기를 못 하고 제품 로그인이 없어 준비안됨이다(provider-contract.spec.ts).
+        BABOJUBOT_FAKE_PROVIDER_SETTINGS: JSON.stringify({
+          "fake-2": {
+            capabilities: { steer: false },
+            readiness: { status: "not_ready", reason: "product_login_missing" },
+          },
+        }),
       },
       gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
       reuseExistingServer: false,

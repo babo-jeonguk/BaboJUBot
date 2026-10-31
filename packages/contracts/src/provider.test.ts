@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  providerCapabilitiesSchema,
   providerChoiceSchema,
+  providerReadinessCheckSchema,
   updateProviderLimitInputSchema,
 } from "./provider.ts";
+import { usageSchema } from "./run.ts";
 import { createOrganizationInputSchema } from "./organization.ts";
 
 describe("provider choice", () => {
@@ -32,5 +35,59 @@ describe("provider choice", () => {
       expect(
         updateProviderLimitInputSchema.safeParse({ maxConcurrentRuns }).success
       ).toBe(false);
+  });
+});
+
+describe("provider declarations", () => {
+  const every = {
+    steer: true,
+    resume: true,
+    reinjectInstructionsOnResume: false,
+    usageTokens: true,
+    usageCost: false,
+    precompact: false,
+  };
+
+  it("needs every capability declared, with no defaults and nothing extra", () => {
+    expect(providerCapabilitiesSchema.parse(every)).toEqual(every);
+    const { usageCost: _left, ...missing } = every;
+    expect(providerCapabilitiesSchema.safeParse(missing).success).toBe(false);
+    expect(
+      providerCapabilitiesSchema.safeParse({ ...every, extra: true }).success
+    ).toBe(false);
+  });
+
+  it("gives a reason exactly when a provider is not ready or unknown", () => {
+    expect(
+      providerReadinessCheckSchema.safeParse({ status: "ready", reason: null })
+        .success
+    ).toBe(true);
+    expect(
+      providerReadinessCheckSchema.safeParse({
+        status: "not_ready",
+        reason: "product_login_missing",
+      }).success
+    ).toBe(true);
+    for (const wrong of [
+      { status: "ready", reason: "check_failed" },
+      { status: "unknown", reason: null },
+    ])
+      expect(providerReadinessCheckSchema.safeParse(wrong).success).toBe(false);
+  });
+
+  it("keeps a reported zero apart from an unreported figure in usage", () => {
+    const usage = {
+      inputTokens: 0,
+      outputTokens: 12,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: null,
+    };
+    expect(usageSchema.parse(usage)).toEqual(usage);
+    expect(usageSchema.safeParse({ ...usage, inputTokens: -1 }).success).toBe(
+      false
+    );
+    const { cacheReadTokens: _missing, ...partial } = usage;
+    expect(usageSchema.safeParse(partial).success).toBe(false);
   });
 });

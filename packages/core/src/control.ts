@@ -208,6 +208,26 @@ export function planInterrupt(
   };
 }
 
+/**
+ * `실행 중 끼워 넣기`가 메시지를 넣을 실행 시도. 받는 에이전트의 진행 중 실행 시도가 있고, 취소를 요청받지 않았고, 그 실행 시도를 맡은
+ * 프로바이더 연결이 끼워 넣기를 지원할 때(`steerable`)만 그 실행 시도다. 조직이나 Lead가 일시정지 중이면(contracts `messageHeldBy`) 넣지 않는다.
+ * 넣을 실행 시도가 없으면 `null`이고 메시지는 줄 세운 메시지(`next_run`)가 된다. 끝난 조직은 보내기 판정이 먼저 거부한다.
+ */
+export function steerTarget(
+  state: {
+    stage: LifecycleStage;
+    leadPaused: boolean;
+    running:
+      { id: string; provider: string; cancelReason: string | null } | undefined;
+  },
+  steerable: (provider: string) => boolean
+): string | null {
+  const { running } = state;
+  if (isClosedStage(state.stage) || messageHeldBy(state)) return null;
+  if (!running || running.cancelReason !== null) return null;
+  return steerable(running.provider) ? running.id : null;
+}
+
 const resumeStageOf = (org: OrganizationState) => {
   if (!org.pausedFrom)
     throw new Error(`paused organization ${org.id} has no stage to resume`);

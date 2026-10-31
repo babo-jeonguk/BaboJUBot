@@ -40,6 +40,10 @@ describe("planWithdrawal", () => {
     expect(planWithdrawal(queued({ deliveredToRunId: "run-1" }))).toBe(
       "message_delivered"
     );
+    // 끼워 넣는 중인 메시지는 줄 서 있지 않다.
+    expect(planWithdrawal(queued({ delivery: "steer" }))).toBe(
+      "message_delivered"
+    );
     expect(planWithdrawal(undefined)).toBe("not_found");
     expect(planWithdrawal(queued({ withdrawn: true }))).toBe("not_found");
     expect(planWithdrawal(queued({ author: "agent", delivery: null }))).toBe(

@@ -16,20 +16,12 @@ import {
   planRunFinish,
   planRunInterruption,
   planRunStart,
+  sessionTaskOfPending,
   type NewRun,
   runBlockingStages,
   type RecordSource,
 } from "@babojubot/core";
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  inArray,
-  isNull,
-  notInArray,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   markDelivered,
@@ -39,10 +31,12 @@ import {
 import { lockProviderSlot } from "./providers.ts";
 import {
   findRunningRunId,
+  notSteering,
   selectInstructions,
   selectRunWakes,
   selectWakes,
 } from "./run-reads.ts";
+import { readSession, writeBackSession } from "./sessions.ts";
 import {
   hasPendingHeartbeat,
   insertEvent,
@@ -50,6 +44,7 @@ import {
   lockRunningRun,
   toAgent,
   toOrganization,
+  type Executor,
 } from "./rows.ts";
 import {
   agents,
@@ -119,25 +114,17 @@ export async function claimNextRun(
 
     const pendingWakes = await selectWakes(
       tx,
-      and(eq(wakes.agentId, agentId), isNull(wakes.runId))
+      and(eq(wakes.agentId, agentId), isNull(wakes.runId), notSteering)
     );
-    const [previous] = await tx
-      .select({
-        provider: runs.provider,
-        instructionsBundleVersion: runs.instructionsBundleVersion,
-        nextSession: runs.sessionAfter,
-      })
-      .from(runs)
-      .where(eq(runs.agentId, agentId))
-      .orderBy(desc(runs.seq))
-      .limit(1);
+    const sessionTaskId = sessionTaskOfPending(pendingWakes);
     const instructions = await selectInstructions(tx, agentId);
     const plan = planRunStart(
       {
         agent: toAgent(agent),
         pendingWakes,
         instructionsBundleVersion: instructionsBundleVersion(instructions),
-        previousRun: previous,
+        session: await readSession(tx, agentId, sessionTaskId),
+        sessionGeneration: agent.sessionGeneration,
       },
       options.source
     );
@@ -180,6 +167,8 @@ export async function claimNextRun(
 /**
  * 종료 결과를 저장한다. 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`를 돌려준다.
  * 취소를 요청받은 실행 시도는 프로바이더의 결과와 상관없이 `cancelled`로 끝난다(core `planRunFinish`).
+ * 다음 세션은 이 실행 시도의 세션 자리에 남긴다. 그사이 에이전트의 프로바이더가 바뀌었으면 남기지 않는다(`writeBackSession`).
+ * 잠금 순서는 조직 → 에이전트 → 실행 시도이며, 에이전트 행 잠금이 프로바이더 변경과 직렬화한다.
  */
 export async function finishRun(
   db: Database,
@@ -188,13 +177,10 @@ export async function finishRun(
   source: Pick<RecordSource, "now">
 ): Promise<Event | undefined> {
   return db.transaction(async (tx) => {
+    const agent = await lockRunAgent(tx, runId);
+    if (!agent) return undefined;
     const [run] = await tx
-      .select({
-        id: runs.id,
-        organizationId: runs.organizationId,
-        agentId: runs.agentId,
-        cancelReason: runs.cancelReason,
-      })
+      .select(finishingRunColumns)
       .from(runs)
       .where(and(eq(runs.id, runId), eq(runs.status, "running")))
       .for("update");
@@ -204,8 +190,45 @@ export async function finishRun(
       .update(runs)
       .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
       .where(eq(runs.id, runId));
+    await writeBackSession(
+      tx,
+      run,
+      agent.sessionGeneration,
+      plan.update.sessionAfter
+    );
     return insertEvent(tx, plan.event);
   });
+}
+
+const finishingRunColumns = {
+  id: runs.id,
+  organizationId: runs.organizationId,
+  agentId: runs.agentId,
+  cancelReason: runs.cancelReason,
+  provider: runs.provider,
+  instructionsBundleVersion: runs.instructionsBundleVersion,
+  sessionBefore: runs.sessionBefore,
+  sessionTaskId: runs.sessionTaskId,
+  sessionGeneration: runs.sessionGeneration,
+};
+
+/**
+ * 실행 시도의 조직 행(`FOR SHARE`)과 에이전트 행을 잠근다. 잠금 순서는 조직 → 에이전트 → 실행 시도다. 에이전트 행 잠금으로
+ * heartbeat scheduler·admission·프로바이더 변경과 직렬화한다. 실행 시도가 없으면 `undefined`.
+ */
+async function lockRunAgent(tx: Executor, runId: string) {
+  // 실행 시도의 조직·에이전트는 바뀌지 않는다. 잠그기 전에 읽어도 된다.
+  const [owner] = await tx
+    .select({ organizationId: runs.organizationId, agentId: runs.agentId })
+    .from(runs)
+    .where(eq(runs.id, runId));
+  if (!owner) return undefined;
+  await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.id, owner.organizationId))
+    .for("share");
+  return lockAgent(tx, owner.organizationId, owner.agentId);
 }
 
 /**
@@ -218,28 +241,12 @@ export async function interruptRun(
   source: Pick<RecordSource, "now">
 ): Promise<Event | undefined> {
   return db.transaction(async (tx) => {
-    // 실행 시도의 조직·에이전트는 바뀌지 않는다. 잠그기 전에 읽어도 된다.
-    const [owner] = await tx
-      .select({ organizationId: runs.organizationId, agentId: runs.agentId })
-      .from(runs)
-      .where(eq(runs.id, runId));
-    if (!owner) return undefined;
-    // 잠금 순서는 조직 → 에이전트 → 실행 시도다. 에이전트 행 잠금으로 heartbeat scheduler·admission과 직렬화해,
+    // 에이전트 행 잠금으로 heartbeat scheduler·admission과 직렬화해,
     // 대기 heartbeat를 확인한 뒤 새 heartbeat가 생겨 다시 대기시킨 heartbeat와 겹치지 않게 한다.
-    await tx
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.id, owner.organizationId))
-      .for("share");
-    await lockAgent(tx, owner.organizationId, owner.agentId);
+    const agent = await lockRunAgent(tx, runId);
+    if (!agent) return undefined;
     const [run] = await tx
-      .select({
-        id: runs.id,
-        organizationId: runs.organizationId,
-        agentId: runs.agentId,
-        cancelReason: runs.cancelReason,
-        sessionBefore: runs.sessionBefore,
-      })
+      .select(finishingRunColumns)
       .from(runs)
       .where(and(eq(runs.id, runId), eq(runs.status, "running")))
       .for("update");
@@ -259,6 +266,12 @@ export async function interruptRun(
       .update(runs)
       .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
       .where(eq(runs.id, runId));
+    await writeBackSession(
+      tx,
+      run,
+      agent.sessionGeneration,
+      plan.update.sessionAfter
+    );
     if (plan.requeueWakeIds.length) {
       const requeued = await tx
         .update(wakes)
@@ -318,6 +331,7 @@ export async function listAgentsWithPendingWakes(
     .where(
       and(
         isNull(wakes.runId),
+        notSteering,
         notInArray(organizations.stage, [...runBlockingStages]),
         eq(agents.paused, false),
         organizationId === undefined

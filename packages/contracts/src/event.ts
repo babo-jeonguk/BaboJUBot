@@ -101,6 +101,22 @@ export const messageSentNowEventSchema = z.object({
   }),
 });
 
+/**
+ * `실행 중 끼워 넣기` 메시지의 결과. `accepted`면 진행 중 실행 시도(`runId`)가 받았고, `queued`면 프로바이더가 거절했거나
+ * 넣을 실행 시도가 끝나 줄 세운 메시지가 되었다.
+ */
+export const messageSteeredEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("message.steered"),
+  payload: z.object({
+    messageId: z.uuid(),
+    agentId: z.uuid(),
+    conversationId: z.uuid(),
+    runId: z.uuid(),
+    outcome: z.enum(["accepted", "queued"]),
+  }),
+});
+
 /** 실행 시도 시작. 묶은 깨우기 ID를 순서대로 담는다. */
 export const runStartedEventSchema = z.object({
   ...eventBase,
@@ -555,6 +571,7 @@ export const eventSchema = z.discriminatedUnion("type", [
   messageEditedEventSchema,
   messageWithdrawnEventSchema,
   messageSentNowEventSchema,
+  messageSteeredEventSchema,
   taskCreatedEventSchema,
   taskStartedEventSchema,
   taskCompletedEventSchema,
@@ -587,7 +604,7 @@ export type StreamScope =
 export const eventStreamPath = "/api/events";
 
 /**
- * 서버 → 화면 frame. `ready`는 구독이 성립한 뒤 한 번 온다. `settings_changed`는 전역 설정(프로바이더 기본값·동시 실행 상한)이
+ * 서버 → 화면 frame. `ready`는 구독이 성립한 뒤 한 번 온다. `settings_changed`는 전역 설정(프로바이더 기본값·동시 실행 상한·준비 상태)이
  * 바뀌었으니 다시 불러오라는 신호다. 전역 설정은 조직에 속하지 않아 Event로 남기지 않으며, 구독 범위와 상관없이 모두에게 간다.
  * 놓친 신호는 다시 연결할 때(`ready`)의 전체 재조회가 맞춘다.
  */

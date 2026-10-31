@@ -728,6 +728,32 @@ export const useUpdateProviderLimit = () =>
     ({ maxConcurrentRuns }) => ({ maxConcurrentRuns })
   );
 
+/** 전역 설정 화면을 열었다: 서버가 모든 연결의 준비 확인을 시작한다. 결과는 `settings_changed` 신호로 다시 불러온다. */
+export function useCheckAllReadiness() {
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/providers/readiness", { method: "POST" });
+      if (!res.ok) throw new ApiError(res.status, undefined);
+    },
+  });
+}
+
+/** `다시 확인`: 연결 하나를 확인한 뒤의 프로바이더 설정으로 바꾼다. */
+export function useRecheckProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (provider: string) =>
+      request(
+        providerSettingsSchema,
+        `/api/providers/${encodeURIComponent(provider)}/readiness`,
+        { method: "POST" }
+      ),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(queryKeys.providers, settings);
+    },
+  });
+}
+
 /**
  * 에이전트 프로바이더·모델 변경. 서버가 확정한 에이전트 상세로 바꾸고 조직 상세를 다시 불러온다.
  * 다른 탭은 `agent.provider_changed` Event로 같은 조직을 다시 불러온다.

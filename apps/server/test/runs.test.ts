@@ -11,7 +11,11 @@ import {
   leadReplyScript,
   type Script,
 } from "@babojubot/runtime";
-import { createGate, type Gate } from "@babojubot/runtime/testing";
+import {
+  createGate,
+  fakeDeclarations,
+  type Gate,
+} from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, quietCreation } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
@@ -31,6 +35,7 @@ function observed(inner: RuntimeAdapter) {
   const running = new Map<string, number>();
   let maxPerAgent = 0;
   const runtime: RuntimeAdapter = {
+    ...fakeDeclarations(),
     async execute(request, control) {
       requests.push(request);
       const agent = request.identity.agentId;
@@ -144,6 +149,7 @@ describe("Lead conversation", () => {
     let executions = 0;
     t = await startTestServer({
       runtime: quietCreation({
+        ...inner,
         async execute(request, control) {
           executions++;
           const result = await inner.execute(request, control);
@@ -277,7 +283,7 @@ describe("Lead conversation", () => {
     for (const body of [
       { body: "  " },
       { body: "x", agentId: org.lead.id },
-      { body: "x", delivery: "steer" },
+      { body: "x", delivery: "later" },
       {},
     ])
       expect(
@@ -312,6 +318,7 @@ describe("organization tools", () => {
     const tokens: string[] = [];
     let inner = holdFirstRun(gate);
     const runtime: RuntimeAdapter = {
+      ...inner,
       async execute(request, control) {
         tokens.push(request.access.token);
         return { ...(await inner.execute(request, control)), stopReason };
@@ -453,6 +460,7 @@ describe("run activity", () => {
     const inner = createScriptedRuntime({ select: () => script });
     t = await startTestServer({
       runtime: quietCreation({
+        ...inner,
         execute(request, control) {
           tokens.push(request.access.token);
           return inner.execute(request, control);
@@ -514,6 +522,7 @@ describe("run activity", () => {
     let calls = 0;
     t = await startTestServer({
       runtime: quietCreation({
+        ...fakeDeclarations(),
         async execute(request, control) {
           if (calls++ === 0) throw new Error("adapter crashed");
           return createScriptedRuntime().execute(request, control);

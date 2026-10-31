@@ -13,7 +13,7 @@
 | 기억 범위·출처를 실행 시도 신원에서 정함, Memory port | [contracts/memory.ts](../../../packages/contracts/src/memory.ts), [core/memory.ts](../../../packages/core/src/memory.ts) `MemoryPort`·`memoryScopeOf` | 기억 API |
 | 기억 저장·최근순·글자 그대로의 회수, 같은 조직 범위·출처(복합 FK) | [db/memories.ts](../../../packages/db/src/memories.ts) `dbMemory`·`writeMemory`; schema `memories` | 기억 API |
 | 모든 쓰기 도구의 같은 호출 키(`Idempotency-Key`)·한 번만 남는 효과 | contracts tools.ts `idempotencyKeyHeader`, db/tool-calls.ts `toolWrite`(`ToolCall.operation`)·schema `tool_operations`, server/tools.ts `operationOf`·`callOf`, runtime/scripted.ts 키 정하기 | [같은 호출 키 API](../../../apps/server/test/idempotency.test.ts), 기억 API, 재시작 복구 API |
-| 서버 재시작 복구(종료·깨우기 복원·Event 한 transaction, 기존 취소 사유 보존), 정상 종료 때 같은 처리, 단계를 바꾼 쓰기 뒤 가짜 Lead의 이어 가기 | core/run.ts `planRunInterruption`, db/runs.ts `interruptRun`·`recoverInterruptedRuns`, server/dispatcher.ts `start`·`#execute`, runtime/scripted.ts `demoLeadScript` | [DB](../../../packages/db/src/runs.test.ts) `run termination`, 재시작 복구 API |
+| 서버 재시작 복구(종료·깨우기 복원·Event 한 transaction, 기존 취소 사유 보존, 시작할 때의 세션 그대로 저장, 끼워 넣는 중이던 메시지는 줄로 되돌림), 정상 종료 때 같은 처리, 단계를 바꾼 쓰기 뒤 가짜 Lead의 이어 가기 | core/run.ts `planRunInterruption`, db/runs.ts `interruptRun`·`recoverInterruptedRuns`, conversations.ts `recoverInterruptedSteers`, server/app.ts 시작 순서, dispatcher.ts `start`·`#execute`, runtime/scripted.ts `demoLeadScript` | [DB](../../../packages/db/src/runs.test.ts) `run termination`, 재시작 복구 API |
 | 실행 시도가 받은 깨우기 기록(재전달 뒤에도 옛 상세·개수 유지) | schema `run_wakes`·migration 0008 backfill, db/runs.ts `claimNextRun`, run-reads.ts `selectRunWakes`, run-views.ts `wakeCount`(`runSummaryColumns`) | 재시작 복구 API |
 
 ## 연결 경로

@@ -12,6 +12,8 @@ import {
   memoryScopes,
   messageAuthors,
   messageDeliveries,
+  providerReadinessReasons,
+  providerReadinessStatuses,
   researchMapOperations,
   researchNodeStatuses,
   researchNodeWorkStatuses,
@@ -131,6 +133,11 @@ export const agents = pgTable(
     provider: text("provider").notNull(),
     /** 모델. 없으면 프로바이더의 기본 모델이다. */
     model: text("model"),
+    /**
+     * 세션 세대. 프로바이더 연결을 바꾸면 그 에이전트의 세션을 모두 비우고 하나 올린다. 실행 시도는 admission 때의 세대를 갖고,
+     * 끝날 때 세대가 다르면 세션을 저장하지 않는다(core `planSessionWriteBack`).
+     */
+    sessionGeneration: integer("session_generation").notNull().default(0),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -228,6 +235,13 @@ export const runs = pgTable(
     instructionsBundleVersion: text("instructions_bundle_version"),
     sessionBefore: jsonb("session_before").$type<SessionState>(),
     sessionAfter: jsonb("session_after").$type<SessionState>(),
+    /**
+     * 이 실행 시도의 세션 자리(core `sessionTaskOf`): 작업 세션이면 그 작업, 에이전트 세션이면 없음. 같은 조직의 깨우기 사유에서 정하며,
+     * 세션을 저장하는 `agent_sessions`가 (조직, 작업)으로 참조한다(작업 표가 실행 시도를 참조하므로 여기서는 FK를 두지 않는다).
+     */
+    sessionTaskId: uuid("session_task_id"),
+    /** admission 때 에이전트의 세션 세대. */
+    sessionGeneration: integer("session_generation").notNull().default(0),
     summary: text("summary"),
     error: text("error"),
     usage: jsonb("usage").$type<Usage>(),
@@ -1233,6 +1247,73 @@ export const toolOperations = pgTable(
       columns: [t.organizationId, t.runId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
+  ]
+);
+
+/**
+ * 프로바이더 세션. (에이전트, 작업)마다 하나이며 작업이 없으면 에이전트 세션이다(`task_id` null도 에이전트마다 하나).
+ * 끝난 실행 시도가 그 세션 자리(`runs.session_task_id`)에 다음 세션을 저장하고, 세션을 만든 연결·지침 bundle 버전을 함께 남긴다.
+ * admission은 지금 연결·버전과 다르면 이어 가지 않는다. 에이전트의 프로바이더를 바꾸면 그 에이전트의 행을 모두 지운다.
+ */
+export const agentSessions = pgTable(
+  "agent_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    agentId: uuid("agent_id").notNull(),
+    taskId: uuid("task_id"),
+    provider: text("provider").notNull(),
+    instructionsBundleVersion: text("instructions_bundle_version"),
+    state: jsonb("state").$type<SessionState>().notNull(),
+    /** 마지막으로 저장한 실행 시도. */
+    runId: uuid("run_id").notNull(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.agentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.taskId],
+      foreignColumns: [tasks.organizationId, tasks.id],
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.runId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    unique("agent_sessions_agent_task_unique")
+      .on(t.agentId, t.taskId)
+      .nullsNotDistinct(),
+  ]
+);
+
+/**
+ * 프로바이더 연결별 마지막 준비 확인 결과. 전역 설정이라 조직 Event로 남기지 않는다. 행이 없으면 아직 확인하지 않았다.
+ * 확인은 모델을 부르지 않으며, 실행 시도의 admission은 이 값을 보지 않는다.
+ */
+export const providerReadiness = pgTable(
+  "provider_readiness",
+  {
+    provider: text("provider").primaryKey(),
+    status: text("status", { enum: providerReadinessStatuses }).notNull(),
+    reason: text("reason", { enum: providerReadinessReasons }),
+    checkedAt: timestamp("checked_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+  },
+  (t) => [
+    check(
+      "provider_readiness_status_check",
+      sql`${t.status} in (${inList(providerReadinessStatuses)})`
+    ),
+    check(
+      "provider_readiness_reason_check",
+      sql`${t.reason} in (${inList(providerReadinessReasons)})
+        and (${t.status} = 'ready') = (${t.reason} is null)`
+    ),
   ]
 );
 
