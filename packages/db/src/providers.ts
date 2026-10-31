@@ -208,16 +208,16 @@ export async function readProviderReadiness(
 }
 
 /**
- * 준비 확인 결과를 저장한다. 전역 설정이라 조직 Event는 남기지 않으며, 다른 화면에 보내는 신호는 확인을 돌린 쪽(server
- * `ReadinessMonitor`)이 확인 중 표시와 함께 보낸다. 늦게 끝난 옛 확인이 새 결과를 덮지 않게, 저장한 확인보다 먼저 시작한 확인
- * (`checkedAt`이 이르면)은 남기지 않고 `null`이다.
+ * 준비 확인 결과 하나를 저장한다. 전역 설정이라 조직 Event는 남기지 않으며, 다른 화면에 보내는 신호는 확인을 돌린 쪽(server
+ * `ReadinessMonitor`)이 확인 중 표시와 함께 보낸다. 저장 순서는 스스로 정하지 않는다. 부르는 쪽이 연결별 확인을 하나씩
+ * 저장하므로 마지막에 시작한 확인이 마지막에 저장된다.
  */
 export async function saveProviderReadiness(
   db: Executor,
   provider: string,
   check: ProviderReadinessCheck,
   checkedAt: Date
-): Promise<StoredReadiness | null> {
+): Promise<StoredReadiness> {
   const [row] = await db
     .insert(providerReadiness)
     .values({ provider, ...check, checkedAt })
@@ -228,8 +228,7 @@ export async function saveProviderReadiness(
         reason: sql`excluded.reason`,
         checkedAt: sql`excluded.checked_at`,
       },
-      setWhere: sql`${providerReadiness.checkedAt} <= excluded.checked_at`,
     })
     .returning();
-  return row ? toReadiness(row) : null;
+  return toReadiness(row!);
 }

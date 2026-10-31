@@ -3,7 +3,6 @@ import {
   type ProviderConnection,
   type ProviderReadinessCheck,
 } from "@babojubot/contracts";
-import { saveProviderReadiness, type Database } from "@babojubot/db";
 import type { EventHub } from "./event-hub.ts";
 
 /**
@@ -11,10 +10,15 @@ import type { EventHub } from "./event-hub.ts";
  * 확인을 시작할 때와 끝낼 때 전역 설정 변경 신호를 보내 화면이 확인 중 표시와 결과를 다시 불러오게 한다.
  * 확인하는 때는 서버 시작·전역 설정 화면 열기·`다시 확인`·로그인 오류로 끝난 실행 시도 뒤이며, 실행 시도의 admission은 확인을
  * 기다리지 않고 결과도 보지 않는다. 준비안됨이어도 다른 연결로 대신 돌리지 않는다.
- * 같은 연결의 확인이 겹치면 마지막에 시작한 확인의 결과만 저장한다(늦게 끝난 옛 확인이 새 결과를 덮지 않음).
+ * 같은 연결의 확인이 겹치면 마지막에 시작한 확인의 결과만 저장한다. 저장 차례도 이 monitor가 정하며, 연결별 저장은 하나씩
+ * 하므로 새 확인의 저장이 옛 확인의 늦은 저장보다 먼저 끝나지 않는다(늦게 끝난 옛 확인이 새 결과를 덮지 않음).
  */
 export class ReadinessMonitor {
-  readonly #db: Database;
+  readonly #save: (
+    provider: string,
+    check: ProviderReadinessCheck,
+    checkedAt: Date
+  ) => Promise<unknown>;
   readonly #connections: ReadonlyMap<string, ProviderConnection>;
   readonly #hub: Pick<EventHub, "publishSettingsChanged">;
   readonly #now: () => Date;
@@ -24,11 +28,21 @@ export class ReadinessMonitor {
   /** 연결별 마지막으로 시작한 확인 가운데 끝난 것의 번호. 마지막에 시작한 확인이 끝나면 확인 중이 아니다. */
   readonly #settled = new Map<string, number>();
   readonly #pending = new Set<Promise<void>>();
+  /**
+   * 연결별 저장 차례. 저장은 하나씩 하므로 새 확인의 저장이 옛 확인의 늦은 저장보다 먼저 끝나지 않는다.
+   * 거절은 삼킨 version을 둬서 한 번의 저장 실패가 뒤 확인의 차례를 막지 않는다.
+   */
+  readonly #saving = new Map<string, Promise<void>>();
   readonly #stop = new AbortController();
   #seq = 0;
 
   constructor(options: {
-    db: Database;
+    /** 확인 결과 하나를 저장한다. 저장 순서는 이 monitor가 정한다. */
+    save: (
+      provider: string,
+      check: ProviderReadinessCheck,
+      checkedAt: Date
+    ) => Promise<unknown>;
     connections: readonly ProviderConnection[];
     /** 전역 설정 변경 신호(`settings_changed`)를 보낸다. 확인 중 표시는 저장과 상관없이 바뀌므로 commit 뒤 할 일을 거치지 않는다. */
     hub: Pick<EventHub, "publishSettingsChanged">;
@@ -36,7 +50,7 @@ export class ReadinessMonitor {
     /** 확인 하나를 기다리는 시간. 넘으면 `unknown`·`check_timeout`이다. */
     timeoutMs?: number;
   }) {
-    this.#db = options.db;
+    this.#save = options.save;
     this.#connections = new Map(options.connections.map((c) => [c.id, c]));
     this.#hub = options.hub;
     this.#now = options.now;
@@ -54,7 +68,11 @@ export class ReadinessMonitor {
     for (const id of this.#connections.keys()) void this.check(id);
   }
 
-  /** 연결 하나를 확인해 저장한다. 끝나면(저장하지 않은 옛 확인이어도) 돌아온다. 던지지 않는다. */
+  /**
+   * 연결 하나를 확인해 저장한다. 끝나면(저장하지 않은 옛 확인이어도) 돌아온다. 던지지 않는다.
+   * 연결별 저장은 하나씩 하며, 각 저장은 자기 차례에 다시 "아직 마지막에 시작한 확인인가"를 확인한다. 그래서 마지막에
+   * 시작한 확인이 마지막에 저장되고, 순서는 시각이 아니라 이 monitor의 확인 번호가 정한다.
+   */
   check(provider: string): Promise<void> {
     const connection = this.#connections.get(provider);
     if (!connection || this.#stop.signal.aborted) return Promise.resolve();
@@ -65,9 +83,17 @@ export class ReadinessMonitor {
     const task = (async () => {
       try {
         const result = await this.#run(connection);
-        if (this.#latest.get(provider) !== seq || this.#stop.signal.aborted)
-          return;
-        await saveProviderReadiness(this.#db, provider, result, startedAt);
+        const previous = this.#saving.get(provider) ?? Promise.resolve();
+        const saving = previous.then(async () => {
+          if (this.#latest.get(provider) !== seq || this.#stop.signal.aborted)
+            return;
+          await this.#save(provider, result, startedAt);
+        });
+        this.#saving.set(
+          provider,
+          saving.catch(() => {})
+        );
+        await saving;
       } catch (error) {
         console.error(`[providers] ${provider} readiness not saved`, error);
       } finally {

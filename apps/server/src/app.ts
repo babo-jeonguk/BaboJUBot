@@ -100,6 +100,7 @@ import {
   updateProviderDefaults,
   updateProviderLimit,
   readProviderDefaults,
+  saveProviderReadiness,
   updateHeartbeat,
   updateInboxItem,
   withdrawQueuedMessage,
@@ -213,7 +214,8 @@ export async function startServer({
   const connections = providers ?? [createFakeProvider({ adapter: runtime })];
   const hub = new EventHub();
   const readiness = new ReadinessMonitor({
-    db,
+    save: (provider, check, checkedAt) =>
+      saveProviderReadiness(db, provider, check, checkedAt),
     connections,
     hub,
     now,
