@@ -78,11 +78,11 @@ describeRuntimeContract("scripted runtime", {
   adapter: createScriptedRuntime(),
   ...scenes,
   unusableSession: expiredFakeSession,
-  // 맡긴 말을 세션에 담고, 다음 실행 시도가 그 말을 답장으로 알린다.
-  remembers: {
-    plant: saying("기억해 주세요: 파랑 고래"),
-    recall: saying("기억한 말을 알려 주세요"),
-    recalled: ({ messages }) => messages.some((m) => m.includes("파랑 고래")),
+  // 맡긴 말을 세션 메모에 담고, 다음 실행 시도가 받은 세션의 메모를 답장으로 알린다.
+  resumes: {
+    plant: (note) => saying(`메모해 주세요: ${note}`),
+    recall: saying("세션 메모를 알려 주세요"),
+    recalled: ({ messages }, note) => messages.some((m) => m.includes(note)),
   },
   // `끼워 넣기 연습`은 끼워 넣은 말을 받을 때까지 일하고, 받은 말을 반영했다고 답장한 뒤 끝난다.
   steers: {

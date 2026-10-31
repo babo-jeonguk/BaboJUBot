@@ -239,7 +239,7 @@ describe("demo Lead scenario", () => {
       sent: [],
       calls: [],
       steered: [],
-      memory: [],
+      notes: [],
     }) as { plan: string; completionCriteria?: string };
   };
   const created = () => ({
@@ -277,7 +277,7 @@ describe("demo Lead scenario", () => {
               sent: [],
               calls: [],
               steered: [],
-              memory: [],
+              notes: [],
             })
             .includes("제안한 완료 기준")
       )
@@ -356,7 +356,7 @@ describe("demo Lead scenario", () => {
         sent: [],
         calls: [],
         steered: [],
-        memory: [],
+        notes: [],
       };
       return script.steps
         .flatMap((s) => (s.do === "then" ? s.steps(state) : [s]))
@@ -437,7 +437,7 @@ describe("demo Lead scenario", () => {
       sent: [],
       calls: [],
       steered: [],
-      memory: [],
+      notes: [],
     };
     expect(
       script.steps.flatMap((s) =>
@@ -461,7 +461,7 @@ describe("demo Lead scenario", () => {
       sent: [],
       calls: [],
       steered: [],
-      memory: [],
+      notes: [],
     });
     const asked = at("researching", [message("작업자 추가: researcher")]);
     const script = demoLeadScript(asked);
@@ -789,7 +789,7 @@ describe("demo worker scenario", () => {
       sent: [],
       calls: [],
       steered: [],
-      memory: [],
+      notes: [],
     };
     expect(
       script.steps.flatMap((s) =>

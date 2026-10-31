@@ -274,7 +274,13 @@ describe("provider readiness", () => {
 
   it("saves only the latest check and stops showing it as checking once that check ends, even if an older one is still going", async () => {
     const older = createGate();
-    const results: ProviderReadinessCheck[] = [];
+    // 검사가 시작한 확인 순서대로의 결과. 서버 시작의 확인은 세지 않는다.
+    const results: ProviderReadinessCheck[] = [
+      { status: "not_ready", reason: "program_missing" },
+      { status: "not_ready", reason: "credentials_invalid" },
+    ];
+    // 검사가 시작할 때까지의 확인 수. 그 전(서버 시작의 확인)은 -1이다.
+    let started = -1;
     let checks = 0;
     await serverWith({
       wrap: (adapter, id) =>
@@ -282,15 +288,16 @@ describe("provider readiness", () => {
           ? {
               ...adapter,
               async checkReadiness(signal): Promise<ProviderReadinessCheck> {
-                const n = ++checks;
-                if (n === 2) await older.wait(signal);
-                return results[n] ?? { status: "ready", reason: null };
+                checks++;
+                if (started < 0) return { status: "ready", reason: null };
+                const n = checks - started;
+                if (n === 1) await older.wait(signal);
+                return results[n - 1]!;
               },
             }
           : adapter,
     });
-    results[2] = { status: "not_ready", reason: "program_missing" };
-    results[3] = { status: "not_ready", reason: "credentials_invalid" };
+    started = checks;
     const first = t!.request("POST", "/api/providers/fake-2/readiness");
     await older.reached;
     const second = await t!.request("POST", "/api/providers/fake-2/readiness");

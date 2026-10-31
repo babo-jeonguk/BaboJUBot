@@ -30,6 +30,9 @@ export type RuntimeContractScene = (
   identity: RunIdentity
 ) => RunRequest;
 
+/** 공통 검사가 정하는 에이전트 신원(조직·에이전트). 같은 에이전트의 다음 실행 시도는 이 신원에 실행 시도 ID만 새로 붙인다. */
+export type RuntimeContractAgent = Omit<RunIdentity, "runId">;
+
 /** 실행 시도 하나에서 밖으로 보인 것: 종료 결과, 공개 활동, Lead 대화로 보낸 답장 글. 선언한 일의 효과를 이것으로 판정한다. */
 export type RuntimeContractEvidence = {
   result: RunResult;
@@ -52,21 +55,26 @@ export type RuntimeContractOptions = {
   /** 이 adapter가 이어 가지 못하는 세션(만료 등). 세션 이어가기를 선언한 adapter는 꼭 준다. */
   unusableSession?: SessionState;
   /**
-   * 세션을 이어 갔다는 관찰 지점. 세션 이어가기를 선언한 adapter는 꼭 준다. `plant`가 무언가를 맡기고, 같은 에이전트의 다음
-   * 실행 시도인 `recall`이 그 세션을 이어 가면 `recalled`가 참이고, 세션 없이 시작하면 거짓이어야 한다.
+   * 받은 세션을 이어 갔다는 관찰 지점. 세션 이어가기를 선언한 adapter는 꼭 준다. `plant(note)`가 세션에 말을 맡기고, 같은 에이전트의
+   * 다음 실행 시도인 `recall`이 그 세션을 이어 가면 `recalled(evidence, note)`가 참이다. 같은 에이전트의 다른 세션에 맡긴 말과
+   * 세션 없이 시작했을 때는 거짓이어야 한다(에이전트의 최신 세션이 아니라 받은 세션을 이어 감).
    */
-  remembers?: {
-    plant: RuntimeContractScene;
+  resumes?: {
+    plant: (note: string) => RuntimeContractScene;
     recall: RuntimeContractScene;
-    recalled: (evidence: RuntimeContractEvidence) => boolean;
+    recalled: (evidence: RuntimeContractEvidence, note: string) => boolean;
   };
   /**
    * 끼워 넣은 말이 실행 시도에 들어갔다는 관찰 지점. 끼워 넣기를 선언한 adapter는 꼭 준다. `scene`은 끼워 넣은 말을 받을 때까지
-   * 일하다 받으면 스스로 끝나는 요청이고, 받은 말(`body`)이 그 실행 시도의 결과에 반영되면 `took`이 참이다.
+   * 일하다 받으면 스스로 끝나는 요청이고, 받은 말(`body`)이 그 실행 시도의 결과(종료 결과·답장)에 반영되면 `took`이 참이다.
+   * 받았다는 공개 활동은 반영의 근거가 아니므로 넘기지 않는다.
    */
   steers?: {
     scene: RuntimeContractScene;
-    took: (evidence: RuntimeContractEvidence, body: string) => boolean;
+    took: (
+      evidence: Omit<RuntimeContractEvidence, "activities">,
+      body: string
+    ) => boolean;
   };
   /** 준비 확인을 기다리는 시간. */
   readinessWithinMs?: number;
@@ -183,14 +191,14 @@ const deadline = <T>(promise: Promise<T>, ms: number, what: string) =>
  * 선언한 일은 이렇게 확인한다(지원한다고 하면 그 동작, 아니라고 하면 그 동작이 없음).
  * 6. 지원하는 일을 모두 기본값 없이 선언하고, 끼워 넣기 선언과 `steer`가 맞고, 지침 다시 넣기·미리 압축은 세션 이어가기와 함께다.
  *    지침 다시 넣기는 프로바이더 안에서 일어나 공개 결과로 보이지 않으므로 adapter 자체 검사가 확인하고, 미리 압축의 실행은 후속(#99)이다.
- * 7. 끼워 넣기: 일하는 실행 시도는 받고(`accepted`) 받은 말이 그 실행 시도의 결과에 반영되며(`steers.took`),
+ * 7. 끼워 넣기: 일하는 실행 시도는 받고(`accepted`) 받은 말이 끝까지 간 그 실행 시도의 결과에 반영되며(`steers.took`),
  *    모르는 실행 시도와 돌아온 실행 시도는 거절한다(`rejected`).
- * 8. 세션 이어가기: 같은 에이전트의 다음 실행 시도가 돌려준 세션을 이어 가 앞에서 맡긴 것을 기억하고(`remembers`, 세션 없이
- *    시작하면 기억하지 못함), 이어 가지 못하는 세션이면 같은 실행 시도 안에서 새 세션으로 시작해 진행 활동을 남긴다.
+ * 8. 세션 이어가기: 같은 에이전트의 다음 실행 시도가 받은 세션을 이어 가 그 세션에 맡긴 말을 알고(`resumes`, 다른 세션의 말이나
+ *    세션 없이는 모름), 이어 가지 못하는 세션이면 같은 실행 시도 안에서 새 세션으로 시작해 진행 활동을 남긴다.
  *    지원하지 않으면 다음 세션을 돌려주지 않는다.
- * 응답 모양(받음·완료)만으로는 선언한 일을 했다고 보지 않는다. 효과는 adapter가 주는 관찰 지점으로 결과·활동·답장에서 확인한다.
  * 9. 사용량: 토큰·비용을 선언한 대로 보고한다(지원하지 않는 항목은 `null`).
  * 10. 준비 확인: 도구를 부르지 않고 정해진 시간 안에 형식에 맞는 결과를 낸다.
+ * 응답 모양(받음·완료)만으로는 선언한 일을 했다고 보지 않는다. 효과는 adapter가 주는 관찰 지점으로 결과·답장에서 확인한다.
  */
 export function describeRuntimeContract(
   name: string,
@@ -202,19 +210,19 @@ export function describeRuntimeContract(
     finishWithinMs = 10_000,
     startupMs = 200,
     unusableSession,
-    remembers,
+    resumes,
     steers,
     readinessWithinMs = 10_000,
   }: RuntimeContractOptions
 ): void {
   const { capabilities } = adapter;
-  if (capabilities?.resume && (!unusableSession || !remembers))
+  if (capabilities?.resume && (!unusableSession || !resumes))
     throw new Error(
-      `${name} declares resume; give an unusableSession and remembers`
+      `${name} declares resume; give an unusableSession and resumes`
     );
   if (capabilities?.steer && !steers)
     throw new Error(`${name} declares steer; give steers`);
-  const newAgent = (): Omit<RunIdentity, "runId"> => ({
+  const newAgent = (): RuntimeContractAgent => ({
     organizationId: crypto.randomUUID(),
     agentId: crypto.randomUUID(),
   });
@@ -225,11 +233,12 @@ export function describeRuntimeContract(
     });
     afterAll(() => tools.close());
 
-    /** 장면 하나를 실행한다. 돌아온 뒤 낸 활동은 `late`에 따로 모은다. */
-    /** 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. */
+    /**
+     * 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. 돌아온 뒤 낸 활동은 `late`에 따로 모은다.
+     */
     function run(
       scene: RuntimeContractScene,
-      agent: Omit<RunIdentity, "runId"> = newAgent()
+      agent: RuntimeContractAgent = newAgent()
     ) {
       const token = `contract-token-${crypto.randomUUID()}`;
       const request = scene(
@@ -334,6 +343,15 @@ export function describeRuntimeContract(
       startupMs + cancelWithinMs + settleMs
     );
 
+    const evidenceOf = (
+      attempt: ReturnType<typeof run>,
+      result: RunResult
+    ): RuntimeContractEvidence => ({
+      result,
+      activities: attempt.activities,
+      messages: attempt.messages,
+    });
+
     /** 장면을 이전 세션만 바꿔 실행하고 스스로 끝날 때까지 기다린다. `agent`를 주면 그 에이전트의 다음 실행 시도다. */
     async function finish(
       previousSession: SessionState | null = null,
@@ -342,7 +360,7 @@ export function describeRuntimeContract(
         agent,
       }: {
         scene?: RuntimeContractScene;
-        agent?: Omit<RunIdentity, "runId">;
+        agent?: RuntimeContractAgent;
       } = {}
     ) {
       const attempt = run(
@@ -358,12 +376,7 @@ export function describeRuntimeContract(
         "did not finish on its own"
       );
       await expectSettled(attempt, result);
-      const evidence: RuntimeContractEvidence = {
-        result,
-        activities: attempt.activities,
-        messages: attempt.messages,
-      };
-      return { attempt, result, evidence };
+      return { attempt, result, evidence: evidenceOf(attempt, result) };
     }
 
     it("declares every capability without defaults, consistently with its channels", () => {
@@ -403,26 +416,36 @@ export function describeRuntimeContract(
 
     if (capabilities.resume) {
       it(
-        "carries what one run left in its session into the same agent's next run, and not into a fresh one",
+        "carries the session it was given into the same agent's next run, not another session of that agent and not a fresh start",
         async () => {
           const agent = newAgent();
-          const planted = await finish(null, {
-            scene: remembers!.plant,
-            agent,
-          });
-          expect(planted.result.stopReason).toBe("completed");
-          expect(planted.result.nextSession).not.toBeNull();
-          const resumed = await finish(planted.result.nextSession, {
-            scene: remembers!.recall,
+          const plant = async (note: string) => {
+            const planted = await finish(null, {
+              scene: resumes!.plant(note),
+              agent,
+            });
+            expect(planted.result.stopReason).toBe("completed");
+            expect(planted.result.nextSession).not.toBeNull();
+            return planted.result.nextSession;
+          };
+          const tag = crypto.randomUUID().slice(0, 8);
+          const [given, other] = [`첫 세션 ${tag}`, `둘째 세션 ${tag}`];
+          const session = await plant(given);
+          // 같은 에이전트의 다른 세션이 나중에 생겨도 받은 세션을 이어 가야 한다(최신 세션을 이어 가는 adapter를 거른다).
+          await plant(other);
+          const resumed = await finish(session, {
+            scene: resumes!.recall,
             agent,
           });
           expect(resumed.result.stopReason).toBe("completed");
-          expect(remembers!.recalled(resumed.evidence)).toBe(true);
-          // 대조군: 같은 에이전트라도 세션 없이 시작하면 기억하지 못한다.
-          const fresh = await finish(null, { scene: remembers!.recall, agent });
-          expect(remembers!.recalled(fresh.evidence)).toBe(false);
+          expect(resumes!.recalled(resumed.evidence, given)).toBe(true);
+          expect(resumes!.recalled(resumed.evidence, other)).toBe(false);
+          // 대조군: 같은 에이전트라도 세션 없이 시작하면 어느 세션의 말도 모른다.
+          const fresh = await finish(null, { scene: resumes!.recall, agent });
+          expect(resumes!.recalled(fresh.evidence, given)).toBe(false);
+          expect(resumes!.recalled(fresh.evidence, other)).toBe(false);
         },
-        3 * finishWithinMs + settleMs
+        4 * finishWithinMs + settleMs
       );
 
       it(
@@ -476,14 +499,7 @@ export function describeRuntimeContract(
           );
           expect(result.stopReason).toBe("completed");
           expect(
-            steers!.took(
-              {
-                result,
-                activities: attempt.activities,
-                messages: attempt.messages,
-              },
-              body
-            )
+            steers!.took({ result, messages: attempt.messages }, body)
           ).toBe(true);
           expect(await steer(attempt.runId, "늦은 말")).toBe("rejected");
           await expectSettled(attempt, result);

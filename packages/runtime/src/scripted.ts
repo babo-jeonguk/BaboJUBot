@@ -39,8 +39,8 @@ export type ScriptState = {
   calls: ToolCallRecord[];
   /** 이 실행 시도가 실행 중에 받은 끼워 넣은 메시지. 시나리오가 끝나면 받은 말을 반영해 답장한다. */
   steered: SteerMessage[];
-  /** 세션에 담아 다음 실행 시도로 이어 가는 말. 이어 간 세션의 말로 시작한다. */
-  memory: string[];
+  /** 세션 메모: 세션에 담아 다음 실행 시도로 이어 가는 말. 이어 간 세션의 메모로 시작한다(에이전트 기억과 다르다). */
+  notes: string[];
 };
 
 export type ScriptStep =
@@ -73,8 +73,8 @@ export type ScriptStep =
   | { do: "hold"; until: (signal: AbortSignal) => Promise<void> }
   /** 끼워 넣은 메시지를 하나 받을 때까지 멈춘다(이미 받았으면 바로 지나간다). 취소되면 취소로 끝난다. */
   | { do: "until_steered" }
-  /** 세션에 말 하나를 담는다. 세션을 이어 가는 다음 실행 시도가 기억한다. */
-  | { do: "remember"; note: string }
+  /** 세션 메모에 말 하나를 더한다. 세션을 이어 가는 다음 실행 시도가 그 메모를 받는다. */
+  | { do: "note"; note: string }
   /** 프로바이더 오류를 흉내 낸다. */
   | { do: "fail"; error: string };
 
@@ -276,7 +276,7 @@ export function parseGoalMessage(
  * - 어느 단계든 사용자가 `실행 유지 연습`을 부탁함: 아무것도 쓰지 않고 취소될 때까지 실행 시도를 끝내지 않는다(대시보드의 실행 중 확인용).
  * - 어느 단계든 사용자가 `끼워 넣기 연습`을 부탁함: 실행 중에 끼워 넣은 말을 받을 때까지 끝내지 않는다. 받은 말은 끝날 때 반영했다고
  *   답한다(실행 중에 받은 말은 어느 시나리오든 이렇게 답한다).
- * - `기억해 주세요: <말>`: 그 말을 세션에 담고 답한다. `기억한 말을 알려 주세요`: 이어 간 세션에 담긴 말을 알린다(세션 이어가기 확인용).
+ * - `메모해 주세요: <말>`: 그 말을 세션 메모에 담고 답한다. `세션 메모를 알려 주세요`: 이어 간 세션의 메모를 알린다(세션 이어가기 확인용).
  * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
  *
@@ -325,35 +325,36 @@ export function demoLeadScript(request: RunRequest): Script {
       summary: () => "실행 중에 끼워 넣은 말을 받아 반영했습니다.",
     };
   const notes = messages.flatMap((m) => {
-    const note = rememberPattern.exec(m)?.[1]?.trim();
+    const note = notePattern.exec(m)?.[1]?.trim();
     return note ? [{ note, message: m }] : [];
   });
   if (notes.length)
     return {
       steps: notes.flatMap(({ note, message }): ScriptStep[] => [
-        { do: "remember", note },
+        { do: "note", note },
         {
           do: "send_message",
-          body: () => `(가짜 프로바이더) 기억하겠습니다: ${quote(note)}`,
+          body: () =>
+            `(가짜 프로바이더) 세션 메모에 담았습니다: ${quote(note)}`,
           conversationId: conversationOfMessage(message),
         },
       ]),
-      summary: () => `말 ${notes.length}개를 세션에 담았습니다.`,
+      summary: () => `말 ${notes.length}개를 세션 메모에 담았습니다.`,
     };
-  const recall = messages.find((m) => recallDrill.test(m));
+  const recall = messages.find((m) => notesDrill.test(m));
   if (recall)
     return {
       steps: [
         {
           do: "send_message",
-          body: ({ memory }) =>
-            memory.length
-              ? `(가짜 프로바이더) 기억한 말: ${memory.map(quote).join(", ")}`
-              : "(가짜 프로바이더) 기억한 말이 없습니다.",
+          body: ({ notes }) =>
+            notes.length
+              ? `(가짜 프로바이더) 세션 메모: ${notes.map(quote).join(", ")}`
+              : "(가짜 프로바이더) 세션 메모가 없습니다.",
           conversationId: conversationOfMessage(recall),
         },
       ],
-      summary: ({ memory }) => `기억한 말 ${memory.length}개를 알렸습니다.`,
+      summary: ({ notes }) => `세션 메모 ${notes.length}개를 알렸습니다.`,
     };
 
   const created = request.wakeReasons.some(
@@ -579,12 +580,12 @@ const holdDrill = requestMessage(String.raw`실행\s*유지\s*연습`);
 /** 사용자가 끼워 넣기를 보고 싶어 부탁하는 메시지. 끼워 넣은 말을 받을 때까지 끝내지 않고, 받으면 반영해 답장한다. */
 const steerDrill = requestMessage(String.raw`끼워\s*넣기\s*연습`);
 
-/** 세션에 말을 담아 달라는 메시지: `기억해 주세요: <말>`. */
-const rememberPattern = /^\s*기억해\s*(?:주세요|줘)\s*[:：]\s*(.+)$/s;
+/** 세션 메모에 말을 담아 달라는 메시지: `메모해 주세요: <말>`. */
+const notePattern = /^\s*메모해\s*(?:주세요|줘)\s*[:：]\s*(.+)$/s;
 
-/** 세션에 담은 말을 알려 달라는 메시지. */
-const recallDrill = requestMessage(
-  String.raw`기억한\s*말(?:을)?\s*알려\s*(?:주세요|줘)`
+/** 이어 간 세션의 메모를 알려 달라는 메시지. */
+const notesDrill = requestMessage(
+  String.raw`세션\s*메모(?:를)?\s*알려\s*(?:주세요|줘)`
 );
 
 /** 취소될 때까지 기다린다. 취소되면 reject해 실행 시도가 `취소됨`으로 끝난다. */
@@ -954,7 +955,7 @@ export function createScriptedRuntime({
     let previous = capabilities.resume ? request.previousSession : null;
     if (previous?.expired) {
       // 이어 가지 못하는 세션: 같은 실행 시도 안에서 새 세션으로 시작하고 그 사실을 남긴다. 취소됐으면 다시 시작하지 않는다.
-      if (signal.aborted) return endWith(0, [], "cancelled");
+      if (signal.aborted) return endWith({ turns: 0, notes: [] }, "cancelled");
       await emit({
         type: "progress",
         text: "이전 세션을 이어 가지 못해 새 세션으로 시작합니다.",
@@ -962,13 +963,16 @@ export function createScriptedRuntime({
       previous = null;
     }
     const turns = Number(previous?.turns ?? 0);
-    const memory = Array.isArray(previous?.notes)
-      ? previous.notes.filter((n): n is string => typeof n === "string")
-      : [];
+    const session = {
+      turns,
+      notes: Array.isArray(previous?.notes)
+        ? previous.notes.filter((n): n is string => typeof n === "string")
+        : [],
+    };
     const end = (
       stopReason: RunResult["stopReason"],
       fields: Partial<RunResult> = {}
-    ): RunResult => endWith(turns, memory, stopReason, fields);
+    ): RunResult => endWith(session, stopReason, fields);
 
     const script = select(request);
     if (!script)
@@ -987,7 +991,7 @@ export function createScriptedRuntime({
       sent: [],
       calls: [],
       steered: inbox.steered,
-      memory,
+      notes: session.notes,
     };
     // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
     // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
@@ -1058,14 +1062,15 @@ export function createScriptedRuntime({
           case "until_steered":
             await inbox.next(signal);
             break;
-          case "remember":
-            state.memory.push(step.note);
+          case "note":
+            state.notes.push(step.note);
             break;
           case "fail":
             return end("failed", { error: step.error });
         }
       }
       // 실행 중에 받은 말은 그 대화에 반영했다고 답한다. 받은 말이 이 실행 시도의 결과에 실제로 들어갔다는 관찰 지점이다.
+      // 호출 키는 받은 메시지로 정한다. 같은 깨우기 묶음을 다시 받아도 끼워 넣은 말은 실행 시도마다 다를 수 있다.
       for (const message of state.steered) {
         signal.throwIfAborted();
         state.sent.push(
@@ -1074,7 +1079,7 @@ export function createScriptedRuntime({
               body: `(가짜 프로바이더) 실행 중에 받은 말을 반영했습니다: ${quote(message.body)}`,
               conversationId: message.conversationId,
             },
-            once("send_message")
+            { idempotencyKey: `steer-reply-${message.messageId}` }
           )
         );
       }
@@ -1089,9 +1094,9 @@ export function createScriptedRuntime({
     }
   }
 
+  /** 종료 결과. 세션을 이어 가면 실행 횟수를 하나 올리고 세션 메모를 담는다. */
   function endWith(
-    turns: number,
-    memory: readonly string[],
+    { turns, notes }: { turns: number; notes: readonly string[] },
     stopReason: RunResult["stopReason"],
     fields: Partial<RunResult> = {}
   ): RunResult {
@@ -1101,7 +1106,7 @@ export function createScriptedRuntime({
       summary: null,
       usage: usage(),
       nextSession: capabilities.resume
-        ? { turns: turns + 1, notes: [...memory] }
+        ? { turns: turns + 1, notes: [...notes] }
         : null,
       ...fields,
     };
