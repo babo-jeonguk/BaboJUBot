@@ -326,6 +326,7 @@ export const artifactSummaryColumns = {
   taskId: artifacts.taskId,
   title: artifacts.title,
   format: artifacts.format,
+  file: artifacts.file,
   createdByAgentId: artifacts.createdByAgentId,
   createdByRunId: artifacts.createdByRunId,
   createdAt: artifacts.createdAt,

@@ -37,6 +37,7 @@ export const sectionGroups: { label?: string; items: Section[] }[] = [
     label: "연구",
     items: [
       { slug: "tasks", label: "작업", width: "standard" },
+      { slug: "artifacts", label: "산출물", width: "standard" },
       { slug: "map", label: "연구 지도", width: "full" },
       { slug: "review", label: "결과 검토", width: "standard" },
     ],
@@ -63,7 +64,7 @@ export const findSection = (slug: string) =>
 const detailSection: Record<string, string> = {
   runs: "agents",
   approvals: "dashboard",
-  artifacts: "tasks",
+  artifacts: "artifacts",
   results: "review",
 };
 

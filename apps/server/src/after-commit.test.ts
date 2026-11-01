@@ -44,6 +44,20 @@ const fakes = () => {
 };
 
 describe("applyAfterCommit", () => {
+  it("preserves committed results and delivers events and wakes when workspace preparation fails", async () => {
+    const f = fakes();
+    const result = await completeStored(
+      {
+        ...f.deps,
+        ensureWorkspace: async () => {
+          throw new Error("disk unavailable");
+        },
+      },
+      stored({ id: "saved" }, { events: [event(1)], woken: ["lead"] })
+    );
+    expect(result).toEqual({ kind: "ok", value: { id: "saved" } });
+    expect(f.calls).toEqual(["publish 1", "kick lead"]);
+  });
   it("publishes, cancels, waits for the resumed organization, then kicks", async () => {
     const f = fakes();
     const applied = applyAfterCommit(f.deps, {

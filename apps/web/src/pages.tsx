@@ -25,7 +25,7 @@ import { Markdown } from "./markdown.tsx";
 import { ResultReviewScreen } from "./results.tsx";
 import { SettingsScreen } from "./settings.tsx";
 import { defaultSection, findSection } from "./shell.tsx";
-import { TasksScreen } from "./tasks.tsx";
+import { TasksScreen, ArtifactsScreen } from "./tasks.tsx";
 import {
   approvalKindLabel,
   ApprovalStatusBadge,
@@ -157,6 +157,12 @@ export function OrganizationScreen({ section: fixed }: { section?: string }) {
     return (
       <Page width={width}>
         <ActivityScreen orgId={orgId} agents={agents} />
+      </Page>
+    );
+  if (section === "artifacts")
+    return (
+      <Page width="standard">
+        <ArtifactsScreen orgId={orgId} />
       </Page>
     );
   if (section === "tasks")

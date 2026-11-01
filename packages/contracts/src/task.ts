@@ -46,18 +46,41 @@ export const addTaskCommentInputSchema = z.strictObject({
 });
 export type AddTaskCommentInput = z.infer<typeof addTaskCommentInputSchema>;
 
-/** 산출물 형식. 첫 판은 본문을 그대로 저장하는 Markdown·일반 텍스트뿐이다. */
-export const artifactFormats = ["markdown", "text"] as const;
+/** 산출물 표시 형식. binary는 본문 대신 파일 메타데이터를 표시한다. */
+export const artifactFormats = ["markdown", "text", "binary"] as const;
 export const artifactFormatSchema = z.enum(artifactFormats);
 export type ArtifactFormat = z.infer<typeof artifactFormatSchema>;
 
 /** 산출물 기록. 연결 작업은 같은 조직의 작업이어야 한다. */
-export const recordArtifactInputSchema = z.strictObject({
-  taskId: z.uuid(),
-  title: text(artifactTitleMaxLength),
-  format: artifactFormatSchema,
-  content: z.string().min(1).max(artifactContentMaxLength),
+export const recordArtifactInputSchema = z
+  .strictObject({
+    taskId: z.uuid(),
+    title: text(artifactTitleMaxLength),
+    format: z.enum(["markdown", "text"]).optional(),
+    content: z.string().min(1).max(artifactContentMaxLength).optional(),
+    path: z.string().min(1).max(4096).optional(),
+  })
+  .refine(
+    (input) =>
+      input.path !== undefined
+        ? input.format === undefined && input.content === undefined
+        : input.format !== undefined && input.content !== undefined,
+    "Provide either path or format and content"
+  );
+export const artifactFileMaxBytes = 10 * 1024 * 1024;
+export const artifactFileSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  mediaType: z.string(),
+  size: z.number().int().nonnegative(),
 });
+export type ArtifactFile = z.infer<typeof artifactFileSchema>;
+export type ArtifactSnapshot = {
+  format: ArtifactFormat;
+  content: string;
+  file: ArtifactFile;
+  bytes: string;
+};
 export type RecordArtifactInput = z.infer<typeof recordArtifactInputSchema>;
 
 /** 같은 조직의 다른 에이전트에게 보내는 메시지. 받는 에이전트를 깨운다. */
@@ -124,6 +147,7 @@ export const artifactSchema = z.object({
   title: z.string(),
   format: artifactFormatSchema,
   content: z.string(),
+  file: artifactFileSchema.nullable().optional(),
   createdByAgentId: z.uuid(),
   createdByRunId: z.uuid(),
   createdAt: time,

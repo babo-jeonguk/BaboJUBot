@@ -784,7 +784,7 @@ export const taskComments = pgTable(
   ]
 );
 
-/** 산출물. 첫 판은 Markdown·텍스트 본문을 그대로 둔다. 연결 작업과 작성 에이전트·실행 시도는 같은 조직의 기록이다. */
+/** 산출물. 본문 또는 파일 바이트와 메타데이터를 불변 기록으로 둔다. 연결 작업과 작성 에이전트·실행 시도는 같은 조직의 기록이다. */
 export const artifacts = pgTable(
   "artifacts",
   {
@@ -797,6 +797,8 @@ export const artifacts = pgTable(
     title: text("title").notNull(),
     format: text("format", { enum: artifactFormats }).notNull(),
     content: text("content").notNull(),
+    file: jsonb("file").$type<import("@babojubot/contracts").ArtifactFile>(),
+    fileBytes: text("file_bytes"),
     createdByAgentId: uuid("created_by_agent_id").notNull(),
     createdByRunId: uuid("created_by_run_id").notNull(),
     createdAt: createdAt(),

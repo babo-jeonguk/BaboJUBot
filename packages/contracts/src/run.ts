@@ -198,7 +198,22 @@ export const runRequestSchema = z.object({
   /** 그 버전을 정한 사본 내용. 프로바이더가 자기 방식으로 주입한다. */
   instructions: z.array(instructionFileSchema),
   /** 연구 환경 workspace. 연구 환경 구성 전에는 없다. */
-  workspace: z.object({ cwd: z.string() }).nullable(),
+  workspace: z
+    .object({
+      cwd: z.string(),
+      organization: z.string().optional(),
+      personal: z.string().optional(),
+      peers: z
+        .array(
+          z.object({
+            agentId: z.uuid(),
+            path: z.string(),
+            access: z.literal("read"),
+          })
+        )
+        .optional(),
+    })
+    .nullable(),
   /** admission이 에이전트 설정에서 고정한 모델. 없으면 프로바이더가 기본 모델을 쓴다. */
   model: modelIdSchema.nullable(),
   /**

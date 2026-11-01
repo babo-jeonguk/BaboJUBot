@@ -169,6 +169,13 @@
       "when": 1793432233281,
       "tag": "0023_provider_sessions_readiness",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793491200000,
+      "tag": "0024_file_artifacts",
+      "breakpoints": true
     }
   ]
 }

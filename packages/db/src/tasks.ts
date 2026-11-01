@@ -198,14 +198,38 @@ export function recordArtifact(
   db: Database,
   run: ActiveRunRef,
   input: RecordArtifactInput,
-  { source, ...call }: WriteOptions
+  {
+    source,
+    readFile,
+    ...call
+  }: WriteOptions & {
+    readFile?: (
+      organizationId: string,
+      path: string
+    ) => Promise<import("@babojubot/contracts").ArtifactSnapshot>;
+  }
 ): Promise<ToolWrite<Artifact, "not_found">> {
   return toolWrite(db, run, "record_artifact", call, async (tx, locked) => {
     if (!(await selectTask(tx, locked.organizationId, input.taskId)))
       return { kind: "invalid", problem: "not_found" };
-    const plan = planArtifactRecord(locked, input, source);
+    const snapshot =
+      input.path !== undefined
+        ? await readFile!(locked.organizationId, input.path)
+        : undefined;
+    const plan = planArtifactRecord(
+      locked,
+      {
+        taskId: input.taskId,
+        title: input.title,
+        format: snapshot?.format ?? input.format!,
+        content: snapshot?.content ?? input.content!,
+        file: snapshot?.file ?? null,
+      },
+      source
+    );
     await tx.insert(artifacts).values({
       ...plan.artifact,
+      fileBytes: snapshot?.bytes ?? null,
       createdAt: new Date(plan.artifact.createdAt),
     });
     const event = await insertEvent(tx, plan.event);
@@ -352,7 +376,7 @@ export async function findArtifact(
       )
     );
   if (!row) return undefined;
-  const { seq: _seq, createdAt, ...artifact } = row;
+  const { seq: _seq, fileBytes: _fileBytes, createdAt, ...artifact } = row;
   return { ...artifact, createdAt: createdAt.toISOString() };
 }
 
@@ -439,3 +463,20 @@ const commentRow = ({ deliveredToRunId: _delivered, ...c }: TaskComment) => ({
   ...c,
   createdAt: new Date(c.createdAt),
 });
+
+/** All artifact summaries of one organization, in registration order. */
+export async function listArtifacts(
+  db: Database,
+  organizationId: string
+): Promise<ArtifactSummary[]> {
+  if (!isUuid(organizationId)) return [];
+  const rows = await db
+    .select(artifactSummaryColumns)
+    .from(artifacts)
+    .where(eq(artifacts.organizationId, organizationId))
+    .orderBy(asc(artifacts.seq));
+  return rows.map(({ createdAt, ...row }) => ({
+    ...row,
+    createdAt: createdAt.toISOString(),
+  }));
+}
