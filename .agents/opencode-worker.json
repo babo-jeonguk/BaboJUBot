@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "**/.env*": "deny"
+    },
+    "edit": {
+      "*": "allow",
+      "**/.env*": "deny",
+      ".git/**": "deny",
+      ".reference-cache/**": "deny"
+    },
+    "bash": {
+      "*": "deny",
+      "pnpm --filter * exec vitest run *": "allow",
+      "pnpm --filter * run typecheck": "allow"
+    },
+    "webfetch": "deny",
+    "websearch": "deny",
+    "external_directory": "deny"
+  }
+}
