@@ -86,7 +86,7 @@ export function CreateOrganizationProvider({
           <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
           <Dialog.Content
             aria-describedby={undefined}
-            className="fixed inset-x-0 bottom-0 z-[71] max-h-[calc(100dvh-2rem)] animate-fade-up overflow-y-auto rounded-t-2xl bg-white p-6 shadow-pop md:inset-x-auto md:top-[max(1rem,10vh)] md:bottom-auto md:left-1/2 md:w-[min(520px,calc(100vw-2rem))] md:-translate-x-1/2 md:animate-pop-in md:rounded-2xl"
+            className="fixed inset-x-0 bottom-0 z-[71] max-h-[calc(100dvh-2rem)] data-[state=open]:animate-fade-up overflow-y-auto rounded-t-2xl bg-white p-6 shadow-pop md:inset-x-auto md:top-[max(1rem,10vh)] md:bottom-auto md:left-1/2 md:w-[min(520px,calc(100vw-2rem))] md:-translate-x-1/2 md:data-[state=open]:animate-pop-in md:rounded-2xl"
           >
             <Dialog.Title className="text-lg font-semibold">
               새 연구 조직

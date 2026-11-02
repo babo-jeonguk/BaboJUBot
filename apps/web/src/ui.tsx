@@ -16,7 +16,7 @@ import type {
   TaskStatus,
 } from "@babojubot/contracts";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 
 /**
@@ -35,18 +35,53 @@ export function Tip({
   /** `speech`는 캐릭터 머리 위 말풍선(흰 바탕, 한 줄). */
   tone?: "dark" | "speech";
 }) {
+  const [open, setOpen] = useState(false);
+  const keyboardFocus = useRef(false);
+  const pointerDown = useRef(false);
   return (
-    <Tooltip.Root disableHoverableContent={tone === "speech"}>
-      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+    <Tooltip.Root
+      open={open}
+      // Focusing an off-screen trigger scrolls its container, and Radix closes tooltips on scroll. Keep a keyboard-focused tooltip open until focus leaves or Escape dismisses it.
+      onOpenChange={(next) => {
+        if (next || !keyboardFocus.current) setOpen(next);
+      }}
+      disableHoverableContent={tone === "speech"}
+    >
+      <Tooltip.Trigger
+        asChild
+        onPointerDown={() => {
+          pointerDown.current = true;
+          keyboardFocus.current = false;
+          document.addEventListener(
+            "pointerup",
+            () => (pointerDown.current = false),
+            { once: true }
+          );
+        }}
+        onFocus={() => {
+          keyboardFocus.current = !pointerDown.current;
+        }}
+        onBlur={() => {
+          keyboardFocus.current = false;
+          setOpen(false);
+        }}
+      >
+        {children}
+      </Tooltip.Trigger>
       <Tooltip.Portal>
+        {/* Keep the enter animation on open states only: closed content with an animation can stay mounted, then close itself on re-open. */}
         <Tooltip.Content
           side={side}
           sideOffset={side === "right" ? 10 : 6}
           collisionPadding={8}
+          onEscapeKeyDown={() => {
+            keyboardFocus.current = false;
+            setOpen(false);
+          }}
           className={
             tone === "speech"
-              ? "animate-pop-in z-[80] max-w-56 truncate rounded-2xl bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-pop ring-1 ring-slate-900/10"
-              : "animate-pop-in z-[80] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
+              ? "data-[state=delayed-open]:animate-pop-in data-[state=instant-open]:animate-pop-in z-[80] max-w-56 truncate rounded-2xl bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-pop ring-1 ring-slate-900/10"
+              : "data-[state=delayed-open]:animate-pop-in data-[state=instant-open]:animate-pop-in z-[80] max-w-64 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-pop"
           }
         >
           {content}
