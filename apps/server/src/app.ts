@@ -1184,7 +1184,6 @@ export async function startServer({
   };
   try {
     // 끼워 넣는 중으로 남은 메시지를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.
-    await workspaces.recover();
     await recoverInterruptedSteers(db);
     await dispatcher.start();
     readiness.checkAll();

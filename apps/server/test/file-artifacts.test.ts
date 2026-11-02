@@ -12,7 +12,11 @@ import { tmpdir } from "node:os";
 import { startServer } from "../src/app.ts";
 import { afterEach, expect, it } from "vitest";
 import { createGate } from "@babojubot/runtime/testing";
-import { artifactSchema, type RunRequest } from "@babojubot/contracts";
+import {
+  artifactSchema,
+  runSummaryListSchema,
+  type RunRequest,
+} from "@babojubot/contracts";
 import { scriptedAgents, serverHelpers, calls, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 let t: TestServer | undefined;
@@ -194,12 +198,97 @@ it("passes organization and personal folders, freezes files, replays across HTTP
     dataDir: root,
   });
   try {
-    expect((await stat(workspace.cwd)).isDirectory()).toBe(true);
-    expect((await stat(workspace.personal!)).isDirectory()).toBe(true);
     const preserved = await fetch(
       `${restarted.url}/api/organizations/${org.id}/artifacts/${registered.body.id}`
     ).then((r) => r.json());
     expect(artifactSchema.parse(preserved).content).toBe("# 등록 원문\n근거");
+    let nextRequest!: RunRequest;
+    agents.queue(org.lead.id, (r) => {
+      nextRequest = r;
+      return idle;
+    });
+    const message = await fetch(
+      `${restarted.url}/api/organizations/${org.id}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body: "폴더 다시 준비" }),
+      }
+    );
+    expect(message.status).toBe(201);
+    await restarted.drain();
+    expect((await stat(nextRequest.workspace!.cwd)).isDirectory()).toBe(true);
+    expect((await stat(nextRequest.workspace!.personal!)).isDirectory()).toBe(
+      true
+    );
+  } finally {
+    await restarted.close();
+  }
+});
+
+it("starts and serves other organizations when one organization's folder path is broken, and repairs it on that organization's next run", async () => {
+  root = await mkdtemp(path.join(tmpdir(), "artifact-test-"));
+  const agents = scriptedAgents();
+  t = await startTestServer({ runtime: agents.runtime, dataDir: root });
+  const { researching } = serverHelpers(() => t!);
+  const broken = await researching(agents, "고장 조직");
+  const healthy = await researching(agents, "정상 조직");
+  await t.stopServer();
+
+  const brokenShared = path.join(root, "organizations", broken.id, "shared");
+  await rm(brokenShared, { recursive: true });
+  await writeFile(brokenShared, "폴더 자리에 놓인 파일");
+
+  const restarted = await startServer({
+    db: t.db,
+    port: 0,
+    runtime: agents.runtime,
+    dataDir: root,
+  });
+  const say = async (orgId: string, body: string) => {
+    const res = await fetch(
+      `${restarted.url}/api/organizations/${orgId}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body }),
+      }
+    );
+    expect(res.status).toBe(201);
+  };
+  const runsOf = async (orgId: string) =>
+    runSummaryListSchema.parse(
+      await fetch(`${restarted.url}/api/organizations/${orgId}/runs`).then(
+        (r) => r.json()
+      )
+    );
+  try {
+    let healthyRequest!: RunRequest;
+    agents.queue(healthy.lead.id, (r) => {
+      healthyRequest = r;
+      return idle;
+    });
+    await say(healthy.id, "정상 조직 실행");
+    await restarted.drain();
+    expect((await stat(healthyRequest.workspace!.cwd)).isDirectory()).toBe(
+      true
+    );
+
+    await say(broken.id, "고장 조직 실행");
+    await restarted.drain();
+    expect((await runsOf(broken.id))[0]?.status).toBe("failed");
+
+    await rm(brokenShared);
+    let repairedRequest!: RunRequest;
+    agents.queue(broken.lead.id, (r) => {
+      repairedRequest = r;
+      return idle;
+    });
+    await say(broken.id, "경로를 고친 뒤 실행");
+    await restarted.drain();
+    expect((await stat(repairedRequest.workspace!.cwd)).isDirectory()).toBe(
+      true
+    );
   } finally {
     await restarted.close();
   }

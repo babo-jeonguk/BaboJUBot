@@ -42,7 +42,7 @@ export async function applyAfterCommit(
         await ensureWorkspace(id);
       } catch {
         console.error(
-          "[workspace] folder preparation failed; run assembly and server restart will retry",
+          "[workspace] folder preparation failed; the next run assembly will retry",
           id
         );
       }

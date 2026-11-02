@@ -6,11 +6,7 @@ import {
   type ArtifactSnapshot,
   type RunRequest,
 } from "@babojubot/contracts";
-import {
-  findOrganization,
-  listOrganizations,
-  type Database,
-} from "@babojubot/db";
+import { findOrganization, type Database } from "@babojubot/db";
 
 export class ArtifactFileError extends Error {}
 
@@ -35,10 +31,6 @@ export class Workspaces {
     for (const agent of org.agents)
       await mkdir(this.personal(orgId, agent.id), { recursive: true });
     return org;
-  }
-  async recover() {
-    for (const org of await listOrganizations(this.db))
-      await this.ensure(org.id);
   }
   async forRun(
     orgId: string,
