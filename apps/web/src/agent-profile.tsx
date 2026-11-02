@@ -141,7 +141,7 @@ export function FaceCustomizer({
         <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px] data-[state=open]:animate-fade-in" />
         <Dialog.Content
           aria-describedby={undefined}
-          className="animate-pop-in fixed top-1/2 left-1/2 z-[71] max-h-[calc(100dvh-2rem)] w-[min(460px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-white p-5 shadow-pop"
+          className="data-[state=open]:animate-pop-in fixed top-1/2 left-1/2 z-[71] max-h-[calc(100dvh-2rem)] w-[min(460px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-white p-5 shadow-pop"
         >
           <Dialog.Title className="text-base font-semibold">
             얼굴 꾸미기

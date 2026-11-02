@@ -724,7 +724,7 @@ function InstructionCopies({
           <Dialog.Overlay className="fixed inset-0 z-[70] bg-slate-950/30 backdrop-blur-[2px]" />
           <Dialog.Content
             aria-describedby={undefined}
-            className="animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop"
+            className="data-[state=open]:animate-pop-in fixed top-[18vh] left-1/2 z-[71] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl bg-white p-6 shadow-pop"
           >
             <Dialog.Title className="text-base font-semibold">
               편집한 내용을 버릴까요?
