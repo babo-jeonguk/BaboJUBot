@@ -1,0 +1,175 @@
+import { constants } from "node:fs";
+import { mkdir, lstat, open, realpath } from "node:fs/promises";
+import path from "node:path";
+import {
+  artifactFileMaxBytes,
+  type ArtifactSnapshot,
+  type RunRequest,
+} from "@babojubot/contracts";
+import { findOrganization, type Database } from "@babojubot/db";
+
+export class ArtifactFileError extends Error {}
+
+/** Server-owned folder layout. Folder access permissions are enforced by the future container adapter, or instructions on the host. */
+export class Workspaces {
+  private readonly root: string;
+  private readonly db: Database;
+  constructor(root: string, db: Database) {
+    this.root = root;
+    this.db = db;
+  }
+  organization(id: string) {
+    return path.resolve(this.root, "organizations", id, "shared");
+  }
+  private personal(orgId: string, agentId: string) {
+    return path.resolve(this.root, "organizations", orgId, "agents", agentId);
+  }
+  async ensure(orgId: string) {
+    const org = await findOrganization(this.db, orgId);
+    if (!org) throw new Error("workspace organization missing");
+    await mkdir(this.organization(orgId), { recursive: true });
+    for (const agent of org.agents)
+      await mkdir(this.personal(orgId, agent.id), { recursive: true });
+    return org;
+  }
+  async forRun(
+    orgId: string,
+    agentId: string
+  ): Promise<NonNullable<RunRequest["workspace"]>> {
+    const org = await this.ensure(orgId);
+    return {
+      cwd: this.organization(orgId),
+      organization: this.organization(orgId),
+      personal: this.personal(orgId, agentId),
+      peers: org.agents
+        .filter((a) => a.id !== agentId)
+        .map((a) => ({
+          agentId: a.id,
+          path: this.personal(orgId, a.id),
+          access: "read" as const,
+        })),
+    };
+  }
+  async readArtifact(
+    orgId: string,
+    relative: string
+  ): Promise<ArtifactSnapshot> {
+    try {
+      const root = this.organization(orgId);
+      if (path.isAbsolute(relative) || relative.includes("\0"))
+        throw new ArtifactFileError();
+      const target = path.resolve(root, relative);
+      const normalized = path.relative(root, target);
+      if (
+        !normalized ||
+        normalized === ".." ||
+        normalized.startsWith(`..${path.sep}`)
+      )
+        throw new ArtifactFileError();
+      // Reject symlinks in every component. The opened descriptor's real path is checked again below.
+      let component = root;
+      if ((await realpath(root)) !== root) throw new ArtifactFileError();
+      for (const part of normalized.split(path.sep)) {
+        component = path.join(component, part);
+        if ((await lstat(component)).isSymbolicLink())
+          throw new ArtifactFileError();
+      }
+      const handle = await open(
+        target,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+      );
+      try {
+        const before = await handle.stat({ bigint: true });
+        if (
+          !before.isFile() ||
+          before.nlink !== 1n ||
+          before.size > BigInt(artifactFileMaxBytes)
+        )
+          throw new ArtifactFileError();
+        // Linux descriptor lookup pins the file actually opened, including parent rename/symlink races.
+        if ((await realpath(`/proc/self/fd/${handle.fd}`)) !== target)
+          throw new ArtifactFileError();
+        const buffer = Buffer.alloc(Number(before.size) + 1);
+        let length = 0;
+        while (length < buffer.length) {
+          const { bytesRead } = await handle.read(
+            buffer,
+            length,
+            buffer.length - length,
+            null
+          );
+          if (!bytesRead) break;
+          length += bytesRead;
+        }
+        const after = await handle.stat({ bigint: true });
+        if (
+          BigInt(length) !== before.size ||
+          before.mtimeNs !== after.mtimeNs ||
+          before.ctimeNs !== after.ctimeNs ||
+          before.size !== after.size ||
+          (await realpath(`/proc/self/fd/${handle.fd}`)) !== target
+        )
+          throw new ArtifactFileError();
+        const bytes = buffer.subarray(0, length);
+        const extension = path.extname(target).toLowerCase();
+        let content = "";
+        let format: ArtifactSnapshot["format"] = "binary";
+        const binaryTypes: Record<string, string> = {
+          ".pdf": "application/pdf",
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".zip": "application/zip",
+          ".svg": "image/svg+xml",
+          ".html": "text/html",
+        };
+        let mediaType = binaryTypes[extension] ?? "application/octet-stream";
+        const textTypes: Record<string, string> = {
+          ".md": "text/markdown",
+          ".markdown": "text/markdown",
+          ".txt": "text/plain",
+          ".csv": "text/csv",
+          ".json": "application/json",
+          ".log": "text/plain",
+          ".tsv": "text/tab-separated-values",
+        };
+        if (textTypes[extension]) {
+          try {
+            const text = new TextDecoder("utf-8", { fatal: true }).decode(
+              bytes
+            );
+            if (!text.includes("\0")) {
+              content = text;
+              mediaType = textTypes[extension]!;
+              format = mediaType === "text/markdown" ? "markdown" : "text";
+            }
+          } catch {
+            /* Invalid UTF-8 remains a binary artifact. */
+          }
+        }
+        return {
+          format,
+          content,
+          file: {
+            name: path.basename(target),
+            path: normalized,
+            mediaType,
+            size: length,
+          },
+          bytes: bytes.toString("base64"),
+        };
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if (
+        error instanceof ArtifactFileError ||
+        (error instanceof Error &&
+          "code" in error &&
+          ["ENOENT", "ELOOP", "ENOTDIR", "EACCES"].includes(String(error.code)))
+      )
+        throw new ArtifactFileError("invalid artifact file");
+      throw error;
+    }
+  }
+}

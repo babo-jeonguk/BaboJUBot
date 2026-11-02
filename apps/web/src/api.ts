@@ -4,6 +4,7 @@ import {
   approvalSchema,
   approvalSummaryListSchema,
   artifactSchema,
+  artifactSummarySchema,
   conversationMessageListSchema,
   conversationMessageSchema,
   conversationSummaryListSchema,
@@ -1128,5 +1129,13 @@ export function useEditResearchMap(orgId: string) {
           queryKey: ["organizations", orgId, "research-nodes"],
         }),
       ]),
+  });
+}
+
+export function useArtifacts(orgId: string) {
+  return useQuery({
+    queryKey: ["organizations", orgId, "artifacts"],
+    queryFn: () =>
+      request(artifactSummarySchema.array(), orgPath(orgId, "/artifacts")),
   });
 }

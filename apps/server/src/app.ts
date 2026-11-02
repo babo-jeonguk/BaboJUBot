@@ -1,3 +1,4 @@
+import { Workspaces } from "./workspace.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -83,6 +84,7 @@ import {
   listOutbox,
   listOrganizationEvents,
   listOrganizations,
+  listArtifacts,
   listResultSubmissions,
   listRunningRuns,
   listRuns,
@@ -159,6 +161,7 @@ export type ServerOptions = {
   now?: () => Date;
   /** 하네스 라이브러리 디렉터리. 기본은 저장소의 `harness/`. */
   harnessDir?: string;
+  dataDir?: string;
   /** 지난 heartbeat를 확인하는 간격(ms). heartbeat 간격은 분 단위이므로 그보다 충분히 짧다. */
   heartbeatPollMs?: number;
   /**
@@ -194,6 +197,7 @@ export async function startServer({
   runtime,
   now = () => new Date(),
   harnessDir = defaultHarnessDir,
+  dataDir = path.resolve(process.env.BABOJUBOT_HOME ?? ".babojubot"),
   heartbeatPollMs = 5_000,
   notificationChannels = [
     createFakeChannel({
@@ -223,13 +227,18 @@ export async function startServer({
   const registry = createProviderRegistry(connections, {
     checking: (id) => readiness.checking(id),
   });
+  const workspaces = new Workspaces(dataDir, db);
   let url = "";
   const dispatcher = new RunDispatcher({
     db,
     hub,
     providers: registry.adapters,
     now,
-    assemble: createRunRequestAssembler({ db, toolsBaseUrl: () => url }),
+    assemble: createRunRequestAssembler({
+      db,
+      toolsBaseUrl: () => url,
+      workspaces,
+    }),
     onLoginRequired: (provider) => void readiness.check(provider),
   });
   const heartbeats = new HeartbeatScheduler({
@@ -252,7 +261,10 @@ export async function startServer({
    * 사용자 HTTP 경로가 모두 이 길을 쓴다. 알림이 실패해도 저장된 결과는 그대로다.
    */
   const complete = async <T, R extends string>(result: Promise<Stored<T, R>>) =>
-    completeStored({ hub, dispatcher }, await result);
+    completeStored(
+      { hub, dispatcher, ensureWorkspace: (id) => workspaces.ensure(id) },
+      await result
+    );
   /**
    * Lead 대화에 사용자 메시지를 남긴다. `conversation`은 같은 조직의 대화(호출한 쪽이 조직 안에서 찾은 것)이고, `new`면 이 메시지로
    * 새 대화를 시작한다. 새 대화는 메시지와 같은 transaction에 남으므로 메시지를 받지 않으면 대화도 남지 않는다.
@@ -324,6 +336,7 @@ export async function startServer({
       now,
       harnessDir,
       providers: registry,
+      workspaces,
     })
   );
 
@@ -881,6 +894,11 @@ export async function startServer({
       );
     }
   );
+
+  app.get("/api/organizations/:id/artifacts", async (req, res) => {
+    if (!(await findOrganization(db, req.params.id))) return notFound(res);
+    res.json(await listArtifacts(db, req.params.id));
+  });
 
   app.get("/api/organizations/:id/artifacts/:artifactId", async (req, res) => {
     const artifact = await findArtifact(

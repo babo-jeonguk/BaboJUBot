@@ -211,7 +211,8 @@ export function planAgentTaskComment(
 /** 산출물 기록. 출처(작성 에이전트·실행 시도)는 실행 시도가 정한다. */
 export function planArtifactRecord(
   run: RunRef,
-  input: RecordArtifactInput,
+  input: Omit<RecordArtifactInput, "path" | "format" | "content"> &
+    Pick<Artifact, "format" | "content" | "file">,
   { newId, now }: RecordSource
 ): { artifact: Artifact; event: NewEvent } {
   const artifact: Artifact = {

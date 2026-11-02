@@ -1,4 +1,9 @@
 import {
+  ArtifactFilename,
+  ArtifactFileMetadata,
+  fileSize,
+} from "./artifact-file.tsx";
+import {
   messageBodyMaxLength,
   type Agent,
   type ArtifactSummary,
@@ -11,6 +16,7 @@ import {
   ApiError,
   useAddTaskComment,
   useArtifact,
+  useArtifacts,
   useFlowTemplate,
   useOrganization,
   useResearchNode,
@@ -29,6 +35,7 @@ import {
   researchNodeStatusLabel,
   runLabel,
   TaskStatusBadge,
+  Tip,
 } from "./ui.tsx";
 
 /** 조직 › 작업: 작업 목록(제목·상태·담당자). 각 작업은 별도 상세 페이지로 열린다. */
@@ -253,18 +260,28 @@ function ArtifactList({
         <ul className="divide-y divide-slate-100">
           {artifacts.map((a) => (
             <li key={a.id}>
-              <Link
-                to={`/orgs/${orgId}/artifacts/${a.id}`}
-                className="block px-4 py-2.5 transition hover:bg-slate-50"
-              >
-                <div className="font-medium break-words text-brand-700">
-                  {a.title}
-                </div>
-                <div className="text-xs text-slate-500">
-                  {formatLabel[a.format]} · {nameOf(agents, a.createdByAgentId)}{" "}
-                  · {formatTime(a.createdAt)}
-                </div>
-              </Link>
+              <Tip content={a.file?.name ?? a.title}>
+                <Link
+                  to={`/orgs/${orgId}/artifacts/${a.id}`}
+                  className="block px-4 py-2.5 transition hover:bg-slate-50"
+                >
+                  <div className="font-medium break-words text-brand-700">
+                    {a.file ? (
+                      <ArtifactFilename
+                        file={a.file}
+                        text={a.format !== "binary"}
+                      />
+                    ) : (
+                      a.title
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {a.file ? fileSize(a.file.size) : formatLabel[a.format]} ·{" "}
+                    {nameOf(agents, a.createdByAgentId)} ·{" "}
+                    {formatTime(a.createdAt)}
+                  </div>
+                </Link>
+              </Tip>
             </li>
           ))}
         </ul>
@@ -480,7 +497,8 @@ export function ArtifactPage() {
           </Link>
         </dd>
       </dl>
-      {a.format === "markdown" ? (
+      {a.file && <ArtifactFileMetadata file={a.file} createdAt={a.createdAt} />}
+      {a.format === "binary" ? null : a.format === "markdown" ? (
         <Markdown
           text={a.content}
           className="card p-4 text-sm text-slate-800"
@@ -495,5 +513,20 @@ export function ArtifactPage() {
         </pre>
       )}
     </Page>
+  );
+}
+
+export function ArtifactsScreen({ orgId }: { orgId: string }) {
+  const artifacts = useArtifacts(orgId);
+  const org = useOrganization(orgId);
+  if (artifacts.isPending) return <Loading />;
+  if (artifacts.isError)
+    return <LoadError what="산출물" onRetry={() => void artifacts.refetch()} />;
+  return (
+    <ArtifactList
+      orgId={orgId}
+      artifacts={artifacts.data}
+      agents={org.data?.agents ?? []}
+    />
   );
 }

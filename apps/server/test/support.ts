@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   type NotificationChannel,
   eventStreamPath,
@@ -66,6 +69,7 @@ export type TestServerOptions = {
   notificationChannels?: NotificationChannel[];
   /** 하네스 라이브러리 디렉터리. 기본은 저장소의 `harness/`다. */
   harnessDir?: string;
+  dataDir?: string;
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */
@@ -73,9 +77,17 @@ export async function startTestServer(
   options: TestServerOptions = {}
 ): Promise<TestServer> {
   const database = await createTestDatabase();
+  const dataDir =
+    options.dataDir ??
+    (await mkdtemp(path.join(tmpdir(), "babojubot-workspaces-")));
   let server: RunningServer;
   try {
-    server = await startServer({ db: database.db, port: 0, ...options });
+    server = await startServer({
+      db: database.db,
+      port: 0,
+      dataDir,
+      ...options,
+    });
   } catch (error) {
     await database.close();
     throw error;
@@ -195,6 +207,7 @@ export async function startTestServer(
       for (const socket of sockets) socket.terminate();
       if (!serverStopped) await server.close();
       await database.close();
+      if (!options.dataDir) await rm(dataDir, { recursive: true, force: true });
     },
   };
 }

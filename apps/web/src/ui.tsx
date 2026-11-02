@@ -307,7 +307,11 @@ const timeFormat = new Intl.DateTimeFormat("ko-KR", {
 });
 export const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 /** 실행 시도를 짧게 부르는 이름. 전체 ID는 주소에 있다. */
-export const formatLabel = { markdown: "Markdown", text: "텍스트" } as const;
+export const formatLabel = {
+  markdown: "Markdown",
+  text: "텍스트",
+  binary: "파일",
+} as const;
 export const nameOf = (agents: Agent[], id: string | null) =>
   agents.find((a) => a.id === id)?.name ?? "에이전트";
 

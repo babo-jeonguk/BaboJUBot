@@ -1,3 +1,4 @@
+import { ArtifactFileError, type Workspaces } from "./workspace.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
   explicitProposedChoice,
@@ -13,7 +14,7 @@ import {
   type PublicActivity,
   type ToolRefusalReason,
 } from "@babojubot/contracts";
-import { memoryScopeOf } from "@babojubot/core";
+import { availableOrgTools, memoryScopeOf } from "@babojubot/core";
 import {
   addWorker,
   appendRunActivity,
@@ -47,6 +48,7 @@ import {
   type ToolWrite,
 } from "@babojubot/db";
 import express from "express";
+import { mcpRoutes } from "./mcp.ts";
 import { applyAfterCommit } from "./after-commit.ts";
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
@@ -54,6 +56,20 @@ import { listHarnessLibrary, loadHarnessLibrary } from "./harness.ts";
 import type { ProviderRegistry } from "./providers.ts";
 import { digestRunToken } from "./run-token.ts";
 import { problemResponses, type ToolProblem } from "./problems.ts";
+
+/** Transport-neutral invocation, retaining the original HTTP representation for existing receipts. */
+export type ToolRequest = {
+  params: Record<string, unknown>;
+  body: unknown;
+  query: unknown;
+  key: unknown;
+};
+export type ToolResponse = { status: number; value: unknown };
+export type ToolDispatch = (
+  name: OrgToolName,
+  run: ActiveRun,
+  request: ToolRequest
+) => Promise<ToolResponse>;
 
 const scopeLabel = {
   organization: "조직 기억",
@@ -104,6 +120,7 @@ export function orgToolsRouter({
   now,
   harnessDir,
   providers,
+  workspaces,
 }: {
   db: Database;
   hub: EventHub;
@@ -111,6 +128,7 @@ export function orgToolsRouter({
   now: () => Date;
   harnessDir: string;
   providers: ProviderRegistry;
+  workspaces: Workspaces;
 }): express.Router {
   const router = express.Router();
   const refuse = (
@@ -149,18 +167,20 @@ export function orgToolsRouter({
     next();
   });
 
-  const refuseByRule = (res: express.Response, reason: ToolRefusalReason) =>
+  const failure = (status: number, code: OrgToolErrorCode): ToolResponse => ({
+    status,
+    value: { error: { code } },
+  });
+  const refuseByRule = (reason: ToolRefusalReason) =>
     reason === "role"
-      ? refuse(res, 403, "forbidden")
-      : refuse(res, 409, "stage_closed");
+      ? failure(403, "forbidden")
+      : failure(409, "stage_closed");
   /**
    * 쓰기 도구의 `Idempotency-Key` header. 없으면 `undefined`, 계약 밖이면 `false`.
    * 같은 키에 다른 입력이 오는지는 경로 변수와 본문의 digest로 가린다.
    */
-  const operationOf = (
-    req: express.Request
-  ): ToolOperation | undefined | false => {
-    const header = req.headers[idempotencyKeyHeader];
+  const operationOf = (req: ToolRequest): ToolOperation | undefined | false => {
+    const header = req.key;
     if (header === undefined) return undefined;
     const key = idempotencyKeySchema.safeParse(header);
     if (!key.success) return false;
@@ -175,7 +195,7 @@ export function orgToolsRouter({
    * 경로 변수와 본문(GET이면 query)을 도구 입력 하나로 합친다. 입력이 경로 변수뿐인 읽기 도구는 query를 읽지 않는다.
    * 본문이 객체가 아니거나 경로 변수와 같은 이름의 칸이 있으면 계약 밖이다(`undefined`).
    */
-  const inputOf = (tool: OrgToolName, req: express.Request) => {
+  const inputOf = (tool: OrgToolName, req: ToolRequest) => {
     const { params, bodyFields } = orgTools[tool];
     const names: readonly string[] = params;
     const rest: unknown = !isOrgToolRead(tool)
@@ -193,22 +213,27 @@ export function orgToolsRouter({
    * 도구 규칙의 거부는 `problemResponses`의 응답 코드로 옮긴다.
    */
   const respondWrite = async <T, P extends ToolProblem>(
-    res: express.Response,
     result: ToolWrite<T, P>,
     status = 201
-  ) => {
+  ): Promise<ToolResponse> => {
     switch (result.kind) {
       case "ok":
-        await applyAfterCommit({ hub, dispatcher }, result.after);
-        return res.status(status).json(result.value);
+        await applyAfterCommit(
+          { hub, dispatcher, ensureWorkspace: (id) => workspaces.ensure(id) },
+          result.after
+        );
+        return { status, value: result.value };
       case "run_finished":
-        return refuse(res, 401, "invalid_token");
+        return failure(401, "invalid_token");
       case "refused":
-        await applyAfterCommit({ hub, dispatcher }, result.after);
-        return refuseByRule(res, result.reason);
+        await applyAfterCommit(
+          { hub, dispatcher, ensureWorkspace: (id) => workspaces.ensure(id) },
+          result.after
+        );
+        return refuseByRule(result.reason);
       case "invalid": {
         const [code, httpStatus] = problemResponses[result.problem];
-        return refuse(res, httpStatus, code);
+        return failure(httpStatus, code);
       }
     }
   };
@@ -326,15 +351,22 @@ export function orgToolsRouter({
         })
       );
     },
-    async record_artifact(input, { run, call, write }) {
-      await write(
-        await recordArtifact(db, run, input, {
-          source,
-          ...call(
-            `산출물 기록: ${quote(input.title)} (${input.format}, ${chars(input.content)}자)`
-          ),
-        })
-      );
+    async record_artifact(input, { run, call, write, refuse }) {
+      try {
+        await write(
+          await recordArtifact(db, run, input, {
+            source,
+            readFile: (org, path) => workspaces.readArtifact(org, path),
+            ...call(
+              `산출물 기록: ${quote(input.title)} (${input.path ? "파일" : `${input.format}, ${chars(input.content!)}자`})`
+            ),
+          })
+        );
+      } catch (error) {
+        if (error instanceof ArtifactFileError)
+          return refuse(422, "invalid_input");
+        throw error;
+      }
     },
     async get_artifact({ artifactId }, { run, refuse, read }) {
       const artifact = await findArtifact(db, run.organizationId, artifactId);
@@ -467,45 +499,68 @@ export function orgToolsRouter({
     },
   };
 
+  const dispatch: ToolDispatch = async (name, run, req) => {
+    const gate = await gateToolCall(db, run, name);
+    if (!gate) return failure(401, "invalid_token");
+    if (!gate.ok) {
+      await applyAfterCommit({ hub, dispatcher }, gate.after);
+      return refuseByRule(gate.reason);
+    }
+    let operation: ToolOperation | undefined;
+    if (!isOrgToolRead(name)) {
+      const found = operationOf(req);
+      if (found === false) return failure(422, "invalid_input");
+      operation = found;
+    }
+    const input = orgTools[name].input.safeParse(inputOf(name, req));
+    if (!input.success) return failure(422, "invalid_input");
+    const handler = handlers[name] as (
+      input: unknown,
+      reply: ToolReply
+    ) => Promise<void>;
+    let response: ToolResponse | undefined;
+    await handler(input.data, {
+      run,
+      refuse: (status, code) => {
+        response = failure(status, code);
+      },
+      read: async (summary, value) => {
+        response = (await recordRead(run, name, summary))
+          ? { status: 200, value }
+          : failure(401, "invalid_token");
+      },
+      call: (summary) => ({ activity: toolActivity(name, summary), operation }),
+      write: async (result, status) => {
+        response = await respondWrite(result, status);
+      },
+    });
+    if (!response) throw new Error("tool returned no response");
+    return response;
+  };
+  mcpRoutes(router, dispatch, async (run) => {
+    const org = await loadRunContext(db, run.id);
+    return org
+      ? availableOrgTools({
+          role: run.agentRole,
+          stage: org.context.organization.stage,
+        })
+      : [];
+  });
+
   for (const name of orgToolNames) {
-    const { method, path, input: schema } = orgTools[name];
-    const route: express.RequestHandler = async (req, res) => {
-      const run = res.locals.run as ActiveRun;
-      const gate = await gateToolCall(db, run, name);
-      if (!gate) return refuse(res, 401, "invalid_token");
-      if (!gate.ok) {
-        await applyAfterCommit({ hub, dispatcher }, gate.after);
-        return refuseByRule(res, gate.reason);
+    const { method, path } = orgTools[name];
+    router[method.toLowerCase() as Lowercase<typeof method>](
+      path,
+      async (req, res) => {
+        const result = await dispatch(name, res.locals.run as ActiveRun, {
+          params: req.params,
+          body: req.body,
+          query: req.query,
+          key: req.headers[idempotencyKeyHeader],
+        });
+        res.status(result.status).json(result.value);
       }
-      let operation: ToolOperation | undefined;
-      if (!isOrgToolRead(name)) {
-        const found = operationOf(req);
-        if (found === false) return refuse(res, 422, "invalid_input");
-        operation = found;
-      }
-      const input = schema.safeParse(inputOf(name, req));
-      if (!input.success) return refuse(res, 422, "invalid_input");
-      const handler = handlers[name] as (
-        input: unknown,
-        reply: ToolReply
-      ) => Promise<void>;
-      await handler(input.data, {
-        run,
-        refuse: (status, code) => void refuse(res, status, code),
-        read: async (summary, value) => {
-          if (!(await recordRead(run, name, summary)))
-            return void refuse(res, 401, "invalid_token");
-          res.json(value);
-        },
-        call: (summary) => ({
-          activity: toolActivity(name, summary),
-          operation,
-        }),
-        write: async (result, status) =>
-          void (await respondWrite(res, result, status)),
-      });
-    };
-    router[method.toLowerCase() as Lowercase<typeof method>](path, route);
+    );
   }
 
   router.use((_req, res) => refuse(res, 404, "not_found"));

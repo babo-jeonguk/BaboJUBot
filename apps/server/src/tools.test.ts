@@ -12,9 +12,10 @@ describe("organization tool routes", () => {
       now: () => new Date(),
       harnessDir: "",
       providers: undefined as never,
+      workspaces: undefined as never,
     });
     const served = router.stack.flatMap((layer) =>
-      layer.route
+      layer.route && layer.route.path !== "/mcp"
         ? Object.keys(
             (layer.route as unknown as { methods: Record<string, boolean> })
               .methods

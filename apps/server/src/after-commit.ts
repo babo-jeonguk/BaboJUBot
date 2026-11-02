@@ -3,6 +3,7 @@ import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
 
 export type AfterCommitDeps = {
+  ensureWorkspace?: (organizationId: string) => Promise<unknown>;
   hub: Pick<EventHub, "publish" | "publishSettingsChanged">;
   dispatcher: Pick<
     RunDispatcher,
@@ -17,7 +18,7 @@ export type AfterCommitDeps = {
  * 알림·촉진의 실패는 각자 남기고 던지지 않으므로 이미 저장된 결과를 바꾸지 않는다.
  */
 export async function applyAfterCommit(
-  { hub, dispatcher }: AfterCommitDeps,
+  { hub, dispatcher, ensureWorkspace }: AfterCommitDeps,
   {
     events,
     cancellation,
@@ -27,6 +28,24 @@ export async function applyAfterCommit(
     providersFreed,
   }: AfterCommit
 ): Promise<void> {
+  if (ensureWorkspace)
+    for (const id of new Set(
+      events
+        .filter((e) =>
+          ["organization.created", "worker.added", "approval.decided"].includes(
+            e.type
+          )
+        )
+        .map((e) => e.organizationId)
+    ))
+      try {
+        await ensureWorkspace(id);
+      } catch {
+        console.error(
+          "[workspace] folder preparation failed; the next run assembly will retry",
+          id
+        );
+      }
   if (events.length) hub.publish(...events);
   if (settingsChanged) hub.publishSettingsChanged();
   if (cancellation) dispatcher.cancel(cancellation);

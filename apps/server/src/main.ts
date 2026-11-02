@@ -77,6 +77,9 @@ let server;
 try {
   server = await startServer({
     db: handle.db,
+    dataDir: path.resolve(
+      env.BABOJUBOT_HOME ?? path.join(repoRoot, ".babojubot")
+    ),
     port: Number(env.PORT ?? 3100),
     host: env.HOST ?? "127.0.0.1",
     providers: createFakeProviders(
