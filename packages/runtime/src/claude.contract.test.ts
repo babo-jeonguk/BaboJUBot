@@ -24,6 +24,7 @@ describeRuntimeContract(
         path.resolve("test-fixtures/claude-simulator.mjs"),
       ],
     }).adapter,
+    startupMs: 2000,
     finishes: saying("진행 상황을 알려 주세요"),
     worksUntilCancelled: saying("실행 유지 연습"),
     unusableSession: { id: "expired" },
