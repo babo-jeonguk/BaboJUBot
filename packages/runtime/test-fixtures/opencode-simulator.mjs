@@ -55,6 +55,8 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) raw += chunk;
     const input = raw ? JSON.parse(raw) : {};
     if (pathname === "/api/model") {
+      if (process.argv.includes("--slow-model"))
+        await new Promise((resolve) => setTimeout(resolve, 11_000));
       json({
         data: [
           {
@@ -74,6 +76,8 @@ const server = http.createServer(async (req, res) => {
           JSON.stringify({ type: "server.connected", data: {} }) +
           "\n\n"
       );
+      if (process.argv.includes("--sse-noise"))
+        res.write(": keep-alive\n\ndata: not json\n\n");
       subscribers.add(res);
       res.on("close", () => subscribers.delete(res));
       return;

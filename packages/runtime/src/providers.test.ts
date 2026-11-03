@@ -38,22 +38,83 @@ describe("listProviderModels", () => {
     expect(
       await listProviderModels({ ...base!, listModels: async () => [] })
     ).toEqual(fixed);
+  });
+
+  it("answers from the fixed list when the wait runs out, then uses the list that arrives late", async () => {
+    const fetched = [{ id: "live-1", label: "받아 온 모델" }];
+    let calls = 0;
+    const connection = {
+      ...base!,
+      listModels: async () => {
+        calls++;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return fetched;
+      },
+    };
+    expect(await listProviderModels(connection, { timeoutMs: 5 })).toEqual(
+      fixed
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await listProviderModels(connection, { timeoutMs: 5 })).toEqual(
+      fetched
+    );
+    expect(calls).toBe(1);
+  });
+
+  it("shares one fetch between callers and does not fetch again while the list is fresh", async () => {
+    const fetched = [{ id: "live-1", label: "받아 온 모델" }];
+    let calls = 0;
+    const connection = {
+      ...base!,
+      listModels: async () => {
+        calls++;
+        return fetched;
+      },
+    };
+    await Promise.all([
+      listProviderModels(connection),
+      listProviderModels(connection),
+    ]);
+    await listProviderModels(connection);
+    expect(calls).toBe(1);
+  });
+
+  it("answers at once from an old list and refreshes it behind the caller", async () => {
+    let version = 1;
+    const connection = {
+      ...base!,
+      listModels: async () => [{ id: `live-${version}`, label: "모델" }],
+    };
+    const options = { maxAgeMs: 0 };
+    expect(await listProviderModels(connection, options)).toEqual([
+      { id: "live-1", label: "모델" },
+    ]);
+    version = 2;
+    expect(await listProviderModels(connection, options)).toEqual([
+      { id: "live-1", label: "모델" },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await listProviderModels(connection, options)).toEqual([
+      { id: "live-2", label: "모델" },
+    ]);
+  });
+
+  it("stops a fetch that outlives its limit", async () => {
     let aborted = false;
+    const connection = {
+      ...base!,
+      listModels: (signal: AbortSignal) =>
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("stopped"));
+          })
+        ),
+    };
     expect(
-      await listProviderModels(
-        {
-          ...base!,
-          listModels: (signal) =>
-            new Promise((resolve) =>
-              signal.addEventListener("abort", () => {
-                aborted = true;
-                resolve(fetched);
-              })
-            ),
-        },
-        { timeoutMs: 10 }
-      )
+      await listProviderModels(connection, { timeoutMs: 5, fetchLimitMs: 20 })
     ).toEqual(fixed);
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(aborted).toBe(true);
   });
 });
