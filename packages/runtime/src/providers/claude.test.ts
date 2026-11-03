@@ -319,3 +319,27 @@ it("waits for an orphaned child to exit before settling cancellation", async () 
     access(path.join(root, "providers/claude/orphan-effect"))
   ).rejects.toThrow();
 }, 10000);
+
+it("compacts through the real compact protocol output", async () => {
+  const root = await home();
+  const provider = createClaudeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/claude-simulator.mjs"),
+      "--recording",
+      path.resolve("test-fixtures/claude-recorded.json"),
+    ],
+  });
+  const session = {
+    id: "session-one",
+    costUsd: 0,
+    launch: { instructions: "지침", cwd: root, model: null },
+  };
+  const result = await provider.adapter.precompact!(
+    { session, access: request().access },
+    new AbortController().signal
+  );
+  expect(result.ok).toBe(true);
+  expect(result.nextSession?.id).toBe("session-one");
+});

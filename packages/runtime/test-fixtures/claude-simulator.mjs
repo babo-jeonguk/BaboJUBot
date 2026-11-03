@@ -3,7 +3,12 @@
 import { createInterface } from "node:readline";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-const argv = process.argv.slice(2);
+import { bind, recording } from "./recording.mjs";
+const argv = process.argv
+  .slice(2)
+  .filter(
+    (_, i, all) => all[i - 1] !== "--recording" && all[i] !== "--recording"
+  );
 const option = (name) => argv[argv.indexOf(name) + 1];
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 if (argv.includes("--version")) {
@@ -39,13 +44,24 @@ async function reply(body) {
       conversationId: context.context.conversations[0].id,
     }),
   });
-  out({
-    type: "result",
-    subtype: "success",
-    session_id: id,
-    usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0 },
-    total_cost_usd: 0.001,
-  });
+  out(
+    recording
+      ? bind(
+          recording.frames.findLast((f) => f.type === "result"),
+          id
+        )
+      : {
+          type: "result",
+          subtype: "success",
+          session_id: id,
+          usage: {
+            input_tokens: 10,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+          },
+          total_cost_usd: 0.001,
+        }
+  );
   process.stdin.pause();
   process.exitCode = 0;
 }
@@ -61,9 +77,24 @@ for await (const line of lines) {
     lines.close();
     break;
   }
+  if (recording && input.message.content === "/compact") {
+    for (const frame of recording.compact) out(bind(frame, id));
+    process.stdin.pause();
+    break;
+  }
   context = JSON.parse(input.message.content);
   const body = context.wakeReasons[0].body ?? "";
-  out({ type: "system", subtype: "init", session_id: id });
+  out(
+    recording
+      ? bind(
+          recording.frames.find((f) => f.subtype === "init"),
+          id
+        )
+      : { type: "system", subtype: "init", session_id: id }
+  );
+  for (const frame of recording?.frames ?? [])
+    if (frame.subtype !== "init" && frame.type !== "result")
+      out(bind(frame, id));
   if (body === "실행 유지 연습") continue;
   if (body === "끼워 넣기 연습") {
     waiting = true;

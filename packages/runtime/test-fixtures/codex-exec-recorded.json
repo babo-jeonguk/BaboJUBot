@@ -1,0 +1,162 @@
+{
+  "provenance": "Reviewed recording of real codex-exec protocol output (2026-11-04). Every string outside a short allowlist is masked; numbers and structure are real. Behaviour around it is scripted by the simulator.",
+  "version": "codex-cli 0.166.0",
+  "frames": [
+    {
+      "type": "thread.started",
+      "thread_id": "<session>"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.started",
+      "item": {
+        "id": "<masked>",
+        "type": "mcp_tool_call",
+        "server": "<masked>",
+        "tool": "<masked>",
+        "arguments": {},
+        "result": null,
+        "error": null,
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "<masked>",
+        "type": "mcp_tool_call",
+        "server": "<masked>",
+        "tool": "<masked>",
+        "arguments": {},
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "<masked>"
+            }
+          ],
+          "structured_content": {
+            "identity": {
+              "organizationId": "<masked>",
+              "agentId": "<masked>",
+              "runId": "<masked>"
+            },
+            "wakeReasons": [
+              {
+                "kind": "<masked>",
+                "wakeId": "<masked>"
+              }
+            ],
+            "context": {
+              "organization": {
+                "id": "<masked>",
+                "name": "<masked>",
+                "stage": "<masked>",
+                "goal": "<masked>",
+                "completionCriteria": "<masked>",
+                "approvalPolicy": {
+                  "addWorker": false,
+                  "publishToGitHub": false
+                }
+              },
+              "agent": {
+                "id": "<masked>",
+                "role": "lead",
+                "name": "<masked>"
+              },
+              "team": [
+                {
+                  "id": "<masked>",
+                  "role": "lead",
+                  "name": "<masked>"
+                }
+              ],
+              "conversations": [
+                {
+                  "id": "<masked>",
+                  "title": "<masked>",
+                  "isDefault": true,
+                  "createdAt": "<masked>"
+                }
+              ],
+              "conversation": [],
+              "researchFlow": null
+            }
+          }
+        },
+        "error": null,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.started",
+      "item": {
+        "id": "<masked>",
+        "type": "mcp_tool_call",
+        "server": "<masked>",
+        "tool": "<masked>",
+        "arguments": {
+          "body": "<masked>"
+        },
+        "result": null,
+        "error": null,
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "<masked>",
+        "type": "mcp_tool_call",
+        "server": "<masked>",
+        "tool": "<masked>",
+        "arguments": {
+          "body": "<masked>"
+        },
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "<masked>"
+            }
+          ],
+          "structured_content": {
+            "id": "<masked>",
+            "organizationId": "<masked>",
+            "agentId": "<masked>",
+            "conversationId": "<session>",
+            "author": "<masked>",
+            "body": "<masked>",
+            "delivery": null,
+            "sentByRunId": "<masked>",
+            "deliveredToRunId": null,
+            "deliveredAt": null,
+            "createdAt": "<masked>"
+          }
+        },
+        "error": null,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "<masked>",
+        "type": "agent_message",
+        "text": "<masked>"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 43619,
+        "cached_input_tokens": 38400,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 461,
+        "reasoning_output_tokens": 369
+      }
+    }
+  ]
+}
