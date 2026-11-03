@@ -7,7 +7,7 @@ const argv = process.argv.slice(2);
 const option = (name) => argv[argv.indexOf(name) + 1];
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 if (argv.includes("--version")) {
-  console.log("2.1.316 (Claude Code)");
+  console.log("9.9.9 (Claude Code)");
   process.exit(0);
 }
 let id = argv.includes("--resume") ? option("--resume") : crypto.randomUUID();

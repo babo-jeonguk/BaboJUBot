@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 if (process.argv.includes("--version")) {
-  console.log("2.1.316 (Claude Code)");
+  console.log("9.9.9 (Claude Code)");
   process.exit(0);
 }
 const child = spawn(

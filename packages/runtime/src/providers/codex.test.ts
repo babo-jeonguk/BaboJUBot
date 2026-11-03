@@ -157,7 +157,7 @@ it("reads the app-server model catalog without starting a model turn", async () 
   await writeFile(
     fixture,
     JSON.stringify({
-      version: "codex-cli 0.166.0",
+      version: "codex-cli 9.9.9",
       steps: [
         { input: { id: 1, method: "initialize" } },
         { frame: { id: 1, result: {} } },

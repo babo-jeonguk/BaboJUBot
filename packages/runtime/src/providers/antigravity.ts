@@ -17,7 +17,6 @@ import type {
   Usage,
 } from "@babojubot/contracts";
 import { startProcess } from "./process.ts";
-export const antigravityVersion = "1.4.12";
 const owner = "babojubot-antigravity-v1";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
@@ -101,8 +100,8 @@ export function createAntigravityProvider(options: {
     loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' agy`,
     async checkReadiness(signal) {
       try {
-        if ((await probe(["--version"], signal)) !== antigravityVersion)
-          return { status: "not_ready", reason: "version_unsupported" };
+        // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
+        await probe(["--version"], signal);
       } catch (e) {
         return {
           status: "not_ready",

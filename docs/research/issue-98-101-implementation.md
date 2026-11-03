@@ -16,6 +16,7 @@
 
 - TDD seam: RuntimeAdapter 공통 계약, 서버 예약·MCP·설정 API, 압축 설정 화면.
 - 실제 모델 호출·실제 녹화는 보류. 합성 peer·재생·로컬 API로 구현을 검증한다.
+- 프로그램 판을 제한하지 않는다(2026-11-03, 이슈의 "고정 판"보다 우선). 자동 업데이트만으로 제품이 멈추면 안 된다. 판 검사와 `version_unsupported`를 없애고 모의 프로그램은 실재하지 않는 판을 출력한다. 압축도 판이 달라졌다고 막지 않으므로, 그사이 업데이트되면 캐시를 못 쓸 수 있다.
 - OpenCode 기본 지침은 유지한다. `agent.system` 교체 대신 Paseo v2처럼 `session.instructions.entry.put`으로 추가한다.
 
 ## 개발 중 확인

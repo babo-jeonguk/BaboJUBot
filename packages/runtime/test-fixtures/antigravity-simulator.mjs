@@ -5,7 +5,7 @@ import path from "node:path";
 const args = process.argv.slice(2),
   out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 if (args.includes("--version")) {
-  console.log("1.4.12");
+  console.log("9.9.9");
   process.exit(0);
 }
 const id = args.includes("--conversation")

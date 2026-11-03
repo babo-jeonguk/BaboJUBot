@@ -14,7 +14,6 @@ import type {
 } from "@babojubot/contracts";
 import { startProcess } from "./process.ts";
 
-export const codexVersion = "0.166.0";
 export type CodexOptions = {
   dataDir: string;
   mode?: "app-server" | "exec";
@@ -64,9 +63,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         maxBuffer: 65536,
       });
     try {
-      const { stdout } = await probe(["--version"]);
-      if (stdout.trim() !== `codex-cli ${codexVersion}`)
-        return { status: "not_ready", reason: "version_unsupported" };
+      // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
+      await probe(["--version"]);
     } catch (error) {
       return {
         status: "not_ready",

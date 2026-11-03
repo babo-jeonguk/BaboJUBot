@@ -2,14 +2,14 @@
 
 서버는 기본적으로 가짜 연결만 등록한다. 실제 연결은 `BABOJUBOT_PROVIDERS=claude,codex,opencode,antigravity pnpm dev`로 추가한다. 전역 설정에서 사용할 연결을 선택하고 저장한다. 프로그램 설치와 제품 로그인은 사용자가 한다. 실제 모델 호출은 구독 사용량이나 비용을 쓴다.
 
-| 연결 | 고정 판 | 실행 방식 | 지침 | 끼워 넣기 |
+| 연결 | 코드를 맞춘 판 | 실행 방식 | 지침 | 끼워 넣기 |
 | --- | --- | --- | --- | --- |
 | Claude Code | 2.1.316 | 실행마다 duplex stream-json | 기본 지침에 append | 살아 있는 입력 큐에 전달 |
 | Codex | 0.166.0 | app-server 기본, `BABOJUBOT_CODEX_MODE=exec` 선택 | developerInstructions | app-server 턴 ACK; exec 미지원 |
 | OpenCode | 2.2.5 | 실행마다 `serve --stdio`로 HTTP 서버 시작 | 기본 지침 유지, session instructions API 추가 | `delivery: steer` 응답 |
 | Antigravity | 1.4.12 | 실행마다 한 입력·한 결과 | 첫 입력 앞에 추가 | 미지원 |
 
-현재 실제 CLI 프로세스 감독·재시작 정리는 Linux의 `/proc`를 지원 범위로 삼는다. 다른 OS 실행은 거부한다. 다른 판은 준비 확인에서 거부한다. OpenCode 1.x는 지원하지 않는다. 이 개발 컴퓨터의 1.18.23 대신 2.2.5를 별도로 설치해야 한다. 현재 OpenCode 설정 분리 경로는 Linux를 지원하며 `/etc/opencode`가 있으면 상속하지 않고 준비 실패로 알린다. 로컬 로그인 존재는 원격 유효성 확인이 아니므로 `unknown`일 수 있다. OpenCode의 모델 미지정 실행은 조회한 목록에서 입력·출력 가격이 모두 0인 모델을 선택하며, 무료 모델이 없으면 실패한다. 특정 무료 모델의 지속 제공을 보장하지 않는다.
+현재 실제 CLI 프로세스 감독·재시작 정리는 Linux의 `/proc`를 지원 범위로 삼는다. 다른 OS 실행은 거부한다. 판을 제한하지 않는다. 설치된 프로그램을 그대로 쓰며, 표의 판은 프로토콜을 맞춘 기준일 뿐이다. 판이 바뀌어 프로토콜이 어긋나면 준비 확인이나 실행 시도가 실패로 드러난다. OpenCode 1.x는 서버 방식이 달라 동작하지 않는다. 현재 OpenCode 설정 분리 경로는 Linux를 지원하며 `/etc/opencode`가 있으면 상속하지 않고 준비 실패로 알린다. 로컬 로그인 존재는 원격 유효성 확인이 아니므로 `unknown`일 수 있다. OpenCode의 모델 미지정 실행은 조회한 목록에서 입력·출력 가격이 모두 0인 모델을 선택하며, 무료 모델이 없으면 실패한다. 특정 무료 모델의 지속 제공을 보장하지 않는다.
 
 ## 제품 로그인
 
@@ -54,4 +54,4 @@ BABOJUBOT_HOME="$product_root" node scripts/provider-smoke.mjs claude --allow-li
 # BABOJUBOT_CODEX_MODE=exec 선택; Codex·Antigravity는 BABOJUBOT_SMOKE_MODEL=<가장 저렴한 모델 ID> 지정
 ```
 
-이 시험은 단건 연결 확인이다. 실제 세션 재개·끼워 넣기·압축·토큰/비용은 추가 사람 시험이 필요하다. 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 실제 호출과 녹화는 사용자 결정으로 보류 중이다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.
+이 시험은 단건 연결 확인이다. 실제 세션 재개·끼워 넣기·압축·토큰/비용은 추가 사람 시험이 필요하다. 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.

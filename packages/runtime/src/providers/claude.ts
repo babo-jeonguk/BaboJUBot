@@ -15,13 +15,11 @@ import type {
 import { z } from "zod";
 import { startProcess } from "./process.ts";
 
-export const claudeVersion = "2.1.316";
 export type ClaudeOptions = {
   dataDir: string;
   command?: readonly [string, ...string[]];
 };
 const launchSchema = z.object({
-  version: z.literal(claudeVersion),
   instructions: z.string(),
   cwd: z.string(),
   model: z.string().nullable(),
@@ -73,7 +71,8 @@ export function createClaudeProvider(
       async checkReadiness(signal) {
         await mkdir(home, { recursive: true, mode: 0o700 });
         try {
-          const { stdout } = await promisify(execFile)(
+          // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
+          await promisify(execFile)(
             command[0],
             [...command.slice(1), "--version"],
             {
@@ -84,8 +83,6 @@ export function createClaudeProvider(
               maxBuffer: 64 * 1024,
             }
           );
-          if (stdout.trim() !== `${claudeVersion} (Claude Code)`)
-            return { status: "not_ready", reason: "version_unsupported" };
           try {
             if (
               !(await readFile(path.join(home, "setup-token"), "utf8")).trim()
@@ -137,7 +134,6 @@ export function createClaudeProvider(
         try {
           return await executeClaude(
             {
-              version: claudeVersion,
               instructions: request.instructions
                 .map((f) => f.content)
                 .join("\n\n"),
@@ -204,24 +200,6 @@ async function executeClaude(
     }
     if (!env.CLAUDE_CODE_OAUTH_TOKEN)
       return { ...failed(), errorCode: "login_required" };
-    try {
-      const { stdout } = await promisify(execFile)(
-        command[0],
-        [...command.slice(1), "--version"],
-        {
-          env,
-          cwd: home,
-          signal: control.signal,
-          timeout: 3000,
-          maxBuffer: 64 * 1024,
-        }
-      );
-      if (stdout.trim() !== `${claudeVersion} (Claude Code)`) return failed();
-    } catch {
-      return control.signal.aborted
-        ? { ...failed(), stopReason: "cancelled", error: null }
-        : failed();
-    }
     const args = [
       "--print",
       "--verbose",
@@ -321,7 +299,6 @@ async function executeClaude(
                   id: frame.session_id,
                   costUsd: number(frame.total_cost_usd),
                   launch: {
-                    version: request.version,
                     instructions: request.instructions,
                     cwd: request.cwd,
                     model: request.model,

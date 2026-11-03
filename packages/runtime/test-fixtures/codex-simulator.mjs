@@ -5,7 +5,7 @@ import path from "node:path";
 const args = process.argv.slice(2),
   out = (x) => process.stdout.write(JSON.stringify(x) + "\n");
 if (args.includes("--version")) {
-  console.log("codex-cli 0.166.0");
+  console.log("codex-cli 9.9.9");
   process.exit(0);
 }
 if (args.includes("login")) process.exit(0);

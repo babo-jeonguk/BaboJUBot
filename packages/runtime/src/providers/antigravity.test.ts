@@ -33,7 +33,7 @@ it("uses one private workspace MCP configuration, normalizes usage, and removes 
   await writeFile(
     fixture,
     JSON.stringify({
-      version: "1.4.12",
+      version: "9.9.9",
       steps: [
         { frame: { event: "init", conversation_id: "saved" } },
         { input: { event: "user" } },

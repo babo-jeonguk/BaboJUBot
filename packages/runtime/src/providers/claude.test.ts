@@ -260,7 +260,6 @@ it("compacts the saved launch with the same session and requires a compact bound
     id: "session-one",
     costUsd: 0.02,
     launch: {
-      version: "2.1.316",
       instructions: "saved instructions",
       cwd: root,
       model: null,

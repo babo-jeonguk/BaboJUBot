@@ -10,7 +10,6 @@ import type {
   SteerOutcome,
 } from "@babojubot/contracts";
 import { startProcess } from "./process.ts";
-export const opencodeVersion = "2.2.5";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const count = (v: unknown) =>
@@ -46,9 +45,9 @@ export function createOpenCodeProvider(options: {
     OPENCODE_DISABLE_CLAUDE_CODE: "1",
     OPENCODE_DISABLE_FILEWATCHER: "1",
   });
-  const version = async (signal: AbortSignal) => {
+  const prepare = async () => {
     await mkdir(home, { recursive: true, mode: 0o700 });
-    // 2.2.5 CLI has no system-config override. Refuse rather than load machine policy/plugins.
+    // The CLI has no system-config override. Refuse rather than load machine policy/plugins.
     if (process.platform !== "linux")
       throw new Error("Unsupported configuration isolation");
     try {
@@ -57,13 +56,6 @@ export function createOpenCodeProvider(options: {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
-    return (
-      await promisify(execFile)(
-        command[0],
-        [...command.slice(1), "--version"],
-        { cwd: home, env: env(), signal, timeout: 3000, maxBuffer: 65536 }
-      )
-    ).stdout.trim();
   };
   async function server(
     signal: AbortSignal,
@@ -182,8 +174,7 @@ export function createOpenCodeProvider(options: {
     (message: SteerMessage) => Promise<SteerOutcome>
   >();
   const catalog = async (signal: AbortSignal) => {
-    if ((await version(signal)) !== opencodeVersion)
-      throw new Error("Unsupported version");
+    await prepare();
     const service = await server(signal);
     try {
       return await service.json("/api/model");
@@ -205,8 +196,13 @@ export function createOpenCodeProvider(options: {
     loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' XDG_DATA_HOME='${path.join(home, "data").replaceAll("'", "'\\''")}' opencode auth login`,
     async checkReadiness(signal) {
       try {
-        if ((await version(signal)) !== opencodeVersion)
-          return { status: "not_ready", reason: "version_unsupported" };
+        await prepare();
+        // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
+        await promisify(execFile)(
+          command[0],
+          [...command.slice(1), "--version"],
+          { cwd: home, env: env(), signal, timeout: 3000, maxBuffer: 65536 }
+        );
         const listed = models(await catalog(signal));
         return listed.some(isFree)
           ? { status: "ready", reason: null }
@@ -228,8 +224,7 @@ export function createOpenCodeProvider(options: {
       let service: Awaited<ReturnType<typeof server>> | undefined,
         events: Promise<void> | undefined;
       try {
-        if ((await version(control.signal)) !== opencodeVersion)
-          return failure();
+        await prepare();
         // Instructions are attached separately; never set agent.system, which replaces the native prompt.
         const config = {
           permissions: [{ action: "*", resource: "*", effect: "allow" }],

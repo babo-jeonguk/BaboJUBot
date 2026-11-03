@@ -72,7 +72,7 @@ export type ProviderReadinessStatus = z.infer<
 
 /**
  * 준비되지 않았거나 알 수 없는 이유. 오류 원문·비밀값 대신 이 코드만 남긴다.
- * - `program_missing`: 실행 프로그램이 없다. `version_unsupported`: 지원하지 않는 버전이다.
+ * - `program_missing`: 실행 프로그램이 없다.
  * - `product_login_missing`: 제품에 로그인하지 않았다(이때만 화면이 로그인 명령을 복사하게 한다).
  * - `credentials_invalid`: 자격 증명이 거부됐다.
  * - `credentials_unverified`: 자격 증명이 있지만 모델을 부르지 않고는 맞는지 알 수 없다.
@@ -80,7 +80,6 @@ export type ProviderReadinessStatus = z.infer<
  */
 export const providerReadinessReasons = [
   "program_missing",
-  "version_unsupported",
   "product_login_missing",
   "credentials_invalid",
   "credentials_unverified",

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 const recording = JSON.parse(await readFile(process.argv[2], "utf8"));
 if (process.argv.includes("--version")) {
-  console.log(recording.version ?? "2.1.316 (Claude Code)");
+  console.log(recording.version ?? "9.9.9 (Claude Code)");
   process.exit(0);
 }
 if (process.argv.includes("login") && process.argv.includes("status"))

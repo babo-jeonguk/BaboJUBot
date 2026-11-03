@@ -3,7 +3,7 @@ import http from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 if (process.argv.includes("--version")) {
-  console.log("2.2.5");
+  console.log("opencode v9.9.9");
   process.exit(0);
 }
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
