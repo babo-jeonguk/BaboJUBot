@@ -99,23 +99,25 @@ export function createAntigravityProvider(options: {
     },
     loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' agy`,
     async checkReadiness(signal) {
+      // 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. 목록 조회는 모델을 부르지 않는다.
       try {
-        // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
-        await probe(["--version"], signal);
+        await probe(["models"], signal);
+        return { status: "ready", reason: null };
       } catch (e) {
+        const error = e as NodeJS.ErrnoException & {
+          stdout?: string;
+          stderr?: string;
+        };
+        if (error.code === "ENOENT")
+          return { status: "not_ready", reason: "program_missing" };
         return {
           status: "not_ready",
-          reason:
-            (e as NodeJS.ErrnoException).code === "ENOENT"
-              ? "program_missing"
-              : "check_failed",
+          reason: /sign.?in|log.?in|auth/i.test(
+            `${error.stdout ?? ""}${error.stderr ?? ""}`
+          )
+            ? "product_login_missing"
+            : "check_failed",
         };
-      }
-      try {
-        await readFile(path.join(home, ".gemini/oauth_creds.json"));
-        return { status: "unknown", reason: "credentials_unverified" };
-      } catch {
-        return { status: "not_ready", reason: "product_login_missing" };
       }
     },
     async execute(request, control) {
@@ -125,10 +127,8 @@ export function createAntigravityProvider(options: {
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
-        const readiness = await adapter.checkReadiness(control.signal);
-        // 로그인이 없다고 확정된 때만 멈춘다. 확인 실패는 실제 실행으로 판단한다.
-        if (readiness.reason === "product_login_missing")
-          return { ...failure(), errorCode: "login_required" as const };
+        // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
+        await mkdir(home, { recursive: true, mode: 0o700 });
         cwd = await realpath(request.workspace?.cwd ?? home);
         while (workspaces.has(cwd)) {
           control.signal.throwIfAborted();
