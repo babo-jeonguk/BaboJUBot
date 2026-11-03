@@ -91,7 +91,7 @@ const workspace = await mkdtemp(path.join(tmpdir(), "babojubot-live-"));
 const database = await openEphemeralDatabase();
 const results = [];
 let server;
-let passedAll = false;
+let passedAll;
 try {
   server = await startServer({
     db: database.db,

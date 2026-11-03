@@ -99,6 +99,25 @@ describe("listProviderModels", () => {
     ]);
   });
 
+  it("waits for a new list when the caller asks for a fresh one", async () => {
+    let version = 1;
+    const connection = {
+      ...base!,
+      listModels: async () => [{ id: `live-${version}`, label: "모델" }],
+    };
+    await listProviderModels(connection);
+    version = 2;
+    expect(await listProviderModels(connection)).toEqual([
+      { id: "live-1", label: "모델" },
+    ]);
+    expect(await listProviderModels(connection, { fresh: true })).toEqual([
+      { id: "live-2", label: "모델" },
+    ]);
+    expect(await listProviderModels(connection)).toEqual([
+      { id: "live-2", label: "모델" },
+    ]);
+  });
+
   it("stops a fetch that outlives its limit", async () => {
     let aborted = false;
     const connection = {
