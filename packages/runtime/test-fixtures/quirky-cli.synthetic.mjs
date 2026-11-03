@@ -21,6 +21,8 @@ const finish = async () => {
     setInterval(() => {}, 1000);
     await sleep(60_000);
   }
+  // 파이프 출력은 비동기다. 큰 줄이 잘리지 않도록 비운 뒤 끝낸다.
+  await new Promise((resolve) => process.stdout.write("", resolve));
   process.exit(0);
 };
 const input = createInterface({ input: process.stdin });

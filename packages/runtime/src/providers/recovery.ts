@@ -52,8 +52,12 @@ export async function stopProcessGroup(group: number) {
     const until = Date.now() + 2000;
     while (members(group).length && Date.now() < until) await delay(25);
     if (members(group).length) signal("SIGKILL");
-    // A live process in uninterruptible kernel work still owns its slot. Never pretend it exited.
-    while (members(group).length) await delay(25);
+    // 커널 작업에 묶여 죽지 않는 프로세스를 끝없이 기다리면 그 에이전트가 영원히 멈춘다. 기다림에 끝을 둔다.
+    const deadline = Date.now() + 10_000;
+    while (members(group).length) {
+      if (Date.now() >= deadline) throw new Error("Process group did not stop");
+      await delay(25);
+    }
   } else {
     signal("SIGTERM");
     await delay(2000);
@@ -81,52 +85,59 @@ export async function recoverProviderProcesses(dataDir: string) {
     try {
       files = readdirSync(directory);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw e;
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+        console.warn(`[provider] could not read ${provider} process records`);
+      continue;
     }
     for (const name of files) {
       if (!/^\d+\.json$/.test(name)) continue;
       const file = path.join(directory, name);
-      const saved = JSON.parse(readFileSync(file, "utf8")) as {
-        pid: number;
-        start: string;
-        group: number;
-        boot: string;
-        lease?: string;
-      };
-      if (saved.boot !== boot()) {
-        rmSync(file, { force: true });
-        continue;
-      }
-      let leader: ReturnType<typeof identity> | undefined;
+      // 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
       try {
-        leader = identity(saved.pid);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      }
-      const remaining = members(saved.pid);
-      const marker = remaining.some((member) => {
-        try {
-          return (
-            !!saved.lease &&
-            readFileSync(`/proc/${member.pid}/environ`).includes(
-              Buffer.from(`BABOJUBOT_PROCESS_LEASE=${saved.lease}\0`)
-            )
-          );
-        } catch {
-          return false;
-        }
-      });
-      if (
-        (leader?.start === saved.start && leader.group === saved.pid) ||
-        marker
-      )
-        await stopProcessGroup(saved.pid);
-      else if (!leader && remaining.length)
-        throw new Error(
-          "Cannot authenticate an orphaned provider process group; manual cleanup required"
+        await recoverRecord(file);
+      } catch {
+        console.warn(
+          `[provider] could not recover ${provider} process record ${name}; check it by hand`
         );
+      }
       rmSync(file, { force: true });
     }
   }
+}
+async function recoverRecord(file: string) {
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    pid: number;
+    start: string;
+    group: number;
+    boot: string;
+    lease?: string;
+  };
+  if (saved.boot !== boot()) {
+    return;
+  }
+  let leader: ReturnType<typeof identity> | undefined;
+  try {
+    leader = identity(saved.pid);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  const remaining = members(saved.pid);
+  const marker = remaining.some((member) => {
+    try {
+      return (
+        !!saved.lease &&
+        readFileSync(`/proc/${member.pid}/environ`).includes(
+          Buffer.from(`BABOJUBOT_PROCESS_LEASE=${saved.lease}\0`)
+        )
+      );
+    } catch {
+      return false;
+    }
+  });
+  if ((leader?.start === saved.start && leader.group === saved.pid) || marker)
+    await stopProcessGroup(saved.pid);
+  else if (!leader && remaining.length)
+    throw new Error(
+      "Cannot authenticate an orphaned provider process group; manual cleanup required"
+    );
 }

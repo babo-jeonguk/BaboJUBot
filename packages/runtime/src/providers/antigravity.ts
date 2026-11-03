@@ -16,7 +16,7 @@ import type {
   RunResult,
   Usage,
 } from "@babojubot/contracts";
-import { startProcess } from "./process.ts";
+import { startProcess, probeTimeoutMs, startupLimitMs } from "./process.ts";
 const owner = "babojubot-antigravity-v1";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
@@ -83,7 +83,7 @@ export function createAntigravityProvider(options: {
         cwd: home,
         env: env(),
         signal,
-        timeout: 5000,
+        timeout: probeTimeoutMs,
         maxBuffer: 1024 * 1024,
       })
     ).stdout.trim();
@@ -126,13 +126,9 @@ export function createAntigravityProvider(options: {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
         const readiness = await adapter.checkReadiness(control.signal);
-        if (readiness.status === "not_ready")
-          return {
-            ...failure(),
-            ...(readiness.reason === "product_login_missing"
-              ? { errorCode: "login_required" as const }
-              : {}),
-          };
+        // 로그인이 없다고 확정된 때만 멈춘다. 확인 실패는 실제 실행으로 판단한다.
+        if (readiness.reason === "product_login_missing")
+          return { ...failure(), errorCode: "login_required" as const };
         cwd = await realpath(request.workspace?.cwd ?? home);
         while (workspaces.has(cwd)) {
           control.signal.throwIfAborted();
@@ -312,7 +308,7 @@ export function createAntigravityProvider(options: {
             }
           },
         });
-        const startup = setTimeout(() => child.end(), 10000);
+        const startup = setTimeout(() => child.end(), startupLimitMs);
         const cancel = () => {
           child.interrupt();
           child.end();
@@ -334,10 +330,10 @@ export function createAntigravityProvider(options: {
                   }),
               },
             });
-          const exit = await child.done;
+          await child.done;
           if (control.signal.aborted)
             return { ...failure(), stopReason: "cancelled", error: null };
-          return exit.broken || exit.code !== 0 ? failure() : result;
+          return result;
         } finally {
           clearTimeout(startup);
           control.signal.removeEventListener("abort", cancel);

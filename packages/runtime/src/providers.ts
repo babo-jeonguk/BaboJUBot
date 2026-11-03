@@ -64,34 +64,87 @@ export function createFakeProviders(
   });
 }
 
-/**
- * 연결의 모델 목록. 연결이 받아 오는 목록을 쓰고, 받아 오지 못하면(오류·시간 초과) 또는 빈 목록이면 연결의 고정 목록을 쓴다.
- * 빈 목록도 일시 오류와 구별하지 않고 고정 목록으로 본다. 목록 조회는 모델을 부르지 않는다.
- */
-export async function listProviderModels(
+/** 저장해 둔 목록과 진행 중인 조회. 연결마다 하나다. */
+type ModelListState = {
+  models?: ModelOption[];
+  fetchedAt?: number;
+  refreshing?: Promise<void>;
+};
+const modelLists = new WeakMap<ProviderConnection, ModelListState>();
+
+async function refreshModels(
   connection: ProviderConnection,
-  { timeoutMs = 3_000 }: { timeoutMs?: number } = {}
-): Promise<ModelOption[]> {
-  const fixed = [...connection.models];
-  if (!connection.listModels) return fixed;
+  state: ModelListState,
+  fetchLimitMs: number
+) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const fetched = await Promise.race([
-      connection.listModels(controller.signal),
+      connection.listModels!(controller.signal),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
-          // 먼저 끝을 정한 뒤 조회를 멈춘다. 멈추며 늦게 돌아온 목록은 쓰지 않는다.
           reject(new Error("model list timed out"));
           controller.abort();
-        }, timeoutMs);
+        }, fetchLimitMs);
+        timer.unref();
       }),
     ]);
-    return fetched.length ? fetched : fixed;
+    if (fetched.length) {
+      state.models = fetched;
+      state.fetchedAt = Date.now();
+    }
   } catch (error) {
     console.warn(`[providers] ${connection.id} model list unavailable`, error);
-    return fixed;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 연결의 모델 목록. 받아 온 목록을 저장해 두고 쓰며, 오래되면 저장한 목록으로 바로 답한 뒤 뒤에서 새로 받는다.
+ * 저장한 목록이 없으면 `timeoutMs`까지 기다리고, 그래도 없으면 연결의 고정 목록으로 답한다. 늦게 끝난 조회의 결과는 다음 호출이 쓴다.
+ * 동시에 부른 호출은 조회 하나를 함께 쓴다. 빈 목록은 일시 오류와 구별하지 않고 저장하지 않는다. 목록 조회는 모델을 부르지 않는다.
+ */
+export async function listProviderModels(
+  connection: ProviderConnection,
+  {
+    timeoutMs = 15_000,
+    maxAgeMs = 5 * 60 * 1000,
+    fetchLimitMs = 60_000,
+  }: { timeoutMs?: number; maxAgeMs?: number; fetchLimitMs?: number } = {}
+): Promise<ModelOption[]> {
+  const fixed = [...connection.models];
+  if (!connection.listModels) return fixed;
+  let state = modelLists.get(connection);
+  if (!state) {
+    state = {};
+    modelLists.set(connection, state);
+  }
+  const current = state;
+  if (
+    current.models &&
+    current.fetchedAt !== undefined &&
+    Date.now() - current.fetchedAt < maxAgeMs &&
+    maxAgeMs > 0
+  )
+    return current.models;
+  const answer = current.models;
+  current.refreshing ??= refreshModels(
+    connection,
+    current,
+    fetchLimitMs
+  ).finally(() => {
+    current.refreshing = undefined;
+  });
+  if (answer) return answer;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    current.refreshing,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  clearTimeout(timer);
+  return current.models ?? fixed;
 }

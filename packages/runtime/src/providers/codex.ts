@@ -12,7 +12,7 @@ import type {
   SteerMessage,
   SteerOutcome,
 } from "@babojubot/contracts";
-import { startProcess } from "./process.ts";
+import { startProcess, probeTimeoutMs } from "./process.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -42,6 +42,10 @@ class ProtocolRejection extends Error {
       /thread not found|no rollout found/i.test(message);
   }
 }
+/** 세션 시작·재개 같은 요청의 응답 제한. 큰 세션을 불러오면 오래 걸린다. */
+const requestTimeoutMs = 2 * 60 * 1000;
+/** 끼워 넣기 응답 제한. 넘겨도 실행 시도는 끝내지 않는다. */
+const steerTimeoutMs = 10_000;
 export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const home = path.resolve(options.dataDir, "providers/codex");
   const command = options.command ?? ["codex"];
@@ -59,7 +63,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         env: environment(),
         cwd: home,
         signal,
-        timeout: 3000,
+        timeout: probeTimeoutMs,
         maxBuffer: 65536,
       });
     try {
@@ -153,7 +157,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
       });
       const stop = () => child.end();
       signal.addEventListener("abort", stop, { once: true });
-      const timer = setTimeout(stop, 10000);
+      const timer = setTimeout(stop, 60000);
       try {
         if (signal.aborted) stop();
         else
@@ -162,10 +166,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             method: "initialize",
             params: { clientInfo: { name: "babojubot", version: "0.0.0" } },
           });
-        const exit = await child.done;
-        return complete && !signal.aborted && !exit.broken && exit.code === 0
-          ? models
-          : [];
+        await child.done;
+        return complete && !signal.aborted ? models : [];
       } finally {
         clearTimeout(timer);
         signal.removeEventListener("abort", stop);
@@ -193,13 +195,9 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         const checked = await readiness(control.signal);
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        if (checked.status === "not_ready")
-          return {
-            ...failed(),
-            ...(checked.reason === "product_login_missing"
-              ? { errorCode: "login_required" as const }
-              : {}),
-          };
+        // 로그인이 없다고 확정된 때만 멈춘다. 확인 실패는 실제 실행으로 판단한다.
+        if (checked.reason === "product_login_missing")
+          return { ...failed(), errorCode: "login_required" as const };
         let result = failed(),
           threadId = "",
           turnId = "",
@@ -306,14 +304,19 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             }
           },
         });
-        const rpc = (method: string, params: unknown) =>
+        const rpc = (
+          method: string,
+          params: unknown,
+          timeoutMs = requestTimeoutMs,
+          endOnTimeout = true
+        ) =>
           new Promise<Record<string, unknown>>((resolve, reject) => {
             const id = ++sequence;
             const timer = setTimeout(() => {
               pending.delete(id);
               reject(new Error("Protocol response timed out"));
-              child.end();
-            }, 3000);
+              if (endOnTimeout) child.end();
+            }, timeoutMs);
             pending.set(id, { resolve, reject, timer });
             if (!child.write({ id, method, params })) {
               clearTimeout(timer);
@@ -398,12 +401,17 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               if (control.signal.aborted || child.closed) return "rejected";
               const expectedTurnId = turnId;
               try {
-                const ack = await rpc("turn/steer", {
-                  threadId,
-                  expectedTurnId,
-                  clientUserMessageId: message.messageId,
-                  input: [{ type: "text", text: message.body }],
-                });
+                const ack = await rpc(
+                  "turn/steer",
+                  {
+                    threadId,
+                    expectedTurnId,
+                    clientUserMessageId: message.messageId,
+                    input: [{ type: "text", text: message.body }],
+                  },
+                  steerTimeoutMs,
+                  false
+                );
                 return ack.turnId === expectedTurnId ? "accepted" : "rejected";
               } catch (error) {
                 if (error instanceof ProtocolRejection) return "rejected";
@@ -420,13 +428,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         } catch {
           child.end();
         }
-        const exit = await child.done;
+        await child.done;
         control.signal.removeEventListener("abort", cancel);
         active.delete(request.identity.runId);
         await activities;
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        return exit.broken || exit.code !== 0 ? failed() : result;
+        return result;
       },
     },
   };
@@ -499,6 +507,7 @@ async function executeExec(
             costUsd: null,
           },
         };
+        child.end();
       }
     },
   });
@@ -534,7 +543,7 @@ async function executeExec(
         env
       );
     }
-    return exit.broken || exit.code !== 0 ? failed() : result;
+    return result;
   } finally {
     control.signal.removeEventListener("abort", cancel);
   }

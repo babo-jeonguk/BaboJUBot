@@ -348,10 +348,15 @@ export class RunDispatcher {
       console.warn(`[runs] run ${runId} dropped a non-public activity`);
       return;
     }
-    const event = await appendRunActivity(this.#db, runId, {
-      source: "runtime",
-      activity: activity.data,
-    });
-    if (event) this.#hub.publish(event);
+    // 활동 기록이 실패해도 실행 시도는 계속한다.
+    try {
+      const event = await appendRunActivity(this.#db, runId, {
+        source: "runtime",
+        activity: activity.data,
+      });
+      if (event) this.#hub.publish(event);
+    } catch (error) {
+      console.error(`[runs] run ${runId} could not record an activity`, error);
+    }
   }
 }

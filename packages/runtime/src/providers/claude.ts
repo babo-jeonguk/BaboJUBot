@@ -13,7 +13,7 @@ import type {
 } from "@babojubot/contracts";
 
 import { z } from "zod";
-import { startProcess } from "./process.ts";
+import { startProcess, probeTimeoutMs, startupLimitMs } from "./process.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
@@ -79,7 +79,7 @@ export function createClaudeProvider(
               env: environment(),
               cwd: home,
               signal,
-              timeout: 3000,
+              timeout: probeTimeoutMs,
               maxBuffer: 64 * 1024,
             }
           );
@@ -309,7 +309,7 @@ async function executeClaude(
         process.end();
       },
     });
-    const startup = setTimeout(() => process.end(), 10000);
+    const startup = setTimeout(() => process.end(), startupLimitMs);
     if (request.runId)
       active.set(request.runId, (message) => {
         if (
@@ -366,7 +366,7 @@ async function executeClaude(
           active
         );
       }
-      if (exit.broken || exit.code !== 0) return failed();
+      if (!completed) return failed();
       if (
         maintenance &&
         (!compactBoundary ||
