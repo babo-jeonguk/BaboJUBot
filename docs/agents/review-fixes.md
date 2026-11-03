@@ -71,8 +71,8 @@ parent는 worker 하나에 한 번만 깨어납니다. 시작 확인과 재시�
 아래를 실제 값으로 채워 **백틱 5개의 단일 블록**으로 전달합니다. 링크는 고정 SHA·결정 댓글을 쓰고 자격 증명·실제 연구 데이터는 제외합니다.
 
 `````text
-mattpocock-skills v1.3.1의 code-review 방식으로 Standards와 Spec을 분리해 검토해 주세요.
-https://github.com/mattpocock/skills/blob/v1.3.1/skills/engineering/code-review/SKILL.md
+mattpocock-skills v1.3.2의 code-review 방식으로 Standards와 Spec을 분리해 검토해 주세요.
+https://github.com/mattpocock/skills/blob/v1.3.2/skills/engineering/code-review/SKILL.md
 Repository / PR: <주소>
 Spec·확정 결정 / 저장소 표준: <링크; 이슈 없는 작업은 승인된 요구를 기재>
 Base / Head SHA: <각 SHA>
