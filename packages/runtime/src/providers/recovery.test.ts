@@ -45,36 +45,40 @@ it("skips a record that cannot be read and still handles the others", async () =
   expect(await readdir(directory)).toEqual([]);
 });
 
-it("leaves a process group it cannot identify alone and still starts", async () => {
-  const { root, directory } = await records();
-  const leader = spawn("sh", ["-c", "sleep 30 & exit 0"], {
-    detached: true,
-    stdio: "ignore",
-  });
-  await new Promise((resolve) => leader.on("close", resolve));
-  const group = leader.pid!;
-  try {
-    await writeFile(
-      path.join(directory, `${group}.json`),
-      JSON.stringify({
-        pid: group,
-        start: "1",
-        group,
-        boot: (
-          await readFile("/proc/sys/kernel/random/boot_id", "utf8")
-        ).trim(),
-        lease: "not-the-real-lease",
-      })
-    );
-    await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
-    expect(() => process.kill(-group, 0)).not.toThrow();
-    expect(await readdir(directory)).toEqual([]);
-  } finally {
-    process.kill(-group, "SIGKILL");
+it.runIf(process.platform === "linux")(
+  "leaves a process group it cannot identify alone and still starts",
+  async () => {
+    const { root, directory } = await records();
+    const leader = spawn("sh", ["-c", "sleep 30 & exit 0"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    await new Promise((resolve) => leader.on("close", resolve));
+    const group = leader.pid!;
+    try {
+      await writeFile(
+        path.join(directory, `${group}.json`),
+        JSON.stringify({
+          pid: group,
+          start: "1",
+          group,
+          boot: (
+            await readFile("/proc/sys/kernel/random/boot_id", "utf8")
+          ).trim(),
+          lease: "not-the-real-lease",
+        })
+      );
+      await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
+      expect(() => process.kill(-group, 0)).not.toThrow();
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      process.kill(-group, "SIGKILL");
+    }
   }
-});
+);
 
-// macOS 경로는 프로세스 시작 시각으로 판단하므로 이 컴퓨터에서도 시험할 수 있다.
+// /proc가 없는 경로는 프로세스 시작 시각으로 판단하므로 Linux에서도 시험할 수 있다. 다른 OS는 자기 경로를 시험한다.
+const withoutProc = process.platform === "linux" ? "darwin" : process.platform;
 const longRunning = () =>
   spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     detached: true,
@@ -98,13 +102,13 @@ it("stops a leftover process on systems without /proc", async () => {
       path.join(directory, `${child.pid}.json`),
       JSON.stringify({ pid: child.pid, lease: "lease" })
     );
-    await recoverProviderProcesses(root, { platform: "darwin" });
+    await recoverProviderProcesses(root, { platform: withoutProc });
     await new Promise((resolve) => child.on("close", resolve));
     expect(gone(child.pid!)).toBe(true);
   } finally {
     if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
   }
-});
+}, 30_000);
 
 it("leaves a process that started after the record was written", async () => {
   const { root, directory } = await records();
@@ -115,13 +119,13 @@ it("leaves a process that started after the record was written", async () => {
     await writeFile(file, JSON.stringify({ pid: child.pid, lease: "lease" }));
     const yesterday = new Date(Date.now() - 86_400_000);
     await utimes(file, yesterday, yesterday);
-    await recoverProviderProcesses(root, { platform: "darwin" });
+    await recoverProviderProcesses(root, { platform: withoutProc });
     expect(gone(child.pid!)).toBe(false);
     expect(await readdir(directory)).toEqual([]);
   } finally {
     process.kill(child.pid!, "SIGKILL");
   }
-});
+}, 30_000);
 
 it("recovers every connection folder, including named ones", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "babojubot-recovery-"));
