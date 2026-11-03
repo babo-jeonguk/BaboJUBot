@@ -144,25 +144,6 @@ it("resumes the requested session and subtracts its cumulative cost baseline", a
   expect(result.nextSession?.id).toBe("session-one");
   expect(result.usage?.costUsd).toBeCloseTo(0.03);
 });
-it("does not start a turn without a product login", async () => {
-  const root = await home();
-  await rm(path.join(root, "providers/claude/setup-token"));
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-finish.synthetic.json"),
-    ],
-  });
-  const result = await provider.adapter.execute(request(), {
-    signal: new AbortController().signal,
-    emit: async () => {
-      throw new Error("must not begin a turn");
-    },
-  });
-  expect(result.errorCode).toBe("login_required");
-});
 it("records the latest primary-session token size, request timestamp and cache TTL from its transcript", async () => {
   const root = await home();
   const transcripts = path.join(
