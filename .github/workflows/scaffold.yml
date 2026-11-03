@@ -12,7 +12,7 @@ concurrency:
 jobs:
   # 바뀐 파일이 Markdown뿐이면 문서 검사(check)만 실제로 돌린다. 나머지 job은 이름을 유지한 채 바로 성공한다.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
@@ -33,7 +33,7 @@ jobs:
   check:
     name: ci / ${{ matrix.script }}
     needs: changes
-    # ubuntu-latest는 예고 없이 판이 바뀐다. Playwright 1.58.2는 ubuntu-26.04에 브라우저를 설치하지 못한다.
+    # 로컬 개발 환경과 같은 Ubuntu LTS를 사용하고 OS 판 변경은 별도로 검증한다.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
