@@ -105,6 +105,7 @@ async function refreshModels(
  * 연결의 모델 목록. 받아 온 목록을 저장해 두고 쓰며, 오래되면 저장한 목록으로 바로 답한 뒤 뒤에서 새로 받는다.
  * 저장한 목록이 없으면 `timeoutMs`까지 기다리고, 그래도 없으면 연결의 고정 목록으로 답한다. 늦게 끝난 조회의 결과는 다음 호출이 쓴다.
  * 동시에 부른 호출은 조회 하나를 함께 쓴다. 빈 목록은 일시 오류와 구별하지 않고 저장하지 않는다. 목록 조회는 모델을 부르지 않는다.
+ * `fresh`면 저장한 목록으로 바로 답하지 않고 새 조회를 기다린다. 선택한 모델을 검사할 때 쓴다.
  */
 export async function listProviderModels(
   connection: ProviderConnection,
@@ -112,7 +113,13 @@ export async function listProviderModels(
     timeoutMs = 15_000,
     maxAgeMs = 5 * 60 * 1000,
     fetchLimitMs = 60_000,
-  }: { timeoutMs?: number; maxAgeMs?: number; fetchLimitMs?: number } = {}
+    fresh = false,
+  }: {
+    timeoutMs?: number;
+    maxAgeMs?: number;
+    fetchLimitMs?: number;
+    fresh?: boolean;
+  } = {}
 ): Promise<ModelOption[]> {
   const fixed = [...connection.models];
   if (!connection.listModels) return fixed;
@@ -123,13 +130,14 @@ export async function listProviderModels(
   }
   const current = state;
   if (
+    !fresh &&
     current.models &&
     current.fetchedAt !== undefined &&
     Date.now() - current.fetchedAt < maxAgeMs &&
     maxAgeMs > 0
   )
     return current.models;
-  const answer = current.models;
+  const answer = fresh ? undefined : current.models;
   current.refreshing ??= refreshModels(
     connection,
     current,
