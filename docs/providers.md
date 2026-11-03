@@ -54,4 +54,4 @@ BABOJUBOT_HOME="$product_root" node scripts/provider-smoke.mjs claude --allow-li
 # BABOJUBOT_CODEX_MODE=exec 선택; Codex·Antigravity는 BABOJUBOT_SMOKE_MODEL=<가장 저렴한 모델 ID> 지정
 ```
 
-이 시험은 단건 연결 확인이다. 실제 세션 재개·끼워 넣기·압축·토큰/비용은 추가 사람 시험이 필요하다. 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.
+이 시험은 단건 연결 확인이다. 세션 재개·끼워 넣기·취소·세션 실패·압축까지 돌리는 시험은 같은 조건으로 `node scripts/provider-live.mjs <연결> --allow-live`이고, `--record`를 붙이면 원본을 Git 밖에 남긴다. 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.

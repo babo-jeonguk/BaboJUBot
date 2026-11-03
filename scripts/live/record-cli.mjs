@@ -55,7 +55,11 @@ function proxy(target) {
         });
         const upstream = http.request(
           new URL(req.url, target),
-          { method: req.method, headers: req.headers },
+          // 기록이 읽히도록 압축하지 않은 응답을 받는다.
+          {
+            method: req.method,
+            headers: { ...req.headers, "accept-encoding": "identity" },
+          },
           (answer) => {
             record("http-response", { id, status: answer.statusCode });
             res.writeHead(answer.statusCode, answer.headers);

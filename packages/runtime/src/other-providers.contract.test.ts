@@ -50,3 +50,33 @@ for (const kind of ["antigravity", "opencode"] as const) {
     }
   );
 }
+
+describeRuntimeContract(
+  "opencode with recorded protocol output (reviewed real frames, scripted behaviour)",
+  {
+    adapter: createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--recording",
+        path.resolve("test-fixtures/opencode-recorded.json"),
+      ],
+    }).adapter,
+    startupMs: 2000,
+    finishes: saying("진행 상황을 알려 주세요"),
+    worksUntilCancelled: saying("실행 유지 연습"),
+    unusableSession: { id: "expired" },
+    resumes: {
+      plant: (note) => saying(`메모해 주세요: ${note}`),
+      recall: saying("세션 메모를 알려 주세요"),
+      recalled: ({ messages }, note) =>
+        messages.some((message) => message.includes(note)),
+    },
+    steers: {
+      scene: saying("끼워 넣기 연습"),
+      took: ({ messages }, body) =>
+        messages.some((message) => message.includes(body)),
+    },
+  }
+);
