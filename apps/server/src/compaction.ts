@@ -14,6 +14,9 @@ import type { RunDispatcher } from "./dispatcher.ts";
 import { issueRunToken, digestRunToken } from "./run-token.ts";
 import { mcpRoutes } from "./mcp.ts";
 
+/** 압축은 화면에서 취소할 수 없고 끝날 때까지 그 에이전트의 실행 시도를 막으므로 서버 시계로 시간을 제한한다. */
+const compactionTimeLimitMs = 15 * 60 * 1000;
+
 /** Maintenance has a separate, list-only credential and never creates a Run or Event. */
 export class CompactionScheduler {
   readonly tokens = new Map<string, { id: string; tools: OrgToolName[] }>();
@@ -117,12 +120,17 @@ export class CompactionScheduler {
   private async execute(
     lease: NonNullable<Awaited<ReturnType<typeof claimCompaction>>>
   ) {
-    const { db, providers, url } = this.options;
+    const { db, providers, url, now } = this.options;
+    const deadline = now().getTime() + compactionTimeLimitMs;
     const { token, digest } = issueRunToken(),
       controller = new AbortController();
     this.tokens.set(digest, { id: lease.id, tools: lease.tools });
     this.controllers.set(lease.id, controller);
     const check = setInterval(() => {
+      if (now().getTime() >= deadline) {
+        controller.abort();
+        return;
+      }
       void compactionLeaseActive(db, lease.id)
         .then((active) => {
           if (!active) controller.abort();

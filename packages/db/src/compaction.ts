@@ -14,21 +14,12 @@ import {
 } from "./schema.ts";
 import { lockProviderSlot, readProviderDefaults } from "./providers.ts";
 
-export async function hasSessionMaintenance(
-  db: Executor,
-  agentId: string,
-  taskId: string | null
-) {
+/** 에이전트의 세션 하나라도 압축 중인가. 압축과 실행 시도는 세션이 달라도 에이전트 단위로 배타다. */
+export async function hasRunningMaintenance(db: Executor, agentId: string) {
   const [row] = await db
     .select({ id: leases.id })
     .from(leases)
-    .where(
-      and(
-        eq(leases.agentId, agentId),
-        eq(leases.status, "running"),
-        taskId === null ? isNull(leases.taskId) : eq(leases.taskId, taskId)
-      )
-    )
+    .where(and(eq(leases.agentId, agentId), eq(leases.status, "running")))
     .limit(1);
   return !!row;
 }
@@ -108,8 +99,7 @@ export async function claimCompaction(
       .from(runs)
       .where(and(eq(runs.agentId, agent.id), eq(runs.status, "running")))
       .limit(1);
-    if (run || (await hasSessionMaintenance(tx, agent.id, session.taskId)))
-      return;
+    if (run || (await hasRunningMaintenance(tx, agent.id))) return;
     if (!admitsProviderRun(await lockProviderSlot(tx, session.provider)))
       return;
     const lease = {

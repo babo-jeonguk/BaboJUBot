@@ -3,6 +3,11 @@ import type { RunResult, SessionState } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { insertOwnerMessage } from "./conversations.ts";
+import {
+  claimCompaction,
+  finishCompaction,
+  listCompactionCandidates,
+} from "./compaction.ts";
 import { insertOrganizationCreation } from "./organizations.ts";
 import { updateAgentProvider, updateProviderLimit } from "./providers.ts";
 import { claimNextRun, finishRun, recoverInterruptedRuns } from "./runs.ts";
@@ -179,5 +184,74 @@ describe("sessions per agent and task", () => {
     await org.claim();
     await recoverInterruptedRuns(t.db, source);
     expect((await org.turn(null)).sessionBefore).toEqual({ at: "before" });
+  });
+});
+
+describe("session compaction is exclusive per agent", () => {
+  const lastRequestAt = new Date();
+  const due = new Date(lastRequestAt.getTime() + 54 * 60 * 1000);
+
+  /** 그 작업 세션의 실행 시도를 끝내 압축 예약을 남긴다. */
+  const reserve = async (
+    org: Awaited<ReturnType<typeof organization>>,
+    taskId: string
+  ) => {
+    await org.assign(taskId);
+    const claimed = (await org.claim())!;
+    await finishRun(
+      t.db,
+      claimed.run.id,
+      {
+        ...ended({ at: taskId }),
+        sessionMaintenance: {
+          tokens: 400000,
+          lastRequestAt: lastRequestAt.toISOString(),
+          ttlMs: 3600000,
+        },
+      },
+      source
+    );
+  };
+  const candidates = async (org: Awaited<ReturnType<typeof organization>>) =>
+    (await listCompactionCandidates(t.db)).filter(
+      (candidate) => candidate.agentId === org.lead.id
+    );
+
+  it("holds a run for another task while the agent compacts and starts it afterward", async () => {
+    const org = await organization();
+    const a = await org.task();
+    const b = await org.task();
+    await reserve(org, a);
+    const [candidate] = await candidates(org);
+    const lease = await claimCompaction(t.db, candidate!, due, ["fake"]);
+    expect(lease).toBeDefined();
+
+    await org.assign(b);
+    expect(await org.claim()).toBeUndefined();
+
+    await finishCompaction(t.db, lease!.id, {
+      ok: true,
+      nextSession: { at: a },
+    });
+    expect((await org.claim())?.run.sessionTaskId).toBe(b);
+  });
+
+  it("compacts one session of an agent at a time and keeps the other reservation", async () => {
+    const org = await organization();
+    await reserve(org, await org.task());
+    await reserve(org, await org.task());
+    const reservations = await candidates(org);
+    expect(reservations).toHaveLength(2);
+
+    const first = await claimCompaction(t.db, reservations[0]!, due, ["fake"]);
+    expect(first).toBeDefined();
+    expect(
+      await claimCompaction(t.db, reservations[1]!, due, ["fake"])
+    ).toBeUndefined();
+
+    await finishCompaction(t.db, first!.id, { ok: true, nextSession: null });
+    expect(
+      await claimCompaction(t.db, reservations[1]!, due, ["fake"])
+    ).toBeDefined();
   });
 });
