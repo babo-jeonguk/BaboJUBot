@@ -373,7 +373,10 @@ export type RuntimeAdapter = {
    * 받았다는 공개 활동은 실행 흐름(`execute`의 `emit`)이 남긴다.
    */
   steer?: (message: SteerMessage) => Promise<SteerOutcome>;
-  /** 같은 세션을 유지하는 비공개 압축. 호출 토큰은 MCP 목록 조회만 허용한다. */
+  /**
+   * 같은 세션을 유지하는 비공개 압축. 호출 토큰은 MCP 목록 조회만 허용한다.
+   * `ok`는 압축이 실제로 끝났을 때만 `true`다. 중단 신호를 받은 뒤라도 압축이 이미 끝났으면 `true`와 그 세션을 돌려주고, 호출자는 그대로 저장한다.
+   */
   precompact?: (
     request: { session: SessionState; access: RunRequest["access"] },
     signal: AbortSignal

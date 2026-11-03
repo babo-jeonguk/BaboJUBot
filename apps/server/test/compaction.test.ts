@@ -204,77 +204,87 @@ it("keeps a normal wake pending while compaction owns the session and uses the c
   await t.drain();
   expect(runs).toBe(2);
 });
-it("ends a stuck compaction at the time limit so the waiting wake runs on the unchanged session", async () => {
-  const { createScriptedRuntime } = await import("@babojubot/runtime");
-  const inner = createScriptedRuntime();
-  let now = new Date("2026-01-01T00:00:00Z"),
-    runs = 0,
-    resumed: unknown,
-    started!: () => void;
-  const began = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  t = await startTestServer({
-    now: () => now,
-    runtime: {
-      ...inner,
-      capabilities: { ...inner.capabilities, precompact: true },
-      async execute(input) {
-        runs++;
-        if (runs === 2) resumed = input.previousSession;
-        return {
-          stopReason: "completed",
-          error: null,
-          summary: null,
-          usage: null,
-          nextSession: { id: "saved" },
-          ...(runs === 1
-            ? {
-                sessionMaintenance: {
-                  tokens: 400000,
-                  lastRequestAt: now.toISOString(),
-                  ttlMs: 3600000,
-                },
-              }
-            : {}),
-        };
+it.each([
+  ["had not finished", { ok: false, nextSession: null }, { id: "saved" }],
+  [
+    "had already finished",
+    { ok: true, nextSession: { id: "saved", compacted: true } },
+    { id: "saved", compacted: true },
+  ],
+] as const)(
+  "ends a compaction at the time limit and the waiting wake resumes the reported session: %s",
+  async (_label, reported, expected) => {
+    const { createScriptedRuntime } = await import("@babojubot/runtime");
+    const inner = createScriptedRuntime();
+    let now = new Date("2026-01-01T00:00:00Z"),
+      runs = 0,
+      resumed: unknown,
+      started!: () => void;
+    const began = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    t = await startTestServer({
+      now: () => now,
+      runtime: {
+        ...inner,
+        capabilities: { ...inner.capabilities, precompact: true },
+        async execute(input) {
+          runs++;
+          if (runs === 2) resumed = input.previousSession;
+          return {
+            stopReason: "completed",
+            error: null,
+            summary: null,
+            usage: null,
+            nextSession: { id: "saved" },
+            ...(runs === 1
+              ? {
+                  sessionMaintenance: {
+                    tokens: 400000,
+                    lastRequestAt: now.toISOString(),
+                    ttlMs: 3600000,
+                  },
+                }
+              : {}),
+          };
+        },
+        async precompact(_input, signal) {
+          started();
+          await new Promise((resolve) =>
+            signal.addEventListener("abort", resolve, { once: true })
+          );
+          return reported;
+        },
       },
-      async precompact(_input, signal) {
-        started();
-        await new Promise((resolve) =>
-          signal.addEventListener("abort", resolve, { once: true })
-        );
-        return { ok: false, nextSession: null };
-      },
-    },
-  });
-  const org = (
-    await t.request("POST", "/api/organizations", {
-      name: "멈춘 압축",
-      goal: "검증",
-      completionCriteria: "확인",
-    })
-  ).body;
-  await t.drain();
-  now = new Date("2026-01-01T00:54:00Z");
-  const tick = t.tickCompactions();
-  await began;
-  expect(
-    (
-      await t.request("POST", `/api/organizations/${org.id}/messages`, {
-        body: "계속",
+    });
+    const org = (
+      await t.request("POST", "/api/organizations", {
+        name: "멈춘 압축",
+        goal: "검증",
+        completionCriteria: "확인",
       })
-    ).status
-  ).toBe(201);
-  now = new Date("2026-01-01T01:08:59Z");
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  expect(runs).toBe(1);
-  now = new Date("2026-01-01T01:09:00Z");
-  await tick;
-  await t.drain();
-  expect(runs).toBe(2);
-  expect(resumed).toEqual({ id: "saved" });
-});
+    ).body;
+    await t.drain();
+    now = new Date("2026-01-01T00:54:00Z");
+    const tick = t.tickCompactions();
+    await began;
+    expect(
+      (
+        await t.request("POST", `/api/organizations/${org.id}/messages`, {
+          body: "계속",
+        })
+      ).status
+    ).toBe(201);
+    now = new Date("2026-01-01T01:08:59Z");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(runs).toBe(1);
+    now = new Date("2026-01-01T01:09:00Z");
+    await tick;
+    await t.drain();
+    expect(runs).toBe(2);
+    expect(resumed).toEqual(expected);
+  }
+);
 it.each(["expired", "stopped", "ordinary-run"] as const)(
   "does not compact a %s reservation",
   async (scenario) => {

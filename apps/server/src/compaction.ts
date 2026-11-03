@@ -142,6 +142,7 @@ export class CompactionScheduler {
       nextSession: null,
     };
     try {
+      // 중단 신호 뒤의 성공 보고도 버리지 않는다. 압축은 이미 끝났고, 저장할 세션의 누적 비용을 버리면 압축 비용이 다음 실행 시도에 잡힌다.
       result = await providers.get(lease.provider)!.precompact!(
         { session: lease.session, access: { toolsBaseUrl: url(), token } },
         controller.signal
