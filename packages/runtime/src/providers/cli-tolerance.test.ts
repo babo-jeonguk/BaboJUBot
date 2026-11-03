@@ -336,3 +336,50 @@ describe("Claude login and steering", () => {
     expect(result.stopReason).toBe("completed");
   }, 20_000);
 });
+
+describe("connections", () => {
+  it("runs Codex when another login is in use and the status check says no", async () => {
+    const { adapter } = adapters["codex app-server"](
+      await home(),
+      "no-file-login"
+    );
+    const result = await adapter.execute(request(), control());
+    expect(result.stopReason).toBe("completed");
+  }, 20_000);
+
+  it("falls back to a listed model when OpenCode has no free one", async () => {
+    const provider = createOpenCodeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--no-free",
+      ],
+    });
+    const result = await provider.adapter.execute(request(), control());
+    expect(result.stopReason).toBe("completed");
+  }, 20_000);
+
+  it("gives each named connection its own id and folder", async () => {
+    const dataDir = await home();
+    const provider = createClaudeProvider({
+      dataDir,
+      id: "claude-work",
+      label: "Claude Code (work)",
+      command: quirky("claude", "plain"),
+    });
+    expect([provider.id, provider.label]).toEqual([
+      "claude-work",
+      "Claude Code (work)",
+    ]);
+    expect(provider.login?.env.HOME).toBe(
+      path.join(dataDir, "providers/claude-work")
+    );
+    expect(provider.adapter.loginCommand).toContain("claude-work");
+  });
+
+  it("lets Claude take models beyond the short list", async () => {
+    const { openModels } = adapters.claude(await home(), "plain");
+    expect(openModels).toBe(true);
+  });
+});

@@ -71,3 +71,14 @@ describe("planAgentProviderChange", () => {
     ).toBe("organization_closed");
   });
 });
+
+describe("a connection with no model list to check against", () => {
+  it("accepts any model, so a list that failed to load does not refuse a real one", () => {
+    expect(
+      checkProviderChoices(
+        [{ id: "a", models: [] }],
+        [{ provider: "a", model: "anything" }]
+      )
+    ).toBeUndefined();
+  });
+});

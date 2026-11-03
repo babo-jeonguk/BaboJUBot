@@ -11,7 +11,7 @@ if (args.includes("--version")) {
   console.log("anything 1.2.3");
   process.exit(0);
 }
-if (args[0] === "login") process.exit(0);
+if (args[0] === "login") process.exit(variant === "no-file-login" ? 1 : 0);
 if (args[0] === "auth") process.exit(variant === "logged-out" ? 1 : 0);
 // 이전 세션으로는 어떤 문구로든 시작하지 못하는 프로그램. 문구에 기대지 않는다는 것을 확인한다.
 const resuming = args.includes("--resume") || args.includes("resume");

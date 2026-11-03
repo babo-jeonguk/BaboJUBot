@@ -76,6 +76,19 @@ const server = http.createServer(async (req, res) => {
         json({ data: recording.models });
         return;
       }
+      if (process.argv.includes("--no-free")) {
+        json({
+          data: [
+            {
+              id: "paid",
+              providerID: "someone",
+              name: "Paid",
+              cost: [{ input: 1, output: 1 }],
+            },
+          ],
+        });
+        return;
+      }
       json({
         data: [
           {

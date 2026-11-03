@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  utimes,
   mkdir,
   mkdtemp,
   readFile,
@@ -71,4 +72,63 @@ it("leaves a process group it cannot identify alone and still starts", async () 
   } finally {
     process.kill(-group, "SIGKILL");
   }
+});
+
+// macOS 경로는 프로세스 시작 시각으로 판단하므로 이 컴퓨터에서도 시험할 수 있다.
+const longRunning = () =>
+  spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    detached: true,
+    stdio: "ignore",
+  });
+const gone = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+it("stops a leftover process on systems without /proc", async () => {
+  const { root, directory } = await records();
+  const child = longRunning();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  try {
+    await writeFile(
+      path.join(directory, `${child.pid}.json`),
+      JSON.stringify({ pid: child.pid, lease: "lease" })
+    );
+    await recoverProviderProcesses(root, { platform: "darwin" });
+    await new Promise((resolve) => child.on("close", resolve));
+    expect(gone(child.pid!)).toBe(true);
+  } finally {
+    if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
+  }
+});
+
+it("leaves a process that started after the record was written", async () => {
+  const { root, directory } = await records();
+  const child = longRunning();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const file = path.join(directory, `${child.pid}.json`);
+  try {
+    await writeFile(file, JSON.stringify({ pid: child.pid, lease: "lease" }));
+    const yesterday = new Date(Date.now() - 86_400_000);
+    await utimes(file, yesterday, yesterday);
+    await recoverProviderProcesses(root, { platform: "darwin" });
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([]);
+  } finally {
+    process.kill(child.pid!, "SIGKILL");
+  }
+});
+
+it("recovers every connection folder, including named ones", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "babojubot-recovery-"));
+  roots.push(root);
+  const directory = path.join(root, "providers/claude-work/processes");
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "123.json"), "broken");
+  await recoverProviderProcesses(root);
+  expect(await readdir(directory)).toEqual([]);
 });

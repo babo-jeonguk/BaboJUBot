@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { startProcess } from "./process.ts";
+import { describe, expect, it } from "vitest";
+import { runProbe, startProcess } from "./process.ts";
 
 const run = async (
   script: string,
@@ -73,4 +73,41 @@ it("keeps the end of the error output for the caller", async () => {
   );
   expect(exit.stderr.endsWith("the real reason")).toBe(true);
   expect(exit.stderr.length).toBeLessThanOrEqual(8192);
+});
+
+describe("runProbe", () => {
+  const probe = (script: string, timeout = 5_000) =>
+    runProbe([process.execPath, "-e", script], [], {
+      env: { PATH: process.env.PATH },
+      cwd: process.cwd(),
+      signal: new AbortController().signal,
+      timeout,
+      maxBuffer: 1024 * 1024,
+    });
+
+  it("returns what the program printed", async () => {
+    expect((await probe(`console.log("hello")`)).stdout).toBe("hello\n");
+  });
+
+  it("reports the exit code and the output of a failed program", async () => {
+    await expect(
+      probe(`console.error("not signed in"); process.exit(1)`)
+    ).rejects.toMatchObject({ code: 1, stderr: "not signed in\n" });
+  });
+
+  it("reports a missing program", async () => {
+    await expect(
+      runProbe(["/missing/program"], [], {
+        env: { PATH: process.env.PATH },
+        cwd: process.cwd(),
+        signal: new AbortController().signal,
+        timeout: 5_000,
+        maxBuffer: 1024,
+      })
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stops a program that outlives its limit", async () => {
+    await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toThrow();
+  });
 });
