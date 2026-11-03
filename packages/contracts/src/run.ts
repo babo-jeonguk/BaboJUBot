@@ -290,6 +290,13 @@ export const runErrorCodeSchema = z.enum(runErrorCodes);
 export type RunErrorCode = z.infer<typeof runErrorCodeSchema>;
 
 /** 종료. 프로바이더는 취소를 받아도 정리를 끝낸 뒤 `cancelled`로 한 번만 돌려준다. */
+export const sessionMaintenanceSchema = z.strictObject({
+  tokens: z.number().int().nonnegative(),
+  lastRequestAt: z.iso.datetime({ offset: true }),
+  ttlMs: z.number().int().positive(),
+});
+export type SessionMaintenance = z.infer<typeof sessionMaintenanceSchema>;
+
 export const runResultSchema = z.strictObject({
   stopReason: runStopReasonSchema,
   /** 실패 사유. 공개 기록에 남으므로 비밀값을 넣지 않는다. */
@@ -300,6 +307,7 @@ export const runResultSchema = z.strictObject({
   usage: usageSchema.nullable(),
   /** 다음 세션 상태. 이 실행 시도의 세션 자리에 저장하며, `null`이면 그 세션을 비운다. */
   nextSession: sessionStateSchema.nullable(),
+  sessionMaintenance: sessionMaintenanceSchema.optional(),
 });
 export type RunResult = z.infer<typeof runResultSchema>;
 
@@ -335,8 +343,8 @@ export type SteerMessage = {
 };
 
 /**
- * 끼워 넣기의 결과. `accepted`는 그 실행 시도가 받았다는 프로바이더의 확인이고, `rejected`는 넣지 않았다는 확실한 거절이다
- * (실행 시도가 끝나 가거나 이미 끝남, 프로바이더가 거절). 거절된 메시지는 줄 세운 메시지가 된다.
+ * 끼워 넣기의 결과. `accepted`는 살아 있는 실행 시도·턴을 확인한 뒤 프로바이더에 전달했다는 뜻이다.
+ * 확인 실패·명시적 거절은 `rejected`이며, 전달 뒤 턴이 끝나 이번 실행 시도에 반영되지 않을 수 있다. 거절된 메시지는 줄 세운 메시지가 된다.
  */
 export const steerOutcomes = ["accepted", "rejected"] as const;
 export type SteerOutcome = (typeof steerOutcomes)[number];
@@ -360,14 +368,17 @@ export type RuntimeAdapter = {
   ): Promise<RunResult>;
   /**
    * 진행 중인 실행 시도(`message.runId`)에 사용자 메시지를 끼워 넣는다. `capabilities.steer`일 때만 있다.
-   * 그 실행 시도가 받았다고 확인했을 때만 `accepted`이고, 넣지 않았음이 확실하면 `rejected`다. 이 adapter가 돌리지 않는 실행 시도도 `rejected`다.
-   * 던지면 넣지 않은 것(`rejected`)으로 본다. 그러니 받기로 정한 뒤에는 실패할 수 있는 일을 하지 않고 바로 `accepted`를 돌려준다.
+   * 실행 시도·턴을 확인한 뒤 전달하면 `accepted`, 확인 실패·명시적 거절은 `rejected`다. 닫힌 입력 경로도 `rejected`다.
+   * 수신 여부를 모르는 통신 오류는 던진다. 호출자는 `rejected`로 처리하며 실제로 전달됐을 가능성을 감수한다.
    * 받았다는 공개 활동은 실행 흐름(`execute`의 `emit`)이 남긴다.
    */
   steer?: (message: SteerMessage) => Promise<SteerOutcome>;
-  /**
-   * 준비 확인. 모델을 부르지 않고(프로그램·버전·로그인 상태 등) 준비 상태와 이유를 돌려준다. 오래 걸리면 `signal`로 멈춘다.
-   */
+  /** 같은 세션을 유지하는 비공개 압축. 호출 토큰은 MCP 목록 조회만 허용한다. */
+  precompact?: (
+    request: { session: SessionState; access: RunRequest["access"] },
+    signal: AbortSignal
+  ) => Promise<{ ok: boolean; nextSession: SessionState | null }>;
+  /** 모델 호출 없이 프로그램·버전·제품 로그인 상태를 확인한다. */
   checkReadiness: (signal: AbortSignal) => Promise<ProviderReadinessCheck>;
   /** 제품 로그인 명령. 준비 상태가 `product_login_missing`일 때 화면이 복사하게 한다. 없으면 `null`이다. */
   loginCommand: string | null;

@@ -1,5 +1,7 @@
 import {
   defaultMaxConcurrentRuns,
+  defaultCompactionSettings,
+  type CompactionSettings,
   type AgentDetail,
   type AgentRole,
   type ProviderChoice,
@@ -21,8 +23,10 @@ import { findAgentDetail } from "./run-views.ts";
 import {
   agents,
   providerDefaults,
+  compactionSettings,
   providerLimits,
   providerReadiness,
+  sessionMaintenanceLeases,
   runs,
 } from "./schema.ts";
 import { resetAgentSessions } from "./sessions.ts";
@@ -34,6 +38,7 @@ import { refused, stored, type Stored } from "./stored.ts";
 export type ProviderDefaults = {
   leadDefault: ProviderChoice;
   workerDefault: ProviderChoice;
+  compaction: CompactionSettings;
 };
 
 /** 전역 Lead·작업자 기본값. migration이 두 행을 만들어 두므로 늘 있다. */
@@ -46,7 +51,17 @@ export async function readProviderDefaults(
     if (!row) throw new Error(`provider default for ${role} is missing`);
     return { provider: row.provider, model: row.model };
   };
-  return { leadDefault: of("lead"), workerDefault: of("worker") };
+  const [compact] = await db.select().from(compactionSettings);
+  return {
+    leadDefault: of("lead"),
+    workerDefault: of("worker"),
+    compaction: compact
+      ? {
+          thresholdTokens: compact.thresholdTokens,
+          ratio: compact.ratioPercent / 100,
+        }
+      : defaultCompactionSettings,
+  };
 }
 
 /**
@@ -77,10 +92,24 @@ export async function updateProviderDefaults(
           is distinct from (excluded.provider, excluded.model)`,
       })
       .returning({ role: providerDefaults.role });
+    let compactChanged = false;
+    if (input.compaction) {
+      const { thresholdTokens, ratio } = input.compaction;
+      const changed = await tx
+        .insert(compactionSettings)
+        .values({ id: 1, thresholdTokens, ratioPercent: ratio * 100 })
+        .onConflictDoUpdate({
+          target: compactionSettings.id,
+          set: { thresholdTokens, ratioPercent: ratio * 100 },
+          setWhere: sql`(${compactionSettings.thresholdTokens}, ${compactionSettings.ratioPercent}) is distinct from (${thresholdTokens}, ${ratio * 100})`,
+        })
+        .returning({ id: compactionSettings.id });
+      compactChanged = changed.length > 0;
+    }
     const after = await readProviderDefaults(tx);
     return stored(after, {
       events: [],
-      settingsChanged: changedRows.length > 0,
+      settingsChanged: changedRows.length > 0 || compactChanged,
     });
   });
 }
@@ -154,7 +183,19 @@ export async function lockProviderSlot(
     .select({ running: sql<number>`count(*)::int` })
     .from(runs)
     .where(and(eq(runs.provider, provider), eq(runs.status, "running")));
-  return { maxConcurrentRuns: limit!.max, running: count!.running };
+  const [maintenance] = await tx
+    .select({ running: sql<number>`count(*)::int` })
+    .from(sessionMaintenanceLeases)
+    .where(
+      and(
+        eq(sessionMaintenanceLeases.provider, provider),
+        eq(sessionMaintenanceLeases.status, "running")
+      )
+    );
+  return {
+    maxConcurrentRuns: limit!.max,
+    running: count!.running + maintenance!.running,
+  };
 }
 
 /**

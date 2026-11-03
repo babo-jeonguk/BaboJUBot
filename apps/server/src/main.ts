@@ -12,7 +12,13 @@ import {
   steerOutcomes,
   usageSchema,
 } from "@babojubot/contracts";
-import { createFakeProviders } from "@babojubot/runtime";
+import {
+  createFakeProviders,
+  createClaudeProvider,
+  createCodexProvider,
+  createOpenCodeProvider,
+  createAntigravityProvider,
+} from "@babojubot/runtime";
 import { z } from "zod";
 import { startServer } from "./app.ts";
 
@@ -29,6 +35,29 @@ const repoRoot = path.resolve(
   "../../.."
 );
 const env = process.env;
+const productHome = path.resolve(
+  env.BABOJUBOT_HOME ?? path.join(repoRoot, ".babojubot")
+);
+// Real connections are opt-in. Tests and the default development server remain synthetic.
+const factories = {
+  claude: createClaudeProvider,
+  codex: (options: { dataDir: string }) =>
+    createCodexProvider({
+      ...options,
+      mode: env.BABOJUBOT_CODEX_MODE === "exec" ? "exec" : "app-server",
+    }),
+  opencode: createOpenCodeProvider,
+  antigravity: createAntigravityProvider,
+};
+const enabled = (env.BABOJUBOT_PROVIDERS ?? "")
+  .split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
+const realProviders = [...new Set(enabled)].map((id) => {
+  if (!(id in factories))
+    throw new Error(`Unknown BABOJUBOT_PROVIDERS connection: ${id}`);
+  return factories[id as keyof typeof factories]({ dataDir: productHome });
+});
 
 async function openConfiguredDatabase(): Promise<{
   handle: DatabaseHandle;
@@ -82,10 +111,13 @@ try {
     ),
     port: Number(env.PORT ?? 3100),
     host: env.HOST ?? "127.0.0.1",
-    providers: createFakeProviders(
-      Math.max(1, Number(env.BABOJUBOT_FAKE_PROVIDERS ?? 1) || 1),
-      { settings: fakeProviderSettings }
-    ),
+    providers: [
+      ...createFakeProviders(
+        Math.max(1, Number(env.BABOJUBOT_FAKE_PROVIDERS ?? 1) || 1),
+        { settings: fakeProviderSettings }
+      ),
+      ...realProviders,
+    ],
     webDistDir: path.join(repoRoot, "apps/web/dist"),
   });
 } catch (error) {

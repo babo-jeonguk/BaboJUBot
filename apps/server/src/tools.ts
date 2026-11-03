@@ -35,6 +35,7 @@ import {
   loadRunContext,
   recordArtifact,
   recordGoal,
+  recordRunToolCatalog,
   sendAgentToAgentMessage,
   startTask,
   submitResult,
@@ -539,12 +540,14 @@ export function orgToolsRouter({
   };
   mcpRoutes(router, dispatch, async (run) => {
     const org = await loadRunContext(db, run.id);
-    return org
+    const tools = org
       ? availableOrgTools({
           role: run.agentRole,
           stage: org.context.organization.stage,
         })
       : [];
+    await recordRunToolCatalog(db, run.id, tools);
+    return tools;
   });
 
   for (const name of orgToolNames) {

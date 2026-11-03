@@ -1,4 +1,8 @@
-import type { ProviderSettings, ProviderSummary } from "@babojubot/contracts";
+import {
+  defaultCompactionSettings,
+  type ProviderSettings,
+  type ProviderSummary,
+} from "@babojubot/contracts";
 import { useEffect, useState } from "react";
 import {
   useCheckAllReadiness,
@@ -67,7 +71,10 @@ function Providers() {
   );
 }
 
-type DefaultsValue = Pick<ProviderSettings, "leadDefault" | "workerDefault">;
+type DefaultsValue = Pick<
+  ProviderSettings,
+  "leadDefault" | "workerDefault" | "compaction"
+>;
 
 /**
  * Lead·작업자 기본값. 고치는 동안의 값은 초안으로 두어 다른 탭의 변경이 덮지 않고 저장에 실패해도 남는다.
@@ -78,10 +85,15 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
   const saved: DefaultsValue = {
     leadDefault: settings.leadDefault,
     workerDefault: settings.workerDefault,
+    compaction: settings.compaction ?? defaultCompactionSettings,
   };
   const [draft, setDraft] = useState<DefaultsValue | null>(null);
   const value = draft ?? saved;
-  const changed = !sameDefaults(value, saved);
+  const compact = value.compaction ?? defaultCompactionSettings;
+  const changed =
+    !sameDefaults(value, saved) ||
+    compact.thresholdTokens !== saved.compaction!.thresholdTokens ||
+    compact.ratio !== saved.compaction!.ratio;
   return (
     <form
       aria-label="기본 프로바이더"
@@ -106,6 +118,33 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
         value={value.workerDefault}
         onChange={(workerDefault) => setDraft({ ...value, workerDefault })}
         disabled={update.isPending}
+      />
+      <CompactionNumber
+        label="압축 기준"
+        unit="토큰"
+        min={50000}
+        max={1000000}
+        step={10000}
+        value={compact.thresholdTokens}
+        disabled={update.isPending}
+        onChange={(thresholdTokens) =>
+          setDraft({ ...value, compaction: { ...compact, thresholdTokens } })
+        }
+      />
+      <CompactionNumber
+        label="압축 시점"
+        unit="%"
+        min={50}
+        max={95}
+        step={5}
+        value={compact.ratio * 100}
+        disabled={update.isPending}
+        onChange={(percent) =>
+          setDraft({
+            ...value,
+            compaction: { ...compact, ratio: percent / 100 },
+          })
+        }
       />
       <div className="flex items-center justify-end gap-3">
         {!update.isPending && update.isError && (
@@ -265,5 +304,88 @@ function Placeholder({ title, now }: { title: string; now: string }) {
       <span className="text-slate-600">{now}</span>
       <span className="chip bg-slate-100 text-slate-500">준비 중</span>
     </section>
+  );
+}
+
+function CompactionNumber({
+  label,
+  unit,
+  min,
+  max,
+  step,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  unit: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  const [typed, setTyped] = useState<string | null>(null);
+  const clamp = (n: number) => Math.min(max, Math.max(min, Math.round(n)));
+  const commit = () => {
+    if (typed !== null) {
+      onChange(
+        typed.trim() && Number.isFinite(Number(typed))
+          ? clamp(Number(typed))
+          : value
+      );
+      setTyped(null);
+    }
+  };
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span>{label}</span>
+      <div className="flex items-center gap-1" role="group" aria-label={label}>
+        <button
+          type="button"
+          className="btn-soft size-8 justify-center p-0"
+          aria-label={`${label} 줄이기`}
+          disabled={disabled || value <= min}
+          onClick={() => {
+            setTyped(null);
+            onChange(clamp(value - step));
+          }}
+        >
+          −
+        </button>
+        <input
+          type="number"
+          aria-label={label}
+          className="input w-28 text-right"
+          min={min}
+          max={max}
+          step="any"
+          value={typed ?? String(value)}
+          disabled={disabled}
+          onChange={(e) => setTyped(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+          }}
+        />
+        <span className="text-xs text-slate-500">{unit}</span>
+        <button
+          type="button"
+          className="btn-soft size-8 justify-center p-0"
+          aria-label={`${label} 늘리기`}
+          disabled={disabled || value >= max}
+          onClick={() => {
+            setTyped(null);
+            onChange(clamp(value + step));
+          }}
+        >
+          ＋
+        </button>
+      </div>
+    </div>
   );
 }

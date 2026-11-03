@@ -1,3 +1,8 @@
+import type { OrgToolName } from "@babojubot/contracts";
+import {
+  hasSessionMaintenance,
+  cancelSessionMaintenance,
+} from "./compaction.ts";
 import type {
   AgentRole,
   Event,
@@ -117,6 +122,8 @@ export async function claimNextRun(
       and(eq(wakes.agentId, agentId), isNull(wakes.runId), notSteering)
     );
     const sessionTaskId = sessionTaskOfPending(pendingWakes);
+    if (await hasSessionMaintenance(tx, agentId, sessionTaskId))
+      return undefined;
     const instructions = await selectInstructions(tx, agentId);
     const plan = planRunStart(
       {
@@ -132,6 +139,7 @@ export async function claimNextRun(
     if (!admitsProviderRun(await lockProviderSlot(tx, plan.run.provider)))
       return undefined;
 
+    await cancelSessionMaintenance(tx, agentId, sessionTaskId);
     await tx.insert(runs).values({
       ...plan.run,
       status: "running",
@@ -194,13 +202,19 @@ export async function finishRun(
       tx,
       run,
       agent.sessionGeneration,
-      plan.update.sessionAfter
+      plan.update.sessionAfter,
+      result.stopReason === "completed"
+        ? result.sessionMaintenance
+          ? { ...result.sessionMaintenance, tools: run.toolCatalog ?? [] }
+          : null
+        : null
     );
     return insertEvent(tx, plan.event);
   });
 }
 
 const finishingRunColumns = {
+  toolCatalog: runs.toolCatalog,
   id: runs.id,
   organizationId: runs.organizationId,
   agentId: runs.agentId,
@@ -462,4 +476,16 @@ export async function loadRunContext(
       researchFlow: template ?? null,
     },
   };
+}
+
+/** Last catalog actually served to this run; retained with its maintenance metadata at settlement. */
+export async function recordRunToolCatalog(
+  db: Database,
+  runId: string,
+  tools: OrgToolName[]
+) {
+  await db
+    .update(runs)
+    .set({ toolCatalog: tools })
+    .where(and(eq(runs.id, runId), eq(runs.status, "running")));
 }

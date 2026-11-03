@@ -1,0 +1,34 @@
+{
+  "provenance": "Synthetic app-server exchange",
+  "steps": [
+    { "input": { "id": 1, "method": "initialize" } },
+    { "frame": { "id": 1, "result": {} } },
+    { "input": { "method": "initialized" } },
+    { "input": { "id": 2, "method": "thread/start" } },
+    { "frame": { "id": 2, "result": { "thread": { "id": "thread-one" } } } },
+    { "input": { "id": 3, "method": "turn/start" } },
+    { "frame": { "id": 3, "result": { "turn": { "id": "turn-one" } } } },
+    {
+      "input": {
+        "id": 4,
+        "method": "turn/steer",
+        "params": {
+          "expectedTurnId": "turn-one",
+          "input": [{ "text": "\ucd94\uac00 \uac80\uc99d" }]
+        }
+      }
+    },
+    { "frame": { "id": 4, "result": { "turnId": "turn-one" } } },
+    {
+      "frame": {
+        "method": "turn/completed",
+        "params": {
+          "threadId": "thread-one",
+          "turn": { "id": "turn-one", "status": "completed" }
+        }
+      }
+    },
+    { "exit": 0 }
+  ],
+  "version": "codex-cli 0.166.0"
+}

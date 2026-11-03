@@ -1,0 +1,24 @@
+{
+  "provenance": "Synthetic, no model recording",
+  "steps": [
+    { "input": { "type": "user" } },
+    {
+      "frame": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "steer-session"
+      }
+    },
+    { "input": { "type": "user", "message": { "content": "추가 검증" } } },
+    {
+      "frame": {
+        "type": "result",
+        "subtype": "success",
+        "session_id": "steer-session",
+        "usage": { "input_tokens": 1, "output_tokens": 1 },
+        "total_cost_usd": 0
+      }
+    },
+    { "exit": 0 }
+  ]
+}

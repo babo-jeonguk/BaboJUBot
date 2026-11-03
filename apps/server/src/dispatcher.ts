@@ -133,7 +133,7 @@ export class RunDispatcher {
   /**
    * 진행 중인 실행 시도에 사용자 메시지를 끼워 넣는다. 그 실행 시도를 맡은 adapter가 받았다고 확인해야 `accepted`이고,
    * 이 프로세스에서 진행 중이 아니거나(아직 등록 전·이미 끝남·취소됨) adapter가 거절하면 `rejected`다.
-   * adapter는 받기로 정한 뒤 실패할 수 있는 일을 하지 않으므로(계약이 금지한다) 오류는 넣지 않은 것으로 본다.
+   * 통신 오류는 거절로 처리한다. 실제로 전달됐으나 응답을 잃은 경우는 감수한다(#98).
    */
   async steer(message: SteerMessage): Promise<SteerOutcome> {
     const active = this.#active.get(message.runId);

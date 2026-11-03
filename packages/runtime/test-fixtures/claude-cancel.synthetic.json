@@ -1,0 +1,20 @@
+{
+  "provenance": "Synthetic, no model recording",
+  "steps": [
+    { "input": { "type": "user" } },
+    {
+      "frame": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "cancel-session"
+      }
+    },
+    {
+      "input": {
+        "type": "control_request",
+        "request": { "subtype": "interrupt" }
+      }
+    },
+    { "exit": 0 }
+  ]
+}

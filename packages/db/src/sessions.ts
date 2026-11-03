@@ -1,4 +1,8 @@
-import type { SessionState } from "@babojubot/contracts";
+import type {
+  SessionState,
+  SessionMaintenance,
+  OrgToolName,
+} from "@babojubot/contracts";
 import {
   planSessionWriteBack,
   type NewRun,
@@ -55,7 +59,8 @@ export async function writeBackSession(
     | "sessionGeneration"
   >,
   agentSessionGeneration: number,
-  nextSession: SessionState | null
+  nextSession: SessionState | null,
+  maintenance: (SessionMaintenance & { tools?: OrgToolName[] }) | null = null
 ) {
   const plan = planSessionWriteBack(run, agentSessionGeneration, nextSession);
   if (plan.kind === "stale") return;
@@ -72,6 +77,7 @@ export async function writeBackSession(
       provider: plan.session.provider,
       instructionsBundleVersion: plan.session.instructionsBundleVersion,
       state: plan.session.state,
+      maintenance,
       runId: run.id,
     })
     .onConflictDoUpdate({
@@ -80,6 +86,7 @@ export async function writeBackSession(
         provider: sql`excluded.provider`,
         instructionsBundleVersion: sql`excluded.instructions_bundle_version`,
         state: sql`excluded.state`,
+        maintenance: sql`excluded.maintenance`,
         runId: sql`excluded.run_id`,
       },
     });

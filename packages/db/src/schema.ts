@@ -27,6 +27,8 @@ import {
   type FlowKind,
   type NewEvent,
   type SessionState,
+  type SessionMaintenance,
+  type OrgToolName,
   type Usage,
   type WakeKind,
 } from "@babojubot/contracts";
@@ -37,6 +39,7 @@ import {
   boolean,
   check,
   foreignKey,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -235,6 +238,7 @@ export const runs = pgTable(
     instructionsBundleVersion: text("instructions_bundle_version"),
     sessionBefore: jsonb("session_before").$type<SessionState>(),
     sessionAfter: jsonb("session_after").$type<SessionState>(),
+    toolCatalog: jsonb("tool_catalog").$type<OrgToolName[]>(),
     /**
      * 이 실행 시도의 세션 자리(core `sessionTaskOf`): 작업 세션이면 그 작업, 에이전트 세션이면 없음. 같은 조직의 깨우기 사유에서 정하며,
      * 세션을 저장하는 `agent_sessions`가 (조직, 작업)으로 참조한다(작업 표가 실행 시도를 참조하므로 여기서는 FK를 두지 않는다).
@@ -1269,6 +1273,9 @@ export const agentSessions = pgTable(
     provider: text("provider").notNull(),
     instructionsBundleVersion: text("instructions_bundle_version"),
     state: jsonb("state").$type<SessionState>().notNull(),
+    maintenance: jsonb("maintenance").$type<
+      SessionMaintenance & { tools?: OrgToolName[] }
+    >(),
     /** 마지막으로 저장한 실행 시도. */
     runId: uuid("run_id").notNull(),
   },
@@ -1567,5 +1574,48 @@ export const inboxStates = pgTable(
       t.resultSubmissionId
     ),
     uniqueIndex("inbox_states_run_unique").on(t.runId),
+  ]
+);
+
+/** Singleton operational settings; no organization Event. */
+export const compactionSettings = pgTable(
+  "compaction_settings",
+  {
+    id: integer("id").primaryKey(),
+    thresholdTokens: integer("threshold_tokens").notNull(),
+    ratioPercent: doublePrecision("ratio_percent").notNull(),
+  },
+  (t) => [
+    check("compaction_settings_singleton", sql`${t.id} = 1`),
+    check(
+      "compaction_threshold_range",
+      sql`${t.thresholdTokens} between 50000 and 1000000`
+    ),
+    check("compaction_ratio_range", sql`${t.ratioPercent} between 50 and 95`),
+  ]
+);
+
+/** Durable maintenance dispatch marker. Kept independently of session resets until the process settles. */
+export const sessionMaintenanceLeases = pgTable(
+  "session_maintenance_leases",
+  {
+    id: uuid("id").primaryKey(),
+    sessionId: uuid("session_id").notNull(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    agentId: uuid("agent_id").notNull(),
+    taskId: uuid("task_id"),
+    provider: text("provider").notNull(),
+    generation: integer("generation").notNull(),
+    status: text("status", {
+      enum: ["running", "completed", "failed", "unknown"],
+    }).notNull(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.agentId],
+      foreignColumns: [agents.organizationId, agents.id],
+    }),
   ]
 );
