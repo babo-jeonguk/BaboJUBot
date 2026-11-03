@@ -12,6 +12,20 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 if (args[0] === "login") process.exit(0);
+if (args[0] === "models") {
+  if (variant === "logged-out") {
+    console.error(
+      "Error: Please sign in to view available models. Launch the CLI without arguments to sign in."
+    );
+    process.exit(1);
+  }
+  if (variant === "offline") {
+    console.error("Error: could not reach the service.");
+    process.exit(1);
+  }
+  console.log("model-one\tModel One");
+  process.exit(0);
+}
 if (variant === "banner")
   console.log("A new version is available. Run the update command.");
 const finish = async () => {
@@ -82,6 +96,18 @@ if (kind === "codex")
 
 if (kind === "antigravity")
   for await (const _ of input) {
+    // 실제 프로그램이 로그인 없이 내는 출력이다.
+    if (variant === "logged-out") {
+      out({
+        event: "result",
+        result: {
+          conversation_id: "",
+          status: "ERROR",
+          error: "authentication failed or timed out",
+        },
+      });
+      process.exit(1);
+    }
     if (variant === "slow-start") await sleep(13_000);
     out({ event: "init", conversation_id: "conversation-one" });
     out({

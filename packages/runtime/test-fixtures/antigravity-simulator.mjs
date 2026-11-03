@@ -8,6 +8,10 @@ if (args.includes("--version")) {
   console.log("9.9.9");
   process.exit(0);
 }
+if (args[0] === "models") {
+  console.log("simulated-model\tSimulated Model");
+  process.exit(0);
+}
 const id = args.includes("--conversation")
   ? args[args.indexOf("--conversation") + 1]
   : crypto.randomUUID();

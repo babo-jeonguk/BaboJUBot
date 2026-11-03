@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll } from "vitest";
@@ -8,13 +8,6 @@ import { createOpenCodeProvider } from "./providers/opencode.ts";
 import { saying } from "./providers/test-support.ts";
 const root = await mkdtemp(path.join(tmpdir(), "other-provider-contract-"));
 afterAll(() => rm(root, { recursive: true, force: true }));
-await mkdir(path.join(root, "providers/antigravity/.gemini"), {
-  recursive: true,
-});
-await writeFile(
-  path.join(root, "providers/antigravity/.gemini/oauth_creds.json"),
-  "{}"
-);
 for (const kind of ["antigravity", "opencode"] as const) {
   const provider = (
     kind === "antigravity" ? createAntigravityProvider : createOpenCodeProvider

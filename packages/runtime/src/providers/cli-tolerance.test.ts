@@ -20,13 +20,6 @@ async function home() {
   roots.push(root);
   await mkdir(path.join(root, "providers/claude"), { recursive: true });
   await writeFile(path.join(root, "providers/claude/setup-token"), "login");
-  await mkdir(path.join(root, "providers/antigravity/.gemini"), {
-    recursive: true,
-  });
-  await writeFile(
-    path.join(root, "providers/antigravity/.gemini/oauth_creds.json"),
-    "{}"
-  );
   return root;
 }
 const quirky = (kind: string, variant: string) =>
@@ -183,5 +176,33 @@ describe("failures around the run", () => {
     });
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("failed");
+  }, 20_000);
+});
+
+describe("Antigravity login", () => {
+  const check = async (variant: string) =>
+    adapters
+      .antigravity(await home(), variant)
+      .adapter.checkReadiness(new AbortController().signal);
+
+  it("is judged by what the program does, not by a file", async () => {
+    expect(await check("plain")).toEqual({ status: "ready", reason: null });
+    expect(await check("logged-out")).toEqual({
+      status: "not_ready",
+      reason: "product_login_missing",
+    });
+    expect(await check("offline")).toEqual({
+      status: "not_ready",
+      reason: "check_failed",
+    });
+  }, 20_000);
+
+  it("reports a run without a login as needing one", async () => {
+    const { adapter } = adapters.antigravity(await home(), "logged-out");
+    const result = await adapter.execute(request(), control());
+    expect(result).toMatchObject({
+      stopReason: "failed",
+      errorCode: "login_required",
+    });
   }, 20_000);
 });

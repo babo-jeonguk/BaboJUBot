@@ -22,13 +22,6 @@ it("uses one private workspace MCP configuration, normalizes usage, and removes 
   roots.push(root);
   const config = path.join(root, ".agents/mcp_config.json");
   await mkdir(path.dirname(config));
-  await mkdir(path.join(root, "providers/antigravity/.gemini"), {
-    recursive: true,
-  });
-  await writeFile(
-    path.join(root, "providers/antigravity/.gemini/oauth_creds.json"),
-    "{}"
-  );
   const fixture = path.join(root, "fixture.json");
   await writeFile(
     fixture,

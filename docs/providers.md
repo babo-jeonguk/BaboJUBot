@@ -24,7 +24,7 @@ chmod 700 "$product_root/providers/claude" "$product_root/providers/codex" "$pro
 - Claude: `env -i PATH="$PATH" HOME="$product_root/providers/claude" CLAUDE_CONFIG_DIR="$product_root/providers/claude/config" claude setup-token`. 발급받은 토큰만 `$product_root/providers/claude/setup-token`에 저장하고 `chmod 600`을 적용한다. 토큰을 명령 인수·Git·이슈에 넣지 않는다.
 - Codex: `env -i PATH="$PATH" HOME="$product_root/providers/codex" CODEX_HOME="$product_root/providers/codex" codex login`.
 - OpenCode: `env -i PATH="$PATH" HOME="$product_root/providers/opencode" XDG_CONFIG_HOME="$product_root/providers/opencode/config" XDG_DATA_HOME="$product_root/providers/opencode/data" XDG_CACHE_HOME="$product_root/providers/opencode/cache" XDG_STATE_HOME="$product_root/providers/opencode/state" OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_CLAUDE_CODE=1 opencode auth login`. 무료 모델 제공자는 로그인 없이 제공할 수도 있다.
-- Antigravity: `env -i PATH="$PATH" HOME="$product_root/providers/antigravity" XDG_CONFIG_HOME="$product_root/providers/antigravity/config" XDG_DATA_HOME="$product_root/providers/antigravity/data" XDG_CACHE_HOME="$product_root/providers/antigravity/cache" agy`에서 로그인한다. 이 판의 제품 로그인은 제품 HOME의 `.gemini/oauth_creds.json`에서 확인한다.
+- Antigravity: `env -i PATH="$PATH" HOME="$product_root/providers/antigravity" XDG_CONFIG_HOME="$product_root/providers/antigravity/config" XDG_DATA_HOME="$product_root/providers/antigravity/data" XDG_CACHE_HOME="$product_root/providers/antigravity/cache" agy`에서 로그인한다. 로그인 여부는 파일이 아니라 `agy models`의 응답으로 판단한다.
 
 제품 HOME/XDG와 환경 변수 허용 목록은 개인 설정의 자동 유입을 막는 경계다. 호스트 파일·네트워크 접근을 격리하는 컨테이너는 후속 #102 범위다. 사용자 홈·자격 증명·연구 원본은 Git에 추가하지 않는다.
 
