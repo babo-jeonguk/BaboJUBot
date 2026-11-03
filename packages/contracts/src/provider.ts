@@ -42,8 +42,8 @@ export const maxConcurrentRunsSchema = z
 /**
  * 프로바이더 연결이 지원하는 일(#96). 연결마다 모든 항목을 기본값 없이 선언하고, 공통 검사(`describeRuntimeContract`)가
  * 선언과 동작이 맞는지 확인한다.
- * - `steer`: 진행 중인 실행 시도에 사용자 메시지를 끼워 넣는다(`실행 중 끼워 넣기`). 받았다는 확인(`accepted`)이나 확실히 넣지 않았다는
- *   거절(`rejected`)만 돌려줄 수 있는 연결만 선언한다. 넣었는지 모르는 실패가 있는 연결은 선언하지 않는다.
+ * - `steer`: 진행 중인 실행 시도에 사용자 메시지를 끼워 넣는다(`실행 중 끼워 넣기`). 실행 시도·턴 확인 뒤 전달하면 `accepted`, 확인 실패·명시적 거절이면 `rejected`다.
+ *   수신 여부를 모르는 통신 오류는 던지며 거절로 처리한다. 전달 직후 턴이 끝나 반영되지 않을 수 있다.
  * - `resume`: 이전 세션을 이어 간다. 이어 가지 못하면 같은 실행 시도 안에서 새 세션으로 시작하고 그 사실을 진행 활동으로 남긴다.
  * - `reinjectInstructionsOnResume`: 세션을 이어 갈 때 지침(Role·Soul·Skill)을 다시 넣는다. `resume`이 있어야 한다.
  * - `usageTokens`·`usageCost`: 실행 시도마다 토큰 수·비용을 보고한다. 하나만 보고할 수도 있다.
@@ -130,6 +130,17 @@ export const providerSummarySchema = z.object({
 });
 export type ProviderSummary = z.infer<typeof providerSummarySchema>;
 
+/** Claude 세션 미리 압축. 비율은 캐시 유지 시간의 50~95%다. */
+export const compactionSettingsSchema = z.strictObject({
+  thresholdTokens: z.number().int().min(50_000).max(1_000_000),
+  ratio: z.number().min(0.5).max(0.95),
+});
+export type CompactionSettings = z.infer<typeof compactionSettingsSchema>;
+export const defaultCompactionSettings: CompactionSettings = {
+  thresholdTokens: 400_000,
+  ratio: 0.9,
+};
+
 /**
  * 전역 프로바이더 설정. Lead 기본값은 사용자가 고르지 않은 Lead를 만들 때, 작업자 기본값은 Lead가 작업자의 프로바이더를
  * 비운 요청을 받을 때 쓴다. 바꿔도 이미 있는 에이전트와 이미 올라온 요청은 그대로다.
@@ -139,6 +150,7 @@ export const providerSettingsSchema = z.object({
   leadDefault: providerChoiceSchema,
   workerDefault: providerChoiceSchema,
   providers: z.array(providerSummarySchema),
+  compaction: compactionSettingsSchema.optional(),
 });
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
 
@@ -158,6 +170,7 @@ export type ProviderCatalog = z.infer<typeof providerCatalogSchema>;
 
 /** 사용자의 Lead·작업자 기본값 변경. 둘을 함께 저장한다. */
 export const updateProviderDefaultsInputSchema = z.strictObject({
+  compaction: compactionSettingsSchema.optional(),
   leadDefault: providerChoiceSchema,
   workerDefault: providerChoiceSchema,
 });

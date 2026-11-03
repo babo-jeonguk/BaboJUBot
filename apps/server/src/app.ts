@@ -1,3 +1,8 @@
+import {
+  recoverProviderProcesses,
+  cleanupAntigravityWorkspaces,
+} from "@babojubot/runtime";
+import { CompactionScheduler } from "./compaction.ts";
 import { Workspaces } from "./workspace.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -179,6 +184,7 @@ export type RunningServer = {
   drain: () => Promise<void>;
   /** 주입한 시계의 지금 시각으로 지난 heartbeat를 처리한다. 테스트 helper(서버는 주기적으로 스스로 확인한다). */
   tickHeartbeats: () => Promise<void>;
+  tickCompactions: () => Promise<void>;
   /** 주입한 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. 테스트 helper(서버는 스스로 보낸다). */
   deliverNotifications: () => Promise<void>;
   /**
@@ -240,6 +246,14 @@ export async function startServer({
       workspaces,
     }),
     onLoginRequired: (provider) => void readiness.check(provider),
+  });
+  const compactions = new CompactionScheduler({
+    db,
+    hub,
+    providers: registry.adapters,
+    dispatcher,
+    now,
+    url: () => url,
   });
   const heartbeats = new HeartbeatScheduler({
     db,
@@ -327,6 +341,7 @@ export async function startServer({
 
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
+  app.use(orgToolsBasePath, compactions.router());
   app.use(
     orgToolsBasePath,
     orgToolsRouter({
@@ -1163,6 +1178,7 @@ export async function startServer({
     const failures: unknown[] = [];
     for (const close of [
       () => heartbeats.close(),
+      () => compactions.close(),
       () => readiness.close(),
       () => dispatcher.close(),
       () => notifications.close(),
@@ -1184,8 +1200,12 @@ export async function startServer({
   };
   try {
     // 끼워 넣는 중으로 남은 메시지를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.
+    await recoverProviderProcesses(dataDir);
+    await cleanupAntigravityWorkspaces(dataDir);
     await recoverInterruptedSteers(db);
+    await compactions.recover();
     await dispatcher.start();
+    compactions.start();
     readiness.checkAll();
     heartbeats.start();
     notifications.start();
@@ -1214,6 +1234,7 @@ export async function startServer({
     url,
     drain: () => dispatcher.drain(),
     tickHeartbeats: () => heartbeats.tick(),
+    tickCompactions: () => compactions.tick(),
     deliverNotifications: () => notifications.flush(),
     close: stop,
   };

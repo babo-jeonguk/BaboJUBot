@@ -176,6 +176,27 @@
       "when": 1793491200000,
       "tag": "0024_file_artifacts",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793617268772,
+      "tag": "0025_provider_compaction",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793617964038,
+      "tag": "0026_session_maintenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793671613911,
+      "tag": "0027_run_tool_catalog",
+      "breakpoints": true
     }
   ]
 }

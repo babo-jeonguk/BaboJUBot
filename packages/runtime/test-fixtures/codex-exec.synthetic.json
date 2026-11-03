@@ -1,0 +1,20 @@
+{
+  "provenance": "Synthetic exec exchange",
+  "version": "codex-cli 0.166.0",
+  "argv": { "exec": true, "--json": true },
+  "steps": [
+    { "input": { "identity": {} } },
+    { "frame": { "type": "thread.started", "thread_id": "exec-thread" } },
+    {
+      "frame": {
+        "type": "turn.completed",
+        "usage": {
+          "input_tokens": 12,
+          "output_tokens": 5,
+          "cached_input_tokens": 3
+        }
+      }
+    },
+    { "exit": 0 }
+  ]
+}

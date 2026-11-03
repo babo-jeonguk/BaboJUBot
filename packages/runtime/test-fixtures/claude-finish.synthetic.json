@@ -1,0 +1,37 @@
+{
+  "provenance": "Synthetic protocol example; not a model recording",
+  "steps": [
+    { "input": { "type": "user", "message": { "role": "user" } } },
+    { "stdout": "{\"type\":\"system\",\"subtype\":\"init\"," },
+    { "stdout": "\"session_id\":\"session-one\"}\n" },
+    {
+      "frame": {
+        "type": "assistant",
+        "message": {
+          "content": [
+            { "type": "thinking", "thinking": "private thinking" },
+            {
+              "type": "tool_use",
+              "name": "Read",
+              "input": { "secret": "private raw input" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "frame": {
+        "type": "result",
+        "subtype": "success",
+        "session_id": "session-one",
+        "total_cost_usd": 0.02,
+        "usage": {
+          "input_tokens": 21,
+          "output_tokens": 7,
+          "cache_read_input_tokens": 0
+        }
+      }
+    },
+    { "exit": 0 }
+  ]
+}

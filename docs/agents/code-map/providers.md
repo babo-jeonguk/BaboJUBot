@@ -33,3 +33,10 @@ claimNextRun(조직 → 에이전트 → 세션 자리 읽기 → lockProviderSl
 ```
 
 상한을 넘었는데 시작한 실행 시도는 `lockProviderSlot`, 기다리는 깨우기가 시작하지 않으면 `kickProvider`·`listAgentsWithPendingWakes`, 다른 탭이 갱신되지 않으면 `settings_changed` 처리에서 시작합니다.
+
+## 실제 CLI 연결과 미리 압축
+
+- `runtime/src/providers/{claude,codex,opencode,antigravity}.ts`: 고정판 프로토콜·제품 환경·로그인·모델 목록·세션·사용량. `process.ts`는 프로세스 그룹 종료, `recovery.ts`는 Linux 재시작 정리를 맡는다. 서버 등록은 `main.ts`의 `BABOJUBOT_PROVIDERS`다. [운영 안내](../../providers.md), [구현 근거](../../research/issue-98-101-implementation.md).
+- `db/src/compaction.ts`의 조직→에이전트→연결 자리 claim과 `runs.ts` admission은 세션 정비·일반 실행을 에이전트 단위로 배타 처리한다(세션이 달라도 동시에 돌지 않는다). `session_maintenance_leases`는 Run과 별개이며 결과 불명 재시도는 하지 않는다. migration 0025는 설정, 0026은 세션 metadata·정비 lease, 0027은 실제로 제공한 MCP 목록이다.
+- `server/src/compaction.ts`는 예약과 목록 전용 MCP 토큰을 소유한다. `RuntimeAdapter.precompact`는 같은 세션을 유지하며 Run/Event를 만들지 않는다. 압축은 서버 시계로 15분을 넘으면 중단한다. 검증은 `server/test/compaction.test.ts`, `web/e2e/compaction.spec.ts`, runtime provider tests와 합성 공통 검사다.
+- 끼워 넣기 accepted는 살아 있는 실행·턴을 확인하고 전달/ACK를 받았다는 뜻이다. 종료 경쟁에서 모델 반영까지 보장하지 않는다. 확정 거절은 rejected, 수신 불명 전송 오류는 throw 후 호출자가 rejected로 처리한다.

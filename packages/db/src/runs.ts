@@ -1,3 +1,8 @@
+import type { OrgToolName } from "@babojubot/contracts";
+import {
+  hasRunningMaintenance,
+  cancelSessionMaintenance,
+} from "./compaction.ts";
 import type {
   AgentRole,
   Event,
@@ -85,6 +90,8 @@ export type ClaimedRun = {
  * 에이전트의 프로바이더 연결에 자리가 없으면(진행 중 실행 시도가 동시 실행 상한 이상, core `admitsProviderRun`) 깨우기를 남겨 두고
  * 아무것도 하지 않는다. 자리 확인은 연결의 상한 행 잠금(`lockProviderSlot`) 아래이므로 조직이 달라도 같은 연결의 admission은
  * 상한을 넘지 않는다. 잠금 순서는 조직 → 에이전트 → 연결 상한이다. 자리가 나면 dispatcher가 그 연결을 기다리는 에이전트를 다시 촉진한다.
+ *
+ * 그 에이전트의 세션이 압축 중이면(세션이 달라도) 깨우기를 남겨 두고 아무것도 하지 않는다. 압축이 끝나면 `finishCompaction`의 결과로 다시 촉진한다.
  */
 export async function claimNextRun(
   db: Database,
@@ -110,7 +117,11 @@ export async function claimNextRun(
       .where(eq(agents.id, agentId))
       .for("update");
     if (!agent || agent.paused) return undefined;
-    if (await findRunningRunId(tx, agentId)) return undefined;
+    if (
+      (await findRunningRunId(tx, agentId)) ||
+      (await hasRunningMaintenance(tx, agentId))
+    )
+      return undefined;
 
     const pendingWakes = await selectWakes(
       tx,
@@ -132,6 +143,7 @@ export async function claimNextRun(
     if (!admitsProviderRun(await lockProviderSlot(tx, plan.run.provider)))
       return undefined;
 
+    await cancelSessionMaintenance(tx, agentId, sessionTaskId);
     await tx.insert(runs).values({
       ...plan.run,
       status: "running",
@@ -194,13 +206,19 @@ export async function finishRun(
       tx,
       run,
       agent.sessionGeneration,
-      plan.update.sessionAfter
+      plan.update.sessionAfter,
+      result.stopReason === "completed"
+        ? result.sessionMaintenance
+          ? { ...result.sessionMaintenance, tools: run.toolCatalog ?? [] }
+          : null
+        : null
     );
     return insertEvent(tx, plan.event);
   });
 }
 
 const finishingRunColumns = {
+  toolCatalog: runs.toolCatalog,
   id: runs.id,
   organizationId: runs.organizationId,
   agentId: runs.agentId,
@@ -462,4 +480,16 @@ export async function loadRunContext(
       researchFlow: template ?? null,
     },
   };
+}
+
+/** Last catalog actually served to this run; retained with its maintenance metadata at settlement. */
+export async function recordRunToolCatalog(
+  db: Database,
+  runId: string,
+  tools: OrgToolName[]
+) {
+  await db
+    .update(runs)
+    .set({ toolCatalog: tools })
+    .where(and(eq(runs.id, runId), eq(runs.status, "running")));
 }

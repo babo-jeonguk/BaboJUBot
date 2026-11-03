@@ -1,0 +1,17 @@
+{
+  "provenance": "Synthetic, no model recording",
+  "argv": { "--resume": "session-one" },
+  "steps": [
+    { "input": { "type": "user" } },
+    {
+      "frame": {
+        "type": "result",
+        "subtype": "success",
+        "session_id": "session-one",
+        "total_cost_usd": 0.05,
+        "usage": { "input_tokens": 10, "output_tokens": 5 }
+      }
+    },
+    { "exit": 0 }
+  ]
+}

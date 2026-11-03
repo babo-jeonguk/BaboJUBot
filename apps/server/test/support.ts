@@ -46,6 +46,7 @@ export type TestServer = {
   drain: () => Promise<void>;
   /** 서버 시계의 지금 시각으로 지난 heartbeat를 처리한다. */
   tickHeartbeats: () => Promise<void>;
+  tickCompactions: () => Promise<void>;
   /** 서버 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. */
   deliverNotifications: () => Promise<void>;
   /** 서버(실행 중인 실행 시도 포함)만 멈추고 DB는 남긴다. */
@@ -140,6 +141,7 @@ export async function startTestServer(
       ),
     drain: () => server.drain(),
     tickHeartbeats: () => server.tickHeartbeats(),
+    tickCompactions: () => server.tickCompactions(),
     deliverNotifications: () => server.deliverNotifications(),
     async stopServer() {
       serverStopped = true;

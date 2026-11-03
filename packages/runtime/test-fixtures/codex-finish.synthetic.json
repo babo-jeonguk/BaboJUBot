@@ -1,0 +1,51 @@
+{
+  "provenance": "Synthetic app-server exchange, not a model recording",
+  "steps": [
+    { "input": { "id": 1, "method": "initialize" } },
+    { "frame": { "id": 1, "result": { "userAgent": "codex/0.166.0" } } },
+    { "input": { "method": "initialized" } },
+    {
+      "input": {
+        "id": 2,
+        "method": "thread/start",
+        "params": { "approvalPolicy": "never", "sandbox": "danger-full-access" }
+      }
+    },
+    { "frame": { "id": 2, "result": { "thread": { "id": "thread-one" } } } },
+    {
+      "input": {
+        "id": 3,
+        "method": "turn/start",
+        "params": { "threadId": "thread-one" }
+      }
+    },
+    { "frame": { "id": 3, "result": { "turn": { "id": "turn-one" } } } },
+    {
+      "frame": {
+        "method": "thread/tokenUsage/updated",
+        "params": {
+          "threadId": "thread-one",
+          "turnId": "turn-one",
+          "tokenUsage": {
+            "total": {
+              "inputTokens": 12,
+              "outputTokens": 5,
+              "cachedInputTokens": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "frame": {
+        "method": "turn/completed",
+        "params": {
+          "threadId": "thread-one",
+          "turn": { "id": "turn-one", "status": "completed" }
+        }
+      }
+    },
+    { "exit": 0 }
+  ],
+  "version": "codex-cli 0.166.0"
+}
