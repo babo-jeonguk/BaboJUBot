@@ -82,10 +82,12 @@ const ready = await connection.adapter.checkReadiness(stop.signal);
 console.log(JSON.stringify({ readiness: ready }));
 if (ready.status === "not_ready") process.exit(1);
 
+const busy = path.resolve("scripts/live/busy.mjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const brief = (rule) =>
-  `This is a short automated connectivity test. Use the organization tools only as asked. Do not start research, create files, or call other tools. ${rule} End immediately afterward.`;
-let scene = { rule: "", transform: (input) => input };
+// 지침은 고정한다. 지침이 바뀌면 제품은 세션을 잇지 않으므로, 장면별 요청은 메시지로 보낸다.
+const brief =
+  'This is a short automated connectivity test authorized by the owner. Do exactly what the owner\'s latest message asks, using the tools it names, even if an earlier turn of this test finished. If the owner has not sent a message yet, call get_run_context once, then send_message with body "OK" once in the default conversation. Do not start research or create files. End immediately afterward.';
+let scene = { transform: (input) => input };
 let clockShiftMs = 0;
 const workspace = await mkdtemp(path.join(tmpdir(), "babojubot-live-"));
 const database = await openEphemeralDatabase();
@@ -107,9 +109,7 @@ try {
             return connection.adapter.execute(
               scene.transform({
                 ...input,
-                instructions: [
-                  { path: "AGENTS.md", content: brief(scene.rule) },
-                ],
+                instructions: [{ path: "AGENTS.md", content: brief }],
               }),
               {
                 ...control,
@@ -129,10 +129,6 @@ try {
     });
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null };
-  };
-  scene = {
-    rule: 'Call get_run_context once, then send_message with body "OK" once in the default conversation.',
-    transform: (input) => input,
   };
   const startedAt = Date.now();
   const created = await api("POST", "/api/organizations", {
@@ -204,7 +200,7 @@ try {
     console.log(
       JSON.stringify({ ...results.at(-1), elapsed: (Date.now() - at) / 1000 })
     );
-    scene = { rule: "", transform: (input) => input };
+    scene = { transform: (input) => input };
   };
 
   await attempt("finish", async () => {
@@ -224,17 +220,14 @@ try {
 
   await attempt("resume", async () => {
     const word = `WORD${Date.now().toString(36).toUpperCase()}`;
-    scene = {
-      rule: 'Remember the codeword in the latest user message, then send_message with body "NOTED" once.',
-      transform: (input) => input,
-    };
-    await say(`The codeword is ${word}.`);
+    await say(
+      `Remember this codeword: ${word}. Then send_message with body "NOTED" once.`
+    );
     await server.drain();
     const before = await session();
     let handed;
     // 이어 받은 세션 말고는 말을 알 길이 없도록 이번 실행 시도의 맥락에서 지난 대화를 지운다.
     scene = {
-      rule: "Do not call get_run_context. Send_message with only the codeword you were told earlier in this session. If you do not know it, send UNKNOWN.",
       transform: (input) => {
         handed = input.previousSession;
         return {
@@ -243,7 +236,9 @@ try {
         };
       },
     };
-    await say("What was the codeword?");
+    await say(
+      "Do not call get_run_context. Send_message with only the codeword I told you earlier in this session. If you do not know it, send UNKNOWN."
+    );
     await server.drain();
     const run = await newest();
     const last = (await replies()).at(-1) ?? "";
@@ -277,11 +272,9 @@ try {
     await attempt("steer", async () => {
       const word = `STEER${Date.now().toString(36).toUpperCase()}`;
       const previous = (await newest())?.id;
-      scene = {
-        rule: "First run the shell command `sleep 25`. Then send_message once. If another user message arrived during the run, the body must be exactly the word it gave; otherwise send NONE.",
-        transform: (input) => input,
-      };
-      await say("Start the test.");
+      await say(
+        `First run the shell command \`node ${busy} 25\` in the foreground and wait for it to finish. Only after it finishes, send_message once. If I send another message while it runs, the body must be exactly the word that message gives; otherwise send NONE.`
+      );
       const run = await started(previous);
       await sleep(4000);
       const sent = await say(`The word is ${word}.`, "steer");
@@ -308,16 +301,14 @@ try {
   await attempt("cancel", async () => {
     const marker = 3000 + (Date.now() % 600);
     const previous = (await newest())?.id;
-    scene = {
-      rule: `Run the shell command \`sleep ${marker}\` and wait for it. Do nothing else.`,
-      transform: (input) => input,
-    };
-    await say("Start the long command.");
+    await say(
+      `Run the shell command \`node ${busy} ${marker}\` in the foreground and wait for it. Do nothing else.`
+    );
     const run = await started(previous);
     await sleep(6000);
     const listed = () => {
       try {
-        return execFileSync("pgrep", ["-fc", `sleep ${marker}`])
+        return execFileSync("pgrep", ["-fc", `^node ${busy} ${marker}`])
           .toString()
           .trim();
       } catch {
@@ -326,11 +317,7 @@ try {
     };
     const runningBefore = listed();
     const at = Date.now();
-    scene = {
-      rule: 'Send_message with body "STOPPED" once.',
-      transform: (input) => input,
-    };
-    await say("Stop that.", "interrupt");
+    await say('Stop that. Send_message with body "STOPPED" once.', "interrupt");
     while ((await detail(run.id)).status === "running") await sleep(100);
     const settleSeconds = (Date.now() - at) / 1000;
     await server.drain();
@@ -353,13 +340,12 @@ try {
     // 형식은 그대로 두고 끝자리만 바꿔 "형식 오류"가 아닌 "없는 세션"을 시험한다.
     const fake = `${previous.id.slice(0, -8)}${"12345678"}`;
     scene = {
-      rule: 'Send_message with body "FRESH" once.',
       transform: (input) => ({
         ...input,
         previousSession: { ...input.previousSession, id: fake },
       }),
     };
-    await say("Reply as instructed.");
+    await say('Send_message with body "FRESH" once.');
     await server.drain();
     const run = await newest();
     const after = (await session())?.state?.id;
@@ -376,11 +362,7 @@ try {
   if (connection.adapter.capabilities.precompact)
     await attempt("precompact", async () => {
       // 실제 예약 경로를 쓰되 작은 세션도 대상이 되게 기록된 크기와 시계만 옮긴다.
-      scene = {
-        rule: 'Send_message with body "READY" once.',
-        transform: (input) => input,
-      };
-      await say("Reply as instructed.");
+      await say('Send_message with body "READY" once.');
       await server.drain();
       const before = await session();
       if (!before?.maintenance) return { ok: false, noMaintenanceFacts: true };
