@@ -12,6 +12,13 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 if (args[0] === "login") process.exit(0);
+if (args[0] === "auth") process.exit(variant === "logged-out" ? 1 : 0);
+// 이전 세션으로는 어떤 문구로든 시작하지 못하는 프로그램. 문구에 기대지 않는다는 것을 확인한다.
+const resuming = args.includes("--resume") || args.includes("resume");
+if (variant === "fails-on-resume" && resuming) {
+  console.error("Something unexpected happened with that conversation.");
+  process.exit(1);
+}
 if (args[0] === "models") {
   if (variant === "logged-out") {
     console.error(
@@ -45,6 +52,43 @@ if (kind === "claude")
   for await (const _ of input) {
     if (variant === "slow-start") await sleep(13_000);
     out({ type: "system", subtype: "init", session_id: "session-one" });
+    // 실제 프로그램이 인증에 실패할 때 내는 출력이다. subtype이 success인 데 주의한다.
+    if (variant === "auth-fail") {
+      out({
+        type: "assistant",
+        error: "authentication_failed",
+        message: {
+          content: [{ type: "text", text: "Failed to authenticate" }],
+        },
+      });
+      out({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: 401,
+        result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+        session_id: "session-one",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        total_cost_usd: 0,
+      });
+      process.exit(1);
+    }
+    if (variant === "api-error") {
+      out({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: 500,
+        result: "API Error: 500 Internal server error",
+        session_id: "session-one",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        total_cost_usd: 0,
+      });
+      process.exit(1);
+    }
+    if (variant === "waits-for-steer") {
+      for await (const _steer of input) break;
+    }
     if (variant === "long-line")
       out({
         type: "assistant",
@@ -65,6 +109,37 @@ if (kind === "claude")
 if (kind === "codex" && args.includes("exec")) {
   for await (const _ of input) break;
   out({ type: "thread.started", thread_id: "thread-one" });
+  if (variant === "auth-fail") {
+    out({
+      type: "error",
+      message: "unexpected status 401 Unauthorized: Missing bearer",
+    });
+    out({
+      type: "turn.failed",
+      error: { message: "unexpected status 401 Unauthorized: Missing bearer" },
+    });
+    process.exit(1);
+  }
+  // 실제 프로그램은 재개한 세션의 누적 사용량을 낸다.
+  if (variant === "cumulative") {
+    out({
+      type: "turn.completed",
+      usage: resuming
+        ? {
+            input_tokens: 76549,
+            cached_input_tokens: 69632,
+            cache_write_input_tokens: 0,
+            output_tokens: 591,
+          }
+        : {
+            input_tokens: 43619,
+            cached_input_tokens: 38400,
+            cache_write_input_tokens: 0,
+            output_tokens: 461,
+          },
+    });
+    await finish();
+  }
   out({
     type: "turn.completed",
     usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0 },
@@ -76,12 +151,31 @@ if (kind === "codex")
   for await (const line of input) {
     const { id, method } = JSON.parse(line);
     if (method === "initialize") out({ id, result: {} });
+    if (method === "thread/resume") {
+      if (variant === "fails-on-resume")
+        out({ id, error: { code: -1, message: "that went badly" } });
+      else out({ id, result: { thread: { id: "thread-one" } } });
+    }
     if (method === "thread/start") {
       if (variant === "slow-answer") await sleep(3_500);
       out({ id, result: { thread: { id: "thread-one" } } });
     }
     if (method === "turn/start") {
       out({ id, result: { turn: { id: "turn-one" } } });
+      if (variant === "auth-fail") {
+        out({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-one",
+            turn: {
+              id: "turn-one",
+              status: "failed",
+              error: { message: "unexpected status 401 Unauthorized" },
+            },
+          },
+        });
+        continue;
+      }
       if (variant === "ignores-steer") await sleep(11_000);
       out({
         method: "turn/completed",

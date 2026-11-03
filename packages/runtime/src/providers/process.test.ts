@@ -29,7 +29,7 @@ it("skips lines that are not JSON and keeps reading", async () => {
     `console.log("update available"); console.log('{"n":1}'); console.log("{broken"); console.log('{"n":2}');`
   );
   expect(frames).toEqual([{ n: 1 }, { n: 2 }]);
-  expect(exit).toEqual({ code: 0, broken: false });
+  expect(exit).toMatchObject({ code: 0, broken: false });
 });
 
 it("skips only the line that is over the limit, across chunks", async () => {
@@ -65,4 +65,12 @@ it("keeps reading after a frame handler fails", async () => {
   );
   expect(frames).toEqual([{ n: 1 }, { n: 2 }]);
   expect(exit.broken).toBe(false);
+});
+
+it("keeps the end of the error output for the caller", async () => {
+  const { exit } = await run(
+    `process.stderr.write("x".repeat(20000) + "the real reason");`
+  );
+  expect(exit.stderr.endsWith("the real reason")).toBe(true);
+  expect(exit.stderr.length).toBeLessThanOrEqual(8192);
 });

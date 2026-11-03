@@ -206,3 +206,133 @@ describe("Antigravity login", () => {
     });
   }, 20_000);
 });
+
+const withSession = (id: string) => ({
+  ...request(),
+  previousSession: { id },
+});
+
+describe("what the program reports", () => {
+  it("does not take a Claude error result for a success", async () => {
+    const { adapter } = adapters.claude(await home(), "api-error");
+    const result = await adapter.execute(request(), control());
+    expect(result.stopReason).toBe("failed");
+    expect(result.errorCode).toBeUndefined();
+    expect(result.nextSession).toBeNull();
+  }, 20_000);
+
+  it.each(["claude", "codex app-server", "codex exec"] as const)(
+    "%s reports a rejected login as needing one",
+    async (name) => {
+      const { adapter } = adapters[name](await home(), "auth-fail");
+      const result = await adapter.execute(request(), control());
+      expect(result).toMatchObject({
+        stopReason: "failed",
+        errorCode: "login_required",
+      });
+    },
+    20_000
+  );
+
+  it("subtracts what the resumed Codex exec session already counted", async () => {
+    const dataDir = await home();
+    const { adapter } = adapters["codex exec"](dataDir, "cumulative");
+    const first = await adapter.execute(request(), control());
+    expect(first.usage).toMatchObject({
+      inputTokens: 5219,
+      cacheReadTokens: 38400,
+      outputTokens: 461,
+    });
+    const second = await adapter.execute(
+      { ...request(), previousSession: first.nextSession },
+      control()
+    );
+    expect(second.usage).toMatchObject({
+      inputTokens: 1698,
+      cacheReadTokens: 31232,
+      outputTokens: 130,
+    });
+  }, 20_000);
+});
+
+describe("a session that cannot be resumed", () => {
+  it.each(["claude", "codex app-server", "codex exec"] as const)(
+    "%s starts a new one whatever the program said",
+    async (name) => {
+      const { adapter } = adapters[name](await home(), "fails-on-resume");
+      const progress: unknown[] = [];
+      const result = await adapter.execute(withSession("old-session"), {
+        signal: new AbortController().signal,
+        emit: async (activity) => {
+          progress.push(activity);
+        },
+      });
+      expect(result.stopReason).toBe("completed");
+      expect(JSON.stringify(progress)).toContain("새 세션");
+    },
+    20_000
+  );
+
+  it("OpenCode starts a new one for any refused session", async () => {
+    const provider = createOpenCodeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+      ],
+    });
+    const result = await provider.adapter.execute(
+      withSession("bad-format"),
+      control()
+    );
+    expect(result.stopReason).toBe("completed");
+  }, 20_000);
+});
+
+describe("Claude login and steering", () => {
+  const check = async (variant: string) =>
+    adapters
+      .claude(await home(), variant)
+      .adapter.checkReadiness(new AbortController().signal);
+
+  it("asks the program whether it is logged in", async () => {
+    expect((await check("plain")).status).toBe("unknown");
+    expect(await check("logged-out")).toEqual({
+      status: "not_ready",
+      reason: "product_login_missing",
+    });
+  }, 20_000);
+
+  it("runs without a token file when the program has another login", async () => {
+    const dataDir = await home();
+    await rm(path.join(dataDir, "providers/claude/setup-token"));
+    const { adapter } = adapters.claude(dataDir, "plain");
+    const result = await adapter.execute(request(), control());
+    expect(result.stopReason).toBe("completed");
+  }, 20_000);
+
+  it("refuses a slash command but takes a message starting with a path", async () => {
+    const { adapter } = adapters.claude(await home(), "waits-for-steer");
+    const input = request();
+    const steer = (body: string) =>
+      adapter.steer!({
+        runId: input.identity.runId,
+        messageId: crypto.randomUUID(),
+        conversationId: crypto.randomUUID(),
+        body,
+      });
+    const outcomes: string[] = [];
+    let started = false;
+    const result = await adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async () => {
+        if (started) return;
+        started = true;
+        outcomes.push(await steer("/compact"));
+        outcomes.push(await steer("/home/me/notes.md 를 봐 주세요"));
+      },
+    });
+    expect(outcomes).toEqual(["rejected", "accepted"]);
+    expect(result.stopReason).toBe("completed");
+  }, 20_000);
+});

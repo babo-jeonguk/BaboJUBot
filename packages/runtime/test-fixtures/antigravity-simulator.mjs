@@ -17,9 +17,13 @@ if (args[0] === "models") {
   console.log("simulated-model\tSimulated Model");
   process.exit(0);
 }
-const id = args.includes("--conversation")
+const asked = args.includes("--conversation")
   ? args[args.indexOf("--conversation") + 1]
-  : crypto.randomUUID();
+  : null;
+// 실제 프로그램은 없는 대화를 받으면 경고하고 새 대화로 시작한다.
+if (asked === "expired")
+  console.error('warning: conversation "expired" not found');
+const id = asked && asked !== "expired" ? asked : crypto.randomUUID();
 const directory = path.join(
   process.env.HOME,
   ".gemini/antigravity-cli/conversations"

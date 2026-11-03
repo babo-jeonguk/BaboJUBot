@@ -122,6 +122,10 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(404).end("{}");
       return;
     }
+    if (id === "bad-format") {
+      res.writeHead(400).end("{}");
+      return;
+    }
     if (!session)
       session = { ...recording?.session, id, tokens: zero, cost: 0 };
     if (pathname.endsWith("/instructions/entries/babojubot")) {
