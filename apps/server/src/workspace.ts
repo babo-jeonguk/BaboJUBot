@@ -55,41 +55,37 @@ export class Workspaces {
     relative: string
   ): Promise<ArtifactSnapshot> {
     try {
-      const root = this.organization(orgId);
       if (path.isAbsolute(relative) || relative.includes("\0"))
         throw new ArtifactFileError();
-      const target = path.resolve(root, relative);
+      // 실제 경로로 비교한다. 데이터 폴더가 심볼릭 링크를 거쳐도 되고, 폴더를 벗어나는 링크만 막는다.
+      const root = await realpath(this.organization(orgId));
+      const target = await realpath(path.resolve(root, relative));
       const normalized = path.relative(root, target);
       if (
         !normalized ||
         normalized === ".." ||
-        normalized.startsWith(`..${path.sep}`)
+        normalized.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(normalized)
       )
         throw new ArtifactFileError();
-      // Reject symlinks in every component. The opened descriptor's real path is checked again below.
-      let component = root;
-      if ((await realpath(root)) !== root) throw new ArtifactFileError();
-      for (const part of normalized.split(path.sep)) {
-        component = path.join(component, part);
-        if ((await lstat(component)).isSymbolicLink())
-          throw new ArtifactFileError();
-      }
       const handle = await open(
         target,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
       );
       try {
         const before = await handle.stat({ bigint: true });
+        // 하드링크는 다른 조직의 파일을 이 폴더의 파일처럼 보이게 할 수 있어 막는다.
         if (
           !before.isFile() ||
           before.nlink !== 1n ||
           before.size > BigInt(artifactFileMaxBytes)
         )
           throw new ArtifactFileError();
-        // Linux descriptor lookup pins the file actually opened, including parent rename/symlink races.
-        if ((await realpath(`/proc/self/fd/${handle.fd}`)) !== target)
+        // 경로 확인과 파일 열기 사이에 파일이 바뀌지 않았는지 본다.
+        const current = await lstat(target, { bigint: true });
+        if (current.dev !== before.dev || current.ino !== before.ino)
           throw new ArtifactFileError();
-        const buffer = Buffer.alloc(Number(before.size) + 1);
+        const buffer = Buffer.alloc(Number(before.size));
         let length = 0;
         while (length < buffer.length) {
           const { bytesRead } = await handle.read(
@@ -101,15 +97,6 @@ export class Workspaces {
           if (!bytesRead) break;
           length += bytesRead;
         }
-        const after = await handle.stat({ bigint: true });
-        if (
-          BigInt(length) !== before.size ||
-          before.mtimeNs !== after.mtimeNs ||
-          before.ctimeNs !== after.ctimeNs ||
-          before.size !== after.size ||
-          (await realpath(`/proc/self/fd/${handle.fd}`)) !== target
-        )
-          throw new ArtifactFileError();
         const bytes = buffer.subarray(0, length);
         const extension = path.extname(target).toLowerCase();
         let content = "";

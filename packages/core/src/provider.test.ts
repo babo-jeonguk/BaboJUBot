@@ -1,6 +1,10 @@
 import { defaultAgentAppearance, type Agent } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
-import { admitsProviderRun, planAgentProviderChange } from "./provider.ts";
+import {
+  admitsProviderRun,
+  planAgentProviderChange,
+  checkProviderChoices,
+} from "./provider.ts";
 
 const agent: Agent = {
   id: "agent-1",

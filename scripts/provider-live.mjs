@@ -208,10 +208,10 @@ try {
     const run = await newest();
     const full = await detail(run.id);
     return {
+      // 맥락은 입력에도 있어 모델이 get_run_context를 건너뛸 수 있다. 활동으로만 남긴다.
       ok:
         run.status === "completed" &&
-        (await replies()).some((reply) => reply.trim() === "OK") &&
-        activityTypes(full).some((a) => a.tool === "get_run_context"),
+        (await replies()).some((reply) => reply.trim() === "OK"),
       seconds: (Date.now() - startedAt) / 1000,
       ...(await finished(run.id)),
       activities: activityTypes(full).map((a) => a.tool ?? a.type),

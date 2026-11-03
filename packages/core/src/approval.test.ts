@@ -252,7 +252,7 @@ describe("planApprovalDecision", () => {
   it("checks only the choices that differ from the Lead's proposal against the model lists", () => {
     // Lead 제안(fake·fake-large)이 지금 목록에 없어도, 그대로 둔 작업자는 다시 확인하지 않는다.
     const listsWithoutLead = [
-      { id: "fake", models: [] },
+      { id: "fake", models: [{ id: "fake-other", label: "다른 모델" }] },
       ...connections.slice(1),
     ];
     const plan = planApprovalDecision(

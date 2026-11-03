@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -12,12 +10,21 @@ import type {
   SteerMessage,
   SteerOutcome,
 } from "@babojubot/contracts";
-import { startProcess, probeTimeoutMs, saysLoginProblem } from "./process.ts";
+import {
+  startProcess,
+  probeTimeoutMs,
+  saysLoginProblem,
+  commandFor,
+  providerEnvironment,
+  runProbe,
+} from "./process.ts";
 
 export type CodexOptions = {
   dataDir: string;
   mode?: "app-server" | "exec";
   command?: readonly [string, ...string[]];
+  id?: string;
+  label?: string;
 };
 const failed = (): RunResult => ({
   stopReason: "failed",
@@ -42,19 +49,16 @@ const requestTimeoutMs = 2 * 60 * 1000;
 /** 끼워 넣기 응답 제한. 넘겨도 실행 시도는 끝내지 않는다. */
 const steerTimeoutMs = 10_000;
 export function createCodexProvider(options: CodexOptions): ProviderConnection {
-  const home = path.resolve(options.dataDir, "providers/codex");
-  const command = options.command ?? ["codex"];
-  const environment = () => ({
-    PATH: process.env.PATH,
-    HOME: home,
-    CODEX_HOME: home,
-  });
+  const id = options.id ?? "codex";
+  const home = path.resolve(options.dataDir, "providers", id);
+  const command = options.command ?? commandFor(id, "codex");
+  const environment = () => providerEnvironment(id, home, { CODEX_HOME: home });
   const readiness = async (
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> => {
     await mkdir(home, { recursive: true, mode: 0o700 });
     const probe = (args: string[]) =>
-      promisify(execFile)(command[0], [...command.slice(1), ...args], {
+      runProbe(command, args, {
         env: environment(),
         cwd: home,
         signal,
@@ -91,8 +95,9 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     (message: SteerMessage) => Promise<SteerOutcome>
   >();
   return {
-    id: "codex",
-    label: "Codex",
+    id,
+    label: options.label ?? "Codex",
+    login: { command, args: ["login"], env: environment() },
     models: [],
     async listModels(signal) {
       if ((await readiness(signal)).status === "not_ready") return [];
@@ -177,7 +182,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         usageCost: false,
         precompact: false,
       },
-      loginCommand: `CODEX_HOME='${home.replaceAll("'", "'\\''")}' codex login`,
+      loginCommand: `pnpm provider:login ${id}`,
       checkReadiness: readiness,
       ...(options.mode === "exec"
         ? {}
@@ -187,12 +192,9 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             },
           }),
       async execute(request, control) {
-        const checked = await readiness(control.signal);
+        await mkdir(home, { recursive: true, mode: 0o700 });
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        // 로그인이 없다고 확정된 때만 멈춘다. 확인 실패는 실제 실행으로 판단한다.
-        if (checked.reason === "product_login_missing")
-          return { ...failed(), errorCode: "login_required" as const };
         let result = failed(),
           threadId = "",
           turnId = "",

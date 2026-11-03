@@ -399,6 +399,15 @@ export type ProviderConnection = {
   adapter: RuntimeAdapter;
   models: readonly ModelOption[];
   listModels?: (signal: AbortSignal) => Promise<ModelOption[]>;
+  /** 모델 목록 밖의 모델도 받는다. 목록이 일부 별칭뿐인 연결이다. */
+  openModels?: boolean;
+  /** 제품 로그인 실행 방법. `tokenFile`이 있으면 프로그램이 보여 준 토큰을 받아 그 파일에 저장한다. */
+  login?: {
+    command: readonly [string, ...string[]];
+    args: readonly string[];
+    env: NodeJS.ProcessEnv;
+    tokenFile?: string;
+  };
 };
 
 // ---------- Surface 조회 모양 ----------

@@ -16,6 +16,7 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "eslint .",
     "check": "node scripts/check-project.mjs",
+    "provider:login": "node scripts/provider-login.mjs",
     "prepare": "husky"
   },
   "devDependencies": {

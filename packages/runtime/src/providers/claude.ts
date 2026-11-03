@@ -1,8 +1,6 @@
 import { claudeSessionFacts } from "./claude-transcript.ts";
-import { execFile } from "node:child_process";
 import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type {
   ProviderConnection,
   RunResult,
@@ -18,11 +16,16 @@ import {
   probeTimeoutMs,
   startupLimitMs,
   saysLoginProblem,
+  commandFor,
+  providerEnvironment,
+  runProbe,
 } from "./process.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
   command?: readonly [string, ...string[]];
+  id?: string;
+  label?: string;
 };
 const launchSchema = z.object({
   instructions: z.string(),
@@ -57,21 +60,28 @@ async function withLogin(home: string, env: NodeJS.ProcessEnv) {
 export function createClaudeProvider(
   options: ClaudeOptions
 ): ProviderConnection {
-  const home = path.resolve(options.dataDir, "providers/claude");
-  const command = options.command ?? ["claude"];
+  const id = options.id ?? "claude";
+  const home = path.resolve(options.dataDir, "providers", id);
+  const command = options.command ?? commandFor(id, "claude");
   const active = new Map<string, (message: SteerMessage) => SteerOutcome>();
-  const environment = () => ({
-    PATH: process.env.PATH,
-    HOME: home,
-    CLAUDE_CONFIG_DIR: path.join(home, "config"),
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-    DISABLE_AUTOUPDATER: "1",
-    // root로 돌면 Claude가 권한 건너뛰기를 거부한다. 컨테이너 같은 환경에서도 돌게 한다.
-    ...(process.getuid?.() === 0 ? { IS_SANDBOX: "1" } : {}),
-  });
+  const environment = () =>
+    providerEnvironment(id, home, {
+      CLAUDE_CONFIG_DIR: path.join(home, "config"),
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      DISABLE_AUTOUPDATER: "1",
+      // root로 돌면 Claude가 권한 건너뛰기를 거부한다. 컨테이너 같은 환경에서도 돌게 한다.
+      ...(process.getuid?.() === 0 ? { IS_SANDBOX: "1" } : {}),
+    });
   return {
-    id: "claude",
-    label: "Claude Code",
+    id,
+    label: options.label ?? "Claude Code",
+    openModels: true,
+    login: {
+      command,
+      args: ["setup-token"],
+      env: environment(),
+      tokenFile: path.join(home, "setup-token"),
+    },
     models: [
       { id: "haiku", label: "Haiku" },
       { id: "sonnet", label: "Sonnet" },
@@ -86,22 +96,18 @@ export function createClaudeProvider(
         usageCost: true,
         precompact: true,
       },
-      loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' claude setup-token`,
+      loginCommand: `pnpm provider:login ${id}`,
       async checkReadiness(signal) {
         await mkdir(home, { recursive: true, mode: 0o700 });
         // 파일 위치를 가정하지 않고 프로그램에 묻는다.
         try {
-          await promisify(execFile)(
-            command[0],
-            [...command.slice(1), "auth", "status"],
-            {
-              env: await withLogin(home, environment()),
-              cwd: home,
-              signal,
-              timeout: probeTimeoutMs,
-              maxBuffer: 64 * 1024,
-            }
-          );
+          await runProbe(command, ["auth", "status"], {
+            env: await withLogin(home, environment()),
+            cwd: home,
+            signal,
+            timeout: probeTimeoutMs,
+            maxBuffer: 64 * 1024,
+          });
           return { status: "unknown", reason: "credentials_unverified" };
         } catch (error) {
           const failure = error as { code?: unknown };

@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   mkdir,
   readFile,
@@ -16,7 +14,14 @@ import type {
   RunResult,
   Usage,
 } from "@babojubot/contracts";
-import { startProcess, probeTimeoutMs, startupLimitMs } from "./process.ts";
+import {
+  startProcess,
+  probeTimeoutMs,
+  startupLimitMs,
+  commandFor,
+  providerEnvironment,
+  runProbe,
+} from "./process.ts";
 const owner = "babojubot-antigravity-v1";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
@@ -66,20 +71,22 @@ export async function cleanupAntigravityWorkspaces(dataDir: string) {
 export function createAntigravityProvider(options: {
   dataDir: string;
   command?: readonly [string, ...string[]];
+  id?: string;
+  label?: string;
 }): ProviderConnection {
-  const home = path.resolve(options.dataDir, "providers/antigravity"),
-    command = options.command ?? ["agy"];
-  const env = () => ({
-    PATH: process.env.PATH,
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, "config"),
-    XDG_DATA_HOME: path.join(home, "data"),
-    XDG_CACHE_HOME: path.join(home, "cache"),
-  });
+  const connectionId = options.id ?? "antigravity";
+  const home = path.resolve(options.dataDir, "providers", connectionId),
+    command = options.command ?? commandFor(connectionId, "agy");
+  const env = () =>
+    providerEnvironment(connectionId, home, {
+      XDG_CONFIG_HOME: path.join(home, "config"),
+      XDG_DATA_HOME: path.join(home, "data"),
+      XDG_CACHE_HOME: path.join(home, "cache"),
+    });
   const probe = async (args: string[], signal: AbortSignal) => {
     await mkdir(home, { recursive: true, mode: 0o700 });
     return (
-      await promisify(execFile)(command[0], [...command.slice(1), ...args], {
+      await runProbe(command, args, {
         cwd: home,
         env: env(),
         signal,
@@ -97,7 +104,7 @@ export function createAntigravityProvider(options: {
       usageCost: false,
       precompact: false,
     },
-    loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' agy`,
+    loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       // 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. 목록 조회는 모델을 부르지 않는다.
       try {
@@ -179,7 +186,17 @@ export function createAntigravityProvider(options: {
             }),
             { flag: "wx", mode: 0o600 }
           );
-          await link(temp, file);
+          // 한 번에 나타나도록 링크로 옮긴다. 하드링크가 안 되는 파일 시스템에서는 덮어쓰지 않는 쓰기로 대신한다.
+          try {
+            await link(temp, file);
+          } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code;
+            if (code === "EEXIST") throw e;
+            await writeFile(file, await readFile(temp), {
+              flag: "wx",
+              mode: 0o600,
+            });
+          }
           owned = true;
         } finally {
           await rm(temp, { force: true });
@@ -342,8 +359,9 @@ export function createAntigravityProvider(options: {
     },
   };
   return {
-    id: "antigravity",
-    label: "Antigravity",
+    id: connectionId,
+    label: options.label ?? "Antigravity",
+    login: { command, args: [], env: env() },
     adapter,
     models: [],
     async listModels(signal) {

@@ -70,3 +70,25 @@ jobs:
           path: apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 3
+  # 실제 프로그램 연결은 세 OS를 지원한다. DB가 필요 없는 연결 검사만 돈다.
+  portable:
+    name: runtime on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @babojubot/runtime run typecheck
+      - run: pnpm --filter @babojubot/runtime test

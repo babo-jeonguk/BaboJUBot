@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir, mkdtemp, rm, lstat } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -9,7 +7,14 @@ import type {
   SteerMessage,
   SteerOutcome,
 } from "@babojubot/contracts";
-import { startProcess, probeTimeoutMs, startupLimitMs } from "./process.ts";
+import {
+  startProcess,
+  probeTimeoutMs,
+  startupLimitMs,
+  commandFor,
+  providerEnvironment,
+  runProbe,
+} from "./process.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const count = (v: unknown) =>
@@ -37,30 +42,35 @@ const maxEventLength = 64 * 1024 * 1024;
 export function createOpenCodeProvider(options: {
   dataDir: string;
   command?: readonly [string, ...string[]];
+  id?: string;
+  label?: string;
 }): ProviderConnection {
-  const home = path.resolve(options.dataDir, "providers/opencode"),
-    command = options.command ?? ["opencode"];
-  const env = () => ({
-    PATH: process.env.PATH,
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, "config"),
-    XDG_DATA_HOME: path.join(home, "data"),
-    XDG_CACHE_HOME: path.join(home, "cache"),
-    XDG_STATE_HOME: path.join(home, "state"),
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE: "1",
-    OPENCODE_DISABLE_FILEWATCHER: "1",
-  });
+  const connectionId = options.id ?? "opencode";
+  const home = path.resolve(options.dataDir, "providers", connectionId),
+    command = options.command ?? commandFor(connectionId, "opencode");
+  const env = () =>
+    providerEnvironment(connectionId, home, {
+      XDG_CONFIG_HOME: path.join(home, "config"),
+      XDG_DATA_HOME: path.join(home, "data"),
+      XDG_CACHE_HOME: path.join(home, "cache"),
+      XDG_STATE_HOME: path.join(home, "state"),
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_DISABLE_CLAUDE_CODE: "1",
+      OPENCODE_DISABLE_FILEWATCHER: "1",
+    });
+  let warnedSystemConfig = false;
   const prepare = async () => {
     await mkdir(home, { recursive: true, mode: 0o700 });
-    // The CLI has no system-config override. Refuse rather than load machine policy/plugins.
-    if (process.platform !== "linux")
-      throw new Error("Unsupported configuration isolation");
+    if (warnedSystemConfig) return;
+    // 이 프로그램은 시스템 설정을 끌 방법이 없다. 막지 않고 알린다.
     try {
       await lstat("/etc/opencode");
-      throw new Error("System config present");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      warnedSystemConfig = true;
+      console.warn(
+        "[provider] /etc/opencode exists; OpenCode will also read this machine's system configuration"
+      );
+    } catch {
+      /* 시스템 설정이 없다. */
     }
   };
   async function server(
@@ -199,22 +209,18 @@ export function createOpenCodeProvider(options: {
       usageCost: true,
       precompact: false,
     },
-    loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' XDG_DATA_HOME='${path.join(home, "data").replaceAll("'", "'\\''")}' opencode auth login`,
+    loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       try {
         await prepare();
         // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
-        await promisify(execFile)(
-          command[0],
-          [...command.slice(1), "--version"],
-          {
-            cwd: home,
-            env: env(),
-            signal,
-            timeout: probeTimeoutMs,
-            maxBuffer: 65536,
-          }
-        );
+        await runProbe(command, ["--version"], {
+          cwd: home,
+          env: env(),
+          signal,
+          timeout: probeTimeoutMs,
+          maxBuffer: 65536,
+        });
         const listed = models(await catalog(signal));
         return listed.some(isFree)
           ? { status: "ready", reason: null }
@@ -255,9 +261,10 @@ export function createOpenCodeProvider(options: {
         service = await server(control.signal, config);
         const api = service;
         const available = models(await api.json("/api/model"));
+        // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
         const selected = input.model
           ? available.find((m) => `${m.providerID}/${m.id}` === input.model)
-          : available.find(isFree);
+          : (available.find(isFree) ?? available[0]);
         if (!selected) return failure();
         let session: Record<string, unknown> | undefined;
         if (typeof input.previousSession?.id === "string") {
@@ -434,8 +441,9 @@ export function createOpenCodeProvider(options: {
     },
   };
   return {
-    id: "opencode",
-    label: "OpenCode",
+    id: connectionId,
+    label: options.label ?? "OpenCode",
+    login: { command, args: ["auth", "login"], env: env() },
     adapter,
     models: [],
     async listModels(signal) {

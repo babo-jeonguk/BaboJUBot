@@ -1,5 +1,12 @@
-import { recordProcess, stopProcessGroup } from "./recovery.ts";
-import { spawn } from "node:child_process";
+import {
+  recordProcess,
+  signalProcessTree,
+  stopProcessGroup,
+} from "./recovery.ts";
+import spawn from "cross-spawn";
+import type { ChildProcessByStdio } from "node:child_process";
+import path from "node:path";
+import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
 /** 프로그램이 있는지 보는 짧은 확인의 제한. 바쁜 컴퓨터에서도 넘지 않을 만큼 넉넉하게 둔다. */
@@ -16,6 +23,127 @@ export const saysLoginProblem = (text: unknown) =>
     text
   );
 
+/** 프로그램에 그대로 넘기는 환경 변수. 네트워크·인증서·언어와 Windows 실행에 필요한 것만이다. 개인 설정과 자격 증명은 넘기지 않는다. */
+const sharedVariables = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "SystemRoot",
+  "ComSpec",
+  "PATHEXT",
+  "windir",
+  "ProgramData",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+];
+const settingName = (id: string, suffix: string) =>
+  `BABOJUBOT_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${suffix}`;
+
+/** 연결의 프로그램 위치. `BABOJUBOT_<연결>_COMMAND`로 정하며 없으면 기본 이름이다. */
+export function commandFor(
+  id: string,
+  fallback: string
+): readonly [string, ...string[]] {
+  return [process.env[settingName(id, "COMMAND")] || fallback];
+}
+
+/**
+ * 연결의 프로그램 환경. 제품 전용 값 위에 공통 변수와 `BABOJUBOT_<연결>_PASS_ENV`(쉼표로 구분)에 적은 변수만 더한다.
+ * API 키 같은 값은 사용자가 그 연결에 적은 때만 넘긴다. 쓰는 줄 모르고 다른 계정으로 과금되지 않게 한다.
+ */
+export function providerEnvironment(
+  id: string,
+  home: string,
+  own: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv {
+  const named = (process.env[settingName(id, "PASS_ENV")] ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const picked = [...sharedVariables, ...named].flatMap((name) =>
+    process.env[name] === undefined ? [] : [[name, process.env[name]]]
+  );
+  return {
+    ...Object.fromEntries(picked),
+    PATH: process.env.PATH,
+    HOME: home,
+    ...(process.platform === "win32"
+      ? {
+          USERPROFILE: home,
+          APPDATA: path.join(home, "AppData/Roaming"),
+          LOCALAPPDATA: path.join(home, "AppData/Local"),
+        }
+      : {}),
+    ...own,
+  };
+}
+
+/** 짧은 확인용 실행. Windows의 .cmd 프로그램도 찾는다. 실패하면 `code`·`stdout`·`stderr`를 담아 던진다. */
+export function runProbe(
+  command: readonly [string, ...string[]],
+  args: readonly string[],
+  options: {
+    env: NodeJS.ProcessEnv;
+    cwd: string;
+    signal: AbortSignal;
+    timeout: number;
+    maxBuffer: number;
+  }
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command[0], [...command.slice(1), ...args], {
+      env: options.env,
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "",
+      stderr = "";
+    const limit = (text: string) => text.slice(0, options.maxBuffer);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout = limit(stdout + chunk.toString());
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = limit(stderr + chunk.toString());
+    });
+    const stop = () => child.kill();
+    const timer = setTimeout(stop, options.timeout);
+    options.signal.addEventListener("abort", stop, { once: true });
+    if (options.signal.aborted) stop();
+    const finish = (error?: Error & { code?: unknown }) => {
+      clearTimeout(timer);
+      options.signal.removeEventListener("abort", stop);
+      if (error) reject(Object.assign(error, { stdout, stderr }));
+      else resolve({ stdout, stderr });
+    };
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (code === 0) finish();
+      else
+        finish(
+          Object.assign(new Error("Program failed"), { code: code ?? "killed" })
+        );
+    });
+  });
+}
+
 /** One process group per attempt. Raw stderr is drained, never propagated to public logs. */
 export function startProcess(options: {
   command: readonly [string, ...string[]];
@@ -27,8 +155,6 @@ export function startProcess(options: {
   onFrame: (frame: unknown) => Promise<void>;
 }) {
   const maxLineLength = options.maxLineLength ?? defaultMaxLineLength;
-  if (process.platform !== "linux")
-    throw new Error("CLI process supervision requires Linux /proc");
   const lease = crypto.randomUUID();
   const child = spawn(
     options.command[0],
@@ -37,9 +163,11 @@ export function startProcess(options: {
       cwd: options.cwd,
       env: { ...options.env, BABOJUBOT_PROCESS_LEASE: lease },
       stdio: ["pipe", "pipe", "pipe"],
-      detached: true,
+      // Windows에는 프로세스 그룹이 없다. 새 콘솔 창도 띄우지 않는다.
+      detached: process.platform !== "win32",
+      windowsHide: true,
     }
-  );
+  ) as ChildProcessByStdio<Writable, Readable, Readable>;
   let forget = () => {};
   if (options.stateDir && child.pid)
     try {
@@ -71,15 +199,7 @@ export function startProcess(options: {
   let term: ReturnType<typeof setTimeout> | undefined,
     kill: ReturnType<typeof setTimeout> | undefined;
   const signalGroup = (signal: NodeJS.Signals) => {
-    if (!child.pid) return;
-    try {
-      process.kill(
-        process.platform === "win32" ? child.pid : -child.pid,
-        signal
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") broken = true;
-    }
+    if (child.pid) signalProcessTree(child.pid, signal);
   };
   const end = () => {
     if (closed || term) return;
