@@ -13,7 +13,12 @@ import type {
 } from "@babojubot/contracts";
 
 import { z } from "zod";
-import { startProcess, probeTimeoutMs, startupLimitMs } from "./process.ts";
+import {
+  startProcess,
+  probeTimeoutMs,
+  startupLimitMs,
+  saysLoginProblem,
+} from "./process.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
@@ -37,6 +42,18 @@ const failed = (): RunResult => ({
   usage: null,
   nextSession: null,
 });
+/** 제품 로그인 토큰이 있으면 환경에 넣는다. 없어도 프로그램에 다른 로그인이 있을 수 있으므로 막지 않는다. */
+async function withLogin(home: string, env: NodeJS.ProcessEnv) {
+  try {
+    const token = (
+      await readFile(path.join(home, "setup-token"), "utf8")
+    ).trim();
+    if (token) return { ...env, CLAUDE_CODE_OAUTH_TOKEN: token };
+  } catch {
+    /* 토큰 파일이 없다. */
+  }
+  return env;
+}
 export function createClaudeProvider(
   options: ClaudeOptions
 ): ProviderConnection {
@@ -49,6 +66,8 @@ export function createClaudeProvider(
     CLAUDE_CONFIG_DIR: path.join(home, "config"),
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     DISABLE_AUTOUPDATER: "1",
+    // root로 돌면 Claude가 권한 건너뛰기를 거부한다. 컨테이너 같은 환경에서도 돌게 한다.
+    ...(process.getuid?.() === 0 ? { IS_SANDBOX: "1" } : {}),
   });
   return {
     id: "claude",
@@ -70,35 +89,28 @@ export function createClaudeProvider(
       loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' claude setup-token`,
       async checkReadiness(signal) {
         await mkdir(home, { recursive: true, mode: 0o700 });
+        // 파일 위치를 가정하지 않고 프로그램에 묻는다.
         try {
-          // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
           await promisify(execFile)(
             command[0],
-            [...command.slice(1), "--version"],
+            [...command.slice(1), "auth", "status"],
             {
-              env: environment(),
+              env: await withLogin(home, environment()),
               cwd: home,
               signal,
               timeout: probeTimeoutMs,
               maxBuffer: 64 * 1024,
             }
           );
-          try {
-            if (
-              !(await readFile(path.join(home, "setup-token"), "utf8")).trim()
-            )
-              throw new Error();
-          } catch {
-            return { status: "not_ready", reason: "product_login_missing" };
-          }
           return { status: "unknown", reason: "credentials_unverified" };
         } catch (error) {
+          const failure = error as { code?: unknown };
+          if (failure.code === "ENOENT")
+            return { status: "not_ready", reason: "program_missing" };
           return {
             status: "not_ready",
             reason:
-              (error as NodeJS.ErrnoException).code === "ENOENT"
-                ? "program_missing"
-                : "check_failed",
+              failure.code === 1 ? "product_login_missing" : "check_failed",
           };
         }
       },
@@ -191,15 +203,8 @@ async function executeClaude(
       }),
       { mode: 0o600 }
     );
-    try {
-      env.CLAUDE_CODE_OAUTH_TOKEN = (
-        await readFile(path.join(home, "setup-token"), "utf8")
-      ).trim();
-    } catch {
-      return { ...failed(), errorCode: "login_required" };
-    }
-    if (!env.CLAUDE_CODE_OAUTH_TOKEN)
-      return { ...failed(), errorCode: "login_required" };
+    const instructions = path.join(temp, "instructions.md");
+    await writeFile(instructions, request.instructions, { mode: 0o600 });
     const args = [
       "--print",
       "--verbose",
@@ -219,8 +224,8 @@ async function executeClaude(
         autoMemoryEnabled: false,
         claudeMdExcludes: ["**"],
       }),
-      "--append-system-prompt",
-      request.instructions,
+      "--append-system-prompt-file",
+      instructions,
     ];
     if (request.model) args.push("--model", request.model);
     if (typeof request.previousSession?.id === "string")
@@ -228,14 +233,13 @@ async function executeClaude(
     let completed = false,
       ready = false,
       compacting = false,
-      missingSession = false,
       compactBoundary = false;
     const process = startProcess({
       stateDir: home,
       command,
       args,
       cwd: request.cwd,
-      env,
+      env: await withLogin(home, env),
       onFrame: async (raw) => {
         if (!raw || typeof raw !== "object" || completed) return;
         const frame = raw as Record<string, unknown>;
@@ -256,25 +260,15 @@ async function executeClaude(
           });
         }
         if (frame.type !== "result") return;
-        missingSession =
-          !ready &&
-          !!request.previousSession &&
-          Array.isArray(frame.errors) &&
-          frame.errors.some(
-            (e) =>
-              typeof e === "string" &&
-              e.startsWith("No conversation found with session ID:")
-          );
         completed = true;
         const usage = frame.usage as Record<string, unknown> | undefined;
         const number = (n: unknown) =>
           typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+        // 실제 프로그램은 오류에도 subtype을 success로 낸다.
+        const success = frame.subtype === "success" && frame.is_error !== true;
         result = {
-          stopReason: frame.subtype === "success" ? "completed" : "failed",
-          error:
-            frame.subtype === "success"
-              ? null
-              : "프로바이더 실행이 실패했습니다.",
+          stopReason: success ? "completed" : "failed",
+          error: success ? null : "프로바이더 실행이 실패했습니다.",
           summary: null,
           usage: {
             inputTokens: number(usage?.input_tokens),
@@ -294,7 +288,7 @@ async function executeClaude(
                   ),
           },
           nextSession:
-            typeof frame.session_id === "string"
+            success && typeof frame.session_id === "string"
               ? {
                   id: frame.session_id,
                   costUsd: number(frame.total_cost_usd),
@@ -306,6 +300,13 @@ async function executeClaude(
                 }
               : null,
         };
+        if (
+          !success &&
+          (frame.api_error_status === 401 ||
+            frame.api_error_status === 403 ||
+            saysLoginProblem(frame.result))
+        )
+          result.errorCode = "login_required";
         process.end();
       },
     });
@@ -318,7 +319,8 @@ async function executeClaude(
           compacting ||
           control.signal.aborted ||
           process.closed ||
-          message.body.startsWith("/")
+          // 슬래시 명령만 막는다. "/home/..."처럼 경로로 시작하는 말은 받는다.
+          /^\/[^\s/]+(\s|$)/.test(message.body)
         )
           return "rejected";
         return process.write({
@@ -349,10 +351,17 @@ async function executeClaude(
           message: { role: "user", content: request.prompt },
           parent_tool_use_id: null,
         });
-      const exit = await process.done;
+      await process.done;
       if (control.signal.aborted)
         return { ...failed(), stopReason: "cancelled", error: null };
-      if (missingSession && !exit.broken && !maintenance) {
+      // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
+      if (
+        !ready &&
+        result.stopReason === "failed" &&
+        request.previousSession &&
+        !maintenance &&
+        result.errorCode !== "login_required"
+      ) {
         await control.emit({
           type: "progress",
           text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",

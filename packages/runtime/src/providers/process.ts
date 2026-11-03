@@ -9,6 +9,13 @@ export const startupLimitMs = 5 * 60 * 1000;
 /** 이보다 긴 출력 한 줄은 메모리를 지키려고 그 줄만 버린다. */
 const defaultMaxLineLength = 64 * 1024 * 1024;
 
+/** 프로그램 출력이 로그인 문제를 말하는가. 공개 기록에 옮기지 않고 판단에만 쓴다. */
+export const saysLoginProblem = (text: unknown) =>
+  typeof text === "string" &&
+  /\b401\b|unauthori[sz]ed|authenticat|not logged in|log ?in required|sign ?in/i.test(
+    text
+  );
+
 /** One process group per attempt. Raw stderr is drained, never propagated to public logs. */
 export function startProcess(options: {
   command: readonly [string, ...string[]];
@@ -92,7 +99,11 @@ export function startProcess(options: {
     broken = true;
     end();
   });
-  child.stderr.resume();
+  // 끝부분만 남긴다. 판단과 서버 진단에만 쓰고 공개 기록에 옮기지 않는다.
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString()).slice(-8192);
+  });
   child.stdout.on("data", (chunk: Buffer) => {
     buffer += decoder.write(chunk);
     for (;;) {
@@ -108,43 +119,51 @@ export function startProcess(options: {
       skipping = true;
     }
   });
-  const done = new Promise<{ code: number | null; broken: boolean }>(
-    (resolve) => {
-      child.on("error", () => {
-        broken = true;
-      });
-      child.on("close", (code) => {
-        closed = true;
-        clearTimeout(term);
-        clearTimeout(kill);
-        const rest = buffer + decoder.end();
-        buffer = "";
-        if (!skipping && rest.length <= maxLineLength) deliver(rest);
-        void (async () => {
-          // The leader may exit before its shell/MCP children. Do not release the attempt while they live.
-          if (child.pid)
-            try {
-              await stopProcessGroup(child.pid);
-            } catch {
-              broken = true;
-              console.error(
-                "[provider] a process group could not be stopped; releasing the run anyway"
-              );
-            }
-          await queue;
+  const done = new Promise<{
+    code: number | null;
+    broken: boolean;
+    stderr: string;
+  }>((resolve) => {
+    child.on("error", () => {
+      broken = true;
+    });
+    child.on("close", (code) => {
+      closed = true;
+      clearTimeout(term);
+      clearTimeout(kill);
+      const rest = buffer + decoder.end();
+      buffer = "";
+      if (!skipping && rest.length <= maxLineLength) deliver(rest);
+      void (async () => {
+        // The leader may exit before its shell/MCP children. Do not release the attempt while they live.
+        if (child.pid)
           try {
-            forget();
+            await stopProcessGroup(child.pid);
           } catch {
             broken = true;
             console.error(
-              "[provider] process exited but its recovery record could not be removed"
+              "[provider] a process group could not be stopped; releasing the run anyway"
             );
           }
-          resolve({ code, broken });
-        })();
-      });
-    }
-  );
+        await queue;
+        try {
+          forget();
+        } catch {
+          broken = true;
+          console.error(
+            "[provider] process exited but its recovery record could not be removed"
+          );
+        }
+        if (code)
+          console.warn(
+            `[provider] program exited with code ${code}: ${stderr
+              .slice(-500)
+              .replace(/\S{32,}/g, "<hidden>")}`
+          );
+        resolve({ code, broken, stderr });
+      })();
+    });
+  });
   return {
     write,
     end,

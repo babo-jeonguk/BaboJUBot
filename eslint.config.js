@@ -20,6 +20,7 @@ const framework = [
 
 export default defineConfig([
   globalIgnores([
+    ".babojubot/**",
     "**/node_modules/",
     "**/dist/",
     "**/test-results/",

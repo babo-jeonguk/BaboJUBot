@@ -14,6 +14,11 @@ for (const [flag, value] of Object.entries(recording.argv ?? {})) {
   if (i < 0 || (value !== true && process.argv[i + 1] !== value))
     process.exit(24);
 }
+for (const [flag, content] of Object.entries(recording.argvFile ?? {})) {
+  const i = process.argv.indexOf(flag);
+  if (i < 0 || (await readFile(process.argv[i + 1], "utf8")) !== content)
+    process.exit(25);
+}
 const input = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
 function matches(actual, expected) {
   if (expected && typeof expected === "object")

@@ -202,8 +202,9 @@ it("compacts the saved launch with the same session and requires a compact bound
     JSON.stringify({
       argv: {
         "--resume": "session-one",
-        "--append-system-prompt": "saved instructions",
+        "--append-system-prompt-file": true,
       },
+      argvFile: { "--append-system-prompt-file": "saved instructions" },
       steps: [
         { input: { type: "user", message: { content: "/compact" } } },
         {

@@ -345,6 +345,7 @@ export function planRunFinish(
     organizationId: string;
     agentId: string;
     cancelReason: RunCancelReason | null;
+    sessionBefore?: SessionState | null;
   },
   result: RunResult,
   { now }: Pick<RecordSource, "now">
@@ -356,7 +357,11 @@ export function planRunFinish(
       summary: result.summary,
       error: result.error,
       usage: result.usage,
-      sessionAfter: result.nextSession,
+      // 끝나지 못한 실행 시도가 세션을 지우면 다음 실행 시도가 정가로 다시 시작한다. 받은 세션을 그대로 둔다.
+      sessionAfter:
+        status === "completed"
+          ? result.nextSession
+          : (result.nextSession ?? run.sessionBefore ?? null),
       finishedAt: now().toISOString(),
     },
     event: {

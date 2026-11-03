@@ -270,7 +270,15 @@ export function createOpenCodeProvider(options: {
               ).data
             );
           } catch (e) {
-            if (!(e instanceof HttpFailure) || e.status !== 404) throw e;
+            // 없는 세션도, 받아들이지 않는 세션도 새 세션으로 시작한다. 로그인 오류와 서버 오류는 세션 문제가 아니다.
+            if (
+              !(e instanceof HttpFailure) ||
+              e.status < 400 ||
+              e.status >= 500 ||
+              e.status === 401 ||
+              e.status === 403
+            )
+              throw e;
             await control.emit({
               type: "progress",
               text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",

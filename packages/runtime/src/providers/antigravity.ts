@@ -195,30 +195,11 @@ export function createAntigravityProvider(options: {
           "--dangerously-skip-permissions",
         ];
         if (request.model) args.push("--model", request.model);
-        if (typeof request.previousSession?.id === "string") {
-          const id = request.previousSession.id;
-          let exists = false;
-          if (/^[a-zA-Z0-9-]+$/.test(id))
-            try {
-              exists = (
-                await lstat(
-                  path.join(
-                    home,
-                    ".gemini/antigravity-cli/conversations",
-                    id + ".db"
-                  )
-                )
-              ).isFile();
-            } catch (e) {
-              if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-            }
-          if (exists) args.push("--conversation", id);
-          else
-            await control.emit({
-              type: "progress",
-              text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
-            });
-        }
+        const previous =
+          typeof request.previousSession?.id === "string"
+            ? request.previousSession.id
+            : null;
+        if (previous) args.push("--conversation", previous);
         let id: string | undefined,
           result = failure(),
           finished = false;
@@ -259,6 +240,12 @@ export function createAntigravityProvider(options: {
             ) {
               clearTimeout(startup);
               id = frame.conversation_id;
+              // 프로그램은 없는 대화를 받으면 새 대화로 시작한다. 파일 위치를 가정하지 않고 시작한 대화로 판단한다.
+              if (previous && id !== previous)
+                await control.emit({
+                  type: "progress",
+                  text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
+                });
               await control.emit({
                 type: "progress",
                 text: "프로바이더가 작업을 시작했습니다.",
