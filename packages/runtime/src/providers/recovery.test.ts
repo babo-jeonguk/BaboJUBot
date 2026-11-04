@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -34,12 +34,14 @@ async function records() {
 it("skips a record that cannot be read and still handles the others", async () => {
   const { root, directory } = await records();
   await writeFile(path.join(directory, "123.json"), '{"pid":12');
+  // 이미 끝난 프로세스의 번호를 쓴다. 고정 번호는 다른 시스템에서 살아 있을 수 있다.
+  const finished = spawnSync(process.execPath, ["-e", ""]).pid;
   await writeFile(
-    path.join(directory, "456.json"),
+    path.join(directory, `${finished}.json`),
     JSON.stringify({
-      pid: 456,
+      pid: finished,
       start: "1",
-      group: 456,
+      group: finished,
       boot: "another-boot",
       lease: "x",
     })
@@ -48,12 +50,13 @@ it("skips a record that cannot be read and still handles the others", async () =
   expect(await readdir(directory)).toEqual([]);
 });
 
+// 끝난 뒤 거두어지지 않은 프로세스만 남으면 macOS는 ESRCH 대신 EPERM을 돌려준다. 정말 없어질 때까지 본다.
 const groupGone = (group: number) => {
   try {
     process.kill(-group, 0);
     return false;
-  } catch {
-    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
 };
 const until = async (done: () => boolean) => {
