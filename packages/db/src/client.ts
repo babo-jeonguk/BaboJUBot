@@ -85,11 +85,20 @@ export async function startEmbeddedCluster(
     },
     onError: (error) => console.error("[embedded-postgres]", error),
   });
+  // postgres가 이 프로세스보다 오래 살면 다음 시작이 dataDir 잠금으로 실패한다. embedded-postgres는 자연 종료와
+  // SIGINT·SIGTERM에만 멈추므로 나머지(process.exit, 처리되지 않은 오류, 터미널 닫힘)는 여기서 멈춘다.
+  // `exit`에서는 기다릴 수 없지만 `cluster.stop`의 동기 구간이 postgres에 종료 신호를 보낸다.
+  const stopOnExit = () => void cluster.stop();
+  const stopOnHangup = () => void stop().finally(() => process.exit(129));
   // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
   const stop = async () => {
+    process.off("exit", stopOnExit);
+    process.off("SIGHUP", stopOnHangup);
     await cluster.stop();
     if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });
   };
+  process.on("exit", stopOnExit);
+  process.on("SIGHUP", stopOnHangup);
   try {
     if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
       await cluster.initialise();
@@ -110,7 +119,7 @@ async function startCluster(
   cluster: EmbeddedPostgres,
   recentLog: () => string
 ) {
-  // 18.4.0-beta.17의 비공개 field. 버전을 올리면 이 우회가 아직 필요한지 확인한다.
+  // 18.6.0-beta.19의 비공개 field. 버전을 올리면 이 우회가 아직 필요한지 확인한다.
   const internal = cluster as unknown as { process?: ChildProcess };
   const forgetWhenExited = () => {
     const child = internal.process;

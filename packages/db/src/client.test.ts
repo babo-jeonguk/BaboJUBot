@@ -59,12 +59,71 @@ describe("embedded Postgres lifetime", () => {
       expect(output).toMatch(
         /failed: embedded Postgres exited before it was ready: \S+/
       );
-      // embedded-postgres의 종료 hook이 멈추면 async-exit-hook이 10초 뒤에야 강제 종료한다.
-      expect(Date.now() - failedAt).toBeLessThan(5_000);
+      // embedded-postgres의 종료 hook이 멈추면 exit-hook이 5초 뒤에야 강제 종료한다.
+      expect(Date.now() - failedAt).toBeLessThan(4_000);
     } finally {
       await fsp.rm(dataDir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it.each([
+    { end: "uncaught error", code: 1, signal: undefined },
+    { end: "process.exit", code: 7, signal: undefined },
+    { end: "terminal hangup", code: 129, signal: "SIGHUP" },
+  ] as const)(
+    "stops Postgres so the next start works after $end",
+    async ({ end, code, signal }) => {
+      const dataDir = await fsp.mkdtemp(
+        path.join(os.tmpdir(), "babojubot-pg-")
+      );
+      const clientModule = fileURLToPath(
+        new URL("./client.ts", import.meta.url)
+      );
+      const finish = {
+        "uncaught error": `throw new Error("boom");`,
+        "process.exit": `process.exit(7);`,
+        "terminal hangup": `setInterval(() => {}, 1000);`,
+      }[end];
+      const script = `
+        const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
+        await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: true } });
+        console.log("started");
+        ${finish}
+      `;
+      let pid = 0;
+      try {
+        const child = spawn(
+          process.execPath,
+          ["--input-type=module", "-e", script],
+          { stdio: ["ignore", "pipe", "ignore"] }
+        );
+        const exited = once(child, "exit");
+        await once(child.stdout!, "data");
+        pid = Number(
+          fs
+            .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
+            .split("\n")[0]
+        );
+        if (signal) child.kill(signal);
+        await exited;
+        expect(child.exitCode).toBe(code);
+
+        const deadline = Date.now() + 15_000;
+        while (isAlive(pid) && Date.now() < deadline)
+          await new Promise((r) => setTimeout(r, 50));
+        expect(isAlive(pid)).toBe(false);
+
+        const handle = await openDatabase({
+          embedded: { dataDir, port: await freePort(), persistent: true },
+        });
+        await handle.close();
+      } finally {
+        if (pid && isAlive(pid)) process.kill(pid, "SIGKILL");
+        await fsp.rm(dataDir, { recursive: true, force: true });
+      }
+    },
+    60_000
+  );
 });
 
 function isAlive(pid: number) {
