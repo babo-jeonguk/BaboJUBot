@@ -1,4 +1,5 @@
 import { claudeSessionFacts } from "./claude-transcript.ts";
+import { claudeModelsFor } from "./claude-models.ts";
 import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -82,11 +83,7 @@ export function createClaudeProvider(
       env: environment(),
       tokenFile: path.join(home, "setup-token"),
     },
-    models: [
-      { id: "haiku", label: "Haiku" },
-      { id: "sonnet", label: "Sonnet" },
-      { id: "opus", label: "Opus" },
-    ],
+    models: claudeModelsFor(id),
     adapter: {
       capabilities: {
         steer: true,

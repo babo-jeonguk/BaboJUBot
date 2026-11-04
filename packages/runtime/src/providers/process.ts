@@ -53,7 +53,7 @@ const sharedVariables = [
   "ProgramFiles",
   "ProgramFiles(x86)",
 ];
-const settingName = (id: string, suffix: string) =>
+export const settingName = (id: string, suffix: string) =>
   `BABOJUBOT_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${suffix}`;
 
 /** 연결의 프로그램 위치. `BABOJUBOT_<연결>_COMMAND`로 정하며 없으면 기본 이름이다. */
