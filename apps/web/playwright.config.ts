@@ -15,12 +15,13 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
     {
-      // 임시 embedded Postgres를 쓰는 서버. SIGTERM을 받으면 Postgres를 멈추고 dataDir를 지운다.
+      // 임시 embedded Postgres와 임시 제품 폴더를 쓰는 서버. SIGTERM을 받으면 Postgres를 멈추고 두 폴더를 지운다(개발용 제품 폴더에 남기지 않음).
       command: "node ../server/src/main.ts",
       url: `http://127.0.0.1:${apiPort}/api/health`,
       env: {
         PORT: String(apiPort),
         BABOJUBOT_EPHEMERAL_DB: "1",
+        BABOJUBOT_EPHEMERAL_HOME: "1",
         DATABASE_URL: "",
         // 같은 가짜 adapter의 연결 둘로 프로바이더·모델 고르기를 검사한다(providers.spec.ts).
         BABOJUBOT_FAKE_PROVIDERS: "2",
