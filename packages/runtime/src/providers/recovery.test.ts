@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import {
-  utimes,
   mkdir,
   mkdtemp,
   readFile,
@@ -11,7 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { recoverProviderProcesses } from "./recovery.ts";
+import {
+  processStartedAt,
+  recordProcess,
+  recoverProviderProcesses,
+} from "./recovery.ts";
 
 // 복구 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
 const roots: string[] = [];
@@ -125,7 +128,11 @@ it("stops a leftover process on systems without /proc", async () => {
   try {
     await writeFile(
       path.join(directory, `${child.pid}.json`),
-      JSON.stringify({ pid: child.pid, lease: "lease" })
+      JSON.stringify({
+        pid: child.pid,
+        lease: "lease",
+        started: processStartedAt(child.pid!, withoutProc),
+      })
     );
     const closed = new Promise((resolve) => child.on("close", resolve));
     await recoverProviderProcesses(root, { platform: withoutProc });
@@ -137,18 +144,76 @@ it("stops a leftover process on systems without /proc", async () => {
   }
 }, 30_000);
 
-it("leaves a process that started after the record was written", async () => {
+// 번호가 같아도 시작 시각이 다르면 남이다. 시작 시각은 언제 물어도 같으므로 여유를 두지 않는다.
+it("leaves a process whose start differs from the recorded one", async () => {
   const { root, directory } = await records();
   const child = longRunning();
   await new Promise((resolve) => setTimeout(resolve, 200));
-  const file = path.join(directory, `${child.pid}.json`);
   try {
-    await writeFile(file, JSON.stringify({ pid: child.pid, lease: "lease" }));
-    const yesterday = new Date(Date.now() - 86_400_000);
-    await utimes(file, yesterday, yesterday);
+    const started = processStartedAt(child.pid!, withoutProc)!;
+    await writeFile(
+      path.join(directory, `${child.pid}.json`),
+      JSON.stringify({ pid: child.pid, lease: "lease", started: started - 1 })
+    );
     await recoverProviderProcesses(root, { platform: withoutProc });
     expect(gone(child.pid!)).toBe(false);
     expect(await readdir(directory)).toEqual([]);
+  } finally {
+    process.kill(child.pid!, "SIGKILL");
+  }
+}, 30_000);
+
+// 시작 시각을 남기기 전에 서버가 죽은 기록이다. 우리 것인지 모르니 건드리지 않고 남긴다.
+it("keeps a record without a start and leaves the process alone", async () => {
+  const { root, directory } = await records();
+  const child = longRunning();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const file = `${child.pid}.json`;
+  try {
+    await writeFile(
+      path.join(directory, file),
+      JSON.stringify({ pid: child.pid, lease: "lease" })
+    );
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([file]);
+  } finally {
+    process.kill(child.pid!, "SIGKILL");
+  }
+}, 30_000);
+
+// 이 시스템의 실제 경로: 기록을 남기면 다음 시작 때 그 프로세스를 찾아 끝낸다.
+it("stops a process it recorded itself", async () => {
+  const { root } = await records();
+  const home = path.join(root, "providers/claude");
+  const child = longRunning();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const file = path.join(home, "processes", `${child.pid}.json`);
+  try {
+    recordProcess(home, child.pid!, "lease");
+    await vi.waitFor(
+      async () => expect(await readFile(file, "utf8")).toMatch(/"start(ed)?"/),
+      { timeout: 20_000, interval: 50 }
+    );
+    const closed = new Promise((resolve) => child.on("close", resolve));
+    await recoverProviderProcesses(root);
+    await closed;
+    expect(gone(child.pid!)).toBe(true);
+    expect(await readdir(path.dirname(file))).toEqual([]);
+  } finally {
+    if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
+  }
+}, 30_000);
+
+it("does not write the record again after forgetting it", async () => {
+  const { root } = await records();
+  const home = path.join(root, "providers/claude");
+  const child = longRunning();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  try {
+    recordProcess(home, child.pid!, "lease")();
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    expect(await readdir(path.join(home, "processes"))).toEqual([]);
   } finally {
     process.kill(child.pid!, "SIGKILL");
   }
@@ -215,7 +280,7 @@ it("keeps the record of a live process whose start cannot be read", async () => 
   try {
     await writeFile(
       path.join(directory, file),
-      JSON.stringify({ pid: child.pid, lease: "lease" })
+      JSON.stringify({ pid: child.pid, lease: "lease", started: 1 })
     );
     vi.stubEnv("PATH", "");
     await recoverProviderProcesses(root, { platform: withoutProc });
@@ -230,24 +295,6 @@ it("keeps the record of a live process whose start cannot be read", async () => 
   }
   await recoverProviderProcesses(root, { platform: withoutProc });
   expect(await readdir(directory)).toEqual([]);
-}, 30_000);
-
-// 파일 시각의 해상도만큼만 여유를 둔다. 기록보다 몇 초 뒤에 시작한 프로세스는 번호만 같은 남이다.
-it("leaves a process that started seconds after the record was written", async () => {
-  const { root, directory } = await records();
-  const child = longRunning();
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  const file = path.join(directory, `${child.pid}.json`);
-  try {
-    await writeFile(file, JSON.stringify({ pid: child.pid, lease: "lease" }));
-    const earlier = new Date(Date.now() - 4000);
-    await utimes(file, earlier, earlier);
-    await recoverProviderProcesses(root, { platform: withoutProc });
-    expect(gone(child.pid!)).toBe(false);
-    expect(await readdir(directory)).toEqual([]);
-  } finally {
-    process.kill(child.pid!, "SIGKILL");
-  }
 }, 30_000);
 
 it("recovers every connection folder, including named ones", async () => {

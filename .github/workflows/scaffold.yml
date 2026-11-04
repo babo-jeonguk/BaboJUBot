@@ -94,3 +94,5 @@ jobs:
       - run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
       - run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
+      # 기본 설정의 서버가 이 시스템에서 뜨는지 본다. 내장 DB와 migration까지 포함한다.
+      - run: node scripts/boot-check.mjs

@@ -4,7 +4,14 @@ packages:
 
 # embedded-postgres ships its native library symlinks through this postinstall script.
 onlyBuiltDependencies:
+  - "@embedded-postgres/darwin-arm64"
+  - "@embedded-postgres/darwin-x64"
+  - "@embedded-postgres/linux-arm"
+  - "@embedded-postgres/linux-arm64"
+  - "@embedded-postgres/linux-ia32"
+  - "@embedded-postgres/linux-ppc64"
   - "@embedded-postgres/linux-x64"
+  - "@embedded-postgres/windows-x64"
 # esbuild finds its platform binary through optional dependencies; its postinstall only verifies it.
 ignoredBuiltDependencies:
   - esbuild
