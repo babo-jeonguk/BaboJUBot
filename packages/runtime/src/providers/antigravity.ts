@@ -1,4 +1,4 @@
-import { mkdir, realpath, readdir } from "node:fs/promises";
+import { lstat, mkdir, realpath, readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -35,13 +35,21 @@ export async function cleanupAntigravityWorkspaces(dataDir: string) {
     () => []
   )) {
     if (!org.isDirectory()) continue;
+    const shared = path.join(organizations, org.name, "shared");
+    // 정리는 조직마다 별도 프로세스를 띄운다. 설정 폴더가 없으면 지울 것이 없으므로 띄우지 않는다.
+    if (await missing(path.join(shared, ".agents"))) continue;
     try {
-      await clearOwnedConfig(path.join(organizations, org.name, "shared"));
+      await clearOwnedConfig(shared);
     } catch {
       /* Preserve unowned files. */
     }
   }
 }
+const missing = (file: string) =>
+  lstat(file).then(
+    () => false,
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT"
+  );
 export function createAntigravityProvider(options: {
   dataDir: string;
   command?: readonly [string, ...string[]];
