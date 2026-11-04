@@ -45,6 +45,27 @@ it("skips a record that cannot be read and still handles the others", async () =
   expect(await readdir(directory)).toEqual([]);
 });
 
+const groupGone = (group: number) => {
+  try {
+    process.kill(-group, 0);
+    return false;
+  } catch {
+    return true;
+  }
+};
+const until = async (done: () => boolean) => {
+  for (let i = 0; i < 400 && !done(); i++)
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  expect(done()).toBe(true);
+};
+
+it("starts even when a record can be neither read nor removed", async () => {
+  const { root, directory } = await records();
+  await mkdir(path.join(directory, "123.json"));
+  await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
+  expect(await readdir(directory)).toEqual(["123.json"]);
+});
+
 it.runIf(process.platform === "linux")(
   "leaves a process group it cannot identify alone and still starts",
   async () => {
@@ -70,10 +91,14 @@ it.runIf(process.platform === "linux")(
       );
       await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
       expect(() => process.kill(-group, 0)).not.toThrow();
-      expect(await readdir(directory)).toEqual([]);
+      // 끝났음을 확인하지 못했으니 기록을 남겨 다음 시작 때 다시 본다.
+      expect(await readdir(directory)).toEqual([`${group}.json`]);
     } finally {
       process.kill(-group, "SIGKILL");
     }
+    await until(() => groupGone(group));
+    await recoverProviderProcesses(root);
+    expect(await readdir(directory)).toEqual([]);
   }
 );
 
@@ -102,9 +127,11 @@ it("stops a leftover process on systems without /proc", async () => {
       path.join(directory, `${child.pid}.json`),
       JSON.stringify({ pid: child.pid, lease: "lease" })
     );
+    const closed = new Promise((resolve) => child.on("close", resolve));
     await recoverProviderProcesses(root, { platform: withoutProc });
-    await new Promise((resolve) => child.on("close", resolve));
+    await closed;
     expect(gone(child.pid!)).toBe(true);
+    expect(await readdir(directory)).toEqual([]);
   } finally {
     if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
   }
@@ -126,6 +153,56 @@ it("leaves a process that started after the record was written", async () => {
     process.kill(child.pid!, "SIGKILL");
   }
 }, 30_000);
+
+// 기록은 서버 밖의 프로그램도 고칠 수 있다. 이름과 맞지 않거나 번호가 아닌 기록으로는 아무것도 끝내지 않는다.
+it("does not act on a record that does not match its name", async () => {
+  const { root, directory } = await records();
+  const child = longRunning();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  try {
+    await writeFile(
+      path.join(directory, "123.json"),
+      JSON.stringify({ pid: child.pid, lease: "lease" })
+    );
+    await writeFile(
+      path.join(directory, "124.json"),
+      JSON.stringify({ pid: "124; echo hello", lease: "lease" })
+    );
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([]);
+  } finally {
+    process.kill(child.pid!, "SIGKILL");
+  }
+}, 30_000);
+
+it.skipIf(process.platform === "win32")(
+  "keeps the record while children outlive their leader on systems without /proc",
+  async () => {
+    const { root, directory } = await records();
+    const leader = spawn("sh", ["-c", "sleep 30 & exit 0"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    await new Promise((resolve) => leader.on("close", resolve));
+    const group = leader.pid!;
+    try {
+      await writeFile(
+        path.join(directory, `${group}.json`),
+        JSON.stringify({ pid: group, lease: "lease" })
+      );
+      await recoverProviderProcesses(root, { platform: withoutProc });
+      expect(groupGone(group)).toBe(false);
+      expect(await readdir(directory)).toEqual([`${group}.json`]);
+    } finally {
+      process.kill(-group, "SIGKILL");
+    }
+    await until(() => groupGone(group));
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
+);
 
 it("recovers every connection folder, including named ones", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "babojubot-recovery-"));

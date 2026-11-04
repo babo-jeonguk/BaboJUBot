@@ -3,6 +3,7 @@ import {
   link,
   mkdir,
   mkdtemp,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -37,6 +38,39 @@ it("accepts a data folder reached through a symbolic link", async () => {
   await symlink(root, linked);
   expect((await read(linked, "a.md")).content).toBe("내용");
 });
+
+it("accepts an organizations folder kept on another disk through a link", async () => {
+  const { root, shared } = await folder();
+  await writeFile(path.join(shared, "a.md"), "내용");
+  const moved = `${root}-moved`;
+  roots.push(moved);
+  await rename(path.join(root, "organizations"), moved);
+  await symlink(moved, path.join(root, "organizations"));
+  expect((await read(root, "a.md")).content).toBe("내용");
+});
+
+// 조직 폴더 자체가 다른 조직을 가리키면 그 안에서 경로를 비교해도 소용없다. 경계는 데이터 폴더에서 정한다.
+it.each(["shared", "."])(
+  "refuses another organization's files when the organization's %s folder is replaced by a link",
+  async (replaced) => {
+    const { root, shared } = await folder();
+    const other = path.join(
+      root,
+      "organizations",
+      "organization-two",
+      "shared"
+    );
+    await mkdir(other, { recursive: true });
+    await writeFile(path.join(other, "secret.md"), "다른 조직");
+    await rm(shared, { recursive: true });
+    if (replaced === "shared") await symlink(other, shared);
+    else {
+      await rm(path.dirname(shared), { recursive: true });
+      await symlink(path.dirname(other), path.dirname(shared));
+    }
+    await expect(read(root, "secret.md")).rejects.toThrow();
+  }
+);
 
 it("accepts a link that stays inside the folder and refuses one that leaves", async () => {
   const { root, shared } = await folder();

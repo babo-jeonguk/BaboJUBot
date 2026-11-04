@@ -16,9 +16,11 @@ const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
   subscribers = new Set();
 const zero = { input: 0, output: 0, cache: { read: 0, write: 0 } };
 let session, context, instructions;
+// 표준은 줄 끝으로 CRLF도 허용한다.
+const eventEnd = process.argv.includes("--sse-crlf") ? "\r\n\r\n" : "\n\n";
 const write = (event) => {
   for (const res of subscribers)
-    res.write("data: " + JSON.stringify(event) + "\n\n");
+    res.write("data: " + JSON.stringify(event) + eventEnd);
 };
 const bound = (event) =>
   JSON.parse(JSON.stringify(event).replaceAll("<session>", session.id));
@@ -106,7 +108,7 @@ const server = http.createServer(async (req, res) => {
       res.write(
         "data: " +
           JSON.stringify({ type: "server.connected", data: {} }) +
-          "\n\n"
+          eventEnd
       );
       if (process.argv.includes("--sse-noise"))
         res.write(": keep-alive\n\ndata: not json\n\n");

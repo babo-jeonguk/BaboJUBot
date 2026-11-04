@@ -132,6 +132,19 @@ describe("unknown output", () => {
     expect(result.stopReason).toBe("completed");
   }, 20_000);
 
+  it("reads an OpenCode event stream that ends lines with CRLF", async () => {
+    const provider = createOpenCodeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--sse-crlf",
+      ],
+    });
+    const result = await provider.adapter.execute(request(), control());
+    expect(result.stopReason).toBe("completed");
+  }, 20_000);
+
   it("ignores an OpenCode event that is not JSON", async () => {
     const provider = createOpenCodeProvider({
       dataDir: await home(),
