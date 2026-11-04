@@ -1,5 +1,6 @@
 import {
   appendFile,
+  cp,
   link,
   mkdir,
   mkdtemp,
@@ -25,6 +26,10 @@ async function folder() {
   roots.push(root);
   const shared = path.join(root, "organizations", org, "shared");
   await mkdir(shared, { recursive: true });
+  await writeFile(
+    path.join(shared, "..", "workspace-identity.json"),
+    JSON.stringify({ version: 1, organizationId: org })
+  );
   return { root, shared };
 }
 const read = (root: string, relative: string) =>
@@ -61,6 +66,10 @@ it.each(["shared", "."])(
       "shared"
     );
     await mkdir(other, { recursive: true });
+    await writeFile(
+      path.join(other, "..", "workspace-identity.json"),
+      JSON.stringify({ version: 1, organizationId: "organization-two" })
+    );
     await writeFile(path.join(other, "secret.md"), "다른 조직");
     await rm(shared, { recursive: true });
     if (replaced === "shared") await symlink(other, shared);
@@ -71,6 +80,61 @@ it.each(["shared", "."])(
     await expect(read(root, "secret.md")).rejects.toThrow();
   }
 );
+
+// 온전한 다른 조직의 폴더가 이 이름으로 옮겨져도 폴더가 자기 ID를 말하므로 구별된다.
+it("refuses another organization's real folder moved to this organization's name", async () => {
+  const { root, shared } = await folder();
+  const mine = path.dirname(shared);
+  const other = path.join(root, "organizations", "organization-two");
+  await mkdir(path.join(other, "shared"), { recursive: true });
+  await writeFile(
+    path.join(other, "workspace-identity.json"),
+    JSON.stringify({ version: 1, organizationId: "organization-two" })
+  );
+  await writeFile(path.join(other, "shared", "secret.md"), "다른 조직");
+  await rename(mine, `${mine}-kept`);
+  await rename(other, mine);
+  await expect(read(root, "secret.md")).rejects.toThrow();
+});
+
+it.each([
+  ["missing", null],
+  ["unreadable", "{broken"],
+  ["for another organization", JSON.stringify({ organizationId: "other" })],
+])("refuses a folder whose mark is %s", async (_name, content) => {
+  const { root, shared } = await folder();
+  await writeFile(path.join(shared, "a.md"), "내용");
+  const marker = path.join(shared, "..", "workspace-identity.json");
+  if (content === null) await rm(marker);
+  else await writeFile(marker, content);
+  await expect(read(root, "a.md")).rejects.toThrow();
+});
+
+it("refuses a mark reached through a link", async () => {
+  const { root, shared } = await folder();
+  await writeFile(path.join(shared, "a.md"), "내용");
+  const marker = path.join(shared, "..", "workspace-identity.json");
+  await writeFile(
+    path.join(root, "elsewhere.json"),
+    JSON.stringify({ organizationId: org })
+  );
+  await rm(marker);
+  await symlink(path.join(root, "elsewhere.json"), marker);
+  await expect(read(root, "a.md")).rejects.toThrow();
+});
+
+it("accepts a folder restored by copying, and a data folder that moved", async () => {
+  const { root, shared } = await folder();
+  await writeFile(path.join(shared, "a.md"), "내용");
+  const organizations = path.join(root, "organizations");
+  await cp(organizations, `${organizations}-copy`, { recursive: true });
+  await rm(organizations, { recursive: true });
+  await rename(`${organizations}-copy`, organizations);
+  const moved = `${root}-moved`;
+  roots.push(moved);
+  await rename(root, moved);
+  expect((await read(moved, "a.md")).content).toBe("내용");
+});
 
 it("accepts a link that stays inside the folder and refuses one that leaves", async () => {
   const { root, shared } = await folder();

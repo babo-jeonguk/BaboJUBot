@@ -24,6 +24,11 @@ async function organizations() {
   await mkdir(other, { recursive: true });
   await writeFile(path.join(mine, "a.md"), "MINE");
   await writeFile(path.join(other, "a.md"), "FOREIGN");
+  for (const id of ["organization-one", "organization-two"])
+    await writeFile(
+      path.join(base, id, "workspace-identity.json"),
+      JSON.stringify({ version: 1, organizationId: id })
+    );
   return { root, base, mine, other };
 }
 const interrupt = `{
@@ -41,11 +46,13 @@ const interrupt = `{
     if (step === plan.swapAt)
       quietly(() => {
         fs.renameSync(plan.from, plan.from + "-kept");
-        fs.symlinkSync(plan.to, plan.from, plan.kind);
+        if (plan.kind === "move") fs.renameSync(plan.to, plan.from);
+        else fs.symlinkSync(plan.to, plan.from, plan.kind);
       });
     if (step === plan.restoreAt)
       quietly(() => {
-        fs.unlinkSync(plan.from);
+        if (plan.kind === "move") fs.renameSync(plan.from, plan.to);
+        else fs.unlinkSync(plan.from);
         fs.renameSync(plan.from + "-kept", plan.from);
       });
   };
@@ -89,9 +96,10 @@ it("reads the file when nothing changes", async () => {
   expect((await read("dir/a.md")).content).toBe("MINE");
 });
 
-const steps = 14;
+const steps = 18;
 it.each([
   ["a folder in the path", "shared/dir", "shared/dir", "dir"],
+  ["the whole organization folder", ".", ".", "move"],
   ["the organization folder", "shared", "shared", "dir"],
   ["the file itself", "shared/dir/a.md", "shared/dir/a.md", "file"],
 ] as const)(
