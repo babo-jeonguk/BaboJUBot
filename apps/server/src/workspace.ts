@@ -1,55 +1,87 @@
 import { execFile } from "node:child_process";
-import { mkdir, realpath } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import {
   artifactFileMaxBytes,
   type ArtifactSnapshot,
   type RunRequest,
 } from "@babojubot/contracts";
-import { findOrganization, type Database } from "@babojubot/db";
+import {
+  findOrganization,
+  hasWorkspaceIdentity,
+  recordWorkspaceIdentity,
+  type Database,
+} from "@babojubot/db";
 
 export class ArtifactFileError extends Error {}
+
+const identityFile = "workspace-identity.json";
+const identityMaxBytes = 4096;
+
+/** 조직 폴더가 이 조직의 것이라고 확인되지 않았다. 다른 조직의 폴더를 잘못 쓰지 않도록 실행을 멈춘다. */
+export class WorkspaceIdentityError extends Error {}
 
 /**
  * 조직 폴더 안의 파일을 다른 프로세스에서 읽는다. Node에는 폴더 핸들로 여는 기능이 없어 경로를 여러 번 확인해도
  * 그 사이의 바꿔치기를 막지 못한다. 작업 폴더는 커널이 폴더 자체를 붙들므로 한 칸씩 들어가며 확인한 폴더인지 보고,
  * 고정된 폴더 안에서 연다. 들어간 뒤에 바깥 경로가 바뀌어도 영향이 없다.
+ * 경로를 고정해도 처음 고른 폴더가 다른 조직이면 소용없으므로, 고정한 폴더가 자기 ID를 말하게 해 대조한다.
  */
 export const pinnedReader = `
 const fs = require("node:fs");
 const { constants } = fs;
-const [maxBytes, ...parts] = JSON.parse(process.argv[1]);
+const [maxBytes, organizationId, ...parts] = JSON.parse(process.argv[1]);
 const stat = { bigint: true };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
-const name = parts.pop();
-for (const part of parts) {
+const enter = (part) => {
   const expected = fs.lstatSync(part, stat);
   if (!expected.isDirectory()) process.exit(3);
   process.chdir(part);
   if (!same(expected, fs.statSync(".", stat))) process.exit(3);
-}
-const expected = fs.lstatSync(name, stat);
-if (!expected.isFile()) process.exit(3);
-const fd = fs.openSync(
-  name,
-  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-);
-const opened = fs.fstatSync(fd, stat);
-if (
-  !same(expected, opened) ||
-  !opened.isFile() ||
-  opened.nlink !== 1n ||
-  opened.size > BigInt(maxBytes)
-)
+};
+const open = (name, limit) => {
+  const expected = fs.lstatSync(name, stat);
+  if (!expected.isFile()) process.exit(3);
+  const fd = fs.openSync(
+    name,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  const opened = fs.fstatSync(fd, stat);
+  if (!same(expected, opened) || !opened.isFile() || opened.size > BigInt(limit))
+    process.exit(3);
+  return { fd, opened };
+};
+const read = ({ fd, opened }) => {
+  const buffer = Buffer.alloc(Number(opened.size));
+  let length = 0;
+  while (length < buffer.length) {
+    const count = fs.readSync(fd, buffer, length, buffer.length - length, null);
+    if (!count) break;
+    length += count;
+  }
+  return buffer.subarray(0, length);
+};
+enter(organizationId);
+let claimed;
+try {
+  claimed = JSON.parse(read(open(${JSON.stringify(identityFile)}, ${identityMaxBytes})).toString("utf8"))?.organizationId;
+} catch {
   process.exit(3);
-const buffer = Buffer.alloc(Number(opened.size));
-let length = 0;
-while (length < buffer.length) {
-  const read = fs.readSync(fd, buffer, length, buffer.length - length, null);
-  if (!read) break;
-  length += read;
 }
-process.stdout.write(buffer.subarray(0, length));
+if (claimed !== organizationId) process.exit(3);
+const name = parts.pop();
+for (const part of parts) enter(part);
+const file = open(name, maxBytes);
+if (file.opened.nlink !== 1n) process.exit(3);
+process.stdout.write(read(file));
 `;
 function readPinned(start: string, parts: string[]) {
   return new Promise<Buffer>((resolve, reject) => {
@@ -90,12 +122,48 @@ export class Workspaces {
   organization(id: string) {
     return path.resolve(this.root, "organizations", id, "shared");
   }
+  private identityPath(id: string) {
+    return path.resolve(this.root, "organizations", id, identityFile);
+  }
+  /**
+   * 이 조직 폴더가 정말 이 조직의 것인지 본다. 처음 쓰는 폴더에는 ID를 적는다. 한 번 적은 뒤로는 표식이 없는 폴더를
+   * 믿지 않는다. 없다고 다시 적으면 옮겨 온 다른 조직의 폴더에도 이 조직의 표식이 붙기 때문이다.
+   */
+  private async confirmIdentity(id: string) {
+    const file = this.identityPath(id);
+    // 기록은 표식을 쓴 뒤에 남긴다. 기록을 먼저 읽어야 함께 도는 준비가 막 쓴 표식을 없다고 오판하지 않는다.
+    const recorded = await hasWorkspaceIdentity(this.db, id);
+    const claimed = await readIdentity(file);
+    if (claimed === id) {
+      await recordWorkspaceIdentity(this.db, id, new Date());
+      return;
+    }
+    if (claimed !== undefined)
+      throw new WorkspaceIdentityError(
+        `조직 폴더의 표식이 이 조직과 다릅니다. 다른 조직의 폴더가 옮겨졌는지 ${file}을 확인해 주세요.`
+      );
+    const folder = path.dirname(file);
+    if (recorded && (await exists(folder)))
+      throw new WorkspaceIdentityError(
+        `조직 폴더에 표식이 없습니다. 이 조직의 폴더가 맞는지 확인하고 ${file}을 복원해 주세요.`
+      );
+    // 처음 쓰는 폴더이거나 폴더가 통째로 없어 다른 조직과 헷갈릴 일이 없다. 한 번에 나타나게 쓴다.
+    await mkdir(folder, { recursive: true });
+    const temp = `${file}.${randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify({ version: 1, organizationId: id }), {
+      flag: "wx",
+      mode: 0o600,
+    });
+    await rename(temp, file);
+    await recordWorkspaceIdentity(this.db, id, new Date());
+  }
   private personal(orgId: string, agentId: string) {
     return path.resolve(this.root, "organizations", orgId, "agents", agentId);
   }
   async ensure(orgId: string) {
     const org = await findOrganization(this.db, orgId);
     if (!org) throw new Error("workspace organization missing");
+    await this.confirmIdentity(orgId);
     await mkdir(this.organization(orgId), { recursive: true });
     for (const agent of org.agents)
       await mkdir(this.personal(orgId, agent.id), { recursive: true });
@@ -200,5 +268,37 @@ export class Workspaces {
         throw new ArtifactFileError("invalid artifact file");
       throw error;
     }
+  }
+}
+
+/** 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. */
+async function readIdentity(file: string) {
+  let info;
+  try {
+    info = await lstat(file);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  if (!info.isFile() || info.size > identityMaxBytes) return null;
+  try {
+    const value = JSON.parse(await readFile(file, "utf8")) as {
+      organizationId?: unknown;
+    } | null;
+    return typeof value?.organizationId === "string"
+      ? value.organizationId
+      : null;
+  } catch (e) {
+    if (e instanceof SyntaxError) return null;
+    throw e;
+  }
+}
+async function exists(target: string) {
+  try {
+    await lstat(target);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
   }
 }

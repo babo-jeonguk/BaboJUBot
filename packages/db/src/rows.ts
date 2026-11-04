@@ -83,6 +83,7 @@ export const withIsoTime = <T extends { createdAt: Date }>(row: T) => ({
 export const toOrganization = ({
   addWorkerApproval,
   publishToGitHubApproval,
+  workspaceIdentityAt: _workspaceIdentityAt,
   ...row
 }: typeof organizations.$inferSelect): Organization => ({
   ...withIsoTime(row),

@@ -78,6 +78,11 @@ export const organizations = pgTable(
       .default(false),
     /** 일시정지 전 단계. 일시정지 중에만 있고 재개하면 이 단계로 돌아간다. */
     pausedFrom: text("paused_from", { enum: lifecycleStages }),
+    /** 조직 폴더에 자기 ID를 적은 시각. 없으면 아직 적지 않았고, 있는데 폴더에 표식이 없으면 그 폴더를 믿지 않는다. */
+    workspaceIdentityAt: timestamp("workspace_identity_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
