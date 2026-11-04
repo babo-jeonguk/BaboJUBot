@@ -82,7 +82,10 @@ it("never shows a partly written configuration", async () => {
   const { config, agents, execute } = await workspace();
   const result = await execute();
   expect(result.stopReason).toBe("completed");
-  const direct = fs.writes.filter((write) => write.file === config);
+  // 임시 폴더가 링크를 거치는 시스템이 있어 전체 경로 대신 파일 이름으로 찾는다.
+  const direct = fs.writes.filter(
+    (write) => path.basename(write.file) === path.basename(config)
+  );
   expect(direct.map((write) => write.data)).toEqual([""]);
   expect(await readdir(agents)).toEqual([]);
 });
