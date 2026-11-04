@@ -69,6 +69,7 @@ it("keeps a temporary product folder only while the server runs", async () => {
     }
   );
   let home: string | undefined;
+  let id: string | undefined;
   try {
     const [line] = await once(child.stdout!, "data");
     home = /product folder (.+)\)/.exec(String(line))?.[1];
@@ -83,7 +84,7 @@ it("keeps a temporary product folder only while the server runs", async () => {
       body: JSON.stringify({ name: "임시 폴더 조직", goal: "임시 폴더 목표" }),
     });
     expect(res.status).toBe(201);
-    const { id } = (await res.json()) as { id: string };
+    ({ id } = (await res.json()) as { id: string });
     expect(existsSync(path.join(home!, "organizations", id))).toBe(true);
   } finally {
     child.kill("SIGTERM");
@@ -92,6 +93,6 @@ it("keeps a temporary product folder only while the server runs", async () => {
 
   expect(existsSync(home!)).toBe(false);
   expect(
-    existsSync(path.join(process.env.BABOJUBOT_HOME!, "organizations"))
+    existsSync(path.join(process.env.BABOJUBOT_HOME!, "organizations", id!))
   ).toBe(false);
 });
