@@ -141,7 +141,12 @@ async function recoverWithoutProc(
   platform: NodeJS.Platform
 ) {
   const started = processStartedAt(saved.pid, platform);
-  if (started === undefined) return;
+  if (started === undefined) {
+    // 대표는 끝났는데 자식이 남았으면 번호만으로 우리 것인지 알 수 없다. 건드리지 않고 기록을 남긴다.
+    if (platform !== "win32" && groupAlive(saved.pid))
+      throw new Error("Cannot identify the remaining process group");
+    return;
+  }
   // 기록은 프로세스를 띄운 직후에 쓰므로 조금의 여유만 둔다.
   if (started > statSync(file).mtimeMs + 5000) return;
   if (platform === "win32") {
@@ -151,12 +156,8 @@ async function recoverWithoutProc(
     });
     return;
   }
-  // 기록을 남긴 프로세스는 그룹 대표로 띄웠다. 시험처럼 그룹이 다르면 그 프로세스만 끝낸다.
-  try {
-    process.kill(-saved.pid, "SIGTERM");
-  } catch {
-    process.kill(saved.pid, "SIGTERM");
-  }
+  // 기록을 남긴 프로세스는 그룹 대표로 띄웠다. 끝났는지 확인하고 돌아온다.
+  await stopProcessGroup(saved.pid);
 }
 export async function recoverProviderProcesses(
   dataDir: string,
@@ -181,26 +182,49 @@ export async function recoverProviderProcesses(
     for (const name of files) {
       if (!/^\d+\.json$/.test(name)) continue;
       const file = path.join(directory, name);
-      // 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
+      // 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 끝났음을 확인하지 못한 기록은 남겨 다음 시작 때 다시 본다.
       try {
-        await recoverRecord(file, platform);
+        const saved = readRecord(file);
+        if (saved) await recoverRecord(file, saved, platform);
+        rmSync(file, { force: true });
       } catch {
         console.warn(
-          `[provider] could not recover ${provider} process record ${name}; check it by hand`
+          `[provider] could not recover ${provider} process record ${name}; it stays for the next start`
         );
       }
-      rmSync(file, { force: true });
     }
   }
 }
-async function recoverRecord(file: string, platform: NodeJS.Platform) {
-  const saved = JSON.parse(readFileSync(file, "utf8")) as {
-    pid: number;
-    start: string;
-    group: number;
-    boot: string;
-    lease?: string;
-  };
+type ProcessRecord = {
+  pid: number;
+  start: string;
+  group: number;
+  boot: string;
+  lease?: string;
+};
+/** 쓸 수 없는 기록(깨졌거나, 이름과 번호가 다름)은 어떤 프로세스도 가리키지 않는다. 파일을 읽지 못한 오류는 그대로 던져 기록을 남긴다. */
+function readRecord(file: string) {
+  let saved: Partial<ProcessRecord> | null;
+  try {
+    saved = JSON.parse(
+      readFileSync(file, "utf8")
+    ) as Partial<ProcessRecord> | null;
+  } catch (e) {
+    if (e instanceof SyntaxError) return undefined;
+    throw e;
+  }
+  // 1번은 신호를 보내면 모든 프로세스에 간다. 이 번호는 명령에도 쓰이니 숫자인지 꼭 본다.
+  return Number.isInteger(saved?.pid) &&
+    saved!.pid! > 1 &&
+    saved!.pid === Number(path.basename(file, ".json"))
+    ? (saved as ProcessRecord)
+    : undefined;
+}
+async function recoverRecord(
+  file: string,
+  saved: ProcessRecord,
+  platform: NodeJS.Platform
+) {
   if (platform !== "linux") {
     await recoverWithoutProc(file, saved, platform);
     return;

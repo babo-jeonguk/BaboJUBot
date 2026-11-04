@@ -256,24 +256,27 @@ export function startProcess(options: {
       if (!skipping && rest.length <= maxLineLength) deliver(rest);
       void (async () => {
         // The leader may exit before its shell/MCP children. Do not release the attempt while they live.
+        let stopped = true;
         if (child.pid)
           try {
             await stopProcessGroup(child.pid);
           } catch {
+            stopped = false;
             broken = true;
             console.error(
-              "[provider] a process group could not be stopped; releasing the run anyway"
+              "[provider] a process group could not be stopped; releasing the run and keeping its recovery record"
             );
           }
         await queue;
-        try {
-          forget();
-        } catch {
-          broken = true;
-          console.error(
-            "[provider] process exited but its recovery record could not be removed"
-          );
-        }
+        if (stopped)
+          try {
+            forget();
+          } catch {
+            broken = true;
+            console.error(
+              "[provider] process exited but its recovery record could not be removed"
+            );
+          }
         if (code)
           console.warn(
             `[provider] program exited with code ${code}: ${stderr

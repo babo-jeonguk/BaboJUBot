@@ -334,12 +334,12 @@ export function createOpenCodeProvider(options: {
           for await (const chunk of stream.body!) {
             buffer += decoder.decode(chunk, { stream: true });
             if (buffer.length > maxEventLength) buffer = "";
-            let split: number;
-            while ((split = buffer.indexOf("\n\n")) >= 0) {
-              const block = buffer.slice(0, split);
-              buffer = buffer.slice(split + 2);
+            let boundary: RegExpExecArray | null;
+            while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+              const block = buffer.slice(0, boundary.index);
+              buffer = buffer.slice(boundary.index + boundary[0].length);
               const data = block
-                .split("\n")
+                .split(/\r?\n/)
                 .filter((line) => line.startsWith("data:"))
                 .map((line) => line.slice(5).trimStart())
                 .join("\n");

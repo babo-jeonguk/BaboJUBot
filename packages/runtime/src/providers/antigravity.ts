@@ -3,7 +3,7 @@ import {
   readFile,
   writeFile,
   lstat,
-  link,
+  rename,
   rm,
   realpath,
   readdir,
@@ -23,6 +23,7 @@ import {
   runProbe,
 } from "./process.ts";
 const owner = "babojubot-antigravity-v1";
+const tempPrefix = ".babojubot-";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -42,13 +43,19 @@ async function removeOwned(cwd: string) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
     throw e;
   }
+  // 설정을 옮기기 전에 멈추면 임시 파일이 남는다. 안에 토큰이 있으니 치운다.
+  for (const name of await readdir(directory))
+    if (name.startsWith(tempPrefix) && name.endsWith(".tmp"))
+      await rm(path.join(directory, name), { force: true });
   try {
     if (!(await lstat(file)).isFile()) throw new Error("unsafe configuration");
-    const value = JSON.parse(await readFile(file, "utf8")) as {
-      babojubotOwner?: string;
-    };
-    if (value.babojubotOwner !== owner)
-      throw new Error("unowned configuration");
+    const text = await readFile(file, "utf8");
+    // 빈 파일은 설정을 옮기기 전에 멈춘 자리다. 내용이 없으니 지워도 잃을 것이 없다.
+    if (text !== "") {
+      const value = JSON.parse(text) as { babojubotOwner?: string };
+      if (value.babojubotOwner !== owner)
+        throw new Error("unowned configuration");
+    }
     await rm(file);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -167,7 +174,7 @@ export function createAntigravityProvider(options: {
         await mkdir(directory, { recursive: true });
         const temp = path.join(
           directory,
-          `.babojubot-${crypto.randomUUID()}.tmp`
+          `${tempPrefix}${crypto.randomUUID()}.tmp`
         );
         try {
           await writeFile(
@@ -186,18 +193,10 @@ export function createAntigravityProvider(options: {
             }),
             { flag: "wx", mode: 0o600 }
           );
-          // 한 번에 나타나도록 링크로 옮긴다. 하드링크가 안 되는 파일 시스템에서는 덮어쓰지 않는 쓰기로 대신한다.
-          try {
-            await link(temp, file);
-          } catch (e) {
-            const code = (e as NodeJS.ErrnoException).code;
-            if (code === "EEXIST") throw e;
-            await writeFile(file, await readFile(temp), {
-              flag: "wx",
-              mode: 0o600,
-            });
-          }
+          // 어떤 파일 시스템에서든 반쯤 쓴 설정이 보이지 않게 한다. 빈 파일로 자리를 잡아 남의 파일을 덮어쓰지 않고, 완성본을 그 위로 옮긴다.
+          await writeFile(file, "", { flag: "wx", mode: 0o600 });
           owned = true;
+          await rename(temp, file);
         } finally {
           await rm(temp, { force: true });
         }

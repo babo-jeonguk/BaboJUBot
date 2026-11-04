@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { mkdir, lstat, open, realpath } from "node:fs/promises";
+import { mkdir, lstat, open, realpath, readlink } from "node:fs/promises";
 import path from "node:path";
 import {
   artifactFileMaxBytes,
@@ -23,6 +23,17 @@ export class Workspaces {
   }
   private personal(orgId: string, agentId: string) {
     return path.resolve(this.root, "organizations", orgId, "agents", agentId);
+  }
+  /** 조직 폴더의 실제 경로. 조직들을 담은 폴더까지의 링크는 괜찮지만, 조직 폴더 자체가 다른 곳을 가리키면 조직 경계가 무너진다. */
+  private async realOrganization(orgId: string) {
+    const expected = path.join(
+      await realpath(path.resolve(this.root, "organizations")),
+      orgId,
+      "shared"
+    );
+    if ((await realpath(this.organization(orgId))) !== expected)
+      throw new ArtifactFileError();
+    return expected;
   }
   async ensure(orgId: string) {
     const org = await findOrganization(this.db, orgId);
@@ -58,7 +69,7 @@ export class Workspaces {
       if (path.isAbsolute(relative) || relative.includes("\0"))
         throw new ArtifactFileError();
       // 실제 경로로 비교한다. 데이터 폴더가 심볼릭 링크를 거쳐도 되고, 폴더를 벗어나는 링크만 막는다.
-      const root = await realpath(this.organization(orgId));
+      const root = await this.realOrganization(orgId);
       const target = await realpath(path.resolve(root, relative));
       const normalized = path.relative(root, target);
       if (
@@ -81,7 +92,14 @@ export class Workspaces {
           before.size > BigInt(artifactFileMaxBytes)
         )
           throw new ArtifactFileError();
-        // 경로 확인과 파일 열기 사이에 파일이 바뀌지 않았는지 본다.
+        // 경로 확인과 파일 열기 사이에 중간 폴더가 바뀌었어도 잡는다. 열린 파일의 경로를 물을 수 있는 시스템이면 그것으로 먼저 확인하고, 경로를 다시 풀어 같은 파일인지 본다.
+        const opened = await readlink(`/proc/self/fd/${handle.fd}`).catch(
+          () => undefined
+        );
+        if (opened !== undefined && opened !== target)
+          throw new ArtifactFileError();
+        if ((await realpath(path.resolve(root, relative))) !== target)
+          throw new ArtifactFileError();
         const current = await lstat(target, { bigint: true });
         if (current.dev !== before.dev || current.ino !== before.ino)
           throw new ArtifactFileError();
