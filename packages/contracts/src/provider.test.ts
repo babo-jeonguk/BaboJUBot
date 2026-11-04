@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  modelOptionSchema,
   providerCapabilitiesSchema,
   providerChoiceSchema,
   providerReadinessCheckSchema,
@@ -89,5 +90,23 @@ describe("provider declarations", () => {
     );
     const { cacheReadTokens: _missing, ...partial } = usage;
     expect(usageSchema.safeParse(partial).success).toBe(false);
+  });
+});
+
+describe("modelOptionSchema", () => {
+  it.each(["", "   ", "\t\n"])(
+    "rejects a name with nothing to show: %j",
+    (label) => {
+      expect(modelOptionSchema.safeParse({ id: "m", label }).success).toBe(
+        false
+      );
+    }
+  );
+
+  it("cleans the name the same way as the ID", () => {
+    expect(modelOptionSchema.parse({ id: " m ", label: " 모델 " })).toEqual({
+      id: "m",
+      label: "모델",
+    });
   });
 });

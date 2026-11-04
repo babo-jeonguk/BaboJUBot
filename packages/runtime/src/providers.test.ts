@@ -40,6 +40,22 @@ describe("listProviderModels", () => {
     ).toEqual(fixed);
   });
 
+  it("shows the ID when a program gives a model no usable name, so one row cannot break the whole list", async () => {
+    const models = await listProviderModels({
+      ...base!,
+      listModels: async () => [
+        { id: "empty", label: "" },
+        { id: "blank", label: "   " },
+        { id: "named", label: "이름 있음" },
+      ],
+    });
+    expect(models).toEqual([
+      { id: "empty", label: "empty" },
+      { id: "blank", label: "blank" },
+      { id: "named", label: "이름 있음" },
+    ]);
+  });
+
   it("answers from the fixed list when the wait runs out, then uses the list that arrives late", async () => {
     const fetched = [{ id: "live-1", label: "받아 온 모델" }];
     let calls = 0;

@@ -21,10 +21,10 @@ export type ProviderChoice = z.infer<typeof providerChoiceSchema>;
 export const sameProviderChoice = (a: ProviderChoice, b: ProviderChoice) =>
   a.provider === b.provider && a.model === b.model;
 
-/** 고르기 목록의 모델 하나. */
+/** 고르기 목록의 모델 하나. 이름도 ID처럼 앞뒤 공백을 지우며, 보일 글자가 있어야 한다. */
 export const modelOptionSchema = z.object({
   id: modelIdSchema,
-  label: z.string().min(1),
+  label: z.string().trim().min(1),
 });
 export type ModelOption = z.infer<typeof modelOptionSchema>;
 
