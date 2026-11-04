@@ -1,13 +1,4 @@
-import {
-  mkdir,
-  readFile,
-  writeFile,
-  lstat,
-  link,
-  rm,
-  realpath,
-  readdir,
-} from "node:fs/promises";
+import { mkdir, realpath, readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -22,8 +13,12 @@ import {
   providerEnvironment,
   runProbe,
 } from "./process.ts";
-const owner = "babojubot-antigravity-v1";
-const tempPrefix = ".babojubot-";
+import {
+  clearOwnedConfig,
+  configFailure,
+  ownerMark,
+  publishConfig,
+} from "./antigravity-config.ts";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -32,45 +27,6 @@ const failure = (error = "프로바이더를 실행하지 못했습니다."): Ru
   usage: null,
   nextSession: null,
 });
-/** 우리 표시가 있는 파일인가. 링크·읽을 수 없는 내용은 우리 것이 아니다. */
-async function isOwned(file: string) {
-  if (!(await lstat(file)).isFile()) return false;
-  try {
-    const value = JSON.parse(await readFile(file, "utf8")) as {
-      babojubotOwner?: string;
-    } | null;
-    return value?.babojubotOwner === owner;
-  } catch (e) {
-    if (e instanceof SyntaxError) return false;
-    throw e;
-  }
-}
-/** Never follow a link or remove somebody else's workspace configuration. */
-async function removeOwned(cwd: string) {
-  const directory = path.join(cwd, ".agents"),
-    file = path.join(directory, "mcp_config.json");
-  try {
-    if ((await lstat(directory)).isSymbolicLink())
-      throw new Error("unsafe workspace");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw e;
-  }
-  // 설정을 옮기기 전에 멈추면 임시 파일이 남는다. 이름이 같아도 우리 표시가 있는 것만 치운다.
-  for (const name of await readdir(directory))
-    if (
-      name.startsWith(tempPrefix) &&
-      name.endsWith(".tmp") &&
-      (await isOwned(path.join(directory, name)))
-    )
-      await rm(path.join(directory, name), { force: true });
-  try {
-    if (!(await isOwned(file))) throw new Error("unowned configuration");
-    await rm(file);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
-}
 /** Called before admission on server startup. Unowned files are left for execute to report. */
 export async function cleanupAntigravityWorkspaces(dataDir: string) {
   const organizations = path.join(dataDir, "organizations");
@@ -79,7 +35,7 @@ export async function cleanupAntigravityWorkspaces(dataDir: string) {
   )) {
     if (!org.isDirectory()) continue;
     try {
-      await removeOwned(path.join(organizations, org.name, "shared"));
+      await clearOwnedConfig(path.join(organizations, org.name, "shared"));
     } catch {
       /* Preserve unowned files. */
     }
@@ -172,51 +128,23 @@ export function createAntigravityProvider(options: {
             release = resolve;
           })
         );
-        try {
-          await removeOwned(cwd);
-        } catch {
-          return failure(
-            "작업 폴더의 MCP 설정이 제품 소유 파일이 아니거나 심볼릭 링크입니다."
-          );
-        }
-        const directory = path.join(cwd, ".agents"),
-          file = path.join(directory, "mcp_config.json");
-        await mkdir(directory, { recursive: true });
-        const temp = path.join(
-          directory,
-          `${tempPrefix}${crypto.randomUUID()}.tmp`
-        );
-        try {
-          await writeFile(
-            temp,
-            JSON.stringify({
-              babojubotOwner: owner,
-              mcpServers: {
-                organization: {
-                  serverUrl: new URL(
-                    "/api/tools/mcp",
-                    request.access.toolsBaseUrl
-                  ).href,
-                  headers: { Authorization: `Bearer ${request.access.token}` },
-                },
+        const published = await publishConfig(
+          cwd,
+          JSON.stringify({
+            babojubotOwner: ownerMark,
+            mcpServers: {
+              organization: {
+                serverUrl: new URL(
+                  "/api/tools/mcp",
+                  request.access.toolsBaseUrl
+                ).href,
+                headers: { Authorization: `Bearer ${request.access.token}` },
               },
-            }),
-            { flag: "wx", mode: 0o600 }
-          );
-          // 한 번에 나타나면서 이미 있는 파일을 덮어쓰지 않는 수단은 링크뿐이다(#101 결정 3).
-          try {
-            await link(temp, file);
-          } catch (e) {
-            return failure(
-              (e as NodeJS.ErrnoException).code === "EEXIST"
-                ? "작업 폴더의 MCP 설정이 제품 소유 파일이 아니거나 심볼릭 링크입니다."
-                : "이 파일 시스템은 하드링크를 지원하지 않아 Antigravity 설정 파일을 안전하게 쓸 수 없습니다. 제품 데이터 폴더를 하드링크를 지원하는 디스크로 옮겨 주세요."
-            );
-          }
-          owned = true;
-        } finally {
-          await rm(temp, { force: true });
-        }
+            },
+          })
+        );
+        if (published) return failure(configFailure(published));
+        owned = true;
         const args = [
           "--input-format",
           "stream-json",
@@ -364,7 +292,12 @@ export function createAntigravityProvider(options: {
           : failure();
       } finally {
         try {
-          if (owned && cwd) await removeOwned(cwd);
+          // 정리에 실패해도 실행 결과는 그대로 돌려준다. 토큰은 실행 시도가 끝나면 무효다.
+          if (owned && cwd) await clearOwnedConfig(cwd);
+        } catch {
+          console.warn(
+            "[provider] could not remove the Antigravity configuration"
+          );
         } finally {
           if (release && cwd) {
             workspaces.delete(cwd);
