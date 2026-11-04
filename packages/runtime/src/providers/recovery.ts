@@ -126,35 +126,59 @@ export function processStartedAt(pid: number, platform: NodeJS.Platform) {
     return undefined;
   }
 }
+// Windows는 다른 프로그램이 파일을 열어 둔 동안 덮어쓰기를 거절한다. 잠깐이므로 약 5초 동안 다시 시도한다.
+const startSaveTries = 20;
+const startSaveRetryMs = 250;
 /** 복구 기록. 프로세스 번호는 재사용되므로 시작 시각으로 같은 프로세스인지 판단한다. Linux는 부팅 식별자도 남긴다. */
-export function recordProcess(home: string, pid: number, lease: string) {
+export function recordProcess(
+  home: string,
+  pid: number,
+  lease: string,
+  { platform = process.platform }: { platform?: NodeJS.Platform } = {}
+) {
   const directory = path.join(home, "processes");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, `${pid}.json`);
+  const temp = `${file}.tmp`;
   const write = (record: object) => {
-    writeFileSync(`${file}.tmp`, JSON.stringify(record), { mode: 0o600 });
-    renameSync(`${file}.tmp`, file);
+    try {
+      writeFileSync(temp, JSON.stringify(record), { mode: 0o600 });
+      renameSync(temp, file);
+    } catch (e) {
+      rmSync(temp, { force: true });
+      throw e;
+    }
   };
-  if (process.platform === "linux") {
+  if (platform === "linux") {
     write({ ...identity(pid), boot: boot(), lease });
     return () => rmSync(file, { force: true });
   }
   write({ pid, lease });
   // PowerShell은 답이 느려 실행을 붙잡지 않는다. 그 전에 서버가 죽으면 시작 시각이 없는 기록으로 남아 건드리지 않는다.
   let forgotten = false;
-  const [command, args] = startQuery(pid, process.platform);
+  const saveStarted = (started: number, tries: number) => {
+    if (forgotten) return;
+    try {
+      write({ pid, lease, started });
+    } catch {
+      if (tries <= 1) {
+        console.warn("[provider] could not save a process start time");
+        return;
+      }
+      setTimeout(
+        () => saveStarted(started, tries - 1),
+        startSaveRetryMs
+      ).unref();
+    }
+  };
+  const [command, args] = startQuery(pid, platform);
   execFile(
     command,
     args,
     { encoding: "utf8", env: startQueryEnv(), windowsHide: true },
     (error, stdout) => {
       const started = error ? undefined : parseStart(stdout);
-      if (forgotten || started === undefined) return;
-      try {
-        write({ pid, lease, started });
-      } catch {
-        console.warn("[provider] could not save a process start time");
-      }
+      if (started !== undefined) saveStarted(started, startSaveTries);
     }
   );
   return () => {
