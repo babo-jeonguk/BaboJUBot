@@ -95,4 +95,13 @@ jobs:
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
       - run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 뜨는지 본다. 내장 DB와 migration까지 포함한다.
-      - run: node scripts/boot-check.mjs
+      - if: runner.os != 'Windows'
+        run: node scripts/boot-check.mjs
+      # Postgres는 관리자 계정에서 시작을 거부하고 Windows CI 계정은 관리자다. 러너에 설치된 Postgres로 서버와 migration을 본다.
+      - if: runner.os == 'Windows'
+        env:
+          DATABASE_URL: postgres://postgres:root@127.0.0.1:5432/postgres
+        run: |
+          Get-Service postgresql* | Set-Service -StartupType Manual
+          Get-Service postgresql* | Start-Service
+          node scripts/boot-check.mjs

@@ -74,7 +74,7 @@ pnpm check        # Markdown 로컬 링크 검사
 
 [데모 흐름 E2E](apps/web/e2e/demo-flow.spec.ts)가 같은 순서를 화면 조작으로 지킵니다(`pnpm test:e2e demo-flow`). 그 밖에 Lead 대화의 `실패 연습`·`실행 유지 연습` 부탁으로 실패한 실행 시도와 실행 중인 에이전트를 볼 수 있고, 작업 댓글로 같은 부탁을 하면 그 작업의 작업자가 그렇게 합니다(홈의 걱정하는 얼굴·작업 말풍선 확인용). `끼워 넣기 연습`을 부탁하면 가짜 Lead가 실행 중에 끼워 넣은 말을 받을 때까지 기다렸다가 반영했다고 답하고, `메모해 주세요: <말>`과 `세션 메모를 알려 주세요`로 세션 이어가기를 볼 수 있습니다(에이전트 기억과는 다른 세션 안의 메모). 위 흐름은 모두 기본 대화에서 진행되며, 대화 목록의 `＋ 새 대화`로 다른 주제를 보내면 가짜 Lead가 그 대화에 답하고, 승인 직후 분담·작업 완료 보고처럼 스스로 알리는 메시지는 기본 대화에 옵니다.
 
-`pnpm install`은 `@embedded-postgres/*`의 postinstall만 실행합니다(`pnpm-workspace.yaml`의 `onlyBuiltDependencies`). 이 script가 Postgres native library의 symlink를 만들기 때문에 `--ignore-scripts`로 설치하면 embedded Postgres가 뜨지 않습니다.
+`pnpm install`은 `@embedded-postgres/*`의 postinstall만 실행합니다(`pnpm-workspace.yaml`의 `onlyBuiltDependencies`). 이 script가 Postgres native library의 symlink를 만들기 때문에 `--ignore-scripts`로 설치하면 embedded Postgres가 뜨지 않습니다. Windows에서는 Postgres가 관리자 권한 실행을 거부하므로 일반 권한 터미널에서 시작하거나 `DATABASE_URL`로 외부 Postgres를 씁니다.
 
 [CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·테스트·빌드·E2E를 실행합니다. 바뀐 파일이 Markdown뿐이면 문서 검사만 돌리고 나머지 검사는 건너뛴 채 성공으로 표시합니다.
 기능 브랜치 push만으로는 중복 실행하지 않고, 같은 PR의 오래된 실행은 취소합니다.

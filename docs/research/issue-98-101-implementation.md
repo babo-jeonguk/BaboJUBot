@@ -83,5 +83,5 @@ macOS·Windows의 실제 프로그램 실행, 실제 캐시 절약 효과, 압�
 3회차, 기준 `40768666cb1b1f2032575ba01dd93c0ec553c391`.
 
 - Spec P7(시각 여유 안의 번호 재사용): 수정. 파일 시각으로 추측하지 않고 프로세스의 시작 시각을 기록해 같은지 비교한다. 시작 시각을 기록하기 전에 서버가 죽으면 그 프로세스는 끝내지 못하고 기록과 경고가 남는다.
-- Spec P9(macOS·Windows 기본 서버 기동): 수정. 설치 설정이 Linux x64의 내장 DB 준비 스크립트만 허용했다. 모든 시스템에 허용하고, macOS·Windows CI에서 기본 설정의 서버를 띄워 DB를 읽는 API까지 확인한다.
+- Spec P9(macOS·Windows 기본 서버 기동): 수정. 설치 설정이 Linux x64의 내장 DB 준비 스크립트만 허용했다. 모든 시스템에 허용했고, macOS CI에서 기본 설정의 서버가 내장 DB와 migration을 거쳐 DB를 읽는 API까지 응답함을 확인한다. 내장 DB가 이유 없이 끝나던 오류는 Postgres의 말을 보이도록 고쳤다. 그 결과 Windows CI 실패는 CI 계정이 관리자라 Postgres가 거부한 것으로 드러났다. Windows CI는 러너에 설치된 Postgres로 서버와 migration을 확인하고, 일반 권한 Windows의 내장 DB는 미검증으로 남긴다.
 - Standards S2(README·문서 지도의 낡은 설명): 수정.
