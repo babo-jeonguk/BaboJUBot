@@ -70,6 +70,8 @@ export async function startEmbeddedCluster(
   { dataDir, port, persistent }: EmbeddedOptions,
   settings: string[] = []
 ): Promise<() => Promise<void>> {
+  // 시작에 실패했을 때 이유를 보이려고 Postgres의 말을 끝부분만 남긴다.
+  let recentLog = "";
   const cluster = new EmbeddedPostgres({
     databaseDir: dataDir,
     port,
@@ -78,7 +80,9 @@ export async function startEmbeddedCluster(
     persistent,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
     postgresFlags: settings.flatMap((setting) => ["-c", setting]),
-    onLog: () => {},
+    onLog: (message) => {
+      recentLog = (recentLog + String(message)).slice(-1000);
+    },
     onError: (error) => console.error("[embedded-postgres]", error),
   });
   // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
@@ -89,7 +93,7 @@ export async function startEmbeddedCluster(
   try {
     if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
       await cluster.initialise();
-    await startCluster(cluster);
+    await startCluster(cluster, () => recentLog);
     return stop;
   } catch (error) {
     await stop();
@@ -102,7 +106,10 @@ export async function startEmbeddedCluster(
  * 종료 hook도 모든 cluster에 `stop`을 부르므로, postgres가 끝나면 cluster가 그 프로세스를 잊게 한다.
  * `start`가 실패해도 postgres는 이미 끝났으므로 `stop`은 바로 돌아온다.
  */
-async function startCluster(cluster: EmbeddedPostgres) {
+async function startCluster(
+  cluster: EmbeddedPostgres,
+  recentLog: () => string
+) {
   // 18.4.0-beta.17의 비공개 field. 버전을 올리면 이 우회가 아직 필요한지 확인한다.
   const internal = cluster as unknown as { process?: ChildProcess };
   const forgetWhenExited = () => {
@@ -119,7 +126,12 @@ async function startCluster(cluster: EmbeddedPostgres) {
   } catch (error) {
     forgetWhenExited();
     // embedded-postgres는 postgres가 먼저 끝나면 이유 없이 reject한다.
-    throw error ?? new Error("embedded Postgres exited before it was ready");
+    throw (
+      error ??
+      new Error(
+        `embedded Postgres exited before it was ready: ${recentLog().trim()}`
+      )
+    );
   }
   forgetWhenExited();
 }
