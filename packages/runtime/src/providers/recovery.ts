@@ -134,21 +134,34 @@ function processStartedAt(pid: number, platform: NodeJS.Platform) {
     return undefined;
   }
 }
+const fileTimeResolutionMs = 2000;
+/** 번호로 프로세스가 있는지 본다. 권한이 없어 거절돼도 있는 것이다. Windows에서도 동작한다. */
+function processAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
 /** /proc가 없는 시스템의 복구. 기록보다 먼저 시작한 프로세스만 우리 것으로 보고 끝낸다. */
 async function recoverWithoutProc(
   file: string,
   saved: { pid: number },
   platform: NodeJS.Platform
 ) {
-  const started = processStartedAt(saved.pid, platform);
-  if (started === undefined) {
+  if (!processAlive(saved.pid)) {
     // 대표는 끝났는데 자식이 남았으면 번호만으로 우리 것인지 알 수 없다. 건드리지 않고 기록을 남긴다.
     if (platform !== "win32" && groupAlive(saved.pid))
       throw new Error("Cannot identify the remaining process group");
     return;
   }
-  // 기록은 프로세스를 띄운 직후에 쓰므로 조금의 여유만 둔다.
-  if (started > statSync(file).mtimeMs + 5000) return;
+  // 살아 있는데 시작 시각을 모르면 우리 것인지 알 수 없다. 끝난 것으로 치지 않고 기록을 남긴다.
+  const started = processStartedAt(saved.pid, platform);
+  if (started === undefined)
+    throw new Error("Cannot read the start of a remaining process");
+  // 기록은 프로세스를 띄운 뒤에 쓰므로 시작이 더 나중이면 번호만 같은 남이다. 여유는 파일 시각의 해상도만큼만 둔다.
+  if (started > statSync(file).mtimeMs + fileTimeResolutionMs) return;
   if (platform === "win32") {
     execFileSync("taskkill", ["/F", "/T", "/PID", String(saved.pid)], {
       windowsHide: true,

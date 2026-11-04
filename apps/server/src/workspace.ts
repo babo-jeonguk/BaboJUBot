@@ -1,5 +1,5 @@
-import { constants } from "node:fs";
-import { mkdir, lstat, open, realpath, readlink } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import {
   artifactFileMaxBytes,
@@ -9,6 +9,75 @@ import {
 import { findOrganization, type Database } from "@babojubot/db";
 
 export class ArtifactFileError extends Error {}
+
+/**
+ * 조직 폴더 안의 파일을 다른 프로세스에서 읽는다. Node에는 폴더 핸들로 여는 기능이 없어 경로를 여러 번 확인해도
+ * 그 사이의 바꿔치기를 막지 못한다. 작업 폴더는 커널이 폴더 자체를 붙들므로 한 칸씩 들어가며 확인한 폴더인지 보고,
+ * 고정된 폴더 안에서 연다. 들어간 뒤에 바깥 경로가 바뀌어도 영향이 없다.
+ */
+export const pinnedReader = `
+const fs = require("node:fs");
+const { constants } = fs;
+const [maxBytes, ...parts] = JSON.parse(process.argv[1]);
+const stat = { bigint: true };
+const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+const name = parts.pop();
+for (const part of parts) {
+  const expected = fs.lstatSync(part, stat);
+  if (!expected.isDirectory()) process.exit(3);
+  process.chdir(part);
+  if (!same(expected, fs.statSync(".", stat))) process.exit(3);
+}
+const expected = fs.lstatSync(name, stat);
+if (!expected.isFile()) process.exit(3);
+const fd = fs.openSync(
+  name,
+  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+);
+const opened = fs.fstatSync(fd, stat);
+if (
+  !same(expected, opened) ||
+  !opened.isFile() ||
+  opened.nlink !== 1n ||
+  opened.size > BigInt(maxBytes)
+)
+  process.exit(3);
+const buffer = Buffer.alloc(Number(opened.size));
+let length = 0;
+while (length < buffer.length) {
+  const read = fs.readSync(fd, buffer, length, buffer.length - length, null);
+  if (!read) break;
+  length += read;
+}
+process.stdout.write(buffer.subarray(0, length));
+`;
+function readPinned(start: string, parts: string[]) {
+  return new Promise<Buffer>((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ["-e", pinnedReader, JSON.stringify([artifactFileMaxBytes, ...parts])],
+      {
+        cwd: start,
+        // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
+        env: process.env.SystemRoot
+          ? { SystemRoot: process.env.SystemRoot }
+          : {},
+        encoding: "buffer",
+        maxBuffer: artifactFileMaxBytes + 1,
+        timeout: 30_000,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (!error) resolve(stdout);
+        // 끝난 코드가 있으면 읽기를 거부한 것이고, 없으면 띄우지 못했거나 시간이 넘은 서버 쪽 문제다.
+        else
+          reject(
+            typeof error.code === "number" ? new ArtifactFileError() : error
+          );
+      }
+    );
+  });
+}
 
 /** Server-owned folder layout. Folder access permissions are enforced by the future container adapter, or instructions on the host. */
 export class Workspaces {
@@ -23,17 +92,6 @@ export class Workspaces {
   }
   private personal(orgId: string, agentId: string) {
     return path.resolve(this.root, "organizations", orgId, "agents", agentId);
-  }
-  /** 조직 폴더의 실제 경로. 조직들을 담은 폴더까지의 링크는 괜찮지만, 조직 폴더 자체가 다른 곳을 가리키면 조직 경계가 무너진다. */
-  private async realOrganization(orgId: string) {
-    const expected = path.join(
-      await realpath(path.resolve(this.root, "organizations")),
-      orgId,
-      "shared"
-    );
-    if ((await realpath(this.organization(orgId))) !== expected)
-      throw new ArtifactFileError();
-    return expected;
   }
   async ensure(orgId: string) {
     const org = await findOrganization(this.db, orgId);
@@ -68,8 +126,11 @@ export class Workspaces {
     try {
       if (path.isAbsolute(relative) || relative.includes("\0"))
         throw new ArtifactFileError();
-      // 실제 경로로 비교한다. 데이터 폴더가 심볼릭 링크를 거쳐도 되고, 폴더를 벗어나는 링크만 막는다.
-      const root = await this.realOrganization(orgId);
+      // 실제 경로로 비교한다. 조직들을 담은 폴더까지는 링크를 거쳐도 되지만, 조직 폴더 자체가 다른 곳을 가리키면 여기서 벗어난 경로로 나온다.
+      const organizations = await realpath(
+        path.resolve(this.root, "organizations")
+      );
+      const root = path.join(organizations, orgId, "shared");
       const target = await realpath(path.resolve(root, relative));
       const normalized = path.relative(root, target);
       if (
@@ -79,93 +140,56 @@ export class Workspaces {
         path.isAbsolute(normalized)
       )
         throw new ArtifactFileError();
-      const handle = await open(
-        target,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-      );
-      try {
-        const before = await handle.stat({ bigint: true });
-        // 하드링크는 다른 조직의 파일을 이 폴더의 파일처럼 보이게 할 수 있어 막는다.
-        if (
-          !before.isFile() ||
-          before.nlink !== 1n ||
-          before.size > BigInt(artifactFileMaxBytes)
-        )
-          throw new ArtifactFileError();
-        // 경로 확인과 파일 열기 사이에 중간 폴더가 바뀌었어도 잡는다. 열린 파일의 경로를 물을 수 있는 시스템이면 그것으로 먼저 확인하고, 경로를 다시 풀어 같은 파일인지 본다.
-        const opened = await readlink(`/proc/self/fd/${handle.fd}`).catch(
-          () => undefined
-        );
-        if (opened !== undefined && opened !== target)
-          throw new ArtifactFileError();
-        if ((await realpath(path.resolve(root, relative))) !== target)
-          throw new ArtifactFileError();
-        const current = await lstat(target, { bigint: true });
-        if (current.dev !== before.dev || current.ino !== before.ino)
-          throw new ArtifactFileError();
-        const buffer = Buffer.alloc(Number(before.size));
-        let length = 0;
-        while (length < buffer.length) {
-          const { bytesRead } = await handle.read(
-            buffer,
-            length,
-            buffer.length - length,
-            null
-          );
-          if (!bytesRead) break;
-          length += bytesRead;
-        }
-        const bytes = buffer.subarray(0, length);
-        const extension = path.extname(target).toLowerCase();
-        let content = "";
-        let format: ArtifactSnapshot["format"] = "binary";
-        const binaryTypes: Record<string, string> = {
-          ".pdf": "application/pdf",
-          ".png": "image/png",
-          ".jpg": "image/jpeg",
-          ".jpeg": "image/jpeg",
-          ".zip": "application/zip",
-          ".svg": "image/svg+xml",
-          ".html": "text/html",
-        };
-        let mediaType = binaryTypes[extension] ?? "application/octet-stream";
-        const textTypes: Record<string, string> = {
-          ".md": "text/markdown",
-          ".markdown": "text/markdown",
-          ".txt": "text/plain",
-          ".csv": "text/csv",
-          ".json": "application/json",
-          ".log": "text/plain",
-          ".tsv": "text/tab-separated-values",
-        };
-        if (textTypes[extension]) {
-          try {
-            const text = new TextDecoder("utf-8", { fatal: true }).decode(
-              bytes
-            );
-            if (!text.includes("\0")) {
-              content = text;
-              mediaType = textTypes[extension]!;
-              format = mediaType === "text/markdown" ? "markdown" : "text";
-            }
-          } catch {
-            /* Invalid UTF-8 remains a binary artifact. */
+      const bytes = await readPinned(organizations, [
+        orgId,
+        "shared",
+        ...normalized.split(path.sep),
+      ]);
+      const extension = path.extname(target).toLowerCase();
+      let content = "";
+      let format: ArtifactSnapshot["format"] = "binary";
+      const binaryTypes: Record<string, string> = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".zip": "application/zip",
+        ".svg": "image/svg+xml",
+        ".html": "text/html",
+      };
+      let mediaType = binaryTypes[extension] ?? "application/octet-stream";
+      const textTypes: Record<string, string> = {
+        ".md": "text/markdown",
+        ".markdown": "text/markdown",
+        ".txt": "text/plain",
+        ".csv": "text/csv",
+        ".json": "application/json",
+        ".log": "text/plain",
+        ".tsv": "text/tab-separated-values",
+      };
+      if (textTypes[extension]) {
+        try {
+          const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          if (!text.includes("\0")) {
+            content = text;
+            mediaType = textTypes[extension]!;
+            format = mediaType === "text/markdown" ? "markdown" : "text";
           }
+        } catch {
+          /* Invalid UTF-8 remains a binary artifact. */
         }
-        return {
-          format,
-          content,
-          file: {
-            name: path.basename(target),
-            path: normalized,
-            mediaType,
-            size: length,
-          },
-          bytes: bytes.toString("base64"),
-        };
-      } finally {
-        await handle.close();
       }
+      return {
+        format,
+        content,
+        file: {
+          name: path.basename(target),
+          path: normalized,
+          mediaType,
+          size: bytes.length,
+        },
+        bytes: bytes.toString("base64"),
+      };
     } catch (error) {
       if (
         error instanceof ArtifactFileError ||

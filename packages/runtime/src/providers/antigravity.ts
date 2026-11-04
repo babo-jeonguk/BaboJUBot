@@ -3,7 +3,7 @@ import {
   readFile,
   writeFile,
   lstat,
-  rename,
+  link,
   rm,
   realpath,
   readdir,
@@ -32,6 +32,19 @@ const failure = (error = "프로바이더를 실행하지 못했습니다."): Ru
   usage: null,
   nextSession: null,
 });
+/** 우리 표시가 있는 파일인가. 링크·읽을 수 없는 내용은 우리 것이 아니다. */
+async function isOwned(file: string) {
+  if (!(await lstat(file)).isFile()) return false;
+  try {
+    const value = JSON.parse(await readFile(file, "utf8")) as {
+      babojubotOwner?: string;
+    } | null;
+    return value?.babojubotOwner === owner;
+  } catch (e) {
+    if (e instanceof SyntaxError) return false;
+    throw e;
+  }
+}
 /** Never follow a link or remove somebody else's workspace configuration. */
 async function removeOwned(cwd: string) {
   const directory = path.join(cwd, ".agents"),
@@ -43,19 +56,16 @@ async function removeOwned(cwd: string) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
     throw e;
   }
-  // 설정을 옮기기 전에 멈추면 임시 파일이 남는다. 안에 토큰이 있으니 치운다.
+  // 설정을 옮기기 전에 멈추면 임시 파일이 남는다. 이름이 같아도 우리 표시가 있는 것만 치운다.
   for (const name of await readdir(directory))
-    if (name.startsWith(tempPrefix) && name.endsWith(".tmp"))
+    if (
+      name.startsWith(tempPrefix) &&
+      name.endsWith(".tmp") &&
+      (await isOwned(path.join(directory, name)))
+    )
       await rm(path.join(directory, name), { force: true });
   try {
-    if (!(await lstat(file)).isFile()) throw new Error("unsafe configuration");
-    const text = await readFile(file, "utf8");
-    // 빈 파일은 설정을 옮기기 전에 멈춘 자리다. 내용이 없으니 지워도 잃을 것이 없다.
-    if (text !== "") {
-      const value = JSON.parse(text) as { babojubotOwner?: string };
-      if (value.babojubotOwner !== owner)
-        throw new Error("unowned configuration");
-    }
+    if (!(await isOwned(file))) throw new Error("unowned configuration");
     await rm(file);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -193,10 +203,17 @@ export function createAntigravityProvider(options: {
             }),
             { flag: "wx", mode: 0o600 }
           );
-          // 어떤 파일 시스템에서든 반쯤 쓴 설정이 보이지 않게 한다. 빈 파일로 자리를 잡아 남의 파일을 덮어쓰지 않고, 완성본을 그 위로 옮긴다.
-          await writeFile(file, "", { flag: "wx", mode: 0o600 });
+          // 한 번에 나타나면서 이미 있는 파일을 덮어쓰지 않는 수단은 링크뿐이다(#101 결정 3).
+          try {
+            await link(temp, file);
+          } catch (e) {
+            return failure(
+              (e as NodeJS.ErrnoException).code === "EEXIST"
+                ? "작업 폴더의 MCP 설정이 제품 소유 파일이 아니거나 심볼릭 링크입니다."
+                : "이 파일 시스템은 하드링크를 지원하지 않아 Antigravity 설정 파일을 안전하게 쓸 수 없습니다. 제품 데이터 폴더를 하드링크를 지원하는 디스크로 옮겨 주세요."
+            );
+          }
           owned = true;
-          await rename(temp, file);
         } finally {
           await rm(temp, { force: true });
         }
