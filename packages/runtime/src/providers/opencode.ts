@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir, mkdtemp, rm, lstat } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -9,8 +7,14 @@ import type {
   SteerMessage,
   SteerOutcome,
 } from "@babojubot/contracts";
-import { startProcess } from "./process.ts";
-export const opencodeVersion = "2.2.5";
+import {
+  startProcess,
+  probeTimeoutMs,
+  startupLimitMs,
+  commandFor,
+  providerEnvironment,
+  runProbe,
+} from "./process.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const count = (v: unknown) =>
@@ -29,41 +33,45 @@ class HttpFailure extends Error {
     this.status = status;
   }
 }
+/** 서버 요청의 응답 제한. 모델 목록은 실제로 몇 초씩 걸린다. */
+const requestTimeoutMs = 60_000;
+/** 끼워 넣기 응답 제한. */
+const steerTimeoutMs = 10_000;
+/** 이보다 큰 이벤트는 메모리를 지키려고 버린다. */
+const maxEventLength = 64 * 1024 * 1024;
 export function createOpenCodeProvider(options: {
   dataDir: string;
   command?: readonly [string, ...string[]];
+  id?: string;
+  label?: string;
 }): ProviderConnection {
-  const home = path.resolve(options.dataDir, "providers/opencode"),
-    command = options.command ?? ["opencode"];
-  const env = () => ({
-    PATH: process.env.PATH,
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, "config"),
-    XDG_DATA_HOME: path.join(home, "data"),
-    XDG_CACHE_HOME: path.join(home, "cache"),
-    XDG_STATE_HOME: path.join(home, "state"),
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE: "1",
-    OPENCODE_DISABLE_FILEWATCHER: "1",
-  });
-  const version = async (signal: AbortSignal) => {
+  const connectionId = options.id ?? "opencode";
+  const home = path.resolve(options.dataDir, "providers", connectionId),
+    command = options.command ?? commandFor(connectionId, "opencode");
+  const env = () =>
+    providerEnvironment(connectionId, home, {
+      XDG_CONFIG_HOME: path.join(home, "config"),
+      XDG_DATA_HOME: path.join(home, "data"),
+      XDG_CACHE_HOME: path.join(home, "cache"),
+      XDG_STATE_HOME: path.join(home, "state"),
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_DISABLE_CLAUDE_CODE: "1",
+      OPENCODE_DISABLE_FILEWATCHER: "1",
+    });
+  let warnedSystemConfig = false;
+  const prepare = async () => {
     await mkdir(home, { recursive: true, mode: 0o700 });
-    // 2.2.5 CLI has no system-config override. Refuse rather than load machine policy/plugins.
-    if (process.platform !== "linux")
-      throw new Error("Unsupported configuration isolation");
+    if (warnedSystemConfig) return;
+    // 이 프로그램은 시스템 설정을 끌 방법이 없다. 막지 않고 알린다.
     try {
       await lstat("/etc/opencode");
-      throw new Error("System config present");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      warnedSystemConfig = true;
+      console.warn(
+        "[provider] /etc/opencode exists; OpenCode will also read this machine's system configuration"
+      );
+    } catch {
+      /* 시스템 설정이 없다. */
     }
-    return (
-      await promisify(execFile)(
-        command[0],
-        [...command.slice(1), "--version"],
-        { cwd: home, env: env(), signal, timeout: 3000, maxBuffer: 65536 }
-      )
-    ).stdout.trim();
   };
   async function server(
     signal: AbortSignal,
@@ -106,7 +114,7 @@ export function createOpenCodeProvider(options: {
     const stop = () => child.end();
     lifetime.signal.addEventListener("abort", stop, { once: true });
     if (lifetime.signal.aborted) stop();
-    const timer = setTimeout(() => lifetime.abort(), 10000);
+    const timer = setTimeout(() => lifetime.abort(), startupLimitMs);
     const close = async () => {
       clearTimeout(timer);
       lifetime.abort();
@@ -139,7 +147,7 @@ export function createOpenCodeProvider(options: {
         route: string,
         method = "GET",
         body?: unknown,
-        timeout = 10000
+        timeout = requestTimeoutMs
       ) => {
         const response = await fetch(base + route, {
           method,
@@ -182,8 +190,7 @@ export function createOpenCodeProvider(options: {
     (message: SteerMessage) => Promise<SteerOutcome>
   >();
   const catalog = async (signal: AbortSignal) => {
-    if ((await version(signal)) !== opencodeVersion)
-      throw new Error("Unsupported version");
+    await prepare();
     const service = await server(signal);
     try {
       return await service.json("/api/model");
@@ -202,11 +209,18 @@ export function createOpenCodeProvider(options: {
       usageCost: true,
       precompact: false,
     },
-    loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' XDG_DATA_HOME='${path.join(home, "data").replaceAll("'", "'\\''")}' opencode auth login`,
+    loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       try {
-        if ((await version(signal)) !== opencodeVersion)
-          return { status: "not_ready", reason: "version_unsupported" };
+        await prepare();
+        // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
+        await runProbe(command, ["--version"], {
+          cwd: home,
+          env: env(),
+          signal,
+          timeout: probeTimeoutMs,
+          maxBuffer: 65536,
+        });
         const listed = models(await catalog(signal));
         return listed.some(isFree)
           ? { status: "ready", reason: null }
@@ -228,8 +242,7 @@ export function createOpenCodeProvider(options: {
       let service: Awaited<ReturnType<typeof server>> | undefined,
         events: Promise<void> | undefined;
       try {
-        if ((await version(control.signal)) !== opencodeVersion)
-          return failure();
+        await prepare();
         // Instructions are attached separately; never set agent.system, which replaces the native prompt.
         const config = {
           permissions: [{ action: "*", resource: "*", effect: "allow" }],
@@ -248,9 +261,10 @@ export function createOpenCodeProvider(options: {
         service = await server(control.signal, config);
         const api = service;
         const available = models(await api.json("/api/model"));
+        // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
         const selected = input.model
           ? available.find((m) => `${m.providerID}/${m.id}` === input.model)
-          : available.find(isFree);
+          : (available.find(isFree) ?? available[0]);
         if (!selected) return failure();
         let session: Record<string, unknown> | undefined;
         if (typeof input.previousSession?.id === "string") {
@@ -263,7 +277,15 @@ export function createOpenCodeProvider(options: {
               ).data
             );
           } catch (e) {
-            if (!(e instanceof HttpFailure) || e.status !== 404) throw e;
+            // 없는 세션도, 받아들이지 않는 세션도 새 세션으로 시작한다. 로그인 오류와 서버 오류는 세션 문제가 아니다.
+            if (
+              !(e instanceof HttpFailure) ||
+              e.status < 400 ||
+              e.status >= 500 ||
+              e.status === 401 ||
+              e.status === 403
+            )
+              throw e;
             await control.emit({
               type: "progress",
               text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
@@ -311,19 +333,24 @@ export function createOpenCodeProvider(options: {
           let buffer = "";
           for await (const chunk of stream.body!) {
             buffer += decoder.decode(chunk, { stream: true });
-            if (buffer.length > 4 * 1024 * 1024) throw new Error("Event limit");
-            let split: number;
-            while ((split = buffer.indexOf("\n\n")) >= 0) {
-              const block = buffer.slice(0, split);
-              buffer = buffer.slice(split + 2);
+            if (buffer.length > maxEventLength) buffer = "";
+            let boundary: RegExpExecArray | null;
+            while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+              const block = buffer.slice(0, boundary.index);
+              buffer = buffer.slice(boundary.index + boundary[0].length);
               const data = block
-                .split("\n")
+                .split(/\r?\n/)
                 .filter((line) => line.startsWith("data:"))
                 .map((line) => line.slice(5).trimStart())
                 .join("\n");
               if (!data) continue;
-              const event = object(JSON.parse(data)),
-                payload = object(event.data);
+              let event: Record<string, unknown>;
+              try {
+                event = object(JSON.parse(data));
+              } catch {
+                continue;
+              }
+              const payload = object(event.data);
               if (payload.sessionID !== id) continue;
               if (event.type === "session.execution.started") {
                 began = true;
@@ -354,10 +381,15 @@ export function createOpenCodeProvider(options: {
         active.set(input.identity.runId, async (message) => {
           if (!began || finished || control.signal.aborted) return "rejected";
           try {
-            await api.request(route + "/prompt", "POST", {
-              text: message.body,
-              delivery: "steer",
-            });
+            await api.request(
+              route + "/prompt",
+              "POST",
+              {
+                text: message.body,
+                delivery: "steer",
+              },
+              steerTimeoutMs
+            );
             return "accepted";
           } catch (e) {
             if (e instanceof HttpFailure && e.status >= 400 && e.status < 500)
@@ -409,8 +441,9 @@ export function createOpenCodeProvider(options: {
     },
   };
   return {
-    id: "opencode",
-    label: "OpenCode",
+    id: connectionId,
+    label: options.label ?? "OpenCode",
+    login: { command, args: ["auth", "login"], env: env() },
     adapter,
     models: [],
     async listModels(signal) {

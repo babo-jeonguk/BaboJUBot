@@ -24,6 +24,7 @@ import {
 import type { EventHub } from "./event-hub.ts";
 import type { RunRequestAssembler } from "./run-request.ts";
 import { issueRunToken } from "./run-token.ts";
+import { WorkspaceIdentityError } from "./workspace.ts";
 
 const failed = (error: string): RunResult => ({
   stopReason: "failed",
@@ -295,11 +296,13 @@ export class RunDispatcher {
         result = failed("프로바이더가 계약 밖의 종료 결과를 돌려주었습니다.");
       }
     } catch (error) {
-      // 프로바이더 오류 내용은 공개 기록에 그대로 옮기지 않는다.
+      // 프로바이더 오류 내용은 공개 기록에 그대로 옮기지 않는다. 조직 폴더 확인 실패는 제품이 쓴 안내라 그대로 보인다.
       console.error(`[runs] run ${run.id} runtime error`, error);
       result = controller.signal.aborted
         ? cancelled
-        : failed("프로바이더가 오류로 끝났습니다.");
+        : error instanceof WorkspaceIdentityError
+          ? failed(error.message)
+          : failed("프로바이더가 오류로 끝났습니다.");
     } finally {
       this.#active.delete(run.id);
     }
@@ -348,10 +351,15 @@ export class RunDispatcher {
       console.warn(`[runs] run ${runId} dropped a non-public activity`);
       return;
     }
-    const event = await appendRunActivity(this.#db, runId, {
-      source: "runtime",
-      activity: activity.data,
-    });
-    if (event) this.#hub.publish(event);
+    // 활동 기록이 실패해도 실행 시도는 계속한다.
+    try {
+      const event = await appendRunActivity(this.#db, runId, {
+        source: "runtime",
+        activity: activity.data,
+      });
+      if (event) this.#hub.publish(event);
+    } catch (error) {
+      console.error(`[runs] run ${runId} could not record an activity`, error);
+    }
   }
 }

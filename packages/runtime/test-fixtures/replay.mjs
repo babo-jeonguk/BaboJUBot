@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 const recording = JSON.parse(await readFile(process.argv[2], "utf8"));
 if (process.argv.includes("--version")) {
-  console.log(recording.version ?? "2.1.316 (Claude Code)");
+  console.log(recording.version ?? "9.9.9 (Claude Code)");
   process.exit(0);
 }
 if (process.argv.includes("login") && process.argv.includes("status"))
@@ -13,6 +13,11 @@ for (const [flag, value] of Object.entries(recording.argv ?? {})) {
   const i = process.argv.indexOf(flag);
   if (i < 0 || (value !== true && process.argv[i + 1] !== value))
     process.exit(24);
+}
+for (const [flag, content] of Object.entries(recording.argvFile ?? {})) {
+  const i = process.argv.indexOf(flag);
+  if (i < 0 || (await readFile(process.argv[i + 1], "utf8")) !== content)
+    process.exit(25);
 }
 const input = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
 function matches(actual, expected) {

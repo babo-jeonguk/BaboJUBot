@@ -255,3 +255,24 @@ describe("session compaction is exclusive per agent", () => {
     ).toBeDefined();
   });
 });
+
+describe("a run that did not finish", () => {
+  it.each(["failed", "cancelled"] as const)(
+    "keeps the session after a %s run",
+    async (stopReason) => {
+      const org = await organization();
+      await org.send("안녕");
+      await org.turn({ at: "kept" });
+      await org.send("다시");
+      const claimed = (await org.claim())!;
+      await finishRun(
+        t.db,
+        claimed.run.id,
+        { ...ended(null), stopReason, error: null },
+        source
+      );
+      await org.send("또");
+      expect((await org.claim())!.run.sessionBefore).toEqual({ at: "kept" });
+    }
+  );
+});

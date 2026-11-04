@@ -1,0 +1,1249 @@
+{
+  "provenance": "Reviewed recording of real OpenCode 2.2.5 protocol output (free model, 2026-11-03). Every string outside a short allowlist is masked; numbers and structure are real. Behaviour around it is scripted by opencode-simulator.mjs.",
+  "version": "opencode v2.2.5",
+  "models": [
+    {
+      "id": "recorded-free",
+      "modelID": "<masked>",
+      "providerID": "opencode",
+      "type": "chat",
+      "family": "<masked>",
+      "name": "Recorded free model",
+      "compatibility": {
+        "reasoningField": "<masked>"
+      },
+      "package": "<masked>",
+      "settings": {
+        "apiKey": "<masked>",
+        "baseURL": "<masked>",
+        "provider": "<masked>"
+      },
+      "capabilities": {
+        "tools": true,
+        "input": ["<masked>"],
+        "output": ["<masked>"],
+        "temperature": true
+      },
+      "variants": [],
+      "time": {
+        "released": 1760659200000
+      },
+      "cost": [
+        {
+          "input": 0,
+          "output": 0,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        }
+      ],
+      "status": "active",
+      "enabled": true,
+      "limit": {
+        "context": 200000,
+        "input": 160000,
+        "output": 32000
+      }
+    }
+  ],
+  "session": {
+    "id": "<masked>",
+    "projectID": "<masked>",
+    "agent": "build",
+    "model": {
+      "id": "<masked>",
+      "providerID": "opencode",
+      "variant": "<masked>"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 15319,
+      "output": 194,
+      "reasoning": 152,
+      "cache": {
+        "read": 35456,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1793717127376,
+      "updated": 1793717137024,
+      "busy": 1793717127883,
+      "idle": 1793717137031
+    },
+    "title": "<masked>",
+    "permissions": [
+      {
+        "action": "<masked>",
+        "resource": "<masked>",
+        "effect": "<masked>"
+      }
+    ],
+    "location": {
+      "directory": "<masked>"
+    }
+  },
+  "prompt": {
+    "data": {
+      "id": "<masked>",
+      "sessionID": "<session>",
+      "time": {
+        "created": 1793717127871
+      },
+      "type": "user",
+      "payload": {
+        "text": "<masked>"
+      },
+      "delivery": "<masked>"
+    }
+  },
+  "connected": [
+    {
+      "id": "<masked>",
+      "type": "server.connected",
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127481,
+      "type": "project.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "id": "<masked>",
+        "canonical": "<masked>",
+        "time": {
+          "created": 1793717127374,
+          "updated": 1793717127374,
+          "active": 1793717127480
+        },
+        "sandboxes": []
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127758,
+      "type": "mcp.status.changed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "server": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127761,
+      "type": "integration.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127772,
+      "type": "provider.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127818,
+      "type": "model.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127822,
+      "type": "agent.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127822,
+      "type": "command.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127823,
+      "type": "skill.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127831,
+      "type": "websearch.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127867,
+      "type": "reference.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127868,
+      "type": "plugin.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {}
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127871,
+      "type": "session.inbox.enqueued",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "inboxID": "<masked>",
+        "sessionID": "<session>",
+        "item": {
+          "type": "user",
+          "payload": {
+            "text": "<masked>"
+          },
+          "delivery": "<masked>"
+        }
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 1,
+        "version": 1
+      }
+    }
+  ],
+  "started": {
+    "id": "<masked>",
+    "created": 1793717127883,
+    "type": "session.execution.started",
+    "data": {
+      "sessionID": "<session>"
+    },
+    "durable": {
+      "aggregateID": "<session>",
+      "seq": 2,
+      "version": 1
+    }
+  },
+  "turn": [
+    {
+      "id": "<masked>",
+      "created": 1793717127944,
+      "metadata": {
+        "instructions": {
+          "initial": true
+        }
+      },
+      "type": "session.instructions.updated",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "delta": {
+          "core/codemode": "<masked>",
+          "core/skill-guidance": "<masked>",
+          "core/date": "<masked>",
+          "core/environment": "<masked>",
+          "api/babojubot": "<masked>"
+        }
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 3,
+        "version": 2
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717127950,
+      "type": "session.inbox.delivered",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "inboxID": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 4,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717128116,
+      "type": "mcp.resources.changed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "server": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717128116,
+      "type": "mcp.status.changed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "server": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131270,
+      "type": "session.usage.updated",
+      "data": {
+        "sessionID": "<session>",
+        "cost": 0,
+        "tokens": {
+          "input": 436,
+          "output": 5,
+          "reasoning": 64,
+          "cache": {
+            "read": 384,
+            "write": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131272,
+      "type": "session.renamed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "title": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 6,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131438,
+      "type": "session.step.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "agent": "build",
+        "model": {
+          "id": "<masked>",
+          "providerID": "opencode",
+          "variant": "<masked>"
+        },
+        "assistantMessageID": "<masked>",
+        "started": 1793717128006
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 7,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131444,
+      "type": "session.reasoning.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "native": {
+          "reasoningField": "<masked>"
+        }
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 8,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131553,
+      "type": "session.reasoning.delta",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "delta": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131673,
+      "type": "session.reasoning.delta",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "delta": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131777,
+      "type": "session.reasoning.delta",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "delta": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131976,
+      "type": "session.tool.input.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "name": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 9,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717131998,
+      "type": "session.reasoning.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "text": "<masked>",
+        "native": {
+          "reasoningField": "<masked>"
+        }
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 10,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717132003,
+      "type": "session.tool.input.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "text": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 11,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717132007,
+      "type": "session.tool.called",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "input": {
+          "code": "<masked>"
+        },
+        "executed": false
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 12,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717132013,
+      "type": "session.step.streamed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 13,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717132051,
+      "type": "session.tool.progress",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "metadata": {
+          "toolCalls": [
+            {
+              "tool": "<masked>",
+              "status": "running",
+              "input": {
+                "query": "<masked>"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717132059,
+      "type": "session.tool.success",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "content": [
+          {
+            "type": "text",
+            "text": "<masked>"
+          }
+        ],
+        "metadata": {
+          "toolCalls": [
+            {
+              "tool": "<masked>",
+              "status": "completed",
+              "input": {
+                "query": "<masked>"
+              }
+            },
+            {
+              "tool": "<masked>",
+              "status": "completed",
+              "input": {
+                "query": "<masked>"
+              }
+            }
+          ],
+          "truncated": false
+        },
+        "executed": false
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 14,
+        "version": 2
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717132065,
+      "type": "session.step.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "finish": "<masked>",
+        "rawFinish": "<masked>",
+        "tokens": {
+          "input": 4200,
+          "output": 71,
+          "reasoning": 55,
+          "cache": {
+            "read": 2688,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 15,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717132071,
+      "type": "session.usage.updated",
+      "data": {
+        "sessionID": "<session>",
+        "cost": 0,
+        "tokens": {
+          "input": 4636,
+          "output": 76,
+          "reasoning": 119,
+          "cache": {
+            "read": 3072,
+            "write": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133485,
+      "type": "session.step.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "agent": "build",
+        "model": {
+          "id": "<masked>",
+          "providerID": "opencode",
+          "variant": "<masked>"
+        },
+        "assistantMessageID": "<masked>",
+        "started": 1793717132129
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 16,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133493,
+      "type": "session.reasoning.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "native": {
+          "reasoningField": "<masked>"
+        }
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 17,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133597,
+      "type": "session.reasoning.delta",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "delta": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133707,
+      "type": "session.reasoning.delta",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "delta": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133774,
+      "type": "session.reasoning.delta",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "delta": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133774,
+      "type": "session.tool.input.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "name": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 18,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133783,
+      "type": "session.reasoning.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "text": "<masked>",
+        "native": {
+          "reasoningField": "<masked>"
+        }
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 19,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133788,
+      "type": "session.tool.input.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "text": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 20,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133792,
+      "type": "session.tool.called",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "input": {},
+        "executed": false
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 21,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133797,
+      "type": "session.step.streamed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 22,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133868,
+      "type": "session.tool.success",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "content": [
+          {
+            "type": "text",
+            "text": "<masked>"
+          }
+        ],
+        "metadata": {
+          "truncated": false
+        },
+        "executed": false
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 23,
+        "version": 2
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133873,
+      "type": "session.step.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "finish": "<masked>",
+        "rawFinish": "<masked>",
+        "tokens": {
+          "input": 9886,
+          "output": 24,
+          "reasoning": 33,
+          "cache": {
+            "read": 4096,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 24,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717133878,
+      "type": "session.usage.updated",
+      "data": {
+        "sessionID": "<session>",
+        "cost": 0,
+        "tokens": {
+          "input": 14522,
+          "output": 100,
+          "reasoning": 152,
+          "cache": {
+            "read": 7168,
+            "write": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135507,
+      "type": "session.step.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "agent": "build",
+        "model": {
+          "id": "<masked>",
+          "providerID": "opencode",
+          "variant": "<masked>"
+        },
+        "assistantMessageID": "<masked>",
+        "started": 1793717133904
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 25,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135512,
+      "type": "session.tool.input.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "name": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 26,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135588,
+      "type": "session.tool.input.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "text": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 27,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135593,
+      "type": "session.tool.called",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "input": {
+          "body": "<masked>",
+          "conversationId": "<masked>"
+        },
+        "executed": false
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 28,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135599,
+      "type": "session.step.streamed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 29,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135647,
+      "type": "session.tool.success",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "id": "<masked>",
+        "content": [
+          {
+            "type": "text",
+            "text": "<masked>"
+          }
+        ],
+        "metadata": {
+          "truncated": false
+        },
+        "executed": false
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 30,
+        "version": 2
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135653,
+      "type": "session.step.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "finish": "<masked>",
+        "rawFinish": "<masked>",
+        "tokens": {
+          "input": 451,
+          "output": 82,
+          "reasoning": 0,
+          "cache": {
+            "read": 13952,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 31,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717135658,
+      "type": "session.usage.updated",
+      "data": {
+        "sessionID": "<session>",
+        "cost": 0,
+        "tokens": {
+          "input": 14973,
+          "output": 182,
+          "reasoning": 152,
+          "cache": {
+            "read": 21120,
+            "write": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717136920,
+      "type": "session.step.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "agent": "build",
+        "model": {
+          "id": "<masked>",
+          "providerID": "opencode",
+          "variant": "<masked>"
+        },
+        "assistantMessageID": "<masked>",
+        "started": 1793717135689
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 32,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717136925,
+      "type": "session.text.started",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 33,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717137013,
+      "type": "session.text.delta",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "delta": "<masked>"
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717137014,
+      "type": "session.text.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "ordinal": 0,
+        "text": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 34,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717137018,
+      "type": "session.step.streamed",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>"
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 35,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717137024,
+      "type": "session.step.ended",
+      "location": {
+        "directory": "<masked>"
+      },
+      "data": {
+        "sessionID": "<session>",
+        "assistantMessageID": "<masked>",
+        "finish": "<masked>",
+        "rawFinish": "<masked>",
+        "tokens": {
+          "input": 346,
+          "output": 12,
+          "reasoning": 0,
+          "cache": {
+            "read": 14336,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "durable": {
+        "aggregateID": "<session>",
+        "seq": 36,
+        "version": 1
+      }
+    },
+    {
+      "id": "<masked>",
+      "created": 1793717137028,
+      "type": "session.usage.updated",
+      "data": {
+        "sessionID": "<session>",
+        "cost": 0,
+        "tokens": {
+          "input": 15319,
+          "output": 194,
+          "reasoning": 152,
+          "cache": {
+            "read": 35456,
+            "write": 0
+          }
+        }
+      }
+    }
+  ],
+  "succeeded": {
+    "id": "<masked>",
+    "created": 1793717137031,
+    "type": "session.execution.succeeded",
+    "data": {
+      "sessionID": "<session>"
+    },
+    "durable": {
+      "aggregateID": "<session>",
+      "seq": 37,
+      "version": 1
+    }
+  }
+}

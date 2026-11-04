@@ -85,7 +85,13 @@ export function createProviderRegistry(
       [...new Set(choices.map((c) => c.provider))].flatMap((id) => {
         const connection = byId.get(id);
         return connection
-          ? [listProviderModels(connection).then((models) => ({ id, models }))]
+          ? [
+              connection.openModels
+                ? Promise.resolve({ id, models: [] })
+                : listProviderModels(connection, { fresh: true }).then(
+                    (models) => ({ id, models })
+                  ),
+            ]
           : [];
       })
     );

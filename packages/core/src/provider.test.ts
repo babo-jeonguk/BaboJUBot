@@ -1,6 +1,10 @@
 import { defaultAgentAppearance, type Agent } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
-import { admitsProviderRun, planAgentProviderChange } from "./provider.ts";
+import {
+  admitsProviderRun,
+  planAgentProviderChange,
+  checkProviderChoices,
+} from "./provider.ts";
 
 const agent: Agent = {
   id: "agent-1",
@@ -69,5 +73,16 @@ describe("planAgentProviderChange", () => {
         model: null,
       })
     ).toBe("organization_closed");
+  });
+});
+
+describe("a connection with no model list to check against", () => {
+  it("accepts any model, so a list that failed to load does not refuse a real one", () => {
+    expect(
+      checkProviderChoices(
+        [{ id: "a", models: [] }],
+        [{ provider: "a", model: "anything" }]
+      )
+    ).toBeUndefined();
   });
 });

@@ -70,3 +70,38 @@ jobs:
           path: apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 3
+  # 실제 프로그램 연결은 세 OS를 지원한다. DB가 필요 없는 연결 검사만 돈다.
+  portable:
+    name: runtime on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @babojubot/runtime run typecheck
+      - run: pnpm --filter @babojubot/runtime test
+      # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
+      - run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
+      # 기본 설정의 서버가 이 시스템에서 뜨는지 본다. 내장 DB와 migration까지 포함한다.
+      - if: runner.os != 'Windows'
+        run: node scripts/boot-check.mjs
+      # Postgres는 관리자 계정에서 시작을 거부하고 Windows CI 계정은 관리자다. 러너에 설치된 Postgres로 서버와 migration을 본다.
+      - if: runner.os == 'Windows'
+        env:
+          DATABASE_URL: postgres://postgres:root@127.0.0.1:5432/postgres
+        run: |
+          Get-Service postgresql* | Set-Service -StartupType Manual
+          Get-Service postgresql* | Start-Service
+          node scripts/boot-check.mjs

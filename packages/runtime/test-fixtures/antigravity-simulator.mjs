@@ -2,15 +2,28 @@
 import { createInterface } from "node:readline";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-const args = process.argv.slice(2),
+import { bind, recording } from "./recording.mjs";
+const args = process.argv
+    .slice(2)
+    .filter(
+      (_, i, all) => all[i] !== "--recording" && all[i - 1] !== "--recording"
+    ),
   out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 if (args.includes("--version")) {
-  console.log("1.4.12");
+  console.log("9.9.9");
   process.exit(0);
 }
-const id = args.includes("--conversation")
+if (args[0] === "models") {
+  console.log("simulated-model\tSimulated Model");
+  process.exit(0);
+}
+const asked = args.includes("--conversation")
   ? args[args.indexOf("--conversation") + 1]
-  : crypto.randomUUID();
+  : null;
+// 실제 프로그램은 없는 대화를 받으면 경고하고 새 대화로 시작한다.
+if (asked === "expired")
+  console.error('warning: conversation "expired" not found');
+const id = asked && asked !== "expired" ? asked : crypto.randomUUID();
 const directory = path.join(
   process.env.HOME,
   ".gemini/antigravity-cli/conversations"
@@ -22,7 +35,14 @@ await writeFile(file, note);
 const config = JSON.parse(
   await readFile(path.join(process.cwd(), ".agents/mcp_config.json"), "utf8")
 ).mcpServers.organization;
-out({ event: "init", conversation_id: id });
+out(
+  recording
+    ? bind(
+        recording.frames.find((f) => f.event === "init"),
+        id
+      )
+    : { event: "init", conversation_id: id }
+);
 for await (const line of createInterface({ input: process.stdin })) {
   const frame = JSON.parse(line),
     text = frame.message.content;
@@ -45,14 +65,22 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
   );
   if (!response.ok) process.exit(23);
-  out({
-    event: "step_update",
-    step_update: {
-      conversation_id: id,
-      step_index: 1,
-      state: "DONE",
-      usage: { input_tokens: 10, output_tokens: 2, cache_read_tokens: 0 },
-    },
-  });
-  out({ event: "result", result: { status: "SUCCESS", conversation_id: id } });
+  if (recording) {
+    for (const frame of recording.frames)
+      if (frame.event !== "init") out(bind(frame, id));
+  } else {
+    out({
+      event: "step_update",
+      step_update: {
+        conversation_id: id,
+        step_index: 1,
+        state: "DONE",
+        usage: { input_tokens: 10, output_tokens: 2, cache_read_tokens: 0 },
+      },
+    });
+    out({
+      event: "result",
+      result: { status: "SUCCESS", conversation_id: id },
+    });
+  }
 }

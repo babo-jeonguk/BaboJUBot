@@ -28,7 +28,12 @@ export function checkProviderChoices(
   for (const { provider, model } of choices) {
     const connection = connections.find((c) => c.id === provider);
     if (!connection) return "unknown_provider";
-    if (model !== null && !connection.models.some((m) => m.id === model))
+    // 목록이 비었으면(받아 오지 못한 때 포함) 틀렸다고 단정하지 않는다. 틀린 모델은 실행에서 드러난다.
+    if (
+      model !== null &&
+      connection.models.length > 0 &&
+      !connection.models.some((m) => m.id === model)
+    )
       return "unknown_model";
   }
   return undefined;

@@ -26,6 +26,7 @@
 | 후속 실제 adapter | `ProviderConnection`으로 [runtime/index.ts](../../../packages/runtime/src/index.ts)에 추가해 서버 등록부에 넘김([프로바이더](providers.md)), 요청 `instructions` 사본·`model`을 프로바이더에 주입 | 프로바이더 계약 공통 검사에 장면 두 개로 등록. 자격 증명·비용이 드는 실행 방식은 판 2에서 정함 |
 | MCP 전송·공통 도구 실행·재호출 키 | server/mcp.ts `mcpRoutes`, server/tools.ts `ToolDispatch`, core/approval.ts `availableOrgTools` | [MCP API](../../../apps/server/test/mcp.test.ts): 토큰·Role·단계·정책·조직·HTTP 재호출 |
 | 조직·개인 폴더 생성·복구와 실행 위치 | server/workspace.ts `Workspaces`, server/run-request.ts, server/after-commit.ts `ensureWorkspace` | 파일 통합·후처리 실패 검사. host의 동료 폴더 쓰기 권한은 OS 격리가 아님 |
+| 조직 폴더의 조직 ID 표식(`workspace-identity.json`)과 확인 실패의 실행 실패 처리 | server/workspace.ts `Workspaces.confirmIdentity`·`WorkspaceIdentityError`, server/dispatcher.ts `#execute`, db/organizations.ts `hasWorkspaceIdentity`·`recordWorkspaceIdentity`, schema `organizations.workspace_identity_at`, migration 0029 | [표식 통합](../../../apps/server/test/workspace-identity.test.ts): 교체·누락·손상·예전 조직·복원·파일 시스템 오류. [겹친 준비](../../../apps/server/test/workspace-identity-race.test.ts). 같은 OS 계정의 에이전트가 표식을 고치는 것은 막지 않음(#102) |
 
 ## 연결 경로
 

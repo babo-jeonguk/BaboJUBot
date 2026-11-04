@@ -9,7 +9,7 @@ import {
   planApprovalPolicyChange,
   type OrganizationCreation,
 } from "@babojubot/core";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import { insertInstructionCopies } from "./harness.ts";
 import {
@@ -135,4 +135,27 @@ export async function listOrganizationEvents(
     )
     .orderBy(asc(events.id));
   return rows.map(toEvent);
+}
+
+/** 조직 폴더에 자기 ID를 적은 적이 있는가. */
+export async function hasWorkspaceIdentity(db: Database, id: string) {
+  const [row] = await db
+    .select({ at: organizations.workspaceIdentityAt })
+    .from(organizations)
+    .where(eq(organizations.id, id));
+  return !!row?.at;
+}
+
+/** 조직 폴더에 자기 ID를 적었음을 남긴다. 처음 한 번만 기록한다. */
+export async function recordWorkspaceIdentity(
+  db: Database,
+  id: string,
+  at: Date
+) {
+  await db
+    .update(organizations)
+    .set({ workspaceIdentityAt: at })
+    .where(
+      and(eq(organizations.id, id), isNull(organizations.workspaceIdentityAt))
+    );
 }

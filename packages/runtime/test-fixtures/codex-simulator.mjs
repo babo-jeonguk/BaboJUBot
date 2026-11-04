@@ -2,10 +2,11 @@
 import { createInterface } from "node:readline";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { bind, recording } from "./recording.mjs";
 const args = process.argv.slice(2),
   out = (x) => process.stdout.write(JSON.stringify(x) + "\n");
 if (args.includes("--version")) {
-  console.log("codex-cli 0.166.0");
+  console.log("codex-cli 9.9.9");
   process.exit(0);
 }
 if (args.includes("login")) process.exit(0);
@@ -44,7 +45,31 @@ async function reply(body) {
     }),
   });
   if (!response.ok) throw new Error("synthetic tool rejected");
-  if (exec)
+  if (recording && exec)
+    out(
+      bind(
+        recording.frames.findLast((f) => f.type === "turn.completed"),
+        id
+      )
+    );
+  else if (recording) {
+    out(
+      bind(
+        recording.frames.findLast(
+          (f) => f.method === "thread/tokenUsage/updated"
+        ),
+        id,
+        turn
+      )
+    );
+    out(
+      bind(
+        recording.frames.findLast((f) => f.method === "turn/completed"),
+        id,
+        turn
+      )
+    );
+  } else if (exec)
     out({
       type: "turn.completed",
       usage: { input_tokens: 10, output_tokens: 2, cached_input_tokens: 0 },
@@ -68,6 +93,14 @@ async function reply(body) {
 }
 async function begin(text) {
   context = JSON.parse(text);
+  for (const frame of recording?.frames ?? [])
+    if (
+      exec
+        ? frame.type !== "thread.started" && frame.type !== "turn.completed"
+        : frame.method !== "turn/completed" &&
+          frame.method !== "thread/tokenUsage/updated"
+    )
+      out(bind(frame, id, turn));
   const body = context.wakeReasons[0].body ?? "";
   if (body === "실행 유지 연습") return;
   if (body === "끼워 넣기 연습") {
@@ -82,7 +115,10 @@ async function begin(text) {
 }
 if (exec && args.includes("resume")) id = args[args.indexOf("resume") + 1];
 if (exec && id === "expired") {
-  out({ type: "error", message: "No rollout found for thread id: expired" });
+  // 실제 프로그램은 표준 출력 없이 표준 오류로 알리고 끝난다.
+  console.error(
+    "Error: thread/resume: thread/resume failed: no rollout found for thread id expired (code -32600)"
+  );
   process.exit(1);
 }
 await load();

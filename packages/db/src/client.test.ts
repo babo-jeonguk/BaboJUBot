@@ -55,7 +55,10 @@ describe("embedded Postgres lifetime", () => {
       });
       await once(child, "exit");
 
-      expect(output).toContain("failed: embedded Postgres exited");
+      // 왜 끝났는지 알 수 있어야 한다. 시스템마다 이유가 달라 Postgres가 남긴 말을 그대로 보인다.
+      expect(output).toMatch(
+        /failed: embedded Postgres exited before it was ready: \S+/
+      );
       // embedded-postgres의 종료 hook이 멈추면 async-exit-hook이 10초 뒤에야 강제 종료한다.
       expect(Date.now() - failedAt).toBeLessThan(5_000);
     } finally {

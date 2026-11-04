@@ -144,25 +144,6 @@ it("resumes the requested session and subtracts its cumulative cost baseline", a
   expect(result.nextSession?.id).toBe("session-one");
   expect(result.usage?.costUsd).toBeCloseTo(0.03);
 });
-it("does not start a turn without a product login", async () => {
-  const root = await home();
-  await rm(path.join(root, "providers/claude/setup-token"));
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-finish.synthetic.json"),
-    ],
-  });
-  const result = await provider.adapter.execute(request(), {
-    signal: new AbortController().signal,
-    emit: async () => {
-      throw new Error("must not begin a turn");
-    },
-  });
-  expect(result.errorCode).toBe("login_required");
-});
 it("records the latest primary-session token size, request timestamp and cache TTL from its transcript", async () => {
   const root = await home();
   const transcripts = path.join(
@@ -221,8 +202,9 @@ it("compacts the saved launch with the same session and requires a compact bound
     JSON.stringify({
       argv: {
         "--resume": "session-one",
-        "--append-system-prompt": "saved instructions",
+        "--append-system-prompt-file": true,
       },
+      argvFile: { "--append-system-prompt-file": "saved instructions" },
       steps: [
         { input: { type: "user", message: { content: "/compact" } } },
         {
@@ -260,7 +242,6 @@ it("compacts the saved launch with the same session and requires a compact bound
     id: "session-one",
     costUsd: 0.02,
     launch: {
-      version: "2.1.316",
       instructions: "saved instructions",
       cwd: root,
       model: null,
@@ -320,3 +301,27 @@ it("waits for an orphaned child to exit before settling cancellation", async () 
     access(path.join(root, "providers/claude/orphan-effect"))
   ).rejects.toThrow();
 }, 10000);
+
+it("compacts through the real compact protocol output", async () => {
+  const root = await home();
+  const provider = createClaudeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/claude-simulator.mjs"),
+      "--recording",
+      path.resolve("test-fixtures/claude-recorded.json"),
+    ],
+  });
+  const session = {
+    id: "session-one",
+    costUsd: 0,
+    launch: { instructions: "지침", cwd: root, model: null },
+  };
+  const result = await provider.adapter.precompact!(
+    { session, access: request().access },
+    new AbortController().signal
+  );
+  expect(result.ok).toBe(true);
+  expect(result.nextSession?.id).toBe("session-one");
+});

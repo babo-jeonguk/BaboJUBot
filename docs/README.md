@@ -55,7 +55,7 @@
 [harness/README.md](../harness/README.md)는 연구 하네스 디렉터리의 안내입니다.
 각 Role·Soul·Skill·템플릿이 해당 연구 절차를 소유하고, 개발 에이전트의 운영 규칙과 구분합니다.
 
-- [프로바이더 운영 안내](providers.md): 고정 판, 제품 로그인, 정리, 압축, 수동 실제 시험.
+- [프로바이더 운영 안내](providers.md): 연결 설정, 제품 로그인, 정리, 압축, 수동 실제 시험.
 - [#98–101 구현 근거](research/issue-98-101-implementation.md): 원문 재확인, 확정 결정, 검증 범위.
 - [OpenCode 2.x 지침 주입 조사](research/opencode-2-instructions.md): 기본 지침 보존과 세션 지침 API 추가.
 

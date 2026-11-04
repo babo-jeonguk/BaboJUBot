@@ -8,9 +8,16 @@ import { afterAll } from "vitest";
 const dataDir = await mkdtemp(path.join(tmpdir(), "claude-contract-"));
 afterAll(() => rm(dataDir, { recursive: true, force: true }));
 
-for (const mode of ["app-server", "exec"] as const)
+for (const [mode, recorded] of [
+  ["app-server", false],
+  ["exec", false],
+  ["app-server", true],
+  ["exec", true],
+] as const)
   describeRuntimeContract(
-    `Codex ${mode} synthetic process (not recorded model evidence)`,
+    recorded
+      ? `Codex ${mode} with recorded protocol output (reviewed real frames, scripted behaviour)`
+      : `Codex ${mode} synthetic process (not recorded model evidence)`,
     {
       adapter: createCodexProvider({
         dataDir,
@@ -18,6 +25,12 @@ for (const mode of ["app-server", "exec"] as const)
         command: [
           process.execPath,
           path.resolve("test-fixtures/codex-simulator.mjs"),
+          ...(recorded
+            ? [
+                "--recording",
+                path.resolve(`test-fixtures/codex-${mode}-recorded.json`),
+              ]
+            : []),
         ],
       }).adapter,
       startupMs: 2000,

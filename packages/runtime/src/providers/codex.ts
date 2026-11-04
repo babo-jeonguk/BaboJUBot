@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -12,13 +10,21 @@ import type {
   SteerMessage,
   SteerOutcome,
 } from "@babojubot/contracts";
-import { startProcess } from "./process.ts";
+import {
+  startProcess,
+  probeTimeoutMs,
+  saysLoginProblem,
+  commandFor,
+  providerEnvironment,
+  runProbe,
+} from "./process.ts";
 
-export const codexVersion = "0.166.0";
 export type CodexOptions = {
   dataDir: string;
   mode?: "app-server" | "exec";
   command?: readonly [string, ...string[]];
+  id?: string;
+  label?: string;
 };
 const failed = (): RunResult => ({
   stopReason: "failed",
@@ -34,39 +40,34 @@ const count = (value: unknown) =>
     ? value
     : null;
 class ProtocolRejection extends Error {
-  readonly missingThread: boolean;
-  constructor(error: unknown) {
+  constructor() {
     super("Protocol request rejected");
-    const message = record(error).message;
-    this.missingThread =
-      typeof message === "string" &&
-      /thread not found|no rollout found/i.test(message);
   }
 }
+/** 세션 시작·재개 같은 요청의 응답 제한. 큰 세션을 불러오면 오래 걸린다. */
+const requestTimeoutMs = 2 * 60 * 1000;
+/** 끼워 넣기 응답 제한. 넘겨도 실행 시도는 끝내지 않는다. */
+const steerTimeoutMs = 10_000;
 export function createCodexProvider(options: CodexOptions): ProviderConnection {
-  const home = path.resolve(options.dataDir, "providers/codex");
-  const command = options.command ?? ["codex"];
-  const environment = () => ({
-    PATH: process.env.PATH,
-    HOME: home,
-    CODEX_HOME: home,
-  });
+  const id = options.id ?? "codex";
+  const home = path.resolve(options.dataDir, "providers", id);
+  const command = options.command ?? commandFor(id, "codex");
+  const environment = () => providerEnvironment(id, home, { CODEX_HOME: home });
   const readiness = async (
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> => {
     await mkdir(home, { recursive: true, mode: 0o700 });
     const probe = (args: string[]) =>
-      promisify(execFile)(command[0], [...command.slice(1), ...args], {
+      runProbe(command, args, {
         env: environment(),
         cwd: home,
         signal,
-        timeout: 3000,
+        timeout: probeTimeoutMs,
         maxBuffer: 65536,
       });
     try {
-      const { stdout } = await probe(["--version"]);
-      if (stdout.trim() !== `codex-cli ${codexVersion}`)
-        return { status: "not_ready", reason: "version_unsupported" };
+      // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
+      await probe(["--version"]);
     } catch (error) {
       return {
         status: "not_ready",
@@ -94,8 +95,9 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     (message: SteerMessage) => Promise<SteerOutcome>
   >();
   return {
-    id: "codex",
-    label: "Codex",
+    id,
+    label: options.label ?? "Codex",
+    login: { command, args: ["login"], env: environment() },
     models: [],
     async listModels(signal) {
       if ((await readiness(signal)).status === "not_ready") return [];
@@ -155,7 +157,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
       });
       const stop = () => child.end();
       signal.addEventListener("abort", stop, { once: true });
-      const timer = setTimeout(stop, 10000);
+      const timer = setTimeout(stop, 60000);
       try {
         if (signal.aborted) stop();
         else
@@ -164,10 +166,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             method: "initialize",
             params: { clientInfo: { name: "babojubot", version: "0.0.0" } },
           });
-        const exit = await child.done;
-        return complete && !signal.aborted && !exit.broken && exit.code === 0
-          ? models
-          : [];
+        await child.done;
+        return complete && !signal.aborted ? models : [];
       } finally {
         clearTimeout(timer);
         signal.removeEventListener("abort", stop);
@@ -182,7 +182,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         usageCost: false,
         precompact: false,
       },
-      loginCommand: `CODEX_HOME='${home.replaceAll("'", "'\\''")}' codex login`,
+      loginCommand: `pnpm provider:login ${id}`,
       checkReadiness: readiness,
       ...(options.mode === "exec"
         ? {}
@@ -192,16 +192,9 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             },
           }),
       async execute(request, control) {
-        const checked = await readiness(control.signal);
+        await mkdir(home, { recursive: true, mode: 0o700 });
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        if (checked.status === "not_ready")
-          return {
-            ...failed(),
-            ...(checked.reason === "product_login_missing"
-              ? { errorCode: "login_required" as const }
-              : {}),
-          };
         let result = failed(),
           threadId = "",
           turnId = "",
@@ -250,8 +243,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               if (!waiter) return;
               pending.delete(frame.id);
               clearTimeout(waiter.timer);
-              if (frame.error)
-                waiter.reject(new ProtocolRejection(frame.error));
+              if (frame.error) waiter.reject(new ProtocolRejection());
               else waiter.resolve(record(frame.result));
               return;
             }
@@ -304,18 +296,28 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 usage,
                 nextSession: { id: threadId, tokens },
               };
+              if (
+                turn.status === "failed" &&
+                saysLoginProblem(record(turn.error).message)
+              )
+                result.errorCode = "login_required";
               child.end();
             }
           },
         });
-        const rpc = (method: string, params: unknown) =>
+        const rpc = (
+          method: string,
+          params: unknown,
+          timeoutMs = requestTimeoutMs,
+          endOnTimeout = true
+        ) =>
           new Promise<Record<string, unknown>>((resolve, reject) => {
             const id = ++sequence;
             const timer = setTimeout(() => {
               pending.delete(id);
               reject(new Error("Protocol response timed out"));
-              child.end();
-            }, 3000);
+              if (endOnTimeout) child.end();
+            }, timeoutMs);
             pending.set(id, { resolve, reject, timer });
             if (!child.write({ id, method, params })) {
               clearTimeout(timer);
@@ -368,10 +370,10 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 }
               );
             } catch (error) {
+              // 문구에 기대지 않는다. 프로그램이 재개를 거절하면 새 세션으로 시작한다.
               if (
                 !request.previousSession ||
-                !(error instanceof ProtocolRejection) ||
-                !error.missingThread
+                !(error instanceof ProtocolRejection)
               )
                 throw error;
               baseline = {};
@@ -400,12 +402,17 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               if (control.signal.aborted || child.closed) return "rejected";
               const expectedTurnId = turnId;
               try {
-                const ack = await rpc("turn/steer", {
-                  threadId,
-                  expectedTurnId,
-                  clientUserMessageId: message.messageId,
-                  input: [{ type: "text", text: message.body }],
-                });
+                const ack = await rpc(
+                  "turn/steer",
+                  {
+                    threadId,
+                    expectedTurnId,
+                    clientUserMessageId: message.messageId,
+                    input: [{ type: "text", text: message.body }],
+                  },
+                  steerTimeoutMs,
+                  false
+                );
                 return ack.turnId === expectedTurnId ? "accepted" : "rejected";
               } catch (error) {
                 if (error instanceof ProtocolRejection) return "rejected";
@@ -422,13 +429,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         } catch {
           child.end();
         }
-        const exit = await child.done;
+        await child.done;
         control.signal.removeEventListener("abort", cancel);
         active.delete(request.identity.runId);
         await activities;
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        return exit.broken || exit.code !== 0 ? failed() : result;
+        return result;
       },
     },
   };
@@ -444,7 +451,11 @@ async function executeExec(
 ): Promise<RunResult> {
   let id: string | null = null,
     result = failed(),
-    missingSession = false;
+    loginProblem = false;
+  const before = record(request.previousSession?.tokens);
+  // 재개한 세션의 사용량은 누적값이다. 이 실행 시도의 몫만 남긴다.
+  const delta = (key: string, value: number | null) =>
+    value === null ? null : Math.max(0, value - (count(before[key]) ?? 0));
   const args = [
     "exec",
     ...config,
@@ -467,12 +478,11 @@ async function executeExec(
     onFrame: async (raw) => {
       const frame = record(raw);
       if (
-        !id &&
-        frame.type === "error" &&
-        typeof frame.message === "string" &&
-        /no rollout found/i.test(frame.message)
+        (frame.type === "error" && saysLoginProblem(frame.message)) ||
+        (frame.type === "turn.failed" &&
+          saysLoginProblem(record(frame.error).message))
       )
-        missingSession = true;
+        loginProblem = true;
       if (
         frame.type === "thread.started" &&
         typeof frame.thread_id === "string"
@@ -485,22 +495,32 @@ async function executeExec(
       }
       if (frame.type === "turn.completed") {
         const value = record(frame.usage),
-          input = count(value.input_tokens),
-          cache = count(value.cached_input_tokens);
+          totals = {
+            input_tokens: count(value.input_tokens),
+            cached_input_tokens: count(value.cached_input_tokens),
+            cache_write_input_tokens: count(value.cache_write_input_tokens),
+            output_tokens: count(value.output_tokens),
+          },
+          input = delta("input_tokens", totals.input_tokens),
+          cache = delta("cached_input_tokens", totals.cached_input_tokens);
         result = {
           stopReason: "completed",
           error: null,
           summary: null,
-          nextSession: id ? { id } : null,
+          nextSession: id ? { id, tokens: totals } : null,
           usage: {
             inputTokens:
               input === null ? null : Math.max(0, input - (cache ?? 0)),
-            outputTokens: count(value.output_tokens),
+            outputTokens: delta("output_tokens", totals.output_tokens),
             cacheReadTokens: cache,
-            cacheWriteTokens: count(value.cache_write_input_tokens),
+            cacheWriteTokens: delta(
+              "cache_write_input_tokens",
+              totals.cache_write_input_tokens
+            ),
             costUsd: null,
           },
         };
+        child.end();
       }
     },
   });
@@ -519,10 +539,11 @@ async function executeExec(
       });
       child.endInput();
     }
-    const exit = await child.done;
+    await child.done;
     if (control.signal.aborted)
       return { ...failed(), stopReason: "cancelled", error: null };
-    if (missingSession && request.previousSession && !exit.broken) {
+    // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
+    if (!id && request.previousSession && !loginProblem) {
       await control.emit({
         type: "progress",
         text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
@@ -536,7 +557,9 @@ async function executeExec(
         env
       );
     }
-    return exit.broken || exit.code !== 0 ? failed() : result;
+    return result.stopReason === "failed" && loginProblem
+      ? { ...result, errorCode: "login_required" as const }
+      : result;
   } finally {
     control.signal.removeEventListener("abort", cancel);
   }

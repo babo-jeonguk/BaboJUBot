@@ -1,24 +1,25 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import {
-  mkdir,
-  readFile,
-  writeFile,
-  lstat,
-  link,
-  rm,
-  realpath,
-  readdir,
-} from "node:fs/promises";
+import { mkdir, realpath, readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProviderConnection,
   RunResult,
   Usage,
 } from "@babojubot/contracts";
-import { startProcess } from "./process.ts";
-export const antigravityVersion = "1.4.12";
-const owner = "babojubot-antigravity-v1";
+import {
+  startProcess,
+  probeTimeoutMs,
+  startupLimitMs,
+  commandFor,
+  providerEnvironment,
+  runProbe,
+} from "./process.ts";
+import {
+  clearOwnedConfig,
+  configFailure,
+  configRefused,
+  ownerMark,
+  publishConfig,
+} from "./antigravity-config.ts";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -27,29 +28,6 @@ const failure = (error = "프로바이더를 실행하지 못했습니다."): Ru
   usage: null,
   nextSession: null,
 });
-/** Never follow a link or remove somebody else's workspace configuration. */
-async function removeOwned(cwd: string) {
-  const directory = path.join(cwd, ".agents"),
-    file = path.join(directory, "mcp_config.json");
-  try {
-    if ((await lstat(directory)).isSymbolicLink())
-      throw new Error("unsafe workspace");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw e;
-  }
-  try {
-    if (!(await lstat(file)).isFile()) throw new Error("unsafe configuration");
-    const value = JSON.parse(await readFile(file, "utf8")) as {
-      babojubotOwner?: string;
-    };
-    if (value.babojubotOwner !== owner)
-      throw new Error("unowned configuration");
-    await rm(file);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
-}
 /** Called before admission on server startup. Unowned files are left for execute to report. */
 export async function cleanupAntigravityWorkspaces(dataDir: string) {
   const organizations = path.join(dataDir, "organizations");
@@ -58,7 +36,7 @@ export async function cleanupAntigravityWorkspaces(dataDir: string) {
   )) {
     if (!org.isDirectory()) continue;
     try {
-      await removeOwned(path.join(organizations, org.name, "shared"));
+      await clearOwnedConfig(path.join(organizations, org.name, "shared"));
     } catch {
       /* Preserve unowned files. */
     }
@@ -67,24 +45,26 @@ export async function cleanupAntigravityWorkspaces(dataDir: string) {
 export function createAntigravityProvider(options: {
   dataDir: string;
   command?: readonly [string, ...string[]];
+  id?: string;
+  label?: string;
 }): ProviderConnection {
-  const home = path.resolve(options.dataDir, "providers/antigravity"),
-    command = options.command ?? ["agy"];
-  const env = () => ({
-    PATH: process.env.PATH,
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, "config"),
-    XDG_DATA_HOME: path.join(home, "data"),
-    XDG_CACHE_HOME: path.join(home, "cache"),
-  });
+  const connectionId = options.id ?? "antigravity";
+  const home = path.resolve(options.dataDir, "providers", connectionId),
+    command = options.command ?? commandFor(connectionId, "agy");
+  const env = () =>
+    providerEnvironment(connectionId, home, {
+      XDG_CONFIG_HOME: path.join(home, "config"),
+      XDG_DATA_HOME: path.join(home, "data"),
+      XDG_CACHE_HOME: path.join(home, "cache"),
+    });
   const probe = async (args: string[], signal: AbortSignal) => {
     await mkdir(home, { recursive: true, mode: 0o700 });
     return (
-      await promisify(execFile)(command[0], [...command.slice(1), ...args], {
+      await runProbe(command, args, {
         cwd: home,
         env: env(),
         signal,
-        timeout: 5000,
+        timeout: probeTimeoutMs,
         maxBuffer: 1024 * 1024,
       })
     ).stdout.trim();
@@ -98,25 +78,27 @@ export function createAntigravityProvider(options: {
       usageCost: false,
       precompact: false,
     },
-    loginCommand: `HOME='${home.replaceAll("'", "'\\''")}' agy`,
+    loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
+      // 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. 목록 조회는 모델을 부르지 않는다.
       try {
-        if ((await probe(["--version"], signal)) !== antigravityVersion)
-          return { status: "not_ready", reason: "version_unsupported" };
+        await probe(["models"], signal);
+        return { status: "ready", reason: null };
       } catch (e) {
+        const error = e as NodeJS.ErrnoException & {
+          stdout?: string;
+          stderr?: string;
+        };
+        if (error.code === "ENOENT")
+          return { status: "not_ready", reason: "program_missing" };
         return {
           status: "not_ready",
-          reason:
-            (e as NodeJS.ErrnoException).code === "ENOENT"
-              ? "program_missing"
-              : "check_failed",
+          reason: /sign.?in|log.?in|auth/i.test(
+            `${error.stdout ?? ""}${error.stderr ?? ""}`
+          )
+            ? "product_login_missing"
+            : "check_failed",
         };
-      }
-      try {
-        await readFile(path.join(home, ".gemini/oauth_creds.json"));
-        return { status: "unknown", reason: "credentials_unverified" };
-      } catch {
-        return { status: "not_ready", reason: "product_login_missing" };
       }
     },
     async execute(request, control) {
@@ -126,14 +108,8 @@ export function createAntigravityProvider(options: {
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
-        const readiness = await adapter.checkReadiness(control.signal);
-        if (readiness.status === "not_ready")
-          return {
-            ...failure(),
-            ...(readiness.reason === "product_login_missing"
-              ? { errorCode: "login_required" as const }
-              : {}),
-          };
+        // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
+        await mkdir(home, { recursive: true, mode: 0o700 });
         cwd = await realpath(request.workspace?.cwd ?? home);
         while (workspaces.has(cwd)) {
           control.signal.throwIfAborted();
@@ -153,41 +129,26 @@ export function createAntigravityProvider(options: {
             release = resolve;
           })
         );
-        try {
-          await removeOwned(cwd);
-        } catch {
-          return failure(
-            "작업 폴더의 MCP 설정이 제품 소유 파일이 아니거나 심볼릭 링크입니다."
-          );
-        }
-        const directory = path.join(cwd, ".agents"),
-          file = path.join(directory, "mcp_config.json");
-        await mkdir(directory, { recursive: true });
-        const temp = path.join(
-          directory,
-          `.babojubot-${crypto.randomUUID()}.tmp`
-        );
-        try {
-          await writeFile(
-            temp,
-            JSON.stringify({
-              babojubotOwner: owner,
-              mcpServers: {
-                organization: {
-                  serverUrl: new URL(
-                    "/api/tools/mcp",
-                    request.access.toolsBaseUrl
-                  ).href,
-                  headers: { Authorization: `Bearer ${request.access.token}` },
-                },
+        // 프로세스가 도중에 끝나면 게시됐는지 알 수 없다. 거부가 확실할 때만 정리 책임을 내려놓는다.
+        owned = true;
+        const published = await publishConfig(
+          cwd,
+          JSON.stringify({
+            babojubotOwner: ownerMark,
+            mcpServers: {
+              organization: {
+                serverUrl: new URL(
+                  "/api/tools/mcp",
+                  request.access.toolsBaseUrl
+                ).href,
+                headers: { Authorization: `Bearer ${request.access.token}` },
               },
-            }),
-            { flag: "wx", mode: 0o600 }
-          );
-          await link(temp, file);
-          owned = true;
-        } finally {
-          await rm(temp, { force: true });
+            },
+          })
+        );
+        if (published) {
+          owned = !configRefused(published);
+          return failure(configFailure(published));
         }
         const args = [
           "--input-format",
@@ -200,30 +161,11 @@ export function createAntigravityProvider(options: {
           "--dangerously-skip-permissions",
         ];
         if (request.model) args.push("--model", request.model);
-        if (typeof request.previousSession?.id === "string") {
-          const id = request.previousSession.id;
-          let exists = false;
-          if (/^[a-zA-Z0-9-]+$/.test(id))
-            try {
-              exists = (
-                await lstat(
-                  path.join(
-                    home,
-                    ".gemini/antigravity-cli/conversations",
-                    id + ".db"
-                  )
-                )
-              ).isFile();
-            } catch (e) {
-              if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-            }
-          if (exists) args.push("--conversation", id);
-          else
-            await control.emit({
-              type: "progress",
-              text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
-            });
-        }
+        const previous =
+          typeof request.previousSession?.id === "string"
+            ? request.previousSession.id
+            : null;
+        if (previous) args.push("--conversation", previous);
         let id: string | undefined,
           result = failure(),
           finished = false;
@@ -264,6 +206,12 @@ export function createAntigravityProvider(options: {
             ) {
               clearTimeout(startup);
               id = frame.conversation_id;
+              // 프로그램은 없는 대화를 받으면 새 대화로 시작한다. 파일 위치를 가정하지 않고 시작한 대화로 판단한다.
+              if (previous && id !== previous)
+                await control.emit({
+                  type: "progress",
+                  text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
+                });
               await control.emit({
                 type: "progress",
                 text: "프로바이더가 작업을 시작했습니다.",
@@ -313,7 +261,7 @@ export function createAntigravityProvider(options: {
             }
           },
         });
-        const startup = setTimeout(() => child.end(), 10000);
+        const startup = setTimeout(() => child.end(), startupLimitMs);
         const cancel = () => {
           child.interrupt();
           child.end();
@@ -335,10 +283,10 @@ export function createAntigravityProvider(options: {
                   }),
               },
             });
-          const exit = await child.done;
+          await child.done;
           if (control.signal.aborted)
             return { ...failure(), stopReason: "cancelled", error: null };
-          return exit.broken || exit.code !== 0 ? failure() : result;
+          return result;
         } finally {
           clearTimeout(startup);
           control.signal.removeEventListener("abort", cancel);
@@ -349,7 +297,12 @@ export function createAntigravityProvider(options: {
           : failure();
       } finally {
         try {
-          if (owned && cwd) await removeOwned(cwd);
+          // 정리에 실패해도 실행 결과는 그대로 돌려준다. 토큰은 실행 시도가 끝나면 무효다.
+          if (owned && cwd) await clearOwnedConfig(cwd);
+        } catch {
+          console.warn(
+            "[provider] could not remove the Antigravity configuration"
+          );
         } finally {
           if (release && cwd) {
             workspaces.delete(cwd);
@@ -360,8 +313,9 @@ export function createAntigravityProvider(options: {
     },
   };
   return {
-    id: "antigravity",
-    label: "Antigravity",
+    id: connectionId,
+    label: options.label ?? "Antigravity",
+    login: { command, args: [], env: env() },
     adapter,
     models: [],
     async listModels(signal) {

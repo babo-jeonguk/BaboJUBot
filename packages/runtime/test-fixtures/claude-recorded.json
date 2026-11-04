@@ -1,0 +1,1184 @@
+{
+  "provenance": "Reviewed recording of real claude protocol output (2026-11-04). Every string outside a short allowlist is masked; numbers and structure are real. Behaviour around it is scripted by the simulator.",
+  "version": "2.1.317 (Claude Code)",
+  "frames": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "cwd": "<masked>",
+      "session_id": "<session>",
+      "tools": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "mcp_servers": [
+        {
+          "name": "<masked>",
+          "status": "connected",
+          "source": "<masked>"
+        }
+      ],
+      "model": "<masked>",
+      "permissionMode": "<masked>",
+      "slash_commands": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "terminal_slash_commands": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "apiKeySource": "<masked>",
+      "claude_code_version": "<masked>",
+      "output_style": "<masked>",
+      "agents": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "skills": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "plugins": [
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        },
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        },
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        },
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        }
+      ],
+      "capabilities": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "analytics_disabled": false,
+      "product_feedback_disabled": false,
+      "uuid": "<masked>",
+      "original_cwd": "<masked>",
+      "additional_directories": [],
+      "messaging_socket_path": "<masked>",
+      "fast_mode_state": "<masked>",
+      "fast_mode_disabled_reason": "<masked>",
+      "per_turn_effort_active": true,
+      "ultrathink_available": false,
+      "ultrathink_typed_raises": false,
+      "view_mode": "<masked>"
+    },
+    {
+      "type": "system",
+      "subtype": "thinking_tokens",
+      "estimated_tokens": 50,
+      "estimated_tokens_delta": 50,
+      "session_id": "<session>",
+      "uuid": "<masked>"
+    },
+    {
+      "type": "system",
+      "subtype": "thinking_tokens",
+      "estimated_tokens": 209,
+      "estimated_tokens_delta": 159,
+      "session_id": "<session>",
+      "uuid": "<masked>"
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "model": "<masked>",
+        "id": "<masked>",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "<masked>",
+            "signature": "<masked>"
+          }
+        ],
+        "container": null,
+        "stop_reason": null,
+        "stop_sequence": null,
+        "stop_details": null,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 6478,
+          "cache_read_input_tokens": 11393,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 6478
+          },
+          "output_tokens": 9,
+          "service_tier": "<masked>",
+          "inference_geo": "<masked>",
+          "speed": "<masked>"
+        },
+        "input_transformations": [],
+        "diagnostics": null,
+        "context_management": null
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "request_id": "<masked>",
+      "thinking_duration_ms": 386,
+      "thinking_display": "<masked>"
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "model": "<masked>",
+        "id": "<masked>",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "<masked>",
+            "name": "<masked>",
+            "input": {
+              "query": "<masked>",
+              "max_results": 2
+            },
+            "caller": {
+              "type": "direct"
+            }
+          }
+        ],
+        "container": null,
+        "stop_reason": null,
+        "stop_sequence": null,
+        "stop_details": null,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 6478,
+          "cache_read_input_tokens": 11393,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 6478
+          },
+          "output_tokens": 9,
+          "service_tier": "<masked>",
+          "inference_geo": "<masked>",
+          "speed": "<masked>"
+        },
+        "input_transformations": [],
+        "diagnostics": null,
+        "context_management": null
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "request_id": "<masked>",
+      "wire_tool_inputs": {
+        "toolu_015qNgBP6SyQY6Cei11GKJ4q": {
+          "query": "<masked>",
+          "max_results": 2
+        }
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "<masked>",
+            "content": [
+              {
+                "type": "tool_reference",
+                "tool_name": "<masked>"
+              },
+              {
+                "type": "tool_reference",
+                "tool_name": "<masked>"
+              }
+            ]
+          }
+        ]
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "tool_use_result": {
+        "matches": [
+          "<masked>",
+          "<masked>"
+        ],
+        "query": "<masked>",
+        "total_deferred_tools": 27
+      },
+      "tool_result_meta": [
+        {
+          "id": "<masked>",
+          "permission_decision": {
+            "decision": "<masked>",
+            "source": "<masked>",
+            "reason_type": "<masked>"
+          }
+        }
+      ]
+    },
+    {
+      "type": "rate_limit_event",
+      "rate_limit_info": {
+        "status": "allowed_warning",
+        "resetsAt": 1794250800,
+        "rateLimitType": "<masked>",
+        "utilization": 0.35,
+        "overageStatus": "<masked>",
+        "overageDisabledReason": "<masked>",
+        "isUsingOverage": false,
+        "unifiedWindows": {
+          "five_hour": {
+            "utilization": 0.71,
+            "resetsAt": 1793731800,
+            "status": "allowed"
+          },
+          "seven_day": {
+            "utilization": 0.35,
+            "resetsAt": 1794250800,
+            "status": "allowed"
+          }
+        }
+      },
+      "uuid": "<masked>",
+      "session_id": "<session>"
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "model": "<masked>",
+        "id": "<masked>",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "<masked>",
+            "name": "<masked>",
+            "input": {},
+            "caller": {
+              "type": "direct"
+            }
+          }
+        ],
+        "container": null,
+        "stop_reason": null,
+        "stop_sequence": null,
+        "stop_details": null,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 902,
+          "cache_read_input_tokens": 17871,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 902
+          },
+          "output_tokens": 24,
+          "service_tier": "<masked>",
+          "inference_geo": "<masked>",
+          "speed": "<masked>"
+        },
+        "input_transformations": [],
+        "diagnostics": null,
+        "context_management": null
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "request_id": "<masked>",
+      "wire_tool_inputs": {
+        "toolu_01HgTM4gqxpmCsYkFHks3xJN": {}
+      },
+      "tool_use_meta": [
+        {
+          "id": "<masked>",
+          "display_name": "<masked>",
+          "server_display_name": "<masked>",
+          "tool_name": "<masked>"
+        }
+      ]
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "tool_use_id": "<masked>",
+            "type": "tool_result",
+            "content": "<masked>"
+          }
+        ]
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "tool_use_result": {
+        "content": "<masked>",
+        "structuredContent": {
+          "identity": {
+            "organizationId": "<masked>",
+            "agentId": "<masked>",
+            "runId": "<masked>"
+          },
+          "wakeReasons": [
+            {
+              "kind": "<masked>",
+              "wakeId": "<masked>"
+            }
+          ],
+          "context": {
+            "organization": {
+              "id": "<masked>",
+              "name": "<masked>",
+              "stage": "<masked>",
+              "goal": "<masked>",
+              "completionCriteria": "<masked>",
+              "approvalPolicy": {
+                "addWorker": false,
+                "publishToGitHub": false
+              }
+            },
+            "agent": {
+              "id": "<masked>",
+              "role": "lead",
+              "name": "<masked>"
+            },
+            "team": [
+              {
+                "id": "<masked>",
+                "role": "lead",
+                "name": "<masked>"
+              }
+            ],
+            "conversations": [
+              {
+                "id": "<masked>",
+                "title": "<masked>",
+                "isDefault": true,
+                "createdAt": "<masked>"
+              }
+            ],
+            "conversation": [],
+            "researchFlow": null
+          }
+        }
+      },
+      "tool_result_meta": [
+        {
+          "id": "<masked>",
+          "permission_decision": {
+            "decision": "<masked>",
+            "source": "<masked>",
+            "reason_type": "<masked>"
+          }
+        }
+      ]
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "model": "<masked>",
+        "id": "<masked>",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "<masked>",
+            "name": "<masked>",
+            "input": {
+              "body": "<masked>",
+              "conversationId": "<session>"
+            },
+            "caller": {
+              "type": "direct"
+            }
+          }
+        ],
+        "container": null,
+        "stop_reason": null,
+        "stop_sequence": null,
+        "stop_details": null,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 530,
+          "cache_read_input_tokens": 18773,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 530
+          },
+          "output_tokens": 24,
+          "service_tier": "<masked>",
+          "inference_geo": "<masked>",
+          "speed": "<masked>"
+        },
+        "input_transformations": [],
+        "diagnostics": null,
+        "context_management": null
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "request_id": "<masked>",
+      "wire_tool_inputs": {
+        "toolu_01KX2N1jN3ChWAqSzEcVaW4C": {
+          "body": "<masked>",
+          "conversationId": "<session>"
+        }
+      },
+      "tool_use_meta": [
+        {
+          "id": "<masked>",
+          "display_name": "<masked>",
+          "server_display_name": "<masked>",
+          "tool_name": "<masked>"
+        }
+      ]
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "tool_use_id": "<masked>",
+            "type": "tool_result",
+            "content": "<masked>"
+          }
+        ]
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "tool_use_result": {
+        "content": "<masked>",
+        "structuredContent": {
+          "id": "<masked>",
+          "organizationId": "<masked>",
+          "agentId": "<masked>",
+          "conversationId": "<session>",
+          "author": "<masked>",
+          "body": "<masked>",
+          "delivery": null,
+          "sentByRunId": "<masked>",
+          "deliveredToRunId": null,
+          "deliveredAt": null,
+          "createdAt": "<masked>"
+        }
+      },
+      "tool_result_meta": [
+        {
+          "id": "<masked>",
+          "permission_decision": {
+            "decision": "<masked>",
+            "source": "<masked>",
+            "reason_type": "<masked>"
+          }
+        }
+      ]
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "model": "<masked>",
+        "id": "<masked>",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "<masked>"
+          }
+        ],
+        "container": null,
+        "stop_reason": null,
+        "stop_sequence": null,
+        "stop_details": null,
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 363,
+          "cache_read_input_tokens": 19303,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 363
+          },
+          "output_tokens": 2,
+          "service_tier": "<masked>",
+          "inference_geo": "<masked>",
+          "speed": "<masked>"
+        },
+        "input_transformations": [],
+        "diagnostics": null,
+        "context_management": null
+      },
+      "parent_tool_use_id": null,
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "request_id": "<masked>"
+    },
+    {
+      "duration_api_ms": 3848,
+      "stop_reason": "end_turn",
+      "session_id": "<session>",
+      "total_cost_usd": 0.0025073,
+      "usage": {
+        "input_tokens": 8,
+        "cache_creation_input_tokens": 8273,
+        "cache_read_input_tokens": 67340,
+        "output_tokens": 357,
+        "output_tokens_details": {
+          "thinking_tokens": 61
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "<masked>",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 8273,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "<masked>",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 61,
+            "cache_read_input_tokens": 19303,
+            "cache_creation_input_tokens": 363,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 363
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "<masked>",
+        "fallback_credit": null
+      },
+      "modelUsage": {
+        "claude-haiku-5-5": {
+          "inputTokens": 8,
+          "outputTokens": 357,
+          "cacheReadInputTokens": 67340,
+          "cacheCreationInputTokens": 8273,
+          "webSearchRequests": 0,
+          "costUSD": 0.0025073,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 61,
+          "cacheCreationEphemeral5mInputTokens": 0,
+          "cacheCreationEphemeral1hInputTokens": 8273,
+          "canonicalModel": "<masked>",
+          "provider": "<masked>",
+          "costBasis": "<masked>"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "<masked>",
+      "fast_mode_state": "<masked>",
+      "fast_mode_disabled_reason": "<masked>",
+      "subagent_stats": {
+        "spawned": 0,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 0
+        },
+        "started_in_background": 0,
+        "max_depth": 0,
+        "spawned_by_subagents": 0,
+        "completed": 0,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {}
+      },
+      "safety_stops": 0,
+      "is_error": false,
+      "num_turns": 4,
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "<masked>",
+      "ttft_ms": 1469,
+      "type": "result",
+      "duration_ms": 4380,
+      "uuid": "<masked>",
+      "ttft_stream_ms": 1082,
+      "time_to_request_ms": 348,
+      "first_content_frame_ms": 1082,
+      "queued_turn_count": 0,
+      "result_index": 0,
+      "model_usage_since_last_result": {
+        "claude-haiku-5-5": {
+          "inputTokens": 8,
+          "outputTokens": 357,
+          "cacheReadInputTokens": 67340,
+          "cacheCreationInputTokens": 8273,
+          "webSearchRequests": 0,
+          "costUSD": 0.0025073,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 61,
+          "cacheCreationEphemeral5mInputTokens": 0,
+          "cacheCreationEphemeral1hInputTokens": 8273,
+          "canonicalModel": "<masked>",
+          "provider": "<masked>",
+          "costBasis": "<masked>"
+        }
+      }
+    }
+  ],
+  "compact": [
+    {
+      "type": "system",
+      "subtype": "status",
+      "status": "compacting",
+      "session_id": "<session>",
+      "uuid": "<masked>"
+    },
+    {
+      "type": "rate_limit_event",
+      "rate_limit_info": {
+        "status": "allowed_warning",
+        "resetsAt": 1794250800,
+        "rateLimitType": "<masked>",
+        "utilization": 0.35,
+        "overageStatus": "<masked>",
+        "overageDisabledReason": "<masked>",
+        "isUsingOverage": false,
+        "unifiedWindows": {
+          "five_hour": {
+            "utilization": 0.72,
+            "resetsAt": 1793731800,
+            "status": "allowed"
+          },
+          "seven_day": {
+            "utilization": 0.35,
+            "resetsAt": 1794250800,
+            "status": "allowed"
+          }
+        }
+      },
+      "uuid": "<masked>",
+      "session_id": "<session>"
+    },
+    {
+      "type": "system",
+      "subtype": "status",
+      "status": null,
+      "compact_result": "<masked>",
+      "session_id": "<session>",
+      "uuid": "<masked>"
+    },
+    {
+      "type": "system",
+      "subtype": "init",
+      "cwd": "<masked>",
+      "session_id": "<session>",
+      "tools": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "mcp_servers": [
+        {
+          "name": "<masked>",
+          "status": "connected",
+          "source": "<masked>"
+        }
+      ],
+      "model": "<masked>",
+      "permissionMode": "<masked>",
+      "slash_commands": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "terminal_slash_commands": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "apiKeySource": "<masked>",
+      "claude_code_version": "<masked>",
+      "output_style": "<masked>",
+      "agents": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "skills": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "plugins": [
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        },
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        },
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        },
+        {
+          "name": "<masked>",
+          "path": "<masked>",
+          "source": "<masked>"
+        }
+      ],
+      "capabilities": [
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>",
+        "<masked>"
+      ],
+      "analytics_disabled": false,
+      "product_feedback_disabled": false,
+      "uuid": "<masked>",
+      "original_cwd": "<masked>",
+      "additional_directories": [],
+      "messaging_socket_path": "<masked>",
+      "fast_mode_state": "<masked>",
+      "fast_mode_disabled_reason": "<masked>",
+      "per_turn_effort_active": true,
+      "ultrathink_available": false,
+      "ultrathink_typed_raises": false,
+      "view_mode": "<masked>"
+    },
+    {
+      "type": "system",
+      "subtype": "compact_boundary",
+      "session_id": "<session>",
+      "uuid": "<masked>",
+      "compact_metadata": {
+        "trigger": "<masked>",
+        "pre_tokens": 27616,
+        "post_tokens": 3397,
+        "cumulative_dropped_tokens": 24219,
+        "duration_ms": 5082,
+        "pre_compact_discovered_tools": [
+          "<masked>"
+        ],
+        "preserved_segment": {
+          "head_uuid": "<masked>",
+          "anchor_uuid": "<masked>",
+          "tail_uuid": "<masked>"
+        },
+        "preserved_messages": {
+          "anchor_uuid": "<masked>",
+          "uuids": [
+            "<masked>",
+            "<masked>"
+          ],
+          "all_uuids": [
+            "<masked>",
+            "<masked>"
+          ]
+        }
+      },
+      "logical_parent_uuid": "<masked>"
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "<masked>"
+      },
+      "session_id": "<session>",
+      "parent_tool_use_id": null,
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "isReplay": false,
+      "isSynthetic": true
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "<masked>"
+      },
+      "session_id": "<session>",
+      "parent_tool_use_id": null,
+      "uuid": "<masked>",
+      "timestamp": "<masked>",
+      "isReplay": true
+    },
+    {
+      "is_error": false,
+      "duration_api_ms": 0,
+      "num_turns": 0,
+      "stop_reason": null,
+      "session_id": "<session>",
+      "total_cost_usd": 0.0056492800000000004,
+      "usage": {
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 0,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "<masked>",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "<masked>",
+        "iterations": [],
+        "speed": "<masked>",
+        "fallback_credit": null
+      },
+      "modelUsage": {
+        "claude-haiku-5-5": {
+          "inputTokens": 6719,
+          "outputTokens": 1500,
+          "thinkingTokens": 207,
+          "cacheReadInputTokens": 100773,
+          "cacheCreationInputTokens": 16117,
+          "cacheCreationEphemeral5mInputTokens": 50,
+          "cacheCreationEphemeral1hInputTokens": 16067,
+          "webSearchRequests": 0,
+          "costUSD": 0.0056492800000000004,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "canonicalModel": "<masked>",
+          "provider": "<masked>",
+          "costBasis": "<masked>"
+        }
+      },
+      "permission_denials": [],
+      "fast_mode_state": "<masked>",
+      "fast_mode_disabled_reason": "<masked>",
+      "subagent_stats": {
+        "spawned": 0,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 0
+        },
+        "started_in_background": 0,
+        "max_depth": 0,
+        "spawned_by_subagents": 0,
+        "completed": 0,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {}
+      },
+      "safety_stops": 0,
+      "subtype": "success",
+      "result": "<masked>",
+      "local_command": "<masked>",
+      "type": "result",
+      "duration_ms": 5386,
+      "uuid": "<masked>",
+      "queued_turn_count": 0,
+      "result_index": 0,
+      "model_usage_since_last_result": {
+        "claude-haiku-5-5": {
+          "inputTokens": 6711,
+          "outputTokens": 1056,
+          "cacheReadInputTokens": 22694,
+          "cacheCreationInputTokens": 50,
+          "webSearchRequests": 0,
+          "costUSD": 0.00143229,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 0,
+          "cacheCreationEphemeral5mInputTokens": 50,
+          "cacheCreationEphemeral1hInputTokens": 0,
+          "canonicalModel": "<masked>",
+          "provider": "<masked>",
+          "costBasis": "<masked>"
+        }
+      }
+    }
+  ]
+}

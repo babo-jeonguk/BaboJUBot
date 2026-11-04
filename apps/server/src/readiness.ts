@@ -54,7 +54,7 @@ export class ReadinessMonitor {
     this.#connections = new Map(options.connections.map((c) => [c.id, c]));
     this.#hub = options.hub;
     this.#now = options.now;
-    this.#timeoutMs = options.timeoutMs ?? 10_000;
+    this.#timeoutMs = options.timeoutMs ?? 30_000;
   }
 
   /** 지금 확인 중인가: 마지막에 시작한 확인이 아직 끝나지 않았다. 그보다 먼저 시작한 확인이 남아 있어도 보지 않는다(그 결과는 저장하지 않는다). */

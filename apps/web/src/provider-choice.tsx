@@ -76,7 +76,6 @@ const readinessBadge: Record<
 /** 준비 상태의 이유. */
 export const readinessReasonLabel: Record<ProviderReadinessReason, string> = {
   program_missing: "프로그램 없음",
-  version_unsupported: "지원하지 않는 버전",
   product_login_missing: "제품 로그인 없음",
   credentials_invalid: "자격 증명 거부됨",
   credentials_unverified: "자격 증명 확인 불가",

@@ -12,13 +12,7 @@ import {
   steerOutcomes,
   usageSchema,
 } from "@babojubot/contracts";
-import {
-  createFakeProviders,
-  createClaudeProvider,
-  createCodexProvider,
-  createOpenCodeProvider,
-  createAntigravityProvider,
-} from "@babojubot/runtime";
+import { createFakeProviders, createConnection } from "@babojubot/runtime";
 import { z } from "zod";
 import { startServer } from "./app.ts";
 
@@ -38,26 +32,17 @@ const env = process.env;
 const productHome = path.resolve(
   env.BABOJUBOT_HOME ?? path.join(repoRoot, ".babojubot")
 );
-// Real connections are opt-in. Tests and the default development server remain synthetic.
-const factories = {
-  claude: createClaudeProvider,
-  codex: (options: { dataDir: string }) =>
-    createCodexProvider({
-      ...options,
-      mode: env.BABOJUBOT_CODEX_MODE === "exec" ? "exec" : "app-server",
-    }),
-  opencode: createOpenCodeProvider,
-  antigravity: createAntigravityProvider,
-};
+// Real connections are opt-in. `claude:work`처럼 쓰면 같은 프로그램의 다른 계정 연결이 된다.
 const enabled = (env.BABOJUBOT_PROVIDERS ?? "")
   .split(",")
   .map((id) => id.trim())
   .filter(Boolean);
-const realProviders = [...new Set(enabled)].map((id) => {
-  if (!(id in factories))
-    throw new Error(`Unknown BABOJUBOT_PROVIDERS connection: ${id}`);
-  return factories[id as keyof typeof factories]({ dataDir: productHome });
-});
+const realProviders = [...new Set(enabled)].map((name) =>
+  createConnection(name, {
+    dataDir: productHome,
+    mode: env.BABOJUBOT_CODEX_MODE === "exec" ? "exec" : "app-server",
+  })
+);
 
 async function openConfiguredDatabase(): Promise<{
   handle: DatabaseHandle;

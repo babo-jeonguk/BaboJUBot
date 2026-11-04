@@ -1,0 +1,687 @@
+{
+  "provenance": "Reviewed recording of real codex-app-server protocol output (2026-11-04). Every string outside a short allowlist is masked; numbers and structure are real. Behaviour around it is scripted by the simulator.",
+  "version": "codex-cli 0.166.0",
+  "frames": [
+    {
+      "method": "remoteControl/status/changed",
+      "params": {
+        "status": "disabled",
+        "serverName": "<masked>",
+        "installationId": "<masked>",
+        "environmentId": null
+      },
+      "emittedAtMs": 1793719490655
+    },
+    {
+      "method": "mcpServer/startupStatus/updated",
+      "params": {
+        "threadId": "<session>",
+        "name": "<masked>",
+        "status": "starting",
+        "error": null,
+        "failureReason": null
+      },
+      "emittedAtMs": 1793719490753
+    },
+    {
+      "method": "mcpServer/startupStatus/updated",
+      "params": {
+        "threadId": "<session>",
+        "name": "<masked>",
+        "status": "starting",
+        "error": null,
+        "failureReason": null
+      },
+      "emittedAtMs": 1793719490753
+    },
+    {
+      "method": "thread/started",
+      "params": {
+        "thread": {
+          "id": "<masked>",
+          "environments": [
+            {
+              "environmentId": "<masked>",
+              "cwd": "<masked>",
+              "runtimeWorkspaceRoots": [
+                "<masked>"
+              ]
+            }
+          ],
+          "extra": null,
+          "sessionId": "<session>",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "<masked>",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "<masked>",
+          "modelProvider": "<masked>",
+          "model": "<masked>",
+          "reasoningEffort": null,
+          "createdAt": 1793719490,
+          "updatedAt": 1793719490,
+          "recencyAt": 1793719490,
+          "status": {
+            "type": "idle"
+          },
+          "path": "<masked>",
+          "cwd": "<masked>",
+          "cliVersion": "<masked>",
+          "originator": "<masked>",
+          "source": "<masked>",
+          "canAcceptDirectInput": true,
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "daybreakEnabled": null,
+          "turns": []
+        }
+      },
+      "emittedAtMs": 1793719490753
+    },
+    {
+      "method": "thread/status/changed",
+      "params": {
+        "threadId": "<session>",
+        "status": {
+          "type": "active",
+          "activeFlags": []
+        }
+      },
+      "emittedAtMs": 1793719490930
+    },
+    {
+      "method": "turn/started",
+      "params": {
+        "threadId": "<session>",
+        "turn": {
+          "id": "<turn>",
+          "rootTurnId": "<masked>",
+          "items": [],
+          "itemsView": "<masked>",
+          "status": "inProgress",
+          "error": null,
+          "startedAt": 1793719490,
+          "completedAt": null,
+          "durationMs": null
+        }
+      },
+      "emittedAtMs": 1793719490931
+    },
+    {
+      "method": "mcpServer/startupStatus/updated",
+      "params": {
+        "threadId": "<session>",
+        "name": "<masked>",
+        "status": "ready",
+        "error": null,
+        "failureReason": null
+      },
+      "emittedAtMs": 1793719490967
+    },
+    {
+      "method": "account/updated",
+      "params": {
+        "authMode": "<masked>",
+        "planType": "<masked>"
+      },
+      "emittedAtMs": 1793719491110
+    },
+    {
+      "method": "mcpServer/startupStatus/updated",
+      "params": {
+        "threadId": "<session>",
+        "name": "<masked>",
+        "status": "ready",
+        "error": null,
+        "failureReason": null
+      },
+      "emittedAtMs": 1793719491403
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "userMessage",
+          "id": "<masked>",
+          "clientId": null,
+          "content": [
+            {
+              "type": "text",
+              "text": "<masked>",
+              "text_elements": []
+            }
+          ],
+          "startedAtMs": 1793719492868,
+          "completedAtMs": null
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "startedAtMs": 1793719492868
+      },
+      "emittedAtMs": 1793719492869
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "userMessage",
+          "id": "<masked>",
+          "clientId": null,
+          "content": [
+            {
+              "type": "text",
+              "text": "<masked>",
+              "text_elements": []
+            }
+          ],
+          "startedAtMs": 1793719492868,
+          "completedAtMs": 1793719492869
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "completedAtMs": 1793719492869
+      },
+      "emittedAtMs": 1793719492880
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "reasoning",
+          "id": "<masked>",
+          "summary": [],
+          "content": [],
+          "startedAtMs": 1793719494834,
+          "completedAtMs": null
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "startedAtMs": 1793719494834
+      },
+      "emittedAtMs": 1793719494835
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "reasoning",
+          "id": "<masked>",
+          "summary": [],
+          "content": [],
+          "startedAtMs": 1793719494834,
+          "completedAtMs": 1793719494846
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "completedAtMs": 1793719494846
+      },
+      "emittedAtMs": 1793719494852
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "tokenUsage": {
+          "total": {
+            "totalTokens": 12112,
+            "inputTokens": 11999,
+            "cachedInputTokens": 10240,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 113,
+            "reasoningOutputTokens": 72
+          },
+          "last": {
+            "totalTokens": 12112,
+            "inputTokens": 11999,
+            "cachedInputTokens": 10240,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 113,
+            "reasoningOutputTokens": 72
+          },
+          "modelContextWindow": 258400
+        }
+      },
+      "emittedAtMs": 1793719495395
+    },
+    {
+      "method": "account/rateLimits/updated",
+      "params": {
+        "rateLimits": {
+          "limitId": "<masked>",
+          "limitName": null,
+          "normalModelSlug": null,
+          "primary": {
+            "usedPercent": 34,
+            "windowDurationMins": 300,
+            "resetsAt": 1793731350
+          },
+          "secondary": {
+            "usedPercent": 31,
+            "windowDurationMins": 10080,
+            "resetsAt": 1794276967
+          },
+          "credits": {
+            "hasCredits": false,
+            "unlimited": false,
+            "balance": "<masked>"
+          },
+          "individualLimit": null,
+          "spendControlReached": null,
+          "planType": "<masked>",
+          "rateLimitReachedType": null
+        }
+      },
+      "emittedAtMs": 1793719495395
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "reasoning",
+          "id": "<masked>",
+          "summary": [],
+          "content": [],
+          "startedAtMs": 1793719496619,
+          "completedAtMs": null
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "startedAtMs": 1793719496619
+      },
+      "emittedAtMs": 1793719496619
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "reasoning",
+          "id": "<masked>",
+          "summary": [],
+          "content": [],
+          "startedAtMs": 1793719496619,
+          "completedAtMs": 1793719496619
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "completedAtMs": 1793719496619
+      },
+      "emittedAtMs": 1793719496625
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "mcpToolCall",
+          "id": "<masked>",
+          "server": "<masked>",
+          "tool": "<masked>",
+          "status": "inProgress",
+          "arguments": {},
+          "appContext": null,
+          "mcpAppUi": null,
+          "pluginId": null,
+          "readOnlyHint": null,
+          "result": null,
+          "error": null,
+          "durationMs": null,
+          "startedAtMs": 1793719497426,
+          "completedAtMs": null
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "startedAtMs": 1793719497426
+      },
+      "emittedAtMs": 1793719497427
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "mcpToolCall",
+          "id": "<masked>",
+          "server": "<masked>",
+          "tool": "<masked>",
+          "status": "completed",
+          "arguments": {},
+          "appContext": null,
+          "mcpAppUi": null,
+          "pluginId": null,
+          "readOnlyHint": null,
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "<masked>"
+              }
+            ],
+            "structuredContent": {
+              "identity": {
+                "organizationId": "<masked>",
+                "agentId": "<masked>",
+                "runId": "<masked>"
+              },
+              "wakeReasons": [
+                {
+                  "kind": "<masked>",
+                  "wakeId": "<masked>"
+                }
+              ],
+              "context": {
+                "organization": {
+                  "id": "<masked>",
+                  "name": "<masked>",
+                  "stage": "<masked>",
+                  "goal": "<masked>",
+                  "completionCriteria": "<masked>",
+                  "approvalPolicy": {
+                    "addWorker": false,
+                    "publishToGitHub": false
+                  }
+                },
+                "agent": {
+                  "id": "<masked>",
+                  "role": "lead",
+                  "name": "<masked>"
+                },
+                "team": [
+                  {
+                    "id": "<masked>",
+                    "role": "lead",
+                    "name": "<masked>"
+                  }
+                ],
+                "conversations": [
+                  {
+                    "id": "<masked>",
+                    "title": "<masked>",
+                    "isDefault": true,
+                    "createdAt": "<masked>"
+                  }
+                ],
+                "conversation": [],
+                "researchFlow": null
+              }
+            },
+            "_meta": null
+          },
+          "error": null,
+          "durationMs": 73,
+          "startedAtMs": 1793719497426,
+          "completedAtMs": 1793719497500
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "completedAtMs": 1793719497500
+      },
+      "emittedAtMs": 1793719497506
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "mcpToolCall",
+          "id": "<masked>",
+          "server": "<masked>",
+          "tool": "<masked>",
+          "status": "inProgress",
+          "arguments": {
+            "body": "<masked>",
+            "conversationId": "<session>"
+          },
+          "appContext": null,
+          "mcpAppUi": null,
+          "pluginId": null,
+          "readOnlyHint": null,
+          "result": null,
+          "error": null,
+          "durationMs": null,
+          "startedAtMs": 1793719497519,
+          "completedAtMs": null
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "startedAtMs": 1793719497519
+      },
+      "emittedAtMs": 1793719497520
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "mcpToolCall",
+          "id": "<masked>",
+          "server": "<masked>",
+          "tool": "<masked>",
+          "status": "completed",
+          "arguments": {
+            "body": "<masked>",
+            "conversationId": "<session>"
+          },
+          "appContext": null,
+          "mcpAppUi": null,
+          "pluginId": null,
+          "readOnlyHint": null,
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "<masked>"
+              }
+            ],
+            "structuredContent": {
+              "id": "<masked>",
+              "organizationId": "<masked>",
+              "agentId": "<masked>",
+              "conversationId": "<session>",
+              "author": "<masked>",
+              "body": "<masked>",
+              "delivery": null,
+              "sentByRunId": "<masked>",
+              "deliveredToRunId": null,
+              "deliveredAt": null,
+              "createdAt": "<masked>"
+            },
+            "_meta": null
+          },
+          "error": null,
+          "durationMs": 33,
+          "startedAtMs": 1793719497519,
+          "completedAtMs": 1793719497553
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "completedAtMs": 1793719497553
+      },
+      "emittedAtMs": 1793719497559
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "tokenUsage": {
+          "total": {
+            "totalTokens": 25216,
+            "inputTokens": 25013,
+            "cachedInputTokens": 22016,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 203,
+            "reasoningOutputTokens": 87
+          },
+          "last": {
+            "totalTokens": 13104,
+            "inputTokens": 13014,
+            "cachedInputTokens": 11776,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 90,
+            "reasoningOutputTokens": 15
+          },
+          "modelContextWindow": 258400
+        }
+      },
+      "emittedAtMs": 1793719497582
+    },
+    {
+      "method": "account/rateLimits/updated",
+      "params": {
+        "rateLimits": {
+          "limitId": "<masked>",
+          "limitName": null,
+          "normalModelSlug": null,
+          "primary": {
+            "usedPercent": 34,
+            "windowDurationMins": 300,
+            "resetsAt": 1793731350
+          },
+          "secondary": {
+            "usedPercent": 31,
+            "windowDurationMins": 10080,
+            "resetsAt": 1794276967
+          },
+          "credits": {
+            "hasCredits": false,
+            "unlimited": false,
+            "balance": "<masked>"
+          },
+          "individualLimit": null,
+          "spendControlReached": null,
+          "planType": "<masked>",
+          "rateLimitReachedType": null
+        }
+      },
+      "emittedAtMs": 1793719497582
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "type": "agentMessage",
+          "id": "<masked>",
+          "text": "<masked>",
+          "phase": "<masked>",
+          "memoryCitation": null,
+          "delivery": null,
+          "questions": null,
+          "startedAtMs": 1793719498413,
+          "completedAtMs": null
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "startedAtMs": 1793719498413
+      },
+      "emittedAtMs": 1793719498414
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "item": {
+          "type": "agentMessage",
+          "id": "<masked>",
+          "text": "<masked>",
+          "phase": "<masked>",
+          "memoryCitation": null,
+          "delivery": null,
+          "questions": null,
+          "startedAtMs": 1793719498413,
+          "completedAtMs": 1793719498525
+        },
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "completedAtMs": 1793719498525
+      },
+      "emittedAtMs": 1793719498531
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "<session>",
+        "turnId": "<turn>",
+        "tokenUsage": {
+          "total": {
+            "totalTokens": 38348,
+            "inputTokens": 38141,
+            "cachedInputTokens": 34816,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 207,
+            "reasoningOutputTokens": 87
+          },
+          "last": {
+            "totalTokens": 13132,
+            "inputTokens": 13128,
+            "cachedInputTokens": 12800,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 4,
+            "reasoningOutputTokens": 0
+          },
+          "modelContextWindow": 258400
+        }
+      },
+      "emittedAtMs": 1793719498548
+    },
+    {
+      "method": "account/rateLimits/updated",
+      "params": {
+        "rateLimits": {
+          "limitId": "<masked>",
+          "limitName": null,
+          "normalModelSlug": null,
+          "primary": {
+            "usedPercent": 34,
+            "windowDurationMins": 300,
+            "resetsAt": 1793731350
+          },
+          "secondary": {
+            "usedPercent": 31,
+            "windowDurationMins": 10080,
+            "resetsAt": 1794276967
+          },
+          "credits": {
+            "hasCredits": false,
+            "unlimited": false,
+            "balance": "<masked>"
+          },
+          "individualLimit": null,
+          "spendControlReached": null,
+          "planType": "<masked>",
+          "rateLimitReachedType": null
+        }
+      },
+      "emittedAtMs": 1793719498549
+    },
+    {
+      "method": "thread/status/changed",
+      "params": {
+        "threadId": "<session>",
+        "status": {
+          "type": "idle"
+        }
+      },
+      "emittedAtMs": 1793719498563
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "<session>",
+        "turn": {
+          "id": "<turn>",
+          "rootTurnId": "<masked>",
+          "items": [],
+          "itemsView": "<masked>",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1793719490,
+          "completedAt": 1793719498,
+          "durationMs": 7780
+        }
+      },
+      "emittedAtMs": 1793719498563
+    }
+  ]
+}

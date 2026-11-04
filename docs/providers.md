@@ -1,40 +1,54 @@
 # 실제 프로바이더 연결
 
-서버는 기본적으로 가짜 연결만 등록한다. 실제 연결은 `BABOJUBOT_PROVIDERS=claude,codex,opencode,antigravity pnpm dev`로 추가한다. 전역 설정에서 사용할 연결을 선택하고 저장한다. 프로그램 설치와 제품 로그인은 사용자가 한다. 실제 모델 호출은 구독 사용량이나 비용을 쓴다.
+서버는 기본적으로 가짜 연결만 등록한다. 실제 연결은 `BABOJUBOT_PROVIDERS=claude,codex,opencode,antigravity pnpm dev`로 추가한다. `claude:work`처럼 쓰면 같은 프로그램의 다른 계정 연결이 되고 제품 폴더도 따로 쓴다. 전역 설정에서 사용할 연결을 선택하고 저장한다. 프로그램 설치와 제품 로그인은 사용자가 한다. 실제 모델 호출은 구독 사용량이나 비용을 쓴다.
 
-| 연결 | 고정 판 | 실행 방식 | 지침 | 끼워 넣기 |
+| 연결 | 시험한 판 | 실행 방식 | 지침 | 끼워 넣기 |
 | --- | --- | --- | --- | --- |
-| Claude Code | 2.1.316 | 실행마다 duplex stream-json | 기본 지침에 append | 살아 있는 입력 큐에 전달 |
+| Claude Code | 2.1.317 | 실행마다 duplex stream-json | 기본 지침에 파일로 append | 살아 있는 입력 큐에 전달 |
 | Codex | 0.166.0 | app-server 기본, `BABOJUBOT_CODEX_MODE=exec` 선택 | developerInstructions | app-server 턴 ACK; exec 미지원 |
 | OpenCode | 2.2.5 | 실행마다 `serve --stdio`로 HTTP 서버 시작 | 기본 지침 유지, session instructions API 추가 | `delivery: steer` 응답 |
 | Antigravity | 1.4.12 | 실행마다 한 입력·한 결과 | 첫 입력 앞에 추가 | 미지원 |
 
-현재 실제 CLI 프로세스 감독·재시작 정리는 Linux의 `/proc`를 지원 범위로 삼는다. 다른 OS 실행은 거부한다. 다른 판은 준비 확인에서 거부한다. OpenCode 1.x는 지원하지 않는다. 이 개발 컴퓨터의 1.18.23 대신 2.2.5를 별도로 설치해야 한다. 현재 OpenCode 설정 분리 경로는 Linux를 지원하며 `/etc/opencode`가 있으면 상속하지 않고 준비 실패로 알린다. 로컬 로그인 존재는 원격 유효성 확인이 아니므로 `unknown`일 수 있다. OpenCode의 모델 미지정 실행은 조회한 목록에서 입력·출력 가격이 모두 0인 모델을 선택하며, 무료 모델이 없으면 실패한다. 특정 무료 모델의 지속 제공을 보장하지 않는다.
+판을 제한하지 않는다. 설치된 프로그램을 그대로 쓰며, 표의 판은 실제 호출로 시험한 기준이다. 프로토콜이 어긋나면 준비 확인이나 실행 시도가 실패로 드러난다. OpenCode 1.x는 서버 방식이 달라 동작하지 않는다.
+
+Linux·macOS·Windows를 지원한다. 실제 호출은 Linux(WSL)에서만 시험했고, macOS·Windows는 CI에서 프로그램 연결·조직 경계 읽기·서버 기동 자동 검사만 돈다. 서버 기동은 macOS가 내장 DB, Windows가 설치된 Postgres로 확인한다. Windows의 내장 DB는 Postgres가 관리자 권한 실행을 거부하므로 일반 권한 터미널에서 쓴다(미검증). Windows에는 프로세스 그룹이 없어, 프로그램이 스스로 끝난 뒤 남은 자식 프로세스는 찾지 못한다. 취소 때는 프로세스 트리를 끝낸다.
+
+## 설정
+
+연결 이름의 영문·숫자를 대문자로 쓰고 나머지는 `_`로 바꾼다. `claude:work`면 연결 ID는 `claude-work`, 설정 이름은 `BABOJUBOT_CLAUDE_WORK_...`이다.
+
+| 환경 변수 | 뜻 |
+| --- | --- |
+| `BABOJUBOT_<연결>_COMMAND` | 프로그램 위치. PATH에 없을 때 쓴다 |
+| `BABOJUBOT_<연결>_PASS_ENV` | 그 연결에 넘길 환경 변수 이름(쉼표로 구분). API 키·Bedrock·Vertex 같은 다른 로그인에 쓴다 |
+
+프록시·인증서·언어 변수는 항상 넘긴다. 그 밖의 환경 변수는 적은 것만 넘긴다. 쓰는 줄 모르고 다른 계정으로 과금되지 않게 하기 위해서다.
+
+모델은 목록을 받아 오면 그 목록으로 확인한다. 목록이 비었거나(받아 오지 못한 때 포함) Claude처럼 별칭만 있는 연결은 API에서 다른 모델 ID도 받고, 틀린 모델은 실행 시도의 실패로 드러난다. OpenCode에서 모델을 정하지 않으면 무료 모델을 먼저 고르고, 없으면 그 연결이 제공하는 첫 모델을 쓴다. 특정 무료 모델의 지속 제공을 보장하지 않는다.
+
+OpenCode는 시스템 설정을 끌 방법이 없어, `/etc/opencode`가 있으면 경고하고 함께 읽는다.
 
 ## 제품 로그인
 
-`BABOJUBOT_HOME`은 절대 경로를 사용한다. 기본 데이터 폴더는 저장소의 `.babojubot`이다. 개인 설정·로그인 파일을 복사하지 않는다. 아래 명령은 로그인만 준비하며 이 문서를 구현하는 과정에서는 실행하지 않았다.
+기본 제품 폴더는 저장소의 `.babojubot`이고 `BABOJUBOT_HOME`으로 바꾼다. 개인 설정·로그인 파일을 복사하지 않는다. 저장소 루트에서 실행한다.
 
 ```bash
-product_root="/absolute/path/to/.babojubot"
-mkdir -p "$product_root/providers/claude/config" "$product_root/providers/codex" "$product_root/providers/opencode" "$product_root/providers/antigravity"
-chmod 700 "$product_root/providers/claude" "$product_root/providers/codex" "$product_root/providers/opencode" "$product_root/providers/antigravity"
+pnpm provider:login claude   # codex, opencode, antigravity, claude:work
 ```
 
-- Claude: `env -i PATH="$PATH" HOME="$product_root/providers/claude" CLAUDE_CONFIG_DIR="$product_root/providers/claude/config" claude setup-token`. 발급받은 토큰만 `$product_root/providers/claude/setup-token`에 저장하고 `chmod 600`을 적용한다. 토큰을 명령 인수·Git·이슈에 넣지 않는다.
-- Codex: `env -i PATH="$PATH" HOME="$product_root/providers/codex" CODEX_HOME="$product_root/providers/codex" codex login`.
-- OpenCode: `env -i PATH="$PATH" HOME="$product_root/providers/opencode" XDG_CONFIG_HOME="$product_root/providers/opencode/config" XDG_DATA_HOME="$product_root/providers/opencode/data" XDG_CACHE_HOME="$product_root/providers/opencode/cache" XDG_STATE_HOME="$product_root/providers/opencode/state" OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_CLAUDE_CODE=1 opencode auth login`. 무료 모델 제공자는 로그인 없이 제공할 수도 있다.
-- Antigravity: `env -i PATH="$PATH" HOME="$product_root/providers/antigravity" XDG_CONFIG_HOME="$product_root/providers/antigravity/config" XDG_DATA_HOME="$product_root/providers/antigravity/data" XDG_CACHE_HOME="$product_root/providers/antigravity/cache" agy`에서 로그인한다. 이 판의 제품 로그인은 제품 HOME의 `.gemini/oauth_creds.json`에서 확인한다.
+실행 시도와 같은 환경으로 프로그램의 로그인을 띄운다. Claude는 화면에 나온 토큰을 붙여 넣으면 제품 폴더에 0600으로 저장한다. 토큰은 명령 인수·Git·이슈에 넣지 않는다. 무료 모델 제공자는 OpenCode 로그인 없이 쓸 수 있다.
+
+로그인 여부는 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. Claude는 `claude auth status`, Codex는 `codex login status`, Antigravity는 `agy models`를 쓴다. Claude와 Antigravity는 실행 시도도 파일 없이 시작하고, 거절되면 로그인 필요로 알린다.
 
 제품 HOME/XDG와 환경 변수 허용 목록은 개인 설정의 자동 유입을 막는 경계다. 호스트 파일·네트워크 접근을 격리하는 컨테이너는 후속 #102 범위다. 사용자 홈·자격 증명·연구 원본은 Git에 추가하지 않는다.
 
 ## 세션과 정리
 
-실행 시도마다 별도 프로세스를 만들고 프로토콜 중단(없는 경우 SIGINT) → 2초 → 프로세스 그룹 TERM → 2초 → KILL 순서로 취소한다. 종료 뒤 남은 그룹도 정리한다. Linux에서는 PID·부팅 식별자·프로세스 시작 시각을 제품 폴더에 기록하고 서버 재시작 때 일치하는 잔여 프로세스를 정리한다.
+실행 시도마다 별도 프로세스를 만들고 프로토콜 중단(없는 경우 SIGINT) → 2초 → 프로세스 그룹 TERM → 2초 → KILL 순서로 취소한다. 종료 뒤 남은 그룹도 정리하되, 끝나지 않으면 10초 뒤 포기하고 실행 자리를 돌려주되 기록은 남겨 다음 시작 때 다시 본다. 최종 결과를 받았으면 종료 코드와 상관없이 그 결과를 쓰고, 모르는 출력은 건너뛴다. 재시작 때 제품 폴더의 기록으로 잔여 프로세스를 정리한다. 기록한 시작 시각과 같은 프로세스만 우리 것으로 본다(Linux는 부팅 식별자도 본다). 시작 시각을 남기기 전에 서버가 죽어 기록에 없으면 건드리지 않는다. 끝났음을 확인했을 때만 기록을 지우고, 판단할 수 없으면 건드리지 않은 채 기록을 남기고 경고한 뒤 서버는 시작한다. 깨졌거나 이름과 맞지 않는 기록은 어떤 프로세스도 건드리지 않고 지운다.
 
-MCP bearer는 Claude의 임시 0600 파일, Codex·OpenCode의 자식 환경, Antigravity의 작업 폴더 `.agents/mcp_config.json`으로 전달한다. 명령 인수에는 넣지 않는다. Antigravity는 같은 작업 폴더를 파일 생성부터 제거까지 직렬화한다. 제품 소유 표시가 있는 잔여 파일만 지우며 사용자 파일·심볼릭 링크는 거부한다. 정상 종료·실패·취소·서버 재시작 때 정리한다.
+MCP bearer는 Claude의 임시 0600 파일, Codex·OpenCode의 자식 환경, Antigravity의 작업 폴더 `.agents/mcp_config.json`으로 전달한다. 명령 인수에는 넣지 않는다. Antigravity는 같은 작업 폴더를 파일 생성부터 제거까지 직렬화한다. 제품 소유 표시가 있는 잔여 파일과 임시 파일만 지우며, 표시가 없는 파일은 비어 있어도 건드리지 않고 그 실행 시도를 실패로 끝낸다. 심볼릭 링크도 거부한다. 파일은 하드링크로 한 번에 나타나고 이미 있는 파일을 덮어쓰지 않는다. 하드링크를 지원하지 않는 파일 시스템에서는 이유와 함께 실패한다. 정상 종료·실패·취소·서버 재시작 때 정리한다.
 
-세션 부재가 확인될 때만 새 세션으로 전환한다. 인증 실패나 전송 실패를 세션 부재로 취급하지 않는다. 공개 활동은 일반적인 시작·재개 실패 안내만 담고 원시 모델 출력이나 내부 추론을 전달하지 않는다. 관찰 가능한 연구 결과는 조직 도구로 기록한다.
+이전 세션으로 시작하지 못하면 프로그램의 문구와 상관없이 새 세션으로 한 번 다시 시도한다. 로그인 거절은 세션 문제로 보지 않는다. 끝나지 못한 실행 시도는 세션을 지우지 않는다. 공개 활동은 일반적인 시작·재개 실패 안내만 담고 원시 모델 출력이나 내부 추론을 전달하지 않는다. 관찰 가능한 연구 결과는 조직 도구로 기록한다.
 
 ## Claude 미리 압축
 
@@ -54,4 +68,4 @@ BABOJUBOT_HOME="$product_root" node scripts/provider-smoke.mjs claude --allow-li
 # BABOJUBOT_CODEX_MODE=exec 선택; Codex·Antigravity는 BABOJUBOT_SMOKE_MODEL=<가장 저렴한 모델 ID> 지정
 ```
 
-이 시험은 단건 연결 확인이다. 실제 세션 재개·끼워 넣기·압축·토큰/비용은 추가 사람 시험이 필요하다. 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 실제 호출과 녹화는 사용자 결정으로 보류 중이다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.
+이 시험은 단건 연결 확인이다. 세션 재개·끼워 넣기·취소·세션 실패·압축까지 돌리는 시험은 같은 조건으로 `node scripts/provider-live.mjs <연결> --allow-live`이고, `--record`를 붙이면 원본을 Git 밖에 남긴다. 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.
