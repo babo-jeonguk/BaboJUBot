@@ -75,6 +75,15 @@ it("skips only the unusable rows and warns about each", () => {
   expect(warn).toHaveBeenCalledTimes(2);
 });
 
+it("keeps the built-in name when a rename has nothing to show", () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  process.env[additional] = JSON.stringify([
+    { id: "claude-opus-5-5", label: "   " },
+  ]);
+  expect(claudeModelsFor("claude")).toEqual(claudeModels);
+  expect(warn).toHaveBeenCalledOnce();
+});
+
 it("reads the setting of that connection only", () => {
   process.env.BABOJUBOT_CLAUDE_WORK_ADDITIONAL_MODELS = JSON.stringify([
     { id: "work-only", label: "Work" },
