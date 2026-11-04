@@ -72,6 +72,12 @@ type ModelListState = {
 };
 const modelLists = new WeakMap<ProviderConnection, ModelListState>();
 
+/** 프로그램이 준 모델 이름이 비었으면 ID를 보인다. 한 줄 때문에 목록 응답 전체가 계약 검사에 막히지 않게 한다. */
+const withVisibleName = ({ id, label }: ModelOption): ModelOption => ({
+  id,
+  label: label.trim() || id,
+});
+
 async function refreshModels(
   connection: ProviderConnection,
   state: ModelListState,
@@ -91,7 +97,7 @@ async function refreshModels(
       }),
     ]);
     if (fetched.length) {
-      state.models = fetched;
+      state.models = fetched.map(withVisibleName);
       state.fetchedAt = Date.now();
     }
   } catch (error) {
