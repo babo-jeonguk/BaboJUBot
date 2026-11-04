@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { recoverProviderProcesses } from "./recovery.ts";
 
 // 복구 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
@@ -203,6 +203,52 @@ it.skipIf(process.platform === "win32")(
   },
   30_000
 );
+
+// 시작 시각을 알 수 없다고 끝난 것은 아니다. 프로세스가 살아 있으면 기록을 남긴다.
+it("keeps the record of a live process whose start cannot be read", async () => {
+  const { root, directory } = await records();
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const file = `${child.pid}.json`;
+  try {
+    await writeFile(
+      path.join(directory, file),
+      JSON.stringify({ pid: child.pid, lease: "lease" })
+    );
+    vi.stubEnv("PATH", "");
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    vi.unstubAllEnvs();
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([file]);
+  } finally {
+    vi.unstubAllEnvs();
+    const closed = new Promise((resolve) => child.on("close", resolve));
+    child.kill("SIGKILL");
+    await closed;
+  }
+  await recoverProviderProcesses(root, { platform: withoutProc });
+  expect(await readdir(directory)).toEqual([]);
+}, 30_000);
+
+// 파일 시각의 해상도만큼만 여유를 둔다. 기록보다 몇 초 뒤에 시작한 프로세스는 번호만 같은 남이다.
+it("leaves a process that started seconds after the record was written", async () => {
+  const { root, directory } = await records();
+  const child = longRunning();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const file = path.join(directory, `${child.pid}.json`);
+  try {
+    await writeFile(file, JSON.stringify({ pid: child.pid, lease: "lease" }));
+    const earlier = new Date(Date.now() - 4000);
+    await utimes(file, earlier, earlier);
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([]);
+  } finally {
+    process.kill(child.pid!, "SIGKILL");
+  }
+}, 30_000);
 
 it("recovers every connection folder, including named ones", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "babojubot-recovery-"));

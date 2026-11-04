@@ -1,81 +1,128 @@
-import {
-  mkdir,
-  mkdtemp,
-  rename,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
-import { Workspaces } from "../src/workspace.ts";
+import { afterEach, expect, it } from "vitest";
+import { pinnedReader, Workspaces } from "../src/workspace.ts";
 
-// 경로를 확인한 뒤 파일을 열기 전에 중간 폴더를 바꿔치기해도 다른 조직의 파일을 읽지 않는다.
-const hook = vi.hoisted(() => ({
-  beforeOpen: undefined as undefined | (() => Promise<void>),
-  afterOpen: undefined as undefined | (() => Promise<void>),
-}));
-vi.mock("node:fs/promises", async (original) => {
-  const real = await original<typeof import("node:fs/promises")>();
-  return {
-    ...real,
-    open: async (...args: Parameters<typeof real.open>) => {
-      await hook.beforeOpen?.();
-      const handle = await real.open(...args);
-      await hook.afterOpen?.();
-      return handle;
-    },
-  };
-});
-
+// 경로를 확인하는 사이에 폴더나 파일을 바꿔치기해도 다른 조직의 파일을 읽지 않는다.
+// 읽는 프로세스의 파일 작업 앞뒤 모든 시점에 바꿔치기(필요하면 원상 복구까지)를 넣어 본다.
 const roots: string[] = [];
 afterEach(async () => {
-  hook.beforeOpen = undefined;
-  hook.afterOpen = undefined;
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
   );
 });
 async function organizations() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-race-"));
-  roots.push(root);
-  const mine = path.join(root, "organizations/organization-one/shared/dir");
-  const other = path.join(root, "organizations/organization-two/shared/dir");
+  const created = await mkdtemp(path.join(tmpdir(), "babojubot-race-"));
+  roots.push(created);
+  const root = await realpath(created);
+  const base = path.join(root, "organizations");
+  const mine = path.join(base, "organization-one/shared/dir");
+  const other = path.join(base, "organization-two/shared/dir");
   await mkdir(mine, { recursive: true });
   await mkdir(other, { recursive: true });
-  await writeFile(path.join(mine, "a.md"), "우리 조직");
-  await writeFile(path.join(other, "a.md"), "다른 조직");
-  const read = () =>
-    new Workspaces(root, null as never).readArtifact(
-      "organization-one",
-      "dir/a.md"
-    );
-  const swap = async () => {
-    await rename(mine, `${mine}-kept`);
-    await symlink(other, mine);
-  };
-  const restore = async () => {
-    await rm(mine);
-    await rename(`${mine}-kept`, mine);
-  };
-  return { read, swap, restore };
+  await writeFile(path.join(mine, "a.md"), "MINE");
+  await writeFile(path.join(other, "a.md"), "FOREIGN");
+  return { root, base, mine, other };
 }
+const interrupt = `{
+  const fs = require("node:fs");
+  const plan = JSON.parse(process.env.PLAN);
+  let step = 0, busy = false;
+  const quietly = (work) => {
+    busy = true;
+    try { work(); } catch {}
+    busy = false;
+  };
+  const tick = () => {
+    if (busy) return;
+    step++;
+    if (step === plan.swapAt)
+      quietly(() => {
+        fs.renameSync(plan.from, plan.from + "-kept");
+        fs.symlinkSync(plan.to, plan.from, plan.kind);
+      });
+    if (step === plan.restoreAt)
+      quietly(() => {
+        fs.unlinkSync(plan.from);
+        fs.renameSync(plan.from + "-kept", plan.from);
+      });
+  };
+  for (const name of ["lstatSync", "statSync", "openSync", "readSync"]) {
+    const real = fs[name];
+    fs[name] = (...args) => { tick(); return real(...args); };
+  }
+  const chdir = process.chdir;
+  process.chdir = (directory) => { tick(); chdir(directory); };
+}
+`;
+const attempt = (cwd: string, plan: Record<string, unknown>) =>
+  new Promise<string | null>((resolve) => {
+    execFile(
+      process.execPath,
+      [
+        "-e",
+        interrupt + pinnedReader,
+        JSON.stringify([1000, "organization-one", "shared", "dir", "a.md"]),
+      ],
+      {
+        cwd,
+        env: {
+          ...(process.env.SystemRoot
+            ? { SystemRoot: process.env.SystemRoot }
+            : {}),
+          PLAN: JSON.stringify(plan),
+        },
+      },
+      (error, stdout) => resolve(error ? null : stdout)
+    );
+  });
 
 it("reads the file when nothing changes", async () => {
-  const { read } = await organizations();
-  expect((await read()).content).toBe("우리 조직");
+  const { root } = await organizations();
+  const read = (relative: string) =>
+    new Workspaces(root, null as never).readArtifact(
+      "organization-one",
+      relative
+    );
+  expect((await read("dir/a.md")).content).toBe("MINE");
 });
 
-it("refuses a file reached through a folder swapped before opening", async () => {
-  const { read, swap } = await organizations();
-  hook.beforeOpen = swap;
-  await expect(read()).rejects.toThrow();
-});
-
-it("refuses it even when the folder is put back right after opening", async () => {
-  const { read, swap, restore } = await organizations();
-  hook.beforeOpen = swap;
-  hook.afterOpen = restore;
-  await expect(read()).rejects.toThrow();
-});
+const steps = 14;
+it.each([
+  ["a folder in the path", "shared/dir", "shared/dir", "dir"],
+  ["the organization folder", "shared", "shared", "dir"],
+  ["the file itself", "shared/dir/a.md", "shared/dir/a.md", "file"],
+] as const)(
+  "never reads another organization's file when %s is swapped at any moment",
+  async (_name, from, to, kind) => {
+    const results: (string | null)[] = [];
+    const plans: { swapAt: number; restoreAt: number }[] = [];
+    for (let swapAt = 1; swapAt <= steps; swapAt++)
+      for (let restoreAt = swapAt + 1; restoreAt <= steps + 1; restoreAt++)
+        plans.push({ swapAt, restoreAt });
+    // 동시에 조금씩 돌려 시간을 줄인다. 시도마다 폴더를 새로 만든다.
+    const queue = [...plans];
+    await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        for (let plan = queue.shift(); plan; plan = queue.shift()) {
+          const { base } = await organizations();
+          results.push(
+            await attempt(base, {
+              ...plan,
+              from: path.join(base, "organization-one", from),
+              to: path.join(base, "organization-two", to),
+              kind,
+            })
+          );
+        }
+      })
+    );
+    expect(results).not.toContain("FOREIGN");
+    // 시험이 헛돌지 않았는지 본다. 일부는 거부되고, 일부는 고정된 뒤라 원래 내용을 읽는다.
+    expect(results).toContain(null);
+    expect(results).toContain("MINE");
+  },
+  240_000
+);

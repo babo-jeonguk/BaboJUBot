@@ -92,3 +92,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @babojubot/runtime run typecheck
       - run: pnpm --filter @babojubot/runtime test
+      # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
+      - run: pnpm --filter @babojubot/server exec vitest run test/workspace.test.ts test/workspace-race.test.ts
