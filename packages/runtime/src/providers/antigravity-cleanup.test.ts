@@ -9,8 +9,11 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createAntigravityProvider } from "./antigravity.ts";
-import { configRefused } from "./antigravity-config.ts";
+import {
+  cleanupAntigravityWorkspaces,
+  createAntigravityProvider,
+} from "./antigravity.ts";
+import { configRefused, ownerMark } from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
 
 // 설정을 쓰는 프로세스가 도중에 끝나면 게시됐는지 알 수 없다. 거부가 확실한 경우만 빼고 치운다.
@@ -93,4 +96,25 @@ it("does not touch anything after a certain refusal", async () => {
   expect(await readFile(config, "utf8")).toBe("사용자 설정");
   expect(configRefused(3)).toBe(true);
   expect(configRefused(1)).toBe(false);
+});
+
+// 서버 시작 정리는 조직마다 별도 프로세스를 띄운다. 설정 폴더가 없는 조직까지 띄우면 조직 수만큼 시작이 느려진다.
+it("checks at server start only the organizations that have a configuration folder", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agy-cleanup-"));
+  roots.push(root);
+  const organizations = path.join(root, "organizations");
+  for (const name of ["no-folder-1", "no-folder-2", "no-folder-3"])
+    await mkdir(path.join(organizations, name, "shared"), { recursive: true });
+  await mkdir(path.join(organizations, "no-shared"), { recursive: true });
+  const agents = path.join(organizations, "with-folder", "shared", ".agents");
+  await mkdir(agents, { recursive: true });
+  await writeFile(
+    path.join(agents, "mcp_config.json"),
+    JSON.stringify({ babojubotOwner: ownerMark })
+  );
+
+  await cleanupAntigravityWorkspaces(root);
+
+  expect(helper.clears).toBe(1);
+  expect(await readdir(agents)).toEqual([]);
 });

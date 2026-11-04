@@ -28,7 +28,7 @@ describe("embedded Postgres lifetime", () => {
 
     await handle.close();
     expect(fs.existsSync(dataDir)).toBe(false);
-  }, 15_000);
+  });
 
   it("lets the process exit promptly when Postgres fails to start", async () => {
     // PG_VERSION이 있어 initdb를 건너뛰지만 cluster가 아니므로 postgres가 바로 끝난다.
