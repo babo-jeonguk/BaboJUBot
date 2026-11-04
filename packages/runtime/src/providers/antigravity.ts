@@ -16,6 +16,7 @@ import {
 import {
   clearOwnedConfig,
   configFailure,
+  configRefused,
   ownerMark,
   publishConfig,
 } from "./antigravity-config.ts";
@@ -128,6 +129,8 @@ export function createAntigravityProvider(options: {
             release = resolve;
           })
         );
+        // 프로세스가 도중에 끝나면 게시됐는지 알 수 없다. 거부가 확실할 때만 정리 책임을 내려놓는다.
+        owned = true;
         const published = await publishConfig(
           cwd,
           JSON.stringify({
@@ -143,8 +146,10 @@ export function createAntigravityProvider(options: {
             },
           })
         );
-        if (published) return failure(configFailure(published));
-        owned = true;
+        if (published) {
+          owned = !configRefused(published);
+          return failure(configFailure(published));
+        }
         const args = [
           "--input-format",
           "stream-json",

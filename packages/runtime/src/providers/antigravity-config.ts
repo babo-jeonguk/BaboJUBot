@@ -64,7 +64,10 @@ if (op === "publish") {
   } catch (e) {
     status = e.code === "EEXIST" ? ${exists} : ${noLink};
   }
-  fs.unlinkSync(temp);
+  // 게시 결과와 임시 파일 정리는 별개다. 남은 임시 파일에도 표시가 있어 정리 때 함께 지운다.
+  try {
+    fs.unlinkSync(temp);
+  } catch {}
   process.exit(status);
 }
 `;
@@ -103,6 +106,10 @@ export async function clearOwnedConfig(cwd: string) {
 /** 설정을 한 번에 나타나게 쓴다. 성공하면 0, 아니면 `configFailure`로 사유를 얻는 상태값이다. */
 export const publishConfig = (cwd: string, content: string) =>
   run(cwd, "publish", content);
+
+/** 설정을 쓰지 않았음이 확실한 거부인가. 그 밖의 실패는 게시됐을 수 있어 정리해야 한다. */
+export const configRefused = (status: number) =>
+  status === unsafe || status === exists || status === noLink;
 
 export function configFailure(status: number) {
   if (status === unsafe || status === exists)

@@ -29,6 +29,15 @@ const identityMaxBytes = 4096;
 /** 조직 폴더가 이 조직의 것이라고 확인되지 않았다. 다른 조직의 폴더를 잘못 쓰지 않도록 실행을 멈춘다. */
 export class WorkspaceIdentityError extends Error {}
 
+/** 파일 시스템이 표식을 막았을 때의 안내. 원본 오류는 원인으로 남겨 서버 기록에 보인다. */
+function identityBlocked(action: string, file: string, error: unknown) {
+  const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+  return new WorkspaceIdentityError(
+    `조직 폴더의 표식을 ${action} 수 없습니다(${code}). ${file}의 경로와 권한을 확인해 주세요.`,
+    { cause: error }
+  );
+}
+
 /**
  * 조직 폴더 안의 파일을 다른 프로세스에서 읽는다. Node에는 폴더 핸들로 여는 기능이 없어 경로를 여러 번 확인해도
  * 그 사이의 바꿔치기를 막지 못한다. 작업 폴더는 커널이 폴더 자체를 붙들므로 한 칸씩 들어가며 확인한 폴더인지 보고,
@@ -148,13 +157,21 @@ export class Workspaces {
         `조직 폴더에 표식이 없습니다. 이 조직의 폴더가 맞는지 확인하고 ${file}을 복원해 주세요.`
       );
     // 처음 쓰는 폴더이거나 폴더가 통째로 없어 다른 조직과 헷갈릴 일이 없다. 한 번에 나타나게 쓴다.
-    await mkdir(folder, { recursive: true });
-    const temp = `${file}.${randomUUID()}.tmp`;
-    await writeFile(temp, JSON.stringify({ version: 1, organizationId: id }), {
-      flag: "wx",
-      mode: 0o600,
-    });
-    await rename(temp, file);
+    try {
+      await mkdir(folder, { recursive: true });
+      const temp = `${file}.${randomUUID()}.tmp`;
+      await writeFile(
+        temp,
+        JSON.stringify({ version: 1, organizationId: id }),
+        {
+          flag: "wx",
+          mode: 0o600,
+        }
+      );
+      await rename(temp, file);
+    } catch (e) {
+      throw identityBlocked("쓸", file, e);
+    }
     await recordWorkspaceIdentity(this.db, id, new Date());
   }
   private personal(orgId: string, agentId: string) {
@@ -278,7 +295,7 @@ async function readIdentity(file: string) {
     info = await lstat(file);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw e;
+    throw identityBlocked("읽을", file, e);
   }
   if (!info.isFile() || info.size > identityMaxBytes) return null;
   try {
@@ -290,7 +307,7 @@ async function readIdentity(file: string) {
       : null;
   } catch (e) {
     if (e instanceof SyntaxError) return null;
-    throw e;
+    throw identityBlocked("읽을", file, e);
   }
 }
 async function exists(target: string) {
@@ -299,6 +316,6 @@ async function exists(target: string) {
     return true;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw e;
+    throw identityBlocked("읽을", target, e);
   }
 }
