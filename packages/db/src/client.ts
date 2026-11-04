@@ -176,6 +176,8 @@ async function connect(
   const pool = new pg.Pool({ connectionString: url });
   // 쉬는 연결이 끊기면(Postgres 재시작 등) pool이 그 연결을 버린다. listener가 없으면 프로세스가 죽는다.
   pool.on("error", (error) => console.error("[db]", error.message));
+  // 쓰는 중인 연결이 끊기면 pool의 error로 오지 않고 그 연결에서 난다. 그 일은 쿼리 실패로 이미 알게 되므로 여기서는 프로세스만 살린다.
+  pool.on("connect", (client) => client.on("error", () => {}));
   const db = drizzle(pool, { schema });
   const close = async () => {
     try {
