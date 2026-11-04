@@ -1,61 +1,46 @@
+import { execFile } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import {
   cleanupAntigravityWorkspaces,
   createAntigravityProvider,
 } from "./antigravity.ts";
+import {
+  configFailure,
+  configScript,
+  ownerMark,
+} from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
 
 // 설정 파일은 링크로 한 번에 나타나고 이미 있는 파일을 덮어쓰지 않는다(#101 결정 3). 우리 표시가 없는 파일은 비어 있어도 건드리지 않는다.
-const fs = vi.hoisted(() => ({
-  beforeLink: undefined as undefined | (() => Promise<void>),
-  linkError: undefined as string | undefined,
-  writes: [] as string[],
-}));
-vi.mock("node:fs/promises", async (original) => {
-  const real = await original<typeof import("node:fs/promises")>();
-  return {
-    ...real,
-    link: async (...args: Parameters<typeof real.link>) => {
-      await fs.beforeLink?.();
-      if (fs.linkError)
-        throw Object.assign(new Error("link failed"), { code: fs.linkError });
-      return real.link(...args);
-    },
-    writeFile: async (...args: Parameters<typeof real.writeFile>) => {
-      fs.writes.push(path.basename(String(args[0])));
-      return real.writeFile(...args);
-    },
-  };
-});
-
+// 쓰기와 지우기는 처음 확인한 .agents 폴더 안에서만 일어난다. 그 폴더를 다른 조직으로 바꿔치기해도 그곳에는 닿지 않는다.
 const roots: string[] = [];
 afterEach(async () => {
-  fs.beforeLink = undefined;
-  fs.linkError = undefined;
-  fs.writes.length = 0;
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
   );
 });
-const ownedLeftover = JSON.stringify({
-  babojubotOwner: "babojubot-antigravity-v1",
-});
+const ownedLeftover = JSON.stringify({ babojubotOwner: ownerMark });
 async function workspace() {
-  const root = await mkdtemp(path.join(tmpdir(), "agy-config-"));
-  roots.push(root);
+  const created = await mkdtemp(path.join(tmpdir(), "agy-config-"));
+  roots.push(created);
+  const root = await realpath(created);
   const cwd = path.join(root, "organizations/one/shared");
   const agents = path.join(cwd, ".agents");
+  const otherCwd = path.join(root, "organizations/two/shared");
+  const otherAgents = path.join(otherCwd, ".agents");
   await mkdir(agents, { recursive: true });
+  await mkdir(otherAgents, { recursive: true });
   const execute = () =>
     createAntigravityProvider({
       dataDir: root,
@@ -74,37 +59,156 @@ async function workspace() {
     );
   return {
     root,
+    cwd,
     agents,
+    otherAgents,
     config: path.join(agents, "mcp_config.json"),
+    otherConfig: path.join(otherAgents, "mcp_config.json"),
     execute,
   };
+}
+
+// 스크립트의 파일 작업 앞마다 끼어들 수 있게 해서 돌린다.
+const interrupt = `{
+  const fs = require("node:fs");
+  const plan = JSON.parse(process.env.PLAN);
+  let step = 0, busy = false;
+  const quietly = (work) => {
+    busy = true;
+    try { work(); } catch {}
+    busy = false;
+  };
+  const tick = () => {
+    if (busy) return;
+    step++;
+    if (step === plan.swapAt)
+      quietly(() => {
+        fs.renameSync(plan.from, plan.from + "-kept");
+        fs.symlinkSync(plan.to, plan.from, "dir");
+      });
+    if (step === plan.restoreAt)
+      quietly(() => {
+        fs.unlinkSync(plan.from);
+        fs.renameSync(plan.from + "-kept", plan.from);
+      });
+  };
+  for (const name of [
+    "lstatSync", "statSync", "openSync", "fstatSync", "readdirSync", "mkdirSync",
+    "writeFileSync", "linkSync", "unlinkSync",
+  ]) {
+    const real = fs[name];
+    fs[name] = (...args) => {
+      tick();
+      if (name === "linkSync" && plan.linkError)
+        throw Object.assign(new Error("link failed"), { code: plan.linkError });
+      if (name === "linkSync" && plan.createFirst) {
+        busy = true;
+        fs.writeFileSync(plan.createFirst, "사용자 설정");
+        busy = false;
+      }
+      return real(...args);
+    };
+  }
+  const chdir = process.chdir;
+  process.chdir = (directory) => { tick(); chdir(directory); };
+}
+`;
+const script = (
+  cwd: string,
+  op: "clear" | "publish",
+  plan: Record<string, unknown> = {}
+) =>
+  new Promise<number>((resolve) => {
+    const child = execFile(
+      process.execPath,
+      ["-e", interrupt + configScript, JSON.stringify([op])],
+      {
+        cwd,
+        env: {
+          ...(process.env.SystemRoot
+            ? { SystemRoot: process.env.SystemRoot }
+            : {}),
+          PLAN: JSON.stringify(plan),
+        },
+      },
+      (error) =>
+        resolve(error ? (typeof error.code === "number" ? error.code : -1) : 0)
+    );
+    child.stdin!.end(op === "publish" ? '{"token":"private"}' : "");
+  });
+const moments = (last: number) => {
+  const plans: { swapAt: number; restoreAt: number }[] = [];
+  for (let swapAt = 1; swapAt <= last; swapAt++)
+    for (let restoreAt = swapAt + 1; restoreAt <= last + 1; restoreAt++)
+      plans.push({ swapAt, restoreAt });
+  return plans;
+};
+async function atEveryMoment(
+  last: number,
+  attempt: (plan: { swapAt: number; restoreAt: number }) => Promise<number>
+) {
+  const queue = moments(last);
+  const results: number[] = [];
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      for (let plan = queue.shift(); plan; plan = queue.shift())
+        results.push(await attempt(plan));
+    })
+  );
+  return results;
 }
 
 it("publishes the finished file in one step and cleans up", async () => {
   const { agents, execute } = await workspace();
   const result = await execute();
   expect(result.stopReason).toBe("completed");
-  expect(fs.writes).not.toContain("mcp_config.json");
   expect(await readdir(agents)).toEqual([]);
 });
 
+it("never publishes into another organization when .agents is swapped at any moment", async () => {
+  const results = await atEveryMoment(12, async (plan) => {
+    const { cwd, agents, otherAgents } = await workspace();
+    const status = await script(cwd, "publish", {
+      ...plan,
+      from: agents,
+      to: otherAgents,
+    });
+    expect(await readdir(otherAgents)).toEqual([]);
+    return status;
+  });
+  // 시험이 헛돌지 않았는지 본다. 일부는 거부되고, 일부는 고정된 뒤라 원래 폴더에 쓴다.
+  expect(results).toContain(0);
+  expect(results.some((status) => status !== 0)).toBe(true);
+}, 240_000);
+
+it("never removes another organization's file when .agents is swapped at any moment", async () => {
+  const results = await atEveryMoment(10, async (plan) => {
+    const { cwd, agents, config, otherAgents, otherConfig } = await workspace();
+    await writeFile(config, ownedLeftover);
+    await writeFile(otherConfig, ownedLeftover);
+    const status = await script(cwd, "clear", {
+      ...plan,
+      from: agents,
+      to: otherAgents,
+    });
+    expect(await readFile(otherConfig, "utf8")).toBe(ownedLeftover);
+    return status;
+  });
+  expect(results).toContain(0);
+  expect(results.some((status) => status !== 0)).toBe(true);
+}, 240_000);
+
 it("fails with the reason where hard links are not available", async () => {
-  const { agents, execute } = await workspace();
-  fs.linkError = "ENOTSUP";
-  const result = await execute();
-  expect(result.stopReason).toBe("failed");
-  expect(result.error).toContain("하드링크");
+  const { cwd, agents } = await workspace();
+  const status = await script(cwd, "publish", { linkError: "ENOTSUP" });
+  expect(configFailure(status)).toContain("하드링크");
   expect(await readdir(agents)).toEqual([]);
 });
 
 it("leaves a file somebody else created at the last moment", async () => {
-  const { config, execute } = await workspace();
-  fs.beforeLink = async () => {
-    await writeFile(config, "사용자 설정");
-    fs.linkError = "EEXIST";
-  };
-  const result = await execute();
-  expect(result.stopReason).toBe("failed");
+  const { cwd, config } = await workspace();
+  const status = await script(cwd, "publish", { createFirst: config });
+  expect(configFailure(status)).toContain("제품 소유 파일이 아니거나");
   expect(await readFile(config, "utf8")).toBe("사용자 설정");
 });
 
