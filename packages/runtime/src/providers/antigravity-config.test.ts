@@ -99,6 +99,12 @@ const interrupt = `{
     const real = fs[name];
     fs[name] = (...args) => {
       tick();
+      if (
+        name === "unlinkSync" &&
+        plan.unlinkError &&
+        String(args[0]).endsWith(".tmp")
+      )
+        throw Object.assign(new Error("locked"), { code: "EBUSY" });
       if (name === "linkSync" && plan.linkError)
         throw Object.assign(new Error("link failed"), { code: plan.linkError });
       if (name === "linkSync" && plan.createFirst) {
@@ -197,6 +203,14 @@ it("never removes another organization's file when .agents is swapped at any mom
   expect(results).toContain(0);
   expect(results.some((status) => status !== 0)).toBe(true);
 }, 240_000);
+
+// 게시는 이미 끝났다. 임시 파일을 못 지웠다고 실패로 알리면 호출자가 게시된 설정을 치우지 않는다.
+it("reports success when only the temporary file could not be removed", async () => {
+  const { cwd, config } = await workspace();
+  const status = await script(cwd, "publish", { unlinkError: true });
+  expect(status).toBe(0);
+  expect(await readFile(config, "utf8")).toContain("private");
+});
 
 it("fails with the reason where hard links are not available", async () => {
   const { cwd, agents } = await workspace();

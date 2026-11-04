@@ -1,4 +1,5 @@
 import {
+  chmod,
   cp,
   mkdir,
   mkdtemp,
@@ -152,3 +153,38 @@ it("accepts a folder restored by copying, whose file numbers all changed", async
   await t!.drain();
   expect((await latestRun(org.id)).status).toBe("completed");
 });
+
+// 표식을 읽거나 쓰지 못하는 원인도 어디를 봐야 하는지 알려야 한다. 일반 오류 문구로는 찾을 수 없다.
+it("names the mark when the file system stops it being read", async () => {
+  const { agents, researching, say, folder, latestRun } = await server();
+  const org = await researching(agents, "읽을 수 없는 표식");
+  await rm(folder(org.id), { recursive: true });
+  await writeFile(folder(org.id), "폴더 자리에 놓인 파일");
+  await say(org.id, "실행");
+  await t!.drain();
+  const failed = await latestRun(org.id);
+  expect(failed.status).toBe("failed");
+  expect(failed.error).toContain("workspace-identity.json");
+  expect(failed.error).toContain("ENOTDIR");
+});
+
+it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
+  "names the mark when the file system stops it being written",
+  async () => {
+    const { agents, say, folder, latestRun } = await server();
+    const org = await insertLegacyOrganization(t!.db, "쓸 수 없는 표식");
+    await mkdir(folder(org.id), { recursive: true });
+    await chmod(folder(org.id), 0o555);
+    try {
+      agents.queue(org.lead.id, idle);
+      await say(org.id, "실행");
+      await t!.drain();
+      const failed = await latestRun(org.id);
+      expect(failed.status).toBe("failed");
+      expect(failed.error).toContain("workspace-identity.json");
+      expect(failed.error).toContain("EACCES");
+    } finally {
+      await chmod(folder(org.id), 0o755);
+    }
+  }
+);
