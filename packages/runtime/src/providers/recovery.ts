@@ -5,7 +5,7 @@ import {
   readFileSync,
   rmSync,
   readdirSync,
-  statSync,
+  renameSync,
 } from "node:fs";
 import path from "node:path";
 const boot = () =>
@@ -89,52 +89,79 @@ export async function stopProcessGroup(group: number) {
     await delay(25);
   }
 }
-/** 복구 기록. 파일 시각이 곧 시작 시각이라, 그 뒤에 시작한 프로세스는 번호만 같은 남이다. Linux는 부팅·시작 식별자도 남긴다. */
-export function recordProcess(home: string, pid: number, lease: string) {
-  const directory = path.join(home, "processes");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const file = path.join(directory, `${pid}.json`);
-  writeFileSync(
-    file,
-    JSON.stringify(
-      process.platform === "linux"
-        ? { ...identity(pid), boot: boot(), lease }
-        : { pid, lease }
-    ),
-    { mode: 0o600 }
-  );
-  return () => rmSync(file, { force: true });
+/** 프로세스 시작 시각을 묻는 명령. 같은 프로세스면 언제 물어도 같은 값이 나온다. */
+function startQuery(
+  pid: number,
+  platform: NodeJS.Platform
+): [string, string[]] {
+  return platform === "win32"
+    ? [
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`,
+        ],
+      ]
+    : ["ps", ["-o", "lstart=", "-p", String(pid)]];
 }
-/** /proc가 없는 시스템에서 프로세스 시작 시각. 없으면 `undefined`다. */
-function processStartedAt(pid: number, platform: NodeJS.Platform) {
+const startQueryEnv = () => ({ ...process.env, LC_ALL: "C" });
+function parseStart(text: string) {
+  const at = Date.parse(text.trim());
+  return Number.isFinite(at) ? at : undefined;
+}
+/** /proc가 없는 시스템에서 프로세스 시작 시각. 물어볼 수 없으면 `undefined`다. */
+export function processStartedAt(pid: number, platform: NodeJS.Platform) {
   try {
-    const text =
-      platform === "win32"
-        ? execFileSync(
-            "powershell",
-            [
-              "-NoProfile",
-              "-Command",
-              `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`,
-            ],
-            {
-              encoding: "utf8",
-              windowsHide: true,
-              stdio: ["ignore", "pipe", "ignore"],
-            }
-          )
-        : execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-            encoding: "utf8",
-            env: { ...process.env, LC_ALL: "C" },
-            stdio: ["ignore", "pipe", "ignore"],
-          });
-    const at = Date.parse(text.trim());
-    return Number.isFinite(at) ? at : undefined;
+    const [command, args] = startQuery(pid, platform);
+    return parseStart(
+      execFileSync(command, args, {
+        encoding: "utf8",
+        env: startQueryEnv(),
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+    );
   } catch {
     return undefined;
   }
 }
-const fileTimeResolutionMs = 2000;
+/** 복구 기록. 프로세스 번호는 재사용되므로 시작 시각으로 같은 프로세스인지 판단한다. Linux는 부팅 식별자도 남긴다. */
+export function recordProcess(home: string, pid: number, lease: string) {
+  const directory = path.join(home, "processes");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = path.join(directory, `${pid}.json`);
+  const write = (record: object) => {
+    writeFileSync(`${file}.tmp`, JSON.stringify(record), { mode: 0o600 });
+    renameSync(`${file}.tmp`, file);
+  };
+  if (process.platform === "linux") {
+    write({ ...identity(pid), boot: boot(), lease });
+    return () => rmSync(file, { force: true });
+  }
+  write({ pid, lease });
+  // PowerShell은 답이 느려 실행을 붙잡지 않는다. 그 전에 서버가 죽으면 시작 시각이 없는 기록으로 남아 건드리지 않는다.
+  let forgotten = false;
+  const [command, args] = startQuery(pid, process.platform);
+  execFile(
+    command,
+    args,
+    { encoding: "utf8", env: startQueryEnv(), windowsHide: true },
+    (error, stdout) => {
+      const started = error ? undefined : parseStart(stdout);
+      if (forgotten || started === undefined) return;
+      try {
+        write({ pid, lease, started });
+      } catch {
+        console.warn("[provider] could not save a process start time");
+      }
+    }
+  );
+  return () => {
+    forgotten = true;
+    rmSync(file, { force: true });
+  };
+}
 /** 번호로 프로세스가 있는지 본다. 권한이 없어 거절돼도 있는 것이다. Windows에서도 동작한다. */
 function processAlive(pid: number) {
   try {
@@ -144,10 +171,9 @@ function processAlive(pid: number) {
     return (e as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
-/** /proc가 없는 시스템의 복구. 기록보다 먼저 시작한 프로세스만 우리 것으로 보고 끝낸다. */
+/** /proc가 없는 시스템의 복구. 기록한 시작 시각과 같은 프로세스만 우리 것으로 보고 끝낸다. */
 async function recoverWithoutProc(
-  file: string,
-  saved: { pid: number },
+  saved: { pid: number; started?: number },
   platform: NodeJS.Platform
 ) {
   if (!processAlive(saved.pid)) {
@@ -156,12 +182,11 @@ async function recoverWithoutProc(
       throw new Error("Cannot identify the remaining process group");
     return;
   }
-  // 살아 있는데 시작 시각을 모르면 우리 것인지 알 수 없다. 끝난 것으로 치지 않고 기록을 남긴다.
+  // 살아 있는데 시작 시각을 모르거나 기록에 없으면 우리 것인지 알 수 없다. 끝난 것으로 치지 않고 기록을 남긴다.
   const started = processStartedAt(saved.pid, platform);
-  if (started === undefined)
-    throw new Error("Cannot read the start of a remaining process");
-  // 기록은 프로세스를 띄운 뒤에 쓰므로 시작이 더 나중이면 번호만 같은 남이다. 여유는 파일 시각의 해상도만큼만 둔다.
-  if (started > statSync(file).mtimeMs + fileTimeResolutionMs) return;
+  if (started === undefined || saved.started === undefined)
+    throw new Error("Cannot identify a remaining process");
+  if (started !== saved.started) return;
   if (platform === "win32") {
     execFileSync("taskkill", ["/F", "/T", "/PID", String(saved.pid)], {
       windowsHide: true,
@@ -198,7 +223,7 @@ export async function recoverProviderProcesses(
       // 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 끝났음을 확인하지 못한 기록은 남겨 다음 시작 때 다시 본다.
       try {
         const saved = readRecord(file);
-        if (saved) await recoverRecord(file, saved, platform);
+        if (saved) await recoverRecord(saved, platform);
         rmSync(file, { force: true });
       } catch {
         console.warn(
@@ -214,6 +239,7 @@ type ProcessRecord = {
   group: number;
   boot: string;
   lease?: string;
+  started?: number;
 };
 /** 쓸 수 없는 기록(깨졌거나, 이름과 번호가 다름)은 어떤 프로세스도 가리키지 않는다. 파일을 읽지 못한 오류는 그대로 던져 기록을 남긴다. */
 function readRecord(file: string) {
@@ -233,13 +259,9 @@ function readRecord(file: string) {
     ? (saved as ProcessRecord)
     : undefined;
 }
-async function recoverRecord(
-  file: string,
-  saved: ProcessRecord,
-  platform: NodeJS.Platform
-) {
+async function recoverRecord(saved: ProcessRecord, platform: NodeJS.Platform) {
   if (platform !== "linux") {
-    await recoverWithoutProc(file, saved, platform);
+    await recoverWithoutProc(saved, platform);
     return;
   }
   if (saved.boot !== boot()) {
