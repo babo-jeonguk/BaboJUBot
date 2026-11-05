@@ -23,6 +23,12 @@ export class ReadinessMonitor {
   readonly #hub: Pick<EventHub, "publishSettingsChanged">;
   readonly #now: () => Date;
   readonly #timeoutMs: number;
+  /** 연결의 확인보다 먼저 보는 결과. 격리를 켰는데 안전 확인을 통과하지 못했으면 준비안됨을 돌려주고, 아니면 `null`이다. */
+  readonly #before:
+    | ((
+        connection: ProviderConnection
+      ) => Promise<ProviderReadinessCheck | null>)
+    | undefined;
   /** 연결별 마지막으로 시작한 확인의 번호. */
   readonly #latest = new Map<string, number>();
   /** 연결별 마지막으로 시작한 확인 가운데 끝난 것의 번호. 마지막에 시작한 확인이 끝나면 확인 중이 아니다. */
@@ -49,12 +55,17 @@ export class ReadinessMonitor {
     now: () => Date;
     /** 확인 하나를 기다리는 시간. 넘으면 `unknown`·`check_timeout`이다. */
     timeoutMs?: number;
+    /** 연결의 확인보다 먼저 보는 결과. 격리를 켰는데 안전 확인을 통과하지 못했으면 준비안됨을 돌려주고, 아니면 `null`이다. */
+    before?: (
+      connection: ProviderConnection
+    ) => Promise<ProviderReadinessCheck | null>;
   }) {
     this.#save = options.save;
     this.#connections = new Map(options.connections.map((c) => [c.id, c]));
     this.#hub = options.hub;
     this.#now = options.now;
     this.#timeoutMs = options.timeoutMs ?? 30_000;
+    this.#before = options.before;
   }
 
   /** 지금 확인 중인가: 마지막에 시작한 확인이 아직 끝나지 않았다. 그보다 먼저 시작한 확인이 남아 있어도 보지 않는다(그 결과는 저장하지 않는다). */
@@ -123,7 +134,9 @@ export class ReadinessMonitor {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const raw = await Promise.race([
-        connection.adapter.checkReadiness(controller.signal),
+        (async () =>
+          (await this.#before?.(connection)) ??
+          connection.adapter.checkReadiness(controller.signal))(),
         new Promise<"timeout">((resolve) => {
           timer = setTimeout(() => {
             resolve("timeout");

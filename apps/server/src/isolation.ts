@@ -1,0 +1,153 @@
+import http from "node:http";
+import type net from "node:net";
+import os from "node:os";
+import type express from "express";
+import type { ProviderReadinessCheck } from "@babojubot/contracts";
+import type { DockerEnvironment } from "@babojubot/runtime";
+
+/** 격리 실행을 시작하지 않은 이유. 제품이 쓴 안내라 실행 시도의 실패 문장으로 그대로 보인다. */
+export class IsolationError extends Error {}
+
+/** 실행 시도·세션 정비가 돌 곳과 그때의 조직 도구 주소. */
+export type Placement = { execution?: "container"; toolsBaseUrl: string };
+
+type Safety =
+  | { status: "safe"; toolsBaseUrl: string }
+  | { status: "unsafe" | "unavailable" };
+
+/**
+ * 격리 실행의 관문. 조직 도구만 담은 전용 listener를 Docker 전용 네트워크의 gateway 주소에 열고,
+ * 실행 시도와 같은 네트워크의 시험 컨테이너로 사용자 API·DB 포트에 닿지 않고 전용 listener에는 닿는지 확인한다.
+ * 확인은 한 번 하고 결과를 나눠 쓰며 준비 확인을 다시 할 때 새로 한다. 확인을 통과하지 않으면 실제 연결은
+ * 준비안됨이고 실행 시도는 컨테이너에서도 이 컴퓨터에서도 시작하지 않는다.
+ */
+export class IsolationGate {
+  readonly #docker: DockerEnvironment | undefined;
+  readonly #toolsApp: express.Express;
+  readonly #protectedPorts: () => number[];
+  readonly #readIsolated: () => Promise<boolean>;
+  readonly #hostUrl: () => string;
+  #current: Promise<Safety> | undefined;
+  #listener:
+    { gateway: string; server: http.Server; origin: string } | undefined;
+
+  constructor(options: {
+    docker: DockerEnvironment | undefined;
+    /** 조직 도구 경로만 담은 앱. 전용 listener가 쓴다. */
+    toolsApp: express.Express;
+    /** 컨테이너에서 막혀야 하는 이 컴퓨터의 포트(사용자 API·DB). 부를 때 읽는다(사용자 API 포트는 listen 뒤에 정해짐). */
+    protectedPorts: () => number[];
+    readIsolated: () => Promise<boolean>;
+    /** 격리하지 않는 실행의 조직 도구 주소(사용자 API 주소). */
+    hostUrl: () => string;
+  }) {
+    this.#docker = options.docker;
+    this.#toolsApp = options.toolsApp;
+    this.#protectedPorts = options.protectedPorts;
+    this.#readIsolated = options.readIsolated;
+    this.#hostUrl = options.hostUrl;
+  }
+
+  check(): Promise<Safety> {
+    return (this.#current ??= this.#probe());
+  }
+
+  invalidate(): void {
+    this.#current = undefined;
+  }
+
+  async place(isolatable: boolean): Promise<Placement> {
+    if (!isolatable || !(await this.#readIsolated()))
+      return { toolsBaseUrl: this.#hostUrl() };
+    const safety = await this.check();
+    if (safety.status === "safe")
+      return { execution: "container", toolsBaseUrl: safety.toolsBaseUrl };
+    // 확인하지 못한 것은 다음 실행 시도 때 다시 본다. 안전하지 않다는 결과는 다음 준비 확인까지 둔다.
+    if (safety.status === "unavailable") this.invalidate();
+    throw new IsolationError(
+      "격리 실행 환경이 안전한지 확인하지 못해 실행하지 않았습니다."
+    );
+  }
+
+  async readiness(isolatable: boolean): Promise<ProviderReadinessCheck | null> {
+    if (!isolatable || !(await this.#readIsolated())) return null;
+    const safety = await this.check();
+    if (safety.status === "safe") return null;
+    return {
+      status: "not_ready",
+      reason:
+        safety.status === "unsafe"
+          ? "isolation_unsafe"
+          : "isolation_unavailable",
+    };
+  }
+
+  async #probe(): Promise<Safety> {
+    if (!this.#docker) return { status: "unavailable" };
+    try {
+      const signal = AbortSignal.timeout(60_000);
+      const { gateway } = await this.#docker.prepareNetwork(signal);
+      const tools = await this.#listen(gateway);
+      const addresses = Object.values(os.networkInterfaces())
+        .flatMap((interfaces) => interfaces ?? [])
+        .filter(
+          (address) => !address.internal && !address.address.startsWith("fe80:")
+        );
+      const hosts = [
+        ...new Set([
+          gateway,
+          "host.docker.internal",
+          ...addresses.map((address) => address.address),
+        ]),
+      ];
+      const blocked = hosts.flatMap((host) =>
+        [...new Set(this.#protectedPorts())].map((port) => ({ host, port }))
+      );
+      const result = await this.#docker.probe({ blocked, tools }, signal);
+      if (result.reached.length > 0) return { status: "unsafe" };
+      if (!result.toolsReached) return { status: "unavailable" };
+      return { status: "safe", toolsBaseUrl: tools };
+    } catch (error) {
+      console.error("[isolation] safety check failed", error);
+      return { status: "unavailable" };
+    }
+  }
+
+  async #listen(gateway: string): Promise<string> {
+    if (this.#listener?.gateway === gateway) return this.#listener.origin;
+    await this.#closeListener();
+    const server = http.createServer(this.#toolsApp);
+    await new Promise<void>((resolve, reject) => {
+      const fail = (error: Error) => {
+        server.off("listening", ready);
+        reject(error);
+      };
+      const ready = () => {
+        server.off("error", fail);
+        resolve();
+      };
+      server.once("error", fail);
+      server.once("listening", ready);
+      server.listen(0, gateway);
+    });
+    const address = server.address() as net.AddressInfo;
+    const host = gateway.includes(":") ? `[${gateway}]` : gateway;
+    const origin = `http://${host}:${address.port}`;
+    this.#listener = { gateway, server, origin };
+    return origin;
+  }
+
+  async #closeListener() {
+    const listener = this.#listener;
+    this.#listener = undefined;
+    if (!listener) return;
+    listener.server.closeAllConnections();
+    await new Promise<void>((resolve) =>
+      listener.server.close(() => resolve())
+    );
+  }
+
+  async close(): Promise<void> {
+    await this.#closeListener();
+  }
+}

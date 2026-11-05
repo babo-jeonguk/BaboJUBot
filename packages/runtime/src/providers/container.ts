@@ -77,6 +77,15 @@ export function containerLaunch(
   } else {
     mount(options.cwd, true);
   }
+  // 프로그램이 실제 경로(realpath)로 작업 폴더를 열면 그 경로도 같은 폴더로 넣는다.
+  const contained = (mountPath: string) => {
+    const relative = path.relative(mountPath, options.cwd);
+    return (
+      relative === "" ||
+      (!relative.startsWith("..") && !path.isAbsolute(relative))
+    );
+  };
+  if (!mounts.some((mount) => contained(mount.path))) mount(options.cwd, true);
   // 추가 패키지는 조직 폴더의 가상환경에 두어 다음 실행 시도에서도 쓴다.
   const env = {
     BABOJUBOT_VENV: path.join(
@@ -192,8 +201,11 @@ export function runDocker(
         encoding: "utf8",
       },
       (error, stdout, stderr) => {
-        const code =
-          error && typeof error.code === "number" ? error.code : null;
+        const code = !error
+          ? 0
+          : typeof error.code === "number"
+            ? error.code
+            : null;
         resolve({ code, stdout, stderr });
       }
     );
@@ -230,26 +242,6 @@ export async function publishedAddress(
   throw new Error("container port is not published on loopback");
 }
 
-/** 안전 확인이 시험할 곳. `blocked`에 닿으면 격리가 안전하지 않고, `tools`에 닿아야 조직 도구를 쓸 수 있다. */
-export type IsolationProbe = {
-  blocked: { host: string; port: number }[];
-  tools: string;
-};
-
-/** 실제 Docker 엔진에서 격리 경계를 확인할 때 쓰는 도구. 서버는 쓰지 않는다. */
-export type DockerEnvironment = {
-  settings: ContainerSettings;
-  prepareNetwork(signal?: AbortSignal): Promise<{ gateway: string }>;
-  probe(
-    options: IsolationProbe,
-    signal?: AbortSignal
-  ): Promise<{
-    reached: { host: string; port: number }[];
-    toolsReached: boolean;
-  }>;
-  removeOrphans(): Promise<void>;
-};
-
 function dockerExec(
   settings: ContainerSettings,
   args: string[],
@@ -268,8 +260,11 @@ function dockerExec(
         ...(options.signal ? { signal: options.signal } : {}),
       },
       (error, stdout, stderr) => {
-        const code =
-          error && typeof error.code === "number" ? error.code : null;
+        const code = !error
+          ? 0
+          : typeof error.code === "number"
+            ? error.code
+            : null;
         resolve({ code, stdout, stderr });
       }
     );
@@ -380,3 +375,28 @@ export function createDockerEnvironment(
     },
   };
 }
+
+/** 격리 안전 확인 한 번의 목표. */
+export type IsolationProbe = {
+  /** 컨테이너에서 닿으면 안 되는 곳(사용자 API·DB 포트). TCP 연결이 되면 HTTP 응답 코드와 상관없이 닿은 것이다. */
+  blocked: { host: string; port: number }[];
+  /** 컨테이너에서 닿아야 하는 조직 도구 전용 listener 주소(origin). */
+  tools: string;
+};
+export type IsolationProbeResult = {
+  reached: { host: string; port: number }[];
+  toolsReached: boolean;
+};
+/** 격리 실행의 Docker 환경. 서버가 안전 확인·남은 컨테이너 정리에 쓴다. */
+export type DockerEnvironment = {
+  settings: ContainerSettings;
+  /** 전용 네트워크를 만들거나 확인하고 그 gateway 주소(이 컴퓨터 쪽)를 돌려준다. */
+  prepareNetwork(signal: AbortSignal): Promise<{ gateway: string }>;
+  /** 실행 시도와 같은 네트워크·권한의 시험 컨테이너로 목표에 닿는지 본다. */
+  probe(
+    input: IsolationProbe,
+    signal: AbortSignal
+  ): Promise<IsolationProbeResult>;
+  /** 이 제품 폴더(`owner`)가 띄웠다가 남은 컨테이너를 지운다. */
+  removeOrphans(): Promise<void>;
+};

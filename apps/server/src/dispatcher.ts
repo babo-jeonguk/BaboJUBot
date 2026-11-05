@@ -22,6 +22,7 @@ import {
   type Database,
 } from "@babojubot/db";
 import type { EventHub } from "./event-hub.ts";
+import { IsolationError } from "./isolation.ts";
 import type { RunRequestAssembler } from "./run-request.ts";
 import { issueRunToken } from "./run-token.ts";
 import { WorkspaceIdentityError } from "./workspace.ts";
@@ -300,7 +301,8 @@ export class RunDispatcher {
       console.error(`[runs] run ${run.id} runtime error`, error);
       result = controller.signal.aborted
         ? cancelled
-        : error instanceof WorkspaceIdentityError
+        : error instanceof WorkspaceIdentityError ||
+            error instanceof IsolationError
           ? failed(error.message)
           : failed("프로바이더가 오류로 끝났습니다.");
     } finally {
