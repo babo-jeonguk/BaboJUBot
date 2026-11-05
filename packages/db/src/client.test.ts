@@ -432,6 +432,108 @@ describe("a Postgres left by a killed process", () => {
       if (next) await removeCluster(next.dataDir);
     }
   }, 60_000);
+
+  // 같은 dataDir에 두 프로세스가 동시에 시작하면 하나만 쓴다. 진 쪽은 시작 실패를 정리하며 이긴 쪽의 Postgres를 멈추면 안 된다.
+  it("lets only one of two processes starting at once use a data folder, and the other leaves its database running", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    // 새 폴더에서 두 프로세스가 동시에 cluster를 만들고 켜게 한다. 주인이 하나가 아니면 둘 다 만들기·켜기를 시도해 부딪힌다.
+    const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
+    const port = await freePort();
+    const script = `
+      const db = await import(${JSON.stringify(clientModule)});
+      const handle = await db
+        .openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: ${port}, persistent: true } })
+        .catch((error) => {
+          console.log("failed: " + error.message);
+          process.exit(0);
+        });
+      console.log("opened");
+      process.stdin.once("data", async () => {
+        const { rows } = await handle.db.$client.query("select 1 as one");
+        console.log("query " + rows[0].one);
+        await handle.close();
+        process.exit(0);
+      });
+    `;
+    const children = [0, 1].map(() =>
+      spawn(process.execPath, ["--input-type=module", "-e", script], {
+        stdio: ["pipe", "pipe", "inherit"],
+      })
+    );
+    let postmaster = 0;
+    try {
+      const lines = await Promise.all(
+        children.map(async (child) => {
+          const [line] = await once(child.stdout!, "data");
+          return String(line).trim();
+        })
+      );
+      expect(lines.filter((line) => line === "opened")).toHaveLength(1);
+      const loser = lines.findIndex((line) => line !== "opened");
+      expect(lines[loser]).toContain("in use by a running process");
+      const loserChild = children[loser]!;
+      if (loserChild.exitCode === null && loserChild.signalCode === null)
+        await once(loserChild, "exit");
+
+      postmaster = readPostmaster(dataDir);
+      const winner = children[1 - loser]!;
+      const answer = once(winner.stdout!, "data");
+      winner.stdin!.write("query\n");
+      expect(String((await answer)[0]).trim()).toBe("query 1");
+      if (winner.exitCode === null && winner.signalCode === null)
+        await once(winner, "exit");
+      expect(winner.exitCode).toBe(0);
+    } finally {
+      for (const child of children) await killHard(child);
+      await stopPostgres(postmaster);
+      await removeCluster(dataDir);
+    }
+  }, 60_000);
+
+  // 프로세스 종료 때의 즉시 정지는 이 프로세스가 켠 Postgres에만 보낸다. 그 Postgres가 밖에서 끝나고 잠금 파일이
+  // 다른 프로세스를 가리키게 되면(pid 재사용·교체) 그 프로세스에 신호를 보내면 안 된다.
+  it("sends its exit-time stop only to the Postgres it started", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
+    const script = `
+      const db = await import(${JSON.stringify(clientModule)});
+      await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await db.freePort(), persistent: true } });
+      console.log("ready");
+      process.stdin.once("data", () => process.exit(1));
+    `;
+    const child = spawn(
+      process.execPath,
+      ["--input-type=module", "-e", script],
+      {
+        stdio: ["pipe", "pipe", "inherit"],
+      }
+    );
+    // Node는 SIGQUIT를 무시하므로 기본 동작으로 끝나는 프로세스를 쓴다.
+    const unrelated = spawn("sleep", ["60"], { stdio: "ignore" });
+    let postmaster = 0;
+    try {
+      await once(child.stdout!, "data");
+      postmaster = readPostmaster(dataDir);
+      process.kill(postmaster, "SIGKILL");
+      const deadline = Date.now() + 10_000;
+      while (isAlive(postmaster) && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 50));
+      fs.writeFileSync(
+        path.join(dataDir, "postmaster.pid"),
+        `${unrelated.pid}\n${dataDir}\n0\n0\n`
+      );
+      const exited = once(child, "exit");
+      child.stdin!.write("end\n");
+      await exited;
+      await new Promise((r) => setTimeout(r, 500));
+      expect(isAlive(unrelated.pid!)).toBe(true);
+    } finally {
+      await killHard(child);
+      await killHard(unrelated);
+      await stopPostgres(postmaster);
+      await removeCluster(dataDir);
+    }
+  }, 60_000);
 });
 
 function isAlive(pid: number) {

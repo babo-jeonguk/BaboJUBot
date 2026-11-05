@@ -167,7 +167,8 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
     child.kill("SIGTERM");
     const [code] = await once(child, "exit");
     expect(code).toBe(1);
-    expect(Date.now() - stoppedAt).toBeLessThan(10_000);
+    // 시한은 프로세스가 끝나는 시각까지다. 프로세스 종료 때의 비상 정지도 그 안에 든다.
+    expect(Date.now() - stoppedAt).toBeLessThan(2_000);
     expect(child.stderrText()).toContain("did not finish");
 
     process.kill(postgresPid, "SIGCONT");
