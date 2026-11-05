@@ -70,10 +70,10 @@ export async function startEmbeddedCluster(
       await initialise(dataDir);
     await stopLeftover(pgCtl, dataDir, persistent, lease.previous);
   } catch (error) {
-    if (!persistent && !readPidFile(dataDir))
-      await fsp.rm(dataDir, { recursive: true, force: true });
-    // 다음 시작이 같은 판단을 다시 할 수 있게 치운 죽은 주인을 되돌린다.
-    releaseOwner(dataDir, lease, lease.previous);
+    // 켜기 전이다. postgres가 없으면 임시 cluster는 통째로 지운다. 그 밖에는(영구 DB이거나 확인하지 못한 postgres가 있음)
+    // 손대지 않고, 다음 시작이 같은 판단을 다시 할 수 있게 치운 죽은 주인을 되돌린다.
+    if (!persistent && !readPidFile(dataDir)) await removeTemporary(dataDir);
+    else releaseOwner(dataDir, lease, lease.previous);
     throw error;
   }
 
@@ -90,10 +90,7 @@ export async function startEmbeddedCluster(
     await stopCluster(pgCtl, dataDir, stopSeconds, !persistent);
     process.off("exit", stopOnExit);
     if (persistent) releaseOwner(dataDir, lease);
-    else {
-      await fsp.rm(dataDir, { recursive: true, force: true });
-      await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
-    }
+    else await removeTemporary(dataDir);
   };
   process.on("exit", stopOnExit);
   const log = path.join(dataDir, logName);
@@ -349,6 +346,12 @@ function readPidFile(
 // 지난 번호는 주인이 지운다. 오래전에 읽은 번호로 그 지워진 자리를 만든 프로세스는 더 큰 번호를 보고 물러난다.
 const ownerDir = (dataDir: string) => `${path.resolve(dataDir)}${ownerSuffix}`;
 
+/** 임시 cluster의 자원(dataDir와 주인 기록)을 함께 지운다. 임시 cluster를 지우는 모든 길이 이것을 쓴다. */
+async function removeTemporary(dataDir: string) {
+  await fsp.rm(dataDir, { recursive: true, force: true });
+  await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
+}
+
 function generations(dir: string): number[] {
   try {
     return fs
@@ -465,8 +468,7 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
     acquireOwner(dataDir, false);
     return { dataDir, port: await freePort(), persistent: false };
   } catch (error) {
-    await fsp.rm(dataDir, { recursive: true, force: true });
-    await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
+    await removeTemporary(dataDir);
     throw error;
   }
 }
@@ -475,16 +477,27 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
  * 강제로 끝난 프로세스가 남긴 임시 cluster를 멈추고 지운다. 주인 기록(`*.owner/`)이 있는 것만 보며, 그 dataDir의 주인이
  * 되어야 손댄다(주인이 살아 있거나 다른 프로세스가 먼저 치우는 중이면 둔다). 그 Postgres가 그 dataDir를 쓰는지 확인할 수 없으면
  * 둔다. 실패는 알리기만 하고 새 cluster는 그대로 띄운다.
+ * tmp는 다른 프로그램도 쓰므로 이름만 믿지 않는다. 주인 기록과 dataDir는 tmp 바로 아래의 실제 폴더여야 하며 링크는 따라가지 않는다.
  */
 async function removeTemporaryLeftovers() {
   const tmp = os.tmpdir();
-  const names = await fsp.readdir(tmp).catch(() => [] as string[]);
-  for (const name of names) {
-    if (!name.startsWith(temporaryPrefix) || !name.endsWith(ownerSuffix))
+  const entries = await fsp
+    .readdir(tmp, { withFileTypes: true })
+    .catch(() => [] as fs.Dirent[]);
+  for (const entry of entries) {
+    if (
+      !entry.isDirectory() ||
+      !entry.name.startsWith(temporaryPrefix) ||
+      !entry.name.endsWith(ownerSuffix)
+    )
       continue;
-    const dataDir = path.join(tmp, name.slice(0, -ownerSuffix.length));
+    const dataDir = path.join(tmp, entry.name.slice(0, -ownerSuffix.length));
+    const folder = fs.lstatSync(dataDir, { throwIfNoEntry: false });
+    if (folder && !folder.isDirectory()) continue;
     const { owner } = latest(ownerDir(dataDir));
-    if (!owner || owner.persistent || isAlive(owner.pid)) continue;
+    // 죽은 임시 주인의 것, 또는 주인 없이(내려놓았거나 읽을 수 없음) 기록만 남고 dataDir가 없는 것만 치운다.
+    if (owner ? owner.persistent || isAlive(owner.pid) : folder !== undefined)
+      continue;
     let lease: Lease;
     try {
       lease = acquireOwner(dataDir, false);
@@ -504,8 +517,7 @@ async function removeTemporaryLeftovers() {
         }
         await stopCluster(pgCtl, dataDir, leftoverStopSeconds, true);
       }
-      await fsp.rm(dataDir, { recursive: true, force: true });
-      await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
+      await removeTemporary(dataDir);
     } catch (error) {
       console.warn(
         `[db] could not remove temporary Postgres left in ${dataDir}:`,
