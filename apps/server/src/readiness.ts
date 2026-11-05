@@ -53,7 +53,7 @@ export class ReadinessMonitor {
     /** 전역 설정 변경 신호(`settings_changed`)를 보낸다. 확인 중 표시는 저장과 상관없이 바뀌므로 commit 뒤 할 일을 거치지 않는다. */
     hub: Pick<EventHub, "publishSettingsChanged">;
     now: () => Date;
-    /** 확인 하나를 기다리는 시간. 넘으면 `unknown`·`check_timeout`이다. */
+    /** 연결의 확인 하나를 기다리는 시간. 넘으면 `unknown`·`check_timeout`이다. 격리 안전 확인은 이 시간에 넣지 않는다. */
     timeoutMs?: number;
     /** 연결의 확인보다 먼저 보는 결과. 격리를 켰는데 안전 확인을 통과하지 못했으면 준비안됨을 돌려주고, 아니면 `null`이다. */
     before?: (
@@ -133,17 +133,31 @@ export class ReadinessMonitor {
     this.#stop.signal.addEventListener("abort", stop, { once: true });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const raw = await Promise.race([
-        (async () =>
-          (await this.#before?.(connection)) ??
-          connection.adapter.checkReadiness(controller.signal))(),
-        new Promise<"timeout">((resolve) => {
-          timer = setTimeout(() => {
-            resolve("timeout");
-            controller.abort();
-          }, this.#timeoutMs);
-        }),
+      // 격리 안전 확인은 자기 시한 안에 결과를 정한다. 연결의 확인 시한은 그 뒤의 연결 확인에만 쓴다.
+      // 끄는 중이면 안전 확인을 기다리지 않는다(그 결과는 저장하지 않는다).
+      const before = await Promise.race([
+        this.#before?.(connection) ?? Promise.resolve(null),
+        new Promise<"stopped">((resolve) =>
+          controller.signal.addEventListener(
+            "abort",
+            () => resolve("stopped"),
+            { once: true }
+          )
+        ),
       ]);
+      if (before === "stopped")
+        return { status: "unknown", reason: "check_failed" };
+      const raw =
+        before ??
+        (await Promise.race([
+          connection.adapter.checkReadiness(controller.signal),
+          new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => {
+              resolve("timeout");
+              controller.abort();
+            }, this.#timeoutMs);
+          }),
+        ]));
       if (raw === "timeout")
         return { status: "unknown", reason: "check_timeout" };
       const parsed = providerReadinessCheckSchema.safeParse(raw);

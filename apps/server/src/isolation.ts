@@ -27,6 +27,7 @@ export class IsolationGate {
   readonly #protectedPorts: () => number[];
   readonly #readIsolated: () => Promise<boolean>;
   readonly #hostUrl: () => string;
+  readonly #timeoutMs: number;
   #current: Promise<Safety> | undefined;
   #listener:
     { gateway: string; server: http.Server; origin: string } | undefined;
@@ -40,12 +41,15 @@ export class IsolationGate {
     readIsolated: () => Promise<boolean>;
     /** 격리하지 않는 실행의 조직 도구 주소(사용자 API 주소). */
     hostUrl: () => string;
+    /** 안전 확인 한 번의 시한. 넘으면 격리 환경 없음이다. 기본 60초. */
+    timeoutMs?: number;
   }) {
     this.#docker = options.docker;
     this.#toolsApp = options.toolsApp;
     this.#protectedPorts = options.protectedPorts;
     this.#readIsolated = options.readIsolated;
     this.#hostUrl = options.hostUrl;
+    this.#timeoutMs = options.timeoutMs ?? 60_000;
   }
 
   check(): Promise<Safety> {
@@ -82,11 +86,36 @@ export class IsolationGate {
     };
   }
 
+  /** 확인의 결과는 시한 안에 정한다. Docker가 늦게 끝내는 일(시험 컨테이너 제거 등)을 기다리지 않는다. */
   async #probe(): Promise<Safety> {
-    if (!this.#docker) return { status: "unavailable" };
+    const docker = this.#docker;
+    if (!docker) return { status: "unavailable" };
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<Safety>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort(new Error("isolation safety check timed out"));
+        console.error("[isolation] safety check did not finish in time");
+        resolve({ status: "unavailable" });
+      }, this.#timeoutMs);
+    });
     try {
-      const signal = AbortSignal.timeout(60_000);
-      const { gateway } = await this.#docker.prepareNetwork(signal);
+      return await Promise.race([
+        this.#examine(docker, controller.signal),
+        expired,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #examine(
+    docker: DockerEnvironment,
+    signal: AbortSignal
+  ): Promise<Safety> {
+    try {
+      const { gateway } = await docker.prepareNetwork(signal);
+      signal.throwIfAborted();
       const tools = await this.#listen(gateway);
       const addresses = Object.values(os.networkInterfaces())
         .flatMap((interfaces) => interfaces ?? [])
@@ -103,7 +132,7 @@ export class IsolationGate {
       const blocked = hosts.flatMap((host) =>
         [...new Set(this.#protectedPorts())].map((port) => ({ host, port }))
       );
-      const result = await this.#docker.probe({ blocked, tools }, signal);
+      const result = await docker.probe({ blocked, tools }, signal);
       if (result.reached.length > 0) return { status: "unsafe" };
       if (!result.toolsReached) return { status: "unavailable" };
       return { status: "safe", toolsBaseUrl: tools };
