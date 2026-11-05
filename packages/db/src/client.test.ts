@@ -5,9 +5,11 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sql } from "drizzle-orm";
 import pg from "pg";
 import { describe, expect, it } from "vitest";
-import { freePort, openDatabase } from "./client.ts";
+import { freePort, openDatabase, withClient } from "./client.ts";
+import { createTestDatabase } from "./testing.ts";
 
 describe("embedded Postgres lifetime", () => {
   it("closes and removes a non-persistent dataDir after Postgres died on its own", async () => {
@@ -134,3 +136,24 @@ function isAlive(pid: number) {
     return false;
   }
 }
+
+// 쓰는 중인 연결이 끊기면(Postgres 재시작·종료) 그 일만 실패하고 프로세스는 살아 있어야 한다.
+// 서버 종료 때 Postgres가 먼저 멈추면 처리되지 않은 오류로 죽어 임시 DB 폴더를 지우지 못했다.
+it("fails only the work on a connection cut while in use, without crashing the process", async () => {
+  const database = await createTestDatabase();
+  try {
+    const work = database.db.transaction(async (tx) => {
+      const { rows } = await tx.execute<{ pid: number }>(
+        sql`select pg_backend_pid() as pid`
+      );
+      await withClient(database.url, (client) =>
+        client.query("select pg_terminate_backend($1)", [rows[0]!.pid])
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      await tx.execute(sql`select 1`);
+    });
+    await expect(work).rejects.toThrow();
+  } finally {
+    await database.close();
+  }
+});

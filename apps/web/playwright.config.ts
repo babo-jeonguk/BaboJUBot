@@ -1,7 +1,24 @@
 import { defineConfig, devices } from "@playwright/test";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const apiPort = 3199;
 const webPort = 5199;
+
+// E2E 서버의 제품 폴더(BABOJUBOT_HOME). 서버는 Windows에서 taskkill /F로, 다른 OS에서도 제한 시간을 넘기면 SIGKILL로
+// 끝나 스스로 정리하지 못한다. 그래서 서버보다 오래 사는 이 실행기가 만들어 넘기고, 실행기가 끝날 때 지운다.
+// 이 설정을 다시 읽는 worker는 환경 변수로 같은 폴더를 물려받고, 폴더를 만든 프로세스만 지운다.
+const productHome = process.env.BABOJUBOT_E2E_HOME ?? createProductHome();
+
+function createProductHome() {
+  const home = mkdtempSync(path.join(os.tmpdir(), "babojubot-e2e-home-"));
+  process.env.BABOJUBOT_E2E_HOME = home;
+  process.on("exit", () =>
+    rmSync(home, { recursive: true, force: true, maxRetries: 5 })
+  );
+  return home;
+}
 
 export default defineConfig({
   testDir: "e2e",
@@ -15,12 +32,13 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
     {
-      // 임시 embedded Postgres를 쓰는 서버. SIGTERM을 받으면 Postgres를 멈추고 dataDir를 지운다.
+      // 임시 embedded Postgres와 실행기가 만든 제품 폴더를 쓰는 서버. SIGTERM을 받으면 Postgres를 멈추고 그 dataDir를 지운다.
       command: "node ../server/src/main.ts",
       url: `http://127.0.0.1:${apiPort}/api/health`,
       env: {
         PORT: String(apiPort),
         BABOJUBOT_EPHEMERAL_DB: "1",
+        BABOJUBOT_HOME: productHome,
         DATABASE_URL: "",
         // 같은 가짜 adapter의 연결 둘로 프로바이더·모델 고르기를 검사한다(providers.spec.ts).
         BABOJUBOT_FAKE_PROVIDERS: "2",

@@ -58,10 +58,7 @@ async function openConfiguredDatabase(): Promise<{
       handle: await openEphemeralDatabase(),
       label: "ephemeral embedded Postgres",
     };
-  const dataDir = path.join(
-    env.BABOJUBOT_HOME ?? path.join(repoRoot, ".babojubot"),
-    "postgres"
-  );
+  const dataDir = path.join(productHome, "postgres");
   const port = Number(env.EMBEDDED_POSTGRES_PORT ?? 54329);
   return {
     handle: await openDatabase({
@@ -91,9 +88,7 @@ let server;
 try {
   server = await startServer({
     db: handle.db,
-    dataDir: path.resolve(
-      env.BABOJUBOT_HOME ?? path.join(repoRoot, ".babojubot")
-    ),
+    dataDir: productHome,
     port: Number(env.PORT ?? 3100),
     host: env.HOST ?? "127.0.0.1",
     providers: [
@@ -109,7 +104,9 @@ try {
   await handle.close();
   throw error;
 }
-console.log(`BaboJUBot server on ${server.url} (${label})`);
+console.log(
+  `BaboJUBot server on ${server.url} (${label}, product folder ${productHome})`
+);
 
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
