@@ -185,6 +185,32 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
   }
 }, 60_000);
 
+// 정리 시한이 잘못 설정되면 시작하지 않고 설정 오류로 알린다. Node 타이머는 1ms 미만이나 2147483647ms 초과를
+// 1ms로 바꾸므로, 그대로 쓰면 첫 종료 신호에 정리가 바로 끊긴다.
+it.each(["-1", "0", "1.5", "Infinity", "2147483648", "soon"])(
+  "refuses to start with the shutdown deadline %s",
+  async (value) => {
+    const child = startMain({
+      DATABASE_URL: external.url,
+      BABOJUBOT_SHUTDOWN_TIMEOUT_MS: value,
+    });
+    try {
+      const outcome = await Promise.race([
+        once(child, "exit").then(([code]) => ({ code })),
+        ready(child).then(
+          () => ({ started: true }),
+          () => new Promise<never>(() => {})
+        ),
+      ]);
+      expect(outcome).toEqual({ code: 1 });
+      expect(child.stderrText()).toContain("BABOJUBOT_SHUTDOWN_TIMEOUT_MS");
+    } finally {
+      child.kill("SIGKILL");
+    }
+  },
+  60_000
+);
+
 type MainProcess = ChildProcess & { stderrText: () => string };
 
 function startMain(
