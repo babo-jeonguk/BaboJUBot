@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  emergencyStopMs,
   openDatabase,
   openEphemeralDatabase,
   type DatabaseHandle,
@@ -24,7 +25,8 @@ import { startServer } from "./app.ts";
 //   예: {"fake-2":{"capabilities":{"steer":false},"readiness":{"status":"not_ready","reason":"product_login_missing"}}}
 // - PORT, HOST, EMBEDDED_POSTGRES_PORT, BABOJUBOT_HOME
 //   HOST 기본값은 127.0.0.1이다. 인증이 없으므로 외부 주소로 열면 그 네트워크의 누구나 API와 Event stream을 쓴다.
-// - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 정리 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
+// - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 프로세스가 끝나기까지의 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
+//   내장 Postgres의 비상 정지 몫(emergencyStopMs, 1.5초)을 남기고 정리를 끊는다.
 //   서버를 감싼 실행기(Docker·Kubernetes·Playwright)의 정지 시한은 이보다 길게 둔다. 실행기가 먼저 강제로 끝내면 내장 Postgres가 남고, 다음 시작이 그것을 정상 정지한다.
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -130,12 +132,16 @@ async function start() {
 }
 
 async function shutdown(signal: NodeJS.Signals) {
-  setTimeout(() => {
-    console.error(
-      `[server] shutdown after ${signal} did not finish in ${shutdownDeadlineMs / 1000}s`
-    );
-    process.exit(1);
-  }, shutdownDeadlineMs).unref();
+  // 시한이 지나 끝낼 때도 DB 패키지가 프로세스 종료 때 내장 Postgres에 즉시 정지를 보낸다. 그 시간까지 시한 안에 들게 먼저 끊는다.
+  setTimeout(
+    () => {
+      console.error(
+        `[server] shutdown after ${signal} did not finish in ${shutdownDeadlineMs / 1000}s`
+      );
+      process.exit(1);
+    },
+    Math.max(1, shutdownDeadlineMs - emergencyStopMs)
+  ).unref();
   let failed = false;
   const fail = (error: unknown) => {
     failed = true;

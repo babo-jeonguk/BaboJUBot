@@ -13,6 +13,7 @@ import {
 
 export {
   clusterUrl,
+  emergencyStopMs,
   ephemeralCluster,
   freePort,
   startEmbeddedCluster,
