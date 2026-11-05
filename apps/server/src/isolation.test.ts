@@ -40,4 +40,60 @@ describe("IsolationGate", () => {
       "격리 실행 환경이 안전한지 확인하지 못해 실행하지 않았습니다."
     );
   });
+
+  it("ends a safety check still running when it closes and opens no tools listener afterwards", async () => {
+    const listeners = () =>
+      process
+        .getActiveResourcesInfo()
+        .filter((name) => name === "TCPServerWrap").length;
+    let prepared = 0;
+    let finishNetwork!: () => void;
+    const networkReady = new Promise<void>((resolve) => {
+      finishNetwork = resolve;
+    });
+    let calledPrepare!: () => void;
+    const prepareCalled = new Promise<void>((resolve) => {
+      calledPrepare = resolve;
+    });
+    // 받은 중단 신호를 따르지 않고 늦게 끝나는 Docker. 끝나면 이 컴퓨터의 loopback을 gateway로 돌려준다.
+    const slow: DockerEnvironment = {
+      ...unresponsive,
+      async prepareNetwork() {
+        prepared++;
+        calledPrepare();
+        await networkReady;
+        return { gateway: "127.0.0.1" };
+      },
+      async probe() {
+        return { reached: [], toolsReached: true };
+      },
+    };
+    const before = listeners();
+    gate = new IsolationGate({
+      docker: slow,
+      toolsApp: express(),
+      protectedPorts: () => [5432],
+      readIsolated: async () => true,
+      hostUrl: () => "http://127.0.0.1:1",
+    });
+    const pending = gate.readiness(true);
+    await prepareCalled;
+    await gate.close();
+    // 닫으면 진행 중인 확인은 결과를 기다리지 않고 끝난다.
+    await expect(pending).resolves.toEqual({
+      status: "not_ready",
+      reason: "isolation_unavailable",
+    });
+    // 닫은 뒤 Docker가 끝나도 조직 도구 listener를 열지 않는다.
+    finishNetwork();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(listeners()).toBe(before);
+    // 닫은 관문은 새 확인을 하지 않는다.
+    gate.invalidate();
+    await expect(gate.readiness(true)).resolves.toEqual({
+      status: "not_ready",
+      reason: "isolation_unavailable",
+    });
+    expect(prepared).toBe(1);
+  });
 });
