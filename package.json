@@ -17,6 +17,7 @@
     "lint": "eslint .",
     "check": "node scripts/check-project.mjs",
     "provider:login": "node scripts/provider-login.mjs",
+    "runner:build": "docker build -t babojubot-runner docker/runner",
     "prepare": "husky"
   },
   "devDependencies": {

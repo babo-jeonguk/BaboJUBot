@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -12,7 +13,12 @@ import {
   steerOutcomes,
   usageSchema,
 } from "@babojubot/contracts";
-import { createFakeProviders, createConnection } from "@babojubot/runtime";
+import {
+  createConnection,
+  createDockerEnvironment,
+  createFakeProviders,
+  type ContainerSettings,
+} from "@babojubot/runtime";
 import { z } from "zod";
 import { startServer } from "./app.ts";
 import { shutdownBudget } from "./shutdown-budget.ts";
@@ -25,6 +31,7 @@ import { shutdownBudget } from "./shutdown-budget.ts";
 //   예: {"fake-2":{"capabilities":{"steer":false},"readiness":{"status":"not_ready","reason":"product_login_missing"}}}
 // - PORT, HOST, EMBEDDED_POSTGRES_PORT, BABOJUBOT_HOME
 //   HOST 기본값은 127.0.0.1이다. 인증이 없으므로 외부 주소로 열면 그 네트워크의 누구나 API와 Event stream을 쓴다.
+// - BABOJUBOT_DOCKER_COMMAND·BABOJUBOT_CONTAINER_IMAGE·BABOJUBOT_CONTAINER_NETWORK: 격리 실행의 Docker 설정(아래 containerSettings).
 // - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 프로세스가 끝나기까지의 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
 //   내장 DB면 비상 정지 몫(최대 1.5초, 시한의 절반 이하)을 남기고 정리를 끊는다(shutdown-budget.ts).
 //   서버를 감싼 실행기(Docker·Kubernetes·Playwright)의 정지 시한은 이보다 길게 둔다. 실행기가 먼저 강제로 끝내면 내장 Postgres가 남고, 다음 시작이 그것을 정상 정지한다.
@@ -36,6 +43,17 @@ const env = process.env;
 const productHome = path.resolve(
   env.BABOJUBOT_HOME ?? path.join(repoRoot, ".babojubot")
 );
+// 격리 실행(전역 설정의 스위치). Docker는 켰을 때만 쓴다.
+// - BABOJUBOT_DOCKER_COMMAND: docker 프로그램(기본 docker)
+// - BABOJUBOT_CONTAINER_IMAGE: 네 프로바이더가 든 공통 이미지(기본 babojubot-runner, docker/runner에서 만든다)
+// - BABOJUBOT_CONTAINER_NETWORK: 실행 시도 컨테이너의 전용 네트워크(기본 babojubot)
+const containerSettings: ContainerSettings = {
+  docker: [env.BABOJUBOT_DOCKER_COMMAND || "docker"],
+  image: env.BABOJUBOT_CONTAINER_IMAGE || "babojubot-runner",
+  network: env.BABOJUBOT_CONTAINER_NETWORK || "babojubot",
+  // 같은 Docker를 쓰는 다른 제품 폴더의 컨테이너는 건드리지 않는다.
+  owner: createHash("sha256").update(productHome).digest("hex").slice(0, 16),
+};
 // Real connections are opt-in. `claude:work`처럼 쓰면 같은 프로그램의 다른 계정 연결이 된다.
 const enabled = (env.BABOJUBOT_PROVIDERS ?? "")
   .split(",")
@@ -45,6 +63,7 @@ const realProviders = [...new Set(enabled)].map((name) =>
   createConnection(name, {
     dataDir: productHome,
     mode: env.BABOJUBOT_CODEX_MODE === "exec" ? "exec" : "app-server",
+    container: containerSettings,
   })
 );
 
@@ -123,6 +142,11 @@ async function start() {
       dataDir: productHome,
       port: Number(env.PORT ?? 3100),
       host: env.HOST ?? "127.0.0.1",
+      // 컨테이너에서 이 컴퓨터의 DB 포트에 닿지 않는지도 안전 확인에서 본다.
+      isolation: {
+        docker: createDockerEnvironment(containerSettings),
+        protectedPorts: [Number(new URL(handle.url).port) || 5432],
+      },
       providers: [
         ...createFakeProviders(
           Math.max(1, Number(env.BABOJUBOT_FAKE_PROVIDERS ?? 1) || 1),

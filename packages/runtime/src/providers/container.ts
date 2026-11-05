@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
@@ -28,6 +29,8 @@ export type ContainerLaunch = {
   env: Record<string, string>;
   /** 이 컴퓨터의 loopback에만 공개할 컨테이너 포트. */
   publish?: number;
+  /** 컨테이너 안에서 쓸 이름과 주소(`--add-host`). 안전 확인이 이 컴퓨터를 가리키는 별칭까지 시험하게 한다. */
+  hosts?: Record<string, string>;
 };
 
 /** 컨테이너에 넘기지 않는 환경 변수. 이 컴퓨터의 실행 경로·임시 폴더·Windows 값은 컨테이너에 맞지 않고, GitHub 로그인은 컨테이너에 두지 않는다. */
@@ -148,6 +151,8 @@ export function dockerRunArgs(
     "--network",
     settings.network
   );
+  for (const [name, value] of Object.entries(launch.hosts ?? {}))
+    args.push("--add-host", `${name}:${value}`);
   for (const mount of launch.mounts)
     args.push(
       "--mount",
@@ -187,7 +192,8 @@ export function dockerClientEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export function runDocker(
   settings: ContainerSettings,
   args: string[],
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  signal?: AbortSignal
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
@@ -199,6 +205,7 @@ export function runDocker(
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
         encoding: "utf8",
+        ...(signal ? { signal } : {}),
       },
       (error, stdout, stderr) => {
         const code = !error
@@ -242,136 +249,188 @@ export async function publishedAddress(
   throw new Error("container port is not published on loopback");
 }
 
-function dockerExec(
-  settings: ContainerSettings,
-  args: string[],
-  options: { timeoutMs: number; signal?: AbortSignal }
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile(
-      settings.docker[0],
-      [...settings.docker.slice(1), ...args],
-      {
-        env: dockerClientEnv({}),
-        windowsHide: true,
-        timeout: options.timeoutMs,
-        maxBuffer: 4 * 1024 * 1024,
-        encoding: "utf8",
-        ...(options.signal ? { signal: options.signal } : {}),
-      },
-      (error, stdout, stderr) => {
-        const code = !error
-          ? 0
-          : typeof error.code === "number"
-            ? error.code
-            : null;
-        resolve({ code, stdout, stderr });
-      }
-    );
+// TCP 연결이 되면 HTTP 응답 코드와 상관없이 닿은 것이다. 연결 실패만으로 안전하다고 보지 않도록 조직 도구 연결(양성 대조)을 함께 본다.
+const probeScript = `
+const net = require("node:net");
+const input = JSON.parse(process.argv[1]);
+const attempt = (host, port) =>
+  new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    let settled = false;
+    const finish = (reached) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(reached);
+    };
+    socket.setTimeout(3000);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
   });
-}
+(async () => {
+  const targetChecks = input.blocked.map((target) =>
+    attempt(target.host, target.port).then((reached) => ({ target, reached }))
+  );
+  const url = new URL(input.tools);
+  const toolsCheck = attempt(url.hostname, Number(url.port || 80));
+  const [results, toolsReached] = await Promise.all([
+    Promise.all(targetChecks),
+    toolsCheck,
+  ]);
+  console.log(
+    JSON.stringify({
+      reached: results
+        .filter((result) => result.reached)
+        .map((result) => result.target),
+      toolsReached,
+    })
+  );
+})();
+`;
 
 export function createDockerEnvironment(
   settings: ContainerSettings
 ): DockerEnvironment {
+  const stopIfAborted = (signal: AbortSignal) => {
+    if (signal.aborted) throw signal.reason;
+  };
+  const inspectNetwork = (signal: AbortSignal) =>
+    runDocker(
+      settings,
+      [
+        "network",
+        "inspect",
+        settings.network,
+        "--format",
+        "{{json .IPAM.Config}}",
+      ],
+      60_000,
+      signal
+    );
   return {
     settings,
+    // 실행 시도 컨테이너끼리는 서로 닿지 않게(icc 끔) 전용 bridge 네트워크를 쓴다. gateway는 이 컴퓨터 쪽 주소이며 조직 도구 전용 listener가 여기에 열린다.
     async prepareNetwork(signal) {
-      await dockerExec(settings, ["network", "create", settings.network], {
-        timeoutMs: 60_000,
-        signal,
-      });
-      const inspected = await dockerExec(
-        settings,
-        [
-          "network",
-          "inspect",
-          settings.network,
-          "--format",
-          "{{(index .IPAM.Config 0).Gateway}}",
-        ],
-        { timeoutMs: 60_000, signal }
-      );
-      const gateway = inspected.stdout.trim().split("\n")[0]?.trim();
-      if (inspected.code !== 0 || !gateway)
-        throw new Error(
-          `container network is not ready: ${inspected.stderr.trim()}`
+      let inspected = await inspectNetwork(signal);
+      stopIfAborted(signal);
+      if (inspected.code !== 0) {
+        const created = await runDocker(
+          settings,
+          [
+            "network",
+            "create",
+            "--driver",
+            "bridge",
+            "--opt",
+            "com.docker.network.bridge.enable_icc=false",
+            "--label",
+            `babojubot.owner=${settings.owner}`,
+            settings.network,
+          ],
+          60_000,
+          signal
         );
+        stopIfAborted(signal);
+        if (created.code !== 0 && !/already exists/i.test(created.stderr))
+          throw new Error("docker network could not be created");
+        inspected = await inspectNetwork(signal);
+        stopIfAborted(signal);
+      }
+      let configs: unknown;
+      try {
+        configs = JSON.parse(inspected.stdout);
+      } catch {
+        throw new Error("docker network has no IPv4 gateway");
+      }
+      const gateway = Array.isArray(configs)
+        ? configs
+            .map((config) =>
+              typeof config === "object" && config !== null
+                ? (config as { Gateway?: unknown }).Gateway
+                : undefined
+            )
+            .find(
+              (value): value is string =>
+                typeof value === "string" && value !== "" && net.isIPv4(value)
+            )
+        : undefined;
+      if (!gateway) throw new Error("docker network has no IPv4 gateway");
       return { gateway };
     },
-    async probe(options, signal) {
-      const script = `
-        const net = require("node:net");
-        const targets = ${JSON.stringify(options.blocked)};
-        const attempt = (host, port) => new Promise((resolve) => {
-          const socket = net.connect({ host, port });
-          const done = (ok) => { socket.destroy(); resolve(ok); };
-          socket.setTimeout(2000);
-          socket.once("connect", () => done(true));
-          socket.once("timeout", () => done(false));
-          socket.once("error", () => done(false));
-        });
-        (async () => {
-          const reached = [];
-          for (const target of targets)
-            if (await attempt(target.host, target.port)) reached.push(target);
-          let toolsReached = false;
-          try {
-            const response = await fetch(${JSON.stringify(options.tools)}, {
-              signal: AbortSignal.timeout(5000),
-            });
-            await response.body?.cancel();
-            toolsReached = true;
-          } catch {}
-          console.log(JSON.stringify({ reached, toolsReached }));
-        })();
-      `;
-      const result = await dockerExec(
+    async probe(input, signal) {
+      const name = `babojubot-probe-${crypto.randomUUID()}`;
+      const launch: ContainerLaunch = {
         settings,
-        [
-          "run",
-          "--rm",
-          "--init",
-          "--network",
-          settings.network,
-          "--cap-drop",
-          "ALL",
-          "--security-opt",
-          "no-new-privileges",
-          settings.image,
-          "node",
-          "-e",
-          script,
-        ],
-        { timeoutMs: 120_000, signal }
-      );
-      const line = result.stdout.trim().split("\n").filter(Boolean).at(-1);
-      if (result.code !== 0 || !line)
-        throw new Error(
-          `container network probe failed: ${result.stderr.trim()}`
-        );
-      const parsed = JSON.parse(line) as {
+        mounts: [],
+        labels: { probe: "1" },
+        program: "node",
+        env: {},
+        hosts: { "host.docker.internal": "host-gateway" },
+      };
+      const args = dockerRunArgs(launch, {
+        name,
+        cwd: "/",
+        env: {},
+        args: ["-e", probeScript, JSON.stringify(input)],
+      });
+      const result = await runDocker(settings, args, 60_000, signal);
+      await removeContainer(settings, name);
+      if (result.code !== 0)
+        throw new Error("isolation probe container failed");
+      const line = result.stdout
+        .split("\n")
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .at(-1);
+      if (!line) throw new Error("isolation probe returned an invalid result");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        throw new Error("isolation probe returned an invalid result");
+      }
+      if (typeof parsed !== "object" || parsed === null)
+        throw new Error("isolation probe returned an invalid result");
+      const { reached, toolsReached } = parsed as {
         reached?: unknown;
         toolsReached?: unknown;
       };
+      if (
+        !Array.isArray(reached) ||
+        reached.some(
+          (target) =>
+            typeof target !== "object" ||
+            target === null ||
+            typeof (target as { host?: unknown }).host !== "string" ||
+            typeof (target as { port?: unknown }).port !== "number"
+        ) ||
+        typeof toolsReached !== "boolean"
+      )
+        throw new Error("isolation probe returned an invalid result");
       return {
-        reached: Array.isArray(parsed.reached)
-          ? (parsed.reached as { host: string; port: number }[])
-          : [],
-        toolsReached: parsed.toolsReached === true,
+        reached: reached as { host: string; port: number }[],
+        toolsReached,
       };
     },
     async removeOrphans() {
-      const listed = await dockerExec(
-        settings,
-        ["ps", "-aq", "--filter", `label=babojubot.owner=${settings.owner}`],
-        { timeoutMs: 60_000 }
-      );
-      const ids = listed.stdout.split(/\s+/).filter(Boolean);
-      if (!ids.length) return;
-      await dockerExec(settings, ["rm", "-f", ...ids], {
-        timeoutMs: 120_000,
-      });
+      const listed = await runDocker(settings, [
+        "ps",
+        "-aq",
+        "--filter",
+        `label=babojubot.owner=${settings.owner}`,
+      ]);
+      if (listed.code !== 0) return;
+      const failed: string[] = [];
+      for (const id of listed.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean))
+        if (!(await removeContainer(settings, id))) failed.push(id);
+      if (failed.length)
+        throw new Error(
+          `leftover containers could not be removed: ${failed.join(", ")}`
+        );
     },
   };
 }
