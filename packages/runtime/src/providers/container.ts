@@ -19,8 +19,8 @@ export type ContainerSettings = {
 /** 실행 시도 한 번의 컨테이너 배치. */
 export type ContainerLaunch = {
   settings: ContainerSettings;
-  /** 같은 경로로 넣는 폴더. 쓰기 가능 여부. */
-  mounts: { path: string; writable: boolean }[];
+  /** 넣는 폴더·파일. `path`는 컨테이너 안 경로이고 `source`가 없으면 같은 경로의 이 컴퓨터 것이다. 쓰기 가능 여부. */
+  mounts: { path: string; writable: boolean; source?: string }[];
   /** `babojubot.owner` 밖에 더 붙일 label(예: run, organization). */
   labels: Record<string, string>;
   /** 컨테이너 안 프로그램 이름. 이 컴퓨터의 프로그램 위치 설정은 쓰지 않는다. */
@@ -66,10 +66,12 @@ export function containerLaunch(
     identity?: { runId: string; organizationId: string };
     /** 이 실행 시도만의 파일(조직 도구 토큰이 든 설정 등)이 든 폴더. 읽기만 넣는다. */
     attempt?: string;
+    /** 이 실행 시도만의 파일을 컨테이너 안 `target` 위에 읽기로 넣는다. 이 컴퓨터의 `target`은 그대로이고 다른 컨테이너에는 그것이 보인다. */
+    files?: { source: string; target: string }[];
     publish?: number;
   }
 ): ContainerLaunch {
-  const mounts: { path: string; writable: boolean }[] = [];
+  const mounts: { path: string; writable: boolean; source?: string }[] = [];
   const mount = (mountPath: string, writable: boolean) => {
     if (mounts.some((m) => m.path === mountPath)) return;
     mounts.push({ path: mountPath, writable });
@@ -84,6 +86,8 @@ export function containerLaunch(
   }
   // 이 실행 시도만의 파일은 이 컨테이너에만 읽기로 넣는다.
   if (options.attempt) mount(options.attempt, false);
+  for (const file of options.files ?? [])
+    mounts.push({ source: file.source, path: file.target, writable: false });
   // 프로그램이 실제 경로(realpath)로 작업 폴더를 열면 그 경로도 같은 폴더로 넣는다.
   const contained = (mountPath: string) => {
     const relative = path.relative(mountPath, options.cwd);
@@ -126,7 +130,7 @@ export function dockerRunArgs(
 ): string[] {
   const { settings } = launch;
   for (const mount of launch.mounts)
-    if (mount.path.includes(","))
+    if (mount.path.includes(",") || (mount.source ?? mount.path).includes(","))
       throw new Error("container mount path must not contain a comma");
   if (options.cwd.includes(","))
     throw new Error("container mount path must not contain a comma");
@@ -160,7 +164,7 @@ export function dockerRunArgs(
   for (const mount of launch.mounts)
     args.push(
       "--mount",
-      `type=bind,source=${mount.path},target=${mount.path}` +
+      `type=bind,source=${mount.source ?? mount.path},target=${mount.path}` +
         (mount.writable ? "" : ",readonly")
     );
   args.push("--workdir", options.cwd);
@@ -293,6 +297,48 @@ const attempt = (host, port) =>
 })();
 `;
 
+/** 실행 시도 컨테이너끼리 닿지 않게 하는 bridge 옵션. 네트워크를 만들 때와 이미 있는 네트워크를 받아들일 때 같은 값을 본다. */
+const iccOption = "com.docker.network.bridge.enable_icc";
+
+/** 격리하는 네트워크(bridge, icc 끔)인지 보고 그 IPv4 gateway(이 컴퓨터 쪽 주소)를 돌려준다. 아니면 던진다. */
+function isolatingGateway(name: string, inspected: string): string {
+  let network: unknown;
+  try {
+    network = JSON.parse(inspected);
+  } catch {
+    throw new Error(`docker network ${name} could not be inspected`);
+  }
+  const { Driver, Options, IPAM } = (
+    typeof network === "object" && network !== null ? network : {}
+  ) as { Driver?: unknown; Options?: unknown; IPAM?: unknown };
+  const options =
+    typeof Options === "object" && Options !== null
+      ? (Options as Record<string, unknown>)
+      : {};
+  if (Driver !== "bridge" || options[iccOption] !== "false")
+    throw new Error(
+      `docker network ${name} is not a bridge whose containers cannot reach each other; remove it (docker network rm ${name}) so it is created again`
+    );
+  const configs =
+    typeof IPAM === "object" && IPAM !== null
+      ? (IPAM as { Config?: unknown }).Config
+      : undefined;
+  const gateway = Array.isArray(configs)
+    ? configs
+        .map((config) =>
+          typeof config === "object" && config !== null
+            ? (config as { Gateway?: unknown }).Gateway
+            : undefined
+        )
+        .find(
+          (value): value is string =>
+            typeof value === "string" && value !== "" && net.isIPv4(value)
+        )
+    : undefined;
+  if (!gateway) throw new Error(`docker network ${name} has no IPv4 gateway`);
+  return gateway;
+}
+
 export function createDockerEnvironment(
   settings: ContainerSettings
 ): DockerEnvironment {
@@ -302,19 +348,13 @@ export function createDockerEnvironment(
   const inspectNetwork = (signal: AbortSignal) =>
     runDocker(
       settings,
-      [
-        "network",
-        "inspect",
-        settings.network,
-        "--format",
-        "{{json .IPAM.Config}}",
-      ],
+      ["network", "inspect", settings.network, "--format", "{{json .}}"],
       60_000,
       signal
     );
   return {
     settings,
-    // 실행 시도 컨테이너끼리는 서로 닿지 않게(icc 끔) 전용 bridge 네트워크를 쓴다. gateway는 이 컴퓨터 쪽 주소이며 조직 도구 전용 listener가 여기에 열린다.
+    // 실행 시도 컨테이너끼리는 서로 닿지 않게(icc 끔) 전용 bridge 네트워크를 쓴다. 이미 있는 네트워크도 같은 격리인지 확인한다. gateway는 이 컴퓨터 쪽 주소이며 조직 도구 전용 listener가 여기에 열린다.
     async prepareNetwork(signal) {
       let inspected = await inspectNetwork(signal);
       stopIfAborted(signal);
@@ -327,7 +367,7 @@ export function createDockerEnvironment(
             "--driver",
             "bridge",
             "--opt",
-            "com.docker.network.bridge.enable_icc=false",
+            `${iccOption}=false`,
             "--label",
             `babojubot.owner=${settings.owner}`,
             settings.network,
@@ -341,26 +381,7 @@ export function createDockerEnvironment(
         inspected = await inspectNetwork(signal);
         stopIfAborted(signal);
       }
-      let configs: unknown;
-      try {
-        configs = JSON.parse(inspected.stdout);
-      } catch {
-        throw new Error("docker network has no IPv4 gateway");
-      }
-      const gateway = Array.isArray(configs)
-        ? configs
-            .map((config) =>
-              typeof config === "object" && config !== null
-                ? (config as { Gateway?: unknown }).Gateway
-                : undefined
-            )
-            .find(
-              (value): value is string =>
-                typeof value === "string" && value !== "" && net.isIPv4(value)
-            )
-        : undefined;
-      if (!gateway) throw new Error("docker network has no IPv4 gateway");
-      return { gateway };
+      return { gateway: isolatingGateway(settings.network, inspected.stdout) };
     },
     async probe(input, signal) {
       const name = `babojubot-probe-${crypto.randomUUID()}`;
@@ -453,7 +474,7 @@ export type IsolationProbeResult = {
 /** 격리 실행의 Docker 환경. 서버가 안전 확인·남은 컨테이너 정리에 쓴다. */
 export type DockerEnvironment = {
   settings: ContainerSettings;
-  /** 전용 네트워크를 만들거나 확인하고 그 gateway 주소(이 컴퓨터 쪽)를 돌려준다. */
+  /** 전용 네트워크를 만들거나, 이미 있으면 같은 격리(bridge, icc 끔)인지 확인하고 그 gateway 주소(이 컴퓨터 쪽)를 돌려준다. 아니면 던진다. */
   prepareNetwork(signal: AbortSignal): Promise<{ gateway: string }>;
   /** 실행 시도와 같은 네트워크·권한의 시험 컨테이너로 목표에 닿는지 본다. */
   probe(

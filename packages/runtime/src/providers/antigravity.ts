@@ -1,4 +1,13 @@
-import { lstat, mkdir, realpath, readdir } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  realpath,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -21,7 +30,7 @@ import {
   publishConfig,
 } from "./antigravity-config.ts";
 import type { ContainerSettings } from "./container.ts";
-import { containerLaunch } from "./container.ts";
+import { containerLaunch, type ContainerLaunch } from "./container.ts";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -115,6 +124,7 @@ export function createAntigravityProvider(options: {
     async execute(request, control) {
       let release: (() => void) | undefined,
         cwd: string | undefined,
+        attempt: string | undefined,
         owned = false;
       try {
         if (control.signal.aborted)
@@ -125,16 +135,6 @@ export function createAntigravityProvider(options: {
         // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
         await mkdir(home, { recursive: true, mode: 0o700 });
         cwd = await realpath(request.workspace?.cwd ?? home);
-        const container =
-          request.execution === "container"
-            ? containerLaunch(options.container!, {
-                home,
-                cwd,
-                program: "agy",
-                workspace: request.workspace,
-                identity: request.identity,
-              })
-            : undefined;
         while (workspaces.has(cwd)) {
           control.signal.throwIfAborted();
           await Promise.race([
@@ -155,20 +155,42 @@ export function createAntigravityProvider(options: {
         );
         // 프로세스가 도중에 끝나면 게시됐는지 알 수 없다. 거부가 확실할 때만 정리 책임을 내려놓는다.
         owned = true;
+        const settings = JSON.stringify({
+          babojubotOwner: ownerMark,
+          mcpServers: {
+            organization: {
+              serverUrl: new URL("/api/tools/mcp", request.access.toolsBaseUrl)
+                .href,
+              headers: { Authorization: `Bearer ${request.access.token}` },
+            },
+          },
+        });
+        // 컨테이너에서는 조직 폴더가 그 조직의 모든 컨테이너에 쓰기로 들어간다. 토큰이 든 설정은 이 실행 시도 전용 폴더에 두고
+        // 이 컨테이너에만 작업 폴더의 설정 파일 위에 읽기로 넣는다. 조직 폴더에는 토큰 없는 제품 소유 파일이 자리만 잡는다.
+        let container: ContainerLaunch | undefined;
+        if (request.execution === "container") {
+          attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
+          const file = path.join(attempt, "mcp_config.json");
+          await writeFile(file, settings, { mode: 0o600, flag: "wx" });
+          container = containerLaunch(options.container!, {
+            home,
+            cwd,
+            program: "agy",
+            workspace: request.workspace,
+            identity: request.identity,
+            files: [
+              {
+                source: file,
+                target: path.join(cwd, ".agents", "mcp_config.json"),
+              },
+            ],
+          });
+        }
         const published = await publishConfig(
           cwd,
-          JSON.stringify({
-            babojubotOwner: ownerMark,
-            mcpServers: {
-              organization: {
-                serverUrl: new URL(
-                  "/api/tools/mcp",
-                  request.access.toolsBaseUrl
-                ).href,
-                headers: { Authorization: `Bearer ${request.access.token}` },
-              },
-            },
-          })
+          container
+            ? JSON.stringify({ babojubotOwner: ownerMark, mcpServers: {} })
+            : settings
         );
         if (published) {
           owned = !configRefused(published);
@@ -329,6 +351,8 @@ export function createAntigravityProvider(options: {
             "[provider] could not remove the Antigravity configuration"
           );
         } finally {
+          if (attempt)
+            await rm(attempt, { recursive: true, force: true }).catch(() => {});
           if (release && cwd) {
             workspaces.delete(cwd);
             release();
