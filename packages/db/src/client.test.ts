@@ -13,6 +13,7 @@ import {
   ephemeralCluster,
   freePort,
   openDatabase,
+  processIdentity,
   withClient,
 } from "./client.ts";
 import { createTestDatabase } from "./testing.ts";
@@ -285,7 +286,6 @@ describe("a Postgres left by a killed process", () => {
         await handle.close();
       }
       expect(fs.existsSync(path.join(dataDir, "postmaster.pid"))).toBe(false);
-      expect(fs.existsSync(`${dataDir}.owner.json`)).toBe(false);
     } finally {
       await stopPostgres(postmaster);
       await removeCluster(dataDir);
@@ -348,10 +348,7 @@ describe("a Postgres left by a killed process", () => {
         if (owner === "a dead process") {
           const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
           await once(gone, "exit");
-          fs.writeFileSync(
-            `${dataDir}.owner.json`,
-            JSON.stringify({ pid: gone.pid, persistent: true })
-          );
+          recordOwner(dataDir, { pid: gone.pid!, persistent: true });
         }
         await expect(
           openDatabase({
@@ -425,7 +422,7 @@ describe("a Postgres left by a killed process", () => {
       next = await ephemeralCluster();
       expect(isAlive(postmaster)).toBe(false);
       expect(fs.existsSync(dataDir)).toBe(false);
-      expect(fs.existsSync(`${dataDir}.owner.json`)).toBe(false);
+      expect(fs.existsSync(`${dataDir}.owner`)).toBe(false);
     } finally {
       await stopPostgres(postmaster);
       if (dataDir) await removeCluster(dataDir);
@@ -433,10 +430,14 @@ describe("a Postgres left by a killed process", () => {
     }
   }, 60_000);
 
-  // 같은 dataDir에 두 프로세스가 동시에 시작하면 하나만 쓴다. 진 쪽은 시작 실패를 정리하며 이긴 쪽의 Postgres를 멈추면 안 된다.
-  it("lets only one of two processes starting at once use a data folder, and the other leaves its database running", async () => {
+  // 같은 dataDir에 여러 프로세스가 동시에 시작하면 하나만 쓴다. 죽은 주인의 기록을 여럿이 동시에 넘겨받으려 해도 마찬가지다.
+  // 진 쪽은 시작 실패를 정리하며 이긴 쪽의 Postgres를 멈추면 안 된다.
+  it("lets only one of several processes starting at once use a data folder, even when they all take it over from a dead owner", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    // 새 폴더에서 두 프로세스가 동시에 cluster를 만들고 켜게 한다. 주인이 하나가 아니면 둘 다 만들기·켜기를 시도해 부딪힌다.
+    // 새 폴더에서 셋이 동시에 cluster를 만들고 켜게 한다. 주인이 하나가 아니면 만들기·켜기를 함께 시도해 부딪힌다.
+    const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    await once(gone, "exit");
+    recordOwner(dataDir, { pid: gone.pid!, persistent: true });
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
     const port = await freePort();
     const script = `
@@ -455,7 +456,7 @@ describe("a Postgres left by a killed process", () => {
         process.exit(0);
       });
     `;
-    const children = [0, 1].map(() =>
+    const children = [0, 1, 2].map(() =>
       spawn(process.execPath, ["--input-type=module", "-e", script], {
         stdio: ["pipe", "pipe", "inherit"],
       })
@@ -469,14 +470,17 @@ describe("a Postgres left by a killed process", () => {
         })
       );
       expect(lines.filter((line) => line === "opened")).toHaveLength(1);
-      const loser = lines.findIndex((line) => line !== "opened");
-      expect(lines[loser]).toContain("in use by a running process");
-      const loserChild = children[loser]!;
-      if (loserChild.exitCode === null && loserChild.signalCode === null)
-        await once(loserChild, "exit");
+      const winnerIndex = lines.indexOf("opened");
+      for (const [index, line] of lines.entries()) {
+        if (index === winnerIndex) continue;
+        expect(line).toContain("in use by a running process");
+        const loser = children[index]!;
+        if (loser.exitCode === null && loser.signalCode === null)
+          await once(loser, "exit");
+      }
 
       postmaster = readPostmaster(dataDir);
-      const winner = children[1 - loser]!;
+      const winner = children[winnerIndex]!;
       const answer = once(winner.stdout!, "data");
       winner.stdin!.write("query\n");
       expect(String((await answer)[0]).trim()).toBe("query 1");
@@ -534,6 +538,29 @@ describe("a Postgres left by a killed process", () => {
       await removeCluster(dataDir);
     }
   }, 60_000);
+
+  // 같은 pid가 다른 프로세스에 다시 쓰이면 pid만으로는 켠 Postgres와 구별할 수 없다. 프로세스 종료 때의 즉시 정지는
+  // OS가 매긴 생성 신원까지 같을 때만 보낸다. pid 재사용 자체는 만들 수 없으므로 그 판단의 재료를 확인한다:
+  // 같은 프로세스는 같은 신원, 나중에 시작한 프로세스는 다른 신원, 끝난 프로세스는 신원이 없다.
+  it("identifies a process by when the OS started it, so a reused pid does not look like its Postgres", async () => {
+    const first = spawn("sleep", ["60"], { stdio: "ignore" });
+    let second: ReturnType<typeof spawn> | undefined;
+    try {
+      const identity = processIdentity(first.pid!);
+      expect(identity).toBeTruthy();
+      expect(processIdentity(first.pid!)).toBe(identity);
+      // ps의 시작 시각은 초 단위이므로 1초 넘게 뒤에 시작한다.
+      await new Promise((r) => setTimeout(r, 1_100));
+      second = spawn("sleep", ["60"], { stdio: "ignore" });
+      expect(processIdentity(second.pid!)).toBeTruthy();
+      expect(processIdentity(second.pid!)).not.toBe(identity);
+      await killHard(first);
+      expect(processIdentity(first.pid!)).toBeUndefined();
+    } finally {
+      await killHard(first);
+      if (second) await killHard(second);
+    }
+  });
 });
 
 function isAlive(pid: number) {
@@ -548,7 +575,18 @@ function isAlive(pid: number) {
 /** 테스트가 만든 cluster 폴더와 그 옆의 주인 기록을 지운다. */
 async function removeCluster(dataDir: string) {
   await fsp.rm(dataDir, { recursive: true, force: true });
-  await fsp.rm(`${dataDir}.owner.json`, { force: true });
+  await fsp.rm(`${dataDir}.owner`, { recursive: true, force: true });
+}
+
+/** 주인 기록을 그 프로세스가 지금 주인인 것으로 바꿔 둔다. */
+function recordOwner(
+  dataDir: string,
+  owner: { pid: number; persistent: boolean }
+) {
+  const dir = `${dataDir}.owner`;
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "1"), JSON.stringify(owner));
 }
 
 function readPostmaster(dataDir: string) {
