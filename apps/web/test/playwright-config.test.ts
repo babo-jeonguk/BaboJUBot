@@ -16,8 +16,14 @@ it("gives the E2E server a temporary product folder that the runner removes when
   const script = `
     import { existsSync } from "node:fs";
     const { default: config } = await import(${JSON.stringify(pathToFileURL(config).href)});
-    const home = config.webServer[0].env.BABOJUBOT_HOME;
-    console.log(JSON.stringify({ home, exists: Boolean(home) && existsSync(home) }));
+    const server = config.webServer[0];
+    const home = server.env.BABOJUBOT_HOME;
+    console.log(JSON.stringify({
+      home,
+      exists: Boolean(home) && existsSync(home),
+      serverDeadline: Number(server.env.BABOJUBOT_SHUTDOWN_TIMEOUT_MS),
+      runnerDeadline: server.gracefulShutdown?.timeout,
+    }));
   `;
   const env = { ...process.env };
   delete env.BABOJUBOT_E2E_HOME;
@@ -35,9 +41,13 @@ it("gives the E2E server a temporary product folder that the runner removes when
   const [code] = await once(runner, "exit");
   expect(code).toBe(0);
 
-  const { home, exists } = JSON.parse(output) as {
+  const { home, exists, serverDeadline, runnerDeadline } = JSON.parse(
+    output
+  ) as {
     home?: string;
     exists: boolean;
+    serverDeadline: number | null;
+    runnerDeadline?: number;
   };
   expect(home).toBeDefined();
   expect(exists).toBe(true);
@@ -47,4 +57,9 @@ it("gives the E2E server a temporary product folder that the runner removes when
   );
   expect(fromTmp.startsWith("..") || path.isAbsolute(fromTmp)).toBe(false);
   expect(existsSync(home!)).toBe(false);
+
+  // 서버는 자기 정리 시한에 스스로 끝나며 내장 Postgres를 멈춘다. 실행기가 그보다 먼저 강제로 끝내면
+  // 따로 떨어진 Postgres가 남으므로, 실행기의 시한이 서버의 시한보다 여유 있게 길어야 한다.
+  expect(serverDeadline).toBeGreaterThan(0);
+  expect(runnerDeadline! - serverDeadline!).toBeGreaterThanOrEqual(5_000);
 }, 60_000);

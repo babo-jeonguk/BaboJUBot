@@ -131,6 +131,60 @@ describe("embedded Postgres lifetime", () => {
     },
     60_000
   );
+  // 정지를 요청한 뒤 Postgres가 끝나기 전에 프로세스가 끝나면(정리 시한 초과 등) 즉시 정지로 넘긴다.
+  // 빠른 정지는 연결 프로세스가 모두 끝나기를 기다리므로, 멈춘 연결 프로세스 하나로 끝나지 않는 상황을 만든다.
+  it("escalates to an immediate stop when the process ends while Postgres is still stopping", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
+    const script = `
+      const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
+      const { default: pg } = await import("pg");
+      const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: true } });
+      const client = new pg.Client({ connectionString: handle.url });
+      client.on("error", () => {});
+      await client.connect();
+      const { rows } = await client.query("select pg_backend_pid() as pid");
+      console.log(rows[0].pid);
+      process.stdin.once("data", () => {
+        void handle.close();
+        setTimeout(() => process.exit(1), 1000);
+      });
+    `;
+    let postmaster = 0;
+    let backend = 0;
+    try {
+      const child = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", script],
+        { stdio: ["pipe", "pipe", "inherit"] }
+      );
+      const exited = once(child, "exit");
+      const [line] = await once(child.stdout!, "data");
+      backend = Number(String(line).trim());
+      postmaster = Number(
+        fs
+          .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
+          .split("\n")[0]
+      );
+      process.kill(backend, "SIGSTOP");
+      child.stdin!.write("close\n");
+      await exited;
+      expect(child.exitCode).toBe(1);
+
+      const deadline = Date.now() + 20_000;
+      while (isAlive(postmaster) && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 50));
+      expect(isAlive(postmaster)).toBe(false);
+    } finally {
+      for (const pid of [backend, postmaster])
+        if (pid && isAlive(pid)) {
+          process.kill(pid, "SIGCONT");
+          process.kill(pid, "SIGKILL");
+        }
+      await fsp.rm(dataDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   // 종료 신호와 종료 순서는 프로그램이 정한다. DB를 불러오거나 열기만 해도 신호를 가로채 먼저 끝내면
   // 서버가 정리하는 동안 DB가 사라진다(외부 DB여도 프로세스가 바로 끝난다).
   it("leaves stop signals to the program that imports it and opens a database", async () => {

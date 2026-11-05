@@ -121,6 +121,70 @@ it("stops the embedded Postgres it was starting when a stop signal arrives durin
   }
 }, 60_000);
 
+// 시작이 실패하면 그 사이 종료 신호가 왔어도 실패로 끝나야 서비스 관리자가 알 수 있다.
+// Postgres port 0은 initdb 뒤 Postgres 시작에서 반드시 실패한다.
+it("ends with a failure when the start fails after a stop signal arrived during startup", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
+  const child = startMain({
+    BABOJUBOT_HOME: home,
+    EMBEDDED_POSTGRES_PORT: "0",
+  });
+  try {
+    while (!existsSync(path.join(home, "postgres")))
+      await new Promise((r) => setTimeout(r, 10));
+    child.kill("SIGTERM");
+    const [code] = await once(child, "exit");
+    expect(code).toBe(1);
+    expect(child.stderrText()).toContain(
+      "embedded Postgres exited before it was ready"
+    );
+  } finally {
+    child.kill("SIGKILL");
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// 정리가 멈추면 정해진 시한(BABOJUBOT_SHUTDOWN_TIMEOUT_MS)에 실패로 끝난다. 서버를 감싼 실행기(Playwright·Docker·
+// Kubernetes)는 그보다 긴 시한을 두어, 서버가 스스로 끝나며 내장 Postgres를 멈출 기회를 갖는다.
+// 멈춘 Postgres로 정리가 끝나지 않는 상황을 만든다. 서버가 끝난 뒤 다시 움직인 Postgres는 받은 정지 신호로 끝난다.
+it("ends with a failure at its configured shutdown deadline and leaves no Postgres behind", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
+  const child = startMain({
+    BABOJUBOT_HOME: home,
+    EMBEDDED_POSTGRES_PORT: String(await freePort()),
+    BABOJUBOT_SHUTDOWN_TIMEOUT_MS: "2000",
+  });
+  let postgresPid = 0;
+  try {
+    await ready(child);
+    postgresPid = Number(
+      readFileSync(path.join(home, "postgres", "postmaster.pid"), "utf8").split(
+        "\n"
+      )[0]
+    );
+    process.kill(postgresPid, "SIGSTOP");
+    const stoppedAt = Date.now();
+    child.kill("SIGTERM");
+    const [code] = await once(child, "exit");
+    expect(code).toBe(1);
+    expect(Date.now() - stoppedAt).toBeLessThan(10_000);
+    expect(child.stderrText()).toContain("did not finish");
+
+    process.kill(postgresPid, "SIGCONT");
+    const deadline = Date.now() + 15_000;
+    while (isAlive(postgresPid) && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 50));
+    expect(isAlive(postgresPid)).toBe(false);
+  } finally {
+    child.kill("SIGKILL");
+    if (postgresPid && isAlive(postgresPid)) {
+      process.kill(postgresPid, "SIGCONT");
+      process.kill(postgresPid, "SIGKILL");
+    }
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 60_000);
+
 type MainProcess = ChildProcess & { stderrText: () => string };
 
 function startMain(
