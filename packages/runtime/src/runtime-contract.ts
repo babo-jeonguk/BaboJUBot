@@ -263,25 +263,29 @@ export function describeRuntimeContract(
           open = undefined;
         };
       };
-      // 도구 호출이나 활동이 일을 시작했다는 신호다. 신호가 없으면 `startupMs` 뒤에 취소한다.
-      let markStarted!: () => void;
-      const started = new Promise<void>((resolve) => {
-        markStarted = resolve;
-        setTimeout(resolve, startupMs);
+      // 도구 호출이나 활동이 일을 시작했다는 신호다. `started`는 신호가 없어도 `startupMs` 뒤에 풀린다.
+      // 시작을 기다려야 결과가 정해지는 검사는 시간과 무관한 `working`을 기다린다.
+      let markWorking!: () => void;
+      const working = new Promise<void>((resolve) => {
+        markWorking = resolve;
       });
-      tools.onRequest.add(markStarted);
-      void started.then(() => tools.onRequest.delete(markStarted));
+      const started = Promise.race([
+        working,
+        new Promise<void>((resolve) => setTimeout(resolve, startupMs)),
+      ]);
+      tools.onRequest.add(markWorking);
       const result = adapter
         .execute(request, {
           signal: controller.signal,
           emit: async (activity) => {
             (returned ? late : activities).push(activity);
-            markStarted();
+            markWorking();
             await gate;
           },
         })
         .finally(() => {
           returned = true;
+          tools.onRequest.delete(markWorking);
         });
       return {
         token,
@@ -292,6 +296,7 @@ export function describeRuntimeContract(
         late,
         result,
         started,
+        working,
         holdActivities,
         get returned() {
           return returned;
@@ -496,7 +501,11 @@ export function describeRuntimeContract(
         "takes a steered message into the run it is working on so that the run's result reflects it, and refuses one for an unknown or returned run",
         async () => {
           const attempt = run(steers!.scene);
-          await attempt.started;
+          await deadline(
+            attempt.working,
+            finishWithinMs,
+            "did not show that it started working"
+          );
           const steer = (runId: string, body: string) =>
             adapter.steer!({
               runId,
@@ -530,7 +539,7 @@ export function describeRuntimeContract(
           expect(await steer(attempt.runId, "늦은 말")).toBe("rejected");
           await expectSettled(attempt, result);
         },
-        startupMs + 2 * finishWithinMs + settleMs
+        3 * finishWithinMs + settleMs
       );
 
     it(

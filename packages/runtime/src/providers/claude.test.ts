@@ -1,4 +1,4 @@
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -295,12 +295,12 @@ it("waits for an orphaned child to exit before settling cancellation", async () 
     },
   });
   expect(result.stopReason).toBe("cancelled");
-  await new Promise((resolve) => setTimeout(resolve, 2800));
-  const { access } = await import("node:fs/promises");
-  await expect(
-    access(path.join(root, "providers/claude/orphan-effect"))
-  ).rejects.toThrow();
-}, 10000);
+  // The child keeps writing while it lives, so a run that settles early would see this change.
+  const heartbeat = path.join(root, "providers/claude/orphan-heartbeat");
+  const settled = await readFile(heartbeat, "utf8");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(await readFile(heartbeat, "utf8")).toBe(settled);
+});
 
 it("compacts through the real compact protocol output", async () => {
   const root = await home();
