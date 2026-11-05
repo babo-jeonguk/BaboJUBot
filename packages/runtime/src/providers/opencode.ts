@@ -15,6 +15,8 @@ import {
   providerEnvironment,
   runProbe,
 } from "./process.ts";
+import type { ContainerLaunch, ContainerSettings } from "./container.ts";
+import { containerLaunch } from "./container.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const count = (v: unknown) =>
@@ -44,6 +46,7 @@ export function createOpenCodeProvider(options: {
   command?: readonly [string, ...string[]];
   id?: string;
   label?: string;
+  container?: ContainerSettings;
 }): ProviderConnection {
   const connectionId = options.id ?? "opencode";
   const home = path.resolve(options.dataDir, "providers", connectionId),
@@ -75,7 +78,8 @@ export function createOpenCodeProvider(options: {
   };
   async function server(
     signal: AbortSignal,
-    config: Record<string, unknown> = {}
+    config: Record<string, unknown> = {},
+    container?: ContainerLaunch
   ) {
     const directory = await mkdtemp(path.join(home, "attempt-")),
       password = crypto.randomUUID();
@@ -94,7 +98,9 @@ export function createOpenCodeProvider(options: {
     const child = startProcess({
       stateDir: home,
       command,
-      args: ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
+      args: container
+        ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
+        : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
       cwd: home,
       env: {
         ...env(),
@@ -102,12 +108,30 @@ export function createOpenCodeProvider(options: {
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         OPENCODE_SERVER_PASSWORD: password,
       },
+      ...(container ? { container: { ...container, publish: 4096 } } : {}),
       onFrame: async (raw) => {
         const url = object(raw).url;
         if (typeof url === "string") {
-          const parsed = new URL(url);
-          if (parsed.hostname === "127.0.0.1" && parsed.protocol === "http:")
-            resolveUrl(parsed.origin);
+          if (container) {
+            // 컨테이너 안 서버는 이 컴퓨터의 loopback에 공개된 포트로만 제어한다(비밀번호 인증 유지).
+            let parsed: URL | undefined;
+            try {
+              parsed = new URL(url);
+            } catch {
+              parsed = undefined;
+            }
+            if (parsed?.protocol === "http:") {
+              try {
+                resolveUrl(await child.address(4096));
+              } catch {
+                lifetime.abort();
+              }
+            }
+          } else {
+            const parsed = new URL(url);
+            if (parsed.hostname === "127.0.0.1" && parsed.protocol === "http:")
+              resolveUrl(parsed.origin);
+          }
         }
       },
     });
@@ -242,6 +266,19 @@ export function createOpenCodeProvider(options: {
       let service: Awaited<ReturnType<typeof server>> | undefined,
         events: Promise<void> | undefined;
       try {
+        // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
+        if (input.execution === "container" && !options.container)
+          return failure();
+        const container =
+          input.execution === "container"
+            ? containerLaunch(options.container!, {
+                home,
+                cwd: home,
+                program: "opencode",
+                workspace: input.workspace,
+                identity: input.identity,
+              })
+            : undefined;
         await prepare();
         // Instructions are attached separately; never set agent.system, which replaces the native prompt.
         const config = {
@@ -258,7 +295,7 @@ export function createOpenCodeProvider(options: {
             },
           },
         };
-        service = await server(control.signal, config);
+        service = await server(control.signal, config, container);
         const api = service;
         const available = models(await api.json("/api/model"));
         // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
@@ -443,6 +480,7 @@ export function createOpenCodeProvider(options: {
   return {
     id: connectionId,
     label: options.label ?? "OpenCode",
+    isolatable: true,
     login: { command, args: ["auth", "login"], env: env() },
     adapter,
     models: [],

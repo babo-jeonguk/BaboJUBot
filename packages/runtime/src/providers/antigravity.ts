@@ -20,6 +20,8 @@ import {
   ownerMark,
   publishConfig,
 } from "./antigravity-config.ts";
+import type { ContainerSettings } from "./container.ts";
+import { containerLaunch } from "./container.ts";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -55,6 +57,7 @@ export function createAntigravityProvider(options: {
   command?: readonly [string, ...string[]];
   id?: string;
   label?: string;
+  container?: ContainerSettings;
 }): ProviderConnection {
   const connectionId = options.id ?? "antigravity";
   const home = path.resolve(options.dataDir, "providers", connectionId),
@@ -116,9 +119,22 @@ export function createAntigravityProvider(options: {
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
+        // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
+        if (request.execution === "container" && !options.container)
+          return failure();
         // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
         await mkdir(home, { recursive: true, mode: 0o700 });
         cwd = await realpath(request.workspace?.cwd ?? home);
+        const container =
+          request.execution === "container"
+            ? containerLaunch(options.container!, {
+                home,
+                cwd,
+                program: "agy",
+                workspace: request.workspace,
+                identity: request.identity,
+              })
+            : undefined;
         while (workspaces.has(cwd)) {
           control.signal.throwIfAborted();
           await Promise.race([
@@ -191,6 +207,7 @@ export function createAntigravityProvider(options: {
           args,
           cwd,
           env: env(),
+          container,
           onFrame: async (raw) => {
             if (!raw || typeof raw !== "object" || finished) return;
             const frame = raw as {
@@ -323,6 +340,7 @@ export function createAntigravityProvider(options: {
   return {
     id: connectionId,
     label: options.label ?? "Antigravity",
+    isolatable: true,
     login: { command, args: [], env: env() },
     adapter,
     models: [],

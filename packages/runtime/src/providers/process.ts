@@ -8,6 +8,13 @@ import type { ChildProcessByStdio } from "node:child_process";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
+import type { ContainerLaunch } from "./container.ts";
+import {
+  dockerClientEnv,
+  dockerRunArgs,
+  publishedAddress,
+  removeContainer,
+} from "./container.ts";
 
 /** 프로그램이 있는지 보는 짧은 확인의 제한. 바쁜 컴퓨터에서도 넘지 않을 만큼 넉넉하게 둔다. */
 export const probeTimeoutMs = 15_000;
@@ -153,15 +160,34 @@ export function startProcess(options: {
   stateDir?: string;
   maxLineLength?: number;
   onFrame: (frame: unknown) => Promise<void>;
+  container?: ContainerLaunch;
 }) {
   const maxLineLength = options.maxLineLength ?? defaultMaxLineLength;
   const lease = crypto.randomUUID();
+  const name = options.container ? "babojubot-" + lease : undefined;
   const child = spawn(
-    options.command[0],
-    [...options.command.slice(1), ...options.args],
+    options.container
+      ? options.container.settings.docker[0]
+      : options.command[0],
+    options.container
+      ? [
+          ...options.container.settings.docker.slice(1),
+          ...dockerRunArgs(options.container, {
+            name: name!,
+            cwd: options.cwd,
+            env: { ...options.env, ...options.container.env },
+            args: options.args,
+          }),
+        ]
+      : [...options.command.slice(1), ...options.args],
     {
       cwd: options.cwd,
-      env: { ...options.env, BABOJUBOT_PROCESS_LEASE: lease },
+      env: options.container
+        ? {
+            ...dockerClientEnv({ ...options.env, ...options.container.env }),
+            BABOJUBOT_PROCESS_LEASE: lease,
+          }
+        : { ...options.env, BABOJUBOT_PROCESS_LEASE: lease },
       stdio: ["pipe", "pipe", "pipe"],
       // Windows에는 프로세스 그룹이 없다. 새 콘솔 창도 띄우지 않는다.
       detached: process.platform !== "win32",
@@ -267,6 +293,16 @@ export function startProcess(options: {
               "[provider] a process group could not be stopped; releasing the run and keeping its recovery record"
             );
           }
+        // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
+        if (
+          options.container &&
+          !(await removeContainer(options.container.settings, name!))
+        ) {
+          broken = true;
+          console.error(
+            "[provider] a container could not be removed; it is removed at the next server start"
+          );
+        }
         await queue;
         if (stopped)
           try {
@@ -293,6 +329,10 @@ export function startProcess(options: {
     done,
     interrupt: () => signalGroup("SIGINT"),
     endInput: () => child.stdin.end(),
+    address: (port: number) =>
+      options.container
+        ? publishedAddress(options.container.settings, name!, port)
+        : Promise.reject(new Error("not a container")),
     get closed() {
       return closed;
     },
