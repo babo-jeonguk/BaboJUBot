@@ -119,8 +119,13 @@ if (verb === "run") {
     for (let i = 2; i < args.length - 1; i++) {
       const [key, value = ""] = (args[i + 1] ?? "").split(/=(.*)/s);
       if (args[i] === "--driver") network.Driver = args[++i];
-      else if (args[i] === "--opt") ((network.Options[key] = value), i++);
-      else if (args[i] === "--label") ((network.Labels[key] = value), i++);
+      else if (args[i] === "--opt") {
+        network.Options[key] = value;
+        i++;
+      } else if (args[i] === "--label") {
+        network.Labels[key] = value;
+        i++;
+      }
     }
     writeFileSync(file, JSON.stringify(network));
   }
