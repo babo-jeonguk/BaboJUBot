@@ -20,6 +20,7 @@ type Safety =
  * 실행 시도와 같은 네트워크의 시험 컨테이너로 사용자 API·DB 포트에 닿지 않고 전용 listener에는 닿는지 확인한다.
  * 확인은 한 번 하고 결과를 나눠 쓰며 준비 확인을 다시 할 때 새로 한다. 확인을 통과하지 않으면 실제 연결은
  * 준비안됨이고 실행 시도는 컨테이너에서도 이 컴퓨터에서도 시작하지 않는다.
+ * 닫으면 진행 중인 확인을 끝내고 그 뒤로는 확인하지 않는다(격리 환경 없음).
  */
 export class IsolationGate {
   readonly #docker: DockerEnvironment | undefined;
@@ -28,6 +29,8 @@ export class IsolationGate {
   readonly #readIsolated: () => Promise<boolean>;
   readonly #hostUrl: () => string;
   readonly #timeoutMs: number;
+  /** 관문의 수명. 닫으면 진행 중인 확인을 끝내고 새 확인·listener를 열지 않는다. */
+  readonly #lifetime = new AbortController();
   #current: Promise<Safety> | undefined;
   #listener:
     { gateway: string; server: http.Server; origin: string } | undefined;
@@ -86,26 +89,34 @@ export class IsolationGate {
     };
   }
 
-  /** 확인의 결과는 시한 안에 정한다. Docker가 늦게 끝내는 일(시험 컨테이너 제거 등)을 기다리지 않는다. */
+  /** 확인의 결과는 시한 안에, 또는 관문을 닫으면 바로 정한다. Docker가 늦게 끝내는 일(시험 컨테이너 제거 등)을 기다리지 않는다. */
   async #probe(): Promise<Safety> {
     const docker = this.#docker;
-    if (!docker) return { status: "unavailable" };
+    if (!docker || this.#lifetime.signal.aborted)
+      return { status: "unavailable" };
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<Safety>((resolve) => {
-      timer = setTimeout(() => {
-        controller.abort(new Error("isolation safety check timed out"));
-        console.error("[isolation] safety check did not finish in time");
+    let closed: (() => void) | undefined;
+    const ended = new Promise<Safety>((resolve) => {
+      const end = (reason: Error) => {
+        controller.abort(reason);
         resolve({ status: "unavailable" });
+      };
+      timer = setTimeout(() => {
+        console.error("[isolation] safety check did not finish in time");
+        end(new Error("isolation safety check timed out"));
       }, this.#timeoutMs);
+      closed = () => end(new Error("isolation gate closed"));
+      this.#lifetime.signal.addEventListener("abort", closed, { once: true });
     });
     try {
       return await Promise.race([
         this.#examine(docker, controller.signal),
-        expired,
+        ended,
       ]);
     } finally {
       clearTimeout(timer);
+      if (closed) this.#lifetime.signal.removeEventListener("abort", closed);
     }
   }
 
@@ -116,7 +127,7 @@ export class IsolationGate {
     try {
       const { gateway } = await docker.prepareNetwork(signal);
       signal.throwIfAborted();
-      const tools = await this.#listen(gateway);
+      const tools = await this.#listen(gateway, signal);
       const addresses = Object.values(os.networkInterfaces())
         .flatMap((interfaces) => interfaces ?? [])
         .filter(
@@ -142,9 +153,10 @@ export class IsolationGate {
     }
   }
 
-  async #listen(gateway: string): Promise<string> {
+  async #listen(gateway: string, signal: AbortSignal): Promise<string> {
     if (this.#listener?.gateway === gateway) return this.#listener.origin;
     await this.#closeListener();
+    signal.throwIfAborted();
     const server = http.createServer(this.#toolsApp);
     await new Promise<void>((resolve, reject) => {
       const fail = (error: Error) => {
@@ -159,6 +171,12 @@ export class IsolationGate {
       server.once("listening", ready);
       server.listen(0, gateway);
     });
+    // 여는 사이 확인이 끝났거나(시한·닫힘) 관문을 닫았으면 이 listener를 남기지 않는다.
+    if (signal.aborted) {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      signal.throwIfAborted();
+    }
     const address = server.address() as net.AddressInfo;
     const host = gateway.includes(":") ? `[${gateway}]` : gateway;
     const origin = `http://${host}:${address.port}`;
@@ -176,7 +194,9 @@ export class IsolationGate {
     );
   }
 
+  /** 관문을 닫는다. 진행 중인 확인은 격리 환경 없음으로 끝나고, 닫은 뒤에는 확인도 listener도 다시 열지 않는다. */
   async close(): Promise<void> {
+    this.#lifetime.abort();
     await this.#closeListener();
   }
 }
