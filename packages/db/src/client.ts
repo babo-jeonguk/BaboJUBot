@@ -1,15 +1,23 @@
-import type { ChildProcess } from "node:child_process";
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import EmbeddedPostgres from "embedded-postgres";
 import pg from "pg";
 import * as schema from "./schema.ts";
+import {
+  clusterUrl,
+  ephemeralCluster,
+  startEmbeddedCluster,
+  type EmbeddedOptions,
+} from "./embedded.ts";
+
+export {
+  clusterUrl,
+  ephemeralCluster,
+  freePort,
+  startEmbeddedCluster,
+  type EmbeddedOptions,
+} from "./embedded.ts";
 
 export type Database = NodePgDatabase<typeof schema>;
 
@@ -18,13 +26,6 @@ export type DatabaseHandle = {
   db: Database;
   url: string;
   close: () => Promise<void>;
-};
-
-/** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 정지 때 dataDir를 지운다. */
-export type EmbeddedOptions = {
-  dataDir: string;
-  port: number;
-  persistent: boolean;
 };
 
 export type DatabaseOptions =
@@ -56,99 +57,6 @@ export async function openDatabase(
     await stop();
     throw error;
   }
-}
-
-/** embedded cluster의 DB 하나에 연결할 주소. */
-export const clusterUrl = (port: number, database: string) =>
-  `postgres://postgres:postgres@127.0.0.1:${port}/${database}`;
-
-/**
- * embedded cluster를 띄우고 멈추는 함수를 돌려준다. `stop`이 돌아오면 postgres는 끝났다.
- * `settings`는 postgres 설정(`이름=값`)이다.
- */
-export async function startEmbeddedCluster(
-  { dataDir, port, persistent }: EmbeddedOptions,
-  settings: string[] = []
-): Promise<() => Promise<void>> {
-  // 시작에 실패했을 때 이유를 보이려고 Postgres의 말을 끝부분만 남긴다.
-  let recentLog = "";
-  const cluster = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    port,
-    user: "postgres",
-    password: "postgres",
-    persistent,
-    initdbFlags: ["--encoding=UTF8", "--locale=C"],
-    postgresFlags: settings.flatMap((setting) => ["-c", setting]),
-    onLog: (message) => {
-      recentLog = (recentLog + String(message)).slice(-1000);
-    },
-    onError: (error) => console.error("[embedded-postgres]", error),
-  });
-  // 종료 신호(SIGINT·SIGTERM·SIGHUP)와 종료 순서는 이 DB를 연 프로그램이 정한다(서버는 main.ts). 그래서 embedded-postgres가
-  // import 때 걸던 종료 hook은 patches/에서 뺐다. 프로그램이 `stop`을 마치지 못하고 끝나면(process.exit, 처리되지 않은 오류,
-  // 정리 시한 초과) postgres가 이 프로세스보다 오래 살아 다음 시작이 dataDir 잠금으로 실패하므로 `exit`에서 멈춘다.
-  // 그 뒤로는 postgres를 챙길 쪽이 없으므로 무엇도 기다리지 않는 즉시 정지(SIGQUIT)를 보낸다. 빠른 정지는 연결 프로세스가
-  // 모두 끝나기를 기다려 멈출 수 있다. 즉시 정지한 cluster는 다음 시작이 복구한다. `exit`에서는 동기 작업만 할 수 있다.
-  // Windows의 정지는 처음부터 강제 종료(taskkill /f /t)이므로 그 정지를 요청한다.
-  // `process`는 18.6.0-beta.19의 비공개 field다(`startCluster` 참고).
-  const stopOnExit = () => {
-    const child = (cluster as unknown as { process?: ChildProcess }).process;
-    if (child && process.platform !== "win32") child.kill("SIGQUIT");
-    else void cluster.stop();
-  };
-  // 비상 정지는 정지가 끝난 뒤에야 내려놓는다.
-  // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
-  const stop = async () => {
-    await cluster.stop();
-    process.off("exit", stopOnExit);
-    if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });
-  };
-  process.on("exit", stopOnExit);
-  try {
-    if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
-      await cluster.initialise();
-    await startCluster(cluster, () => recentLog);
-    return stop;
-  } catch (error) {
-    await stop();
-    throw error;
-  }
-}
-
-/**
- * embedded-postgres의 `stop`은 이미 끝난 postgres의 exit를 기다리며 멈춘다(upstream issue #32).
- * 프로세스 종료 때의 정지도 `stop`을 부르므로, postgres가 끝나면 cluster가 그 프로세스를 잊게 한다.
- * `start`가 실패해도 postgres는 이미 끝났으므로 `stop`은 바로 돌아온다.
- */
-async function startCluster(
-  cluster: EmbeddedPostgres,
-  recentLog: () => string
-) {
-  // 18.6.0-beta.19의 비공개 field. 버전을 올리면 이 우회가 아직 필요한지 확인한다.
-  const internal = cluster as unknown as { process?: ChildProcess };
-  const forgetWhenExited = () => {
-    const child = internal.process;
-    if (!child) return;
-    const forget = () => {
-      if (internal.process === child) internal.process = undefined;
-    };
-    if (child.exitCode !== null || child.signalCode !== null) forget();
-    else child.once("exit", forget);
-  };
-  try {
-    await cluster.start();
-  } catch (error) {
-    forgetWhenExited();
-    // embedded-postgres는 postgres가 먼저 끝나면 이유 없이 reject한다.
-    throw (
-      error ??
-      new Error(
-        `embedded Postgres exited before it was ready: ${recentLog().trim()}`
-      )
-    );
-  }
-  forgetWhenExited();
 }
 
 async function ensureDatabase(url: string) {
@@ -204,26 +112,4 @@ async function connect(
 /** 임시 dataDir와 빈 port에 embedded Postgres를 띄운다. `close`가 cluster와 dataDir를 지운다. 테스트와 E2E용. */
 export async function openEphemeralDatabase(): Promise<DatabaseHandle> {
   return openDatabase({ embedded: await ephemeralCluster() });
-}
-
-/** 임시 dataDir와 빈 port. 정지 때 dataDir를 지우며, port를 못 구하면 바로 지운다. */
-export async function ephemeralCluster(): Promise<EmbeddedOptions> {
-  const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-  try {
-    return { dataDir, port: await freePort(), persistent: false };
-  } catch (error) {
-    await fsp.rm(dataDir, { recursive: true, force: true });
-    throw error;
-  }
-}
-
-export function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as net.AddressInfo;
-      server.close(() => resolve(port));
-    });
-  });
 }

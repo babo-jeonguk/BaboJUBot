@@ -1,5 +1,15 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 415ef0a3c8fc3acecb6e21342ac424ffdc7c2798..5a4d776378591c9ce1d31f4605931ae999513b99 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -54,4 +54,5 @@ declare class EmbeddedPostgres {
+      */
+     private getUidAndGid;
+ }
++export { default as getBinaries, type PostgresBinaries } from './binary.js';
+ export default EmbeddedPostgres;
 diff --git a/dist/index.js b/dist/index.js
-index 574bc4522fa3fe222fd75b6019cccf3902a29137..ed4c17d2783dec980f27c45724332e7baddc012d 100644
+index 574bc4522fa3fe222fd75b6019cccf3902a29137..e4cb950b9d4781e7afbda6b2103c735aa34bf82e 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -13,7 +13,6 @@ import fs from 'fs/promises';
@@ -10,21 +20,7 @@ index 574bc4522fa3fe222fd75b6019cccf3902a29137..ed4c17d2783dec980f27c45724332e7b
  import getBinaries from './binary.js';
  import { ensureSymlinks } from './symlinks.js';
  const bin = getBinaries();
-@@ -213,7 +212,12 @@ class EmbeddedPostgres {
-                     '-p',
-                     this.options.port.toString(),
-                     ...this.options.postgresFlags,
--                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, process.env), { LC_MESSAGES: locale }) }));
-+                ], Object.assign(Object.assign({}, permissionIds), {
-+                    // BaboJUBot: the program that started Postgres stops it after its own shutdown. A separate process
-+                    // group keeps a terminal Ctrl+C or window close (sent to the whole group) from stopping it first.
-+                    detached: true,
-+                    env: Object.assign(Object.assign({}, process.env), { LC_MESSAGES: locale }),
-+                }));
-                 // Connect to stderr, as that is where the messages get sent
-                 (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
-                     // Parse the data as a string and log it
-@@ -382,21 +386,4 @@ function execAsync(command) {
+@@ -382,21 +381,6 @@ function execAsync(command) {
          });
      });
  }
@@ -45,4 +41,6 @@ index 574bc4522fa3fe222fd75b6019cccf3902a29137..ed4c17d2783dec980f27c45724332e7b
 -asyncExitHook(gracefulShutdown, {
 -    wait: 5000
 -});
++// BaboJUBot: the program starts and stops the cluster with the bundled pg_ctl, so it needs the binary paths.
++export { default as getBinaries } from './binary.js';
  export default EmbeddedPostgres;
