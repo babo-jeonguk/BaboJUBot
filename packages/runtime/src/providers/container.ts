@@ -64,6 +64,8 @@ export function containerLaunch(
     program: string;
     workspace?: RunRequest["workspace"];
     identity?: { runId: string; organizationId: string };
+    /** 이 실행 시도만의 파일(조직 도구 토큰이 든 설정 등)이 든 폴더. 읽기만 넣는다. */
+    attempt?: string;
     publish?: number;
   }
 ): ContainerLaunch {
@@ -80,6 +82,8 @@ export function containerLaunch(
   } else {
     mount(options.cwd, true);
   }
+  // 이 실행 시도만의 파일은 이 컨테이너에만 읽기로 넣는다.
+  if (options.attempt) mount(options.attempt, false);
   // 프로그램이 실제 경로(realpath)로 작업 폴더를 열면 그 경로도 같은 폴더로 넣는다.
   const contained = (mountPath: string) => {
     const relative = path.relative(mountPath, options.cwd);

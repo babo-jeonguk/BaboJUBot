@@ -151,13 +151,15 @@ describe("an isolated attempt", () => {
     expect(labels).toContainEqual(
       expect.stringMatching(/^babojubot\.run=[0-9a-f-]{36}$/)
     );
-    // 조직 폴더·자기 개인 폴더·그 프로바이더의 제품 설정 폴더는 읽기·쓰기, 동료 개인 폴더는 읽기만. 그 밖에는 없다.
+    // 조직 폴더·자기 개인 폴더·그 프로바이더의 제품 설정 폴더는 읽기·쓰기, 동료 개인 폴더와 이 실행 시도의 파일 폴더는 읽기만. 그 밖에는 없다.
     expect(valuesOf(args, "--mount").sort()).toEqual(
       [
         `type=bind,source=${env.shared},target=${env.shared}`,
         `type=bind,source=${env.personal},target=${env.personal}`,
         `type=bind,source=${env.peerFolder},target=${env.peerFolder},readonly`,
         `type=bind,source=${home},target=${home}`,
+        // 토큰이 든 이 실행 시도만의 파일 폴더(읽기만).
+        `type=bind,source=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
       ].sort()
     );
     expect(args.join(" ")).not.toMatch(/docker\.sock|--volume|-v /);
@@ -187,6 +189,37 @@ describe("an isolated attempt", () => {
     expect(removed(calls.slice(calls.indexOf(run) + 1), nameOf(run))).toBe(
       true
     );
+  });
+
+  it("keeps the run token file out of the product folder that every organization's container shares", async () => {
+    const env = await setup({
+      claude: [
+        process.execPath,
+        fixture("replay.mjs"),
+        fixture("claude-finish.synthetic.json"),
+      ],
+    });
+    const provider = createClaudeProvider({
+      dataDir: env.root,
+      container: env.container,
+    });
+    const result = await provider.adapter.execute(env.isolated(), control());
+    expect(result.stopReason).toBe("completed");
+    const run = runCall(await env.calls());
+    const home = path.join(env.root, "providers/claude");
+    // 제품 폴더는 같은 연결의 모든 조직 컨테이너에 들어간다. 실행 시도 토큰이 든 MCP 설정은 그 밖의 이 실행 시도 전용 폴더에 두고 읽기만 넣는다.
+    const config = valuesOf(run.args, "--mcp-config")[0]!;
+    expect(path.relative(home, config).startsWith("..")).toBe(true);
+    const attempt = path.dirname(config);
+    expect(valuesOf(run.args, "--mount")).toContain(
+      `type=bind,source=${attempt},target=${attempt},readonly`
+    );
+    // 지침 파일도 같은 폴더에 둔다.
+    expect(
+      path.dirname(valuesOf(run.args, "--append-system-prompt-file")[0]!)
+    ).toBe(attempt);
+    // 끝나면 그 폴더를 지운다.
+    await expect(readFile(config, "utf8")).rejects.toThrow();
   });
 
   it("removes the container as the last step of cancellation", async () => {

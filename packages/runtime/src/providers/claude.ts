@@ -1,6 +1,7 @@
 import { claudeSessionFacts } from "./claude-transcript.ts";
 import { claudeModelsFor } from "./claude-models.ts";
 import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -205,6 +206,12 @@ async function executeClaude(
     return { ...failed(), stopReason: "cancelled", error: null };
   // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
   if (request.execution === "container" && !container) return failed();
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  // 컨테이너에서는 제품 폴더가 같은 연결의 모든 조직 컨테이너에 들어가므로, 토큰이 든 이 실행 시도의 파일은 그 밖에 두고 이 컨테이너에만 읽기로 넣는다.
+  const temp =
+    request.execution === "container"
+      ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
+      : await mkdtemp(path.join(home, "attempt-"));
   const launch =
     request.execution === "container"
       ? containerLaunch(container!, {
@@ -218,10 +225,9 @@ async function executeClaude(
                 organizationId: request.identity.organizationId,
               }
             : undefined,
+          attempt: temp,
         })
       : undefined;
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  const temp = await mkdtemp(path.join(home, "attempt-"));
   let result = failed();
   try {
     const config = path.join(temp, "mcp.json");
