@@ -14,6 +14,7 @@ import {
   freePort,
   openDatabase,
   processIdentity,
+  startEmbeddedCluster,
   withClient,
 } from "./client.ts";
 import { createTestDatabase } from "./testing.ts";
@@ -559,6 +560,70 @@ describe("a Postgres left by a killed process", () => {
     } finally {
       await killHard(first);
       if (second) await killHard(second);
+    }
+  });
+
+  // 임시 cluster는 dataDir와 주인 기록을 함께 가진다. 켜기 전에 실패하면(initdb 실패 등) 둘 다 남지 않아야 한다.
+  it("removes a temporary cluster with its owner record when it cannot be created", async () => {
+    const options = await ephemeralCluster();
+    // 비어 있지 않은 폴더에는 initdb가 cluster를 만들지 않는다.
+    fs.writeFileSync(path.join(options.dataDir, "unrelated"), "");
+    try {
+      await expect(startEmbeddedCluster(options)).rejects.toThrow(
+        "could not create embedded Postgres"
+      );
+      expect(fs.existsSync(options.dataDir)).toBe(false);
+      expect(fs.existsSync(`${options.dataDir}.owner`)).toBe(false);
+    } finally {
+      await removeCluster(options.dataDir);
+    }
+  }, 60_000);
+
+  it("removes a temporary owner record left without its folder", async () => {
+    const dataDir = path.join(
+      os.tmpdir(),
+      `babojubot-pg-left-${process.pid}-${Date.now()}`
+    );
+    fs.mkdirSync(`${dataDir}.owner`);
+    fs.writeFileSync(
+      path.join(`${dataDir}.owner`, "1"),
+      JSON.stringify({ released: true })
+    );
+    let next: Awaited<ReturnType<typeof ephemeralCluster>> | undefined;
+    try {
+      next = await ephemeralCluster();
+      expect(fs.existsSync(`${dataDir}.owner`)).toBe(false);
+    } finally {
+      await removeCluster(dataDir);
+      if (next) await removeCluster(next.dataDir);
+    }
+  });
+
+  // tmp는 다른 프로그램도 쓴다. 임시 주인 기록 이름을 한 링크가 tmp 밖 폴더를 가리켜도 그 폴더를 건드리면 안 된다.
+  it("does not follow a link named like a temporary owner record", async () => {
+    const outside = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "babojubot-outside-")
+    );
+    const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    await once(gone, "exit");
+    fs.writeFileSync(
+      path.join(outside, "1"),
+      JSON.stringify({ pid: gone.pid, persistent: false })
+    );
+    const link = path.join(
+      os.tmpdir(),
+      `babojubot-pg-link-${process.pid}-${Date.now()}.owner`
+    );
+    fs.symlinkSync(outside, link, "dir");
+    let next: Awaited<ReturnType<typeof ephemeralCluster>> | undefined;
+    try {
+      next = await ephemeralCluster();
+      expect(fs.readdirSync(outside)).toEqual(["1"]);
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(link, { force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+      if (next) await removeCluster(next.dataDir);
     }
   });
 });
