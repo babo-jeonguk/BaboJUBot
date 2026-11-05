@@ -16,6 +16,7 @@ export {
   emergencyStopMs,
   ephemeralCluster,
   freePort,
+  processIdentity,
   startEmbeddedCluster,
   type EmbeddedOptions,
 } from "./embedded.ts";
@@ -110,7 +111,14 @@ async function connect(
   return { db, url, close };
 }
 
-/** 임시 dataDir와 빈 port에 embedded Postgres를 띄운다. `close`가 cluster와 dataDir를 지운다. 테스트와 E2E용. */
-export async function openEphemeralDatabase(): Promise<DatabaseHandle> {
-  return openDatabase({ embedded: await ephemeralCluster() });
+/**
+ * 임시 dataDir와 빈 port에 embedded Postgres를 띄운다. `close`가 cluster와 dataDir를 지운다. 테스트와 E2E용.
+ * `emergencyStopMs`는 프로세스 종료 때 즉시 정지에 쓸 수 있는 시간이다(`EmbeddedOptions`).
+ */
+export async function openEphemeralDatabase({
+  emergencyStopMs,
+}: { emergencyStopMs?: number } = {}): Promise<DatabaseHandle> {
+  return openDatabase({
+    embedded: { ...(await ephemeralCluster()), emergencyStopMs },
+  });
 }

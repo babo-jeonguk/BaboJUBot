@@ -12,6 +12,8 @@ export type EmbeddedOptions = {
   dataDir: string;
   port: number;
   persistent: boolean;
+  /** 프로세스 종료 때 즉시 정지에 쓸 수 있는 시간(ms). 기본 `emergencyStopMs`. 0이면 보내지 않고 다음 시작에 맡긴다. */
+  emergencyStopMs?: number;
 };
 
 /** embedded cluster의 DB 하나에 연결할 주소. */
@@ -23,8 +25,7 @@ export const clusterUrl = (port: number, database: string) =>
 //   그래서 터미널의 Ctrl+C·창 닫기가 Postgres에 바로 가지 않고, Windows 관리자 계정에서도 켜진다. Windows에서 pg_ctl에 출력
 //   통로를 주면 Postgres가 그 통로를 물려받아 닫히지 않으므로 출력은 버리고 끝남 코드만 본다. 실패 이유는 Postgres 로그에서 읽는다.
 // - 끄기: 정상 정지(fast)를 요청하고 끝날 때까지 기다린다. Windows도 Postgres 자체 신호로 정상 정지한다.
-// - 주인: dataDir 하나는 한 프로세스만 쓴다. 주인 기록(`<dataDir>.owner.json`)을 한 번에 하나만 만들 수 있게 만들어 그 권리로 삼고,
-//   만들기·남은 Postgres 정리·켜기·끄기·지우기는 그 기록을 가진 프로세스만 한다.
+// - 주인: dataDir 하나는 한 프로세스만 쓴다(`acquireOwner`). 만들기·남은 Postgres 정리·켜기·끄기·지우기는 주인만 한다.
 // - 다음 시작: 강제로 끝난 프로세스가 남긴 Postgres는 기록된 주인이 죽었고 그 서버가 이 dataDir를 쓰는 것이 접속으로 확인될
 //   때만 멈춘다. 잠금 파일(postmaster.pid)만으로는 무관한 프로세스와 구별할 수 없다.
 const startSeconds = 60;
@@ -32,21 +33,30 @@ const startSeconds = 60;
 const stopSeconds = 30;
 // 다음 시작 때 남은 Postgres를 멈추는 시한.
 const leftoverStopSeconds = 10;
-/** 프로세스 종료 때 즉시 정지에 쓰는 최대 시간. 서버는 정리 시한에서 이만큼 남기고 끝낸다(main.ts). */
+/** 프로세스 종료 때 즉시 정지에 쓰는 기본 최대 시간. 서버는 정리 시한에서 이 몫을 남긴다(apps/server/src/shutdown-budget.ts). */
 export const emergencyStopMs = 1_500;
 const temporaryPrefix = "babojubot-pg-";
-const ownerSuffix = ".owner.json";
+const ownerSuffix = ".owner";
 const logName = "postgres.log";
 
 /** 이 dataDir를 쓰는 프로세스. */
 type Owner = { pid: number; persistent: boolean };
+/** 이 프로세스가 얻은 주인 세대와, 바로 전 세대의 죽은 주인. */
+type Lease = { generation: number; previous: Owner | undefined };
+/** 이 프로세스가 켠 postgres. `identity`는 OS가 매긴 프로세스 생성 신원이다(`processIdentity`). */
+type Started = { pid: number; identity: string | undefined };
 
 /**
  * embedded cluster를 띄우고 멈추는 함수를 돌려준다. `stop`이 돌아오면 postgres는 끝났다.
  * `settings`는 postgres 설정(`이름=값`)이다.
  */
 export async function startEmbeddedCluster(
-  { dataDir, port, persistent }: EmbeddedOptions,
+  {
+    dataDir,
+    port,
+    persistent,
+    emergencyStopMs: emergencyBudgetMs = emergencyStopMs,
+  }: EmbeddedOptions,
   settings: string[] = []
 ): Promise<() => Promise<void>> {
   // 설정은 pg_ctl을 거쳐 shell 명령줄에 들어가므로 따옴표가 필요 없는 값만 받는다.
@@ -54,33 +64,36 @@ export async function startEmbeddedCluster(
     if (!/^[A-Za-z_][A-Za-z0-9_.]*=[A-Za-z0-9_.:/-]+$/.test(setting))
       throw new Error(`unsupported Postgres setting "${setting}"`);
   const { pg_ctl: pgCtl } = await getBinaries();
-  const { previous } = acquireOwner(dataDir, persistent);
+  const lease = acquireOwner(dataDir, persistent);
   try {
     if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
       await initialise(dataDir);
-    await stopLeftover(pgCtl, dataDir, persistent, previous);
+    await stopLeftover(pgCtl, dataDir, persistent, lease.previous);
   } catch (error) {
     if (!persistent && !readPidFile(dataDir))
       await fsp.rm(dataDir, { recursive: true, force: true });
-    restoreOwner(dataDir, previous);
+    // 다음 시작이 같은 판단을 다시 할 수 있게 치운 죽은 주인을 되돌린다.
+    releaseOwner(dataDir, lease, lease.previous);
     throw error;
   }
 
   // 프로그램이 `stop`을 마치지 못하고 끝나면(process.exit, 처리되지 않은 오류, 정리 시한 초과) postgres가 이 프로세스보다 오래
   // 살아 남는다. 그 뒤로는 postgres를 챙길 쪽이 없으므로 무엇도 기다리지 않는 즉시 정지를 보낸다(다음 시작이 복구).
-  // `exit`에서는 동기 작업만 할 수 있다. 신호는 이 프로세스가 켠 postgres에만 보낸다: 켤 때 기억한 pid를 잠금 파일이 아직 가리킬
-  // 때만이다. 켜는 중에 끝나면 보내지 않는다. 그 postgres는 이 프로세스를 주인으로 기록하고 있어 다음 시작이 멈춘다.
-  let started: number | undefined;
+  // `exit`에서는 동기 작업만 할 수 있다. 켜는 중에 끝나면 보내지 않는다. 그 postgres는 이 프로세스를 주인으로 기록하고 있어
+  // 다음 시작이 멈춘다.
+  let started: Started | undefined;
   const stopOnExit = () => {
-    if (started && readPidFile(dataDir)?.pid === started)
-      stopNow(pgCtl, started);
+    if (started) stopNow(pgCtl, dataDir, started, emergencyBudgetMs);
   };
   // 비상 정지는 정지가 끝난 뒤에야 내려놓는다.
   const stop = async () => {
     await stopCluster(pgCtl, dataDir, stopSeconds, !persistent);
     process.off("exit", stopOnExit);
-    if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });
-    releaseOwner(dataDir);
+    if (persistent) releaseOwner(dataDir, lease);
+    else {
+      await fsp.rm(dataDir, { recursive: true, force: true });
+      await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
+    }
   };
   process.on("exit", stopOnExit);
   const log = path.join(dataDir, logName);
@@ -107,10 +120,13 @@ export async function startEmbeddedCluster(
       throw new Error(
         `embedded Postgres exited before it was ready: ${await logTail(log)}`
       );
-    started = readPidFile(dataDir)?.pid;
+    // 이 dataDir의 주인은 이 프로세스뿐이므로 잠금 파일의 postgres는 방금 켠 것이다.
+    const running = readPidFile(dataDir);
+    if (running)
+      started = { pid: running.pid, identity: processIdentity(running.pid) };
     return stop;
   } catch (error) {
-    // 이 dataDir를 가진 것은 이 프로세스뿐이므로 여기서 도는 postgres는 이번에 켜다 만 것이다.
+    // 이 dataDir의 주인은 이 프로세스뿐이므로 여기서 도는 postgres는 이번에 켜다 만 것이다.
     await stop().catch((stopError: unknown) =>
       console.error(
         "[db] could not stop embedded Postgres after a failed start",
@@ -200,16 +216,64 @@ async function stopCluster(
 }
 
 /**
- * 기다리지 않는 즉시 정지. 프로세스 종료 때 동기로 부르며 `emergencyStopMs` 안에 끝난다.
+ * 기다리지 않는 즉시 정지. 프로세스 종료 때 동기로 부르며 `budgetMs` 안에 끝난다. 이 프로세스가 켠 postgres에만 보낸다:
+ * 잠금 파일이 아직 그 pid를 가리키고, POSIX에서는 그 pid의 OS 생성 신원이 켤 때와 같을 때만이다(pid가 재사용됐으면 다르다).
  * Windows의 pg_ctl kill은 그 pid의 Postgres만 여는 신호 통로로 보내므로 Postgres가 아닌 프로세스에는 닿지 않는다.
- * 닿지 않으면 강제 종료하지 않고 다음 시작에 맡긴다.
+ * 확인할 수 없거나 시간이 없거나 닿지 않으면 보내지 않고 다음 시작에 맡긴다(주인 기록이 이 프로세스를 가리킨다).
  */
-function stopNow(pgCtl: string, pid: number) {
-  spawnSync(pgCtl, ["kill", "QUIT", String(pid)], {
+function stopNow(
+  pgCtl: string,
+  dataDir: string,
+  started: Started,
+  budgetMs: number
+) {
+  if (budgetMs < 1) return;
+  const deadline = Date.now() + budgetMs;
+  if (readPidFile(dataDir)?.pid !== started.pid) return;
+  if (
+    process.platform !== "win32" &&
+    (!started.identity ||
+      processIdentity(started.pid, budgetMs) !== started.identity)
+  )
+    return;
+  const left = deadline - Date.now();
+  if (left < 1) return;
+  spawnSync(pgCtl, ["kill", "QUIT", String(started.pid)], {
     stdio: "ignore",
-    timeout: emergencyStopMs,
+    timeout: left,
     windowsHide: true,
   });
+}
+
+/**
+ * OS가 매긴 프로세스 생성 신원. 같은 pid라도 나중에 시작한 다른 프로세스면 달라진다. Linux는 /proc의 시작 tick,
+ * 그 밖의 POSIX는 ps의 시작 시각이다. Windows는 쓰지 않는다(`stopNow` 참고). 알 수 없으면 undefined.
+ */
+export function processIdentity(
+  pid: number,
+  timeoutMs = 5_000
+): string | undefined {
+  if (process.platform === "win32") return undefined;
+  if (process.platform === "linux") {
+    try {
+      return fs
+        .readFileSync(`/proc/${pid}/stat`, "utf8")
+        .split(") ")
+        .at(-1)!
+        .split(" ")[19];
+    } catch {
+      return undefined;
+    }
+  }
+  if (timeoutMs < 1) return undefined;
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: timeoutMs,
+  });
+  const text = result.status === 0 ? result.stdout.trim() : "";
+  return text || undefined;
 }
 
 /** pg_ctl status: 0이면 그 dataDir의 잠금 파일에 적힌 프로세스가 살아 있다. */
@@ -278,79 +342,97 @@ function readPidFile(
   }
 }
 
-const ownerFile = (dataDir: string) => `${path.resolve(dataDir)}${ownerSuffix}`;
+// 주인 기록: dataDir 옆 `<dataDir>.owner/` 폴더에 세대 번호 이름의 파일(`1`, `2`, …)을 둔다. 가장 큰 번호가 지금 기록이다.
+// 주인이 되려면 지금 번호 + 1 파일을 만든다. 내용을 다 쓴 임시 파일을 hard link로 붙이므로 그 번호는 한 프로세스만 만들고,
+// 읽는 쪽이 반쯤 쓴 기록을 보지 않는다. 남의 기록을 옮기거나 지우지 않으므로, 몇 프로세스가 같은 죽은 주인을 다투어도
+// 다음 번호를 만든 하나만 주인이 된다. 내려놓을 때도 다음 번호에 내려놓음(또는 되돌릴 죽은 주인)을 남겨 번호는 줄지 않는다.
+// 지난 번호는 주인이 지운다. 오래전에 읽은 번호로 그 지워진 자리를 만든 프로세스는 더 큰 번호를 보고 물러난다.
+const ownerDir = (dataDir: string) => `${path.resolve(dataDir)}${ownerSuffix}`;
 
-/**
- * 이 dataDir를 쓸 권리를 얻는다. 주인 기록은 내용을 다 쓴 임시 파일을 hard link로 붙여 만든다. 이미 있으면 실패하므로
- * 두 프로세스가 동시에 얻지 못하고, 읽는 쪽이 반쯤 쓴 기록을 보지 않는다. 기록된 주인이 살아 있으면 실패한다.
- * 죽은 주인의 기록은 자기 이름으로 옮겨(rename은 한 프로세스만 성공) 치운다. 옮긴 기록이 그새 살아 있는 주인이 만든
- * 것이면 되돌린다. 돌려주는 `previous`는 치운 죽은 주인이다(남은 Postgres를 멈춰도 되는지 판단할 때 쓴다).
- * 세 프로세스 이상이 같은 순간에 같은 기록을 다투는 경우는 다루지 않는다.
- */
-function acquireOwner(
-  dataDir: string,
-  persistent: boolean
-): { previous: Owner | undefined } {
-  const file = ownerFile(dataDir);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const mine = `${file}.${process.pid}.new`;
-  const owner: Owner = { pid: process.pid, persistent };
-  fs.writeFileSync(mine, JSON.stringify(owner));
-  let previous: Owner | undefined;
+function generations(dir: string): number[] {
   try {
-    for (let attempt = 0; attempt < 10; attempt++) {
-      try {
-        fs.linkSync(mine, file);
-        return { previous };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-      const current = readOwnerFile(file);
-      if (current && isAlive(current.pid)) {
-        // 임시 cluster는 ephemeralCluster가 만들 때 이 프로세스 이름으로 이미 기록했다.
-        if (current.pid === process.pid && !current.persistent && !persistent)
-          return { previous };
-        throw new Error(
-          `embedded Postgres in ${dataDir} is in use by a running process (pid ${current.pid}). Stop that process first. If no BaboJUBot process uses it, delete ${file}.`
-        );
-      }
-      const stale = `${file}.${process.pid}.stale`;
-      try {
-        fs.renameSync(file, stale);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
-      }
-      const moved = readOwnerFile(stale);
-      if (moved && isAlive(moved.pid)) {
-        // 그새 다른 프로세스가 얻은 기록을 옮겼다. 되돌리고 다시 본다.
-        try {
-          fs.linkSync(stale, file);
-        } catch {
-          /* 그새 또 다른 기록이 생겼다. 다음 반복이 그 기록을 본다. */
-        }
-      } else if (moved) previous = moved;
-      fs.rmSync(stale, { force: true });
-    }
-    throw new Error(`could not take ownership of ${dataDir}`);
-  } finally {
-    fs.rmSync(mine, { force: true });
+    return fs
+      .readdirSync(dir)
+      .filter((name) => /^\d+$/.test(name))
+      .map(Number)
+      .sort((a, b) => a - b);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
 }
 
-/** 이 프로세스의 주인 기록을 지운다. 다른 프로세스의 기록이면 둔다. */
-function releaseOwner(dataDir: string) {
-  const file = ownerFile(dataDir);
-  if (readOwnerFile(file)?.pid === process.pid)
-    fs.rmSync(file, { force: true });
+/** 지금 기록. `owner`가 없으면 내려놓았거나 읽을 수 없는 기록이다. */
+function latest(dir: string): { generation: number; owner: Owner | undefined } {
+  const generation = generations(dir).at(-1) ?? 0;
+  return {
+    generation,
+    owner: generation
+      ? readOwnerFile(path.join(dir, String(generation)))
+      : undefined,
+  };
 }
 
-/** 시작하지 못했을 때, 치운 죽은 주인의 기록을 되돌린다. 다음 시작이 같은 판단을 다시 할 수 있게 한다. */
-function restoreOwner(dataDir: string, previous: Owner | undefined) {
-  const file = ownerFile(dataDir);
-  if (readOwnerFile(file)?.pid !== process.pid) return;
-  if (previous) fs.writeFileSync(file, JSON.stringify(previous));
-  else fs.rmSync(file, { force: true });
+/** 그 번호의 기록을 내용째 한 번에 만든다. 이미 있으면 false. */
+function claim(dir: string, generation: number, record: object): boolean {
+  const temp = path.join(dir, `.${process.pid}.${generation}.tmp`);
+  fs.writeFileSync(temp, JSON.stringify(record));
+  try {
+    fs.linkSync(temp, path.join(dir, String(generation)));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    removeQuietly(temp);
+  }
+}
+
+/** 지난 기록 정리는 덤이다. Windows에서 다른 프로세스가 잠깐 읽는 중이면 지우지 못해도 더 작은 번호라 판단에 쓰이지 않는다. */
+function removeQuietly(file: string) {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    /* 더 작은 번호로 남는다. */
+  }
+}
+
+/**
+ * 이 dataDir의 주인이 된다. 지금 기록의 주인이 살아 있으면 실패한다. 죽었거나 내려놓았으면 다음 번호를 만든다.
+ * 돌려주는 `previous`는 바로 전 세대의 죽은 주인이다(남은 Postgres를 멈춰도 되는지 판단할 때 쓴다).
+ */
+function acquireOwner(dataDir: string, persistent: boolean): Lease {
+  const dir = ownerDir(dataDir);
+  fs.mkdirSync(dir, { recursive: true });
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const { generation, owner } = latest(dir);
+    if (owner && isAlive(owner.pid)) {
+      // 임시 cluster는 ephemeralCluster가 만들 때 이 프로세스 이름으로 이미 기록했다.
+      if (owner.pid === process.pid && !owner.persistent && !persistent)
+        return { generation, previous: undefined };
+      throw new Error(
+        `embedded Postgres in ${dataDir} is in use by a running process (pid ${owner.pid}). Stop that process first. If no BaboJUBot process uses it, delete ${dir}.`
+      );
+    }
+    const mine = generation + 1;
+    const record: Owner = { pid: process.pid, persistent };
+    if (!claim(dir, mine, record)) continue;
+    if (latest(dir).generation !== mine) {
+      removeQuietly(path.join(dir, String(mine)));
+      continue;
+    }
+    for (const old of generations(dir))
+      if (old < mine) removeQuietly(path.join(dir, String(old)));
+    return { generation: mine, previous: owner };
+  }
+  throw new Error(`could not take ownership of ${dataDir}`);
+}
+
+/** 주인을 내려놓는다. 다음 번호에 내려놓음을 남기거나, 시작하지 못했을 때는 치운 죽은 주인을 되돌려 남긴다. */
+function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
+  const dir = ownerDir(dataDir);
+  if (claim(dir, lease.generation + 1, restore ?? { released: true }))
+    removeQuietly(path.join(dir, String(lease.generation)));
 }
 
 function readOwnerFile(file: string): Owner | undefined {
@@ -384,13 +466,13 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
     return { dataDir, port: await freePort(), persistent: false };
   } catch (error) {
     await fsp.rm(dataDir, { recursive: true, force: true });
-    releaseOwner(dataDir);
+    await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
     throw error;
   }
 }
 
 /**
- * 강제로 끝난 프로세스가 남긴 임시 cluster를 멈추고 지운다. 주인 기록(`*.owner.json`)이 있는 것만 보며, 그 dataDir의 주인이
+ * 강제로 끝난 프로세스가 남긴 임시 cluster를 멈추고 지운다. 주인 기록(`*.owner/`)이 있는 것만 보며, 그 dataDir의 주인이
  * 되어야 손댄다(주인이 살아 있거나 다른 프로세스가 먼저 치우는 중이면 둔다). 그 Postgres가 그 dataDir를 쓰는지 확인할 수 없으면
  * 둔다. 실패는 알리기만 하고 새 cluster는 그대로 띄운다.
  */
@@ -401,11 +483,11 @@ async function removeTemporaryLeftovers() {
     if (!name.startsWith(temporaryPrefix) || !name.endsWith(ownerSuffix))
       continue;
     const dataDir = path.join(tmp, name.slice(0, -ownerSuffix.length));
-    const recorded = readOwnerFile(ownerFile(dataDir));
-    if (!recorded || recorded.persistent || isAlive(recorded.pid)) continue;
-    let previous: Owner | undefined;
+    const { owner } = latest(ownerDir(dataDir));
+    if (!owner || owner.persistent || isAlive(owner.pid)) continue;
+    let lease: Lease;
     try {
-      ({ previous } = acquireOwner(dataDir, false));
+      lease = acquireOwner(dataDir, false);
     } catch {
       continue;
     }
@@ -417,19 +499,19 @@ async function removeTemporaryLeftovers() {
           console.warn(
             `[db] left temporary Postgres in ${dataDir}: could not confirm it serves that folder`
           );
-          restoreOwner(dataDir, previous);
+          releaseOwner(dataDir, lease, lease.previous);
           continue;
         }
         await stopCluster(pgCtl, dataDir, leftoverStopSeconds, true);
       }
       await fsp.rm(dataDir, { recursive: true, force: true });
-      releaseOwner(dataDir);
+      await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
     } catch (error) {
       console.warn(
         `[db] could not remove temporary Postgres left in ${dataDir}:`,
         error instanceof Error ? error.message : error
       );
-      restoreOwner(dataDir, previous);
+      releaseOwner(dataDir, lease, lease.previous);
     }
   }
 }
