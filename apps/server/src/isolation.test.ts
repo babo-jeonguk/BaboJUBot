@@ -142,6 +142,7 @@ describe("IsolationGate", () => {
     expect(tools[1]).toBe(tools[0]);
     expect(listeners()).toBe(before + 1);
     await gate.close();
-    expect(listeners()).toBe(before);
+    // 닫힌 listener 핸들은 다음 차례에 목록에서 빠진다.
+    await expect.poll(() => listeners()).toBe(before);
   });
 });
