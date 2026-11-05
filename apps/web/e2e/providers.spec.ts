@@ -10,6 +10,7 @@ const initialDefaults = {
 };
 test.afterEach(async ({ request }) => {
   await request.put("/api/providers/defaults", { data: initialDefaults });
+  await request.put("/api/providers/isolation", { data: { isolated: false } });
   for (const provider of ["fake", "fake-2"])
     await request.put(`/api/providers/${provider}/limit`, {
       data: { maxConcurrentRuns: 2 },
@@ -186,4 +187,50 @@ test("the owner picks the Lead's provider when creating an organization and late
   await expect(recent.getByRole("listitem").last()).toContainText(
     "가짜 프로바이더 · 맥스"
   );
+});
+
+test("the owner turns isolated runs on and off with one switch that saves at once, and another tab follows", async ({
+  page,
+  context,
+}) => {
+  await openWithLiveEvents(page, "/settings");
+  const other = await context.newPage();
+  await other.setViewportSize({ width: 390, height: 844 });
+  await openWithLiveEvents(other, "/settings");
+  const isolation = (p: Page) =>
+    providers(p).getByRole("switch", { name: "격리 실행" });
+
+  // 기본은 꺼짐이며, 그 행에는 이름과 스위치만 있고 설명문이 없다.
+  await expect(isolation(page)).not.toBeChecked();
+  await expect(
+    providers(page)
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("switch", { name: "격리 실행" }) })
+  ).toHaveText("격리 실행");
+
+  // 누르면 저장 버튼 없이 곧바로 저장되고 다른 탭(390px)도 따라온다.
+  await isolation(page).click();
+  await expect(isolation(page)).toBeChecked();
+  await expect(isolation(other)).toBeChecked();
+
+  // 키보드로도 바꾼다.
+  await isolation(other).focus();
+  await other.keyboard.press("Space");
+  await expect(isolation(other)).not.toBeChecked();
+  await expect(isolation(page)).not.toBeChecked();
+
+  // 저장이 실패하면 서버에 저장된 값으로 돌아간다.
+  await page.route("**/api/providers/isolation", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: '{"error":{"code":"internal"}}',
+    })
+  );
+  await isolation(page).click();
+  await expect(providers(page).getByRole("alert")).toContainText(
+    "저장하지 못했습니다"
+  );
+  await expect(isolation(page)).not.toBeChecked();
+  await expect(isolation(other)).not.toBeChecked();
 });

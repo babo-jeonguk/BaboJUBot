@@ -24,6 +24,7 @@ import {
   agents,
   providerDefaults,
   compactionSettings,
+  executionSettings,
   providerLimits,
   providerReadiness,
   sessionMaintenanceLeases,
@@ -39,6 +40,7 @@ export type ProviderDefaults = {
   leadDefault: ProviderChoice;
   workerDefault: ProviderChoice;
   compaction: CompactionSettings;
+  isolated: boolean;
 };
 
 /** 전역 Lead·작업자 기본값. migration이 두 행을 만들어 두므로 늘 있다. */
@@ -52,6 +54,7 @@ export async function readProviderDefaults(
     return { provider: row.provider, model: row.model };
   };
   const [compact] = await db.select().from(compactionSettings);
+  const [execution] = await db.select().from(executionSettings);
   return {
     leadDefault: of("lead"),
     workerDefault: of("worker"),
@@ -61,6 +64,7 @@ export async function readProviderDefaults(
           ratio: compact.ratioPercent / 100,
         }
       : defaultCompactionSettings,
+    isolated: execution?.isolated ?? false,
   };
 }
 
@@ -111,6 +115,29 @@ export async function updateProviderDefaults(
       events: [],
       settingsChanged: changedRows.length > 0 || compactChanged,
     });
+  });
+}
+
+/**
+ * 사용자의 격리 실행 켜기·끄기. 전역 설정이라 조직 Event는 남기지 않고, 실제로 값이 바뀌었을 때만 commit 뒤 다른 화면에 신호를 보낸다.
+ * 진행 중인 실행 시도는 그대로이며 다음 실행 시도부터 따른다. 값은 변경 뒤의 전역 설정이다.
+ */
+export async function updateIsolation(
+  db: Database,
+  isolated: boolean
+): Promise<Stored<ProviderDefaults, never>> {
+  return db.transaction(async (tx) => {
+    const changed = await tx
+      .insert(executionSettings)
+      .values({ id: 1, isolated })
+      .onConflictDoUpdate({
+        target: executionSettings.id,
+        set: { isolated },
+        setWhere: sql`${executionSettings.isolated} is distinct from ${isolated}`,
+      })
+      .returning({ id: executionSettings.id });
+    const after = await readProviderDefaults(tx);
+    return stored(after, { events: [], settingsChanged: changed.length > 0 });
   });
 }
 

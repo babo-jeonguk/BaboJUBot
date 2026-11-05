@@ -38,6 +38,7 @@ import {
   updateHeartbeatInputSchema,
   updateProviderDefaultsInputSchema,
   updateProviderLimitInputSchema,
+  updateIsolationInputSchema,
   providerChoiceSchema,
   updateInboxItemInputSchema,
   type ChannelAnswer,
@@ -106,6 +107,7 @@ import {
   updateApprovalPolicy,
   updateProviderDefaults,
   updateProviderLimit,
+  updateIsolation,
   readProviderDefaults,
   saveProviderReadiness,
   updateHeartbeat,
@@ -419,6 +421,18 @@ export async function startServer({
       if (problem) return refuseOwner(res, problem);
     }
     await complete(updateProviderDefaults(db, input));
+    res.json(await registry.settings(db));
+  });
+
+  /**
+   * 격리 실행 켜기·끄기. 누르면 바로 저장하고 바꾼 뒤의 프로바이더 설정을 돌려준다. 진행 중인 실행 시도는 그대로이며 다음 실행 시도부터 따른다.
+   * 실행 환경이 바뀌므로 모든 연결의 준비 확인을 다시 시작한다(기다리지 않음).
+   */
+  app.put("/api/providers/isolation", async (req, res) => {
+    const input = parseInput(res, updateIsolationInputSchema, req.body);
+    if (!input) return;
+    await complete(updateIsolation(db, input.isolated));
+    readiness.checkAll();
     res.json(await registry.settings(db));
   });
 

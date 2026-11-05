@@ -150,6 +150,8 @@ export const providerSettingsSchema = z.object({
   workerDefault: providerChoiceSchema,
   providers: z.array(providerSummarySchema),
   compaction: compactionSettingsSchema.optional(),
+  /** 격리 실행. 켜면 실제 프로바이더를 실행 시도마다 컨테이너에서 돌린다. 기본은 꺼짐이며 다음 실행 시도부터 적용한다. */
+  isolated: z.boolean(),
 });
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
 
@@ -184,3 +186,9 @@ export const updateProviderLimitInputSchema = z.strictObject({
 export type UpdateProviderLimitInput = z.infer<
   typeof updateProviderLimitInputSchema
 >;
+
+/** 사용자의 격리 실행 켜기·끄기. 누르면 바로 저장하며 진행 중인 실행 시도는 그대로 두고 다음 실행 시도부터 따른다. */
+export const updateIsolationInputSchema = z.strictObject({
+  isolated: z.boolean(),
+});
+export type UpdateIsolationInput = z.infer<typeof updateIsolationInputSchema>;

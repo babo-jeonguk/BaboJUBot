@@ -1600,6 +1600,16 @@ export const compactionSettings = pgTable(
   ]
 );
 
+/** Singleton execution settings (isolation switch); no organization Event. */
+export const executionSettings = pgTable(
+  "execution_settings",
+  {
+    id: integer("id").primaryKey(),
+    isolated: boolean("isolated").notNull().default(false),
+  },
+  (t) => [check("execution_settings_singleton", sql`${t.id} = 1`)]
+);
+
 /** Durable maintenance dispatch marker. Kept independently of session resets until the process settles. */
 export const sessionMaintenanceLeases = pgTable(
   "session_maintenance_leases",

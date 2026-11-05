@@ -211,6 +211,13 @@
       "when": 1793762544723,
       "tag": "0029_workspace_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1793889031465,
+      "tag": "0030_isolation_setting",
+      "breakpoints": true
     }
   ]
 }

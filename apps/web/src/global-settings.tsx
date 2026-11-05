@@ -10,6 +10,7 @@ import {
   useRecheckProvider,
   useUpdateProviderDefaults,
   useUpdateProviderLimit,
+  useUpdateIsolation,
 } from "./api.ts";
 import {
   ProviderChoiceFields,
@@ -56,6 +57,12 @@ function Providers() {
       ) : (
         <>
           <Defaults settings={settings.data} />
+          <ul
+            aria-label="실행 환경"
+            className="mt-4 border-t border-slate-100 pt-1"
+          >
+            <IsolationSwitch isolated={settings.data.isolated} />
+          </ul>
           <div className="mt-4 flex border-t border-slate-100 pt-3 text-xs text-slate-500">
             <span className="flex-1">연결</span>
             <span>동시 실행 상한</span>
@@ -387,5 +394,43 @@ function CompactionNumber({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * 격리 실행 스위치. 누르면 바로 저장하고 설명문은 두지 않는다. 저장하는 동안은 보낸 값으로 잠그고, 실패하면 서버에 저장된 값으로 돌아간다.
+ * 보낸 값은 누른 순간 지역 상태에 둔다. mutation 상태는 한 박자 늦게 바뀌어, 그 사이 controlled 스위치가 옛 값으로 되돌아가지 않게 한다.
+ */
+function IsolationSwitch({ isolated }: { isolated: boolean }) {
+  const update = useUpdateIsolation();
+  const [requested, setRequested] = useState<boolean | null>(null);
+  const saving = requested !== null;
+  const checked = requested ?? isolated;
+  return (
+    <li className="py-2.5">
+      <label className="flex items-center gap-3">
+        <span className="flex-1 font-medium">격리 실행</span>
+        <input
+          type="checkbox"
+          role="switch"
+          className="switch"
+          checked={checked}
+          disabled={saving}
+          onChange={(e) => {
+            const value = e.currentTarget.checked;
+            setRequested(value);
+            update.mutate(
+              { isolated: value },
+              { onSettled: () => setRequested(null) }
+            );
+          }}
+        />
+      </label>
+      {!saving && update.isError && (
+        <p role="alert" className="mt-1 text-xs text-rose-600">
+          저장하지 못했습니다. 다시 시도하세요.
+        </p>
+      )}
+    </li>
   );
 }
