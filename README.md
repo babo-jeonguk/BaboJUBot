@@ -84,7 +84,7 @@ pnpm check        # Markdown 로컬 링크 검사
 
 조직 폴더(`organizations/<조직 ID>/`)에는 자기 조직 ID를 적은 `workspace-identity.json`이 있습니다. 다른 조직의 폴더가 그 자리에 놓이거나 이 파일이 없어지면 그 조직의 실행은 이유를 보이며 실패합니다. 데이터 폴더를 옮기거나 복원할 때는 이 파일을 함께 옮기면 그대로 동작합니다. 예전 조직은 첫 실행 때 현재 폴더를 믿고 한 번 적습니다.
 
-데이터베이스는 `DATABASE_URL`이 있으면 그 외부 Postgres에 연결만 하고, 없으면 embedded Postgres를 `.babojubot/postgres`(`BABOJUBOT_HOME`으로 변경)에 띄웁니다. 둘 다 시작할 때 같은 migration을 적용합니다. 운영은 `pnpm build` 후 `DATABASE_URL=… pnpm start`로 서버가 빌드한 대시보드까지 제공합니다. 그 밖의 설정(`PORT`, `HOST`, `EMBEDDED_POSTGRES_PORT`, `BABOJUBOT_FAKE_PROVIDERS`)은 [`apps/server/src/main.ts`](apps/server/src/main.ts) 머리에 있습니다. 스택은 [ADR-0004](docs/adr/0004-paperclip-aligned-stack.md)를 따릅니다.
+데이터베이스는 `DATABASE_URL`이 있으면 그 외부 Postgres에 연결만 하고, 없으면 embedded Postgres를 `.babojubot/postgres`(`BABOJUBOT_HOME`으로 변경)에 띄웁니다. 둘 다 시작할 때 같은 migration을 적용합니다. 운영은 `pnpm build` 후 `DATABASE_URL=… pnpm start`로 서버가 빌드한 대시보드까지 제공합니다. 그 밖의 설정(`PORT`, `HOST`, `EMBEDDED_POSTGRES_PORT`, `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`, `BABOJUBOT_FAKE_PROVIDERS`)은 [`apps/server/src/main.ts`](apps/server/src/main.ts) 머리에 있습니다. 서버를 Docker·Kubernetes·systemd로 돌리면 그 정지 시한을 `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`(기본 30초)보다 길게 둡니다. 스택은 [ADR-0004](docs/adr/0004-paperclip-aligned-stack.md)를 따릅니다.
 
 패키지별 책임은 [전체 구조](docs/architecture.md#패키지-구성), 수정할 코드와 테스트의 위치는 [코드 지도](docs/agents/code-map.md)에서 확인합니다.
 
