@@ -85,20 +85,26 @@ export async function startEmbeddedCluster(
     },
     onError: (error) => console.error("[embedded-postgres]", error),
   });
-  // postgres가 이 프로세스보다 오래 살면 다음 시작이 dataDir 잠금으로 실패한다. embedded-postgres는 자연 종료와
-  // SIGINT·SIGTERM에만 멈추므로 나머지(process.exit, 처리되지 않은 오류, 터미널 닫힘)는 여기서 멈춘다.
-  // `exit`에서는 기다릴 수 없지만 `cluster.stop`의 동기 구간이 postgres에 종료 신호를 보낸다.
-  const stopOnExit = () => void cluster.stop();
-  const stopOnHangup = () => void stop().finally(() => process.exit(129));
+  // 종료 신호(SIGINT·SIGTERM·SIGHUP)와 종료 순서는 이 DB를 연 프로그램이 정한다(서버는 main.ts). 그래서 embedded-postgres가
+  // import 때 걸던 종료 hook은 patches/에서 뺐다. 프로그램이 `stop`을 마치지 못하고 끝나면(process.exit, 처리되지 않은 오류,
+  // 정리 시한 초과) postgres가 이 프로세스보다 오래 살아 다음 시작이 dataDir 잠금으로 실패하므로 `exit`에서 멈춘다.
+  // 그 뒤로는 postgres를 챙길 쪽이 없으므로 무엇도 기다리지 않는 즉시 정지(SIGQUIT)를 보낸다. 빠른 정지는 연결 프로세스가
+  // 모두 끝나기를 기다려 멈출 수 있다. 즉시 정지한 cluster는 다음 시작이 복구한다. `exit`에서는 동기 작업만 할 수 있다.
+  // Windows의 정지는 처음부터 강제 종료(taskkill /f /t)이므로 그 정지를 요청한다.
+  // `process`는 18.6.0-beta.19의 비공개 field다(`startCluster` 참고).
+  const stopOnExit = () => {
+    const child = (cluster as unknown as { process?: ChildProcess }).process;
+    if (child && process.platform !== "win32") child.kill("SIGQUIT");
+    else void cluster.stop();
+  };
+  // 비상 정지는 정지가 끝난 뒤에야 내려놓는다.
   // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
   const stop = async () => {
-    process.off("exit", stopOnExit);
-    process.off("SIGHUP", stopOnHangup);
     await cluster.stop();
+    process.off("exit", stopOnExit);
     if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });
   };
   process.on("exit", stopOnExit);
-  process.on("SIGHUP", stopOnHangup);
   try {
     if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
       await cluster.initialise();
@@ -112,7 +118,7 @@ export async function startEmbeddedCluster(
 
 /**
  * embedded-postgres의 `stop`은 이미 끝난 postgres의 exit를 기다리며 멈춘다(upstream issue #32).
- * 종료 hook도 모든 cluster에 `stop`을 부르므로, postgres가 끝나면 cluster가 그 프로세스를 잊게 한다.
+ * 프로세스 종료 때의 정지도 `stop`을 부르므로, postgres가 끝나면 cluster가 그 프로세스를 잊게 한다.
  * `start`가 실패해도 postgres는 이미 끝났으므로 `stop`은 바로 돌아온다.
  */
 async function startCluster(

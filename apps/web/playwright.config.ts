@@ -5,6 +5,9 @@ import path from "node:path";
 
 const apiPort = 3199;
 const webPort = 5199;
+// E2E 서버의 정리 시한. 실행기는 그보다 길게 기다려, 서버가 스스로 끝나며 내장 Postgres를 멈출 기회를 준다.
+// 실행기가 먼저 강제로 끝내면(SIGKILL) 따로 떨어진 프로세스 그룹의 Postgres가 남는다.
+const serverShutdownMs = 10_000;
 
 // E2E 서버의 제품 폴더(BABOJUBOT_HOME). 서버는 Windows에서 taskkill /F로, 다른 OS에서도 제한 시간을 넘기면 SIGKILL로
 // 끝나 스스로 정리하지 못한다. 그래서 서버보다 오래 사는 이 실행기가 만들어 넘기고, 실행기가 끝날 때 지운다.
@@ -39,6 +42,7 @@ export default defineConfig({
         PORT: String(apiPort),
         BABOJUBOT_EPHEMERAL_DB: "1",
         BABOJUBOT_HOME: productHome,
+        BABOJUBOT_SHUTDOWN_TIMEOUT_MS: String(serverShutdownMs),
         DATABASE_URL: "",
         // 같은 가짜 adapter의 연결 둘로 프로바이더·모델 고르기를 검사한다(providers.spec.ts).
         BABOJUBOT_FAKE_PROVIDERS: "2",
@@ -50,7 +54,10 @@ export default defineConfig({
           },
         }),
       },
-      gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
+      gracefulShutdown: {
+        signal: "SIGTERM",
+        timeout: serverShutdownMs + 5_000,
+      },
       reuseExistingServer: false,
       timeout: 60_000,
     },

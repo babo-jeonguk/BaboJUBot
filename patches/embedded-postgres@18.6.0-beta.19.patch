@@ -1,0 +1,48 @@
+diff --git a/dist/index.js b/dist/index.js
+index 574bc4522fa3fe222fd75b6019cccf3902a29137..ed4c17d2783dec980f27c45724332e7baddc012d 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -13,7 +13,6 @@ import fs from 'fs/promises';
+ import { platform, tmpdir, userInfo } from 'os';
+ import { spawn, exec, execSync } from 'child_process';
+ import pg from 'pg';
+-import { asyncExitHook } from 'exit-hook';
+ import getBinaries from './binary.js';
+ import { ensureSymlinks } from './symlinks.js';
+ const bin = getBinaries();
+@@ -213,7 +212,12 @@ class EmbeddedPostgres {
+                     '-p',
+                     this.options.port.toString(),
+                     ...this.options.postgresFlags,
+-                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, process.env), { LC_MESSAGES: locale }) }));
++                ], Object.assign(Object.assign({}, permissionIds), {
++                    // BaboJUBot: the program that started Postgres stops it after its own shutdown. A separate process
++                    // group keeps a terminal Ctrl+C or window close (sent to the whole group) from stopping it first.
++                    detached: true,
++                    env: Object.assign(Object.assign({}, process.env), { LC_MESSAGES: locale }),
++                }));
+                 // Connect to stderr, as that is where the messages get sent
+                 (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
+                     // Parse the data as a string and log it
+@@ -382,21 +386,4 @@ function execAsync(command) {
+         });
+     });
+ }
+-/**
+- * This script should be called when a Node script is exited, so that we can
+- * nicely shutdown all potentially started clusters, and we don't end up with
+- * zombie processes.
+- */
+-function gracefulShutdown() {
+-    return __awaiter(this, void 0, void 0, function* () {
+-        // Loop through all instances, stop them, and await the response
+-        yield Promise.all([...instances].map((instance) => {
+-            return instance.stop();
+-        }));
+-    });
+-}
+-// Register graceful shutdown function
+-asyncExitHook(gracefulShutdown, {
+-    wait: 5000
+-});
+ export default EmbeddedPostgres;

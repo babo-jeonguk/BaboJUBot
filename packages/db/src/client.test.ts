@@ -71,7 +71,11 @@ describe("embedded Postgres lifetime", () => {
   it.each([
     { end: "uncaught error", code: 1, signal: undefined },
     { end: "process.exit", code: 7, signal: undefined },
-    { end: "terminal hangup", code: 129, signal: "SIGHUP" },
+    {
+      end: "a stop signal its program handles",
+      code: 129,
+      signal: "SIGHUP",
+    },
   ] as const)(
     "stops Postgres so the next start works after $end",
     async ({ end, code, signal }) => {
@@ -84,7 +88,8 @@ describe("embedded Postgres lifetime", () => {
       const finish = {
         "uncaught error": `throw new Error("boom");`,
         "process.exit": `process.exit(7);`,
-        "terminal hangup": `setInterval(() => {}, 1000);`,
+        // 종료 신호는 프로그램(서버 진입점 등)이 받는다. 프로그램이 어떻게 끝나든 Postgres는 멈춘다.
+        "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); setInterval(() => {}, 1000);`,
       }[end];
       const script = `
         const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
@@ -126,6 +131,119 @@ describe("embedded Postgres lifetime", () => {
     },
     60_000
   );
+  // 프로세스가 끝나면 Postgres를 뒤따라 챙길 쪽이 없으므로, 그때 보내는 정지는 무엇도 기다리지 않는 즉시 정지여야 한다.
+  // 빠른 정지는 연결 프로세스가 모두 끝나기를 기다리므로, 멈춘(SIGSTOP) 연결 프로세스 하나로 끝나지 않는 상황을 만든다.
+  // 프로세스는 DB 정리의 어느 단계에서든 끝날 수 있다(서버 정리 시한 초과, 처리되지 않은 오류).
+  it.each([
+    {
+      when: "before the database is closed",
+      connect: `const client = new pg.Client({ connectionString: handle.url }); client.on("error", () => {}); await client.connect();`,
+      close: ``,
+    },
+    {
+      when: "while the database waits for a connection never returned to the pool",
+      connect: `const client = await handle.db.$client.connect(); client.on("error", () => {});`,
+      close: `void handle.close();`,
+    },
+    {
+      when: "while Postgres is still stopping",
+      connect: `const client = new pg.Client({ connectionString: handle.url }); client.on("error", () => {}); await client.connect();`,
+      close: `void handle.close();`,
+    },
+  ])(
+    "stops Postgres immediately when the process ends $when",
+    async ({ connect, close }) => {
+      const dataDir = await fsp.mkdtemp(
+        path.join(os.tmpdir(), "babojubot-pg-")
+      );
+      const clientModule = fileURLToPath(
+        new URL("./client.ts", import.meta.url)
+      );
+      const script = `
+        const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
+        const { default: pg } = await import("pg");
+        const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: true } });
+        ${connect}
+        const { rows } = await client.query("select pg_backend_pid() as pid");
+        console.log(rows[0].pid);
+        process.stdin.once("data", () => {
+          ${close}
+          setTimeout(() => process.exit(1), 1000);
+        });
+      `;
+      let postmaster = 0;
+      let backend = 0;
+      try {
+        const child = spawn(
+          process.execPath,
+          ["--input-type=module", "-e", script],
+          { stdio: ["pipe", "pipe", "inherit"] }
+        );
+        const exited = once(child, "exit");
+        const [line] = await once(child.stdout!, "data");
+        backend = Number(String(line).trim());
+        postmaster = Number(
+          fs
+            .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
+            .split("\n")[0]
+        );
+        process.kill(backend, "SIGSTOP");
+        child.stdin!.write("end\n");
+        await exited;
+        expect(child.exitCode).toBe(1);
+
+        const deadline = Date.now() + 20_000;
+        while (isAlive(postmaster) && Date.now() < deadline)
+          await new Promise((r) => setTimeout(r, 50));
+        expect(isAlive(postmaster)).toBe(false);
+      } finally {
+        for (const pid of [backend, postmaster])
+          if (pid && isAlive(pid)) {
+            process.kill(pid, "SIGCONT");
+            process.kill(pid, "SIGKILL");
+          }
+        await fsp.rm(dataDir, { recursive: true, force: true });
+      }
+    },
+    60_000
+  );
+
+  // 종료 신호와 종료 순서는 프로그램이 정한다. DB를 불러오거나 열기만 해도 신호를 가로채 먼저 끝내면
+  // 서버가 정리하는 동안 DB가 사라진다(외부 DB여도 프로세스가 바로 끝난다).
+  it("leaves stop signals to the program that imports it and opens a database", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
+    const script = `
+      const events = ["SIGINT", "SIGTERM", "SIGHUP", "beforeExit", "message"];
+      const count = () => Object.fromEntries(events.map((e) => [e, process.listenerCount(e)]));
+      const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
+      const imported = count();
+      const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: false } });
+      const opened = count();
+      await handle.close();
+      console.log(JSON.stringify({ imported, opened }));
+    `;
+    try {
+      const child = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", script],
+        { stdio: ["ignore", "pipe", "inherit"] }
+      );
+      let output = "";
+      child.stdout!.on("data", (chunk) => (output += chunk));
+      await once(child, "exit");
+      const none = {
+        SIGINT: 0,
+        SIGTERM: 0,
+        SIGHUP: 0,
+        beforeExit: 0,
+        message: 0,
+      };
+      expect(JSON.parse(output)).toEqual({ imported: none, opened: none });
+    } finally {
+      await fsp.rm(dataDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 function isAlive(pid: number) {

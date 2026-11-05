@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  embedded-postgres@18.6.0-beta.19:
+    hash: efdc5a4051643d7611848a592c8934c4af6dac01806ef49934c8e0ff6482c432
+    path: patches/embedded-postgres@18.6.0-beta.19.patch
+
 importers:
 
   .:
@@ -176,7 +181,7 @@ importers:
         version: 0.45.4(@types/pg@8.23.1)(pg@8.23.1)
       embedded-postgres:
         specifier: 18.6.0-beta.19
-        version: 18.6.0-beta.19
+        version: 18.6.0-beta.19(patch_hash=efdc5a4051643d7611848a592c8934c4af6dac01806ef49934c8e0ff6482c432)
       pg:
         specifier: 8.23.1
         version: 8.23.1
@@ -4423,7 +4428,7 @@ snapshots:
 
   electron-to-chromium@1.5.458: {}
 
-  embedded-postgres@18.6.0-beta.19:
+  embedded-postgres@18.6.0-beta.19(patch_hash=efdc5a4051643d7611848a592c8934c4af6dac01806ef49934c8e0ff6482c432):
     dependencies:
       exit-hook: 5.1.0
       pg: 8.23.1
