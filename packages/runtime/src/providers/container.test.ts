@@ -137,9 +137,12 @@ describe("an isolated attempt", () => {
     const run = runCall(calls);
     const args = run.args;
     const home = path.join(env.root, "providers/claude");
-    expect(valuesOf(args, "--user")).toEqual([
-      `${process.getuid!()}:${process.getgid!()}`,
-    ]);
+    // Windows에는 uid가 없어 Docker Desktop이 정한 사용자로 돈다.
+    expect(valuesOf(args, "--user")).toEqual(
+      process.getuid && process.getgid
+        ? [`${process.getuid()}:${process.getgid()}`]
+        : []
+    );
     expect(valuesOf(args, "--cap-drop")).toEqual(["ALL"]);
     expect(valuesOf(args, "--security-opt")).toContain("no-new-privileges");
     expect(valuesOf(args, "--network")).toEqual(["babojubot-test"]);
