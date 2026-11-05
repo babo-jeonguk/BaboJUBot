@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
@@ -6,7 +14,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
 import { createCodexProvider } from "./codex.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
-import type { ContainerSettings } from "./container.ts";
+import { createAntigravityProvider } from "./antigravity.ts";
+import {
+  createDockerEnvironment,
+  type ContainerSettings,
+} from "./container.ts";
 import { request } from "./test-support.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
@@ -225,6 +237,98 @@ describe("an isolated attempt", () => {
     await expect(readFile(config, "utf8")).rejects.toThrow();
   });
 
+  it("keeps the Antigravity run token out of the organization folder that every container of the organization shares", async () => {
+    const env = await setup({});
+    const recording = path.join(env.root, "agy.json");
+    await writeFile(
+      recording,
+      JSON.stringify({
+        steps: [
+          { frame: { event: "init", conversation_id: "c1" } },
+          { input: { event: "user" } },
+          {
+            frame: {
+              event: "result",
+              result: { status: "SUCCESS", conversation_id: "c1" },
+            },
+          },
+          { exit: 0 },
+        ],
+      })
+    );
+    env.container.docker = [
+      process.execPath,
+      fixture("fake-docker.mjs"),
+      env.container.docker[2]!,
+      JSON.stringify({
+        agy: [process.execPath, fixture("replay.mjs"), recording],
+      }),
+    ];
+    const provider = createAntigravityProvider({
+      dataDir: env.root,
+      container: env.container,
+    });
+    // Antigravity는 작업 폴더의 .agents/mcp_config.json만 읽는다. 조직 폴더는 그 조직의 모든 컨테이너가 쓰기로 넣으므로,
+    // 토큰이 든 설정은 이 실행 시도 전용 폴더에 두고 이 컨테이너에만 그 경로 위에 읽기로 넣는다. 조직 폴더의 파일은 자리만 잡는다.
+    const config = path.join(
+      await realpath(env.shared),
+      ".agents/mcp_config.json"
+    );
+    const seen: { shared: string; source: string; mode: number }[] = [];
+    const result = await provider.adapter.execute(env.isolated(), {
+      signal: new AbortController().signal,
+      emit: async () => {
+        const run = runCall(await env.calls());
+        const overlay = valuesOf(run.args, "--mount").find((m) =>
+          m.endsWith(`,target=${config},readonly`)
+        );
+        expect(overlay).toBeDefined();
+        const source = /source=([^,]+)/.exec(overlay!)![1]!;
+        seen.push({
+          shared: await readFile(config, "utf8"),
+          source: await readFile(source, "utf8"),
+          mode: (await stat(source)).mode & 0o777,
+        });
+      },
+    });
+    expect(result.stopReason).toBe("completed");
+    expect(seen.length).toBeGreaterThan(0);
+    for (const { shared, source, mode } of seen) {
+      expect(shared).not.toContain("private-run-token");
+      expect(source).toContain("private-run-token");
+      // Windows는 권한 비트를 쓰지 않는다.
+      if (process.platform !== "win32") expect(mode).toBe(0o600);
+    }
+    const run = runCall(await env.calls());
+    const mounts = valuesOf(run.args, "--mount");
+    const source = /source=([^,]+)/.exec(
+      mounts.find((m) => m.endsWith(`,target=${config},readonly`))!
+    )![1]!;
+    // 토큰 파일은 이 컨테이너가 쓰기로 넣는 어느 폴더(제품·조직·자기 폴더)에도 없다.
+    for (const mount of mounts.filter((m) => !m.endsWith(",readonly"))) {
+      const target = /target=([^,]+)/.exec(mount)![1]!;
+      expect(path.relative(target, source).startsWith("..")).toBe(true);
+    }
+    // 끝나면 토큰 파일과 조직 폴더의 자리 파일을 모두 지운다.
+    await expect(stat(source)).rejects.toThrow();
+    await expect(stat(config)).rejects.toThrow();
+  });
+
+  it("keeps a user's own Antigravity configuration in the organization folder and refuses to run in a container", async () => {
+    const env = await setup({});
+    const config = path.join(env.shared, ".agents/mcp_config.json");
+    await mkdir(path.dirname(config));
+    await writeFile(config, '{"user":"keep"}');
+    const provider = createAntigravityProvider({
+      dataDir: env.root,
+      container: env.container,
+    });
+    const result = await provider.adapter.execute(env.isolated(), control());
+    expect(result.stopReason).toBe("failed");
+    expect(await readFile(config, "utf8")).toBe('{"user":"keep"}');
+    expect((await env.calls()).some((c) => c.args.includes("run"))).toBe(false);
+  });
+
   it("removes the container as the last step of cancellation", async () => {
     const env = await setup({
       claude: [
@@ -395,4 +499,68 @@ describe("an isolated attempt", () => {
     ).toBe(true);
     expect(removed(calls, nameOf(run))).toBe(true);
   });
+});
+
+describe("the dedicated network", () => {
+  async function network(existing?: Record<string, unknown>) {
+    const root = await mkdtemp(path.join(tmpdir(), "babojubot-network-"));
+    roots.push(root);
+    if (existing)
+      await writeFile(
+        path.join(root, "network.json"),
+        JSON.stringify(existing)
+      );
+    const settings: ContainerSettings = {
+      docker: [process.execPath, fixture("fake-docker.mjs"), root, "{}"],
+      image,
+      network: "babojubot-test",
+      owner: "owner-test",
+    };
+    return createDockerEnvironment(settings);
+  }
+  const isolating = {
+    Name: "babojubot-test",
+    Driver: "bridge",
+    Options: { "com.docker.network.bridge.enable_icc": "false" },
+    Labels: { "babojubot.owner": "someone-else" },
+    IPAM: { Config: [{ Subnet: "172.31.0.0/16", Gateway: "172.31.0.1" }] },
+  };
+
+  it("creates a bridge network whose containers cannot reach each other and uses its gateway", async () => {
+    const environment = await network();
+    await expect(
+      environment.prepareNetwork(AbortSignal.timeout(10_000))
+    ).resolves.toEqual({ gateway: "172.31.0.1" });
+  });
+
+  it("accepts an existing network with the same isolation, whoever created it", async () => {
+    // 같은 컴퓨터의 다른 제품 폴더도 같은 이름의 네트워크를 쓴다. 격리는 네트워크의 속성이 정한다.
+    const environment = await network(isolating);
+    await expect(
+      environment.prepareNetwork(AbortSignal.timeout(10_000))
+    ).resolves.toEqual({ gateway: "172.31.0.1" });
+  });
+
+  it.each([
+    [
+      "containers on it can reach each other",
+      {
+        ...isolating,
+        Options: { "com.docker.network.bridge.enable_icc": "true" },
+      },
+    ],
+    [
+      "it does not say whether containers can reach each other",
+      { ...isolating, Options: {} },
+    ],
+    ["it is not a bridge", { ...isolating, Driver: "macvlan" }],
+  ])(
+    "does not accept an existing network of the same name when %s",
+    async (_case, existing) => {
+      const environment = await network(existing);
+      await expect(
+        environment.prepareNetwork(AbortSignal.timeout(10_000))
+      ).rejects.toThrow();
+    }
+  );
 });

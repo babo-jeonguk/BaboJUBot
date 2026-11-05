@@ -260,6 +260,68 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
     expect(containersOf(settings.owner)).toBe("");
   }, 120_000);
 
+  it("does not accept an existing network of the same name whose containers can reach each other", async () => {
+    // 같은 이름의 네트워크가 이미 있어도 그대로 믿지 않는다. 기본 bridge 설정(icc 켬)으로 만든 네트워크는 실행 시도 컨테이너끼리 닿는다.
+    const name = `babojubot-test-open-${suffix}`;
+    docker(["network", "create", "--driver", "bridge", name]);
+    try {
+      const open = createDockerEnvironment({ ...settings, network: name });
+      await expect(
+        open.prepareNetwork(AbortSignal.timeout(60_000))
+      ).rejects.toThrow();
+    } finally {
+      docker(["network", "rm", name]);
+    }
+  }, 120_000);
+
+  it("shows an attempt's own file over the organization folder's file only inside that attempt's container", async () => {
+    await environment.prepareNetwork(AbortSignal.timeout(60_000));
+    const org = path.join(root, "organizations/overlay/shared");
+    const home = path.join(root, "providers/overlay");
+    const attempt = path.join(root, "attempt-overlay");
+    for (const folder of [path.join(org, ".agents"), home, attempt])
+      await mkdir(folder, { recursive: true });
+    const target = path.join(org, ".agents/mcp_config.json");
+    await writeFile(target, "placeholder");
+    await writeFile(path.join(attempt, "mcp_config.json"), "attempt secret");
+    const read = async (files?: { source: string; target: string }[]) => {
+      const frames: unknown[] = [];
+      const child = startProcess({
+        command: ["unused"],
+        args: [
+          "-e",
+          `const fs = require("node:fs");
+           const file = ${JSON.stringify(target)};
+           const content = fs.readFileSync(file, "utf8");
+           let write;
+           try { fs.writeFileSync(file, "changed"); write = "ok"; } catch (e) { write = e.code; }
+           console.log(JSON.stringify({ content, write }));`,
+        ],
+        cwd: org,
+        env: { HOME: home },
+        container: containerLaunch(settings, {
+          home,
+          cwd: org,
+          program: "node",
+          workspace: { cwd: org, organization: org, peers: [] },
+          ...(files ? { files } : {}),
+        }),
+        onFrame: async (frame) => {
+          frames.push(frame);
+        },
+      });
+      child.endInput();
+      expect((await child.done).code).toBe(0);
+      return frames.at(-1);
+    };
+    expect(
+      await read([{ source: path.join(attempt, "mcp_config.json"), target }])
+    ).toEqual({ content: "attempt secret", write: "EROFS" });
+    // 이 컴퓨터의 조직 폴더와 같은 조직의 다른 컨테이너에는 자리 파일만 있다.
+    expect(await readFile(target, "utf8")).toBe("placeholder");
+    expect(await read()).toMatchObject({ content: "placeholder" });
+  }, 120_000);
+
   it("removes only this product folder's leftover containers", async () => {
     const mine = docker([
       "run",

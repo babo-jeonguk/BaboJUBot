@@ -5,6 +5,9 @@
 //   passes stdin/stdout through, forwards SIGINT/SIGTERM and writes the port of a `{"url":"http://127.0.0.1:N"}` frame
 //   to <stateDir>/<name>.port so `port <name> <spec>` can answer like a published port.
 // - `rm`: succeeds. `inspect`/`container inspect`: "No such container". `port`: the recorded port.
+// - `network inspect`: prints <stateDir>/network.json (a `docker network inspect --format '{{json .}}'` object) or "No such network".
+//   `network create`: writes network.json from --driver/--opt/--label with gateway 172.31.0.1. A test may write network.json first
+//   to stand for a network that already exists.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -91,6 +94,37 @@ if (verb === "run") {
   for (const signal of ["SIGINT", "SIGTERM"])
     process.on(signal, () => child.kill(signal));
   child.on("close", (code, signal) => process.exit(code ?? (signal ? 137 : 1)));
+} else if (args[0] === "network") {
+  record({ args });
+  const file = path.join(stateDir, "network.json");
+  if (args[1] === "inspect") {
+    try {
+      process.stdout.write(readFileSync(file, "utf8").trim() + "\n");
+      process.exit(0);
+    } catch {
+      process.stderr.write(
+        `Error response from daemon: network ${args[2]} not found\n`
+      );
+      process.exit(1);
+    }
+  }
+  if (args[1] === "create") {
+    const network = {
+      Name: args.at(-1),
+      Driver: "bridge",
+      Options: {},
+      Labels: {},
+      IPAM: { Config: [{ Subnet: "172.31.0.0/16", Gateway: "172.31.0.1" }] },
+    };
+    for (let i = 2; i < args.length - 1; i++) {
+      const [key, value = ""] = (args[i + 1] ?? "").split(/=(.*)/s);
+      if (args[i] === "--driver") network.Driver = args[++i];
+      else if (args[i] === "--opt") ((network.Options[key] = value), i++);
+      else if (args[i] === "--label") ((network.Labels[key] = value), i++);
+    }
+    writeFileSync(file, JSON.stringify(network));
+  }
+  process.exit(0);
 } else {
   record({ args });
   if (verb === "inspect") {
