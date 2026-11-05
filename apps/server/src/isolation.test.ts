@@ -96,4 +96,52 @@ describe("IsolationGate", () => {
     });
     expect(prepared).toBe(1);
   });
+
+  it("shares one tools listener between overlapping safety checks and closes it with the gate", async () => {
+    const listeners = () =>
+      process
+        .getActiveResourcesInfo()
+        .filter((name) => name === "TCPServerWrap").length;
+    let prepared = 0;
+    let finishNetwork!: () => void;
+    const networkReady = new Promise<void>((resolve) => {
+      finishNetwork = resolve;
+    });
+    const tools: string[] = [];
+    const docker: DockerEnvironment = {
+      ...unresponsive,
+      async prepareNetwork() {
+        prepared++;
+        await networkReady;
+        return { gateway: "127.0.0.1" };
+      },
+      async probe(input) {
+        tools.push(input.tools);
+        return { reached: [], toolsReached: true };
+      },
+    };
+    const before = listeners();
+    gate = new IsolationGate({
+      docker,
+      toolsApp: express(),
+      protectedPorts: () => [5432],
+      readIsolated: async () => true,
+      hostUrl: () => "http://127.0.0.1:1",
+    });
+    // 확인이 끝나기 전에 설정 화면을 다시 열면(다시 확인) 앞의 확인과 새 확인이 겹친다.
+    const first = gate.readiness(true);
+    await expect.poll(() => prepared).toBe(1);
+    gate.invalidate();
+    const second = gate.readiness(true);
+    await expect.poll(() => prepared).toBe(2);
+    finishNetwork();
+    await expect(first).resolves.toBeNull();
+    await expect(second).resolves.toBeNull();
+    // 두 확인은 관문이 가진 listener 하나를 나눠 쓴다.
+    expect(tools).toHaveLength(2);
+    expect(tools[1]).toBe(tools[0]);
+    expect(listeners()).toBe(before + 1);
+    await gate.close();
+    expect(listeners()).toBe(before);
+  });
 });
