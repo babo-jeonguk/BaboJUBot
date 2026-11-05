@@ -86,23 +86,20 @@ export async function startEmbeddedCluster(
     onError: (error) => console.error("[embedded-postgres]", error),
   });
   // 종료 신호(SIGINT·SIGTERM·SIGHUP)와 종료 순서는 이 DB를 연 프로그램이 정한다(서버는 main.ts). 그래서 embedded-postgres가
-  // import 때 걸던 종료 hook은 patches/에서 뺐다. 프로그램이 `stop`을 부르지 못하고 끝나면(process.exit, 처리되지 않은 오류,
+  // import 때 걸던 종료 hook은 patches/에서 뺐다. 프로그램이 `stop`을 마치지 못하고 끝나면(process.exit, 처리되지 않은 오류,
   // 정리 시한 초과) postgres가 이 프로세스보다 오래 살아 다음 시작이 dataDir 잠금으로 실패하므로 `exit`에서 멈춘다.
-  // `exit`에서는 기다릴 수 없지만 `cluster.stop`의 동기 구간이 postgres에 종료 신호를 보낸다.
-  // 정지를 이미 요청했는데 끝나기 전에 프로세스가 끝나면(정리 시한 초과) 즉시 정지(SIGQUIT)로 넘긴다. 빠른 정지는 연결
-  // 프로세스가 끝나기를 기다려 멈출 수 있고, 즉시 정지는 기다리지 않는다(다음 시작이 복구한다). Windows의 정지는 처음부터
-  // 강제 종료(taskkill /f /t)이므로 다시 요청한다. `process`는 18.6.0-beta.19의 비공개 field다(`startCluster` 참고).
-  let stopping = false;
+  // 그 뒤로는 postgres를 챙길 쪽이 없으므로 무엇도 기다리지 않는 즉시 정지(SIGQUIT)를 보낸다. 빠른 정지는 연결 프로세스가
+  // 모두 끝나기를 기다려 멈출 수 있다. 즉시 정지한 cluster는 다음 시작이 복구한다. `exit`에서는 동기 작업만 할 수 있다.
+  // Windows의 정지는 처음부터 강제 종료(taskkill /f /t)이므로 그 정지를 요청한다.
+  // `process`는 18.6.0-beta.19의 비공개 field다(`startCluster` 참고).
   const stopOnExit = () => {
     const child = (cluster as unknown as { process?: ChildProcess }).process;
-    if (stopping && child && process.platform !== "win32")
-      child.kill("SIGQUIT");
+    if (child && process.platform !== "win32") child.kill("SIGQUIT");
     else void cluster.stop();
   };
   // 비상 정지는 정지가 끝난 뒤에야 내려놓는다.
   // postgres가 먼저 끝나 cluster가 프로세스를 잊었으면 `stop`은 dataDir를 지우지 않으므로 여기서 지운다.
   const stop = async () => {
-    stopping = true;
     await cluster.stop();
     process.off("exit", stopOnExit);
     if (!persistent) await fsp.rm(dataDir, { recursive: true, force: true });

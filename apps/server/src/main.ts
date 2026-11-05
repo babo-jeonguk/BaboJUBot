@@ -24,8 +24,8 @@ import { startServer } from "./app.ts";
 //   예: {"fake-2":{"capabilities":{"steer":false},"readiness":{"status":"not_ready","reason":"product_login_missing"}}}
 // - PORT, HOST, EMBEDDED_POSTGRES_PORT, BABOJUBOT_HOME
 //   HOST 기본값은 127.0.0.1이다. 인증이 없으므로 외부 주소로 열면 그 네트워크의 누구나 API와 Event stream을 쓴다.
-// - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 정리 시한(기본 30000). 서버를 감싼 실행기(Docker·Kubernetes·Playwright)의
-//   정지 시한은 이보다 길게 둔다. 실행기가 먼저 강제로 끝내면 내장 Postgres가 남을 수 있다.
+// - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 정리 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
+//   서버를 감싼 실행기(Docker·Kubernetes·Playwright)의 정지 시한은 이보다 길게 둔다. 실행기가 먼저 강제로 끝내면 내장 Postgres가 남을 수 있다.
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../.."
@@ -87,8 +87,10 @@ const fakeProviderSettings = fakeProviderSettingsSchema.parse(
 
 // 종료: SIGINT(Ctrl+C)·SIGTERM·SIGHUP(터미널 닫힘)은 이 진입점만 받는다. 서버 정리를 끝낸 뒤 DB를 닫고, 성공하면 0,
 // 정리나 시작에 실패하면 1로 끝난다. 시작하는 동안 온 신호는 시작을 마친 뒤 같은 순서로 정리한다(서버는 띄우지 않는다).
-// 정리가 시한 안에 끝나지 않으면 1로 끝내고, 그때 내장 Postgres는 DB 패키지가 프로세스 종료 때 멈춘다(정지 중이었으면 즉시 정지).
-const shutdownDeadlineMs = Number(env.BABOJUBOT_SHUTDOWN_TIMEOUT_MS) || 30_000;
+// 정리가 시한 안에 끝나지 않으면 1로 끝내고, 그때 내장 Postgres는 DB 패키지가 프로세스 종료 때 멈춘다(즉시 정지).
+const shutdownDeadlineMs = readShutdownDeadline(
+  env.BABOJUBOT_SHUTDOWN_TIMEOUT_MS
+);
 let stopping: Promise<void> | undefined;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.on(signal, () => {
@@ -149,4 +151,15 @@ async function shutdown(signal: NodeJS.Signals) {
     await started.handle.close().catch(fail);
   }
   process.exit(failed ? 1 : 0);
+}
+
+/** 정리 시한. Node 타이머는 1ms 미만이나 2147483647ms 초과를 1ms로 바꾸므로 그 범위의 정수만 받는다. */
+function readShutdownDeadline(value: string | undefined): number {
+  if (value === undefined || value === "") return 30_000;
+  const ms = Number(value);
+  if (!Number.isInteger(ms) || ms < 1 || ms > 2_147_483_647)
+    throw new Error(
+      `BABOJUBOT_SHUTDOWN_TIMEOUT_MS must be a whole number of milliseconds from 1 to 2147483647, got "${value}"`
+    );
+  return ms;
 }
