@@ -57,9 +57,9 @@ pnpm provider:login claude   # codex, opencode, antigravity, claude:work
 - 정리: 취소 공통 순서(프로토콜 중단 → 2초 → TERM → 2초 → KILL) 뒤 마지막에 컨테이너를 지우고 없어졌는지 확인한다. 지우지 못하면 서버 기록에 남기고, 서버 시작 때 이 제품 폴더가 띄운 컨테이너(`babojubot.owner` label)만 지운다.
 - 추가 패키지: 에이전트는 조직 폴더의 가상환경(`shared/.venv`)에 설치한다. 이미지의 시작 스크립트가 없으면 만들고 `PATH`에 넣으므로 다음 실행 시도에서도 쓴다.
 
-공통 이미지는 `pnpm runner:build`(`docker/runner`)로 만든다. Node 24, git, Python, 기본 도구와 Claude Code·Codex(npm)·OpenCode(공식 설치 스크립트)를 담는다. Antigravity CLI는 공개 설치 경로를 정하지 않아 `docker build --build-arg ANTIGRAVITY_INSTALL="<설치 명령>"`으로 넣는다. 설정은 `BABOJUBOT_DOCKER_COMMAND`·`BABOJUBOT_CONTAINER_IMAGE`(기본 `babojubot-runner`)·`BABOJUBOT_CONTAINER_NETWORK`(기본 `babojubot`)이다.
+공통 이미지는 `pnpm runner:build`(`docker/runner`)로 만든다. Node 24, git, Python, 기본 도구와 Claude Code·Codex(npm)·OpenCode 2.x(GitHub 릴리스, 기본 2.2.5, build arg OPENCODE_VERSION)를 담는다. Antigravity CLI는 공개 설치 경로를 정하지 않아 `docker build --build-arg ANTIGRAVITY_INSTALL="<설치 명령>"`으로 넣는다. 설정은 `BABOJUBOT_DOCKER_COMMAND`·`BABOJUBOT_CONTAINER_IMAGE`(기본 `babojubot-runner`)·`BABOJUBOT_CONTAINER_NETWORK`(기본 `babojubot`)이다.
 
-지원 환경은 Linux Docker Engine이다. Docker Desktop·rootless처럼 gateway 주소가 이 컴퓨터에 없거나 이 컴퓨터의 loopback으로 중계하는 환경은 안전 확인에서 `준비안됨`으로 드러나며 이 컴퓨터로 대신 돌리지 않는다. 같은 연결의 제품 폴더는 실행 시도끼리 함께 쓰므로 그 안의 세션·로그인은 서로 보인다. 준비 확인(로그인 상태)과 모델 목록은 이 컴퓨터의 프로그램으로 한다.
+지원 환경은 Linux Docker Engine이다. Docker Desktop·rootless처럼 gateway 주소가 이 컴퓨터에 없거나 이 컴퓨터의 loopback으로 중계하는 환경은 안전 확인에서 `준비안됨`으로 드러나며 이 컴퓨터로 대신 돌리지 않는다. 같은 연결의 제품 폴더는 모든 조직의 컨테이너가 함께 읽고 쓰므로 그 안의 로그인·설정·다른 조직의 세션 기록이 서로 보이고 고칠 수 있다. 실행 시도 토큰이 든 파일만 제품 폴더 밖 실행 시도 전용 폴더에 두고 그 컨테이너에만 읽기로 넣는다. 서버가 강제로 끝나면 남은 컨테이너는 다음 시작 때 지운다. 서버를 root로 띄우면 컨테이너도 root uid로 돈다(권한은 모두 뗀다). 준비 확인(로그인 상태)과 모델 목록은 이 컴퓨터의 프로그램으로 한다.
 
 ## 세션과 정리
 

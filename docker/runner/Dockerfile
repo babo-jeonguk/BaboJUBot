@@ -8,11 +8,14 @@ RUN apt-get update \
 ARG CLAUDE_CODE_PACKAGE=@anthropic-ai/claude-code
 ARG CODEX_PACKAGE=@openai/codex
 RUN npm install -g "$CLAUDE_CODE_PACKAGE" "$CODEX_PACKAGE" && npm cache clean --force
-# OpenCode 2.x는 공식 설치 스크립트로 받는다(npm 1.x는 서버 방식이 다르다).
-ARG OPENCODE_INSTALL="curl -fsSL https://opencode.ai/install | bash"
-RUN HOME=/tmp/opencode-install sh -c "$OPENCODE_INSTALL" \
-  && install -m 0755 /tmp/opencode-install/.opencode/bin/opencode /usr/local/bin/opencode \
-  && rm -rf /tmp/opencode-install
+# OpenCode 2.x는 GitHub 릴리스 묶음으로 받는다(공식 설치 스크립트와 npm은 1.x이며 서버 방식이 다르다). 판은 build arg로 바꾼다.
+ARG OPENCODE_VERSION=2.2.5
+RUN arch="$(dpkg --print-architecture)" \
+  && case "$arch" in amd64) asset=x64 ;; arm64) asset=arm64 ;; *) echo "unsupported architecture: $arch" >&2; exit 1 ;; esac \
+  && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${asset}.tar.gz" \
+    | tar -xz -C /usr/local/bin opencode \
+  && chmod 0755 /usr/local/bin/opencode \
+  && opencode --version
 # Antigravity CLI(agy)는 공개 패키지를 정하지 않았다. 설치 명령을 주면 /usr/local/bin/agy가 되게 설치한다.
 ARG ANTIGRAVITY_INSTALL=""
 RUN if [ -n "$ANTIGRAVITY_INSTALL" ]; then sh -c "$ANTIGRAVITY_INSTALL"; fi
