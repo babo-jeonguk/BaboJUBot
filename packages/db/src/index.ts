@@ -1,4 +1,5 @@
 export {
+  emergencyStopMs,
   migrateDatabase,
   openDatabase,
   openEphemeralDatabase,

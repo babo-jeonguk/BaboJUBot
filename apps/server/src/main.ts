@@ -15,6 +15,7 @@ import {
 import { createFakeProviders, createConnection } from "@babojubot/runtime";
 import { z } from "zod";
 import { startServer } from "./app.ts";
+import { shutdownBudget } from "./shutdown-budget.ts";
 
 // 환경 변수
 // - DATABASE_URL: 외부 Postgres(운영). 없으면 embedded Postgres를 BABOJUBOT_HOME/postgres에 띄운다.
@@ -24,8 +25,9 @@ import { startServer } from "./app.ts";
 //   예: {"fake-2":{"capabilities":{"steer":false},"readiness":{"status":"not_ready","reason":"product_login_missing"}}}
 // - PORT, HOST, EMBEDDED_POSTGRES_PORT, BABOJUBOT_HOME
 //   HOST 기본값은 127.0.0.1이다. 인증이 없으므로 외부 주소로 열면 그 네트워크의 누구나 API와 Event stream을 쓴다.
-// - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 정리 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
-//   서버를 감싼 실행기(Docker·Kubernetes·Playwright)의 정지 시한은 이보다 길게 둔다. 실행기가 먼저 강제로 끝내면 내장 Postgres가 남을 수 있다.
+// - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 프로세스가 끝나기까지의 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
+//   내장 DB면 비상 정지 몫(최대 1.5초, 시한의 절반 이하)을 남기고 정리를 끊는다(shutdown-budget.ts).
+//   서버를 감싼 실행기(Docker·Kubernetes·Playwright)의 정지 시한은 이보다 길게 둔다. 실행기가 먼저 강제로 끝내면 내장 Postgres가 남고, 다음 시작이 그것을 정상 정지한다.
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../.."
@@ -57,14 +59,21 @@ async function openConfiguredDatabase(): Promise<{
     };
   if (env.BABOJUBOT_EPHEMERAL_DB === "1")
     return {
-      handle: await openEphemeralDatabase(),
+      handle: await openEphemeralDatabase({
+        emergencyStopMs: budget.emergencyMs,
+      }),
       label: "ephemeral embedded Postgres",
     };
   const dataDir = path.join(productHome, "postgres");
   const port = Number(env.EMBEDDED_POSTGRES_PORT ?? 54329);
   return {
     handle: await openDatabase({
-      embedded: { dataDir, port, persistent: true },
+      embedded: {
+        dataDir,
+        port,
+        persistent: true,
+        emergencyStopMs: budget.emergencyMs,
+      },
     }),
     label: `embedded Postgres ${dataDir}`,
   };
@@ -91,6 +100,7 @@ const fakeProviderSettings = fakeProviderSettingsSchema.parse(
 const shutdownDeadlineMs = readShutdownDeadline(
   env.BABOJUBOT_SHUTDOWN_TIMEOUT_MS
 );
+const budget = shutdownBudget(shutdownDeadlineMs, !env.DATABASE_URL);
 let stopping: Promise<void> | undefined;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.on(signal, () => {
@@ -130,12 +140,13 @@ async function start() {
 }
 
 async function shutdown(signal: NodeJS.Signals) {
+  // 시한이 지나 끝낼 때도 DB 패키지가 프로세스 종료 때 내장 Postgres에 즉시 정지를 보낸다. 그 몫까지 시한 안에 들게 먼저 끊는다.
   setTimeout(() => {
     console.error(
       `[server] shutdown after ${signal} did not finish in ${shutdownDeadlineMs / 1000}s`
     );
     process.exit(1);
-  }, shutdownDeadlineMs).unref();
+  }, budget.cleanupMs).unref();
   let failed = false;
   const fail = (error: unknown) => {
     failed = true;
