@@ -20,7 +20,7 @@ type Safety =
  * 실행 시도와 같은 네트워크의 시험 컨테이너로 사용자 API·DB 포트에 닿지 않고 전용 listener에는 닿는지 확인한다.
  * 확인은 한 번 하고 결과를 나눠 쓰며 준비 확인을 다시 할 때 새로 한다. 확인을 통과하지 않으면 실제 연결은
  * 준비안됨이고 실행 시도는 컨테이너에서도 이 컴퓨터에서도 시작하지 않는다.
- * 닫으면 진행 중인 확인을 끝내고 그 뒤로는 확인하지 않는다(격리 환경 없음).
+ * 조직 도구 listener는 관문이 하나만 가지며 겹친 확인이 나눠 쓴다. 닫으면 진행 중인 확인을 끝내고 listener를 닫으며 그 뒤로는 확인하지 않는다(격리 환경 없음).
  */
 export class IsolationGate {
   readonly #docker: DockerEnvironment | undefined;
@@ -32,8 +32,13 @@ export class IsolationGate {
   /** 관문의 수명. 닫으면 진행 중인 확인을 끝내고 새 확인·listener를 열지 않는다. */
   readonly #lifetime = new AbortController();
   #current: Promise<Safety> | undefined;
+  /** 조직 도구 전용 listener. 관문이 하나만 가지며 여는 중에도 기록해 겹친 확인이 나눠 쓴다. */
   #listener:
-    { gateway: string; server: http.Server; origin: string } | undefined;
+    | {
+        gateway: string;
+        ready: Promise<{ server: http.Server; origin: string }>;
+      }
+    | undefined;
 
   constructor(options: {
     docker: DockerEnvironment | undefined;
@@ -127,7 +132,8 @@ export class IsolationGate {
     try {
       const { gateway } = await docker.prepareNetwork(signal);
       signal.throwIfAborted();
-      const tools = await this.#listen(gateway, signal);
+      const tools = await this.#listen(gateway);
+      signal.throwIfAborted();
       const addresses = Object.values(os.networkInterfaces())
         .flatMap((interfaces) => interfaces ?? [])
         .filter(
@@ -153,50 +159,66 @@ export class IsolationGate {
     }
   }
 
-  async #listen(gateway: string, signal: AbortSignal): Promise<string> {
-    if (this.#listener?.gateway === gateway) return this.#listener.origin;
-    await this.#closeListener();
-    signal.throwIfAborted();
-    const server = http.createServer(this.#toolsApp);
-    await new Promise<void>((resolve, reject) => {
-      const fail = (error: Error) => {
-        server.off("listening", ready);
-        reject(error);
-      };
-      const ready = () => {
-        server.off("error", fail);
-        resolve();
-      };
-      server.once("error", fail);
-      server.once("listening", ready);
-      server.listen(0, gateway);
-    });
-    // 여는 사이 확인이 끝났거나(시한·닫힘) 관문을 닫았으면 이 listener를 남기지 않는다.
-    if (signal.aborted) {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      signal.throwIfAborted();
+  /**
+   * 이 gateway의 조직 도구 listener 주소. 같은 gateway면 열린(또는 여는 중인) listener를 나눠 쓰고, 바뀌면 옛것을 닫고 새로 연다.
+   * 확인은 listener를 닫지 않는다. 닫는 것은 gateway가 바뀔 때와 관문을 닫을 때뿐이다. 닫은 관문은 열지 않는다.
+   */
+  async #listen(gateway: string): Promise<string> {
+    if (this.#listener?.gateway !== gateway) {
+      const previous = this.#listener;
+      const ready = (async () => {
+        if (previous) await stopListener(previous.ready);
+        this.#lifetime.signal.throwIfAborted();
+        const server = http.createServer(this.#toolsApp);
+        await new Promise<void>((resolve, reject) => {
+          const fail = (error: Error) => {
+            server.off("listening", listening);
+            reject(error);
+          };
+          const listening = () => {
+            server.off("error", fail);
+            resolve();
+          };
+          server.once("error", fail);
+          server.once("listening", listening);
+          server.listen(0, gateway);
+        });
+        // 여는 사이 관문을 닫았으면 남기지 않는다.
+        if (this.#lifetime.signal.aborted) {
+          await stopServer(server);
+          this.#lifetime.signal.throwIfAborted();
+        }
+        const address = server.address() as net.AddressInfo;
+        const host = gateway.includes(":") ? `[${gateway}]` : gateway;
+        return { server, origin: `http://${host}:${address.port}` };
+      })();
+      this.#listener = { gateway, ready };
+      // 열지 못했으면 다음 확인이 다시 열 수 있게 기록을 지운다.
+      ready.catch(() => {
+        if (this.#listener?.ready === ready) this.#listener = undefined;
+      });
     }
-    const address = server.address() as net.AddressInfo;
-    const host = gateway.includes(":") ? `[${gateway}]` : gateway;
-    const origin = `http://${host}:${address.port}`;
-    this.#listener = { gateway, server, origin };
-    return origin;
+    return (await this.#listener!.ready).origin;
   }
 
-  async #closeListener() {
-    const listener = this.#listener;
-    this.#listener = undefined;
-    if (!listener) return;
-    listener.server.closeAllConnections();
-    await new Promise<void>((resolve) =>
-      listener.server.close(() => resolve())
-    );
-  }
-
-  /** 관문을 닫는다. 진행 중인 확인은 격리 환경 없음으로 끝나고, 닫은 뒤에는 확인도 listener도 다시 열지 않는다. */
+  /** 관문을 닫는다. 진행 중인 확인은 격리 환경 없음으로 끝나고, 열린(또는 여는 중인) listener를 닫으며 그 뒤로는 확인도 listener도 열지 않는다. */
   async close(): Promise<void> {
     this.#lifetime.abort();
-    await this.#closeListener();
+    const listener = this.#listener;
+    this.#listener = undefined;
+    if (listener) await stopListener(listener.ready);
   }
+}
+
+function stopServer(server: http.Server): Promise<void> {
+  server.closeAllConnections();
+  return new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+/** 열린 listener를 닫는다. 열지 못한 listener는 닫을 것이 없다. */
+function stopListener(ready: Promise<{ server: http.Server }>): Promise<void> {
+  return ready.then(
+    ({ server }) => stopServer(server),
+    () => {}
+  );
 }
