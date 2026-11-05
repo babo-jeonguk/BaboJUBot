@@ -71,7 +71,11 @@ describe("embedded Postgres lifetime", () => {
   it.each([
     { end: "uncaught error", code: 1, signal: undefined },
     { end: "process.exit", code: 7, signal: undefined },
-    { end: "terminal hangup", code: 129, signal: "SIGHUP" },
+    {
+      end: "a stop signal its program handles",
+      code: 129,
+      signal: "SIGHUP",
+    },
   ] as const)(
     "stops Postgres so the next start works after $end",
     async ({ end, code, signal }) => {
@@ -84,7 +88,8 @@ describe("embedded Postgres lifetime", () => {
       const finish = {
         "uncaught error": `throw new Error("boom");`,
         "process.exit": `process.exit(7);`,
-        "terminal hangup": `setInterval(() => {}, 1000);`,
+        // 종료 신호는 프로그램(서버 진입점 등)이 받는다. 프로그램이 어떻게 끝나든 Postgres는 멈춘다.
+        "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); setInterval(() => {}, 1000);`,
       }[end];
       const script = `
         const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
@@ -126,6 +131,42 @@ describe("embedded Postgres lifetime", () => {
     },
     60_000
   );
+  // 종료 신호와 종료 순서는 프로그램이 정한다. DB를 불러오거나 열기만 해도 신호를 가로채 먼저 끝내면
+  // 서버가 정리하는 동안 DB가 사라진다(외부 DB여도 프로세스가 바로 끝난다).
+  it("leaves stop signals to the program that imports it and opens a database", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
+    const script = `
+      const events = ["SIGINT", "SIGTERM", "SIGHUP", "beforeExit", "message"];
+      const count = () => Object.fromEntries(events.map((e) => [e, process.listenerCount(e)]));
+      const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
+      const imported = count();
+      const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: false } });
+      const opened = count();
+      await handle.close();
+      console.log(JSON.stringify({ imported, opened }));
+    `;
+    try {
+      const child = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", script],
+        { stdio: ["ignore", "pipe", "inherit"] }
+      );
+      let output = "";
+      child.stdout!.on("data", (chunk) => (output += chunk));
+      await once(child, "exit");
+      const none = {
+        SIGINT: 0,
+        SIGTERM: 0,
+        SIGHUP: 0,
+        beforeExit: 0,
+        message: 0,
+      };
+      expect(JSON.parse(output)).toEqual({ imported: none, opened: none });
+    } finally {
+      await fsp.rm(dataDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 function isAlive(pid: number) {
