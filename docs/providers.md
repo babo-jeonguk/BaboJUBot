@@ -43,7 +43,23 @@ pnpm provider:login claude   # codex, opencode, antigravity, claude:work
 
 로그인 여부는 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. Claude는 `claude auth status`, Codex는 `codex login status`, Antigravity는 `agy models`를 쓴다. Claude와 Antigravity는 실행 시도도 파일 없이 시작하고, 거절되면 로그인 필요로 알린다.
 
-제품 HOME/XDG와 환경 변수 허용 목록은 개인 설정의 자동 유입을 막는 경계다. 호스트 파일·네트워크 접근을 격리하는 컨테이너는 후속 #102 범위다. 사용자 홈·자격 증명·연구 원본은 Git에 추가하지 않는다.
+제품 HOME/XDG와 환경 변수 허용 목록은 개인 설정의 자동 유입을 막는 경계다. 호스트 파일·네트워크 접근은 아래 격리 실행을 켰을 때만 막는다. 사용자 홈·자격 증명·연구 원본은 Git에 추가하지 않는다.
+
+## 격리 실행
+
+전역 설정의 `격리 실행` 스위치(기본 꺼짐)를 켜면 실제 연결의 실행 시도와 Claude 미리 압축을 실행 시도마다 Docker 컨테이너 하나에서 돌린다. 꺼져 있으면 지금처럼 이 컴퓨터에서 돈다. 스위치는 누르면 바로 저장되고 다음 실행 시도부터 따른다. 이미 돌고 있는 실행 시도는 그대로 끝낸다. 가짜 연결은 프로그램을 띄우지 않으므로 상관없다.
+
+- 컨테이너: 서버를 띄운 사용자의 uid:gid, 권한(capability) 모두 제거, `no-new-privileges`, 호스트 네트워크 대신 전용 bridge 네트워크(기본 `babojubot`, 컨테이너끼리는 닿지 않음). 이미지는 받아 오지 않는다(`--pull never`).
+- 폴더: 같은 경로로 조직 폴더(`shared`) 읽기·쓰기, 자기 개인 폴더 읽기·쓰기, 같은 조직 동료 개인 폴더 읽기만, 그 연결의 제품 폴더(`providers/<연결>`) 읽기·쓰기만 넣는다. 다른 조직·서버 데이터·사용자 홈·Docker socket은 넣지 않는다.
+- 환경: 제품 폴더 환경과 로그인 값은 이름만 명령에 적고 값은 docker 프로그램의 환경으로 넘긴다. GitHub 토큰(`GH_TOKEN`·`GITHUB_TOKEN` 등)·이 컴퓨터의 `PATH`·임시 폴더는 넘기지 않는다. 컨테이너에는 GitHub 로그인이 없다.
+- 조직 도구: 사용자 API와 다른 전용 listener를 전용 네트워크의 gateway 주소에 열고 조직 도구 경로만 둔다. 사용자 API와 DB는 loopback에 그대로 둔다. OpenCode는 컨테이너 안 서버를 이 컴퓨터의 loopback에만 공개한 포트와 실행마다 만든 비밀번호로 제어한다.
+- 안전 확인: 스위치를 켰을 때·서버 시작·전역 설정 화면·`다시 확인` 때 실행 시도와 같은 네트워크·권한의 시험 컨테이너로 사용자 API·DB 포트(gateway, `host.docker.internal`, 이 컴퓨터의 주소)에 TCP로 닿지 않는지, 전용 listener에는 닿는지 본다. 닿으면 실제 연결은 모두 `준비안됨`(`격리 경계 열림`), Docker·이미지·네트워크를 확인하지 못하면 `준비안됨`(`격리 환경 없음`)이다. 확인을 통과하지 않으면 실행 시도는 컨테이너에서도 이 컴퓨터에서도 시작하지 않고 실패로 끝난다. 이 컴퓨터로 대신 돌리지 않는다.
+- 정리: 취소 공통 순서(프로토콜 중단 → 2초 → TERM → 2초 → KILL) 뒤 마지막에 컨테이너를 지우고 없어졌는지 확인한다. 지우지 못하면 서버 기록에 남기고, 서버 시작 때 이 제품 폴더가 띄운 컨테이너(`babojubot.owner` label)만 지운다.
+- 추가 패키지: 에이전트는 조직 폴더의 가상환경(`shared/.venv`)에 설치한다. 이미지의 시작 스크립트가 없으면 만들고 `PATH`에 넣으므로 다음 실행 시도에서도 쓴다.
+
+공통 이미지는 `pnpm runner:build`(`docker/runner`)로 만든다. Node 24, git, Python, 기본 도구와 Claude Code·Codex(npm)·OpenCode(공식 설치 스크립트)를 담는다. Antigravity CLI는 공개 설치 경로를 정하지 않아 `docker build --build-arg ANTIGRAVITY_INSTALL="<설치 명령>"`으로 넣는다. 설정은 `BABOJUBOT_DOCKER_COMMAND`·`BABOJUBOT_CONTAINER_IMAGE`(기본 `babojubot-runner`)·`BABOJUBOT_CONTAINER_NETWORK`(기본 `babojubot`)이다.
+
+지원 환경은 Linux Docker Engine이다. Docker Desktop·rootless처럼 gateway 주소가 이 컴퓨터에 없거나 이 컴퓨터의 loopback으로 중계하는 환경은 안전 확인에서 `준비안됨`으로 드러나며 이 컴퓨터로 대신 돌리지 않는다. 같은 연결의 제품 폴더는 실행 시도끼리 함께 쓰므로 그 안의 세션·로그인은 서로 보인다. 준비 확인(로그인 상태)과 모델 목록은 이 컴퓨터의 프로그램으로 한다.
 
 ## 세션과 정리
 
