@@ -492,6 +492,8 @@ describe("an isolated attempt", () => {
     });
     const provider = createOpenCodeProvider({
       dataDir: env.root,
+      // 연결 폴더의 로그인을 읽는 이 컴퓨터의 프로그램도 가짜로 둔다.
+      command: [process.execPath, fixture("opencode-simulator.mjs")],
       container: env.container,
     });
     expect(provider.isolatable).toBe(true);

@@ -375,4 +375,25 @@ describe("OpenCode", () => {
       )
     ).toEqual([own]);
   }, 20000);
+
+  it("still runs in a container when the connection's login cannot be read on this machine", async () => {
+    const env = await setup();
+    // 컨테이너 안 프로그램은 있지만 이 컴퓨터에는 그 프로그램이 없다. 로그인 옮기기는 건너뛰고 실행은 그대로 한다(무료 모델은 로그인 없이 돈다).
+    env.container.docker = [
+      ...env.container.docker.slice(0, 3),
+      JSON.stringify({
+        opencode: [process.execPath, fixture("opencode-simulator.mjs")],
+      }),
+    ] as unknown as ContainerSettings["docker"];
+    const provider = createOpenCodeProvider({
+      dataDir: env.root,
+      command: [path.join(env.root, "missing-opencode")],
+      container: env.container,
+    });
+    const result = await provider.adapter.execute(
+      await env.requestFor(crypto.randomUUID(), "container"),
+      control()
+    );
+    expect(result.stopReason).toBe("completed");
+  }, 20000);
 });
