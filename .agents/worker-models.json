@@ -1,0 +1,4 @@
+{
+  "primary": "opencode-go/deepseek-v4.1-flash",
+  "fallback": ["opencode-go/glm-5.3-flash", "opencode/deepseek-v4.1-flash-free"]
+}

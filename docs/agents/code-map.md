@@ -23,7 +23,7 @@
 | 알림 outbox·가짜 채널·Inbox | [notifications](code-map/notifications.md) |
 | 대시보드 지표·홈 개요 | [dashboard](code-map/dashboard.md) |
 | 에이전트 조직도·이름·얼굴 | [agent-chart](code-map/agent-chart.md) |
-| 개발 환경: 서버 시작·임시 Postgres·scripts·CI·hook | [dev-environment](code-map/dev-environment.md) |
+| 개발 환경: 서버 시작·임시 Postgres·scripts·CI·hook·코드 worker | [dev-environment](code-map/dev-environment.md) |
 | 계약·schema·저장·Event·응답을 함께 바꿈: 사용자 HTTP 경로와 commit 뒤 처리의 공통 순서 | [shared-path](code-map/shared-path.md) |
 
 ## 지도 갱신
