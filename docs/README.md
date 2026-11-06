@@ -24,6 +24,7 @@
 | 구현은 언제 시작·완료하는가? | [implementation](agents/implementation.md): 브랜치→구현→리뷰→커밋→push→PR·외부 리뷰 인계 |
 | 언제 무엇을 검사하고 결과를 재사용하는가? | [verification](agents/verification.md): 검사 시점·완료 검사·결과 재사용 |
 | 리뷰 결과를 어떻게 처리하는가? | [review-fixes](agents/review-fixes.md): finding 판정→실패 유형 검증·수정→재검토·외부 요청 형식 |
+| 코드 수정을 언제 어떻게 OpenCode worker에 맡기는가? | [worker](agents/worker.md): 구현·리뷰 대응 코드 worker의 역할·모델·brief·실행·인수 |
 | 병합은 언제·어떻게 완료하는가? | [pr-merge](agents/pr-merge.md): 병합 판단→기록 정합성·최종 검증 확인→병합→후처리·보고 |
 | 이슈·의존성·parent를 어떻게 조작하는가? | [issue-tracker](agents/issue-tracker.md): gh·게시 규칙·skill 작업 매핑 |
 | triage 역할은 어떤 label인가? | [triage-labels](agents/triage-labels.md): 역할·label 대응 |
