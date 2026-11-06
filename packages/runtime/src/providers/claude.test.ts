@@ -78,7 +78,8 @@ it("interrupts through the protocol and deletes attempt credentials after proces
     ],
   });
   const controller = new AbortController();
-  const result = await provider.adapter.execute(request(), {
+  const input = request();
+  const result = await provider.adapter.execute(input, {
     signal: controller.signal,
     emit: async () => {
       controller.abort();
@@ -146,9 +147,12 @@ it("resumes the requested session and subtracts its cumulative cost baseline", a
 });
 it("records the latest primary-session token size, request timestamp and cache TTL from its transcript", async () => {
   const root = await home();
+  const input = request();
   const transcripts = path.join(
     root,
-    "providers/claude/config/projects/synthetic"
+    "providers/claude/organizations",
+    input.identity.organizationId,
+    "config/projects/synthetic"
   );
   await mkdir(transcripts, { recursive: true });
   await writeFile(
@@ -184,7 +188,7 @@ it("records the latest primary-session token size, request timestamp and cache T
       path.resolve("test-fixtures/claude-finish.synthetic.json"),
     ],
   });
-  const result = await provider.adapter.execute(request(), {
+  const result = await provider.adapter.execute(input, {
     signal: new AbortController().signal,
     emit: async () => {},
   });
@@ -248,7 +252,7 @@ it("compacts the saved launch with the same session and requires a compact bound
     },
   };
   const result = await provider.adapter.precompact!(
-    { session, access: request().access },
+    { session, access: request().access, organizationId: crypto.randomUUID() },
     new AbortController().signal
   );
   expect(result.ok).toBe(true);
@@ -272,7 +276,11 @@ it("compacts the saved launch with the same session and requires a compact bound
   expect(
     (
       await provider.adapter.precompact!(
-        { session, access: request().access },
+        {
+          session,
+          access: request().access,
+          organizationId: crypto.randomUUID(),
+        },
         new AbortController().signal
       )
     ).ok
@@ -288,7 +296,8 @@ it("waits for an orphaned child to exit before settling cancellation", async () 
       path.resolve("test-fixtures/claude-orphan.synthetic.mjs"),
     ],
   });
-  const result = await provider.adapter.execute(request(), {
+  const input = request();
+  const result = await provider.adapter.execute(input, {
     signal: controller.signal,
     emit: async () => {
       controller.abort();
@@ -296,7 +305,12 @@ it("waits for an orphaned child to exit before settling cancellation", async () 
   });
   expect(result.stopReason).toBe("cancelled");
   // The child keeps writing while it lives, so a run that settles early would see this change.
-  const heartbeat = path.join(root, "providers/claude/orphan-heartbeat");
+  const heartbeat = path.join(
+    root,
+    "providers/claude/organizations",
+    input.identity.organizationId,
+    "orphan-heartbeat"
+  );
   const settled = await readFile(heartbeat, "utf8");
   await new Promise((resolve) => setTimeout(resolve, 200));
   expect(await readFile(heartbeat, "utf8")).toBe(settled);
@@ -319,7 +333,7 @@ it("compacts through the real compact protocol output", async () => {
     launch: { instructions: "지침", cwd: root, model: null },
   };
   const result = await provider.adapter.precompact!(
-    { session, access: request().access },
+    { session, access: request().access, organizationId: crypto.randomUUID() },
     new AbortController().signal
   );
   expect(result.ok).toBe(true);

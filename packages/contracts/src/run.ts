@@ -384,6 +384,8 @@ export type RuntimeAdapter = {
       session: SessionState;
       access: RunRequest["access"];
       execution?: RunRequest["execution"];
+      /** 세션을 가진 조직. 프로바이더는 그 조직의 제품 폴더에서 압축한다. */
+      organizationId: string;
     },
     signal: AbortSignal
   ) => Promise<{ ok: boolean; nextSession: SessionState | null }>;

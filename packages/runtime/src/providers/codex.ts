@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { lstat, mkdir, readlink, rename, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -20,6 +20,7 @@ import {
 } from "./process.ts";
 import type { ContainerLaunch, ContainerSettings } from "./container.ts";
 import { placeAttempt } from "./container.ts";
+import { connectionFolders } from "./folders.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -51,15 +52,67 @@ class ProtocolRejection extends Error {
 const requestTimeoutMs = 2 * 60 * 1000;
 /** 끼워 넣기 응답 제한. 넘겨도 실행 시도는 끝내지 않는다. */
 const steerTimeoutMs = 10_000;
+let warnedLinks = false;
+/**
+ * 모든 조직이 연결의 Codex 로그인 하나를 쓴다. 원본(`original`)은 다른 내용이 없는 로그인 전용 폴더에 두고, `at`(연결 폴더나 조직 폴더의
+ * `auth.json`)은 원본을 가리키는 링크로 둔다. Codex는 링크를 따라가 원본 자리에서 바꿔 쓰므로 링크가 남는다.
+ * `at`에 보통 파일이 있으면 가장 최근 로그인(예전 연결 폴더 로그인, 링크 대신 파일을 쓴 판)이므로 원본으로 옮긴다.
+ * 원본 자리는 모든 조직 컨테이너가 쓸 수 있으므로 보통 파일이 아닌 것(다른 곳을 가리키는 링크 등)은 지운다. 남기면 이 컴퓨터에서 도는 Codex가
+ * 로그인을 갱신할 때 링크를 따라가 그 파일을 덮어쓴다.
+ * 링크를 만들 수 없는 컴퓨터(권한 없는 Windows)면 `false`이며, 그 실행은 연결 폴더로 돈다.
+ */
+async function linkLogin(original: string, at: string): Promise<boolean> {
+  await mkdir(path.dirname(original), { recursive: true, mode: 0o700 });
+  await mkdir(path.dirname(at), { recursive: true, mode: 0o700 });
+  const source = await lstat(original).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (source && !source.isFile())
+    await rm(original, { recursive: true, force: true });
+  const current = await lstat(at).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (current?.isSymbolicLink() && (await readlink(at)) === original)
+    return true;
+  if (current?.isFile()) await rename(at, original);
+  else if (current) await rm(at, { recursive: true, force: true });
+  try {
+    await symlink(original, at, "file");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // 같은 조직의 다른 실행 시도가 먼저 만들었다.
+    if (code === "EEXIST") return true;
+    if (code === "EPERM" && process.platform === "win32") {
+      if (!warnedLinks) {
+        warnedLinks = true;
+        console.warn(
+          "[provider] this machine cannot create file links; Codex runs share the connection folder"
+        );
+      }
+      return false;
+    }
+    throw error;
+  }
+  return true;
+}
+
 export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const id = options.id ?? "codex";
-  const home = path.resolve(options.dataDir, "providers", id);
+  const folders = connectionFolders(options.dataDir, id);
+  const home = folders.connection;
+  /** 연결의 로그인 원본. 컨테이너에는 이 폴더만 함께 쓰기로 넣는다. */
+  const loginFolder = path.join(home, "login");
+  const original = path.join(loginFolder, "auth.json");
   const command = options.command ?? commandFor(id, "codex");
-  const environment = () => providerEnvironment(id, home, { CODEX_HOME: home });
+  const environment = (codexHome = home) =>
+    providerEnvironment(id, codexHome, { CODEX_HOME: codexHome });
   const readiness = async (
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> => {
     await mkdir(home, { recursive: true, mode: 0o700 });
+    await linkLogin(original, path.join(home, "auth.json"));
     const probe = (args: string[]) =>
       runProbe(command, args, {
         env: environment(),
@@ -199,11 +252,25 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         await mkdir(home, { recursive: true, mode: 0o700 });
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        const placement = placeAttempt(options.container, home, request);
+        // 그 조직의 제품 폴더로 돈다. 로그인은 연결의 원본 하나를 링크로 쓴다.
+        const organization = folders.organization(
+          request.identity.organizationId
+        );
+        await linkLogin(original, path.join(home, "auth.json"));
+        const linked = await linkLogin(
+          original,
+          path.join(organization, "auth.json")
+        );
+        // 링크 없이 연결 폴더를 컨테이너에 넣지 않는다.
+        if (!linked && request.execution === "container") return failed();
+        const codexHome = linked ? organization : home;
+        const cwd = request.workspace?.cwd ?? codexHome;
+        const placement = placeAttempt(options.container, codexHome, request);
         if (!placement) return failed();
         const container = placement.container?.({
-          cwd: request.workspace?.cwd ?? home,
+          cwd,
           program: "codex",
+          shared: linked ? [loginFolder] : [],
         });
         let result = failed(),
           threadId = "",
@@ -222,7 +289,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           }
         >();
         const env = {
-          ...environment(),
+          ...environment(codexHome),
           BABOJUBOT_MCP_TOKEN: request.access.token,
         };
         const args = [
@@ -238,21 +305,21 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           'mcp_servers.organization.bearer_token_env_var="BABOJUBOT_MCP_TOKEN"',
         ];
         if (options.mode === "exec")
-          return executeExec(
-            request,
-            control,
+          return executeExec(request, control, {
             command,
-            args,
-            home,
+            config: args,
+            stateDir: home,
+            cwd,
             env,
-            container
-          );
+            container,
+          });
         args.unshift("app-server");
         const child = startProcess({
+          // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
           stateDir: home,
           command,
           args,
-          cwd: request.workspace?.cwd ?? home,
+          cwd,
           env,
           container,
           onFrame: async (raw) => {
@@ -369,7 +436,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             });
             child.write({ method: "initialized" });
             const config = {
-              cwd: request.workspace?.cwd ?? home,
+              cwd,
               model: request.model,
               approvalPolicy: "never",
               sandbox: "danger-full-access",
@@ -463,12 +530,17 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
 async function executeExec(
   request: RunRequest,
   control: Parameters<RuntimeAdapter["execute"]>[1],
-  command: readonly [string, ...string[]],
-  config: string[],
-  home: string,
-  env: NodeJS.ProcessEnv,
-  container?: ContainerLaunch
+  launch: {
+    command: readonly [string, ...string[]];
+    config: string[];
+    /** 프로세스 기록 폴더(연결 폴더). */
+    stateDir: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    container?: ContainerLaunch;
+  }
 ): Promise<RunResult> {
+  const { command, config, stateDir, cwd, env, container } = launch;
   let id: string | null = null,
     result = failed(),
     loginProblem = false;
@@ -490,10 +562,10 @@ async function executeExec(
     args.push("resume", request.previousSession.id);
   args.push("-");
   const child = startProcess({
-    stateDir: home,
+    stateDir,
     command,
     args,
-    cwd: request.workspace?.cwd ?? home,
+    cwd,
     env,
     container,
     onFrame: async (raw) => {
@@ -572,11 +644,7 @@ async function executeExec(
       return executeExec(
         { ...request, previousSession: null },
         control,
-        command,
-        config,
-        home,
-        env,
-        container
+        launch
       );
     }
     return result.stopReason === "failed" && loginProblem

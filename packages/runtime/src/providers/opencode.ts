@@ -17,6 +17,7 @@ import {
 } from "./process.ts";
 import type { ContainerLaunch, ContainerSettings } from "./container.ts";
 import { placeAttempt } from "./container.ts";
+import { connectionFolders } from "./folders.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const count = (v: unknown) =>
@@ -49,14 +50,16 @@ export function createOpenCodeProvider(options: {
   container?: ContainerSettings;
 }): ProviderConnection {
   const connectionId = options.id ?? "opencode";
-  const home = path.resolve(options.dataDir, "providers", connectionId),
+  const folders = connectionFolders(options.dataDir, connectionId);
+  const home = folders.connection,
     command = options.command ?? commandFor(connectionId, "opencode");
-  const env = () =>
-    providerEnvironment(connectionId, home, {
-      XDG_CONFIG_HOME: path.join(home, "config"),
-      XDG_DATA_HOME: path.join(home, "data"),
-      XDG_CACHE_HOME: path.join(home, "cache"),
-      XDG_STATE_HOME: path.join(home, "state"),
+  /** 그 제품 폴더로 띄우는 환경. 로그인과 세션은 그 폴더의 DB 하나에 함께 있다. */
+  const env = (productHome = home) =>
+    providerEnvironment(connectionId, productHome, {
+      XDG_CONFIG_HOME: path.join(productHome, "config"),
+      XDG_DATA_HOME: path.join(productHome, "data"),
+      XDG_CACHE_HOME: path.join(productHome, "cache"),
+      XDG_STATE_HOME: path.join(productHome, "state"),
       OPENCODE_DISABLE_PROJECT_CONFIG: "1",
       OPENCODE_DISABLE_CLAUDE_CODE: "1",
       OPENCODE_DISABLE_FILEWATCHER: "1",
@@ -79,9 +82,10 @@ export function createOpenCodeProvider(options: {
   async function server(
     signal: AbortSignal,
     config: Record<string, unknown> = {},
-    container?: ContainerLaunch
+    container?: ContainerLaunch,
+    productHome = home
   ) {
-    const directory = await mkdtemp(path.join(home, "attempt-")),
+    const directory = await mkdtemp(path.join(productHome, "attempt-")),
       password = crypto.randomUUID();
     const lifetime = new AbortController();
     let interrupt: (() => void) | undefined;
@@ -96,14 +100,15 @@ export function createOpenCodeProvider(options: {
       resolveUrl = resolve;
     });
     const child = startProcess({
+      // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
       stateDir: home,
       command,
       args: container
         ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
         : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
-      cwd: home,
+      cwd: productHome,
       env: {
-        ...env(),
+        ...env(productHome),
         OPENCODE_CONFIG_DIR: directory,
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         OPENCODE_SERVER_PASSWORD: password,
@@ -222,8 +227,44 @@ export function createOpenCodeProvider(options: {
       await service.close();
     }
   };
-  const models = (value: Record<string, unknown>) =>
+  /** 서버 응답의 `data` 목록. */
+  const entries = (value: Record<string, unknown>) =>
     Array.isArray(value.data) ? value.data.map(object) : [];
+  const models = entries;
+  /**
+   * 조직 폴더에 로그인이 하나도 없으면 연결의 로그인을 옮겨 넣는다. `auth import`와 같은 규칙으로 같은 ID는 건너뛰고, 세션은 옮기지 않는다.
+   * 실행 중인 서버는 넣은 로그인을 바로 쓴다(2.2.5 확인). 로그인 목록을 주지 않는 판이면 옮기지 않고 그대로 돈다.
+   */
+  const copyLogin = async (
+    target: Awaited<ReturnType<typeof server>>,
+    signal: AbortSignal
+  ) => {
+    try {
+      if (entries(await target.json("/api/credential")).length) return;
+    } catch (e) {
+      if (e instanceof HttpFailure) return;
+      throw e;
+    }
+    const source = await server(signal);
+    try {
+      for (const credential of entries(await source.json("/api/credential")))
+        try {
+          await target.request("/api/credential", "POST", {
+            id: credential.id,
+            integrationID: credential.integrationID,
+            label: credential.label,
+            value: credential.value,
+            activate: credential.active === true,
+          });
+        } catch (e) {
+          if (!(e instanceof HttpFailure && e.status === 409)) throw e;
+        }
+    } catch (e) {
+      if (!(e instanceof HttpFailure)) throw e;
+    } finally {
+      await source.close();
+    }
+  };
   const adapter: ProviderConnection["adapter"] = {
     capabilities: {
       steer: true,
@@ -266,13 +307,18 @@ export function createOpenCodeProvider(options: {
       let service: Awaited<ReturnType<typeof server>> | undefined,
         events: Promise<void> | undefined;
       try {
-        const placement = placeAttempt(options.container, home, input);
+        // 그 조직의 제품 폴더로 돈다.
+        const organization = folders.organization(
+          input.identity.organizationId
+        );
+        const placement = placeAttempt(options.container, organization, input);
         if (!placement) return failure();
         const container = placement.container?.({
-          cwd: home,
+          cwd: organization,
           program: "opencode",
         });
         await prepare();
+        await mkdir(organization, { recursive: true, mode: 0o700 });
         // Instructions are attached separately; never set agent.system, which replaces the native prompt.
         const config = {
           permissions: [{ action: "*", resource: "*", effect: "allow" }],
@@ -288,8 +334,9 @@ export function createOpenCodeProvider(options: {
             },
           },
         };
-        service = await server(control.signal, config, container);
+        service = await server(control.signal, config, container, organization);
         const api = service;
+        await copyLogin(api, control.signal);
         const available = models(await api.json("/api/model"));
         // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
         const selected = input.model
@@ -327,7 +374,7 @@ export function createOpenCodeProvider(options: {
           session = object(
             (
               await api.json("/api/session", "POST", {
-                location: { directory: input.workspace?.cwd ?? home },
+                location: { directory: input.workspace?.cwd ?? organization },
                 agent: "build",
                 model,
                 permissions: [{ action: "*", resource: "*", effect: "allow" }],
