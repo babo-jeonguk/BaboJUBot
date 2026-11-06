@@ -30,7 +30,7 @@ import {
   publishConfig,
 } from "./antigravity-config.ts";
 import type { ContainerSettings } from "./container.ts";
-import { containerLaunch, type ContainerLaunch } from "./container.ts";
+import { placeAttempt, type ContainerLaunch } from "./container.ts";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -129,9 +129,8 @@ export function createAntigravityProvider(options: {
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
-        // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
-        if (request.execution === "container" && !options.container)
-          return failure();
+        const placement = placeAttempt(options.container, home, request);
+        if (!placement) return failure();
         // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
         await mkdir(home, { recursive: true, mode: 0o700 });
         cwd = await realpath(request.workspace?.cwd ?? home);
@@ -168,16 +167,13 @@ export function createAntigravityProvider(options: {
         // 컨테이너에서는 조직 폴더가 그 조직의 모든 컨테이너에 쓰기로 들어간다. 토큰이 든 설정은 이 실행 시도 전용 폴더에 두고
         // 이 컨테이너에만 작업 폴더의 설정 파일 위에 읽기로 넣는다. 조직 폴더에는 토큰 없는 제품 소유 파일이 자리만 잡는다.
         let container: ContainerLaunch | undefined;
-        if (request.execution === "container") {
+        if (placement.container) {
           attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
           const file = path.join(attempt, "mcp_config.json");
           await writeFile(file, settings, { mode: 0o600, flag: "wx" });
-          container = containerLaunch(options.container!, {
-            home,
+          container = placement.container({
             cwd,
             program: "agy",
-            workspace: request.workspace,
-            identity: request.identity,
             files: [
               {
                 source: file,
