@@ -222,6 +222,8 @@ export const runRequestSchema = z.object({
    * 이어 가지 못하면 프로바이더가 같은 실행 시도 안에서 새 세션으로 시작한다.
    */
   previousSession: sessionStateSchema.nullable(),
+  /** 실행 환경. `container`면 프로바이더 프로그램을 실행 시도마다 컨테이너 하나에서 돌린다(격리 실행). 없으면 이 컴퓨터에서 돈다. */
+  execution: z.enum(["host", "container"]).optional(),
 });
 export type RunRequest = z.infer<typeof runRequestSchema>;
 
@@ -378,7 +380,11 @@ export type RuntimeAdapter = {
    * `ok`는 압축이 실제로 끝났을 때만 `true`다. 중단 신호를 받은 뒤라도 압축이 이미 끝났으면 `true`와 그 세션을 돌려주고, 호출자는 그대로 저장한다.
    */
   precompact?: (
-    request: { session: SessionState; access: RunRequest["access"] },
+    request: {
+      session: SessionState;
+      access: RunRequest["access"];
+      execution?: RunRequest["execution"];
+    },
     signal: AbortSignal
   ) => Promise<{ ok: boolean; nextSession: SessionState | null }>;
   /** 모델 호출 없이 프로그램·버전·제품 로그인 상태를 확인한다. */
@@ -401,6 +407,8 @@ export type ProviderConnection = {
   listModels?: (signal: AbortSignal) => Promise<ModelOption[]>;
   /** 목록 밖의 모델도 받는다. 목록이 제품에 담긴 고정 목록이라 모든 모델을 담지 못하는 연결이다. */
   openModels?: boolean;
+  /** 프로그램을 띄우는 실제 연결. 격리를 켜면 컨테이너에서 돌며, 안전 확인이 실패하면 준비안됨이다. 가짜 연결에는 없다. */
+  isolatable?: boolean;
   /** 제품 로그인 실행 방법. `tokenFile`이 있으면 프로그램이 보여 준 토큰을 받아 그 파일에 저장한다. */
   login?: {
     command: readonly [string, ...string[]];

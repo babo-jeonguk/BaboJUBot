@@ -77,6 +77,8 @@ export type ProviderReadinessStatus = z.infer<
  * - `credentials_invalid`: 자격 증명이 거부됐다.
  * - `credentials_unverified`: 자격 증명이 있지만 모델을 부르지 않고는 맞는지 알 수 없다.
  * - `not_checked`: 아직 확인하지 않았다. `check_failed`·`check_timeout`: 확인이 실패하거나 시간 안에 끝나지 않았다.
+ * - `isolation_unsafe`: 격리를 켰는데 시험 컨테이너가 사용자 API나 DB에 닿았다.
+ * - `isolation_unavailable`: 격리를 켰는데 Docker·이미지·네트워크·조직 도구 연결을 확인하지 못했다.
  */
 export const providerReadinessReasons = [
   "program_missing",
@@ -86,6 +88,8 @@ export const providerReadinessReasons = [
   "not_checked",
   "check_failed",
   "check_timeout",
+  "isolation_unavailable",
+  "isolation_unsafe",
 ] as const;
 export const providerReadinessReasonSchema = z.enum(providerReadinessReasons);
 export type ProviderReadinessReason = z.infer<
@@ -150,6 +154,8 @@ export const providerSettingsSchema = z.object({
   workerDefault: providerChoiceSchema,
   providers: z.array(providerSummarySchema),
   compaction: compactionSettingsSchema.optional(),
+  /** 격리 실행. 켜면 실제 프로바이더를 실행 시도마다 컨테이너에서 돌린다. 기본은 꺼짐이며 다음 실행 시도부터 적용한다. */
+  isolated: z.boolean(),
 });
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
 
@@ -184,3 +190,9 @@ export const updateProviderLimitInputSchema = z.strictObject({
 export type UpdateProviderLimitInput = z.infer<
   typeof updateProviderLimitInputSchema
 >;
+
+/** 사용자의 격리 실행 켜기·끄기. 누르면 바로 저장하며 진행 중인 실행 시도는 그대로 두고 다음 실행 시도부터 따른다. */
+export const updateIsolationInputSchema = z.strictObject({
+  isolated: z.boolean(),
+});
+export type UpdateIsolationInput = z.infer<typeof updateIsolationInputSchema>;

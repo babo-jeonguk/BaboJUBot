@@ -1,6 +1,7 @@
 import { claudeSessionFacts } from "./claude-transcript.ts";
 import { claudeModelsFor } from "./claude-models.ts";
 import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -21,12 +22,15 @@ import {
   providerEnvironment,
   runProbe,
 } from "./process.ts";
+import type { ContainerSettings } from "./container.ts";
+import { containerLaunch } from "./container.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
   command?: readonly [string, ...string[]];
   id?: string;
   label?: string;
+  container?: ContainerSettings;
 };
 const launchSchema = z.object({
   instructions: z.string(),
@@ -38,6 +42,9 @@ type ClaudeAttempt = z.infer<typeof launchSchema> & {
   previousSession: RunRequest["previousSession"];
   prompt: string;
   runId?: string;
+  execution?: RunRequest["execution"];
+  workspace?: RunRequest["workspace"];
+  identity?: RunRequest["identity"];
 };
 const failed = (): RunResult => ({
   stopReason: "failed",
@@ -77,6 +84,7 @@ export function createClaudeProvider(
     id,
     label: options.label ?? "Claude Code",
     openModels: true,
+    isolatable: true,
     login: {
       command,
       args: ["setup-token"],
@@ -117,7 +125,7 @@ export function createClaudeProvider(
           };
         }
       },
-      async precompact({ session, access }, signal) {
+      async precompact({ session, access, execution }, signal) {
         const launch = launchSchema.safeParse(session.launch);
         if (!launch.success || typeof session.id !== "string")
           return { ok: false, nextSession: null };
@@ -127,13 +135,15 @@ export function createClaudeProvider(
             access,
             previousSession: session,
             prompt: "/compact",
+            execution,
           },
           { signal, emit: async () => {} },
           home,
           command,
           environment(),
           active,
-          true
+          true,
+          options.container
         );
         return {
           ok: result.stopReason === "completed",
@@ -162,12 +172,17 @@ export function createClaudeProvider(
                 wakeReasons: request.wakeReasons,
               }),
               runId: request.identity.runId,
+              execution: request.execution,
+              workspace: request.workspace,
+              identity: request.identity,
             },
             control,
             home,
             command,
             environment(),
-            active
+            active,
+            false,
+            options.container
           );
         } finally {
           active.delete(request.identity.runId);
@@ -184,12 +199,35 @@ async function executeClaude(
   command: readonly [string, ...string[]],
   env: NodeJS.ProcessEnv,
   active: Map<string, (message: SteerMessage) => SteerOutcome>,
-  maintenance = false
+  maintenance = false,
+  container?: ContainerSettings
 ): Promise<RunResult> {
   if (control.signal.aborted)
     return { ...failed(), stopReason: "cancelled", error: null };
+  // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
+  if (request.execution === "container" && !container) return failed();
   await mkdir(home, { recursive: true, mode: 0o700 });
-  const temp = await mkdtemp(path.join(home, "attempt-"));
+  // 컨테이너에서는 제품 폴더가 같은 연결의 모든 조직 컨테이너에 들어가므로, 토큰이 든 이 실행 시도의 파일은 그 밖에 두고 이 컨테이너에만 읽기로 넣는다.
+  const temp =
+    request.execution === "container"
+      ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
+      : await mkdtemp(path.join(home, "attempt-"));
+  const launch =
+    request.execution === "container"
+      ? containerLaunch(container!, {
+          home,
+          cwd: request.cwd,
+          program: "claude",
+          workspace: request.workspace ?? null,
+          identity: request.identity
+            ? {
+                runId: request.identity.runId,
+                organizationId: request.identity.organizationId,
+              }
+            : undefined,
+          attempt: temp,
+        })
+      : undefined;
   let result = failed();
   try {
     const config = path.join(temp, "mcp.json");
@@ -243,6 +281,7 @@ async function executeClaude(
       args,
       cwd: request.cwd,
       env: await withLogin(home, env),
+      container: launch,
       onFrame: async (raw) => {
         if (!raw || typeof raw !== "object" || completed) return;
         const frame = raw as Record<string, unknown>;
@@ -375,7 +414,9 @@ async function executeClaude(
           home,
           command,
           env,
-          active
+          active,
+          maintenance,
+          container
         );
       }
       if (!completed) return failed();

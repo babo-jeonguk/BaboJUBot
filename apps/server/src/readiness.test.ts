@@ -68,3 +68,68 @@ describe("ReadinessMonitor", () => {
     expect(f.calls).toEqual(["start A", "end A", "start B", "end B"]);
   });
 });
+
+describe("ReadinessMonitor with the isolation safety check", () => {
+  const unavailable: ProviderReadinessCheck = {
+    status: "not_ready",
+    reason: "isolation_unavailable",
+  };
+  const monitorWith = (
+    before: () => Promise<ProviderReadinessCheck | null>,
+    checkReadiness: () => Promise<ProviderReadinessCheck> = async () => ready
+  ) => {
+    const stored = new Map<string, ProviderReadinessCheck>();
+    const connection: ProviderConnection = {
+      id: "p",
+      label: "P",
+      models: [],
+      adapter: {
+        ...fakeDeclarations(),
+        async execute() {
+          throw new Error("unused");
+        },
+        checkReadiness,
+      },
+    };
+    const monitor = new ReadinessMonitor({
+      save: async (provider, check) => stored.set(provider, check),
+      connections: [connection],
+      hub: { publishSettingsChanged() {} },
+      now: () => new Date("2026-11-06T00:00:00.000Z"),
+      timeoutMs: 20,
+      before,
+    });
+    return { monitor, stored };
+  };
+
+  it("saves the safety check's own result even when it takes longer than a connection's check may", async () => {
+    // 안전 확인은 자기 시한 안에 결과(통과·경계 열림·환경 없음)를 정한다. 연결의 확인 시한은 그 결과를 알수없음으로 바꾸지 않는다.
+    const { monitor, stored } = monitorWith(
+      () =>
+        new Promise((resolve) => setTimeout(() => resolve(unavailable), 100))
+    );
+    await monitor.check("p");
+    expect(stored.get("p")).toEqual(unavailable);
+  });
+
+  it("still limits the connection's own check after the safety check passes", async () => {
+    const { monitor, stored } = monitorWith(
+      async () => null,
+      () => new Promise(() => {})
+    );
+    await monitor.check("p");
+    expect(stored.get("p")).toEqual({
+      status: "unknown",
+      reason: "check_timeout",
+    });
+  });
+
+  it("closes without waiting for a safety check that is still running", async () => {
+    const { monitor, stored } = monitorWith(() => new Promise(() => {}));
+    const check = monitor.check("p");
+    await new Promise((r) => setTimeout(r, 50));
+    await monitor.close();
+    await check;
+    expect(stored.has("p")).toBe(false);
+  });
+});

@@ -82,6 +82,8 @@ export const readinessReasonLabel: Record<ProviderReadinessReason, string> = {
   not_checked: "확인 전",
   check_failed: "확인 실패",
   check_timeout: "확인 시간 초과",
+  isolation_unavailable: "격리 환경 없음",
+  isolation_unsafe: "격리 경계 열림",
 };
 
 /**

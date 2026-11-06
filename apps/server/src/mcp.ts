@@ -18,9 +18,17 @@ export function mcpRoutes(
   router.all("/mcp", async (req, res) => {
     const host = req.headers.host;
     const origin = req.headers.origin;
+    // 전용 listener는 Docker 네트워크의 gateway 주소로 받는다. 받은 주소 그대로의 Host만 더 허용하므로 다른 이름으로 오는 DNS rebinding은 여전히 막는다.
+    const localAddress = req.socket.localAddress;
+    const localPort = req.socket.localPort;
+    const localHost =
+      localAddress === undefined || localPort === undefined
+        ? undefined
+        : `${localAddress.includes(":") ? `[${localAddress}]` : localAddress}:${localPort}`;
     if (
       !host ||
-      !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host) ||
+      (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host) &&
+        host !== localHost) ||
       (origin && origin !== `http://${host}`)
     ) {
       res.status(403).json({ error: { code: "forbidden" } });

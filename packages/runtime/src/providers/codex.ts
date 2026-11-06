@@ -18,6 +18,8 @@ import {
   providerEnvironment,
   runProbe,
 } from "./process.ts";
+import type { ContainerLaunch, ContainerSettings } from "./container.ts";
+import { containerLaunch } from "./container.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -25,6 +27,7 @@ export type CodexOptions = {
   command?: readonly [string, ...string[]];
   id?: string;
   label?: string;
+  container?: ContainerSettings;
 };
 const failed = (): RunResult => ({
   stopReason: "failed",
@@ -97,6 +100,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
   return {
     id,
     label: options.label ?? "Codex",
+    isolatable: true,
     login: { command, args: ["login"], env: environment() },
     models: [],
     async listModels(signal) {
@@ -195,6 +199,19 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         await mkdir(home, { recursive: true, mode: 0o700 });
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
+        // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
+        if (request.execution === "container" && !options.container)
+          return failed();
+        const container =
+          request.execution === "container"
+            ? containerLaunch(options.container!, {
+                home,
+                cwd: request.workspace?.cwd ?? home,
+                program: "codex",
+                workspace: request.workspace,
+                identity: request.identity,
+              })
+            : undefined;
         let result = failed(),
           threadId = "",
           turnId = "",
@@ -228,7 +245,15 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           'mcp_servers.organization.bearer_token_env_var="BABOJUBOT_MCP_TOKEN"',
         ];
         if (options.mode === "exec")
-          return executeExec(request, control, command, args, home, env);
+          return executeExec(
+            request,
+            control,
+            command,
+            args,
+            home,
+            env,
+            container
+          );
         args.unshift("app-server");
         const child = startProcess({
           stateDir: home,
@@ -236,6 +261,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           args,
           cwd: request.workspace?.cwd ?? home,
           env,
+          container,
           onFrame: async (raw) => {
             const frame = record(raw);
             if (typeof frame.id === "number" && !frame.method) {
@@ -447,7 +473,8 @@ async function executeExec(
   command: readonly [string, ...string[]],
   config: string[],
   home: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  container?: ContainerLaunch
 ): Promise<RunResult> {
   let id: string | null = null,
     result = failed(),
@@ -475,6 +502,7 @@ async function executeExec(
     args,
     cwd: request.workspace?.cwd ?? home,
     env,
+    container,
     onFrame: async (raw) => {
       const frame = record(raw);
       if (
@@ -554,7 +582,8 @@ async function executeExec(
         command,
         config,
         home,
-        env
+        env,
+        container
       );
     }
     return result.stopReason === "failed" && loginProblem

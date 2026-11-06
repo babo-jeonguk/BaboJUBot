@@ -3,6 +3,7 @@ import { createClaudeProvider } from "./providers/claude.ts";
 import { createCodexProvider } from "./providers/codex.ts";
 import { createOpenCodeProvider } from "./providers/opencode.ts";
 import { createAntigravityProvider } from "./providers/antigravity.ts";
+import type { ContainerSettings } from "./providers/container.ts";
 
 // Agent Runtime: 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter.
 export * from "./scripted.ts";
@@ -15,6 +16,7 @@ export * from "./providers/opencode.ts";
 export * from "./providers/antigravity.ts";
 export * from "./providers/recovery.ts";
 export * from "./providers/login.ts";
+export * from "./providers/container.ts";
 
 const kinds = {
   claude: createClaudeProvider,
@@ -25,7 +27,11 @@ const kinds = {
 /** `claude` 또는 `claude:work`로 연결을 만든다. 뒤의 이름은 같은 프로그램의 다른 계정을 구분한다. */
 export function createConnection(
   name: string,
-  options: { dataDir: string; mode?: "app-server" | "exec" }
+  options: {
+    dataDir: string;
+    mode?: "app-server" | "exec";
+    container?: ContainerSettings;
+  }
 ) {
   const [kind, account] = name.split(":") as [string, string | undefined];
   if (!(kind in kinds)) throw new Error(`Unknown provider connection: ${name}`);
@@ -34,13 +40,19 @@ export function createConnection(
     mode?: "app-server" | "exec";
     id?: string;
     label?: string;
+    container?: ContainerSettings;
   }) => ProviderConnection;
-  const base = create({ dataDir: options.dataDir, mode: options.mode });
+  const base = create({
+    dataDir: options.dataDir,
+    mode: options.mode,
+    container: options.container,
+  });
   if (!account) return base;
   return create({
     dataDir: options.dataDir,
     mode: options.mode,
     id: `${kind}-${account}`,
     label: `${base.label} (${account})`,
+    container: options.container,
   });
 }

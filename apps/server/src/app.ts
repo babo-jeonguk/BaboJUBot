@@ -1,6 +1,7 @@
 import {
   recoverProviderProcesses,
   cleanupAntigravityWorkspaces,
+  type DockerEnvironment,
 } from "@babojubot/runtime";
 import { CompactionScheduler } from "./compaction.ts";
 import { Workspaces } from "./workspace.ts";
@@ -38,6 +39,7 @@ import {
   updateHeartbeatInputSchema,
   updateProviderDefaultsInputSchema,
   updateProviderLimitInputSchema,
+  updateIsolationInputSchema,
   providerChoiceSchema,
   updateInboxItemInputSchema,
   type ChannelAnswer,
@@ -106,6 +108,7 @@ import {
   updateApprovalPolicy,
   updateProviderDefaults,
   updateProviderLimit,
+  updateIsolation,
   readProviderDefaults,
   saveProviderReadiness,
   updateHeartbeat,
@@ -134,6 +137,7 @@ import {
   loadHarnessLibrary,
 } from "./harness.ts";
 import { HeartbeatScheduler } from "./heartbeat.ts";
+import { IsolationGate } from "./isolation.ts";
 import { NotificationRelay } from "./notifications.ts";
 import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
 import { createProviderRegistry } from "./providers.ts";
@@ -176,6 +180,8 @@ export type ServerOptions = {
   notificationChannels?: NotificationChannel[];
   /** 신호 없이 알림 outbox를 확인하는 간격(ms). 실패한 전송의 재시도 예정도 이때 확인한다. */
   notificationPollMs?: number;
+  /** 격리 실행의 Docker 환경과 컨테이너에서 막혀야 하는 이 컴퓨터의 다른 포트(DB). 없으면 격리를 켜도 실제 연결은 준비안됨이다. */
+  isolation?: { docker: DockerEnvironment; protectedPorts: number[] };
 };
 
 export type RunningServer = {
@@ -213,6 +219,7 @@ export async function startServer({
     }),
   ],
   notificationPollMs = 5_000,
+  isolation,
 }: ServerOptions): Promise<RunningServer> {
   if (notificationChannels.length !== 1)
     throw new Error(
@@ -221,20 +228,37 @@ export async function startServer({
   const channel = notificationChannels[0]!;
   if (providers && runtime)
     throw new Error("pass either providers or runtime, not both");
-  const connections = providers ?? [createFakeProvider({ adapter: runtime })];
+  const connections: ProviderConnection[] = providers ?? [
+    createFakeProvider({ adapter: runtime }),
+  ];
   const hub = new EventHub();
+  // 조직 도구만 담은 앱. 라우터는 dispatcher·압축을 만든 뒤에 건다. 전용 listener는 처음 필요할 때 연다.
+  const toolsApp = express();
+  const isolatable = (id: string) =>
+    connections.find((connection) => connection.id === id)?.isolatable === true;
+  let url = "";
+  const gate = new IsolationGate({
+    docker: isolation?.docker,
+    toolsApp,
+    protectedPorts: () => [
+      Number(new URL(url).port),
+      ...(isolation?.protectedPorts ?? []),
+    ],
+    readIsolated: async () => (await readProviderDefaults(db)).isolated,
+    hostUrl: () => url,
+  });
   const readiness = new ReadinessMonitor({
     save: (provider, check, checkedAt) =>
       saveProviderReadiness(db, provider, check, checkedAt),
     connections,
     hub,
     now,
+    before: (connection) => gate.readiness(connection.isolatable === true),
   });
   const registry = createProviderRegistry(connections, {
     checking: (id) => readiness.checking(id),
   });
   const workspaces = new Workspaces(dataDir, db);
-  let url = "";
   const dispatcher = new RunDispatcher({
     db,
     hub,
@@ -242,7 +266,7 @@ export async function startServer({
     now,
     assemble: createRunRequestAssembler({
       db,
-      toolsBaseUrl: () => url,
+      place: (provider) => gate.place(isolatable(provider)),
       workspaces,
     }),
     onLoginRequired: (provider) => void readiness.check(provider),
@@ -253,7 +277,7 @@ export async function startServer({
     providers: registry.adapters,
     dispatcher,
     now,
-    url: () => url,
+    place: (provider) => gate.place(isolatable(provider)),
   });
   const heartbeats = new HeartbeatScheduler({
     db,
@@ -341,19 +365,23 @@ export async function startServer({
 
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
-  app.use(orgToolsBasePath, compactions.router());
-  app.use(
-    orgToolsBasePath,
-    orgToolsRouter({
-      db,
-      hub,
-      dispatcher,
-      now,
-      harnessDir,
-      providers: registry,
-      workspaces,
-    })
-  );
+  const compactionTools = compactions.router();
+  const organizationTools = orgToolsRouter({
+    db,
+    hub,
+    dispatcher,
+    now,
+    harnessDir,
+    providers: registry,
+    workspaces,
+  });
+  app.use(orgToolsBasePath, compactionTools);
+  app.use(orgToolsBasePath, organizationTools);
+  // 컨테이너용 전용 listener의 앱. 조직 도구만 있고 사용자 경로는 없다.
+  toolsApp.use(express.json({ limit: jsonBodyLimitBytes }));
+  toolsApp.use(orgToolsBasePath, compactionTools);
+  toolsApp.use(orgToolsBasePath, organizationTools);
+  toolsApp.use((_req, res) => notFound(res));
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
@@ -396,6 +424,7 @@ export async function startServer({
    * 프로바이더 설정을 다시 불러오면 보인다.
    */
   app.post("/api/providers/readiness", (_req, res) => {
+    gate.invalidate();
     readiness.checkAll();
     res.status(202).json({});
   });
@@ -403,6 +432,7 @@ export async function startServer({
   /** `다시 확인`: 연결 하나를 확인해 저장한 뒤의 프로바이더 설정을 돌려준다. 이 서버에 없는 연결은 404다. */
   app.post("/api/providers/:providerId/readiness", async (req, res) => {
     if (!registry.has(req.params.providerId)) return notFound(res);
+    gate.invalidate();
     await readiness.check(req.params.providerId);
     res.json(await registry.settings(db));
   });
@@ -419,6 +449,19 @@ export async function startServer({
       if (problem) return refuseOwner(res, problem);
     }
     await complete(updateProviderDefaults(db, input));
+    res.json(await registry.settings(db));
+  });
+
+  /**
+   * 격리 실행 켜기·끄기. 누르면 바로 저장하고 바꾼 뒤의 프로바이더 설정을 돌려준다. 진행 중인 실행 시도는 그대로이며 다음 실행 시도부터 따른다.
+   * 실행 환경이 바뀌므로 모든 연결의 준비 확인을 다시 시작한다(기다리지 않음).
+   */
+  app.put("/api/providers/isolation", async (req, res) => {
+    const input = parseInput(res, updateIsolationInputSchema, req.body);
+    if (!input) return;
+    await complete(updateIsolation(db, input.isolated));
+    gate.invalidate();
+    readiness.checkAll();
     res.json(await registry.settings(db));
   });
 
@@ -1181,6 +1224,7 @@ export async function startServer({
       () => compactions.close(),
       () => readiness.close(),
       () => dispatcher.close(),
+      () => gate.close(),
       () => notifications.close(),
       () => channel.close(),
       async () => {
@@ -1201,6 +1245,12 @@ export async function startServer({
   try {
     // 끼워 넣는 중으로 남은 메시지를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.
     await recoverProviderProcesses(dataDir);
+    // 지난 실행이 남긴 이 제품 폴더의 컨테이너를 실행 시도를 시작하기 전에 지운다. Docker가 없으면 건너뛴다.
+    await isolation?.docker
+      .removeOrphans()
+      .catch((error: unknown) =>
+        console.warn("[isolation] leftover containers were not removed", error)
+      );
     await cleanupAntigravityWorkspaces(dataDir);
     await recoverInterruptedSteers(db);
     await compactions.recover();

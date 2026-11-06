@@ -12,7 +12,11 @@ import {
 } from "@babojubot/contracts";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import WebSocket from "ws";
-import { startServer, type RunningServer } from "../src/index.ts";
+import {
+  startServer,
+  type RunningServer,
+  type ServerOptions,
+} from "../src/index.ts";
 
 export type Subscription = {
   /** 받은 Event frame. */
@@ -71,6 +75,8 @@ export type TestServerOptions = {
   /** 하네스 라이브러리 디렉터리. 기본은 저장소의 `harness/`다. */
   harnessDir?: string;
   dataDir?: string;
+  /** 격리 실행의 Docker 환경. 없으면 격리를 켜도 실제 연결은 준비안됨이다. */
+  isolation?: ServerOptions["isolation"];
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */

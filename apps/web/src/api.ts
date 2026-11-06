@@ -51,6 +51,7 @@ import {
   type UpdateApprovalPolicyInput,
   type UpdateHeartbeatInput,
   type UpdateInboxItemInput,
+  type UpdateIsolationInput,
   type UpdateResearchNodeInput,
 } from "@babojubot/contracts";
 import {
@@ -727,6 +728,12 @@ export const useUpdateProviderLimit = () =>
     ({ provider }: { provider: string; maxConcurrentRuns: number }) =>
       `/api/providers/${encodeURIComponent(provider)}/limit`,
     ({ maxConcurrentRuns }) => ({ maxConcurrentRuns })
+  );
+
+export const useUpdateIsolation = () =>
+  useProviderSettingsMutation(
+    (_: UpdateIsolationInput) => "/api/providers/isolation",
+    (input) => input
   );
 
 /** 전역 설정 화면을 열었다: 서버가 모든 연결의 준비 확인을 시작한다. 결과는 `settings_changed` 신호로 다시 불러온다. */
