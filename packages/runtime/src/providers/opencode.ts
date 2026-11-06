@@ -233,38 +233,35 @@ export function createOpenCodeProvider(options: {
   const models = entries;
   /**
    * 조직 폴더에 로그인이 하나도 없으면 연결의 로그인을 옮겨 넣는다. `auth import`와 같은 규칙으로 같은 ID는 건너뛰고, 세션은 옮기지 않는다.
-   * 실행 중인 서버는 넣은 로그인을 바로 쓴다(2.2.5 확인). 로그인 목록을 주지 않는 판이면 옮기지 않고 그대로 돈다.
+   * 실행 중인 서버는 넣은 로그인을 바로 쓴다(2.2.5 확인). 옮기지 못하면(로그인 목록을 주지 않는 판, 이 컴퓨터에 프로그램이 없음 등) 건너뛰고 그대로 돈다.
    */
   const copyLogin = async (
     target: Awaited<ReturnType<typeof server>>,
     signal: AbortSignal
   ) => {
+    let source: Awaited<ReturnType<typeof server>> | undefined;
     try {
       if (entries(await target.json("/api/credential")).length) return;
-    } catch (e) {
-      if (e instanceof HttpFailure) return;
-      throw e;
-    }
-    const source = await server(signal);
-    try {
+      source = await server(signal);
       for (const credential of entries(await source.json("/api/credential")))
-        try {
-          await target.request("/api/credential", "POST", {
+        await target
+          .request("/api/credential", "POST", {
             id: credential.id,
             integrationID: credential.integrationID,
             label: credential.label,
             value: credential.value,
             activate: credential.active === true,
+          })
+          .catch((e: unknown) => {
+            if (!(e instanceof HttpFailure && e.status === 409)) throw e;
           });
-        } catch (e) {
-          if (!(e instanceof HttpFailure && e.status === 409)) throw e;
-        }
-    } catch (e) {
-      if (!(e instanceof HttpFailure)) throw e;
+    } catch {
+      // 옮기지 못해도 실행은 그대로 한다. 무료 모델은 로그인 없이 돌고, 로그인이 필요하면 실행 시도가 로그인 필요로 드러난다. 중단은 다음 단계가 처리한다.
     } finally {
-      await source.close();
+      await source?.close();
     }
   };
+
   const adapter: ProviderConnection["adapter"] = {
     capabilities: {
       steer: true,
