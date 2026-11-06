@@ -31,6 +31,7 @@ import {
 } from "./antigravity-config.ts";
 import type { ContainerSettings } from "./container.ts";
 import { placeAttempt, type ContainerLaunch } from "./container.ts";
+import { connectionFolders } from "./folders.ts";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -69,13 +70,14 @@ export function createAntigravityProvider(options: {
   container?: ContainerSettings;
 }): ProviderConnection {
   const connectionId = options.id ?? "antigravity";
-  const home = path.resolve(options.dataDir, "providers", connectionId),
+  const folders = connectionFolders(options.dataDir, connectionId);
+  const home = folders.connection,
     command = options.command ?? commandFor(connectionId, "agy");
-  const env = () =>
-    providerEnvironment(connectionId, home, {
-      XDG_CONFIG_HOME: path.join(home, "config"),
-      XDG_DATA_HOME: path.join(home, "data"),
-      XDG_CACHE_HOME: path.join(home, "cache"),
+  const env = (productHome = home) =>
+    providerEnvironment(connectionId, productHome, {
+      XDG_CONFIG_HOME: path.join(productHome, "config"),
+      XDG_DATA_HOME: path.join(productHome, "data"),
+      XDG_CACHE_HOME: path.join(productHome, "cache"),
     });
   const probe = async (args: string[], signal: AbortSignal) => {
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -129,11 +131,20 @@ export function createAntigravityProvider(options: {
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
-        const placement = placeAttempt(options.container, home, request);
+        // 그 조직의 제품 폴더로 돈다. 로그인을 어디에 두는지는 이 프로그램이 공개하지 않아 조직 실행에서 실제로 확인한다.
+        const organization = folders.organization(
+          request.identity.organizationId
+        );
+        const placement = placeAttempt(
+          options.container,
+          organization,
+          request
+        );
         if (!placement) return failure();
         // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
         await mkdir(home, { recursive: true, mode: 0o700 });
-        cwd = await realpath(request.workspace?.cwd ?? home);
+        await mkdir(organization, { recursive: true, mode: 0o700 });
+        cwd = await realpath(request.workspace?.cwd ?? organization);
         while (workspaces.has(cwd)) {
           control.signal.throwIfAborted();
           await Promise.race([
@@ -220,11 +231,12 @@ export function createAntigravityProvider(options: {
         };
         const steps = new Set<number>();
         const child = startProcess({
+          // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
           stateDir: home,
           command,
           args,
           cwd,
-          env: env(),
+          env: env(organization),
           container,
           onFrame: async (raw) => {
             if (!raw || typeof raw !== "object" || finished) return;

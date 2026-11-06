@@ -148,7 +148,8 @@ describe("an isolated attempt", () => {
     const calls = await env.calls();
     const run = runCall(calls);
     const args = run.args;
-    const home = path.join(env.root, "providers/claude");
+    // 그 조직의 제품 폴더. 로그인 토큰이 든 연결 폴더는 넣지 않는다.
+    const home = path.join(env.root, "providers/claude/organizations", env.org);
     // Windows에는 uid가 없어 Docker Desktop이 정한 사용자로 돈다.
     expect(valuesOf(args, "--user")).toEqual(
       process.getuid && process.getgid
@@ -166,7 +167,7 @@ describe("an isolated attempt", () => {
     expect(labels).toContainEqual(
       expect.stringMatching(/^babojubot\.run=[0-9a-f-]{36}$/)
     );
-    // 조직 폴더·자기 개인 폴더·그 프로바이더의 제품 설정 폴더는 읽기·쓰기, 동료 개인 폴더와 이 실행 시도의 파일 폴더는 읽기만. 그 밖에는 없다.
+    // 조직 폴더·자기 개인 폴더·그 조직의 제품 폴더는 읽기·쓰기, 동료 개인 폴더와 이 실행 시도의 파일 폴더는 읽기만. 그 밖에는 없다.
     expect(valuesOf(args, "--mount").sort()).toEqual(
       [
         `type=bind,source=${env.shared},target=${env.shared}`,
@@ -206,7 +207,7 @@ describe("an isolated attempt", () => {
     );
   });
 
-  it("keeps the run token file out of the product folder that every organization's container shares", async () => {
+  it("keeps the run token file out of the product folder that every agent container of the organization shares", async () => {
     const env = await setup({
       claude: [
         process.execPath,
@@ -222,7 +223,7 @@ describe("an isolated attempt", () => {
     expect(result.stopReason).toBe("completed");
     const run = runCall(await env.calls());
     const home = path.join(env.root, "providers/claude");
-    // 제품 폴더는 같은 연결의 모든 조직 컨테이너에 들어간다. 실행 시도 토큰이 든 MCP 설정은 그 밖의 이 실행 시도 전용 폴더에 두고 읽기만 넣는다.
+    // 조직의 제품 폴더는 그 조직의 같은 연결 에이전트 컨테이너에 모두 들어간다. 실행 시도 토큰이 든 MCP 설정은 그 밖의 이 실행 시도 전용 폴더에 두고 읽기만 넣는다.
     const config = valuesOf(run.args, "--mcp-config")[0]!;
     expect(path.relative(home, config).startsWith("..")).toBe(true);
     const attempt = path.dirname(config);
@@ -448,6 +449,7 @@ describe("an isolated attempt", () => {
         },
         access: request().access,
         execution: "container",
+        organizationId: env.org,
       },
       new AbortController().signal
     );
@@ -455,6 +457,10 @@ describe("an isolated attempt", () => {
     const calls = await env.calls();
     const run = runCall(calls);
     expect(valuesOf(run.args, "--workdir")).toEqual([env.shared]);
+    // 그 조직의 제품 폴더에서 압축한다.
+    expect(run.env?.HOME).toBe(
+      path.join(env.root, "providers/claude/organizations", env.org)
+    );
     expect(removed(calls, nameOf(run))).toBe(true);
   });
 
@@ -486,6 +492,8 @@ describe("an isolated attempt", () => {
     });
     const provider = createOpenCodeProvider({
       dataDir: env.root,
+      // 연결 폴더의 로그인을 읽는 이 컴퓨터의 프로그램도 가짜로 둔다.
+      command: [process.execPath, fixture("opencode-simulator.mjs")],
       container: env.container,
     });
     expect(provider.isolatable).toBe(true);

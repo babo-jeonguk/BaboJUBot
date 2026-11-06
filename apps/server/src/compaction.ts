@@ -149,6 +149,7 @@ export class CompactionScheduler {
         {
           session: lease.session,
           access: { toolsBaseUrl: placement.toolsBaseUrl, token },
+          organizationId: lease.organizationId,
           ...(placement.execution ? { execution: placement.execution } : {}),
         },
         controller.signal
