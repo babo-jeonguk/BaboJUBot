@@ -16,7 +16,7 @@ import {
   runProbe,
 } from "./process.ts";
 import type { ContainerLaunch, ContainerSettings } from "./container.ts";
-import { containerLaunch } from "./container.ts";
+import { placeAttempt } from "./container.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const count = (v: unknown) =>
@@ -266,19 +266,12 @@ export function createOpenCodeProvider(options: {
       let service: Awaited<ReturnType<typeof server>> | undefined,
         events: Promise<void> | undefined;
       try {
-        // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
-        if (input.execution === "container" && !options.container)
-          return failure();
-        const container =
-          input.execution === "container"
-            ? containerLaunch(options.container!, {
-                home,
-                cwd: home,
-                program: "opencode",
-                workspace: input.workspace,
-                identity: input.identity,
-              })
-            : undefined;
+        const placement = placeAttempt(options.container, home, input);
+        if (!placement) return failure();
+        const container = placement.container?.({
+          cwd: home,
+          program: "opencode",
+        });
         await prepare();
         // Instructions are attached separately; never set agent.system, which replaces the native prompt.
         const config = {

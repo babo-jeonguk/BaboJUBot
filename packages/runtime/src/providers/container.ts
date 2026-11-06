@@ -56,19 +56,60 @@ const excluded = new Set([
   "LOCALAPPDATA",
 ]);
 
-export function containerLaunch(
-  settings: ContainerSettings,
-  options: {
-    home: string;
-    cwd: string;
-    program: string;
+/** 프로바이더마다 다른 배치 부분. */
+export type AttemptContainer = {
+  /** 컨테이너 안 작업 폴더. */
+  cwd: string;
+  /** 컨테이너 안 프로그램 이름. */
+  program: string;
+  /** 이 실행 시도만의 파일(조직 도구 토큰이 든 설정 등)이 든 폴더. 읽기만 넣는다. */
+  attempt?: string;
+  /** 이 실행 시도만의 파일을 컨테이너 안 `target` 위에 읽기로 넣는다. 이 컴퓨터의 `target`은 그대로이고 다른 컨테이너에는 그것이 보인다. */
+  files?: { source: string; target: string }[];
+};
+
+/** 실행 시도 한 번이 돌 곳. `container`가 있으면 컨테이너에서, 없으면 이 컴퓨터에서 돈다. */
+export type AttemptPlacement = {
+  /** 프로바이더마다 다른 부분을 받아 이 실행 시도의 컨테이너 배치를 만든다. */
+  container?: (options: AttemptContainer) => ContainerLaunch;
+};
+
+/**
+ * 실행 시도가 돌 곳을 고른다. 격리 실행인데 컨테이너 설정이 없으면 `null`이며, 이때 프로바이더는 이 컴퓨터에서 대신 돌리지 않고 실패로 끝낸다.
+ * 제품 폴더·연구 환경 폴더·조직 표식처럼 모든 프로바이더에 같은 배치는 여기서 정한다.
+ */
+export function placeAttempt(
+  settings: ContainerSettings | undefined,
+  home: string,
+  request: {
+    execution?: RunRequest["execution"];
     workspace?: RunRequest["workspace"];
     identity?: { runId: string; organizationId: string };
-    /** 이 실행 시도만의 파일(조직 도구 토큰이 든 설정 등)이 든 폴더. 읽기만 넣는다. */
-    attempt?: string;
-    /** 이 실행 시도만의 파일을 컨테이너 안 `target` 위에 읽기로 넣는다. 이 컴퓨터의 `target`은 그대로이고 다른 컨테이너에는 그것이 보인다. */
-    files?: { source: string; target: string }[];
-    publish?: number;
+  }
+): AttemptPlacement | null {
+  if (request.execution !== "container") return {};
+  if (!settings) return null;
+  const identity = request.identity && {
+    runId: request.identity.runId,
+    organizationId: request.identity.organizationId,
+  };
+  return {
+    container: (options) =>
+      containerLaunch(settings, {
+        ...options,
+        home,
+        workspace: request.workspace,
+        identity,
+      }),
+  };
+}
+
+function containerLaunch(
+  settings: ContainerSettings,
+  options: AttemptContainer & {
+    home: string;
+    workspace?: RunRequest["workspace"];
+    identity?: { runId: string; organizationId: string };
   }
 ): ContainerLaunch {
   const mounts: { path: string; writable: boolean; source?: string }[] = [];
@@ -115,7 +156,6 @@ export function containerLaunch(
       : {},
     program: options.program,
     env,
-    ...(options.publish === undefined ? {} : { publish: options.publish }),
   };
 }
 

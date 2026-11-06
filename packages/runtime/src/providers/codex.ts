@@ -19,7 +19,7 @@ import {
   runProbe,
 } from "./process.ts";
 import type { ContainerLaunch, ContainerSettings } from "./container.ts";
-import { containerLaunch } from "./container.ts";
+import { placeAttempt } from "./container.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -199,19 +199,12 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         await mkdir(home, { recursive: true, mode: 0o700 });
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        // 컨테이너 설정이 없으면 이 컴퓨터에서 대신 돌리지 않는다.
-        if (request.execution === "container" && !options.container)
-          return failed();
-        const container =
-          request.execution === "container"
-            ? containerLaunch(options.container!, {
-                home,
-                cwd: request.workspace?.cwd ?? home,
-                program: "codex",
-                workspace: request.workspace,
-                identity: request.identity,
-              })
-            : undefined;
+        const placement = placeAttempt(options.container, home, request);
+        if (!placement) return failed();
+        const container = placement.container?.({
+          cwd: request.workspace?.cwd ?? home,
+          program: "codex",
+        });
         let result = failed(),
           threadId = "",
           turnId = "",

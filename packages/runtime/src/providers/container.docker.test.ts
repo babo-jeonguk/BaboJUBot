@@ -5,9 +5,10 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { RunRequest } from "@babojubot/contracts";
 import {
-  containerLaunch,
   createDockerEnvironment,
+  placeAttempt,
   type ContainerSettings,
   type DockerEnvironment,
 } from "./container.ts";
@@ -70,7 +71,7 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
     script: string,
     options: {
       cwd: string;
-      workspace?: Parameters<typeof containerLaunch>[1]["workspace"];
+      workspace?: RunRequest["workspace"];
       home: string;
     }
   ) {
@@ -80,16 +81,14 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
       args: ["-e", script],
       cwd: options.cwd,
       env: { HOME: options.home },
-      container: containerLaunch(settings, {
-        home: options.home,
-        cwd: options.cwd,
-        program: "node",
+      container: placeAttempt(settings, options.home, {
+        execution: "container",
         workspace: options.workspace,
         identity: {
           runId: crypto.randomUUID(),
           organizationId: crypto.randomUUID(),
         },
-      }),
+      })!.container!({ cwd: options.cwd, program: "node" }),
       onFrame: async (frame) => {
         frames.push(frame);
       },
@@ -245,11 +244,9 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
       ],
       cwd: home,
       env: { HOME: home },
-      container: containerLaunch(settings, {
-        home,
-        cwd: home,
-        program: "node",
-      }),
+      container: placeAttempt(settings, home, {
+        execution: "container",
+      })!.container!({ cwd: home, program: "node" }),
       onFrame: async () => {
         child.end();
       },
@@ -299,11 +296,12 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
         ],
         cwd: org,
         env: { HOME: home },
-        container: containerLaunch(settings, {
-          home,
+        container: placeAttempt(settings, home, {
+          execution: "container",
+          workspace: { cwd: org, organization: org, peers: [] },
+        })!.container!({
           cwd: org,
           program: "node",
-          workspace: { cwd: org, organization: org, peers: [] },
           ...(files ? { files } : {}),
         }),
         onFrame: async (frame) => {
