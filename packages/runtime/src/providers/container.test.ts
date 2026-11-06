@@ -351,22 +351,32 @@ describe("an isolated attempt", () => {
     expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
   });
 
-  it("never falls back to this machine when no container settings exist", async () => {
-    const env = await setup({});
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      // 호스트에서 돌면 성공했을 프로그램이다.
-      command: [
-        process.execPath,
-        fixture("replay.mjs"),
-        fixture("claude-finish.synthetic.json"),
-      ],
-    });
-    expect(provider.isolatable).toBe(true);
-    const result = await provider.adapter.execute(env.isolated(), control());
-    expect(result.stopReason).toBe("failed");
-    expect(await env.calls()).toEqual([]);
-  });
+  it.each([
+    ["Claude", createClaudeProvider],
+    ["Codex", createCodexProvider],
+    ["OpenCode", createOpenCodeProvider],
+    ["Antigravity", createAntigravityProvider],
+  ])(
+    "never runs %s on this machine instead when no container settings exist",
+    async (_name, create) => {
+      const env = await setup({});
+      const marker = path.join(env.root, "ran-on-this-machine");
+      const provider = create({
+        dataDir: env.root,
+        // 이 컴퓨터에서 돌면 표시 파일을 남기는 프로그램이다.
+        command: [
+          process.execPath,
+          "-e",
+          `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`,
+        ],
+      });
+      expect(provider.isolatable).toBe(true);
+      const result = await provider.adapter.execute(env.isolated(), control());
+      expect(result.stopReason).toBe("failed");
+      expect(await env.calls()).toEqual([]);
+      await expect(stat(marker)).rejects.toThrow();
+    }
+  );
 
   it("keeps running on this machine when isolation is off", async () => {
     const env = await setup({});
