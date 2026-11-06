@@ -122,6 +122,37 @@ const server = http.createServer(async (req, res) => {
       res.on("close", () => subscribers.delete(res));
       return;
     }
+    // 2.2.5의 `GET`/`POST /api/credential`(Credential.Entry·CreateInput). 로그인은 그 실행의 데이터 폴더에 둔다.
+    if (pathname === "/api/credential") {
+      const store = path.join(
+        process.env.XDG_DATA_HOME,
+        "synthetic-credentials.json"
+      );
+      const stored = JSON.parse(
+        await readFile(store, "utf8").catch(() => "[]")
+      );
+      if (req.method === "GET") {
+        json({ data: stored });
+        return;
+      }
+      if (req.method === "POST") {
+        if (stored.some((entry) => entry.id === input.id)) {
+          res.writeHead(409).end("{}");
+          return;
+        }
+        const entry = {
+          id: input.id ?? "cred_" + crypto.randomUUID(),
+          integrationID: input.integrationID,
+          label: input.label ?? "",
+          active: input.activate ?? false,
+          value: input.value,
+        };
+        await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+        await writeFile(store, JSON.stringify([...stored, entry]));
+        json({ data: entry });
+        return;
+      }
+    }
     if (pathname === "/api/session" && req.method === "POST") {
       session = {
         ...recording?.session,
