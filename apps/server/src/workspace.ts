@@ -77,6 +77,7 @@ function identityBlocked(action: string, file: string, error: unknown) {
  * 절대 경로의 작업 폴더 부분은 이름 하나씩 대조하고, 나머지는 글자로 먼저 줄이지 않고 상대 경로처럼 걸어가므로
  * 링크 뒤의 `..`는 링크가 가리키는 자리에서 올라간다.
  * 경로를 고정해도 처음 고른 폴더가 다른 조직이면 소용없으므로, 고정한 폴더가 자기 ID를 말하게 해 대조한다.
+ * Windows에서는 Win32가 다른 드라이브·장치·스트림으로 읽거나 끝의 점이나 공백을 떼는 이름을 파일 시스템에 닿기 전에 거부한다.
  */
 export const pinnedReader = `
 const fs = require("node:fs");
@@ -100,6 +101,20 @@ const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
 /** Names of a path, without empty names or ".". ".." stays where it is. */
 const names = (value) => value.split(separator).filter((name) => name !== "" && name !== ".");
 const sameName = windows ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
+/** Windows가 이름 하나를 다른 것으로 읽는 경우의 거부 종료 코드. 없으면 undefined다(Go filepath.IsLocal·os.Root, cap-std, node-tar). */
+const windowsName = (name) => {
+  if (!windows) return undefined;
+  // 드라이브 문자로 시작하면 그 드라이브의 현재 폴더 기준이다.
+  if (/^[A-Za-z]:/.test(name)) return ${readerExit.outside};
+  // 이름 중간의 ":"는 NTFS 스트림이다.
+  if (name.includes(":")) return ${readerExit.notFile};
+  // Win32는 끝의 점·공백을 떼고 연다. ".. "는 위 폴더가 된다.
+  if (/[. ]$/.test(name)) return ${readerExit.notFile};
+  // 예약된 장치 이름은 확장자가 붙어도 장치다.
+  const base = name.split(".")[0].replace(/ +$/, "").toUpperCase();
+  if (/^(CON|PRN|AUX|NUL|CONIN\\$|CONOUT\\$|COM[1-9¹²³]|LPT[1-9¹²³])$/.test(base)) return ${readerExit.notFile};
+  return undefined;
+};
 const inside = (absolute, clean) => {
   const target =
     windows && absolute.startsWith("\\\\\\\\?\\\\") ? absolute.slice(4) : absolute;
@@ -229,6 +244,8 @@ try {
       up();
       continue;
     }
+    const refused = windowsName(part);
+    if (refused !== undefined) process.exit(refused);
     let info;
     try {
       info = fs.lstatSync(part, stat);

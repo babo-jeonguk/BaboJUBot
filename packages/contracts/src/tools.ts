@@ -769,7 +769,7 @@ export const orgToolErrorMessages: Partial<Record<OrgToolErrorCode, string>> = {
   link_loop:
     "The path goes through links that point back to each other. Fix or remove the links and register the file itself.",
   not_regular_file:
-    "The path is not a regular file (for example, it is a directory).",
+    "The path is not a regular file (for example, a directory, or on Windows a device name, a stream, or a name ending in a dot or space).",
   file_too_large: "The file is larger than 10 MiB.",
   hard_link_refused:
     "The file has more than one hard link. Copy it to a new file and register the copy.",
