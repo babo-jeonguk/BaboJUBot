@@ -246,7 +246,7 @@ it("registers the file the operating system opens for `..` after a link, in rela
 });
 
 // 경로 끝의 구분자·`.`·겹친 구분자 같은 표기도 운영체제와 같게 다룬다. 운영체제가 열지 못하면 거부하고, 열면 같은 내용이다.
-// 파일 뒤에 `/`나 `/.`가 남으면 폴더가 아니므로 열 수 없다(ENOTDIR, PR #131 리뷰 4회차 P7).
+// Linux·macOS는 파일 뒤에 `/`나 `/.`가 남으면 폴더가 아니므로 열 수 없다(ENOTDIR, PR #131 리뷰 4회차 P7). Windows는 끝의 구분자를 떼고 연다(Win32).
 it("treats the spelling of a path the way the operating system does", async () => {
   const { root, shared } = await folder();
   const sep = path.sep;
@@ -274,22 +274,26 @@ it("treats the spelling of a path the way the operating system does", async () =
     `${shared}${sep}${sep}dir${sep}a.md`,
     `${shared}${sep}`,
   ];
+  // 어긋난 표기를 한 번에 모두 보인다.
+  const mismatches: string[] = [];
   for (const requested of cases) {
     const opened = await readFile(
       path.isAbsolute(requested) ? requested : `${shared}${sep}${requested}`,
       "utf8"
     ).catch((error: NodeJS.ErrnoException) => ({ refused: error.code }));
     const result = await read(root, requested);
-    if (typeof opened === "string")
-      expect(result, requested).toMatchObject({
-        ok: true,
-        snapshot: { content: opened },
-      });
-    else
-      expect(result, `${requested} (${opened.refused})`).toMatchObject({
-        ok: false,
-      });
+    const ours = result.ok
+      ? result.snapshot.content
+      : { refused: result.refusal };
+    if (
+      (typeof opened === "string") !== (typeof ours === "string") ||
+      (typeof opened === "string" && opened !== ours)
+    )
+      mismatches.push(
+        `${JSON.stringify(requested)}: os ${JSON.stringify(opened)}, ours ${JSON.stringify(ours)}`
+      );
   }
+  expect(mismatches).toEqual([]);
   // 파일을 폴더처럼 지나가려 한 것은 파일이 없는 것과 같다.
   if (process.platform !== "win32")
     for (const requested of [
