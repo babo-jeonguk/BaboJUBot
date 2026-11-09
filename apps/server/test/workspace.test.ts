@@ -306,6 +306,58 @@ it("treats the spelling of a path the way the operating system does", async () =
       );
 });
 
+// Windows는 이름 하나를 다른 드라이브·장치·스트림으로 읽거나 끝의 점·공백을 떼어 읽는다(Win32). 그런 이름은 파일 시스템에 넘기기 전에
+// 거부한다. 다른 드라이브를 가리키는 이름은 폴더 밖이다(Go filepath.IsLocal·os.Root, cap-std, node-tar CVE-2021-37713, PR #131 리뷰 5회차 S3).
+// 끝에 공백을 붙인 ".. "는 Windows에서 위 폴더로 올라가므로 이것도 막는다. Linux·macOS에서는 모두 보통 파일 이름이다.
+it("refuses names Windows reads as another drive, a device, a stream or a shortened name, and keeps them as plain names elsewhere", async () => {
+  const { root, shared } = await folder();
+  const sep = path.sep;
+  await mkdir(path.join(shared, "dir"));
+  await writeFile(path.join(shared, "report.md"), "CONTENT");
+  await writeFile(path.join(root, "organizations", "secret.md"), "SECRET");
+  if (process.platform === "win32") {
+    await symlink("D:outside.md", path.join(shared, "drive-link.md"));
+    for (const requested of [
+      "D:outside.md",
+      "C:outside.md",
+      `Z:..${sep}outside.md`,
+      `dir${sep}D:outside.md`,
+      "drive-link.md",
+    ])
+      expect(await read(root, requested), requested).toEqual(
+        refusal("path_outside_folder")
+      );
+    for (const requested of [
+      "NUL",
+      "con.txt",
+      "COM1",
+      "COM\u00b9",
+      `dir${sep}aux`,
+      "report.md:stream",
+      "report.md.",
+      "report.md ",
+      `dir${sep}..${sep}.. ${sep}.. ${sep}secret.md`,
+      `.. ${sep}.. ${sep}secret.md`,
+    ])
+      expect(await read(root, requested), requested).toEqual(
+        refusal("not_regular_file")
+      );
+    expect(await content(root, "report.md")).toBe("CONTENT");
+  } else {
+    for (const name of [
+      "D:outside.md",
+      "NUL",
+      "con.txt",
+      "report.md:stream",
+      "report.md.",
+      "report.md ",
+    ]) {
+      await writeFile(path.join(shared, name), name);
+      expect(await content(root, name), name).toBe(name);
+    }
+  }
+});
+
 // 절대 경로의 작업 폴더 부분은 이름 그대로 같아야 한다. 그 안에 `..`를 섞어 돌아오는 드문 경로는 폴더 밖으로 본다.
 // Windows는 운영체제처럼 글자로 먼저 줄이므로 작업 폴더 안의 파일이다.
 it("refuses an absolute path that wanders out of the working folder part and back, except on Windows", async () => {
