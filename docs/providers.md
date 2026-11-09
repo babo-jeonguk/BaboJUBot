@@ -74,7 +74,7 @@ pnpm provider:login claude   # codex, opencode, antigravity, claude:work
 
 공통 이미지는 `pnpm runner:build`(`docker/runner`)로 만든다. Node 24, git, Python, 기본 도구와 Claude Code·Codex(npm)·OpenCode 2.x(GitHub 릴리스, 기본 2.2.5, build arg OPENCODE_VERSION)를 담는다. Antigravity CLI는 공개 설치 경로를 정하지 않아 `docker build --build-arg ANTIGRAVITY_INSTALL="<설치 명령>"`으로 넣는다. 설정은 `BABOJUBOT_DOCKER_COMMAND`·`BABOJUBOT_CONTAINER_IMAGE`(기본 `babojubot-runner`)·`BABOJUBOT_CONTAINER_NETWORK`(기본 `babojubot`)이다.
 
-지원 환경은 Linux Docker Engine이다. Docker Desktop·rootless처럼 gateway 주소가 이 컴퓨터에 없거나 이 컴퓨터의 loopback으로 중계하는 환경은 안전 확인에서 `준비안됨`으로 드러나며 이 컴퓨터로 대신 돌리지 않는다. 조직의 제품 폴더는 그 조직에서 같은 연결을 쓰는 에이전트 컨테이너가 함께 읽고 쓴다. 그래서 실행 시도 토큰이 든 파일은 제품 폴더·조직 폴더 밖 실행 시도 전용 폴더에 두고 그 컨테이너에만 읽기로 넣는다. Codex 로그인 전용 폴더는 그 연결의 모든 조직 컨테이너가 함께 쓰므로, 한 조직의 에이전트가 로그인 파일을 다른 계정으로 바꿀 수 있다. 서버가 강제로 끝나면 남은 컨테이너는 다음 시작 때 지운다. 서버를 root로 띄우면 컨테이너도 root uid로 돈다(권한은 모두 뗀다). 준비 확인(로그인 상태)과 모델 목록은 이 컴퓨터의 프로그램으로 한다.
+지원 환경은 Linux Docker Engine이다. Windows에서는 Docker 격리를 지원하지 않는다(2026-11-09 결정). 그래서 Windows의 에이전트는 늘 서버와 같은 사용자로 이 컴퓨터에서 돌고 폴더 경계는 지침으로 지킨다. 산출물 파일을 읽는 폴더 고정도 Windows에서는 완전하지 않다. Windows는 작업 폴더를 경로 문자열로 기억하고, Node에는 폴더 핸들 기준으로 여는 기능이 없기 때문이다. Windows 격리를 지원하려면 Go `os.Root`처럼 핸들 기준으로 여는 도구가 먼저 필요하다. Docker Desktop·rootless처럼 gateway 주소가 이 컴퓨터에 없거나 이 컴퓨터의 loopback으로 중계하는 환경은 안전 확인에서 `준비안됨`으로 드러나며 이 컴퓨터로 대신 돌리지 않는다. 조직의 제품 폴더는 그 조직에서 같은 연결을 쓰는 에이전트 컨테이너가 함께 읽고 쓴다. 그래서 실행 시도 토큰이 든 파일은 제품 폴더·조직 폴더 밖 실행 시도 전용 폴더에 두고 그 컨테이너에만 읽기로 넣는다. Codex 로그인 전용 폴더는 그 연결의 모든 조직 컨테이너가 함께 쓰므로, 한 조직의 에이전트가 로그인 파일을 다른 계정으로 바꿀 수 있다. 서버가 강제로 끝나면 남은 컨테이너는 다음 시작 때 지운다. 서버를 root로 띄우면 컨테이너도 root uid로 돈다(권한은 모두 뗀다). 준비 확인(로그인 상태)과 모델 목록은 이 컴퓨터의 프로그램으로 한다.
 
 ## 세션과 정리
 
