@@ -1,6 +1,6 @@
 # 프로바이더 프롬프트 캐시와 압축 조사: 몇 시간 뒤 같은 작업을 이어갈 때 세션을 재개할지, 새로 시작할지, 미리 압축할지
 
-조사일: 2026-10-30. 대상: Claude Code·Codex·OpenCode·Antigravity 네 **프로바이더**를 사용자의 구독 계정으로 로그인해 실행 시도마다 띄우고, 실행 시도가 끝나면 프로세스를 닫는 현재 연결 방식([프로바이더 연결 방식 조사](provider-connection-references.md))이다. 세션은 (에이전트, 작업)마다 보관하고 같은 작업의 다음 실행 시도에서 재개한다. 구현 전 기술 조사이며 확정 결정이 아니다.
+조사일: 2026-10-30(Claude 압축 요청의 캐시 적중은 2026-11-09 #127에서 실측으로 보강). 대상: Claude Code·Codex·OpenCode·Antigravity 네 **프로바이더**를 사용자의 구독 계정으로 로그인해 실행 시도마다 띄우고, 실행 시도가 끝나면 프로세스를 닫는 현재 연결 방식([프로바이더 연결 방식 조사](provider-connection-references.md))이다. 세션은 (에이전트, 작업)마다 보관하고 같은 작업의 다음 실행 시도에서 재개한다. 구현 전 기술 조사이며 확정 결정이 아니다.
 
 배경 장면: 작업자가 10:00에 실행 시도를 마치고 Lead의 답을 기다린다. 15:00에 같은 작업으로 다시 깨어나 세션을 재개한다. 그 사이 프로바이더의 프롬프트 캐시가 만료됐다면, 재개 첫 요청은 지금까지의 대화 전체를 캐시 할인 없이 다시 입력으로 처리한다. 대화가 클수록 구독 한도를 크게 소모한다.
 
@@ -12,11 +12,11 @@
 4. **압축.** 자동 압축 시점(크기 기준, 유휴·TTL 기준), 비대화·양방향 연결에서 수동 압축을 보낼 수 있는가, 압축 자체의 비용, 결과(같은 세션 ID인가). 사용자 주장 (b) "Claude Code는 기본으로 캐시 만료 직전에 자동 압축한다"를 우리 연결 방식에서 쓸 수 있는가.
 5. **새 세션 사이의 앞부분 캐시.** 지침·도구가 같은 새 세션이 다른 세션의 캐시를 읽는가. 읽는다면 "조직 기록으로 새 세션 시작"이 싸다.
 
-근거 수준 표기: **[소스]** 고정 SHA 코드 또는 설치 바이너리(문자열·내장 changelog)에서 읽은 사실, **[문서]** 공식 문서·공식 변경 기록의 주장, **[실측]** 이 PC에 남아 있는 프로바이더 로컬 기록의 숫자 메타데이터(프롬프트 본문·자격 증명은 열지 않음), **[추론]** 위 근거에서 끌어낸 판단, **[미확인]** 확인하지 못한 것.
+근거 수준 표기: **[소스]** 고정 SHA 코드 또는 설치 바이너리(문자열·내장 changelog)에서 읽은 사실, **[문서]** 공식 문서·공식 변경 기록의 주장, **[실측]** 이 PC에 남아 있는 프로바이더 로컬 기록의 숫자 메타데이터(2026-10-30 조사는 프롬프트 본문·자격 증명을 열지 않음), **[요청 본문]** 2026-11-09 #127 보강에서 모델을 부르지 않고 로컬 수신기로 받은 실제 요청 본문(아래 4절 #127 절의 방법), **[추론]** 위 근거에서 끌어낸 판단, **[미확인]** 확인하지 못한 것.
 
 ## 기준 버전과 조사 방식
 
-모델을 호출하지 않았고, 로그인하지 않았고, 자격 증명 파일을 열지 않았다. 코드는 정적으로 읽었다. 버전·소스는 [프로바이더 기능 조사](executor-capabilities.md#기준-버전)와 같다.
+2026-10-30 조사: 모델을 호출하지 않았고, 로그인하지 않았고, 자격 증명 파일을 열지 않았다. 코드는 정적으로 읽었다. 2026-11-09 #127 보강은 방법이 다르다. 실제 모델 호출 측정(#91, 구독 계정)의 세션 기록을 썼고, 요청 본문을 로컬 수신기로 받아 비교했다(4절 #127 절). 버전·소스는 [프로바이더 기능 조사](executor-capabilities.md#기준-버전)와 같다.
 
 | 대상 | 버전 | 근거 | 읽은 범위 |
 |---|---|---|---|
@@ -35,7 +35,7 @@
 | 1. 캐시 방식·TTL | 자동(Claude Code가 `cache_control` 부착). 구독 한도 안에서는 본 대화 **1시간**, 그 밖(하위 에이전트·압축 요청 등)은 5분. 한도 초과로 usage credits를 쓰면 본 대화도 5분. `promptCacheTtl`·`CLAUDE_CODE_PROMPT_CACHE_TTL`·`ENABLE_PROMPT_CACHING_1H`·`FORCE_PROMPT_CACHING_5M`으로 지정 [문서] | 자동(서버가 앞부분 캐시). Codex는 TTL 옵션을 보내지 않고 `prompt_cache_key` = 루트 thread ID만 보냄 [소스]. ChatGPT 백엔드의 보존 시간은 공식 문서에 없음 [미확인] | OpenCode가 공급자별로 표시를 붙임. Anthropic 계열은 시스템 앞 2개+마지막 2개 메시지에 `ephemeral`(TTL 미지정 → 5분 [추론]), OpenAI 계열은 `promptCacheKey` = 세션 ID [소스]. TTL 설정 항목 없음 | 자동(implicit) 앞부분 캐시만 사용, 명시 캐시 생성 호출 없음 [소스]. TTL 비공개. Vertex 문서는 "최대 24시간, 대부분 그 전에 삭제" [문서]. 7.9시간 뒤 재개 요청은 적중 0 [실측] |
 | 2. TTL 뒤 재개 | 대화 전체를 다시 보냄. 바뀌지 않았고 TTL 안인 앞부분만 캐시에서 읽음 [문서] | 전체 기록을 다시 보냄(`store:false`, HTTP에 `previous_response_id` 없음). 증분 전송은 살아 있는 WebSocket 연결 안에서만 [소스]. "로그인 사용자는 캐시 영구 보존" 주장은 OpenAI 임원 X 게시물뿐 [미확인] | 매 요청 로컬 DB에서 대화 전체를 다시 조립해 보냄. 서버 상태 미사용 [소스] | 전체 기록을 다시 보냄(Code Assist `streamGenerateContent`의 `contents`) [소스·실측] |
 | 3. 구독 한도에서 캐시 적중분 | "캐시 토큰 단가로 다시 읽어" 한도를 소모한다는 문서 문장 있음. 정확한 배율 [미확인] | 크레딧 단가표에서 캐시 입력은 입력의 1/10(일부 1/20), 캐시 쓰기 요금 없음. 단 "크레딧 단가만으로 구독 포함 사용량이 정해지지 않는다" [문서] | 로그인 종류에 따름. Go는 한도를 달러로 정하고 캐시 읽기 단가가 따로 있음 [문서]. ChatGPT·Copilot 경로 [미확인] | 2026-05 공식 블로그: 한도를 "API 가격 기준으로 차감"(입력·출력·캐시 읽기 비율 언급) [문서]. 캐시 배율 명시 문장 없음 [미확인] |
-| 4. 압축 | 크기 기준 자동 압축 + **터미널 대화형 전용** 유휴 압축(200K 이상, 약 54분). `-p`·Agent SDK에서는 유휴 압축이 동작하지 않음 [소스]. `/compact`는 stream-json·SDK 입력으로 보낼 수 있고 `compact_boundary`로 확인, 같은 세션 [문서] | 컨텍스트 창의 90%에서 자동 [소스]. 유휴·TTL 기준 없음 [소스]. app-server `thread/compact/start {threadId}` 수동 압축, 같은 thread [소스·문서]. 압축 요청은 일반 턴과 같은 앞부분 → 캐시가 살아 있으면 적중 [소스·추론] | 사용 가능 토큰 초과 시 자동(`compaction.auto`), 유휴·TTL 기준 없음 [소스]. `POST /session/:id/summarize` 수동 압축, 같은 세션 [소스·문서]. 압축 요청은 **본 대화와 앞부분이 다름**(도구 없음, 기록을 텍스트로 붙임) → 캐시를 거의 못 씀 [소스·추론] | 토큰 임계값 기준 자동 [소스]. 유휴·TTL 기준 없음 [소스]. `/compact`는 대화형에서 확인, `-p`·stream-json에서 동작 여부 [미확인] |
+| 4. 압축 | 크기 기준 자동 압축 + **터미널 대화형 전용** 유휴 압축(200K 이상, 약 54분). `-p`·Agent SDK에서는 유휴 압축이 동작하지 않음 [소스]. `/compact`는 stream-json·SDK 입력으로 보낼 수 있고 `compact_boundary`로 확인, 같은 세션 [문서]. 압축 요청은 앞부분이 같지만 마지막 도구 단계를 캐시 없이 읽음([4절](#claude-code-압축-요청은-마지막-도구-단계를-캐시-없이-읽는다127)) [실측·소스] | 컨텍스트 창의 90%에서 자동 [소스]. 유휴·TTL 기준 없음 [소스]. app-server `thread/compact/start {threadId}` 수동 압축, 같은 thread [소스·문서]. 압축 요청은 일반 턴과 같은 앞부분 → 캐시가 살아 있으면 적중 [소스·추론] | 사용 가능 토큰 초과 시 자동(`compaction.auto`), 유휴·TTL 기준 없음 [소스]. `POST /session/:id/summarize` 수동 압축, 같은 세션 [소스·문서]. 압축 요청은 **본 대화와 앞부분이 다름**(도구 없음, 기록을 텍스트로 붙임) → 캐시를 거의 못 씀 [소스·추론] | 토큰 임계값 기준 자동 [소스]. 유휴·TTL 기준 없음 [소스]. `/compact`는 대화형에서 확인, `-p`·stream-json에서 동작 여부 [미확인] |
 | 5. 새 세션 간 앞부분 캐시 | API 캐시는 조직 안에서 앞부분이 같으면 공유. Claude Code는 시스템 프롬프트에 auto memory 경로, 대화 첫머리에 cwd·git 상태가 들어가 기계·디렉터리 단위로 갈림. SDK `excludeDynamicSections`/`--exclude-dynamic-system-prompt-sections`로 시스템 프롬프트를 고정 가능 [문서] | thread마다 `prompt_cache_key`가 다르고, OpenAI 문서상 키가 다르면 캐시 집계가 분리 → 새 thread는 다른 thread 캐시를 거의 못 읽음 [소스·문서·추론] | Anthropic 계열은 키가 없어 앞부분이 같으면 공유 가능, 단 시스템 프롬프트에 **오늘 날짜**가 들어감. OpenAI 계열은 세션 ID 키로 분리 [소스·추론] | 자동 캐시는 요청 단위 앞부분 일치. 새 대화 첫 요청 65건 중 2건만 약 8K 적중 [실측]. 몇 시간 간격이면 기대하기 어려움 [추론] |
 
 ## 1. 캐시 방식과 TTL
@@ -106,6 +106,21 @@
 - [문서] **압축 비용.** "To produce the summary, Claude Code sends a separate request. The request repeats your conversation's system prompt, tools, and the history being summarized … While the cache is warm, that request reads your prefix from the cache." "After a break longer than the cache lifetime, there is no cache left to read, so the summarization request reprocesses that history as uncached input." 압축 뒤 첫 턴은 짧은 요약만 다시 캐시한다. 시스템 프롬프트 층은 캐시에 남는다. [CC "Compacting the conversation"](https://code.claude.com/docs/en/prompt-caching#compacting-the-conversation)
 - [문서] **결과.** 같은 세션에서 기록이 요약으로 바뀐다(`/clear`만 새 `session_id`). 자동 압축 창은 `autoCompactWindow`(100,000–1,000,000 또는 `auto`), `autoCompactEnabled`, `DISABLE_AUTO_COMPACT`로 조절한다([CC settings-reference](https://code.claude.com/docs/en/settings-reference)).
 
+### Claude Code: 압축 요청은 마지막 도구 단계를 캐시 없이 읽는다(#127)
+
+위 문서 문장("While the cache is warm, that request reads your prefix from the cache")은 일부만 맞다. 2026-11-09 Claude Code 2.1.317·Haiku 4.5 실측과 요청 본문 확인으로 원인을 찾았다.
+
+- [실측] #91 마무리 측정(main `cf272dd`, 캐시 유지 1시간). 압축한 세션(116,431 토큰)에서 마지막 요청 54분 뒤 보낸 압축 요청이 캐시 읽기 24,904, 캐시 없이 읽음 91,945, 캐시 쓰기 1,010(5분), 출력 2,539였다. 모델 호출은 구독 계정으로 했고, 달러 값은 측정한 토큰을 Haiku 4.5 API 단가로 환산한 추정이다 [추론]. 환산하면 압축 요청 $0.1084, 62분 뒤 이어 가기 $0.0184, 압축하지 않은 비교군(114,005 토큰)의 이어 가기 $0.2008이다. 합계는 $0.1268 대 $0.2008로 37% 싸다. 구독 한도가 같은 비율로 줄었는지는 [미확인]이다. 압축 요청이 모두 캐시에 맞았다면 약 $0.024였다 [추론, 같은 단가].
+- [요청 본문] 확인 방법: 압축 직전까지의 세션 기록으로 같은 세션을 다시 열고 `ANTHROPIC_BASE_URL`을 로컬 수신기(모든 요청에 400을 돌려줌)로 돌렸다. 모델은 부르지 않았고, 로그인 토큰은 로컬 수신기에만 갔으며, 요청 header는 저장하지 않았다. 같은 세션에 일반 메시지를 보낸 요청과 `/compact`를 보낸 요청을 비교했다.
+  - 도구 목록(13개), 시스템 지침 세 블록, 생각 설정(`thinking`), `context_management`가 같았고, 메시지 0–7은 해시까지 같았다. 제품이 압축을 여는 방식(모델·지침·MCP·설정)은 원인이 아니다.
+  - 압축 요청은 마지막 assistant 답장(압축 뒤에 그대로 남기는 `compactMetadata.preservedSegment`)을 빼고, 요약 지시를 마지막 user 메시지(도구 결과 다섯 개, 메시지 8) 끝에 text 블록으로 붙인다.
+  - 메시지 쪽 캐시 표시는 메시지 7의 마지막 `tool_use` 하나에만 붙고 TTL이 없다(5분).
+- [소스, 2.1.317 바이너리] 압축은 `querySource:"compact"` fork를 `skipCacheWrite:true`로 보낸다. 캐시 표시 위치를 고르는 함수는 `skipCacheWrite`이면 표시를 마지막 메시지에서 한 메시지 앞으로 옮긴다(`if(r)Ee=we(Ee-1)`). fork의 마지막 메시지가 새 지시 하나라고 보고 만든 규칙으로 보인다 [추론]. 그런데 압축은 요약 지시를 마지막 도구 결과 메시지에 합치므로 한 칸 옮기면 도구 결과 메시지 전체가 표시 뒤로 밀린다.
+- [실측] 압축 전 마지막 일반 요청(세션 기록 `api-request` `7bb4b4e6…`)은 `messages[8].content[4]`(마지막 도구 결과)에 캐시를 썼다. 이 위치는 압축 요청의 표시보다 뒤라 읽을 수 없다. 캐시 조회는 표시에서 앞쪽으로만 찾는다([prompt caching \"How automatic prefix checking works\"](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#how-automatic-prefix-checking-works)). 앞쪽에서 가장 가까운 기록은 그 전 요청(`744a9793…`)이 `messages[6].content[1]`에 쓴 누적 24,904 토큰이며, 압축 요청의 캐시 읽기와 정확히 같다.
+- [실측·추론] 캐시 없이 읽는 양은 세션 크기가 아니라 **마지막 답장 직전의 도구 단계**(그 단계의 assistant 도구 호출 + 도구 결과)와 요약 지시다. 측정 세션은 마지막 단계에서 큰 파일 다섯 개를 읽었고, 그 단계를 처음 캐시에 쓴 일반 요청의 쓰기가 91,519 토큰이었다. 측정은 최악에 가까운 경우였다. Lead 실행처럼 마지막 단계가 짧은 `send_message` 결과이면 대부분 캐시에 맞는다 [추론, 이 경우는 따로 재지 않음].
+- [소스·문서] 제품 쪽에서 바꿀 수단이 없다. 앞부분은 이미 같고, 표시 위치는 Claude Code 내부 규칙이다. 압축 fork를 끄는 내부 flag(`tengu_compact_cache_prefix`)의 대체 경로는 캐시를 아예 쓰지 않는다(`enablePromptCaching:false`). 2.1.318·2.1.319 변경 기록에도 이 동작의 변경은 없다([v2.1.319 태그의 CHANGELOG](https://github.com/anthropics/claude-code/blob/v2.1.319/CHANGELOG.md), 2026-11-09 열람). 두 판을 실제로 돌려 확인하지는 않았다 [미확인]. 고치려면 Claude Code가 압축 요청의 표시를 마지막 도구 결과 블록에 두어야 한다.
+- [추론] 그래도 미리 압축은 이득이다. 압축하지 않고 캐시가 만료된 뒤 이어 가면 세션 전체를 1시간 캐시 쓰기 단가(입력의 2배)로 다시 쓴다. 압축 요청은 최악(모두 캐시 실패)이어도 입력 단가 1배와 요약 출력이고, 압축 뒤 이어 가기는 요약만 다시 쓴다. 기본 기준(400,000 토큰, TTL의 90%)을 바꿀 근거는 없다.
+
 ### Codex
 
 - [소스] 자동 압축 기본값은 모델 컨텍스트 창의 90%이며, 카탈로그·config(`model_auto_compact_token_limit`) 값과 비교해 작은 쪽을 쓴다(`protocol/src/openai_models.rs` L534-L545). 압축 사유는 `UserRequested | ContextLimit | ModelDownshift | CompHashChanged`뿐이고(`analytics/src/facts.rs` L461-L466) 유휴·TTL 기준 경로는 없다.
@@ -158,7 +173,7 @@
 
 | 프로바이더 | 권고 | 이유와 조건 |
 |---|---|---|
-| Claude Code | **TTL 전 압축 후 재개** (큰 대화), 작은 대화는 TTL과 무관하게 재개 | 재개 시 전체 재전송이 문서로 확정, 자체 유휴 압축은 `-p`·SDK에서 꺼져 있음, 수동 `/compact`는 stream-json·SDK로 가능하고 따뜻할 때 압축은 캐시를 읽음. 구독 한도 안 본 대화 TTL은 기본 1시간이지만, usage credits로 넘어가면 5분이 되므로 실행 결과의 TTL을 매번 읽는다. 1시간을 고정하려면 `CLAUDE_CODE_PROMPT_CACHE_TTL=1h`(credits 사용 중 쓰기 단가 상승) |
+| Claude Code | **TTL 전 압축 후 재개** (큰 대화), 작은 대화는 TTL과 무관하게 재개 | 재개 시 전체 재전송이 문서로 확정, 자체 유휴 압축은 `-p`·SDK에서 꺼져 있음, 수동 `/compact`는 stream-json·SDK로 가능하고 따뜻할 때 압축은 마지막 도구 단계를 뺀 앞부분을 캐시에서 읽음(#127 실측). 구독 한도 안 본 대화 TTL은 기본 1시간이지만, usage credits로 넘어가면 5분이 되므로 실행 결과의 TTL을 매번 읽는다. 1시간을 고정하려면 `CLAUDE_CODE_PROMPT_CACHE_TTL=1h`(credits 사용 중 쓰기 단가 상승) |
 | Codex | **자유 재개(잠정)**, 첫 재개 턴의 `cachedInputTokens`로 검증. 적중하지 않으면 "TTL 안에서만 재개, 아니면 압축 또는 새 thread"로 전환 | 소스상 항상 전체 재전송이므로 비용은 ChatGPT 백엔드 보존에 달림. "로그인 사용자 캐시 영구 보존"은 공식 문서 [미확인]. 필요 시 `thread/compact/start`는 일반 턴과 같은 앞부분이라 따뜻할 때 싸다. 새 thread는 다른 thread 캐시를 거의 못 읽어 "새로 시작"의 이점이 작다 |
 | OpenCode | **TTL 안에서만 재개, 아니면 새 세션**(조직 기록으로 시작). 큰 세션은 압축이 재개 1회 재전송과 비슷한 비용임을 감안 | 공급자가 로그인 종류에 따라 달라짐(Claude 구독은 내장 안 됨, ChatGPT·Copilot·Go/Zen). Anthropic 계열 기본 TTL 5분. 압축 요청은 앞부분이 달라 TTL 전 압축의 이점이 없음. 시스템 프롬프트에 날짜가 있어 날짜가 바뀌면 재개도 전체 캐시 실패. ChatGPT 로그인 경로의 장기 캐시 적용 여부는 Codex와 같은 [미확인] |
 | Antigravity | **TTL 안에서만 재개, 아니면 새 세션**. TTL을 알 수 없으므로 짧게(수 분~1시간 이하) 잡고 실측으로 조정 | 전체 재전송, 자동 캐시 TTL 비공개, 7.9시간 뒤 적중 0. `-p`·stream-json `/compact` 지원이 [미확인]이라 TTL 전 압축은 확인 전 쓸 수 없음. stream-json `cache_read_tokens`를 실행마다 기록해 간격별 적중률을 쌓는다 |
@@ -167,14 +182,14 @@
 
 ## 검증 결과와 한계
 
-실행한 것:
+실행한 것(2026-10-30 조사, #127 보강은 4절 #127 절에 따로 적음):
 
 - Claude Code 2.1.312 바이너리 문자열에서 유휴 압축기(진입점 검사 `IF()`, 서버 flag `tengu_sunny_locket`, 0.9 비율, 200,000 기본·100,000 하한)와 sleep compaction(`CLAUDE_CODE_SLEEP_COMPACT` + `CLAUDE_CODE_REMOTE`) 코드를 읽었다. `-p`의 진입점이 `sdk-cli`로 정해지는 코드도 확인했다.
 - Codex·OpenCode는 고정 SHA 소스를 읽었고, 핵심 주장(`prompt_cache_key` 정책, `"restored_history"` 전체 전송, OpenCode 시스템 프롬프트의 날짜)은 해당 줄을 다시 열어 확인했다.
 - 공식 문서는 2026-10-30에 열람했다(CC prompt-caching·costs·agent-sdk 3종·settings-reference 일부, OpenAI prompt caching guide·API changelog, learn.chatgpt.com pricing·changelog, Gemini·Vertex caching, Antigravity headless·plans·blog).
 - Antigravity는 로컬 대화 DB와 로그의 숫자 메타데이터·API 메서드 이름만 읽었다(프롬프트 본문·자격 증명 미열람).
 
-실행하지 않은 것과 남은 미확인:
+실행하지 않은 것과 남은 미확인(2026-10-30 기준):
 
 - 어떤 프로바이더에도 모델 호출을 하지 않았다. 따라서 5시간 간격 재개의 실제 캐시 적중, 정비 실행으로 다시 띄운 Claude 세션이 원래 앞부분 캐시를 읽는지, OpenCode `cacheControl` `ttl:"1h"` 우회의 실제 요청은 검증하지 않았다.
 - Codex "로그인 사용자 캐시 영구 보존"의 원문·적용 조건(공식 클라이언트·모델·헤더). X 게시물을 열지 못했다.
