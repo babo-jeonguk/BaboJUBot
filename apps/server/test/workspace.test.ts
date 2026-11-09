@@ -353,7 +353,10 @@ it("refuses names Windows reads as another drive, a device, a stream or a shorte
       "report.md ",
     ]) {
       await writeFile(path.join(shared, name), name);
-      expect(await content(root, name), name).toBe(name);
+      expect(await read(root, name), name).toMatchObject({
+        ok: true,
+        snapshot: { file: { name, size: name.length } },
+      });
     }
   }
 });
