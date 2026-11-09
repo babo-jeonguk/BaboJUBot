@@ -4,6 +4,7 @@ import {
   link,
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   symlink,
@@ -218,30 +219,41 @@ it("accepts an absolute path inside the working folder and refuses one outside",
   ).toBe("내용");
 });
 
-// 링크 뒤의 `..`는 파일 시스템처럼 링크를 따라간 자리에서 올라간다. 절대 경로도 문자열로 먼저 줄이지 않는다(PR #131 리뷰 3회차 P5).
-it("climbs from where a link leads, not from the link's name, for relative and absolute paths and link targets", async () => {
+// 링크 뒤의 `..`는 운영체제가 여는 것과 같은 파일을 고른다. Linux·macOS는 링크를 따라간 자리에서 올라가고,
+// Windows는 경로의 `..`를 글자로 줄여 연다(Win32). 절대 경로를 서버가 글자로 먼저 줄이면 Linux·macOS에서 다른 파일이 된다(PR #131 리뷰 3회차 P5).
+it("registers the file the operating system opens for `..` after a link, in relative and absolute paths and link targets", async () => {
   const { root, shared } = await folder();
   await mkdir(path.join(shared, "data", "deep"), { recursive: true });
   await writeFile(path.join(shared, "target.md"), "WRONG");
   await writeFile(path.join(shared, "data", "target.md"), "INTENDED");
   await symlink(path.join("data", "deep"), path.join(shared, "link"));
-  const climbing =
-    path.join(shared, "link") + path.sep + ".." + path.sep + "target.md";
-  await symlink(climbing, path.join(shared, "absolute.md"));
-  for (const requested of [
-    `link${path.sep}..${path.sep}target.md`,
-    climbing,
-    "absolute.md",
-  ])
-    expect(await content(root, requested), requested).toBe("INTENDED");
+  const relative = `link${path.sep}..${path.sep}target.md`;
+  const absolute = `${shared}${path.sep}${relative}`;
+  await symlink(absolute, path.join(shared, "absolute.md"));
+  await symlink(relative, path.join(shared, "relative.md"));
+  for (const requested of [relative, absolute, "absolute.md", "relative.md"]) {
+    const opened = await readFile(
+      path.isAbsolute(requested)
+        ? requested
+        : `${shared}${path.sep}${requested}`,
+      "utf8"
+    );
+    expect(opened, requested).toBe(
+      process.platform === "win32" ? "WRONG" : "INTENDED"
+    );
+    expect(await content(root, requested), requested).toBe(opened);
+  }
 });
 
-// 절대 경로의 작업 폴더 부분은 글자 그대로 같아야 한다. 그 안에 `..`를 섞어 돌아오는 드문 경로는 폴더 밖으로 본다.
-it("refuses an absolute path that wanders out of the working folder part and back", async () => {
+// 절대 경로의 작업 폴더 부분은 이름 그대로 같아야 한다. 그 안에 `..`를 섞어 돌아오는 드문 경로는 폴더 밖으로 본다.
+// Windows는 운영체제처럼 글자로 먼저 줄이므로 작업 폴더 안의 파일이다.
+it("refuses an absolute path that wanders out of the working folder part and back, except on Windows", async () => {
   const { root, shared } = await folder();
   await writeFile(path.join(shared, "a.md"), "내용");
   const back = [shared, "..", "shared", "a.md"].join(path.sep);
-  expect(await read(root, back)).toEqual(refusal("path_outside_folder"));
+  if (process.platform === "win32")
+    expect(await content(root, back)).toBe("내용");
+  else expect(await read(root, back)).toEqual(refusal("path_outside_folder"));
 });
 
 // PR #131 리뷰 S1: 작업 폴더 밖은 그곳에 무엇이 있는지 보지 않고 거부한다. 있든 없든, 링크로 가리키든 같은 응답이다.
