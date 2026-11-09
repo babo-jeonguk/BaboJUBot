@@ -2,6 +2,8 @@
 // on exit it appends a `cost-state` row (cumulative, last wins per session) to the session transcript,
 // also when the run was interrupted. Scene file (argv[2]):
 // { "mode": "cancel" | "finish", "result"?: {...result frame}, "costState"?: {...cost-state fields} }
+// or { "mode": "script", "frames": [...frames, or "save" to append the cost row], "untilStopped"?: true }.
+// A script's frames get the session id. With untilStopped it waits for the stop signal, saves and exits.
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
@@ -30,6 +32,19 @@ if (scene.mode === "cancel") {
   await saveCost();
   process.exit(0);
 }
-out({ type: "result", subtype: "success", session_id: id, ...scene.result });
-await saveCost();
-process.exit(0);
+if (scene.mode === "script") {
+  for (const frame of scene.frames) {
+    if (frame === "save") await saveCost();
+    else out({ session_id: id, ...frame });
+  }
+  if (!scene.untilStopped) process.exit(0);
+  process.on("SIGTERM", async () => {
+    await saveCost();
+    process.exit(0);
+  });
+  setInterval(() => {}, 1000);
+} else {
+  out({ type: "result", subtype: "success", session_id: id, ...scene.result });
+  await saveCost();
+  process.exit(0);
+}

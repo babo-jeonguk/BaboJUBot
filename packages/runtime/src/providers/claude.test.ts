@@ -400,6 +400,128 @@ it("does not guess a resumed run's cost when Claude's saved row has no cost (PR 
   expect(result.usage?.inputTokens).toBe(9);
   expect(result.usage?.costUsd).toBeNull();
 });
+const backgroundTask = (count: number) => ({
+  type: "system",
+  subtype: "background_tasks_changed",
+  tasks: Array.from({ length: count }, (_, n) => ({
+    task_id: `bash-${n}`,
+    task_type: "local_bash",
+  })),
+});
+/** 이어 간 세션 session-one의 실행 전 기록과 그 세션으로 시작하는 요청. */
+async function resumedFrom(root: string, saved: Record<string, unknown>) {
+  const input = request();
+  await saveCost(root, input.identity.organizationId, "session-one", saved);
+  input.previousSession = { id: "session-one" };
+  return input;
+}
+it("reports the cost Claude saved when it exits with background work and no result (PR #132 SPEC-03)", async () => {
+  const root = await home();
+  const input = await resumedFrom(
+    root,
+    costState(0.5286, [100, 50, 1000, 200])
+  );
+  const result = await (
+    await costPeer(root, {
+      mode: "script",
+      frames: [backgroundTask(1), "save"],
+      costState: costState(0.6037, [110, 80, 3000, 700]),
+    })
+  ).adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  // 백그라운드 일이 끝나지 않았으므로 실패지만, Claude가 저장한 비용은 이 실행의 몫이다.
+  expect(result.stopReason).toBe("failed");
+  expect(result.error).toContain("백그라운드");
+  expect(result.nextSession).toBeNull();
+  expect(result.usage).toEqual({
+    inputTokens: 10,
+    outputTokens: 30,
+    cacheReadTokens: 2000,
+    cacheWriteTokens: 500,
+    costUsd: expect.closeTo(0.0751, 6),
+  });
+});
+it("charges a resumed run with several results its last total minus the saved cost and adds each turn's tokens", async () => {
+  const root = await home();
+  const input = await resumedFrom(root, costState(0.02, [1, 1, 0, 0]));
+  const result = await (
+    await costPeer(root, {
+      mode: "script",
+      frames: [
+        backgroundTask(1),
+        {
+          type: "result",
+          subtype: "success",
+          total_cost_usd: 0.03,
+          usage: { input_tokens: 10, output_tokens: 3 },
+        },
+        backgroundTask(0),
+        { type: "system", subtype: "init" },
+        {
+          type: "result",
+          subtype: "success",
+          total_cost_usd: 0.05,
+          usage: { input_tokens: 4, output_tokens: 2 },
+        },
+        "save",
+      ],
+      costState: costState(0.05, [15, 6, 0, 0]),
+    })
+  ).adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.stopReason).toBe("completed");
+  expect(result.nextSession?.id).toBe("session-one");
+  expect(result.usage?.inputTokens).toBe(14);
+  expect(result.usage?.outputTokens).toBe(5);
+  expect(result.usage?.costUsd).toBeCloseTo(0.03, 6);
+});
+// 합성 peer는 멈춤 신호를 받아 비용을 저장한다. Windows는 프로세스에 신호 처리기를 부르지 않는다.
+it.skipIf(process.platform === "win32")(
+  "reports the cost Claude saved when a run waiting for background work is cancelled",
+  async () => {
+    const root = await home();
+    const input = await resumedFrom(
+      root,
+      costState(0.5286, [100, 50, 1000, 200])
+    );
+    const controller = new AbortController();
+    const result = await (
+      await costPeer(root, {
+        mode: "script",
+        frames: [
+          backgroundTask(1),
+          {
+            type: "result",
+            subtype: "success",
+            total_cost_usd: 0.55,
+            usage: { input_tokens: 5, output_tokens: 10 },
+          },
+        ],
+        untilStopped: true,
+        costState: costState(0.6037, [110, 80, 3000, 700]),
+      })
+    ).adapter.execute(input, {
+      signal: controller.signal,
+      emit: async (value) => {
+        const activity = value as { type?: string; text?: string };
+        if (activity.text === "백그라운드 작업이 끝나기를 기다립니다.")
+          controller.abort();
+      },
+    });
+    expect(result.stopReason).toBe("cancelled");
+    expect(result.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 30,
+      cacheReadTokens: 2000,
+      cacheWriteTokens: 500,
+      costUsd: expect.closeTo(0.0751, 6),
+    });
+  }
+);
 it("charges the run after a compaction only its own cost, using the latest saved cost", async () => {
   const root = await home();
   const input = request();
