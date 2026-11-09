@@ -275,7 +275,7 @@ async function executeClaude(
     if (request.model) args.push("--model", request.model);
     if (typeof request.previousSession?.id === "string")
       args.push("--resume", request.previousSession.id);
-    let completed = false,
+    let hasResult = false,
       ready = false,
       compacting = false,
       compactBoundary = false;
@@ -384,8 +384,8 @@ async function executeClaude(
             saysLoginProblem(frame.result))
         )
           result.errorCode = "login_required";
-        if (!completed) {
-          completed = true;
+        if (!hasResult) {
+          hasResult = true;
           // 입력을 닫으면 더 보낼 턴이 없다고 알린다. Claude는 기다리던 백그라운드 작업을 마치고 그 결과로 한 턴 더 한 뒤 스스로 끝나며, 프로세스 종료가 실행 시도를 끝낸다.
           process.endInput();
         }
@@ -401,7 +401,7 @@ async function executeClaude(
       active.set(request.runId, (message) => {
         if (
           !ready ||
-          completed ||
+          hasResult ||
           compacting ||
           control.signal.aborted ||
           process.closed ||
@@ -440,6 +440,12 @@ async function executeClaude(
       await process.done;
       if (control.signal.aborted)
         return { ...failed(), stopReason: "cancelled", error: null };
+      // 띄운 백그라운드 작업이 끝났다고 알리기 전에 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않는다.
+      if (background.size > 0)
+        return {
+          ...failed(),
+          error: "백그라운드 작업이 끝나기 전에 프로바이더가 종료했습니다.",
+        };
       // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
       if (
         !ready &&
@@ -458,7 +464,7 @@ async function executeClaude(
           connection
         );
       }
-      if (!completed) return failed();
+      if (!hasResult) return failed();
       if (
         maintenance &&
         (!compactBoundary ||
