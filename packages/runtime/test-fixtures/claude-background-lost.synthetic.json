@@ -1,0 +1,47 @@
+{
+  "provenance": "Synthetic protocol example; not a model recording. The program exits after the first result while a background command it started has not reported back (PR #130 review SPEC-01).",
+  "steps": [
+    {
+      "input": {
+        "type": "user",
+        "message": {
+          "role": "user"
+        }
+      }
+    },
+    {
+      "frame": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "session-bg"
+      }
+    },
+    {
+      "frame": {
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": "bash-1",
+        "task_type": "local_bash",
+        "description": "sleep 45"
+      }
+    },
+    {
+      "frame": {
+        "type": "result",
+        "subtype": "success",
+        "session_id": "session-bg",
+        "total_cost_usd": 0.01,
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 3
+        }
+      }
+    },
+    {
+      "inputEnd": true
+    },
+    {
+      "exit": 1
+    }
+  ]
+}

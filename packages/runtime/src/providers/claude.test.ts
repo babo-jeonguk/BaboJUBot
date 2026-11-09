@@ -405,3 +405,36 @@ it("cancels a run that is waiting for a background command", async () => {
   expect(result.stopReason).toBe("cancelled");
   expect(Date.now() - started).toBeLessThan(15_000);
 });
+
+// PR #130 리뷰 SPEC-01: 띄운 백그라운드 작업이 끝났다고 알리기 전에 프로그램이 끝나면 일은 끝나지 않았다.
+// 첫 턴의 성공 결과는 중간 결과이므로 실행 시도를 성공으로 남기지 않고, 그 세션도 저장하지 않는다.
+it.each([1, 0])(
+  "fails a run whose program exits with code %i before a background command reports back",
+  async (code) => {
+    const fixture = JSON.parse(
+      await readFile(
+        path.resolve("test-fixtures/claude-background-lost.synthetic.json"),
+        "utf8"
+      )
+    );
+    fixture.steps[fixture.steps.length - 1] = { exit: code };
+    const root = await home();
+    const file = path.join(root, "lost.json");
+    await writeFile(file, JSON.stringify(fixture));
+    const provider = createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        file,
+      ],
+    });
+    const result = await provider.adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    expect(result.stopReason).toBe("failed");
+    expect(result.nextSession).toBeNull();
+    expect(result.error).toContain("백그라운드");
+  }
+);
