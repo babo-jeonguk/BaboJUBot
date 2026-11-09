@@ -301,6 +301,104 @@ it("leaves a cancelled run's usage unreported when Claude saved no new cost", as
   });
   expect(result.stopReason).toBe("cancelled");
   expect(result.usage).toBeNull();
+  // Claude restores its count from the last saved row, so the cost Claude never saved is in neither run.
+  const next = request();
+  next.identity.organizationId = input.identity.organizationId;
+  next.previousSession = { id: "session-one" };
+  const finished = await (
+    await costPeer(root, {
+      mode: "finish",
+      result: { total_cost_usd: 0.5892, usage: { input_tokens: 9 } },
+    })
+  ).adapter.execute(next, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(finished.usage?.costUsd).toBeCloseTo(0.0606, 6);
+});
+it("reports zero, not unreported, when Claude saved a new row equal to the last one (PR #132 SPEC-01)", async () => {
+  const root = await home();
+  const input = request();
+  const same = costState(0.5286, [100, 50, 1000, 200]);
+  await saveCost(root, input.identity.organizationId, "session-one", same);
+  input.previousSession = { id: "session-one" };
+  const controller = new AbortController();
+  const result = await (
+    await costPeer(root, { mode: "cancel", costState: same })
+  ).adapter.execute(input, {
+    signal: controller.signal,
+    emit: async () => controller.abort(),
+  });
+  expect(result.stopReason).toBe("cancelled");
+  expect(result.usage).toEqual({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsd: 0,
+  });
+});
+it("leaves only the fields Claude did not save unreported (PR #132 SPEC-02)", async () => {
+  const root = await home();
+  const input = request();
+  await saveCost(root, input.identity.organizationId, "session-one", {
+    totalCostUSD: 0.5,
+    modelUsage: {
+      "claude-haiku-4-5": {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationInputTokens: 200,
+      },
+    },
+  });
+  input.previousSession = { id: "session-one" };
+  const controller = new AbortController();
+  const result = await (
+    await costPeer(root, {
+      mode: "cancel",
+      costState: {
+        totalCostUSD: 0.6,
+        modelUsage: {
+          "claude-haiku-4-5": {
+            inputTokens: 110,
+            outputTokens: 80,
+            cacheCreationInputTokens: 700,
+          },
+          // A second model without a cache write count makes the session's total unknown.
+          "claude-sonnet-5": { inputTokens: 5, outputTokens: 5 },
+        },
+      },
+    })
+  ).adapter.execute(input, {
+    signal: controller.signal,
+    emit: async () => controller.abort(),
+  });
+  expect(result.usage).toEqual({
+    inputTokens: 15,
+    outputTokens: 35,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    costUsd: expect.closeTo(0.1, 6),
+  });
+});
+it("does not guess a resumed run's cost when Claude's saved row has no cost (PR #132 SPEC-02)", async () => {
+  const root = await home();
+  const input = request();
+  await saveCost(root, input.identity.organizationId, "session-one", {
+    modelUsage: { "claude-haiku-4-5": { inputTokens: 100 } },
+  });
+  input.previousSession = { id: "session-one" };
+  const result = await (
+    await costPeer(root, {
+      mode: "finish",
+      result: { total_cost_usd: 0.6, usage: { input_tokens: 9 } },
+    })
+  ).adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.usage?.inputTokens).toBe(9);
+  expect(result.usage?.costUsd).toBeNull();
 });
 it("charges the run after a compaction only its own cost, using the latest saved cost", async () => {
   const root = await home();
