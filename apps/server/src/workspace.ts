@@ -271,7 +271,7 @@ export class Workspaces {
     const root = path.join(organizations, orgId, "shared");
     const working = this.organization(orgId);
     const resolved = path.resolve(working, requested);
-    let target = resolved;
+    let target: string;
     try {
       target = await realpath(resolved);
     } catch (error) {
