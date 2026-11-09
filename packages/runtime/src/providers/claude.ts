@@ -279,8 +279,8 @@ async function executeClaude(
       ready = false,
       compacting = false,
       compactBoundary = false;
-    // Claude는 백그라운드 명령, 서브에이전트 등 실행을 열어 두는 작업에 대해 이 프레임을 낸다.
-    const background = new Set<string>();
+    // Claude가 마지막으로 알린 살아 있는 백그라운드 일의 수(ambient 제외). 시작·끝 신호를 짝짓지 않고 이 목록을 그대로 쓴다.
+    let background = 0;
     let inputTokens: number | null = null,
       outputTokens: number | null = null,
       cacheReadTokens: number | null = null,
@@ -306,25 +306,26 @@ async function executeClaude(
           compacting = frame.status === "compacting";
         if (frame.type === "system" && frame.subtype === "init") {
           clearTimeout(startup);
+          // 백그라운드 일을 마친 뒤의 턴도 init을 다시 낸다. 실행 시도의 시작은 한 번만 알린다.
+          const started = !ready;
           ready = true;
-          await control.emit({
-            type: "progress",
-            text: "프로바이더가 작업을 시작했습니다.",
-          });
+          if (started)
+            await control.emit({
+              type: "progress",
+              text: "프로바이더가 작업을 시작했습니다.",
+            });
         }
         if (
           frame.type === "system" &&
-          frame.subtype === "task_started" &&
-          frame.ambient !== true &&
-          typeof frame.task_id === "string"
+          frame.subtype === "background_tasks_changed" &&
+          Array.isArray(frame.tasks)
         )
-          background.add(frame.task_id);
-        if (
-          frame.type === "system" &&
-          frame.subtype === "task_notification" &&
-          typeof frame.task_id === "string"
-        )
-          background.delete(frame.task_id);
+          background = frame.tasks.filter(
+            (task) =>
+              !task ||
+              typeof task !== "object" ||
+              (task as Record<string, unknown>).ambient !== true
+          ).length;
         if (frame.type !== "result") return;
         const usage = frame.usage as Record<string, unknown> | undefined;
         const number = (n: unknown) =>
@@ -389,7 +390,7 @@ async function executeClaude(
           // 입력을 닫으면 더 보낼 턴이 없다고 알린다. Claude는 기다리던 백그라운드 작업을 마치고 그 결과로 한 턴 더 한 뒤 스스로 끝나며, 프로세스 종료가 실행 시도를 끝낸다.
           process.endInput();
         }
-        if (background.size > 0)
+        if (background > 0)
           await control.emit({
             type: "progress",
             text: "백그라운드 작업이 끝나기를 기다립니다.",
@@ -440,8 +441,8 @@ async function executeClaude(
       await process.done;
       if (control.signal.aborted)
         return { ...failed(), stopReason: "cancelled", error: null };
-      // 띄운 백그라운드 작업이 끝났다고 알리기 전에 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않고 세션도 저장하지 않지만, 이미 보고된 사용량과 로그인 판정은 남긴다.
-      if (background.size > 0)
+      // Claude가 마지막으로 알린 살아 있는 백그라운드 일이 남은 채 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않고 세션도 저장하지 않지만, 이미 보고된 사용량과 로그인 판정은 남긴다.
+      if (background > 0)
         return {
           ...result,
           stopReason: "failed",
