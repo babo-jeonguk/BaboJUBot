@@ -218,6 +218,33 @@ try {
     };
   });
 
+  // #125: 기다리는 서브에이전트와 45초 백그라운드 명령을 띄운 작업이 실행 하나에서 끝나고, 기다리는 동안 활동에 보인다.
+  await attempt("background", async () => {
+    await server.drain();
+    const previous = (await newest())?.id;
+    await say(
+      `Do these in order. 1) If you have a tool for launching a subagent, launch one subagent in the foreground (not in the background) whose only job is to reply with the word SUB, and wait for its answer; if you have no such tool, skip this step. 2) Run the shell command \`node ${busy} 45\` in the background (the shell tool's run_in_background option) and end your turn right away without waiting for it. 3) When you are told the background command finished, send_message with body "BG DONE" once.`
+    );
+    const run = await started(previous);
+    while ((await detail(run.id)).status === "running") await sleep(500);
+    await server.drain();
+    const full = await detail(run.id);
+    const progress = activityTypes(full)
+      .filter((a) => a.type === "progress")
+      .map((a) => a.text);
+    const result = await finished(run.id);
+    return {
+      ok:
+        result.status === "completed" &&
+        result.seconds >= 45 &&
+        progress.includes("백그라운드 작업이 끝나기를 기다립니다.") &&
+        (await replies()).some((reply) => reply.trim() === "BG DONE"),
+      progress,
+      runs: (await runs()).length,
+      ...result,
+    };
+  });
+
   await attempt("resume", async () => {
     const word = `WORD${Date.now().toString(36).toUpperCase()}`;
     await say(
