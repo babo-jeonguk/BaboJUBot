@@ -1,4 +1,5 @@
-import { claudeSessionFacts } from "./claude-transcript.ts";
+import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
+import type { ClaudeSessionCost } from "./claude-transcript.ts";
 import { claudeModelsFor } from "./claude-models.ts";
 import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -66,6 +67,20 @@ const failed = (): RunResult => ({
   summary: null,
   usage: null,
   nextSession: null,
+});
+/** Claude's saved totals after the run minus the baseline for this run. */
+const runUsage = (after: ClaudeSessionCost, baseline: ClaudeSessionCost) => ({
+  inputTokens: Math.max(0, after.inputTokens - baseline.inputTokens),
+  outputTokens: Math.max(0, after.outputTokens - baseline.outputTokens),
+  cacheReadTokens: Math.max(
+    0,
+    after.cacheReadTokens - baseline.cacheReadTokens
+  ),
+  cacheWriteTokens: Math.max(
+    0,
+    after.cacheWriteTokens - baseline.cacheWriteTokens
+  ),
+  costUsd: Math.max(0, after.costUsd - baseline.costUsd),
 });
 /** 연결 폴더의 제품 로그인 토큰이 있으면 환경에 넣는다. 모든 조직이 이 로그인 하나를 쓴다. 없어도 프로그램에 다른 로그인이 있을 수 있으므로 막지 않는다. */
 async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
@@ -275,10 +290,31 @@ async function executeClaude(
     if (request.model) args.push("--model", request.model);
     if (typeof request.previousSession?.id === "string")
       args.push("--resume", request.previousSession.id);
+    const before =
+      typeof request.previousSession?.id === "string"
+        ? await claudeSessionCost(home, request.previousSession.id)
+        : undefined;
     let completed = false,
       ready = false,
       compacting = false,
-      compactBoundary = false;
+      compactBoundary = false,
+      sessionId: string | undefined;
+    /** Claude's saved cost to subtract for this run; undefined means unknown. */
+    const baseline = (): ClaudeSessionCost | undefined => {
+      if (
+        typeof sessionId === "string" &&
+        sessionId === request.previousSession?.id
+      )
+        return before;
+      return {
+        row: "",
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+    };
     const process = startProcess({
       // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
       stateDir: folders.connection,
@@ -301,6 +337,8 @@ async function executeClaude(
         if (frame.type === "system" && frame.subtype === "init") {
           clearTimeout(startup);
           ready = true;
+          if (typeof frame.session_id === "string")
+            sessionId = frame.session_id;
           await control.emit({
             type: "progress",
             text: "프로바이더가 작업을 시작했습니다.",
@@ -308,9 +346,13 @@ async function executeClaude(
         }
         if (frame.type !== "result") return;
         completed = true;
+        // result 프레임의 세션 ID가 init보다 우선한다.
+        if (typeof frame.session_id === "string") sessionId = frame.session_id;
         const usage = frame.usage as Record<string, unknown> | undefined;
         const number = (n: unknown) =>
           typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+        const total = number(frame.total_cost_usd);
+        const sessionBaseline = baseline();
         // 실제 프로그램은 오류에도 subtype을 success로 낸다.
         const success = frame.subtype === "success" && frame.is_error !== true;
         result = {
@@ -323,22 +365,14 @@ async function executeClaude(
             cacheReadTokens: number(usage?.cache_read_input_tokens),
             cacheWriteTokens: number(usage?.cache_creation_input_tokens),
             costUsd:
-              number(frame.total_cost_usd) === null
+              total === null || sessionBaseline === undefined
                 ? null
-                : Math.max(
-                    0,
-                    (frame.total_cost_usd as number) -
-                      (frame.session_id === request.previousSession?.id &&
-                      typeof request.previousSession?.costUsd === "number"
-                        ? request.previousSession.costUsd
-                        : 0)
-                  ),
+                : Math.max(0, total - sessionBaseline.costUsd),
           },
           nextSession:
             success && typeof frame.session_id === "string"
               ? {
                   id: frame.session_id,
-                  costUsd: number(frame.total_cost_usd),
                   launch: {
                     instructions: request.instructions,
                     cwd: request.cwd,
@@ -389,6 +423,21 @@ async function executeClaude(
       process.end();
     };
     control.signal.addEventListener("abort", cancel, { once: true });
+    /** 실행이 result 프레임 없이 끝나면 Claude가 종료 시 저장한 비용을 읽는다. */
+    const savedUsage = async () => {
+      if (typeof sessionId !== "string") return null;
+      const sessionBaseline = baseline();
+      if (sessionBaseline === undefined) return null;
+      const after = await claudeSessionCost(home, sessionId);
+      if (!after) return null;
+      // 이어 간 세션에서 Claude가 새 행을 저장하지 않았으면 이 실행의 비용은 모른다.
+      if (
+        sessionId === request.previousSession?.id &&
+        after.row === before?.row
+      )
+        return null;
+      return runUsage(after, sessionBaseline);
+    };
     try {
       if (control.signal.aborted) cancel();
       else
@@ -400,7 +449,12 @@ async function executeClaude(
         });
       await process.done;
       if (control.signal.aborted)
-        return { ...failed(), stopReason: "cancelled", error: null };
+        return {
+          ...failed(),
+          stopReason: "cancelled",
+          error: null,
+          usage: await savedUsage(),
+        };
       // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
       if (
         !ready &&
@@ -419,7 +473,7 @@ async function executeClaude(
           connection
         );
       }
-      if (!completed) return failed();
+      if (!completed) return { ...failed(), usage: await savedUsage() };
       if (
         maintenance &&
         (!compactBoundary ||

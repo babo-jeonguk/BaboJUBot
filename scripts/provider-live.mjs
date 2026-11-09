@@ -381,15 +381,9 @@ try {
       const after = await session();
       const stateRuns = await runs();
       return {
-        ok:
-          after.maintenance === null &&
-          after.state?.id === before.state?.id &&
-          after.state?.costUsd !== before.state?.costUsd,
+        ok: after.maintenance === null && after.state?.id === before.state?.id,
         realTokens: before.maintenance.tokens,
         sameSessionId: after.state?.id === before.state?.id,
-        sessionUpdated: after.state?.costUsd !== before.state?.costUsd,
-        costBefore: before.state?.costUsd ?? null,
-        costAfter: after.state?.costUsd ?? null,
         runCount: stateRuns.length,
         seconds: (Date.now() - at) / 1000,
       };
