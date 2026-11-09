@@ -1,4 +1,5 @@
-import { claudeSessionFacts } from "./claude-transcript.ts";
+import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
+import type { ClaudeSessionCost } from "./claude-transcript.ts";
 import { claudeModelsFor } from "./claude-models.ts";
 import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -66,6 +67,19 @@ const failed = (): RunResult => ({
   summary: null,
   usage: null,
   nextSession: null,
+});
+const difference = (after: number | null, baseline: number | null) =>
+  after === null || baseline === null ? null : Math.max(0, after - baseline);
+/** Claude's saved totals after the run minus the baseline for this run, field by field. */
+const runUsage = (after: ClaudeSessionCost, baseline: ClaudeSessionCost) => ({
+  inputTokens: difference(after.inputTokens, baseline.inputTokens),
+  outputTokens: difference(after.outputTokens, baseline.outputTokens),
+  cacheReadTokens: difference(after.cacheReadTokens, baseline.cacheReadTokens),
+  cacheWriteTokens: difference(
+    after.cacheWriteTokens,
+    baseline.cacheWriteTokens
+  ),
+  costUsd: difference(after.costUsd, baseline.costUsd),
 });
 /** 연결 폴더의 제품 로그인 토큰이 있으면 환경에 넣는다. 모든 조직이 이 로그인 하나를 쓴다. 없어도 프로그램에 다른 로그인이 있을 수 있으므로 막지 않는다. */
 async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
@@ -275,16 +289,37 @@ async function executeClaude(
     if (request.model) args.push("--model", request.model);
     if (typeof request.previousSession?.id === "string")
       args.push("--resume", request.previousSession.id);
+    const before =
+      typeof request.previousSession?.id === "string"
+        ? await claudeSessionCost(home, request.previousSession.id)
+        : undefined;
     let hasResult = false,
       ready = false,
       compacting = false,
-      compactBoundary = false;
+      compactBoundary = false,
+      sessionId: string | undefined;
     // Claude가 마지막으로 알린 살아 있는 백그라운드 일의 수(ambient 제외). 시작·끝 신호를 짝짓지 않고 이 목록을 그대로 쓴다.
     let background = 0;
     let inputTokens: number | null = null,
       outputTokens: number | null = null,
       cacheReadTokens: number | null = null,
       cacheWriteTokens: number | null = null;
+    /** Claude's saved cost to subtract for this run; undefined means unknown. */
+    const baseline = (): ClaudeSessionCost | undefined => {
+      if (
+        typeof sessionId === "string" &&
+        sessionId === request.previousSession?.id
+      )
+        return before;
+      return {
+        line: -1,
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+    };
     const process = startProcess({
       // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
       stateDir: folders.connection,
@@ -309,6 +344,8 @@ async function executeClaude(
           // 백그라운드 일을 마친 뒤의 턴도 init을 다시 낸다. 실행 시도의 시작은 한 번만 알린다.
           const started = !ready;
           ready = true;
+          if (typeof frame.session_id === "string")
+            sessionId = frame.session_id;
           if (started)
             await control.emit({
               type: "progress",
@@ -327,10 +364,14 @@ async function executeClaude(
               (task as Record<string, unknown>).ambient !== true
           ).length;
         if (frame.type !== "result") return;
+        // result 프레임의 세션 ID가 init보다 우선한다.
+        if (typeof frame.session_id === "string") sessionId = frame.session_id;
         const usage = frame.usage as Record<string, unknown> | undefined;
         const number = (n: unknown) =>
           typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
-        // 스트리밍 입력 모드에서 usage는 턴마다이고 total_cost_usd는 프로세스 전체 누계다.
+        // 스트리밍 입력 모드에서 usage는 턴마다이고 total_cost_usd는 이어 간 세션까지 포함한 누계다.
+        const total = number(frame.total_cost_usd);
+        const sessionBaseline = baseline();
         const add = (current: number | null, n: unknown) => {
           const value = number(n);
           return value === null ? current : (current ?? 0) + value;
@@ -354,22 +395,16 @@ async function executeClaude(
             cacheReadTokens,
             cacheWriteTokens,
             costUsd:
-              number(frame.total_cost_usd) === null
+              total === null ||
+              sessionBaseline === undefined ||
+              sessionBaseline.costUsd === null
                 ? null
-                : Math.max(
-                    0,
-                    (frame.total_cost_usd as number) -
-                      (frame.session_id === request.previousSession?.id &&
-                      typeof request.previousSession?.costUsd === "number"
-                        ? request.previousSession.costUsd
-                        : 0)
-                  ),
+                : Math.max(0, total - sessionBaseline.costUsd),
           },
           nextSession:
             success && typeof frame.session_id === "string"
               ? {
                   id: frame.session_id,
-                  costUsd: number(frame.total_cost_usd),
                   launch: {
                     instructions: request.instructions,
                     cwd: request.cwd,
@@ -429,6 +464,21 @@ async function executeClaude(
       process.end();
     };
     control.signal.addEventListener("abort", cancel, { once: true });
+    /** 실행이 result 프레임 없이 끝나면 Claude가 종료 시 저장한 비용을 읽는다. */
+    const savedUsage = async () => {
+      if (typeof sessionId !== "string") return null;
+      const sessionBaseline = baseline();
+      if (sessionBaseline === undefined) return null;
+      const after = await claudeSessionCost(home, sessionId);
+      if (!after) return null;
+      // 이어 간 세션에서 Claude가 새 행을 저장하지 않았으면 이 실행의 비용은 모른다.
+      if (
+        sessionId === request.previousSession?.id &&
+        after.line === before?.line
+      )
+        return null;
+      return runUsage(after, sessionBaseline);
+    };
     try {
       if (control.signal.aborted) cancel();
       else
@@ -439,15 +489,26 @@ async function executeClaude(
           parent_tool_use_id: null,
         });
       await process.done;
+      // 결과 프레임이 없었거나 취소됐으면 Claude가 종료 때 저장한 비용으로, 아니면 보고된 결과로 센다.
+      const usage =
+        control.signal.aborted || !hasResult
+          ? await savedUsage()
+          : result.usage;
       if (control.signal.aborted)
-        return { ...failed(), stopReason: "cancelled", error: null };
-      // Claude가 마지막으로 알린 살아 있는 백그라운드 일이 남은 채 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않고 세션도 저장하지 않지만, 이미 보고된 사용량과 로그인 판정은 남긴다.
+        return {
+          ...failed(),
+          stopReason: "cancelled",
+          error: null,
+          usage,
+        };
+      // Claude가 마지막으로 알린 살아 있는 백그라운드 일이 남은 채 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않고 세션도 저장하지 않지만, 사용량(보고된 결과 또는 결과 프레임이 없을 때 Claude가 저장한 비용)과 로그인 판정은 남긴다.
       if (background > 0)
         return {
           ...result,
           stopReason: "failed",
           error: "백그라운드 작업이 끝나기 전에 프로바이더가 종료했습니다.",
           nextSession: null,
+          usage,
         };
       // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
       if (
@@ -467,7 +528,7 @@ async function executeClaude(
           connection
         );
       }
-      if (!hasResult) return failed();
+      if (!hasResult) return { ...failed(), usage };
       if (
         maintenance &&
         (!compactBoundary ||
