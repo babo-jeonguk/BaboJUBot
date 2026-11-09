@@ -68,19 +68,18 @@ const failed = (): RunResult => ({
   usage: null,
   nextSession: null,
 });
-/** Claude's saved totals after the run minus the baseline for this run. */
+const difference = (after: number | null, baseline: number | null) =>
+  after === null || baseline === null ? null : Math.max(0, after - baseline);
+/** Claude's saved totals after the run minus the baseline for this run, field by field. */
 const runUsage = (after: ClaudeSessionCost, baseline: ClaudeSessionCost) => ({
-  inputTokens: Math.max(0, after.inputTokens - baseline.inputTokens),
-  outputTokens: Math.max(0, after.outputTokens - baseline.outputTokens),
-  cacheReadTokens: Math.max(
-    0,
-    after.cacheReadTokens - baseline.cacheReadTokens
+  inputTokens: difference(after.inputTokens, baseline.inputTokens),
+  outputTokens: difference(after.outputTokens, baseline.outputTokens),
+  cacheReadTokens: difference(after.cacheReadTokens, baseline.cacheReadTokens),
+  cacheWriteTokens: difference(
+    after.cacheWriteTokens,
+    baseline.cacheWriteTokens
   ),
-  cacheWriteTokens: Math.max(
-    0,
-    after.cacheWriteTokens - baseline.cacheWriteTokens
-  ),
-  costUsd: Math.max(0, after.costUsd - baseline.costUsd),
+  costUsd: difference(after.costUsd, baseline.costUsd),
 });
 /** 연결 폴더의 제품 로그인 토큰이 있으면 환경에 넣는다. 모든 조직이 이 로그인 하나를 쓴다. 없어도 프로그램에 다른 로그인이 있을 수 있으므로 막지 않는다. */
 async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
@@ -307,7 +306,7 @@ async function executeClaude(
       )
         return before;
       return {
-        row: "",
+        line: -1,
         costUsd: 0,
         inputTokens: 0,
         outputTokens: 0,
@@ -365,7 +364,9 @@ async function executeClaude(
             cacheReadTokens: number(usage?.cache_read_input_tokens),
             cacheWriteTokens: number(usage?.cache_creation_input_tokens),
             costUsd:
-              total === null || sessionBaseline === undefined
+              total === null ||
+              sessionBaseline === undefined ||
+              sessionBaseline.costUsd === null
                 ? null
                 : Math.max(0, total - sessionBaseline.costUsd),
           },
@@ -433,7 +434,7 @@ async function executeClaude(
       // 이어 간 세션에서 Claude가 새 행을 저장하지 않았으면 이 실행의 비용은 모른다.
       if (
         sessionId === request.previousSession?.id &&
-        after.row === before?.row
+        after.line === before?.line
       )
         return null;
       return runUsage(after, sessionBaseline);

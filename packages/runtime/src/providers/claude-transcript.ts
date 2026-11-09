@@ -6,13 +6,13 @@ import type { SessionMaintenance } from "@babojubot/contracts";
 
 /** Claude's saved cumulative session cost, as written to the session transcript. */
 export type ClaudeSessionCost = {
-  /** The raw row as JSON text, so callers can tell whether Claude saved a new row. */
-  row: string;
-  costUsd: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
+  /** The 0-based index of the saved row's line in the transcript file. */
+  line: number;
+  costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
 };
 
 /** Find a session's transcript file under the product's projects folder. */
@@ -95,64 +95,56 @@ export async function claudeSessionFacts(
   });
 }
 
-/** Claude's own saved cost for a session; last valid `cost-state` row wins. */
+/** Claude's own saved cost for a session; the last `cost-state` row wins, field by field. */
 export async function claudeSessionCost(
   home: string,
   id: string
 ): Promise<ClaudeSessionCost | undefined> {
   return sessionTranscripts(home, id, async (file) => {
     let found: ClaudeSessionCost | undefined;
+    let line = -1;
     for await (const raw of file.readLines()) {
-      const line = raw.trim();
-      if (!line) continue;
+      line++;
+      const text = raw.trim();
+      if (!text) continue;
       let row;
       try {
-        row = JSON.parse(line);
+        row = JSON.parse(text);
       } catch {
         continue;
       }
       if (
         !row ||
+        typeof row !== "object" ||
         row.type !== "cost-state" ||
-        row.sessionId !== id ||
-        typeof row.totalCostUSD !== "number" ||
-        !Number.isFinite(row.totalCostUSD) ||
-        row.totalCostUSD < 0 ||
-        !row.modelUsage ||
-        typeof row.modelUsage !== "object"
+        row.sessionId !== id
       )
         continue;
-      const sum = (key: string): number | undefined => {
+      const total = (row as Record<string, unknown>).totalCostUSD;
+      const modelUsage = (row as Record<string, unknown>).modelUsage;
+      const sum = (key: string): number | null => {
+        if (!modelUsage || typeof modelUsage !== "object") return null;
+        const entries = Object.values(modelUsage as Record<string, unknown>);
+        if (entries.length === 0) return null;
         let total = 0;
-        for (const usage of Object.values(
-          row.modelUsage as Record<string, unknown>
-        )) {
+        for (const usage of entries) {
           const value = (usage as Record<string, unknown> | null)?.[key];
-          if (value === undefined) continue;
           if (!Number.isSafeInteger(value) || (value as number) < 0)
-            return undefined;
+            return null;
           total += value as number;
         }
         return total;
       };
-      const inputTokens = sum("inputTokens"),
-        outputTokens = sum("outputTokens"),
-        cacheReadTokens = sum("cacheReadInputTokens"),
-        cacheWriteTokens = sum("cacheCreationInputTokens");
-      if (
-        inputTokens === undefined ||
-        outputTokens === undefined ||
-        cacheReadTokens === undefined ||
-        cacheWriteTokens === undefined
-      )
-        continue;
       found = {
-        row: line,
-        costUsd: row.totalCostUSD,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheWriteTokens,
+        line,
+        costUsd:
+          typeof total === "number" && Number.isFinite(total) && total >= 0
+            ? total
+            : null,
+        inputTokens: sum("inputTokens"),
+        outputTokens: sum("outputTokens"),
+        cacheReadTokens: sum("cacheReadInputTokens"),
+        cacheWriteTokens: sum("cacheCreationInputTokens"),
       };
     }
     return found;
