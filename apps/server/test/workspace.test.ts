@@ -246,7 +246,7 @@ it("registers the file the operating system opens for `..` after a link, in rela
 });
 
 // 경로 끝의 구분자·`.`·겹친 구분자 같은 표기도 운영체제와 같게 다룬다. 운영체제가 열지 못하면 거부하고, 열면 같은 내용이다.
-// Linux·macOS는 파일 뒤에 `/`나 `/.`가 남으면 폴더가 아니므로 열 수 없다(ENOTDIR, PR #131 리뷰 4회차 P7). Windows는 끝의 구분자를 떼고 연다(Win32).
+// Linux·macOS는 파일 뒤에 `/`나 `/.`가 남으면 폴더가 아니므로 열 수 없다(ENOTDIR, PR #131 리뷰 4회차 P7). Windows는 입력한 경로의 끝 구분자는 떼고 열지만, 끝이 구분자인 링크 대상은 열지 못한다.
 it("treats the spelling of a path the way the operating system does", async () => {
   const { root, shared } = await folder();
   const sep = path.sep;
