@@ -86,6 +86,7 @@ it("interrupts through the protocol and deletes attempt credentials after proces
     },
   });
   expect(result.stopReason).toBe("cancelled");
+  expect(result.usage).toBeNull();
   const { readdir } = await import("node:fs/promises");
   expect(
     (await readdir(path.join(root, "providers/claude"))).filter((name) =>
@@ -126,7 +127,84 @@ it("delivers steering to the active stream and rejects unknown and finished runs
   expect(result.stopReason).toBe("completed");
   expect(await provider.adapter.steer!(message)).toBe("rejected");
 });
-it("resumes the requested session and subtracts its cumulative cost baseline", async () => {
+/** Claude's saved cumulative cost rows for a session, as the program appends them to the transcript. */
+async function saveCost(
+  root: string,
+  organizationId: string,
+  id: string,
+  ...rows: Record<string, unknown>[]
+) {
+  const folder = path.join(
+    root,
+    "providers/claude/organizations",
+    organizationId,
+    "config/projects/synthetic"
+  );
+  await mkdir(folder, { recursive: true });
+  await writeFile(
+    path.join(folder, `${id}.jsonl`),
+    rows
+      .map((row) =>
+        JSON.stringify({ type: "cost-state", sessionId: id, ...row })
+      )
+      .join("\n") + "\n"
+  );
+}
+const costState = (
+  totalCostUSD: number,
+  [input, output, cacheRead, cacheWrite]: number[]
+) => ({
+  totalCostUSD,
+  totalDuration: Math.round(totalCostUSD * 1e6),
+  modelUsage: {
+    "claude-haiku-4-5": {
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadInputTokens: cacheRead,
+      cacheCreationInputTokens: cacheWrite,
+      costUSD: totalCostUSD,
+    },
+  },
+});
+async function costPeer(root: string, scene: unknown) {
+  const file = path.join(root, `scene-${crypto.randomUUID()}.json`);
+  await writeFile(file, JSON.stringify(scene));
+  return createClaudeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/claude-cost-state.synthetic.mjs"),
+      file,
+    ],
+  });
+}
+it("resumes the requested session and subtracts the cost Claude saved for it", async () => {
+  const root = await home();
+  const provider = createClaudeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/claude-resume.synthetic.json"),
+    ],
+  });
+  const input = request();
+  await saveCost(
+    root,
+    input.identity.organizationId,
+    "session-one",
+    costState(0.02, [1, 1, 0, 0])
+  );
+  input.previousSession = { id: "session-one" };
+  const result = await provider.adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.stopReason).toBe("completed");
+  expect(result.nextSession?.id).toBe("session-one");
+  expect(result.usage?.costUsd).toBeCloseTo(0.03);
+});
+it("does not guess a resumed session's cost when Claude's saved cost cannot be read", async () => {
   const provider = createClaudeProvider({
     dataDir: await home(),
     command: [
@@ -136,14 +214,117 @@ it("resumes the requested session and subtracts its cumulative cost baseline", a
     ],
   });
   const input = request();
+  // A copy of the cost in the session state is not Claude's record and is not used.
   input.previousSession = { id: "session-one", costUsd: 0.02 };
   const result = await provider.adapter.execute(input, {
     signal: new AbortController().signal,
     emit: async () => {},
   });
   expect(result.stopReason).toBe("completed");
-  expect(result.nextSession?.id).toBe("session-one");
-  expect(result.usage?.costUsd).toBeCloseTo(0.03);
+  expect(result.usage).toEqual({
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    costUsd: null,
+  });
+});
+it("reports a cancelled run's own usage from the cost Claude saved, and the next run pays only its own requests (#128)", async () => {
+  const root = await home();
+  const first = request();
+  const organizationId = first.identity.organizationId;
+  await saveCost(
+    root,
+    organizationId,
+    "session-one",
+    costState(0.5286, [100, 50, 1000, 200])
+  );
+  // The state the product kept from the last successful run, before and after the cancelled run.
+  const stored = { id: "session-one", costUsd: 0.5286 };
+  first.previousSession = stored;
+  const controller = new AbortController();
+  const cancelled = await (
+    await costPeer(root, {
+      mode: "cancel",
+      costState: costState(0.6037, [110, 80, 3000, 700]),
+    })
+  ).adapter.execute(first, {
+    signal: controller.signal,
+    emit: async () => controller.abort(),
+  });
+  expect(cancelled.stopReason).toBe("cancelled");
+  expect(cancelled.usage).toEqual({
+    inputTokens: 10,
+    outputTokens: 30,
+    cacheReadTokens: 2000,
+    cacheWriteTokens: 500,
+    costUsd: expect.closeTo(0.0751, 6),
+  });
+
+  const next = request();
+  next.identity.organizationId = organizationId;
+  next.previousSession = stored;
+  const finished = await (
+    await costPeer(root, {
+      mode: "finish",
+      result: {
+        total_cost_usd: 0.6643,
+        usage: { input_tokens: 9, output_tokens: 20 },
+      },
+      costState: costState(0.6643, [119, 100, 4000, 900]),
+    })
+  ).adapter.execute(next, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(finished.stopReason).toBe("completed");
+  expect(finished.usage?.costUsd).toBeCloseTo(0.0606, 6);
+  // Claude's saved cost is the one record of the session's cost; the session state keeps no copy.
+  expect(finished.nextSession).not.toHaveProperty("costUsd");
+});
+it("leaves a cancelled run's usage unreported when Claude saved no new cost", async () => {
+  const root = await home();
+  const input = request();
+  await saveCost(
+    root,
+    input.identity.organizationId,
+    "session-one",
+    costState(0.5286, [100, 50, 1000, 200])
+  );
+  input.previousSession = { id: "session-one" };
+  const controller = new AbortController();
+  const result = await (
+    await costPeer(root, { mode: "cancel" })
+  ).adapter.execute(input, {
+    signal: controller.signal,
+    emit: async () => controller.abort(),
+  });
+  expect(result.stopReason).toBe("cancelled");
+  expect(result.usage).toBeNull();
+});
+it("charges the run after a compaction only its own cost, using the latest saved cost", async () => {
+  const root = await home();
+  const input = request();
+  await saveCost(
+    root,
+    input.identity.organizationId,
+    "session-one",
+    costState(0.225151, [10, 10, 10, 10]),
+    // The compaction's own process saved the newer cumulative cost.
+    costState(0.3335439, [20, 20, 20, 20])
+  );
+  input.previousSession = { id: "session-one", costUsd: 0.225151 };
+  const result = await (
+    await costPeer(root, {
+      mode: "finish",
+      result: { total_cost_usd: 0.3519445, usage: { input_tokens: 10 } },
+      costState: costState(0.3519445, [30, 30, 30, 30]),
+    })
+  ).adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.usage?.costUsd).toBeCloseTo(0.0184006, 6);
 });
 it("records the latest primary-session token size, request timestamp and cache TTL from its transcript", async () => {
   const root = await home();
