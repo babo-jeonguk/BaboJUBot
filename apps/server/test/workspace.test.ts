@@ -245,6 +245,63 @@ it("registers the file the operating system opens for `..` after a link, in rela
   }
 });
 
+// 경로 끝의 구분자·`.`·겹친 구분자 같은 표기도 운영체제와 같게 다룬다. 운영체제가 열지 못하면 거부하고, 열면 같은 내용이다.
+// 파일 뒤에 `/`나 `/.`가 남으면 폴더가 아니므로 열 수 없다(ENOTDIR, PR #131 리뷰 4회차 P7).
+it("treats the spelling of a path the way the operating system does", async () => {
+  const { root, shared } = await folder();
+  const sep = path.sep;
+  await mkdir(path.join(shared, "dir"));
+  await writeFile(path.join(shared, "report.md"), "CONTENT");
+  await writeFile(path.join(shared, "dir", "a.md"), "A");
+  await symlink(`report.md${sep}.`, path.join(shared, "alias.md"));
+  await symlink(`report.md${sep}`, path.join(shared, "alias-slash.md"));
+  await symlink(`dir${sep}`, path.join(shared, "dir-link"));
+  const cases = [
+    `report.md${sep}`,
+    `report.md${sep}.`,
+    "alias.md",
+    "alias-slash.md",
+    `dir${sep}`,
+    `dir${sep}.`,
+    `dir-link${sep}a.md`,
+    "dir-link",
+    `dir${sep}${sep}a.md`,
+    `.${sep}dir${sep}.${sep}a.md`,
+    "",
+    `dir${sep}a.md${sep}..`,
+    `${shared}${sep}report.md${sep}`,
+    `${shared}${sep}report.md${sep}.`,
+    `${shared}${sep}${sep}dir${sep}a.md`,
+    `${shared}${sep}`,
+  ];
+  for (const requested of cases) {
+    const opened = await readFile(
+      path.isAbsolute(requested) ? requested : `${shared}${sep}${requested}`,
+      "utf8"
+    ).catch((error: NodeJS.ErrnoException) => ({ refused: error.code }));
+    const result = await read(root, requested);
+    if (typeof opened === "string")
+      expect(result, requested).toMatchObject({
+        ok: true,
+        snapshot: { content: opened },
+      });
+    else
+      expect(result, `${requested} (${opened.refused})`).toMatchObject({
+        ok: false,
+      });
+  }
+  // 파일을 폴더처럼 지나가려 한 것은 파일이 없는 것과 같다.
+  if (process.platform !== "win32")
+    for (const requested of [
+      `report.md${sep}`,
+      "alias.md",
+      `${shared}${sep}report.md${sep}.`,
+    ])
+      expect(await read(root, requested), requested).toEqual(
+        refusal("file_not_found")
+      );
+});
+
 // 절대 경로의 작업 폴더 부분은 이름 그대로 같아야 한다. 그 안에 `..`를 섞어 돌아오는 드문 경로는 폴더 밖으로 본다.
 // Windows는 운영체제처럼 글자로 먼저 줄이므로 작업 폴더 안의 파일이다.
 it("refuses an absolute path that wanders out of the working folder part and back, except on Windows", async () => {
