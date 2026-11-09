@@ -66,6 +66,8 @@ export type AttemptContainer = {
   attempt?: string;
   /** 이 실행 시도만의 파일을 컨테이너 안 `target` 위에 읽기로 넣는다. 이 컴퓨터의 `target`은 그대로이고 다른 컨테이너에는 그것이 보인다. */
   files?: { source: string; target: string }[];
+  /** 같은 연결의 모든 조직 컨테이너가 함께 읽고 쓰는 폴더(Codex 로그인 원본 폴더). 그 밖의 내용이 없는 전용 폴더만 넣는다. */
+  shared?: string[];
 };
 
 /** 실행 시도 한 번이 돌 곳. `container`가 있으면 컨테이너에서, 없으면 이 컴퓨터에서 돈다. */
@@ -76,7 +78,7 @@ export type AttemptPlacement = {
 
 /**
  * 실행 시도가 돌 곳을 고른다. 격리 실행인데 컨테이너 설정이 없으면 `null`이며, 이때 프로바이더는 이 컴퓨터에서 대신 돌리지 않고 실패로 끝낸다.
- * 제품 폴더·연구 환경 폴더·조직 표식처럼 모든 프로바이더에 같은 배치는 여기서 정한다.
+ * 제품 폴더·연구 환경 폴더·조직 표식처럼 모든 프로바이더에 같은 배치는 여기서 정한다. `home`은 그 조직의 제품 폴더이며 연결 폴더는 넣지 않는다.
  */
 export function placeAttempt(
   settings: ContainerSettings | undefined,
@@ -125,6 +127,7 @@ function containerLaunch(
   } else {
     mount(options.cwd, true);
   }
+  for (const folder of options.shared ?? []) mount(folder, true);
   // 이 실행 시도만의 파일은 이 컨테이너에만 읽기로 넣는다.
   if (options.attempt) mount(options.attempt, false);
   for (const file of options.files ?? [])
