@@ -136,7 +136,9 @@ it("passes organization and personal folders, freezes files, replays across HTTP
   await mkdir(path.join(workspace.cwd, "directory"));
   // #124: 거부 응답만 보고 에이전트가 원인을 가른다. 이유마다 코드가 다르고 고칠 방법을 담은 문장이 붙는다.
   for (const [invalid, code] of [
-    ["../outside.txt", "path_outside_folder"],
+    // 작업 폴더(shared)에서 세 칸 올라가면 데이터 폴더의 outside.txt다.
+    ["../../../outside.txt", "path_outside_folder"],
+    ["../outside.txt", "file_not_found"],
     [path.join(root, "outside.txt"), "path_outside_folder"],
     ["missing.txt", "file_not_found"],
     ["shared/보고서.md", "file_not_found"],
