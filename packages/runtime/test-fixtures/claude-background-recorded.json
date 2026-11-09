@@ -324,7 +324,7 @@
         "timestamp": "<masked>",
         "request_id": "<masked>",
         "wire_tool_inputs": {
-          "toolu_01H2Yjbtzc7CfotCVUCvMdy7": {
+          "<tool-use-1>": {
             "description": "<masked>",
             "prompt": "<masked>",
             "subagent_type": "<masked>",
@@ -614,7 +614,7 @@
         "timestamp": "<masked>",
         "request_id": "<masked>",
         "wire_tool_inputs": {
-          "toolu_01PvGZHNDQoGYaTKfxf8LpRc": {
+          "<tool-use-2>": {
             "command": "<masked>",
             "run_in_background": true,
             "description": "<masked>"
@@ -1190,7 +1190,7 @@
         "timestamp": "<masked>",
         "request_id": "<masked>",
         "wire_tool_inputs": {
-          "toolu_01M2yhFhmvmihhNZmWNhRN1G": {
+          "<tool-use-3>": {
             "body": "<masked>",
             "conversationId": "<session>"
           }

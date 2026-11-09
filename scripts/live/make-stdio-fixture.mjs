@@ -31,11 +31,23 @@ const sessionKeys = new Set([
   "conversation_id",
   "conversationId",
 ]);
+// 키는 보통 프로토콜의 필드 이름이라 남긴다. 아래 필드는 실행의 ID를 키로 쓰는 표이므로 키도 순번 자리표시로 바꾼다.
+// 새 녹화에서 다른 표가 보이면 여기에 더한다(runtime의 recorded-fixtures 검사가 알려진 ID 모양을 잡는다).
+const idKeyed = { wire_tool_inputs: "tool-use" };
+const placeholders = new Map();
+const placeholder = (kind, id) => {
+  if (!placeholders.has(id))
+    placeholders.set(id, `<${kind}-${placeholders.size + 1}>`);
+  return placeholders.get(id);
+};
 const mask = (value, key, parent) => {
   if (Array.isArray(value)) return value.map((item) => mask(item, key, parent));
   if (value && typeof value === "object")
     return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, mask(v, k, key)])
+      Object.entries(value).map(([k, v]) => [
+        Object.hasOwn(idKeyed, key) ? placeholder(idKeyed[key], k) : k,
+        mask(v, k, key),
+      ])
     );
   if (typeof value !== "string") return value;
   if (sessionKeys.has(key)) return "<session>";

@@ -300,7 +300,7 @@
       "timestamp": "<masked>",
       "request_id": "<masked>",
       "wire_tool_inputs": {
-        "toolu_015qNgBP6SyQY6Cei11GKJ4q": {
+        "<tool-use-1>": {
           "query": "<masked>",
           "max_results": 2
         }
@@ -418,7 +418,7 @@
       "timestamp": "<masked>",
       "request_id": "<masked>",
       "wire_tool_inputs": {
-        "toolu_01HgTM4gqxpmCsYkFHks3xJN": {}
+        "<tool-use-2>": {}
       },
       "tool_use_meta": [
         {
@@ -555,7 +555,7 @@
       "timestamp": "<masked>",
       "request_id": "<masked>",
       "wire_tool_inputs": {
-        "toolu_01KX2N1jN3ChWAqSzEcVaW4C": {
+        "<tool-use-3>": {
           "body": "<masked>",
           "conversationId": "<session>"
         }
