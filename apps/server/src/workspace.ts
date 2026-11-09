@@ -95,14 +95,19 @@ const sameName = windows ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b
 const inside = (absolute) => {
   const target =
     windows && absolute.startsWith("\\\\\\\\?\\\\") ? absolute.slice(4) : absolute;
-  const given = names(lexical(target));
+  const given = lexical(target).split(separator);
   for (const base of [working, real]) {
     const prefix = names(base);
-    if (
-      prefix.length <= given.length &&
-      prefix.every((name, index) => sameName(name, given[index]))
-    )
-      return given.slice(prefix.length);
+    let at = 0;
+    let matched = 0;
+    while (matched < prefix.length && at < given.length) {
+      const name = given[at];
+      at += 1;
+      if (name === "" || name === ".") continue;
+      if (!sameName(name, prefix[matched])) break;
+      matched += 1;
+    }
+    if (matched === prefix.length) return given.slice(at);
   }
   return undefined;
 };
@@ -242,7 +247,7 @@ try {
       } else pending = [...lexical(target).split(separator), ...pending];
       continue;
     }
-    if (!pending.some((item) => item !== "" && item !== ".")) {
+    if (pending.length === 0) {
       name = part;
       break;
     }
