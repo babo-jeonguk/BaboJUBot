@@ -1,4 +1,7 @@
-import type { OrgToolErrorCode } from "@babojubot/contracts";
+import type {
+  ArtifactFileRefusal,
+  OrgToolErrorCode,
+} from "@babojubot/contracts";
 import type {
   MapRuleProblem,
   ProposalProblem,
@@ -20,7 +23,8 @@ export type ToolProblem =
   | MapRuleProblem
   | "self_message"
   | "conversation_required"
-  | "idempotency_conflict";
+  | "idempotency_conflict"
+  | ArtifactFileRefusal;
 export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
   {
     goal_missing: ["invalid_input", 422],
@@ -43,6 +47,14 @@ export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
     node_discarded: ["node_discarded", 409],
     task_already_linked: ["task_already_linked", 409],
     idempotency_conflict: ["idempotency_conflict", 409],
+    file_not_found: ["file_not_found", 422],
+    path_outside_folder: ["path_outside_folder", 422],
+    link_loop: ["link_loop", 422],
+    not_regular_file: ["not_regular_file", 422],
+    file_too_large: ["file_too_large", 422],
+    hard_link_refused: ["hard_link_refused", 422],
+    file_changed: ["file_changed", 422],
+    file_unreadable: ["file_unreadable", 422],
   };
 
 /**
