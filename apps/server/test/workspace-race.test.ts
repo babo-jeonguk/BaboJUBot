@@ -93,7 +93,10 @@ it("reads the file when nothing changes", async () => {
       "organization-one",
       relative
     );
-  expect((await read("dir/a.md")).content).toBe("MINE");
+  expect(await read("dir/a.md")).toMatchObject({
+    ok: true,
+    snapshot: { content: "MINE" },
+  });
 });
 
 const steps = 18;

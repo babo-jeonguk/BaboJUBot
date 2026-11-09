@@ -134,19 +134,62 @@ it("passes organization and personal folders, freezes files, replays across HTTP
     path.join(workspace.cwd, "link.txt")
   );
   await mkdir(path.join(workspace.cwd, "directory"));
-  for (const invalid of [
-    "../outside.txt",
-    path.join(root, "outside.txt"),
-    "missing.txt",
-    "link.txt",
-    "directory",
-  ]) {
+  // #124: 거부 응답만 보고 에이전트가 원인을 가른다. 이유마다 코드가 다르고 고칠 방법을 담은 문장이 붙는다.
+  for (const [invalid, code] of [
+    ["../outside.txt", "path_outside_folder"],
+    [path.join(root, "outside.txt"), "path_outside_folder"],
+    ["missing.txt", "file_not_found"],
+    ["shared/보고서.md", "file_not_found"],
+    ["link.txt", "path_outside_folder"],
+    ["directory", "not_regular_file"],
+  ] as const) {
     const result = await t.tool(request.access.token, "POST", "/artifacts", {
       ...input,
       path: invalid,
     });
     expect(result.status, invalid).toBe(422);
+    expect(result.body.error.code, invalid).toBe(code);
+    expect(result.body.error.message, invalid).toEqual(expect.any(String));
   }
+  // MCP도 같은 거부를 같은 모양으로 돌려준다.
+  const refusedMcp = await t.request(
+    "POST",
+    "/api/tools/mcp",
+    {
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: {
+        name: "record_artifact",
+        arguments: { ...input, path: "missing.txt" },
+      },
+    },
+    { authorization: `Bearer ${request.access.token}` }
+  );
+  expect(refusedMcp.body.result.isError).toBe(true);
+  expect(refusedMcp.body.result.structuredContent.error.code).toBe(
+    "file_not_found"
+  );
+  // NUL이 든 경로는 파일 시스템에 닿기 전에 입력 계약에서 거부한다.
+  expect(
+    (
+      await t.tool(request.access.token, "POST", "/artifacts", {
+        ...input,
+        path: "a\u0000b.txt",
+      })
+    ).body.error.code
+  ).toBe("invalid_input");
+  // 작업 폴더 안을 가리키는 절대 경로는 받고, 원래 경로는 작업 폴더 기준으로 남긴다.
+  await writeFile(path.join(workspace.cwd, "절대.md"), "절대 경로 본문");
+  const absolute = await t.tool(request.access.token, "POST", "/artifacts", {
+    ...input,
+    path: path.join(workspace.cwd, "절대.md"),
+  });
+  expect(absolute.status).toBe(201);
+  expect(absolute.body).toMatchObject({
+    content: "절대 경로 본문",
+    file: { name: "절대.md", path: "절대.md" },
+  });
   await writeFile(
     path.join(workspace.cwd, "data.bin"),
     Buffer.from([0, 255, 1])
@@ -155,14 +198,12 @@ it("passes organization and personal folders, freezes files, replays across HTTP
     path.join(root, "outside.txt"),
     path.join(workspace.cwd, "hardlink.txt")
   );
-  expect(
-    (
-      await t.tool(request.access.token, "POST", "/artifacts", {
-        ...input,
-        path: "hardlink.txt",
-      })
-    ).status
-  ).toBe(422);
+  const hardlink = await t.tool(request.access.token, "POST", "/artifacts", {
+    ...input,
+    path: "hardlink.txt",
+  });
+  expect(hardlink.status).toBe(422);
+  expect(hardlink.body.error.code).toBe("hard_link_refused");
   await writeFile(path.join(workspace.cwd, "empty.txt"), "");
   const empty = await t.tool(request.access.token, "POST", "/artifacts", {
     ...input,
