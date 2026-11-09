@@ -138,7 +138,9 @@ it("passes organization and personal folders, freezes files, replays across HTTP
   for (const [invalid, code] of [
     // 작업 폴더(shared)에서 세 칸 올라가면 데이터 폴더의 outside.txt다.
     ["../../../outside.txt", "path_outside_folder"],
-    ["../outside.txt", "file_not_found"],
+    // 작업 폴더 밖은 거기 무엇이 있든 같은 응답이다(PR #131 리뷰 S1).
+    ["../outside.txt", "path_outside_folder"],
+    [path.join(root, "missing.txt"), "path_outside_folder"],
     [path.join(root, "outside.txt"), "path_outside_folder"],
     ["missing.txt", "file_not_found"],
     ["shared/보고서.md", "file_not_found"],
@@ -168,10 +170,17 @@ it("passes organization and personal folders, freezes files, replays across HTTP
     },
     { authorization: `Bearer ${request.access.token}` }
   );
+  const refusedHttp = await t.tool(request.access.token, "POST", "/artifacts", {
+    ...input,
+    path: "missing.txt",
+  });
   expect(refusedMcp.body.result.isError).toBe(true);
-  expect(refusedMcp.body.result.structuredContent.error.code).toBe(
-    "file_not_found"
-  );
+  // 코드와 안내 문장이 두 전송에서 같다(PR #131 리뷰 R1).
+  expect(refusedMcp.body.result.structuredContent).toEqual(refusedHttp.body);
+  expect(refusedHttp.body.error).toEqual({
+    code: "file_not_found",
+    message: expect.stringContaining("working directory"),
+  });
   // NUL이 든 경로는 파일 시스템에 닿기 전에 입력 계약에서 거부한다.
   expect(
     (

@@ -62,6 +62,7 @@ it("accepts an organizations folder kept on another disk through a link", async 
 });
 
 // 조직 폴더 자체가 다른 조직을 가리키면 그 안에서 경로를 비교해도 소용없다. 경계는 데이터 폴더에서 정한다.
+// 서버가 만든 폴더 배치가 어긋난 것이라 에이전트가 고칠 경로 문제가 아니다(PR #131 리뷰 S1).
 it.each(["shared", "."])(
   "refuses another organization's files when the organization's %s folder is replaced by a link",
   async (replaced) => {
@@ -84,8 +85,8 @@ it.each(["shared", "."])(
       await rm(path.dirname(shared), { recursive: true });
       await symlink(path.dirname(other), path.dirname(shared));
     }
-    expect(await read(root, "secret.md")).toEqual(
-      refusal("path_outside_folder")
+    await expect(read(root, "secret.md")).rejects.toThrow(
+      WorkspaceIdentityError
     );
   }
 );
@@ -215,4 +216,74 @@ it("accepts an absolute path inside the working folder and refuses one outside",
       path.join(linked, "organizations", org, "shared", "a.md")
     )
   ).toBe("내용");
+});
+
+// PR #131 리뷰 S1: 작업 폴더 밖은 그곳에 무엇이 있는지 보지 않고 거부한다. 있든 없든, 링크로 가리키든 같은 응답이다.
+it("refuses every path outside the working folder the same way, whether or not something is there", async () => {
+  const { root, shared } = await folder();
+  await writeFile(path.join(root, "outside.md"), "밖");
+  await mkdir(path.join(root, "outside-dir"));
+  const outside = [
+    "../../../outside.md",
+    "../../../missing.md",
+    "../workspace-identity.json",
+    "../nothing.md",
+    path.join(root, "outside.md"),
+    path.join(root, "missing.md"),
+    path.join(root, "missing-dir", "x.md"),
+  ];
+  for (const requested of outside)
+    expect(await read(root, requested), requested).toEqual(
+      refusal("path_outside_folder")
+    );
+  // 밖을 가리키는 링크도 대상이 있든 없든 같다. 폴더를 가리키는 링크를 거쳐도 같다.
+  await symlink(path.join(root, "outside.md"), path.join(shared, "to-file.md"));
+  await symlink(path.join(root, "missing.md"), path.join(shared, "to-none.md"));
+  await symlink(path.join(root, "outside-dir"), path.join(shared, "to-dir"));
+  await symlink("../../../missing-dir", path.join(shared, "to-none-dir"));
+  for (const requested of [
+    "to-file.md",
+    "to-none.md",
+    "to-dir/x.md",
+    "to-none-dir/x.md",
+  ])
+    expect(await read(root, requested), requested).toEqual(
+      refusal("path_outside_folder")
+    );
+});
+
+it("follows links that stay inside, including relative and chained ones", async () => {
+  const { root, shared } = await folder();
+  await mkdir(path.join(shared, "data", "deep"), { recursive: true });
+  await writeFile(path.join(shared, "data", "deep", "a.md"), "내용");
+  await symlink("data/deep", path.join(shared, "short"));
+  await symlink("short/a.md", path.join(shared, "chain.md"));
+  await symlink(path.join(shared, "chain.md"), path.join(shared, "abs.md"));
+  expect(await content(root, "short/a.md")).toBe("내용");
+  expect(await content(root, "abs.md")).toBe("내용");
+  // 남는 경로는 링크를 푼 실제 위치다.
+  expect(await read(root, "abs.md")).toMatchObject({
+    ok: true,
+    snapshot: { file: { path: path.join("data", "deep", "a.md") } },
+  });
+  // 링크가 가리키는 곳에 없는 파일은 그대로 없는 파일이다.
+  await symlink("data/none.md", path.join(shared, "dangling.md"));
+  expect(await read(root, "dangling.md")).toEqual(refusal("file_not_found"));
+});
+
+// PR #131 리뷰 P2: 돌고 도는 링크는 없는 파일이 아니라 링크 문제로 알린다.
+it("names a link loop", async () => {
+  const { root, shared } = await folder();
+  await symlink("b.md", path.join(shared, "a.md"));
+  await symlink("a.md", path.join(shared, "b.md"));
+  expect(await read(root, "a.md")).toEqual(refusal("link_loop"));
+  await symlink(".", path.join(shared, "self"));
+  expect(await read(root, "self/self/a.md")).toEqual(refusal("link_loop"));
+});
+
+it("treats a name too long for the file system as no file", async () => {
+  const { root } = await folder();
+  expect(await read(root, `${"가".repeat(200)}.md`)).toEqual(
+    refusal("file_not_found")
+  );
 });

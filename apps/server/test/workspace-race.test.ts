@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { pinnedReader, Workspaces } from "../src/workspace.ts";
+import { pinnedReader, readerExit, Workspaces } from "../src/workspace.ts";
 
 // 경로를 확인하는 사이에 폴더나 파일을 바꿔치기해도 다른 조직의 파일을 읽지 않는다.
 // 읽는 프로세스의 파일 작업 앞뒤 모든 시점에 바꿔치기(필요하면 원상 복구까지)를 넣어 본다.
@@ -64,6 +64,8 @@ const interrupt = `{
   process.chdir = (directory) => { tick(); chdir(directory); };
 }
 `;
+/** 거부한 시도의 종료 코드. 바꿔치기는 알려진 거부로만 끝나야 하며, 예상하지 못한 오류(`failed`)나 잡히지 않은 예외가 아니다. */
+const exits: unknown[] = [];
 const attempt = (cwd: string, plan: Record<string, unknown>) =>
   new Promise<string | null>((resolve) => {
     execFile(
@@ -82,7 +84,10 @@ const attempt = (cwd: string, plan: Record<string, unknown>) =>
           PLAN: JSON.stringify(plan),
         },
       },
-      (error, stdout) => resolve(error ? null : stdout)
+      (error, stdout) => {
+        if (error) exits.push(error.code);
+        resolve(error ? null : stdout);
+      }
     );
   });
 
@@ -134,6 +139,11 @@ it.each([
     // 시험이 헛돌지 않았는지 본다. 일부는 거부되고, 일부는 고정된 뒤라 원래 내용을 읽는다.
     expect(results).toContain(null);
     expect(results).toContain("MINE");
+    const known: unknown[] = Object.values(readerExit).filter(
+      (code) => code !== readerExit.failed
+    );
+    expect(exits.filter((code) => !known.includes(code))).toEqual([]);
+    exits.length = 0;
   },
   240_000
 );
