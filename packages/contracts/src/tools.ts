@@ -27,6 +27,7 @@ import { resultSubmissionSchema, submitResultInputSchema } from "./result.ts";
 import {
   addTaskCommentInputSchema,
   agentToAgentMessageSchema,
+  artifactFileRefusals,
   artifactSchema,
   completeTaskInputSchema,
   createTaskInputSchema,
@@ -372,7 +373,7 @@ export const orgTools = {
   }),
   record_artifact: orgTool({
     description:
-      "Records an artifact on a task of this organization and returns it. Artifacts hold the evidence that `complete_task` reports and `submit_result` cites. Refused with `not_found` when the task is not in this organization.",
+      "Records an artifact on a task of this organization and returns it. Artifacts hold the evidence that `complete_task` reports and `submit_result` cites. Refused with `not_found` when the task is not in this organization. A file path is refused with a code that names the reason, with a `message` on how to fix it: `file_not_found`, `path_outside_folder`, `not_regular_file`, `file_too_large`, `hard_link_refused`, `file_changed` or `file_unreadable`.",
     method: "POST",
     path: "/artifacts",
     params: {},
@@ -382,7 +383,7 @@ export const orgTools = {
       title: "Artifact title.",
       format: "`markdown` or `text`. The content is stored as is.",
       content: "The full artifact content. Omit when registering a file.",
-      path: "Path relative to the organization folder of an existing regular file (max 10 MiB). Registers an immutable copy. Omit format and content when using path; symlinks are refused.",
+      path: "Path of an existing regular file in your working directory (where your shell starts), relative to it or absolute (max 10 MiB). Registers an immutable copy. Links are followed while they stay inside the working directory. Omit format and content when using path.",
     },
     ownerFacing: ["title", "content"],
     output: artifactSchema,
@@ -727,6 +728,7 @@ export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
  * 답장(`send_message`)의 대화가 같은 조직에 없으면 404 `not_found`, 여러 대화의 사용자 메시지를 받은 실행 시도가 대화를 고르지 않으면 422 `invalid_input`.
  * 초기 연구 승인 요청의 완료 기준: 조직에 완료 기준이 없는데 제안하지 않으면 422 `completion_criteria_required`,
  * 조직에 이미 완료 기준이 있는데 완료 기준을 함께 내면 409 `completion_criteria_set`.
+ * `record_artifact`의 파일 경로 거부는 422에 이유를 그대로 코드로 쓰고(`file_not_found` …) 에이전트용 `message`를 붙인다.
  */
 export const orgToolErrorCodes = [
   "invalid_token",
@@ -748,8 +750,28 @@ export const orgToolErrorCodes = [
   "completion_criteria_set",
   "unknown_provider",
   "unknown_model",
+  ...artifactFileRefusals,
 ] as const;
 export type OrgToolErrorCode = (typeof orgToolErrorCodes)[number];
 export const orgToolErrorSchema = z.object({
-  error: z.object({ code: z.enum(orgToolErrorCodes) }),
+  error: z.object({
+    code: z.enum(orgToolErrorCodes),
+    message: z.string().optional(),
+  }),
 });
+
+/** 거부 응답에 붙는 에이전트용 안내. 에이전트가 고칠 방법을 담는다. */
+export const orgToolErrorMessages: Partial<Record<OrgToolErrorCode, string>> = {
+  file_not_found:
+    "No file exists at this path. Paths are relative to your working directory (where your shell starts) or absolute; do not prefix the working directory's own folder name.",
+  path_outside_folder:
+    "The path resolves outside your working directory. Only files inside it, including through links that stay inside it, can be registered.",
+  not_regular_file:
+    "The path is not a regular file (for example, it is a directory).",
+  file_too_large: "The file is larger than 10 MiB.",
+  hard_link_refused:
+    "The file has more than one hard link. Copy it to a new file and register the copy.",
+  file_changed:
+    "The file or a folder on its path changed while it was being read. Register it again after it stops changing.",
+  file_unreadable: "The file could not be read because of its permissions.",
+};

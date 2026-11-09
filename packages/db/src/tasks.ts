@@ -1,6 +1,9 @@
 import type {
   AgentToAgentMessage,
   Artifact,
+  ArtifactFileRead,
+  ArtifactFileRefusal,
+  ArtifactSnapshot,
   ArtifactSummary,
   CreateTaskInput,
   RecordArtifactInput,
@@ -206,16 +209,18 @@ export function recordArtifact(
     readFile?: (
       organizationId: string,
       path: string
-    ) => Promise<import("@babojubot/contracts").ArtifactSnapshot>;
+    ) => Promise<ArtifactFileRead>;
   }
-): Promise<ToolWrite<Artifact, "not_found">> {
+): Promise<ToolWrite<Artifact, "not_found" | ArtifactFileRefusal>> {
   return toolWrite(db, run, "record_artifact", call, async (tx, locked) => {
     if (!(await selectTask(tx, locked.organizationId, input.taskId)))
       return { kind: "invalid", problem: "not_found" };
-    const snapshot =
-      input.path !== undefined
-        ? await readFile!(locked.organizationId, input.path)
-        : undefined;
+    let snapshot: ArtifactSnapshot | undefined;
+    if (input.path !== undefined) {
+      const read = await readFile!(locked.organizationId, input.path);
+      if (!read.ok) return { kind: "invalid", problem: read.refusal };
+      snapshot = read.snapshot;
+    }
     const plan = planArtifactRecord(
       locked,
       {

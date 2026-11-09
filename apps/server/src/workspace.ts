@@ -11,6 +11,8 @@ import {
 import path from "node:path";
 import {
   artifactFileMaxBytes,
+  type ArtifactFileRead,
+  type ArtifactFileRefusal,
   type ArtifactSnapshot,
   type RunRequest,
 } from "@babojubot/contracts";
@@ -21,10 +23,32 @@ import {
   type Database,
 } from "@babojubot/db";
 
-export class ArtifactFileError extends Error {}
-
 const identityFile = "workspace-identity.json";
 const identityMaxBytes = 4096;
+
+/** 고정한 폴더에서 읽는 프로세스가 거부를 알리는 종료 코드. */
+const readerExit = {
+  changed: 3,
+  notFile: 4,
+  tooLarge: 5,
+  hardLink: 6,
+  identity: 7,
+  notFound: 8,
+  unreadable: 9,
+} as const;
+
+/** 거부 종료 코드 → 거부 이유. 표식 불일치는 거부가 아니라 서버 쪽 문제라 따로 던진다. */
+const readerRefusals: Record<number, ArtifactFileRefusal> = {
+  [readerExit.changed]: "file_changed",
+  [readerExit.notFile]: "not_regular_file",
+  [readerExit.tooLarge]: "file_too_large",
+  [readerExit.hardLink]: "hard_link_refused",
+  [readerExit.notFound]: "file_not_found",
+  [readerExit.unreadable]: "file_unreadable",
+};
+
+type PinnedRead =
+  { ok: true; bytes: Buffer } | { ok: false; refusal: ArtifactFileRefusal };
 
 /** 조직 폴더가 이 조직의 것이라고 확인되지 않았다. 다른 조직의 폴더를 잘못 쓰지 않도록 실행을 멈춘다. */
 export class WorkspaceIdentityError extends Error {}
@@ -52,20 +76,21 @@ const stat = { bigint: true };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const enter = (part) => {
   const expected = fs.lstatSync(part, stat);
-  if (!expected.isDirectory()) process.exit(3);
+  if (!expected.isDirectory()) process.exit(${readerExit.changed});
   process.chdir(part);
-  if (!same(expected, fs.statSync(".", stat))) process.exit(3);
+  if (!same(expected, fs.statSync(".", stat))) process.exit(${readerExit.changed});
 };
-const open = (name, limit) => {
+const open = (name, limit, notFileExit, changedExit, tooLargeExit) => {
   const expected = fs.lstatSync(name, stat);
-  if (!expected.isFile()) process.exit(3);
+  if (!expected.isFile()) process.exit(notFileExit);
   const fd = fs.openSync(
     name,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
   );
   const opened = fs.fstatSync(fd, stat);
-  if (!same(expected, opened) || !opened.isFile() || opened.size > BigInt(limit))
-    process.exit(3);
+  if (!same(expected, opened) || !opened.isFile())
+    process.exit(changedExit);
+  if (opened.size > BigInt(limit)) process.exit(tooLargeExit);
   return { fd, opened };
 };
 const read = ({ fd, opened }) => {
@@ -78,22 +103,41 @@ const read = ({ fd, opened }) => {
   }
   return buffer.subarray(0, length);
 };
-enter(organizationId);
+const fail = (error) => {
+  process.exit(
+    error && (error.code === "ENOENT" || error.code === "ENOTDIR")
+      ? ${readerExit.notFound}
+      : error && (error.code === "EACCES" || error.code === "EPERM")
+        ? ${readerExit.unreadable}
+        : error && error.code === "ELOOP"
+          ? ${readerExit.changed}
+          : ${readerExit.unreadable}
+  );
+};
+try {
+  enter(organizationId);
+} catch (error) {
+  fail(error);
+}
 let claimed;
 try {
-  claimed = JSON.parse(read(open(${JSON.stringify(identityFile)}, ${identityMaxBytes})).toString("utf8"))?.organizationId;
+  claimed = JSON.parse(read(open(${JSON.stringify(identityFile)}, ${identityMaxBytes}, ${readerExit.identity}, ${readerExit.identity}, ${readerExit.identity})).toString("utf8"))?.organizationId;
 } catch {
-  process.exit(3);
+  process.exit(${readerExit.identity});
 }
-if (claimed !== organizationId) process.exit(3);
-const name = parts.pop();
-for (const part of parts) enter(part);
-const file = open(name, maxBytes);
-if (file.opened.nlink !== 1n) process.exit(3);
-process.stdout.write(read(file));
+if (claimed !== organizationId) process.exit(${readerExit.identity});
+try {
+  const name = parts.pop();
+  for (const part of parts) enter(part);
+  const file = open(name, maxBytes, ${readerExit.notFile}, ${readerExit.changed}, ${readerExit.tooLarge});
+  if (file.opened.nlink !== 1n) process.exit(${readerExit.hardLink});
+  process.stdout.write(read(file));
+} catch (error) {
+  fail(error);
+}
 `;
-function readPinned(start: string, parts: string[]) {
-  return new Promise<Buffer>((resolve, reject) => {
+function readPinned(start: string, parts: string[]): Promise<PinnedRead> {
+  return new Promise<PinnedRead>((resolve, reject) => {
     execFile(
       process.execPath,
       ["-e", pinnedReader, JSON.stringify([artifactFileMaxBytes, ...parts])],
@@ -109,12 +153,20 @@ function readPinned(start: string, parts: string[]) {
         windowsHide: true,
       },
       (error, stdout) => {
-        if (!error) resolve(stdout);
+        if (!error) return resolve({ ok: true, bytes: stdout });
         // 끝난 코드가 있으면 읽기를 거부한 것이고, 없으면 띄우지 못했거나 시간이 넘은 서버 쪽 문제다.
-        else
-          reject(
-            typeof error.code === "number" ? new ArtifactFileError() : error
+        const code = error.code;
+        if (typeof code !== "number") return reject(error);
+        if (code === readerExit.identity)
+          return reject(
+            new WorkspaceIdentityError(
+              "조직 폴더의 표식이 이 조직과 맞지 않아 파일을 읽지 않았습니다. 조직 폴더가 옮겨지거나 바뀌었는지 확인해 주세요."
+            )
           );
+        resolve({
+          ok: false,
+          refusal: readerRefusals[code] ?? "file_unreadable",
+        });
       }
     );
   });
@@ -204,67 +256,84 @@ export class Workspaces {
         })),
     };
   }
+  /**
+   * 조직 폴더 안의 파일을 읽어 산출물로 만들 내용을 돌려준다. 경로는 에이전트의 작업 폴더(`forRun`의 `cwd`) 기준이거나
+   * 절대 경로다. 거부하면 그 이유를 돌려주고, 조직 폴더의 표식이 이 조직과 맞지 않으면 `WorkspaceIdentityError`를 던진다.
+   */
   async readArtifact(
     orgId: string,
-    relative: string
-  ): Promise<ArtifactSnapshot> {
+    requested: string
+  ): Promise<ArtifactFileRead> {
+    // 실제 경로로 비교한다. 조직들을 담은 폴더까지는 링크를 거쳐도 되지만, 조직 폴더 자체가 다른 곳을 가리키면 여기서 벗어난 경로로 나온다.
+    const organizations = await realpath(
+      path.resolve(this.root, "organizations")
+    );
+    const root = path.join(organizations, orgId, "shared");
+    const working = this.organization(orgId);
+    const resolved = path.resolve(working, requested);
+    let target = resolved;
     try {
-      if (path.isAbsolute(relative) || relative.includes("\0"))
-        throw new ArtifactFileError();
-      // 실제 경로로 비교한다. 조직들을 담은 폴더까지는 링크를 거쳐도 되지만, 조직 폴더 자체가 다른 곳을 가리키면 여기서 벗어난 경로로 나온다.
-      const organizations = await realpath(
-        path.resolve(this.root, "organizations")
-      );
-      const root = path.join(organizations, orgId, "shared");
-      const target = await realpath(path.resolve(root, relative));
-      const normalized = path.relative(root, target);
-      if (
-        !normalized ||
-        normalized === ".." ||
-        normalized.startsWith(`..${path.sep}`) ||
-        path.isAbsolute(normalized)
-      )
-        throw new ArtifactFileError();
-      const bytes = await readPinned(organizations, [
-        orgId,
-        "shared",
-        ...normalized.split(path.sep),
-      ]);
-      const extension = path.extname(target).toLowerCase();
-      let content = "";
-      let format: ArtifactSnapshot["format"] = "binary";
-      const binaryTypes: Record<string, string> = {
-        ".pdf": "application/pdf",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".zip": "application/zip",
-        ".svg": "image/svg+xml",
-        ".html": "text/html",
-      };
-      let mediaType = binaryTypes[extension] ?? "application/octet-stream";
-      const textTypes: Record<string, string> = {
-        ".md": "text/markdown",
-        ".markdown": "text/markdown",
-        ".txt": "text/plain",
-        ".csv": "text/csv",
-        ".json": "application/json",
-        ".log": "text/plain",
-        ".tsv": "text/tab-separated-values",
-      };
-      if (textTypes[extension]) {
-        try {
-          const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-          if (!text.includes("\0")) {
-            content = text;
-            mediaType = textTypes[extension]!;
-            format = mediaType === "text/markdown" ? "markdown" : "text";
-          }
-        } catch {
-          /* Invalid UTF-8 remains a binary artifact. */
+      target = await realpath(resolved);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EACCES" || code === "EPERM")
+        return { ok: false, refusal: "file_unreadable" };
+      if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP")
+        return { ok: false, refusal: "file_not_found" };
+      throw error;
+    }
+    const normalized = path.relative(root, target);
+    if (!normalized) return { ok: false, refusal: "not_regular_file" };
+    if (
+      normalized === ".." ||
+      normalized.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(normalized)
+    )
+      return { ok: false, refusal: "path_outside_folder" };
+    const read = await readPinned(organizations, [
+      orgId,
+      "shared",
+      ...normalized.split(path.sep),
+    ]);
+    if (!read.ok) return read;
+    const bytes = read.bytes;
+    const extension = path.extname(target).toLowerCase();
+    let content = "";
+    let format: ArtifactSnapshot["format"] = "binary";
+    const binaryTypes: Record<string, string> = {
+      ".pdf": "application/pdf",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".zip": "application/zip",
+      ".svg": "image/svg+xml",
+      ".html": "text/html",
+    };
+    let mediaType = binaryTypes[extension] ?? "application/octet-stream";
+    const textTypes: Record<string, string> = {
+      ".md": "text/markdown",
+      ".markdown": "text/markdown",
+      ".txt": "text/plain",
+      ".csv": "text/csv",
+      ".json": "application/json",
+      ".log": "text/plain",
+      ".tsv": "text/tab-separated-values",
+    };
+    if (textTypes[extension]) {
+      try {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        if (!text.includes("\0")) {
+          content = text;
+          mediaType = textTypes[extension]!;
+          format = mediaType === "text/markdown" ? "markdown" : "text";
         }
+      } catch {
+        /* Invalid UTF-8 remains a binary artifact. */
       }
-      return {
+    }
+    return {
+      ok: true,
+      snapshot: {
         format,
         content,
         file: {
@@ -274,17 +343,8 @@ export class Workspaces {
           size: bytes.length,
         },
         bytes: bytes.toString("base64"),
-      };
-    } catch (error) {
-      if (
-        error instanceof ArtifactFileError ||
-        (error instanceof Error &&
-          "code" in error &&
-          ["ENOENT", "ELOOP", "ENOTDIR", "EACCES"].includes(String(error.code)))
-      )
-        throw new ArtifactFileError("invalid artifact file");
-      throw error;
-    }
+      },
+    };
   }
 }
 

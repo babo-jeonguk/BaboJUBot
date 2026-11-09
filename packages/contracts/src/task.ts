@@ -58,7 +58,12 @@ export const recordArtifactInputSchema = z
     title: text(artifactTitleMaxLength),
     format: z.enum(["markdown", "text"]).optional(),
     content: z.string().min(1).max(artifactContentMaxLength).optional(),
-    path: z.string().min(1).max(4096).optional(),
+    path: z
+      .string()
+      .min(1)
+      .max(4096)
+      .regex(/^[^\0]*$/)
+      .optional(),
   })
   .refine(
     (input) =>
@@ -68,6 +73,21 @@ export const recordArtifactInputSchema = z
     "Provide either path or format and content"
   );
 export const artifactFileMaxBytes = 10 * 1024 * 1024;
+/** 파일 산출물 등록을 거부한 이유. 에이전트가 경로를 스스로 고칠 수 있도록 이유마다 따로 둔다. */
+export const artifactFileRefusals = [
+  "file_not_found",
+  "path_outside_folder",
+  "not_regular_file",
+  "file_too_large",
+  "hard_link_refused",
+  "file_changed",
+  "file_unreadable",
+] as const;
+export type ArtifactFileRefusal = (typeof artifactFileRefusals)[number];
+/** 조직 폴더에서 파일을 읽은 결과. */
+export type ArtifactFileRead =
+  | { ok: true; snapshot: ArtifactSnapshot }
+  | { ok: false; refusal: ArtifactFileRefusal };
 export const artifactFileSchema = z.object({
   name: z.string(),
   path: z.string(),
