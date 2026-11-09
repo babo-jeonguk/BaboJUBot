@@ -21,6 +21,7 @@ type Safety =
  * 확인은 한 번 하고 결과를 나눠 쓰며 준비 확인을 다시 할 때 새로 한다. 확인을 통과하지 않으면 실제 연결은
  * 준비안됨이고 실행 시도는 컨테이너에서도 이 컴퓨터에서도 시작하지 않는다.
  * 조직 도구 listener는 관문이 하나만 가지며 겹친 확인이 나눠 쓴다. 닫으면 진행 중인 확인을 끝내고 listener를 닫으며 그 뒤로는 확인하지 않는다(격리 환경 없음).
+ * Windows는 Docker 격리를 지원하지 않으므로 격리를 켜면 실제 연결은 준비안됨(격리 환경 없음)이고 실행 시도는 이 컴퓨터에서도 시작하지 않는다.
  */
 export class IsolationGate {
   readonly #docker: DockerEnvironment | undefined;
@@ -29,6 +30,8 @@ export class IsolationGate {
   readonly #readIsolated: () => Promise<boolean>;
   readonly #hostUrl: () => string;
   readonly #timeoutMs: number;
+  /** 이 컴퓨터의 운영체제가 Windows인지. Windows는 Docker 격리를 지원하지 않는다. */
+  readonly #windows: boolean;
   /** 관문의 수명. 닫으면 진행 중인 확인을 끝내고 새 확인·listener를 열지 않는다. */
   readonly #lifetime = new AbortController();
   #current: Promise<Safety> | undefined;
@@ -51,6 +54,8 @@ export class IsolationGate {
     hostUrl: () => string;
     /** 안전 확인 한 번의 시한. 넘으면 격리 환경 없음이다. 기본 60초. */
     timeoutMs?: number;
+    /** 이 컴퓨터의 운영체제. Windows는 Docker 격리를 지원하지 않아 격리 환경 없음으로 둔다(docs/providers.md 격리 실행). 기본 process.platform. */
+    platform?: NodeJS.Platform;
   }) {
     this.#docker = options.docker;
     this.#toolsApp = options.toolsApp;
@@ -58,6 +63,7 @@ export class IsolationGate {
     this.#readIsolated = options.readIsolated;
     this.#hostUrl = options.hostUrl;
     this.#timeoutMs = options.timeoutMs ?? 60_000;
+    this.#windows = (options.platform ?? process.platform) === "win32";
   }
 
   check(): Promise<Safety> {
@@ -97,7 +103,7 @@ export class IsolationGate {
   /** 확인의 결과는 시한 안에, 또는 관문을 닫으면 바로 정한다. Docker가 늦게 끝내는 일(시험 컨테이너 제거 등)을 기다리지 않는다. */
   async #probe(): Promise<Safety> {
     const docker = this.#docker;
-    if (!docker || this.#lifetime.signal.aborted)
+    if (!docker || this.#windows || this.#lifetime.signal.aborted)
       return { status: "unavailable" };
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;

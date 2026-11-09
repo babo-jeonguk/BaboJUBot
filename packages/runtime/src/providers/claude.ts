@@ -293,11 +293,17 @@ async function executeClaude(
       typeof request.previousSession?.id === "string"
         ? await claudeSessionCost(home, request.previousSession.id)
         : undefined;
-    let completed = false,
+    let hasResult = false,
       ready = false,
       compacting = false,
       compactBoundary = false,
       sessionId: string | undefined;
+    // Claude가 마지막으로 알린 살아 있는 백그라운드 일의 수(ambient 제외). 시작·끝 신호를 짝짓지 않고 이 목록을 그대로 쓴다.
+    let background = 0;
+    let inputTokens: number | null = null,
+      outputTokens: number | null = null,
+      cacheReadTokens: number | null = null,
+      cacheWriteTokens: number | null = null;
     /** Claude's saved cost to subtract for this run; undefined means unknown. */
     const baseline = (): ClaudeSessionCost | undefined => {
       if (
@@ -323,7 +329,7 @@ async function executeClaude(
       env: await withLogin(folders.connection, env),
       container: launch,
       onFrame: async (raw) => {
-        if (!raw || typeof raw !== "object" || completed) return;
+        if (!raw || typeof raw !== "object") return;
         const frame = raw as Record<string, unknown>;
         if (
           frame.type === "system" &&
@@ -335,23 +341,48 @@ async function executeClaude(
           compacting = frame.status === "compacting";
         if (frame.type === "system" && frame.subtype === "init") {
           clearTimeout(startup);
+          // 백그라운드 일을 마친 뒤의 턴도 init을 다시 낸다. 실행 시도의 시작은 한 번만 알린다.
+          const started = !ready;
           ready = true;
           if (typeof frame.session_id === "string")
             sessionId = frame.session_id;
-          await control.emit({
-            type: "progress",
-            text: "프로바이더가 작업을 시작했습니다.",
-          });
+          if (started)
+            await control.emit({
+              type: "progress",
+              text: "프로바이더가 작업을 시작했습니다.",
+            });
         }
+        if (
+          frame.type === "system" &&
+          frame.subtype === "background_tasks_changed" &&
+          Array.isArray(frame.tasks)
+        )
+          background = frame.tasks.filter(
+            (task) =>
+              !task ||
+              typeof task !== "object" ||
+              (task as Record<string, unknown>).ambient !== true
+          ).length;
         if (frame.type !== "result") return;
-        completed = true;
         // result 프레임의 세션 ID가 init보다 우선한다.
         if (typeof frame.session_id === "string") sessionId = frame.session_id;
         const usage = frame.usage as Record<string, unknown> | undefined;
         const number = (n: unknown) =>
           typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+        // 스트리밍 입력 모드에서 usage는 턴마다이고 total_cost_usd는 이어 간 세션까지 포함한 누계다.
         const total = number(frame.total_cost_usd);
         const sessionBaseline = baseline();
+        const add = (current: number | null, n: unknown) => {
+          const value = number(n);
+          return value === null ? current : (current ?? 0) + value;
+        };
+        inputTokens = add(inputTokens, usage?.input_tokens);
+        outputTokens = add(outputTokens, usage?.output_tokens);
+        cacheReadTokens = add(cacheReadTokens, usage?.cache_read_input_tokens);
+        cacheWriteTokens = add(
+          cacheWriteTokens,
+          usage?.cache_creation_input_tokens
+        );
         // 실제 프로그램은 오류에도 subtype을 success로 낸다.
         const success = frame.subtype === "success" && frame.is_error !== true;
         result = {
@@ -359,10 +390,10 @@ async function executeClaude(
           error: success ? null : "프로바이더 실행이 실패했습니다.",
           summary: null,
           usage: {
-            inputTokens: number(usage?.input_tokens),
-            outputTokens: number(usage?.output_tokens),
-            cacheReadTokens: number(usage?.cache_read_input_tokens),
-            cacheWriteTokens: number(usage?.cache_creation_input_tokens),
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
             costUsd:
               total === null ||
               sessionBaseline === undefined ||
@@ -389,7 +420,16 @@ async function executeClaude(
             saysLoginProblem(frame.result))
         )
           result.errorCode = "login_required";
-        process.end();
+        if (!hasResult) {
+          hasResult = true;
+          // 입력을 닫으면 더 보낼 턴이 없다고 알린다. Claude는 기다리던 백그라운드 작업을 마치고 그 결과로 한 턴 더 한 뒤 스스로 끝나며, 프로세스 종료가 실행 시도를 끝낸다.
+          process.endInput();
+        }
+        if (background > 0)
+          await control.emit({
+            type: "progress",
+            text: "백그라운드 작업이 끝나기를 기다립니다.",
+          });
       },
     });
     const startup = setTimeout(() => process.end(), startupLimitMs);
@@ -397,7 +437,7 @@ async function executeClaude(
       active.set(request.runId, (message) => {
         if (
           !ready ||
-          completed ||
+          hasResult ||
           compacting ||
           control.signal.aborted ||
           process.closed ||
@@ -456,6 +496,14 @@ async function executeClaude(
           error: null,
           usage: await savedUsage(),
         };
+      // Claude가 마지막으로 알린 살아 있는 백그라운드 일이 남은 채 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않고 세션도 저장하지 않지만, 이미 보고된 사용량과 로그인 판정은 남긴다.
+      if (background > 0)
+        return {
+          ...result,
+          stopReason: "failed",
+          error: "백그라운드 작업이 끝나기 전에 프로바이더가 종료했습니다.",
+          nextSession: null,
+        };
       // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
       if (
         !ready &&
@@ -474,7 +522,7 @@ async function executeClaude(
           connection
         );
       }
-      if (!completed) return { ...failed(), usage: await savedUsage() };
+      if (!hasResult) return { ...failed(), usage: await savedUsage() };
       if (
         maintenance &&
         (!compactBoundary ||

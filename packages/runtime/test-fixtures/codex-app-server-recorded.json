@@ -43,9 +43,7 @@
             {
               "environmentId": "<masked>",
               "cwd": "<masked>",
-              "runtimeWorkspaceRoots": [
-                "<masked>"
-              ]
+              "runtimeWorkspaceRoots": ["<masked>"]
             }
           ],
           "extra": null,

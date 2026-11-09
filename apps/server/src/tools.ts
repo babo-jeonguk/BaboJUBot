@@ -1,4 +1,4 @@
-import { ArtifactFileError, type Workspaces } from "./workspace.ts";
+import type { Workspaces } from "./workspace.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
   explicitProposedChoice,
@@ -6,6 +6,7 @@ import {
   idempotencyKeySchema,
   isOrgToolRead,
   memoryRecallLimitDefault,
+  orgToolErrorMessages,
   orgToolNames,
   orgTools,
   type OrgToolErrorCode,
@@ -170,7 +171,14 @@ export function orgToolsRouter({
 
   const failure = (status: number, code: OrgToolErrorCode): ToolResponse => ({
     status,
-    value: { error: { code } },
+    value: {
+      error: {
+        code,
+        ...(orgToolErrorMessages[code]
+          ? { message: orgToolErrorMessages[code] }
+          : {}),
+      },
+    },
   });
   const refuseByRule = (reason: ToolRefusalReason) =>
     reason === "role"
@@ -352,22 +360,16 @@ export function orgToolsRouter({
         })
       );
     },
-    async record_artifact(input, { run, call, write, refuse }) {
-      try {
-        await write(
-          await recordArtifact(db, run, input, {
-            source,
-            readFile: (org, path) => workspaces.readArtifact(org, path),
-            ...call(
-              `산출물 기록: ${quote(input.title)} (${input.path ? "파일" : `${input.format}, ${chars(input.content!)}자`})`
-            ),
-          })
-        );
-      } catch (error) {
-        if (error instanceof ArtifactFileError)
-          return refuse(422, "invalid_input");
-        throw error;
-      }
+    async record_artifact(input, { run, call, write }) {
+      await write(
+        await recordArtifact(db, run, input, {
+          source,
+          readFile: (org, path) => workspaces.readArtifact(org, path),
+          ...call(
+            `산출물 기록: ${quote(input.title)} (${input.path ? "파일" : `${input.format}, ${chars(input.content!)}자`})`
+          ),
+        })
+      );
     },
     async get_artifact({ artifactId }, { run, refuse, read }) {
       const artifact = await findArtifact(db, run.organizationId, artifactId);
