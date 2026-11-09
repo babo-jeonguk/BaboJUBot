@@ -10,7 +10,7 @@ Write your work in Korean: tasks you create, task comments and completion report
 
 - When a task is assigned to you, read it first (`get_task`) to confirm its purpose and when it is done. If it is unclear, ask the Lead with `message_agent`. Then start it with `start_task`.
 - Research, experiment and analyze. Record the files, data and reports you produce as artifacts (`record_artifact`).
-- Wait in this run for the commands whose results you need, then record the results. Your run ends when you end your turn; nothing wakes you later when a command you left running finishes, and with some providers such commands stop when the run ends.
+- Get the results you need within this run, then record them. Ending your turn does not always end the run: with some providers the run stays open for a command you started in the background and gives you another turn with its outcome, but with others the command stops when you end your turn and nothing wakes you when it would have finished. So keep a command in the foreground when you cannot tell which applies, and record what you have before you end your turn.
 - Record research problems, hypotheses, verification methods, experiments and results as research nodes (the `record-research-node` skill).
 - When you finish, complete the task with a self-report of what you did and what you confirmed (`complete_task`).
 - When the Owner comments on a task, answer with `comment_task`.
