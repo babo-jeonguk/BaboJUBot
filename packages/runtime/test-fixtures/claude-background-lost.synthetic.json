@@ -1,0 +1,61 @@
+{
+  "provenance": "Synthetic protocol example; not a model recording. Frame shape follows the reviewed recording claude-background-recorded.json. The program exits after the first result while a background command it started is still in Claude's live background task list (PR #130 review SPEC-01).",
+  "steps": [
+    {
+      "input": {
+        "type": "user",
+        "message": {
+          "role": "user"
+        }
+      }
+    },
+    {
+      "frame": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "session-bg"
+      }
+    },
+    {
+      "frame": {
+        "type": "system",
+        "subtype": "background_tasks_changed",
+        "tasks": [
+          {
+            "task_id": "bash-1",
+            "task_type": "local_bash",
+            "description": "train"
+          }
+        ]
+      }
+    },
+    {
+      "frame": {
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": "bash-1",
+        "task_type": "local_bash",
+        "is_backgrounded": true,
+        "description": "train"
+      }
+    },
+    {
+      "frame": {
+        "type": "result",
+        "subtype": "success",
+        "session_id": "session-bg",
+        "total_cost_usd": 0.01,
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 3
+        }
+      }
+    },
+    {
+      "inputEnd": true
+    },
+    {
+      "exit": 1
+    }
+  ]
+}

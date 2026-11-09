@@ -31,6 +31,12 @@ for (const step of recording.steps) {
     if (line.done || !matches(JSON.parse(line.value), step.input))
       process.exit(23);
   }
+  // 입력이 닫히기를 기다린다. 닫히지 않고 다른 줄이 오면 실패한다.
+  if (step.inputEnd) {
+    const line = await input.next();
+    if (!line.done) process.exit(26);
+  }
+  if (step.sleepMs) await new Promise((r) => setTimeout(r, step.sleepMs));
   if (step.stdout !== undefined) process.stdout.write(step.stdout);
   if (step.frame) process.stdout.write(JSON.stringify(step.frame) + "\n");
   if (step.exit !== undefined) process.exit(step.exit);
