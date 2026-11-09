@@ -14,4 +14,13 @@ if (!name) {
   console.error("Usage: pnpm provider:login <connection> [--home <folder>]");
   process.exit(2);
 }
-await runLogin(createConnection(name, { dataDir }));
+try {
+  await runLogin(createConnection(name, { dataDir }));
+} catch (error) {
+  if (error?.name === "AbortError") {
+    console.error("Login cancelled.");
+    process.exitCode = 130;
+  } else {
+    throw error;
+  }
+}
