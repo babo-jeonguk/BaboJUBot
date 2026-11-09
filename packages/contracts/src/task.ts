@@ -77,6 +77,7 @@ export const artifactFileMaxBytes = 10 * 1024 * 1024;
 export const artifactFileRefusals = [
   "file_not_found",
   "path_outside_folder",
+  "link_loop",
   "not_regular_file",
   "file_too_large",
   "hard_link_refused",

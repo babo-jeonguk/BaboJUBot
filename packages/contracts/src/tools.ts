@@ -373,7 +373,7 @@ export const orgTools = {
   }),
   record_artifact: orgTool({
     description:
-      "Records an artifact on a task of this organization and returns it. Artifacts hold the evidence that `complete_task` reports and `submit_result` cites. Refused with `not_found` when the task is not in this organization. A file path is refused with a code that names the reason, with a `message` on how to fix it: `file_not_found`, `path_outside_folder`, `not_regular_file`, `file_too_large`, `hard_link_refused`, `file_changed` or `file_unreadable`.",
+      "Records an artifact on a task of this organization and returns it. Artifacts hold the evidence that `complete_task` reports and `submit_result` cites. Refused with `not_found` when the task is not in this organization. A file path is refused with a code that names the reason, with a `message` on how to fix it: `file_not_found`, `path_outside_folder`, `link_loop`, `not_regular_file`, `file_too_large`, `hard_link_refused`, `file_changed` or `file_unreadable`.",
     method: "POST",
     path: "/artifacts",
     params: {},
@@ -765,7 +765,9 @@ export const orgToolErrorMessages: Partial<Record<OrgToolErrorCode, string>> = {
   file_not_found:
     "No file exists at this path. Paths are relative to your working directory (where your shell starts) or absolute; do not prefix the working directory's own folder name.",
   path_outside_folder:
-    "The path resolves outside your working directory. Only files inside it, including through links that stay inside it, can be registered.",
+    "The path leaves your working directory. Only files inside it can be registered, including through links that stay inside it; nothing outside is looked at.",
+  link_loop:
+    "The path goes through links that point back to each other. Fix or remove the links and register the file itself.",
   not_regular_file:
     "The path is not a regular file (for example, it is a directory).",
   file_too_large: "The file is larger than 10 MiB.",

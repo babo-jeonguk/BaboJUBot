@@ -49,6 +49,7 @@ export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
     idempotency_conflict: ["idempotency_conflict", 409],
     file_not_found: ["file_not_found", 422],
     path_outside_folder: ["path_outside_folder", 422],
+    link_loop: ["link_loop", 422],
     not_regular_file: ["not_regular_file", 422],
     file_too_large: ["file_too_large", 422],
     hard_link_refused: ["hard_link_refused", 422],
