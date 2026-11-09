@@ -86,6 +86,8 @@ const [maxBytes, organizationId, requested, working, real] = JSON.parse(process.
 const stat = { bigint: true };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const windows = path.sep === "\\\\";
+/** Windows는 경로의 ".."를 글자로 줄여 연다(Win32). 같은 파일을 고르도록 Windows에서만 같은 규칙을 따른다. */
+const lexical = (value) => (windows ? path.normalize(value) : value);
 const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
 /** Names of a path, without empty names or ".". ".." stays where it is. */
 const names = (value) => value.split(separator).filter((name) => name !== "" && name !== ".");
@@ -93,7 +95,7 @@ const sameName = windows ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b
 const inside = (absolute) => {
   const target =
     windows && absolute.startsWith("\\\\\\\\?\\\\") ? absolute.slice(4) : absolute;
-  const given = names(target);
+  const given = names(lexical(target));
   for (const base of [working, real]) {
     const prefix = names(base);
     if (
@@ -203,7 +205,7 @@ try {
     const fromRoot = inside(requested);
     if (!fromRoot) process.exit(${readerExit.outside});
     pending = fromRoot;
-  } else pending = requested.split(separator);
+  } else pending = lexical(requested).split(separator);
   let links = 0;
   let name;
   while (pending.length > 0) {
@@ -237,7 +239,7 @@ try {
         if (!fromRoot) process.exit(${readerExit.outside});
         while (done.length > 0) up();
         pending = [...fromRoot, ...pending];
-      } else pending = [...target.split(separator), ...pending];
+      } else pending = [...lexical(target).split(separator), ...pending];
       continue;
     }
     if (!pending.some((item) => item !== "" && item !== ".")) {
