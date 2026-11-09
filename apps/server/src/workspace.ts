@@ -86,8 +86,10 @@ const [maxBytes, organizationId, requested, working, real] = JSON.parse(process.
 const stat = { bigint: true };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const windows = path.sep === "\\\\";
-/** Windows는 경로의 ".."를 글자로 줄이고 끝의 구분자를 떼고 연다(Win32). 같은 파일을 고르도록 Windows에서만 같은 규칙을 따른다. */
-const lexical = (value) => {
+/** Windows는 경로의 ".."를 글자로 줄여 연다(Win32). 링크 대상은 이것만 따른다. */
+const lexical = (value) => (windows ? path.normalize(value) : value);
+/** 에이전트가 입력한 경로. Windows는 글자로 줄인 뒤 끝의 구분자도 떼고 연다(Win32). */
+const typed = (value) => {
   if (!windows) return value;
   const cleaned = path.normalize(value);
   return cleaned.length > path.parse(cleaned).root.length
@@ -98,10 +100,10 @@ const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
 /** Names of a path, without empty names or ".". ".." stays where it is. */
 const names = (value) => value.split(separator).filter((name) => name !== "" && name !== ".");
 const sameName = windows ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
-const inside = (absolute) => {
+const inside = (absolute, clean) => {
   const target =
     windows && absolute.startsWith("\\\\\\\\?\\\\") ? absolute.slice(4) : absolute;
-  const given = lexical(target).split(separator);
+  const given = clean(target).split(separator);
   for (const base of [working, real]) {
     const prefix = names(base);
     let at = 0;
@@ -213,10 +215,10 @@ try {
   };
   let pending;
   if (path.isAbsolute(requested)) {
-    const fromRoot = inside(requested);
+    const fromRoot = inside(requested, typed);
     if (!fromRoot) process.exit(${readerExit.outside});
     pending = fromRoot;
-  } else pending = lexical(requested).split(separator);
+  } else pending = typed(requested).split(separator);
   let links = 0;
   let name;
   while (pending.length > 0) {
@@ -246,7 +248,7 @@ try {
         fail(error);
       }
       if (path.isAbsolute(target)) {
-        const fromRoot = inside(target);
+        const fromRoot = inside(target, lexical);
         if (!fromRoot) process.exit(${readerExit.outside});
         while (done.length > 0) up();
         pending = [...fromRoot, ...pending];
