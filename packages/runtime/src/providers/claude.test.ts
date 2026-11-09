@@ -339,3 +339,67 @@ it("compacts through the real compact protocol output", async () => {
   expect(result.ok).toBe(true);
   expect(result.nextSession?.id).toBe("session-one");
 });
+
+// #125: 첫 턴이 끝난 뒤에도 Claude는 띄운 백그라운드 명령을 기다렸다가 그 결과로 한 턴 더 한다(입력을 닫은 뒤).
+// 제품은 입력만 닫고 프로그램이 스스로 끝날 때까지 기다리며, 마지막 턴의 결과로 실행 시도를 끝낸다.
+it("keeps the run open for a background command and finishes with the turn that handles its outcome", async () => {
+  const provider = createClaudeProvider({
+    dataDir: await home(),
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/claude-background.synthetic.json"),
+    ],
+  });
+  const input = request();
+  const progress: string[] = [];
+  let steeredAfterFirstTurn: string | undefined;
+  const result = await provider.adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async (activity) => {
+      if (activity.type !== "progress") return;
+      progress.push(activity.text);
+      if (activity.text.includes("백그라운드"))
+        steeredAfterFirstTurn = await provider.adapter.steer!({
+          runId: input.identity.runId,
+          messageId: crypto.randomUUID(),
+          conversationId: crypto.randomUUID(),
+          body: "늦은 말",
+        });
+    },
+  });
+  expect(result.stopReason).toBe("completed");
+  // 턴마다의 토큰은 더하고, 비용은 마지막 결과의 누계다.
+  expect(result.usage).toMatchObject({
+    inputTokens: 15,
+    outputTokens: 7,
+    costUsd: 0.03,
+  });
+  expect(result.nextSession?.id).toBe("session-bg");
+  // 기다리는 동안 활동에 그 사실이 보인다.
+  expect(progress).toContain("백그라운드 작업이 끝나기를 기다립니다.");
+  // 입력을 닫은 뒤에는 끼워 넣기를 받지 않는다.
+  expect(steeredAfterFirstTurn).toBe("rejected");
+});
+
+it("cancels a run that is waiting for a background command", async () => {
+  const provider = createClaudeProvider({
+    dataDir: await home(),
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/claude-background-hang.synthetic.json"),
+    ],
+  });
+  const controller = new AbortController();
+  const started = Date.now();
+  const result = await provider.adapter.execute(request(), {
+    signal: controller.signal,
+    emit: async (activity) => {
+      if (activity.type === "progress" && activity.text.includes("백그라운드"))
+        controller.abort();
+    },
+  });
+  expect(result.stopReason).toBe("cancelled");
+  expect(Date.now() - started).toBeLessThan(15_000);
+});

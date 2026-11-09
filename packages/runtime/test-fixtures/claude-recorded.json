@@ -120,13 +120,7 @@
       "apiKeySource": "<masked>",
       "claude_code_version": "<masked>",
       "output_style": "<masked>",
-      "agents": [
-        "<masked>",
-        "<masked>",
-        "<masked>",
-        "<masked>",
-        "<masked>"
-      ],
+      "agents": ["<masked>", "<masked>", "<masked>", "<masked>", "<masked>"],
       "skills": [
         "<masked>",
         "<masked>",
@@ -338,10 +332,7 @@
       "uuid": "<masked>",
       "timestamp": "<masked>",
       "tool_use_result": {
-        "matches": [
-          "<masked>",
-          "<masked>"
-        ],
+        "matches": ["<masked>", "<masked>"],
         "query": "<masked>",
         "total_deferred_tools": 27
       },
@@ -941,13 +932,7 @@
       "apiKeySource": "<masked>",
       "claude_code_version": "<masked>",
       "output_style": "<masked>",
-      "agents": [
-        "<masked>",
-        "<masked>",
-        "<masked>",
-        "<masked>",
-        "<masked>"
-      ],
+      "agents": ["<masked>", "<masked>", "<masked>", "<masked>", "<masked>"],
       "skills": [
         "<masked>",
         "<masked>",
@@ -1031,9 +1016,7 @@
         "post_tokens": 3397,
         "cumulative_dropped_tokens": 24219,
         "duration_ms": 5082,
-        "pre_compact_discovered_tools": [
-          "<masked>"
-        ],
+        "pre_compact_discovered_tools": ["<masked>"],
         "preserved_segment": {
           "head_uuid": "<masked>",
           "anchor_uuid": "<masked>",
@@ -1041,14 +1024,8 @@
         },
         "preserved_messages": {
           "anchor_uuid": "<masked>",
-          "uuids": [
-            "<masked>",
-            "<masked>"
-          ],
-          "all_uuids": [
-            "<masked>",
-            "<masked>"
-          ]
+          "uuids": ["<masked>", "<masked>"],
+          "all_uuids": ["<masked>", "<masked>"]
         }
       },
       "logical_parent_uuid": "<masked>"
