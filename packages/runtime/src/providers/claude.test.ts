@@ -406,35 +406,62 @@ it("cancels a run that is waiting for a background command", async () => {
   expect(Date.now() - started).toBeLessThan(15_000);
 });
 
+/** 백그라운드 작업이 알리기 전에 끝나는 녹화를 고쳐 재생한다. */
+async function runBackgroundLost(
+  change: (fixture: { steps: Record<string, unknown>[] }) => void
+) {
+  const fixture = JSON.parse(
+    await readFile(
+      path.resolve("test-fixtures/claude-background-lost.synthetic.json"),
+      "utf8"
+    )
+  );
+  change(fixture);
+  const root = await home();
+  const file = path.join(root, "lost.json");
+  await writeFile(file, JSON.stringify(fixture));
+  const provider = createClaudeProvider({
+    dataDir: root,
+    command: [process.execPath, path.resolve("test-fixtures/replay.mjs"), file],
+  });
+  return provider.adapter.execute(request(), {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+}
+
 // PR #130 리뷰 SPEC-01: 띄운 백그라운드 작업이 끝났다고 알리기 전에 프로그램이 끝나면 일은 끝나지 않았다.
 // 첫 턴의 성공 결과는 중간 결과이므로 실행 시도를 성공으로 남기지 않고, 그 세션도 저장하지 않는다.
+// 리뷰 SPEC-02: 그래도 이미 보고된 턴의 사용량은 실제로 쓴 것이므로 실행 기록에 남긴다.
 it.each([1, 0])(
   "fails a run whose program exits with code %i before a background command reports back",
   async (code) => {
-    const fixture = JSON.parse(
-      await readFile(
-        path.resolve("test-fixtures/claude-background-lost.synthetic.json"),
-        "utf8"
-      )
-    );
-    fixture.steps[fixture.steps.length - 1] = { exit: code };
-    const root = await home();
-    const file = path.join(root, "lost.json");
-    await writeFile(file, JSON.stringify(fixture));
-    const provider = createClaudeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        file,
-      ],
-    });
-    const result = await provider.adapter.execute(request(), {
-      signal: new AbortController().signal,
-      emit: async () => {},
+    const result = await runBackgroundLost((fixture) => {
+      fixture.steps[fixture.steps.length - 1] = { exit: code };
     });
     expect(result.stopReason).toBe("failed");
     expect(result.nextSession).toBeNull();
     expect(result.error).toContain("백그라운드");
+    expect(result.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 3,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: 0.01,
+    });
   }
 );
+
+// 리뷰 SPEC-02: 마지막 결과가 로그인 문제였으면 백그라운드 작업이 남아도 그 판정을 남겨 준비 상태를 다시 확인하게 한다.
+it("keeps a login problem when the program exits before a background command reports back", async () => {
+  const result = await runBackgroundLost((fixture) => {
+    const step = fixture.steps.find(
+      (s) => (s.frame as { type?: string } | undefined)?.type === "result"
+    ) as { frame: Record<string, unknown> };
+    step.frame.is_error = true;
+    step.frame.api_error_status = 401;
+  });
+  expect(result.stopReason).toBe("failed");
+  expect(result.nextSession).toBeNull();
+  expect(result.errorCode).toBe("login_required");
+});
