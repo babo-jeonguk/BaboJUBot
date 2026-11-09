@@ -79,11 +79,19 @@ function fakeTerminalInput() {
   return { input, modes };
 }
 
-function recordedOutput(isTTY: boolean) {
+/** 출력에 쓴 글과, 프롬프트를 쓰는 순간 입력이 이미 raw였는지를 남긴다. 프롬프트가 보이면 바로 붙여 넣을 수 있다. */
+function recordedOutput(isTTY: boolean, input?: { isRaw: boolean }) {
   const output = Object.assign(new PassThrough(), { isTTY, columns: 80 });
   let text = "";
-  output.on("data", (chunk: Buffer) => (text += chunk.toString("utf8")));
-  return { output, text: () => text };
+  let rawAtPrompt: boolean | undefined;
+  const write = output.write.bind(output) as (chunk: unknown) => boolean;
+  output.write = ((chunk: unknown) => {
+    const piece = String(chunk);
+    if (piece.includes("empty to skip")) rawAtPrompt = input?.isRaw;
+    text += piece;
+    return write(chunk);
+  }) as typeof output.write;
+  return { output, text: () => text, rawAtPrompt: () => rawAtPrompt };
 }
 
 /** 프롬프트가 나온 뒤에 입력을 보낸다. 프롬프트 전 입력은 실제 터미널에서도 echo되므로 계약 밖이다. */
@@ -110,11 +118,12 @@ it.each([
     const dir = await tempDir();
     const connection = stubConnection(dir);
     const { input, modes } = fakeTerminalInput();
-    const { output, text } = recordedOutput(outputIsTTY);
+    const { output, text, rawAtPrompt } = recordedOutput(outputIsTTY, input);
     const done = runLogin(connection, { input, output, stdio: "ignore" });
     await typeAfterPrompt(input, text, ["  synthetic-", "token-123  \r"]);
     await done;
     expect(text()).toContain("Paste the token");
+    expect(rawAtPrompt()).toBe(true);
     expect(text()).not.toContain("synthetic");
     expect(modes[0]).toBe(true);
     expect(modes.at(-1)).toBe(false);
@@ -231,9 +240,9 @@ def read_until(marker, timeout=20):
         if not chunk:
             return
         out += chunk
+# 프롬프트를 본 즉시 보낸다. 사람·자동화가 프롬프트를 보자마자 붙여 넣는 경우다.
 for marker, text in sends:
     read_until(marker)
-    time.sleep(0.2)
     os.write(fd, text.encode())
 read_until("\0never\0")
 _, status = os.waitpid(pid, 0)
@@ -275,6 +284,24 @@ it.skipIf(!python)(
     expect(await readFile(path.join(dir, "home", "token"), "utf8")).toBe(
       "synthetic-pty-token-7f3a\n"
     );
+  }
+);
+
+// 프롬프트와 echo 끄기 사이에 틈이 있으면 바로 붙여 넣은 토큰이 대부분 보인다(리뷰 재현 27/30). 여러 번 돌려 틈이 없음을 본다.
+it.skipIf(!python)(
+  "does not echo a token pasted the moment the prompt appears on a real terminal",
+  async () => {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const dir = await tempDir();
+      const { transcript, code } = runInPty(dir, [
+        ["empty to skip", "synthetic-race-token-9c1e\r"],
+        ["after: ", "visible-after\r"],
+      ]);
+      expect(code, transcript).toBe(0);
+      expect(transcript, `attempt ${attempt}`).not.toContain(
+        "synthetic-race-token-9c1e"
+      );
+    }
   }
 );
 
