@@ -74,6 +74,8 @@ function identityBlocked(action: string, file: string, error: unknown) {
  * 고정된 폴더 안에서 연다. 들어간 뒤에 바깥 경로가 바뀌어도 영향이 없다.
  * 요청 경로도 이 프로세스가 고정한 폴더 안에서 한 칸씩 직접 풀고, 링크는 안에 머무는 동안에만 따라간다. 바깥으로
  * 나가는 `..`나 링크는 그 너머를 보지 않고 거부한다. 본 바로 뒤에 바뀐 칸은 `changed`다.
+ * 절대 경로의 작업 폴더 부분은 이름 하나씩 대조하고, 나머지는 글자로 먼저 줄이지 않고 상대 경로처럼 걸어가므로
+ * 링크 뒤의 `..`는 링크가 가리키는 자리에서 올라간다.
  * 경로를 고정해도 처음 고른 폴더가 다른 조직이면 소용없으므로, 고정한 폴더가 자기 ID를 말하게 해 대조한다.
  */
 export const pinnedReader = `
@@ -83,6 +85,25 @@ const { constants } = fs;
 const [maxBytes, organizationId, requested, working, real] = JSON.parse(process.argv[1]);
 const stat = { bigint: true };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+const windows = path.sep === "\\\\";
+const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
+/** Names of a path, without empty names or ".". ".." stays where it is. */
+const names = (value) => value.split(separator).filter((name) => name !== "" && name !== ".");
+const sameName = windows ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
+const inside = (absolute) => {
+  const target =
+    windows && absolute.startsWith("\\\\\\\\?\\\\") ? absolute.slice(4) : absolute;
+  const given = names(target);
+  for (const base of [working, real]) {
+    const prefix = names(base);
+    if (
+      prefix.length <= given.length &&
+      prefix.every((name, index) => sameName(name, given[index]))
+    )
+      return given.slice(prefix.length);
+  }
+  return undefined;
+};
 const server = (name) => {
   try {
     const expected = fs.lstatSync(name, stat);
@@ -158,25 +179,6 @@ const fail = (error) => {
           : ${readerExit.failed}
   );
 };
-const inside = (absolute) => {
-  const target =
-    path.sep === "\\\\" && absolute.startsWith("\\\\\\\\?\\\\")
-      ? absolute.slice(4)
-      : absolute;
-  for (const base of [working, real]) {
-    const relative = path.relative(base, target);
-    if (!relative) return [];
-    if (
-      relative === ".." ||
-      relative.startsWith(\`..\${path.sep}\`) ||
-      path.isAbsolute(relative)
-    )
-      continue;
-    return relative.split(path.sep);
-  }
-  return undefined;
-};
-const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
 server(organizationId);
 let claimed;
 try {
@@ -198,7 +200,7 @@ try {
   };
   let pending;
   if (path.isAbsolute(requested)) {
-    const fromRoot = inside(path.resolve(requested));
+    const fromRoot = inside(requested);
     if (!fromRoot) process.exit(${readerExit.outside});
     pending = fromRoot;
   } else pending = requested.split(separator);
