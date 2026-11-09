@@ -23,6 +23,52 @@ const unresponsive: DockerEnvironment = {
 };
 
 describe("IsolationGate", () => {
+  // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 격리를 켜면 Docker를 부르지 않고
+  // 격리 환경 없음으로 두며, 이 컴퓨터로 대신 돌리지 않는다(PR #131 리뷰 3회차 P6).
+  it("treats isolation as unavailable on Windows without asking Docker, and starts no run", async () => {
+    const asked: string[] = [];
+    const docker: DockerEnvironment = {
+      ...unresponsive,
+      async prepareNetwork() {
+        asked.push("prepareNetwork");
+        return { gateway: "127.0.0.2" };
+      },
+      async probe() {
+        asked.push("probe");
+        return { reached: [], toolsReached: true };
+      },
+    };
+    gate = new IsolationGate({
+      docker,
+      toolsApp: express(),
+      protectedPorts: () => [5432],
+      readIsolated: async () => true,
+      hostUrl: () => "http://127.0.0.1:1",
+      platform: "win32",
+    });
+    await expect(gate.readiness(true)).resolves.toEqual({
+      status: "not_ready",
+      reason: "isolation_unavailable",
+    });
+    await expect(gate.place(true)).rejects.toThrow(
+      "격리 실행 환경이 안전한지 확인하지 못해 실행하지 않았습니다."
+    );
+    expect(asked).toEqual([]);
+    // 격리가 꺼져 있으면 Windows에서도 지금처럼 이 컴퓨터에서 돈다.
+    const off = new IsolationGate({
+      docker,
+      toolsApp: express(),
+      protectedPorts: () => [5432],
+      readIsolated: async () => false,
+      hostUrl: () => "http://127.0.0.1:1",
+      platform: "win32",
+    });
+    await expect(off.place(true)).resolves.toEqual({
+      toolsBaseUrl: "http://127.0.0.1:1",
+    });
+    await off.close();
+  });
+
   it("decides that the environment is unavailable when the safety check does not finish within its time", async () => {
     gate = new IsolationGate({
       docker: unresponsive,

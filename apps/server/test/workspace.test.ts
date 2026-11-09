@@ -218,6 +218,32 @@ it("accepts an absolute path inside the working folder and refuses one outside",
   ).toBe("내용");
 });
 
+// 링크 뒤의 `..`는 파일 시스템처럼 링크를 따라간 자리에서 올라간다. 절대 경로도 문자열로 먼저 줄이지 않는다(PR #131 리뷰 3회차 P5).
+it("climbs from where a link leads, not from the link's name, for relative and absolute paths and link targets", async () => {
+  const { root, shared } = await folder();
+  await mkdir(path.join(shared, "data", "deep"), { recursive: true });
+  await writeFile(path.join(shared, "target.md"), "WRONG");
+  await writeFile(path.join(shared, "data", "target.md"), "INTENDED");
+  await symlink(path.join("data", "deep"), path.join(shared, "link"));
+  const climbing =
+    path.join(shared, "link") + path.sep + ".." + path.sep + "target.md";
+  await symlink(climbing, path.join(shared, "absolute.md"));
+  for (const requested of [
+    `link${path.sep}..${path.sep}target.md`,
+    climbing,
+    "absolute.md",
+  ])
+    expect(await content(root, requested), requested).toBe("INTENDED");
+});
+
+// 절대 경로의 작업 폴더 부분은 글자 그대로 같아야 한다. 그 안에 `..`를 섞어 돌아오는 드문 경로는 폴더 밖으로 본다.
+it("refuses an absolute path that wanders out of the working folder part and back", async () => {
+  const { root, shared } = await folder();
+  await writeFile(path.join(shared, "a.md"), "내용");
+  const back = [shared, "..", "shared", "a.md"].join(path.sep);
+  expect(await read(root, back)).toEqual(refusal("path_outside_folder"));
+});
+
 // PR #131 리뷰 S1: 작업 폴더 밖은 그곳에 무엇이 있는지 보지 않고 거부한다. 있든 없든, 링크로 가리키든 같은 응답이다.
 it("refuses every path outside the working folder the same way, whether or not something is there", async () => {
   const { root, shared } = await folder();
