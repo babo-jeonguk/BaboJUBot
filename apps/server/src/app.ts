@@ -200,6 +200,20 @@ export type RunningServer = {
   close: () => Promise<void>;
 };
 
+/** 사용자 API와 전용 도구 listener 모두 이 JSON 오류 계약으로 답한다. */
+const serverErrors: ErrorRequestHandler = (error, _req, res, _next) => {
+  if (error?.type === "entity.parse.failed") {
+    res.status(400).json({ error: { code: "invalid_json" } });
+    return;
+  }
+  if (error?.type === "entity.too.large") {
+    res.status(413).json({ error: { code: "body_too_large" } });
+    return;
+  }
+  console.error("[server]", error);
+  res.status(500).json({ error: { code: "internal" } });
+};
+
 export async function startServer({
   db,
   port,
@@ -382,6 +396,7 @@ export async function startServer({
   toolsApp.use(orgToolsBasePath, compactionTools);
   toolsApp.use(orgToolsBasePath, organizationTools);
   toolsApp.use((_req, res) => notFound(res));
+  toolsApp.use(serverErrors);
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
@@ -1147,18 +1162,7 @@ export async function startServer({
     );
   }
 
-  app.use(((error, _req, res, _next) => {
-    if (error?.type === "entity.parse.failed") {
-      res.status(400).json({ error: { code: "invalid_json" } });
-      return;
-    }
-    if (error?.type === "entity.too.large") {
-      res.status(413).json({ error: { code: "body_too_large" } });
-      return;
-    }
-    console.error("[server]", error);
-    res.status(500).json({ error: { code: "internal" } });
-  }) satisfies ErrorRequestHandler);
+  app.use(serverErrors);
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
