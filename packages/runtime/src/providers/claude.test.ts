@@ -356,8 +356,9 @@ it("keeps the run open for a background command and finishes with the turn that 
   let steeredAfterFirstTurn: string | undefined;
   const result = await provider.adapter.execute(input, {
     signal: new AbortController().signal,
-    emit: async (activity) => {
-      if (activity.type !== "progress") return;
+    emit: async (value) => {
+      const activity = value as { type?: string; text?: string };
+      if (activity.type !== "progress" || !activity.text) return;
       progress.push(activity.text);
       if (activity.text.includes("백그라운드"))
         steeredAfterFirstTurn = await provider.adapter.steer!({
@@ -395,8 +396,9 @@ it("cancels a run that is waiting for a background command", async () => {
   const started = Date.now();
   const result = await provider.adapter.execute(request(), {
     signal: controller.signal,
-    emit: async (activity) => {
-      if (activity.type === "progress" && activity.text.includes("백그라운드"))
+    emit: async (value) => {
+      const activity = value as { type?: string; text?: string };
+      if (activity.type === "progress" && activity.text?.includes("백그라운드"))
         controller.abort();
     },
   });

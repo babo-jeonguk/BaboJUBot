@@ -37,10 +37,11 @@ if (variant === "banner")
   console.log("A new version is available. Run the update command.");
 const finish = async () => {
   if (variant === "exits-1") process.exit(1);
+  // 결과를 낸 뒤 입력이 닫혀도 몇 초 더 머문다. 끝나기를 기다리는 adapter(Claude, #125)도 시험 시간 안에 결과를 받는다.
   if (variant === "slow-exit") {
     process.stdin.pause();
     setInterval(() => {}, 1000);
-    await sleep(60_000);
+    await sleep(6_000);
   }
   // 파이프 출력은 비동기다. 큰 줄이 잘리지 않도록 비운 뒤 끝낸다.
   await new Promise((resolve) => process.stdout.write("", resolve));
