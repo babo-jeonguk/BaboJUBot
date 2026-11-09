@@ -62,7 +62,7 @@ function stubConnection(dir: string): ProviderConnection {
       env: { ...process.env, HOME: path.join(dir, "home") },
       tokenFile: path.join(dir, "home", "token"),
     },
-  } as ProviderConnection;
+  } as unknown as ProviderConnection;
 }
 
 function fakeTerminalInput() {

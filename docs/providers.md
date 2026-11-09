@@ -39,7 +39,7 @@ OpenCode는 시스템 설정을 끌 방법이 없어, `/etc/opencode`가 있으�
 pnpm provider:login claude   # codex, opencode, antigravity, claude:work
 ```
 
-실행 시도와 같은 환경으로 프로그램의 로그인을 띄운다. 로그인은 연결 폴더(`providers/<연결>`)에 하며 모든 조직이 그 로그인을 쓴다(아래 조직별 제품 폴더). Claude는 화면에 나온 토큰을 붙여 넣으면 연결 폴더에 0600으로 저장한다. 토큰은 명령 인수·Git·이슈에 넣지 않는다. 무료 모델 제공자는 OpenCode 로그인 없이 쓸 수 있다.
+실행 시도와 같은 환경으로 프로그램의 로그인을 띄운다. 로그인은 연결 폴더(`providers/<연결>`)에 하며 모든 조직이 그 로그인을 쓴다(아래 조직별 제품 폴더). Claude는 화면에 나온 토큰을 붙여 넣으면 연결 폴더에 0600으로 저장한다. 입력이 터미널이면 붙여 넣는 토큰은 화면에 보이지 않고, 끝나면 터미널을 원래 상태로 되돌린다. 빈 입력은 저장 없이 건너뛰고, Ctrl-C는 저장 없이 `Login cancelled.`와 종료 코드 130으로 끝난다. 파이프로 넣은 입력은 그대로 읽는다. 토큰은 명령 인수·Git·이슈에 넣지 않는다. 무료 모델 제공자는 OpenCode 로그인 없이 쓸 수 있다.
 
 로그인 여부는 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. Claude는 `claude auth status`, Codex는 `codex login status`, Antigravity는 `agy models`를 쓴다. Claude와 Antigravity는 실행 시도도 파일 없이 시작하고, 거절되면 로그인 필요로 알린다.
 
