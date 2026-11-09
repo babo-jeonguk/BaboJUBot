@@ -440,11 +440,13 @@ async function executeClaude(
       await process.done;
       if (control.signal.aborted)
         return { ...failed(), stopReason: "cancelled", error: null };
-      // 띄운 백그라운드 작업이 끝났다고 알리기 전에 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않는다.
+      // 띄운 백그라운드 작업이 끝났다고 알리기 전에 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않고 세션도 저장하지 않지만, 이미 보고된 사용량과 로그인 판정은 남긴다.
       if (background.size > 0)
         return {
-          ...failed(),
+          ...result,
+          stopReason: "failed",
           error: "백그라운드 작업이 끝나기 전에 프로바이더가 종료했습니다.",
+          nextSession: null,
         };
       // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
       if (
