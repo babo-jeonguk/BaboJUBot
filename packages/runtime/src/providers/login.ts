@@ -1,37 +1,35 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createInterface } from "node:readline";
+import { createInterface, type Interface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import spawn from "cross-spawn";
 import type { ProviderConnection } from "@babojubot/contracts";
 
 /**
- * 토큰 한 줄을 숨겨서 읽는다. 입력이 터미널이면 커널 echo를 끄는 raw mode로 바꾸고, readline에도 출력
- * 스트림을 주지 않아 readline이 echo할 곳을 없앤다. 끝나면 입력의 raw 상태를 원래대로 되돌린다.
+ * 토큰 한 줄을 숨겨서 읽는다. 입력이 터미널이면 프롬프트를 쓰기 전에 커널 echo를 끄는 raw mode로 바꾸므로,
+ * 프롬프트가 보이는 순간 붙여 넣은 토큰도 화면에 나타나지 않는다. readline에도 출력 스트림을 주지 않아
+ * readline이 echo할 곳을 없앤다. 끝나면 입력의 raw 상태를 원래대로 되돌린다.
  */
 async function readHiddenLine(
   input: Readable,
   output: Writable,
   prompt: string
 ): Promise<string> {
-  output.write(prompt);
   const tty =
     (input as { isTTY?: boolean }).isTTY === true &&
     typeof (input as { setRawMode?: unknown }).setRawMode === "function";
   const wasRaw = (input as { isRaw?: boolean }).isRaw === true;
   return new Promise<string>((resolve, reject) => {
     let settled = false;
-    const rl = tty
-      ? createInterface({ input, terminal: true, historySize: 0 })
-      : createInterface({ input, terminal: false });
+    let rl: Interface | undefined;
 
     const cleanup = () => {
-      rl.off("line", onLine);
-      rl.off("close", onClose);
-      rl.off("SIGINT", onSigint);
-      rl.off("error", onError);
+      rl?.off("line", onLine);
+      rl?.off("close", onClose);
+      rl?.off("SIGINT", onSigint);
+      rl?.off("error", onError);
       input.off("error", onError);
-      rl.close();
+      rl?.close();
       if (tty) {
         (input as unknown as { setRawMode(mode: boolean): unknown }).setRawMode(
           wasRaw
@@ -55,11 +53,24 @@ async function readHiddenLine(
       );
     const onError = (error: Error) => finish(() => reject(error));
 
-    rl.on("line", onLine);
-    rl.on("close", onClose);
-    rl.on("SIGINT", onSigint);
-    rl.on("error", onError);
-    input.once("error", onError);
+    try {
+      if (tty) {
+        (input as unknown as { setRawMode(mode: boolean): unknown }).setRawMode(
+          true
+        );
+      }
+      rl = tty
+        ? createInterface({ input, terminal: true, historySize: 0 })
+        : createInterface({ input, terminal: false });
+      rl.on("line", onLine);
+      rl.on("close", onClose);
+      rl.on("SIGINT", onSigint);
+      rl.on("error", onError);
+      input.once("error", onError);
+      output.write(prompt);
+    } catch (error) {
+      finish(() => reject(error));
+    }
   });
 }
 
