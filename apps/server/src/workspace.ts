@@ -86,8 +86,14 @@ const [maxBytes, organizationId, requested, working, real] = JSON.parse(process.
 const stat = { bigint: true };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const windows = path.sep === "\\\\";
-/** Windows는 경로의 ".."를 글자로 줄여 연다(Win32). 같은 파일을 고르도록 Windows에서만 같은 규칙을 따른다. */
-const lexical = (value) => (windows ? path.normalize(value) : value);
+/** Windows는 경로의 ".."를 글자로 줄이고 끝의 구분자를 떼고 연다(Win32). 같은 파일을 고르도록 Windows에서만 같은 규칙을 따른다. */
+const lexical = (value) => {
+  if (!windows) return value;
+  const cleaned = path.normalize(value);
+  return cleaned.length > path.parse(cleaned).root.length
+    ? cleaned.replace(/[\\\\/]+$/, "")
+    : cleaned;
+};
 const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
 /** Names of a path, without empty names or ".". ".." stays where it is. */
 const names = (value) => value.split(separator).filter((name) => name !== "" && name !== ".");
