@@ -14,6 +14,7 @@ import {
   type IsolationProbe,
 } from "@babojubot/runtime";
 import { afterEach, describe, expect, it } from "vitest";
+import { jsonBodyLimitBytes } from "../src/app.ts";
 import { goal } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
@@ -233,6 +234,63 @@ describe("isolated runs", () => {
       ])
     );
     expect(new URL(probe.tools).origin).toBe(tools.origin);
+  });
+
+  // 전용 listener도 사용자 API와 같은 서버 오류 처리를 거쳐 JSON 오류 계약으로 답한다(PR #131 리뷰 2회차 P4).
+  it("answers a broken request on the dedicated listener with the same JSON error as the user API", async () => {
+    const send = (base: string, token: string, body: string) =>
+      fetch(new URL("/api/tools/artifacts", base), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body,
+      }).then(async (res) => ({
+        status: res.status,
+        type: res.headers.get("content-type") ?? "",
+        body: await res.text(),
+      }));
+    const answers: Record<string, Awaited<ReturnType<typeof send>>[]> = {};
+    const { connection } = realConnection(async (request) => {
+      const { token, toolsBaseUrl } = request.access;
+      answers[request.execution ?? "host"] = [
+        await send(toolsBaseUrl, token, "{"),
+        await send(
+          toolsBaseUrl,
+          token,
+          JSON.stringify({ x: "가".repeat(jsonBodyLimitBytes) })
+        ),
+      ];
+    });
+    const { docker } = fakeDocker();
+    t = await startTestServer({
+      providers: [...createFakeProviders(1), connection],
+      isolation: { docker, protectedPorts: [54329] },
+    });
+    await createOrganization("real");
+    await t.drain();
+    await t.request("PUT", "/api/providers/isolation", { isolated: true });
+    await expect
+      .poll(() => readinessOf("real"))
+      .toMatchObject({ checking: false });
+    await createOrganization("real");
+    await t.drain();
+
+    const json = expect.stringContaining("application/json");
+    expect(answers.host).toEqual([
+      {
+        status: 400,
+        type: json,
+        body: JSON.stringify({ error: { code: "invalid_json" } }),
+      },
+      {
+        status: 413,
+        type: json,
+        body: JSON.stringify({ error: { code: "body_too_large" } }),
+      },
+    ]);
+    expect(answers.container).toEqual(answers.host);
   });
 
   it.each([
