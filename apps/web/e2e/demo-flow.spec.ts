@@ -12,7 +12,7 @@ async function openInbox(page: Page) {
 
 const runs = { timeout: 20_000 };
 
-// README의 손 조작 순서와 같은 판 1 데모 시나리오를 대시보드에서 처음부터 끝까지 누른다.
+// CONTRIBUTING.md 데모 시나리오의 손 조작 순서와 같은 판 1 데모 시나리오를 대시보드에서 처음부터 끝까지 누른다.
 // 주요 사용자 행동은 모두 화면으로 하고, 조회 API는 쓰지 않는다.
 test("the demo scenario walks one organization from creation with a goal through the initial approval, worker results, pause and resume, a worker approval and the result review to final completion", async ({
   page,

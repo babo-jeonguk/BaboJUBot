@@ -22,7 +22,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 
 ## 패키지 구성
 
-현재 구현은 [README](../README.md), 실제 코드·테스트는 [코드 지도](agents/code-map.md)를 따릅니다.
+현재 구현은 [현재 구현 현황](current-implementation.md), 실제 코드·테스트는 [코드 지도](agents/code-map.md)를 따릅니다.
 
 | 위치 | 담는 것 | Module |
 |---|---|---|

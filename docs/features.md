@@ -28,7 +28,7 @@
 
 ## 웹 대시보드 화면 지도
 
-Paperclip 대시보드의 대부분을 연구 조직 개념에 맞게 가져오고 연구 화면을 더합니다. 근거는 [Paperclip 대시보드 조사](research/paperclip-dashboard.md)와 [기타 대시보드 조사](research/dashboard-references.md)입니다. 모든 화면은 Event stream으로 실시간 갱신합니다. `첫 판` 열은 첫 walking skeleton에 넣을 범위이고, 나머지는 판을 거듭하며 채웁니다. 체크 표시는 목표 범위이며 구현 완료 표시가 아닙니다. 현재 구현 요약은 [README](../README.md), 개별 완료 근거는 해당 이슈·PR을 따릅니다.
+Paperclip 대시보드의 대부분을 연구 조직 개념에 맞게 가져오고 연구 화면을 더합니다. 근거는 [Paperclip 대시보드 조사](research/paperclip-dashboard.md)와 [기타 대시보드 조사](research/dashboard-references.md)입니다. 모든 화면은 Event stream으로 실시간 갱신합니다. `첫 판` 열은 첫 walking skeleton에 넣을 범위이고, 나머지는 판을 거듭하며 채웁니다. 체크 표시는 목표 범위이며 구현 완료 표시가 아닙니다. 현재 구현 요약은 [현재 구현 현황](current-implementation.md), 개별 완료 근거는 해당 이슈·PR을 따릅니다.
 
 | 화면 | 내용 | 첫 판 |
 |---|---|---|

@@ -1,6 +1,6 @@
 # BaboJUBot
 
-연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 현재 구현 현황은 [`README.md`](README.md), 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
+연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 현재 구현 현황은 [`docs/current-implementation.md`](docs/current-implementation.md), 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
 
 ## 제품 불변 조건
 
@@ -28,7 +28,7 @@
 - 용어·의미 충돌·ADR 작성 → [도메인 규칙](docs/agents/domain.md)
 - 이슈 작업 → [이슈 운영](docs/agents/issue-tracker.md); label·triage 시 [label 표](docs/agents/triage-labels.md)
 - 사용자 요구의 배경 → [인터뷰 기록](docs/project-intent.md)
-- 설치 → [개발 시작](README.md#개발-시작)
+- 설치 → [개발 시작](CONTRIBUTING.md#개발-시작)
 - 검증·검사 결과 재사용 → [검증 기준](docs/agents/verification.md)
 - 커밋 메시지 → [커밋 규칙](docs/agents/commit-messages.md)
 - 구현 전 레퍼런스 조사 → [reference-first](.agents/skills/reference-first/SKILL.md) (`/reference-first #<n>`)
