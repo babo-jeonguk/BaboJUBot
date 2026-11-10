@@ -384,9 +384,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                   turn.status === "failed"
                     ? "프로바이더 실행이 실패했습니다."
                     : null,
-                usage: totals
-                  ? providerUsage(id, codexUsage(totals, baseline))
-                  : null,
+                // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+                usage: null,
                 nextSession: {
                   id: threadId,
                   tokens: totals ? savedTotals(totals, appServerKeys) : {},
@@ -529,9 +528,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         control.signal.removeEventListener("abort", cancel);
         active.delete(request.identity.runId);
         await activities;
+        // 끝난 방식과 상관없이 마지막으로 받은 누계로 사용량을 한 번 정한다. 누계를 받지 못했으면 보고 안 됨이다.
+        const usage = totals
+          ? providerUsage(id, codexUsage(totals, baseline))
+          : null;
         if (control.signal.aborted)
-          return { ...failed(), stopReason: "cancelled", error: null };
-        return result;
+          return { ...failed(), stopReason: "cancelled", error: null, usage };
+        return { ...result, usage };
       },
     },
   };
@@ -626,8 +629,14 @@ async function executeExec(
       child.endInput();
     }
     await child.done;
+    // 취소 전에 받은 결과의 사용량은 남긴다.
     if (control.signal.aborted)
-      return { ...failed(), stopReason: "cancelled", error: null };
+      return {
+        ...failed(),
+        stopReason: "cancelled",
+        error: null,
+        usage: result.usage,
+      };
     // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
     if (!id && request.previousSession && !loginProblem) {
       await control.emit({

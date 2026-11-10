@@ -351,7 +351,8 @@ export function createAntigravityProvider(options: {
                 ...failure(),
                 stopReason: success ? "completed" : "failed",
                 error: success ? null : "프로바이더 실행이 실패했습니다.",
-                usage: providerUsage(connectionId, usage),
+                // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+                usage: null,
                 nextSession: success ? { id: id! } : null,
               };
               if (saysLoginProblem(frame.result?.error))
@@ -383,12 +384,22 @@ export function createAntigravityProvider(options: {
               },
             });
           const exited = await child.done;
+          // 끝난 방식과 상관없이 완료된 step의 합으로 사용량을 한 번 정한다. 결과도 완료된 step도 없으면 보고 안 됨이다.
+          const collected =
+            finished || steps.size > 0
+              ? providerUsage(connectionId, usage)
+              : null;
           if (control.signal.aborted)
-            return { ...failure(), stopReason: "cancelled", error: null };
+            return {
+              ...failure(),
+              stopReason: "cancelled",
+              error: null,
+              usage: collected,
+            };
           // 로그인이 없으면 프로그램이 결과 없이 오류 문구만 남기고 끝난다(1.5.3).
           if (!finished && saysLoginProblem(exited.stderr))
-            return { ...result, errorCode: "login_required" };
-          return result;
+            return { ...result, errorCode: "login_required", usage: collected };
+          return { ...result, usage: collected };
         } finally {
           clearTimeout(startup);
           control.signal.removeEventListener("abort", cancel);

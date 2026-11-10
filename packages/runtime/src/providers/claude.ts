@@ -479,7 +479,7 @@ async function executeClaude(
       process.end();
     };
     control.signal.addEventListener("abort", cancel, { once: true });
-    /** 실행이 result 프레임 없이 끝나면 Claude가 종료 시 저장한 비용을 읽는다. */
+    /** 취소됐거나 result 프레임 없이 끝났으면 Claude가 종료 때 저장한 비용을 읽는다. 새로 저장한 기록이 없으면 null이다. */
     const savedUsage = async () => {
       if (typeof sessionId !== "string") return null;
       const sessionBaseline = baseline();
@@ -504,11 +504,10 @@ async function executeClaude(
           parent_tool_use_id: null,
         });
       await process.done;
-      // 결과 프레임이 없었거나 취소됐으면 Claude가 종료 때 저장한 비용으로, 아니면 보고된 결과로 센다.
+      // 사용량은 끝난 방식과 상관없이 한 번 정한다. 취소됐거나 결과 프레임이 없었으면 Claude가 종료 때 저장한 비용(진행 중이던 턴 포함)을 먼저 쓰고, 새 기록이 없으면 이미 받은 결과의 사용량을 쓴다.
       const usage =
-        control.signal.aborted || !hasResult
-          ? await savedUsage()
-          : providerUsage(connection.id, reported);
+        (control.signal.aborted || !hasResult ? await savedUsage() : null) ??
+        (hasResult ? providerUsage(connection.id, reported) : null);
       if (control.signal.aborted)
         return {
           ...failed(),
