@@ -29,7 +29,7 @@ export const clusterUrl = (port: number, database: string) =>
 // - 주인: dataDir 하나는 한 프로세스만 쓴다(`acquireOwner`). 만들기·남은 Postgres 정리·켜기·끄기·지우기는 주인만 한다.
 // - 다음 시작: 강제로 끝난 프로세스가 남긴 Postgres는 기록된 주인이 죽었고 그 서버가 이 dataDir를 쓰는 것이 접속으로 확인될
 //   때만 멈춘다. 잠금 파일(postmaster.pid)만으로는 무관한 프로세스와 구별할 수 없다.
-// - port: 정한 port가 없으면 빈 port 후보로 켜고, 그 사이 남이 잡았으면 다른 후보로 다시 켠다. 번호만 미리 받아 두면 다른 프로세스가 먼저 잡을 수 있다.
+// - port: 정한 port가 없으면 빈 port 후보로 켜고, 그 후보를 잡지 못했으면(그 사이 남이 잡았거나 그 port만 막힘) 다른 후보로 다시 켠다. 번호만 미리 받아 두면 다른 프로세스가 먼저 잡을 수 있다.
 const startSeconds = 60;
 // 정상 종료 때의 정지 시한. 서버 정리 시한(main.ts)이 먼저 지나면 프로세스 종료 때 즉시 정지가 따른다.
 const stopSeconds = 30;
@@ -99,7 +99,7 @@ export async function startEmbeddedCluster(
   };
   process.on("exit", stopOnExit);
   const log = path.join(dataDir, logName);
-  // port를 고르는 경우(`port` 없음) 고른 번호를 다른 프로세스가 먼저 잡았으면 다른 번호로 다시 켠다. 그 밖의 실패는 다시 하지 않는다.
+  // port를 고르는 경우(`port` 없음) 그 후보를 127.0.0.1에서 잡지 못했으면(남이 먼저 잡았거나 그 port만 막힘) 다른 후보로 다시 켠다. 그 밖의 실패는 다시 하지 않는다.
   const portAttempts = 5;
   try {
     for (let attempt = 1; ; attempt++) {
@@ -141,7 +141,7 @@ export async function startEmbeddedCluster(
       if (
         port === undefined &&
         attempt < portAttempts &&
-        portTaken(tail) &&
+        couldNotBindPort(tail) &&
         !(await isRunning(pgCtl, dataDir))
       )
         continue;
@@ -348,8 +348,12 @@ async function logTail(log: string) {
   return text.trim().slice(-1000) || "Postgres wrote no log";
 }
 
-/** Postgres가 127.0.0.1의 그 port를 잡지 못해 끝났는지. 메시지는 Postgres 자체 문구다(lc_messages=C로 켠다). */
-function portTaken(log: string) {
+/**
+ * Postgres가 127.0.0.1의 그 port를 잡지 못해 끝났는지. 남이 먼저 잡았든(Address already in use) 그 port만 막혔든
+ * (Permission denied 등) 다른 후보로 다시 켤 이유다. 이유 문구는 OS마다 달라 보지 않고 Postgres 자체 문구만 본다
+ * (lc_messages=C로 켠다). port와 상관없는 bind 실패면 후보마다 같은 실패가 나 `portAttempts`번 뒤 그 로그로 실패한다.
+ */
+function couldNotBindPort(log: string) {
   return (
     log.includes('could not bind IPv4 address "127.0.0.1"') &&
     log.includes("could not create any TCP/IP sockets")
