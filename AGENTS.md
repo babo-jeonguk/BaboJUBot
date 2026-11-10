@@ -1,6 +1,6 @@
 # BaboJUBot
 
-연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 현재 구현 현황은 [`docs/current-implementation.md`](docs/current-implementation.md), 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
+연구 목표마다 독립 AI 연구 조직(Research Lead + 작업자 팀)을 운영하는 범용 연구 운영 프로젝트입니다. 도메인 용어는 [`GLOSSARY.md`](GLOSSARY.md)를 따릅니다.
 
 ## 제품 불변 조건
 
@@ -15,7 +15,7 @@
 
 ## Routing
 
-착수 전에 해당 개발 절차를 읽고 완료 조건까지 따릅니다. 참고 문서는 작업에 해당하는 절만 읽습니다.
+착수 전에 해당 개발 절차를 읽고 완료 조건까지 따릅니다. 참고 문서는 작업에 해당하는 절만 읽습니다. `docs/research/`와 [ADR](docs/adr/)은 기록된 결정을 다시 정할 때와 이슈·절차가 그 파일을 가리킬 때 엽니다. 현재 기준은 아래 문서가 맡습니다.
 
 - 이슈 작업 → [이슈 운영](docs/agents/issue-tracker.md); label·triage 시 [label 표](docs/agents/triage-labels.md)
 - 구현 전 레퍼런스 조사 → [reference-first](.agents/skills/reference-first/SKILL.md) (`/reference-first #<n>`)
@@ -25,10 +25,12 @@
 - PR·이슈 본문 → [PR 양식](.github/PULL_REQUEST_TEMPLATE.md)·[이슈 양식](.github/ISSUE_TEMPLATE/)
 - 검증·검사 결과 재사용 → [검증 기준](docs/agents/verification.md)
 - 코드 worker 위임 → [코드 worker](docs/agents/worker.md); Paseo 배치 → [개발 오케스트레이션](docs/agents/dev-orchestration.md)
+- 지금 구현된 동작·규칙·응답 코드 → [현재 구현 현황](docs/current-implementation.md)
 - 코드 탐색·버그 추적 → [코드 지도](docs/agents/code-map.md)
+- 실제 프로바이더 연결·실행 방식 → [실제 프로바이더 연결](docs/providers.md)
 - 커밋 메시지 → [커밋 규칙](docs/agents/commit-messages.md)
 - 용어·의미 충돌·ADR 작성 → [도메인 규칙](docs/agents/domain.md)
-- module·seam·불변 조건 강제 → [전체 구조](docs/architecture.md)와 관련 [ADR](docs/adr/)
+- module·seam·불변 조건 강제 → [전체 구조](docs/architecture.md)
 - 문서 작성·구조 정리 → [문서 지도와 작성 기준](docs/README.md)
 - 사용자 요구의 배경 → [인터뷰 기록](docs/project-intent.md)
 - 설치 → [개발 시작](CONTRIBUTING.md#개발-시작)
