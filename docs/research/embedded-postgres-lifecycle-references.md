@@ -246,3 +246,18 @@ D03은 일반 경로를 먼저 갖춘다는 프로젝트 원칙을 따른다. �
 - 기본 다음 시작 회수는 시작하지 않는 동안 자원 누적을 막지 못한다. watcher도 함께 죽으면 정상 정지를 보장할 수 없다. 기존 소유 기록이 없는 잔존 DB를 무조건 안전하게 자동 kill한다는 약속도 하지 않는다.
 - 모든 근거는 설계 참고다. 실제 upstream 코드 복사나 새 바이너리 배포를 선택하면 해당 SHA의 LICENSE/header/NOTICE/의존성 및 AGENTS의 출처·THIRD_PARTY_NOTICES 규칙을 구현 단계에서 다시 적용해야 한다. 본문 미독 라이선스를 코드 재사용 가능 판정으로 사용하지 않았다.
 - 허용 경로의 문서·조사 기록만 썼다. 제품 코드·테스트·설정·patches·git 조작·외부 댓글 게시를 하지 않았다. 제품 검사 전체를 실행한 것으로 보고하지 않는다.
+
+## 추가 조사: 내장 Postgres의 port 고르기 (2026-11-10)
+
+CI에서 시작 중 종료 신호 시험이 한 번 실패한 원인을 찾으며 조사했다. 빈 port 번호를 받아 두고 닫은 뒤 약 2초 뒤(initdb 후) Postgres가 그 번호를 잡는 사이, 다른 프로세스가 같은 번호를 먼저 잡을 수 있었다. 이때 Postgres는 `could not bind IPv4 address "127.0.0.1": Address already in use`로 끝났다. 듣는 주소를 `localhost`로 두면, localhost가 `::1`도 가리키는 컴퓨터에서는 `::1`에서만 듣고 성공으로 켜졌다. 그러면 127.0.0.1로 하는 접속이 그 번호를 잡은 다른 프로그램으로 갔다. 두 경우 모두 Linux에서 재현했다.
+
+| 선례 | port를 정하는 방법 | 출처 |
+| --- | --- | --- |
+| PostgreSQL TAP 시험(`PostgreSQL::Test::Cluster`) | Windows가 아니면 TCP를 끄고(`listen_addresses = ''`) 사용자 전용 임시 폴더의 Unix socket을 쓴다. TCP 모드는 port 예약 파일을 쓴다. `start`는 다시 시도하지 않는다 | [Cluster.pm](https://github.com/postgres/postgres/blob/master/src/test/perl/PostgreSQL/Test/Cluster.pm) `init`·`start` |
+| `pg_regress` 임시 instance | `listen_addresses`를 비우고 `-k <0700 임시 폴더>`로 Unix socket만 쓴다. Windows는 기본으로 Unix socket을 쓰지 않는다 | [pg_regress.c](https://github.com/postgres/postgres/blob/master/src/test/regress/pg_regress.c) `make_temp_sockdir`·`remove_temp` |
+| zonky(Java)·fergusstrange(Go)·testing.postgresql(Python) | 우리와 같이 빈 번호를 받고 닫는다. 충돌을 다루지 않는다(Gemini 조사, 원문 미확인) | 각 저장소 `detectPort`·`freePort`·`get_unused_port` |
+| Testcontainers | Docker가 host port를 잡은 채로 두고 번호를 알려 준다 | Testcontainers 문서(Gemini 조사, 원문 미확인) |
+
+- Postgres는 `port = 0`을 받지 않는다(범위 1..65535). OS에 고르게 맡길 수 없다.
+- Unix socket만 쓰는 방식은 충돌을 없애지만 Windows에서는 쓸 수 없다. node-postgres는 Windows에서 socket 경로 접속을 지원하지 않는다(Node `net`의 경로는 Windows에서 named pipe다).
+- 결정: 모든 OS에서 같은 경로를 쓴다. Postgres는 접속 주소인 `127.0.0.1`에서만 듣는다. 정한 port가 없으면 후보 번호로 켜고, Postgres가 그 번호를 잡지 못해 끝났을 때만 다른 후보로 다시 켠다(최대 5번). 번호는 Postgres가 실제로 잡았을 때 정해지므로 "받아 둔 번호를 남이 먼저 잡는" 틈이 없다. 정한 port(제품 기본 54329)를 남이 잡았으면 다시 하지 않고 실패를 알린다.
