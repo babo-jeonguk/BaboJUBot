@@ -66,7 +66,7 @@ export type AttemptContainer = {
   attempt?: string;
   /** 이 실행 시도만의 파일을 컨테이너 안 `target` 위에 읽기로 넣는다. 이 컴퓨터의 `target`은 그대로이고 다른 컨테이너에는 그것이 보인다. */
   files?: { source: string; target: string }[];
-  /** 같은 연결의 모든 조직 컨테이너가 함께 읽고 쓰는 폴더(Codex 로그인 원본 폴더). 그 밖의 내용이 없는 전용 폴더만 넣는다. */
+  /** 같은 연결의 모든 조직 컨테이너가 함께 읽고 쓰는 폴더(Codex·Antigravity 로그인 원본 폴더). 그 밖의 내용이 없는 전용 폴더만 넣는다. */
   shared?: string[];
 };
 
