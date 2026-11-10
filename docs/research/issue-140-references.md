@@ -1,6 +1,6 @@
 # issue-140 레퍼런스 조사: 공통 Usage 숫자 규칙 정렬과 이상값 격리
 
-조사일: 2026-11-10. 대상: [#140](https://github.com/babo-jeonguk/BaboJUBot/issues/140). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-140/`(git 무시). 제품 정책은 이슈에서 이미 확정됐으며 재결정하지 않는다.
+조사일: 2026-11-10. 대상: [#140](https://github.com/babo-jeonguk/BaboJUBot/issues/140). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 제품 정책은 이슈에서 이미 확정됐으며 재결정하지 않는다.
 
 ## Brief
 
@@ -25,7 +25,7 @@
 
 ## 레퍼런스
 
-전체 후보·라운드·실행 경로는 `.reference-cache/issue-140/candidates.md`에 있다. 프로바이더 OSS, 집계 라이브러리, 숫자/계측 표준의 세 관점으로 탐색했다. 마지막 라운드에서 각각 정규화/누적 의미, 부분합/미측정 추적, 숫자 범위/계측 격리/기본 0의 반례가 반복됐다. 이 탐색 범위의 포화이며 모든 프로젝트를 망라했다는 뜻은 아니다.
+프로바이더 OSS, 집계 라이브러리, 숫자/계측 표준의 세 관점으로 탐색했다. 마지막 라운드에서 각각 정규화/누적 의미, 부분합/미측정 추적, 숫자 범위/계측 격리/기본 0의 반례가 반복됐다. 이 탐색 범위의 포화이며 모든 프로젝트를 망라했다는 뜻은 아니다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -48,14 +48,14 @@
 | <a id="E05"></a>E05 | Codex는 raw safe integer를 검사하지만 누적 차감/cache 차감에 0 보정·미보고 fallback을 쓴다. 새 snapshot으로 usage를 교체한다 | [tokenUsage handler](https://github.com/babo-jeonguk/BaboJUBot/blob/c88a98b58284a38bdadf7eff7aafa0219005371c/packages/runtime/src/providers/codex.ts#L296-L324) | 소스 확인 |
 | <a id="E06"></a>E06 | OpenCode adapter는 session before/after 차감, Antigravity는 완료 step_index 중복 제외 후 캐시를 빼서 합산한다. 전자는 finite 검사, 후자는 integer 검사라 safe 범위와 차이가 있다 | [sessionUsage](https://github.com/babo-jeonguk/BaboJUBot/blob/c88a98b58284a38bdadf7eff7aafa0219005371c/packages/runtime/src/providers/opencode.ts#L547-L565), [step_update](https://github.com/babo-jeonguk/BaboJUBot/blob/c88a98b58284a38bdadf7eff7aafa0219005371c/packages/runtime/src/providers/antigravity.ts#L312-L335) | 소스 확인 |
 | <a id="E07"></a>E07 | 서버는 종료 결과 전체 safeParse 실패 시 일반 failed 결과로 교체한다. usage를 고치는 과정에서 다른 종료 계약 위반까지 허용하면 안 된다 | [Dispatcher execute](https://github.com/babo-jeonguk/BaboJUBot/blob/c88a98b58284a38bdadf7eff7aafa0219005371c/apps/server/src/dispatcher.ts#L283-L298) | 소스 확인 |
-| <a id="E08"></a>E08 | contracts 허용/거부, 소수 USD 보존, 잘못된 usage를 가진 completed 계약 거부, transcript 합산 overflow 통과 및 음수 항목 격리/독립 output 보존을 직접 확인 | `probes/local-boundaries.mjs`, `probes/local-run-log.json`; Node v24.21.0, 키 없는 셸, 14 assertions 통과 | 실행 확인 |
+| <a id="E08"></a>E08 | contracts 허용/거부, 소수 USD 보존, 잘못된 usage를 가진 completed 계약 거부, transcript 합산 overflow 통과 및 음수 항목 격리/독립 output 보존을 직접 확인 | 로컬 probe; Node v24.21.0, 키 없는 셸, 14 assertions 통과 | 실행 확인 |
 | <a id="E09"></a>E09 | AI SDK 새 관찰: asLanguageModelUsage는 숫자를 그대로 매핑하고 generateText는 step 사용량을 reduce한다. 부분합 규칙은 [기존 #96 E08](issue-96-references.md#E08)을 재사용하며 이번 실행으로 재확인했다 | [addLanguageModelUsage·addTokenCounts](https://github.com/vercel/ai/blob/f9d43bdaa78a0564105942c7a6709469a120c3ee/packages/ai/src/types/usage.ts#L81-L101), [generateText](https://github.com/vercel/ai/blob/f9d43bdaa78a0564105942c7a6709469a120c3ee/packages/ai/src/generate-text/generate-text.ts#L1722-L1745) | 소스 확인 |
 | <a id="E10"></a>E10 | OpenCode 자체 usage 정규화는 missing/비유한/음수를 0으로 만들고 이후 단순 가산한다. 명시 비용 0은 catalog 추정보다 우선한다 | [SessionUsage tokens·record·add](https://github.com/anomalyco/opencode/blob/57719d7fd400721783a059fee78c7d33a21cd9b6/packages/core/src/session/usage.ts#L8-L64) | 소스 확인 |
 | <a id="E11"></a>E11 | 계측 런타임 오류가 본 애플리케이션을 실패시키지 않도록 하고 계측 자체 진단을 권고한다. Usage 숫자 정책 자체를 정하는 명세는 아니다 | [OpenTelemetry Error handling](https://opentelemetry.io/docs/specs/otel/error-handling/) | 문서 주장 |
-| <a id="E12"></a>E12 | Claude streaming input에서는 result가 턴마다 나오며 usage는 턴 범위, total_cost_usd/modelUsage는 세션 누계다 | [공식 cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking#track-costs-in-streaming-input-mode); 원문 `notes/claude-cost-tracking.md` | 문서 주장 |
+| <a id="E12"></a>E12 | Claude streaming input에서는 result가 턴마다 나오며 usage는 턴 범위, total_cost_usd/modelUsage는 세션 누계다 | [공식 cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking#track-costs-in-streaming-input-mode) | 문서 주장 |
 
-| <a id="E13"></a>E13 | OpenCode 원문 정규화 함수에서 타입 주석만 제거해 정상0/1, missing/음수/NaN/Infinity, 소수/unsafe를 실행: 뒤 두 값도 그대로 통과 | `probes/opencode-tokens.mjs`, `probes/opencode-main-run-log.txt`; Node v24.21.0, 8개 입력, 메인 재실행 일치 | 실행 확인 |
-| <a id="E14"></a>E14 | AI SDK 원문 함수 직접 import: missing/0/부분합·음수·소수·overflow·NaN·Infinity·독립 output 9개 assertion 일치. #140 통과가 아니라 현행 집계의 반례 | `probes/ai-sdk-usage.mjs`, `probes/ai-sdk-main-run-log.txt`; Node v24.21.0, 메인 재실행 | 실행 확인 |
+| <a id="E13"></a>E13 | OpenCode 원문 정규화 함수에서 타입 주석만 제거해 정상0/1, missing/음수/NaN/Infinity, 소수/unsafe를 실행: 뒤 두 값도 그대로 통과 | 로컬 probe; Node v24.21.0, 8개 입력, 메인 재실행 일치 | 실행 확인 |
+| <a id="E14"></a>E14 | AI SDK 원문 함수 직접 import: missing/0/부분합·음수·소수·overflow·NaN·Infinity·독립 output 9개 assertion 일치. #140 통과가 아니라 현행 집계의 반례 | 로컬 probe; Node v24.21.0, 메인 재실행 | 실행 확인 |
 | <a id="E15"></a>E15 | Pydantic AI는 미측정 요청이 있으면 합계는 lower bound임을 별도 표현하고 사용량 추출 오류는 warning으로 격리한다. 기본 토큰0은 이식하지 않는다 | [unmeasured_requests](https://github.com/pydantic/pydantic-ai/blob/cc37d25c2bcba1ecaa8ec80614fac99142db7930/pydantic_ai_slim/pydantic_ai/usage.py#L160-L165), [추출 오류](https://github.com/pydantic/pydantic-ai/blob/cc37d25c2bcba1ecaa8ec80614fac99142db7930/pydantic_ai_slim/pydantic_ai/usage.py#L385-L416) | 소스 확인 |
 
 ## 패턴
