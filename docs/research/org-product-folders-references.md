@@ -211,6 +211,8 @@
 
 추가 확인(메인, 2026-11-10, #126): agy 1.5.3, 키링 서비스가 없는 이 컴퓨터. 기록에 `Failed to load stored token from keyring, falling back to file`이 남고 로그인은 HOME의 `.gemini/antigravity-cli/antigravity-oauth-token`에서 읽는다. 임시 HOME의 그 자리를 연결 폴더 로그인 파일을 가리키는 링크로 두고 `agy models`(모델 호출 없음)를 strace로 따라갔다. 링크로 읽었고, 접근 토큰이 만료돼 갱신한 로그인을 `open(O_WRONLY|O_CREAT|O_TRUNC, 0600)`으로 같은 경로에 써서 원본(같은 inode)이 바뀌고 링크는 남았다. 토큰 파일 잠금은 보이지 않았다. 로그인이 없을 때 stream-json 실행은 결과 없이 `Error: authentication required. Run 'agy' to log in, then retry.`와 종료 코드 1로 끝난다(#91 서버 기록). 로그인 명령(`agy` 대화형 로그인)이 링크를 따라 쓰는지와 갱신 토큰 회전·동시 갱신은 확인하지 않았다. 로그인 명령이 링크를 보통 파일로 바꿔도 다음 준비 확인·실행이 그 파일을 원본으로 옮긴다.
 
+실제 실행(메인, 2026-11-10, `079421a`, agy 1.5.3, gemini-3.8-flash-low, 사용자 승인): 연결 폴더에만 로그인을 둔 새 제품 폴더에서 격리를 끈 연결 확인(`provider-smoke.mjs`)과 격리를 켠 새 조직 Lead 실행 2번(시험 전용 이미지 `babojubot-runner-agy`)이 모두 `completed`였고 조직 도구로 답장했다. 컨테이너에는 조직 제품 폴더와 로그인 전용 폴더만 들어갔다. 실행 중 로그인 갱신은 일어나지 않아 갱신 뒤 다른 조직 실행은 합성 시험으로만 확인했다.
+
 | 열린 결정 | owner | 선택지와 근거 |
 |---|---|---|
 | 로그인 운영 방식 | 사용자 결정 | 위 ①·②·③. 권고는 Claude①, OpenCode2②, Codex② 또는①+직렬화; agy는 인증 분리 계약 확인 전 보류 |
