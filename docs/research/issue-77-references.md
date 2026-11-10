@@ -1,6 +1,6 @@
 # issue-77 레퍼런스 조사: Event 폭주 중 대시보드 조회 갱신
 
-조사일: 2026-10-23. 대상: [#77](https://github.com/babo-jeonguk/BaboJUBot/issues/77). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-77/`(git 무시). 조사 receipt: [#77 댓글](https://github.com/babo-jeonguk/BaboJUBot/issues/77#issuecomment-6360074474).
+조사일: 2026-10-23. 대상: [#77](https://github.com/babo-jeonguk/BaboJUBot/issues/77). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 조사 receipt: [#77 댓글](https://github.com/babo-jeonguk/BaboJUBot/issues/77#issuecomment-6360074474).
 
 권고는 **현재 조회를 끝까지 반영하고, 조회 중 생긴 변경을 별도 dirty 상태로 기억해 뒤이어 한 번 더 회수하는 방식**이다. `cancelRefetch:false`만 적용하거나 고정 간격 배처만 추가하면 마지막 변경을 놓칠 수 있다. 특히 첫 Event 전에 시작된 조회에 합류하는 경우와 offline pause를 별도로 다뤄야 한다.
 
@@ -24,11 +24,11 @@
 | [#53 D10](issue-53-references.md#결정-권고) | 조직 범위·안정 ID, replay 보장과 snapshot 복구 구별 | 과거 소스 근거를 새 E로 승격하지 않음. 서버의 영속 run/wake 큐를 브라우저에 옮기지 않음 |
 | [#64 D06/V10](issue-64-references.md#구현-참고) | draft 보존·다른 탭 revision 반영 회귀 | #64 완료 댓글과 현행 instructions E2E를 읽음. 화면 디자인 재조사는 하지 않음 |
 | [#50](issue-50-references.md#결정-권고)·[#59](issue-59-references.md#구현-참고) | 마지막 정상 자료/오류 구분 및 제어 화면 회귀 범위 | 맥락만 참조. 캡처·과거 실행 결과는 이번 조사 결과로 세지 않음 |
-| 기존 `.reference-cache/` | 후보·과거 checkout 탐색 힌트 | 결정 근거는 아래 고정 SHA 원문을 새로 읽음. upstream 전체가 변하지 않았다고 주장하지 않음 |
+| 기존 로컬 조사 캐시 | 후보·과거 checkout 탐색 힌트 | 결정 근거는 아래 고정 SHA 원문을 새로 읽음. upstream 전체가 변하지 않았다고 주장하지 않음 |
 
 ## 레퍼런스
 
-중복을 제거한 후보 **23개 묶음**(관련 issue·연산자는 묶어서 집계)과 각 실행 경로는 `.reference-cache/issue-77/candidates.md`에 있다. 관점별 마지막 라운드는 다음과 같다. 검색 전체의 완전성이나 미발견 기능의 부재를 뜻하지 않는다.
+중복을 제거한 후보는 **23개 묶음**(관련 issue·연산자는 묶어서 집계)이다. 관점별 마지막 라운드는 다음과 같다. 검색 전체의 완전성이나 미발견 기능의 부재를 뜻하지 않는다.
 
 | 관점 | 탐색·saturation 근거 |
 |---|---|
@@ -48,7 +48,7 @@
 
 ## 근거
 
-소스 확인은 테스트를 읽은 경우까지 포함하며, 실행한 것은 별도 행이다. 메인이 결정용 원문을 다시 열어 확인한 기록은 `.reference-cache/issue-77/main-verification.md`에 있다.
+소스 확인은 테스트를 읽은 경우까지 포함하며, 실행한 것은 별도 행이다. 메인이 결정용 원문을 다시 열어 확인했다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -65,17 +65,17 @@
 | <a id="E11"></a>E11 | Paperclip은 300ms trailing throttle+동일 필터 Map을 쓴다. flush 시작에 timer/pending을 비운 뒤 await하므로 진행 HTTP 중 다음 창도 flush 가능하다. 실제 query 동일성과 필터 문자열 동일성은 다르다 | [createInvalidationBatcher](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/lib/query-invalidation-batcher.ts#L40-L125) | 소스 확인 |
 | <a id="E12"></a>E12 | provider는 Event를 배처로 보내고 첫 연결/재연결에는 raw QueryClient의 active invalidate(false)를 쓴다. replay가 없어서 첫 구독 전 누락도 reconcile한다 | [provider 배처](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/context/LiveUpdatesProvider.tsx#L2008-L2019), [onopen/onmessage](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/context/LiveUpdatesProvider.tsx#L2101-L2149) | 소스 확인 |
 | <a id="E13"></a>E13 | Paperclip 배처 테스트는 즉시 resolve fakeClient로 창 안 중복 제거·별도 필터·dispose를 검사한다. 느린 응답/최종 서버 상태는 이 파일의 assertions에 없다 | [query-invalidation-batcher tests](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/lib/query-invalidation-batcher.test.ts#L9-L148) | 소스 확인 |
-| <a id="E14"></a>E14 | 설치본 QueryClient+QueryObserver와 signal을 쓰지 않는 deferred queryFn에서 Event10회→호출10회·진행 최대10회. 마지막만 cache에 반영되어도 앞선 물리 작업은 남는다 | `probes/query-burst.mjs` 기본 취소 사례, `query-burst-result.json` | 실행 확인 |
+| <a id="E14"></a>E14 | 설치본 QueryClient+QueryObserver와 signal을 쓰지 않는 deferred queryFn에서 Event10회→호출10회·진행 최대10회. 마지막만 cache에 반영되어도 앞선 물리 작업은 남는다 | 로컬 probe 기본 취소 사례 | 실행 확인 |
 | <a id="E15"></a>E15 | false-only는 호출1·진행최대1이지만 server10/cache1/invalidated=false. naïve dirty-drain이 첫 Event 전에 시작된 조회에 합류해도 cache1에 머문다. 초기 무캐시 default도 중간 Event를 새 fetch로 회수하지 않는다 | 같은 probe의 false-only/preexisting/initial 사례. 조회 시작 때 snapshot을 고정 | 실행 확인 |
 | <a id="E16"></a>E16 | 별도 dirty 모형은 진행 응답1을 먼저 cache에 반영하고 후속 snapshot10으로 수렴(호출2·최대1). 첫 오류 뒤 dirty 후속, 기존 조회 합류 시 dirty 미소비, 매 응답 중 새 Event가 오는 경우도 통과했다 | 같은 probe의 dirty-drain/오류/existing-aware 사례. 모형 검증이며 제품 수정이 아님 | 실행 확인 |
 | <a id="E17"></a>E17 | offline 상태에서 invalidate(false)를 await해도 fetchStatus=paused·queryFn 호출0이었다 | 같은 probe의 paused 사례, `onlineManager.setOnline(false)` | 실행 확인 |
-| <a id="E18"></a>E18 | p-debounce 원본 직접 import: 입력1/2/3은 실행1/3·최대진행1, 첫 caller 완료 시 tail은 pending. 첫 거부 뒤 queued 성공도 통과했다 | `probes/reference-schedulers.mjs`, `reference-schedulers-result.json`; 원본 SHA E09, 외부 API 없음 | 실행 확인 |
+| <a id="E18"></a>E18 | p-debounce 원본 직접 import: 입력1/2/3은 실행1/3·최대진행1, 첫 caller 완료 시 tail은 pending. 첫 거부 뒤 queued 성공도 통과했다 | 로컬 probe; 원본 SHA E09, 외부 API 없음 | 실행 확인 |
 | <a id="E19"></a>E19 | Paperclip 원본 배처 import: 한 창20회는1회로 합쳐지지만 미완료인 두 창을 flush하면 최대진행2. prefix/exact 중첩 필터도2회 호출했다 | 같은 probe. visibility만 visible stub, deferred fake invalidate와 명시 flush 사용. 실제 300ms timer/HTTP/UI 검증은 아님 | 실행 확인 |
 | <a id="E20"></a>E20 | #7180은 WS invalidation 후 성공 응답이 stale 표시를 없애는 실패와 호출 제어를 논의한다. #6536은 초기 fetch 동안 재조회가 무시되는 보고다 | [Query #7180](https://github.com/TanStack/query/discussions/7180), [#6536](https://github.com/TanStack/query/issues/6536). 역사적 문서이며 현재 사실은 E03/E06/E15로 확인 | 문서 주장 |
 | <a id="E21"></a>E21 | route.fetch/fulfill로 HTTP 응답을 잡고, routeWebSocket으로 frame 입력을 제어할 수 있다. waitForResponse는 동작 전에 등록하는 예시를 제공한다 | [Playwright network](https://playwright.dev/docs/network), [Route](https://playwright.dev/docs/api/class-route), [routeWebSocket](https://playwright.dev/docs/api/class-page#page-route-web-socket), [waitForResponse](https://playwright.dev/docs/api/class-page#page-wait-for-response) | 문서 주장 |
 | <a id="E22"></a>E22 | 큐의 식별자는 실제 조회 또는 겹치지 않는 scope여야 한다. 모든 조직을 한 최신 인자로 합치면 다른 조직의 입력이 사라지고, 모든 조회를 한 완료 barrier로 묶으면 느린 한 조회가 나머지를 지연시킨다 | E01/E07/E09/E11 및 [구조의 Surface 책임](../architecture.md#module)에서 도출 | 추론 |
 
-실행 환경: Node v24.21.0, 키 없는 `env -i HOME="$HOME" PATH="$PATH"`, 패키지 추가 설치 없음. 설치본 query/queryClient/retryer/queryObserver 소스는 정확 버전 SHA 원문과 byte 일치했다. build artifact와 소스의 재빌드 동일성을 검증했다는 뜻은 아니다. 명령과 실패/결과는 `probes/run-log.txt`에 기록했다.
+실행 환경: Node v24.21.0, 키 없는 `env -i HOME="$HOME" PATH="$PATH"`, 패키지 추가 설치 없음. 설치본 query/queryClient/retryer/queryObserver 소스는 정확 버전 SHA 원문과 byte 일치했다. build artifact와 소스의 재빌드 동일성을 검증했다는 뜻은 아니다.
 
 ## 패턴
 

@@ -1,6 +1,6 @@
 # issue-64 레퍼런스 조사: Role·Soul·Skill 편집과 revision
 
-조사일: 2026-10-23. 대상: [#64](https://github.com/babo-jeonguk/BaboJUBot/issues/64). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-64/`(git 무시). 제품 코드·테스트·설정은 변경하지 않는다.
+조사일: 2026-10-23. 대상: [#64](https://github.com/babo-jeonguk/BaboJUBot/issues/64). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 제품 코드·테스트·설정은 변경하지 않는다.
 
 이슈 기록: [조사 receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/64#issuecomment-6347651179). 게시 후 문서의 권고·열린 결정과 대조했다.
 
@@ -20,7 +20,7 @@
 
 | 재사용한 조사 | 쓰는 범위 | 재확인 |
 |---|---|---|
-| [#54 사본·bundle 권고](issue-54-references.md#결정-권고) | 독립 사본, 원본 provenance, 전체 bundle 내용 버전과 entry 해시 구분 | 기존 E를 새 E로 옮기지 않음. Paperclip 이전 `c9669a6…`와 이번 ref의 파일별 blob 비교는 `recon/paperclip.md`, `recon/editor-paperclip.md`. UI 본문 변경, UI 테스트 동일; 이번 원문 재열람 |
+| [#54 사본·bundle 권고](issue-54-references.md#결정-권고) | 독립 사본, 원본 provenance, 전체 bundle 내용 버전과 entry 해시 구분 | 기존 E를 새 E로 옮기지 않음. Paperclip 이전 `c9669a6…`와 이번 ref의 파일별 blob을 비교했다. UI 본문 변경, UI 테스트 동일; 이번 원문 재열람 |
 | [#53](issue-53-references.md#구현-참고)·[실행 모델](agent-runtime-models.md#핵심-판단) | 세션 재개와 실행 시도 스냅샷의 배경 | 현행 core/harness·run, db/runs의 실제 계약을 다시 읽고 제한 실행(E13–E15). 이전 조사로 현행 동작을 대신하지 않음 |
 | [#50](issue-50-references.md#결정-권고)·[Paperclip 대시보드](paperclip-dashboard.md) | scope·탭 배경 | 배치 수치는 #50 확정 댓글을 우선. 과거 캡처를 이번 편집 화면의 실행 근거로 쓰지 않음 |
 | [#56](issue-56-references.md#구현-참고) | 사용자 편집+Event+Lead 깨우기의 인접 패턴 | 현행 db/research-map.ts 재열람. 지도 편집의 초기 승인 뒤 gate·동일 값 no-op를 사본 편집에 그대로 적용하지 않음 |
@@ -29,7 +29,7 @@
 
 ## 레퍼런스
 
-관점별로 3라운드 검색했다. agent/prompt 구성에서는 파일 기반 현재값·불변 번호 이력·가변 label의 세 유형, 동시성에서는 조건부 저장·원자적 이력·동일 값 단축과 검사 순서, UI에서는 draft/base·이동 보호·읽기 전용 선택의 패턴을 얻었다. 마지막 라운드는 이 유형의 변형을 더했지만 새 질문·실패 부류를 추가하지 않아 saturation으로 판단했다. 이는 공개 자료의 제한된 탐색 결과이며 전수조사는 아니다. 중복 제거한 후보는19개다. 전체 후보·검색 경로·실행 경로·선정 이유는 `candidates.md`와 `notes/`에 보존한다.
+관점별로 3라운드 검색했다. agent/prompt 구성에서는 파일 기반 현재값·불변 번호 이력·가변 label의 세 유형, 동시성에서는 조건부 저장·원자적 이력·동일 값 단축과 검사 순서, UI에서는 draft/base·이동 보호·읽기 전용 선택의 패턴을 얻었다. 마지막 라운드는 이 유형의 변형을 더했지만 새 질문·실패 부류를 추가하지 않아 saturation으로 판단했다. 이는 공개 자료의 제한된 탐색 결과이며 전수조사는 아니다. 중복 제거한 후보는19개다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -44,7 +44,7 @@
 
 ## 근거
 
-소스 링크는 고정 SHA다. 테스트를 읽은 사실은 실행으로 세지 않는다. 메인이 아래 결정에 쓰는 원문을 다시 열었으며 일치·보정 결과는 `main-verification.md`에 남긴다.
+소스 링크는 고정 SHA다. 테스트를 읽은 사실은 실행으로 세지 않는다. 메인이 아래 결정에 쓰는 원문을 다시 열어 일치 여부를 확인하고 보정했다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -59,11 +59,11 @@
 | <a id="E09"></a>E09 | Paperclip UI는 query의 현재값과 draft/base를 분리한다. 저장에 pinned base를 보내고 성공/취소 때 초기화한다. 편집 중 poll을 멈추고 충돌 오류에서 draft를 보존하는 mock 테스트가 있다 | [save/cancel](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.tsx#L2559-L2652) · [poll](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.tsx#L2303-L2346) · [tests](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.instructions.test.tsx#L468-L525) | 소스 확인 |
 | <a id="E10"></a>E10 | legacy History는 open 시 조회, 별도 로딩·오류·pagination과 과거 본문 pre를 제공한다. 현 agent_files는 History를 숨긴다. 번호 대신 짧은 UUID를 쓰고 diff/restore가 있으므로 #64 계약 그대로는 아니다 | [InstructionHistory](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/components/InstructionHistory.tsx#L22-L145) · [render condition](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.tsx#L3125-L3136) | 소스 확인 |
 | <a id="E11"></a>E11 | route 이동 가드는 있지만 file 선택은 base refs를 지우며 해당 callback에 dirty 검사가 없다. 뒤의 version effect는 base가 없으면 draft를 지울 수 있다. 탭 전환 손실 가능성은 이 경로에서 도출한 추론이고 실행 재현은 아니다 | [navigation](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.tsx#L1088-L1162) · [reset](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.tsx#L2275-L2282) · [select](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.tsx#L2951-L2967) · [effect](https://github.com/paperclipai/paperclip/blob/78b833c4958465b5e345b0e337018011b00dab72/ui/src/pages/AgentDetail.tsx#L2524-L2539) | 소스 확인 |
-| <a id="E12"></a>E12 | CodeMirror 공식 예제의 focus 가능한 readonly 영역에서 입력 후 내용 불변, Ctrl+A로 본문 선택을 확인했다. desktop/390px 캡처에 선택 영역이 보인다 | [실행 예제](https://codemirror.net/examples/readonly/), `probes/capture-ui.mjs`, `captures/captures.md` | 실행 확인 |
-| <a id="E13"></a>E13 | 독립 PG 모형에서 동시 저장 중 하나 충돌, 현재값/revision/Event/wake rollback, 복합 귀속 FK, 사본 독립, 종료 거부, 응답 유실 재시도, 동일 내용 이력과 내용 버전 분리를 확인했다. 제품·upstream API 검증이 아니다 | `probes/revisions-pg.mjs`, `revisions-pg-log-final.txt`; Node24.21.0/PG18.4, 전체 E14/E15 포함10건·35 assertions | 실행 확인(제한) |
+| <a id="E12"></a>E12 | CodeMirror 공식 예제의 focus 가능한 readonly 영역에서 입력 후 내용 불변, Ctrl+A로 본문 선택을 확인했다. desktop/390px 캡처에 선택 영역이 보인다 | [실행 예제](https://codemirror.net/examples/readonly/), 로컬 probe·캡처 | 실행 확인 |
+| <a id="E13"></a>E13 | 독립 PG 모형에서 동시 저장 중 하나 충돌, 현재값/revision/Event/wake rollback, 복합 귀속 FK, 사본 독립, 종료 거부, 응답 유실 재시도, 동일 내용 이력과 내용 버전 분리를 확인했다. 제품·upstream API 검증이 아니다 | 로컬 probe; Node24.21.0/PG18.4, 전체 E14/E15 포함10건·35 assertions | 실행 확인(제한) |
 | <a id="E14"></a>E14 | 현행 instructionsBundleVersion/planRunStart를 직접 호출했다. 같은 내용은 같은 버전·이전 session, 다른 내용은 새 session. A→B→A 중 B 실행이 없으면 기존 A session을 재개한다 | 현행 [harness](../../packages/core/src/harness.ts)·[run](../../packages/core/src/run.ts), 동일 probe. 로컬 기준 commit `b0ea70e30931d357454e2e6a9bcb469ae81b0f61` | 실행 확인(순수 함수) |
 | <a id="E15"></a>E15 | 현행 claimNextRun은 조직 FOR SHARE→agent FOR UPDATE 뒤 사본을 읽고 그 값으로 bundle과 runtime 요청을 구성한다. 원본 provenance sourceDigest는 내용과 별도다 | 현행 [db/runs](../../packages/db/src/runs.ts) `claimNextRun`·`selectInstructions`, [schema](../../packages/db/src/schema.ts) `instructionCopies`; 같은 commit | 소스 확인 |
-| <a id="E16"></a>E16 | 고정 UI SHA의 InstructionHistory 원문을 합성 API와 native Button adapter로 띄워 History→과거 revision 선택→읽기 전용 pre, 로딩·오류·빈 목록을 조작했다. 빈 목록에는 별도 설명이 없었다. 1440/390px 포함5캡처 | `selfhost/history-ui.md`, `probes/surface-capture-log.json`; 원문 SHA256 일치. restore 미클릭, theme 없음 | 실행 확인(제한) |
+| <a id="E16"></a>E16 | 고정 UI SHA의 InstructionHistory 원문을 합성 API와 native Button adapter로 띄워 History→과거 revision 선택→읽기 전용 pre, 로딩·오류·빈 목록을 조작했다. 빈 목록에는 별도 설명이 없었다. 1440/390px 포함5캡처 | 로컬 self-host·실행 기록; 원문 SHA256 일치. restore 미클릭, theme 없음 | 실행 확인(제한) |
 
 근거 16개: 실행4·소스10·문서2. E13/E14는 같은 10건 실행의 다른 관찰이므로 검사 수를 중복 합산하지 않는다. E11의 위험과 아래 권고는 근거에서 도출한 판단이다.
 

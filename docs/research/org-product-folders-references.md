@@ -1,6 +1,6 @@
 # org-product-folders 레퍼런스 조사: 조직별 제품 폴더와 로그인 공유
 
-조사일: 2026-11-06. 대상: 이슈 없는 기술 조사. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/org-product-folders/`(git 무시). 제품 코드·테스트·설정·다른 문서는 변경하지 않는다.
+조사일: 2026-11-06. 대상: 이슈 없는 기술 조사. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 제품 코드·테스트·설정·다른 문서는 변경하지 않는다.
 
 ## Brief
 
@@ -26,7 +26,7 @@
 
 ## 레퍼런스
 
-조사 관점은 CLI 원본·저장/동시성 실패·오케스트레이터·격리 서비스다. 각 관점의 마지막 검색은 기존 패턴(분리 home, 자격 증명 연결/복제, 갱신 주체 통합, 프록시)의 변형을 보강했으며 새 패턴을 더하지 않았다. 비공개 writer는 검색 포화와 별개로 미확인이다. 라운드별 검색·전체 후보·실행 경로·심층 선정 이유는 `.reference-cache/org-product-folders/candidates.md`와 `notes/`에 남겼다.
+조사 관점은 CLI 원본·저장/동시성 실패·오케스트레이터·격리 서비스다. 각 관점의 마지막 검색은 기존 패턴(분리 home, 자격 증명 연결/복제, 갱신 주체 통합, 프록시)의 변형을 보강했으며 새 패턴을 더하지 않았다. 비공개 writer는 검색 포화와 별개로 미확인이다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -47,7 +47,7 @@
 
 ## 근거
 
-아래 소스 확인은 실행 성공을 뜻하지 않는다. 전체 호출 경로·테스트 이름·미확인은 `recon/`에, 메인의 원문 재독·정정 결과는 `main-verification.md`에 있다.
+아래 소스 확인은 실행 성공을 뜻하지 않는다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -76,7 +76,7 @@
 | <a id="E23"></a>E23 | Hermes는 profile 복제 때 회전형 OAuth grant 사본을 제거하고 root grant를 참조한다. Codex refresh는 원본 store transaction 안에서 재독→HTTP→저장하며 이미 갱신됐으면 저장값을 채택한다. CLI home 전체의 안전 공유를 뜻하지 않는다. | [profiles.py L1215–1237](https://github.com/NousResearch/hermes-agent/blob/ca4360692055bdb4df3a695c164646e528891da8/hermes_cli/profiles.py#L1215-L1237), [auth_codex.py L523–564](https://github.com/NousResearch/hermes-agent/blob/ca4360692055bdb4df3a695c164646e528891da8/hermes_cli/auth_codex.py#L523-L564) | 소스 확인 |
 | <a id="E24"></a>E24 | Sculptor Docker recipe는 호스트 Claude config 폴더 전체를 RW 마운트하고 OAuth env도 전달한다. 컨테이너 존재만으로 설정·이력의 조직 분리가 되는 것은 아니다. | [run-backend.py L147–169](https://github.com/imbue-ai/sculptor/blob/5435bd424044d37d66be43cf746448a82700843d/container/recipes/docker/run-backend.py#L147-L169) | 소스 확인 |
 | <a id="E25"></a>E25 | Docker Sandboxes는 호스트 프록시가 인증 header를 넣고 sandbox에는 sentinel만 보이게 한다. OAuth passthrough를 켜면 실제 token이 안으로 들어오므로 예외다. 네 CLI 구독 로그인 모두에 적용됨을 검증한 것은 아니다. | [공식 Manage credentials](https://docs.docker.com/ai/sandboxes/configuration/credentials/#how-credential-injection-works) | 문서 주장 |
-| <a id="E26"></a>E26 | 합성 파일 실험에서 truncate는 symlink/단일 파일 mount 원본에 반영됐다. plain rename은 symlink 자체를 대체했다. 단일 파일 mount rename은 일반 uid /tmp에서 EPERM, root 대조에서 EBUSY로 실패했다. 폴더 mount rename은 성공했다. 호스트 rename 후 단일 파일 mount는 이전 inode 내용을 계속 읽었다. | `probes/mount-semantics.py`, `probes/run-log.txt`; Docker29.3.1·Node24 공개 기존 이미지 sha256:55fb5f5a527e…·WSL2 Linux6.18.54.1; network none·합성 데이터만. [rename 계약](https://man7.org/linux/man-pages/man2/rename.2.html), [Docker mount 계약](https://docs.docker.com/engine/storage/bind-mounts/) | 실행 확인 |
+| <a id="E26"></a>E26 | 합성 파일 실험에서 truncate는 symlink/단일 파일 mount 원본에 반영됐다. plain rename은 symlink 자체를 대체했다. 단일 파일 mount rename은 일반 uid /tmp에서 EPERM, root 대조에서 EBUSY로 실패했다. 폴더 mount rename은 성공했다. 호스트 rename 후 단일 파일 mount는 이전 inode 내용을 계속 읽었다. | 로컬 probe; Docker29.3.1·Node24 공개 기존 이미지 sha256:55fb5f5a527e…·WSL2 Linux6.18.54.1; network none·합성 데이터만. [rename 계약](https://man7.org/linux/man-pages/man2/rename.2.html), [Docker mount 계약](https://docs.docker.com/engine/storage/bind-mounts/) | 실행 확인 |
 | <a id="E27"></a>E27 | agy 공식 문서는 OS keyring 재사용, API key의 설정+env 조합, cwd→ID cache·backend 확인을 명시한다. 과거 컨테이너 fallback 파일은 사용자 보고일 뿐 최신 writer 계약이 아니다. | [keyring·API key·ADC](https://antigravity.google/docs/install#local-silent-keyring-sign-in), [세션 cache](https://antigravity.google/docs/cli/commands/resume/#the-cache-file), [과거 사용자 보고 #479](https://github.com/google-antigravity/antigravity-cli/issues/479): ~/.gemini/antigravity-cli/antigravity-oauth-token | 문서 주장 |
 | <a id="E28"></a>E28 | Codex API-key env와 구독 OAuth는 다르다. 공식 app-server의 외부 ChatGPT token 모드는 experimental이며 host가 access token 제공·401 갱신 응답을 소유한다. | [OpenAI Docs: external ChatGPT tokens](https://learn.chatgpt.com/docs/app-server#3c-log-in-with-externally-managed-chatgpt-tokens-chatgptauthtokens); env reader는 고정 SHA manager.rs L1049–1065(메인 재독 기록). API key 지원 표면은 [공식 non-interactive](https://learn.chatgpt.com/docs/non-interactive-mode) | 문서 주장 |
 | <a id="E29"></a>E29 | OpenClaw 문서는 Claude config dir와 Linux/Windows credential dir를 따로 지정하는 예를 준다. macOS Keychain 및 자동 이력 복구의 제약을 함께 명시한다. 이는 Claude runtime writer의 소스 확인이 아니다. | [공식 CLI backends: Separate Claude configuration](https://docs.openclaw.ai/gateway/cli-backends#separate-claude-configuration) | 문서 주장 |
@@ -87,7 +87,7 @@
 
 | 프로바이더 | 저장·설정 분리 수단 | 갱신 쓰기·회전·잠금 | 로그인 저장소 자체의 실행 설정 혼재 |
 |---|---|---|---|
-| Codex | file는 home/auth.json, keyring은 home 기반 식별자. CODEX_HOME은 config·세션도 이동. 별도 auth-dir flag는 조사 경로에서 확인 못 함(E02). API key env·experimental app-server 외부 token 경로는 E28·recon 참고 | 해당 SHA는 원자 교체·symlink target 보존·target sidecar CAS. 응답 refresh token 교체, HTTP 중복까지 배타 아님(E03–06) | auth.json schema는 credential 전용. 상위 home 공유는 config/AGENTS/skills/plugins까지 노출. 쓰기 공유 credential 자체의 신원·issuer 변조와 구독 탈취 위험은 남음(E02·05) |
+| Codex | file는 home/auth.json, keyring은 home 기반 식별자. CODEX_HOME은 config·세션도 이동. 별도 auth-dir flag는 조사 경로에서 확인 못 함(E02). API key env·experimental app-server 외부 token 경로는 E28 참고 | 해당 SHA는 원자 교체·symlink target 보존·target sidecar CAS. 응답 refresh token 교체, HTTP 중복까지 배타 아님(E03–06) | auth.json schema는 credential 전용. 상위 home 공유는 config/AGENTS/skills/plugins까지 노출. 쓰기 공유 credential 자체의 신원·issuer 변조와 구독 탈취 위험은 남음(E02·05) |
 | Claude Code | config dir에 credential 파일·설정·세션, macOS는 dir별 Keychain. setup-token env로 로그인 파일 없이 실행 가능(E08–09). 별도 credential dir는 생태계 공식 예시까지 확인(E29), 배포 버전 검증 필요 | 같은 머신 renewal 조정은 공식 계약. writer의 in-place/rename·정확 lock 경로·회전/grace는 미확인. symlink 파손은 사용자 보고(E10–11) | credential store에 MCP/plugin secret도 포함. sensitive 값을 통한 임의 실행은 검증 못 함. 전체 config dir는 hook/plugin 실행 설정까지 공유(E10·11) |
 | OpenCode 2.2.5 | XDG config/data/state/cache 분리, OPENCODE_DB로 DB 위치 선택. 인증만 별도 파일로 지정하는 구조 아님(E13·15) | SQLite row update/WAL. credential lock 안에서 재독→refresh→update. 동일 DB·동일 lock root 필요. 회전 정책은 integration/provider별이며 일률적 single-use 아님(E14) | credential schema에 직접 실행 명령 없음, remote config는 plugin/local command 거부. DB에는 세션도 함께 있음. config/plugins를 공유하면 원래 위험 지속(E13·15) |
 | Antigravity agy | OS keyring·파일 fallback은 공개 문서로 확인. 기본 keyring과 과거 fallback 파일 경로는 E27. 정확 namespace·별도 auth-dir·HOME/XDG 효과는 실행 검증 못 함 | refresh token 회전·writer·rename·lock·경쟁 모두 미확인. 개인 파일·설치 바이너리를 열어 추정하지 않음 | 공개 changelog는 plugin/hook 지원을 보여주나 credential 파일에 실행 설정이 섞이는지 미확인. 전체 .gemini나 keyring 공유는 안전하다고 판정 못 함 |
@@ -224,8 +224,8 @@
 ## 한계와 미확인
 
 - 개인 로그인·설정 파일을 열지 않았으며 CLI 로그인·실제 모델·유료 API를 실행하지 않았다. Claude·agy runtime writer의 저장 경로·rename·잠금·서버 회전 정책을 소스로 확정할 수 없는 항목은 미확인으로 남겼다. 공식 changelog·사용자 issue는 런타임 소스 증거와 구분했다.
-- 실행 확인은 합성 파일의 OS/Docker 의미뿐이다. 일반 uid /tmp의 EPERM과 root의 EBUSY를 구분했으며, 제품 uid·대상 디렉터리·Desktop·rootless·remote daemon·Windows/macOS·NFS에서의 결과는 미검증이다. 초기 EBUSY 단정 assertion 실패도 `probes/initial-permission-log.txt`에 보존했다.
+- 실행 확인은 합성 파일의 OS/Docker 의미뿐이다. 일반 uid /tmp의 EPERM과 root의 EBUSY를 구분했으며, 제품 uid·대상 디렉터리·Desktop·rootless·remote daemon·Windows/macOS·NFS에서의 결과는 미검증이다. 초기 EBUSY 단정 assertion 실패도 로컬 실행 기록에 보존했다.
 - Codex commit/CAS·OpenCode2 refresh lock·OpenHands credential CAS·Hermes root grant 동작은 소스를 읽었다. upstream 테스트는 읽었고 실행하지 않았다. 해당 CLI 전체 suite·인증 refresh 경합·프로바이더 통합/E2E·실제 세션 재개는 미실행이다.
 - 확인한 버전과 이 기기에 설치된 실행 버전이 일치하는지 확인하지 않았다. 기존 [격리 조사 5절](executor-isolation-references.md#5-격리-아래의-로그인)의 Codex 제자리 덮어쓰기, 예전 OpenCode auth.json, agy/Gemini 파일 전제는 위 버전에 적용하지 않는다. 기존 문서는 작업 경계에 따라 수정하지 않았다.
 - 문서/공개 저장소를 읽고 패턴만 참고했으며 외부 코드를 제품에 복사하지 않았다. 추후 복사 시 해당 SHA LICENSE·file header·NOTICE·의존성을 재확인하고 출처·THIRD_PARTY_NOTICES 규칙을 적용한다.
-- 문서 검사 결과와 단계 완료 기록은 `.reference-cache/org-product-folders/receipt.md`. 이슈·PR 댓글은 작성하지 않으며 commit·push·branch 조작도 하지 않는다.
+- 이슈·PR 댓글은 작성하지 않으며 commit·push·branch 조작도 하지 않는다.

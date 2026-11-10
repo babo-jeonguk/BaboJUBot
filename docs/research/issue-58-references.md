@@ -1,6 +1,6 @@
 # issue-58 레퍼런스 조사: 승인 정책 — 작업자 추가
 
-원문·실행 조사일: 2026-10-21. 종합·보고일: 2026-10-22. 대상: [#58](https://github.com/babo-jeonguk/BaboJUBot/issues/58). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-58/`(git 무시).
+원문·실행 조사일: 2026-10-21. 종합·보고일: 2026-10-22. 대상: [#58](https://github.com/babo-jeonguk/BaboJUBot/issues/58). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다.
 
 게시 기록: [reference-first receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/58#issuecomment-6320495049).
 
@@ -36,7 +36,7 @@ Discovery 관점: (1) OSS agent 도구 승인/채용 정책, (2) 인접 workflow
 
 ## 레퍼런스
 
-후보 **35행·중복 제외 34종**이다. 모든 후보의 공식 출처·질문 대응·실행 경로는 `candidates.md`에, 검색 라운드는 `notes/{policy,workflow,surface}.md`에 남겼다. 질문별 패턴 saturation이며 생태계 전수조사를 뜻하지 않는다.
+후보 **35행·중복 제외 34종**이다. 질문별 패턴 saturation이며 생태계 전수조사를 뜻하지 않는다.
 
 | 관점 | 마지막 라운드와 종료 근거 |
 |---|---|
@@ -62,7 +62,7 @@ Discovery 관점: (1) OSS agent 도구 승인/채용 정책, (2) 인접 workflow
 
 ## 근거
 
-현재 제품 소스 기준 HEAD는 `58e3155f05f62bb00fc296afda64104f57c273db`다. 메인이 아래 원문과 캡처6개를 직접 재열람했다. source test는 실행 표시가 없으면 읽기만 했다. Paperclip은 #54 ref와 파일별 blob을 비교했고 변경된 route는 새 SHA 원문으로 확인했다. assistant-ui card/focus/demo/test4개는 #57 ref와 blob 동일하므로 기존 [#57 E17](issue-57-references.md#E17)을 재사용하며 새 E로 옮기지 않는다. `main-verification.md`에 대응과 한계를 남겼다.
+현재 제품 소스 기준 HEAD는 `58e3155f05f62bb00fc296afda64104f57c273db`다. 메인이 아래 원문과 캡처6개를 직접 재열람했다. source test는 실행 표시가 없으면 읽기만 했다. Paperclip은 #54 ref와 파일별 blob을 비교했고 변경된 route는 새 SHA 원문으로 확인했다. assistant-ui card/focus/demo/test4개는 #57 ref와 blob 동일하므로 기존 [#57 E17](issue-57-references.md#E17)을 재사용하며 새 E로 옮기지 않는다.
 
 
 | ID | 관찰 | 출처 | 수준 |
@@ -77,11 +77,11 @@ Discovery 관점: (1) OSS agent 도구 승인/채용 정책, (2) 인접 workflow
 | <a id="E08"></a>E08 | Microsoft binding은 session/run context가 없으면 그대로 통과한다. 실패한 inner run 뒤 pending을 유지하고, 다음 run에서 미응답한 요청은 자동 반려한다. 서버 업무 승인 보존·DB 단일 효과·조직 경계와 같은 계약이 아니다. | [실패와 소모](https://github.com/microsoft/agent-framework/blob/08851e69d722b0e0961c08eecf8575db995f0172/dotnet/src/Microsoft.Agents.AI/ChatClient/ApprovalResponseBindingChatClient.cs#L97-L119) · [no session](https://github.com/microsoft/agent-framework/blob/08851e69d722b0e0961c08eecf8575db995f0172/dotnet/src/Microsoft.Agents.AI/ChatClient/ApprovalResponseBindingChatClient.cs#L193-L213) · [미응답 반려](https://github.com/microsoft/agent-framework/blob/08851e69d722b0e0961c08eecf8575db995f0172/dotnet/src/Microsoft.Agents.AI/ChatClient/ApprovalResponseBindingChatClient.cs#L330-L357) | 소스 확인 |
 | <a id="E09"></a>E09 | Temporal doUpdate는 validator→입력 재decode→accept→handler 첫 동기 부분 사이 yield를 피한다. handler 완료는 별도 promise 결과다. 테스트는 validator 인자 변경이 handler에 전달되지 않음, client deadline/abort와 workflow cancellation을 별도 assert한다. 외부 DB 부작용의 원자성 검증은 아니다. | [doUpdate](https://github.com/temporalio/sdk-typescript/blob/6a188eea837b77db33e2254397dc25b6c726b5cc/packages/workflow/src/internals.ts#L1014-L1115) · [mutation test](https://github.com/temporalio/sdk-typescript/blob/6a188eea837b77db33e2254397dc25b6c726b5cc/packages/test/src/test-integration-update.ts#L536-L558) · [timeout/cancel tests](https://github.com/temporalio/sdk-typescript/blob/6a188eea837b77db33e2254397dc25b6c726b5cc/packages/test/src/test-integration-update.ts#L830-L891) | 소스 확인 |
 | <a id="E10"></a>E10 | PG18은 충돌 행 잠금으로 갱신을 직렬화하고 NO KEY UPDATE는 KEY SHARE와 호환한다. Read Committed의 대기한 UPDATE는 갱신 행의 WHERE를 재평가한다. partial unique는 predicate에 맞는 행만 제한한다. | [row locks](https://www.postgresql.org/docs/18/explicit-locking.html#LOCKING-ROWS) · [Read Committed](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED) · [partial index](https://www.postgresql.org/docs/18/indexes-partial.html) | 문서 주장 |
-| <a id="E11"></a>E11 | 독립 PG 모형11시나리오·62assertions PASS. 무잠금 정책 읽기 반례, 정책/add 양방향 잠금, CAS 경합, 반려 사유, 결정/worker/copy/wake/Event5종 실패 rollback, 내용 문자열 snapshot·사본 ID 분리, 교차 조직/terminal 거부와 초기 승인 전용 unique를 확인했다. | `probes/postgres-policy.mjs`, `postgres-policy-final-log.txt`; Node24.21·PG18.4·pg8.23.1. 제품/upstream schema/API 실행 아님 | 실행 확인 |
+| <a id="E11"></a>E11 | 독립 PG 모형11시나리오·62assertions PASS. 무잠금 정책 읽기 반례, 정책/add 양방향 잠금, CAS 경합, 반려 사유, 결정/worker/copy/wake/Event5종 실패 rollback, 내용 문자열 snapshot·사본 ID 분리, 교차 조직/terminal 거부와 초기 승인 전용 unique를 확인했다. | 로컬 probe; Node24.21·PG18.4·pg8.23.1. 제품/upstream schema/API 실행 아님 | 실행 확인 |
 | <a id="E12"></a>E12 | Unleash는 path의 project/환경·서버 config로 switch를 제어한다. API 성공 후 toast/refetch, 실패는 error 경로다. PermissionSwitch는 UI access만 검사한다. 읽은 공개 tree에서 이 Enterprise 설정 API의 서버 guard는 확인하지 못했다. | [onConfirm](https://github.com/Unleash/unleash/blob/584eddf7fa4bd93bdbe2891da60bb052f419e214/frontend/src/component/project/Project/ProjectSettings/ChangeRequestConfiguration/ChangeRequestTable.tsx#L62-L95) · [UI guard](https://github.com/Unleash/unleash/blob/584eddf7fa4bd93bdbe2891da60bb052f419e214/frontend/src/component/common/PermissionSwitch/PermissionSwitch.tsx#L61-L94) · [설정 PUT](https://github.com/Unleash/unleash/blob/584eddf7fa4bd93bdbe2891da60bb052f419e214/frontend/src/hooks/api/actions/useChangeRequestApi/useChangeRequestApi.ts#L135-L150) | 소스 확인 |
 | <a id="E13"></a>E13 | Infisical detail은 request ID·decision·trimmed comment를 한 mutation에 담는다. 양 결정 버튼은 같은 pending을 쓰고 Button은 disabled/aria-busy를 설정한다. comment는 optional이고 성공 후 상세를 닫으므로 #58 필수 반려 사유·지속 receipt는 별도 변형이 필요하다. | [payload](https://github.com/Infisical/infisical/blob/0a76cc0fa8c8e9b39be62cc553cf687ecd77a7a4/frontend/src/pages/pam/PamApprovalRequestsPage/components/ApprovalRequestDetailSheet.tsx#L39-L79) · [공유 pending](https://github.com/Infisical/infisical/blob/0a76cc0fa8c8e9b39be62cc553cf687ecd77a7a4/frontend/src/pages/pam/PamApprovalRequestsPage/components/ApprovalRequestDetailSheet.tsx#L147-L177) · [disabled](https://github.com/Infisical/infisical/blob/0a76cc0fa8c8e9b39be62cc553cf687ecd77a7a4/frontend/src/components/v3/generic/Button/Button.tsx#L124-L131) | 소스 확인 |
 | <a id="E14"></a>E14 | Carbon 공식 지침은 처리중/성공/실패에 다른 label을 쓰고 처리중 연관 입력을 비활성화하도록 설명한다. 이번 Storybook blank 화면은 실행 근거에서 제외했다. | [InlineLoading 지침](https://www.carbondesignsystem.com/building-blocks/core/components/inline-loading/guidelines) | 문서 주장 |
-| <a id="E15"></a>E15 | 공개 UI6캡처를 직접 조작·재열람했다. handup은 원문·입력 사유→Inbox8→7·History→같은 사유/결정자/원문 receipt, assistant-ui는390px request→Denied를 보여준다. 서버 결정/권한/다른 탭은 이 데모로 검증하지 않았다. | [handup](https://gethandup.dev/) · [ApprovalCard](https://www.assistant-ui.com/elements/approval-card); `captures/captures.md`, `probes/surface-capture-log.json`. 자동 reset 방지용 browser clock 정지는 로그에 명시 | 실행 확인 |
+| <a id="E15"></a>E15 | 공개 UI6캡처를 직접 조작·재열람했다. handup은 원문·입력 사유→Inbox8→7·History→같은 사유/결정자/원문 receipt, assistant-ui는390px request→Denied를 보여준다. 서버 결정/권한/다른 탭은 이 데모로 검증하지 않았다. | [handup](https://gethandup.dev/) · [ApprovalCard](https://www.assistant-ui.com/elements/approval-card); 로컬 캡처·실행 기록. 자동 reset 방지용 browser clock 정지는 로그에 명시 | 실행 확인 |
 
 근거15개: **실행2·소스11·문서2**. 독립 SQL과 브라우저 client-only 데모는 제품 검증·전체 upstream 실행과 구별한다.
 

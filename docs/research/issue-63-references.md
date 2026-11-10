@@ -1,6 +1,6 @@
 # issue-63 레퍼런스 조사: 판 1 · 데모 시나리오와 흐름 전체 E2E
 
-조사일: 2026-10-27. 대상: [#63](https://github.com/babo-jeonguk/BaboJUBot/issues/63), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49). 구현 전 기술 권고이며 확정 계약이나 구현 완료가 아니다. 상세 자료: `.reference-cache/issue-63/`(git 무시). 제품 적합성 확인 기준 SHA: `71345a2be52f8b524b643c7ce25d31421c62a5b1`.
+조사일: 2026-10-27. 대상: [#63](https://github.com/babo-jeonguk/BaboJUBot/issues/63), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49). 구현 전 기술 권고이며 확정 계약이나 구현 완료가 아니다. 제품 적합성 확인 기준 SHA: `71345a2be52f8b524b643c7ce25d31421c62a5b1`.
 
 [이슈 receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/63#issuecomment-6433163794)를 게시한 뒤 다시 읽어 로컬 receipt 본문과 완전히 일치하고 #63이 열린 상태임을 확인했다.
 
@@ -29,11 +29,11 @@
 | [#61](issue-61-references.md#결정-권고)·[Inbox 상세](inbox-detail-references.md#결정-권고) | Inbox 진입·결정과 정리 구별 | #61의10/26 정정으로 과거 Working/보관 권고를 대체. 이번 scope에서 outbox 전체 재구현/재검증하지 않음 |
 | [#62](issue-62-references.md#결정-권고)·[#77](issue-77-references.md#결정-권고) | 관찰 지표와 Event 뒤 HTTP 수렴 | #62 완료·현행 config/기능 spec 확인. 새 E2E는 reload나 route fake로 실시간 회귀를 숨기지 않음 |
 | [#64](issue-64-references.md#결정-권고)·[#50](issue-50-references.md#결정-권고)·[#51](issue-51-references.md#결정-권고) | 사본/화면·지도 배치 범위 | 확정된 UI 의미만 재사용, 신규 배치 권고·타사 화면/캡처 재사용 없음. #64는 자체 검증에 남김 |
-| 기존 `.reference-cache/` | 후보와 checkout 찾기 | 기존 조사 원문 근거를 직접 승격하지 않음. 이번 고정 ref 원문을 새로 읽어 과거 ref blob 동일성을 주장하지 않음 |
+| 기존 로컬 조사 캐시 | 후보와 checkout 찾기 | 기존 조사 원문 근거를 직접 승격하지 않음. 이번 고정 ref 원문을 새로 읽어 과거 ref blob 동일성을 주장하지 않음 |
 
 ## 레퍼런스
 
-후보32행 중 MSW 중복1행을 제거한 **31개**, 외부 심층 **7종**이다. 현행 BaboJUBot은 외부 후보 수에서 제외한 적합성 확인이다. 전체 목록·URL·실행 경로·선정/제외 이유는 `.reference-cache/issue-63/candidates.md`에 있다. 검색 snippet만인 후보는 발견 기록이며 결정 근거에서 제외했다.
+후보32행 중 MSW 중복1행을 제거한 **31개**, 외부 심층 **7종**이다. 현행 BaboJUBot은 외부 후보 수에서 제외한 적합성 확인이다. 검색 snippet만인 후보는 발견 기록이며 결정 근거에서 제외했다.
 
 | 관점 | saturation 근거 |
 |---|---|
@@ -52,11 +52,11 @@
 | Temporal TS SDK | 인접 workflow | `7d27a7ff5937c62954f61fce962370e1440b3bbf` | MIT | 소스·테스트/JSDoc 읽기 | 실제 workflow+대체 외부 효과·공유 clock·신호 대기 |
 | XState | 상태기계·clock 부품 | `060cd63378b46b32e7559d569ed3ad112ee60084` | MIT | 소스·clock만 실행 | 금지 이벤트 누락·하위 완료/전체 완료·clock 경계. v6 계열 HEAD를 stable API로 간주하지 않음 |
 
-확인일은 모두2026-10-27. 각 대상의 진입→상태 변경→계약→테스트→실패→이력은 캐시 `recon/`에 기록했다. **설계 참고만** 권고한다. 코드 복사를 하려면 해당 SHA의 LICENSE/header/NOTICE/함께 오는 의존성을 별도 검토하고 출처·고지를 추가해야 한다.
+확인일은 모두2026-10-27. 각 대상의 진입→상태 변경→계약→테스트→실패→이력은 로컬 조사 기록에 남겼다. **설계 참고만** 권고한다. 코드 복사를 하려면 해당 SHA의 LICENSE/header/NOTICE/함께 오는 의존성을 별도 검토하고 출처·고지를 추가해야 한다.
 
 ## 근거
 
-26개: 실행 확인6·소스 확인18·문서 주장2. 적용 판단은 아래 패턴·권고의 추론이며 원본에서 확인한 사실과 구별한다. worker 보고에 쓴 원문을 메인이 다시 열어 `main-verification.md`에 일치·범위를 기록했다.
+26개: 실행 확인6·소스 확인18·문서 주장2. 적용 판단은 아래 패턴·권고의 추론이며 원본에서 확인한 사실과 구별한다. worker 보고에 쓴 원문을 메인이 다시 열어 일치·범위를 확인했다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -65,27 +65,27 @@
 | <a id="E03"></a>E03 | fake는 실행 시도 token/AbortSignal의 실제 tools client를 사용하고, wake 묶음·도구별 쓰기 번호로 Idempotency-Key를 정한다. 각 단계 전후 abort를 확인한다. | [createScriptedRuntime.execute](https://github.com/babo-jeonguk/BaboJUBot/blob/71345a2be52f8b524b643c7ce25d31421c62a5b1/packages/runtime/src/scripted.ts#L670-L754) | 소스 확인 |
 | <a id="E04"></a>E04 | 기존 결과 검토 E2E는 생성·목표·초기 승인을 API로 준비하며, 완료 뒤 새 실행 부재는 1초 waitForTimeout으로 확인한다. 전체 사용자 여정을 검증하는 테스트와 범위가 다르다. | [API setup](https://github.com/babo-jeonguk/BaboJUBot/blob/71345a2be52f8b524b643c7ce25d31421c62a5b1/apps/web/e2e/result-review.spec.ts#L20-L53); [완료 뒤 검사](https://github.com/babo-jeonguk/BaboJUBot/blob/71345a2be52f8b524b643c7ce25d31421c62a5b1/apps/web/e2e/result-review.spec.ts#L163-L171) | 소스 확인 |
 | <a id="E05"></a>E05 | 현 E2E는 전용 포트·임시 DB·빈 DATABASE_URL·workers1·reuse=false·SIGTERM·retain-on-failure다. main은 외부 DATABASE_URL을 임시 DB flag보다 먼저 검사한다. | [E2E config](https://github.com/babo-jeonguk/BaboJUBot/blob/71345a2be52f8b524b643c7ce25d31421c62a5b1/apps/web/playwright.config.ts#L3-L51); [DB 선택](https://github.com/babo-jeonguk/BaboJUBot/blob/71345a2be52f8b524b643c7ce25d31421c62a5b1/apps/server/src/main.ts#L21-L34) | 소스 확인 |
-| <a id="E06"></a>E06 | 기본 fake+실제 token HTTP+임시 PG 조사 probe 5시나리오·73assertions 통과. 승인 전 작업/작업자0, 승인 후 작업·산출물·노드 각2, pause 입력 보존/resume, 정책 승인 후 worker2→3, heartbeat, 사용자 최종 완료, 교차조직404·종료/무토큰401을 확인했다. | 캐시 `probes/product-flow.mjs`, `product-flow-log.txt`, `run-log.txt`. Node24.21.0. 서버 구성 clock 주입·DB 직접 쓰기0. Runtime wrapper의 호출 관찰도 포함하므로 순수 외부 seam 테스트와 구별 | 실행 확인 |
-| <a id="E07"></a>E07 | 기존 조직 생성·초기 승인·결과 검토 E2E 4건이 실제 main+임시 PG+production UI+Chromium에서 통과(55.8s). 새 #63 전체 흐름 구현 결과는 아니다. | 캐시 `probes/existing-e2e-log.txt`; 기존 세 spec 무변경, Playwright1.58.2·workers1 | 실행 확인 |
+| <a id="E06"></a>E06 | 기본 fake+실제 token HTTP+임시 PG 조사 probe 5시나리오·73assertions 통과. 승인 전 작업/작업자0, 승인 후 작업·산출물·노드 각2, pause 입력 보존/resume, 정책 승인 후 worker2→3, heartbeat, 사용자 최종 완료, 교차조직404·종료/무토큰401을 확인했다. | 로컬 probe. Node24.21.0. 서버 구성 clock 주입·DB 직접 쓰기0. Runtime wrapper의 호출 관찰도 포함하므로 순수 외부 seam 테스트와 구별 | 실행 확인 |
+| <a id="E07"></a>E07 | 기존 조직 생성·초기 승인·결과 검토 E2E 4건이 실제 main+임시 PG+production UI+Chromium에서 통과(55.8s). 새 #63 전체 흐름 구현 결과는 아니다. | 로컬 실행 기록; 기존 세 spec 무변경, Playwright1.58.2·workers1 | 실행 확인 |
 | <a id="E08"></a>E08 | locator expect는 즉시 한 번 확인 후 필요하면 deadline까지 반복한다. expect.poll은 generator를 반복 호출하므로 그 안의 변경 연산도 반복될 수 있다. | [Frame.expect](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/packages/playwright-core/src/server/frames.ts#L1383-L1423); [pollMatcher](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/packages/playwright/src/matchers/expect.ts#L367-L402) | 소스 확인 |
 | <a id="E09"></a>E09 | webServer는 이미 가용한 URL이면 reuse=true에서 command/env 확인 없이 재사용하고 false는 거부한다. 새 process는 readiness timeout/early-exit를 감시하고 gracefulShutdown 때 process group에 signal을 보낸다. | [setup/start/teardown](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/packages/playwright/src/plugins/webServerPlugin.ts#L67-L139); [readiness](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/packages/playwright/src/plugins/webServerPlugin.ts#L182-L203) | 소스 확인 |
 | <a id="E10"></a>E10 | page.clock은 context init script와 frame 평가에 적용된다. 기본 page fixture의 per-test newContext/close에는 서버 DB reset이 없다. | [Clock](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/packages/playwright-core/src/server/clock.ts#L73-L109); [context fixture](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/packages/playwright/src/index.ts#L349-L390) | 소스 확인 |
 | <a id="E11"></a>E11 | retain-on-failure는 첫 실행부터 trace를 수집하고 on-first-retry는 retry===1에서만 수집한다. | [trace capture](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/packages/playwright/src/worker/testTracing.ts#L70-L81) | 소스 확인 |
 | <a id="E12"></a>E12 | 동봉 공식 문서는 networkidle을 testing readiness에 쓰지 말고 web assertion을 사용하도록 명시한다. | [navigation waitUntil](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/docs/src/api/params.md#L1-L8) | 문서 주장 |
-| <a id="E13"></a>E13 | 작은 실제 HTTP/browser probe에서 비동기 DOM assertion·poll 성공/timeout, browser clock과 server clock 분리, API fulfill의 실제 handler 우회, 새 context의 storage 격리와 server state 공유를 확인했다. | 캐시 `probes/playwright-mechanisms.cjs`, `playwright-run-log.txt`; 설치된1.58.2 API·합성 HTTP 서버 | 실행 확인 |
-| <a id="E14"></a>E14 | webServer plugin probe에서 무관한403 서버를 reuse=true가 수용하고 command는 미실행, false는 거부했다. 새 child의 ready→SIGTERM handler→PID 소멸도 확인했다. | 캐시 `probes/playwright-webserver.cjs`, `playwright-run-log.txt`; 설치된1.58.2 내부 plugin. 제품 DB/강제 crash 검사는 아님 | 실행 확인 |
+| <a id="E13"></a>E13 | 작은 실제 HTTP/browser probe에서 비동기 DOM assertion·poll 성공/timeout, browser clock과 server clock 분리, API fulfill의 실제 handler 우회, 새 context의 storage 격리와 server state 공유를 확인했다. | 로컬 probe; 설치된1.58.2 API·합성 HTTP 서버 | 실행 확인 |
+| <a id="E14"></a>E14 | webServer plugin probe에서 무관한403 서버를 reuse=true가 수용하고 command는 미실행, false는 거부했다. 새 child의 ready→SIGTERM handler→PID 소멸도 확인했다. | 로컬 probe; 설치된1.58.2 내부 plugin. 제품 DB/강제 crash 검사는 아님 | 실행 확인 |
 | <a id="E15"></a>E15 | Paperclip도 temp home·전용 포트·single worker·빌드 UI·health·reuse=false로 전용 인스턴스를 구성한다. retries0과 trace on-first-retry 조합은 그대로 옮기지 않는다. | [config](https://github.com/paperclipai/paperclip/blob/ea727dc3c2a14660635f30cdba09f7790ac5603d/tests/e2e/playwright.config.ts#L6-L95) | 소스 확인 |
 | <a id="E16"></a>E16 | Paperclip planning fixture는 API setup+UI composer+API 조회 검증이며 agent를 paused/heartbeat off로 둔다. signoff helper는 wake POST 한 번 후 소속을 검증한 GET으로 대기한다. | [planning fixture](https://github.com/paperclipai/paperclip/blob/ea727dc3c2a14660635f30cdba09f7790ac5603d/tests/e2e/plan-task-fixture.spec.ts#L5-L30); [fetchVerifiedRun/invokeHeartbeat](https://github.com/paperclipai/paperclip/blob/ea727dc3c2a14660635f30cdba09f7790ac5603d/tests/e2e/signoff-policy.spec.ts#L110-L164) | 소스 확인 |
 | <a id="E17"></a>E17 | AI SDK MockLanguageModelV4는 실제 model interface에 canned function/object/array를 주입하며 호출을 먼저 기록한다. 배열 범위 밖은 별도 throw 없이 undefined가 된다. | [model mock](https://github.com/vercel/ai/blob/95348b32c6ef9aec688db1021ff921dfe94f8f12/packages/ai/src/test/mock-language-model-v4.ts#L9-L75) | 소스 확인 |
 | <a id="E18"></a>E18 | AI SDK는 user-approval tool을 blocked 집합으로 실제 실행에서 제외하고, 재개 collection에서 이미 결과가 있거나 같은 toolCallId 결정이 중복이면 건너뛴다. 이 dedupe는 한 collection 범위다. | [approval gate](https://github.com/vercel/ai/blob/95348b32c6ef9aec688db1021ff921dfe94f8f12/packages/ai/src/generate-text/generate-text.ts#L1392-L1429); [execution filter](https://github.com/vercel/ai/blob/95348b32c6ef9aec688db1021ff921dfe94f8f12/packages/ai/src/generate-text/generate-text.ts#L1505-L1519); [collector](https://github.com/vercel/ai/blob/95348b32c6ef9aec688db1021ff921dfe94f8f12/packages/ai/src/generate-text/collect-tool-approvals.ts#L96-L143) | 소스 확인 |
 | <a id="E19"></a>E19 | 작은 Alexa-plus 사례는 같은 conversation script에서 사용자 confirmation Promise를 기다리고 실제 HTTP로 도구/승인을 보낸다. 원본 통합 테스트는 confirm/decline과 실제 상태를 검사한다. 기본 callback은 자동 confirm이다. | [runConversation](https://github.com/guptachetan1995/alexa-plus/blob/42fd28e61cf7839ecbfed6a9775dc1e4a0b0c34b/client/src/planner.js#L27-L81); [원본 테스트 읽기](https://github.com/guptachetan1995/alexa-plus/blob/42fd28e61cf7839ecbfed6a9775dc1e4a0b0c34b/client/test/conversation.integration.test.js#L116-L156) | 소스 확인 |
 | <a id="E20"></a>E20 | assistant-ui scripted adapter는 tool-call/result를 로컬 parts 배열에 직접 만든다. reasoning도 시나리오 문자열이며 서버 실행·모델 내부 추론의 증거가 아니다. | [runAgentScript](https://github.com/assistant-ui/assistant-ui/blob/7d6cf6a923b5381cd5ee64847a2269f4b1b962a5/examples/with-react-ink/src/scripted-adapter.ts#L78-L160) | 소스 확인 |
-| <a id="E21"></a>E21 | AI SDK 원 mock의 응답 순서/소진/미구현/실패 기록과 assistant-ui 원 adapter의 canned tool5개·무관 입력 tool0·fetch0 등 5검사 영역을 실행했다. 승인 SDK 전체와 Alexa 서버는 실행하지 않았다. | 캐시 `probes/demo-mocks.mjs`, `demo-run-log.txt`; Node type-strip, 같은 snapshot helper import만 data URL로 치환 | 실행 확인 |
+| <a id="E21"></a>E21 | AI SDK 원 mock의 응답 순서/소진/미구현/실패 기록과 assistant-ui 원 adapter의 canned tool5개·무관 입력 tool0·fetch0 등 5검사 영역을 실행했다. 승인 SDK 전체와 Alexa 서버는 실행하지 않았다. | 로컬 probe; Node type-strip, 같은 snapshot helper import만 data URL로 치환 | 실행 확인 |
 | <a id="E22"></a>E22 | Temporal JSDoc는 result await가 시간 전진을 열고 시계는 workflow별이 아니라 환경 전체 공유라 직렬 또는 환경 분리를 권한다. Java test server는 일반 서버와 동작이 다를 수 있다고 명시한다. | [createTimeSkipping JSDoc](https://github.com/temporalio/sdk-typescript/blob/7d27a7ff5937c62954f61fce962370e1440b3bbf/packages/testing/src/testing-workflow-environment.ts#L138-L165) | 문서 주장 |
 | <a id="E23"></a>E23 | Temporal 원본 테스트는 실제 Worker에 Activity만 대체하고, start→수동 시간 이동→signal→result를 검사한다. result의 시간 lock은 finally에서 복구한다. 테스트는 읽기만 했다. | [worker/time/signal 테스트](https://github.com/temporalio/sdk-typescript/blob/7d27a7ff5937c62954f61fce962370e1440b3bbf/packages/test/src/test-testenvironment.ts#L85-L132); [result finally](https://github.com/temporalio/sdk-typescript/blob/7d27a7ff5937c62954f61fce962370e1440b3bbf/packages/testing/src/client.ts#L54-L64) | 소스 확인 |
 | <a id="E24"></a>E24 | XState 경로 테스트의 state.can 필터는 disabled 이벤트를 경로에서 제거한다. 별도 final 테스트는 child final이어도 root가 active임을 검사한다. 원본 테스트 미실행. | [guarded paths](https://github.com/statelyai/xstate/blob/060cd63378b46b32e7559d569ed3ad112ee60084/packages/core/src/graph/test/paths.test.ts#L121-L159); [child final](https://github.com/statelyai/xstate/blob/060cd63378b46b32e7559d569ed3ad112ee60084/packages/core/test/final.test.ts#L760-L784) | 소스 확인 |
 | <a id="E25"></a>E25 | XState SimulatedClock은 주입된 시간으로 due timer를 발화 전 삭제하고 clearTimeout·역행 set 거부를 구현한다. | [clock](https://github.com/statelyai/xstate/blob/060cd63378b46b32e7559d569ed3ad112ee60084/packages/core/src/SimulatedClock.ts#L38-L85) | 소스 확인 |
-| <a id="E26"></a>E26 | 원본 SimulatedClock만 transpile한 probe에서 deadline1ms전/도달/중복 없음/취소/역행 거부가 통과했다. 만료 뒤 미발화라는 잘못된 기대는 의도대로 exit1이었다. | 캐시 `probes/workflow-clock.mjs`, `workflow-run-log.txt`; TS6.0.3. actor/graph suite·workflow 서버 아님 | 실행 확인 |
+| <a id="E26"></a>E26 | 원본 SimulatedClock만 transpile한 probe에서 deadline1ms전/도달/중복 없음/취소/역행 거부가 통과했다. 만료 뒤 미발화라는 잘못된 기대는 의도대로 exit1이었다. | 로컬 probe; TS6.0.3. actor/graph suite·workflow 서버 아님 | 실행 확인 |
 
 ## 패턴
 

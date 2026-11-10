@@ -1,6 +1,6 @@
 # issue-94 레퍼런스 조사: 에이전트별 프로바이더·모델, 전역 기본값, 동시 실행 상한
 
-조사일: 2026-10-30. 대상: [#94](https://github.com/babo-jeonguk/BaboJUBot/issues/94), parent [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-94/`(git 무시). 제품 코드·테스트·설정은 변경하지 않았다.
+조사일: 2026-10-30. 대상: [#94](https://github.com/babo-jeonguk/BaboJUBot/issues/94), parent [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 제품 코드·테스트·설정은 변경하지 않았다.
 
 ## Brief
 
@@ -18,7 +18,7 @@
 
 | 재사용한 조사 | 쓰는 범위 | 재확인 |
 |---|---|---|
-| [프로바이더 선택 조사](executor-selection-references.md#babojubot에-주는-시사점) | 에이전트 소유 설정, 생성 복사, 모델 초기화, 새 세션 | 새 SHA와 파일별 blob 비교: Multica 관련 파일·Paperclip 타입/registry는 변경 없음, AO manager는 변경되어 새 원문을 읽음. 비교 결과는 cache `notes/selection-source/blob-comparison.json` |
+| [프로바이더 선택 조사](executor-selection-references.md#babojubot에-주는-시사점) | 에이전트 소유 설정, 생성 복사, 모델 초기화, 새 세션 | 새 SHA와 파일별 blob 비교: Multica 관련 파일·Paperclip 타입/registry는 변경 없음, AO manager는 변경되어 새 원문을 읽음 |
 | [화면 지침](design-guidelines-pan2.md) A·B·C | Select·stepper·Save·초안·bottom sheet, 문장 없는 상태 표시 | SEED 고정 SHA 및 공개 데모 재확인. E11–E13 및 한계 참조 |
 | [#59](issue-59-references.md), [#61](issue-61-references.md), [#63](issue-63-references.md) | 취소 정리·에이전트 하나·복구의 배경 | 외부 E ID를 이식하지 않고 현재 저장소 원문(E09–E10)으로 확인 |
 | [기능 비교](executor-capabilities.md), [연결 방식](provider-connection-references.md) | 실제 adapter 후속 범위 식별 | 실제 provider 사실은 이번 권고 근거로 재사용하지 않음 |
@@ -27,7 +27,7 @@
 
 ## 레퍼런스
 
-관점별 saturation은 후보 수의 충분함이 아니라 마지막 검색에서 새 패턴·실패 모드가 나왔는지로 판단했다. 전체 후보·검색 경로·실행 경로는 `.reference-cache/issue-94/candidates.md`에 기록한다.
+관점별 saturation은 후보 수의 충분함이 아니라 마지막 검색에서 새 패턴·실패 모드가 나왔는지로 판단했다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -55,13 +55,13 @@
 | <a id="E04"></a>E04 | Multica는 runtime 변경 때 명시 모델이 없으면 known incompatible만 초기화한다(unknown/custom 보존). 세션 fallback은 이전 runtime ID가 같을 때만 받는다 | [agent update L2221–2229](https://github.com/multica-ai/multica/blob/908456c60192907f3c7e65709e18846f08eea2f8/server/internal/handler/agent.go#L2221-L2229), [daemon L3721–3730](https://github.com/multica-ai/multica/blob/908456c60192907f3c7e65709e18846f08eea2f8/server/internal/handler/daemon.go#L3721-L3730) | 소스 확인 |
 | <a id="E05"></a>E05 | p-queue는 pending < cap일 때만 시작한다. setter는 새 cap을 적용하고 대기를 처리하며 진행 작업을 취소하지 않는다 | [`index.ts` guard L389–404](https://github.com/sindresorhus/p-queue/blob/7f272ab5ff2254c0dc2537b7977e88ede1cd55e8/source/index.ts#L389-L404), [setter L790–800](https://github.com/sindresorhus/p-queue/blob/7f272ab5ff2254c0dc2537b7977e88ede1cd55e8/source/index.ts#L790-L800) | 소스 확인 |
 | <a id="E06"></a>E06 | p-queue의 signal 취소는 원 작업과 Promise.race하며 finally에서 logical slot을 반환한다. 프로세스 정리 완료와 동일하지 않다 | [`add` L685–732](https://github.com/sindresorhus/p-queue/blob/7f272ab5ff2254c0dc2537b7977e88ede1cd55e8/source/index.ts#L685-L732) | 소스 확인 |
-| <a id="E07"></a>E07 | 원본 TS 실행: 2→1 감소 시 두 진행 작업 유지·새 cap 미만이 될 때 대기 시작, cap0 거부, 두 큐 독립, 취소 뒤 원 작업 cleanup 전 다음 작업 겹침 재현 | p-queue E05 SHA, Node v24.21.0; `probes/pqueue-concurrency.mjs`, `probes/concurrency-run-log.txt`. 메인 재실행도 네 PASS | 실행 확인 |
+| <a id="E07"></a>E07 | 원본 TS 실행: 2→1 감소 시 두 진행 작업 유지·새 cap 미만이 될 때 대기 시작, cap0 거부, 두 큐 독립, 취소 뒤 원 작업 cleanup 전 다음 작업 겹침 재현 | p-queue E05 SHA, Node v24.21.0; 로컬 probe. 메인 재실행도 네 PASS | 실행 확인 |
 | <a id="E08"></a>E08 | BullMQ Lua는 active count가 cap 이상이면 대기를 유지하고, 같은 호출 안에서 통과 후 wait→active로 옮긴다 | [`getQueueMetadata` L5–20](https://github.com/taskforcesh/bullmq/blob/e80a9ea72e985849eb2096e5820db6a63c17f665/src/commands/includes/getQueueMetadata.lua#L5-L20), [`moveToActive` L54–74](https://github.com/taskforcesh/bullmq/blob/e80a9ea72e985849eb2096e5820db6a63c17f665/src/commands/moveToActive-11.lua#L54-L74) | 소스 확인 |
 | <a id="E09"></a>E09 | 현재 admission은 조직→에이전트 잠금, 진행 run 검사와 wake 전달을 한 transaction으로 한다. dispatcher는 종료 저장 재시도 완료 전 다음 claim 금지. sessionBefore는 bundle version만 비교 | [자체 `claimNextRun`](https://github.com/babo-jeonguk/BaboJUBot/blob/914b31f3e8e7bc8f7da078790df3e33240c3098a/packages/db/src/runs.ts#L66-L159), [dispatcher L188–208](https://github.com/babo-jeonguk/BaboJUBot/blob/914b31f3e8e7bc8f7da078790df3e33240c3098a/apps/server/src/dispatcher.ts#L188-L208), [core L241–284](https://github.com/babo-jeonguk/BaboJUBot/blob/914b31f3e8e7bc8f7da078790df3e33240c3098a/packages/core/src/run.ts#L241-L284) | 소스 확인 |
 | <a id="E10"></a>E10 | Event 계약·DB FK는 조직 필수. all 구독도 조직 Event의 묶음이다. web은 ready 때 재조회·event 때 조직별 조회를 갱신한다 | [event L20–25](https://github.com/babo-jeonguk/BaboJUBot/blob/914b31f3e8e7bc8f7da078790df3e33240c3098a/packages/contracts/src/event.ts#L20-L25), [DB L1219–1249](https://github.com/babo-jeonguk/BaboJUBot/blob/914b31f3e8e7bc8f7da078790df3e33240c3098a/packages/db/src/schema.ts#L1219-L1249), [web L25–44](https://github.com/babo-jeonguk/BaboJUBot/blob/914b31f3e8e7bc8f7da078790df3e33240c3098a/apps/web/src/live-events.ts#L25-L44) | 소스 확인 |
 | <a id="E11"></a>E11 | SEED QuantityPicker는 safe integer min/max를 요구하고 경계에서 disabled/clamp. ResponsiveDialog는 기본 md 아래 BottomSheet, 이상 Dialog이며 open state를 공통 관리 | [quantity validation L85–115](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react-headless/quantity-picker/src/useQuantityPicker.ts#L85-L115), [경계 L155–191](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react-headless/quantity-picker/src/useQuantityPicker.ts#L155-L191), [ResponsiveDialog L57–122](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react/src/components/ResponsiveDialog/ResponsiveDialog.tsx#L57-L122) | 소스 확인 |
 | <a id="E12"></a>E12 | React는 제거한 component state를 파기하므로, 닫은 뒤 초안 유지는 부모 등 살아 있는 상태 소유자에게 맡겨야 함 | [Preserving state for removed components](https://react.dev/learn/preserving-and-resetting-state#preserving-state-for-removed-components) | 문서 주장 |
-| <a id="E13"></a>E13 | SEED 공개 Select를 열어 옵션·현재 선택 체크를 확인. QuantityPicker에서 증가→감소 후 값1·감소 native disabled=true 확인 | [Select demo](https://seed-design.io/react/components/select), [QuantityPicker demo](https://seed-design.io/react/components/quantity-picker). Playwright 1.58.2/Chromium, 1280×900. cache `captures/seed-select-open.png`, `seed-quantity-min.png`, `captures.md`, 메인 이미지 재열람 | 실행 확인 |
+| <a id="E13"></a>E13 | SEED 공개 Select를 열어 옵션·현재 선택 체크를 확인. QuantityPicker에서 증가→감소 후 값1·감소 native disabled=true 확인 | [Select demo](https://seed-design.io/react/components/select), [QuantityPicker demo](https://seed-design.io/react/components/quantity-picker). Playwright 1.58.2/Chromium, 1280×900. 로컬 캡처, 메인 이미지 재열람 | 실행 확인 |
 
 ## 패턴
 

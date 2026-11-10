@@ -1,6 +1,6 @@
 # inbox-detail 레퍼런스 조사: Inbox 상세(요약에서 결정 → 원래 화면으로 이어가기)
 
-조사일: 2026-10-26 (Asia/Seoul). 대상: [#61](https://github.com/babo-jeonguk/BaboJUBot/issues/61) 리뷰 P1([PR #79](https://github.com/babo-jeonguk/BaboJUBot/pull/79#issuecomment-6407816434))과 [#50 확정 결정](https://github.com/babo-jeonguk/BaboJUBot/issues/50#issuecomment-6161637737)의 `/inbox/:id`. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/inbox-detail/`(git 무시).
+조사일: 2026-10-26 (Asia/Seoul). 대상: [#61](https://github.com/babo-jeonguk/BaboJUBot/issues/61) 리뷰 P1([PR #79](https://github.com/babo-jeonguk/BaboJUBot/pull/79#issuecomment-6407816434))과 [#50 확정 결정](https://github.com/babo-jeonguk/BaboJUBot/issues/50#issuecomment-6161637737)의 `/inbox/:id`. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다.
 
 ## Brief
 
@@ -31,7 +31,7 @@
 - 인접 업무 도구 Inbox·승인 — 17개 항목(약 22개 제품), 3라운드. 마지막 후보(Spinnaker)는 새 패턴을 더하지 않음.
 - 디자인 시스템·가이드·명세 — 29개, 5라운드. 마지막 라운드는 기존 축의 사례만 더함.
 
-전체 후보: `.reference-cache/inbox-detail/notes/`(agent-oss·adjacent-inbox·design-systems). 검색한 관점의 포화이며 전수조사가 아니다.
+전체 후보는 agent-oss·adjacent-inbox·design-systems 세 관점에서 찾았다. 검색한 관점의 포화이며 전수조사가 아니다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -53,7 +53,7 @@
 |---|---|---|---|
 | <a id="E01"></a>E01 | Airflow Required Actions는 한 모달 안에 대기(·완료) 목록과 요약·응답 상세를 두고, 상세의 task 링크(`onOpenTask`)는 모달을 닫고 원래 Task Instance 화면으로, 응답 성공(`onResponded`)은 다음 항목 선택으로 잇는다 | [HITLReviewModal.tsx](https://github.com/apache/airflow/blob/8bdb287f7ee587a5ca6d642e59979bf4576c4a3e/airflow-core/src/airflow/ui/src/components/HITLReview/HITLReviewModal.tsx#L121-L151) | 소스 확인 |
 | <a id="E02"></a>E02 | Airflow 응답 API는 실행 시도가 현재가 아님·이미 응답·불러온 뒤 요청 교체를 각각 409로, 없음을 404로 거절한다 | [hitl.py](https://github.com/apache/airflow/blob/8bdb287f7ee587a5ca6d642e59979bf4576c4a3e/airflow-core/src/airflow/api_fastapi/core_api/routes/public/hitl.py#L196-L238) | 소스 확인 |
-| <a id="E03"></a>E03 | Airflow 3.3.2 실화면(1440px): 목록 옆 요약에서 Approve를 누르면 확인 단계 없이 저장되고, 그 행이 빠지며 다음 행이 선택된다(4→3). 다른 탭에서 먼저 응답한 항목에 응답하면 "Response failed / Conflict" 알림만 뜨고 누가 무엇을 골랐는지는 보이지 않는다. 응답한 항목의 원래 화면 주소를 열면 "Response received at … from …" 한 줄과 비활성 버튼이 보인다. 열람만으로 바뀌는 상태는 없다(GET 외 요청 0건). 응답 뒤 포커스는 BODY로 떨어진다 | self-host `apache-airflow==3.3.2` `airflow standalone`, 캡처 `captures/airflow-p2-modal-1440.png`·`p3-after-approve-3s`·`p4-A-409-0.5s`·`p6a-responded-ti-deeplink-1440`, `recon/airflow.md` | 실행 확인 |
+| <a id="E03"></a>E03 | Airflow 3.3.2 실화면(1440px): 목록 옆 요약에서 Approve를 누르면 확인 단계 없이 저장되고, 그 행이 빠지며 다음 행이 선택된다(4→3). 다른 탭에서 먼저 응답한 항목에 응답하면 "Response failed / Conflict" 알림만 뜨고 누가 무엇을 골랐는지는 보이지 않는다. 응답한 항목의 원래 화면 주소를 열면 "Response received at … from …" 한 줄과 비활성 버튼이 보인다. 열람만으로 바뀌는 상태는 없다(GET 외 요청 0건). 응답 뒤 포커스는 BODY로 떨어진다 | self-host `apache-airflow==3.3.2` `airflow standalone`, 로컬 캡처 4장(1440px modal·승인 3초 뒤·A 409·응답 뒤 deeplink) | 실행 확인 |
 | <a id="E04"></a>E04 | OpenClaw 단독 승인 페이지는 불러오기 결과를 없음/연결 끊김으로 나누고, 보고 있는 동안 대기→결정으로 바뀌면 "Resolved elsewhere"로 표시하고 결과 영역으로 포커스를 옮긴다. 대기 중 안내는 "The first answer from any surface wins", 결정 뒤 "safe to close"와 "Open Control UI" | [approval-page.tsx](https://github.com/openclaw/openclaw/blob/ea5d12e1c97ad781617a6518103a2dc78ba54d21/ui/src/pages/approval/approval-page.tsx#L265-L320), [en-approvals.ts](https://github.com/openclaw/openclaw/blob/ea5d12e1c97ad781617a6518103a2dc78ba54d21/ui/src/i18n/locales/en-approvals.ts#L51-L99) | 소스 확인 |
 | <a id="E05"></a>E05 | Plane 알림 화면은 Intake(승인 대기열) 항목이면 Intake 상세 컴포넌트를 `isNotificationEmbed`로 그대로 넣는다 | [workspace-notifications/root.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/workspace-notifications/root.tsx#L93-L113) | 소스 확인 |
 | <a id="E06"></a>E06 | Plane은 수락·거절 뒤 원래 Intake에서는 다음(없으면 이전) 항목으로 이동하지만 알림 embed에서는 이동하지 않는다. 결정된 항목은 결정 버튼 대신 Copy link·Open을 보인다 | [inbox-issue-header.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/inbox/content/inbox-issue-header.tsx#L120-L160), [같은 파일](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/inbox/content/inbox-issue-header.tsx#L376-L398) | 소스 확인 |
@@ -70,7 +70,7 @@
 | <a id="E17"></a>E17 | Plane 알림 행을 누르면 읽지 않은 알림이면 `markNotificationAsRead`를 기다린 뒤 상세를 연다. 행에는 마우스를 올리면 보이는 읽음/읽지 않음 전환 아이콘, 머리에는 "모두 읽음"이 있다 | [item.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/workspace-notifications/sidebar/notification-card/item.tsx#L47-L67), [options/read.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/workspace-notifications/sidebar/notification-card/options/read.tsx#L32-L45), [header/options/root.tsx](https://github.com/makeplane/plane/blob/d9726d5c9615756135f3d6cd512ece8e2dd42902/apps/web/components/workspace-notifications/sidebar/header/options/root.tsx#L44-L65) | 소스 확인 |
 | <a id="E18"></a>E18 | Novu Inbox 행을 누르면 읽지 않았으면 `read()`를 기다린 뒤 이동한다 | [controller.ts](https://github.com/novuhq/novu/blob/d7ff70c66565b05364276b0d39ecd3c9aad6822b/packages/js/src/ui/core/item/controller.ts#L49-L65) | 소스 확인 |
 
-worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 사례(Cordum 상세의 "If approved / If denied"·blast radius 확인, Hermes "Always allow"만 확인, HumanLayer 승인 행 dismiss 불가, Plane·Novu·Huly 열람 시 자동 읽음, SAP Fiori FCL 다음 항목/닫기, Carbon·Primer danger 확인의 취소 포커스)는 `notes/`에 있고 결정 근거로 쓰지 않았다.
+worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 사례(Cordum 상세의 "If approved / If denied"·blast radius 확인, Hermes "Always allow"만 확인, HumanLayer 승인 행 dismiss 불가, Plane·Novu·Huly 열람 시 자동 읽음, SAP Fiori FCL 다음 항목/닫기, Carbon·Primer danger 확인의 취소 포커스)는 로컬 조사 메모에만 남기고 결정 근거로 쓰지 않았다.
 
 ## 패턴
 
@@ -127,7 +127,7 @@ worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 �
 
 ## 추가 조사: 필터와 보관 (2026-10-26)
 
-계기: 사용자가 필터 `주의 필요·안 읽음·작업 중`의 의도와 보관 대상을 물었다. 상세 메모: `notes/filters.md`·`notes/archive.md`.
+계기: 사용자가 필터 `주의 필요·안 읽음·작업 중`의 의도와 보관 대상을 물었다.
 
 **출처 확인.** 세 구분은 2026-10-13 화면 지도 작성 때 [xAI Grok Bot 문서](https://docs.x.ai/grok-bot/settings-and-notifications)의 사이드바 상태(Needs attention / Unread activity / Working or typing — 봇 **대화** 단위, 열면 읽음)를 옮긴 것이다. [대시보드 조사](dashboard-references.md)는 이를 **사이드바** 표시로 채택했으나, 기능 목록·#49 이야기 76·#61로 옮기며 Inbox **항목 필터**가 되었다. `작업 중`에 다른 디자인 의도는 없었다.
 
@@ -139,7 +139,7 @@ worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 �
 | <a id="E22"></a>E22 | HumanLayer 승인 행은 대기 중일 때만 만들고 `dismissible: false`라 결정해야만 빠진다 | [approval-rows.ts](https://github.com/humanlayer/humanlayer/blob/cbaf99b79446a914a0136c8eb93617b63dd424d6/apps/riptide-ui/src/lib/notifications/rows/approval-rows.ts#L5-L27), [WiredNotificationList.tsx](https://github.com/humanlayer/humanlayer/blob/cbaf99b79446a914a0136c8eb93617b63dd424d6/apps/riptide-ui/src/components/notifications/WiredNotificationList.tsx#L44-L53) | 소스 확인 |
 | <a id="E23"></a>E23 | Paperclip은 대기 중 승인 행에도 상태 검사 없이 보관 버튼·스와이프 보관을 둔다(탭으로만 갈림). 보관하면 배지에서도 빠진다 | [Inbox.tsx](https://github.com/paperclipai/paperclip/blob/def4726bea0e3b340457100038d80ca55c2b7d4f/ui/src/pages/Inbox.tsx#L3122-L3154) | 소스 확인 |
 
-그 밖에 결정 대기열 제품(Airflow·Plane Intake·OpenClaw)은 보관 없이 결정해야 빠지고, 보관은 결정과 묶이지 않은 알림함(GitHub·Plane 알림·Novu)에 있다. 결정 대기를 미루는 기능은 보관이 아니라 기한 있는 나중에 보기다(Plane Intake·Linear·PagerDuty) — `notes/archive.md`, 메인 원문 재확인은 E22·E23만.
+그 밖에 결정 대기열 제품(Airflow·Plane Intake·OpenClaw)은 보관 없이 결정해야 빠지고, 보관은 결정과 묶이지 않은 알림함(GitHub·Plane 알림·Novu)에 있다. 결정 대기를 미루는 기능은 보관이 아니라 기한 있는 나중에 보기다(Plane Intake·Linear·PagerDuty). 메인 원문 재확인은 E22·E23만.
 
 | ID | 결정 | 내용 | 근거 |
 |---|---|---|---|
@@ -152,5 +152,5 @@ worker 보고에만 있고 메인이 원문을 끝까지 열지 않은 보조 �
 
 - 상용 서비스(Linear, GitHub, GitLab, Teams, Slack, SAP, Knock, Novu cloud 등)의 실제 화면은 로그인 벽으로 열지 않았고 문서 주장만 있다. SAP Fiori 새 포털은 403이라 보관본만 worker가 읽었다(결정 근거에서 제외).
 - Airflow는 3.3.2로 실행했다. 고정 SHA에만 있는 409 두 갈래(요청 교체·실행 시도 교체)와 실패 뒤 즉시 재조회는 소스만 읽었다. 메모리 상한은 `systemd-run`이 bus 연결에 실패해 프로세스별 `ulimit -v 3G`로 대신했다. 응답자 이름은 all-admins 모드라 "Anonymous"로만 보였다.
-- OpenClaw·Plane·breakglass·Frappe는 실행하지 않았다. 390px 실화면은 Airflow만 확인했다(목록·상세가 세로로 쌓이고 결정 버튼이 스크롤 아래, 일부 열이 화면 밖 — `captures/airflow-p2-modal-390*.png`). 1280px에 패널이 붙은 상태와 같은 배치의 레퍼런스 실화면은 없다.
+- OpenClaw·Plane·breakglass·Frappe는 실행하지 않았다. 390px 실화면은 Airflow만 확인했다(목록·상세가 세로로 쌓이고 결정 버튼이 스크롤 아래, 일부 열이 화면 밖). 1280px에 패널이 붙은 상태와 같은 배치의 레퍼런스 실화면은 없다.
 - 설계 참고만 하며 코드를 복사하지 않는다(Cordum BSL, n8n SUL, Plane AGPL, Windmill AGPL 포함).

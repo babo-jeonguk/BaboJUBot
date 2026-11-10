@@ -1,6 +1,6 @@
 # issue-95 레퍼런스 조사: Lead 제안과 승인 결정의 프로바이더·모델
 
-조사일: 2026-10-30. 대상: [#95](https://github.com/babo-jeonguk/BaboJUBot/issues/95), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91), 완료된 선행 [#94](https://github.com/babo-jeonguk/BaboJUBot/issues/94). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-95/`(git 무시). 제품 코드·테스트·설정은 변경하지 않았으며, 이 문서는 구현 변경과 함께 커밋하도록 남긴다.
+조사일: 2026-10-30. 대상: [#95](https://github.com/babo-jeonguk/BaboJUBot/issues/95), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91), 완료된 선행 [#94](https://github.com/babo-jeonguk/BaboJUBot/issues/94). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 제품 코드·테스트·설정은 변경하지 않았으며, 이 문서는 구현 변경과 함께 커밋하도록 남긴다.
 
 ## Brief
 
@@ -26,7 +26,7 @@
 
 ## 레퍼런스
 
-후보와 관점별 검색 라운드·실행 경로는 `.reference-cache/issue-95/candidates.md`에 기록한다. saturation은 이번 질문에 새 패턴이 더해지지 않은 범위를 뜻하며 생태계 전수조사를 뜻하지 않는다.
+saturation은 이번 질문에 새 패턴이 더해지지 않은 범위를 뜻하며 생태계 전수조사를 뜻하지 않는다.
 
 | 관점 | 마지막 라운드·saturation |
 |---|---|
@@ -42,7 +42,7 @@
 | SEED | 디자인 시스템 | `99efaf5561de6e18557ffeb57fe95428ce066eb3` | Apache-2.0 | 소스·공개 실행 | Select/Switch controlled 상태·공개 데모·좁은 화면 |
 | OpenClaw | 에이전트 OSS | `03ba6b4720287fe483d338116830b34cb2029dcd` | MIT | 소스·지침 | 최초 대화와 선호 변경 지침, prompt context 조립 |
 
-모두 설계 참고이며 코드 복사 없음. Paperclip의 기존 선택 조사 SHA와 비교한 approvals service/route·registry·approval validator 4파일은 blob hash가 같았다(`recon/approval.md`). #54의 다른 SHA 근거는 해당 문서 링크로만 참조하고 새 실행 근거로 세지 않았다. SEED는 기존 #94와 40자 SHA가 같다. OpenClaw는 새 SHA로 독립 열람했다.
+모두 설계 참고이며 코드 복사 없음. Paperclip의 기존 선택 조사 SHA와 비교한 approvals service/route·registry·approval validator 4파일은 blob hash가 같았다. #54의 다른 SHA 근거는 해당 문서 링크로만 참조하고 새 실행 근거로 세지 않았다. SEED는 기존 #94와 40자 SHA가 같다. OpenClaw는 새 SHA로 독립 열람했다.
 
 ## 근거
 
@@ -51,16 +51,16 @@
 | <a id="E01"></a>E01 | 등록부는 연결 ID 중복을 거부하고 모델 null을 허용한다. 목록은 같은 runtime 함수를 쓰며 오류·시간 초과·빈 응답이면 고정 목록으로 돌아간다 | 자체 c4a0aa92da6eaea26b8f1e9f8d054832ae88ac80: [registry `checkChoice/settings`](https://github.com/babo-jeonguk/BaboJUBot/blob/c4a0aa92da6eaea26b8f1e9f8d054832ae88ac80/apps/server/src/providers.ts#L33-L66), [`listProviderModels`](https://github.com/babo-jeonguk/BaboJUBot/blob/c4a0aa92da6eaea26b8f1e9f8d054832ae88ac80/packages/runtime/src/providers.ts#L48-L78) | 소스 확인 |
 | <a id="E02"></a>E02 | 현재 결정은 조직 잠금→조직+승인 ID 조회→pending/단계 검사→조건부 갱신→작업자·사본·조직·wake·Event를 같은 transaction에 넣는다. workerDefault는 결정 때 읽는다 | 자체 [`decideApproval`](https://github.com/babo-jeonguk/BaboJUBot/blob/c4a0aa92da6eaea26b8f1e9f8d054832ae88ac80/packages/db/src/approvals.ts#L155-L239) | 소스 확인 |
 | <a id="E03"></a>E03 | 작업자 추가는 toolWrite 안 최신 정책으로 분기하고, 꺼짐이면 작업자·사본·Event, 켜짐이면 승인 요청·Event를 저장한다. 현재 입력 팀은 개별 작업자가 아닌 role/count이며 같은 Role 중복을 거부한다 | 자체 [`addWorker`](https://github.com/babo-jeonguk/BaboJUBot/blob/c4a0aa92da6eaea26b8f1e9f8d054832ae88ac80/packages/db/src/workers.ts#L43-L89), [팀 입력](https://github.com/babo-jeonguk/BaboJUBot/blob/c4a0aa92da6eaea26b8f1e9f8d054832ae88ac80/packages/contracts/src/approval.ts#L29-L46) | 소스 확인 |
-| <a id="E04"></a>E04 | 현재 원본 `listProviderModels`에 fixed/dynamic/empty/error/timeout와 abort 음성 대조를 실행, 6 assertions 통과. 모델 adapter는 부르지 않았다 | E01 SHA, Node v24.21.0; `probes/catalog.mjs`, `probes/catalog-run-log.txt`; `env -i HOME="$HOME" PATH="$PATH" node .reference-cache/issue-95/probes/catalog.mjs` | 실행 확인 |
+| <a id="E04"></a>E04 | 현재 원본 `listProviderModels`에 fixed/dynamic/empty/error/timeout와 abort 음성 대조를 실행, 6 assertions 통과. 모델 adapter는 부르지 않았다 | E01 SHA, Node v24.21.0; 로컬 probe를 `env -i HOME="$HOME" PATH="$PATH"`로 키 없는 셸에서 실행 | 실행 확인 |
 | <a id="E05"></a>E05 | Paperclip 채용 승인은 회사 행 잠금 transaction에서 resolve한 뒤 applied일 때만 payload로 agent를 활성화/생성한다. 동일 결정 재전송은 applied=false, 반대 결정은 오류 | [hireApprovalService.decide](https://github.com/paperclipai/paperclip/blob/ac4f13d205ce7783856a673497b2c01be7781ce7/server/src/modules/agent-lifecycle/adapters/approvals.ts#L21-L93), [회사 잠금](https://github.com/paperclipai/paperclip/blob/ac4f13d205ce7783856a673497b2c01be7781ce7/server/src/services/accounting-transaction.ts#L11-L21), [resolveApproval](https://github.com/paperclipai/paperclip/blob/ac4f13d205ce7783856a673497b2c01be7781ce7/server/src/lib/approval-records.ts#L24-L68) | 소스 확인 |
 | <a id="E06"></a>E06 | Paperclip approve schema는 note만 받고, resubmit은 기존 payload를 덮는다. 읽은 테스트는 pending 설정 변경 거부/변조 후 snapshot 복원과 중복 부작용·교차회사 거부를 assert한다 | [resolve schema](https://github.com/paperclipai/paperclip/blob/ac4f13d205ce7783856a673497b2c01be7781ce7/packages/shared/src/validators/approval.ts#L14-L18), [resubmit](https://github.com/paperclipai/paperclip/blob/ac4f13d205ce7783856a673497b2c01be7781ce7/server/src/services/approvals.ts#L108-L127), [snapshot test](https://github.com/paperclipai/paperclip/blob/ac4f13d205ce7783856a673497b2c01be7781ce7/server/src/__tests__/agents-pending-approval-config.test.ts#L92-L188), [route test](https://github.com/paperclipai/paperclip/blob/ac4f13d205ce7783856a673497b2c01be7781ce7/server/src/__tests__/approval-routes-idempotency.test.ts#L146-L219) | 소스 확인(테스트 미실행) |
 | <a id="E07"></a>E07 | SEED Select는 open과 value를 따로 제어, disabled/readOnly는 열기·선택을 거부, 단일 선택 뒤 닫는다. Switch는 checked callback과 native disabled를 제공한다. API 저장과 앱 초안 수명은 이 함수 밖이다 | [useSelect](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react-headless/select/src/useSelect.ts#L107-L180), [useSwitch state](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react-headless/switch/src/useSwitch.ts#L13-L26), [native input](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react-headless/switch/src/useSwitch.ts#L121-L135) | 소스 확인 |
 | <a id="E08"></a>E08 | SEED 가이드는 한 행에 4개 이상 상호작용 요소를 피하고, switch는 별도 제출 없이 즉시 효과가 있을 때 쓰도록 한다 | [List](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/docs/content/components/list.mdx#L116-L125), [Switch](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/docs/content/components/switch.mdx#L75-L90) | 문서 주장 |
-| <a id="E09"></a>E09 | 공개 SEED Switch의 label 클릭으로 true→false 전환, Select 열기·사과 선택·390px 재열기 선택 체크 확인. 메인이 캡처 3개 직접 재열람 | [Switch demo](https://seed-design.io/react/components/switch), [Select demo](https://seed-design.io/react/components/select). Playwright1.58.2/Chromium1208, Node24.21.0, 1280×900/390×844; cache captures/captures.md, probes/ui-success-log.txt | 실행 확인 |
+| <a id="E09"></a>E09 | 공개 SEED Switch의 label 클릭으로 true→false 전환, Select 열기·사과 선택·390px 재열기 선택 체크 확인. 메인이 캡처 3개 직접 재열람 | [Switch demo](https://seed-design.io/react/components/switch), [Select demo](https://seed-design.io/react/components/select). Playwright1.58.2/Chromium1208, Node24.21.0, 1280×900/390×844; 로컬 캡처·실행 기록 | 실행 확인 |
 | <a id="E10"></a>E10 | OpenClaw AGENTS는 요청하지 않은 외부행동에 사전 확인 지침, 변경 선호는 이전 것을 superseded로 표시. BOOTSTRAP은 최초 대화 관례이며 hard gate가 아니라고 명시한다 | [AGENTS External vs Internal](https://github.com/openclaw/openclaw/blob/03ba6b4720287fe483d338116830b34cb2029dcd/docs/reference/templates/AGENTS.md#L19-L23), [선호 변경](https://github.com/openclaw/openclaw/blob/03ba6b4720287fe483d338116830b34cb2029dcd/docs/reference/templates/AGENTS.md#L59-L63), [BOOTSTRAP](https://github.com/openclaw/openclaw/blob/03ba6b4720287fe483d338116830b34cb2029dcd/docs/reference/templates/BOOTSTRAP.md#L10-L21) | 문서 주장(에이전트 지침) |
 | <a id="E11"></a>E11 | OpenClaw buildProjectContextSection은 파일 본문을 Project Context 문자열로 조립한다. 이 함수는 GitHub 네트워크 차단의 근거가 아니다 | [buildProjectContextSection](https://github.com/openclaw/openclaw/blob/03ba6b4720287fe483d338116830b34cb2029dcd/src/agents/system-prompt-context-files.ts#L72-L96) | 소스 확인 |
 
-근거 11행: 실행 확인 2·소스 확인 7·문서 주장 2. 패턴·결정은 위 관찰과 제품 요구에서 도출한 **추론**이다. worker는 탐색을 나누었고 메인은 결정에 쓴 원문·라이선스·캡처를 재열람했다(`main-verification.md`).
+근거 11행: 실행 확인 2·소스 확인 7·문서 주장 2. 패턴·결정은 위 관찰과 제품 요구에서 도출한 **추론**이다. worker는 탐색을 나누었고 메인은 결정에 쓴 원문·라이선스·캡처를 재열람했다.
 
 ## 패턴
 
@@ -131,6 +131,6 @@
 
 ## 조사 완료 기록
 
-Brief·Discovery·Recon·Synthesis·Receipt 완료. [Issue receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/95#issuecomment-6524565529)를 사용자 게시 승인 후 게시하고 재조회하여 로컬 `.reference-cache/issue-95/receipt.md` 전문과 일치함을 확인했다.
+Brief·Discovery·Recon·Synthesis·Receipt 완료. [Issue receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/95#issuecomment-6524565529)를 사용자 게시 승인 후 게시하고 재조회하여 로컬 receipt 전문과 일치함을 확인했다.
 
 `node scripts/check-project.mjs`로 Markdown 90개 로컬 링크 검사 및 `git diff --check` 통과. 제품 코드·테스트·설정 변경 없음, 문서와 문서 지도만 미커밋 상태로 남겼다.

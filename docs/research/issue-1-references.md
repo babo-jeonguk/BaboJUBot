@@ -1,13 +1,13 @@
 # issue-1 레퍼런스 조사: 기반 도메인·상태·데이터 계약과 개발 검증 환경
 
-조사일: 2026-10-13. 대상: [#1](https://github.com/babo-jeonguk/BaboJUBot/issues/1). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-1/`(git 무시).
+조사일: 2026-10-13. 대상: [#1](https://github.com/babo-jeonguk/BaboJUBot/issues/1). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다.
 
 ## Brief
 
 - 구현할 문제: 화면·server·worker가 공통 식별자·조직 귀속·상태·명령·이벤트·오류 계약을 사용하고, Node 24/pnpm 위에서 타입 검사와 유료 호출 없는 핵심 검증을 실행할 기반을 마련한다.
 - 동종 문제: 서로 다른 실행 경계가 동일한 상태 기계와 검증 가능한 데이터 계약을 공유하는 메커니즘.
 - 고정된 결정: 연구 목표마다 독립 조직; 초기 계획·팀 사용자 승인 후 실행; 결과 제출과 사용자 최종 완료, Task와 Run을 구분. 제품 규칙은 core, 교환 계약은 contracts, 외부 실행은 runtime, 저장 구현은 storage. web은 contracts를 소비한다. Node 24/pnpm 10.33.0/TypeScript workspace는 기존 골격. 저장 엔진·LLM 제공자·실제 호출은 이번 선정 대상이 아니다.
-- 선행 관계: GitHub #1 본문과 dependencies API에서 blocker 없음 확인; parent 없음. ADR 디렉터리와 기존 `.reference-cache/` 없음.
+- 선행 관계: GitHub #1 본문과 dependencies API에서 blocker 없음 확인; parent 없음. ADR 디렉터리와 기존 로컬 조사 캐시 없음.
 
 | ID | 조사 질문 | 출처 | 전략 |
 |---|---|---|---|
@@ -26,7 +26,7 @@
 
 ## 레퍼런스
 
-관점별 후보 항목 60개(제품 15·개발 패키지 28·표준/명세 17; 관점 간 중복 포함). 개발 버전 대안은 31행이다. 전체 후보·운영 상태·각 질문 연결: `.reference-cache/issue-1/candidates.md`. 목적은 다른 해법과 실패 모드를 비교하는 것이며 모든 OSS를 소진했다는 뜻은 아니다.
+관점별 후보 항목 60개(제품 15·개발 패키지 28·표준/명세 17; 관점 간 중복 포함). 개발 버전 대안은 31행이다. 목적은 다른 해법과 실패 모드를 비교하는 것이며 모든 OSS를 소진했다는 뜻은 아니다.
 
 | 관점 | 마지막 라운드와 saturation 근거 |
 |---|---|
@@ -44,16 +44,16 @@
 | RFC9562·3339·9457 / JSON Schema | 표준·명세 | RFC 번호 / draft 2020-12 | 각 문서 고지; 코드 복제 권고 없음 | 문서 | ID·시간·오류·unknown field 정책 |
 | TS / Vitest / Zod / 포맷·린트 / Vite / HTTP 도구 | 부품 라이브러리 | 아래 실행 조합·버전별 registry URL | MIT / Apache-2.0 / Biome 이중 선택 | 설치·실행 | 현재 Node24/pnpm 골격의 실제 호환성 |
 
-깊이: 목록 / 문서 / 소스 / 실행. 네 제품의 조사일은 모두 2026-10-13. 기존 ref와 같은 SHA를 사용했고, 결정에 사용한 파일 원문을 메인이 재열람했다. `.reference-cache/issue-1/main-verification.md`에 원문 줄·blob identity·일치 결과를 남겼다. 새 근거는 기존 문서의 ID를 복제한 것이 아닌 이번 원문 재확인/실행이다.
+깊이: 목록 / 문서 / 소스 / 실행. 네 제품의 조사일은 모두 2026-10-13. 기존 ref와 같은 SHA를 사용했고, 결정에 사용한 파일 원문을 메인이 재열람했다. 새 근거는 기존 문서의 ID를 복제한 것이 아닌 이번 원문 재확인/실행이다.
 
 ## 근거
 
-25개: 실행 확인 7 · 소스 확인 12 · 문서 주장 6. 원문 링크의 테스트는 별도 실행 표시가 없으면 **읽기만** 한 것이다. probe 로그는 `.reference-cache/issue-1/probes/`에 있으며 제품 검증 통과를 뜻하지 않는다.
+25개: 실행 확인 7 · 소스 확인 12 · 문서 주장 6. 원문 링크의 테스트는 별도 실행 표시가 없으면 **읽기만** 한 것이다. probe 실행은 제품 검증 통과를 뜻하지 않는다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
 | <a id="E01"></a>E01 | Run 전이표는 core에, enum은 contracts에 있다. failed는 terminal로 분류되면서 queued 재시도를 허용한다. 전이표 호출만으로 모든 DB 쓰기 경로 보호를 입증하지는 않는다. | [canTransition/assertTransition](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/packages/core/src/run-state.ts#L31-L58); [lease 조건부 쓰기](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/packages/adapters/src/executor.ts#L3265-L3296) | 소스 확인 |
-| <a id="E02"></a>E02 | 원본 상태 테스트 5개와 별도 64쌍 전이 대조가 통과했다. completed/cancelled 탈출 거부, failed→queued 허용을 확인했다. | [원본 테스트](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/packages/core/src/run-state.test.ts#L1-L54); `probes/vitest-log.txt`, `toolchain/probe.test.ts` (Node24.21.0·Vitest5.0.4·fast-check4.10.0) | 실행 확인 |
+| <a id="E02"></a>E02 | 원본 상태 테스트 5개와 별도 64쌍 전이 대조가 통과했다. completed/cancelled 탈출 거부, failed→queued 허용을 확인했다. | [원본 테스트](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/packages/core/src/run-state.test.ts#L1-L54); 로컬 probe (Node24.21.0·Vitest5.0.4·fast-check4.10.0) | 실행 확인 |
 | <a id="E03"></a>E03 | Id는 nonempty string. IsoDate는 datetime 검증이지만 ProductEvent.createdAt은 string, payload는 unknown record여서 type별 payload를 강제하지 않는다. | [Id/IsoDate/RunStatus](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/packages/contracts/src/ids.ts#L1-L35); [ProductEventSchema](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/packages/contracts/src/events.ts#L329-L339) | 소스 확인 |
 | <a id="E04"></a>E04 | Task에 해당하는 issue, heartbeat Run, Approval은 별도 상태 집합이며 Run 행에는 companyId·agentId·issueId가 있다. 독립 FK만으로 동일 조직 관계가 보장되지는 않는다. | [issue states](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/packages/shared/src/constants.ts#L189-L198); [approval states](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/packages/shared/src/constants.ts#L697-L704); [run states](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/packages/shared/src/constants.ts#L919-L929); [heartbeatRuns](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/packages/db/src/schema/heartbeat_runs.ts#L22-L42) | 소스 확인 |
 | <a id="E05"></a>E05 | 신규 채용 사용자 승인 flag 기본 false; issue assertTransition는 target enum만 확인; reviewPolicy null/anyone이면 사용자 전용 완료를 강제하지 않는다. | [승인 기본값](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/packages/db/src/schema/companies.ts#L19-L21); [assertTransition](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/server/src/services/issues.ts#L312-L334); [review authority](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/server/src/services/issue-review-policy.ts#L100-L121) | 소스 확인 |
@@ -67,15 +67,15 @@
 | <a id="E13"></a>E13 | CloudEvents source+id는 중복 식별 기준이다. envelope specversion과 payload schema 진화는 별도이며 delivery·권한·전역 순서를 보장하지 않는다. | [spec id/source](https://github.com/cloudevents/spec/blob/fc1f6f31f5f011a72183f1bcea20c987cb683ade/cloudevents/spec.md#L248-L295), [primer versioning](https://github.com/cloudevents/spec/blob/fc1f6f31f5f011a72183f1bcea20c987cb683ade/cloudevents/primer.md#L253-L317) | 문서 주장 |
 | <a id="E14"></a>E14 | JSON Schema additionalProperties와 format 정책은 명시해야 한다. format은 기본 annotation이며 날짜 강제 검증과 같지 않다. | [2020-12 validation §7.2.1](https://json-schema.org/draft/2020-12/json-schema-validation#section-7.2.1), [core §10](https://json-schema.org/draft/2020-12/json-schema-core#section-10) | 문서 주장 |
 | <a id="E15"></a>E15 | 기계 판별 오류와 표시 문구를 분리하고 unknown 오류 확장은 허용할 수 있다. JSON-RPC notification은 오류 응답이 없고 batch 순서는 보장되지 않는다. | [RFC9457 §3](https://www.rfc-editor.org/rfc/rfc9457.html#section-3), [JSON-RPC §4.1·6](https://www.jsonrpc.org/specification) | 문서 주장 |
-| <a id="E16"></a>E16 | Rakazo 이벤트의 invalid date·unrelated payload 수용/귀속 누락 거부, Zod strict vs additive 읽기, 결정론적 timer+fake runtime을 실행했다. Orca 원본 envelope도 5 assertion으로 strip·payload 미검증·잘못된 discriminator/meta 거부를 확인했다. | `probes/vitest-log.txt` (총 11 tests), `probes/orca-envelope-log.txt` (5 assertions); Zod4.6.7. 실제 승인/조직 API는 연결하지 않았다. | 실행 확인 |
+| <a id="E16"></a>E16 | Rakazo 이벤트의 invalid date·unrelated payload 수용/귀속 누락 거부, Zod strict vs additive 읽기, 결정론적 timer+fake runtime을 실행했다. Orca 원본 envelope도 5 assertion으로 strip·payload 미검증·잘못된 discriminator/meta 거부를 확인했다. | 로컬 probe (총 11 tests), 로컬 probe (5 assertions); Zod4.6.7. 실제 승인/조직 API는 연결하지 않았다. | 실행 확인 |
 | <a id="E17"></a>E17 | TS7.0.2와 typescript-eslint8.71.2의 TS peer >=4.8.4 <6.1.0은 충돌한다. Vitest5.0.4는 Node24와 Vite8을 허용한다. Node 타입 latest26과 제품용24를 구분했다. | [TS7 manifest](https://registry.npmjs.org/typescript/7.0.2), [typescript-eslint manifest](https://registry.npmjs.org/typescript-eslint/8.71.2), [Vitest manifest](https://registry.npmjs.org/vitest/5.0.4), [Node24 types](https://registry.npmjs.org/%40types%2Fnode/24.19.2) | 문서 주장 |
-| <a id="E18"></a>E18 | A 조합은 strict-peer/ignore-scripts 설치 성공. 정상 tsc/lint/format 성공, 타입 오류·floating Promise·web→storage 하위 import를 각각 거부했다. | `probes/toolchain-a/commands.md`, `results.json`, `*-log.txt`: TS6.0.3·ESLint10.12.0·typescript-eslint8.71.2·Prettier3.9.10 | 실행 확인 |
-| <a id="E19"></a>E19 | B 조합 TS7 tsc와 Biome lint의 정상/부정 대조군을 실행했다. 잘못된 타입과 금지 import를 거부한다. strict-peer B 설치는 혼합 탐색 설치의 peer 경고와 별도로 기록했다. | `probes/tools-log.txt`, `tools-results.json`, `toolchain-b-install.txt`: TS7.0.2·Biome2.5.15·Vitest5.0.4·Vite8.3.4·Zod4.6.7 | 실행 확인 |
-| <a id="E20"></a>E20 | 작은 별도 pnpm workspace에서 contracts를 core·web·worker·server가 소비해 tsc -b 성공, Node compiled ESM import 성공. TaskId→OrganizationId 잘못된 대입은 TS2322로 거부했다. | `probes/workspace-build.txt`, `workspace-negative.txt`, `toolchain/workspace/`: TS7.0.2·NodeNext·exports dist·project references | 실행 확인 |
-| <a id="E21"></a>E21 | React19.3.0/Vite8.3.4/plugin-react6.1.2 production smoke build 성공. Fastify5.12.7 inject·Hono4.13.13 app.request에서 정상 200/필수 id 누락 400 확인. 실제 HTTP listen·웹 사용자 흐름은 미실행. | `probes/tools-log.txt`, `vitest-log.txt`, `toolchain/probe.test.ts` | 실행 확인 |
-| <a id="E22"></a>E22 | 네 고정 제품 LICENSE를 재확인했다. Rakazo/Paseo Apache-2.0, Paperclip/Orca MIT; Paseo 내장 제3자 예외. 실제 채택 도구의 직접 LICENSE도 캐시에 보존했으며 전이 의존성 전체 감사는 미수행. | [Rakazo](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/LICENSE#L1-L55); [Paseo](https://github.com/getpaseo/paseo/blob/9246813fd2acd6afc7012c5fde79a164b8f8592e/LICENSE#L1-L15); [Paperclip](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/LICENSE#L1-L21); [Orca](https://github.com/stablyai/orca/blob/564693f1765e58bea9aee9cf642b96230411a8cd/LICENSE#L1-L21); `toolchain-a/licenses/` | 소스 확인 |
+| <a id="E18"></a>E18 | A 조합은 strict-peer/ignore-scripts 설치 성공. 정상 tsc/lint/format 성공, 타입 오류·floating Promise·web→storage 하위 import를 각각 거부했다. | 로컬 probe: TS6.0.3·ESLint10.12.0·typescript-eslint8.71.2·Prettier3.9.10 | 실행 확인 |
+| <a id="E19"></a>E19 | B 조합 TS7 tsc와 Biome lint의 정상/부정 대조군을 실행했다. 잘못된 타입과 금지 import를 거부한다. strict-peer B 설치는 혼합 탐색 설치의 peer 경고와 별도로 기록했다. | 로컬 probe: TS7.0.2·Biome2.5.15·Vitest5.0.4·Vite8.3.4·Zod4.6.7 | 실행 확인 |
+| <a id="E20"></a>E20 | 작은 별도 pnpm workspace에서 contracts를 core·web·worker·server가 소비해 tsc -b 성공, Node compiled ESM import 성공. TaskId→OrganizationId 잘못된 대입은 TS2322로 거부했다. | 로컬 probe: TS7.0.2·NodeNext·exports dist·project references | 실행 확인 |
+| <a id="E21"></a>E21 | React19.3.0/Vite8.3.4/plugin-react6.1.2 production smoke build 성공. Fastify5.12.7 inject·Hono4.13.13 app.request에서 정상 200/필수 id 누락 400 확인. 실제 HTTP listen·웹 사용자 흐름은 미실행. | 로컬 probe | 실행 확인 |
+| <a id="E22"></a>E22 | 네 고정 제품 LICENSE를 재확인했다. Rakazo/Paseo Apache-2.0, Paperclip/Orca MIT; Paseo 내장 제3자 예외. 실제 채택 도구의 직접 LICENSE도 캐시에 보존했으며 전이 의존성 전체 감사는 미수행. | [Rakazo](https://github.com/elie222/rakazo/blob/40ee8548763ca1050350210291048274610bef79/LICENSE#L1-L55); [Paseo](https://github.com/getpaseo/paseo/blob/9246813fd2acd6afc7012c5fde79a164b8f8592e/LICENSE#L1-L15); [Paperclip](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/LICENSE#L1-L21); [Orca](https://github.com/stablyai/orca/blob/564693f1765e58bea9aee9cf642b96230411a8cd/LICENSE#L1-L21) | 소스 확인 |
 | <a id="E23"></a>E23 | Fastify baseline Ajv는 coerceTypes/useDefaults/removeAdditional을 활성화한다. strict command의 unknown 필드 거부를 이 기본값에 맡길 수 없다. | [Fastify 기본 검증 설정](https://github.com/fastify/fastify/blob/9f400035ebaf572b95989db5040ebb09c01e4e77/docs/Reference/Validation-and-Serialization.md#L499-L512) | 소스 확인 |
-| <a id="E24"></a>E24 | number로 선언했지만 string을 대입한 TS를 Node native stripping과 tsx가 정상 종료로 실행했다. 변환·실행 성공은 타입 검사 성공과 별개다. | `probes/tools-log.txt`: Node24.21.0·tsx4.23.15의 `native-negative.ts`; tsc는 별도 TS2322 거부 | 실행 확인 |
+| <a id="E24"></a>E24 | number로 선언했지만 string을 대입한 TS를 Node native stripping과 tsx가 정상 종료로 실행했다. 변환·실행 성공은 타입 검사 성공과 별개다. | 로컬 probe: Node24.21.0·tsx4.23.15의 타입 오류 예제; tsc는 별도 TS2322 거부 | 실행 확인 |
 | <a id="E25"></a>E25 | Node TS 실행은 typecheck/tsconfig alias/TSX를 대신하지 않는다. TS는 NodeNext와 bundler에서 import 해석이 달라 host별 설정이 필요하다. | [Node24 TS](https://nodejs.org/docs/latest-v24.x/api/typescript.html), [TypeScript modules reference](https://www.typescriptlang.org/docs/handbook/modules/reference.html) | 문서 주장 |
 
 ## 패턴

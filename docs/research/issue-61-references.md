@@ -1,6 +1,6 @@
 # issue-61 레퍼런스 조사: 알림 outbox, 가짜 채널, Inbox 완성
 
-조사일: 2026-10-23 (Asia/Seoul). 대상: [#61](https://github.com/babo-jeonguk/BaboJUBot/issues/61), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-61/`(git 무시). 제품 코드·테스트·설정은 변경하지 않았으며 이 문서는 커밋하지 않고 구현 변경과 함께 커밋되게 둔다.
+조사일: 2026-10-23 (Asia/Seoul). 대상: [#61](https://github.com/babo-jeonguk/BaboJUBot/issues/61), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 제품 코드·테스트·설정은 변경하지 않았으며 이 문서는 커밋하지 않고 구현 변경과 함께 커밋되게 둔다.
 
 [이슈 receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/61#issuecomment-6363457996)를 게시하고 원문과 결정 표의 일치를 확인했다.
 
@@ -28,12 +28,12 @@
 | [#52](issue-52-references.md#brief) | 셸·global/org 범위·event invalidation | 현행 shell/live-events 원문 재독 |
 | [#54](issue-54-references.md#brief)·[#57](issue-57-references.md#brief) | pending approval/result 원본과 단일 결정 | 선행 이슈 둘 모두 closed 확인, 댓글과 현행 db/inbox·approvals·results 재독 |
 | [#59](issue-59-references.md#brief) | 취소와 실패 구별·잠금 순서 | 현행 core/run·db/runs 재독 |
-| [#60](issue-60-references.md#brief) | 영속 입력·호출 키·재시작 복구·PG queue | pg-boss/Graphile/Transaction Outbox 동일 SHA 확인 및 관련 파일 blob 비교·재독. 상세 `recon/outbox-discovery/blob-comparison.json` |
+| [#60](issue-60-references.md#brief) | 영속 입력·호출 키·재시작 복구·PG queue | pg-boss/Graphile/Transaction Outbox 동일 SHA 확인 및 관련 파일 blob 비교·재독 |
 | [기타 화면 조사](dashboard-references.md#6-babojubot이-고려할-기능--설계-제안-결정-아님) | 승인 링크는 식별과 권한이 다르다는 출발점 | OpenClaw 새 SHA·공식 보안 권고·원본 guard 별도 확인 |
 
 ## 레퍼런스
 
-후보 전체와 실행 경로는 `candidates.md`, 라운드별 검색은 `notes/{outbox,channel,inbox,local-boundaries}.md`에 있다. 검색한 경로의 포화를 뜻하며 전체 생태계 소진을 주장하지 않는다.
+검색한 경로의 포화를 뜻하며 전체 생태계 소진을 주장하지 않는다.
 
 | 관점 | Saturation 근거 |
 |---|---|
@@ -59,7 +59,7 @@
 
 ## 근거
 
-각 수준은 해당 범위만 보증한다. 테스트를 읽은 사실을 실행으로 세지 않았고, 독립 SQL 모형·mock transport·preview를 제품 API/실채널 통합 검증으로 세지 않았다. 메인의 원문 대조는 `main-verification.md`에 기록한다.
+각 수준은 해당 범위만 보증한다. 테스트를 읽은 사실을 실행으로 세지 않았고, 독립 SQL 모형·mock transport·preview를 제품 API/실채널 통합 검증으로 세지 않았다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -75,7 +75,7 @@
 | <a id="E10"></a>E10 | OpenClaw는 write-only chat.send→/approve가 내부 privileged client로 승인 권한을 우회한 결함을 공개했고2026.2.2 이상 수정으로 명시한다. 과거 fix commit 원문은 API422로 미확인 | [GHSA-mqpw-46fh-299h](https://github.com/openclaw/openclaw/security/advisories/GHSA-mqpw-46fh-299h) | 문서 주장 |
 | <a id="E11"></a>E11 | 현재 /approve는 sender·gateway scope를 검사하고 원 reviewer를 resolver로 전달한다. device binding 없는 광범위 승인 권한도 있어 우리 조직 격리 모델과 같지 않다 | [command](https://github.com/openclaw/openclaw/blob/3b153699457f0f51c6d84d3e5ad8ddd29780b9ef/src/auto-reply/reply/commands-approve.ts#L139-L231), [access guard](https://github.com/openclaw/openclaw/blob/3b153699457f0f51c6d84d3e5ad8ddd29780b9ef/src/gateway/operator-approval-authorization.ts#L10-L54), [binding](https://github.com/openclaw/openclaw/blob/3b153699457f0f51c6d84d3e5ad8ddd29780b9ef/src/gateway/operator-approval-reviewer-binding.ts#L5-L24) | 소스 확인 |
 | <a id="E12"></a>E12 | canonical approval.resolve는 live custody·최종 guard를 재검사하고 terminal winner는 applied:false로 반환한다. publication은 best effort다. UI는 응답 불명확 시 authoritative 상태를 다시 읽는다. 이 경로는 HTTP가 아닌 WS RPC다 | [resolver](https://github.com/openclaw/openclaw/blob/3b153699457f0f51c6d84d3e5ad8ddd29780b9ef/src/gateway/server-methods/approval.ts#L344-L479), [UI](https://github.com/openclaw/openclaw/blob/3b153699457f0f51c6d84d3e5ad8ddd29780b9ef/ui/src/pages/approval/approval-page.tsx#L320-L404) | 소스 확인 |
-| <a id="E13"></a>E13 | OpenClaw 원본 4모듈을 변경 없이 transpile하고 의존성·transport만 double로 실행했다. write-only/sender 거부, 정상 승인/admin, malformed/stale ID/ack 분실, device binding과 빈 binding 반례13 checks PASS | `probes/openclaw-approval.cjs`, `openclaw-approval-run-log.txt`; Node24.21.0·TS6.0.3. Gateway/DB/실채널 실행 아님 | 실행 확인(제한) |
+| <a id="E13"></a>E13 | OpenClaw 원본 4모듈을 변경 없이 transpile하고 의존성·transport만 double로 실행했다. write-only/sender 거부, 정상 승인/admin, malformed/stale ID/ack 분실, device binding과 빈 binding 반례13 checks PASS | 로컬 probe; Node24.21.0·TS6.0.3. Gateway/DB/실채널 실행 아님 | 실행 확인(제한) |
 | <a id="E14"></a>E14 | Slack의 raw body 서명·timestamp·ack와 Matrix의 device+endpoint별 txn ID는 전송 계약이다. 제품의 업무 승인 권한·최종 상태와 같은 개념으로 쓰지 않는다 | [Slack authenticity](https://docs.slack.dev/authentication/verifying-requests-from-slack/), [ack](https://docs.slack.dev/tools/bolt-js/concepts/acknowledge), [Matrix txn](https://spec.matrix.org/latest/client-server-api/#transaction-identifiers) | 문서 주장 |
 | <a id="E15"></a>E15 | Paperclip은 agent별 최신 실행을 고른 뒤 실패만 남겨 후속 success/running이 과거 실패를 숨긴다. non-issue read는 localStorage Set, issue read는 별도 PG다. unread 승인 탭도 actionable 의미여서 복사하면 의미가 섞인다 | [latest run](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/lib/inbox.ts#L728-L805), [read hook](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/hooks/useInboxBadge.ts#L147-L177), [issue read](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/packages/db/src/schema/issue_read_states.ts#L5-L28) | 소스 확인 |
 | <a id="E16"></a>E16 | Paperclip의 PG dismissal은 company/user/itemKey별 정리 상태다. route는 문자열 key의 source 실체 귀속을 별도 조회하지 않는다. issue archive의 항목별 rollback과 non-issue hook의 전체 snapshot rollback은 다르다 | [schema](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/packages/db/src/schema/inbox_dismissals.ts#L4-L29), [route](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/server/src/routes/inbox-dismissals.ts#L62-L80), [per-item](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/pages/Inbox.tsx#L1931-L1979), [hook](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/hooks/useInboxBadge.ts#L69-L106), [selection](https://github.com/paperclipai/paperclip/blob/412914cfa78d5abefcc34d3eb8d4bb86e461caac/ui/src/pages/Inbox.tsx#L2101-L2128) | 소스 확인 |
@@ -84,9 +84,9 @@
 | <a id="E19"></a>E19 | Novu ADR는 renderer마다 filter/count 소유자가 갈라져 drift하던 이유로 instance별 shared core를 선택한다. 다른 탭 영속화 보장을 뜻하지 않는다 | [shared inbox ADR](https://github.com/novuhq/novu/blob/14c6c4faf106292a20bacdb9c54c73f40ed93553/packages/js/docs/adr/0003-shared-inbox-state-lives-in-the-core.md#L6-L22) | 문서 주장 |
 | <a id="E20"></a>E20 | Knock은 bulk에 현재 user/filter/tenant를 넘기고, opt-in BroadcastChannel 이벤트를 받으면 목록을 fetch한다. 브라우저 이벤트 payload를 최종 상태로 쓰지 않는다 | [bulk/cross-tab](https://github.com/knocklabs/javascript/blob/b429cf037dedcde794143bb8f85f6bc1532741d9/packages/client/src/clients/feed/feed.ts#L757-L817) | 소스 확인 |
 | <a id="E21"></a>E21 | Courier의 preview는 실제 datastore를 우회한다. read/archive 오류는 listener에 전달하지만 catch 뒤 throw하지 않는 경로도 있어 명령 성공 계약을 그대로 가져오지 않는다 | [preview](https://github.com/trycourier/courier-web/blob/105379f72aaba48db9d5080a5ca410869a57f9fa/%40trycourier/courier-ui-inbox/src/components/courier-inbox.ts#L763-L795), [rollback](https://github.com/trycourier/courier-web/blob/105379f72aaba48db9d5080a5ca410869a57f9fa/%40trycourier/courier-ui-inbox/src/datastore/inbox-datastore.ts#L910-L923) | 소스 확인 |
-| <a id="E22"></a>E22 | 독립 SQL 모형 10cases·26assertions PASS. 업무/outbox 롤백·중복 의도·네 종류·조직 FK·동시 claim·lease 회수·stale ack·지연 retry·fake sink dedup·외부 중복 대조·read/archive 독립·set/toggle 차이를 확인했다 | `probes/outbox-pg.mjs`, `outbox-pg-log.txt`; Node24.21.0·PG18.4·pg8.23.1·embedded-postgres18.4.0-beta.17 | 실행 확인(독립 모형) |
-| <a id="E23"></a>E23 | pg-boss 고정 SHA의 원본 plans.ts와 전체 PG schema를 직접 실행해 6cases·15assertions PASS. caller tx rollback·정상/중복 settle·stale complete/touch 거부·UUID를 확인했다. id-only가 새 attempt를 덮고 public restore가 generation을 재사용하는 음성 대조도 재현했다 | `probes/pg-boss-upstream.mjs`, `pg-boss-upstream-log.txt`; Node24.21.0·PG18.4·pg8.23.1. worker API/분산 branch 미실행 | 실행 확인(원본 SQL) |
-| <a id="E24"></a>E24 | Courier 고정 소스의 원본 preview UI를 로컬에서 조작해 1440/390px 8캡처를 확인하고 메인이 전부 재열람했다. feed/bulk/row 메뉴·모바일 long press·줄바꿈·빈/로딩/오류 구분을 보았다. read/archive 클릭은 preview 상태를 바꾸지 않고 Archive도 주입 3행을 재사용했다 | [원본 preview guard](https://github.com/trycourier/courier-web/blob/105379f72aaba48db9d5080a5ca410869a57f9fa/%40trycourier/courier-ui-inbox/src/components/courier-inbox.ts#L258-L270), [list renderer](https://github.com/trycourier/courier-web/blob/105379f72aaba48db9d5080a5ca410869a57f9fa/%40trycourier/courier-ui-inbox/src/components/courier-inbox-list.ts#L180-L232); `captures/courier-captures.md`, `probes/courier-run-log.txt` | 실행 확인(원본 UI＋합성 데이터) |
+| <a id="E22"></a>E22 | 독립 SQL 모형 10cases·26assertions PASS. 업무/outbox 롤백·중복 의도·네 종류·조직 FK·동시 claim·lease 회수·stale ack·지연 retry·fake sink dedup·외부 중복 대조·read/archive 독립·set/toggle 차이를 확인했다 | 로컬 probe; Node24.21.0·PG18.4·pg8.23.1·embedded-postgres18.4.0-beta.17 | 실행 확인(독립 모형) |
+| <a id="E23"></a>E23 | pg-boss 고정 SHA의 원본 plans.ts와 전체 PG schema를 직접 실행해 6cases·15assertions PASS. caller tx rollback·정상/중복 settle·stale complete/touch 거부·UUID를 확인했다. id-only가 새 attempt를 덮고 public restore가 generation을 재사용하는 음성 대조도 재현했다 | 로컬 probe; Node24.21.0·PG18.4·pg8.23.1. worker API/분산 branch 미실행 | 실행 확인(원본 SQL) |
+| <a id="E24"></a>E24 | Courier 고정 소스의 원본 preview UI를 로컬에서 조작해 1440/390px 8캡처를 확인하고 메인이 전부 재열람했다. feed/bulk/row 메뉴·모바일 long press·줄바꿈·빈/로딩/오류 구분을 보았다. read/archive 클릭은 preview 상태를 바꾸지 않고 Archive도 주입 3행을 재사용했다 | [원본 preview guard](https://github.com/trycourier/courier-web/blob/105379f72aaba48db9d5080a5ca410869a57f9fa/%40trycourier/courier-ui-inbox/src/components/courier-inbox.ts#L258-L270), [list renderer](https://github.com/trycourier/courier-web/blob/105379f72aaba48db9d5080a5ca410869a57f9fa/%40trycourier/courier-ui-inbox/src/components/courier-inbox-list.ts#L180-L232); 로컬 캡처·실행 기록 | 실행 확인(원본 UI＋합성 데이터) |
 
 근거 24개: 소스 확인 15·문서 주장 5·실행 확인 4. 실행 범위는 서로 다르며 하나의 통합 suite로 합산하지 않는다.
 
@@ -94,8 +94,8 @@
 
 - 독립 SQL 모형은 임시 embedded PG18.4, pg8.23.1, Node24.21.0에서 키 없는 셸로 실행하고 finally에서 pool/cluster/임시 디렉터리를 정리했다. 실제 제품 schema·HTTP·relay를 구현/검증한 것이 아니다.
 - pg-boss는 고정 source snapshot의 원본 SQL 생성기·전체 schema만 실행했다. worker API·CockroachDB/분산 branch·upstream 전체 suite는 미실행이다. OpenClaw는 원본 4모듈의 transpilation과 명시적 dependency/transport double만 사용했고,13 checks를 실제 Gateway/DB의 권한 검증으로 확대하지 않는다.
-- Courier는 `/tmp/reference-selfhost/issue-61-courier/`의 고정 checkout에서 원본 component를 Vite source alias로 실행했다. 새 연구 runner에 Vite6.2.6만 `npm install --ignore-scripts`로 설치하고 원본 소스는 수정하지 않았다. 합성 메시지·wrapper 여백/폭만 주입했다. 당시 available4GiB, 설치/서버/브라우저 모두 Docker2GiB 상한·env-i, localhost만 사용했다. 외부 요청0/pageerror0, 사용한 서버 컨테이너 종료를 확인했다.
-- UI 8장은 실제 원본 메뉴 조작 후 촬영했다. empty/loading/error는 원본 public setter fixture에 native feed 메뉴를 연 상태로 확인했다. 실제 네트워크 오류·Retry 복구·read/archive 저장·undo·다른 탭·키보드 접근성 보장은 미확인이다. preview의 no-op을 제품 정책으로 채택하지 않고, 메뉴·상태 renderer의 구분만 참고한다. 상세 재현 명령/시행착오는 `probes/run-log.txt`와 각 실행 로그에 있다.
+- Courier는 임시 폴더의 고정 checkout에서 원본 component를 Vite source alias로 실행했다. 새 연구 runner에 Vite6.2.6만 `npm install --ignore-scripts`로 설치하고 원본 소스는 수정하지 않았다. 합성 메시지·wrapper 여백/폭만 주입했다. 당시 available4GiB, 설치/서버/브라우저 모두 Docker2GiB 상한·env-i, localhost만 사용했다. 외부 요청0/pageerror0, 사용한 서버 컨테이너 종료를 확인했다.
+- UI 8장은 실제 원본 메뉴 조작 후 촬영했다. empty/loading/error는 원본 public setter fixture에 native feed 메뉴를 연 상태로 확인했다. 실제 네트워크 오류·Retry 복구·read/archive 저장·undo·다른 탭·키보드 접근성 보장은 미확인이다. preview의 no-op을 제품 정책으로 채택하지 않고, 메뉴·상태 renderer의 구분만 참고한다.
 
 ## 패턴
 

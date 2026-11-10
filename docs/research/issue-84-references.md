@@ -1,6 +1,6 @@
 # issue-84 레퍼런스 조사: 채널에서 들어오는 사용자 답
 
-조사일: 2026-10-28. 대상: [#84](https://github.com/babo-jeonguk/BaboJUBot/issues/84) 4번(채널 답을 받는 seam). 구현 전 조사이며, 채택한 결정은 이슈 본문이 기준입니다. 상세 노트와 읽은 코드 사본은 `.reference-cache/issue-84/`(git 무시)에 있습니다. 클론한 코드는 읽기만 했고 실행하지 않았습니다.
+조사일: 2026-10-28. 대상: [#84](https://github.com/babo-jeonguk/BaboJUBot/issues/84) 4번(채널 답을 받는 seam). 구현 전 조사이며, 채택한 결정은 이슈 본문이 기준입니다. 클론한 코드는 읽기만 했고 실행하지 않았습니다.
 
 ## Brief
 

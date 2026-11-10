@@ -1,6 +1,6 @@
 # issue-96 레퍼런스 조사: 능력·끼워 넣기·사용량·작업별 세션·준비 상태
 
-조사일: 2026-10-31. 대상: [#96](https://github.com/babo-jeonguk/BaboJUBot/issues/96), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91), 완료된 선행 #94·#95. 구현 전 권고이며 확정 계약이나 구현 완료가 아니다. 상세 자료: `.reference-cache/issue-96/`(git 무시). 제품 코드·테스트·설정은 변경하지 않고 문서는 구현 변경과 함께 커밋하도록 둔다.
+조사일: 2026-10-31. 대상: [#96](https://github.com/babo-jeonguk/BaboJUBot/issues/96), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91), 완료된 선행 #94·#95. 구현 전 권고이며 확정 계약이나 구현 완료가 아니다. 제품 코드·테스트·설정은 변경하지 않고 문서는 구현 변경과 함께 커밋하도록 둔다.
 
 ## Brief
 
@@ -27,7 +27,7 @@
 
 ## 레퍼런스
 
-관점별 각 3라운드 탐색: 세션/능력/입력은 provider OSS→프로토콜·checkpoint→오류 테스트·extension, 준비/사용량은 운영 OSS→측정 라이브러리→실패 보고, UI는 기존 가이드→운영 label·query 취소→소스·테스트로 넓혔다. 마지막 라운드가 기존 입력 소유권·명시 상태·응답 순서 패턴만 반복해 이번 질문 범위에서 종료했다. 전수조사 주장이 아니다. 전체 후보는 `candidates.md` 18행(관점 중복 포함), 실행 경로·선정 이유·라운드별 검색은 관점별 `notes/`에 있다.
+관점별 각 3라운드 탐색: 세션/능력/입력은 provider OSS→프로토콜·checkpoint→오류 테스트·extension, 준비/사용량은 운영 OSS→측정 라이브러리→실패 보고, UI는 기존 가이드→운영 label·query 취소→소스·테스트로 넓혔다. 마지막 라운드가 기존 입력 소유권·명시 상태·응답 순서 패턴만 반복해 이번 질문 범위에서 종료했다. 전수조사 주장이 아니다. 전체 후보는 18행(관점 중복 포함)이다.
 
 | 레퍼런스 | 분류 | 고정 SHA | 라이선스 | 깊이·선정 이유 |
 |---|---|---|---|---|
@@ -37,7 +37,7 @@
 | AI SDK | 측정 부품 | `ae5b13ee576e9176b1aaef2348f4d75b0812974a` | Apache-2.0 | 소스·실행: 미보고 표현 |
 | SEED | 디자인 시스템 | `99efaf5561de6e18557ffeb57fe95428ce066eb3` | Apache-2.0 | 소스·공개 실행: 지정된 배지·진행 표시 |
 
-codex-acp는 E13 문서 비교만 했다(라이선스 미검증, 코드 재사용 제외). 나머지 후보 ACP·LangGraph·OpenClaw·Vibe Kanban·실패 이슈·PatternFly·TanStack·React·기존 가이드는 목록/문서 범위다. 설계 참고만 하며 외부 코드 복사 없음. Paseo 기존 SHA의 핵심 4파일 blob은 모두 변경되어 새로 읽었다. Paperclip 기존 선택 조사 대비 세션·Claude 실행 2파일은 blob 동일이나 새 원문을 읽었다. SEED는 기존 #95와 같은 SHA다. 자세한 비교는 `recon/sessions.md`에 있다.
+codex-acp는 E13 문서 비교만 했다(라이선스 미검증, 코드 재사용 제외). 나머지 후보 ACP·LangGraph·OpenClaw·Vibe Kanban·실패 이슈·PatternFly·TanStack·React·기존 가이드는 목록/문서 범위다. 설계 참고만 하며 외부 코드 복사 없음. Paseo 기존 SHA의 핵심 4파일 blob은 모두 변경되어 새로 읽었다. Paperclip 기존 선택 조사 대비 세션·Claude 실행 2파일은 blob 동일이나 새 원문을 읽었다. SEED는 기존 #95와 같은 SHA다.
 
 ## 근거
 
@@ -47,17 +47,17 @@ codex-acp는 E13 문서 비교만 했다(라이선스 미검증, 코드 재사�
 | <a id="E02"></a>E02 | 현재 admission은 agent의 직전 run에서 sessionAfter를 가져온다. 메시지는 message+wake+Event transaction으로 저장한다. | [원문 1](https://github.com/babo-jeonguk/BaboJUBot/blob/db62a51055938bea597d6998c45601ff7ffd8937/packages/db/src/runs.ts#L118-L146) · [원문 2](https://github.com/babo-jeonguk/BaboJUBot/blob/db62a51055938bea597d6998c45601ff7ffd8937/packages/db/src/conversations.ts#L240-L294) | 소스 확인 |
 | <a id="E03"></a>E03 | Paseo는 expectedTurnId를 포착하고 accepted에만 전달을 기록한다. unavailable→replace 동작도 별도로 존재한다. | [원문 1](https://github.com/getpaseo/paseo/blob/a4f696620b5d248598a882b1a78d82ec5038c74b/packages/server/src/server/agent/agent-manager.ts#L3016-L3093) | 소스 확인 |
 | <a id="E04"></a>E04 | Codex steer는 thread/turn 신원을 재검사하고 ack turnId 일치 때 accepted. 명시적 거절만 unavailable, transport/unknown 오류는 throw한다. 읽은 fake app-server 테스트도 이를 assert한다. | [원문 1](https://github.com/getpaseo/paseo/blob/a4f696620b5d248598a882b1a78d82ec5038c74b/packages/server/src/server/agent/providers/codex-app-server-agent.ts#L4430-L4483) · [원문 2](https://github.com/getpaseo/paseo/blob/a4f696620b5d248598a882b1a78d82ec5038c74b/packages/server/src/server/agent/providers/codex-app-server-agent.test.ts#L431-L490) | 소스 확인 |
-| <a id="E05"></a>E05 | 원문 classifier 추출 실행: 명시 거절5·모호 오류3·일반 Error 음성대조1 모두 통과. | Paseo E04 SHA; `probes/steer-rejection.mjs`, `steer-run-log.txt`, 메인 재실행 동일 | 실행 확인 |
+| <a id="E05"></a>E05 | 원문 classifier 추출 실행: 명시 거절5·모호 오류3·일반 Error 음성대조1 모두 통과. | Paseo E04 SHA; 로컬 probe, 메인 재실행 동일 | 실행 확인 |
 | <a id="E06"></a>E06 | Paperclip은 company+agent+adapter+taskKey로 세션 조회, taskKey 없으면 agent 세션. Claude는 bundle/cwd/target 일치를 확인하고 known session error에 로그 후 같은 execute에서 fresh 재시도한다. | [원문 1](https://github.com/paperclipai/paperclip/blob/aa58fa107389e8b9ae5949f7ad815943dfd94292/server/src/services/heartbeat/run-state.ts#L1256-L1274) · [원문 2](https://github.com/paperclipai/paperclip/blob/aa58fa107389e8b9ae5949f7ad815943dfd94292/server/src/services/heartbeat/run-state.ts#L1492-L1517) · [원문 3](https://github.com/paperclipai/paperclip/blob/aa58fa107389e8b9ae5949f7ad815943dfd94292/packages/adapters/claude-local/src/server/execute.ts#L1371-L1418) | 소스 확인 |
 | <a id="E07"></a>E07 | Paperclip 진단은 Respond with hello. 모델 요청을 한다. usage fallback은 누락 입력/출력/cache read를 0으로 채운다. 둘 다 #96의 반례다. | [원문 1](https://github.com/paperclipai/paperclip/blob/aa58fa107389e8b9ae5949f7ad815943dfd94292/packages/adapters/claude-local/src/server/test.ts#L380-L447) · [원문 2](https://github.com/paperclipai/paperclip/blob/aa58fa107389e8b9ae5949f7ad815943dfd94292/packages/adapters/claude-local/src/server/execute.ts#L1122-L1138) | 소스 확인 |
 | <a id="E08"></a>E08 | Codex 누적 측정은 historical baseline과 latest max를 보관해 delta를 계산한다. AI SDK는 각 usage/cache 항목의 undefined를 유지하고, 둘 다 미보고면 합계도 undefined다. 한쪽만 보고되면 부분합이다. | [원문 1](https://github.com/paperclipai/paperclip/blob/aa58fa107389e8b9ae5949f7ad815943dfd94292/packages/paperclip-runner/src/drivers/codex/codex-usage-baseline.ts#L1-L45) · [원문 2](https://github.com/vercel/ai/blob/ae5b13ee576e9176b1aaef2348f4d75b0812974a/packages/ai/src/types/usage.ts#L10-L185) | 소스 확인 |
-| <a id="E09"></a>E09 | 원본 함수 실행: Codex baseline6·AI SDK 미보고/0/부분합5 assertions 통과. 누적 반복·과거 snapshot·잘못된 숫자·cache 누락 대조 포함. | `probes/codex-usage.mjs`, `ai-sdk-usage.mjs`, 각 run-log; E08 SHA, 메인 재실행 동일 | 실행 확인 |
+| <a id="E09"></a>E09 | 원본 함수 실행: Codex baseline6·AI SDK 미보고/0/부분합5 assertions 통과. 누적 반복·과거 snapshot·잘못된 숫자·cache 누락 대조 포함. | 로컬 probe 2개; E08 SHA, 메인 재실행 동일 | 실행 확인 |
 | <a id="E10"></a>E10 | AO는 설치+인증 상태에서 3값을 도출한다. 로컬 credential configured는 unknown. 동시 확인을 공유하고 버전을 검사하지만 Ensure는 완료를 기다린다. | [원문 1](https://github.com/ComposioHQ/agent-orchestrator/blob/0a43ac09dde2261a469fb39d7c64d3d946352942/backend/internal/domain/agent_readiness.go#L279-L301) · [원문 2](https://github.com/ComposioHQ/agent-orchestrator/blob/0a43ac09dde2261a469fb39d7c64d3d946352942/backend/internal/service/agent/readiness_coordinator.go#L317-L410) | 소스 확인 |
 | <a id="E11"></a>E11 | SEED Badge는 span Root/Prefix/Label과 별도 button Action. useProgress는 value 없을 때 indeterminate, aria-valuenow 생략·progressbar 제공. 접근성 값 loading...은 영어다. | [원문 1](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react/src/components/Badge/Badge.tsx#L30-L97) · [원문 2](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react-headless/progress/src/useProgress.ts#L22-L45) | 소스 확인 |
-| <a id="E12"></a>E12 | 공개 Badge에서 스크롤·텍스트 선택 뒤 prefix 아이콘+라벨을 1280px/390px에서 관찰하고 캡처 2개를 메인이 재열람했다. 제품 준비 상태 전이를 관찰한 것은 아니다. | [SEED Badge 공개 데모](https://seed-design.io/react/components/badge), `captures/captures.md` | 실행 확인 |
+| <a id="E12"></a>E12 | 공개 Badge에서 스크롤·텍스트 선택 뒤 prefix 아이콘+라벨을 1280px/390px에서 관찰하고 캡처 2개를 메인이 재열람했다. 제품 준비 상태 전이를 관찰한 것은 아니다. | [SEED Badge 공개 데모](https://seed-design.io/react/components/badge), 로컬 캡처 | 실행 확인 |
 | <a id="E13"></a>E13 | codex-acp 문서는 pre-standard steering extension과 promptRequired opt-in(입력 미소비·host가 다음 prompt 소유)을 명시한다. 표준/모든 adapter의 보편 능력으로 일반화할 수 없다. | [원문 1](https://github.com/agentclientprotocol/codex-acp/blob/ef45a6d97cd81810aaebcba9533af5411dadec6f/docs/steering.md#L1-L59) | 문서 주장 |
 
-근거 13행: 소스 확인9·실행 확인3·문서 주장1. 아래 패턴·권고는 이 관찰과 제품 요구를 종합한 **추론**이다. Node v24.21.0, Playwright1.58.2/Chromium1208. 순수 함수 probe는 키 없는 셸·설치 없이 실행했다. full SDK/프로바이더를 띄운 self-host 실행은 없고 `selfhost/`는 미사용이다. 결정에 쓰는 원문과 캡처는 메인이 재열람했다(`main-verification.md`).
+근거 13행: 소스 확인9·실행 확인3·문서 주장1. 아래 패턴·권고는 이 관찰과 제품 요구를 종합한 **추론**이다. Node v24.21.0, Playwright1.58.2/Chromium1208. 순수 함수 probe는 키 없는 셸·설치 없이 실행했다. full SDK/프로바이더를 띄운 self-host 실행은 없다. 결정에 쓰는 원문과 캡처는 메인이 재열람했다.
 
 ## 패턴
 

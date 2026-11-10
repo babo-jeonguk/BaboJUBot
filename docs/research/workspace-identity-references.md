@@ -1,13 +1,13 @@
 # workspace-identity 레퍼런스 조사: 조직 ID와 작업 폴더의 결합
 
-조사일: 2026-11-04. 대상: 사용자 조사 위임 「제품의 조직 폴더와 조직 ID를 어떻게 묶을 것인가」. 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/workspace-identity/`(git 무시). 제품 기준 소스는 `9efe7f376badb9739b3d70443197c838abff3a6e`이며, 조사 중 생긴 별도 작업 트리 변경은 아래 한계에 구분했다.
+조사일: 2026-11-04. 대상: 사용자 조사 위임 「제품의 조직 폴더와 조직 ID를 어떻게 묶을 것인가」. 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 제품 기준 소스는 `9efe7f376badb9739b3d70443197c838abff3a6e`이며, 조사 중 생긴 별도 작업 트리 변경은 아래 한계에 구분했다.
 
 ## Brief
 
 - 구현할 문제: DB에서 인증한 조직 A의 산출물을 읽을 때, A 경로에 놓인 B 폴더를 A로 오인하는 문제를 막는다.
 - 동종 문제: 논리 ID와 교체·복원 가능한 저장소 루트의 정체성을 결합하고, 그 루트 아래 비신뢰 파일을 서버가 대신 읽는다. **정체 확인·경로 고정·쓰기 권한 격리는 서로 다른 계약**이다.
 - 고정된 결정: 조직 UUID와 사용자 지정 공유만 허용하는 조직 경계를 유지한다. Node.js 서버, Linux·macOS·Windows, 일반 경로와 데이터 폴더 이동·백업 복원을 전제한다. 특정 inode·절대경로·Linux 전용 기능을 필수 영속 계약으로 삼지 않는다.
-- 작업 경계: 지정 결과 문서와 `.reference-cache/`만 쓴다. 제품·테스트·설정 변경, commit/push, 이슈·댓글 게시, 자격 증명·로그인·유료/모델 API 사용은 하지 않는다. `BABOJUBOT_HOME` 아래 데이터와 `.env*`는 읽지 않는다.
+- 작업 경계: 지정 결과 문서와 로컬 조사 캐시만 쓴다. 제품·테스트·설정 변경, commit/push, 이슈·댓글 게시, 자격 증명·로그인·유료/모델 API 사용은 하지 않는다. `BABOJUBOT_HOME` 아래 데이터와 `.env*`는 읽지 않는다.
 
 | ID | 조사 질문 | 출처 | 전략 |
 |---|---|---|---|
@@ -20,11 +20,11 @@
 |---|---|---|
 | [실행 격리 조사](executor-isolation-references.md) | OpenHands·Paperclip 후보 발굴, 기존 격리 문제와 연결 | 과거 소스 근거를 그대로 재사용하지 않았다. 이번 SHA의 원문을 새로 읽었다. OpenHands registry와 Paperclip SPEC에는 변경이 있어 과거 줄 번호를 옮기지 않았다 |
 | [#98–101 조사](issue-98-101-references.md#구현-참고) | 동일 UID·workspace 설정 경합의 배경만 | 결론의 근거는 현재 제품 소스 E02–E05·E33으로 확인. 과거 실행 결과나 외부 소스의 동일성을 가정하지 않았다 |
-| 기존 `.reference-cache/workspace-identity/brief.md` | 사용자 원문·쓰기 경계 | 요청과 대조. 기존 결론/실행 근거는 없었음 |
+| 기존 조사 위임 메모 | 사용자 원문·쓰기 경계 | 요청과 대조. 기존 결론/실행 근거는 없었음 |
 
 ## 레퍼런스
 
-선정 원칙은 패턴의 다양성과 공개 소스의 거부 분기다. 역사적 안정판의 구현을 현재 모든 버전의 보장으로 확대하지 않는다. 공개 원문은 **40자 SHA의 선택 파일 snapshot**으로 `.reference-cache/src/<owner>-<repo>@<sha7>/`에 받았으며 전체 checkout은 아니다. 모두 설계 참고이고 코드 복사 권고가 아니다.
+선정 원칙은 패턴의 다양성과 공개 소스의 거부 분기다. 역사적 안정판의 구현을 현재 모든 버전의 보장으로 확대하지 않는다. 공개 원문은 **40자 SHA의 선택 파일 snapshot**으로 로컬 조사 캐시에 받았으며 전체 checkout은 아니다. 모두 설계 참고이고 코드 복사 권고가 아니다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -46,7 +46,7 @@
 | Daytona | control/compute 분리 | 문서 v0.227 / 공개 README `ec4c21b2d597091ac09ecc278f3bcc172575a987` | 현 core 미확인 | 문서 | 조직 인가와 sandbox 내부 파일 서비스 구별 |
 | Docker/Kubernetes CVE, openat2, Windows File ID, MLflow | 실패 보고·명세·인접 산출물 서비스 | 아래 원문 URL·2026-11-04 확인 | 구현 코드 미채택 | 문서·제한 실행 | 대리인 실패와 번호/업로드의 비용 |
 
-관점별 saturation은 다음과 같다. 후보별 공식 URL·운영 상태·실행 경로·선정/제외 이유는 `.reference-cache/workspace-identity/candidates.md`에 모았다.
+관점별 saturation은 다음과 같다.
 
 - 저장소: 3라운드에서 Kafka/MinIO/PG → backup·clone·marker 반례 → Ceph/Cockroach/Elasticsearch/Gitaly로 확장했다. 마지막 라운드는 논리 ID·존재 마커·별도 과거 상태로 수렴했다. 미열람 후보를 소스 근거로 올리지 않았다.
 - 경로: CVE → openat2/라이브러리/소비자 → Node 제안·safeopen으로 확장했다. 마지막 라운드는 fd 기반 경계와 언어별 비용을 반복했다.
@@ -55,7 +55,7 @@
 
 ## 근거
 
-수준은 **소스 확인 / 문서 주장 / 실행 확인 / 추론 / 미확인**으로 구분한다. 소스 확인은 해당 고정판 코드가 그렇게 작성되어 있다는 뜻이며 실행 보장이 아니다. 공식 README·명세·보안 정책은 저장소 안에 있어도 문서 주장이다. worker 보고를 근거 원문 대신 쓰지 않았으며 메인의 재열람 기록은 `.reference-cache/workspace-identity/main-verification.md`에 있다.
+수준은 **소스 확인 / 문서 주장 / 실행 확인 / 추론 / 미확인**으로 구분한다. 소스 확인은 해당 고정판 코드가 그렇게 작성되어 있다는 뜻이며 실행 보장이 아니다. 공식 README·명세·보안 정책은 저장소 안에 있어도 문서 주장이다. worker 보고를 근거 원문 대신 쓰지 않았으며 메인이 근거 원문을 재열람했다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -64,7 +64,7 @@
 | <a id="E03"></a>E03 | realpath 경계 확인 뒤 자식 cwd에서 각 단계의 현재 lstat과 진입 후 stat dev/ino를 비교한다. 파일도 open/fstat·link 수·크기를 검사한다. 비교 대상은 이번 호출의 관찰값이고 DB에 저장된 조직–폴더 결합값이 아니다 | 제품 [pinnedReader/readPinned](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/apps/server/src/workspace.ts#L18-L79), [readArtifact](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/apps/server/src/workspace.ts#L122-L147) | 소스 확인 |
 | <a id="E04"></a>E04 | run token에서 주체를 얻고, 조직/실행 잠금·task 조직 확인 후 locked.organizationId로 파일을 읽는다. 읽은 bytes는 DB 산출물과 함께 저장된다 | [인증](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/apps/server/src/tools.ts#L162-L168), [recordArtifact](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/packages/db/src/tasks.ts#L196-L237), [toolWrite](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/packages/db/src/tool-calls.ts#L117-L157) | 소스 확인 |
 | <a id="E05"></a>E05 | DB 대화 조회는 organizationId+conversationId로 한다. Workspaces에는 조직/agent 폴더만 있으며 DB 대화의 폴더는 읽은 경로에서 확인하지 못했다. native session은 DB JSONB이고 provider home은 연결별 경로다 | [findConversation](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/packages/db/src/conversations.ts#L82-L98), E01/E02, [Claude home](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/packages/runtime/src/providers/claude.ts#L60-L69), [OpenCode home](https://github.com/babo-jeonguk/BaboJUBot/blob/9efe7f376badb9739b3d70443197c838abff3a6e/packages/runtime/src/providers/opencode.ts#L43-L60) | 소스 확인; 부재는 읽은 범위 한정 |
-| <a id="E06"></a>E06 | 제품 reader 문자열을 그대로 실행한 fixture에서 정상 A는 A, 외부 B symlink는 거부. B→A rename 및 organizations 전체 교체 뒤 B bytes 반환. cp 복원은 marker 내용 유지·inode 변경. 같은 writer는 marker도 A로 위조 가능 | `probes/identity.mjs`, `probes/run-log.txt` — Node v24.21.0/Linux x64, 명령은 아래 실행 범위 | 실행 확인(파일 경계만; DB/API 미실행) |
+| <a id="E06"></a>E06 | 제품 reader 문자열을 그대로 실행한 fixture에서 정상 A는 A, 외부 B symlink는 거부. B→A rename 및 organizations 전체 교체 뒤 B bytes 반환. cp 복원은 marker 내용 유지·inode 변경. 같은 writer는 marker도 A로 위조 가능 | 로컬 probe — Node v24.21.0/Linux x64, 명령은 아래 실행 범위 | 실행 확인(파일 경계만; DB/API 미실행) |
 | <a id="E07"></a>E07 | Kafka verify는 기대 cluster/node ID와 저장값 불일치·directory UUID 중복을 거부한다. KRaft caller는 nodeId를 설정에서 주지만 cluster 기대값은 비워 디렉터리 간 일치를 검사한다. 비실패 디렉터리의 meta.properties 누락은 시작 거부이며 기존 메타데이터의 directory.id만 누락하면 생성한다 | [MetaPropertiesEnsemble.verify](https://github.com/apache/kafka/blob/84caaa6e9da06435411510a81fa321d4f99c351f/metadata/src/main/java/org/apache/kafka/metadata/properties/MetaPropertiesEnsemble.java#L472-L528), [initializeLogDirs](https://github.com/apache/kafka/blob/84caaa6e9da06435411510a81fa321d4f99c351f/core/src/main/scala/kafka/server/KafkaRaftServer.scala#L138-L176) | 소스 확인 |
 | <a id="E08"></a>E08 | MinIO format.json에는 deployment ID와 drive This/set UUID가 있다. 누락은 unformatted 오류, JSON 오류는 반환. 참조 set의 UUID 배치 불일치와 This 미포함을 거부한다. 이 비교 함수가 deployment ID 자체도 검증한다고 일반화하지 않는다 | [formatMetaV1](https://github.com/minio/minio/blob/0d7408fc9969caf07de6a8c3a84f9fbb10a6739e/cmd/format-meta.go#L20-L52), [loadFormatErasure](https://github.com/minio/minio/blob/0d7408fc9969caf07de6a8c3a84f9fbb10a6739e/cmd/format-erasure.go#L388-L415), [formatErasureV3Check](https://github.com/minio/minio/blob/0d7408fc9969caf07de6a8c3a84f9fbb10a6739e/cmd/format-erasure.go#L494-L524) | 소스 확인 |
 | <a id="E09"></a>E09 | PostgreSQL pg_control에 system_identifier가 있고 WAL header·복제 상대와 대조한다. UUID/inode가 아니라 데이터 계보의 ID다. pg_control 누락·읽기 실패·CRC 오류도 거부한다 | [ControlFileData](https://github.com/postgres/postgres/blob/7885b94dd81b98bbab9ed878680d156df7bf857f/src/include/catalog/pg_control.h#L104-L110), [WAL ID 거부](https://github.com/postgres/postgres/blob/7885b94dd81b98bbab9ed878680d156df7bf857f/src/backend/access/transam/xlogreader.c#L1276-L1287), [복제 ID 거부](https://github.com/postgres/postgres/blob/7885b94dd81b98bbab9ed878680d156df7bf857f/src/backend/replication/walreceiver.c#L342-L356), [ReadControlFile](https://github.com/postgres/postgres/blob/7885b94dd81b98bbab9ed878680d156df7bf857f/src/backend/access/transam/xlog.c#L4308-L4371) | 소스 확인 |
@@ -76,7 +76,7 @@
 | <a id="E15"></a>E15 | Windows file ID는 FS별 지원이며 시간에 따라 재사용/변경될 수 있다. ReFS의 64-bit file index는 유일성을 보장하지 않는다 | [Microsoft BY_HANDLE_FILE_INFORMATION Remarks](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information#remarks) | 문서 주장 |
 | <a id="E16"></a>E16 | Docker cp CVE-2018-15664는 문자열 경로 해석과 실제 사용 사이 symlink 교체로 daemon이 host 권한으로 읽고 쓰는 문제다. 현재 Docker 취약 여부를 주장하는 근거가 아니다 | [발견자 Aleksa Sarai 공개 보고, 2019-05-28](https://www.openwall.com/lists/oss-security/2019/05/28/1) | 문서 주장 |
 | <a id="E17"></a>E17 | K8s CVE-2017-1002101은 비신뢰 subPath를 kubelet가 host 권한으로 mount하는 문제다. 단계별 openat/fd 고정으로 보완했으나 CVE-2021-25741에서 mount 유틸의 재정규화가 fd 경계를 되돌렸다. 후자는 --no-canonicalize로 보완했다 | [Kubernetes 2018 공식 분석](https://kubernetes.io/blog/2018/04/04/fixing-subpath-volume-vulnerability/), [Google 발견팀 2021 분석](https://security.googleblog.com/2021/12/exploring-container-security-storage.html) | 문서 주장 |
-| <a id="E18"></a>E18 | openat2 BENEATH는 dirfd 아래로 제한한다. IN_ROOT는 상대 root 의미를 적용하며 NO_MAGICLINKS·NO_XDEV는 별도 정책이다. Linux 실행에서 탈출은 EXDEV, 교체 전 보유 fd는 A, 교체 후 새로 연 fd는 B를 읽었다 | [openat2 매뉴얼](https://www.man7.org/linux/man-pages/man2/openat2.2.html); `probes/openat2-root-identity.py`, `openat2-run-log.txt` — Linux6.18 WSL2 x86_64/Python3.12.3 | 문서 주장 + 작은 probe 실행 확인 |
+| <a id="E18"></a>E18 | openat2 BENEATH는 dirfd 아래로 제한한다. IN_ROOT는 상대 root 의미를 적용하며 NO_MAGICLINKS·NO_XDEV는 별도 정책이다. Linux 실행에서 탈출은 EXDEV, 교체 전 보유 fd는 A, 교체 후 새로 연 fd는 B를 읽었다 | [openat2 매뉴얼](https://www.man7.org/linux/man-pages/man2/openat2.2.html); 로컬 probe — Linux6.18 WSL2 x86_64/Python3.12.3 | 문서 주장 + 작은 probe 실행 확인 |
 | <a id="E19"></a>E19 | Go Root의 Unix 구현은 parent fd+Openat/O_NOFOLLOW로 열고, Windows는 root handle+windows.Openat/O_NOFOLLOW_ANY·RootDirectory/NtCreateFile로 reparse link를 처리한다. 파일시스템 경계·bind mount·device까지 전부 막는 API는 아니다 | [Unix rootOpenFileNolog](https://github.com/golang/go/blob/3901409b5d0fb7c85a3e6730a59943cc93b2835c/src/os/root_unix.go#L77-L110), [Windows 구현](https://github.com/golang/go/blob/3901409b5d0fb7c85a3e6730a59943cc93b2835c/src/os/root_windows.go#L125-L169), [Root 계약](https://github.com/golang/go/blob/3901409b5d0fb7c85a3e6730a59943cc93b2835c/src/os/root.go#L33-L61) | 소스 확인; 계약 주석은 문서 성격 |
 | <a id="E20"></a>E20 | securejoin 구 문자열 API의 검사 후 사용은 경로 교체에 안전하지 않다. 새 Linux API는 root fd를 받아 openat2 IN_ROOT/NO_MAGICLINKS로 handle을 얻는다 | [README 경고](https://github.com/cyphar/filepath-securejoin/blob/9e667cafd6b022fac5ae8711ace2204eeec95207/README.md#L6-L21), [lookupOpenat2](https://github.com/cyphar/filepath-securejoin/blob/9e667cafd6b022fac5ae8711ace2204eeec95207/pathrs-lite/internal/gopathrs/openat2_linux.go#L51-L59) | 문서 주장 + 소스 확인 |
 | <a id="E21"></a>E21 | libpathrs는 root fd를 열어 보관하며 주석에서 공격자 소유 tree 안의 root 취득을 피하라 한다. 해당 판은 root 이동 후 SafetyViolation 정책도 명시한다. runc의 mountpoint 처리도 열린 root를 pathrs.OpenInRoot에 넘긴다 | [Root::open·계약](https://github.com/cyphar/libpathrs/blob/05a4b54f9843ea1fb0ae86dc2f40550bde244589/src/root.rs#L126-L185), [runc createOpenMountpoint](https://github.com/opencontainers/runc/blob/642809e5e24b8ddad48ed64085cf33b226befd8f/libcontainer/rootfs_linux.go#L535-L554), [OpenInRoot wrapper](https://github.com/opencontainers/runc/blob/642809e5e24b8ddad48ed64085cf33b226befd8f/internal/pathrs/root_pathrslite.go#L32-L44) | 소스 확인; libpathrs 안전/이동 주석은 문서 주장 |
@@ -237,7 +237,7 @@ UUID 경로 레이아웃은 locator로 계속 쓸 수 있다. `{version: 1, orga
 
 ## 한계와 미확인
 
-- **실행 확인:** 키 없는 셸에서 `env -i PATH="$PATH" node .reference-cache/workspace-identity/probes/identity.mjs`와 `env -i PATH="$PATH" python3 .reference-cache/workspace-identity/probes/openat2-root-identity.py`. 앞쪽은 제품 pinnedReader와 preflight를 fixture에 실행한 파일 경계 확인, 뒤쪽은 Linux openat2 작은 syscall probe다. DB/API 전체·실제 C 구현·동시 race를 실행한 것이 아니다. 로그와 probe를 cache에 보존했고 fixture는 정리했다.
+- **실행 확인:** 키 없는 셸(`env -i PATH="$PATH"`)에서 Node 파일 경계 probe와 Python openat2 probe를 실행했다. 앞쪽은 제품 pinnedReader와 preflight를 fixture에 실행한 파일 경계 확인, 뒤쪽은 Linux openat2 작은 syscall probe다. DB/API 전체·실제 C 구현·동시 race를 실행한 것이 아니다. 로그와 probe를 cache에 보존했고 fixture는 정리했다.
 - **소스 확인:** 위 고정 SHA의 선택 파일·호출 경로·거부 분기를 읽었다. Kafka·Go·Paperclip 일부 테스트도 읽었지만 실행하지 않았다. 제품 테스트·upstream 서비스·실제 모델·업로드 서버·백업/복원 통합 실행은 하지 않았다.
 - **미확인:** Windows/macOS의 현재 Node chdir/helper 안전성, reparse/ACL/네트워크 FS·inode 재사용 스트레스, 구현될 C의 crash/동시성, 모든 provider native session의 악의적 변조, 실제 격리 환경의 host 부모 변경 방어.
 - **자료 제한:** Ceph/CockroachDB/Elasticsearch는 후보 문서까지만, Gitaly 이슈 본문은 확보 실패. Daytona private core·위협 모델 whitepaper 본문은 공개 페이지 접근 실패/403, E2B 상세 감사/pentest는 NDA·계정 경로라 미열람. 이를 “공격자를 위협 모델에서 제외한다”는 부재 주장으로 바꾸지 않는다. GNU libc 원문은 timeout, POSIX sys_stat 원문은 403이라 결정 근거에서 제외했다.
@@ -247,9 +247,9 @@ UUID 경로 레이아웃은 locator로 계속 쓸 수 있다. `{version: 1, orga
 | 단계 | 상태 | 근거 |
 |---|---|---|
 | Brief | 완료 | Q1–Q4, 고정 결정과 기존 조사 재사용 판단 |
-| Discovery | 완료 | 관점별 라운드·saturation·후보별 실행 경로를 candidates/notes에 기록 |
+| Discovery | 완료 | 관점별 라운드·saturation·후보별 실행 경로를 로컬 조사 기록에 남김 |
 | Recon | 완료(명시한 범위) | 고정 SHA·라이선스·메인 원문 재열람, 소스/문서/실행 구분. 미확인은 위에 명시 |
 | Synthesis | 완료 | P01–P05, D01–D06, A–E 실패/비용·이관·보안 전제·열린 결정 |
-| Receipt | 완료 | 이 문서와 `.reference-cache/workspace-identity/receipt.md`. 사용자 지시로 외부 댓글·이슈 게시 없음 |
+| Receipt | 완료 | 이 문서. 사용자 지시로 외부 댓글·이슈 게시 없음 |
 
-문서 검사 결과는 `.reference-cache/workspace-identity/verification.md`에 기록한다. 제품 구현·테스트 통과나 최종 제품 결정을 뜻하지 않는다.
+이 조사 완료는 제품 구현·테스트 통과나 최종 제품 결정을 뜻하지 않는다.

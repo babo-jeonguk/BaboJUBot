@@ -26,4 +26,4 @@ OpenCode 2.2.5의 native 기본 prompt는 짧지만 harness 안내, system-remin
 - Paseo의 고정 SDK는 `@opencode/client` 2.0.10이다. 그 API 사용 사례와 위 2.2.5 소스를 함께 확인했으며, OpenCode 1.x의 `agent.prompt`나 다른 버전으로 일반화하지 않는다. [Paseo 의존성](https://github.com/getpaseo/paseo/blob/efc64a5443dfe166dfb0d80434ecb48516b8fbe2/packages/server/package.json#L117-L118)
 - 서버 응답·첫 요청의 실제 wire payload·resume/compaction 이후 지침 유지·모델 준수율은 실행하지 않았다. 제품 결정은 기본 지침 보존으로 확정됐으며 실제 모델 지침 준수 검증은 보류 상태다. 조직 경계·승인은 어느 쪽에서도 제품 코드가 강제한다.
 
-원본 소스는 기존 `.reference-cache/src/` 사본에서 읽었다. upstream 코드는 복사하지 않았다.
+원본 소스는 기존 로컬 조사 캐시의 사본에서 읽었다. upstream 코드는 복사하지 않았다.
