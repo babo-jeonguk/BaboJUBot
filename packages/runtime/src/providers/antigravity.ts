@@ -129,11 +129,14 @@ export function createAntigravityProvider(options: {
       try {
         await prepare();
         // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
-        await access(tokenAt(home), constants.R_OK | constants.W_OK).catch(
+        // Windows의 access는 링크를 따라가지 않으므로 실제 파일을 찾아 본다.
+        const login = await realpath(tokenAt(home)).catch(
           (error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT") throw error;
+            if (error.code === "ENOENT") return undefined;
+            throw error;
           }
         );
+        if (login) await access(login, constants.R_OK | constants.W_OK);
       } catch {
         return { status: "not_ready", reason: "check_failed" };
       }
