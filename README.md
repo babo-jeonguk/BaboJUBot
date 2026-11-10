@@ -92,4 +92,4 @@ Please see our **[Development & Contributing Guide](CONTRIBUTING.md)** for setup
 
 ## License
 
-BaboJUBot has not chosen a distribution license yet. Third-party code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+BaboJUBot has not chosen a distribution license yet.
