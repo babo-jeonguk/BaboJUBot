@@ -14,16 +14,16 @@ For each research objective, BaboJUBot creates an independent research organizat
 - **Human-in-the-Loop Governance**: Retain full control over key decisions. The AI team formulates plans and proposes team structures, but work begins only after your approval. Final completion is always determined by you.
 - **Visual Research Map**: Track research progress on a live, interactive graph (DAG). Watch hypotheses branch, converge, or get pruned as evidence accumulates.
 - **Real-Time Steering & Chat**: Jump into conversation with the Research Lead at any time. Queue upcoming instructions, steer in-flight execution, or interrupt and redirect immediately.
-- **Durable Research Artifacts**: Access structured Markdown reports, summaries, code, and data files generated during research. All artifacts are securely stored and versioned.
-- **Observable Dashboard**: Real-time event streams provide complete visibility into agent activities, active runs, token usage, and organizational health without relying on hidden model traces.
+- **Durable Research Artifacts**: Access structured Markdown reports, summaries, code, and data files generated during research. File artifacts keep the bytes captured at registration, so they stay viewable even if the original file later changes or is deleted.
+- **Observable Dashboard**: Real-time event streams provide complete visibility into agent activities, active runs, token usage and cost per run, and per-organization metrics without relying on hidden model traces.
 
 ---
 
 ## Quickstart
 
 ### Prerequisites
-- **Node.js**: 24.x or later
-- **pnpm**: 10.x or later
+- **Node.js**: 24.x
+- **pnpm**: 10.33.0
 - **Git**
 
 ### Installation & Launch
@@ -37,7 +37,7 @@ pnpm install
 pnpm dev
 ```
 
-Open your browser and navigate to **`http://localhost:5173`** to access the dashboard.
+Open your browser and navigate to **`http://127.0.0.1:5173`** to access the dashboard.
 
 ---
 
@@ -50,7 +50,15 @@ BaboJUBot connects to your favorite LLM providers and coding agents:
 - **OpenCode**
 - **Google Antigravity**
 
-Configure provider credentials, authentication logins, and concurrency limits directly in the dashboard under **Settings › Providers**. Agents can also run in isolated Docker environments for secure local code execution.
+Install the CLI you want to use and sign in with it yourself. Then start BaboJUBot with the connections you need, for example:
+
+```bash
+BABOJUBOT_PROVIDERS=claude,codex pnpm dev
+```
+
+Without this, BaboJUBot starts with only a built-in demo connection that does not call any model. In the dashboard **Settings**, pick the default connection and model for new Research Leads and workers, set per-connection concurrency limits, and check each connection's readiness. The **Isolated execution** switch (off by default) runs each real-model run inside a Docker container. Real model calls use your own subscription or API credits.
+
+See the [provider guide](docs/providers.md) for every option. Real-model runs have been tested on Linux; macOS and Windows are covered by automated checks only.
 
 ---
 
@@ -68,14 +76,20 @@ Configure provider credentials, authentication logins, and concurrency limits di
 
 ---
 
+## Data and Security
+
+BaboJUBot is meant to run on your own machine. The dashboard and API listen on `127.0.0.1` and have no login, so any program on the same machine can use them. Your database and organization folders are stored locally under `.babojubot/`.
+
+---
+
 ## Development & Contributing
 
 Looking to develop, test, or contribute to BaboJUBot?
 
-Please see our **[Development & Contributing Guide](CONTRIBUTING.md)** for local testing commands, demo scenarios, database setup, and architectural guidelines.
+Please see our **[Development & Contributing Guide](CONTRIBUTING.md)** for setup, demo scenarios, tests, and CI.
 
 ---
 
 ## License
 
-BaboJUBot is currently in active development.
+BaboJUBot has not chosen a distribution license yet. Third-party code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

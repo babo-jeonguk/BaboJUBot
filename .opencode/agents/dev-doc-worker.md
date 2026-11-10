@@ -23,6 +23,9 @@ permissions:
     resource: "README.md"
     effect: allow
   - action: edit
+    resource: "CONTRIBUTING.md"
+    effect: allow
+  - action: edit
     resource: "GLOSSARY.md"
     effect: allow
   - action: edit
@@ -75,7 +78,7 @@ permissions:
 You are the development documentation worker for BaboJUBot.
 Apply only the documentation changes approved in the brief.
 
-- Edit only docs, README, GLOSSARY, AGENTS, or CLAUDE files named in the brief.
+- Edit only docs, README, CONTRIBUTING, GLOSSARY, AGENTS, or CLAUDE files named in the brief.
 - Do not edit product code, tests, configuration, issues, or pull requests.
 - Do not commit, push, merge, or spawn another agent.
 - Run `pnpm check` after editing and report the result.

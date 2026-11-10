@@ -507,7 +507,7 @@ export async function startServer({
   /**
    * 알림 정리 명령(읽음·보관). 준 값을 그대로 대입하고 정리 뒤 상태를 돌려준다. 원본의 결정·단계·깨우기는 바뀌지 않는다.
    * 다른 조직의 원본, 없는 원본·종류는 404다. 결정을 기다리는 승인 요청·결과 제출의 보관은 422 `archive_not_allowed`다.
-   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, docs/current-implementation.md 참고).
    */
   app.put("/api/organizations/:id/inbox/:kind/:sourceId", async (req, res) => {
     const kind = inboxItemKindSchema.safeParse(req.params.kind);
@@ -555,7 +555,7 @@ export async function startServer({
 
   /**
    * 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. 바꾼 뒤의 조직을 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
-   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, docs/current-implementation.md 참고).
    */
   app.put("/api/organizations/:id/approval-policy", async (req, res) => {
     const input = parseInput(res, updateApprovalPolicyInputSchema, req.body);
@@ -1131,7 +1131,7 @@ export async function startServer({
    * 결과 검토 제어 명령: 수정 요청 또는 최종 완료. 최종 완료는 이 사용자 명령으로만 일어나며 조직 도구가 없다.
    * 결정은 한 번만 할 수 있고, 이미 결정한 제출(재제출 뒤의 옛 제출 포함)은 409 `already_decided`다.
    * 일시정지 중의 결정은 조직을 재개하고(최종 완료는 곧바로 완료), 중단된 조직은 409 `organization_closed`다.
-   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, README 참고).
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, docs/current-implementation.md 참고).
    */
   app.post(
     "/api/organizations/:id/results/:submissionId/decision",

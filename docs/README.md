@@ -7,6 +7,7 @@
 | 질문 | 기준 문서·책임 |
 | --- | --- |
 | 제품의 가치·핵심 기능·사용자 시작 방법은 무엇인가? | [README](../README.md): 제품 가치 제안·핵심 기능·실행법·프로바이더 연결 |
+| 지금 무엇이 구현돼 동작하는가? | [현재 구현 현황](current-implementation.md): 구현된 동작·규칙·응답 코드 |
 | 무엇을 제공하고 제외하는가? | [features](features.md): 확정 기능·화면 범위. 완료 근거는 이슈/PR |
 | 개념은 무엇을 뜻하는가? | [GLOSSARY](../GLOSSARY.md): 공통 용어 정의 |
 | 책임·계약·상태·불변 조건은 어디서 강제하는가? | [architecture](architecture.md): 목표 구조·module·seam. 실제 파일은 코드 지도 |
@@ -17,7 +18,7 @@
 
 | 질문 | 기준 문서·책임 |
 | --- | --- |
-| 어떻게 로컬 개발 환경을 구성하고 테스트·기여하는가? | [CONTRIBUTING](../CONTRIBUTING.md): 빌드·실행·데모 시나리오·테스트·CI |
+| 어떻게 로컬 개발 환경을 구성하고 테스트·기여하는가? | [CONTRIBUTING](../CONTRIBUTING.md): 개발 시작·명령·데모 시나리오·DB·운영 설정·CI |
 | 어떤 규칙·문서를 읽는가? | [AGENTS](../AGENTS.md): 공통 규칙·제품 불변 조건 요약·Routing. [CLAUDE](../CLAUDE.md)는 참조만 유지 |
 | 어디에 어떻게 기록하는가? | 이 문서: 문서 책임·작성·갱신 기준 |
 | 용어 충돌·컨텍스트·ADR을 어떻게 다루는가? | [domain](agents/domain.md): 의미 확정·작성 조건 |

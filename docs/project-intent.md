@@ -4,7 +4,7 @@
 
 이 문서는 인터뷰 당시의 배경·요구·미결 사항과 이후 변경을 보존한 기록입니다.
 본문의 구현 상태와 승인 정책은 당시 기준이며, 후속 인터뷰에서 바뀐 내용도 함께 남아 있습니다.
-현재 기능 범위는 [features.md](features.md), 구조는 [architecture.md](architecture.md), 구현 요약은 [README](../README.md)를 따릅니다.
+현재 기능 범위는 [features.md](features.md), 구조는 [architecture.md](architecture.md), 구현 요약은 [현재 구현 현황](current-implementation.md)을 따릅니다.
 
 ## 사용자가 명시한 목표
 
