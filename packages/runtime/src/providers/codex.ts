@@ -61,7 +61,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
   /** 연결의 로그인 원본. 컨테이너에는 이 폴더만 함께 쓰기로 넣는다. */
   const loginFolder = path.join(home, "login");
   const original = path.join(loginFolder, "auth.json");
-  const shareLogin = loginLink(original, "Codex");
+  const shareLogin = loginLink({
+    original,
+    fallback: path.join(home, "auth.json"),
+    label: "Codex",
+  });
   const command = options.command ?? commandFor(id, "codex");
   const environment = (codexHome = home) =>
     providerEnvironment(id, codexHome, { CODEX_HOME: codexHome });

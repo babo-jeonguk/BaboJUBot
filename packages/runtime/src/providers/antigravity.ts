@@ -88,7 +88,11 @@ export function createAntigravityProvider(options: {
       "antigravity-cli",
       "antigravity-oauth-token"
     );
-  const shareLogin = loginLink(original, "Antigravity");
+  const shareLogin = loginLink({
+    original,
+    fallback: tokenAt(home),
+    label: "Antigravity",
+  });
   /** 연결 폴더도 조직 폴더와 같은 링크로 로그인을 읽는다. 로그인 명령·준비 확인·모델 목록이 조직 실행과 같은 로그인을 본다. */
   const prepare = async () => {
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -124,8 +128,8 @@ export function createAntigravityProvider(options: {
     async checkReadiness(signal) {
       try {
         await prepare();
-        // 갱신한 로그인을 원본에 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 원본이 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
-        await access(original, constants.R_OK | constants.W_OK).catch(
+        // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
+        await access(tokenAt(home), constants.R_OK | constants.W_OK).catch(
           (error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT") throw error;
           }

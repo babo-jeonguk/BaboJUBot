@@ -17,6 +17,27 @@ function oneAtATime<T>(key: string, task: () => Promise<T>): Promise<T> {
   return next;
 }
 const warned = new Set<string>();
+/** 링크를 만들 수 없다는 뜻의 오류. 권한 없는 Windows는 EPERM, 링크를 모르는 파일 시스템은 ENOTSUP·EOPNOTSUPP다. */
+const noLinks = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP"]);
+/**
+ * 링크를 만들 수 없는 컴퓨터에서 실행은 연결 폴더의 `fallback`을 읽는다. 원본이 이미 로그인 전용 폴더에 있으면(링크를 만들 수 있던
+ * 컴퓨터에서 옮긴 제품 폴더, 링크만 사라진 경우) 그 자리로 되돌린다. `fallback`에 보통 파일이 있으면 그것이 이 컴퓨터의 로그인이므로 그대로 둔다.
+ * 복사하지 않고 옮기므로 로그인은 하나다. 다시 링크를 만들 수 있게 되면 `linkLogin`이 `fallback`의 파일을 원본으로 옮긴다.
+ */
+async function keepAtFallback(original: string, fallback: string) {
+  const exists = (file: string) =>
+    lstat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+  const source = await exists(original);
+  if (!source?.isFile()) return;
+  const current = await exists(fallback);
+  if (current?.isFile()) return;
+  await mkdir(path.dirname(fallback), { recursive: true, mode: 0o700 });
+  if (current) await rm(fallback, { recursive: true, force: true });
+  await rename(original, fallback);
+}
 /**
  * 모든 조직이 연결의 로그인 하나를 쓴다. 원본(`original`)은 다른 내용이 없는 로그인 전용 폴더에 두고, `at`(연결 폴더나 조직 폴더의
  * 로그인 파일)은 원본을 가리키는 링크로 둔다. 프로그램은 링크를 따라가 원본 자리에서 바꿔 쓰므로 링크가 남는다.
@@ -24,10 +45,11 @@ const warned = new Set<string>();
  * `at`에 보통 파일이 있으면 가장 최근 로그인(예전 연결 폴더 로그인, 링크 대신 파일을 쓴 판)이므로 원본으로 옮긴다.
  * 원본 자리는 모든 조직 컨테이너가 쓸 수 있으므로 보통 파일이 아닌 것(다른 곳을 가리키는 링크 등)은 지운다. 남기면 이 컴퓨터에서 도는
  * 프로그램이 로그인을 갱신할 때 링크를 따라가 그 파일을 덮어쓴다.
- * 링크를 먼저 임시 이름으로 만들어 본 뒤에 옮기므로, 링크를 만들 수 없는 컴퓨터(권한 없는 Windows, 링크를 모르는 파일 시스템)면 아무것도 옮기지 않고 `false`이며 그 실행은 연결 폴더의 로그인으로 돈다. 같은 원본의 링크 작업은 `oneAtATime`으로 하나씩 한다.
+ * 링크를 먼저 임시 이름으로 만들어 본 뒤에 옮기므로, 링크를 만들 수 없는 컴퓨터(권한 없는 Windows, 링크를 모르는 파일 시스템)면 링크를 만들지 않고 `false`이며, 로그인 하나를 연결 폴더의 자리(`fallback`)에 두어(`keepAtFallback`) 그 실행은 연결 폴더의 로그인으로 돈다. 같은 원본의 링크 작업은 `oneAtATime`으로 하나씩 한다.
  */
 async function linkLogin(
   original: string,
+  fallback: string,
   at: string,
   label: string
 ): Promise<boolean> {
@@ -49,13 +71,14 @@ async function linkLogin(
   try {
     await symlink(original, temporary, "file");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EPERM") {
+    if (noLinks.has((error as NodeJS.ErrnoException).code ?? "")) {
       if (!warned.has(label)) {
         warned.add(label);
         console.warn(
           `[provider] this machine cannot create file links; ${label} runs share the connection folder`
         );
       }
+      await keepAtFallback(original, fallback);
       return false;
     }
     throw error;
@@ -70,8 +93,16 @@ async function linkLogin(
   return true;
 }
 
-/** 연결의 로그인 원본 `original` 하나를 여러 제품 폴더가 쓰게 한다. 돌려준 함수는 `at`을 원본을 가리키는 링크로 두고, 링크를 만들 수 없는 컴퓨터면 `false`다. */
-export function loginLink(original: string, label: string) {
+/**
+ * 연결의 로그인 원본 `original` 하나를 여러 제품 폴더가 쓰게 한다. 돌려준 함수는 `at`을 원본을 가리키는 링크로 두고, 링크를 만들 수 없는
+ * 컴퓨터면 `false`다. 그때 실행은 연결 폴더로 돌므로 로그인 하나를 연결 폴더의 자리 `fallback`에 둔다.
+ */
+export function loginLink(options: {
+  original: string;
+  fallback: string;
+  label: string;
+}) {
+  const { original, fallback, label } = options;
   return (at: string) =>
-    oneAtATime(original, () => linkLogin(original, at, label));
+    oneAtATime(original, () => linkLogin(original, fallback, at, label));
 }
