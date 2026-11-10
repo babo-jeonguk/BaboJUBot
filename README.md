@@ -92,4 +92,4 @@ Please see our **[Development & Contributing Guide](CONTRIBUTING.md)** for setup
 
 ## License
 
-BaboJUBot has not chosen a distribution license yet.
+BaboJUBot is released under the [MIT License](LICENSE).
