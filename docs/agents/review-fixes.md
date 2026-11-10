@@ -45,6 +45,7 @@
 - parent는 finding을 검증하고 이번 회차에 고칠지 정한 뒤, 원인과 수정 방향을 확정하고 회귀 테스트를 커밋합니다. 테스트·문서를 worker가 고쳐야 하면 대상과 이유를 brief에 적습니다.
 - brief에는 finding ID·축·회차, 확인된 원인과 `file:line`, 바꿀 심볼·구조, 지울 guard, 통과시킬 테스트와 명령, 고칠 파일(그 밖은 수정 금지), 보고 형식을 담습니다.
 - worker가 고친 뒤 `written`·`denied`·`errors`와 `git diff`로 brief 밖 변경이 없는지 확인하고, 회귀·영향 범위 검사를 직접 실행합니다. 거절하면 같은 session에 이유를 보내고, 두 번 거절하면 직접 고칩니다.
+- Paseo로 진행하면 fix brief마다 새 `dev-worker` subagent를 띄웁니다([개발 오케스트레이션 §5](dev-orchestration.md#5-review-fix)).
 - 모델 우선순위와 한도 시 다음 모델로 넘기는 규칙은 [코드 worker §2](worker.md#2-모델)를 따릅니다.
 
 ## 외부 리뷰 요청 형식

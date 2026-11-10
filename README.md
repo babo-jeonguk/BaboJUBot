@@ -60,6 +60,8 @@ pnpm lint
 pnpm check        # Markdown 로컬 링크 검사
 ```
 
+Paseo로 research·implement·review-fix·merge를 네 세션으로 나눠 진행하는 개발 절차는 [개발 오케스트레이션](docs/agents/dev-orchestration.md)을 따릅니다.
+
 ### 데모 시나리오
 
 `pnpm dev`의 서버는 기본으로 가짜 프로바이더를 씁니다. 실제 모델·유료 API·자격 증명 없이 대시보드(http://127.0.0.1:5173)에서 판 1 흐름을 처음부터 끝까지 해 볼 수 있습니다. 개발 DB(`.babojubot/postgres`)는 지우지 않으므로 전에 만든 조직도 그대로 보입니다.

@@ -55,6 +55,8 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 - 한 checkout에서는 worker를 하나씩 띄우고, 도는 동안 Git 작업을 하지 않습니다.
 - 출력은 `.babojubot/` 아래에 두며 Git에 넣지 않습니다.
 
+Paseo로 진행하면 parent가 `dev-worker` mode의 subagent로 띄웁니다([개발 오케스트레이션 §2](dev-orchestration.md#2-profile)). 권한은 [dev-worker.md](../../.opencode/agents/dev-worker.md)가 정하며 `opencode-worker.json`과 같은 규칙을 유지합니다. 한쪽을 고치면 다른 쪽도 고칩니다.
+
 ## 5. 멈춤과 재시도
 
 스크립트가 3분(`--start-check`) 안에 session이 생기지 않으면 process group을 멈추고 같은 인자로 한 번 다시 띄웁니다. 두 번 다 session이 없으면 종료 코드 3으로 끝나며, worker를 더 띄우지 않고 parent가 같은 brief로 직접 고칩니다. OpenCode가 `error` 이벤트 없이 실패하면 종료 코드 4이며 `.err`와 diff를 보고 판단합니다.
@@ -68,10 +70,10 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 
 ## 6. 검토·인수
 
-- 스크립트 요약(`status`·`session`·`written`·`denied`·`errors`·마지막 보고)과 `git diff`로 brief 밖 파일 변경이 없는지 확인합니다.
+- 스크립트 요약(`status`·`session`·`written`·`denied`·`errors`·마지막 보고, Paseo는 worker의 마지막 보고)과 `git diff`로 brief 밖 파일 변경이 없는지 확인합니다.
 - 허용한 테스트·문서 변경은 brief와 대조합니다. brief에 없는 테스트·문서 변경은 거절합니다.
 - 원인이 없어졌는지 확인하고 회귀·영향 범위 검사를 parent가 직접 실행합니다.
-- 거절하면 요약의 `session:` 값을 `--session`으로 넘겨 같은 session에 구체적 이유를 보냅니다. 두 번 거절하면 parent가 직접 고칩니다.
+- 거절하면 요약의 `session:` 값을 `--session`으로 넘겨(Paseo는 같은 agent에 메시지로) 같은 session에 구체적 이유를 보냅니다. 두 번 거절하면 parent가 직접 고칩니다.
 
 ## 7. 데이터 보호
 

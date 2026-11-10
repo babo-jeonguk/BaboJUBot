@@ -20,6 +20,8 @@
     },
     "webfetch": "deny",
     "websearch": "deny",
-    "external_directory": "deny"
+    "external_directory": "deny",
+    "execute": "deny",
+    "opencode*": "deny"
   }
 }
