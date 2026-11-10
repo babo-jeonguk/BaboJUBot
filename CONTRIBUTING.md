@@ -20,7 +20,7 @@ Paseo로 research·implement·review-fix·merge를 네 세션으로 나눠 진�
 
 ### 데모 시나리오
 
-`pnpm dev`의 서버는 기본으로 가짜 프로바이더를 씁니다. 실제 모델·유료 API·자격 증명 없이 대시보드(http://127.0.0.1:5173)에서 판 1 흐름을 처음부터 끝까지 해 볼 수 있습니다. 개발 DB(`.babojubot/postgres`)는 지우지 않으므로 전에 만든 조직도 그대로 보입니다.
+`pnpm dev`의 서버는 기본으로 가짜 프로바이더를 씁니다. 실제 모델·유료 API·자격 증명 없이 대시보드(http://127.0.0.1:5173)에서 판 1 흐름을 처음부터 끝까지 해 볼 수 있습니다. 개발 DB(`BABOJUBOT_HOME` 아래 `postgres`)는 지우지 않으므로 전에 만든 조직도 그대로 보입니다.
 
 1. 레일의 `＋`(새 연구 조직)를 누르고 조직 이름, 연구 목표 `공개 자료로 오류 유형을 정리한다`, 완료 기준 `유형 목록과 근거 메모`를 적어 만듭니다.
 2. Lead 대화가 열리고, 생성으로 깨어난 Lead가 초기 연구 승인을 요청했다고 답합니다. 완료 기준을 비워 두면 Lead가 목표에서 만든 기준을 같은 요청에 제안합니다.
@@ -42,7 +42,7 @@ Paseo로 research·implement·review-fix·merge를 네 세션으로 나눠 진�
 
 조직 폴더(`organizations/<조직 ID>/`)에는 자기 조직 ID를 적은 `workspace-identity.json`이 있습니다. 다른 조직의 폴더가 그 자리에 놓이거나 이 파일이 없어지면 그 조직의 실행은 이유를 보이며 실패합니다. 데이터 폴더를 옮기거나 복원할 때는 이 파일을 함께 옮기면 그대로 동작합니다. 예전 조직은 첫 실행 때 현재 폴더를 믿고 한 번 적습니다.
 
-데이터베이스는 `DATABASE_URL`이 있으면 그 외부 Postgres에 연결만 하고, 없으면 embedded Postgres를 `.babojubot/postgres`(`BABOJUBOT_HOME`으로 변경)에 띄웁니다. 둘 다 시작할 때 같은 migration을 적용합니다. 운영은 `pnpm build` 후 `DATABASE_URL=… pnpm start`로 서버가 빌드한 대시보드까지 제공합니다. 그 밖의 설정(`PORT`, `HOST`, `EMBEDDED_POSTGRES_PORT`, `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`, `BABOJUBOT_FAKE_PROVIDERS`)은 [`apps/server/src/main.ts`](apps/server/src/main.ts) 머리에 있습니다. 서버를 Docker·Kubernetes·systemd로 돌리면 그 정지 시한을 `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`(기본 30초)보다 길게 둡니다. 스택은 [ADR-0004](docs/adr/0004-paperclip-aligned-stack.md)를 따릅니다.
+데이터베이스는 `DATABASE_URL`이 있으면 그 외부 Postgres에 연결만 하고, 없으면 embedded Postgres를 `BABOJUBOT_HOME` 아래 `postgres`에 띄웁니다. `BABOJUBOT_HOME`을 지정하지 않으면 저장소의 Git 제외 로컬 데이터 폴더를 쓰며 기본값은 [`apps/server/src/main.ts`](apps/server/src/main.ts)에 있습니다. 둘 다 시작할 때 같은 migration을 적용합니다. 운영은 `pnpm build` 후 `DATABASE_URL=… pnpm start`로 서버가 빌드한 대시보드까지 제공합니다. 그 밖의 설정(`PORT`, `HOST`, `EMBEDDED_POSTGRES_PORT`, `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`, `BABOJUBOT_FAKE_PROVIDERS`)은 [`apps/server/src/main.ts`](apps/server/src/main.ts) 머리에 있습니다. 서버를 Docker·Kubernetes·systemd로 돌리면 그 정지 시한을 `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`(기본 30초)보다 길게 둡니다. 스택은 [ADR-0004](docs/adr/0004-paperclip-aligned-stack.md)를 따릅니다.
 
 패키지별 책임은 [전체 구조](docs/architecture.md#패키지-구성), 수정할 코드와 테스트의 위치는 [코드 지도](docs/agents/code-map.md)에서 확인합니다.
 
@@ -54,7 +54,7 @@ Paseo로 research·implement·review-fix·merge를 네 세션으로 나눠 진�
 
 [문서 지도](docs/README.md)에서 기능·구조·용어·개발 운영·인터뷰·조사 문서를 질문별로 찾습니다.
 
-실제 실행 인스턴스의 파일·기억·실험 결과는 Git에서 제외하는 `.babojubot/` 아래 또는 설정된 외부 저장소에 둡니다. 최종 저장 방식은 후속 이슈에서 결정합니다.
+실제 실행 인스턴스의 파일·기억·실험 결과는 `BABOJUBOT_HOME`(기본값은 저장소의 Git 제외 로컬 데이터 폴더) 아래 또는 설정된 외부 저장소에 둡니다. 최종 저장 방식은 후속 이슈에서 결정합니다.
 
 상위 프로젝트의 구조를 참고해 독립적으로 작성합니다. 코드 재사용 시 해당 버전·파일·의존성의 라이선스를 확인합니다. BaboJUBot 자체의 배포 라이선스는 아직 선택하지 않았습니다.
 

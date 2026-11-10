@@ -78,7 +78,7 @@ See the [provider guide](docs/providers.md) for every option. Real-model runs ha
 
 ## Data and Security
 
-BaboJUBot is meant to run on your own machine. The dashboard and API listen on `127.0.0.1` and have no login, so any program on the same machine can use them. Your database and organization folders are stored locally under `.babojubot/`.
+BaboJUBot is meant to run on your own machine. The dashboard and API listen on `127.0.0.1` and have no login, so any program on the same machine can use them. Your database and organization folders are stored in the local data folder selected by `BABOJUBOT_HOME` (a Git-ignored folder in the repository by default).
 
 ---
 

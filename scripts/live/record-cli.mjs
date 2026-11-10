@@ -1,5 +1,5 @@
 // 사람이 돌리는 실제 시험 전용. 프로바이더 명령 자리에 놓여 입출력을 그대로 넘기며 비공개 폴더에 남긴다.
-// 원본 기록은 모델 출력과 지침을 담으므로 Git 밖(`BABOJUBOT_HOME/recordings`)에만 둔다. 인증 헤더와 환경 변수는 남기지 않는다.
+// 원본 기록은 모델 출력과 지침을 담으므로 Git 밖 로컬 기록 폴더에만 둔다. 인증 헤더와 환경 변수는 남기지 않는다.
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import http from "node:http";

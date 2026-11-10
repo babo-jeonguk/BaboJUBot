@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,18 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [".gitignore", "AGENTS.md", "GLOSSARY.md", "docs/features.md"];
 for (const location of required)
   assert(fs.existsSync(path.join(root, location)), `Missing ${location}`);
+
+function isGitIgnored(location) {
+  try {
+    execFileSync("git", ["check-ignore", "--no-index", "-q", location], {
+      cwd: root,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 let markdownFiles = 0;
 function inspect(directory) {
@@ -32,9 +45,14 @@ function inspect(directory) {
         const target = match[1];
         if (/^(https?:|mailto:|#)/.test(target)) continue;
         const local = target.split("#")[0];
+        const resolved = path.resolve(path.dirname(location), local);
         assert(
-          fs.existsSync(path.resolve(path.dirname(location), local)),
+          fs.existsSync(resolved),
           `Broken local link ${location}: ${target}`
+        );
+        assert(
+          !isGitIgnored(resolved),
+          `Link to Git-ignored path ${location}: ${target}`
         );
       }
     }

@@ -53,7 +53,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 - 권한은 `opencode-worker.json`이 정합니다. `.env*`·git·웹·checkout 밖은 거절하고, 셸은 대상 패키지 vitest·typecheck만 허용합니다.
 - Claude Code는 `run_in_background`와 `timeout: 7200000`으로 실행하고 완료 알림으로만 깨어납니다. Codex도 background로 띄우고 완료를 기다립니다.
 - 한 checkout에서는 worker를 하나씩 띄우고, 도는 동안 Git 작업을 하지 않습니다.
-- 출력은 `.babojubot/` 아래에 두며 Git에 넣지 않습니다.
+- 출력은 Git 제외 로컬 폴더에 두며 Git에 넣지 않습니다. 핸드오프·조사 메모도 같은 로컬 폴더에 두고, 제품 런타임 데이터와 섞지 않습니다.
 
 Paseo로 진행하면 parent가 `dev-worker` mode의 subagent로 띄웁니다([개발 오케스트레이션 §2](dev-orchestration.md#2-profile)). 권한은 [dev-worker.md](../../.opencode/agents/dev-worker.md)가 정하며 `opencode-worker.json`과 같은 규칙을 유지합니다. 한쪽을 고치면 다른 쪽도 고칩니다.
 

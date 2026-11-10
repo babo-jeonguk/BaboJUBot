@@ -33,7 +33,7 @@ OpenCode는 시스템 설정을 끌 방법이 없어, `/etc/opencode`가 있으�
 
 ## 제품 로그인
 
-기본 제품 폴더는 저장소의 `.babojubot`이고 `BABOJUBOT_HOME`으로 바꾼다. 개인 설정·로그인 파일을 복사하지 않는다. 저장소 루트에서 실행한다.
+제품 폴더는 `BABOJUBOT_HOME`으로 정한다. 지정하지 않으면 저장소의 Git 제외 로컬 데이터 폴더를 쓴다. 개인 설정·로그인 파일을 복사하지 않는다. 저장소 루트에서 실행한다.
 
 ```bash
 pnpm provider:login claude   # codex, opencode, antigravity, claude:work

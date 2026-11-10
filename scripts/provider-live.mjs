@@ -1,6 +1,6 @@
 // 사람이 돌리는 실제 모델 호출 시험. CI와 자동 검사는 부르지 않는다. 구독 사용량이나 비용을 쓴다.
 // 실제 서버의 조직 도구(MCP) 위에서 종료·세션 재개·끼워 넣기·취소·세션 실패·미리 압축을 한 번씩 돈다.
-// 출력은 메타데이터뿐이다. 모델 원문·토큰은 찍지 않는다. `--record`면 원본을 Git 밖 `BABOJUBOT_HOME/recordings`에 남긴다.
+// 출력은 메타데이터뿐이다. 모델 원문·토큰은 찍지 않는다. `--record`면 원본을 Git 밖 로컬 기록 폴더(`BABOJUBOT_RECORDINGS`로 지정)에 남긴다.
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,6 +49,8 @@ const only = flags
   ?.slice("--scenes=".length)
   .split(",");
 const home = path.resolve(process.env.BABOJUBOT_HOME);
+const recordings =
+  process.env.BABOJUBOT_RECORDINGS ?? path.resolve(".scratch/recordings");
 const model =
   process.env.BABOJUBOT_SMOKE_MODEL ?? (provider === "claude" ? "haiku" : null);
 if (!model && provider !== "opencode") {
@@ -61,9 +63,9 @@ const label = provider === "codex" ? `codex-${mode}` : provider;
 const base = process.env.BABOJUBOT_LIVE_COMMAND ?? defaultCommand[provider];
 let command = [base];
 if (record) {
-  const directory = path.join(home, "recordings", label, String(Date.now()));
+  const directory = path.join(recordings, label, String(Date.now()));
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(path.join(home, "recordings"), 0o700);
+  await chmod(recordings, 0o700);
   command = [
     process.execPath,
     path.resolve("scripts/live/record-cli.mjs"),
