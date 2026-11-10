@@ -4,12 +4,19 @@ import type {
   ProviderConnection,
   ProviderReadinessCheck,
   RunResult,
-  Usage,
   RuntimeAdapter,
   RunRequest,
   SteerMessage,
   SteerOutcome,
+  UsageAmount,
+  UsageField,
 } from "@babojubot/contracts";
+import {
+  isUsageAnomaly,
+  subtractUsage,
+  usageAmount,
+} from "@babojubot/contracts";
+import { providerUsage } from "./usage.ts";
 import {
   startProcess,
   probeTimeoutMs,
@@ -40,10 +47,68 @@ const failed = (): RunResult => ({
 });
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-const count = (value: unknown) =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : null;
+/** Codex가 알려 준 세션 누계 하나. */
+type CodexTotals = Record<
+  "input" | "cachedInput" | "cacheWrite" | "output",
+  UsageAmount
+>;
+/** 세션 상태에 남긴 누계를 읽는다. 키 이름은 경로(app-server·exec)마다 다르다. */
+const readTotals = (
+  value: unknown,
+  keys: Record<keyof CodexTotals, string>
+): CodexTotals => {
+  const saved = record(value);
+  return {
+    input: usageAmount("tokens", saved[keys.input]),
+    cachedInput: usageAmount("tokens", saved[keys.cachedInput]),
+    cacheWrite: usageAmount("tokens", saved[keys.cacheWrite]),
+    output: usageAmount("tokens", saved[keys.output]),
+  };
+};
+/** 세션 상태에 남기는 잘못된 누계 표시. 숫자가 아니므로 다음 실행 시도가 읽으면 보고 안 됨(0)이 아니라 이상값이 된다. */
+const invalidSavedTotal = "invalid";
+/** 다음 실행 시도의 baseline으로 남길 누계. */
+const savedTotals = (
+  totals: CodexTotals,
+  keys: Record<keyof CodexTotals, string>
+) =>
+  Object.fromEntries(
+    (Object.keys(keys) as (keyof CodexTotals)[]).map((key) => {
+      const amount = totals[key];
+      return [keys[key], isUsageAnomaly(amount) ? invalidSavedTotal : amount];
+    })
+  );
+/**
+ * 재개한 세션의 누계에서 이 실행 시도의 몫만 남긴다. 보고 안 된 baseline은 0으로 본다(새 세션·그 값을 받지 못한 세션).
+ * Codex의 입력은 캐시 읽기를 포함하므로 캐시 읽기를 뺀 값을 입력으로 보고한다.
+ */
+const codexUsage = (
+  totals: CodexTotals,
+  baseline: CodexTotals
+): Record<UsageField, UsageAmount> => {
+  const delta = (key: keyof CodexTotals) =>
+    subtractUsage("tokens", totals[key], baseline[key] ?? 0);
+  const cache = delta("cachedInput");
+  return {
+    inputTokens: subtractUsage("tokens", delta("input"), cache ?? 0),
+    outputTokens: delta("output"),
+    cacheReadTokens: cache,
+    cacheWriteTokens: delta("cacheWrite"),
+    costUsd: null,
+  };
+};
+const appServerKeys = {
+  input: "inputTokens",
+  cachedInput: "cachedInputTokens",
+  cacheWrite: "cacheWriteInputTokens",
+  output: "outputTokens",
+};
+const execKeys = {
+  input: "input_tokens",
+  cachedInput: "cached_input_tokens",
+  cacheWrite: "cache_write_input_tokens",
+  output: "output_tokens",
+};
 class ProtocolRejection extends Error {
   constructor() {
     super("Protocol request rejected");
@@ -234,9 +299,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           threadId = "",
           turnId = "",
           sequence = 0;
-        let usage: Usage | null = null;
-        let tokens: Record<string, number | null> = {};
-        let baseline = record(request.previousSession?.tokens);
+        let totals: CodexTotals | undefined;
+        let baseline = readTotals(
+          request.previousSession?.tokens,
+          appServerKeys
+        );
         let activities = Promise.resolve();
         const pending = new Map<
           number,
@@ -264,6 +331,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         ];
         if (options.mode === "exec")
           return executeExec(request, control, {
+            provider: id,
             command,
             config: args,
             stateDir: home,
@@ -294,32 +362,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             const params = record(frame.params);
             if (params.threadId !== threadId) return;
             if (frame.method === "thread/tokenUsage/updated") {
-              const totals = record(record(params.tokenUsage).total);
-              tokens = Object.fromEntries(
-                [
-                  "inputTokens",
-                  "outputTokens",
-                  "cachedInputTokens",
-                  "cacheWriteInputTokens",
-                ].map((k) => [k, count(totals[k])])
+              // 합이 아니라 세션 누계이므로 새 누계가 앞의 누계(잘못된 것이었어도)를 대신한다.
+              totals = readTotals(
+                record(params.tokenUsage).total,
+                appServerKeys
               );
-              const delta = (key: string) =>
-                tokens[key] === null
-                  ? null
-                  : Math.max(
-                      0,
-                      (tokens[key] ?? 0) - (count(baseline[key]) ?? 0)
-                    );
-              const input = delta("inputTokens"),
-                cache = delta("cachedInputTokens");
-              usage = {
-                inputTokens:
-                  input === null ? null : Math.max(0, input - (cache ?? 0)),
-                outputTokens: delta("outputTokens"),
-                cacheReadTokens: cache,
-                cacheWriteTokens: delta("cacheWriteInputTokens"),
-                costUsd: null,
-              };
             }
             if (frame.method === "turn/completed") {
               const turn = record(params.turn);
@@ -337,8 +384,12 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                   turn.status === "failed"
                     ? "프로바이더 실행이 실패했습니다."
                     : null,
-                usage,
-                nextSession: { id: threadId, tokens },
+                // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+                usage: null,
+                nextSession: {
+                  id: threadId,
+                  tokens: totals ? savedTotals(totals, appServerKeys) : {},
+                },
               };
               if (
                 turn.status === "failed" &&
@@ -420,7 +471,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 !(error instanceof ProtocolRejection)
               )
                 throw error;
-              baseline = {};
+              baseline = readTotals({}, appServerKeys);
               await control.emit({
                 type: "progress",
                 text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
@@ -477,9 +528,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         control.signal.removeEventListener("abort", cancel);
         active.delete(request.identity.runId);
         await activities;
+        // 끝난 방식과 상관없이 마지막으로 받은 누계로 사용량을 한 번 정한다. 누계를 받지 못했으면 보고 안 됨이다.
+        const usage = totals
+          ? providerUsage(id, codexUsage(totals, baseline))
+          : null;
         if (control.signal.aborted)
-          return { ...failed(), stopReason: "cancelled", error: null };
-        return result;
+          return { ...failed(), stopReason: "cancelled", error: null, usage };
+        return { ...result, usage };
       },
     },
   };
@@ -489,6 +544,8 @@ async function executeExec(
   request: RunRequest,
   control: Parameters<RuntimeAdapter["execute"]>[1],
   launch: {
+    /** 운영 기록에 남길 연결 ID. */
+    provider: string;
     command: readonly [string, ...string[]];
     config: string[];
     /** 프로세스 기록 폴더(연결 폴더). */
@@ -502,10 +559,7 @@ async function executeExec(
   let id: string | null = null,
     result = failed(),
     loginProblem = false;
-  const before = record(request.previousSession?.tokens);
-  // 재개한 세션의 사용량은 누적값이다. 이 실행 시도의 몫만 남긴다.
-  const delta = (key: string, value: number | null) =>
-    value === null ? null : Math.max(0, value - (count(before[key]) ?? 0));
+  const before = readTotals(request.previousSession?.tokens, execKeys);
   const args = [
     "exec",
     ...config,
@@ -545,31 +599,15 @@ async function executeExec(
         });
       }
       if (frame.type === "turn.completed") {
-        const value = record(frame.usage),
-          totals = {
-            input_tokens: count(value.input_tokens),
-            cached_input_tokens: count(value.cached_input_tokens),
-            cache_write_input_tokens: count(value.cache_write_input_tokens),
-            output_tokens: count(value.output_tokens),
-          },
-          input = delta("input_tokens", totals.input_tokens),
-          cache = delta("cached_input_tokens", totals.cached_input_tokens);
+        const totals = readTotals(frame.usage, execKeys);
         result = {
           stopReason: "completed",
           error: null,
           summary: null,
-          nextSession: id ? { id, tokens: totals } : null,
-          usage: {
-            inputTokens:
-              input === null ? null : Math.max(0, input - (cache ?? 0)),
-            outputTokens: delta("output_tokens", totals.output_tokens),
-            cacheReadTokens: cache,
-            cacheWriteTokens: delta(
-              "cache_write_input_tokens",
-              totals.cache_write_input_tokens
-            ),
-            costUsd: null,
-          },
+          nextSession: id
+            ? { id, tokens: savedTotals(totals, execKeys) }
+            : null,
+          usage: providerUsage(launch.provider, codexUsage(totals, before)),
         };
         child.end();
       }
@@ -591,8 +629,14 @@ async function executeExec(
       child.endInput();
     }
     await child.done;
+    // 취소 전에 받은 결과의 사용량은 남긴다.
     if (control.signal.aborted)
-      return { ...failed(), stopReason: "cancelled", error: null };
+      return {
+        ...failed(),
+        stopReason: "cancelled",
+        error: null,
+        usage: result.usage,
+      };
     // 문구에 기대지 않는다. 이전 세션으로 시작조차 못 했으면 새 세션으로 한 번 다시 시도한다.
     if (!id && request.previousSession && !loginProblem) {
       await control.emit({

@@ -14,8 +14,16 @@ import path from "node:path";
 import type {
   ProviderConnection,
   RunResult,
-  Usage,
+  UsageAmount,
+  UsageField,
 } from "@babojubot/contracts";
+import {
+  addUsage,
+  subtractUsage,
+  unreportedUsage,
+  usageAmount,
+} from "@babojubot/contracts";
+import { providerUsage } from "./usage.ts";
 import {
   startProcess,
   probeTimeoutMs,
@@ -259,13 +267,8 @@ export function createAntigravityProvider(options: {
         let id: string | undefined,
           result = failure(),
           finished = false;
-        const usage: Usage = {
-          inputTokens: null,
-          outputTokens: null,
-          cacheReadTokens: null,
-          cacheWriteTokens: null,
-          costUsd: null,
-        };
+        /** 완료된 step마다 보고된 사용량의 합. 잘못된 step이 섞인 합은 되살아나지 않는다. */
+        const usage: Record<UsageField, UsageAmount> = { ...unreportedUsage };
         const steps = new Set<number>();
         const child = startProcess({
           // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
@@ -319,20 +322,24 @@ export function createAntigravityProvider(options: {
               !steps.has(step.step_index)
             ) {
               steps.add(step.step_index);
-              const n = (v: unknown) =>
-                typeof v === "number" && Number.isInteger(v) && v >= 0
-                  ? v
-                  : null;
-              const input = n(step.usage.input_tokens),
-                cached = n(step.usage.cache_read_tokens),
-                output = n(step.usage.output_tokens);
-              if (input !== null)
-                usage.inputTokens =
-                  (usage.inputTokens ?? 0) + Math.max(0, input - (cached ?? 0));
-              if (cached !== null)
-                usage.cacheReadTokens = (usage.cacheReadTokens ?? 0) + cached;
-              if (output !== null)
-                usage.outputTokens = (usage.outputTokens ?? 0) + output;
+              const input = usageAmount("tokens", step.usage.input_tokens),
+                cached = usageAmount("tokens", step.usage.cache_read_tokens);
+              // 입력은 캐시 읽기를 포함하므로 뺀다. 캐시 읽기를 보고하지 않은 step은 그대로 둔다.
+              usage.inputTokens = addUsage(
+                "tokens",
+                usage.inputTokens,
+                subtractUsage("tokens", input, cached ?? 0)
+              );
+              usage.cacheReadTokens = addUsage(
+                "tokens",
+                usage.cacheReadTokens,
+                cached
+              );
+              usage.outputTokens = addUsage(
+                "tokens",
+                usage.outputTokens,
+                usageAmount("tokens", step.usage.output_tokens)
+              );
             }
             if (frame.event === "result") {
               finished = true;
@@ -344,7 +351,8 @@ export function createAntigravityProvider(options: {
                 ...failure(),
                 stopReason: success ? "completed" : "failed",
                 error: success ? null : "프로바이더 실행이 실패했습니다.",
-                usage,
+                // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+                usage: null,
                 nextSession: success ? { id: id! } : null,
               };
               if (saysLoginProblem(frame.result?.error))
@@ -376,12 +384,22 @@ export function createAntigravityProvider(options: {
               },
             });
           const exited = await child.done;
+          // 끝난 방식과 상관없이 완료된 step의 합으로 사용량을 한 번 정한다. 결과도 완료된 step도 없으면 보고 안 됨이다.
+          const collected =
+            finished || steps.size > 0
+              ? providerUsage(connectionId, usage)
+              : null;
           if (control.signal.aborted)
-            return { ...failure(), stopReason: "cancelled", error: null };
+            return {
+              ...failure(),
+              stopReason: "cancelled",
+              error: null,
+              usage: collected,
+            };
           // 로그인이 없으면 프로그램이 결과 없이 오류 문구만 남기고 끝난다(1.5.3).
           if (!finished && saysLoginProblem(exited.stderr))
-            return { ...result, errorCode: "login_required" };
-          return result;
+            return { ...result, errorCode: "login_required", usage: collected };
+          return { ...result, usage: collected };
         } finally {
           clearTimeout(startup);
           control.signal.removeEventListener("abort", cancel);

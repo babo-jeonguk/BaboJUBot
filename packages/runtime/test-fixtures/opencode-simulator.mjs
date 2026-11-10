@@ -12,6 +12,12 @@ const recording =
   recordingAt < 0
     ? null
     : JSON.parse(await readFile(process.argv[recordingAt + 1], "utf8"));
+// --usage면 그 파일의 세션 누계({ before, after }: { tokens, cost })를 실행 전·후 값으로 쓴다.
+const usageAt = process.argv.indexOf("--usage");
+const usage =
+  usageAt < 0
+    ? null
+    : JSON.parse(await readFile(process.argv[usageAt + 1], "utf8"));
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
   subscribers = new Set();
 const zero = { input: 0, output: 0, cache: { read: 0, write: 0 } };
@@ -48,7 +54,10 @@ async function finish(body) {
     });
     if (!res.ok) throw new Error("synthetic tool rejected");
   }
-  session.tokens = { input: 12, output: 3, cache: { read: 5, write: 0 } };
+  session.tokens = usage
+    ? usage.after.tokens
+    : { input: 12, output: 3, cache: { read: 5, write: 0 } };
+  if (usage) session.cost = usage.after.cost;
   emit("session.execution.succeeded");
 }
 const server = http.createServer(async (req, res) => {
@@ -157,8 +166,8 @@ const server = http.createServer(async (req, res) => {
       session = {
         ...recording?.session,
         id: "ses_" + crypto.randomUUID(),
-        tokens: zero,
-        cost: 0,
+        tokens: usage?.before.tokens ?? zero,
+        cost: usage ? usage.before.cost : 0,
       };
       json({ data: session });
       return;

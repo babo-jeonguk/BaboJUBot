@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { request } from "./test-support.ts";
 import { createClaudeProvider } from "./claude.ts";
 
@@ -896,4 +896,254 @@ it("keeps a login problem when the program exits before a background command rep
   expect(result.stopReason).toBe("failed");
   expect(result.nextSession).toBeNull();
   expect(result.errorCode).toBe("login_required");
+});
+
+describe("usage numbers outside the contract (#140)", () => {
+  const diagnostics = () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    return {
+      lines: () => warn.mock.calls.map((call) => call.join(" ")),
+      [Symbol.dispose]: () => warn.mockRestore(),
+    };
+  };
+  const result = (usage: Record<string, unknown>, total?: unknown) => ({
+    type: "result",
+    subtype: "success",
+    ...(total === undefined ? {} : { total_cost_usd: total }),
+    usage,
+  });
+
+  it("keeps a turn total unreported once a bad turn is in it, and keeps the success, session and other totals", async () => {
+    using warnings = diagnostics();
+    const root = await home();
+    const outcome = await (
+      await costPeer(root, {
+        mode: "script",
+        frames: [
+          result({ input_tokens: 1, output_tokens: 100 }),
+          result({ input_tokens: 2, output_tokens: -3 }),
+          result({ input_tokens: 3, output_tokens: 50 }, 0.25),
+        ],
+      })
+    ).adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    expect(outcome.stopReason).toBe("completed");
+    expect(outcome.nextSession?.id).toBe("fresh-session");
+    expect(outcome.usage).toEqual({
+      inputTokens: 6,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: 0.25,
+    });
+    expect(warnings.lines()).toEqual([
+      expect.stringMatching(/outputTokens.*invalid_value/),
+    ]);
+  });
+
+  it("leaves an overflowing turn total, a fractional count and an unsafe count unreported", async () => {
+    using warnings = diagnostics();
+    const root = await home();
+    const outcome = await (
+      await costPeer(root, {
+        mode: "script",
+        frames: [
+          result({
+            input_tokens: Number.MAX_SAFE_INTEGER,
+            output_tokens: 1.5,
+            cache_read_input_tokens: 2 ** 53,
+            cache_creation_input_tokens: 4,
+          }),
+          result({ input_tokens: 1, cache_creation_input_tokens: 5 }, 0.1),
+        ],
+      })
+    ).adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    expect(outcome.stopReason).toBe("completed");
+    expect(outcome.usage).toEqual({
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: 9,
+      costUsd: 0.1,
+    });
+    expect(warnings.lines()).toEqual([
+      expect.stringMatching(/inputTokens.*overflow/),
+      expect.stringMatching(/outputTokens.*invalid_value/),
+      expect.stringMatching(/cacheReadTokens.*invalid_value/),
+    ]);
+  });
+
+  it("does not turn a session cost that went down into zero", async () => {
+    using _ = diagnostics();
+    const root = await home();
+    const input = await resumedFrom(root, costState(0.5, [100, 50, 0, 0]));
+    const outcome = await (
+      await costPeer(root, {
+        mode: "finish",
+        result: { total_cost_usd: 0.4, usage: { input_tokens: 9 } },
+      })
+    ).adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    expect(outcome.stopReason).toBe("completed");
+    expect(outcome.usage?.inputTokens).toBe(9);
+    expect(outcome.usage?.costUsd).toBeNull();
+  });
+
+  it("isolates bad figures in the cost Claude saved for a cancelled run, field by field", async () => {
+    using warnings = diagnostics();
+    const root = await home();
+    const input = await resumedFrom(root, {
+      totalCostUSD: 0.5,
+      modelUsage: {
+        "claude-haiku-4-5": {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 1000,
+          cacheCreationInputTokens: -5,
+        },
+      },
+    });
+    const controller = new AbortController();
+    const outcome = await (
+      await costPeer(root, {
+        mode: "cancel",
+        costState: {
+          totalCostUSD: 0.6,
+          modelUsage: {
+            "claude-haiku-4-5": {
+              inputTokens: Number.MAX_SAFE_INTEGER,
+              outputTokens: 40,
+              cacheReadInputTokens: 1500,
+              cacheCreationInputTokens: 700,
+            },
+            "claude-sonnet-5": {
+              inputTokens: 1,
+              outputTokens: 0,
+              cacheReadInputTokens: 0.5,
+              cacheCreationInputTokens: 0,
+            },
+          },
+        },
+      })
+    ).adapter.execute(input, {
+      signal: controller.signal,
+      emit: async () => controller.abort(),
+    });
+    expect(outcome.stopReason).toBe("cancelled");
+    expect(outcome.usage).toEqual({
+      // The two models' sum overflows.
+      inputTokens: null,
+      // 50 → 40 is a decrease, not zero.
+      outputTokens: null,
+      // A fractional count in one model.
+      cacheReadTokens: null,
+      // The baseline was bad, so the difference is unknown.
+      cacheWriteTokens: null,
+      costUsd: expect.closeTo(0.1, 6),
+    });
+    expect(warnings.lines()).toEqual([
+      expect.stringMatching(/inputTokens.*overflow/),
+      expect.stringMatching(/outputTokens.*negative_result/),
+      expect.stringMatching(/cacheReadTokens.*invalid_value/),
+      expect.stringMatching(/cacheWriteTokens.*invalid_operand/),
+    ]);
+  });
+
+  it("isolates a decreased saved total when the run ends without a result frame, keeping the other figures", async () => {
+    using warnings = diagnostics();
+    const root = await home();
+    const input = await resumedFrom(root, costState(0.5, [100, 50, 10, 0]));
+    const outcome = await (
+      await costPeer(root, {
+        mode: "script",
+        frames: ["save"],
+        costState: costState(0.6, [110, 40, 20, 5]),
+      })
+    ).adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    expect(outcome.stopReason).toBe("failed");
+    expect(outcome.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: null,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 5,
+      costUsd: expect.closeTo(0.1, 6),
+    });
+    expect(warnings.lines()).toEqual([
+      expect.stringMatching(/outputTokens.*negative_result/),
+    ]);
+  });
+
+  it("does not take an infinite saved cost as a figure", async () => {
+    using _ = diagnostics();
+    const root = await home();
+    const input = await resumedFrom(root, costState(0.5, [100, 50, 0, 0]));
+    // JSON has no Infinity; a huge literal parses to it.
+    const folder = path.join(
+      root,
+      "providers/claude/organizations",
+      input.identity.organizationId,
+      "config/projects/synthetic"
+    );
+    const file = path.join(folder, "session-one.jsonl");
+    await writeFile(
+      file,
+      (await readFile(file, "utf8")).replace(
+        '"totalCostUSD":0.5',
+        '"totalCostUSD":1e400'
+      )
+    );
+    const outcome = await (
+      await costPeer(root, {
+        mode: "finish",
+        result: { total_cost_usd: 0.6, usage: { input_tokens: 9 } },
+      })
+    ).adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    expect(outcome.stopReason).toBe("completed");
+    expect(outcome.usage?.inputTokens).toBe(9);
+    expect(outcome.usage?.costUsd).toBeNull();
+  });
+
+  it("keeps the turns already reported when a cancelled run leaves no new saved cost", async () => {
+    using _ = diagnostics();
+    const root = await home();
+    const input = await resumedFrom(root, costState(0.5, [100, 50, 0, 0]));
+    const controller = new AbortController();
+    const outcome = await (
+      await costPeer(root, {
+        mode: "script",
+        // Background work keeps the run going after the result; Claude saves no new cost row on the way out.
+        frames: [
+          backgroundTask(1),
+          result({ input_tokens: 7, output_tokens: 3 }, 0.7),
+        ],
+        untilStopped: true,
+      })
+    ).adapter.execute(input, {
+      signal: controller.signal,
+      emit: async (event) => {
+        if (JSON.stringify(event).includes("백그라운드")) controller.abort();
+      },
+    });
+    expect(outcome.stopReason).toBe("cancelled");
+    expect(outcome.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: expect.closeTo(0.2, 6),
+    });
+  });
 });

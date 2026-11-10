@@ -1,6 +1,6 @@
 # <key> 레퍼런스 조사: <Issue 제목>
 
-조사일: YYYY-MM-DD. 대상: [#<n>](<Issue URL>). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/<key>/`(git 무시).
+조사일: YYYY-MM-DD. 대상: [#<n>](<Issue URL>). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다.
 
 ## Brief
 
@@ -17,7 +17,7 @@
 
 ## 레퍼런스
 
-관점별 saturation: <관점 — 마지막 라운드 요지>. 전체 후보: `.reference-cache/<key>/candidates.md`.
+관점별 saturation: <관점 — 마지막 라운드 요지>.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  isolateUsageNumbers,
   runResultSchema,
   runtimeActivitySchema,
   type RunCancel,
@@ -287,7 +288,7 @@ export class RunDispatcher {
             emit: (activity) => this.#emit(run.id, activity),
           })
         : missingProvider;
-      const parsed = runResultSchema.safeParse(raw);
+      const parsed = runResultSchema.safeParse(isolateRunUsage(run.id, raw));
       if (parsed.success) result = parsed.data;
       else {
         console.error(
@@ -364,4 +365,18 @@ export class RunDispatcher {
       console.error(`[runs] run ${runId} could not record an activity`, error);
     }
   }
+}
+
+/**
+ * 사용량 숫자의 이상은 그 항목만 비우고 진단으로 남겨 실행 시도의 종료 사유·요약·다음 세션을 지킨다(#140).
+ * 나머지 종료 결과는 그대로 넘기므로 다른 계약 위반은 schema 검사가 거부한다.
+ */
+function isolateRunUsage(runId: string, raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || !("usage" in raw)) return raw;
+  const { value, anomalies } = isolateUsageNumbers(raw.usage);
+  for (const { field, reason } of anomalies)
+    console.warn(
+      `[runs] run ${runId} usage ${field} left unreported: ${reason}`
+    );
+  return anomalies.length ? { ...raw, usage: value } : raw;
 }

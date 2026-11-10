@@ -14,9 +14,9 @@ import {
   publicActivitySchema,
   runEndReasonSchema,
   runSummarySchema,
-  usageSchema,
   wakeReasonSchema,
 } from "./run.ts";
+import { usageSchema } from "./usage.ts";
 
 /** Event log에 영속한 상태 변화. 모든 Event는 조직 하나에 속한다. */
 const eventBase = {

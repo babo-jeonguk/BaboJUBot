@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { usageSchema } from "./usage.ts";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
 import { flowKindSchema, instructionFileSchema } from "./harness.ts";
 import { agentAppearanceSchema } from "./agent-profile.ts";
@@ -258,31 +259,6 @@ export const publicActivitySchema = z.discriminatedUnion("source", [
   }),
 ]);
 export type PublicActivity = z.infer<typeof publicActivitySchema>;
-
-const tokenCountSchema = z.number().int().nonnegative().nullable();
-
-/**
- * 실행 시도 하나의 사용량. 항목마다 보고한 값이거나 `null`(보고 안 됨)이며, 보고한 0은 0이다. 보고하지 않은 항목을 0으로 채우지 않는다.
- * 프로바이더가 세션 누적값만 주면 adapter가 이 실행 시도 몫으로 바꿔 보고한다. 캐시 읽기·쓰기는 입력과 따로 센 토큰이다.
- * 비용(USD)은 프로바이더가 알려 준 추정이다.
- */
-export const usageSchema = z.strictObject({
-  inputTokens: tokenCountSchema,
-  outputTokens: tokenCountSchema,
-  cacheReadTokens: tokenCountSchema,
-  cacheWriteTokens: tokenCountSchema,
-  costUsd: z.number().nonnegative().nullable(),
-});
-export type Usage = z.infer<typeof usageSchema>;
-
-/** 아무 항목도 보고하지 않은 사용량. */
-export const unreportedUsage: Usage = {
-  inputTokens: null,
-  outputTokens: null,
-  cacheReadTokens: null,
-  cacheWriteTokens: null,
-  costUsd: null,
-};
 
 /**
  * 실패의 종류. `login_required`는 제품 로그인이 필요해 실패했다는 뜻이며, 서버가 그 연결의 준비 상태를 다시 확인한다.
