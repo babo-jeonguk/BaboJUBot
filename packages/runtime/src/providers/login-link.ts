@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readlink, rename, rm, symlink } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readlink,
+  rename,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import path from "node:path";
 
 /** 로그인 원본마다 링크 작업을 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다. */
@@ -20,22 +28,27 @@ const warned = new Set<string>();
 /** 링크를 만들 수 없다는 뜻의 오류. 권한 없는 Windows는 EPERM, 링크를 모르는 파일 시스템은 ENOTSUP·EOPNOTSUPP다. */
 const noLinks = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP"]);
 /**
- * 링크를 만들 수 없는 컴퓨터에서 실행은 연결 폴더의 `fallback`을 읽는다. 원본이 이미 로그인 전용 폴더에 있으면(링크를 만들 수 있던
- * 컴퓨터에서 옮긴 제품 폴더, 링크만 사라진 경우) 그 자리로 되돌린다. `fallback`에 보통 파일이 있으면 그것이 이 컴퓨터의 로그인이므로 그대로 둔다.
- * 복사하지 않고 옮기므로 로그인은 하나다. 다시 링크를 만들 수 있게 되면 `linkLogin`이 `fallback`의 파일을 원본으로 옮긴다.
+ * 링크를 만들 수 없는 컴퓨터에서는 모든 실행이 연결 폴더의 `fallback`을 읽는다. 그 자리로 로그인을 읽을 수 있으면(이 컴퓨터가 쓴 보통 파일,
+ * 원본을 가리키는 이미 있는 링크) 아무것도 옮기지 않는다. 원본을 옮기면 이미 있는 링크가 원본을 잃는다.
+ * 읽을 수 없을 때만(없거나 대상이 없는 링크) 원본을 그 자리로 옮긴다. 복사하지 않으므로 로그인은 하나다.
+ * 다시 링크를 만들 수 있게 되면 `linkLogin`이 `fallback`의 보통 파일을 원본으로 옮긴다(가장 최근 로그인).
  */
 async function keepAtFallback(original: string, fallback: string) {
-  const exists = (file: string) =>
-    lstat(file).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
+  const readable = await stat(fallback).then(
+    (found) => found.isFile(),
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
       throw error;
-    });
-  const source = await exists(original);
+    }
+  );
+  if (readable) return;
+  const source = await lstat(original).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
   if (!source?.isFile()) return;
-  const current = await exists(fallback);
-  if (current?.isFile()) return;
   await mkdir(path.dirname(fallback), { recursive: true, mode: 0o700 });
-  if (current) await rm(fallback, { recursive: true, force: true });
+  await rm(fallback, { recursive: true, force: true });
   await rename(original, fallback);
 }
 /**
@@ -45,7 +58,7 @@ async function keepAtFallback(original: string, fallback: string) {
  * `at`에 보통 파일이 있으면 가장 최근 로그인(예전 연결 폴더 로그인, 링크 대신 파일을 쓴 판)이므로 원본으로 옮긴다.
  * 원본 자리는 모든 조직 컨테이너가 쓸 수 있으므로 보통 파일이 아닌 것(다른 곳을 가리키는 링크 등)은 지운다. 남기면 이 컴퓨터에서 도는
  * 프로그램이 로그인을 갱신할 때 링크를 따라가 그 파일을 덮어쓴다.
- * 링크를 먼저 임시 이름으로 만들어 본 뒤에 옮기므로, 링크를 만들 수 없는 컴퓨터(권한 없는 Windows, 링크를 모르는 파일 시스템)면 링크를 만들지 않고 `false`이며, 로그인 하나를 연결 폴더의 자리(`fallback`)에 두어(`keepAtFallback`) 그 실행은 연결 폴더의 로그인으로 돈다. 같은 원본의 링크 작업은 `oneAtATime`으로 하나씩 한다.
+ * 링크를 만들 수 있는지는 부를 때마다 임시 링크로 먼저 보고, 이미 있는 링크도 그 판정을 따른다. 링크를 만들 수 없는 컴퓨터(권한 없는 Windows, 링크를 모르는 파일 시스템)면 어느 `at`이든 `false`이며 모든 실행이 연결 폴더의 자리(`fallback`)로 돌고, 그 자리에서 로그인 하나를 읽게 한다(`keepAtFallback`). 같은 원본의 링크 작업은 `oneAtATime`으로 하나씩 한다.
  */
 async function linkLogin(
   original: string,
@@ -65,8 +78,8 @@ async function linkLogin(
     if (error.code === "ENOENT") return undefined;
     throw error;
   });
-  if (current?.isSymbolicLink() && (await readlink(at)) === original)
-    return true;
+  // 이 컴퓨터가 지금 링크를 만들 수 있는지 매번 임시 링크로 본다. 이미 있는 링크도 이 판정을 따른다.
+  // 링크로 도는 조직과 연결 폴더로 대신 도는 조직이 섞이면 서로 다른 로그인이나 사라진 원본을 읽는다.
   const temporary = `${at}.${randomUUID()}.link`;
   try {
     await symlink(original, temporary, "file");
@@ -84,6 +97,8 @@ async function linkLogin(
     throw error;
   }
   try {
+    if (current?.isSymbolicLink() && (await readlink(at)) === original)
+      return true;
     if (current?.isFile()) await rename(at, original);
     else if (current) await rm(at, { recursive: true, force: true });
     await rename(temporary, at);
