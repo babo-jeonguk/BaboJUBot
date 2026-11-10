@@ -204,10 +204,14 @@
 | Claude | 로그인 하나를 같이 쓴다 | 연결 폴더의 setup-token을 실행마다 환경 변수로 넣는다(E09) |
 | Codex | 로그인 하나를 같이 쓴다(Paperclip·Multica 방식) | 연결의 로그인 전용 폴더에 `auth.json` 원본을 두고 조직 폴더의 `auth.json`은 그 원본을 가리키는 링크로 둔다. 컨테이너에는 로그인 전용 폴더만 쓰기로 더 넣는다(E03·E26의 단일 파일 mount 배제). 동시 갱신이 겹치면 다시 로그인해야 할 수 있다는 위험은 받아들인다(E05·E06) |
 | OpenCode | 새 조직 폴더에 로그인만 복사한다. 사용자의 로그인은 API 키 방식이다 | 조직 DB에 로그인이 없을 때 연결 폴더의 로그인 목록을 조직 쪽으로 옮긴다(공식 `GET`/`POST /api/credential`, `auth import`와 같은 규칙). 세션은 옮기지 않는다. 갱신형 계정 로그인은 복사본끼리 어긋날 수 있다(E14·E16) |
-| Antigravity | 다른 프로바이더처럼 나누고 사용자가 실제 로그인으로 확인한다 | 로그인 저장이 비공개라 구현 뒤 조직 실행에서 로그인이 보이는지 확인한다(E17·E27) |
+| Antigravity | 다른 프로바이더처럼 나누고 사용자가 실제 로그인으로 확인한다 | 조직 실행에서 로그인이 보이지 않았다(#126). Codex와 같은 로그인 전용 폴더 원본+링크로 바꿨다(아래 추가 확인 2026-11-10) |
 | 기존 세션 | 새 세션으로 시작한다(D05 기본안) | 네 프로바이더 모두 이전 세션을 찾지 못하면 새 세션으로 시작하는 경로가 이미 있다 |
 
 추가 확인(메인, 2026-11-06): 이 컴퓨터의 Codex 0.166.0에서 `CODEX_HOME/auth.json`을 다른 폴더의 없는 파일로 가리키는 링크로 두고 가짜 API 키로 `codex login --with-api-key`를 두 번 실행했다. 원본 자리에 파일이 생겼고 링크는 유지됐다(네트워크·모델 호출 없음). Codex `storage_file.rs`(E03)와 OpenCode 2.2.5 `credential.ts`·`groups/credential.ts`(E13)는 메인이 고정 소스에서 다시 읽었다. 설치 판: Claude Code 2.1.317, OpenCode 2.2.5, agy 1.5.0.
+
+추가 확인(메인, 2026-11-10, #126): agy 1.5.3, 키링 서비스가 없는 이 컴퓨터. 기록에 `Failed to load stored token from keyring, falling back to file`이 남고 로그인은 HOME의 `.gemini/antigravity-cli/antigravity-oauth-token`에서 읽는다. 임시 HOME의 그 자리를 연결 폴더 로그인 파일을 가리키는 링크로 두고 `agy models`(모델 호출 없음)를 strace로 따라갔다. 링크로 읽었고, 접근 토큰이 만료돼 갱신한 로그인을 `open(O_WRONLY|O_CREAT|O_TRUNC, 0600)`으로 같은 경로에 써서 원본(같은 inode)이 바뀌고 링크는 남았다. 토큰 파일 잠금은 보이지 않았다. 로그인이 없을 때 stream-json 실행은 결과 없이 `Error: authentication required. Run 'agy' to log in, then retry.`와 종료 코드 1로 끝난다(#91 서버 기록). 로그인 명령(`agy` 대화형 로그인)이 링크를 따라 쓰는지와 갱신 토큰 회전·동시 갱신은 확인하지 않았다. 로그인 명령이 링크를 보통 파일로 바꿔도 다음 준비 확인·실행이 그 파일을 원본으로 옮긴다.
+
+실제 실행(메인, 2026-11-10, `079421a`, agy 1.5.3, gemini-3.8-flash-low, 사용자 승인): 연결 폴더에만 로그인을 둔 새 제품 폴더에서 격리를 끈 연결 확인(`provider-smoke.mjs`)과 격리를 켠 새 조직 Lead 실행 2번(시험 전용 이미지 `babojubot-runner-agy`)이 모두 `completed`였고 조직 도구로 답장했다. 컨테이너에는 조직 제품 폴더와 로그인 전용 폴더만 들어갔다. 실행 중 로그인 갱신은 일어나지 않아 갱신 뒤 다른 조직 실행은 합성 시험으로만 확인했다.
 
 | 열린 결정 | owner | 선택지와 근거 |
 |---|---|---|

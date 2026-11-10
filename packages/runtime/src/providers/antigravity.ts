@@ -1,4 +1,6 @@
+import { constants } from "node:fs";
 import {
+  access,
   lstat,
   mkdir,
   mkdtemp,
@@ -21,6 +23,7 @@ import {
   commandFor,
   providerEnvironment,
   runProbe,
+  saysLoginProblem,
 } from "./process.ts";
 import {
   clearOwnedConfig,
@@ -32,6 +35,7 @@ import {
 import type { ContainerSettings } from "./container.ts";
 import { placeAttempt, type ContainerLaunch } from "./container.ts";
 import { connectionFolders } from "./folders.ts";
+import { loginLink } from "./login-link.ts";
 const workspaces = new Map<string, Promise<void>>();
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
@@ -73,6 +77,27 @@ export function createAntigravityProvider(options: {
   const folders = connectionFolders(options.dataDir, connectionId);
   const home = folders.connection,
     command = options.command ?? commandFor(connectionId, "agy");
+  /** 연결의 로그인 원본. 컨테이너에는 이 폴더만 함께 쓰기로 넣는다. */
+  const loginFolder = path.join(home, "login");
+  const original = path.join(loginFolder, "antigravity-oauth-token");
+  // 키링이 없는 컴퓨터·컨테이너에서 agy는 HOME의 이 파일로 로그인하고, 갱신하면 링크를 따라 원본 자리에 덮어쓴다(1.5.3 실측, #126).
+  const tokenAt = (productHome: string) =>
+    path.join(
+      productHome,
+      ".gemini",
+      "antigravity-cli",
+      "antigravity-oauth-token"
+    );
+  const shareLogin = loginLink({
+    original,
+    fallback: tokenAt(home),
+    label: "Antigravity",
+  });
+  /** 연결 폴더도 조직 폴더와 같은 링크로 로그인을 읽는다. 로그인 명령·준비 확인·모델 목록이 조직 실행과 같은 로그인을 본다. */
+  const prepare = async () => {
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    await shareLogin(tokenAt(home));
+  };
   const env = (productHome = home) =>
     providerEnvironment(connectionId, productHome, {
       XDG_CONFIG_HOME: path.join(productHome, "config"),
@@ -80,7 +105,6 @@ export function createAntigravityProvider(options: {
       XDG_CACHE_HOME: path.join(productHome, "cache"),
     });
   const probe = async (args: string[], signal: AbortSignal) => {
-    await mkdir(home, { recursive: true, mode: 0o700 });
     return (
       await runProbe(command, args, {
         cwd: home,
@@ -102,7 +126,21 @@ export function createAntigravityProvider(options: {
     },
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
-      // 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. 목록 조회는 모델을 부르지 않는다.
+      try {
+        await prepare();
+        // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
+        // Windows의 access는 링크를 따라가지 않으므로 실제 파일을 찾아 본다.
+        const login = await realpath(tokenAt(home)).catch(
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw error;
+          }
+        );
+        if (login) await access(login, constants.R_OK | constants.W_OK);
+      } catch {
+        return { status: "not_ready", reason: "check_failed" };
+      }
+      // 로그인이 맞는지는 프로그램의 응답으로 판단한다. 목록 조회는 모델을 부르지 않는다.
       try {
         await probe(["models"], signal);
         return { status: "ready", reason: null };
@@ -115,9 +153,7 @@ export function createAntigravityProvider(options: {
           return { status: "not_ready", reason: "program_missing" };
         return {
           status: "not_ready",
-          reason: /sign.?in|log.?in|auth/i.test(
-            `${error.stdout ?? ""}${error.stderr ?? ""}`
-          )
+          reason: saysLoginProblem(`${error.stdout ?? ""}${error.stderr ?? ""}`)
             ? "product_login_missing"
             : "check_failed",
         };
@@ -131,20 +167,20 @@ export function createAntigravityProvider(options: {
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
-        // 그 조직의 제품 폴더로 돈다. 로그인을 어디에 두는지는 이 프로그램이 공개하지 않아 조직 실행에서 실제로 확인한다.
+        // 그 조직의 제품 폴더로 돈다. 로그인은 연결의 원본 하나를 링크로 쓴다.
         const organization = folders.organization(
           request.identity.organizationId
         );
-        const placement = placeAttempt(
-          options.container,
-          organization,
-          request
-        );
+        await prepare();
+        const linked = await shareLogin(tokenAt(organization));
+        // 링크 없이 연결 폴더를 컨테이너에 넣지 않는다.
+        if (!linked && request.execution === "container") return failure();
+        const productHome = linked ? organization : home;
+        const placement = placeAttempt(options.container, productHome, request);
         if (!placement) return failure();
         // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
-        await mkdir(home, { recursive: true, mode: 0o700 });
-        await mkdir(organization, { recursive: true, mode: 0o700 });
-        cwd = await realpath(request.workspace?.cwd ?? organization);
+        await mkdir(productHome, { recursive: true, mode: 0o700 });
+        cwd = await realpath(request.workspace?.cwd ?? productHome);
         while (workspaces.has(cwd)) {
           control.signal.throwIfAborted();
           await Promise.race([
@@ -191,6 +227,7 @@ export function createAntigravityProvider(options: {
                 target: path.join(cwd, ".agents", "mcp_config.json"),
               },
             ],
+            shared: linked ? [loginFolder] : [],
           });
         }
         const published = await publishConfig(
@@ -236,7 +273,7 @@ export function createAntigravityProvider(options: {
           command,
           args,
           cwd,
-          env: env(organization),
+          env: env(productHome),
           container,
           onFrame: async (raw) => {
             if (!raw || typeof raw !== "object" || finished) return;
@@ -310,7 +347,7 @@ export function createAntigravityProvider(options: {
                 usage,
                 nextSession: success ? { id: id! } : null,
               };
-              if (/auth|sign.in|log.in/i.test(frame.result?.error ?? ""))
+              if (saysLoginProblem(frame.result?.error))
                 result.errorCode = "login_required";
               child.end();
             }
@@ -338,9 +375,12 @@ export function createAntigravityProvider(options: {
                   }),
               },
             });
-          await child.done;
+          const exited = await child.done;
           if (control.signal.aborted)
             return { ...failure(), stopReason: "cancelled", error: null };
+          // 로그인이 없으면 프로그램이 결과 없이 오류 문구만 남기고 끝난다(1.5.3).
+          if (!finished && saysLoginProblem(exited.stderr))
+            return { ...result, errorCode: "login_required" };
           return result;
         } finally {
           clearTimeout(startup);
@@ -377,6 +417,7 @@ export function createAntigravityProvider(options: {
     adapter,
     models: [],
     async listModels(signal) {
+      await prepare();
       return (await probe(["models"], signal)).split("\n").flatMap((line) => {
         const [id, label] = line.split("\t");
         return id && label ? [{ id, label }] : [];

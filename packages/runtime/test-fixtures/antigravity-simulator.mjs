@@ -13,6 +13,33 @@ if (args.includes("--version")) {
   console.log("9.9.9");
   process.exit(0);
 }
+// 실제 프로그램(1.5.3, 키링 없는 컴퓨터)은 HOME의 이 파일로 로그인한다. 접근 토큰이 만료됐으면 갱신해 같은 경로에 덮어쓴다
+// (O_WRONLY|O_CREAT|O_TRUNC, 링크면 따라가 원본 자리에 쓴다. 2026-11-10 strace로 확인). 로그인이 없으면 결과 없이 끝난다.
+const loginFile = path.join(
+  process.env.HOME,
+  ".gemini/antigravity-cli/antigravity-oauth-token"
+);
+const login = await readFile(loginFile, "utf8")
+  .then((text) => JSON.parse(text))
+  .catch(() => null);
+if (!login) {
+  console.error(
+    args[0] === "models"
+      ? "Error: Please sign in to view available models. Launch the CLI without arguments to sign in."
+      : "Error: authentication required. Run 'agy' to log in, then retry."
+  );
+  process.exit(1);
+}
+if (login.expired)
+  await writeFile(
+    loginFile,
+    JSON.stringify({
+      ...login,
+      expired: false,
+      refreshed: (login.refreshed ?? 0) + 1,
+    }),
+    { mode: 0o600 }
+  );
 if (args[0] === "models") {
   console.log("simulated-model\tSimulated Model");
   process.exit(0);
