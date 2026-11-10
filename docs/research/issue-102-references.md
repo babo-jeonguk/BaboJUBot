@@ -1,6 +1,6 @@
 # issue-102 레퍼런스 조사: 격리 실행(Docker)
 
-조사일: 2026-11-05. 대상: [#102](https://github.com/babo-jeonguk/BaboJUBot/issues/102), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91), 선행 #97·#98. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 원자료·명령·로그: `.reference-cache/issue-102/`(git 무시). 제품 코드·테스트·설정은 변경하지 않았고 이 문서는 구현 변경과 함께 커밋하도록 둔다.
+조사일: 2026-11-05. 대상: [#102](https://github.com/babo-jeonguk/BaboJUBot/issues/102), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91), 선행 #97·#98. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 제품 코드·테스트·설정은 변경하지 않았고 이 문서는 구현 변경과 함께 커밋하도록 둔다.
 
 ## Brief
 
@@ -27,7 +27,7 @@
 
 ## 레퍼런스
 
-Discovery는 실행 생애·파일, 네트워크·실패 환경, 화면의 세 관점으로 나눴다. 관점별 후보 5/7/5행(중복 포함 총17행), 마지막 라운드는 각각 3/4/2회차이며 최소 mount/ID 정리, 주소 치환/프록시, 즉시 적용/disabled 패턴의 변형으로 수렴했다. 후보·라운드별 검색과 실행 경로는 `candidates.md`와 `notes/`에 둔다. 이번 질문 범위의 탐색 종료 판단이며 모든 프로젝트를 조사했다는 뜻은 아니다.
+Discovery는 실행 생애·파일, 네트워크·실패 환경, 화면의 세 관점으로 나눴다. 관점별 후보 5/7/5행(중복 포함 총17행), 마지막 라운드는 각각 3/4/2회차이며 최소 mount/ID 정리, 주소 치환/프록시, 즉시 적용/disabled 패턴의 변형으로 수렴했다. 이번 질문 범위의 탐색 종료 판단이며 모든 프로젝트를 조사했다는 뜻은 아니다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -47,7 +47,7 @@ Discovery는 실행 생애·파일, 네트워크·실패 환경, 화면의 세 �
 | <a id="E04"></a>E04 | VPNKit은 host_ip로 온 패킷을 Localhost 경로로 넘기며 TCP 목적지를 host localhost로 바꾼다. Desktop 계열을 Linux bridge 실측으로 일반화할 수 없다 | [VPNKit Localhost](https://github.com/moby/vpnkit/blob/42340d105737658de198210f3fac377ff56c7256/src/hostnet/slirp.ml#L498-L558), [host_ip 분기](https://github.com/moby/vpnkit/blob/42340d105737658de198210f3fac377ff56c7256/src/hostnet/slirp.ml#L1318-L1333) | 소스 확인 |
 | <a id="E05"></a>E05 | bind는 daemon 호스트 경로이며 원본을 수정한다. RO 하위 mount 강제는 kernel 5.12 이상 제약이 있다. `--mount`는 없는 source를 오류로 취급한다 | [Docker bind mounts](https://docs.docker.com/engine/storage/bind-mounts/) | 문서 주장 |
 | <a id="E06"></a>E06 | `--init`은 신호 전달·자식 회수, `--rm`은 컨테이너 종료 후 제거다. PID1 신호 처리에는 별도 규칙이 있다 | [docker run](https://docs.docker.com/reference/cli/docker/container/run/) | 문서 주장 |
-| <a id="E07"></a>E07 | Docker29.3.1/Ubuntu에서 uid1000·cap-drop ALL·no-new-privileges로 공유/자기/제품 폴더 쓰기 성공, 동료 EROFS·/etc EACCES. docker.sock은 없고 새 컨테이너가 공유 파일을 읽었다 | `probes/docker-boundary.py`, `probes/run-log.txt`; image `sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205` | 실행 확인 |
+| <a id="E07"></a>E07 | Docker29.3.1/Ubuntu에서 uid1000·cap-drop ALL·no-new-privileges로 공유/자기/제품 폴더 쓰기 성공, 동료 EROFS·/etc EACCES. docker.sock은 없고 새 컨테이너가 공유 파일을 읽었다 | 로컬 probe; image `sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205` | 실행 확인 |
 | <a id="E08"></a>E08 | 같은 fixture에서 bridge→mock loopback API/DB는 실패, bridge주소 도구는 성공, 도구의 사용자 경로는 404. host-network 양성 대조에서는 mock API/DB 연결 성공 | 같은 probe. 실제 API·DB 대신 임시 HTTP/TCP 포트를 사용 | 실행 확인 |
 | <a id="E09"></a>E09 | Docker client SIGKILL 뒤에도 컨테이너 Running=true였다. 명시적 `docker rm -f` 뒤 inspect는 부재를 확인했다 | 같은 probe, `--memory=256m --pids-limit=64`, 시험 컨테이너 제거 완료 | 실행 확인 |
 | <a id="E10"></a>E10 | 현재 MCP Host guard는 localhost/127.0.0.1/[::1]만 허용한다. tools router와 사용자 route는 같은 앱에 있다 | [mcp.ts](../../apps/server/src/mcp.ts), [app.ts](../../apps/server/src/app.ts) `orgToolsRouter`, 조사 기준 HEAD `a857772f88134e09e0d0478c5128fa1f04a8dcfc` | 소스 확인 |
@@ -55,7 +55,7 @@ Discovery는 실행 생애·파일, 네트워크·실패 환경, 화면의 세 �
 | <a id="E12"></a>E12 | ReadinessMonitor는 비동기 관찰이며 현재 admission이 결과를 보지 않는다. Claude precompact도 executeClaude를 호출해 별도 프로세스를 만든다 | [readiness.ts](../../apps/server/src/readiness.ts), [claude.ts](../../packages/runtime/src/providers/claude.ts) `precompact`, [process.ts](../../packages/runtime/src/providers/process.ts) `startProcess` | 소스 확인 |
 
 | <a id="E13"></a>E13 | useSwitch는 checked/defaultChecked/onCheckedChange를 연결하고 hidden checkbox role=switch를 제공한다. 예제 callback은 count/lastValue를 즉시 갱신한다. 기존 SHA99efaf5와 useSwitch blob은 동일(7671392178518f82b78ce025a01918840a9d494c) | [useSwitch](https://github.com/daangn/seed-design/blob/22a426f4c1de3db4bfdd2318e226f95a52170422/packages/react-headless/switch/src/useSwitch.ts#L13-L26), [예제](https://github.com/daangn/seed-design/blob/22a426f4c1de3db4bfdd2318e226f95a52170422/docs/examples/react/switch/value-changes.tsx#L5-L20) | 소스 확인 |
-| <a id="E14"></a>E14 | 공개 SEED 예제 라벨 클릭:1280px false→true/callback1,true, 390px true→false/callback2,false. 두 캡처를 메인도 열어 switch와 callback 표시 확인 | [공개 Switch](https://seed-design.io/react/components/switch), `notes/ui-run-log.txt`·`captures/`. Playwright1.64.1, 2026-11-05T08:16:15Z | 실행 확인 |
+| <a id="E14"></a>E14 | 공개 SEED 예제 라벨 클릭:1280px false→true/callback1,true, 390px true→false/callback2,false. 두 캡처를 메인도 열어 switch와 callback 표시 확인 | [공개 Switch](https://seed-design.io/react/components/switch), 로컬 실행 기록·캡처. Playwright1.64.1, 2026-11-05T08:16:15Z | 실행 확인 |
 
 ## 패턴
 

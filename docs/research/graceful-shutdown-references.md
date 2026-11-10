@@ -1,6 +1,6 @@
 # graceful-shutdown 레퍼런스 조사: Node 서버의 종료 신호 소유권
 
-조사일: 2026-11-05. 대상: 사용자 조사 의뢰 Q1–Q4. 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 후보·원문·재확인 기록: `.reference-cache/graceful-shutdown/`(기존 `.gitignore`의 무시 대상).
+조사일: 2026-11-05. 대상: 사용자 조사 의뢰 Q1–Q4. 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다.
 
 ## Brief
 
@@ -48,7 +48,7 @@
 | testcontainers/moby-ryuk | 연결 소멸 뒤 회수 계약 | `0509b379b7c4a572c918d54079f9ede176045714` | MIT |
 | Kubernetes·12-factor·Docker·systemd·PostgreSQL·pnpm 10 | 운영 계약·DB stop·패치 실패 감지 | 공식 문서 2026-11-05 열람; 아래 원문 URL | 문서 참고 |
 
-n8n·Directus는 소스 공개 제품으로 구분한다. 엄격한 OSS 앱 세 개 조건은 Ghost·Strapi 비EE·Backstage로 충족한다. 후보 전체와 실행 경로는 캐시의 `candidates.md`에 있다. 제한된 탐색의 마지막 비교에서 framework는 선택 활성화/자원 close/프로세스 coordinator, 제품은 직렬/병렬/강제 socket 종료, DB는 선택 hook/프로세스 없음/외부 회수자의 변형을 확보했다. 생태계 전수 탐색이 끝났다는 의미의 saturation은 주장하지 않는다.
+n8n·Directus는 소스 공개 제품으로 구분한다. 엄격한 OSS 앱 세 개 조건은 Ghost·Strapi 비EE·Backstage로 충족한다. 제한된 탐색의 마지막 비교에서 framework는 선택 활성화/자원 close/프로세스 coordinator, 제품은 직렬/병렬/강제 socket 종료, DB는 선택 hook/프로세스 없음/외부 회수자의 변형을 확보했다. 생태계 전수 탐색이 끝났다는 의미의 saturation은 주장하지 않는다.
 
 ## 근거
 
@@ -181,10 +181,10 @@ HTTP 세부 계약: Node 24 [`server.close`](https://github.com/nodejs/node/blob
 
 ## 한계와 미확인
 
-- **확인한 것:** 공개 고정 소스·공식 문서·npm metadata/배포 파일·issue/PR 상태. 배포와 HEAD의 해당 파일 동일 여부, 메인의 결정 근거 재열람 결과는 캐시 `main-verification.md`에 기록했다. 소스 테스트를 읽은 것을 실행 통과로 표시하지 않았다.
+- **확인한 것:** 공개 고정 소스·공식 문서·npm metadata/배포 파일·issue/PR 상태. 배포와 HEAD의 해당 파일 동일 여부, 메인의 결정 근거 재열람 결과는 로컬 조사 캐시에 기록했다. 소스 테스트를 읽은 것을 실행 통과로 표시하지 않았다.
 - **실행하지 않은 것:** 제품/OSS 서버·실제 DB·CLI 에이전트·모델 API, 신호 재현, Windows/macOS/Linux 통합 시험, 패치 적용·설치. (a)–(e) 표의 ✓는 권고 설계의 제어 경로이지 제품 검증 통과가 아니다. 특히 현재 Windows taskkill 및 group 전달 문제 때문에 hook 제거만으로 (d)는 미충족이다.
 - SIGKILL·OS 사망·event-loop block에 대한 유한 종료/고아 회수는 JS timer·exit hook으로 보장할 수 없다. synchronous fallback 자체도 OS 호출이 지연될 수 있으므로 외부 시한이 최종 상한이다. 정상 DB-last와 무조건 유한 종료를 비정상 경로에서도 동시에 요구할 수는 없다.
 - embedded-postgres 검색은 캐시에 기록한 shutdown/exit-hook/signal/hook query 범위다. Paperclip 검색 133건 중 첫 100건 및 관련 개별 issue/PR만 확인했다. 모든 issue/플러그인/의존성의 부작용을 전수 확인한 것은 아니다. embedded-postgres-binaries 사용 제품은 별도 심층 추적하지 않았다.
 - Ghost의 명시 DB pool 해제는 읽은 경로에서 확인 못 했다. Backstage의 root HTTP/DB 병렬 정리, n8n의 HTTP callback 미대기, Strapi의 즉시 socket 파괴를 이상적인 순서의 근거로 사용하지 않았다. 유명 구현의 사용 사실과 권고할 안전성을 분리했다.
 - upstream HEAD·npm dist-tag·issue 상태는 변한다. Paperclip 미병합 PR의 autoShutdown을 공식 배포 옵션으로 오인하지 말고 후속 구현 착수 때 재확인해야 한다. PGlite/Java/Testcontainers 사례는 lifecycle 설계 비교이며 우리 SQL·드라이버·영속성·설치 호환성을 검증하지 않았다.
-- 이번 변경은 이 보고서와 지정 조사 캐시뿐이다. 문서 지도·제품 코드·테스트·설정·git 조작·커밋·push·PR·issue 댓글은 수행하지 않았다. 제품 검사는 실행하지 않았으며 문서 검증 결과는 캐시 receipt에 남긴다.
+- 이번 변경은 이 보고서와 지정 조사 캐시뿐이다. 문서 지도·제품 코드·테스트·설정·git 조작·커밋·push·PR·issue 댓글은 수행하지 않았다. 제품 검사는 실행하지 않았으며 문서 검증 결과는 로컬 조사 캐시에 남긴다.

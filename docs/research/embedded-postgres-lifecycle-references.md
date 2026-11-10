@@ -1,6 +1,6 @@
 # embedded-postgres-lifecycle 레퍼런스 조사: 내장 Postgres의 수명
 
-조사일: 2026-11-05. 대상: 사용자 조사 의뢰, GitHub Issue 없음. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 기록: `.reference-cache/embedded-postgres-lifecycle/`.
+조사일: 2026-11-05. 대상: 사용자 조사 의뢰, GitHub Issue 없음. 구현 전 권고이며 확정 계약이나 구현 결과가 아니다.
 
 ## Brief
 
@@ -29,7 +29,7 @@
 
 **권고의 중심은 소유권을 검증한 다음 시작 회수와 공통 fast stop이다.** `pg_ctl start`는 Windows 관리자 문제를 풀 근거가 있지만 잔존 DB 회수는 별도다. 즉시 회수가 필수인지와 남은 영구 DB를 멈출지 재사용할지는 사용자 결정으로 남긴다.
 
-Discovery는 세 관점으로 분담했다. 엔진·Windows는 3라운드에서 token/console/pipe/Job의 반복, 라이브러리·제품은 4라운드에서 회수/재사용/marker/감독자 변형의 반복, 인접 데몬·OS는 4라운드에서 polling/연결 lease/native 회수의 반복을 확인했다. 이는 읽은 범위의 saturation이며 생태계 전수 조사를 뜻하지 않는다. 메인은 마지막으로 Postgres.app 충돌 안내를 열어 수동 해결의 사례를 보완했다. 모든 후보와 실행 경로는 `.reference-cache/embedded-postgres-lifecycle/candidates.md`, 라운드별 검색·미선정 이유와 원문은 `notes/`에 있다.
+Discovery는 세 관점으로 분담했다. 엔진·Windows는 3라운드에서 token/console/pipe/Job의 반복, 라이브러리·제품은 4라운드에서 회수/재사용/marker/감독자 변형의 반복, 인접 데몬·OS는 4라운드에서 polling/연결 lease/native 회수의 반복을 확인했다. 이는 읽은 범위의 saturation이며 생태계 전수 조사를 뜻하지 않는다. 메인은 마지막으로 Postgres.app 충돌 안내를 열어 수동 해결의 사례를 보완했다.
 
 아래 SHA는 공개 소스 snapshot이며 설치 배포판과 같다는 뜻은 아니다. checkout 캐시는 필요한 원문만 가진 부분 snapshot도 포함한다. 설계 참고만 권고하며 upstream 코드를 복사하거나 새 라이브러리를 설치하지 않았다. 라이선스 본문 미독은 그대로 표시했다.
 
@@ -56,7 +56,7 @@ Discovery는 세 관점으로 분담했다. 엔진·Windows는 3라운드에서 
 | Chromium | native launcher | def0a08abab2964675731106e2f6ea6ffd6f38f3 | BSD 계열 | 소스 | PDEATHSIG의 실제 사용 |
 | Win32·Linux man-pages·Apple·GitHub runners·Postgres.app·EDB | 명세·제품 문서 | 2026-11-05 열람 | 설계 참고 | 문서 | OS 계약·실패/수동 안내 |
 
-기존 조사 재확인: JS `index.ts`의 배포 ref와 HEAD의 blob은 동일했다. Paperclip의 기존/새 ref `embedded-postgres-supervisor.ts`도 동일하며 앱 내부 재시작 helper라는 기존 관찰을 유지한다. 재사용 E26의 미병합 PR patch는 동일 PR SHA로 재열람했으며 현재 적용 사실로 사용하지 않았다. Node 기존 E32와 Ryuk 기존 E29는 같은 SHA를 재열람했다. blob 값과 메인 재확인·정정은 `.reference-cache/embedded-postgres-lifecycle/notes/main-verification.md`에 남겼다.
+기존 조사 재확인: JS `index.ts`의 배포 ref와 HEAD의 blob은 동일했다. Paperclip의 기존/새 ref `embedded-postgres-supervisor.ts`도 동일하며 앱 내부 재시작 helper라는 기존 관찰을 유지한다. 재사용 E26의 미병합 PR patch는 동일 PR SHA로 재열람했으며 현재 적용 사실로 사용하지 않았다. Node 기존 E32와 Ryuk 기존 E29는 같은 SHA를 재열람했다.
 
 ## 근거
 
@@ -95,10 +95,10 @@ Discovery는 세 관점으로 분담했다. 엔진·Windows는 3라운드에서 
 | <a id="E29"></a>E29 | macOS kqueue EVFILT_PROC/NOTE_EXIT는 사망 알림이다. 살아 있는 watcher가 정지를 수행해야 하며 부모 사망시 OS 자동 kill과 같지 않다. 표준 pipe EOF watcher는 macOS에서도 검증할 수 있는 공통 후보다. | [Apple kevent man page](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kevent.2.html) | 문서 주장 |
 | <a id="E30"></a>E30 | theseus CI는 Windows/macOS에서 cargo test, Go v2는 Windows/macOS 및 restricted-token/Node launch 회귀 명령을 실행하도록 정의한다. workflow를 읽은 것으로 통과 이력을 확인했다고 할 수 없다. GitHub 공식 문서는 Windows hosted runner를 관리자/UAC off로 설명한다. | [Rust CI](https://github.com/theseus-rs/postgresql-embedded/blob/efb7b2452f5380555d79a788f189cb2c2c49af38/.github/workflows/ci.yml#L20-L89), [Go CI](https://github.com/fergusstrange/embedded-postgres/blob/b505714f34b4ce90788630c5bbcbf9f25b0ce83f/.github/workflows/v2.yml#L10-L100); [runner 권한](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges) | 소스 확인 |
 | <a id="E31"></a>E31 | Postgres.app 공식 문제 해결 문서는 살아 있는 다른 서버의 port/dataDir 충돌은 사용자가 그 서버를 멈추거나 port를 바꾸도록 안내한다. stale pidfile 자동 삭제 설명도 따로 있다. 제품 전체가 아무 정리도 하지 않는다는 사례가 아니라 소유가 불명확한 충돌을 수동 해결하는 사례다. | [Postgres.app troubleshooting](https://postgresapp.com/documentation/troubleshooting.html) | 문서 주장 |
-| <a id="E32"></a>E32 | Node 24.21.0 + 설치된 PostgreSQL 18.6 Linux에서 detached postgres 부모 Node를 SIGKILL했다. postgres는 살아 있었고 같은 dataDir 새 start는 rc=1이었다. 소유 dataDir의 pg_ctl status는 rc=0, fast stop은 103.3ms/rc=0, pidfile 제거를 확인했다. | `.reference-cache/embedded-postgres-lifecycle/probes/linux-lifecycle.py`, `.reference-cache/embedded-postgres-lifecycle/probes/run-log.json`, `.reference-cache/embedded-postgres-lifecycle/probes/postgres.log` | 실행 확인 |
-| <a id="E33"></a>E33 | 정상 정지 후 남겨 둔 pidfile 복사본 첫 줄을 존재하지 않는 PID 2147483647로 바꾸자 start 성공·새 PID 기록을 확인했다. 이는 합성 stale 파일 대조군이며 실제 postmaster SIGKILL/OOM·남은 공유메모리 사례의 재현은 아니다. | `.reference-cache/embedded-postgres-lifecycle/probes/run-log.json` | 실행 확인 |
-| <a id="E34"></a>E34 | 제가 만든 무관한 sleep PID를 pidfile 첫 줄에 넣자 pg_ctl status는 rc=0과 이전 postmaster.opts를 출력했고, 새 start는 rc=1이었다. sleep을 PG로 오인해 stop하지 않았다. 별도 -t 0 stop 실험은 rc=1을 반환했지만 DB 정지는 뒤에서 완료됐다. | `.reference-cache/embedded-postgres-lifecycle/probes/run-log.json` | 실행 확인 |
-| <a id="E35"></a>E35 | 독립 Node watcher의 stdin pipe를 부모만 보유하게 하고 부모를 SIGKILL했다. EOF 감지 후 watcher가 pg_ctl fast stop을 212ms에 완료했고 pidfile 제거·dataDir 보존을 확인했다. Linux 단일 성공 경로의 실현 가능성 실험이며 완성된 supervisor 구현/성능 보장은 아니다. | `.reference-cache/embedded-postgres-lifecycle/probes/linux-watcher.py`, `.reference-cache/embedded-postgres-lifecycle/probes/watcher-run-log.json`, `.reference-cache/embedded-postgres-lifecycle/probes/cleanup.txt` | 실행 확인 |
+| <a id="E32"></a>E32 | Node 24.21.0 + 설치된 PostgreSQL 18.6 Linux에서 detached postgres 부모 Node를 SIGKILL했다. postgres는 살아 있었고 같은 dataDir 새 start는 rc=1이었다. 소유 dataDir의 pg_ctl status는 rc=0, fast stop은 103.3ms/rc=0, pidfile 제거를 확인했다. | 로컬 probe·실행 기록(postgres 로그 포함) | 실행 확인 |
+| <a id="E33"></a>E33 | 정상 정지 후 남겨 둔 pidfile 복사본 첫 줄을 존재하지 않는 PID 2147483647로 바꾸자 start 성공·새 PID 기록을 확인했다. 이는 합성 stale 파일 대조군이며 실제 postmaster SIGKILL/OOM·남은 공유메모리 사례의 재현은 아니다. | 로컬 실행 기록 | 실행 확인 |
+| <a id="E34"></a>E34 | 제가 만든 무관한 sleep PID를 pidfile 첫 줄에 넣자 pg_ctl status는 rc=0과 이전 postmaster.opts를 출력했고, 새 start는 rc=1이었다. sleep을 PG로 오인해 stop하지 않았다. 별도 -t 0 stop 실험은 rc=1을 반환했지만 DB 정지는 뒤에서 완료됐다. | 로컬 실행 기록 | 실행 확인 |
+| <a id="E35"></a>E35 | 독립 Node watcher의 stdin pipe를 부모만 보유하게 하고 부모를 SIGKILL했다. EOF 감지 후 watcher가 pg_ctl fast stop을 212ms에 완료했고 pidfile 제거·dataDir 보존을 확인했다. Linux 단일 성공 경로의 실현 가능성 실험이며 완성된 supervisor 구현/성능 보장은 아니다. | 로컬 probe·실행 기록(정리 결과 포함) | 실행 확인 |
 
 ### Q1–Q8을 적용해서 읽기
 
@@ -125,7 +125,7 @@ Q4·Q5의 핵심은 **정지 방식과 시작 방식을 독립적으로 바꿀 �
 
 `pg_ctl start`는 내부적으로 shell을 쓰므로 Node 바깥 호출을 `shell:false`/인자 배열로 해도 `-o` 문자열의 인용 문제는 남는다. 현재 settings 인자를 shell 문자열로 단순 연결하지 않도록 공백·따옴표·한글 경로를 검증해야 한다. `-l`은 명시적 파일에 기록하고 서버 진입점이 필요한 끝부분만 진단하게 한다. Windows에서는 pg_ctl가 만드는 CMD 창까지 숨겨지는지 별도 시험이 필요하다. 공개 [pgsql-bugs 콘솔 창 보고](https://www.postgresql.org/message-id/18bbefccd530e218.a6bdbcf84d30dc08.260dd5df653405e8%40NBK11-64-T5J)는 실패 사례의 문서 주장으로만 사용한다.
 
-언어별 구현이 모두 같은 것은 아니다. Java Zonky·Rust theseus·Python pgserver·.NET MysticMind는 pg_ctl 경로가 있고, Go v2는 직접 token/Job을 가진 supervisor로 차별화한다. 현행 otj는 Docker다. testing.postgresql의 Windows 종료는 dependency까지 추적하지 못했으므로 정상 fast의 선례로 쓰지 않는다. pg-embed의 pg_ctl/Drop 경로는 `notes/embedded-cases.md`에서 비교하되 Windows 실동작 근거로 승격하지 않는다(E13·E16–E20).
+언어별 구현이 모두 같은 것은 아니다. Java Zonky·Rust theseus·Python pgserver·.NET MysticMind는 pg_ctl 경로가 있고, Go v2는 직접 token/Job을 가진 supervisor로 차별화한다. 현행 otj는 Docker다. testing.postgresql의 Windows 종료는 dependency까지 추적하지 못했으므로 정상 fast의 선례로 쓰지 않는다. pg-embed의 pg_ctl/Drop 경로는 로컬 조사 메모에서 비교하되 Windows 실동작 근거로 승격하지 않는다(E13·E16–E20).
 
 Q6의 비용과 보장은 다음과 같다. **“부모가 어떤 이유로 죽어도 정상 정지를 끝낸다”는 사용자 공간 장치의 무조건 보장은 없다.** OS 전원 상실·전체 Job/cgroup 종료·watcher도 함께 OOM되는 경우는 다음 시작 recovery가 필요하다.
 

@@ -1,6 +1,6 @@
 # issue-56 레퍼런스 조사: 연구 지도 기록과 편집 경계
 
-조사일: 2026-10-19 (Asia/Seoul). 대상: [#56](https://github.com/babo-jeonguk/BaboJUBot/issues/56), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 선행 [#51](https://github.com/babo-jeonguk/BaboJUBot/issues/51)·[#55](https://github.com/babo-jeonguk/BaboJUBot/issues/55). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료는 `.reference-cache/issue-56/`에 보존하고 Git에서 제외한다. 이 문서는 구현 변경과 함께 검토·커밋하도록 미커밋으로 남긴다.
+조사일: 2026-10-19 (Asia/Seoul). 대상: [#56](https://github.com/babo-jeonguk/BaboJUBot/issues/56), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 선행 [#51](https://github.com/babo-jeonguk/BaboJUBot/issues/51)·[#55](https://github.com/babo-jeonguk/BaboJUBot/issues/55). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 이 문서는 구현 변경과 함께 검토·커밋하도록 미커밋으로 남긴다.
 
 ## Brief
 
@@ -26,7 +26,7 @@
 
 ## 레퍼런스
 
-후보는 **31항목**(구조11·템플릿/격리8·화면9·PostgreSQL3, 관점 간 중복 포함)이다. 전체 후보와 실행 경로는 `candidates.md`, 검색 기록은 `notes/{structure,scope-template,surface,postgres}.md`에 있다. 표의 SHA는 소스 조사 ref이며 공개 데모의 배포 SHA와 일치한다는 뜻이 아니다.
+후보는 **31항목**(구조11·템플릿/격리8·화면9·PostgreSQL3, 관점 간 중복 포함)이다. 표의 SHA는 소스 조사 ref이며 공개 데모의 배포 SHA와 일치한다는 뜻이 아니다.
 
 | 관점 | 마지막 라운드와 saturation 근거 |
 |---|---|
@@ -46,14 +46,14 @@
 
 ## 근거
 
-확인일은 모두 2026-10-19. 결정에 쓴 원문과4개 캡처를 메인이 직접 다시 열었으며 대조 결과는 `main-verification.md`에 있다. 테스트는 별도 실행 표시가 없으면 읽기만 했다. BaboJUBot 소스의 기준 HEAD는 `2982406dd79f29e73441662b267f3f750d1c9590`이다.
+확인일은 모두 2026-10-19. 결정에 쓴 원문과4개 캡처를 메인이 직접 다시 열어 대조했다. 테스트는 별도 실행 표시가 없으면 읽기만 했다. BaboJUBot 소스의 기준 HEAD는 `2982406dd79f29e73441662b267f3f750d1c9590`이다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
 | <a id="E01"></a>E01 | 단일 행 CHECK는 다른 행의 구조를 보장하지 않는다. partial unique와 복합FK는 각각 주 부모 cardinality와 같은 조직 관계를 표현하는 수단이다. | [PG18 constraints](https://www.postgresql.org/docs/18/ddl-constraints.html#DDL-CONSTRAINTS-CHECK-CONSTRAINTS)·[partial index](https://www.postgresql.org/docs/18/indexes-partial.html) | 문서 주장 |
 | <a id="E02"></a>E02 | 충돌하는 행 잠금은 transaction 끝까지 유지된다. Read Committed는 statement마다 snapshot을 정하므로 잠금 뒤 별도 조회와 잠금 전에 읽어 둔 구조를 구분해야 한다. | [row locks](https://www.postgresql.org/docs/18/explicit-locking.html#LOCKING-ROWS)·[Read Committed](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED) | 문서 주장 |
 | <a id="E03"></a>E03 | recursive CTE는 관계를 탐색한다. UNION의 전체 행 중복 제거와 CYCLE/방문 경로 검사는 종료 전략이며, 자체가 저장 전 제약은 아니다. | [recursive queries/cycle](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-CYCLE) | 문서 주장 |
-| <a id="E04"></a>E04 | 독립 SQL8시나리오·37 assertions PASS. 잠금 없는 두 read/check→서로 다른 edge 쓰기로 cycle이 저장되는 음성 대조와, 조직 잠금 뒤 최신 재검사로 후속을 거부하는 대조를 실행했다. 복합FK·주 부모 unique·task 두 번째 연결 거부·폐기 보존·효과 rollback·stale revision 거부도 확인했다. | `probes/postgres-map.mjs`, `postgres-map-log.txt`; Node24.21.0·PG18.4·pg8.23.1. 제품/upstream API·스키마 실행 아님 | 실행 확인 |
+| <a id="E04"></a>E04 | 독립 SQL8시나리오·37 assertions PASS. 잠금 없는 두 read/check→서로 다른 edge 쓰기로 cycle이 저장되는 음성 대조와, 조직 잠금 뒤 최신 재검사로 후속을 거부하는 대조를 실행했다. 복합FK·주 부모 unique·task 두 번째 연결 거부·폐기 보존·효과 rollback·stale revision 거부도 확인했다. | 로컬 probe; Node24.21.0·PG18.4·pg8.23.1. 제품/upstream API·스키마 실행 아님 | 실행 확인 |
 | <a id="E05"></a>E05 | AL move는 self/descendant guard 후 parent를 저장하고 부모 없는 root를 허용한다. 테스트도 자기/후손 이동 거부를 assert한다. | [AL move/root](https://github.com/django-treebeard/django-treebeard/blob/c7c2b70f625bc7e55fd560d0bc5fb3fb7fbb1622/treebeard/al_tree.py#L108-L157)·[tests](https://github.com/django-treebeard/django-treebeard/blob/c7c2b70f625bc7e55fd560d0bc5fb3fb7fbb1622/tests/test_treebeard.py#L1887-L1903) | 소스 확인 |
 | <a id="E06"></a>E06 | treebeard는 transaction이 있어도 동시 쓰기로 구조 불일치가 가능하며 추가 잠금에 성능 비용이 있다고 명시한다. | [caveats](https://github.com/django-treebeard/django-treebeard/blob/c7c2b70f625bc7e55fd560d0bc5fb3fb7fbb1622/docs/source/caveats.rst#L15-L29) | 문서 주장 |
 | <a id="E07"></a>E07 | MP delete는 자손까지 실제 삭제한다. 실패 시 관련 count/구조도 rollback해야 하는 회귀 테스트가 있다. 이는 제품의 단건 폐기와 의미가 다르다. | [delete](https://github.com/django-treebeard/django-treebeard/blob/c7c2b70f625bc7e55fd560d0bc5fb3fb7fbb1622/treebeard/mp_tree.py#L32-L82)·[rollback tests](https://github.com/django-treebeard/django-treebeard/blob/c7c2b70f625bc7e55fd560d0bc5fb3fb7fbb1622/tests/test_treebeard.py#L1848-L1877) | 소스 확인 |
@@ -62,7 +62,7 @@
 | <a id="E10"></a>E10 | Dify는 기존 draft를 tenant/app/version 조건으로 잠근 뒤 hash mismatch를 거부하고 graph·편집자를 저장한다. graph hash와 draft/published version은 별개다. 신규 draft 동시 생성 보장은 이 관찰에 포함하지 않는다. | [lock](https://github.com/langgenius/dify/blob/823f40e71fc9e045a9ff2aa903a74b5b001dff33/api/services/workflow_service.py#L267-L278)·[sync](https://github.com/langgenius/dify/blob/823f40e71fc9e045a9ff2aa903a74b5b001dff33/api/services/workflow_service.py#L439-L480)·[version](https://github.com/langgenius/dify/blob/823f40e71fc9e045a9ff2aa903a74b5b001dff33/api/models/workflow.py#L213-L235)·[hash](https://github.com/langgenius/dify/blob/823f40e71fc9e045a9ff2aa903a74b5b001dff33/api/models/workflow.py#L547-L555) | 소스 확인 |
 | <a id="E11"></a>E11 | React Flow selection listener의 equality는 선택 node/edge의 ID 배열만 비교한다. 같은 선택 ID에서 제목/상태가 바뀌어도 선택 변경 callback만을 최신 데이터 전달 경로로 삼으면 안 된다는 판단은 추론이다. | [SelectionListener selector/areEqual/effect](https://github.com/xyflow/xyflow/blob/654ba5a5e04f3404bc4db2eee88bfa15866d203d/packages/react/src/components/SelectionListener/index.tsx#L17-L58) | 소스 확인 |
 | <a id="E12"></a>E12 | renderer의 remove change는 배열에서 항목을 빼고 toObject는 nodes/edges뿐 아니라 viewport도 반환한다. 공식 SaveRestore는 이 객체를 localforage에 저장한다. 연구 기록 저장 API와 별개다. | [changes](https://github.com/xyflow/xyflow/blob/654ba5a5e04f3404bc4db2eee88bfa15866d203d/packages/react/src/utils/changes.ts#L55-L85)·[toObject](https://github.com/xyflow/xyflow/blob/654ba5a5e04f3404bc4db2eee88bfa15866d203d/packages/react/src/hooks/useReactFlow.ts#L150-L162)·[SaveRestore](https://github.com/xyflow/xyflow/blob/654ba5a5e04f3404bc4db2eee88bfa15866d203d/examples/react/src/examples/SaveRestore/Controls.tsx#L21-L43) | 소스 확인 |
-| <a id="E13"></a>E13 | 공개 Update Node에서 제목 입력→선택→hidden→복원→다른 노드 선택을1280/390px에서 실행했다.4개 캡처를 재열람했고 페이지 오류0, 문서 폭은 각각1280/390이었다. narrow input은 긴 제목 일부만 보이며 노드 제목은 줄바꿈된다. | [공식 실행 예시](https://example-apps.xyflow.com/react/examples/nodes/update-node/index.html); `captures/surface-captures.md`, `selfhost/surface-public-log.json` | 실행 확인 |
+| <a id="E13"></a>E13 | 공개 Update Node에서 제목 입력→선택→hidden→복원→다른 노드 선택을1280/390px에서 실행했다.4개 캡처를 재열람했고 페이지 오류0, 문서 폭은 각각1280/390이었다. narrow input은 긴 제목 일부만 보이며 노드 제목은 줄바꿈된다. | [공식 실행 예시](https://example-apps.xyflow.com/react/examples/nodes/update-node/index.html); 로컬 캡처·실행 기록 | 실행 확인 |
 | <a id="E14"></a>E14 | 현재 toolWrite는 running run→조직 잠금→단계 재검사→쓰기를 transaction 안에서 실행한다. 조직 사본 템플릿은 조직 ID로 조회하며 종류는 JSON에 저장한다. | [toolWrite](https://github.com/babo-jeonguk/BaboJUBot/blob/2982406dd79f29e73441662b267f3f750d1c9590/packages/db/src/tool-calls.ts#L86-L117)·[조직 잠금](https://github.com/babo-jeonguk/BaboJUBot/blob/2982406dd79f29e73441662b267f3f750d1c9590/packages/db/src/rows.ts#L81-L91)·[사본 조회](https://github.com/babo-jeonguk/BaboJUBot/blob/2982406dd79f29e73441662b267f3f750d1c9590/packages/db/src/harness.ts#L40-L50)·[schema](https://github.com/babo-jeonguk/BaboJUBot/blob/2982406dd79f29e73441662b267f3f750d1c9590/packages/db/src/schema.ts#L267-L293) | 소스 확인 |
 | <a id="E15"></a>E15 | 현재 작업/산출물 계약에는 연구 노드 필드가 없고 산출물은 task에 속한다. live events는 조직 하위 query를 invalidate하고 ready/reconnect 시 재조회한다. 노드 연결·상세 query는 #56 확장 지점이다. | [task/artifact 계약](https://github.com/babo-jeonguk/BaboJUBot/blob/2982406dd79f29e73441662b267f3f750d1c9590/packages/contracts/src/task.ts#L108-L167)·[live events](https://github.com/babo-jeonguk/BaboJUBot/blob/2982406dd79f29e73441662b267f3f750d1c9590/apps/web/src/live-events.ts#L29-L47) | 소스 확인 |
 

@@ -1,6 +1,6 @@
 # issue-62 레퍼런스 조사: 조직 대시보드 지표와 홈
 
-조사일: 2026-10-27(KST). 대상: [#62](https://github.com/babo-jeonguk/BaboJUBot/issues/62), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 완료된 blocker [#55](https://github.com/babo-jeonguk/BaboJUBot/issues/55). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-62/`(Git 무시). [조사 receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/62#issuecomment-6422188274).
+조사일: 2026-10-27(KST). 대상: [#62](https://github.com/babo-jeonguk/BaboJUBot/issues/62), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 완료된 blocker [#55](https://github.com/babo-jeonguk/BaboJUBot/issues/55). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. [조사 receipt](https://github.com/babo-jeonguk/BaboJUBot/issues/62#issuecomment-6422188274).
 
 권고는 **서버가 조직별 원장으로 정확한 집계와 14개 날짜를 만들고, 홈 전체 합계·카드 목록·Event 갱신을 구분하는 방식**이다. 제한된 최근 실행 목록 길이로 총수를 세거나 현재 작업 상태를 과거 상태 추세로 표시하지 않는다. 차트 의미·시간대·성공률 분모는 아래 열린 결정이며, 이 조사로 확정하지 않는다.
 
@@ -32,7 +32,7 @@
 
 ## 레퍼런스
 
-중복 제거한 후보 **14개**: Paperclip, Kestra, Trigger.dev, Windmill, Bull Board, AgentLens, Inngest, Grafana Play, UseAgent, PostgreSQL, Grafana PostgreSQL datasource, Prometheus 가이드, TimescaleDB, dbt snapshots. 전체 후보별 출처·실행 경로는 `.reference-cache/issue-62/candidates.md`에 있다. Grafana Play(화면)와 datasource(집계 부품)는 별도 후보로 센다.
+중복 제거한 후보 **14개**: Paperclip, Kestra, Trigger.dev, Windmill, Bull Board, AgentLens, Inngest, Grafana Play, UseAgent, PostgreSQL, Grafana PostgreSQL datasource, Prometheus 가이드, TimescaleDB, dbt snapshots. Grafana Play(화면)와 datasource(집계 부품)는 별도 후보로 센다.
 
 | 관점 | 탐색·saturation 근거 |
 |---|---|
@@ -53,7 +53,7 @@
 
 ## 근거
 
-메인이 결정용 원문과 캡처를 다시 열었다. 재확인 기록: `.reference-cache/issue-62/main-verification.md`. 테스트 소스 열람은 실행 통과가 아니다.
+메인이 결정용 원문과 캡처를 다시 열었다. 테스트 소스 열람은 실행 통과가 아니다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -72,9 +72,9 @@
 | <a id="E13"></a>E13 | Grafana는 0행이면 fill에 도달하기 전에 반환한다. fill 설정만으로 완전히 빈 조직의14일 행이 생긴다고 볼 수 없다 | [processFrame](https://github.com/grafana/grafana-postgresql-datasource/blob/975580aadf51fa075e0181026abd0dcfb9f366dd/pkg/postgresql/sqleng/sql_engine.go#L296-L311) | 소스 확인 |
 | <a id="E14"></a>E14 | 공식 가이드는 진행 중 gauge와 완료 계수의 의미를 구분하고, 비율을 모을 때 분자·분모를 각각 합한 뒤 나누도록 한다 | [instrumentation](https://github.com/prometheus/docs/blob/3576591af32864770ad6ff73a14fc485f70afb73/docs/practices/instrumentation.md#L24-L51), [rules](https://github.com/prometheus/docs/blob/3576591af32864770ad6ff73a14fc485f70afb73/docs/practices/rules.md#L30-L45) | 문서 주장 |
 | <a id="E15"></a>E15 | upstream 테스트는 105개 당일+7일 전3개 전체 집계·다른 company 제외·14행과 live cap50을 assert한다. 이번 실행은 하지 않았다 | [dashboard service test](https://github.com/paperclipai/paperclip/blob/125ddcabe51b2850cac2c64ee111a529d0578673/server/src/__tests__/dashboard-service.test.ts#L96-L210), [live route test](https://github.com/paperclipai/paperclip/blob/125ddcabe51b2850cac2c64ee111a529d0578673/server/src/__tests__/agent-live-run-routes.test.ts#L712-L755) | 소스 확인 |
-| <a id="E16"></a>E16 | 독립 SQL16검사 통과: A/B scope, 잘못 결합한6행 대비 정확한2/3건, recent50의 오래된running 누락, 취소 중 슬롯,14일0건, UTC/KST,25시간 날짜, 현재 상태 변경과 과거 bucket, 두 격리 수준의 snapshot 차이 | `probes/aggregation.sql`·`aggregation-run-log.txt`. PostgreSQL17.11,2GB 컨테이너, 합성 자료만 사용 | 실행 확인 |
-| <a id="E17"></a>E17 | 원본 날짜 함수 body를 추출해 고정 clock으로 실행. UTC는 연속14일, 뉴욕 2026-11-02T00:30Z는 11/1이 빠지고 10/19…10/31→11/2. 서울 local10/28 01시는 UTC 날짜10/27로 끝남 | `probes/original-date.mjs`·`original-date-result.json`, Node24.21.0. 원본 body만 사용, mock Date·TZ는 probe에서 주입 | 실행 확인 |
-| <a id="E18"></a>E18 | 원본 차트를1440/390px에서 fixture empty→data로 조작. 캡처4개 재열람,14개 bar/title 확인·가로 넘침0·focus 가능한 bar0·외부 요청0. 전체 Dashboard/WS 실행은 아니다 | `probes/chart-capture.mjs`·`chart-surface-log.json`, `captures/`. Paperclip@위 SHA 원본 module+합성 fixture, 브라우저 Playwright1.58.2/Chromium1228 | 실행 확인 |
+| <a id="E16"></a>E16 | 독립 SQL16검사 통과: A/B scope, 잘못 결합한6행 대비 정확한2/3건, recent50의 오래된running 누락, 취소 중 슬롯,14일0건, UTC/KST,25시간 날짜, 현재 상태 변경과 과거 bucket, 두 격리 수준의 snapshot 차이 | 로컬 probe. PostgreSQL17.11,2GB 컨테이너, 합성 자료만 사용 | 실행 확인 |
+| <a id="E17"></a>E17 | 원본 날짜 함수 body를 추출해 고정 clock으로 실행. UTC는 연속14일, 뉴욕 2026-11-02T00:30Z는 11/1이 빠지고 10/19…10/31→11/2. 서울 local10/28 01시는 UTC 날짜10/27로 끝남 | 로컬 probe, Node24.21.0. 원본 body만 사용, mock Date·TZ는 probe에서 주입 | 실행 확인 |
+| <a id="E18"></a>E18 | 원본 차트를1440/390px에서 fixture empty→data로 조작. 캡처4개 재열람,14개 bar/title 확인·가로 넘침0·focus 가능한 bar0·외부 요청0. 전체 Dashboard/WS 실행은 아니다 | 로컬 probe·캡처. Paperclip@위 SHA 원본 module+합성 fixture, 브라우저 Playwright1.58.2/Chromium1228 | 실행 확인 |
 | <a id="E19"></a>E19 | 현행 key는 전역 organizations exact와 조직 prefix·agent별 events, ready는 전체 갱신. createLiveRefresh가 요청 중 dirty를 보존한다. 새로운 별도 홈 key는 현재 Event 분기에 자동 포함되지 않는다 | [keys](https://github.com/babo-jeonguk/BaboJUBot/blob/ea1a3f02a874e76adfb4cb86126a799866f9a502/apps/web/src/api.ts#L50-L63), [Event](https://github.com/babo-jeonguk/BaboJUBot/blob/ea1a3f02a874e76adfb4cb86126a799866f9a502/apps/web/src/live-events.ts#L33-L43), [live-refresh](https://github.com/babo-jeonguk/BaboJUBot/blob/ea1a3f02a874e76adfb4cb86126a799866f9a502/apps/web/src/live-refresh.ts#L1-L78) | 소스 확인 |
 | <a id="E20"></a>E20 | 정확한 수·의미·시각 경계는 HTTP 집계 계약이고 Event는 재조회 신호다. UI의 scope·filter 표시는 서버 조직 경계/승인 강제를 대신하지 않는다 | E01/E03/E07/E11/E19, [구조](../architecture.md#surface--control-plane), [ADR-0002](../adr/0002-durable-records-and-wakes.md)에서 도출 | 추론 |
 

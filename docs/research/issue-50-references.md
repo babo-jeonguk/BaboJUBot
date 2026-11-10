@@ -1,6 +1,6 @@
 # issue-50 레퍼런스 조사: 판 1 대시보드 배치
 
-조사일: 2026-10-14 (Asia/Seoul). 대상: [#50](https://github.com/babo-jeonguk/BaboJUBot/issues/50), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료·캡처·실행 로그는 `.reference-cache/issue-50/`에 두며 Git에서 제외한다.
+조사일: 2026-10-14 (Asia/Seoul). 대상: [#50](https://github.com/babo-jeonguk/BaboJUBot/issues/50), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다.
 
 권고의 중심은 전역 홈·Inbox와 조직 화면의 범위를 명확히 표시하고, 읽음·보관과 승인·최종 완료를 분리하는 것이다. 실제 배치는 #50 프로토타입을 사용자가 보고 고른다.
 
@@ -29,7 +29,7 @@
 
 ## 레퍼런스
 
-전체 후보는 34개다(복합 후보 두 개를 분리 계수). 후보별 공개 데모/self-host/없음 경로와 선정·제외 이유는 `candidates.md`에 보존했다. 심층 소스·문서 대상은 아래 7개이며, 공개 UI와 고정 소스의 버전 일치가 확인되지 않은 경우 각각의 근거로 구분했다.
+전체 후보는 34개다(복합 후보 두 개를 분리 계수). 심층 소스·문서 대상은 아래 7개이며, 공개 UI와 고정 소스의 버전 일치가 확인되지 않은 경우 각각의 근거로 구분했다.
 
 | 관점 | Saturation 근거 |
 |---|---|
@@ -53,7 +53,7 @@
 
 ## 근거
 
-소스 확인은 구현이 그렇게 쓰였다는 뜻이며 실행 확인과 구분한다. 기존 문서의 Evidence ID를 복제하지 않고 이번 재열람·조작에 번호를 부여했다. 메인 원문 대조는 `main-verification.md`, 캡처 URL·시각·폭·조작은 `captures/captures.md`에 남긴다.
+소스 확인은 구현이 그렇게 쓰였다는 뜻이며 실행 확인과 구분한다. 기존 문서의 Evidence ID를 복제하지 않고 이번 재열람·조작에 번호를 부여했다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
@@ -72,12 +72,12 @@
 | <a id="E13"></a>E13 | Novu의 isRead/isSeen/isArchived와 custom action completion은 별도 속성·동작이다. | [Notification](https://github.com/novuhq/novu/blob/271d93ecc8da693d91cb0729971f243757482054/packages/js/src/notifications/notification.ts#L21-L44) · [handleClick/handleActionClick](https://github.com/novuhq/novu/blob/271d93ecc8da693d91cb0729971f243757482054/packages/js/src/ui/core/item/controller.ts#L49-L82) | 소스 확인 |
 | <a id="E14"></a>E14 | Novu completeAction은 실패를 {error}로 반환한다. controller는 반환 결과 확인 없이 host callback/navigation을 호출한다. 도메인 승인 성공 계약으로 사용하면 안 된다는 권고 근거이며 오류 실행 재현은 하지 않았다. | [completeAction](https://github.com/novuhq/novu/blob/271d93ecc8da693d91cb0729971f243757482054/packages/js/src/notifications/helpers.ts#L323-L368) · [handleActionClick](https://github.com/novuhq/novu/blob/271d93ecc8da693d91cb0729971f243757482054/packages/js/src/ui/core/item/controller.ts#L67-L82) | 소스 확인 |
 | <a id="E15"></a>E15 | Paperclip PageTabBar는 모바일이고 value/onValueChange가 있으면 select로 대체한다. 최신 shadcn Radix wrapper는 orientation을 data attribute에만 쓰고 primitive prop으로 전달하지 않는다. | [PageTabBar](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/ui/src/components/PageTabBar.tsx#L17-L48) · [Tabs wrapper](https://github.com/shadcn-ui/ui/blob/30a58d4498f270af1c1e981a7d78a15cf5740841/apps/v4/registry/bases/radix/ui/tabs.tsx#L8-L22) | 소스 확인 |
-| <a id="E16"></a>E16 | 공식 sidebar-07에서 팀 메뉴 열기·다른 팀 표시·desktop 접기·390px Sheet 열기/Escape 닫기를 조작했다. 좁은 폭 전환 때 예제의 팀 표시가 초기값으로 돌아왔다. 제품 조직 전환·영속화 근거가 아니다. | [shadcn 공개 block](https://ui.shadcn.com/view/new-york-v4/sidebar-07); captures/shadcn-*.png, probes/public-capture-log.json | 실행 확인 |
-| <a id="E17"></a>E17 | Radix 공식 예제의 Account에 focus 후 ArrowRight로 Password가 선택되고 해당 panel과 focus 테두리가 보였다. | [Radix Tabs 공식 예제](https://www.radix-ui.com/primitives/docs/components/tabs); captures/radix-password.png | 실행 확인 |
-| <a id="E18"></a>E18 | APG manual 예제에서 Right는 focus만 이동하고 panel을 유지했다. Space 후 Carl Andersen panel로 바뀌었다. | [APG manual 예제](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/examples/tabs-manual/); captures/apg-manual.png, probes/apg.txt | 실행 확인 |
-| <a id="E19"></a>E19 | Paperclip 공식 BlockedInboxView Storybook fixture에서 Tab 키로 승인 판단 행에 focus를 옮기고 1440px 행과 390px 여러 줄 배치를 확인했다. 제목·사유·담당·경과 시간 배치 참고이며 승인 상세/결정 동작은 확인하지 않았다. 예제 query key만 아래처럼 보정했다. | [공식 fixture](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/ui/storybook/stories/blocked-inbox.stories.tsx#L163-L209); captures/paperclip-blocked.png, paperclip-mobile.png | 실행 확인 |
-| <a id="E20"></a>E20 | 공식 Storybook empty 상태의 안내를 선택해 확인했다. 정상 0건 안내이며 API 실패/권한 없음의 실화면 근거가 아니다. | [BlockedTabEmptyState](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/ui/storybook/stories/blocked-inbox.stories.tsx#L254-L267); captures/paperclip-empty.png | 실행 확인 |
-| <a id="E21"></a>E21 | Novu 공개 playground에서 Inbox 필터 메뉴를 열었다. Unread & read/Unread only/Snoozed/Archived가 보인다. 목록은 loading/empty 표시가 함께 있어 정상 빈 상태 확정 근거에서는 제외했다. | [Novu playground](https://inbox.novu.co/); captures/novu-inbox-empty.png, probes/novu-empty.txt | 실행 확인 |
+| <a id="E16"></a>E16 | 공식 sidebar-07에서 팀 메뉴 열기·다른 팀 표시·desktop 접기·390px Sheet 열기/Escape 닫기를 조작했다. 좁은 폭 전환 때 예제의 팀 표시가 초기값으로 돌아왔다. 제품 조직 전환·영속화 근거가 아니다. | [shadcn 공개 block](https://ui.shadcn.com/view/new-york-v4/sidebar-07); 로컬 캡처·실행 기록 | 실행 확인 |
+| <a id="E17"></a>E17 | Radix 공식 예제의 Account에 focus 후 ArrowRight로 Password가 선택되고 해당 panel과 focus 테두리가 보였다. | [Radix Tabs 공식 예제](https://www.radix-ui.com/primitives/docs/components/tabs); 로컬 캡처 | 실행 확인 |
+| <a id="E18"></a>E18 | APG manual 예제에서 Right는 focus만 이동하고 panel을 유지했다. Space 후 Carl Andersen panel로 바뀌었다. | [APG manual 예제](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/examples/tabs-manual/); 로컬 캡처·실행 기록 | 실행 확인 |
+| <a id="E19"></a>E19 | Paperclip 공식 BlockedInboxView Storybook fixture에서 Tab 키로 승인 판단 행에 focus를 옮기고 1440px 행과 390px 여러 줄 배치를 확인했다. 제목·사유·담당·경과 시간 배치 참고이며 승인 상세/결정 동작은 확인하지 않았다. 예제 query key만 아래처럼 보정했다. | [공식 fixture](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/ui/storybook/stories/blocked-inbox.stories.tsx#L163-L209); 로컬 캡처 | 실행 확인 |
+| <a id="E20"></a>E20 | 공식 Storybook empty 상태의 안내를 선택해 확인했다. 정상 0건 안내이며 API 실패/권한 없음의 실화면 근거가 아니다. | [BlockedTabEmptyState](https://github.com/paperclipai/paperclip/blob/1b4c803816e82b0265c8422e1a804327a7ed8c54/ui/storybook/stories/blocked-inbox.stories.tsx#L254-L267); 로컬 캡처 | 실행 확인 |
+| <a id="E21"></a>E21 | Novu 공개 playground에서 Inbox 필터 메뉴를 열었다. Unread & read/Unread only/Snoozed/Archived가 보인다. 목록은 loading/empty 표시가 함께 있어 정상 빈 상태 확정 근거에서는 제외했다. | [Novu playground](https://inbox.novu.co/); 로컬 캡처·실행 기록 | 실행 확인 |
 | <a id="E22"></a>E22 | Knock 공식 문서는 같은 tenant를 목록·badge·실시간에 적용한다고 명시한다. BaboJUBot UI 범위 검증 시나리오의 참고이며 서버 격리 증거가 아니다. | [Knock tenant scoping](https://docs.knock.app/multi-tenancy/tenant-scoping) | 문서 주장 |
 | <a id="E23"></a>E23 | PagerDuty의 acknowledged는 작업 중이지만 미해결 상태다. 읽음과 처리 상태를 구분하는 인접 도메인 사례다. | [PagerDuty incidents](https://support.pagerduty.com/main/docs/incidents) | 문서 주장 |
 | <a id="E24"></a>E24 | Novu playground의 Send Notification은 실제 cloud API 요청이다. 로컬 mock으로 간주하지 않았으며 전송 버튼을 누르지 않았다. | [POST trigger](https://github.com/novuhq/inbox-playground/blob/71f3f2a31eb2ae4571b66f3432abf7b9ac5bb6d1/src/app/api/trigger/route.ts#L5-L34) · [useNotificationForm](https://github.com/novuhq/inbox-playground/blob/71f3f2a31eb2ae4571b66f3432abf7b9ac5bb6d1/src/app/hooks/useNotificationForm.ts#L29-L45) | 소스 확인 |
@@ -85,7 +85,7 @@
 
 ### 실행 조건과 보정
 
-Node 24.21.0, pnpm 10.33.0에서 Paperclip 자체 packageManager가 pnpm 9.15.4를 사용했다. 고정 SHA를 `/tmp/reference-selfhost/issue-50-paperclip/`에 받아 UI 의존성을 `--ignore-scripts --frozen-lockfile`로 설치했다. 설치·서버·브라우저는 키 없는 `env -i`와 각각 `MemoryMax=2G` scope에서 실행했다. 모델 API·제품 서버·DB는 실행하지 않았다.
+Node 24.21.0, pnpm 10.33.0에서 Paperclip 자체 packageManager가 pnpm 9.15.4를 사용했다. 고정 SHA를 임시 폴더에 받아 UI 의존성을 `--ignore-scripts --frozen-lockfile`로 설치했다. 설치·서버·브라우저는 키 없는 `env -i`와 각각 `MemoryMax=2G` scope에서 실행했다. 모델 API·제품 서버·DB는 실행하지 않았다.
 
 공식 Storybook 10.6.0의 story 목록을 navigation/blocked/persona 세 파일로 제한했고, Blocked story의 `PrimeBlockedFixtures` 주입 키에 현재 컴포넌트와 같은 `live-descendant-summary`를 추가했다. 실제 `BlockedInboxView`와 `IssueRow`는 수정하지 않았다. 보정 전에는 정상 empty 화면이 나타났다. 초기 브라우저 버전 경로 오류, Storybook config-dir 누락, Vite 최적화 중 timeout도 실행 로그에 보존했으며 동작 부재의 근거에서 제외했다. E19는 보정된 공식 mock 데이터의 배치 관찰이다.
 

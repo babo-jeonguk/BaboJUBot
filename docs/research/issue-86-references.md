@@ -1,6 +1,6 @@
 # issue-86 레퍼런스 조사: 조직 도구 목록과 Role·단계 허용 규칙의 자리
 
-조사일: 2026-10-29. 대상: [#86](https://github.com/babo-jeonguk/BaboJUBot/issues/86) 3번(조직 도구 목록). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 5번·6번은 이 조사 범위 밖이다. 상세 자료: `.reference-cache/issue-86/`(git 무시).
+조사일: 2026-10-29. 대상: [#86](https://github.com/babo-jeonguk/BaboJUBot/issues/86) 3번(조직 도구 목록). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 5번·6번은 이 조사 범위 밖이다.
 
 ## Brief
 
@@ -19,7 +19,7 @@
 
 ## 레퍼런스
 
-관점별 saturation: OSS control plane(Paperclip) — 가장 가까운 동종, 소스까지 / OSS agent(Hermes·OpenClaw) — "목록은 데이터, 선택은 설정"으로 수렴 / 표준·SDK(MCP·Claude Agent SDK·OpenAI Agents) — 마지막 라운드가 "노출과 허가는 다른 층" 변형만 더함 / 계약 우선 RPC(ts-rest·oRPC) — "계약에 metadata, 강제는 서버 middleware"로 수렴. 전체 후보: `.reference-cache/issue-86/candidates.md`.
+관점별 saturation: OSS control plane(Paperclip) — 가장 가까운 동종, 소스까지 / OSS agent(Hermes·OpenClaw) — "목록은 데이터, 선택은 설정"으로 수렴 / 표준·SDK(MCP·Claude Agent SDK·OpenAI Agents) — 마지막 라운드가 "노출과 허가는 다른 층" 변형만 더함 / 계약 우선 RPC(ts-rest·oRPC) — "계약에 metadata, 강제는 서버 middleware"로 수렴.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -105,7 +105,7 @@
 
 ## 2차 조사: 도구 설명·필드 설명·역할 문서의 분담과 필드별 언어 규칙
 
-조사일: 2026-10-29. 대상: [#86](https://github.com/babo-jeonguk/BaboJUBot/issues/86) 3번의 "모델이 읽을 설명" 칸. 위 1차 조사(목록과 허용 규칙의 자리)와 질문이 다르며 ID는 이어서 매긴다(Q2–Q3, E13–, P04–, D05–). 구현 전 기술 권고이며 확정 계약이 아니다. 상세 자료: `.reference-cache/issue-86/`(`candidates.md` 2차 절, `main-verification.md` 2차 절).
+조사일: 2026-10-29. 대상: [#86](https://github.com/babo-jeonguk/BaboJUBot/issues/86) 3번의 "모델이 읽을 설명" 칸. 위 1차 조사(목록과 허용 규칙의 자리)와 질문이 다르며 ID는 이어서 매긴다(Q2–Q3, E13–, P04–, D05–). 구현 전 기술 권고이며 확정 계약이 아니다.
 
 ### Brief
 

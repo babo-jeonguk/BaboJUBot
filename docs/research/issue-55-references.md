@@ -1,6 +1,6 @@
 # issue-55 레퍼런스 조사: 판 1 · 작업과 작업자 실행 시도
 
-조사일: 2026-10-19(KST). 대상: [#55](https://github.com/babo-jeonguk/BaboJUBot/issues/55), 부모 [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 완료된 선행 [#54](https://github.com/babo-jeonguk/BaboJUBot/issues/54). **구현 전 권고이며 확정 계약이나 구현 완료가 아니다.** 상세 자료는 `.reference-cache/issue-55/`(Git 무시)에 둔다.
+조사일: 2026-10-19(KST). 대상: [#55](https://github.com/babo-jeonguk/BaboJUBot/issues/55), 부모 [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 완료된 선행 [#54](https://github.com/babo-jeonguk/BaboJUBot/issues/54). **구현 전 권고이며 확정 계약이나 구현 완료가 아니다.**
 
 ## Brief
 
@@ -28,11 +28,11 @@
 | [협력](agent-interaction-models.md#paperclip)·[실행 모델](agent-runtime-models.md#기준-버전과-조사-방식)·[Paperclip](paperclip.md#핵심-판단)·[코드 구조](reference-code-structure.md#프로젝트별-구조와-참고-지점) | 영속 업무 기록·부모 깨우기·자기 보고 경고의 소스 후보 | 결정에 쓰는 Paperclip 파일은 새 SHA로 재독하고 옛 ref와 파일별 blob 비교. 세션 간 직접 메시지는 ADR-0002의 대체 근거로 삼지 않음 |
 | [#51](issue-51-references.md#brief)·[비교 목록](comparative-survey.md#비교-대상의-분류) | 연구 노드 연결·출처 UI의 범위, 후보 목록 | 그래프·템플릿 쓰기와 작업-노드 연결의 실제 검증은 후속 #56. 이번에 그래프 라이브러리를 재선정하지 않음 |
 
-기존 `.reference-cache/issue-{1,50,51,52,53,54}/`는 소스·실행 도구 위치에 재사용한다. 기존 Evidence ID는 위 문서 anchor로 인용하고 신규 근거와 혼합하지 않는다.
+기존 로컬 조사 캐시는 소스·실행 도구 위치에 재사용한다. 기존 Evidence ID는 위 문서 anchor로 인용하고 신규 근거와 혼합하지 않는다.
 
 ## 레퍼런스
 
-관점별 후보 **25항목**(작업10·산출물9·화면5·메인 PostgreSQL1, 중복 포함)을 기록했다. 전체 목록과 실행 경로는 `candidates.md`, 검색 기록은 `notes/{work,artifacts,surface}.md`에 있다. 생태계 전수조사가 아닌 아래 질문 집합의 패턴 포화다.
+관점별 후보 **25항목**(작업10·산출물9·화면5·메인 PostgreSQL1, 중복 포함)을 기록했다. 생태계 전수조사가 아닌 아래 질문 집합의 패턴 포화다.
 
 | 관점 | 마지막 라운드와 saturation 근거 |
 |---|---|
@@ -52,17 +52,17 @@
 
 ## 근거
 
-확인일은 모두 2026-10-19다. 메인이 결정에 사용한 원문을 다시 열었고 대조 기록은 `main-verification.md`에 있다. 테스트는 별도 실행 표시가 없으면 **읽기만** 했다. Paperclip은 과거 `78b833c`와 파일별 blob을 비교했다. 작업 service·댓글 helper·schema·일부 tests는 같고 routes·auth·heartbeat·queue는 변경되어 새 원문을 읽었다. UI 파일 비교는 `recon/surface.md`에 둔다.
+확인일은 모두 2026-10-19다. 메인이 결정에 사용한 원문을 다시 열어 대조했다. 테스트는 별도 실행 표시가 없으면 **읽기만** 했다. Paperclip은 과거 `78b833c`와 파일별 blob을 비교했다. 작업 service·댓글 helper·schema·일부 tests는 같고 routes·auth·heartbeat·queue는 변경되어 새 원문을 읽었다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
 | <a id="E01"></a>E01 | Read Committed의 경합 UPDATE는 대기 후 WHERE를 재검사한다. 행 잠금·여러 행의 불변 조건·복합 FK는 각각의 보장이다. | [isolation](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED) · [locks](https://www.postgresql.org/docs/18/explicit-locking.html#LOCKING-ROWS) · [FK](https://www.postgresql.org/docs/18/ddl-constraints.html#DDL-CONSTRAINTS-FK) | 문서 주장 |
-| <a id="E02"></a>E02 | 독립 PG 실험 8시나리오·32 assertions PASS. 생성/완료와 wake/Event rollback, 부모 없는 생성자·형제가 미완료인 부모 담당자 wake, CAS 중복 완료, 복합 FK 교차 조직 거부, 다음 묶음 입력, 종료와 쓰기의 잠금 충돌을 확인했다. | `probes/postgres-task.mjs`, `postgres-task-log.txt`; Node24.21.0·PG18.1·pg8.16.3. 제품·upstream API/schema 실행 아님 | 실행 확인 |
+| <a id="E02"></a>E02 | 독립 PG 실험 8시나리오·32 assertions PASS. 생성/완료와 wake/Event rollback, 부모 없는 생성자·형제가 미완료인 부모 담당자 wake, CAS 중복 완료, 복합 FK 교차 조직 거부, 다음 묶음 입력, 종료와 쓰기의 잠금 충돌을 확인했다. | 로컬 probe; Node24.21.0·PG18.1·pg8.16.3. 제품·upstream API/schema 실행 아님 | 실행 확인 |
 | <a id="E03"></a>E03 | 부모를 깨우려면 모든 직접 자식이 done/cancelled여야 한다. 자식 요약은 최신 댓글 또는 전달받은 텍스트이며 개수 제한이 있다. 부모 없는 작업의 생성자 fallback은 이 경로에서 확인되지 않는다. | [getWakeableParentAfterChildCompletion](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/services/issues.ts#L9248-L9344) | 소스 확인 |
 | <a id="E04"></a>E04 | update service의 행 잠금·쓰기 transaction과 route의 terminal 감지·부모 wake 호출은 분리되어 있다. assignment helper도 wake 오류를 기본 warn/null로 처리한다. 전체 시스템의 복구 보장은 이 경로만으로 입증되지 않는다. | [update tx](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/services/issues.ts#L11553-L11558) · [terminal wake](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/routes/issues.ts#L15745-L15849) · [assignment](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/services/issue-assignment-wakeup.ts#L27-L100) | 소스 확인 |
 | <a id="E05"></a>E05 | checkout은 상태·담당·run을 UPDATE predicate에 넣는다. 일반 update는 행 잠금 후 같은 tx에서 run 쓰기 권한을 재검사한다. checkout의 CAS를 완료의 멱등성으로 일반화할 수는 없다. | [checkout](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/services/issues.ts#L11723-L11765) · [update lock](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/services/issues.ts#L11086-L11145) | 소스 확인 |
 | <a id="E06"></a>E06 | 댓글 helper는 자기 댓글의 재귀 wake를 억제하고, 명시 reopen 없이 done/cancelled인 작업의 댓글도 억제한다. | [shouldWakeAssigneeForIssueComment](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/services/issue-comment-wakeup.ts#L1-L28) | 소스 확인 |
-| <a id="E07"></a>E07 | 위 원본 module을 변경·stub 없이 직접 import해 8사례 PASS. 자기 댓글·resume·완료/취소 작업·누락 상태를 대조했다. 실제 HTTP 작성자 판별·인가·저장은 실행하지 않았다. | `probes/paperclip-comment.mjs`, `paperclip-comment-log.txt`; Node24.21.0, E06 고정 SHA | 실행 확인(제한) |
+| <a id="E07"></a>E07 | 위 원본 module을 변경·stub 없이 직접 import해 8사례 PASS. 자기 댓글·resume·완료/취소 작업·누락 상태를 대조했다. 실제 HTTP 작성자 판별·인가·저장은 실행하지 않았다. | 로컬 probe; Node24.21.0, E06 고정 SHA | 실행 확인(제한) |
 | <a id="E08"></a>E08 | batching 테스트는 실행 중 댓글2/3을 deferred ID 목록으로 남기고 다음 run의 순서 있는 입력으로 전달함을 assert한다. 테스트는 이번에 실행하지 않았다. | [heartbeat-comment-wake-batching.test](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/__tests__/heartbeat-comment-wake-batching.test.ts#L647-L721) | 소스 확인 |
 | <a id="E09"></a>E09 | 생성 route는 부모의 company/접근을 확인해 404로 거부한다. 담당 agent의 company 불일치는 service에서 422로 거부한다. cancellation helper는 cancelled/requested만 검사하며 모든 종료 상태를 검사하는 allowlist가 아니다. | [parent guard](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/routes/issues.ts#L12359-L12372) · [assignee guard](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/services/agent-assignability.ts#L104-L118) · [run guard](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/server/src/agent-run-cancellation.ts#L5-L33) | 소스 확인 |
 | <a id="E10"></a>E10 | A2A Task는 status·artifacts·history를 구분한다. Artifact ID는 task 안에서 고유하고 parts/metadata를 담지만 작성자·실행 시도 ID는 고유 필드가 아니다. Part는 text/raw/url/data를 구별한다. | [Task](https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/specification/a2a.proto#L167-L184) · [Part](https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/specification/a2a.proto#L224-L242) · [Artifact](https://github.com/a2aproject/A2A/blob/1205f45951ca97c209634ce6046180e38c5dfb30/specification/a2a.proto#L280-L292) | 소스 확인(명세 선언) |
@@ -74,7 +74,7 @@
 | <a id="E16"></a>E16 | 작업 row는 별도 상세 route로 이동한다. placeholder header가 보여도 요청 ID·조직·canonical route 일치 전 쓰기 대상을 확정하지 않는다. 산출물 목록의 task 묶음은 query 이동이고 모바일 상세는 side panel을 Sheet로 옮긴다. | [IssueRow](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/components/IssueRow.tsx#L217-L244) · [loaded task guard](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/pages/IssueDetail.tsx#L3184-L3233) · [artifacts query](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/pages/Artifacts.tsx#L152-L168) · [mobile](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/pages/IssueDetail.tsx#L8440-L8486) | 소스 확인 |
 | <a id="E17"></a>E17 | 댓글은 임시 pending/queued echo와 서버 기록을 구별한다. 성공 때 서버 댓글로 교체하고 실패 때 임시 항목을 제거·이전 snapshot 복구·실패/저장 미확인 toast를 구별한다. | [onMutate](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/pages/IssueDetail.tsx#L5171-L5218) · [success/error](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/pages/IssueDetail.tsx#L5266-L5315) | 소스 확인 |
 | <a id="E18"></a>E18 | 작업·댓글·산출물 변경은 연관 query를 재조회한다. 최초 socket 연결 전 read/subscribe 공백을 메우고 끊김 때 fallback polling하는 테스트가 있다. 이번에는 그 테스트를 실행하지 않았다. | [invalidation](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/context/LiveUpdatesProvider.tsx#L1318-L1403) · [recovery tests](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/context/LiveUpdatesProvider.recovery.test.tsx#L71-L118) | 소스 확인 |
-| <a id="E19"></a>E19 | 원본 첨부 패널을 공식 fixture 데이터로 분리 실행했다. Raw/Rendered 전환·390px·빈 파일·누락 ID·과대 metadata의 상태와 fixture 다운로드 event를 관찰했다. 메인도 모드 전환/다운로드를 직접 조작하고 7개 캡처를 전부 재열람했다. | [TaskAttachmentPanel](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/components/task-side-panel/TaskAttachmentPanel.tsx#L42-L106); `captures.md`, `probes/surface-capture-resume-log.json`, `ui-main-capture-log.json`, `ui-main-download-log.txt`. 고정 SHA 파일 blob 일치 확인 | 실행 확인(제한) |
+| <a id="E19"></a>E19 | 원본 첨부 패널을 공식 fixture 데이터로 분리 실행했다. Raw/Rendered 전환·390px·빈 파일·누락 ID·과대 metadata의 상태와 fixture 다운로드 event를 관찰했다. 메인도 모드 전환/다운로드를 직접 조작하고 7개 캡처를 전부 재열람했다. | [TaskAttachmentPanel](https://github.com/paperclipai/paperclip/blob/023f4a5d0cd452c540ddd0deb4a0b81ef5e2ff92/ui/src/components/task-side-panel/TaskAttachmentPanel.tsx#L42-L106); 로컬 캡처·실행 기록. 고정 SHA 파일 blob 일치 확인 | 실행 확인(제한) |
 
 근거19개: **실행3·소스13·문서3**. UI는 원본 production 모듈과 provider를 쓰되 Query cache·본문·다운로드는 fixture다. 성공한 실화면 근거는 산출물 내부 viewer에만 적용한다. 작업 목록/전체 상세·댓글 전송·실시간 backend·산출물 단건 route·실제 파일 읽기 권한/스트리밍은 이 실행으로 검증하지 않았다. Storybook ready와 초기 timeout·빈 앱은 성공 캡처에서 제외했다. 메인 capture script의 `Wrap lines` 버튼 탐색 실패는 하네스 선택 오류이며, 그 전에 성공한 2개 캡처 및 별도 다운로드 확인과 구분했다.
 
@@ -158,5 +158,5 @@
 - A2A SDK의 source recon은 기본 helper/store까지만이다. opt-in multi-replica versioned store, 전체 transport 인가·streaming 재접속은 미확인이다. 최초 산출물 형식·비담당 완료 예외·중복 완료 응답은 위 owner의 열린 결정이다.
 - 원본 첨부 패널은 실제 조작했지만 전체 작업 상세·댓글 전송·전송 실패/권한 없음/조직 전환의 실화면과 live event는 미확인이다. 의도적으로 빈 본문·미등록 ID·과대 metadata를 주입한 상태 관찰이며 실제 HTTP404·서버 파일 용량 제한·파일 권한 검증의 근거가 아니다.
 - Plane의 공개 업무 view URL을 확보하지 못했고, Prefect/MLflow의 실제 UI는 실행하지 않았다. 도움말 그림은 실화면 근거로 세지 않았다. Paperclip의 산출물 단건 별도 페이지와 BaboJUBot 연구 노드 UI의 직접 동종 실화면은 확인되지 않았다.
-- 기존 Paperclip Storybook은 두 설정 모두 iframe navigation timeout으로 실패했다. manager의 ready 메시지나 빈/오류 화면을 성공 캡처로 사용하지 않았다. 사용자 재개 때 `/tmp` 설치가 소실되어 같은 고정 SHA를 복구했으며 세부 재설치·실행·정리는 `selfhost/paperclip-ui.md`에 남긴다. 이전 SQL 로그는 보존됐지만 재개 후 다시 실행했다고 세지 않는다.
+- 기존 Paperclip Storybook은 두 설정 모두 iframe navigation timeout으로 실패했다. manager의 ready 메시지나 빈/오류 화면을 성공 캡처로 사용하지 않았다. 사용자 재개 때 `/tmp` 설치가 소실되어 같은 고정 SHA를 복구했다. 이전 SQL 로그는 보존됐지만 재개 후 다시 실행했다고 세지 않는다.
 - 소스 재사용을 결정하면 upstream 변경, root/개별 파일 LICENSE·NOTICE·의존성을 다시 확인해야 한다. 이번 결과 문서와 문서 지도만 남기고 커밋하지 않는다. 확정 계약을 바꾸거나 제품 구현을 시작하지 않았다.

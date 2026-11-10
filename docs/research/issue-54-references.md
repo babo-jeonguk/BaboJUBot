@@ -1,6 +1,6 @@
 # issue-54 레퍼런스 조사: 판 1 · 목표 합의와 초기 연구 승인
 
-조사일: 2026-10-18. 대상: [#54](https://github.com/babo-jeonguk/BaboJUBot/issues/54). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-54/`(git 무시).
+조사일: 2026-10-18. 대상: [#54](https://github.com/babo-jeonguk/BaboJUBot/issues/54). 구현 전 기술 권고이며 확정 계약이나 구현 결과가 아니다.
 
 ## Brief
 
@@ -26,11 +26,11 @@
 | [실행 모델](agent-runtime-models.md)·[협력](agent-interaction-models.md)·[Paperclip](paperclip.md)·[코드 구조](reference-code-structure.md) | adapter·하네스·승인 소스 후보 | 고정 ref 파일별 비교 또는 새 ref 원문 재독. 기존 E는 위 문서 링크로만 인용 |
 | [#51](issue-51-references.md#brief)·[비교 목록](comparative-survey.md) | 템플릿/그래프 경계·후보 출발점 | 그래프 layout은 #56으로 이번 심층 제외 |
 
-기존 `.reference-cache/issue-{1,50,51,52,53}/`는 소스·도구 위치 탐색에 사용한다. 실행 로그와 신규 근거는 이번 캐시에 별도 보존한다.
+기존 로컬 조사 캐시는 소스·도구 위치 탐색에 사용한다. 실행 로그와 신규 근거는 이번 캐시에 별도 보존한다.
 
 ## 레퍼런스
 
-후보 **34행·31종**(승인16·하네스7·화면11, 관점 간 중복 포함)이다. 전체 후보·실행 경로는 `candidates.md`, 라운드별 검색은 `notes/{approval,harness,surface}.md`에 남겼다. 공개 생태계 전수조사가 아닌 질문별 패턴 포화다.
+후보 **34행·31종**(승인16·하네스7·화면11, 관점 간 중복 포함)이다. 공개 생태계 전수조사가 아닌 질문별 패턴 포화다.
 
 | 관점 | 마지막 라운드와 saturation 근거 |
 |---|---|
@@ -53,12 +53,12 @@
 
 ## 근거
 
-모든 확인일은 2026-10-18이다. 메인이 아래 결정에 사용한 원문과 8개 캡처를 다시 열었다. `main-verification.md`에 일치·정정과 범위를 기록했다. 테스트는 실행 표시가 없으면 **읽기만** 했다. 기존 Paperclip `4415665`와 새 ref는 파일별 blob 비교로 확인했다(상세 `recon/approval.md`, `recon/surface.md`). 공통 파일은 동일하며 변경된 agents route·AgentDetail은 새 원문을 읽었다. 하네스 파일은 새 SHA 원문을 별도로 읽었다.
+모든 확인일은 2026-10-18이다. 메인이 아래 결정에 사용한 원문과 8개 캡처를 다시 열었다. 테스트는 실행 표시가 없으면 **읽기만** 했다. 기존 Paperclip `4415665`와 새 ref는 파일별 blob 비교로 확인했다. 공통 파일은 동일하며 변경된 agents route·AgentDetail은 새 원문을 읽었다. 하네스 파일은 새 SHA 원문을 별도로 읽었다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
 | <a id="E01"></a>E01 | PG Read Committed의 UPDATE는 경쟁 transaction이 끝난 뒤 WHERE를 다시 검사한다. 행 잠금과 복합 FK는 별도 계약이다. | [isolation](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED) · [row locks](https://www.postgresql.org/docs/18/explicit-locking.html#LOCKING-ROWS) · [FK](https://www.postgresql.org/docs/18/ddl-constraints.html#DDL-CONSTRAINTS-FK) | 문서 주장 |
-| <a id="E02"></a>E02 | 독립 PG 실험 7건·23 assertions PASS. 선행 읽기+id-only UPDATE의 덮어쓰기 반례, CAS 경합 패자0행, 승인/stage/team/event/wake rollback, 응답 유실 재시도0, scope predicate, 독립 FK의 교차 조직 허용 반례, 고정 내용의 사본 분리를 확인했다. | `probes/postgres-approval.mjs`, `postgres-approval-log-prlimit.txt`; Node24.21.0·PG18.1·pg8.16.3. 제품·upstream API/스키마 실행 아님 | 실행 확인 |
+| <a id="E02"></a>E02 | 독립 PG 실험 7건·23 assertions PASS. 선행 읽기+id-only UPDATE의 덮어쓰기 반례, CAS 경합 패자0행, 승인/stage/team/event/wake rollback, 응답 유실 재시도0, scope predicate, 독립 FK의 교차 조직 허용 반례, 고정 내용의 사본 분리를 확인했다. | 로컬 probe; Node24.21.0·PG18.1·pg8.16.3. 제품·upstream API/스키마 실행 아님 | 실행 확인 |
 | <a id="E03"></a>E03 | Paperclip resolveApproval은 pending/revision_requested 조건부 UPDATE다. 같은 결과 재요청은 applied=false로 돌려주고 route tests는200/no duplicate wake를 assert한다. #54의 재결정 거부와 다르다. | [resolveApproval](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/lib/approval-records.ts#L5-L64) · [route tests](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/__tests__/approval-routes-idempotency.test.ts#L146-L202) | 소스 확인 |
 | <a id="E04"></a>E04 | requestRevision과 resubmit은 SELECT에서 상태를 확인하고 UPDATE에서는 id만 검사한다. 수정 재제출은 같은 행의 결정 메타데이터를 지우고 pending으로 되돌린다. | [requestRevision/resubmit](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/services/approvals.ts#L82-L122) | 소스 확인 |
 | <a id="E05"></a>E05 | hire 결정은 회사 행 잠금 transaction 안에서 승인과 agent activation/create를 묶는다. activation Event 실패 시 agent와 approval rollback을 assert하는 DB 테스트가 있다. | [hireApprovalService.decide](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/modules/agent-lifecycle/adapters/approvals.ts#L21-L92) · [transaction](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/services/accounting-transaction.ts#L7-L20) · [tests](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/modules/agent-lifecycle/__tests__/lifecycle.test.ts#L322-L357) | 소스 확인 |
@@ -70,12 +70,12 @@
 | <a id="E11"></a>E11 | managed root는 company/agent별이다. files map을 그 root에 쓰며 DB owner lock이 있지만 파일 쓰기 자체가 DB rollback되는 계약은 아니다. 현 default bundle은 AGENTS.md 하나다. | [owner root](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/services/agent-instructions.ts#L136-L145) · [materialize](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/services/agent-instructions.ts#L759-L822) · [default](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/services/default-agent-instructions.ts#L3-L26) | 소스 확인 |
 | <a id="E12"></a>E12 | OpenClaw bootstrap은 기존 파일을 보존하고 새 파일은 atomic/durable로 공개한다. 실패 시 partial 파일이 없고 동시 생성 winner 하나만 완전함을 assert하는 테스트가 있다. 승인 purpose와 기존 AGENTS가 다르면 오류다. | [publishBootstrapFile/publishAgentInstructions](https://github.com/openclaw/openclaw/blob/28f97f236f882af739aac9f0e6e77d83b2da2a7c/src/agents/workspace-bootstrap-publish.ts#L15-L77) · [tests](https://github.com/openclaw/openclaw/blob/28f97f236f882af739aac9f0e6e77d83b2da2a7c/src/agents/workspace-bootstrap-publish.test.ts#L77-L155) | 소스 확인 |
 | <a id="E13"></a>E13 | instructionPath는 상대 경로·traversal·빈 부분·backslash·NUL 등을 검사하고, instructionBytes는 UTF-8/1MiB를 검사한다. | [두 함수](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/services/agent-instruction-files.ts#L7-L53) | 소스 확인 |
-| <a id="E14"></a>E14 | 위 두 원본 함수를 추출하고 TS 타입만 제거해 17 assertions PASS. 정상 skill 경로/한국어/BOM과 traversal·잘못된 UTF-8·surrogate·초과 길이를 대조했다. unprocessable만 Error constructor로 대체했다. | `probes/instruction-files.mjs`, `instruction-files-log.txt`; Node24.21.0. filesystem/I/O/symlink/service/HTTP는 실행하지 않음 | 실행 확인(제한) |
+| <a id="E14"></a>E14 | 위 두 원본 함수를 추출하고 TS 타입만 제거해 17 assertions PASS. 정상 skill 경로/한국어/BOM과 traversal·잘못된 UTF-8·surrogate·초과 길이를 대조했다. unprocessable만 Error constructor로 대체했다. | 로컬 probe; Node24.21.0. filesystem/I/O/symlink/service/HTTP는 실행하지 않음 | 실행 확인(제한) |
 | <a id="E15"></a>E15 | Agent Skills는 SKILL.md frontmatter의 name/description과 Markdown 본문을 정한다. allowed-tools는 선택·실험적이며 구현별 지원이 다르다. | [format](https://github.com/agentskills/agentskills/blob/69ef37e9424c0a7ea9dd2293b559e43ec8176379/docs/specification.mdx#L6-L32) · [allowed-tools](https://github.com/agentskills/agentskills/blob/69ef37e9424c0a7ea9dd2293b559e43ec8176379/docs/specification.mdx#L163-L185) | 문서 주장 |
 | <a id="E16"></a>E16 | OpenClaw 문서는 workspace가 cwd이며 hard sandbox가 아니고 AGENTS Tools 절도 availability 제어가 아닌 guidance라고 명시한다. | [workspace](https://github.com/openclaw/openclaw/blob/28f97f236f882af739aac9f0e6e77d83b2da2a7c/docs/concepts/agent-workspace.md#L9-L18) · [Tools](https://github.com/openclaw/openclaw/blob/28f97f236f882af739aac9f0e6e77d83b2da2a7c/docs/concepts/agent-workspace.md#L73-L86) | 문서 주장 |
 | <a id="E17"></a>E17 | LangGraph resume은 interrupt가 있는 node의 앞부분을 재실행하므로 앞선 부작용의 중복을 고려해야 한다. Temporal은 Update 수락과 완료를 구별하고 async handler의 await 경합을 별도로 다룬다. | [LangGraph Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts) · [Temporal message passing](https://docs.temporal.io/develop/typescript/workflows/message-passing) | 문서 주장 |
 | <a id="E18"></a>E18 | GitHub branch 보호는 검토 대상 변경 시 stale approval을 무효화하는 옵션을 둔다. 이 옵션의 구체 제품 정책을 초기 연구 승인에 그대로 가져오지는 않는다. | [protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) | 문서 주장 |
-| <a id="E19"></a>E19 | 공개 UI8캡처를 조작·재열람했다. assistant-ui는 요청→반려/진행/완료 receipt, handup은 Markdown 계획·사유 입력·390px footer를 보여준다. handup Deny 후 Inbox8→7과 Undo toast는 관찰했지만 최종 이력 추가는 미확인이다. | [Approval card](https://www.assistant-ui.com/elements/approval-card) · [handup](https://gethandup.dev/); `captures/captures.md`, `probes/ui-capture-log.json` | 실행 확인 |
+| <a id="E19"></a>E19 | 공개 UI8캡처를 조작·재열람했다. assistant-ui는 요청→반려/진행/완료 receipt, handup은 Markdown 계획·사유 입력·390px footer를 보여준다. handup Deny 후 Inbox8→7과 Undo toast는 관찰했지만 최종 이력 추가는 미확인이다. | [Approval card](https://www.assistant-ui.com/elements/approval-card) · [handup](https://gethandup.dev/); 로컬 캡처·실행 기록 | 실행 확인 |
 | <a id="E20"></a>E20 | Paperclip working copy baseHash는 선택 entry 파일 bytes의 SHA256이다. 전체 Role/Soul/Skill bundle 해시의 근거가 아니다. | [prepare](https://github.com/paperclipai/paperclip/blob/c9669a6c2237626ab0b0b2059d34c3965a86f02f/server/src/services/agent-instruction-working-copies.ts#L145-L170) | 소스 확인 |
 
 근거20개: 실행3·소스12·문서5. E04의 경합, E06의 commit 뒤 손실, E11의 filesystem/DB 경계에서 도출한 위험은 **추론**이며 upstream 전체 서비스의 실제 장애 재현이 아니다. E02는 그 최소 SQL 메커니즘만 검증한다.
@@ -151,7 +151,7 @@
 
 ## 한계와 미확인
 
-- 실행함: 독립 PG7건/23 assertions, Paperclip 순수 함수2개/17 assertions(에러 생성자 stub), 공개 UI8상태 캡처·재열람. PG는 기존 `/tmp/reference-selfhost/issue-52-stack`의 임시 설치18.1을 재사용했으며 제품 embedded18.4 검증이 아니다. 설치/실행 명령·보정·정리는 `selfhost/execution.md`, `probes/run-log.txt`에 기록했다.
+- 실행함: 독립 PG7건/23 assertions, Paperclip 순수 함수2개/17 assertions(에러 생성자 stub), 공개 UI8상태 캡처·재열람. PG는 #52 조사의 임시 설치18.1을 재사용했으며 제품 embedded18.4 검증이 아니다.
 - 미실행: 제품 코드·제품 테스트·API/E2E·upstream 전체 tests·Paperclip/OpenClaw 전체 self-host·실제 agent/provider/모델 호출·실제 승인 backend·강제 crash 자동 복구·filesystem symlink/I/O race. token/actor/격리·승인 상태를 제품에서 강제했음을 이번 조사로 주장하지 않는다.
 - 공개 UI는 scripted/local demo다. 실패·권한 없음·이미 결정 경합·조직 전환 stale·에이전트 하네스 읽기 전용의 **실화면**은 미확인이다. 화면 제안 중 이 항목들은 소스/계약에서 도출했다. handup의 서버 영속성·승인 내용 hash 검증·agent 전달·Undo 후 확정 이력도 미확인이다. 배포 SHA와 source SHA 일치는 확인하지 못했다.
 - Camunda의 일부 공식 lifecycle 페이지와 GetApproved 본문은 접근/추출 실패로 결정 근거에서 제외했다. 계정이 필요한 Agent Inbox/상용 서비스는 로그인하지 않았다. 추측한 OpenClaw test 경로404는 실제 publish test로 바로잡았다. sandbox network/browser 및 systemd user bus 실패는 허용 환경·prlimit으로 재시도했으며 동작 부재 증거로 쓰지 않았다.

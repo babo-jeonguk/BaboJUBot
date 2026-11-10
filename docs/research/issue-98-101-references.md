@@ -1,6 +1,6 @@
 # issue-98-101 레퍼런스 조사: 실제 프로바이더 연결과 Claude 미리 압축
 
-조사일: 2026-11-02. 대상: [#98](https://github.com/babo-jeonguk/BaboJUBot/issues/98)·[#99](https://github.com/babo-jeonguk/BaboJUBot/issues/99)·[#100](https://github.com/babo-jeonguk/BaboJUBot/issues/100)·[#101](https://github.com/babo-jeonguk/BaboJUBot/issues/101). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 자료: `.reference-cache/issue-98-101/`(git 무시). 이 문서는 네 이슈가 공유하는 프로세스·전송·세션 경계를 한곳에서 비교한다.
+조사일: 2026-11-02. 대상: [#98](https://github.com/babo-jeonguk/BaboJUBot/issues/98)·[#99](https://github.com/babo-jeonguk/BaboJUBot/issues/99)·[#100](https://github.com/babo-jeonguk/BaboJUBot/issues/100)·[#101](https://github.com/babo-jeonguk/BaboJUBot/issues/101). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 이 문서는 네 이슈가 공유하는 프로세스·전송·세션 경계를 한곳에서 비교한다.
 
 ## Brief
 
@@ -35,7 +35,7 @@
 
 ## 레퍼런스
 
-전체 후보와 실행 경로: `.reference-cache/issue-98-101/candidates.md`. 관점별 마지막 탐색은 Claude 전송/명령 재생, Codex 원본/운영 wrapper, OpenCode/Antigravity 설정 탐색·장애 보고, 정비/지연 작업 엔진, 숫자 입력 strict/blur를 대조했고 이미 찾은 신원·ACK·배타·prefix·검증 패턴으로 수렴했다. 이는 기록한 검색 범위의 saturation이며 생태계 전수조사가 아니다. 질문별 후보·선정/제외 이유·라운드는 `notes/*discovery.md`에 있다.
+관점별 마지막 탐색은 Claude 전송/명령 재생, Codex 원본/운영 wrapper, OpenCode/Antigravity 설정 탐색·장애 보고, 정비/지연 작업 엔진, 숫자 입력 strict/blur를 대조했고 이미 찾은 신원·ACK·배타·prefix·검증 패턴으로 수렴했다. 이는 기록한 검색 범위의 saturation이며 생태계 전수조사가 아니다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 |---|---|---|---|---|---|
@@ -48,7 +48,7 @@
 | Antigravity CLI | 비공개 제품 | 설치1.4.12, 문서 확인2026-11-02 | 상용 | 문서·help/version | 실제 CLI 정체·workspace MCP·headless 계약 |
 | Mantine NumberInput | 공개 DS 예제 | 페이지9.7.4, deploy SHA 미확인 | 코드 이식 없음 | 문서·실화면 | 범위 초과 거부·stepper 두 폭 관찰 |
 
-구판 재확인: 압축 프로젝트 `server/cache.ts`는 기존4039afd와 같은 blob `639206d2ff60dbc64f553c48460af9203287c522`, scheduler/runtime은 변경되어 새로 읽었다. Paseo query.ts는 a4f6966→efc64a5 blob `0f9525d5b106a5d7d840113b5e7d67ed42e78af9` 동일, agent.ts는 새로 읽었다. Codex 기존360319d→a098129의 MCP types/exec events/global instructions blob은 같고 turn/config/exec는 변경되어 새로 읽었다(`notes/codex-blob-comparison.json`). OpenCode는 최신 구조로 이동해 구판과 최신을 별도 근거로 취급했다. 기존 조사 문서의 권고를 최신 동작 증거로 승격하지 않았다.
+구판 재확인: 압축 프로젝트 `server/cache.ts`는 기존4039afd와 같은 blob `639206d2ff60dbc64f553c48460af9203287c522`, scheduler/runtime은 변경되어 새로 읽었다. Paseo query.ts는 a4f6966→efc64a5 blob `0f9525d5b106a5d7d840113b5e7d67ed42e78af9` 동일, agent.ts는 새로 읽었다. Codex 기존360319d→a098129의 MCP types/exec events/global instructions blob은 같고 turn/config/exec는 변경되어 새로 읽었다. OpenCode는 최신 구조로 이동해 구판과 최신을 별도 근거로 취급했다. 기존 조사 문서의 권고를 최신 동작 증거로 승격하지 않았다.
 
 ## 근거: 공통 경계와 압축
 
@@ -61,16 +61,16 @@
 | E03 | 압축 프로젝트는 session/model/sidechain·compact boundary를 걸러 TTL을 읽고 관측→정책→60분 fallback을 둔다 | [cache.ts transcriptTtl/createCacheReader](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/blob/a599a13208f401ea38ede8104149cd1ac05daaec/server/cache.ts#L20-L77) | 소스 확인 |
 | E04 | 원본 예약은 endedAt+idleMinutes이며 재시작 시 이미 due인 예약은 만료시킨다. #99의 lastRequestAt+TTL×ratio·재예약 요구와 다르다 | [policy](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/blob/a599a13208f401ea38ede8104149cd1ac05daaec/server/policy.ts#L4-L26), [recover](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/blob/a599a13208f401ea38ede8104149cd1ac05daaec/server/scheduler.ts#L20-L69) | 소스 확인 |
 | E05 | dispatch marker 이후 복구는 재전송 대신 관찰한다. 성공에는 경계·완료·동일 세션 확인이 필요하며 deadline 후 unknown을 남긴다 | [worker](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/blob/a599a13208f401ea38ede8104149cd1ac05daaec/server/operations.ts#L67-L166), [gateway](https://github.com/babo-jeonguk/paseo-auto-compact-for-claude/blob/a599a13208f401ea38ede8104149cd1ac05daaec/server/gateway.ts#L157-L239) | 소스 확인 |
-| E06 | 원본 cache.ts import: TTL·혼합 쓰기·잘못된 세션/모델·sidechain·경계·음수·fallback·미래 시각 10 assertions PASS, 메인 재실행 동일 | `probes/compact-cache.mjs`, `compact-cache-run-log.txt`; Node24.21.0, env -i·설치 없음 | 실행 확인 |
+| E06 | 원본 cache.ts import: TTL·혼합 쓰기·잘못된 세션/모델·sidechain·경계·음수·fallback·미래 시각 10 assertions PASS, 메인 재실행 동일 | 로컬 probe; Node24.21.0, env -i·설치 없음 | 실행 확인 |
 | E07 | 캐시는 요청 앞부분 일치에 의존한다. MCP 변경 영향은 tool search의 지연 여부에 따라 다르며, 압축 자체도 모델 요청이다 | [Claude 공식 캐시 문서](https://code.claude.com/docs/en/prompt-caching#connecting-or-removing-an-mcp-server), [압축](https://code.claude.com/docs/en/prompt-caching#compacting-the-conversation), 2026-11-02 직접 열람 | 문서 주장 |
-| E08 | 공개 숫자 입력에서 100의 ArrowUp은 100, 101 입력은 거부되어 100 유지, 90의 ArrowDown은 89. 1280×844·390×844 캡처를 메인이 확인 | [Mantine NumberInput](https://mantine.dev/core/number-input/), `captures/captures.md`, `probes/number-ui-log.txt`, Playwright1.58.2/Chromium1208; 페이지 v9.7.4 | 실행 확인 |
+| E08 | 공개 숫자 입력에서 100의 ArrowUp은 100, 101 입력은 거부되어 100 유지, 90의 ArrowDown은 89. 1280×844·390×844 캡처를 메인이 확인 | [Mantine NumberInput](https://mantine.dev/core/number-input/), 로컬 캡처·실행 기록, Playwright1.58.2/Chromium1208; 페이지 v9.7.4 | 실행 확인 |
 
 ## 근거: Claude와 녹화 재생
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
 | E09 | Paseo는 예상 turn/query/input 신원을 재확인한 뒤 queue push와 accepted를 수행한다. 큐 종료 뒤 push는 조용히 버린다 | [steerActiveTurn/enqueueSteer](https://github.com/getpaseo/paseo/blob/efc64a5443dfe166dfb0d80434ecb48516b8fbe2/packages/server/src/server/agent/providers/claude/agent.ts#L2607-L2664), [createAsyncMessageInput](https://github.com/getpaseo/paseo/blob/efc64a5443dfe166dfb0d80434ecb48516b8fbe2/packages/server/src/server/agent/providers/claude/agent.ts#L6609-L6655) | 소스 확인 |
-| E10 | 위 원본 큐 추출 실행에서 정상 FIFO·대기 소비·종료와 종료 후 입력 유실 음성 대조 5 assertions PASS. 메인 재실행 동일 | `probes/claude-input.mjs`, `claude-input-log.txt`; Node24.21.0·types만 strip·설치/모델 없음 | 실행 확인 |
+| E10 | 위 원본 큐 추출 실행에서 정상 FIFO·대기 소비·종료와 종료 후 입력 유실 음성 대조 5 assertions PASS. 메인 재실행 동일 | 로컬 probe; Node24.21.0·types만 strip·설치/모델 없음 | 실행 확인 |
 | E11 | 공식 Python SDK의 기본 system_prompt=None은 빈 system prompt 교체다. preset append 분기가 별도로 있다. MCP dict는 argv JSON, path는 경로만 넘긴다 | [prompt](https://github.com/anthropics/claude-agent-sdk-python/blob/2146f9d8985513053e904b13200c8f744b36785a/src/claude_agent_sdk/_internal/transport/subprocess_cli.py#L574-L590), [MCP](https://github.com/anthropics/claude-agent-sdk-python/blob/2146f9d8985513053e904b13200c8f744b36785a/src/claude_agent_sdk/_internal/transport/subprocess_cli.py#L670-L701) | 소스 확인 |
 | E12 | SDK close/write는 같은 lock과 readiness 검사를 사용하고 EOF flush 유예 뒤 TERM/KILL한다. Paseo 회귀 테스트는 queued/dequeued/completed 입력을 구별한다(읽기만) | [close/write](https://github.com/anthropics/claude-agent-sdk-python/blob/2146f9d8985513053e904b13200c8f744b36785a/src/claude_agent_sdk/_internal/transport/subprocess_cli.py#L1000-L1090), [테스트](https://github.com/getpaseo/paseo/blob/efc64a5443dfe166dfb0d80434ecb48516b8fbe2/packages/server/src/server/agent/providers/claude/agent.interrupt-restart-regression.test.ts#L361-L425) | 소스 확인 |
 | E13 | cli-replay는 command/argv/stdin 전체와 고정 응답을 매칭한다. 이 API 자체는 양방향 턴·control 응답 재생의 보장이 아니다 | [Engine.MatchWithStdin](https://github.com/ormasoftchile/cli-replay/blob/bb196bdc430f83e56a099ce71b6c79bed03ebbc2/pkg/replay/engine.go#L15-L90) | 소스 확인 |
@@ -82,7 +82,7 @@
 | E14 | native steer는 thread·expectedTurnId를 검사하고 실제 제출 여부를 결과로 바꾼다. Paseo는 ACK ID 확인 뒤 permission cleanup await도 수행하므로 ACK 후 오류 가능 작업을 그대로 복제하면 안 된다 | [turn_steer_inner](https://github.com/openai/codex/blob/a09812981de703f18f38015cd5d500ab373f616c/codex-rs/app-server/src/request_processors/turn_processor.rs#L1077-L1220), [wrapper](https://github.com/getpaseo/paseo/blob/efc64a5443dfe166dfb0d80434ecb48516b8fbe2/packages/server/src/server/agent/providers/codex-app-server-agent.ts#L4473-L4525) | 소스 확인 |
 | E15 | usage는 total/last 및 input/cache-read/cache-write/output/reasoning을 구별한다. exec turn usage와 차이가 있고 cache-write에는 serde default가 있으므로 wire 누락을 0 관측으로 오인하면 안 된다 | [thread usage](https://github.com/openai/codex/blob/a09812981de703f18f38015cd5d500ab373f616c/codex-rs/app-server-protocol/src/protocol/v2/thread.rs#L2045-L2093), [exec usage](https://github.com/openai/codex/blob/a09812981de703f18f38015cd5d500ab373f616c/codex-rs/exec/src/exec_events.rs#L59-L75) | 소스 확인 |
 | E16 | developer_instructions 추가·제품 codex_home의 전역 AGENTS 탐색·MCP bearer 환경변수 참조가 별도 경로다 | [append](https://github.com/openai/codex/blob/a09812981de703f18f38015cd5d500ab373f616c/codex-rs/config/src/config_toml.rs#L251-L277), [global instructions](https://github.com/openai/codex/blob/a09812981de703f18f38015cd5d500ab373f616c/codex-rs/codex-home/src/instructions/mod.rs#L41-L77), [MCP](https://github.com/openai/codex/blob/a09812981de703f18f38015cd5d500ab373f616c/codex-rs/config/src/mcp_types.rs#L391-L411) | 소스 확인 |
-| E17 | 설치본0.166.0의 빈 제품 HOME/CODEX_HOME에서 login missing·initialize 성공·없는 thread steer 거부·EOF 종료0 확인. 실제 모델 시작 요청 없음 | `probes/codex-handshake.py`, `codex-run-log.txt`; Python subprocess, RLIMIT_AS 2GiB/process group. 설치 binary와 소스 SHA 동일성은 미확인 | 실행 확인 |
+| E17 | 설치본0.166.0의 빈 제품 HOME/CODEX_HOME에서 login missing·initialize 성공·없는 thread steer 거부·EOF 종료0 확인. 실제 모델 시작 요청 없음 | 로컬 probe; Python subprocess, RLIMIT_AS 2GiB/process group. 설치 binary와 소스 SHA 동일성은 미확인 | 실행 확인 |
 
 ## 근거: OpenCode와 Antigravity
 
@@ -92,7 +92,7 @@
 | E19 | 구판 agent.prompt는 기본 prompt를 교체한다. 최신은 agent.system과 instructions 조립 구조가 달라 추가 의미를 별도 검증해야 한다 | [구판 prepare](https://github.com/anomalyco/opencode/blob/ef2880f379129aa048be9e9353e30aa168d42c17/packages/opencode/src/session/llm/request.ts#L56-L66), [최신 agent](https://github.com/anomalyco/opencode/blob/271f5ef9bcceba185eee4f7225a883f857b04715/packages/core/src/config/plugin/agent.ts#L101-L115), [context](https://github.com/anomalyco/opencode/blob/271f5ef9bcceba185eee4f7225a883f857b04715/packages/core/src/session/context.ts#L132-L163) | 소스 확인 |
 | E20 | OpenCode MCP는 고정 headers와 call별 sessionID metadata를 보낸다. 읽은 경로에서 외부 설정의 임의 호출별 재호출 키 주입을 확인하지 못했다 | [connect](https://github.com/anomalyco/opencode/blob/271f5ef9bcceba185eee4f7225a883f857b04715/packages/core/src/mcp/client.ts#L305-L315), [callTool](https://github.com/anomalyco/opencode/blob/271f5ef9bcceba185eee4f7225a883f857b04715/packages/core/src/mcp/client.ts#L466-L488) | 소스 확인 |
 | E21 | Paseo agy driver는 대화 ID·stream-json·detached group을 쓰며 종료 이벤트를 기다리고 잔존 group도 정리한다. 타이머는 제품의 2+2초와 다르다 | [driver](https://github.com/getpaseo/paseo/blob/efc64a5443dfe166dfb0d80434ecb48516b8fbe2/plugins/antigravity-provider/server/internal/process.ts#L34-L58), [stop](https://github.com/getpaseo/paseo/blob/efc64a5443dfe166dfb0d80434ecb48516b8fbe2/plugins/antigravity-provider/server/internal/process.ts#L146-L168) | 소스 확인 |
-| E22 | 원본 signalPlan 함수의 Unix 음수 group PID/Windows tree 3 assertions PASS. 빈 HOME에서 agy1.4.12 help/version·OpenCode1.18.23 version 확인 | `probes/ag-signal-plan.mjs`, `ag-signal-plan-log.txt`; 명령은 `recon/opencode-antigravity.md` 재현 절. 실제 signal·모델 호출 없음 | 실행 확인 |
+| E22 | 원본 signalPlan 함수의 Unix 음수 group PID/Windows tree 3 assertions PASS. 빈 HOME에서 agy1.4.12 help/version·OpenCode1.18.23 version 확인 | 로컬 probe. 실제 signal·모델 호출 없음 | 실행 확인 |
 | E23 | 공식 Antigravity MCP는 global/workspace 설정과 HTTP headers, headless는 단건 print·conversation·상태 판정을 설명한다 | [MCP](https://antigravity.google/docs/mcp), [headless](https://antigravity.google/docs/cli/headless/), 2026-11-02 | 문서 주장 |
 
 근거 23행: 소스 확인16 · 실행 확인5 · 문서 주장2. 실행 5행은 helper 18 assertions(10+5+3), 무모델 Codex 연결, CLI help/version, 숫자 입력 상호작용을 묶은 것이며 5개 제품 시나리오 통과라는 뜻이 아니다.
@@ -185,5 +185,5 @@
 - 설정 탐색·개인 credential 차단은 실제 sentinel 적대 시나리오로 검증해야 한다. 조직별 작업 폴더·제품 홈은 OS 권한 강제가 아니며 host 셸로 사용자 API·DB 접근을 차단하는 작업은 후속 #102다.
 - #99 실제 `/compact` 성공·같은 ID·캐시 prefix 유지와 비용 절약은 미확인이다. helper 실행을 정비 claim·재시작 복구 실행 증거로 쓰지 않는다. 과거 캐시 조사와 현행 #99의 활동/세션 정책 차이는 현행 이슈를 따른다.
 - UI는 공개 0–100 예제 두 폭의 입력과 키보드 동작만 확인했다. 제품 설정 화면의 저장·빈/실패 상태·한글 단위·스크린리더·터치·큰 토큰 하한은 미확인이다. 타사 캡처는 캐시에만 두었다.
-- history는 압축 프로젝트 PR2·Codex provider mismatch 변경·Paseo 최근 log/SDK 주석까지다. 모든 파일의 blame·관련 PR 이유를 완전히 추적하지 않았다. 접근 실패 후보와 실제 실행 없는 후보는 `candidates.md`에 구별했다.
+- history는 압축 프로젝트 PR2·Codex provider mismatch 변경·Paseo 최근 log/SDK 주석까지다. 모든 파일의 blame·관련 PR 이유를 완전히 추적하지 않았다.
 - 라이선스는 설계 참고 범위로 확인했다. 사용자 압축 프로젝트는 root LICENSE가 없고 부분 third-party 고지만 있어 코드 복사를 권고하지 않는다. 향후 이식은 각 SHA LICENSE/header/NOTICE/전이 의존성과 AGENTS의 출처·THIRD_PARTY_NOTICES 규칙을 다시 확인한다.

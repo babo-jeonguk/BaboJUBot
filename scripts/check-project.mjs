@@ -21,6 +21,21 @@ function isGitIgnored(location) {
   }
 }
 
+// .gitignore의 점 폴더(로컬 조사 캐시·실행 데이터 등)는 checkout에 없으므로 문서가 경로로 가리키지 않는다.
+const ignoredDotFolders = fs
+  .readFileSync(path.join(root, ".gitignore"), "utf8")
+  .split("\n")
+  .map((line) => line.trim())
+  .filter((line) => /^\/?\.[^/*!]+\/$/.test(line))
+  .map((line) => line.replace(/^\//, "").slice(0, -1));
+const ignoredFolderPath = new RegExp(
+  `(?:^|[\\s\`'"(])(?:\\./)?(?:${ignoredDotFolders
+    .map((name) => name.replace(/[.]/g, "\\."))
+    .join("|")})(?![\\w.-])`
+);
+// 그 폴더를 작업 위치로 정하는 도구 정의(agent skill·권한 설정)만 이름을 쓸 수 있다.
+const toolDefinitions = [".agents/", ".opencode/"];
+
 let markdownFiles = 0;
 function inspect(directory) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -41,6 +56,14 @@ function inspect(directory) {
     else if (entry.name.endsWith(".md")) {
       markdownFiles++;
       const content = fs.readFileSync(location, "utf8");
+      const relative = path.relative(root, location).split(path.sep).join("/");
+      if (!toolDefinitions.some((prefix) => relative.startsWith(prefix)))
+        content.split("\n").forEach((line, index) => {
+          assert(
+            !ignoredFolderPath.test(line),
+            `Path to Git-ignored folder ${relative}:${index + 1}`
+          );
+        });
       for (const match of content.matchAll(/\]\(([^)\s]+)\)/g)) {
         const target = match[1];
         if (/^(https?:|mailto:|#)/.test(target)) continue;

@@ -1,6 +1,6 @@
 # issue-97 레퍼런스 조사: 조직 도구 MCP·작업 폴더·파일 산출물
 
-조사일: 2026-11-01. 대상: [#97](https://github.com/babo-jeonguk/BaboJUBot/issues/97), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91). 구현 전 권고이며 확정 계약이나 구현 완료가 아니다. 상세 자료: `.reference-cache/issue-97/`(git 무시). 제품 코드·테스트·설정은 변경하지 않으며 이 문서는 구현 변경과 함께 커밋하도록 둔다.
+조사일: 2026-11-01. 대상: [#97](https://github.com/babo-jeonguk/BaboJUBot/issues/97), 부모 [#91](https://github.com/babo-jeonguk/BaboJUBot/issues/91). 구현 전 권고이며 확정 계약이나 구현 완료가 아니다. 제품 코드·테스트·설정은 변경하지 않으며 이 문서는 구현 변경과 함께 커밋하도록 둔다.
 
 ## Brief
 
@@ -27,7 +27,7 @@
 
 ## 레퍼런스
 
-Discovery는 MCP(3라운드: 기존 표준→SDK/운영 OSS→인증·호환 실패 테스트), 파일(3라운드: 파일/산출물 OSS→저장·격리 부품→보안 권고·실패 테스트), 화면(기존 가이드→공개 DS·인접 말줄임→실제 예제)으로 나눴다. 마지막 탐색은 각각 요청 신원·receipt, 경로/사용 경합·부분 publish, 행 구성·끝부분 보존 패턴의 변형으로 수렴했다. 전수조사나 영구적 포화를 뜻하지 않는다. 후보별 실행 경로와 제외 이유는 `candidates.md`와 `notes/`에 둔다.
+Discovery는 MCP(3라운드: 기존 표준→SDK/운영 OSS→인증·호환 실패 테스트), 파일(3라운드: 파일/산출물 OSS→저장·격리 부품→보안 권고·실패 테스트), 화면(기존 가이드→공개 DS·인접 말줄임→실제 예제)으로 나눴다. 마지막 탐색은 각각 요청 신원·receipt, 경로/사용 경합·부분 publish, 행 구성·끝부분 보존 패턴의 변형으로 수렴했다. 전수조사나 영구적 포화를 뜻하지 않는다.
 
 | 레퍼런스 | 분류 | 고정 SHA | 라이선스 | 깊이·선정 이유 |
 |---|---|---|---|---|
@@ -41,24 +41,24 @@ Discovery는 MCP(3라운드: 기존 표준→SDK/운영 OSS→인증·호환 실
 
 ## 근거
 
-아래 E는 이번 조사에서 확인한 사실이다. 테스트는 실행을 명시하지 않으면 읽기만 했다. 메인이 결정에 쓴 원문·캡처를 재열람한 기록은 `main-verification.md`다.
+아래 E는 이번 조사에서 확인한 사실이다. 테스트는 실행을 명시하지 않으면 읽기만 했다. 메인이 결정에 쓴 원문·캡처를 재열람했다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
 | <a id="E01"></a>E01 | 현행 tool 목록이 설명·입력·출력·Role·단계를 소유하며 HTTP path/body 분해도 제공한다. workspace는 cwd만 있는 nullable 계약이다 | [도구](https://github.com/babo-jeonguk/BaboJUBot/blob/a22c7691733d89e9cbf1669a53ed94045a1e769e/packages/contracts/src/tools.ts#L115-L152), [분해](https://github.com/babo-jeonguk/BaboJUBot/blob/a22c7691733d89e9cbf1669a53ed94045a1e769e/packages/contracts/src/tools.ts#L680-L692), [run](https://github.com/babo-jeonguk/BaboJUBot/blob/a22c7691733d89e9cbf1669a53ed94045a1e769e/packages/contracts/src/run.ts#L188-L201) | 소스 확인 |
 | <a id="E02"></a>E02 | 현행 HTTP digest는 raw params/body JSON의 SHA256. DB는 최신 gate 뒤 agent+key receipt를 검사하고 도구/digest가 같으면 기존 결과를 반환한다 | [HTTP](https://github.com/babo-jeonguk/BaboJUBot/blob/a22c7691733d89e9cbf1669a53ed94045a1e769e/apps/server/src/tools.ts#L156-L173), [toolWrite](https://github.com/babo-jeonguk/BaboJUBot/blob/a22c7691733d89e9cbf1669a53ed94045a1e769e/packages/db/src/tool-calls.ts#L103-L183) | 소스 확인 |
 | <a id="E03"></a>E03 | 본문 산출물은 markdown/text+content이며 결과 제출은 같은 조직 artifact ID를 참조한다 | [계약](https://github.com/babo-jeonguk/BaboJUBot/blob/a22c7691733d89e9cbf1669a53ed94045a1e769e/packages/contracts/src/task.ts#L50-L61), [제출](https://github.com/babo-jeonguk/BaboJUBot/blob/a22c7691733d89e9cbf1669a53ed94045a1e769e/packages/db/src/results.ts#L54-L90) | 소스 확인 |
-| <a id="E04"></a>E04 | 기존 32개 tool input의 JSON Schema 변환과 필드 설명 보존, path/body 분해·organizationId 추가 거부 PASS | `probes/catalog.mjs`, `catalog-log.txt`; Node24.21.0·Zod4.6.7, 설치 없이 키 없는 셸 | 실행 확인 |
+| <a id="E04"></a>E04 | 기존 32개 tool input의 JSON Schema 변환과 필드 설명 보존, path/body 분해·organizationId 추가 거부 PASS | 로컬 probe; Node24.21.0·Zod4.6.7, 설치 없이 키 없는 셸 | 실행 확인 |
 | <a id="E05"></a>E05 | 2026-07-28 HTTP는 GET stream·protocol session을 제거했다. 요청별 POST·Origin 검사·로컬 loopback을 규정한다 | [명세](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/0aab7058fe6471f3d7b0301e13965f10ad9cb198/docs/specification/2026-07-28/basic/transports/streamable-http.mdx#L14-L68) | 문서 주장 |
 | <a id="E06"></a>E06 | SDK는 modern/legacy 모두 요청별 factory를 사용하며 authInfo는 caller 전달값이다. legacy는 sessionIdGenerator undefined다 | [modern](https://github.com/modelcontextprotocol/typescript-sdk/blob/1e608caeb5130b2ad0fa067c84b26a038c1c6e36/packages/server/src/server/createMcpHandler.ts#L791-L798), [legacy](https://github.com/modelcontextprotocol/typescript-sdk/blob/1e608caeb5130b2ad0fa067c84b26a038c1c6e36/packages/server/src/server/createMcpHandler.ts#L331-L375), [인증 전달](https://github.com/modelcontextprotocol/typescript-sdk/blob/1e608caeb5130b2ad0fa067c84b26a038c1c6e36/packages/server/src/server/createMcpHandler.ts#L946-L991) | 소스 확인 |
 | <a id="E07"></a>E07 | SDK 테스트는 raw bearer만 넣으면 anonymous, 검증된 authInfo를 전달하면 client identity라고 assert한다. legacy initialize/call은 별개 인스턴스다 | [auth test](https://github.com/modelcontextprotocol/typescript-sdk/blob/1e608caeb5130b2ad0fa067c84b26a038c1c6e36/packages/server/test/server/createMcpHandler.test.ts#L175-L188), [legacy test](https://github.com/modelcontextprotocol/typescript-sdk/blob/1e608caeb5130b2ad0fa067c84b26a038c1c6e36/packages/server/test/server/createMcpHandler.test.ts#L496-L525) | 소스 확인 |
 | <a id="E08"></a>E08 | MCP는 요청 authorization에 따른 목록과 일정 순서를 허용/권고하며 protocol error와 isError 도구 실행 오류를 구분한다 | [목록](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/0aab7058fe6471f3d7b0301e13965f10ad9cb198/docs/specification/2026-07-28/server/tools.mdx#L62-L75), [오류](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/0aab7058fe6471f3d7b0301e13965f10ad9cb198/docs/specification/2026-07-28/server/tools.mdx#L738-L794) | 문서 주장 |
 | <a id="E09"></a>E09 | filesystem은 문자열 root와 realpath target을 각각 검사한다. 없는 경로에는 생성 fallback이 있다. 일반 readFileContent는 단순 fs.readFile이다 | [validatePath](https://github.com/modelcontextprotocol/servers/blob/194cc86e3ae6400958555bd4116849d822d69263/src/filesystem/lib.ts#L451-L525), [readFileContent](https://github.com/modelcontextprotocol/servers/blob/194cc86e3ae6400958555bd4116849d822d69263/src/filesystem/lib.ts#L556-L561) | 소스 확인 |
 | <a id="E10"></a>E10 | 안전 쓰기 helper는 parent를 동기 chdir/getcwd로 pin하고 leaf descriptor의 lstat/fstat identity를 확인한다. 새 파일은 O_EXCL, overwrite는 확인 뒤 truncate다 | [parent/leaf](https://github.com/modelcontextprotocol/servers/blob/194cc86e3ae6400958555bd4116849d822d69263/src/filesystem/pinned-directory.ts#L156-L280) | 소스 확인 |
-| <a id="E11"></a>E11 | 원본 helper 직접 import로 정상 생성·기존 파일 거부·leaf symlink 생성/덮기 거부·parent 교체 거부 5사례 PASS | `probes/files-pinned.mjs`, `files-run-log.txt`; Node24.21.0·Linux, 키 없는 셸. 파일 등록 API 실행은 아님 | 실행 확인 |
+| <a id="E11"></a>E11 | 원본 helper 직접 import로 정상 생성·기존 파일 거부·leaf symlink 생성/덮기 거부·parent 교체 거부 5사례 PASS | 로컬 probe; Node24.21.0·Linux, 키 없는 셸. 파일 등록 API 실행은 아님 | 실행 확인 |
 | <a id="E12"></a>E12 | MLflow는 같은 디렉터리 staging→copy→os.replace 후 실패 cleanup. 같은 이름 재등록도 replace한다. 실패 stream 테스트는 기존 내용 보존·temp 제거를 assert한다 | [저장](https://github.com/mlflow/mlflow/blob/a1d0c1d6398c28c5b7cbbc0e4ba0e4b28d23eb29/mlflow/store/artifact/local_artifact_repo.py#L94-L170), [실패 test](https://github.com/mlflow/mlflow/blob/a1d0c1d6398c28c5b7cbbc0e4ba0e4b28d23eb29/tests/store/artifact/test_local_artifact_repo.py#L333-L357) | 소스 확인 |
 | <a id="E13"></a>E13 | SEED middle truncate는 폭 측정·끝부분 보존·이분 탐색을 하며, story는 CJK/Latin·100/200/300px·글자 크기를 대조한다 | [hook](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/packages/react-headless/middle-truncate/src/useMiddleTruncate.ts#L29-L140), [story](https://github.com/daangn/seed-design/blob/99efaf5561de6e18557ffeb57fe95428ce066eb3/docs/stories/MiddleTruncate.stories.tsx#L23-L70) | 소스 확인 |
-| <a id="E14"></a>E14 | 공개 SEED List의 토글을 눌러 선택됨 상태를 만들고 1280×900·390×844에서 앞 아이콘/중앙 텍스트/끝 요소를 관찰했다. 메인이 성공 캡처 두 개를 직접 다시 열었다 | [공개 List](https://seed-design.io/react/components/list), `captures/captures.md`·`seed-list-affix-{1280,390}.png` | 실행 확인 |
+| <a id="E14"></a>E14 | 공개 SEED List의 토글을 눌러 선택됨 상태를 만들고 1280×900·390×844에서 앞 아이콘/중앙 텍스트/끝 요소를 관찰했다. 메인이 성공 캡처 두 개를 직접 다시 열었다 | [공개 List](https://seed-design.io/react/components/list), 로컬 캡처 2장(1280·390px) | 실행 확인 |
 
 근거 14행: 소스 확인9·실행 확인3·문서 주장2. 공개 사이트 배포와 고정 SHA가 같다는 증명은 없으며, 실행 관찰은 완성된 파일 산출물 행·viewer 동작이 아니다.
 

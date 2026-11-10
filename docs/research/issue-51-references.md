@@ -1,6 +1,6 @@
 # issue-51 레퍼런스 조사: 연구 지도 그래프
 
-조사일: 2026-10-16 (Asia/Seoul). 대상: [#51](https://github.com/babo-jeonguk/BaboJUBot/issues/51), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 구현 후속 [#56](https://github.com/babo-jeonguk/BaboJUBot/issues/56). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다. 상세 원문·실행 로그·캡처는 `.reference-cache/issue-51/`에 보존하고 Git에서 제외한다.
+조사일: 2026-10-16 (Asia/Seoul). 대상: [#51](https://github.com/babo-jeonguk/BaboJUBot/issues/51), parent [#49](https://github.com/babo-jeonguk/BaboJUBot/issues/49), 구현 후속 [#56](https://github.com/babo-jeonguk/BaboJUBot/issues/56). 구현 전 권고이며 확정 계약이나 구현 결과가 아니다.
 
 결과(2026-10-16): 프로토타입 비교 후 사용자가 React Flow + Dagre(A)를 골랐습니다. 결정과 #56이 따를 배치·편집 규칙은 [#51 결정 댓글](https://github.com/babo-jeonguk/BaboJUBot/issues/51#issuecomment-6209365865), 프로토타입 원본은 `prototype/research-map` 브랜치에 있습니다. 아래 본문은 결정 전 조사 기록입니다.
 
@@ -25,12 +25,12 @@
 | [#1](issue-1-references.md#brief)·[코드 구조](reference-code-structure.md) | 스택·책임 경계 배경 | 과거 #1은 백로그 초기화 전 이슈. 최신 ADR·#49/#51/#56 우선; 예전 storage 명칭·스택 후보를 되살리지 않음 |
 | [Paperclip](paperclip.md)·[실행 모델](agent-runtime-models.md)·[상호작용](agent-interaction-models.md) | 영속 연구 기록·조직 경계의 배경 | 그래프 라이브러리 근거로 재사용하지 않음 |
 
-기존 `.reference-cache/issue-1/`, `issue-50/`, `wayfinder-foundation/`은 조사·이슈 맥락만 재사용했다. 연구 지도 라이브러리 실행 근거는 찾지 못했다. 과거 고정 소스의 동작 주장을 이번 근거로 복제하지 않아 두 ref 간 blob 비교 대상은 없다.
+기존 로컬 조사 캐시(#1, #50, wayfinder 기반 조사)는 조사·이슈 맥락만 재사용했다. 연구 지도 라이브러리 실행 근거는 찾지 못했다. 과거 고정 소스의 동작 주장을 이번 근거로 복제하지 않아 두 ref 간 blob 비교 대상은 없다.
 
 
 ## 레퍼런스
 
-세 관점의 후보는 **21개**다. 후보별 실행 경로·질문·선정/제외 이유·검색어는 `candidates.md`, 관점별 원문은 `notes/`에 있다. 공개 데모 접근과 실제 조작을 구분했다. 일부 후보는 공개 실행 경로를 찾지 못해 self-host 경로 또는 「없음·미확인」으로 남겼다.
+세 관점의 후보는 **21개**다. 공개 데모 접근과 실제 조작을 구분했다. 일부 후보는 공개 실행 경로를 찾지 못해 self-host 경로 또는 「없음·미확인」으로 남겼다.
 
 | 관점 | Saturation 근거 |
 |---|---|
@@ -63,38 +63,38 @@
 
 ## 근거
 
-소스 확인은 구현을 읽었다는 뜻이다. upstream 테스트를 읽은 사실과 이번 probe 실행을 구분한다. 메인은 결정에 쓴 원문을 다시 읽고 `main-verification.md`에 일치·정정을 남겼다. 캡처는 메인이 모두 열어 상태를 확인했고 Git·이슈에 첨부하지 않았다.
+소스 확인은 구현을 읽었다는 뜻이다. upstream 테스트를 읽은 사실과 이번 probe 실행을 구분한다. 메인은 결정에 쓴 원문을 다시 읽고 일치·정정을 확인했다. 캡처는 메인이 모두 열어 상태를 확인했고 Git·이슈에 첨부하지 않았다.
 
 | ID | 관찰 | 출처 | 수준 |
 |---|---|---|---|
 | <a id="E01"></a>E01 | React Flow는 외부 Dagre/ELK/D3와 조합한다. 무료 Dagre 예시는 정적 배치이며 편집 때 자동 재계산하지 않는다. | [배치 안내](https://reactflow.dev/learn/layouting/layouting), [Dagre 예시](https://reactflow.dev/examples/layout/dagre) | 문서 주장 |
 | <a id="E02"></a>E02 | edge style/data/type과 시각 parentId가 있다. parentId는 부모 기준 위치를 계산하는 containment이므로 연구의 주 부모와 의미가 다르다. | [Edge](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/react/src/types/edges.ts#L54-L79), [updateChildNode](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/system/src/utils/store.ts#L214-L264) | 소스 확인 |
 | <a id="E03"></a>E03 | addEdge는 endpoint/handle tuple로 중복 판정한다. 관계 종류·ID는 비교하지 않는다. reconnectEdge 기본은 ID를 바꾼다. | [connectionExists/addEdge](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/system/src/utils/edges/general.ts#L102-L174), [reconnectEdge](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/system/src/utils/edges/general.ts#L209-L244) | 소스 확인 |
-| <a id="E04"></a>E04 | 원본 helper 추출·타입 제거 실행에서 서로 다른 주/보조 의미·ID도 같은 tuple이면 하나만 유지했다. distinct handle은 둘 다 유지. cycle·두 번째 부모는 허용, reconnect ID 변경/보존 대조 통과. | `probes/xyflow-edge-contracts.mjs`, `.log`; Node 24.21.0, 6 assert | 실행 확인 |
+| <a id="E04"></a>E04 | 원본 helper 추출·타입 제거 실행에서 서로 다른 주/보조 의미·ID도 같은 tuple이면 하나만 유지했다. distinct handle은 둘 다 유지. cycle·두 번째 부모는 허용, reconnect ID 변경/보존 대조 통과. | 로컬 probe; Node 24.21.0, 6 assert | 실행 확인 |
 | <a id="E05"></a>E05 | deleteElements는 remove change를 발행하고 연결 edge도 삭제 후보에 포함한다. 폐기 상태 전환과 별개다. upstream 선택·삭제 테스트는 읽었으나 실행하지 않았다. | [deleteElements](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/react/src/hooks/useReactFlow.ts#L163-L203), [getElementsToRemove](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/system/src/utils/graph.ts#L499-L544), [upstream test](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/tests/playwright/e2e/nodes.spec.ts#L171-L196) | 소스 확인 |
 | <a id="E06"></a>E06 | 선택 ID 변화 callback, keyboard 선택·해제·이동·focus autopan·ARIA를 구현한다. 상세 패널은 앱이 붙여야 한다. | [SelectionListener](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/react/src/components/SelectionListener/index.tsx#L17-L58), [NodeWrapper](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/react/src/components/NodeWrapper/index.tsx#L128-L225) | 소스 확인 |
 | <a id="E07"></a>E07 | NodeRenderer는 visible ID를 구독해 개별 갱신을 분리한다. visible edge 계산은 전체 edge 순회가 있어 culling 자체의 비용도 있다. | [NodeRenderer](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/react/src/container/NodeRenderer/index.tsx#L38-L68), [useVisibleEdgeIds](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/packages/react/src/hooks/useVisibleEdgeIds.ts#L15-L54) | 소스 확인 |
-| <a id="E08"></a>E08 | 공식 Dagre 실화면에서 가로 전환·node 2 선택·세로 전환. 11 nodes/9 edges의 다중 root 구조를 확인했다. | [공개 예시](https://example-apps.xyflow.com/react/examples/layout/dagre/index.html); `captures/dagre-{horizontal-selected,vertical}.png`, `public-capture-retry.json` | 실행 확인 |
-| <a id="E09"></a>E09 | cycle 예시에서 B→C 연결은 edge 1→2, C→A 연결 시도는 2를 유지했다. 이는 해당 예시 validator 동작이며 라이브러리 기본 보장이 아니다. | [공개 예시](https://example-apps.xyflow.com/react/examples/interaction/prevent-cycles/index.html); `captures/cycles-rejected.png`, 동일 로그 | 실행 확인 |
-| <a id="E10"></a>E10 | Label에 한국어 입력 시 화면 반영, 390px resize 후 긴 제목에서는 기존 viewport의 노드가 잘렸다. 우클릭 메뉴는 duplicate/delete만 보였다. 연구 상세·폼 설계를 그대로 제공하는 예시가 아니다. | [update](https://example-apps.xyflow.com/react/examples/nodes/update-node/index.html), [context](https://example-apps.xyflow.com/react/examples/interaction/context-menu/index.html); `captures/update-{title,mobile}.png`, `context-menu.png` | 실행 확인 |
-| <a id="E11"></a>E11 | Stress 실화면에서 450 nodes/449 edges, Fit View·Zoom In·change pos·Node 200 선택은 동작했다. 랜덤 위치의 전체 화면은 제목·연결이 겹쳤다. FPS나 연구 데이터 가독성 통과 근거는 아니다. | [공개 stress](https://example-apps.xyflow.com/react/examples/nodes/stress/index.html); `captures/stress-450.png`, 동일 로그 | 실행 확인 |
+| <a id="E08"></a>E08 | 공식 Dagre 실화면에서 가로 전환·node 2 선택·세로 전환. 11 nodes/9 edges의 다중 root 구조를 확인했다. | [공개 예시](https://example-apps.xyflow.com/react/examples/layout/dagre/index.html); 로컬 캡처 | 실행 확인 |
+| <a id="E09"></a>E09 | cycle 예시에서 B→C 연결은 edge 1→2, C→A 연결 시도는 2를 유지했다. 이는 해당 예시 validator 동작이며 라이브러리 기본 보장이 아니다. | [공개 예시](https://example-apps.xyflow.com/react/examples/interaction/prevent-cycles/index.html); 로컬 캡처 | 실행 확인 |
+| <a id="E10"></a>E10 | Label에 한국어 입력 시 화면 반영, 390px resize 후 긴 제목에서는 기존 viewport의 노드가 잘렸다. 우클릭 메뉴는 duplicate/delete만 보였다. 연구 상세·폼 설계를 그대로 제공하는 예시가 아니다. | [update](https://example-apps.xyflow.com/react/examples/nodes/update-node/index.html), [context](https://example-apps.xyflow.com/react/examples/interaction/context-menu/index.html); 로컬 캡처 | 실행 확인 |
+| <a id="E11"></a>E11 | Stress 실화면에서 450 nodes/449 edges, Fit View·Zoom In·change pos·Node 200 선택은 동작했다. 랜덤 위치의 전체 화면은 제목·연결이 겹쳤다. FPS나 연구 데이터 가독성 통과 근거는 아니다. | [공개 stress](https://example-apps.xyflow.com/react/examples/nodes/stress/index.html); 로컬 캡처 | 실행 확인 |
 | <a id="E12"></a>E12 | Cytoscape breadthfirst의 BFS는 edge subset을 검사하지만 root 자동 추론은 전역 connectedEdges, 기본 depthSort는 전역 neighborhood를 읽는다. | [roots](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/src/extensions/layout/breadthfirst.mjs#L43-L86), [defineDagExtremity](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/src/collection/traversing.mjs#L9-L42), [BFS](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/src/collection/algorithms/bfs-dfs.mjs#L81-L100), [depthSort](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/src/extensions/layout/breadthfirst.mjs#L230-L304) | 소스 확인 |
-| <a id="E13"></a>E13 | stable 배포 headless에서 보조 cycle이 root 추론을 바꾸고, roots를 명시해도 다른 보조 edge가 형제 순서를 바꿨다. roots+독립 comparator 대조는 해당 fixture에서 같았다. multi-parent/cycle 수용·missing endpoint 거부·상태 갱신 보존·remove 관계 삭제도 확인했다. | `probes/cytoscape-{3.34.3-run-log,order-overlay-run-log}.txt`, 2개 probe; 8+2 check, Node 24.21.0 | 실행 확인 |
+| <a id="E13"></a>E13 | stable 배포 headless에서 보조 cycle이 root 추론을 바꾸고, roots를 명시해도 다른 보조 edge가 형제 순서를 바꿨다. roots+독립 comparator 대조는 해당 fixture에서 같았다. multi-parent/cycle 수용·missing endpoint 거부·상태 갱신 보존·remove 관계 삭제도 확인했다. | 로컬 probe 2개; 8+2 check, Node 24.21.0 | 실행 확인 |
 | <a id="E14"></a>E14 | Cytoscape move는 존재하는 endpoint만 바꾸며 remove는 연결 edge와 compound descendants도 수집한다. layout/renderer의 parent와 연구 주 부모는 구별해야 한다. | [move](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/src/collection/index.mjs#L748-L797), [remove](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/src/collection/index.mjs#L586-L633) | 소스 확인 |
-| <a id="E15"></a>E15 | 공식 Cytoscape Dagre demo(브라우저 버전 3.34.3, 17 nodes/13 edges)에서 n0를 drag해 (147,235)→(237,295) 이동. 이 demo는 autounselectify이므로 선택·상세 동작 근거로 쓰지 않는다. | [공개 demo](https://js.cytoscape.org/demos/dagre-layout/), [demo 설정](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/documentation/demos/dagre-layout/code.js#L1-L12); `captures/cytoscape-dragged.png`, `cyto-demo-browser.json` | 실행 확인 |
+| <a id="E15"></a>E15 | 공식 Cytoscape Dagre demo(브라우저 버전 3.34.3, 17 nodes/13 edges)에서 n0를 drag해 (147,235)→(237,295) 이동. 이 demo는 autounselectify이므로 선택·상세 동작 근거로 쓰지 않는다. | [공개 demo](https://js.cytoscape.org/demos/dagre-layout/), [demo 설정](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/documentation/demos/dagre-layout/code.js#L1-L12); 로컬 캡처 | 실행 확인 |
 | <a id="E16"></a>E16 | Dagre는 입력 graph별 이전 배치를 보관한다. acyclic.run은 cycle edge를 내부 역전하고 undo는 복원한다. cycle 거부 validator가 아니다. | [layout](https://github.com/dagrejs/dagre/blob/c3ed0802cd98de74c21cff1f754689ebbb0f8dae/lib/layout.ts#L37-L49), [acyclic run](https://github.com/dagrejs/dagre/blob/c3ed0802cd98de74c21cff1f754689ebbb0f8dae/lib/acyclic.ts#L8-L25), [undo](https://github.com/dagrejs/dagre/blob/c3ed0802cd98de74c21cff1f754689ebbb0f8dae/lib/acyclic.ts#L77-L89) | 소스 확인 |
 | <a id="E17"></a>E17 | ELK layout은 Promise 메시지 API. workerFactory/URL을 받지만 Node 기본은 fake worker fallback이어서 비동기 API만으로 별도 thread를 보장하지 않는다. | [ELK API](https://github.com/kieler/elkjs/blob/ff5771d7165445c42c408bb8a090c8035272218c/src/js/elk-api.js#L17-L83), [ELKNode](https://github.com/kieler/elkjs/blob/ff5771d7165445c42c408bb8a090c8035272218c/src/js/main-node.js#L18-L48) | 소스 확인 |
-| <a id="E18"></a>E18 | 50/200/500 가변 크기 노드·3 roots에서 primary-only 배치와 전체 edge 배치를 비교했다. 보조를 넣으면 위치가 바뀌며, 뺀 입력의 재계산은 같았다. Dagre/ELK 모두 cycle 입력을 수용했다. | `probes/layout-engines.mjs`, `layout-run-log.txt`; Node 24.21.0, Dagre 3.1.1/ELK 0.12.0, 2GiB scope | 실행 확인 |
+| <a id="E18"></a>E18 | 50/200/500 가변 크기 노드·3 roots에서 primary-only 배치와 전체 edge 배치를 비교했다. 보조를 넣으면 위치가 바뀌며, 뺀 입력의 재계산은 같았다. Dagre/ELK 모두 cycle 입력을 수용했다. | 로컬 probe; Node 24.21.0, Dagre 3.1.1/ELK 0.12.0, 2GiB scope | 실행 확인 |
 | <a id="E19"></a>E19 | D3 stratify는 여러 root·없는 parent·cycle을 거부한다. forest를 직접 통과시키지 않으므로 virtual root 또는 component별 변환이 필요하다. | [stratify](https://github.com/d3/d3-hierarchy/blob/c4ae7066d5a52e8aeaab24b3f7113e25c38183f2/src/stratify.js#L62-L95) | 소스 확인 |
 | <a id="E20"></a>E20 | flextree는 node별 size accessor를 쓰는 hierarchy 배치다. 렌더러·보조 연결·연구 편집 규칙을 제공하는 API가 아니다. | [flextree](https://github.com/Klortho/d3-flextree/blob/af196220927218bbe7ac6cad8e059f56430befb6/src/flextree.js#L1-L46) | 소스 확인 |
-| <a id="E21"></a>E21 | D3의 multiple roots/cycle/dangling 거부와, flextree의 virtual root로 50/200/500 가변 크기 배치·겹침 0을 확인했다. 노드 box의 겹침이며 edge·label 충돌이나 UI 가독성 측정이 아니다. | `probes/layout-run-log.txt`; D3 3.1.2·flextree 2.1.2 | 실행 확인 |
+| <a id="E21"></a>E21 | D3의 multiple roots/cycle/dangling 거부와, flextree의 virtual root로 50/200/500 가변 크기 배치·겹침 0을 확인했다. 노드 box의 겹침이며 edge·label 충돌이나 UI 가독성 측정이 아니다. | 로컬 probe; D3 3.1.2·flextree 2.1.2 | 실행 확인 |
 | <a id="E22"></a>E22 | xyflow/Cytoscape/Dagre root MIT, ELK package/header의 SPDX와 root EPL2를 확인했다. 자동으로 모두 같은 배포 조건이라고 볼 수 없다. | [xyflow LICENSE](https://github.com/xyflow/xyflow/blob/3d35b57317576b0916c0bfeaaedd573aaacc2839/LICENSE#L1-L21), [Cytoscape LICENSE](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/LICENSE#L1-L19), [Dagre LICENSE](https://github.com/dagrejs/dagre/blob/c3ed0802cd98de74c21cff1f754689ebbb0f8dae/LICENSE#L1-L19), [ELK manifest](https://github.com/kieler/elkjs/blob/ff5771d7165445c42c408bb8a090c8035272218c/package.json#L24-L28), [ELK header](https://github.com/kieler/elkjs/blob/ff5771d7165445c42c408bb8a090c8035272218c/src/js/elk-api.js#L1-L14) | 소스 확인 |
 | <a id="E23"></a>E23 | 자동 배치·펼침/접기 중 일부 공식 예시는 Pro이며 auto-layout 페이지의 라이선스는 xyflow Pro License다. OSS 본체의 MIT와 구분한다. | [Auto Layout Pro](https://reactflow.dev/examples/layout/auto-layout) | 문서 주장 |
 | <a id="E24"></a>E24 | 공식 가이드는 전체 nodes 구독·불안정 callback·무거운 스타일을 피하고, 큰 tree 숨김/단순화를 제안한다. Cytoscape도 라벨·곡선·반투명 비용을 설명한다. | [React Flow 성능](https://reactflow.dev/learn/advanced-use/performance), [접근성](https://reactflow.dev/learn/advanced-use/accessibility), [Cytoscape 성능](https://github.com/cytoscape/cytoscape.js/blob/716a1cb6c6015d57b674abe626deaeb5e817ee30/documentation/md/performance.md#L5-L37) | 문서 주장 |
 
 ### 배치 실행 수치의 해석
 
-`layout-run-log.txt`의 정상 종료 재실행 값을 사용한다. 한 fixture, 1회 warm-up 후 3회 중앙값, Node에서 배치 호출부터 완료까지의 경과 시간이며 렌더링·React commit·FPS·사용자 탐색 시간은 포함하지 않는다. 배치 중 다른 조사 작업의 부하가 있어 순위나 SLA로 일반화하지 않는다. 가변 box는 폭 140–260, 높이 44–92px이며 보조 연결은 약 20% 추가했다(E18/E21). 실제 브라우저 Worker 성능은 미측정이다.
+로컬 배치 probe의 정상 종료 재실행 값을 사용한다. 한 fixture, 1회 warm-up 후 3회 중앙값, Node에서 배치 호출부터 완료까지의 경과 시간이며 렌더링·React commit·FPS·사용자 탐색 시간은 포함하지 않는다. 배치 중 다른 조사 작업의 부하가 있어 순위나 SLA로 일반화하지 않는다. 가변 box는 폭 140–260, 높이 44–92px이며 보조 연결은 약 20% 추가했다(E18/E21). 실제 브라우저 Worker 성능은 미측정이다.
 
 | 엔진 | 50 nodes 주/전체(ms) | 200 nodes 주/전체(ms) | 500 nodes 주/전체(ms) |
 |---|---:|---:|---:|
