@@ -1,4 +1,5 @@
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -175,8 +176,11 @@ describe.each(providers)("%s", (_name, create, id, configVariable) => {
         .filter((source) => inside(connection, source));
     const homeA = path.join(connection, "organizations", a);
     const homeB = path.join(connection, "organizations", b);
-    // Codex는 연결의 로그인 하나를 같이 쓰므로 로그인 전용 폴더도 넣는다. 그 밖의 연결 폴더는 넣지 않는다.
-    const login = id === "codex" ? [path.join(connection, "login")] : [];
+    // Codex·Antigravity는 연결의 로그인 하나를 같이 쓰므로 로그인 전용 폴더도 넣는다. 그 밖의 연결 폴더는 넣지 않는다.
+    const login =
+      id === "codex" || id === "antigravity"
+        ? [path.join(connection, "login")]
+        : [];
     expect(product(mountsA).sort()).toEqual([homeA, ...login].sort());
     expect(product(mountsB).sort()).toEqual([homeB, ...login].sort());
     expect(mountsA).toContain(`type=bind,source=${homeA},target=${homeA}`);
@@ -396,4 +400,124 @@ describe("OpenCode", () => {
     );
     expect(result.stopReason).toBe("completed");
   }, 20000);
+});
+
+describe("Antigravity", () => {
+  // 키링이 없는 컴퓨터·컨테이너에서 agy는 HOME의 이 파일로 로그인한다(1.5.3 실측, #126).
+  const tokenAt = (home: string) =>
+    path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+  const simulator = (root: string) =>
+    createAntigravityProvider({
+      dataDir: root,
+      command: [process.execPath, fixture("antigravity-simulator.mjs")],
+    });
+
+  it("links every organization's login file to the connection's one login and moves an older login there", async () => {
+    const env = await setup();
+    const connection = path.join(env.root, "providers/antigravity");
+    // `pnpm provider:login antigravity`가 연결 폴더에 남긴 로그인.
+    await mkdir(path.dirname(tokenAt(connection)), { recursive: true });
+    await writeFile(tokenAt(connection), '{"synthetic":1}');
+    const organizationId = crypto.randomUUID();
+    const result = await simulator(env.root).adapter.execute(
+      await env.requestFor(organizationId),
+      control()
+    );
+    // 이 시험의 도구 주소는 닿지 않아 실행은 실패하지만, 로그인은 보여야 한다.
+    expect(result.errorCode).toBeUndefined();
+    const original = path.join(connection, "login", "antigravity-oauth-token");
+    expect(await readFile(original, "utf8")).toBe('{"synthetic":1}');
+    // 로그인 명령·준비 확인은 연결 폴더로 돌므로 그 자리도 원본을 가리킨다.
+    expect((await lstat(tokenAt(connection))).isSymbolicLink()).toBe(true);
+    expect(await readlink(tokenAt(connection))).toBe(original);
+    const linked = tokenAt(
+      path.join(connection, "organizations", organizationId)
+    );
+    expect((await lstat(linked)).isSymbolicLink()).toBe(true);
+    expect(await readlink(linked)).toBe(original);
+  }, 20000);
+
+  it("lets the next organization use a login that another organization's run refreshed", async () => {
+    const env = await setup();
+    const connection = path.join(env.root, "providers/antigravity");
+    await mkdir(path.dirname(tokenAt(connection)), { recursive: true });
+    await writeFile(tokenAt(connection), '{"expired":true}');
+    const provider = simulator(env.root);
+    const a = crypto.randomUUID(),
+      b = crypto.randomUUID();
+    await provider.adapter.execute(await env.requestFor(a), control());
+    const original = path.join(connection, "login", "antigravity-oauth-token");
+    // 갱신은 링크를 따라 원본 자리에 쓰인다. 원본이 낡지 않는다.
+    expect(JSON.parse(await readFile(original, "utf8"))).toEqual({
+      expired: false,
+      refreshed: 1,
+    });
+    const result = await provider.adapter.execute(
+      await env.requestFor(b),
+      control()
+    );
+    expect(result.errorCode).toBeUndefined();
+    // 다음 조직은 갱신된 로그인을 읽으므로 다시 갱신하지 않는다.
+    expect(JSON.parse(await readFile(original, "utf8"))).toEqual({
+      expired: false,
+      refreshed: 1,
+    });
+    for (const home of [connection, path.join(connection, "organizations", a)])
+      expect((await lstat(tokenAt(home))).isSymbolicLink()).toBe(true);
+  }, 20000);
+
+  it("reports a run without the connection's login as needing one", async () => {
+    const env = await setup();
+    // 실제 프로그램은 로그인이 없으면 결과를 내지 않고 오류 문구만 남긴 채 끝난다.
+    const result = await simulator(env.root).adapter.execute(
+      await env.requestFor(crypto.randomUUID()),
+      control()
+    );
+    expect(result).toMatchObject({
+      stopReason: "failed",
+      errorCode: "login_required",
+    });
+  }, 20000);
+
+  it("judges readiness by the login that organization runs read", async () => {
+    const env = await setup();
+    const provider = simulator(env.root);
+    const signal = new AbortController().signal;
+    expect(await provider.adapter.checkReadiness(signal)).toEqual({
+      status: "not_ready",
+      reason: "product_login_missing",
+    });
+    const connection = path.join(env.root, "providers/antigravity");
+    const original = path.join(connection, "login", "antigravity-oauth-token");
+    await mkdir(path.dirname(original), { recursive: true });
+    await writeFile(original, '{"synthetic":1}');
+    expect(await provider.adapter.checkReadiness(signal)).toEqual({
+      status: "ready",
+      reason: null,
+    });
+    expect(await readlink(tokenAt(connection))).toBe(original);
+  }, 20000);
+
+  it.skipIf(process.getuid?.() === 0)(
+    "is not ready when the connection's login cannot be rewritten",
+    async () => {
+      const env = await setup();
+      const connection = path.join(env.root, "providers/antigravity");
+      const original = path.join(
+        connection,
+        "login",
+        "antigravity-oauth-token"
+      );
+      await mkdir(path.dirname(original), { recursive: true });
+      await writeFile(original, '{"synthetic":1}');
+      // 갱신한 로그인을 원본에 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다.
+      await chmod(original, 0o400);
+      expect(
+        await simulator(env.root).adapter.checkReadiness(
+          new AbortController().signal
+        )
+      ).toEqual({ status: "not_ready", reason: "check_failed" });
+    },
+    20000
+  );
 });
