@@ -333,4 +333,85 @@ describe("usage numbers outside the contract (#140)", () => {
       costUsd: null,
     });
   });
+
+  /** The resumed exchange that reports a total and then stops before the turn completes. */
+  async function unfinished(
+    ending: "cancel" | "exit",
+    totals: Record<string, unknown>
+  ) {
+    const root = await mkdtemp(path.join(tmpdir(), "codex-usage-"));
+    roots.push(root);
+    const fixture = JSON.parse(
+      await readFile(
+        path.resolve("test-fixtures/codex-resume.synthetic.json"),
+        "utf8"
+      )
+    );
+    const steps: Record<string, any>[] = fixture.steps;
+    const usage = steps.find(
+      (step) => step.frame?.method === "thread/tokenUsage/updated"
+    )!;
+    usage.frame.params.tokenUsage.total = totals;
+    const started = steps.findIndex((step) => step.frame?.id === 3);
+    const rest = steps.filter(
+      (step) => step !== usage && step.frame?.method !== "turn/completed"
+    );
+    rest.splice(rest.indexOf(steps[started]!), 0, usage);
+    // Cancel: the run is cancelled once it reports that work began (after the total). Exit: the program ends without a result.
+    fixture.steps = rest.filter(
+      (step) => ending === "exit" || step.exit === undefined
+    );
+    if (ending === "exit") fixture.steps.push({ exit: 1 });
+    const file = path.join(root, "fixture.json");
+    await writeFile(file, JSON.stringify(fixture));
+    const input = request();
+    input.previousSession = { id: "thread-one", tokens: { inputTokens: 2 } };
+    const controller = new AbortController();
+    return createCodexProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        file,
+      ],
+    }).adapter.execute(input, {
+      signal: controller.signal,
+      emit: async () => {
+        if (ending === "cancel") controller.abort();
+      },
+    });
+  }
+
+  it("keeps the total already reported when the run is cancelled before the turn completes", async () => {
+    using _ = warnings();
+    const result = await unfinished("cancel", {
+      inputTokens: 12,
+      outputTokens: 5,
+      cachedInputTokens: 0.5,
+    });
+    expect(result.stopReason).toBe("cancelled");
+    expect(result.usage).toEqual({
+      inputTokens: null,
+      outputTokens: 5,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+  });
+
+  it("keeps the total already reported when the program ends without completing the turn", async () => {
+    const result = await unfinished("exit", {
+      inputTokens: 12,
+      outputTokens: 5,
+      cachedInputTokens: 3,
+    });
+    expect(result.stopReason).toBe("failed");
+    expect(result.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 5,
+      cacheReadTokens: 3,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+  });
 });

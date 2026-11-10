@@ -1115,4 +1115,35 @@ describe("usage numbers outside the contract (#140)", () => {
     expect(outcome.usage?.inputTokens).toBe(9);
     expect(outcome.usage?.costUsd).toBeNull();
   });
+
+  it("keeps the turns already reported when a cancelled run leaves no new saved cost", async () => {
+    using _ = diagnostics();
+    const root = await home();
+    const input = await resumedFrom(root, costState(0.5, [100, 50, 0, 0]));
+    const controller = new AbortController();
+    const outcome = await (
+      await costPeer(root, {
+        mode: "script",
+        // Background work keeps the run going after the result; Claude saves no new cost row on the way out.
+        frames: [
+          backgroundTask(1),
+          result({ input_tokens: 7, output_tokens: 3 }, 0.7),
+        ],
+        untilStopped: true,
+      })
+    ).adapter.execute(input, {
+      signal: controller.signal,
+      emit: async (event) => {
+        if (JSON.stringify(event).includes("백그라운드")) controller.abort();
+      },
+    });
+    expect(outcome.stopReason).toBe("cancelled");
+    expect(outcome.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: expect.closeTo(0.2, 6),
+    });
+  });
 });

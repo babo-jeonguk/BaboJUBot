@@ -98,7 +98,10 @@ it("uses one private workspace MCP configuration, normalizes usage, and removes 
 
 describe("usage numbers outside the contract (#140)", () => {
   /** A finished conversation whose completed steps report these counts, in order. */
-  async function run(steps: [number, Record<string, unknown>][]) {
+  async function run(
+    steps: [number, Record<string, unknown>][],
+    ending: "result" | "exit" = "result"
+  ) {
     const root = await mkdtemp(path.join(tmpdir(), "agy-usage-"));
     roots.push(root);
     const fixture = path.join(root, "fixture.json");
@@ -120,12 +123,16 @@ describe("usage numbers outside the contract (#140)", () => {
               },
             },
           })),
-          {
-            frame: {
-              event: "result",
-              result: { status: "SUCCESS", conversation_id: "saved" },
-            },
-          },
+          ...(ending === "result"
+            ? [
+                {
+                  frame: {
+                    event: "result",
+                    result: { status: "SUCCESS", conversation_id: "saved" },
+                  },
+                },
+              ]
+            : []),
           { exit: 0 },
         ],
       })
@@ -217,6 +224,29 @@ describe("usage numbers outside the contract (#140)", () => {
       expect.stringMatching(/inputTokens.*invalid_operand/),
       expect.stringMatching(/outputTokens.*overflow/),
       expect.stringMatching(/cacheReadTokens.*invalid_value/),
+    ]);
+  });
+
+  it("keeps the completed steps when the program ends without a result", async () => {
+    using warn = warnings();
+    const result = await run(
+      [
+        [1, { input_tokens: 15, cache_read_tokens: 5, output_tokens: 1.5 }],
+        [2, { input_tokens: 7, cache_read_tokens: 2, output_tokens: 4 }],
+      ],
+      "exit"
+    );
+    expect(result.stopReason).toBe("failed");
+    expect(result.nextSession).toBeNull();
+    expect(result.usage).toEqual({
+      inputTokens: 15,
+      outputTokens: null,
+      cacheReadTokens: 7,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+    expect(warn.lines()).toEqual([
+      expect.stringMatching(/outputTokens.*invalid_value/),
     ]);
   });
 });
