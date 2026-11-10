@@ -14,6 +14,8 @@
 | 선행 조건 | `gh api --method POST repos/<owner>/<repo>/issues/<blocked>/dependencies/blocked_by -F issue_id=<blocker-db-id>` |
 | parent/sub-issue | `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>` |
 
+새 이슈 본문은 [이슈 양식](../../.github/ISSUE_TEMPLATE/)에서 종류(명세·티켓·버그)에 맞는 파일을 뼈대로 쓰고, 양식 머리말의 label을 `--label`로 붙입니다. skill이 상태 label을 따로 정하면 그것을 씁니다. label이 없다는 오류가 나면 [label 표](triage-labels.md)대로 만든 뒤 다시 실행합니다.
+
 skill의 “publish to the issue tracker”는 이슈 생성과 blocker 연결, “fetch the relevant ticket”은 댓글 포함 조회입니다.
 
 이슈는 사용자 저장소에만 만듭니다. fork나 clone에서 `gh`가 upstream parent를 기본 대상으로 잡을 수 있으므로, 세션의 첫 `gh issue create` 전에 `gh repo view --json nameWithOwner`로 대상을 확인하고 사용자 저장소가 아니면 사용자에게 확인합니다. 이미 닫힌 이슈에서는 `gh issue close --comment`가 댓글을 버리고 종료 코드 0을 내므로, 댓글은 먼저 `gh issue comment`로 남깁니다.
