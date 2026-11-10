@@ -31,6 +31,7 @@ import { shutdownBudget } from "./shutdown-budget.ts";
 //   예: {"fake-2":{"capabilities":{"steer":false},"readiness":{"status":"not_ready","reason":"product_login_missing"}}}
 // - PORT, HOST, EMBEDDED_POSTGRES_PORT, BABOJUBOT_HOME
 //   HOST 기본값은 127.0.0.1이다. 인증이 없으므로 외부 주소로 열면 그 네트워크의 누구나 API와 Event stream을 쓴다.
+// - EMBEDDED_POSTGRES_PORT: 내장 Postgres port(기본 54329). 0이면 켤 때 빈 port를 고른다(PORT=0과 같다).
 // - BABOJUBOT_DOCKER_COMMAND·BABOJUBOT_CONTAINER_IMAGE·BABOJUBOT_CONTAINER_NETWORK: 격리 실행의 Docker 설정(아래 containerSettings).
 // - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 프로세스가 끝나기까지의 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
 //   내장 DB면 비상 정지 몫(최대 1.5초, 시한의 절반 이하)을 남기고 정리를 끊는다(shutdown-budget.ts).
@@ -84,12 +85,12 @@ async function openConfiguredDatabase(): Promise<{
       label: "ephemeral embedded Postgres",
     };
   const dataDir = path.join(productHome, "postgres");
-  const port = Number(env.EMBEDDED_POSTGRES_PORT ?? 54329);
+  const configuredPort = Number(env.EMBEDDED_POSTGRES_PORT ?? 54329);
   return {
     handle: await openDatabase({
       embedded: {
         dataDir,
-        port,
+        port: configuredPort === 0 ? undefined : configuredPort,
         persistent: true,
         emergencyStopMs: budget.emergencyMs,
       },

@@ -15,9 +15,9 @@ export {
   clusterUrl,
   emergencyStopMs,
   ephemeralCluster,
-  freePort,
   processIdentity,
   startEmbeddedCluster,
+  type EmbeddedCluster,
   type EmbeddedOptions,
 } from "./embedded.ts";
 
@@ -50,8 +50,7 @@ export async function openDatabase(
 ): Promise<DatabaseHandle> {
   if ("url" in options) return connect(options.url, async () => {});
 
-  const { port } = options.embedded;
-  const stop = await startEmbeddedCluster(options.embedded);
+  const { port, stop } = await startEmbeddedCluster(options.embedded);
   try {
     await ensureDatabase(clusterUrl(port, "postgres"));
     return await connect(clusterUrl(port, databaseName), stop);

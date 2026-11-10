@@ -17,8 +17,6 @@ import { conversationRow } from "./conversations.ts";
 import { agentRow, insertEvent, organizationRow } from "./rows.ts";
 import { agents, conversations, organizations } from "./schema.ts";
 
-export { freePort } from "./client.ts";
-
 export type TestDatabase = DatabaseHandle;
 
 /** 테스트 실행이 띄운 cluster의 port를 담는 환경 변수. vitest globalSetup이 정하고 작업자 프로세스가 물려받는다. */
@@ -38,16 +36,14 @@ const testSettings = [
  */
 export async function startTestCluster(): Promise<() => Promise<void>> {
   const options = await ephemeralCluster();
-  const stop = await startEmbeddedCluster(options, testSettings);
+  const { port, stop } = await startEmbeddedCluster(options, testSettings);
   try {
-    await withClient(clusterUrl(options.port, "postgres"), (client) =>
+    await withClient(clusterUrl(port, "postgres"), (client) =>
       client.query(`create database ${templateName}`)
     );
     // 원본에 연결이 남으면 복제할 수 없으므로 migration 뒤 바로 닫는다.
-    await (
-      await openDatabase({ url: clusterUrl(options.port, templateName) })
-    ).close();
-    process.env[clusterPortEnv] = String(options.port);
+    await (await openDatabase({ url: clusterUrl(port, templateName) })).close();
+    process.env[clusterPortEnv] = String(port);
     return async () => {
       delete process.env[clusterPortEnv];
       await stop();

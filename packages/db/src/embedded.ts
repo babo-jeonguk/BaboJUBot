@@ -1,16 +1,17 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import EmbeddedPostgres, { getBinaries } from "embedded-postgres";
 import pg from "pg";
+import { candidatePort } from "./ports.ts";
 
 /** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 정지 때 dataDir를 지운다. */
 export type EmbeddedOptions = {
   dataDir: string;
-  port: number;
+  /** 듣는 port. 없으면 켤 때 빈 port를 골라 Postgres가 실제로 잡은 번호를 쓴다. */
+  port?: number;
   persistent: boolean;
   /** 프로세스 종료 때 즉시 정지에 쓸 수 있는 시간(ms). 기본 `emergencyStopMs`. 0이면 보내지 않고 다음 시작에 맡긴다. */
   emergencyStopMs?: number;
@@ -28,6 +29,7 @@ export const clusterUrl = (port: number, database: string) =>
 // - 주인: dataDir 하나는 한 프로세스만 쓴다(`acquireOwner`). 만들기·남은 Postgres 정리·켜기·끄기·지우기는 주인만 한다.
 // - 다음 시작: 강제로 끝난 프로세스가 남긴 Postgres는 기록된 주인이 죽었고 그 서버가 이 dataDir를 쓰는 것이 접속으로 확인될
 //   때만 멈춘다. 잠금 파일(postmaster.pid)만으로는 무관한 프로세스와 구별할 수 없다.
+// - port: 정한 port가 없으면 빈 port 후보로 켜고, 그 사이 남이 잡았으면 다른 후보로 다시 켠다. 번호만 미리 받아 두면 다른 프로세스가 먼저 잡을 수 있다.
 const startSeconds = 60;
 // 정상 종료 때의 정지 시한. 서버 정리 시한(main.ts)이 먼저 지나면 프로세스 종료 때 즉시 정지가 따른다.
 const stopSeconds = 30;
@@ -46,8 +48,11 @@ type Lease = { generation: number; previous: Owner | undefined };
 /** 이 프로세스가 켠 postgres. `identity`는 OS가 매긴 프로세스 생성 신원이다(`processIdentity`). */
 type Started = { pid: number; identity: string | undefined };
 
+/** 켠 embedded cluster. `port`는 Postgres가 실제로 듣는 port다. `stop`이 돌아오면 postgres는 끝났다. */
+export type EmbeddedCluster = { port: number; stop: () => Promise<void> };
+
 /**
- * embedded cluster를 띄우고 멈추는 함수를 돌려준다. `stop`이 돌아오면 postgres는 끝났다.
+ * embedded cluster를 띄우고, Postgres가 실제로 듣는 port와 멈추는 함수를 돌려준다(`EmbeddedCluster`).
  * `settings`는 postgres 설정(`이름=값`)이다.
  */
 export async function startEmbeddedCluster(
@@ -58,7 +63,7 @@ export async function startEmbeddedCluster(
     emergencyStopMs: emergencyBudgetMs = emergencyStopMs,
   }: EmbeddedOptions,
   settings: string[] = []
-): Promise<() => Promise<void>> {
+): Promise<EmbeddedCluster> {
   // 설정은 pg_ctl을 거쳐 shell 명령줄에 들어가므로 따옴표가 필요 없는 값만 받는다.
   for (const setting of settings)
     if (!/^[A-Za-z_][A-Za-z0-9_.]*=[A-Za-z0-9_.:/-]+$/.test(setting))
@@ -94,34 +99,54 @@ export async function startEmbeddedCluster(
   };
   process.on("exit", stopOnExit);
   const log = path.join(dataDir, logName);
+  // port를 고르는 경우(`port` 없음) 고른 번호를 다른 프로세스가 먼저 잡았으면 다른 번호로 다시 켠다. 그 밖의 실패는 다시 하지 않는다.
+  const portAttempts = 5;
   try {
-    await fsp.rm(log, { force: true }).catch(() => {});
-    const options = [
-      "-p",
-      String(port),
-      ...settings.flatMap((setting) => ["-c", setting]),
-    ];
-    const code = await run(pgCtl, [
-      "start",
-      "-D",
-      dataDir,
-      "-w",
-      "-t",
-      String(startSeconds),
-      "-l",
-      log,
-      "-o",
-      options.join(" "),
-    ]);
-    if (code !== 0)
-      throw new Error(
-        `embedded Postgres exited before it was ready: ${await logTail(log)}`
-      );
-    // 이 dataDir의 주인은 이 프로세스뿐이므로 잠금 파일의 postgres는 방금 켠 것이다.
-    const running = readPidFile(dataDir);
-    if (running)
-      started = { pid: running.pid, identity: processIdentity(running.pid) };
-    return stop;
+    for (let attempt = 1; ; attempt++) {
+      const chosen = port ?? (await candidatePort());
+      await fsp.rm(log, { force: true }).catch(() => {});
+      // 접속하는 주소(clusterUrl의 127.0.0.1)에서만 듣는다. localhost로 두면 127.0.0.1을 남이 잡았을 때 ::1에서만 듣고 성공으로 켜져, 접속이 그 port를 잡은 다른 프로그램으로 간다.
+      const options = [
+        "-p",
+        String(chosen),
+        "-c",
+        "listen_addresses=127.0.0.1",
+        "-c",
+        "lc_messages=C",
+        ...settings.flatMap((setting) => ["-c", setting]),
+      ];
+      const code = await run(pgCtl, [
+        "start",
+        "-D",
+        dataDir,
+        "-w",
+        "-t",
+        String(startSeconds),
+        "-l",
+        log,
+        "-o",
+        options.join(" "),
+      ]);
+      if (code === 0) {
+        // 이 dataDir의 주인은 이 프로세스뿐이므로 잠금 파일의 postgres는 방금 켠 것이다.
+        const running = readPidFile(dataDir);
+        if (running)
+          started = {
+            pid: running.pid,
+            identity: processIdentity(running.pid),
+          };
+        return { port: chosen, stop };
+      }
+      const tail = await logTail(log);
+      if (
+        port === undefined &&
+        attempt < portAttempts &&
+        portTaken(tail) &&
+        !(await isRunning(pgCtl, dataDir))
+      )
+        continue;
+      throw new Error(`embedded Postgres exited before it was ready: ${tail}`);
+    }
   } catch (error) {
     // 이 dataDir의 주인은 이 프로세스뿐이므로 여기서 도는 postgres는 이번에 켜다 만 것이다.
     await stop().catch((stopError: unknown) =>
@@ -323,6 +348,14 @@ async function logTail(log: string) {
   return text.trim().slice(-1000) || "Postgres wrote no log";
 }
 
+/** Postgres가 127.0.0.1의 그 port를 잡지 못해 끝났는지. 메시지는 Postgres 자체 문구다(lc_messages=C로 켠다). */
+function portTaken(log: string) {
+  return (
+    log.includes('could not bind IPv4 address "127.0.0.1"') &&
+    log.includes("could not create any TCP/IP sockets")
+  );
+}
+
 /** 잠금 파일의 첫 줄은 postgres pid, 넷째 줄은 port다. */
 function readPidFile(
   dataDir: string
@@ -460,13 +493,13 @@ function isAlive(pid: number) {
   }
 }
 
-/** 임시 dataDir와 빈 port. 정지 때 dataDir를 지우며, port를 못 구하면 바로 지운다. 먼저 강제로 끝난 프로세스가 남긴 임시 cluster를 치운다. */
+/** 임시 dataDir. port는 켤 때 고른다(`startEmbeddedCluster`). 정지 때 dataDir를 지운다. 먼저 강제로 끝난 프로세스가 남긴 임시 cluster를 치운다. */
 export async function ephemeralCluster(): Promise<EmbeddedOptions> {
   await removeTemporaryLeftovers();
   const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), temporaryPrefix));
   try {
     acquireOwner(dataDir, false);
-    return { dataDir, port: await freePort(), persistent: false };
+    return { dataDir, persistent: false };
   } catch (error) {
     await removeTemporary(dataDir);
     throw error;
@@ -526,15 +559,4 @@ async function removeTemporaryLeftovers() {
       releaseOwner(dataDir, lease, lease.previous);
     }
   }
-}
-
-export function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as net.AddressInfo;
-      server.close(() => resolve(port));
-    });
-  });
 }
