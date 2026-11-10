@@ -32,7 +32,7 @@
   → settings_changed → 다른 탭 재조회; 상한 변경은 dispatcher.kickProvider
 에이전트 상세 → PUT …/agents/:agentId/provider → db updateAgentProvider(core planAgentProviderChange) → agent.provider_changed → kick
 claimNextRun → lockProviderSlot(core admitsProviderRun·planRunStart) → dispatcher가 run.provider의 adapter 실행
-  → finishRun → kickProvider; 로그인 필요 실패면 ReadinessMonitor.check
+  → finishRun(providersFreed) → applyAfterCommit → kickProvider; 로그인 필요 실패면 ReadinessMonitor.check
 ReadinessMonitor.check → (격리 켜짐) IsolationGate → adapter.checkReadiness → saveProviderReadiness
 격리 켜짐 → run-request place → adapter의 startProcess({ container })
 ```

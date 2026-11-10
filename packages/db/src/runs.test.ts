@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RunResult, WakeReason } from "@babojubot/contracts";
+import type { RunResult, Usage, WakeReason } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ import {
   authenticateRun,
   claimNextRun,
   finishRun,
+  interruptRun,
   listAgentsWithPendingWakes,
   loadRunContext,
   recoverInterruptedRuns,
@@ -27,7 +28,11 @@ import {
 } from "./rows.ts";
 import { organizations, runs } from "./schema.ts";
 import { toolWrite } from "./tool-calls.ts";
-import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import {
+  createTestDatabase,
+  failRunEnd,
+  type TestDatabase,
+} from "./testing.ts";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -250,7 +255,7 @@ describe("wake queue admission", () => {
 
     expect(
       await finishRun(t.db, run1!.run.id, completed, source)
-    ).toMatchObject({ type: "run.finished" });
+    ).toMatchObject({ after: { events: [{ type: "run.finished" }] } });
     const run2 = await claim();
     expect(run2?.wakeReasons.map(messageIdOf)).toEqual([third.id]);
 
@@ -428,16 +433,49 @@ describe("run termination", () => {
     const runId = (await claim(digest))!.run.id;
 
     expect(await authenticateRun(t.db, digest)).toMatchObject({ id: runId });
-    await finishRun(t.db, runId, completed, source);
+    const first = await finishRun(
+      t.db,
+      runId,
+      { ...completed, usage: usage(10) },
+      source
+    );
+    expect(first).toMatchObject({
+      kind: "ok",
+      value: "ended",
+      after: {
+        events: [
+          {
+            type: "run.finished",
+            payload: expect.objectContaining({
+              runId,
+              stopReason: "completed",
+            }),
+          },
+        ],
+        providersFreed: ["fake"],
+      },
+    });
 
+    // 같은 종료를 다시 저장해도(commit 응답을 잃은 재시도) 상태·사용량·Event는 그대로이고 자리를 기다리는 에이전트는 다시 촉진한다.
+    const eventsBefore = await runEventCount(runId);
     expect(
       await finishRun(
         t.db,
         runId,
-        { ...completed, stopReason: "failed" },
+        { ...completed, stopReason: "failed", usage: usage(99) },
         source
       )
-    ).toBeUndefined();
+    ).toEqual({
+      kind: "ok",
+      value: "already_ended",
+      after: { events: [], providersFreed: ["fake"] },
+    });
+    expect(await runEventCount(runId)).toBe(eventsBefore);
+    const [row] = await t.db
+      .select({ status: runs.status, usage: runs.usage })
+      .from(runs)
+      .where(eq(runs.id, runId));
+    expect(row).toEqual({ status: "completed", usage: usage(10) });
     expect(await authenticateRun(t.db, digest)).toBeUndefined();
     expect(
       await appendRunActivity(t.db, runId, {
@@ -447,16 +485,86 @@ describe("run termination", () => {
     ).toBeUndefined();
   });
 
+  it("frees no provider slot for a run that does not exist", async () => {
+    const result = { ...completed };
+    expect(await finishRun(t.db, randomUUID(), result, source)).toEqual({
+      kind: "refused",
+      reason: "not_found",
+    });
+    expect(await interruptRun(t.db, randomUUID(), source)).toEqual({
+      kind: "refused",
+      reason: "not_found",
+    });
+  });
+
+  it("frees the provider the run was admitted on after the agent switched providers", async () => {
+    const { lead, send, claim } = await organization();
+    await send("x");
+    const runId = (await claim())!.run.id;
+    expect(
+      (
+        await updateAgentProvider(t.db, lead.organizationId, lead.id, {
+          provider: "fake-2",
+          model: null,
+        })
+      ).kind
+    ).toBe("ok");
+
+    expect(await finishRun(t.db, runId, completed, source)).toMatchObject({
+      after: { providersFreed: ["fake"] },
+    });
+  });
+
+  it("leaves the run, its usage, its session, and its Events untouched when the end cannot be saved, and saves the same end on retry", async () => {
+    const { send, claim } = await organization();
+    await send("x");
+    const runId = (await claim())!.run.id;
+    const ending: RunResult = {
+      ...completed,
+      usage: usage(7),
+      nextSession: { at: "after" },
+    };
+    const eventsBefore = await runEventCount(runId);
+
+    await failingRunFinishedEvents(runId, async () => {
+      await expect(finishRun(t.db, runId, ending, source)).rejects.toThrow();
+    });
+    const [kept] = await t.db
+      .select({
+        status: runs.status,
+        usage: runs.usage,
+        sessionAfter: runs.sessionAfter,
+      })
+      .from(runs)
+      .where(eq(runs.id, runId));
+    expect(kept).toEqual({
+      status: "running",
+      usage: null,
+      sessionAfter: null,
+    });
+    expect(await runEventCount(runId)).toBe(eventsBefore);
+
+    expect(await finishRun(t.db, runId, ending, source)).toMatchObject({
+      value: "ended",
+    });
+    const [saved] = await t.db
+      .select({ status: runs.status, usage: runs.usage })
+      .from(runs)
+      .where(eq(runs.id, runId));
+    expect(saved).toEqual({ status: "completed", usage: usage(7) });
+    expect(await runEventCount(runId)).toBe(eventsBefore + 1);
+  });
+
   it("ends runs a stopped server left running and hands their wakes to a new run", async () => {
     const { lead, send, claim, listConversation } = await organization();
     const message = await send("x");
     const digest = randomUUID();
     const interrupted = await claim(digest);
 
-    const events = await recoverInterruptedRuns(t.db, source);
+    const after = await recoverInterruptedRuns(t.db, source);
 
     // 같은 DB를 쓰는 앞 테스트가 실행 중으로 남긴 실행 시도도 함께 끝난다.
-    expect(events).toContainEqual(
+    expect(after.events).toContainEqual(
       expect.objectContaining({
         type: "run.finished",
         payload: expect.objectContaining({
@@ -466,9 +574,15 @@ describe("run termination", () => {
         }),
       })
     );
+    expect(after.woken).toContain(lead.id);
+    expect(after.providersFreed).toContain("fake");
     expect(await authenticateRun(t.db, digest)).toBeUndefined();
     // 다시 불러도 이미 끝난 실행 시도는 그대로다.
-    expect(await recoverInterruptedRuns(t.db, source)).toEqual([]);
+    expect(await recoverInterruptedRuns(t.db, source)).toEqual({
+      events: [],
+      woken: [],
+      providersFreed: [],
+    });
     expect(await listAgentsWithPendingWakes(t.db)).toContain(lead.id);
 
     const next = await claim();
@@ -506,4 +620,66 @@ describe("run termination", () => {
     ).toMatchObject({ status: "cancelled", cancelReason: "owner_interrupt" });
     expect(await claim()).toBeUndefined();
   });
+
+  it("keeps the runs it already ended when a later recovery fails, and ends only the rest on the next start", async () => {
+    // 앞 테스트가 남긴 실행 시도를 먼저 정리한다.
+    await recoverInterruptedRuns(t.db, source);
+    const first = await organization();
+    const second = await organization();
+    await first.send("x");
+    await second.send("y");
+    const early = (await first.claim())!.run.id;
+    const late = (await second.claim())!.run.id;
+
+    await failingRunFinishedEvents(late, async () => {
+      await expect(recoverInterruptedRuns(t.db, source)).rejects.toThrow();
+    });
+    const status = async (runId: string) =>
+      (
+        await t.db
+          .select({ status: runs.status })
+          .from(runs)
+          .where(eq(runs.id, runId))
+      )[0]!.status;
+    expect(await status(early)).toBe("server_restart");
+    expect(await status(late)).toBe("running");
+    const earlyEvents = await runEventCount(early);
+
+    const after = await recoverInterruptedRuns(t.db, source);
+    expect(after.events.map((e) => e.payload)).toEqual([
+      expect.objectContaining({ runId: late, stopReason: "server_restart" }),
+    ]);
+    expect(after.woken).toEqual([second.lead.id]);
+    expect(await status(late)).toBe("server_restart");
+    expect(await runEventCount(early)).toBe(earlyEvents);
+  });
+});
+
+/** 실행 시도의 Event 수. */
+async function runEventCount(runId: string) {
+  const { rows } = await t.db.execute<{ count: number }>(
+    sql`select count(*)::int as count from events where payload->>'runId' = ${runId}`
+  );
+  return rows[0]!.count;
+}
+
+/** 그 실행 시도의 종료 Event 기록이 실패하는 동안 `during`을 한다. */
+async function failingRunFinishedEvents(
+  runId: string,
+  during: () => Promise<void>
+) {
+  const restore = await failRunEnd(t.db, runId);
+  try {
+    await during();
+  } finally {
+    await restore();
+  }
+}
+
+const usage = (inputTokens: number): Usage => ({
+  inputTokens,
+  outputTokens: 1,
+  cacheReadTokens: null,
+  cacheWriteTokens: null,
+  costUsd: null,
 });

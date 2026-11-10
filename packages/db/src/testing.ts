@@ -135,3 +135,29 @@ export async function insertLegacyOrganization(
   });
   return { id: organization.id, lead };
 }
+
+/**
+ * 그 실행 시도의 종료 Event 기록이 실패하게 한다. 종료 저장 transaction의 마지막 쓰기가 실패하는 경우다.
+ * 돌려준 함수가 되돌린다. 한 DB에 하나만 걸 수 있다.
+ */
+export async function failRunEnd(
+  db: Database,
+  runId: string
+): Promise<() => Promise<void>> {
+  await db.execute(`
+    create function fail_run_end() returns trigger as $$
+    begin
+      if new.type = 'run.finished' and new.payload->>'runId' = '${runId}' then
+        raise exception 'run end could not be saved';
+      end if;
+      return new;
+    end $$ language plpgsql;
+    create trigger fail_run_end before insert on events
+      for each row execute function fail_run_end();
+  `);
+  return async () => {
+    await db.execute(
+      "drop trigger fail_run_end on events; drop function fail_run_end();"
+    );
+  };
+}

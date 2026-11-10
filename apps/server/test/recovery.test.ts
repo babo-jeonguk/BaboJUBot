@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import net from "node:net";
 import path from "node:path";
 import { once } from "node:events";
 import {
   approvalSummaryListSchema,
+  eventStreamPath,
+  streamFrameSchema,
+  type RuntimeAdapter,
   conversationMessageListSchema,
   conversationPageSchema,
   eventListSchema,
@@ -10,8 +15,15 @@ import {
   runDetailSchema,
   runSummaryListSchema,
 } from "@babojubot/contracts";
+import { planOrganizationCreation } from "@babojubot/core";
+import {
+  claimNextRun,
+  insertOrganizationCreation,
+  type Database,
+} from "@babojubot/db";
 import {
   createTestDatabase,
+  failRunEnd,
   insertLegacyOrganization,
   type TestDatabase,
 } from "@babojubot/db/testing";
@@ -20,12 +32,19 @@ import {
   defaultScriptSelector,
   leadReplyScript,
 } from "@babojubot/runtime";
-import { createGate, holdAfter, writes } from "@babojubot/runtime/testing";
+import {
+  createGate,
+  holdAfter,
+  writes,
+  type Gate,
+} from "@babojubot/runtime/testing";
+import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import {
   calls,
   goal,
+  idle,
   quietCreation,
   scriptedAgents,
   serverHelpers,
@@ -433,3 +452,188 @@ describe("demo Lead flows across a restart right after a stage-changing write", 
     );
   });
 });
+
+// 서버 시작 복구는 실행 중으로 남은 실행 시도를 모두 저장한 뒤에야 Event를 알리고 실행 시도를 촉진한다.
+describe("server start recovery barrier", () => {
+  it("starts no run and publishes nothing until every interrupted run is saved, then publishes the ends before any run starts", async () => {
+    database = await createTestDatabase();
+    const [early, late] = await leftRunning(database.db, 2);
+    const runtime = countingRuntime();
+    // 뒤쪽 실행 시도의 행을 붙잡아 그 복구 저장을 늦춘다.
+    const held = createGate();
+    const holding = holdRow(database.db, late!.runId, held);
+    await held.reached;
+    const port = await freePort();
+    const base = `http://127.0.0.1:${port}`;
+    const http = api(() => base);
+    const starting = startServer({
+      db: database.db,
+      port,
+      runtime: runtime.adapter,
+    });
+    let stream: Stream;
+    try {
+      await until(
+        async () => (await runStatus(early!.runId)) === "server_restart"
+      );
+      stream = await listen(base);
+      // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
+      await http.say(early!.organizationId, "복구 중에 보낸 메시지");
+      await new Promise((r) => setTimeout(r, 300));
+      expect(runtime.executions()).toEqual([]);
+      expect(stream.types().filter((t) => t !== "message.created")).toEqual([]);
+      expect(await runStatus(late!.runId)).toBe("running");
+    } finally {
+      held.open();
+      await holding;
+    }
+    server = await starting;
+    await server.drain();
+    stream.close();
+
+    // 복구된 깨우기는 다시 처리되고, 복구 중에 보낸 메시지는 같은 조직의 다음 실행 시도가 받는다.
+    expect(runtime.executions().sort()).toEqual(
+      [early!.leadId, late!.leadId].sort()
+    );
+    const types = stream.types().filter((t) => t !== "message.created");
+    expect(types.slice(0, 2)).toEqual(["run.finished", "run.finished"]);
+    expect(types.filter((t) => t === "run.finished")).toHaveLength(4);
+    expect(
+      (await http.runs(early!.organizationId)).map((r) => [
+        r.status,
+        r.wakeCount,
+      ])
+    ).toEqual([
+      ["completed", 2],
+      ["server_restart", 1],
+    ]);
+  });
+
+  it("starts no run when a later recovery save fails, and the next start ends only the rest", async () => {
+    database = await createTestDatabase();
+    const [early, late] = await leftRunning(database.db, 2);
+    const runtime = countingRuntime();
+    const restore = await failRunEnd(database.db, late!.runId);
+    await expect(
+      startServer({ db: database.db, port: 0, runtime: runtime.adapter })
+    ).rejects.toThrow();
+    expect(await runStatus(early!.runId)).toBe("server_restart");
+    expect(await runStatus(late!.runId)).toBe("running");
+    expect(runtime.executions()).toEqual([]);
+
+    await restore();
+    server = await startServer({
+      db: database.db,
+      port: 0,
+      runtime: runtime.adapter,
+    });
+    await server.drain();
+    const http = api(() => server!.url);
+    expect(await runStatus(late!.runId)).toBe("server_restart");
+    expect(runtime.executions().sort()).toEqual(
+      [early!.leadId, late!.leadId].sort()
+    );
+    // 앞서 끝낸 실행 시도의 종료는 다시 남지 않는다.
+    expect(
+      (await http.events(early!.organizationId)).filter(
+        (e) => e.type === "run.finished" && e.payload.runId === early!.runId
+      )
+    ).toHaveLength(1);
+  });
+
+  async function runStatus(runId: string) {
+    const { rows } = await database!.db.execute<{ status: string }>(
+      `select status from runs where id = '${runId}'`
+    );
+    return rows[0]?.status;
+  }
+});
+
+/** 조직 `count`개를 만들고 각 Lead의 생성 깨우기를 실행 중인 실행 시도로 남긴다. 서버가 멈춰 남긴 실행 시도와 같다. */
+async function leftRunning(db: Database, count: number) {
+  const source = { newId: randomUUID, now: () => new Date() };
+  const left = [];
+  for (let i = 0; i < count; i++) {
+    const creation = planOrganizationCreation(
+      {
+        name: `복구 장벽 ${i}`,
+        goal: "목표",
+        lead: { provider: "fake", model: null },
+      },
+      { files: [] },
+      source
+    );
+    await insertOrganizationCreation(db, creation);
+    const lead = creation.agents[0]!;
+    const claimed = await claimNextRun(db, lead.id, {
+      tokenDigest: randomUUID(),
+      source,
+    });
+    left.push({
+      organizationId: lead.organizationId,
+      leadId: lead.id,
+      runId: claimed!.run.id,
+    });
+  }
+  return left;
+}
+
+/** 맥락만 읽고 끝나는 가짜 프로바이더. 실행 시도를 받은 에이전트를 순서대로 남긴다. */
+function countingRuntime() {
+  const inner = createScriptedRuntime({ select: () => idle });
+  const executions: string[] = [];
+  return {
+    executions: () => [...executions],
+    adapter: {
+      ...inner,
+      execute: (request, control) => {
+        executions.push(request.identity.agentId);
+        return inner.execute(request, control);
+      },
+    } satisfies RuntimeAdapter,
+  };
+}
+
+/** gate가 열릴 때까지 실행 시도 행을 잠근 transaction. */
+function holdRow(db: Database, runId: string, gate: Gate) {
+  return db.transaction(async (tx) => {
+    await tx.execute(`select id from runs where id = '${runId}' for update`);
+    await gate.wait(new AbortController().signal);
+  });
+}
+
+async function freePort() {
+  const probe = net.createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address() as net.AddressInfo;
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
+
+async function until(check: () => Promise<boolean>) {
+  for (let i = 0; !(await check().catch(() => false)); i++) {
+    if (i > 400) throw new Error("condition never held");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+type Stream = { types: () => string[]; close: () => void };
+
+/** 전체 Event stream을 구독해 받은 Event 종류를 순서대로 모은다. 서버가 듣기 시작할 때까지 다시 시도한다. */
+async function listen(base: string): Promise<Stream> {
+  const types: string[] = [];
+  let socket!: WebSocket;
+  await until(
+    () =>
+      new Promise<boolean>((resolve) => {
+        socket = new WebSocket(base.replace(/^http/, "ws") + eventStreamPath);
+        socket.once("error", () => resolve(false));
+        socket.on("message", (data) => {
+          const frame = streamFrameSchema.parse(JSON.parse(String(data)));
+          if (frame.type === "ready") resolve(true);
+          if (frame.type === "event") types.push(frame.event.type);
+        });
+      })
+  );
+  return { types: () => [...types], close: () => socket.close() };
+}

@@ -1,7 +1,7 @@
 import type { Event } from "@babojubot/contracts";
 import type { RunCancellation } from "@babojubot/core";
-import { refused, stored } from "@babojubot/db";
-import { describe, expect, it } from "vitest";
+import { refused, stored, type AfterCommit } from "@babojubot/db";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyAfterCommit, completeStored } from "./after-commit.ts";
 
 const event = (id: number): Event => ({
@@ -100,6 +100,94 @@ describe("applyAfterCommit", () => {
     const f = fakes();
     await applyAfterCommit(f.deps, { events: [event(3)], woken: ["lead"] });
     expect(f.calls).toEqual(["publish 3", "kick lead"]);
+  });
+});
+
+describe("applyAfterCommit when an effect fails", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const everything: AfterCommit = {
+    events: [event(5)],
+    settingsChanged: true,
+    cancellation: { reason: "owner_interrupt", runIds: ["r1"] },
+    resumedOrganizationId: "A",
+    woken: ["lead", "worker"],
+    providersFreed: ["fake", "fake-2"],
+  };
+  const all = [
+    "publish 5",
+    "settings changed",
+    "cancel r1",
+    "resume A",
+    "resumed A",
+    "kick lead",
+    "kick worker",
+    "kick waiting for fake",
+    "kick waiting for fake-2",
+  ];
+
+  it.each([
+    ["publish", "publish 5"],
+    ["settings", "settings changed"],
+    ["cancel", "cancel r1"],
+    ["resume", "resumed A"],
+    ["kick", "kick lead"],
+    ["kick waiting", "kick waiting for fake"],
+  ] as const)(
+    "keeps the saved result, reports the failed %s effect, and still applies the others in order",
+    async (_name, failing) => {
+      const f = fakes();
+      f.release();
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const fail = (call: string) => {
+        f.calls.push(call);
+        if (call === failing) throw new Error("effect failed");
+      };
+      const deps = {
+        hub: {
+          publish: () => fail("publish 5"),
+          publishSettingsChanged: () => fail("settings changed"),
+        },
+        dispatcher: {
+          cancel: () => fail("cancel r1"),
+          kickOrganization: async () => {
+            f.calls.push("resume A");
+            await Promise.resolve();
+            fail("resumed A");
+          },
+          kick: (agentId: string) => fail(`kick ${agentId}`),
+          kickProvider: async (provider: string) =>
+            fail(`kick waiting for ${provider}`),
+        },
+      };
+
+      expect(
+        await completeStored(deps, stored({ id: "saved" }, { ...everything }))
+      ).toEqual({ kind: "ok", value: { id: "saved" } });
+      expect(f.calls).toEqual(all);
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0]![0])).toMatch(/\[after-commit\]/);
+    }
+  );
+
+  it("keeps going when reporting a failure fails too", async () => {
+    const f = fakes();
+    f.release();
+    vi.spyOn(console, "error").mockImplementation(() => {
+      throw new Error("log sink unavailable");
+    });
+    await applyAfterCommit(
+      {
+        ...f.deps,
+        hub: {
+          ...f.deps.hub,
+          publish: () => {
+            throw new Error("hub down");
+          },
+        },
+      },
+      { ...everything }
+    );
+    expect(f.calls).toEqual(all.slice(1));
   });
 });
 

@@ -19,9 +19,11 @@ import {
   interruptRun,
   listAgentsWithPendingWakes,
   recoverInterruptedRuns,
+  type AfterCommit,
   type ClaimedRun,
   type Database,
 } from "@babojubot/db";
+import { applyAfterCommit } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import { IsolationError } from "./isolation.ts";
 import type { RunRequestAssembler } from "./run-request.ts";
@@ -50,8 +52,8 @@ const cancelled: RunResult = {
  * 깨우기를 실행 시도로 만들어 프로바이더에 맡긴다. admission → 요청 조립(`createRunRequestAssembler`) → 프로바이더 호출·취소 → 종료 저장만 한다.
  * 에이전트당 실행 시도 하나와 프로바이더 연결별 동시 실행 상한은 DB admission(`claimNextRun`)이 보장하고, 이 객체는 같은 프로세스 안에서
  * 에이전트별로 한 줄씩 깨우기를 처리할 뿐이다. 실행 시도는 admission이 고정한 연결의 adapter가 맡는다.
- * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행하고, 종료를 저장한 뒤 같은 연결의 자리를 기다리던
- * 다른 에이전트도 다시 촉진한다.
+ * 실행 시도가 끝나면 그 사이 쌓인 깨우기를 다음 실행 시도 하나로 묶어 이어서 실행한다. 종료 저장이 돌려준 commit 뒤 할 일
+ * (Event 알리기·같은 연결의 자리를 기다리던 에이전트 촉진)은 다른 저장과 같은 `applyAfterCommit`이 한다.
  */
 export class RunDispatcher {
   readonly #db: Database;
@@ -70,10 +72,12 @@ export class RunDispatcher {
   /** 저장하지 못한 종료. `server_restart`는 서버 종료로 프로바이더가 취소되어 돌아온 실행 시도다(`interruptRun`). */
   readonly #pendingFinishes = new Map<
     string,
-    { runId: string; provider: string; result: RunResult | "server_restart" }
+    { runId: string; result: RunResult | "server_restart" }
   >();
   readonly #recovery = new AbortController();
   #closed = false;
+  /** 서버 시작 복구(`start`)의 저장이 모두 끝났다. 그 전의 촉진은 버리고, 복구가 끝난 뒤 대기 깨우기를 모두 다시 읽어 촉진한다. */
+  #recovered = false;
 
   constructor(options: {
     db: Database;
@@ -96,20 +100,25 @@ export class RunDispatcher {
 
   /**
    * 이전 프로세스가 실행 중으로 남긴 실행 시도를 `server_restart`로 끝내 그 깨우기를 다시 대기시키고,
-   * 대기 중인 깨우기가 있는 에이전트를 깨운다. 프로바이더를 부르기 전에 복구를 끝낸다.
+   * 대기 중인 깨우기가 있는 에이전트를 깨운다. 모든 복구 저장이 성공한 뒤에야 모은 commit 뒤 할 일(Event 알리기·촉진)을 하므로,
+   * 복구가 끝나기 전에는 이 경로든 사용자 요청 같은 다른 경로든 실행 시도를 시작하지 않는다. 복구 저장이 실패하면 던지고 촉진하지 않는다.
    */
   async start(): Promise<void> {
-    for (const event of await recoverInterruptedRuns(this.#db, {
+    const recovered = await recoverInterruptedRuns(this.#db, {
       now: this.#now,
-    }))
-      this.#hub.publish(event);
+    });
+    this.#recovered = true;
+    await this.#afterCommit(recovered);
     for (const agentId of await listAgentsWithPendingWakes(this.#db))
       this.kick(agentId);
   }
 
-  /** 에이전트에게 새 깨우기가 생겼다. 이미 처리 중이면 그 처리가 끝난 뒤 다시 확인한다. */
+  /**
+   * 에이전트에게 새 깨우기가 생겼다. 이미 처리 중이면 그 처리가 끝난 뒤 다시 확인한다.
+   * 서버 시작 복구가 끝나기 전이면 아무것도 하지 않는다. 깨우기는 DB에 있고 복구가 끝나면 `start`가 모두 다시 읽는다.
+   */
   kick(agentId: string): void {
-    if (this.#closed) return;
+    if (this.#closed || !this.#recovered) return;
     if (this.#pumps.has(agentId)) {
       this.#kickedAgain.add(agentId);
       return;
@@ -238,14 +247,23 @@ export class RunDispatcher {
     }
   }
 
+  /**
+   * 저장하지 못한 종료를 저장하고 commit 뒤 할 일을 한다. 저장이 실패하면 같은 결과로 다시 저장하며(`#retrying`) 프로바이더를 다시 부르지 않는다.
+   * commit됐지만 응답을 잃었으면 다시 저장할 때 이미 끝난 실행 시도라 기록은 그대로이고, 자리 촉진만 다시 받는다.
+   * commit 뒤 할 일의 실패는 저장 실패가 아니다(`applyAfterCommit`가 남기고 계속한다). 촉진은 첫 조회까지만 기다리므로
+   * 이 에이전트 자신을 다시 촉진해도 그 처리가 끝나기를 기다리지 않는다.
+   */
   async #settle(agentId: string) {
     const pending = this.#pendingFinishes.get(agentId);
     if (!pending) return;
-    const event = await this.#finish(pending.runId, pending.result);
+    const ended = await this.#finish(pending.runId, pending.result);
     this.#pendingFinishes.delete(agentId);
-    if (event) this.#hub.publish(event);
-    // 종료를 저장해 연결의 자리가 비었다. 이 에이전트의 다음 실행 시도와 같은 자리를 두고 admission에서 겨룬다.
-    await this.kickProvider(pending.provider);
+    if (ended.kind === "ok") await this.#afterCommit(ended.after);
+  }
+
+  /** 종료·복구 저장의 commit 뒤 할 일. 다른 저장과 같은 순서·실패 처리를 쓴다. */
+  #afterCommit(after: AfterCommit) {
+    return applyAfterCommit({ hub: this.#hub, dispatcher: this }, after);
   }
 
   async #pump(agentId: string) {
@@ -315,7 +333,6 @@ export class RunDispatcher {
         "server_shutdown";
     this.#pendingFinishes.set(run.agentId, {
       runId: run.id,
-      provider: run.provider,
       // 서버 종료로 끝까지 하지 못한 실행 시도는 받은 깨우기를 다음 실행 시도에 다시 넘긴다. 프로바이더가 끝을 냈으면 그 결과다.
       result:
         shutDown && result.stopReason === "cancelled"

@@ -13,7 +13,7 @@
 | 기억 범위·출처 | [contracts/memory.ts](../../../packages/contracts/src/memory.ts), [core/memory.ts](../../../packages/core/src/memory.ts) `MemoryPort`·`memoryScopeOf` | 기억 API |
 | 기억 저장·회수 | [db/memories.ts](../../../packages/db/src/memories.ts) `writeMemory` | 기억 API |
 | 쓰기 도구의 같은 호출 키 | contracts tools.ts `idempotencyKeyHeader`, db/tool-calls.ts `toolWrite`, server/tools.ts `operationOf` | [같은 호출 키 API](../../../apps/server/test/idempotency.test.ts) |
-| 서버 재시작·정상 종료 때 실행 시도 정리 | core/run.ts `planRunInterruption`, db/runs.ts `interruptRun`·`recoverInterruptedRuns`, conversations.ts `recoverInterruptedSteers`, dispatcher.ts `start` | [DB](../../../packages/db/src/runs.test.ts) `run termination`, 재시작 복구 API |
+| 서버 재시작·정상 종료 때 실행 시도 정리 | core/run.ts `planRunInterruption`, db/runs.ts `interruptRun`·`recoverInterruptedRuns`, conversations.ts `recoverInterruptedSteers`, dispatcher.ts `start` | [DB](../../../packages/db/src/runs.test.ts) `run termination`, [재시작 복구 API](../../../apps/server/test/recovery.test.ts) `server restart recovery`·`server start recovery barrier` |
 | 실행 시도가 받은 깨우기 기록 | db/run-reads.ts `selectRunWakes`, run-views.ts `wakeCount`; migration 0008 | 재시작 복구 API |
 
 ## 연결 경로
@@ -23,7 +23,8 @@
 ```text
 에이전트 상세 폼 → PUT …/agents/:agentId/heartbeat(app) → updateHeartbeat(core planHeartbeatChange) → EventHub
 HeartbeatScheduler.tick → runDueHeartbeats(core planHeartbeat) → EventHub → dispatcher.kick → claimNextRun
-서버 시작 → dispatcher.start → recoverInterruptedRuns → interruptRun(core planRunInterruption) → kick → scheduler 시작
+서버 시작 → dispatcher.start → recoverInterruptedRuns → interruptRun(core planRunInterruption)
+  → applyAfterCommit → listAgentsWithPendingWakes → kick → scheduler 시작
 ```
 
 중복 heartbeat는 `wakes_one_pending_heartbeat_per_agent`와 `planHeartbeat`, 재전달된 입력의 옛 상세는 `run_wakes`, 되풀이된 쓰기는 `toolWrite`의 호출 키 확인에서 시작합니다.
