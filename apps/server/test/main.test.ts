@@ -4,11 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  freePort,
-  createTestDatabase,
-  type TestDatabase,
-} from "@babojubot/db/testing";
+import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
@@ -23,16 +19,16 @@ afterAll(async () => {
 });
 
 it("starts against an external Postgres URL and leaves that Postgres running on shutdown", async () => {
-  const port = await freePort();
   const child = spawn(process.execPath, [main], {
-    env: { ...process.env, DATABASE_URL: external.url, PORT: String(port) },
+    env: { ...process.env, DATABASE_URL: external.url, PORT: "0" },
     stdio: ["ignore", "pipe", "inherit"],
   });
   try {
     const [line] = await once(child.stdout!, "data");
     expect(String(line)).toContain("external Postgres");
+    const url = String(line).match(/BaboJUBot server on (\S+)/)![1]!;
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/organizations`, {
+    const res = await fetch(`${url}/api/organizations`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "외부 DB 조직", goal: "외부 DB 목표" }),
@@ -59,7 +55,7 @@ it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
       await ready(child);
       child.kill(signal);
       const [code] = await once(child, "exit");
-      expect(code).toBe(0);
+      expect(code, child.stderrText()).toBe(0);
       expect(child.stderrText()).toBe("");
     } finally {
       child.kill("SIGKILL");
@@ -78,7 +74,7 @@ it.each(["SIGINT", "SIGHUP"] as const)(
       await ready(child);
       process.kill(-child.pid!, signal);
       const [code] = await once(child, "exit");
-      expect(code).toBe(0);
+      expect(code, child.stderrText()).toBe(0);
       expect(child.stderrText()).toBe("");
     } finally {
       killGroup(child);
@@ -93,7 +89,7 @@ it("stops the embedded Postgres it was starting when a stop signal arrives durin
   const pidFile = path.join(home, "postgres", "postmaster.pid");
   const child = startMain({
     BABOJUBOT_HOME: home,
-    EMBEDDED_POSTGRES_PORT: String(await freePort()),
+    EMBEDDED_POSTGRES_PORT: "0",
   });
   let postgresPid = 0;
   try {
@@ -110,7 +106,7 @@ it("stops the embedded Postgres it was starting when a stop signal arrives durin
     expect(postgresPid).toBeGreaterThan(0);
     child.kill("SIGTERM");
     const [code] = await once(child, "exit");
-    expect(code).toBe(0);
+    expect(code, child.stderrText()).toBe(0);
     expect(isAlive(postgresPid)).toBe(false);
     expect(existsSync(pidFile)).toBe(false);
   } finally {
@@ -122,19 +118,19 @@ it("stops the embedded Postgres it was starting when a stop signal arrives durin
 }, 60_000);
 
 // 시작이 실패하면 그 사이 종료 신호가 왔어도 실패로 끝나야 서비스 관리자가 알 수 있다.
-// Postgres port 0은 initdb 뒤 Postgres 시작에서 반드시 실패한다.
+// Postgres port 범위(1..65535) 밖의 번호는 initdb 뒤 Postgres 시작에서 반드시 실패한다.
 it("ends with a failure when the start fails after a stop signal arrived during startup", async () => {
   const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
   const child = startMain({
     BABOJUBOT_HOME: home,
-    EMBEDDED_POSTGRES_PORT: "0",
+    EMBEDDED_POSTGRES_PORT: "65536",
   });
   try {
     while (!existsSync(path.join(home, "postgres")))
       await new Promise((r) => setTimeout(r, 10));
     child.kill("SIGTERM");
     const [code] = await once(child, "exit");
-    expect(code).toBe(1);
+    expect(code, child.stderrText()).toBe(1);
     expect(child.stderrText()).toContain(
       "embedded Postgres exited before it was ready"
     );
@@ -151,7 +147,7 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
   const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
   const child = startMain({
     BABOJUBOT_HOME: home,
-    EMBEDDED_POSTGRES_PORT: String(await freePort()),
+    EMBEDDED_POSTGRES_PORT: "0",
     BABOJUBOT_SHUTDOWN_TIMEOUT_MS: "2000",
   });
   let postgresPid = 0;
@@ -166,7 +162,7 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
     const stoppedAt = Date.now();
     child.kill("SIGTERM");
     const [code] = await once(child, "exit");
-    expect(code).toBe(1);
+    expect(code, child.stderrText()).toBe(1);
     // 시한은 프로세스가 끝나는 시각까지다. 프로세스 종료 때의 비상 정지도 그 안에 든다.
     expect(Date.now() - stoppedAt).toBeLessThan(2_000);
     expect(child.stderrText()).toContain("did not finish");

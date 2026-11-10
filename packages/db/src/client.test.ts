@@ -11,19 +11,19 @@ import { describe, expect, it } from "vitest";
 import {
   clusterUrl,
   ephemeralCluster,
-  freePort,
   openDatabase,
   processIdentity,
   startEmbeddedCluster,
   withClient,
 } from "./client.ts";
+import { candidatePort } from "./ports.ts";
 import { createTestDatabase } from "./testing.ts";
 
 describe("embedded Postgres lifetime", () => {
   it("closes and removes a non-persistent dataDir after Postgres died on its own", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     const handle = await openDatabase({
-      embedded: { dataDir, port: await freePort(), persistent: false },
+      embedded: { dataDir, persistent: false },
     });
     const client = new pg.Client({ connectionString: handle.url });
     await client.connect();
@@ -46,9 +46,8 @@ describe("embedded Postgres lifetime", () => {
     await fsp.writeFile(path.join(dataDir, "PG_VERSION"), "0\n");
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
     const script = `
-      const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
-      const port = await freePort();
-      await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port, persistent: true } })
+      const { openDatabase } = await import(${JSON.stringify(clientModule)});
+      await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } })
         .then(() => console.log("started"), (error) => console.log("failed:", error.message));
     `;
     try {
@@ -100,8 +99,8 @@ describe("embedded Postgres lifetime", () => {
         "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); setInterval(() => {}, 1000);`,
       }[end];
       const script = `
-        const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
-        await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: true } });
+        const { openDatabase } = await import(${JSON.stringify(clientModule)});
+        await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         console.log("started");
         ${finish}
       `;
@@ -129,7 +128,7 @@ describe("embedded Postgres lifetime", () => {
         expect(isAlive(pid)).toBe(false);
 
         const handle = await openDatabase({
-          embedded: { dataDir, port: await freePort(), persistent: true },
+          embedded: { dataDir, persistent: true },
         });
         await handle.close();
       } finally {
@@ -168,9 +167,9 @@ describe("embedded Postgres lifetime", () => {
         new URL("./client.ts", import.meta.url)
       );
       const script = `
-        const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
+        const { openDatabase } = await import(${JSON.stringify(clientModule)});
         const { default: pg } = await import("pg");
-        const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: true } });
+        const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         ${connect}
         const { rows } = await client.query("select pg_backend_pid() as pid");
         console.log(rows[0].pid);
@@ -224,9 +223,9 @@ describe("embedded Postgres lifetime", () => {
     const script = `
       const events = ["SIGINT", "SIGTERM", "SIGHUP", "beforeExit", "message"];
       const count = () => Object.fromEntries(events.map((e) => [e, process.listenerCount(e)]));
-      const { openDatabase, freePort } = await import(${JSON.stringify(clientModule)});
+      const { openDatabase } = await import(${JSON.stringify(clientModule)});
       const imported = count();
-      const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await freePort(), persistent: false } });
+      const handle = await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: false } });
       const opened = count();
       await handle.close();
       console.log(JSON.stringify({ imported, opened }));
@@ -262,7 +261,7 @@ describe("a Postgres left by a killed process", () => {
     let postmaster = 0;
     try {
       const { child } = await holdDatabase(`
-        const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await db.freePort(), persistent: true } });
+        const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         await handle.db.$client.query("create table kept (value int); insert into kept values (7)");
         console.log("ready");
       `);
@@ -271,7 +270,7 @@ describe("a Postgres left by a killed process", () => {
       expect(isAlive(postmaster)).toBe(true);
 
       const handle = await openDatabase({
-        embedded: { dataDir, port: await freePort(), persistent: true },
+        embedded: { dataDir, persistent: true },
       });
       try {
         expect(isAlive(postmaster)).toBe(false);
@@ -299,13 +298,13 @@ describe("a Postgres left by a killed process", () => {
     let child: ReturnType<typeof spawn> | undefined;
     try {
       ({ child } = await holdDatabase(`
-        await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await db.freePort(), persistent: true } });
+        await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         console.log("ready");
       `));
       postmaster = readPostmaster(dataDir);
       await expect(
         openDatabase({
-          embedded: { dataDir, port: await freePort(), persistent: true },
+          embedded: { dataDir, persistent: true },
         })
       ).rejects.toThrow(`in use by a running process (pid ${child.pid})`);
       expect(isAlive(postmaster)).toBe(true);
@@ -331,7 +330,7 @@ describe("a Postgres left by a killed process", () => {
       );
       await (
         await openDatabase({
-          embedded: { dataDir, port: await freePort(), persistent: true },
+          embedded: { dataDir, persistent: true },
         })
       ).close();
       const unrelated = spawn(
@@ -344,7 +343,7 @@ describe("a Postgres left by a killed process", () => {
       try {
         fs.writeFileSync(
           path.join(dataDir, "postmaster.pid"),
-          `${unrelated.pid}\n${dataDir}\n0\n${await freePort()}\n`
+          `${unrelated.pid}\n${dataDir}\n0\n${await candidatePort()}\n`
         );
         if (owner === "a dead process") {
           const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
@@ -353,7 +352,7 @@ describe("a Postgres left by a killed process", () => {
         }
         await expect(
           openDatabase({
-            embedded: { dataDir, port: await freePort(), persistent: true },
+            embedded: { dataDir, persistent: true },
           })
         ).rejects.toThrow(message);
         expect(isAlive(unrelated.pid!)).toBe(true);
@@ -373,7 +372,7 @@ describe("a Postgres left by a killed process", () => {
     const client = { current: undefined as pg.Client | undefined };
     try {
       const { child, line } = await holdDatabase(`
-        const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await db.freePort(), persistent: true } });
+        const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         console.log(new URL(handle.url).port);
       `);
       postmaster = readPostmaster(dataDir);
@@ -391,7 +390,7 @@ describe("a Postgres left by a killed process", () => {
 
       await expect(
         openDatabase({
-          embedded: { dataDir, port: await freePort(), persistent: true },
+          embedded: { dataDir, persistent: true },
         })
       ).rejects.toThrow(
         /did not stop in 10s\. Stop it with: .*pg_ctl.* stop -D /
@@ -440,11 +439,10 @@ describe("a Postgres left by a killed process", () => {
     await once(gone, "exit");
     recordOwner(dataDir, { pid: gone.pid!, persistent: true });
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
-    const port = await freePort();
     const script = `
       const db = await import(${JSON.stringify(clientModule)});
       const handle = await db
-        .openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: ${port}, persistent: true } })
+        .openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } })
         .catch((error) => {
           console.log("failed: " + error.message);
           process.exit(0);
@@ -502,7 +500,7 @@ describe("a Postgres left by a killed process", () => {
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
     const script = `
       const db = await import(${JSON.stringify(clientModule)});
-      await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, port: await db.freePort(), persistent: true } });
+      await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
       console.log("ready");
       process.stdin.once("data", () => process.exit(1));
     `;
