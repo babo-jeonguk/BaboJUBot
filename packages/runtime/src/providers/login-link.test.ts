@@ -50,8 +50,12 @@ const fixture = (name: string) => path.resolve("test-fixtures", name);
 async function setup() {
   const root = await mkdtemp(path.join(tmpdir(), "babojubot-login-link-"));
   roots.push(root);
-  const requestFor = async (): Promise<RunRequest> => {
+  const requestFor = async (
+    organizationId = crypto.randomUUID()
+  ): Promise<RunRequest> => {
     const input = request();
+    input.identity.organizationId = organizationId;
+    input.context.organization.id = organizationId;
     const shared = path.join(
       root,
       "organizations",
@@ -145,3 +149,86 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
     );
   }
 );
+
+// 링크로 같이 쓰던 컴퓨터가 링크를 더 만들 수 없게 된 장면(권한이 바뀐 Windows, 링크를 모르는 저장소로 옮긴 제품 폴더 등).
+// 이미 있는 링크와 대신 실행이 섞이면 조직마다 다른 로그인을 읽거나 원본이 사라진 링크를 읽는다(PR #135 SPEC-2).
+describe("a machine that stops being able to create links", () => {
+  /** 받은 CODEX_HOME의 로그인을 한 줄씩 남기는 프로그램. */
+  const codexReader = async (root: string) => {
+    const dump = path.join(root, "auth.txt");
+    const script = path.join(root, "read-login.cjs");
+    await writeFile(
+      script,
+      `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(dump)}, (() => { try { return fs.readFileSync(require("node:path").join(process.env.CODEX_HOME, "auth.json"), "utf8"); } catch { return "missing"; } })() + "\\n");`
+    );
+    const last = async () =>
+      (await readFile(dump, "utf8")).trim().split("\n").at(-1);
+    return { command: [process.execPath, script] as [string, string], last };
+  };
+
+  it("keeps every Antigravity organization on the one login, including those that already had a link", async () => {
+    const env = await setup();
+    const connection = path.join(env.root, "providers/antigravity");
+    await mkdir(path.dirname(antigravityToken(connection)), {
+      recursive: true,
+    });
+    await writeFile(antigravityToken(connection), '{"synthetic":1}');
+    const provider = createAntigravityProvider({
+      dataDir: env.root,
+      command: [process.execPath, fixture("antigravity-simulator.mjs")],
+    });
+    const a = crypto.randomUUID(),
+      b = crypto.randomUUID();
+    // 링크를 만들 수 있을 때 조직 A가 먼저 돌아 링크가 생겼다.
+    await provider.adapter.execute(await env.requestFor(a), control());
+    refusal = "EPERM";
+    const signal = new AbortController().signal;
+    for (const organizationId of [b, a]) {
+      const result = await provider.adapter.execute(
+        await env.requestFor(organizationId),
+        control()
+      );
+      expect(result.errorCode).toBeUndefined();
+    }
+    expect(await provider.adapter.checkReadiness(signal)).toEqual({
+      status: "ready",
+      reason: null,
+    });
+    // 다시 링크를 만들 수 있게 되어도 두 조직 모두 같은 로그인을 읽는다.
+    refusal = null;
+    for (const organizationId of [a, b]) {
+      const result = await provider.adapter.execute(
+        await env.requestFor(organizationId),
+        control()
+      );
+      expect(result.errorCode).toBeUndefined();
+    }
+  }, 30000);
+
+  it("runs a Codex organization that already had a link with the login this machine wrote, not an older one", async () => {
+    const env = await setup();
+    const connection = path.join(env.root, "providers/codex");
+    await mkdir(connection, { recursive: true });
+    await writeFile(path.join(connection, "auth.json"), '{"old":1}');
+    const reader = await codexReader(env.root);
+    const provider = createCodexProvider({
+      dataDir: env.root,
+      command: reader.command,
+    });
+    const a = crypto.randomUUID();
+    await provider.adapter.execute(await env.requestFor(a), control());
+    expect(await reader.last()).toBe('{"old":1}');
+    refusal = "EPERM";
+    // 링크를 만들 수 없는 컴퓨터에서 다시 로그인하면 연결 폴더에 보통 파일로 남는다. 이것이 가장 최근 로그인이다.
+    await rm(path.join(connection, "auth.json"));
+    await writeFile(path.join(connection, "auth.json"), '{"new":1}');
+    await provider.adapter.execute(await env.requestFor(a), control());
+    expect(await reader.last()).toBe('{"new":1}');
+    await provider.adapter.execute(await env.requestFor(), control());
+    expect(await reader.last()).toBe('{"new":1}');
+    // 다시 링크를 만들 수 있게 되면 가장 최근 로그인이 원본이 되어 모든 조직이 그것을 읽는다.
+    refusal = null;
+    await provider.adapter.execute(await env.requestFor(a), control());
+    expect(await reader.last()).toBe('{"new":1}');
+  }, 30000);
+});
