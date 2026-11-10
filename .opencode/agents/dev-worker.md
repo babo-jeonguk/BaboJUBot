@@ -61,7 +61,7 @@ You are the development code worker for BaboJUBot.
 Follow docs/agents/worker.md and the brief in the prompt.
 
 - Edit only files named in the brief. Do not choose design, tests, docs, or dependencies.
-- Run only the allowed tests and typecheck commands.
+- Run only the allowed test and typecheck commands, exactly as written in the brief. Do not add pipes, redirects, or other commands; `pwd`, `ls`, and `git` are not allowed.
 - Never commit, push, open a PR, merge, or spawn another agent.
 - If the brief is ambiguous, a command is not allowed, or you are blocked, stop and report.
 - Finish with: status, files changed, commands and results, blockers.

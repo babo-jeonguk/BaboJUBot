@@ -61,6 +61,8 @@ const message = opts.brief ? readFileSync(opts.brief, "utf8") : opts.message;
 const errFile = `${opts.out.replace(/\.jsonl$/, "")}.err`;
 const args = [
   "run",
+  "--agent",
+  "dev-worker",
   "--standalone",
   "--auto",
   "--format",

@@ -16,7 +16,6 @@ pnpm lint
 pnpm check        # Markdown 로컬 링크 검사
 ```
 
-Paseo로 research·implement·review-fix·merge를 네 세션으로 나눠 진행하는 개발 절차는 [개발 오케스트레이션](docs/agents/dev-orchestration.md)을 따릅니다.
 
 ### 데모 시나리오
 
@@ -57,15 +56,3 @@ Paseo로 research·implement·review-fix·merge를 네 세션으로 나눠 진�
 실제 실행 인스턴스의 파일·기억·실험 결과는 `BABOJUBOT_HOME`(기본값은 저장소의 Git 제외 로컬 데이터 폴더) 아래 또는 설정된 외부 저장소에 둡니다. 최종 저장 방식은 후속 이슈에서 결정합니다.
 
 상위 프로젝트의 구조를 참고해 독립적으로 작성합니다. 코드 재사용 시 해당 버전·파일·의존성의 라이선스를 확인합니다. BaboJUBot 자체의 배포 라이선스는 아직 선택하지 않았습니다.
-
-
-## 개발 규칙 및 참고 문서
-
-- **개발 절차 및 오케스트레이션**: [AGENTS.md](AGENTS.md) 및 [docs/agents/dev-orchestration.md](docs/agents/dev-orchestration.md)
-- **문서 지도 (SSOT)**: [docs/README.md](docs/README.md)
-- **시스템 아키텍처 및 불변 조건**: [docs/architecture.md](docs/architecture.md)
-- **구현 기능 기준선**: [docs/features.md](docs/features.md)
-- **코드 지도 (디렉터리 및 코드 진입점)**: [docs/agents/code-map.md](docs/agents/code-map.md)
-- **프로바이더 운영 및 어댑터 안내**: [docs/providers.md](docs/providers.md)
-- **검증 기준**: [docs/agents/verification.md](docs/agents/verification.md)
-- **커밋 메시지 규칙**: [docs/agents/commit-messages.md](docs/agents/commit-messages.md)

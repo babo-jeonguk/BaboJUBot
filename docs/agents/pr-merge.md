@@ -16,7 +16,7 @@
 - 변경한 개념·경로·상태로 README·현재 구현 현황·CONTRIBUTING·GLOSSARY·관련 docs·연결 이슈·parent/epic·후속·의존 이슈를 검색하고 **갱신 / 유지(역사 또는 기준 문서 링크) / 후속 처리**로 분류합니다. 기록 위치는 [문서 지도](../README.md), 경로 변경은 [코드 지도](code-map.md)에 반영합니다.
 - 문서는 PR head에서 수정하고 diff를 확인합니다. 추가 코드 수정도 리뷰·검증합니다. PR 본문은 `/pr`로 [PR 양식](../../.github/PULL_REQUEST_TEMPLATE.md)대로 최종 범위·검증·한계에 맞춰 다시 쓰고, 교정 이력은 댓글에 둡니다.
 - 기존 이슈에 합의·결과를 반영하고 확정 계약과의 충돌을 해소합니다. 병합·완료 상태 변경은 병합 성공 뒤에 합니다. 범위 밖 결함은 회귀·기존 결함·환경 문제로 구분하고, 새 제품 결정은 사용자에게, 새 이슈 게시는 [이슈 규칙](issue-tracker.md)에 따릅니다.
-- Paseo로 진행하면 merge 전에 같은 workspace에서 docs auditor와 issue auditor를 subagent로 띄웁니다. parent가 finding을 갱신·유지·후속으로 분류하고, 승인된 문서 수정만 `dev-doc-worker` subagent에 맡깁니다. auditor 결과는 CI·테스트를 대신하지 않습니다([개발 오케스트레이션](dev-orchestration.md#6-merge)).
+- Paseo로 진행하면 이 대조를 docs·issue auditor에 맡기고 결과를 위 세 가지로 분류합니다([개발 오케스트레이션 §4](dev-orchestration.md#4-auditor-쓰기)).
 
 **완료:** 구현·기록이 일치하고, 유지·후속 처리 및 병합 판단의 근거가 있습니다.
 

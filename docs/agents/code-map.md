@@ -1,6 +1,6 @@
 # 코드 지도
 
-작업에 해당하는 절 파일 하나를 열어 진입점·테스트부터 읽고 `rg`로 호출·계약을 따라갑니다. 표에 없으면 가까운 진입점에서 검색합니다.
+작업에 해당하는 절 파일 하나를 열어 진입점·테스트부터 읽고 검색으로 호출·계약을 따라갑니다. 표에 없으면 가까운 진입점에서 검색합니다.
 현재 구현은 [현재 구현 현황](../current-implementation.md), 요구는 [features](../features.md)·이슈, 목표 책임은 [architecture](../architecture.md), 용어·결정은 [domain](domain.md)을 따릅니다. 검사 실행 명령은 [CONTRIBUTING](../../CONTRIBUTING.md#개발-시작)이 맡습니다.
 
 ## 목차

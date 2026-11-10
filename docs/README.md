@@ -16,22 +16,15 @@
 
 ## 개발 운영
 
-| 질문 | 기준 문서·책임 |
-| --- | --- |
-| 어떻게 로컬 개발 환경을 구성하고 테스트·기여하는가? | [CONTRIBUTING](../CONTRIBUTING.md): 개발 시작·명령·데모 시나리오·DB·운영 설정·CI |
-| 어떤 규칙·문서를 읽는가? | [AGENTS](../AGENTS.md): 공통 규칙·제품 불변 조건 요약·Routing. [CLAUDE](../CLAUDE.md)는 참조만 유지 |
-| 어디에 어떻게 기록하는가? | 이 문서: 문서 책임·작성·갱신 기준 |
-| 용어 충돌·컨텍스트·ADR을 어떻게 다루는가? | [domain](agents/domain.md): 의미 확정·작성 조건 |
-| 수정할 코드·테스트는 어디인가? | [code-map](agents/code-map.md): 영역별 절 파일 목차. 절 파일마다 작업별 진입점·연결 경로·현재 검증 위치 |
-| 구현은 언제 시작·완료하는가? | [implementation](agents/implementation.md): 브랜치→구현→리뷰→커밋→push→PR·외부 리뷰 인계 |
-| 언제 무엇을 검사하고 결과를 재사용하는가? | [verification](agents/verification.md): 검사 시점·완료 검사·결과 재사용 |
-| 리뷰 결과를 어떻게 처리하는가? | [review-fixes](agents/review-fixes.md): finding 판정→실패 유형 검증·수정→재검토·외부 요청 형식 |
-| 코드 수정을 언제 어떻게 OpenCode worker에 맡기는가? | [worker](agents/worker.md): 구현·리뷰 대응 코드 worker의 역할·모델·brief·실행·인수 |
-| 여러 worker를 어떤 세션·profile·Paseo workspace로 배치하는가? | [dev-orchestration](agents/dev-orchestration.md): 4개 상위 세션·subagent·merge 감사 |
-| 병합은 언제·어떻게 완료하는가? | [pr-merge](agents/pr-merge.md): 병합 판단→기록 정합성·최종 검증 확인→병합→후처리·보고 |
-| 이슈·의존성·parent를 어떻게 조작하는가? | [issue-tracker](agents/issue-tracker.md): gh·게시 규칙·skill 작업 매핑 |
-| triage 역할은 어떤 label인가? | [triage-labels](agents/triage-labels.md): 역할·label 대응 |
-| 커밋 메시지는 어떻게 쓰는가? | [commit-messages](agents/commit-messages.md): 형식·언어 |
+작업할 때 읽을 문서는 [AGENTS](../AGENTS.md)의 Routing이 정합니다([CLAUDE](../CLAUDE.md)는 참조만 유지). 개발 문서는 세 층으로 나누고 층마다 맡는 질문이 다릅니다.
+
+| 층 | 맡는 질문 | 문서 |
+| --- | --- | --- |
+| 단계 | 무엇을, 어떤 순서로, 언제 끝났다고 보는가 | [issue-tracker](agents/issue-tracker.md)(+[triage-labels](agents/triage-labels.md)) → [implementation](agents/implementation.md) → [review-fixes](agents/review-fixes.md) → [pr-merge](agents/pr-merge.md) |
+| 도구 | 어떻게 하는가 | [verification](agents/verification.md), [worker](agents/worker.md), [dev-orchestration](agents/dev-orchestration.md), [commit-messages](agents/commit-messages.md), [domain](agents/domain.md), [code-map](agents/code-map.md) |
+| 양식 | 어떤 모양으로 쓰는가 | [PR 양식](../.github/PULL_REQUEST_TEMPLATE.md), [이슈 양식](../.github/ISSUE_TEMPLATE/), [외부 리뷰 요청](agents/review-fixes.md#외부-리뷰-요청-형식), [worker brief](agents/worker.md#3-brief) |
+
+사람용 설치·명령·데모·DB·CI는 [CONTRIBUTING](../CONTRIBUTING.md)이 맡습니다.
 
 ## 배경과 조사 기록
 
@@ -71,6 +64,6 @@
 
 1. **책임:** 한 문서는 한 주된 질문, 한 절은 같은 기준의 하위 질문·단계·비교 축을 맡습니다. 중복 책임은 합치거나 경계를 나눕니다.
 2. **원본:** 사실·규칙은 위 기준 위치에만 정의합니다. 파일·명령·설정의 원본은 코드·manifest·config이며 문서에는 탐색에 필요한 정보만 둡니다. 기능 범위·강제 구조·수정 위치는 각각 features·architecture·code-map이 맡습니다.
-3. **구성:** 절차는 순서·완료 조건, 참고 정보는 필요한 단계에 둡니다. 목차는 링크로 연결합니다. 새 문서는 기존 내용을 이동하거나 새 질문의 책임을 명시한 뒤 이 지도에 추가하고, 작업 시 필수인 문서는 AGENTS Routing에 연결합니다. 빈 문서는 미리 만들지 않습니다.
+3. **구성:** 문서 첫 줄에 다루는 범위와 다루지 않는 것의 위치를 적습니다. 단계 문서는 순서·완료 조건만 쓰고 도구 사용법은 도구 문서로 링크하며, 도구 문서는 단계 순서를 쓰지 않습니다. 양식 파일은 모양만 담습니다. 참고 정보는 필요한 단계에 둡니다. 목차는 링크로 연결합니다. 새 문서는 기존 내용을 이동하거나 새 질문의 책임을 명시한 뒤 이 지도에 추가하고, 작업 시 필수인 문서는 AGENTS Routing에 연결합니다. 빈 문서는 미리 만들지 않습니다.
 4. **갱신:** 기준 변경과 영향받는 링크·요약은 같은 변경에 반영합니다. 인터뷰·조사 원문은 보존하고 달라진 전제에는 현행 기준 링크를 붙입니다.
 5. **검토:** 책임 중복·누락, 현재/과거 구분, 링크를 확인합니다. Git이 추적하지 않는 파일·폴더를 링크하거나 경로로 가리키지 않습니다. 확정 문서의 의미 충돌은 [도메인 규칙](agents/domain.md#모호성과-충돌-보고)에 따라 근거와 함께 보고합니다.
