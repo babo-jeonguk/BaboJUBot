@@ -6,7 +6,7 @@ import {
   providerReadinessCheckSchema,
   updateProviderLimitInputSchema,
 } from "./provider.ts";
-import { usageSchema } from "./run.ts";
+import { usageSchema } from "./usage.ts";
 import { createOrganizationInputSchema } from "./organization.ts";
 
 describe("provider choice", () => {

@@ -7,6 +7,9 @@ import type {
   SteerMessage,
   SteerOutcome,
 } from "@babojubot/contracts";
+import { subtractUsage, usageAmount } from "@babojubot/contracts";
+import type { UsageUnit } from "@babojubot/contracts";
+import { providerUsage } from "./usage.ts";
 import {
   startProcess,
   probeTimeoutMs,
@@ -20,8 +23,6 @@ import { placeAttempt } from "./container.ts";
 import { connectionFolders } from "./folders.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
-const count = (v: unknown) =>
-  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 const failure = (): RunResult => ({
   stopReason: "failed",
   error: "프로바이더 실행이 실패했습니다.",
@@ -497,7 +498,7 @@ export function createOpenCodeProvider(options: {
             stopReason: "completed",
             error: null,
             summary: null,
-            usage: sessionUsage(before, after),
+            usage: sessionUsage(connectionId, before, after),
             nextSession: { id },
           };
         } finally {
@@ -544,7 +545,12 @@ function isFree(model: Record<string, unknown>) {
     )
   );
 }
+/**
+ * 실행 전·후 세션 누계의 차이. 실행 후 값이 없으면 보고 안 됨이고, 실행 전 값이 보고 안 됐으면 0으로 본다(새 세션).
+ * 잘못된 값과 줄어든 누계는 그 항목만 비운다.
+ */
 function sessionUsage(
+  provider: string,
   before: Record<string, unknown>,
   after: Record<string, unknown>
 ): Usage {
@@ -552,13 +558,13 @@ function sessionUsage(
     a = object(after.tokens),
     bc = object(b.cache),
     ac = object(a.cache);
-  const delta = (a: unknown, b: unknown) =>
-    count(a) === null ? null : Math.max(0, (a as number) - (count(b) ?? 0));
-  return {
-    inputTokens: delta(a.input, b.input),
-    outputTokens: delta(a.output, b.output),
-    cacheReadTokens: delta(ac.read, bc.read),
-    cacheWriteTokens: delta(ac.write, bc.write),
-    costUsd: delta(after.cost, before.cost),
-  };
+  const delta = (unit: UsageUnit, a: unknown, b: unknown) =>
+    subtractUsage(unit, usageAmount(unit, a), usageAmount(unit, b) ?? 0);
+  return providerUsage(provider, {
+    inputTokens: delta("tokens", a.input, b.input),
+    outputTokens: delta("tokens", a.output, b.output),
+    cacheReadTokens: delta("tokens", ac.read, bc.read),
+    cacheWriteTokens: delta("tokens", ac.write, bc.write),
+    costUsd: delta("usd", after.cost, before.cost),
+  });
 }

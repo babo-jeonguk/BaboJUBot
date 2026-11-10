@@ -1,7 +1,7 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCodexProvider } from "./codex.ts";
 import { request } from "./test-support.ts";
 const roots: string[] = [];
@@ -193,4 +193,144 @@ it("reads the app-server model catalog without starting a model turn", async () 
   expect(await provider.listModels!(new AbortController().signal)).toEqual([
     { id: "model-one", label: "Model One" },
   ]);
+});
+
+type Saved = Record<string, number | string | null>;
+describe("usage numbers outside the contract (#140)", () => {
+  /** The synthetic exchange with Codex's cumulative totals replaced, run on the saved session `thread-one`. */
+  async function run(
+    mode: "app-server" | "exec",
+    totals: Record<string, unknown>,
+    saved: Saved
+  ) {
+    const root = await mkdtemp(path.join(tmpdir(), "codex-usage-"));
+    roots.push(root);
+    const source = path.resolve(
+      mode === "exec"
+        ? "test-fixtures/codex-exec.synthetic.json"
+        : "test-fixtures/codex-resume.synthetic.json"
+    );
+    const fixture = JSON.parse(await readFile(source, "utf8"));
+    for (const step of fixture.steps) {
+      if (step.frame?.method === "thread/tokenUsage/updated")
+        step.frame.params.tokenUsage.total = totals;
+      if (step.frame?.type === "turn.completed") step.frame.usage = totals;
+    }
+    const file = path.join(root, "fixture.json");
+    await writeFile(file, JSON.stringify(fixture));
+    const input = request();
+    input.previousSession = { id: "thread-one", tokens: saved };
+    return createCodexProvider({
+      dataDir: root,
+      mode,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        file,
+      ],
+    }).adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+  }
+  const warnings = () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    return {
+      lines: () => warn.mock.calls.map((call) => call.join(" ")),
+      [Symbol.dispose]: () => warn.mockRestore(),
+    };
+  };
+
+  it("does not take a decreased total as zero and keeps a cache larger than the input", async () => {
+    using warn = warnings();
+    const result = await run(
+      "app-server",
+      { inputTokens: 100, outputTokens: 90, cachedInputTokens: 120 },
+      { outputTokens: 100 }
+    );
+    expect(result.stopReason).toBe("completed");
+    expect(result.nextSession?.id).toBe("thread-one");
+    expect(result.usage).toEqual({
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: 120,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+    expect(warn.lines()).toEqual([
+      expect.stringMatching(/inputTokens.*negative_result/),
+      expect.stringMatching(/outputTokens.*negative_result/),
+    ]);
+  });
+
+  it("leaves a bad cache and the input that needs it unreported, and the next run does not read the bad total as unreported", async () => {
+    using warn = warnings();
+    const first = await run(
+      "app-server",
+      { inputTokens: 10, outputTokens: 4, cachedInputTokens: 1.5 },
+      {}
+    );
+    expect(first.stopReason).toBe("completed");
+    expect(first.usage).toEqual({
+      inputTokens: null,
+      outputTokens: 4,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+    expect(warn.lines()).toEqual([
+      expect.stringMatching(/inputTokens.*invalid_operand/),
+      expect.stringMatching(/cacheReadTokens.*invalid_value/),
+    ]);
+    const second = await run(
+      "app-server",
+      { inputTokens: 20, outputTokens: 9, cachedInputTokens: 6 },
+      first.nextSession!.tokens as Saved
+    );
+    expect(second.usage).toEqual({
+      inputTokens: null,
+      outputTokens: 5,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+  });
+
+  it("keeps reading an unreported baseline as zero, and a total as unreported when it was not reported", async () => {
+    const result = await run(
+      "app-server",
+      { inputTokens: 12, outputTokens: 5 },
+      { inputTokens: 2, outputTokens: null }
+    );
+    expect(result.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+  });
+
+  it("applies the same rules to the exec alternative", async () => {
+    using _ = warnings();
+    const result = await run(
+      "exec",
+      {
+        input_tokens: 100,
+        cached_input_tokens: 120,
+        output_tokens: Number.MAX_SAFE_INTEGER + 1,
+        cache_write_input_tokens: 3,
+      },
+      { input_tokens: 0, cache_write_input_tokens: 5 }
+    );
+    expect(result.stopReason).toBe("completed");
+    expect(result.nextSession?.id).toBe("exec-thread");
+    expect(result.usage).toEqual({
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: 120,
+      cacheWriteTokens: null,
+      costUsd: null,
+    });
+  });
 });

@@ -18,7 +18,7 @@ import {
   type Script,
 } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, idle, scriptedAgents } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
@@ -404,5 +404,108 @@ describe("usage in the run detail", () => {
       ...defaultFakeUsage,
       costUsd: null,
     });
+  });
+});
+
+describe("usage numbers outside the contract (#140)", () => {
+  it("keeps a successful result, its next session and the other figures, and leaves only the bad figure unreported", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const previous = new Map<string, unknown[]>();
+    try {
+      await serverWith({
+        wrap: (adapter) => ({
+          ...adapter,
+          async execute(request, control) {
+            const list = previous.get(request.identity.organizationId) ?? [];
+            list.push(request.previousSession);
+            previous.set(request.identity.organizationId, list);
+            const result = await adapter.execute(request, control);
+            if (bodies(request.wakeReasons).includes("잘못된 사용량"))
+              return {
+                ...result,
+                nextSession: { id: `session-${request.identity.runId}` },
+                usage: { ...defaultFakeUsage, outputTokens: 1.5, costUsd: -1 },
+              };
+            return {
+              ...result,
+              nextSession: { id: `session-${request.identity.runId}` },
+            };
+          },
+        }),
+      });
+      const bad = await createOrganization("이상값 조직");
+      const good = await createOrganization("정상 조직");
+      await send(bad.id, "잘못된 사용량");
+      await send(good.id, "정상 사용량");
+      await t!.drain();
+      const latest = async (orgId: string) => {
+        const [run] = await runsOf(orgId);
+        return runDetailSchema.parse(
+          await get(`/api/organizations/${orgId}/runs/${run!.id}`)
+        );
+      };
+      const badRun = await latest(bad.id);
+      expect(badRun.status).toBe("completed");
+      expect(badRun.error).toBeNull();
+      expect(badRun.usage).toEqual({
+        ...defaultFakeUsage,
+        outputTokens: null,
+        costUsd: null,
+      });
+      expect((await latest(good.id)).usage).toEqual(defaultFakeUsage);
+      const diagnostics = warn.mock.calls.map((call) => call.join(" "));
+      expect(diagnostics).toEqual([
+        expect.stringMatching(
+          new RegExp(`${badRun.id}.*outputTokens.*invalid_value`)
+        ),
+        expect.stringMatching(
+          new RegExp(`${badRun.id}.*costUsd.*invalid_value`)
+        ),
+      ]);
+      // The session that run saved is the one the organization's next run continues; the other organization keeps its own.
+      await send(bad.id, "다음 실행");
+      await send(good.id, "다음 실행");
+      await t!.drain();
+      expect(previous.get(bad.id)!.at(-1)).toEqual({
+        id: `session-${badRun.id}`,
+      });
+      const goodRun = (await runsOf(good.id))[1]!;
+      expect(previous.get(good.id)!.at(-1)).toEqual({
+        id: `session-${goodRun.id}`,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("still rejects a result that breaks another part of the contract", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await serverWith({
+        wrap: (adapter) => ({
+          ...adapter,
+          async execute(request, control) {
+            const result = await adapter.execute(request, control);
+            if (!bodies(request.wakeReasons).includes("깨진 종료"))
+              return result;
+            return {
+              ...result,
+              stopReason: "finished" as never,
+              usage: { ...defaultFakeUsage, outputTokens: -1 },
+            };
+          },
+        }),
+      });
+      const org = await createOrganization("계약 위반 조직");
+      await send(org.id, "깨진 종료");
+      await t!.drain();
+      const [run] = await runsOf(org.id);
+      expect(run!.status).toBe("failed");
+      expect(run!.error).toBe(
+        "프로바이더가 계약 밖의 종료 결과를 돌려주었습니다."
+      );
+    } finally {
+      error.mockRestore();
+    }
   });
 });

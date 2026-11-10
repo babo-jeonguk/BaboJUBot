@@ -11,9 +11,18 @@ import type {
   RuntimeAdapter,
   SteerMessage,
   SteerOutcome,
+  UsageAmount,
+  UsageField,
+} from "@babojubot/contracts";
+import {
+  addUsage,
+  subtractUsage,
+  unreportedUsage,
+  usageAmount,
 } from "@babojubot/contracts";
 
 import { z } from "zod";
+import { providerUsage } from "./usage.ts";
 import {
   startProcess,
   probeTimeoutMs,
@@ -54,6 +63,7 @@ type ClaudeAttempt = z.infer<typeof launchSchema> & {
 };
 /** 실행 시도마다 같은 연결의 값. */
 type ClaudeConnection = {
+  id: string;
   folders: ReturnType<typeof connectionFolders>;
   command: readonly [string, ...string[]];
   /** 그 제품 폴더로 띄우는 프로그램 환경. */
@@ -68,18 +78,31 @@ const failed = (): RunResult => ({
   usage: null,
   nextSession: null,
 });
-const difference = (after: number | null, baseline: number | null) =>
-  after === null || baseline === null ? null : Math.max(0, after - baseline);
-/** Claude's saved totals after the run minus the baseline for this run, field by field. */
-const runUsage = (after: ClaudeSessionCost, baseline: ClaudeSessionCost) => ({
-  inputTokens: difference(after.inputTokens, baseline.inputTokens),
-  outputTokens: difference(after.outputTokens, baseline.outputTokens),
-  cacheReadTokens: difference(after.cacheReadTokens, baseline.cacheReadTokens),
-  cacheWriteTokens: difference(
+/**
+ * Claude's saved totals after the run minus the baseline for this run, field by field. A field either side did not save stays unreported;
+ * a total that went down is not taken as zero.
+ */
+const runUsage = (
+  after: ClaudeSessionCost,
+  baseline: ClaudeSessionCost
+): Record<UsageField, UsageAmount> => ({
+  inputTokens: subtractUsage("tokens", after.inputTokens, baseline.inputTokens),
+  outputTokens: subtractUsage(
+    "tokens",
+    after.outputTokens,
+    baseline.outputTokens
+  ),
+  cacheReadTokens: subtractUsage(
+    "tokens",
+    after.cacheReadTokens,
+    baseline.cacheReadTokens
+  ),
+  cacheWriteTokens: subtractUsage(
+    "tokens",
     after.cacheWriteTokens,
     baseline.cacheWriteTokens
   ),
-  costUsd: difference(after.costUsd, baseline.costUsd),
+  costUsd: subtractUsage("usd", after.costUsd, baseline.costUsd),
 });
 /** 연결 폴더의 제품 로그인 토큰이 있으면 환경에 넣는다. 모든 조직이 이 로그인 하나를 쓴다. 없어도 프로그램에 다른 로그인이 있을 수 있으므로 막지 않는다. */
 async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
@@ -110,6 +133,7 @@ export function createClaudeProvider(
       ...(process.getuid?.() === 0 ? { IS_SANDBOX: "1" } : {}),
     });
   const connection: ClaudeConnection = {
+    id,
     folders,
     command,
     environment,
@@ -300,10 +324,9 @@ async function executeClaude(
       sessionId: string | undefined;
     // Claude가 마지막으로 알린 살아 있는 백그라운드 일의 수(ambient 제외). 시작·끝 신호를 짝짓지 않고 이 목록을 그대로 쓴다.
     let background = 0;
-    let inputTokens: number | null = null,
-      outputTokens: number | null = null,
-      cacheReadTokens: number | null = null,
-      cacheWriteTokens: number | null = null;
+    /** 턴마다 보고된 사용량의 합과, 세션 누계 비용에서 뺀 이 실행 시도의 비용. 잘못된 턴이 섞인 합은 되살아나지 않는다. */
+    // 비용은 합이 아니라 세션 누계 차이이므로 마지막 result의 누계가 앞의 값을 대신한다.
+    const reported: Record<UsageField, UsageAmount> = { ...unreportedUsage };
     /** Claude's saved cost to subtract for this run; undefined means unknown. */
     const baseline = (): ClaudeSessionCost | undefined => {
       if (
@@ -367,21 +390,23 @@ async function executeClaude(
         // result 프레임의 세션 ID가 init보다 우선한다.
         if (typeof frame.session_id === "string") sessionId = frame.session_id;
         const usage = frame.usage as Record<string, unknown> | undefined;
-        const number = (n: unknown) =>
-          typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
         // 스트리밍 입력 모드에서 usage는 턴마다이고 total_cost_usd는 이어 간 세션까지 포함한 누계다.
-        const total = number(frame.total_cost_usd);
         const sessionBaseline = baseline();
-        const add = (current: number | null, n: unknown) => {
-          const value = number(n);
-          return value === null ? current : (current ?? 0) + value;
+        const add = (field: UsageField, raw: unknown) => {
+          reported[field] = addUsage(
+            "tokens",
+            reported[field],
+            usageAmount("tokens", raw)
+          );
         };
-        inputTokens = add(inputTokens, usage?.input_tokens);
-        outputTokens = add(outputTokens, usage?.output_tokens);
-        cacheReadTokens = add(cacheReadTokens, usage?.cache_read_input_tokens);
-        cacheWriteTokens = add(
-          cacheWriteTokens,
-          usage?.cache_creation_input_tokens
+        add("inputTokens", usage?.input_tokens);
+        add("outputTokens", usage?.output_tokens);
+        add("cacheReadTokens", usage?.cache_read_input_tokens);
+        add("cacheWriteTokens", usage?.cache_creation_input_tokens);
+        reported.costUsd = subtractUsage(
+          "usd",
+          usageAmount("usd", frame.total_cost_usd),
+          sessionBaseline === undefined ? null : sessionBaseline.costUsd
         );
         // 실제 프로그램은 오류에도 subtype을 success로 낸다.
         const success = frame.subtype === "success" && frame.is_error !== true;
@@ -389,18 +414,8 @@ async function executeClaude(
           stopReason: success ? "completed" : "failed",
           error: success ? null : "프로바이더 실행이 실패했습니다.",
           summary: null,
-          usage: {
-            inputTokens,
-            outputTokens,
-            cacheReadTokens,
-            cacheWriteTokens,
-            costUsd:
-              total === null ||
-              sessionBaseline === undefined ||
-              sessionBaseline.costUsd === null
-                ? null
-                : Math.max(0, total - sessionBaseline.costUsd),
-          },
+          // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+          usage: null,
           nextSession:
             success && typeof frame.session_id === "string"
               ? {
@@ -477,7 +492,7 @@ async function executeClaude(
         after.line === before?.line
       )
         return null;
-      return runUsage(after, sessionBaseline);
+      return providerUsage(connection.id, runUsage(after, sessionBaseline));
     };
     try {
       if (control.signal.aborted) cancel();
@@ -493,7 +508,7 @@ async function executeClaude(
       const usage =
         control.signal.aborted || !hasResult
           ? await savedUsage()
-          : result.usage;
+          : providerUsage(connection.id, reported);
       if (control.signal.aborted)
         return {
           ...failed(),
@@ -542,7 +557,7 @@ async function executeClaude(
         const facts = await claudeSessionFacts(home, result.nextSession.id);
         if (facts) result.sessionMaintenance = facts;
       }
-      return result;
+      return { ...result, usage };
     } finally {
       clearTimeout(startup);
       control.signal.removeEventListener("abort", cancel);
