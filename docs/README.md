@@ -56,6 +56,7 @@
 
 - [프로바이더 운영 안내](providers.md): 연결 설정, 제품 로그인, 정리, 압축, 수동 실제 시험.
 - [#98–101 구현 근거](research/issue-98-101-implementation.md): 원문 재확인, 확정 결정, 검증 범위.
+- [#154 실모델 장애 검사 기록](research/issue-154-chaos-verification.md): 대상 커밋·환경·명령·결과·미실행 범위, 발견한 결함.
 - [OpenCode 2.x 지침 주입 조사](research/opencode-2-instructions.md): 기본 지침 보존과 세션 지침 API 추가.
 - [서버 종료 순서 조사](research/graceful-shutdown-references.md): 종료 신호를 누가 받고 DB를 언제 닫는지, embedded-postgres 종료 hook 처리.
 - [내장 Postgres 수명 조사](research/embedded-postgres-lifecycle-references.md): 강제 종료 뒤 남은 DB 정리, pg_ctl로 켜고 끄기, Windows 정지와 관리자 계정.

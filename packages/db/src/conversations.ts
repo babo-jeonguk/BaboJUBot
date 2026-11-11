@@ -413,8 +413,9 @@ export async function settleSteer(
 }
 
 /**
- * 서버가 멈춰 끼워 넣는 중으로 남은 메시지를 줄 세운 메시지로 되돌린다. 넣으려던 실행 시도는 서버 재시작으로 끝나 그 깨우기를 다시
- * 대기시키므로, 프로바이더가 받았더라도 다음 실행 시도가 다시 받는 것과 같다. 서버 시작 때 실행 시도 복구 전에 한 번 부른다.
+ * 서버가 멈춰 프로바이더 결과를 받지 못한 채 남은 끼워 넣기, 곧 깨우기가 어떤 실행 시도에도 묶이지 않은 메시지만 줄 세운 메시지로 되돌린다.
+ * 실행 시도가 이미 받은 끼워 넣기는 서버 재시작이 그 실행 시도를 끝내며 깨우기를 다시 대기시킬 때 `markRequeued`가 줄 세운 메시지로 돌린다.
+ * 그래서 서버 시작 때 두 복구의 순서는 상관없다.
  */
 export async function recoverInterruptedSteers(db: Database): Promise<void> {
   await db
@@ -510,7 +511,11 @@ export async function markDelivered(
     .where(inArray(messages.id, messageIds));
 }
 
-/** 다시 대기한 깨우기의 사용자 메시지는 줄 세운 메시지로 돌아가고, 다음 실행 시도가 받은 순간에 다시 놓인다. */
+/**
+ * 다시 대기한 깨우기의 사용자 메시지는 줄 세운 메시지로 돌아가고, 다음 실행 시도가 받은 순간에 다시 놓인다.
+ * 실행 시도가 이미 끼워 넣어 받은 메시지도 끼워 넣는 중이 아니므로 줄 세운 메시지(`next_run`)가 되어 다음 실행 시도가 다른 줄 세운 메시지처럼 받는다.
+ * `중단하고 보내기` 메시지는 그대로 두어 다음 실행 시도에서 먼저 간다.
+ */
 export async function markRequeued(tx: Executor, wakeIds: string[]) {
   const messageIds = await messagesOfWakes(tx, wakeIds);
   if (!messageIds.length) return;
@@ -518,6 +523,12 @@ export async function markRequeued(tx: Executor, wakeIds: string[]) {
     .update(messages)
     .set({ deliveredSeq: null, deliveredAt: null })
     .where(inArray(messages.id, messageIds));
+  await tx
+    .update(messages)
+    .set({ delivery: "next_run" })
+    .where(
+      and(inArray(messages.id, messageIds), eq(messages.delivery, "steer"))
+    );
 }
 
 async function messagesOfWakes(tx: Executor, wakeIds: string[]) {

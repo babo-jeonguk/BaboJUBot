@@ -31,7 +31,7 @@ export const saysLoginProblem = (text: unknown) =>
   );
 
 /** 프로그램에 그대로 넘기는 환경 변수. 네트워크·인증서·언어와 Windows 실행에 필요한 것만이다. 개인 설정과 자격 증명은 넘기지 않는다. */
-const sharedVariables = [
+export const sharedVariables = [
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "ALL_PROXY",

@@ -1247,7 +1247,7 @@ export async function startServer({
       throw new AggregateError(failures, "stopping the server failed");
   };
   try {
-    // 끼워 넣는 중으로 남은 메시지를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.
+    // 결과를 받지 못한 끼워 넣기를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.
     await recoverProviderProcesses(dataDir);
     // 지난 실행이 남긴 이 제품 폴더의 컨테이너를 실행 시도를 시작하기 전에 지운다. Docker가 없으면 건너뛴다.
     await isolation?.docker
