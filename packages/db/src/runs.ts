@@ -20,10 +20,12 @@ import {
   admitsRuns,
   instructionsBundleVersion,
   planRunFinish,
+  planRunEndBeforeModel,
   planRunInterruption,
   planRunStart,
   sessionTaskOfPending,
   type NewRun,
+  type RunFinishPlan,
   runBlockingStages,
   type RecordSource,
 } from "@babojubot/core";
@@ -215,27 +217,42 @@ export async function finishRun(
     const { agent, run } = locked;
     if (run.status !== "running") return alreadyEnded(run);
     const plan = planRunFinish(run, result, source);
-    await tx
-      .update(runs)
-      .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
-      .where(eq(runs.id, runId));
-    await abandonRunIntents(tx, runId);
-    await writeBackSession(
+    await closeRun(
       tx,
+      agent,
       run,
-      agent.sessionGeneration,
-      plan.update.sessionAfter,
-      result.stopReason === "completed"
-        ? result.sessionMaintenance
-          ? { ...result.sessionMaintenance, tools: run.toolCatalog ?? [] }
-          : null
+      plan,
+      result.stopReason === "completed" && result.sessionMaintenance
+        ? { ...result.sessionMaintenance, tools: run.toolCatalog ?? [] }
         : null
     );
+    await abandonRunIntents(tx, runId);
     return stored<RunEnding>("ended", {
       events: [await insertEvent(tx, plan.event)],
       providersFreed: [run.provider],
     });
   });
+}
+
+/** 잠근 실행 시도의 종료 상태를 저장하고 다음 세션을 그 세션 자리에 남긴다(`writeBackSession`). */
+async function closeRun(
+  tx: Executor,
+  agent: { sessionGeneration: number },
+  run: Parameters<typeof writeBackSession>[1],
+  plan: Pick<RunFinishPlan, "update">,
+  maintenance: Parameters<typeof writeBackSession>[4] = null
+) {
+  await tx
+    .update(runs)
+    .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
+    .where(eq(runs.id, run.id));
+  await writeBackSession(
+    tx,
+    run,
+    agent.sessionGeneration,
+    plan.update.sessionAfter,
+    maintenance
+  );
 }
 
 /** 이미 끝난 실행 시도: 아무것도 다시 남기지 않고, 그 실행 시도가 쓴 연결의 자리 촉진만 돌려준다. */
@@ -319,16 +336,7 @@ export async function interruptRun(
       { wakes: held, pendingHeartbeat },
       source
     );
-    await tx
-      .update(runs)
-      .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
-      .where(eq(runs.id, runId));
-    await writeBackSession(
-      tx,
-      run,
-      agent.sessionGeneration,
-      plan.update.sessionAfter
-    );
+    await closeRun(tx, agent, run, plan);
     const requeued = await requeueWakes(tx, runId, plan.requeueWakeIds);
     // 사용자 제어가 취소한 실행 시도의 수행하지 않은 의도는 버리고, 서버 재시작으로 끝나면 다음 실행 시도가 정산·전달하도록 알린다.
     const recovering = run.cancelReason
@@ -361,24 +369,16 @@ async function requeueWakes(tx: Executor, runId: string, wakeIds: string[]) {
   return requeued;
 }
 
-const recoveryBlockedError: Record<AgentRecoveryBlockReason, string> = {
-  missing_source:
-    "실행 의도의 원본 자료를 찾을 수 없어 복구를 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
-  inconsistent_record:
-    "실행 의도 기록이 맞지 않아 복구를 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
-  retry_exhausted:
-    "실행 의도 복구가 거듭 실패해 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
-};
-
 /**
- * 모델을 부르기 전의 실행 의도 정산이 막혔다. 실행 시도를 실패로 끝내되 받은 깨우기는 모두 다시 대기시키고(모델은 아무것도 받지 않았다),
- * 에이전트를 `blocked`로 두어 사용자가 복구 재시도를 고를 때까지 admission을 막는다. 세션은 그 실행 시도 전 그대로다.
- * 사용자 제어가 이미 취소를 요청했으면 그 취소대로 끝나고 깨우기·의도는 취소 계약을 따른다. 이미 끝난 실행 시도는 바꾸지 않는다.
+ * 모델(프로바이더)을 부르기 전, 실행 의도 복구 정산 단계에서 실행 시도를 끝낸다(core `planRunEndBeforeModel`). 정산이 막혔으면
+ * 받은 깨우기를 모두 다시 대기시키고 에이전트를 `blocked`로 두어 사용자가 복구 재시도를 고를 때까지 admission을 막는다.
+ * 사용자 제어가 취소했으면 취소로 끝나되 복구 깨우기만 다시 대기시키고, 그 깨우기가 가리키는 수행하지 않은 의도는 버리지 않는다.
+ * 종료·깨우기 복원·복구 상태·Event는 한 transaction이다. 이미 끝난 실행 시도는 바꾸지 않는다.
  */
-export async function blockRunRecovery(
+export async function endRunBeforeModel(
   db: Database,
   runId: string,
-  reason: AgentRecoveryBlockReason,
+  ending: { blocked: AgentRecoveryBlockReason } | "cancelled",
   source: Pick<RecordSource, "now">
 ): Promise<Stored<RunEnding, "not_found">> {
   return db.transaction(async (tx) => {
@@ -386,67 +386,35 @@ export async function blockRunRecovery(
     if (locked === "not_found") return refused(locked);
     const { agent, run } = locked;
     if (run.status !== "running") return alreadyEnded(run);
-    const error = recoveryBlockedError[reason];
-    const plan = planRunFinish(
-      run,
-      {
-        stopReason: "failed",
-        error,
-        summary: null,
-        usage: null,
-        nextSession: run.sessionBefore,
-      },
-      source
-    );
-    await tx
-      .update(runs)
-      .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
-      .where(eq(runs.id, runId));
-    await writeBackSession(
-      tx,
-      run,
-      agent.sessionGeneration,
-      plan.update.sessionAfter
-    );
-    if (run.cancelReason) {
-      await abandonRunIntents(tx, runId);
-      return stored<RunEnding>("ended", {
-        events: [await insertEvent(tx, plan.event)],
-        providersFreed: [run.provider],
-      });
-    }
     const held = await tx
-      .select({ id: wakes.id })
+      .select({ id: wakes.id, kind: wakes.kind })
       .from(wakes)
       .where(eq(wakes.runId, runId))
       .orderBy(asc(wakes.seq));
-    const requeued = await requeueWakes(
-      tx,
-      runId,
-      held.map((w) => w.id)
-    );
-    await tx
-      .update(agents)
-      .set({
-        recoveryState: "blocked",
-        recoveryReason: reason,
-        recoverySince: new Date(plan.update.finishedAt),
-      })
-      .where(eq(agents.id, run.agentId));
-    const finished = await insertEvent(tx, {
-      ...plan.event,
-      payload: {
-        ...plan.event.payload,
-        requeuedWakeIds: requeued.map((w) => w.id),
-      },
-    } as typeof plan.event);
-    const blocked = await insertEvent(tx, {
-      organizationId: run.organizationId,
-      type: "agent.recovery_blocked",
-      payload: { agentId: run.agentId, runId, reason },
-    });
+    const plan = planRunEndBeforeModel(run, ending, { wakes: held }, source);
+    await closeRun(tx, agent, run, plan);
+    const requeued = await requeueWakes(tx, runId, plan.requeueWakeIds);
+    const events = [await insertEvent(tx, plan.event)];
+    if (plan.block) {
+      await tx
+        .update(agents)
+        .set({
+          recoveryState: "blocked",
+          recoveryReason: plan.block,
+          recoverySince: new Date(plan.update.finishedAt),
+        })
+        .where(eq(agents.id, run.agentId));
+      events.push(
+        await insertEvent(tx, {
+          organizationId: run.organizationId,
+          type: "agent.recovery_blocked",
+          payload: { agentId: run.agentId, runId, reason: plan.block },
+        })
+      );
+    }
     return stored<RunEnding>("ended", {
-      events: [finished, blocked],
+      events,
+      woken: requeued.length && !plan.block ? [run.agentId] : [],
       providersFreed: [run.provider],
     });
   });

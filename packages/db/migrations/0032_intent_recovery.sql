@@ -11,6 +11,7 @@ ALTER TABLE "tool_operations" ADD COLUMN "request" text;--> statement-breakpoint
 ALTER TABLE "tool_operations" ADD COLUMN "source" jsonb;--> statement-breakpoint
 ALTER TABLE "tool_operations" ADD COLUMN "status" text DEFAULT 'completed' NOT NULL;--> statement-breakpoint
 ALTER TABLE "tool_operations" ADD COLUMN "refusal" text;--> statement-breakpoint
+ALTER TABLE "tool_operations" ADD COLUMN "settle_attempts" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "tool_operations" ADD COLUMN "settled_run_id" uuid;--> statement-breakpoint
 ALTER TABLE "wakes" ADD COLUMN "interrupted_run_id" uuid;--> statement-breakpoint
 ALTER TABLE "tool_operations" ADD CONSTRAINT "tool_operations_organization_id_settled_run_id_runs_organization_id_id_fk" FOREIGN KEY ("organization_id","settled_run_id") REFERENCES "public"."runs"("organization_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

@@ -15,6 +15,7 @@ import {
   requestCancellation,
   toOrganization,
 } from "./rows.ts";
+import { resetSettleAttempts } from "./intents.ts";
 import { findAgentDetail } from "./run-views.ts";
 import { agents, organizations, runs } from "./schema.ts";
 import { refused, stored, type Stored } from "./stored.ts";
@@ -108,11 +109,14 @@ export async function controlAgent(
         .update(agents)
         .set({ paused: plan.paused })
         .where(eq(agents.id, agentId));
-    if (plan.recoveryState)
+    if (plan.recoveryState) {
       await tx
         .update(agents)
         .set({ recoveryState: plan.recoveryState })
         .where(eq(agents.id, agentId));
+      // 사용자가 고른 재시도는 재시도 한도를 새로 센다.
+      await resetSettleAttempts(tx, agentId);
+    }
     await requestCancellation(tx, plan.cancellation);
     const event = await insertEvent(tx, plan.event);
     return stored(await detail(), {

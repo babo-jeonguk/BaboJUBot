@@ -142,7 +142,8 @@ export const runActivityEventSchema = z.object({
 
 /**
  * 실행 시도 종료. 종료 뒤에는 그 실행 시도의 토큰으로 조직 도구를 쓸 수 없다.
- * `server_restart`면 그 실행 시도의 깨우기(`requeuedWakeIds`)가 다시 대기해 다음 실행 시도가 받는다.
+ * `server_restart`면 그 실행 시도의 깨우기(`requeuedWakeIds`)가 다시 대기해 다음 실행 시도가 받는다. 모델을 부르기 전에 끝난 실행 시도
+ * (실행 의도 복구가 막혀 `failed`, 복구 중 사용자 제어로 `cancelled`)도 다시 대기시킨 깨우기를 여기에 담는다.
  */
 export const runFinishedEventSchema = z.object({
   ...eventBase,

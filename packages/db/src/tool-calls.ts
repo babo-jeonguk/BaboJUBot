@@ -91,10 +91,10 @@ export type ToolWrite<T, P extends string> =
     };
 
 /** 이 쓰기가 정산할 실행 의도(intents.ts `acceptIntent`로 수락한 것). */
-export type ToolOperation = { intentId: string };
+export type IntentRef = { intentId: string };
 
 /** 조직 도구 쓰기 호출 하나: 남길 공개 활동 요약과, 있으면 정산할 실행 의도. */
-export type ToolCall = { activity: PublicActivity; operation?: ToolOperation };
+export type ToolCall = { activity: PublicActivity; operation?: IntentRef };
 
 /** 정산할 실행 의도가 그 실행 시도의 에이전트·도구와 맞지 않는다. 기록 모순이며 효과를 남기지 않는다. */
 export class IntentMismatchError extends Error {

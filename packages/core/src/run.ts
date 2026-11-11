@@ -2,6 +2,7 @@ import {
   conversationTitleMaxLength,
   defaultConversationTitle,
   type Agent,
+  type AgentRecoveryBlockReason,
   type Conversation,
   type ConversationMessage,
   type LifecycleStage,
@@ -475,6 +476,72 @@ export function planRunInterruption(
       },
     },
     requeueWakeIds: wakeIds,
+  };
+}
+
+const recoveryBlockedError: Record<AgentRecoveryBlockReason, string> = {
+  missing_source:
+    "실행 의도의 원본 자료를 찾을 수 없어 복구를 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
+  inconsistent_record:
+    "실행 의도 기록이 맞지 않아 복구를 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
+  retry_exhausted:
+    "실행 의도 복구가 거듭 실패해 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
+};
+
+/**
+ * 모델(프로바이더)을 부르기 전, 실행 의도 복구 정산 단계에서 끝나는 실행 시도. 모델은 아무것도 받지 않았다. 세션은 그 실행 시도 전 그대로다.
+ * - 정산이 막혔으면(`blocked`) `failed`로 끝나고 받은 깨우기를 모두 다시 대기시키며, 에이전트를 복구 멈춤으로 둔다(`block`).
+ * - 사용자 제어가 취소를 요청했으면(정산 중이든 막힌 뒤든) `cancelled`로 끝난다. 다른 깨우기는 취소 계약대로 다시 보내지 않지만,
+ *   실행 의도 복구 깨우기는 모델에 전해지지 않았으므로 다시 대기시켜 재개 뒤의 실행 시도가 정산·전달한다.
+ */
+export function planRunEndBeforeModel(
+  run: {
+    id: string;
+    organizationId: string;
+    agentId: string;
+    cancelReason: RunCancelReason | null;
+    sessionBefore: SessionState | null;
+  },
+  ending: { blocked: AgentRecoveryBlockReason } | "cancelled",
+  { wakes }: { wakes: { id: string; kind: WakeKind }[] },
+  source: Pick<RecordSource, "now">
+): RunFinishPlan & {
+  requeueWakeIds: string[];
+  block: AgentRecoveryBlockReason | null;
+} {
+  const block =
+    ending !== "cancelled" && !run.cancelReason ? ending.blocked : null;
+  const error = block ? recoveryBlockedError[block] : null;
+  const plan = planRunFinish(
+    run,
+    {
+      stopReason: block ? "failed" : "cancelled",
+      error,
+      summary: null,
+      usage: null,
+      nextSession: run.sessionBefore,
+    },
+    source
+  );
+  const requeueWakeIds = wakes
+    .filter((w) => block || w.kind === "intent_recovery")
+    .map((w) => w.id);
+  return {
+    ...plan,
+    event: {
+      organizationId: run.organizationId,
+      type: "run.finished",
+      payload: {
+        runId: run.id,
+        agentId: run.agentId,
+        stopReason: plan.update.status,
+        summary: null,
+        error: plan.update.error,
+        requeuedWakeIds: requeueWakeIds,
+      },
+    },
+    requeueWakeIds,
+    block,
   };
 }
 

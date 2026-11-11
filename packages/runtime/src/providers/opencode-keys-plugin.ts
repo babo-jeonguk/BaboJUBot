@@ -8,7 +8,7 @@
  * `{ id, setup(ctx) }`를 쓴다(`core/src/plugin/source-directory.ts`, `core/src/plugin/module.ts`). `ctx.tool.transform`의 editor는
  * `update(id, draft => draft.execute = …)`로 실행을 바꾸며, MCP 도구 ID는 `organization_<도구>`이고 `options.namespace`가 서버 이름이다
  * (`plugin/src/promise/tool.ts`, `core/src/tool/mcp.ts`). 바꾼 실행은 원래 실행처럼 먼저 권한을 확인하고(`permission.assert`),
- * 결과의 `structuredContent`를 `output`으로, 글 조각을 `content`로 돌려주며 `isError`면 그 글로 던진다(`core/src/tool/mcp.ts` 84–105).
+ * 원래 MCP 실행의 기본 시한(12시간, `core/src/mcp/client.ts`)을 지키고, 결과의 `structuredContent`를 `output`으로, 글 조각을 `content`로 돌려주며 `isError`면 그 글로 던진다(`core/src/tool/mcp.ts` 84–105).
  * 제품 서버는 글 조각과 `structuredContent`만 보내므로 그 밖의 조각(이미지·자원)은 옮기지 않는다.
  * transform은 등록 순서대로 다시 적용되므로, MCP 도구가 나중에 등록돼 이 transform이 그 도구를 보지 못했으면 다시 등록해 뒤로 보낸다.
  *
@@ -18,6 +18,8 @@ export const organizationKeysPluginSource = String.raw`// BaboJUBot이 실행 �
 import { createHash } from "node:crypto";
 
 const server = "organization";
+/** OpenCode 원래 MCP 실행의 기본 시한(설정 timeout.execution이 없을 때 12시간). */
+const executionTimeoutMs = 12 * 60 * 60 * 1000;
 const keyField = "idempotency-key";
 
 /** 호출 신원으로 만든 같은 호출 키. 신원이 하나라도 없으면 던진다. */
@@ -58,7 +60,7 @@ async function callTool(target, name, input, context, key) {
           _meta: { "ai.opencode/sessionID": context.sessionID, [keyField]: key },
         },
       }),
-      signal: context.signal,
+      signal: AbortSignal.any([context.signal, AbortSignal.timeout(executionTimeoutMs)]),
     });
   } catch (error) {
     throw new Error('MCP tool "' + name + '" on server "' + server + '" failed: ' + (error?.message ?? String(error)));

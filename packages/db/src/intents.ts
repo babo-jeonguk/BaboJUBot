@@ -14,7 +14,13 @@ import {
   violatesUnique,
   type Executor,
 } from "./rows.ts";
-import { agents, runs, toolOperations, wakes } from "./schema.ts";
+import {
+  agents,
+  organizations,
+  runs,
+  toolOperations,
+  wakes,
+} from "./schema.ts";
 import type { AfterCommit } from "./stored.ts";
 
 // 실행 의도(GLOSSARY)의 수락·조회·버림과 서버 재시작 뒤의 복구 깨우기. 효과와 최초 결과의 정산은 도구 쓰기 틀(tool-calls.ts `toolWrite`)이
@@ -217,6 +223,19 @@ export const intentRequestOf = (
   return { params: parsed.params ?? {}, body: parsed.body ?? null };
 };
 
+/** 실행 시도가 받은 복구 깨우기가 가리키는, 서버 재시작으로 끝난 실행 시도들(subquery). */
+const recoveredRunsOf = (db: Executor, runId: string) =>
+  db
+    .select({ id: wakes.interruptedRunId })
+    .from(wakes)
+    .where(
+      and(
+        eq(wakes.runId, runId),
+        eq(wakes.kind, "intent_recovery"),
+        isNotNull(wakes.interruptedRunId)
+      )
+    );
+
 /**
  * 실행 시도가 수락했거나 그 실행 시도가 복구로 정산하려던 실행 의도 가운데 아직 수행하지 않은 것을 버린다(`abandoned`).
  * 프로바이더가 결과를 돌려주거나 사용자 제어가 취소해 끝난 실행 시도에 쓴다. 수락한 의도가 남았다면 효과는 commit되지 않았고
@@ -231,19 +250,7 @@ export async function abandonRunIntents(tx: Executor, runId: string) {
         eq(toolOperations.status, "accepted"),
         or(
           eq(toolOperations.runId, runId),
-          inArray(
-            toolOperations.runId,
-            tx
-              .select({ id: wakes.interruptedRunId })
-              .from(wakes)
-              .where(
-                and(
-                  eq(wakes.runId, runId),
-                  eq(wakes.kind, "intent_recovery"),
-                  isNotNull(wakes.interruptedRunId)
-                )
-              )
-          )
+          inArray(toolOperations.runId, recoveredRunsOf(tx, runId))
         )
       )
     );
@@ -259,12 +266,12 @@ export async function insertIntentRecoveryWake(
   run: { id: string; organizationId: string; agentId: string },
   now: Date
 ): Promise<boolean> {
-  const [any] = await tx
+  const [accepted] = await tx
     .select({ id: toolOperations.id })
     .from(toolOperations)
     .where(eq(toolOperations.runId, run.id))
     .limit(1);
-  if (!any) return false;
+  if (!accepted) return false;
   const inserted = await tx
     .insert(wakes)
     .values({
@@ -327,19 +334,7 @@ export async function listIntentsToSettle(
     .where(
       and(
         eq(toolOperations.status, "accepted"),
-        inArray(
-          toolOperations.runId,
-          db
-            .select({ id: wakes.interruptedRunId })
-            .from(wakes)
-            .where(
-              and(
-                eq(wakes.runId, run.id),
-                eq(wakes.kind, "intent_recovery"),
-                isNotNull(wakes.interruptedRunId)
-              )
-            )
-        )
+        inArray(toolOperations.runId, recoveredRunsOf(db, run.id))
       )
     )
     .orderBy(asc(toolOperations.createdAt), asc(toolOperations.id));
@@ -353,6 +348,46 @@ export async function listIntentsToSettle(
   return { kind: "ok", intents: rows };
 }
 
+/** 서버 재시작을 넘어 세는 복구 정산 시도의 한도. 닿으면 복구 멈춤이다. */
+export const intentSettleAttemptLimit = 3;
+
+/**
+ * 정산할 실행 의도들의 복구 정산 시도를 하나 센다. 이미 한도에 닿은 의도가 있으면 세지 않고 `false`다(호출자가 멈춘다).
+ * 서버가 정산 도중 멈춰도 센 값은 남으므로 재시작이 한도를 되돌리지 않는다.
+ */
+export async function countSettleAttempt(
+  db: Database,
+  intentIds: string[]
+): Promise<boolean> {
+  if (!intentIds.length) return true;
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ attempts: toolOperations.settleAttempts })
+      .from(toolOperations)
+      .where(inArray(toolOperations.id, intentIds))
+      .for("update");
+    if (rows.some((r) => r.attempts >= intentSettleAttemptLimit)) return false;
+    await tx
+      .update(toolOperations)
+      .set({ settleAttempts: sql`${toolOperations.settleAttempts} + 1` })
+      .where(inArray(toolOperations.id, intentIds));
+    return true;
+  });
+}
+
+/** 사용자의 복구 재시도: 그 에이전트의 수행하지 않은 의도의 시도 횟수를 되돌린다. */
+export async function resetSettleAttempts(tx: Executor, agentId: string) {
+  await tx
+    .update(toolOperations)
+    .set({ settleAttempts: 0 })
+    .where(
+      and(
+        eq(toolOperations.agentId, agentId),
+        eq(toolOperations.status, "accepted")
+      )
+    );
+}
+
 /**
  * 사용자가 고른 복구 재시도의 정산이 성공했다: 에이전트가 `retrying`이면 막힘을 풀고 Event를 남긴다. 그 밖에는 아무것도 하지 않는다.
  */
@@ -361,6 +396,12 @@ export async function resolveAgentRecovery(
   run: { id: string; organizationId: string; agentId: string }
 ): Promise<AfterCommit> {
   return db.transaction(async (tx) => {
+    // 잠금 순서는 어디서나 조직 → 에이전트다.
+    await tx
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, run.organizationId))
+      .for("share");
     const cleared = await tx
       .update(agents)
       .set({ recoveryState: null, recoveryReason: null, recoverySince: null })

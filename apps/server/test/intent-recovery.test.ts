@@ -17,7 +17,11 @@ import {
 } from "@babojubot/contracts";
 import { acceptIntent, controlAgent, type Database } from "@babojubot/db";
 import { createGate } from "@babojubot/runtime/testing";
-import { intentStatusOf, setIntentSource } from "@babojubot/db/testing";
+import {
+  intentStatusOf,
+  setIntentSettleAttempts,
+  setIntentSource,
+} from "@babojubot/db/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import { Workspaces } from "../src/workspace.ts";
@@ -409,6 +413,60 @@ describe("execution intent recovery across a server restart (#150)", () => {
         "agent.recovery_resolved",
       ])
     );
+  });
+
+  it("keeps counting settlement attempts across restarts, and only the owner's retry, not reading or archiving the Inbox item, lets it settle again", async () => {
+    const { agents, org, held, api, restart, db } =
+      await heldLead("재시도 한도 조직");
+    const accepted = await acceptIntent(
+      db,
+      { id: held.identity.runId },
+      draft("send_message", { body: "한도 뒤 답장" }, "k-limit")
+    );
+    if (accepted.kind !== "accepted") throw new Error("not accepted");
+    // 앞선 재시작들에서 이미 한도만큼 정산을 시작했다가 멈춘 기록.
+    await setIntentSettleAttempts(db, accepted.intent.id, 3);
+    const modelRuns = agents.of(org.lead.id).length;
+    await restart();
+    expect((await api.agent(org.id, org.lead.id)).recovery).toMatchObject({
+      state: "blocked",
+      reason: "retry_exhausted",
+    });
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
+    expect(await api.agentReplies(org.id, "한도 뒤 답장")).toEqual([]);
+    // 막혀 실패한 실행 시도의 Inbox 항목을 읽고 보관해도, 서버를 다시 시작해도 풀리지 않는다.
+    const [blockedRun] = await api.runs(org.id, org.lead.id);
+    for (const change of [{ read: true }, { archived: true }])
+      expect(
+        (
+          await api.request(
+            "PUT",
+            `/api/organizations/${org.id}/inbox/run_failure/${blockedRun!.id}`,
+            change
+          )
+        ).status
+      ).toBe(200);
+    await restart();
+    expect((await api.agent(org.id, org.lead.id)).recovery?.state).toBe(
+      "blocked"
+    );
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
+    // 사용자의 복구 재시도는 시도 횟수를 새로 세고 정산한 뒤에야 모델을 부른다.
+    expect(
+      (
+        await api.request(
+          "POST",
+          `/api/organizations/${org.id}/agents/${org.lead.id}/recover`,
+          {}
+        )
+      ).status
+    ).toBe(200);
+    await restarted!.drain();
+    expect((await api.agent(org.id, org.lead.id)).recovery).toBeNull();
+    expect(
+      (await api.agentReplies(org.id, "한도 뒤 답장")).map((m) => m.body)
+    ).toEqual(["한도 뒤 답장"]);
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns + 1);
   });
 
   it("keeps one effect for concurrent retransmissions of one intent and separate effects for separate intents with the same content", async () => {

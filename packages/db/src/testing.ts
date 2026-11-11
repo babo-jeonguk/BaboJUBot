@@ -211,3 +211,15 @@ export async function intentsOf(db: Database, agentId: string) {
     .where(eq(toolOperations.agentId, agentId))
     .orderBy(asc(toolOperations.createdAt), asc(toolOperations.id));
 }
+
+/** 실행 의도의 복구 정산 시도 횟수를 정한다. 서버 재시작을 거듭하며 정산하다 멈춘 기록을 만드는 테스트 전용 조작이다. */
+export async function setIntentSettleAttempts(
+  db: Database,
+  intentId: string,
+  attempts: number
+) {
+  await db
+    .update(toolOperations)
+    .set({ settleAttempts: attempts })
+    .where(eq(toolOperations.id, intentId));
+}

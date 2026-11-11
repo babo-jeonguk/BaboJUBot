@@ -1289,6 +1289,10 @@ export const toolOperations = pgTable(
     result: jsonb("result"),
     /** 확정 거절 이유(`refused`): Role·단계 거부(`role`·`stage`)나 도구 규칙 거부 코드. */
     refusal: text("refusal"),
+    /**
+     * 복구 정산을 시작한 횟수. 서버 재시작을 넘어 세며, 한도에 닿으면 에이전트가 복구 멈춤이 된다. 사용자의 복구 재시도가 0으로 되돌린다.
+     */
+    settleAttempts: integer("settle_attempts").notNull().default(0),
     /** 의도를 수락한 실행 시도. */
     runId: uuid("run_id").notNull(),
     /** 정산한 실행 시도. 복구로 정산하면 수락한 실행 시도와 다르다. */
