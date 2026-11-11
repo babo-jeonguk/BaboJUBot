@@ -42,6 +42,7 @@ import {
   selectWakes,
 } from "./run-reads.ts";
 import { readSession, writeBackSession } from "./sessions.ts";
+import { refused, stored, type AfterCommit, type Stored } from "./stored.ts";
 import {
   hasPendingHeartbeat,
   insertEvent,
@@ -177,7 +178,15 @@ export async function claimNextRun(
 }
 
 /**
- * 종료 결과를 저장한다. 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`를 돌려준다.
+ * 실행 시도 종료 저장의 결과. `ended`면 이번 저장이 종료를 확정했고, `already_ended`면 이미 끝난 실행 시도라 아무것도 바꾸지 않았다.
+ * 어느 쪽이든 commit 뒤 할 일에 그 실행 시도가 admission에서 쓴 프로바이더 연결을 담아, commit 응답을 잃고 다시 저장해도
+ * 그 연결의 자리를 기다리는 에이전트를 다시 촉진할 수 있다. Event는 종료를 확정한 저장에만 있다.
+ */
+export type RunEnding = "ended" | "already_ended";
+
+/**
+ * 종료 결과를 저장한다. 상태·사용량·다음 세션·Event를 한 transaction에 남기고 commit 뒤 할 일(Event 알리기·자리가 난 연결 촉진)을 돌려준다.
+ * 이미 끝난 실행 시도면 아무것도 바꾸지 않고 Event 없이 자리 촉진만 돌려준다. 없는 실행 시도는 `not_found`다.
  * 취소를 요청받은 실행 시도는 프로바이더의 결과와 상관없이 `cancelled`로 끝난다(core `planRunFinish`).
  * 다음 세션은 이 실행 시도의 세션 자리에 남긴다. 그사이 에이전트의 프로바이더가 바뀌었으면 남기지 않는다(`writeBackSession`).
  * 잠금 순서는 조직 → 에이전트 → 실행 시도이며, 에이전트 행 잠금이 프로바이더 변경과 직렬화한다.
@@ -187,16 +196,12 @@ export async function finishRun(
   runId: string,
   result: RunResult,
   source: Pick<RecordSource, "now">
-): Promise<Event | undefined> {
+): Promise<Stored<RunEnding, "not_found">> {
   return db.transaction(async (tx) => {
-    const agent = await lockRunAgent(tx, runId);
-    if (!agent) return undefined;
-    const [run] = await tx
-      .select(finishingRunColumns)
-      .from(runs)
-      .where(and(eq(runs.id, runId), eq(runs.status, "running")))
-      .for("update");
-    if (!run) return undefined;
+    const locked = await lockEndingRun(tx, runId);
+    if (locked === "not_found") return refused(locked);
+    const { agent, run } = locked;
+    if (run.status !== "running") return alreadyEnded(run);
     const plan = planRunFinish(run, result, source);
     await tx
       .update(runs)
@@ -213,8 +218,31 @@ export async function finishRun(
           : null
         : null
     );
-    return insertEvent(tx, plan.event);
+    return stored<RunEnding>("ended", {
+      events: [await insertEvent(tx, plan.event)],
+      providersFreed: [run.provider],
+    });
   });
+}
+
+/** 이미 끝난 실행 시도: 아무것도 다시 남기지 않고, 그 실행 시도가 쓴 연결의 자리 촉진만 돌려준다. */
+const alreadyEnded = (run: { provider: string }) =>
+  stored<RunEnding>("already_ended", {
+    events: [],
+    providersFreed: [run.provider],
+  });
+
+/** 종료할 실행 시도와 그 에이전트를 잠근다. 실행 시도 행은 상태와 상관없이 잠가, 이미 끝났는지 같은 잠금 안에서 본다. */
+async function lockEndingRun(tx: Executor, runId: string) {
+  const agent = await lockRunAgent(tx, runId);
+  if (!agent) return "not_found" as const;
+  const [run] = await tx
+    .select({ ...finishingRunColumns, status: runs.status })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .for("update");
+  if (!run) return "not_found" as const;
+  return { agent, run };
 }
 
 const finishingRunColumns = {
@@ -251,24 +279,21 @@ async function lockRunAgent(tx: Executor, runId: string) {
 
 /**
  * 서버가 멈춰 프로바이더 결과 없이 끝나는 실행 시도를 끝낸다(core `planRunInterruption`). 종료·깨우기 복원·Event는 한 transaction이며,
- * 이미 끝난 실행 시도면 아무것도 바꾸지 않고 `undefined`다. 서버 시작의 복구와 서버 종료 때 취소로 돌아온 실행 시도가 쓴다.
+ * commit 뒤 할 일은 Event 알리기, 깨우기를 되돌려 받은 에이전트와 자리가 난 연결의 촉진이다.
+ * 이미 끝난 실행 시도면 `finishRun`처럼 아무것도 바꾸지 않고 자리 촉진만 돌려준다. 서버 시작의 복구와 서버 종료 때 취소로 돌아온 실행 시도가 쓴다.
  */
 export async function interruptRun(
   db: Database,
   runId: string,
   source: Pick<RecordSource, "now">
-): Promise<Event | undefined> {
+): Promise<Stored<RunEnding, "not_found">> {
   return db.transaction(async (tx) => {
     // 에이전트 행 잠금으로 heartbeat scheduler·admission과 직렬화해,
     // 대기 heartbeat를 확인한 뒤 새 heartbeat가 생겨 다시 대기시킨 heartbeat와 겹치지 않게 한다.
-    const agent = await lockRunAgent(tx, runId);
-    if (!agent) return undefined;
-    const [run] = await tx
-      .select(finishingRunColumns)
-      .from(runs)
-      .where(and(eq(runs.id, runId), eq(runs.status, "running")))
-      .for("update");
-    if (!run) return undefined;
+    const locked = await lockEndingRun(tx, runId);
+    if (locked === "not_found") return refused(locked);
+    const { agent, run } = locked;
+    if (run.status !== "running") return alreadyEnded(run);
     const held = await tx
       .select({ id: wakes.id, kind: wakes.kind })
       .from(wakes)
@@ -290,8 +315,9 @@ export async function interruptRun(
       agent.sessionGeneration,
       plan.update.sessionAfter
     );
+    let requeued: { id: string }[] = [];
     if (plan.requeueWakeIds.length) {
-      const requeued = await tx
+      requeued = await tx
         .update(wakes)
         .set({ runId: null })
         .where(
@@ -303,30 +329,46 @@ export async function interruptRun(
         requeued.map((w) => w.id)
       );
     }
-    return insertEvent(tx, plan.event);
+    return stored<RunEnding>("ended", {
+      events: [await insertEvent(tx, plan.event)],
+      woken: requeued.length ? [run.agentId] : [],
+      providersFreed: [run.provider],
+    });
   });
 }
 
 /**
  * 서버가 멈춰 실행 중으로 남은 실행 시도를 `server_restart`로 끝내고 그 깨우기를 다시 대기시킨다(`interruptRun`).
  * 실행 시도를 돌리는 서버 프로세스가 하나라는 전제다(docs/architecture.md 패키지 구성). worker를 나누면 프로세스별 소유 기록이 필요하다.
- * 서버 시작 때 프로바이더를 부르기 전에 한 번 부른다. 실행 시도마다 따로 저장하므로 중간에 실패해도 다시 부르면 남은 것만 끝낸다.
+ * 서버 시작 때 프로바이더를 부르기 전에 한 번 부른다. 실행 시도마다 따로 저장하므로 중간에 실패하면 이미 끝낸 것은 남고, 다시 부르면 남은 것만 끝낸다.
+ * commit 뒤 할 일은 적용하지 않고 모아서, 모든 저장이 성공했을 때만 돌려준다. 호출자는 그 뒤에 적용해야 복구가 끝나기 전에 실행 시도가 시작되지 않는다.
  */
 export async function recoverInterruptedRuns(
   db: Database,
   source: Pick<RecordSource, "now">
-): Promise<Event[]> {
+): Promise<AfterCommit> {
   const rows = await db
     .select({ id: runs.id })
     .from(runs)
     .where(eq(runs.status, "running"))
     .orderBy(asc(runs.seq));
-  const finished: Event[] = [];
+  const events: Event[] = [];
+  const woken = new Set<string>();
+  const providersFreed = new Set<string>();
   for (const { id } of rows) {
-    const event = await interruptRun(db, id, source);
-    if (event) finished.push(event);
+    const ended = await interruptRun(db, id, source);
+    // 조회 뒤 다른 쪽이 먼저 끝낸 실행 시도는 이미 그쪽이 알렸다.
+    if (ended.kind !== "ok" || ended.value !== "ended") continue;
+    events.push(...ended.after.events);
+    for (const agentId of ended.after.woken ?? []) woken.add(agentId);
+    for (const provider of ended.after.providersFreed ?? [])
+      providersFreed.add(provider);
   }
-  return finished;
+  return {
+    events,
+    woken: [...woken],
+    providersFreed: [...providersFreed],
+  };
 }
 
 /**

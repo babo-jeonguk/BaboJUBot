@@ -36,7 +36,7 @@ chat → POST /api/organizations/:id/messages·/conversations·/conversations/:i
   → claimNextRun → createRunRequestAssembler → runtime execute
       → 토큰으로 /api/tools/* → 메시지·도구 Event(send_message는 core chooseReplyConversation)
       → emit → run.activity
-  → finishRun → run.finished → 다음 깨우기
+  → finishRun → applyAfterCommit → 다음 깨우기
 ```
 
 미실행·중복 실행은 claim/kick, 토큰 거부는 server/tools, Role/단계 거부는 [초기 연구 승인](initial-approval.md#연결-경로)의 `gateToolCall`에서 시작합니다.

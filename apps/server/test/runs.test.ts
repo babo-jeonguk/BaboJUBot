@@ -193,6 +193,69 @@ describe("Lead conversation", () => {
     stream.close();
   });
 
+  it("frees the provider slot once after a finish whose commit response was lost, without a second record or another provider call", async () => {
+    const gate = createGate();
+    const inner = holdFirstRun(gate);
+    const executions: string[] = [];
+    t = await startTestServer({
+      runtime: quietCreation({
+        ...inner,
+        async execute(request, control) {
+          executions.push(request.identity.agentId);
+          const result = await inner.execute(request, control);
+          if (executions.length === 1) {
+            // 종료 저장은 commit되지만 그 응답을 잃는다.
+            const transaction = t!.db.transaction.bind(t!.db);
+            vi.spyOn(t!.db, "transaction").mockImplementationOnce(
+              async (...args: Parameters<typeof transaction>) => {
+                await transaction(...args);
+                throw new Error("lost commit response");
+              }
+            );
+          }
+          return result;
+        },
+      }),
+    });
+    const a = await createOrganization("응답 유실 A");
+    const b = await createOrganization("응답 유실 B");
+    expect(
+      (
+        await t.request("PUT", "/api/providers/fake/limit", {
+          maxConcurrentRuns: 1,
+        })
+      ).status
+    ).toBe(200);
+    const watchB = await t.subscribe({
+      kind: "organization",
+      organizationId: b.id,
+    });
+    await say(a.id, "첫 메시지");
+    await gate.reached;
+    // 자리가 하나라 B는 A의 종료가 자리를 비울 때까지 기다린다. 그 뒤 B를 깨우는 것은 다시 저장한 종료의 자리 촉진뿐이다.
+    await say(b.id, "B의 메시지");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(executions).toEqual([a.lead.id]);
+    gate.open();
+    while ((await watchB.next(10_000)).type !== "run.finished") {
+      /* drain 없이 B의 실행 시도가 끝난다. */
+    }
+    watchB.close();
+    await t.drain();
+
+    expect((await runs(a.id)).map((r) => r.status)).toEqual(["completed"]);
+    expect((await runs(b.id)).map((r) => r.status)).toEqual(["completed"]);
+    expect(executions).toEqual([a.lead.id, b.lead.id]);
+    const [first] = await runs(a.id);
+    const events = (await t.request("GET", `/api/organizations/${a.id}/events`))
+      .body as { type: string; payload: { runId?: string } }[];
+    expect(
+      events.filter(
+        (e) => e.type === "run.finished" && e.payload.runId === first!.id
+      )
+    ).toHaveLength(1);
+  });
+
   it("wakes the Lead into one run whose scripted reply shows in the conversation and the Event stream", async () => {
     const now = new Date("2026-10-18T09:00:00.000Z");
     t = await startTestServer({ now: () => now, runtime: quietCreation() });

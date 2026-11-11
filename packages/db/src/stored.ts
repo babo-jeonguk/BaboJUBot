@@ -4,7 +4,8 @@ import type { RunCancellation } from "@babojubot/core";
 /**
  * commit 뒤 할 일. 저장한 쪽은 무엇을 할지만 담고, 순서(Event·설정 변경 알리기 → 진행 중 실행 시도 취소 → 재개한 조직의 대기 깨우기
  * 다시 처리 → 깨운 에이전트·자리가 늘어난 연결을 기다리는 에이전트 촉진)는 적용하는 쪽(server `applyAfterCommit`)이 정한다. 알림이 실패해도 저장은 이미 끝났고,
- * 깨우기는 DB에 있어 서버 시작 때 다시 처리된다.
+ * 깨우기는 DB에 있어 서버 시작 때 다시 처리된다. 영속 outbox가 아니므로 commit 직후 서버가 멈추면 이 지시는 사라진다.
+ * 예산처럼 영속 상태를 정하는 판단은 여기 담지 않고 저장 transaction 안에서 한다.
  */
 export type AfterCommit = {
   /** 같은 transaction에 남긴 Event. 남긴 순서다. */
@@ -22,7 +23,7 @@ export type AfterCommit = {
 };
 
 /**
- * 사용자가 대시보드나 채널에서 한 일 하나의 저장 결과: 돌려줄 값과 commit 뒤 할 일, 또는 거부 이유.
+ * 저장 하나의 결과: 돌려줄 값과 commit 뒤 할 일, 또는 거부 이유. 사용자가 대시보드나 채널에서 한 일, 실행 시도 종료가 쓴다.
  * 거부면 아무것도 남지 않았다. 바뀐 것이 없으면 `after`가 빈 성공이다.
  */
 export type Stored<T, R extends string> =
