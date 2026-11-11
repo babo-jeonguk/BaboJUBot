@@ -159,7 +159,7 @@ describe("chaos harness budget gate", () => {
       },
       { live: true, brief: "brief", ...files }
     );
-    const run = (n) =>
+    const run = (n, signal = new AbortController().signal) =>
       connection.adapter.execute(
         {
           identity: { runId: `run-${n}` },
@@ -170,7 +170,7 @@ describe("chaos harness budget gate", () => {
           wakeReasons: [],
           model: null,
         },
-        { signal: new AbortController().signal, emit: async () => {} }
+        { signal, emit: async () => {} }
       );
     return { dir, run, seen, ledger: createLedger(files.ledgerFile) };
   }
@@ -317,6 +317,28 @@ describe("chaos harness budget gate", () => {
         .map((e) => e.kind)
     ).toEqual(["cancelled_before_start"]);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("ends a run cancelled before it reaches the gate as cancelled even while a ready result is reused", async () => {
+    // 준비됨 결과를 60초 다시 쓰는 동안에도 이미 취소된 실행은 예산을 쓰지 않고 시작 전 취소로 끝난다.
+    const g = await gated({
+      scene: "a",
+      maxLiveRuns: 24,
+      sceneMaxRuns: 4,
+      deadlineAt: Date.now() + 60_000,
+    });
+    expect((await run(g, 1)).stopReason).toBe("completed");
+    const cancelled = new AbortController();
+    cancelled.abort({ type: "cancel", reason: "owner_interrupt" });
+    const result = await g.run(2, cancelled.signal);
+    expect(result.stopReason).toBe("cancelled");
+    expect(g.seen).toHaveLength(1);
+    expect(g.ledger.read().map((e) => e.kind)).toEqual([
+      "claim",
+      "end",
+      "cancelled_before_start",
+    ]);
+    await rm(g.dir, { recursive: true, force: true });
   });
 
   const run = (g, n) => g.run(n);
