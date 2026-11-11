@@ -230,39 +230,41 @@ export function gateConnection(
         /* 예산이 없으면 실제 실행을 시작하지 않는다. */
       }
       if (live) {
+        // 준비됨 결과는 60초 다시 쓴다. 지난 결과가 없거나 오래됐으면 새로 확인한다.
+        let ready = { status: "ready", reason: null };
         if (Date.now() >= readyUntil) {
-          let ready = null;
+          ready = null;
           try {
             ready = await inner.checkReadiness(ctl.signal);
           } catch {
             /* 확인하지 못하면 시작하지 않는다. */
           }
-          // 확인하는 동안 취소된 실행은 시작하지 않고 취소로 끝낸다. 비용 경계의 거절이 아니다.
-          if (ctl.signal.aborted) {
-            ledger.append({
-              kind: "cancelled_before_start",
-              scene: budget?.scene ?? null,
-              runId,
-            });
-            return {
-              stopReason: "cancelled",
-              error: null,
-              summary: null,
-              usage: null,
-              nextSession: request.previousSession ?? null,
-            };
-          }
-          // OpenCode의 준비됨은 무료 모델이 있다는 뜻이다. 모델을 정하지 않은 실행은 그 무료 모델을 고른다.
-          if (ready?.status !== "ready") {
-            ledger.append({
-              kind: "refused",
-              scene: budget?.scene ?? null,
-              runId,
-              reason: "no_free_model",
-            });
-            return refusal("no_free_model");
-          }
-          readyUntil = Date.now() + 60_000;
+          if (ready?.status === "ready") readyUntil = Date.now() + 60_000;
+        }
+        // 취소된 실행은 시작하지 않고 취소로 끝낸다. 준비 확인을 새로 했든 지난 결과를 썼든 같고, 비용 경계의 거절도 아니다.
+        if (ctl.signal.aborted) {
+          ledger.append({
+            kind: "cancelled_before_start",
+            scene: budget?.scene ?? null,
+            runId,
+          });
+          return {
+            stopReason: "cancelled",
+            error: null,
+            summary: null,
+            usage: null,
+            nextSession: request.previousSession ?? null,
+          };
+        }
+        // OpenCode의 준비됨은 무료 모델이 있다는 뜻이다. 모델을 정하지 않은 실행은 그 무료 모델을 고른다.
+        if (ready?.status !== "ready") {
+          ledger.append({
+            kind: "refused",
+            scene: budget?.scene ?? null,
+            runId,
+            reason: "no_free_model",
+          });
+          return refusal("no_free_model");
         }
         const claim = claimLiveRun(ledger, budget, {
           runId,
