@@ -6,6 +6,8 @@ import {
   type ApprovalPolicy,
   type Conversation,
   type CreateOrganizationInput,
+  type Destination,
+  type UpdateNetworkPolicyInput,
   type InstructionCopy,
   type InstructionSourceFile,
   type LifecycleStage,
@@ -130,6 +132,42 @@ export function planApprovalPolicyChange(
       organizationId: organization.id,
       type: "organization.approval_policy_changed",
       payload: { by: "owner", previous, policy },
+    },
+  };
+}
+
+/**
+ * 네트워크 허용 목록 변경 계획(#149). 사용자만 바꾸며 조직 도구가 없다. 목록 전체를 바꾸고, 같은 항목은 하나로 합친다.
+ * 끝난 조직도 바꿀 수 있다(실행이 없으므로 효과가 없다). 그대로면 `undefined`.
+ */
+export function planNetworkPolicyChange(
+  organization: { id: string; destinations: readonly Destination[] },
+  input: UpdateNetworkPolicyInput
+): { destinations: Destination[]; event: NewEvent } | undefined {
+  const seen = new Set<string>();
+  const destinations: Destination[] = [];
+  for (const entry of input.destinations) {
+    const normalized: Destination = {
+      host: entry.host,
+      port: entry.port,
+      ...(entry.addresses?.length
+        ? { addresses: [...new Set(entry.addresses)] }
+        : {}),
+    };
+    const key = JSON.stringify(normalized);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    destinations.push(normalized);
+  }
+  const previous = [...organization.destinations];
+  if (JSON.stringify(previous) === JSON.stringify(destinations))
+    return undefined;
+  return {
+    destinations,
+    event: {
+      organizationId: organization.id,
+      type: "organization.network_policy_changed",
+      payload: { by: "owner", previous, destinations },
     },
   };
 }

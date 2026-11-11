@@ -4,9 +4,14 @@ import {
   type Organization,
   type OrganizationDetail,
   type UpdateApprovalPolicyInput,
+  type UpdateNetworkPolicyInput,
+  type NetworkPolicy,
+  type LifecycleStage,
+  networkPolicySchema,
 } from "@babojubot/contracts";
 import {
   planApprovalPolicyChange,
+  planNetworkPolicyChange,
   type OrganizationCreation,
 } from "@babojubot/core";
 import { and, asc, eq, isNull } from "drizzle-orm";
@@ -89,6 +94,75 @@ export async function updateApprovalPolicy(
     const event = await insertEvent(tx, change.event);
     return stored(toOrganization(updated!), { events: [event] });
   });
+}
+
+/** 저장한 허용 목록. 계약 밖의 값(손으로 고친 행 등)은 버리고 빈 목록으로 본다(연구 목적지 거부). */
+const storedDestinations = (value: unknown): NetworkPolicy["destinations"] => {
+  const parsed = networkPolicySchema.safeParse({ destinations: value });
+  return parsed.success ? parsed.data.destinations : [];
+};
+
+/** 조직의 네트워크 허용 목록(#149). 조직이 없으면 `undefined`. */
+export async function readNetworkPolicy(
+  db: Database,
+  organizationId: string
+): Promise<NetworkPolicy | undefined> {
+  if (!isUuid(organizationId)) return undefined;
+  const [row] = await db
+    .select({ destinations: organizations.networkDestinations })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId));
+  return row && { destinations: storedDestinations(row.destinations) };
+}
+
+/** 허용 목록 변경 제어 명령. 사용자만 내리며 목록 전체를 바꾼다. 바뀌면 Event를 남긴다. */
+export async function updateNetworkPolicy(
+  db: Database,
+  organizationId: string,
+  input: UpdateNetworkPolicyInput
+): Promise<Stored<NetworkPolicy, "not_found">> {
+  if (!isUuid(organizationId)) return refused("not_found");
+  return db.transaction(async (tx) => {
+    const row = await lockOrganization(tx, organizationId);
+    if (!row) return refused("not_found");
+    const current = storedDestinations(row.networkDestinations);
+    const change = planNetworkPolicyChange(
+      { id: organizationId, destinations: current },
+      input
+    );
+    if (!change) return stored({ destinations: current });
+    await tx
+      .update(organizations)
+      .set({ networkDestinations: change.destinations })
+      .where(eq(organizations.id, organizationId));
+    const event = await insertEvent(tx, change.event);
+    return stored({ destinations: change.destinations }, { events: [event] });
+  });
+}
+
+/**
+ * 중계가 연결마다 읽는 조직 정책. 초기 연구 승인 뒤(연구 중·결과 검토, 그 단계에서 일시정지)에만 연구 목적지를 돌려주고,
+ * 그 전(목표 설정·계획 수립·승인 대기)에는 빈 목록이다. 조직이 없으면 `undefined`.
+ */
+export async function loadResearchDestinations(
+  db: Database,
+  organizationId: string
+): Promise<NetworkPolicy["destinations"] | undefined> {
+  if (!isUuid(organizationId)) return undefined;
+  const [row] = await db
+    .select({
+      stage: organizations.stage,
+      pausedFrom: organizations.pausedFrom,
+      destinations: organizations.networkDestinations,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId));
+  if (!row) return undefined;
+  const researching: LifecycleStage[] = ["researching", "result_review"];
+  const stage = row.stage === "paused" ? row.pausedFrom : row.stage;
+  return stage && researching.includes(stage)
+    ? storedDestinations(row.destinations)
+    : [];
 }
 
 export async function listOrganizations(db: Database): Promise<Organization[]> {

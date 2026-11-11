@@ -84,6 +84,8 @@ export const toOrganization = ({
   addWorkerApproval,
   publishToGitHubApproval,
   workspaceIdentityAt: _workspaceIdentityAt,
+  // 허용 목록은 조직 응답에 싣지 않고 `/network-policy`로만 읽는다.
+  networkDestinations: _networkDestinations,
   ...row
 }: typeof organizations.$inferSelect): Organization => ({
   ...withIsoTime(row),

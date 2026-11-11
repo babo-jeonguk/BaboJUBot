@@ -19,7 +19,7 @@ import {
   createDockerEnvironment,
   type ContainerSettings,
 } from "./container.ts";
-import { request } from "./test-support.ts";
+import { attachedRelayHub, request } from "./test-support.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
@@ -58,8 +58,8 @@ async function setup(programs: Record<string, string[]>) {
       JSON.stringify(programs),
     ],
     image,
-    network: "babojubot-test",
     owner: "owner-test",
+    relay: attachedRelayHub(),
   };
   const isolated = (): RunRequest => {
     const input = request();
@@ -158,7 +158,10 @@ describe("an isolated attempt", () => {
     );
     expect(valuesOf(args, "--cap-drop")).toEqual(["ALL"]);
     expect(valuesOf(args, "--security-opt")).toContain("no-new-privileges");
-    expect(valuesOf(args, "--network")).toEqual(["babojubot-test"]);
+    // 네트워크가 없다. 바깥과 조직 도구는 이 실행 시도의 중계 폴더(읽기만)로만 닿는다.
+    expect(valuesOf(args, "--network")).toEqual(["none"]);
+    expect(args).not.toContain("--publish");
+    expect(args).not.toContain("--add-host");
     expect(args).not.toContain("--privileged");
     expect(valuesOf(args, "--workdir")).toEqual([env.shared]);
     // 서버 재시작 때 이 제품 폴더의 남은 컨테이너만 찾아 지우도록 표식을 단다.
@@ -168,7 +171,19 @@ describe("an isolated attempt", () => {
       expect.stringMatching(/^babojubot\.run=[0-9a-f-]{36}$/)
     );
     // 조직 폴더·자기 개인 폴더·그 조직의 제품 폴더는 읽기·쓰기, 동료 개인 폴더와 이 실행 시도의 파일 폴더는 읽기만. 그 밖에는 없다.
-    expect(valuesOf(args, "--mount").sort()).toEqual(
+    const relayMount = valuesOf(args, "--mount").filter((m) =>
+      m.includes("target=/run/babojubot,")
+    );
+    expect(relayMount).toEqual([
+      expect.stringMatching(
+        /^type=bind,source=.*babojubot-relay-[^,]+,target=\/run\/babojubot,readonly$/
+      ),
+    ]);
+    expect(
+      valuesOf(args, "--mount")
+        .filter((m) => !relayMount.includes(m))
+        .sort()
+    ).toEqual(
       [
         `type=bind,source=${env.shared},target=${env.shared}`,
         `type=bind,source=${env.personal},target=${env.personal}`,
@@ -185,13 +200,15 @@ describe("an isolated attempt", () => {
     expect(args.join(" ")).not.toMatch(
       /private-run-token|synthetic-login|github-secret/
     );
-    // 컨테이너 환경: 제품 홈·로그인은 있고, GitHub 로그인과 이 컴퓨터의 임시 폴더는 없다. 추가 패키지는 조직 폴더의 가상환경이다.
+    // 컨테이너 환경: 제품 홈·로그인은 있고, GitHub 로그인과 이 컴퓨터의 임시 폴더는 없다. 공유 가상환경은 자동으로 쓰지 않고,
+    // 연구 명령이 고를 개인 폴더만 알려 준다.
     expect(run.env).toMatchObject({
       HOME: home,
       CLAUDE_CONFIG_DIR: path.join(home, "config"),
       CLAUDE_CODE_OAUTH_TOKEN: "synthetic-login",
-      BABOJUBOT_VENV: path.join(env.shared, ".venv"),
+      BABOJUBOT_PERSONAL: env.personal,
     });
+    expect(run.env).not.toHaveProperty("BABOJUBOT_VENV");
     for (const name of [
       "GH_TOKEN",
       "GITHUB_TOKEN",
@@ -486,7 +503,7 @@ describe("an isolated attempt", () => {
     expect(removed(calls, nameOf(run))).toBe(true);
   });
 
-  it("controls OpenCode in a container through a port published only on this machine's loopback", async () => {
+  it("controls OpenCode in a container with no network through connections the container offers to its relay", async () => {
     const env = await setup({
       opencode: [process.execPath, fixture("opencode-simulator.mjs")],
     });
@@ -501,7 +518,8 @@ describe("an isolated attempt", () => {
     expect(result.stopReason).toBe("completed");
     const calls = await env.calls();
     const run = runCall(calls);
-    expect(valuesOf(run.args, "--publish")).toEqual(["127.0.0.1::4096"]);
+    expect(run.args).not.toContain("--publish");
+    expect(run.env).toMatchObject({ BABOJUBOT_INBOUND_PORT: "4096" });
     expect(run.args.slice(run.args.indexOf(image) + 1)).toEqual(
       expect.arrayContaining([
         "opencode",
@@ -512,73 +530,72 @@ describe("an isolated attempt", () => {
         "4096",
       ])
     );
-    expect(
-      calls.some((c) => c.args.includes("port") && c.args.includes(nameOf(run)))
-    ).toBe(true);
     expect(removed(calls, nameOf(run))).toBe(true);
   });
 });
 
-describe("the dedicated network", () => {
-  async function network(existing?: Record<string, unknown>) {
-    const root = await mkdtemp(path.join(tmpdir(), "babojubot-network-"));
+describe("the Docker engine check", () => {
+  async function engine(files: Record<string, string> = {}) {
+    const root = await mkdtemp(path.join(tmpdir(), "babojubot-engine-"));
     roots.push(root);
-    if (existing)
-      await writeFile(
-        path.join(root, "network.json"),
-        JSON.stringify(existing)
-      );
-    const settings: ContainerSettings = {
+    for (const [name, value] of Object.entries(files))
+      await writeFile(path.join(root, name), value);
+    return createDockerEnvironment({
       docker: [process.execPath, fixture("fake-docker.mjs"), root, "{}"],
       image,
-      network: "babojubot-test",
       owner: "owner-test",
-    };
-    return createDockerEnvironment(settings);
+      relay: attachedRelayHub(),
+    });
   }
-  const isolating = {
-    Name: "babojubot-test",
-    Driver: "bridge",
-    Options: { "com.docker.network.bridge.enable_icc": "false" },
-    Labels: { "babojubot.owner": "someone-else" },
-    IPAM: { Config: [{ Subnet: "172.31.0.0/16", Gateway: "172.31.0.1" }] },
-  };
 
-  it("creates a bridge network whose containers cannot reach each other and uses its gateway", async () => {
-    const environment = await network();
+  it("accepts a local Linux engine with the current runner image", async () => {
     await expect(
-      environment.prepareNetwork(AbortSignal.timeout(10_000))
-    ).resolves.toEqual({ gateway: "172.31.0.1" });
-  });
-
-  it("accepts an existing network with the same isolation, whoever created it", async () => {
-    // 같은 컴퓨터의 다른 제품 폴더도 같은 이름의 네트워크를 쓴다. 격리는 네트워크의 속성이 정한다.
-    const environment = await network(isolating);
-    await expect(
-      environment.prepareNetwork(AbortSignal.timeout(10_000))
-    ).resolves.toEqual({ gateway: "172.31.0.1" });
+      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+    ).resolves.toBeUndefined();
   });
 
   it.each([
     [
-      "containers on it can reach each other",
+      "Docker Desktop",
       {
-        ...isolating,
-        Options: { "com.docker.network.bridge.enable_icc": "true" },
+        "info.json": JSON.stringify({
+          OSType: "linux",
+          OperatingSystem: "Docker Desktop",
+          SecurityOptions: [],
+        }),
       },
     ],
     [
-      "it does not say whether containers can reach each other",
-      { ...isolating, Options: {} },
+      "rootless Docker",
+      {
+        "info.json": JSON.stringify({
+          OSType: "linux",
+          OperatingSystem: "Ubuntu",
+          SecurityOptions: ["name=rootless"],
+        }),
+      },
     ],
-    ["it is not a bridge", { ...isolating, Driver: "macvlan" }],
-  ])(
-    "does not accept an existing network of the same name when %s",
-    async (_case, existing) => {
-      const environment = await network(existing);
-      await expect(
-        environment.prepareNetwork(AbortSignal.timeout(10_000))
-      ).rejects.toThrow();
-    }
-  );
+    [
+      "a Windows engine",
+      {
+        "info.json": JSON.stringify({
+          OSType: "windows",
+          OperatingSystem: "Windows",
+          SecurityOptions: [],
+        }),
+      },
+    ],
+    ["an image without the relay start program", { "runner-version": "" }],
+  ])("refuses %s", async (_case, files) => {
+    await expect(
+      (await engine(files)).checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow();
+  });
+
+  it("refuses a daemon on another computer, whose folders this computer cannot check", async () => {
+    process.env.DOCKER_HOST = "tcp://10.0.0.9:2375";
+    await expect(
+      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow(/not on this computer/);
+  });
 });

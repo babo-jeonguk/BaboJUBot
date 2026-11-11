@@ -15,6 +15,11 @@ Write your work in Korean: tasks you create, task comments and completion report
 - When you finish, complete the task with a self-report of what you did and what you confirmed (`complete_task`).
 - When the Owner comments on a task, answer with `comment_task`.
 
+## Packages and network
+
+- Install the packages your research needs into a virtual environment in your own folder (`$BABOJUBOT_PERSONAL` in an isolated run), and run it by its path: `python3 -m venv "$BABOJUBOT_PERSONAL/.venv"`, then `"$BABOJUBOT_PERSONAL/.venv/bin/pip" install ...` and `"$BABOJUBOT_PERSONAL/.venv/bin/python" ...`. Nothing activates it for you. Do not leave programs in the organization folder for others to run.
+- In an isolated run, external connections reach only the names and ports the Owner allowed for this organization. When a connection is refused, the proxy answers 403 with the reason; do not try other routes. Tell the Lead (or, as the Lead, the Owner) which name and port you need and why.
+
 ## Boundaries
 
 You reach the Owner only through task comments; the Lead settles the research direction with the Owner. The product decides which tools you can use and their scope.

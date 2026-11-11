@@ -19,7 +19,7 @@ import { createClaudeProvider } from "./claude.ts";
 import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
-import { request } from "./test-support.ts";
+import { request, attachedRelayHub } from "./test-support.ts";
 
 // 조직별 제품 폴더(사용자 결정 2026-11-06, docs/research/org-product-folders-references.md).
 // 같은 연결이라도 조직마다 제품 폴더(설정·세션·확장)를 따로 쓴다. 연결 폴더는 로그인 원본·준비 확인·모델 목록·프로세스 기록에만 쓰고
@@ -76,8 +76,8 @@ async function setup() {
       }),
     ],
     image: "babojubot-runner-test",
-    network: "babojubot-test",
     owner: "owner-test",
+    relay: attachedRelayHub(),
   };
   const requestFor = async (
     organizationId: string,

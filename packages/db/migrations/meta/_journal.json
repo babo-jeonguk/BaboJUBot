@@ -232,6 +232,13 @@
       "when": 1794387140757,
       "tag": "0032_intent_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794419963499,
+      "tag": "0033_network_policy",
+      "breakpoints": true
     }
   ]
 }

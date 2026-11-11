@@ -36,6 +36,8 @@ import {
   timeZoneSchema,
   updateAgentProfileInputSchema,
   updateApprovalPolicyInputSchema,
+  updateNetworkPolicyInputSchema,
+  egressRefusalMessages,
   updateHeartbeatInputSchema,
   updateProviderDefaultsInputSchema,
   updateProviderLimitInputSchema,
@@ -106,6 +108,10 @@ import {
   updateAgentProfile,
   updateAgentProvider,
   updateApprovalPolicy,
+  readNetworkPolicy,
+  updateNetworkPolicy,
+  loadResearchDestinations,
+  appendRunActivity,
   updateProviderDefaults,
   updateProviderLimit,
   updateIsolation,
@@ -127,7 +133,11 @@ import { createFakeChannel, createFakeProvider } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
 import { WebSocketServer, type WebSocket } from "ws";
-import { completeStored, type Outcome } from "./after-commit.ts";
+import {
+  applyAfterCommit,
+  completeStored,
+  type Outcome,
+} from "./after-commit.ts";
 import { channelInlet } from "./channel-replies.ts";
 import { RunDispatcher } from "./dispatcher.ts";
 import { EventHub } from "./event-hub.ts";
@@ -251,13 +261,13 @@ export async function startServer({
   const isolatable = (id: string) =>
     connections.find((connection) => connection.id === id)?.isolatable === true;
   let url = "";
+  const protectedPorts = () => [
+    Number(new URL(url).port),
+    ...(isolation?.protectedPorts ?? []),
+  ];
   const gate = new IsolationGate({
     docker: isolation?.docker,
-    toolsApp,
-    protectedPorts: () => [
-      Number(new URL(url).port),
-      ...(isolation?.protectedPorts ?? []),
-    ],
+    protectedPorts,
     readIsolated: async () => (await readProviderDefaults(db)).isolated,
     hostUrl: () => url,
   });
@@ -399,6 +409,39 @@ export async function startServer({
   toolsApp.use(orgToolsBasePath, organizationTools);
   toolsApp.use((_req, res) => notFound(res));
   toolsApp.use(serverErrors);
+  // 격리 실행의 중계에 정책·조직 도구를 붙인다(#149). 붙이기 전에는 실행 시도 컨테이너가 시작하지 않는다.
+  // 거부는 실행 활동에 이유와 함께 남긴다(같은 목적지·이유는 실행 시도마다 한 번, 많아도 50번까지).
+  const refusalsSeen = new Map<string, Set<string>>();
+  isolation?.docker.settings.relay.attach({
+    research: async (identity) =>
+      (await loadResearchDestinations(db, identity.organizationId)) ?? [],
+    tools: toolsApp,
+    protectedPorts,
+    refused: (identity, { host, port, reason }) => {
+      const target = `${host.slice(0, 253)}:${port}`;
+      console.warn(`[isolation] relay refused ${target} (${reason})`);
+      const runId = identity.runId;
+      if (!runId) return;
+      const seen = refusalsSeen.get(runId) ?? new Set<string>();
+      refusalsSeen.set(runId, seen);
+      const key = `${target} ${reason}`;
+      if (seen.has(key) || seen.size >= 50) return;
+      seen.add(key);
+      void appendRunActivity(db, runId, {
+        source: "runtime",
+        activity: {
+          type: "progress",
+          text: `외부 연결 거부: ${target}. ${egressRefusalMessages[reason]}`,
+        },
+      })
+        .then((event) => {
+          // 끝난 실행 시도에는 남지 않는다. 그때 기록도 지운다.
+          if (!event) return void refusalsSeen.delete(runId);
+          return applyAfterCommit({ hub, dispatcher }, { events: [event] });
+        })
+        .catch(() => {});
+    },
+  });
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
@@ -559,6 +602,24 @@ export async function startServer({
    * 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. 바꾼 뒤의 조직을 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
    * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, docs/current-implementation.md 참고).
    */
+  /** 격리 실행의 연구 목적지 허용 목록(#149). 사용자만 바꾸며 조직 도구가 없다. */
+  app.get("/api/organizations/:id/network-policy", async (req, res) => {
+    const policy = await readNetworkPolicy(db, req.params.id);
+    if (!policy) return notFound(res);
+    res.json(policy);
+  });
+  app.put("/api/organizations/:id/network-policy", async (req, res) => {
+    const input = parseInput(res, updateNetworkPolicyInputSchema, req.body);
+    if (!input) return;
+    const result = await complete(
+      updateNetworkPolicy(db, req.params.id, input)
+    );
+    // 줄인 목록이 더 이상 허용하지 않는 열린 연결을 닫는다.
+    if (result.kind === "ok")
+      await isolation?.docker.settings.relay.revalidate(req.params.id);
+    respond(res, result);
+  });
+
   app.put("/api/organizations/:id/approval-policy", async (req, res) => {
     const input = parseInput(res, updateApprovalPolicyInputSchema, req.body);
     if (!input) return;
@@ -1231,6 +1292,8 @@ export async function startServer({
       () => readiness.close(),
       () => dispatcher.close(),
       () => gate.close(),
+      // 실행 시도가 모두 끝난 뒤 남은 중계를 닫고 정책을 뗀다.
+      async () => isolation?.docker.settings.relay.close(),
       () => notifications.close(),
       () => channel.close(),
       async () => {

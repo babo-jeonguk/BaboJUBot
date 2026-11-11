@@ -12,7 +12,6 @@ import type { ContainerLaunch } from "./container.ts";
 import {
   dockerClientEnv,
   dockerRunArgs,
-  publishedAddress,
   removeContainer,
 } from "./container.ts";
 
@@ -165,6 +164,12 @@ export function startProcess(options: {
   const maxLineLength = options.maxLineLength ?? defaultMaxLineLength;
   const lease = crypto.randomUUID();
   const name = options.container ? "babojubot-" + lease : undefined;
+  // 컨테이너는 네트워크가 없다. 이 실행 시도의 중계를 먼저 열고(못 열면 띄우지 않고 던진다) 그 폴더를 넣는다. 끝나면 닫는다.
+  const relay = options.container?.settings.relay.open({
+    identity: options.container.relay.identity,
+    required: options.container.relay.required,
+    inbound: options.container.relay.inbound !== undefined,
+  });
   const child = spawn(
     options.container
       ? options.container.settings.docker[0]
@@ -177,6 +182,7 @@ export function startProcess(options: {
             cwd: options.cwd,
             env: { ...options.env, ...options.container.env },
             args: options.args,
+            relay: relay!.directory,
           }),
         ]
       : [...options.command.slice(1), ...options.args],
@@ -194,6 +200,10 @@ export function startProcess(options: {
       windowsHide: true,
     }
   ) as ChildProcessByStdio<Writable, Readable, Readable>;
+  relay?.ready.catch(() => {
+    console.error("[provider] the isolated run relay could not open");
+    child.kill("SIGKILL");
+  });
   let forget = () => {};
   if (options.stateDir && child.pid)
     try {
@@ -303,6 +313,8 @@ export function startProcess(options: {
             "[provider] a container could not be removed; it is removed at the next server start"
           );
         }
+        // 중계 권한과 열린 연결은 컨테이너를 지운 뒤에 회수한다.
+        await relay?.close();
         await queue;
         if (stopped)
           try {
@@ -329,9 +341,10 @@ export function startProcess(options: {
     done,
     interrupt: () => signalGroup("SIGINT"),
     endInput: () => child.stdin.end(),
-    address: (port: number) =>
-      options.container
-        ? publishedAddress(options.container.settings, name!, port)
+    /** 컨테이너 안 서버(`relay.inbound` 포트)로 가는 이 컴퓨터 loopback 주소. */
+    inboundOrigin: () =>
+      relay
+        ? relay.inboundOrigin()
         : Promise.reject(new Error("not a container")),
     get closed() {
       return closed;

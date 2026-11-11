@@ -19,6 +19,7 @@ import {
   organizationDashboardSchema,
   organizationListSchema,
   organizationSchema,
+  networkPolicySchema,
   overviewSchema,
   providerSettingsSchema,
   researchLinkSchema,
@@ -49,6 +50,7 @@ import {
   type UpdateAgentProfileInput,
   type UpdateProviderDefaultsInput,
   type UpdateApprovalPolicyInput,
+  type UpdateNetworkPolicyInput,
   type UpdateHeartbeatInput,
   type UpdateInboxItemInput,
   type UpdateIsolationInput,
@@ -86,6 +88,8 @@ export const queryKeys = {
       conversationId ?? "default",
       "queued",
     ] as const,
+  networkPolicy: (id: string) =>
+    ["organizations", id, "network-policy"] as const,
   events: (id: string, agentId?: string) =>
     ["organizations", id, "events", agentId ?? "all"] as const,
   dashboard: (id: string, timeZone: string) =>
@@ -611,6 +615,31 @@ export function useUpdateApprovalPolicy(orgId: string) {
         queryKey: queryKeys.organization(orgId),
         exact: true,
       });
+    },
+  });
+}
+
+/** 조직의 외부 연결 허용 목록(#149). */
+export function useNetworkPolicy(orgId: string) {
+  return useQuery({
+    queryKey: queryKeys.networkPolicy(orgId),
+    queryFn: () =>
+      request(networkPolicySchema, orgPath(orgId, "/network-policy")),
+  });
+}
+
+/** 허용 목록 전체를 바꾼다. 서버가 저장한 목록으로 화면을 바꾼다. */
+export function useUpdateNetworkPolicy(orgId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateNetworkPolicyInput) =>
+      request(networkPolicySchema, orgPath(orgId, "/network-policy"), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (policy) => {
+      queryClient.setQueryData(queryKeys.networkPolicy(orgId), policy);
     },
   });
 }

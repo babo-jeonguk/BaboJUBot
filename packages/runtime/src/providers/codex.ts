@@ -25,8 +25,13 @@ import {
   providerEnvironment,
   runProbe,
 } from "./process.ts";
-import type { ContainerLaunch, ContainerSettings } from "./container.ts";
-import { placeAttempt } from "./container.ts";
+import type { ContainerSettings } from "./container.ts";
+import {
+  ContainerRefusal,
+  placeAttempt,
+  type ContainerLaunch,
+} from "./container.ts";
+import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
 
@@ -290,11 +295,19 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         const cwd = request.workspace?.cwd ?? codexHome;
         const placement = placeAttempt(options.container, codexHome, request);
         if (!placement) return failed();
-        const container = placement.container?.({
-          cwd,
-          program: "codex",
-          shared: linked ? [loginFolder] : [],
-        });
+        let container: ContainerLaunch | undefined;
+        try {
+          container = placement.container?.({
+            cwd,
+            program: "codex",
+            shared: linked ? [loginFolder] : [],
+            destinations: providerDestinations.codex,
+          });
+        } catch (error) {
+          if (error instanceof ContainerRefusal)
+            return { ...failed(), error: error.message };
+          throw error;
+        }
         let result = failed(),
           threadId = "",
           turnId = "",

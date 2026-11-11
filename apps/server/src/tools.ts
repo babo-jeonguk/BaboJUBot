@@ -176,6 +176,15 @@ export function orgToolsRouter({
     const token = /^Bearer (\S+)$/.exec(header)?.[1];
     const run = token && (await authenticateRun(db, digestRunToken(token)));
     if (!run) return refuse(res, 401, "invalid_token");
+    // 격리 실행의 중계는 요청에 그 실행 시도의 신원을 덮어써 넣는다(#149). 다른 실행 시도·조직의 토큰은 그 중계로 쓰지 못한다.
+    const relayRun = req.headers["x-babojubot-relay-run"];
+    const relayOrganization = req.headers["x-babojubot-relay-organization"];
+    if (
+      (relayOrganization !== undefined &&
+        relayOrganization !== run.organizationId) ||
+      (relayOrganization !== undefined && relayRun !== run.id)
+    )
+      return refuse(res, 401, "invalid_token");
     res.locals.run = run;
     next();
   });
