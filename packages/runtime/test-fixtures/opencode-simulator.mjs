@@ -1,6 +1,6 @@
 // Synthetic HTTP/SSE peer for the pinned 2.x public protocol. No model calls.
 import http from "node:http";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 if (process.argv.includes("--version")) {
   console.log("opencode v9.9.9");
@@ -18,6 +18,11 @@ const usage =
   usageAt < 0
     ? null
     : JSON.parse(await readFile(process.argv[usageAt + 1], "utf8"));
+// --fail면 본 실행 요청에 그 파일의 `error`로 2.2.6 `session.execution.failed`(data.error: type·message·선택 status·response.body)를 낸다.
+// 합성 재생이며 실제 SSE 녹화가 아니다. `foreign`이면 먼저 다른 세션의 실패를 낸다. 본 실행 요청마다 `<파일>.prompts`에 한 줄 남긴다.
+const failAt = process.argv.indexOf("--fail");
+const failFile = failAt < 0 ? null : process.argv[failAt + 1];
+const failing = failFile ? JSON.parse(await readFile(failFile, "utf8")) : null;
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
   subscribers = new Set();
 const zero = { input: 0, output: 0, cache: { read: 0, write: 0 } };
@@ -204,6 +209,22 @@ const server = http.createServer(async (req, res) => {
       }
       context = JSON.parse(input.text);
       emit("session.execution.started");
+      if (failing) {
+        await writeFile(failFile + ".prompts", "prompt\n", { flag: "a" });
+        if (failing.foreign)
+          write({
+            type: "session.execution.failed",
+            data: {
+              sessionID: "ses_other",
+              error: { type: "provider.auth", message: "other", status: 401 },
+            },
+          });
+        write({
+          type: "session.execution.failed",
+          data: { sessionID: session.id, error: failing.error },
+        });
+        return;
+      }
       const body = context.wakeReasons[0]?.body ?? "";
       if (body === "실행 유지 연습" || body === "끼워 넣기 연습") return;
       if (body === "느린 작업")
@@ -236,6 +257,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500).end("{}");
   }
 });
+// --startup-race면 같은 데이터 폴더에서 다른 서버가 뜨는 중일 때 끝난다. 실제 2.2.6이 새 폴더의 DB를 둘이 함께 만들다
+// 하나가 끝나는 것(`table … already exists`, #147)의 합성이다. 뜨는 데 300ms 걸린다.
+if (process.argv.includes("--startup-race")) {
+  await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+  const starting = path.join(process.env.XDG_DATA_HOME, "starting");
+  try {
+    await writeFile(starting, "", { flag: "wx" });
+  } catch {
+    console.error("synthetic: table already exists");
+    process.exit(1);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await rm(starting);
+}
 server.listen(0, "127.0.0.1", () =>
   console.log(
     JSON.stringify({ url: "http://127.0.0.1:" + server.address().port })

@@ -30,6 +30,33 @@ const failure = (): RunResult => ({
   usage: null,
   nextSession: null,
 });
+/**
+ * 2.2.6 `session.execution.failed`의 `data.error`(type·선택 status)를 공개할 수 있는 종료 결과로 바꾼다.
+ * 원문 `message`·`response.body`는 모델 서비스의 응답·연구 내용·비밀값을 담을 수 있어 옮기지 않고, 제품이 쓴 문구만 쓴다.
+ * 요청 거부와 명시적 인증 실패만 구분하며, 그 밖의 종류와 모양이 맞지 않는 값은 일반 실패다.
+ */
+function failedExecution(error: unknown): RunResult {
+  const { type, status } = object(error);
+  const http =
+    typeof status === "number" &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+      ? `(HTTP ${status})`
+      : "";
+  if (type === "provider.invalid-request")
+    return {
+      ...failure(),
+      error: `모델 서비스가 요청을 거부했습니다${http}. 도구 정의나 입력이 이 모델과 맞지 않을 수 있습니다.`,
+    };
+  if (type === "provider.auth")
+    return {
+      ...failure(),
+      error: `모델 서비스가 인증을 거부했습니다${http}. 프로바이더 로그인을 확인해 주세요.`,
+      errorCode: "login_required",
+    };
+  return failure();
+}
 class HttpFailure extends Error {
   readonly status: number;
   constructor(status: number) {
@@ -80,11 +107,60 @@ export function createOpenCodeProvider(options: {
       /* 시스템 설정이 없다. */
     }
   };
+  const startups = new Map<string, Promise<void>>();
+  /**
+   * 같은 제품 폴더의 서버는 하나씩 띄운다. 새 폴더에 서버 둘이 함께 뜨면 그 폴더의 DB를 함께 만들다 하나가 끝난다
+   * (2.2.6 실제 CLI 확인: `table … already exists`, #147). 띄우는 동안만 차례를 지키며, 띄운 서버의 실행은 함께 돈다.
+   * 차례를 기다리다 취소되면 기다림을 그만두고 차례를 넘긴다.
+   */
+  const startupTurn = async (folder: string, signal: AbortSignal) => {
+    const previous = startups.get(folder) ?? Promise.resolve();
+    let release!: () => void;
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const turn = previous.then(() => done);
+    startups.set(folder, turn);
+    void turn.then(() => {
+      if (startups.get(folder) === turn) startups.delete(folder);
+    });
+    let onAbort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        previous,
+        new Promise<never>((_, reject) => {
+          onAbort = () => reject(new Error("Provider stopped"));
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } catch (e) {
+      release();
+      throw e;
+    } finally {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    }
+    return release;
+  };
   async function server(
     signal: AbortSignal,
     config: Record<string, unknown> = {},
     container?: ContainerLaunch,
     productHome = home
+  ) {
+    const release = await startupTurn(productHome, signal);
+    try {
+      return await launch(signal, config, container, productHome);
+    } finally {
+      release();
+    }
+  }
+  /** 서버 하나를 띄워 첫 응답(주소)까지 기다린다. */
+  async function launch(
+    signal: AbortSignal,
+    config: Record<string, unknown>,
+    container: ContainerLaunch | undefined,
+    productHome: string
   ) {
     const directory = await mkdtemp(path.join(productHome, "attempt-")),
       password = crypto.randomUUID();
@@ -396,7 +472,8 @@ export function createOpenCodeProvider(options: {
         const before = session;
         let began = false,
           finished = false,
-          success = false;
+          success = false,
+          failedError: unknown;
         let end!: () => void;
         const ended = new Promise<void>((resolve) => {
           end = resolve;
@@ -444,6 +521,8 @@ export function createOpenCodeProvider(options: {
               ) {
                 finished = true;
                 success = event.type === "session.execution.succeeded";
+                if (event.type === "session.execution.failed")
+                  failedError = payload.error;
                 end();
                 return;
               }
@@ -492,7 +571,9 @@ export function createOpenCodeProvider(options: {
           await Promise.race([ended, api.closed, events]);
           if (control.signal.aborted)
             return { ...failure(), stopReason: "cancelled", error: null };
-          if (!finished || !success) return failure();
+          if (!finished) return failure();
+          // 실패를 같은 요청으로 다시 보내지 않는다. 요청 거부는 다시 보내도 거부된다.
+          if (!success) return failedExecution(failedError);
           const after = object((await api.json(route)).data);
           return {
             stopReason: "completed",

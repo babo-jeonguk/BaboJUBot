@@ -184,3 +184,39 @@ it("preserves worker Role refusal, organization isolation, policy decisions and 
   ).toBe("added");
   leadGate.open();
 });
+
+// #147: 연구 단계에서 처음 열리는 record_artifact의 경로 규칙이 실제 tools/list 응답에 모델 서비스가 받는 표기로 나간다.
+it("lists record_artifact once research starts, with the NUL rule in the accepted \\x00 form", async () => {
+  const agents = scriptedAgents();
+  t = await startTestServer({ runtime: agents.runtime });
+  const { researching, say } = serverHelpers(() => t!);
+  const org = await researching(agents, "MCP schema");
+  const gate = createGate();
+  let token = "";
+  agents.queue(org.lead.id, (request) => {
+    token = request.access.token;
+    return { steps: [{ do: "hold", until: gate.wait }] };
+  });
+  await say(org.id, "산출물 도구 확인");
+  await gate.reached;
+  const list = await t.request(
+    "POST",
+    "/api/tools/mcp",
+    { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+    { authorization: `Bearer ${token}` }
+  );
+  expect(list.status).toBe(200);
+  const tool = list.body.result.tools.find(
+    (tool: { name: string }) => tool.name === "record_artifact"
+  );
+  expect(tool.inputSchema.properties.path).toMatchObject({
+    type: "string",
+    minLength: 1,
+    maxLength: 4096,
+    pattern: "^[^\\x00]*$",
+  });
+  // 응답 본문(JSON 문자열)에서도 거부된 `\0` 표기가 없다.
+  expect(JSON.stringify(tool.inputSchema)).not.toContain(String.raw`[^\\0]`);
+  gate.open();
+  await t.drain();
+});

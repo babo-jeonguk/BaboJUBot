@@ -83,3 +83,59 @@ describe("organization tool list", () => {
     ).toBe(false);
   });
 });
+
+// #147: 대상 upstream이 `\0` 표기의 pattern을 담은 도구 정의 요청을 HTTP 400으로 거부했고, 같은 뜻의 `\x00` 표기는 받아들였다.
+describe("record_artifact path rule (#147)", () => {
+  const input = orgTools.record_artifact.input;
+  const base = {
+    taskId: "8d0f4c1e-5b7a-4d2e-9a3c-1f2e3d4c5b6a",
+    title: "근거",
+  };
+
+  it("exports the NUL exclusion in the \\x00 form the target upstream accepts", () => {
+    const path = (
+      z.toJSONSchema(input) as {
+        properties: Record<string, Record<string, unknown>>;
+      }
+    ).properties.path!;
+    expect(path).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 4096,
+      pattern: "^[^\\x00]*$",
+    });
+    expect(JSON.stringify(path.pattern)).toBe(String.raw`"^[^\\x00]*$"`);
+    expect(String(path.pattern)).not.toContain("\\0");
+  });
+
+  it("still refuses a real NUL and accepts ordinary, absolute, Korean and digit-zero paths", () => {
+    for (const path of [
+      "out/report.md",
+      "/home/user/work/report.md",
+      "결과/보고서.md",
+      "data/0/v0.0.csv",
+      "0",
+    ])
+      expect(input.safeParse({ ...base, path }).success, path).toBe(true);
+    for (const path of ["a\0b", "\0", "report.md\0.txt"])
+      expect(input.safeParse({ ...base, path }).success, path).toBe(false);
+  });
+
+  it("keeps the length and field-combination rules", () => {
+    expect(input.safeParse({ ...base, path: "" }).success).toBe(false);
+    expect(input.safeParse({ ...base, path: "a".repeat(4096) }).success).toBe(
+      true
+    );
+    expect(input.safeParse({ ...base, path: "a".repeat(4097) }).success).toBe(
+      false
+    );
+    expect(
+      input.safeParse({ ...base, path: "a.md", format: "text", content: "x" })
+        .success
+    ).toBe(false);
+    expect(
+      input.safeParse({ ...base, format: "text", content: "x" }).success
+    ).toBe(true);
+    expect(input.safeParse({ ...base }).success).toBe(false);
+  });
+});
