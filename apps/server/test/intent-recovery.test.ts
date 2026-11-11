@@ -1020,7 +1020,7 @@ describe("recovery delivery confirmed by the provider's session and counted acro
   });
 
   it("counts recovery delivery attempts in the database even when every intent is already settled, so failures and restarts cannot reset the limit", async () => {
-    const { agents, org, held, api, restart, db } =
+    const { agents, org, held, api, restart } =
       await heldLead("전달 한도 조직");
     expect(
       (
