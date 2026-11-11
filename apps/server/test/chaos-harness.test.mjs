@@ -326,6 +326,12 @@ describe("chaos harness verdicts", () => {
       ["limit_saturated", "passed"],
       ["waiting_request_started_after_a_slot_freed", "passed"],
     ]);
+    // 세 요청이 한꺼번에 오면 셋째는 앞의 둘이 자리를 차지한 동안 기다렸다가 첫째가 끝난 뒤 시작한다.
+    expect(outcomes([at(0, 1, 10), at(0, 2, 12), at(0, 10, 20)])).toEqual([
+      ["never_more_than_limit_running", "passed"],
+      ["limit_saturated", "passed"],
+      ["waiting_request_started_after_a_slot_freed", "passed"],
+    ]);
     // 하나씩 돌면 상한에 닿지 않았고 기다린 요청도 없다. 통과로 치지 않는다.
     expect(outcomes([at(0, 0, 10), at(10, 10, 20), at(20, 20, 30)])).toEqual([
       ["never_more_than_limit_running", "passed"],
