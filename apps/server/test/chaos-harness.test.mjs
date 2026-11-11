@@ -1,8 +1,9 @@
 // 실모델 장애 검사(scripts/chaos-live.mjs)의 자동 검사. 실제 모델은 부르지 않는다.
 // 실행 허용 차단, 예산 제한, 결과 판정, 증거 검사, 그리고 가짜 연결·임시 홈·임시 DB로 강제 종료·시간 초과·중단 뒤 정리를 본다.
-import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -28,10 +29,16 @@ import {
   sceneOutcome,
   sceneTools,
   scenes,
+  steerKillChecks,
 } from "../../../scripts/live/chaos-scenes.mjs";
+import {
+  chaosEnvironment,
+  chaosServer,
+  scrubEnvironment,
+} from "../../../scripts/live/chaos-server.mjs";
 
 const ids = scenes.map((s) => s.id);
-const launchAll = { scenes: ids, maxLiveRuns: 24, model: null, altModel: null };
+const launchAll = { scenes: ids, maxLiveRuns: 24 };
 const sceneById = (id) => scenes.find((s) => s.id === id);
 
 /** 이 홈의 내장 Postgres 프로세스가 남았는지. */
@@ -57,6 +64,11 @@ describe("chaos harness launch", () => {
     refused(["--allow-live", "--scenes=z"]);
     for (const value of ["0", "25", "-1", "1.5", "abc", "2e1"])
       refused(["--allow-live"], { BABOJUBOT_CHAOS_MAX_LIVE_RUNS: value });
+    // 비용을 확인할 수 없는 모델은 고르지 못한다. 제품의 무료 모델 선택만 쓴다.
+    refused(["--allow-live"], { BABOJUBOT_CHAOS_MODEL: "opencode/some-model" });
+    refused(["--allow-live"], {
+      BABOJUBOT_CHAOS_ALT_MODEL: "opencode/other-model",
+    });
   });
 
   it("accepts an explicit permission with a budget up to 24 and keeps the scene order", () => {
@@ -74,8 +86,46 @@ describe("chaos harness launch", () => {
   });
 });
 
+describe("chaos harness environment", () => {
+  const env = {
+    PATH: "/bin",
+    HOME: "/home/owner",
+    LANG: "C.UTF-8",
+    HTTPS_PROXY: "http://proxy",
+    NODE_EXTRA_CA_CERTS: "/ca.pem",
+    TMPDIR: "/tmp",
+    OPENAI_API_KEY: "sk-owner",
+    BABOJUBOT_OPENCODE_PASS_ENV: "OPENAI_API_KEY",
+    BABOJUBOT_OPENCODE_COMMAND: "/other/opencode",
+    BABOJUBOT_PROVIDERS: "claude",
+    DATABASE_URL: "postgres://owner",
+    GH_TOKEN: "ghp-owner",
+  };
+  const kept = {
+    PATH: "/bin",
+    LANG: "C.UTF-8",
+    HTTPS_PROXY: "http://proxy",
+    NODE_EXTRA_CA_CERTS: "/ca.pem",
+    TMPDIR: "/tmp",
+  };
+
+  it("gives the server only network, certificate, locale and temp settings, never product settings or credentials", () => {
+    expect(chaosEnvironment(env, "/tmp/home")).toEqual({
+      ...kept,
+      HOME: "/tmp/home",
+      BABOJUBOT_HOME: "/tmp/home",
+    });
+  });
+
+  it("scrubs the harness's own environment the same way before the preflight", () => {
+    const own = { ...env };
+    expect(scrubEnvironment(own)).toBe(own);
+    expect(own).toEqual({ ...kept, HOME: "/home/owner" });
+  });
+});
+
 describe("chaos harness budget gate", () => {
-  async function gated(budget) {
+  async function gated(budget, readiness = { status: "ready", reason: null }) {
     const dir = await mkdtemp(path.join(tmpdir(), "chaos-gate-"));
     const files = {
       ledgerFile: path.join(dir, "ledger.jsonl"),
@@ -90,6 +140,7 @@ describe("chaos harness budget gate", () => {
         id: "live",
         adapter: {
           capabilities: {},
+          checkReadiness: async () => readiness,
           async execute(request) {
             const file = path.join(dir, `${request.identity.runId}.token`);
             seen.push({
@@ -191,6 +242,24 @@ describe("chaos harness budget gate", () => {
     await rm(g.dir, { recursive: true, force: true });
   });
 
+  it("starts no live run while no free model is confirmed", async () => {
+    const g = await gated(
+      {
+        scene: "a",
+        maxLiveRuns: 24,
+        sceneMaxRuns: 4,
+        deadlineAt: Date.now() + 60_000,
+      },
+      { status: "unknown", reason: "credentials_unverified" }
+    );
+    expect((await run(g, 1)).stopReason).toBe("failed");
+    expect(g.seen).toEqual([]);
+    expect(g.ledger.read().map((e) => [e.kind, e.reason ?? null])).toEqual([
+      ["refused", "no_free_model"],
+    ]);
+    await rm(g.dir, { recursive: true, force: true });
+  });
+
   const run = (g, n) => g.run(n);
 });
 
@@ -244,30 +313,76 @@ describe("chaos harness verdicts", () => {
     ]);
   });
 
-  it("fails the connection limit on an overlap above the limit or a run that did not wait for a slot", () => {
-    const at = (start, end) => ({ start, end });
-    expect(maxOverlap([at(0, 10), at(10, 20)])).toBe(1);
-    const fine = judgeConcurrency({
-      intervals: [at(0, 10), at(1, 12), at(10, 20)],
-      limit: 2,
+  it("passes the connection limit only after the limit was reached and a request waited for a slot", () => {
+    const at = (requestedAt, start, end) => ({ requestedAt, start, end });
+    const outcomes = (intervals) =>
+      judgeConcurrency({ intervals, limit: 2, source: "live" }).checks.map(
+        (c) => [c.name, c.outcome]
+      );
+    expect(maxOverlap([at(0, 0, 10), at(10, 10, 20)])).toBe(1);
+    // 셋째 요청은 둘이 도는 동안 왔고 첫째가 끝난 뒤에 시작했다.
+    expect(outcomes([at(0, 0, 10), at(0, 1, 12), at(2, 10, 20)])).toEqual([
+      ["never_more_than_limit_running", "passed"],
+      ["limit_saturated", "passed"],
+      ["waiting_request_started_after_a_slot_freed", "passed"],
+    ]);
+    // 하나씩 돌면 상한에 닿지 않았고 기다린 요청도 없다. 통과로 치지 않는다.
+    expect(outcomes([at(0, 0, 10), at(10, 10, 20), at(20, 20, 30)])).toEqual([
+      ["never_more_than_limit_running", "passed"],
+      ["limit_saturated", "not_run"],
+      ["waiting_request_started_after_a_slot_freed", "not_run"],
+    ]);
+    // 둘이 도는 동안 온 요청이 자리가 나기 전에 시작했다.
+    expect(outcomes([at(0, 0, 10), at(0, 1, 12), at(2, 5, 20)])).toEqual([
+      ["never_more_than_limit_running", "failed"],
+      ["limit_saturated", "passed"],
+      ["waiting_request_started_after_a_slot_freed", "failed"],
+    ]);
+  });
+
+  it("passes the server-kill steer checks only when the kill hit the intended moment", () => {
+    const outcomes = (facts) =>
+      steerKillChecks({ source: "live", ...facts }).map((c) => [
+        c.name,
+        c.outcome,
+      ]);
+    const hit = {
+      acceptedBeforeKill: true,
+      acceptedRecovered: true,
+      inFlightSaved: true,
+      inFlightSettledBeforeKill: false,
+      inFlightRecovered: true,
+    };
+    expect(outcomes(hit)).toEqual([
+      ["accepted_then_killed_steer_reaches_run_after_restart", "passed"],
+      ["steer_in_flight_when_killed_is_not_lost", "passed"],
+    ]);
+    expect(
+      outcomes({
+        ...hit,
+        acceptedBeforeKill: false,
+        inFlightSettledBeforeKill: true,
+      })
+    ).toEqual([
+      ["accepted_then_killed_steer_reaches_run_after_restart", "not_run"],
+      ["steer_in_flight_when_killed_is_not_lost", "not_run"],
+    ]);
+    expect(outcomes({ ...hit, inFlightSaved: false })[1]).toEqual([
+      "steer_in_flight_when_killed_is_not_lost",
+      "not_run",
+    ]);
+    expect(
+      outcomes({ ...hit, acceptedRecovered: false, inFlightRecovered: false })
+    ).toEqual([
+      ["accepted_then_killed_steer_reaches_run_after_restart", "failed"],
+      ["steer_in_flight_when_killed_is_not_lost", "failed"],
+    ]);
+    for (const c of steerKillChecks({
       source: "live",
-    });
-    expect(fine.checks.map((c) => c.outcome)).toEqual(["passed", "passed"]);
-    const over = judgeConcurrency({
-      intervals: [at(0, 10), at(1, 12), at(5, 20)],
-      limit: 2,
-      source: "live",
-    });
-    expect(over.checks.map((c) => c.outcome)).toEqual(["failed", "failed"]);
-    const few = judgeConcurrency({
-      intervals: [at(0, 10)],
-      limit: 2,
-      source: "live",
-    });
-    expect(few.checks[1]).toMatchObject({
-      outcome: "not_run",
-      reason: expect.any(String),
-    });
+      ...hit,
+      acceptedBeforeKill: false,
+    }))
+      if (c.outcome === "not_run") expect(c.reason).toEqual(expect.any(String));
   });
 
   it("never reports a result with a skipped check as a full pass", () => {
@@ -378,6 +493,7 @@ describe("chaos harness on a fake connection", () => {
       expect(scene.cleanup).toMatchObject({
         serverStopped: true,
         homeRemoved: true,
+        homeKept: false,
         providerRecordsLeft: 0,
         commandPidsLeft: 0,
         problems: 0,
@@ -394,6 +510,10 @@ describe("chaos harness on a fake connection", () => {
     );
     expect(["passed", "partial"]).toContain(g.outcome);
     expect(summary.outcome).toBe("incomplete");
+    expect(summary).toMatchObject({
+      overrunSeconds: 0,
+      timeLimitExceeded: false,
+    });
     expect(summary.liveRuns).toBe(7);
     // 등록된 비밀값(토큰·메시지 본문·DB 주소)은 증거에 남지 않는다.
     expect(secrets.size).toBeGreaterThan(0);
@@ -506,4 +626,126 @@ describe("chaos harness on a fake connection", () => {
       problems: 0,
     });
   }, 120_000);
+
+  it("reports a product invariant that times out as failed and a missing precondition as not run", async () => {
+    const waiting = (id, wait) => ({
+      id,
+      title: id,
+      minLiveRuns: 0,
+      database: "ephemeral",
+      async run(ctx) {
+        await wait(ctx);
+        return { checks: [check("unreachable", true)], observations: {} };
+      },
+    });
+    const { summary } = await runChaos({
+      launch: { ...launchAll, scenes: ["a", "b"] },
+      connection: "fake-live",
+      scenes: [
+        waiting("a", (ctx) =>
+          sceneTools.expectWithin(
+            ctx,
+            "복구된 깨우기가 실행됨",
+            async () => false,
+            {
+              ms: 300,
+            }
+          )
+        ),
+        waiting("b", (ctx) =>
+          sceneTools.waitFor(ctx, "모델이 명령을 시작함", async () => false, {
+            ms: 300,
+          })
+        ),
+      ],
+    });
+    expect(summary.scenes.map((s) => [s.outcome, s.reason])).toEqual([
+      ["failed", "불변 조건 위반: 복구된 깨우기가 실행됨"],
+      ["not_run", "모델이 명령을 시작함: 제한 시간 안에 관찰하지 못함"],
+    ]);
+  }, 120_000);
+
+  it("keeps the home and fails the scene when a provider process record cannot be recovered", async () => {
+    // 대표는 끝나고 그룹의 프로세스만 남았다. 제품 복구는 우리 것인지 확인할 수 없어 기록을 남긴다.
+    const leader = spawn("sh", ["-c", "sleep 60 & exit 0"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    await once(leader, "exit");
+    const group = leader.pid;
+    let home;
+    try {
+      const planted = {
+        id: "a",
+        title: "남은 프로세스",
+        minLiveRuns: 0,
+        database: "ephemeral",
+        async run(ctx) {
+          home = ctx.home;
+          const dir = path.join(home, "providers/opencode/processes");
+          await mkdir(dir, { recursive: true });
+          await writeFile(
+            path.join(dir, `${group}.json`),
+            JSON.stringify({
+              pid: group,
+              start: "0",
+              group,
+              boot: readFileSync(
+                "/proc/sys/kernel/random/boot_id",
+                "utf8"
+              ).trim(),
+            })
+          );
+          return { checks: [check("ran", true)], observations: {} };
+        },
+      };
+      const { summary } = await runChaos({
+        launch: { ...launchAll, scenes: ["a"] },
+        connection: "fake-live",
+        scenes: [planted],
+      });
+      const [scene] = summary.scenes;
+      expect(scene.outcome).toBe("failed");
+      expect(scene.cleanup).toMatchObject({
+        homeKept: true,
+        homeRemoved: false,
+        providerRecordsLeft: 1,
+      });
+      // 사람이 정리할 수 있게 기록을 지우지 않는다.
+      expect(
+        existsSync(
+          path.join(home, "providers/opencode/processes", `${group}.json`)
+        )
+      ).toBe(true);
+    } finally {
+      try {
+        process.kill(-group, "SIGKILL");
+      } catch {
+        /* 이미 끝났다. */
+      }
+      if (home) await rm(home, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("stops waiting for a server start when the scene is aborted", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
+    const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
+    const server = chaosServer({
+      home,
+      harnessDir,
+      connection: "fake-live",
+      database: "persistent",
+    });
+    try {
+      const at = Date.now();
+      await expect(server.start(AbortSignal.timeout(200))).rejects.toThrow();
+      expect(Date.now() - at).toBeLessThan(10_000);
+      expect(server.running).toBe(false);
+    } finally {
+      // 실패해도 띄운 서버·DB·홈을 남기지 않는다.
+      await server.dispose();
+      await rm(harnessDir, { recursive: true, force: true });
+    }
+    expect(postgresAlive(home)).toBe(false);
+  }, 60_000);
 });
