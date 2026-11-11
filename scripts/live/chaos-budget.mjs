@@ -91,11 +91,14 @@ export function parseLaunch(argv, env, knownScenes) {
     if (!knownScenes.includes(id))
       throw new LaunchRefused(`unknown scene "${id}"`);
   if (!scenes.length) throw new LaunchRefused("no scene selected");
+  for (const name of ["BABOJUBOT_CHAOS_MODEL", "BABOJUBOT_CHAOS_ALT_MODEL"])
+    if (env[name]?.trim())
+      throw new LaunchRefused(
+        `${name} is not supported: the harness cannot confirm that a chosen model is free, so it uses the product's free-model choice only`
+      );
   return {
     scenes: knownScenes.filter((id) => scenes.includes(id)),
     maxLiveRuns: readMaxLiveRuns(env.BABOJUBOT_CHAOS_MAX_LIVE_RUNS),
-    model: env.BABOJUBOT_CHAOS_MODEL?.trim() || null,
-    altModel: env.BABOJUBOT_CHAOS_ALT_MODEL?.trim() || null,
   };
 }
 
@@ -187,9 +190,9 @@ export function writeSecretFile(file, content, { replace = false } = {}) {
   }
 }
 
-const budgetRefusal = (reason) => ({
+const refusal = (reason) => ({
   stopReason: "failed",
-  error: `Chaos harness ${reason.replaceAll("_", " ")} reached; the live run was not started.`,
+  error: `Chaos harness did not start the live run (${reason.replaceAll("_", " ")}).`,
   summary: null,
   usage: null,
   nextSession: null,
@@ -215,6 +218,7 @@ export function gateConnection(
     }
   };
   const inner = connection.adapter;
+  let readyUntil = 0;
   const adapter = {
     ...inner,
     async execute(request, ctl) {
@@ -226,12 +230,31 @@ export function gateConnection(
         /* 예산이 없으면 실제 실행을 시작하지 않는다. */
       }
       if (live) {
+        if (Date.now() >= readyUntil) {
+          let ready = null;
+          try {
+            ready = await inner.checkReadiness(ctl.signal);
+          } catch {
+            /* 확인하지 못하면 시작하지 않는다. */
+          }
+          // OpenCode의 준비됨은 무료 모델이 있다는 뜻이다. 모델을 정하지 않은 실행은 그 무료 모델을 고른다.
+          if (ready?.status !== "ready") {
+            ledger.append({
+              kind: "refused",
+              scene: budget?.scene ?? null,
+              runId,
+              reason: "no_free_model",
+            });
+            return refusal("no_free_model");
+          }
+          readyUntil = Date.now() + 60_000;
+        }
         const claim = claimLiveRun(ledger, budget, {
           runId,
           connection: connection.id,
           now: Date.now(),
         });
-        if (!claim.ok) return budgetRefusal(claim.reason);
+        if (!claim.ok) return refusal(claim.reason);
       } else {
         ledger.append({
           kind: "fake_run",

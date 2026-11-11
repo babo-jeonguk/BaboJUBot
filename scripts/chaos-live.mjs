@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { LaunchRefused, limits, parseLaunch } from "./live/chaos-budget.mjs";
 import { exitCodeOf, runChaos, writeEvidence } from "./live/chaos-run.mjs";
+import { scrubEnvironment } from "./live/chaos-server.mjs";
 import { scenes } from "./live/chaos-scenes.mjs";
 
 const repoRoot = path.resolve(
@@ -18,8 +19,7 @@ const usage = `Usage: node scripts/chaos-live.mjs --allow-live [--scenes=a,d,e,f
 
 Runs real OpenCode chaos scenes. Needs explicit permission to use model quota and is refused in CI.
   BABOJUBOT_CHAOS_MAX_LIVE_RUNS  live run budget, 1-${limits.maxLiveRuns} (default ${limits.maxLiveRuns})
-  BABOJUBOT_CHAOS_MODEL          OpenCode model ID (default: the product's free-model choice)
-  BABOJUBOT_CHAOS_ALT_MODEL      second model for the model-change check (not run without it)`;
+  Models: the product's free-model choice only (a run starts only while a free model is confirmed)`;
 
 let launch;
 try {
@@ -35,6 +35,9 @@ try {
   process.exit(2);
 }
 
+// 실제 호출 전 확인과 서버가 개인 설정·자격 증명(PASS_ENV 등)을 읽지 않게 한다.
+scrubEnvironment(process.env);
+
 // 사용자 중단(Ctrl-C): 지금 장면을 멈추고 정리한 뒤 결과를 남긴다. 두 번째 Ctrl-C는 바로 끝낸다.
 const stop = new AbortController();
 process.on("SIGINT", () => {
@@ -45,7 +48,7 @@ process.on("SIGINT", () => {
   stop.abort(new Error("user interrupt"));
 });
 
-/** 실제 호출 전 확인: 프로그램·로그인 상태와 쓸 모델. 임시 홈에서 하고 지운다. 사용자 OpenCode 설정·자격 증명은 읽지 않는다. */
+/** 실제 호출 전 확인: 프로그램·로그인 상태와 무료 모델. 임시 홈에서 하고 지운다. 사용자 OpenCode 설정·자격 증명은 읽지 않는다. */
 async function preflight() {
   const { createOpenCodeProvider } =
     await import("../packages/runtime/src/index.ts");
@@ -54,19 +57,10 @@ async function preflight() {
     const connection = createOpenCodeProvider({ dataDir: home });
     const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(60_000)]);
     const readiness = await connection.adapter.checkReadiness(signal);
-    if (readiness.status === "not_ready")
-      return { problem: `OpenCode 준비 안 됨(${readiness.reason})` };
-    const models =
-      (await connection.listModels?.(signal).catch(() => [])) ?? [];
-    const ids = models.map((m) => m.id);
-    if (launch.model && ids.length && !ids.includes(launch.model))
-      return { problem: "BABOJUBOT_CHAOS_MODEL이 OpenCode 모델 목록에 없음" };
-    if (launch.altModel && ids.length && !ids.includes(launch.altModel)) {
-      console.error(
-        "BABOJUBOT_CHAOS_ALT_MODEL is not in the OpenCode model list; the model-change check will not run."
-      );
-      launch.altModel = null;
-    }
+    if (readiness.status !== "ready")
+      return {
+        problem: `무료 모델을 확인하지 못함(${readiness.status}, ${readiness.reason})`,
+      };
     return { readiness: readiness.status };
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -82,8 +76,7 @@ console.log(
   JSON.stringify({
     plan: {
       connection: "opencode",
-      model: launch.model ?? "product-default-free",
-      altModel: launch.altModel,
+      model: "product-default-free",
       scenes: launch.scenes,
       maxLiveRuns: launch.maxLiveRuns,
       totalMinutes: limits.totalMs / 60_000,

@@ -8,26 +8,27 @@ import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
+import { sharedVariables } from "../../packages/runtime/src/providers/process.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
 
-/** 상속하면 기존 데이터·다른 연결로 이어질 수 있는 환경. 자식에 넘기지 않는다. */
-const inheritedButUnsafe = [
-  "DATABASE_URL",
-  "BABOJUBOT_EPHEMERAL_DB",
-  "BABOJUBOT_PROVIDERS",
-  "BABOJUBOT_FAKE_PROVIDERS",
-  "BABOJUBOT_FAKE_PROVIDER_SETTINGS",
-  "EMBEDDED_POSTGRES_PORT",
-  "PORT",
-  "HOST",
-  "PGHOST",
-  "PGPORT",
-  "PGUSER",
-  "PGPASSWORD",
-  "PGDATABASE",
-];
+/** 서버 자식에 넘기는 환경. 네트워크·인증서·언어·임시 폴더와 PATH만 넘기고, 제품 설정·자격 증명은 넘기지 않는다. */
+export function chaosEnvironment(env, home) {
+  const picked = Object.fromEntries(
+    ["PATH", ...sharedVariables].flatMap((name) =>
+      env[name] === undefined ? [] : [[name, env[name]]]
+    )
+  );
+  return { ...picked, HOME: home, BABOJUBOT_HOME: home };
+}
+
+/** 이 프로세스의 환경에서 허용 목록 밖의 값을 지운다(실제 호출 전 확인용). HOME은 둔다. 같은 객체를 돌려준다. */
+export function scrubEnvironment(env) {
+  const allowed = new Set(["PATH", "HOME", ...sharedVariables]);
+  for (const name of Object.keys(env)) if (!allowed.has(name)) delete env[name];
+  return env;
+}
 
 /**
  * 장면 하나의 서버 자원. `home`(임시 제품 홈)과 `harnessDir`(토큰·설정, 0700)는 부르는 쪽이 만든다.
@@ -58,7 +59,8 @@ export function chaosServer({
   let forced = false;
   let starts = 0;
 
-  async function start() {
+  async function start(signal) {
+    if (signal?.aborted) throw signal.reason;
     await mkdir(files.tokens, { recursive: true, mode: 0o700 });
     writeSecretFile(
       files.config,
@@ -66,14 +68,12 @@ export function chaosServer({
       { replace: true }
     );
     rmSync(files.info, { force: true });
-    const env = { ...process.env, BABOJUBOT_HOME: home };
-    for (const name of inheritedButUnsafe) delete env[name];
     child = spawn(
       process.execPath,
       [fileURLToPath(import.meta.url), files.config],
       {
         cwd: repoRoot,
-        env,
+        env: chaosEnvironment(process.env, home),
         stdio: ["ignore", "pipe", "pipe"],
       }
     );
@@ -95,6 +95,10 @@ export function chaosServer({
     });
     const deadline = Date.now() + 180_000;
     while (!existsSync(files.info)) {
+      if (signal?.aborted) {
+        await kill();
+        throw signal.reason;
+      }
       if (gone)
         throw startFailure("chaos server exited before it was ready", tail);
       if (Date.now() > deadline) {
@@ -129,7 +133,12 @@ export function chaosServer({
    */
   async function dispose() {
     await stop();
-    const leftovers = { postgres: false, providerRecords: 0 };
+    const leftovers = {
+      postgres: false,
+      providerRecordsFound: 0,
+      providerRecordsLeft: 0,
+      homeKept: false,
+    };
     const { openDatabase, openEphemeralDatabase } =
       await import("../../packages/db/src/index.ts");
     const { recoverProviderProcesses } =
@@ -151,9 +160,18 @@ export function chaosServer({
       const handle = await openEphemeralDatabase();
       await handle.close();
     }
-    leftovers.providerRecords = processRecordPids(home).length;
+    leftovers.providerRecordsFound = processRecordPids(home).length;
     await recoverProviderProcesses(home);
-    await rm(home, { recursive: true, force: true });
+    leftovers.providerRecordsLeft = processRecordPids(home).length;
+    if (leftovers.providerRecordsLeft > 0) {
+      // 우리 것인지 확인하지 못한 기록은 지우지 않는다. 사람이 정리할 수 있게 홈을 남긴다.
+      leftovers.homeKept = true;
+      console.error(
+        `[chaos] ${leftovers.providerRecordsLeft} provider process record(s) could not be recovered; kept ${home} for manual cleanup`
+      );
+    } else {
+      await rm(home, { recursive: true, force: true });
+    }
     return leftovers;
   }
 

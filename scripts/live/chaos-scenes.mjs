@@ -15,6 +15,8 @@ export const busyScript = path.join(here, "busy.mjs");
 export class NotRun extends Error {}
 /** 기다리던 일을 제한 시간 안에 보지 못했다. */
 class WaitTimeout extends NotRun {}
+/** 제품이 지켜야 할 일이 제한 시간 안에 일어나지 않았다. 장면은 실패다. */
+export class InvariantBroken extends Error {}
 /** 기다린 일이 오지 않은 것만 `fallback`으로 바꾼다. 중단·예산 소진은 그대로 던진다. */
 const unlessTimeout = (fallback) => (error) => {
   if (error instanceof WaitTimeout) return fallback;
@@ -84,29 +86,51 @@ export function judgeRestart({ events, oldRunId, oldWakeIds, source }) {
   };
 }
 
-/** 연결 동시 실행 상한 판정. 실행 구간(시작·끝 시각)의 최대 겹침이 상한 이하이고, 기다린 실행은 자리가 난 뒤 시작했다. */
+/** 연결 동시 실행 상한 판정. 실행 구간에 요청 시각(`requestedAt`)이 붙는다. 겹침은 상한 이하여야 하고, 상한까지 찬 적이 있어야 하며,
+ * 자리가 차 있을 때 온 요청은 앞선 실행이 끝난 뒤에 시작해야 한다. 상한까지 차지 않았거나 기다린 요청이 없으면 그 검사는 미실행이다. */
 export function judgeConcurrency({ intervals, limit, source }) {
-  const sorted = [...intervals].sort((a, b) => a.start - b.start);
   const overlap = maxOverlap(intervals);
-  // 상한만큼 실행 중일 때 들어온 실행은 그중 하나가 끝난 뒤에 시작해야 한다.
-  const waited = sorted.slice(limit).every((later, i) => {
-    const before = sorted.slice(0, limit + i);
-    return before.some((b) => b.end !== null && b.end <= later.start);
-  });
+  const runningAt = (t, self) =>
+    intervals.filter(
+      (o) => o !== self && o.start <= t && (o.end === null || o.end > t)
+    );
+  // 요청이 온 뒤 시작하기 전 어느 순간에 다른 실행이 상한만큼 돌았으면 그 요청은 자리를 기다렸다.
+  const waitedFor = (i) =>
+    [
+      i.requestedAt,
+      ...intervals
+        .filter((o) => o !== i && o.start >= i.requestedAt && o.start < i.start)
+        .map((o) => o.start),
+    ].some((t) => runningAt(t, i).length >= limit);
+  const waited = intervals.filter(waitedFor);
+  const waitedOk = waited.every((i) =>
+    intervals.some(
+      (o) =>
+        o !== i && o.end !== null && o.end > i.requestedAt && o.end <= i.start
+    )
+  );
   return {
     checks: [
       check("never_more_than_limit_running", overlap <= limit, { source }),
+      check("limit_saturated", overlap >= limit ? true : null, {
+        source,
+        reason: overlap >= limit ? null : "실행이 상한까지 겹치지 않음",
+      }),
       check(
         "waiting_request_started_after_a_slot_freed",
-        sorted.length > limit ? waited : null,
+        waited.length ? waitedOk : null,
         {
           source,
-          reason:
-            sorted.length > limit ? null : "상한보다 많은 실행이 생기지 않음",
+          reason: waited.length ? null : "자리가 차 있을 때 온 요청이 없음",
         }
       ),
     ],
-    observations: { runs: intervals.length, maxOverlap: overlap, limit },
+    observations: {
+      runs: intervals.length,
+      maxOverlap: overlap,
+      limit,
+      waitedRequests: waited.length,
+    },
   };
 }
 
@@ -129,19 +153,34 @@ export const sleep = (ms, signal) =>
     );
   });
 
-/** `fn`이 참 값을 낼 때까지 기다린다. 시간이 지나면 `onTimeout`(기본: 미실행)을 던진다. 예산이 소진되면 미실행으로 멈춘다. */
-async function waitFor(ctx, what, fn, { ms = 120_000, every = 300 } = {}) {
+/** `fn`이 참 값을 낼 때까지 기다린다. 시간이 지나면 `timedOut`을 던진다. 예산이 소진되면 미실행으로 멈춘다. */
+async function poll(ctx, fn, { ms = 120_000, every = 300 } = {}, timedOut) {
   const deadline = Date.now() + ms;
   for (;;) {
     ctx.signal.throwIfAborted();
     ctx.assertBudget();
     const value = await fn();
     if (value) return value;
-    if (Date.now() > deadline)
-      throw new WaitTimeout(`${what}: 제한 시간 안에 관찰하지 못함`);
+    if (Date.now() > deadline) throw timedOut();
     await sleep(every, ctx.signal);
   }
 }
+/** 전제(모델이 지시를 따름 등)를 기다린다. 오지 않으면 미실행이다. */
+const waitFor = (ctx, what, fn, options) =>
+  poll(
+    ctx,
+    fn,
+    options,
+    () => new WaitTimeout(`${what}: 제한 시간 안에 관찰하지 못함`)
+  );
+/** 제품이 지켜야 할 일을 기다린다. 오지 않으면 실패다. */
+const expectWithin = (ctx, what, fn, options) =>
+  poll(ctx, fn, options, () => new InvariantBroken(`불변 조건 위반: ${what}`));
+/** 불변 조건 위반만 `fallback`으로 바꿔 검사 하나의 실패로 남긴다. */
+const unlessBroken = (fallback) => (error) => {
+  if (error instanceof InvariantBroken) return fallback;
+  throw error;
+};
 
 /** 실제 연결은 그대로, 가짜 연결은 1/10로 줄인 초. 긴 명령 상한(90초)을 넘지 않는다. */
 const seconds = (ctx, n) =>
@@ -294,9 +333,9 @@ async function settled(ctx, org, ms = 300_000) {
   );
 }
 
-/** `known`에 없는 새 실행 시도가 생길 때까지 기다린다(이미 끝났을 수도 있다). */
+/** `known`에 없는 새 실행 시도가 생길 때까지 기다린다(이미 끝났을 수도 있다). 제품이 지켜야 할 일이므로 오지 않으면 실패다. */
 const newRun = (ctx, org, known, ms) =>
-  waitFor(
+  expectWithin(
     ctx,
     "새 실행 시작",
     async () => (await runsOf(ctx, org)).find((r) => !known.includes(r.id)),
@@ -363,7 +402,7 @@ async function cancelScene(ctx) {
     {}
   );
   const refused = await tool(ctx, token, "GET", "/run-context");
-  await waitFor(
+  await expectWithin(
     ctx,
     "취소된 실행이 끝남",
     async () => (await runOf(ctx, org, run.id)).status !== "running",
@@ -371,7 +410,7 @@ async function cancelScene(ctx) {
   );
   const pidsAfterEnd = pids.filter(alive);
   const next = await newRun(ctx, org, [...known, run.id], 120_000).catch(
-    unlessTimeout(null)
+    unlessBroken(null)
   );
   await settled(ctx, org);
   const events = await eventsOf(ctx, org);
@@ -402,8 +441,11 @@ async function cancelScene(ctx) {
       ),
       check(
         "next_run_started_after_cleanup",
-        next && end && nextClaim ? nextClaim.at >= end.at : null,
-        { source, reason: next ? null : "다음 실행이 시작되지 않음" }
+        next && end && nextClaim ? nextClaim.at >= end.at : false,
+        {
+          source,
+          reason: next ? null : "기다리던 깨우기로 다음 실행이 시작되지 않음",
+        }
       ),
       check(
         "input_not_redelivered",
@@ -411,8 +453,11 @@ async function cancelScene(ctx) {
           ? !second.payload.wakeIds.some((id) =>
               first.payload.wakeIds.includes(id)
             )
-          : null,
-        { source, reason: second ? null : "다음 실행이 시작되지 않음" }
+          : false,
+        {
+          source,
+          reason: next ? null : "기다리던 깨우기로 다음 실행이 시작되지 않음",
+        }
       ),
     ],
     observations: {
@@ -454,7 +499,7 @@ async function startLongRun(ctx, org, secondsWanted = 85, prefix = "") {
 /** 서버만 SIGKILL로 끝내고 같은 홈·DB로 다시 띄운다. */
 async function killAndRestart(ctx) {
   await ctx.server.kill();
-  await ctx.server.start();
+  await ctx.server.start(ctx.signal);
 }
 
 /** b. 서버 강제 종료 뒤 복구. */
@@ -643,12 +688,15 @@ async function concurrencyScene(ctx) {
       org.id,
       (await runsOf(ctx, org)).map((r) => r.id)
     );
-  for (const org of orgs)
+  const requested = new Map();
+  for (const org of orgs) {
+    requested.set(org.id, Date.now());
     await say(
       ctx,
       org,
       `Run the shell command \`${longCommand(ctx, 30)}\` in the foreground and wait for it to finish. Then send_message with body "DONE" once.`
     );
+  }
   // 기다리는 동안 실행 중 개수를 따로 표본으로도 센다.
   let sampledMax = 0;
   await waitFor(
@@ -675,6 +723,7 @@ async function concurrencyScene(ctx) {
     for (const run of await runsOf(ctx, org))
       if (!known.get(org.id).includes(run.id) && run.provider === ctx.liveId)
         intervals.push({
+          requestedAt: requested.get(org.id),
           start: Date.parse(run.startedAt),
           end: run.finishedAt ? Date.parse(run.finishedAt) : null,
         });
@@ -886,7 +935,7 @@ async function sessionScene(ctx) {
 
   // 모델만 바꾸면 세션을 유지한다. 다른 모델은 사람이 정한 것만 쓴다(비용).
   let last = recalled;
-  const altModel = ctx.fake ? "fake-live-max" : ctx.altModel;
+  const altModel = ctx.fake ? "fake-live-max" : null;
   if (altModel && ctx.remainingSceneRuns() >= 2) {
     const changed = await changeTo(ctx.liveId, altModel);
     if (changed.status >= 300) {
@@ -912,7 +961,7 @@ async function sessionScene(ctx) {
         source: live,
         reason: altModel
           ? "남은 예산 부족"
-          : "다른 모델을 정하지 않음(BABOJUBOT_CHAOS_ALT_MODEL)",
+          : "비용 조건을 확인할 수 없어 다른 모델을 쓰지 않음",
       })
     );
 
@@ -956,6 +1005,41 @@ async function sessionScene(ctx) {
   };
 }
 
+/** 끼워 넣기 강제 종료 판정. 노린 순간(수락 직후·결과가 정해지기 전)에 끝냈을 때만 통과·실패를 정하고, 아니면 미실행이다. */
+export function steerKillChecks({
+  acceptedBeforeKill,
+  acceptedRecovered,
+  inFlightSaved,
+  inFlightSettledBeforeKill,
+  inFlightRecovered,
+  source,
+}) {
+  return [
+    check(
+      "accepted_then_killed_steer_reaches_run_after_restart",
+      acceptedBeforeKill ? !!acceptedRecovered : null,
+      {
+        source,
+        reason: acceptedBeforeKill
+          ? null
+          : "강제 종료 전에 끼워 넣기가 수락되지 않음",
+      }
+    ),
+    check(
+      "steer_in_flight_when_killed_is_not_lost",
+      !inFlightSaved || inFlightSettledBeforeKill ? null : !!inFlightRecovered,
+      {
+        source,
+        reason: !inFlightSaved
+          ? "서버가 메시지를 저장하기 전에 끝남"
+          : inFlightSettledBeforeKill
+            ? "강제 종료 전에 끼워 넣기 결과가 정해짐"
+            : null,
+      }
+    ),
+  ];
+}
+
 /** g(선택). 끼워 넣기 수락 직후, 그리고 끼워 넣는 중에 서버를 강제로 끝낸다. 메시지는 복구 뒤 실행에 전달돼야 한다. */
 async function steerKillScene(ctx) {
   const org = await setupOrg(ctx, "Chaos steer kill");
@@ -978,27 +1062,26 @@ async function steerKillScene(ctx) {
     );
     return wake?.run_id && !known.includes(wake.run_id) ? wake.run_id : null;
   };
-  const acceptedLater = await waitFor(
+  const acceptedLater = await expectWithin(
     ctx,
     "수락된 메시지가 복구 뒤 실행에 전달됨",
     () => deliveredAfterRestart(accepted.id, [first.run.id]),
     { ms: 45_000 }
-  ).catch(unlessTimeout(null));
-  const checks = [
-    check(
-      "accepted_then_killed_steer_reaches_run_after_restart",
-      !!acceptedLater,
-      { source }
-    ),
-  ];
+  ).catch(unlessBroken(null));
+  const facts = {
+    source,
+    acceptedBeforeKill: accepted.deliveredToRunId === first.run.id,
+    acceptedRecovered: !!acceptedLater,
+  };
+  let checks;
   // 받지 못했으면 그 상태를 남긴다(깨우기가 대기 중인데 메시지가 끼워 넣는 중으로 남았는지).
   const [stuck] = await ctx.query(
     "select (w.run_id is null) as pending, m.delivery from wakes w join messages m on m.id = w.message_id where m.id = $1",
     [accepted.id]
   );
   const observations = {
-    acceptedDeliveredBeforeKill: accepted.deliveredToRunId === first.run.id,
-    acceptedRecovered: !!acceptedLater,
+    acceptedDeliveredBeforeKill: facts.acceptedBeforeKill,
+    acceptedRecovered: facts.acceptedRecovered,
     acceptedWakePending: stuck?.pending ?? null,
     acceptedMessageDelivery: stuck?.delivery ?? null,
   };
@@ -1024,29 +1107,28 @@ async function steerKillScene(ctx) {
         )
       : null;
     const later = id
-      ? await waitFor(
+      ? await expectWithin(
           ctx,
           "끼워 넣던 메시지가 복구 뒤 실행에 전달됨",
           () => deliveredAfterRestart(id, [first.run.id, second.id]),
           { ms: 120_000 }
-        ).catch(unlessTimeout(null))
+        ).catch(unlessBroken(null))
       : null;
-    checks.push(
-      check("steer_in_flight_when_killed_is_not_lost", id ? !!later : null, {
-        source,
-        reason: id ? null : "서버가 메시지를 저장하기 전에 끝남",
-      })
-    );
+    facts.inFlightSaved = !!id;
+    facts.inFlightSettledBeforeKill = settledBeforeKill;
+    facts.inFlightRecovered = !!later;
+    checks = steerKillChecks(facts);
     observations.inFlightSaved = !!id;
     observations.inFlightSettledBeforeKill = settledBeforeKill;
     observations.inFlightRecovered = !!later;
   } else
-    checks.push(
+    checks = [
+      steerKillChecks(facts)[0],
       check("steer_in_flight_when_killed_is_not_lost", null, {
         source,
         reason: "남은 예산 부족",
-      })
-    );
+      }),
+    ];
   await ctx.api(
     "POST",
     `/api/organizations/${org.id}/agents/${org.leadId}/interrupt`,
@@ -1122,4 +1204,6 @@ export const sceneTools = {
   runsOf,
   startLongRun,
   killAndRestart,
+  waitFor,
+  expectWithin,
 };

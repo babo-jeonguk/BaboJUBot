@@ -16,6 +16,7 @@ import {
   brief,
   busyPids,
   check,
+  InvariantBroken,
   NotRun,
   sceneOutcome,
 } from "./chaos-scenes.mjs";
@@ -23,7 +24,7 @@ import {
 /** 남은 시간이 이보다 적으면 새 장면을 시작하지 않는다. */
 const minSceneMs = 60_000;
 /** 전체 시간 안에 마지막 장면의 정리(서버 정지·DB 정지·홈 삭제)까지 끝내도록 남겨 두는 시간. */
-const cleanupReserveMs = 60_000;
+const cleanupReserveMs = 90_000;
 
 /**
  * 선택한 장면을 순서대로 돌린다. 결과 요약을 돌려준다(쓰기는 `writeEvidence`).
@@ -108,19 +109,22 @@ export async function runChaos({
   const liveRuns = results.reduce((n, r) => n + (r.liveRuns ?? 0), 0);
   const inputTokens = results.reduce((n, r) => n + (r.inputTokens ?? 0), 0);
   const allChecks = results.flatMap((r) => r.checks);
-  const outcome = results.some((r) => r.outcome === "failed")
-    ? "failed"
-    : results.every((r) => r.outcome === "passed")
-      ? "passed"
-      : "incomplete";
+  const overrunSeconds = Math.max(0, (Date.now() - startedAt - totalMs) / 1000);
+  const outcome =
+    overrunSeconds > 0 || results.some((r) => r.outcome === "failed")
+      ? "failed"
+      : results.every((r) => r.outcome === "passed")
+        ? "passed"
+        : "incomplete";
   return {
     summary: {
       outcome,
       connection: fake ? "fake-live" : "opencode",
-      model: launch.model ?? (fake ? "fake-live-mini" : "product-default-free"),
-      altModel: launch.altModel,
+      model: fake ? "fake-live-mini" : "product-default-free",
       startedAt: new Date(startedAt).toISOString(),
       seconds: (Date.now() - startedAt) / 1000,
+      overrunSeconds,
+      timeLimitExceeded: overrunSeconds > 0,
       limits: {
         maxLiveRuns: launch.maxLiveRuns,
         totalSeconds: totalMs / 1000,
@@ -194,8 +198,7 @@ async function runScene({
     secrets,
     ledger,
     server,
-    model: fake ? "fake-live-mini" : launch.model,
-    altModel: launch.altModel,
+    model: fake ? "fake-live-mini" : null,
     get liveId() {
       return server.info.liveProviderId;
     },
@@ -236,7 +239,9 @@ async function runScene({
         throw new NotRun(
           refused.reason === "time_limit"
             ? "시간 한도에 닿아 새 실제 실행을 막음"
-            : "실제 실행 예산에 닿아 새 실제 실행을 막음"
+            : refused.reason === "no_free_model"
+              ? "무료 모델을 확인하지 못해 새 실제 실행을 막음"
+              : "실제 실행 예산에 닿아 새 실제 실행을 막음"
         );
     },
   };
@@ -245,7 +250,7 @@ async function runScene({
     checks = [],
     observations = {};
   try {
-    await server.start();
+    await server.start(sceneSignal);
     secrets.add(server.info.dbUrl);
     const aborted = new Promise((_, reject) =>
       sceneSignal.addEventListener("abort", () => reject(sceneSignal.reason), {
@@ -258,6 +263,9 @@ async function runScene({
   } catch (error) {
     if (error instanceof NotRun) {
       outcome = "not_run";
+      reason = error.message;
+    } else if (error instanceof InvariantBroken) {
+      outcome = "failed";
       reason = error.message;
     } else if (signal.aborted) {
       outcome = "not_run";
@@ -283,6 +291,8 @@ async function runScene({
   if (
     !cleanup.serverStopped ||
     !cleanup.homeRemoved ||
+    cleanup.homeKept ||
+    cleanup.providerRecordsLeft > 0 ||
     cleanup.problems > 0 ||
     cleanup.commandPidsLeft > 0
   ) {
@@ -316,7 +326,9 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
   const cleanup = {
     serverStopped: false,
     homeRemoved: false,
+    homeKept: false,
     postgresLeft: false,
+    providerRecordsFound: 0,
     providerRecordsLeft: 0,
     commandPidsLeft: 0,
     problems: 0,
@@ -324,12 +336,13 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
   try {
     const leftovers = await server.dispose();
     cleanup.postgresLeft = leftovers.postgres;
-    cleanup.providerRecordsLeft = leftovers.providerRecords;
+    cleanup.homeKept = leftovers.homeKept;
+    cleanup.providerRecordsFound = leftovers.providerRecordsFound;
+    cleanup.providerRecordsLeft = leftovers.providerRecordsLeft;
   } catch {
     cleanup.problems++;
-    await rm(home, { recursive: true, force: true }).catch(
-      () => cleanup.problems++
-    );
+    // 홈에는 아직 프로세스 기록이 남아 있을 수 있다. 지우지 않고 남긴다.
+    cleanup.homeKept = existsSync(home);
   }
   cleanup.serverStopped = !server.running;
   // 이 장면 표시가 붙은 시험용 명령만 남아 있으면 끝낸다. 다른 작업의 프로세스는 표시가 달라 건드리지 않는다.
