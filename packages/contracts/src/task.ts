@@ -62,7 +62,9 @@ export const recordArtifactInputSchema = z
       .string()
       .min(1)
       .max(4096)
-      .regex(/^[^\0]*$/)
+      // NUL을 거부한다. 같은 뜻의 `\0` 표기는 도구 정의의 pattern으로 나가면 일부 모델 서비스가 요청 전체를 거부한다(#147).
+      // eslint-disable-next-line no-control-regex -- NUL을 일부러 거부하며, 이 표기가 도구 정의 pattern으로 그대로 나간다.
+      .regex(/^[^\x00]*$/)
       .optional(),
   })
   .refine(
