@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -21,6 +21,17 @@ async function createOrganization(page: Page, name: string) {
     id: string;
     agents: { id: string; role: string }[];
   };
+  // 생성으로 깨어난 가짜 Lead가 초기 연구 승인을 요청하고 실행 시도를 끝낼 때까지 기다린다. 그 뒤로는 이 시험이 보낸 메시지만 상세를 다시 부른다.
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(`/api/organizations/${org.id}/runs`);
+        const list = (await res.json()) as { status: string }[];
+        return list.length > 0 && list.every((r) => r.status === "completed");
+      },
+      { timeout: 30_000 }
+    )
+    .toBe(true);
   return { id: org.id, leadId: org.agents.find((a) => a.role === "lead")!.id };
 }
 
@@ -34,18 +45,22 @@ test("a blocked recovery shows its reason, the owner retries it, and the notice 
     reason: "missing_source",
     since: new Date().toISOString(),
   };
-  const withRecovery = async (
-    res: Awaited<ReturnType<Page["request"]["get"]>>
-  ) => ({
-    ...((await res.json()) as object),
+  /** 서버의 실제 에이전트 상세에 이 시험의 복구 상태만 덮는다. 화면 요청과 따로 받아, 화면이 그 요청을 취소해도 읽기가 깨지지 않는다. */
+  const detail = async () => ({
+    ...((await (await page.request.get(agentPath)).json()) as object),
     recovery,
   });
+  /** 화면이 이미 버린 요청(새 Event로 다시 부름)에는 응답할 곳이 없으므로 무시한다. */
+  const answer = async (route: Route, json: object) => {
+    try {
+      await route.fulfill({ status: 200, json });
+    } catch {
+      // 요청이 취소됨.
+    }
+  };
   await page.route(
     (url) => url.pathname === agentPath,
-    async (route) => {
-      const res = await route.fetch();
-      await route.fulfill({ response: res, json: await withRecovery(res) });
-    }
+    async (route) => answer(route, await detail())
   );
   let recoverRequests = 0;
   let release!: () => void;
@@ -56,11 +71,7 @@ test("a blocked recovery shows its reason, the owner retries it, and the notice 
       recoverRequests++;
       await held;
       recovery = { ...recovery!, state: "retrying" };
-      const res = await page.request.get(agentPath);
-      await route.fulfill({
-        status: 200,
-        json: { ...((await res.json()) as object), recovery },
-      });
+      await answer(route, await detail());
     }
   );
 
