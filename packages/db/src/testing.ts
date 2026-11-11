@@ -182,6 +182,24 @@ export async function setIntentSource(
     .where(eq(toolOperations.id, intentId));
 }
 
+/**
+ * 에이전트의 같은 호출 키 실행 의도가 고정한 입력 표기를 바꾼다. 이 기능 전 판이 남긴 기록(`null`)이나 읽을 수 없게 손상된 기록을
+ * 만드는 테스트 전용 조작이다.
+ */
+export async function setIntentRequest(
+  db: Database,
+  agentId: string,
+  key: string,
+  request: string | null
+) {
+  await db
+    .update(toolOperations)
+    .set({ request })
+    .where(
+      and(eq(toolOperations.agentId, agentId), eq(toolOperations.key, key))
+    );
+}
+
 /** 에이전트의 같은 호출 키 실행 의도의 정산 상태. */
 export async function intentStatusOf(
   db: Database,

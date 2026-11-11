@@ -19,10 +19,11 @@ import { acceptIntent, controlAgent, type Database } from "@babojubot/db";
 import { createGate } from "@babojubot/runtime/testing";
 import {
   intentStatusOf,
+  setIntentRequest,
   setIntentSettleAttempts,
   setIntentSource,
 } from "@babojubot/db/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import { Workspaces } from "../src/workspace.ts";
 import { calls, idle, scriptedAgents, serverHelpers } from "./scenarios.ts";
@@ -37,6 +38,7 @@ let t: TestServer | undefined;
 let restarted: RunningServer | undefined;
 let root = "";
 afterEach(async () => {
+  vi.restoreAllMocks();
   await restarted?.close();
   restarted = undefined;
   await t?.close();
@@ -709,3 +711,238 @@ async function heldOtherOrganization(
       .filter((b) => b === "다른 조직 답장"),
   };
 }
+
+describe("recovery delivery and stored records at the edges (#150 PR #164 review)", () => {
+  /** 다음 Lead 요청 조립의 작업 폴더 준비(`Workspaces.forRun`)를 바꾼다. 정산과 모델 호출 사이의 경계를 고정한다. */
+  const onLeadAssemble = (
+    leadId: string,
+    around: (
+      real: () => ReturnType<Workspaces["forRun"]>
+    ) => ReturnType<Workspaces["forRun"]>
+  ) => {
+    const real = Workspaces.prototype.forRun;
+    vi.spyOn(Workspaces.prototype, "forRun").mockImplementation(function (
+      this: Workspaces,
+      orgId: string,
+      agentId: string
+    ) {
+      const call = () => real.call(this, orgId, agentId);
+      return agentId === leadId ? around(call) : call();
+    });
+  };
+
+  it("keeps the recovery delivery when building the model request fails after settlement, blocks at the limit, and delivers it after the owner's retry", async () => {
+    const { agents, org, held, api, restart, db } =
+      await heldLead("요청 조립 실패 조직");
+    await acceptIntent(
+      db,
+      { id: held.identity.runId },
+      draft("send_message", { body: "조립 전 답장" }, "k-assemble")
+    );
+    let broken = true;
+    onLeadAssemble(org.lead.id, (real) =>
+      broken ? Promise.reject(new Error("요청 조립 실패")) : real()
+    );
+    const modelRuns = agents.of(org.lead.id).length;
+    await restart();
+    // 효과는 정산됐지만 모델은 결과를 받지 못했다. 복구 깨우기는 소모되지 않고, 한도까지 다시 시도한 뒤 에이전트가 막힌다.
+    expect(
+      (await api.agentReplies(org.id, "조립 전 답장")).map((m) => m.body)
+    ).toEqual(["조립 전 답장"]);
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
+    expect((await api.agent(org.id, org.lead.id)).recovery).toMatchObject({
+      state: "blocked",
+      reason: "retry_exhausted",
+    });
+    broken = false;
+    expect(
+      (
+        await api.request(
+          "POST",
+          `/api/organizations/${org.id}/agents/${org.lead.id}/recover`,
+          {}
+        )
+      ).status
+    ).toBe(200);
+    await restarted!.drain();
+    const resumed = agents.of(org.lead.id).slice(modelRuns);
+    expect(resumed).toHaveLength(1);
+    expect(
+      outcomes(recoveries(resumed[0]!.request.wakeReasons)[0]!.intents)
+    ).toEqual([["send_message", "completed"]]);
+    expect((await api.agent(org.id, org.lead.id)).recovery).toBeNull();
+    expect(
+      (await api.agentReplies(org.id, "조립 전 답장")).map((m) => m.body)
+    ).toEqual(["조립 전 답장"]);
+  });
+
+  it("keeps the recovery delivery when the owner cancels after settlement but before the model receives the request", async () => {
+    const { agents, org, held, api, restart, db } =
+      await heldLead("조립 중 취소 조직");
+    await acceptIntent(
+      db,
+      { id: held.identity.runId },
+      draft("send_message", { body: "취소 전 답장" }, "k-boundary")
+    );
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => (enter = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let armed = true;
+    onLeadAssemble(org.lead.id, async (real) => {
+      if (armed) {
+        armed = false;
+        enter();
+        await released;
+      }
+      return real();
+    });
+    const modelRuns = agents.of(org.lead.id).length;
+    await restart(undefined, { drain: false });
+    await entered;
+    expect(
+      (
+        await api.request(
+          "POST",
+          `/api/organizations/${org.id}/agents/${org.lead.id}/interrupt`,
+          {}
+        )
+      ).status
+    ).toBe(200);
+    release();
+    await restarted!.drain();
+    // 모델은 요청을 받지 않았고, 사용자 취소는 막힘이 아니다. 복구 깨우기는 다음 실행 시도로 넘어간다.
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
+    expect((await api.runs(org.id, org.lead.id))[0]).toMatchObject({
+      status: "cancelled",
+    });
+    expect((await api.agent(org.id, org.lead.id)).recovery).toBeNull();
+    let next!: RunRequest;
+    agents.queue(org.lead.id, (request) => {
+      next = request;
+      return idle;
+    });
+    await api.say(org.id, "다음");
+    await restarted!.drain();
+    expect(outcomes(recoveries(next.wakeReasons)[0]!.intents)).toEqual([
+      ["send_message", "completed"],
+    ]);
+    expect(
+      (await api.agentReplies(org.id, "취소 전 답장")).map((m) => m.body)
+    ).toEqual(["취소 전 답장"]);
+  });
+
+  it("marks the original input as unknown instead of an empty input when a completed record has none", async () => {
+    const { agents, org, held, api, restart, db } =
+      await heldLead("입력 없는 기록 조직");
+    const sent = await api.tool(
+      held.access.token,
+      "/messages",
+      { body: "옛 판 답장" },
+      "k-legacy"
+    );
+    expect(sent.status).toBe(201);
+    // 이 기능 전 판이 남긴 영수증은 입력을 남기지 않았다(migration 0032 뒤 `request`가 비어 있음).
+    await setIntentRequest(db, org.lead.id, "k-legacy", null);
+    let next!: RunRequest;
+    agents.queue(org.lead.id, (request) => {
+      next = request;
+      return idle;
+    });
+    await restart();
+    expect(recoveries(next.wakeReasons)[0]!.intents).toEqual([
+      {
+        intentId: expect.any(String),
+        tool: "send_message",
+        request: null,
+        outcome: { status: "completed", result: sent.body },
+      },
+    ]);
+  });
+
+  it("delivers a completed result with an unknown input, but blocks a pending write whose stored input cannot be read, instead of retrying admission forever", async () => {
+    const { agents, org, held, api, restart, db } =
+      await heldLead("손상된 입력 조직");
+    const sent = await api.tool(
+      held.access.token,
+      "/messages",
+      { body: "완료된 답장" },
+      "k-done"
+    );
+    expect(sent.status).toBe(201);
+    await acceptIntent(
+      db,
+      { id: held.identity.runId },
+      draft("send_message", { body: "손상된 답장" }, "k-corrupt")
+    );
+    await setIntentRequest(db, org.lead.id, "k-done", "{손상");
+    await setIntentRequest(db, org.lead.id, "k-corrupt", "{손상");
+    const modelRuns = agents.of(org.lead.id).length;
+    await restart(undefined, { drain: false });
+    await vi.waitFor(
+      async () =>
+        expect((await api.agent(org.id, org.lead.id)).recovery).toMatchObject({
+          state: "blocked",
+          reason: "inconsistent_record",
+        }),
+      { timeout: 10_000, interval: 100 }
+    );
+    await restarted!.drain();
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
+    expect(await api.agentReplies(org.id, "손상된 답장")).toEqual([]);
+    // 깨우기 사유를 읽는 곳(실행 시도 상세)도 손상된 입력으로 실패하지 않고 입력을 모름으로 보인다.
+    const [blockedRun] = await api.runs(org.id, org.lead.id);
+    const detail = await api.run(org.id, blockedRun!.id);
+    const recovery = detail.wakeReasons.find(
+      (r) => r.kind === "intent_recovery"
+    ) as Extract<WakeReason, { kind: "intent_recovery" }>;
+    expect(recovery.intents.map((i) => [i.request, i.outcome.status])).toEqual([
+      [null, "completed"],
+      [null, "pending"],
+    ]);
+  });
+
+  it("returns the first result to a concurrent retransmission whose file read starts before the first acceptance and ends after the file is gone", async () => {
+    const { org, task, held, api } = await heldLead("동시 파일 조직");
+    const folder = held.workspace!.cwd;
+    await writeFile(path.join(folder, "동시.md"), "# 처음 내용");
+    const input = { taskId: task.id, title: "동시 산출물", path: "동시.md" };
+    const real = Workspaces.prototype.readArtifact;
+    let reads = 0;
+    let secondReading!: () => void;
+    const second = new Promise<void>((resolve) => (secondReading = resolve));
+    let firstSettled!: () => void;
+    const settled = new Promise<void>((resolve) => (firstSettled = resolve));
+    // 먼저 읽기에 닿은 호출은 다른 호출이 기존 의도 조회를 지나 파일 읽기에 닿을 때까지 기다린다.
+    // 뒤의 호출은 앞의 호출이 정산되고 파일이 사라진 뒤에 읽는다.
+    vi.spyOn(Workspaces.prototype, "readArtifact").mockImplementation(
+      async function (this: Workspaces, orgId: string, requested: string) {
+        const n = ++reads;
+        if (n === 1) await second;
+        if (n === 2) {
+          secondReading();
+          await settled;
+        }
+        return real.call(this, orgId, requested);
+      }
+    );
+    const calls = [1, 2].map(() =>
+      api.tool(held.access.token, "/artifacts", input, "k-race")
+    );
+    const first = await Promise.race(calls);
+    expect(first.status).toBe(201);
+    await rm(path.join(folder, "동시.md"));
+    firstSettled();
+    expect(await Promise.all(calls)).toEqual([first, first]);
+    expect(reads).toBe(2);
+    const detail = taskDetailSchema.parse(
+      (
+        await api.request(
+          "GET",
+          `/api/organizations/${org.id}/tasks/${task.id}`
+        )
+      ).body
+    );
+    expect(detail.artifacts.map((a) => a.title)).toEqual(["동시 산출물"]);
+  });
+});
