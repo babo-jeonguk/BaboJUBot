@@ -15,11 +15,20 @@ import {
   type RunRequest,
   type WakeReason,
 } from "@babojubot/contracts";
-import { acceptIntent, controlAgent, type Database } from "@babojubot/db";
+import {
+  acceptIntent,
+  controlAgent,
+  findIntentByKey,
+  type Database,
+} from "@babojubot/db";
 import { createGate } from "@babojubot/runtime/testing";
 import {
+  insertCompletedIntent,
   intentStatusOf,
+  lockWaiters,
   setIntentRequest,
+  setOrganizationStage,
+  whileHoldingRun,
   setIntentSettleAttempts,
   setIntentSource,
 } from "@babojubot/db/testing";
@@ -946,5 +955,182 @@ describe("recovery delivery and stored records at the edges (#150 PR #164 review
       ).body
     );
     expect(detail.artifacts.map((a) => a.title)).toEqual(["동시 산출물"]);
+  });
+});
+
+describe("recovery delivery confirmed by the provider's session and counted across restarts (#150 PR #164 review round 2)", () => {
+  /** 서버 재시작 뒤 복구 깨우기를 받은 Lead 요청을 프로바이더가 모델을 부르기 전에 실패로 끝낸다(세션 없음). `times`번까지. */
+  const failBeforeModel = (
+    agents: ReturnType<typeof scriptedAgents>,
+    leadId: string,
+    times: number
+  ) => {
+    const real = agents.runtime.execute.bind(agents.runtime);
+    const failed: RunRequest[] = [];
+    vi.spyOn(agents.runtime, "execute").mockImplementation(
+      async (request, options) => {
+        if (
+          request.identity.agentId === leadId &&
+          request.wakeReasons.some((r) => r.kind === "intent_recovery") &&
+          failed.length < times
+        ) {
+          failed.push(request);
+          return {
+            stopReason: "failed",
+            error: "프로바이더가 모델을 부르기 전에 실패했습니다.",
+            summary: null,
+            usage: null,
+            nextSession: null,
+          };
+        }
+        return real(request, options);
+      }
+    );
+    return failed;
+  };
+
+  it("requeues the recovery wake when the provider fails before the model and leaves no session, so the next run receives the result", async () => {
+    const { agents, org, held, api, restart } =
+      await heldLead("프로바이더 준비 실패 조직");
+    const sent = await api.tool(
+      held.access.token,
+      "/messages",
+      { body: "준비 실패 전 답장" },
+      "k-provider"
+    );
+    expect(sent.status).toBe(201);
+    const failed = failBeforeModel(agents, org.lead.id, 1);
+    let next!: RunRequest;
+    agents.queue(org.lead.id, (request) => {
+      next = request;
+      return idle;
+    });
+    await restart();
+    expect(failed).toHaveLength(1);
+    const [after, failedRun] = await api.runs(org.id, org.lead.id);
+    expect([after!.status, failedRun!.status]).toEqual(["completed", "failed"]);
+    expect(next.identity.runId).toBe(after!.id);
+    expect(outcomes(recoveries(next.wakeReasons)[0]!.intents)).toEqual([
+      ["send_message", "completed"],
+    ]);
+    expect((await api.agent(org.id, org.lead.id)).recovery).toBeNull();
+    expect(
+      (await api.agentReplies(org.id, "준비 실패 전 답장")).map((m) => m.body)
+    ).toEqual(["준비 실패 전 답장"]);
+  });
+
+  it("counts recovery delivery attempts in the database even when every intent is already settled, so failures and restarts cannot reset the limit", async () => {
+    const { agents, org, held, api, restart, db } =
+      await heldLead("전달 한도 조직");
+    expect(
+      (
+        await api.tool(
+          held.access.token,
+          "/messages",
+          { body: "한도 전 답장" },
+          "k-delivery"
+        )
+      ).status
+    ).toBe(201);
+    const failed = failBeforeModel(agents, org.lead.id, 100);
+    const modelRuns = agents.of(org.lead.id).length;
+    await restart();
+    // 모델 전 실패가 이어지면 전달 시도는 한도(3)에서 멈추고 에이전트가 막힌다.
+    expect(failed).toHaveLength(3);
+    expect((await api.agent(org.id, org.lead.id)).recovery).toMatchObject({
+      state: "blocked",
+      reason: "retry_exhausted",
+    });
+    // 서버를 다시 시작해도 센 횟수는 남아 다시 시도하지 않는다.
+    await restart();
+    expect(failed).toHaveLength(3);
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
+    vi.restoreAllMocks();
+    let next!: RunRequest;
+    agents.queue(org.lead.id, (request) => {
+      next = request;
+      return idle;
+    });
+    expect(
+      (
+        await api.request(
+          "POST",
+          `/api/organizations/${org.id}/agents/${org.lead.id}/recover`,
+          {}
+        )
+      ).status
+    ).toBe(200);
+    await restarted!.drain();
+    expect(outcomes(recoveries(next.wakeReasons)[0]!.intents)).toEqual([
+      ["send_message", "completed"],
+    ]);
+    expect((await api.agent(org.id, org.lead.id)).recovery).toBeNull();
+  });
+
+  it("blocks a recovery whose settled intents already used up their attempts before earlier restarts", async () => {
+    const { agents, org, held, api, restart, db } =
+      await heldLead("정산 끝난 한도 조직");
+    expect(
+      (
+        await api.tool(
+          held.access.token,
+          "/messages",
+          { body: "정산 끝난 답장" },
+          "k-settled"
+        )
+      ).status
+    ).toBe(201);
+    const intent = await findIntentByKey(db, org.lead.id, "k-settled");
+    await setIntentSettleAttempts(db, intent!.id, 3);
+    const modelRuns = agents.of(org.lead.id).length;
+    await restart();
+    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
+    expect((await api.agent(org.id, org.lead.id)).recovery).toMatchObject({
+      state: "blocked",
+      reason: "retry_exhausted",
+    });
+  });
+
+  it("returns the first result to a same-key retransmission whose stage check runs after the first call settled and the stage closed the tool", async () => {
+    const { org, held, api, db } = await heldLead("단계 경합 조직");
+    const assigneeAgentId = org.workers[0]!.id;
+    const body = { title: "경합 작업", assigneeAgentId };
+    const stored = draft("create_task", body, "k-stage-race");
+    const result = {
+      id: "00000000-0000-4000-8000-000000000000",
+      title: "경합 작업",
+    };
+    const eventsBefore = (await api.events(org.id)).length;
+    let retransmission!: ReturnType<typeof api.tool>;
+    // 재전송의 기존 의도 조회는 지났고 단계 검사는 실행 시도 행 잠금을 기다리는 동안, 앞선 호출의 정산과 단계 변경이 commit된다.
+    await whileHoldingRun(db, held.identity.runId, async (tx) => {
+      retransmission = api.tool(
+        held.access.token,
+        "/tasks",
+        body,
+        "k-stage-race"
+      );
+      await vi.waitFor(async () => expect(await lockWaiters(db)).toBe(1), {
+        timeout: 10_000,
+        interval: 20,
+      });
+      await insertCompletedIntent(tx, {
+        organizationId: org.id,
+        agentId: org.lead.id,
+        runId: held.identity.runId,
+        key: "k-stage-race",
+        tool: "create_task",
+        request: stored.request,
+        digest: stored.digest,
+        result,
+      });
+      await setOrganizationStage(tx, org.id, "result_review");
+    });
+    expect(await retransmission).toEqual({ status: 201, body: result });
+    expect(
+      (await api.events(org.id))
+        .slice(0, (await api.events(org.id)).length - eventsBefore)
+        .map((e) => e.type)
+    ).not.toContain("tool.refused");
   });
 });

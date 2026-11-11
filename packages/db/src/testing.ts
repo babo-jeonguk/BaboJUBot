@@ -14,12 +14,18 @@ import {
 } from "./client.ts";
 import { insertInstructionCopies } from "./harness.ts";
 import { conversationRow } from "./conversations.ts";
-import { agentRow, insertEvent, organizationRow } from "./rows.ts";
-import { and, asc, eq } from "drizzle-orm";
+import {
+  agentRow,
+  insertEvent,
+  organizationRow,
+  type Executor,
+} from "./rows.ts";
+import { and, asc, eq, sql } from "drizzle-orm";
 import {
   agents,
   conversations,
   organizations,
+  runs,
   toolOperations,
 } from "./schema.ts";
 
@@ -240,4 +246,71 @@ export async function setIntentSettleAttempts(
     .update(toolOperations)
     .set({ settleAttempts: attempts })
     .where(eq(toolOperations.id, intentId));
+}
+
+/**
+ * 실행 시도 행을 배타 잠금한 채 `body`를 한 transaction에서 실행하고 commit한다. 도구 호출의 Role·단계 검사는 그 행을 공유 잠금하므로
+ * 그동안 기다린다. 동시 호출의 검사 직전에 다른 commit을 끼워 넣는 테스트 전용 조작이다.
+ */
+export async function whileHoldingRun(
+  db: Database,
+  runId: string,
+  body: (tx: Executor) => Promise<void>
+) {
+  await db.transaction(async (tx) => {
+    await tx
+      .select({ id: runs.id })
+      .from(runs)
+      .where(eq(runs.id, runId))
+      .for("update");
+    await body(tx);
+  });
+}
+
+/** 이 DB에서 잠금을 기다리는 연결 수. */
+export async function lockWaiters(db: Database) {
+  const result = await db.execute(
+    sql`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`
+  );
+  return (result.rows[0] as { n: number }).n;
+}
+
+/** 정산이 끝난(`completed`) 실행 의도 하나를 그대로 남긴다. 다른 요청이 먼저 수락·정산한 상태를 만드는 테스트 전용 조작이다. */
+export async function insertCompletedIntent(
+  tx: Executor,
+  intent: {
+    organizationId: string;
+    agentId: string;
+    runId: string;
+    key: string;
+    tool: string;
+    request: string;
+    digest: string;
+    result: unknown;
+  }
+) {
+  await tx.insert(toolOperations).values({
+    organizationId: intent.organizationId,
+    agentId: intent.agentId,
+    runId: intent.runId,
+    key: intent.key,
+    tool: intent.tool,
+    request: intent.request,
+    requestDigest: intent.digest,
+    result: intent.result,
+    status: "completed",
+    settledRunId: intent.runId,
+  });
+}
+
+/** 조직 단계를 바로 바꾼다(일시정지 외). 그 단계가 닫은 도구를 만드는 테스트 전용 조작이다. */
+export async function setOrganizationStage(
+  tx: Executor,
+  organizationId: string,
+  stage: "researching" | "result_review"
+) {
+  await tx
+    .update(organizations)
+    .set({ stage })
+    .where(eq(organizations.id, organizationId));
 }
