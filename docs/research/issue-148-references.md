@@ -221,9 +221,9 @@ Q1~Q8을 [같은 누적 댓글의 Agent Brief](https://github.com/babo-jeonguk/B
 
 기준: `origin/main` `89f6abb`. 이 단계는 공통 인증 중계와 원본 비전달을 만든 것이며 네 프로바이더 지원 완료가 아니다.
 
-- 공통 경로(`packages/runtime/src/providers/relay.ts`): 실행 시도 권한 발급(연결·조직·실행 시도, 최대 12시간, 서버 메모리에만 있어 재시작 시 소멸) → 권한 확인 → 허용 메서드·경로 확인 → 그 뒤에만 원본 읽기 → 요청 쪽 인증·쿠키·전달 header 제거와 원본 인증 주입 → 고정 상류 → 응답 쿠키 제거, 3xx 거부, stream 그대로. 중단 신호에 권한을 바로 거두고 진행 중 요청을 끊는다. 원본을 읽지 못하면 모든 권한을 먼저 거둔 뒤 연결을 실패 상태로 두고, 준비 확인이 원본을 다시 읽으면 푼다(D01·D03·D05·D06, Q5·Q6).
+- 공통 경로(`packages/runtime/src/providers/relay.ts`): 실행 시도 권한 발급(연결·조직·실행 시도, 최대 12시간, 서버 메모리에만 있어 재시작 시 소멸) → 권한 확인 → 허용 메서드·경로 확인 → 그 뒤에만 원본 읽기 → 요청 쪽 인증·쿠키·전달 header 제거와 원본 인증 주입 → 고정 상류 → 응답 쿠키 제거, 3xx 거부, stream 그대로. 중단 신호에 권한을 바로 거두고 진행 중 요청을 끊는다. 원본을 읽지 못하거나 상류가 원본 로그인을 401로 거부하면 모든 권한을 먼저 거둔 뒤 연결을 실패 상태로 두고, 준비 확인이 실패할 때와 다른 로그인을 읽으면 푼다(D01·D03·D05·D06, Q5·Q6).
 - 서버 관문(`apps/server/src/isolation.ts`): 격리 켜짐 + 중계 없음/미검증이면 `credential_relay_unverified`, 실패 상태면 `credential_relay_failed`로 준비안됨·실행 거부(Q4·Q6). 중계는 조직 도구 전용 listener의 `/api/relay/<연결>`에만 있다.
-- 원본 비전달: 컨테이너 배치에서 공유 로그인 폴더 mount를 없앴다. Claude는 원본 토큰 변수 대신 중계 주소·권한 값만 넣고, Codex·Antigravity는 로그인 링크를 만들지 않으며, OpenCode는 로그인을 옮기지 않는다. 조직 폴더에 보통 파일·조직 DB로 남은 로그인이 있으면 시작하지 않는다(D07).
+- 원본 비전달: 컨테이너 배치에서 공유 로그인 폴더 mount를 없앴다. Claude는 원본 토큰 변수 대신 중계 주소·권한 값만 넣고, Codex·Antigravity는 로그인 링크를 만들지 않으며, OpenCode는 로그인을 옮기지 않는다. 조직 폴더에 보통 파일·조직 DB로 남은 로그인이 있으면 시작하지 않는다(D07). 단, OpenCode 조직 DB의 남은 로그인 확인은 컨테이너 안 서버를 띄운 뒤 하므로, OpenCode 중계를 붙일 때 서버를 띄우기 전으로 앞당긴다(지금은 서버 관문이 OpenCode 격리 실행을 막는다).
 - Claude adapter: 공식 gateway 경로(`ANTHROPIC_BASE_URL` + `CLAUDE_CODE_OAUTH_TOKEN`=권한). 프로필은 `POST /v1/messages`·`/v1/messages/count_tokens`만 허용한다. `verified: false`.
 
 ### 원문 확인
@@ -238,7 +238,7 @@ Q1~Q8을 [같은 누적 댓글의 Agent Brief](https://github.com/babo-jeonguk/B
 
 | 대상 | 실행 | 결과 | 다음 입증 조건 |
 |---|---|---|---|
-| Claude 2.1.322 | 실제 CLI, 빈 HOME, 합성 권한, 중계 → 로컬 모의 Messages API(SSE). 실제 계정·모델 없음 | `--print` 한 턴 성공. 상류는 `POST /v1/messages?beta=true` 한 번, `anthropic-beta`에 `oauth-2025-04-20`(구독 OAuth 분기) 포함, 원본 합성 토큰으로 바뀌어 도착, 권한 값은 상류에 가지 않음. 기본 환경에서 `HEAD /api/hello`는 중계가 401로 거부했고 CLI는 계속 진행 | 기존 구독 계정으로 모델 한 턴·사용량·세션 이어 가기·만료 응답 확인(실제 계정·비용 승인 필요), Docker Engine에서 컨테이너 → 중계 경로 |
+| Claude 2.1.322 | 수동 확인 한 번(자동 시험 아님): 실제 CLI, 빈 HOME, 합성 권한, 중계 → 로컬 모의 Messages API(SSE). 실제 계정·모델·Docker 없음. 자동 시험은 가짜 프로그램(`test-fixtures/claude-relay.mjs`)으로 같은 경로를 본다 | `--print` 한 턴 성공. 상류는 `POST /v1/messages?beta=true` 한 번, `anthropic-beta`에 `oauth-2025-04-20`(구독 OAuth 분기) 포함, 원본 합성 토큰으로 바뀌어 도착, 권한 값은 상류에 가지 않음. 기본 환경에서 `HEAD /api/hello`는 중계가 401로 거부했고 CLI는 계속 진행 | 기존 구독 계정으로 모델 한 턴·사용량·세션 이어 가기·만료 응답 확인(실제 계정·비용 승인 필요), Docker Engine에서 컨테이너 → 중계 경로 |
 | Codex 0.167.0 | 이번 단계 미실행 | 중계 프로필 없음 → 격리 실행 준비안됨 | ChatGPT 계정 경로의 base URL 중계, 합성 JWT·account header, 갱신 소유(원본 refresh는 서버) |
 | OpenCode 2.2.6 | 이번 단계 미실행 | 중계 프로필 없음 → 준비안됨 | Go 구독 key의 기존 상류·model ID·session header 유지 |
 | Antigravity 1.5.4 | 이번 단계 미실행 | 중계 프로필 없음 → 준비안됨 | signed-in harness의 endpoint 교체 가능성부터 확인 |
@@ -252,4 +252,4 @@ Q8의 병렬 검증 중 이번 단계는 공통 경로와 Claude 행만 실행�
 - Rust/cargo 부재로 OpenShell·Codex proxy upstream 테스트는 읽기만 했다. Docker 제품·네 CLI 중계·실제 OAuth/구독·컨테이너 전체 침해·다른 OS는 실행하지 않았다. 근거 수준을 넘는 보안 보증·산업 표준 인증은 주장하지 않는다.
 - 메인이 채택 근거의 원문을 재독했다. 이전 고정 SHA의 동작을 변경 없음으로 재사용하지 않고 새 snapshot을 직접 확인했다. commit/blame 전수 추적은 하지 않았다.
 - 접근 실패: 추정한 Claude gateway URL은 오류 후 실제 navigation의 공식 URL로 확인했다. `docker/sandboxes`·`microsoft/agent-sandbox` 404는 그 조회 경로의 미확인이지 전체 제품의 부재나 비공개 판정이 아니다.
-- 제품 코드·테스트·설정·GLOSSARY·ADR은 변경하지 않았다. 조사 문서와 receipt는 구현 변경과 함께 커밋하는 자료이며 새 확정 계약이 아니다.
+- 조사 단계에서는 제품 코드·테스트·설정·GLOSSARY·ADR을 변경하지 않았다. 이후 변경은 위 [구현 기록](#구현-기록--1단계-2026-11-11)이 다룬다. GLOSSARY·ADR은 구현 1단계에서도 바꾸지 않았다.

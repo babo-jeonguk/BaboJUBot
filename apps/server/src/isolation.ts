@@ -36,7 +36,7 @@ const relayRefusalText = {
   credential_relay_unverified:
     "이 프로바이더 연결은 격리 실행에서 쓸 인증 중계가 아직 검증되지 않아 실행하지 않았습니다.",
   credential_relay_failed:
-    "인증 중계가 연결의 로그인을 읽지 못해 실행하지 않았습니다. 로그인을 확인한 뒤 준비 상태를 다시 확인하세요.",
+    "인증 중계가 연결의 로그인을 쓰지 못해 실행하지 않았습니다. 로그인을 고친 뒤 준비 상태를 다시 확인하세요.",
 };
 
 type Safety =
@@ -117,7 +117,7 @@ export class IsolationGate {
     );
   }
 
-  /** 준비 확인에서 먼저 보는 결과. 중계가 실패 상태면 로그인을 다시 읽어 보고, 읽히면 풀어 준다(사용자의 다시 확인이 복구 경로다). */
+  /** 준비 확인에서 먼저 보는 결과. 중계가 실패 상태면 로그인을 다시 읽어 보고, 실패할 때와 다른 로그인이 읽히면 풀어 준다(사용자가 로그인을 고친 뒤의 확인이 복구 경로다). */
   async readiness(
     target: IsolationTarget | undefined
   ): Promise<ProviderReadinessCheck | null> {

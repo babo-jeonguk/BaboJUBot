@@ -83,7 +83,7 @@ describe("IsolationGate", () => {
     }
     const state = { verified: true, failed: true, readable: false };
     const broken = { isolatable: true, credentialRelay: relay(state) };
-    await expect(gate.place(broken)).rejects.toThrow("로그인을 읽지 못해");
+    await expect(gate.place(broken)).rejects.toThrow("로그인을 쓰지 못해");
     await expect(gate.readiness(broken)).resolves.toEqual({
       status: "not_ready",
       reason: "credential_relay_failed",

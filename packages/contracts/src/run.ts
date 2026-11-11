@@ -451,9 +451,9 @@ export type ProviderConnection = {
 export type CredentialRelayEndpoint = {
   /** 이 연결의 기존 구독으로 격리 실행을 검증했는가. */
   verified: boolean;
-  /** 원본을 읽지 못해 중계가 실패한 상태인가. 복구 전에는 새 격리 실행을 막는다. */
+  /** 원본을 읽지 못했거나 상류가 원본을 거부해 중계가 실패한 상태인가. 복구 전에는 새 격리 실행을 막는다. */
   failed: () => boolean;
-  /** 실패 상태면 원본을 다시 읽어 보고, 읽히면 실패 상태를 푼다. 준비 확인(사용자의 다시 확인)이 부른다. */
+  /** 실패 상태면 원본을 다시 읽어 보고, 실패할 때와 다른 로그인이 읽히면 실패 상태를 푼다(같은 로그인이면 그대로). 준비 확인이 부른다. */
   recover: () => Promise<void>;
   /** 실패하면 부른다. 돌려준 함수로 해제한다. */
   onFailure: (listener: () => void) => () => void;

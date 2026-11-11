@@ -150,7 +150,7 @@ async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
   return env;
 }
 const relayFailure =
-  "인증 중계가 연결의 로그인을 읽지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
+  "인증 중계가 연결의 로그인을 쓰지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
 /** 격리 실행의 프로그램 환경: 원본 인증 변수를 빼고 중계 주소와 이 실행 시도의 권한만 넣는다. */
 function relayEnvironment(
   env: NodeJS.ProcessEnv,
@@ -330,17 +330,6 @@ async function executeClaude(
       ...failed(),
       error: residueRefusal,
     };
-  let grant: RelayGrant | undefined;
-  if (placement.container)
-    try {
-      grant = connection.relay.grant({
-        organizationId: request.organizationId,
-        runId: request.runId ?? crypto.randomUUID(),
-        signal: control.signal,
-      });
-    } catch {
-      return { ...failed(), error: relayFailure };
-    }
   // 컨테이너에서는 조직의 제품 폴더가 그 조직의 같은 연결 에이전트 컨테이너에 모두 들어가므로, 토큰이 든 이 실행 시도의 파일은 그 밖에 두고 이 컨테이너에만 읽기로 넣는다.
   const temp = placement.container
     ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
@@ -351,7 +340,15 @@ async function executeClaude(
     attempt: temp,
   });
   let result = failed();
+  // 권한은 실행 시도를 정리하는 이 try 안에서 받는다. 어디서 끝나든 finally가 거둔다.
+  let grant: RelayGrant | undefined;
   try {
+    if (placement.container)
+      try {
+        grant = connection.relay.grant({ signal: control.signal });
+      } catch {
+        return { ...failed(), error: relayFailure };
+      }
     const config = path.join(temp, "mcp.json");
     await writeFile(
       config,

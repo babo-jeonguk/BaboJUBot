@@ -1,6 +1,6 @@
 import http from "node:http";
 import https from "node:https";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
@@ -39,17 +39,11 @@ export type CredentialRelay = CredentialRelayEndpoint & {
    * 실행 시도 하나의 권한을 발급한다. `signal`이 끝나면(실행 중단) 바로 거둔다. 중계가 실패 상태면 던진다.
    * 실행 시도가 끝나면 부른 쪽이 `revoke`한다.
    */
-  grant: (scope: {
-    organizationId: string;
-    runId: string;
-    signal: AbortSignal;
-  }) => RelayGrant;
+  grant: (scope: { signal: AbortSignal }) => RelayGrant;
 };
 
-/** 거둬진 권한·진행 중 요청을 정리하는 데 쓰는 실행 시도 권한의 상태. */
+/** 실행 시도 권한의 상태. 권한은 그 실행 시도의 프로그램에만 준 값 자체이며, 요청의 어떤 값도 다른 조직·실행 시도로 바꾸지 못한다. */
 type GrantState = {
-  organizationId: string;
-  runId: string;
   expiresAt: number;
   inflight: Set<{ destroy: () => void }>;
   failure: AbortController;
@@ -90,6 +84,22 @@ const droppedResponseHeaders = new Set([
   "proxy-authenticate",
 ]);
 
+/** 상류는 고정이다. 다른 곳으로 보내는 응답은 따라가지도 넘기지도 않는다. */
+const redirects = new Set([301, 302, 303, 307, 308]);
+
+function keep(
+  headers: http.IncomingHttpHeaders,
+  dropped: ReadonlySet<string>
+): http.OutgoingHttpHeaders {
+  const kept: http.OutgoingHttpHeaders = {};
+  for (const [name, value] of Object.entries(headers))
+    if (value !== undefined && !dropped.has(name)) kept[name] = value;
+  return kept;
+}
+
+const fingerprint = (credential: string) =>
+  createHash("sha256").update(credential).digest("hex");
+
 const deny = (res: http.ServerResponse, status: number, code: string): void => {
   if (res.headersSent) {
     res.destroy();
@@ -125,6 +135,8 @@ export function createCredentialRelay(options: {
   const grants = new Map<string, GrantState>();
   const listeners = new Set<() => void>();
   let failed = false;
+  /** 실패할 때의 원본 지문(읽지 못했으면 null). 같은 원본이 다시 읽혀도 풀지 않는다: 로그인을 고쳐야 풀린다. */
+  let failedWith: string | null = null;
 
   const revoke = (token: string, failure: boolean) => {
     const state = grants.get(token);
@@ -135,11 +147,15 @@ export function createCredentialRelay(options: {
     for (const request of state.inflight) request.destroy();
     state.inflight.clear();
   };
-  const fail = () => {
+  /** 원본을 읽지 못했거나(`rejected` 없음) 상류가 원본을 거부했다(`rejected`). */
+  const fail = (rejected?: string) => {
     if (!failed) {
       failed = true;
+      failedWith = rejected ? fingerprint(rejected) : null;
       console.error(
-        "[relay] the connection's credential could not be read; isolated runs on it stop"
+        rejected
+          ? "[relay] the upstream rejected the connection's login; isolated runs on it stop"
+          : "[relay] the connection's credential could not be read; isolated runs on it stop"
       );
     }
     // 권한을 먼저 거둬 프로그램이 다시 시도해도 상류에 닿지 못하게 한 뒤 알린다.
@@ -160,20 +176,25 @@ export function createCredentialRelay(options: {
     failed: () => failed,
     async recover() {
       if (!failed) return;
-      if (await read()) failed = false;
+      const credential = await read();
+      if (credential && fingerprint(credential) !== failedWith) {
+        failed = false;
+        failedWith = null;
+      }
     },
     onFailure(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    grant({ organizationId, runId, signal }) {
+    grant({ signal }) {
       if (failed) throw new Error("credential relay is not available");
+      // 거두지 못하고 만료된 권한을 정리한다.
+      for (const [token, state] of grants)
+        if (state.expiresAt <= now()) revoke(token, false);
       const token = randomBytes(32).toString("base64url");
       const failure = new AbortController();
       const stop = () => revoke(token, false);
       grants.set(token, {
-        organizationId,
-        runId,
         expiresAt: now() + grantLifetimeMs,
         inflight: new Set(),
         failure,
@@ -200,22 +221,26 @@ export function createCredentialRelay(options: {
           )
         )
           return deny(res, 403, "relay_route_refused");
-        // 거둔 뒤 끝난 원본 읽기는 쓰지 않는다.
+        // 거둔 뒤나 프로그램이 연결을 끊은 뒤 끝난 원본 읽기는 쓰지 않는다.
+        let gone = false;
+        res.once("close", () => {
+          gone = true;
+        });
         const pending = { destroy: () => res.destroy() };
         state.inflight.add(pending);
         const credential = await read();
         state.inflight.delete(pending);
+        if (gone) return;
         if (grants.get(token) !== state)
           return deny(res, 401, "relay_grant_invalid");
         if (!credential) {
           fail();
           return deny(res, 503, "relay_unavailable");
         }
-        const headers: http.OutgoingHttpHeaders = {};
-        for (const [name, value] of Object.entries(req.headers))
-          if (value !== undefined && !droppedRequestHeaders.has(name))
-            headers[name] = value;
-        Object.assign(headers, profile.authorize(credential));
+        const headers = {
+          ...keep(req.headers, droppedRequestHeaders),
+          ...profile.authorize(credential),
+        };
         const base = upstream.pathname.replace(/\/$/, "");
         const outgoing = client.request({
           protocol: upstream.protocol,
@@ -243,17 +268,19 @@ export function createCredentialRelay(options: {
         });
         outgoing.on("response", (incoming) => {
           const status = incoming.statusCode ?? 502;
-          // 상류는 고정이다. 다른 곳으로 보내는 응답은 따라가지도 넘기지도 않는다.
-          if (status >= 300 && status < 400) {
+          if (redirects.has(status)) {
             incoming.resume();
             done();
             return deny(res, 502, "relay_redirect_refused");
           }
-          const responseHeaders: http.OutgoingHttpHeaders = {};
-          for (const [name, value] of Object.entries(incoming.headers))
-            if (value !== undefined && !droppedResponseHeaders.has(name))
-              responseHeaders[name] = value;
-          res.writeHead(status, responseHeaders);
+          // 권한을 확인한 요청이 거부됐으면 원본 로그인이 거부된 것이다. 연결을 실패로 두고 모든 권한을 거둬, 프로그램의 재시도가 상류에 닿지 않게 한다.
+          if (status === 401) {
+            incoming.resume();
+            done();
+            fail(credential);
+            return deny(res, 503, "relay_login_rejected");
+          }
+          res.writeHead(status, keep(incoming.headers, droppedResponseHeaders));
           incoming.pipe(res);
           incoming.on("end", done);
           incoming.on("error", () => res.destroy());

@@ -26,6 +26,13 @@ async function listen(handler: http.RequestListener) {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
 }
+/** 서버에 열린 연결 수. */
+const connections = (server: http.Server) =>
+  new Promise<number>((resolve, reject) =>
+    server.getConnections((error, count) =>
+      error ? reject(error) : resolve(count)
+    )
+  );
 
 /** 모의 상류. `/v1/stream`은 첫 조각을 보낸 뒤 닫힐 때까지 열어 둔다. */
 async function upstream() {
@@ -34,6 +41,16 @@ async function upstream() {
   const url = await listen((req, res) => {
     seen.push({ method: req.method!, url: req.url!, headers: req.headers });
     req.resume();
+    if (req.url?.startsWith("/base/v1/rejected")) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid login" }));
+      return;
+    }
+    if (req.url?.startsWith("/base/v1/unchanged")) {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
     if (req.url?.startsWith("/base/v1/redirect")) {
       res.writeHead(302, { location: "https://elsewhere.invalid/" });
       res.end();
@@ -51,7 +68,7 @@ async function upstream() {
     });
     res.end(JSON.stringify({ ok: true }));
   });
-  return { url: `${url}/base`, seen, closed };
+  return { url: `${url}/base`, seen, closed, server: servers.at(-1)! };
 }
 
 const profile = (url: string): RelayProfile => ({
@@ -60,11 +77,15 @@ const profile = (url: string): RelayProfile => ({
     { method: "POST", path: "/v1/messages" },
     { method: "POST", path: "/v1/stream" },
     { method: "POST", path: "/v1/redirect" },
+    { method: "POST", path: "/v1/rejected" },
+    { method: "POST", path: "/v1/unchanged" },
   ],
   authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
 });
 
-async function setup(options: { credential?: () => Promise<string> } = {}) {
+async function setup(
+  options: { credential?: () => Promise<string | undefined> } = {}
+) {
   const up = await upstream();
   let reads = 0;
   const relay = createCredentialRelay({
@@ -95,11 +116,7 @@ const send = (
     body: JSON.stringify({ hello: "model" }),
   });
 
-const scope = (signal = new AbortController().signal) => ({
-  organizationId: crypto.randomUUID(),
-  runId: crypto.randomUUID(),
-  signal,
-});
+const scope = (signal = new AbortController().signal) => ({ signal });
 
 describe("the credential relay", () => {
   it("sends an allowed request to the fixed upstream with the real credential in place of the run's grant, and returns no cookie", async () => {
@@ -209,12 +226,70 @@ describe("the credential relay", () => {
     expect(up.seen).toHaveLength(0);
   });
 
-  it("does not follow or pass on a redirect from the upstream", async () => {
+  it("does not follow or pass on a redirect from the upstream, but passes other 3xx answers", async () => {
     const { relay, url } = await setup();
     const grant = relay.grant(scope());
     const response = await send(url, grant.token, "/v1/redirect");
     expect(response.status).toBe(502);
     expect(response.headers.get("location")).toBeNull();
+    expect((await send(url, grant.token, "/v1/unchanged")).status).toBe(304);
+  });
+
+  it("fails the connection when the upstream rejects its login, and keeps it failed until a different login can be read", async () => {
+    let login = "expired-login";
+    const { up, relay, url } = await setup({ credential: async () => login });
+    const one = relay.grant(scope());
+    const two = relay.grant(scope());
+    const response = await send(url, one.token, "/v1/rejected");
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("invalid login");
+    expect(relay.failed()).toBe(true);
+    expect(two.failed.aborted).toBe(true);
+    expect((await send(url, two.token, "/v1/messages")).status).toBe(401);
+    // 같은 로그인이 다시 읽혀도 풀지 않는다. 사용자가 로그인을 고쳐야 풀린다.
+    await relay.recover();
+    expect(relay.failed()).toBe(true);
+    login = "new-login";
+    await relay.recover();
+    expect(relay.failed()).toBe(false);
+    expect(up.seen.map((request) => request.url)).toEqual([
+      "/base/v1/rejected",
+    ]);
+  });
+
+  it("does not reach the upstream for a request whose program hung up while the credential was being read", async () => {
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const startedReading = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const { up, relay, url } = await setup({
+      credential: async () => {
+        started();
+        await reading;
+        return "real-account-secret";
+      },
+    });
+    const grant = relay.grant(scope());
+    const controller = new AbortController();
+    const request = fetch(`${url}/v1/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${grant.token}` },
+      body: "{}",
+      signal: controller.signal,
+    }).catch(() => "aborted");
+    await startedReading;
+    controller.abort();
+    expect(await request).toBe("aborted");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(up.seen).toHaveLength(0);
+    // 상류에 연결도 열지 않는다(열린 채 남지 않는다).
+    expect(await connections(up.server)).toBe(0);
   });
 
   it("fails the connection when the credential cannot be read: every run's grant is withdrawn first, new runs are refused until it can be read again", async () => {
