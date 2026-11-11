@@ -26,21 +26,28 @@ import { startTestServer, type TestServer } from "./support.ts";
 
 // #147: 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델로, 조직 도구 MCP → OpenCode가 모델에 보내는 도구 정의 → 실행 시도 종료·저장·API까지를 본다.
 // 가짜 모델은 대상 upstream이 거부한 `\0` 표기의 도구 정의를 400으로 거부한다. 실제 모델 호출·로그인·모델 목록 다운로드는 없다.
-// OpenCode가 없으면 건너뛰고 그 사실을 출력한다. BABOJUBOT_TEST_OPENCODE로 실행 파일을 고른다.
+// BABOJUBOT_TEST_OPENCODE로 실행 파일을 정하면 그것만 쓰고, 실행되지 않으면 건너뛰지 않고 실패한다(CI는 이 값을 준다).
+// 정하지 않았으면 PATH와 기본 설치 위치에서 찾고, 없으면 건너뛰며 그 사실을 출력한다.
+const version = (candidate: string) =>
+  execFileSync(candidate, ["--version"], {
+    encoding: "utf8",
+    timeout: 20_000,
+    stdio: "pipe",
+  }).trim();
 const program = (() => {
+  const named = process.env.BABOJUBOT_TEST_OPENCODE;
+  if (named) {
+    console.log(`[opencode] 실제 CLI 검사: ${named} ${version(named)}`);
+    return named;
+  }
   for (const candidate of [
-    process.env.BABOJUBOT_TEST_OPENCODE,
     "opencode",
     path.join(homedir(), ".opencode/bin/opencode"),
   ]) {
-    if (!candidate) continue;
     try {
-      const version = execFileSync(candidate, ["--version"], {
-        encoding: "utf8",
-        timeout: 20_000,
-        stdio: "pipe",
-      }).trim();
-      console.log(`[opencode] 실제 CLI 검사: ${candidate} ${version}`);
+      console.log(
+        `[opencode] 실제 CLI 검사: ${candidate} ${version(candidate)}`
+      );
       return candidate;
     } catch {
       /* 다음 후보 */

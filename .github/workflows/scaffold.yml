@@ -57,6 +57,18 @@ jobs:
           cache: true
       - if: env.RUN == 'true'
         run: pnpm install --frozen-lockfile
+      # 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델 검사(apps/server/test/opencode-real-cli.test.ts)용. 모델 호출·로그인은 없다.
+      # 공식 설치 스크립트와 npm은 1.x라 GitHub 릴리스 묶음을 받는다(docker/runner와 같은 방식). 판은 #147 프로토콜 기준이다.
+      - name: Install OpenCode
+        if: env.RUN == 'true' && matrix.script == 'test'
+        env:
+          OPENCODE_VERSION: "2.2.6"
+        run: |
+          mkdir -p "$RUNNER_TEMP/opencode"
+          curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/opencode" opencode
+          "$RUNNER_TEMP/opencode/opencode" --version
+          echo "BABOJUBOT_TEST_OPENCODE=$RUNNER_TEMP/opencode/opencode" >> "$GITHUB_ENV"
       - name: Install Chromium and system dependencies
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
         run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium

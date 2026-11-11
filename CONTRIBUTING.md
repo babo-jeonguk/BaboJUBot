@@ -33,7 +33,7 @@ pnpm check        # Markdown 로컬 링크 검사
 
 `pnpm install`은 `@embedded-postgres/*`의 postinstall만 실행합니다(`pnpm-workspace.yaml`의 `onlyBuiltDependencies`). 이 script가 Postgres native library의 symlink를 만들기 때문에 `--ignore-scripts`로 설치하면 embedded Postgres가 뜨지 않습니다. 내장 Postgres는 묶여 온 `pg_ctl`로 켜고 끄므로 Windows 관리자 계정에서도 뜹니다. 서버가 강제로 끝나 남은 내장 Postgres는 다음 시작이 정상 정지하고 다시 띄웁니다. 다른 프로세스가 아직 쓰고 있거나 BaboJUBot이 띄운 것인지 확인할 수 없으면 끄는 명령을 알리고 시작하지 않습니다.
 
-[CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·테스트·빌드·E2E를 실행합니다. 바뀐 파일이 Markdown뿐이면 문서 검사만 돌리고 나머지 검사는 건너뛴 채 성공으로 표시합니다.
+[CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·테스트·빌드·E2E를 실행합니다. 바뀐 파일이 Markdown뿐이면 문서 검사만 돌리고 나머지 검사는 건너뛴 채 성공으로 표시합니다. 테스트 job은 OpenCode 2.2.6(GitHub 릴리스)을 설치해 실제 OpenCode와 이 컴퓨터의 가짜 모델로 도는 검사(`apps/server/test/opencode-real-cli.test.ts`, 모델 호출·로그인 없음)까지 실행합니다. 로컬에서는 OpenCode가 있으면 돌고 없으면 건너뛰며, `BABOJUBOT_TEST_OPENCODE`로 실행 파일을 정하면 실행되지 않을 때 건너뛰지 않고 실패합니다.
 기능 브랜치 push만으로는 중복 실행하지 않고, 같은 PR의 오래된 실행은 취소합니다.
 `main`의 필수 검사는 workflow의 `ci / …` job 전체이며, 실행 환경과 검사 이름은 workflow를 기준으로 합니다.
 표준 GitHub-hosted runner를 쓰는 공개 저장소의 실행 시간은 무료입니다([GitHub 과금 문서](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
