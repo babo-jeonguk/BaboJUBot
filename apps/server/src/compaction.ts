@@ -1,3 +1,4 @@
+import { relayIdentityHeaders } from "@babojubot/runtime";
 import { completeStored } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import express from "express";
@@ -54,11 +55,11 @@ export class CompactionScheduler {
       const entry = token && this.tokens.get(digestRunToken(token));
       if (!entry) return next("router");
       // 격리 실행의 중계를 거친 요청은 그 조직의 세션 정비 중계에서 온 것이어야 한다(#149).
-      const relayOrganization = req.headers["x-babojubot-relay-organization"];
+      const relayOrganization = req.headers[relayIdentityHeaders.organization];
       if (
         relayOrganization !== undefined &&
         (relayOrganization !== entry.organizationId ||
-          req.headers["x-babojubot-relay-run"] !== undefined)
+          req.headers[relayIdentityHeaders.run] !== undefined)
       ) {
         res.status(401).json({ error: { code: "invalid_token" } });
         return;

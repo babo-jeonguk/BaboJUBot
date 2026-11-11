@@ -7,6 +7,7 @@
 //   (the `/run/babojubot` mount source) and joins each to port N on its first byte.
 // - `rm`: succeeds. `inspect`/`container inspect`: "No such container".
 // - `info`: prints <stateDir>/info.json or a local Linux engine. `image inspect`: prints <stateDir>/runner-version or "2".
+//   `context inspect`: prints <stateDir>/context-host or the local socket.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import net from "node:net";
@@ -142,6 +143,10 @@ if (verb === "run") {
           SecurityOptions: ["name=seccomp"],
         })
       ) + "\n"
+    );
+  if (args[0] === "context" && args[1] === "inspect")
+    process.stdout.write(
+      stored("context-host", "unix:///var/run/docker.sock") + "\n"
     );
   if (args[0] === "image" && args[1] === "inspect")
     process.stdout.write(stored("runner-version", "2") + "\n");

@@ -586,6 +586,10 @@ describe("the Docker engine check", () => {
       },
     ],
     ["an image without the relay start program", { "runner-version": "" }],
+    [
+      "a Docker context on another computer",
+      { "context-host": "ssh://user@build-box" },
+    ],
   ])("refuses %s", async (_case, files) => {
     await expect(
       (await engine(files)).checkDaemon(AbortSignal.timeout(10_000))

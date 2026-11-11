@@ -412,7 +412,16 @@ export async function startServer({
   // 격리 실행의 중계에 정책·조직 도구를 붙인다(#149). 붙이기 전에는 실행 시도 컨테이너가 시작하지 않는다.
   // 거부는 실행 활동에 이유와 함께 남긴다(같은 목적지·이유는 실행 시도마다 한 번, 많아도 50번까지).
   const refusalsSeen = new Map<string, Set<string>>();
-  isolation?.docker.settings.relay.attach({
+  const relay = isolation?.docker.settings.relay;
+  // 허용 목록을 줄이거나 단계가 바뀌어(예: 연구 진행 → 일시정지·최종 완료) 더 이상 허용되지 않는 열린 연결을 끊는다.
+  // 조직의 상태 변화 Event마다 그 조직의 열린 중계를 다시 본다(실행 시도 활동 Event는 정책을 바꾸지 않아 건너뛴다).
+  const stopRevalidating = relay
+    ? hub.subscribe({ kind: "all" }, (event) => {
+        if (event.type.startsWith("run.")) return;
+        void relay.revalidate(event.organizationId).catch(() => {});
+      })
+    : () => {};
+  relay?.attach({
     research: async (identity) =>
       (await loadResearchDestinations(db, identity.organizationId)) ?? [],
     tools: toolsApp,
@@ -598,10 +607,6 @@ export async function startServer({
     res.json(org);
   });
 
-  /**
-   * 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. 바꾼 뒤의 조직을 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
-   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, docs/current-implementation.md 참고).
-   */
   /** 격리 실행의 연구 목적지 허용 목록(#149). 사용자만 바꾸며 조직 도구가 없다. */
   app.get("/api/organizations/:id/network-policy", async (req, res) => {
     const policy = await readNetworkPolicy(db, req.params.id);
@@ -611,15 +616,13 @@ export async function startServer({
   app.put("/api/organizations/:id/network-policy", async (req, res) => {
     const input = parseInput(res, updateNetworkPolicyInputSchema, req.body);
     if (!input) return;
-    const result = await complete(
-      updateNetworkPolicy(db, req.params.id, input)
-    );
-    // 줄인 목록이 더 이상 허용하지 않는 열린 연결을 닫는다.
-    if (result.kind === "ok")
-      await isolation?.docker.settings.relay.revalidate(req.params.id);
-    respond(res, result);
+    respond(res, await complete(updateNetworkPolicy(db, req.params.id, input)));
   });
 
+  /**
+   * 승인 정책 변경 제어 명령. 사용자만 바꾸며 조직 도구가 없다. 바꾼 뒤의 조직을 돌려주고, 값이 그대로면 아무것도 남기지 않는다.
+   * 사용자 API에는 아직 인증이 없다(로컬 신뢰 운영, docs/current-implementation.md 참고).
+   */
   app.put("/api/organizations/:id/approval-policy", async (req, res) => {
     const input = parseInput(res, updateApprovalPolicyInputSchema, req.body);
     if (!input) return;
@@ -1293,7 +1296,10 @@ export async function startServer({
       () => dispatcher.close(),
       () => gate.close(),
       // 실행 시도가 모두 끝난 뒤 남은 중계를 닫고 정책을 뗀다.
-      async () => isolation?.docker.settings.relay.close(),
+      async () => {
+        stopRevalidating();
+        await relay?.close();
+      },
       () => notifications.close(),
       () => channel.close(),
       async () => {

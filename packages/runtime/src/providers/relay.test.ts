@@ -230,6 +230,62 @@ describe("isolated run relay", () => {
     });
   });
 
+  it("passes a redirect back without following it, so the next request is checked again", async () => {
+    const forbidden = await fixture("http");
+    const accepted: string[] = [];
+    const redirecting = http.createServer((req, res) => {
+      accepted.push(req.url ?? "");
+      res.writeHead(302, {
+        location: `http://127.0.0.1:${forbidden.port}/inside`,
+      });
+      res.end();
+    });
+    await new Promise<void>((resolve) =>
+      redirecting.listen(0, "127.0.0.1", resolve)
+    );
+    cleanups.push(
+      () => new Promise<void>((resolve) => redirecting.close(() => resolve()))
+    );
+    const port = (redirecting.address() as net.AddressInfo).port;
+    const { relays } = hub();
+    const relay = relays.open({
+      identity,
+      required: [
+        destination({
+          host: "localhost",
+          port,
+          addresses: ["127.0.0.1", "::1"],
+        }),
+      ],
+    });
+    await relay.ready;
+    const viaProxy = (target: string) =>
+      new Promise<{ status: number; location?: string }>((resolve, reject) => {
+        const req = http.request({
+          socketPath: path.join(relay.directory, "egress.sock"),
+          path: target,
+        });
+        req.on("response", (res) => {
+          res.resume();
+          resolve({
+            status: res.statusCode ?? 0,
+            location: res.headers.location,
+          });
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    const first = await viaProxy(`http://localhost:${port}/start`);
+    expect(first).toEqual({
+      status: 302,
+      location: `http://127.0.0.1:${forbidden.port}/inside`,
+    });
+    // 클라이언트가 따라가도 새 요청은 다시 판정을 받는다.
+    expect((await viaProxy(first.location!)).status).toBe(403);
+    expect(accepted).toEqual(["/start"]);
+    expect(forbidden.accepted).toHaveLength(0);
+  });
+
   it("uses the organization's research list only as the policy hook gives it, and closes tunnels the user removes", async () => {
     const target = await fixture("echo");
     const { relays, refused, setResearch } = hub();

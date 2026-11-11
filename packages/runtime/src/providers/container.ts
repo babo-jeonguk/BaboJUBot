@@ -620,8 +620,21 @@ export function createDockerEnvironment(
     settings,
     // 같은 컴퓨터의 Linux Docker Engine만 받는다. 이 컴퓨터에서 확인한 폴더와 중계 소켓이 컨테이너에 그대로 들어가야 하기 때문이다.
     async checkDaemon(signal) {
-      const host = process.env.DOCKER_HOST;
-      if (host && !host.startsWith("unix://"))
+      // DOCKER_HOST가 없으면 지금 Docker context의 주소를 본다(ssh·tcp context도 다른 컴퓨터다).
+      let host = process.env.DOCKER_HOST;
+      if (!host) {
+        const context = await runDocker(
+          settings,
+          ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+          60_000,
+          signal
+        );
+        signal.throwIfAborted();
+        if (context.code !== 0)
+          throw new Error("docker context could not be inspected");
+        host = context.stdout.trim();
+      }
+      if (!host.startsWith("unix://"))
         throw new Error("docker daemon is not on this computer");
       const info = await runDocker(
         settings,

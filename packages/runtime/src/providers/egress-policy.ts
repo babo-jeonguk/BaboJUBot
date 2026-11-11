@@ -31,14 +31,15 @@ const ranges = (values: string[]) =>
   });
 
 /** 이 컴퓨터 자신(loopback·미지정). 사용자 API·DB 포트는 여기서 어떤 예외로도 열지 않는다. */
-const selfRanges = ranges(["127.0.0.0/8", "0.0.0.0/8", "::1/128", "::/128"]);
+const selfRangeTexts = ["127.0.0.0/8", "0.0.0.0/8", "::1/128", "::/128"];
+const selfRanges = ranges(selfRangeTexts);
 
 /**
  * 기본으로 막는 주소. 허용한 이름이 이 주소로 풀리면 거부하고, 사용자가 그 목적지에 적은 주소·대역 안일 때만 연다.
  * sandbox-runtime(resolved-address-guard.ts)·Codex(network-proxy connect_policy.rs)와 달리 사설망·CGNAT·ULA도 기본으로 막는다(#149 결정).
  */
 const forbiddenRanges = ranges([
-  ...["127.0.0.0/8", "0.0.0.0/8", "::1/128", "::/128"],
+  ...selfRangeTexts,
   // 사설망·공유 주소(CGNAT)·IETF·벤치마크·문서용·예약
   "10.0.0.0/8",
   "172.16.0.0/12",

@@ -636,7 +636,7 @@ describe("organization network allow list", () => {
     ).not.toBe(200);
   });
 
-  it("opens research destinations only after initial research approval, and closes connections the owner removes", async () => {
+  it("opens research destinations only after initial research approval, and closes connections the owner removes or the stage no longer allows", async () => {
     const agents = scriptedAgents();
     const fake = fakeDocker();
     t = await startTestServer({
@@ -710,6 +710,27 @@ describe("organization network allow list", () => {
         (await connectOver(relay.directory, `localhost:${target.port}`)).head
       ).toMatch(/403/);
       expect(target.accepted).toHaveLength(1);
+
+      // 단계가 바뀌어 연구 목적지가 닫혀도(중단) 열린 연결을 끊는다.
+      await t.request("PUT", `/api/organizations/${org.id}/network-policy`, {
+        destinations: [entry],
+      });
+      const again = await connectOver(
+        relay.directory,
+        `localhost:${target.port}`
+      );
+      expect(again.head).toMatch(/^HTTP\/1\.1 200/);
+      const stopped = new Promise<void>((resolve) =>
+        again.socket.once("close", () => resolve())
+      );
+      expect(
+        (await t.request("POST", `/api/organizations/${org.id}/stop`, {}))
+          .status
+      ).toBe(200);
+      await stopped;
+      expect(
+        (await connectOver(relay.directory, `localhost:${target.port}`)).head
+      ).toMatch(/403/);
       await relay.close();
     } finally {
       target.close();

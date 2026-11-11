@@ -34,7 +34,7 @@ In every stage, answer the Owner's messages in the Lead conversation with `send_
 ## Packages and network
 
 - Install the packages your research needs into a virtual environment in your own folder (`$BABOJUBOT_PERSONAL` in an isolated run), and run it by its path: `python3 -m venv "$BABOJUBOT_PERSONAL/.venv"`, then `"$BABOJUBOT_PERSONAL/.venv/bin/pip" install ...` and `"$BABOJUBOT_PERSONAL/.venv/bin/python" ...`. Nothing activates it for you. Do not leave programs in the organization folder for others to run.
-- In an isolated run, external connections reach only the names and ports the Owner allowed for this organization. When a connection is refused, the proxy answers 403 with the reason; do not try other routes. Tell the Lead (or, as the Lead, the Owner) which name and port you need and why.
+- In an isolated run, external connections reach only the names and ports the Owner allowed for this organization. When a connection is refused, the proxy answers 403 with the reason; do not try other routes. Tell the Owner in the Lead conversation which name and port the research needs and why; the Owner adds it in the organization settings.
 
 ## Boundaries
 

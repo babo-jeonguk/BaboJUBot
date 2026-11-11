@@ -20,11 +20,13 @@ export const providerDestinations = {
   // Codex: API, ChatGPT 로그인과 그 API.
   codex: https("api.openai.com", "chatgpt.com", "auth.openai.com"),
   // OpenCode: 기본 제공자(OpenCode Zen·Go)와 모델 목록.
-  opencode: https("opencode.ai", "*.opencode.ai", "models.dev"),
-  // Antigravity CLI: Google 로그인과 Google API.
+  opencode: https("opencode.ai", "models.opencode.ai", "models.dev"),
+  // Antigravity CLI: Google 로그인과 Code Assist API. 하위 이름 전체(*.googleapis.com)는 공개 저장소(storage)까지 열어 넣지 않는다.
   antigravity: https(
     "accounts.google.com",
     "oauth2.googleapis.com",
-    "*.googleapis.com"
+    "www.googleapis.com",
+    "cloudcode-pa.googleapis.com",
+    "daily-cloudcode-pa.googleapis.com"
   ),
 } as const satisfies Record<string, readonly Destination[]>;

@@ -67,6 +67,12 @@ export type RelayHub = {
   close(): Promise<void>;
 };
 
+/** 중계가 조직 도구 요청에 덮어써 넣는 신원 머리. 서버가 토큰의 실행 시도·조직과 대조한다. */
+export const relayIdentityHeaders = {
+  run: "x-babojubot-relay-run",
+  organization: "x-babojubot-relay-organization",
+} as const;
+
 /** 컨테이너 안 프로그램이 쓰는 이름. docker/runner/relay.mjs와 같아야 한다. */
 export const relaySockets = {
   egress: "egress.sock",
@@ -288,11 +294,11 @@ export function createRelayHub(): RelayHub {
 
   const toolsServer = (relay: Relay) =>
     http.createServer((req, res) => {
-      req.headers["x-babojubot-relay-organization"] =
+      req.headers[relayIdentityHeaders.organization] =
         relay.identity.organizationId;
       if (relay.identity.runId)
-        req.headers["x-babojubot-relay-run"] = relay.identity.runId;
-      else delete req.headers["x-babojubot-relay-run"];
+        req.headers[relayIdentityHeaders.run] = relay.identity.runId;
+      else delete req.headers[relayIdentityHeaders.run];
       hooks!.tools(req, res);
     });
 
