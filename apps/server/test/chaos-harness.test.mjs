@@ -351,14 +351,19 @@ describe("chaos harness on a fake connection", () => {
     // 가짜 연결은 프로그램을 띄우지 않으므로 프로세스 정리 검사만 미실행이다.
     for (const scene of [b, c]) {
       expect(scene.serverStarts).toBe(2);
-      expect(scene.checks.filter((x) => x.outcome !== "passed")).toEqual(
+      expect(
+        scene.checks
+          .filter((x) => x.outcome !== "passed")
+          .map((x) => [x.name, x.outcome, x.source])
+      ).toEqual(
         scene.id === "b"
           ? [
-              expect.objectContaining({
-                name: "old_run_processes_cleaned_after_restart",
-                outcome: "not_run",
-                source: "fake",
-              }),
+              ["old_run_processes_cleaned_after_restart", "not_run", "fake"],
+              [
+                "old_provider_process_and_record_cleaned_after_restart",
+                "not_run",
+                "fake",
+              ],
             ]
           : []
       );

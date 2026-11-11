@@ -96,10 +96,10 @@ export function chaosServer({
     const deadline = Date.now() + 180_000;
     while (!existsSync(files.info)) {
       if (gone)
-        throw new Error(`chaos server exited before it was ready\n${tail}`);
+        throw startFailure("chaos server exited before it was ready", tail);
       if (Date.now() > deadline) {
         await kill();
-        throw new Error(`chaos server was not ready in time\n${tail}`);
+        throw startFailure("chaos server was not ready in time", tail);
       }
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -151,7 +151,7 @@ export function chaosServer({
       const handle = await openEphemeralDatabase();
       await handle.close();
     }
-    leftovers.providerRecords = countProcessRecords(home);
+    leftovers.providerRecords = processRecordPids(home).length;
     await recoverProviderProcesses(home);
     await rm(home, { recursive: true, force: true });
     return leftovers;
@@ -183,16 +183,20 @@ export function chaosServer({
   };
 }
 
-/** 이 홈에 남은 프로바이더 프로세스 기록 수. 서버가 정리를 마치면 0이다. */
-export function countProcessRecords(home) {
+/** 서버 출력은 증거에 넣지 않는다. 사람이 원인을 보도록 터미널에만 보이고, 오류에는 짧은 문구만 담는다. */
+function startFailure(message, tail) {
+  if (tail)
+    console.error(`[chaos-server] ${message}; last server output:\n${tail}`);
+  return new Error(message);
+}
+
+/** 이 홈에 남은 프로바이더 프로세스 기록의 PID(기록 파일 이름). 서버가 정리를 마치면 그 기록은 없어진다. */
+export function processRecordPids(home) {
   const root = path.join(home, "providers");
-  return readdir(root).reduce(
-    (count, provider) =>
-      count +
-      readdir(path.join(root, provider, "processes")).filter((n) =>
-        /^\d+\.json$/.test(n)
-      ).length,
-    0
+  return readdir(root).flatMap((provider) =>
+    readdir(path.join(root, provider, "processes"))
+      .filter((n) => /^\d+\.json$/.test(n))
+      .map((n) => Number.parseInt(n, 10))
   );
 }
 
@@ -262,7 +266,7 @@ function fakeLiveAdapter(defaultFakeCapabilities) {
   };
 }
 
-async function child(configFile) {
+async function runChild(configFile) {
   const config = JSON.parse(readFileSync(configFile, "utf8"));
   const { home, files } = config;
   const runtime = await import("../../packages/runtime/src/index.ts");
@@ -338,7 +342,7 @@ if (import.meta.main) {
     console.error("Usage: node scripts/live/chaos-server.mjs <config file>");
     process.exit(2);
   }
-  await child(configFile).catch((error) => {
+  await runChild(configFile).catch((error) => {
     console.error("[chaos-server] start failed", error?.message ?? error);
     process.exit(1);
   });

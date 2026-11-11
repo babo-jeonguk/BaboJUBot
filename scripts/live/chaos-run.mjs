@@ -11,11 +11,19 @@ import {
   writeBudget,
   writeSecretFile,
 } from "./chaos-budget.mjs";
-import { chaosServer, countProcessRecords } from "./chaos-server.mjs";
-import { brief, busyPids, NotRun, sceneOutcome } from "./chaos-scenes.mjs";
+import { chaosServer, processRecordPids } from "./chaos-server.mjs";
+import {
+  brief,
+  busyPids,
+  check,
+  NotRun,
+  sceneOutcome,
+} from "./chaos-scenes.mjs";
 
 /** 남은 시간이 이보다 적으면 새 장면을 시작하지 않는다. */
 const minSceneMs = 60_000;
+/** 전체 시간 안에 마지막 장면의 정리(서버 정지·DB 정지·홈 삭제)까지 끝내도록 남겨 두는 시간. */
+const cleanupReserveMs = 60_000;
 
 /**
  * 선택한 장면을 순서대로 돌린다. 결과 요약을 돌려준다(쓰기는 `writeEvidence`).
@@ -31,9 +39,10 @@ export async function runChaos({
   totalMs = limits.totalMs,
   sceneMs = limits.sceneMs,
   log = () => {},
+  /** 전체 시간의 시작. 실제 호출 전 확인을 먼저 했으면 그 시작 시각을 준다. */
+  startedAt = Date.now(),
 }) {
-  const startedAt = Date.now();
-  const deadlineAt = startedAt + totalMs;
+  const deadlineAt = startedAt + totalMs - cleanupReserveMs;
   const runDir = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-run-"));
   await chmod(runDir, 0o700);
   const ledger = createLedger(path.join(runDir, "ledger.jsonl"));
@@ -211,7 +220,7 @@ async function runScene({
       writeSecretFile(server.files.control, JSON.stringify(settings), {
         replace: true,
       }),
-    processRecords: () => countProcessRecords(home),
+    processRecordPids: () => processRecordPids(home),
     remainingSceneRuns: () =>
       Math.min(
         sceneRunCap(scene.id) - sceneClaims(),
@@ -270,6 +279,20 @@ async function runScene({
   }
   // 사용자 중단·시간 초과에서도 진행 중인 실행을 취소하고 서버·DB·프로세스·홈을 정리한다.
   const cleanup = await cleanupScene({ server, home, harnessDir, marker });
+  // 정리가 끝나지 않았으면(서버·홈·시험용 명령이 남음) 장면 결과와 상관없이 실패다.
+  if (
+    !cleanup.serverStopped ||
+    !cleanup.homeRemoved ||
+    cleanup.problems > 0 ||
+    cleanup.commandPidsLeft > 0
+  ) {
+    checks = [
+      ...checks,
+      check("cleanup_complete", false, { source: fake ? "fake" : "live" }),
+    ];
+    outcome = "failed";
+    reason ??= "장면 정리가 끝나지 않음";
+  }
   const sceneEntries = ledger.read().filter((e) => e.scene === scene.id);
   const ends = sceneEntries.filter((e) => e.kind === "end" && e.live);
   return {

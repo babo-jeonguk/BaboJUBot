@@ -181,8 +181,14 @@ const runOf = async (ctx, org, id) =>
   (await ctx.api("GET", `/api/organizations/${org.id}/runs/${id}`)).body;
 const eventsOf = async (ctx, org) =>
   (await ctx.api("GET", `/api/organizations/${org.id}/events`)).body;
-const messagesOf = async (ctx, org) =>
-  (await ctx.api("GET", `/api/organizations/${org.id}/messages`)).body.messages;
+/** 대화 메시지. 본문(에이전트 답장 포함)은 모두 비밀값으로 등록해 증거에 섞이면 가린다. */
+async function messagesOf(ctx, org) {
+  const { messages } = (
+    await ctx.api("GET", `/api/organizations/${org.id}/messages`)
+  ).body;
+  for (const m of messages) ctx.secrets.add(m.body);
+  return messages;
+}
 
 async function say(ctx, org, body, delivery = "next_run") {
   ctx.secrets.add(body);
@@ -455,7 +461,7 @@ async function killAndRestart(ctx) {
 async function restartScene(ctx) {
   const org = await setupOrg(ctx, "Chaos restart");
   const first = await startLongRun(ctx, org);
-  const recordsBefore = ctx.processRecords();
+  const recordsBefore = ctx.processRecordPids();
   await killAndRestart(ctx);
   const next = await newRun(ctx, org, first.known, 120_000);
   // 다시 대기한 깨우기를 받은 실행은 확인했으니 긴 명령을 기다리지 않고 끝낸다.
@@ -473,6 +479,11 @@ async function restartScene(ctx) {
     source: fakeOr(ctx),
   });
   const oldPidsLeft = first.pids.filter(alive);
+  // 이전 실행의 프로바이더 프로그램(기록에 남은 프로세스 그룹 대표)도 끝나고 그 기록이 지워져야 한다.
+  const recordsAfter = ctx.processRecordPids();
+  const oldRecordsLeft = recordsBefore.filter(
+    (pid) => alive(pid) || recordsAfter.includes(pid)
+  );
   return {
     checks: [
       ...judged.checks,
@@ -484,10 +495,16 @@ async function restartScene(ctx) {
         "old_run_processes_cleaned_after_restart",
         oldPidsLeft.length === 0
       ),
+      processCheck(
+        ctx,
+        "old_provider_process_and_record_cleaned_after_restart",
+        recordsBefore.length > 0 && oldRecordsLeft.length === 0
+      ),
     ],
     observations: {
       ...judged.observations,
-      processRecordsBeforeKill: recordsBefore,
+      processRecordsBeforeKill: recordsBefore.length,
+      oldProcessRecordsLeft: oldRecordsLeft.length,
       oldCommandPids: first.pids.length,
       oldCommandPidsLeft: oldPidsLeft.length,
     },
@@ -1000,6 +1017,12 @@ async function steerKillScene(ctx) {
     await killAndRestart(ctx);
     await inFlight;
     const id = (await messagesOf(ctx, org)).find((m) => m.body === body)?.id;
+    // 강제 종료 전에 끼워 넣기 결과가 정해졌는지(정해졌으면 "전달 중" 시점을 잡지 못한 것이다).
+    const settledBeforeKill = id
+      ? (await eventsOf(ctx, org)).some(
+          (e) => e.type === "message.steered" && e.payload.messageId === id
+        )
+      : null;
     const later = id
       ? await waitFor(
           ctx,
@@ -1015,6 +1038,7 @@ async function steerKillScene(ctx) {
       })
     );
     observations.inFlightSaved = !!id;
+    observations.inFlightSettledBeforeKill = settledBeforeKill;
     observations.inFlightRecovered = !!later;
   } else
     checks.push(

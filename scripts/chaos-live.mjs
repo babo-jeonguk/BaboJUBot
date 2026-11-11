@@ -90,6 +90,7 @@ console.log(
     },
   })
 );
+const startedAt = Date.now();
 const checked = await preflight();
 let summary, secrets;
 if (checked.problem) {
@@ -114,6 +115,7 @@ if (checked.problem) {
     connection: "opencode",
     scenes,
     signal: stop.signal,
+    startedAt,
     log: (line) => console.log(line),
   }));
 if (stop.signal.aborted) summary.interrupted = true;
