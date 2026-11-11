@@ -14,6 +14,7 @@ import {
   type OrgToolParsedInput,
   type AgentRecoveryBlockReason,
   type ArtifactFileRead,
+  type IntentRequest,
   type PublicActivity,
   type ToolRefusalReason,
 } from "@babojubot/contracts";
@@ -48,6 +49,7 @@ import {
   type Database,
   type MapCommand,
   acceptIntent,
+  decodeIntentRequest,
   findIntent,
   findIntentByKey,
   IntentMismatchError,
@@ -543,11 +545,8 @@ export function orgToolsRouter({
   };
 
   /** 실행 의도가 고정한 입력을 도구 입력으로. 계약 밖이면 `undefined`. */
-  const intentInput = (name: OrgToolName, request: string) => {
-    const { params, body } = JSON.parse(request) as {
-      params: Record<string, unknown>;
-      body: unknown;
-    };
+  const intentInput = (name: OrgToolName, request: IntentRequest) => {
+    const { params, body } = request;
     const input = orgTools[name].input.safeParse(
       inputOf(name, { params, body, query: body, key: undefined })
     );
@@ -576,10 +575,8 @@ export function orgToolsRouter({
     }
     const key = keyOf(req);
     if (key === false) return failure(422, "invalid_input");
-    const request = JSON.stringify({
-      params: req.params,
-      body: req.body ?? null,
-    });
+    const fixed = { params: req.params, body: req.body ?? null };
+    const request = JSON.stringify(fixed);
     const digest = digestOf(request);
     const conflicts = (intent: StoredIntent) =>
       intent.tool !== name || intent.digest !== digest;
@@ -606,8 +603,11 @@ export function orgToolsRouter({
       intent = accepted.intent;
     }
     if (conflicts(intent)) return failure(409, "idempotency_conflict");
-    // 이 기능 전에 남은 기록은 입력을 고정하지 않았다. digest가 같으므로 이번 입력과 같다.
-    const input = intentInput(name, intent.request ?? request);
+    // 이 기능 전에 남은 기록은 입력을 고정하지 않았다. digest가 같으므로 이번 입력과 같다. 저장된 표기를 읽을 수 없어도 마찬가지다.
+    const input = intentInput(
+      name,
+      decodeIntentRequest(intent.request) ?? fixed
+    );
     if (input === undefined) return failure(422, "invalid_input");
     return handle(name, run, input, intent);
   };
@@ -625,7 +625,7 @@ export function orgToolsRouter({
   /**
    * 서버 재시작으로 끝난 실행 시도가 수락한 실행 의도를 새 실행 시도(`run`)로 정산한다. 모델을 부르기 전에 dispatcher가 부른다.
    * 지금 Role·단계·승인 규칙과 조직·에이전트 제어를 그대로 거치므로 막힌 쓰기는 효과 없이 확정 거절된다. 입력은 수락 때 고정한 것이고,
-   * 파일 경로 산출물은 그때 읽은 내용이다. 고정한 입력·원본 자료가 없거나 기록이 맞지 않으면 `blocked`이며 아무것도 하지 않는다.
+   * 파일 경로 산출물은 그때 읽은 내용이다. 고정한 입력을 읽을 수 없거나 원본 자료가 없거나 기록이 맞지 않으면 `blocked`이며 아무것도 하지 않는다.
    * 정산 중 실행 시도가 끝나면(사용자 제어 취소) `run_finished`다. 일시적 오류는 던지고 호출자가 다시 시도한다.
    */
   const settle: IntentSettler = async (intent, run) => {
@@ -633,12 +633,14 @@ export function orgToolsRouter({
     if (
       !orgToolNames.includes(name) ||
       isOrgToolRead(name) ||
-      intent.request === null ||
       intent.organizationId !== run.organizationId ||
       intent.agentId !== run.agentId
     )
       return { kind: "blocked", reason: "inconsistent_record" };
-    const input = intentInput(name, intent.request);
+    const fixed = decodeIntentRequest(intent.request);
+    if (fixed === null)
+      return { kind: "blocked", reason: "inconsistent_record" };
+    const input = intentInput(name, fixed);
     if (input === undefined)
       return { kind: "blocked", reason: "inconsistent_record" };
     if (

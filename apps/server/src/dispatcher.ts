@@ -6,6 +6,7 @@ import {
   runResultSchema,
   runtimeActivitySchema,
   type RunCancel,
+  type RunRequest,
   type RunResult,
   type RuntimeAdapter,
   type SteerMessage,
@@ -326,9 +327,14 @@ export class RunDispatcher {
           type: "cancel",
           reason: cancelReason,
         } satisfies RunCancel);
-      // 서버 재시작으로 남은 실행 의도를 모델보다 먼저 정산하고, 그 결과를 실은 깨우기 사유로 요청을 만든다.
-      const recovered = await this.#recoverIntents(claimed, controller.signal);
-      if (recovered.kind !== "ok") {
+      // 서버 재시작으로 남은 실행 의도를 모델보다 먼저 정산하고, 그 결과를 실은 깨우기 사유로 프로바이더에 넘길 요청까지 준비한다.
+      const prepared = await this.#prepare(
+        claimed,
+        token,
+        controller.signal,
+        adapter
+      );
+      if (prepared.kind !== "ok") {
         // 모델은 아무것도 받지 않았다. 서버 종료면 받은 깨우기를 모두 다시 넘기고, 아니면 막힘이나 사용자 취소대로 끝낸다.
         this.#active.delete(run.id);
         this.#pendingFinishes.set(run.agentId, {
@@ -337,20 +343,16 @@ export class RunDispatcher {
             ? "server_restart"
             : {
                 beforeModel:
-                  recovered.kind === "blocked"
-                    ? { blocked: recovered.reason }
+                  prepared.kind === "blocked"
+                    ? { blocked: prepared.reason }
                     : "cancelled",
               },
         });
         await this.#settle(run.agentId);
         return;
       }
-      const request = await this.#assemble(
-        { ...claimed, wakeReasons: recovered.wakeReasons },
-        token
-      );
       const raw = adapter
-        ? await adapter.execute(request, {
+        ? await adapter.execute(prepared.request, {
             signal: controller.signal,
             emit: (activity) => this.#emit(run.id, activity),
           })
@@ -391,23 +393,28 @@ export class RunDispatcher {
   }
 
   /**
-   * 실행 시도가 받은 실행 의도 복구 깨우기의 남은 의도를 모델을 부르기 전에 정산한다(`settleIntent`). 정산한 결과는 깨우기 사유에 실려
-   * 모델이 받는 맥락이 된다. 일시적 오류는 다시 시도하되, 의도마다 DB에 센 시도가 서버 재시작을 넘어 한도(db `intentSettleAttemptLimit`)에
+   * 실행 시도가 받은 실행 의도 복구 깨우기의 남은 의도를 모델을 부르기 전에 정산하고(`settleIntent`) 프로바이더에 넘길 요청까지 준비한다.
+   * 정산한 결과는 깨우기 사유에 실려 모델이 받는 맥락이 된다. 복구 깨우기를 실은 실행 시도에서 정산부터 프로바이더에 요청을 넘기기 직전까지
+   * (막힘 풀기, 깨우기 사유 다시 읽기, 요청 조립, 프로바이더 연결 찾기, 취소 관찰)가 모델을 부르기 전의 경계다. 그 경계에서 실패하면 실행 시도
+   * 안에서 다시 시도하고 한도에 닿으면 `retry_exhausted`로 막으며, 그사이 사용자 제어가 취소했으면 모델을 부르기 전에 실행 시도를 끝내
+   * 복구 깨우기를 다시 대기시킨다. 일시적 오류는 다시 시도하되, 의도마다 DB에 센 시도가 서버 재시작을 넘어 한도(db `intentSettleAttemptLimit`)에
    * 닿거나 같은 실행 시도 안에서 {@link recoveryAttempts}번 실패하거나
    * 원본 자료가 없거나 기록이 맞지 않으면 `blocked`다. 사용자 제어가 그사이 취소했으면 `run_finished`다.
    * 정산에 성공하고 에이전트가 사용자가 고른 복구 재시도 중이면 막힘을 푼다.
    */
-  async #recoverIntents(
+  async #prepare(
     claimed: ClaimedRun,
-    signal: AbortSignal
+    token: string,
+    signal: AbortSignal,
+    adapter: RuntimeAdapter | undefined
   ): Promise<
-    | { kind: "ok"; wakeReasons: ClaimedRun["wakeReasons"] }
+    | { kind: "ok"; request: RunRequest }
     | { kind: "run_finished" }
     | { kind: "blocked"; reason: AgentRecoveryBlockReason }
   > {
     const { run } = claimed;
     if (!claimed.wakeReasons.some((r) => r.kind === "intent_recovery"))
-      return { kind: "ok", wakeReasons: claimed.wakeReasons };
+      return { kind: "ok", request: await this.#assemble(claimed, token) };
     for (let attempt = 1; ; attempt++) {
       try {
         const listed = await listIntentsToSettle(this.#db, run);
@@ -435,7 +442,20 @@ export class RunDispatcher {
           const settled = await this.#settleIntent!(intent, active);
           if (settled.kind !== "settled") return settled;
         }
-        break;
+        await this.#afterCommit(await resolveAgentRecovery(this.#db, run));
+        const current = new Map(
+          (await loadRunWakeReasons(this.#db, run.id)).map((r) => [r.wakeId, r])
+        );
+        const wakeReasons = claimed.wakeReasons.map(
+          (r) => current.get(r.wakeId) ?? r
+        );
+        const request = await this.#assemble(
+          { ...claimed, wakeReasons },
+          token
+        );
+        if (!adapter) throw new Error("provider connection is missing");
+        if (signal.aborted) return { kind: "run_finished" };
+        return { kind: "ok", request };
       } catch (error) {
         console.error(
           `[runs] run ${run.id} intent recovery failed (attempt ${attempt})`,
@@ -450,14 +470,6 @@ export class RunDispatcher {
         }
       }
     }
-    await this.#afterCommit(await resolveAgentRecovery(this.#db, run));
-    const current = new Map(
-      (await loadRunWakeReasons(this.#db, run.id)).map((r) => [r.wakeId, r])
-    );
-    return {
-      kind: "ok",
-      wakeReasons: claimed.wakeReasons.map((r) => current.get(r.wakeId) ?? r),
-    };
   }
 
   /**

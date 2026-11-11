@@ -566,7 +566,7 @@ describe("execution intent recovery across a server restart (#150)", () => {
     });
     await restart();
     const [recovery] = recoveries(next.wakeReasons);
-    expect(recovery!.intents.map((i) => [i.request.body, i.outcome])).toEqual([
+    expect(recovery!.intents.map((i) => [i.request?.body, i.outcome])).toEqual([
       [
         { title: "끝난 쓰기", assigneeAgentId },
         { status: "completed", result: created.body },
@@ -798,6 +798,7 @@ describe("recovery delivery and stored records at the edges (#150 PR #164 review
       return real();
     });
     const modelRuns = agents.of(org.lead.id).length;
+    agents.queue(org.lead.id, idle);
     await restart(undefined, { drain: false });
     await entered;
     expect(
@@ -811,22 +812,23 @@ describe("recovery delivery and stored records at the edges (#150 PR #164 review
     ).toBe(200);
     release();
     await restarted!.drain();
-    // 모델은 요청을 받지 않았고, 사용자 취소는 막힘이 아니다. 복구 깨우기는 다음 실행 시도로 넘어간다.
-    expect(agents.of(org.lead.id)).toHaveLength(modelRuns);
-    expect((await api.runs(org.id, org.lead.id))[0]).toMatchObject({
-      status: "cancelled",
-    });
-    expect((await api.agent(org.id, org.lead.id)).recovery).toBeNull();
-    let next!: RunRequest;
-    agents.queue(org.lead.id, (request) => {
-      next = request;
-      return idle;
-    });
-    await api.say(org.id, "다음");
-    await restarted!.drain();
-    expect(outcomes(recoveries(next.wakeReasons)[0]!.intents)).toEqual([
-      ["send_message", "completed"],
+    // 취소된 실행 시도는 모델을 부르지 않았고, 사용자 취소는 막힘이 아니다. 취소한 사용자 메시지는 버리고
+    // 복구 깨우기만 다시 대기해 바로 다음 실행 시도가 그 결과를 받는다.
+    const [after, cancelled] = await api.runs(org.id, org.lead.id);
+    expect([after!.status, cancelled!.status]).toEqual([
+      "completed",
+      "cancelled",
     ]);
+    expect((await api.agent(org.id, org.lead.id)).recovery).toBeNull();
+    const resumed = agents.of(org.lead.id).slice(modelRuns);
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]!.request.identity.runId).toBe(after!.id);
+    expect(resumed[0]!.request.wakeReasons.map((r) => r.kind)).toEqual([
+      "intent_recovery",
+    ]);
+    expect(
+      outcomes(recoveries(resumed[0]!.request.wakeReasons)[0]!.intents)
+    ).toEqual([["send_message", "completed"]]);
     expect(
       (await api.agentReplies(org.id, "취소 전 답장")).map((m) => m.body)
     ).toEqual(["취소 전 답장"]);

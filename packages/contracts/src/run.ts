@@ -64,17 +64,22 @@ export const intentOutcomeSchema = z.discriminatedUnion("status", [
 ]);
 export type IntentOutcome = z.infer<typeof intentOutcomeSchema>;
 
+/** 실행 의도가 수락 때 고정한 입력: 경로 변수 `params`와 본문 `body`. */
+export const intentRequestSchema = z.object({
+  params: z.record(z.string(), z.unknown()),
+  body: z.unknown(),
+});
+export type IntentRequest = z.infer<typeof intentRequestSchema>;
+
 /**
  * 서버 재시작으로 끝난 실행 시도가 수락한 실행 의도 하나와 그 정산 결과. `tool`은 조직 도구 이름(contracts `orgToolNames`),
- * `request`는 수락 때 고정한 입력(경로 변수 `params`와 본문 `body`)이다.
+ * `request`는 수락 때 고정한 입력이고, 원래 입력을 알 수 없으면(이 기능 전 판이 남긴 기록이거나 저장된 표기를 읽을 수 없음)
+ * `null`이다. 빈 입력으로 바꾸어 보이지 않는다.
  */
 export const recoveredIntentSchema = z.object({
   intentId: z.uuid(),
   tool: z.string(),
-  request: z.object({
-    params: z.record(z.string(), z.unknown()),
-    body: z.unknown(),
-  }),
+  request: intentRequestSchema.nullable(),
   outcome: intentOutcomeSchema,
 });
 export type RecoveredIntent = z.infer<typeof recoveredIntentSchema>;

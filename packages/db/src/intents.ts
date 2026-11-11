@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type {
-  AgentRecoveryBlockReason,
-  IntentOutcome,
-  OrgToolName,
-  RecoveredIntent,
+import {
+  intentRequestSchema,
+  type AgentRecoveryBlockReason,
+  type IntentOutcome,
+  type IntentRequest,
+  type OrgToolName,
+  type RecoveredIntent,
 } from "@babojubot/contracts";
 import { and, asc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import type { Database } from "./client.ts";
@@ -214,13 +216,20 @@ export const intentOutcomeOf = (intent: {
   }
 };
 
-/** 고정한 입력. 이 기능 전의 기록은 입력을 남기지 않았으므로 빈 입력이다. */
-export const intentRequestOf = (
+/**
+ * 저장한 입력 표기를 읽는다. 기록이 없거나(이 기능 전 판) 읽을 수 없거나 형식이 맞지 않으면 `null`이며 던지지 않는다.
+ * 빈 입력으로 대신하지 않는다. 수행할 의도에서 `null`은 기록 모순이다(`listIntentsToSettle`).
+ */
+export const decodeIntentRequest = (
   request: string | null
-): RecoveredIntent["request"] => {
-  if (request === null) return { params: {}, body: null };
-  const parsed = JSON.parse(request) as RecoveredIntent["request"];
-  return { params: parsed.params ?? {}, body: parsed.body ?? null };
+): IntentRequest | null => {
+  if (request === null) return null;
+  try {
+    const parsed = intentRequestSchema.safeParse(JSON.parse(request));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 };
 
 /** 실행 시도가 받은 복구 깨우기가 가리키는, 서버 재시작으로 끝난 실행 시도들(subquery). */
@@ -311,7 +320,7 @@ export async function selectRecoveredIntents(
     found.get(row.runId)?.intents.push({
       intentId: row.id,
       tool: row.tool,
-      request: intentRequestOf(row.request),
+      request: decodeIntentRequest(row.request),
       outcome: intentOutcomeOf(row),
     });
   return found;
@@ -319,7 +328,7 @@ export async function selectRecoveredIntents(
 
 /**
  * 실행 시도가 받은 복구 깨우기가 가리키는, 아직 수행하지 않은 실행 의도. 모델을 부르기 전에 정산할 목록이다.
- * 다른 에이전트의 의도가 섞였거나 고정한 입력이 없으면 기록 모순으로 본다.
+ * 다른 에이전트의 의도가 섞였거나 고정한 입력이 없거나 읽을 수 없으면 기록 모순으로 본다.
  */
 export async function listIntentsToSettle(
   db: Executor,
@@ -342,7 +351,7 @@ export async function listIntentsToSettle(
     if (
       row.organizationId !== run.organizationId ||
       row.agentId !== run.agentId ||
-      row.request === null
+      decodeIntentRequest(row.request) === null
     )
       return { kind: "blocked", reason: "inconsistent_record" };
   return { kind: "ok", intents: rows };
