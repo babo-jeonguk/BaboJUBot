@@ -11,6 +11,7 @@ import { researchMapOperationSchema } from "./research-map.ts";
 import { memoryScopeSchema } from "./memory.ts";
 import { providerChoiceSchema } from "./provider.ts";
 import {
+  agentRecoveryBlockReasonSchema,
   publicActivitySchema,
   runEndReasonSchema,
   runSummarySchema,
@@ -258,6 +259,34 @@ export const agentInterruptedEventSchema = z.object({
     runId: z.uuid().nullable(),
     messageId: z.uuid().nullable(),
   }),
+});
+
+/**
+ * 실행 의도 복구가 에이전트의 모델 진행을 막았다. `runId`는 정산하다 막힌 실행 시도이며, 그 실행 시도가 받은 깨우기는 다시 대기한다.
+ * 사용자가 복구 재시도(`agent.recovery_retried`)를 고르기 전에는 새 메시지·heartbeat·서버 재시작으로도 풀리지 않는다.
+ */
+export const agentRecoveryBlockedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.recovery_blocked"),
+  payload: z.object({
+    agentId: z.uuid(),
+    runId: z.uuid(),
+    reason: agentRecoveryBlockReasonSchema,
+  }),
+});
+
+/** 사용자가 막힌 실행 의도 복구를 다시 시도하게 했다. 다음 실행 시도가 모델을 부르기 전에 정산을 다시 한다. */
+export const agentRecoveryRetriedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.recovery_retried"),
+  payload: z.object({ by: z.literal("owner"), agentId: z.uuid() }),
+});
+
+/** 사용자가 고른 복구 재시도의 정산이 성공해 막힘이 풀렸다. `runId`는 정산한 실행 시도다. */
+export const agentRecoveryResolvedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("agent.recovery_resolved"),
+  payload: z.object({ agentId: z.uuid(), runId: z.uuid() }),
 });
 
 /** 사용자의 heartbeat 설정 변경. 바꾼 뒤의 설정과 서버가 정한 다음 heartbeat다. 값이 그대로인 변경은 남지 않는다. */
@@ -555,6 +584,9 @@ export const eventSchema = z.discriminatedUnion("type", [
   agentPausedEventSchema,
   agentResumedEventSchema,
   agentInterruptedEventSchema,
+  agentRecoveryBlockedEventSchema,
+  agentRecoveryRetriedEventSchema,
+  agentRecoveryResolvedEventSchema,
   agentHeartbeatChangedEventSchema,
   agentProfileChangedEventSchema,
   agentProviderChangedEventSchema,

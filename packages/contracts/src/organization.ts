@@ -37,8 +37,14 @@ export type OrganizationCommand = (typeof organizationCommands)[number];
 /**
  * 에이전트 제어 명령: 일시정지·재개·실행 중단. 조직 제어와 따로 저장한다.
  * 실행 중단(`interrupt`)은 메시지 없이 지금 실행 시도만 취소하고 일시정지하지 않으므로, 이후 깨우기는 그대로 실행 시도를 시작한다.
+ * 복구 재시도(`recover`)는 실행 의도 복구로 막힌 에이전트(contracts `agentRecoverySchema`)의 정산을 다시 시도하게 한다.
  */
-export const agentCommands = ["pause", "resume", "interrupt"] as const;
+export const agentCommands = [
+  "pause",
+  "resume",
+  "interrupt",
+  "recover",
+] as const;
 export type AgentCommand = (typeof agentCommands)[number];
 
 export const agentRoles = ["lead", "worker"] as const;

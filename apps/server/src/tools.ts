@@ -12,6 +12,8 @@ import {
   type OrgToolErrorCode,
   type OrgToolName,
   type OrgToolParsedInput,
+  type AgentRecoveryBlockReason,
+  type ArtifactFileRead,
   type PublicActivity,
   type ToolRefusalReason,
 } from "@babojubot/contracts";
@@ -45,8 +47,13 @@ import {
   type ActiveRun,
   type Database,
   type MapCommand,
+  acceptIntent,
+  findIntent,
+  findIntentByKey,
+  IntentMismatchError,
+  findActiveRun,
+  type StoredIntent,
   type ToolCall,
-  type ToolOperation,
   type ToolWrite,
 } from "@babojubot/db";
 import express from "express";
@@ -87,6 +94,8 @@ const quote = (text: string) =>
 /** 처리 함수가 검사를 통과한 호출 하나에 쓰는 응답 수단. */
 type ToolReply = {
   run: ActiveRun;
+  /** 쓰기 도구: 실행 의도를 수락할 때 고정한 원본 자료(`record_artifact`의 파일 읽기 결과). 없으면 `undefined`. */
+  source: unknown;
   /** 거부 응답. */
   refuse: (status: number, code: OrgToolErrorCode) => void;
   /** 읽기 도구의 공개 요약을 남기고 값을 돌려준다. 그 사이 실행 시도가 끝났으면 401. */
@@ -131,7 +140,7 @@ export function orgToolsRouter({
   harnessDir: string;
   providers: ProviderRegistry;
   workspaces: Workspaces;
-}): express.Router {
+}): { router: express.Router; settle: IntentSettler } {
   const router = express.Router();
   const refuse = (
     res: express.Response,
@@ -185,21 +194,16 @@ export function orgToolsRouter({
       ? failure(403, "forbidden")
       : failure(409, "stage_closed");
   /**
-   * 쓰기 도구의 `Idempotency-Key` header. 없으면 `undefined`, 계약 밖이면 `false`.
-   * 같은 키에 다른 입력이 오는지는 경로 변수와 본문의 digest로 가린다.
+   * 쓰기 도구의 `Idempotency-Key` header. 없으면 `null`, 계약 밖이면 `false`.
+   * 같은 키에 다른 입력이 오는지는 경로 변수와 본문의 JSON 표기(실행 의도가 고정하는 입력)의 digest로 가린다.
    */
-  const operationOf = (req: ToolRequest): ToolOperation | undefined | false => {
-    const header = req.key;
-    if (header === undefined) return undefined;
-    const key = idempotencyKeySchema.safeParse(header);
-    if (!key.success) return false;
-    return {
-      key: key.data,
-      digest: createHash("sha256")
-        .update(JSON.stringify({ params: req.params, body: req.body ?? null }))
-        .digest("hex"),
-    };
+  const keyOf = (req: ToolRequest): string | null | false => {
+    if (req.key === undefined) return null;
+    const key = idempotencyKeySchema.safeParse(req.key);
+    return key.success ? key.data : false;
   };
+  const digestOf = (request: string) =>
+    createHash("sha256").update(request).digest("hex");
   /**
    * 경로 변수와 본문(GET이면 query)을 도구 입력 하나로 합친다. 입력이 경로 변수뿐인 읽기 도구는 query를 읽지 않는다.
    * 본문이 객체가 아니거나 경로 변수와 같은 이름의 칸이 있으면 계약 밖이다(`undefined`).
@@ -360,11 +364,12 @@ export function orgToolsRouter({
         })
       );
     },
-    async record_artifact(input, { run, call, write }) {
+    // 파일 경로 산출물은 실행 의도를 수락할 때 읽어 고정한 내용으로 기록한다. 그 뒤 경로의 파일이 바뀌거나 사라져도 다시 읽지 않는다.
+    async record_artifact(input, { run, call, write, source: fixed }) {
       await write(
         await recordArtifact(db, run, input, {
           source,
-          readFile: (org, path) => workspaces.readArtifact(org, path),
+          readFile: async () => fixed as ArtifactFileRead,
           ...call(
             `산출물 기록: ${quote(input.title)} (${input.path ? "파일" : `${input.format}, ${chars(input.content!)}자`})`
           ),
@@ -502,28 +507,21 @@ export function orgToolsRouter({
     },
   };
 
-  const dispatch: ToolDispatch = async (name, run, req) => {
-    const gate = await gateToolCall(db, run, name);
-    if (!gate) return failure(401, "invalid_token");
-    if (!gate.ok) {
-      await applyAfterCommit({ hub, dispatcher }, gate.after);
-      return refuseByRule(gate.reason);
-    }
-    let operation: ToolOperation | undefined;
-    if (!isOrgToolRead(name)) {
-      const found = operationOf(req);
-      if (found === false) return failure(422, "invalid_input");
-      operation = found;
-    }
-    const input = orgTools[name].input.safeParse(inputOf(name, req));
-    if (!input.success) return failure(422, "invalid_input");
+  /** 처리 함수 하나를 부른다. 쓰기 도구면 정산할 실행 의도와 그 원본 자료를 함께 넘긴다. */
+  const handle = async (
+    name: OrgToolName,
+    run: ActiveRun,
+    input: unknown,
+    intent?: { id: string; source: unknown }
+  ): Promise<ToolResponse> => {
     const handler = handlers[name] as (
       input: unknown,
       reply: ToolReply
     ) => Promise<void>;
     let response: ToolResponse | undefined;
-    await handler(input.data, {
+    await handler(input, {
       run,
+      source: intent?.source ?? undefined,
       refuse: (status, code) => {
         response = failure(status, code);
       },
@@ -532,7 +530,10 @@ export function orgToolsRouter({
           ? { status: 200, value }
           : failure(401, "invalid_token");
       },
-      call: (summary) => ({ activity: toolActivity(name, summary), operation }),
+      call: (summary) => ({
+        activity: toolActivity(name, summary),
+        ...(intent ? { operation: { intentId: intent.id } } : {}),
+      }),
       write: async (result, status) => {
         response = await respondWrite(result, status);
       },
@@ -540,6 +541,126 @@ export function orgToolsRouter({
     if (!response) throw new Error("tool returned no response");
     return response;
   };
+
+  /** 실행 의도가 고정한 입력을 도구 입력으로. 계약 밖이면 `undefined`. */
+  const intentInput = (name: OrgToolName, request: string) => {
+    const { params, body } = JSON.parse(request) as {
+      params: Record<string, unknown>;
+      body: unknown;
+    };
+    const input = orgTools[name].input.safeParse(
+      inputOf(name, { params, body, query: body, key: undefined })
+    );
+    return input.success ? input.data : undefined;
+  };
+
+  /**
+   * 조직 도구 호출 하나. 읽기는 Role·단계 검사 뒤 처리한다. 쓰기는 실행 의도(GLOSSARY)로 처리한다.
+   * - 같은 호출 키의 의도가 이미 있으면 도구·입력이 같은지만 보고(다르면 409 `idempotency_conflict`) 그 의도를 처리한다. 정산한 의도는
+   *   지금 단계가 그 쓰기를 막아도 최초 결과를 돌려주고 아무것도 다시 남기지 않는다(새 쓰기가 아님). 토큰은 언제나 지금 실행 시도의 것이어야 한다.
+   * - 새 쓰기는 Role·단계와 입력을 검사한 뒤, 원본 자료(파일 경로 산출물이면 그 파일)를 읽어 입력과 함께 고정하고 의도를 수락한다.
+   *   효과는 그 commit 뒤에만 하며, 효과와 최초 결과는 같은 transaction으로 정산된다(db `toolWrite`).
+   * 키 없이 온 쓰기도 의도로 남긴다. 서버 재시작 뒤 다음 실행 시도가 그 결과를 받지만, 키가 없으니 같은 호출의 재전송은 가리지 못한다.
+   */
+  const dispatch: ToolDispatch = async (name, run, req) => {
+    if (isOrgToolRead(name)) {
+      const gate = await gateToolCall(db, run, name);
+      if (!gate) return failure(401, "invalid_token");
+      if (!gate.ok) {
+        await applyAfterCommit({ hub, dispatcher }, gate.after);
+        return refuseByRule(gate.reason);
+      }
+      const input = orgTools[name].input.safeParse(inputOf(name, req));
+      if (!input.success) return failure(422, "invalid_input");
+      return handle(name, run, input.data);
+    }
+    const key = keyOf(req);
+    if (key === false) return failure(422, "invalid_input");
+    const request = JSON.stringify({
+      params: req.params,
+      body: req.body ?? null,
+    });
+    const digest = digestOf(request);
+    const conflicts = (intent: StoredIntent) =>
+      intent.tool !== name || intent.digest !== digest;
+    let intent =
+      key === null ? undefined : await findIntentByKey(db, run.agentId, key);
+    if (!intent) {
+      const gate = await gateToolCall(db, run, name);
+      if (!gate) return failure(401, "invalid_token");
+      if (!gate.ok) {
+        await applyAfterCommit({ hub, dispatcher }, gate.after);
+        return refuseByRule(gate.reason);
+      }
+      const input = orgTools[name].input.safeParse(inputOf(name, req));
+      if (!input.success) return failure(422, "invalid_input");
+      const accepted = await acceptIntent(db, run, {
+        key,
+        tool: name,
+        request,
+        digest,
+        source: await sourceOf(name, run, input.data),
+      });
+      if (accepted.kind === "run_finished")
+        return failure(401, "invalid_token");
+      intent = accepted.intent;
+    }
+    if (conflicts(intent)) return failure(409, "idempotency_conflict");
+    // 이 기능 전에 남은 기록은 입력을 고정하지 않았다. digest가 같으므로 이번 입력과 같다.
+    const input = intentInput(name, intent.request ?? request);
+    if (input === undefined) return failure(422, "invalid_input");
+    return handle(name, run, input, intent);
+  };
+
+  /** 쓰기 전에 고정할 원본 자료. 파일 경로 산출물은 지금 경로의 파일을 경로 격리·변경 감지 규칙대로 읽은 결과다. */
+  const sourceOf = async (name: OrgToolName, run: ActiveRun, input: unknown) =>
+    name === "record_artifact" &&
+    (input as { path?: string }).path !== undefined
+      ? await workspaces.readArtifact(
+          run.organizationId,
+          (input as { path: string }).path
+        )
+      : null;
+
+  /**
+   * 서버 재시작으로 끝난 실행 시도가 수락한 실행 의도를 새 실행 시도(`run`)로 정산한다. 모델을 부르기 전에 dispatcher가 부른다.
+   * 지금 Role·단계·승인 규칙과 조직·에이전트 제어를 그대로 거치므로 막힌 쓰기는 효과 없이 확정 거절된다. 입력은 수락 때 고정한 것이고,
+   * 파일 경로 산출물은 그때 읽은 내용이다. 고정한 입력·원본 자료가 없거나 기록이 맞지 않으면 `blocked`이며 아무것도 하지 않는다.
+   * 정산 중 실행 시도가 끝나면(사용자 제어 취소) `run_finished`다. 일시적 오류는 던지고 호출자가 다시 시도한다.
+   */
+  const settle: IntentSettler = async (intent, run) => {
+    const name = intent.tool as OrgToolName;
+    if (
+      !orgToolNames.includes(name) ||
+      isOrgToolRead(name) ||
+      intent.request === null ||
+      intent.organizationId !== run.organizationId ||
+      intent.agentId !== run.agentId
+    )
+      return { kind: "blocked", reason: "inconsistent_record" };
+    const input = intentInput(name, intent.request);
+    if (input === undefined)
+      return { kind: "blocked", reason: "inconsistent_record" };
+    if (
+      name === "record_artifact" &&
+      (input as { path?: string }).path !== undefined &&
+      (intent.source === null || intent.source === undefined)
+    )
+      return { kind: "blocked", reason: "missing_source" };
+    try {
+      await handle(name, run, input, intent);
+    } catch (error) {
+      if (error instanceof IntentMismatchError)
+        return { kind: "blocked", reason: "inconsistent_record" };
+      throw error;
+    }
+    const after = await findIntent(db, intent.id);
+    if (after?.status !== "accepted") return { kind: "settled" };
+    return (await findActiveRun(db, run.id))
+      ? { kind: "blocked", reason: "inconsistent_record" }
+      : { kind: "run_finished" };
+  };
+
   mcpRoutes(router, dispatch, async (run) => {
     const org = await loadRunContext(db, run.id);
     const tools = org
@@ -569,5 +690,15 @@ export function orgToolsRouter({
   }
 
   router.use((_req, res) => refuse(res, 404, "not_found"));
-  return router;
+  return { router, settle };
 }
+
+/** 복구 정산 하나의 결과(`orgToolsRouter`의 `settle`). */
+export type IntentSettlement =
+  | { kind: "settled" }
+  | { kind: "run_finished" }
+  | { kind: "blocked"; reason: AgentRecoveryBlockReason };
+export type IntentSettler = (
+  intent: StoredIntent,
+  run: ActiveRun
+) => Promise<IntentSettlement>;

@@ -6,6 +6,8 @@ import {
   orgToolNames,
   orgTools,
   idempotencyKeyHeader,
+  callKeyRequiredHeader,
+  isOrgToolRead,
   type OrgToolName,
 } from "@babojubot/contracts";
 
@@ -133,6 +135,26 @@ export function mcpRoutes(
         return;
       }
       operationKey = key;
+    }
+    // 호출마다 키를 넣겠다고 한 연결은 키 없는 쓰기를 받지 않는다. 키를 넣는 장치가 빠졌으면 효과 없이 도구 오류로 드러난다.
+    if (
+      req.headers[callKeyRequiredHeader] === "required" &&
+      operationKey === undefined &&
+      !isOrgToolRead(name)
+    ) {
+      const value = {
+        error: {
+          code: "invalid_input",
+          message:
+            "This connection must send an idempotency key with every write tool call; the call was not performed.",
+        },
+      };
+      reply({
+        isError: true,
+        content: [{ type: "text", text: JSON.stringify(value) }],
+        structuredContent: value,
+      });
+      return;
     }
     const { status, value } = await dispatch(
       name,

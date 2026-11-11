@@ -7,7 +7,7 @@ import type {
   ToolRefusalReason,
 } from "@babojubot/contracts";
 import { checkToolCall, toolRefusedEvent } from "@babojubot/core";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
 import {
   insertEvent,
@@ -15,7 +15,8 @@ import {
   lockRunningRun,
   type Executor,
 } from "./rows.ts";
-import { organizations, runs, toolOperations } from "./schema.ts";
+import { lockIntent, settleIntent, type StoredIntent } from "./intents.ts";
+import { organizations, runs } from "./schema.ts";
 import type { AfterCommit } from "./stored.ts";
 
 // 조직 도구 호출의 공통 검사와 쓰기 틀. 모든 쓰기는 조직 행 → 실행 시도 행 순서로 잠그고(제어 명령의 취소 요청과 같은 순서),
@@ -77,28 +78,57 @@ export async function gateToolCall(
 
 /**
  * 도구 쓰기의 결과. 저장한 결과(`ok`)와 규칙 거부(`refused`, `tool.refused` Event를 남김)는 commit 뒤 할 일을 담는다.
- * `invalid`는 도구마다 정한 입력·기록 규칙의 거부이며 아무것도 남기지 않는다. 같은 호출 키에 다른 도구·입력이 오면 `idempotency_conflict`다.
+ * `invalid`는 도구마다 정한 입력·기록 규칙의 거부이며 아무것도 남기지 않는다. 같은 호출 키에 다른 도구·입력이 오면 `idempotency_conflict`,
+ * 사용자 제어가 취소해 수행하지 않기로 한 실행 의도를 다시 보내면 `intent_cancelled`다.
  */
 export type ToolWrite<T, P extends string> =
   | { kind: "ok"; value: T; after: AfterCommit }
   | { kind: "run_finished" }
   | { kind: "refused"; reason: ToolRefusalReason; after: AfterCommit }
-  | { kind: "invalid"; problem: P | "idempotency_conflict" };
+  | {
+      kind: "invalid";
+      problem: P | "idempotency_conflict" | "intent_cancelled";
+    };
 
-/** 같은 효과를 한 번만 남기는 호출의 키와 입력 digest. 키는 에이전트마다 따로다(contracts `idempotencyKeyHeader`). */
-export type ToolOperation = { key: string; digest: string };
+/** 이 쓰기가 정산할 실행 의도(intents.ts `acceptIntent`로 수락한 것). */
+export type ToolOperation = { intentId: string };
 
-/** 조직 도구 쓰기 호출 하나: 남길 공개 활동 요약과, 있으면 같은 호출 키. */
+/** 조직 도구 쓰기 호출 하나: 남길 공개 활동 요약과, 있으면 정산할 실행 의도. */
 export type ToolCall = { activity: PublicActivity; operation?: ToolOperation };
+
+/** 정산할 실행 의도가 그 실행 시도의 에이전트·도구와 맞지 않는다. 기록 모순이며 효과를 남기지 않는다. */
+export class IntentMismatchError extends Error {
+  constructor(intentId: string) {
+    super(`execution intent ${intentId} does not belong to this call`);
+  }
+}
+
+/** 이미 정산한 실행 의도의 최초 결과. 새 기록·Event·깨우기는 없다. 아직 수행하지 않았으면 `undefined`. */
+export function replayIntent<T, P extends string>(
+  intent: Pick<StoredIntent, "status" | "result" | "refusal">
+): ToolWrite<T, P> | undefined {
+  switch (intent.status) {
+    case "accepted":
+      return undefined;
+    case "completed":
+      return { kind: "ok", value: intent.result as T, after: { events: [] } };
+    case "refused":
+      return intent.refusal === "role" || intent.refusal === "stage"
+        ? { kind: "refused", reason: intent.refusal, after: { events: [] } }
+        : { kind: "invalid", problem: intent.refusal as P };
+    case "abandoned":
+      return { kind: "invalid", problem: "intent_cancelled" };
+  }
+}
 
 /**
  * 조직 도구 쓰기의 공통 틀: 조직 행과 실행 시도 행을 잠그고, 실행 시도가 끝나거나 취소를 요청받지 않았는지와 단계 규칙을 다시 확인한 뒤 쓴다.
  * 실행 시도 행을 먼저 잠그면 조직 행을 잠근 채 실행 시도에 취소를 요청하는 제어 명령과 교착한다.
  *
- * 같은 호출 키(`call.operation`)를 주면 그 에이전트가 같은 키로 이미 남긴 결과를 다시 쓰지 않고 돌려준다. 키 기록은 효과와 같은
- * transaction이므로 효과가 commit되었으면 키도 있고, 같은 키의 동시 호출은 조직 행 잠금으로 직렬화된다. 서버 재시작 뒤 같은 깨우기를
- * 다시 받은 실행 시도는 새 실행 시도·토큰이어도 같은 키면 앞 실행 시도의 결과를 받으며 새 기록·Event·깨우기는 없다.
- * Role·단계 규칙은 같은 키여도 먼저 검사한다.
+ * 실행 의도(`call.operation`)를 주면 그 의도를 잠그고 정산한다. 이미 정산했으면(같은 의도의 동시 호출이 먼저 끝남) 그 최초 결과를
+ * 돌려주고 아무것도 다시 남기지 않는다. 아직이면 지금 Role·단계 규칙을 검사해 거부는 효과 없는 확정 거절로, 효과는 최초 결과와
+ * 함께 정산한다. 효과와 정산은 같은 transaction이므로 효과가 commit되었으면 결과도 있다. 서버 재시작 뒤의 복구는 새 실행 시도가
+ * 같은 의도를 이 틀로 정산하므로, 지금 단계에서 막힌 쓰기는 거절로 정산된다. 실행 시도가 먼저 끝났으면 의도는 수락한 채로 남는다.
  */
 export async function toolWrite<T, P extends string>(
   db: Database,
@@ -124,36 +154,40 @@ export async function toolWrite<T, P extends string>(
     const org = (await lockOrganization(tx, owner.organizationId))!;
     const locked = await lockRun(tx, run);
     if (!locked) return { kind: "run_finished" };
-    const gate = await checkOrRefuse(tx, locked, org.stage, tool);
-    if (!gate.ok)
-      return { kind: "refused", reason: gate.reason, after: gate.after };
     if (operation) {
-      const [done] = await tx
-        .select()
-        .from(toolOperations)
-        .where(
-          and(
-            eq(toolOperations.agentId, locked.agentId),
-            eq(toolOperations.key, operation.key)
-          )
-        );
-      if (done) {
-        if (done.tool !== tool || done.requestDigest !== operation.digest)
-          return { kind: "invalid", problem: "idempotency_conflict" };
-        return { kind: "ok", value: done.result as T, after: { events: [] } };
-      }
+      const intent = await lockIntent(tx, operation.intentId);
+      if (
+        !intent ||
+        intent.organizationId !== locked.organizationId ||
+        intent.agentId !== locked.agentId ||
+        intent.tool !== tool
+      )
+        throw new IntentMismatchError(operation.intentId);
+      const replay = replayIntent<T, P>(intent);
+      if (replay) return replay;
+    }
+    const gate = await checkOrRefuse(tx, locked, org.stage, tool);
+    if (!gate.ok) {
+      if (operation)
+        await settleIntent(tx, operation.intentId, locked.id, {
+          status: "refused",
+          refusal: gate.reason,
+        });
+      return { kind: "refused", reason: gate.reason, after: gate.after };
     }
     const result = await write(tx, locked, org);
-    if (result.kind === "invalid") return result;
+    if (result.kind === "invalid") {
+      if (operation)
+        await settleIntent(tx, operation.intentId, locked.id, {
+          status: "refused",
+          refusal: result.problem,
+        });
+      return result;
+    }
     if (operation)
-      await tx.insert(toolOperations).values({
-        organizationId: locked.organizationId,
-        agentId: locked.agentId,
-        key: operation.key,
-        tool,
-        requestDigest: operation.digest,
+      await settleIntent(tx, operation.intentId, locked.id, {
+        status: "completed",
         result: result.value,
-        runId: locked.id,
       });
     const summary = await insertEvent(tx, {
       organizationId: locked.organizationId,

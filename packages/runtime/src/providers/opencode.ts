@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, lstat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -7,7 +7,12 @@ import type {
   SteerMessage,
   SteerOutcome,
 } from "@babojubot/contracts";
-import { subtractUsage, usageAmount } from "@babojubot/contracts";
+import {
+  callKeyRequiredHeader,
+  subtractUsage,
+  usageAmount,
+} from "@babojubot/contracts";
+import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import {
@@ -164,6 +169,13 @@ export function createOpenCodeProvider(options: {
   ) {
     const directory = await mkdtemp(path.join(productHome, "attempt-")),
       password = crypto.randomUUID();
+    // 조직 도구 호출마다 같은 호출 키를 넣는 plugin. 설정 폴더의 `plugins/`는 OpenCode가 스스로 읽는다.
+    await mkdir(path.join(directory, "plugins"), { mode: 0o700 });
+    await writeFile(
+      path.join(directory, "plugins", "babojubot-organization-keys.js"),
+      organizationKeysPluginSource,
+      { mode: 0o600 }
+    );
     const lifetime = new AbortController();
     let interrupt: (() => void) | undefined;
     const abort = () => {
@@ -401,7 +413,11 @@ export function createOpenCodeProvider(options: {
               organization: {
                 type: "remote",
                 url: new URL("/api/tools/mcp", input.access.toolsBaseUrl).href,
-                headers: { Authorization: `Bearer ${input.access.token}` },
+                headers: {
+                  Authorization: `Bearer ${input.access.token}`,
+                  // 쓰기 도구는 plugin이 넣는 호출 키 없이는 거부된다(키 없는 쓰기로 우회하지 않음).
+                  [callKeyRequiredHeader]: "required",
+                },
                 oauth: false,
                 codemode: false,
               },

@@ -86,6 +86,7 @@ export async function controlAgent(
         id: agents.id,
         organizationId: agents.organizationId,
         paused: agents.paused,
+        recoveryState: agents.recoveryState,
       })
       .from(agents)
       .where(
@@ -107,12 +108,19 @@ export async function controlAgent(
         .update(agents)
         .set({ paused: plan.paused })
         .where(eq(agents.id, agentId));
+    if (plan.recoveryState)
+      await tx
+        .update(agents)
+        .set({ recoveryState: plan.recoveryState })
+        .where(eq(agents.id, agentId));
     await requestCancellation(tx, plan.cancellation);
     const event = await insertEvent(tx, plan.event);
     return stored(await detail(), {
       events: [event],
       cancellation: plan.cancellation,
-      ...(command === "resume" ? { woken: [agentId] } : {}),
+      ...(command === "resume" || command === "recover"
+        ? { woken: [agentId] }
+        : {}),
     });
   });
 }

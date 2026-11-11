@@ -225,7 +225,8 @@ export function sessionTaskOf(reasons: readonly WakeReason[]): string | null {
     reasons.map((r) =>
       r.kind === "task_assigned" ||
       r.kind === "task_completed" ||
-      r.kind === "task_comment"
+      r.kind === "task_comment" ||
+      r.kind === "intent_recovery"
         ? r.taskId
         : null
     )
@@ -264,10 +265,14 @@ export const admitsRuns = (stage: LifecycleStage) =>
  * `중단하고 보내기` 메시지(지금 보내기로 바꾼 줄 세운 메시지 포함)가 기다리면 그 메시지 깨우기만 받는다.
  * 사용자가 지금 실행 시도를 끊고 먼저 넣은 말이므로 그 말만 먼저 다루게 하고, 먼저 줄 세운 메시지와
  * 다른 깨우기(승인 결정·작업 사건·heartbeat 등)는 대기한 채 그 실행 시도가 끝난 뒤의 실행 시도가 평소처럼 합쳐 받는다.
+ * 실행 의도 복구 깨우기(`intent_recovery`)는 어느 묶음에든 함께 들어간다. 모델이 지난 실행 시도의 쓰기 결과를 받기 전에는 진행하지 않는다.
  */
 export function bundleWakes(pending: readonly PendingWake[]): PendingWake[] {
   const interrupts = pending.filter((w) => w.delivery === "interrupt");
-  return interrupts.length ? interrupts : [...pending];
+  if (!interrupts.length) return [...pending];
+  return pending.filter(
+    (w) => w.delivery === "interrupt" || w.reason.kind === "intent_recovery"
+  );
 }
 
 /**

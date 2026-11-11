@@ -1,11 +1,13 @@
 import type {
   Agent,
+  AgentRecoveryBlockReason,
   AgentStatus,
   ApprovalDecision,
   ApprovalKind,
   ApprovalPolicyItem,
   ApprovalStatus,
   InboxItemKind,
+  IntentOutcome,
   LifecycleStage,
   ResearchMapOperation,
   ResearchNodeStatus,
@@ -93,6 +95,23 @@ export function Tip({
     </Tooltip.Root>
   );
 }
+
+/** 실행 의도 복구가 에이전트를 멈춘 이유. */
+export const recoveryBlockLabel: Record<AgentRecoveryBlockReason, string> = {
+  missing_source:
+    "서버가 멈추기 전에 받은 쓰기의 원본 자료를 찾을 수 없습니다.",
+  inconsistent_record: "서버가 멈추기 전에 받은 쓰기의 기록이 맞지 않습니다.",
+  retry_exhausted:
+    "서버가 멈추기 전에 받은 쓰기를 처리하다 여러 번 실패했습니다.",
+};
+
+/** 실행 의도의 정산 결과. */
+export const intentOutcomeLabel: Record<IntentOutcome["status"], string> = {
+  pending: "처리 전",
+  completed: "완료",
+  refused: "거절",
+  cancelled: "취소됨",
+};
 
 export const stageLabel: Record<LifecycleStage, string> = {
   goal_setting: "목표 설정",

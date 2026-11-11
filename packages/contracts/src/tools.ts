@@ -701,6 +701,11 @@ export function splitOrgToolInput(
  * 키와 결과는 지우지 않는다. 외부 효과(조직 도구 밖의 일)의 중복은 막지 않는다.
  */
 export const idempotencyKeyHeader = "idempotency-key";
+/**
+ * 조직 도구 MCP 연결에 붙는 header. 값이 `required`인 연결은 쓰기 도구를 같은 호출 키 없이 부를 수 없다(도구 오류 422 `invalid_input`).
+ * 호출마다 키를 넣는 OpenCode 연결이 붙인다. 키를 넣는 장치가 빠졌을 때 조용히 키 없는 쓰기가 되지 않게 한다.
+ */
+export const callKeyRequiredHeader = "babojubot-call-key";
 export const idempotencyKeySchema = z
   .string()
   .min(1)
@@ -724,7 +729,8 @@ export type ToolRefusalReason = z.infer<typeof toolRefusalReasonSchema>;
  * 422 `invalid_input`, 주 연결 순환(자기 자신이나 후손을 주 부모로)은 409 `primary_cycle`, 이미 다른 주 부모가 있는 노드의
  * 주 부모 지정은 409 `primary_parent_exists`, 이미 다른 노드에 연결된 작업의 연결은 409 `task_already_linked`,
  * 폐기된 노드의 편집(폐기 취소 제외)·폐기된 노드로의 새 연결은 409 `node_discarded`.
- * 같은 `Idempotency-Key`로 다른 도구·입력을 보내면 409 `idempotency_conflict`({@link idempotencyKeyHeader}).
+ * 같은 `Idempotency-Key`로 다른 도구·입력을 보내면 409 `idempotency_conflict`({@link idempotencyKeyHeader}),
+ * 사용자 제어가 취소해 수행하지 않기로 한 실행 의도를 같은 키로 다시 보내면 409 `intent_cancelled`.
  * 답장(`send_message`)의 대화가 같은 조직에 없으면 404 `not_found`, 여러 대화의 사용자 메시지를 받은 실행 시도가 대화를 고르지 않으면 422 `invalid_input`.
  * 초기 연구 승인 요청의 완료 기준: 조직에 완료 기준이 없는데 제안하지 않으면 422 `completion_criteria_required`,
  * 조직에 이미 완료 기준이 있는데 완료 기준을 함께 내면 409 `completion_criteria_set`.
@@ -746,6 +752,7 @@ export const orgToolErrorCodes = [
   "task_already_linked",
   "node_discarded",
   "idempotency_conflict",
+  "intent_cancelled",
   "completion_criteria_required",
   "completion_criteria_set",
   "unknown_provider",

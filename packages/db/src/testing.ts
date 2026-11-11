@@ -15,7 +15,13 @@ import {
 import { insertInstructionCopies } from "./harness.ts";
 import { conversationRow } from "./conversations.ts";
 import { agentRow, insertEvent, organizationRow } from "./rows.ts";
-import { agents, conversations, organizations } from "./schema.ts";
+import { and, asc, eq } from "drizzle-orm";
+import {
+  agents,
+  conversations,
+  organizations,
+  toolOperations,
+} from "./schema.ts";
 
 export type TestDatabase = DatabaseHandle;
 
@@ -160,4 +166,48 @@ export async function failRunEnd(
       "drop trigger fail_run_end on events; drop function fail_run_end();"
     );
   };
+}
+
+/**
+ * 실행 의도의 고정한 원본 자료를 바꾼다. 원본 자료가 사라진 기록(`null`)이나 되찾은 기록을 만드는 테스트 전용 조작이다.
+ */
+export async function setIntentSource(
+  db: Database,
+  intentId: string,
+  source: unknown
+) {
+  await db
+    .update(toolOperations)
+    .set({ source })
+    .where(eq(toolOperations.id, intentId));
+}
+
+/** 에이전트의 같은 호출 키 실행 의도의 정산 상태. */
+export async function intentStatusOf(
+  db: Database,
+  agentId: string,
+  key: string
+) {
+  const [row] = await db
+    .select({ status: toolOperations.status })
+    .from(toolOperations)
+    .where(
+      and(eq(toolOperations.agentId, agentId), eq(toolOperations.key, key))
+    );
+  return row?.status;
+}
+
+/** 에이전트의 실행 의도(만든 순서): 같은 호출 키·도구·고정한 입력·정산 상태. */
+export async function intentsOf(db: Database, agentId: string) {
+  return db
+    .select({
+      key: toolOperations.key,
+      tool: toolOperations.tool,
+      request: toolOperations.request,
+      status: toolOperations.status,
+      runId: toolOperations.runId,
+    })
+    .from(toolOperations)
+    .where(eq(toolOperations.agentId, agentId))
+    .orderBy(asc(toolOperations.createdAt), asc(toolOperations.id));
 }

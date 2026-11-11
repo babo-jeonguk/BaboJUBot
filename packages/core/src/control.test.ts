@@ -1,10 +1,41 @@
 import { describe, expect, it } from "vitest";
 import { planAgentControl, planInterrupt, steerTarget } from "./control.ts";
 
-const agent = (paused = false) => ({
+const agent = (
+  paused = false,
+  recoveryState: "blocked" | "retrying" | null = null
+) => ({
   id: "agent-1",
   organizationId: "org-1",
   paused,
+  recoveryState,
+});
+
+describe("planAgentControl recover", () => {
+  it("lets a blocked recovery try again without touching a pause", () => {
+    expect(
+      planAgentControl(agent(true, "blocked"), "researching", "recover", null)
+    ).toEqual({
+      paused: true,
+      recoveryState: "retrying",
+      cancellation: null,
+      event: {
+        organizationId: "org-1",
+        type: "agent.recovery_retried",
+        payload: { by: "owner", agentId: "agent-1" },
+      },
+    });
+  });
+
+  it("changes nothing unless the recovery is blocked, and refuses a finished organization", () => {
+    for (const state of [null, "retrying"] as const)
+      expect(
+        planAgentControl(agent(false, state), "researching", "recover", null)
+      ).toBe("unchanged");
+    expect(
+      planAgentControl(agent(false, "blocked"), "stopped", "recover", null)
+    ).toBe("organization_closed");
+  });
 });
 
 describe("planAgentControl interrupt", () => {

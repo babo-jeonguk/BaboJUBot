@@ -30,3 +30,4 @@ export * from "./dashboard.ts";
 export * from "./stored.ts";
 
 export * from "./compaction.ts";
+export * from "./intents.ts";

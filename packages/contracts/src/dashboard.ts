@@ -93,6 +93,7 @@ export const wakeKinds = [
   "result_changes_requested",
   "organization_created",
   "heartbeat",
+  "intent_recovery",
 ] as const satisfies readonly WakeKind[];
 // 깨우기 사유가 늘면 여기서 타입 오류가 나서 목록을 함께 고친다.
 const allWakeKinds: Exclude<WakeKind, (typeof wakeKinds)[number]> extends never

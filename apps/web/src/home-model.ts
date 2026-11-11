@@ -93,6 +93,7 @@ const wakeDoing: Record<WakeKind, string> = {
   result_changes_requested: "결과 고치는 중",
   organization_created: "연구 계획 세우는 중",
   heartbeat: "정기 점검 중",
+  intent_recovery: "멈춘 일 정리하는 중",
 };
 
 /** 캐릭터의 자세. `away`는 자리에 없음(라운지에 있거나 끝난 조직). */

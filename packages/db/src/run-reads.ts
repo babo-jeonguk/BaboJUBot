@@ -1,6 +1,7 @@
 import type { InstructionFile, WakeReason } from "@babojubot/contracts";
 import { decisionOfStatus, type PendingWake } from "@babojubot/core";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { selectRecoveredIntents } from "./intents.ts";
 import { type Executor } from "./rows.ts";
 import {
   agentToAgentMessages,
@@ -63,7 +64,10 @@ export const selectRunWakes = (db: Executor, runId: string) =>
     )
   );
 
-/** 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집, 결과 수정 요청)에서 읽는다. heartbeat는 가리키는 기록이 없다. */
+/**
+ * 깨우기와 그 사유. 사유는 깨우기가 가리키는 기록(메시지, 승인 결정, 작업, 작업 댓글, 에이전트 메시지, 연구 지도 편집, 결과 수정 요청,
+ * 서버 재시작으로 끝난 실행 시도의 실행 의도)에서 읽는다. heartbeat는 가리키는 기록이 없다. 실행 의도의 정산 상태는 읽는 때의 것이다.
+ */
 export async function selectWakes(
   db: Executor,
   where: ReturnType<typeof and> | ReturnType<typeof inArray>
@@ -124,6 +128,14 @@ export async function selectWakes(
     )
     .where(where)
     .orderBy(asc(wakes.seq));
+  const recoveries = await selectRecoveredIntents(
+    db,
+    rows.flatMap(({ wake }) =>
+      wake.kind === "intent_recovery" && wake.interruptedRunId
+        ? [wake.interruptedRunId]
+        : []
+    )
+  );
   return rows.map(
     ({
       wake,
@@ -221,6 +233,16 @@ export async function selectWakes(
           case "organization_created":
           case "heartbeat":
             return { kind: wake.kind, wakeId };
+          case "intent_recovery": {
+            const recovered = recoveries.get(wake.interruptedRunId!);
+            return {
+              kind: wake.kind,
+              wakeId,
+              interruptedRunId: wake.interruptedRunId!,
+              taskId: recovered?.taskId ?? null,
+              intents: recovered?.intents ?? [],
+            };
+          }
         }
       })();
       return {
