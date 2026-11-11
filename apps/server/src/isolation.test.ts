@@ -52,7 +52,7 @@ const verified = {
 
 describe("IsolationGate", () => {
   // #148: 로그인 원본을 컨테이너에 넣지 않는다. 중계가 없거나 검증되지 않았거나 실패 상태면 Docker 확인 전에 막고 이 컴퓨터로도 돌리지 않는다.
-  it("refuses an isolated run whose connection has no verified credential relay, or whose relay failed until the login can be read again", async () => {
+  it("refuses an isolated run whose connection has no verified credential relay, or whose relay failed until a different login can be read", async () => {
     const asked: string[] = [];
     const docker: DockerEnvironment = {
       ...unresponsive,
@@ -67,6 +67,8 @@ describe("IsolationGate", () => {
       protectedPorts: () => [5432],
       readIsolated: async () => true,
       hostUrl: () => "http://127.0.0.1:1",
+      // 복구 뒤에는 안전 확인으로 간다. 이 시험은 그 결과를 보지 않으므로 짧게 끝낸다.
+      timeoutMs: 50,
     });
     for (const target of [
       { isolatable: true },
