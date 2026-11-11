@@ -341,6 +341,20 @@ function containerLaunch(
   const folders = [...mounts];
   const within = (target: string) =>
     folders.some((mount) => inside(mount.path, target));
+  // 작업 폴더는 넣은 폴더 안이어야 한다. 프로그램이 실제 경로(realpath)로 연 작업 폴더면 같은 확인한 폴더를 그 경로에도 넣는다.
+  const cwd = path.resolve(options.cwd);
+  if (!within(cwd)) {
+    const owner = folders.find((mount) => inside(mount.source, cwd));
+    if (!owner) throw new ContainerRefusal("cwd_outside");
+    const alias = {
+      source: owner.source,
+      path: owner.source,
+      writable: owner.writable,
+    };
+    mounts.push(alias);
+    // 실행 시도 전용 파일의 자리(작업 폴더 안)도 이 경로로 올 수 있다.
+    folders.push(alias);
+  }
   for (const file of options.files ?? []) {
     const directory = attemptFolder(path.dirname(file.source));
     const source = path.join(directory, path.basename(file.source));
@@ -356,17 +370,6 @@ function containerLaunch(
     if (!within(path.resolve(file.target)))
       throw new ContainerRefusal("cwd_outside");
     mounts.push({ source, path: path.resolve(file.target), writable: false });
-  }
-  // 작업 폴더는 넣은 폴더 안이어야 한다. 프로그램이 실제 경로(realpath)로 연 작업 폴더면 같은 확인한 폴더를 그 경로에도 넣는다.
-  const cwd = path.resolve(options.cwd);
-  if (!within(cwd)) {
-    const owner = folders.find((mount) => inside(mount.source, cwd));
-    if (!owner) throw new ContainerRefusal("cwd_outside");
-    mounts.push({
-      source: owner.source,
-      path: owner.source,
-      writable: owner.writable,
-    });
   }
   return {
     settings,

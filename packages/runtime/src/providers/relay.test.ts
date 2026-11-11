@@ -109,7 +109,8 @@ const closed = (socket: net.Socket) =>
     socket.once("close", () => resolve());
   });
 
-describe("isolated run relay", () => {
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
+describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("tunnels an allowed destination and refuses others before any connection reaches them", async () => {
     const target = await fixture("echo");
     const { relays, refused } = hub();

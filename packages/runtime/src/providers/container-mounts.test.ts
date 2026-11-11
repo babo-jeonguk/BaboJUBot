@@ -129,7 +129,8 @@ async function attemptDir() {
   return dir;
 }
 
-describe("container mount grants", () => {
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
+describe.skipIf(process.platform === "win32")("container mount grants", () => {
   it("mounts the organization folder and own folder writable, peers read-only and the product folder, nothing else", () => {
     const { mounts } = launch({ shared: [login] });
     const base = path.join(data, "organizations", org);
@@ -256,36 +257,73 @@ describe("container mount grants", () => {
   });
 });
 
-describe("session maintenance (Claude pre-compaction) mounts", () => {
-  const maintain = (cwd: string) =>
-    placeAttempt(settings, home, {
-      execution: "container",
-      organizationId: org,
-    })!.container!({ cwd, program: "claude" });
+describe.skipIf(process.platform === "win32")(
+  "a data folder behind a link",
+  () => {
+    it("accepts a working folder opened by its real path and an attempt file placed there (Antigravity)", async () => {
+      const alias = path.join(root, "alias");
+      await symlink(data, alias);
+      const attempt = await attemptDir();
+      await writeFile(path.join(attempt, "mcp_config.json"), "{}");
+      const real = path.join(data, "organizations", org, "shared");
+      const { mounts } = launch({
+        workspace: workspace(org, alias),
+        home: path.join(alias, "providers", "claude", "organizations", org),
+        cwd: real,
+        files: [
+          {
+            source: path.join(attempt, "mcp_config.json"),
+            target: path.join(real, ".agents", "mcp_config.json"),
+          },
+        ],
+      });
+      expect(mounts).toContainEqual({
+        source: real,
+        path: real,
+        writable: true,
+      });
+      expect(mounts).toContainEqual({
+        source: path.join(attempt, "mcp_config.json"),
+        path: path.join(real, ".agents", "mcp_config.json"),
+        writable: false,
+      });
+    });
+  }
+);
 
-  it("mounts the product folder and the organization's own folder read-only as the working folder", () => {
-    const shared = path.join(data, "organizations", org, "shared");
-    expect(
-      maintain(shared).mounts.map(({ path: target, writable }) => ({
-        target,
-        writable,
-      }))
-    ).toEqual([
-      { target: home, writable: true },
-      { target: shared, writable: false },
-    ]);
-  });
+describe.skipIf(process.platform === "win32")(
+  "session maintenance (Claude pre-compaction) mounts",
+  () => {
+    const maintain = (cwd: string) =>
+      placeAttempt(settings, home, {
+        execution: "container",
+        organizationId: org,
+      })!.container!({ cwd, program: "claude" });
 
-  it("refuses a stored working folder of another organization", () => {
-    expect(
-      refusal(() =>
-        maintain(path.join(data, "organizations", otherOrg, "shared"))
-      )
-    ).toBe("mount_outside");
-  });
-});
+    it("mounts the product folder and the organization's own folder read-only as the working folder", () => {
+      const shared = path.join(data, "organizations", org, "shared");
+      expect(
+        maintain(shared).mounts.map(({ path: target, writable }) => ({
+          target,
+          writable,
+        }))
+      ).toEqual([
+        { target: home, writable: true },
+        { target: shared, writable: false },
+      ]);
+    });
 
-describe("container command", () => {
+    it("refuses a stored working folder of another organization", () => {
+      expect(
+        refusal(() =>
+          maintain(path.join(data, "organizations", otherOrg, "shared"))
+        )
+      ).toBe("mount_outside");
+    });
+  }
+);
+
+describe.skipIf(process.platform === "win32")("container command", () => {
   const args = (env: NodeJS.ProcessEnv = {}) =>
     dockerRunArgs(launch(), {
       name: "babojubot-x",

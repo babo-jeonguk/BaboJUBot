@@ -38,7 +38,10 @@ const image = "babojubot-runner-test";
 const fixture = (name: string) => path.resolve("test-fixtures", name);
 
 async function setup(programs: Record<string, string[]>) {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-container-"));
+  // 임시 폴더가 링크 뒤에 있으면(macOS) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
+  const root = await realpath(
+    await mkdtemp(path.join(tmpdir(), "babojubot-container-"))
+  );
   roots.push(root);
   const state = path.join(root, "docker-state");
   await mkdir(state);
@@ -116,7 +119,8 @@ const control = (signal = new AbortController().signal) => ({
   emit: async () => {},
 });
 
-describe("an isolated attempt", () => {
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 실행 시도 중계의 파일 소켓은 Linux·macOS에서 본다.
+describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
   it("runs the provider in one container with only the allowed folders, no privileges and no GitHub login, then removes it", async () => {
     const env = await setup({
       claude: [

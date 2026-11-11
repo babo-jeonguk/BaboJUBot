@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readlink,
+  realpath,
   rm,
   stat,
   symlink,
@@ -50,7 +51,10 @@ const providers: [string, Create, string, string][] = [
 ];
 
 async function setup() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-org-folders-"));
+  // 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
+  const root = await realpath(
+    await mkdtemp(path.join(tmpdir(), "babojubot-org-folders-"))
+  );
   roots.push(root);
   const dump = path.join(root, "env.jsonl");
   // 받은 환경을 한 줄로 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 어느 폴더로 띄웠는지는 남는다.
@@ -128,6 +132,9 @@ const inside = (folder: string, file: string | undefined) => {
   );
 };
 
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 중계의 파일 소켓·폴더 자리 확인은 Linux·macOS에서 본다.
+const noIsolation = process.platform === "win32";
+
 describe.each(providers)("%s", (_name, create, id, configVariable) => {
   it("runs each organization with its own product folder of the connection on this machine", async () => {
     const env = await setup();
@@ -151,42 +158,45 @@ describe.each(providers)("%s", (_name, create, id, configVariable) => {
     await expect(stat(path.join(homeA, "processes"))).rejects.toThrow();
   });
 
-  it("puts only that organization's product folder into its container, never the connection folder", async () => {
-    const env = await setup();
-    const provider = create({
-      dataDir: env.root,
-      command: env.dumper,
-      container: env.container,
-    });
-    const a = crypto.randomUUID(),
-      b = crypto.randomUUID();
-    await provider.adapter.execute(
-      await env.requestFor(a, "container"),
-      control()
-    );
-    await provider.adapter.execute(
-      await env.requestFor(b, "container"),
-      control()
-    );
-    const connection = path.join(env.root, "providers", id);
-    const [mountsA, mountsB] = await env.runMounts();
-    const product = (mounts: string[] | undefined) =>
-      (mounts ?? [])
-        .map((mount) => /source=([^,]+)/.exec(mount)![1]!)
-        .filter((source) => inside(connection, source));
-    const homeA = path.join(connection, "organizations", a);
-    const homeB = path.join(connection, "organizations", b);
-    // Codex·Antigravity는 연결의 로그인 하나를 같이 쓰므로 로그인 전용 폴더도 넣는다. 그 밖의 연결 폴더는 넣지 않는다.
-    const login =
-      id === "codex" || id === "antigravity"
-        ? [path.join(connection, "login")]
-        : [];
-    expect(product(mountsA).sort()).toEqual([homeA, ...login].sort());
-    expect(product(mountsB).sort()).toEqual([homeB, ...login].sort());
-    expect(mountsA).toContain(`type=bind,source=${homeA},target=${homeA}`);
-    const [first] = await env.dumps();
-    expect(first?.HOME).toBe(homeA);
-  });
+  it.skipIf(noIsolation)(
+    "puts only that organization's product folder into its container, never the connection folder",
+    async () => {
+      const env = await setup();
+      const provider = create({
+        dataDir: env.root,
+        command: env.dumper,
+        container: env.container,
+      });
+      const a = crypto.randomUUID(),
+        b = crypto.randomUUID();
+      await provider.adapter.execute(
+        await env.requestFor(a, "container"),
+        control()
+      );
+      await provider.adapter.execute(
+        await env.requestFor(b, "container"),
+        control()
+      );
+      const connection = path.join(env.root, "providers", id);
+      const [mountsA, mountsB] = await env.runMounts();
+      const product = (mounts: string[] | undefined) =>
+        (mounts ?? [])
+          .map((mount) => /source=([^,]+)/.exec(mount)![1]!)
+          .filter((source) => inside(connection, source));
+      const homeA = path.join(connection, "organizations", a);
+      const homeB = path.join(connection, "organizations", b);
+      // Codex·Antigravity는 연결의 로그인 하나를 같이 쓰므로 로그인 전용 폴더도 넣는다. 그 밖의 연결 폴더는 넣지 않는다.
+      const login =
+        id === "codex" || id === "antigravity"
+          ? [path.join(connection, "login")]
+          : [];
+      expect(product(mountsA).sort()).toEqual([homeA, ...login].sort());
+      expect(product(mountsB).sort()).toEqual([homeB, ...login].sort());
+      expect(mountsA).toContain(`type=bind,source=${homeA},target=${homeA}`);
+      const [first] = await env.dumps();
+      expect(first?.HOME).toBe(homeA);
+    }
+  );
 
   it("keeps readiness on the connection folder that no container sees", async () => {
     const env = await setup();

@@ -260,29 +260,31 @@ export function createRelayHub(): RelayHub {
         const tunnel: Tunnel = { host, port, sockets: [req.socket] };
         relay.tunnels.add(tunnel);
         const done = () => relay.tunnels.delete(tunnel);
-        const outgoing = http.request(
-          {
-            host: decision.addresses[0],
-            port,
-            method: req.method,
-            path: `${url.pathname}${url.search}`,
-            headers,
-            setHost: false,
-            agent: false,
-          },
-          (response) => {
-            res.writeHead(response.statusCode ?? 502, response.headers);
-            response.pipe(res);
-            response.on("end", done);
-          }
-        );
-        outgoing.on("socket", (socket) => tunnel.sockets.push(socket));
-        outgoing.on("error", () => {
+        const failed = () => {
           done();
           if (!res.headersSent) res.writeHead(502, { connection: "close" });
           res.end();
-        });
-        req.pipe(outgoing);
+        };
+        // CONNECT와 같이 확인한 주소에 차례로 붙는다(이름을 다시 풀지 않는다).
+        dial(decision.addresses, port).then((socket) => {
+          tunnel.sockets.push(socket);
+          const outgoing = http.request(
+            {
+              method: req.method,
+              path: `${url.pathname}${url.search}`,
+              headers,
+              setHost: false,
+              createConnection: () => socket,
+            },
+            (response) => {
+              res.writeHead(response.statusCode ?? 502, response.headers);
+              response.pipe(res);
+              response.on("end", done);
+            }
+          );
+          outgoing.on("error", failed);
+          req.pipe(outgoing);
+        }, failed);
       });
     });
     server.on("upgrade", (_req, socket: net.Socket) =>
