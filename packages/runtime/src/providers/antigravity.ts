@@ -42,6 +42,7 @@ import {
 } from "./antigravity-config.ts";
 import type { ContainerSettings } from "./container.ts";
 import { placeAttempt, type ContainerLaunch } from "./container.ts";
+import { credentialResidue, residueRefusal } from "./relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
 const workspaces = new Map<string, Promise<void>>();
@@ -85,7 +86,7 @@ export function createAntigravityProvider(options: {
   const folders = connectionFolders(options.dataDir, connectionId);
   const home = folders.connection,
     command = options.command ?? commandFor(connectionId, "agy");
-  /** 연결의 로그인 원본. 컨테이너에는 이 폴더만 함께 쓰기로 넣는다. */
+  /** 연결의 로그인 원본. 컨테이너에는 넣지 않는다(#148). */
   const loginFolder = path.join(home, "login");
   const original = path.join(loginFolder, "antigravity-oauth-token");
   // 키링이 없는 컴퓨터·컨테이너에서 agy는 HOME의 이 파일로 로그인하고, 갱신하면 링크를 따라 원본 자리에 덮어쓴다(1.5.3 실측, #126).
@@ -180,10 +181,18 @@ export function createAntigravityProvider(options: {
           request.identity.organizationId
         );
         await prepare();
-        const linked = await shareLogin(tokenAt(organization));
-        // 링크 없이 연결 폴더를 컨테이너에 넣지 않는다.
-        if (!linked && request.execution === "container") return failure();
-        const productHome = linked ? organization : home;
+        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이면 시작하지 않는다.
+        // Antigravity의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
+        const isolated = request.execution === "container";
+        if (
+          isolated &&
+          (await credentialResidue(organization, [
+            path.relative(organization, tokenAt(organization)),
+          ]))
+        )
+          return failure(residueRefusal);
+        const linked = !isolated && (await shareLogin(tokenAt(organization)));
+        const productHome = linked || isolated ? organization : home;
         const placement = placeAttempt(options.container, productHome, request);
         if (!placement) return failure();
         // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
@@ -235,7 +244,6 @@ export function createAntigravityProvider(options: {
                 target: path.join(cwd, ".agents", "mcp_config.json"),
               },
             ],
-            shared: linked ? [loginFolder] : [],
           });
         }
         const published = await publishConfig(

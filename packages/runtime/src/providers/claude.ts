@@ -35,6 +35,14 @@ import {
 import type { ContainerSettings } from "./container.ts";
 import { placeAttempt } from "./container.ts";
 import { connectionFolders } from "./folders.ts";
+import {
+  createCredentialRelay,
+  credentialResidue,
+  type CredentialRelay,
+  type RelayGrant,
+  type RelayProfile,
+  residueRefusal,
+} from "./relay.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
@@ -42,7 +50,31 @@ export type ClaudeOptions = {
   id?: string;
   label?: string;
   container?: ContainerSettings;
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 미검증)을 쓴다. */
+  relay?: { upstream?: string; verified?: boolean };
 };
+/**
+ * Claude의 인증 중계(#148). 공식 LLM gateway 경로(`ANTHROPIC_BASE_URL` + claude.ai 로그인)를 쓴다. 프로그램에는 실행 시도의 권한을
+ * `CLAUDE_CODE_OAUTH_TOKEN`으로 주고, 중계가 그것을 연결의 setup-token(access token)으로 바꿔 Messages API에만 보낸다.
+ * setup-token에는 refresh token이 없으므로 중계가 갱신하지 않는다. 기존 구독으로 검증하기 전에는 `verified`가 거짓이다.
+ */
+export const claudeRelayProfile: RelayProfile = {
+  upstream: "https://api.anthropic.com",
+  routes: [
+    { method: "POST", path: "/v1/messages" },
+    { method: "POST", path: "/v1/messages/count_tokens" },
+  ],
+  authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
+};
+/** 컨테이너의 프로그램이 원본 인증으로 쓸 수 있는 변수. 격리 실행에서는 넘기지 않고 중계 값만 넣는다. */
+const credentialVariables = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+];
+/** 조직 제품 폴더에 남으면 격리 실행을 시작하지 않는 로그인 흔적(프로그램 안에서 로그인한 기록). */
+const credentialFiles = ["config/.credentials.json"];
 const launchSchema = z.object({
   instructions: z.string(),
   cwd: z.string(),
@@ -70,6 +102,7 @@ type ClaudeConnection = {
   environment: (home: string) => NodeJS.ProcessEnv;
   active: Map<string, (message: SteerMessage) => SteerOutcome>;
   container?: ContainerSettings;
+  relay: CredentialRelay;
 };
 const failed = (): RunResult => ({
   stopReason: "failed",
@@ -116,6 +149,26 @@ async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
   }
   return env;
 }
+const relayFailure =
+  "인증 중계가 연결의 로그인을 읽지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
+/** 격리 실행의 프로그램 환경: 원본 인증 변수를 빼고 중계 주소와 이 실행 시도의 권한만 넣는다. */
+function relayEnvironment(
+  env: NodeJS.ProcessEnv,
+  toolsBaseUrl: string,
+  connectionId: string,
+  grant: RelayGrant
+): NodeJS.ProcessEnv {
+  const result = { ...env };
+  for (const name of credentialVariables) delete result[name];
+  return {
+    ...result,
+    ANTHROPIC_BASE_URL: new URL(
+      `/api/relay/${encodeURIComponent(connectionId)}`,
+      toolsBaseUrl
+    ).href,
+    CLAUDE_CODE_OAUTH_TOKEN: grant.token,
+  };
+}
 export function createClaudeProvider(
   options: ClaudeOptions
 ): ProviderConnection {
@@ -139,12 +192,22 @@ export function createClaudeProvider(
     environment,
     active,
     container: options.container,
+    relay: createCredentialRelay({
+      profile: {
+        ...claudeRelayProfile,
+        upstream: options.relay?.upstream ?? claudeRelayProfile.upstream,
+      },
+      verified: options.relay?.verified ?? false,
+      credential: () =>
+        readFile(path.join(connectionHome, "setup-token"), "utf8"),
+    }),
   };
   return {
     id,
     label: options.label ?? "Claude Code",
     openModels: true,
     isolatable: true,
+    credentialRelay: connection.relay,
     login: {
       command,
       args: ["setup-token"],
@@ -261,6 +324,23 @@ async function executeClaude(
   const placement = placeAttempt(connection.container, home, request);
   if (!placement) return failed();
   await mkdir(home, { recursive: true, mode: 0o700 });
+  // 격리 실행에는 연결의 로그인을 넣지 않는다. 조직 폴더에 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.
+  if (placement.container && (await credentialResidue(home, credentialFiles)))
+    return {
+      ...failed(),
+      error: residueRefusal,
+    };
+  let grant: RelayGrant | undefined;
+  if (placement.container)
+    try {
+      grant = connection.relay.grant({
+        organizationId: request.organizationId,
+        runId: request.runId ?? crypto.randomUUID(),
+        signal: control.signal,
+      });
+    } catch {
+      return { ...failed(), error: relayFailure };
+    }
   // 컨테이너에서는 조직의 제품 폴더가 그 조직의 같은 연결 에이전트 컨테이너에 모두 들어가므로, 토큰이 든 이 실행 시도의 파일은 그 밖에 두고 이 컨테이너에만 읽기로 넣는다.
   const temp = placement.container
     ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
@@ -349,7 +429,14 @@ async function executeClaude(
       command,
       args,
       cwd: request.cwd,
-      env: await withLogin(folders.connection, env),
+      env: grant
+        ? relayEnvironment(
+            env,
+            request.access.toolsBaseUrl,
+            connection.id,
+            grant
+          )
+        : await withLogin(folders.connection, env),
       container: launch,
       onFrame: async (raw) => {
         if (!raw || typeof raw !== "object") return;
@@ -479,6 +566,8 @@ async function executeClaude(
       process.end();
     };
     control.signal.addEventListener("abort", cancel, { once: true });
+    // 중계가 실패해 권한을 거뒀으면 프로그램을 멈춘다. 프로그램이 다시 시도해도 거둔 권한으로는 상류에 닿지 못한다.
+    grant?.failed.addEventListener("abort", cancel, { once: true });
     /** 취소됐거나 result 프레임 없이 끝났으면 Claude가 종료 때 저장한 비용을 읽는다. 새로 저장한 기록이 없으면 null이다. */
     const savedUsage = async () => {
       if (typeof sessionId !== "string") return null;
@@ -515,6 +604,8 @@ async function executeClaude(
           error: null,
           usage,
         };
+      if (grant?.failed.aborted)
+        return { ...failed(), error: relayFailure, usage, nextSession: null };
       // Claude가 마지막으로 알린 살아 있는 백그라운드 일이 남은 채 프로그램이 끝났다. 앞 턴의 결과는 중간 결과이므로 성공으로 남기지 않고 세션도 저장하지 않지만, 사용량(보고된 결과 또는 결과 프레임이 없을 때 Claude가 저장한 비용)과 로그인 판정은 남긴다.
       if (background > 0)
         return {
@@ -560,8 +651,10 @@ async function executeClaude(
     } finally {
       clearTimeout(startup);
       control.signal.removeEventListener("abort", cancel);
+      grant?.failed.removeEventListener("abort", cancel);
     }
   } finally {
+    grant?.revoke();
     await rm(temp, { recursive: true, force: true });
   }
 }

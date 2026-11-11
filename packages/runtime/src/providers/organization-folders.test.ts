@@ -176,13 +176,9 @@ describe.each(providers)("%s", (_name, create, id, configVariable) => {
         .filter((source) => inside(connection, source));
     const homeA = path.join(connection, "organizations", a);
     const homeB = path.join(connection, "organizations", b);
-    // Codex·Antigravity는 연결의 로그인 하나를 같이 쓰므로 로그인 전용 폴더도 넣는다. 그 밖의 연결 폴더는 넣지 않는다.
-    const login =
-      id === "codex" || id === "antigravity"
-        ? [path.join(connection, "login")]
-        : [];
-    expect(product(mountsA).sort()).toEqual([homeA, ...login].sort());
-    expect(product(mountsB).sort()).toEqual([homeB, ...login].sort());
+    // 연결의 로그인 원본 폴더는 어느 프로바이더도 넣지 않는다(#148). 모델 인증은 컨테이너 밖의 인증 중계가 붙인다.
+    expect(product(mountsA)).toEqual([homeA]);
+    expect(product(mountsB)).toEqual([homeB]);
     expect(mountsA).toContain(`type=bind,source=${homeA},target=${homeA}`);
     const [first] = await env.dumps();
     expect(first?.HOME).toBe(homeA);

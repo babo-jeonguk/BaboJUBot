@@ -25,6 +25,7 @@ import {
 } from "./process.ts";
 import type { ContainerLaunch, ContainerSettings } from "./container.ts";
 import { placeAttempt } from "./container.ts";
+import { residueRefusal } from "./relay.ts";
 import { connectionFolders } from "./folders.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -426,7 +427,12 @@ export function createOpenCodeProvider(options: {
         };
         service = await server(control.signal, config, container, organization);
         const api = service;
-        await copyLogin(api, control.signal);
+        // 격리 실행에는 연결의 로그인을 옮기지 않는다(#148). 조직 폴더에 옮겨 둔 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.
+        // OpenCode의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
+        if (container) {
+          if (entries(await api.json("/api/credential")).length)
+            return { ...failure(), error: residueRefusal };
+        } else await copyLogin(api, control.signal);
         const available = models(await api.json("/api/model"));
         // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
         const selected = input.model

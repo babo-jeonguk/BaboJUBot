@@ -79,6 +79,8 @@ export type ProviderReadinessStatus = z.infer<
  * - `not_checked`: 아직 확인하지 않았다. `check_failed`·`check_timeout`: 확인이 실패하거나 시간 안에 끝나지 않았다.
  * - `isolation_unsafe`: 격리를 켰는데 시험 컨테이너가 사용자 API나 DB에 닿았다.
  * - `isolation_unavailable`: 격리를 켰는데 Docker·이미지·네트워크·조직 도구 연결을 확인하지 못했다.
+ * - `credential_relay_unverified`: 격리를 켰는데 이 연결의 인증 중계가 없거나 기존 구독으로 검증되지 않았다(#148). 로그인 원본을 컨테이너에 넣지 않으므로 실행하지 않는다.
+ * - `credential_relay_failed`: 격리를 켰는데 인증 중계가 연결의 로그인을 읽지 못했다. 다시 확인해 로그인이 읽히면 풀린다.
  */
 export const providerReadinessReasons = [
   "program_missing",
@@ -90,6 +92,8 @@ export const providerReadinessReasons = [
   "check_timeout",
   "isolation_unavailable",
   "isolation_unsafe",
+  "credential_relay_unverified",
+  "credential_relay_failed",
 ] as const;
 export const providerReadinessReasonSchema = z.enum(providerReadinessReasons);
 export type ProviderReadinessReason = z.infer<

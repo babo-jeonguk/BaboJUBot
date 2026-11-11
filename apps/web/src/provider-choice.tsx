@@ -84,6 +84,8 @@ export const readinessReasonLabel: Record<ProviderReadinessReason, string> = {
   check_timeout: "확인 시간 초과",
   isolation_unavailable: "격리 환경 없음",
   isolation_unsafe: "격리 경계 열림",
+  credential_relay_unverified: "격리 실행 미지원",
+  credential_relay_failed: "인증 중계 실패",
 };
 
 /**
