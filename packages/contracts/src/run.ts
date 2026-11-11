@@ -51,6 +51,39 @@ export const agentStatuses = ["idle", "running"] as const;
 export const agentStatusSchema = z.enum(agentStatuses);
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
+/**
+ * 실행 의도(GLOSSARY)의 정산 상태. `pending`은 수락해 입력·원본 자료를 고정했지만 아직 효과도 확정 거절도 없는 의도다.
+ * `completed`는 효과와 최초 결과를 함께 저장했고, `refused`는 효과 없이 확정 거절했으며(`reason`은 도구 거부 코드),
+ * `cancelled`는 사용자 제어가 그 실행 시도를 취소해 수행하지 않기로 한 의도다.
+ */
+export const intentOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("pending") }),
+  z.object({ status: z.literal("completed"), result: z.unknown() }),
+  z.object({ status: z.literal("refused"), reason: z.string() }),
+  z.object({ status: z.literal("cancelled") }),
+]);
+export type IntentOutcome = z.infer<typeof intentOutcomeSchema>;
+
+/** 실행 의도가 수락 때 고정한 입력: 경로 변수 `params`와 본문 `body`. */
+export const intentRequestSchema = z.object({
+  params: z.record(z.string(), z.unknown()),
+  body: z.unknown(),
+});
+export type IntentRequest = z.infer<typeof intentRequestSchema>;
+
+/**
+ * 서버 재시작으로 끝난 실행 시도가 수락한 실행 의도 하나와 그 정산 결과. `tool`은 조직 도구 이름(contracts `orgToolNames`),
+ * `request`는 수락 때 고정한 입력이고, 원래 입력을 알 수 없으면(이 기능 전 판이 남긴 기록이거나 저장된 표기를 읽을 수 없음)
+ * `null`이다. 빈 입력으로 바꾸어 보이지 않는다.
+ */
+export const recoveredIntentSchema = z.object({
+  intentId: z.uuid(),
+  tool: z.string(),
+  request: intentRequestSchema.nullable(),
+  outcome: intentOutcomeSchema,
+});
+export type RecoveredIntent = z.infer<typeof recoveredIntentSchema>;
+
 /** 실행 시도 하나로 묶인 깨우기 하나. 묶음의 순서는 깨우기가 생긴 순서다. */
 export const wakeReasonSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -138,6 +171,18 @@ export const wakeReasonSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("organization_created"), wakeId: z.uuid() }),
   /** 켜 둔 heartbeat의 간격이 지났다. 가리키는 기록은 없다. */
   z.object({ kind: z.literal("heartbeat"), wakeId: z.uuid() }),
+  /**
+   * 서버 재시작으로 끝난 실행 시도(`interruptedRunId`)가 수락한 실행 의도와 그 정산 결과. 모델은 그 실행 시도의 세션을 잃었으므로
+   * 이 결과로 이미 한 쓰기를 알고 다시 하지 않는다. 제품은 이 깨우기를 받은 실행 시도에서 모델을 부르기 전에 남은 의도를 정산하므로
+   * 프로바이더가 받는 결과에는 `pending`이 없다. `taskId`는 끝난 실행 시도의 세션 자리(작업 세션이면 그 작업)다.
+   */
+  z.object({
+    kind: z.literal("intent_recovery"),
+    wakeId: z.uuid(),
+    interruptedRunId: z.uuid(),
+    taskId: z.uuid().nullable(),
+    intents: z.array(recoveredIntentSchema),
+  }),
 ]);
 export type WakeReason = z.infer<typeof wakeReasonSchema>;
 export type WakeKind = WakeReason["kind"];
@@ -418,6 +463,32 @@ export const runSummarySchema = z.object({
 export type RunSummary = z.infer<typeof runSummarySchema>;
 export const runSummaryListSchema = z.array(runSummarySchema);
 
+/**
+ * 실행 의도 복구가 에이전트의 모델 진행을 막은 이유. 원본 자료 부족(`missing_source`), 기록 모순(`inconsistent_record`),
+ * 일시적 오류의 자동 재시도 소진(`retry_exhausted`).
+ */
+export const agentRecoveryBlockReasons = [
+  "missing_source",
+  "inconsistent_record",
+  "retry_exhausted",
+] as const;
+export const agentRecoveryBlockReasonSchema = z.enum(agentRecoveryBlockReasons);
+export type AgentRecoveryBlockReason = z.infer<
+  typeof agentRecoveryBlockReasonSchema
+>;
+
+/**
+ * 에이전트의 실행 의도 복구 상태. `blocked`면 admission이 그 에이전트의 실행 시도를 시작하지 않고, 사용자가 복구 재시도를 고르면
+ * `retrying`이 되어 다음 실행 시도가 모델을 부르기 전에 정산을 다시 한다. 정산에 성공하면 상태가 없어지고 실패하면 다시 `blocked`다.
+ * 일시정지·조직 단계 같은 다른 admission 조건은 따로 적용한다.
+ */
+export const agentRecoverySchema = z.object({
+  state: z.enum(["blocked", "retrying"]),
+  reason: agentRecoveryBlockReasonSchema,
+  since: z.iso.datetime({ offset: true }),
+});
+export type AgentRecovery = z.infer<typeof agentRecoverySchema>;
+
 export const agentDetailSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
@@ -437,5 +508,7 @@ export const agentDetailSchema = z.object({
   recentRuns: z.array(runSummarySchema),
   /** 이 에이전트에게 줄 세운 사용자 메시지 수(모든 대화). 상한은 `maxQueuedMessages`다. Lead가 아니면 0이다. */
   queuedMessageCount: z.number().int().nonnegative(),
+  /** 실행 의도 복구가 막혔거나 사용자가 고른 복구 재시도가 진행 중이면 그 상태다. 그 밖에는 없다. */
+  recovery: agentRecoverySchema.nullable(),
 });
 export type AgentDetail = z.infer<typeof agentDetailSchema>;

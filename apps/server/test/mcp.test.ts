@@ -69,6 +69,38 @@ it("authenticates MCP requests and exposes the same catalog and stage refusal as
   expect((await t.tool(token, "POST", "/artifacts", {})).body).toEqual(
     denied.body.result.structuredContent
   );
+  // 호출마다 키를 넣겠다고 한 연결(OpenCode)의 키 없는 쓰기는 효과 없이 도구 오류다. 읽기와 키가 있는 쓰기는 그대로다.
+  const keyed = (params: object, meta?: object) =>
+    t!.request(
+      "POST",
+      "/api/tools/mcp",
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { ...params, ...(meta ? { _meta: meta } : {}) },
+      },
+      { authorization: `Bearer ${token}`, "babojubot-call-key": "required" }
+    );
+  const goalCall = { name: "send_message", arguments: { body: "키 확인" } };
+  const unkeyed = await keyed(goalCall);
+  expect(unkeyed.body.result).toMatchObject({
+    isError: true,
+    structuredContent: { error: { code: "invalid_input" } },
+  });
+  expect(
+    (await keyed({ name: "get_run_context", arguments: {} })).body.result
+      .isError
+  ).toBe(false);
+  const orgId = (await t.request("GET", "/api/organizations")).body[0].id;
+  const replies = async () =>
+    (
+      await t!.request("GET", `/api/organizations/${orgId}/messages`)
+    ).body.messages.filter((m: { body: string }) => m.body === "키 확인");
+  expect(await replies()).toHaveLength(0);
+  const withKey = await keyed(goalCall, { "idempotency-key": "oc1:goal" });
+  expect(withKey.body.result.isError).toBe(false);
+  expect(await replies()).toHaveLength(1);
   gate.open();
   await t.drain();
   expect((await rpc("tools/list")).status).toBe(401);

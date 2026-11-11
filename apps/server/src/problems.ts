@@ -24,6 +24,7 @@ export type ToolProblem =
   | "self_message"
   | "conversation_required"
   | "idempotency_conflict"
+  | "intent_cancelled"
   | ArtifactFileRefusal;
 export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
   {
@@ -47,6 +48,7 @@ export const problemResponses: Record<ToolProblem, [OrgToolErrorCode, number]> =
     node_discarded: ["node_discarded", 409],
     task_already_linked: ["task_already_linked", 409],
     idempotency_conflict: ["idempotency_conflict", 409],
+    intent_cancelled: ["intent_cancelled", 409],
     file_not_found: ["file_not_found", 422],
     path_outside_folder: ["path_outside_folder", 422],
     link_loop: ["link_loop", 422],

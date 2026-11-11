@@ -5,7 +5,7 @@ import { orgToolsRouter } from "./tools.ts";
 describe("organization tool routes", () => {
   it("serves exactly the routes of the tool list", () => {
     // 경로만 거는 단계라 DB·Event·dispatcher를 부르지 않는다.
-    const router = orgToolsRouter({
+    const { router } = orgToolsRouter({
       db: undefined as never,
       hub: undefined as never,
       dispatcher: undefined as never,

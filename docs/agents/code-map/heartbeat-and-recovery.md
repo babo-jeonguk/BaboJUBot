@@ -12,8 +12,12 @@
 | heartbeat 폼·깨우기 사유 표시 | agents.tsx `HeartbeatSettings`·`WakeReasonRow`, api.ts `useUpdateHeartbeat` | heartbeat E2E |
 | 기억 범위·출처 | [contracts/memory.ts](../../../packages/contracts/src/memory.ts), [core/memory.ts](../../../packages/core/src/memory.ts) `MemoryPort`·`memoryScopeOf` | 기억 API |
 | 기억 저장·회수 | [db/memories.ts](../../../packages/db/src/memories.ts) `writeMemory` | 기억 API |
-| 쓰기 도구의 같은 호출 키 | contracts tools.ts `idempotencyKeyHeader`, db/tool-calls.ts `toolWrite`, server/tools.ts `operationOf` | [같은 호출 키 API](../../../apps/server/test/idempotency.test.ts) |
-| 서버 재시작·정상 종료 때 실행 시도 정리 | core/run.ts `planRunInterruption`, db/runs.ts `interruptRun`·`recoverInterruptedRuns`, conversations.ts `recoverInterruptedSteers`, dispatcher.ts `start` | [DB](../../../packages/db/src/runs.test.ts) `run termination`, [재시작 복구 API](../../../apps/server/test/recovery.test.ts) `server restart recovery`·`server start recovery barrier` |
+| 쓰기 도구의 같은 호출 키 | contracts tools.ts `idempotencyKeyHeader`, db/tool-calls.ts `toolWrite`·`replayIntent`, server/tools.ts `keyOf`·`dispatch` | [같은 호출 키 API](../../../apps/server/test/idempotency.test.ts) |
+| 실행 의도 수락·원본 고정·정산·버림 | db/intents.ts `acceptIntent`·`findIntentByKey`·`lockIntent`·`settleIntent`·`abandonRunIntents`, tool-calls.ts `IntentMismatchError`, server/tools.ts `sourceOf`; migration 0032 | [실행 의도 복구 API](../../../apps/server/test/intent-recovery.test.ts) `execution intent recovery across a server restart (#150)` |
+| 재시작 뒤 모델보다 먼저 하는 의도 정산·복구 깨우기 | db/intents.ts `insertIntentRecoveryWake`·`listIntentsToSettle`·`selectRecoveredIntents`·`countSettleAttempt`, runs.ts `findActiveRun`·`loadRunWakeReasons`, dispatcher.ts `#recoverIntents`, server/tools.ts `settle`, core run.ts `bundleWakes`, web agents.tsx `WakeReasonRow` | 실행 의도 복구 API, [core](../../../packages/core/src/run.test.ts) `planRunStart` |
+| 복구 멈춤·복구 재시도 | db/runs.ts `endRunBeforeModel`·`claimNextRun`, intents.ts `resolveAgentRecovery`·`resetSettleAttempts`, core run.ts `planRunEndBeforeModel`, control.ts `planAgentControl`(`recover`), web agents.tsx `AgentControl`, ui.tsx `recoveryBlockLabel`·`intentOutcomeLabel`, activity.tsx `describeEvent` | 실행 의도 복구 API, [DB](../../../packages/db/src/intents.test.ts) `a run that ends before the model`, [core](../../../packages/core/src/control.test.ts) `planAgentControl recover` |
+| OpenCode 호출 키 plugin·키 없는 쓰기 거부 | runtime/providers/opencode-keys-plugin.ts, opencode.ts `launch`, server/mcp.ts(`callKeyRequiredHeader`) | [plugin](../../../packages/runtime/src/providers/opencode-keys-plugin.test.ts) `OpenCode organization call key plugin`, [실제 OpenCode](../../../apps/server/test/opencode-real-cli.test.ts)(가짜 모델의 도구 호출: [local-model.ts](../../../apps/server/test/local-model.ts) `respondWithTools`), [MCP API](../../../apps/server/test/mcp.test.ts) |
+| 서버 재시작·정상 종료 때 실행 시도 정리 | core/run.ts `planRunInterruption`, db/runs.ts `interruptRun`·`recoverInterruptedRuns`, conversations.ts `recoverInterruptedSteers`·`markRequeued`, dispatcher.ts `start` | [DB](../../../packages/db/src/runs.test.ts) `run termination`, [줄 세운 메시지 DB](../../../packages/db/src/queued-messages.test.ts) `steering into the running run`, [재시작 복구 API](../../../apps/server/test/recovery.test.ts) `server restart recovery`·`server start recovery barrier`·`accepted steer across a restart` |
 | 실행 시도가 받은 깨우기 기록 | db/run-reads.ts `selectRunWakes`, run-views.ts `wakeCount`; migration 0008 | 재시작 복구 API |
 
 ## 연결 경로
@@ -23,8 +27,10 @@
 ```text
 에이전트 상세 폼 → PUT …/agents/:agentId/heartbeat(app) → updateHeartbeat(core planHeartbeatChange) → EventHub
 HeartbeatScheduler.tick → runDueHeartbeats(core planHeartbeat) → EventHub → dispatcher.kick → claimNextRun
-서버 시작 → dispatcher.start → recoverInterruptedRuns → interruptRun(core planRunInterruption)
+서버 시작 → dispatcher.start → recoverInterruptedRuns → interruptRun(core planRunInterruption, insertIntentRecoveryWake)
   → applyAfterCommit → listAgentsWithPendingWakes → kick → scheduler 시작
+claimNextRun → dispatcher #recoverIntents → listIntentsToSettle → tools settle → toolWrite(정산)
+  → 깨우기 사유 다시 읽기 → 요청 조립 → 프로바이더 / 막히거나 취소되면 endRunBeforeModel → 사용자 recover
 ```
 
-중복 heartbeat는 `wakes_one_pending_heartbeat_per_agent`와 `planHeartbeat`, 재전달된 입력의 옛 상세는 `run_wakes`, 되풀이된 쓰기는 `toolWrite`의 호출 키 확인에서 시작합니다.
+중복 heartbeat는 `wakes_one_pending_heartbeat_per_agent`와 `planHeartbeat`, 재전달된 입력의 옛 상세는 `run_wakes`, 되풀이된 쓰기는 server/tools.ts `dispatch`의 의도 조회와 `toolWrite`의 의도 잠금, 재시작 뒤 결과 누락·중복은 `#recoverIntents`에서 시작합니다.

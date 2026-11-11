@@ -4,6 +4,7 @@ import {
   cancelSessionMaintenance,
 } from "./compaction.ts";
 import type {
+  AgentRecoveryBlockReason,
   AgentRole,
   Event,
   InstructionFile,
@@ -19,10 +20,12 @@ import {
   admitsRuns,
   instructionsBundleVersion,
   planRunFinish,
+  planRunEndBeforeModel,
   planRunInterruption,
   planRunStart,
   sessionTaskOfPending,
   type NewRun,
+  type RunFinishPlan,
   runBlockingStages,
   type RecordSource,
 } from "@babojubot/core";
@@ -41,6 +44,11 @@ import {
   selectRunWakes,
   selectWakes,
 } from "./run-reads.ts";
+import {
+  abandonRunIntents,
+  insertIntentRecoveryWake,
+  recoveryNotBlocked,
+} from "./intents.ts";
 import { readSession, writeBackSession } from "./sessions.ts";
 import { refused, stored, type AfterCommit, type Stored } from "./stored.ts";
 import {
@@ -93,6 +101,9 @@ export type ClaimedRun = {
  * 상한을 넘지 않는다. 잠금 순서는 조직 → 에이전트 → 연결 상한이다. 자리가 나면 dispatcher가 그 연결을 기다리는 에이전트를 다시 촉진한다.
  *
  * 그 에이전트의 세션이 압축 중이면(세션이 달라도) 깨우기를 남겨 두고 아무것도 하지 않는다. 압축이 끝나면 `finishCompaction`의 결과로 다시 촉진한다.
+ *
+ * 실행 의도 복구가 막힌 에이전트(`recovery_state` `blocked`)도 깨우기를 남겨 두고 아무것도 하지 않는다. 새 메시지·heartbeat·서버 재시작은
+ * 이 상태를 바꾸지 않고, 사용자의 복구 재시도(`recover` 제어 명령)만 바꾼다.
  */
 export async function claimNextRun(
   db: Database,
@@ -117,7 +128,9 @@ export async function claimNextRun(
       .from(agents)
       .where(eq(agents.id, agentId))
       .for("update");
-    if (!agent || agent.paused) return undefined;
+    // 실행 의도 복구가 막힌 에이전트는 사용자가 복구 재시도를 고를 때까지 실행 시도를 시작하지 않는다.
+    if (!agent || agent.paused || agent.recoveryState === "blocked")
+      return undefined;
     if (
       (await findRunningRunId(tx, agentId)) ||
       (await hasRunningMaintenance(tx, agentId))
@@ -189,6 +202,8 @@ export type RunEnding = "ended" | "already_ended";
  * 이미 끝난 실행 시도면 아무것도 바꾸지 않고 Event 없이 자리 촉진만 돌려준다. 없는 실행 시도는 `not_found`다.
  * 취소를 요청받은 실행 시도는 프로바이더의 결과와 상관없이 `cancelled`로 끝난다(core `planRunFinish`).
  * 다음 세션은 이 실행 시도의 세션 자리에 남긴다. 그사이 에이전트의 프로바이더가 바뀌었으면 남기지 않는다(`writeBackSession`).
+ * 완료하지 못했고 다음 세션도 없으면 모델이 받지 못한 복구 깨우기를 다시 대기시킨다(core `recoveryDelivered`).
+ * 그 실행 시도가 수락했거나 복구로 정산하려던 실행 의도 가운데 아직 수행하지 않은 것은 버린다(intents.ts `abandonRunIntents`).
  * 잠금 순서는 조직 → 에이전트 → 실행 시도이며, 에이전트 행 잠금이 프로바이더 변경과 직렬화한다.
  */
 export async function finishRun(
@@ -202,27 +217,51 @@ export async function finishRun(
     if (locked === "not_found") return refused(locked);
     const { agent, run } = locked;
     if (run.status !== "running") return alreadyEnded(run);
-    const plan = planRunFinish(run, result, source);
-    await tx
-      .update(runs)
-      .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
-      .where(eq(runs.id, runId));
-    await writeBackSession(
+    const held = await tx
+      .select({ id: wakes.id, kind: wakes.kind })
+      .from(wakes)
+      .where(eq(wakes.runId, runId))
+      .orderBy(asc(wakes.seq));
+    const plan = planRunFinish(run, result, source, { wakes: held });
+    await closeRun(
       tx,
+      agent,
       run,
-      agent.sessionGeneration,
-      plan.update.sessionAfter,
-      result.stopReason === "completed"
-        ? result.sessionMaintenance
-          ? { ...result.sessionMaintenance, tools: run.toolCatalog ?? [] }
-          : null
+      plan,
+      result.stopReason === "completed" && result.sessionMaintenance
+        ? { ...result.sessionMaintenance, tools: run.toolCatalog ?? [] }
         : null
     );
+    await abandonRunIntents(tx, runId);
+    // 복구 깨우기는 `wakes.runId`로 복구 대상을 찾으므로(`abandonRunIntents`), 의도를 버린 뒤에 다시 대기시킨다.
+    const requeued = await requeueWakes(tx, runId, plan.requeueWakeIds);
     return stored<RunEnding>("ended", {
       events: [await insertEvent(tx, plan.event)],
+      woken: requeued.length ? [run.agentId] : [],
       providersFreed: [run.provider],
     });
   });
+}
+
+/** 잠근 실행 시도의 종료 상태를 저장하고 다음 세션을 그 세션 자리에 남긴다(`writeBackSession`). */
+async function closeRun(
+  tx: Executor,
+  agent: { sessionGeneration: number },
+  run: Parameters<typeof writeBackSession>[1],
+  plan: Pick<RunFinishPlan, "update">,
+  maintenance: Parameters<typeof writeBackSession>[4] = null
+) {
+  await tx
+    .update(runs)
+    .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
+    .where(eq(runs.id, run.id));
+  await writeBackSession(
+    tx,
+    run,
+    agent.sessionGeneration,
+    plan.update.sessionAfter,
+    maintenance
+  );
 }
 
 /** 이미 끝난 실행 시도: 아무것도 다시 남기지 않고, 그 실행 시도가 쓴 연결의 자리 촉진만 돌려준다. */
@@ -281,6 +320,7 @@ async function lockRunAgent(tx: Executor, runId: string) {
  * 서버가 멈춰 프로바이더 결과 없이 끝나는 실행 시도를 끝낸다(core `planRunInterruption`). 종료·깨우기 복원·Event는 한 transaction이며,
  * commit 뒤 할 일은 Event 알리기, 깨우기를 되돌려 받은 에이전트와 자리가 난 연결의 촉진이다.
  * 이미 끝난 실행 시도면 `finishRun`처럼 아무것도 바꾸지 않고 자리 촉진만 돌려준다. 서버 시작의 복구와 서버 종료 때 취소로 돌아온 실행 시도가 쓴다.
+ * `server_restart`로 끝나면 그 실행 시도가 수락한 실행 의도를 알릴 복구 깨우기도 같은 transaction에 남긴다(intents.ts `insertIntentRecoveryWake`).
  */
 export async function interruptRun(
   db: Database,
@@ -305,33 +345,85 @@ export async function interruptRun(
       { wakes: held, pendingHeartbeat },
       source
     );
-    await tx
-      .update(runs)
-      .set({ ...plan.update, finishedAt: new Date(plan.update.finishedAt) })
-      .where(eq(runs.id, runId));
-    await writeBackSession(
-      tx,
-      run,
-      agent.sessionGeneration,
-      plan.update.sessionAfter
-    );
-    let requeued: { id: string }[] = [];
-    if (plan.requeueWakeIds.length) {
-      requeued = await tx
-        .update(wakes)
-        .set({ runId: null })
-        .where(
-          and(inArray(wakes.id, plan.requeueWakeIds), eq(wakes.runId, runId))
-        )
-        .returning({ id: wakes.id });
-      await markRequeued(
-        tx,
-        requeued.map((w) => w.id)
+    await closeRun(tx, agent, run, plan);
+    const requeued = await requeueWakes(tx, runId, plan.requeueWakeIds);
+    // 사용자 제어가 취소한 실행 시도의 수행하지 않은 의도는 버리고, 서버 재시작으로 끝나면 다음 실행 시도가 정산·전달하도록 알린다.
+    const recovering = run.cancelReason
+      ? (await abandonRunIntents(tx, runId), false)
+      : await insertIntentRecoveryWake(
+          tx,
+          run,
+          new Date(plan.update.finishedAt)
+        );
+    return stored<RunEnding>("ended", {
+      events: [await insertEvent(tx, plan.event)],
+      woken: requeued.length || recovering ? [run.agentId] : [],
+      providersFreed: [run.provider],
+    });
+  });
+}
+
+/** 실행 시도에 묶인 깨우기를 다시 대기시키고 그 사용자 메시지를 줄 세운 메시지로 돌린다. 다시 대기한 깨우기를 돌려준다. */
+async function requeueWakes(tx: Executor, runId: string, wakeIds: string[]) {
+  if (!wakeIds.length) return [];
+  const requeued = await tx
+    .update(wakes)
+    .set({ runId: null })
+    .where(and(inArray(wakes.id, wakeIds), eq(wakes.runId, runId)))
+    .returning({ id: wakes.id });
+  await markRequeued(
+    tx,
+    requeued.map((w) => w.id)
+  );
+  return requeued;
+}
+
+/**
+ * 모델(프로바이더)을 부르기 전, 실행 의도 복구 정산 단계에서 실행 시도를 끝낸다(core `planRunEndBeforeModel`). 정산이 막혔으면
+ * 받은 깨우기를 모두 다시 대기시키고 에이전트를 `blocked`로 두어 사용자가 복구 재시도를 고를 때까지 admission을 막는다.
+ * 사용자 제어가 취소했으면 취소로 끝나되 복구 깨우기만 다시 대기시키고, 그 깨우기가 가리키는 수행하지 않은 의도는 버리지 않는다.
+ * 종료·깨우기 복원·복구 상태·Event는 한 transaction이다. 이미 끝난 실행 시도는 바꾸지 않는다.
+ */
+export async function endRunBeforeModel(
+  db: Database,
+  runId: string,
+  ending: { blocked: AgentRecoveryBlockReason } | "cancelled",
+  source: Pick<RecordSource, "now">
+): Promise<Stored<RunEnding, "not_found">> {
+  return db.transaction(async (tx) => {
+    const locked = await lockEndingRun(tx, runId);
+    if (locked === "not_found") return refused(locked);
+    const { agent, run } = locked;
+    if (run.status !== "running") return alreadyEnded(run);
+    const held = await tx
+      .select({ id: wakes.id, kind: wakes.kind })
+      .from(wakes)
+      .where(eq(wakes.runId, runId))
+      .orderBy(asc(wakes.seq));
+    const plan = planRunEndBeforeModel(run, ending, { wakes: held }, source);
+    await closeRun(tx, agent, run, plan);
+    const requeued = await requeueWakes(tx, runId, plan.requeueWakeIds);
+    const events = [await insertEvent(tx, plan.event)];
+    if (plan.block) {
+      await tx
+        .update(agents)
+        .set({
+          recoveryState: "blocked",
+          recoveryReason: plan.block,
+          recoverySince: new Date(plan.update.finishedAt),
+        })
+        .where(eq(agents.id, run.agentId));
+      events.push(
+        await insertEvent(tx, {
+          organizationId: run.organizationId,
+          type: "agent.recovery_blocked",
+          payload: { agentId: run.agentId, runId, reason: plan.block },
+        })
       );
     }
     return stored<RunEnding>("ended", {
-      events: [await insertEvent(tx, plan.event)],
-      woken: requeued.length ? [run.agentId] : [],
+      events,
+      woken: requeued.length && !plan.block ? [run.agentId] : [],
       providersFreed: [run.provider],
     });
   });
@@ -373,7 +465,8 @@ export async function recoverInterruptedRuns(
 
 /**
  * 실행 시도를 받는 조직에서 대기 중인 깨우기가 있는 에이전트. 서버 시작·조직 재개, 프로바이더 연결에 자리가 날 때(`provider`) 다시 깨운다.
- * 최종 완료·일시정지·중단 등 admission을 거부하는 조직과 일시정지한 에이전트의 깨우기는 남아 있어도 지금 처리할 것이 아니므로 빠진다.
+ * 최종 완료·일시정지·중단 등 admission을 거부하는 조직과 일시정지한 에이전트, 실행 의도 복구가 막힌 에이전트의 깨우기는
+ * 남아 있어도 지금 처리할 것이 아니므로 빠진다.
  * 가장 오래 기다린 깨우기가 먼저인 에이전트부터다.
  */
 export async function listAgentsWithPendingWakes(
@@ -394,6 +487,7 @@ export async function listAgentsWithPendingWakes(
         notSteering,
         notInArray(organizations.stage, [...runBlockingStages]),
         eq(agents.paused, false),
+        recoveryNotBlocked,
         organizationId === undefined
           ? undefined
           : eq(wakes.organizationId, organizationId),
@@ -446,6 +540,36 @@ export async function authenticateRun(
   if (!row || !acceptsToolCalls(row)) return undefined;
   const { status: _status, cancelReason: _cancel, ...run } = row;
   return run;
+}
+
+/** 실행 시도가 아직 조직 도구를 쓸 수 있으면(실행 중이고 취소를 요청받지 않음, core `acceptsToolCalls`) 그 신원. 그 밖이면 `undefined`. */
+export async function findActiveRun(
+  db: Database,
+  runId: string
+): Promise<ActiveRun | undefined> {
+  const [row] = await db
+    .select({
+      id: runs.id,
+      organizationId: runs.organizationId,
+      agentId: runs.agentId,
+      status: runs.status,
+      cancelReason: runs.cancelReason,
+      agentRole: agents.role,
+    })
+    .from(runs)
+    .innerJoin(agents, eq(agents.id, runs.agentId))
+    .where(eq(runs.id, runId));
+  if (!row || !acceptsToolCalls(row)) return undefined;
+  const { status: _status, cancelReason: _cancel, ...run } = row;
+  return run;
+}
+
+/** 실행 시도가 받은 깨우기의 지금 사유. 복구 정산 뒤 실행 의도의 결과를 다시 읽을 때 쓴다. */
+export async function loadRunWakeReasons(
+  db: Database,
+  runId: string
+): Promise<WakeReason[]> {
+  return (await selectRunWakes(db, runId)).map((w) => w.reason);
 }
 
 /**

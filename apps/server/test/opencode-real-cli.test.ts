@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
+  conversationPageSchema,
   organizationDetailSchema,
   runSummaryListSchema,
   taskListSchema,
@@ -11,6 +12,7 @@ import {
   createFakeProviders,
   createOpenCodeProvider,
 } from "@babojubot/runtime";
+import { intentsOf } from "@babojubot/db/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { calls, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import {
@@ -259,6 +261,74 @@ describe.skipIf(!program)(
           await get(`/api/organizations/${planning.id}`)
         ).stage
       ).toBe("awaiting_approval");
+    });
+
+    // #150: 실제 OpenCode가 이 제품의 plugin으로 조직 쓰기 도구 호출마다 같은 호출 키를 MCP `params._meta`에 넣는다.
+    // 가짜 모델은 한 응답에 내용이 같은 send_message 두 개를 병렬로 내고, 다음 메시지에도 같은 호출 ID로 같은 내용을 낸다.
+    it("injects a separate call key into every organization write call without touching the tool input, also for parallel calls and a resumed session", async () => {
+      const org = await researching(agents, "호출 키 조직");
+      await useOpenCode(org.id, org.lead.id);
+      const marker = "#150-keys";
+      const sendName = (request: ModelRequest) =>
+        toolNames(request).find((n) => n.endsWith("send_message"))!;
+      model.respondWithTools((request) =>
+        wakeText(request).includes(marker)
+          ? [
+              {
+                id: "call_a",
+                name: sendName(request),
+                arguments: { body: "같은 내용" },
+              },
+              {
+                id: "call_b",
+                name: sendName(request),
+                arguments: { body: "같은 내용" },
+              },
+            ]
+          : undefined
+      );
+      try {
+        await say(org.id, `${marker} 첫 번째`);
+        await t.drain();
+        await say(org.id, `${marker} 이어서`);
+        await t.drain();
+      } finally {
+        model.respondWithTools(undefined);
+      }
+      const runs = await runsOf(org.id, org.lead.id);
+      expect(runs.map((r) => r.status)).toEqual(["completed", "completed"]);
+      const opencodeRuns = new Set(runs.map((r) => r.id));
+      const intents = (await intentsOf(t.db, org.lead.id)).filter(
+        (i) => i.tool === "send_message" && opencodeRuns.has(i.runId)
+      );
+      // 네 호출 모두 키가 있고 서로 다르다. 같은 호출 ID라도 다음 assistant 메시지의 호출은 새 실행 의도다.
+      expect(intents).toHaveLength(4);
+      for (const intent of intents) {
+        expect(intent.key).toMatch(/^oc1:[0-9a-f]{64}$/);
+        expect(intent.status).toBe("completed");
+        // 모델이 준 입력 그대로다. 키나 `_meta`가 도구 입력에 섞이지 않았다.
+        expect(JSON.parse(intent.request!)).toEqual({
+          params: {},
+          body: { body: "같은 내용" },
+        });
+      }
+      expect(new Set(intents.map((i) => i.key)).size).toBe(4);
+      expect(new Set(intents.map((i) => i.runId))).toEqual(opencodeRuns);
+      const replies = conversationPageSchema
+        .parse(await get(`/api/organizations/${org.id}/messages`))
+        .messages.filter((m) => m.author === "agent" && m.body === "같은 내용");
+      expect(replies).toHaveLength(4);
+      // 모델은 각 호출의 결과(저장된 메시지)를 도구 결과로 받았다.
+      const followUps = mainRequests(model.requests).filter(
+        (r) =>
+          r.body.messages?.at(-1)?.role === "tool" &&
+          userText(r).includes(org.id)
+      );
+      expect(followUps).toHaveLength(2);
+      for (const request of followUps)
+        expect(
+          request.body.messages!.filter((m) => m.role === "tool").length
+        ).toBeGreaterThanOrEqual(2);
     });
 
     it("ends a refused request as a failed attempt with a safe reason, once, and an authentication refusal as login required", async () => {

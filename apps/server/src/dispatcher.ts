@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  type AgentRecoveryBlockReason,
   isolateUsageNumbers,
   runResultSchema,
   runtimeActivitySchema,
   type RunCancel,
+  type RunRequest,
   type RunResult,
   type RuntimeAdapter,
   type SteerMessage,
@@ -13,7 +15,13 @@ import {
 import type { RunCancellation } from "@babojubot/core";
 import {
   appendRunActivity,
+  countSettleAttempt,
+  endRunBeforeModel,
   claimNextRun,
+  findActiveRun,
+  listIntentsToSettle,
+  loadRunWakeReasons,
+  resolveAgentRecovery,
   findRunCancelReason,
   finishRun,
   interruptRun,
@@ -28,6 +36,7 @@ import type { EventHub } from "./event-hub.ts";
 import { IsolationError } from "./isolation.ts";
 import type { RunRequestAssembler } from "./run-request.ts";
 import { issueRunToken } from "./run-token.ts";
+import type { IntentSettler } from "./tools.ts";
 import { WorkspaceIdentityError } from "./workspace.ts";
 
 const failed = (error: string): RunResult => ({
@@ -42,6 +51,18 @@ const missingProvider = failed(
   "이 실행 시도의 프로바이더 연결이 서버에 없습니다."
 );
 const shutdown: RunCancel = { type: "cancel", reason: "server_shutdown" };
+/** 한 실행 시도 안에서 실행 의도 복구 정산의 일시적 오류를 다시 시도하는 횟수(첫 시도 포함). */
+const recoveryAttempts = 3;
+/**
+ * 실행 시도의 종료: 프로바이더 결과, 서버 종료로 돌아온 실행 시도, 모델을 부르기 전의 복구 정산에서 막히거나 사용자 제어로 취소된 실행 시도.
+ */
+type Ending =
+  | RunResult
+  | "server_restart"
+  | { beforeModel: { blocked: AgentRecoveryBlockReason } | "cancelled" };
+const isShutdown = (signal: AbortSignal) =>
+  signal.aborted &&
+  (signal.reason as RunCancel | undefined)?.reason === "server_shutdown";
 const cancelled: RunResult = {
   ...failed(""),
   stopReason: "cancelled",
@@ -69,11 +90,15 @@ export class RunDispatcher {
     { controller: AbortController; adapter: RuntimeAdapter | undefined }
   >();
   readonly #onLoginRequired: (provider: string) => void;
-  /** 저장하지 못한 종료. `server_restart`는 서버 종료로 프로바이더가 취소되어 돌아온 실행 시도다(`interruptRun`). */
+  /**
+   * 저장하지 못한 종료. `server_restart`는 서버 종료로 프로바이더가 취소되어 돌아온 실행 시도다(`interruptRun`).
+   * `beforeModel`은 모델을 부르기 전의 실행 의도 정산에서 끝난 실행 시도다(`endRunBeforeModel`).
+   */
   readonly #pendingFinishes = new Map<
     string,
-    { runId: string; result: RunResult | "server_restart" }
+    { runId: string; result: Ending }
   >();
+  readonly #settleIntent: IntentSettler | undefined;
   readonly #recovery = new AbortController();
   #closed = false;
   /** 서버 시작 복구(`start`)의 저장이 모두 끝났다. 그 전의 촉진은 버리고, 복구가 끝난 뒤 대기 깨우기를 모두 다시 읽어 촉진한다. */
@@ -89,7 +114,10 @@ export class RunDispatcher {
     assemble: RunRequestAssembler;
     /** 실행 시도가 제품 로그인이 필요해 실패로 끝났다(`errorCode` `login_required`). 종료를 저장한 뒤 부른다. */
     onLoginRequired?: (provider: string) => void;
+    /** 서버 재시작으로 남은 실행 의도 하나를 새 실행 시도로 정산한다(`orgToolsRouter`의 `settle`). 없으면 정산할 의도가 있을 때 막는다. */
+    settleIntent?: IntentSettler;
   }) {
+    this.#settleIntent = options.settleIntent;
     this.#db = options.db;
     this.#hub = options.hub;
     this.#providers = options.providers;
@@ -299,9 +327,32 @@ export class RunDispatcher {
           type: "cancel",
           reason: cancelReason,
         } satisfies RunCancel);
-      const request = await this.#assemble(claimed, token);
+      // 서버 재시작으로 남은 실행 의도를 모델보다 먼저 정산하고, 그 결과를 실은 깨우기 사유로 프로바이더에 넘길 요청까지 준비한다.
+      const prepared = await this.#prepare(
+        claimed,
+        token,
+        controller.signal,
+        adapter
+      );
+      if (prepared.kind !== "ok") {
+        // 모델은 아무것도 받지 않았다. 서버 종료면 받은 깨우기를 모두 다시 넘기고, 아니면 막힘이나 사용자 취소대로 끝낸다.
+        this.#active.delete(run.id);
+        this.#pendingFinishes.set(run.agentId, {
+          runId: run.id,
+          result: isShutdown(controller.signal)
+            ? "server_restart"
+            : {
+                beforeModel:
+                  prepared.kind === "blocked"
+                    ? { blocked: prepared.reason }
+                    : "cancelled",
+              },
+        });
+        await this.#settle(run.agentId);
+        return;
+      }
       const raw = adapter
-        ? await adapter.execute(request, {
+        ? await adapter.execute(prepared.request, {
             signal: controller.signal,
             emit: (activity) => this.#emit(run.id, activity),
           })
@@ -327,10 +378,7 @@ export class RunDispatcher {
     } finally {
       this.#active.delete(run.id);
     }
-    const shutDown =
-      controller.signal.aborted &&
-      (controller.signal.reason as RunCancel | undefined)?.reason ===
-        "server_shutdown";
+    const shutDown = isShutdown(controller.signal);
     this.#pendingFinishes.set(run.agentId, {
       runId: run.id,
       // 서버 종료로 끝까지 하지 못한 실행 시도는 받은 깨우기를 다음 실행 시도에 다시 넘긴다. 프로바이더가 끝을 냈으면 그 결과다.
@@ -345,17 +393,101 @@ export class RunDispatcher {
   }
 
   /**
+   * 실행 시도가 받은 실행 의도 복구 깨우기의 남은 의도를 모델을 부르기 전에 정산하고(`settleIntent`) 프로바이더에 넘길 요청까지 준비한다.
+   * 정산한 결과는 깨우기 사유에 실려 모델이 받는 맥락이 된다. 복구 깨우기를 실은 실행 시도에서 정산부터 프로바이더에 요청을 넘기기 직전까지
+   * (막힘 풀기, 깨우기 사유 다시 읽기, 요청 조립, 프로바이더 연결 찾기, 취소 관찰)가 모델을 부르기 전의 경계다. 그 경계에서 실패하면 실행 시도
+   * 안에서 다시 시도하고 한도에 닿으면 `retry_exhausted`로 막으며, 그사이 사용자 제어가 취소했으면 모델을 부르기 전에 실행 시도를 끝내
+   * 복구 깨우기를 다시 대기시킨다. 일시적 오류는 다시 시도하되, 복구가 나르는 모든 의도(정산 여부와 상관없음)마다 DB에 센 복구 전달 시도가
+   * 서버 재시작을 넘어 한도(db `intentSettleAttemptLimit`)에 닿거나 같은 실행 시도 안에서 {@link recoveryAttempts}번 실패하거나
+   * 원본 자료가 없거나 기록이 맞지 않으면 `blocked`다. 그래서 모델보다 먼저(준비 중이나 프로바이더가 모델을 부르기 전) 실패하거나
+   * 서버가 다시 시작해도 한도가 되돌아가지 않는다. 사용자 제어가 그사이 취소했으면 `run_finished`다.
+   * 정산에 성공하고 에이전트가 사용자가 고른 복구 재시도 중이면 막힘을 푼다.
+   */
+  async #prepare(
+    claimed: ClaimedRun,
+    token: string,
+    signal: AbortSignal,
+    adapter: RuntimeAdapter | undefined
+  ): Promise<
+    | { kind: "ok"; request: RunRequest }
+    | { kind: "run_finished" }
+    | { kind: "blocked"; reason: AgentRecoveryBlockReason }
+  > {
+    const { run } = claimed;
+    if (!claimed.wakeReasons.some((r) => r.kind === "intent_recovery"))
+      return { kind: "ok", request: await this.#assemble(claimed, token) };
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const listed = await listIntentsToSettle(this.#db, run);
+        if (listed.kind === "blocked") return listed;
+        // 시도 횟수는 DB에 세므로 정산 도중 서버가 멈춰 다시 시작해도 한도가 되돌아가지 않는다.
+        // 이미 정산한 의도도 세야 모델 전 실패·재시작이 한도를 되돌리지 않는다.
+        if (!(await countSettleAttempt(this.#db, listed.recovered)))
+          return { kind: "blocked", reason: "retry_exhausted" };
+        if (listed.intents.length) {
+          if (!this.#settleIntent)
+            return { kind: "blocked", reason: "inconsistent_record" };
+          void this.#emit(run.id, {
+            type: "progress",
+            text: `서버 재시작으로 남은 실행 의도 ${listed.intents.length}개를 모델보다 먼저 정산합니다.`,
+          });
+        }
+        for (const intent of listed.intents) {
+          const active =
+            !signal.aborted && (await findActiveRun(this.#db, run.id));
+          if (!active) return { kind: "run_finished" };
+          const settled = await this.#settleIntent!(intent, active);
+          if (settled.kind !== "settled") return settled;
+        }
+        await this.#afterCommit(await resolveAgentRecovery(this.#db, run));
+        const current = new Map(
+          (await loadRunWakeReasons(this.#db, run.id)).map((r) => [r.wakeId, r])
+        );
+        const wakeReasons = claimed.wakeReasons.map(
+          (r) => current.get(r.wakeId) ?? r
+        );
+        const request = await this.#assemble(
+          { ...claimed, wakeReasons },
+          token
+        );
+        if (!adapter) throw new Error("provider connection is missing");
+        if (signal.aborted) return { kind: "run_finished" };
+        return { kind: "ok", request };
+      } catch (error) {
+        console.error(
+          `[runs] run ${run.id} intent recovery failed (attempt ${attempt})`,
+          error
+        );
+        if (attempt >= recoveryAttempts)
+          return { kind: "blocked", reason: "retry_exhausted" };
+        try {
+          await delay(100 * 2 ** attempt, undefined, { signal });
+        } catch {
+          return { kind: "run_finished" };
+        }
+      }
+    }
+  }
+
+  /**
    * 종료 결과를 저장한다. 저장이 계속 실패하면 실행 시도가 실행 중으로 남아 에이전트가 막히므로 몇 번 다시 시도한다.
    * 그래도 실패하면 dispatcher가 같은 결과 저장을 backoff 뒤 다시 시도한다.
    * DB 장애가 서버 종료까지 이어지면 다음 시작 때 `recoverInterruptedRuns`가 끝낸다.
    */
-  async #finish(runId: string, result: RunResult | "server_restart") {
+  async #finish(runId: string, result: Ending) {
     const source = { now: this.#now };
     for (let attempt = 1; ; attempt++) {
       try {
         return result === "server_restart"
           ? await interruptRun(this.#db, runId, source)
-          : await finishRun(this.#db, runId, result, source);
+          : "beforeModel" in result
+            ? await endRunBeforeModel(
+                this.#db,
+                runId,
+                result.beforeModel,
+                source
+              )
+            : await finishRun(this.#db, runId, result, source);
       } catch (error) {
         if (attempt >= 3) throw error;
         console.error(`[runs] run ${runId} finish failed, retrying`, error);

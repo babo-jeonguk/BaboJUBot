@@ -285,6 +285,102 @@ const goalMessage =
  * `alsoSay`가 있으면 SIGKILL 전에 보내, 다시 대기한 깨우기와 새 깨우기가 한 실행 시도로 합쳐지게 한다.
  * 같은 DB로 기본 가짜 프로바이더 서버를 다시 띄워 재처리가 끝날 때까지 기다린다.
  */
+describe("accepted steer across a restart (#159)", () => {
+  it("hands a message the stopped run had accepted by steering to the run after the first restart, once, and keeps both runs' records", async () => {
+    database = await createTestDatabase();
+    const gate = createGate();
+    server = await startServer({
+      db: database.db,
+      port: 0,
+      runtime: quietCreation(
+        createScriptedRuntime({
+          select: () => ({
+            ...leadReplyScript,
+            steps: [{ do: "hold", until: gate.wait }, ...leadReplyScript.steps],
+          }),
+        })
+      ),
+    });
+    const http = api(() => server!.url);
+    const org = await http.createOrganization("끼워 넣기 재시작 조직");
+    await server.drain();
+    await http.say(org.id, "긴 일을 시작해 주세요");
+    await gate.reached;
+    const [running] = await http.runs(org.id);
+    const steered = await http.call(
+      "POST",
+      `/api/organizations/${org.id}/messages`,
+      { body: "받은 뒤 멈춤", delivery: "steer" }
+    );
+    expect(steered.body).toMatchObject({
+      delivery: "steer",
+      deliveredToRunId: running!.id,
+    });
+
+    // 정상 종료: 진행 중 실행 시도는 취소되어 돌아와 `server_restart`로 끝나고 받은 깨우기를 다시 대기시킨다.
+    await server.close();
+    let received: string[][] = [];
+    server = await startServer({
+      db: database.db,
+      port: 0,
+      runtime: quietCreation(
+        createScriptedRuntime({
+          select: (request) => {
+            received.push(
+              request.wakeReasons.flatMap((r) =>
+                r.kind === "owner_message" ? [r.body] : []
+              )
+            );
+            return leadReplyScript;
+          },
+        })
+      ),
+    });
+    await server.drain();
+    // 첫 재시작 한 번으로 다음 실행 시도가 끼워 넣어 받았던 메시지까지 한 번씩 받는다.
+    expect(received).toEqual([["긴 일을 시작해 주세요", "받은 뒤 멈춤"]]);
+    const [next, old] = await http.runs(org.id);
+    expect(old).toMatchObject({ id: running!.id, status: "server_restart" });
+    expect(next).toMatchObject({ status: "completed" });
+    const bodiesOf = async (runId: string) =>
+      (await http.run(org.id, runId)).wakeReasons.flatMap((r) =>
+        r.kind === "owner_message" ? [r.body] : []
+      );
+    expect(await bodiesOf(old!.id)).toEqual([
+      "긴 일을 시작해 주세요",
+      "받은 뒤 멈춤",
+    ]);
+    expect(await bodiesOf(next!.id)).toEqual([
+      "긴 일을 시작해 주세요",
+      "받은 뒤 멈춤",
+    ]);
+    // 대화에는 지금 받은 실행 시도의 메시지로 놓이고, 공개 활동에 끼워 넣기와 재대기가 남는다.
+    const placed = (await http.conversation(org.id)).find(
+      (m) => m.body === "받은 뒤 멈춤"
+    );
+    expect(placed).toMatchObject({
+      deliveredToRunId: next!.id,
+      delivery: "next_run",
+    });
+    const events = await http.events(org.id);
+    expect(
+      events.filter((e) => e.type === "message.steered").map((e) => e.payload)
+    ).toEqual([expect.objectContaining({ outcome: "accepted" })]);
+    const finished = events.find(
+      (e) => e.type === "run.finished" && e.payload.runId === old!.id
+    );
+    expect(
+      finished?.type === "run.finished" && finished.payload.requeuedWakeIds
+    ).toHaveLength(2);
+    // 다시 시작해도 더 받지 않는다.
+    await server.close();
+    received = [];
+    server = await startServer({ db: database.db, port: 0 });
+    await server.drain();
+    expect(await http.runs(org.id)).toHaveLength(3);
+  });
+});
+
 async function crashAndRestart(
   stopAfter: string,
   {
@@ -337,10 +433,19 @@ async function crashAndRestart(
   const http = api(() => server!.url);
   const [next, old] = await http.runs(orgId);
   expect(old).toMatchObject({ status: "server_restart", wakeCount: 1 });
+  // 새 실행 시도는 다시 대기한 깨우기와 함께, 멈춘 실행 시도가 수락한 실행 의도의 결과를 실은 복구 깨우기를 받는다.
   expect(next).toMatchObject({
     status: "completed",
-    wakeCount: alsoSay ? 2 : 1,
+    wakeCount: alsoSay ? 3 : 2,
   });
+  const recovery = (await http.run(orgId, next!.id)).wakeReasons.find(
+    (r) => r.kind === "intent_recovery"
+  );
+  expect(recovery).toMatchObject({ interruptedRunId: old!.id });
+  expect(
+    recovery?.kind === "intent_recovery" &&
+      recovery.intents.map((i) => [i.tool, i.outcome.status])
+  ).toContainEqual([stopAfter, "completed"]);
   return { http, org: { id: orgId }, next: next!, old: old! };
 }
 

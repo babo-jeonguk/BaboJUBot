@@ -124,6 +124,14 @@ export async function findAgentDetail(
     heartbeat: toAgentHeartbeat(agent),
     recentRuns: recent,
     queuedMessageCount: await countQueuedMessages(db, agentId),
+    recovery:
+      agent.recoveryState && agent.recoveryReason && agent.recoverySince
+        ? {
+            state: agent.recoveryState,
+            reason: agent.recoveryReason,
+            since: agent.recoverySince.toISOString(),
+          }
+        : null,
   };
 }
 

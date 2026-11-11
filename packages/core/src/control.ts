@@ -1,4 +1,5 @@
 import {
+  type AgentRecovery,
   isClosedStage,
   messageHeldBy,
   type AgentCommand,
@@ -112,6 +113,8 @@ export function planDecisionStage(
 
 export type AgentControlPlan = {
   paused: boolean;
+  /** 명령 뒤의 복구 상태. 복구 재시도만 바꾸며, 없으면 그대로다. */
+  recoveryState?: "retrying";
   cancellation: RunCancellation | null;
   event: NewEvent;
 };
@@ -122,12 +125,31 @@ export type AgentControlPlan = {
  * 진행 중 실행 시도이며, 없으면(실행 중이 아니거나 이미 정리 중) 아무것도 바꾸지 않는다.
  */
 export function planAgentControl(
-  agent: { id: string; organizationId: string; paused: boolean },
+  agent: {
+    id: string;
+    organizationId: string;
+    paused: boolean;
+    recoveryState: AgentRecovery["state"] | null;
+  },
   organizationStage: LifecycleStage,
   command: AgentCommand,
   runningRunId: string | null
 ): AgentControlPlan | ControlRefusal {
   if (isClosedStage(organizationStage)) return "organization_closed";
+  if (command === "recover") {
+    // 막힌 복구만 다시 시도하게 한다. 이미 다시 시도 중이거나 막히지 않았으면 그대로다. 일시정지는 바꾸지 않는다.
+    if (agent.recoveryState !== "blocked") return "unchanged";
+    return {
+      paused: agent.paused,
+      recoveryState: "retrying" satisfies AgentRecovery["state"],
+      cancellation: null,
+      event: {
+        organizationId: agent.organizationId,
+        type: "agent.recovery_retried",
+        payload: { by: "owner", agentId: agent.id },
+      },
+    };
+  }
   if (command === "interrupt") {
     if (!runningRunId) return "unchanged";
     return {

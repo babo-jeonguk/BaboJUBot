@@ -124,6 +124,8 @@ export function describeWakeReason(reason: WakeReason): string {
       return "사용자가 연구 목표를 적어 조직을 만듦";
     case "heartbeat":
       return "heartbeat 간격이 지남";
+    case "intent_recovery":
+      return `서버 재시작으로 끝난 실행 시도의 쓰기 ${reason.intents.length}개 결과를 받음`;
   }
 }
 
@@ -1003,8 +1005,14 @@ export function createScriptedRuntime({
     // 쓰기 도구 호출의 키: 받은 깨우기 묶음과 그 안에서 그 도구의 몇 번째 쓰기인지. 서버 재시작 뒤 같은 깨우기를 다시 받으면
     // 같은 시나리오가 같은 키로 호출하므로 이미 남긴 답장·작업·기억 등을 되풀이하지 않는다. 단계를 바꾼 쓰기 뒤에 멈췄으면
     // 다시 받은 시나리오는 그 쓰기를 건너뛰는데, 도구별로 세므로 남은 쓰기의 키는 그대로다. 새 깨우기가 섞이면 키가 달라진다.
+    // 서버 재시작 뒤 함께 오는 실행 의도 복구 깨우기는 셈에서 뺀다. 가짜 모델은 같은 구체적 호출을 다시 보내는 모델이다.
     const bundle = createHash("sha256")
-      .update(request.wakeReasons.map((r) => r.wakeId).join(","))
+      .update(
+        request.wakeReasons
+          .filter((r) => r.kind !== "intent_recovery")
+          .map((r) => r.wakeId)
+          .join(",")
+      )
       .digest("hex")
       .slice(0, 32);
     const effects = new Map<OrgToolName, number>();

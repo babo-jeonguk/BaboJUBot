@@ -49,8 +49,17 @@ export function wakeText(request: ModelRequest) {
 /** 거부된 `\0` 표기. JSON 본문에서는 역슬래시가 두 번 나온다. */
 export const refusedPattern = String.raw`"^[^\\0]*$"`;
 
+/** 가짜 모델이 한 응답에 내는 도구 호출 하나. `name`은 모델이 받은 도구 정의의 이름(예: `organization_send_message`)이다. */
+export type ModelToolCall = { id: string; name: string; arguments: unknown };
+
 export async function startLocalModel() {
   const requests: ModelRequest[] = [];
+  /**
+   * 마지막 메시지가 사용자 메시지인 요청에 도구 호출로 답할지 정한다(#150). 돌려준 호출을 한 응답에 함께 내고(병렬 호출),
+   * 그 결과가 돌아온 다음 요청에는 글로 끝낸다. 없으면 늘 글로 답한다.
+   */
+  let toolCalls:
+    ((request: ModelRequest) => ModelToolCall[] | undefined) | undefined;
   const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
@@ -105,6 +114,40 @@ export async function startLocalModel() {
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (data: unknown) =>
       res.write(`data: ${JSON.stringify(data)}\n\n`);
+    const planned =
+      body.messages?.at(-1)?.role === "user" ? toolCalls?.(request) : undefined;
+    if (planned?.length) {
+      send({
+        ...base,
+        object: "chat.completion.chunk",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: "assistant",
+              tool_calls: planned.map((call, index) => ({
+                index,
+                id: call.id,
+                type: "function",
+                function: {
+                  name: call.name,
+                  arguments: JSON.stringify(call.arguments),
+                },
+              })),
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      send({
+        ...base,
+        object: "chat.completion.chunk",
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        usage,
+      });
+      res.end("data: [DONE]\n\n");
+      return;
+    }
     send({
       ...base,
       object: "chat.completion.chunk",
@@ -129,6 +172,11 @@ export async function startLocalModel() {
   return {
     url: `http://127.0.0.1:${port}/v1`,
     requests,
+    respondWithTools(
+      plan: ((request: ModelRequest) => ModelToolCall[] | undefined) | undefined
+    ) {
+      toolCalls = plan;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

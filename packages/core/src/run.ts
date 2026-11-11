@@ -2,6 +2,7 @@ import {
   conversationTitleMaxLength,
   defaultConversationTitle,
   type Agent,
+  type AgentRecoveryBlockReason,
   type Conversation,
   type ConversationMessage,
   type LifecycleStage,
@@ -225,7 +226,8 @@ export function sessionTaskOf(reasons: readonly WakeReason[]): string | null {
     reasons.map((r) =>
       r.kind === "task_assigned" ||
       r.kind === "task_completed" ||
-      r.kind === "task_comment"
+      r.kind === "task_comment" ||
+      r.kind === "intent_recovery"
         ? r.taskId
         : null
     )
@@ -264,10 +266,14 @@ export const admitsRuns = (stage: LifecycleStage) =>
  * `중단하고 보내기` 메시지(지금 보내기로 바꾼 줄 세운 메시지 포함)가 기다리면 그 메시지 깨우기만 받는다.
  * 사용자가 지금 실행 시도를 끊고 먼저 넣은 말이므로 그 말만 먼저 다루게 하고, 먼저 줄 세운 메시지와
  * 다른 깨우기(승인 결정·작업 사건·heartbeat 등)는 대기한 채 그 실행 시도가 끝난 뒤의 실행 시도가 평소처럼 합쳐 받는다.
+ * 실행 의도 복구 깨우기(`intent_recovery`)는 어느 묶음에든 함께 들어간다. 모델이 지난 실행 시도의 쓰기 결과를 받기 전에는 진행하지 않는다.
  */
 export function bundleWakes(pending: readonly PendingWake[]): PendingWake[] {
   const interrupts = pending.filter((w) => w.delivery === "interrupt");
-  return interrupts.length ? interrupts : [...pending];
+  if (!interrupts.length) return [...pending];
+  return pending.filter(
+    (w) => w.delivery === "interrupt" || w.reason.kind === "intent_recovery"
+  );
 }
 
 /**
@@ -333,11 +339,23 @@ export type RunFinishPlan = {
     finishedAt: string;
   };
   event: NewEvent;
+  /** 이 실행 시도가 쥔 채 끝나 다시 대기시킬 깨우기(모델이 받지 못한 복구 깨우기). */
+  requeueWakeIds: string[];
 };
+
+/**
+ * 끝난 실행 시도가 받은 복구 깨우기를 모델이 받았다고 볼 수 있는가. 완료했거나, 끝나지 못했어도 프로바이더가 이 실행 시도의 요청을 담은
+ * 다음 세션을 돌려줬으면 받았다. 다음 세션이 없으면 다음 실행 시도는 이 실행 시도 전 세션에서 이어 가므로 결과를 잃는다(`planRunFinish`).
+ */
+export const recoveryDelivered = (
+  status: RunEndReason,
+  result: Pick<RunResult, "nextSession">
+) => status === "completed" || result.nextSession !== null;
 
 /**
  * 프로바이더가 돌려준 종료 결과로 실행 시도를 끝낸다. 종료는 한 번만 확정된다(저장 쪽이 강제).
  * 사용자 제어가 취소를 요청한 실행 시도는 프로바이더가 무엇을 돌려주든 `cancelled`로 끝난다. 늦게 돌아온 성공이 취소를 덮지 않는다.
+ * 완료하지 못했고 다음 세션도 없으면, 이 실행 시도가 쥔 복구 깨우기는 모델에 전해지지 않았으므로 다시 대기시킨다.
  */
 export function planRunFinish(
   run: {
@@ -348,9 +366,13 @@ export function planRunFinish(
     sessionBefore?: SessionState | null;
   },
   result: RunResult,
-  { now }: Pick<RecordSource, "now">
+  { now }: Pick<RecordSource, "now">,
+  { wakes }: { wakes: { id: string; kind: WakeKind }[] } = { wakes: [] }
 ): RunFinishPlan {
   const status = run.cancelReason ? "cancelled" : result.stopReason;
+  const requeueWakeIds = recoveryDelivered(status, result)
+    ? []
+    : wakes.filter((w) => w.kind === "intent_recovery").map((w) => w.id);
   return {
     update: {
       status,
@@ -373,8 +395,10 @@ export function planRunFinish(
         stopReason: status,
         summary: result.summary,
         error: result.error,
+        ...(requeueWakeIds.length ? { requeuedWakeIds: requeueWakeIds } : {}),
       },
     },
+    requeueWakeIds,
   };
 }
 
@@ -470,6 +494,72 @@ export function planRunInterruption(
       },
     },
     requeueWakeIds: wakeIds,
+  };
+}
+
+const recoveryBlockedError: Record<AgentRecoveryBlockReason, string> = {
+  missing_source:
+    "실행 의도의 원본 자료를 찾을 수 없어 복구를 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
+  inconsistent_record:
+    "실행 의도 기록이 맞지 않아 복구를 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
+  retry_exhausted:
+    "실행 의도 복구가 거듭 실패해 멈췄습니다. 받은 깨우기는 복구 재시도 뒤 다시 받습니다.",
+};
+
+/**
+ * 모델(프로바이더)을 부르기 전, 실행 의도 복구 정산 단계에서 끝나는 실행 시도. 모델은 아무것도 받지 않았다. 세션은 그 실행 시도 전 그대로다.
+ * - 정산이 막혔으면(`blocked`) `failed`로 끝나고 받은 깨우기를 모두 다시 대기시키며, 에이전트를 복구 멈춤으로 둔다(`block`).
+ * - 사용자 제어가 취소를 요청했으면(정산 중이든 막힌 뒤든) `cancelled`로 끝난다. 다른 깨우기는 취소 계약대로 다시 보내지 않지만,
+ *   실행 의도 복구 깨우기는 모델에 전해지지 않았으므로 다시 대기시켜 재개 뒤의 실행 시도가 정산·전달한다.
+ */
+export function planRunEndBeforeModel(
+  run: {
+    id: string;
+    organizationId: string;
+    agentId: string;
+    cancelReason: RunCancelReason | null;
+    sessionBefore: SessionState | null;
+  },
+  ending: { blocked: AgentRecoveryBlockReason } | "cancelled",
+  { wakes }: { wakes: { id: string; kind: WakeKind }[] },
+  source: Pick<RecordSource, "now">
+): RunFinishPlan & {
+  requeueWakeIds: string[];
+  block: AgentRecoveryBlockReason | null;
+} {
+  const block =
+    ending !== "cancelled" && !run.cancelReason ? ending.blocked : null;
+  const error = block ? recoveryBlockedError[block] : null;
+  const plan = planRunFinish(
+    run,
+    {
+      stopReason: block ? "failed" : "cancelled",
+      error,
+      summary: null,
+      usage: null,
+      nextSession: run.sessionBefore,
+    },
+    source
+  );
+  const requeueWakeIds = wakes
+    .filter((w) => block || w.kind === "intent_recovery")
+    .map((w) => w.id);
+  return {
+    ...plan,
+    event: {
+      organizationId: run.organizationId,
+      type: "run.finished",
+      payload: {
+        runId: run.id,
+        agentId: run.agentId,
+        stopReason: plan.update.status,
+        summary: null,
+        error: plan.update.error,
+        requeuedWakeIds: requeueWakeIds,
+      },
+    },
+    requeueWakeIds,
+    block,
   };
 }
 

@@ -159,6 +159,34 @@ describe("planRunStart", () => {
     expect(plan([])).toBeUndefined();
   });
 
+  it("puts a pending intent recovery into every bundle, an interrupt bundle included, and keeps the interrupted run's session slot", () => {
+    const recovery = (id: string, taskId: string | null): PendingWake => ({
+      id,
+      organizationId: "org-1",
+      agentId: "lead-1",
+      createdAt: at,
+      reason: {
+        kind: "intent_recovery",
+        wakeId: id,
+        interruptedRunId: "run-1",
+        taskId,
+        intents: [],
+      },
+      delivery: null,
+    });
+    const pending = [
+      wake("w1", "줄 선 하나"),
+      recovery("w2", null),
+      wake("w3", "중단하고 보낸 말", "interrupt"),
+    ];
+    expect(bundleWakes(pending).map((w) => w.id)).toEqual(["w2", "w3"]);
+    expect(
+      bundleWakes([recovery("w4", null), wake("w5", "하나")])
+    ).toHaveLength(2);
+    expect(sessionTaskOf([recovery("w6", "task-1").reason])).toBe("task-1");
+    expect(sessionTaskOf([recovery("w7", null).reason])).toBeNull();
+  });
+
   it("resumes the stored session only under the same instructions bundle", () => {
     const start = (current: string | null, previous: string | null) =>
       planRunStart(

@@ -23,14 +23,16 @@ import {
   sendQueuedMessageNow,
   withdrawQueuedMessage,
 } from "./queued-messages.ts";
+import { controlAgent } from "./control.ts";
 import {
   claimNextRun,
   finishRun,
+  interruptRun,
   listAgentsWithPendingWakes,
   loadRunContext,
   recoverInterruptedRuns,
 } from "./runs.ts";
-import { findAgentDetail } from "./run-views.ts";
+import { findAgentDetail, findRunDetail } from "./run-views.ts";
 import { organizations } from "./schema.ts";
 import { refused } from "./stored.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
@@ -283,6 +285,107 @@ describe("steering into the running run", () => {
     expect(bodies((await org.claim())?.wakeReasons)).toEqual([
       "일 시작",
       "받은 뒤 멈춤",
+    ]);
+  });
+
+  /** 끼워 넣어 실행 시도가 받은 메시지. 그 실행 시도는 실행 중으로 남는다(서버가 멈춘 상태). */
+  const acceptedSteer = async (body: string) => {
+    const org = await organization();
+    await org.send("일 시작");
+    const running = (await org.claim())!;
+    const sent = await steer(org, body);
+    await settleSteer(
+      t.db,
+      {
+        organizationId: org.orgId,
+        messageId: sent.message.id,
+        runId: running.run.id,
+        outcome: "accepted",
+      },
+      source
+    );
+    return { org, running, messageId: sent.message.id };
+  };
+  const recover = async () => {
+    await recoverInterruptedSteers(t.db);
+    await recoverInterruptedRuns(t.db, source);
+  };
+
+  it("delivers a recovered accepted message once even when recovery repeats, also through the shutdown requeue, and keeps each run's record (#159)", async () => {
+    const { org, running, messageId } = await acceptedSteer("받은 뒤 멈춤");
+    await recover();
+    // 다시 복구해도 메시지·깨우기가 늘지 않는다.
+    await recover();
+    expect(
+      (await listQueuedMessages(t.db, org.orgId, org.conversation.id)).map(
+        (m) => m.body
+      )
+    ).toEqual(["일 시작", "받은 뒤 멈춤"]);
+    const next = (await org.claim())!;
+    expect(bodies(next.wakeReasons)).toEqual(["일 시작", "받은 뒤 멈춤"]);
+    // 정상 종료(서버 종료로 취소되어 돌아온 실행 시도)도 같은 재대기 경로다.
+    await interruptRun(t.db, next.run.id, source);
+    const after = (await org.claim())!;
+    expect(bodies(after.wakeReasons)).toEqual(["일 시작", "받은 뒤 멈춤"]);
+    expect(await org.claim()).toBeUndefined();
+    // 지난 실행 시도의 상세에는 끼워 넣어 받은 메시지까지 받은 깨우기가 남고, 다음 실행 시도들도 같은 입력을 받았다.
+    for (const runId of [running.run.id, next.run.id, after.run.id])
+      expect(
+        bodies((await findRunDetail(t.db, org.orgId, runId))?.wakeReasons)
+      ).toEqual(["일 시작", "받은 뒤 멈춤"]);
+    // 대화에서는 지금 받은 실행 시도의 메시지로 놓인다.
+    const placed = (
+      await listConversationMessages(t.db, org.orgId, org.conversation.id)
+    ).find((m) => m.id === messageId);
+    expect(placed).toMatchObject({
+      deliveredToRunId: after.run.id,
+      delivery: "next_run",
+    });
+    expect(
+      await listQueuedMessages(t.db, org.orgId, org.conversation.id)
+    ).toEqual([]);
+  });
+
+  it("does not resend an accepted message of a run the owner cancelled before the server stopped, and holds a recovered one while the Lead is paused (#159)", async () => {
+    const cancelled = await acceptedSteer("취소 뒤 멈춤");
+    expect(
+      (
+        await controlAgent(
+          t.db,
+          cancelled.org.orgId,
+          cancelled.org.lead.id,
+          "interrupt"
+        )
+      ).kind
+    ).toBe("ok");
+    const paused = await acceptedSteer("일시정지 중 복구");
+    await recover();
+    expect(
+      await listQueuedMessages(
+        t.db,
+        cancelled.org.orgId,
+        cancelled.org.conversation.id
+      )
+    ).toEqual([]);
+    expect(await cancelled.org.claim()).toBeUndefined();
+
+    expect(
+      (await controlAgent(t.db, paused.org.orgId, paused.org.lead.id, "pause"))
+        .kind
+    ).toBe("ok");
+    expect(await paused.org.claim()).toBeUndefined();
+    expect(
+      await listAgentsWithPendingWakes(t.db, {
+        organizationId: paused.org.orgId,
+      })
+    ).toEqual([]);
+    await controlAgent(t.db, paused.org.orgId, paused.org.lead.id, "resume");
+    const resumed = (await paused.org.claim())!;
+    expect(resumed.run.agentId).toBe(paused.org.lead.id);
+    expect(resumed.run.organizationId).toBe(paused.org.orgId);
+    expect(bodies(resumed.wakeReasons)).toEqual([
+      "일 시작",
+      "일시정지 중 복구",
     ]);
   });
 

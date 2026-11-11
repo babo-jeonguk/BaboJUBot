@@ -225,6 +225,13 @@
       "when": 1793904000000,
       "tag": "0031_isolation_readiness",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794387140757,
+      "tag": "0032_intent_recovery",
+      "breakpoints": true
     }
   ]
 }

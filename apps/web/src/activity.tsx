@@ -17,6 +17,7 @@ import {
   mapOperationLabel,
   runLabel,
   runStatusLabel,
+  recoveryBlockLabel,
   resultDecisionLabel,
   stageLabel,
 } from "./ui.tsx";
@@ -134,6 +135,19 @@ export function describeEvent(
       };
     case "agent.resumed":
       return { icon: "▶", title: `사용자가 ${agentName}를 재개했습니다` };
+    case "agent.recovery_blocked":
+      return {
+        icon: "⛔",
+        title: `${agentName}의 실행 복구가 멈췄습니다`,
+        detail: recoveryBlockLabel[event.payload.reason],
+      };
+    case "agent.recovery_retried":
+      return {
+        icon: "↻",
+        title: `사용자가 ${agentName}의 실행 복구를 다시 시도했습니다`,
+      };
+    case "agent.recovery_resolved":
+      return { icon: "✓", title: `${agentName}의 실행 복구가 끝났습니다` };
     case "agent.interrupted":
       if (!event.payload.messageId)
         return {

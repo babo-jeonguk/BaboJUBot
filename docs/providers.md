@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- |
 | Claude Code | 2.1.317 | 실행마다 duplex stream-json | 기본 지침에 파일로 append | 살아 있는 입력 큐에 전달 |
 | Codex | 0.166.0 | app-server 기본, `BABOJUBOT_CODEX_MODE=exec` 선택 | developerInstructions | app-server 턴 ACK; exec 미지원 |
-| OpenCode | 2.2.5 | 실행마다 `serve --stdio`로 HTTP 서버 시작 | 기본 지침 유지, session instructions API 추가 | `delivery: steer` 응답 |
+| OpenCode | 2.2.5, 2.2.6 | 실행마다 `serve --stdio`로 HTTP 서버 시작, 조직 도구 호출 키 plugin | 기본 지침 유지, session instructions API 추가 | `delivery: steer` 응답 |
 | Antigravity | 1.4.12 | 실행마다 한 입력·한 결과 | 첫 입력 앞에 추가 | 미지원 |
 
 판을 제한하지 않는다. 설치된 프로그램을 그대로 쓰며, 표의 판은 실제 호출로 시험한 기준이다. 프로토콜이 어긋나면 준비 확인이나 실행 시도가 실패로 드러난다. OpenCode 1.x는 서버 방식이 달라 동작하지 않는다.
@@ -83,6 +83,8 @@ pnpm provider:login claude   # codex, opencode, antigravity, claude:work
 실행 시도는 프로그램이 스스로 끝날 때 끝난다. Claude는 첫 턴의 결과를 받으면 입력만 닫는다. Claude는 메인 대화가 띄운 백그라운드 명령(`run_in_background`)이 끝나거나 시간 한도(기본 30분, `timeout`으로 최대 2시간)에 닿을 때까지 열려 있다가 그 결과로 한 턴 더 하고 끝나며([Claude 문서](https://code.claude.com/docs/en/headless.md#background-tasks-at-exit)), 실행 시도는 마지막 턴의 결과로 끝난다. 토큰은 턴마다 더하고 비용은 마지막 결과의 누계를 쓴다. 기다리는 동안 활동에 `백그라운드 작업이 끝나기를 기다립니다.`가 보이고, 끼워 넣기는 받지 않으며, 취소는 위 순서대로 백그라운드 명령까지 끝낸다. Codex·OpenCode·Antigravity는 아직 첫 턴의 끝에서 프로그램을 닫으므로 백그라운드로 남긴 명령은 함께 끝나고, 끝났다고 다시 깨우지 않는다(#125). 작업자 지침은 결과가 필요한 명령의 결과를 같은 실행 시도 안에서 받게 하고, 턴을 끝내면 실행 시도가 끝나는 프로바이더도 있음을 알린다. 열린 백그라운드 작업은 Claude가 바뀔 때마다 내는 살아 있는 백그라운드 작업 목록(`background_tasks_changed`)으로 판단하고, 기다리는 서브에이전트 같은 foreground 일은 세지 않는다. 그 목록에 작업이 남은 채 프로그램이 끝나면(종료 코드와 상관없이) 실행 시도를 실패로 끝내고 세션을 저장하지 않는다. 이미 보고된 턴의 사용량과 로그인 문제 판정은 남긴다. 결과를 한 번도 내지 않고 끝났으면 사용량은 아래처럼 Claude가 남긴 비용 행으로 센다.
 
 MCP bearer는 Claude의 임시 0600 파일, Codex·OpenCode의 자식 환경, Antigravity의 작업 폴더 `.agents/mcp_config.json`으로 전달한다. 격리 실행에서는 Antigravity도 토큰이 든 설정을 실행 시도 전용 임시 폴더에 두고 그 컨테이너 안에서만 작업 폴더의 설정 파일 위에 읽기로 넣는다. 작업 폴더에는 토큰 없는 제품 소유 파일이 자리만 잡으며 같은 조직의 다른 컨테이너에는 그것만 보인다. 명령 인수에는 넣지 않는다. Antigravity는 같은 작업 폴더를 파일 생성부터 제거까지 직렬화한다. 제품 소유 표시가 있는 잔여 파일과 임시 파일만 지우며, 표시가 없는 파일은 비어 있어도 건드리지 않고 그 실행 시도를 실패로 끝낸다. 심볼릭 링크도 거부한다. 파일은 하드링크로 한 번에 나타나고 이미 있는 파일을 덮어쓰지 않는다. 하드링크를 지원하지 않는 파일 시스템에서는 이유와 함께 실패한다. 정상 종료·실패·취소·서버 재시작 때 정리한다.
+
+OpenCode는 실행마다 설정 폴더(`OPENCODE_CONFIG_DIR`)의 `plugins/`에 제품 plugin을 써 넣는다. plugin은 공개 도구 API(`ctx.tool.transform`)로 조직 도구의 실행만 바꿔, 원래 실행처럼 권한을 확인한 뒤 호출 신원(세션·assistant 메시지·도구 호출 ID)으로 만든 같은 호출 키를 MCP `params._meta`에 넣어 보낸다. 도구 입력은 바꾸지 않고, 호출 신원이 없으면 보내지 않는다. 조직 도구 연결에는 `babojubot-call-key: required` header를 붙여, plugin이 적용되지 않아 키 없이 온 쓰기를 서버가 효과 없이 거부한다. 2.2.6에서 실제 프로그램과 이 컴퓨터의 가짜 모델로 병렬 호출·다음 메시지 호출의 키가 서로 다르고 입력이 그대로임을 확인했다(#150, `apps/server/test/opencode-real-cli.test.ts`). 근거와 보장 범위는 [#150 조사](research/issue-150-references.md)에 있다.
 
 OpenCode 실행이 실패로 끝나면 2.2.6 실패 이벤트(`session.execution.failed`)의 오류 종류와 HTTP 상태만 읽는다. 요청 거부(`provider.invalid-request`)는 제품이 쓴 요청 거부 안내로, 인증 거부(`provider.auth`)는 인증 거부 안내와 제품 로그인 필요로 끝내고, 그 밖의 종류나 모양이 맞지 않는 값은 일반 실패다. 안내에는 100–599의 정수 상태만 붙인다. 모델 서비스의 원문 메시지·응답 본문은 비밀값이나 연구 내용을 담을 수 있어 옮기지 않는다. 실패한 요청은 다시 보내지 않는다(#147).
 

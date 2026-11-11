@@ -45,11 +45,13 @@ import {
   approvalKindLabel,
   decisionLabel,
   formatTime,
+  intentOutcomeLabel,
   Loading,
   LoadError,
   NotFound,
   Page,
   PausedBadge,
+  recoveryBlockLabel,
   runLabel,
   runStatusLabel,
   RunStatusBadge,
@@ -212,8 +214,35 @@ function AgentControl({
   const control = useControlAgent(orgId, agent.id);
   const closed = stage !== undefined && isClosedStage(stage);
   const command = agent.paused ? "resume" : "pause";
+  const recovery = agent.recovery;
   return (
     <section aria-label="에이전트 제어" className="card mb-6 p-4 text-sm">
+      {recovery && (
+        <div
+          role="status"
+          aria-label="실행 복구"
+          className="mb-3 rounded-md border border-rose-200 bg-rose-50 p-3"
+        >
+          <p className="font-medium text-rose-800">
+            {recovery.state === "blocked"
+              ? "실행 복구가 멈췄습니다"
+              : "실행 복구를 다시 시도하는 중입니다"}
+          </p>
+          <p className="mt-1 text-rose-700">
+            {recoveryBlockLabel[recovery.reason]} 복구를 다시 시도하기 전에는 새
+            메시지나 heartbeat가 와도 이 에이전트가 움직이지 않습니다.
+          </p>
+          {recovery.state === "blocked" && (
+            <button
+              className="btn-soft mt-2"
+              disabled={closed || control.isPending}
+              onClick={() => control.mutate("recover")}
+            >
+              ↻ 복구 다시 시도
+            </button>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <button
           className="btn-soft"
@@ -1155,6 +1184,20 @@ function WakeReasonRow({
       return row(
         "Heartbeat",
         <span className="text-slate-700">heartbeat 간격이 지났습니다</span>
+      );
+    case "intent_recovery":
+      return row(
+        "서버 재시작 뒤 복구",
+        link(
+          `/orgs/${orgId}/runs/${reason.interruptedRunId}`,
+          `멈춘 실행 시도의 쓰기 ${reason.intents.length}개`
+        ),
+        reason.intents
+          .map(
+            (intent) =>
+              `- ${intent.tool} · ${intentOutcomeLabel[intent.outcome.status]}${intent.outcome.status === "refused" ? ` (${intent.outcome.reason})` : ""}`
+          )
+          .join("\n")
       );
   }
 }

@@ -1,4 +1,5 @@
 import {
+  agentRecoveryBlockReasons,
   agentRoles,
   approvalKinds,
   artifactFormats,
@@ -146,6 +147,18 @@ export const agents = pgTable(
      * 끝날 때 세대가 다르면 세션을 저장하지 않는다(core `planSessionWriteBack`).
      */
     sessionGeneration: integer("session_generation").notNull().default(0),
+    /**
+     * 실행 의도 복구 상태(contracts `agentRecoverySchema`). `blocked`면 admission이 실행 시도를 시작하지 않는다. 정산이 막히면
+     * dispatcher가 `blocked`로, 사용자의 복구 재시도가 `retrying`으로 바꾸고, 그 정산이 성공하면 비운다. 새 메시지·heartbeat·재시작은 바꾸지 않는다.
+     */
+    recoveryState: text("recovery_state", { enum: ["blocked", "retrying"] }),
+    recoveryReason: text("recovery_reason", {
+      enum: agentRecoveryBlockReasons,
+    }),
+    recoverySince: timestamp("recovery_since", {
+      withTimezone: true,
+      mode: "date",
+    }),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -153,6 +166,11 @@ export const agents = pgTable(
   },
   (t) => [
     check("agents_role_check", sql`${t.role} in (${inList(agentRoles)})`),
+    check(
+      "agents_recovery_check",
+      sql`(${t.recoveryState} is null and ${t.recoveryReason} is null and ${t.recoverySince} is null)
+        or (${t.recoveryState} in ('blocked', 'retrying') and ${t.recoveryReason} in (${inList(agentRecoveryBlockReasons)}) and ${t.recoverySince} is not null)`
+    ),
     check(
       "agents_heartbeat_check",
       sql`${t.heartbeatEnabled} = (${t.heartbeatNextAt} is not null)
@@ -1028,6 +1046,7 @@ const wakeSourceColumns = {
   research_map_edit: "map_edit_id",
   instruction_edit: "instruction_revision_id",
   result_changes_requested: "result_submission_id",
+  intent_recovery: "interrupted_run_id",
 } as const satisfies Record<Exclude<WakeKind, SourcelessWakeKind>, string>;
 const wakeKinds = [
   ...Object.keys(wakeSourceColumns),
@@ -1058,6 +1077,8 @@ export const wakes = pgTable(
     mapEditId: uuid("map_edit_id"),
     instructionRevisionId: uuid("instruction_revision_id"),
     resultSubmissionId: uuid("result_submission_id"),
+    /** 실행 의도 복구 깨우기가 가리키는, 서버 재시작으로 끝난 실행 시도. 그 실행 시도가 수락한 실행 의도를 알린다. */
+    interruptedRunId: uuid("interrupted_run_id"),
     runId: uuid("run_id"),
     createdAt: createdAt(),
   },
@@ -1066,8 +1087,8 @@ export const wakes = pgTable(
     check(
       "wakes_source_check",
       sql`(${t.kind} in (${inList([...sourcelessWakeKinds])})
-          and num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 0)
-        or num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}) = 1
+          and num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}, ${t.interruptedRunId}) = 0)
+        or num_nonnulls(${t.messageId}, ${t.approvalId}, ${t.taskId}, ${t.commentId}, ${t.agentToAgentMessageId}, ${t.mapEditId}, ${t.instructionRevisionId}, ${t.resultSubmissionId}, ${t.interruptedRunId}) = 1
         and (${sql.raw(
           Object.entries(wakeSourceColumns)
             .map(
@@ -1120,6 +1141,10 @@ export const wakes = pgTable(
       foreignColumns: [resultSubmissions.organizationId, resultSubmissions.id],
     }),
     foreignKey({
+      columns: [t.organizationId, t.interruptedRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    foreignKey({
       columns: [t.organizationId, t.runId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
@@ -1132,6 +1157,10 @@ export const wakes = pgTable(
     uniqueIndex("wakes_one_pending_heartbeat_per_agent")
       .on(t.agentId)
       .where(sql`${t.kind} = 'heartbeat' and ${t.runId} is null`),
+    // 서버 재시작으로 끝난 실행 시도 하나에 실행 의도 복구 깨우기는 하나뿐이다.
+    uniqueIndex("wakes_one_intent_recovery_per_run")
+      .on(t.interruptedRunId)
+      .where(sql`${t.kind} = 'intent_recovery'`),
     // 조직 생성은 Lead 깨우기 하나만 만든다.
     uniqueIndex("wakes_one_organization_created_per_organization")
       .on(t.organizationId)
@@ -1228,28 +1257,60 @@ export const memories = pgTable(
 );
 
 /**
- * 같은 효과를 한 번만 남기는 조직 도구 호출(`Idempotency-Key`). 에이전트마다 키 하나에 처음 저장한 결과를 둔다.
- * 효과와 같은 transaction에 남으므로, 효과가 commit되었으면 이 기록도 있다. 결과는 다시 처리할 수 있는 동안 지우지 않는다.
+ * 실행 의도(GLOSSARY): 에이전트가 수행하려고 확정한 조직 도구 쓰기 한 건. 효과보다 먼저 도구·입력·원본 자료를 고정해 `accepted`로 남기고,
+ * 효과와 최초 결과는 같은 transaction에서 `completed`로, 효과 없는 확정 거절은 `refused`로 정산한다. 사용자 제어가 그 실행 시도를
+ * 취소해 수행하지 않기로 한 의도는 `abandoned`다. `key`는 호출하는 쪽이 준 같은 호출 키(`Idempotency-Key`)이며 에이전트마다 하나다.
+ * 키 없이 온 쓰기도 의도로 남아 서버 재시작 뒤 다음 실행 시도에 결과를 알린다. 결과는 다시 처리할 수 있는 동안 지우지 않는다.
+ * 이 열들 전에 남은 기록(migration 0032 전)은 모두 `completed`이고 고정한 입력이 없다.
  */
 export const toolOperations = pgTable(
   "tool_operations",
   {
+    /** 제품이 발급한 실행 의도 ID. 실행 시도·토큰·프로바이더 세션이 바뀌어도 그대로다. */
+    id: uuid("id").primaryKey().defaultRandom(),
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organizations.id),
     agentId: uuid("agent_id").notNull(),
-    key: text("key").notNull(),
+    key: text("key"),
     tool: text("tool").notNull(),
     requestDigest: text("request_digest").notNull(),
-    result: jsonb("result").notNull(),
-    /** 처음 쓴 실행 시도. */
+    /** 수락 때 고정한 입력: 경로 변수와 본문의 JSON 표기 그대로(`{"params":…,"body":…}`). digest는 이 글의 SHA-256이다. */
+    request: text("request"),
+    /** 수락 때 고정한 원본 자료. 파일 경로 산출물이면 처음 읽은 결과다. 정산하면 비운다. */
+    source: jsonb("source"),
+    /** `accepted`·`completed`·`refused`·`abandoned`. */
+    status: text("status", {
+      enum: ["accepted", "completed", "refused", "abandoned"],
+    })
+      .notNull()
+      .default("completed"),
+    /** 최초 결과(`completed`). */
+    result: jsonb("result"),
+    /** 확정 거절 이유(`refused`): Role·단계 거부(`role`·`stage`)나 도구 규칙 거부 코드. */
+    refusal: text("refusal"),
+    /**
+     * 복구 전달을 시작한 횟수(그 복구가 나르는 모든 의도에 대해 센다). 서버 재시작을 넘어 세며, 한도에 닿으면 에이전트가 복구 멈춤이 된다.
+     * 사용자의 복구 재시도가 0으로 되돌린다.
+     */
+    settleAttempts: integer("settle_attempts").notNull().default(0),
+    /** 의도를 수락한 실행 시도. */
     runId: uuid("run_id").notNull(),
+    /** 정산한 실행 시도. 복구로 정산하면 수락한 실행 시도와 다르다. */
+    settledRunId: uuid("settled_run_id"),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
       .notNull()
       .defaultNow(),
   },
   (t) => [
-    primaryKey({ columns: [t.agentId, t.key] }),
+    unique("tool_operations_agent_id_key_unique").on(t.agentId, t.key),
+    check(
+      "tool_operations_status_check",
+      sql`(${t.status} = 'accepted' and ${t.result} is null and ${t.refusal} is null and ${t.request} is not null)
+        or (${t.status} = 'completed' and ${t.result} is not null and ${t.refusal} is null and ${t.source} is null)
+        or (${t.status} = 'refused' and ${t.result} is null and ${t.refusal} is not null and ${t.source} is null)
+        or (${t.status} = 'abandoned' and ${t.result} is null and ${t.refusal} is null and ${t.source} is null)`
+    ),
     foreignKey({
       columns: [t.organizationId, t.agentId],
       foreignColumns: [agents.organizationId, agents.id],
@@ -1258,6 +1319,11 @@ export const toolOperations = pgTable(
       columns: [t.organizationId, t.runId],
       foreignColumns: [runs.organizationId, runs.id],
     }),
+    foreignKey({
+      columns: [t.organizationId, t.settledRunId],
+      foreignColumns: [runs.organizationId, runs.id],
+    }),
+    index("tool_operations_run_idx").on(t.runId),
   ]
 );
 

@@ -284,6 +284,8 @@ export async function startServer({
       workspaces,
     }),
     onLoginRequired: (provider) => void readiness.check(provider),
+    // 도구 경로는 dispatcher를 받아 뒤에 만든다. 정산은 실행 시도가 시작된 뒤에만 부르므로 그때는 있다.
+    settleIntent: (intent, run) => settleIntent(intent, run),
   });
   const compactions = new CompactionScheduler({
     db,
@@ -380,7 +382,7 @@ export async function startServer({
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
   const compactionTools = compactions.router();
-  const organizationTools = orgToolsRouter({
+  const { router: organizationTools, settle: settleIntent } = orgToolsRouter({
     db,
     hub,
     dispatcher,
