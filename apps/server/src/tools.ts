@@ -556,7 +556,8 @@ export function orgToolsRouter({
   /**
    * 조직 도구 호출 하나. 읽기는 Role·단계 검사 뒤 처리한다. 쓰기는 실행 의도(GLOSSARY)로 처리한다.
    * - 같은 호출 키의 의도가 이미 있으면 도구·입력이 같은지만 보고(다르면 409 `idempotency_conflict`) 그 의도를 처리한다. 정산한 의도는
-   *   지금 단계가 그 쓰기를 막아도 최초 결과를 돌려주고 아무것도 다시 남기지 않는다(새 쓰기가 아님). 토큰은 언제나 지금 실행 시도의 것이어야 한다.
+   *   지금 단계가 그 쓰기를 막아도 최초 결과를 돌려주고 아무것도 다시 남기지 않는다(새 쓰기가 아님). 처음 조회와 단계 검사 사이에 의도가
+   *   정산되고 단계가 바뀌어도 마찬가지로 최초 결과를 받는다. 토큰은 언제나 지금 실행 시도의 것이어야 한다.
    * - 새 쓰기는 Role·단계와 입력을 검사한 뒤, 원본 자료(파일 경로 산출물이면 그 파일)를 읽어 입력과 함께 고정하고 의도를 수락한다.
    *   효과는 그 commit 뒤에만 하며, 효과와 최초 결과는 같은 transaction으로 정산된다(db `toolWrite`).
    * 키 없이 온 쓰기도 의도로 남긴다. 서버 재시작 뒤 다음 실행 시도가 그 결과를 받지만, 키가 없으니 같은 호출의 재전송은 가리지 못한다.
@@ -583,7 +584,7 @@ export function orgToolsRouter({
     let intent =
       key === null ? undefined : await findIntentByKey(db, run.agentId, key);
     if (!intent) {
-      const gate = await gateToolCall(db, run, name);
+      const gate = await gateToolCall(db, run, name, key);
       if (!gate) return failure(401, "invalid_token");
       if (!gate.ok) {
         await applyAfterCommit({ hub, dispatcher }, gate.after);

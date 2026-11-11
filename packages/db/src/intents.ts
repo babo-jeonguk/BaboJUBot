@@ -328,15 +328,20 @@ export async function selectRecoveredIntents(
 
 /**
  * 실행 시도가 받은 복구 깨우기가 가리키는, 아직 수행하지 않은 실행 의도. 모델을 부르기 전에 정산할 목록이다.
+ * `recovered`는 그 깨우기가 가리키는 실행 시도의 모든 의도(정산 여부와 상관없음)로, 복구 전달 시도를 셀 때 쓴다.
  * 다른 에이전트의 의도가 섞였거나 고정한 입력이 없거나 읽을 수 없으면 기록 모순으로 본다.
  */
 export async function listIntentsToSettle(
   db: Executor,
   run: { id: string; organizationId: string; agentId: string }
 ): Promise<
-  | { kind: "ok"; intents: StoredIntent[] }
+  | { kind: "ok"; intents: StoredIntent[]; recovered: string[] }
   | { kind: "blocked"; reason: AgentRecoveryBlockReason }
 > {
+  const recovered = await db
+    .select({ id: toolOperations.id })
+    .from(toolOperations)
+    .where(inArray(toolOperations.runId, recoveredRunsOf(db, run.id)));
   const rows = await db
     .select(intentColumns)
     .from(toolOperations)
@@ -354,15 +359,20 @@ export async function listIntentsToSettle(
       decodeIntentRequest(row.request) === null
     )
       return { kind: "blocked", reason: "inconsistent_record" };
-  return { kind: "ok", intents: rows };
+  return {
+    kind: "ok",
+    intents: rows,
+    recovered: recovered.map((r) => r.id),
+  };
 }
 
-/** 서버 재시작을 넘어 세는 복구 정산 시도의 한도. 닿으면 복구 멈춤이다. */
+/** 서버 재시작을 넘어 세는 복구 전달 시도의 한도. 닿으면 복구 멈춤이다. */
 export const intentSettleAttemptLimit = 3;
 
 /**
- * 정산할 실행 의도들의 복구 정산 시도를 하나 센다. 이미 한도에 닿은 의도가 있으면 세지 않고 `false`다(호출자가 멈춘다).
- * 서버가 정산 도중 멈춰도 센 값은 남으므로 재시작이 한도를 되돌리지 않는다.
+ * 복구가 전달하려는 실행 의도들의 복구 전달 시도를 하나 센다. 정산 여부와 상관없이 그 복구가 나르는 모든 의도를 센다.
+ * 이미 한도에 닿은 의도가 있으면 세지 않고 `false`다(호출자가 멈춘다).
+ * 서버가 복구 도중 멈춰도 센 값은 남으므로 재시작이 한도를 되돌리지 않는다.
  */
 export async function countSettleAttempt(
   db: Database,
@@ -384,17 +394,12 @@ export async function countSettleAttempt(
   });
 }
 
-/** 사용자의 복구 재시도: 그 에이전트의 수행하지 않은 의도의 시도 횟수를 되돌린다. */
+/** 사용자의 복구 재시도: 그 에이전트의 모든 의도의 복구 전달 시도 횟수를 되돌린다. */
 export async function resetSettleAttempts(tx: Executor, agentId: string) {
   await tx
     .update(toolOperations)
     .set({ settleAttempts: 0 })
-    .where(
-      and(
-        eq(toolOperations.agentId, agentId),
-        eq(toolOperations.status, "accepted")
-      )
-    );
+    .where(eq(toolOperations.agentId, agentId));
 }
 
 /**

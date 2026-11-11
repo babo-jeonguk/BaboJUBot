@@ -397,9 +397,10 @@ export class RunDispatcher {
    * 정산한 결과는 깨우기 사유에 실려 모델이 받는 맥락이 된다. 복구 깨우기를 실은 실행 시도에서 정산부터 프로바이더에 요청을 넘기기 직전까지
    * (막힘 풀기, 깨우기 사유 다시 읽기, 요청 조립, 프로바이더 연결 찾기, 취소 관찰)가 모델을 부르기 전의 경계다. 그 경계에서 실패하면 실행 시도
    * 안에서 다시 시도하고 한도에 닿으면 `retry_exhausted`로 막으며, 그사이 사용자 제어가 취소했으면 모델을 부르기 전에 실행 시도를 끝내
-   * 복구 깨우기를 다시 대기시킨다. 일시적 오류는 다시 시도하되, 의도마다 DB에 센 시도가 서버 재시작을 넘어 한도(db `intentSettleAttemptLimit`)에
-   * 닿거나 같은 실행 시도 안에서 {@link recoveryAttempts}번 실패하거나
-   * 원본 자료가 없거나 기록이 맞지 않으면 `blocked`다. 사용자 제어가 그사이 취소했으면 `run_finished`다.
+   * 복구 깨우기를 다시 대기시킨다. 일시적 오류는 다시 시도하되, 복구가 나르는 모든 의도(정산 여부와 상관없음)마다 DB에 센 복구 전달 시도가
+   * 서버 재시작을 넘어 한도(db `intentSettleAttemptLimit`)에 닿거나 같은 실행 시도 안에서 {@link recoveryAttempts}번 실패하거나
+   * 원본 자료가 없거나 기록이 맞지 않으면 `blocked`다. 그래서 모델보다 먼저(준비 중이나 프로바이더가 모델을 부르기 전) 실패하거나
+   * 서버가 다시 시작해도 한도가 되돌아가지 않는다. 사용자 제어가 그사이 취소했으면 `run_finished`다.
    * 정산에 성공하고 에이전트가 사용자가 고른 복구 재시도 중이면 막힘을 푼다.
    */
   async #prepare(
@@ -420,12 +421,8 @@ export class RunDispatcher {
         const listed = await listIntentsToSettle(this.#db, run);
         if (listed.kind === "blocked") return listed;
         // 시도 횟수는 DB에 세므로 정산 도중 서버가 멈춰 다시 시작해도 한도가 되돌아가지 않는다.
-        if (
-          !(await countSettleAttempt(
-            this.#db,
-            listed.intents.map((i) => i.id)
-          ))
-        )
+        // 이미 정산한 의도도 세야 모델 전 실패·재시작이 한도를 되돌리지 않는다.
+        if (!(await countSettleAttempt(this.#db, listed.recovered)))
           return { kind: "blocked", reason: "retry_exhausted" };
         if (listed.intents.length) {
           if (!this.#settleIntent)

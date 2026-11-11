@@ -202,6 +202,7 @@ export type RunEnding = "ended" | "already_ended";
  * 이미 끝난 실행 시도면 아무것도 바꾸지 않고 Event 없이 자리 촉진만 돌려준다. 없는 실행 시도는 `not_found`다.
  * 취소를 요청받은 실행 시도는 프로바이더의 결과와 상관없이 `cancelled`로 끝난다(core `planRunFinish`).
  * 다음 세션은 이 실행 시도의 세션 자리에 남긴다. 그사이 에이전트의 프로바이더가 바뀌었으면 남기지 않는다(`writeBackSession`).
+ * 완료하지 못했고 다음 세션도 없으면 모델이 받지 못한 복구 깨우기를 다시 대기시킨다(core `recoveryDelivered`).
  * 그 실행 시도가 수락했거나 복구로 정산하려던 실행 의도 가운데 아직 수행하지 않은 것은 버린다(intents.ts `abandonRunIntents`).
  * 잠금 순서는 조직 → 에이전트 → 실행 시도이며, 에이전트 행 잠금이 프로바이더 변경과 직렬화한다.
  */
@@ -216,7 +217,12 @@ export async function finishRun(
     if (locked === "not_found") return refused(locked);
     const { agent, run } = locked;
     if (run.status !== "running") return alreadyEnded(run);
-    const plan = planRunFinish(run, result, source);
+    const held = await tx
+      .select({ id: wakes.id, kind: wakes.kind })
+      .from(wakes)
+      .where(eq(wakes.runId, runId))
+      .orderBy(asc(wakes.seq));
+    const plan = planRunFinish(run, result, source, { wakes: held });
     await closeRun(
       tx,
       agent,
@@ -227,8 +233,11 @@ export async function finishRun(
         : null
     );
     await abandonRunIntents(tx, runId);
+    // 복구 깨우기는 `wakes.runId`로 복구 대상을 찾으므로(`abandonRunIntents`), 의도를 버린 뒤에 다시 대기시킨다.
+    const requeued = await requeueWakes(tx, runId, plan.requeueWakeIds);
     return stored<RunEnding>("ended", {
       events: [await insertEvent(tx, plan.event)],
+      woken: requeued.length ? [run.agentId] : [],
       providersFreed: [run.provider],
     });
   });

@@ -339,11 +339,23 @@ export type RunFinishPlan = {
     finishedAt: string;
   };
   event: NewEvent;
+  /** 이 실행 시도가 쥔 채 끝나 다시 대기시킬 깨우기(모델이 받지 못한 복구 깨우기). */
+  requeueWakeIds: string[];
 };
+
+/**
+ * 끝난 실행 시도가 받은 복구 깨우기를 모델이 받았다고 볼 수 있는가. 완료했거나, 끝나지 못했어도 프로바이더가 이 실행 시도의 요청을 담은
+ * 다음 세션을 돌려줬으면 받았다. 다음 세션이 없으면 다음 실행 시도는 이 실행 시도 전 세션에서 이어 가므로 결과를 잃는다(`planRunFinish`).
+ */
+export const recoveryDelivered = (
+  status: RunEndReason,
+  result: Pick<RunResult, "nextSession">
+) => status === "completed" || result.nextSession !== null;
 
 /**
  * 프로바이더가 돌려준 종료 결과로 실행 시도를 끝낸다. 종료는 한 번만 확정된다(저장 쪽이 강제).
  * 사용자 제어가 취소를 요청한 실행 시도는 프로바이더가 무엇을 돌려주든 `cancelled`로 끝난다. 늦게 돌아온 성공이 취소를 덮지 않는다.
+ * 완료하지 못했고 다음 세션도 없으면, 이 실행 시도가 쥔 복구 깨우기는 모델에 전해지지 않았으므로 다시 대기시킨다.
  */
 export function planRunFinish(
   run: {
@@ -354,9 +366,13 @@ export function planRunFinish(
     sessionBefore?: SessionState | null;
   },
   result: RunResult,
-  { now }: Pick<RecordSource, "now">
+  { now }: Pick<RecordSource, "now">,
+  { wakes }: { wakes: { id: string; kind: WakeKind }[] } = { wakes: [] }
 ): RunFinishPlan {
   const status = run.cancelReason ? "cancelled" : result.stopReason;
+  const requeueWakeIds = recoveryDelivered(status, result)
+    ? []
+    : wakes.filter((w) => w.kind === "intent_recovery").map((w) => w.id);
   return {
     update: {
       status,
@@ -379,8 +395,10 @@ export function planRunFinish(
         stopReason: status,
         summary: result.summary,
         error: result.error,
+        ...(requeueWakeIds.length ? { requeuedWakeIds: requeueWakeIds } : {}),
       },
     },
+    requeueWakeIds,
   };
 }
 

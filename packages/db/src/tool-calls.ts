@@ -15,7 +15,12 @@ import {
   lockRunningRun,
   type Executor,
 } from "./rows.ts";
-import { lockIntent, settleIntent, type StoredIntent } from "./intents.ts";
+import {
+  findIntentByKey,
+  lockIntent,
+  settleIntent,
+  type StoredIntent,
+} from "./intents.ts";
 import { organizations, runs } from "./schema.ts";
 import type { AfterCommit } from "./stored.ts";
 
@@ -59,11 +64,15 @@ const lockRun = async (tx: Executor, run: ActiveRunRef) => {
 /**
  * 조직 도구 호출 전의 Role·단계 검사. 거부하면 그 실행 시도에 귀속한 `tool.refused` Event를 남긴다.
  * 실행 시도가 이미 끝났으면 `undefined`. 쓰기 도구는 저장할 때 잠금 아래에서 다시 검사한다.
+ * 쓰기 호출의 같은 호출 키에 이미 실행 의도가 있으면(동시에 온 같은 호출이 먼저 수락함) 거부하지 않는다. 그 호출은 새 쓰기가
+ * 아니라 그 의도의 결과 조회다. 거부 판정 뒤 같은 transaction에서 다시 보므로, 처음 조회와 이 검사 사이에 그 의도가 정산되고 단계가 바뀌어도
+ * 최초 결과를 받는다.
  */
 export async function gateToolCall(
   db: Database,
   run: ActiveRunRef,
-  tool: OrgToolName
+  tool: OrgToolName,
+  key: string | null = null
 ): Promise<GateResult | undefined> {
   return db.transaction(async (tx) => {
     const locked = await lockRun(tx, run);
@@ -72,6 +81,15 @@ export async function gateToolCall(
       .select({ stage: organizations.stage })
       .from(organizations)
       .where(eq(organizations.id, locked.organizationId));
+    const check = checkToolCall(tool, {
+      role: locked.role,
+      stage: org!.stage,
+    });
+    // 같은 호출 키의 의도가 이미 있으면 이 호출은 그 결과 조회다. 단계가 그 쓰기를 닫았어도 거부하지 않는다.
+    if (!check.ok && key !== null) {
+      const intent = await findIntentByKey(tx, locked.agentId, key);
+      if (intent) return { ok: true };
+    }
     return checkOrRefuse(tx, locked, org!.stage, tool);
   });
 }
