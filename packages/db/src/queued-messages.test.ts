@@ -28,6 +28,7 @@ import {
   finishRun,
   listAgentsWithPendingWakes,
   loadRunContext,
+  recoverInterruptedRuns,
 } from "./runs.ts";
 import { findAgentDetail } from "./run-views.ts";
 import { organizations } from "./schema.ts";
@@ -248,6 +249,54 @@ describe("steering into the running run", () => {
         (m) => [m.body, m.delivery]
       )
     ).toEqual([["넣다가 멈춤", "next_run"]]);
+  });
+
+  it("returns an accepted message to the queue when the server stopped during its run, so the run after the restart takes it", async () => {
+    const org = await organization();
+    await org.send("일 시작");
+    const running = (await org.claim())!;
+    const sent = await steer(org, "받은 뒤 멈춤");
+    await settleSteer(
+      t.db,
+      {
+        organizationId: org.orgId,
+        messageId: sent.message.id,
+        runId: running.run.id,
+        outcome: "accepted",
+      },
+      source
+    );
+    // 실제 서버 시작 순서: 끼워 넣기 복구 다음 실행 시도 복구. 실행 시도는 멈추기 전처럼 `running`으로 남아 있다.
+    await recoverInterruptedSteers(t.db);
+    await recoverInterruptedRuns(t.db, source);
+    expect(
+      (await listQueuedMessages(t.db, org.orgId, org.conversation.id)).map(
+        (m) => [m.body, m.delivery]
+      )
+    ).toEqual([
+      ["일 시작", "next_run"],
+      ["받은 뒤 멈춤", "next_run"],
+    ]);
+    expect(
+      await listAgentsWithPendingWakes(t.db, { organizationId: org.orgId })
+    ).toContain(org.lead.id);
+    expect(bodies((await org.claim())?.wakeReasons)).toEqual([
+      "일 시작",
+      "받은 뒤 멈춤",
+    ]);
+  });
+
+  it("keeps an interrupt message first when its run is requeued", async () => {
+    const org = await organization();
+    await org.send("방향 바꿈", "interrupt");
+    expect(bodies((await org.claim())?.wakeReasons)).toEqual(["방향 바꿈"]);
+    await recoverInterruptedRuns(t.db, source);
+    expect(
+      (await listQueuedMessages(t.db, org.orgId, org.conversation.id)).map(
+        (m) => [m.body, m.delivery]
+      )
+    ).toEqual([["방향 바꿈", "interrupt"]]);
+    expect(bodies((await org.claim())?.wakeReasons)).toEqual(["방향 바꿈"]);
   });
 });
 

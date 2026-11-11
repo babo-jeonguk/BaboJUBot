@@ -341,19 +341,27 @@ describe("chaos harness evidence", () => {
 });
 
 describe("chaos harness on a fake connection", () => {
-  it("kills the separate server with SIGKILL, restarts it on the same home and database, and checks recovery and the same key", async () => {
+  it("kills the separate server with SIGKILL, restarts it on the same home and database, and checks recovery, the same key, and steered messages", async () => {
     const { summary, secrets } = await runChaos({
-      launch: { ...launchAll, scenes: ["b", "c"] },
+      launch: { ...launchAll, scenes: ["b", "c", "g"] },
       connection: "fake-live",
-      scenes: [sceneById("b"), sceneById("c")],
+      scenes: [sceneById("b"), sceneById("c"), sceneById("g")],
     });
-    const [b, c] = summary.scenes;
+    const [b, c, g] = summary.scenes;
     // 가짜 연결은 프로그램을 띄우지 않으므로 프로세스 정리 검사만 미실행이다.
-    for (const scene of [b, c]) {
-      expect(scene.serverStarts).toBe(2);
+    for (const scene of [b, c, g]) {
+      expect(scene.serverStarts).toBe(scene.id === "g" ? 3 : 2);
+      // 전달 중 강제 종료는 30ms 뒤에 끝내므로 서버가 메시지를 저장하기 전에 끝날 수 있다. 그때는 미실행이고 실패는 아니다.
       expect(
         scene.checks
           .filter((x) => x.outcome !== "passed")
+          .filter(
+            (x) =>
+              !(
+                x.name === "steer_in_flight_when_killed_is_not_lost" &&
+                x.outcome === "not_run"
+              )
+          )
           .map((x) => [x.name, x.outcome, x.source])
       ).toEqual(
         scene.id === "b"
@@ -377,8 +385,16 @@ describe("chaos harness on a fake connection", () => {
     }
     expect(b.outcome).toBe("partial");
     expect(c.outcome).toBe("passed");
+    // 수락 직후 강제 종료에도 메시지는 복구 뒤 실행이 받는다(수락된 메시지가 줄로 돌아오지 않던 결함의 회귀 검사).
+    expect(g.checks).toContainEqual(
+      expect.objectContaining({
+        name: "accepted_then_killed_steer_reaches_run_after_restart",
+        outcome: "passed",
+      })
+    );
+    expect(["passed", "partial"]).toContain(g.outcome);
     expect(summary.outcome).toBe("incomplete");
-    expect(summary.liveRuns).toBe(4);
+    expect(summary.liveRuns).toBe(7);
     // 등록된 비밀값(토큰·메시지 본문·DB 주소)은 증거에 남지 않는다.
     expect(secrets.size).toBeGreaterThan(0);
     expect(sanitizeEvidence(summary, secrets).evidenceCheck.clean).toBe(true);
