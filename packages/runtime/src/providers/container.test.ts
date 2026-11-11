@@ -7,6 +7,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
@@ -36,6 +37,9 @@ afterEach(async () => {
 type Call = { args: string[]; env?: Record<string, string> };
 const image = "babojubot-runner-test";
 const fixture = (name: string) => path.resolve("test-fixtures", name);
+/** 임시 폴더 바로 아래 폴더의 실제 경로. 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) mount 원본은 실제 경로다. 폴더는 이미 지워졌을 수 있다. */
+const canonicalTemp = (folder: string) =>
+  path.join(realpathSync(path.dirname(folder)), path.basename(folder));
 
 async function setup(programs: Record<string, string[]>) {
   // 임시 폴더가 링크 뒤에 있으면(macOS) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
@@ -194,7 +198,7 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         `type=bind,source=${env.peerFolder},target=${env.peerFolder},readonly`,
         `type=bind,source=${home},target=${home}`,
         // 토큰이 든 이 실행 시도만의 파일 폴더(읽기만).
-        `type=bind,source=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
+        `type=bind,source=${canonicalTemp(path.dirname(valuesOf(args, "--mcp-config")[0]!))},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
       ].sort()
     );
     expect(args.join(" ")).not.toMatch(/docker\.sock|--volume|-v /);
@@ -249,7 +253,7 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     expect(path.relative(home, config).startsWith("..")).toBe(true);
     const attempt = path.dirname(config);
     expect(valuesOf(run.args, "--mount")).toContain(
-      `type=bind,source=${attempt},target=${attempt},readonly`
+      `type=bind,source=${canonicalTemp(attempt)},target=${attempt},readonly`
     );
     // 지침 파일도 같은 폴더에 둔다.
     expect(

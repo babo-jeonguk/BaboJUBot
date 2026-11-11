@@ -124,7 +124,10 @@ const refusal = (run: () => unknown) => {
 };
 
 async function attemptDir() {
-  const dir = await mkdtemp(path.join(tmpdir(), "babojubot-attempt-"));
+  // 임시 폴더가 링크 뒤에 있어도(macOS) mount 원본과 같도록 실제 경로로 받는다.
+  const dir = await realpath(
+    await mkdtemp(path.join(tmpdir(), "babojubot-attempt-"))
+  );
   attempts.push(dir);
   return dir;
 }
