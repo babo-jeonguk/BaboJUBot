@@ -237,6 +237,21 @@ export function gateConnection(
           } catch {
             /* 확인하지 못하면 시작하지 않는다. */
           }
+          // 확인하는 동안 취소된 실행은 시작하지 않고 취소로 끝낸다. 비용 경계의 거절이 아니다.
+          if (ctl.signal.aborted) {
+            ledger.append({
+              kind: "cancelled_before_start",
+              scene: budget?.scene ?? null,
+              runId,
+            });
+            return {
+              stopReason: "cancelled",
+              error: null,
+              summary: null,
+              usage: null,
+              nextSession: request.previousSession ?? null,
+            };
+          }
           // OpenCode의 준비됨은 무료 모델이 있다는 뜻이다. 모델을 정하지 않은 실행은 그 무료 모델을 고른다.
           if (ready?.status !== "ready") {
             ledger.append({
