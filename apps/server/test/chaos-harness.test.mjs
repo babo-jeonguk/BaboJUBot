@@ -260,6 +260,65 @@ describe("chaos harness budget gate", () => {
     await rm(g.dir, { recursive: true, force: true });
   });
 
+  it("ends a run cancelled during the free-model check as cancelled, not as a refusal", async () => {
+    // 서버 재시작 장면은 다시 대기한 깨우기를 받은 실행을 확인하자마자 중단한다. 그 중단이 준비 확인 중에 오면
+    // 확인은 실패로 돌아오지만, 그것은 비용 경계의 거절이 아니라 시작 전 취소다.
+    const dir = await mkdtemp(path.join(tmpdir(), "chaos-gate-"));
+    const files = {
+      ledgerFile: path.join(dir, "ledger.jsonl"),
+      budgetFile: path.join(dir, "budget.json"),
+      tokenDir: dir,
+      controlFile: path.join(dir, "control.json"),
+    };
+    writeBudget(files.budgetFile, {
+      scene: "b",
+      maxLiveRuns: 24,
+      sceneMaxRuns: 4,
+      deadlineAt: Date.now() + 60_000,
+    });
+    const controller = new AbortController();
+    let executed = false;
+    const connection = gateConnection(
+      {
+        id: "live",
+        adapter: {
+          capabilities: {},
+          async checkReadiness(signal) {
+            controller.abort({ type: "cancel", reason: "owner_interrupt" });
+            return signal.aborted
+              ? { status: "not_ready", reason: "check_failed" }
+              : { status: "ready", reason: null };
+          },
+          async execute() {
+            executed = true;
+            throw new Error("must not start");
+          },
+        },
+      },
+      { live: true, brief: "brief", ...files }
+    );
+    const result = await connection.adapter.execute(
+      {
+        identity: { runId: "run-1" },
+        access: { token: "token-1" },
+        instructions: [],
+        context: {},
+        previousSession: null,
+        wakeReasons: [],
+        model: null,
+      },
+      { signal: controller.signal, emit: async () => {} }
+    );
+    expect(result.stopReason).toBe("cancelled");
+    expect(executed).toBe(false);
+    expect(
+      createLedger(files.ledgerFile)
+        .read()
+        .map((e) => e.kind)
+    ).toEqual(["cancelled_before_start"]);
+    await rm(dir, { recursive: true, force: true });
+  });
+
   const run = (g, n) => g.run(n);
 });
 
