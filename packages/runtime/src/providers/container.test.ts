@@ -4,6 +4,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -592,6 +593,47 @@ describe("an isolated attempt never receives the connection's login (#148)", () 
       expect(
         (await env.calls()).some((call) => call.args.includes("run"))
       ).toBe(false);
+    }
+  );
+
+  it.each([
+    ["Codex", "codex", createCodexProvider, ["auth.json"], "auth.json"],
+    [
+      "Antigravity",
+      "antigravity",
+      createAntigravityProvider,
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      "antigravity-oauth-token",
+    ],
+  ] as const)(
+    "starts %s over the link to the connection's login this machine left, but not over a link to anywhere else",
+    async (_name, id, create, file, original) => {
+      const env = await setup({});
+      const target = path.join(
+        env.root,
+        "providers",
+        id,
+        "organizations",
+        env.org,
+        ...file
+      );
+      await mkdir(path.dirname(target), { recursive: true });
+      // 이 컴퓨터에서 돈 실행이 남긴 링크. 연결 폴더는 컨테이너에 없으므로 안에서는 비어 있다.
+      await symlink(
+        path.join(env.root, "providers", id, "login", original),
+        target
+      );
+      const provider = create({ dataDir: env.root, container: env.container });
+      await provider.adapter.execute(env.isolated(), control());
+      expect(
+        (await env.calls()).some((call) => call.args.includes("run"))
+      ).toBe(true);
+      // 컨테이너에 들어가는 조직 폴더 안의 다른 파일을 가리키는 링크는 남은 로그인이다.
+      await rm(target);
+      await symlink(path.join(path.dirname(target), "copy"), target);
+      const refused = await provider.adapter.execute(env.isolated(), control());
+      expect(refused.stopReason).toBe("failed");
+      expect(refused.error).toContain("로그인 기록");
     }
   );
 });

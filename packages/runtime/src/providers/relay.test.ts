@@ -1,6 +1,14 @@
 import http from "node:http";
 import type net from "node:net";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -56,6 +64,36 @@ async function upstream() {
       res.end();
       return;
     }
+    // 상류가 받은 인증을 그대로 돌려주는 경우. 중계가 붙인 원본이 프로그램에 돌아가면 안 된다.
+    const echoed = String(req.headers.authorization ?? "").replace(
+      /^Bearer /,
+      ""
+    );
+    if (req.url?.startsWith("/base/v1/echo-header")) {
+      res.writeHead(400, { "x-echo": `Bearer ${echoed}` });
+      res.end("{}");
+      return;
+    }
+    if (req.url?.startsWith("/base/v1/echo-error")) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: `invalid token ${echoed}` }));
+      return;
+    }
+    if (req.url?.startsWith("/base/v1/echo-stream")) {
+      // 원본이 두 조각에 걸쳐 온다.
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: got ${echoed.slice(0, 6)}`);
+      setTimeout(() => res.end(`${echoed.slice(6)} end\n\n`), 50);
+      return;
+    }
+    if (req.url?.startsWith("/base/v1/compressed")) {
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "content-encoding": "gzip",
+      });
+      res.end(gzipSync(JSON.stringify({ error: `invalid token ${echoed}` })));
+      return;
+    }
     if (req.url?.startsWith("/base/v1/stream")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write("data: first\n\n");
@@ -79,6 +117,10 @@ const profile = (url: string): RelayProfile => ({
     { method: "POST", path: "/v1/redirect" },
     { method: "POST", path: "/v1/rejected" },
     { method: "POST", path: "/v1/unchanged" },
+    { method: "POST", path: "/v1/echo-header" },
+    { method: "POST", path: "/v1/echo-error" },
+    { method: "POST", path: "/v1/echo-stream" },
+    { method: "POST", path: "/v1/compressed" },
   ],
   authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
 });
@@ -117,6 +159,22 @@ const send = (
   });
 
 const scope = (signal = new AbortController().signal) => ({ signal });
+
+/** 응답 본문을 끝까지 읽는다. 중계가 끊으면 그때까지 받은 것과 끊김을 돌려준다. */
+async function received(response: Response) {
+  const decoder = new TextDecoder();
+  const reader = response.body!.getReader();
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return { text, cut: false };
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    return { text, cut: true };
+  }
+}
 
 describe("the credential relay", () => {
   it("sends an allowed request to the fixed upstream with the real credential in place of the run's grant, and returns no cookie", async () => {
@@ -235,6 +293,65 @@ describe("the credential relay", () => {
     expect((await send(url, grant.token, "/v1/unchanged")).status).toBe(304);
   });
 
+  it("never returns the injected credential to the program when the upstream echoes it in a header, an error body or across stream chunks", async () => {
+    const { up, relay, url } = await setup();
+    const grant = relay.grant(scope());
+    const header = await send(url, grant.token, "/v1/echo-header");
+    expect(header.status).toBe(502);
+    expect(JSON.stringify([...header.headers])).not.toContain("real-account");
+    expect((await received(header)).text).not.toContain("real-account");
+    const error = await received(
+      await send(url, grant.token, "/v1/echo-error")
+    );
+    expect(error.text).not.toContain("real-account");
+    expect(error.cut).toBe(true);
+    // 원본의 앞부분이 한 조각 끝에 오면, 원본인지 알 수 있을 때까지 그 부분을 내보내지 않는다.
+    const stream = await received(
+      await send(url, grant.token, "/v1/echo-stream")
+    );
+    expect(stream.text).not.toContain("real-a");
+    expect(stream.cut).toBe(true);
+    // 상류의 반향은 로그인 거부가 아니다. 연결은 그대로 쓴다.
+    expect(relay.failed()).toBe(false);
+    expect((await send(url, grant.token)).status).toBe(200);
+    expect(up.seen).toHaveLength(4);
+  });
+
+  it("asks the upstream for an uncompressed answer and refuses one it cannot check for the credential", async () => {
+    const { up, relay, url } = await setup();
+    const grant = relay.grant(scope());
+    const plain = await send(url, grant.token, "/v1/messages", {
+      "accept-encoding": "gzip, br",
+    });
+    expect(plain.status).toBe(200);
+    expect(up.seen[0]!.headers["accept-encoding"]).toBe("identity");
+    const compressed = await send(url, grant.token, "/v1/compressed");
+    expect(compressed.status).toBe(502);
+    expect(compressed.headers.get("content-encoding")).toBeNull();
+  });
+
+  it("fails the connection when the login cannot be put into a request, and keeps it failed until the login changes", async () => {
+    // 줄바꿈이 낀 로그인은 HTTP header에 넣을 수 없다. 요청을 만들다 던진다.
+    let login = "real-account\nsecret";
+    const { up, relay, url } = await setup({ credential: async () => login });
+    const one = relay.grant(scope());
+    const two = relay.grant(scope());
+    const response = await send(url, one.token);
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("real-account");
+    expect(relay.failed()).toBe(true);
+    expect(one.failed.aborted).toBe(true);
+    expect(two.failed.aborted).toBe(true);
+    expect((await send(url, two.token)).status).toBe(401);
+    expect(() => relay.grant(scope())).toThrow();
+    await relay.recover();
+    expect(relay.failed()).toBe(true);
+    login = "real-account-secret";
+    await relay.recover();
+    expect(relay.failed()).toBe(false);
+    expect(up.seen).toHaveLength(0);
+  });
+
   it("fails the connection when the upstream rejects its login, and keeps it failed until a different login can be read", async () => {
     let login = "expired-login";
     const { up, relay, url } = await setup({ credential: async () => login });
@@ -325,19 +442,50 @@ describe("the credential relay", () => {
 });
 
 describe("login residue in an organization's product folder", () => {
-  it("counts a regular file or folder as residue but not a link to the connection's login", async () => {
+  it("counts a regular file or folder as residue, and a link as residue unless it is the known link to the connection's login", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
     try {
-      expect(await credentialResidue(root, ["auth.json"])).toBe(false);
-      await symlink(path.join(root, "elsewhere"), path.join(root, "auth.json"));
-      expect(await credentialResidue(root, ["auth.json"])).toBe(false);
+      const login = path.join(root, "connection/login/auth.json");
+      expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+      // 연결의 로그인 원본을 가리키는 링크는 컨테이너 안에서 비어 있다.
+      await symlink(login, path.join(root, "auth.json"));
+      expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+      // 알려진 원본이 없는 프로그램에서는 어떤 링크도 안전하다고 볼 수 없다.
+      expect(await credentialResidue(root, ["auth.json"])).toBe(true);
+      // 컨테이너 안에서 닿을 수 있는 다른 곳을 가리키는 링크는 남은 로그인이다.
+      await mkdir(path.join(root, "copy"));
+      await symlink(
+        path.join(root, "copy/auth.json"),
+        path.join(root, "other.json")
+      );
+      expect(await credentialResidue(root, ["other.json"], login)).toBe(true);
       await mkdir(path.join(root, "config"));
       await writeFile(path.join(root, "config/.credentials.json"), "{}");
       expect(
         await credentialResidue(root, ["auth.json", "config/.credentials.json"])
       ).toBe(true);
+      // 상위가 파일이면 그 아래 로그인은 없다.
+      await writeFile(path.join(root, "file"), "");
+      expect(await credentialResidue(root, ["file/auth.json"], login)).toBe(
+        false
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "counts a path it cannot inspect as residue",
+    async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
+      try {
+        await mkdir(path.join(root, "locked"));
+        await chmod(path.join(root, "locked"), 0o000);
+        expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
+      } finally {
+        await chmod(path.join(root, "locked"), 0o700);
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
 });
