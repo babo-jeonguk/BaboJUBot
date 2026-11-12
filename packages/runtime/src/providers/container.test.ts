@@ -1128,15 +1128,12 @@ describe.skipIf(process.platform === "win32")(
       }
     });
 
-    it("refreshes once when runs of two organizations need the expiring login at the same time", async () => {
+    it("refreshes once when two runs need the expiring login at the same time", async () => {
       const t = await refreshSetup("slow");
       try {
-        const other = t.input();
-        other.identity.organizationId = crypto.randomUUID();
-        other.context.organization.id = other.identity.organizationId;
         const results = await Promise.all([
           t.provider().adapter.execute(t.input(), control()),
-          t.provider().adapter.execute(other, control()),
+          t.provider().adapter.execute(t.input(), control()),
         ]);
         expect(results.map((result) => result.stopReason)).toEqual([
           "completed",

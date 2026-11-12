@@ -164,6 +164,42 @@ async function placeLoginPlaceholder(at: string): Promise<void> {
       throw error;
   }
 }
+/** 갱신을 기다리는 한도. */
+const refreshTimeoutMs = 60_000;
+/** Codex 자신은 접근 토큰 만료 5분 전, 또는 마지막 갱신 8일 뒤에 갱신한다. 서버는 그보다 조금 일찍 갱신한다. */
+const refreshWindowMs = 10 * 60 * 1000;
+const refreshIntervalMs = 8 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000;
+/** JWT 모양 값의 만료 시각(ms). 읽지 못하면 undefined. */
+function jwtExpiry(token: string): number | undefined {
+  try {
+    const claims = record(
+      JSON.parse(
+        Buffer.from(token.split(".")[1]!, "base64url").toString("utf8")
+      )
+    );
+    return typeof claims.exp === "number" ? claims.exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+/** 원본 로그인을 갱신해야 하는가. Codex와 같은 규칙이다: 접근 토큰에 만료 시각이 있으면 그것으로, 없으면 마지막 갱신 시각으로 본다. */
+function needsRefresh(text: string): boolean {
+  let login: Record<string, unknown>;
+  try {
+    login = record(JSON.parse(text));
+  } catch {
+    return false;
+  }
+  const access = record(login.tokens).access_token;
+  if (typeof access !== "string" || !access) return false;
+  const expiry = jwtExpiry(access);
+  if (expiry !== undefined) return expiry - Date.now() <= refreshWindowMs;
+  const last =
+    typeof login.last_refresh === "string"
+      ? Date.parse(login.last_refresh)
+      : Number.NaN;
+  return Number.isFinite(last) && Date.now() - last >= refreshIntervalMs;
+}
 const failed = (): RunResult => ({
   stopReason: "failed",
   error: "프로바이더 실행이 실패했습니다.",
@@ -260,13 +296,64 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const command = options.command ?? commandFor(id, "codex");
   const environment = (codexHome = home, isolated = false) =>
     providerEnvironment(id, codexHome, { CODEX_HOME: codexHome }, { isolated });
+  let refreshing: Promise<void> | undefined;
+  /**
+   * 원본 로그인을 이 컴퓨터의 Codex로 갱신한다(#148). 갱신은 컨테이너가 아니라 서버가 맡는다. 연결 폴더의 로그인 링크를 따라
+   * Codex가 원본 자리에 새 로그인을 쓴다. 연결마다 한 번에 하나만 하고, 그동안 온 요청은 같은 갱신을 기다린다.
+   */
+  const refreshLogin = () =>
+    (refreshing ??= (async () => {
+      await mkdir(home, { recursive: true, mode: 0o700 });
+      await shareLogin(path.join(home, "auth.json"));
+      const child = startProcess({
+        stateDir: home,
+        command,
+        args: ["app-server"],
+        cwd: home,
+        env: environment(),
+        onFrame: async (raw) => {
+          const frame = record(raw);
+          if (frame.method) return;
+          if (frame.id === 1 && !frame.error) {
+            child.write({ method: "initialized" });
+            child.write({
+              id: 2,
+              method: "account/read",
+              params: { refreshToken: true },
+            });
+          } else child.end();
+        },
+      });
+      const timer = setTimeout(() => child.end(), refreshTimeoutMs);
+      try {
+        child.write({
+          id: 1,
+          method: "initialize",
+          params: { clientInfo: { name: "babojubot", version: "0.0.0" } },
+        });
+        await child.done;
+      } finally {
+        clearTimeout(timer);
+      }
+    })().finally(() => {
+      refreshing = undefined;
+    }));
+  /** 중계가 쓸 원본 로그인. 곧 끝나면 먼저 갱신하고, 갱신한 뒤에도 끝나 가면 갱신 실패로 던진다(중계 실패, Q6). */
+  const currentLogin = async () => {
+    const login = await readFile(original, "utf8");
+    if (!needsRefresh(login)) return login;
+    await refreshLogin();
+    const refreshed = await readFile(original, "utf8");
+    if (needsRefresh(refreshed)) throw new Error("login refresh failed");
+    return refreshed;
+  };
   const relay = createCredentialRelay({
     profile: {
       ...codexRelayProfile,
       upstream: options.relay?.upstream ?? codexRelayProfile.upstream,
     },
     verified: options.relay?.verified ?? false,
-    credential: () => readFile(original, "utf8"),
+    credential: () => currentLogin(),
   });
   const readiness = async (
     signal: AbortSignal
