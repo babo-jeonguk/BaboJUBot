@@ -268,6 +268,21 @@ Q1~Q8을 [같은 누적 댓글의 Agent Brief](https://github.com/babo-jeonguk/B
 
 조사 실험의 기록과 스크립트는 저장소 밖(`/tmp/relay-probe-*`)에 두었고 실제 계정·모델 호출·비용은 쓰지 않았다.
 
+## 실제 확인 — 2026-11-12 (C-8·C-9, 사용자 승인)
+
+사용자가 실제 Docker와 기존 구독 계정의 실제 모델 호출을 승인했다. 확인 스크립트는 저장소 밖(`.scratch/e2e/real-relay.ts`, Git 제외)이다. 임시 제품 폴더에 실제 로그인을 링크만 하고(복사·출력 없음), 이 브랜치로 만든 공통 이미지(`babojubot-runner:relay-148`, Antigravity는 agy 1.5.4를 얹은 이미지)의 실제 컨테이너에서 실제 CLI가 #149 실행 시도 중계 → 인증 중계 → 실제 상류로 모델 한 턴을 돈다. 조직 도구는 확인용 최소 MCP 서버로 대신했다.
+
+| 연결 | 결과 | 비고 |
+|---|---|---|
+| Docker 경계 | 실제 Docker 검사 9개 통과 | 방화벽을 열지 않았다. #149 이후 컨테이너는 네트워크 없이 파일 소켓으로만 통신하므로 예전 컨테이너→호스트 차단과 무관하다 |
+| Codex 0.167.0 (ChatGPT 구독) | 완료. `POST /responses` 200, `GET /models` 200, `wham/settings/user`는 중계가 403으로 거부(무해). 조직 도구 호출이 실행 토큰으로 도착 | chatgpt.com이 압축하지 않은 응답 요청을 따른다(중계가 응답을 거부하지 않았다). 직접 나가려는 시도 없음 |
+| OpenCode 2.2.6 Go 구독 | `deepseek-v4.1-flash` 완료(`/go/chat/completions`·`/go/responses` 200), 조직 도구 호출 도착 | `glm-5.3`은 403 "Model access is disabled"(계정 콘솔의 모델 사용 설정, 중계와 무관). 이 403을 어댑터가 로그인 필요로 보고한다(기존 판정, 별도 확인 필요) |
+| OpenCode 2.2.6 Zen 무료 | 경로 확인, 실제 완료는 못 봄 | 처음에는 모델 목록 받기를 막아 내장 목록의 없어진 모델(`crouton-alpha-free`)을 골라 410 → 공개 목록 주소만 열어 고침. 그 뒤 429 `FreeUsageLimitError`. 같은 CLI를 이 컴퓨터에서 직접(중계 없이) 돌려도 같은 429였고 header가 중계 전달과 같아, 이 컴퓨터 IP의 무료 사용 한도로 판단 |
+| Antigravity 1.5.4 (Google 계정) | 완료. `daily-cloudcode-pa` 상류의 `loadCodeAssist`·`fetchAvailableModels`·`streamGenerateContent` 등 8개 모두 200. 조직 도구가 ACP `session/new`로 실려 실제 모델이 호출 | 실행 전 Google 로그인 확인(`www.googleapis.com`)과 `aicode.googleapis.com`은 막혔고 실행은 이어졌다. 만료된 실제 로그인은 이 컴퓨터의 `agy models`로 갱신됐다(수동 재현, 링크를 따라 원본에 씀) |
+| Claude (setup-token) | 중계를 거친 요청이 인증은 통과하고 429 `rate_limit_error` | 중계 없이 직접 호출해도 "5-hour limit, resets 7:40am (UTC)". 구독 사용량 한도이며 중계 문제가 아니다. 초기화 뒤 다시 확인한다 |
+
+확인 중 고친 것: OpenCode 격리 실행의 모델 목록 받기(위). 스크립트의 Antigravity 원본 배치 실수(원본을 링크로 두면 제품 코드가 보통 파일이 아닌 원본을 지운다)는 스크립트 문제였고 실제 로그인 파일은 그대로였다.
+
 ## 한계와 미확인
 
 - 실행 확인: 조사 worker OpenSandbox 원문 addon suite 93 PASS. 메인이 원문 함수의 선별 정상·거부·응답 body 한계 10개를 재실행해 PASS. mitmproxy는 upstream test의 stdlib stub이므로 wire·TLS·nft·Docker 공격 E2E가 아니다.
