@@ -1,18 +1,18 @@
 // 이 시스템에서 기본 설정의 서버가 실제로 뜨는지 본다. 내장 DB 시작·migration·DB를 읽는 API 하나까지 확인한다.
 // 서버가 정리 없이 끝나 내장 DB가 남으면 다음 시작이 그 DB를 정상 정지하고 다시 뜨는지, 닫을 때 정상 정지하는지도 본다.
 // CI의 macOS·Windows 작업이 부른다. 상속 환경과 상관없이 임시 폴더·빈 port만 쓰고, 끝나면 DB가 실제로 멈춘 것을 기다린 뒤 폴더를 지운다.
+// 멈춤(시한·부모 요청)은 진행 중인 단계를 끊지 않고 다음 단계 경계에서 받아 같은 정리 경로로 끝낸다.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 
 // main.ts가 서버를 띄운 뒤 내는 완전한 한 줄. 내장 DB로 띄운 서버만 받는다.
 // 예: `BaboJUBot server on http://127.0.0.1:PORT (embedded Postgres …, product folder …)`
 const readyLinePattern =
   /^BaboJUBot server on (https?:\/\/[^\s)]+) \(embedded Postgres [^\r\n]*\)\r?\n/m;
-// 실행 전체의 시한. 지나면 멈춤 경로로 정리하고 실패한다(scripts/boot-check.test.mjs의 `bootCheckTimeoutMs`와 같은 값).
-const runTimeoutMs = 360_000;
 const fetchTimeoutMs = 2_000;
 const cleanupTimeoutMs = 15_000;
 const stopWaitMs = 10_000;
@@ -24,11 +24,6 @@ const dataDir = path.join(home, "postgres");
 const pidFile = path.join(dataDir, "postmaster.pid");
 const log = path.join(dataDir, "postgres.log");
 console.log(`boot check folder: ${home}`);
-
-/** 지금 떠 있는 서버. 멈춤 경로가 이 서버부터 끝낸다. */
-let current;
-/** 멈춤 이유. 정해지면 진행 중인 기다림이 끝난다. */
-let stopReason;
 
 /**
  * 부모 환경의 실제 서비스 설정이 이 검사를 바꾸지 않게 서버 환경을 따로 만든다.
@@ -82,7 +77,7 @@ async function serveAndKill(label) {
   });
   current = {
     label,
-    stop: () => stopServer(server, exited, () => hasExited),
+    server,
     output: () => outputTail(stdoutTail, stderrTail),
   };
   server.stdout?.setEncoding("utf8");
@@ -109,7 +104,6 @@ async function serveAndKill(label) {
   let failure;
   try {
     while (!readyUrl) {
-      if (stopReason) throw new Error(`${label}: ${stopReason}`);
       if (spawnError)
         throw new Error(
           `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
@@ -123,7 +117,7 @@ async function serveAndKill(label) {
 
     let overview;
     while (overview === undefined) {
-      if (stopReason) throw new Error(`${label}: ${stopReason}`);
+      throwIfStopped(label);
       if (spawnError)
         throw new Error(
           `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
@@ -145,6 +139,7 @@ async function serveAndKill(label) {
     console.log(
       `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
     );
+    await checkpoint(`${label}: server ready`, { serverPid: server.pid });
   } catch (error) {
     failure = error;
   }
@@ -283,62 +278,77 @@ function outputTail(...texts) {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-let cleaning;
-/** 이 검사가 가진 것을 정리한다. 남은 Postgres가 실제로 멈춘 뒤에만 폴더를 지운다. 여러 경로가 불러도 한 번만 한다. */
-function cleanUp() {
-  cleaning ??= (async () => {
-    await stopLeftPostgres();
-    rmSync(home, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 100,
-    });
-  })();
-  return cleaning;
+/** 지금 떠 있는 서버. 멈춤 시한이 지나 강제로 끝낼 때만 쓴다. */
+let current;
+/** 멈춤 이유. 정해지면 본 흐름이 진행 중인 단계를 마친 뒤 다음 gate에서 멈추고 정리한다. */
+let stopReason;
+/** gate에서 부모의 답을 기다리는 중이면 그 답을 넘기는 함수. */
+let answerGate;
+
+/**
+ * 멈춤을 요청한다. 정리는 본 흐름 하나만 한다: 진행 중인 단계(서버 시작, DB 열기·닫기)를 끊지 않고, 끝난 뒤 다음 gate에서 멈춰
+ * 평소의 정리 경로를 탄다. 멈춤 시한 안에 끝나지 않을 때만 떠 있는 서버를 끝내고 남았을 수 있는 것을 밝혀 실패한다.
+ */
+function requestStop(reason) {
+  if (stopReason) return;
+  stopReason = reason;
+  console.log(`${current ? `${current.label}: ` : ""}${reason}`);
+  answerGate?.("stop");
+  setTimeout(() => {
+    console.log(
+      `${reason}: cleanup did not finish in ${stopGraceMs / 1000}s; the server, Postgres, and ${home} may remain${current ? current.output() : ""}`
+    );
+    try {
+      current?.server.kill("SIGKILL");
+    } catch {
+      /* 이미 끝났다. */
+    }
+    process.exit(1);
+  }, stopGraceMs).unref();
 }
 
-let stopping;
-/** 시한이 지나거나 부모가 멈추라고 하면, 떠 있는 서버를 끝내고 정리한 뒤 실패로 끝난다. */
-function stopRun(reason) {
-  stopReason ??= reason;
-  stopping ??= (async () => {
-    console.log(
-      `${current ? `${current.label}: ` : ""}${reason}${current ? current.output() : ""}`
-    );
-    const code = 1;
-    try {
-      await current?.stop();
-    } catch (error) {
-      console.log(
-        `could not confirm the server stopped: ${error instanceof Error ? error.message : error}`
-      );
-    }
-    try {
-      await cleanUp();
-    } catch (error) {
-      console.log(
-        `cleanup failed: ${error instanceof Error ? error.message : error}`
-      );
-    }
-    process.exit(code);
-  })();
+/** 멈춤이 요청됐으면 이 단계 경계에서 멈춘다. */
+function throwIfStopped(where) {
+  if (stopReason) throw new Error(`${where}: ${stopReason}`);
 }
-const runTimer = setTimeout(
-  () => stopRun(`boot check did not finish in ${runTimeoutMs / 1000}s`),
+
+/**
+ * 단계 경계. 부모가 IPC로 띄웠으면 `{ checkpoint }`를 보내고 "continue"/"stop"을 기다린다(시험의 결정적인 gate).
+ * 기다리는 동안만 채널이 이 프로세스를 붙잡게 한다.
+ */
+async function checkpoint(name, extra = {}) {
+  throwIfStopped(name);
+  if (!process.send) return;
+  const answer = new Promise((resolve) => {
+    answerGate = resolve;
+  });
+  process.channel?.ref();
+  process.send({ checkpoint: name, ...extra });
+  try {
+    await answer;
+  } finally {
+    answerGate = undefined;
+    process.channel?.unref();
+  }
+  throwIfStopped(name);
+}
+
+setTimeout(
+  () => requestStop(`boot check did not finish in ${runTimeoutMs / 1000}s`),
   runTimeoutMs
-);
-runTimer.unref();
-// 부모가 IPC로 띄웠을 때만 멈춤 요청을 받는다. 채널이 이 프로세스를 붙잡지 않게 unref한다.
+).unref();
+// 부모가 IPC로 띄웠을 때만 멈춤 요청과 gate 답을 받는다. gate를 기다릴 때 말고는 채널이 이 프로세스를 붙잡지 않는다.
 if (process.send) {
   process.on("message", (message) => {
-    if (message === "stop") stopRun("stop requested by the parent");
+    if (message === "stop") requestStop("stop requested by the parent");
+    else if (message === "continue") answerGate?.("continue");
   });
   process.channel?.unref();
 }
 
 let code = 0;
 let failure;
+let handle;
 try {
   await serveAndKill("first start");
   if (!existsSync(pidFile))
@@ -354,33 +364,38 @@ try {
   const { openDatabase } = await import(
     pathToFileURL(path.resolve("packages/db/src/index.ts")).href
   );
-  const handle = await openDatabase({
+  await checkpoint("open after another killed server");
+  handle = await openDatabase({
     embedded: { dataDir, port: running.port, persistent: true },
   });
-  try {
-    expectCleanStart("open after another killed server");
-  } catch (error) {
-    // 검사가 실패해도 연 handle은 닫는다. 닫기도 실패하면 원래 실패를 남긴다.
-    await handle
-      .close()
-      .catch((closeError) =>
-        console.error(
-          `could not close the embedded Postgres after a failed check: ${closeError instanceof Error ? closeError.message : closeError}`
-        )
-      );
-    throw error;
-  }
-  await handle.close();
+  expectCleanStart("open after another killed server");
+  await checkpoint("close");
+  const opened = handle;
+  handle = undefined;
+  await opened.close();
   if (existsSync(pidFile))
     throw new Error("the embedded Postgres was still running after close");
   console.log("embedded Postgres stopped normally on close");
+  throwIfStopped("after close");
 } catch (error) {
   code = 1;
   failure = error;
   console.log(error instanceof Error ? error.message : error);
 }
+// 정리는 여기 한 곳에서만 한다. 연 DB는 닫고(정상 정지), 남은 Postgres가 실제로 멈춘 뒤에만 폴더를 지운다.
 try {
-  await cleanUp();
+  if (handle) {
+    const opened = handle;
+    handle = undefined;
+    await opened.close();
+  }
+  await stopLeftPostgres();
+  rmSync(home, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 } catch (error) {
   code = 1;
   const cleanup = error instanceof Error ? error.message : String(error);
@@ -389,5 +404,5 @@ try {
     : "";
   console.log(`cleanup failed: ${cleanup}${original}`);
 }
+if (stopReason) code = 1;
 process.exitCode = code;
-clearTimeout(runTimer);
