@@ -14,7 +14,8 @@ export type LowContrast = {
  * 화면에 실제로 보이는 글자의 대비를 잰다(WCAG 2.2 1.4.3). 글자 색의 투명도, 조상의 배경색 겹침, 조상 `opacity`까지 반영해
  * 그려지는 색끼리 비교한다. 색은 canvas로 sRGB로 바꾸므로 oklch 같은 계산 색도 그대로 잰다.
  * 기준은 4.5:1, 큰 글자(24px 이상, 굵은 18.66px 이상)는 3:1이다. 화면 읽기 프로그램 전용(`sr-only`)·`aria-hidden` 장식·비활성 칸,
- * 배경이 그림·그라데이션인 글자, 잘림을 알리려 흐리게 덮은(mask) 글자는 재지 않는다.
+ * 배경이 그림·그라데이션인 글자, 잘림을 알리려 흐리게 덮은(mask) 글자는 재지 않는다. 조상이 아닌 다른 층이 위에 덮은 색
+ * (연구 지도 선택 강조 막 같은 것)은 반영하지 않는다.
  */
 export function lowContrastTexts(page: Page): Promise<LowContrast[]> {
   return page.evaluate(async () => {
