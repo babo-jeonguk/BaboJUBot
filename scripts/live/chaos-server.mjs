@@ -228,6 +228,9 @@ function readdir(dir) {
 
 // ---------- 자식 프로세스 ----------
 
+/** 가짜 실제 연결의 준비 확인 시간. 서버 프로세스마다 첫 실행 전에 한 번 든다(준비 결과는 60초 다시 쓴다). */
+const fakeReadinessMs = 500;
+
 /**
  * 자동 검사용 가짜 실제 연결. 모델을 부르지 않는다. 받은 메시지에 `busy.mjs <초>`가 있으면 그 시간 동안(취소되면 그때까지) 일하며
  * 그동안 끼워 넣기를 받는다. 받은 세션이 있으면 같은 세션을 이어 간다.
@@ -237,7 +240,12 @@ function fakeLiveAdapter(defaultFakeCapabilities) {
   return {
     capabilities: { ...defaultFakeCapabilities, steer: true },
     loginCommand: null,
-    checkReadiness: async () => ({ status: "ready", reason: null }),
+    // 실제 연결처럼 준비 확인에 시간이 든다. 그래서 실행이 생긴 뒤 실행기에 닿기 전의 구간이 늘 있고,
+    // 장면이 그 구간에서 서버를 끝내거나 실행을 멈추면 그 실행은 실제 실행으로 세지 않는다(검사가 그 순서를 드러낸다).
+    checkReadiness: async () => {
+      await new Promise((resolve) => setTimeout(resolve, fakeReadinessMs));
+      return { status: "ready", reason: null };
+    },
     async steer(message) {
       return steerable.has(message.runId) ? "accepted" : "rejected";
     },
