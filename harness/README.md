@@ -18,9 +18,10 @@ templates/<name>/template.json  연구 흐름 템플릿: label, description, nod
 
 | 내용물 | 쓰임 |
 | --- | --- |
-| `roles/lead` | Research Lead. 목표 합의·계획·초기 연구 승인 요청 |
+| `roles/lead` | Research Lead. 목표 합의·계획·초기 연구 승인 요청. `check-research-environment` Skill을 받음 |
 | `roles/researcher` | 작업자 연구원. `record-research-node` Skill을 받음 |
 | `skills/record-research-node` | 연구 노드와 연결 기록 절차 |
+| `skills/check-research-environment` | 초기 승인 요청 전 환경 점검 절차: 읽기 전용 확인만(설치·자격 증명·외부 통신·환경 변경 없음), 명령별 10초·전체 2분 상한, `확인됨`·`없음`·`확인 불가`와 근거·확인한 환경·후속 조치를 환경 명세 칸에 표로. 지침일 뿐이라 제품은 점검 여부·결과의 진위를 검사하지 않음 |
 | `templates/basic-research` | 기본 연구 흐름: 연구 문제 → 가설·아이디어 → 검증 방법 → 실험·검증 → 결과 |
 
 ## 언어와 쓰는 자리
@@ -29,4 +30,4 @@ templates/<name>/template.json  연구 흐름 템플릿: label, description, nod
 - 사용자가 보는 조직 기록은 한국어입니다(어떤 기록인지는 [기능 범위](../docs/features.md)의 `언어`). 그래서 역할 문서마다 "사용자와의 대화와 작업물은 한국어로 쓴다"는 지시를 둡니다. 새 Role을 더할 때도 그 역할 문서에 이 지시를 넣습니다.
 - `role.json`의 `label`과 템플릿의 `label`·`description`은 사용자에게 보이므로 한국어로 둡니다. 이름(식별자)은 영어입니다.
 - 도구의 사실(하는 일, 남기는 기록, 거부 조건, 입력 칸의 규칙)은 도구 목록(`packages/contracts/src/tools.ts`)의 설명에만 씁니다. 역할 문서는 단계별 흐름·도구를 쓰는 순서·제출물 품질 기준을 쓰고 도구는 이름으로만 가리키며, Skill은 여러 도구를 잇는 절차, Soul은 태도만 씁니다.
-- 라이브러리를 바꿔도 이미 있는 조직의 사본은 바뀌지 않습니다. 새 조직과 새 작업자만 바뀐 내용을 받습니다.
+- 라이브러리를 바꿔도 이미 있는 조직의 사본은 바뀌지 않습니다. 새 조직과 새 작업자만 바뀐 내용을 받습니다. 예: 환경 점검 Skill(#170)은 이 판 뒤에 만든 조직의 Lead만 받으며, 그 전 조직의 Lead에는 사용자가 사본을 직접 고쳐 넣어야 합니다.

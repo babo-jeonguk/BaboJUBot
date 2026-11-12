@@ -7,7 +7,7 @@
 | 목표·승인 요청·결정·사본 계약 | [contracts/approval.ts](../../../packages/contracts/src/approval.ts), [harness.ts](../../../packages/contracts/src/harness.ts), event.ts, tools.ts `orgTools` | 승인 API |
 | Role·단계 도구 판정, 승인 요청 snapshot, 결정 효과 | [core/approval.ts](../../../packages/core/src/approval.ts) `checkToolCall`·`buildInitialResearchProposal`·`planApprovalDecision`; 응답 코드는 server/problems.ts | [core](../../../packages/core/src/approval.test.ts), 승인 API |
 | bundle 버전·frontmatter | [core/harness.ts](../../../packages/core/src/harness.ts) | [core](../../../packages/core/src/harness.test.ts) |
-| 하네스 라이브러리 읽기·Lead Role | [harness 안내](../../../harness/README.md), [server/harness.ts](../../../apps/server/src/harness.ts) `loadHarnessLibrary` | 승인 API |
+| 하네스 라이브러리 읽기·Lead Role·Lead 환경 점검 Skill | [harness 안내](../../../harness/README.md), [server/harness.ts](../../../apps/server/src/harness.ts) `loadHarnessLibrary`, harness/skills/check-research-environment | 승인 API |
 | 거부 Event·전이 경합·결정 단일 적용 | [db/tool-calls.ts](../../../packages/db/src/tool-calls.ts) `gateToolCall`·`toolWrite`, [db/approvals.ts](../../../packages/db/src/approvals.ts) `decideApproval`, [rows.ts](../../../packages/db/src/rows.ts) `lockOrganization` | 승인 API |
 | 에이전트·조직 템플릿 사본, admission bundle 버전 | [db/harness.ts](../../../packages/db/src/harness.ts), db/runs.ts `claimNextRun`, run-reads.ts `selectWakes` | 승인 API |
 | 결정 API·작업자별 모델 확인 | server/app.ts, server/providers.ts `modelsFor`, server/tools.ts | 승인 API, 승인 프로바이더 API |

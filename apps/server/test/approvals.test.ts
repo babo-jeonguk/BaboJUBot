@@ -40,7 +40,21 @@ const goal = {
 };
 const proposal: RequestInitialApprovalInput = {
   plan: "# 계획\n오류 유형을 분류하고 가설별로 검증한다.",
-  environment: "# 연구 환경\n로컬 GPU 1장, 공개 평가셋",
+  // 환경 점검 결과는 기존 환경 명세 칸에 함께 담는다(#170). 확인됨·없음·확인 불가를 모두 담은 fixture다.
+  environment: [
+    "# 연구 환경",
+    "로컬 GPU 1장, 공개 평가셋",
+    "",
+    "## 환경 점검 결과",
+    "| 항목 | 요구사항 | 결과 | 확인한 환경 | 확인 방법·근거 | 후속 조치 |",
+    "| --- | --- | --- | --- | --- | --- |",
+    "| python3 | 3.10 이상 | 확인됨 | Lead 실행 환경 | `python3 --version` → Python 3.12.3 | 없음 |",
+    '| torch | import 가능 | 없음 | Lead 실행 환경 | `python3 -c "import torch"` → ModuleNotFoundError | 승인 후 작업자가 설치 |',
+    "| GPU | CUDA GPU 1장 | 확인 불가 | Lead 실행 환경 | `nvidia-smi` 명령 없음 | 사용자가 GPU 준비 |",
+    "",
+    "## 사용자만 준비할 일",
+    "- GPU 제공 여부 확인",
+  ].join("\n"),
   team: [{ role: "researcher", count: 2 }],
   template: "basic-research",
 };
@@ -299,7 +313,7 @@ describe("goal and initial research approval", () => {
     expect(needsAttention(kept!)).toBe(false);
   });
 
-  it("gives a new organization's Lead its own Role and Soul copies from the library and runs it with that bundle", async () => {
+  it("gives a new organization's Lead its own Role, Soul and Skill copies from the library and runs it with that bundle", async () => {
     const lead = leadRuns();
     t = await startTestServer({ runtime: lead.runtime });
     const a = await createOrganization("Lead 사본 A");
@@ -309,6 +323,11 @@ describe("goal and initial research approval", () => {
     expect(own.copies.map((c) => [c.path, c.source, c.kind])).toEqual([
       ["AGENTS.md", "roles/lead/AGENTS.md", "role"],
       ["SOUL.md", "roles/lead/SOUL.md", "soul"],
+      [
+        "skills/check-research-environment/SKILL.md",
+        "skills/check-research-environment/SKILL.md",
+        "skill",
+      ],
     ]);
     for (const copy of own.copies)
       expect(copy.content).toBe(library(copy.source));

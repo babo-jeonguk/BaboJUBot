@@ -1,6 +1,6 @@
 {
   "label": "Research Lead",
   "agent": "lead",
-  "skills": [],
+  "skills": ["check-research-environment"],
   "heartbeatMinutes": 60
 }

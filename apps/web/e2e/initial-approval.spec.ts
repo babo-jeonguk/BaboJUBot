@@ -58,6 +58,10 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   await expect(
     page.getByRole("region", { name: "연구 환경 명세" })
   ).toContainText("compute");
+  // 환경 점검 결과는 환경 명세 칸 안의 표로 보인다.
+  await expect(
+    page.getByRole("region", { name: "연구 환경 명세" }).getByRole("table")
+  ).toContainText("확인 불가");
   await expect(
     page.getByRole("region", { name: "연구 흐름 템플릿" })
   ).toContainText("가설·아이디어");
