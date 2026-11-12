@@ -13,7 +13,16 @@ const workflow = parse(
     "utf8"
   )
 );
-const suites = ["unit", "runtime", "db", "server", "opencode"];
+// macOS·Windows도 필수다. 실제 프로그램 연결·파일 경계·부팅 검사가 시스템마다 달라 그 시스템에서만 드러나는 결함을 막는다.
+const suites = [
+  "unit",
+  "runtime",
+  "db",
+  "server",
+  "opencode",
+  "macos",
+  "windows",
+];
 const gate = workflow.jobs.test;
 const step = gate.steps.find(
   (candidate) => candidate.name === "Check test results"
@@ -100,11 +109,22 @@ test("each mandatory suite has its own job result and direct gate dependency", (
   }
 });
 
-test("accepts code only when all five tests succeeded", () => {
+// macOS·Windows job은 각자 그 시스템에서 돌고, 상태 이름은 예전 matrix와 같다.
+test("runs the macOS and Windows suites on their own systems", () => {
+  assert.equal(workflow.jobs.portable, undefined);
+  for (const os of ["macos", "windows"]) {
+    const job = workflow.jobs[`test-${os}`];
+    assert.equal(job["runs-on"], `${os}-latest`);
+    assert.equal(job.name, `runtime on ${os}-latest`);
+    assert.equal(job.if, "needs.changes.outputs.code == 'true'");
+  }
+});
+
+test("accepts code only when every test job succeeded", () => {
   assert.equal(runGate().status, 0);
 });
 
-test("accepts Markdown-only changes when all five tests were skipped", () => {
+test("accepts Markdown-only changes when every test job was skipped", () => {
   assert.equal(runGate({ code: "false" }).status, 0);
 });
 
