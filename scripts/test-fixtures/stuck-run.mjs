@@ -21,6 +21,15 @@ writeFileSync(
   path.join(dataDir, "postmaster.pid"),
   `${escaped.pid}\n${dataDir}\n`
 );
+// 감독자가 넘긴 무관한 프로세스를 가리키는 오래된 pid 파일(pid 재사용). 감독자는 그 프로세스를 건드리면 안 된다.
+if (process.env.UNRELATED_PID) {
+  const stale = path.join(home, "stale");
+  mkdirSync(stale);
+  writeFileSync(
+    path.join(stale, "postmaster.pid"),
+    `${process.env.UNRELATED_PID}\n${stale}\n`
+  );
+}
 console.log(
   JSON.stringify({ home, inGroup: inGroup.pid, escaped: escaped.pid })
 );
