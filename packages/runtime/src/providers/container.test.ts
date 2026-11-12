@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import http from "node:http";
 import type net from "node:net";
@@ -1207,11 +1208,179 @@ describe.skipIf(process.platform === "win32")(
 );
 
 describe.skipIf(process.platform === "win32")(
+  "an isolated OpenCode attempt through the credential relay (#148)",
+  () => {
+    const relayProgram = {
+      opencode: [
+        process.execPath,
+        fixture("opencode-simulator.mjs"),
+        "--relay",
+      ],
+    };
+    /** OpenCode 2.2.6의 로그인 저장소(`<XDG_DATA_HOME>/opencode/opencode.db`의 `credential` 표)를 합성한다. */
+    async function storeLogins(
+      dataHome: string,
+      rows: { integration: string; value: unknown }[]
+    ) {
+      await mkdir(path.join(dataHome, "opencode"), { recursive: true });
+      const db = new DatabaseSync(
+        path.join(dataHome, "opencode", "opencode.db")
+      );
+      db.exec(
+        "create table credential (id text primary key, integration_id text, label text not null, value text not null, connector_id text, method_id text, active integer, time_created integer, time_updated integer)"
+      );
+      for (const [n, row] of rows.entries())
+        db.prepare(
+          "insert into credential (id, integration_id, label, value, active) values (?, ?, ?, ?, 1)"
+        ).run(`cred_${n}`, row.integration, "Go", JSON.stringify(row.value));
+      db.close();
+    }
+    async function openCodeSetup(login = true) {
+      const env = await setup(relayProgram);
+      const connection = path.join(env.root, "providers/opencode");
+      if (login)
+        await storeLogins(path.join(connection, "data"), [
+          {
+            integration: "opencode-go",
+            value: { type: "key", key: "real-go-key" },
+          },
+        ]);
+      let provider!: ReturnType<typeof createOpenCodeProvider>;
+      const network = await relayed("opencode", (upstream) => {
+        provider = createOpenCodeProvider({
+          dataDir: env.root,
+          command: [process.execPath, fixture("opencode-simulator.mjs")],
+          container: env.container,
+          relay: { upstream, verified: true },
+        });
+        return provider.credentialRelay!;
+      });
+      const input = (model?: string) => {
+        const request = env.isolated();
+        request.access = { ...request.access, toolsBaseUrl: network.tools };
+        if (model) request.model = model;
+        return request;
+      };
+      const organization = path.join(connection, "organizations", env.org);
+      return { env, network, provider: () => provider, input, organization };
+    }
+
+    it("sends the free model through the relay with the public key only, as today", async () => {
+      const t = await openCodeSetup();
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("completed");
+        expect(t.network.urls).toEqual(["/openai/v1/responses"]);
+        expect(t.network.seen[0]!.authorization).toBe("Bearer public");
+        expect(t.network.seen[0]!["x-api-key"]).toBeUndefined();
+      } finally {
+        await t.network.close();
+      }
+    }, 20000);
+
+    it.each([
+      [
+        "an OpenAI-protocol",
+        "opencode-go/glm-5.3",
+        "/go/openai/v1/chat/completions",
+        "authorization",
+        "Bearer real-go-key",
+      ],
+      [
+        "an Anthropic-protocol",
+        "opencode-go/qwen3.8-flash",
+        "/go/anthropic/v1/messages",
+        "x-api-key",
+        "real-go-key",
+      ],
+    ])(
+      "sends %s Go model through the relay, which puts the connection's Go key in place of the run's grant",
+      async (_family, model, upstreamPath, header, value) => {
+        const t = await openCodeSetup();
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.input(model), control());
+          expect(result.stopReason).toBe("completed");
+          expect(t.network.urls).toEqual([upstreamPath]);
+          expect(t.network.seen[0]![header]).toBe(value);
+          const run = runCall(await t.env.calls());
+          expect(JSON.stringify(run)).not.toContain("real-go-key");
+          // 조직의 제품 폴더에는 로그인을 옮기지 않는다.
+          await expect(
+            stat(path.join(t.organization, "data", "opencode", "opencode.db"))
+          ).rejects.toThrow();
+        } finally {
+          await t.network.close();
+        }
+      },
+      20000
+    );
+
+    it.each([
+      [
+        "a login stored in the organization's database",
+        async (data: string) =>
+          storeLogins(data, [
+            { integration: "opencode-go", value: { type: "key", key: "left" } },
+          ]),
+      ],
+      [
+        "a legacy login file",
+        async (data: string) => {
+          await mkdir(path.join(data, "opencode"), { recursive: true });
+          await writeFile(path.join(data, "opencode", "auth.json"), "{}");
+        },
+      ],
+    ])(
+      "does not start a container over %s left in the organization's product folder",
+      async (_case, leave) => {
+        const t = await openCodeSetup();
+        try {
+          await leave(path.join(t.organization, "data"));
+          const result = await t
+            .provider()
+            .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+          expect(result.stopReason).toBe("failed");
+          expect(result.error).toContain("로그인 기록");
+          expect(await t.env.calls()).toEqual([]);
+          expect(t.network.urls).toHaveLength(0);
+        } finally {
+          await t.network.close();
+        }
+      },
+      20000
+    );
+
+    it("ends the run as failed with the reason when the relay cannot read the Go login", async () => {
+      const t = await openCodeSetup(false);
+      try {
+        const result = await t
+          .provider()
+          .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("인증 중계");
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        expect(t.network.urls).toHaveLength(0);
+      } finally {
+        await t.network.close();
+      }
+    }, 20000);
+  }
+);
+
+describe.skipIf(process.platform === "win32")(
   "connections behind the credential relay (#148)",
   () => {
     it.each([
       ["Claude", "claude", "claude-relay.mjs", createClaudeProvider],
       ["Codex", "codex", "codex-relay.mjs", createCodexProvider],
+      [
+        "OpenCode",
+        "opencode",
+        "opencode-simulator.mjs",
+        createOpenCodeProvider,
+      ],
     ] as const)(
       "give an isolated %s run no direct way to the provider: its model traffic leaves only through the credential relay",
       async (_name, id, program, create) => {

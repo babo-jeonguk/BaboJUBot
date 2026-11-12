@@ -26,7 +26,40 @@ const failing = failFile ? JSON.parse(await readFile(failFile, "utf8")) : null;
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
   subscribers = new Set();
 const zero = { input: 0, output: 0, cache: { read: 0, write: 0 } };
-let session, context, instructions;
+let session, context, instructions, model;
+// --relay면 본 실행 요청마다 고른 모델의 제공자 설정(baseURL·키)으로 모델을 한 번 부른다. 실제 OpenCode처럼 Go의 OpenAI 계열은
+// `Authorization: Bearer`, Anthropic 계열은 `x-api-key`, Google 계열은 `x-goog-api-key`로 키를 싣고, Zen 무료 모델은 공개 키
+// `Bearer public`에 설정의 header를 더한다.
+const relayMode = process.argv.includes("--relay");
+async function callModel() {
+  const go = config.providers?.["opencode-go"],
+    zen = config.providers?.opencode;
+  let url, headers;
+  if (model?.providerID === "opencode") {
+    url = `${zen.settings.baseURL}/responses`;
+    headers = { authorization: "Bearer public", ...zen.headers };
+  } else if (model?.id.startsWith("qwen")) {
+    url = `${go.settings.baseURL}/messages`;
+    headers = { "x-api-key": go.settings.apiKey };
+  } else if (model?.id.startsWith("gemini")) {
+    url = `${go.settings.baseURL}/models/${model.id}:streamGenerateContent?alt=sse`;
+    headers = { "x-goog-api-key": go.settings.apiKey };
+  } else {
+    url = `${go.settings.baseURL}/chat/completions`;
+    headers = { authorization: `Bearer ${go.settings.apiKey}` };
+  }
+  return fetch(url, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ model: model?.id }),
+  }).then(
+    async (response) => {
+      await response.arrayBuffer().catch(() => undefined);
+      return response.status;
+    },
+    () => 0
+  );
+}
 // 표준은 줄 끝으로 CRLF도 허용한다.
 const eventEnd = process.argv.includes("--sse-crlf") ? "\r\n\r\n" : "\n\n";
 const write = (event) => {
@@ -86,6 +119,32 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) raw += chunk;
     const input = raw ? JSON.parse(raw) : {};
     if (pathname === "/api/model") {
+      // --relay면 설정의 제공자(인증 중계 주소)대로 Go 구독 모델과 Zen 무료 모델을 보인다.
+      if (relayMode) {
+        json({
+          data: [
+            ...(config.providers?.opencode
+              ? [
+                  {
+                    id: "crouton-alpha-free",
+                    providerID: "opencode",
+                    name: "Free",
+                    cost: [{ input: 0, output: 0 }],
+                  },
+                ]
+              : []),
+            ...(config.providers?.["opencode-go"]
+              ? ["glm-5.3", "qwen3.8-flash", "gemini-4-argon"].map((id) => ({
+                  id,
+                  providerID: "opencode-go",
+                  name: id,
+                  cost: [{ input: 1, output: 1 }],
+                }))
+              : []),
+          ],
+        });
+        return;
+      }
       if (process.argv.includes("--slow-model"))
         await new Promise((resolve) => setTimeout(resolve, 11_000));
       if (recording) {
@@ -168,6 +227,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (pathname === "/api/session" && req.method === "POST") {
+      model = input.model;
       session = {
         ...recording?.session,
         id: "ses_" + crypto.randomUUID(),
@@ -225,6 +285,19 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
+      if (relayMode) {
+        const status = await callModel();
+        if (status !== 200) {
+          write({
+            type: "session.execution.failed",
+            data: {
+              sessionID: session.id,
+              error: { type: "provider.error", message: `status ${status}` },
+            },
+          });
+          return;
+        }
+      }
       const body = context.wakeReasons[0]?.body ?? "";
       if (body === "실행 유지 연습" || body === "끼워 넣기 연습") return;
       if (body === "느린 작업")
@@ -249,6 +322,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (pathname.endsWith("/model")) {
+      model = input.model;
       res.writeHead(204).end();
       return;
     }
