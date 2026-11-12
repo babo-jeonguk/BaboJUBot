@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 
 /**
  * 파일 읽기 경계에 닿는 경로. 영향이 불명확한 공용 설정(의존성·CI)도 넣는다. 전체 검증은 읽는 프로세스와
- * \`Workspaces.readArtifact\`만 돌리므로, \`record_artifact\` 도구 처리(apps/server/src/tools.ts)와 DB 저장은 일반 서버 시험
+ * `Workspaces.readArtifact`만 돌리므로, `record_artifact` 도구 처리(apps/server/src/tools.ts)와 DB 저장은 일반 서버 시험
  * (file-artifacts.test.ts)이 맡고 여기에 넣지 않는다.
  */
 export const fileBoundaryPaths = [
