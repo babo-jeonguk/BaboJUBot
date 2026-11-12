@@ -21,6 +21,7 @@ import {
   featureGaps,
   filesBase,
   gapOutcome,
+  junctionSeen,
   realScratch,
   runPinned,
   windows,
@@ -152,22 +153,46 @@ const needs = (
   feature: keyof typeof lacks
 ) => {
   const code = lacks[feature];
-  if (code) without(context, id, gapOutcome(code), `${feature} 없음(${code})`);
+  if (code)
+    without(context, id, gapOutcome(feature, code), `${feature} 없음(${code})`);
 };
 const needsLinks = (context: TestContext, id: string) =>
   needs(context, id, "symlink");
-it("counts a missing link as n/a only when the file system lacks the feature", () => {
-  // Windows FAT32의 링크·hard link는 ERROR_INVALID_FUNCTION(libuv EISDIR)으로 실패한다.
-  expect(gapOutcome("EISDIR", "win32")).toBe("n/a");
-  expect(gapOutcome("ENOTSUP", "linux")).toBe("n/a");
-  // POSIX의 symlink EPERM은 파일 시스템이 링크를 지원하지 않는다는 뜻이다(symlink(2)).
-  expect(gapOutcome("EPERM", "linux")).toBe("n/a");
-  // SMB 공유의 정션은 만들어져도 운영체제가 링크로 보지 못한다.
-  expect(gapOutcome("NOT_A_LINK", "win32")).toBe("n/a");
-  // Windows의 EPERM은 링크를 만들 권한이 없는 계정이다. 기능 부재가 아니다.
-  expect(gapOutcome("EPERM", "win32")).toBe("unverified");
-  expect(gapOutcome("EACCES", "linux")).toBe("unverified");
-  expect(gapOutcome("ENOSPC", "darwin")).toBe("unverified");
+it("counts a missing link as n/a only when the failed operation shows the file system lacks it", () => {
+  // Windows FAT32의 링크·hard link·정션은 ERROR_INVALID_FUNCTION(libuv EISDIR)으로 실패한다.
+  for (const feature of ["symlink", "hardLink", "junction"] as const)
+    expect(gapOutcome(feature, "EISDIR", "win32")).toBe("n/a");
+  expect(gapOutcome("hardLink", "ENOTSUP", "linux")).toBe("n/a");
+  // symlink(2)의 EPERM은 파일 시스템이 링크를 지원하지 않는다는 뜻뿐이다.
+  expect(gapOutcome("symlink", "EPERM", "linux")).toBe("n/a");
+  // link(2)의 EPERM은 권한 정책(protected_hardlinks 등)일 수도 있어 기능 부재로 확정하지 못한다.
+  expect(gapOutcome("hardLink", "EPERM", "linux")).toBe("unverified");
+  // Windows의 EPERM은 링크를 만들 권한이 없는 계정이다.
+  expect(gapOutcome("symlink", "EPERM", "win32")).toBe("unverified");
+  expect(gapOutcome("symlink", "EACCES", "linux")).toBe("unverified");
+  expect(gapOutcome("hardLink", "ENOSPC", "darwin")).toBe("unverified");
+  // EISDIR이 기능 부재를 뜻하는 것은 Windows에서뿐이다.
+  expect(gapOutcome("symlink", "EISDIR", "linux")).toBe("unverified");
+});
+it("counts a junction as missing only when the operating system cannot see the one it made", () => {
+  const link = { isSymbolicLink: () => true };
+  const folder = { isSymbolicLink: () => false };
+  const error = (code: string) => Object.assign(new Error(code), { code });
+  expect(junctionSeen(link)).toBe("");
+  // SMB 공유: 만든 정션을 운영체제가 보지 못한다(lstat ENOENT). 기능 부재다.
+  expect(junctionSeen(error("ENOENT"))).toBe("INVISIBLE");
+  expect(gapOutcome("junction", junctionSeen(error("ENOENT")), "win32")).toBe(
+    "n/a"
+  );
+  // 권한 오류는 그대로 남겨 미검증이 된다.
+  expect(junctionSeen(error("EACCES"))).toBe("EACCES");
+  expect(gapOutcome("junction", junctionSeen(error("EACCES")), "win32")).toBe(
+    "unverified"
+  );
+  // 보이지만 링크가 아니면 무엇이 만들어졌는지 모른다. 기능 부재로 확정하지 않는다.
+  expect(gapOutcome("junction", junctionSeen(folder), "win32")).toBe(
+    "unverified"
+  );
 });
 /** 이 파일 시스템이 이름을 다루는 방식. */
 const can = {

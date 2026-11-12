@@ -41,19 +41,38 @@ export type FeatureGaps = {
   junction: string;
 };
 /**
- * 탐침 실패가 이 파일 시스템에 그 기능이 없다는 근거면 적용 불가(n/a), 아니면(권한 부족 등) 준비하지 못한 것이라
- * 미검증이다.
+ * 기능 탐침의 실패가 이 파일 시스템에 그 기능이 없다는 근거면 적용 불가(n/a), 아니면 준비하지 못한 것이라
+ * 미검증이다. 같은 오류 코드도 어떤 작업이 실패했는지에 따라 뜻이 달라 작업과 함께 판정한다.
  */
-export const gapOutcome = (
+export function gapOutcome(
+  feature: keyof FeatureGaps,
   code: string,
   platform: NodeJS.Platform = process.platform
-): "n/a" | "unverified" =>
-  // EISDIR: Windows의 ERROR_INVALID_FUNCTION(FAT32). NOT_A_LINK: 만든 정션을 운영체제가 링크로 보지 못함(SMB).
-  // EPERM은 POSIX에서 링크를 지원하지 않는 파일 시스템이고, Windows에서는 링크 권한이 없는 계정이다.
-  ["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EISDIR", "NOT_A_LINK"].includes(code) ||
-  (code === "EPERM" && platform !== "win32")
-    ? "n/a"
-    : "unverified";
+): "n/a" | "unverified" {
+  const absent =
+    ["ENOTSUP", "EOPNOTSUPP", "ENOSYS"].includes(code) ||
+    // Windows의 ERROR_INVALID_FUNCTION(libuv EISDIR): FAT32는 링크·hard link·정션을 만들지 못한다.
+    (platform === "win32" && code === "EISDIR") ||
+    // symlink(2)의 EPERM은 링크를 지원하지 않는 파일 시스템뿐이다. link(2)의 EPERM은 권한 정책일 수도 있고,
+    // Windows의 EPERM은 링크 권한이 없는 계정이다.
+    (feature === "symlink" && platform !== "win32" && code === "EPERM") ||
+    // SMB 공유: 만든 정션을 운영체제가 보지 못한다.
+    (feature === "junction" && code === "INVISIBLE");
+  return absent ? "n/a" : "unverified";
+}
+/**
+ * 만든 정션을 lstat한 결과. 링크로 보이면 "", 운영체제가 보지 못하면(ENOENT) INVISIBLE, 그 밖의 오류는 그 코드,
+ * 보이지만 링크가 아니면 NOT_A_LINK.
+ */
+export function junctionSeen(
+  result: { isSymbolicLink(): boolean } | NodeJS.ErrnoException
+) {
+  if (result instanceof Error)
+    return result.code === "ENOENT"
+      ? "INVISIBLE"
+      : (result.code ?? String(result));
+  return result.isSymbolicLink() ? "" : "NOT_A_LINK";
+}
 let gaps: Promise<FeatureGaps> | undefined;
 export const featureGaps = () =>
   (gaps ??= (async () => {
@@ -81,15 +100,18 @@ export const featureGaps = () =>
         ),
         // SMB 공유에 만든 정션은 만들어져도 운영체제가 보지 못한다(lstat ENOENT). 보이는 정션만 있다고 본다.
         junction: windows
-          ? await attempt(async () => {
-              const junction = path.join(probe, "junction");
-              await symlink(path.join(probe, "folder"), junction, "junction");
-              const info = await lstat(junction).catch(() => undefined);
-              if (!info?.isSymbolicLink())
-                throw Object.assign(new Error("junction is not a link"), {
-                  code: "NOT_A_LINK",
-                });
-            })
+          ? (await attempt(() =>
+              symlink(
+                path.join(probe, "folder"),
+                path.join(probe, "junction"),
+                "junction"
+              )
+            )) ||
+            junctionSeen(
+              await lstat(path.join(probe, "junction")).catch(
+                (error: NodeJS.ErrnoException) => error
+              )
+            )
           : "not Windows",
       };
     } finally {
