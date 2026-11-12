@@ -46,7 +46,7 @@ it("keeps waiting while the pid file is missing, empty, or still initdb's", asyn
   const contents = [undefined, "", "-12\n", "987\n"];
   const pid = await waitForPostmaster(running(), file, {
     timeoutMs: 5_000,
-    read: (target) => {
+    read: () => {
       const next = contents.shift();
       if (next === undefined)
         throw Object.assign(new Error("gone"), { code: "ENOENT" });
