@@ -6,20 +6,12 @@ import type { Destination } from "@babojubot/contracts";
  * 운영자가 서버 시작 때 `BABOJUBOT_MODEL_DESTINATIONS`로 더한다. 에이전트·공유 파일·모델 출력으로는 넓히지 않는다.
  * 원격 측정·오류 보고처럼 실행에 꼭 필요하지 않은 목적지는 넣지 않는다(거부되어도 실행은 이어진다).
  */
-const https = (...hosts: string[]): Destination[] =>
-  hosts.map((host) => ({ host, port: 443 }));
-
 export const providerDestinations = {
-  // 인증 중계(#148)에 붙은 연결은 모델 통신이 실행 시도 중계의 조직 도구 연결(`/api/relay/<연결>`)로만 나간다. 프로바이더로 직접 나가는 목적지를 열지 않는다.
+  // 네 연결 모두 인증 중계(#148)에 붙어, 모델 통신이 실행 시도 중계의 조직 도구 연결(`/api/relay/<연결>`)로만 나간다.
+  // 프로바이더로 직접 나가는 목적지를 열지 않는다. 다른 모델 서버는 운영자가 `BABOJUBOT_MODEL_DESTINATIONS`로 더한다.
   claude: [],
   codex: [],
+  // Antigravity(`agy acp`): 로그인 확인(www.googleapis.com)·사용 기록은 중계로 보낼 수 없지만 ACP에서는 실패해도 실행이 이어진다.
+  antigravity: [],
   opencode: [],
-  // Antigravity CLI: Google 로그인과 Code Assist API. 하위 이름 전체(*.googleapis.com)는 공개 저장소(storage)까지 열어 넣지 않는다.
-  antigravity: https(
-    "accounts.google.com",
-    "oauth2.googleapis.com",
-    "www.googleapis.com",
-    "cloudcode-pa.googleapis.com",
-    "daily-cloudcode-pa.googleapis.com"
-  ),
 } as const satisfies Record<string, readonly Destination[]>;
