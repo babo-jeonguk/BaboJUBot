@@ -178,12 +178,31 @@ test("runs the default-volume file checks in the macOS and Windows jobs unless t
   }
 });
 
-test("lets an agent run the whole verification on a branch by hand and cancels superseded PR runs", () => {
+test("lets an agent run the whole verification on a branch or an exact commit by hand and cancels superseded PR runs", () => {
   assert.ok("workflow_dispatch" in workflow.on);
+  assert.equal(workflow.on.workflow_dispatch.inputs.sha.required, false);
   assert.equal(
     workflow.concurrency["cancel-in-progress"],
     "${{ github.event_name == 'pull_request' }}"
   );
+  // 두 수동 실행이 서로 다른 SHA면 같은 대기열을 나누지 않는다.
+  assert.match(workflow.concurrency.group, /inputs\.sha/);
+  // 모든 job이 지정한 SHA를 받는다(없으면 이벤트의 기본 commit).
+  for (const [name, job] of Object.entries(workflow.jobs))
+    for (const step of job.steps ?? [])
+      if (step.uses?.startsWith("actions/checkout@"))
+        assert.equal(step.with?.ref, "${{ inputs.sha }}", `${name} checkout`);
+  // 지정한 값이 짧은 SHA나 브랜치 이름이면 다른 commit을 검증한 것으로 보이지 않게 실패한다. 나머지 job은 changes 뒤에 돈다.
+  const verify = workflow.jobs.changes.steps.find((step) =>
+    /git rev-parse HEAD/.test(step.run ?? "")
+  );
+  assert.equal(verify?.if, "inputs.sha != ''");
+  for (const [name, job] of Object.entries(workflow.jobs))
+    if (name !== "changes")
+      assert.ok(
+        [job.needs].flat().includes("changes"),
+        `${name} needs changes`
+      );
 });
 
 test("accepts code only when every test job succeeded", () => {

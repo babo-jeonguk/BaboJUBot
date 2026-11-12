@@ -28,7 +28,12 @@ const meta = {
   volume,
   fileSystem,
   dir: dir ?? "",
-  sha: process.env.GITHUB_SHA ?? "local",
+  // 수동 실행은 지정한 commit을 checkout하므로 GITHUB_SHA가 아니라 실제로 받은 commit을 남긴다.
+  sha:
+    spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    }).stdout?.trim() || "local",
 };
 const finish = (fields, code) => {
   writeFileSync(

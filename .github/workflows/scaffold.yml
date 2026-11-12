@@ -4,12 +4,18 @@ on:
     branches: [main]
   push:
     branches: [main]
-  # 에이전트가 특정 브랜치에서 파일 시스템별 전체 검증을 포함한 모든 검사를 명시적으로 돌린다(`gh workflow run CI --ref <branch>`).
+  # 에이전트가 특정 브랜치나 commit에서 파일 시스템별 전체 검증을 포함한 모든 검사를 명시적으로 돌린다
+  # (`gh workflow run CI --ref <branch> [-f sha=<40자 SHA>]`). 모든 checkout이 `inputs.sha`를 받는다.
   workflow_dispatch:
+    inputs:
+      sha:
+        description: 검증할 commit의 40자 SHA. 비우면 --ref 브랜치의 최신 commit
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # 바뀐 파일이 Markdown뿐이면 문서 검사(check)만 실제로 돌린다. 나머지 job은 이름을 유지한 채 바로 성공한다.
@@ -23,7 +29,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ inputs.sha }}
           fetch-depth: 0
+      # 짧은 SHA·브랜치 이름을 주면 checkout이 다른 commit을 받을 수 있다. 지정한 그 commit이 아니면 모든 job을 막는다.
+      - if: inputs.sha != ''
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$SHA" ]; then
+            echo "::error::checked out $head, not '$SHA' (give the full 40-character commit SHA)"
+            exit 1
+          fi
+          echo "Verifying commit $SHA"
       - id: diff
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -51,6 +69,8 @@ jobs:
         run: echo "Markdown만 바뀌어 ${{ matrix.script }}를 건너뜁니다."
       - if: env.RUN == 'true'
         uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - if: env.RUN == 'true'
         uses: actions/setup-node@v7.1.0
         with:
@@ -83,6 +103,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -100,6 +122,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -117,6 +141,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -139,6 +165,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -156,6 +184,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -198,6 +228,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -227,6 +259,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -256,6 +290,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -289,6 +325,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -329,6 +367,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
@@ -373,6 +413,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
