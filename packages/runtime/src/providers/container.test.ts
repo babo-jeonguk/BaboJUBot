@@ -1,6 +1,8 @@
 import {
+  lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -650,6 +652,77 @@ describe.skipIf(process.platform === "win32")(
     );
 
     it.each([
+      [
+        "Codex",
+        "codex",
+        createCodexProvider,
+        ["auth.json"],
+        "auth.json",
+        [process.execPath, "-e", ""],
+      ],
+      [
+        "Antigravity",
+        "antigravity",
+        createAntigravityProvider,
+        [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+        "antigravity-oauth-token",
+        [process.execPath, fixture("antigravity-simulator.mjs")],
+      ],
+    ] as const)(
+      "keeps a %s login that a run with isolation off set aside out of every folder a later isolated run of the organization mounts (PR #171 SP-1)",
+      async (_name, id, create, file, original, program) => {
+        const env = await setup({});
+        const connection = path.join(env.root, "providers", id);
+        const login = path.join(connection, "login", original);
+        await mkdir(path.dirname(login), { recursive: true });
+        await writeFile(login, '{"real":1}');
+        // 예전 판이나 컨테이너가 조직 제품 폴더의 로그인 자리에 남긴, 로그인 모양의 보통 파일.
+        const left = path.join(connection, "organizations", env.org, ...file);
+        await mkdir(path.dirname(left), { recursive: true });
+        await writeFile(
+          left,
+          JSON.stringify({ token: { access_token: "left-in-organization" } })
+        );
+        const provider = create({
+          dataDir: env.root,
+          container: env.container,
+          command: [...program],
+        });
+        await provider.adapter.execute(
+          { ...env.isolated(), execution: "host" },
+          control()
+        );
+        await provider.adapter.execute(env.isolated(), control());
+        const sources = valuesOf(runCall(await env.calls()).args, "--mount")
+          .map((spec) => /(?:^|,)source=([^,]+)/.exec(spec)?.[1])
+          .filter((source): source is string => Boolean(source));
+        expect(sources.length).toBeGreaterThan(0);
+        const holding: string[] = [];
+        const look = async (at: string): Promise<void> => {
+          const info = await lstat(at).catch(() => undefined);
+          if (info?.isDirectory())
+            for (const name of await readdir(at))
+              await look(path.join(at, name));
+          else if (
+            info?.isFile() &&
+            (await readFile(at, "utf8")).includes("left-in-organization")
+          )
+            holding.push(at);
+        };
+        for (const source of sources) await look(source);
+        expect(holding).toEqual([]);
+        // 치운 로그인은 버리지 않고 이 컴퓨터만 쓰는 연결 폴더에 남긴다.
+        const kept = path.join(connection, "set-aside");
+        const names = await readdir(kept);
+        expect(names).toHaveLength(1);
+        expect(await readFile(path.join(kept, names[0]!), "utf8")).toContain(
+          "left-in-organization"
+        );
+      },
+      20000
+    );
+
+    it.each([
       ["Codex", "codex", createCodexProvider, ["auth.json"], "auth.json"],
       [
         "Antigravity",
@@ -1230,7 +1303,7 @@ describe.skipIf(process.platform === "win32")(
         ).run(`cred_${n}`, row.integration, "Go", JSON.stringify(row.value));
       db.close();
     }
-    async function openCodeSetup(login = true) {
+    async function openCodeSetup(login = true, hold = false) {
       const env = await setup(relayProgram);
       const connection = path.join(env.root, "providers/opencode");
       if (login)
@@ -1241,15 +1314,19 @@ describe.skipIf(process.platform === "win32")(
           },
         ]);
       let provider!: ReturnType<typeof createOpenCodeProvider>;
-      const network = await relayed("opencode", (upstream) => {
-        provider = createOpenCodeProvider({
-          dataDir: env.root,
-          command: [process.execPath, fixture("opencode-simulator.mjs")],
-          container: env.container,
-          relay: { upstream, verified: true },
-        });
-        return provider.credentialRelay!;
-      });
+      const network = await relayed(
+        "opencode",
+        (upstream) => {
+          provider = createOpenCodeProvider({
+            dataDir: env.root,
+            command: [process.execPath, fixture("opencode-simulator.mjs")],
+            container: env.container,
+            relay: { upstream, verified: true },
+          });
+          return provider.credentialRelay!;
+        },
+        { hold }
+      );
       const input = (model?: string) => {
         const request = env.isolated();
         request.access = { ...request.access, toolsBaseUrl: network.tools };
@@ -1346,6 +1423,54 @@ describe.skipIf(process.platform === "win32")(
       },
       20000
     );
+
+    it("copies no connection login into the organization's product folder while an isolated run of the organization is still going, even after isolation is turned off (PR #171 SP-2)", async () => {
+      const t = await openCodeSetup(true, true);
+      try {
+        // 이 컴퓨터의 실행이 조직 폴더로 옮겨 가는 연결의 로그인(시뮬레이터 저장소).
+        await writeFile(
+          path.join(
+            t.env.root,
+            "providers/opencode/data/synthetic-credentials.json"
+          ),
+          JSON.stringify([
+            {
+              id: "cred_synthetic",
+              integrationID: "opencode-go",
+              label: "Go",
+              active: true,
+              value: { type: "key", key: "synthetic-key" },
+            },
+          ])
+        );
+        const cancel = new AbortController();
+        const isolated = t
+          .provider()
+          .adapter.execute(t.input(), control(cancel.signal));
+        // 격리 실행의 컨테이너가 조직 제품 폴더를 넣은 채 모델 응답을 기다린다.
+        await expect
+          .poll(() => t.network.urls.length, { timeout: 10_000 })
+          .toBe(1);
+        // 그 사이 사용자가 격리를 끄고, 같은 조직의 다음 실행이 이 컴퓨터에서 돈다.
+        const base = t.input();
+        const host = await t.provider().adapter.execute(
+          {
+            ...base,
+            execution: "host",
+            identity: { ...base.identity, runId: crypto.randomUUID() },
+          },
+          control()
+        );
+        expect(host.stopReason).toBe("completed");
+        await expect(
+          stat(path.join(t.organization, "data", "synthetic-credentials.json"))
+        ).rejects.toThrow();
+        cancel.abort();
+        expect((await isolated).stopReason).toBe("cancelled");
+      } finally {
+        await t.network.close();
+      }
+    }, 30_000);
 
     it("ends the run as failed with the reason when the relay cannot read the Go login", async () => {
       const t = await openCodeSetup(false);

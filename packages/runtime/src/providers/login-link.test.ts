@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   readlink,
   rm,
   writeFile,
@@ -163,7 +164,7 @@ describe("a file left at an organization's login place", () => {
       "antigravity-oauth-token",
     ],
   ] as const)(
-    "is never taken as the %s connection's login: a run on this machine sets it aside and links the organization to the original",
+    "is never taken as the %s connection's login: a run on this machine sets it aside in the connection folder and links the organization to the original",
     async (name, id, place, original) => {
       const env = await setup();
       const connection = path.join(env.root, "providers", id);
@@ -192,7 +193,12 @@ describe("a file left at an organization's login place", () => {
       await provider.adapter.execute(input, control());
       expect(await readFile(login, "utf8")).toBe('{"real":1}');
       expect(await readlink(planted)).toBe(login);
-      expect(await readFile(`${planted}.set-aside`, "utf8")).toBe(
+      // 치운 파일은 컨테이너에 넣는 조직 제품 폴더가 아니라 이 컴퓨터만 쓰는 연결 폴더에 둔다(#148 PR #171 SP-1).
+      await expect(readFile(`${planted}.set-aside`, "utf8")).rejects.toThrow();
+      const kept = path.join(connection, "set-aside");
+      const files = await readdir(kept);
+      expect(files).toHaveLength(1);
+      expect(await readFile(path.join(kept, files[0]!), "utf8")).toBe(
         '{"planted":1}'
       );
     },
