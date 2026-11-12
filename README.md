@@ -28,7 +28,7 @@ For each research objective, BaboJUBot creates an independent research organizat
 
 ### Installation & Launch
 
-Clone the repository and start the platform locally:
+Clone the repository and start the platform locally. `pnpm dev` below is the hot-reload development mode; for long research, use `pnpm build` and `pnpm start` as described right after it.
 
 ```bash
 git clone https://github.com/babo-jeonguk/BaboJUBot.git
@@ -39,7 +39,7 @@ pnpm dev
 
 Open your browser and navigate to **`http://127.0.0.1:5173`** to access the dashboard.
 
-`pnpm dev` is for development: it reloads the server whenever a repository file changes, and each reload cuts off agent runs in progress. For long research, especially with real models, build once and start without file watching:
+`pnpm dev` is for development: it restarts the server whenever a file the server loads (including installed packages) changes, for example on `git pull`, and each restart cuts off agent runs in progress. For long research, especially with real models, build once and start without file watching:
 
 ```bash
 pnpm build
