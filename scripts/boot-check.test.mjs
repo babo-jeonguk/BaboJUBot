@@ -225,22 +225,31 @@ async function supervise(
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk);
     });
-    // close는 stdout/stderr를 끝까지 읽은 뒤 온다. spawn 직후에 붙여 한 번만 오는 사건을 놓치지 않는다.
-    const closed = new Promise((resolve) => {
-      child.once("close", (code, signal) => resolve({ code, signal }));
+    // 끝남은 exit로 본다. spawn 직후에 붙여 한 번만 오는 사건을 놓치지 않는다. close는 stdout/stderr를 끝까지 읽은 뒤
+    // 오지만, 끝난 프로세스가 남긴 자식이 출력 통로를 물려받아 잡고 있으면 오지 않는다(그 자식은 남은 것이다).
+    const exited = new Promise((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
       child.once("error", (error) =>
         resolve({ code: null, signal: null, error })
       );
     });
-    let exit = await within(closed, limit);
+    const closed = new Promise((resolve) => {
+      child.once("close", () => resolve(true));
+    });
+    let exit = await within(exited, limit);
     const overrun = !exit;
-    if (!exit) exit = await forceStop(child, closed, graceMs);
+    if (!exit) exit = await forceStop(child, exited, graceMs);
+    const outputClosed = (await within(closed, 5_000)) === true;
+    if (!outputClosed) {
+      child.stdout.destroy();
+      child.stderr.destroy();
+    }
     result = {
       ...(exit ?? { code: null, signal: null }),
       stdout,
       stderr,
       overrun,
-      leftBehind: leftovers(scope),
+      leftBehind: leftovers(scope, outputClosed),
     };
   } catch (error) {
     failure = error;
@@ -262,16 +271,16 @@ async function supervise(
  * Windows에는 협조적인 멈춤 신호가 없고(SIGTERM도 그 프로세스만 강제로 끝낸다) 트리는 부모가 살아 있을 때만 따라갈 수 있으므로,
  * 부모가 살아 있는 동안 트리 전체를 먼저 강제로 끝낸다.
  */
-async function forceStop(child, closed, graceMs) {
+async function forceStop(child, exited, graceMs) {
   if (process.platform === "win32") {
     killTree(child);
-    return within(closed, 10_000);
+    return within(exited, 10_000);
   }
   signalGroup(child, "SIGTERM");
-  const exit = await within(closed, graceMs);
+  const exit = await within(exited, graceMs);
   if (exit) return exit;
   signalGroup(child, "SIGKILL");
-  return within(closed, 10_000);
+  return within(exited, 10_000);
 }
 
 /** 정상으로 끝났어도 남은 것을 치운다. 단계마다 따로 시도하고 실패한 단계를 모아 돌려준다. */
@@ -302,10 +311,14 @@ async function cleanUpScope(scope, child) {
   return problems;
 }
 
-function leftovers(scope) {
+/** 그 폴더에 남은 것. 끝난 실행의 출력 통로를 아직 누가 잡고 있으면 그것도 남은 프로세스다. */
+function leftovers(scope, outputClosed = true) {
   return {
     folders: existsSync(scope) ? readdirSync(scope) : [],
-    processes: runningIn(scope),
+    processes: [
+      ...runningIn(scope),
+      ...(outputClosed ? [] : ["a process still holds the run's output"]),
+    ],
   };
 }
 
