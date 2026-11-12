@@ -81,14 +81,21 @@ test("the global settings show each connection's readiness with a recheck, and a
     await held;
     await route.continue();
   });
-  await fake2
-    .getByRole("button", { name: "가짜 프로바이더 2 다시 확인" })
-    .click();
-  await expect(
-    fake2.getByRole("status", { name: "가짜 프로바이더 2 준비 상태 확인 중" })
-  ).toBeVisible();
-  release();
-  await expect(fake2.getByTestId("readiness-badge")).toHaveText("!준비안됨");
+  try {
+    await fake2
+      .getByRole("button", { name: "가짜 프로바이더 2 다시 확인" })
+      .click();
+    await expect(
+      fake2.getByRole("status", {
+        name: "가짜 프로바이더 2 준비 상태 확인 중",
+      })
+    ).toBeVisible();
+    release();
+    await expect(fake2.getByTestId("readiness-badge")).toHaveText("!준비안됨");
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
 
   // 준비안됨 연결도 고르기 목록에 남고, 고르면 칸 옆에 그 배지가 보인다.
   const lead = providers.getByRole("combobox", {

@@ -106,29 +106,33 @@ test("the Lead chat shows the latest 50 messages and loads older ones on scroll-
     await held;
     await route.continue();
   });
-  const top = messages.first();
-  const topId = await top.getAttribute("data-message-id");
-  await scroller.hover();
-  await page.mouse.wheel(0, -100_000);
-  await expect(page.getByRole("list", { name: "대화" })).toHaveAttribute(
-    "aria-busy",
-    "true"
-  );
-  const before = await offsetIn(
-    scroller,
-    scroller.locator(`[data-message-id="${topId}"]`)
-  );
-  release();
-  await expect(messages).toHaveCount(100);
-  await expect(page.getByRole("list", { name: "대화" })).not.toHaveAttribute(
-    "aria-busy"
-  );
-  const after = await offsetIn(
-    scroller,
-    scroller.locator(`[data-message-id="${topId}"]`)
-  );
-  expect(Math.abs(after - before)).toBeLessThan(40);
-  await page.unroute("**/messages?before=*");
+  try {
+    const top = messages.first();
+    const topId = await top.getAttribute("data-message-id");
+    await scroller.hover();
+    await page.mouse.wheel(0, -100_000);
+    await expect(page.getByRole("list", { name: "대화" })).toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+    const before = await offsetIn(
+      scroller,
+      scroller.locator(`[data-message-id="${topId}"]`)
+    );
+    release();
+    await expect(messages).toHaveCount(100);
+    await expect(page.getByRole("list", { name: "대화" })).not.toHaveAttribute(
+      "aria-busy"
+    );
+    const after = await offsetIn(
+      scroller,
+      scroller.locator(`[data-message-id="${topId}"]`)
+    );
+    expect(Math.abs(after - before)).toBeLessThan(40);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
 
   // 키보드로 `이전 메시지 보기`를 누르면 남은 쪽을 받고, 처음까지 오면 버튼이 사라진다.
   await older.focus();

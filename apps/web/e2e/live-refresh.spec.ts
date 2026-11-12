@@ -158,17 +158,21 @@ test("after the Event stream drops and reconnects, another tab shows what change
 
   // 끊긴 동안 승인 정책을 켠다. 이 변경은 Event 하나만 남기고 아무도 깨우지 않으므로, 그 Event를 놓치면 뒤따르는 Event도 없다.
   reconnect = new Promise<void>((resolve) => (release = resolve));
-  await connection!.close();
-  const changed = await page.request.put(
-    `/api/organizations/${org.id}/approval-policy`,
-    { data: { addWorker: true } }
-  );
-  expect(changed.status()).toBe(200);
-  await expect(policy).not.toBeChecked();
+  try {
+    await connection!.close();
+    const changed = await page.request.put(
+      `/api/organizations/${org.id}/approval-policy`,
+      { data: { addWorker: true } }
+    );
+    expect(changed.status()).toBe(200);
+    await expect(policy).not.toBeChecked();
 
-  // 다시 이어지면 ready가 전체를 다시 불러와, 사용자 입력 없이 바뀐 정책이 보인다.
-  const second = nextReady();
-  release();
-  await second;
-  await expect(policy).toBeChecked();
+    // 다시 이어지면 ready가 전체를 다시 불러와, 사용자 입력 없이 바뀐 정책이 보인다.
+    const second = nextReady();
+    release();
+    await second;
+    await expect(policy).toBeChecked();
+  } finally {
+    release();
+  }
 });
