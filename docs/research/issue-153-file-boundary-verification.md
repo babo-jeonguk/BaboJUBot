@@ -2,7 +2,7 @@
 
 `record_artifact`의 파일 경로 격리를 Linux·Windows·macOS의 파일 시스템 여덟 곳에서 실제로 확인한 결과다. 지금 동작·응답 코드는 [현재 구현 현황](../current-implementation.md), CI 실행 조건은 [CONTRIBUTING](../../CONTRIBUTING.md)이 기준이다.
 
-기준: PR #176 head `127fbe4`(GitHub이 `main` `19b6cfc` 위에 만든 병합 커밋 `f0e9c6a`), [CI run 43221772628](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43221772628), 2026-11-12. 사례 표는 앞선 코드 head `fc23ac8`·`2300054`의 [run 43215390688](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43215390688)·[run 43217439001](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43217439001)과 같다. 이후 커밋은 이 기록 등 문서만 바꿨다.
+기준: PR #176 head `127fbe4`(GitHub이 `main` `19b6cfc` 위에 만든 병합 커밋 `f0e9c6a`), [CI run 43221772628](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43221772628), 2026-11-12. 사례 표는 앞선 코드 head `fc23ac8`·`2300054`의 [run 43215390688](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43215390688)·[run 43217439001](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43217439001)과 같다. 외부 리뷰 1회차 수정(결과 판정·적용 불가 분류·수동 실행 SHA) head `9c0e3be`(병합 커밋 `a76ab13`)의 [run 43229784411](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43229784411)도 전 job 성공이고 사례 표·볼륨별 개수가 같다(미검증 0). 이후 커밋은 이 기록만 바꿨다.
 
 확인 범위는 읽는 프로세스와 `Workspaces.readArtifact`의 응답·보존 바이트다. `record_artifact` 도구 호출·DB 저장·HTTP/MCP 응답은 Linux의 서버 통합 시험(`file-artifacts.test.ts`)이 맡으며 다른 파일 시스템에서는 돌리지 않았다.
 
