@@ -647,12 +647,18 @@ test("instant switches tell which setting saved, never on load or failure, and a
     await held;
     await route.fallback();
   });
-  await isolation.click();
-  await expect(isolation).toHaveAccessibleDescription("격리 실행 저장하는 중…");
-  release();
-  await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
-  expect(await isolation.isChecked()).toBe(was);
-  await page.unrouteAll({ behavior: "wait" });
+  try {
+    await isolation.click();
+    await expect(isolation).toHaveAccessibleDescription(
+      "격리 실행 저장하는 중…"
+    );
+    release();
+    await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
+    expect(await isolation.isChecked()).toBe(was);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
 });
 
 test("a policy switch's saving or saved state stays with its organization when history jumps to another organization's settings", async ({
@@ -687,18 +693,22 @@ test("a policy switch's saving or saved state stays with its organization when h
     await held;
     await route.fallback();
   });
-  await policy.click();
-  await expect(policy).toHaveAccessibleDescription(/저장하는 중…$/);
-  const saved = page.waitForResponse(
-    (r) => r.url().endsWith(a.api("/approval-policy")) && r.ok()
-  );
-  await jumpToOther();
-  await expect(policy).not.toBeChecked();
-  await expect(policy).not.toHaveAttribute("aria-disabled");
-  await expect(policy).toHaveAccessibleDescription("");
-  release();
-  await saved;
-  await page.unrouteAll({ behavior: "wait" });
+  try {
+    await policy.click();
+    await expect(policy).toHaveAccessibleDescription(/저장하는 중…$/);
+    const saved = page.waitForResponse(
+      (r) => r.url().endsWith(a.api("/approval-policy")) && r.ok()
+    );
+    await jumpToOther();
+    await expect(policy).not.toBeChecked();
+    await expect(policy).not.toHaveAttribute("aria-disabled");
+    await expect(policy).toHaveAccessibleDescription("");
+    release();
+    await saved;
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
   await expect(policy).not.toBeChecked();
   await expect(policy).toHaveAccessibleDescription("");
 
@@ -779,12 +789,16 @@ test("reduced motion stops spin and pulse loops while normal motion keeps them, 
   expect(await probe()).toEqual(["spin infinite", "pulse infinite"]);
   // 불러오는 중 자리 표시도 글로 읽힌다.
   await page.route(`**${org.api("/dashboard*")}`, () => undefined);
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(`/orgs/${org.id}/dashboard`);
-  await expect(
-    page.getByRole("status").filter({ hasText: "불러오는 중…" }).first()
-  ).toBeAttached();
-  await page.unrouteAll({ behavior: "ignoreErrors" });
+  try {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto(`/orgs/${org.id}/dashboard`);
+    await expect(
+      page.getByRole("status").filter({ hasText: "불러오는 중…" }).first()
+    ).toBeAttached();
+  } finally {
+    // 붙잡은 요청은 끝내지 않고 버린다.
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  }
 });
 
 /** 주요 화면이 옆으로 넘치지 않고 핵심 조작이 화면에 닿는지 본다. */
