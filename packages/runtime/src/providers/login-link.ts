@@ -56,7 +56,8 @@ async function keepAtFallback(original: string, fallback: string) {
  * 로그인 파일)은 원본을 가리키는 링크로 둔다. 프로그램은 링크를 따라가 원본 자리에서 바꿔 쓰므로 링크가 남는다.
  * Codex(0.166.0)와 Antigravity(agy 1.5.3)는 링크를 따라가 원본 자리에 바꿔 쓴다는 것을 확인했다.
  * 연결 폴더의 자리(`fallback`)에 보통 파일이 있으면 가장 최근 로그인(예전 연결 폴더 로그인, 링크 대신 파일을 쓴 판)이므로 원본으로 옮긴다.
- * 조직 제품 폴더의 자리에 있는 보통 파일은 컨테이너가 쓸 수 있어 로그인으로 가져가지 않고 `<자리>.set-aside`로 치운다.
+ * 조직 제품 폴더의 자리에 있는 보통 파일은 컨테이너가 쓸 수 있어 로그인으로 가져가지 않고 연결 폴더의 `set-aside` 폴더로 옮긴다.
+ * 그 폴더는 이 컴퓨터만 쓰고 어떤 컨테이너에도 넣지 않는다. 조직 제품 폴더는 격리 실행에 그대로 넣기 때문이다.
  * 원본 자리는 모든 조직 컨테이너가 쓸 수 있으므로 보통 파일이 아닌 것(다른 곳을 가리키는 링크 등)은 지운다. 남기면 이 컴퓨터에서 도는
  * 프로그램이 로그인을 갱신할 때 링크를 따라가 그 파일을 덮어쓴다.
  * 링크를 만들 수 있는지는 부를 때마다 임시 링크로 먼저 보고, 이미 있는 링크도 그 판정을 따른다. 링크를 만들 수 없는 컴퓨터(권한 없는 Windows, 링크를 모르는 파일 시스템)면 어느 `at`이든 `false`이며 모든 실행이 연결 폴더의 자리(`fallback`)로 돌고, 그 자리에서 로그인 하나를 읽게 한다(`keepAtFallback`). 같은 원본의 링크 작업은 `oneAtATime`으로 하나씩 한다.
@@ -65,7 +66,8 @@ async function linkLogin(
   original: string,
   fallback: string,
   at: string,
-  label: string
+  label: string,
+  setAside: string
 ): Promise<boolean> {
   await mkdir(path.dirname(original), { recursive: true, mode: 0o700 });
   await mkdir(path.dirname(at), { recursive: true, mode: 0o700 });
@@ -102,12 +104,20 @@ async function linkLogin(
       return true;
     if (current?.isFile()) {
       // 연결 폴더의 자리(`fallback`)는 이 컴퓨터만 쓰므로 그 보통 파일은 가장 최근 로그인이다. 조직 제품 폴더의 자리는 격리 실행의
-      // 에이전트도 쓸 수 있으므로 거기 남은 파일은 로그인으로 가져가지 않고 옆에 치워 둔다(#148: 실행 결과를 원본으로 되가져오지 않는다).
+      // 에이전트도 쓸 수 있고 그 폴더를 컨테이너에 넣으므로, 거기 남은 파일은 로그인으로 가져가지 않고 연결 폴더의 `set-aside` 폴더로
+      // 옮긴다(#148: 실행 결과를 원본으로 되가져오지 않는다, PR #171 SP-1).
       if (at === fallback) await rename(at, original);
       else {
-        await rename(at, `${at}.set-aside`);
+        await mkdir(setAside, { recursive: true, mode: 0o700 });
+        await rename(
+          at,
+          path.join(
+            setAside,
+            `${Date.now()}-${randomUUID()}-${path.basename(at)}`
+          )
+        );
         console.warn(
-          `[provider] a file at an organization's ${label} login place was set aside, not used as the connection's login`
+          `[provider] a file at an organization's ${label} login place was moved to the connection's set-aside folder, not used as the connection's login`
         );
       }
     } else if (current) await rm(at, { recursive: true, force: true });
@@ -126,8 +136,11 @@ export function loginLink(options: {
   original: string;
   fallback: string;
   label: string;
+  setAside: string;
 }) {
-  const { original, fallback, label } = options;
+  const { original, fallback, label, setAside } = options;
   return (at: string) =>
-    oneAtATime(original, () => linkLogin(original, fallback, at, label));
+    oneAtATime(original, () =>
+      linkLogin(original, fallback, at, label, setAside)
+    );
 }

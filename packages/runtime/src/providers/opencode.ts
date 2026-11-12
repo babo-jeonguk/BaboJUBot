@@ -445,6 +445,10 @@ export function createOpenCodeProvider(options: {
     string,
     (message: SteerMessage) => Promise<SteerOutcome>
   >();
+  /** 조직마다 살아 있는 격리 실행 수. 그동안 이 컴퓨터의 실행은 그 조직 폴더로 연결의 로그인을 옮기지 않는다(PR #171 SP-2). */
+  const isolatedRuns = new Map<string, number>();
+  /** 조직마다 진행 중인 로그인 옮기기. 격리 실행은 이것이 끝난 뒤에 남은 로그인을 확인한다. */
+  const copying = new Map<string, Set<Promise<void>>>();
   const catalog = async (signal: AbortSignal) => {
     await prepare();
     const service = await server(signal);
@@ -531,6 +535,8 @@ export function createOpenCodeProvider(options: {
       let service: Awaited<ReturnType<typeof server>> | undefined,
         grant: RelayGrant | undefined,
         events: Promise<void> | undefined;
+      const organizationId = input.identity.organizationId;
+      let counted = false;
       try {
         // 그 조직의 제품 폴더로 돈다.
         const organization = folders.organization(
@@ -538,8 +544,19 @@ export function createOpenCodeProvider(options: {
         );
         const placement = placeAttempt(options.container, organization, input);
         if (!placement) return failure();
+        // 같은 조직의 격리 실행이 살아 있는 동안 이 컴퓨터의 실행은 그 조직 폴더로 연결의 로그인을 옮기지 않는다(PR #171 SP-2).
+        if (placement.container) {
+          isolatedRuns.set(
+            organizationId,
+            (isolatedRuns.get(organizationId) ?? 0) + 1
+          );
+          counted = true;
+        }
         await prepare();
         await mkdir(organization, { recursive: true, mode: 0o700 });
+        // 이 컴퓨터의 실행이 옮기던 로그인은 다 옮겨진 뒤에 본다.
+        if (placement.container)
+          await Promise.all(copying.get(organizationId) ?? []);
         // 격리 실행은 조직 폴더에 남은 로그인을 컨테이너가 읽을 수 있으므로, 서버를 띄우기 전에 확인하고 시작하지 않는다.
         if (
           placement.container &&
@@ -643,7 +660,25 @@ export function createOpenCodeProvider(options: {
         if (container) {
           if (entries(await api.json("/api/credential")).length)
             return { ...failure(), error: residueRefusal };
-        } else await copyLogin(api, runControl.signal);
+        } else if (isolatedRuns.get(organizationId)) {
+          // 살아 있는 격리 컨테이너가 조직의 제품 폴더를 넣은 채 돌고 있다.
+          await runControl.emit({
+            type: "progress",
+            text: "같은 조직의 격리 실행이 진행 중이라 연결의 로그인을 조직 폴더로 옮기지 않았습니다.",
+          });
+        } else {
+          const copy = copyLogin(api, runControl.signal);
+          const pending =
+            copying.get(organizationId) ?? new Set<Promise<void>>();
+          pending.add(copy);
+          copying.set(organizationId, pending);
+          try {
+            await copy;
+          } finally {
+            pending.delete(copy);
+            if (!pending.size) copying.delete(organizationId);
+          }
+        }
         const available = models(await api.json("/api/model"));
         // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
         const selected = input.model
@@ -830,8 +865,17 @@ export function createOpenCodeProvider(options: {
       } finally {
         grant?.revoke();
         active.delete(input.identity.runId);
-        await service?.close();
-        await events?.catch(() => {});
+        try {
+          await service?.close();
+          await events?.catch(() => {});
+        } finally {
+          // 컨테이너를 지운 뒤에야 이 격리 실행을 센 것에서 뺀다.
+          if (counted) {
+            const remaining = (isolatedRuns.get(organizationId) ?? 1) - 1;
+            if (remaining) isolatedRuns.set(organizationId, remaining);
+            else isolatedRuns.delete(organizationId);
+          }
+        }
       }
     },
   };

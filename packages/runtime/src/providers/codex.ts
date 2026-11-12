@@ -292,6 +292,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     original,
     fallback: path.join(home, "auth.json"),
     label: "Codex",
+    setAside: path.join(home, "set-aside"),
   });
   const command = options.command ?? commandFor(id, "codex");
   const environment = (codexHome = home, isolated = false) =>

@@ -206,6 +206,7 @@ export function createAntigravityProvider(options: {
     original,
     fallback: tokenAt(home),
     label: "Antigravity",
+    setAside: path.join(home, "set-aside"),
   });
   /** 연결 폴더도 조직 폴더와 같은 링크로 로그인을 읽는다. 로그인 명령·준비 확인·모델 목록이 조직 실행과 같은 로그인을 본다. */
   const prepare = async () => {
