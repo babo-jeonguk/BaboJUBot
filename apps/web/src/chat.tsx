@@ -272,7 +272,7 @@ function ConversationLink({
       </span>
       <time
         dateTime={c.lastActivityAt}
-        className="text-[11px] text-slate-400 tabular-nums"
+        className="text-[11px] text-slate-500 tabular-nums"
       >
         {shortTime(c.lastActivityAt)}
       </time>
@@ -319,7 +319,9 @@ function ChatHeader({
       <button
         type="button"
         onClick={onOpenList}
-        aria-label="대화 목록"
+        aria-label={
+          unreadElsewhere ? "대화 목록 (읽지 않은 대화 있음)" : "대화 목록"
+        }
         className="btn-ghost relative -ml-2 px-2 md:hidden"
       >
         <svg
@@ -334,7 +336,10 @@ function ChatHeader({
           <path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h8" />
         </svg>
         {unreadElsewhere && (
-          <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-brand-500" />
+          <span
+            data-testid="unread-elsewhere"
+            className="absolute top-1 right-1 h-2 w-2 rounded-full bg-brand-500"
+          />
         )}
       </button>
       <h1 className="min-w-0 truncate text-xl font-semibold">{title}</h1>
@@ -738,10 +743,14 @@ function Transcript({
   });
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
+      {/* 키보드로 들어와 PageUp·PageDown·화살표로 스크롤하는 이름 있는 영역. 새 메시지는 아래 알림 줄이 따로 읽는다. */}
       <div
         ref={scroller}
+        role="region"
+        aria-label="대화 내용"
+        tabIndex={0}
         data-testid="transcript-scroller"
-        className="scrollbar-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1 [overflow-anchor:none]"
+        className="scrollbar-thin -mx-1 min-h-0 flex-1 overflow-y-auto rounded-lg px-1 [overflow-anchor:none] focus-visible:outline-2 focus-visible:outline-brand-500"
         onWheel={takeOver}
         onTouchStart={takeOver}
         onKeyDown={takeOver}
@@ -855,7 +864,7 @@ function MessageBubble({
       data-author={m.author}
       data-message-id={m.id}
     >
-      <div className="mb-1 text-[11px] text-slate-400">
+      <div className="mb-1 text-[11px] text-slate-500">
         {mine ? "나" : lead.name} ·{" "}
         {!mine && runId ? (
           <Link
@@ -882,7 +891,7 @@ function MessageBubble({
         </div>
       )}
       {mine && runId && (
-        <div className="mt-1 text-[11px] text-slate-400">
+        <div className="mt-1 text-[11px] text-slate-500">
           <Link
             to={`/orgs/${orgId}/runs/${runId}`}
             title={runLabel(runId)}
@@ -1070,7 +1079,7 @@ function Composer({
       ) : (
         <>
           {send.isPending && (
-            <p className="mb-2 text-right text-xs text-slate-400" role="status">
+            <p className="mb-2 text-right text-xs text-slate-500" role="status">
               전송 중…
             </p>
           )}
@@ -1231,7 +1240,7 @@ function QueuedMessages({
       >
         <QueueIcon className="h-3.5 w-3.5" />줄 세운 메시지{" "}
         <span
-          className={`tabular-nums ${count >= maxQueuedMessages ? "text-rose-600" : "text-slate-400"}`}
+          className={`tabular-nums ${count >= maxQueuedMessages ? "text-rose-600" : "text-slate-500"}`}
         >
           {count}/{maxQueuedMessages}
         </span>

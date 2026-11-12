@@ -8,6 +8,7 @@
 | 조직 지표·날짜 묶음·시간대·홈 개요 조회 | [db/dashboard.ts](../../../packages/db/src/dashboard.ts) `getOrganizationDashboard`·`getOverview`, run-views.ts `listRunningRuns` | 대시보드 API `rooms on the home` 외 |
 | 조회 API·`invalid_time_zone` | server/app.ts `GET /api/organizations/:id/dashboard`·`GET /api/overview` | 대시보드 API |
 | 지표·14일 차트·실행 중인 에이전트·최근 활동 | [web/dashboard.tsx](../../../apps/web/src/dashboard.tsx) `RunningCountText`, pages.tsx `OrganizationDashboard`, activity.tsx `ActivityScreen`, api.ts `useOrganizationDashboard`·`dashboardQuery` | 대시보드 E2E, [시간대 대체](../../../apps/web/src/dashboard-query.test.ts) |
+| 차트의 `숫자로 보기` 표 | dashboard.tsx `DayChart` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
 | 홈 로비: 요약·방 순서·자리·상태별 모습·말풍선 | [web/home.tsx](../../../apps/web/src/home.tsx) `Home`·`Summary`, [home-model.ts](../../../apps/web/src/home-model.ts) `arrangeHome`·`placeOf`·`columnsOf`·`relativeTime`, [home-room.tsx](../../../apps/web/src/home-room.tsx) `Room`·`Seat`·`Lounge`, [home.css](../../../apps/web/src/home.css); 근거 [홈 조사](../../research/home-references.md) | [배치 규칙](../../../apps/web/src/home.test.ts), 홈 E2E |
 | Event 뒤 홈 개요 재조회 | live-events.ts `queryKeys.overview` | 대시보드 E2E |
 | 대시보드용 가짜 장면(`실행 유지 연습`·`실패 연습`) | runtime/scripted.ts `demoLeadScript`·`demoWorkerScript` | [가짜 프로바이더](../../../packages/runtime/src/scripted.test.ts) |

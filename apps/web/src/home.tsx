@@ -181,7 +181,7 @@ function Closed({
         <span className="text-[10px] transition group-open:rotate-90">▶</span>
         끝난 조직
         <span
-          className="font-normal text-slate-400 tabular-nums"
+          className="font-normal text-slate-500 tabular-nums"
           data-testid="closed-organization-count"
         >
           {rooms.length}

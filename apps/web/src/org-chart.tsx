@@ -12,7 +12,14 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router";
 import { AgentFace, faceMoodOf } from "./agent-face.tsx";
 import { roleLabel } from "./agents.tsx";
@@ -113,6 +120,13 @@ function Chart({ orgId, agents }: { orgId: string; agents: Agent[] }) {
   );
 }
 
+/** 조직도에서 실제로 되는 조작. 노드 고르기·화살표 이동·Escape는 없다(노드는 포커스·선택되지 않고 카드 링크만 있다). */
+const chartHelp = {
+  tree: "Research Lead 아래 작업자를 잇는 관계도입니다. 카드마다 그 에이전트 상세로 가는 링크라 Tab으로 옮겨 다니고 Enter로 엽니다. 끌어서 옮기고 아래 보기 조절로 확대·축소·한눈에 보기를 합니다. 같은 구성은 아래 ‘구성원 목록으로 보기’에서 글로 읽을 수 있습니다.",
+  stack:
+    "Research Lead 아래로 작업자를 들여 쌓은 관계도입니다. 카드마다 그 에이전트 상세로 가는 링크라 Tab으로 옮겨 다니고 Enter로 엽니다. 같은 구성은 아래 ‘구성원 목록으로 보기’에서 글로 읽을 수 있습니다.",
+};
+
 function Canvas({
   graph,
   tree,
@@ -124,39 +138,47 @@ function Canvas({
   fitKey: string;
 }) {
   const rf = useReactFlow();
+  const helpId = useId();
   useEffect(() => {
     if (!tree) return;
     const id = requestAnimationFrame(() => void rf.fitView(fitOptions));
     return () => cancelAnimationFrame(id);
   }, [rf, tree, fitKey]);
   return (
-    <ReactFlow<ChartNode>
-      nodes={graph.nodes}
-      edges={graph.edges}
-      nodeTypes={nodeTypes}
-      nodesDraggable={false}
-      nodesConnectable={false}
-      nodesFocusable={false}
-      edgesFocusable={false}
-      elementsSelectable={false}
-      deleteKeyCode={null}
-      panOnDrag={tree}
-      zoomOnPinch={tree}
-      zoomOnScroll={false}
-      zoomOnDoubleClick={false}
-      preventScrolling={false}
-      panOnScroll={false}
-      fitView={tree}
-      fitViewOptions={fitOptions}
-      defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-      minZoom={0.3}
-      maxZoom={1.6}
-      ariaLabelConfig={ariaLabelConfig}
-      proOptions={{ hideAttribution: true }}
-      className={tree ? "org-chart" : "org-chart cursor-default"}
-    >
-      {tree && <Controls showInteractive={false} position="bottom-right" />}
-    </ReactFlow>
+    <>
+      <p id={helpId} className="sr-only">
+        {chartHelp[tree ? "tree" : "stack"]}
+      </p>
+      <ReactFlow<ChartNode>
+        aria-label="에이전트 조직도 그래프"
+        aria-describedby={helpId}
+        nodes={graph.nodes}
+        edges={graph.edges}
+        nodeTypes={nodeTypes}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        nodesFocusable={false}
+        edgesFocusable={false}
+        elementsSelectable={false}
+        deleteKeyCode={null}
+        panOnDrag={tree}
+        zoomOnPinch={tree}
+        zoomOnScroll={false}
+        zoomOnDoubleClick={false}
+        preventScrolling={false}
+        panOnScroll={false}
+        fitView={tree}
+        fitViewOptions={fitOptions}
+        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+        minZoom={0.3}
+        maxZoom={1.6}
+        ariaLabelConfig={ariaLabelConfig}
+        proOptions={{ hideAttribution: true }}
+        className={tree ? "org-chart" : "org-chart cursor-default"}
+      >
+        {tree && <Controls showInteractive={false} position="bottom-right" />}
+      </ReactFlow>
+    </>
   );
 }
 

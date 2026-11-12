@@ -189,16 +189,20 @@ const shortDate = (date: string) => {
 };
 
 /**
- * 날짜별 막대 14개. 막대마다 hover·keyboard focus로 그날의 수를 보이고, `숫자로 보기` 표가 같은 값을 모두 담는다.
+ * 날짜별 막대 14개. 막대마다 hover로 그날의 수를 보인다. 막대는 Tab으로 하나씩 들르지 않고, 키보드·화면 읽기 프로그램은
+ * `숫자로 보기` 표에서 모든 날짜·계열·값을 단위와 함께 읽는다.
  * 여러 계열이면 아래에서부터 쌓고 범례를 둔다. `display`가 있으면 막대 높이(0~1)와 표시 값을 직접 정한다(비율).
  */
 function DayChart({
   title,
+  unit,
   days,
   series,
   display,
 }: {
   title: string;
+  /** 표의 값 단위(예: `회`). 비율(`display`)은 값에 %가 붙는다. */
+  unit: string;
   days: DashboardDay[];
   series: Series[];
   display?: (day: DashboardDay) => { height: number | null; label: string };
@@ -231,7 +235,7 @@ function DayChart({
         </ul>
       )}
       <div className="mt-3">
-        <div className="mb-1 text-right text-[10px] text-slate-400 tabular-nums">
+        <div className="mb-1 text-right text-[10px] text-slate-500 tabular-nums">
           {display ? "100%" : `최대 ${max}`}
         </div>
         <div
@@ -243,15 +247,12 @@ function DayChart({
             return (
               <div
                 key={d.date}
-                tabIndex={0}
                 role="img"
                 aria-label={describe(d)}
                 data-date={d.date}
-                className="relative flex h-full min-w-0 flex-1 cursor-default flex-col justify-end rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+                className="relative flex h-full min-w-0 flex-1 cursor-default flex-col justify-end rounded-sm"
                 onPointerEnter={() => setActive(i)}
                 onPointerLeave={() => setActive(undefined)}
-                onFocus={() => setActive(i)}
-                onBlur={() => setActive(undefined)}
               >
                 <div
                   className={`mx-auto flex w-full max-w-6 flex-col-reverse gap-[2px] overflow-hidden rounded-t-[4px] ${active === i ? "opacity-80" : ""}`}
@@ -259,7 +260,7 @@ function DayChart({
                   {shown ? (
                     shown.height === null ? (
                       // 값이 없는 날(분모 0)은 0%와 구별해 막대 대신 —를 둔다.
-                      <span className="text-center text-[10px] leading-none text-slate-300">
+                      <span className="text-center text-[10px] leading-none text-slate-500">
                         —
                       </span>
                     ) : (
@@ -316,16 +317,27 @@ function DayChart({
             );
           })}
         </div>
-        <div className="mt-1 flex justify-between text-[10px] text-slate-400 tabular-nums">
+        <div className="mt-1 flex justify-between text-[10px] text-slate-500 tabular-nums">
           <span>{shortDate(days[0]!.date)}</span>
           <span>오늘</span>
         </div>
       </div>
       <details className="mt-2 text-xs">
-        <summary className="cursor-pointer text-slate-500">숫자로 보기</summary>
-        <div className="scrollbar-thin mt-1 max-h-60 overflow-auto">
+        <summary className="cursor-pointer rounded text-slate-600 focus-visible:outline-2 focus-visible:outline-brand-500">
+          숫자로 보기
+        </summary>
+        {/* 표가 넘치면 키보드로도 스크롤하도록 영역에 들어갈 수 있다. */}
+        <div
+          role="region"
+          aria-label={`${title} 날짜별 값`}
+          tabIndex={0}
+          className="scrollbar-thin mt-1 max-h-60 overflow-auto rounded focus-visible:outline-2 focus-visible:outline-brand-500"
+        >
           <table className="w-full text-left tabular-nums">
-            <thead className="text-slate-500">
+            <caption className="pb-1 text-left text-slate-600">
+              {title} · 최근 14일, 최근 날짜부터 · 단위: {unit}
+            </caption>
+            <thead className="text-slate-600">
               <tr>
                 <th className="py-1 pr-2 font-medium">날짜</th>
                 {display ? (
@@ -379,9 +391,15 @@ export function DashboardCharts({ orgId }: { orgId: string }) {
               {timeZone !== browserTimeZone && ` · ${timeZone} 기준`}
             </h2>
             <div className="grid gap-3 md:grid-cols-2">
-              <DayChart title="실행 시도" days={days} series={runSeries} />
+              <DayChart
+                title="실행 시도"
+                unit="회(시작한 날 기준)"
+                days={days}
+                series={runSeries}
+              />
               <DayChart
                 title="실행 성공률"
+                unit="%(완료 ÷ 완료+실패)"
                 days={days}
                 series={[]}
                 display={(d) => {
@@ -398,8 +416,18 @@ export function DashboardCharts({ orgId }: { orgId: string }) {
                       };
                 }}
               />
-              <DayChart title="작업" days={days} series={taskSeries} />
-              <DayChart title="산출물" days={days} series={artifactSeries} />
+              <DayChart
+                title="작업"
+                unit="개(만든 날 기준)"
+                days={days}
+                series={taskSeries}
+              />
+              <DayChart
+                title="산출물"
+                unit="개(기록한 날 기준)"
+                days={days}
+                series={artifactSeries}
+              />
             </div>
           </>
         )}
@@ -461,7 +489,7 @@ export function RunningAgents({ org }: { org: OrganizationDetail }) {
                       </span>
                     </div>
                     <div className="mt-1 flex flex-wrap gap-x-3 text-xs">
-                      <span className="text-slate-400 tabular-nums">
+                      <span className="text-slate-500 tabular-nums">
                         {formatTime(run.startedAt)} 시작
                       </span>
                       <Link

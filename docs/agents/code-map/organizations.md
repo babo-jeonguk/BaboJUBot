@@ -17,6 +17,9 @@
 | 주소·메뉴·홈·빈 상태 | [pages.tsx](../../../apps/web/src/pages.tsx), [home.tsx](../../../apps/web/src/home.tsx), [shell.tsx](../../../apps/web/src/shell.tsx), main.tsx routes | 생성 E2E |
 | 되돌리기 토스트·아이콘 tooltip | [toast.tsx](../../../apps/web/src/toast.tsx) `useToast`, [toast-stack.ts](../../../apps/web/src/toast-stack.ts), ui.tsx `Tip` | [단위](../../../apps/web/src/toast-stack.test.ts), 연구 지도 E2E의 폐기 |
 | 공용 UI·반응형 | [ui.tsx](../../../apps/web/src/ui.tsx), [index.css](../../../apps/web/src/index.css) | 각 화면 E2E |
+| 즉시 저장 스위치의 저장 결과 | ui.tsx `SaveStatus` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
+| 움직임 줄이기 | index.css `prefers-reduced-motion` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
+| 보조 글자색 대비 | index.css `--color-slate-500`; 측정 [e2e/support/contrast.ts](../../../apps/web/e2e/support/contrast.ts) `lowContrastTexts` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
 | 긴 글의 Markdown 표시·HTML 안전 | [markdown.tsx](../../../apps/web/src/markdown.tsx) `Markdown`, [markdown.css](../../../apps/web/src/markdown.css) | [단위](../../../apps/web/src/markdown.test.tsx) |
 
 ## 연결 경로

@@ -8,7 +8,7 @@ import {
   type AgentDetail,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useRef, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import {
   AgentFace,
   faceAccessoryLabel,
@@ -21,12 +21,14 @@ import { ApiError, useUpdateAgentProfile } from "./api.ts";
 
 // 에이전트 상세 머리의 이름 바꾸기와 얼굴 꾸미기. 둘 다 사용자 변경이며 서버가 확정한 값만 보인다.
 
-const nameError = (error: unknown) =>
-  error instanceof ApiError && error.code === "name_taken"
-    ? "같은 이름의 에이전트가 이미 있습니다."
-    : "이름을 바꾸지 못했습니다. 다시 시도하세요.";
+/** 같은 이름은 이름 칸의 오류이고, 그 밖의 실패(통신·서버)는 칸과 잇지 않는 저장 실패 안내다. */
+const nameTaken = (error: unknown) =>
+  error instanceof ApiError && error.code === "name_taken";
 
-/** 이름을 누르면 입력칸이 되고, Enter·포커스 이동은 저장, Esc는 취소다. 비우거나 그대로면 저장하지 않는다. */
+/**
+ * 이름을 누르면 입력칸이 되고, Enter·포커스 이동은 저장, Esc는 취소다. 비우거나 그대로면 저장하지 않는다.
+ * 같은 이름이라 거부되면 그 이름 그대로는 다시 보내지 않고, 다른 곳으로 포커스를 옮기지 않았으면 입력칸으로 돌아온다.
+ */
 export function AgentNameEditor({
   orgId,
   agent,
@@ -37,6 +39,9 @@ export function AgentNameEditor({
   const update = useUpdateAgentProfile(orgId, agent.id);
   const [draft, setDraft] = useState<string | null>(null);
   const done = useRef(false);
+  const input = useRef<HTMLInputElement>(null);
+  const errorId = useId();
+  const taken = update.isError && nameTaken(update.error);
   const close = () => {
     done.current = true;
     setDraft(null);
@@ -46,7 +51,22 @@ export function AgentNameEditor({
     if (done.current || draft === null || update.isPending) return;
     const name = draft.trim();
     if (!name || name === agent.name) return close();
-    update.mutate({ name }, { onSuccess: close });
+    if (taken && update.variables?.name === name) return;
+    update.mutate(
+      { name },
+      {
+        onSuccess: close,
+        onError: (error) => {
+          const field = input.current;
+          const active = document.activeElement;
+          if (
+            nameTaken(error) &&
+            (active === document.body || active === field)
+          )
+            field?.focus();
+        },
+      }
+    );
   };
   if (draft === null)
     return (
@@ -61,19 +81,21 @@ export function AgentNameEditor({
           }}
         >
           <span className="truncate">{agent.name}</span>
-          <PencilIcon className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-slate-500 group-focus-visible:text-slate-500" />
+          <PencilIcon className="h-4 w-4 shrink-0 text-slate-500 transition group-hover:text-slate-700 group-focus-visible:text-slate-700" />
         </button>
       </h1>
     );
   return (
     <div>
       <input
+        ref={input}
         aria-label="에이전트 이름"
         autoFocus
         value={draft}
         maxLength={agentNameMaxLength}
         readOnly={update.isPending}
-        aria-invalid={update.isError || undefined}
+        aria-invalid={taken || undefined}
+        aria-describedby={taken ? errorId : undefined}
         onFocus={(e) => e.currentTarget.select()}
         onChange={(e) => {
           setDraft(e.target.value);
@@ -91,10 +113,16 @@ export function AgentNameEditor({
         onBlur={save}
         className="-mx-1.5 w-full max-w-sm rounded-lg bg-white px-1.5 text-xl font-semibold ring-2 ring-brand-500 outline-none aria-invalid:ring-rose-400"
       />
-      {update.isError && (
-        <p role="alert" className="mt-1 text-xs text-rose-600">
-          {nameError(update.error)}
+      {taken ? (
+        <p id={errorId} role="alert" className="mt-1 text-xs text-rose-700">
+          같은 이름의 에이전트가 이미 있습니다. 다른 이름을 적으세요.
         </p>
+      ) : (
+        update.isError && (
+          <p role="alert" className="mt-1 text-xs text-rose-700">
+            이름을 바꾸지 못했습니다. 다시 시도하세요.
+          </p>
+        )
       )}
     </div>
   );

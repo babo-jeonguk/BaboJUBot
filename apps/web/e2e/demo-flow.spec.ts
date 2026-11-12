@@ -65,7 +65,12 @@ test("the demo scenario walks one organization from creation with a goal through
   await test.step("초기 연구 승인 전에는 작업자와 작업이 없다", async () => {
     await openWithLiveEvents(page, orgPath("/agents"));
     await expect(workerTeam.locator("[data-agent-node]")).toHaveCount(1);
-    await expect(workerTeam).not.toContainText("작업자");
+    await expect(workerTeam.getByRole("heading", { level: 1 })).toHaveText(
+      "에이전트"
+    );
+    await expect(workerTeam.getByTestId("org-chart-text")).toContainText(
+      "작업자 0명"
+    );
     await openWithLiveEvents(watcher, orgPath("/tasks"));
     await expect(watcher.getByRole("main")).toContainText(
       "아직 작업이 없습니다"

@@ -5,6 +5,7 @@ import {
 } from "@babojubot/contracts";
 import { useEffect, useState } from "react";
 import {
+  ApiError,
   useCheckAllReadiness,
   useProviderSettings,
   useRecheckProvider,
@@ -12,13 +13,14 @@ import {
   useUpdateProviderLimit,
   useUpdateIsolation,
 } from "./api.ts";
+import { focusFirstChoiceProblem, isChoiceRefusal } from "./choice-problems.ts";
 import {
   ProviderChoiceFields,
   ReadinessBadge,
   readinessReasonLabel,
   sameDefaults,
 } from "./provider-choice.tsx";
-import { Loading, LoadError, Page } from "./ui.tsx";
+import { Loading, LoadError, Page, SaveStatus } from "./ui.tsx";
 
 /**
  * 전역 설정. 프로바이더 칸은 Lead·작업자 기본 프로바이더·모델과 연결별 준비 상태·동시 실행 상한이다(#94, #96).
@@ -101,13 +103,37 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
     !sameDefaults(value, saved) ||
     compact.thresholdTokens !== saved.compaction!.thresholdTokens ||
     compact.ratio !== saved.compaction!.ratio;
+  // 서버가 거부할 프로바이더·모델은 보내기 전에 그 칸의 오류로 알린다. 그사이 목록이 바뀌어 서버가 거부하면 목록을 다시 받아
+  // 그 칸에 알린다. 그 밖의 저장 실패(통신·서버)는 칸과 잇지 않는 폼 아래 안내다.
+  const [showProblem, setShowProblem] = useState(false);
+  const list = useProviderSettings();
+  const fields = (v: DefaultsValue) => [
+    { idPrefix: "lead-default", choice: v.leadDefault },
+    { idPrefix: "worker-default", choice: v.workerDefault },
+  ];
+  const refused =
+    update.error instanceof ApiError && isChoiceRefusal(update.error.code);
   return (
     <form
       aria-label="기본 프로바이더"
       className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault();
-        if (changed) update.mutate(value, { onSuccess: () => setDraft(null) });
+        if (!changed) return;
+        if (focusFirstChoiceProblem(settings.providers, fields(value))) {
+          setShowProblem(true);
+          return;
+        }
+        update.mutate(value, {
+          onSuccess: () => setDraft(null),
+          onError: async (error) => {
+            if (!(error instanceof ApiError && isChoiceRefusal(error.code)))
+              return;
+            setShowProblem(true);
+            const fresh = (await list.refetch()).data;
+            if (fresh) focusFirstChoiceProblem(fresh.providers, fields(value));
+          },
+        });
       }}
     >
       <ProviderChoiceFields
@@ -117,6 +143,7 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
         value={value.leadDefault}
         onChange={(leadDefault) => setDraft({ ...value, leadDefault })}
         disabled={update.isPending}
+        showProblem={showProblem}
       />
       <ProviderChoiceFields
         idPrefix="worker-default"
@@ -125,6 +152,7 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
         value={value.workerDefault}
         onChange={(workerDefault) => setDraft({ ...value, workerDefault })}
         disabled={update.isPending}
+        showProblem={showProblem}
       />
       <CompactionNumber
         label="압축 기준"
@@ -156,7 +184,9 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
       <div className="flex items-center justify-end gap-3">
         {!update.isPending && update.isError && (
           <p role="alert" className="text-xs text-rose-600">
-            저장하지 못했습니다. 다시 시도하세요.
+            {refused
+              ? "서버가 고른 프로바이더나 모델을 받지 않았습니다. 표시한 칸을 고치세요."
+              : "저장하지 못했습니다. 다시 시도하세요."}
           </p>
         )}
         <button
@@ -398,7 +428,7 @@ function CompactionNumber({
 }
 
 /**
- * 격리 실행 스위치. 누르면 바로 저장하고 설명문은 두지 않는다. 저장하는 동안은 보낸 값으로 잠그고, 실패하면 서버에 저장된 값으로 돌아간다.
+ * 격리 실행 스위치. 누르면 바로 저장하고 설명문은 두지 않으며, 저장 결과는 스위치 옆 상태(`SaveStatus`)로 알린다. 저장하는 동안은 보낸 값으로 잠그고, 실패하면 서버에 저장된 값으로 돌아간다.
  * 보낸 값은 누른 순간 지역 상태에 둔다. mutation 상태는 한 박자 늦게 바뀌어, 그 사이 controlled 스위치가 옛 값으로 되돌아가지 않게 한다.
  */
 function IsolationSwitch({ isolated }: { isolated: boolean }) {
@@ -408,15 +438,26 @@ function IsolationSwitch({ isolated }: { isolated: boolean }) {
   const checked = requested ?? isolated;
   return (
     <li className="py-2.5">
-      <label className="flex items-center gap-3">
-        <span className="flex-1 font-medium">격리 실행</span>
+      <div className="flex items-center gap-3">
+        <label htmlFor="isolation-switch" className="flex-1 font-medium">
+          격리 실행
+        </label>
+        <SaveStatus
+          id="isolation-switch-status"
+          label="격리 실행"
+          state={saving ? "saving" : update.isSuccess ? "saved" : "idle"}
+        />
         <input
+          id="isolation-switch"
           type="checkbox"
           role="switch"
           className="switch"
           checked={checked}
-          disabled={saving}
+          // 저장하는 동안 잠그되 disabled로 바꾸지 않는다. disabled가 되면 키보드 포커스가 스위치에서 빠진다.
+          aria-disabled={saving || undefined}
+          aria-describedby="isolation-switch-status"
           onChange={(e) => {
+            if (saving) return;
             const value = e.currentTarget.checked;
             setRequested(value);
             update.mutate(
@@ -425,10 +466,10 @@ function IsolationSwitch({ isolated }: { isolated: boolean }) {
             );
           }}
         />
-      </label>
+      </div>
       {!saving && update.isError && (
         <p role="alert" className="mt-1 text-xs text-rose-600">
-          저장하지 못했습니다. 다시 시도하세요.
+          격리 실행 설정을 저장하지 못했습니다. 다시 시도하세요.
         </p>
       )}
     </li>

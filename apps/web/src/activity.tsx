@@ -350,7 +350,7 @@ export function EventRow({
   const runId = runIdOf(event);
   return (
     <li className="flex gap-3 px-4 py-2.5 text-sm" data-event-type={event.type}>
-      <span className="mt-0.5 w-5 shrink-0 text-center text-slate-400">
+      <span className="mt-0.5 w-5 shrink-0 text-center text-slate-500">
         {icon}
       </span>
       <div className="min-w-0 flex-1">
@@ -397,7 +397,7 @@ export function EventRow({
       </div>
       <time
         dateTime={event.createdAt}
-        className="shrink-0 text-xs text-slate-400 tabular-nums"
+        className="shrink-0 text-xs text-slate-500 tabular-nums"
       >
         {formatTime(event.createdAt)}
       </time>

@@ -135,7 +135,7 @@ export function Shell() {
             <InboxButton className="btn-ghost relative px-2" />
           </div>
           {orgId && (
-            <div className="sticky top-0 z-20 hidden shrink-0 truncate border-b border-slate-200/70 bg-white/80 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
+            <div className="sticky top-0 z-20 hidden shrink-0 truncate border-b border-slate-200/70 bg-white/80 px-6 py-2.5 text-xs text-slate-500 backdrop-blur md:block">
               <Crumbs orgId={orgId} />
             </div>
           )}
@@ -391,7 +391,7 @@ function Sections({ orgId }: { orgId: string }) {
                   setShut((x) => ({ ...x, [g.label!]: !x[g.label!] }))
                 }
                 aria-expanded={!closed}
-                className="group mb-0.5 flex w-full items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-semibold tracking-wide text-slate-400 transition hover:text-slate-600"
+                className="group mb-0.5 flex w-full items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-semibold tracking-wide text-slate-500 transition hover:text-slate-600"
               >
                 {g.label}
                 <span

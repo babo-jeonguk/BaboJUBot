@@ -12,6 +12,7 @@
 | 가짜 채널·채널 답 받기 | [runtime/fake-channel.ts](../../../packages/runtime/src/fake-channel.ts) `createFakeChannel`, [server/channel-replies.ts](../../../apps/server/src/channel-replies.ts) `channelInlet`, app.ts `fakeChannelResponse` | 알림 API `channel replies` |
 | Inbox 패널·진입점·주의 수 | [web/inbox.tsx](../../../apps/web/src/inbox.tsx), shell.tsx, [global-settings.tsx](../../../apps/web/src/global-settings.tsx), api.ts `useUpdateInboxItem`·`useMarkInboxItemsRead` | Inbox E2E |
 | Inbox 상세와 그 자리 결정 | [web/inbox-detail.tsx](../../../apps/web/src/inbox-detail.tsx) `InboxDetailPage`·`Organize`, inbox.tsx `InboxItemOrganize`, approvals.tsx `ApprovalDecision`, results.tsx `ResultDecision` | Inbox E2E, 초기 승인·작업자 추가·결과 검토 E2E |
+| 잘린 요약 글 | inbox-detail.tsx `Excerpt` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
 
 ## 연결 경로
 

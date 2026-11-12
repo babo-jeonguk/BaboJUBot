@@ -100,7 +100,7 @@ export function Room({
             <time
               dateTime={org.lastActivityAt}
               title={`마지막 활동 ${formatTime(org.lastActivityAt)}`}
-              className="whitespace-nowrap text-slate-400 tabular-nums"
+              className="whitespace-nowrap text-slate-500 tabular-nums"
               data-testid="organization-last-activity"
             >
               {relativeTime(org.lastActivityAt, now)}
@@ -164,7 +164,7 @@ function Headcount({
   if (closed)
     return (
       <span
-        className="text-slate-400 tabular-nums"
+        className="text-slate-500 tabular-nums"
         data-testid="room-headcount"
       >
         {total}명
@@ -183,7 +183,7 @@ function Headcount({
       >
         작업 중 {working}
       </span>
-      <span className="text-slate-400">/ {total}명</span>
+      <span className="text-slate-500">/ {total}명</span>
     </span>
   );
 }

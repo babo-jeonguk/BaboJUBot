@@ -11,7 +11,7 @@ import {
   useUpdateApprovalPolicy,
   useUpdateNetworkPolicy,
 } from "./api.ts";
-import { approvalPolicyItemLabel } from "./ui.tsx";
+import { approvalPolicyItemLabel, SaveStatus } from "./ui.tsx";
 
 /**
  * 조직 › 설정. 첫 판은 승인 정책 스위치뿐이다(예산·job 한도·연결 채널은 후속).
@@ -94,7 +94,7 @@ function NetworkPolicySection({ org }: { org: OrganizationDetail }) {
         로그인 연결은 따로 열려 있습니다.
       </p>
       {policy.isPending ? (
-        <p className="text-sm text-slate-400">불러오는 중…</p>
+        <p className="text-sm text-slate-500">불러오는 중…</p>
       ) : destinations.length === 0 ? (
         <p className="text-sm text-slate-500">
           허용한 곳이 없습니다. 연구 중 외부 연결은 모두 거부됩니다.
@@ -183,6 +183,7 @@ function NetworkPolicySection({ org }: { org: OrganizationDetail }) {
 
 /**
  * 승인 정책 항목 하나의 스위치. 서버가 저장한 값만 보여 주고, 저장하는 동안에는 보낸 값으로 잠가 둔다. 실패하면 저장된 값으로 돌아간다.
+ * 저장 결과는 스위치 옆 상태(`SaveStatus`)로, 실패는 항목 이름과 함께 그 아래에 알린다.
  * 보낸 값은 누른 순간 지역 상태에 둔다. mutation 상태는 한 박자 늦게 바뀌어, 그 사이 controlled 스위치가 옛 값으로 되돌아가지 않게 한다.
  */
 function PolicySwitch({
@@ -196,23 +197,32 @@ function PolicySwitch({
   const [requested, setRequested] = useState<boolean | null>(null);
   const saving = requested !== null;
   const checked = requested ?? org.approvalPolicy[item];
+  const label = approvalPolicyItemLabel[item];
+  const statusId = `approval-policy-${item}-status`;
   return (
     <li className="py-2.5">
-      <label className="flex items-center gap-3">
-        <span className="flex-1 font-medium">
-          {approvalPolicyItemLabel[item]}
-        </span>
-        {saving && (
-          <span role="status" className="text-xs text-slate-400">
-            저장하는 중…
-          </span>
-        )}
+      <div className="flex items-center gap-3">
+        <label
+          htmlFor={`approval-policy-${item}`}
+          className="flex-1 font-medium"
+        >
+          {label}
+        </label>
+        <SaveStatus
+          id={statusId}
+          label={label}
+          state={saving ? "saving" : update.isSuccess ? "saved" : "idle"}
+        />
         <input
+          id={`approval-policy-${item}`}
           type="checkbox"
           className="switch"
           checked={checked}
-          disabled={saving}
+          // 저장하는 동안 잠그되 disabled로 바꾸지 않는다. disabled가 되면 키보드 포커스가 스위치에서 빠진다.
+          aria-disabled={saving || undefined}
+          aria-describedby={statusId}
           onChange={(e) => {
+            if (saving) return;
             const value = e.currentTarget.checked;
             setRequested(value);
             update.mutate(
@@ -221,10 +231,10 @@ function PolicySwitch({
             );
           }}
         />
-      </label>
+      </div>
       {!saving && update.isError && (
         <p role="alert" className="mt-1 text-xs text-rose-600">
-          저장하지 못했습니다. 다시 시도하세요.
+          {label} 설정을 저장하지 못했습니다. 다시 시도하세요.
         </p>
       )}
     </li>

@@ -68,6 +68,10 @@ export function InboxDetailPage() {
 
 type Props = { orgId: string; sourceId: string };
 
+/** 알림의 원래 화면(승인 요청·결과 제출·실행 시도 상세) 주소. */
+const sourceHref = (orgId: string, kind: InboxItemKind, sourceId: string) =>
+  `/orgs/${orgId}/${sourcePath[kind]}/${sourceId}`;
+
 /**
  * 머리: 종류·상태·조직·시각, 원래 화면 링크, 알림 정리(읽음·보관).
  * 정리 버튼은 Inbox 항목에만 보인다(결정한 승인 요청·결과 제출도 Inbox에 남아 결정 뒤에는 보관할 수 있다).
@@ -110,10 +114,7 @@ function Header({
       </div>
       <div className="mt-1 text-sm text-slate-500">{meta}</div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Link
-          to={`/orgs/${orgId}/${sourcePath[kind]}/${sourceId}`}
-          className="btn-soft"
-        >
+        <Link to={sourceHref(orgId, kind, sourceId)} className="btn-soft">
           {originalLabel} →
         </Link>
         <Organize orgId={orgId} kind={kind} sourceId={sourceId} />
@@ -176,8 +177,20 @@ function Block({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** 긴 글은 앞부분만 보이고, 잘린 글은 아래가 흐려져 줄였다는 것을 숨기지 않는다. */
-function Excerpt({ label, text }: { label: string; text: string }) {
+/**
+ * 긴 글은 앞부분만 보이고, 잘린 글은 아래가 흐려져 줄였다는 것을 숨기지 않는다. 잘렸으면 바로 아래에 그 사실과
+ * 전체를 읽을 원래 화면 링크(머리의 `원래 화면에서 자세히 보기`와 같은 곳)를 둔다. 펼치기는 따로 두지 않는다.
+ */
+function Excerpt({
+  label,
+  text,
+  original,
+}: {
+  label: string;
+  text: string;
+  /** 전체 내용이 있는 원래 화면의 주소. */
+  original: string;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [clipped, setClipped] = useState(false);
   useLayoutEffect(() => {
@@ -194,6 +207,17 @@ function Excerpt({ label, text }: { label: string; text: string }) {
           data-clipped={clipped || undefined}
           className={`max-h-24 overflow-hidden ${clipped ? "[mask-image:linear-gradient(to_bottom,black_55%,transparent)]" : ""}`}
         />
+        {clipped && (
+          <p className="mt-2 text-xs text-slate-600">
+            앞부분만 보입니다.{" "}
+            <Link
+              to={original}
+              className="font-medium text-brand-700 underline-offset-2 hover:underline"
+            >
+              {label} 전체를 원래 화면에서 보기 →
+            </Link>
+          </p>
+        )}
       </div>
     </section>
   );
@@ -222,7 +246,10 @@ function ApprovalSummary({ orgId, sourceId }: Props) {
         meta={`${nameOf(org.data?.agents ?? [], a.requestedByAgentId)} · ${formatTime(a.createdAt)} 제출${a.previousApprovalId ? " · 다시 제출됨" : ""}`}
         originalLabel="원래 화면에서 자세히 보기"
       />
-      <ProposalSummary approval={a} />
+      <ProposalSummary
+        approval={a}
+        original={sourceHref(orgId, "approval", sourceId)}
+      />
       <div className="mt-6">
         <ApprovalDecision orgId={orgId} approval={a} stage={org.data?.stage} />
       </div>
@@ -231,12 +258,18 @@ function ApprovalSummary({ orgId, sourceId }: Props) {
 }
 
 /** 승인 요청 요약: 결정에 필요한 사실만. 사본 내용·템플릿 세부·계획 전문은 원래 화면에 있다. */
-function ProposalSummary({ approval: a }: { approval: Approval }) {
+function ProposalSummary({
+  approval: a,
+  original,
+}: {
+  approval: Approval;
+  original: string;
+}) {
   if (a.kind === "add_worker")
     return (
       <Block label="추가할 작업자">
         <span className="font-medium">{a.proposal.label}</span>{" "}
-        <span className="text-xs text-slate-400">{a.proposal.role}</span> · 1명
+        <span className="text-xs text-slate-500">{a.proposal.role}</span> · 1명
         · 받을 사본 {a.proposal.files.length}개
       </Block>
     );
@@ -258,8 +291,12 @@ function ProposalSummary({ approval: a }: { approval: Approval }) {
       <Block label="팀 구성">
         {p.team.map((m) => `${m.label} ${m.count}명`).join(" · ")}
       </Block>
-      <Excerpt label="초기 연구 계획" text={p.plan} />
-      <Excerpt label="연구 환경 명세" text={p.environment} />
+      <Excerpt label="초기 연구 계획" text={p.plan} original={original} />
+      <Excerpt
+        label="연구 환경 명세"
+        text={p.environment}
+        original={original}
+      />
       <Block label="연구 흐름 템플릿">{p.template.label}</Block>
     </>
   );
@@ -288,7 +325,10 @@ function ResultSummary({ orgId, sourceId }: Props) {
         meta={`${nameOf(org.data?.agents ?? [], s.submittedByAgentId)} · ${formatTime(s.createdAt)} 제출${s.previousSubmissionId ? " · 다시 제출됨" : ""}`}
         originalLabel="원래 화면에서 자세히 보기"
       />
-      <SubmissionSummary submission={s} />
+      <SubmissionSummary
+        submission={s}
+        original={sourceHref(orgId, "result_submission", sourceId)}
+      />
       <div className="mt-6">
         <ResultDecision orgId={orgId} submission={s} stage={org.data?.stage} />
       </div>
@@ -299,12 +339,14 @@ function ResultSummary({ orgId, sourceId }: Props) {
 /** 결과 제출 요약: 결과 요약 앞부분, 제출 때 고정한 완료 기준, 근거 산출물 제목. 산출물 본문은 원래 화면에서 연다. */
 function SubmissionSummary({
   submission: s,
+  original,
 }: {
   submission: ResultSubmission;
+  original: string;
 }) {
   return (
     <>
-      <Excerpt label="결과 요약" text={s.summary} />
+      <Excerpt label="결과 요약" text={s.summary} original={original} />
       <section aria-label="완료 기준" className="mb-4">
         <h2 className="mb-1.5 text-sm font-semibold text-slate-600">
           완료 기준

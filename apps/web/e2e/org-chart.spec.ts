@@ -93,7 +93,7 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
   await input.fill("research lead");
   await input.press("Enter");
   await expect(page.getByRole("alert")).toHaveText(
-    "같은 이름의 에이전트가 이미 있습니다."
+    "같은 이름의 에이전트가 이미 있습니다. 다른 이름을 적으세요."
   );
   await input.fill("  통계 담당  ");
   await input.press("Enter");
