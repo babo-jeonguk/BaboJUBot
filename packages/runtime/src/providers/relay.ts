@@ -145,6 +145,9 @@ function dial(
       socket.once("connect", () => {
         socket.setTimeout(0);
         socket.removeAllListeners("error");
+        // 돌려주는 소켓에는 늘 오류 리스너가 있다. 부르는 쪽이 기다리는 사이 난 오류는 이 연결만 닫는다.
+        // 부르는 쪽은 자기 처리를 따로 붙인다.
+        socket.on("error", () => socket.destroy());
         resolve({ socket, address });
       });
       socket.once("error", (error) => next(index + 1, error));
@@ -356,6 +359,11 @@ export function createRelayHub(): RelayHub {
             }
             return;
           }
+        }
+        // 기다리는 사이 목적지가 끊었으면 이 요청만 502로 끝낸다.
+        if (socket.destroyed) {
+          done();
+          return void badGateway();
         }
         const outgoing = http.request(
           {
