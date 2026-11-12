@@ -10,16 +10,20 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { filesBase } from "./files-volume.ts";
+import { featureGaps, filesBase, remove } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { WorkspaceIdentityError, Workspaces } from "../src/workspace.ts";
 
+// 링크를 만들 수 없는 파일 시스템(FAT32)에서는 링크가 필요한 시험을 건너뛴다. 그 볼륨의 링크 없는 경계 사례는
+// workspace-cases.test.ts가 같은 볼륨에서 돌고, 링크 사례는 적용 불가로 결과표에 남는다.
+const lacks = await featureGaps();
+const withLinks = it.skipIf(lacks.symlink !== "");
+const withHardLinks = it.skipIf(lacks.hardLink !== "");
+
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map(remove));
 });
 const org = "organization-one";
 async function folder() {
@@ -43,7 +47,7 @@ const content = async (root: string, relative: string) => {
 };
 const refusal = (refusal: string) => ({ ok: false, refusal });
 
-it("accepts a data folder reached through a symbolic link", async () => {
+withLinks("accepts a data folder reached through a symbolic link", async () => {
   const { root, shared } = await folder();
   await writeFile(path.join(shared, "a.md"), "내용");
   const linked = `${root}-link`;
@@ -52,19 +56,22 @@ it("accepts a data folder reached through a symbolic link", async () => {
   expect(await content(linked, "a.md")).toBe("내용");
 });
 
-it("accepts an organizations folder kept on another disk through a link", async () => {
-  const { root, shared } = await folder();
-  await writeFile(path.join(shared, "a.md"), "내용");
-  const moved = `${root}-moved`;
-  roots.push(moved);
-  await rename(path.join(root, "organizations"), moved);
-  await symlink(moved, path.join(root, "organizations"));
-  expect(await content(root, "a.md")).toBe("내용");
-});
+withLinks(
+  "accepts an organizations folder kept on another disk through a link",
+  async () => {
+    const { root, shared } = await folder();
+    await writeFile(path.join(shared, "a.md"), "내용");
+    const moved = `${root}-moved`;
+    roots.push(moved);
+    await rename(path.join(root, "organizations"), moved);
+    await symlink(moved, path.join(root, "organizations"));
+    expect(await content(root, "a.md")).toBe("내용");
+  }
+);
 
 // 조직 폴더 자체가 다른 조직을 가리키면 그 안에서 경로를 비교해도 소용없다. 경계는 데이터 폴더에서 정한다.
 // 서버가 만든 폴더 배치가 어긋난 것이라 에이전트가 고칠 경로 문제가 아니다(PR #131 리뷰 S1).
-it.each(["shared", "."])(
+withLinks.each(["shared", "."])(
   "refuses another organization's files when the organization's %s folder is replaced by a link",
   async (replaced) => {
     const { root, shared } = await folder();
@@ -121,7 +128,7 @@ it.each([
   await expect(read(root, "a.md")).rejects.toThrow(WorkspaceIdentityError);
 });
 
-it("refuses a mark reached through a link", async () => {
+withLinks("refuses a mark reached through a link", async () => {
   const { root, shared } = await folder();
   await writeFile(path.join(shared, "a.md"), "내용");
   const marker = path.join(shared, "..", "workspace-identity.json");
@@ -147,25 +154,31 @@ it("accepts a folder restored by copying, and a data folder that moved", async (
   expect(await content(moved, "a.md")).toBe("내용");
 });
 
-it("accepts a link that stays inside the folder and refuses one that leaves", async () => {
-  const { root, shared } = await folder();
-  await writeFile(path.join(shared, "a.md"), "내용");
-  await symlink(path.join(shared, "a.md"), path.join(shared, "inner.md"));
-  expect(await content(root, "inner.md")).toBe("내용");
-  await writeFile(path.join(root, "outside.md"), "밖");
-  await symlink(path.join(root, "outside.md"), path.join(shared, "out.md"));
-  expect(await read(root, "out.md")).toEqual(refusal("path_outside_folder"));
-  expect(await read(root, "../../../outside.md")).toEqual(
-    refusal("path_outside_folder")
-  );
-});
+withLinks(
+  "accepts a link that stays inside the folder and refuses one that leaves",
+  async () => {
+    const { root, shared } = await folder();
+    await writeFile(path.join(shared, "a.md"), "내용");
+    await symlink(path.join(shared, "a.md"), path.join(shared, "inner.md"));
+    expect(await content(root, "inner.md")).toBe("내용");
+    await writeFile(path.join(root, "outside.md"), "밖");
+    await symlink(path.join(root, "outside.md"), path.join(shared, "out.md"));
+    expect(await read(root, "out.md")).toEqual(refusal("path_outside_folder"));
+    expect(await read(root, "../../../outside.md")).toEqual(
+      refusal("path_outside_folder")
+    );
+  }
+);
 
-it("refuses a hard link because it can reach another organization's file", async () => {
-  const { root, shared } = await folder();
-  await writeFile(path.join(root, "outside.md"), "밖");
-  await link(path.join(root, "outside.md"), path.join(shared, "hard.md"));
-  expect(await read(root, "hard.md")).toEqual(refusal("hard_link_refused"));
-});
+withHardLinks(
+  "refuses a hard link because it can reach another organization's file",
+  async () => {
+    const { root, shared } = await folder();
+    await writeFile(path.join(root, "outside.md"), "밖");
+    await link(path.join(root, "outside.md"), path.join(shared, "hard.md"));
+    expect(await read(root, "hard.md")).toEqual(refusal("hard_link_refused"));
+  }
+);
 
 it("takes what a file holds now even if it is still being written", async () => {
   const { root, shared } = await folder();
@@ -199,167 +212,184 @@ it("tells why a path is refused", async () => {
 });
 
 // 셸에서 흔히 쓰는 절대 경로도 작업 폴더 안을 가리키면 받는다. 경계는 실제 경로로 정하므로 밖은 그대로 거부한다.
-it("accepts an absolute path inside the working folder and refuses one outside", async () => {
-  const { root, shared } = await folder();
-  await writeFile(path.join(shared, "a.md"), "내용");
-  await writeFile(path.join(root, "outside.md"), "밖");
-  expect(await content(root, path.join(shared, "a.md"))).toBe("내용");
-  expect(await read(root, path.join(root, "outside.md"))).toEqual(
-    refusal("path_outside_folder")
-  );
-  // 데이터 폴더를 링크로 가리켜도 작업 폴더 경로는 그 링크 아래로 보인다.
-  const linked = `${root}-link`;
-  roots.push(linked);
-  await symlink(root, linked);
-  expect(
-    await content(
-      linked,
-      path.join(linked, "organizations", org, "shared", "a.md")
-    )
-  ).toBe("내용");
-});
+withLinks(
+  "accepts an absolute path inside the working folder and refuses one outside",
+  async () => {
+    const { root, shared } = await folder();
+    await writeFile(path.join(shared, "a.md"), "내용");
+    await writeFile(path.join(root, "outside.md"), "밖");
+    expect(await content(root, path.join(shared, "a.md"))).toBe("내용");
+    expect(await read(root, path.join(root, "outside.md"))).toEqual(
+      refusal("path_outside_folder")
+    );
+    // 데이터 폴더를 링크로 가리켜도 작업 폴더 경로는 그 링크 아래로 보인다.
+    const linked = `${root}-link`;
+    roots.push(linked);
+    await symlink(root, linked);
+    expect(
+      await content(
+        linked,
+        path.join(linked, "organizations", org, "shared", "a.md")
+      )
+    ).toBe("내용");
+  }
+);
 
 // 링크 뒤의 `..`는 운영체제가 여는 것과 같은 파일을 고른다. Linux·macOS는 링크를 따라간 자리에서 올라가고,
 // Windows는 경로의 `..`를 글자로 줄여 연다(Win32). 절대 경로를 서버가 글자로 먼저 줄이면 Linux·macOS에서 다른 파일이 된다(PR #131 리뷰 3회차 P5).
-it("registers the file the operating system opens for `..` after a link, in relative and absolute paths and link targets", async () => {
-  const { root, shared } = await folder();
-  await mkdir(path.join(shared, "data", "deep"), { recursive: true });
-  await writeFile(path.join(shared, "target.md"), "WRONG");
-  await writeFile(path.join(shared, "data", "target.md"), "INTENDED");
-  await symlink(path.join("data", "deep"), path.join(shared, "link"));
-  const relative = `link${path.sep}..${path.sep}target.md`;
-  const absolute = `${shared}${path.sep}${relative}`;
-  await symlink(absolute, path.join(shared, "absolute.md"));
-  await symlink(relative, path.join(shared, "relative.md"));
-  for (const requested of [relative, absolute, "absolute.md", "relative.md"]) {
-    const opened = await readFile(
-      path.isAbsolute(requested)
-        ? requested
-        : `${shared}${path.sep}${requested}`,
-      "utf8"
-    );
-    expect(opened, requested).toBe(
-      process.platform === "win32" ? "WRONG" : "INTENDED"
-    );
-    expect(await content(root, requested), requested).toBe(opened);
+withLinks(
+  "registers the file the operating system opens for `..` after a link, in relative and absolute paths and link targets",
+  async () => {
+    const { root, shared } = await folder();
+    await mkdir(path.join(shared, "data", "deep"), { recursive: true });
+    await writeFile(path.join(shared, "target.md"), "WRONG");
+    await writeFile(path.join(shared, "data", "target.md"), "INTENDED");
+    await symlink(path.join("data", "deep"), path.join(shared, "link"));
+    const relative = `link${path.sep}..${path.sep}target.md`;
+    const absolute = `${shared}${path.sep}${relative}`;
+    await symlink(absolute, path.join(shared, "absolute.md"));
+    await symlink(relative, path.join(shared, "relative.md"));
+    for (const requested of [
+      relative,
+      absolute,
+      "absolute.md",
+      "relative.md",
+    ]) {
+      const opened = await readFile(
+        path.isAbsolute(requested)
+          ? requested
+          : `${shared}${path.sep}${requested}`,
+        "utf8"
+      );
+      expect(opened, requested).toBe(
+        process.platform === "win32" ? "WRONG" : "INTENDED"
+      );
+      expect(await content(root, requested), requested).toBe(opened);
+    }
   }
-});
+);
 
 // 경로 끝의 구분자·`.`·겹친 구분자 같은 표기도 운영체제와 같게 다룬다. 운영체제가 열지 못하면 거부하고, 열면 같은 내용이다.
 // Linux·macOS는 파일 뒤에 `/`나 `/.`가 남으면 폴더가 아니므로 열 수 없다(ENOTDIR, PR #131 리뷰 4회차 P7). Windows는 입력한 경로의 끝 구분자는 떼고 열지만, 끝이 구분자인 링크 대상은 열지 못한다.
-it("treats the spelling of a path the way the operating system does", async () => {
-  const { root, shared } = await folder();
-  const sep = path.sep;
-  await mkdir(path.join(shared, "dir"));
-  await writeFile(path.join(shared, "report.md"), "CONTENT");
-  await writeFile(path.join(shared, "dir", "a.md"), "A");
-  await symlink(`report.md${sep}.`, path.join(shared, "alias.md"));
-  await symlink(`report.md${sep}`, path.join(shared, "alias-slash.md"));
-  await symlink(`dir${sep}`, path.join(shared, "dir-link"));
-  const cases = [
-    `report.md${sep}`,
-    `report.md${sep}.`,
-    "alias.md",
-    "alias-slash.md",
-    `dir${sep}`,
-    `dir${sep}.`,
-    `dir-link${sep}a.md`,
-    "dir-link",
-    `dir${sep}${sep}a.md`,
-    `.${sep}dir${sep}.${sep}a.md`,
-    "",
-    `dir${sep}a.md${sep}..`,
-    `${shared}${sep}report.md${sep}`,
-    `${shared}${sep}report.md${sep}.`,
-    `${shared}${sep}${sep}dir${sep}a.md`,
-    `${shared}${sep}`,
-  ];
-  // 어긋난 표기를 한 번에 모두 보인다.
-  const mismatches: string[] = [];
-  for (const requested of cases) {
-    const opened = await readFile(
-      path.isAbsolute(requested) ? requested : `${shared}${sep}${requested}`,
-      "utf8"
-    ).catch((error: NodeJS.ErrnoException) => ({ refused: error.code }));
-    const result = await read(root, requested);
-    const ours = result.ok
-      ? result.snapshot.content
-      : { refused: result.refusal };
-    if (
-      (typeof opened === "string") !== (typeof ours === "string") ||
-      (typeof opened === "string" && opened !== ours)
-    )
-      mismatches.push(
-        `${JSON.stringify(requested)}: os ${JSON.stringify(opened)}, ours ${JSON.stringify(ours)}`
-      );
-  }
-  expect(mismatches).toEqual([]);
-  // 파일을 폴더처럼 지나가려 한 것은 파일이 없는 것과 같다.
-  if (process.platform !== "win32")
-    for (const requested of [
+withLinks(
+  "treats the spelling of a path the way the operating system does",
+  async () => {
+    const { root, shared } = await folder();
+    const sep = path.sep;
+    await mkdir(path.join(shared, "dir"));
+    await writeFile(path.join(shared, "report.md"), "CONTENT");
+    await writeFile(path.join(shared, "dir", "a.md"), "A");
+    await symlink(`report.md${sep}.`, path.join(shared, "alias.md"));
+    await symlink(`report.md${sep}`, path.join(shared, "alias-slash.md"));
+    await symlink(`dir${sep}`, path.join(shared, "dir-link"));
+    const cases = [
       `report.md${sep}`,
+      `report.md${sep}.`,
       "alias.md",
+      "alias-slash.md",
+      `dir${sep}`,
+      `dir${sep}.`,
+      `dir-link${sep}a.md`,
+      "dir-link",
+      `dir${sep}${sep}a.md`,
+      `.${sep}dir${sep}.${sep}a.md`,
+      "",
+      `dir${sep}a.md${sep}..`,
+      `${shared}${sep}report.md${sep}`,
       `${shared}${sep}report.md${sep}.`,
-    ])
-      expect(await read(root, requested), requested).toEqual(
-        refusal("file_not_found")
-      );
-});
+      `${shared}${sep}${sep}dir${sep}a.md`,
+      `${shared}${sep}`,
+    ];
+    // 어긋난 표기를 한 번에 모두 보인다.
+    const mismatches: string[] = [];
+    for (const requested of cases) {
+      const opened = await readFile(
+        path.isAbsolute(requested) ? requested : `${shared}${sep}${requested}`,
+        "utf8"
+      ).catch((error: NodeJS.ErrnoException) => ({ refused: error.code }));
+      const result = await read(root, requested);
+      const ours = result.ok
+        ? result.snapshot.content
+        : { refused: result.refusal };
+      if (
+        (typeof opened === "string") !== (typeof ours === "string") ||
+        (typeof opened === "string" && opened !== ours)
+      )
+        mismatches.push(
+          `${JSON.stringify(requested)}: os ${JSON.stringify(opened)}, ours ${JSON.stringify(ours)}`
+        );
+    }
+    expect(mismatches).toEqual([]);
+    // 파일을 폴더처럼 지나가려 한 것은 파일이 없는 것과 같다.
+    if (process.platform !== "win32")
+      for (const requested of [
+        `report.md${sep}`,
+        "alias.md",
+        `${shared}${sep}report.md${sep}.`,
+      ])
+        expect(await read(root, requested), requested).toEqual(
+          refusal("file_not_found")
+        );
+  }
+);
 
 // Windows는 이름 하나를 다른 드라이브·장치·스트림으로 읽거나 끝의 점·공백을 떼어 읽는다(Win32). 그런 이름은 파일 시스템에 넘기기 전에
 // 거부한다. 다른 드라이브를 가리키는 이름은 폴더 밖이다(Go filepath.IsLocal·os.Root, cap-std, node-tar CVE-2021-37713, PR #131 리뷰 5회차 S3).
 // 끝에 공백을 붙인 ".. "는 Windows에서 위 폴더로 올라가므로 이것도 막는다. Linux·macOS에서는 모두 보통 파일 이름이다.
-it("refuses names Windows reads as another drive, a device, a stream or a shortened name, and keeps them as plain names elsewhere", async () => {
-  const { root, shared } = await folder();
-  const sep = path.sep;
-  await mkdir(path.join(shared, "dir"));
-  await writeFile(path.join(shared, "report.md"), "CONTENT");
-  await writeFile(path.join(root, "organizations", "secret.md"), "SECRET");
-  if (process.platform === "win32") {
-    await symlink("D:outside.md", path.join(shared, "drive-link.md"));
-    for (const requested of [
-      "D:outside.md",
-      "C:outside.md",
-      `Z:..${sep}outside.md`,
-      `dir${sep}D:outside.md`,
-      "drive-link.md",
-    ])
-      expect(await read(root, requested), requested).toEqual(
-        refusal("path_outside_folder")
-      );
-    for (const requested of [
-      "NUL",
-      "con.txt",
-      "COM1",
-      "COM\u00b9",
-      `dir${sep}aux`,
-      "report.md:stream",
-      "report.md.",
-      "report.md ",
-      `dir${sep}..${sep}.. ${sep}.. ${sep}secret.md`,
-      `.. ${sep}.. ${sep}secret.md`,
-    ])
-      expect(await read(root, requested), requested).toEqual(
-        refusal("not_regular_file")
-      );
-    expect(await content(root, "report.md")).toBe("CONTENT");
-  } else {
-    for (const name of [
-      "D:outside.md",
-      "NUL",
-      "con.txt",
-      "report.md:stream",
-      "report.md.",
-      "report.md ",
-    ]) {
-      await writeFile(path.join(shared, name), name);
-      expect(await read(root, name), name).toMatchObject({
-        ok: true,
-        snapshot: { file: { name, size: name.length } },
-      });
+withLinks(
+  "refuses names Windows reads as another drive, a device, a stream or a shortened name, and keeps them as plain names elsewhere",
+  async () => {
+    const { root, shared } = await folder();
+    const sep = path.sep;
+    await mkdir(path.join(shared, "dir"));
+    await writeFile(path.join(shared, "report.md"), "CONTENT");
+    await writeFile(path.join(root, "organizations", "secret.md"), "SECRET");
+    if (process.platform === "win32") {
+      await symlink("D:outside.md", path.join(shared, "drive-link.md"));
+      for (const requested of [
+        "D:outside.md",
+        "C:outside.md",
+        `Z:..${sep}outside.md`,
+        `dir${sep}D:outside.md`,
+        "drive-link.md",
+      ])
+        expect(await read(root, requested), requested).toEqual(
+          refusal("path_outside_folder")
+        );
+      for (const requested of [
+        "NUL",
+        "con.txt",
+        "COM1",
+        "COM\u00b9",
+        `dir${sep}aux`,
+        "report.md:stream",
+        "report.md.",
+        "report.md ",
+        `dir${sep}..${sep}.. ${sep}.. ${sep}secret.md`,
+        `.. ${sep}.. ${sep}secret.md`,
+      ])
+        expect(await read(root, requested), requested).toEqual(
+          refusal("not_regular_file")
+        );
+      expect(await content(root, "report.md")).toBe("CONTENT");
+    } else {
+      for (const name of [
+        "D:outside.md",
+        "NUL",
+        "con.txt",
+        "report.md:stream",
+        "report.md.",
+        "report.md ",
+      ]) {
+        await writeFile(path.join(shared, name), name);
+        expect(await read(root, name), name).toMatchObject({
+          ok: true,
+          snapshot: { file: { name, size: name.length } },
+        });
+      }
     }
   }
-});
+);
 
 // 절대 경로의 작업 폴더 부분은 이름 그대로 같아야 한다. 그 안에 `..`를 섞어 돌아오는 드문 경로는 폴더 밖으로 본다.
 // Windows는 운영체제처럼 글자로 먼저 줄이므로 작업 폴더 안의 파일이다.
@@ -373,60 +403,72 @@ it("refuses an absolute path that wanders out of the working folder part and bac
 });
 
 // PR #131 리뷰 S1: 작업 폴더 밖은 그곳에 무엇이 있는지 보지 않고 거부한다. 있든 없든, 링크로 가리키든 같은 응답이다.
-it("refuses every path outside the working folder the same way, whether or not something is there", async () => {
-  const { root, shared } = await folder();
-  await writeFile(path.join(root, "outside.md"), "밖");
-  await mkdir(path.join(root, "outside-dir"));
-  const outside = [
-    "../../../outside.md",
-    "../../../missing.md",
-    "../workspace-identity.json",
-    "../nothing.md",
-    path.join(root, "outside.md"),
-    path.join(root, "missing.md"),
-    path.join(root, "missing-dir", "x.md"),
-  ];
-  for (const requested of outside)
-    expect(await read(root, requested), requested).toEqual(
-      refusal("path_outside_folder")
+withLinks(
+  "refuses every path outside the working folder the same way, whether or not something is there",
+  async () => {
+    const { root, shared } = await folder();
+    await writeFile(path.join(root, "outside.md"), "밖");
+    await mkdir(path.join(root, "outside-dir"));
+    const outside = [
+      "../../../outside.md",
+      "../../../missing.md",
+      "../workspace-identity.json",
+      "../nothing.md",
+      path.join(root, "outside.md"),
+      path.join(root, "missing.md"),
+      path.join(root, "missing-dir", "x.md"),
+    ];
+    for (const requested of outside)
+      expect(await read(root, requested), requested).toEqual(
+        refusal("path_outside_folder")
+      );
+    // 밖을 가리키는 링크도 대상이 있든 없든 같다. 폴더를 가리키는 링크를 거쳐도 같다.
+    await symlink(
+      path.join(root, "outside.md"),
+      path.join(shared, "to-file.md")
     );
-  // 밖을 가리키는 링크도 대상이 있든 없든 같다. 폴더를 가리키는 링크를 거쳐도 같다.
-  await symlink(path.join(root, "outside.md"), path.join(shared, "to-file.md"));
-  await symlink(path.join(root, "missing.md"), path.join(shared, "to-none.md"));
-  await symlink(path.join(root, "outside-dir"), path.join(shared, "to-dir"));
-  await symlink("../../../missing-dir", path.join(shared, "to-none-dir"));
-  for (const requested of [
-    "to-file.md",
-    "to-none.md",
-    "to-dir/x.md",
-    "to-none-dir/x.md",
-  ])
-    expect(await read(root, requested), requested).toEqual(
-      refusal("path_outside_folder")
+    await symlink(
+      path.join(root, "missing.md"),
+      path.join(shared, "to-none.md")
     );
-});
+    await symlink(path.join(root, "outside-dir"), path.join(shared, "to-dir"));
+    await symlink("../../../missing-dir", path.join(shared, "to-none-dir"));
+    for (const requested of [
+      "to-file.md",
+      "to-none.md",
+      "to-dir/x.md",
+      "to-none-dir/x.md",
+    ])
+      expect(await read(root, requested), requested).toEqual(
+        refusal("path_outside_folder")
+      );
+  }
+);
 
-it("follows links that stay inside, including relative and chained ones", async () => {
-  const { root, shared } = await folder();
-  await mkdir(path.join(shared, "data", "deep"), { recursive: true });
-  await writeFile(path.join(shared, "data", "deep", "a.md"), "내용");
-  await symlink("data/deep", path.join(shared, "short"));
-  await symlink("short/a.md", path.join(shared, "chain.md"));
-  await symlink(path.join(shared, "chain.md"), path.join(shared, "abs.md"));
-  expect(await content(root, "short/a.md")).toBe("내용");
-  expect(await content(root, "abs.md")).toBe("내용");
-  // 남는 경로는 링크를 푼 실제 위치다.
-  expect(await read(root, "abs.md")).toMatchObject({
-    ok: true,
-    snapshot: { file: { path: path.join("data", "deep", "a.md") } },
-  });
-  // 링크가 가리키는 곳에 없는 파일은 그대로 없는 파일이다.
-  await symlink("data/none.md", path.join(shared, "dangling.md"));
-  expect(await read(root, "dangling.md")).toEqual(refusal("file_not_found"));
-});
+withLinks(
+  "follows links that stay inside, including relative and chained ones",
+  async () => {
+    const { root, shared } = await folder();
+    await mkdir(path.join(shared, "data", "deep"), { recursive: true });
+    await writeFile(path.join(shared, "data", "deep", "a.md"), "내용");
+    await symlink("data/deep", path.join(shared, "short"));
+    await symlink("short/a.md", path.join(shared, "chain.md"));
+    await symlink(path.join(shared, "chain.md"), path.join(shared, "abs.md"));
+    expect(await content(root, "short/a.md")).toBe("내용");
+    expect(await content(root, "abs.md")).toBe("내용");
+    // 남는 경로는 링크를 푼 실제 위치다.
+    expect(await read(root, "abs.md")).toMatchObject({
+      ok: true,
+      snapshot: { file: { path: path.join("data", "deep", "a.md") } },
+    });
+    // 링크가 가리키는 곳에 없는 파일은 그대로 없는 파일이다.
+    await symlink("data/none.md", path.join(shared, "dangling.md"));
+    expect(await read(root, "dangling.md")).toEqual(refusal("file_not_found"));
+  }
+);
 
 // PR #131 리뷰 P2: 돌고 도는 링크는 없는 파일이 아니라 링크 문제로 알린다.
-it("names a link loop", async () => {
+withLinks("names a link loop", async () => {
   const { root, shared } = await folder();
   await symlink("b.md", path.join(shared, "a.md"));
   await symlink("a.md", path.join(shared, "b.md"));

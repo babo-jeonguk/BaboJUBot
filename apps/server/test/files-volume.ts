@@ -1,5 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pinnedReader } from "../src/workspace.ts";
@@ -17,11 +25,58 @@ export async function scratch(prefix: string) {
   made.push(created);
   return created;
 }
+/** 지운다. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 다시 시도한다(Node `rm`의 maxRetries). */
+export const remove = (folder: string) =>
+  rm(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 export async function cleanup() {
-  await Promise.all(
-    made.splice(0).map((folder) => rm(folder, { recursive: true, force: true }))
-  );
+  await Promise.all(made.splice(0).map(remove));
 }
+
+/** 이 파일 시스템에 없는 기능과 그 오류 코드. 빈 문자열이면 있다(FAT은 링크가 없다). */
+export type FeatureGaps = {
+  symlink: string;
+  hardLink: string;
+  junction: string;
+};
+let gaps: Promise<FeatureGaps> | undefined;
+export const featureGaps = () =>
+  (gaps ??= (async () => {
+    const probe = await realpath(
+      await mkdtemp(path.join(filesBase(), "bjc-probe-"))
+    );
+    const attempt = async (work: () => Promise<unknown>) => {
+      try {
+        await work();
+        return "";
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code ?? String(error);
+      }
+    };
+    try {
+      await writeFile(path.join(probe, "file"), "x");
+      await mkdir(path.join(probe, "folder"));
+      return {
+        symlink: await attempt(async () => {
+          await symlink("file", path.join(probe, "link"), "file");
+          await symlink("folder", path.join(probe, "folder-link"), "dir");
+        }),
+        hardLink: await attempt(() =>
+          link(path.join(probe, "file"), path.join(probe, "hard"))
+        ),
+        junction: windows
+          ? await attempt(() =>
+              symlink(
+                path.join(probe, "folder"),
+                path.join(probe, "junction"),
+                "junction"
+              )
+            )
+          : "not Windows",
+      };
+    } finally {
+      await remove(probe);
+    }
+  })());
 
 export const windows = process.platform === "win32";
 

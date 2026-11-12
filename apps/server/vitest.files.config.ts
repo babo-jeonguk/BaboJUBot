@@ -11,5 +11,7 @@ export default defineConfig({
     testTimeout: 240_000,
     // 바꿔치기 시험은 시도마다 만든 임시 폴더 수백 개를 끝에 지운다. 느린 Windows runner에서도 끝나게 둔다.
     hookTimeout: 120_000,
+    // 실패한 사례의 실제 응답을 결과표에서 그대로 보이게 줄이지 않는다.
+    chaiConfig: { truncateThreshold: 0 },
   },
 });

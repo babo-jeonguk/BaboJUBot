@@ -16,6 +16,7 @@ import { afterEach, beforeAll, expect, it, type TestContext } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
 import {
   cleanup,
+  featureGaps,
   filesBase,
   realScratch,
   runPinned,
@@ -139,8 +140,8 @@ const shortName = async (target: string) => {
   return result.ok ? result.output : undefined;
 };
 
-/** 이 파일 시스템에 없는 기능과 그 오류. 빈 문자열이면 있다. 없으면 그 사례는 적용 불가로 남긴다. */
-const lacks = { symlink: "", hardLink: "", junction: "" };
+/** 이 파일 시스템에 없는 기능. 없으면 그 사례는 적용 불가로 남긴다. */
+const lacks = await featureGaps();
 /** 이 파일 시스템이 이름을 다루는 방식. */
 const can = {
   caseSensitive: false,
@@ -150,31 +151,6 @@ const can = {
 beforeAll(async () => {
   const probe = await realScratch("bjc-probe-");
   await writeFile(path.join(probe, "file"), "x");
-  await mkdir(path.join(probe, "folder"));
-  const attempt = async (work: () => Promise<unknown>) => {
-    try {
-      await work();
-      return "";
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code ?? String(error);
-    }
-  };
-  lacks.symlink = await attempt(async () => {
-    await symlink("file", path.join(probe, "link"));
-    await symlink("folder", path.join(probe, "folder-link"), "dir");
-  });
-  lacks.hardLink = await attempt(() =>
-    link(path.join(probe, "file"), path.join(probe, "hard"))
-  );
-  lacks.junction = windows
-    ? await attempt(() =>
-        symlink(
-          path.join(probe, "folder"),
-          path.join(probe, "junction"),
-          "junction"
-        )
-      )
-    : "not Windows";
   can.caseSensitive = !(await stat(path.join(probe, "FILE")).then(
     () => true,
     () => false
@@ -797,8 +773,9 @@ it("C23 keeps invalid UTF-8 Markdown as binary", async (context) => {
 
 it("C24 keeps Markdown with NUL as binary", async (context) => {
   const { read, shared } = await world();
-  await writeFile(path.join(shared, "nul.md"), "A\0B");
-  expect(await read("nul.md")).toMatchObject({
+  // `nul.md`는 Windows에서 장치 이름이라 다른 이름을 쓴다(C28).
+  await writeFile(path.join(shared, "zero.md"), "A\0B");
+  expect(await read("zero.md")).toMatchObject({
     ok: true,
     snapshot: { format: "binary", content: "", file: { size: 3 } },
   });
@@ -840,7 +817,12 @@ const deny = async (target: string, folder: boolean) => {
     "/deny",
     `*S-1-1-0:(${folder ? "RD,X" : "RD"})`,
   ]);
-  return result.ok ? "" : result.output;
+  if (!result.ok) return result.output;
+  // FAT은 ACL을 저장하지 않아 명령이 성공해도 거부 항목이 남지 않는다. 남았는지 다시 읽어 본다.
+  const stored = await run("icacls", [target]);
+  return stored.output.includes("DENY")
+    ? ""
+    : `거부 항목이 저장되지 않음(ACL 없는 파일 시스템): ${stored.output.split("\n")[0]}`;
 };
 const allow = async (target: string, folder: boolean) => {
   if (!windows) await chmod(target, folder ? 0o755 : 0o644);
