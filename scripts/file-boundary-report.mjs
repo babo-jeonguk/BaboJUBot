@@ -1,8 +1,8 @@
 // file-boundary-reports/의 볼륨별 시험 결과를 사례 표(C01–C37, F1–F6)로 모은다. GitHub job 요약과
 // file-boundary-reports/summary.{md,json}에 쓴다.
 //   node scripts/file-boundary-report.mjs --require NTFS,FAT32,SMB [--reports <folder>]
-// 요구한 볼륨이 준비되지 않았거나, 결과가 없거나, 시험이 하나라도 실패했거나, 사례가 빠졌으면 실패한다.
-// 적용 불가(n/a)·미검증(unverified)은 통과 수에 넣지 않고 이유와 함께 따로 보인다.
+// 요구한 볼륨이 준비되지 않았거나, 결과가 없거나, 시험이 하나라도 실패했거나, 어느 사례든 결과가 `accepted` 밖이면
+// (미검증·결함·빠짐) 실패한다. 적용 불가(n/a)는 통과 수에 넣지 않고 이유와 함께 따로 보인다.
 import {
   appendFileSync,
   existsSync,
@@ -25,6 +25,8 @@ export const findings = {
   F5: "C15",
   F6: "C14",
 };
+/** 볼륨이 성공할 수 있는 사례 결과. 그 밖(unverified·defect·missing)은 모두 실패다. */
+export const accepted = new Set(["pass", "limitation", "n/a"]);
 const marks = {
   pass: "✅ pass",
   limitation: "⚠️ limitation",
@@ -73,7 +75,9 @@ export function summarize(volume, meta, report) {
   if (report && !environment) problems.push("environment not identified");
   for (const id of caseIds) {
     outcomes[id] ??= { outcome: "missing", detail: "not run" };
-    if (outcomes[id].outcome === "missing") problems.push(`${id} not run`);
+    const { outcome, detail } = outcomes[id];
+    if (!accepted.has(outcome))
+      problems.push(`${id} ${outcome}${detail ? `: ${detail}` : ""}`);
   }
   return {
     volume,
