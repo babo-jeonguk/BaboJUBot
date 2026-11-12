@@ -25,6 +25,7 @@ import {
   type ContainerSettings,
 } from "./container.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
+import type { CredentialRelay } from "./credential-relay.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
@@ -700,10 +701,13 @@ describe.skipIf(process.platform === "win32")(
 /** 모의 상류와, 조직 도구 listener처럼 `/api/relay/<연결>` 아래를 중계에 넘기는 서버. 중계는 상류 주소를 받은 뒤 만든다. */
 async function relayed(
   connectionId: string,
-  connect: (upstream: string) => { handle: http.RequestListener }
+  connect: (upstream: string) => { handle: http.RequestListener },
+  options: { hold?: boolean } = {}
 ) {
   const seen: http.IncomingHttpHeaders[] = [];
   const urls: string[] = [];
+  /** 상류에서 끊긴 요청의 경로. `hold`면 상류는 답하지 않고 요청을 열어 둔다. */
+  const closed: string[] = [];
   const servers: http.Server[] = [];
   const listen = async (handler: http.RequestListener) => {
     const server = http.createServer(handler);
@@ -717,6 +721,10 @@ async function relayed(
     seen.push(req.headers);
     urls.push(req.url ?? "");
     req.resume();
+    if (options.hold) {
+      res.on("close", () => closed.push(req.url ?? ""));
+      return;
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end("{}");
   });
@@ -736,7 +744,7 @@ async function relayed(
       await new Promise((resolve) => server.close(resolve));
     }
   };
-  return { tools, seen, urls, close };
+  return { tools, seen, urls, closed, close };
 }
 
 describe.skipIf(process.platform === "win32")(
@@ -1510,6 +1518,144 @@ describe.skipIf(process.platform === "win32")(
 describe.skipIf(process.platform === "win32")(
   "connections behind the credential relay (#148)",
   () => {
+    /** 연결마다 원본 로그인(합성)을 두고 중계에 붙인 연결을 만든다. */
+    const connections = {
+      claude: {
+        program: "claude-relay.mjs",
+        async login(root: string) {
+          await mkdir(path.join(root, "providers/claude"), { recursive: true });
+          await writeFile(
+            path.join(root, "providers/claude/setup-token"),
+            "real-claude-token"
+          );
+        },
+        create: createClaudeProvider,
+      },
+      codex: {
+        program: "codex-relay.mjs",
+        async login(root: string) {
+          await mkdir(path.join(root, "providers/codex/login"), {
+            recursive: true,
+          });
+          await writeFile(
+            path.join(root, "providers/codex/login/auth.json"),
+            JSON.stringify({
+              tokens: {
+                id_token: "real-id",
+                access_token: "real-codex-access",
+                refresh_token: "real-codex-refresh",
+                account_id: "real-account",
+              },
+              last_refresh: new Date().toISOString(),
+            })
+          );
+        },
+        create: createCodexProvider,
+      },
+      opencode: {
+        program: "opencode-simulator.mjs",
+        args: ["--relay"],
+        async login() {},
+        create: createOpenCodeProvider,
+      },
+      antigravity: {
+        program: "antigravity-simulator.mjs",
+        async login(root: string) {
+          await mkdir(path.join(root, "providers/antigravity/login"), {
+            recursive: true,
+          });
+          await writeFile(
+            path.join(
+              root,
+              "providers/antigravity/login/antigravity-oauth-token"
+            ),
+            JSON.stringify({
+              token: {
+                access_token: "real-agy-access",
+                refresh_token: "real-agy-refresh",
+                expiry: new Date(Date.now() + 3_600_000).toISOString(),
+              },
+              auth_method: "consumer",
+            })
+          );
+        },
+        create: createAntigravityProvider,
+      },
+    } as const;
+    const containerProgram = {
+      claude: "claude",
+      codex: "codex",
+      opencode: "opencode",
+      antigravity: "agy",
+    } as const;
+
+    it.each(Object.keys(connections) as (keyof typeof connections)[])(
+      "%s: a cancel refuses the run's grant at once, cuts the model request, and returns only after the container is removed",
+      async (id) => {
+        const connection = connections[id];
+        const env = await setup({
+          [containerProgram[id]]: [
+            process.execPath,
+            fixture(connection.program),
+            ...("args" in connection ? connection.args : []),
+          ],
+        });
+        await connection.login(env.root);
+        let provider!: ReturnType<typeof connection.create>;
+        const grants: string[] = [];
+        const network = await relayed(
+          id,
+          (upstream) => {
+            provider = connection.create({
+              dataDir: env.root,
+              container: env.container,
+              relay: { upstream, verified: true },
+              command: [process.execPath, fixture(connection.program)],
+            });
+            const relay = provider.credentialRelay as CredentialRelay;
+            const grant = relay.grant.bind(relay);
+            relay.grant = (scope) => {
+              const issued = grant(scope);
+              grants.push(issued.token);
+              return issued;
+            };
+            return relay;
+          },
+          { hold: true }
+        );
+        try {
+          const input = env.isolated();
+          input.access = { ...input.access, toolsBaseUrl: network.tools };
+          const cancel = new AbortController();
+          const running = provider.adapter.execute(
+            input,
+            control(cancel.signal)
+          );
+          await expect
+            .poll(() => network.urls.length, { timeout: 10_000 })
+            .toBe(1);
+          cancel.abort();
+          // 중단이 효력을 갖는 순간부터 그 권한의 새 요청은 상류에 닿지 않는다.
+          const after = await fetch(`${network.tools}/api/relay/${id}/any`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${grants[0]}` },
+          });
+          expect(after.status).toBe(401);
+          await expect.poll(() => network.closed.length).toBe(1);
+          const result = await running;
+          expect(result.stopReason).toBe("cancelled");
+          expect(network.urls).toHaveLength(1);
+          // 실행 시도는 컨테이너를 지운 뒤에야 끝난다(그 전에 같은 자리를 다시 쓰지 않는다).
+          const calls = await env.calls();
+          expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
+          expect(grants).toHaveLength(1);
+        } finally {
+          await network.close();
+        }
+      },
+      30_000
+    );
+
     it.each([
       ["Claude", "claude", "claude-relay.mjs", createClaudeProvider],
       ["Codex", "codex", "codex-relay.mjs", createCodexProvider],
