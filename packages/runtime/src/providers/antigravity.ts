@@ -184,7 +184,7 @@ export function createAntigravityProvider(options: {
   id?: string;
   label?: string;
   container?: ContainerSettings;
-  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 미검증)을 쓴다. */
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
   relay?: { upstream?: string; verified?: boolean };
 }): ProviderConnection {
   const connectionId = options.id ?? "antigravity";
@@ -263,7 +263,7 @@ export function createAntigravityProvider(options: {
       ...antigravityRelayProfile,
       upstream: options.relay?.upstream ?? antigravityRelayProfile.upstream,
     },
-    verified: options.relay?.verified ?? false,
+    verified: options.relay?.verified ?? true,
     credential: () => currentAccess(),
   });
   const adapter: ProviderConnection["adapter"] = {

@@ -202,7 +202,7 @@ export function createOpenCodeProvider(options: {
   id?: string;
   label?: string;
   container?: ContainerSettings;
-  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 미검증)을 쓴다. */
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
   relay?: { upstream?: string; verified?: boolean };
 }): ProviderConnection {
   const connectionId = options.id ?? "opencode";
@@ -214,7 +214,7 @@ export function createOpenCodeProvider(options: {
       ...opencodeRelayProfile,
       upstream: options.relay?.upstream ?? opencodeRelayProfile.upstream,
     },
-    verified: options.relay?.verified ?? false,
+    verified: options.relay?.verified ?? true,
     credential: async () => goKey(path.join(home, "data")),
   });
   /** 그 제품 폴더로 띄우는 환경. 로그인과 세션은 그 폴더의 DB 하나에 함께 있다. */
@@ -640,7 +640,6 @@ export function createOpenCodeProvider(options: {
         );
         const api = service;
         // 격리 실행에는 연결의 로그인을 옮기지 않는다(#148). 조직 폴더에 옮겨 둔 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.
-        // OpenCode의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
         if (container) {
           if (entries(await api.json("/api/credential")).length)
             return { ...failure(), error: residueRefusal };

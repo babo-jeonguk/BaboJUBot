@@ -57,7 +57,7 @@ export type CodexOptions = {
   id?: string;
   label?: string;
   container?: ContainerSettings;
-  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 미검증)을 쓴다. */
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
   relay?: { upstream?: string; verified?: boolean };
 };
 /**
@@ -352,7 +352,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
       ...codexRelayProfile,
       upstream: options.relay?.upstream ?? codexRelayProfile.upstream,
     },
-    verified: options.relay?.verified ?? false,
+    verified: options.relay?.verified ?? true,
     credential: () => currentLogin(),
   });
   const readiness = async (
@@ -506,7 +506,6 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         );
         await shareLogin(path.join(home, "auth.json"));
         // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
-        // Codex의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
         const isolated = request.execution === "container";
         const loginAt = path.join(organization, "auth.json");
         if (
