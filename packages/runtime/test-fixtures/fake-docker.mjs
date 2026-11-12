@@ -2,14 +2,21 @@
 // argv: <stateDir> <programs JSON> <docker args...>
 // - records every call as one JSON line in <stateDir>/calls.jsonl ({ args, env } where env is the container env of `run`)
 // - `run ... <image> <program> <args...>`: runs programs[<program>] on this machine with the container env and --workdir,
-//   passes stdin/stdout through, forwards SIGINT/SIGTERM and writes the port of a `{"url":"http://127.0.0.1:N"}` frame
-//   to <stateDir>/<name>.port so `port <name> <spec>` can answer like a published port.
-// - `rm`: succeeds. `inspect`/`container inspect`: "No such container". `port`: the recorded port.
-// - `network inspect`: prints <stateDir>/network.json (a `docker network inspect --format '{{json .}}'` object) or "No such network".
-//   `network create`: writes network.json from --driver/--opt/--label with gateway 172.31.0.1. A test may write network.json first
-//   to stand for a network that already exists.
+//   passes stdin/stdout through and forwards SIGINT/SIGTERM. With BABOJUBOT_INBOUND_PORT it stands in for the image's relay.mjs:
+//   once the program prints a `{"url":"http://127.0.0.1:N"}` frame it keeps connections open to the relay folder's inbound.sock
+//   (the `/run/babojubot` mount source) and joins each to port N on its first byte.
+// - `rm`: succeeds and records whether the last run's relay socket (`egress.sock`) still existed (`relayOpen`).
+//   `inspect`/`container inspect`: "No such container". With <stateDir>/rm-fails, `rm` fails and the container stays.
+// - `info`: prints <stateDir>/info.json or a local Linux engine. `image inspect`: prints <stateDir>/runner-version or "2".
+//   `context inspect`: prints <stateDir>/context-host or the local socket.
 import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import net from "node:net";
 import path from "node:path";
 
 const [stateDir, programsJson, ...args] = process.argv.slice(2);
@@ -64,7 +71,33 @@ if (verb === "run") {
   }
   const [, program, ...programArgs] = rest.slice(i);
   record({ args, env });
-  const name = options.get("--name")?.[0] ?? "unnamed";
+  const relay = (options.get("--mount") ?? [])
+    .map((spec) =>
+      Object.fromEntries(spec.split(",").map((part) => part.split("=")))
+    )
+    .find((mount) => mount.target === "/run/babojubot")?.source;
+  if (relay) writeFileSync(path.join(stateDir, "relay-dir"), relay);
+  const inbound = Boolean(env.BABOJUBOT_INBOUND_PORT);
+  const offer = (port) => {
+    const reverse = net.connect(path.join(relay, "inbound.sock"));
+    let used = false;
+    reverse.once("data", (first) => {
+      used = true;
+      reverse.pause();
+      offer(port);
+      const local = net.connect(port, "127.0.0.1", () => {
+        local.write(first);
+        reverse.pipe(local).pipe(reverse);
+        reverse.resume();
+      });
+      local.on("error", () => reverse.destroy());
+      reverse.on("close", () => local.destroy());
+    });
+    reverse.on("error", () => reverse.destroy());
+    reverse.on("close", () => {
+      if (!used) setTimeout(() => offer(port), 100).unref();
+    });
+  };
   const mapped = programs[program];
   if (!mapped) {
     process.stderr.write(`fake docker: unknown program ${program}\n`);
@@ -84,8 +117,8 @@ if (verb === "run") {
       buffer = buffer.slice(n + 1);
       try {
         const url = JSON.parse(line).url;
-        if (typeof url === "string")
-          writeFileSync(path.join(stateDir, `${name}.port`), new URL(url).port);
+        if (typeof url === "string" && inbound && relay)
+          for (let k = 0; k < 4; k++) offer(Number(new URL(url).port));
       } catch {
         /* not a frame */
       }
@@ -94,53 +127,55 @@ if (verb === "run") {
   for (const signal of ["SIGINT", "SIGTERM"])
     process.on(signal, () => child.kill(signal));
   child.on("close", (code, signal) => process.exit(code ?? (signal ? 137 : 1)));
-} else if (args[0] === "network") {
-  record({ args });
-  const file = path.join(stateDir, "network.json");
-  if (args[1] === "inspect") {
+} else {
+  const failing = existsSync(path.join(stateDir, "rm-fails"));
+  if (verb === "rm") {
+    let relayOpen = false;
     try {
-      process.stdout.write(readFileSync(file, "utf8").trim() + "\n");
-      process.exit(0);
+      const relay = readFileSync(path.join(stateDir, "relay-dir"), "utf8");
+      relayOpen = existsSync(path.join(relay, "egress.sock"));
     } catch {
-      process.stderr.write(
-        `Error response from daemon: network ${args[2]} not found\n`
-      );
+      /* no run yet */
+    }
+    record({ args, relayOpen });
+    if (failing) {
+      process.stderr.write("Error response from daemon: cannot remove\n");
       process.exit(1);
     }
+    process.exit(0);
   }
-  if (args[1] === "create") {
-    const network = {
-      Name: args.at(-1),
-      Driver: "bridge",
-      Options: {},
-      Labels: {},
-      IPAM: { Config: [{ Subnet: "172.31.0.0/16", Gateway: "172.31.0.1" }] },
-    };
-    for (let i = 2; i < args.length - 1; i++) {
-      const [key, value = ""] = (args[i + 1] ?? "").split(/=(.*)/s);
-      if (args[i] === "--driver") network.Driver = args[++i];
-      else if (args[i] === "--opt") {
-        network.Options[key] = value;
-        i++;
-      } else if (args[i] === "--label") {
-        network.Labels[key] = value;
-        i++;
-      }
-    }
-    writeFileSync(file, JSON.stringify(network));
-  }
-  process.exit(0);
-} else {
   record({ args });
+  if (verb === "inspect" && failing) {
+    process.stdout.write("[{}]\n");
+    process.exit(0);
+  }
   if (verb === "inspect") {
     process.stderr.write(`Error: No such container: ${args.at(-1)}\n`);
     process.exit(1);
   }
-  if (verb === "port") {
-    const name = args[args.indexOf("port") + 1];
+  const stored = (file, fallback) => {
+    try {
+      return readFileSync(path.join(stateDir, file), "utf8").trim();
+    } catch {
+      return fallback;
+    }
+  };
+  if (verb === "info")
     process.stdout.write(
-      `127.0.0.1:${readFileSync(path.join(stateDir, `${name}.port`), "utf8")}\n`
+      stored(
+        "info.json",
+        JSON.stringify({
+          OSType: "linux",
+          OperatingSystem: "Ubuntu 24.04",
+          SecurityOptions: ["name=seccomp"],
+        })
+      ) + "\n"
     );
-  }
+  if (args[0] === "context" && args[1] === "inspect")
+    process.stdout.write(
+      stored("context-host", "unix:///var/run/docker.sock") + "\n"
+    );
+  if (args[0] === "image" && args[1] === "inspect")
+    process.stdout.write(stored("runner-version", "2") + "\n");
   process.exit(0);
 }

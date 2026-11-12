@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "network_destinations" jsonb DEFAULT '[]'::jsonb NOT NULL;

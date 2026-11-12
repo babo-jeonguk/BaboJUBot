@@ -1,10 +1,16 @@
 import {
   approvalPolicyItems,
+  destinationSchema,
   type ApprovalPolicyItem,
+  type Destination,
   type OrganizationDetail,
 } from "@babojubot/contracts";
-import { useState } from "react";
-import { useUpdateApprovalPolicy } from "./api.ts";
+import { useState, type FormEvent } from "react";
+import {
+  useNetworkPolicy,
+  useUpdateApprovalPolicy,
+  useUpdateNetworkPolicy,
+} from "./api.ts";
 import { approvalPolicyItemLabel } from "./ui.tsx";
 
 /**
@@ -35,7 +41,143 @@ export function SettingsScreen({ org }: { org: OrganizationDetail }) {
           ))}
         </ul>
       </section>
+      <NetworkPolicySection org={org} />
     </div>
+  );
+}
+
+/** 목적지 한 줄의 글자. */
+const destinationLabel = (entry: Destination) =>
+  `${entry.host.includes(":") ? `[${entry.host}]` : entry.host}:${entry.port}`;
+
+/**
+ * 외부 연결 허용 목록(#149). 격리 실행에서 초기 연구 승인 뒤 에이전트가 연결할 수 있는 이름·포트다. 목록에 없으면 연결하지 않는다.
+ * 추가·삭제는 누르면 바로 목록 전체를 저장한다. 모델·로그인 연결은 연결마다 따로 열려 있어 여기에 적지 않는다.
+ */
+function NetworkPolicySection({ org }: { org: OrganizationDetail }) {
+  const policy = useNetworkPolicy(org.id);
+  const update = useUpdateNetworkPolicy(org.id);
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("443");
+  const [addresses, setAddresses] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  const destinations = policy.data?.destinations ?? [];
+  const save = (next: Destination[], done?: () => void) =>
+    update.mutate({ destinations: next }, { onSuccess: done });
+  const add = (event: FormEvent) => {
+    event.preventDefault();
+    const parsed = destinationSchema.safeParse({
+      host,
+      port: Number(port),
+      ...(addresses.trim()
+        ? {
+            addresses: addresses
+              .split(/[\s,]+/)
+              .map((value) => value.trim())
+              .filter(Boolean),
+          }
+        : {}),
+    });
+    if (!parsed.success) return setInvalid(true);
+    setInvalid(false);
+    save([...destinations, parsed.data], () => {
+      setHost("");
+      setAddresses("");
+    });
+  };
+  return (
+    <section aria-label="외부 연결 허용 목록" className="card p-4">
+      <h2 className="mb-1 text-sm font-semibold">외부 연결 허용 목록</h2>
+      <p className="mb-3 text-xs text-slate-500">
+        격리 실행에서 초기 연구 승인 뒤 에이전트가 연결할 수 있는 곳입니다.
+        목록에 없는 곳과 이 컴퓨터·내부망 주소는 연결하지 않습니다. 모델과
+        로그인 연결은 따로 열려 있습니다.
+      </p>
+      {policy.isPending ? (
+        <p className="text-sm text-slate-400">불러오는 중…</p>
+      ) : destinations.length === 0 ? (
+        <p className="text-sm text-slate-500">
+          허용한 곳이 없습니다. 연구 중 외부 연결은 모두 거부됩니다.
+        </p>
+      ) : (
+        <ul className="divide-y divide-slate-100 text-sm">
+          {destinations.map((entry, index) => (
+            <li
+              key={`${destinationLabel(entry)}-${index}`}
+              className="flex items-center gap-3 py-2"
+            >
+              <span className="flex-1">
+                <span className="font-mono">{destinationLabel(entry)}</span>
+                {entry.addresses?.length ? (
+                  <span className="ml-2 text-xs text-slate-500">
+                    내부 주소 허용: {entry.addresses.join(", ")}
+                  </span>
+                ) : null}
+              </span>
+              <button
+                type="button"
+                className="btn-soft text-xs"
+                disabled={update.isPending}
+                aria-label={`${destinationLabel(entry)} 삭제`}
+                onClick={() => save(destinations.filter((_, i) => i !== index))}
+              >
+                삭제
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        onSubmit={add}
+        className="mt-3 flex flex-wrap items-end gap-2 text-sm"
+      >
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-slate-500">이름</span>
+          <input
+            className="input"
+            value={host}
+            placeholder="example.com 또는 *.example.com"
+            onChange={(e) => setHost(e.currentTarget.value)}
+          />
+        </label>
+        <label className="flex w-24 flex-col gap-1">
+          <span className="text-xs text-slate-500">포트</span>
+          <input
+            className="input"
+            inputMode="numeric"
+            value={port}
+            onChange={(e) => setPort(e.currentTarget.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-slate-500">허용할 내부 주소(선택)</span>
+          <input
+            className="input"
+            value={addresses}
+            placeholder="10.0.0.5"
+            onChange={(e) => setAddresses(e.currentTarget.value)}
+          />
+        </label>
+        <button
+          type="submit"
+          className="btn-primary"
+          disabled={update.isPending}
+        >
+          추가
+        </button>
+      </form>
+      {invalid && (
+        <p role="alert" className="mt-1 text-xs text-rose-600">
+          이름·포트·주소를 확인해 주세요. 이름은 example.com처럼, 포트는
+          1~65535로, 내부 주소는 10.0.0.5처럼 하나씩(대역 없이) 적습니다.
+        </p>
+      )}
+      {update.isError && (
+        <p role="alert" className="mt-1 text-xs text-rose-600">
+          저장하지 못했습니다. 다시 시도하세요.
+        </p>
+      )}
+    </section>
   );
 }
 

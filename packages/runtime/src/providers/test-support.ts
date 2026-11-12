@@ -1,4 +1,19 @@
 import { defaultApprovalPolicy, type RunRequest } from "@babojubot/contracts";
+import { createRelayHub } from "./relay.ts";
+
+/** 정책을 붙인 중계(시험용). 연구 목적지는 없고 조직 도구는 404로 답한다. */
+export function attachedRelayHub() {
+  const hub = createRelayHub();
+  hub.attach({
+    research: async () => [],
+    tools: (_req, res) => {
+      res.statusCode = 404;
+      res.end();
+    },
+    protectedPorts: () => [],
+  });
+  return hub;
+}
 export function request(): RunRequest {
   const organizationId = crypto.randomUUID(),
     agentId = crypto.randomUUID();

@@ -13,6 +13,7 @@ export * from "./research-map.ts";
 export * from "./heartbeat.ts";
 export * from "./memory.ts";
 export * from "./usage.ts";
+export * from "./network.ts";
 export * from "./run.ts";
 export * from "./tools.ts";
 export * from "./event.ts";

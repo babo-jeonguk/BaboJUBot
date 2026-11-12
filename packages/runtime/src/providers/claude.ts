@@ -33,7 +33,12 @@ import {
   runProbe,
 } from "./process.ts";
 import type { ContainerSettings } from "./container.ts";
-import { placeAttempt } from "./container.ts";
+import {
+  ContainerRefusal,
+  placeAttempt,
+  type ContainerLaunch,
+} from "./container.ts";
+import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 
 export type ClaudeOptions = {
@@ -265,11 +270,20 @@ async function executeClaude(
   const temp = placement.container
     ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
     : await mkdtemp(path.join(home, "attempt-"));
-  const launch = placement.container?.({
-    cwd: request.cwd,
-    program: "claude",
-    attempt: temp,
-  });
+  let launch: ContainerLaunch | undefined;
+  try {
+    launch = placement.container?.({
+      cwd: request.cwd,
+      program: "claude",
+      attempt: temp,
+      destinations: providerDestinations.claude,
+    });
+  } catch (error) {
+    await rm(temp, { recursive: true, force: true });
+    if (error instanceof ContainerRefusal)
+      return { ...failed(), error: error.message };
+    throw error;
+  }
   let result = failed();
   try {
     const config = path.join(temp, "mcp.json");
