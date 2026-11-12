@@ -25,7 +25,7 @@ import {
 } from "./process.ts";
 import type { ContainerLaunch, ContainerSettings } from "./container.ts";
 import { placeAttempt } from "./container.ts";
-import { residueRefusal } from "./relay.ts";
+import { residueRefusal } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};

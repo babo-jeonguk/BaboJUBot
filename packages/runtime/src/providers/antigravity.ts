@@ -42,7 +42,7 @@ import {
 } from "./antigravity-config.ts";
 import type { ContainerSettings } from "./container.ts";
 import { placeAttempt, type ContainerLaunch } from "./container.ts";
-import { credentialResidue, residueRefusal } from "./relay.ts";
+import { credentialResidue, residueRefusal } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
 const workspaces = new Map<string, Promise<void>>();

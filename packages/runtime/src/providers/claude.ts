@@ -42,7 +42,7 @@ import {
   type RelayGrant,
   type RelayProfile,
   residueRefusal,
-} from "./relay.ts";
+} from "./credential-relay.ts";
 
 export type ClaudeOptions = {
   dataDir: string;

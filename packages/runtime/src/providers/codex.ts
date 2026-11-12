@@ -27,7 +27,7 @@ import {
 } from "./process.ts";
 import type { ContainerLaunch, ContainerSettings } from "./container.ts";
 import { placeAttempt } from "./container.ts";
-import { credentialResidue, residueRefusal } from "./relay.ts";
+import { credentialResidue, residueRefusal } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
 

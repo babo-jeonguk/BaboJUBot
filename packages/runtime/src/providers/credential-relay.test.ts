@@ -16,7 +16,7 @@ import {
   createCredentialRelay,
   credentialResidue,
   type RelayProfile,
-} from "./relay.ts";
+} from "./credential-relay.ts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 

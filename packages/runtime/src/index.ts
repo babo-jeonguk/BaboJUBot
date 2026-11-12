@@ -17,7 +17,7 @@ export * from "./providers/antigravity.ts";
 export * from "./providers/recovery.ts";
 export * from "./providers/login.ts";
 export * from "./providers/container.ts";
-export * from "./providers/relay.ts";
+export * from "./providers/credential-relay.ts";
 
 const kinds = {
   claude: createClaudeProvider,

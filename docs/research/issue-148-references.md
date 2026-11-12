@@ -221,7 +221,7 @@ Q1~Q8을 [같은 누적 댓글의 Agent Brief](https://github.com/babo-jeonguk/B
 
 기준: `origin/main` `89f6abb`. 이 단계는 공통 인증 중계와 원본 비전달을 만든 것이며 네 프로바이더 지원 완료가 아니다.
 
-- 공통 경로(`packages/runtime/src/providers/relay.ts`): 실행 시도 권한 발급(연결·조직·실행 시도, 최대 12시간, 서버 메모리에만 있어 재시작 시 소멸) → 권한 확인 → 허용 메서드·경로 확인 → 그 뒤에만 원본 읽기 → 요청 쪽 인증·쿠키·전달 header 제거와 원본 인증 주입 → 고정 상류 → 응답 쿠키 제거, 3xx 거부, stream 그대로. 중단 신호에 권한을 바로 거두고 진행 중 요청을 끊는다. 원본을 읽지 못하거나 상류가 원본 로그인을 401로 거부하면 모든 권한을 먼저 거둔 뒤 연결을 실패 상태로 두고, 준비 확인이 실패할 때와 다른 로그인을 읽으면 푼다(D01·D03·D05·D06, Q5·Q6).
+- 공통 경로(`packages/runtime/src/providers/credential-relay.ts`): 실행 시도 권한 발급(연결·조직·실행 시도, 최대 12시간, 서버 메모리에만 있어 재시작 시 소멸) → 권한 확인 → 허용 메서드·경로 확인 → 그 뒤에만 원본 읽기 → 요청 쪽 인증·쿠키·전달 header 제거와 원본 인증 주입 → 고정 상류 → 응답 쿠키 제거, 3xx 거부, stream 그대로. 중단 신호에 권한을 바로 거두고 진행 중 요청을 끊는다. 원본을 읽지 못하거나 상류가 원본 로그인을 401로 거부하면 모든 권한을 먼저 거둔 뒤 연결을 실패 상태로 두고, 준비 확인이 실패할 때와 다른 로그인을 읽으면 푼다(D01·D03·D05·D06, Q5·Q6).
 - 서버 관문(`apps/server/src/isolation.ts`): 격리 켜짐 + 중계 없음/미검증이면 `credential_relay_unverified`, 실패 상태면 `credential_relay_failed`로 준비안됨·실행 거부(Q4·Q6). 중계는 조직 도구 전용 listener의 `/api/relay/<연결>`에만 있다.
 - 원본 비전달: 컨테이너 배치에서 공유 로그인 폴더 mount를 없앴다. Claude는 원본 토큰 변수 대신 중계 주소·권한 값만 넣고, Codex·Antigravity는 로그인 링크를 만들지 않으며, OpenCode는 로그인을 옮기지 않는다. 조직 폴더에 보통 파일·조직 DB로 남은 로그인이 있으면 시작하지 않는다(D07). 단, OpenCode 조직 DB의 남은 로그인 확인은 컨테이너 안 서버를 띄운 뒤 하므로, OpenCode 중계를 붙일 때 서버를 띄우기 전으로 앞당긴다(지금은 서버 관문이 OpenCode 격리 실행을 막는다).
 - Claude adapter: 공식 gateway 경로(`ANTHROPIC_BASE_URL` + `CLAUDE_CODE_OAUTH_TOKEN`=권한). 프로필은 `POST /v1/messages`·`/v1/messages/count_tokens`만 허용한다. `verified: false`.
