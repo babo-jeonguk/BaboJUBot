@@ -848,6 +848,48 @@ async function killHard(child: Spawned) {
   await exited;
 }
 
+// 종료 관찰은 spawn 직후에 붙이고, 끝나기를 기다리는 시한은 기다리기 시작할 때부터 센다.
+// spawn부터 세면 오래 살아 있어야 하는 자식(경쟁에서 이긴 쪽)이 끝내라는 요청을 받기도 전에 시한이 지난다.
+it("counts an exit deadline from when the wait starts, not from the spawn", async () => {
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `console.log("ready"); process.stdin.once("data", () => process.exit(0));`,
+    ],
+    { stdio: ["pipe", "pipe", "inherit"] }
+  );
+  child.stdin!.on("error", () => {});
+  const exit = watchExit(child);
+  try {
+    await lineReader(child, 30_000).next();
+    // 기다리는 시한(1초)보다 오래 산 뒤에 끝내라고 한다.
+    await new Promise((r) => setTimeout(r, 1_500));
+    child.stdin!.write("end\n");
+    await expect(exit.within(1_000)).resolves.toEqual({
+      code: 0,
+      signal: null,
+    });
+  } finally {
+    await killHard(child);
+  }
+}, 30_000);
+
+// 끝나지 않는 자식을 기다리면 시한에서 그 자식을 밝혀 실패한다. 정리 단계의 기다림이 시험을 멈추지 않게 한다.
+it("fails an exit wait at its deadline and names the child", async () => {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+  });
+  const exit = watchExit(child);
+  try {
+    await expect(exit.within(200)).rejects.toThrow(
+      new RegExp(`child ${child.pid} did not exit in 200ms`)
+    );
+  } finally {
+    await killHard(child);
+  }
+}, 30_000);
+
 // 쓰는 중인 연결이 끊기면(Postgres 재시작·종료) 그 일만 실패하고 프로세스는 살아 있어야 한다.
 // 서버 종료 때 Postgres가 먼저 멈추면 처리되지 않은 오류로 죽어 임시 DB 폴더를 지우지 못했다.
 it("fails only the work on a connection cut while in use, without crashing the process", async () => {
