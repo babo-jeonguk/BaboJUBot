@@ -132,6 +132,8 @@ const script = (cwd: string, op: "clear", plan: Record<string, unknown> = {}) =>
       (error) =>
         resolve(error ? (typeof error.code === "number" ? error.code : -1) : 0)
     );
+    // 계획에 따라 자식은 입력을 읽기 전에 끝날 수 있다. 그때의 쓰기 오류(EPIPE)는 예상된 것이며 결과는 종료 코드로 본다.
+    child.stdin!.on("error", () => {});
     child.stdin!.end();
   });
 const moments = (last: number) => {

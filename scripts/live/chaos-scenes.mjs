@@ -363,6 +363,25 @@ const endOf = (ctx, runId) =>
 const claimOf = (ctx, runId) =>
   ledgerOf(ctx).find((e) => e.kind === "claim" && e.runId === runId);
 
+/**
+ * 실행이 실행기에 닿을 때까지 기다린다(실행 관문이 그 실행을 세거나, 거절하거나, 시작 전 취소로 기록함).
+ * 서버를 끝내거나 실행을 멈추기 전에 부른다. 그 전에 끝내면 그 실행이 실제 실행으로 세질지가 시간에 따라 달라진다.
+ */
+const reachedProvider = (ctx, runId) =>
+  waitFor(
+    ctx,
+    "실행이 실행기에 닿음",
+    async () =>
+      ledgerOf(ctx).find(
+        (e) =>
+          e.runId === runId &&
+          ["claim", "refused", "cancelled_before_start", "fake_run"].includes(
+            e.kind
+          )
+      ),
+    { ms: 30_000 }
+  );
+
 const processCheck = (ctx, name, ok) =>
   ctx.fake
     ? check(name, null, {
@@ -486,6 +505,7 @@ async function startLongRun(ctx, org, secondsWanted = 85, prefix = "") {
     `${prefix}Run the shell command \`${longCommand(ctx, secondsWanted)}\` in the foreground and wait for it to finish. Then send_message with body "DONE" once.`
   );
   const run = await newRun(ctx, org, known);
+  await reachedProvider(ctx, run.id);
   const pids = await commandStarted(ctx);
   const events = await eventsOf(ctx, org);
   return {
@@ -509,6 +529,8 @@ async function restartScene(ctx) {
   const recordsBefore = ctx.processRecordPids();
   await killAndRestart(ctx);
   const next = await newRun(ctx, org, first.known, 120_000);
+  // 멈추기 전에 새 실행이 실행기에 닿을 때까지 기다린다. 그래야 이 장면의 실제 실행 수가 정해진다.
+  await reachedProvider(ctx, next.id);
   // 다시 대기한 깨우기를 받은 실행은 확인했으니 긴 명령을 기다리지 않고 끝낸다.
   await ctx.api(
     "POST",
@@ -1053,6 +1075,7 @@ async function steerKillScene(ctx) {
   );
   await killAndRestart(ctx);
   const second = await newRun(ctx, org, first.known, 120_000);
+  await reachedProvider(ctx, second.id);
   await commandStarted(ctx).catch(unlessTimeout([]));
   // 메시지의 깨우기를 마지막으로 받은 실행. 재시작 전 실행이 아니면 복구 뒤 실행이 받은 것이다.
   const deliveredAfterRestart = async (id, known) => {
@@ -1099,6 +1122,9 @@ async function steerKillScene(ctx) {
     await sleep(30, ctx.signal);
     await killAndRestart(ctx);
     await inFlight;
+    // 두 번째 재시작이 일하던 실행을 끝냈으므로 그 깨우기를 받은 새 실행이 생긴다. 멈추기 전에 실행기에 닿을 때까지 기다린다.
+    const third = await newRun(ctx, org, [first.run.id, second.id], 120_000);
+    await reachedProvider(ctx, third.id);
     const id = (await messagesOf(ctx, org)).find((m) => m.body === body)?.id;
     // 강제 종료 전에 끼워 넣기 결과가 정해졌는지(정해졌으면 "전달 중" 시점을 잡지 못한 것이다).
     const settledBeforeKill = id

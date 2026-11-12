@@ -125,6 +125,8 @@ jobs:
       # DB 테스트가 실패 코드를 0으로 덮어쓰지 않는지, 실패한 서버 테스트와 실패한 DB 준비도 실패로 끝나는지 본다.
       - name: Check test exit codes
         run: node scripts/check-test-exit-code.mjs
+      - name: Check boot script isolation
+        run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
   test-server:
     name: tests / server
     needs: changes
@@ -221,5 +223,7 @@ jobs:
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
       - run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
-      # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다.
-      - run: node scripts/boot-check.mjs
+      # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
+      # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
+      - name: Check boot script on this system
+        run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs

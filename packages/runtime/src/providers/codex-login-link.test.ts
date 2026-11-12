@@ -12,12 +12,18 @@ import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCodexProvider } from "./codex.ts";
+import { loginLink } from "./login-link.ts";
 import { request } from "./test-support.ts";
 
 // Codex 로그인 하나를 연결의 모든 조직이 링크로 같이 쓴다(docs/research/org-product-folders-references.md 사용자 결정).
 // 링크를 만들 수 없는 컴퓨터와 여러 조직이 한꺼번에 시작하는 장면에서도 로그인이 남아야 한다.
 
 let refuseLinks = false;
+// 원본 로그인을 옮기는 rename 하나를 붙잡아 둔다. 링크를 임시 이름에서 제자리로 옮기는 rename은 세지 않는다.
+let gatedOriginal: string | undefined;
+let enteredOriginalRename: (() => void) | undefined;
+let heldOriginalRename: Promise<void> | undefined;
+let originalRenames = 0;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -31,12 +37,26 @@ vi.mock("node:fs/promises", async (importOriginal) => {
             })
           )
         : actual.symlink(...args),
+    rename: (...args: Parameters<typeof actual.rename>) => {
+      if (gatedOriginal && String(args[1]) === gatedOriginal) {
+        originalRenames += 1;
+        enteredOriginalRename?.();
+        enteredOriginalRename = undefined;
+        if (heldOriginalRename)
+          return heldOriginalRename.then(() => actual.rename(...args));
+      }
+      return actual.rename(...args);
+    },
   };
 });
 
 const roots: string[] = [];
 afterEach(async () => {
   refuseLinks = false;
+  gatedOriginal = undefined;
+  enteredOriginalRename = undefined;
+  heldOriginalRename = undefined;
+  originalRenames = 0;
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
   );
@@ -102,37 +122,110 @@ describe("Codex login link", () => {
   });
 
   it("moves the connection's login once when several organizations start together", async () => {
-    // 첫 실행 직후 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮긴다. 겹치는 순서가 나오도록 여러 번 되풀이한다.
-    for (let round = 0; round < 50; round++) {
-      const env = await setup();
-      const organizations = [1, 2, 3].map(() => crypto.randomUUID());
-      const requests = await Promise.all(organizations.map(env.requestFor));
-      const started = await Promise.allSettled([
-        ...[1, 2, 3, 4].map(() =>
-          env.provider.adapter.checkReadiness(new AbortController().signal)
-        ),
-        ...requests.map((input) =>
-          env.provider.adapter.execute(input, control())
-        ),
-      ]);
-      expect(started.filter((one) => one.status === "rejected")).toEqual([]);
-      const original = path.join(env.connection, "login", "auth.json");
-      expect((await lstat(original)).isFile()).toBe(true);
-      expect(await readFile(original, "utf8")).toBe('{"synthetic":1}');
-      for (const at of [
-        path.join(env.connection, "auth.json"),
-        ...organizations.map((organizationId) =>
-          path.join(
-            env.connection,
-            "organizations",
-            organizationId,
-            "auth.json"
-          )
-        ),
-      ]) {
-        expect(await readlink(at)).toBe(original);
-        expect(await readFile(at, "utf8")).toBe('{"synthetic":1}');
-      }
+    // 첫 실행 직후 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮긴다.
+    const env = await setup();
+    const organizations = [1, 2, 3].map(() => crypto.randomUUID());
+    const requests = await Promise.all(organizations.map(env.requestFor));
+    const started = await Promise.allSettled([
+      ...[1, 2, 3, 4].map(() =>
+        env.provider.adapter.checkReadiness(new AbortController().signal)
+      ),
+      ...requests.map((input) =>
+        env.provider.adapter.execute(input, control())
+      ),
+    ]);
+    const readiness = started.slice(0, 4);
+    const executions = started.slice(4);
+    expect(readiness).toHaveLength(4);
+    expect(executions).toHaveLength(3);
+    for (const one of readiness) {
+      expect(one.status).toBe("fulfilled");
+      if (one.status === "fulfilled")
+        expect(one.value).toEqual({
+          status: "unknown",
+          reason: "credentials_unverified",
+        });
+    }
+    for (const one of executions) {
+      expect(one.status).toBe("fulfilled");
+      if (one.status === "fulfilled")
+        expect(one.value).toMatchObject({ stopReason: "failed" });
+    }
+    const original = path.join(env.connection, "login", "auth.json");
+    expect((await lstat(original)).isFile()).toBe(true);
+    expect(await readFile(original, "utf8")).toBe('{"synthetic":1}');
+    for (const at of [
+      path.join(env.connection, "auth.json"),
+      ...organizations.map((organizationId) =>
+        path.join(env.connection, "organizations", organizationId, "auth.json")
+      ),
+    ]) {
+      expect(await readlink(at)).toBe(original);
+      expect(await readFile(at, "utf8")).toBe('{"synthetic":1}');
+    }
+  });
+
+  it("serializes concurrent link calls for one login at the original migration", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "babojubot-codex-login-"));
+    roots.push(root);
+    const connection = path.join(root, "providers/codex");
+    const original = path.join(connection, "login", "auth.json");
+    const fallback = path.join(connection, "auth.json");
+    const links = ["one", "two", "three"].map((name) =>
+      path.join(connection, "links", name, "auth.json")
+    );
+    await mkdir(connection, { recursive: true });
+    await writeFile(fallback, '{"synthetic":1}');
+    // 제품처럼 연결 폴더의 set-aside에 치운 로그인을 둔다(codex.ts).
+    const setAside = path.join(connection, "set-aside");
+    const share = loginLink({ original, fallback, label: "Codex", setAside });
+    // 같은 원본에 대한 별도의 loginLink 클로저도 같은 차례를 지켜야 한다.
+    const otherShare = loginLink({
+      original,
+      fallback,
+      label: "Codex",
+      setAside,
+    });
+
+    originalRenames = 0;
+    gatedOriginal = original;
+    let release!: () => void;
+    heldOriginalRename = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let completed = 0;
+    const track = (operation: Promise<boolean>) =>
+      operation.then((value) => {
+        completed += 1;
+        return value;
+      });
+    const operations = [
+      share(fallback),
+      otherShare(links[0]!),
+      share(links[1]!),
+      otherShare(links[2]!),
+    ].map(track);
+    let results: boolean[];
+    try {
+      // 첫 호출이 원본 로그인을 옮기는 rename에 들어갔다. 그동안 다른 호출은 그 rename에 들어오지 못한다.
+      await vi.waitFor(() => {
+        expect(originalRenames).toBe(1);
+        expect(completed).toBe(0);
+      });
+    } finally {
+      release();
+      const settled = await Promise.allSettled(operations);
+      results = settled.flatMap((one) =>
+        one.status === "fulfilled" ? [one.value] : []
+      );
+    }
+    expect(results).toEqual([true, true, true, true]);
+    expect(originalRenames).toBe(1);
+    expect((await lstat(original)).isFile()).toBe(true);
+    expect(await readFile(original, "utf8")).toBe('{"synthetic":1}');
+    for (const at of [fallback, ...links]) {
+      expect(await readlink(at)).toBe(original);
+      expect(await readFile(at, "utf8")).toBe('{"synthetic":1}');
     }
   });
 });

@@ -601,6 +601,14 @@ describe("chaos harness on a fake connection", () => {
       overrunSeconds: 0,
       timeLimitExceeded: false,
     });
+    // 장면은 서버를 끝내거나 실행을 멈추기 전에 그 실행이 실행기에 닿을 때까지 기다린다. 그래서 실제 실행 수는
+    // 장면 구성으로 정해진다: b는 첫 실행과 복구 뒤 실행(2), c도 2, g는 첫 실행·복구 뒤 실행·두 번째 재시작 뒤 실행(3).
+    // 가짜 연결의 준비 확인에 시간이 들어, 기다리지 않으면 그 실행은 세지 않아 수가 줄어든다.
+    expect(summary.scenes.map((scene) => [scene.id, scene.liveRuns])).toEqual([
+      ["b", 2],
+      ["c", 2],
+      ["g", 3],
+    ]);
     expect(summary.liveRuns).toBe(7);
     // 등록된 비밀값(토큰·메시지 본문·DB 주소)은 증거에 남지 않는다.
     expect(secrets.size).toBeGreaterThan(0);
