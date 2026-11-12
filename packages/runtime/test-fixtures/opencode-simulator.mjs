@@ -1,6 +1,6 @@
 // Synthetic HTTP/SSE peer for the pinned 2.x public protocol. No model calls.
 import http from "node:http";
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 if (process.argv.includes("--version")) {
   console.log("opencode v9.9.9");
@@ -212,6 +212,23 @@ const server = http.createServer(async (req, res) => {
         if (stored.some((entry) => entry.id === input.id)) {
           res.writeHead(409).end("{}");
           return;
+        }
+        // 시험이 로그인 저장을 붙잡아 둘 수 있다: 데이터 폴더에 `hold-credential`이 있으면 도착을 알리고 그 파일이 지워질 때까지 기다린다.
+        const hold = path.join(process.env.XDG_DATA_HOME, "hold-credential");
+        if (
+          await stat(hold).then(
+            () => true,
+            () => false
+          )
+        ) {
+          await writeFile(hold + ".reached", "");
+          while (
+            await stat(hold).then(
+              () => true,
+              () => false
+            )
+          )
+            await new Promise((resolve) => setTimeout(resolve, 20));
         }
         const entry = {
           id: input.id ?? "cred_" + crypto.randomUUID(),

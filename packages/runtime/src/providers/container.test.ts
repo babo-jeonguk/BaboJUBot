@@ -1472,6 +1472,67 @@ describe.skipIf(process.platform === "win32")(
       }
     }, 30_000);
 
+    it("starts no container for an isolated run while a run with isolation off is still copying the login into the organization, and refuses once the copy has landed (PR #171 REC-1)", async () => {
+      const t = await openCodeSetup();
+      try {
+        await writeFile(
+          path.join(
+            t.env.root,
+            "providers/opencode/data/synthetic-credentials.json"
+          ),
+          JSON.stringify([
+            {
+              id: "cred_synthetic",
+              integrationID: "opencode-go",
+              label: "Go",
+              active: true,
+              value: { type: "key", key: "synthetic-key" },
+            },
+          ])
+        );
+        // 이 컴퓨터의 실행이 조직 폴더에 로그인을 쓰는 순간을 붙잡아 둔다.
+        const data = path.join(t.organization, "data");
+        await mkdir(data, { recursive: true });
+        const hold = path.join(data, "hold-credential");
+        await writeFile(hold, "");
+        const base = t.input();
+        const host = t.provider().adapter.execute(
+          {
+            ...base,
+            execution: "host",
+            identity: { ...base.identity, runId: crypto.randomUUID() },
+          },
+          control()
+        );
+        await expect
+          .poll(
+            () =>
+              stat(`${hold}.reached`).then(
+                () => true,
+                () => false
+              ),
+            {
+              timeout: 10_000,
+            }
+          )
+          .toBe(true);
+        // 옮기기가 끝나지 않은 동안 같은 조직의 격리 실행이 시작한다.
+        const isolated = t.provider().adapter.execute(t.input(), control());
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(
+          (await t.env.calls()).some((call) => call.args.includes("run"))
+        ).toBe(false);
+        await rm(hold);
+        expect((await host).stopReason).toBe("completed");
+        const refused = await isolated;
+        expect(refused.stopReason).toBe("failed");
+        expect(refused.error).toContain("로그인 기록");
+        expect(t.network.urls).toHaveLength(0);
+      } finally {
+        await t.network.close();
+      }
+    }, 30_000);
+
     it("ends the run as failed with the reason when the relay cannot read the Go login", async () => {
       const t = await openCodeSetup(false);
       try {
