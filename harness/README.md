@@ -18,9 +18,10 @@ templates/<name>/template.json  연구 흐름 템플릿: label, description, nod
 
 | 내용물 | 쓰임 |
 | --- | --- |
-| `roles/lead` | Research Lead. 목표 합의·계획·초기 연구 승인 요청 |
+| `roles/lead` | Research Lead. 목표 합의·계획·초기 연구 승인 요청. `check-research-environment` Skill을 받음 |
 | `roles/researcher` | 작업자 연구원. `record-research-node` Skill을 받음 |
 | `skills/record-research-node` | 연구 노드와 연결 기록 절차 |
+| `skills/check-research-environment` | 초기 승인 요청 전 연구 환경 점검과 그 결과를 환경 명세에 적는 절차 |
 | `templates/basic-research` | 기본 연구 흐름: 연구 문제 → 가설·아이디어 → 검증 방법 → 실험·검증 → 결과 |
 
 ## 언어와 쓰는 자리

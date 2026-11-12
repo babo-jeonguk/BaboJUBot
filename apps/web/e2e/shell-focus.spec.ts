@@ -225,9 +225,21 @@ for (const size of widths) {
       const revision = panel.getByTestId("copy-revision");
       const before = Number(await revision.textContent());
       const copyId = await panel.getByTestId("copy-id").textContent();
+      // 고른 탭이 Skill 사본일 수도 있으므로 지금 내용에 덧붙여 frontmatter를 지킨다.
+      const own = (await (
+        await page.request.get(
+          `/api/organizations/${org.id}/agents/${leadId}/instructions`
+        )
+      ).json()) as { copies: { id: string; content: string }[] };
+      const current = own.copies.find((c) => c.id === copyId)!.content;
       const saved = await page.request.put(
         `/api/organizations/${org.id}/agents/${leadId}/instructions/${copyId}`,
-        { data: { content: "# 다른 탭에서 고침\n", expectedRevision: before } }
+        {
+          data: {
+            content: `${current}\n다른 탭에서 고침\n`,
+            expectedRevision: before,
+          },
+        }
       );
       expect(saved.ok()).toBe(true);
       await expect(revision).toHaveText(String(before + 1), runs);
