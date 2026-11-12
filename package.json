@@ -16,7 +16,7 @@
     "test:e2e": "pnpm --filter @babojubot/web run test:e2e",
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "eslint .",
-    "check": "node scripts/check-project.mjs",
+    "check": "node scripts/check-project.mjs && node --test scripts/ci-test-gate.test.mjs",
     "provider:login": "node scripts/provider-login.mjs",
     "runner:build": "docker build -t babojubot-runner docker/runner",
     "prepare": "husky"
@@ -31,6 +31,7 @@
     "lint-staged": "17.6.0",
     "prettier": "3.9.10",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.71.2"
+    "typescript-eslint": "8.71.2",
+    "yaml": "2.9.1"
   }
 }

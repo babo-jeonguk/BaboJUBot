@@ -43,6 +43,9 @@ importers:
       typescript-eslint:
         specifier: 8.71.2
         version: 8.71.2(eslint@10.12.0(jiti@2.7.0))(typescript@6.0.3)
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
 
   apps/server:
     dependencies:
@@ -5945,8 +5948,7 @@ snapshots:
 
   yallist@3.1.1: {}
 
-  yaml@2.9.1:
-    optional: true
+  yaml@2.9.1: {}
 
   yocto-queue@0.1.0: {}
 

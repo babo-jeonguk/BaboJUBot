@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        script: [check, typecheck, lint, test, build, "test:e2e"]
+        script: [check, typecheck, lint, build, "test:e2e"]
     env:
       RUN: ${{ matrix.script == 'check' || needs.changes.outputs.code == 'true' }}
     steps:
@@ -57,18 +57,6 @@ jobs:
           cache: true
       - if: env.RUN == 'true'
         run: pnpm install --frozen-lockfile
-      # 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델 검사(apps/server/test/opencode-real-cli.test.ts)용. 모델 호출·로그인은 없다.
-      # 공식 설치 스크립트와 npm은 1.x라 GitHub 릴리스 묶음을 받는다(docker/runner와 같은 방식). 판은 #147 프로토콜 기준이다.
-      - name: Install OpenCode
-        if: env.RUN == 'true' && matrix.script == 'test'
-        env:
-          OPENCODE_VERSION: "2.2.6"
-        run: |
-          mkdir -p "$RUNNER_TEMP/opencode"
-          curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
-            | tar -xz -C "$RUNNER_TEMP/opencode" opencode
-          "$RUNNER_TEMP/opencode/opencode" --version
-          echo "BABOJUBOT_TEST_OPENCODE=$RUNNER_TEMP/opencode/opencode" >> "$GITHUB_ENV"
       - name: Install Chromium and system dependencies
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
         run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium
@@ -82,6 +70,129 @@ jobs:
           path: apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 3
+  # 테스트는 서로 독립인 다섯 job으로 나눠 겹쳐 돌린다. 코드가 바뀐 PR은 다섯 job이 모두 성공해야 한다.
+  test-unit:
+    name: tests / unit
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Run unit tests
+        run: pnpm --filter @babojubot/contracts --filter @babojubot/core --filter @babojubot/web run test
+  test-runtime:
+    name: tests / runtime
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Run runtime tests
+        run: pnpm --filter @babojubot/runtime run test
+  test-db:
+    name: tests / db
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Run DB tests
+        run: pnpm --filter @babojubot/db run test
+      # DB 테스트가 실패 코드를 0으로 덮어쓰지 않는지, 실패한 서버 테스트와 실패한 DB 준비도 실패로 끝나는지 본다.
+      - name: Check test exit codes
+        run: node scripts/check-test-exit-code.mjs
+  test-server:
+    name: tests / server
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Run server tests
+        run: pnpm --filter @babojubot/server exec vitest run --exclude test/opencode-real-cli.test.ts
+  test-opencode:
+    name: tests / opencode
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      # 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델 검사(apps/server/test/opencode-real-cli.test.ts)용. 모델 호출·로그인은 없다.
+      # 공식 설치 스크립트와 npm은 1.x라 GitHub 릴리스 묶음을 받는다(docker/runner와 같은 방식). 판은 #147 프로토콜 기준이다.
+      - name: Install OpenCode
+        env:
+          OPENCODE_VERSION: "2.2.6"
+        run: |
+          mkdir -p "$RUNNER_TEMP/opencode"
+          curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/opencode" opencode
+          "$RUNNER_TEMP/opencode/opencode" --version
+          echo "BABOJUBOT_TEST_OPENCODE=$RUNNER_TEMP/opencode/opencode" >> "$GITHUB_ENV"
+      - name: Run real OpenCode CLI tests
+        run: pnpm --filter @babojubot/server exec vitest run test/opencode-real-cli.test.ts
+  # 지점 보호가 기대하는 `ci / test` 이름을 유지하는 집계 job. 각 테스트 job의 성공·건너뜀·취소를 하나씩 판정한다.
+  test:
+    name: ci / test
+    needs:
+      [changes, test-unit, test-runtime, test-db, test-server, test-opencode]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - name: Check test results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          UNIT_RESULT: ${{ needs.test-unit.result }}
+          RUNTIME_RESULT: ${{ needs.test-runtime.result }}
+          DB_RESULT: ${{ needs.test-db.result }}
+          SERVER_RESULT: ${{ needs.test-server.result }}
+          OPENCODE_RESULT: ${{ needs.test-opencode.result }}
+        run: node scripts/check-ci-test-gate.mjs
   # 실제 프로그램 연결은 세 OS를 지원한다. DB가 필요 없는 연결 검사만 돈다.
   portable:
     name: runtime on ${{ matrix.os }}
@@ -102,6 +213,9 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
+      # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
+      - name: Check CI gate portability
+        run: node --test scripts/ci-test-gate.test.mjs
       - run: pnpm --filter @babojubot/runtime run typecheck
       - run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
