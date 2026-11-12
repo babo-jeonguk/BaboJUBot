@@ -122,16 +122,22 @@ const profile = (url: string): RelayProfile => ({
     { method: "POST", path: "/v1/echo-stream" },
     { method: "POST", path: "/v1/compressed" },
   ],
-  authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
+  authorize: (credential) => ({
+    headers: { authorization: `Bearer ${credential}` },
+    secrets: [credential],
+  }),
 });
 
 async function setup(
-  options: { credential?: () => Promise<string | undefined> } = {}
+  options: {
+    credential?: () => Promise<string | undefined>;
+    profile?: (upstream: string) => RelayProfile;
+  } = {}
 ) {
   const up = await upstream();
   let reads = 0;
   const relay = createCredentialRelay({
-    profile: profile(up.url),
+    profile: (options.profile ?? profile)(up.url),
     verified: true,
     credential: async () => {
       reads++;
@@ -444,6 +450,204 @@ describe("the credential relay", () => {
     expect(relay.failed()).toBe(false);
     expect((await send(url, relay.grant(scope()).token)).status).toBe(200);
     expect(up.seen).toHaveLength(1);
+  });
+});
+
+describe("the credential relay's per-connection differences (#148)", () => {
+  /**
+   * Codex처럼 원본이 여러 값을 담은 문서인 연결. 상류에 붙이는 값 중 비밀은 접근 토큰뿐이고, 계정 ID는 비밀이 아니다.
+   * OpenCode처럼 경로마다 상류 경로·인증 header가 다르고, 무료 모델처럼 원본 없이 고정 값만 붙이는 경로도 있다.
+   */
+  const documentProfile = (url: string): RelayProfile => ({
+    upstream: url,
+    routes: [
+      { method: "POST", path: "/v1/messages" },
+      { method: "POST", path: "/v1/rejected" },
+      { method: "POST", path: "/v1/echo-header" },
+      { method: "POST", path: "/v1/echo-error" },
+      { method: "POST", path: "/v1/echo-stream" },
+      {
+        method: "POST",
+        path: "/family/messages",
+        upstreamPath: "/anthropic/v1/messages",
+        authorize: (credential) => {
+          const login = JSON.parse(credential) as { access: string };
+          return {
+            headers: { "x-api-key": login.access },
+            secrets: [login.access],
+          };
+        },
+      },
+      {
+        method: "POST",
+        path: "/free/responses",
+        upstreamPath: "/zen/v1/responses",
+        fixed: { authorization: "Bearer public" },
+      },
+      {
+        method: "POST",
+        path: "/free/rejected",
+        upstreamPath: "/v1/rejected",
+        fixed: { authorization: "Bearer public" },
+      },
+    ],
+    authorize: (credential) => {
+      const login = JSON.parse(credential) as {
+        access: string;
+        account: string;
+      };
+      return {
+        headers: {
+          authorization: `Bearer ${login.access}`,
+          "chatgpt-account-id": login.account,
+        },
+        secrets: [login.access],
+      };
+    },
+    droppedHeaders: ["chatgpt-account-id", "x-openai-account-routing-override"],
+  });
+  const document = (fields: Record<string, string> = {}) =>
+    JSON.stringify({
+      access: "real-access-token",
+      refresh: "real-refresh-token",
+      account: "real-account",
+      refreshedAt: "2026-11-12T00:00:00Z",
+      ...fields,
+    });
+
+  it("sends a route to its own upstream path with that route's header, keeping the query", async () => {
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/family/messages?beta=1");
+    expect(response.status).toBe(200);
+    expect(up.seen.map((request) => request.url)).toEqual([
+      "/base/anthropic/v1/messages?beta=1",
+    ]);
+    expect(up.seen[0]!.headers["x-api-key"]).toBe("real-access-token");
+    expect(up.seen[0]!.headers.authorization).toBeUndefined();
+    // 중계 주소의 경로 그대로는 허용하지 않는다(상류 경로를 직접 고르지 못한다).
+    expect(
+      (await send(url, grant.token, "/anthropic/v1/messages")).status
+    ).toBe(403);
+    expect(up.seen).toHaveLength(1);
+  });
+
+  it("injects only the real credential's values, and drops account headers the program chose", async () => {
+    const { up, relay, url } = await setup({
+      profile: (upstreamUrl) => ({
+        ...documentProfile(upstreamUrl),
+        // 계정 ID를 붙이지 않는 프로필이어도 프로그램이 고른 계정이 상류에 가지 않는다.
+        authorize: (credential) => {
+          const login = JSON.parse(credential) as { access: string };
+          return {
+            headers: { authorization: `Bearer ${login.access}` },
+            secrets: [login.access],
+          };
+        },
+      }),
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/v1/messages", {
+      "chatgpt-account-id": "other-account",
+      "x-openai-account-routing-override": "other-workspace",
+      "x-goog-api-key": grant.token,
+    });
+    expect(response.status).toBe(200);
+    const [request] = up.seen;
+    expect(request!.headers.authorization).toBe("Bearer real-access-token");
+    expect(request!.headers["chatgpt-account-id"]).toBeUndefined();
+    expect(
+      request!.headers["x-openai-account-routing-override"]
+    ).toBeUndefined();
+    expect(request!.headers["x-goog-api-key"]).toBeUndefined();
+    expect(JSON.stringify(request!.headers)).not.toContain(grant.token);
+  });
+
+  it("never returns an injected secret taken from a credential document, in a header, an error body or across stream chunks", async () => {
+    const { relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const header = await send(url, grant.token, "/v1/echo-header");
+    expect(header.status).toBe(502);
+    expect(await header.text()).not.toContain("real-access-token");
+    const error = await received(
+      await send(url, grant.token, "/v1/echo-error")
+    );
+    expect(error.text).not.toContain("real-access-token");
+    const stream = await received(
+      await send(url, grant.token, "/v1/echo-stream")
+    );
+    expect(stream.text).not.toContain("real-access-token");
+    expect(stream.text).not.toContain("access-token");
+    expect(stream.cut).toBe(true);
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("judges 'the same login' by the injected secrets: a rejected login stays failed when only other fields change", async () => {
+    let login = document({ access: "expired-access" });
+    const { relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => login,
+    });
+    const grant = relay.grant(scope());
+    expect((await send(url, grant.token, "/v1/rejected")).status).toBe(503);
+    expect(relay.failed()).toBe(true);
+    login = document({
+      access: "expired-access",
+      refreshedAt: "2026-11-13T00:00:00Z",
+    });
+    await relay.recover();
+    expect(relay.failed()).toBe(true);
+    login = document({ access: "new-access" });
+    await relay.recover();
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("fails the connection without reaching the upstream when the credential cannot be turned into a request", async () => {
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => "not a credential document",
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token);
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("not a credential");
+    expect(relay.failed()).toBe(true);
+    expect(grant.failed.aborted).toBe(true);
+    expect(up.seen).toHaveLength(0);
+  });
+
+  it("a fixed-value route still needs the run's grant, never reads the connection's credential, and an upstream refusal there does not fail the connection", async () => {
+    const { up, relay, url, reads } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    expect((await send(url, undefined, "/free/responses")).status).toBe(401);
+    expect((await send(url, "forged", "/free/responses")).status).toBe(401);
+    expect(up.seen).toHaveLength(0);
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/free/responses");
+    expect(response.status).toBe(200);
+    expect(up.seen.map((request) => request.url)).toEqual([
+      "/base/zen/v1/responses",
+    ]);
+    expect(up.seen[0]!.headers.authorization).toBe("Bearer public");
+    expect(JSON.stringify(up.seen[0]!.headers)).not.toContain(grant.token);
+    const refused = await send(url, grant.token, "/free/rejected");
+    expect(refused.status).toBe(401);
+    expect(relay.failed()).toBe(false);
+    expect(grant.failed.aborted).toBe(false);
+    expect(reads()).toBe(0);
+    // 실행이 끝나면 고정 값 경로도 거부한다.
+    grant.revoke();
+    expect((await send(url, grant.token, "/free/responses")).status).toBe(401);
+    expect(up.seen).toHaveLength(2);
   });
 });
 
