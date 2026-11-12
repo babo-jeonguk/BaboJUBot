@@ -1,3 +1,4 @@
+import { relayIdentityHeaders } from "@babojubot/runtime";
 import type { Workspaces } from "./workspace.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -176,6 +177,14 @@ export function orgToolsRouter({
     const token = /^Bearer (\S+)$/.exec(header)?.[1];
     const run = token && (await authenticateRun(db, digestRunToken(token)));
     if (!run) return refuse(res, 401, "invalid_token");
+    // 격리 실행의 중계는 요청에 그 실행 시도의 신원을 덮어써 넣는다(#149). 다른 실행 시도·조직의 토큰은 그 중계로 쓰지 못한다.
+    const relayOrganization = req.headers[relayIdentityHeaders.organization];
+    if (
+      relayOrganization !== undefined &&
+      (relayOrganization !== run.organizationId ||
+        req.headers[relayIdentityHeaders.run] !== run.id)
+    )
+      return refuse(res, 401, "invalid_token");
     res.locals.run = run;
     next();
   });

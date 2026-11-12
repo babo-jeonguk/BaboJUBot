@@ -41,7 +41,12 @@ import {
   publishConfig,
 } from "./antigravity-config.ts";
 import type { ContainerSettings } from "./container.ts";
-import { placeAttempt, type ContainerLaunch } from "./container.ts";
+import {
+  ContainerRefusal,
+  placeAttempt,
+  type ContainerLaunch,
+} from "./container.ts";
+import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
 const workspaces = new Map<string, Promise<void>>();
@@ -226,17 +231,24 @@ export function createAntigravityProvider(options: {
           attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
           const file = path.join(attempt, "mcp_config.json");
           await writeFile(file, settings, { mode: 0o600, flag: "wx" });
-          container = placement.container({
-            cwd,
-            program: "agy",
-            files: [
-              {
-                source: file,
-                target: path.join(cwd, ".agents", "mcp_config.json"),
-              },
-            ],
-            shared: linked ? [loginFolder] : [],
-          });
+          try {
+            container = placement.container({
+              cwd,
+              program: "agy",
+              destinations: providerDestinations.antigravity,
+              files: [
+                {
+                  source: file,
+                  target: path.join(cwd, ".agents", "mcp_config.json"),
+                },
+              ],
+              shared: linked ? [loginFolder] : [],
+            });
+          } catch (error) {
+            if (error instanceof ContainerRefusal)
+              return failure(error.message);
+            throw error;
+          }
         }
         const published = await publishConfig(
           cwd,

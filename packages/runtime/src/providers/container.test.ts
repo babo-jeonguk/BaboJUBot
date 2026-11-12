@@ -7,6 +7,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
@@ -19,7 +20,7 @@ import {
   createDockerEnvironment,
   type ContainerSettings,
 } from "./container.ts";
-import { request } from "./test-support.ts";
+import { attachedRelayHub, request } from "./test-support.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
@@ -33,12 +34,22 @@ afterEach(async () => {
   );
 });
 
-type Call = { args: string[]; env?: Record<string, string> };
+type Call = {
+  args: string[];
+  env?: Record<string, string>;
+  relayOpen?: boolean;
+};
 const image = "babojubot-runner-test";
 const fixture = (name: string) => path.resolve("test-fixtures", name);
+/** 임시 폴더 바로 아래 폴더의 실제 경로. 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) mount 원본은 실제 경로다. 폴더는 이미 지워졌을 수 있다. */
+const canonicalTemp = (folder: string) =>
+  path.join(realpathSync(path.dirname(folder)), path.basename(folder));
 
 async function setup(programs: Record<string, string[]>) {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-container-"));
+  // 임시 폴더가 링크 뒤에 있으면(macOS) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
+  const root = await realpath(
+    await mkdtemp(path.join(tmpdir(), "babojubot-container-"))
+  );
   roots.push(root);
   const state = path.join(root, "docker-state");
   await mkdir(state);
@@ -58,8 +69,8 @@ async function setup(programs: Record<string, string[]>) {
       JSON.stringify(programs),
     ],
     image,
-    network: "babojubot-test",
     owner: "owner-test",
+    relay: attachedRelayHub(),
   };
   const isolated = (): RunRequest => {
     const input = request();
@@ -90,6 +101,7 @@ async function setup(programs: Record<string, string[]>) {
   };
   return {
     root,
+    state,
     container,
     isolated,
     calls,
@@ -116,7 +128,8 @@ const control = (signal = new AbortController().signal) => ({
   emit: async () => {},
 });
 
-describe("an isolated attempt", () => {
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 실행 시도 중계의 파일 소켓은 Linux·macOS에서 본다.
+describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
   it("runs the provider in one container with only the allowed folders, no privileges and no GitHub login, then removes it", async () => {
     const env = await setup({
       claude: [
@@ -158,7 +171,10 @@ describe("an isolated attempt", () => {
     );
     expect(valuesOf(args, "--cap-drop")).toEqual(["ALL"]);
     expect(valuesOf(args, "--security-opt")).toContain("no-new-privileges");
-    expect(valuesOf(args, "--network")).toEqual(["babojubot-test"]);
+    // 네트워크가 없다. 바깥과 조직 도구는 이 실행 시도의 중계 폴더(읽기만)로만 닿는다.
+    expect(valuesOf(args, "--network")).toEqual(["none"]);
+    expect(args).not.toContain("--publish");
+    expect(args).not.toContain("--add-host");
     expect(args).not.toContain("--privileged");
     expect(valuesOf(args, "--workdir")).toEqual([env.shared]);
     // 서버 재시작 때 이 제품 폴더의 남은 컨테이너만 찾아 지우도록 표식을 단다.
@@ -168,14 +184,26 @@ describe("an isolated attempt", () => {
       expect.stringMatching(/^babojubot\.run=[0-9a-f-]{36}$/)
     );
     // 조직 폴더·자기 개인 폴더·그 조직의 제품 폴더는 읽기·쓰기, 동료 개인 폴더와 이 실행 시도의 파일 폴더는 읽기만. 그 밖에는 없다.
-    expect(valuesOf(args, "--mount").sort()).toEqual(
+    const relayMount = valuesOf(args, "--mount").filter((m) =>
+      m.includes("target=/run/babojubot,")
+    );
+    expect(relayMount).toEqual([
+      expect.stringMatching(
+        /^type=bind,source=.*babojubot-relay-[^,]+,target=\/run\/babojubot,readonly$/
+      ),
+    ]);
+    expect(
+      valuesOf(args, "--mount")
+        .filter((m) => !relayMount.includes(m))
+        .sort()
+    ).toEqual(
       [
         `type=bind,source=${env.shared},target=${env.shared}`,
         `type=bind,source=${env.personal},target=${env.personal}`,
         `type=bind,source=${env.peerFolder},target=${env.peerFolder},readonly`,
         `type=bind,source=${home},target=${home}`,
         // 토큰이 든 이 실행 시도만의 파일 폴더(읽기만).
-        `type=bind,source=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
+        `type=bind,source=${canonicalTemp(path.dirname(valuesOf(args, "--mcp-config")[0]!))},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
       ].sort()
     );
     expect(args.join(" ")).not.toMatch(/docker\.sock|--volume|-v /);
@@ -185,13 +213,15 @@ describe("an isolated attempt", () => {
     expect(args.join(" ")).not.toMatch(
       /private-run-token|synthetic-login|github-secret/
     );
-    // 컨테이너 환경: 제품 홈·로그인은 있고, GitHub 로그인과 이 컴퓨터의 임시 폴더는 없다. 추가 패키지는 조직 폴더의 가상환경이다.
+    // 컨테이너 환경: 제품 홈·로그인은 있고, GitHub 로그인과 이 컴퓨터의 임시 폴더는 없다. 공유 가상환경은 자동으로 쓰지 않고,
+    // 연구 명령이 고를 개인 폴더만 알려 준다.
     expect(run.env).toMatchObject({
       HOME: home,
       CLAUDE_CONFIG_DIR: path.join(home, "config"),
       CLAUDE_CODE_OAUTH_TOKEN: "synthetic-login",
-      BABOJUBOT_VENV: path.join(env.shared, ".venv"),
+      BABOJUBOT_PERSONAL: env.personal,
     });
+    expect(run.env).not.toHaveProperty("BABOJUBOT_VENV");
     for (const name of [
       "GH_TOKEN",
       "GITHUB_TOKEN",
@@ -228,7 +258,7 @@ describe("an isolated attempt", () => {
     expect(path.relative(home, config).startsWith("..")).toBe(true);
     const attempt = path.dirname(config);
     expect(valuesOf(run.args, "--mount")).toContain(
-      `type=bind,source=${attempt},target=${attempt},readonly`
+      `type=bind,source=${canonicalTemp(attempt)},target=${attempt},readonly`
     );
     // 지침 파일도 같은 폴더에 둔다.
     expect(
@@ -351,6 +381,35 @@ describe("an isolated attempt", () => {
     const calls = await env.calls();
     expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
   });
+
+  it("takes the relay back before removing the container, even when Docker cannot remove it", async () => {
+    const env = await setup({
+      claude: [
+        process.execPath,
+        fixture("replay.mjs"),
+        fixture("claude-cancel.synthetic.json"),
+      ],
+    });
+    // Docker 프로그램은 끝났지만 daemon이 컨테이너를 지우지 못한다. 컨테이너가 살아 있어도 중계는 이미 닫혀 있어야 한다.
+    await writeFile(path.join(env.state, "rm-fails"), "");
+    const provider = createClaudeProvider({
+      dataDir: env.root,
+      container: env.container,
+    });
+    const controller = new AbortController();
+    const result = await provider.adapter.execute(env.isolated(), {
+      signal: controller.signal,
+      emit: async () => controller.abort(),
+    });
+    expect(result.stopReason).toBe("cancelled");
+    const calls = await env.calls();
+    const name = nameOf(runCall(calls));
+    const removals = calls.filter(
+      (c) => c.args.includes("rm") && c.args.includes(name)
+    );
+    expect(removals.length).toBeGreaterThan(0);
+    expect(removals.map((c) => c.relayOpen)).toEqual(removals.map(() => false));
+  }, 20_000);
 
   it.each([
     ["Claude", createClaudeProvider],
@@ -486,7 +545,7 @@ describe("an isolated attempt", () => {
     expect(removed(calls, nameOf(run))).toBe(true);
   });
 
-  it("controls OpenCode in a container through a port published only on this machine's loopback", async () => {
+  it("controls OpenCode in a container with no network through connections the container offers to its relay", async () => {
     const env = await setup({
       opencode: [process.execPath, fixture("opencode-simulator.mjs")],
     });
@@ -501,7 +560,8 @@ describe("an isolated attempt", () => {
     expect(result.stopReason).toBe("completed");
     const calls = await env.calls();
     const run = runCall(calls);
-    expect(valuesOf(run.args, "--publish")).toEqual(["127.0.0.1::4096"]);
+    expect(run.args).not.toContain("--publish");
+    expect(run.env).toMatchObject({ BABOJUBOT_INBOUND_PORT: "4096" });
     expect(run.args.slice(run.args.indexOf(image) + 1)).toEqual(
       expect.arrayContaining([
         "opencode",
@@ -512,73 +572,76 @@ describe("an isolated attempt", () => {
         "4096",
       ])
     );
-    expect(
-      calls.some((c) => c.args.includes("port") && c.args.includes(nameOf(run)))
-    ).toBe(true);
     expect(removed(calls, nameOf(run))).toBe(true);
   });
 });
 
-describe("the dedicated network", () => {
-  async function network(existing?: Record<string, unknown>) {
-    const root = await mkdtemp(path.join(tmpdir(), "babojubot-network-"));
+describe("the Docker engine check", () => {
+  async function engine(files: Record<string, string> = {}) {
+    const root = await mkdtemp(path.join(tmpdir(), "babojubot-engine-"));
     roots.push(root);
-    if (existing)
-      await writeFile(
-        path.join(root, "network.json"),
-        JSON.stringify(existing)
-      );
-    const settings: ContainerSettings = {
+    for (const [name, value] of Object.entries(files))
+      await writeFile(path.join(root, name), value);
+    return createDockerEnvironment({
       docker: [process.execPath, fixture("fake-docker.mjs"), root, "{}"],
       image,
-      network: "babojubot-test",
       owner: "owner-test",
-    };
-    return createDockerEnvironment(settings);
+      relay: attachedRelayHub(),
+    });
   }
-  const isolating = {
-    Name: "babojubot-test",
-    Driver: "bridge",
-    Options: { "com.docker.network.bridge.enable_icc": "false" },
-    Labels: { "babojubot.owner": "someone-else" },
-    IPAM: { Config: [{ Subnet: "172.31.0.0/16", Gateway: "172.31.0.1" }] },
-  };
 
-  it("creates a bridge network whose containers cannot reach each other and uses its gateway", async () => {
-    const environment = await network();
+  it("accepts a local Linux engine with the current runner image", async () => {
     await expect(
-      environment.prepareNetwork(AbortSignal.timeout(10_000))
-    ).resolves.toEqual({ gateway: "172.31.0.1" });
-  });
-
-  it("accepts an existing network with the same isolation, whoever created it", async () => {
-    // 같은 컴퓨터의 다른 제품 폴더도 같은 이름의 네트워크를 쓴다. 격리는 네트워크의 속성이 정한다.
-    const environment = await network(isolating);
-    await expect(
-      environment.prepareNetwork(AbortSignal.timeout(10_000))
-    ).resolves.toEqual({ gateway: "172.31.0.1" });
+      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+    ).resolves.toBeUndefined();
   });
 
   it.each([
     [
-      "containers on it can reach each other",
+      "Docker Desktop",
       {
-        ...isolating,
-        Options: { "com.docker.network.bridge.enable_icc": "true" },
+        "info.json": JSON.stringify({
+          OSType: "linux",
+          OperatingSystem: "Docker Desktop",
+          SecurityOptions: [],
+        }),
       },
     ],
     [
-      "it does not say whether containers can reach each other",
-      { ...isolating, Options: {} },
+      "rootless Docker",
+      {
+        "info.json": JSON.stringify({
+          OSType: "linux",
+          OperatingSystem: "Ubuntu",
+          SecurityOptions: ["name=rootless"],
+        }),
+      },
     ],
-    ["it is not a bridge", { ...isolating, Driver: "macvlan" }],
-  ])(
-    "does not accept an existing network of the same name when %s",
-    async (_case, existing) => {
-      const environment = await network(existing);
-      await expect(
-        environment.prepareNetwork(AbortSignal.timeout(10_000))
-      ).rejects.toThrow();
-    }
-  );
+    [
+      "a Windows engine",
+      {
+        "info.json": JSON.stringify({
+          OSType: "windows",
+          OperatingSystem: "Windows",
+          SecurityOptions: [],
+        }),
+      },
+    ],
+    ["an image without the relay start program", { "runner-version": "" }],
+    [
+      "a Docker context on another computer",
+      { "context-host": "ssh://user@build-box" },
+    ],
+  ])("refuses %s", async (_case, files) => {
+    await expect(
+      (await engine(files)).checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow();
+  });
+
+  it("refuses a daemon on another computer, whose folders this computer cannot check", async () => {
+    process.env.DOCKER_HOST = "tcp://10.0.0.9:2375";
+    await expect(
+      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow(/not on this computer/);
+  });
 });
