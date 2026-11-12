@@ -1672,7 +1672,7 @@ describe.skipIf(process.platform === "win32")(
         createAntigravityProvider,
       ],
     ] as const)(
-      "give an isolated %s run no direct way to the provider: its model traffic leaves only through the credential relay",
+      "give an isolated %s run no direct way to the provider's model service: its model traffic leaves only through the credential relay",
       async (_name, id, program, create) => {
         const env = await setup({
           [id]: [process.execPath, fixture(program)],
@@ -1694,7 +1694,10 @@ describe.skipIf(process.platform === "win32")(
         });
         await provider.adapter.execute(env.isolated(), control(stop.signal));
         expect(opened).toHaveLength(1);
-        expect(opened[0]).toEqual([]);
+        // OpenCode만 공개 모델 목록(로그인 없이 받는 catalog) 주소를 연다. 모델 통신 주소는 열지 않는다.
+        expect(opened[0]).toEqual(
+          id === "opencode" ? ["models.opencode.ai"] : []
+        );
       }
     );
   }
