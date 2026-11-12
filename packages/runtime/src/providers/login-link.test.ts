@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -149,6 +150,71 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
     );
   }
 );
+
+// 격리 실행의 에이전트는 조직 제품 폴더에 쓸 수 있다. 거기 남은 파일을 나중에 이 컴퓨터의 실행이 연결의 로그인으로 가져가면,
+// 컨테이너가 연결의 로그인을 바꿔 놓을 수 있다(#148: 실행 결과를 원본으로 되가져오지 않는다).
+describe("a file left at an organization's login place", () => {
+  it.each([
+    ["Codex", "codex", ["auth.json"], "auth.json"],
+    [
+      "Antigravity",
+      "antigravity",
+      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      "antigravity-oauth-token",
+    ],
+  ] as const)(
+    "is never taken as the %s connection's login: a run on this machine sets it aside and links the organization to the original",
+    async (name, id, place, original) => {
+      const env = await setup();
+      const connection = path.join(env.root, "providers", id);
+      const login = path.join(connection, "login", original);
+      await mkdir(path.dirname(login), { recursive: true });
+      await writeFile(login, '{"real":1}');
+      const input = await env.requestFor();
+      const organization = path.join(
+        connection,
+        "organizations",
+        input.identity.organizationId
+      );
+      const planted = path.join(organization, ...place);
+      await mkdir(path.dirname(planted), { recursive: true });
+      await writeFile(planted, '{"planted":1}');
+      const provider =
+        name === "Codex"
+          ? createCodexProvider({
+              dataDir: env.root,
+              command: [process.execPath, "-e", ""],
+            })
+          : createAntigravityProvider({
+              dataDir: env.root,
+              command: [process.execPath, fixture("antigravity-simulator.mjs")],
+            });
+      await provider.adapter.execute(input, control());
+      expect(await readFile(login, "utf8")).toBe('{"real":1}');
+      expect(await readlink(planted)).toBe(login);
+      expect(await readFile(`${planted}.set-aside`, "utf8")).toBe(
+        '{"planted":1}'
+      );
+    },
+    20000
+  );
+
+  it("is still taken from the connection's own folder, where only this machine writes", async () => {
+    const env = await setup();
+    const connection = path.join(env.root, "providers/codex");
+    // 로그인 전용 폴더가 생기기 전의 판은 연결 폴더에 로그인을 두었다.
+    await mkdir(connection, { recursive: true });
+    await writeFile(path.join(connection, "auth.json"), '{"older":1}');
+    const provider = createCodexProvider({
+      dataDir: env.root,
+      command: [process.execPath, "-e", ""],
+    });
+    await provider.adapter.execute(await env.requestFor(), control());
+    expect(
+      await readFile(path.join(connection, "login", "auth.json"), "utf8")
+    ).toBe('{"older":1}');
+  }, 20000);
+});
 
 // 링크로 같이 쓰던 컴퓨터가 링크를 더 만들 수 없게 된 장면(권한이 바뀐 Windows, 링크를 모르는 저장소로 옮긴 제품 폴더 등).
 // 이미 있는 링크와 대신 실행이 섞이면 조직마다 다른 로그인을 읽거나 원본이 사라진 링크를 읽는다(PR #135 SPEC-2).
