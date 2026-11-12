@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { waitForPostmaster } from "./postmaster.ts";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const readyTimeoutMs = 45_000;
@@ -112,7 +113,9 @@ it("stops the embedded Postgres it was starting when a stop signal arrives durin
   });
   let postgresPid = 0;
   try {
-    postgresPid = await waitForPostmaster(child, pidFile);
+    postgresPid = await waitForPostmaster(child, pidFile, {
+      timeoutMs: readyTimeoutMs,
+    });
     expect(postgresPid).toBeGreaterThan(0);
     child.kill("SIGTERM");
     const { code } = await waitExit(child, shutdownWaitMs);
@@ -384,25 +387,6 @@ async function stopMain(child: MainProcess, { group = false } = {}) {
     // spawn 오류는 시작 실패로 이미 드러났다. 끝나지 않는 자식만 실패로 알린다.
     if (child.exitCode === null && child.signalCode === null) throw error;
   }
-}
-
-async function waitForPostmaster(child: MainProcess, pidFile: string) {
-  const deadline = Date.now() + readyTimeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null)
-      throw new Error(
-        `server ended before Postgres started (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
-      );
-    if (existsSync(pidFile)) {
-      const pid = Number(readFileSync(pidFile, "utf8").split("\n")[0]);
-      // initdb도 잠깐 음수 pid로 이 파일을 쓴다. 서버로 뜬 postgres만 기다린다.
-      if (pid > 0) return pid;
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  throw new Error(
-    `Postgres did not start in ${readyTimeoutMs}ms: ${child.stderrText()}`
-  );
 }
 
 async function waitForPath(child: MainProcess, target: string) {

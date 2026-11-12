@@ -1,5 +1,4 @@
 import {
-  appendFile,
   cp,
   link,
   mkdir,
@@ -10,6 +9,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { keepAppending } from "./appending-writer.ts";
 import { featureGaps, filesBase, remove } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -184,12 +184,13 @@ it("takes what a file holds now even if it is still being written", async () => 
   const { root, shared } = await folder();
   const file = path.join(shared, "run.log");
   await writeFile(file, "시작\n");
-  const writer = setInterval(() => void appendFile(file, "더\n"), 1);
+  const writer = keepAppending(file, "더\n");
   try {
     for (let i = 0; i < 20; i++)
       expect((await content(root, "run.log")).length).toBeGreaterThan(0);
   } finally {
-    clearInterval(writer);
+    // 진행 중인 덧붙이기가 끝난 뒤에 afterEach가 폴더를 지운다.
+    await writer.stop();
   }
 });
 
