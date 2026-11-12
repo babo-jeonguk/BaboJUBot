@@ -10,12 +10,12 @@ For each research objective, BaboJUBot creates an independent research organizat
 
 ## Key Features
 
-- **Goal-Oriented AI Organizations**: Spin up a dedicated AI team for each research objective. Each organization maintains isolated memory, context, and workspaces, ensuring research efforts never contaminate each other.
-- **Human-in-the-Loop Governance**: Retain full control over key decisions. The AI team formulates plans and proposes team structures, but work begins only after your approval. Final completion is always determined by you.
-- **Visual Research Map**: Track research progress on a live, interactive graph (DAG). Watch hypotheses branch, converge, or get pruned as evidence accumulates.
-- **Real-Time Steering & Chat**: Jump into conversation with the Research Lead at any time. Queue upcoming instructions, steer in-flight execution, or interrupt and redirect immediately.
-- **Durable Research Artifacts**: Access structured Markdown reports, summaries, code, and data files generated during research. File artifacts keep the bytes captured at registration, so they stay viewable even if the original file later changes or is deleted.
-- **Observable Dashboard**: Real-time event streams provide complete visibility into agent activities, active runs, token usage and cost per run, and per-organization metrics without relying on hidden model traces.
+- **Goal-Oriented AI Organizations**: Spin up a dedicated AI team for each research objective with isolated memory, context, and workspace directories. By default, workspace file isolation relies on provider instructions; enabling isolated execution enforces workspace boundaries through Docker container mounts.
+- **Human-in-the-Loop Governance**: Retain full control over key decisions. The AI team formulates an initial research plan, proposed team staffing, and environment specifications, but research work begins only after your approval. Optional per-organization policies can require approval for additional actions, and final completion is always determined by you.
+- **Visual Research Map**: Track research progress on a live, interactive graph structured around a primary parent tree alongside auxiliary connections (not a strict DAG). Watch hypotheses branch, interconnect, or undergo reversible pruning without permanent deletion as evidence accumulates.
+- **Real-Time Steering & Chat**: Jump into conversation with the Research Lead directly in the web dashboard (messaging app integrations are not yet implemented). Queue upcoming instructions (`next_run`), steer in-flight execution when supported by the active provider (falling back to queueing if rejected), or interrupt and redirect immediately.
+- **Durable Research Artifacts**: Access structured Markdown reports, summaries, code, and data files generated during research. File artifacts preserve their registration-time bytes even if the original file changes or is deleted. Markdown and text files display inline while other formats show metadata; document revision histories and artifact galleries are not yet implemented.
+- **Observable Dashboard**: Real-time event streams provide visibility into recorded agent activities, active runs, per-organization metrics, and per-run token usage and estimated costs when reported by the provider. Dedicated cost and budget dashboards and actual billing reconciliation are not yet implemented.
 
 ---
 
