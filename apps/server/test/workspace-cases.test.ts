@@ -2,8 +2,10 @@ import { execFile } from "node:child_process";
 import {
   chmod,
   link,
+  lstat,
   mkdir,
   readFile,
+  readlink,
   stat,
   symlink,
   writeFile,
@@ -1083,7 +1085,7 @@ it("C35 refuses a Windows junction leading out and follows one inside", async (c
   if (!windows) without(context, "C35", "n/a", "Windows 정션");
   if (lacks.junction)
     without(context, "C35", "n/a", `정션 없음(${lacks.junction})`);
-  const { read, shared, root, other } = await world();
+  const { read, got, shared, root, other } = await world();
   await symlink(
     path.join(root, "outside-dir"),
     path.join(shared, "out"),
@@ -1095,13 +1097,41 @@ it("C35 refuses a Windows junction leading out and follows one inside", async (c
     "junction"
   );
   await symlink(path.join(shared, "dir"), path.join(shared, "in"), "junction");
-  expect(await read("out\\a.md")).toEqual(refusal("path_outside_folder"));
-  expect(await read("foreign\\a.md")).toEqual(refusal("path_outside_folder"));
-  expect(await read("in\\a.md")).toMatchObject({
+  // 볼륨마다 정션이 어떻게 보이는지(링크인지 폴더인지, 가리키는 곳, 운영체제가 여는 내용)를 결과와 함께 남긴다.
+  const seen: Record<string, unknown> = {};
+  for (const name of ["out", "foreign", "in"]) {
+    const at = path.join(shared, name);
+    const info = await lstat(at).catch(
+      (e: NodeJS.ErrnoException) => e.code ?? "error"
+    );
+    seen[name] = {
+      lstat:
+        typeof info === "string"
+          ? info
+          : info.isSymbolicLink()
+            ? "link"
+            : info.isDirectory()
+              ? "dir"
+              : "other",
+      readlink: await readlink(at).catch(
+        (e: NodeJS.ErrnoException) => `<${e.code}>`
+      ),
+      os: await osOpen(path.join(at, "a.md")),
+      ours: await got(`${name}\\a.md`),
+    };
+  }
+  const detail = JSON.stringify(seen);
+  expect(seen.out, detail).toMatchObject({
+    ours: { refused: "path_outside_folder" },
+  });
+  expect(seen.foreign, detail).toMatchObject({
+    ours: { refused: "path_outside_folder" },
+  });
+  expect(await read("in\\a.md"), detail).toMatchObject({
     ok: true,
     snapshot: { content: "A:dir/a.md", file: { path: "dir\\a.md" } },
   });
-  note(context, "C35", "pass");
+  note(context, "C35", "pass", detail);
 });
 
 /** 이름 하나의 대소문자를 뒤집는다. */

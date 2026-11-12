@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
 import {
   link,
+  lstat,
   mkdir,
   mkdtemp,
+  readdir,
   realpath,
   rm,
   symlink,
@@ -74,9 +76,27 @@ export const featureGaps = () =>
           : "not Windows",
       };
     } finally {
-      await remove(probe);
+      // 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다.
+      await remove(probe).catch(async (error: NodeJS.ErrnoException) =>
+        console.warn(
+          `could not remove ${probe} (${error.code}); left: ${JSON.stringify(await describe(probe))}`
+        )
+      );
     }
   })());
+
+/** 폴더 안의 항목과 종류. 지우지 못한 이유를 보일 때 쓴다. */
+export async function describe(folder: string) {
+  const entries = await readdir(folder).catch(
+    (error: NodeJS.ErrnoException) => [`<${error.code}>`]
+  );
+  return Promise.all(
+    entries.map(async (name) => {
+      const info = await lstat(path.join(folder, name)).catch(() => undefined);
+      return `${name}:${info ? (info.isSymbolicLink() ? "link" : info.isDirectory() ? "dir" : "file") : "?"}`;
+    })
+  );
+}
 
 export const windows = process.platform === "win32";
 
