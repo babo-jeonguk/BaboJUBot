@@ -1,27 +1,21 @@
-import { execFile } from "node:child_process";
-import {
-  mkdir,
-  mkdtemp,
-  realpath,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { featureGaps, filesBase, remove, runPinned } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { pinnedReader, readerExit, Workspaces } from "../src/workspace.ts";
+import { readerExit, Workspaces } from "../src/workspace.ts";
+
+// 링크로 바꿔치는 시험은 링크를 만들 수 없는 파일 시스템(FAT32)에서 건너뛴다. 폴더째 옮겨 바꾸는 시험은 그대로 돈다.
+const lacks = await featureGaps();
+const withLinks = it.skipIf(lacks.symlink !== "");
 
 // 경로를 확인하는 사이에 폴더나 파일을 바꿔치기해도 다른 조직의 파일을 읽지 않는다.
 // 읽는 프로세스의 파일 작업 앞뒤 모든 시점에 바꿔치기(필요하면 원상 복구까지)를 넣어 본다.
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map(remove));
 });
 async function organizations() {
-  const created = await mkdtemp(path.join(tmpdir(), "babojubot-race-"));
+  const created = await mkdtemp(path.join(filesBase(), "babojubot-race-"));
   roots.push(created);
   const root = await realpath(created);
   const base = path.join(root, "organizations");
@@ -73,43 +67,16 @@ const interrupt = `{
 `;
 /** 거부한 시도의 종료 코드. 바꿔치기는 알려진 거부로만 끝나야 하며, 예상하지 못한 오류(`failed`)나 잡히지 않은 예외가 아니다. */
 const exits: unknown[] = [];
-/** 읽는 프로세스의 출력은 실제 위치(JSON 한 줄) 다음에 파일 내용이다. */
-const content = (stdout: Buffer) =>
-  stdout.subarray(stdout.indexOf(0x0a) + 1).toString("utf8");
 /** 한 번 읽어 본 결과. 끝난 코드(성공이면 0)와 읽은 내용이다. */
-const run = (
+const run = async (
   cwd: string,
   preload: string,
   plan: Record<string, unknown>,
   requested = "dir/a.md"
-) =>
-  new Promise<{ code: unknown; content: string | null }>((resolve) => {
-    const shared = path.join(cwd, "organization-one", "shared");
-    execFile(
-      process.execPath,
-      [
-        "-e",
-        preload + pinnedReader,
-        JSON.stringify([1000, "organization-one", requested, shared, shared]),
-      ],
-      {
-        cwd,
-        encoding: "buffer",
-        env: {
-          ...(process.env.SystemRoot
-            ? { SystemRoot: process.env.SystemRoot }
-            : {}),
-          PLAN: JSON.stringify(plan),
-        },
-      },
-      (error, stdout) =>
-        resolve(
-          error
-            ? { code: error.code, content: null }
-            : { code: 0, content: content(stdout) }
-        )
-    );
-  });
+) => {
+  const { code, bytes } = await runPinned(cwd, preload, { requested, plan });
+  return { code, content: bytes?.toString("utf8") ?? null };
+};
 const attempt = async (cwd: string, plan: Record<string, unknown>) => {
   const result = await run(cwd, interrupt, plan);
   if (result.code !== 0) exits.push(result.code);
@@ -151,14 +118,17 @@ it("reads the file when nothing changes", async () => {
 });
 
 const steps = 26;
-it.each([
+it.for([
   ["a folder in the path", "shared/dir", "shared/dir", "dir"],
   ["the whole organization folder", ".", ".", "move"],
   ["the organization folder", "shared", "shared", "dir"],
   ["the file itself", "shared/dir/a.md", "shared/dir/a.md", "file"],
 ] as const)(
   "never reads another organization's file when %s is swapped at any moment",
-  async (_name, from, to, kind) => {
+  { timeout: 240_000 },
+  async ([, from, to, kind], context) => {
+    if (kind !== "move" && lacks.symlink)
+      context.skip(`no links on this file system (${lacks.symlink})`);
     const results: (string | null)[] = [];
     // 시도마다 폴더를 새로 만든다.
     await parallel(plans(), async (plan) => {
@@ -178,55 +148,58 @@ it.each([
     expect(results).toContain("MINE");
     expect(exits.filter((code) => !known.includes(code))).toEqual([]);
     exits.length = 0;
-  },
-  240_000
+  }
 );
 
 // 경로를 한 칸씩 풀어 가는 사이에 지나온 폴더를 바깥으로 가는 링크로 바꿔도, 답이 바깥에 무엇이 있는지에 따라
 // 달라지지 않는다. 바깥에 폴더와 파일이 있을 때와 아무것도 없을 때를 같은 시점의 바꿔치기로 비교한다(PR #131 리뷰 2회차 S2).
-it("answers the same whether or not anything is outside when a folder in the path turns into a link leading out at any moment", async () => {
-  const answers = new Map<
-    string,
-    { code: unknown; content: string | null }[]
-  >();
-  await parallel(
-    plans().flatMap((plan) => [
-      { plan, present: true },
-      { plan, present: false },
-    ]),
-    async ({ plan, present }) => {
-      const { root, base } = await organizations();
-      const outside = path.join(root, "outside");
-      if (present) {
-        await mkdir(outside);
-        await writeFile(path.join(outside, "a.md"), "OUTSIDE");
+withLinks(
+  "answers the same whether or not anything is outside when a folder in the path turns into a link leading out at any moment",
+  async () => {
+    const answers = new Map<
+      string,
+      { code: unknown; content: string | null }[]
+    >();
+    await parallel(
+      plans().flatMap((plan) => [
+        { plan, present: true },
+        { plan, present: false },
+      ]),
+      async ({ plan, present }) => {
+        const { root, base } = await organizations();
+        const outside = path.join(root, "outside");
+        if (present) {
+          await mkdir(outside);
+          await writeFile(path.join(outside, "a.md"), "OUTSIDE");
+        }
+        const result = await run(base, interrupt, {
+          ...plan,
+          from: path.join(base, "organization-one", "shared", "dir"),
+          to: outside,
+          kind: "dir",
+        });
+        const key = JSON.stringify(plan);
+        answers.set(key, [...(answers.get(key) ?? []), result]);
       }
-      const result = await run(base, interrupt, {
-        ...plan,
-        from: path.join(base, "organization-one", "shared", "dir"),
-        to: outside,
-        kind: "dir",
-      });
-      const key = JSON.stringify(plan);
-      answers.set(key, [...(answers.get(key) ?? []), result]);
-    }
-  );
-  const all = [...answers.values()].flat();
-  expect(all.map((answer) => answer.content)).not.toContain("OUTSIDE");
-  expect(all.map((answer) => answer.code)).toContain(0);
-  expect(all.map((answer) => answer.code)).toContain(readerExit.changed);
-  expect(
-    all.filter((answer) => !known.includes(answer.code) && answer.code !== 0)
-  ).toEqual([]);
-  const differing = [...answers.entries()].filter(
-    ([, [first, second]]) => JSON.stringify(first) !== JSON.stringify(second)
-  );
-  // Windows는 작업 폴더를 경로 문자열로 기억해, 바깥 링크로 바꿨다가 곧바로 되돌리면 바깥 폴더가 있을 때만 들어간 뒤
-  // 원래 폴더를 읽는다. Node에는 폴더 핸들 기준으로 여는 기능이 없어 막지 못한다. Windows는 Docker 격리를 지원하지 않아
-  // 에이전트가 서버와 같은 사용자로 바깥을 직접 볼 수 있으므로 이 차이는 경계가 아니다(docs/providers.md 격리 실행).
-  // 다른 조직·바깥의 내용을 읽지 않는다는 위 검사는 Windows에서도 돈다.
-  if (process.platform !== "win32") expect(differing).toEqual([]);
-}, 240_000);
+    );
+    const all = [...answers.values()].flat();
+    expect(all.map((answer) => answer.content)).not.toContain("OUTSIDE");
+    expect(all.map((answer) => answer.code)).toContain(0);
+    expect(all.map((answer) => answer.code)).toContain(readerExit.changed);
+    expect(
+      all.filter((answer) => !known.includes(answer.code) && answer.code !== 0)
+    ).toEqual([]);
+    const differing = [...answers.entries()].filter(
+      ([, [first, second]]) => JSON.stringify(first) !== JSON.stringify(second)
+    );
+    // Windows는 작업 폴더를 경로 문자열로 기억해, 바깥 링크로 바꿨다가 곧바로 되돌리면 바깥 폴더가 있을 때만 들어간 뒤
+    // 원래 폴더를 읽는다. Node에는 폴더 핸들 기준으로 여는 기능이 없어 막지 못한다. Windows는 Docker 격리를 지원하지 않아
+    // 에이전트가 서버와 같은 사용자로 바깥을 직접 볼 수 있으므로 이 차이는 경계가 아니다(docs/providers.md 격리 실행).
+    // 다른 조직·바깥의 내용을 읽지 않는다는 위 검사는 Windows에서도 돈다.
+    if (process.platform !== "win32") expect(differing).toEqual([]);
+  },
+  240_000
+);
 
 // 링크를 링크로 확인한 바로 뒤에 그 링크가 사라지거나 다른 것으로 바뀌면 파일이 바뀐 것이다. 서버 오류가 아니다(리뷰 2회차 P3).
 const vanish = `{
@@ -246,7 +219,7 @@ const vanish = `{
   };
 }
 `;
-it.each(["gone", "file", "folder"])(
+withLinks.each(["gone", "file", "folder"])(
   "names a link that is %s right after it is seen as a changed file",
   async (then) => {
     const { base } = await organizations();

@@ -100,7 +100,12 @@ const typed = (value) => {
 const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
 /** Names of a path, without empty names or ".". ".." stays where it is. */
 const names = (value) => value.split(separator).filter((name) => name !== "" && name !== ".");
-const sameName = windows ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
+/**
+ * 작업 폴더 부분의 이름 대조. 대소문자까지 같아야 한다. Windows도 폴더마다 대소문자를 가리게 할 수 있어 대소문자만 다른 이름은
+ * 다른 폴더일 수 있다. 같은 폴더를 대소문자만 다르게 적은 경로는 밖으로 보는 안전한 오거부다. 드라이브 문자는 늘 같은 드라이브다.
+ */
+const sameName = (a, b) =>
+  a === b || (windows && /^[A-Za-z]:$/.test(a) && a.toLowerCase() === b.toLowerCase());
 /** Windows가 이름 하나를 다른 것으로 읽는 경우의 거부 종료 코드. 없으면 undefined다(Go filepath.IsLocal·os.Root, cap-std, node-tar). */
 const windowsName = (name) => {
   if (!windows) return undefined;
@@ -116,8 +121,14 @@ const windowsName = (name) => {
   return undefined;
 };
 const inside = (absolute, clean) => {
-  const target =
-    windows && absolute.startsWith("\\\\\\\\?\\\\") ? absolute.slice(4) : absolute;
+  // 확장 표기는 같은 곳이다. "\\\\?\\C:\\…"는 "C:\\…", "\\\\?\\UNC\\server\\share\\…"는 "\\\\server\\share\\…"다.
+  const target = !windows
+    ? absolute
+    : absolute.startsWith("\\\\\\\\?\\\\UNC\\\\")
+      ? "\\\\\\\\" + absolute.slice(8)
+      : absolute.startsWith("\\\\\\\\?\\\\")
+        ? absolute.slice(4)
+        : absolute;
   const given = clean(target).split(separator);
   for (const base of [working, real]) {
     const prefix = names(base);
@@ -166,8 +177,8 @@ const into = (name, expected) => {
   }
   if (!same(expected, fs.statSync(".", stat))) process.exit(${readerExit.changed});
 };
-const open = (name, limit, notFileExit, changedExit, tooLargeExit) => {
-  const expected = fs.lstatSync(name, stat);
+/** 확인한 \`expected\`와 같은 파일만 연다. 확인한 바로 뒤에 사라지거나 바뀌었으면 \`changedExit\`다. */
+const open = (name, expected, limit, notFileExit, changedExit, tooLargeExit) => {
   if (!expected.isFile()) process.exit(notFileExit);
   let fd;
   try {
@@ -212,7 +223,8 @@ const fail = (error) => {
 server(organizationId);
 let claimed;
 try {
-  claimed = JSON.parse(read(open(${JSON.stringify(identityFile)}, ${identityMaxBytes}, ${readerExit.identity}, ${readerExit.identity}, ${readerExit.identity})).toString("utf8"))?.organizationId;
+  const mark = ${JSON.stringify(identityFile)};
+  claimed = JSON.parse(read(open(mark, fs.lstatSync(mark, stat), ${identityMaxBytes}, ${readerExit.identity}, ${readerExit.identity}, ${readerExit.identity})).toString("utf8"))?.organizationId;
 } catch {
   process.exit(${readerExit.identity});
 }
@@ -236,6 +248,7 @@ try {
   } else pending = typed(requested).split(separator);
   let links = 0;
   let name;
+  let checked;
   while (pending.length > 0) {
     const part = pending.shift();
     if (part === "" || part === ".") continue;
@@ -274,6 +287,7 @@ try {
     }
     if (pending.length === 0) {
       name = part;
+      checked = info;
       break;
     }
     if (!info.isDirectory()) process.exit(${readerExit.notFound});
@@ -282,7 +296,8 @@ try {
     done.push(part);
   }
   if (name === undefined) process.exit(${readerExit.notFile});
-  const file = open(name, maxBytes, ${readerExit.notFile}, ${readerExit.changed}, ${readerExit.tooLarge});
+  // 걸으며 확인한 그 파일을 연다. 다시 확인하면 그 사이에 사라지거나 바뀐 것을 없는 파일·다른 종류로 잘못 알린다.
+  const file = open(name, checked, maxBytes, ${readerExit.notFile}, ${readerExit.changed}, ${readerExit.tooLarge});
   if (file.opened.nlink !== 1n) process.exit(${readerExit.hardLink});
   process.stdout.write(Buffer.concat([Buffer.from(JSON.stringify([...done, name]) + "\\n"), read(file)]));
 } catch (error) {

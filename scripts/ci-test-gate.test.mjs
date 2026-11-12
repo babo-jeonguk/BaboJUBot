@@ -23,6 +23,8 @@ const suites = [
   "macos",
   "windows",
 ];
+// 파일 시스템별 전체 검증 job. changes의 files 출력이 true일 때만 돌고 그때는 모두 성공해야 한다.
+const fileSuites = ["files-linux", "files-windows", "files-macos"];
 const gate = workflow.jobs.test;
 const step = gate.steps.find(
   (candidate) => candidate.name === "Check test results"
@@ -43,12 +45,14 @@ const gateScript = fileURLToPath(
 // second gate implementation.
 function runGate({
   code = "true",
+  files = "false",
   changes = "success",
   results = {},
+  fileResults = {},
   executablePath = process.env.PATH,
 } = {}) {
   const needs = {
-    changes: { result: changes, outputs: { code } },
+    changes: { result: changes, outputs: { code, files } },
     "test-packages": { result: code === "false" ? "skipped" : "success" },
     ...Object.fromEntries(
       suites.map((suite) => [
@@ -58,13 +62,22 @@ function runGate({
         },
       ])
     ),
+    ...Object.fromEntries(
+      fileSuites.map((suite) => [
+        suite,
+        {
+          result:
+            fileResults[suite] ?? (files === "true" ? "success" : "skipped"),
+        },
+      ])
+    ),
   };
   const env = { PATH: executablePath };
   // Windows child processes may need the system root to load runtime DLLs.
   if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
   for (const [name, expression] of Object.entries(step.env)) {
     const match = expression.match(
-      /^\$\{\{\s*needs\.([\w-]+)\.(result|outputs\.code)\s*\}\}$/
+      /^\$\{\{\s*needs\.([\w-]+)\.(result|outputs\.code|outputs\.files)\s*\}\}$/
     );
     assert.ok(match, `Unsupported gate binding: ${name}=${expression}`);
     const value = match[2]
@@ -125,12 +138,104 @@ test("runs the macOS and Windows suites on their own systems", () => {
   );
 });
 
+test("each file-system verification has its own job, runs only for file-boundary changes, and is a direct gate dependency", () => {
+  assert.equal(
+    workflow.jobs.changes.outputs.files,
+    "${{ steps.diff.outputs.files }}"
+  );
+  for (const id of fileSuites) {
+    const job = workflow.jobs[id];
+    assert.ok(job, `Missing independent job ${id}`);
+    assert.equal(job.strategy?.matrix, undefined);
+    assert.equal(job.if, "needs.changes.outputs.files == 'true'");
+    assert.ok(job["timeout-minutes"] > 0, `${id} needs a time limit`);
+    assert.ok(gate.needs.includes(id), `Gate must directly need ${id}`);
+    assert.ok(
+      Object.values(step.env).some((binding) =>
+        binding.includes(`needs.${id}.result`)
+      ),
+      `Gate must receive ${id}'s own result`
+    );
+    // 준비가 실패해도 남은 볼륨 검사와 결과 집계·정리는 돈다. 실패를 성공으로 바꾸는 continue-on-error는 쓰지 않는다.
+    for (const each of job.steps)
+      assert.notEqual(each["continue-on-error"], true);
+    assert.ok(
+      job.steps.some((each) =>
+        /file-boundary-report\.mjs/.test(each.run ?? "")
+      ),
+      `${id} must aggregate its volumes`
+    );
+  }
+});
+
+// 일반 PR의 macOS·Windows job은 기본 볼륨의 파일 경계 검사를 돌다가, 전체 검증이 도는 변경에서는 같은 검사를 거듭하지 않는다.
+test("runs the default-volume file checks in the macOS and Windows jobs unless the full verification runs", () => {
+  for (const os of ["macos", "windows"]) {
+    const files = workflow.jobs[`test-${os}`].steps.find((each) =>
+      /vitest\.files\.config\.ts/.test(each.run ?? "")
+    );
+    assert.equal(files.if, "needs.changes.outputs.files != 'true'");
+  }
+});
+
+test("lets an agent run the whole verification on a branch or an exact commit by hand and cancels superseded PR runs", () => {
+  assert.ok("workflow_dispatch" in workflow.on);
+  assert.equal(workflow.on.workflow_dispatch.inputs.sha.required, false);
+  assert.equal(
+    workflow.concurrency["cancel-in-progress"],
+    "${{ github.event_name == 'pull_request' }}"
+  );
+  // 두 수동 실행이 서로 다른 SHA면 같은 대기열을 나누지 않는다.
+  assert.match(workflow.concurrency.group, /inputs\.sha/);
+  // 모든 job이 지정한 SHA를 받는다(없으면 이벤트의 기본 commit).
+  for (const [name, job] of Object.entries(workflow.jobs))
+    for (const step of job.steps ?? [])
+      if (step.uses?.startsWith("actions/checkout@"))
+        assert.equal(step.with?.ref, "${{ inputs.sha }}", `${name} checkout`);
+  // 지정한 값이 짧은 SHA나 브랜치 이름이면 다른 commit을 검증한 것으로 보이지 않게 실패한다. 나머지 job은 changes 뒤에 돈다.
+  const verify = workflow.jobs.changes.steps.find((step) =>
+    /git rev-parse HEAD/.test(step.run ?? "")
+  );
+  assert.equal(verify?.if, "inputs.sha != ''");
+  for (const [name, job] of Object.entries(workflow.jobs))
+    if (name !== "changes")
+      assert.ok(
+        [job.needs].flat().includes("changes"),
+        `${name} needs changes`
+      );
+});
+
 test("accepts code only when every test job succeeded", () => {
   assert.equal(runGate().status, 0);
 });
 
 test("accepts Markdown-only changes when every test job was skipped", () => {
   assert.equal(runGate({ code: "false" }).status, 0);
+});
+
+test("accepts a file-boundary change only when every file-system verification succeeded", () => {
+  assert.equal(runGate({ files: "true" }).status, 0);
+});
+
+for (const suite of fileSuites) {
+  for (const result of ["failure", "cancelled", "skipped", ""]) {
+    test(`rejects a file-boundary change with ${suite}=${result || "missing"}`, () => {
+      assertRejected({ files: "true", fileResults: { [suite]: result } });
+    });
+  }
+  for (const result of ["success", "failure", "cancelled", ""]) {
+    test(`rejects ${suite}=${result || "missing"} when the file boundary did not change`, () => {
+      assertRejected({ fileResults: { [suite]: result } });
+    });
+  }
+}
+
+for (const files of ["", "unknown"]) {
+  test(`rejects files=${files || "missing"}`, () => assertRejected({ files }));
+}
+
+test("rejects a file-boundary change reported for a Markdown-only change", () => {
+  assertRejected({ code: "false", files: "true" });
 });
 
 for (const suite of suites) {
