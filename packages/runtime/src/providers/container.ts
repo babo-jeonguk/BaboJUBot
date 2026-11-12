@@ -721,6 +721,7 @@ export function createDockerEnvironment(
           relay: relay.directory,
         });
         const result = await runDocker(settings, args, 60_000, signal);
+        await relay.close();
         await removeContainer(settings, name);
         if (result.code !== 0)
           throw new Error("isolation probe container failed");

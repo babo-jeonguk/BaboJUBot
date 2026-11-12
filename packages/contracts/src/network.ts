@@ -4,8 +4,8 @@ import { z } from "zod";
  * 격리 실행의 외부 통신 목적지(#149). 컨테이너에는 네트워크가 없고, 실행 시도 밖의 중계가 이 목록에 있는 이름·포트만 연다.
  * - `host`: 이름(`example.com`), 하위 이름 전체(`*.example.com`, `example.com` 자체는 포함하지 않음), 또는 IP 주소.
  * - `port`: 그 이름의 포트 하나.
- * - `addresses`: 이 목적지가 내부 주소(이 컴퓨터·사설망 등)로 이어져도 되는 주소·대역. 적은 주소·대역만 예외이며,
- *   없으면 내부 주소로 풀리는 이름은 거부한다. 사용자 API·DB 포트는 이 예외로도 열리지 않는다.
+ * - `addresses`: 이 목적지가 내부 주소(이 컴퓨터·사설망 등)로 이어져도 되는 주소. 적은 주소만 예외이며 대역은
+ *   받지 않는다. 없으면 내부 주소로 풀리는 이름은 거부한다. 사용자 API·DB 포트는 이 예외로도 열리지 않는다.
  */
 export const destinationSchema = z.strictObject({
   host: z
@@ -22,8 +22,8 @@ export const destinationSchema = z.strictObject({
       z
         .string()
         .trim()
-        .refine((value) => parseCidr(value) !== null, {
-          message: "IP 주소 또는 대역(10.0.0.0/8)을 적는다",
+        .refine((value) => parseIp(value) !== null, {
+          message: "IP 주소를 하나씩 적는다(대역은 받지 않는다)",
         })
     )
     .max(16)

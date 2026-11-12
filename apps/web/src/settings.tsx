@@ -169,7 +169,7 @@ function NetworkPolicySection({ org }: { org: OrganizationDetail }) {
       {invalid && (
         <p role="alert" className="mt-1 text-xs text-rose-600">
           이름·포트·주소를 확인해 주세요. 이름은 example.com처럼, 포트는
-          1~65535로 적습니다.
+          1~65535로, 내부 주소는 10.0.0.5처럼 하나씩(대역 없이) 적습니다.
         </p>
       )}
       {update.isError && (

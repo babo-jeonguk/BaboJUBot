@@ -291,6 +291,15 @@ export function startProcess(options: {
       buffer = "";
       if (!skipping && rest.length <= maxLineLength) deliver(rest);
       void (async () => {
+        // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
+        try {
+          await relay?.close();
+        } catch {
+          broken = true;
+          console.error(
+            "[provider] the isolated run relay could not be closed"
+          );
+        }
         // The leader may exit before its shell/MCP children. Do not release the attempt while they live.
         let stopped = true;
         if (child.pid)
@@ -313,8 +322,6 @@ export function startProcess(options: {
             "[provider] a container could not be removed; it is removed at the next server start"
           );
         }
-        // 중계 권한과 열린 연결은 컨테이너를 지운 뒤에 회수한다.
-        await relay?.close();
         await queue;
         if (stopped)
           try {

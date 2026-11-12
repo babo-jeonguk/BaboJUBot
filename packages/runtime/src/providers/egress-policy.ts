@@ -35,7 +35,7 @@ const selfRangeTexts = ["127.0.0.0/8", "0.0.0.0/8", "::1/128", "::/128"];
 const selfRanges = ranges(selfRangeTexts);
 
 /**
- * 기본으로 막는 주소. 허용한 이름이 이 주소로 풀리면 거부하고, 사용자가 그 목적지에 적은 주소·대역 안일 때만 연다.
+ * 기본으로 막는 주소. 허용한 이름이 이 주소로 풀리면 거부하고, 사용자가 그 목적지에 적은 주소일 때만 연다.
  * sandbox-runtime(resolved-address-guard.ts)·Codex(network-proxy connect_policy.rs)와 달리 사설망·CGNAT·ULA도 기본으로 막는다(#149 결정).
  */
 const forbiddenRanges = ranges([
@@ -92,18 +92,22 @@ function embeddedIpv4(address: IpAddress): IpAddress | undefined {
 const sameAddress = (a: IpAddress, b: IpAddress) =>
   a.family === b.family && a.bytes.every((x, i) => x === b.bytes[i]);
 
-/** 이름·포트가 목록에 있는지(주소는 보지 않음). 정책을 줄였을 때 열린 연결을 다시 볼 때도 쓴다. */
-export function isListed(
+/** 이름·포트가 목록에 있는 항목. 이름이 정규화되지 않거나 와일드카드이거나 포트가 범위 밖이면 빈 목록. */
+function listedEntries(
   destinations: readonly Destination[],
   requestedHost: string,
   port: number
-): boolean {
+): Destination[] {
   const host = normalizeHost(requestedHost);
-  return (
-    host !== null &&
-    !host.startsWith("*.") &&
-    destinations.some((entry) => matches(entry, host, port))
-  );
+  if (
+    !host ||
+    host.startsWith("*.") ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  )
+    return [];
+  return destinations.filter((entry) => matches(entry, host, port));
 }
 
 function matches(entry: Destination, host: string, port: number) {
@@ -113,6 +117,49 @@ function matches(entry: Destination, host: string, port: number) {
       host.endsWith(entry.host.slice(1)) && host.length > entry.host.length - 1
     );
   return entry.host === host;
+}
+
+/**
+ * 주소 하나가 이 목록 항목들에서 열리는지. 이 컴퓨터·protected 포트·금지 주소는 목적지에 적은 주소 하나와 같을 때만 연다.
+ * 예외는 주소 하나이며 대역이 아니다.
+ */
+function addressAllowed(
+  rules: EgressRules,
+  entries: readonly Destination[],
+  address: IpAddress,
+  port: number
+): boolean {
+  const own = rules.hostAddresses
+    .map((text) => parseIp(text))
+    .filter((value): value is IpAddress => value !== null);
+  const exceptions = entries.flatMap((entry) =>
+    (entry.addresses ?? []).flatMap((text) => {
+      const parsed = parseIp(text);
+      return parsed ? [parsed] : [];
+    })
+  );
+  const forms = [address, embeddedIpv4(address)].filter(
+    (form): form is IpAddress => form !== undefined
+  );
+  const self = forms.some(
+    (form) =>
+      selfRanges.some((range) => cidrContains(range, form)) ||
+      own.some((value) => sameAddress(value, form))
+  );
+  if (self && rules.protectedPorts.includes(port)) return false;
+  const forbidden =
+    self ||
+    forms.some((form) =>
+      forbiddenRanges.some((range) => cidrContains(range, form))
+    );
+  if (
+    forbidden &&
+    !exceptions.some((exception) =>
+      forms.some((form) => sameAddress(exception, form))
+    )
+  )
+    return false;
+  return true;
 }
 
 /**
@@ -135,9 +182,7 @@ export async function decideDestination(
     port > 65535
   )
     return { allowed: false, reason: "destination_not_allowed" };
-  const entries = rules.destinations.filter((entry) =>
-    matches(entry, host, port)
-  );
+  const entries = listedEntries(rules.destinations, requestedHost, port);
   if (entries.length === 0)
     return { allowed: false, reason: "destination_not_allowed" };
   const literal = parseIp(host);
@@ -153,41 +198,26 @@ export async function decideDestination(
   const addresses = texts.map((text) => parseIp(text));
   if (addresses.length === 0 || addresses.some((address) => !address))
     return { allowed: false, reason: "not_resolved" };
-  const own = rules.hostAddresses
-    .map((text) => parseIp(text))
-    .filter((address): address is IpAddress => address !== null);
-  const exceptions = entries.flatMap((entry) =>
-    (entry.addresses ?? []).flatMap((text) => {
-      const parsed = parseCidr(text);
-      return parsed ? [parsed] : [];
-    })
-  );
   for (const address of addresses as IpAddress[]) {
-    const forms = [address, embeddedIpv4(address)].filter(
-      (form): form is IpAddress => form !== undefined
-    );
-    const self = forms.some(
-      (form) =>
-        selfRanges.some((range) => cidrContains(range, form)) ||
-        own.some((value) => sameAddress(value, form))
-    );
-    if (self && rules.protectedPorts.includes(port))
-      return { allowed: false, reason: "address_not_allowed" };
-    const forbidden =
-      self ||
-      forms.some((form) =>
-        forbiddenRanges.some((range) => cidrContains(range, form))
-      );
-    if (
-      forbidden &&
-      !exceptions.some((range) =>
-        forms.some((form) => cidrContains(range, form))
-      )
-    )
+    if (!addressAllowed(rules, entries, address, port))
       return { allowed: false, reason: "address_not_allowed" };
   }
   return {
     allowed: true,
     addresses: (addresses as IpAddress[]).map((address) => formatIp(address)),
   };
+}
+
+/** 이미 연결한 주소 하나가 지금 규칙에서도 열리는지. 이름을 다시 풀지 않는다. 새 연결 판정과 같은 규칙이다. */
+export function allowsConnection(
+  rules: EgressRules,
+  requestedHost: string,
+  port: number,
+  address: string
+): boolean {
+  const entries = listedEntries(rules.destinations, requestedHost, port);
+  if (entries.length === 0) return false;
+  const parsed = parseIp(address);
+  if (!parsed) return false;
+  return addressAllowed(rules, entries, parsed, port);
 }
