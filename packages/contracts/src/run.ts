@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { usageSchema } from "./usage.ts";
 import { approvalDecisionSchema, approvalKindSchema } from "./approval.ts";
@@ -432,6 +433,11 @@ export type ProviderConnection = {
   openModels?: boolean;
   /** 프로그램을 띄우는 실제 연결. 격리를 켜면 컨테이너에서 돌며, 안전 확인이 실패하면 준비안됨이다. 가짜 연결에는 없다. */
   isolatable?: boolean;
+  /**
+   * 격리 실행의 인증 중계(#148). 컨테이너에는 연결의 로그인 원본 대신 실행 시도에 묶인 권한만 넣고, 모델 요청은 서버의 이 중계가 실제 인증을 붙여 보낸다.
+   * 격리를 켰을 때 중계가 없거나 기존 구독으로 검증되지 않았으면(`verified` 거짓) 준비안됨이며 실행 시도를 시작하지 않는다.
+   */
+  credentialRelay?: CredentialRelayEndpoint;
   /** 제품 로그인 실행 방법. `tokenFile`이 있으면 프로그램이 보여 준 토큰을 받아 그 파일에 저장한다. */
   login?: {
     command: readonly [string, ...string[]];
@@ -439,6 +445,20 @@ export type ProviderConnection = {
     env: NodeJS.ProcessEnv;
     tokenFile?: string;
   };
+};
+
+/** 서버가 보는 인증 중계의 면. 권한 발급은 연결의 어댑터가 실행 시도 안에서 한다. */
+export type CredentialRelayEndpoint = {
+  /** 이 연결의 기존 구독으로 격리 실행을 검증했는가. */
+  verified: boolean;
+  /** 원본을 읽지 못했거나 상류가 원본을 거부해 중계가 실패한 상태인가. 복구 전에는 새 격리 실행을 막는다. */
+  failed: () => boolean;
+  /** 실패 상태면 원본을 다시 읽어 보고, 실패할 때와 다른 로그인이 읽히면 실패 상태를 푼다(같은 로그인이면 그대로). 준비 확인이 부른다. */
+  recover: () => Promise<void>;
+  /** 실패하면 부른다. 돌려준 함수로 해제한다. */
+  onFailure: (listener: () => void) => () => void;
+  /** 조직 도구 listener에서 `/api/relay/<연결>` 아래 요청을 처리한다. 요청의 경로는 그 접두사를 뺀 것이다. */
+  handle: (req: IncomingMessage, res: ServerResponse) => void;
 };
 
 // ---------- Surface 조회 모양 ----------

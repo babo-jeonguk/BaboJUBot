@@ -1,0 +1,3 @@
+ALTER TABLE "provider_readiness" DROP CONSTRAINT "provider_readiness_reason_check";--> statement-breakpoint
+ALTER TABLE "provider_readiness" ADD CONSTRAINT "provider_readiness_reason_check" CHECK ("provider_readiness"."reason" in ('program_missing', 'product_login_missing', 'credentials_invalid', 'credentials_unverified', 'not_checked', 'check_failed', 'check_timeout', 'isolation_unavailable', 'isolation_unsafe', 'credential_relay_unverified', 'credential_relay_failed')
+        and ("provider_readiness"."status" = 'ready') = ("provider_readiness"."reason" is null));

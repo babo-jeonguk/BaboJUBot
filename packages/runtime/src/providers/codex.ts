@@ -31,6 +31,7 @@ import {
   placeAttempt,
   type ContainerLaunch,
 } from "./container.ts";
+import { credentialResidue, residueRefusal } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
@@ -128,7 +129,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const id = options.id ?? "codex";
   const folders = connectionFolders(options.dataDir, id);
   const home = folders.connection;
-  /** 연결의 로그인 원본. 컨테이너에는 이 폴더만 함께 쓰기로 넣는다. */
+  /** 연결의 로그인 원본. 컨테이너에는 넣지 않는다(#148). */
   const loginFolder = path.join(home, "login");
   const original = path.join(loginFolder, "auth.json");
   const shareLogin = loginLink({
@@ -137,8 +138,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     label: "Codex",
   });
   const command = options.command ?? commandFor(id, "codex");
-  const environment = (codexHome = home) =>
-    providerEnvironment(id, codexHome, { CODEX_HOME: codexHome });
+  const environment = (codexHome = home, isolated = false) =>
+    providerEnvironment(id, codexHome, { CODEX_HOME: codexHome }, { isolated });
   const readiness = async (
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> => {
@@ -288,10 +289,19 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           request.identity.organizationId
         );
         await shareLogin(path.join(home, "auth.json"));
-        const linked = await shareLogin(path.join(organization, "auth.json"));
-        // 링크 없이 연결 폴더를 컨테이너에 넣지 않는다.
-        if (!linked && request.execution === "container") return failed();
-        const codexHome = linked ? organization : home;
+        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
+        // Codex의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
+        const isolated = request.execution === "container";
+        if (
+          isolated &&
+          (await credentialResidue(organization, ["auth.json"], original))
+        )
+          return { ...failed(), error: residueRefusal };
+        const linked =
+          !isolated && (await shareLogin(path.join(organization, "auth.json")));
+        const codexHome = linked || isolated ? organization : home;
+        // 격리 실행은 로그인 링크를 만들지 않으므로, 컨테이너에 넣을 제품 폴더를 여기서 만든다.
+        if (isolated) await mkdir(codexHome, { recursive: true, mode: 0o700 });
         const cwd = request.workspace?.cwd ?? codexHome;
         const placement = placeAttempt(options.container, codexHome, request);
         if (!placement) return failed();
@@ -300,7 +310,6 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           container = placement.container?.({
             cwd,
             program: "codex",
-            shared: linked ? [loginFolder] : [],
             destinations: providerDestinations.codex,
           });
         } catch (error) {
@@ -327,7 +336,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           }
         >();
         const env = {
-          ...environment(codexHome),
+          ...environment(codexHome, isolated),
           BABOJUBOT_MCP_TOKEN: request.access.token,
         };
         const args = [

@@ -92,7 +92,6 @@ function launch(
     workspace?: RunRequest["workspace"];
     home?: string;
     cwd?: string;
-    shared?: string[];
     attempt?: string;
     files?: { source: string; target: string }[];
   } = {}
@@ -106,7 +105,6 @@ function launch(
   return placement!.container!({
     cwd: options.cwd ?? ws?.cwd ?? home,
     program: "claude",
-    ...(options.shared ? { shared: options.shared } : {}),
     ...(options.attempt ? { attempt: options.attempt } : {}),
     ...(options.files ? { files: options.files } : {}),
   });
@@ -135,7 +133,8 @@ async function attemptDir() {
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
 describe.skipIf(process.platform === "win32")("container mount grants", () => {
   it("mounts the organization folder and own folder writable, peers read-only and the product folder, nothing else", () => {
-    const { mounts } = launch({ shared: [login] });
+    // 연결의 로그인 원본 폴더는 제품 폴더 옆에 있어도 넣지 않는다(#148).
+    const { mounts } = launch();
     const base = path.join(data, "organizations", org);
     expect(
       mounts
@@ -147,9 +146,9 @@ describe.skipIf(process.platform === "win32")("container mount grants", () => {
         { target: path.join(base, "agents", peer), writable: false },
         { target: path.join(base, "shared"), writable: true },
         { target: home, writable: true },
-        { target: login, writable: true },
       ].sort((a, b) => a.target.localeCompare(b.target))
     );
+    expect(mounts.map((mount) => mount.source)).not.toContain(login);
   });
 
   it("refuses a pre-planted link in place of a mount source or one of its folders", async () => {
@@ -188,10 +187,9 @@ describe.skipIf(process.platform === "win32")("container mount grants", () => {
     expect(refusal(() => launch({ workspace: self }))).toBe("mount_overlap");
   });
 
-  it("refuses a product folder or login folder outside its slot, such as the user's home or a socket folder", () => {
+  it("refuses a product folder outside its slot, such as the user's home or a socket folder", () => {
     expect(refusal(() => launch({ home: root }))).toBe("mount_outside");
     expect(refusal(() => launch({ home: "/var/run" }))).toBe("mount_outside");
-    expect(refusal(() => launch({ shared: [root] }))).toBe("mount_outside");
   });
 
   it("does not add a working folder that no granted folder contains", () => {

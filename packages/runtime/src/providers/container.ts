@@ -106,8 +106,6 @@ export type AttemptContainer = {
   attempt?: string;
   /** 실행 시도 전용 폴더의 보통 파일을 컨테이너 안 `target` 위에 읽기로 넣는다. `target`은 넣은 폴더 안이어야 한다. */
   files?: { source: string; target: string }[];
-  /** 같은 연결의 모든 조직 컨테이너가 함께 읽고 쓰는 로그인 전용 폴더(`providers/<연결>/login`). 그 자리만 받는다. */
-  shared?: string[];
   /** 이 연결이 늘 여는 모델·로그인 목적지. */
   destinations?: readonly Destination[];
   /** 이 컴퓨터가 부를 컨테이너 안 서버 포트(OpenCode). 중계의 역방향 연결로 부른다. */
@@ -145,6 +143,7 @@ export class ContainerRefusal extends Error {
  * 실행 시도가 돌 곳을 고른다. 격리 실행인데 컨테이너 설정이 없으면 `null`이며, 이때 프로바이더는 이 컴퓨터에서 대신 돌리지 않고 실패로 끝낸다.
  * 넣는 폴더는 서버가 정한 신원(조직·에이전트)의 자리에서만 만든다. `home`은 그 조직의 제품 폴더(`.../organizations/<조직>`)다.
  * 세션 정비(미리 압축)는 실행 시도·에이전트가 없어 `organizationId`만 준다.
+ * 연결의 로그인 원본(연결 폴더의 로그인 폴더·토큰 파일)은 어떤 프로바이더도 넣을 수 없다. 모델 인증은 인증 중계(credential-relay.ts)가 컨테이너 밖에서 붙인다(#148).
  */
 export function placeAttempt(
   settings: ContainerSettings | undefined,
@@ -280,12 +279,6 @@ function containerLaunch(
   // 제품 폴더: providers/<연결>/organizations/<조직>
   const product = slot(options.home, ["organizations", organizationId]);
   grant(product, true);
-  const connection = path.dirname(path.dirname(product.target));
-  for (const folder of options.shared ?? []) {
-    if (path.resolve(folder) !== path.join(connection, "login"))
-      throw new ContainerRefusal("mount_outside");
-    grant(slot(folder, ["login"]), true);
-  }
   const workspace = options.workspace;
   let personal: string | undefined;
   if (workspace) {

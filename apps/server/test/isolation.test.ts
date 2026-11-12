@@ -13,6 +13,7 @@ import {
 } from "@babojubot/contracts";
 import {
   containerToolsOrigin,
+  createCredentialRelay,
   createFakeProviders,
   createRelayHub,
   type DockerEnvironment,
@@ -217,12 +218,23 @@ function fakeDocker(
  */
 function realConnection(
   onRequest?: (request: RunRequest) => Promise<void>,
-  relay?: () => ReturnType<typeof createRelayHub>
+  relay?: () => ReturnType<typeof createRelayHub>,
+  credential: { verified: boolean } = { verified: true }
 ): {
   connection: ProviderConnection;
   received: RunRequest[];
 } {
   const [fake] = createFakeProviders(1);
+  // 이 연결의 인증 중계(#148). 시험의 상류는 닿지 않는 주소이며, 권한 없는 요청은 상류 전에 거부된다.
+  const credentialRelay = createCredentialRelay({
+    profile: {
+      upstream: "http://127.0.0.1:1",
+      routes: [{ method: "POST", path: "/v1/messages" }],
+      authorize: (value) => ({ authorization: `Bearer ${value}` }),
+    },
+    verified: credential.verified,
+    credential: async () => "real-account-secret",
+  });
   const received: RunRequest[] = [];
   return {
     received,
@@ -231,6 +243,7 @@ function realConnection(
       id: "real",
       label: "실제 연결",
       isolatable: true,
+      credentialRelay,
       adapter: {
         ...fake!.adapter,
         async execute(request, control) {
@@ -332,6 +345,13 @@ describe("isolated runs", () => {
             tools: (await mcp(own.directory)).status,
             // 다른 조직·실행 시도의 중계로는 이 실행 시도의 토큰을 쓰지 못한다.
             otherRelay: (await mcp(other.directory)).status,
+            // 인증 중계도 이 경로에 있고, 실행 시도 권한이 없는 요청은 상류 전에 거부한다(#148).
+            credentialRelay: (
+              await overSocket(tools, "/api/relay/real/v1/messages", {
+                method: "POST",
+                headers: auth,
+              })
+            ).status,
           });
         } finally {
           await Promise.all([own.close(), other.close()]);
@@ -367,8 +387,22 @@ describe("isolated runs", () => {
     expect(isolated.access.toolsBaseUrl).toBe(containerToolsOrigin);
     // 중계에는 조직 도구만 있다. 사용자 경로는 없다.
     expect(checks).toEqual([
-      { health: 404, settings: 404, tools: 200, otherRelay: 401 },
+      {
+        health: 404,
+        settings: 404,
+        tools: 200,
+        otherRelay: 401,
+        credentialRelay: 401,
+      },
     ]);
+    // 사용자 API에는 인증 중계가 없다.
+    expect(
+      (
+        await fetch(new URL("/api/relay/real/v1/messages", t.baseUrl), {
+          method: "POST",
+        })
+      ).status
+    ).toBe(404);
     expect((await runsOf(org.id))[0]!.status).toBe("completed");
 
     // 안전 확인은 사용자 API와 DB 포트를 직접·중계 양쪽에서 막혀야 할 곳으로 시험했다.
@@ -382,6 +416,33 @@ describe("isolated runs", () => {
           { host: "127.0.0.1", port: 54329 },
         ])
       );
+  });
+
+  // #148: 로그인 원본을 컨테이너에 넣지 않으므로, 기존 구독으로 검증된 인증 중계가 없는 연결은 격리를 켜면 준비안됨이고 실행 시도를 시작하지 않는다.
+  it("shows a real connection without a verified credential relay as not ready under isolation and starts none of its runs", async () => {
+    const fake = fakeDocker();
+    const { connection, received } = realConnection(
+      undefined,
+      () => fake.relay,
+      { verified: false }
+    );
+    t = await startTestServer({
+      providers: [...createFakeProviders(1), connection],
+      isolation: { docker: fake.docker, protectedPorts: [54329] },
+    });
+    await t.request("PUT", "/api/providers/isolation", { isolated: true });
+    await expect
+      .poll(() => readinessOf("real"))
+      .toMatchObject({
+        status: "not_ready",
+        reason: "credential_relay_unverified",
+        checking: false,
+      });
+    const org = await createOrganization("real");
+    await t.drain();
+    expect(received).toEqual([]);
+    const [run] = await runsOf(org.id);
+    expect(run!.status).toBe("failed");
   });
 
   // 중계의 조직 도구도 사용자 API와 같은 서버 오류 처리를 거쳐 JSON 오류 계약으로 답한다(PR #131 리뷰 2회차 P4).

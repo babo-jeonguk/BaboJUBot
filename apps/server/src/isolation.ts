@@ -1,5 +1,8 @@
 import os from "node:os";
-import type { ProviderReadinessCheck } from "@babojubot/contracts";
+import type {
+  ProviderConnection,
+  ProviderReadinessCheck,
+} from "@babojubot/contracts";
 import {
   containerToolsOrigin,
   type DockerEnvironment,
@@ -10,6 +13,31 @@ export class IsolationError extends Error {}
 
 /** 실행 시도·세션 정비가 돌 곳과 그때의 조직 도구 주소. */
 export type Placement = { execution?: "container"; toolsBaseUrl: string };
+
+/** 격리 실행에 필요한 연결의 면: 실제 프로그램 연결인지와 인증 중계. */
+export type IsolationTarget = Pick<
+  ProviderConnection,
+  "isolatable" | "credentialRelay"
+>;
+
+/**
+ * 인증 중계 때문에 격리 실행을 할 수 없는 이유(#148). 로그인 원본은 컨테이너에 넣지 않으므로, 중계가 없거나 기존 구독으로 검증되지 않았으면
+ * 실행하지 않는다(다른 경로로 원본을 넘기지 않는다). 중계가 연결의 로그인을 읽지 못해 실패 상태면 복구 전까지 새 실행을 막는다.
+ */
+function relayRefusal(
+  target: IsolationTarget
+): "credential_relay_unverified" | "credential_relay_failed" | null {
+  const relay = target.credentialRelay;
+  if (!relay?.verified) return "credential_relay_unverified";
+  if (relay.failed()) return "credential_relay_failed";
+  return null;
+}
+const relayRefusalText = {
+  credential_relay_unverified:
+    "이 프로바이더 연결은 격리 실행에서 쓸 인증 중계가 아직 검증되지 않아 실행하지 않았습니다.",
+  credential_relay_failed:
+    "인증 중계가 연결의 로그인을 쓰지 못해 실행하지 않았습니다. 로그인을 고친 뒤 준비 상태를 다시 확인하세요.",
+};
 
 type Safety =
   | { status: "safe"; toolsBaseUrl: string }
@@ -64,9 +92,11 @@ export class IsolationGate {
     this.#current = undefined;
   }
 
-  async place(isolatable: boolean): Promise<Placement> {
-    if (!isolatable || !(await this.#readIsolated()))
+  async place(target: IsolationTarget | undefined): Promise<Placement> {
+    if (target?.isolatable !== true || !(await this.#readIsolated()))
       return { toolsBaseUrl: this.#hostUrl() };
+    const refusal = relayRefusal(target);
+    if (refusal) throw new IsolationError(relayRefusalText[refusal]);
     const safety = await this.check();
     if (safety.status === "safe")
       return { execution: "container", toolsBaseUrl: safety.toolsBaseUrl };
@@ -77,8 +107,16 @@ export class IsolationGate {
     );
   }
 
-  async readiness(isolatable: boolean): Promise<ProviderReadinessCheck | null> {
-    if (!isolatable || !(await this.#readIsolated())) return null;
+  /** 준비 확인에서 먼저 보는 결과. 중계가 실패 상태면 로그인을 다시 읽어 보고, 실패할 때와 다른 로그인이 읽히면 풀어 준다(사용자가 로그인을 고친 뒤의 확인이 복구 경로다). */
+  async readiness(
+    target: IsolationTarget | undefined
+  ): Promise<ProviderReadinessCheck | null> {
+    if (target?.isolatable !== true || !(await this.#readIsolated()))
+      return null;
+    if (target.credentialRelay?.failed())
+      await target.credentialRelay.recover();
+    const refusal = relayRefusal(target);
+    if (refusal) return { status: "not_ready", reason: refusal };
     const safety = await this.check();
     if (safety.status === "safe") return null;
     return {

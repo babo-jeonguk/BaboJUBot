@@ -29,6 +29,7 @@ import {
   placeAttempt,
   type ContainerLaunch,
 } from "./container.ts";
+import { residueRefusal } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 const object = (v: unknown): Record<string, unknown> =>
@@ -92,16 +93,21 @@ export function createOpenCodeProvider(options: {
   const home = folders.connection,
     command = options.command ?? commandFor(connectionId, "opencode");
   /** 그 제품 폴더로 띄우는 환경. 로그인과 세션은 그 폴더의 DB 하나에 함께 있다. */
-  const env = (productHome = home) =>
-    providerEnvironment(connectionId, productHome, {
-      XDG_CONFIG_HOME: path.join(productHome, "config"),
-      XDG_DATA_HOME: path.join(productHome, "data"),
-      XDG_CACHE_HOME: path.join(productHome, "cache"),
-      XDG_STATE_HOME: path.join(productHome, "state"),
-      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-      OPENCODE_DISABLE_CLAUDE_CODE: "1",
-      OPENCODE_DISABLE_FILEWATCHER: "1",
-    });
+  const env = (productHome = home, isolated = false) =>
+    providerEnvironment(
+      connectionId,
+      productHome,
+      {
+        XDG_CONFIG_HOME: path.join(productHome, "config"),
+        XDG_DATA_HOME: path.join(productHome, "data"),
+        XDG_CACHE_HOME: path.join(productHome, "cache"),
+        XDG_STATE_HOME: path.join(productHome, "state"),
+        OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        OPENCODE_DISABLE_CLAUDE_CODE: "1",
+        OPENCODE_DISABLE_FILEWATCHER: "1",
+      },
+      { isolated }
+    );
   let warnedSystemConfig = false;
   const prepare = async () => {
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -202,7 +208,7 @@ export function createOpenCodeProvider(options: {
         : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
       cwd: productHome,
       env: {
-        ...env(productHome),
+        ...env(productHome, Boolean(container)),
         OPENCODE_CONFIG_DIR: directory,
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         OPENCODE_SERVER_PASSWORD: password,
@@ -441,7 +447,12 @@ export function createOpenCodeProvider(options: {
         };
         service = await server(control.signal, config, container, organization);
         const api = service;
-        await copyLogin(api, control.signal);
+        // 격리 실행에는 연결의 로그인을 옮기지 않는다(#148). 조직 폴더에 옮겨 둔 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.
+        // OpenCode의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
+        if (container) {
+          if (entries(await api.json("/api/credential")).length)
+            return { ...failure(), error: residueRefusal };
+        } else await copyLogin(api, control.signal);
         const available = models(await api.json("/api/model"));
         // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
         const selected = input.model

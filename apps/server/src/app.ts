@@ -258,8 +258,10 @@ export async function startServer({
   const hub = new EventHub();
   // 조직 도구만 담은 앱. 라우터는 dispatcher·압축을 만든 뒤에 건다. 전용 listener는 처음 필요할 때 연다.
   const toolsApp = express();
-  const isolatable = (id: string) =>
-    connections.find((connection) => connection.id === id)?.isolatable === true;
+  /** 인증 중계 실패 알림의 해제. 서버를 끌 때 푼다. */
+  const stopRelayWatch: (() => void)[] = [];
+  const connectionOf = (id: string) =>
+    connections.find((connection) => connection.id === id);
   let url = "";
   const protectedPorts = () => [
     Number(new URL(url).port),
@@ -277,7 +279,7 @@ export async function startServer({
     connections,
     hub,
     now,
-    before: (connection) => gate.readiness(connection.isolatable === true),
+    before: (connection) => gate.readiness(connection),
   });
   const registry = createProviderRegistry(connections, {
     checking: (id) => readiness.checking(id),
@@ -290,7 +292,7 @@ export async function startServer({
     now,
     assemble: createRunRequestAssembler({
       db,
-      place: (provider) => gate.place(isolatable(provider)),
+      place: (provider) => gate.place(connectionOf(provider)),
       workspaces,
     }),
     onLoginRequired: (provider) => void readiness.check(provider),
@@ -303,7 +305,7 @@ export async function startServer({
     providers: registry.adapters,
     dispatcher,
     now,
-    place: (provider) => gate.place(isolatable(provider)),
+    place: (provider) => gate.place(connectionOf(provider)),
   });
   const heartbeats = new HeartbeatScheduler({
     db,
@@ -404,6 +406,19 @@ export async function startServer({
   app.use(orgToolsBasePath, compactionTools);
   app.use(orgToolsBasePath, organizationTools);
   // 컨테이너용 전용 listener의 앱. 조직 도구만 있고 사용자 경로는 없다.
+  // 인증 중계(#148)는 요청 본문을 그대로 상류로 흘려보내므로 JSON 해석 앞에 둔다. 컨테이너가 닿는 조직 도구 listener에만 있다.
+  for (const connection of connections) {
+    const relay = connection.credentialRelay;
+    if (!relay) continue;
+    toolsApp.use(
+      `/api/relay/${encodeURIComponent(connection.id)}`,
+      (req, res) => relay.handle(req, res)
+    );
+    // 중계가 실패하면 준비 상태를 다시 확인해 준비안됨으로 보이고 새 실행을 막는다.
+    stopRelayWatch.push(
+      relay.onFailure(() => void readiness.check(connection.id))
+    );
+  }
   toolsApp.use(express.json({ limit: jsonBodyLimitBytes }));
   toolsApp.use(orgToolsBasePath, compactionTools);
   toolsApp.use(orgToolsBasePath, organizationTools);
@@ -1292,6 +1307,9 @@ export async function startServer({
     for (const close of [
       () => heartbeats.close(),
       () => compactions.close(),
+      () => {
+        for (const unwatch of stopRelayWatch.splice(0)) unwatch();
+      },
       () => readiness.close(),
       () => dispatcher.close(),
       () => gate.close(),
