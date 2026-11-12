@@ -15,6 +15,12 @@
 | 주소는 바뀌었는데 화면이 늦게 바뀜 | [main.tsx](../../../apps/web/src/main.tsx) `RouterProvider useTransitions={false}` | [연구 지도 E2E](../../../apps/web/e2e/research-map.spec.ts) `watchSelectionLag` |
 | 생성 dialog | [create-organization.tsx](../../../apps/web/src/create-organization.tsx), api.ts `useCreateOrganization` | 생성 E2E |
 | 주소·메뉴·홈·빈 상태 | [pages.tsx](../../../apps/web/src/pages.tsx), [home.tsx](../../../apps/web/src/home.tsx), [shell.tsx](../../../apps/web/src/shell.tsx), main.tsx routes | 생성 E2E |
+| 화면 이동 뒤 포커스·페이지 제목 | shell.tsx `useRouteFocus`·`OrganizationTitle`·`DocumentTitle` | [셸 포커스 E2E](../../../apps/web/e2e/shell-focus.spec.ts) `moving between screens…` |
+| 탐색 시트·Inbox drawer 닫힌 뒤 포커스 | shell.tsx `Shell`(시트 `onCloseAutoFocus`)·inbox.tsx `InboxPanel`, ui.tsx `focusLost` | [셸 포커스 E2E](../../../apps/web/e2e/shell-focus.spec.ts) `choosing the current screen…`, `the narrow Inbox drawer…` |
+| 홈 h1 | home.tsx `Home` | [셸 포커스 E2E](../../../apps/web/e2e/shell-focus.spec.ts) `moving between screens…`, `the home without organizations…` |
+| Inbox 여는 버튼·패널 포커스 | [inbox.tsx](../../../apps/web/src/inbox.tsx) `useInboxTrigger`·`DockedInbox`·`focusOpener` | [셸 포커스 E2E](../../../apps/web/e2e/shell-focus.spec.ts) `the docked Inbox…`, `the narrow Inbox drawer…` |
+| 사본 탭 키보드 | [agents.tsx](../../../apps/web/src/agents.tsx) `moveTabFocus` | [셸 포커스 E2E](../../../apps/web/e2e/shell-focus.spec.ts) `the instruction copy tabs…` |
+| 되돌릴 수 없는 명령의 인라인 확인 취소 | ui.tsx `useInlineConfirm` | [셸 포커스 E2E](../../../apps/web/e2e/shell-focus.spec.ts) `cancelling the stop…`, `cancelling the final completion…` |
 | 되돌리기 토스트·아이콘 tooltip | [toast.tsx](../../../apps/web/src/toast.tsx) `useToast`, [toast-stack.ts](../../../apps/web/src/toast-stack.ts), ui.tsx `Tip` | [단위](../../../apps/web/src/toast-stack.test.ts), 연구 지도 E2E의 폐기 |
 | 공용 UI·반응형 | [ui.tsx](../../../apps/web/src/ui.tsx), [index.css](../../../apps/web/src/index.css) | 각 화면 E2E |
 | 즉시 저장 스위치의 저장 결과 | ui.tsx `SaveStatus` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |

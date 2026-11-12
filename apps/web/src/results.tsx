@@ -26,6 +26,7 @@ import {
   ResultStatusBadge,
   resultStatusLabel,
   StageBadge,
+  useInlineConfirm,
 } from "./ui.tsx";
 
 /**
@@ -264,8 +265,10 @@ function DecisionForm({
   onDecided: () => void;
 }) {
   const [note, setNote] = useState("");
-  const [confirming, setConfirming] = useState(false);
   const decide = useDecideResult(orgId, submissionId);
+  const { trigger: completeTrigger, ...complete } = useInlineConfirm(
+    decide.isPending
+  );
   const trimmed = note.trim();
   const alreadyDecided =
     decide.error instanceof ApiError && decide.error.code === "already_decided";
@@ -311,10 +314,11 @@ function DecisionForm({
         >
           수정 요청
         </button>
-        {confirming ? (
+        {complete.confirming ? (
           <span
             role="group"
             aria-labelledby="complete-confirm-title"
+            onKeyDown={complete.onKeyDown}
             className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-100 py-1 pr-1 pl-3"
           >
             <span className="text-xs text-slate-700">
@@ -326,7 +330,7 @@ function DecisionForm({
             <button
               className="btn-ghost"
               disabled={decide.isPending}
-              onClick={() => setConfirming(false)}
+              onClick={complete.cancel}
               autoFocus
             >
               취소
@@ -341,9 +345,10 @@ function DecisionForm({
           </span>
         ) : (
           <button
+            ref={completeTrigger}
             className="btn-primary"
             disabled={closed || decide.isPending}
-            onClick={() => setConfirming(true)}
+            onClick={complete.ask}
           >
             최종 완료
           </button>

@@ -18,7 +18,13 @@ import type {
   TaskStatus,
 } from "@babojubot/contracts";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { Link } from "react-router";
 
 /**
@@ -370,6 +376,52 @@ export const nameOf = (agents: Agent[], id: string | null) =>
   agents.find((a) => a.id === id)?.name ?? "에이전트";
 
 export const runLabel = (runId: string) => `실행 시도 ${runId.slice(0, 8)}`;
+
+/**
+ * 되돌릴 수 없는 명령 앞의 인라인 확인(#151 F16). 버튼 자리에 확인이 나타나고, Escape나 `취소`로 닫으면 다시 나타난
+ * 원래 버튼(`trigger`를 `ref`로 단다)으로 포커스를 돌린다. 요청 중(`locked`)에는 취소하지 않는다. 확인 묶음에
+ * `onKeyDown`을 단다.
+ */
+export function useInlineConfirm(locked: boolean) {
+  const [confirming, setConfirming] = useState(false);
+  // 취소로 닫혔는가. 요청이 끝나 닫힐 때(`dismiss`)는 포커스를 옮기지 않는다.
+  const [cancelled, setCancelled] = useState(false);
+  const trigger = useCallback(
+    (el: HTMLButtonElement | null) => {
+      if (el && cancelled) el.focus();
+    },
+    [cancelled]
+  );
+  const cancel = () => {
+    if (locked) return;
+    setCancelled(true);
+    setConfirming(false);
+  };
+  return {
+    confirming,
+    ask: () => {
+      setCancelled(false);
+      setConfirming(true);
+    },
+    dismiss: () => {
+      setCancelled(false);
+      setConfirming(false);
+    },
+    cancel,
+    trigger,
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      cancel();
+    },
+  };
+}
+
+/** 포커스가 갈 곳을 잃었는지(닫힌 dialog·사라진 요소와 함께 body로 떨어졌는지). 다른 곳이 이미 받았으면 false. */
+export function focusLost() {
+  const active = document.activeElement;
+  return !active || active === document.body;
+}
 
 /** 본문 폭 3단계: 좁게 768px, 중간 1024px, 전체 폭. 창이 좁으면 창 폭을 따른다. */
 export type Width = "reading" | "standard" | "full";
