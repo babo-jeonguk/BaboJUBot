@@ -891,6 +891,12 @@ describe.skipIf(process.platform === "win32")(
           dataDir: env.root,
           container: env.container,
           relay: { upstream, verified: true },
+          // 격리를 끈 실행은 이 컴퓨터에서 재생 프로그램으로 돈다.
+          command: [
+            process.execPath,
+            fixture("replay.mjs"),
+            fixture("codex-finish.synthetic.json"),
+          ],
         });
         return provider.credentialRelay!;
       });
@@ -904,21 +910,25 @@ describe.skipIf(process.platform === "win32")(
         request.access = { ...request.access, toolsBaseUrl: network.tools };
         return request;
       };
-      /** 프로그램이 본 로그인·인수·갱신 주소. */
-      const seen = async () =>
-        JSON.parse(
-          await readFile(path.join(organization, "seen-auth.json"), "utf8")
-        ) as {
-          login: { tokens: Record<string, string>; [key: string]: unknown };
-          args: string[];
-          refreshUrl: string | null;
-        };
+      type Seen = {
+        login: { tokens: Record<string, string>; [key: string]: unknown };
+        args: string[];
+        refreshUrl: string | null;
+      };
+      /** 프로그램들이 본 로그인·인수·갱신 주소(실행 시도마다 한 줄). */
+      const seenAll = async () =>
+        (await readFile(path.join(organization, "seen-auth.jsonl"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as Seen);
+      const seen = async () => (await seenAll()).at(-1)!;
       return {
         env,
         network,
         provider: () => provider,
         input,
         seen,
+        seenAll,
         organization,
         loginFolder,
       };
@@ -954,16 +964,24 @@ describe.skipIf(process.platform === "win32")(
         expect(JSON.stringify(run)).not.toMatch(
           /real-access-token|real-refresh-token|real-id-token/
         );
-        // 실행 시도가 끝나면 권한을 거두고, 조직 폴더의 가짜 로그인 파일을 지운다.
+        // 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 있고, 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 들어간다.
+        // 조직 폴더(그 조직의 모든 컨테이너에 들어간다)에는 권한 값이 없는 자리 표시만 남는다.
+        const loginAt = path.join(t.organization, "auth.json");
+        const mount = valuesOf(run.args, "--mount").find((spec) =>
+          spec.includes(`target=${loginAt},`)
+        );
+        expect(mount).toMatch(/,readonly$/);
+        const source = /source=([^,]+)/.exec(mount!)![1]!;
+        expect(source).not.toContain(t.organization);
+        await expect(stat(source)).rejects.toThrow();
+        expect(await readFile(loginAt, "utf8")).not.toContain(grant);
+        // 실행 시도가 끝나면 권한을 거둔다.
         const after = await fetch(`${relayBase}/responses`, {
           method: "POST",
           headers: { authorization: `Bearer ${grant}` },
         });
         expect(after.status).toBe(401);
         expect(t.network.urls).toHaveLength(1);
-        await expect(
-          stat(path.join(t.organization, "auth.json"))
-        ).rejects.toThrow();
       } finally {
         await t.network.close();
       }
@@ -988,7 +1006,7 @@ describe.skipIf(process.platform === "win32")(
       }
     });
 
-    it("replaces the link to the connection's login this machine left without writing through it, and starts over its own leftover login file", async () => {
+    it("replaces the link to the connection's login this machine left without writing through it, and starts again over the placeholder it left", async () => {
       const t = await codexSetup();
       try {
         const original = path.join(t.loginFolder, "auth.json");
@@ -999,16 +1017,55 @@ describe.skipIf(process.platform === "win32")(
         expect(first.stopReason).toBe("completed");
         // 원본 로그인은 그대로다.
         expect(await readFile(original, "utf8")).toBe(before);
-        // 서버가 실행 중에 멈춰 이 어댑터의 가짜 로그인 파일이 남았어도 다음 실행은 시작한다.
-        const leftover = (await t.seen()).login;
-        await writeFile(
-          path.join(t.organization, "auth.json"),
-          JSON.stringify(leftover)
-        );
+        // 이 어댑터가 남긴 자리 표시 위에서 다음 실행도 시작한다.
         const second = await t.provider().adapter.execute(t.input(), control());
         expect(second.stopReason).toBe("completed");
         expect(await readFile(original, "utf8")).toBe(before);
         expect(t.network.urls).toHaveLength(2);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("gives two runs of one organization at the same time each its own grant", async () => {
+      const t = await codexSetup();
+      try {
+        const results = await Promise.all([
+          t.provider().adapter.execute(t.input(), control()),
+          t.provider().adapter.execute(t.input(), control()),
+        ]);
+        expect(results.map((result) => result.stopReason)).toEqual([
+          "completed",
+          "completed",
+        ]);
+        const grants = (await t.seenAll()).map(
+          (record) => record.login.tokens.access_token
+        );
+        expect(grants).toHaveLength(2);
+        expect(new Set(grants).size).toBe(2);
+        expect(t.network.urls).toEqual(["/responses", "/responses"]);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("a run with isolation off does not take the placeholder as the connection's login", async () => {
+      const t = await codexSetup();
+      try {
+        const original = path.join(t.loginFolder, "auth.json");
+        const before = await readFile(original, "utf8");
+        expect(
+          (await t.provider().adapter.execute(t.input(), control())).stopReason
+        ).toBe("completed");
+        const host = t.input();
+        delete host.execution;
+        expect(
+          (await t.provider().adapter.execute(host, control())).stopReason
+        ).toBe("completed");
+        expect(await readFile(original, "utf8")).toBe(before);
+        expect(
+          await readFile(path.join(t.organization, "auth.json"), "utf8")
+        ).toBe(before);
       } finally {
         await t.network.close();
       }

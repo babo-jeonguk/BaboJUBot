@@ -1,10 +1,10 @@
 // Synthetic Codex app-server stand-in for the credential relay tests (#148). No model or network requests beyond the given relay.
 // Like Codex with a ChatGPT login and a custom provider (`requires_openai_auth`), it reads the access token (and the account id, when
 // present) from CODEX_HOME/auth.json and calls `<base_url>/responses` of the `babojubot_relay` provider given with `-c`.
-// It copies the login it saw to CODEX_HOME/seen-auth.json for the test. On 200 the turn completes; otherwise it keeps retrying like a
+// It appends the login it saw to CODEX_HOME/seen-auth.jsonl for the test. On 200 the turn completes; otherwise it keeps retrying like a
 // CLI would until its input closes, then exits 1.
 import { createInterface } from "node:readline";
-import { readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const args = process.argv.slice(2);
@@ -13,15 +13,19 @@ const provider = args.find((arg) =>
   arg.startsWith("model_providers.babojubot_relay=")
 );
 const baseUrl = provider ? /base_url="([^"]+)"/.exec(provider)?.[1] : undefined;
-const loginFile = path.join(process.env.CODEX_HOME, "auth.json");
-const login = JSON.parse(await readFile(loginFile, "utf8"));
-await writeFile(
-  path.join(process.env.CODEX_HOME, "seen-auth.json"),
+// Inside a container a per-attempt file may be mounted over CODEX_HOME/auth.json; the fake docker lists its mounts.
+const loginAt = path.join(process.env.CODEX_HOME, "auth.json");
+const mounted = JSON.parse(process.env.FAKE_DOCKER_MOUNTS ?? "[]").find(
+  (mount) => mount.target === loginAt
+);
+const login = JSON.parse(await readFile(mounted?.source ?? loginAt, "utf8"));
+await appendFile(
+  path.join(process.env.CODEX_HOME, "seen-auth.jsonl"),
   JSON.stringify({
     login,
     args,
     refreshUrl: process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE ?? null,
-  })
+  }) + "\n"
 );
 
 const threadId = "relay-thread",
