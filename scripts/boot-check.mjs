@@ -11,7 +11,8 @@ import { pathToFileURL } from "node:url";
 // 예: `BaboJUBot server on http://127.0.0.1:PORT (embedded Postgres …, product folder …)`
 const readyLinePattern =
   /^BaboJUBot server on (https?:\/\/[^\s)]+) \(embedded Postgres [^\r\n]*\)\r?\n/m;
-const overallTimeoutMs = 180_000;
+// 실행 전체의 시한. 지나면 멈춤 경로로 정리하고 실패한다(scripts/boot-check.test.mjs의 `bootCheckTimeoutMs`와 같은 값).
+const runTimeoutMs = 360_000;
 const fetchTimeoutMs = 2_000;
 const cleanupTimeoutMs = 15_000;
 const stopWaitMs = 10_000;
@@ -22,28 +23,26 @@ const home = mkdtempSync(path.join(tmpdir(), "babojubot-boot-"));
 const dataDir = path.join(home, "postgres");
 const pidFile = path.join(dataDir, "postmaster.pid");
 const log = path.join(dataDir, "postgres.log");
+console.log(`boot check folder: ${home}`);
+
+/** 지금 떠 있는 서버. 멈춤 경로가 이 서버부터 끝낸다. */
+let current;
+/** 멈춤 이유. 정해지면 진행 중인 기다림이 끝난다. */
+let stopReason;
 
 /**
  * 부모 환경의 실제 서비스 설정이 이 검사를 바꾸지 않게 서버 환경을 따로 만든다.
- * 외부 DB·임시 DB·HOST·시한·실제 프로바이더·가짜 프로바이더 설정은 지우고 알려진 값만 넣는다.
+ * 서버가 읽는 `BABOJUBOT_*` 설정과 DATABASE_URL·HOST·PORT·EMBEDDED_POSTGRES_PORT는 이름을 나열하지 않고 규칙으로 지우므로,
+ * 서버에 설정이 늘어도 부모 환경이 새지 않는다. 알려진 값만 아래에서 넣는다.
  */
 function serverEnv() {
   const env = { ...process.env };
-  for (const name of [
-    "DATABASE_URL",
-    "BABOJUBOT_EPHEMERAL_DB",
-    "HOST",
-    "EMBEDDED_POSTGRES_PORT",
-    "BABOJUBOT_SHUTDOWN_TIMEOUT_MS",
-    "BABOJUBOT_PROVIDERS",
-    "BABOJUBOT_FAKE_PROVIDERS",
-    "BABOJUBOT_FAKE_PROVIDER_SETTINGS",
-    "BABOJUBOT_CODEX_MODE",
-    "BABOJUBOT_DOCKER_COMMAND",
-    "BABOJUBOT_CONTAINER_IMAGE",
-    "BABOJUBOT_MODEL_DESTINATIONS",
-  ])
-    delete env[name];
+  for (const name of Object.keys(env))
+    if (
+      name.startsWith("BABOJUBOT_") ||
+      ["DATABASE_URL", "HOST", "PORT", "EMBEDDED_POSTGRES_PORT"].includes(name)
+    )
+      delete env[name];
   return {
     ...env,
     BABOJUBOT_HOME: home,
@@ -81,6 +80,11 @@ async function serveAndKill(label) {
       resolve();
     });
   });
+  current = {
+    label,
+    stop: () => stopServer(server, exited, () => hasExited),
+    output: () => outputTail(stdoutTail, stderrTail),
+  };
   server.stdout?.setEncoding("utf8");
   server.stderr?.setEncoding("utf8");
   server.stdout?.on("data", (chunk) => {
@@ -102,10 +106,10 @@ async function serveAndKill(label) {
     stderrTail = (stderrTail + String(chunk)).slice(-4000);
   });
 
-  const deadline = Date.now() + overallTimeoutMs;
   let failure;
   try {
     while (!readyUrl) {
+      if (stopReason) throw new Error(`${label}: ${stopReason}`);
       if (spawnError)
         throw new Error(
           `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
@@ -114,15 +118,12 @@ async function serveAndKill(label) {
         throw new Error(
           `${label}: server exited before it was ready (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
         );
-      if (Date.now() >= deadline)
-        throw new Error(
-          `${label}: server was not ready in ${overallTimeoutMs / 1000}s${outputTail(stdoutTail, stderrTail)}`
-        );
       await delay(50);
     }
 
     let overview;
     while (overview === undefined) {
+      if (stopReason) throw new Error(`${label}: ${stopReason}`);
       if (spawnError)
         throw new Error(
           `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
@@ -131,16 +132,9 @@ async function serveAndKill(label) {
         throw new Error(
           `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
         );
-      const remaining = deadline - Date.now();
-      if (remaining <= 0)
-        throw new Error(
-          `${label}: /api/overview did not answer in ${overallTimeoutMs / 1000}s${outputTail(stdoutTail, stderrTail)}`
-        );
       try {
         const response = await fetch(`${readyUrl}/api/overview`, {
-          signal: AbortSignal.timeout(
-            Math.min(fetchTimeoutMs, Math.max(1, remaining))
-          ),
+          signal: AbortSignal.timeout(fetchTimeoutMs),
         });
         if (response.ok) overview = await response.json();
       } catch {
@@ -165,6 +159,7 @@ async function serveAndKill(label) {
       throw stopError;
     }
   }
+  current = undefined;
   if (failure) throw failure;
 }
 
@@ -288,6 +283,60 @@ function outputTail(...texts) {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+let cleaning;
+/** 이 검사가 가진 것을 정리한다. 남은 Postgres가 실제로 멈춘 뒤에만 폴더를 지운다. 여러 경로가 불러도 한 번만 한다. */
+function cleanUp() {
+  cleaning ??= (async () => {
+    await stopLeftPostgres();
+    rmSync(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  })();
+  return cleaning;
+}
+
+let stopping;
+/** 시한이 지나거나 부모가 멈추라고 하면, 떠 있는 서버를 끝내고 정리한 뒤 실패로 끝난다. */
+function stopRun(reason) {
+  stopReason ??= reason;
+  stopping ??= (async () => {
+    console.log(
+      `${current ? `${current.label}: ` : ""}${reason}${current ? current.output() : ""}`
+    );
+    const code = 1;
+    try {
+      await current?.stop();
+    } catch (error) {
+      console.log(
+        `could not confirm the server stopped: ${error instanceof Error ? error.message : error}`
+      );
+    }
+    try {
+      await cleanUp();
+    } catch (error) {
+      console.log(
+        `cleanup failed: ${error instanceof Error ? error.message : error}`
+      );
+    }
+    process.exit(code);
+  })();
+}
+const runTimer = setTimeout(
+  () => stopRun(`boot check did not finish in ${runTimeoutMs / 1000}s`),
+  runTimeoutMs
+);
+runTimer.unref();
+// 부모가 IPC로 띄웠을 때만 멈춤 요청을 받는다. 채널이 이 프로세스를 붙잡지 않게 unref한다.
+if (process.send) {
+  process.on("message", (message) => {
+    if (message === "stop") stopRun("stop requested by the parent");
+  });
+  process.channel?.unref();
+}
+
 let code = 0;
 let failure;
 try {
@@ -331,13 +380,7 @@ try {
   console.log(error instanceof Error ? error.message : error);
 }
 try {
-  await stopLeftPostgres();
-  rmSync(home, {
-    recursive: true,
-    force: true,
-    maxRetries: 5,
-    retryDelay: 100,
-  });
+  await cleanUp();
 } catch (error) {
   code = 1;
   const cleanup = error instanceof Error ? error.message : String(error);
@@ -347,3 +390,4 @@ try {
   console.log(`cleanup failed: ${cleanup}${original}`);
 }
 process.exitCode = code;
+clearTimeout(runTimer);

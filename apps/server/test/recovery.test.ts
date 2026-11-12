@@ -450,6 +450,28 @@ async function crashAndRestart(
       resolve({ code: null, signal: null });
     });
   });
+  // SIGKILL 뒤 종료가 보고되지 않으면 시험을 멈추지 않고 그 자식을 밝혀 실패한다.
+  const exitedWithin = async (ms: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        exited,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `crash server ${child.pid} did not exit in ${ms}ms after SIGKILL (exit code ${child.exitCode}, signal ${child.signalCode}): stderr=${JSON.stringify(stderr)}`
+                )
+              ),
+            ms
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   let orgId: string;
   try {
     // 준비 줄은 조각나서 온다. 완전한 줄이 모일 때까지 기다리되 15초에서 멈춘다.
@@ -480,7 +502,7 @@ async function crashAndRestart(
     }
     if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
-    await exited;
+    await exitedWithin(10_000);
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       try {
@@ -489,7 +511,7 @@ async function crashAndRestart(
         /* 이미 끝났다. */
       }
     }
-    await exited;
+    await exitedWithin(10_000);
   }
   server = await startServer({ db: database.db, port: 0 });
   await server.drain();

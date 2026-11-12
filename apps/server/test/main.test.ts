@@ -9,6 +9,10 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const readyTimeoutMs = 45_000;
+// 종료 신호 뒤 서버가 끝나기까지. 서버의 기본 종료 시한(30초)보다 길게 둔다.
+const shutdownWaitMs = 35_000;
+// SIGKILL 뒤 종료가 보고되기까지.
+const killWaitMs = 10_000;
 
 let external: TestDatabase;
 beforeAll(async () => {
@@ -69,7 +73,7 @@ it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
     try {
       await child.ready;
       child.kill(signal);
-      const { code } = await child.exited;
+      const { code } = await waitExit(child, shutdownWaitMs);
       expect(code, child.stderrText()).toBe(0);
       expect(child.stderrText()).toBe("");
     } finally {
@@ -88,7 +92,7 @@ it.each(["SIGINT", "SIGHUP"] as const)(
     try {
       await child.ready;
       process.kill(-child.pid!, signal);
-      const { code } = await child.exited;
+      const { code } = await waitExit(child, shutdownWaitMs);
       expect(code, child.stderrText()).toBe(0);
       expect(child.stderrText()).toBe("");
     } finally {
@@ -111,7 +115,7 @@ it("stops the embedded Postgres it was starting when a stop signal arrives durin
     postgresPid = await waitForPostmaster(child, pidFile);
     expect(postgresPid).toBeGreaterThan(0);
     child.kill("SIGTERM");
-    const { code } = await child.exited;
+    const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(0);
     expect(isAlive(postgresPid)).toBe(false);
     expect(existsSync(pidFile)).toBe(false);
@@ -139,7 +143,7 @@ it("ends with a failure when the start fails after a stop signal arrived during 
   try {
     await waitForPath(child, path.join(home, "postgres"));
     child.kill("SIGTERM");
-    const { code } = await child.exited;
+    const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(1);
     expect(child.stderrText()).toContain(
       "embedded Postgres exited before it was ready"
@@ -171,7 +175,7 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
     process.kill(postgresPid, "SIGSTOP");
     const stoppedAt = Date.now();
     child.kill("SIGTERM");
-    const { code } = await child.exited;
+    const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(1);
     // 시한은 프로세스가 끝나는 시각까지다. 프로세스 종료 때의 비상 정지도 그 안에 든다.
     // 타이머를 이 경계에 두므로 스케줄러가 늦게 깨는 몫을 더 두되, 기본 시한(30s)보다는 크게 짧게 잡는다.
@@ -224,20 +228,24 @@ type MainProcess = ChildProcess & {
   ready: Promise<void>;
 };
 
-/** 부모 환경의 DB·HOST·프로바이더 설정이 테스트가 고른 환경을 이기지 않게 지운다. BABOJUBOT_HOME 기본값은 남긴다. */
+/**
+ * 부모 셸의 서버 설정이 테스트가 고른 환경을 이기지 않게 지운다. 서버가 읽는 설정은 `BABOJUBOT_*`와 아래 이름이다.
+ * 목록으로 지우면 서버에 설정이 늘 때마다 빠진다. BABOJUBOT_HOME은 테스트 setup(product-home.ts)이 정한 값을 남긴다.
+ */
+const serverSettings = [
+  "DATABASE_URL",
+  "HOST",
+  "PORT",
+  "EMBEDDED_POSTGRES_PORT",
+];
 function inheritedEnv() {
   const env = { ...process.env };
-  for (const name of [
-    "DATABASE_URL",
-    "BABOJUBOT_EPHEMERAL_DB",
-    "EMBEDDED_POSTGRES_PORT",
-    "BABOJUBOT_SHUTDOWN_TIMEOUT_MS",
-    "HOST",
-    "BABOJUBOT_PROVIDERS",
-    "BABOJUBOT_FAKE_PROVIDERS",
-    "BABOJUBOT_FAKE_PROVIDER_SETTINGS",
-  ])
-    delete env[name];
+  for (const name of Object.keys(env))
+    if (
+      (name.startsWith("BABOJUBOT_") && name !== "BABOJUBOT_HOME") ||
+      serverSettings.includes(name)
+    )
+      delete env[name];
   return env;
 }
 
@@ -334,22 +342,29 @@ async function startOutcome(child: MainProcess) {
     await child.ready;
     return { started: true };
   } catch (error) {
-    const exit = await exitWithin(child, 1_000);
+    const exit = await waitExit(child, 1_000).catch(() => undefined);
     return exit ? { code: exit.code } : { error: String(error) };
   }
 }
 
-async function exitWithin(child: MainProcess, ms: number) {
+/** 이미 붙여 둔 종료 관찰을 시한 안에서 기다린다. 시한은 기다리기 시작할 때부터 센다. */
+async function waitExit(child: MainProcess, ms: number): Promise<Exit> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       child.exited,
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), ms);
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `server ${child.pid} did not exit in ${ms}ms (exit code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(child.stdoutText().slice(-2000))} stderr=${JSON.stringify(child.stderrText().slice(-2000))}`
+              )
+            ),
+          ms
+        );
       }),
     ]);
-  } catch {
-    return undefined;
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -360,7 +375,12 @@ async function stopMain(child: MainProcess, { group = false } = {}) {
   if (group) killGroup(child);
   else if (child.exitCode === null && child.signalCode === null)
     child.kill("SIGKILL");
-  await child.exited.catch(() => {});
+  try {
+    await waitExit(child, killWaitMs);
+  } catch (error) {
+    // spawn 오류는 시작 실패로 이미 드러났다. 끝나지 않는 자식만 실패로 알린다.
+    if (child.exitCode === null && child.signalCode === null) throw error;
+  }
 }
 
 async function waitForPostmaster(child: MainProcess, pidFile: string) {

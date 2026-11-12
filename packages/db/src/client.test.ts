@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -76,14 +75,14 @@ describe("embedded Postgres lifetime", () => {
       child = spawn(process.execPath, ["--input-type=module", "-e", script], {
         stdio: ["ignore", "pipe", "inherit"],
       });
-      const exited = exitOf(child, 30_000);
+      const exited = watchExit(child);
       let output = "";
       let failedAt = 0;
       child.stdout!.on("data", (chunk) => {
         output += chunk;
         failedAt ||= Date.now();
       });
-      await exited;
+      await exited.within(30_000);
 
       // 왜 끝났는지 알 수 있어야 한다. 시스템마다 이유가 달라 Postgres가 남긴 말을 그대로 보인다.
       expect(output).toMatch(
@@ -132,7 +131,7 @@ describe("embedded Postgres lifetime", () => {
         child = spawn(process.execPath, ["--input-type=module", "-e", script], {
           stdio: ["ignore", "pipe", "ignore"],
         });
-        const exited = exitOf(child, 30_000);
+        const exited = watchExit(child);
         const lines = lineReader(child);
         await lines.next();
         pid = Number(
@@ -141,7 +140,7 @@ describe("embedded Postgres lifetime", () => {
             .split("\n")[0]
         );
         if (signal) child.kill(signal);
-        await exited;
+        await exited.within(30_000);
         expect(child.exitCode).toBe(code);
 
         const deadline = Date.now() + 15_000;
@@ -209,7 +208,7 @@ describe("embedded Postgres lifetime", () => {
           stdio: ["pipe", "pipe", "inherit"],
         });
         child.stdin!.on("error", () => {});
-        const exited = exitOf(child, 30_000);
+        const exited = watchExit(child);
         const lines = lineReader(child);
         backend = Number((await lines.next()).trim());
         postmaster = Number(
@@ -219,7 +218,7 @@ describe("embedded Postgres lifetime", () => {
         );
         process.kill(backend, "SIGSTOP");
         child.stdin!.write("end\n");
-        await exited;
+        await exited.within(30_000);
         expect(child.exitCode).toBe(1);
 
         const deadline = Date.now() + 20_000;
@@ -263,10 +262,10 @@ describe("embedded Postgres lifetime", () => {
       child = spawn(process.execPath, ["--input-type=module", "-e", script], {
         stdio: ["ignore", "pipe", "inherit"],
       });
-      const exited = exitOf(child, 30_000);
+      const exited = watchExit(child);
       let output = "";
       child.stdout!.on("data", (chunk) => (output += chunk));
-      await exited;
+      await exited.within(30_000);
       const none = {
         SIGINT: 0,
         SIGTERM: 0,
@@ -379,7 +378,7 @@ describe("a Postgres left by a killed process", () => {
         );
         if (owner === "a dead process") {
           const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-          await exitOf(gone, 10_000);
+          await watchExit(gone).within(10_000);
           recordOwner(dataDir, { pid: gone.pid!, persistent: true });
         }
         await expect(
@@ -480,7 +479,7 @@ describe("a Postgres left by a killed process", () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     // 새 폴더에서 셋이 동시에 cluster를 만들고 켜게 한다. 주인이 하나가 아니면 만들기·켜기를 함께 시도해 부딪힌다.
     const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-    await exitOf(gone, 10_000);
+    await watchExit(gone).within(10_000);
     recordOwner(dataDir, { pid: gone.pid!, persistent: true });
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
     const script = `
@@ -504,7 +503,7 @@ describe("a Postgres left by a killed process", () => {
         stdio: ["pipe", "pipe", "inherit"],
       })
     );
-    const exits = children.map((child) => exitOf(child, 30_000));
+    const exits = children.map(watchExit);
     const readers = children.map((child) => lineReader(child, 45_000));
     for (const child of children) child.stdin!.on("error", () => {});
     let postmaster = 0;
@@ -515,18 +514,17 @@ describe("a Postgres left by a killed process", () => {
       for (const [index, line] of lines.entries()) {
         if (index === winnerIndex) continue;
         expect(line).toContain("in use by a running process");
-        await exits[index]!;
+        await exits[index]!.within(30_000);
       }
 
       postmaster = readPostmaster(dataDir);
       const winner = children[winnerIndex]!;
       winner.stdin!.write("query\n");
       expect(await readers[winnerIndex]!.next()).toBe("query 1");
-      await exits[winnerIndex]!;
+      await exits[winnerIndex]!.within(30_000);
       expect(winner.exitCode).toBe(0);
     } finally {
       for (const child of children) await killHard(child);
-      await Promise.allSettled(exits);
       await stopPostgres(postmaster);
       await removeCluster(dataDir);
     }
@@ -566,9 +564,9 @@ describe("a Postgres left by a killed process", () => {
         path.join(dataDir, "postmaster.pid"),
         `${unrelated.pid}\n${dataDir}\n0\n0\n`
       );
-      const exited = exitOf(child, 30_000);
+      const exited = watchExit(child);
       child.stdin!.write("end\n");
-      await exited;
+      await exited.within(30_000);
       await new Promise((r) => setTimeout(r, 500));
       expect(isAlive(unrelated.pid!)).toBe(true);
     } finally {
@@ -644,7 +642,7 @@ describe("a Postgres left by a killed process", () => {
       path.join(os.tmpdir(), "babojubot-outside-")
     );
     const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-    await exitOf(gone, 10_000);
+    await watchExit(gone).within(10_000);
     fs.writeFileSync(
       path.join(outside, "1"),
       JSON.stringify({ pid: gone.pid, persistent: false })
@@ -789,33 +787,45 @@ function lineReader(child: Spawned, timeoutMs = 45_000) {
   };
 }
 
-/** 자식이 끝날 때까지 기다리되, spawn 오류와 제한 시간도 실패로 돌려준다. */
-function exitOf(child: Spawned, timeoutMs = 30_000) {
-  return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (resolve, reject) => {
-      function cleanup() {
-        if (timer) clearTimeout(timer);
-        child.off("exit", onExit);
-        child.off("error", onError);
-      }
-      function onExit(code: number | null, signal: NodeJS.Signals | null) {
-        cleanup();
-        resolve({ code, signal });
-      }
-      function onError(error: Error) {
-        cleanup();
-        reject(error);
-      }
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(`child did not exit in ${timeoutMs}ms`));
-      }, timeoutMs);
-      child.once("exit", onExit);
-      child.once("error", onError);
-      if (child.exitCode !== null || child.signalCode !== null)
-        onExit(child.exitCode, child.signalCode);
+type Exit = { code: number | null; signal: NodeJS.Signals | null };
+
+/**
+ * spawn 직후에 붙여 한 번만 오는 exit/error를 놓치지 않는다. 시한은 `within`으로 기다리기 시작할 때부터 센다.
+ * spawn부터 세면 오래 살아 있어야 하는 자식이 끝내라는 요청을 받기도 전에 시한이 지난다.
+ */
+function watchExit(child: Spawned) {
+  const exited = new Promise<Exit>((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve({ code: child.exitCode, signal: child.signalCode });
+      return;
     }
-  );
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+    child.once("error", reject);
+  });
+  exited.catch(() => {});
+  return {
+    async within(timeoutMs: number): Promise<Exit> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          exited,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `child ${child.pid} did not exit in ${timeoutMs}ms (exit code ${child.exitCode}, signal ${child.signalCode})`
+                  )
+                ),
+              timeoutMs
+            );
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    },
+  };
 }
 
 /** DB를 열고 살아 있는 자식 프로세스. `line`은 자식이 처음 출력한 줄이다. `db`가 client.ts 모듈이다. */
@@ -843,9 +853,9 @@ async function killHard(child: Spawned) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   // spawn 자체가 실패하면 pid가 없고 exit도 오지 않는다.
   if (child.pid === undefined) return;
-  const exited = once(child, "exit");
+  const exited = watchExit(child);
   child.kill("SIGKILL");
-  await exited;
+  await exited.within(10_000);
 }
 
 // 종료 관찰은 spawn 직후에 붙이고, 끝나기를 기다리는 시한은 기다리기 시작할 때부터 센다.
