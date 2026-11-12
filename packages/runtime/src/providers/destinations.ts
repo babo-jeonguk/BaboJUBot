@@ -13,5 +13,7 @@ export const providerDestinations = {
   codex: [],
   // Antigravity(`agy acp`): 로그인 확인(www.googleapis.com)·사용 기록은 중계로 보낼 수 없지만 ACP에서는 실패해도 실행이 이어진다.
   antigravity: [],
-  opencode: [],
+  // OpenCode: 공개 모델 목록(catalog, 로그인 없이 받는다)만 직접 연다. 막으면 내장된 낡은 목록을 써서 이미 없어진 무료 모델을
+  // 고른다(2.2.6 실제 확인: 410 ModelDeprecated). 모델 통신(opencode.ai)은 인증 중계로만 나간다.
+  opencode: [{ host: "models.opencode.ai", port: 443 }],
 } as const satisfies Record<string, readonly Destination[]>;

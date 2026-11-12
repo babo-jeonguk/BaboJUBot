@@ -230,13 +230,8 @@ export function createOpenCodeProvider(options: {
         OPENCODE_DISABLE_PROJECT_CONFIG: "1",
         OPENCODE_DISABLE_CLAUDE_CODE: "1",
         OPENCODE_DISABLE_FILEWATCHER: "1",
-        // 격리 컨테이너에는 바깥으로 직접 나가는 길이 없다.
-        ...(isolated
-          ? {
-              OPENCODE_DISABLE_MODELS_FETCH: "1",
-              OPENCODE_DISABLE_AUTOUPDATE: "1",
-            }
-          : {}),
+        // 격리 컨테이너는 스스로 판을 올리지 않는다(바깥으로 나가는 길은 중계와 모델 목록뿐이다).
+        ...(isolated ? { OPENCODE_DISABLE_AUTOUPDATE: "1" } : {}),
       },
       { isolated }
     );
