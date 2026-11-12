@@ -69,7 +69,10 @@ export const claudeRelayProfile: RelayProfile = {
     { method: "POST", path: "/v1/messages" },
     { method: "POST", path: "/v1/messages/count_tokens" },
   ],
-  authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
+  authorize: (credential) => ({
+    headers: { authorization: `Bearer ${credential}` },
+    secrets: [credential],
+  }),
 };
 /** 조직 제품 폴더에 남으면 격리 실행을 시작하지 않는 로그인 흔적(프로그램 안에서 로그인한 기록). */
 const credentialFiles = ["config/.credentials.json"];
