@@ -176,9 +176,16 @@ describe("Codex login link", () => {
     );
     await mkdir(connection, { recursive: true });
     await writeFile(fallback, '{"synthetic":1}');
-    const share = loginLink({ original, fallback, label: "Codex" });
+    // 제품처럼 연결 폴더의 set-aside에 치운 로그인을 둔다(codex.ts).
+    const setAside = path.join(connection, "set-aside");
+    const share = loginLink({ original, fallback, label: "Codex", setAside });
     // 같은 원본에 대한 별도의 loginLink 클로저도 같은 차례를 지켜야 한다.
-    const otherShare = loginLink({ original, fallback, label: "Codex" });
+    const otherShare = loginLink({
+      original,
+      fallback,
+      label: "Codex",
+      setAside,
+    });
 
     originalRenames = 0;
     gatedOriginal = original;

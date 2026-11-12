@@ -230,7 +230,10 @@ function realConnection(
     profile: {
       upstream: "http://127.0.0.1:1",
       routes: [{ method: "POST", path: "/v1/messages" }],
-      authorize: (value) => ({ authorization: `Bearer ${value}` }),
+      authorize: (credential) => ({
+        headers: { authorization: `Bearer ${credential}` },
+        secrets: [credential],
+      }),
     },
     verified: credential.verified,
     credential: async () => "real-account-secret",

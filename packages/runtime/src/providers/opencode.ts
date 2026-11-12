@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, rm, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type {
   ProviderConnection,
   RunResult,
@@ -29,7 +30,12 @@ import {
   placeAttempt,
   type ContainerLaunch,
 } from "./container.ts";
-import { residueRefusal } from "./credential-relay.ts";
+import {
+  createCredentialRelay,
+  type RelayGrant,
+  type RelayProfile,
+  residueRefusal,
+} from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 const object = (v: unknown): Record<string, unknown> =>
@@ -81,17 +87,136 @@ const requestTimeoutMs = 60_000;
 const steerTimeoutMs = 10_000;
 /** 이보다 큰 이벤트는 메모리를 지키려고 버린다. */
 const maxEventLength = 64 * 1024 * 1024;
+/**
+ * OpenCode의 인증 중계(#148). Go 구독 모델은 연결의 Go 키를 쓰고, Zen 무료 모델은 연결의 로그인 없이 공개 키를 쓴다.
+ * Google 프로토콜을 쓰는 Go 모델은 경로가 없다.
+ */
+export const opencodeRelayProfile: RelayProfile = {
+  upstream: "https://opencode.ai/inference",
+  routes: [
+    {
+      method: "POST",
+      path: "/zen/chat/completions",
+      upstreamPath: "/openai/v1/chat/completions",
+      fixed: { authorization: "Bearer public" },
+    },
+    {
+      method: "POST",
+      path: "/zen/responses",
+      upstreamPath: "/openai/v1/responses",
+      fixed: { authorization: "Bearer public" },
+    },
+    {
+      method: "POST",
+      path: "/go/chat/completions",
+      upstreamPath: "/go/openai/v1/chat/completions",
+    },
+    {
+      method: "POST",
+      path: "/go/responses",
+      upstreamPath: "/go/openai/v1/responses",
+    },
+    {
+      method: "POST",
+      path: "/go/messages",
+      upstreamPath: "/go/anthropic/v1/messages",
+      authorize: (key) => ({
+        headers: { "x-api-key": key },
+        secrets: [key],
+      }),
+    },
+  ],
+  authorize: (key) => ({
+    headers: { authorization: `Bearer ${key}` },
+    secrets: [key],
+  }),
+};
+const relayFailure =
+  "인증 중계가 연결의 로그인을 쓰지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
+/**
+ * 인증 중계가 이 컴퓨터에서 연결의 Go 키를 읽는다. 컨테이너에는 키를 주지 않는다.
+ * DB가 없거나 값이 Go 키가 아니면 `undefined`다.
+ */
+function goKey(dataHome: string): string | undefined {
+  const file = path.join(dataHome, "opencode", "opencode.db");
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const row = db
+      .prepare(
+        "select value from credential where integration_id = 'opencode-go' order by active desc limit 1"
+      )
+      .get() as { value?: unknown } | undefined;
+    if (typeof row?.value !== "string") return undefined;
+    const value = object(JSON.parse(row.value));
+    return value.type === "key" && typeof value.key === "string" && value.key
+      ? value.key
+      : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    db?.close();
+  }
+}
+/**
+ * 조직의 제품 폴더에 남은 로그인 흔적이 있는가. 서버를 띄우기 전에 보므로, 그 폴더의 로그인을 읽을 수 있는
+ * 컨테이너는 시작하지 않는다. 값은 읽지 않고 표의 개수만 센다.
+ */
+async function openCodeLoginResidue(dataHome: string): Promise<boolean> {
+  const folder = path.join(dataHome, "opencode");
+  try {
+    await lstat(path.join(folder, "auth.json"));
+    return true;
+  } catch {
+    /* 옛 로그인 파일이 없다. */
+  }
+  const file = path.join(folder, "opencode.db");
+  try {
+    await lstat(file);
+  } catch {
+    return false;
+  }
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    for (const table of ["credential", "account", "control_account"]) {
+      try {
+        const row = db.prepare(`select count(*) as n from "${table}"`).get() as
+          { n?: unknown } | undefined;
+        if (typeof row?.n === "number" && row.n > 0) return true;
+      } catch (error) {
+        // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
+        if (!/no such table/i.test(String(error))) throw error;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  } finally {
+    db?.close();
+  }
+}
 export function createOpenCodeProvider(options: {
   dataDir: string;
   command?: readonly [string, ...string[]];
   id?: string;
   label?: string;
   container?: ContainerSettings;
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
+  relay?: { upstream?: string; verified?: boolean };
 }): ProviderConnection {
   const connectionId = options.id ?? "opencode";
   const folders = connectionFolders(options.dataDir, connectionId);
   const home = folders.connection,
     command = options.command ?? commandFor(connectionId, "opencode");
+  const relay = createCredentialRelay({
+    profile: {
+      ...opencodeRelayProfile,
+      upstream: options.relay?.upstream ?? opencodeRelayProfile.upstream,
+    },
+    verified: options.relay?.verified ?? true,
+    credential: async () => goKey(path.join(home, "data")),
+  });
   /** 그 제품 폴더로 띄우는 환경. 로그인과 세션은 그 폴더의 DB 하나에 함께 있다. */
   const env = (productHome = home, isolated = false) =>
     providerEnvironment(
@@ -105,6 +230,8 @@ export function createOpenCodeProvider(options: {
         OPENCODE_DISABLE_PROJECT_CONFIG: "1",
         OPENCODE_DISABLE_CLAUDE_CODE: "1",
         OPENCODE_DISABLE_FILEWATCHER: "1",
+        // 격리 컨테이너는 스스로 판을 올리지 않는다(바깥으로 나가는 길은 중계와 모델 목록뿐이다).
+        ...(isolated ? { OPENCODE_DISABLE_AUTOUPDATE: "1" } : {}),
       },
       { isolated }
     );
@@ -318,6 +445,10 @@ export function createOpenCodeProvider(options: {
     string,
     (message: SteerMessage) => Promise<SteerOutcome>
   >();
+  /** 조직마다 살아 있는 격리 실행 수. 그동안 이 컴퓨터의 실행은 그 조직 폴더로 연결의 로그인을 옮기지 않는다(PR #171 SP-2). */
+  const isolatedRuns = new Map<string, number>();
+  /** 조직마다 진행 중인 로그인 옮기기. 격리 실행은 이것이 끝난 뒤에 남은 로그인을 확인한다. */
+  const copying = new Map<string, Set<Promise<void>>>();
   const catalog = async (signal: AbortSignal) => {
     await prepare();
     const service = await server(signal);
@@ -402,7 +533,10 @@ export function createOpenCodeProvider(options: {
     },
     async execute(input, control) {
       let service: Awaited<ReturnType<typeof server>> | undefined,
+        grant: RelayGrant | undefined,
         events: Promise<void> | undefined;
+      const organizationId = input.identity.organizationId;
+      let counted = false;
       try {
         // 그 조직의 제품 폴더로 돈다.
         const organization = folders.organization(
@@ -410,8 +544,25 @@ export function createOpenCodeProvider(options: {
         );
         const placement = placeAttempt(options.container, organization, input);
         if (!placement) return failure();
+        // 같은 조직의 격리 실행이 살아 있는 동안 이 컴퓨터의 실행은 그 조직 폴더로 연결의 로그인을 옮기지 않는다(PR #171 SP-2).
+        if (placement.container) {
+          isolatedRuns.set(
+            organizationId,
+            (isolatedRuns.get(organizationId) ?? 0) + 1
+          );
+          counted = true;
+        }
         await prepare();
         await mkdir(organization, { recursive: true, mode: 0o700 });
+        // 이 컴퓨터의 실행이 옮기던 로그인은 다 옮겨진 뒤에 본다.
+        if (placement.container)
+          await Promise.all(copying.get(organizationId) ?? []);
+        // 격리 실행은 조직 폴더에 남은 로그인을 컨테이너가 읽을 수 있으므로, 서버를 띄우기 전에 확인하고 시작하지 않는다.
+        if (
+          placement.container &&
+          (await openCodeLoginResidue(path.join(organization, "data")))
+        )
+          return { ...failure(), error: residueRefusal };
         let container: ContainerLaunch | undefined;
         try {
           container = placement.container?.({
@@ -426,6 +577,27 @@ export function createOpenCodeProvider(options: {
             return { ...failure(), error: error.message };
           throw error;
         }
+        if (placement.container) {
+          try {
+            grant = relay.grant({
+              signal: control.signal,
+              organizationId: input.identity.organizationId,
+              runId: input.identity.runId,
+            });
+          } catch {
+            return { ...failure(), error: relayFailure };
+          }
+        }
+        const runControl = grant
+          ? {
+              ...control,
+              signal: AbortSignal.any([control.signal, grant.failed]),
+            }
+          : control;
+        const relayBase = new URL(
+          `/api/relay/${encodeURIComponent(connectionId)}`,
+          input.access.toolsBaseUrl
+        ).href;
         // Instructions are attached separately; never set agent.system, which replaces the native prompt.
         const config = {
           permissions: [{ action: "*", resource: "*", effect: "allow" }],
@@ -444,15 +616,69 @@ export function createOpenCodeProvider(options: {
               },
             },
           },
+          // 권한은 이 실행 시도의 환경에만 들어간다. Zen 무료 모델은 공개 키를 그대로 두고 권한은 `x-api-key`로 싣는다.
+          // 정책은 따로 나가는 다른 제공자들을 쓰지 않게 한다.
+          ...(grant
+            ? {
+                policies: [
+                  { action: "provider.use", resource: "*", effect: "deny" },
+                  {
+                    action: "provider.use",
+                    resource: "opencode-go",
+                    effect: "allow",
+                  },
+                  {
+                    action: "provider.use",
+                    resource: "opencode",
+                    effect: "allow",
+                  },
+                ],
+                share: "disabled",
+                providers: {
+                  opencode: {
+                    settings: { baseURL: `${relayBase}/zen` },
+                    headers: { "x-api-key": grant.token },
+                  },
+                  "opencode-go": {
+                    settings: {
+                      baseURL: `${relayBase}/go`,
+                      apiKey: grant.token,
+                    },
+                  },
+                },
+              }
+            : {}),
         };
-        service = await server(control.signal, config, container, organization);
+        service = await server(
+          runControl.signal,
+          config,
+          container,
+          organization
+        );
         const api = service;
         // 격리 실행에는 연결의 로그인을 옮기지 않는다(#148). 조직 폴더에 옮겨 둔 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.
-        // OpenCode의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
         if (container) {
           if (entries(await api.json("/api/credential")).length)
             return { ...failure(), error: residueRefusal };
-        } else await copyLogin(api, control.signal);
+        } else if (isolatedRuns.get(organizationId)) {
+          // 살아 있는 격리 컨테이너가 조직의 제품 폴더를 넣은 채 돌고 있다.
+          await runControl.emit({
+            type: "progress",
+            text: "같은 조직의 격리 실행이 진행 중이라 연결의 로그인을 조직 폴더로 옮기지 않았습니다.",
+          });
+        } else {
+          const copy = copyLogin(api, runControl.signal);
+          const pending =
+            copying.get(organizationId) ?? new Set<Promise<void>>();
+          pending.add(copy);
+          copying.set(organizationId, pending);
+          try {
+            await copy;
+          } finally {
+            pending.delete(copy);
+            if (!pending.size) copying.delete(organizationId);
+          }
+        }
         const available = models(await api.json("/api/model"));
         // 비용이 들지 않도록 무료 모델을 먼저 고른다. 무료 모델이 없으면 그 연결이 제공하는 첫 모델을 쓴다.
         const selected = input.model
@@ -479,7 +705,7 @@ export function createOpenCodeProvider(options: {
               e.status === 403
             )
               throw e;
-            await control.emit({
+            await runControl.emit({
               type: "progress",
               text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
             });
@@ -548,7 +774,7 @@ export function createOpenCodeProvider(options: {
               if (payload.sessionID !== id) continue;
               if (event.type === "session.execution.started") {
                 began = true;
-                await control.emit({
+                await runControl.emit({
                   type: "progress",
                   text: "프로바이더가 작업을 시작했습니다.",
                 });
@@ -575,7 +801,8 @@ export function createOpenCodeProvider(options: {
         // Attach a handler immediately: a disconnected stream is a failed attempt, never a false success.
         void events.catch(() => end());
         active.set(input.identity.runId, async (message) => {
-          if (!began || finished || control.signal.aborted) return "rejected";
+          if (!began || finished || runControl.signal.aborted)
+            return "rejected";
           try {
             await api.request(
               route + "/prompt",
@@ -601,7 +828,7 @@ export function createOpenCodeProvider(options: {
         };
         // Server lifetime uses a separate signal below so interrupt can be sent before escalation.
         api.setInterrupt(cancel);
-        if (control.signal.aborted) cancel();
+        if (runControl.signal.aborted) cancel();
         try {
           await api.request(route + "/prompt", "POST", {
             text: JSON.stringify({
@@ -611,6 +838,8 @@ export function createOpenCodeProvider(options: {
             }),
           });
           await Promise.race([ended, api.closed, events]);
+          if (grant?.failed.aborted && !control.signal.aborted)
+            return { ...failure(), error: relayFailure };
           if (control.signal.aborted)
             return { ...failure(), stopReason: "cancelled", error: null };
           if (!finished) return failure();
@@ -628,13 +857,25 @@ export function createOpenCodeProvider(options: {
           api.setInterrupt(() => api.lifetime.abort());
         }
       } catch {
+        if (grant?.failed.aborted && !control.signal.aborted)
+          return { ...failure(), error: relayFailure };
         return control.signal.aborted
           ? { ...failure(), stopReason: "cancelled", error: null }
           : failure();
       } finally {
+        grant?.revoke();
         active.delete(input.identity.runId);
-        await service?.close();
-        await events?.catch(() => {});
+        try {
+          await service?.close();
+          await events?.catch(() => {});
+        } finally {
+          // 컨테이너를 지운 뒤에야 이 격리 실행을 센 것에서 뺀다.
+          if (counted) {
+            const remaining = (isolatedRuns.get(organizationId) ?? 1) - 1;
+            if (remaining) isolatedRuns.set(organizationId, remaining);
+            else isolatedRuns.delete(organizationId);
+          }
+        }
       }
     },
   };
@@ -642,6 +883,7 @@ export function createOpenCodeProvider(options: {
     id: connectionId,
     label: options.label ?? "OpenCode",
     isolatable: true,
+    credentialRelay: relay,
     login: { command, args: ["auth", "login"], env: env() },
     adapter,
     models: [],

@@ -15,15 +15,11 @@ import {
   cleanupAntigravityWorkspaces,
   createAntigravityProvider,
 } from "./antigravity.ts";
-import {
-  configFailure,
-  configScript,
-  ownerMark,
-} from "./antigravity-config.ts";
+import { configScript, ownerMark } from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
 
-// 설정 파일은 링크로 한 번에 나타나고 이미 있는 파일을 덮어쓰지 않는다(#101 결정 3). 우리 표시가 없는 파일은 비어 있어도 건드리지 않는다.
-// 쓰기와 지우기는 처음 확인한 .agents 폴더 안에서만 일어난다. 그 폴더를 다른 조직으로 바꿔치기해도 그곳에는 닿지 않는다.
+// 예전 판이 작업 폴더에 둔 설정의 남은 것만 서버 시작 때 지운다(#148부터 실행은 설정 파일을 쓰지 않는다). 우리 표시가 없는 파일은
+// 비어 있어도 건드리지 않는다. 지우기는 처음 확인한 .agents 폴더 안에서만 일어난다. 그 폴더를 다른 조직으로 바꿔치기해도 그곳에는 닿지 않는다.
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -119,11 +115,7 @@ const interrupt = `{
   process.chdir = (directory) => { tick(); chdir(directory); };
 }
 `;
-const script = (
-  cwd: string,
-  op: "clear" | "publish",
-  plan: Record<string, unknown> = {}
-) =>
+const script = (cwd: string, op: "clear", plan: Record<string, unknown> = {}) =>
   new Promise<number>((resolve) => {
     const child = execFile(
       process.execPath,
@@ -142,7 +134,7 @@ const script = (
     );
     // 계획에 따라 자식은 입력을 읽기 전에 끝날 수 있다. 그때의 쓰기 오류(EPIPE)는 예상된 것이며 결과는 종료 코드로 본다.
     child.stdin!.on("error", () => {});
-    child.stdin!.end(op === "publish" ? '{"token":"private"}' : "");
+    child.stdin!.end();
   });
 const moments = (last: number) => {
   const plans: { swapAt: number; restoreAt: number }[] = [];
@@ -166,29 +158,6 @@ async function atEveryMoment(
   return results;
 }
 
-it("publishes the finished file in one step and cleans up", async () => {
-  const { agents, execute } = await workspace();
-  const result = await execute();
-  expect(result.stopReason).toBe("completed");
-  expect(await readdir(agents)).toEqual([]);
-});
-
-it("never publishes into another organization when .agents is swapped at any moment", async () => {
-  const results = await atEveryMoment(12, async (plan) => {
-    const { cwd, agents, otherAgents } = await workspace();
-    const status = await script(cwd, "publish", {
-      ...plan,
-      from: agents,
-      to: otherAgents,
-    });
-    expect(await readdir(otherAgents)).toEqual([]);
-    return status;
-  });
-  // 시험이 헛돌지 않았는지 본다. 일부는 거부되고, 일부는 고정된 뒤라 원래 폴더에 쓴다.
-  expect(results).toContain(0);
-  expect(results.some((status) => status !== 0)).toBe(true);
-}, 240_000);
-
 it("never removes another organization's file when .agents is swapped at any moment", async () => {
   const results = await atEveryMoment(10, async (plan) => {
     const { cwd, agents, config, otherAgents, otherConfig } = await workspace();
@@ -206,50 +175,31 @@ it("never removes another organization's file when .agents is swapped at any mom
   expect(results.some((status) => status !== 0)).toBe(true);
 }, 240_000);
 
-// 게시는 이미 끝났다. 임시 파일을 못 지웠다고 실패로 알리면 호출자가 게시된 설정을 치우지 않는다.
-it("reports success when only the temporary file could not be removed", async () => {
-  const { cwd, config } = await workspace();
-  const status = await script(cwd, "publish", { unlinkError: true });
-  expect(status).toBe(0);
-  expect(await readFile(config, "utf8")).toContain("private");
-});
-
-it("fails with the reason where hard links are not available", async () => {
-  const { cwd, agents } = await workspace();
-  const status = await script(cwd, "publish", { linkError: "ENOTSUP" });
-  expect(configFailure(status)).toContain("하드링크");
-  expect(await readdir(agents)).toEqual([]);
-});
-
-it("leaves a file somebody else created at the last moment", async () => {
-  const { cwd, config } = await workspace();
-  const status = await script(cwd, "publish", { createFirst: config });
-  expect(configFailure(status)).toContain("제품 소유 파일이 아니거나");
-  expect(await readFile(config, "utf8")).toBe("사용자 설정");
-});
-
 it.each([
   ["empty", ""],
   ["unfinished", '{"mcpServers"'],
   ["unmarked", '{"mcpServers":{}}'],
-])("refuses and keeps an %s file without our mark", async (_name, content) => {
-  const { root, config, execute } = await workspace();
-  await writeFile(config, content);
-  const result = await execute();
-  expect(result.stopReason).toBe("failed");
-  expect(await readFile(config, "utf8")).toBe(content);
-  await cleanupAntigravityWorkspaces(root);
-  expect(await readFile(config, "utf8")).toBe(content);
-});
+])(
+  "keeps an %s file without our mark, on a run and at server start",
+  async (_name, content) => {
+    const { root, config, execute } = await workspace();
+    await writeFile(config, content);
+    // 실행은 작업 폴더의 설정을 쓰지도 지우지도 않는다(조직 도구는 ACP 세션으로 준다).
+    const result = await execute();
+    expect(result.stopReason).toBe("completed");
+    expect(await readFile(config, "utf8")).toBe(content);
+    await cleanupAntigravityWorkspaces(root);
+    expect(await readFile(config, "utf8")).toBe(content);
+  }
+);
 
-it("clears only leftovers carrying our mark, on a run and at server start", async () => {
-  for (const clear of ["run", "start"]) {
-    const { root, agents, config, execute } = await workspace();
+it("clears only leftovers carrying our mark at server start", async () => {
+  {
+    const { root, agents, config } = await workspace();
     await writeFile(config, ownedLeftover);
     await writeFile(path.join(agents, ".babojubot-left.tmp"), ownedLeftover);
     await writeFile(path.join(agents, ".babojubot-notes.tmp"), "사용자 메모");
-    if (clear === "run") expect((await execute()).stopReason).toBe("completed");
-    else await cleanupAntigravityWorkspaces(root);
+    await cleanupAntigravityWorkspaces(root);
     expect(await readdir(agents)).toEqual([".babojubot-notes.tmp"]);
   }
 });

@@ -1,4 +1,12 @@
-import { mkdir } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -31,7 +39,13 @@ import {
   placeAttempt,
   type ContainerLaunch,
 } from "./container.ts";
-import { credentialResidue, residueRefusal } from "./credential-relay.ts";
+import {
+  createCredentialRelay,
+  credentialResidue,
+  type RelayGrant,
+  type RelayProfile,
+  residueRefusal,
+} from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
@@ -43,7 +57,149 @@ export type CodexOptions = {
   id?: string;
   label?: string;
   container?: ContainerSettings;
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
+  relay?: { upstream?: string; verified?: boolean };
 };
+/**
+ * Codex의 인증 중계(#148). Codex의 ChatGPT 로그인은 custom provider(`requires_openai_auth`)를 거쳐 중계로 간다.
+ * 중계는 실행 시도의 권한을 연결의 access token과 계정으로 바꿔 넣는다. 갱신은 컨테이너 밖이 맡고,
+ * 컨테이너의 로그인 파일에는 갱신 값도 계정도 없다.
+ */
+export const codexRelayProfile: RelayProfile = {
+  upstream: "https://chatgpt.com/backend-api/codex",
+  routes: [
+    { method: "POST", path: "/responses" },
+    { method: "GET", path: "/models" },
+  ],
+  authorize(credential) {
+    const login = record(JSON.parse(credential));
+    const tokens = record(login.tokens);
+    const access = tokens.access_token;
+    if (typeof access !== "string" || !access)
+      throw new Error("no access token");
+    let account =
+      typeof tokens.account_id === "string" && tokens.account_id
+        ? tokens.account_id
+        : undefined;
+    if (!account && typeof tokens.id_token === "string") {
+      try {
+        const payload = tokens.id_token.split(".")[1];
+        const claims = record(
+          JSON.parse(Buffer.from(payload!, "base64url").toString("utf8"))
+        );
+        const auth = record(claims["https://api.openai.com/auth"]);
+        if (
+          typeof auth.chatgpt_account_id === "string" &&
+          auth.chatgpt_account_id
+        )
+          account = auth.chatgpt_account_id;
+      } catch {
+        /* 계정을 읽지 못했다. */
+      }
+    }
+    if (!account) throw new Error("no account id");
+    return {
+      headers: {
+        authorization: `Bearer ${access}`,
+        "chatgpt-account-id": account,
+      },
+      secrets: [access],
+    };
+  },
+  droppedHeaders: ["chatgpt-account-id", "x-openai-account-routing-override"],
+};
+const relayFailure =
+  "인증 중계가 연결의 로그인을 쓰지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
+/**
+ * 컨테이너 로그인 파일의 id_token. JWT 모양이지만 payload가 비어 있다. Codex는 id_token이 JWT 모양일 때만
+ * Authorization header를 보낸다.
+ */
+const relayIdToken = "eyJhbGciOiJub25lIn0.e30.babojubot-relay";
+/**
+ * 컨테이너에 넣는 가짜 로그인. 계정 ID도, OPENAI_API_KEY도, 갱신 값도 없다. 빈 갱신 값과 계정 ID가 없으므로
+ * Codex는 갱신도 계정 확인도 하지 않는다. last_refresh를 지금으로 두어 8일 규칙도 걸리지 않는다.
+ */
+const relayLogin = (token: string) => ({
+  tokens: {
+    id_token: relayIdToken,
+    access_token: token,
+    refresh_token: "",
+  },
+  last_refresh: new Date().toISOString(),
+});
+/** 이 어댑터가 남긴 가짜 로그인 파일인가. 서버가 실행 중에 멈춰 남은 파일이면 다음 실행을 시작한다. */
+async function isRelayLogin(file: string): Promise<boolean> {
+  try {
+    const found = await lstat(file);
+    if (!found.isFile()) return false;
+    const login = record(JSON.parse(await readFile(file, "utf8")));
+    const tokens = record(login.tokens);
+    return (
+      tokens.id_token === relayIdToken &&
+      (tokens.refresh_token === undefined || tokens.refresh_token === "") &&
+      tokens.account_id === undefined &&
+      (login.OPENAI_API_KEY === undefined || login.OPENAI_API_KEY === null)
+    );
+  } catch {
+    return false;
+  }
+}
+/**
+ * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 실행 시도마다 그 위에 자기 로그인 파일을 넣는 자리다(Docker는 넣을 자리가 있어야 한다).
+ * 원본을 가리키는 링크는 따라가 쓰지 않도록 먼저 지운다. 같은 조직의 다른 실행 시도가 함께 두어도 같은 내용이다.
+ */
+async function placeLoginPlaceholder(at: string): Promise<void> {
+  if (await isRelayLogin(at)) return;
+  await rm(at, { force: true });
+  try {
+    await writeFile(at, JSON.stringify(relayLogin("")), {
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+      !(await isRelayLogin(at))
+    )
+      throw error;
+  }
+}
+/** 갱신을 기다리는 한도. */
+const refreshTimeoutMs = 60_000;
+/** Codex 자신은 접근 토큰 만료 5분 전, 또는 마지막 갱신 8일 뒤에 갱신한다. 서버는 그보다 조금 일찍 갱신한다. */
+const refreshWindowMs = 10 * 60 * 1000;
+const refreshIntervalMs = 8 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000;
+/** JWT 모양 값의 만료 시각(ms). 읽지 못하면 undefined. */
+function jwtExpiry(token: string): number | undefined {
+  try {
+    const claims = record(
+      JSON.parse(
+        Buffer.from(token.split(".")[1]!, "base64url").toString("utf8")
+      )
+    );
+    return typeof claims.exp === "number" ? claims.exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+/** 원본 로그인을 갱신해야 하는가. Codex와 같은 규칙이다: 접근 토큰에 만료 시각이 있으면 그것으로, 없으면 마지막 갱신 시각으로 본다. */
+function needsRefresh(text: string): boolean {
+  let login: Record<string, unknown>;
+  try {
+    login = record(JSON.parse(text));
+  } catch {
+    return false;
+  }
+  const access = record(login.tokens).access_token;
+  if (typeof access !== "string" || !access) return false;
+  const expiry = jwtExpiry(access);
+  if (expiry !== undefined) return expiry - Date.now() <= refreshWindowMs;
+  const last =
+    typeof login.last_refresh === "string"
+      ? Date.parse(login.last_refresh)
+      : Number.NaN;
+  return Number.isFinite(last) && Date.now() - last >= refreshIntervalMs;
+}
 const failed = (): RunResult => ({
   stopReason: "failed",
   error: "프로바이더 실행이 실패했습니다.",
@@ -136,10 +292,70 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     original,
     fallback: path.join(home, "auth.json"),
     label: "Codex",
+    setAside: path.join(home, "set-aside"),
   });
   const command = options.command ?? commandFor(id, "codex");
   const environment = (codexHome = home, isolated = false) =>
     providerEnvironment(id, codexHome, { CODEX_HOME: codexHome }, { isolated });
+  let refreshing: Promise<void> | undefined;
+  /**
+   * 원본 로그인을 이 컴퓨터의 Codex로 갱신한다(#148). 갱신은 컨테이너가 아니라 서버가 맡는다. 연결 폴더의 로그인 링크를 따라
+   * Codex가 원본 자리에 새 로그인을 쓴다. 연결마다 한 번에 하나만 하고, 그동안 온 요청은 같은 갱신을 기다린다.
+   */
+  const refreshLogin = () =>
+    (refreshing ??= (async () => {
+      await mkdir(home, { recursive: true, mode: 0o700 });
+      await shareLogin(path.join(home, "auth.json"));
+      const child = startProcess({
+        stateDir: home,
+        command,
+        args: ["app-server"],
+        cwd: home,
+        env: environment(),
+        onFrame: async (raw) => {
+          const frame = record(raw);
+          if (frame.method) return;
+          if (frame.id === 1 && !frame.error) {
+            child.write({ method: "initialized" });
+            child.write({
+              id: 2,
+              method: "account/read",
+              params: { refreshToken: true },
+            });
+          } else child.end();
+        },
+      });
+      const timer = setTimeout(() => child.end(), refreshTimeoutMs);
+      try {
+        child.write({
+          id: 1,
+          method: "initialize",
+          params: { clientInfo: { name: "babojubot", version: "0.0.0" } },
+        });
+        await child.done;
+      } finally {
+        clearTimeout(timer);
+      }
+    })().finally(() => {
+      refreshing = undefined;
+    }));
+  /** 중계가 쓸 원본 로그인. 곧 끝나면 먼저 갱신하고, 갱신한 뒤에도 끝나 가면 갱신 실패로 던진다(중계 실패, Q6). */
+  const currentLogin = async () => {
+    const login = await readFile(original, "utf8");
+    if (!needsRefresh(login)) return login;
+    await refreshLogin();
+    const refreshed = await readFile(original, "utf8");
+    if (needsRefresh(refreshed)) throw new Error("login refresh failed");
+    return refreshed;
+  };
+  const relay = createCredentialRelay({
+    profile: {
+      ...codexRelayProfile,
+      upstream: options.relay?.upstream ?? codexRelayProfile.upstream,
+    },
+    verified: options.relay?.verified ?? true,
+    credential: () => currentLogin(),
+  });
   const readiness = async (
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> => {
@@ -186,6 +402,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     id,
     label: options.label ?? "Codex",
     isolatable: true,
+    credentialRelay: relay,
     login: { command, args: ["login"], env: environment() },
     models: [],
     async listModels(signal) {
@@ -290,13 +507,17 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         );
         await shareLogin(path.join(home, "auth.json"));
         // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
-        // Codex의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
         const isolated = request.execution === "container";
+        const loginAt = path.join(organization, "auth.json");
         if (
           isolated &&
-          (await credentialResidue(organization, ["auth.json"], original))
+          (await credentialResidue(organization, ["auth.json"], original)) &&
+          !(await isRelayLogin(loginAt))
         )
           return { ...failed(), error: residueRefusal };
+        // 격리 실행이 조직 폴더에 남긴 자리 표시는 로그인이 아니다. 이 컴퓨터의 실행이 그것을 연결의 로그인으로 옮기지 않게 먼저 지운다.
+        if (!isolated && (await isRelayLogin(loginAt)))
+          await rm(loginAt, { force: true });
         const linked =
           !isolated && (await shareLogin(path.join(organization, "auth.json")));
         const codexHome = linked || isolated ? organization : home;
@@ -305,258 +526,360 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         const cwd = request.workspace?.cwd ?? codexHome;
         const placement = placeAttempt(options.container, codexHome, request);
         if (!placement) return failed();
-        let container: ContainerLaunch | undefined;
+        // 권한은 실행 시도를 정리하는 이 try 안에서 받는다. 어디서 끝나든 finally가 거두고 이 실행 시도 전용 폴더를 지운다.
+        let grant: RelayGrant | undefined;
+        let attempt: string | undefined;
         try {
-          container = placement.container?.({
-            cwd,
-            program: "codex",
-            destinations: providerDestinations.codex,
-          });
-        } catch (error) {
-          if (error instanceof ContainerRefusal)
-            return { ...failed(), error: error.message };
-          throw error;
-        }
-        let result = failed(),
-          threadId = "",
-          turnId = "",
-          sequence = 0;
-        let totals: CodexTotals | undefined;
-        let baseline = readTotals(
-          request.previousSession?.tokens,
-          appServerKeys
-        );
-        let activities = Promise.resolve();
-        const pending = new Map<
-          number,
-          {
-            resolve: (value: Record<string, unknown>) => void;
-            reject: (error: Error) => void;
-            timer: ReturnType<typeof setTimeout>;
+          if (isolated) {
+            try {
+              grant = relay.grant({
+                signal: control.signal,
+                organizationId: request.identity.organizationId,
+                runId: request.identity.runId,
+              });
+            } catch {
+              return { ...failed(), error: relayFailure };
+            }
+            // 조직 폴더는 그 조직의 모든 컨테이너에 쓰기로 들어간다. 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 두고,
+            // 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 넣는다. 조직 폴더에는 권한 없는 자리 표시만 둔다.
+            attempt = await mkdtemp(
+              path.join(os.tmpdir(), "babojubot-attempt-")
+            );
+            await writeFile(
+              path.join(attempt, "auth.json"),
+              JSON.stringify(relayLogin(grant.token)),
+              { mode: 0o600, flag: "wx" }
+            );
+            await placeLoginPlaceholder(loginAt);
           }
-        >();
-        const env = {
-          ...environment(codexHome, isolated),
-          BABOJUBOT_MCP_TOKEN: request.access.token,
-        };
-        const args = [
-          "-c",
-          'approval_policy="never"',
-          "-c",
-          'sandbox_mode="danger-full-access"',
-          "-c",
-          "project_doc_max_bytes=0",
-          "-c",
-          `mcp_servers.organization.url=${JSON.stringify(new URL("/api/tools/mcp", request.access.toolsBaseUrl).href)}`,
-          "-c",
-          'mcp_servers.organization.bearer_token_env_var="BABOJUBOT_MCP_TOKEN"',
-        ];
-        if (options.mode === "exec")
-          return executeExec(request, control, {
-            provider: id,
-            command,
-            config: args,
+          let container: ContainerLaunch | undefined;
+          try {
+            container = placement.container?.({
+              cwd,
+              program: "codex",
+              destinations: providerDestinations.codex,
+              ...(attempt
+                ? {
+                    files: [
+                      {
+                        source: path.join(attempt, "auth.json"),
+                        target: loginAt,
+                      },
+                    ],
+                  }
+                : {}),
+            });
+          } catch (error) {
+            if (error instanceof ContainerRefusal)
+              return { ...failed(), error: error.message };
+            throw error;
+          }
+          let result = failed(),
+            threadId = "",
+            turnId = "",
+            sequence = 0;
+          let totals: CodexTotals | undefined;
+          let baseline = readTotals(
+            request.previousSession?.tokens,
+            appServerKeys
+          );
+          let activities = Promise.resolve();
+          const pending = new Map<
+            number,
+            {
+              resolve: (value: Record<string, unknown>) => void;
+              reject: (error: Error) => void;
+              timer: ReturnType<typeof setTimeout>;
+            }
+          >();
+          const relayBase = new URL(
+            `/api/relay/${encodeURIComponent(id)}`,
+            request.access.toolsBaseUrl
+          ).href;
+          const runControl = grant
+            ? {
+                ...control,
+                signal: AbortSignal.any([control.signal, grant.failed]),
+              }
+            : control;
+          const env = {
+            ...environment(codexHome, isolated),
+            BABOJUBOT_MCP_TOKEN: request.access.token,
+            ...(isolated
+              ? { CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${relayBase}/oauth/token` }
+              : {}),
+          };
+          const args = [
+            "-c",
+            'approval_policy="never"',
+            "-c",
+            'sandbox_mode="danger-full-access"',
+            "-c",
+            "project_doc_max_bytes=0",
+            "-c",
+            `mcp_servers.organization.url=${JSON.stringify(new URL("/api/tools/mcp", request.access.toolsBaseUrl).href)}`,
+            "-c",
+            'mcp_servers.organization.bearer_token_env_var="BABOJUBOT_MCP_TOKEN"',
+          ];
+          // -c는 에이전트가 고칠 수 있는 조직 폴더의 config.toml보다 우선한다.
+          if (isolated)
+            args.push(
+              "-c",
+              `model_provider=${JSON.stringify("babojubot_relay")}`,
+              "-c",
+              `model_providers.babojubot_relay={name="BaboJUBot relay",base_url=${JSON.stringify(relayBase)},wire_api="responses",requires_openai_auth=true,supports_websockets=false}`,
+              "-c",
+              `chatgpt_base_url=${JSON.stringify(relayBase + "/backend-api/")}`,
+              "-c",
+              `cli_auth_credentials_store=${JSON.stringify("file")}`,
+              "-c",
+              `forced_login_method=${JSON.stringify("chatgpt")}`,
+              "-c",
+              "check_for_update_on_startup=false",
+              "-c",
+              "analytics.enabled=false",
+              "-c",
+              "features.apps=false",
+              "-c",
+              "features.plugins=false",
+              "-c",
+              "features.remote_plugin=false",
+              "-c",
+              "features.plugin_discovery_prefetch=false"
+            );
+          if (options.mode === "exec") {
+            const outcome = await executeExec(request, runControl, {
+              provider: id,
+              command,
+              config: args,
+              stateDir: home,
+              cwd,
+              env,
+              container,
+            });
+            // 중계가 실패해 멈췄으면 취소가 아니라 중계 실패다. 사용자의 중단은 그대로 취소다.
+            if (grant?.failed.aborted && !control.signal.aborted)
+              return {
+                ...failed(),
+                error: relayFailure,
+                usage: outcome.usage,
+                nextSession: null,
+              };
+            return outcome;
+          }
+          args.unshift("app-server");
+          const child = startProcess({
+            // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
             stateDir: home,
+            command,
+            args,
             cwd,
             env,
             container,
-          });
-        args.unshift("app-server");
-        const child = startProcess({
-          // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
-          stateDir: home,
-          command,
-          args,
-          cwd,
-          env,
-          container,
-          onFrame: async (raw) => {
-            const frame = record(raw);
-            if (typeof frame.id === "number" && !frame.method) {
-              const waiter = pending.get(frame.id);
-              if (!waiter) return;
-              pending.delete(frame.id);
-              clearTimeout(waiter.timer);
-              if (frame.error) waiter.reject(new ProtocolRejection());
-              else waiter.resolve(record(frame.result));
-              return;
-            }
-            const params = record(frame.params);
-            if (params.threadId !== threadId) return;
-            if (frame.method === "thread/tokenUsage/updated") {
-              // 합이 아니라 세션 누계이므로 새 누계가 앞의 누계(잘못된 것이었어도)를 대신한다.
-              totals = readTotals(
-                record(params.tokenUsage).total,
-                appServerKeys
-              );
-            }
-            if (frame.method === "turn/completed") {
-              const turn = record(params.turn);
-              if (turn.id !== turnId) return;
-              active.delete(request.identity.runId);
-              result = {
-                ...failed(),
-                stopReason:
-                  turn.status === "completed"
-                    ? "completed"
-                    : turn.status === "interrupted"
-                      ? "cancelled"
-                      : "failed",
-                error:
-                  turn.status === "failed"
-                    ? "프로바이더 실행이 실패했습니다."
-                    : null,
-                // 사용량은 실행 시도가 끝날 때 한 번 정한다.
-                usage: null,
-                nextSession: {
-                  id: threadId,
-                  tokens: totals ? savedTotals(totals, appServerKeys) : {},
-                },
-              };
-              if (
-                turn.status === "failed" &&
-                saysLoginProblem(record(turn.error).message)
-              )
-                result.errorCode = "login_required";
-              child.end();
-            }
-          },
-        });
-        const rpc = (
-          method: string,
-          params: unknown,
-          timeoutMs = requestTimeoutMs,
-          endOnTimeout = true
-        ) =>
-          new Promise<Record<string, unknown>>((resolve, reject) => {
-            const id = ++sequence;
-            const timer = setTimeout(() => {
-              pending.delete(id);
-              reject(new Error("Protocol response timed out"));
-              if (endOnTimeout) child.end();
-            }, timeoutMs);
-            pending.set(id, { resolve, reject, timer });
-            if (!child.write({ id, method, params })) {
-              clearTimeout(timer);
-              pending.delete(id);
-              reject(new Error("Protocol closed"));
-            }
-          });
-        void child.done.then(() => {
-          for (const item of pending.values()) {
-            clearTimeout(item.timer);
-            item.reject(new Error("Protocol closed"));
-          }
-          pending.clear();
-        });
-        const cancel = () => {
-          if (threadId && turnId)
-            child.write({
-              id: ++sequence,
-              method: "turn/interrupt",
-              params: { threadId, turnId },
-            });
-          child.end();
-        };
-        control.signal.addEventListener("abort", cancel, { once: true });
-        try {
-          if (control.signal.aborted) cancel();
-          else {
-            await rpc("initialize", {
-              clientInfo: { name: "babojubot", version: "0.0.0" },
-            });
-            child.write({ method: "initialized" });
-            const config = {
-              cwd,
-              model: request.model,
-              approvalPolicy: "never",
-              sandbox: "danger-full-access",
-              developerInstructions: request.instructions
-                .map((f) => f.content)
-                .join("\n\n"),
-            };
-            let started: Record<string, unknown>;
-            try {
-              started = await rpc(
-                request.previousSession?.id ? "thread/resume" : "thread/start",
-                {
-                  ...config,
-                  ...(request.previousSession?.id
-                    ? { threadId: request.previousSession.id }
-                    : {}),
-                }
-              );
-            } catch (error) {
-              // 문구에 기대지 않는다. 프로그램이 재개를 거절하면 새 세션으로 시작한다.
-              if (
-                !request.previousSession ||
-                !(error instanceof ProtocolRejection)
-              )
-                throw error;
-              baseline = readTotals({}, appServerKeys);
-              await control.emit({
-                type: "progress",
-                text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
-              });
-              started = await rpc("thread/start", config);
-            }
-            threadId = String(record(started.thread).id);
-            const turn = await rpc("turn/start", {
-              threadId,
-              input: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    identity: request.identity,
-                    context: request.context,
-                    wakeReasons: request.wakeReasons,
-                  }),
-                },
-              ],
-            });
-            turnId = String(record(turn.turn).id);
-            active.set(request.identity.runId, async (message) => {
-              if (control.signal.aborted || child.closed) return "rejected";
-              const expectedTurnId = turnId;
-              try {
-                const ack = await rpc(
-                  "turn/steer",
-                  {
-                    threadId,
-                    expectedTurnId,
-                    clientUserMessageId: message.messageId,
-                    input: [{ type: "text", text: message.body }],
-                  },
-                  steerTimeoutMs,
-                  false
+            onFrame: async (raw) => {
+              const frame = record(raw);
+              if (typeof frame.id === "number" && !frame.method) {
+                const waiter = pending.get(frame.id);
+                if (!waiter) return;
+                pending.delete(frame.id);
+                clearTimeout(waiter.timer);
+                if (frame.error) waiter.reject(new ProtocolRejection());
+                else waiter.resolve(record(frame.result));
+                return;
+              }
+              const params = record(frame.params);
+              if (params.threadId !== threadId) return;
+              if (frame.method === "thread/tokenUsage/updated") {
+                // 합이 아니라 세션 누계이므로 새 누계가 앞의 누계(잘못된 것이었어도)를 대신한다.
+                totals = readTotals(
+                  record(params.tokenUsage).total,
+                  appServerKeys
                 );
-                return ack.turnId === expectedTurnId ? "accepted" : "rejected";
-              } catch (error) {
-                if (error instanceof ProtocolRejection) return "rejected";
-                throw error;
+              }
+              if (frame.method === "turn/completed") {
+                const turn = record(params.turn);
+                if (turn.id !== turnId) return;
+                active.delete(request.identity.runId);
+                result = {
+                  ...failed(),
+                  stopReason:
+                    turn.status === "completed"
+                      ? "completed"
+                      : turn.status === "interrupted"
+                        ? "cancelled"
+                        : "failed",
+                  error:
+                    turn.status === "failed"
+                      ? "프로바이더 실행이 실패했습니다."
+                      : null,
+                  // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+                  usage: null,
+                  nextSession: {
+                    id: threadId,
+                    tokens: totals ? savedTotals(totals, appServerKeys) : {},
+                  },
+                };
+                if (
+                  turn.status === "failed" &&
+                  saysLoginProblem(record(turn.error).message)
+                )
+                  result.errorCode = "login_required";
+                child.end();
+              }
+            },
+          });
+          const rpc = (
+            method: string,
+            params: unknown,
+            timeoutMs = requestTimeoutMs,
+            endOnTimeout = true
+          ) =>
+            new Promise<Record<string, unknown>>((resolve, reject) => {
+              const id = ++sequence;
+              const timer = setTimeout(() => {
+                pending.delete(id);
+                reject(new Error("Protocol response timed out"));
+                if (endOnTimeout) child.end();
+              }, timeoutMs);
+              pending.set(id, { resolve, reject, timer });
+              if (!child.write({ id, method, params })) {
+                clearTimeout(timer);
+                pending.delete(id);
+                reject(new Error("Protocol closed"));
               }
             });
-            activities = activities.then(() =>
-              control.emit({
-                type: "progress",
-                text: "프로바이더가 작업을 시작했습니다.",
-              })
-            );
+          void child.done.then(() => {
+            for (const item of pending.values()) {
+              clearTimeout(item.timer);
+              item.reject(new Error("Protocol closed"));
+            }
+            pending.clear();
+          });
+          const cancel = () => {
+            if (threadId && turnId)
+              child.write({
+                id: ++sequence,
+                method: "turn/interrupt",
+                params: { threadId, turnId },
+              });
+            child.end();
+          };
+          runControl.signal.addEventListener("abort", cancel, { once: true });
+          try {
+            if (runControl.signal.aborted) cancel();
+            else {
+              await rpc("initialize", {
+                clientInfo: { name: "babojubot", version: "0.0.0" },
+              });
+              child.write({ method: "initialized" });
+              const config = {
+                cwd,
+                model: request.model,
+                approvalPolicy: "never",
+                sandbox: "danger-full-access",
+                developerInstructions: request.instructions
+                  .map((f) => f.content)
+                  .join("\n\n"),
+              };
+              let started: Record<string, unknown>;
+              try {
+                started = await rpc(
+                  request.previousSession?.id
+                    ? "thread/resume"
+                    : "thread/start",
+                  {
+                    ...config,
+                    ...(request.previousSession?.id
+                      ? { threadId: request.previousSession.id }
+                      : {}),
+                  }
+                );
+              } catch (error) {
+                // 문구에 기대지 않는다. 프로그램이 재개를 거절하면 새 세션으로 시작한다.
+                if (
+                  !request.previousSession ||
+                  !(error instanceof ProtocolRejection)
+                )
+                  throw error;
+                baseline = readTotals({}, appServerKeys);
+                await runControl.emit({
+                  type: "progress",
+                  text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
+                });
+                started = await rpc("thread/start", config);
+              }
+              threadId = String(record(started.thread).id);
+              const turn = await rpc("turn/start", {
+                threadId,
+                input: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      identity: request.identity,
+                      context: request.context,
+                      wakeReasons: request.wakeReasons,
+                    }),
+                  },
+                ],
+              });
+              turnId = String(record(turn.turn).id);
+              active.set(request.identity.runId, async (message) => {
+                if (runControl.signal.aborted || child.closed)
+                  return "rejected";
+                const expectedTurnId = turnId;
+                try {
+                  const ack = await rpc(
+                    "turn/steer",
+                    {
+                      threadId,
+                      expectedTurnId,
+                      clientUserMessageId: message.messageId,
+                      input: [{ type: "text", text: message.body }],
+                    },
+                    steerTimeoutMs,
+                    false
+                  );
+                  return ack.turnId === expectedTurnId
+                    ? "accepted"
+                    : "rejected";
+                } catch (error) {
+                  if (error instanceof ProtocolRejection) return "rejected";
+                  throw error;
+                }
+              });
+              activities = activities.then(() =>
+                runControl.emit({
+                  type: "progress",
+                  text: "프로바이더가 작업을 시작했습니다.",
+                })
+              );
+            }
+          } catch {
+            child.end();
           }
-        } catch {
-          child.end();
+          await child.done;
+          runControl.signal.removeEventListener("abort", cancel);
+          active.delete(request.identity.runId);
+          await activities;
+          // 끝난 방식과 상관없이 마지막으로 받은 누계로 사용량을 한 번 정한다. 누계를 받지 못했으면 보고 안 됨이다.
+          const usage = totals
+            ? providerUsage(id, codexUsage(totals, baseline))
+            : null;
+          if (control.signal.aborted)
+            return { ...failed(), stopReason: "cancelled", error: null, usage };
+          if (grant?.failed.aborted)
+            return {
+              ...failed(),
+              error: relayFailure,
+              usage,
+              nextSession: null,
+            };
+          return { ...result, usage };
+        } finally {
+          grant?.revoke();
+          if (attempt)
+            await rm(attempt, { recursive: true, force: true }).catch(() => {});
         }
-        await child.done;
-        control.signal.removeEventListener("abort", cancel);
-        active.delete(request.identity.runId);
-        await activities;
-        // 끝난 방식과 상관없이 마지막으로 받은 누계로 사용량을 한 번 정한다. 누계를 받지 못했으면 보고 안 됨이다.
-        const usage = totals
-          ? providerUsage(id, codexUsage(totals, baseline))
-          : null;
-        if (control.signal.aborted)
-          return { ...failed(), stopReason: "cancelled", error: null, usage };
-        return { ...result, usage };
       },
     },
   };
