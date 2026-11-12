@@ -23,7 +23,7 @@ Only short read-only probes, one attempt per item:
 - Command present: `command -v <name>`.
 - Version: `<name> --version` (for example `python3 --version`, `node --version`).
 - Python module: `python3 -c "import <module>"`. A `ModuleNotFoundError` for that module means Absent.
-- GPU: `nvidia-smi -L`. If `nvidia-smi` itself is missing, that does not show there is no GPU; mark it Cannot tell.
+- GPU: `nvidia-smi -L`. If it runs and lists no GPU, mark it Absent. If `nvidia-smi` itself is missing, that does not show there is no GPU; mark it Cannot tell.
 - Data or storage you were told about: `ls` or `df -h` on that path.
 
 Do not:
@@ -36,7 +36,7 @@ Do not:
 ## Time limits
 
 - Each command: 10 seconds. Run it as `timeout 10 <command>`. Exit code 124 means it timed out; mark the item Cannot tell, giving the 10-second limit as the reason.
-- If `timeout` is missing, run only `command -v` and `--version` probes, and mark items that need any other probe Cannot tell, giving the missing `timeout` as the reason.
+- If `timeout` is missing, run only `command -v` (it returns at once) and mark every item that needs any other probe Cannot tell, giving the missing `timeout` as the reason.
 - The whole check: 2 minutes. When that time is up, stop, mark every unchecked item Cannot tell, giving the 2-minute limit as the reason, and submit.
 
 ## Results
@@ -47,7 +47,7 @@ Give each item exactly one of three results:
 - **Absent**: the probe ran and showed the item is not there. Only a probe that succeeded in showing absence counts.
 - **Cannot tell**: you could not decide (refused, the probe tool is missing, timed out, no access, out of time). Always give the reason.
 
-Never write a result you did not observe. Write the results in Korean like the rest of the specification, and use the same Korean word for each result everywhere.
+Never write a result you did not observe. Write the results in Korean like the rest of the specification, and use the same Korean word for each result everywhere. When an item needs no follow-up, write `-` so it is not mistaken for the Absent result.
 
 ## Which environment you checked
 
@@ -72,8 +72,8 @@ Checked: the Lead's run environment (this run). The workers' environment was not
 
 | Item | Requirement | Result | Checked where | How, evidence | Follow-up |
 | --- | --- | --- | --- | --- | --- |
-| python3 | 3.10 or later | Confirmed | Lead run environment | `python3 --version` -> Python 3.12.3 | none |
-| numpy | importable | Confirmed | Lead run environment | `python3 -c "import numpy"` succeeded | none |
+| python3 | 3.10 or later | Confirmed | Lead run environment | `python3 --version` -> Python 3.12.3 | - |
+| numpy | importable | Confirmed | Lead run environment | `python3 -c "import numpy"` succeeded | - |
 | torch | importable | Absent | Lead run environment | `python3 -c "import torch"` -> ModuleNotFoundError | a worker installs it in their own virtual environment after approval |
 | GPU | one CUDA GPU | Cannot tell | Lead run environment | `nvidia-smi` is not installed, so no answer | the Owner says whether a GPU is provided, or prepares one |
 | Workers' run environment | all items above | Cannot tell | workers' run environment | the Lead cannot reach it | a worker checks it in the first task after approval |
