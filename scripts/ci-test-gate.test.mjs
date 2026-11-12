@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
 
@@ -19,7 +21,12 @@ const step = gate.steps.find(
 // Replay the reported boundary: a legacy matrix summary says success even though
 // an individual test did not succeed. Resolve the workflow's actual env bindings
 // and execute its actual gate shell; do not substitute a second gate implementation.
-function runGate({ code = "true", changes = "success", results = {} } = {}) {
+function runGate({
+  code = "true",
+  changes = "success",
+  results = {},
+  executablePath = process.env.PATH,
+} = {}) {
   const needs = {
     changes: { result: changes, outputs: { code } },
     "test-packages": { result: code === "false" ? "skipped" : "success" },
@@ -32,7 +39,7 @@ function runGate({ code = "true", changes = "success", results = {} } = {}) {
       ])
     ),
   };
-  const env = { PATH: process.env.PATH };
+  const env = { PATH: executablePath };
   for (const [name, expression] of Object.entries(step.env)) {
     const match = expression.match(
       /^\$\{\{\s*needs\.([\w-]+)\.(result|outputs\.code)\s*\}\}$/
@@ -114,4 +121,17 @@ for (const code of ["", "unknown"]) {
 
 test("rejects a partial rerun where one test recovered but another still failed", () => {
   assertRejected({ results: { unit: "success", runtime: "failure" } });
+});
+
+// Windows development requires Node/Git, not a shell installation. Reproduce
+// that boundary on any OS by removing every executable from the child PATH.
+test("runs the real workflow gate without any executable on PATH", (context) => {
+  const emptyPath = mkdtempSync(path.join(tmpdir(), "ci-gate-no-shell-"));
+  context.after(() => rmSync(emptyPath, { recursive: true, force: true }));
+  assert.equal(runGate({ executablePath: emptyPath }).status, 0);
+  assert.equal(runGate({ code: "false", executablePath: emptyPath }).status, 0);
+  assertRejected({
+    executablePath: emptyPath,
+    results: { opencode: "cancelled" },
+  });
 });
