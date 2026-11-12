@@ -2,7 +2,7 @@
 
 `record_artifact`의 파일 경로 격리를 Linux·Windows·macOS의 파일 시스템 여덟 곳에서 실제로 확인한 결과다. 지금 동작·응답 코드는 [현재 구현 현황](../current-implementation.md), CI 실행 조건은 [CONTRIBUTING](../../CONTRIBUTING.md)이 기준이다.
 
-기준: PR #176 head `2300054`(GitHub이 `main` `19b6cfc` 위에 만든 병합 커밋 `60299d4`), [CI run 43217439001](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43217439001), 2026-11-12. 사례 표는 직전 코드 head `fc23ac8`의 [run 43215390688](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43215390688)과 같다. 이후 커밋은 이 기록 등 문서만 바꿨다.
+기준: PR #176 head `127fbe4`(GitHub이 `main` `19b6cfc` 위에 만든 병합 커밋 `f0e9c6a`), [CI run 43221772628](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43221772628), 2026-11-12. 사례 표는 앞선 코드 head `fc23ac8`·`2300054`의 [run 43215390688](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43215390688)·[run 43217439001](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43217439001)과 같다. 이후 커밋은 이 기록 등 문서만 바꿨다.
 
 확인 범위는 읽는 프로세스와 `Workspaces.readArtifact`의 응답·보존 바이트다. `record_artifact` 도구 호출·DB 저장·HTTP/MCP 응답은 Linux의 서버 통합 시험(`file-artifacts.test.ts`)이 맡으며 다른 파일 시스템에서는 돌리지 않았다.
 
@@ -25,24 +25,24 @@
 
 ## 환경
 
-모두 GitHub 호스팅 runner이고 Node 24.22.2다. 시험 전용 폴더·가상 디스크·디스크 이미지·공유만 만들었고, job 끝에 정리한 뒤 runner VM과 함께 폐기된다.
+모두 GitHub 호스팅 runner이고 Node 24.22.2다. 시험 전용 폴더·가상 디스크·RAM 디스크·공유만 만들었고, job 끝에 정리한 뒤 runner VM과 함께 폐기된다.
 
 - Linux: Ubuntu 24.04(커널 7.0.0-1017-azure), `/dev/sda1` ext4, 일반 사용자 `runner`(uid 1001). 장치 노드(C18)만 `sudo -n mknod`로 만들고 읽기는 일반 사용자로 했다.
 - Windows: Windows Server 빌드 26100, 관리자 권한(High Mandatory Level). NTFS는 runner 임시 볼륨 `D:`(8.3 짧은 이름 생성을 켬), FAT32는 `diskpart`로 만든 1 GiB VHDX(`R:`), SMB는 같은 컴퓨터의 NTFS 폴더를 공유해 `\\localhost\babojubot-files`로 연 SMB 3.1.1 loopback이다. 원격→로컬·원격→원격 symlink 평가는 기본값대로 꺼져 있다. 실제 NAS나 다른 SMB 서버는 시험하지 않았다.
-- macOS: macOS 26.7.2(빌드 25G332). APFS는 runner 임시 폴더, 나머지는 `hdiutil`로 만든 256 MB 이미지(소유권 켬)다. 볼륨 종류는 `diskutil`의 File System Personality로 확인했다.
+- macOS: macOS 26.7.2(빌드 25G332). APFS는 runner 임시 폴더(내장 디스크), 나머지는 `hdiutil`로 만든 512 MiB RAM 디스크를 `diskutil erasevolume`으로 포맷하고 소유권을 켠 볼륨이다. 볼륨 종류·소유권은 `diskutil`의 File System Personality·Owners로 확인했다.
 
 준비 단계가 기대한 대소문자·정규화 설정은 시험이 실제 동작을 관찰해 다시 확인한다(`ENV` 시험).
 
 | 볼륨 | 파일 시스템 | 대소문자 구분 | NFD로 NFC 이름 찾음 | 링크 | hard link | 파일 dev / ino / nlink | 시험(통과/실패/건너뜀) | 볼륨 시간 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ext4 | ext4 | true | false | yes | yes | 66305 / 9201317 / 1 | 67/0/4 | 21s |
-| NTFS | NTFS | false | false | yes | yes | 6666607 / 281474976734267 / 1 | 69/0/2 | 58s |
-| FAT32 | FAT32 | false | false | EISDIR | EISDIR | 2463120090 / 4235360 / 1 | 35/0/36 | 14s |
-| SMB | SMB 3.1.1 loopback to NTFS | false | false | yes | yes | 6666607 / 1688849860287570 / 1 | 68/0/3 | 142s |
-| APFS | APFS | false | true | yes | yes | 16777230 / 3065692 / 1 | 67/0/4 | 29s |
-| APFS-CS | Case-sensitive APFS | true | true | yes | yes | 16777242 / 70 / 1 | 67/0/4 | 23s |
-| HFS | HFS+ | false | true | yes | yes | 16777244 / 72 / 1 | 67/0/4 | 88s |
-| HFSX | Case-sensitive HFS+ | true | true | yes | yes | 16777246 / 69 / 1 | 67/0/4 | 27s |
+| ext4 | ext4 | true | false | yes | yes | 2049 / 9201303 / 1 | 67/0/4 | 31s |
+| NTFS | NTFS | false | false | yes | yes | 3663005976 / 281474976734275 / 1 | 69/0/2 | 58s |
+| FAT32 | FAT32 | false | false | EISDIR | EISDIR | 3569013517 / 4284512 / 1 | 35/0/36 | 15s |
+| SMB | SMB 3.1.1 loopback to NTFS | false | false | yes | yes | 3663005976 / 1688849860287588 / 1 | 68/0/3 | 146s |
+| APFS | APFS | false | true | yes | yes | 16777229 / 3063801 / 1 | 67/0/4 | 41s |
+| APFS-CS | Case-sensitive APFS | true | true | yes | yes | 16777241 / 58 / 1 | 67/0/4 | 39s |
+| HFS | HFS+ | false | true | yes | yes | 16777242 / 60 / 1 | 67/0/4 | 36s |
+| HFSX | Case-sensitive HFS+ | true | true | yes | yes | 16777243 / 12415 / 1 | 67/0/4 | 42s |
 
 
 ## 사례별 결과
@@ -123,19 +123,20 @@
 | 단계 | 시간 |
 | --- | --- |
 | 기준: `main` `19b6cfc` CI 전체([run 43205145233](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43205145233)) | 4분 31초. Windows 파일 단계 76초, macOS 37초 |
-| 이 PR CI 전체(전체 검증 포함, run 43215390688 / 43217439001) | 5분 41초 / 5분 45초 |
-| `files / linux` | 50초 / 35초(ext4 32초 / 21초) |
-| `files / windows` | 3분 39초 / 4분 36초(준비 5–7초, NTFS 47–59초, FAT32 12–15초, SMB 105–143초, 정리 3초) |
-| `files / macos` | 5분 23초 / 4분 59초(준비 7초, 볼륨마다 22–127초, 정리 101–103초) |
+| 이 PR CI 전체(전체 검증 포함, run 43217439001 / 43221772628) | 5분 45초 / 5분 22초 |
+| `files / linux` | 35초 / 48초(ext4 21초 / 31초) |
+| `files / windows` | 4분 36초 / 4분 39초(준비 7초, NTFS 58–59초, FAT32 15초, SMB 143–147초, 정리 2–3초) |
+| `files / macos` | 4분 59초(디스크 이미지) / 3분 25초(RAM 디스크: 준비 8초, 볼륨마다 36–43초, 정리 12초) |
 
 - 일반 PR: 기본 볼륨의 시험은 사례 표를 더하고도 Windows 47–69초·macOS 22–38초로 기준(76초·37초) 안팎이다. 세 시험 파일은 나란히 돌고 가장 긴 것은 기존 경합 시험이다(NTFS: 경합 44초, 사례 표 31초, 기존 경계 22초; APFS: 20·7·7초). Linux `tests / server`에도 사례 표가 더해져 약 10초 겹쳐 돈다. 전체 실행 시간은 E2E(약 4–5분)가 정하므로 늘어난 대기는 1분 목표 안이다. 전체 검증이 돌지 않는 일반 코드 PR의 실제 run은 이 PR에서 관찰하지 못했고, 실행 조건은 `scripts/ci-test-gate.test.mjs`·`scripts/ci-changes.test.mjs`로 확인했다.
-- 전체 검증: 가장 긴 macOS job이 5분 23초로 15분 목표 안이다. 병목은 이미지 떼기(병렬로 약 100초)와 이미지 하나의 느린 시험이다. 느린 이미지는 실행마다 달랐다(run 43215390688은 대소문자 구분 APFS 127초, run 43217439001은 HFS+ 88초, 나머지 22–29초). 원인은 확인하지 못했다. 이미지 떼기를 생략하고 VM 폐기에 맡기면 약 1분 40초 줄지만 정리 시도를 남기려고 그대로 두었다.
+- 전체 검증: 가장 긴 job은 Windows(4분 39초)로 15분 목표 안이고, 이 PR의 대기 시간은 다시 E2E(약 4–5분)가 정한다. Windows의 병목은 SMB loopback의 경합 시험(약 2분 반)이다. macOS는 처음에 파일에 둔 디스크 이미지를 썼는데, 이미지 하나가 실행마다 달리 느려졌고(대소문자 구분 APFS 127초, HFS+ 88초, 나머지 22–29초) 떼는 데 약 100초가 걸렸다. RAM 디스크로 바꾼 뒤 네 볼륨이 36–43초, 정리가 12초다.
 - 실행 수: 파일 경계 PR은 job 세 개(약 9분 50초의 runner 시간)가 더 돈다. 그 대신 macOS·Windows job은 기본 볼륨 시험을 거듭하지 않는다.
 - 중복 취소: 같은 PR의 새 커밋이 [run 43217361929](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43217361929)를 취소했고, 항상 도는 `ci / test`는 취소를 실패로 판정했다.
 - 판정: 처음 실행([run 43209747615](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43209747615))에서 `files / windows` 실패를 `ci / test`가 "files-windows did not finish as success"로 거부했고, 마지막 실행은 "All test suites and file-system verifications passed"였다.
 
-## 처음 실행에서 고친 시험
+## 실행 중 고친 시험·준비
 
+- 문서만 더한 head `929b157`의 [run 43219527316](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43219527316)에서 대소문자 구분 APFS 이미지가 크게 느려져(경합 시험 269초) C22의 10 MiB 읽기가 읽는 프로세스의 30초 한도에 걸려 서버 오류로 끝났다. 바이트를 돌려주지 않는 안전한 실패이고 경계 결함은 아니다. 한도를 늘리거나 다시 시도하지 않고, 느려지는 원인인 파일 기반 이미지를 RAM 디스크로 바꿨다.
 - `nul.md` 시험 파일은 Windows에서 장치 이름이라 정상 거부됐다. 이름을 바꿨다(C24).
 - 기존 경계 시험이 FAT32에서 링크를 만들지 못해 실패했다. 링크가 없는 볼륨에서는 링크가 필요한 시험만 건너뛴다.
 - SMB에서 막 지운 항목 때문에 폴더 삭제가 늦어 다시 시도하게 했고, 공유에 만든 정션이 보이지 않는 것을 기능 판정에 반영했다.
@@ -149,6 +150,7 @@
 
 - 실제 NAS·다른 SMB 서버·다른 Windows 계정(일반 사용자)·exFAT·ReFS·NFS·FUSE. SMB는 같은 Windows의 loopback이다.
 - 대소문자 무시 ext4(casefold)와 다른 Linux 파일 시스템, 다른 macOS·Windows 판.
+- macOS의 대소문자 구분 APFS·HFS+·대소문자 구분 HFS+는 RAM 디스크에서 확인했다. 형식은 같지만 실제 내장·외장 디스크의 속도·장치 특성은 다르다.
 - 경합의 무작위 대량 반복. 결정적 주입과 기존 모든 시점 시험만 돌렸다.
 - 전체 검증이 돌지 않는 일반 코드 PR의 실제 CI 실행(실행 조건은 단위 검사로만 확인).
 - 수동 실행은 브랜치를 대상으로 한다(`gh workflow run CI --ref <branch>`). 특정 SHA만 따로 돌리는 방법은 만들지 않았다. 이 `workflow_dispatch`는 `main`에 병합된 뒤에 쓸 수 있다.
