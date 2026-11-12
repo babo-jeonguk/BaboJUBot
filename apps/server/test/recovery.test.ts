@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
-import { once } from "node:events";
 import {
   approvalSummaryListSchema,
   eventStreamPath,
@@ -403,13 +402,73 @@ async function crashAndRestart(
       database.url,
       stopAfter,
     ],
-    { stdio: ["ignore", "pipe", "inherit"] }
+    { stdio: ["ignore", "pipe", "pipe"] }
   );
+  let stdout = "";
+  let stderr = "";
+  let pendingLine = "";
+  let readyUrl: string | undefined;
+  let readyError: Error | undefined;
+  let spawnError: Error | undefined;
+  child.stdout!.setEncoding("utf8");
+  child.stderr!.setEncoding("utf8");
+  // 준비 줄을 읽기 전부터 stdout을 끝까지 비우고, exit/error는 spawn 직후에 붙여 한 번만 오는 사건을 놓치지 않는다.
+  child.stdout!.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    stdout = (stdout + text).slice(-4000);
+    if (readyUrl) return;
+    pendingLine += text;
+    for (;;) {
+      const newline = pendingLine.indexOf("\n");
+      if (newline === -1) break;
+      const line = pendingLine.slice(0, newline);
+      pendingLine = pendingLine.slice(newline + 1);
+      try {
+        readyUrl = (JSON.parse(line) as { url: string }).url;
+      } catch (error) {
+        readyError = new Error(
+          `crash server wrote an unreadable start line: ${JSON.stringify(line)}`,
+          { cause: error }
+        );
+        break;
+      }
+      if (readyUrl) break;
+    }
+    if (pendingLine.length > 4000) pendingLine = pendingLine.slice(-4000);
+  });
+  child.stderr!.on("data", (chunk: Buffer) => {
+    stderr = (stderr + String(chunk)).slice(-4000);
+  });
+  // spawn 실패에는 exit가 오지 않을 수 있다. 기다림이 멈추지 않게 error도 종료로 본다.
+  const exited = new Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  }>((resolve) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+    child.once("error", (error) => {
+      spawnError = error;
+      resolve({ code: null, signal: null });
+    });
+  });
   let orgId: string;
   try {
-    const [line] = (await once(child.stdout!, "data")) as [Buffer];
-    const crashed = JSON.parse(String(line)) as { url: string };
-    const before = api(() => crashed.url);
+    // 준비 줄은 조각나서 온다. 완전한 줄이 모일 때까지 기다리되 15초에서 멈춘다.
+    const deadline = Date.now() + 15_000;
+    while (!readyUrl && !readyError) {
+      if (spawnError)
+        throw new Error(`crash server could not start: ${spawnError.message}`);
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new Error(
+          `crash server exited before it was ready (code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`
+        );
+      if (Date.now() >= deadline)
+        throw new Error(
+          `crash server was not ready in 15s: stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`
+        );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (readyError) throw readyError;
+    const before = api(() => readyUrl!);
     const org = legacy
       ? await insertLegacyOrganization(database.db, "crash 조직")
       : await before.createOrganization("crash 조직");
@@ -421,12 +480,16 @@ async function crashAndRestart(
     }
     if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
-    await once(child, "exit");
+    await exited;
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
-      await once(child, "exit");
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* 이미 끝났다. */
+      }
     }
+    await exited;
   }
   server = await startServer({ db: database.db, port: 0 });
   await server.drain();

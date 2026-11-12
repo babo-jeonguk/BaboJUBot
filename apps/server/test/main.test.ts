@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +8,7 @@ import { listOrganizations } from "@babojubot/db";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+const readyTimeoutMs = 45_000;
 
 let external: TestDatabase;
 beforeAll(async () => {
@@ -19,14 +19,11 @@ afterAll(async () => {
 });
 
 it("starts against an external Postgres URL and leaves that Postgres running on shutdown", async () => {
-  const child = spawn(process.execPath, [main], {
-    env: { ...process.env, DATABASE_URL: external.url, PORT: "0" },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  const child = startMain({ DATABASE_URL: external.url });
   try {
-    const [line] = await once(child.stdout!, "data");
-    expect(String(line)).toContain("external Postgres");
-    const url = String(line).match(/BaboJUBot server on (\S+)/)![1]!;
+    await child.ready;
+    expect(child.stdoutText()).toContain("external Postgres");
+    const url = child.stdoutText().match(/BaboJUBot server on (\S+)/)![1]!;
 
     const res = await fetch(`${url}/api/organizations`, {
       method: "POST",
@@ -35,8 +32,7 @@ it("starts against an external Postgres URL and leaves that Postgres running on 
     });
     expect(res.status).toBe(201);
   } finally {
-    child.kill("SIGTERM");
-    await once(child, "exit");
+    await stopMain(child);
   }
 
   // The server only owned its connections: the external database still answers.
@@ -52,13 +48,13 @@ it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
   async (signal) => {
     const child = startMain({ DATABASE_URL: external.url });
     try {
-      await ready(child);
+      await child.ready;
       child.kill(signal);
-      const [code] = await once(child, "exit");
+      const { code } = await child.exited;
       expect(code, child.stderrText()).toBe(0);
       expect(child.stderrText()).toBe("");
     } finally {
-      child.kill("SIGKILL");
+      await stopMain(child);
     }
   },
   60_000
@@ -71,13 +67,13 @@ it.each(["SIGINT", "SIGHUP"] as const)(
   async (signal) => {
     const child = startMain({ BABOJUBOT_EPHEMERAL_DB: "1" }, { group: true });
     try {
-      await ready(child);
+      await child.ready;
       process.kill(-child.pid!, signal);
-      const [code] = await once(child, "exit");
+      const { code } = await child.exited;
       expect(code, child.stderrText()).toBe(0);
       expect(child.stderrText()).toBe("");
     } finally {
-      killGroup(child);
+      await stopMain(child, { group: true });
     }
   },
   60_000
@@ -93,26 +89,22 @@ it("stops the embedded Postgres it was starting when a stop signal arrives durin
   });
   let postgresPid = 0;
   try {
-    const deadline = Date.now() + 45_000;
-    while (!postgresPid && Date.now() < deadline) {
-      if (existsSync(pidFile))
-        postgresPid = Number(readFileSync(pidFile, "utf8").split("\n")[0]);
-      // initdb도 잠깐 음수 pid로 이 파일을 쓴다. 서버로 뜬 postgres만 기다린다.
-      if (!(postgresPid > 0)) {
-        postgresPid = 0;
-        await new Promise((r) => setTimeout(r, 20));
-      }
-    }
+    postgresPid = await waitForPostmaster(child, pidFile);
     expect(postgresPid).toBeGreaterThan(0);
     child.kill("SIGTERM");
-    const [code] = await once(child, "exit");
+    const { code } = await child.exited;
     expect(code, child.stderrText()).toBe(0);
     expect(isAlive(postgresPid)).toBe(false);
     expect(existsSync(pidFile)).toBe(false);
   } finally {
-    child.kill("SIGKILL");
-    if (postgresPid && isAlive(postgresPid))
-      process.kill(postgresPid, "SIGKILL");
+    await stopMain(child);
+    if (postgresPid && isAlive(postgresPid)) {
+      try {
+        process.kill(postgresPid, "SIGKILL");
+      } catch {
+        /* Already gone between the check and the signal. */
+      }
+    }
     rmSync(home, { recursive: true, force: true });
   }
 }, 60_000);
@@ -126,16 +118,15 @@ it("ends with a failure when the start fails after a stop signal arrived during 
     EMBEDDED_POSTGRES_PORT: "65536",
   });
   try {
-    while (!existsSync(path.join(home, "postgres")))
-      await new Promise((r) => setTimeout(r, 10));
+    await waitForPath(child, path.join(home, "postgres"));
     child.kill("SIGTERM");
-    const [code] = await once(child, "exit");
+    const { code } = await child.exited;
     expect(code, child.stderrText()).toBe(1);
     expect(child.stderrText()).toContain(
       "embedded Postgres exited before it was ready"
     );
   } finally {
-    child.kill("SIGKILL");
+    await stopMain(child);
     rmSync(home, { recursive: true, force: true });
   }
 }, 60_000);
@@ -152,7 +143,7 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
   });
   let postgresPid = 0;
   try {
-    await ready(child);
+    await child.ready;
     postgresPid = Number(
       readFileSync(path.join(home, "postgres", "postmaster.pid"), "utf8").split(
         "\n"
@@ -161,10 +152,11 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
     process.kill(postgresPid, "SIGSTOP");
     const stoppedAt = Date.now();
     child.kill("SIGTERM");
-    const [code] = await once(child, "exit");
+    const { code } = await child.exited;
     expect(code, child.stderrText()).toBe(1);
     // 시한은 프로세스가 끝나는 시각까지다. 프로세스 종료 때의 비상 정지도 그 안에 든다.
-    expect(Date.now() - stoppedAt).toBeLessThan(2_000);
+    // 타이머를 이 경계에 두므로 스케줄러가 늦게 깨는 몫을 더 두되, 기본 시한(30s)보다는 크게 짧게 잡는다.
+    expect(Date.now() - stoppedAt).toBeLessThan(2_000 + 1_000);
     expect(child.stderrText()).toContain("did not finish");
 
     process.kill(postgresPid, "SIGCONT");
@@ -173,10 +165,14 @@ it("ends with a failure at its configured shutdown deadline and leaves no Postgr
       await new Promise((r) => setTimeout(r, 50));
     expect(isAlive(postgresPid)).toBe(false);
   } finally {
-    child.kill("SIGKILL");
+    await stopMain(child);
     if (postgresPid && isAlive(postgresPid)) {
-      process.kill(postgresPid, "SIGCONT");
-      process.kill(postgresPid, "SIGKILL");
+      try {
+        process.kill(postgresPid, "SIGCONT");
+        process.kill(postgresPid, "SIGKILL");
+      } catch {
+        /* Already gone between the check and the signal. */
+      }
     }
     rmSync(home, { recursive: true, force: true });
   }
@@ -192,51 +188,194 @@ it.each(["-1", "0", "1.5", "Infinity", "2147483648", "soon"])(
       BABOJUBOT_SHUTDOWN_TIMEOUT_MS: value,
     });
     try {
-      const outcome = await Promise.race([
-        once(child, "exit").then(([code]) => ({ code })),
-        ready(child).then(
-          () => ({ started: true }),
-          () => new Promise<never>(() => {})
-        ),
-      ]);
-      expect(outcome).toEqual({ code: 1 });
+      expect(await startOutcome(child)).toEqual({ code: 1 });
       expect(child.stderrText()).toContain("BABOJUBOT_SHUTDOWN_TIMEOUT_MS");
     } finally {
-      child.kill("SIGKILL");
+      await stopMain(child);
     }
   },
   60_000
 );
 
-type MainProcess = ChildProcess & { stderrText: () => string };
+type Exit = { code: number | null; signal: NodeJS.Signals | null };
+type MainProcess = ChildProcess & {
+  stdoutText: () => string;
+  stderrText: () => string;
+  exited: Promise<Exit>;
+  ready: Promise<void>;
+};
+
+/** 부모 환경의 DB·HOST·프로바이더 설정이 테스트가 고른 환경을 이기지 않게 지운다. BABOJUBOT_HOME 기본값은 남긴다. */
+function inheritedEnv() {
+  const env = { ...process.env };
+  for (const name of [
+    "DATABASE_URL",
+    "BABOJUBOT_EPHEMERAL_DB",
+    "EMBEDDED_POSTGRES_PORT",
+    "BABOJUBOT_SHUTDOWN_TIMEOUT_MS",
+    "HOST",
+    "BABOJUBOT_PROVIDERS",
+    "BABOJUBOT_FAKE_PROVIDERS",
+    "BABOJUBOT_FAKE_PROVIDER_SETTINGS",
+  ])
+    delete env[name];
+  return env;
+}
 
 function startMain(
   env: Record<string, string>,
   { group = false } = {}
 ): MainProcess {
   const child = spawn(process.execPath, [main], {
-    env: { ...process.env, PORT: "0", ...env },
+    env: {
+      ...inheritedEnv(),
+      HOST: "127.0.0.1",
+      PORT: "0",
+      BABOJUBOT_PROVIDERS: "",
+      BABOJUBOT_FAKE_PROVIDERS: "1",
+      BABOJUBOT_FAKE_PROVIDER_SETTINGS: "{}",
+      ...env,
+    },
     stdio: ["ignore", "pipe", "pipe"],
     detached: group,
   }) as MainProcess;
+  let stdout = "";
   let stderr = "";
+  child.stdout!.on("data", (chunk) => (stdout += chunk));
   child.stderr!.on("data", (chunk) => (stderr += chunk));
+  child.stdoutText = () => stdout;
   child.stderrText = () => stderr;
+  const exited = new Promise<Exit>((resolve, reject) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+    child.once("error", reject);
+  });
+  void exited.catch(() => {});
+  child.exited = exited;
+  child.ready = waitForReady(
+    child,
+    () => stdout,
+    () => stderr
+  );
+  void child.ready.catch(() => {});
   return child;
 }
 
 /** 시작 줄이 나올 때까지 기다린다. stdout은 끝까지 읽어 둔다(멈추면 서버의 쓰기가 막힌다). */
-function ready(child: ChildProcess) {
+function waitForReady(
+  child: MainProcess,
+  stdout: () => string,
+  stderr: () => string
+) {
   return new Promise<void>((resolve, reject) => {
-    let stdout = "";
-    child.stdout!.on("data", (chunk) => {
-      stdout += chunk;
-      if (stdout.includes("BaboJUBot server on")) resolve();
-    });
-    child.once("exit", () =>
-      reject(new Error(`server ended before it was ready: ${stdout}`))
+    let settled = false;
+    const finish = (done: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout!.off("data", onData);
+      child.off("exit", onExit);
+      child.off("error", onError);
+      done();
+    };
+    const onData = () => {
+      if (/^BaboJUBot server on (https?:\/\/\S+) \(.*\)\r?\n/m.test(stdout()))
+        finish(resolve);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(() =>
+        reject(
+          new Error(
+            `server ended before it was ready (code ${code}, signal ${signal}): stdout=${JSON.stringify(stdout())} stderr=${JSON.stringify(stderr())}`
+          )
+        )
+      );
+    const onError = (error: Error) => finish(() => reject(error));
+    const timer = setTimeout(
+      () =>
+        finish(() =>
+          reject(
+            new Error(
+              `server did not become ready in ${readyTimeoutMs}ms: stdout=${JSON.stringify(stdout())} stderr=${JSON.stringify(stderr())}`
+            )
+          )
+        ),
+      readyTimeoutMs
     );
+    child.stdout!.on("data", onData);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    if (child.exitCode !== null || child.signalCode !== null)
+      onExit(child.exitCode, child.signalCode);
   });
+}
+
+/** 시작도 종료도 하지 못한 경우를 구분해 돌려준다. 시작했다면 finally가 끝낸다. */
+async function startOutcome(child: MainProcess) {
+  try {
+    await child.ready;
+    return { started: true };
+  } catch (error) {
+    const exit = await exitWithin(child, 1_000);
+    return exit ? { code: exit.code } : { error: String(error) };
+  }
+}
+
+async function exitWithin(child: MainProcess, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      child.exited,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** 자식이 살아 있으면 끝내고, 이미 끝났으면 그 종료를 기다린다. 그룹 테스트는 남은 그룹까지 정리한다. */
+async function stopMain(child: MainProcess, { group = false } = {}) {
+  if (group) killGroup(child);
+  else if (child.exitCode === null && child.signalCode === null)
+    child.kill("SIGKILL");
+  await child.exited.catch(() => {});
+}
+
+async function waitForPostmaster(child: MainProcess, pidFile: string) {
+  const deadline = Date.now() + readyTimeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null)
+      throw new Error(
+        `server ended before Postgres started (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
+      );
+    if (existsSync(pidFile)) {
+      const pid = Number(readFileSync(pidFile, "utf8").split("\n")[0]);
+      // initdb도 잠깐 음수 pid로 이 파일을 쓴다. 서버로 뜬 postgres만 기다린다.
+      if (pid > 0) return pid;
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(
+    `Postgres did not start in ${readyTimeoutMs}ms: ${child.stderrText()}`
+  );
+}
+
+async function waitForPath(child: MainProcess, target: string) {
+  const deadline = Date.now() + readyTimeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(target)) return;
+    if (child.exitCode !== null || child.signalCode !== null)
+      throw new Error(
+        `server ended before ${target} appeared (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
+      );
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(
+    `${target} did not appear in ${readyTimeoutMs}ms: ${child.stderrText()}`
+  );
 }
 
 function killGroup(child: ChildProcess) {

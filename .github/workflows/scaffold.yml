@@ -125,6 +125,8 @@ jobs:
       # DB 테스트가 실패 코드를 0으로 덮어쓰지 않는지, 실패한 서버 테스트와 실패한 DB 준비도 실패로 끝나는지 본다.
       - name: Check test exit codes
         run: node scripts/check-test-exit-code.mjs
+      - name: Check boot script isolation
+        run: node --test scripts/boot-check.test.mjs
   test-server:
     name: tests / server
     needs: changes

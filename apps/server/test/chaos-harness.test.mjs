@@ -601,7 +601,15 @@ describe("chaos harness on a fake connection", () => {
       overrunSeconds: 0,
       timeLimitExceeded: false,
     });
-    expect(summary.liveRuns).toBe(7);
+    // 전달 중 강제 종료된 HTTP 메시지는 저장되지 않을 수 있다(장면 g가 그 경우를 허용한다). 그래서 전체 실행 수는
+    // 장면이 실제로 시작한 실행 수의 합과 같아야 하고, 이 장면 구성에서는 6..7이다.
+    const sceneLiveRuns = summary.scenes.map((scene) => scene.liveRuns);
+    expect(sceneLiveRuns.every((count) => count > 0)).toBe(true);
+    expect(summary.liveRuns).toBe(
+      sceneLiveRuns.reduce((sum, count) => sum + count, 0)
+    );
+    expect(summary.liveRuns).toBeGreaterThanOrEqual(6);
+    expect(summary.liveRuns).toBeLessThanOrEqual(7);
     // 등록된 비밀값(토큰·메시지 본문·DB 주소)은 증거에 남지 않는다.
     expect(secrets.size).toBeGreaterThan(0);
     expect(sanitizeEvidence(summary, secrets).evidenceCheck.clean).toBe(true);

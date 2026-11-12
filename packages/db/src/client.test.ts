@@ -22,23 +22,44 @@ import { createTestDatabase } from "./testing.ts";
 describe("embedded Postgres lifetime", () => {
   it("closes and removes a non-persistent dataDir after Postgres died on its own", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    const handle = await openDatabase({
-      embedded: { dataDir, persistent: false },
-    });
-    const client = new pg.Client({ connectionString: handle.url });
-    await client.connect();
-    const { rows } = await client.query<{ pid: string }>(
-      "select split_part(pg_read_file('postmaster.pid'), E'\\n', 1) as pid"
-    );
-    await client.end();
-    const pid = Number(rows[0]!.pid);
+    let handle: Awaited<ReturnType<typeof openDatabase>> | undefined;
+    let pid = 0;
+    try {
+      handle = await openDatabase({
+        embedded: { dataDir, persistent: false },
+      });
+      const client = new pg.Client({ connectionString: handle.url });
+      try {
+        await client.connect();
+        const { rows } = await client.query<{ pid: string }>(
+          "select split_part(pg_read_file('postmaster.pid'), E'\\n', 1) as pid"
+        );
+        pid = Number(rows[0]!.pid);
+      } finally {
+        await client.end().catch(() => {});
+      }
 
-    process.kill(pid, "SIGKILL");
-    while (isAlive(pid)) await new Promise((r) => setTimeout(r, 50));
+      process.kill(pid, "SIGKILL");
+      const deadline = Date.now() + 15_000;
+      while (isAlive(pid) && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 50));
+      expect(isAlive(pid)).toBe(false);
 
-    await handle.close();
-    expect(fs.existsSync(dataDir)).toBe(false);
-  });
+      await handle.close();
+      handle = undefined;
+      expect(fs.existsSync(dataDir)).toBe(false);
+    } finally {
+      if (pid && isAlive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* Already gone. */
+        }
+      }
+      await handle?.close().catch(() => {});
+      await removeCluster(dataDir);
+    }
+  }, 60_000);
 
   it("lets the process exit promptly when Postgres fails to start", async () => {
     // PG_VERSION이 있어 initdb를 건너뛰지만 cluster가 아니므로 postgres가 바로 끝난다.
@@ -50,19 +71,19 @@ describe("embedded Postgres lifetime", () => {
       await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } })
         .then(() => console.log("started"), (error) => console.log("failed:", error.message));
     `;
+    let child: ReturnType<typeof spawn> | undefined;
     try {
-      const child = spawn(
-        process.execPath,
-        ["--input-type=module", "-e", script],
-        { stdio: ["ignore", "pipe", "inherit"] }
-      );
+      child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      const exited = exitOf(child, 30_000);
       let output = "";
       let failedAt = 0;
       child.stdout!.on("data", (chunk) => {
         output += chunk;
         failedAt ||= Date.now();
       });
-      await once(child, "exit");
+      await exited;
 
       // 왜 끝났는지 알 수 있어야 한다. 시스템마다 이유가 달라 Postgres가 남긴 말을 그대로 보인다.
       expect(output).toMatch(
@@ -71,6 +92,7 @@ describe("embedded Postgres lifetime", () => {
       // embedded-postgres의 종료 hook이 멈추면 exit-hook이 5초 뒤에야 강제 종료한다.
       expect(Date.now() - failedAt).toBeLessThan(4_000);
     } finally {
+      if (child) await killHard(child);
       await removeCluster(dataDir);
     }
   }, 60_000);
@@ -93,26 +115,26 @@ describe("embedded Postgres lifetime", () => {
         new URL("./client.ts", import.meta.url)
       );
       const finish = {
-        "uncaught error": `throw new Error("boom");`,
-        "process.exit": `process.exit(7);`,
+        "uncaught error": `console.log("started"); throw new Error("boom");`,
+        "process.exit": `console.log("started"); process.exit(7);`,
         // 종료 신호는 프로그램(서버 진입점 등)이 받는다. 프로그램이 어떻게 끝나든 Postgres는 멈춘다.
-        "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); setInterval(() => {}, 1000);`,
+        // 신호 handler를 먼저 설치한 뒤 알리므로, 준비를 본 쪽이 보내는 신호를 놓치지 않는다.
+        "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); console.log("started"); setInterval(() => {}, 1000);`,
       }[end];
       const script = `
         const { openDatabase } = await import(${JSON.stringify(clientModule)});
         await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
-        console.log("started");
         ${finish}
       `;
       let pid = 0;
+      let child: ReturnType<typeof spawn> | undefined;
       try {
-        const child = spawn(
-          process.execPath,
-          ["--input-type=module", "-e", script],
-          { stdio: ["ignore", "pipe", "ignore"] }
-        );
-        const exited = once(child, "exit");
-        await once(child.stdout!, "data");
+        child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        const exited = exitOf(child, 30_000);
+        const lines = lineReader(child);
+        await lines.next();
         pid = Number(
           fs
             .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
@@ -133,6 +155,7 @@ describe("embedded Postgres lifetime", () => {
         await handle.close();
       } finally {
         if (pid && isAlive(pid)) process.kill(pid, "SIGKILL");
+        if (child) await killHard(child);
         await removeCluster(dataDir);
       }
     },
@@ -180,15 +203,15 @@ describe("embedded Postgres lifetime", () => {
       `;
       let postmaster = 0;
       let backend = 0;
+      let child: ReturnType<typeof spawn> | undefined;
       try {
-        const child = spawn(
-          process.execPath,
-          ["--input-type=module", "-e", script],
-          { stdio: ["pipe", "pipe", "inherit"] }
-        );
-        const exited = once(child, "exit");
-        const [line] = await once(child.stdout!, "data");
-        backend = Number(String(line).trim());
+        child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+          stdio: ["pipe", "pipe", "inherit"],
+        });
+        child.stdin!.on("error", () => {});
+        const exited = exitOf(child, 30_000);
+        const lines = lineReader(child);
+        backend = Number((await lines.next()).trim());
         postmaster = Number(
           fs
             .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
@@ -206,9 +229,14 @@ describe("embedded Postgres lifetime", () => {
       } finally {
         for (const pid of [backend, postmaster])
           if (pid && isAlive(pid)) {
-            process.kill(pid, "SIGCONT");
-            process.kill(pid, "SIGKILL");
+            try {
+              process.kill(pid, "SIGCONT");
+              process.kill(pid, "SIGKILL");
+            } catch {
+              // Between the check and the signal the process may be gone. Continue with the rest.
+            }
           }
+        if (child) await killHard(child);
         await removeCluster(dataDir);
       }
     },
@@ -230,15 +258,15 @@ describe("embedded Postgres lifetime", () => {
       await handle.close();
       console.log(JSON.stringify({ imported, opened }));
     `;
+    let child: ReturnType<typeof spawn> | undefined;
     try {
-      const child = spawn(
-        process.execPath,
-        ["--input-type=module", "-e", script],
-        { stdio: ["ignore", "pipe", "inherit"] }
-      );
+      child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      const exited = exitOf(child, 30_000);
       let output = "";
       child.stdout!.on("data", (chunk) => (output += chunk));
-      await once(child, "exit");
+      await exited;
       const none = {
         SIGINT: 0,
         SIGTERM: 0,
@@ -248,6 +276,7 @@ describe("embedded Postgres lifetime", () => {
       };
       expect(JSON.parse(output)).toEqual({ imported: none, opened: none });
     } finally {
+      if (child) await killHard(child);
       await removeCluster(dataDir);
     }
   }, 60_000);
@@ -259,12 +288,14 @@ describe("a Postgres left by a killed process", () => {
   it("is stopped normally by the next start, which keeps its data", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     let postmaster = 0;
+    let child: ReturnType<typeof spawn> | undefined;
     try {
-      const { child } = await holdDatabase(`
+      const held = await holdDatabase(`
         const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         await handle.db.$client.query("create table kept (value int); insert into kept values (7)");
         console.log("ready");
       `);
+      child = held.child;
       postmaster = readPostmaster(dataDir);
       await killHard(child);
       expect(isAlive(postmaster)).toBe(true);
@@ -287,6 +318,7 @@ describe("a Postgres left by a killed process", () => {
       }
       expect(fs.existsSync(path.join(dataDir, "postmaster.pid"))).toBe(false);
     } finally {
+      if (child) await killHard(child);
       await stopPostgres(postmaster);
       await removeCluster(dataDir);
     }
@@ -347,7 +379,7 @@ describe("a Postgres left by a killed process", () => {
         );
         if (owner === "a dead process") {
           const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-          await once(gone, "exit");
+          await exitOf(gone, 10_000);
           recordOwner(dataDir, { pid: gone.pid!, persistent: true });
         }
         await expect(
@@ -369,15 +401,17 @@ describe("a Postgres left by a killed process", () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     let postmaster = 0;
     let backend = 0;
+    let child: ReturnType<typeof spawn> | undefined;
     const client = { current: undefined as pg.Client | undefined };
     try {
-      const { child, line } = await holdDatabase(`
+      const held = await holdDatabase(`
         const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         console.log(new URL(handle.url).port);
       `);
+      child = held.child;
       postmaster = readPostmaster(dataDir);
       client.current = new pg.Client({
-        connectionString: clusterUrl(Number(line), "postgres"),
+        connectionString: clusterUrl(Number(held.line), "postgres"),
       });
       client.current.on("error", () => {});
       await client.current.connect();
@@ -397,8 +431,15 @@ describe("a Postgres left by a killed process", () => {
       );
       expect(isAlive(postmaster)).toBe(true);
     } finally {
-      if (backend && isAlive(backend)) process.kill(backend, "SIGCONT");
+      if (backend && isAlive(backend)) {
+        try {
+          process.kill(backend, "SIGCONT");
+        } catch {
+          /* Between the check and the signal the process may be gone. */
+        }
+      }
       await client.current?.end().catch(() => {});
+      if (child) await killHard(child);
       await stopPostgres(postmaster);
       await removeCluster(dataDir);
     }
@@ -407,6 +448,7 @@ describe("a Postgres left by a killed process", () => {
   it("is stopped and removed by the next temporary cluster when it was temporary", async () => {
     let postmaster = 0;
     let dataDir = "";
+    let child: ReturnType<typeof spawn> | undefined;
     let next: Awaited<ReturnType<typeof ephemeralCluster>> | undefined;
     try {
       const held = await holdDatabase(`
@@ -414,9 +456,10 @@ describe("a Postgres left by a killed process", () => {
         await db.openDatabase({ embedded: options });
         console.log(options.dataDir);
       `);
+      child = held.child;
       dataDir = held.line;
       postmaster = readPostmaster(dataDir);
-      await killHard(held.child);
+      await killHard(child);
       expect(isAlive(postmaster)).toBe(true);
 
       next = await ephemeralCluster();
@@ -424,6 +467,7 @@ describe("a Postgres left by a killed process", () => {
       expect(fs.existsSync(dataDir)).toBe(false);
       expect(fs.existsSync(`${dataDir}.owner`)).toBe(false);
     } finally {
+      if (child) await killHard(child);
       await stopPostgres(postmaster);
       if (dataDir) await removeCluster(dataDir);
       if (next) await removeCluster(next.dataDir);
@@ -436,7 +480,7 @@ describe("a Postgres left by a killed process", () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     // 새 폴더에서 셋이 동시에 cluster를 만들고 켜게 한다. 주인이 하나가 아니면 만들기·켜기를 함께 시도해 부딪힌다.
     const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-    await once(gone, "exit");
+    await exitOf(gone, 10_000);
     recordOwner(dataDir, { pid: gone.pid!, persistent: true });
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
     const script = `
@@ -460,34 +504,29 @@ describe("a Postgres left by a killed process", () => {
         stdio: ["pipe", "pipe", "inherit"],
       })
     );
+    const exits = children.map((child) => exitOf(child, 30_000));
+    const readers = children.map((child) => lineReader(child, 45_000));
+    for (const child of children) child.stdin!.on("error", () => {});
     let postmaster = 0;
     try {
-      const lines = await Promise.all(
-        children.map(async (child) => {
-          const [line] = await once(child.stdout!, "data");
-          return String(line).trim();
-        })
-      );
+      const lines = await Promise.all(readers.map((reader) => reader.next()));
       expect(lines.filter((line) => line === "opened")).toHaveLength(1);
       const winnerIndex = lines.indexOf("opened");
       for (const [index, line] of lines.entries()) {
         if (index === winnerIndex) continue;
         expect(line).toContain("in use by a running process");
-        const loser = children[index]!;
-        if (loser.exitCode === null && loser.signalCode === null)
-          await once(loser, "exit");
+        await exits[index]!;
       }
 
       postmaster = readPostmaster(dataDir);
       const winner = children[winnerIndex]!;
-      const answer = once(winner.stdout!, "data");
       winner.stdin!.write("query\n");
-      expect(String((await answer)[0]).trim()).toBe("query 1");
-      if (winner.exitCode === null && winner.signalCode === null)
-        await once(winner, "exit");
+      expect(await readers[winnerIndex]!.next()).toBe("query 1");
+      await exits[winnerIndex]!;
       expect(winner.exitCode).toBe(0);
     } finally {
       for (const child of children) await killHard(child);
+      await Promise.allSettled(exits);
       await stopPostgres(postmaster);
       await removeCluster(dataDir);
     }
@@ -511,11 +550,13 @@ describe("a Postgres left by a killed process", () => {
         stdio: ["pipe", "pipe", "inherit"],
       }
     );
+    child.stdin!.on("error", () => {});
     // Node는 SIGQUIT를 무시하므로 기본 동작으로 끝나는 프로세스를 쓴다.
     const unrelated = spawn("sleep", ["60"], { stdio: "ignore" });
     let postmaster = 0;
     try {
-      await once(child.stdout!, "data");
+      const lines = lineReader(child);
+      await lines.next();
       postmaster = readPostmaster(dataDir);
       process.kill(postmaster, "SIGKILL");
       const deadline = Date.now() + 10_000;
@@ -525,7 +566,7 @@ describe("a Postgres left by a killed process", () => {
         path.join(dataDir, "postmaster.pid"),
         `${unrelated.pid}\n${dataDir}\n0\n0\n`
       );
-      const exited = once(child, "exit");
+      const exited = exitOf(child, 30_000);
       child.stdin!.write("end\n");
       await exited;
       await new Promise((r) => setTimeout(r, 500));
@@ -603,7 +644,7 @@ describe("a Postgres left by a killed process", () => {
       path.join(os.tmpdir(), "babojubot-outside-")
     );
     const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-    await once(gone, "exit");
+    await exitOf(gone, 10_000);
     fs.writeFileSync(
       path.join(outside, "1"),
       JSON.stringify({ pid: gone.pid, persistent: false })
@@ -661,11 +702,120 @@ function readPostmaster(dataDir: string) {
 /** 남은 postgres를 즉시 정지로 멈추고 끝날 때까지 기다린다. */
 async function stopPostgres(pid: number) {
   if (!pid || !isAlive(pid)) return;
-  process.kill(pid, "SIGQUIT");
+  try {
+    process.kill(pid, "SIGQUIT");
+  } catch {
+    // Between the check and the signal the process may be gone.
+    return;
+  }
   const deadline = Date.now() + 10_000;
   while (isAlive(pid) && Date.now() < deadline)
     await new Promise((r) => setTimeout(r, 50));
-  if (isAlive(pid)) process.kill(pid, "SIGKILL");
+  if (isAlive(pid)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* Already gone. */
+    }
+  }
+}
+
+type Spawned = ReturnType<typeof spawn>;
+
+/** 자식의 stdout을 줄 단위로 나눠 둔다. 청크는 줄과 같지 않고, 자식이 끝나거나 시한이 지나면 실패한다. */
+function lineReader(child: Spawned, timeoutMs = 45_000) {
+  let buffer = "";
+  const lines: string[] = [];
+  let wake: (() => void) | undefined;
+  let ended: Error | undefined;
+  let exit = "no exit";
+  const signal = () => {
+    const current = wake;
+    wake = undefined;
+    current?.();
+  };
+  const onData = (chunk: Buffer | string) => {
+    buffer += String(chunk);
+    for (
+      let index = buffer.indexOf("\n");
+      index >= 0;
+      index = buffer.indexOf("\n")
+    ) {
+      lines.push(buffer.slice(0, index).trim());
+      buffer = buffer.slice(index + 1);
+    }
+    signal();
+  };
+  // 프로세스가 끝나도 stdout에는 아직 읽지 않은 줄이 남아 있을 수 있다. 스트림이 닫힌 뒤에만 포기한다.
+  const onExit = (code: number | null, name: NodeJS.Signals | null) => {
+    exit = `code ${code}, signal ${name}`;
+    signal();
+  };
+  const onClose = () => {
+    ended = new Error(`child ended before its next line (${exit}): ${buffer}`);
+    signal();
+  };
+  const onError = (error: Error) => {
+    ended = error;
+    signal();
+  };
+  child.stdout!.on("data", onData);
+  child.stdout!.once("close", onClose);
+  child.once("exit", onExit);
+  child.once("error", onError);
+  return {
+    async next(limit = timeoutMs) {
+      const deadline = Date.now() + limit;
+      while (true) {
+        if (lines.length > 0) return lines.shift()!;
+        if (ended) throw ended;
+        const left = deadline - Date.now();
+        if (left <= 0)
+          throw new Error(
+            `child did not print a line in ${limit}ms: ${buffer}`
+          );
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            wake = undefined;
+            resolve();
+          }, left);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      }
+    },
+  };
+}
+
+/** 자식이 끝날 때까지 기다리되, spawn 오류와 제한 시간도 실패로 돌려준다. */
+function exitOf(child: Spawned, timeoutMs = 30_000) {
+  return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve, reject) => {
+      function cleanup() {
+        if (timer) clearTimeout(timer);
+        child.off("exit", onExit);
+        child.off("error", onError);
+      }
+      function onExit(code: number | null, signal: NodeJS.Signals | null) {
+        cleanup();
+        resolve({ code, signal });
+      }
+      function onError(error: Error) {
+        cleanup();
+        reject(error);
+      }
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`child did not exit in ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.once("exit", onExit);
+      child.once("error", onError);
+      if (child.exitCode !== null || child.signalCode !== null)
+        onExit(child.exitCode, child.signalCode);
+    }
+  );
 }
 
 /** DB를 열고 살아 있는 자식 프로세스. `line`은 자식이 처음 출력한 줄이다. `db`가 client.ts 모듈이다. */
@@ -679,13 +829,20 @@ async function holdDatabase(open: string) {
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     stdio: ["ignore", "pipe", "inherit"],
   });
-  const [line] = await once(child.stdout!, "data");
-  return { child, line: String(line).trim() };
+  try {
+    const lines = lineReader(child);
+    return { child, line: await lines.next() };
+  } catch (error) {
+    await killHard(child);
+    throw error;
+  }
 }
 
 /** 정리 없이 강제로 끝낸다(SIGKILL·IDE 강제 정지·OOM과 같은 상황). */
-async function killHard(child: ReturnType<typeof spawn>) {
+async function killHard(child: Spawned) {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  // spawn 자체가 실패하면 pid가 없고 exit도 오지 않는다.
+  if (child.pid === undefined) return;
   const exited = once(child, "exit");
   child.kill("SIGKILL");
   await exited;
