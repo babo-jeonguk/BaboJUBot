@@ -696,7 +696,7 @@ describe.skipIf(process.platform === "win32")(
           (await env.calls()).some((call) => call.args.includes("run"))
         ).toBe(true);
         // 컨테이너에 들어가는 조직 폴더 안의 다른 파일을 가리키는 링크는 남은 로그인이다.
-        await rm(target);
+        await rm(target, { force: true });
         await symlink(path.join(path.dirname(target), "copy"), target);
         const refused = await provider.adapter.execute(
           env.isolated(),
@@ -709,47 +709,51 @@ describe.skipIf(process.platform === "win32")(
   }
 );
 
+/** 모의 상류와, 조직 도구 listener처럼 `/api/relay/<연결>` 아래를 중계에 넘기는 서버. 중계는 상류 주소를 받은 뒤 만든다. */
+async function relayed(
+  connectionId: string,
+  connect: (upstream: string) => { handle: http.RequestListener }
+) {
+  const seen: http.IncomingHttpHeaders[] = [];
+  const urls: string[] = [];
+  const servers: http.Server[] = [];
+  const listen = async (handler: http.RequestListener) => {
+    const server = http.createServer(handler);
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+  };
+  const upstream = await listen((req, res) => {
+    seen.push(req.headers);
+    urls.push(req.url ?? "");
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  const relay = connect(upstream);
+  const tools = await listen((req, res) => {
+    const prefix = `/api/relay/${connectionId}`;
+    if (!req.url?.startsWith(prefix + "/")) {
+      res.writeHead(404).end();
+      return;
+    }
+    req.url = req.url.slice(prefix.length);
+    relay.handle(req, res);
+  });
+  const close = async () => {
+    for (const server of servers) {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  };
+  return { tools, seen, urls, close };
+}
+
 describe.skipIf(process.platform === "win32")(
   "an isolated Claude attempt through the credential relay (#148)",
   () => {
-    /** 모의 상류와, 조직 도구 listener처럼 `/api/relay/<연결>` 아래를 중계에 넘기는 서버. 중계는 상류 주소를 받은 뒤 만든다. */
-    async function relayed(
-      connect: (upstream: string) => { handle: http.RequestListener }
-    ) {
-      const seen: http.IncomingHttpHeaders[] = [];
-      const servers: http.Server[] = [];
-      const listen = async (handler: http.RequestListener) => {
-        const server = http.createServer(handler);
-        servers.push(server);
-        await new Promise<void>((resolve) =>
-          server.listen(0, "127.0.0.1", resolve)
-        );
-        return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
-      };
-      const upstream = await listen((req, res) => {
-        seen.push(req.headers);
-        req.resume();
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end("{}");
-      });
-      const relay = connect(upstream);
-      const tools = await listen((req, res) => {
-        const prefix = "/api/relay/claude";
-        if (!req.url?.startsWith(prefix + "/")) {
-          res.writeHead(404).end();
-          return;
-        }
-        req.url = req.url.slice(prefix.length);
-        relay.handle(req, res);
-      });
-      const close = async () => {
-        for (const server of servers) {
-          server.closeAllConnections();
-          await new Promise((resolve) => server.close(resolve));
-        }
-      };
-      return { tools, seen, close };
-    }
     const relayProgram = {
       claude: [process.execPath, fixture("claude-relay.mjs")],
     };
@@ -765,7 +769,7 @@ describe.skipIf(process.platform === "win32")(
       process.env.ANTHROPIC_API_KEY = "api-key-secret";
       process.env.BABOJUBOT_CLAUDE_PASS_ENV = "ANTHROPIC_API_KEY";
       let provider!: ReturnType<typeof createClaudeProvider>;
-      const network = await relayed((upstream) => {
+      const network = await relayed("claude", (upstream) => {
         provider = createClaudeProvider({
           dataDir: env.root,
           container: env.container,
@@ -805,7 +809,7 @@ describe.skipIf(process.platform === "win32")(
     it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
       const env = await setup(relayProgram);
       let provider!: ReturnType<typeof createClaudeProvider>;
-      const network = await relayed((upstream) => {
+      const network = await relayed("claude", (upstream) => {
         provider = createClaudeProvider({
           dataDir: env.root,
           container: env.container,
@@ -851,6 +855,181 @@ describe.skipIf(process.platform === "win32")(
       expect(result.stopReason).toBe("failed");
       expect(result.error).toContain("로그인 기록");
       expect(await env.calls()).toEqual([]);
+    });
+  }
+);
+
+describe.skipIf(process.platform === "win32")(
+  "an isolated Codex attempt through the credential relay (#148)",
+  () => {
+    const relayProgram = {
+      codex: [process.execPath, fixture("codex-relay.mjs")],
+    };
+    /** 연결의 로그인 원본(합성 값). 실제 Codex의 ChatGPT 로그인 파일 형식이다. */
+    const realLogin = {
+      tokens: {
+        id_token: "real-id-token",
+        access_token: "real-access-token",
+        refresh_token: "real-refresh-token",
+        account_id: "real-account",
+      },
+      last_refresh: new Date().toISOString(),
+    };
+    async function codexSetup(
+      login: string | null = JSON.stringify(realLogin)
+    ) {
+      const env = await setup(relayProgram);
+      const loginFolder = path.join(env.root, "providers/codex/login");
+      await mkdir(loginFolder, { recursive: true });
+      if (login !== null)
+        await writeFile(path.join(loginFolder, "auth.json"), login, {
+          mode: 0o600,
+        });
+      let provider!: ReturnType<typeof createCodexProvider>;
+      const network = await relayed("codex", (upstream) => {
+        provider = createCodexProvider({
+          dataDir: env.root,
+          container: env.container,
+          relay: { upstream, verified: true },
+        });
+        return provider.credentialRelay!;
+      });
+      const organization = path.join(
+        env.root,
+        "providers/codex/organizations",
+        env.org
+      );
+      const input = () => {
+        const request = env.isolated();
+        request.access = { ...request.access, toolsBaseUrl: network.tools };
+        return request;
+      };
+      /** 프로그램이 본 로그인·인수·갱신 주소. */
+      const seen = async () =>
+        JSON.parse(
+          await readFile(path.join(organization, "seen-auth.json"), "utf8")
+        ) as {
+          login: { tokens: Record<string, string>; [key: string]: unknown };
+          args: string[];
+          refreshUrl: string | null;
+        };
+      return {
+        env,
+        network,
+        provider: () => provider,
+        input,
+        seen,
+        organization,
+        loginFolder,
+      };
+    }
+
+    it("lets the program reach the model only through the relay, which puts the connection's access token and account in place of the run's grant", async () => {
+      const t = await codexSetup();
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("completed");
+        expect(t.network.urls).toEqual(["/responses"]);
+        expect(t.network.seen[0]!.authorization).toBe(
+          "Bearer real-access-token"
+        );
+        expect(t.network.seen[0]!["chatgpt-account-id"]).toBe("real-account");
+        const seen = await t.seen();
+        // 컨테이너의 로그인 파일에는 이 실행 시도의 권한만 있다. 갱신 값·계정은 없다.
+        const grant = seen.login.tokens.access_token!;
+        expect(grant).not.toBe("real-access-token");
+        expect(seen.login.tokens.refresh_token ?? "").toBe("");
+        expect(seen.login.tokens.account_id).toBeUndefined();
+        expect(JSON.stringify(seen)).not.toMatch(
+          /real-access-token|real-refresh-token|real-account|real-id-token/
+        );
+        // 모델 통신과 ChatGPT 보조 요청은 중계 주소로, 갱신은 중계 안의 허용하지 않은 경로로 간다.
+        const relayBase = `${t.network.tools}/api/relay/codex`;
+        expect(seen.args.join(" ")).toContain(`base_url="${relayBase}"`);
+        expect(seen.args.join(" ")).toContain(
+          `chatgpt_base_url="${relayBase}/backend-api/"`
+        );
+        expect(seen.refreshUrl).toBe(`${relayBase}/oauth/token`);
+        const run = runCall(await t.env.calls());
+        expect(JSON.stringify(run)).not.toMatch(
+          /real-access-token|real-refresh-token|real-id-token/
+        );
+        // 실행 시도가 끝나면 권한을 거두고, 조직 폴더의 가짜 로그인 파일을 지운다.
+        const after = await fetch(`${relayBase}/responses`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${grant}` },
+        });
+        expect(after.status).toBe(401);
+        expect(t.network.urls).toHaveLength(1);
+        await expect(
+          stat(path.join(t.organization, "auth.json"))
+        ).rejects.toThrow();
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
+      const t = await codexSetup(null);
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("인증 중계");
+        expect(t.network.urls).toHaveLength(0);
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        // 복구 전에는 새 실행 시도도 시작하지 않는다.
+        const again = await t.provider().adapter.execute(t.input(), control());
+        expect(again.stopReason).toBe("failed");
+        expect(
+          (await t.env.calls()).filter((call) => call.args.includes("run"))
+        ).toHaveLength(1);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("replaces the link to the connection's login this machine left without writing through it, and starts over its own leftover login file", async () => {
+      const t = await codexSetup();
+      try {
+        const original = path.join(t.loginFolder, "auth.json");
+        const before = await readFile(original, "utf8");
+        await mkdir(t.organization, { recursive: true });
+        await symlink(original, path.join(t.organization, "auth.json"));
+        const first = await t.provider().adapter.execute(t.input(), control());
+        expect(first.stopReason).toBe("completed");
+        // 원본 로그인은 그대로다.
+        expect(await readFile(original, "utf8")).toBe(before);
+        // 서버가 실행 중에 멈춰 이 어댑터의 가짜 로그인 파일이 남았어도 다음 실행은 시작한다.
+        const leftover = (await t.seen()).login;
+        await writeFile(
+          path.join(t.organization, "auth.json"),
+          JSON.stringify(leftover)
+        );
+        const second = await t.provider().adapter.execute(t.input(), control());
+        expect(second.stopReason).toBe("completed");
+        expect(await readFile(original, "utf8")).toBe(before);
+        expect(t.network.urls).toHaveLength(2);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("does not start over a real-looking login left in the organization's product folder", async () => {
+      const t = await codexSetup();
+      try {
+        await mkdir(t.organization, { recursive: true });
+        await writeFile(
+          path.join(t.organization, "auth.json"),
+          JSON.stringify({ ...realLogin, tokens: { ...realLogin.tokens } })
+        );
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("로그인 기록");
+        expect(await t.env.calls()).toEqual([]);
+        expect(t.network.urls).toHaveLength(0);
+      } finally {
+        await t.network.close();
+      }
     });
   }
 );
