@@ -20,10 +20,153 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, quietCreation } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
+/**
+ * 저장 경계에 건 실패. 실행 시도 admission(`claimNextRun`)과 종료 저장(`finishRun`) 중 대상(에이전트·실행 시도)이 맞는 호출만,
+ * 그 저장의 실제 transaction을 끝까지 돌린 뒤 되돌리거나(`rollback`) commit한 뒤 응답을 잃게(`lost_commit`) 한다.
+ * 알림·heartbeat·압축 같은 다른 `db.transaction` 소비자는 이 주입을 가져가지 못한다(#180).
+ */
+type StoreFault = {
+  /** admission은 에이전트 ID, 종료 저장은 실행 시도 ID. */
+  target: string;
+  mode: "rollback" | "lost_commit";
+  /** 주입할 횟수. 다 쓰면 그 뒤 호출은 그대로 저장한다. */
+  times: number;
+  /** 대상 저장 바로 앞과 뒤에 돌리는 일(경쟁 소비자). */
+  around?: () => Promise<void>;
+  /** 실제로 주입한 호출마다 그 transaction 본문이 돌려준 값. 되돌렸거나 응답을 잃은 저장이다. */
+  injected: unknown[];
+};
+const store = vi.hoisted(() => {
+  const faults: { admission?: StoreFault; finish?: StoreFault } = {};
+  async function guard<T>(
+    boundary: keyof typeof faults,
+    target: string,
+    db: object,
+    save: (db: never) => Promise<T>
+  ): Promise<T> {
+    const fault = faults[boundary];
+    if (
+      !fault ||
+      fault.target !== target ||
+      fault.injected.length >= fault.times
+    )
+      return save(db as never);
+    const failure = new Error(`injected ${boundary} failure`);
+    type Transaction = (
+      body: (tx: unknown) => Promise<unknown>,
+      config?: unknown
+    ) => Promise<unknown>;
+    const faulty = new Proxy(db, {
+      get(real, key) {
+        if (key !== "transaction") return Reflect.get(real, key, real);
+        const transaction = (real as { transaction: Transaction }).transaction;
+        return async (
+          body: (tx: unknown) => Promise<unknown>,
+          config?: unknown
+        ) => {
+          const value = await transaction.call(
+            real,
+            async (tx) => {
+              const saved = await body(tx);
+              if (fault.mode === "rollback") {
+                fault.injected.push(saved);
+                throw failure;
+              }
+              return saved;
+            },
+            config
+          );
+          fault.injected.push(value);
+          throw failure;
+        };
+      },
+    });
+    await fault.around?.();
+    try {
+      return await save(faulty as never);
+    } finally {
+      await fault.around?.();
+    }
+  }
+  return { faults, guard };
+});
+vi.mock("@babojubot/db", async (original) => {
+  const real = await original<typeof import("@babojubot/db")>();
+  return {
+    ...real,
+    claimNextRun: (...args: Parameters<typeof real.claimNextRun>) =>
+      store.guard("admission", args[1], args[0], (db) =>
+        real.claimNextRun(db, args[1], args[2])
+      ),
+    finishRun: (...args: Parameters<typeof real.finishRun>) =>
+      store.guard("finish", args[1], args[0], (db) =>
+        real.finishRun(db, args[1], args[2], args[3])
+      ),
+  };
+});
+/** `boundary` 저장 경계의 대상 호출에 실패를 건다. 돌려준 기록의 `injected`로 실제 주입을 확인한다. */
+function failAt(
+  boundary: keyof typeof store.faults,
+  fault: Omit<StoreFault, "injected">
+): StoreFault {
+  const armed = { ...fault, injected: [] };
+  store.faults[boundary] = armed;
+  return armed;
+}
+
+/**
+ * 경쟁 소비자: 알림 보내기·heartbeat·압축을 한 번씩 돌린다. 모두 공용 `db.transaction`을 쓰므로(알림 가져가기는 매번 연다)
+ * 호출 순번에 건 주입이었다면 이들이 실패를 가져간다. 돌릴 때마다 그 사이 시작한 transaction의 결과를 `passes`에 남긴다.
+ */
+function competitors() {
+  let started: Promise<unknown>[] | undefined;
+  let traced = false;
+  const passes: PromiseSettledResult<unknown>[][] = [];
+  return {
+    passes,
+    async run() {
+      const server = t!;
+      if (!traced) {
+        traced = true;
+        const transaction = server.db.transaction.bind(server.db);
+        vi.spyOn(server.db, "transaction").mockImplementation(((
+          ...args: Parameters<typeof transaction>
+        ) => {
+          const result = transaction(...args);
+          started?.push(result);
+          return result;
+        }) as typeof transaction);
+      }
+      const pass: Promise<unknown>[] = (started = []);
+      try {
+        await server.deliverNotifications();
+        await server.tickHeartbeats();
+        await server.tickCompactions();
+      } finally {
+        started = undefined;
+      }
+      passes.push(await Promise.allSettled(pass));
+    },
+  };
+}
+/** 주입한 저장마다 그 앞뒤로 경쟁 소비자가 돌았고, 매번 transaction을 열어 모두 성공했다. */
+function expectCompetitorsUnharmed(
+  passes: PromiseSettledResult<unknown>[][],
+  fault: StoreFault
+) {
+  expect(passes).toHaveLength(fault.injected.length * 2);
+  for (const pass of passes) {
+    expect(pass.length).toBeGreaterThan(0);
+    expect(pass.filter((p) => p.status === "rejected")).toEqual([]);
+  }
+}
+
 let t: TestServer | undefined;
 const bodyOf = (reason: WakeReason) =>
   reason.kind === "owner_message" ? reason.body : undefined;
 afterEach(async () => {
+  store.faults.admission = undefined;
+  store.faults.finish = undefined;
   await t?.close();
   t = undefined;
   vi.restoreAllMocks();
@@ -103,39 +246,54 @@ describe("Lead conversation", () => {
       kind: "organization",
       organizationId: org.id,
     });
-    const transaction = t.db.transaction.bind(t.db);
-    // 메시지 저장은 성공하고 그 다음 admission transaction만 실패한다.
-    vi.spyOn(t.db, "transaction")
-      .mockImplementationOnce(transaction)
-      .mockRejectedValueOnce(new Error("temporary admission failure"));
+    const rivals = competitors();
+    // 메시지 저장은 그대로 두고, 그 메시지로 실행 시도를 만든 admission만 되돌린다. 그 앞뒤에서 다른 transaction 소비자가 돈다.
+    const admission = failAt("admission", {
+      target: org.lead.id,
+      mode: "rollback",
+      times: 1,
+      around: rivals.run,
+    });
 
     await say(org.id, "한 번만 보낼 메시지");
     while ((await stream.next(10_000)).type !== "run.finished") {
       /* 완료 barrier */
     }
+    expect(admission.injected).toEqual([
+      expect.objectContaining({
+        run: expect.objectContaining({ agentId: org.lead.id }),
+      }),
+    ]);
+    expectCompetitorsUnharmed(rivals.passes, admission);
     expect(await conversation(org.id)).toHaveLength(2);
-    expect((await runs(org.id)).map((r) => r.status)).toEqual(["completed"]);
+    const [run, ...others] = await runs(org.id);
+    expect(run!.status).toBe("completed");
+    expect(others).toEqual([]);
+    expect((await runDetail(org.id, run!.id)).wakeReasons.map(bodyOf)).toEqual([
+      "한 번만 보낼 메시지",
+    ]);
     stream.close();
   });
 
-  it("stops retrying admission on shutdown even while the database still fails", async () => {
+  it("stops retrying admission on shutdown while admission keeps failing", async () => {
     t = await startTestServer({ runtime: quietCreation() });
     const org = await createOrganization("복구 중 종료");
     let failed!: () => void;
     const failure = new Promise<void>((resolve) => {
       failed = resolve;
     });
-    const transaction = t.db.transaction.bind(t.db);
-    vi.spyOn(t.db, "transaction")
-      .mockImplementationOnce(transaction)
-      .mockImplementation(() => {
-        failed();
-        return Promise.reject(new Error("database unavailable"));
-      });
+    const admission = failAt("admission", {
+      target: org.lead.id,
+      mode: "rollback",
+      times: Infinity,
+      around: async () => failed(),
+    });
     await say(org.id, "재시도 중 종료할 메시지");
-    await failure;
+    // 주입이 빠졌다면 admission이 성공해 대기열이 비므로 기다림이 끝나고 아래 검사가 실패한다.
+    await Promise.race([failure, t.drain()]);
     await t.stopServer();
 
+    expect(admission.injected.length).toBeGreaterThan(0);
     const { listRuns } = await import("@babojubot/db");
     // 생성 깨우기를 받은 실행 시도 밖에는 실행 시도가 생기지 않았다.
     expect((await listRuns(t.db, org.id)).map((r) => r.status)).toEqual([
@@ -147,19 +305,22 @@ describe("Lead conversation", () => {
     const gate = createGate();
     const inner = holdFirstRun(gate);
     let executions = 0;
+    const rivals = competitors();
+    let finish: StoreFault | undefined;
     t = await startTestServer({
       runtime: quietCreation({
         ...inner,
         async execute(request, control) {
           executions++;
           const result = await inner.execute(request, control);
-          if (executions === 1) {
-            const transactions = vi.spyOn(t!.db, "transaction");
-            for (let i = 0; i < 4; i++)
-              transactions.mockRejectedValueOnce(
-                new Error("temporary finish failure")
-              );
-          }
+          // 이 실행 시도의 종료 저장만 네 번 되돌린다: 한 번의 저장 안에서 세 번, dispatcher가 다시 시도해 한 번 더.
+          if (executions === 1)
+            finish = failAt("finish", {
+              target: request.identity.runId,
+              mode: "rollback",
+              times: 4,
+              around: rivals.run,
+            });
           return { ...result, summary: "원래 종료 결과" };
         },
       }),
@@ -177,6 +338,11 @@ describe("Lead conversation", () => {
     for (let remaining = 2; remaining > 0;) {
       if ((await stream.next(10_000)).type === "run.finished") remaining--;
     }
+    // 되돌린 네 번 모두 실행 시도를 실제로 끝낸 저장이었다.
+    expect(finish!.injected).toEqual(
+      Array(4).fill(expect.objectContaining({ kind: "ok", value: "ended" }))
+    );
+    expectCompetitorsUnharmed(rivals.passes, finish!);
     expect((await runs(org.id)).map((r) => r.status)).toEqual([
       "completed",
       "completed",
@@ -197,22 +363,22 @@ describe("Lead conversation", () => {
     const gate = createGate();
     const inner = holdFirstRun(gate);
     const executions: string[] = [];
+    const rivals = competitors();
+    let finish: StoreFault | undefined;
     t = await startTestServer({
       runtime: quietCreation({
         ...inner,
         async execute(request, control) {
           executions.push(request.identity.agentId);
           const result = await inner.execute(request, control);
-          if (executions.length === 1) {
-            // 종료 저장은 commit되지만 그 응답을 잃는다.
-            const transaction = t!.db.transaction.bind(t!.db);
-            vi.spyOn(t!.db, "transaction").mockImplementationOnce(
-              async (...args: Parameters<typeof transaction>) => {
-                await transaction(...args);
-                throw new Error("lost commit response");
-              }
-            );
-          }
+          // 이 실행 시도의 종료 저장은 commit되지만 그 응답을 잃는다.
+          if (executions.length === 1)
+            finish = failAt("finish", {
+              target: request.identity.runId,
+              mode: "lost_commit",
+              times: 1,
+              around: rivals.run,
+            });
           return result;
         },
       }),
@@ -243,6 +409,11 @@ describe("Lead conversation", () => {
     watchB.close();
     await t.drain();
 
+    // 응답을 잃은 저장은 실행 시도를 실제로 끝내고 commit했다.
+    expect(finish!.injected).toEqual([
+      expect.objectContaining({ kind: "ok", value: "ended" }),
+    ]);
+    expectCompetitorsUnharmed(rivals.passes, finish!);
     expect((await runs(a.id)).map((r) => r.status)).toEqual(["completed"]);
     expect((await runs(b.id)).map((r) => r.status)).toEqual(["completed"]);
     expect(executions).toEqual([a.lead.id, b.lead.id]);
