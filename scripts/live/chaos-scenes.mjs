@@ -1113,6 +1113,8 @@ async function steerKillScene(ctx) {
     const body =
       'When the command finishes, send_message with body "AFTER2" once.';
     ctx.secrets.add(body);
+    // 두 번째 강제 종료 전에 찍은 실행 목록. 이 뒤에 생긴 실행만 새 실행으로 본다.
+    const beforeSecondKill = (await runsOf(ctx, org)).map((r) => r.id);
     const inFlight = ctx
       .api("POST", `/api/organizations/${org.id}/messages`, {
         body,
@@ -1122,8 +1124,9 @@ async function steerKillScene(ctx) {
     await sleep(30, ctx.signal);
     await killAndRestart(ctx);
     await inFlight;
-    // 두 번째 재시작이 일하던 실행을 끝냈으므로 그 깨우기를 받은 새 실행이 생긴다. 멈추기 전에 실행기에 닿을 때까지 기다린다.
-    const third = await newRun(ctx, org, [first.run.id, second.id], 120_000);
+    // 두 번째 재시작이 일하던 실행을 끝냈으므로 그 깨우기를 받은 새 실행이 생긴다. 두 번째 강제 종료 전에 찍은 실행 목록과 비교해
+    // 찾으므로, 조직 준비 때 끝난 실행 같은 이전 실행을 새 실행으로 잘못 잡지 않는다. 멈추기 전에 실행기에 닿을 때까지 기다린다.
+    const third = await newRun(ctx, org, beforeSecondKill, 120_000);
     await reachedProvider(ctx, third.id);
     const id = (await messagesOf(ctx, org)).find((m) => m.body === body)?.id;
     // 강제 종료 전에 끼워 넣기 결과가 정해졌는지(정해졌으면 "전달 중" 시점을 잡지 못한 것이다).
@@ -1136,7 +1139,7 @@ async function steerKillScene(ctx) {
       ? await expectWithin(
           ctx,
           "끼워 넣던 메시지가 복구 뒤 실행에 전달됨",
-          () => deliveredAfterRestart(id, [first.run.id, second.id]),
+          () => deliveredAfterRestart(id, beforeSecondKill),
           { ms: 120_000 }
         ).catch(unlessBroken(null))
       : null;
