@@ -279,7 +279,7 @@ Q1~Q8을 [같은 누적 댓글의 Agent Brief](https://github.com/babo-jeonguk/B
 | OpenCode 2.2.6 Go 구독 | `deepseek-v4.1-flash` 완료(`/go/chat/completions`·`/go/responses` 200), 조직 도구 호출 도착 | `glm-5.3`은 403 "Model access is disabled"(계정 콘솔의 모델 사용 설정, 중계와 무관). 이 403을 어댑터가 로그인 필요로 보고한다(기존 판정, 별도 확인 필요) |
 | OpenCode 2.2.6 Zen 무료 | 경로 확인, 실제 완료는 못 봄 | 처음에는 모델 목록 받기를 막아 내장 목록의 없어진 모델(`crouton-alpha-free`)을 골라 410 → 공개 목록 주소만 열어 고침. 그 뒤 429 `FreeUsageLimitError`. 같은 CLI를 이 컴퓨터에서 직접(중계 없이) 돌려도 같은 429였고 header가 중계 전달과 같아, 이 컴퓨터 IP의 무료 사용 한도로 판단 |
 | Antigravity 1.5.4 (Google 계정) | 완료. `daily-cloudcode-pa` 상류의 `loadCodeAssist`·`fetchAvailableModels`·`streamGenerateContent` 등 8개 모두 200. 조직 도구가 ACP `session/new`로 실려 실제 모델이 호출 | 실행 전 Google 로그인 확인(`www.googleapis.com`)과 `aicode.googleapis.com`은 막혔고 실행은 이어졌다. 만료된 실제 로그인은 이 컴퓨터의 `agy models`로 갱신됐다(수동 재현, 링크를 따라 원본에 씀) |
-| Claude (setup-token) | 중계를 거친 요청이 인증은 통과하고 429 `rate_limit_error` | 중계 없이 직접 호출해도 "5-hour limit, resets 7:40am (UTC)". 구독 사용량 한도이며 중계 문제가 아니다. 초기화 뒤 다시 확인한다 |
+| Claude | Claude Code 로그인(Team 구독, OAuth 접근 토큰)으로 완료. `POST /v1/messages?beta=true` 200, 세션 유지, 조직 도구 호출이 실행 토큰으로 도착 | 제품 연결의 setup-token으로는 중계를 거친 요청이 인증을 통과한 뒤 429 `rate_limit_error`였고, 중계 없이 직접 불러도 "5-hour limit"이어서 그 계정의 구독 한도로 판단했다. 같은 Bearer 형식의 접근 토큰을 다른 구독 계정으로 확인한 것이다. `api.anthropic.com` 직행 시도는 막혔다 |
 
 확인 중 고친 것: OpenCode 격리 실행의 모델 목록 받기(위). 스크립트의 Antigravity 원본 배치 실수(원본을 링크로 두면 제품 코드가 보통 파일이 아닌 원본을 지운다)는 스크립트 문제였고 실제 로그인 파일은 그대로였다.
 
