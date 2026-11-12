@@ -28,7 +28,7 @@ For each research objective, BaboJUBot creates an independent research organizat
 
 ### Installation & Launch
 
-Clone the repository and start the platform locally:
+Clone the repository and start the platform locally. `pnpm dev` below is the hot-reload development mode; for long research, use `pnpm build` and `pnpm start` as described right after it.
 
 ```bash
 git clone https://github.com/babo-jeonguk/BaboJUBot.git
@@ -38,6 +38,15 @@ pnpm dev
 ```
 
 Open your browser and navigate to **`http://127.0.0.1:5173`** to access the dashboard.
+
+`pnpm dev` is for development: it restarts the server whenever a file the server loads (including installed packages) changes, for example on `git pull`, and each restart cuts off agent runs in progress. For long research, especially with real models, build once and start without file watching:
+
+```bash
+pnpm build
+pnpm start
+```
+
+The server then serves both the dashboard and the API at **`http://127.0.0.1:3100`** (or the port you set with `PORT`). After pulling or changing code, run `pnpm build` again and restart `pnpm start` yourself.
 
 ---
 
@@ -53,8 +62,11 @@ BaboJUBot connects to your favorite LLM providers and coding agents:
 Install the CLI you want to use and sign in with it yourself. Then start BaboJUBot with the connections you need, for example:
 
 ```bash
-BABOJUBOT_PROVIDERS=claude,codex pnpm dev
+pnpm build
+BABOJUBOT_PROVIDERS=claude,codex pnpm start
 ```
+
+Pass the variable to the command that starts the server. `BABOJUBOT_PROVIDERS=claude,codex pnpm dev` also works for short trials, but file changes restart it as described above.
 
 Without this, BaboJUBot starts with only a built-in demo connection that does not call any model. In the dashboard **Settings**, pick the default connection and model for new Research Leads and workers, set per-connection concurrency limits, and check each connection's readiness. The **Isolated execution** switch (off by default) runs each real-model run inside a Docker container. Real model calls use your own subscription or API credits.
 

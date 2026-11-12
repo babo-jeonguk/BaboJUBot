@@ -1,6 +1,6 @@
 # BaboJUBot 개발 가이드
 
-개발 환경 구성, 데모 시나리오, 테스트·CI를 안내합니다. 제품 소개는 [README](README.md), 지금 구현된 동작은 [현재 구현 현황](docs/current-implementation.md)을 따릅니다.
+개발 환경 구성, 개발용·장시간 실행 방식, 데모 시나리오, 테스트·CI를 안내합니다. 제품 소개는 [README](README.md), 지금 구현된 동작은 [현재 구현 현황](docs/current-implementation.md)을 따릅니다.
 
 ## 개발 시작
 
@@ -8,7 +8,7 @@ Node.js 24.x, pnpm 10.33.0 및 Git을 사용합니다. GitHub 이슈 작업에�
 
 ```bash
 pnpm install
-pnpm dev          # 서버(http://127.0.0.1:3100, 가짜 프로바이더 데모 시나리오)와 대시보드(http://127.0.0.1:5173)
+pnpm dev          # 개발용 hot reload. 서버(http://127.0.0.1:3100, 가짜 프로바이더 데모 시나리오)와 대시보드(http://127.0.0.1:5173)
 pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 embedded Postgres 하나를 띄우고 테스트마다 DB를 복제합니다. 끝으로 테스트 실패가 실패 종료로 이어지는지 확인합니다.
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
@@ -16,6 +16,16 @@ pnpm lint
 pnpm check        # Markdown 로컬 링크 검사와 CI 테스트 집계 회귀 검사(scripts/ci-test-gate.test.mjs). 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
 ```
 
+### 개발용 실행과 장시간 연구 실행
+
+`pnpm dev`는 서버를 `node --watch`로 띄워 서버가 불러온 소스·의존 패키지 파일(`node_modules` 포함)이 바뀔 때마다 서버를 다시 시작합니다. 다시 시작하면 진행 중인 실행 시도가 `server_restart`로 끝납니다. 깨우기는 다시 대기해 이어지지만, `git pull`·브랜치 전환·다른 세션의 편집이 반복되면 장시간 연구가 계속 끊길 수 있습니다. 코드를 고치며 확인할 때만 `pnpm dev`를 쓰고, 장시간 연구나 실제 모델 연구는 파일 감시 없이 띄웁니다.
+
+```bash
+pnpm build                                     # 대시보드를 apps/web/dist에 빌드
+BABOJUBOT_PROVIDERS=opencode pnpm start   # 감시 없는 서버가 대시보드와 API를 함께 제공
+```
+
+대시보드와 API는 모두 `http://127.0.0.1:3100`(`PORT`를 정하면 그 포트)에서 열립니다. 서버는 시작할 때 `apps/web/dist`가 있어야 대시보드를 제공하므로 먼저 빌드합니다. 프로바이더 등 환경 변수는 `pnpm start` 앞에 둡니다. 코드 변경은 자동 반영되지 않으므로 `pnpm build`를 다시 하고 서버를 재시작합니다. 이 경로는 자동 재시작만 막습니다. 실행 중에 의존성을 갱신하거나 파일을 지우는 일까지 막는 배포 격리는 아닙니다.
 
 ### 데모 시나리오
 
