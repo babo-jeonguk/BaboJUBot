@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { launchZoomed } from "./support/browser-zoom.ts";
 import { lowContrastTexts } from "./support/contrast.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput } from "./support/organization.ts";
@@ -654,6 +655,63 @@ test("instant switches tell which setting saved, never on load or failure, and a
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("a policy switch's saving or saved state stays with its organization when history jumps to another organization's settings", async ({
+  page,
+}) => {
+  const a = await createOrganization(page, "A11y switch owner");
+  const b = await createOrganization(page, "A11y switch other");
+  const policy = page.getByRole("checkbox", { name: /작업자 추가/ });
+  // B 설정을 먼저 열어 캐시에 두고, 화면 안 이동으로 A 설정에 간다. 기록: B 설정 → A 대시보드 → A 설정.
+  await openWithLiveEvents(page, `/orgs/${b.id}/settings`);
+  await expect(policy).not.toBeChecked();
+  await page.getByRole("link", { name: /^A11y switch owner · / }).click();
+  await page
+    .getByRole("navigation", { name: "조직 화면" })
+    .getByRole("link", { name: "설정", exact: true })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`/orgs/${a.id}/settings$`));
+  // 뒤로 가기 목록에서 B 설정을 바로 고르는 이동(history.go(-2))은 A 설정에서 B 설정으로 곧장 바뀐다.
+  const jumpToOther = async () => {
+    await page.evaluate(() => history.go(-2));
+    await expect(page).toHaveURL(new RegExp(`/orgs/${b.id}/settings$`));
+  };
+  const backToOwner = async () => {
+    await page.evaluate(() => history.go(2));
+    await expect(page).toHaveURL(new RegExp(`/orgs/${a.id}/settings$`));
+  };
+
+  // A의 저장이 끝나기 전에 B로 가면 B 스위치는 잠기지 않고 B의 저장된 값·빈 상태를 보인다. A가 끝나도 그대로다.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route(`**${a.api("/approval-policy")}`, async (route) => {
+    await held;
+    await route.fallback();
+  });
+  await policy.click();
+  await expect(policy).toHaveAccessibleDescription(/저장하는 중…$/);
+  const saved = page.waitForResponse(
+    (r) => r.url().endsWith(a.api("/approval-policy")) && r.ok()
+  );
+  await jumpToOther();
+  await expect(policy).not.toBeChecked();
+  await expect(policy).not.toHaveAttribute("aria-disabled");
+  await expect(policy).toHaveAccessibleDescription("");
+  release();
+  await saved;
+  await page.unrouteAll({ behavior: "wait" });
+  await expect(policy).not.toBeChecked();
+  await expect(policy).toHaveAccessibleDescription("");
+
+  // A에서 저장을 마친 `저장됨`도 B에 따라오지 않는다.
+  await backToOwner();
+  await expect(policy).toBeChecked();
+  await policy.click();
+  await expect(policy).toHaveAccessibleDescription(/저장됨$/);
+  await jumpToOther();
+  await expect(policy).not.toBeChecked();
+  await expect(policy).toHaveAccessibleDescription("");
+});
+
 test("a clipped Inbox excerpt says so and links to the original screen, where the long text is whole", async ({
   page,
 }) => {
@@ -729,43 +787,70 @@ test("reduced motion stops spin and pulse loops while normal motion keeps them, 
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
-test("at 390, 768 and 1280 px and at 200% zoom the main screens do not scroll sideways and keep their controls reachable", async ({
+/** 주요 화면이 옆으로 넘치지 않고 핵심 조작이 화면에 닿는지 본다. */
+async function expectMainScreensFit(page: Page, org: Org, at: string) {
+  for (const [path, ready] of [
+    [
+      `/orgs/${org.id}/map`,
+      page.getByRole("application", { name: "연구 지도 그래프" }),
+    ],
+    [`/orgs/${org.id}/chat`, page.getByRole("region", { name: "대화 내용" })],
+    [
+      `/orgs/${org.id}/dashboard`,
+      page.getByRole("figure", { name: "실행 시도" }),
+    ],
+    [
+      `/orgs/${org.id}/settings`,
+      page.getByRole("checkbox", { name: /작업자 추가/ }),
+    ],
+  ] as const) {
+    await openWithLiveEvents(page, path);
+    await expect(ready, `${path} @${at}`).toBeVisible({ timeout: 20_000 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      ),
+      `${path} @${at}`
+    ).toBe(true);
+    await ready.scrollIntoViewIfNeeded();
+    await expect(ready).toBeInViewport();
+  }
+}
+
+test("at 390, 768 and 1280 px the main screens do not scroll sideways and keep their controls reachable", async ({
   page,
 }) => {
   const org = await researchingOrganization(page, "A11y widths");
-  // 1280px 창의 200% 확대는 CSS 폭 640px과 같다.
   for (const [width, height] of [
     [390, 844],
-    [640, 400],
     [768, 1024],
     [1280, 800],
   ] as const) {
     await page.setViewportSize({ width, height });
-    for (const [path, ready] of [
-      [
-        `/orgs/${org.id}/map`,
-        page.getByRole("application", { name: "연구 지도 그래프" }),
-      ],
-      [`/orgs/${org.id}/chat`, page.getByRole("region", { name: "대화 내용" })],
-      [
-        `/orgs/${org.id}/dashboard`,
-        page.getByRole("figure", { name: "실행 시도" }),
-      ],
-      [
-        `/orgs/${org.id}/settings`,
-        page.getByRole("checkbox", { name: /작업자 추가/ }),
-      ],
-    ] as const) {
-      await openWithLiveEvents(page, path);
-      await expect(ready, `${path} @${width}`).toBeVisible({ timeout: 20_000 });
-      expect(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= window.innerWidth
-        ),
-        `${path} @${width}px`
-      ).toBe(true);
-      await ready.scrollIntoViewIfNeeded();
-      await expect(ready).toBeInViewport();
-    }
+    await expectMainScreensFit(page, org, `${width}px`);
+  }
+});
+
+test("at 200% browser zoom of a 1280 px window the main screens do not scroll sideways and keep their controls reachable", async ({
+  page,
+  baseURL,
+}, testInfo) => {
+  const org = await researchingOrganization(page, "A11y zoom");
+  const zoomed = await launchZoomed({
+    baseURL: baseURL!,
+    profileDir: testInfo.outputPath("zoomed-profile"),
+    zoom: 2,
+    window: { width: 1280, height: 800 },
+  });
+  try {
+    const view = zoomed.pages()[0] ?? (await zoomed.newPage());
+    await view.goto("/");
+    // 창 폭 1280px의 200% 확대: CSS 폭은 절반, 화소 비율은 2다.
+    expect(
+      await view.evaluate(() => [window.innerWidth, window.devicePixelRatio])
+    ).toEqual([640, 2]);
+    await expectMainScreensFit(view, org, "200%");
+  } finally {
+    await zoomed.close();
   }
 });

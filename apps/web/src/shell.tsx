@@ -139,6 +139,8 @@ export function Shell() {
               <Crumbs orgId={orgId} />
             </div>
           )}
+          {/* 주소가 바뀌면 본문을 새로 그린다. 들어오는 효과를 다시 틀고, 저장 중·저장됨·입력 같은 화면 상태가 다른 조직·항목의
+              같은 화면으로 넘어가지 않게 한다(keyboard-a11y.spec.ts의 조직 간 이동 검사). */}
           <div
             key={useLocation().pathname}
             className="animate-fade-up flex flex-1 flex-col has-[[data-fill-height]]:min-h-0"
