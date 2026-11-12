@@ -35,12 +35,15 @@ console.log(`boot check folder: ${home}`);
  */
 function serverEnv() {
   const env = { ...process.env };
-  for (const name of Object.keys(env))
+  // Windows는 환경 변수 이름의 대소문자를 가리지 않으므로 대문자로 바꿔 비교한다.
+  for (const name of Object.keys(env)) {
+    const upper = name.toUpperCase();
     if (
-      name.startsWith("BABOJUBOT_") ||
-      ["DATABASE_URL", "HOST", "PORT", "EMBEDDED_POSTGRES_PORT"].includes(name)
+      upper.startsWith("BABOJUBOT_") ||
+      ["DATABASE_URL", "HOST", "PORT", "EMBEDDED_POSTGRES_PORT"].includes(upper)
     )
       delete env[name];
+  }
   return {
     ...env,
     BABOJUBOT_HOME: home,

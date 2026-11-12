@@ -240,12 +240,15 @@ const serverSettings = [
 ];
 function inheritedEnv() {
   const env = { ...process.env };
-  for (const name of Object.keys(env))
+  // Windows는 환경 변수 이름의 대소문자를 가리지 않으므로 대문자로 바꿔 비교한다.
+  for (const name of Object.keys(env)) {
+    const upper = name.toUpperCase();
     if (
-      (name.startsWith("BABOJUBOT_") && name !== "BABOJUBOT_HOME") ||
-      serverSettings.includes(name)
+      (upper.startsWith("BABOJUBOT_") && upper !== "BABOJUBOT_HOME") ||
+      serverSettings.includes(upper)
     )
       delete env[name];
+  }
   return env;
 }
 
