@@ -17,6 +17,7 @@ import {
   credentialResidue,
   type RelayProfile,
 } from "./credential-relay.ts";
+import { relayIdentityHeaders } from "./relay.ts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
@@ -688,6 +689,59 @@ describe("the credential relay's per-connection differences (#148)", () => {
     });
     expect(response.status).toBe(401);
     expect(up.seen).toHaveLength(0);
+  });
+});
+
+describe("the credential relay and the run identity the #149 relay adds (#148)", () => {
+  const identity = (organization: string, run: string) => ({
+    [relayIdentityHeaders.organization]: organization,
+    [relayIdentityHeaders.run]: run,
+  });
+
+  it("refuses a grant whose request comes through another organization's or run's relay, before reading the credential", async () => {
+    const { up, relay, url, reads } = await setup();
+    const grant = relay.grant({
+      ...scope(),
+      organizationId: "org-a",
+      runId: "run-1",
+    });
+    for (const headers of [
+      identity("org-b", "run-1"),
+      identity("org-a", "run-2"),
+      { [relayIdentityHeaders.organization]: "org-a" },
+    ])
+      expect(
+        (await send(url, grant.token, "/v1/messages", headers)).status
+      ).toBe(401);
+    expect(reads()).toBe(0);
+    expect(up.seen).toHaveLength(0);
+    // 같은 실행 시도의 중계로 온 요청은 받고, 신원 header는 상류에 넘기지 않는다.
+    const response = await send(
+      url,
+      grant.token,
+      "/v1/messages",
+      identity("org-a", "run-1")
+    );
+    expect(response.status).toBe(200);
+    expect(
+      up.seen[0]!.headers[relayIdentityHeaders.organization]
+    ).toBeUndefined();
+    expect(up.seen[0]!.headers[relayIdentityHeaders.run]).toBeUndefined();
+  });
+
+  it("keeps the organization and run a grant was issued for", () => {
+    const relay = createCredentialRelay({
+      profile: profile("http://127.0.0.1:1"),
+      verified: true,
+      credential: async () => "real-account-secret",
+    });
+    const grant = relay.grant({
+      ...scope(),
+      organizationId: "org-a",
+      runId: "run-1",
+    });
+    expect(grant.organizationId).toBe("org-a");
+    expect(grant.runId).toBe("run-1");
   });
 });
 
