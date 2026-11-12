@@ -388,6 +388,61 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
   });
 
+  it("answers 502 and keeps serving when a plain HTTP destination resets while the changed policy is rechecked", async () => {
+    const target = await fixture("http");
+    const entry = destination({
+      host: "localhost",
+      port: target.port,
+      addresses: ["127.0.0.1", "::1"],
+    });
+    let calls = 0;
+    const env = hub({
+      research: async () => {
+        calls += 1;
+        // 첫 판정 중에 정책이 바뀐 것처럼 재검사를 돌려, 연결 뒤 한 번 더 보게 한다.
+        if (calls === 1) await env.relays.revalidate(identity.organizationId);
+        // 연결 뒤 재검사(세 번째)를 기다리는 동안 목적지가 연결을 RST로 끊는다.
+        if (calls === 3) {
+          while (target.accepted.length === 0)
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          target.accepted.at(-1)!.resetAndDestroy();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return [entry];
+      },
+    });
+    // 처리되지 않은 소켓 오류는 서버 프로세스를 끝낸다. 시험에서는 여기에 잡힌다.
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown) => uncaught.push(error);
+    process.on("uncaughtException", onUncaught);
+    cleanups.push(() => void process.off("uncaughtException", onUncaught));
+    const relay = env.relays.open({ identity, required: [] });
+    await relay.ready;
+    const viaProxy = () =>
+      new Promise<number>((resolve, reject) => {
+        const req = http.request({
+          socketPath: path.join(relay.directory, "egress.sock"),
+          path: `http://localhost:${target.port}/page`,
+          agent: false,
+        });
+        // 응답이 오지 않으면 0으로 끝낸다(시험 시간 초과 대신).
+        req.setTimeout(3000, () => {
+          req.destroy();
+          resolve(0);
+        });
+        req.on("response", (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    expect(await viaProxy()).toBe(502);
+    expect(uncaught).toEqual([]);
+    // 같은 중계가 다음 요청을 그대로 처리한다.
+    expect(await viaProxy()).toBe(200);
+  });
+
   it("refuses when the policy cannot be read", async () => {
     const target = await fixture("echo");
     const { relays } = hub({
