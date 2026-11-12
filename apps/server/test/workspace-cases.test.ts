@@ -20,6 +20,7 @@ import {
   cleanup,
   featureGaps,
   filesBase,
+  gapOutcome,
   realScratch,
   runPinned,
   windows,
@@ -144,11 +145,30 @@ const shortName = async (target: string) => {
 
 /** 이 파일 시스템에 없는 기능. 없으면 그 사례는 적용 불가로 남긴다. */
 const lacks = await featureGaps();
-/** 링크를 만들 수 없는 파일 시스템(FAT32)이면 이 사례를 적용 불가로 남기고 건너뛴다. */
-const needsLinks = (context: TestContext, id: string) => {
-  if (lacks.symlink)
-    without(context, id, "n/a", `symlink 없음(${lacks.symlink})`);
+/** 기능을 만들지 못한 이유에 따라 이 사례를 적용 불가(FAT32의 링크 등) 또는 미검증으로 남기고 건너뛴다. */
+const needs = (
+  context: TestContext,
+  id: string,
+  feature: keyof typeof lacks
+) => {
+  const code = lacks[feature];
+  if (code) without(context, id, gapOutcome(code), `${feature} 없음(${code})`);
 };
+const needsLinks = (context: TestContext, id: string) =>
+  needs(context, id, "symlink");
+it("counts a missing link as n/a only when the file system lacks the feature", () => {
+  // Windows FAT32의 링크·hard link는 ERROR_INVALID_FUNCTION(libuv EISDIR)으로 실패한다.
+  expect(gapOutcome("EISDIR", "win32")).toBe("n/a");
+  expect(gapOutcome("ENOTSUP", "linux")).toBe("n/a");
+  // POSIX의 symlink EPERM은 파일 시스템이 링크를 지원하지 않는다는 뜻이다(symlink(2)).
+  expect(gapOutcome("EPERM", "linux")).toBe("n/a");
+  // SMB 공유의 정션은 만들어져도 운영체제가 링크로 보지 못한다.
+  expect(gapOutcome("NOT_A_LINK", "win32")).toBe("n/a");
+  // Windows의 EPERM은 링크를 만들 권한이 없는 계정이다. 기능 부재가 아니다.
+  expect(gapOutcome("EPERM", "win32")).toBe("unverified");
+  expect(gapOutcome("EACCES", "linux")).toBe("unverified");
+  expect(gapOutcome("ENOSPC", "darwin")).toBe("unverified");
+});
 /** 이 파일 시스템이 이름을 다루는 방식. */
 const can = {
   caseSensitive: false,
@@ -186,7 +206,6 @@ it("ENV identifies the file system under test", async (context) => {
     release: os.release(),
     arch: process.arch,
     node: process.version,
-    sha: process.env.GITHUB_SHA ?? "local",
     uid: typeof process.getuid === "function" ? process.getuid() : null,
     caseSensitive: can.caseSensitive,
     normalizationInsensitive: can.normalizationInsensitive,
@@ -506,8 +525,7 @@ it("C12 refuses when the organization folder or shared is swapped for another or
 });
 
 it("C13 refuses a hard link to a file outside", async (context) => {
-  if (lacks.hardLink)
-    without(context, "C13", "n/a", `hard link 없음(${lacks.hardLink})`);
+  needs(context, "C13", "hardLink");
   const { read, shared, root, other } = await world();
   await link(path.join(root, "outside.md"), path.join(shared, "hard.md"));
   await link(path.join(other, "a.md"), path.join(shared, "foreign.md"));
@@ -518,8 +536,7 @@ it("C13 refuses a hard link to a file outside", async (context) => {
 
 // F6: 연 뒤에 바깥에서 같은 파일로 hard link를 더해도, 읽는 descriptor는 이미 안쪽 파일이다. 더한 링크는 감지하지 않는다.
 it("C14 reads the inside bytes when a hard link is added after the file was opened", async (context) => {
-  if (lacks.hardLink)
-    without(context, "C14", "n/a", `hard link 없음(${lacks.hardLink})`);
+  needs(context, "C14", "hardLink");
   const { organizations, shared, root } = await world();
   const result = await injected(organizations, "a.md", {
     on: "fstatSync",
@@ -807,23 +824,59 @@ it("C25 registers Korean names and treats NFC and NFD the way the file system do
   );
 });
 
+type Ran = { ok: boolean; output: string };
+/**
+ * Windows에서 읽기 거부 ACL을 더한 결과를 판정한다. 막았으면 undefined. 거부 항목을 다시 읽어 보니 남지 않았으면
+ * 이 파일 시스템이 ACL을 저장하지 않는다는 근거라 적용 불가(FAT)다. 명령이 실패했으면 ACL이 있는 볼륨에서 준비하지
+ * 못한 것이라 미검증이다.
+ */
+function denial(set: Ran, stored?: Ran) {
+  if (!set.ok)
+    return {
+      outcome: "unverified" as const,
+      reason: `거부를 설정하지 못함: ${set.output}`,
+    };
+  if (!stored?.ok)
+    return {
+      outcome: "unverified" as const,
+      reason: `거부 항목을 읽지 못함: ${stored?.output ?? ""}`,
+    };
+  return stored.output.includes("DENY")
+    ? undefined
+    : {
+        outcome: "n/a" as const,
+        reason: `거부 항목이 저장되지 않음(ACL 없는 파일 시스템): ${stored.output.split("\n")[0]}`,
+      };
+}
+it("classifies a Windows read denial that could not be set as unverified, and one the file system dropped as n/a", () => {
+  const deny = { ok: true, output: "processed file: x" };
+  expect(
+    denial(deny, { ok: true, output: "x Everyone:(DENY)(R)" })
+  ).toBeUndefined();
+  // FAT32: icacls는 성공하지만 다시 읽으면 거부 항목이 없다.
+  expect(denial(deny, { ok: true, output: "x NULL SID:(F)" })?.outcome).toBe(
+    "n/a"
+  );
+  // NTFS·SMB에서 권한 부족 등으로 명령이 실패하면 ACL이 있는 볼륨을 준비하지 못한 것이다.
+  expect(denial({ ok: false, output: "Access is denied." })?.outcome).toBe(
+    "unverified"
+  );
+  expect(
+    denial(deny, { ok: false, output: "Access is denied." })?.outcome
+  ).toBe("unverified");
+});
 /** 읽기 권한을 막는다. Windows는 모든 사용자의 데이터 읽기·폴더 통과를 거부하는 ACL을 더한다. */
 const deny = async (target: string, folder: boolean) => {
   if (!windows) {
     await chmod(target, folder ? 0o600 : 0o000);
-    return "";
+    return undefined;
   }
-  const result = await run("icacls", [
+  const set = await run("icacls", [
     target,
     "/deny",
     `*S-1-1-0:(${folder ? "RD,X" : "RD"})`,
   ]);
-  if (!result.ok) return result.output;
-  // FAT은 ACL을 저장하지 않아 명령이 성공해도 거부 항목이 남지 않는다. 남았는지 다시 읽어 본다.
-  const stored = await run("icacls", [target]);
-  return stored.output.includes("DENY")
-    ? ""
-    : `거부 항목이 저장되지 않음(ACL 없는 파일 시스템): ${stored.output.split("\n")[0]}`;
+  return denial(set, set.ok ? await run("icacls", [target]) : undefined);
 };
 const allow = async (target: string, folder: boolean) => {
   if (!windows) await chmod(target, folder ? 0o755 : 0o644);
@@ -839,13 +892,8 @@ it("C26 refuses a file it may not read and a folder it may not search", async (c
   const fileDenied = await deny(file, false);
   const folderDenied = await deny(folder, true);
   try {
-    if (fileDenied || folderDenied)
-      without(
-        context,
-        "C26",
-        windows ? "n/a" : "unverified",
-        `권한을 막지 못함: ${fileDenied || folderDenied}`
-      );
+    const failed = fileDenied ?? folderDenied;
+    if (failed) without(context, "C26", failed.outcome, failed.reason);
     // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
     const osFile = await osOpen(file);
     const osFolder = await osOpen(path.join(folder, "a.md"));
@@ -1081,8 +1129,7 @@ it("C34 registers a Windows 8.3 short name of an inside file or folder and refus
 
 it("C35 refuses a Windows junction leading out and follows one inside", async (context) => {
   if (!windows) without(context, "C35", "n/a", "Windows 정션");
-  if (lacks.junction)
-    without(context, "C35", "n/a", `정션 없음(${lacks.junction})`);
+  needs(context, "C35", "junction");
   const { read, got, shared, root, other } = await world();
   await symlink(
     path.join(root, "outside-dir"),
