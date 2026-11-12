@@ -4,6 +4,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # 에이전트가 특정 브랜치에서 파일 시스템별 전체 검증을 포함한 모든 검사를 명시적으로 돌린다(`gh workflow run CI --ref <branch>`).
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -11,10 +13,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # 바뀐 파일이 Markdown뿐이면 문서 검사(check)만 실제로 돌린다. 나머지 job은 이름을 유지한 채 바로 성공한다.
+  # 파일 읽기 경계에 닿는 변경이면 파일 시스템별 전체 검증(`files / …`)도 돈다(scripts/ci-changes.mjs).
   changes:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      files: ${{ steps.diff.outputs.files }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -23,12 +28,11 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
+          set -o pipefail
           if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "$BASE" HEAD | grep -v '\.md$' >/dev/null; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
+            node scripts/ci-changes.mjs --full | tee -a "$GITHUB_OUTPUT"
           else
-            echo "code=false" >> "$GITHUB_OUTPUT"
+            git diff --name-only "$BASE" HEAD | node scripts/ci-changes.mjs | tee -a "$GITHUB_OUTPUT"
           fi
   check:
     name: ci / ${{ matrix.script }}
@@ -185,6 +189,9 @@ jobs:
         test-opencode,
         test-macos,
         test-windows,
+        files-linux,
+        files-windows,
+        files-macos,
       ]
     if: always()
     runs-on: ubuntu-24.04
@@ -198,6 +205,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          FILES: ${{ needs.changes.outputs.files }}
           UNIT_RESULT: ${{ needs.test-unit.result }}
           RUNTIME_RESULT: ${{ needs.test-runtime.result }}
           DB_RESULT: ${{ needs.test-db.result }}
@@ -205,6 +213,9 @@ jobs:
           OPENCODE_RESULT: ${{ needs.test-opencode.result }}
           MACOS_RESULT: ${{ needs.test-macos.result }}
           WINDOWS_RESULT: ${{ needs.test-windows.result }}
+          FILES_LINUX_RESULT: ${{ needs.files-linux.result }}
+          FILES_WINDOWS_RESULT: ${{ needs.files-windows.result }}
+          FILES_MACOS_RESULT: ${{ needs.files-macos.result }}
         run: node scripts/check-ci-test-gate.mjs
   # 실제 프로그램 연결은 세 OS를 지원한다. DB가 필요 없는 연결 검사만 돈다. 시스템마다 하나의 독립 job이며
   # `ci / test`가 각 결과를 직접 판정한다(matrix 요약은 개별 실패를 가릴 수 있다). 두 job의 단계는 같아야 한다(scripts/ci-test-gate.test.mjs).
@@ -228,8 +239,10 @@ jobs:
         run: node --test scripts/ci-test-gate.test.mjs
       - run: pnpm --filter @babojubot/runtime run typecheck
       - run: pnpm --filter @babojubot/runtime test
-      # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
-      - run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
+      # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
+      # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
+      - if: needs.changes.outputs.files != 'true'
+        run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
       # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
       # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
@@ -255,10 +268,148 @@ jobs:
         run: node --test scripts/ci-test-gate.test.mjs
       - run: pnpm --filter @babojubot/runtime run typecheck
       - run: pnpm --filter @babojubot/runtime test
-      # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다.
-      - run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
+      # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
+      # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
+      - if: needs.changes.outputs.files != 'true'
+        run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
       # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
       # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+  # 파일 시스템별 전체 검증(#153). 조직 경계의 파일 읽기에 닿는 변경(scripts/ci-changes.mjs)과 수동 실행에서만 돈다.
+  # OS마다 job 하나가 시험용 볼륨을 한 번 준비하고 볼륨마다 같은 시험(apps/server/vitest.files.config.ts)을 돈다.
+  # 앞 볼륨이 실패해도 남은 볼륨·결과표·정리는 돌고(`!cancelled()`·`always()`), job은 실패로 남는다.
+  # 결과표(C01–C37, F1–F6)는 job 요약과 `file-boundary-*` artifact에 남는다.
+  files-linux:
+    name: files / linux
+    needs: changes
+    if: needs.changes.outputs.files == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      # 장치 노드 시험(C18)은 sudo로 만들고 일반 사용자로 읽는다.
+      - name: Prepare volumes
+        timeout-minutes: 3
+        run: |
+          dir="$RUNNER_TEMP/file-volumes/ext4"
+          mkdir -p "$dir"
+          findmnt -T "$dir"
+          [ "$(findmnt -n -o FSTYPE -T "$dir")" = ext4 ] || { echo "::error::$dir is not on ext4"; exit 1; }
+          id
+          sudo -n true
+          echo "FILES_EXT4=$dir" >> "$GITHUB_ENV"
+      - name: Check ext4
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume ext4 --fs ext4 --dir "$FILES_EXT4" --case sensitive --nfd sensitive
+      - name: Report
+        if: ${{ !cancelled() }}
+        run: node scripts/file-boundary-report.mjs --require ext4
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: file-boundary-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: file-boundary-reports/
+          if-no-files-found: warn
+          retention-days: 14
+  files-windows:
+    name: files / windows
+    needs: changes
+    if: needs.changes.outputs.files == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare volumes
+        timeout-minutes: 5
+        run: ./scripts/files/prepare-windows.ps1
+      - name: Check NTFS
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume NTFS --fs NTFS --dir "$env:FILES_NTFS" --case insensitive --nfd sensitive
+      - name: Check FAT32
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume FAT32 --fs FAT32 --dir "$env:FILES_FAT32" --case insensitive --nfd sensitive
+      - name: Check SMB loopback
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume SMB --fs "SMB $env:FILES_SMB_DIALECT loopback to NTFS" --dir "$env:FILES_SMB" --case insensitive --nfd sensitive
+      - name: Report
+        if: ${{ !cancelled() }}
+        run: node scripts/file-boundary-report.mjs --require NTFS,FAT32,SMB
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: file-boundary-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: file-boundary-reports/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Clean up volumes
+        if: always()
+        timeout-minutes: 3
+        run: ./scripts/files/cleanup-windows.ps1
+  files-macos:
+    name: files / macos
+    needs: changes
+    if: needs.changes.outputs.files == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare volumes
+        timeout-minutes: 5
+        run: ./scripts/files/prepare-macos.sh
+      - name: Check APFS
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume APFS --fs APFS --dir "$FILES_APFS" --case insensitive --nfd insensitive
+      - name: Check case-sensitive APFS
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume APFS-CS --fs "Case-sensitive APFS" --dir "$FILES_APFSX" --case sensitive --nfd insensitive
+      - name: Check HFS+
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume HFS --fs "HFS+" --dir "$FILES_HFS" --case insensitive --nfd insensitive
+      - name: Check case-sensitive HFS+
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node scripts/file-boundary-run.mjs --volume HFSX --fs "Case-sensitive HFS+" --dir "$FILES_HFSX" --case sensitive --nfd insensitive
+      - name: Report
+        if: ${{ !cancelled() }}
+        run: node scripts/file-boundary-report.mjs --require APFS,APFS-CS,HFS,HFSX
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: file-boundary-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: file-boundary-reports/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Clean up volumes
+        if: always()
+        timeout-minutes: 3
+        run: ./scripts/files/cleanup-macos.sh

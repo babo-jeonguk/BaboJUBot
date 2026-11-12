@@ -10,7 +10,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { filesBase } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { WorkspaceIdentityError, Workspaces } from "../src/workspace.ts";
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 const org = "organization-one";
 async function folder() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-workspace-"));
+  const root = await mkdtemp(path.join(filesBase(), "babojubot-workspace-"));
   roots.push(root);
   const shared = path.join(root, "organizations", org, "shared");
   await mkdir(shared, { recursive: true });

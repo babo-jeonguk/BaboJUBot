@@ -9,6 +9,12 @@ const suites = [
   ["macos", process.env.MACOS_RESULT],
   ["windows", process.env.WINDOWS_RESULT],
 ];
+// 파일 시스템별 전체 검증. 파일 읽기 경계에 닿는 변경(changes의 files 출력)에서만 돌고, 그때는 셋 모두 성공해야 한다.
+const fileSuites = [
+  ["files-linux", process.env.FILES_LINUX_RESULT],
+  ["files-windows", process.env.FILES_WINDOWS_RESULT],
+  ["files-macos", process.env.FILES_MACOS_RESULT],
+];
 
 // 반환값은 프로세스 종료 코드다. 빠진 값은 빈 문자열처럼 다뤄 모두 거부한다.
 function decide() {
@@ -35,10 +41,31 @@ function decide() {
       return 1;
     }
   }
+  const files = process.env.FILES;
+  if (
+    (files !== "true" && files !== "false") ||
+    (code === "false" && files === "true")
+  ) {
+    console.error(`unknown files output: '${files ?? ""}' (code '${code}')`);
+    return 1;
+  }
+  const filesExpected = files === "true" ? "success" : "skipped";
+  for (const [name, result] of fileSuites) {
+    if (result !== filesExpected) {
+      console.error(
+        `${name} did not finish as ${filesExpected}: '${result ?? ""}'`
+      );
+      return 1;
+    }
+  }
   if (expected === "skipped") {
     console.log("Markdown-only change; tests skipped.");
   } else {
-    console.log("All test suites passed.");
+    console.log(
+      files === "true"
+        ? "All test suites and file-system verifications passed."
+        : "All test suites passed; file-system verification not affected."
+    );
   }
   return 0;
 }

@@ -7,7 +7,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { filesBase } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { pinnedReader, readerExit, Workspaces } from "../src/workspace.ts";
@@ -21,7 +21,7 @@ afterEach(async () => {
   );
 });
 async function organizations() {
-  const created = await mkdtemp(path.join(tmpdir(), "babojubot-race-"));
+  const created = await mkdtemp(path.join(filesBase(), "babojubot-race-"));
   roots.push(created);
   const root = await realpath(created);
   const base = path.join(root, "organizations");

@@ -47,3 +47,4 @@ venv/
 # Playwright output
 test-results/
 playwright-report/
+file-boundary-reports/
