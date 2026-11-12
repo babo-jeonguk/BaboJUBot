@@ -185,6 +185,9 @@ describe("the credential relay", () => {
       host: "attacker.invalid",
       "x-forwarded-host": "attacker.invalid",
       "anthropic-beta": "oauth-2025-04-20",
+      // #149의 실행 시도 중계가 덧붙이는 내부 신원. 상류로 내보내지 않는다.
+      "x-babojubot-relay-organization": "organization-id",
+      "x-babojubot-relay-run": "run-id",
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
@@ -196,6 +199,9 @@ describe("the credential relay", () => {
     expect(request!.headers["anthropic-beta"]).toBe("oauth-2025-04-20");
     expect(request!.headers.cookie).toBeUndefined();
     expect(request!.headers["x-forwarded-host"]).toBeUndefined();
+    expect(JSON.stringify(request!.headers)).not.toMatch(
+      /x-babojubot|organization-id|run-id/
+    );
     expect(request!.headers.host).not.toBe("attacker.invalid");
     expect(JSON.stringify(request!.headers)).not.toContain(grant.token);
   });
