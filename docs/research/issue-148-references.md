@@ -225,6 +225,7 @@ Q1~Q8을 [같은 누적 댓글의 Agent Brief](https://github.com/babo-jeonguk/B
 - 서버 관문(`apps/server/src/isolation.ts`): 격리 켜짐 + 중계 없음/미검증이면 `credential_relay_unverified`, 실패 상태면 `credential_relay_failed`로 준비안됨·실행 거부(Q4·Q6). 중계는 조직 도구 전용 listener의 `/api/relay/<연결>`에만 있다.
 - 원본 비전달: 컨테이너 배치에서 공유 로그인 폴더 mount를 없앴다. Claude는 원본 토큰 변수 대신 중계 주소·권한 값만 넣고, Codex·Antigravity는 로그인 링크를 만들지 않으며, OpenCode는 로그인을 옮기지 않는다. 조직 폴더에 보통 파일·조직 DB로 남은 로그인이 있으면 시작하지 않는다(D07). 단, OpenCode 조직 DB의 남은 로그인 확인은 컨테이너 안 서버를 띄운 뒤 하므로, OpenCode 중계를 붙일 때 서버를 띄우기 전으로 앞당긴다(지금은 서버 관문이 OpenCode 격리 실행을 막는다).
 - Claude adapter: 공식 gateway 경로(`ANTHROPIC_BASE_URL` + `CLAUDE_CODE_OAUTH_TOKEN`=권한). 프로필은 `POST /v1/messages`·`/v1/messages/count_tokens`만 허용한다. `verified: false`.
+- PR #165 외부 리뷰 1회차 반영(2026-11-12): (1) 응답 반향 — 상류에 압축하지 않은 응답을 요청하고, 압축 응답·붙인 원본을 담은 응답 header는 넘기지 않으며, 본문에 원본이 그대로 나오면 그 앞에서 끊는다(원본 앞부분일 수 있는 끝 조각만 잡아 둠). 인코딩·잘라 낸 반향은 막지 못하며 provider별 credential-bearing 응답 계약은 각 중계를 붙일 때 정한다(V04·E10). (2) 원본을 요청에 넣을 수 없으면(잘못된 header 값) 상류 거부와 같이 연결 실패로 두고 같은 로그인으로는 풀지 않는다(Q6). (3) 조직 폴더의 로그인 흔적은 이 컴퓨터의 실행이 남긴, 원본을 가리키는 알려진 링크만 괜찮고 다른 링크·확인할 수 없는 경로는 시작 거부한다(D07). (4) `BABOJUBOT_<연결>_PASS_ENV` 변수는 격리 실행에 넘기지 않는다. 컨테이너 환경에서 원본 인증 변수를 하나씩 빼던 목록은 없앴다(Q1).
 
 ### 원문 확인
 
