@@ -34,6 +34,7 @@ import {
 import {
   abbr,
   avatarStyle,
+  focusLost,
   StageBadge,
   Tip,
   stageLabel,
@@ -106,10 +107,9 @@ export function Shell() {
   const { orgId, home, settings } = useCurrent();
   const onInboxDetail = useMatch("/inbox/*") !== null;
   const [sheet, setSheet] = useState(false);
-  // 시트 안의 링크로 화면을 옮기면 시트가 닫혀도 포커스를 여는 버튼으로 돌리지 않는다(새 화면 제목이 받는다).
-  const sheetNavigated = useRef(false);
   const main = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
+  const sheetOpener = useRef<HTMLButtonElement>(null);
   const pathname = useLocation().pathname;
   useRouteFocus(pathname, content, main);
   return (
@@ -124,16 +124,17 @@ export function Shell() {
             <Dialog.Overlay className="fixed inset-0 z-40 bg-slate-950/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
             <Dialog.Content
               className="fixed inset-y-0 left-0 z-50 flex shadow-pop data-[state=closed]:animate-slide-out-left data-[state=open]:animate-slide-in-left"
-              onOpenAutoFocus={() => (sheetNavigated.current = false)}
+              // Radix는 Dialog.Trigger로 포커스를 돌리는데 `탐색 열기`가 Root 밖이라 직접 돌린다. 링크로 다른 화면에 가면
+              // 새 화면 제목이 이미 포커스를 받았으므로 그대로 둔다(같은 화면을 다시 고르면 포커스를 잃어 `탐색 열기`로).
               onCloseAutoFocus={(e) => {
-                if (sheetNavigated.current) e.preventDefault();
+                e.preventDefault();
+                if (focusLost()) sheetOpener.current?.focus();
               }}
               onClick={(e) => {
                 const closer = (e.target as HTMLElement).closest(
                   "a, button[data-closes-sheet]"
                 );
                 if (!closer) return;
-                sheetNavigated.current = closer.tagName === "A";
                 setSheet(false);
               }}
             >
@@ -166,6 +167,7 @@ export function Shell() {
         >
           <div className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur md:hidden">
             <button
+              ref={sheetOpener}
               aria-label="탐색 열기"
               onClick={() => setSheet(true)}
               className="btn-ghost px-2"

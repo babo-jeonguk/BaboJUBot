@@ -43,6 +43,7 @@ import {
   approvalKindLabel,
   ApprovalStatusBadge,
   avatarStyle,
+  focusLost,
   formatTime,
   Loading,
   LoadError,
@@ -50,7 +51,7 @@ import {
 } from "./ui.tsx";
 
 type Scope = "all" | "organization";
-/** 패널(붙은 패널·drawer)의 id. 여는 버튼의 `aria-controls`가 가리킨다. */
+/** 패널(붙은 패널·drawer)의 id. 열려 있는 동안 여는 버튼의 `aria-controls`가 가리킨다(닫히면 DOM에 없다). */
 export const inboxPanelId = "inbox-panel";
 type Panel = {
   open: boolean;
@@ -114,7 +115,9 @@ export function useInboxPanel() {
 
 /**
  * Inbox 패널을 여는 버튼의 속성(`onClick`·`aria-expanded`·`aria-controls`). 누른 버튼을 연 버튼으로 기억해 붙은 패널을
- * 닫을 때 그리로 포커스를 돌린다. 조직을 주면 그 조직 범위로 열고, `toggle`이면 열려 있을 때 닫는다.
+ * 닫을 때 그리로 포커스를 돌린다. `aria-controls`는 패널이 DOM에 있는 동안(열려 있을 때)만 가리키고,
+ * `data-inbox-trigger` 표시는 닫혀 있어도 남아 다른 보이는 Inbox 버튼을 찾는 데 쓴다. 조직을 주면 그 조직 범위로 열고,
+ * `toggle`이면 열려 있을 때 닫는다.
  */
 export function useInboxTrigger({
   organizationId,
@@ -127,7 +130,8 @@ export function useInboxTrigger({
         ? panel.toggle(e.currentTarget)
         : panel.show(organizationId, e.currentTarget),
     "aria-expanded": panel.open,
-    "aria-controls": inboxPanelId,
+    "aria-controls": panel.open ? inboxPanelId : undefined,
+    "data-inbox-trigger": "",
   };
 }
 
@@ -191,7 +195,6 @@ export function InboxPanel() {
   // 붙어 있던 패널은 창이 좁아져도 본문을 가리는 drawer로 바뀌지 않고 닫힌다.
   const wasDocked = useRef(isDocked);
   const { close } = panel;
-  const picked = useRef(false);
   useEffect(() => {
     if (wasDocked.current && !isDocked) close();
     wasDocked.current = isDocked;
@@ -207,21 +210,15 @@ export function InboxPanel() {
         <Dialog.Content
           id={inboxPanelId}
           aria-describedby={undefined}
-          onOpenAutoFocus={() => (picked.current = false)}
           // Radix는 닫을 때 Dialog.Trigger로 포커스를 돌리는데 여는 버튼이 여럿이라 Trigger를 쓰지 않는다. 그래서 연 버튼으로
-          // 직접 돌린다. 항목을 골라 화면을 옮겼으면 새 화면 제목이 포커스를 받으므로 건드리지 않는다.
+          // 직접 돌린다. 고른 항목이 다른 화면으로 옮겼으면 새 화면 제목이 이미 포커스를 받았으므로 건드리지 않는다.
           onCloseAutoFocus={(e) => {
             e.preventDefault();
-            if (!picked.current) focusOpener(panel.opener());
+            if (focusLost()) focusOpener(panel.opener());
           }}
           className="fixed inset-y-0 right-0 z-50 flex w-[340px] max-w-full flex-col bg-white shadow-pop data-[state=closed]:animate-slide-out-right data-[state=open]:animate-slide-in-right"
         >
-          <InboxContent
-            onPick={() => {
-              picked.current = true;
-              panel.close();
-            }}
-          />
+          <InboxContent onPick={panel.close} />
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -230,12 +227,7 @@ export function InboxPanel() {
 
 /** 패널을 연 버튼으로 포커스를 돌린다. 그 버튼이 사라졌거나 숨었으면 보이는 다른 Inbox 버튼으로 돌린다. */
 function focusOpener(opener: HTMLElement | null) {
-  [
-    opener,
-    ...document.querySelectorAll<HTMLElement>(
-      `[aria-controls="${inboxPanelId}"]`
-    ),
-  ]
+  [opener, ...document.querySelectorAll<HTMLElement>("[data-inbox-trigger]")]
     .find((el) => el?.isConnected && el.checkVisibility())
     ?.focus();
 }
@@ -253,8 +245,7 @@ function DockedInbox() {
   useLayoutEffect(() => {
     const panel = aside.current!;
     return () => {
-      const active = document.activeElement;
-      if (active && active !== document.body && !panel.contains(active)) return;
+      if (!focusLost() && !panel.contains(document.activeElement)) return;
       focusOpener(opener());
     };
   }, [opener]);

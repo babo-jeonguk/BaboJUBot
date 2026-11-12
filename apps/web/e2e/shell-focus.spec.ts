@@ -371,7 +371,7 @@ test("choosing the current screen in the narrow navigation sheet returns focus t
   const opener = page.getByRole("button", { name: "탐색 열기" });
   const sheet = page.getByRole("dialog", { name: "탐색" });
   await opener.click();
-  await sheet.getByRole("link", { name: "대시보드" }).click();
+  await sheet.getByRole("link", { name: "대시보드", exact: true }).click();
   await expect(sheet).toBeHidden();
   await expect(page).toHaveURL(new RegExp(`/orgs/${org.id}/dashboard$`));
   await expect(opener).toBeFocused();

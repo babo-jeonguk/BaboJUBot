@@ -417,6 +417,12 @@ export function useInlineConfirm(locked: boolean) {
   };
 }
 
+/** 포커스가 갈 곳을 잃었는지(닫힌 dialog·사라진 요소와 함께 body로 떨어졌는지). 다른 곳이 이미 받았으면 false. */
+export function focusLost() {
+  const active = document.activeElement;
+  return !active || active === document.body;
+}
+
 /** 본문 폭 3단계: 좁게 768px, 중간 1024px, 전체 폭. 창이 좁으면 창 폭을 따른다. */
 export type Width = "reading" | "standard" | "full";
 const widthClass: Record<Width, string> = {
