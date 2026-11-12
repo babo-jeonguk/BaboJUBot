@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 const workflow = parse(
@@ -17,10 +18,20 @@ const gate = workflow.jobs.test;
 const step = gate.steps.find(
   (candidate) => candidate.name === "Check test results"
 );
+const gateCommand = step.run.match(
+  /^node (scripts\/check-ci-test-gate\.mjs)\s*$/
+);
+assert.ok(gateCommand, `Unsupported gate command: ${step.run}`);
+// Resolve the checked-in script from the workflow's captured relative path.
+// fileURLToPath keeps Windows drive letters and spaces intact.
+const gateScript = fileURLToPath(
+  new URL(`../${gateCommand[1]}`, import.meta.url)
+);
 
 // Replay the reported boundary: a legacy matrix summary says success even though
 // an individual test did not succeed. Resolve the workflow's actual env bindings
-// and execute its actual gate shell; do not substitute a second gate implementation.
+// and run its actual Node gate with the current Node binary; do not substitute a
+// second gate implementation.
 function runGate({
   code = "true",
   changes = "success",
@@ -40,6 +51,8 @@ function runGate({
     ),
   };
   const env = { PATH: executablePath };
+  // Windows child processes may need the system root to load runtime DLLs.
+  if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
   for (const [name, expression] of Object.entries(step.env)) {
     const match = expression.match(
       /^\$\{\{\s*needs\.([\w-]+)\.(result|outputs\.code)\s*\}\}$/
@@ -50,11 +63,11 @@ function runGate({
       .reduce((object, key) => object?.[key], needs[match[1]]);
     env[name] = value ?? "";
   }
-  const result = spawnSync(
-    "bash",
-    ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step.run],
-    { env, encoding: "utf8", timeout: 5_000 }
-  );
+  const result = spawnSync(process.execPath, [gateScript], {
+    env,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
   assert.ifError(result.error);
   assert.equal(result.signal, null);
   return result;
