@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -45,66 +45,65 @@ test("a blocked recovery shows its reason, the owner retries it, and the notice 
     reason: "missing_source",
     since: new Date().toISOString(),
   };
-  /** 서버의 실제 에이전트 상세에 이 시험의 복구 상태만 덮는다. 화면 요청과 따로 받아, 화면이 그 요청을 취소해도 읽기가 깨지지 않는다. */
+  /** 서버의 실제 에이전트 상세에 이 시험의 복구 상태만 덮는다. 화면 요청과 따로 읽어 상세를 만든다. */
   const detail = async () => ({
     ...((await (await page.request.get(agentPath)).json()) as object),
     recovery,
   });
-  /** 화면이 이미 버린 요청(새 Event로 다시 부름)에는 응답할 곳이 없으므로 무시한다. */
-  const answer = async (route: Route, json: object) => {
-    try {
-      await route.fulfill({ status: 200, json });
-    } catch {
-      // 요청이 취소됨.
-    }
-  };
-  await page.route(
-    (url) => url.pathname === agentPath,
-    async (route) => answer(route, await detail())
-  );
   let recoverRequests = 0;
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
-  await page.route(
-    (url) => url.pathname === `${agentPath}/recover`,
-    async (route) => {
-      recoverRequests++;
-      await held;
-      recovery = { ...recovery!, state: "retrying" };
-      await answer(route, await detail());
-    }
-  );
 
-  await openWithLiveEvents(page, `/orgs/${org.id}/agents/${org.leadId}`);
-  const control = page.getByRole("region", { name: "에이전트 제어" });
-  const notice = control.getByRole("status", { name: "실행 복구" });
-  await expect(notice).toContainText("실행 복구가 멈췄습니다");
-  await expect(notice).toContainText(
-    "서버가 멈추기 전에 받은 쓰기의 원본 자료를 찾을 수 없습니다."
-  );
-  const retry = notice.getByRole("button", { name: "↻ 복구 다시 시도" });
-  await expect(retry).toBeEnabled();
+  try {
+    await page.route(
+      (url) => url.pathname === agentPath,
+      async (route) => route.fulfill({ status: 200, json: await detail() })
+    );
+    await page.route(
+      (url) => url.pathname === `${agentPath}/recover`,
+      async (route) => {
+        recoverRequests++;
+        await held;
+        recovery = { ...recovery!, state: "retrying" };
+        await route.fulfill({ status: 200, json: await detail() });
+      }
+    );
 
-  // 요청하는 동안 버튼을 잠그고, 서버가 확정한 상태(다시 시도하는 중)로만 안내를 바꾼다.
-  await retry.click();
-  await expect(control.getByText("요청하는 중…")).toBeVisible();
-  await expect(retry).toBeDisabled();
-  release();
-  await expect(notice).toContainText("실행 복구를 다시 시도하는 중입니다");
-  await expect(notice.getByRole("button")).toHaveCount(0);
-  expect(recoverRequests).toBe(1);
+    await openWithLiveEvents(page, `/orgs/${org.id}/agents/${org.leadId}`);
+    const control = page.getByRole("region", { name: "에이전트 제어" });
+    const notice = control.getByRole("status", { name: "실행 복구" });
+    await expect(notice).toContainText("실행 복구가 멈췄습니다");
+    await expect(notice).toContainText(
+      "서버가 멈추기 전에 받은 쓰기의 원본 자료를 찾을 수 없습니다."
+    );
+    const retry = notice.getByRole("button", { name: "↻ 복구 다시 시도" });
+    await expect(retry).toBeEnabled();
 
-  // 정산이 끝나 막힘이 풀리면 다음 Event로 상세를 다시 불러와 안내가 사라진다.
-  recovery = null;
-  expect(
-    (
-      await page.request.post(`/api/organizations/${org.id}/messages`, {
-        data: { body: "복구 뒤 메시지" },
-      })
-    ).status()
-  ).toBe(201);
-  await expect(notice).toHaveCount(0);
-  await expect(
-    control.getByRole("button", { name: /에이전트 일시정지/ })
-  ).toBeEnabled();
+    // 요청하는 동안 버튼을 잠그고, 서버가 확정한 상태(다시 시도하는 중)로만 안내를 바꾼다.
+    await retry.click();
+    await expect(control.getByText("요청하는 중…")).toBeVisible();
+    await expect(retry).toBeDisabled();
+    release();
+    await expect(notice).toContainText("실행 복구를 다시 시도하는 중입니다");
+    await expect(notice.getByRole("button")).toHaveCount(0);
+    expect(recoverRequests).toBe(1);
+
+    // 정산이 끝나 막힘이 풀리면 다음 Event로 상세를 다시 불러와 안내가 사라진다.
+    recovery = null;
+    expect(
+      (
+        await page.request.post(`/api/organizations/${org.id}/messages`, {
+          data: { body: "복구 뒤 메시지" },
+        })
+      ).status()
+    ).toBe(201);
+    await expect(notice).toHaveCount(0);
+    await expect(
+      control.getByRole("button", { name: /에이전트 일시정지/ })
+    ).toBeEnabled();
+  } finally {
+    // 남은 화면 요청이 fixture 자원을 쓰지 못하도록, 보류를 풀고 신규 가로채기를 해제한 뒤 진행 중인 callback 완료를 기다린다.
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
 });
