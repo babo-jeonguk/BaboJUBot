@@ -40,7 +40,9 @@ ram() {
   echo "${key}_DEVICE=$device" >> "$GITHUB_ENV"
   diskutil erasevolume "$fs" "$name" "$device" > /dev/null
   sudo -n diskutil enableOwnership "/Volumes/$name"
-  mkdir -p "/Volumes/$name/files"
+  # 소유권을 켜면 볼륨 최상위가 root 소유가 된다. 시험 폴더만 만들어 runner 사용자에게 준다.
+  sudo -n mkdir -p "/Volumes/$name/files"
+  sudo -n chown "$(id -u):$(id -g)" "/Volumes/$name/files"
   check "/Volumes/$name/files" "$want" "$refuse"
   echo "$key=/Volumes/$name/files" >> "$GITHUB_ENV"
 }
