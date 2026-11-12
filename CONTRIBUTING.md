@@ -13,7 +13,7 @@ pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 em
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
 pnpm lint
-pnpm check        # Markdown 로컬 링크 검사와 CI 테스트 집계 회귀 검사(scripts/ci-test-gate.test.mjs). 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
+pnpm check        # Markdown 로컬 링크 검사와 CI 회귀 검사(테스트 집계 scripts/ci-test-gate.test.mjs, 실행 판정 scripts/ci-changes.test.mjs, 파일 경계 결과표 scripts/file-boundary-report.test.mjs). 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
 ```
 
 
