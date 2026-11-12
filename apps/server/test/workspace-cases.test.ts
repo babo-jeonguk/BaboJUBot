@@ -1063,7 +1063,7 @@ it("C34 registers a Windows 8.3 short name of an inside file or folder and refus
     ok: true,
     snapshot: { content: "A:long folder" },
   });
-  let junction = "junction 없음";
+  let junction = `정션 없음(${lacks.junction})`;
   if (!lacks.junction) {
     await symlink(
       path.join(root, "outside-dir"),

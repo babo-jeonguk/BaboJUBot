@@ -65,14 +65,16 @@ export const featureGaps = () =>
         hardLink: await attempt(() =>
           link(path.join(probe, "file"), path.join(probe, "hard"))
         ),
+        // SMB 공유에 만든 정션은 만들어져도 운영체제가 보지 못한다(lstat ENOENT). 보이는 정션만 있다고 본다.
         junction: windows
-          ? await attempt(() =>
-              symlink(
-                path.join(probe, "folder"),
-                path.join(probe, "junction"),
-                "junction"
-              )
-            )
+          ? await attempt(async () => {
+              const junction = path.join(probe, "junction");
+              await symlink(path.join(probe, "folder"), junction, "junction");
+              if (!(await lstat(junction)).isSymbolicLink())
+                throw Object.assign(new Error("junction is not a link"), {
+                  code: "NOT_A_LINK",
+                });
+            })
           : "not Windows",
       };
     } finally {
