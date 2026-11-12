@@ -1,332 +1,108 @@
 {
-  "provenance": "Reviewed recording of real antigravity protocol output (2026-11-04). Every string outside a short allowlist is masked; numbers and structure are real. Behaviour around it is scripted by the simulator.",
-  "version": "1.4.12",
-  "frames": [
+  "provenance": "Reviewed recording of real agy 1.5.4 ACP output against a local mock upstream (2026-11-12, #148). Synthetic login and model; strings outside a short allowlist are masked; numbers and structure are real. Behaviour around it is scripted by the simulator.",
+  "version": "1.5.4",
+  "updates": [
     {
-      "event": "init",
-      "conversation_id": "<session>",
-      "init": {
-        "model": "<masked>",
-        "cwd": "<masked>",
-        "tools": [
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>",
-          "<masked>"
-        ],
-        "permission_mode": "<masked>"
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 0,
-        "state": "DONE",
-        "step_type": "<masked>"
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 1,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "duration_seconds": 4.675431071,
-        "usage": {
-          "input_tokens": 7949,
-          "output_tokens": 120,
-          "thinking_tokens": 0,
-          "cache_read_tokens": 0,
-          "total_tokens": 8069
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 2,
-        "state": "ACTIVE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Path": "<masked>"
+      "method": "session/update",
+      "params": {
+        "sessionId": "<session>",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "<masked>",
+          "name": "run_command",
+          "args": {
+            "CommandLine": "<masked>",
+            "IsDaemon": false,
+            "WaitMsBeforeAsync": 2000,
+            "toolSummary": "<masked>"
+          },
+          "status": "in_progress",
+          "kind": "execute",
+          "title": "<masked>",
+          "rawInput": {
+            "CommandLine": "<masked>",
+            "IsDaemon": false,
+            "WaitMsBeforeAsync": 2000,
+            "toolSummary": "<masked>"
           }
         }
       }
     },
     {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 2,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "duration_seconds": 0.283529415,
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Path": "<masked>"
+      "method": "session/update",
+      "params": {
+        "sessionId": "<session>",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "<masked>",
+          "name": "run_command",
+          "args": {
+            "CommandLine": "<masked>",
+            "IsDaemon": false,
+            "WaitMsBeforeAsync": 2000,
+            "toolSummary": "<masked>"
           },
-          "output": "<masked>"
+          "status": "completed",
+          "kind": "execute",
+          "title": "<masked>",
+          "rawInput": {
+            "CommandLine": "<masked>",
+            "IsDaemon": false,
+            "WaitMsBeforeAsync": 2000,
+            "toolSummary": "<masked>"
+          },
+          "rawOutput": {
+            "output": "<masked>",
+            "exit_code": 0
+          },
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "<masked>"
+              }
+            }
+          ]
         }
       }
     },
     {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 3,
-        "state": "ACTIVE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Path": "<masked>"
+      "method": "session/update",
+      "params": {
+        "sessionId": "<session>",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "<masked>"
           }
         }
       }
     },
     {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 3,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "duration_seconds": 0.241751235,
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Path": "<masked>"
-          },
-          "output": "<masked>"
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 4,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "duration_seconds": 3.456540897,
-        "usage": {
-          "input_tokens": 8750,
-          "output_tokens": 34,
-          "thinking_tokens": 0,
-          "cache_read_tokens": 0,
-          "total_tokens": 8784
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 5,
-        "state": "ACTIVE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Arguments": {},
-            "ServerName": "<masked>",
-            "ToolName": "<masked>"
+      "method": "session/update",
+      "params": {
+        "sessionId": "<session>",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "<masked>"
           }
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 5,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "duration_seconds": 0.263047773,
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Arguments": {},
-            "ServerName": "<masked>",
-            "ToolName": "<masked>"
-          },
-          "output": "<masked>"
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 6,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "duration_seconds": 6.326529302,
-        "usage": {
-          "input_tokens": 9286,
-          "output_tokens": 76,
-          "thinking_tokens": 0,
-          "cache_read_tokens": 0,
-          "total_tokens": 9362
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 7,
-        "state": "ACTIVE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Arguments": {
-              "body": "<masked>",
-              "conversationId": "<session>"
-            },
-            "ServerName": "<masked>",
-            "ToolName": "<masked>"
-          }
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 7,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "tool_name": "<masked>",
-        "duration_seconds": 0.108166812,
-        "tool_info": {
-          "name": "<masked>",
-          "parameters": {
-            "Arguments": {
-              "body": "<masked>",
-              "conversationId": "<session>"
-            },
-            "ServerName": "<masked>",
-            "ToolName": "<masked>"
-          },
-          "output": "<masked>"
-        }
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 8,
-        "state": "ACTIVE",
-        "step_type": "<masked>",
-        "text_delta": "<masked>"
-      }
-    },
-    {
-      "event": "step_update",
-      "step_update": {
-        "conversation_id": "<session>",
-        "step_index": 8,
-        "state": "DONE",
-        "step_type": "<masked>",
-        "text_delta": "<masked>",
-        "duration_seconds": 4.083849805,
-        "usage": {
-          "input_tokens": 9676,
-          "output_tokens": 1,
-          "thinking_tokens": 0,
-          "cache_read_tokens": 0,
-          "total_tokens": 9677
-        }
-      }
-    },
-    {
-      "event": "result",
-      "result": {
-        "conversation_id": "<session>",
-        "status": "SUCCESS",
-        "response": "<masked>",
-        "duration_seconds": 18.963350362,
-        "num_turns": 1,
-        "usage": {
-          "input_tokens": 35661,
-          "output_tokens": 231,
-          "thinking_tokens": 0,
-          "cache_read_tokens": 0,
-          "total_tokens": 35892
         }
       }
     }
-  ]
+  ],
+  "promptResult": {
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 266,
+      "outputTokens": 27,
+      "cachedReadTokens": 45,
+      "cachedWriteTokens": 0,
+      "thoughtTokens": 0,
+      "totalTokens": 338
+    }
+  }
 }

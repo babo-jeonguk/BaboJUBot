@@ -274,21 +274,43 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     await expect(readFile(config, "utf8")).rejects.toThrow();
   });
 
-  it("keeps the Antigravity run token out of the organization folder that every container of the organization shares", async () => {
+  it("gives an isolated Antigravity run its organization tools token only through the ACP session, never through a file or the command line", async () => {
     const env = await setup({});
     const recording = path.join(env.root, "agy.json");
     await writeFile(
       recording,
       JSON.stringify({
         steps: [
-          { frame: { event: "init", conversation_id: "c1" } },
-          { input: { event: "user" } },
+          { input: { method: "initialize" } },
+          { frame: { jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } } },
           {
-            frame: {
-              event: "result",
-              result: { status: "SUCCESS", conversation_id: "c1" },
+            input: {
+              method: "session/new",
+              params: {
+                mcpServers: [
+                  {
+                    name: "organization",
+                    headers: [
+                      {
+                        name: "Authorization",
+                        value: "Bearer private-run-token",
+                      },
+                    ],
+                  },
+                ],
+              },
             },
           },
+          { frame: { jsonrpc: "2.0", id: 2, result: { sessionId: "c1" } } },
+          { input: { method: "session/prompt" } },
+          {
+            frame: {
+              jsonrpc: "2.0",
+              id: 3,
+              result: { stopReason: "end_turn" },
+            },
+          },
+          { inputEnd: true },
           { exit: 0 },
         ],
       })
@@ -305,54 +327,20 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
       dataDir: env.root,
       container: env.container,
     });
-    // Antigravity는 작업 폴더의 .agents/mcp_config.json만 읽는다. 조직 폴더는 그 조직의 모든 컨테이너가 쓰기로 넣으므로,
-    // 토큰이 든 설정은 이 실행 시도 전용 폴더에 두고 이 컨테이너에만 그 경로 위에 읽기로 넣는다. 조직 폴더의 파일은 자리만 잡는다.
-    const config = path.join(
-      await realpath(env.shared),
-      ".agents/mcp_config.json"
-    );
-    const seen: { shared: string; source: string; mode: number }[] = [];
-    const result = await provider.adapter.execute(env.isolated(), {
-      signal: new AbortController().signal,
-      emit: async () => {
-        const run = runCall(await env.calls());
-        const overlay = valuesOf(run.args, "--mount").find((m) =>
-          m.endsWith(`,target=${config},readonly`)
-        );
-        expect(overlay).toBeDefined();
-        const source = /source=([^,]+)/.exec(overlay!)![1]!;
-        seen.push({
-          shared: await readFile(config, "utf8"),
-          source: await readFile(source, "utf8"),
-          mode: (await stat(source)).mode & 0o777,
-        });
-      },
-    });
+    const result = await provider.adapter.execute(env.isolated(), control());
     expect(result.stopReason).toBe("completed");
-    expect(seen.length).toBeGreaterThan(0);
-    for (const { shared, source, mode } of seen) {
-      expect(shared).not.toContain("private-run-token");
-      expect(source).toContain("private-run-token");
-      // Windows는 권한 비트를 쓰지 않는다.
-      if (process.platform !== "win32") expect(mode).toBe(0o600);
-    }
     const run = runCall(await env.calls());
-    const mounts = valuesOf(run.args, "--mount");
-    const source = /source=([^,]+)/.exec(
-      mounts.find((m) => m.endsWith(`,target=${config},readonly`))!
-    )![1]!;
-    // 토큰 파일은 이 컨테이너가 쓰기로 넣는 어느 폴더(제품·조직·자기 폴더)에도 없다.
-    for (const mount of mounts.filter((m) => !m.endsWith(",readonly"))) {
-      const target = /target=([^,]+)/.exec(mount)![1]!;
-      expect(path.relative(target, source).startsWith("..")).toBe(true);
-    }
-    // 끝나면 토큰 파일과 조직 폴더의 자리 파일을 모두 지운다.
-    await expect(stat(source)).rejects.toThrow();
-    await expect(stat(config)).rejects.toThrow();
+    expect(JSON.stringify(run)).not.toContain("private-run-token");
+    // 작업 폴더에 조직 도구 설정을 두지 않는다.
+    await expect(
+      stat(path.join(env.shared, ".agents/mcp_config.json"))
+    ).rejects.toThrow();
   });
 
-  it("keeps a user's own Antigravity configuration in the organization folder and refuses to run in a container", async () => {
-    const env = await setup({});
+  it("leaves a user's own Antigravity configuration in the workspace alone, and still runs in a container", async () => {
+    const env = await setup({
+      agy: [process.execPath, fixture("antigravity-simulator.mjs")],
+    });
     const config = path.join(env.shared, ".agents/mcp_config.json");
     await mkdir(path.dirname(config));
     await writeFile(config, '{"user":"keep"}');
@@ -360,10 +348,9 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
       dataDir: env.root,
       container: env.container,
     });
-    const result = await provider.adapter.execute(env.isolated(), control());
-    expect(result.stopReason).toBe("failed");
+    await provider.adapter.execute(env.isolated(), control());
     expect(await readFile(config, "utf8")).toBe('{"user":"keep"}');
-    expect((await env.calls()).some((c) => c.args.includes("run"))).toBe(false);
+    expect((await env.calls()).some((c) => c.args.includes("run"))).toBe(true);
   });
 
   it("removes the container as the last step of cancellation", async () => {
