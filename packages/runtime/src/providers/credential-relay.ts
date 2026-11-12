@@ -178,15 +178,20 @@ function echoGuard(secrets: readonly string[]): Transform {
   });
 }
 
-/** 요청이 실은 권한 값. `Authorization: Bearer`나 `x-api-key`에 둔다(프로그램마다 인증 header가 다르다). */
-function presentedToken(req: http.IncomingMessage): string | undefined {
+/**
+ * 요청이 실은 권한 값 후보. `Authorization: Bearer`와 `x-api-key`에 둔다(프로그램마다 인증 header가 다르다).
+ * OpenCode의 무료 모델처럼 `Authorization`에 공개 키를 그대로 두고 권한은 `x-api-key`에만 싣는 프로그램도 있다.
+ */
+function presentedTokens(req: http.IncomingMessage): string[] {
+  const found: string[] = [];
   const authorization = req.headers.authorization;
   if (typeof authorization === "string") {
     const match = /^Bearer\s+(\S+)$/i.exec(authorization.trim());
-    if (match) return match[1];
+    if (match) found.push(match[1]!);
   }
   const key = req.headers["x-api-key"];
-  return typeof key === "string" && key ? key : undefined;
+  if (typeof key === "string" && key) found.push(key);
+  return found;
 }
 
 export function createCredentialRelay(options: {
@@ -300,9 +305,13 @@ export function createCredentialRelay(options: {
     },
     handle(req, res) {
       void (async () => {
-        const token = presentedToken(req);
-        const state = token ? grants.get(token) : undefined;
-        if (!token || !state) return deny(res, 401, "relay_grant_invalid");
+        // 이 중계가 발급한 권한인 값만 본다. 서로 다른 권한 둘을 실은 요청은 어느 실행인지 정할 수 없어 거부한다.
+        const known = [
+          ...new Set(presentedTokens(req).filter((value) => grants.has(value))),
+        ];
+        if (known.length !== 1) return deny(res, 401, "relay_grant_invalid");
+        const token = known[0]!;
+        const state = grants.get(token)!;
         if (state.expiresAt <= now()) {
           revoke(token, false);
           return deny(res, 401, "relay_grant_invalid");
