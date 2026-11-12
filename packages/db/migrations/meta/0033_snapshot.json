@@ -1,5 +1,5 @@
 {
-  "id": "ecb67dc1-65ea-413b-b62d-bb208c976652",
+  "id": "ed1eafc2-fd2e-4a39-9ad4-3cf4dcaef21e",
   "prevId": "6c4349fd-4b5e-4b3a-b4ad-e674f2db0220",
   "version": "7",
   "dialect": "postgresql",
@@ -2811,6 +2811,13 @@
           "notNull": true,
           "default": false
         },
+        "network_destinations": {
+          "name": "network_destinations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "paused_from": {
           "name": "paused_from",
           "type": "text",
@@ -2958,7 +2965,7 @@
         },
         "provider_readiness_reason_check": {
           "name": "provider_readiness_reason_check",
-          "value": "\"provider_readiness\".\"reason\" in ('program_missing', 'product_login_missing', 'credentials_invalid', 'credentials_unverified', 'not_checked', 'check_failed', 'check_timeout', 'isolation_unavailable', 'isolation_unsafe', 'credential_relay_unverified', 'credential_relay_failed')\n        and (\"provider_readiness\".\"status\" = 'ready') = (\"provider_readiness\".\"reason\" is null)"
+          "value": "\"provider_readiness\".\"reason\" in ('program_missing', 'product_login_missing', 'credentials_invalid', 'credentials_unverified', 'not_checked', 'check_failed', 'check_timeout', 'isolation_unavailable', 'isolation_unsafe')\n        and (\"provider_readiness\".\"status\" = 'ready') = (\"provider_readiness\".\"reason\" is null)"
         }
       },
       "isRLSEnabled": false

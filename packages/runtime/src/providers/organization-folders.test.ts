@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readlink,
+  realpath,
   rm,
   stat,
   symlink,
@@ -19,7 +20,7 @@ import { createClaudeProvider } from "./claude.ts";
 import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
-import { request } from "./test-support.ts";
+import { request, attachedRelayHub } from "./test-support.ts";
 
 // 조직별 제품 폴더(사용자 결정 2026-11-06, docs/research/org-product-folders-references.md).
 // 같은 연결이라도 조직마다 제품 폴더(설정·세션·확장)를 따로 쓴다. 연결 폴더는 로그인 원본·준비 확인·모델 목록·프로세스 기록에만 쓰고
@@ -50,7 +51,10 @@ const providers: [string, Create, string, string][] = [
 ];
 
 async function setup() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-org-folders-"));
+  // 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
+  const root = await realpath(
+    await mkdtemp(path.join(tmpdir(), "babojubot-org-folders-"))
+  );
   roots.push(root);
   const dump = path.join(root, "env.jsonl");
   // 받은 환경을 한 줄로 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 어느 폴더로 띄웠는지는 남는다.
@@ -76,8 +80,8 @@ async function setup() {
       }),
     ],
     image: "babojubot-runner-test",
-    network: "babojubot-test",
     owner: "owner-test",
+    relay: attachedRelayHub(),
   };
   const requestFor = async (
     organizationId: string,
@@ -128,6 +132,9 @@ const inside = (folder: string, file: string | undefined) => {
   );
 };
 
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 중계의 파일 소켓·폴더 자리 확인은 Linux·macOS에서 본다.
+const noIsolation = process.platform === "win32";
+
 describe.each(providers)("%s", (_name, create, id, configVariable) => {
   it("runs each organization with its own product folder of the connection on this machine", async () => {
     const env = await setup();
@@ -151,76 +158,82 @@ describe.each(providers)("%s", (_name, create, id, configVariable) => {
     await expect(stat(path.join(homeA, "processes"))).rejects.toThrow();
   });
 
-  it("puts only that organization's product folder into its container, never the connection folder", async () => {
-    const env = await setup();
-    const provider = create({
-      dataDir: env.root,
-      command: env.dumper,
-      container: env.container,
-    });
-    const a = crypto.randomUUID(),
-      b = crypto.randomUUID();
-    await provider.adapter.execute(
-      await env.requestFor(a, "container"),
-      control()
-    );
-    await provider.adapter.execute(
-      await env.requestFor(b, "container"),
-      control()
-    );
-    const connection = path.join(env.root, "providers", id);
-    const [mountsA, mountsB] = await env.runMounts();
-    const product = (mounts: string[] | undefined) =>
-      (mounts ?? [])
-        .map((mount) => /source=([^,]+)/.exec(mount)![1]!)
-        .filter((source) => inside(connection, source));
-    const homeA = path.join(connection, "organizations", a);
-    const homeB = path.join(connection, "organizations", b);
-    // 연결의 로그인 원본 폴더는 어느 프로바이더도 넣지 않는다(#148). 모델 인증은 컨테이너 밖의 인증 중계가 붙인다.
-    expect(product(mountsA)).toEqual([homeA]);
-    expect(product(mountsB)).toEqual([homeB]);
-    expect(mountsA).toContain(`type=bind,source=${homeA},target=${homeA}`);
-    const [first] = await env.dumps();
-    expect(first?.HOME).toBe(homeA);
-  });
-
-  it("passes the variables named for the connection to its program on this machine but never into a container (#148)", async () => {
-    const env = await setup();
-    const setting = `BABOJUBOT_${id.toUpperCase()}_PASS_ENV`;
-    // 사용자가 그 연결에 적어 둔 다른 로그인(API 키·클라우드 키 같은 것). 컨테이너 전체가 장악돼도 나가면 안 된다.
-    process.env.ORG_FOLDERS_NAMED_SECRET = "named-secret";
-    process.env[setting] = "ORG_FOLDERS_NAMED_SECRET";
-    try {
-      const a = crypto.randomUUID(),
-        b = crypto.randomUUID();
-      await create({ dataDir: env.root, command: env.dumper }).adapter.execute(
-        await env.requestFor(a),
-        control()
-      );
-      await create({
+  it.skipIf(noIsolation)(
+    "puts only that organization's product folder into its container, never the connection folder",
+    async () => {
+      const env = await setup();
+      const provider = create({
         dataDir: env.root,
         command: env.dumper,
         container: env.container,
-      }).adapter.execute(await env.requestFor(b, "container"), control());
+      });
+      const a = crypto.randomUUID(),
+        b = crypto.randomUUID();
+      await provider.adapter.execute(
+        await env.requestFor(a, "container"),
+        control()
+      );
+      await provider.adapter.execute(
+        await env.requestFor(b, "container"),
+        control()
+      );
       const connection = path.join(env.root, "providers", id);
-      const dumped = await env.dumps();
-      const onHost = dumped.filter(
-        (one) => one.HOME === path.join(connection, "organizations", a)
-      );
-      const inContainer = dumped.filter(
-        (one) => one.HOME === path.join(connection, "organizations", b)
-      );
-      expect(onHost.length).toBeGreaterThan(0);
-      expect(inContainer.length).toBeGreaterThan(0);
-      for (const one of onHost)
-        expect(one.ORG_FOLDERS_NAMED_SECRET).toBe("named-secret");
-      for (const one of inContainer)
-        expect(one).not.toHaveProperty("ORG_FOLDERS_NAMED_SECRET");
-    } finally {
-      delete process.env.ORG_FOLDERS_NAMED_SECRET;
-      delete process.env[setting];
+      const [mountsA, mountsB] = await env.runMounts();
+      const product = (mounts: string[] | undefined) =>
+        (mounts ?? [])
+          .map((mount) => /source=([^,]+)/.exec(mount)![1]!)
+          .filter((source) => inside(connection, source));
+      const homeA = path.join(connection, "organizations", a);
+      const homeB = path.join(connection, "organizations", b);
+      // 연결의 로그인 원본 폴더는 어느 프로바이더도 넣지 않는다(#148). 모델 인증은 컨테이너 밖의 인증 중계가 붙인다.
+      expect(product(mountsA)).toEqual([homeA]);
+      expect(product(mountsB)).toEqual([homeB]);
+      expect(mountsA).toContain(`type=bind,source=${homeA},target=${homeA}`);
+      const [first] = await env.dumps();
+      expect(first?.HOME).toBe(homeA);
     }
-  });
+  );
+
+  it.skipIf(noIsolation)(
+    "passes the variables named for the connection to its program on this machine but never into a container (#148)",
+    async () => {
+      const env = await setup();
+      const setting = `BABOJUBOT_${id.toUpperCase()}_PASS_ENV`;
+      // 사용자가 그 연결에 적어 둔 다른 로그인(API 키·클라우드 키 같은 것). 컨테이너 전체가 장악돼도 나가면 안 된다.
+      process.env.ORG_FOLDERS_NAMED_SECRET = "named-secret";
+      process.env[setting] = "ORG_FOLDERS_NAMED_SECRET";
+      try {
+        const a = crypto.randomUUID(),
+          b = crypto.randomUUID();
+        await create({
+          dataDir: env.root,
+          command: env.dumper,
+        }).adapter.execute(await env.requestFor(a), control());
+        await create({
+          dataDir: env.root,
+          command: env.dumper,
+          container: env.container,
+        }).adapter.execute(await env.requestFor(b, "container"), control());
+        const connection = path.join(env.root, "providers", id);
+        const dumped = await env.dumps();
+        const onHost = dumped.filter(
+          (one) => one.HOME === path.join(connection, "organizations", a)
+        );
+        const inContainer = dumped.filter(
+          (one) => one.HOME === path.join(connection, "organizations", b)
+        );
+        expect(onHost.length).toBeGreaterThan(0);
+        expect(inContainer.length).toBeGreaterThan(0);
+        for (const one of onHost)
+          expect(one.ORG_FOLDERS_NAMED_SECRET).toBe("named-secret");
+        for (const one of inContainer)
+          expect(one).not.toHaveProperty("ORG_FOLDERS_NAMED_SECRET");
+      } finally {
+        delete process.env.ORG_FOLDERS_NAMED_SECRET;
+        delete process.env[setting];
+      }
+    }
+  );
 
   it("keeps readiness on the connection folder that no container sees", async () => {
     const env = await setup();
@@ -414,26 +427,30 @@ describe("OpenCode", () => {
     ).toEqual([own]);
   }, 20000);
 
-  it("still runs in a container when the connection's login cannot be read on this machine", async () => {
-    const env = await setup();
-    // 컨테이너 안 프로그램은 있지만 이 컴퓨터에는 그 프로그램이 없다. 로그인 옮기기는 건너뛰고 실행은 그대로 한다(무료 모델은 로그인 없이 돈다).
-    env.container.docker = [
-      ...env.container.docker.slice(0, 3),
-      JSON.stringify({
-        opencode: [process.execPath, fixture("opencode-simulator.mjs")],
-      }),
-    ] as unknown as ContainerSettings["docker"];
-    const provider = createOpenCodeProvider({
-      dataDir: env.root,
-      command: [path.join(env.root, "missing-opencode")],
-      container: env.container,
-    });
-    const result = await provider.adapter.execute(
-      await env.requestFor(crypto.randomUUID(), "container"),
-      control()
-    );
-    expect(result.stopReason).toBe("completed");
-  }, 20000);
+  it.skipIf(noIsolation)(
+    "still runs in a container when the connection's login cannot be read on this machine",
+    async () => {
+      const env = await setup();
+      // 컨테이너 안 프로그램은 있지만 이 컴퓨터에는 그 프로그램이 없다. 로그인 옮기기는 건너뛰고 실행은 그대로 한다(무료 모델은 로그인 없이 돈다).
+      env.container.docker = [
+        ...env.container.docker.slice(0, 3),
+        JSON.stringify({
+          opencode: [process.execPath, fixture("opencode-simulator.mjs")],
+        }),
+      ] as unknown as ContainerSettings["docker"];
+      const provider = createOpenCodeProvider({
+        dataDir: env.root,
+        command: [path.join(env.root, "missing-opencode")],
+        container: env.container,
+      });
+      const result = await provider.adapter.execute(
+        await env.requestFor(crypto.randomUUID(), "container"),
+        control()
+      );
+      expect(result.stopReason).toBe("completed");
+    },
+    20000
+  );
 });
 
 describe("Antigravity", () => {

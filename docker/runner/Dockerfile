@@ -19,6 +19,10 @@ RUN arch="$(dpkg --print-architecture)" \
 # Antigravity CLI(agy)는 공개 패키지를 정하지 않았다. 설치 명령을 주면 /usr/local/bin/agy가 되게 설치한다.
 ARG ANTIGRAVITY_INSTALL=""
 RUN if [ -n "$ANTIGRAVITY_INSTALL" ]; then sh -c "$ANTIGRAVITY_INSTALL"; fi
+# 시작 프로그램(#149): 신뢰된 PATH·환경으로 프로바이더를 띄우고, 네트워크 없는 컨테이너의 loopback 포트를 실행 시도 밖 중계의 파일 소켓에 잇는다.
 COPY entry.sh /usr/local/bin/babojubot-entry
-RUN chmod 0755 /usr/local/bin/babojubot-entry
+COPY relay.mjs /usr/local/lib/babojubot/relay.mjs
+RUN chmod 0755 /usr/local/bin/babojubot-entry && chmod 0644 /usr/local/lib/babojubot/relay.mjs
+# 서버가 안전 확인 때 이 판인지 본다. 시작 프로그램의 약속(소켓·포트·환경)이 바뀌면 올린다.
+LABEL babojubot.runner="2"
 ENTRYPOINT ["/usr/local/bin/babojubot-entry"]

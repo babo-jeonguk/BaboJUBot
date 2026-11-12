@@ -23,9 +23,14 @@ import {
   providerEnvironment,
   runProbe,
 } from "./process.ts";
-import type { ContainerLaunch, ContainerSettings } from "./container.ts";
-import { placeAttempt } from "./container.ts";
+import type { ContainerSettings } from "./container.ts";
+import {
+  ContainerRefusal,
+  placeAttempt,
+  type ContainerLaunch,
+} from "./container.ts";
 import { residueRefusal } from "./credential-relay.ts";
+import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -208,12 +213,12 @@ export function createOpenCodeProvider(options: {
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         OPENCODE_SERVER_PASSWORD: password,
       },
-      ...(container ? { container: { ...container, publish: 4096 } } : {}),
+      ...(container ? { container } : {}),
       onFrame: async (raw) => {
         const url = object(raw).url;
         if (typeof url === "string") {
           if (container) {
-            // 컨테이너 안 서버는 이 컴퓨터의 loopback에 공개된 포트로만 제어한다(비밀번호 인증 유지).
+            // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
             let parsed: URL | undefined;
             try {
               parsed = new URL(url);
@@ -222,7 +227,7 @@ export function createOpenCodeProvider(options: {
             }
             if (parsed?.protocol === "http:") {
               try {
-                resolveUrl(await child.address(4096));
+                resolveUrl(await child.inboundOrigin());
               } catch {
                 lifetime.abort();
               }
@@ -405,12 +410,22 @@ export function createOpenCodeProvider(options: {
         );
         const placement = placeAttempt(options.container, organization, input);
         if (!placement) return failure();
-        const container = placement.container?.({
-          cwd: organization,
-          program: "opencode",
-        });
         await prepare();
         await mkdir(organization, { recursive: true, mode: 0o700 });
+        let container: ContainerLaunch | undefined;
+        try {
+          container = placement.container?.({
+            cwd: organization,
+            program: "opencode",
+            destinations: providerDestinations.opencode,
+            // 이 컴퓨터가 컨테이너 안 OpenCode 서버를 중계의 역방향 연결로 부른다.
+            inbound: 4096,
+          });
+        } catch (error) {
+          if (error instanceof ContainerRefusal)
+            return { ...failure(), error: error.message };
+          throw error;
+        }
         // Instructions are attached separately; never set agent.system, which replaces the native prompt.
         const config = {
           permissions: [{ action: "*", resource: "*", effect: "allow" }],

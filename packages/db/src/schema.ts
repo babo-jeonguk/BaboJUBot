@@ -25,6 +25,7 @@ import {
   type AgentAppearance,
   type ApprovalProposal,
   type DecidedWorker,
+  type Destination,
   type FlowKind,
   type NewEvent,
   type SessionState,
@@ -77,6 +78,11 @@ export const organizations = pgTable(
     publishToGitHubApproval: boolean("publish_to_github_approval")
       .notNull()
       .default(false),
+    /** 격리 실행의 연구 목적지 허용 목록(#149, contracts `Destination[]`). 사용자 제어 명령만 바꾼다. 비어 있으면 연구 목적지는 모두 거부한다. */
+    networkDestinations: jsonb("network_destinations")
+      .$type<Destination[]>()
+      .notNull()
+      .default([]),
     /** 일시정지 전 단계. 일시정지 중에만 있고 재개하면 이 단계로 돌아간다. */
     pausedFrom: text("paused_from", { enum: lifecycleStages }),
     /** 조직 폴더에 자기 ID를 적은 시각. 없으면 아직 적지 않았고, 있는데 폴더에 표식이 없으면 그 폴더를 믿지 않는다. */

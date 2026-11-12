@@ -12,10 +12,12 @@ import {
   providerReadinessCheckSchema,
   steerOutcomes,
   usageSchema,
+  destinationSchema,
 } from "@babojubot/contracts";
 import {
   createConnection,
   createDockerEnvironment,
+  createRelayHub,
   createFakeProviders,
   type ContainerSettings,
 } from "@babojubot/runtime";
@@ -32,7 +34,7 @@ import { shutdownBudget } from "./shutdown-budget.ts";
 // - PORT, HOST, EMBEDDED_POSTGRES_PORT, BABOJUBOT_HOME
 //   HOST 기본값은 127.0.0.1이다. 인증이 없으므로 외부 주소로 열면 그 네트워크의 누구나 API와 Event stream을 쓴다.
 // - EMBEDDED_POSTGRES_PORT: 내장 Postgres port(기본 54329). 0이면 켤 때 빈 port를 고른다(PORT=0과 같다).
-// - BABOJUBOT_DOCKER_COMMAND·BABOJUBOT_CONTAINER_IMAGE·BABOJUBOT_CONTAINER_NETWORK: 격리 실행의 Docker 설정(아래 containerSettings).
+// - BABOJUBOT_DOCKER_COMMAND·BABOJUBOT_CONTAINER_IMAGE·BABOJUBOT_MODEL_DESTINATIONS: 격리 실행의 Docker·중계 설정(아래 containerSettings).
 // - BABOJUBOT_SHUTDOWN_TIMEOUT_MS: 종료 신호 뒤 프로세스가 끝나기까지의 시한(ms, 1~2147483647 정수, 기본 30000). 아니면 시작하지 않는다.
 //   내장 DB면 비상 정지 몫(최대 1.5초, 시한의 절반 이하)을 남기고 정리를 끊는다(shutdown-budget.ts).
 //   서버를 감싼 실행기(Docker·Kubernetes·Playwright)의 정지 시한은 이보다 길게 둔다. 실행기가 먼저 강제로 끝내면 내장 Postgres가 남고, 다음 시작이 그것을 정상 정지한다.
@@ -47,11 +49,16 @@ const productHome = path.resolve(
 // 격리 실행(전역 설정의 스위치). Docker는 켰을 때만 쓴다.
 // - BABOJUBOT_DOCKER_COMMAND: docker 프로그램(기본 docker)
 // - BABOJUBOT_CONTAINER_IMAGE: 네 프로바이더가 든 공통 이미지(기본 babojubot-runner, docker/runner에서 만든다)
-// - BABOJUBOT_CONTAINER_NETWORK: 실행 시도 컨테이너의 전용 네트워크(기본 babojubot)
+// - BABOJUBOT_MODEL_DESTINATIONS: 모든 연결이 더 여는 모델·로그인 목적지(JSON 배열, contracts `Destination`).
+//   예: [{"host":"models.lan","port":8000,"addresses":["10.0.0.5"]}]. 연결마다 정한 필수 목적지에 더하며 초기 연구 승인 전에도 열린다.
+// 실행 시도 컨테이너에는 네트워크가 없고(--network none) 실행 시도 밖의 중계가 정책대로 잇는다(#149).
 const containerSettings: ContainerSettings = {
   docker: [env.BABOJUBOT_DOCKER_COMMAND || "docker"],
   image: env.BABOJUBOT_CONTAINER_IMAGE || "babojubot-runner",
-  network: env.BABOJUBOT_CONTAINER_NETWORK || "babojubot",
+  relay: createRelayHub(),
+  destinations: z
+    .array(destinationSchema)
+    .parse(JSON.parse(env.BABOJUBOT_MODEL_DESTINATIONS || "[]")),
   // 같은 Docker를 쓰는 다른 제품 폴더의 컨테이너는 건드리지 않는다.
   owner: createHash("sha256").update(productHome).digest("hex").slice(0, 16),
 };

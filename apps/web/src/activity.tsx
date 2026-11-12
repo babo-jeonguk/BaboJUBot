@@ -109,6 +109,25 @@ export function describeEvent(
           .join(", ")}`,
       };
     }
+    case "organization.network_policy_changed": {
+      const label = (entry: { host: string; port: number }) =>
+        `${entry.host}:${entry.port}`;
+      const before = new Set(event.payload.previous.map(label));
+      const after = new Set(event.payload.destinations.map(label));
+      const added = [...after].filter((value) => !before.has(value));
+      const removed = [...before].filter((value) => !after.has(value));
+      return {
+        icon: "⚙",
+        title: "사용자가 외부 연결 허용 목록을 바꿨습니다",
+        detail:
+          [
+            added.length ? `추가: ${added.join(", ")}` : "",
+            removed.length ? `삭제: ${removed.join(", ")}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n") || "내부 주소 허용을 바꿨습니다",
+      };
+    }
     case "organization.paused":
       return {
         icon: "⏸",

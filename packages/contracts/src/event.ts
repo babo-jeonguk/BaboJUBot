@@ -18,6 +18,7 @@ import {
   wakeReasonSchema,
 } from "./run.ts";
 import { usageSchema } from "./usage.ts";
+import { destinationSchema } from "./network.ts";
 
 /** Event log에 영속한 상태 변화. 모든 Event는 조직 하나에 속한다. */
 const eventBase = {
@@ -184,6 +185,17 @@ export const approvalPolicyChangedEventSchema = z.object({
     by: z.literal("owner"),
     previous: recordedApprovalPolicySchema,
     policy: recordedApprovalPolicySchema,
+  }),
+});
+
+/** 사용자의 네트워크 허용 목록 변경(#149). 바꾸기 전과 뒤의 목록을 함께 남긴다. 값이 그대로인 명령은 남지 않는다. */
+export const networkPolicyChangedEventSchema = z.object({
+  ...eventBase,
+  type: z.literal("organization.network_policy_changed"),
+  payload: z.object({
+    by: z.literal("owner"),
+    previous: z.array(destinationSchema),
+    destinations: z.array(destinationSchema),
   }),
 });
 
@@ -579,6 +591,7 @@ export const inboxItemUpdatedEventSchema = z.object({
 export const eventSchema = z.discriminatedUnion("type", [
   organizationCreatedEventSchema,
   approvalPolicyChangedEventSchema,
+  networkPolicyChangedEventSchema,
   organizationPausedEventSchema,
   organizationResumedEventSchema,
   organizationStoppedEventSchema,

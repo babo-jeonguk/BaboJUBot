@@ -25,9 +25,14 @@ import {
   providerEnvironment,
   runProbe,
 } from "./process.ts";
-import type { ContainerLaunch, ContainerSettings } from "./container.ts";
-import { placeAttempt } from "./container.ts";
+import type { ContainerSettings } from "./container.ts";
+import {
+  ContainerRefusal,
+  placeAttempt,
+  type ContainerLaunch,
+} from "./container.ts";
 import { credentialResidue, residueRefusal } from "./credential-relay.ts";
+import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
 
@@ -295,13 +300,23 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         const linked =
           !isolated && (await shareLogin(path.join(organization, "auth.json")));
         const codexHome = linked || isolated ? organization : home;
+        // 격리 실행은 로그인 링크를 만들지 않으므로, 컨테이너에 넣을 제품 폴더를 여기서 만든다.
+        if (isolated) await mkdir(codexHome, { recursive: true, mode: 0o700 });
         const cwd = request.workspace?.cwd ?? codexHome;
         const placement = placeAttempt(options.container, codexHome, request);
         if (!placement) return failed();
-        const container = placement.container?.({
-          cwd,
-          program: "codex",
-        });
+        let container: ContainerLaunch | undefined;
+        try {
+          container = placement.container?.({
+            cwd,
+            program: "codex",
+            destinations: providerDestinations.codex,
+          });
+        } catch (error) {
+          if (error instanceof ContainerRefusal)
+            return { ...failed(), error: error.message };
+          throw error;
+        }
         let result = failed(),
           threadId = "",
           turnId = "",

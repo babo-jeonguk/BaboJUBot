@@ -1,3 +1,4 @@
+import { relayIdentityHeaders } from "@babojubot/runtime";
 import { completeStored } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import express from "express";
@@ -20,7 +21,10 @@ const compactionTimeLimitMs = 15 * 60 * 1000;
 
 /** Maintenance has a separate, list-only credential and never creates a Run or Event. */
 export class CompactionScheduler {
-  readonly tokens = new Map<string, { id: string; tools: OrgToolName[] }>();
+  readonly tokens = new Map<
+    string,
+    { id: string; tools: OrgToolName[]; organizationId: string }
+  >();
   readonly controllers = new Map<string, AbortController>();
   private running: Promise<void> | undefined;
   private jobs = new Set<Promise<void>>();
@@ -50,6 +54,16 @@ export class CompactionScheduler {
       const token = /^Bearer (\S+)$/.exec(req.headers.authorization ?? "")?.[1];
       const entry = token && this.tokens.get(digestRunToken(token));
       if (!entry) return next("router");
+      // 격리 실행의 중계를 거친 요청은 그 조직의 세션 정비 중계에서 온 것이어야 한다(#149).
+      const relayOrganization = req.headers[relayIdentityHeaders.organization];
+      if (
+        relayOrganization !== undefined &&
+        (relayOrganization !== entry.organizationId ||
+          req.headers[relayIdentityHeaders.run] !== undefined)
+      ) {
+        res.status(401).json({ error: { code: "invalid_token" } });
+        return;
+      }
       if (
         req.path !== "/mcp" ||
         !(await compactionLeaseActive(this.options.db, entry.id))
@@ -125,7 +139,11 @@ export class CompactionScheduler {
     const deadline = now().getTime() + compactionTimeLimitMs;
     const { token, digest } = issueRunToken(),
       controller = new AbortController();
-    this.tokens.set(digest, { id: lease.id, tools: lease.tools });
+    this.tokens.set(digest, {
+      id: lease.id,
+      tools: lease.tools,
+      organizationId: lease.organizationId,
+    });
     this.controllers.set(lease.id, controller);
     const check = setInterval(() => {
       if (now().getTime() >= deadline) {

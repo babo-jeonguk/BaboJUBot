@@ -8,6 +8,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import http from "node:http";
 import type net from "node:net";
@@ -22,7 +23,7 @@ import {
   createDockerEnvironment,
   type ContainerSettings,
 } from "./container.ts";
-import { request } from "./test-support.ts";
+import { attachedRelayHub, request } from "./test-support.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
@@ -36,12 +37,22 @@ afterEach(async () => {
   );
 });
 
-type Call = { args: string[]; env?: Record<string, string> };
+type Call = {
+  args: string[];
+  env?: Record<string, string>;
+  relayOpen?: boolean;
+};
 const image = "babojubot-runner-test";
 const fixture = (name: string) => path.resolve("test-fixtures", name);
+/** 임시 폴더 바로 아래 폴더의 실제 경로. 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) mount 원본은 실제 경로다. 폴더는 이미 지워졌을 수 있다. */
+const canonicalTemp = (folder: string) =>
+  path.join(realpathSync(path.dirname(folder)), path.basename(folder));
 
 async function setup(programs: Record<string, string[]>) {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-container-"));
+  // 임시 폴더가 링크 뒤에 있으면(macOS) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
+  const root = await realpath(
+    await mkdtemp(path.join(tmpdir(), "babojubot-container-"))
+  );
   roots.push(root);
   const state = path.join(root, "docker-state");
   await mkdir(state);
@@ -61,8 +72,8 @@ async function setup(programs: Record<string, string[]>) {
       JSON.stringify(programs),
     ],
     image,
-    network: "babojubot-test",
     owner: "owner-test",
+    relay: attachedRelayHub(),
   };
   const isolated = (): RunRequest => {
     const input = request();
@@ -93,6 +104,7 @@ async function setup(programs: Record<string, string[]>) {
   };
   return {
     root,
+    state,
     container,
     isolated,
     calls,
@@ -119,7 +131,8 @@ const control = (signal = new AbortController().signal) => ({
   emit: async () => {},
 });
 
-describe("an isolated attempt", () => {
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 실행 시도 중계의 파일 소켓은 Linux·macOS에서 본다.
+describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
   it("runs the provider in one container with only the allowed folders, no privileges and no GitHub login, then removes it", async () => {
     const env = await setup({
       claude: [
@@ -161,7 +174,10 @@ describe("an isolated attempt", () => {
     );
     expect(valuesOf(args, "--cap-drop")).toEqual(["ALL"]);
     expect(valuesOf(args, "--security-opt")).toContain("no-new-privileges");
-    expect(valuesOf(args, "--network")).toEqual(["babojubot-test"]);
+    // 네트워크가 없다. 바깥과 조직 도구는 이 실행 시도의 중계 폴더(읽기만)로만 닿는다.
+    expect(valuesOf(args, "--network")).toEqual(["none"]);
+    expect(args).not.toContain("--publish");
+    expect(args).not.toContain("--add-host");
     expect(args).not.toContain("--privileged");
     expect(valuesOf(args, "--workdir")).toEqual([env.shared]);
     // 서버 재시작 때 이 제품 폴더의 남은 컨테이너만 찾아 지우도록 표식을 단다.
@@ -171,14 +187,26 @@ describe("an isolated attempt", () => {
       expect.stringMatching(/^babojubot\.run=[0-9a-f-]{36}$/)
     );
     // 조직 폴더·자기 개인 폴더·그 조직의 제품 폴더는 읽기·쓰기, 동료 개인 폴더와 이 실행 시도의 파일 폴더는 읽기만. 그 밖에는 없다.
-    expect(valuesOf(args, "--mount").sort()).toEqual(
+    const relayMount = valuesOf(args, "--mount").filter((m) =>
+      m.includes("target=/run/babojubot,")
+    );
+    expect(relayMount).toEqual([
+      expect.stringMatching(
+        /^type=bind,source=.*babojubot-relay-[^,]+,target=\/run\/babojubot,readonly$/
+      ),
+    ]);
+    expect(
+      valuesOf(args, "--mount")
+        .filter((m) => !relayMount.includes(m))
+        .sort()
+    ).toEqual(
       [
         `type=bind,source=${env.shared},target=${env.shared}`,
         `type=bind,source=${env.personal},target=${env.personal}`,
         `type=bind,source=${env.peerFolder},target=${env.peerFolder},readonly`,
         `type=bind,source=${home},target=${home}`,
         // 토큰이 든 이 실행 시도만의 파일 폴더(읽기만).
-        `type=bind,source=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
+        `type=bind,source=${canonicalTemp(path.dirname(valuesOf(args, "--mcp-config")[0]!))},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
       ].sort()
     );
     expect(args.join(" ")).not.toMatch(/docker\.sock|--volume|-v /);
@@ -189,15 +217,16 @@ describe("an isolated attempt", () => {
       /private-run-token|synthetic-login|github-secret/
     );
     // 컨테이너 환경: 제품 홈은 있고, 연결의 로그인 대신 인증 중계 주소와 이 실행 시도의 권한만 있다(#148).
-    // GitHub 로그인과 이 컴퓨터의 임시 폴더는 없다. 추가 패키지는 조직 폴더의 가상환경이다.
+    // GitHub 로그인과 이 컴퓨터의 임시 폴더는 없다. 공유 가상환경은 자동으로 쓰지 않고, 연구 명령이 고를 개인 폴더만 알려 준다.
     expect(run.env).toMatchObject({
       HOME: home,
       CLAUDE_CONFIG_DIR: path.join(home, "config"),
       ANTHROPIC_BASE_URL: "http://127.0.0.1:1/api/relay/claude",
-      BABOJUBOT_VENV: path.join(env.shared, ".venv"),
+      BABOJUBOT_PERSONAL: env.personal,
     });
     expect(run.env!.CLAUDE_CODE_OAUTH_TOKEN).toMatch(/^[\w-]{43}$/);
     expect(JSON.stringify(run.env)).not.toContain("synthetic-login");
+    expect(run.env).not.toHaveProperty("BABOJUBOT_VENV");
     for (const name of [
       "GH_TOKEN",
       "GITHUB_TOKEN",
@@ -234,7 +263,7 @@ describe("an isolated attempt", () => {
     expect(path.relative(home, config).startsWith("..")).toBe(true);
     const attempt = path.dirname(config);
     expect(valuesOf(run.args, "--mount")).toContain(
-      `type=bind,source=${attempt},target=${attempt},readonly`
+      `type=bind,source=${canonicalTemp(attempt)},target=${attempt},readonly`
     );
     // 지침 파일도 같은 폴더에 둔다.
     expect(
@@ -357,6 +386,35 @@ describe("an isolated attempt", () => {
     const calls = await env.calls();
     expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
   });
+
+  it("takes the relay back before removing the container, even when Docker cannot remove it", async () => {
+    const env = await setup({
+      claude: [
+        process.execPath,
+        fixture("replay.mjs"),
+        fixture("claude-cancel.synthetic.json"),
+      ],
+    });
+    // Docker 프로그램은 끝났지만 daemon이 컨테이너를 지우지 못한다. 컨테이너가 살아 있어도 중계는 이미 닫혀 있어야 한다.
+    await writeFile(path.join(env.state, "rm-fails"), "");
+    const provider = createClaudeProvider({
+      dataDir: env.root,
+      container: env.container,
+    });
+    const controller = new AbortController();
+    const result = await provider.adapter.execute(env.isolated(), {
+      signal: controller.signal,
+      emit: async () => controller.abort(),
+    });
+    expect(result.stopReason).toBe("cancelled");
+    const calls = await env.calls();
+    const name = nameOf(runCall(calls));
+    const removals = calls.filter(
+      (c) => c.args.includes("rm") && c.args.includes(name)
+    );
+    expect(removals.length).toBeGreaterThan(0);
+    expect(removals.map((c) => c.relayOpen)).toEqual(removals.map(() => false));
+  }, 20_000);
 
   it.each([
     ["Claude", createClaudeProvider],
@@ -492,7 +550,7 @@ describe("an isolated attempt", () => {
     expect(removed(calls, nameOf(run))).toBe(true);
   });
 
-  it("controls OpenCode in a container through a port published only on this machine's loopback", async () => {
+  it("controls OpenCode in a container with no network through connections the container offers to its relay", async () => {
     const env = await setup({
       opencode: [process.execPath, fixture("opencode-simulator.mjs")],
     });
@@ -507,7 +565,8 @@ describe("an isolated attempt", () => {
     expect(result.stopReason).toBe("completed");
     const calls = await env.calls();
     const run = runCall(calls);
-    expect(valuesOf(run.args, "--publish")).toEqual(["127.0.0.1::4096"]);
+    expect(run.args).not.toContain("--publish");
+    expect(run.env).toMatchObject({ BABOJUBOT_INBOUND_PORT: "4096" });
     expect(run.args.slice(run.args.indexOf(image) + 1)).toEqual(
       expect.arrayContaining([
         "opencode",
@@ -518,327 +577,350 @@ describe("an isolated attempt", () => {
         "4096",
       ])
     );
-    expect(
-      calls.some((c) => c.args.includes("port") && c.args.includes(nameOf(run)))
-    ).toBe(true);
     expect(removed(calls, nameOf(run))).toBe(true);
   });
 });
 
-describe("an isolated attempt never receives the connection's login (#148)", () => {
-  it("copies no OpenCode login into the organization's product folder, and does not start over one left there", async () => {
-    const env = await setup({
-      opencode: [process.execPath, fixture("opencode-simulator.mjs")],
-    });
-    const connection = path.join(env.root, "providers/opencode");
-    await mkdir(path.join(connection, "data"), { recursive: true });
-    const login = {
-      id: "cred_synthetic",
-      integrationID: "opencode-go",
-      label: "Go",
-      active: true,
-      value: { type: "key", key: "synthetic-key" },
-    };
-    await writeFile(
-      path.join(connection, "data", "synthetic-credentials.json"),
-      JSON.stringify([login])
-    );
-    const provider = createOpenCodeProvider({
-      dataDir: env.root,
-      command: [process.execPath, fixture("opencode-simulator.mjs")],
-      container: env.container,
-    });
-    const result = await provider.adapter.execute(env.isolated(), control());
-    expect(result.stopReason).toBe("completed");
-    const data = path.join(connection, "organizations", env.org, "data");
-    await expect(
-      stat(path.join(data, "synthetic-credentials.json"))
-    ).rejects.toThrow();
-    // 예전에 이 컴퓨터에서 돌며 옮겨 둔 로그인이 조직 폴더에 남아 있으면 시작하지 않는다.
-    await writeFile(
-      path.join(data, "synthetic-credentials.json"),
-      JSON.stringify([login])
-    );
-    const refused = await provider.adapter.execute(env.isolated(), control());
-    expect(refused.stopReason).toBe("failed");
-    expect(refused.error).toContain("로그인 기록");
-  }, 20000);
-
-  it.each([
-    ["Codex", "codex", createCodexProvider, ["auth.json"]],
-    [
-      "Antigravity",
-      "antigravity",
-      createAntigravityProvider,
-      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
-    ],
-  ] as const)(
-    "does not start %s over a login left as a file in the organization's product folder",
-    async (_name, id, create, file) => {
-      const env = await setup({});
-      const target = path.join(
-        env.root,
-        "providers",
-        id,
-        "organizations",
-        env.org,
-        ...file
+describe.skipIf(process.platform === "win32")(
+  "an isolated attempt never receives the connection's login (#148)",
+  () => {
+    it("copies no OpenCode login into the organization's product folder, and does not start over one left there", async () => {
+      const env = await setup({
+        opencode: [process.execPath, fixture("opencode-simulator.mjs")],
+      });
+      const connection = path.join(env.root, "providers/opencode");
+      await mkdir(path.join(connection, "data"), { recursive: true });
+      const login = {
+        id: "cred_synthetic",
+        integrationID: "opencode-go",
+        label: "Go",
+        active: true,
+        value: { type: "key", key: "synthetic-key" },
+      };
+      await writeFile(
+        path.join(connection, "data", "synthetic-credentials.json"),
+        JSON.stringify([login])
       );
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, "{}");
-      const provider = create({ dataDir: env.root, container: env.container });
+      const provider = createOpenCodeProvider({
+        dataDir: env.root,
+        command: [process.execPath, fixture("opencode-simulator.mjs")],
+        container: env.container,
+      });
       const result = await provider.adapter.execute(env.isolated(), control());
-      expect(result.stopReason).toBe("failed");
-      expect(result.error).toContain("로그인 기록");
-      expect(
-        (await env.calls()).some((call) => call.args.includes("run"))
-      ).toBe(false);
-    }
-  );
-
-  it.each([
-    ["Codex", "codex", createCodexProvider, ["auth.json"], "auth.json"],
-    [
-      "Antigravity",
-      "antigravity",
-      createAntigravityProvider,
-      [".gemini", "antigravity-cli", "antigravity-oauth-token"],
-      "antigravity-oauth-token",
-    ],
-  ] as const)(
-    "starts %s over the link to the connection's login this machine left, but not over a link to anywhere else",
-    async (_name, id, create, file, original) => {
-      const env = await setup({});
-      const target = path.join(
-        env.root,
-        "providers",
-        id,
-        "organizations",
-        env.org,
-        ...file
+      expect(result.stopReason).toBe("completed");
+      const data = path.join(connection, "organizations", env.org, "data");
+      await expect(
+        stat(path.join(data, "synthetic-credentials.json"))
+      ).rejects.toThrow();
+      // 예전에 이 컴퓨터에서 돌며 옮겨 둔 로그인이 조직 폴더에 남아 있으면 시작하지 않는다.
+      await writeFile(
+        path.join(data, "synthetic-credentials.json"),
+        JSON.stringify([login])
       );
-      await mkdir(path.dirname(target), { recursive: true });
-      // 이 컴퓨터에서 돈 실행이 남긴 링크. 연결 폴더는 컨테이너에 없으므로 안에서는 비어 있다.
-      await symlink(
-        path.join(env.root, "providers", id, "login", original),
-        target
-      );
-      const provider = create({ dataDir: env.root, container: env.container });
-      await provider.adapter.execute(env.isolated(), control());
-      expect(
-        (await env.calls()).some((call) => call.args.includes("run"))
-      ).toBe(true);
-      // 컨테이너에 들어가는 조직 폴더 안의 다른 파일을 가리키는 링크는 남은 로그인이다.
-      await rm(target);
-      await symlink(path.join(path.dirname(target), "copy"), target);
       const refused = await provider.adapter.execute(env.isolated(), control());
       expect(refused.stopReason).toBe("failed");
       expect(refused.error).toContain("로그인 기록");
-    }
-  );
-});
+    }, 20000);
 
-describe("an isolated Claude attempt through the credential relay (#148)", () => {
-  /** 모의 상류와, 조직 도구 listener처럼 `/api/relay/<연결>` 아래를 중계에 넘기는 서버. 중계는 상류 주소를 받은 뒤 만든다. */
-  async function relayed(
-    connect: (upstream: string) => { handle: http.RequestListener }
-  ) {
-    const seen: http.IncomingHttpHeaders[] = [];
-    const servers: http.Server[] = [];
-    const listen = async (handler: http.RequestListener) => {
-      const server = http.createServer(handler);
-      servers.push(server);
-      await new Promise<void>((resolve) =>
-        server.listen(0, "127.0.0.1", resolve)
-      );
-      return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
-    };
-    const upstream = await listen((req, res) => {
-      seen.push(req.headers);
-      req.resume();
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end("{}");
-    });
-    const relay = connect(upstream);
-    const tools = await listen((req, res) => {
-      const prefix = "/api/relay/claude";
-      if (!req.url?.startsWith(prefix + "/")) {
-        res.writeHead(404).end();
-        return;
+    it.each([
+      ["Codex", "codex", createCodexProvider, ["auth.json"]],
+      [
+        "Antigravity",
+        "antigravity",
+        createAntigravityProvider,
+        [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+      ],
+    ] as const)(
+      "does not start %s over a login left as a file in the organization's product folder",
+      async (_name, id, create, file) => {
+        const env = await setup({});
+        const target = path.join(
+          env.root,
+          "providers",
+          id,
+          "organizations",
+          env.org,
+          ...file
+        );
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, "{}");
+        const provider = create({
+          dataDir: env.root,
+          container: env.container,
+        });
+        const result = await provider.adapter.execute(
+          env.isolated(),
+          control()
+        );
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("로그인 기록");
+        expect(
+          (await env.calls()).some((call) => call.args.includes("run"))
+        ).toBe(false);
       }
-      req.url = req.url.slice(prefix.length);
-      relay.handle(req, res);
-    });
-    const close = async () => {
-      for (const server of servers) {
-        server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
+    );
+
+    it.each([
+      ["Codex", "codex", createCodexProvider, ["auth.json"], "auth.json"],
+      [
+        "Antigravity",
+        "antigravity",
+        createAntigravityProvider,
+        [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+        "antigravity-oauth-token",
+      ],
+    ] as const)(
+      "starts %s over the link to the connection's login this machine left, but not over a link to anywhere else",
+      async (_name, id, create, file, original) => {
+        const env = await setup({});
+        const target = path.join(
+          env.root,
+          "providers",
+          id,
+          "organizations",
+          env.org,
+          ...file
+        );
+        await mkdir(path.dirname(target), { recursive: true });
+        // 이 컴퓨터에서 돈 실행이 남긴 링크. 연결 폴더는 컨테이너에 없으므로 안에서는 비어 있다.
+        await symlink(
+          path.join(env.root, "providers", id, "login", original),
+          target
+        );
+        const provider = create({
+          dataDir: env.root,
+          container: env.container,
+        });
+        await provider.adapter.execute(env.isolated(), control());
+        expect(
+          (await env.calls()).some((call) => call.args.includes("run"))
+        ).toBe(true);
+        // 컨테이너에 들어가는 조직 폴더 안의 다른 파일을 가리키는 링크는 남은 로그인이다.
+        await rm(target);
+        await symlink(path.join(path.dirname(target), "copy"), target);
+        const refused = await provider.adapter.execute(
+          env.isolated(),
+          control()
+        );
+        expect(refused.stopReason).toBe("failed");
+        expect(refused.error).toContain("로그인 기록");
       }
-    };
-    return { tools, seen, close };
+    );
   }
-  const relayProgram = {
-    claude: [process.execPath, fixture("claude-relay.mjs")],
-  };
+);
 
-  it("lets the program reach the model only through the relay, which puts the connection's login in place of the run's grant", async () => {
-    const env = await setup(relayProgram);
-    await mkdir(path.join(env.root, "providers/claude"), { recursive: true });
-    await writeFile(
-      path.join(env.root, "providers/claude/setup-token"),
-      "synthetic-login",
-      { mode: 0o600 }
-    );
-    process.env.ANTHROPIC_API_KEY = "api-key-secret";
-    process.env.BABOJUBOT_CLAUDE_PASS_ENV = "ANTHROPIC_API_KEY";
-    let provider!: ReturnType<typeof createClaudeProvider>;
-    const network = await relayed((upstream) => {
-      provider = createClaudeProvider({
-        dataDir: env.root,
-        container: env.container,
-        relay: { upstream, verified: true },
+describe.skipIf(process.platform === "win32")(
+  "an isolated Claude attempt through the credential relay (#148)",
+  () => {
+    /** 모의 상류와, 조직 도구 listener처럼 `/api/relay/<연결>` 아래를 중계에 넘기는 서버. 중계는 상류 주소를 받은 뒤 만든다. */
+    async function relayed(
+      connect: (upstream: string) => { handle: http.RequestListener }
+    ) {
+      const seen: http.IncomingHttpHeaders[] = [];
+      const servers: http.Server[] = [];
+      const listen = async (handler: http.RequestListener) => {
+        const server = http.createServer(handler);
+        servers.push(server);
+        await new Promise<void>((resolve) =>
+          server.listen(0, "127.0.0.1", resolve)
+        );
+        return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+      };
+      const upstream = await listen((req, res) => {
+        seen.push(req.headers);
+        req.resume();
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
       });
-      return provider.credentialRelay!;
-    });
-    try {
-      const input = env.isolated();
-      input.access = { ...input.access, toolsBaseUrl: network.tools };
-      const result = await provider.adapter.execute(input, control());
-      expect(result.stopReason).toBe("completed");
-      expect(network.seen).toHaveLength(1);
-      expect(network.seen[0]!.authorization).toBe("Bearer synthetic-login");
-      const run = runCall(await env.calls());
-      expect(JSON.stringify(run)).not.toMatch(/synthetic-login|api-key-secret/);
-      expect(run.env).not.toHaveProperty("ANTHROPIC_API_KEY");
-      // 실행 시도가 끝나면 그 권한은 거둬진다.
-      const after = await fetch(
-        `${network.tools}/api/relay/claude/v1/messages`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${run.env!.CLAUDE_CODE_OAUTH_TOKEN}`,
-          },
+      const relay = connect(upstream);
+      const tools = await listen((req, res) => {
+        const prefix = "/api/relay/claude";
+        if (!req.url?.startsWith(prefix + "/")) {
+          res.writeHead(404).end();
+          return;
         }
-      );
-      expect(after.status).toBe(401);
-      expect(network.seen).toHaveLength(1);
-    } finally {
-      await network.close();
+        req.url = req.url.slice(prefix.length);
+        relay.handle(req, res);
+      });
+      const close = async () => {
+        for (const server of servers) {
+          server.closeAllConnections();
+          await new Promise((resolve) => server.close(resolve));
+        }
+      };
+      return { tools, seen, close };
     }
-  });
+    const relayProgram = {
+      claude: [process.execPath, fixture("claude-relay.mjs")],
+    };
 
-  it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
-    const env = await setup(relayProgram);
-    let provider!: ReturnType<typeof createClaudeProvider>;
-    const network = await relayed((upstream) => {
-      provider = createClaudeProvider({
+    it("lets the program reach the model only through the relay, which puts the connection's login in place of the run's grant", async () => {
+      const env = await setup(relayProgram);
+      await mkdir(path.join(env.root, "providers/claude"), { recursive: true });
+      await writeFile(
+        path.join(env.root, "providers/claude/setup-token"),
+        "synthetic-login",
+        { mode: 0o600 }
+      );
+      process.env.ANTHROPIC_API_KEY = "api-key-secret";
+      process.env.BABOJUBOT_CLAUDE_PASS_ENV = "ANTHROPIC_API_KEY";
+      let provider!: ReturnType<typeof createClaudeProvider>;
+      const network = await relayed((upstream) => {
+        provider = createClaudeProvider({
+          dataDir: env.root,
+          container: env.container,
+          relay: { upstream, verified: true },
+        });
+        return provider.credentialRelay!;
+      });
+      try {
+        const input = env.isolated();
+        input.access = { ...input.access, toolsBaseUrl: network.tools };
+        const result = await provider.adapter.execute(input, control());
+        expect(result.stopReason).toBe("completed");
+        expect(network.seen).toHaveLength(1);
+        expect(network.seen[0]!.authorization).toBe("Bearer synthetic-login");
+        const run = runCall(await env.calls());
+        expect(JSON.stringify(run)).not.toMatch(
+          /synthetic-login|api-key-secret/
+        );
+        expect(run.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+        // 실행 시도가 끝나면 그 권한은 거둬진다.
+        const after = await fetch(
+          `${network.tools}/api/relay/claude/v1/messages`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${run.env!.CLAUDE_CODE_OAUTH_TOKEN}`,
+            },
+          }
+        );
+        expect(after.status).toBe(401);
+        expect(network.seen).toHaveLength(1);
+      } finally {
+        await network.close();
+      }
+    });
+
+    it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
+      const env = await setup(relayProgram);
+      let provider!: ReturnType<typeof createClaudeProvider>;
+      const network = await relayed((upstream) => {
+        provider = createClaudeProvider({
+          dataDir: env.root,
+          container: env.container,
+          relay: { upstream, verified: true },
+        });
+        return provider.credentialRelay!;
+      });
+      try {
+        const input = env.isolated();
+        input.access = { ...input.access, toolsBaseUrl: network.tools };
+        const result = await provider.adapter.execute(input, control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("인증 중계");
+        expect(network.seen).toHaveLength(0);
+        expect(provider.credentialRelay!.failed()).toBe(true);
+        // 복구 전에는 새 실행 시도도 시작하지 않는다.
+        const again = await provider.adapter.execute(env.isolated(), control());
+        expect(again.stopReason).toBe("failed");
+        expect(
+          (await env.calls()).filter((call) => call.args.includes("run"))
+        ).toHaveLength(1);
+      } finally {
+        await network.close();
+      }
+    });
+
+    it("does not start when a login is left in the organization's product folder", async () => {
+      const env = await setup(relayProgram);
+      const config = path.join(
+        env.root,
+        "providers/claude/organizations",
+        env.org,
+        "config"
+      );
+      await mkdir(config, { recursive: true });
+      await writeFile(path.join(config, ".credentials.json"), "{}");
+      const provider = createClaudeProvider({
         dataDir: env.root,
         container: env.container,
-        relay: { upstream, verified: true },
+        relay: { verified: true },
       });
-      return provider.credentialRelay!;
-    });
-    try {
-      const input = env.isolated();
-      input.access = { ...input.access, toolsBaseUrl: network.tools };
-      const result = await provider.adapter.execute(input, control());
+      const result = await provider.adapter.execute(env.isolated(), control());
       expect(result.stopReason).toBe("failed");
-      expect(result.error).toContain("인증 중계");
-      expect(network.seen).toHaveLength(0);
-      expect(provider.credentialRelay!.failed()).toBe(true);
-      // 복구 전에는 새 실행 시도도 시작하지 않는다.
-      const again = await provider.adapter.execute(env.isolated(), control());
-      expect(again.stopReason).toBe("failed");
-      expect(
-        (await env.calls()).filter((call) => call.args.includes("run"))
-      ).toHaveLength(1);
-    } finally {
-      await network.close();
-    }
-  });
-
-  it("does not start when a login is left in the organization's product folder", async () => {
-    const env = await setup(relayProgram);
-    const config = path.join(
-      env.root,
-      "providers/claude/organizations",
-      env.org,
-      "config"
-    );
-    await mkdir(config, { recursive: true });
-    await writeFile(path.join(config, ".credentials.json"), "{}");
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      container: env.container,
-      relay: { verified: true },
+      expect(result.error).toContain("로그인 기록");
+      expect(await env.calls()).toEqual([]);
     });
-    const result = await provider.adapter.execute(env.isolated(), control());
-    expect(result.stopReason).toBe("failed");
-    expect(result.error).toContain("로그인 기록");
-    expect(await env.calls()).toEqual([]);
-  });
-});
+  }
+);
 
-describe("the dedicated network", () => {
-  async function network(existing?: Record<string, unknown>) {
-    const root = await mkdtemp(path.join(tmpdir(), "babojubot-network-"));
+describe("the Docker engine check", () => {
+  async function engine(files: Record<string, string> = {}) {
+    const root = await mkdtemp(path.join(tmpdir(), "babojubot-engine-"));
     roots.push(root);
-    if (existing)
-      await writeFile(
-        path.join(root, "network.json"),
-        JSON.stringify(existing)
-      );
-    const settings: ContainerSettings = {
+    for (const [name, value] of Object.entries(files))
+      await writeFile(path.join(root, name), value);
+    return createDockerEnvironment({
       docker: [process.execPath, fixture("fake-docker.mjs"), root, "{}"],
       image,
-      network: "babojubot-test",
       owner: "owner-test",
-    };
-    return createDockerEnvironment(settings);
+      relay: attachedRelayHub(),
+    });
   }
-  const isolating = {
-    Name: "babojubot-test",
-    Driver: "bridge",
-    Options: { "com.docker.network.bridge.enable_icc": "false" },
-    Labels: { "babojubot.owner": "someone-else" },
-    IPAM: { Config: [{ Subnet: "172.31.0.0/16", Gateway: "172.31.0.1" }] },
-  };
 
-  it("creates a bridge network whose containers cannot reach each other and uses its gateway", async () => {
-    const environment = await network();
+  it("accepts a local Linux engine with the current runner image", async () => {
     await expect(
-      environment.prepareNetwork(AbortSignal.timeout(10_000))
-    ).resolves.toEqual({ gateway: "172.31.0.1" });
-  });
-
-  it("accepts an existing network with the same isolation, whoever created it", async () => {
-    // 같은 컴퓨터의 다른 제품 폴더도 같은 이름의 네트워크를 쓴다. 격리는 네트워크의 속성이 정한다.
-    const environment = await network(isolating);
-    await expect(
-      environment.prepareNetwork(AbortSignal.timeout(10_000))
-    ).resolves.toEqual({ gateway: "172.31.0.1" });
+      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+    ).resolves.toBeUndefined();
   });
 
   it.each([
     [
-      "containers on it can reach each other",
+      "Docker Desktop",
       {
-        ...isolating,
-        Options: { "com.docker.network.bridge.enable_icc": "true" },
+        "info.json": JSON.stringify({
+          OSType: "linux",
+          OperatingSystem: "Docker Desktop",
+          SecurityOptions: [],
+        }),
       },
     ],
     [
-      "it does not say whether containers can reach each other",
-      { ...isolating, Options: {} },
+      "rootless Docker",
+      {
+        "info.json": JSON.stringify({
+          OSType: "linux",
+          OperatingSystem: "Ubuntu",
+          SecurityOptions: ["name=rootless"],
+        }),
+      },
     ],
-    ["it is not a bridge", { ...isolating, Driver: "macvlan" }],
-  ])(
-    "does not accept an existing network of the same name when %s",
-    async (_case, existing) => {
-      const environment = await network(existing);
-      await expect(
-        environment.prepareNetwork(AbortSignal.timeout(10_000))
-      ).rejects.toThrow();
-    }
-  );
+    [
+      "a Windows engine",
+      {
+        "info.json": JSON.stringify({
+          OSType: "windows",
+          OperatingSystem: "Windows",
+          SecurityOptions: [],
+        }),
+      },
+    ],
+    ["an image without the relay start program", { "runner-version": "" }],
+    [
+      "a Docker context on another computer",
+      { "context-host": "ssh://user@build-box" },
+    ],
+  ])("refuses %s", async (_case, files) => {
+    await expect(
+      (await engine(files)).checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow();
+  });
+
+  it("refuses a daemon on another computer, whose folders this computer cannot check", async () => {
+    process.env.DOCKER_HOST = "tcp://10.0.0.9:2375";
+    await expect(
+      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow(/not on this computer/);
+  });
 });
