@@ -447,6 +447,172 @@ describe("the credential relay", () => {
   });
 });
 
+describe("the credential relay with runs that overlap (#148)", () => {
+  /** 원본 읽기를 하나씩 붙잡아 둔다. 읽기마다 `started[n]`이 풀리고, `release(n)`으로 끝낸다. */
+  function heldReads(count: number, login = "real-account-secret") {
+    const releases: (() => void)[] = [];
+    const holds = Array.from(
+      { length: count },
+      (_, n) =>
+        new Promise<void>((resolve) => {
+          releases[n] = resolve;
+        })
+    );
+    const starts: (() => void)[] = [];
+    const started = Array.from(
+      { length: count },
+      (_, n) =>
+        new Promise<void>((resolve) => {
+          starts[n] = resolve;
+        })
+    );
+    let reads = 0;
+    return {
+      credential: async () => {
+        const n = reads++;
+        starts[n]?.();
+        await holds[n];
+        return login;
+      },
+      started,
+      release: (n: number) => releases[n]!(),
+    };
+  }
+  /** stream이 끝나지도 끊기지도 않고 열려 있는가. 잠깐 기다려 본다. */
+  async function stillOpen(reader: ReadableStreamDefaultReader<Uint8Array>) {
+    const outcome = await Promise.race([
+      reader.read().then(
+        ({ done }) => (done ? "ended" : "data"),
+        () => "cut"
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("open"), 100)),
+    ]);
+    return outcome === "open";
+  }
+  const cutOff = (reader: ReadableStreamDefaultReader<Uint8Array>) =>
+    (async () => {
+      for (;;) if ((await reader.read()).done) return "ended";
+    })();
+
+  it("does not reach the upstream for a request whose run is cancelled while the credential is being read", async () => {
+    const held = heldReads(1);
+    const { up, relay, url } = await setup({ credential: held.credential });
+    const cancel = new AbortController();
+    const grant = relay.grant(scope(cancel.signal));
+    const request = send(url, grant.token).then(
+      (response) => response.status,
+      () => "cut"
+    );
+    await held.started[0];
+    cancel.abort();
+    held.release(0);
+    expect(await request).not.toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(up.seen).toHaveLength(0);
+    expect(await connections(up.server)).toBe(0);
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("cancelling one organization's run cuts only that run's stream; another organization's run on the same connection keeps going", async () => {
+    const { up, relay, url } = await setup();
+    const cancelA = new AbortController();
+    const a = relay.grant(scope(cancelA.signal));
+    const b = relay.grant(scope());
+    const streamA = (await send(url, a.token, "/v1/stream")).body!.getReader();
+    const streamB = (await send(url, b.token, "/v1/stream")).body!.getReader();
+    await streamA.read();
+    await streamB.read();
+    cancelA.abort();
+    await expect(cutOff(streamA)).rejects.toThrow();
+    expect(await stillOpen(streamB)).toBe(true);
+    expect((await send(url, a.token)).status).toBe(401);
+    expect((await send(url, b.token)).status).toBe(200);
+    expect(b.failed.aborted).toBe(false);
+    await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
+    await streamB.cancel();
+  });
+
+  it("when the upstream rejects the login for one run, another run's open stream is cut and its program's retries never reach the upstream", async () => {
+    const { up, relay, url } = await setup({
+      credential: async () => "expired-login",
+    });
+    const streaming = relay.grant(scope());
+    const rejected = relay.grant(scope());
+    const stream = (
+      await send(url, streaming.token, "/v1/stream")
+    ).body!.getReader();
+    await stream.read();
+    expect((await send(url, rejected.token, "/v1/rejected")).status).toBe(503);
+    await expect(cutOff(stream)).rejects.toThrow();
+    expect(streaming.failed.aborted).toBe(true);
+    expect(rejected.failed.aborted).toBe(true);
+    const before = up.seen.length;
+    for (const grant of [streaming, rejected])
+      expect((await send(url, grant.token)).status).toBe(401);
+    expect(up.seen).toHaveLength(before);
+    await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
+  });
+
+  it("when several runs' requests are rejected at the same time, the connection fails for all of them and nothing reaches the upstream afterwards", async () => {
+    let login = "expired-login";
+    const { up, relay, url } = await setup({ credential: async () => login });
+    const grants = [
+      relay.grant(scope()),
+      relay.grant(scope()),
+      relay.grant(scope()),
+    ];
+    const notified: boolean[] = [];
+    relay.onFailure(() => notified.push(relay.failed()));
+    const statuses = await Promise.all(
+      grants.map((grant) =>
+        send(url, grant.token, "/v1/rejected").then(
+          (response) => response.status,
+          () => 0
+        )
+      )
+    );
+    expect(statuses).not.toContain(200);
+    expect(relay.failed()).toBe(true);
+    expect(notified.length).toBeGreaterThanOrEqual(1);
+    expect(notified.every(Boolean)).toBe(true);
+    expect(grants.every((grant) => grant.failed.aborted)).toBe(true);
+    const before = up.seen.length;
+    expect(before).toBeLessThanOrEqual(grants.length);
+    for (const grant of grants)
+      expect((await send(url, grant.token)).status).toBe(401);
+    expect(() => relay.grant(scope())).toThrow();
+    expect(up.seen).toHaveLength(before);
+    // 같은 로그인으로는 풀리지 않는다.
+    await relay.recover();
+    expect(relay.failed()).toBe(true);
+    login = "new-login";
+    await relay.recover();
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("a request still reading the credential when another run's login is rejected does not reach the upstream", async () => {
+    // 두 실행이 같은 원본을 쓴다. B가 원본을 읽는 동안 A의 요청이 거부되면, B의 요청은 거둔 권한으로 상류에 가지 않는다.
+    const held = heldReads(2, "expired-login");
+    const { up, relay, url } = await setup({ credential: held.credential });
+    const a = relay.grant(scope());
+    const b = relay.grant(scope());
+    const first = send(url, a.token, "/v1/rejected");
+    await held.started[0];
+    const second = send(url, b.token).then(
+      (response) => response.status,
+      () => "cut"
+    );
+    await held.started[1];
+    held.release(0);
+    expect((await first).status).toBe(503);
+    held.release(1);
+    expect(await second).not.toBe(200);
+    expect(up.seen.map((request) => request.url)).toEqual([
+      "/base/v1/rejected",
+    ]);
+  });
+});
+
 describe("login residue in an organization's product folder", () => {
   it("counts a regular file or folder as residue, and a link as residue unless it is the known link to the connection's login", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
