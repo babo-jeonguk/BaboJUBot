@@ -126,7 +126,7 @@ jobs:
       - name: Check test exit codes
         run: node scripts/check-test-exit-code.mjs
       - name: Check boot script isolation
-        run: node --test scripts/boot-check.test.mjs
+        run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
   test-server:
     name: tests / server
     needs: changes

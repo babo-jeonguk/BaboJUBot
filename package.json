@@ -12,7 +12,7 @@
     "dev": "pnpm --parallel --filter @babojubot/server --filter @babojubot/web run dev",
     "start": "pnpm --filter @babojubot/server run start",
     "build": "pnpm -r --if-present run build",
-    "test": "pnpm -r --if-present run test && node scripts/check-test-exit-code.mjs && node --test scripts/boot-check.test.mjs",
+    "test": "pnpm -r --if-present run test && node scripts/check-test-exit-code.mjs && node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs",
     "test:e2e": "pnpm --filter @babojubot/web run test:e2e",
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "eslint .",
