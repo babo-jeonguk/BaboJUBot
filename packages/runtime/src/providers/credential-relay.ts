@@ -5,6 +5,7 @@ import { lstat, readlink } from "node:fs/promises";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
+import { relayIdentityHeaders } from "./relay.ts";
 
 /**
  * 인증 중계(#148). 격리 실행의 프로그램은 연결의 로그인 원본 대신 실행 시도 하나에 묶인 권한(grant)을 받고, 모델 요청을 이 중계로 보낸다.
@@ -74,6 +75,9 @@ const droppedRequestHeaders = new Set([
   "x-forwarded-host",
   "x-forwarded-proto",
   "x-real-ip",
+  // 격리 실행의 실행 시도 중계(#149)가 덧붙이는 내부 신원. 상류에 조직·실행 시도 ID를 보내지 않는다.
+  relayIdentityHeaders.organization,
+  relayIdentityHeaders.run,
 ]);
 /** 프로그램에 돌려주지 않는 응답 header. 쿠키와 연결 관리다. */
 const droppedResponseHeaders = new Set([
