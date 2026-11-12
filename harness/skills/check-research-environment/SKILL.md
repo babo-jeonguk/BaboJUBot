@@ -24,7 +24,7 @@ Only short read-only probes, one attempt per item:
 - Version: `<name> --version` (for example `python3 --version`, `node --version`).
 - Python module: find it without importing it, because an import runs the module's own code and can write files:
   `python3 -B -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('<module>') else 1)"`
-  Use only the top-level name (`torch`, not `torch.nn`). Exit 0 means Confirmed (found, not imported); exit 1 means Absent. Never run `import <module>` to check.
+  Use only the top-level name (`torch`, not `torch.nn`). Exit 0 means Confirmed for "installed" only: the module was found, but whether it imports (its own dependencies load) was not checked, so its follow-up is that the first task imports it. Exit 1 means Absent. Never run `import <module>` to check.
 - CPU cores: `nproc`.
 - GPU: `nvidia-smi -L`. If it runs and lists no GPU, mark it Absent. If `nvidia-smi` itself is missing, that does not show there is no GPU; mark it Cannot tell.
 - Data or storage at a path you were given: `ls` or `df -h` on that path. With no path yet, mark it Cannot tell.
@@ -78,7 +78,7 @@ Checked: the Lead's run environment (this run). The workers' environment was not
 | Item | Requirement | Result | Checked where | How, evidence | Follow-up |
 | --- | --- | --- | --- | --- | --- |
 | python3 | 3.10 or later | Confirmed | Lead run environment | `python3 --version` -> Python 3.12.3 | - |
-| numpy | installed | Confirmed | Lead run environment | `find_spec('numpy')` found it (not imported) | - |
+| numpy | installed | Confirmed | Lead run environment | `find_spec('numpy')` found it (not imported) | a worker checks that it imports in the first task |
 | torch | installed | Absent | Lead run environment | `find_spec('torch')` found nothing | a worker installs it in their own virtual environment after approval |
 | CPU | 4 cores | Confirmed | Lead run environment | `nproc` -> 4 | - |
 | GPU | one CUDA GPU | Cannot tell | Lead run environment | `nvidia-smi` is not installed, so no answer | the Owner says whether a GPU is provided, or prepares one |
