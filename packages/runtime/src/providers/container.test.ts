@@ -876,7 +876,8 @@ describe.skipIf(process.platform === "win32")(
       last_refresh: new Date().toISOString(),
     };
     async function codexSetup(
-      login: string | null = JSON.stringify(realLogin)
+      login: string | null = JSON.stringify(realLogin),
+      command?: [string, ...string[]]
     ) {
       const env = await setup(relayProgram);
       const loginFolder = path.join(env.root, "providers/codex/login");
@@ -891,8 +892,8 @@ describe.skipIf(process.platform === "win32")(
           dataDir: env.root,
           container: env.container,
           relay: { upstream, verified: true },
-          // 격리를 끈 실행은 이 컴퓨터에서 재생 프로그램으로 돈다.
-          command: [
+          // 격리를 끈 실행과 로그인 갱신은 이 컴퓨터의 프로그램으로 돈다.
+          command: command ?? [
             process.execPath,
             fixture("replay.mjs"),
             fixture("codex-finish.synthetic.json"),
@@ -1066,6 +1067,123 @@ describe.skipIf(process.platform === "win32")(
         expect(
           await readFile(path.join(t.organization, "auth.json"), "utf8")
         ).toBe(before);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    /** Codex의 접근 토큰처럼 만료 시각이 든 JWT 모양 값. */
+    const jwt = (claims: Record<string, unknown>) =>
+      [{ alg: "none" }, claims]
+        .map((part) => Buffer.from(JSON.stringify(part)).toString("base64url"))
+        .join(".") + ".sig";
+    const expiringLogin = () =>
+      JSON.stringify({
+        tokens: {
+          ...realLogin.tokens,
+          access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 60 }),
+        },
+        last_refresh: new Date(Date.now() - 86_400_000).toISOString(),
+      });
+    async function refreshSetup(mode: "ok" | "slow" | "fail") {
+      const log = path.join(
+        await realpath(
+          await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
+        ),
+        "refreshes.log"
+      );
+      roots.push(path.dirname(log));
+      const t = await codexSetup(expiringLogin(), [
+        process.execPath,
+        fixture("codex-refresh.mjs"),
+        log,
+        mode,
+      ]);
+      const refreshes = async () =>
+        (await readFile(log, "utf8").catch(() => ""))
+          .split("\n")
+          .filter(Boolean).length;
+      return { ...t, refreshes };
+    }
+
+    it("refreshes a login about to expire once on this machine, before sending the model request with the new access token", async () => {
+      const t = await refreshSetup("ok");
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("completed");
+        expect(await t.refreshes()).toBe(1);
+        const login = JSON.parse(
+          await readFile(path.join(t.loginFolder, "auth.json"), "utf8")
+        ) as { tokens: Record<string, string> };
+        expect(login.tokens.refresh_token).toBe("rotated-refresh-1");
+        expect(t.network.seen[0]!.authorization).toBe(
+          `Bearer ${login.tokens.access_token}`
+        );
+        // 컨테이너는 새 로그인도 보지 못한다.
+        expect(JSON.stringify(await t.seen())).not.toContain(
+          login.tokens.access_token
+        );
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("refreshes once when runs of two organizations need the expiring login at the same time", async () => {
+      const t = await refreshSetup("slow");
+      try {
+        const other = t.input();
+        other.identity.organizationId = crypto.randomUUID();
+        other.context.organization.id = other.identity.organizationId;
+        const results = await Promise.all([
+          t.provider().adapter.execute(t.input(), control()),
+          t.provider().adapter.execute(other, control()),
+        ]);
+        expect(results.map((result) => result.stopReason)).toEqual([
+          "completed",
+          "completed",
+        ]);
+        expect(await t.refreshes()).toBe(1);
+        expect(t.network.seen).toHaveLength(2);
+        expect(t.network.seen[0]!.authorization).toBe(
+          t.network.seen[1]!.authorization
+        );
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("fails the run and the connection when the refresh fails, and nothing reaches the model", async () => {
+      const t = await refreshSetup("fail");
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("인증 중계");
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        expect(t.network.urls).toHaveLength(0);
+        const again = await t.provider().adapter.execute(t.input(), control());
+        expect(again.stopReason).toBe("failed");
+        expect(t.network.urls).toHaveLength(0);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it("does not refresh a login that is not about to expire", async () => {
+      const t = await refreshSetup("ok");
+      try {
+        await writeFile(
+          path.join(t.loginFolder, "auth.json"),
+          JSON.stringify({
+            ...realLogin,
+            tokens: {
+              ...realLogin.tokens,
+              access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+            },
+          })
+        );
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("completed");
+        expect(await t.refreshes()).toBe(0);
       } finally {
         await t.network.close();
       }
