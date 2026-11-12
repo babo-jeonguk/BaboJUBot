@@ -144,6 +144,11 @@ const shortName = async (target: string) => {
 
 /** 이 파일 시스템에 없는 기능. 없으면 그 사례는 적용 불가로 남긴다. */
 const lacks = await featureGaps();
+/** 링크를 만들 수 없는 파일 시스템(FAT32)이면 이 사례를 적용 불가로 남기고 건너뛴다. */
+const needsLinks = (context: TestContext, id: string) => {
+  if (lacks.symlink)
+    without(context, id, "n/a", `symlink 없음(${lacks.symlink})`);
+};
 /** 이 파일 시스템이 이름을 다루는 방식. */
 const can = {
   caseSensitive: false,
@@ -273,8 +278,7 @@ it("C05 refuses an absolute path that leaves the working folder part and comes b
 });
 
 it("C06 follows relative and absolute links to files and folders inside", async (context) => {
-  if (lacks.symlink)
-    without(context, "C06", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "C06");
   const { read, shared } = await world();
   await symlink("a.md", path.join(shared, "relative.md"));
   await symlink(
@@ -301,8 +305,7 @@ it("C06 follows relative and absolute links to files and folders inside", async 
 });
 
 it("C07 refuses links to an outside file, an outside folder, another organization and nothing", async (context) => {
-  if (lacks.symlink)
-    without(context, "C07", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "C07");
   const { read, shared, root, other } = await world();
   await symlink(path.join(root, "outside.md"), path.join(shared, "out.md"));
   await symlink(path.join(other, "a.md"), path.join(shared, "foreign.md"));
@@ -331,8 +334,7 @@ it("C07 refuses links to an outside file, an outside folder, another organizatio
 
 // 링크 뒤의 `..`는 운영체제가 여는 것과 같은 파일을 고른다(Linux·macOS는 링크가 가리키는 자리, Windows는 글자로 줄인 자리).
 it("C08 picks the file the operating system opens for `..` after a link", async (context) => {
-  if (lacks.symlink)
-    without(context, "C08", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "C08");
   const { got, shared } = await world();
   await mkdir(path.join(shared, "data", "deep"), { recursive: true });
   await writeFile(path.join(shared, "target.md"), "A:WRONG");
@@ -366,8 +368,7 @@ it("C08 picks the file the operating system opens for `..` after a link", async 
 });
 
 it("C09 names a folder link loop", async (context) => {
-  if (lacks.symlink)
-    without(context, "C09", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "C09");
   const { read, shared } = await world();
   await symlink("b", path.join(shared, "a"), "dir");
   await symlink("a", path.join(shared, "b"), "dir");
@@ -376,8 +377,7 @@ it("C09 names a folder link loop", async (context) => {
 });
 
 it("C10 follows a finite chain of self links and names more than 40 as a loop", async (context) => {
-  if (lacks.symlink)
-    without(context, "C10", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "C10");
   const { read, shared } = await world();
   await symlink(".", path.join(shared, "self"), "dir");
   const through = (count: number) =>
@@ -645,8 +645,7 @@ it("C17 refuses a Unix socket", async (context) => {
 it("C18 refuses a device file and a link to a device", async (context) => {
   const { read, shared } = await world();
   if (windows) {
-    if (lacks.symlink)
-      without(context, "C18", "n/a", `symlink 없음(${lacks.symlink})`);
+    needsLinks(context, "C18");
     await symlink("\\\\.\\NUL", path.join(shared, "device.md"));
     expect(await read("device.md")).toEqual(refusal("path_outside_folder"));
     note(
@@ -1019,8 +1018,7 @@ it("C32 registers a \\\\?\\UNC\\ path to the working folder on a share, and trea
 
 // F1: 작업 폴더를 가리키는 다른 절대 링크(별칭)를 거친 절대 경로는 이름 대조가 맞지 않아 밖으로 본다. 안전한 오거부다.
 it("C33 treats an absolute path through another link to the working folder as outside", async (context) => {
-  if (lacks.symlink)
-    without(context, "C33", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "C33");
   const { read, root, shared } = await world();
   await symlink(shared, path.join(root, "alias"), "dir");
   expect(await osOpen(path.join(root, "alias", "a.md"))).toBe("A:a.md");
@@ -1192,9 +1190,43 @@ it("C36 matches the working folder part with its exact case and names inside the
       details.push("대소문자 구분 폴더 확인");
     } else
       details.push(
-        `대소문자 구분 폴더를 만들지 못함: ${set.output.split("\n")[0]}`
+        `대소문자 구분 폴더: 적용 불가(${set.output.split("\n")[0]})`
       );
   }
+  // F4 그대로: 대소문자를 가리는 부모 폴더에 `organizations`와 `Organizations`가 따로 있으면 대소문자만 다른 표기는
+  // 다른 폴더다. 그 폴더의 파일은 운영체제가 열어도 작업 폴더 밖으로 거부한다.
+  const parent = await realScratch("bjc-cs-");
+  const sensitive = windows
+    ? await run("fsutil.exe", [
+        "file",
+        "setCaseSensitiveInfo",
+        parent,
+        "enable",
+      ])
+    : { ok: can.caseSensitive, output: "대소문자 무시 볼륨" };
+  if (sensitive.ok) {
+    const mine = path.join(parent, "organizations", A, "shared");
+    const twin = path.join(parent, "Organizations", A, "shared");
+    await mkdir(mine, { recursive: true });
+    await mkdir(twin, { recursive: true });
+    await writeFile(
+      path.join(mine, "..", "workspace-identity.json"),
+      JSON.stringify({ version: 1, organizationId: A })
+    );
+    await writeFile(path.join(mine, "a.md"), "A:a.md");
+    await writeFile(path.join(twin, "a.md"), outsideBytes);
+    expect(await osOpen(path.join(twin, "a.md"))).toBe(outsideBytes);
+    expect(
+      await new Workspaces(parent, null as never).readArtifact(
+        A,
+        path.join(twin, "a.md")
+      )
+    ).toEqual(refusal("path_outside_folder"));
+    details.push("대소문자 구분 부모 폴더의 다른 대소문자 폴더 거부(F4)");
+  } else
+    details.push(
+      `F4 대소문자 구분 부모 폴더: 적용 불가(${sensitive.output.split("\n")[0]})`
+    );
   note(
     context,
     "C36",
@@ -1204,8 +1236,7 @@ it("C36 matches the working folder part with its exact case and names inside the
 });
 
 it("C37 refuses when a parent folder is renamed away and a link leading out takes its name while walking", async (context) => {
-  if (lacks.symlink)
-    without(context, "C37", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "C37");
   const { organizations, shared, root } = await world();
   const result = await injected(organizations, ["dir", "a.md"].join(path.sep), {
     on: "chdir",
@@ -1228,8 +1259,7 @@ it("C37 refuses when a parent folder is renamed away and a link leading out take
 
 // F3: 링크 대상의 끝 구분자·`.`·`..` 표기도 운영체제와 같은 파일을 고르거나 함께 거부한다.
 it("F3 treats the spelling at the end of a link target the way the operating system does", async (context) => {
-  if (lacks.symlink)
-    without(context, "F3", "n/a", `symlink 없음(${lacks.symlink})`);
+  needsLinks(context, "F3");
   const { got, shared } = await world();
   const sep = path.sep;
   await mkdir(path.join(shared, "dir", "sub"));

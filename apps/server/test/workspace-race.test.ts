@@ -1,9 +1,8 @@
-import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
-import { featureGaps, filesBase, remove } from "./files-volume.ts";
+import { featureGaps, filesBase, remove, runPinned } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { pinnedReader, readerExit, Workspaces } from "../src/workspace.ts";
+import { readerExit, Workspaces } from "../src/workspace.ts";
 
 // 링크로 바꿔치는 시험은 링크를 만들 수 없는 파일 시스템(FAT32)에서 건너뛴다. 폴더째 옮겨 바꾸는 시험은 그대로 돈다.
 const lacks = await featureGaps();
@@ -68,43 +67,16 @@ const interrupt = `{
 `;
 /** 거부한 시도의 종료 코드. 바꿔치기는 알려진 거부로만 끝나야 하며, 예상하지 못한 오류(`failed`)나 잡히지 않은 예외가 아니다. */
 const exits: unknown[] = [];
-/** 읽는 프로세스의 출력은 실제 위치(JSON 한 줄) 다음에 파일 내용이다. */
-const content = (stdout: Buffer) =>
-  stdout.subarray(stdout.indexOf(0x0a) + 1).toString("utf8");
 /** 한 번 읽어 본 결과. 끝난 코드(성공이면 0)와 읽은 내용이다. */
-const run = (
+const run = async (
   cwd: string,
   preload: string,
   plan: Record<string, unknown>,
   requested = "dir/a.md"
-) =>
-  new Promise<{ code: unknown; content: string | null }>((resolve) => {
-    const shared = path.join(cwd, "organization-one", "shared");
-    execFile(
-      process.execPath,
-      [
-        "-e",
-        preload + pinnedReader,
-        JSON.stringify([1000, "organization-one", requested, shared, shared]),
-      ],
-      {
-        cwd,
-        encoding: "buffer",
-        env: {
-          ...(process.env.SystemRoot
-            ? { SystemRoot: process.env.SystemRoot }
-            : {}),
-          PLAN: JSON.stringify(plan),
-        },
-      },
-      (error, stdout) =>
-        resolve(
-          error
-            ? { code: error.code, content: null }
-            : { code: 0, content: content(stdout) }
-        )
-    );
-  });
+) => {
+  const { code, bytes } = await runPinned(cwd, preload, { requested, plan });
+  return { code, content: bytes?.toString("utf8") ?? null };
+};
 const attempt = async (cwd: string, plan: Record<string, unknown>) => {
   const result = await run(cwd, interrupt, plan);
   if (result.code !== 0) exits.push(result.code);
