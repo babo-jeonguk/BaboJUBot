@@ -1,0 +1,117 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { parse } from "yaml";
+
+const workflow = parse(
+  readFileSync(
+    new URL("../.github/workflows/scaffold.yml", import.meta.url),
+    "utf8"
+  )
+);
+const suites = ["unit", "runtime", "db", "server", "opencode"];
+const gate = workflow.jobs.test;
+const step = gate.steps.find(
+  (candidate) => candidate.name === "Check test results"
+);
+
+// Replay the reported boundary: a legacy matrix summary says success even though
+// an individual test did not succeed. Resolve the workflow's actual env bindings
+// and execute its actual gate shell; do not substitute a second gate implementation.
+function runGate({ code = "true", changes = "success", results = {} } = {}) {
+  const needs = {
+    changes: { result: changes, outputs: { code } },
+    "test-packages": { result: code === "false" ? "skipped" : "success" },
+    ...Object.fromEntries(
+      suites.map((suite) => [
+        `test-${suite}`,
+        {
+          result: results[suite] ?? (code === "false" ? "skipped" : "success"),
+        },
+      ])
+    ),
+  };
+  const env = { PATH: process.env.PATH };
+  for (const [name, expression] of Object.entries(step.env)) {
+    const match = expression.match(
+      /^\$\{\{\s*needs\.([\w-]+)\.(result|outputs\.code)\s*\}\}$/
+    );
+    assert.ok(match, `Unsupported gate binding: ${name}=${expression}`);
+    const value = match[2]
+      .split(".")
+      .reduce((object, key) => object?.[key], needs[match[1]]);
+    env[name] = value ?? "";
+  }
+  const result = spawnSync(
+    "bash",
+    ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step.run],
+    { env, encoding: "utf8", timeout: 5_000 }
+  );
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  return result;
+}
+
+function assertRejected(input) {
+  const result = runGate(input);
+  assert.notEqual(
+    result.status,
+    0,
+    `Gate accepted unsafe results: ${result.stdout}`
+  );
+}
+
+test("each mandatory suite has its own job result and direct gate dependency", () => {
+  assert.equal(gate.name, "ci / test");
+  assert.equal(gate.if, "always()");
+  assert.ok(gate.needs.includes("changes"));
+  for (const suite of suites) {
+    const id = `test-${suite}`;
+    assert.ok(workflow.jobs[id], `Missing independent job ${id}`);
+    assert.equal(workflow.jobs[id].strategy?.matrix, undefined);
+    assert.ok(gate.needs.includes(id), `Gate must directly need ${id}`);
+    assert.ok(
+      Object.values(step.env).some((binding) =>
+        binding.includes(`needs.${id}.result`)
+      ),
+      `Gate must receive ${id}'s own result`
+    );
+  }
+});
+
+test("accepts code only when all five tests succeeded", () => {
+  assert.equal(runGate().status, 0);
+});
+
+test("accepts Markdown-only changes when all five tests were skipped", () => {
+  assert.equal(runGate({ code: "false" }).status, 0);
+});
+
+for (const suite of suites) {
+  for (const result of ["failure", "cancelled", "skipped", ""]) {
+    test(`rejects ${suite}=${result || "missing"} despite a successful matrix summary`, () => {
+      assertRejected({ results: { [suite]: result } });
+    });
+  }
+  for (const result of ["success", "failure", "cancelled", ""]) {
+    test(`rejects Markdown-only ${suite}=${result || "missing"} despite a skipped matrix summary`, () => {
+      assertRejected({ code: "false", results: { [suite]: result } });
+    });
+  }
+}
+
+for (const changes of ["failure", "cancelled", "skipped", ""]) {
+  test(`rejects changes=${changes || "missing"}`, () => {
+    assertRejected({ changes });
+    assertRejected({ changes, code: "false" });
+  });
+}
+
+for (const code of ["", "unknown"]) {
+  test(`rejects code=${code || "missing"}`, () => assertRejected({ code }));
+}
+
+test("rejects a partial rerun where one test recovered but another still failed", () => {
+  assertRejected({ results: { unit: "success", runtime: "failure" } });
+});
