@@ -22,11 +22,14 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
+  type MouseEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { Link, Navigate, useMatch } from "react-router";
 import {
@@ -40,6 +43,7 @@ import {
   approvalKindLabel,
   ApprovalStatusBadge,
   avatarStyle,
+  focusLost,
   formatTime,
   Loading,
   LoadError,
@@ -47,33 +51,53 @@ import {
 } from "./ui.tsx";
 
 type Scope = "all" | "organization";
+/** 패널(붙은 패널·drawer)의 id. 열려 있는 동안 여는 버튼의 `aria-controls`가 가리킨다(닫히면 DOM에 없다). */
+export const inboxPanelId = "inbox-panel";
 type Panel = {
   open: boolean;
   scope: Scope;
-  /** 패널을 연다. 조직을 주면 그 조직 범위로 연다. */
-  show: (organizationId?: string) => void;
-  toggle: () => void;
+  /**
+   * 패널을 연다. 조직을 주면 그 조직 범위로 연다. 여는 버튼(`trigger`)을 주면 붙은 패널을 닫을 때 그 버튼으로 포커스를
+   * 돌린다. 주지 않으면 그때 포커스가 있던 요소로 돌린다.
+   */
+  show: (organizationId?: string, trigger?: HTMLElement) => void;
+  toggle: (trigger?: HTMLElement) => void;
   close: () => void;
   setScope: (scope: Scope) => void;
+  /** 붙은 패널을 닫을 때 포커스를 돌릴 요소. */
+  opener: () => HTMLElement | null;
 };
 const PanelContext = createContext<Panel | null>(null);
 
 export function InboxPanelProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [scope, setScope] = useState<Scope>("all");
+  const opener = useRef<HTMLElement | null>(null);
   // 여닫는 함수는 바뀌지 않는다. 열기 효과(`InboxRedirect`)가 상태 변화마다 다시 돌지 않게 한다.
-  const actions = useMemo(
-    () => ({
-      show: (organizationId?: string) => {
+  const actions = useMemo(() => {
+    const remember = (trigger?: HTMLElement) => {
+      const active = document.activeElement;
+      opener.current =
+        trigger ??
+        (active instanceof HTMLElement && active !== document.body
+          ? active
+          : null);
+    };
+    return {
+      show: (organizationId?: string, trigger?: HTMLElement) => {
+        remember(trigger);
         setScope(organizationId ? "organization" : "all");
         setOpen(true);
       },
-      toggle: () => setOpen((o) => !o),
+      toggle: (trigger?: HTMLElement) => {
+        remember(trigger);
+        setOpen((o) => !o);
+      },
       close: () => setOpen(false),
       setScope,
-    }),
-    []
-  );
+      opener: () => opener.current,
+    };
+  }, []);
   const panel = useMemo<Panel>(
     () => ({ open, scope, ...actions }),
     [open, scope, actions]
@@ -87,6 +111,28 @@ export function useInboxPanel() {
   const panel = useContext(PanelContext);
   if (!panel) throw new Error("InboxPanelProvider가 없습니다");
   return panel;
+}
+
+/**
+ * Inbox 패널을 여는 버튼의 속성(`onClick`·`aria-expanded`·`aria-controls`). 누른 버튼을 연 버튼으로 기억해 붙은 패널을
+ * 닫을 때 그리로 포커스를 돌린다. `aria-controls`는 패널이 DOM에 있는 동안(열려 있을 때)만 가리키고,
+ * `data-inbox-trigger` 표시는 닫혀 있어도 남아 다른 보이는 Inbox 버튼을 찾는 데 쓴다. 조직을 주면 그 조직 범위로 열고,
+ * `toggle`이면 열려 있을 때 닫는다.
+ */
+export function useInboxTrigger({
+  organizationId,
+  toggle = false,
+}: { organizationId?: string; toggle?: boolean } = {}) {
+  const panel = useInboxPanel();
+  return {
+    onClick: (e: MouseEvent<HTMLElement>) =>
+      toggle
+        ? panel.toggle(e.currentTarget)
+        : panel.show(organizationId, e.currentTarget),
+    "aria-expanded": panel.open,
+    "aria-controls": panel.open ? inboxPanelId : undefined,
+    "data-inbox-trigger": "",
+  };
 }
 
 /** 예전 Inbox 주소. 패널을 열고 홈으로 간다. */
@@ -153,15 +199,7 @@ export function InboxPanel() {
     if (wasDocked.current && !isDocked) close();
     wasDocked.current = isDocked;
   }, [isDocked, close]);
-  if (isDocked)
-    return panel.open ? (
-      <aside
-        aria-label="Inbox"
-        className="animate-slide-in-right flex w-[340px] shrink-0 flex-col border-l border-slate-200/70 bg-white/80 backdrop-blur"
-      >
-        <InboxContent onPick={() => {}} inDialog={false} />
-      </aside>
-    ) : null;
+  if (isDocked) return panel.open ? <DockedInbox /> : null;
   return (
     <Dialog.Root
       open={panel.open}
@@ -170,23 +208,68 @@ export function InboxPanel() {
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-slate-950/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
         <Dialog.Content
+          id={inboxPanelId}
           aria-describedby={undefined}
+          // Radix는 닫을 때 Dialog.Trigger로 포커스를 돌리는데 여는 버튼이 여럿이라 Trigger를 쓰지 않는다. 그래서 연 버튼으로
+          // 직접 돌린다. 고른 항목이 다른 화면으로 옮겼으면 새 화면 제목이 이미 포커스를 받았으므로 건드리지 않는다.
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            if (focusLost()) focusOpener(panel.opener());
+          }}
           className="fixed inset-y-0 right-0 z-50 flex w-[340px] max-w-full flex-col bg-white shadow-pop data-[state=closed]:animate-slide-out-right data-[state=open]:animate-slide-in-right"
         >
-          <InboxContent onPick={panel.close} inDialog />
+          <InboxContent onPick={panel.close} />
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
   );
 }
 
+/** 패널을 연 버튼으로 포커스를 돌린다. 그 버튼이 사라졌거나 숨었으면 보이는 다른 Inbox 버튼으로 돌린다. */
+function focusOpener(opener: HTMLElement | null) {
+  [opener, ...document.querySelectorAll<HTMLElement>("[data-inbox-trigger]")]
+    .find((el) => el?.isConnected && el.checkVisibility())
+    ?.focus();
+}
+
+/**
+ * 1280px 이상에서 본문 옆에 붙는 패널(#151 F7). 모달이 아니라서 포커스를 가두지 않는다. 열면 패널 제목으로 포커스를
+ * 옮기고(본문 뒤 DOM이라 Tab으로는 멀다), 패널 안에 포커스가 있던 채로 닫히면 연 버튼으로 돌린다.
+ */
+function DockedInbox() {
+  const { opener } = useInboxPanel();
+  const aside = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => heading.current?.focus(), []);
+  // 패널이 DOM에서 빠지기 전에 포커스 위치를 본다(layout effect 정리는 DOM 제거보다 먼저 돈다).
+  useLayoutEffect(() => {
+    const panel = aside.current!;
+    return () => {
+      if (!focusLost() && !panel.contains(document.activeElement)) return;
+      focusOpener(opener());
+    };
+  }, [opener]);
+  return (
+    <aside
+      ref={aside}
+      id={inboxPanelId}
+      aria-label="Inbox"
+      className="animate-slide-in-right flex w-[340px] shrink-0 flex-col border-l border-slate-200/70 bg-white/80 backdrop-blur"
+    >
+      <InboxContent onPick={() => {}} heading={heading} />
+    </aside>
+  );
+}
+
 function InboxContent({
   onPick,
-  inDialog,
+  heading,
 }: {
   onPick: () => void;
-  inDialog: boolean;
+  /** 붙은 패널의 제목. 없으면 drawer라서 dialog 제목을 쓴다. */
+  heading?: RefObject<HTMLHeadingElement | null>;
 }) {
+  const inDialog = !heading;
   const panel = useInboxPanel();
   const inbox = useInbox();
   // Inbox 상세도 그 항목의 조직을 현재 조직으로 본다.
@@ -221,7 +304,13 @@ function InboxContent({
             Inbox
           </Dialog.Title>
         ) : (
-          <h2 className="flex-1 text-base font-semibold">Inbox</h2>
+          <h2
+            ref={heading}
+            tabIndex={-1}
+            className="flex-1 text-base font-semibold outline-none"
+          >
+            Inbox
+          </h2>
         )}
         <button
           onClick={panel.close}

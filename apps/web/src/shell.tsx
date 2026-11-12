@@ -3,8 +3,20 @@
 import type { Organization } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { useState, type ReactNode } from "react";
-import { Link, Outlet, useLocation, useMatch } from "react-router";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import {
+  Link,
+  Outlet,
+  useLocation,
+  useMatch,
+  useNavigationType,
+} from "react-router";
 import {
   useArtifact,
   useOrganization,
@@ -13,10 +25,16 @@ import {
   useTask,
 } from "./api.ts";
 import { useOpenCreateOrganization } from "./create-organization.tsx";
-import { InboxPanel, useAttention, useInboxPanel } from "./inbox.tsx";
+import {
+  InboxPanel,
+  useAttention,
+  useInboxPanel,
+  useInboxTrigger,
+} from "./inbox.tsx";
 import {
   abbr,
   avatarStyle,
+  focusLost,
   StageBadge,
   Tip,
   stageLabel,
@@ -86,9 +104,14 @@ function useCurrent() {
 }
 
 export function Shell() {
-  const { orgId } = useCurrent();
+  const { orgId, home, settings } = useCurrent();
   const onInboxDetail = useMatch("/inbox/*") !== null;
   const [sheet, setSheet] = useState(false);
+  const main = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const sheetOpener = useRef<HTMLButtonElement>(null);
+  const pathname = useLocation().pathname;
+  useRouteFocus(pathname, content, main);
   return (
     <Tooltip.Provider delayDuration={150}>
       <div className="flex h-screen overflow-hidden">
@@ -101,11 +124,19 @@ export function Shell() {
             <Dialog.Overlay className="fixed inset-0 z-40 bg-slate-950/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
             <Dialog.Content
               className="fixed inset-y-0 left-0 z-50 flex shadow-pop data-[state=closed]:animate-slide-out-left data-[state=open]:animate-slide-in-left"
-              onClick={(e) =>
-                (e.target as HTMLElement).closest(
+              // Radix는 Dialog.Trigger로 포커스를 돌리는데 `탐색 열기`가 Root 밖이라 직접 돌린다. 링크로 다른 화면에 가면
+              // 새 화면 제목이 이미 포커스를 받았으므로 그대로 둔다(같은 화면을 다시 고르면 포커스를 잃어 `탐색 열기`로).
+              onCloseAutoFocus={(e) => {
+                e.preventDefault();
+                if (focusLost()) sheetOpener.current?.focus();
+              }}
+              onClick={(e) => {
+                const closer = (e.target as HTMLElement).closest(
                   "a, button[data-closes-sheet]"
-                ) && setSheet(false)
-              }
+                );
+                if (!closer) return;
+                setSheet(false);
+              }}
             >
               <Dialog.Title className="sr-only">탐색</Dialog.Title>
               <Rail />
@@ -114,9 +145,29 @@ export function Shell() {
           </Dialog.Portal>
         </Dialog.Root>
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-auto pb-20 has-[[data-fill-height]]:pb-0">
+        {orgId ? (
+          <OrganizationTitle orgId={orgId} />
+        ) : (
+          <DocumentTitle
+            parts={
+              home
+                ? ["홈"]
+                : settings
+                  ? ["전역 설정"]
+                  : onInboxDetail
+                    ? ["Inbox"]
+                    : []
+            }
+          />
+        )}
+        <main
+          ref={main}
+          tabIndex={-1}
+          className="flex min-w-0 flex-1 flex-col overflow-auto pb-20 outline-none has-[[data-fill-height]]:pb-0"
+        >
           <div className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2 backdrop-blur md:hidden">
             <button
+              ref={sheetOpener}
               aria-label="탐색 열기"
               onClick={() => setSheet(true)}
               className="btn-ghost px-2"
@@ -140,7 +191,8 @@ export function Shell() {
             </div>
           )}
           <div
-            key={useLocation().pathname}
+            key={pathname}
+            ref={content}
             className="animate-fade-up flex flex-1 flex-col has-[[data-fill-height]]:min-h-0"
           >
             <Outlet />
@@ -149,6 +201,76 @@ export function Shell() {
         <InboxPanel />
       </div>
     </Tooltip.Provider>
+  );
+}
+
+/**
+ * 링크·뒤로 가기로 화면이 바뀌면 새 화면의 h1(없으면 `main`)에 포커스를 둔다(#151 F2). 화면이 아직 불러오는 중이면
+ * h1이 나타날 때까지 기다리고, 불러오기가 끝났는데 h1이 없으면 `main`에 둔다. 새 화면이 스스로 포커스를 정했거나
+ * (`autoFocus` 등) 그 사이 사용자가 누르거나 키를 치면 손대지 않는다. 같은 화면의 데이터 갱신에는 반응하지 않는다.
+ * 주소 바꾸기(`replace`)는 사용자가 옮긴 이동이 아니라서 건너뛴다.
+ */
+function useRouteFocus(
+  pathname: string,
+  content: RefObject<HTMLElement | null>,
+  main: RefObject<HTMLElement | null>
+) {
+  const navigation = useNavigationType();
+  const last = useRef(pathname);
+  useEffect(() => {
+    if (last.current === pathname) return;
+    last.current = pathname;
+    const root = content.current;
+    if (navigation === "REPLACE" || !root) return;
+    let done = false;
+    const settle = () => {
+      if (done) return;
+      const active = document.activeElement;
+      if (active && active !== document.body && root.contains(active))
+        return stop();
+      const heading = root.querySelector("h1");
+      if (heading) {
+        if (!heading.hasAttribute("tabindex"))
+          heading.setAttribute("tabindex", "-1");
+        heading.focus();
+        return stop();
+      }
+      if (root.querySelector('[aria-busy="true"]')) return;
+      main.current?.focus();
+      stop();
+    };
+    const observer = new MutationObserver(settle);
+    const stop = () => {
+      done = true;
+      observer.disconnect();
+      document.removeEventListener("pointerdown", stop, true);
+      document.removeEventListener("keydown", stop, true);
+    };
+    observer.observe(root, { childList: true, subtree: true });
+    document.addEventListener("pointerdown", stop, true);
+    document.addEventListener("keydown", stop, true);
+    settle();
+    return stop;
+  }, [pathname, navigation, content, main]);
+}
+
+/** 페이지 제목. 자세한 것부터 적고 끝에 제품 이름을 둔다(예: `대시보드 · 조직 이름 · BaboJUBot`). */
+function DocumentTitle({ parts }: { parts: string[] }) {
+  const title = [...parts, "BaboJUBot"].join(" · ");
+  useEffect(() => {
+    document.title = title;
+  }, [title]);
+  return null;
+}
+
+/** 조직 화면의 페이지 제목. 조직 정보를 불러오기 전에는 조직 이름을 비워 앞 조직 이름이 남지 않게 한다. */
+function OrganizationTitle({ orgId }: { orgId: string }) {
+  const { trail, loaded } = useTrail(orgId);
+  const screens = trail.slice(1).map((c) => c.label);
+  return (
+    <DocumentTitle
+      parts={[...screens.reverse(), ...(loaded ? [trail[0]!.label] : [])]}
+    />
   );
 }
 
@@ -203,13 +325,12 @@ function InboxButton({
   className: string;
   children?: ReactNode;
 }) {
-  const panel = useInboxPanel();
+  const trigger = useInboxTrigger({ toggle: true });
   const attention = useAttention();
   return (
     <button
-      onClick={panel.toggle}
+      {...trigger}
       data-closes-sheet
-      aria-expanded={panel.open}
       aria-label={`Inbox · ${attentionText(attention)}`}
       className={className}
     >
@@ -353,7 +474,7 @@ function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
 function Sections({ orgId }: { orgId: string }) {
   const { section } = useCurrent();
   const org = useOrganization(orgId);
-  const panel = useInboxPanel();
+  const inboxTrigger = useInboxTrigger({ organizationId: orgId });
   const attention = useAttention(orgId);
   const [shut, setShut] = useState<Record<string, boolean>>({});
   if (!org.data) return null;
@@ -369,7 +490,7 @@ function Sections({ orgId }: { orgId: string }) {
         <div className="mt-2 flex items-center justify-between gap-2">
           <StageBadge stage={org.data.stage} />
           <button
-            onClick={() => panel.show(orgId)}
+            {...inboxTrigger}
             data-closes-sheet
             className="text-xs font-medium text-amber-700 transition hover:text-amber-900"
             aria-label={`이 조직의 Inbox 열기 · ${attentionText(attention)}`}
@@ -427,8 +548,8 @@ function Sections({ orgId }: { orgId: string }) {
   );
 }
 
-/** 조직 › 섹션 › 상세. 앞 단계는 링크. 실행 시도는 에이전트 아래에, 산출물은 연결 작업 아래에 둔다. */
-function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
+/** 조직 › 섹션 › 상세. 실행 시도는 에이전트 아래에, 산출물은 연결 작업 아래에 둔다. 마지막 단계는 링크가 아니다. */
+function useTrail(orgId: string) {
   const { section } = useCurrent();
   const org = useOrganization(orgId);
   const agentOverview = useMatch("/orgs/:orgId/agents/:agentId");
@@ -467,6 +588,12 @@ function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
     });
   if (artifactMatch) trail.push({ label: artifact.data?.title ?? "산출물" });
   trail[trail.length - 1] = { label: trail[trail.length - 1]!.label };
+  return { trail, loaded: org.data !== undefined };
+}
+
+/** 조직 › 섹션 › 상세 위치. 앞 단계는 링크. */
+function Crumbs({ orgId, compact }: { orgId: string; compact?: boolean }) {
+  const { trail } = useTrail(orgId);
   if (compact) return <>{trail.map((c) => c.label).join(" › ")}</>;
   return (
     <nav aria-label="위치">
