@@ -1357,6 +1357,157 @@ describe.skipIf(process.platform === "win32")(
 );
 
 describe.skipIf(process.platform === "win32")(
+  "an isolated Antigravity attempt through the credential relay (#148)",
+  () => {
+    const simulator = [process.execPath, fixture("antigravity-simulator.mjs")];
+    /** 연결의 로그인 원본(합성 값). 키링 없는 agy의 로그인 파일 형식이다. */
+    const realLogin = (fields: Record<string, unknown> = {}) => ({
+      token: {
+        access_token: "real-agy-access",
+        token_type: "Bearer",
+        refresh_token: "real-agy-refresh",
+        expiry: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+      auth_method: "consumer",
+      ...fields,
+    });
+    async function agySetup(login: unknown = realLogin()) {
+      const env = await setup({ agy: simulator });
+      const loginFolder = path.join(env.root, "providers/antigravity/login");
+      await mkdir(loginFolder, { recursive: true });
+      const original = path.join(loginFolder, "antigravity-oauth-token");
+      if (login !== null)
+        await writeFile(original, JSON.stringify(login), { mode: 0o600 });
+      let provider!: ReturnType<typeof createAntigravityProvider>;
+      const network = await relayed("antigravity", (upstream) => {
+        provider = createAntigravityProvider({
+          dataDir: env.root,
+          container: env.container,
+          relay: { upstream, verified: true },
+          // 격리를 끈 실행과 로그인 갱신(`agy models`)은 이 컴퓨터의 프로그램으로 돈다.
+          command: [process.execPath, fixture("antigravity-simulator.mjs")],
+        });
+        return provider.credentialRelay!;
+      });
+      const organization = path.join(
+        env.root,
+        "providers/antigravity/organizations",
+        env.org
+      );
+      const loginAt = path.join(
+        organization,
+        ".gemini/antigravity-cli/antigravity-oauth-token"
+      );
+      const input = () => {
+        const request = env.isolated();
+        request.access = { ...request.access, toolsBaseUrl: network.tools };
+        return request;
+      };
+      return {
+        env,
+        network,
+        provider: () => provider,
+        input,
+        original,
+        loginAt,
+      };
+    }
+
+    it("lets the program reach the model only through the relay, which puts the connection's access token in place of the run's grant", async () => {
+      const t = await agySetup();
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("completed");
+        expect(t.network.urls).toEqual([
+          "/v1internal:streamGenerateContent?alt=sse",
+        ]);
+        expect(t.network.seen[0]!.authorization).toBe("Bearer real-agy-access");
+        const run = runCall(await t.env.calls());
+        expect(JSON.stringify(run)).not.toMatch(
+          /real-agy-access|real-agy-refresh/
+        );
+        expect(run.env?.CLOUD_CODE_URL).toBe(
+          `${t.network.tools}/api/relay/antigravity`
+        );
+        // 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 있고 이 컨테이너에만 로그인 자리 위에 읽기로 들어간다.
+        const mount = valuesOf(run.args, "--mount").find((spec) =>
+          spec.includes(`target=${t.loginAt},`)
+        );
+        expect(mount).toMatch(/,readonly$/);
+        await expect(
+          stat(/source=([^,]+)/.exec(mount!)![1]!)
+        ).rejects.toThrow();
+        // 조직 폴더에는 권한 없는 자리 표시만 남는다.
+        const placeholder = JSON.parse(await readFile(t.loginAt, "utf8")) as {
+          token: Record<string, string>;
+        };
+        expect(placeholder.token.access_token).toBe("");
+        expect(placeholder.token.refresh_token).toBeUndefined();
+      } finally {
+        await t.network.close();
+      }
+    }, 20000);
+
+    it("ends the run as failed with the reason when the relay cannot read the login", async () => {
+      const t = await agySetup(null);
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("인증 중계");
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        expect(t.network.urls).toHaveLength(0);
+      } finally {
+        await t.network.close();
+      }
+    }, 20000);
+
+    it("refreshes a login about to expire with agy on this machine before the relay uses it", async () => {
+      const t = await agySetup(
+        realLogin({
+          expired: true,
+          token: {
+            access_token: "old-agy-access",
+            token_type: "Bearer",
+            refresh_token: "real-agy-refresh",
+            expiry: new Date(Date.now() - 60_000).toISOString(),
+          },
+        })
+      );
+      try {
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("completed");
+        const login = JSON.parse(await readFile(t.original, "utf8")) as {
+          token: Record<string, string>;
+          refreshed: number;
+        };
+        expect(login.refreshed).toBe(1);
+        expect(login.token.access_token).not.toBe("old-agy-access");
+        expect(t.network.seen[0]!.authorization).toBe(
+          `Bearer ${login.token.access_token}`
+        );
+      } finally {
+        await t.network.close();
+      }
+    }, 20000);
+
+    it("a run with isolation off does not take the placeholder as the connection's login", async () => {
+      const t = await agySetup();
+      try {
+        const before = await readFile(t.original, "utf8");
+        await t.provider().adapter.execute(t.input(), control());
+        const host = t.input();
+        delete host.execution;
+        await t.provider().adapter.execute(host, control());
+        expect(await readFile(t.original, "utf8")).toBe(before);
+        expect(await readFile(t.loginAt, "utf8")).toBe(before);
+      } finally {
+        await t.network.close();
+      }
+    }, 20000);
+  }
+);
+
+describe.skipIf(process.platform === "win32")(
   "connections behind the credential relay (#148)",
   () => {
     it.each([
@@ -1367,6 +1518,12 @@ describe.skipIf(process.platform === "win32")(
         "opencode",
         "opencode-simulator.mjs",
         createOpenCodeProvider,
+      ],
+      [
+        "Antigravity",
+        "agy",
+        "antigravity-simulator.mjs",
+        createAntigravityProvider,
       ],
     ] as const)(
       "give an isolated %s run no direct way to the provider: its model traffic leaves only through the credential relay",
