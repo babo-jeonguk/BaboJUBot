@@ -9,6 +9,7 @@ import { test as base } from "@playwright/test";
 // 빈 상태나 전체 개수처럼 서버 전체를 보는 검사는 이 fixture가 테스트마다 띄우는 자기 서버에서 한다.
 // 서버는 임시 embedded Postgres와 임시 제품 폴더를 쓰고, 빈 port를 골라 빌드된 화면(apps/web/dist)과 API를 한 origin으로 낸다.
 // 화면 빌드는 공용 설정의 webServer(`vite build`)가 테스트 전에 끝낸다.
+// 서버 띄우기·멈추기는 서버 진입점 시험(apps/server/test/main.test.ts의 startMain·stopMain)과 같은 방식이다.
 
 const main = fileURLToPath(
   new URL("../../../server/src/main.ts", import.meta.url)
@@ -19,6 +20,7 @@ const shutdownMs = 10_000;
 const exitWaitMs = shutdownMs + 5_000;
 const killWaitMs = 5_000;
 
+type Exit = { code: number | null; signal: string | null };
 type IsolatedServer = { url: string; stop: () => Promise<void> };
 
 /**
@@ -52,6 +54,7 @@ async function startIsolatedServer(): Promise<IsolatedServer> {
       BABOJUBOT_EPHEMERAL_DB: "1",
       BABOJUBOT_HOME: home,
       BABOJUBOT_SHUTDOWN_TIMEOUT_MS: String(shutdownMs),
+      // 조직 생성만 보므로 기본 가짜 프로바이더 하나면 된다. 공용 서버의 프로바이더 고르기용 설정은 넘기지 않는다.
       BABOJUBOT_FAKE_PROVIDERS: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -63,12 +66,10 @@ async function startIsolatedServer(): Promise<IsolatedServer> {
   const output = () =>
     `stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`;
   // 종료 관찰은 시작을 기다리기 전에 붙인다. 시작 전에 끝나도 놓치지 않는다.
-  const exited = new Promise<{ code: number | null; signal: string | null }>(
-    (resolve, reject) => {
-      child.once("exit", (code, signal) => resolve({ code, signal }));
-      child.once("error", reject);
-    }
-  );
+  const exited = new Promise<Exit>((resolve, reject) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+    child.once("error", reject);
+  });
   void exited.catch(() => {});
 
   const stop = async () => {
@@ -90,7 +91,7 @@ async function startIsolatedServer(): Promise<IsolatedServer> {
 /** 완전한 시작 줄(`BaboJUBot server on <url> (…)`)이 나올 때까지 기다려 그 주소를 돌려준다. */
 function waitForReadyLine(
   child: ChildProcess,
-  exited: Promise<{ code: number | null; signal: string | null }>,
+  exited: Promise<Exit>,
   stdout: () => string,
   output: () => string
 ) {
@@ -139,10 +140,17 @@ function waitForReadyLine(
 /** SIGTERM으로 정리를 맡기고 시한 안에 끝나기를 기다린다. 넘기면 SIGKILL하고 실패로 알린다. */
 async function stopChild(
   child: ChildProcess,
-  exited: Promise<{ code: number | null; signal: string | null }>,
+  exited: Promise<Exit>,
   output: () => string
 ) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  // 테스트 중에 이미 끝났으면 그 종료가 정상인지만 본다. 도중에 죽은 서버를 조용히 넘기지 않는다.
+  if (child.exitCode !== null || child.signalCode !== null) {
+    if (child.exitCode !== 0)
+      throw new Error(
+        `격리 E2E 서버가 테스트 중에 끝났다(code ${child.exitCode}, signal ${child.signalCode}): ${output()}`
+      );
+    return;
+  }
   child.kill("SIGTERM");
   const exit = await within(exited, exitWaitMs);
   if (exit) {
