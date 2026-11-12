@@ -1,10 +1,13 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createAntigravityProvider } from "./antigravity.ts";
 import { createClaudeProvider } from "./claude.ts";
-import { createCodexProvider } from "./codex.ts";
+import {
+  adapters,
+  control,
+  createCliHome,
+  quirky,
+} from "./cli-tolerance-support.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
 
@@ -16,41 +19,10 @@ afterEach(async () => {
   );
 });
 async function home() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-tolerance-"));
-  roots.push(root);
-  await mkdir(path.join(root, "providers/claude"), { recursive: true });
-  await writeFile(path.join(root, "providers/claude/setup-token"), "login");
-  return root;
+  return createCliHome((root) => {
+    roots.push(root);
+  });
 }
-const quirky = (kind: string, variant: string) =>
-  [
-    process.execPath,
-    path.resolve("test-fixtures/quirky-cli.synthetic.mjs"),
-    kind,
-    variant,
-  ] as [string, ...string[]];
-const control = (emit: () => Promise<void> = async () => {}) => ({
-  signal: new AbortController().signal,
-  emit,
-});
-
-const adapters = {
-  claude: (dataDir: string, variant: string) =>
-    createClaudeProvider({ dataDir, command: quirky("claude", variant) }),
-  "codex app-server": (dataDir: string, variant: string) =>
-    createCodexProvider({ dataDir, command: quirky("codex", variant) }),
-  "codex exec": (dataDir: string, variant: string) =>
-    createCodexProvider({
-      dataDir,
-      mode: "exec",
-      command: quirky("codex", variant),
-    }),
-  antigravity: (dataDir: string, variant: string) =>
-    createAntigravityProvider({
-      dataDir,
-      command: quirky("antigravity", variant),
-    }),
-};
 
 describe.each(Object.keys(adapters) as (keyof typeof adapters)[])(
   "%s keeps a finished result",

@@ -1,50 +1,16 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { describe, it, type TestContext } from "vitest";
-import { createAntigravityProvider } from "./antigravity.ts";
-import { createClaudeProvider } from "./claude.ts";
-import { createCodexProvider } from "./codex.ts";
+import { adapters, control, createCliHome } from "./cli-tolerance-support.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
 
 // 서로 독립인 실제 자식 프로세스 시나리오라 겹쳐 돌린다. 지연은 줄이지 않고, 홈은 테스트마다 하나씩 만들어 그 테스트가 끝날 때 지운다.
 async function home(onTestFinished: TestContext["onTestFinished"]) {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-tolerance-"));
-  onTestFinished(() => rm(root, { recursive: true, force: true }));
-  await mkdir(path.join(root, "providers/claude"), { recursive: true });
-  await writeFile(path.join(root, "providers/claude/setup-token"), "login");
-  return root;
+  return createCliHome((root) => {
+    onTestFinished(() => rm(root, { recursive: true, force: true }));
+  });
 }
-const quirky = (kind: string, variant: string) =>
-  [
-    process.execPath,
-    path.resolve("test-fixtures/quirky-cli.synthetic.mjs"),
-    kind,
-    variant,
-  ] as [string, ...string[]];
-const control = (emit: () => Promise<void> = async () => {}) => ({
-  signal: new AbortController().signal,
-  emit,
-});
-
-const adapters = {
-  claude: (dataDir: string, variant: string) =>
-    createClaudeProvider({ dataDir, command: quirky("claude", variant) }),
-  "codex app-server": (dataDir: string, variant: string) =>
-    createCodexProvider({ dataDir, command: quirky("codex", variant) }),
-  "codex exec": (dataDir: string, variant: string) =>
-    createCodexProvider({
-      dataDir,
-      mode: "exec",
-      command: quirky("codex", variant),
-    }),
-  antigravity: (dataDir: string, variant: string) =>
-    createAntigravityProvider({
-      dataDir,
-      command: quirky("antigravity", variant),
-    }),
-};
 
 describe.concurrent("slow programs", () => {
   it("lets Claude take longer than a few seconds to start", async ({

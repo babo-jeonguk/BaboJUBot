@@ -13,7 +13,7 @@ pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 em
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
 pnpm lint
-pnpm check        # Markdown 로컬 링크 검사
+pnpm check        # Markdown 로컬 링크 검사와 CI 테스트 집계 회귀 검사(scripts/ci-test-gate.test.mjs)
 ```
 
 
@@ -33,7 +33,7 @@ pnpm check        # Markdown 로컬 링크 검사
 
 `pnpm install`은 `@embedded-postgres/*`의 postinstall만 실행합니다(`pnpm-workspace.yaml`의 `onlyBuiltDependencies`). 이 script가 Postgres native library의 symlink를 만들기 때문에 `--ignore-scripts`로 설치하면 embedded Postgres가 뜨지 않습니다. 내장 Postgres는 묶여 온 `pg_ctl`로 켜고 끄므로 Windows 관리자 계정에서도 뜹니다. 서버가 강제로 끝나 남은 내장 Postgres는 다음 시작이 정상 정지하고 다시 띄웁니다. 다른 프로세스가 아직 쓰고 있거나 BaboJUBot이 띄운 것인지 확인할 수 없으면 끄는 명령을 알리고 시작하지 않습니다.
 
-[CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·빌드·E2E와 다섯 개의 독립 테스트 job(`unit`, `runtime`, `db`, `server`, `opencode`)을 실행합니다. 바뀐 파일이 Markdown뿐이면 문서 검사만 돌리고 나머지 검사는 건너뛴 채 성공으로 표시하며, 지점 보호가 기대하는 `ci / test` 집계 job이 이 판정과 테스트 결과를 모읍니다. 코드가 바뀐 PR은 다섯 테스트 job이 모두 성공해야 하고, DB job은 테스트 뒤 [시험 종료 코드 검사](scripts/check-test-exit-code.mjs)로 실패한 DB 테스트·서버 테스트와 실패한 DB 준비가 실패 종료로 이어지는지 확인합니다. `opencode` job은 OpenCode 2.2.6(GitHub 릴리스)을 설치해 실제 OpenCode와 이 컴퓨터의 가짜 모델로 도는 검사(`apps/server/test/opencode-real-cli.test.ts`, 모델 호출·로그인 없음)를 모든 코드 PR에서 실행하며, `BABOJUBOT_TEST_OPENCODE`로 실행 파일을 정했는데 실행되지 않으면 건너뛰지 않고 실패합니다. 로컬 `pnpm test`는 예전처럼 패키지 테스트를 한 명령으로 모두 돌립니다. 느린 CLI 시나리오 검사는 실제 지연을 줄이지 않은 채 서로 겹쳐 돌리고, 테스트마다 자기 임시 홈을 만들어 그 테스트가 끝날 때 지웁니다.
+[CI](.github/workflows/scaffold.yml)는 `main` 대상 PR의 생성·갱신·재개와 `main` push에서 문서 검사·타입·lint·빌드·E2E와 다섯 개의 독립 테스트 job(`unit`, `runtime`, `db`, `server`, `opencode`)을 실행합니다. 바뀐 파일이 Markdown뿐이면 문서 검사만 돌리고 나머지 검사는 건너뛴 채 성공으로 표시하며, 지점 보호가 기대하는 `ci / test` 집계 job이 이 판정과 다섯 테스트 job 각각의 결과에 직접 의존해 판정합니다. 코드가 바뀐 PR은 다섯 테스트 job이 모두 성공해야 하고, DB job은 테스트 뒤 [시험 종료 코드 검사](scripts/check-test-exit-code.mjs)로 실패한 DB 테스트·서버 테스트와 실패한 DB 준비가 실패 종료로 이어지는지 확인합니다. `opencode` job은 OpenCode 2.2.6(GitHub 릴리스)을 설치해 실제 OpenCode와 이 컴퓨터의 가짜 모델로 도는 검사(`apps/server/test/opencode-real-cli.test.ts`, 모델 호출·로그인 없음)를 모든 코드 PR에서 실행하며, `BABOJUBOT_TEST_OPENCODE`로 실행 파일을 정했는데 실행되지 않으면 건너뛰지 않고 실패합니다. 로컬 `pnpm test`는 예전처럼 패키지 테스트를 한 명령으로 모두 돌립니다. 느린 CLI 시나리오 검사는 실제 지연을 줄이지 않은 채 서로 겹쳐 돌리고, 테스트마다 자기 임시 홈을 만들어 그 테스트가 끝날 때 지웁니다.
 기능 브랜치 push만으로는 중복 실행하지 않고, 같은 PR의 오래된 실행은 취소합니다.
 `main`의 필수 검사는 workflow의 `ci / …` job 전체이며, 실행 환경과 검사 이름은 workflow를 기준으로 합니다.
 표준 GitHub-hosted runner를 쓰는 공개 저장소의 실행 시간은 무료입니다([GitHub 과금 문서](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
