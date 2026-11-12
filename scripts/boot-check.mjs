@@ -4,6 +4,7 @@
 // 멈춤(자기 시한·SIGTERM·SIGINT)은 진행 중인 단계를 끊지 않고 다음 단계 경계에서 받아 한 곳의 정리로 끝낸다(boot-check-flow.mjs).
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -228,25 +229,31 @@ function readPostmaster() {
   };
 }
 
-/** 실패했을 때 남은 Postgres를 실제로 멈출 때까지 기다린다. 멈추지 않았는데 폴더를 지우지 않는다. */
+/**
+ * 실패했을 때 남은 Postgres를 멈추고, 실제로 멈출 때까지 기다린다. 멈추지 않았는데 폴더를 지우지 않는다.
+ * 제품처럼 Postgres의 pg_ctl로 즉시 정지한다. postmaster가 자기 자식까지 끝내므로, Windows에서 postmaster만 강제로 끝내
+ * 자식이 남아 폴더와 출력을 잡는 일이 없다. pg_ctl은 그 폴더의 postmaster에만 보낸다.
+ */
 async function stopLeftPostgres() {
   const running = readPostmaster();
-  if (!running?.pid) return;
-  if (process.platform === "win32") {
-    try {
-      execFileSync("taskkill", ["/F", "/T", "/PID", String(running.pid)], {
-        stdio: "ignore",
-        timeout: cleanupTimeoutMs,
-      });
-    } catch (error) {
-      if (isAlive(running.pid)) throw error;
-    }
-  } else {
-    try {
-      process.kill(running.pid, "SIGQUIT");
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-    }
+  if (!running?.pid || !isAlive(running.pid)) return;
+  try {
+    execFileSync(
+      await pgCtl(),
+      [
+        "stop",
+        "-D",
+        dataDir,
+        "-m",
+        "immediate",
+        "-w",
+        "-t",
+        String(cleanupTimeoutMs / 1000),
+      ],
+      { stdio: "ignore", timeout: cleanupTimeoutMs + 5_000 }
+    );
+  } catch {
+    /* 이미 멈췄거나 시한 안에 멈추지 않았다. 아래에서 확인한다. */
   }
   const deadline = Date.now() + cleanupTimeoutMs;
   while (isAlive(running.pid) && Date.now() < deadline) await delay(100);
@@ -254,6 +261,15 @@ async function stopLeftPostgres() {
     throw new Error(
       `leftover embedded Postgres (pid ${running.pid}) did not stop in ${cleanupTimeoutMs}ms`
     );
+}
+
+/** 제품(packages/db)이 쓰는 내장 Postgres의 pg_ctl. */
+async function pgCtl() {
+  const require = createRequire(path.resolve("packages/db/package.json"));
+  const { getBinaries } = await import(
+    pathToFileURL(require.resolve("embedded-postgres")).href
+  );
+  return (await getBinaries()).pg_ctl;
 }
 
 function isAlive(pid) {
