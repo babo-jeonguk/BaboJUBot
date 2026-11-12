@@ -179,8 +179,10 @@ function echoGuard(secrets: readonly string[]): Transform {
 }
 
 /**
- * 요청이 실은 권한 값 후보. `Authorization: Bearer`와 `x-api-key`에 둔다(프로그램마다 인증 header가 다르다).
+ * 요청이 실은 권한 값 후보. `Authorization: Bearer`와 `x-api-key`, `x-goog-api-key`에 둔다(프로그램마다 인증 header가 다르다).
  * OpenCode의 무료 모델처럼 `Authorization`에 공개 키를 그대로 두고 권한은 `x-api-key`에만 싣는 프로그램도 있다.
+ * OpenCode의 Google 프로토콜 Go 모델은 키를 `x-goog-api-key`에 싣는데 그 경로는 중계에 없으므로, 로그인 문제("권한 없음")가 아니라
+ * "경로 거부"가 된다. 그래도 이미 `droppedRequestHeaders`에 있어 상류에는 닿지 않는다.
  */
 function presentedTokens(req: http.IncomingMessage): string[] {
   const found: string[] = [];
@@ -191,6 +193,8 @@ function presentedTokens(req: http.IncomingMessage): string[] {
   }
   const key = req.headers["x-api-key"];
   if (typeof key === "string" && key) found.push(key);
+  const google = req.headers["x-goog-api-key"];
+  if (typeof google === "string" && google) found.push(google);
   return found;
 }
 

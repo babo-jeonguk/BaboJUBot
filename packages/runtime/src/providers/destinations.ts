@@ -13,8 +13,7 @@ export const providerDestinations = {
   // 인증 중계(#148)에 붙은 연결은 모델 통신이 실행 시도 중계의 조직 도구 연결(`/api/relay/<연결>`)로만 나간다. 프로바이더로 직접 나가는 목적지를 열지 않는다.
   claude: [],
   codex: [],
-  // OpenCode: 기본 제공자(OpenCode Zen·Go)와 모델 목록.
-  opencode: https("opencode.ai", "models.opencode.ai", "models.dev"),
+  opencode: [],
   // Antigravity CLI: Google 로그인과 Code Assist API. 하위 이름 전체(*.googleapis.com)는 공개 저장소(storage)까지 열어 넣지 않는다.
   antigravity: https(
     "accounts.google.com",
