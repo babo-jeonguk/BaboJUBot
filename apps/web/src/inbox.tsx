@@ -27,6 +27,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -109,6 +110,25 @@ export function useInboxPanel() {
   const panel = useContext(PanelContext);
   if (!panel) throw new Error("InboxPanelProvider가 없습니다");
   return panel;
+}
+
+/**
+ * Inbox 패널을 여는 버튼의 속성(`onClick`·`aria-expanded`·`aria-controls`). 누른 버튼을 연 버튼으로 기억해 붙은 패널을
+ * 닫을 때 그리로 포커스를 돌린다. 조직을 주면 그 조직 범위로 열고, `toggle`이면 열려 있을 때 닫는다.
+ */
+export function useInboxTrigger({
+  organizationId,
+  toggle = false,
+}: { organizationId?: string; toggle?: boolean } = {}) {
+  const panel = useInboxPanel();
+  return {
+    onClick: (e: MouseEvent<HTMLElement>) =>
+      toggle
+        ? panel.toggle(e.currentTarget)
+        : panel.show(organizationId, e.currentTarget),
+    "aria-expanded": panel.open,
+    "aria-controls": inboxPanelId,
+  };
 }
 
 /** 예전 Inbox 주소. 패널을 열고 홈으로 간다. */

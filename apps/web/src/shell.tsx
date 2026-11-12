@@ -27,9 +27,9 @@ import {
 import { useOpenCreateOrganization } from "./create-organization.tsx";
 import {
   InboxPanel,
-  inboxPanelId,
   useAttention,
   useInboxPanel,
+  useInboxTrigger,
 } from "./inbox.tsx";
 import {
   abbr,
@@ -233,7 +233,7 @@ function useRouteFocus(
         heading.focus();
         return stop();
       }
-      if (root.querySelector("[aria-busy]")) return;
+      if (root.querySelector('[aria-busy="true"]')) return;
       main.current?.focus();
       stop();
     };
@@ -323,14 +323,12 @@ function InboxButton({
   className: string;
   children?: ReactNode;
 }) {
-  const panel = useInboxPanel();
+  const trigger = useInboxTrigger({ toggle: true });
   const attention = useAttention();
   return (
     <button
-      onClick={(e) => panel.toggle(e.currentTarget)}
+      {...trigger}
       data-closes-sheet
-      aria-expanded={panel.open}
-      aria-controls={inboxPanelId}
       aria-label={`Inbox · ${attentionText(attention)}`}
       className={className}
     >
@@ -474,7 +472,7 @@ function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
 function Sections({ orgId }: { orgId: string }) {
   const { section } = useCurrent();
   const org = useOrganization(orgId);
-  const panel = useInboxPanel();
+  const inboxTrigger = useInboxTrigger({ organizationId: orgId });
   const attention = useAttention(orgId);
   const [shut, setShut] = useState<Record<string, boolean>>({});
   if (!org.data) return null;
@@ -490,10 +488,8 @@ function Sections({ orgId }: { orgId: string }) {
         <div className="mt-2 flex items-center justify-between gap-2">
           <StageBadge stage={org.data.stage} />
           <button
-            onClick={(e) => panel.show(orgId, e.currentTarget)}
+            {...inboxTrigger}
             data-closes-sheet
-            aria-expanded={panel.open}
-            aria-controls={inboxPanelId}
             className="text-xs font-medium text-amber-700 transition hover:text-amber-900"
             aria-label={`이 조직의 Inbox 열기 · ${attentionText(attention)}`}
           >

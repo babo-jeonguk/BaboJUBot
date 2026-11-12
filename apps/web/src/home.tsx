@@ -12,7 +12,7 @@ import { useOpenCreateOrganization } from "./create-organization.tsx";
 import { arrangeHome, type HomeRoom } from "./home-model.ts";
 import { Room } from "./home-room.tsx";
 import "./home.css";
-import { inboxPanelId, useInboxPanel } from "./inbox.tsx";
+import { useInboxTrigger } from "./inbox.tsx";
 import { Loading, LoadError, Page } from "./ui.tsx";
 
 /** 홈은 방 목록이 화면 전체라 보이는 제목 대신 화면 읽기 프로그램용 h1을 둔다. 불러오는 중·조직이 없을 때도 같다. */
@@ -94,20 +94,16 @@ function Summary({
   runs: Overview["runs"];
 }) {
   const openCreate = useOpenCreateOrganization();
-  const panel = useInboxPanel();
+  const inboxTrigger = useInboxTrigger();
   const hot = typeof attention === "number" && attention > 0;
   const working = activeRunCount(runs);
   return (
     <div className="mb-6 flex flex-wrap items-stretch gap-3">
       <div className="card grid min-w-0 flex-1 grid-cols-3 divide-x divide-slate-100 overflow-hidden sm:flex sm:flex-none">
         <button
-          onClick={
-            attention === "error"
-              ? onRetryAttention
-              : (e) => panel.show(undefined, e.currentTarget)
-          }
-          aria-expanded={attention === "error" ? undefined : panel.open}
-          aria-controls={attention === "error" ? undefined : inboxPanelId}
+          {...(attention === "error"
+            ? { onClick: onRetryAttention }
+            : inboxTrigger)}
           aria-label={
             attention === "error"
               ? "주의 수를 불러오지 못함 · 다시 시도"

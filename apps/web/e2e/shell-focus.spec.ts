@@ -22,7 +22,7 @@ async function createOrganization(page: Page, label: string) {
   return (await created.json()) as Org;
 }
 
-/** 지금 포커스가 있는 요소의 id. 포커스 대상이 바뀌었는지 비교할 때 쓴다. */
+/** 요소의 id. ARIA 연결(`aria-controls`·`aria-labelledby`)을 비교할 때 쓴다. */
 const idOf = (locator: Locator) => locator.getAttribute("id");
 
 for (const size of widths) {
@@ -93,25 +93,28 @@ for (const size of widths) {
         await held;
         await route.continue();
       });
-      if (mobile) {
-        await page.getByRole("button", { name: "탐색 열기" }).click();
-        await page
-          .getByRole("dialog", { name: "탐색" })
-          .getByRole("link", { name: new RegExp(`^${second.name} · `) })
-          .click();
-      } else {
-        await page
-          .getByRole("navigation", { name: "연구 조직" })
-          .getByRole("link", { name: new RegExp(`^${second.name} · `) })
-          .click();
+      try {
+        if (mobile) {
+          await page.getByRole("button", { name: "탐색 열기" }).click();
+          await page
+            .getByRole("dialog", { name: "탐색" })
+            .getByRole("link", { name: new RegExp(`^${second.name} · `) })
+            .click();
+        } else {
+          await page
+            .getByRole("navigation", { name: "연구 조직" })
+            .getByRole("link", { name: new RegExp(`^${second.name} · `) })
+            .click();
+        }
+        await expect(page).toHaveURL(new RegExp(`/orgs/${second.id}$`));
+        await expect(page).toHaveTitle("대시보드 · BaboJUBot");
+      } finally {
+        release();
+        await page.unrouteAll({ behavior: "wait" });
       }
-      await expect(page).toHaveURL(new RegExp(`/orgs/${second.id}$`));
-      await expect(page).toHaveTitle("대시보드 · BaboJUBot");
-      release();
       await expect(h1).toHaveText(second.name);
       await expect(h1).toBeFocused();
       await expect(page).toHaveTitle(`대시보드 · ${second.name} · BaboJUBot`);
-      await page.unrouteAll({ behavior: "wait" });
 
       // 홈으로 돌아와도 제목에 조직이 남지 않는다.
       if (mobile) await page.getByRole("button", { name: "탐색 열기" }).click();
@@ -217,6 +220,20 @@ for (const size of widths) {
       await page.keyboard.press("Tab");
       await expect(panel.getByRole("button", { name: "✎ 편집" })).toBeFocused();
 
+      // 같은 화면의 실시간 갱신(다른 곳에서 고른 사본을 저장)은 탭의 포커스를 빼앗지 않는다.
+      await tabs.nth(afterSecond).focus();
+      const revision = panel.getByTestId("copy-revision");
+      const before = Number(await revision.textContent());
+      const copyId = await panel.getByTestId("copy-id").textContent();
+      const saved = await page.request.put(
+        `/api/organizations/${org.id}/agents/${leadId}/instructions/${copyId}`,
+        { data: { content: "# 다른 탭에서 고침\n", expectedRevision: before } }
+      );
+      expect(saved.ok()).toBe(true);
+      await expect(revision).toHaveText(String(before + 1), runs);
+      await expect(tabs.nth(afterSecond)).toBeFocused();
+      await page.keyboard.press("Tab");
+
       // 저장하지 않은 편집이 있으면 키보드로 다른 탭을 골라도 버릴지 묻고, 계속 편집하면 초안이 남는다.
       await page.keyboard.press("Enter");
       const editor = panel.getByRole("textbox");
@@ -262,6 +279,30 @@ for (const size of widths) {
 
       expect(stops).toEqual([]);
       await expect(page.getByTestId("org-stage")).not.toHaveText("중단됨");
+
+      // 중단 요청을 보내는 동안에는 Escape·취소로 닫히지 않는다. 요청이 실패하면 확인이 닫힌다.
+      let release = () => {};
+      const held = new Promise<void>((resolve) => (release = resolve));
+      await page.route(`**/api/organizations/${org.id}/stop`, async (route) => {
+        await held;
+        await route.abort();
+      });
+      try {
+        await trigger.click();
+        await confirm
+          .getByRole("button", { name: "중단", exact: true })
+          .click();
+        await expect(
+          confirm.getByRole("button", { name: "취소" })
+        ).toBeDisabled();
+        await page.keyboard.press("Escape");
+        await expect(confirm).toBeVisible();
+      } finally {
+        release();
+        await page.unrouteAll({ behavior: "wait" });
+      }
+      await expect(confirm).toBeHidden();
+      await expect(page.getByTestId("org-stage")).not.toHaveText("중단됨");
     });
   });
 }
@@ -302,6 +343,21 @@ test("the docked Inbox takes focus when opened, is linked from its triggers, and
     await expect(trigger).toBeFocused();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
   }
+
+  // 홈의 `주의 필요` 칸도 같은 패널을 연다. Inbox가 비어 있어도 패널 제목이 포커스를 받는다.
+  await page.route("**/api/inbox", (route) => route.fulfill({ json: [] }));
+  await openWithLiveEvents(page, "/");
+  const attention = page.getByRole("button", { name: /Inbox 열기$/ });
+  await attention.focus();
+  await page.keyboard.press("Enter");
+  await expect(panel).toContainText("주의가 필요한 항목이 없습니다.");
+  await expect(heading).toBeFocused();
+  expect(await attention.getAttribute("aria-controls")).toBe(
+    await panel.getAttribute("id")
+  );
+  await panel.getByRole("button", { name: "Inbox 닫기" }).click();
+  await expect(attention).toBeFocused();
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("the narrow Inbox drawer still traps focus and returns it to its trigger", async ({
@@ -326,6 +382,13 @@ test("the narrow Inbox drawer still traps focus and returns it to its trigger", 
   await drawer.getByRole("button", { name: "Inbox 닫기" }).click();
   await expect(drawer).toBeHidden();
   await expect(trigger).toBeFocused();
+
+  // 항목을 골라 화면을 옮기면 drawer가 닫히고 새 화면 제목이 포커스를 받는다.
+  await trigger.click();
+  await drawer.getByRole("link").first().click();
+  await expect(drawer).toBeHidden();
+  await expect(page).toHaveURL(/\/inbox\//);
+  await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
 });
 
 test("cancelling the final completion confirmation returns focus to its button without deciding", async ({
