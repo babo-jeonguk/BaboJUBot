@@ -189,25 +189,21 @@ if (kind === "codex")
     }
   }
 
+// `agy acp`(Agent Client Protocol, 줄 단위 JSON-RPC).
 if (kind === "antigravity")
-  for await (const _ of input) {
-    // 실제 프로그램이 로그인 없이 내는 출력이다.
-    if (variant === "logged-out") {
-      out({
-        event: "result",
-        result: {
-          conversation_id: "",
-          status: "ERROR",
-          error: "authentication failed or timed out",
-        },
-      });
-      process.exit(1);
-    }
-    if (variant === "slow-start") await sleep(13_000);
-    out({ event: "init", conversation_id: "conversation-one" });
-    out({
-      event: "result",
-      result: { status: "SUCCESS", conversation_id: "conversation-one" },
-    });
-    await finish();
+  for await (const line of input) {
+    const { id, method } = JSON.parse(line);
+    const answer = (body) => out({ jsonrpc: "2.0", id, ...body });
+    if (method === "initialize") {
+      if (variant === "slow-start") await sleep(13_000);
+      answer({ result: { protocolVersion: 1 } });
+    } else if (method === "session/new" || method === "session/load") {
+      // 실제 프로그램(1.5.4)이 로그인 없이 세션을 열 때 내는 오류다.
+      if (variant === "logged-out")
+        answer({ error: { code: -32000, message: "Authentication required" } });
+      else answer({ result: { sessionId: "conversation-one" } });
+    } else if (method === "session/prompt") {
+      answer({ result: { stopReason: "end_turn" } });
+      await finish();
+    } else if (id !== undefined) answer({ result: {} });
   }

@@ -17,6 +17,7 @@ import {
   credentialResidue,
   type RelayProfile,
 } from "./credential-relay.ts";
+import { relayIdentityHeaders } from "./relay.ts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
@@ -122,16 +123,22 @@ const profile = (url: string): RelayProfile => ({
     { method: "POST", path: "/v1/echo-stream" },
     { method: "POST", path: "/v1/compressed" },
   ],
-  authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
+  authorize: (credential) => ({
+    headers: { authorization: `Bearer ${credential}` },
+    secrets: [credential],
+  }),
 });
 
 async function setup(
-  options: { credential?: () => Promise<string | undefined> } = {}
+  options: {
+    credential?: () => Promise<string | undefined>;
+    profile?: (upstream: string) => RelayProfile;
+  } = {}
 ) {
   const up = await upstream();
   let reads = 0;
   const relay = createCredentialRelay({
-    profile: profile(up.url),
+    profile: (options.profile ?? profile)(up.url),
     verified: true,
     credential: async () => {
       reads++;
@@ -179,7 +186,11 @@ async function received(response: Response) {
 describe("the credential relay", () => {
   it("sends an allowed request to the fixed upstream with the real credential in place of the run's grant, and returns no cookie", async () => {
     const { up, relay, url } = await setup();
-    const grant = relay.grant(scope());
+    const grant = relay.grant({
+      ...scope(),
+      organizationId: "organization-id",
+      runId: "run-id",
+    });
     const response = await send(url, grant.token, "/v1/messages?beta=true", {
       cookie: "client=1",
       host: "attacker.invalid",
@@ -444,6 +455,463 @@ describe("the credential relay", () => {
     expect(relay.failed()).toBe(false);
     expect((await send(url, relay.grant(scope()).token)).status).toBe(200);
     expect(up.seen).toHaveLength(1);
+  });
+});
+
+describe("the credential relay's per-connection differences (#148)", () => {
+  /**
+   * Codex처럼 원본이 여러 값을 담은 문서인 연결. 상류에 붙이는 값 중 비밀은 접근 토큰뿐이고, 계정 ID는 비밀이 아니다.
+   * OpenCode처럼 경로마다 상류 경로·인증 header가 다르고, 무료 모델처럼 원본 없이 고정 값만 붙이는 경로도 있다.
+   */
+  const documentProfile = (url: string): RelayProfile => ({
+    upstream: url,
+    routes: [
+      { method: "POST", path: "/v1/messages" },
+      { method: "POST", path: "/v1/rejected" },
+      { method: "POST", path: "/v1/echo-header" },
+      { method: "POST", path: "/v1/echo-error" },
+      { method: "POST", path: "/v1/echo-stream" },
+      {
+        method: "POST",
+        path: "/family/messages",
+        upstreamPath: "/anthropic/v1/messages",
+        authorize: (credential) => {
+          const login = JSON.parse(credential) as { access: string };
+          return {
+            headers: { "x-api-key": login.access },
+            secrets: [login.access],
+          };
+        },
+      },
+      {
+        method: "POST",
+        path: "/free/responses",
+        upstreamPath: "/zen/v1/responses",
+        fixed: { authorization: "Bearer public" },
+      },
+      {
+        method: "POST",
+        path: "/free/rejected",
+        upstreamPath: "/v1/rejected",
+        fixed: { authorization: "Bearer public" },
+      },
+    ],
+    authorize: (credential) => {
+      const login = JSON.parse(credential) as {
+        access: string;
+        account: string;
+      };
+      return {
+        headers: {
+          authorization: `Bearer ${login.access}`,
+          "chatgpt-account-id": login.account,
+        },
+        secrets: [login.access],
+      };
+    },
+    droppedHeaders: ["chatgpt-account-id", "x-openai-account-routing-override"],
+  });
+  const document = (fields: Record<string, string> = {}) =>
+    JSON.stringify({
+      access: "real-access-token",
+      refresh: "real-refresh-token",
+      account: "real-account",
+      refreshedAt: "2026-11-12T00:00:00Z",
+      ...fields,
+    });
+
+  it("sends a route to its own upstream path with that route's header, keeping the query", async () => {
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/family/messages?beta=1");
+    expect(response.status).toBe(200);
+    expect(up.seen.map((request) => request.url)).toEqual([
+      "/base/anthropic/v1/messages?beta=1",
+    ]);
+    expect(up.seen[0]!.headers["x-api-key"]).toBe("real-access-token");
+    expect(up.seen[0]!.headers.authorization).toBeUndefined();
+    // 중계 주소의 경로 그대로는 허용하지 않는다(상류 경로를 직접 고르지 못한다).
+    expect(
+      (await send(url, grant.token, "/anthropic/v1/messages")).status
+    ).toBe(403);
+    expect(up.seen).toHaveLength(1);
+  });
+
+  it("injects only the real credential's values, and drops account headers the program chose", async () => {
+    const { up, relay, url } = await setup({
+      profile: (upstreamUrl) => ({
+        ...documentProfile(upstreamUrl),
+        // 계정 ID를 붙이지 않는 프로필이어도 프로그램이 고른 계정이 상류에 가지 않는다.
+        authorize: (credential) => {
+          const login = JSON.parse(credential) as { access: string };
+          return {
+            headers: { authorization: `Bearer ${login.access}` },
+            secrets: [login.access],
+          };
+        },
+      }),
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/v1/messages", {
+      "chatgpt-account-id": "other-account",
+      "x-openai-account-routing-override": "other-workspace",
+      "x-goog-api-key": grant.token,
+    });
+    expect(response.status).toBe(200);
+    const [request] = up.seen;
+    expect(request!.headers.authorization).toBe("Bearer real-access-token");
+    expect(request!.headers["chatgpt-account-id"]).toBeUndefined();
+    expect(
+      request!.headers["x-openai-account-routing-override"]
+    ).toBeUndefined();
+    expect(request!.headers["x-goog-api-key"]).toBeUndefined();
+    expect(JSON.stringify(request!.headers)).not.toContain(grant.token);
+  });
+
+  it("never returns an injected secret taken from a credential document, in a header, an error body or across stream chunks", async () => {
+    const { relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const header = await send(url, grant.token, "/v1/echo-header");
+    expect(header.status).toBe(502);
+    expect(await header.text()).not.toContain("real-access-token");
+    const error = await received(
+      await send(url, grant.token, "/v1/echo-error")
+    );
+    expect(error.text).not.toContain("real-access-token");
+    const stream = await received(
+      await send(url, grant.token, "/v1/echo-stream")
+    );
+    expect(stream.text).not.toContain("real-access-token");
+    expect(stream.text).not.toContain("access-token");
+    expect(stream.cut).toBe(true);
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("judges 'the same login' by the injected secrets: a rejected login stays failed when only other fields change", async () => {
+    let login = document({ access: "expired-access" });
+    const { relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => login,
+    });
+    const grant = relay.grant(scope());
+    expect((await send(url, grant.token, "/v1/rejected")).status).toBe(503);
+    expect(relay.failed()).toBe(true);
+    login = document({
+      access: "expired-access",
+      refreshedAt: "2026-11-13T00:00:00Z",
+    });
+    await relay.recover();
+    expect(relay.failed()).toBe(true);
+    login = document({ access: "new-access" });
+    await relay.recover();
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("fails the connection without reaching the upstream when the credential cannot be turned into a request", async () => {
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => "not a credential document",
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token);
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("not a credential");
+    expect(relay.failed()).toBe(true);
+    expect(grant.failed.aborted).toBe(true);
+    expect(up.seen).toHaveLength(0);
+  });
+
+  it("a fixed-value route still needs the run's grant, never reads the connection's credential, and an upstream refusal there does not fail the connection", async () => {
+    const { up, relay, url, reads } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    expect((await send(url, undefined, "/free/responses")).status).toBe(401);
+    expect((await send(url, "forged", "/free/responses")).status).toBe(401);
+    expect(up.seen).toHaveLength(0);
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/free/responses");
+    expect(response.status).toBe(200);
+    expect(up.seen.map((request) => request.url)).toEqual([
+      "/base/zen/v1/responses",
+    ]);
+    expect(up.seen[0]!.headers.authorization).toBe("Bearer public");
+    expect(JSON.stringify(up.seen[0]!.headers)).not.toContain(grant.token);
+    const refused = await send(url, grant.token, "/free/rejected");
+    expect(refused.status).toBe(401);
+    expect(relay.failed()).toBe(false);
+    expect(grant.failed.aborted).toBe(false);
+    expect(reads()).toBe(0);
+    // 실행이 끝나면 고정 값 경로도 거부한다.
+    grant.revoke();
+    expect((await send(url, grant.token, "/free/responses")).status).toBe(401);
+    expect(up.seen).toHaveLength(2);
+  });
+
+  it("finds the run's grant in x-api-key when the program keeps a public key in Authorization, and sends neither upstream", async () => {
+    // OpenCode의 무료 모델은 `Authorization: Bearer public`을 그대로 보내고, 권한은 `x-api-key`로만 실을 수 있다.
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, undefined, "/free/responses", {
+      authorization: "Bearer public",
+      "x-api-key": grant.token,
+    });
+    expect(response.status).toBe(200);
+    expect(up.seen[0]!.headers.authorization).toBe("Bearer public");
+    expect(JSON.stringify(up.seen[0]!.headers)).not.toContain(grant.token);
+    // 원본을 쓰는 경로도 같다.
+    expect(
+      (
+        await send(url, undefined, "/v1/messages", {
+          authorization: "Bearer public",
+          "x-api-key": grant.token,
+        })
+      ).status
+    ).toBe(200);
+    expect(up.seen[1]!.headers.authorization).toBe("Bearer real-access-token");
+  });
+
+  it("refuses a request that carries two different runs' grants", async () => {
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const one = relay.grant(scope());
+    const two = relay.grant(scope());
+    const response = await send(url, one.token, "/v1/messages", {
+      "x-api-key": two.token,
+    });
+    expect(response.status).toBe(401);
+    expect(up.seen).toHaveLength(0);
+  });
+});
+
+describe("the credential relay and the run identity the #149 relay adds (#148)", () => {
+  const identity = (organization: string, run: string) => ({
+    [relayIdentityHeaders.organization]: organization,
+    [relayIdentityHeaders.run]: run,
+  });
+
+  it("refuses a grant whose request comes through another organization's or run's relay, before reading the credential", async () => {
+    const { up, relay, url, reads } = await setup();
+    const grant = relay.grant({
+      ...scope(),
+      organizationId: "org-a",
+      runId: "run-1",
+    });
+    for (const headers of [
+      identity("org-b", "run-1"),
+      identity("org-a", "run-2"),
+      { [relayIdentityHeaders.organization]: "org-a" },
+    ])
+      expect(
+        (await send(url, grant.token, "/v1/messages", headers)).status
+      ).toBe(401);
+    expect(reads()).toBe(0);
+    expect(up.seen).toHaveLength(0);
+    // 같은 실행 시도의 중계로 온 요청은 받고, 신원 header는 상류에 넘기지 않는다.
+    const response = await send(
+      url,
+      grant.token,
+      "/v1/messages",
+      identity("org-a", "run-1")
+    );
+    expect(response.status).toBe(200);
+    expect(
+      up.seen[0]!.headers[relayIdentityHeaders.organization]
+    ).toBeUndefined();
+    expect(up.seen[0]!.headers[relayIdentityHeaders.run]).toBeUndefined();
+  });
+
+  it("keeps the organization and run a grant was issued for", () => {
+    const relay = createCredentialRelay({
+      profile: profile("http://127.0.0.1:1"),
+      verified: true,
+      credential: async () => "real-account-secret",
+    });
+    const grant = relay.grant({
+      ...scope(),
+      organizationId: "org-a",
+      runId: "run-1",
+    });
+    expect(grant.organizationId).toBe("org-a");
+    expect(grant.runId).toBe("run-1");
+  });
+});
+
+describe("the credential relay with runs that overlap (#148)", () => {
+  /** 원본 읽기를 하나씩 붙잡아 둔다. 읽기마다 `started[n]`이 풀리고, `release(n)`으로 끝낸다. */
+  function heldReads(count: number, login = "real-account-secret") {
+    const releases: (() => void)[] = [];
+    const holds = Array.from(
+      { length: count },
+      (_, n) =>
+        new Promise<void>((resolve) => {
+          releases[n] = resolve;
+        })
+    );
+    const starts: (() => void)[] = [];
+    const started = Array.from(
+      { length: count },
+      (_, n) =>
+        new Promise<void>((resolve) => {
+          starts[n] = resolve;
+        })
+    );
+    let reads = 0;
+    return {
+      credential: async () => {
+        const n = reads++;
+        starts[n]?.();
+        await holds[n];
+        return login;
+      },
+      started,
+      release: (n: number) => releases[n]!(),
+    };
+  }
+  /** stream이 끝나지도 끊기지도 않고 열려 있는가. 잠깐 기다려 본다. */
+  async function stillOpen(reader: ReadableStreamDefaultReader<Uint8Array>) {
+    const outcome = await Promise.race([
+      reader.read().then(
+        ({ done }) => (done ? "ended" : "data"),
+        () => "cut"
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("open"), 100)),
+    ]);
+    return outcome === "open";
+  }
+  const cutOff = (reader: ReadableStreamDefaultReader<Uint8Array>) =>
+    (async () => {
+      for (;;) if ((await reader.read()).done) return "ended";
+    })();
+
+  it("does not reach the upstream for a request whose run is cancelled while the credential is being read", async () => {
+    const held = heldReads(1);
+    const { up, relay, url } = await setup({ credential: held.credential });
+    const cancel = new AbortController();
+    const grant = relay.grant(scope(cancel.signal));
+    const request = send(url, grant.token).then(
+      (response) => response.status,
+      () => "cut"
+    );
+    await held.started[0];
+    cancel.abort();
+    held.release(0);
+    expect(await request).not.toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(up.seen).toHaveLength(0);
+    expect(await connections(up.server)).toBe(0);
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("cancelling one organization's run cuts only that run's stream; another organization's run on the same connection keeps going", async () => {
+    const { up, relay, url } = await setup();
+    const cancelA = new AbortController();
+    const a = relay.grant(scope(cancelA.signal));
+    const b = relay.grant(scope());
+    const streamA = (await send(url, a.token, "/v1/stream")).body!.getReader();
+    const streamB = (await send(url, b.token, "/v1/stream")).body!.getReader();
+    await streamA.read();
+    await streamB.read();
+    cancelA.abort();
+    await expect(cutOff(streamA)).rejects.toThrow();
+    expect(await stillOpen(streamB)).toBe(true);
+    expect((await send(url, a.token)).status).toBe(401);
+    expect((await send(url, b.token)).status).toBe(200);
+    expect(b.failed.aborted).toBe(false);
+    await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
+    await streamB.cancel();
+  });
+
+  it("when the upstream rejects the login for one run, another run's open stream is cut and its program's retries never reach the upstream", async () => {
+    const { up, relay, url } = await setup({
+      credential: async () => "expired-login",
+    });
+    const streaming = relay.grant(scope());
+    const rejected = relay.grant(scope());
+    const stream = (
+      await send(url, streaming.token, "/v1/stream")
+    ).body!.getReader();
+    await stream.read();
+    expect((await send(url, rejected.token, "/v1/rejected")).status).toBe(503);
+    await expect(cutOff(stream)).rejects.toThrow();
+    expect(streaming.failed.aborted).toBe(true);
+    expect(rejected.failed.aborted).toBe(true);
+    const before = up.seen.length;
+    for (const grant of [streaming, rejected])
+      expect((await send(url, grant.token)).status).toBe(401);
+    expect(up.seen).toHaveLength(before);
+    await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
+  });
+
+  it("when several runs' requests are rejected at the same time, the connection fails for all of them and nothing reaches the upstream afterwards", async () => {
+    let login = "expired-login";
+    const { up, relay, url } = await setup({ credential: async () => login });
+    const grants = [
+      relay.grant(scope()),
+      relay.grant(scope()),
+      relay.grant(scope()),
+    ];
+    const notified: boolean[] = [];
+    relay.onFailure(() => notified.push(relay.failed()));
+    const statuses = await Promise.all(
+      grants.map((grant) =>
+        send(url, grant.token, "/v1/rejected").then(
+          (response) => response.status,
+          () => 0
+        )
+      )
+    );
+    expect(statuses).not.toContain(200);
+    expect(relay.failed()).toBe(true);
+    expect(notified.length).toBeGreaterThanOrEqual(1);
+    expect(notified.every(Boolean)).toBe(true);
+    expect(grants.every((grant) => grant.failed.aborted)).toBe(true);
+    const before = up.seen.length;
+    expect(before).toBeLessThanOrEqual(grants.length);
+    for (const grant of grants)
+      expect((await send(url, grant.token)).status).toBe(401);
+    expect(() => relay.grant(scope())).toThrow();
+    expect(up.seen).toHaveLength(before);
+    // 같은 로그인으로는 풀리지 않는다.
+    await relay.recover();
+    expect(relay.failed()).toBe(true);
+    login = "new-login";
+    await relay.recover();
+    expect(relay.failed()).toBe(false);
+  });
+
+  it("a request still reading the credential when another run's login is rejected does not reach the upstream", async () => {
+    // 두 실행이 같은 원본을 쓴다. B가 원본을 읽는 동안 A의 요청이 거부되면, B의 요청은 거둔 권한으로 상류에 가지 않는다.
+    const held = heldReads(2, "expired-login");
+    const { up, relay, url } = await setup({ credential: held.credential });
+    const a = relay.grant(scope());
+    const b = relay.grant(scope());
+    const first = send(url, a.token, "/v1/rejected");
+    await held.started[0];
+    const second = send(url, b.token).then(
+      (response) => response.status,
+      () => "cut"
+    );
+    await held.started[1];
+    held.release(0);
+    expect((await first).status).toBe(503);
+    held.release(1);
+    expect(await second).not.toBe(200);
+    expect(up.seen.map((request) => request.url)).toEqual([
+      "/base/v1/rejected",
+    ]);
   });
 });
 

@@ -55,13 +55,13 @@ export type ClaudeOptions = {
   id?: string;
   label?: string;
   container?: ContainerSettings;
-  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 미검증)을 쓴다. */
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
   relay?: { upstream?: string; verified?: boolean };
 };
 /**
  * Claude의 인증 중계(#148). 공식 LLM gateway 경로(`ANTHROPIC_BASE_URL` + claude.ai 로그인)를 쓴다. 프로그램에는 실행 시도의 권한을
  * `CLAUDE_CODE_OAUTH_TOKEN`으로 주고, 중계가 그것을 연결의 setup-token(access token)으로 바꿔 Messages API에만 보낸다.
- * setup-token에는 refresh token이 없으므로 중계가 갱신하지 않는다. 기존 구독으로 검증하기 전에는 `verified`가 거짓이다.
+ * setup-token에는 refresh token이 없으므로 중계가 갱신하지 않는다. 기존 구독으로 확인해(2026-11-12) 격리 실행을 연다.
  */
 export const claudeRelayProfile: RelayProfile = {
   upstream: "https://api.anthropic.com",
@@ -69,7 +69,10 @@ export const claudeRelayProfile: RelayProfile = {
     { method: "POST", path: "/v1/messages" },
     { method: "POST", path: "/v1/messages/count_tokens" },
   ],
-  authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
+  authorize: (credential) => ({
+    headers: { authorization: `Bearer ${credential}` },
+    secrets: [credential],
+  }),
 };
 /** 조직 제품 폴더에 남으면 격리 실행을 시작하지 않는 로그인 흔적(프로그램 안에서 로그인한 기록). */
 const credentialFiles = ["config/.credentials.json"];
@@ -198,7 +201,7 @@ export function createClaudeProvider(
         ...claudeRelayProfile,
         upstream: options.relay?.upstream ?? claudeRelayProfile.upstream,
       },
-      verified: options.relay?.verified ?? false,
+      verified: options.relay?.verified ?? true,
       credential: () =>
         readFile(path.join(connectionHome, "setup-token"), "utf8"),
     }),
@@ -355,7 +358,12 @@ async function executeClaude(
   try {
     if (placement.container)
       try {
-        grant = connection.relay.grant({ signal: control.signal });
+        grant = connection.relay.grant({
+          signal: control.signal,
+          organizationId: request.organizationId,
+          // 세션 정비(압축)에는 실행이 없다. #149 중계도 그때는 실행 신원을 넣지 않는다.
+          ...(request.runId ? { runId: request.runId } : {}),
+        });
       } catch {
         return { ...failed(), error: relayFailure };
       }

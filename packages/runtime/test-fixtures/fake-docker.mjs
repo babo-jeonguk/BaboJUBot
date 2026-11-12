@@ -71,11 +71,12 @@ if (verb === "run") {
   }
   const [, program, ...programArgs] = rest.slice(i);
   record({ args, env });
-  const relay = (options.get("--mount") ?? [])
-    .map((spec) =>
-      Object.fromEntries(spec.split(",").map((part) => part.split("=")))
-    )
-    .find((mount) => mount.target === "/run/babojubot")?.source;
+  const mounts = (options.get("--mount") ?? []).map((spec) =>
+    Object.fromEntries(spec.split(",").map((part) => part.split("=")))
+  );
+  const relay = mounts.find(
+    (mount) => mount.target === "/run/babojubot"
+  )?.source;
   if (relay) writeFileSync(path.join(stateDir, "relay-dir"), relay);
   const inbound = Boolean(env.BABOJUBOT_INBOUND_PORT);
   const offer = (port) => {
@@ -105,7 +106,15 @@ if (verb === "run") {
   }
   const child = spawn(mapped[0], [...mapped.slice(1), ...programArgs], {
     cwd: options.get("--workdir")?.[0] ?? options.get("-w")?.[0],
-    env: { PATH: process.env.PATH, ...env },
+    // The program runs on this machine, so the container's mounts are not applied. A program that must see a file mounted
+    // over another path (a per-attempt file) reads FAKE_DOCKER_MOUNTS.
+    env: {
+      PATH: process.env.PATH,
+      ...env,
+      FAKE_DOCKER_MOUNTS: JSON.stringify(
+        mounts.map(({ source, target }) => ({ source, target }))
+      ),
+    },
     stdio: ["inherit", "pipe", "inherit"],
   });
   let buffer = "";

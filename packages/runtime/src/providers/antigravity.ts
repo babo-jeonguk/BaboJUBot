@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   readdir,
   rm,
@@ -11,18 +12,8 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type {
-  ProviderConnection,
-  RunResult,
-  UsageAmount,
-  UsageField,
-} from "@babojubot/contracts";
-import {
-  addUsage,
-  subtractUsage,
-  unreportedUsage,
-  usageAmount,
-} from "@babojubot/contracts";
+import type { ProviderConnection, RunResult } from "@babojubot/contracts";
+import { usageAmount } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import {
   startProcess,
@@ -33,24 +24,131 @@ import {
   runProbe,
   saysLoginProblem,
 } from "./process.ts";
-import {
-  clearOwnedConfig,
-  configFailure,
-  configRefused,
-  ownerMark,
-  publishConfig,
-} from "./antigravity-config.ts";
+import { clearOwnedConfig } from "./antigravity-config.ts";
 import type { ContainerSettings } from "./container.ts";
 import {
   ContainerRefusal,
   placeAttempt,
   type ContainerLaunch,
 } from "./container.ts";
-import { credentialResidue, residueRefusal } from "./credential-relay.ts";
+import {
+  createCredentialRelay,
+  credentialResidue,
+  type RelayGrant,
+  type RelayProfile,
+  residueRefusal,
+} from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink } from "./login-link.ts";
-const workspaces = new Map<string, Promise<void>>();
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+/** 프로그램이 JSON-RPC 오류로 거절한 요청. */
+class AcpRejection extends Error {}
+/** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */
+const cancelGraceMs = 3_000;
+const relayFailure =
+  "인증 중계가 연결의 로그인을 쓰지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
+/**
+ * Antigravity의 인증 중계(#148). `agy acp`의 Code Assist 호출(`CLOUD_CODE_URL`)을 중계로 보내고, 중계가 실행 시도의 권한을
+ * 연결의 접근 토큰으로 바꿔 넣는다. 상류는 주소를 바꾸지 않은 agy가 부르는 곳이다(1.5.4 합성 확인, 실제 호스트 미확인).
+ * 로그인 확인(www.googleapis.com)·사용 기록은 중계로 보낼 수 없고, ACP에서는 실패해도 실행이 이어진다.
+ */
+export const antigravityRelayProfile: RelayProfile = {
+  upstream: "https://daily-cloudcode-pa.googleapis.com",
+  routes: [
+    "loadCodeAssist",
+    "onboardUser",
+    "fetchAvailableModels",
+    "retrieveUserQuotaSummary",
+    "fetchUserInfo",
+    "fetchAdminControls",
+    "listExperiments",
+    "writeTrajectoryAcls",
+    "streamGenerateContent",
+  ].map((method) => ({ method: "POST", path: `/v1internal:${method}` })),
+  authorize: (accessToken) => ({
+    headers: { authorization: `Bearer ${accessToken}` },
+    secrets: [accessToken],
+  }),
+};
+/** 컨테이너에 넣는 로그인의 만료 시각. 실제 로그인에는 없는 값이라 이 어댑터가 둔 파일을 알아본다. 이 시각이 멀어 agy가 갱신하지 않는다. */
+const relayExpiry = "2099-01-01T00:00:00Z";
+/** 컨테이너에 넣는 가짜 로그인. 갱신 값이 없다. 권한이 빈 것은 조직 폴더의 자리 표시다. */
+const relayToken = (accessToken: string) => ({
+  token: {
+    access_token: accessToken,
+    token_type: "Bearer",
+    expiry: relayExpiry,
+  },
+  auth_method: "consumer",
+});
+/** 이 어댑터가 둔 가짜 로그인(자리 표시)인가. */
+async function isRelayToken(file: string): Promise<boolean> {
+  try {
+    if (!(await lstat(file)).isFile()) return false;
+    const login = record(JSON.parse(await readFile(file, "utf8")));
+    const token = record(login.token);
+    return (
+      token.expiry === relayExpiry &&
+      (token.refresh_token === undefined || token.refresh_token === "")
+    );
+  } catch {
+    return false;
+  }
+}
+/**
+ * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 실행 시도마다 그 위에 자기 로그인 파일을 넣는 자리다.
+ * 원본을 가리키는 링크는 따라가 쓰지 않도록 먼저 지운다.
+ */
+async function placeTokenPlaceholder(at: string): Promise<void> {
+  if (await isRelayToken(at)) return;
+  await rm(at, { force: true });
+  try {
+    await writeFile(at, JSON.stringify(relayToken("")), {
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+      !(await isRelayToken(at))
+    )
+      throw error;
+  }
+}
+/** 갱신을 서두르는 여유. 만료가 이보다 가까우면 쓰기 전에 갱신한다. */
+const refreshWindowMs = 10 * 60 * 1000;
+/** 원본 로그인의 접근 토큰. 곧 끝나면 `undefined`가 아니라 `expiring`이 참이다. */
+function accessOf(text: string): { token?: string; expiring: boolean } {
+  try {
+    const token = record(record(JSON.parse(text)).token);
+    const access =
+      typeof token.access_token === "string" && token.access_token
+        ? token.access_token
+        : undefined;
+    const expiry =
+      typeof token.expiry === "string" ? Date.parse(token.expiry) : Number.NaN;
+    return {
+      token: access,
+      expiring:
+        Number.isFinite(expiry) && expiry - Date.now() <= refreshWindowMs,
+    };
+  } catch {
+    return { expiring: false };
+  }
+}
+/** ACP `session/prompt` 결과의 사용량. 입력은 이미 캐시 읽기를 뺀 값이다(1.5.4). */
+function promptUsage(connectionId: string, raw: unknown) {
+  const usage = record(raw);
+  return providerUsage(connectionId, {
+    inputTokens: usageAmount("tokens", usage.inputTokens),
+    outputTokens: usageAmount("tokens", usage.outputTokens),
+    cacheReadTokens: usageAmount("tokens", usage.cachedReadTokens),
+    cacheWriteTokens: usageAmount("tokens", usage.cachedWriteTokens),
+  });
+}
+
 const failure = (error = "프로바이더를 실행하지 못했습니다."): RunResult => ({
   stopReason: "failed",
   error,
@@ -86,6 +184,8 @@ export function createAntigravityProvider(options: {
   id?: string;
   label?: string;
   container?: ContainerSettings;
+  /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
+  relay?: { upstream?: string; verified?: boolean };
 }): ProviderConnection {
   const connectionId = options.id ?? "antigravity";
   const folders = connectionFolders(options.dataDir, connectionId);
@@ -106,6 +206,7 @@ export function createAntigravityProvider(options: {
     original,
     fallback: tokenAt(home),
     label: "Antigravity",
+    setAside: path.join(home, "set-aside"),
   });
   /** 연결 폴더도 조직 폴더와 같은 링크로 로그인을 읽는다. 로그인 명령·준비 확인·모델 목록이 조직 실행과 같은 로그인을 본다. */
   const prepare = async () => {
@@ -134,6 +235,38 @@ export function createAntigravityProvider(options: {
       })
     ).stdout.trim();
   };
+  let refreshing: Promise<void> | undefined;
+  /**
+   * 원본 로그인을 이 컴퓨터의 agy로 갱신한다(#148). `agy models`는 만료된 로그인을 갱신해 연결 폴더의 링크를 따라 원본 자리에 쓴다
+   * (1.5.4 합성 확인). 연결마다 한 번에 하나만 하고, 그동안 온 요청은 같은 갱신을 기다린다.
+   */
+  const refreshLogin = () =>
+    (refreshing ??= (async () => {
+      await prepare();
+      await probe(["models"], AbortSignal.timeout(probeTimeoutMs)).catch(
+        () => undefined
+      );
+    })().finally(() => {
+      refreshing = undefined;
+    }));
+  /** 중계가 쓸 원본 접근 토큰. 곧 끝나면 먼저 갱신하고, 갱신한 뒤에도 끝나 가면 갱신 실패로 던진다(중계 실패, Q6). */
+  const currentAccess = async () => {
+    let login = accessOf(await readFile(original, "utf8"));
+    if (login.expiring) {
+      await refreshLogin();
+      login = accessOf(await readFile(original, "utf8"));
+      if (login.expiring) throw new Error("login refresh failed");
+    }
+    return login.token;
+  };
+  const relay = createCredentialRelay({
+    profile: {
+      ...antigravityRelayProfile,
+      upstream: options.relay?.upstream ?? antigravityRelayProfile.upstream,
+    },
+    verified: options.relay?.verified ?? true,
+    credential: () => currentAccess(),
+  });
   const adapter: ProviderConnection["adapter"] = {
     capabilities: {
       steer: false,
@@ -179,10 +312,9 @@ export function createAntigravityProvider(options: {
       }
     },
     async execute(request, control) {
-      let release: (() => void) | undefined,
-        cwd: string | undefined,
+      let grant: RelayGrant | undefined,
         attempt: string | undefined,
-        owned = false;
+        logs: string | undefined;
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
@@ -191,266 +323,334 @@ export function createAntigravityProvider(options: {
           request.identity.organizationId
         );
         await prepare();
-        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
-        // Antigravity의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
+        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크와 이 어댑터의 자리 표시는 괜찮고,
+        // 조직 폴더에 남은 다른 로그인 흔적이 있으면 시작하지 않는다.
         const isolated = request.execution === "container";
+        const loginAt = tokenAt(organization);
         if (
           isolated &&
           (await credentialResidue(
             organization,
-            [path.relative(organization, tokenAt(organization))],
+            [path.relative(organization, loginAt)],
             original
-          ))
+          )) &&
+          !(await isRelayToken(loginAt))
         )
           return failure(residueRefusal);
-        const linked = !isolated && (await shareLogin(tokenAt(organization)));
+        // 격리 실행이 남긴 자리 표시는 로그인이 아니다. 이 컴퓨터의 실행이 그것을 치우게 먼저 지운다.
+        if (!isolated && (await isRelayToken(loginAt)))
+          await rm(loginAt, { force: true });
+        const linked = !isolated && (await shareLogin(loginAt));
         const productHome = linked || isolated ? organization : home;
         const placement = placeAttempt(options.container, productHome, request);
         if (!placement) return failure();
         // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
         await mkdir(productHome, { recursive: true, mode: 0o700 });
-        cwd = await realpath(request.workspace?.cwd ?? productHome);
-        while (workspaces.has(cwd)) {
-          control.signal.throwIfAborted();
-          await Promise.race([
-            workspaces.get(cwd),
-            new Promise<void>((resolve) => {
-              const timer = setTimeout(resolve, 100);
-              timer.unref();
-            }),
-          ]);
-        }
-        if (control.signal.aborted)
-          return { ...failure(), stopReason: "cancelled", error: null };
-        workspaces.set(
-          cwd,
-          new Promise<void>((resolve) => {
-            release = resolve;
-          })
-        );
-        // 프로세스가 도중에 끝나면 게시됐는지 알 수 없다. 거부가 확실할 때만 정리 책임을 내려놓는다.
-        owned = true;
-        const settings = JSON.stringify({
-          babojubotOwner: ownerMark,
-          mcpServers: {
-            organization: {
-              serverUrl: new URL("/api/tools/mcp", request.access.toolsBaseUrl)
-                .href,
-              headers: { Authorization: `Bearer ${request.access.token}` },
-            },
-          },
-        });
-        // 컨테이너에서는 조직 폴더가 그 조직의 모든 컨테이너에 쓰기로 들어간다. 토큰이 든 설정은 이 실행 시도 전용 폴더에 두고
-        // 이 컨테이너에만 작업 폴더의 설정 파일 위에 읽기로 넣는다. 조직 폴더에는 토큰 없는 제품 소유 파일이 자리만 잡는다.
+        const cwd = await realpath(request.workspace?.cwd ?? productHome);
         let container: ContainerLaunch | undefined;
         if (placement.container) {
+          try {
+            grant = relay.grant({
+              signal: control.signal,
+              organizationId: request.identity.organizationId,
+              runId: request.identity.runId,
+            });
+          } catch {
+            return failure(relayFailure);
+          }
+          // 조직 폴더는 그 조직의 모든 컨테이너에 쓰기로 들어간다. 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 두고,
+          // 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 넣는다. 조직 폴더에는 권한 없는 자리 표시만 둔다.
           attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
-          const file = path.join(attempt, "mcp_config.json");
-          await writeFile(file, settings, { mode: 0o600, flag: "wx" });
+          const file = path.join(attempt, "antigravity-oauth-token");
+          await writeFile(file, JSON.stringify(relayToken(grant.token)), {
+            mode: 0o600,
+            flag: "wx",
+          });
+          await mkdir(path.dirname(loginAt), { recursive: true, mode: 0o700 });
+          await placeTokenPlaceholder(loginAt);
           try {
             container = placement.container({
               cwd,
               program: "agy",
               destinations: providerDestinations.antigravity,
-              files: [
-                {
-                  source: file,
-                  target: path.join(cwd, ".agents", "mcp_config.json"),
-                },
-              ],
+              files: [{ source: file, target: loginAt }],
             });
           } catch (error) {
             if (error instanceof ContainerRefusal)
               return failure(error.message);
             throw error;
           }
-        }
-        const published = await publishConfig(
-          cwd,
-          container
-            ? JSON.stringify({ babojubotOwner: ownerMark, mcpServers: {} })
-            : settings
-        );
-        if (published) {
-          owned = !configRefused(published);
-          return failure(configFailure(published));
-        }
+        } else
+          logs = await mkdtemp(path.join(os.tmpdir(), "babojubot-agy-log-"));
+        const runControl = grant
+          ? {
+              ...control,
+              signal: AbortSignal.any([control.signal, grant.failed]),
+            }
+          : control;
+        const relayBase = new URL(
+          `/api/relay/${encodeURIComponent(connectionId)}`,
+          request.access.toolsBaseUrl
+        ).href;
+        const logFile = logs ? path.join(logs, "agy.log") : undefined;
         const args = [
-          "--input-format",
-          "stream-json",
-          "--output-format",
-          "stream-json",
-          "--add-dir",
-          cwd,
-          "--disable-slash-commands",
+          "acp",
+          "--disable-telemetry",
           "--dangerously-skip-permissions",
+          ...(logFile ? ["--log-file", logFile] : []),
         ];
-        if (request.model) args.push("--model", request.model);
+        // 조직 도구는 세션을 열 때 이 실행 시도에만 준다. 작업 폴더에 토큰이 든 설정 파일을 두지 않는다.
+        const mcpServers = [
+          {
+            type: "http",
+            name: "organization",
+            url: new URL("/api/tools/mcp", request.access.toolsBaseUrl).href,
+            headers: [
+              {
+                name: "Authorization",
+                value: `Bearer ${request.access.token}`,
+              },
+            ],
+          },
+        ];
         const previous =
           typeof request.previousSession?.id === "string"
             ? request.previousSession.id
             : null;
-        if (previous) args.push("--conversation", previous);
-        let id: string | undefined,
-          result = failure(),
-          finished = false;
-        /** 완료된 step마다 보고된 사용량의 합. 잘못된 step이 섞인 합은 되살아나지 않는다. */
-        const usage: Record<UsageField, UsageAmount> = { ...unreportedUsage };
-        const steps = new Set<number>();
+        let sequence = 0,
+          sessionId: string | undefined,
+          prompting = false,
+          errored = false;
+        const pending = new Map<
+          number,
+          {
+            resolve: (value: Record<string, unknown>) => void;
+            reject: (error: Error) => void;
+          }
+        >();
         const child = startProcess({
           // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
           stateDir: home,
           command,
           args,
           cwd,
-          env: env(productHome, isolated),
+          env: {
+            ...env(productHome, isolated),
+            ...(grant
+              ? {
+                  // 모델 통신(Code Assist)을 인증 중계로 보낸다. 컨테이너에는 바깥으로 직접 나가는 길이 없다.
+                  CLOUD_CODE_URL: relayBase,
+                  AGY_CLI_DISABLE_AUTO_UPDATE: "1",
+                }
+              : {}),
+          },
           container,
           onFrame: async (raw) => {
-            if (!raw || typeof raw !== "object" || finished) return;
-            const frame = raw as {
-              event?: string;
-              conversation_id?: string;
-              step_update?: {
-                conversation_id?: string;
-                step_index: number;
-                state?: string;
-                usage?: Record<string, unknown>;
-              };
-              result?: {
-                status?: string;
-                conversation_id?: string;
-                error?: string;
-              };
-            };
+            const frame = record(raw);
+            if (typeof frame.id === "number" && !frame.method) {
+              const waiter = pending.get(frame.id);
+              if (!waiter) return;
+              pending.delete(frame.id);
+              if (frame.error)
+                waiter.reject(
+                  new AcpRejection(String(record(frame.error).message ?? ""))
+                );
+              else waiter.resolve(record(frame.result));
+              return;
+            }
+            // 명령 허락을 묻지 않게 띄우지만, 물으면 이 실행 시도의 결정대로 허락한다.
+            if (frame.method === "session/request_permission") {
+              const options = Array.isArray(record(frame.params).options)
+                ? (record(frame.params).options as unknown[]).map(record)
+                : [];
+              const allow = options.find((option) =>
+                String(option.kind).startsWith("allow")
+              );
+              child.write({
+                jsonrpc: "2.0",
+                id: frame.id,
+                result: {
+                  outcome: allow
+                    ? { outcome: "selected", optionId: allow.optionId }
+                    : { outcome: "cancelled" },
+                },
+              });
+              return;
+            }
+            const params = record(frame.params);
+            // 불러온 세션의 지난 대화는 본 요청 전에 다시 온다. 본 요청 뒤의 갱신만 본다.
             if (
-              frame.event === "init" &&
-              typeof frame.conversation_id === "string"
-            ) {
-              clearTimeout(startup);
-              id = frame.conversation_id;
-              // 프로그램은 없는 대화를 받으면 새 대화로 시작한다. 파일 위치를 가정하지 않고 시작한 대화로 판단한다.
-              if (previous && id !== previous)
-                await control.emit({
+              frame.method !== "session/update" ||
+              !prompting ||
+              params.sessionId !== sessionId
+            )
+              return;
+            const update = record(params.update);
+            // 실제 프로그램(1.5.4)은 실행 오류를 실패 종료로 알리지 않고 이 문구와 end_turn만 보낸다.
+            if (
+              update.sessionUpdate === "agent_message_chunk" &&
+              String(record(update.content).text ?? "").includes(
+                "Agent execution terminated due to error"
+              )
+            )
+              errored = true;
+          },
+        });
+        void child.done.then(() => {
+          for (const waiter of pending.values())
+            waiter.reject(new Error("Protocol closed"));
+          pending.clear();
+        });
+        const rpc = (method: string, params: unknown) =>
+          new Promise<Record<string, unknown>>((resolve, reject) => {
+            const id = ++sequence;
+            pending.set(id, { resolve, reject });
+            if (!child.write({ jsonrpc: "2.0", id, method, params })) {
+              pending.delete(id);
+              reject(new Error("Protocol closed"));
+            }
+          });
+        const startup = setTimeout(() => child.end(), startupLimitMs);
+        let ending: ReturnType<typeof setTimeout> | undefined;
+        const cancel = () => {
+          // 진행 중인 요청을 프로그램에 멈추게 하고, 멈추지 않으면 끝낸다.
+          if (sessionId && prompting) {
+            child.write({
+              jsonrpc: "2.0",
+              method: "session/cancel",
+              params: { sessionId },
+            });
+            ending ??= setTimeout(() => child.end(), cancelGraceMs);
+          } else child.end();
+        };
+        runControl.signal.addEventListener("abort", cancel, { once: true });
+        let outcome: Record<string, unknown> | undefined,
+          sessionError: string | undefined;
+        try {
+          if (runControl.signal.aborted) cancel();
+          else {
+            await rpc("initialize", {
+              protocolVersion: 1,
+              clientCapabilities: {
+                fs: { readTextFile: false, writeTextFile: false },
+                terminal: false,
+              },
+              clientInfo: { name: "babojubot", version: "0.0.0" },
+            });
+            if (previous)
+              try {
+                await rpc("session/load", {
+                  sessionId: previous,
+                  cwd,
+                  mcpServers,
+                });
+                sessionId = previous;
+              } catch (error) {
+                if (!(error instanceof AcpRejection)) throw error;
+                if (saysLoginProblem(error.message)) {
+                  sessionError = error.message;
+                  throw error;
+                }
+                // 문구에 기대지 않는다. 프로그램이 그 세션을 열지 못하면 새 세션으로 시작한다.
+                await runControl.emit({
                   type: "progress",
                   text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
                 });
-              await control.emit({
-                type: "progress",
-                text: "프로바이더가 작업을 시작했습니다.",
-              });
-            }
-            const step = frame.step_update;
-            if (
-              frame.event === "step_update" &&
-              id &&
-              step?.conversation_id === id &&
-              step.state === "DONE" &&
-              step.usage &&
-              !steps.has(step.step_index)
-            ) {
-              steps.add(step.step_index);
-              const input = usageAmount("tokens", step.usage.input_tokens),
-                cached = usageAmount("tokens", step.usage.cache_read_tokens);
-              // 입력은 캐시 읽기를 포함하므로 뺀다. 캐시 읽기를 보고하지 않은 step은 그대로 둔다.
-              usage.inputTokens = addUsage(
-                "tokens",
-                usage.inputTokens,
-                subtractUsage("tokens", input, cached ?? 0)
-              );
-              usage.cacheReadTokens = addUsage(
-                "tokens",
-                usage.cacheReadTokens,
-                cached
-              );
-              usage.outputTokens = addUsage(
-                "tokens",
-                usage.outputTokens,
-                usageAmount("tokens", step.usage.output_tokens)
-              );
-            }
-            if (frame.event === "result") {
-              finished = true;
-              const success =
-                !!id &&
-                frame.result?.conversation_id === id &&
-                frame.result.status === "SUCCESS";
-              result = {
-                ...failure(),
-                stopReason: success ? "completed" : "failed",
-                error: success ? null : "프로바이더 실행이 실패했습니다.",
-                // 사용량은 실행 시도가 끝날 때 한 번 정한다.
-                usage: null,
-                nextSession: success ? { id: id! } : null,
-              };
-              if (saysLoginProblem(frame.result?.error))
-                result.errorCode = "login_required";
-              child.end();
-            }
-          },
-        });
-        const startup = setTimeout(() => child.end(), startupLimitMs);
-        const cancel = () => {
-          child.interrupt();
-          child.end();
-        };
-        control.signal.addEventListener("abort", cancel, { once: true });
-        try {
-          if (control.signal.aborted) cancel();
-          else
-            child.write({
-              event: "user",
-              message: {
-                content:
-                  request.instructions.map((f) => f.content).join("\n\n") +
-                  "\n\n" +
-                  JSON.stringify({
-                    identity: request.identity,
-                    context: request.context,
-                    wakeReasons: request.wakeReasons,
-                  }),
-              },
+              }
+            if (!sessionId)
+              try {
+                const opened = await rpc("session/new", { cwd, mcpServers });
+                sessionId = String(opened.sessionId);
+              } catch (error) {
+                if (error instanceof AcpRejection) sessionError = error.message;
+                throw error;
+              }
+            clearTimeout(startup);
+            // 고른 모델을 쓰지 못하면 프로그램은 기본 모델로 그냥 돈다(1.5.4). 다른 모델로 돌지 않게 실패로 끝낸다.
+            if (request.model)
+              try {
+                await rpc("session/set_model", {
+                  sessionId,
+                  modelId: request.model,
+                });
+              } catch (error) {
+                if (error instanceof AcpRejection) {
+                  child.end();
+                  await child.done;
+                  return failure("고른 모델을 쓸 수 없어 실행하지 않았습니다.");
+                }
+                throw error;
+              }
+            await runControl.emit({
+              type: "progress",
+              text: "프로바이더가 작업을 시작했습니다.",
             });
-          const exited = await child.done;
-          // 끝난 방식과 상관없이 완료된 step의 합으로 사용량을 한 번 정한다. 결과도 완료된 step도 없으면 보고 안 됨이다.
-          const collected =
-            finished || steps.size > 0
-              ? providerUsage(connectionId, usage)
-              : null;
-          if (control.signal.aborted)
-            return {
-              ...failure(),
-              stopReason: "cancelled",
-              error: null,
-              usage: collected,
-            };
-          // 로그인이 없으면 프로그램이 결과 없이 오류 문구만 남기고 끝난다(1.5.3).
-          if (!finished && saysLoginProblem(exited.stderr))
-            return { ...result, errorCode: "login_required", usage: collected };
-          return { ...result, usage: collected };
+            prompting = true;
+            if (runControl.signal.aborted) cancel();
+            outcome = await rpc("session/prompt", {
+              sessionId,
+              prompt: [
+                {
+                  type: "text",
+                  text:
+                    request.instructions.map((f) => f.content).join("\n\n") +
+                    "\n\n" +
+                    JSON.stringify({
+                      identity: request.identity,
+                      context: request.context,
+                      wakeReasons: request.wakeReasons,
+                    }),
+                },
+              ],
+            });
+          }
+        } catch {
+          /* 결과 없이 끝났다. 아래에서 끝난 방식으로 정한다. */
         } finally {
           clearTimeout(startup);
-          control.signal.removeEventListener("abort", cancel);
+          child.end();
+          await child.done;
+          clearTimeout(ending);
+          runControl.signal.removeEventListener("abort", cancel);
         }
+        const usage = outcome?.usage
+          ? promptUsage(connectionId, outcome.usage)
+          : null;
+        if (control.signal.aborted)
+          return { ...failure(), stopReason: "cancelled", error: null, usage };
+        if (grant?.failed.aborted) return { ...failure(relayFailure), usage };
+        if (sessionError !== undefined && saysLoginProblem(sessionError))
+          return { ...failure(), errorCode: "login_required" };
+        if (outcome?.stopReason === "end_turn" && !errored && sessionId)
+          return {
+            stopReason: "completed",
+            error: null,
+            summary: null,
+            usage,
+            nextSession: { id: sessionId },
+          };
+        const result: RunResult = {
+          ...failure(),
+          error: "프로바이더 실행이 실패했습니다.",
+          usage,
+        };
+        // 실행 오류의 자세한 이유는 프로그램의 기록 파일에만 있다(1.5.4).
+        if (errored && logFile) {
+          const log = await readFile(logFile, "utf8").catch(() => "");
+          if (saysLoginProblem(log.slice(-4096)))
+            result.errorCode = "login_required";
+        }
+        return result;
       } catch {
         return control.signal.aborted
           ? { ...failure(), stopReason: "cancelled", error: null }
           : failure();
       } finally {
-        try {
-          // 정리에 실패해도 실행 결과는 그대로 돌려준다. 토큰은 실행 시도가 끝나면 무효다.
-          if (owned && cwd) await clearOwnedConfig(cwd);
-        } catch {
-          console.warn(
-            "[provider] could not remove the Antigravity configuration"
-          );
-        } finally {
-          if (attempt)
-            await rm(attempt, { recursive: true, force: true }).catch(() => {});
-          if (release && cwd) {
-            workspaces.delete(cwd);
-            release();
-          }
-        }
+        grant?.revoke();
+        if (attempt)
+          await rm(attempt, { recursive: true, force: true }).catch(() => {});
+        if (logs)
+          await rm(logs, { recursive: true, force: true }).catch(() => {});
       }
     },
   };
@@ -458,6 +658,7 @@ export function createAntigravityProvider(options: {
     id: connectionId,
     label: options.label ?? "Antigravity",
     isolatable: true,
+    credentialRelay: relay,
     login: { command, args: [], env: env() },
     adapter,
     models: [],
