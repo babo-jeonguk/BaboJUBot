@@ -342,6 +342,7 @@ test("the docked Inbox takes focus when opened, is linked from its triggers, and
     await expect(panel).toBeHidden();
     await expect(trigger).toBeFocused();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(trigger).not.toHaveAttribute("aria-controls");
   }
 
   // 홈의 `주의 필요` 칸도 같은 패널을 연다. Inbox가 비어 있어도 패널 제목이 포커스를 받는다.
@@ -360,10 +361,28 @@ test("the docked Inbox takes focus when opened, is linked from its triggers, and
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("choosing the current screen in the narrow navigation sheet returns focus to the sheet button", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const org = await createOrganization(page, "탐색 시트 재선택 조직");
+  await openWithLiveEvents(page, `/orgs/${org.id}/dashboard`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(org.name);
+  const opener = page.getByRole("button", { name: "탐색 열기" });
+  const sheet = page.getByRole("dialog", { name: "탐색" });
+  await opener.click();
+  await sheet.getByRole("link", { name: "대시보드" }).click();
+  await expect(sheet).toBeHidden();
+  await expect(page).toHaveURL(new RegExp(`/orgs/${org.id}/dashboard$`));
+  await expect(opener).toBeFocused();
+});
+
 test("the narrow Inbox drawer still traps focus and returns it to its trigger", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  // 초기 승인 요청이 Inbox 항목이 된다.
+  await createOrganization(page, "Inbox drawer 조직");
   await openWithLiveEvents(page, "/");
   // drawer가 열리면 바깥이 접근성 트리에서 숨으므로 트리거는 속성으로 찾는다.
   const trigger = page.locator('main button[aria-label^="Inbox · "]');
@@ -377,6 +396,8 @@ test("the narrow Inbox drawer still traps focus and returns it to its trigger", 
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
   await expect(trigger).toBeFocused();
+  // 닫힌 패널은 DOM에 없으므로 가리키지 않는다.
+  await expect(trigger).not.toHaveAttribute("aria-controls");
 
   await trigger.click();
   await drawer.getByRole("button", { name: "Inbox 닫기" }).click();
@@ -385,10 +406,19 @@ test("the narrow Inbox drawer still traps focus and returns it to its trigger", 
 
   // 항목을 골라 화면을 옮기면 drawer가 닫히고 새 화면 제목이 포커스를 받는다.
   await trigger.click();
-  await drawer.getByRole("link").first().click();
+  const item = drawer.getByRole("link").first();
+  await expect(item).toBeVisible(runs);
+  const href = await item.getAttribute("href");
+  await item.click();
   await expect(drawer).toBeHidden();
   await expect(page).toHaveURL(/\/inbox\//);
   await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
+
+  // 지금 보고 있는 항목을 다시 고르면 화면이 그대로라서 연 버튼으로 돌아간다.
+  await trigger.click();
+  await drawer.locator(`a[href="${href}"]`).click();
+  await expect(drawer).toBeHidden();
+  await expect(trigger).toBeFocused();
 });
 
 test("cancelling the final completion confirmation returns focus to its button without deciding", async ({
