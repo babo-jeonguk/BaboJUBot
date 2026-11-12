@@ -649,6 +649,46 @@ describe("the credential relay's per-connection differences (#148)", () => {
     expect((await send(url, grant.token, "/free/responses")).status).toBe(401);
     expect(up.seen).toHaveLength(2);
   });
+
+  it("finds the run's grant in x-api-key when the program keeps a public key in Authorization, and sends neither upstream", async () => {
+    // OpenCode의 무료 모델은 `Authorization: Bearer public`을 그대로 보내고, 권한은 `x-api-key`로만 실을 수 있다.
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const grant = relay.grant(scope());
+    const response = await send(url, undefined, "/free/responses", {
+      authorization: "Bearer public",
+      "x-api-key": grant.token,
+    });
+    expect(response.status).toBe(200);
+    expect(up.seen[0]!.headers.authorization).toBe("Bearer public");
+    expect(JSON.stringify(up.seen[0]!.headers)).not.toContain(grant.token);
+    // 원본을 쓰는 경로도 같다.
+    expect(
+      (
+        await send(url, undefined, "/v1/messages", {
+          authorization: "Bearer public",
+          "x-api-key": grant.token,
+        })
+      ).status
+    ).toBe(200);
+    expect(up.seen[1]!.headers.authorization).toBe("Bearer real-access-token");
+  });
+
+  it("refuses a request that carries two different runs' grants", async () => {
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const one = relay.grant(scope());
+    const two = relay.grant(scope());
+    const response = await send(url, one.token, "/v1/messages", {
+      "x-api-key": two.token,
+    });
+    expect(response.status).toBe(401);
+    expect(up.seen).toHaveLength(0);
+  });
 });
 
 describe("the credential relay with runs that overlap (#148)", () => {
