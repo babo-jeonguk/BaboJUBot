@@ -1034,6 +1034,41 @@ describe.skipIf(process.platform === "win32")(
   }
 );
 
+describe.skipIf(process.platform === "win32")(
+  "connections behind the credential relay (#148)",
+  () => {
+    it.each([
+      ["Claude", "claude", "claude-relay.mjs", createClaudeProvider],
+      ["Codex", "codex", "codex-relay.mjs", createCodexProvider],
+    ] as const)(
+      "give an isolated %s run no direct way to the provider: its model traffic leaves only through the credential relay",
+      async (_name, id, program, create) => {
+        const env = await setup({
+          [id]: [process.execPath, fixture(program)],
+        });
+        const hub = env.container.relay;
+        const opened: string[][] = [];
+        const stop = new AbortController();
+        const open = hub.open.bind(hub);
+        hub.open = (input) => {
+          opened.push(input.required.map(({ host }) => host));
+          // 열린 목적지만 본다. 프로그램은 닿지 않는 중계를 다시 시도하므로 곧 멈춘다.
+          setTimeout(() => stop.abort(), 100);
+          return open(input);
+        };
+        const provider = create({
+          dataDir: env.root,
+          container: env.container,
+          relay: { verified: true },
+        });
+        await provider.adapter.execute(env.isolated(), control(stop.signal));
+        expect(opened).toHaveLength(1);
+        expect(opened[0]).toEqual([]);
+      }
+    );
+  }
+);
+
 describe("the Docker engine check", () => {
   async function engine(files: Record<string, string> = {}) {
     const root = await mkdtemp(path.join(tmpdir(), "babojubot-engine-"));
