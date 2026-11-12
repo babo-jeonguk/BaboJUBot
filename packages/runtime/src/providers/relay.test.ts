@@ -373,10 +373,14 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const socket = net.connect(path.join(relay.directory, "egress.sock"));
     cleanups.push(() => void socket.destroy());
     socket.on("error", () => {});
+    // 응답을 읽어야 끝(FIN)을 받고 닫힌다.
+    let answer = "";
+    socket.on("data", (chunk: Buffer) => (answer += chunk.toString("latin1")));
     socket.write(
       `CONNECT localhost:${target.port} HTTP/1.1\r\nHost: localhost:${target.port}\r\n\r\n`
     );
     expect(await closedWithin(socket)).toBe("closed");
+    expect(answer).not.toMatch(/^HTTP\/1\.1 200/);
     expect(env.refused.at(-1)).toEqual({
       host: "localhost",
       port: target.port,
