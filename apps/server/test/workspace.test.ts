@@ -22,8 +22,15 @@ const withLinks = it.skipIf(lacks.symlink !== "");
 const withHardLinks = it.skipIf(lacks.hardLink !== "");
 
 const roots: string[] = [];
+const writers: ReturnType<typeof keepAppending>[] = [];
 afterEach(async () => {
+  // 진행 중인 덧붙이기를 정산한 뒤에 폴더를 지운다. 정리 실패는 hook 오류로 따로 보고되어 시험의 단언 실패를 가리지 않는다.
+  const stopped = await Promise.allSettled(
+    writers.splice(0).map((w) => w.stop())
+  );
   await Promise.all(roots.splice(0).map(remove));
+  const failed = stopped.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
 });
 const org = "organization-one";
 async function folder() {
@@ -184,14 +191,9 @@ it("takes what a file holds now even if it is still being written", async () => 
   const { root, shared } = await folder();
   const file = path.join(shared, "run.log");
   await writeFile(file, "시작\n");
-  const writer = keepAppending(file, "더\n");
-  try {
-    for (let i = 0; i < 20; i++)
-      expect((await content(root, "run.log")).length).toBeGreaterThan(0);
-  } finally {
-    // 진행 중인 덧붙이기가 끝난 뒤에 afterEach가 폴더를 지운다.
-    await writer.stop();
-  }
+  writers.push(keepAppending(file, "더\n"));
+  for (let i = 0; i < 20; i++)
+    expect((await content(root, "run.log")).length).toBeGreaterThan(0);
 });
 
 // #124: 에이전트가 스스로 고칠 수 있게 거부마다 이유가 다르다. 경로는 에이전트의 작업 폴더(조직 공유 폴더) 기준이다.
