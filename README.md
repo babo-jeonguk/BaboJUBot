@@ -10,12 +10,12 @@ For each research objective, BaboJUBot creates an independent research organizat
 
 ## Key Features
 
-- **Goal-Oriented AI Organizations**: Spin up a dedicated AI team for each research objective. Each organization maintains isolated memory, context, and workspaces, ensuring research efforts never contaminate each other.
-- **Human-in-the-Loop Governance**: Retain full control over key decisions. The AI team formulates plans and proposes team structures, but work begins only after your approval. Final completion is always determined by you.
-- **Visual Research Map**: Track research progress on a live, interactive graph (DAG). Watch hypotheses branch, converge, or get pruned as evidence accumulates.
-- **Real-Time Steering & Chat**: Jump into conversation with the Research Lead at any time. Queue upcoming instructions, steer in-flight execution, or interrupt and redirect immediately.
-- **Durable Research Artifacts**: Access structured Markdown reports, summaries, code, and data files generated during research. File artifacts keep the bytes captured at registration, so they stay viewable even if the original file later changes or is deleted.
-- **Observable Dashboard**: Real-time event streams provide complete visibility into agent activities, active runs, token usage and cost per run, and per-organization metrics without relying on hidden model traces.
+- **Goal-Oriented AI Organizations**: Spin up a dedicated AI team for each research objective with scoped memory, context, and workspaces. Workspace boundaries follow provider instructions by default, with optional Docker container isolation.
+- **Human-in-the-Loop Governance**: Retain full control over key decisions. The AI team formulates an initial plan, staffing, and environment specifications, but research begins only after your approval. Optional per-organization approval policies can govern additional actions, and final completion is always determined by you.
+- **Visual Research Map**: Track research progress on a live, interactive graph combining a primary parent tree with cross-cutting auxiliary connections. Watch hypotheses branch, connect, or be reversibly pruned as evidence accumulates.
+- **Real-Time Steering & Chat**: Jump into conversation with the Research Lead directly in the web dashboard. Queue upcoming instructions, steer in-flight execution when supported by the provider, or interrupt and redirect immediately.
+- **Durable Research Artifacts**: Access structured Markdown reports, summaries, code, and data files generated during research. File artifacts preserve their captured bytes even if the source file changes, rendering Markdown and text inline alongside rich metadata for other formats.
+- **Observable Dashboard**: Real-time event streams provide visibility into recorded agent activities, active runs, per-organization metrics, and per-run token usage and estimated costs as reported by the provider.
 
 ---
 
