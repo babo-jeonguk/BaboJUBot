@@ -474,7 +474,8 @@ describe("login residue in an organization's product folder", () => {
     }
   });
 
-  it.skipIf(process.getuid?.() === 0)(
+  // 폴더 권한으로 읽기를 막는다. root는 권한을 넘고, Windows는 POSIX 권한 비트로 읽기를 막지 않는다.
+  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
     "counts a path it cannot inspect as residue",
     async () => {
       const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
