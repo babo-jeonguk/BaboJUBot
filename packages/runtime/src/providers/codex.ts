@@ -1,4 +1,12 @@
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -134,6 +142,26 @@ async function isRelayLogin(file: string): Promise<boolean> {
     );
   } catch {
     return false;
+  }
+}
+/**
+ * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 실행 시도마다 그 위에 자기 로그인 파일을 넣는 자리다(Docker는 넣을 자리가 있어야 한다).
+ * 원본을 가리키는 링크는 따라가 쓰지 않도록 먼저 지운다. 같은 조직의 다른 실행 시도가 함께 두어도 같은 내용이다.
+ */
+async function placeLoginPlaceholder(at: string): Promise<void> {
+  if (await isRelayLogin(at)) return;
+  await rm(at, { force: true });
+  try {
+    await writeFile(at, JSON.stringify(relayLogin("")), {
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+      !(await isRelayLogin(at))
+    )
+      throw error;
   }
 }
 const failed = (): RunResult => ({
@@ -393,12 +421,16 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
         // Codex의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
         const isolated = request.execution === "container";
+        const loginAt = path.join(organization, "auth.json");
         if (
           isolated &&
           (await credentialResidue(organization, ["auth.json"], original)) &&
-          !(await isRelayLogin(path.join(organization, "auth.json")))
+          !(await isRelayLogin(loginAt))
         )
           return { ...failed(), error: residueRefusal };
+        // 격리 실행이 조직 폴더에 남긴 자리 표시는 로그인이 아니다. 이 컴퓨터의 실행이 그것을 연결의 로그인으로 옮기지 않게 먼저 지운다.
+        if (!isolated && (await isRelayLogin(loginAt)))
+          await rm(loginAt, { force: true });
         const linked =
           !isolated && (await shareLogin(path.join(organization, "auth.json")));
         const codexHome = linked || isolated ? organization : home;
@@ -407,38 +439,9 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         const cwd = request.workspace?.cwd ?? codexHome;
         const placement = placeAttempt(options.container, codexHome, request);
         if (!placement) return failed();
-        let container: ContainerLaunch | undefined;
-        try {
-          container = placement.container?.({
-            cwd,
-            program: "codex",
-            destinations: providerDestinations.codex,
-          });
-        } catch (error) {
-          if (error instanceof ContainerRefusal)
-            return { ...failed(), error: error.message };
-          throw error;
-        }
-        let result = failed(),
-          threadId = "",
-          turnId = "",
-          sequence = 0;
-        let totals: CodexTotals | undefined;
-        let baseline = readTotals(
-          request.previousSession?.tokens,
-          appServerKeys
-        );
-        let activities = Promise.resolve();
-        const pending = new Map<
-          number,
-          {
-            resolve: (value: Record<string, unknown>) => void;
-            reject: (error: Error) => void;
-            timer: ReturnType<typeof setTimeout>;
-          }
-        >();
-        // 권한은 실행 시도를 정리하는 이 try 안에서 받는다. 어디서 끝나든 finally가 거두고 컨테이너의 가짜 로그인을 지운다.
+        // 권한은 실행 시도를 정리하는 이 try 안에서 받는다. 어디서 끝나든 finally가 거두고 이 실행 시도 전용 폴더를 지운다.
         let grant: RelayGrant | undefined;
+        let attempt: string | undefined;
         try {
           if (isolated) {
             try {
@@ -446,15 +449,58 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             } catch {
               return { ...failed(), error: relayFailure };
             }
-            // 알려진 링크나 남은 파일을 먼저 지운다. 원본은 건드리지 않고, 기존 경로로는 절대 쓰지 않는다.
-            await rm(path.join(organization, "auth.json"), { force: true });
-            await mkdir(organization, { recursive: true, mode: 0o700 });
+            // 조직 폴더는 그 조직의 모든 컨테이너에 쓰기로 들어간다. 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 두고,
+            // 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 넣는다. 조직 폴더에는 권한 없는 자리 표시만 둔다.
+            attempt = await mkdtemp(
+              path.join(os.tmpdir(), "babojubot-attempt-")
+            );
             await writeFile(
-              path.join(organization, "auth.json"),
+              path.join(attempt, "auth.json"),
               JSON.stringify(relayLogin(grant.token)),
               { mode: 0o600, flag: "wx" }
             );
+            await placeLoginPlaceholder(loginAt);
           }
+          let container: ContainerLaunch | undefined;
+          try {
+            container = placement.container?.({
+              cwd,
+              program: "codex",
+              destinations: providerDestinations.codex,
+              ...(attempt
+                ? {
+                    files: [
+                      {
+                        source: path.join(attempt, "auth.json"),
+                        target: loginAt,
+                      },
+                    ],
+                  }
+                : {}),
+            });
+          } catch (error) {
+            if (error instanceof ContainerRefusal)
+              return { ...failed(), error: error.message };
+            throw error;
+          }
+          let result = failed(),
+            threadId = "",
+            turnId = "",
+            sequence = 0;
+          let totals: CodexTotals | undefined;
+          let baseline = readTotals(
+            request.previousSession?.tokens,
+            appServerKeys
+          );
+          let activities = Promise.resolve();
+          const pending = new Map<
+            number,
+            {
+              resolve: (value: Record<string, unknown>) => void;
+              reject: (error: Error) => void;
+              timer: ReturnType<typeof setTimeout>;
+            }
+          >();
           const relayBase = new URL(
             `/api/relay/${encodeURIComponent(id)}`,
             request.access.toolsBaseUrl
@@ -740,8 +786,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           return { ...result, usage };
         } finally {
           grant?.revoke();
-          if (grant)
-            await rm(path.join(organization, "auth.json"), { force: true });
+          if (attempt)
+            await rm(attempt, { recursive: true, force: true }).catch(() => {});
         }
       },
     },
