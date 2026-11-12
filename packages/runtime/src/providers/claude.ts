@@ -358,7 +358,12 @@ async function executeClaude(
   try {
     if (placement.container)
       try {
-        grant = connection.relay.grant({ signal: control.signal });
+        grant = connection.relay.grant({
+          signal: control.signal,
+          organizationId: request.organizationId,
+          // 세션 정비(압축)에는 실행이 없다. #149 중계도 그때는 실행 신원을 넣지 않는다.
+          ...(request.runId ? { runId: request.runId } : {}),
+        });
       } catch {
         return { ...failed(), error: relayFailure };
       }

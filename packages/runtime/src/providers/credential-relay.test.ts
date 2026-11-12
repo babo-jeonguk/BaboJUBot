@@ -186,7 +186,11 @@ async function received(response: Response) {
 describe("the credential relay", () => {
   it("sends an allowed request to the fixed upstream with the real credential in place of the run's grant, and returns no cookie", async () => {
     const { up, relay, url } = await setup();
-    const grant = relay.grant(scope());
+    const grant = relay.grant({
+      ...scope(),
+      organizationId: "organization-id",
+      runId: "run-id",
+    });
     const response = await send(url, grant.token, "/v1/messages?beta=true", {
       cookie: "client=1",
       host: "attacker.invalid",

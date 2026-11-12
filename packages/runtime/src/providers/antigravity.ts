@@ -349,7 +349,11 @@ export function createAntigravityProvider(options: {
         let container: ContainerLaunch | undefined;
         if (placement.container) {
           try {
-            grant = relay.grant({ signal: control.signal });
+            grant = relay.grant({
+              signal: control.signal,
+              organizationId: request.identity.organizationId,
+              runId: request.identity.runId,
+            });
           } catch {
             return failure(relayFailure);
           }

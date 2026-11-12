@@ -57,6 +57,9 @@ export type RelayProfile = {
 /** 실행 시도 하나의 권한. `token`은 그 실행 시도의 프로그램에만 준다. */
 export type RelayGrant = {
   token: string;
+  /** 발급할 때 정한 조직·실행. 기록과 시험에서 권한의 범위를 확인한다. */
+  organizationId?: string;
+  runId?: string;
   /** 중계가 실패해 권한을 거둔 경우에만 끝나는 신호. 어댑터는 이것으로 프로그램을 멈추고 실행 시도를 실패로 끝낸다. */
   failed: AbortSignal;
   /** 권한을 거둔다. 새 요청을 거부하고 진행 중인 요청·stream을 끊는다. 여러 번 불러도 된다. */
@@ -68,11 +71,23 @@ export type CredentialRelay = CredentialRelayEndpoint & {
    * 실행 시도 하나의 권한을 발급한다. `signal`이 끝나면(실행 중단) 바로 거둔다. 중계가 실패 상태면 던진다.
    * 실행 시도가 끝나면 부른 쪽이 `revoke`한다.
    */
-  grant: (scope: { signal: AbortSignal }) => RelayGrant;
+  grant: (scope: RelayGrantScope) => RelayGrant;
+};
+
+/**
+ * 권한을 묶을 범위. `signal`은 그 실행 시도의 중단 신호다. 조직·실행을 주면, #149의 실행 시도 중계가 요청에 덮어쓴 신원
+ * (`x-babojubot-relay-*`)이 있을 때 그것과 맞는 요청만 받는다(조직 도구와 같은 규칙).
+ */
+export type RelayGrantScope = {
+  signal: AbortSignal;
+  organizationId?: string;
+  runId?: string;
 };
 
 /** 실행 시도 권한의 상태. 권한은 그 실행 시도의 프로그램에만 준 값 자체이며, 요청의 어떤 값도 다른 조직·실행 시도로 바꾸지 못한다. */
 type GrantState = {
+  organizationId?: string;
+  runId?: string;
   expiresAt: number;
   inflight: Set<{ destroy: () => void }>;
   failure: AbortController;
@@ -289,7 +304,7 @@ export function createCredentialRelay(options: {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    grant({ signal }) {
+    grant({ signal, organizationId, runId }) {
       if (failed) throw new Error("credential relay is not available");
       // 거두지 못하고 만료된 권한을 정리한다.
       for (const [token, state] of grants)
@@ -298,6 +313,8 @@ export function createCredentialRelay(options: {
       const failure = new AbortController();
       const stop = () => revoke(token, false);
       grants.set(token, {
+        organizationId,
+        runId,
         expiresAt: now() + grantLifetimeMs,
         inflight: new Set(),
         failure,
@@ -305,7 +322,13 @@ export function createCredentialRelay(options: {
       });
       signal.addEventListener("abort", stop, { once: true });
       if (signal.aborted) stop();
-      return { token, failed: failure.signal, revoke: stop };
+      return {
+        token,
+        organizationId,
+        runId,
+        failed: failure.signal,
+        revoke: stop,
+      };
     },
     handle(req, res) {
       void (async () => {
@@ -320,6 +343,16 @@ export function createCredentialRelay(options: {
           revoke(token, false);
           return deny(res, 401, "relay_grant_invalid");
         }
+        // 격리 실행의 중계(#149)는 요청에 그 실행 시도의 신원을 덮어써 넣는다. 다른 조직·실행의 중계로 온 권한은 원본을 읽기 전에 거부한다.
+        const relayOrganization =
+          req.headers[relayIdentityHeaders.organization];
+        if (
+          (relayOrganization !== undefined ||
+            req.headers[relayIdentityHeaders.run] !== undefined) &&
+          (relayOrganization !== state.organizationId ||
+            req.headers[relayIdentityHeaders.run] !== state.runId)
+        )
+          return deny(res, 401, "relay_grant_invalid");
         const target = new URL(req.url ?? "/", "http://relay.invalid");
         const method = (req.method ?? "GET").toUpperCase();
         const route = profile.routes.find(

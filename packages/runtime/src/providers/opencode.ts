@@ -567,7 +567,11 @@ export function createOpenCodeProvider(options: {
         }
         if (placement.container) {
           try {
-            grant = relay.grant({ signal: control.signal });
+            grant = relay.grant({
+              signal: control.signal,
+              organizationId: input.identity.organizationId,
+              runId: input.identity.runId,
+            });
           } catch {
             return { ...failure(), error: relayFailure };
           }

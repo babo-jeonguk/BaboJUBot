@@ -532,7 +532,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         try {
           if (isolated) {
             try {
-              grant = relay.grant({ signal: control.signal });
+              grant = relay.grant({
+                signal: control.signal,
+                organizationId: request.identity.organizationId,
+                runId: request.identity.runId,
+              });
             } catch {
               return { ...failed(), error: relayFailure };
             }
