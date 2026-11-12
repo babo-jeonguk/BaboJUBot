@@ -614,6 +614,12 @@ describe("organization network allow list", () => {
           { host: "a.com", port: 443, addresses: ["10.0.0.0/33"] },
         ],
       },
+      {
+        destinations: [{ host: "a.com", port: 443, addresses: ["0.0.0.0/0"] }],
+      },
+      {
+        destinations: [{ host: "a.com", port: 443, addresses: ["10.0.0.0/8"] }],
+      },
       { destinations: [{ host: "a.com" }] },
       {},
     ])

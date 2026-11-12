@@ -108,6 +108,12 @@ const closed = (socket: net.Socket) =>
     if (socket.destroyed) return resolve();
     socket.once("close", () => resolve());
   });
+/** 정해진 시간 안에 닫혔는지. 닫히지 않는 결함이 시험 시간 초과로 번지지 않게 한다. */
+const closedWithin = (socket: net.Socket, ms = 2000) =>
+  Promise.race([
+    closed(socket).then(() => "closed"),
+    new Promise((resolve) => setTimeout(() => resolve("open"), ms)),
+  ]);
 
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
 describe.skipIf(process.platform === "win32")("isolated run relay", () => {
@@ -184,7 +190,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         destination({
           host: "localhost",
           port: target.port,
-          addresses: ["127.0.0.0/8", "::1"],
+          addresses: ["127.0.0.1", "::1"],
         }),
       ],
     });
@@ -307,6 +313,71 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await relays.revalidate(identity.organizationId);
     await closed(open.socket);
     expect(refused.at(-1)).toEqual({
+      host: "localhost",
+      port: target.port,
+      reason: "policy_changed",
+    });
+  });
+
+  it("closes a tunnel when the user removes only the internal address it needed, keeping the name and port", async () => {
+    const target = await fixture("echo");
+    const { relays, refused, setResearch } = hub();
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    setResearch([
+      destination({
+        host: "localhost",
+        port: target.port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const open = await connectVia(relay.directory, `localhost:${target.port}`);
+    expect(open.head).toMatch(/^HTTP\/1\.1 200/);
+    // 이름·포트는 그대로 두고 내부 주소 예외만 지운다. 새 연결은 거부되므로 열린 연결도 닫혀야 한다.
+    setResearch([destination({ host: "localhost", port: target.port })]);
+    await relays.revalidate(identity.organizationId);
+    expect(await closedWithin(open.socket)).toBe("closed");
+    expect(refused.at(-1)).toEqual({
+      host: "localhost",
+      port: target.port,
+      reason: "policy_changed",
+    });
+    expect(
+      (await connectVia(relay.directory, `localhost:${target.port}`)).head
+    ).toMatch(/address_not_allowed/);
+  });
+
+  it("closes a connection admitted under the old policy when the user narrowed it while that connection was opening", async () => {
+    const target = await fixture("echo");
+    const entry = destination({
+      host: "localhost",
+      port: target.port,
+      addresses: ["127.0.0.1", "::1"],
+    });
+    let current: Destination[] = [entry];
+    let narrowing = true;
+    const env = hub({
+      // 첫 판정이 옛 목록을 읽은 직후 사용자가 목록을 비우고, 그 재검사가 끝난 뒤에야 연결이 열린다.
+      research: async () => {
+        const seen = current;
+        if (narrowing) {
+          narrowing = false;
+          current = [];
+          await env.relays.revalidate(identity.organizationId);
+        }
+        return seen;
+      },
+    });
+    const relay = env.relays.open({ identity, required: [] });
+    await relay.ready;
+    const socket = net.connect(path.join(relay.directory, "egress.sock"));
+    cleanups.push(() => void socket.destroy());
+    socket.on("error", () => {});
+    socket.write(
+      `CONNECT localhost:${target.port} HTTP/1.1\r\nHost: localhost:${target.port}\r\n\r\n`
+    );
+    expect(await closedWithin(socket)).toBe("closed");
+    expect(env.refused.at(-1)).toEqual({
       host: "localhost",
       port: target.port,
       reason: "policy_changed",

@@ -146,7 +146,7 @@ describe("egress destination decision", () => {
     const policy = rules([
       { host: "models.lan", port: 8000, addresses: ["10.0.0.5"] },
       { host: "localhost", port: 11434, addresses: ["127.0.0.1"] },
-      { host: "sneaky.lan", port: 3100, addresses: ["127.0.0.0/8"] },
+      { host: "sneaky.lan", port: 3100, addresses: ["127.0.0.1"] },
     ]);
     const resolve = resolver({
       "models.lan": ["10.0.0.5"],
@@ -197,5 +197,56 @@ describe("egress destination decision", () => {
         addresses: ["10.0.0.0/33"],
       }).success
     ).toBe(false);
+  });
+
+  it("takes an internal address exception only as single addresses, never a range such as the whole address space or the whole LAN", () => {
+    for (const address of [
+      "0.0.0.0/0",
+      "::/0",
+      "10.0.0.0/8",
+      "127.0.0.0/8",
+      "192.168.0.0/24",
+      "fd00::/8",
+      "10.0.0.5/32",
+    ])
+      expect(
+        destinationSchema.safeParse({
+          host: "models.lan",
+          port: 8000,
+          addresses: [address],
+        }).success,
+        address
+      ).toBe(false);
+    for (const address of ["10.0.0.5", "127.0.0.1", "::1", "fd00::5"])
+      expect(
+        destinationSchema.safeParse({
+          host: "models.lan",
+          port: 8000,
+          addresses: [address],
+        }).success,
+        address
+      ).toBe(true);
+  });
+
+  it("ignores a range exception that bypassed the schema, so it never opens internal addresses", async () => {
+    // 운영자 설정·옛 저장값처럼 입력 검사를 거치지 않은 목록도 같은 규칙으로 판정한다.
+    const policy: EgressRules = {
+      destinations: [
+        { host: "models.example", port: 8000, addresses: ["0.0.0.0/0"] },
+        { host: "lan.example", port: 8000, addresses: ["10.0.0.0/8"] },
+      ],
+      protectedPorts: [],
+      hostAddresses: [],
+    };
+    const resolve = resolver({
+      "models.example": ["127.0.0.1"],
+      "lan.example": ["10.0.0.7"],
+    });
+    expect(
+      await decideDestination(policy, "models.example", 8000, resolve)
+    ).toEqual({ allowed: false, reason: "address_not_allowed" });
+    expect(
+      await decideDestination(policy, "lan.example", 8000, resolve)
+    ).toEqual({ allowed: false, reason: "address_not_allowed" });
   });
 });

@@ -5,11 +5,17 @@
 //   passes stdin/stdout through and forwards SIGINT/SIGTERM. With BABOJUBOT_INBOUND_PORT it stands in for the image's relay.mjs:
 //   once the program prints a `{"url":"http://127.0.0.1:N"}` frame it keeps connections open to the relay folder's inbound.sock
 //   (the `/run/babojubot` mount source) and joins each to port N on its first byte.
-// - `rm`: succeeds. `inspect`/`container inspect`: "No such container".
+// - `rm`: succeeds and records whether the last run's relay socket (`egress.sock`) still existed (`relayOpen`).
+//   `inspect`/`container inspect`: "No such container". With <stateDir>/rm-fails, `rm` fails and the container stays.
 // - `info`: prints <stateDir>/info.json or a local Linux engine. `image inspect`: prints <stateDir>/runner-version or "2".
 //   `context inspect`: prints <stateDir>/context-host or the local socket.
 import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
@@ -70,6 +76,7 @@ if (verb === "run") {
       Object.fromEntries(spec.split(",").map((part) => part.split("=")))
     )
     .find((mount) => mount.target === "/run/babojubot")?.source;
+  if (relay) writeFileSync(path.join(stateDir, "relay-dir"), relay);
   const inbound = Boolean(env.BABOJUBOT_INBOUND_PORT);
   const offer = (port) => {
     const reverse = net.connect(path.join(relay, "inbound.sock"));
@@ -121,7 +128,27 @@ if (verb === "run") {
     process.on(signal, () => child.kill(signal));
   child.on("close", (code, signal) => process.exit(code ?? (signal ? 137 : 1)));
 } else {
+  const failing = existsSync(path.join(stateDir, "rm-fails"));
+  if (verb === "rm") {
+    let relayOpen = false;
+    try {
+      const relay = readFileSync(path.join(stateDir, "relay-dir"), "utf8");
+      relayOpen = existsSync(path.join(relay, "egress.sock"));
+    } catch {
+      /* no run yet */
+    }
+    record({ args, relayOpen });
+    if (failing) {
+      process.stderr.write("Error response from daemon: cannot remove\n");
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   record({ args });
+  if (verb === "inspect" && failing) {
+    process.stdout.write("[{}]\n");
+    process.exit(0);
+  }
   if (verb === "inspect") {
     process.stderr.write(`Error: No such container: ${args.at(-1)}\n`);
     process.exit(1);

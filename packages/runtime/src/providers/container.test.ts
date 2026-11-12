@@ -34,7 +34,11 @@ afterEach(async () => {
   );
 });
 
-type Call = { args: string[]; env?: Record<string, string> };
+type Call = {
+  args: string[];
+  env?: Record<string, string>;
+  relayOpen?: boolean;
+};
 const image = "babojubot-runner-test";
 const fixture = (name: string) => path.resolve("test-fixtures", name);
 /** 임시 폴더 바로 아래 폴더의 실제 경로. 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) mount 원본은 실제 경로다. 폴더는 이미 지워졌을 수 있다. */
@@ -97,6 +101,7 @@ async function setup(programs: Record<string, string[]>) {
   };
   return {
     root,
+    state,
     container,
     isolated,
     calls,
@@ -376,6 +381,35 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     const calls = await env.calls();
     expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
   });
+
+  it("takes the relay back before removing the container, even when Docker cannot remove it", async () => {
+    const env = await setup({
+      claude: [
+        process.execPath,
+        fixture("replay.mjs"),
+        fixture("claude-cancel.synthetic.json"),
+      ],
+    });
+    // Docker 프로그램은 끝났지만 daemon이 컨테이너를 지우지 못한다. 컨테이너가 살아 있어도 중계는 이미 닫혀 있어야 한다.
+    await writeFile(path.join(env.state, "rm-fails"), "");
+    const provider = createClaudeProvider({
+      dataDir: env.root,
+      container: env.container,
+    });
+    const controller = new AbortController();
+    const result = await provider.adapter.execute(env.isolated(), {
+      signal: controller.signal,
+      emit: async () => controller.abort(),
+    });
+    expect(result.stopReason).toBe("cancelled");
+    const calls = await env.calls();
+    const name = nameOf(runCall(calls));
+    const removals = calls.filter(
+      (c) => c.args.includes("rm") && c.args.includes(name)
+    );
+    expect(removals.length).toBeGreaterThan(0);
+    expect(removals.map((c) => c.relayOpen)).toEqual(removals.map(() => false));
+  }, 20_000);
 
   it.each([
     ["Claude", createClaudeProvider],
