@@ -1582,6 +1582,23 @@ describe.skipIf(process.platform === "win32")(
         create: createAntigravityProvider,
       },
     } as const;
+    it.each([
+      ["Claude", createClaudeProvider],
+      ["Codex", createCodexProvider],
+      ["OpenCode", createOpenCodeProvider],
+      ["Antigravity", createAntigravityProvider],
+    ] as const)(
+      "%s opens isolated runs by default: its relay was checked with a real subscription (2026-11-12)",
+      async (_name, create) => {
+        const env = await setup({});
+        const provider = create({
+          dataDir: env.root,
+          container: env.container,
+        });
+        expect(provider.credentialRelay?.verified).toBe(true);
+      }
+    );
+
     const containerProgram = {
       claude: "claude",
       codex: "codex",
