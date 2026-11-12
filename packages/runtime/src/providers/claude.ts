@@ -66,13 +66,6 @@ export const claudeRelayProfile: RelayProfile = {
   ],
   authorize: (credential) => ({ authorization: `Bearer ${credential}` }),
 };
-/** 컨테이너의 프로그램이 원본 인증으로 쓸 수 있는 변수. 격리 실행에서는 넘기지 않고 중계 값만 넣는다. */
-const credentialVariables = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-];
 /** 조직 제품 폴더에 남으면 격리 실행을 시작하지 않는 로그인 흔적(프로그램 안에서 로그인한 기록). */
 const credentialFiles = ["config/.credentials.json"];
 const launchSchema = z.object({
@@ -99,7 +92,7 @@ type ClaudeConnection = {
   folders: ReturnType<typeof connectionFolders>;
   command: readonly [string, ...string[]];
   /** 그 제품 폴더로 띄우는 프로그램 환경. */
-  environment: (home: string) => NodeJS.ProcessEnv;
+  environment: (home: string, isolated?: boolean) => NodeJS.ProcessEnv;
   active: Map<string, (message: SteerMessage) => SteerOutcome>;
   container?: ContainerSettings;
   relay: CredentialRelay;
@@ -151,17 +144,15 @@ async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
 }
 const relayFailure =
   "인증 중계가 연결의 로그인을 쓰지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
-/** 격리 실행의 프로그램 환경: 원본 인증 변수를 빼고 중계 주소와 이 실행 시도의 권한만 넣는다. */
+/** 격리 실행 환경에는 원본 인증 변수가 처음부터 없다(providerEnvironment). 중계 주소와 이 실행 시도의 권한만 넣는다. */
 function relayEnvironment(
   env: NodeJS.ProcessEnv,
   toolsBaseUrl: string,
   connectionId: string,
   grant: RelayGrant
 ): NodeJS.ProcessEnv {
-  const result = { ...env };
-  for (const name of credentialVariables) delete result[name];
   return {
-    ...result,
+    ...env,
     ANTHROPIC_BASE_URL: new URL(
       `/api/relay/${encodeURIComponent(connectionId)}`,
       toolsBaseUrl
@@ -177,14 +168,19 @@ export function createClaudeProvider(
   const connectionHome = folders.connection;
   const command = options.command ?? commandFor(id, "claude");
   const active = new Map<string, (message: SteerMessage) => SteerOutcome>();
-  const environment = (home: string) =>
-    providerEnvironment(id, home, {
-      CLAUDE_CONFIG_DIR: path.join(home, "config"),
-      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-      DISABLE_AUTOUPDATER: "1",
-      // root로 돌면 Claude가 권한 건너뛰기를 거부한다. 컨테이너 같은 환경에서도 돌게 한다.
-      ...(process.getuid?.() === 0 ? { IS_SANDBOX: "1" } : {}),
-    });
+  const environment = (home: string, isolated = false) =>
+    providerEnvironment(
+      id,
+      home,
+      {
+        CLAUDE_CONFIG_DIR: path.join(home, "config"),
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+        DISABLE_AUTOUPDATER: "1",
+        // root로 돌면 Claude가 권한 건너뛰기를 거부한다. 컨테이너 같은 환경에서도 돌게 한다.
+        ...(process.getuid?.() === 0 ? { IS_SANDBOX: "1" } : {}),
+      },
+      { isolated }
+    );
   const connection: ClaudeConnection = {
     id,
     folders,
@@ -317,12 +313,12 @@ async function executeClaude(
 ): Promise<RunResult> {
   const { folders, command, active } = connection;
   const home = folders.organization(request.organizationId);
-  const env = connection.environment(home);
   const maintenance = request.maintenance ?? false;
   if (control.signal.aborted)
     return { ...failed(), stopReason: "cancelled", error: null };
   const placement = placeAttempt(connection.container, home, request);
   if (!placement) return failed();
+  const env = connection.environment(home, Boolean(placement.container));
   await mkdir(home, { recursive: true, mode: 0o700 });
   // 격리 실행에는 연결의 로그인을 넣지 않는다. 조직 폴더에 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.
   if (placement.container && (await credentialResidue(home, credentialFiles)))

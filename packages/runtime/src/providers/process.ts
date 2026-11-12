@@ -74,16 +74,20 @@ export function commandFor(
 /**
  * 연결의 프로그램 환경. 제품 전용 값 위에 공통 변수와 `BABOJUBOT_<연결>_PASS_ENV`(쉼표로 구분)에 적은 변수만 더한다.
  * API 키 같은 값은 사용자가 그 연결에 적은 때만 넘긴다. 쓰는 줄 모르고 다른 계정으로 과금되지 않게 한다.
+ * 격리 실행(컨테이너)에는 이름 적은 변수를 넘기지 않는다. 컨테이너 전체가 장악돼도 사용자의 다른 로그인이 나가지 않게 한다(#148).
  */
 export function providerEnvironment(
   id: string,
   home: string,
-  own: NodeJS.ProcessEnv
+  own: NodeJS.ProcessEnv,
+  options: { isolated?: boolean } = {}
 ): NodeJS.ProcessEnv {
-  const named = (process.env[settingName(id, "PASS_ENV")] ?? "")
-    .split(",")
-    .map((name) => name.trim())
-    .filter(Boolean);
+  const named = options.isolated
+    ? []
+    : (process.env[settingName(id, "PASS_ENV")] ?? "")
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
   const picked = [...sharedVariables, ...named].flatMap((name) =>
     process.env[name] === undefined ? [] : [[name, process.env[name]]]
   );

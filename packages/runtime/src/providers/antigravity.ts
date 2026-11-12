@@ -107,12 +107,17 @@ export function createAntigravityProvider(options: {
     await mkdir(home, { recursive: true, mode: 0o700 });
     await shareLogin(tokenAt(home));
   };
-  const env = (productHome = home) =>
-    providerEnvironment(connectionId, productHome, {
-      XDG_CONFIG_HOME: path.join(productHome, "config"),
-      XDG_DATA_HOME: path.join(productHome, "data"),
-      XDG_CACHE_HOME: path.join(productHome, "cache"),
-    });
+  const env = (productHome = home, isolated = false) =>
+    providerEnvironment(
+      connectionId,
+      productHome,
+      {
+        XDG_CONFIG_HOME: path.join(productHome, "config"),
+        XDG_DATA_HOME: path.join(productHome, "data"),
+        XDG_CACHE_HOME: path.join(productHome, "cache"),
+      },
+      { isolated }
+    );
   const probe = async (args: string[], signal: AbortSignal) => {
     return (
       await runProbe(command, args, {
@@ -181,14 +186,16 @@ export function createAntigravityProvider(options: {
           request.identity.organizationId
         );
         await prepare();
-        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이면 시작하지 않는다.
+        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
         // Antigravity의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
         const isolated = request.execution === "container";
         if (
           isolated &&
-          (await credentialResidue(organization, [
-            path.relative(organization, tokenAt(organization)),
-          ]))
+          (await credentialResidue(
+            organization,
+            [path.relative(organization, tokenAt(organization))],
+            original
+          ))
         )
           return failure(residueRefusal);
         const linked = !isolated && (await shareLogin(tokenAt(organization)));
@@ -284,7 +291,7 @@ export function createAntigravityProvider(options: {
           command,
           args,
           cwd,
-          env: env(productHome),
+          env: env(productHome, isolated),
           container,
           onFrame: async (raw) => {
             if (!raw || typeof raw !== "object" || finished) return;

@@ -88,16 +88,21 @@ export function createOpenCodeProvider(options: {
   const home = folders.connection,
     command = options.command ?? commandFor(connectionId, "opencode");
   /** 그 제품 폴더로 띄우는 환경. 로그인과 세션은 그 폴더의 DB 하나에 함께 있다. */
-  const env = (productHome = home) =>
-    providerEnvironment(connectionId, productHome, {
-      XDG_CONFIG_HOME: path.join(productHome, "config"),
-      XDG_DATA_HOME: path.join(productHome, "data"),
-      XDG_CACHE_HOME: path.join(productHome, "cache"),
-      XDG_STATE_HOME: path.join(productHome, "state"),
-      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-      OPENCODE_DISABLE_CLAUDE_CODE: "1",
-      OPENCODE_DISABLE_FILEWATCHER: "1",
-    });
+  const env = (productHome = home, isolated = false) =>
+    providerEnvironment(
+      connectionId,
+      productHome,
+      {
+        XDG_CONFIG_HOME: path.join(productHome, "config"),
+        XDG_DATA_HOME: path.join(productHome, "data"),
+        XDG_CACHE_HOME: path.join(productHome, "cache"),
+        XDG_STATE_HOME: path.join(productHome, "state"),
+        OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        OPENCODE_DISABLE_CLAUDE_CODE: "1",
+        OPENCODE_DISABLE_FILEWATCHER: "1",
+      },
+      { isolated }
+    );
   let warnedSystemConfig = false;
   const prepare = async () => {
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -198,7 +203,7 @@ export function createOpenCodeProvider(options: {
         : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
       cwd: productHome,
       env: {
-        ...env(productHome),
+        ...env(productHome, Boolean(container)),
         OPENCODE_CONFIG_DIR: directory,
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         OPENCODE_SERVER_PASSWORD: password,

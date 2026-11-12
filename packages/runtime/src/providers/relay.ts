@@ -1,8 +1,9 @@
 import http from "node:http";
 import https from "node:https";
 import { createHash, randomBytes } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { lstat, readlink } from "node:fs/promises";
 import path from "node:path";
+import { Transform } from "node:stream";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
 
 /**
@@ -10,7 +11,8 @@ import type { CredentialRelayEndpoint } from "@babojubot/contracts";
  * 중계는 컨테이너 밖(서버)에서 돌며 권한을 확인한 뒤에만 원본을 읽어 정해진 상류에 실제 인증을 붙인다.
  *
  * 공통 경로가 맡는 것: 권한 발급·확인·회수(실행 중단·끝·서버 재시작), 허용 작업(메서드·경로) 확인, 요청 쪽 인증 header 제거와 실제 인증 주입,
- * 상류 고정(redirect 거부), 응답 쿠키 제거, stream 전달과 회수 때 끊기, 원본을 읽지 못하면 연결 실패 처리.
+ * 상류 고정(redirect 거부), 응답 쿠키 제거, stream 전달과 회수 때 끊기, 응답 header·본문에 원본이 그대로 나오면 막기, 압축 응답 거부,
+ * 원본을 읽지 못하면 연결 실패 처리.
  * 프로바이더마다 다른 것은 `RelayProfile`(상류·허용 작업·주입 형식)과 원본 읽기뿐이다.
  * 같은 연결을 여러 조직이 쓰지만, 권한은 발급할 때 정한 조직·실행 시도에만 묶이며 요청의 어떤 값도 그것을 바꾸지 못한다.
  */
@@ -109,6 +111,37 @@ const deny = (res: http.ServerResponse, status: number, code: string): void => {
   res.end(JSON.stringify({ error: { code } }));
 };
 
+/**
+ * 원본이 응답에 그대로 나오면 그 앞에서 끊는다. 원본의 앞부분일 수 있는 끝 조각만 다음 조각이 올 때까지 잡아 둔다.
+ * 변형된 반향(인코딩·잘린 값)은 막지 못한다.
+ */
+function echoGuard(secret: string): Transform {
+  const secretBytes = Buffer.from(secret);
+  let held = Buffer.alloc(0);
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      const buffer = Buffer.concat([held, chunk]);
+      if (buffer.includes(secretBytes)) {
+        callback(new Error("credential echoed"));
+        return;
+      }
+      let keep = 0;
+      for (let k = Math.min(secretBytes.length - 1, buffer.length); k >= 1; k--)
+        if (
+          buffer.subarray(buffer.length - k).equals(secretBytes.subarray(0, k))
+        ) {
+          keep = k;
+          break;
+        }
+      held = Buffer.from(buffer.subarray(buffer.length - keep));
+      callback(null, buffer.subarray(0, buffer.length - keep));
+    },
+    flush(callback) {
+      callback(null, held);
+    },
+  });
+}
+
 /** 요청이 실은 권한 값. `Authorization: Bearer`나 `x-api-key`에 둔다(프로그램마다 인증 header가 다르다). */
 function presentedToken(req: http.IncomingMessage): string | undefined {
   const authorization = req.headers.authorization;
@@ -147,15 +180,20 @@ export function createCredentialRelay(options: {
     for (const request of state.inflight) request.destroy();
     state.inflight.clear();
   };
-  /** 원본을 읽지 못했거나(`rejected` 없음) 상류가 원본을 거부했다(`rejected`). */
-  const fail = (rejected?: string) => {
+  /** 원본을 읽지 못했거나(`unreadable`), 상류가 원본을 거부했거나(`rejected`), 요청에 넣을 수 없다(`unusable`). */
+  const fail = (
+    cause: "unreadable" | "rejected" | "unusable",
+    credential?: string
+  ) => {
     if (!failed) {
       failed = true;
-      failedWith = rejected ? fingerprint(rejected) : null;
+      failedWith = credential ? fingerprint(credential) : null;
       console.error(
-        rejected
+        cause === "rejected"
           ? "[relay] the upstream rejected the connection's login; isolated runs on it stop"
-          : "[relay] the connection's credential could not be read; isolated runs on it stop"
+          : cause === "unusable"
+            ? "[relay] the connection's login could not be put into a request; isolated runs on it stop"
+            : "[relay] the connection's credential could not be read; isolated runs on it stop"
       );
     }
     // 권한을 먼저 거둬 프로그램이 다시 시도해도 상류에 닿지 못하게 한 뒤 알린다.
@@ -234,22 +272,30 @@ export function createCredentialRelay(options: {
         if (grants.get(token) !== state)
           return deny(res, 401, "relay_grant_invalid");
         if (!credential) {
-          fail();
+          fail("unreadable");
           return deny(res, 503, "relay_unavailable");
         }
-        const headers = {
-          ...keep(req.headers, droppedRequestHeaders),
-          ...profile.authorize(credential),
-        };
-        const base = upstream.pathname.replace(/\/$/, "");
-        const outgoing = client.request({
-          protocol: upstream.protocol,
-          hostname: upstream.hostname,
-          port: upstream.port || undefined,
-          method,
-          path: `${base}${target.pathname}${target.search}`,
-          headers,
-        });
+        let outgoing: http.ClientRequest;
+        try {
+          const headers = {
+            ...keep(req.headers, droppedRequestHeaders),
+            ...profile.authorize(credential),
+            // 프로그램의 값이 상류에 닿지 않게 한다. 압축 응답은 원본을 확인할 수 없어 거부한다.
+            "accept-encoding": "identity",
+          };
+          const base = upstream.pathname.replace(/\/$/, "");
+          outgoing = client.request({
+            protocol: upstream.protocol,
+            hostname: upstream.hostname,
+            port: upstream.port || undefined,
+            method,
+            path: `${base}${target.pathname}${target.search}`,
+            headers,
+          });
+        } catch {
+          fail("unusable", credential);
+          return deny(res, 503, "relay_unavailable");
+        }
         const inflight = {
           destroy: () => {
             outgoing.destroy();
@@ -277,11 +323,43 @@ export function createCredentialRelay(options: {
           if (status === 401) {
             incoming.resume();
             done();
-            fail(credential);
+            fail("rejected", credential);
             return deny(res, 503, "relay_login_rejected");
           }
+          // 압축 응답은 안에서 원본을 확인할 수 없다. 상류에 압축하지 않은 응답을 요청했으므로, 그래도 압축해 오면 거부한다.
+          const encoding = incoming.headers["content-encoding"];
+          if (
+            encoding !== undefined &&
+            String(encoding).trim().toLowerCase() !== "identity"
+          ) {
+            incoming.resume();
+            done();
+            return deny(res, 502, "relay_response_refused");
+          }
+          // 원본이 그대로 돌아오면 프로그램에 넘기지 않는다. 연결은 실패로 두지 않는다.
+          if (
+            Object.values(incoming.headers).some((value) =>
+              value === undefined
+                ? false
+                : (Array.isArray(value) ? value : [value]).some((one) =>
+                    one.includes(credential)
+                  )
+            )
+          ) {
+            incoming.resume();
+            done();
+            return deny(res, 502, "relay_response_refused");
+          }
           res.writeHead(status, keep(incoming.headers, droppedResponseHeaders));
-          incoming.pipe(res);
+          // 본문을 막아 끊어도 프로그램이 상태와 header를 읽도록 먼저 보낸다.
+          res.flushHeaders();
+          const guarded = incoming.pipe(echoGuard(credential));
+          guarded.pipe(res);
+          guarded.on("error", () => {
+            incoming.destroy();
+            res.destroy();
+            done();
+          });
           incoming.on("end", done);
           incoming.on("error", () => res.destroy());
         });
@@ -297,16 +375,34 @@ export const residueRefusal =
   "조직 제품 폴더에 로그인 기록이 남아 있어 격리 실행을 시작하지 않았습니다.";
 
 /**
- * 격리 실행에 넣으면 안 되는 로그인 흔적이 조직 제품 폴더에 남아 있는가. 링크는 원본 폴더를 컨테이너에 넣지 않으므로 비어 있어 괜찮고,
- * 보통 파일·폴더면 남은 로그인이다. 비밀값은 읽지 않는다.
+ * 격리 실행에 넣으면 안 되는 로그인 흔적이 조직 제품 폴더에 남아 있는가.
+ * 연결의 로그인 원본을 가리키는 알려진 링크(이 컴퓨터의 실행이 남긴 것)만 컨테이너 안에서 비어 있어 괜찮다.
+ * 보통 파일·폴더, 다른 곳을 가리키는 링크, 확인할 수 없는 경로는 남은 로그인으로 본다. 비밀값은 읽지 않는다.
  */
 export async function credentialResidue(
   home: string,
-  paths: readonly string[]
+  paths: readonly string[],
+  known?: string
 ): Promise<boolean> {
   for (const relative of paths) {
-    const found = await lstat(path.join(home, relative)).catch(() => undefined);
-    if (found && !found.isSymbolicLink()) return true;
+    const at = path.join(home, relative);
+    let found;
+    try {
+      found = await lstat(at);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      return true;
+    }
+    if (!found.isSymbolicLink()) return true;
+    if (known === undefined) return true;
+    let target: string;
+    try {
+      target = await readlink(at);
+    } catch {
+      return true;
+    }
+    if (target !== known) return true;
   }
   return false;
 }

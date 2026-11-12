@@ -133,8 +133,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     label: "Codex",
   });
   const command = options.command ?? commandFor(id, "codex");
-  const environment = (codexHome = home) =>
-    providerEnvironment(id, codexHome, { CODEX_HOME: codexHome });
+  const environment = (codexHome = home, isolated = false) =>
+    providerEnvironment(id, codexHome, { CODEX_HOME: codexHome }, { isolated });
   const readiness = async (
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> => {
@@ -284,10 +284,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           request.identity.organizationId
         );
         await shareLogin(path.join(home, "auth.json"));
-        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이면 시작하지 않는다.
+        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
         // Codex의 인증 중계를 검증하기 전에는 서버가 격리 실행을 준비안됨으로 막는다.
         const isolated = request.execution === "container";
-        if (isolated && (await credentialResidue(organization, ["auth.json"])))
+        if (
+          isolated &&
+          (await credentialResidue(organization, ["auth.json"], original))
+        )
           return { ...failed(), error: residueRefusal };
         const linked =
           !isolated && (await shareLogin(path.join(organization, "auth.json")));
@@ -318,7 +321,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           }
         >();
         const env = {
-          ...environment(codexHome),
+          ...environment(codexHome, isolated),
           BABOJUBOT_MCP_TOKEN: request.access.token,
         };
         const args = [
