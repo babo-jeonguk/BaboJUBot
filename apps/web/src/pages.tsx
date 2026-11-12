@@ -1,5 +1,5 @@
 import { isClosedStage } from "@babojubot/contracts";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense } from "react";
 import { Link, useParams } from "react-router";
 import type {
   OrganizationCommand,
@@ -36,6 +36,7 @@ import {
   Page,
   StageBadge,
   stageLabel,
+  useInlineConfirm,
 } from "./ui.tsx";
 
 /** 연구 지도는 React Flow·Dagre를 쓰므로 그 화면을 열 때만 불러온다. */
@@ -51,12 +52,12 @@ const ResearchMapScreen = lazy(() =>
  */
 function OrganizationControl({ org }: { org: OrganizationDetail }) {
   const control = useControlOrganization(org.id);
-  const [confirmingStop, setConfirmingStop] = useState(false);
+  const { trigger: stopTrigger, ...stop } = useInlineConfirm(control.isPending);
   const closed = isClosedStage(org.stage);
   const paused = org.stage === "paused";
   const busy = closed || control.isPending;
   const send = (command: OrganizationCommand) =>
-    control.mutate(command, { onSettled: () => setConfirmingStop(false) });
+    control.mutate(command, { onSettled: stop.dismiss });
   return (
     <section
       aria-label="조직 제어"
@@ -80,11 +81,12 @@ function OrganizationControl({ org }: { org: OrganizationDetail }) {
           ⏸ 일시정지
         </button>
       )}
-      {!confirmingStop ? (
+      {!stop.confirming ? (
         <button
+          ref={stopTrigger}
           className="btn-danger"
           disabled={busy}
-          onClick={() => setConfirmingStop(true)}
+          onClick={stop.ask}
         >
           ⏹ 중단…
         </button>
@@ -92,6 +94,7 @@ function OrganizationControl({ org }: { org: OrganizationDetail }) {
         <span
           role="group"
           aria-labelledby="stop-confirm-title"
+          onKeyDown={stop.onKeyDown}
           className="flex flex-wrap items-center gap-2 rounded-xl bg-rose-50 py-1 pr-1 pl-3"
         >
           <span className="text-xs text-rose-700">
@@ -103,7 +106,7 @@ function OrganizationControl({ org }: { org: OrganizationDetail }) {
           <button
             className="btn-ghost"
             disabled={control.isPending}
-            onClick={() => setConfirmingStop(false)}
+            onClick={stop.cancel}
             autoFocus
           >
             취소

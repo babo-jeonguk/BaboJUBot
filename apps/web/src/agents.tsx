@@ -18,7 +18,9 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useId,
   useState,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import { Link, useBeforeUnload, useBlocker, useParams } from "react-router";
@@ -498,6 +500,28 @@ const saveErrorText = (code: string | undefined) => {
 };
 
 /**
+ * 사본 탭 사이 키보드 이동(#151 F14, WAI-ARIA APG Tabs). ←/→는 양 끝에서 순환하고 Home/End는 처음·끝 탭으로 간다.
+ * 화살표는 포커스만 옮기고 고르기는 Enter·Space로 한다(수동 선택). 저장하지 않은 편집이 있으면 탭을 고를 때 버릴지
+ * 묻는데, 포커스 이동만으로 그 확인이 뜨지 않게 하려는 것이다. Tab 순서에는 고른 탭 하나만 있다(roving tabindex).
+ */
+function moveTabFocus(e: KeyboardEvent<HTMLElement>) {
+  const tabs = [
+    ...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'),
+  ];
+  const at = tabs.indexOf(e.target as HTMLElement);
+  if (at < 0) return;
+  const next = {
+    ArrowRight: (at + 1) % tabs.length,
+    ArrowLeft: (at - 1 + tabs.length) % tabs.length,
+    Home: 0,
+    End: tabs.length - 1,
+  }[e.key];
+  if (next === undefined) return;
+  e.preventDefault();
+  tabs[next]!.focus();
+}
+
+/**
  * 에이전트 상세 › Role·Soul·Skill 탭. 이 에이전트가 소유한 사본을 고쳐 저장하고 revision을 본다.
  * 편집 중인 본문(draft)은 서버 값과 따로 두므로 실시간 갱신·저장 실패·충돌에도 남는다. 저장하지 않은 편집이 있으면
  * 다른 파일·화면으로 옮기거나 새로고침할 때 버릴지 묻는다. 예전 revision은 읽기만 하며 되돌리기·diff는 없다.
@@ -534,6 +558,9 @@ function InstructionCopies({
     )
   );
   const closed = stage !== undefined && isClosedStage(stage);
+  const ids = useId();
+  const panelId = `${ids}-panel`;
+  const tabId = (copyId: string) => `${ids}-tab-${copyId}`;
 
   const leaveDraft = () => {
     setDraft(null);
@@ -583,13 +610,17 @@ function InstructionCopies({
         <div
           role="tablist"
           aria-label="사본 파일"
+          onKeyDown={moveTabFocus}
           className="scrollbar-thin flex gap-1 overflow-x-auto border-b border-slate-100 px-2 pt-2"
         >
           {copies.map((c) => (
             <button
               key={c.id}
+              id={tabId(c.id)}
               role="tab"
               aria-selected={c.id === copy.id}
+              aria-controls={panelId}
+              tabIndex={c.id === copy.id ? 0 : -1}
               onClick={() => select(c.path)}
               className={`shrink-0 rounded-t-lg px-3 py-1.5 text-xs transition ${c.id === copy.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-500 hover:text-slate-800"}`}
             >
@@ -597,7 +628,7 @@ function InstructionCopies({
             </button>
           ))}
         </div>
-        <div role="tabpanel" aria-label={copy.path}>
+        <div role="tabpanel" id={panelId} aria-labelledby={tabId(copy.id)}>
           <dl className="grid grid-cols-[5.5rem_1fr] gap-x-3 gap-y-1 border-b border-slate-100 px-4 py-3 text-xs text-slate-500">
             <dt>사본</dt>
             <dd className="font-mono break-all" data-testid="copy-id">

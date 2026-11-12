@@ -27,7 +27,7 @@ import {
   useRun,
 } from "./api.ts";
 import { ApprovalDecision, ProposedCriteria } from "./approvals.tsx";
-import { InboxItemOrganize, useInboxPanel } from "./inbox.tsx";
+import { InboxItemOrganize, inboxPanelId, useInboxPanel } from "./inbox.tsx";
 import { Markdown } from "./markdown.tsx";
 import { ResultDecision } from "./results.tsx";
 import {
@@ -93,9 +93,11 @@ function Header({
     <div className="mb-6">
       <div className="mb-1 text-xs text-slate-500">
         <button
-          onClick={() => panel.show(orgId)}
+          onClick={(e) => panel.show(orgId, e.currentTarget)}
           className="hover:underline"
           aria-label="Inbox 열기"
+          aria-expanded={panel.open}
+          aria-controls={inboxPanelId}
         >
           ← Inbox
         </button>{" "}
