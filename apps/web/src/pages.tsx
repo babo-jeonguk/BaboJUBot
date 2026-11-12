@@ -348,7 +348,7 @@ function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
                     <span className="truncate text-slate-700">
                       {approvalKindLabel[a.kind]}
                     </span>
-                    <span className="ml-auto text-xs text-slate-400 tabular-nums">
+                    <span className="ml-auto text-xs text-slate-500 tabular-nums">
                       {formatTime(a.createdAt)}
                     </span>
                   </Link>

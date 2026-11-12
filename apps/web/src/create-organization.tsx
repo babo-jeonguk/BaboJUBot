@@ -131,7 +131,7 @@ export function CreateOrganizationProvider({
               <div>
                 <label className={labelClass} htmlFor="org-criteria">
                   완료 기준{" "}
-                  <span className="font-normal text-slate-400">(선택)</span>
+                  <span className="font-normal text-slate-500">(선택)</span>
                 </label>
                 <textarea
                   id="org-criteria"

@@ -69,7 +69,7 @@ export function ResultReviewScreen({
                 <ResultStatusBadge status={s.status} />
                 <time
                   dateTime={s.createdAt}
-                  className="ml-auto shrink-0 text-xs text-slate-400 tabular-nums"
+                  className="ml-auto shrink-0 text-xs text-slate-500 tabular-nums"
                 >
                   {formatTime(s.createdAt)}
                 </time>
@@ -395,7 +395,7 @@ function DecisionReceipt({
       <h2 className="mb-2 text-sm font-semibold">
         {resultStatusLabel[s.status]}
         {s.decidedAt && (
-          <span className="ml-2 font-normal text-slate-400">
+          <span className="ml-2 font-normal text-slate-500">
             {formatTime(s.decidedAt)}
           </span>
         )}

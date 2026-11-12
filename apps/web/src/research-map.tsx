@@ -43,11 +43,15 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { Link, useSearchParams } from "react-router";
 import {
@@ -79,7 +83,7 @@ const statusTone: Record<ResearchNodeStatus, string> = {
   in_progress: "text-brand-600",
   done: "text-emerald-600",
   rejected: "text-rose-600",
-  discarded: "text-slate-400 line-through",
+  discarded: "text-slate-500 line-through",
 };
 /** 노드 종류는 템플릿 선언 순서대로 색을 받고, 색과 함께 늘 종류 글자로 보인다. */
 const kindTones = [
@@ -294,7 +298,7 @@ const ResearchCard = memo(function ResearchCard({
       data-testid="map-node"
       data-node-id={node.id}
       data-status={node.status}
-      className={`flex flex-col rounded-xl px-2.5 py-2 text-left transition-[opacity,box-shadow] duration-150 ${gone ? "border border-dashed border-slate-300 bg-slate-50" : "bg-white shadow-card ring-1 ring-slate-900/[0.07]"} ${selected ? "!ring-2 !ring-brand-500 shadow-lift" : ""} ${gone ? "opacity-70" : ""}`}
+      className={`flex flex-col rounded-xl px-2.5 py-2 text-left transition-[opacity,box-shadow] duration-150 ${gone ? "border border-dashed border-slate-400 bg-slate-50" : "bg-white shadow-card ring-1 ring-slate-900/[0.07]"} ${selected ? "!ring-2 !ring-brand-500 shadow-lift" : ""}`}
     >
       <Handle
         type="target"
@@ -316,7 +320,7 @@ const ResearchCard = memo(function ResearchCard({
         </span>
       </div>
       <div
-        className={`mt-1 line-clamp-2 text-[12.5px] leading-snug break-words ${gone ? "text-slate-400 line-through" : "text-slate-800"}`}
+        className={`mt-1 line-clamp-2 text-[12.5px] leading-snug break-words ${gone ? "text-slate-500 line-through" : "text-slate-800"}`}
         title={node.title}
       >
         {node.title}
@@ -331,6 +335,33 @@ const ResearchCard = memo(function ResearchCard({
   );
 });
 const nodeTypes = { research: ResearchCard };
+
+/** 지도에서 실제로 되는 키보드 조작. 노드마다와 지도 영역에 같은 글이 연결된다. */
+const mapKeyboardHelp =
+  "Tab으로 노드 사이를 옮겨 다닙니다. Enter나 Space로 노드를 고르면 상세 패널 제목으로 갑니다. 고른 노드에 포커스가 있으면 화살표 키로 카드 위치를 옮기고(Shift와 함께 크게), Escape로 선택을 풉니다. 아래 ‘노드·연결을 글로 보기’에 모든 노드와 연결이 표로 있습니다.";
+const moveDirection: Record<string, string> = {
+  up: "위",
+  down: "아래",
+  left: "왼쪽",
+  right: "오른쪽",
+};
+const mapAriaLabels = {
+  // 이름과 달리 keyboardDisabled는 키보드 조작을 켰을 때 노드에 연결되는 글이다(@xyflow/react 12.12 A11yDescriptions).
+  "node.a11yDescription.default": mapKeyboardHelp,
+  "node.a11yDescription.keyboardDisabled": mapKeyboardHelp,
+  "node.a11yDescription.ariaLiveMessage": ({
+    direction,
+  }: {
+    direction: string;
+    x: number;
+    y: number;
+  }) => `고른 노드를 ${moveDirection[direction] ?? direction}로 옮겼습니다`,
+  "edge.a11yDescription.default": "",
+  "controls.ariaLabel": "지도 보기 조절",
+  "controls.zoomIn.ariaLabel": "확대",
+  "controls.zoomOut.ariaLabel": "축소",
+  "controls.fitView.ariaLabel": "한눈에 보기",
+};
 // 배경 점·덮개를 깔 노드 바깥 여백(지도 좌표).
 const AROUND = 20_000;
 // 지도 안의 쌓는 순서: 배경 점(-2) < 정적 연결(-1) < 노드(0) < 덮개(1) < 강조 노드·주 연결(2) < 선택 노드에 닿은 보조 연결(5).
@@ -574,6 +605,7 @@ function MapWorkspace({
   agents: Agent[];
   index: MapIndex;
 }) {
+  const helpId = useId();
   // 직접 옮긴 위치(카드 왼쪽 위). 보기 상태이며 저장하지 않는다. 자동 재배치에도 유지하고 `자동 정렬로 되돌리기`로 지운다.
   const [pinned, setPinned] = useState<Map<string, XY>>(new Map());
   const [live, setLive] = useState<Map<string, XY> | null>(null);
@@ -590,18 +622,32 @@ function MapWorkspace({
   const requested = params.get("node") ?? undefined;
   const selected =
     requested && index.byId.has(requested) ? requested : undefined;
+  // 사용자가 노드를 고르면(포인터·Enter·패널의 노드 링크·노드 추가) 상세 패널 제목으로 포커스를 옮긴다. 주소로 연 선택은 옮기지 않는다.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const focusDetail = useRef(false);
   // 지도에 넘기는 처리 함수는 선택이 바뀔 때만 바뀐다. React Flow는 이것이 바뀌면 모든 노드를 다시 그린다.
   const select = useCallback(
     (id?: string) => {
-      if (id === selected) return;
+      if (id === selected) {
+        if (id) heading.current?.focus();
+        return;
+      }
       const next = new URLSearchParams(params);
       if (id) next.set("node", id);
       else next.delete("node");
       setParams(next, { replace: true });
-      if (id) setAddingRoot(false);
+      if (id) {
+        setAddingRoot(false);
+        focusDetail.current = true;
+      }
     },
     [selected, params, setParams]
   );
+  useEffect(() => {
+    if (!focusDetail.current || !selected) return;
+    focusDetail.current = false;
+    heading.current?.focus();
+  }, [selected]);
   const onNodeClick = useCallback(
     (_: unknown, n: CardNode) => select(n.id),
     [select]
@@ -613,7 +659,7 @@ function MapWorkspace({
       ? { mode: "add_root" }
       : null;
 
-  // 폐기한 노드도 지도에 남는다(카드를 흐리게 그림).
+  // 폐기한 노드도 지도에 남는다(점선 테두리와 취소선).
   const mapNodes = index.map.nodes;
   const key = useMemo(() => layoutKey(mapNodes), [mapNodes]);
   const laidOut = useMemo(() => layoutOf(key), [key]);
@@ -672,6 +718,10 @@ function MapWorkspace({
           // 카드 크기는 고정이다. 다시 그려도 측정값과 연결 핸들 위치를 잃지 않게 함께 넘긴다.
           measured: { width: NODE_W, height: NODE_H },
           selected: n.id === selected,
+          // 노드 그룹의 이름과, 고른 노드는 지금 상세 패널에 보이는 노드(`aria-current`)라는 것.
+          ariaLabel: `${n.title} · ${kindLabel(index.nodeKinds, n.kind)} · ${researchNodeStatusLabel[n.status]} · 작업 ${index.tasksByNode.get(n.id)?.length ?? 0}`,
+          domAttributes:
+            n.id === selected ? { "aria-current": "true" } : undefined,
           data: {
             node: n,
             kind: kindLabel(index.nodeKinds, n.kind),
@@ -855,12 +905,62 @@ function MapWorkspace({
 
   const node = selected ? index.byId.get(selected) : undefined;
 
+  // 포커스가 패널 안에 있을 때 패널이 닫히면(닫기 버튼, 선택한 노드가 사라짐) 연 자리로 돌려보낸다: 고른 노드, 그 노드가 없으면
+  // 지도의 `한눈에 보기`, 최상위 노드 추가였으면 그 버튼. 포인터로 지도 바탕을 눌러 닫을 때는 포커스가 이미 패널 밖이라 옮기지 않는다.
+  const canvas = useRef<HTMLDivElement>(null);
+  const addRoot = useRef<HTMLButtonElement>(null);
+  const focusInPanel = useRef(false);
+  const openedFrom = useRef<string | null>(null);
+  const open = panel !== null;
+  const openedNode = panel?.mode === "node" ? panel.id : null;
+  useEffect(() => {
+    if (open) openedFrom.current = openedNode;
+  }, [open, openedNode]);
+  const wasOpen = useRef(open);
+  useLayoutEffect(() => {
+    if (wasOpen.current && !open && focusInPanel.current) {
+      focusInPanel.current = false;
+      const id = openedFrom.current;
+      // 노드가 남았는지는 조회 결과로 본다. React Flow는 사라진 노드의 DOM을 한 박자 뒤에 지운다.
+      const target =
+        (id &&
+          index.byId.has(id) &&
+          canvas.current?.querySelector<HTMLElement>(
+            `.react-flow__node[data-id="${CSS.escape(id)}"]`
+          )) ||
+        (!id && addRoot.current) ||
+        canvas.current?.querySelector<HTMLElement>(
+          ".react-flow__controls-fitview"
+        );
+      target?.focus();
+    }
+    wasOpen.current = open;
+  }, [open, index]);
+  // 고른 노드에서 Escape는 선택을 푼다. 이미 고른 노드에서 Enter·Space는 다시 상세 패널 제목으로 간다(React Flow는 고른 노드를 다시 고르지 않는다).
+  const onCanvasKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const card = (e.target as HTMLElement).closest<HTMLElement>(
+      ".react-flow__node"
+    );
+    const id = card?.getAttribute("data-id");
+    if (!card || !id || id !== selected) return;
+    if (e.key === "Escape") {
+      select(undefined);
+      // React Flow는 Escape로 선택을 풀며 다음 프레임에 노드에서 포커스를 뺀다(handleNodeClick). 그 뒤에 그 노드로 되돌려
+      // 키보드 자리를 잃지 않는다. 이 처리기는 노드의 처리기 뒤에 불려 같은 프레임에서 그보다 늦게 돈다.
+      requestAnimationFrame(() => card.focus());
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      heading.current?.focus();
+    }
+  };
+
   return (
     <div className="flex flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-2 text-xl font-semibold">연구 지도</h1>
         {canEdit && (
           <button
+            ref={addRoot}
             className="btn-primary py-1 text-xs"
             onClick={() => {
               select(undefined);
@@ -883,9 +983,11 @@ function MapWorkspace({
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
         <div
+          ref={canvas}
           className={`rm-canvas card relative h-[60vh] min-h-[420px] flex-1 overflow-hidden lg:h-auto ${focus ? "rm-focus" : ""}`}
           style={{ "--rm-dash-scale": dashScale } as CSSProperties}
           data-testid="map-canvas"
+          onKeyDown={onCanvasKeyDown}
         >
           {focusCss && <style>{focusCss}</style>}
           {!index.map.nodes.length ? (
@@ -905,7 +1007,13 @@ function MapWorkspace({
               </div>
             </div>
           ) : null}
+          <p id={helpId} className="sr-only">
+            {mapKeyboardHelp}
+          </p>
           <ReactFlow<CardNode>
+            aria-label="연구 지도 그래프"
+            aria-describedby={helpId}
+            ariaLabelConfig={mapAriaLabels}
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
@@ -942,6 +1050,11 @@ function MapWorkspace({
           <aside
             className="card scrollbar-thin animate-fade-up w-full shrink-0 overflow-auto p-4 lg:max-h-[calc(100vh-9rem)] lg:w-[340px]"
             aria-label="노드 상세"
+            onFocus={() => (focusInPanel.current = true)}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget))
+                focusInPanel.current = false;
+            }}
           >
             {panel.mode === "add_root" ? (
               <Section
@@ -964,6 +1077,7 @@ function MapWorkspace({
                   agents={agents}
                   canEdit={canEdit}
                   select={select}
+                  heading={heading}
                   onCenter={() =>
                     void rf.fitView({
                       nodes: [{ id: node.id }],
@@ -977,7 +1091,130 @@ function MapWorkspace({
           </aside>
         )}
       </div>
+      <MapTextView index={index} select={select} />
     </div>
+  );
+}
+
+/** 주 연결을 따라 위에서부터 내려간 순서(부모 바로 아래 하위)와 깊이. 부모가 지도에 없는 노드는 최상위로 본다. */
+function treeOrder(index: MapIndex) {
+  const out: { node: ResearchNode; depth: number }[] = [];
+  const seen = new Set<string>();
+  const visit = (n: ResearchNode, depth: number) => {
+    if (seen.has(n.id)) return;
+    seen.add(n.id);
+    out.push({ node: n, depth });
+    for (const c of index.children.get(n.id) ?? []) visit(c, depth + 1);
+  };
+  for (const n of index.map.nodes)
+    if (!n.parentNodeId || !index.byId.has(n.parentNodeId)) visit(n, 0);
+  for (const n of index.map.nodes) visit(n, 0);
+  return out;
+}
+
+/**
+ * 지도의 글 대체(접이식): 모든 노드의 종류·상태·주 부모와, 방향·종류가 있는 보조 연결. 지도와 같은 조회 결과(`index`)로
+ * 그리고, 큰 지도에서도 지도를 느리게 하지 않게 펼쳤을 때만 그린다. 노드 이름을 누르면 지도에서 고른 것과 같이 상세가 열린다.
+ */
+function MapTextView({
+  index,
+  select,
+}: {
+  index: MapIndex;
+  select: (id?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const linksTitle = useId();
+  const { nodes, links } = index.map;
+  const title = (id: string) => index.byId.get(id)?.title ?? shortId(id);
+  return (
+    <details
+      className="card p-3 text-sm"
+      data-testid="map-text-view"
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary className="cursor-pointer rounded font-medium text-slate-700 focus-visible:outline-2 focus-visible:outline-brand-500">
+        노드·연결을 글로 보기 (노드 {nodes.length}개 · 보조 연결 {links.length}
+        개)
+      </summary>
+      {open && (
+        <div className="mt-3 space-y-4">
+          {nodes.length ? (
+            <div className="scrollbar-thin overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <caption className="pb-1 text-left text-slate-600">
+                  연구 노드 {nodes.length}개 · 주 부모 아래로 들여 씀
+                </caption>
+                <thead className="text-slate-600">
+                  <tr>
+                    <th className="py-1 pr-3 font-medium">노드</th>
+                    <th className="py-1 pr-3 font-medium">종류</th>
+                    <th className="py-1 pr-3 font-medium">상태</th>
+                    <th className="py-1 font-medium">주 부모</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {treeOrder(index).map(({ node: n, depth }) => (
+                    <tr
+                      key={n.id}
+                      data-node-id={n.id}
+                      className="border-t border-slate-100 align-top"
+                    >
+                      <th
+                        scope="row"
+                        className="py-1 pr-3 font-normal"
+                        style={{ paddingLeft: `${depth * 0.75}rem` }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => select(n.id)}
+                          className={`text-left break-words text-brand-700 hover:underline ${discarded(n) ? "line-through" : ""}`}
+                        >
+                          {n.title}
+                        </button>
+                      </th>
+                      <td className="py-1 pr-3 whitespace-nowrap">
+                        {kindLabel(index.nodeKinds, n.kind)}
+                      </td>
+                      <td className="py-1 pr-3 whitespace-nowrap">
+                        {researchNodeStatusLabel[n.status]}
+                      </td>
+                      <td className="py-1 break-words text-slate-700">
+                        {n.parentNodeId
+                          ? title(n.parentNodeId)
+                          : "없음 (최상위)"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-slate-600">연구 노드가 없습니다.</p>
+          )}
+          <section aria-labelledby={linksTitle}>
+            <h3
+              id={linksTitle}
+              className="mb-1 text-xs font-semibold text-slate-700"
+            >
+              보조 연결 {links.length}개
+            </h3>
+            {links.length ? (
+              <ul className="space-y-0.5 text-xs text-slate-700">
+                {links.map((l) => (
+                  <li key={l.id} data-link-id={l.id}>
+                    “{title(l.sourceNodeId)}” → “{title(l.targetNodeId)}”:{" "}
+                    {kindLabel(index.linkKinds, l.kind)}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-slate-600">보조 연결이 없습니다.</p>
+            )}
+          </section>
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -991,6 +1228,7 @@ function NodeDetail({
   agents,
   canEdit,
   select,
+  heading,
   onCenter,
 }: {
   orgId: string;
@@ -999,6 +1237,8 @@ function NodeDetail({
   agents: Agent[];
   canEdit: boolean;
   select: (id?: string) => void;
+  /** 패널 제목. 노드를 고르면 지도가 여기로 포커스를 옮긴다. */
+  heading: RefObject<HTMLHeadingElement | null>;
   onCenter: () => void;
 }) {
   const [form, setForm] = useState<Form>(null);
@@ -1024,7 +1264,7 @@ function NodeDetail({
       >
         <span
           className={
-            x && discarded(x) ? "text-slate-400 line-through" : "text-slate-600"
+            x && discarded(x) ? "text-slate-500 line-through" : "text-slate-600"
           }
         >
           {x?.title}
@@ -1058,17 +1298,26 @@ function NodeDetail({
     <div className="space-y-4" data-testid="node-detail" data-node-id={node.id}>
       <div>
         <div className="flex items-center gap-1.5">
-          <span
-            className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${kindTone(index.nodeKinds, node.kind)}`}
+          {/* 패널 제목: 노드 제목·종류·상태. 노드를 고르면 포커스가 여기로 온다. 제목은 아래 칸에 보이므로 여기서는 읽기만 한다. */}
+          <h2
+            ref={heading}
+            tabIndex={-1}
+            data-testid="node-heading"
+            className="flex min-w-0 items-center gap-1.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
           >
-            {kindLabel(index.nodeKinds, node.kind)}
-          </span>
-          <span
-            className={`text-[11px] font-medium ${statusTone[node.status]}`}
-            data-testid="node-status"
-          >
-            {researchNodeStatusLabel[node.status]}
-          </span>
+            <span className="sr-only">{node.title} · </span>
+            <span
+              className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ring-1 ${kindTone(index.nodeKinds, node.kind)}`}
+            >
+              {kindLabel(index.nodeKinds, node.kind)}
+            </span>
+            <span
+              className={`text-[11px] font-medium ${statusTone[node.status]}`}
+              data-testid="node-status"
+            >
+              {researchNodeStatusLabel[node.status]}
+            </span>
+          </h2>
           <button
             onClick={onCenter}
             className="btn-ghost ml-auto px-1.5 py-0.5 text-xs"
@@ -1088,12 +1337,12 @@ function NodeDetail({
         {editable ? (
           <TitleForm orgId={orgId} node={node} />
         ) : (
-          <h2
-            className={`mt-2 text-sm font-semibold break-words ${discarded(node) ? "text-slate-400 line-through" : ""}`}
+          <p
+            className={`mt-2 text-sm font-semibold break-words ${discarded(node) ? "text-slate-600 line-through" : ""}`}
             data-testid="node-title"
           >
             {node.title}
-          </h2>
+          </p>
         )}
         {editable && (
           <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
@@ -1132,38 +1381,38 @@ function NodeDetail({
 
       <div className="space-y-2.5 text-sm">
         <div className={row}>
-          <span className="text-slate-400">주 부모</span>
+          <span className="text-slate-500">주 부모</span>
           {parent ? (
             ref(parent.id)
           ) : (
-            <span className="text-slate-400">없음 (최상위)</span>
+            <span className="text-slate-500">없음 (최상위)</span>
           )}
         </div>
         <div className={row}>
-          <span className="text-slate-400">하위 {kids.length}</span>
+          <span className="text-slate-500">하위 {kids.length}</span>
           <div className="min-w-0 space-y-0.5">
             {kids.length ? (
               kids.map((k) => ref(k.id))
             ) : (
-              <span className="text-slate-400">없음</span>
+              <span className="text-slate-500">없음</span>
             )}
           </div>
         </div>
         <div className={row}>
-          <span className="text-slate-400">보조 {out.length + inn.length}</span>
+          <span className="text-slate-500">보조 {out.length + inn.length}</span>
           <div className="min-w-0 space-y-0.5">
             {!out.length && !inn.length && (
-              <span className="text-slate-400">없음</span>
+              <span className="text-slate-500">없음</span>
             )}
             {out.map((l) => linkRow(l, true))}
             {inn.map((l) => linkRow(l, false))}
           </div>
         </div>
         <section className={row} aria-label="연결 작업">
-          <span className="text-slate-400">연결 작업</span>
+          <span className="text-slate-500">연결 작업</span>
           <div className="min-w-0 space-y-1">
             {detail.isPending ? (
-              <span className="text-slate-400">불러오는 중…</span>
+              <span className="text-slate-500">불러오는 중…</span>
             ) : detail.isError ? (
               <button
                 className="text-rose-700 underline"
@@ -1172,7 +1421,7 @@ function NodeDetail({
                 불러오지 못했습니다. 다시 시도
               </button>
             ) : !detail.data.tasks.length ? (
-              <span className="text-slate-400">없음</span>
+              <span className="text-slate-500">없음</span>
             ) : (
               detail.data.tasks.map((t) => (
                 <div key={t.id}>
@@ -1199,7 +1448,7 @@ function NodeDetail({
           </div>
         </section>
         <div className={row}>
-          <span className="text-slate-400">만든 이</span>
+          <span className="text-slate-500">만든 이</span>
           <span className="text-slate-600">
             {by(node.createdBy)}
             {node.createdBy.author === "agent" && (
@@ -1273,7 +1522,7 @@ function NodeDetail({
       <section aria-label="편집 기록" className="text-xs">
         <h3 className="mb-1 font-semibold text-slate-600">편집 기록</h3>
         {detail.data && !detail.data.edits.length && (
-          <p className="text-slate-400">없음</p>
+          <p className="text-slate-500">없음</p>
         )}
         <ol className="space-y-1.5">
           {detail.data?.edits
@@ -1281,7 +1530,7 @@ function NodeDetail({
             .reverse()
             .map((e) => (
               <li key={e.id} data-editor={e.editor.author}>
-                <div className="text-[11px] text-slate-400">
+                <div className="text-[11px] text-slate-500">
                   {by(e.editor)} · {mapOperationLabel[e.operation]} ·{" "}
                   {formatTime(e.createdAt)}
                 </div>
@@ -1352,7 +1601,7 @@ function TitleForm({ orgId, node }: { orgId: string; node: ResearchNode }) {
       )}
       <div className="flex items-center justify-end gap-2">
         {save.isPending && (
-          <span className="text-xs text-slate-400" role="status">
+          <span className="text-xs text-slate-500" role="status">
             저장 중…
           </span>
         )}
@@ -1420,20 +1669,12 @@ function AddNodeForm({
           ? `“${parent.title}” 아래에 추가`
           : "최상위(주 부모 없음)에 추가"}
       </div>
-      <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="종류">
-        {kinds.map((k) => (
-          <button
-            type="button"
-            key={k.name}
-            role="radio"
-            aria-checked={kind === k.name}
-            onClick={() => setKind(k.name)}
-            className={`chip ${kind === k.name ? "bg-slate-900 text-white" : "bg-white ring-1 ring-slate-200"}`}
-          >
-            {k.label}
-          </button>
-        ))}
-      </div>
+      <ChipRadios
+        label="종류"
+        options={kinds.map((k) => ({ name: k.name, label: k.label }))}
+        value={kind}
+        onChange={setKind}
+      />
       <label className="sr-only" htmlFor="new-node-title">
         새 노드 제목
       </label>
@@ -1456,7 +1697,58 @@ function AddNodeForm({
   );
 }
 
-/** 노드 고르기. 수백 개여도 쓸 수 있게 ID·제목으로 찾는다. */
+/**
+ * 칩 모양의 한 가지 고르기. native radio라 Tab 한 번으로 들어오고 화살표로 옮기며 고른다. 입력은 칩 전체를 덮는 투명한 칸이다.
+ */
+function ChipRadios({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: { name: string; label: string; color?: string }[];
+  value: string;
+  onChange: (name: string) => void;
+}) {
+  const group = useId();
+  return (
+    <fieldset className="flex flex-wrap gap-1">
+      <legend className="sr-only">{label}</legend>
+      {options.map((o) => (
+        <label
+          key={o.name}
+          className={`chip relative ${value === o.name ? "bg-slate-900 text-white" : "bg-white ring-1 ring-slate-200"}`}
+        >
+          <input
+            type="radio"
+            name={group}
+            value={o.name}
+            checked={value === o.name}
+            onChange={() => onChange(o.name)}
+            className="absolute inset-0 m-0 cursor-pointer appearance-none rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+          />
+          {o.color && (
+            <span
+              aria-hidden
+              className="h-2 w-2 rounded-full"
+              style={{ background: o.color }}
+            />
+          )}
+          {o.label}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+/** 한 번에 보이는 찾은 노드 수. 넘치면 검색어로 좁히라고 알린다. */
+const pickerLimit = 40;
+
+/**
+ * 노드 고르기. 수백 개여도 쓸 수 있게 ID·제목으로 찾는다. 찾은 노드는 Tab 정지 하나인 listbox이고, 화살표·Home·End로
+ * 옮기면 그 노드가 바로 골라진다(검색 칸에서 ↓로도 들어간다). 결과 없음·좁히기 안내는 목록 밖의 status로 읽힌다.
+ */
 function NodePicker({
   nodes,
   kinds,
@@ -1473,70 +1765,110 @@ function NodePicker({
   none?: string;
 }) {
   const [q, setQ] = useState("");
+  const listId = useId();
+  const list = useRef<HTMLUListElement>(null);
   const query = q.trim().toLowerCase();
-  const found = (
-    query
-      ? nodes.filter(
-          (n) =>
-            n.id.toLowerCase().includes(query) ||
-            n.title.toLowerCase().includes(query)
-        )
-      : nodes
-  ).slice(0, 40);
+  const matched = query
+    ? nodes.filter(
+        (n) =>
+          n.id.toLowerCase().includes(query) ||
+          n.title.toLowerCase().includes(query)
+      )
+    : nodes;
+  const found = matched.slice(0, pickerLimit);
+  // 목록 순서의 값: `none`(주 부모 없음)이 있으면 맨 앞의 null이다.
+  const items: (string | null)[] = [
+    ...(none ? [null] : []),
+    ...found.map((n) => n.id),
+  ];
+  const optionId = (id: string | null) => `${listId}-${id ?? "none"}`;
+  const at = value === undefined ? -1 : items.indexOf(value);
+  const pick = (to: number) => {
+    const next = items[Math.max(0, Math.min(items.length - 1, to))];
+    if (next === undefined) return;
+    onChange(next);
+    document
+      .getElementById(optionId(next))
+      ?.scrollIntoView({ block: "nearest" });
+  };
+  const onListKeyDown = (e: KeyboardEvent<HTMLUListElement>) => {
+    const to =
+      e.key === "ArrowDown"
+        ? at + 1
+        : e.key === "ArrowUp"
+          ? Math.max(0, at - 1)
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? items.length - 1
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    pick(to);
+  };
+  const option = (id: string | null, children: ReactNode) => (
+    <li
+      key={id ?? "none"}
+      id={optionId(id)}
+      role="option"
+      aria-selected={value === id}
+      onClick={() => onChange(id)}
+      className={`flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-left ${value === id ? "bg-brand-50 font-medium" : "hover:bg-slate-50"}`}
+    >
+      {children}
+    </li>
+  );
   return (
     <div className="rounded-xl ring-1 ring-slate-200">
       <input
         value={q}
         onChange={(e) => setQ(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "ArrowDown" || !items.length) return;
+          e.preventDefault();
+          list.current?.focus();
+          if (at < 0) pick(0);
+        }}
         placeholder={placeholder}
         aria-label={placeholder}
+        aria-controls={listId}
         className="w-full rounded-t-xl border-b border-slate-100 px-2.5 py-1.5 text-sm outline-none focus:bg-brand-50/40"
       />
       <ul
-        className="scrollbar-thin max-h-44 overflow-auto p-1 text-xs"
+        ref={list}
+        id={listId}
+        className="scrollbar-thin max-h-44 overflow-auto p-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:ring-inset"
         role="listbox"
         aria-label="찾은 노드"
+        tabIndex={items.length ? 0 : -1}
+        aria-activedescendant={at >= 0 ? optionId(items[at]!) : undefined}
+        onKeyDown={onListKeyDown}
       >
-        {none && (
-          <li>
-            <button
-              type="button"
-              role="option"
-              aria-selected={value === null}
-              onClick={() => onChange(null)}
-              className={`w-full rounded-lg px-2 py-1 text-left ${value === null ? "bg-brand-50 font-medium" : "hover:bg-slate-50"}`}
-            >
-              {none}
-            </button>
-          </li>
-        )}
-        {found.map((n) => (
-          <li key={n.id}>
-            <button
-              type="button"
-              role="option"
-              aria-selected={value === n.id}
-              onClick={() => onChange(n.id)}
-              className={`flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left ${value === n.id ? "bg-brand-50 font-medium" : "hover:bg-slate-50"}`}
-            >
+        {none && option(null, none)}
+        {found.map((n) =>
+          option(
+            n.id,
+            <>
               <span
                 className={`shrink-0 rounded px-1 text-[10px] font-semibold ring-1 ${kindTone(kinds, n.kind)}`}
               >
                 {kindLabel(kinds, n.kind)}
               </span>
               <span className="truncate">{n.title}</span>
-            </button>
-          </li>
-        ))}
-        {!found.length && (
-          <li className="px-2 py-1 text-slate-400">일치하는 노드 없음</li>
-        )}
-        {nodes.length > 40 && found.length === 40 && (
-          <li className="px-2 py-1 text-slate-400">
-            … 검색어로 좁히세요 ({nodes.length}개)
-          </li>
+            </>
+          )
         )}
       </ul>
+      <p
+        role="status"
+        className="px-3 text-xs text-slate-600 [&:not(:empty)]:py-1"
+      >
+        {!found.length
+          ? "일치하는 노드 없음"
+          : matched.length > pickerLimit
+            ? `… ${matched.length}개 가운데 ${pickerLimit}개만 보입니다. 검색어로 좁히세요`
+            : ""}
+      </p>
     </div>
   );
 }
@@ -1628,27 +1960,17 @@ function LinkForm({
         onChange={setTarget}
         placeholder="연결할 노드 검색"
       />
-      <div
-        className="flex flex-wrap items-center gap-1.5 text-xs"
-        role="radiogroup"
-        aria-label="연결 종류"
-      >
-        {index.linkKinds.map((k) => (
-          <button
-            key={k.name}
-            type="button"
-            role="radio"
-            aria-checked={kind === k.name}
-            onClick={() => setKind(k.name)}
-            className={`chip ${kind === k.name ? "bg-slate-900 text-white" : "bg-white ring-1 ring-slate-200"}`}
-          >
-            <span
-              className="h-2 w-2 rounded-full"
-              style={{ background: linkColor(index.linkKinds, k.name) }}
-            />
-            {k.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <ChipRadios
+          label="연결 종류"
+          options={index.linkKinds.map((k) => ({
+            name: k.name,
+            label: k.label,
+            color: linkColor(index.linkKinds, k.name),
+          }))}
+          value={kind}
+          onChange={setKind}
+        />
         <button
           type="button"
           onClick={() => setReversed(!reversed)}
@@ -1683,6 +2005,8 @@ function LinkForm({
 
 /**
  * 폐기와 폐기 취소. 폐기는 되돌릴 수 있는 상태 변경이라 묻지 않고 바로 하고, 화면 아래 토스트에서도 폐기 취소를 준다.
+ * 토스트는 시간이 지나면 사라지므로, 토스트와 패널이 패널의 `폐기 취소`가 늘 남아 있다는 것을 글로 알린다. 포커스는 옮기지 않는다.
+ * 보내는 동안에도 버튼을 `disabled`로 바꾸지 않는다(눌렀던 버튼에서 키보드 포커스가 빠지지 않게 같은 버튼이 폐기 취소로 바뀐다).
  */
 function DiscardControl({
   orgId,
@@ -1693,6 +2017,7 @@ function DiscardControl({
 }) {
   const edit = useEditResearchMap(orgId);
   const toast = useToast();
+  const hintId = useId();
   const restore = () =>
     edit
       .mutateAsync({ op: "restore_node", nodeId: node.id })
@@ -1701,7 +2026,7 @@ function DiscardControl({
     void edit.mutateAsync({ op: "discard_node", nodeId: node.id }).then(
       () =>
         toast({
-          message: `'${node.title}' 노드를 폐기했습니다`,
+          message: `'${node.title}' 노드를 폐기했습니다. 노드 상세의 ‘폐기 취소’로도 되돌릴 수 있습니다`,
           action: {
             label: "폐기 취소",
             onAction: () =>
@@ -1712,26 +2037,29 @@ function DiscardControl({
         }),
       () => undefined
     );
+  const gone = discarded(node);
   return (
     <div>
-      {discarded(node) ? (
-        <button
-          className="btn-soft w-full"
-          disabled={edit.isPending}
-          onClick={() => void restore()}
-        >
-          폐기 취소
-          {node.statusBeforeDiscard &&
-            ` (이전 상태: ${researchNodeStatusLabel[node.statusBeforeDiscard]})`}
-        </button>
-      ) : (
-        <button
-          className="btn-danger w-full"
-          disabled={edit.isPending}
-          onClick={discard}
-        >
-          폐기
-        </button>
+      <button
+        className={`${gone ? "btn-soft" : "btn-danger"} w-full aria-disabled:opacity-60`}
+        aria-disabled={edit.isPending || undefined}
+        aria-describedby={gone ? hintId : undefined}
+        onClick={() => {
+          if (edit.isPending) return;
+          if (gone) void restore();
+          else discard();
+        }}
+      >
+        {gone ? "폐기 취소" : "폐기"}
+        {gone &&
+          node.statusBeforeDiscard &&
+          ` (이전 상태: ${researchNodeStatusLabel[node.statusBeforeDiscard]})`}
+      </button>
+      {gone && (
+        <p id={hintId} className="mt-1.5 text-xs text-slate-600">
+          폐기한 노드는 지도에 점선으로 남습니다. 이 버튼으로 언제든 되돌릴 수
+          있습니다.
+        </p>
       )}
       {edit.isError && <Problem error={edit.error} />}
     </div>
@@ -1761,7 +2089,7 @@ function Section({
         {title}
         <button
           onClick={onClose}
-          className="ml-auto text-slate-400 hover:text-slate-700"
+          className="ml-auto text-slate-500 hover:text-slate-700"
           aria-label="닫기"
         >
           ✕

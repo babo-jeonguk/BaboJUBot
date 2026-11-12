@@ -186,10 +186,12 @@ export function Shell() {
             <InboxButton className="btn-ghost relative px-2" />
           </div>
           {orgId && (
-            <div className="sticky top-0 z-20 hidden shrink-0 truncate border-b border-slate-200/70 bg-white/80 px-6 py-2.5 text-xs text-slate-400 backdrop-blur md:block">
+            <div className="sticky top-0 z-20 hidden shrink-0 truncate border-b border-slate-200/70 bg-white/80 px-6 py-2.5 text-xs text-slate-500 backdrop-blur md:block">
               <Crumbs orgId={orgId} />
             </div>
           )}
+          {/* 주소가 바뀌면 본문을 새로 그린다. 들어오는 효과를 다시 틀고, 저장 중·저장됨·입력 같은 화면 상태가 다른 조직·항목의
+              같은 화면으로 넘어가지 않게 한다(keyboard-a11y.spec.ts의 조직 간 이동 검사). */}
           <div
             key={pathname}
             ref={content}
@@ -512,7 +514,7 @@ function Sections({ orgId }: { orgId: string }) {
                   setShut((x) => ({ ...x, [g.label!]: !x[g.label!] }))
                 }
                 aria-expanded={!closed}
-                className="group mb-0.5 flex w-full items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-semibold tracking-wide text-slate-400 transition hover:text-slate-600"
+                className="group mb-0.5 flex w-full items-center gap-1 rounded-lg px-3 py-1 text-[11px] font-semibold tracking-wide text-slate-500 transition hover:text-slate-600"
               >
                 {g.label}
                 <span

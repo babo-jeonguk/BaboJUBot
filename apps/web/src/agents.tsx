@@ -88,7 +88,70 @@ export function AgentsScreen({
       <Suspense fallback={<Loading />}>
         <OrgChart orgId={orgId} agents={agents} />
       </Suspense>
+      <OrgChartText orgId={orgId} agents={agents} />
     </section>
+  );
+}
+
+/**
+ * 조직도의 글 대체(접이식): 조직도와 같은 구성원 목록으로 Research Lead와 그 아래 작업자를 적고, 이름마다 그 에이전트 상세로 간다.
+ */
+function OrgChartText({ orgId, agents }: { orgId: string; agents: Agent[] }) {
+  const lead = agents.find((a) => a.role === "lead");
+  const workers = agents.filter((a) => a.role === "worker");
+  const link = (a: Agent) => (
+    <Link
+      to={`/orgs/${orgId}/agents/${a.id}`}
+      className="font-medium text-brand-700 hover:underline"
+    >
+      {a.name}
+    </Link>
+  );
+  const role = (a: Agent) =>
+    a.name !== roleLabel[a.role] && (
+      <span className="text-slate-600"> · {roleLabel[a.role]}</span>
+    );
+  return (
+    <details className="card mt-3 p-3 text-sm" data-testid="org-chart-text">
+      <summary className="cursor-pointer rounded font-medium text-slate-700 focus-visible:outline-2 focus-visible:outline-brand-500">
+        구성원 목록으로 보기 (Research Lead {lead ? 1 : 0}명 · 작업자{" "}
+        {workers.length}명)
+      </summary>
+      <div className="mt-2">
+        {!lead ? (
+          <p className="text-slate-600">구성원이 없습니다.</p>
+        ) : (
+          <ul aria-label="구성원">
+            <li>
+              {link(lead)}
+              {role(lead)}
+              {workers.length ? (
+                <>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Research Lead 아래 작업자 {workers.length}명
+                  </p>
+                  <ul
+                    aria-label={`${lead.name} 아래 작업자`}
+                    className="mt-1 ml-4 list-disc space-y-0.5 pl-3"
+                  >
+                    {workers.map((w) => (
+                      <li key={w.id}>
+                        {link(w)}
+                        {role(w)}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="mt-1 text-xs text-slate-600">
+                  아직 작업자가 없습니다.
+                </p>
+              )}
+            </li>
+          </ul>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -749,7 +812,7 @@ function InstructionCopies({
                   className="max-h-[28rem] overflow-auto px-4 py-3 text-sm text-slate-800"
                 />
               ) : (
-                <p className="px-4 py-3 text-sm text-slate-400">빈 파일</p>
+                <p className="px-4 py-3 text-sm text-slate-500">빈 파일</p>
               )}
             </>
           )}
@@ -842,7 +905,7 @@ function RevisionList({
         <LoadError what="revision 목록" onRetry={() => void list.refetch()} />
       );
     if (!list.data.length)
-      return <p className="text-xs text-slate-400">revision이 없습니다.</p>;
+      return <p className="text-xs text-slate-500">revision이 없습니다.</p>;
     return (
       <ol className="divide-y divide-slate-100 rounded-xl ring-1 ring-slate-100">
         {list.data.map((r) => {
@@ -870,7 +933,7 @@ function RevisionList({
                 </span>
                 <time
                   dateTime={r.createdAt}
-                  className="shrink-0 text-slate-400 tabular-nums"
+                  className="shrink-0 text-slate-500 tabular-nums"
                 >
                   {formatTime(r.createdAt)}
                 </time>
@@ -946,7 +1009,7 @@ function RevisionView({
           className="max-h-[28rem] overflow-auto rounded-xl px-1 py-1 text-sm text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
         />
       ) : (
-        <p className="text-sm text-slate-400">빈 파일</p>
+        <p className="text-sm text-slate-500">빈 파일</p>
       )}
     </div>
   );
@@ -972,7 +1035,7 @@ function RunRow({ orgId, run }: { orgId: string; run: RunSummary }) {
         </div>
         <time
           dateTime={run.startedAt}
-          className="shrink-0 text-xs text-slate-400 tabular-nums"
+          className="shrink-0 text-xs text-slate-500 tabular-nums"
         >
           {formatTime(run.startedAt)}
         </time>
@@ -1059,7 +1122,7 @@ export function RunDetailPage() {
             {r.summary ? (
               <Markdown text={r.summary} />
             ) : (
-              <span className="text-slate-400">없음</span>
+              <span className="text-slate-500">없음</span>
             )}
           </dd>
           {r.error && (
@@ -1089,7 +1152,7 @@ const costFormat = new Intl.NumberFormat("en-US", {
  * 비용은 프로바이더가 알려 준 추정이라 `추정` 배지가 붙는다.
  */
 function UsageTable({ usage }: { usage: Usage | null }) {
-  const unreported = <span className="text-slate-400">보고 안 됨</span>;
+  const unreported = <span className="text-slate-500">보고 안 됨</span>;
   const tokens = (n: number | null | undefined) =>
     n == null ? unreported : `${tokenFormat.format(n)} 토큰`;
   const cost = usage?.costUsd ?? null;
@@ -1136,7 +1199,7 @@ function WakeReasonRow({
 }) {
   const row = (label: string, body: ReactNode, detail?: string | null) => (
     <li className="px-4 py-2.5 text-sm">
-      <div className="text-xs text-slate-400">{label}</div>
+      <div className="text-xs text-slate-500">{label}</div>
       {body}
       {detail && <Markdown text={detail} className="mt-0.5" />}
     </li>

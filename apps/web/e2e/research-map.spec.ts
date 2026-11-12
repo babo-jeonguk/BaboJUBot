@@ -113,7 +113,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await panel.getByRole("button", { name: "＋ 하위 노드" }).click();
   await expect(
     panel.getByRole("radio", { name: "가설·아이디어" })
-  ).toHaveAttribute("aria-checked", "true");
+  ).toBeChecked();
   await panel.getByLabel("새 노드 제목").fill("잡음 구간이 오류의 원인이다");
   // 추가한 노드가 선택되면 주소와 같은 때에 패널도 그 노드로 바뀐다. 편집 Event 재조회가 몰리는 느린 기기에서도
   // 이전 노드를 보이며 입력을 받지 않는다(CPU 4배 감속에서 라우터 transition 사용 시 0.8~1.5초, 끈 뒤 0초).

@@ -69,7 +69,7 @@ export function TasksScreen({
                 <TaskStatusBadge status={task.status} />
                 <span className="min-w-0 flex-1 font-medium break-words text-slate-800">
                   {task.parentTaskId && (
-                    <span className="mr-1 text-slate-400" title="하위 작업">
+                    <span className="mr-1 text-slate-500" title="하위 작업">
                       ↳
                     </span>
                   )}
@@ -180,7 +180,7 @@ function LinkedNode({
       {!nodeId ? (
         <p className="text-slate-500">연결된 연구 노드가 없습니다.</p>
       ) : node.isPending ? (
-        <p className="text-slate-400">불러오는 중…</p>
+        <p className="text-slate-500">불러오는 중…</p>
       ) : node.isError ? (
         <LoadError what="연구 노드" onRetry={() => void node.refetch()} />
       ) : (
@@ -192,7 +192,7 @@ function LinkedNode({
             {kind} · {researchNodeStatusLabel[node.data.status]}
           </div>
           <div
-            className={`font-medium break-words ${node.data.status === "discarded" ? "text-slate-400 line-through" : "text-brand-700"}`}
+            className={`font-medium break-words ${node.data.status === "discarded" ? "text-slate-500 line-through" : "text-brand-700"}`}
           >
             {node.data.title}
           </div>
@@ -335,7 +335,7 @@ function CommentItem({
   const runId = mine ? c.deliveredToRunId : c.runId;
   return (
     <li data-author={c.author} className="text-sm">
-      <div className="mb-1 text-[11px] text-slate-400">
+      <div className="mb-1 text-[11px] text-slate-500">
         {mine ? "나" : nameOf(agents, c.agentId)} ·{" "}
         {!mine && runId ? (
           <Link
@@ -354,7 +354,7 @@ function CommentItem({
         className={`rounded-xl px-3 py-2 ${mine ? "bg-brand-50 text-slate-800" : "bg-slate-50 text-slate-800"}`}
       />
       {mine && (
-        <div className="mt-1 text-[11px] text-slate-400">
+        <div className="mt-1 text-[11px] text-slate-500">
           {runId ? (
             <Link
               to={`/orgs/${orgId}/runs/${runId}`}
@@ -418,7 +418,7 @@ function CommentComposer({
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <span className="flex-1" />
         {add.isPending && (
-          <span className="text-xs text-slate-400" role="status">
+          <span className="text-xs text-slate-500" role="status">
             저장 중…
           </span>
         )}

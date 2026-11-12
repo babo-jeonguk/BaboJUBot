@@ -63,8 +63,8 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   await expect(page.getByTestId("metric-runs")).toContainText("실행 중 1");
   const today = runChart.locator("[data-date]").last();
   await expect(today).toHaveAttribute("aria-label", /실행 중 1/);
-  // 막대는 keyboard focus로도 그날의 수를 보인다.
-  await today.focus();
+  // 막대는 hover로 그날의 수를 보인다. 키보드는 막대를 들르지 않고 `숫자로 보기` 표에서 같은 값을 읽는다(keyboard-a11y.spec.ts).
+  await today.hover();
   await expect(runChart.getByRole("tooltip")).toContainText("(오늘)");
   await expect(
     page

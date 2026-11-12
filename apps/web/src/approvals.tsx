@@ -25,6 +25,7 @@ import {
   useOrganization,
   useProviderSettings,
 } from "./api.ts";
+import { focusFirstChoiceProblem, isChoiceRefusal } from "./choice-problems.ts";
 import { Markdown } from "./markdown.tsx";
 import {
   changedChoiceFields,
@@ -176,7 +177,7 @@ function InitialResearchContent({
             <li key={m.role} className="px-4 py-3 text-sm">
               <div className="flex items-center gap-2">
                 <span className="font-medium">{m.label}</span>
-                <span className="text-xs text-slate-400">{m.role}</span>
+                <span className="text-xs text-slate-500">{m.role}</span>
                 <span className="ml-auto tabular-nums">{m.count}명</span>
               </div>
               {m.choice && (
@@ -208,7 +209,7 @@ function InitialResearchContent({
         <div className="space-y-2 p-4 text-sm">
           <div>
             <span className="font-medium">{proposal.template.label}</span>{" "}
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-slate-500">
               {proposal.template.name}
             </span>
           </div>
@@ -241,7 +242,7 @@ function AddWorkerContent({
       <div className="px-4 py-3 text-sm">
         <div className="flex items-center gap-2">
           <span className="font-medium">{proposal.label}</span>
-          <span className="text-xs text-slate-400">{proposal.role}</span>
+          <span className="text-xs text-slate-500">{proposal.role}</span>
           <span className="ml-auto tabular-nums">1명</span>
         </div>
         {proposal.choice && (
@@ -298,7 +299,7 @@ function Kinds({ label, kinds }: { label: string; kinds: string[] }) {
           </span>
         ))
       ) : (
-        <span className="text-xs text-slate-400">없음</span>
+        <span className="text-xs text-slate-500">없음</span>
       )}
     </div>
   );
@@ -382,6 +383,7 @@ function WorkerChoiceTable({
   draft,
   onChange,
   disabled,
+  showProblem,
 }: {
   idPrefix: string;
   workers: ProposedWorker[];
@@ -392,6 +394,8 @@ function WorkerChoiceTable({
   draft: ChoiceDraft | undefined;
   onChange: (index: number, choice: ProviderChoice | undefined) => void;
   disabled: boolean;
+  /** 승인을 시도한 뒤라 서버가 거부할 프로바이더·모델 칸을 알린다. 서버처럼 사용자가 바꾼 칸만 본다. */
+  showProblem: boolean;
 }) {
   const providers = useProviderSettings().data?.providers;
   const choiceLabel = useChoiceLabel();
@@ -420,7 +424,7 @@ function WorkerChoiceTable({
             >
               <div className="flex min-w-0 items-center gap-2 text-sm">
                 <span className="truncate font-medium">{w.label}</span>
-                <span className="shrink-0 text-xs text-slate-400 tabular-nums">
+                <span className="shrink-0 text-xs text-slate-500 tabular-nums">
                   {w.ordinal}번
                 </span>
                 {changed && <ChangedBadge />}
@@ -445,6 +449,7 @@ function WorkerChoiceTable({
                   providers={providers}
                   value={value}
                   disabled={disabled}
+                  showProblem={showProblem && changed}
                   onChange={(next) =>
                     onChange(
                       i,
@@ -509,7 +514,7 @@ function DecidedWorkerTable({
             <tr key={decided.agentId} data-testid="decided-worker">
               <td className="py-2 pr-2 align-top">
                 <span className="block truncate font-medium">{name}</span>
-                <span className="text-xs text-slate-400">
+                <span className="text-xs text-slate-500">
                   {proposed?.label}
                 </span>
               </td>
@@ -566,8 +571,12 @@ function DecisionForm({
   const { id: approvalId, kind } = approval;
   const [note, setNote] = useState("");
   const decide = useDecideApproval(orgId, approvalId);
-  const workerDefault = useProviderSettings().data?.workerDefault;
+  const providerSettings = useProviderSettings();
+  const settings = providerSettings.data;
+  const workerDefault = settings?.workerDefault;
   const workers = proposedWorkers(approval);
+  const idPrefix = `worker-choice-${approvalId}`;
+  const [showProblem, setShowProblem] = useState(false);
   const draftKey = `${orgId}/${approvalId}`;
   const draft = useChoiceDraft(draftKey);
   // 표의 값과 승인할 때 보낼 값은 한 곳에서 나온다. 모르는 칸이 있으면 승인할 수 없다.
@@ -597,12 +606,13 @@ function DecisionForm({
         </p>
       )}
       <WorkerChoiceTable
-        idPrefix={`worker-choice-${approvalId}`}
+        idPrefix={idPrefix}
         workers={workers}
         shown={choices.shown}
         base={base}
         draft={draft}
         disabled={decide.isPending}
+        showProblem={showProblem}
         onChange={(index, choice) =>
           setChoiceDraft(
             draftKey,
@@ -634,7 +644,26 @@ function DecisionForm({
               decide.isPending ||
               (decision === "approve" ? !choices.ready : !trimmed)
             }
-            onClick={() =>
+            onClick={() => {
+              // 사용자가 바꾼 작업자 칸만 서버가 다시 확인한다(Lead 제안은 요청 때 확인함). 그 칸이 서버가 거부할 값이면
+              // 보내기 전에 그 칸의 오류로 알리고 그 칸으로 간다. 그사이 목록이 바뀌어 서버가 거부하면 목록을 다시 받아 알린다.
+              const changedFields = (shown: typeof choices.shown) =>
+                shown.flatMap((choice, i) =>
+                  draft?.[i] === undefined
+                    ? []
+                    : [{ idPrefix: `${idPrefix}-${i}`, choice }]
+                );
+              if (
+                decision === "approve" &&
+                settings &&
+                focusFirstChoiceProblem(
+                  settings.providers,
+                  changedFields(choices.shown)
+                )
+              ) {
+                setShowProblem(true);
+                return;
+              }
               decide.mutate(
                 {
                   decision,
@@ -648,9 +677,22 @@ function DecisionForm({
                     setChoiceDraft(draftKey, undefined);
                     onDecided();
                   },
+                  onError: async (error) => {
+                    if (!(
+                      error instanceof ApiError && isChoiceRefusal(error.code)
+                    ))
+                      return;
+                    setShowProblem(true);
+                    const fresh = (await providerSettings.refetch()).data;
+                    if (fresh)
+                      focusFirstChoiceProblem(
+                        fresh.providers,
+                        changedFields(choices.shown)
+                      );
+                  },
                 }
-              )
-            }
+              );
+            }}
           >
             {decisionLabel[decision]}
           </button>
@@ -668,7 +710,10 @@ function DecisionForm({
             : decide.error instanceof ApiError &&
                 decide.error.code === "organization_closed"
               ? "조직이 중단되어 결정을 받지 않았습니다."
-              : "보내지 못했습니다. 다시 시도하세요."}
+              : decide.error instanceof ApiError &&
+                  isChoiceRefusal(decide.error.code)
+                ? "서버가 고른 프로바이더나 모델을 받지 않았습니다. 표시한 칸을 고치세요."
+                : "보내지 못했습니다. 다시 시도하세요."}
         </p>
       )}
     </section>
@@ -698,7 +743,7 @@ function DecisionReceipt({
       <h2 className="mb-2 text-sm font-semibold">
         {approvalStatusLabel[a.status]}
         {a.decidedAt && (
-          <span className="ml-2 font-normal text-slate-400">
+          <span className="ml-2 font-normal text-slate-500">
             {formatTime(a.decidedAt)}
           </span>
         )}

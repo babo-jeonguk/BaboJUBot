@@ -9,6 +9,12 @@ import {
 } from "@babojubot/contracts";
 import { useCallback } from "react";
 import { useProviderSettings } from "./api.ts";
+import {
+  choiceFieldIds,
+  choiceProblem,
+  choiceProblemText,
+  type ChoiceProblem,
+} from "./choice-problems.ts";
 
 // 프로바이더·모델 고르기(#94). 새 연구 조직 창·에이전트 설정·전역 설정의 기본값이 같은 Select 쌍을 쓴다.
 
@@ -125,12 +131,13 @@ export function ReadinessBadge({
 }
 
 const selectClass =
-  "mt-1 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm ring-1 ring-slate-200 transition outline-none focus:bg-white focus:ring-2 focus:ring-brand-400 disabled:opacity-60";
+  "mt-1 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm ring-1 ring-slate-200 transition outline-none focus:bg-white focus:ring-2 focus:ring-brand-400 disabled:opacity-60 aria-invalid:ring-2 aria-invalid:ring-rose-400";
 
 /**
  * 프로바이더 Select와 모델 Select. 모델의 첫 옵션은 `기본 모델`(값 없음)이고, 프로바이더를 바꾸면 모델은 `기본 모델`이 된다.
  * 서버에 없는 연결이나 목록에 없는 모델이 지금 값이면 그 값도 옵션에 남겨 보인다. 고른 연결의 준비 상태 배지가 칸 옆에 있고,
- * 준비안됨 연결도 목록에 그대로 남는다.
+ * 준비안됨 연결도 목록에 그대로 남는다. `showProblem`이면 서버가 거부할 값(`choiceProblem`)을 그 칸의 오류로 잇는다
+ * (`aria-invalid`·`aria-describedby`). 값을 고치면 오류와 연결이 함께 사라진다.
  */
 export function ProviderChoiceFields({
   idPrefix,
@@ -140,6 +147,7 @@ export function ProviderChoiceFields({
   onChange,
   disabled = false,
   inTableRow = false,
+  showProblem = false,
 }: {
   idPrefix: string;
   /** 칸 이름 앞에 붙는 말(예: `Lead`). 없으면 `프로바이더`·`모델`이다. */
@@ -150,8 +158,24 @@ export function ProviderChoiceFields({
   disabled?: boolean;
   /** 표의 한 줄로 쓴다: 열 머리가 칸 이름을 보이므로 칸 이름은 화면 읽기 프로그램에만 남기고, 두 칸을 늘 나란히 둔다. */
   inTableRow?: boolean;
+  /** 제출을 시도한 뒤라 잘못된 칸을 알린다. */
+  showProblem?: boolean;
 }) {
   const connection = providers.find((p) => p.id === value.provider);
+  const problem = showProblem ? choiceProblem(providers, value) : undefined;
+  const ids = choiceFieldIds(idPrefix);
+  const errorId = problem && `${ids[problem]}-error`;
+  /** 문제가 있는 칸의 오류 연결과, 그 칸 아래의 오류 글. */
+  const invalid = (field: ChoiceProblem) =>
+    problem === field
+      ? { "aria-invalid": true, "aria-describedby": errorId }
+      : {};
+  const error = (field: ChoiceProblem) =>
+    problem === field && (
+      <p id={errorId} className="mt-1 text-xs text-rose-700">
+        {choiceProblemText[field]}
+      </p>
+    );
   const models = connection?.models ?? [];
   const badge = connection && (
     <ReadinessBadge
@@ -172,15 +196,16 @@ export function ProviderChoiceFields({
       }
     >
       <div>
-        <label className={labelClass} htmlFor={`${idPrefix}-provider`}>
+        <label className={labelClass} htmlFor={ids.unknown_provider}>
           {named("프로바이더")}
         </label>
         <div className="flex items-center gap-2 [&_select]:min-w-0 [&_select]:flex-1">
           <select
-            id={`${idPrefix}-provider`}
+            id={ids.unknown_provider}
             className={selectClass}
             value={value.provider}
             disabled={disabled}
+            {...invalid("unknown_provider")}
             onChange={(e) =>
               onChange({ provider: e.currentTarget.value, model: null })
             }
@@ -196,16 +221,18 @@ export function ProviderChoiceFields({
           </select>
           {badge}
         </div>
+        {error("unknown_provider")}
       </div>
       <div>
-        <label className={labelClass} htmlFor={`${idPrefix}-model`}>
+        <label className={labelClass} htmlFor={ids.unknown_model}>
           {named("모델")}
         </label>
         <select
-          id={`${idPrefix}-model`}
+          id={ids.unknown_model}
           className={selectClass}
           value={value.model ?? ""}
           disabled={disabled}
+          {...invalid("unknown_model")}
           onChange={(e) =>
             onChange({
               provider: value.provider,
@@ -224,6 +251,7 @@ export function ProviderChoiceFields({
             </option>
           ))}
         </select>
+        {error("unknown_model")}
       </div>
     </div>
   );

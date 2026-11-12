@@ -463,10 +463,39 @@ export const avatarStyle = (id: string) => {
   };
 };
 
-/** 불러오는 중·오류는 빈 상태나 숫자 0으로 보이지 않는다. */
+/**
+ * 누르면 바로 저장하는 칸의 저장 결과. 영역은 늘 있어 바뀐 글을 화면 읽기 프로그램이 읽고, 어느 설정의 결과인지 이름을 함께 읽는다.
+ * 저장하는 동안은 `저장하는 중…`, 이번 저장이 끝나면 `저장됨`이다. 처음 연 화면과 실패(칸 아래의 오류 안내)에는 아무것도 없다.
+ */
+export function SaveStatus({
+  id,
+  label,
+  state,
+}: {
+  id: string;
+  label: string;
+  state: "idle" | "saving" | "saved";
+}) {
+  return (
+    <span id={id} role="status" className="text-xs text-slate-600">
+      {state !== "idle" && <span className="sr-only">{label} </span>}
+      {state === "saving" && "저장하는 중…"}
+      {state === "saved" && (
+        <>
+          <span aria-hidden>✓ </span>저장됨
+        </>
+      )}
+    </span>
+  );
+}
+
+/** 불러오는 중·오류는 빈 상태나 숫자 0으로 보이지 않는다. 움직임을 줄여도 `불러오는 중`으로 읽힌다. */
 export function Loading() {
   return (
     <div className="space-y-2 p-4" aria-busy>
+      <span role="status" className="sr-only">
+        불러오는 중…
+      </span>
       {[0, 1, 2].map((i) => (
         <div
           key={i}

@@ -23,6 +23,9 @@
 | 되돌릴 수 없는 명령의 인라인 확인 취소 | ui.tsx `useInlineConfirm` | [셸 포커스 E2E](../../../apps/web/e2e/shell-focus.spec.ts) `cancelling the stop…`, `cancelling the final completion…` |
 | 되돌리기 토스트·아이콘 tooltip | [toast.tsx](../../../apps/web/src/toast.tsx) `useToast`, [toast-stack.ts](../../../apps/web/src/toast-stack.ts), ui.tsx `Tip` | [단위](../../../apps/web/src/toast-stack.test.ts), 연구 지도 E2E의 폐기 |
 | 공용 UI·반응형 | [ui.tsx](../../../apps/web/src/ui.tsx), [index.css](../../../apps/web/src/index.css) | 각 화면 E2E |
+| 즉시 저장 스위치의 저장 결과 | ui.tsx `SaveStatus` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
+| 움직임 줄이기 | index.css `prefers-reduced-motion` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
+| 보조 글자색 대비 | index.css `--color-slate-500`; 측정 [e2e/support/contrast.ts](../../../apps/web/e2e/support/contrast.ts) `lowContrastTexts` | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts) |
 | 긴 글의 Markdown 표시·HTML 안전 | [markdown.tsx](../../../apps/web/src/markdown.tsx) `Markdown`, [markdown.css](../../../apps/web/src/markdown.css) | [단위](../../../apps/web/src/markdown.test.tsx) |
 
 ## 연결 경로

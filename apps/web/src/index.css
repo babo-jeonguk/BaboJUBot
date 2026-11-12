@@ -9,6 +9,8 @@
     "Liberation Mono", "Noto Sans Mono", "Pretendard Variable", monospace;
 
   --color-canvas: #f4f5f9;
+  /* 보조 글자색. Tailwind 기본(L 0.554)은 바탕(canvas)·slate-100 위에서 4.4:1이라 4.5:1을 넘도록 조금 어둡게 둔다(#152). */
+  --color-slate-500: oklch(0.53 0.046 257.417);
   --color-brand-50: #eef0ff;
   --color-brand-100: #e0e3ff;
   --color-brand-200: #c7cbfe;
@@ -146,7 +148,7 @@
       before:absolute before:top-0.5 before:left-0.5 before:h-4 before:w-4 before:rounded-full before:bg-white before:shadow-sm before:transition before:duration-150 before:content-['']
       checked:bg-brand-600 checked:before:translate-x-4
       focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500
-      disabled:cursor-default disabled:opacity-50;
+      disabled:cursor-default disabled:opacity-50 aria-disabled:cursor-default aria-disabled:opacity-50;
 }
 @utility chip {
   @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition duration-150 active:scale-95;
@@ -168,11 +170,15 @@ body {
   scrollbar-width: thin;
 }
 
+/* 움직임 줄이기: 들어오는 효과는 바로 끝내고, 반복하는 spin·pulse·흐르는 연결은 한 번(사실상 0초)만 돌고 멈춘다.
+   상태는 글·아이콘·status가 계속 알린다. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

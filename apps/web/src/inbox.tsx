@@ -570,7 +570,7 @@ function InboxRow({
               )}
               <time
                 dateTime={at}
-                className="text-[11px] text-slate-400 tabular-nums"
+                className="text-[11px] text-slate-500 tabular-nums"
               >
                 {formatTime(at)}
               </time>
