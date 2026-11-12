@@ -2,7 +2,9 @@
 
 `record_artifact`의 파일 경로 격리를 Linux·Windows·macOS의 파일 시스템 여덟 곳에서 실제로 확인한 결과다. 지금 동작·응답 코드는 [현재 구현 현황](../current-implementation.md), CI 실행 조건은 [CONTRIBUTING](../../CONTRIBUTING.md)이 기준이다.
 
-기준: PR #176 head `fc23ac8`(GitHub이 `main` `19b6cfc` 위에 만든 병합 커밋 `905ab33`), [CI run 43215390688](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43215390688), 2026-11-12. 이후 커밋은 이 기록 등 문서만 바꿨다.
+기준: PR #176 head `2300054`(GitHub이 `main` `19b6cfc` 위에 만든 병합 커밋 `60299d4`), [CI run 43217439001](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43217439001), 2026-11-12. 사례 표는 직전 코드 head `fc23ac8`의 [run 43215390688](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43215390688)과 같다. 이후 커밋은 이 기록 등 문서만 바꿨다.
+
+확인 범위는 읽는 프로세스와 `Workspaces.readArtifact`의 응답·보존 바이트다. `record_artifact` 도구 호출·DB 저장·HTTP/MCP 응답은 Linux의 서버 통합 시험(`file-artifacts.test.ts`)이 맡으며 다른 파일 시스템에서는 돌리지 않았다.
 
 ## 결론
 
@@ -17,7 +19,7 @@
 | F1 절대 경로 별칭 | 제한 유지 | 작업 폴더를 가리키는 다른 절대 링크를 거친 경로는 `path_outside_folder`. 같은 파일은 상대 경로·작업 폴더 표기로 등록한다(C33). 받으려면 바깥 경로를 봐야 하므로 넓히지 않았다 |
 | F2 `\\?\UNC\` | 수정 | `\\?\UNC\server\share\…`를 `\\server\share\…`로 읽는다. SMB 작업 폴더에서 등록 확인(C32) |
 | F3 링크 대상 끝 표기 | 재현 안 됨 | 끝이 `\`·`\.`·`\..`인 파일·폴더 링크 여섯 개에서 우리 읽기와 운영체제가 같은 파일을 고르거나 함께 거부했다(FAT32를 뺀 모든 볼륨) |
-| F4 대소문자 무시 접두 | 수정(안전한 오거부 추가) | 작업 폴더 부분은 이름마다 대소문자까지 같아야 한다. 드라이브 문자만 무시한다. 대소문자 구분 폴더(NTFS `setCaseSensitiveInfo`)와 구분 볼륨에서 다른 폴더를 거부하고, 대소문자 무시 볼륨에서 같은 폴더를 다르게 적은 표기는 거부한다(C36) |
+| F4 대소문자 무시 접두 | 수정(안전한 오거부 추가) | 작업 폴더 부분은 이름마다 대소문자까지 같아야 한다. 드라이브 문자만 무시한다. 대소문자를 가리는 부모 폴더에 `organizations`와 `Organizations`를 따로 두면 운영체제는 `Organizations`의 바깥 바이트를 열지만 우리 읽기는 `path_outside_folder`다(NTFS `setCaseSensitiveInfo`, ext4·대소문자 구분 APFS·HFS+). 대소문자 무시 볼륨에서 같은 폴더를 대소문자만 다르게 적으면 거부한다(C36) |
 | F5 확인 직후 변경 | 수정 | 걸으며 확인한 최종 파일을 다시 보지 않고 그 확인값으로 연다. 삭제·다른 조직 파일로 교체·바깥 링크로 교체가 모두 `file_changed`(C15), 확인 직후 FIFO로 바뀌어도 `file_changed`(C16) |
 | F6 연 뒤 hard link | 제한 유지 | 연 뒤 다른 곳에 더한 hard link는 감지하지 않는다. 읽은 바이트는 이미 연 안쪽 파일이다(C14) |
 
@@ -33,14 +35,14 @@
 
 | 볼륨 | 파일 시스템 | 대소문자 구분 | NFD로 NFC 이름 찾음 | 링크 | hard link | 파일 dev / ino / nlink | 시험(통과/실패/건너뜀) | 볼륨 시간 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ext4 | ext4 | true | false | yes | yes | 2049 / 9201311 / 1 | 67/0/4 | 31s |
-| NTFS | NTFS | false | false | yes | yes | 1923415076 / 281474976734263 / 1 | 69/0/2 | 47s |
-| FAT32 | FAT32 | false | false | EISDIR | EISDIR | 718739034 / 4288608 / 1 | 35/0/36 | 11s |
-| SMB | SMB 3.1.1 loopback to NTFS | false | false | yes | yes | 1923415076 / 1688849860287574 / 1 | 68/0/3 | 104s |
-| APFS | APFS | false | true | yes | yes | 16777231 / 3064868 / 1 | 67/0/4 | 22s |
-| APFS-CS | Case-sensitive APFS | true | true | yes | yes | 16777242 / 70 / 1 | 67/0/4 | 127s |
-| HFS | HFS+ | false | true | yes | yes | 16777244 / 72 / 1 | 67/0/4 | 22s |
-| HFSX | Case-sensitive HFS+ | true | true | yes | yes | 16777246 / 72 / 1 | 67/0/4 | 25s |
+| ext4 | ext4 | true | false | yes | yes | 66305 / 9201317 / 1 | 67/0/4 | 21s |
+| NTFS | NTFS | false | false | yes | yes | 6666607 / 281474976734267 / 1 | 69/0/2 | 58s |
+| FAT32 | FAT32 | false | false | EISDIR | EISDIR | 2463120090 / 4235360 / 1 | 35/0/36 | 14s |
+| SMB | SMB 3.1.1 loopback to NTFS | false | false | yes | yes | 6666607 / 1688849860287570 / 1 | 68/0/3 | 142s |
+| APFS | APFS | false | true | yes | yes | 16777230 / 3065692 / 1 | 67/0/4 | 29s |
+| APFS-CS | Case-sensitive APFS | true | true | yes | yes | 16777242 / 70 / 1 | 67/0/4 | 23s |
+| HFS | HFS+ | false | true | yes | yes | 16777244 / 72 / 1 | 67/0/4 | 88s |
+| HFSX | Case-sensitive HFS+ | true | true | yes | yes | 16777246 / 69 / 1 | 67/0/4 | 27s |
 
 
 ## 사례별 결과
@@ -108,7 +110,7 @@
 - C33: F1과 같다.
 - C34: NTFS·FAT32·SMB 모두 8.3 짧은 이름(`LONGFI~1.MD`, `LONGFO~1`)으로 안쪽 파일을 등록했다. NTFS는 바깥을 가리키는 정션의 짧은 이름(`LONGJU~1`)도 `path_outside_folder`로 거부했다.
 - C35 SMB: Node가 공유에 만든 정션은 만든 뒤 운영체제도 보지 못한다(`lstat` ENOENT, 열기 ENOENT). 우리 읽기도 `file_not_found`로 거부했다. NTFS에서는 운영체제가 정션을 따라가 바깥·다른 조직 바이트를 여는 반면 우리 읽기는 `path_outside_folder`다.
-- C36: F4와 같다. Windows의 대소문자 구분 폴더는 NTFS에서만 만들 수 있다(FAT32·SMB는 `setCaseSensitiveInfo` 거부).
+- C36: F4와 같다. 결과는 볼륨 전체의 대소문자 동작으로 정했고, 세부 확인 중 대소문자 구분 폴더·부모 폴더는 FAT32·SMB(`setCaseSensitiveInfo` 거부)와 대소문자 무시 APFS·HFS+에서 적용 불가다. C34의 정션 짧은 이름도 정션이 없는 FAT32·SMB에서는 적용 불가다. 결과표의 판정은 세부 확인 하나가 적용 불가여도 나머지 확인으로 정했고, 적용 불가인 세부 확인은 job 요약의 사례 메모에 남는다.
 - C16·C17: Windows에는 FIFO가 없고, Node는 경로 socket 대신 named pipe를 쓴다. C18 FAT32는 장치 링크를 만들 수 없고 장치 이름 거부는 C28이 본다.
 - FAT32·SMB의 `dev`/`ino`는 0이 아니었다. SMB의 `dev`는 공유한 NTFS 볼륨과 같다. 두 볼륨에서도 확인 직후 다른 조직 폴더·파일로 옮겨 넣는 바꿔치기(C11·C12·C15)는 모두 `file_changed`·조직 신원 오류로 막혔다.
 
@@ -121,14 +123,15 @@
 | 단계 | 시간 |
 | --- | --- |
 | 기준: `main` `19b6cfc` CI 전체([run 43205145233](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43205145233)) | 4분 31초. Windows 파일 단계 76초, macOS 37초 |
-| 이 PR CI 전체(전체 검증 포함) | 5분 41초 |
-| `files / linux` | 50초(ext4 32초) |
-| `files / windows` | 3분 39초(준비 5초, NTFS 47초, FAT32 12초, SMB 105초, 정리 3초) |
-| `files / macos` | 5분 23초(준비 7초, APFS 22초, 대소문자 구분 APFS 127초, HFS+ 22초, 대소문자 구분 HFS+ 25초, 정리 101초) |
+| 이 PR CI 전체(전체 검증 포함, run 43215390688 / 43217439001) | 5분 41초 / 5분 45초 |
+| `files / linux` | 50초 / 35초(ext4 32초 / 21초) |
+| `files / windows` | 3분 39초 / 4분 36초(준비 5–7초, NTFS 47–59초, FAT32 12–15초, SMB 105–143초, 정리 3초) |
+| `files / macos` | 5분 23초 / 4분 59초(준비 7초, 볼륨마다 22–127초, 정리 101–103초) |
 
-- 일반 PR: 기본 볼륨의 시험은 사례 표를 더하고도 Windows 47–69초·macOS 22–38초로 기준(76초·37초) 안팎이다. 전체 실행 시간은 E2E(약 4–5분)가 정하므로 늘어난 대기는 1분 목표 안이다. 전체 검증이 돌지 않는 일반 코드 PR의 실제 run은 이 PR에서 관찰하지 못했고, 실행 조건은 `scripts/ci-test-gate.test.mjs`·`scripts/ci-changes.test.mjs`로 확인했다.
-- 전체 검증: 가장 긴 macOS job이 5분 23초로 15분 목표 안이다. 병목은 대소문자 구분 APFS 이미지의 경합 시험과 이미지 떼기(병렬로 약 100초)다. 이미지 떼기를 생략하고 VM 폐기에 맡기면 약 1분 40초 줄지만 정리 시도를 남기려고 그대로 두었다.
+- 일반 PR: 기본 볼륨의 시험은 사례 표를 더하고도 Windows 47–69초·macOS 22–38초로 기준(76초·37초) 안팎이다. 세 시험 파일은 나란히 돌고 가장 긴 것은 기존 경합 시험이다(NTFS: 경합 44초, 사례 표 31초, 기존 경계 22초; APFS: 20·7·7초). Linux `tests / server`에도 사례 표가 더해져 약 10초 겹쳐 돈다. 전체 실행 시간은 E2E(약 4–5분)가 정하므로 늘어난 대기는 1분 목표 안이다. 전체 검증이 돌지 않는 일반 코드 PR의 실제 run은 이 PR에서 관찰하지 못했고, 실행 조건은 `scripts/ci-test-gate.test.mjs`·`scripts/ci-changes.test.mjs`로 확인했다.
+- 전체 검증: 가장 긴 macOS job이 5분 23초로 15분 목표 안이다. 병목은 이미지 떼기(병렬로 약 100초)와 이미지 하나의 느린 시험이다. 느린 이미지는 실행마다 달랐다(run 43215390688은 대소문자 구분 APFS 127초, run 43217439001은 HFS+ 88초, 나머지 22–29초). 원인은 확인하지 못했다. 이미지 떼기를 생략하고 VM 폐기에 맡기면 약 1분 40초 줄지만 정리 시도를 남기려고 그대로 두었다.
 - 실행 수: 파일 경계 PR은 job 세 개(약 9분 50초의 runner 시간)가 더 돈다. 그 대신 macOS·Windows job은 기본 볼륨 시험을 거듭하지 않는다.
+- 중복 취소: 같은 PR의 새 커밋이 [run 43217361929](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43217361929)를 취소했고, 항상 도는 `ci / test`는 취소를 실패로 판정했다.
 - 판정: 처음 실행([run 43209747615](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/43209747615))에서 `files / windows` 실패를 `ci / test`가 "files-windows did not finish as success"로 거부했고, 마지막 실행은 "All test suites and file-system verifications passed"였다.
 
 ## 처음 실행에서 고친 시험
@@ -148,3 +151,5 @@
 - 대소문자 무시 ext4(casefold)와 다른 Linux 파일 시스템, 다른 macOS·Windows 판.
 - 경합의 무작위 대량 반복. 결정적 주입과 기존 모든 시점 시험만 돌렸다.
 - 전체 검증이 돌지 않는 일반 코드 PR의 실제 CI 실행(실행 조건은 단위 검사로만 확인).
+- 수동 실행은 브랜치를 대상으로 한다(`gh workflow run CI --ref <branch>`). 특정 SHA만 따로 돌리는 방법은 만들지 않았다. 이 `workflow_dispatch`는 `main`에 병합된 뒤에 쓸 수 있다.
+- `record_artifact` 도구·DB 저장을 거친 응답의 파일 시스템별 확인(위 확인 범위).
