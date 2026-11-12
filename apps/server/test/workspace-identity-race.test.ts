@@ -10,15 +10,24 @@ import { Workspaces } from "../src/workspace.ts";
 
 // 조직을 만든 직후의 폴더 준비와 실행 시도 준비가 겹칠 수 있다. 겹쳤다고 표식이 없는 것으로 보면 멀쩡한 실행이 실패한다.
 // 첫 준비가 기록을 확인하는 동안 다른 준비가 표식을 쓰고 기록까지 남기는 순간을 만든다.
-const hold = vi.hoisted(() => ({
-  calls: 0,
-  /** 첫 호출이 gate에 들어서면 풀린다. 두 번째 준비는 이 신호 뒤에 시작해야 경합 순서가 성립한다. */
-  arrived: () => {},
-  first: true,
-  /** 첫 호출이 기록 확인에 닿기 전의 지연. 스케줄러가 늦게 깨는 상황을 흉내 낸다. */
-  entryDelay: Promise.resolve(),
-  release: () => {},
-}));
+// 지연은 처음 도착한 호출에, gate는 처음 들어선 호출에 건다. 둘을 따로 세야 늦은 첫 호출 대신 다른 호출이 gate를
+// 잡는 순서(원래 50ms 대기의 교착)를 만들 수 있다.
+const hold = vi.hoisted(() => {
+  const fresh = () => ({
+    calls: 0,
+    /** 첫 호출이 gate에 들어서면 풀린다. 두 번째 준비는 이 신호 뒤에 시작해야 경합 순서가 성립한다. */
+    arrived: () => {},
+    first: true,
+    /** 첫 호출이 기록 확인에 닿기 전의 지연. 스케줄러가 늦게 깨는 상황을 흉내 낸다. */
+    entryDelay: Promise.resolve(),
+    release: () => {},
+  });
+  return Object.assign(fresh(), {
+    reset() {
+      Object.assign(this, fresh());
+    },
+  });
+});
 vi.mock("@babojubot/db", async (original) => {
   const real = await original<typeof import("@babojubot/db")>();
   return {
@@ -46,13 +55,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   hold.release();
   await Promise.allSettled(preparations.splice(0));
-  Object.assign(hold, {
-    calls: 0,
-    arrived: () => {},
-    first: true,
-    entryDelay: Promise.resolve(),
-    release: () => {},
-  });
+  hold.reset();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 

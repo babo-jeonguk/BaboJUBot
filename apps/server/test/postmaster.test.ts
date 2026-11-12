@@ -1,5 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -23,7 +23,6 @@ const running = (stderr = ""): ObservedChild => ({
   signalCode: null,
   stderrText: () => stderr,
 });
-const real = (file: string) => readFileSync(file, "utf8");
 
 it("keeps waiting when the pid file disappears between the check and the read", async () => {
   const file = await pidFile();
@@ -34,11 +33,9 @@ it("keeps waiting when the pid file disappears between the check and the read", 
     read: (target) => {
       reads.push(target);
       // 첫 읽기 직전에 initdb가 파일을 지운다. 다음 읽기 전에 서버로 뜬 postgres가 다시 쓴다.
-      if (reads.length === 1) {
-        rmSync(target);
-        setImmediate(() => void writeFile(target, "4321\n/data\n"));
-      }
-      return real(target);
+      if (reads.length === 1) rmSync(target);
+      else writeFileSync(target, "4321\n/data\n");
+      return readFileSync(target, "utf8");
     },
   });
   expect(pid).toBe(4321);
