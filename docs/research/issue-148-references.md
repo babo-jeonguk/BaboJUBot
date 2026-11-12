@@ -240,11 +240,33 @@ Q1~Q8을 [같은 누적 댓글의 Agent Brief](https://github.com/babo-jeonguk/B
 | 대상 | 실행 | 결과 | 다음 입증 조건 |
 |---|---|---|---|
 | Claude 2.1.322 | 수동 확인 한 번(자동 시험 아님): 실제 CLI, 빈 HOME, 합성 권한, 중계 → 로컬 모의 Messages API(SSE). 실제 계정·모델·Docker 없음. 자동 시험은 가짜 프로그램(`test-fixtures/claude-relay.mjs`)으로 같은 경로를 본다 | `--print` 한 턴 성공. 상류는 `POST /v1/messages?beta=true` 한 번, `anthropic-beta`에 `oauth-2025-04-20`(구독 OAuth 분기) 포함, 원본 합성 토큰으로 바뀌어 도착, 권한 값은 상류에 가지 않음. 기본 환경에서 `HEAD /api/hello`는 중계가 401로 거부했고 CLI는 계속 진행 | 기존 구독 계정으로 모델 한 턴·사용량·세션 이어 가기·만료 응답 확인(실제 계정·비용 승인 필요), Docker Engine에서 컨테이너 → 중계 경로 |
-| Codex 0.167.0 | 이번 단계 미실행 | 중계 프로필 없음 → 격리 실행 준비안됨 | ChatGPT 계정 경로의 base URL 중계, 합성 JWT·account header, 갱신 소유(원본 refresh는 서버) |
-| OpenCode 2.2.6 | 이번 단계 미실행 | 중계 프로필 없음 → 준비안됨 | Go 구독 key의 기존 상류·model ID·session header 유지 |
-| Antigravity 1.5.4 | 이번 단계 미실행 | 중계 프로필 없음 → 준비안됨 | signed-in harness의 endpoint 교체 가능성부터 확인 |
+| Codex 0.167.0 | 2단계: 실제 CLI(app-server·exec·다른 프로세스에서 이어 가기), 빈 HOME, 합성 로그인, loopback만 있는 네트워크 이름공간, 실제 `createCredentialRelay` → 로컬 모의 상류. 자동 시험은 `codex-relay.mjs`·`codex-refresh.mjs` | 사용자 지정 provider(`requires_openai_auth`)로 ChatGPT 로그인 분기 유지, 한 턴 성공. 부가 기능을 끄면 `/models`·`/responses`와 거부해도 되는 설정 조회만 나감, WebSocket 없음. 상류에 원본 access token·계정 ID 도착, 컨테이너 파일·출력에 원본 없음. 사용량은 `response.completed` 그대로, 이어 가기는 로컬. 상류 401 → 0.3초에 `unauthorized` 실패. 갱신 값·계정 ID 없는 가짜 로그인이면 CLI는 갱신·계정 확인을 하지 않음 | 실제 구독 한 턴(chatgpt.com이 `accept-encoding: identity`를 따르는지, 구독 한도로 잡히는지), 실제 갱신 수명·회전, 도중 429·5xx, 도구·압축 턴, Docker |
+| OpenCode 2.2.6 | 2단계: 실제 CLI(`serve`), 빈 XDG 폴더, 합성 Go 키, 네트워크 이름공간, 실제 중계 → 모의 상류. 자동 시험은 `opencode-simulator.mjs --relay` | `providers.<id>.settings.baseURL`로 Go(`opencode-go`)·Zen 무료(`opencode`)를 중계로, provider ID·model ID·프로토콜 유지. 권한은 설정 `apiKey`·`headers["x-api-key"]`로만(조직 DB에 저장 안 됨). OpenAI 계열은 `Authorization`, Anthropic 계열은 `x-api-key`. Zen 무료는 공개 키 그대로·비용 0. 사용량은 세션 누계로 서버 재시작 뒤에도 집계. 조직 DB에 남은 로그인은 config `apiKey`보다 앞서므로 시작 전 검사 필요(행 수만 셈, 서버 없이 확인됨). Google 계열(`gemini-*`)은 경로·키 위치가 달라 미지원 | 프로토콜 계열마다 실제 Go 한 턴(과금·남용 판정·session header 요구 여부), Zen 무료의 중계 수용, Docker |
+| Antigravity 1.5.4 | 2단계: 실제 CLI(출력 모드·`agy acp`), 빈 HOME, 합성 로그인 파일, 네트워크 이름공간(세션 bus 가림), 실제 중계 → 모의 상류. 자동 시험은 ACP로 바꾼 `antigravity-simulator.mjs`와 실제 ACP 프레임(모의 상류)으로 만든 `antigravity-recorded.json` | `CLOUD_CODE_URL`이 로그인 상태로 Code Assist 호출 전체를 옮김(http 허용). 출력 모드는 고정 주소 `www.googleapis.com/oauth2/v2/userinfo` 확인 실패로 모델 호출 전에 끝남 → `agy acp`는 그 실패에도 이어져 한 턴 성공, 상류에 원본 access token만 도착. ACP: 취소 즉시 `cancelled`·상류 끊김, 실행 오류는 `end_turn`+경고 문구로만 오고 이유는 `--log-file`에만, 없는 모델은 기본 모델로 조용히 진행, 로그인 없으면 `session/new` -32000 `Authentication required`. 작업 폴더 `.agents/mcp_config.json`은 읽지 않았고 `session/new`의 `mcpServers`는 연결됨(도구가 모델에 실리는지는 모의 모델로 확인 못 함). `agy models`가 만료 로그인을 갱신해 링크를 따라 원본에 씀 | 실제 구독 한 턴(상류 호스트가 `daily-cloudcode-pa`인지, 조직 도구가 실제 모델에 실리는지), 429 기본 재시도 상한, 제목 생성 호출의 사용량, Docker |
 
-Q8의 병렬 검증 중 이번 단계는 공통 경로와 Claude 행만 실행했다. 나머지 세 행은 위 조건으로 이어서 실행하며, 그전까지 준비안됨으로 막혀 원본이 전달되지 않는다.
+1단계는 공통 경로와 Claude 행만 실행했고, 2단계(아래)에서 Codex·OpenCode·Antigravity 행을 병렬로 실행했다. 네 행 모두 합성 확인이며 실제 구독·Docker는 실행하지 않았다. 지원은 열지 않아(`verified: false`) 네 연결의 격리 실행은 여전히 준비안됨이다.
+
+## 구현 기록 — 2단계 (2026-11-12)
+
+기준: `origin/main` `9d3148f`(#165·#166 병합 뒤). 브랜치 `fix/148-relay-stage2`.
+
+- 공통 중계: 경로마다 상류 경로(`upstreamPath`)와 인증(`authorize`)을 따로 정하고, 원본을 읽지 않는 고정 값 경로(`fixed`, OpenCode Zen 무료 모델의 공개 키)를 둔다. 반향 검사와 "같은 로그인" 판정은 원본 문서 전체가 아니라 붙인 비밀값으로 한다(Codex 로그인 파일처럼 여러 값을 담은 원본). 연결마다 계정을 고르는 header(Codex `chatgpt-account-id` 등)를 버리고, `x-goog-api-key`도 공통으로 버린다. 권한 값은 `Authorization`·`x-api-key`·`x-goog-api-key` 어디서든 찾되 서로 다른 권한 둘이면 거부한다. 권한에 조직·실행을 묶어, #149 중계가 덮어쓴 신원 header가 다르면 원본을 읽기 전에 거부한다(조직 도구와 같은 규칙, PR #165 리뷰 3회차 권고).
+- 연결별: Codex·OpenCode·Antigravity를 중계에 붙였다(위 표). 권한이 든 로그인 파일은 실행 시도 전용 폴더에서 그 컨테이너에만 읽기로 넣고, 조직 폴더에는 권한 없는 자리 표시만 둔다. 같은 조직의 두 실행이 한 파일을 함께 쓰면 서로의 권한을 읽거나 지울 수 있어서다(시험으로 재현). 원본을 가리키는 링크가 남아 있으면 따라 쓰지 않고 지운다. Antigravity는 `agy acp`로 바꾸고 조직 도구를 `session/new`로 준다(사용자 결정, 2026-11-12). OpenCode Zen 무료 모델도 중계로 허용했다(사용자 결정, 2026-11-12).
+- 직행 차단: 네 연결 모두 격리 실행에 프로바이더 직행 목적지(#149 `providerDestinations`)를 열지 않는다. 모델 통신은 인증 중계로만 나간다.
+- 갱신(완료 조건 6): Codex·Antigravity는 중계가 원본을 읽을 때 곧 끝나면 이 컴퓨터의 공식 프로그램으로 먼저 갱신한다(Codex `app-server` `account/read`+`refreshToken`, Antigravity `agy models`). 연결마다 하나씩, 그동안 온 요청은 같은 갱신을 기다린다. 갱신 뒤에도 끝나 가면 중계 실패(Q6). Claude setup-token·OpenCode Go 키는 갱신하지 않는다. 격리를 끈 실행의 프로그램이 같은 원본을 동시에 갱신하는 경쟁은 남는다(Codex 잠금 파일은 CODEX_HOME마다 따로다).
+- 되가져오기 차단: 격리를 끈 실행이 조직 폴더의 로그인 자리에 남은 보통 파일을 원본으로 옮기던 동작을 없앴다. 격리 실행의 에이전트가 거기 쓴 파일이 연결의 로그인을 덮을 수 있었다(시험으로 재현). 조직 폴더의 파일은 `<자리>.set-aside`로 치우고, 연결 폴더의 옛 로그인만 옮긴다.
+- OpenCode 남은 로그인 검사를 서버를 띄우기 전으로 앞당겼다(조직 DB를 읽기 전용으로 열어 행 수만 셈, 옛 `auth.json`). 서버를 띄운 뒤의 검사도 둘째 관문으로 남겼다.
+- 경쟁 시험(완료 조건 6·7): 로그인을 읽는 중의 중단, 한 조직의 중단이 다른 조직 stream에 닿지 않음, 한 실행의 로그인 거부가 다른 실행 stream을 끊음, 동시 거부, 읽는 중 거부, 같은 연결의 동시 갱신 한 번, 네 연결 공통 중단(즉시 권한 거부·상류 끊김·컨테이너를 지운 뒤 종료).
+
+### 원문 확인 — 2단계
+
+| 원문 | 확인한 것 | 적용·배제 |
+|---|---|---|
+| openai/codex `rust-v0.167.0`(`086ccc8`) `codex-rs/login/src/auth/manager.rs` L221–222·L2868–2878·L3328–3360·L3528–3546, `storage.rs` L186–215·L270–295, `storage_file.rs` L10–25, `app-server-protocol/src/protocol/v2/account.rs` L570–582 | 갱신 규칙(만료 5분 전, 없으면 8일), 계정 ID 없으면 다시 읽기·갱신 건너뜀, `account/read`+`refreshToken`이 보통 갱신 흐름을 부름, 저장은 링크를 따라간 자리에 임시 파일 rename, 잠금 파일은 CODEX_HOME마다 | 적용: 서버 갱신 방식과 규칙, 가짜 로그인 형식. 배제: OAuth 직접 구현(공식 프로그램에 맡김), `chatgptAuthTokens`(불안정 표시) |
+| anomalyco/opencode v2.2.6(`dc2ffcf`) `core/src/credential/sql.ts` L5–14, `plugin/provider/opencode.ts` L416–444, `model-resolver.ts` L280–303·L395–420 | `credential` 표 모양, Zen 무료 모델이 키 없음일 때만 켜짐·공개 키, 저장된 로그인이 설정 키보다 앞섬 | 적용: 시작 전 검사·연결 DB의 Go 키 읽기, Zen에는 `x-api-key`로 권한 |
+| agy 1.5.4 실행 파일 문자열(`CLOUD_CODE_URL`, `https://www.googleapis.com/oauth2/v2/userinfo`) | 주소 바꾸기 변수, 고정된 로그인 확인 주소 | 적용: `CLOUD_CODE_URL`. 배제: 출력 모드(고정 확인 주소를 옮길 수 없음) |
+
+조사 실험의 기록과 스크립트는 저장소 밖(`/tmp/relay-probe-*`)에 두었고 실제 계정·모델 호출·비용은 쓰지 않았다.
 
 ## 한계와 미확인
 
