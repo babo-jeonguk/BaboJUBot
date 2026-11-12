@@ -49,7 +49,7 @@ const proposal: RequestInitialApprovalInput = {
     "| 항목 | 요구사항 | 결과 | 확인한 환경 | 확인 방법·근거 | 후속 조치 |",
     "| --- | --- | --- | --- | --- | --- |",
     "| python3 | 3.10 이상 | 확인됨 | Lead 실행 환경 | `python3 --version` → Python 3.12.3 | - |",
-    '| torch | import 가능 | 없음 | Lead 실행 환경 | `python3 -c "import torch"` → ModuleNotFoundError | 승인 후 작업자가 설치 |',
+    "| torch | 설치됨 | 없음 | Lead 실행 환경 | `find_spec('torch')` 결과 없음(불러오지 않음) | 승인 후 작업자가 설치 |",
     "| GPU | CUDA GPU 1장 | 확인 불가 | Lead 실행 환경 | `nvidia-smi` 명령 없음 | 사용자가 GPU 준비 |",
     "| 작업자 실행 환경 | 위 항목 전체 | 확인 불가 | 작업자 실행 환경 | Lead가 접근할 수 없음 | 첫 작업에서 작업자가 확인 |",
     "",

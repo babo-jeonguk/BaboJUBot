@@ -20,11 +20,16 @@ If you cannot run commands at all in this run, do not guess: mark every item Can
 
 Only short read-only probes, one attempt per item:
 
-- Command present: `command -v <name>`.
+- Command present: `command -v <name>`. It is a shell builtin that returns at once; run it as is, never under `timeout`.
 - Version: `<name> --version` (for example `python3 --version`, `node --version`).
-- Python module: `python3 -c "import <module>"`. A `ModuleNotFoundError` for that module means Absent.
+- Python module: find it without importing it, because an import runs the module's own code and can write files:
+  `python3 -B -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('<module>') else 1)"`
+  Use only the top-level name (`torch`, not `torch.nn`). Exit 0 means Confirmed (found, not imported); exit 1 means Absent. Never run `import <module>` to check.
+- CPU cores: `nproc`.
 - GPU: `nvidia-smi -L`. If it runs and lists no GPU, mark it Absent. If `nvidia-smi` itself is missing, that does not show there is no GPU; mark it Cannot tell.
-- Data or storage you were told about: `ls` or `df -h` on that path.
+- Data or storage at a path you were given: `ls` or `df -h` on that path. With no path yet, mark it Cannot tell.
+
+Any other item you list under Needed still gets a row: if none of these probes fits it, mark it Cannot tell and say why.
 
 Do not:
 
@@ -35,7 +40,7 @@ Do not:
 
 ## Time limits
 
-- Each command: 10 seconds. Run it as `timeout 10 <command>`. Exit code 124 means it timed out; mark the item Cannot tell, giving the 10-second limit as the reason.
+- Each probe other than `command -v`: 10 seconds. Run it as `timeout 10 <command>`. Exit code 124 means it timed out; mark the item Cannot tell, giving the 10-second limit as the reason.
 - If `timeout` is missing, run only `command -v` (it returns at once) and mark every item that needs any other probe Cannot tell, giving the missing `timeout` as the reason.
 - The whole check: 2 minutes. When that time is up, stop, mark every unchecked item Cannot tell, giving the 2-minute limit as the reason, and submit.
 
@@ -73,9 +78,11 @@ Checked: the Lead's run environment (this run). The workers' environment was not
 | Item | Requirement | Result | Checked where | How, evidence | Follow-up |
 | --- | --- | --- | --- | --- | --- |
 | python3 | 3.10 or later | Confirmed | Lead run environment | `python3 --version` -> Python 3.12.3 | - |
-| numpy | importable | Confirmed | Lead run environment | `python3 -c "import numpy"` succeeded | - |
-| torch | importable | Absent | Lead run environment | `python3 -c "import torch"` -> ModuleNotFoundError | a worker installs it in their own virtual environment after approval |
+| numpy | installed | Confirmed | Lead run environment | `find_spec('numpy')` found it (not imported) | - |
+| torch | installed | Absent | Lead run environment | `find_spec('torch')` found nothing | a worker installs it in their own virtual environment after approval |
+| CPU | 4 cores | Confirmed | Lead run environment | `nproc` -> 4 | - |
 | GPU | one CUDA GPU | Cannot tell | Lead run environment | `nvidia-smi` is not installed, so no answer | the Owner says whether a GPU is provided, or prepares one |
+| Evaluation set | readable | Cannot tell | Lead run environment | no path given yet | the Owner gives the path |
 | Workers' run environment | all items above | Cannot tell | workers' run environment | the Lead cannot reach it | a worker checks it in the first task after approval |
 
 ## Network (not tested)
