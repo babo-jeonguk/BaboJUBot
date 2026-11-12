@@ -6,6 +6,8 @@ const suites = [
   ["db", process.env.DB_RESULT],
   ["server", process.env.SERVER_RESULT],
   ["opencode", process.env.OPENCODE_RESULT],
+  ["macos", process.env.MACOS_RESULT],
+  ["windows", process.env.WINDOWS_RESULT],
 ];
 
 // 반환값은 프로세스 종료 코드다. 빠진 값은 빈 문자열처럼 다뤄 모두 거부한다.

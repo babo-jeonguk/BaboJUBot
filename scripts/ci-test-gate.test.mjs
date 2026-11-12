@@ -118,6 +118,11 @@ test("runs the macOS and Windows suites on their own systems", () => {
     assert.equal(job.name, `runtime on ${os}-latest`);
     assert.equal(job.if, "needs.changes.outputs.code == 'true'");
   }
+  // 두 시스템은 같은 검사를 돈다. 한쪽만 고치면 그 시스템의 검사가 빠진다.
+  assert.deepEqual(
+    workflow.jobs["test-windows"].steps,
+    workflow.jobs["test-macos"].steps
+  );
 });
 
 test("accepts code only when every test job succeeded", () => {
