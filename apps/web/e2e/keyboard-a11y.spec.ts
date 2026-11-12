@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { launchZoomed } from "./support/browser-zoom.ts";
 import { lowContrastTexts } from "./support/contrast.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
-import { goalInput } from "./support/organization.ts";
+import { goalInput, railOrganizationLink } from "./support/organization.ts";
 
 // 키보드·포커스·접근 이름과 상태·실패 복구·실제 대비(#152). 실제 화면 읽기 프로그램은 실행하지 않고 Chromium 접근성 트리로 확인한다.
 
@@ -664,13 +664,22 @@ test("instant switches tell which setting saved, never on load or failure, and a
 test("a policy switch's saving or saved state stays with its organization when history jumps to another organization's settings", async ({
   page,
 }) => {
+  // 같은 표시 이름의 다른 조직이 있어도(앞선 실행 등) 레일에서 A를 조직 ID로 고른다. 그런 조직을 먼저 만들어 늘 확인한다.
+  const sameName = await page.request.post("/api/organizations", {
+    data: { name: "A11y switch owner", ...goalInput },
+  });
+  expect(sameName.status()).toBe(201);
   const a = await createOrganization(page, "A11y switch owner");
   const b = await createOrganization(page, "A11y switch other");
   const policy = page.getByRole("checkbox", { name: /작업자 추가/ });
   // B 설정을 먼저 열어 캐시에 두고, 화면 안 이동으로 A 설정에 간다. 기록: B 설정 → A 대시보드 → A 설정.
   await openWithLiveEvents(page, `/orgs/${b.id}/settings`);
   await expect(policy).not.toBeChecked();
-  await page.getByRole("link", { name: /^A11y switch owner · / }).click();
+  await railOrganizationLink(
+    page.getByRole("navigation", { name: "연구 조직" }),
+    a.id,
+    /^A11y switch owner · /
+  ).click();
   await page
     .getByRole("navigation", { name: "조직 화면" })
     .getByRole("link", { name: "설정", exact: true })
