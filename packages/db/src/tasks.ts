@@ -3,7 +3,6 @@ import type {
   Artifact,
   ArtifactFileRead,
   ArtifactFileRefusal,
-  ArtifactSnapshot,
   ArtifactSummary,
   CreateTaskInput,
   RecordArtifactInput,
@@ -196,31 +195,33 @@ export function commentTask(
   });
 }
 
-/** 산출물 기록. 연결 작업이 이 조직의 작업이어야 한다. */
+/**
+ * 산출물 기록. 연결 작업이 이 조직의 작업이어야 한다(잠금 아래에서 다시 확인).
+ * 파일 경로 산출물은 잠금 밖에서 미리 읽어 고정한 결과(`file`)만 받으며, 이 함수는 파일을 읽지 않는다.
+ * 경로 없는 산출물은 `file`이 `null`이다. 그 읽기의 거부는 효과 없는 확정 거절이다.
+ */
 export function recordArtifact(
   db: Database,
   run: ActiveRunRef,
   input: RecordArtifactInput,
   {
     source,
-    readFile,
+    file,
     ...call
   }: WriteOptions & {
-    readFile?: (
-      organizationId: string,
-      path: string
-    ) => Promise<ArtifactFileRead>;
+    file: ArtifactFileRead | null;
   }
 ): Promise<ToolWrite<Artifact, "not_found" | ArtifactFileRefusal>> {
   return toolWrite(db, run, "record_artifact", call, async (tx, locked) => {
+    // 정산한 의도는 원본 자료를 비우므로 이 검사는 효과를 낼 때만 한다(최초 결과 조회는 여기 오지 않는다).
+    if ((input.path !== undefined) !== (file !== null))
+      throw new Error(
+        "record_artifact needs a prepared file read exactly when the input has a path"
+      );
     if (!(await selectTask(tx, locked.organizationId, input.taskId)))
       return { kind: "invalid", problem: "not_found" };
-    let snapshot: ArtifactSnapshot | undefined;
-    if (input.path !== undefined) {
-      const read = await readFile!(locked.organizationId, input.path);
-      if (!read.ok) return { kind: "invalid", problem: read.refusal };
-      snapshot = read.snapshot;
-    }
+    if (file && !file.ok) return { kind: "invalid", problem: file.refusal };
+    const snapshot = file?.ok ? file.snapshot : undefined;
     const plan = planArtifactRecord(
       locked,
       {
@@ -240,6 +241,18 @@ export function recordArtifact(
     const event = await insertEvent(tx, plan.event);
     return { kind: "ok", value: plan.artifact, events: [event] };
   });
+}
+
+/**
+ * 작업이 이 조직의 것인지. 다른 조직의 작업과 없는 작업은 같다(`false`). 새 쓰기의 원본 자료를 준비하기 전에 잠금 없이 보는 사전 확인이며,
+ * 정산은 잠금 아래에서 다시 본다.
+ */
+export async function taskInOrganization(
+  db: Executor,
+  organizationId: string,
+  taskId: string
+): Promise<boolean> {
+  return (await selectTask(db, organizationId, taskId)) !== undefined;
 }
 
 /** 같은 조직 에이전트에게 메시지를 보내고 그 에이전트를 깨운다. */

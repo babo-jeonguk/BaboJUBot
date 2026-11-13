@@ -11,6 +11,7 @@ import {
   taskDetailSchema,
   taskListSchema,
   conversationPageSchema,
+  type ArtifactFileRead,
   type RecoveredIntent,
   type RunRequest,
   type WakeReason,
@@ -23,6 +24,7 @@ import {
 } from "@babojubot/db";
 import { createGate } from "@babojubot/runtime/testing";
 import {
+  failArtifactRecord,
   insertCompletedIntent,
   intentStatusOf,
   lockWaiters,
@@ -34,7 +36,7 @@ import {
 } from "@babojubot/db/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
-import { Workspaces } from "../src/workspace.ts";
+import { Workspaces, WorkspaceIdentityError } from "../src/workspace.ts";
 import { calls, idle, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 
@@ -147,22 +149,32 @@ const outcomes = (intents: RecoveredIntent[]) =>
  * 연구 진행 중인 조직과, Lead가 실행 시도 안에서 멈춘 상태. 멈춘 실행 시도의 요청(토큰 포함)을 돌려준다.
  * `restart`는 서버를 멈추고 같은 DB·폴더로 다시 띄운 뒤 대기 깨우기를 모두 처리한다.
  */
-async function heldLead(name: string) {
+async function heldLead(
+  name: string,
+  { otherOrganization = false }: { otherOrganization?: boolean } = {}
+) {
   root = await mkdtemp(path.join(tmpdir(), "intent-recovery-"));
   const agents = scriptedAgents();
   t = await startTestServer({ runtime: agents.runtime, dataDir: root });
-  const { researching, say } = serverHelpers(() => t!);
-  const org = await researching(agents, name);
-  agents.queue(
-    org.lead.id,
-    calls({
-      tool: "create_task",
-      input: { title: "근거 정리", assigneeAgentId: org.workers[0]!.id },
-    })
-  );
-  agents.queue(org.workers[0]!.id, idle);
-  await say(org.id, "작업 만들기");
-  await t.drain();
+  const { researching, say, tasksOf } = serverHelpers(() => t!);
+  const withTask = async (orgName: string) => {
+    const org = await researching(agents, orgName);
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "create_task",
+        input: { title: "근거 정리", assigneeAgentId: org.workers[0]!.id },
+      })
+    );
+    agents.queue(org.workers[0]!.id, idle);
+    await say(org.id, "작업 만들기");
+    await t!.drain();
+    return org;
+  };
+  // 다른 조직의 작업: 이 조직의 도구 호출이 가리키면 없는 작업과 같아야 한다.
+  const other = otherOrganization ? await withTask("다른 조직") : undefined;
+  const otherTask = other && (await tasksOf(other.id))[0]!;
+  const org = await withTask(name);
   const gate = createGate();
   let held!: RunRequest;
   agents.queue(org.lead.id, (request) => {
@@ -188,7 +200,17 @@ async function heldLead(name: string) {
     });
     if (drain) await restarted.drain();
   };
-  return { agents, org, task, held, api, restart, db: t.db as Database };
+  return {
+    agents,
+    org,
+    task,
+    held,
+    gate,
+    api,
+    restart,
+    other: other && { org: other, task: otherTask! },
+    db: t.db as Database,
+  };
 }
 
 describe("execution intent recovery across a server restart (#150)", () => {
@@ -1132,5 +1154,316 @@ describe("recovery delivery confirmed by the provider's session and counted acro
         .slice(0, (await api.events(org.id)).length - eventsBefore)
         .map((e) => e.type)
     ).not.toContain("tool.refused");
+  });
+});
+
+describe("file artifact preparation outside the locks and its settlement through the shared write path (#142)", () => {
+  /** 조직 폴더에 파일을 쓰고 그 경로를 가리키는 산출물 입력을 만든다. */
+  const fileOf = async (
+    held: RunRequest,
+    taskId: string,
+    name: string,
+    content: string
+  ) => {
+    await writeFile(path.join(held.workspace!.cwd, name), content);
+    return { taskId, title: name, path: name };
+  };
+  const artifactsOf = async (
+    api: ReturnType<typeof http>,
+    orgId: string,
+    taskId: string
+  ) =>
+    taskDetailSchema.parse(
+      (await api.request("GET", `/api/organizations/${orgId}/tasks/${taskId}`))
+        .body
+    ).artifacts;
+
+  /**
+   * 조직 폴더 reader 대역(앞서 건 대역을 바꾼다). 읽은 경로를 `reads`에 남긴다. 앞의 `held`개 읽기는 모두 들어오면 `reached`로 알리고
+   * `release`까지 기다린 뒤 `finish`대로 끝낸다(실제 읽기를 넘겨받음). 나머지 읽기는 실제로 읽는다.
+   */
+  const holdReads = (
+    finish: (
+      read: () => Promise<ArtifactFileRead>
+    ) => Promise<ArtifactFileRead> = (read) => read(),
+    held = 1
+  ) => {
+    vi.restoreAllMocks();
+    const real = Workspaces.prototype.readArtifact;
+    const reads: string[] = [];
+    let entered!: () => void;
+    const reached = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    vi.spyOn(Workspaces.prototype, "readArtifact").mockImplementation(
+      async function (this: Workspaces, orgId: string, requested: string) {
+        const read = () => real.call(this, orgId, requested);
+        reads.push(requested);
+        if (reads.length > held) return read();
+        if (reads.length === held) entered();
+        await released;
+        return finish(read);
+      }
+    );
+    return { reads, reached, release };
+  };
+  /** 실제로 읽으며 읽은 경로만 남긴다. */
+  const countReads = () => holdReads(undefined, 0).reads;
+  const invalidToken = {
+    status: 401,
+    body: { error: { code: "invalid_token" } },
+  };
+  const interrupt = (
+    api: ReturnType<typeof http>,
+    orgId: string,
+    agentId: string
+  ) =>
+    api.request(
+      "POST",
+      `/api/organizations/${orgId}/agents/${agentId}/interrupt`,
+      {}
+    );
+  /** 이 조직에 산출물 효과가 남았는지: 산출물 기록 Event와 그 도구의 공개 활동 요약. */
+  const artifactEffects = async (api: ReturnType<typeof http>, orgId: string) =>
+    (await api.events(orgId)).filter(
+      (e) =>
+        e.type === "artifact.recorded" ||
+        JSON.stringify(e.payload).includes("record_artifact")
+    );
+
+  it("refuses a new file artifact for another organization's task or a missing task before reading the file, and checks the task again when settling", async () => {
+    const { org, held, api, db, other } = await heldLead("작업 소속 조직", {
+      otherOrganization: true,
+    });
+    const reads = countReads();
+    const notFound = { status: 404, body: { error: { code: "not_found" } } };
+    for (const taskId of [
+      other!.task.id,
+      "00000000-0000-4000-8000-000000000000",
+    ]) {
+      const input = await fileOf(held, taskId, "소속.md", "# 소속 확인");
+      expect(
+        await api.tool(held.access.token, "/artifacts", input, `k-${taskId}`)
+      ).toMatchObject(notFound);
+      // 준비 전에 거부했으므로 수락한 의도도 없다.
+      expect(await findIntentByKey(db, org.lead.id, `k-${taskId}`)).toBe(
+        undefined
+      );
+    }
+    expect(reads).toEqual([]);
+    // 다른 조직 작업을 가리키는 의도가 이미 수락됐어도(고정 자료 포함) 정산이 작업 소속을 다시 보아 효과 없이 거절한다.
+    const workspaces = new Workspaces(root, db);
+    const input = await fileOf(held, other!.task.id, "소속.md", "# 소속 확인");
+    await acceptIntent(
+      db,
+      { id: held.identity.runId },
+      draft(
+        "record_artifact",
+        input,
+        "k-settle-owner",
+        await workspaces.readArtifact(org.id, "소속.md")
+      )
+    );
+    expect(
+      await api.tool(held.access.token, "/artifacts", input, "k-settle-owner")
+    ).toMatchObject(notFound);
+    expect(await intentStatusOf(db, org.lead.id, "k-settle-owner")).toBe(
+      "refused"
+    );
+    expect(await artifactsOf(api, other!.org.id, other!.task.id)).toEqual([]);
+    expect((await api.events(other!.org.id)).map((e) => e.type)).not.toContain(
+      "artifact.recorded"
+    );
+  });
+
+  it.each([
+    ["a general exception", false],
+    ["a refusal value", false],
+    ["an organization folder identity error", true],
+  ] as const)(
+    "converges a same-key call whose file read ends with %s after another call succeeded on the first result, unless it is an identity error",
+    async (ending, blocked) => {
+      const { org, task, held, api, db } = await heldLead("같은 키 경쟁 조직");
+      const input = await fileOf(held, task.id, "경쟁.md", "# 승자 내용");
+      const reader = holdReads(async () => {
+        if (ending === "a general exception") throw new Error("reader crashed");
+        if (ending === "a refusal value")
+          return { ok: false, refusal: "file_not_found" };
+        throw new WorkspaceIdentityError("조직 폴더 표식이 다릅니다.");
+      });
+      const loser = api.tool(held.access.token, "/artifacts", input, "k-race");
+      await reader.reached;
+      const winner = await api.tool(
+        held.access.token,
+        "/artifacts",
+        input,
+        "k-race"
+      );
+      expect(winner.status).toBe(201);
+      reader.release();
+      expect(await loser).toEqual(
+        blocked
+          ? { status: 500, body: { error: { code: "internal" } } }
+          : winner
+      );
+      // 의도·원본 자료·효과는 승자의 것 하나다.
+      expect(await findIntentByKey(db, org.lead.id, "k-race")).toMatchObject({
+        status: "completed",
+        result: winner.body,
+      });
+      const artifacts = await artifactsOf(api, org.id, task.id);
+      expect(artifacts.map((a) => a.id)).toEqual([winner.body.id]);
+      expect(winner.body.content).toBe("# 승자 내용");
+      expect(
+        (await artifactEffects(api, org.id)).map((e) => e.type).sort()
+      ).toEqual(["artifact.recorded", "run.activity"]);
+    }
+  );
+
+  it("keeps the original error without accepting anything when no other call won, never borrows another key's or input's result, and refuses a cancelled run", async () => {
+    const { org, task, held, api, db } = await heldLead("경쟁 거부 조직");
+    const token = held.access.token;
+    const input = await fileOf(held, task.id, "거부.md", "# 내용");
+    const crash = async (): Promise<ArtifactFileRead> => {
+      throw new Error("reader crashed");
+    };
+    const internal = { status: 500, body: { error: { code: "internal" } } };
+    // 같은 키의 다른 호출이 없으면 원래 오류이며 의도도 효과도 남기지 않는다.
+    let reader = holdReads(crash);
+    const alone = api.tool(token, "/artifacts", input, "k-alone");
+    await reader.reached;
+    reader.release();
+    expect(await alone).toEqual(internal);
+    expect(await findIntentByKey(db, org.lead.id, "k-alone")).toBe(undefined);
+    // 키가 다른 호출의 성공은 쓰지 않는다.
+    reader = holdReads(crash);
+    const otherKey = api.tool(token, "/artifacts", input, "k-mine");
+    await reader.reached;
+    const theirs = await api.tool(token, "/artifacts", input, "k-theirs");
+    expect(theirs.status).toBe(201);
+    reader.release();
+    expect(await otherKey).toEqual(internal);
+    expect(await findIntentByKey(db, org.lead.id, "k-mine")).toBe(undefined);
+    // 같은 키라도 입력이 다르면 충돌이다.
+    reader = holdReads(crash);
+    const otherInput = api.tool(
+      token,
+      "/artifacts",
+      { ...input, title: "다른 입력" },
+      "k-input"
+    );
+    await reader.reached;
+    expect((await api.tool(token, "/artifacts", input, "k-input")).status).toBe(
+      201
+    );
+    reader.release();
+    expect(await otherInput).toEqual({
+      status: 409,
+      body: { error: { code: "idempotency_conflict" } },
+    });
+    // 같은 키의 성공이 있어도 그사이 사용자가 실행을 중단했으면 거부한다. 입력이 달라도 충돌보다 실행 신원이 먼저다.
+    reader = holdReads(crash, 2);
+    const cancelled = api.tool(token, "/artifacts", input, "k-cancelled");
+    const cancelledOther = api.tool(
+      token,
+      "/artifacts",
+      { ...input, title: "다른 입력" },
+      "k-cancelled"
+    );
+    await reader.reached;
+    expect(
+      (await api.tool(token, "/artifacts", input, "k-cancelled")).status
+    ).toBe(201);
+    expect((await interrupt(api, org.id, org.lead.id)).status).toBe(200);
+    reader.release();
+    expect(await cancelled).toEqual(invalidToken);
+    expect(await cancelledOther).toEqual(invalidToken);
+    expect(
+      (await artifactsOf(api, org.id, task.id)).map((a) => a.title)
+    ).toEqual(["거부.md", "거부.md", "거부.md"]);
+  });
+
+  it.each(["pause", "stop", "interrupt", "run end"] as const)(
+    "completes %s while a file read is held and leaves no artifact effect after the read ends",
+    async (control) => {
+      const { org, task, held, gate, api, db } =
+        await heldLead("제어 우선 조직");
+      const input = await fileOf(held, task.id, "느린.md", "# 느린 읽기");
+      const reader = holdReads();
+      const call = api.tool(held.access.token, "/artifacts", input, "k-slow");
+      await reader.reached;
+      // 읽기가 멈춰 있는 동안 제어가 끝난다(DB 잠금을 쥔 채 읽지 않는다).
+      if (control === "run end") {
+        gate.open();
+        await vi.waitFor(
+          async () =>
+            expect(
+              (await api.run(org.id, held.identity.runId)).status
+            ).not.toBe("running"),
+          { timeout: 10_000, interval: 20 }
+        );
+      } else {
+        const done =
+          control === "interrupt"
+            ? await interrupt(api, org.id, org.lead.id)
+            : await api.request(
+                "POST",
+                `/api/organizations/${org.id}/${control}`,
+                {}
+              );
+        expect(done.status).toBe(200);
+      }
+      reader.release();
+      expect(await call).toEqual(invalidToken);
+      expect(await findIntentByKey(db, org.lead.id, "k-slow")).toBe(undefined);
+      expect(await artifactsOf(api, org.id, task.id)).toEqual([]);
+      expect(await artifactEffects(api, org.id)).toEqual([]);
+    }
+  );
+
+  it("rolls back the artifact, its bytes, the first result and both events when settlement fails in the database, and settles the kept intent once from the fixed bytes after a restart", async () => {
+    const { agents, org, task, held, api, restart, db } =
+      await heldLead("정산 실패 조직");
+    const input = await fileOf(held, task.id, "실패.md", "# 수락 때 내용");
+    const undo = await failArtifactRecord(db);
+    try {
+      expect(
+        await api.tool(held.access.token, "/artifacts", input, "k-fail")
+      ).toEqual({ status: 500, body: { error: { code: "internal" } } });
+    } finally {
+      await undo();
+    }
+    // 수락한 의도와 고정 자료는 남고(복구 대상), 정산 transaction의 것은 모두 없다.
+    expect(await findIntentByKey(db, org.lead.id, "k-fail")).toMatchObject({
+      status: "accepted",
+      result: null,
+      source: { ok: true, snapshot: { content: "# 수락 때 내용" } },
+    });
+    expect(await artifactsOf(api, org.id, task.id)).toEqual([]);
+    expect(await artifactEffects(api, org.id)).toEqual([]);
+    // 원본이 바뀌고 사라져도 복구는 고정 자료로 한 번만 정산한다.
+    await writeFile(path.join(held.workspace!.cwd, "실패.md"), "# 바뀐 내용");
+    const reads = countReads();
+    agents.queue(org.lead.id, idle);
+    await restart(() => rm(path.join(held.workspace!.cwd, "실패.md")));
+    agents.queue(org.lead.id, idle);
+    await restart();
+    expect(reads).toEqual([]);
+    const artifacts = await artifactsOf(api, org.id, task.id);
+    expect(artifacts).toHaveLength(1);
+    expect(
+      artifactSchema.parse(
+        (
+          await api.request(
+            "GET",
+            `/api/organizations/${org.id}/artifacts/${artifacts[0]!.id}`
+          )
+        ).body
+      ).content
+    ).toBe("# 수락 때 내용");
+    expect(await intentStatusOf(db, org.lead.id, "k-fail")).toBe("completed");
+    expect(
+      (await artifactEffects(api, org.id)).map((e) => e.type).sort()
+    ).toEqual(["artifact.recorded", "run.activity"]);
   });
 });

@@ -121,6 +121,34 @@ it("passes organization and personal folders, freezes files, replays across HTTP
     headers
   );
   expect(replay.body.result.structuredContent).toEqual(registered.body);
+  // 반대 방향: MCP로 등록하고 원본을 지운 뒤 HTTP로 다시 부르면 같은 최초 결과다.
+  await writeFile(path.join(workspace.cwd, "mcp.md"), "# MCP 원문");
+  const mcpInput = { ...input, title: "MCP 보고서", path: "mcp.md" };
+  const mcpHeaders = { ...headers, "idempotency-key": "file-mcp" };
+  const viaMcp = await t.request(
+    "POST",
+    "/api/tools/mcp",
+    {
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/call",
+      params: { name: "record_artifact", arguments: mcpInput },
+    },
+    mcpHeaders
+  );
+  expect(viaMcp.body.result.structuredContent).toMatchObject({
+    title: "MCP 보고서",
+    content: "# MCP 원문",
+  });
+  await rm(path.join(workspace.cwd, "mcp.md"));
+  const viaHttp = await t.request(
+    "POST",
+    "/api/tools/artifacts",
+    mcpInput,
+    mcpHeaders
+  );
+  expect(viaHttp.status).toBe(201);
+  expect(viaHttp.body).toEqual(viaMcp.body.result.structuredContent);
   const other = await t.request(
     "POST",
     "/api/tools/artifacts",
