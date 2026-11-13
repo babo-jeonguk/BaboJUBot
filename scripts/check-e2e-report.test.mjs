@@ -49,8 +49,8 @@ test("accepts a run where every test passed and the server lifecycle checks ran"
   );
   assert.deepEqual(problems, []);
   assert.deepEqual(summary, {
-    total: 3,
-    passed: 3,
+    total: 4,
+    passed: 4,
     failed: 0,
     flaky: 0,
     skipped: 0,
@@ -98,19 +98,23 @@ for (const [name, tests, errors] of [
     ],
   ],
   ["no test at all", []],
-  ["a missing isolated server check", [passing(requiredFiles[1])]],
-  ["a missing shared server check", [passing(requiredFiles[0])]],
-  [
-    "a skipped shared server check",
-    [
-      passing(requiredFiles[0]),
-      {
-        ...passing(requiredFiles[1]),
-        status: "skipped",
-        skip: ["MAP_PERF=1일 때만 측정한다"],
-      },
-    ],
-  ],
+  ...requiredFiles.flatMap((file) => {
+    const others = required.filter((t) => t.file !== file);
+    return [
+      [`a missing ${file}`, others],
+      [
+        `a skipped ${file}`,
+        [
+          ...others,
+          {
+            ...passing(file),
+            status: "skipped",
+            skip: ["MAP_PERF=1일 때만 측정한다"],
+          },
+        ],
+      ],
+    ];
+  }),
   [
     "a run error such as a failed teardown",
     required,
@@ -137,7 +141,7 @@ test("prints the counts and fails the command for a rejected or unreadable repor
   assert.equal(ok.status, 0, ok.stderr);
   assert.match(
     ok.stdout,
-    /E2E: 2 tests, 2 passed, 0 failed, 0 flaky, 0 skipped/
+    /E2E: 3 tests, 3 passed, 0 failed, 0 flaky, 0 skipped/
   );
   const failed = run(
     JSON.stringify(

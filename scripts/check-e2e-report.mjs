@@ -11,10 +11,11 @@ export const allowedSkips = [
     reason: "MAP_PERF=1일 때만 측정한다",
   },
 ];
-/** 실제로 돌아 통과해야 하는 E2E 서버 수명 시험(격리 서버 fixture·공용 서버). */
+/** 실제로 돌아 통과해야 하는 E2E 서버 수명 시험(격리 서버 fixture·공용 서버·서버 프로세스 helper의 실패 경로). */
 export const requiredFiles = [
   "support/isolated-server.spec.ts",
   "support/shared-server.spec.ts",
+  "support/server-process.spec.ts",
 ];
 
 /** 보고서의 파일 경로(testDir 기준, Windows는 `\\`)가 `file`로 끝나는가. */
