@@ -24,7 +24,7 @@
 
 ## 3. Push·PR·외부 리뷰 인계
 
-- 작업 브랜치를 push하고 base를 확인해 PR을 생성·갱신합니다. 본문은 `/pr`을 호출해 [PR 양식](../../.github/PULL_REQUEST_TEMPLATE.md)대로 쓰고, 완료한 이슈만 `Closes #N`으로 연결합니다.
+- 작업 브랜치를 push하고 base를 확인해 PR을 생성·갱신합니다. 본문은 `/pr`을 호출해 [PR 양식](../../.github/PULL_REQUEST_TEMPLATE.md)대로 쓰고, 완료한 이슈만 `Closes #N`으로 연결합니다. PR 생성·본문 수정은 [게시문 검사](issue-tracker.md#게시문에-쓰는-경로)를 거칩니다.
 - 필수 CI를 확인·해결하고 본문을 현재 head에 맞춥니다.
 - [외부 리뷰 요청 형식](review-fixes.md#외부-리뷰-요청-형식)을 사용자에게 전달합니다.
 

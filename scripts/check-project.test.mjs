@@ -47,6 +47,10 @@ test("check-project checks Git's file list without scanning ignored worktrees", 
       path.join(fixture, "scripts/check-project.mjs")
     );
     copyFromRepository(
+      "scripts/ignored-dot-folders.mjs",
+      path.join(fixture, "scripts/ignored-dot-folders.mjs")
+    );
+    copyFromRepository(
       ".agents/scripts/run-worker.mjs",
       path.join(fixture, ".agents/scripts/run-worker.mjs")
     );

@@ -68,7 +68,7 @@ Brief를 채운다: 구현할 문제, 동종 문제(제품 이름이 아닌 메�
 표와 맞는지 확인한다. Issue 밖 주제는 관련 Issue에 달고, 없으면 결과 문서가 기록이다.
 
 ```bash
-gh issue comment <n> --body-file .reference-cache/<key>/receipt.md
+node scripts/gh-post.mjs issue comment <n> --body-file .reference-cache/<key>/receipt.md
 gh issue view <n> --comments
 ```
 

@@ -16,7 +16,7 @@
     "test:e2e": "pnpm --filter @babojubot/web run test:e2e",
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "eslint .",
-    "check": "node scripts/check-project.mjs && node --test scripts/check-project.test.mjs && node --test scripts/ci-test-gate.test.mjs scripts/ci-changes.test.mjs scripts/file-boundary-report.test.mjs",
+    "check": "node scripts/check-project.mjs && node --test scripts/check-project.test.mjs scripts/gh-post.test.mjs && node --test scripts/ci-test-gate.test.mjs scripts/ci-changes.test.mjs scripts/file-boundary-report.test.mjs",
     "provider:login": "node scripts/provider-login.mjs",
     "runner:build": "docker build -t babojubot-runner docker/runner",
     "prepare": "husky"

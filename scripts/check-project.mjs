@@ -4,6 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  ignoredDotFolderPattern,
+  loadIgnoredDotFolders,
+} from "./ignored-dot-folders.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [".gitignore", "AGENTS.md", "GLOSSARY.md", "docs/features.md"];
 for (const location of required)
@@ -21,18 +26,7 @@ function isGitIgnored(location) {
   }
 }
 
-// .gitignore의 점 폴더(로컬 조사 캐시·실행 데이터 등)는 checkout에 없으므로 문서가 경로로 가리키지 않는다.
-const ignoredDotFolders = fs
-  .readFileSync(path.join(root, ".gitignore"), "utf8")
-  .split("\n")
-  .map((line) => line.trim())
-  .filter((line) => /^\/?\.[^/*!]+\/$/.test(line))
-  .map((line) => line.replace(/^\//, "").slice(0, -1));
-const ignoredFolderPath = new RegExp(
-  `(?:^|[\\s\`'"(])(?:\\./)?(?:${ignoredDotFolders
-    .map((name) => name.replace(/[.]/g, "\\."))
-    .join("|")})(?![\\w.-])`
-);
+const ignoredFolderPath = ignoredDotFolderPattern(loadIgnoredDotFolders(root));
 // 그 폴더를 작업 위치로 정하는 도구 정의(agent skill·권한 설정)만 이름을 쓸 수 있다.
 const toolDefinitions = [".agents/", ".opencode/"];
 
