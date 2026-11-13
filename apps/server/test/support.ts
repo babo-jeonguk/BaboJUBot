@@ -77,6 +77,8 @@ export type TestServerOptions = {
   dataDir?: string;
   /** 격리 실행의 Docker 환경. 없으면 격리를 켜도 실제 연결은 준비안됨이다. */
   isolation?: ServerOptions["isolation"];
+  /** 빌드한 화면 디렉터리. 있으면 API 밖의 경로에 SPA로 낸다. */
+  webDistDir?: string;
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */
