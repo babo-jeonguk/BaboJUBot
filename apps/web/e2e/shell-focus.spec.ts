@@ -316,6 +316,23 @@ for (const size of widths) {
       await expect(confirm).toBeHidden();
       await expect(page.getByTestId("org-stage")).not.toHaveText("중단됨");
     });
+
+    test("a skip link is the first Tab stop on home and on a directly opened organization screen, and moves focus to main", async ({
+      page,
+    }) => {
+      const org = await createOrganization(page, `건너뛰기 ${size.name}`);
+      for (const path of ["/", `/orgs/${org.id}/dashboard`]) {
+        await page.goto(path);
+        const skip = page.getByRole("link", { name: "본문으로 건너뛰기" });
+        // 포커스 전에는 화면에서 감춰 두고, 첫 Tab에서 보이는 위치로 올린다.
+        await expect(skip).toHaveCSS("position", "absolute");
+        await page.keyboard.press("Tab");
+        await expect(skip, path).toBeFocused();
+        await expect(skip).toHaveCSS("position", "fixed");
+        await page.keyboard.press("Enter");
+        await expect(page.locator("main#main"), path).toBeFocused();
+      }
+    });
   });
 }
 
@@ -496,19 +513,4 @@ test("cancelling the final completion confirmation returns focus to its button w
   }
   expect(decisions).toEqual([]);
   await expect(page.getByRole("main")).toContainText("검토 대기");
-});
-
-test("a skip link moves focus to main before the rail and section navigation", async ({
-  page,
-}) => {
-  await page.goto("/");
-  const skip = page.getByRole("link", { name: "본문으로 건너뛰기" });
-  await expect(skip).toBeAttached();
-  // 포커스 전에는 화면에서 감춰 두고, 첫 Tab에서 보이는 위치로 올린다.
-  await expect(skip).toHaveCSS("position", "absolute");
-  await page.keyboard.press("Tab");
-  await expect(skip).toBeFocused();
-  await expect(skip).toHaveCSS("position", "fixed");
-  await page.keyboard.press("Enter");
-  await expect(page.locator("main#main")).toBeFocused();
 });
