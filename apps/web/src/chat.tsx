@@ -1083,7 +1083,7 @@ function Composer({
               전송 중…
             </p>
           )}
-          <div className="card flex items-end gap-2 p-2">
+          <div className="card flex items-end gap-2 p-2 focus-within:ring-2 focus-within:ring-brand-500">
             <label htmlFor="lead-message" className="sr-only">
               Lead에게 보낼 메시지
             </label>
@@ -1121,7 +1121,7 @@ function Composer({
                 }
               }}
               placeholder="Research Lead에게 메시지"
-              className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
+              className="min-h-10 max-h-[40vh] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
             />
             <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
               {actions.send.visible ? (

@@ -170,6 +170,25 @@ body {
   scrollbar-width: thin;
 }
 
+/* 키보드 첫 Tab에서 레일·섹션 목록을 건너뛰고 본문으로 가는 링크. 포커스 전에는 화면에서 감춘다. */
+.skip-link {
+  @apply sr-only;
+}
+.skip-link:focus {
+  @apply rounded-xl bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-pop ring-2 ring-brand-500;
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 60;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  clip-path: none;
+  white-space: normal;
+}
+
 /* 움직임 줄이기: 들어오는 효과는 바로 끝내고, 반복하는 spin·pulse·흐르는 연결은 한 번(사실상 0초)만 돌고 멈춘다.
    상태는 글·아이콘·status가 계속 알린다. */
 @media (prefers-reduced-motion: reduce) {

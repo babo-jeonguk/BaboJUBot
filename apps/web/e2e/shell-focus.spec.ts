@@ -1,4 +1,4 @@
-// 셸 이동·포커스·탭·인라인 확인의 접근성 회귀(#151 F2·F3·F7·F14·F16). 역할 기반 locator, 포커스, 페이지 제목,
+// 셸 이동·포커스·탭·인라인 확인·건너뛰기 링크의 접근성 회귀(#151 F1·F2·F3·F7·F14·F16). 역할 기반 locator, 포커스, 페이지 제목,
 // ARIA 연결로 확인한다. 실제 스크린 리더 낭독은 이 검사 범위 밖이다.
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
@@ -315,6 +315,23 @@ for (const size of widths) {
       }
       await expect(confirm).toBeHidden();
       await expect(page.getByTestId("org-stage")).not.toHaveText("중단됨");
+    });
+
+    test("a skip link is the first Tab stop on home and on a directly opened organization screen, and moves focus to main", async ({
+      page,
+    }) => {
+      const org = await createOrganization(page, `건너뛰기 ${size.name}`);
+      for (const path of ["/", `/orgs/${org.id}/dashboard`]) {
+        await page.goto(path);
+        const skip = page.getByRole("link", { name: "본문으로 건너뛰기" });
+        // 포커스 전에는 화면에서 감춰 두고, 첫 Tab에서 보이는 위치로 올린다.
+        await expect(skip).toHaveCSS("position", "absolute");
+        await page.keyboard.press("Tab");
+        await expect(skip, path).toBeFocused();
+        await expect(skip).toHaveCSS("position", "fixed");
+        await page.keyboard.press("Enter");
+        await expect(page.locator("main#main"), path).toBeFocused();
+      }
     });
   });
 }
