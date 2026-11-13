@@ -118,6 +118,11 @@ async function upstream() {
 /** 시험 요청마다 붙이는 이름. 중계는 이 header를 그대로 상류에 넘기므로, 상류가 받은 요청이 어느 요청인지 가린다. */
 const requestTag = "x-test-request";
 const tag = (name: string) => ({ [requestTag]: name });
+/** 권한으로 이름 붙인 요청을 보내고 상태만 돌려준다. */
+const statusOf = (url: string, token: string, name: string) =>
+  send(url, token, "/v1/messages", tag(name)).then(
+    (response) => response.status
+  );
 /** 상류가 받은 요청의 이름(도착 순서). */
 const arrived = (seen: readonly Seen[]) =>
   seen.map((request) => String(request.headers[requestTag]));
@@ -968,8 +973,10 @@ describe("the credential relay with runs that overlap (#148)", () => {
     expect(() => relay.grant(scope())).toThrow();
     // 처음 보낸 요청은 중계가 끊기 전에 이미 상류로 나갔을 수 있어 늦게 도착할 수 있다(아래 시험이 그 순서를 강제한다).
     // 상류가 받은 요청은 처음 보낸 것뿐이고, 실패 뒤의 재시도는 하나도 없다.
-    for (const name of arrived(up.seen))
-      expect(["initial-0", "initial-1", "initial-2"]).toContain(name);
+    const initials = grants.map((_, n) => `initial-${n}`);
+    const reached = arrived(up.seen);
+    for (const name of reached) expect(initials).toContain(name);
+    expect(new Set(reached).size).toBe(reached.length);
     // 같은 로그인으로는 풀리지 않는다.
     await relay.recover();
     expect(relay.failed()).toBe(true);
@@ -1003,20 +1010,16 @@ describe("the credential relay with runs that overlap (#148)", () => {
     await between.parked;
     held.release(0);
     expect((await first).status).toBe(503);
-    expect(await second).not.toBe(200);
+    // 중계가 실패를 확정하며 B의 진행 중 요청을 끊는다.
+    expect(await second).toBe("cut");
 
     expect(relay.failed()).toBe(true);
     expect(notified).toEqual([true]);
     expect(a.failed.aborted).toBe(true);
     expect(b.failed.aborted).toBe(true);
     expect(() => relay.grant(scope())).toThrow();
-    for (const [name, grant] of [
-      ["retry-a", a],
-      ["retry-b", b],
-    ] as const)
-      expect(
-        (await send(url, grant.token, "/v1/messages", tag(name))).status
-      ).toBe(401);
+    expect(await statusOf(url, a.token, "retry-a")).toBe(401);
+    expect(await statusOf(url, b.token, "retry-b")).toBe(401);
     expect(arrived(up.seen)).toEqual(["initial-a"]);
 
     between.deliver();
@@ -1024,13 +1027,8 @@ describe("the credential relay with runs that overlap (#148)", () => {
       .poll(() => arrived(up.seen))
       .toEqual(["initial-a", "initial-b"]);
     // 늦게 도착한 B의 첫 요청 뒤에도 재시도는 여전히 거부되고 상류에 닿지 않는다.
-    for (const [name, grant] of [
-      ["retry-a-again", a],
-      ["retry-b-again", b],
-    ] as const)
-      expect(
-        (await send(url, grant.token, "/v1/messages", tag(name))).status
-      ).toBe(401);
+    expect(await statusOf(url, a.token, "retry-a-again")).toBe(401);
+    expect(await statusOf(url, b.token, "retry-b-again")).toBe(401);
     expect(arrived(up.seen)).toEqual(["initial-a", "initial-b"]);
   });
 
