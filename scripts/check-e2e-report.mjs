@@ -10,6 +10,10 @@ export const allowedSkips = [
     file: "research-map-perf.spec.ts",
     reason: "MAP_PERF=1일 때만 측정한다",
   },
+  {
+    file: "support/server-process.spec.ts",
+    reason: "Windows에서는 폴더 권한으로 삭제를 막을 수 없다",
+  },
 ];
 /** 실제로 돌아 통과해야 하는 E2E 서버 수명 시험(격리 서버 fixture·공용 서버·서버 프로세스 helper의 실패 경로). */
 export const requiredFiles = [
@@ -21,6 +25,13 @@ export const requiredFiles = [
 /** 보고서의 파일 경로(testDir 기준, Windows는 `\\`)가 `file`로 끝나는가. */
 const fileIs = (path, file) =>
   (path ?? "").replaceAll("\\", "/").endsWith(file);
+
+/** 허용 목록의 이유로 건너뛴 테스트인가. */
+const allowedSkip = (t) =>
+  t.status === "skipped" &&
+  allowedSkips.some(
+    (skip) => fileIs(t.file, skip.file) && t.skipReasons.includes(skip.reason)
+  );
 
 /** 보고서의 모든 테스트를 `{ file, title, status, skipReasons }`로 편다. */
 function collect(suites, out = []) {
@@ -60,11 +71,7 @@ export function judge(report) {
     if (t.status === "unexpected") problems.push(`failed: ${name}`);
     else if (t.status === "flaky") problems.push(`flaky: ${name}`);
     else if (t.status === "skipped") {
-      const allowed = allowedSkips.some(
-        (skip) =>
-          fileIs(t.file, skip.file) && t.skipReasons.includes(skip.reason)
-      );
-      if (!allowed)
+      if (!allowedSkip(t))
         problems.push(
           `unexpected skip: ${name} (${t.skipReasons.join("; ") || "no reason"})`
         );
@@ -72,7 +79,8 @@ export function judge(report) {
       problems.push(`unknown status ${t.status}: ${name}`);
   }
   for (const file of requiredFiles) {
-    const ran = tests.filter((t) => fileIs(t.file, file));
+    // 허용된 건너뜀 말고는 모두 돌아 통과해야 하고, 적어도 하나는 돌아야 한다.
+    const ran = tests.filter((t) => fileIs(t.file, file) && !allowedSkip(t));
     if (ran.length === 0 || ran.some((t) => t.status !== "expected"))
       problems.push(
         `required server lifecycle checks did not all pass: ${file}`

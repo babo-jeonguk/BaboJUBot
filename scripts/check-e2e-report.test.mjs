@@ -73,6 +73,21 @@ test("accepts the performance measurement skipped for its stated reason", () => 
   assert.equal(summary.skipped, 1);
 });
 
+test("accepts the helper's folder permission check skipped on Windows for its stated reason", () => {
+  const { problems } = judge(
+    report([
+      ...required,
+      {
+        file: "support\\server-process.spec.ts",
+        title: "undeletable folder",
+        status: "skipped",
+        skip: ["Windows에서는 폴더 권한으로 삭제를 막을 수 없다"],
+      },
+    ])
+  );
+  assert.deepEqual(problems, []);
+});
+
 for (const [name, tests, errors] of [
   [
     "a failed test",
