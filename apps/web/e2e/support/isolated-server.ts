@@ -21,7 +21,12 @@ const exitWaitMs = shutdownMs + 5_000;
 const killWaitMs = 5_000;
 
 type Exit = { code: number | null; signal: string | null };
-type IsolatedServer = { url: string; stop: () => Promise<void> };
+type IsolatedServer = {
+  url: string;
+  /** 서버 프로세스 ID. fixture 시험(isolated-server.spec.ts)이 테스트 도중 서버가 끝나는 경우를 만들 때 쓴다. */
+  pid: number;
+  stop: () => Promise<void>;
+};
 
 /**
  * 부모 셸과 공용 설정의 서버 설정이 이 서버에 새지 않게 지운다. 서버가 읽는 설정은 `BABOJUBOT_*`와 아래 이름이다.
@@ -43,7 +48,7 @@ function inheritedEnv() {
   return env;
 }
 
-async function startIsolatedServer(): Promise<IsolatedServer> {
+export async function startIsolatedServer(): Promise<IsolatedServer> {
   const home = mkdtempSync(path.join(os.tmpdir(), "babojubot-e2e-isolated-"));
   const child = spawn(process.execPath, [main], {
     env: {
@@ -81,7 +86,7 @@ async function startIsolatedServer(): Promise<IsolatedServer> {
   };
   try {
     const url = await waitForReadyLine(child, exited, () => stdout, output);
-    return { url, stop };
+    return { url, pid: child.pid!, stop };
   } catch (error) {
     await stop().catch(() => {});
     throw error;
