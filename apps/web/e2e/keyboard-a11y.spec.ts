@@ -3,6 +3,7 @@ import { launchZoomed } from "./support/browser-zoom.ts";
 import { lowContrastTexts } from "./support/contrast.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput, railOrganizationLink } from "./support/organization.ts";
+import { test as settingsTest } from "./support/shared-settings.ts";
 
 // 키보드·포커스·접근 이름과 상태·실패 복구·실제 대비(#152). 실제 화면 읽기 프로그램은 실행하지 않고 Chromium 접근성 트리로 확인한다.
 
@@ -601,65 +602,67 @@ test("field errors are linked to their field and focused on submit, while server
   await page.unrouteAll({ behavior: "wait" });
 });
 
-test("instant switches tell which setting saved, never on load or failure, and a new save does not read as the old success", async ({
-  page,
-}) => {
-  const org = await createOrganization(page, "A11y switches");
-  await openWithLiveEvents(page, `/orgs/${org.id}/settings`);
-  const policy = page.getByRole("checkbox", { name: /작업자 추가/ });
-  const label = (await policy.evaluate(
-    (el) => (el as HTMLInputElement).labels![0]!.textContent
-  ))!.trim();
-  // 처음 연 화면에는 저장 결과가 없다.
-  await expect(policy).toHaveAccessibleDescription("");
-  const before = await policy.isChecked();
-  await policy.focus();
-  await page.keyboard.press("Space");
-  await expect(policy).toHaveAccessibleDescription(`${label} 저장됨`);
-  expect(await policy.isChecked()).toBe(!before);
-  await expect(policy).toBeFocused();
-  // 실패하면 성공을 알리지 않고, 오류와 함께 저장된 값으로 돌아간다.
-  await page.route(`**${org.api("/approval-policy")}`, (route) =>
-    route.fulfill({ status: 500, json: { error: { code: "internal" } } })
-  );
-  await policy.click();
-  await expect(page.getByRole("alert")).toHaveText(
-    `${label} 설정을 저장하지 못했습니다. 다시 시도하세요.`
-  );
-  await expect(policy).toHaveAccessibleDescription("");
-  expect(await policy.isChecked()).toBe(!before);
-  await page.unrouteAll({ behavior: "wait" });
-  await policy.click();
-  await expect(policy).toHaveAccessibleDescription(`${label} 저장됨`);
-  expect(await policy.isChecked()).toBe(before);
-  await expectReadable(page);
-
-  // 전역 격리 실행: 두 번째 저장 동안은 `저장하는 중…`이고, 끝나야 다시 `저장됨`이다. 켠 것은 되돌린다.
-  await openWithLiveEvents(page, "/settings");
-  const isolation = page.getByRole("switch", { name: "격리 실행" });
-  await expect(isolation).toHaveAccessibleDescription("");
-  const was = await isolation.isChecked();
-  await isolation.click();
-  await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => (release = resolve));
-  await page.route("**/api/providers/isolation", async (route) => {
-    await held;
-    await route.fallback();
-  });
-  try {
-    await isolation.click();
-    await expect(isolation).toHaveAccessibleDescription(
-      "격리 실행 저장하는 중…"
+// 전역 격리 실행 스위치도 바꾸므로, 실패해도 시작 전 전역 설정으로 되돌리는 test를 쓴다.
+settingsTest(
+  "instant switches tell which setting saved, never on load or failure, and a new save does not read as the old success",
+  async ({ page }) => {
+    const org = await createOrganization(page, "A11y switches");
+    await openWithLiveEvents(page, `/orgs/${org.id}/settings`);
+    const policy = page.getByRole("checkbox", { name: /작업자 추가/ });
+    const label = (await policy.evaluate(
+      (el) => (el as HTMLInputElement).labels![0]!.textContent
+    ))!.trim();
+    // 처음 연 화면에는 저장 결과가 없다.
+    await expect(policy).toHaveAccessibleDescription("");
+    const before = await policy.isChecked();
+    await policy.focus();
+    await page.keyboard.press("Space");
+    await expect(policy).toHaveAccessibleDescription(`${label} 저장됨`);
+    expect(await policy.isChecked()).toBe(!before);
+    await expect(policy).toBeFocused();
+    // 실패하면 성공을 알리지 않고, 오류와 함께 저장된 값으로 돌아간다.
+    await page.route(`**${org.api("/approval-policy")}`, (route) =>
+      route.fulfill({ status: 500, json: { error: { code: "internal" } } })
     );
-    release();
-    await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
-    expect(await isolation.isChecked()).toBe(was);
-  } finally {
-    release();
+    await policy.click();
+    await expect(page.getByRole("alert")).toHaveText(
+      `${label} 설정을 저장하지 못했습니다. 다시 시도하세요.`
+    );
+    await expect(policy).toHaveAccessibleDescription("");
+    expect(await policy.isChecked()).toBe(!before);
     await page.unrouteAll({ behavior: "wait" });
+    await policy.click();
+    await expect(policy).toHaveAccessibleDescription(`${label} 저장됨`);
+    expect(await policy.isChecked()).toBe(before);
+    await expectReadable(page);
+
+    // 전역 격리 실행: 두 번째 저장 동안은 `저장하는 중…`이고, 끝나야 다시 `저장됨`이다. 켠 것은 되돌린다.
+    await openWithLiveEvents(page, "/settings");
+    const isolation = page.getByRole("switch", { name: "격리 실행" });
+    await expect(isolation).toHaveAccessibleDescription("");
+    const was = await isolation.isChecked();
+    await isolation.click();
+    await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/providers/isolation", async (route) => {
+      await held;
+      await route.fallback();
+    });
+    try {
+      await isolation.click();
+      await expect(isolation).toHaveAccessibleDescription(
+        "격리 실행 저장하는 중…"
+      );
+      release();
+      await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
+      expect(await isolation.isChecked()).toBe(was);
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: "wait" });
+    }
   }
-});
+);
 
 test("a policy switch's saving or saved state stays with its organization when history jumps to another organization's settings", async ({
   page,

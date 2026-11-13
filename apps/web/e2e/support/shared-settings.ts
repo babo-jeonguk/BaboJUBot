@@ -15,12 +15,15 @@ import {
 //
 // 저장 버튼이 잠기거나 클릭이 끝난 것은 저장 확정이 아니다. 저장을 확정한 뒤에 다음 동작을 하려면 `holdWrite`로 그 요청을
 // 붙잡아 진행 중 상태를 보고, `release`가 돌려준 서버 응답과 그 안의 저장값을 확인한다.
-// 정리는 (1) 아직 붙잡힌 요청을 서버에 보내지 않고 끊고 (2) 이 테스트가 보낸 전역 설정 변경 요청이 모두 끝나기를 기다린 뒤
-// (3) 되돌린다. 늦게 도착한 화면의 저장이 되돌린 값을 덮지 않고, 정리 뒤 route callback이 닫힌 page를 쓰지 않는다.
+// 정리는 (1) 아직 붙잡힌 요청을 서버에 보내지 않고 끊고 (2) 이 테스트의 화면(browser context)이 보낸 전역 설정 변경 요청이
+// 모두 끝나기를 기다린 뒤 (3) 되돌린다. API 요청(`request`·`page.request`)은 테스트가 응답을 기다리므로 추적하지 않는다.
+// 그래서 늦게 도착한 화면의 저장이 되돌린 값을 덮지 않고, 정리 뒤 route callback이 닫힌 page를 쓰지 않는다.
 
-const cleanupMs = 10_000;
+// 붙잡은 요청의 도착·응답과 정리 단계마다 기다리는 시한.
+const settleMs = 10_000;
 
-type Snapshot = {
+/** 되돌릴 전역 설정. */
+export type Snapshot = {
   leadDefault: ProviderSettings["leadDefault"];
   workerDefault: ProviderSettings["workerDefault"];
   compaction: ProviderSettings["compaction"];
@@ -43,12 +46,12 @@ export type SharedSettings = {
   holdWrite: (page: Page, url: string) => Promise<HeldWrite>;
 };
 
-function within<T>(promise: Promise<T>, what: string): Promise<T> {
+function failAfter<T>(promise: Promise<T>, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${cleanupMs}ms 안에 ${what}`)),
-      cleanupMs
+      () => reject(new Error(`${settleMs}ms 안에 ${what}`)),
+      settleMs
     );
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
@@ -66,14 +69,15 @@ function snapshotOf(settings: ProviderSettings): Snapshot {
   };
 }
 
-async function readSettings(request: APIRequestContext) {
-  const response = await request.get("/api/providers", { timeout: cleanupMs });
+/** 서버에 저장된 전역 설정. */
+export async function readSettings(request: APIRequestContext) {
+  const response = await request.get("/api/providers", { timeout: settleMs });
   expect(response.status()).toBe(200);
   return snapshotOf((await response.json()) as ProviderSettings);
 }
 
 async function put(request: APIRequestContext, path: string, data: unknown) {
-  const response = await request.put(path, { data, timeout: cleanupMs });
+  const response = await request.put(path, { data, timeout: settleMs });
   expect(response.status(), `${path} 되돌리기`).toBe(200);
 }
 
@@ -135,18 +139,18 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
         gates.push({
           drop: () => decide(false),
           settle: async () => {
-            await within(running, `${url} route callback이 끝나지 않았다`);
+            await failAfter(running, `${url} route callback이 끝나지 않았다`);
             if (!target.isClosed()) await target.unroute(url, handler);
           },
         });
         const arrived = () =>
-          within(arrival, `${url} PUT이 route에 닿지 않았다`);
+          failAfter(arrival, `${url} PUT이 route에 닿지 않았다`);
         return {
           arrived,
           release: async () => {
             const request = await arrived();
             decide(true);
-            const response = await within(
+            const response = await failAfter(
               request.response(),
               `${url} 응답이 오지 않았다`
             );
@@ -172,7 +176,7 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
       page.context().off("request", onRequest);
       // 실패한 요청은 null, 서버에 닿은 요청은 그 응답으로 끝난다. 그 뒤에는 화면이 보낸 변경이 되돌린 값을 덮지 않는다.
       await attempt(() =>
-        within(
+        failAfter(
           Promise.all(
             writes.filter((r) => !gated.has(r)).map((r) => r.response())
           ),
