@@ -151,7 +151,7 @@ it.each(stopRequests)(
       const { code } = await waitExit(child, shutdownWaitMs);
       expect(code, child.stderrText()).toBe(0);
       expect(child.stdoutText()).not.toContain("BaboJUBot server on");
-      expect(isAlive(postgresPid)).toBe(false);
+      await expectGone(postgresPid);
       expect(existsSync(pidFile)).toBe(false);
     } finally {
       await stopMain(child);
@@ -228,7 +228,7 @@ posix.each(posixStopRequests)(
       const deadline = Date.now() + 15_000;
       while (isAlive(postgresPid) && Date.now() < deadline)
         await new Promise((r) => setTimeout(r, 50));
-      expect(isAlive(postgresPid)).toBe(false);
+      await expectGone(postgresPid);
     } finally {
       await stopMain(child);
       killLeftover(postgresPid);
@@ -255,7 +255,7 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(0);
     expect(child.stderrText()).toBe("");
-    expect(isAlive(postgres.pid)).toBe(false);
+    await expectGone(postgres.pid);
     expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
   } finally {
     await stopMain(child);
@@ -280,7 +280,7 @@ it("finishes its own shutdown when the parent's channel closes", async () => {
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(0);
     expect(child.stderrText()).toBe("");
-    expect(isAlive(postgres.pid)).toBe(false);
+    await expectGone(postgres.pid);
     expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
   } finally {
     await stopMain(child);
@@ -567,6 +567,14 @@ function temporaryPostgres(temp: string): TemporaryPostgres {
 /** 임시 내장 Postgres가 임시 폴더에 남기는 항목(dataDir와 그 주인 기록 `.owner`). 정상 정지 뒤에는 없다. */
 function temporaryPostgresEntries(temp: string) {
   return readdirSync(temp).filter((name) => name.startsWith("babojubot-pg-"));
+}
+
+/**
+ * 서버가 멈춘 Postgres 프로세스가 사라졌다. pg_ctl의 정지 대기는 postmaster.pid가 지워지면 끝나고 프로세스는 그 뒤 잠시
+ * 남을 수 있어(Windows는 완전히 끝날 때까지 살아 있다고 답함) 짧은 시한 안에서 기다린다.
+ */
+async function expectGone(pid: number) {
+  await expect.poll(() => isAlive(pid), { timeout: 5_000 }).toBe(false);
 }
 
 /** 시험이 실패해 남은 Postgres만 끝낸다. */

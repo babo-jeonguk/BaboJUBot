@@ -26,6 +26,11 @@ const readyTimeoutMs = 60_000;
 export const serverShutdownMs = 10_000;
 const exitWaitMs = serverShutdownMs + 5_000;
 const killWaitMs = 5_000;
+/**
+ * 서버가 끝난 뒤 내장 Postgres 프로세스가 사라지기까지. pg_ctl의 정지 대기는 postmaster.pid가 지워지면 끝나는데, 그 뒤에도
+ * 프로세스는 잠시 남아 있을 수 있다(Windows는 완전히 끝날 때까지 살아 있다고 답한다).
+ */
+const postgresExitMs = 5_000;
 
 type Exit = { code: number | null; signal: string | null };
 
@@ -123,7 +128,7 @@ export async function startServerProcess({
       try {
         await stopChild(child, exited, label, output);
         const left = temporaryPostgresEntries(temp);
-        if (postgresPid && alive(postgresPid))
+        if (postgresPid && !(await gone(postgresPid, postgresExitMs)))
           throw new Error(
             `${label}가 끝났지만 내장 Postgres(pid ${postgresPid})가 남았다: ${output()}`
           );
@@ -225,10 +230,17 @@ async function stopChild(
   const sent = await new Promise<Error | null>((resolve) =>
     child.send(stopRequest, (error) => resolve(error ?? null))
   );
-  if (sent)
+  if (sent) {
+    // 확인과 보내기 사이에 서버가 끝나고 있었으면 채널이 닫혀 보내기가 실패한다. 그때도 멈추라고 하기 전에 끝난 것이다.
+    const early = await within(exited, killWaitMs);
+    if (early)
+      throw new Error(
+        `${label}가 멈추라고 하기 전에 끝났다(code ${early.code}, signal ${early.signal}): ${output()}`
+      );
     throw new Error(
       `${label}에 멈춤 요청을 보내지 못했다: ${sent.message}: ${output()}`
     );
+  }
   const exit = await within(exited, exitWaitMs);
   if (exit) {
     if (exit.code !== 0)
@@ -274,6 +286,16 @@ export function alive(pid: number) {
   } catch {
     return false;
   }
+}
+
+/** 프로세스가 `ms` 안에 사라지면 true. 사라지기를 짧은 간격으로 확인한다. */
+async function gone(pid: number, ms: number) {
+  const deadline = Date.now() + ms;
+  while (alive(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
 }
 
 function killQuietly(pid: number | undefined) {

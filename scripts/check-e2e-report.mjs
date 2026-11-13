@@ -17,6 +17,10 @@ export const requiredFiles = [
   "support/shared-server.spec.ts",
 ];
 
+/** 보고서의 파일 경로(testDir 기준, Windows는 `\\`)가 `file`로 끝나는가. */
+const fileIs = (path, file) =>
+  (path ?? "").replaceAll("\\", "/").endsWith(file);
+
 /** 보고서의 모든 테스트를 `{ file, title, status, skipReasons }`로 편다. */
 function collect(suites, out = []) {
   for (const suite of suites ?? []) {
@@ -57,7 +61,7 @@ export function judge(report) {
     else if (t.status === "skipped") {
       const allowed = allowedSkips.some(
         (skip) =>
-          t.file?.endsWith(skip.file) && t.skipReasons.includes(skip.reason)
+          fileIs(t.file, skip.file) && t.skipReasons.includes(skip.reason)
       );
       if (!allowed)
         problems.push(
@@ -67,9 +71,7 @@ export function judge(report) {
       problems.push(`unknown status ${t.status}: ${name}`);
   }
   for (const file of requiredFiles) {
-    const ran = tests.filter((t) =>
-      t.file?.replaceAll("\\", "/").endsWith(file)
-    );
+    const ran = tests.filter((t) => fileIs(t.file, file));
     if (ran.length === 0 || ran.some((t) => t.status !== "expected"))
       problems.push(
         `required server lifecycle checks did not all pass: ${file}`

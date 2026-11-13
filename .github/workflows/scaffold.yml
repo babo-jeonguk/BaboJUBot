@@ -88,7 +88,7 @@ jobs:
         run: pnpm run ${{ matrix.script }}
       # 통과·실패·건너뜀 수를 남기고, 예상 밖 건너뜀과 빠진 서버 수명 시험을 실패로 본다.
       - name: Check E2E report
-        if: env.RUN == 'true' && matrix.script == 'test:e2e'
+        if: ${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}
         run: node scripts/check-e2e-report.mjs apps/web/test-results/e2e-report.json
       - name: Keep failed E2E traces
         if: failure() && env.RUN == 'true' && matrix.script == 'test:e2e'

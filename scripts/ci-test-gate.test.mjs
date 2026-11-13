@@ -162,11 +162,14 @@ test("runs the server stop checks and the whole E2E on Windows and judges its re
   );
   assert.equal(keep?.if, "failure()");
   assert.equal(keep.with.path, "apps/web/test-results/");
-  // Linux E2E도 같은 보고서 판정을 한다.
+  // Linux E2E도 같은 보고서 판정을 하고, E2E가 실패해도 수를 남긴다.
   const linux = workflow.jobs.check.steps.find((each) =>
     /check-e2e-report\.mjs/.test(each.run ?? "")
   );
-  assert.equal(linux?.if, "env.RUN == 'true' && matrix.script == 'test:e2e'");
+  assert.equal(
+    linux?.if,
+    "${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}"
+  );
 });
 
 test("each file-system verification has its own job, runs only for file-boundary changes, and is a direct gate dependency", () => {
