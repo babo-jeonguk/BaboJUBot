@@ -1,65 +1,39 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 
-// E2E 서버는 Windows에서 taskkill /F로, 다른 OS에서도 제한 시간을 넘기면 SIGKILL로 끝나 스스로 정리하지 못한다.
-// 그래서 서버의 제품 폴더는 서버보다 오래 사는 Playwright 실행기가 만들어 넘기고, 실행기가 끝날 때 지운다.
+// Playwright의 webServer는 Windows에서 서버를 taskkill /F로 끝내 정리할 기회를 주지 않는다. 그래서 공용 API 서버는
+// globalSetup(e2e/global-setup.ts)이 띄우고 정리까지 기다리며, webServer에는 화면 preview만 둔다. 서버 정리 자체는
+// E2E의 수명 시험(e2e/support/shared-server.spec.ts)이 확인한다.
 // Playwright를 읽는 Node 프로세스를 새로 띄우므로 다른 패키지 검사와 함께 돌 때를 생각해 시간 제한을 넉넉히 둔다.
-it("gives the E2E server a temporary product folder that the runner removes when it ends", async () => {
+it("leaves the API server to the global setup and only the web preview to webServer", async () => {
   const config = fileURLToPath(
     new URL("../playwright.config.ts", import.meta.url)
   );
   const script = `
-    import { existsSync } from "node:fs";
     const { default: config } = await import(${JSON.stringify(pathToFileURL(config).href)});
-    const server = config.webServer[0];
-    const home = server.env.BABOJUBOT_HOME;
     console.log(JSON.stringify({
-      home,
-      exists: Boolean(home) && existsSync(home),
-      serverDeadline: Number(server.env.BABOJUBOT_SHUTDOWN_TIMEOUT_MS),
-      runnerDeadline: server.gracefulShutdown?.timeout,
+      globalSetup: config.globalSetup,
+      commands: [config.webServer].flat().map((server) => server.command),
     }));
   `;
-  const env = { ...process.env };
-  delete env.BABOJUBOT_E2E_HOME;
   const runner = spawn(
     process.execPath,
     ["--input-type=module", "-e", script],
-    {
-      cwd: path.dirname(config),
-      env,
-      stdio: ["ignore", "pipe", "inherit"],
-    }
+    { cwd: path.dirname(config), stdio: ["ignore", "pipe", "inherit"] }
   );
   let output = "";
   runner.stdout!.on("data", (chunk) => (output += chunk));
   const [code] = await once(runner, "exit");
   expect(code).toBe(0);
 
-  const { home, exists, serverDeadline, runnerDeadline } = JSON.parse(
-    output
-  ) as {
-    home?: string;
-    exists: boolean;
-    serverDeadline: number | null;
-    runnerDeadline?: number;
+  const { globalSetup, commands } = JSON.parse(output) as {
+    globalSetup: string;
+    commands: string[];
   };
-  expect(home).toBeDefined();
-  expect(exists).toBe(true);
-  const fromTmp = path.relative(
-    realpathSync(tmpdir()),
-    realpathSync.native(path.dirname(home!))
-  );
-  expect(fromTmp.startsWith("..") || path.isAbsolute(fromTmp)).toBe(false);
-  expect(existsSync(home!)).toBe(false);
-
-  // 서버는 자기 정리 시한에 스스로 끝나며 내장 Postgres를 멈춘다. 실행기가 그보다 먼저 강제로 끝내면
-  // 따로 떨어진 Postgres가 남으므로, 실행기의 시한이 서버의 시한보다 여유 있게 길어야 한다.
-  expect(serverDeadline).toBeGreaterThan(0);
-  expect(runnerDeadline! - serverDeadline!).toBeGreaterThanOrEqual(5_000);
+  expect(globalSetup).toBe("./e2e/global-setup.ts");
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).toMatch(/^vite build && vite preview /);
 }, 60_000);
