@@ -873,10 +873,15 @@ test("at 200% browser zoom of a 1280 px window the main screens do not scroll si
   try {
     const view = zoomed.pages()[0] ?? (await zoomed.newPage());
     await view.goto("/");
-    // 창 폭 1280px의 200% 확대: CSS 폭은 절반, 화소 비율은 2다.
-    expect(
-      await view.evaluate(() => [window.innerWidth, window.devicePixelRatio])
-    ).toEqual([640, 2]);
+    // 창 폭 1280px의 200% 확대: 화소 비율은 2, CSS 폭은 창 안쪽 폭의 절반이다. Windows는 창 크기에 테두리(양쪽 8px)가
+    // 들어가 안쪽 폭이 그만큼 좁다. 확대가 실제로 걸렸는지만 보고 시스템마다 다른 창 테두리 폭은 정하지 않는다.
+    const [cssWidth, ratio] = await view.evaluate(() => [
+      window.innerWidth,
+      window.devicePixelRatio,
+    ]);
+    expect(ratio).toBe(2);
+    expect(cssWidth).toBeLessThanOrEqual(640);
+    expect(cssWidth).toBeGreaterThan(600);
     await expectMainScreensFit(view, org, "200%");
   } finally {
     await zoomed.close();
