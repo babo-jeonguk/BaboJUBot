@@ -32,6 +32,7 @@ function misbehaving(
     | "disconnect"
     | "leave-postgres-on-stop"
     | "exit-before-ready-undeletable"
+    | "exit-before-ready-without-temp"
 ) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "babojubot-misbehave-"));
   const file = path.join(dir, "state.json");
@@ -142,6 +143,24 @@ test("a server that ends before it is ready and whose folder cannot be removed r
       `폴더를 지우지 못했다: ${path.dirname(temp)}`
     );
     expect(alive(postgresPid)).toBe(false);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test("a cleanup step that fails does not hide the start failure, and an unchecked folder is kept and named", async () => {
+  const fake = misbehaving("exit-before-ready-without-temp");
+  try {
+    const error = await fake.start().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    const folder = path.dirname(fake.state().temp);
+    expect(error?.message).toMatch(/시작 전에 끝났다/);
+    expect(error?.message).toMatch(/ENOENT/);
+    // 남은 Postgres를 확인하지 못했으므로 폴더를 지우지 않고 경로를 알린다.
+    expect(error?.message).toContain(folder);
+    expect(existsSync(folder)).toBe(true);
   } finally {
     fake.cleanup();
   }

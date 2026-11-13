@@ -6,6 +6,7 @@
 // - disconnect: 시작 줄을 낸 뒤 IPC 채널을 닫고 살아 있다.
 // - leave-postgres-on-stop: 멈춤 메시지에 임시 Postgres 폴더(잠금 파일 포함)를 지우고 종료 코드 0으로 끝나지만 가짜 Postgres는
 //   살아 있다(잠금 파일을 지운 뒤에도 끝나지 않는 Postgres).
+// - exit-before-ready-without-temp: 임시 폴더를 통째로 지우고 시작 줄 전에 끝난다(정리가 임시 폴더를 읽지 못한다).
 // - exit-before-ready-undeletable: 임시 폴더에 지울 수 없는 폴더(쓰기 권한 없음, POSIX)를 만들고 시작 줄 전에 끝난다.
 // 가짜 Postgres의 pid와 임시 폴더를 `MISBEHAVE_STATE` 파일에 적는다(시험이 정리를 확인한다).
 import { spawn } from "node:child_process";
@@ -56,6 +57,10 @@ switch (process.env.MISBEHAVE) {
       process.exit(0);
     });
     process.stdout.write(ready);
+    break;
+  case "exit-before-ready-without-temp":
+    rmSync(temp, { recursive: true, force: true });
+    process.exit(1);
     break;
   case "exit-before-ready-undeletable": {
     const locked = path.join(temp, "undeletable");
