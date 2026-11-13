@@ -1,5 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import {
+  goalInput,
+  inboxOrganizationLinks,
+  railOrganizationLink,
+} from "./support/organization.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
 async function openInbox(page: Page) {
@@ -22,7 +27,7 @@ test("the demo scenario walks one organization from creation with a goal through
   const name = "데모 흐름 E2E 조직";
   const rail = page.getByRole("navigation", { name: "연구 조직" });
   const stageLink = (stage: string) =>
-    rail.getByRole("link", { name: `${name} · ${stage}` });
+    railOrganizationLink(rail, orgId, `${name} · ${stage}`);
   const leadSaid = (text: string) =>
     page
       .getByRole("list", { name: "대화" })
@@ -43,6 +48,12 @@ test("the demo scenario walks one organization from creation with a goal through
   };
 
   await test.step("연구 목표와 완료 기준을 적어 조직을 만들면 Lead가 초기 연구 승인을 요청한다", async () => {
+    // 같은 표시 이름의 다른 조직이 이미 있어도(앞선 실행·다른 spec) 이 시나리오는 자기가 만든 조직만 본다.
+    // 그런 조직을 먼저 하나 만들어 두어, 이름으로 고르는 검사가 실행 순서와 무관하게 여기서 드러나게 한다.
+    const sameName = await page.request.post("/api/organizations", {
+      data: { name, ...goalInput },
+    });
+    expect(sameName.status()).toBe(201);
     await openWithLiveEvents(page, "/");
     await rail.getByRole("button", { name: "새 연구 조직" }).click();
     const dialog = page.getByRole("dialog", { name: "새 연구 조직" });
@@ -79,7 +90,7 @@ test("the demo scenario walks one organization from creation with a goal through
 
   await test.step("Inbox에서 초기 연구 계획·팀·연구 환경을 보고 승인한다", async () => {
     await openInbox(page);
-    await attention.getByRole("link", { name: new RegExp(name) }).click();
+    await inboxOrganizationLinks(attention, orgId, new RegExp(name)).click();
     await expect(page).toHaveURL(
       /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
     );
@@ -206,9 +217,11 @@ test("the demo scenario walks one organization from creation with a goal through
 
   await test.step("Inbox에서 작업자 추가를 승인하면 팀이 한 명 늘고 연구 단계는 그대로다", async () => {
     await openInbox(page);
-    await attention
-      .getByRole("link", { name: new RegExp(`작업자 추가 승인 요청.*${name}`) })
-      .click();
+    await inboxOrganizationLinks(
+      attention,
+      orgId,
+      new RegExp(`작업자 추가 승인 요청.*${name}`)
+    ).click();
     await expect(
       page.getByRole("region", { name: "추가할 작업자" })
     ).toContainText("연구원");
@@ -230,7 +243,9 @@ test("the demo scenario walks one organization from creation with a goal through
     await expect(stageLink("결과 검토 중")).toBeVisible();
 
     await openInbox(page);
-    const item = attention.getByRole("link").filter({ hasText: name });
+    const item = inboxOrganizationLinks(attention, orgId).filter({
+      hasText: name,
+    });
     await expect(item).toContainText("결과 제출");
     await item.click();
     await page.getByRole("link", { name: /원래 화면에서 자세히 보기/ }).click();

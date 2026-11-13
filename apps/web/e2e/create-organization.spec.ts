@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./support/isolated-server.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /** 화면을 열어 구독 성립을 기다린 뒤, 이후 화면 갱신이 새로고침 없이 일어났는지 확인할 표식을 심는다. */
@@ -19,6 +20,7 @@ test("creating an organization with a goal opens its Lead chat, wakes the Lead a
   await openMarked(watcher, "/");
   await openMarked(page, "/");
 
+  // 이 테스트는 자기만 쓰는 빈 서버(support/isolated-server.ts)에서 돈다. 빈 상태와 전체 조직 수를 그 서버 기준으로 본다.
   // 조직 없음 빈 상태에서 dialog를 연다. 이름과 연구 목표가 있어야 만들 수 있고 완료 기준은 비워도 된다.
   await expect(page.getByText("아직 연구 조직이 없습니다")).toBeVisible();
   await page.getByRole("button", { name: "＋ 새 연구 조직" }).click();
@@ -91,6 +93,7 @@ test("creating an organization with a goal opens its Lead chat, wakes the Lead a
   ).toBeVisible();
   await expect(page).toHaveURL(/\/chat$/);
 
+  // 빈 서버에서 둘을 만들었으므로 전체 조직 수는 2다. 다른 탭도 Event로 같은 수가 된다.
   await rail.getByRole("link", { name: /홈/ }).click();
   await expect(page.getByTestId("organization-count")).toHaveText("2");
   await expect(watcher.getByTestId("organization-count")).toHaveText("2");
