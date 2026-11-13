@@ -19,7 +19,8 @@ import path from "node:path";
 // - 멈추라고 하기 전에 서버가 끝났으면 종료 코드가 0이어도 실패다. 시한을 넘기면 강제로 끝내고 실패로 알린다.
 //   실패하면 이 서버와, 잠금 파일이 이 서버의 임시 폴더에 남은 모든 Postgres를 끝내고, 준비 때 읽은 Postgres를 포함해
 //   그들이 끝나기를 기다린 뒤 폴더를 지운다. 잠금 파일이 없는 Postgres는 이 서버의 것인지 확인할 수 없어 끝내지 않는다.
-//   그래도 살아 있는 프로세스가 있으면 폴더를 남기고 그 경로를 알린다. 실패가 여럿이면 모두 모아 알린다.
+//   남은 프로세스를 확인하지 못했거나 그래도 살아 있는 프로세스가 있으면 폴더를 남기고 그 경로를 알린다.
+//   실패가 여럿이면 모두 모아 알린다.
 
 /** apps/server/src/stop-request.ts의 `stopRequest`와 같은 모양. 서버 패키지 코드를 화면 시험에 들이지 않으려고 따로 적는다. */
 const stopRequest = { type: "babojubot:stop" };
@@ -123,38 +124,6 @@ export async function startServerProcess({
   child.on("error", () => {});
 
   let postgresPid = 0;
-  /**
-   * 실패한 뒤 이 서버가 띄운 프로세스를 강제로 끝내고, 아직 살아 있는 pid를 모아 돌려준다. 이 서버와, 이 서버의 임시 폴더에
-   * 잠금 파일을 남긴 모든 Postgres를 끝내고, 준비 때 읽은 Postgres까지 끝나기를 기다린다. 끝나기를 기다린 뒤에도 살아 있는
-   * 것만 남긴다. 잠금 파일이 없는 pid는 이 서버의 Postgres인지 확인할 수 없어 끝내지 않고 기다리기만 한다.
-   */
-  async function cleanUpAfterFailure() {
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-    await within(
-      exited.catch(() => undefined),
-      killWaitMs
-    );
-    const locked = lockedPostgresPids(temp);
-    for (const pid of locked) {
-      if (alive(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* Already gone. */
-        }
-      }
-    }
-    // 준비 때 읽은 pid는 잠금 파일이 지워져도 이 서버의 Postgres다. 끝내지는 않고, 폴더를 지우기 전에 끝나기를 기다린다.
-    const watched = [
-      ...new Set([...locked, ...(postgresPid ? [postgresPid] : [])]),
-    ];
-    for (const pid of watched) await gone(pid, postgresExitMs);
-    const left: number[] = [];
-    if (child.pid && alive(child.pid)) left.push(child.pid);
-    for (const pid of watched) if (alive(pid)) left.push(pid);
-    return left;
-  }
 
   /** 폴더를 지운다. 지우지 못하면 `failures`에 남긴다. */
   function removeFolder(failures: unknown[]) {
@@ -170,12 +139,50 @@ export async function startServerProcess({
   }
 
   /**
-   * 실패한 뒤 정리한다. 남은 프로세스가 있으면 폴더를 남기고 그 사실을 `failures`에 더한다. 폴더를 지웠든 남겼든 모은 실패를
-   * 모두 알린다.
+   * 실패한 뒤 정리한다. 이 서버와, 이 서버의 임시 폴더에 잠금 파일을 남긴 모든 Postgres를 강제로 끝내고, 준비 때 읽은
+   * Postgres까지 끝나기를 기다린다. 잠금 파일이 없는 pid는 이 서버의 Postgres인지 확인할 수 없어 끝내지 않고 기다리기만 한다.
+   * 남은 프로세스가 있거나 남은 프로세스를 확인하지 못했으면 폴더를 남기고 그 사실을 `failures`에 더한다. 폴더를 지웠든
+   * 남겼든 모은 실패를 모두 알린다. 각 단계는 `attempt`로 감싸 한 단계가 실패해도 다음 단계를 한다.
    */
   async function release(failures: unknown[]): Promise<never> {
-    const left = await cleanUpAfterFailure();
-    if (left.length > 0)
+    await attempt(failures, undefined, async () => {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      await within(
+        exited.catch(() => undefined),
+        killWaitMs
+      );
+    });
+    // `undefined`는 폴더가 없거나 읽을 수 없어 남은 Postgres를 확인하지 못했다는 뜻이다.
+    const locked = await attempt<number[] | undefined>(
+      failures,
+      undefined,
+      () => lockedPostgresPids(temp)
+    );
+    for (const pid of locked ?? []) {
+      if (alive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* Already gone. */
+        }
+      }
+    }
+    // 준비 때 읽은 pid는 잠금 파일이 지워져도 이 서버의 Postgres다. 끝내지는 않고, 폴더를 지우기 전에 끝나기를 기다린다.
+    const watched = [
+      ...new Set([...(locked ?? []), ...(postgresPid ? [postgresPid] : [])]),
+    ];
+    for (const pid of watched) await gone(pid, postgresExitMs);
+    const left: number[] = [];
+    if (child.pid && alive(child.pid)) left.push(child.pid);
+    for (const pid of watched) if (alive(pid)) left.push(pid);
+    if (locked === undefined)
+      failures.push(
+        new Error(
+          `남은 Postgres를 확인하지 못해 ${label}의 폴더를 지우지 않았다: ${folder}`
+        )
+      );
+    else if (left.length > 0)
       failures.push(
         new Error(
           `남은 프로세스(pid ${left.join(", ")})가 있어 ${label}의 폴더를 지우지 않았다: ${folder}`
@@ -236,6 +243,20 @@ function combine(failures: unknown[]) {
       )
       .join(" — 그리고 ")
   );
+}
+
+/** `step`을 하고, 던지면 `failures`에 남기고 `fallback`을 돌려준다. 실패 정리는 한 단계가 실패해도 다음 단계를 한다. */
+async function attempt<T>(
+  failures: unknown[],
+  fallback: T,
+  step: () => T | Promise<T>
+): Promise<T> {
+  try {
+    return await step();
+  } catch (error) {
+    failures.push(error);
+    return fallback;
+  }
 }
 
 /** 완전한 시작 줄(`BaboJUBot server on <url> (…)`)이 나올 때까지 기다려 그 주소를 돌려준다. */
