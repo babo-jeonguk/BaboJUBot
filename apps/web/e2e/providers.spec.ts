@@ -1,21 +1,10 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput } from "./support/organization.ts";
+import { test } from "./support/shared-settings.ts";
 
 // E2E 서버는 가짜 프로바이더 연결 둘(`fake`, `fake-2`)을 띄운다(playwright.config.ts `BABOJUBOT_FAKE_PROVIDERS`).
-// 같은 서버를 쓰는 다음 spec이 처음 기본값을 보도록 끝나면 되돌린다.
-const initialDefaults = {
-  leadDefault: { provider: "fake", model: null },
-  workerDefault: { provider: "fake", model: null },
-};
-test.afterEach(async ({ request }) => {
-  await request.put("/api/providers/defaults", { data: initialDefaults });
-  await request.put("/api/providers/isolation", { data: { isolated: false } });
-  for (const provider of ["fake", "fake-2"])
-    await request.put(`/api/providers/${provider}/limit`, {
-      data: { maxConcurrentRuns: 2 },
-    });
-});
+// 같은 서버를 쓰는 다른 spec이 영향받지 않도록 전역 설정은 테스트가 끝나면(실패해도) 시작 전 값으로 되돌린다(support/shared-settings.ts).
 
 const providers = (p: Page) => p.getByRole("region", { name: "프로바이더" });
 const select = (p: Page, name: string) =>
@@ -107,13 +96,15 @@ test("the owner sets the Lead and worker defaults and each connection's run cap,
 test("the owner picks the Lead's provider when creating an organization and later changes it for the next run", async ({
   page,
   request,
+  sharedSettings,
 }) => {
-  await request.put("/api/providers/defaults", {
+  const defaults = await request.put("/api/providers/defaults", {
     data: {
       leadDefault: { provider: "fake-2", model: "fake-2-max" },
       workerDefault: { provider: "fake", model: null },
     },
   });
+  expect(defaults.status()).toBe(200);
   await openWithLiveEvents(page, "/");
   const rail = page.getByRole("navigation", { name: "연구 조직" });
   await rail.getByRole("button", { name: "새 연구 조직" }).click();
@@ -170,12 +161,53 @@ test("the owner picks the Lead's provider when creating an organization and late
   await expect(select(page, "모델")).toHaveValue("fake-max");
 
   // 바꾸면 모델은 기본 모델로 돌아가고 확인 없이 저장된다. 이미 끝난 실행 시도의 행은 그대로이고 다음 실행 시도가 새 값이다.
-  const save = providers(page).getByRole("button", { name: "저장" });
+  const save = providers(page).getByRole("button", { name: /^저장/ });
+  const alert = providers(page).getByRole("alert");
+  const stored = async () => {
+    const agent = (await (
+      await request.get(`/api/organizations/${orgId}/agents/${leadId}`)
+    ).json()) as { provider: string; model: string | null };
+    return { provider: agent.provider, model: agent.model };
+  };
   await expect(save).toBeDisabled();
   await select(page, "프로바이더").selectOption({ label: "가짜 프로바이더 2" });
   await expect(select(page, "모델")).toHaveValue("");
+
+  // 서버가 거부하면 안내가 뜨고 고친 값은 초안으로 남으며 저장된 값은 그대로다.
+  const providerPath = `**/api/organizations/${orgId}/agents/${leadId}/provider`;
+  await page.route(
+    providerPath,
+    (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: '{"error":{"code":"internal"}}',
+      }),
+    { times: 1 }
+  );
   await save.click();
+  await expect(alert).toContainText("저장하지 못했습니다");
+  await expect(save).toHaveText("저장");
+  await expect(save).toBeEnabled();
+  await expect(select(page, "프로바이더")).toHaveValue("fake-2");
+  expect(await stored()).toEqual({ provider: "fake", model: "fake-max" });
+
+  // 저장하는 동안 버튼은 잠기지만 아직 저장되지 않았다. 이때 다음 실행 시도를 시작하지 않는다.
+  const held = await sharedSettings.holdWrite(page, providerPath);
+  await save.click();
+  await held.arrived();
+  await expect(save).toHaveText("저장하는 중…");
   await expect(save).toBeDisabled();
+  expect(await stored()).toEqual({ provider: "fake", model: "fake-max" });
+
+  // 서버가 새 값을 저장했다고 답하고 화면이 그 값을 받아들인 뒤에 다음 실행 시도를 시작한다.
+  const saved = await held.release();
+  expect(saved.status()).toBe(200);
+  expect(await saved.json()).toMatchObject({ provider: "fake-2", model: null });
+  await expect(save).toHaveText("저장");
+  await expect(save).toBeDisabled();
+  await expect(alert).toHaveCount(0);
+  await expect(select(page, "프로바이더")).toHaveValue("fake-2");
   const sent = await request.post(`/api/organizations/${orgId}/messages`, {
     data: { body: "다음 실행 시도" },
   });

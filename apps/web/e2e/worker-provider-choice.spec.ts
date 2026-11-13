@@ -1,6 +1,7 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { test } from "./support/shared-settings.ts";
 
 // 승인 상세에서 작업자마다 프로바이더·모델을 바꿔 승인하고 결정 뒤 비교를 보는 흐름과 `GitHub에 올리기` 정책 스위치(#95).
 // E2E 서버는 같은 가짜 adapter의 연결 둘(`fake` 가짜 프로바이더, `fake-2` 가짜 프로바이더 2)을 쓴다.
@@ -10,13 +11,14 @@ const runs = { timeout: 20_000 };
 test("the owner changes one worker's model on the approval detail, reverts and changes it again, approves, and sees the Lead's proposal beside the decision", async ({
   page,
 }) => {
-  // 가짜 Lead는 프로바이더를 비워 제안하므로 요청 때의 작업자 기본값이 Lead 제안이 된다.
-  await page.request.put("/api/providers/defaults", {
+  // 가짜 Lead는 프로바이더를 비워 제안하므로 요청 때의 작업자 기본값이 Lead 제안이 된다. 끝나면 시작 전 값으로 되돌린다.
+  const defaults = await page.request.put("/api/providers/defaults", {
     data: {
       leadDefault: { provider: "fake", model: null },
       workerDefault: { provider: "fake", model: null },
     },
   });
+  expect(defaults.status()).toBe(200);
   const created = await page.request.post("/api/organizations", {
     data: { name: "작업자 프로바이더 E2E 조직", ...goalInput },
   });
