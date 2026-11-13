@@ -86,6 +86,10 @@ jobs:
         run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium
       - if: env.RUN == 'true'
         run: pnpm run ${{ matrix.script }}
+      # 통과·실패·건너뜀 수를 남기고, 예상 밖 건너뜀과 빠진 서버 수명 시험을 실패로 본다.
+      - name: Check E2E report
+        if: ${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}
+        run: node scripts/check-e2e-report.mjs apps/web/test-results/e2e-report.json
       - name: Keep failed E2E traces
         if: failure() && env.RUN == 'true' && matrix.script == 'test:e2e'
         uses: actions/upload-artifact@v7.0.2
@@ -219,6 +223,7 @@ jobs:
         test-opencode,
         test-macos,
         test-windows,
+        test-e2e-windows,
         files-linux,
         files-windows,
         files-macos,
@@ -245,6 +250,7 @@ jobs:
           OPENCODE_RESULT: ${{ needs.test-opencode.result }}
           MACOS_RESULT: ${{ needs.test-macos.result }}
           WINDOWS_RESULT: ${{ needs.test-windows.result }}
+          E2E_WINDOWS_RESULT: ${{ needs.test-e2e-windows.result }}
           FILES_LINUX_RESULT: ${{ needs.files-linux.result }}
           FILES_WINDOWS_RESULT: ${{ needs.files-windows.result }}
           FILES_MACOS_RESULT: ${{ needs.files-macos.result }}
@@ -313,6 +319,43 @@ jobs:
       # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+  # Windows의 서버 정상 종료와 화면 E2E(#189). Windows에서는 부모가 신호로 서버에 정리를 맡길 수 없어 멈춤 메시지를 쓴다.
+  # 서버 진입점의 멈춤 시험(POSIX 전용 신호·프로세스 그룹 시험은 건너뜀)과 Chromium 전체 E2E를 이 시스템에서 돈다.
+  # E2E 결과는 수를 남기고 예상 밖 건너뜀·빠진 서버 수명 시험을 실패로 본다. 실패하면 trace와 보고서를 남긴다.
+  test-e2e-windows:
+    name: e2e on windows-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: Check server stop on this system
+        run: pnpm --filter @babojubot/server exec vitest run src/stop-request.test.ts test/main.test.ts
+      - name: Install Chromium
+        run: pnpm --filter @babojubot/web exec playwright install chromium
+      - name: Run E2E
+        run: pnpm run test:e2e
+      - name: Check E2E report
+        if: ${{ !cancelled() }}
+        run: node scripts/check-e2e-report.mjs apps/web/test-results/e2e-report.json
+      - name: Keep failed E2E traces
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: e2e-windows-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 3
   # 파일 시스템별 전체 검증(#153). 조직 경계의 파일 읽기에 닿는 변경(scripts/ci-changes.mjs)과 수동 실행에서만 돈다.
   # OS마다 job 하나가 시험용 볼륨을 한 번 준비하고 볼륨마다 같은 시험(apps/server/vitest.files.config.ts)을 돈다.
   # 앞 볼륨이 실패해도 남은 볼륨·결과표·정리는 돌고(`!cancelled()`·`always()`), job은 실패로 남는다.

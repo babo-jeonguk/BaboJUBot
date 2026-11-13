@@ -1,28 +1,32 @@
+import { existsSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { startIsolatedServer } from "./isolated-server.ts";
 import { goalInput } from "./organization.ts";
+import { alive } from "./server-process.ts";
 
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-test("stopping a server that is still running succeeds", async () => {
+// 모든 OS(Windows 포함)에서 같은 멈춤 경로(부모의 멈춤 메시지)로 확인한다.
+test("stopping a server that is still running succeeds after it stops its Postgres and removes its data", async () => {
   const server = await startIsolatedServer();
+  expect(alive(server.postgresPid)).toBe(true);
   await expect(server.stop()).resolves.toBeUndefined();
   expect(alive(server.pid)).toBe(false);
+  expect(alive(server.postgresPid)).toBe(false);
+  expect(existsSync(server.folder)).toBe(false);
+  // 다시 멈춰도 같은 결과다.
+  await expect(server.stop()).resolves.toBeUndefined();
 });
 
 test("a server that ended on its own during the test fails the teardown, even with exit code 0", async () => {
   const server = await startIsolatedServer();
-  // fixture가 멈추라고 하기 전에 서버가 정상 정리 경로(SIGTERM → 종료 코드 0)로 스스로 끝난다.
-  process.kill(server.pid, "SIGTERM");
-  await expect.poll(() => alive(server.pid), { timeout: 20_000 }).toBe(false);
-  await expect(server.stop()).rejects.toThrow(/테스트 중에 끝났다/);
+  // fixture가 멈추라고 하기 전에, fixture 밖에서 보낸 멈춤 요청으로 서버가 정상 정리 경로(종료 코드 0)로 스스로 끝난다.
+  const exited = new Promise<number | null>((resolve) =>
+    server.child.once("exit", (code) => resolve(code))
+  );
+  server.child.send({ type: "babojubot:stop" });
+  expect(await exited).toBe(0);
+  await expect(server.stop()).rejects.toThrow(/멈추라고 하기 전에 끝났다/);
+  expect(alive(server.postgresPid)).toBe(false);
+  expect(existsSync(server.folder)).toBe(false);
 });
 
 test("a clock server records and cuts days by the time the test sets, not the wall clock", async ({

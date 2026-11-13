@@ -14,6 +14,7 @@ const workflow = parse(
   )
 );
 // macOS·Windows도 필수다. 실제 프로그램 연결·파일 경계·부팅 검사가 시스템마다 달라 그 시스템에서만 드러나는 결함을 막는다.
+// Windows의 서버 정상 종료와 화면 E2E(e2e-windows)도 코드 변경마다 성공해야 한다.
 const suites = [
   "unit",
   "runtime",
@@ -22,6 +23,7 @@ const suites = [
   "opencode",
   "macos",
   "windows",
+  "e2e-windows",
 ];
 // 파일 시스템별 전체 검증 job. changes의 files 출력이 true일 때만 돌고 그때는 모두 성공해야 한다.
 const fileSuites = ["files-linux", "files-windows", "files-macos"];
@@ -135,6 +137,38 @@ test("runs the macOS and Windows suites on their own systems", () => {
   assert.deepEqual(
     workflow.jobs["test-windows"].steps,
     workflow.jobs["test-macos"].steps
+  );
+});
+
+// Windows E2E는 그 시스템에서 서버 멈춤 시험과 Chromium 전체 E2E를 돌고, 결과 수·서버 수명 시험을 판정하며 실패 자료를 남긴다.
+test("runs the server stop checks and the whole E2E on Windows and judges its report", () => {
+  const job = workflow.jobs["test-e2e-windows"];
+  assert.equal(job["runs-on"], "windows-latest");
+  assert.equal(job.if, "needs.changes.outputs.code == 'true'");
+  assert.ok(job["timeout-minutes"] > 0);
+  const runs = job.steps.map((each) => each.run ?? "");
+  const index = (pattern) => runs.findIndex((run) => pattern.test(run));
+  assert.ok(index(/test\/main\.test\.ts/) >= 0, "server stop checks");
+  assert.ok(index(/playwright install chromium/) >= 0, "Chromium");
+  const e2e = index(/^pnpm run test:e2e$/);
+  const report = index(/^node scripts\/check-e2e-report\.mjs /);
+  assert.ok(e2e >= 0 && report > e2e, "E2E then its report check");
+  // 앞 단계가 실패해도 보고서는 판정해 수를 남긴다. 실패를 성공으로 바꾸지 않는다.
+  assert.equal(job.steps[report].if, "${{ !cancelled() }}");
+  for (const each of job.steps)
+    assert.notEqual(each["continue-on-error"], true);
+  const keep = job.steps.find((each) =>
+    each.uses?.startsWith("actions/upload-artifact@")
+  );
+  assert.equal(keep?.if, "failure()");
+  assert.equal(keep.with.path, "apps/web/test-results/");
+  // Linux E2E도 같은 보고서 판정을 하고, E2E가 실패해도 수를 남긴다.
+  const linux = workflow.jobs.check.steps.find((each) =>
+    /check-e2e-report\.mjs/.test(each.run ?? "")
+  );
+  assert.equal(
+    linux?.if,
+    "${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}"
   );
 });
 
