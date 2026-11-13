@@ -1,5 +1,5 @@
 import { relayIdentityHeaders } from "@babojubot/runtime";
-import type { Workspaces } from "./workspace.ts";
+import { WorkspaceIdentityError, type Workspaces } from "./workspace.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
   explicitProposedChoice,
@@ -47,6 +47,7 @@ import {
   writeMemory,
   writeResearchMap,
   type ActiveRun,
+  taskInOrganization,
   type Database,
   type MapCommand,
   acceptIntent,
@@ -375,12 +376,12 @@ export function orgToolsRouter({
         })
       );
     },
-    // 파일 경로 산출물은 실행 의도를 수락할 때 읽어 고정한 내용으로 기록한다. 그 뒤 경로의 파일이 바뀌거나 사라져도 다시 읽지 않는다.
+    // 파일 경로 산출물은 실행 의도를 수락하기 전에 읽어 고정한 내용으로 기록한다(`prepare`). 그 뒤 경로의 파일이 바뀌거나 사라져도 다시 읽지 않는다.
     async record_artifact(input, { run, call, write, source: fixed }) {
       await write(
         await recordArtifact(db, run, input, {
           source,
-          readFile: async () => fixed as ArtifactFileRead,
+          file: (fixed ?? null) as ArtifactFileRead | null,
           ...call(
             `산출물 기록: ${quote(input.title)} (${input.path ? "파일" : `${input.format}, ${chars(input.content!)}자`})`
           ),
@@ -563,74 +564,118 @@ export function orgToolsRouter({
   };
 
   /**
-   * 조직 도구 호출 하나. 읽기는 Role·단계 검사 뒤 처리한다. 쓰기는 실행 의도(GLOSSARY)로 처리한다.
-   * - 같은 호출 키의 의도가 이미 있으면 도구·입력이 같은지만 보고(다르면 409 `idempotency_conflict`) 그 의도를 처리한다. 정산한 의도는
-   *   지금 단계가 그 쓰기를 막아도 최초 결과를 돌려주고 아무것도 다시 남기지 않는다(새 쓰기가 아님). 처음 조회와 단계 검사 사이에 의도가
-   *   정산되고 단계가 바뀌어도 마찬가지로 최초 결과를 받는다. 토큰은 언제나 지금 실행 시도의 것이어야 한다.
-   * - 새 쓰기는 Role·단계와 입력을 검사한 뒤, 원본 자료(파일 경로 산출물이면 그 파일)를 읽어 입력과 함께 고정하고 의도를 수락한다.
-   *   효과는 그 commit 뒤에만 하며, 효과와 최초 결과는 같은 transaction으로 정산된다(db `toolWrite`).
-   * 키 없이 온 쓰기도 의도로 남긴다. 서버 재시작 뒤 다음 실행 시도가 그 결과를 받지만, 키가 없으니 같은 호출의 재전송은 가리지 못한다.
+   * 조직 도구 호출 하나. HTTP와 MCP가 같이 쓴다. 읽기는 Role·단계 검사 뒤 처리하고, 쓰기는 실행 의도(GLOSSARY)로 처리한다(`write`).
    */
   const dispatch: ToolDispatch = async (name, run, req) => {
-    if (isOrgToolRead(name)) {
-      const gate = await gateToolCall(db, run, name);
-      if (!gate) return failure(401, "invalid_token");
-      if (!gate.ok) {
-        await applyAfterCommit({ hub, dispatcher }, gate.after);
-        return refuseByRule(gate.reason);
-      }
-      const input = orgTools[name].input.safeParse(inputOf(name, req));
-      if (!input.success) return failure(422, "invalid_input");
-      return handle(name, run, input.data);
+    if (!isOrgToolRead(name)) return write(name, run, req);
+    const gate = await gateToolCall(db, run, name);
+    if (!gate) return failure(401, "invalid_token");
+    if (!gate.ok) {
+      await applyAfterCommit({ hub, dispatcher }, gate.after);
+      return refuseByRule(gate.reason);
     }
+    const input = orgTools[name].input.safeParse(inputOf(name, req));
+    if (!input.success) return failure(422, "invalid_input");
+    return handle(name, run, input.data);
+  };
+
+  /**
+   * 쓰기 도구 호출 하나를 실행 의도로 처리한다. 순서는 이 함수만 정하며 전송(HTTP·MCP)은 조립하지 않는다.
+   * 1. 같은 호출 키의 의도가 이미 있으면 도구·입력이 같은지만 보고(다르면 409 `idempotency_conflict`) 그 의도를 처리한다. 정산한 의도는
+   *    지금 단계가 그 쓰기를 막아도 최초 결과를 돌려주고 아무것도 다시 남기지 않는다(새 쓰기가 아님). 처음 조회와 단계 검사 사이에 의도가
+   *    정산되고 단계가 바뀌어도 마찬가지로 최초 결과를 받는다. 토큰은 언제나 지금 실행 시도의 것이어야 한다.
+   * 2. 새 쓰기는 Role·단계와 입력, 도구별 사전 확인(`prepare`)을 통과해야 한다. 그다음 원본 자료(파일 경로 산출물이면 그 파일)를
+   *    어떤 DB 잠금도 쥐지 않은 채 준비한다. 준비가 오래 걸려도 사용자 제어는 기다리지 않는다.
+   * 3. 준비한 입력·원본 자료를 고정해 의도를 수락한다(commit). 그사이 실행 시도가 취소·종료됐으면 401이며 아무것도 남기지 않는다.
+   *    같은 키를 다른 호출이 먼저 수락했으면 그 의도와 원본 자료를 쓴다.
+   * 4. 효과와 최초 결과를 한 transaction으로 정산한다(db `toolWrite`). 그때 실행 시도·Role·단계·작업 소속 등을 잠금 아래에서 다시 본다.
+   *    정산이 실패해도 수락한 의도와 원본 자료는 남아 같은 키의 재전송이나 서버 재시작 뒤 복구가 그것으로 정산한다.
+   * 준비가 던지면(파일을 읽지 못한 서버 쪽 문제) 그 사이 같은 키의 의도를 다른 호출이 수락했는지 본다. 있으면 그 의도를 1처럼 처리하고,
+   * 없으면 원래 오류를 그대로 던지며 의도를 남기지 않는다. 조직 폴더 표식 오류는 이렇게 합치지 않고 그대로 던진다.
+   * 키 없이 온 쓰기도 의도로 남긴다. 서버 재시작 뒤 다음 실행 시도가 그 결과를 받지만, 키가 없으니 같은 호출의 재전송은 가리지 못한다.
+   */
+  const write = async (
+    name: OrgToolName,
+    run: ActiveRun,
+    req: ToolRequest
+  ): Promise<ToolResponse> => {
     const key = keyOf(req);
     if (key === false) return failure(422, "invalid_input");
     const fixed = { params: req.params, body: req.body ?? null };
     const request = JSON.stringify(fixed);
     const digest = digestOf(request);
-    const conflicts = (intent: StoredIntent) =>
-      intent.tool !== name || intent.digest !== digest;
-    let intent =
+    const settleIntent = (intent: StoredIntent) => {
+      if (intent.tool !== name || intent.digest !== digest)
+        return failure(409, "idempotency_conflict");
+      // 이 기능 전에 남은 기록은 입력을 고정하지 않았다. digest가 같으므로 이번 입력과 같다. 저장된 표기를 읽을 수 없어도 마찬가지다.
+      const input = intentInput(
+        name,
+        decodeIntentRequest(intent.request) ?? fixed
+      );
+      if (input === undefined) return failure(422, "invalid_input");
+      return handle(name, run, input, intent);
+    };
+    const existing =
       key === null ? undefined : await findIntentByKey(db, run.agentId, key);
-    if (!intent) {
-      const gate = await gateToolCall(db, run, name, key);
-      if (!gate) return failure(401, "invalid_token");
-      if (!gate.ok) {
-        await applyAfterCommit({ hub, dispatcher }, gate.after);
-        return refuseByRule(gate.reason);
-      }
-      const input = orgTools[name].input.safeParse(inputOf(name, req));
-      if (!input.success) return failure(422, "invalid_input");
-      const accepted = await acceptIntent(db, run, {
-        key,
-        tool: name,
-        request,
-        digest,
-        source: await sourceOf(name, run, input.data),
-      });
-      if (accepted.kind === "run_finished")
-        return failure(401, "invalid_token");
-      intent = accepted.intent;
+    if (existing) return settleIntent(existing);
+    const gate = await gateToolCall(db, run, name, key);
+    if (!gate) return failure(401, "invalid_token");
+    if (!gate.ok) {
+      await applyAfterCommit({ hub, dispatcher }, gate.after);
+      return refuseByRule(gate.reason);
     }
-    if (conflicts(intent)) return failure(409, "idempotency_conflict");
-    // 이 기능 전에 남은 기록은 입력을 고정하지 않았다. digest가 같으므로 이번 입력과 같다. 저장된 표기를 읽을 수 없어도 마찬가지다.
-    const input = intentInput(
-      name,
-      decodeIntentRequest(intent.request) ?? fixed
-    );
-    if (input === undefined) return failure(422, "invalid_input");
-    return handle(name, run, input, intent);
+    const input = orgTools[name].input.safeParse(inputOf(name, req));
+    if (!input.success) return failure(422, "invalid_input");
+    let prepared: Prepared;
+    try {
+      prepared = await prepare(name, run, input.data);
+    } catch (error) {
+      if (key === null || error instanceof WorkspaceIdentityError) throw error;
+      const winner = await findIntentByKey(db, run.agentId, key);
+      if (!winner) throw error;
+      return settleIntent(winner);
+    }
+    if (prepared.kind === "refused") return prepared.response;
+    const accepted = await acceptIntent(db, run, {
+      key,
+      tool: name,
+      request,
+      digest,
+      source: prepared.source,
+    });
+    if (accepted.kind === "run_finished") return failure(401, "invalid_token");
+    return settleIntent(accepted.intent);
   };
 
-  /** 쓰기 전에 고정할 원본 자료. 파일 경로 산출물은 지금 경로의 파일을 경로 격리·변경 감지 규칙대로 읽은 결과다. */
-  const sourceOf = async (name: OrgToolName, run: ActiveRun, input: unknown) =>
-    name === "record_artifact" &&
-    (input as { path?: string }).path !== undefined
-      ? await workspaces.readArtifact(
-          run.organizationId,
-          (input as { path: string }).path
-        )
-      : null;
+  /** 새 쓰기의 준비 결과: 수락할 때 고정할 원본 자료, 또는 의도 없이 돌려줄 거부. */
+  type Prepared =
+    | { kind: "ready"; source: unknown }
+    | { kind: "refused"; response: ToolResponse };
+
+  /**
+   * 새 쓰기의 도구별 사전 확인과 원본 자료 준비. DB 잠금 밖에서 돈다. 산출물은 연결 작업이 이 조직의 것인지 먼저 보고(다른 조직의 작업과
+   * 없는 작업은 같은 404이며 파일을 읽지 않는다), 파일 경로가 있으면 지금 경로의 파일을 경로 격리·변경 감지 규칙대로 읽는다.
+   * 읽기의 거부는 고정할 수 있는 결과라 원본 자료가 되고, 정산이 효과 없는 확정 거절로 남긴다. 다른 도구는 원본 자료가 없다.
+   */
+  const prepare = async (
+    name: OrgToolName,
+    run: ActiveRun,
+    input: unknown
+  ): Promise<Prepared> => {
+    if (name !== "record_artifact") return { kind: "ready", source: null };
+    const artifact = input as OrgToolParsedInput<"record_artifact">;
+    if (!(await taskInOrganization(db, run.organizationId, artifact.taskId))) {
+      const [code, status] = problemResponses.not_found;
+      return { kind: "refused", response: failure(status, code) };
+    }
+    return {
+      kind: "ready",
+      source:
+        artifact.path === undefined
+          ? null
+          : await workspaces.readArtifact(run.organizationId, artifact.path),
+    };
+  };
 
   /**
    * 서버 재시작으로 끝난 실행 시도가 수락한 실행 의도를 새 실행 시도(`run`)로 정산한다. 모델을 부르기 전에 dispatcher가 부른다.

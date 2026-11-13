@@ -175,6 +175,31 @@ export async function failRunEnd(
 }
 
 /**
+ * 산출물 기록 Event(`artifact.recorded`) 저장이 실패하게 한다. 산출물 행을 넣은 뒤 같은 정산 transaction이 실패하는 실제 DB 실패다.
+ * 돌려준 함수가 되돌린다. 한 DB에 하나만 걸 수 있다.
+ */
+export async function failArtifactRecord(
+  db: Database
+): Promise<() => Promise<void>> {
+  await db.execute(`
+    create function fail_artifact_record() returns trigger as $$
+    begin
+      if new.type = 'artifact.recorded' then
+        raise exception 'artifact record could not be saved';
+      end if;
+      return new;
+    end $$ language plpgsql;
+    create trigger fail_artifact_record before insert on events
+      for each row execute function fail_artifact_record();
+  `);
+  return async () => {
+    await db.execute(
+      "drop trigger fail_artifact_record on events; drop function fail_artifact_record();"
+    );
+  };
+}
+
+/**
  * 실행 의도의 고정한 원본 자료를 바꾼다. 원본 자료가 사라진 기록(`null`)이나 되찾은 기록을 만드는 테스트 전용 조작이다.
  */
 export async function setIntentSource(
