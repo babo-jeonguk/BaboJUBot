@@ -21,12 +21,15 @@ test.use({ timezoneId: timeZone });
 /** 날짜 막대. 마지막·끝에서 둘째 같은 위치가 아니라 그 날짜로 찾는다. */
 const bar = (chart: Locator, date: string) =>
   chart.locator(`[data-date="${date}"]`);
+/** 막대 이름의 날짜(`3/10`). */
+const label = (date: string) =>
+  `${Number(date.slice(5, 7))}/${Number(date.slice(8))}`;
 /** 실행 시도 막대의 이름: 시작한 날 기준 상태별 수. */
 const started = (
   date: string,
   { completed = 0, failed = 0, cancelled = 0, running = 0 }
 ) =>
-  `${Number(date.slice(5, 7))}/${Number(date.slice(8))}: 완료 ${completed}, 실패 ${failed}, 취소됨 ${cancelled}, 서버 재시작 0, 실행 중 ${running}`;
+  `${label(date)}: 완료 ${completed}, 실패 ${failed}, 취소됨 ${cancelled}, 서버 재시작 0, 실행 중 ${running}`;
 /** 성공률 막대·표의 값: 끝난 날 기준 완료 / (완료 + 실패). 취소·서버 재시작은 따로 보인다. */
 const rate = (completed: number, total: number, cancelled = 0) =>
   total
@@ -93,11 +96,11 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
     chart
       .locator("[data-date]")
       .evaluateAll((bars) => bars.map((b) => b.getAttribute("data-date")));
-  const today = await serverDays();
-  expect(today).toHaveLength(14);
-  expect(today.at(-1)).toBe(day);
-  expect(await shownDays(runChart)).toEqual(today);
-  expect(await shownDays(rateChart)).toEqual(today);
+  const daysBeforeMidnight = await serverDays();
+  expect(daysBeforeMidnight).toHaveLength(14);
+  expect(daysBeforeMidnight.at(-1)).toBe(day);
+  expect(await shownDays(runChart)).toEqual(daysBeforeMidnight);
+  expect(await shownDays(rateChart)).toEqual(daysBeforeMidnight);
 
   // 가짜 Lead는 `실행 유지 연습` 부탁을 받으면 취소될 때까지 실행 시도를 끝내지 않는다.
   await org.say("실행 유지 연습");
@@ -114,7 +117,9 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   );
   // 막대는 hover로 그날의 수를 보인다. 키보드는 막대를 들르지 않고 `숫자로 보기` 표에서 같은 값을 읽는다(keyboard-a11y.spec.ts).
   await bar(runChart, day).hover();
-  await expect(runChart.getByRole("tooltip")).toContainText("3/10 (오늘)");
+  await expect(runChart.getByRole("tooltip")).toContainText(
+    `${label(day)} (오늘)`
+  );
   await expect(
     page
       .getByRole("region", { name: "최근 활동" })
@@ -193,11 +198,11 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   await expect(page.getByTestId("metric-success")).toContainText("100%");
   await expect(bar(rateChart, day)).toHaveAttribute(
     "aria-label",
-    `3/10: ${rate(1, 1, 1)}`
+    `${label(day)}: ${rate(1, 1, 1)}`
   );
   await expect(bar(rateChart, dayBefore)).toHaveAttribute(
     "aria-label",
-    `3/9: ${rate(0, 0)}`
+    `${label(dayBefore)}: ${rate(0, 0)}`
   );
 
   // 자정이 지나 서울 3/11이 된 뒤 실패 하나, 완료 하나가 차례로 끝난다. 새 기록은 3/11에 들고, 3/10의 값은 그대로 남는다.
@@ -208,12 +213,12 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   await expect(page.getByTestId("metric-success")).toContainText(
     "완료 1 · 실패 1"
   );
-  const tomorrow = await serverDays();
-  expect(tomorrow).toEqual([...today.slice(1), nextDay]);
-  expect(await shownDays(rateChart)).toEqual(tomorrow);
+  const daysAfterMidnight = await serverDays();
+  expect(daysAfterMidnight).toEqual([...daysBeforeMidnight.slice(1), nextDay]);
+  expect(await shownDays(rateChart)).toEqual(daysAfterMidnight);
   await expect(bar(rateChart, nextDay)).toHaveAttribute(
     "aria-label",
-    `3/11: ${rate(0, 1)}`
+    `${label(nextDay)}: ${rate(0, 1)}`
   );
   await org.say("안녕하세요");
   await expect(page.getByTestId("metric-success")).toContainText("67%", runs);
@@ -222,15 +227,15 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   );
   await expect(bar(rateChart, nextDay)).toHaveAttribute(
     "aria-label",
-    `3/11: ${rate(1, 2)}`
+    `${label(nextDay)}: ${rate(1, 2)}`
   );
   await expect(bar(rateChart, day)).toHaveAttribute(
     "aria-label",
-    `3/10: ${rate(1, 1, 1)}`
+    `${label(day)}: ${rate(1, 1, 1)}`
   );
   await expect(bar(rateChart, dayBefore)).toHaveAttribute(
     "aria-label",
-    `3/9: ${rate(0, 0)}`
+    `${label(dayBefore)}: ${rate(0, 0)}`
   );
   // 실행 시도 막대는 시작한 날 기준이다. 자정 전 시작한 둘(생성 깨우기 완료·취소)은 3/10, 자정 뒤 둘은 3/11이다.
   await expect(bar(runChart, day)).toHaveAttribute(
@@ -242,7 +247,9 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
     started(nextDay, { completed: 1, failed: 1 })
   );
   await bar(runChart, nextDay).hover();
-  await expect(runChart.getByRole("tooltip")).toContainText("3/11 (오늘)");
+  await expect(runChart.getByRole("tooltip")).toContainText(
+    `${label(nextDay)} (오늘)`
+  );
   // 숫자 표도 날짜마다 같은 값이다(최근 날짜부터).
   await rateChart.getByText("숫자로 보기").click();
   const rateRow = (date: string) =>
@@ -273,7 +280,7 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   );
   await expect(bar(utcRate, day)).toHaveAttribute(
     "aria-label",
-    `3/10: ${rate(2, 3, 1)}`
+    `${label(day)}: ${rate(2, 3, 1)}`
   );
   await unknownZone.close();
 
