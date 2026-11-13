@@ -148,14 +148,11 @@ async function stopChild(
   exited: Promise<Exit>,
   output: () => string
 ) {
-  // 테스트 중에 이미 끝났으면 그 종료가 정상인지만 본다. 도중에 죽은 서버를 조용히 넘기지 않는다.
-  if (child.exitCode !== null || child.signalCode !== null) {
-    if (child.exitCode !== 0)
-      throw new Error(
-        `격리 E2E 서버가 테스트 중에 끝났다(code ${child.exitCode}, signal ${child.signalCode}): ${output()}`
-      );
-    return;
-  }
+  // 서버는 이 fixture가 멈추라고 할 때까지 살아 있어야 한다. 그 전에 끝났으면 종료 코드가 0이어도 테스트 도중의 이상이다.
+  if (child.exitCode !== null || child.signalCode !== null)
+    throw new Error(
+      `격리 E2E 서버가 테스트 중에 끝났다(code ${child.exitCode}, signal ${child.signalCode}): ${output()}`
+    );
   child.kill("SIGTERM");
   const exit = await within(exited, exitWaitMs);
   if (exit) {
