@@ -4,13 +4,15 @@ import { openEphemeralDatabase } from "@babojubot/db";
 import { createFakeProviders } from "@babojubot/runtime";
 import { startServer } from "../src/app.ts";
 import { shutdownBudget } from "../src/shutdown-budget.ts";
+import { onStopRequest } from "../src/stop-request.ts";
 
 // 시각을 테스트가 정하는 E2E 서버(apps/web/e2e/support/isolated-server.ts의 `clock` 서버). 제품 진입점(src/main.ts)에는
 // 시계를 바꾸는 길을 두지 않고, 이 시험용 진입점만 서버의 `now`를 부모 프로세스가 IPC로 보낸 시각에 고정한다.
 // 시계는 다음 시각을 받을 때까지 멈춰 있다. 기록 시각과 대시보드 기준 시각이 같은 시계에서 나와 날짜 경계가 실행 시각과 무관하다.
 // 서버가 `now`로 적는 시각(실행 시도의 시작·종료 등)과 대시보드 기준 시각만 이 시계다. DB 기본값으로 적는 시각(조직 생성 시각 등)은 실제 시계다.
-// 임시 embedded Postgres와 가짜 프로바이더(BABOJUBOT_FAKE_PROVIDERS개)를 쓴다. 시작 줄과 종료 신호·정리 시한
-// (BABOJUBOT_SHUTDOWN_TIMEOUT_MS)은 제품 진입점과 같은 방식이다. 시작 중에 온 신호도 시작을 마친 뒤 정리한다.
+// 임시 embedded Postgres와 가짜 프로바이더(BABOJUBOT_FAKE_PROVIDERS개)를 쓴다. 시작 줄과 멈춤 요청(신호·부모의 멈춤 메시지·
+// 채널 끊김, src/stop-request.ts)·정리 시한(BABOJUBOT_SHUTDOWN_TIMEOUT_MS)은 제품 진입점과 같은 방식이다. 시작 중에 온 요청도
+// 시작을 마친 뒤 정리한다.
 
 const env = process.env;
 const repoRoot = path.resolve(
@@ -29,9 +31,10 @@ if (!Number.isInteger(deadlineMs) || deadlineMs < 1)
   );
 const budget = shutdownBudget(deadlineMs, true);
 
-/** 부모가 보낸 시각으로 옮기고 같은 id로 답한다. 답을 받은 뒤의 요청은 새 시각으로 기록·집계된다. */
-process.on("message", (message: { id: number; now: string }) => {
-  const next = new Date(message.now);
+/** 부모가 보낸 시각으로 옮기고 같은 id로 답한다. 답을 받은 뒤의 요청은 새 시각으로 기록·집계된다. 멈춤 메시지는 시각이 아니다. */
+process.on("message", (message: { id?: number; now?: unknown }) => {
+  if (typeof message?.id !== "number" || !("now" in message)) return;
+  const next = new Date(message.now as string);
   if (Number.isNaN(next.getTime())) {
     process.send!({ id: message.id, error: `시각이 아니다: ${message.now}` });
     return;
@@ -40,7 +43,7 @@ process.on("message", (message: { id: number; now: string }) => {
   process.send!({ id: message.id });
 });
 
-// 신호 처리는 시작 전에 건다. 시작 중에 온 신호로 내장 Postgres를 남긴 채 끝나지 않는다.
+// 멈춤 요청은 시작 전에 받는다. 시작 중에 온 요청으로 내장 Postgres를 남긴 채 끝나지 않는다.
 let stopping = false;
 const stop = () => {
   if (stopping) return;
@@ -64,10 +67,7 @@ const stop = () => {
     process.exit(failed ? 1 : 0);
   })();
 };
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
-  process.on(signal, stop);
-// IPC가 끊기면(부모가 사라짐) 스스로 정리한다.
-process.on("disconnect", stop);
+onStopRequest(process, stop);
 
 const startup = (async () => {
   const handle = await openEphemeralDatabase({
