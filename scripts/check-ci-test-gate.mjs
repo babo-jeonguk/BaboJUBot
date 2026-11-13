@@ -8,6 +8,7 @@ const suites = [
   ["opencode", process.env.OPENCODE_RESULT],
   ["macos", process.env.MACOS_RESULT],
   ["windows", process.env.WINDOWS_RESULT],
+  ["e2e-windows", process.env.E2E_WINDOWS_RESULT],
 ];
 // 파일 시스템별 전체 검증. 파일 읽기 경계에 닿는 변경(changes의 files 출력)에서만 돌고, 그때는 셋 모두 성공해야 한다.
 const fileSuites = [
