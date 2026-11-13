@@ -15,8 +15,9 @@ import {
 //
 // 저장 버튼이 잠기거나 클릭이 끝난 것은 저장 확정이 아니다. 저장을 확정한 뒤에 다음 동작을 하려면 `holdWrite`로 그 요청을
 // 붙잡아 진행 중 상태를 보고, `release`가 돌려준 서버 응답과 그 안의 저장값을 확인한다.
-// 정리는 (1) 아직 붙잡힌 요청을 서버에 보내지 않고 끊고 (2) 이 테스트의 화면(browser context)이 보낸 전역 설정 변경 요청이
-// 모두 끝나기를 기다린 뒤 (3) 되돌린다. API 요청(`request`·`page.request`)은 테스트가 응답을 기다리므로 추적하지 않는다.
+// 정리는 (1) 아직 붙잡힌 요청을 서버에 보내지 않고 끊고 (2) 이 테스트의 화면(browser context)이 서버로 보낸 전역 설정 변경
+// 요청(`release`로 보낸 요청 포함)이 모두 끝나기를 기다린 뒤 (3) 되돌린다. 기다리다 시한을 넘기면 되돌리기는 시도하되
+// 정리를 실패로 알린다. API 요청(`request`·`page.request`)은 테스트가 응답을 기다리므로 추적하지 않는다.
 // 그래서 늦게 도착한 화면의 저장이 되돌린 값을 덮지 않고, 정리 뒤 route callback이 닫힌 page를 쓰지 않는다.
 
 // 붙잡은 요청의 도착·응답과 정리 단계마다 기다리는 시한.
@@ -113,9 +114,9 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
       };
       page.context().on("request", onRequest);
       const gates: { drop: () => void; settle: () => Promise<void> }[] = [];
-      // 문이 붙잡은 요청. 끊은 요청은 서버에 닿지 않고, 붙잡힌 채 화면이 이동해 취소된 요청은 응답도 실패도 알리지 않는다.
-      // 보낸 요청의 응답은 `release`가 기다린다.
-      const gated = new Set<Request>();
+      // 붙잡았다가 보내지 않고 끊은 요청. 서버에 닿지 않았고, 붙잡힌 채 화면이 이동해 취소됐으면 응답도 실패도 알리지 않으므로
+      // 정리는 이 요청을 기다리지 않는다. 서버로 보낸 요청은 다른 화면 요청처럼 정리가 끝날 때까지 기다린다.
+      const unsent = new Set<Request>();
 
       const holdWrite = async (target: Page, url: string) => {
         let decide!: (send: boolean) => void;
@@ -128,11 +129,12 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
           if (taken || route.request().method() !== "PUT")
             return route.fallback();
           taken = true;
-          gated.add(route.request());
           arrive(route.request());
-          running = decision.then((send) =>
-            send ? route.fallback() : route.abort()
-          );
+          running = decision.then((send) => {
+            if (send) return route.fallback();
+            unsent.add(route.request());
+            return route.abort();
+          });
           return running;
         };
         await target.route(url, handler);
@@ -178,7 +180,7 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
       await attempt(() =>
         failAfter(
           Promise.all(
-            writes.filter((r) => !gated.has(r)).map((r) => r.response())
+            writes.filter((r) => !unsent.has(r)).map((r) => r.response())
           ),
           "이 테스트가 보낸 전역 설정 변경이 끝나지 않았다"
         )
