@@ -1,5 +1,5 @@
 import http from "node:http";
-import type net from "node:net";
+import net from "node:net";
 import { gzipSync } from "node:zlib";
 import {
   chmod,
@@ -23,7 +23,12 @@ import { relayIdentityHeaders } from "./relay.ts";
 
 type Seen = { method: string; url: string; headers: http.IncomingHttpHeaders };
 const servers: http.Server[] = [];
+const wires: { server: net.Server; sockets: Set<net.Socket> }[] = [];
 afterEach(async () => {
+  for (const wire of wires.splice(0)) {
+    for (const socket of wire.sockets) socket.destroy();
+    await new Promise((resolve) => wire.server.close(resolve));
+  }
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -110,6 +115,85 @@ async function upstream() {
   return { url: `${url}/base`, seen, closed, server: servers.at(-1)! };
 }
 
+/** 시험 요청마다 붙이는 이름. 중계는 이 header를 그대로 상류에 넘기므로, 상류가 받은 요청이 어느 요청인지 가린다. */
+const requestTag = "x-test-request";
+const tag = (name: string) => ({ [requestTag]: name });
+/** 권한으로 이름 붙인 요청을 보내고 상태만 돌려준다. */
+const statusOf = (url: string, token: string, name: string) =>
+  send(url, token, "/v1/messages", tag(name)).then(
+    (response) => response.status
+  );
+/** 상류가 받은 요청의 이름(도착 순서). */
+const arrived = (seen: readonly Seen[]) =>
+  seen.map((request) => String(request.headers[requestTag]));
+
+/**
+ * 중계와 모의 상류 사이의 전송 구간. 연결마다 바이트를 그대로 넘기되, 이름이 `parkedTag`인 요청의 연결은 상류에 넘기지 않고
+ * 붙잡아 둔다(`parked`가 풀린다). 중계가 그 연결을 끊어도 `deliver()`로 붙잡아 둔 바이트를 상류에 보낸다:
+ * 이미 보낸 요청은 소켓을 끊어도 돌아오지 않고 상류에 늦게 도착할 수 있다.
+ */
+async function holdingTransport(target: string, parkedTag: string) {
+  const to = new URL(target);
+  const sockets = new Set<net.Socket>();
+  const track = (socket: net.Socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.on("close", () => sockets.delete(socket));
+    return socket;
+  };
+  const connect = () => track(net.connect(Number(to.port), to.hostname));
+  let held = Buffer.alloc(0);
+  let markParked!: () => void;
+  const parked = new Promise<void>((resolve) => {
+    markParked = resolve;
+  });
+  const server = net.createServer((inbound) => {
+    track(inbound);
+    let head = Buffer.alloc(0);
+    let route: "parked" | net.Socket | undefined;
+    inbound.on("data", (chunk: Buffer) => {
+      if (route === "parked") {
+        held = Buffer.concat([held, chunk]);
+        return;
+      }
+      if (route) {
+        route.write(chunk);
+        return;
+      }
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const named = new RegExp(`^${requestTag}:\\s*(.*)$`, "im").exec(
+        head.subarray(0, end).toString("latin1")
+      )?.[1];
+      if (named?.trim() === parkedTag) {
+        route = "parked";
+        held = head;
+        markParked();
+        return;
+      }
+      const outbound = connect();
+      route = outbound;
+      outbound.pipe(inbound);
+      outbound.on("close", () => inbound.destroy());
+      inbound.on("close", () => outbound.destroy());
+      outbound.write(head);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  wires.push({ server, sockets });
+  return {
+    url: `http://127.0.0.1:${(server.address() as net.AddressInfo).port}${to.pathname}`,
+    parked,
+    /** 붙잡아 둔 요청을 새 연결로 상류에 보낸다. 상류의 답은 버린다. */
+    deliver: () => {
+      const late = connect();
+      late.resume();
+      late.write(held);
+    },
+  };
+}
+
 const profile = (url: string): RelayProfile => ({
   upstream: url,
   routes: [
@@ -133,12 +217,16 @@ async function setup(
   options: {
     credential?: () => Promise<string | undefined>;
     profile?: (upstream: string) => RelayProfile;
+    /** 중계가 상류 대신 보낼 주소(상류 앞의 전송 구간). */
+    through?: (upstream: string) => Promise<string>;
   } = {}
 ) {
   const up = await upstream();
   let reads = 0;
   const relay = createCredentialRelay({
-    profile: (options.profile ?? profile)(up.url),
+    profile: (options.profile ?? profile)(
+      options.through ? await options.through(up.url) : up.url
+    ),
     verified: true,
     credential: async () => {
       reads++;
@@ -795,6 +883,21 @@ describe("the credential relay with runs that overlap (#148)", () => {
     (async () => {
       for (;;) if ((await reader.read()).done) return "ended";
     })();
+  /**
+   * 재시도가 상류에 닿지 않았다는 판정의 관찰 시점. 재시도에 대한 답을 받았다고 중계가 그 재시도로 상류에 보낼 일을 끝낸 것은 아니다
+   * (답을 먼저 보내고 상류로 보내는 잘못된 구현). 로그인을 바꿔 복구한 뒤 새 권한으로 보낸 확인 요청(`probe`)이 상류의 답까지 받은
+   * 다음에 상류 기록을 본다. 중계가 확인 요청보다 먼저 시작한 전송은 그 사이에 상류에 닿는다. 그보다 더 미룬 전송은 유한한 시험으로 배제할 수 없다.
+   */
+  async function probeAfterNewLogin(
+    relay: ReturnType<typeof createCredentialRelay>,
+    url: string,
+    changeLogin: () => void
+  ) {
+    changeLogin();
+    await relay.recover();
+    expect(relay.failed()).toBe(false);
+    expect(await statusOf(url, relay.grant(scope()).token, "probe")).toBe(200);
+  }
 
   it("does not reach the upstream for a request whose run is cancelled while the credential is being read", async () => {
     const held = heldReads(1);
@@ -855,7 +958,7 @@ describe("the credential relay with runs that overlap (#148)", () => {
     await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
   });
 
-  it("when several runs' requests are rejected at the same time, the connection fails for all of them and nothing reaches the upstream afterwards", async () => {
+  it("when several runs' requests are rejected at the same time, the connection fails for all of them and no retry reaches the upstream afterwards", async () => {
     let login = "expired-login";
     const { up, relay, url } = await setup({ credential: async () => login });
     const grants = [
@@ -866,8 +969,8 @@ describe("the credential relay with runs that overlap (#148)", () => {
     const notified: boolean[] = [];
     relay.onFailure(() => notified.push(relay.failed()));
     const statuses = await Promise.all(
-      grants.map((grant) =>
-        send(url, grant.token, "/v1/rejected").then(
+      grants.map((grant, n) =>
+        send(url, grant.token, "/v1/rejected", tag(`initial-${n}`)).then(
           (response) => response.status,
           () => 0
         )
@@ -878,18 +981,73 @@ describe("the credential relay with runs that overlap (#148)", () => {
     expect(notified.length).toBeGreaterThanOrEqual(1);
     expect(notified.every(Boolean)).toBe(true);
     expect(grants.every((grant) => grant.failed.aborted)).toBe(true);
-    const before = up.seen.length;
-    expect(before).toBeLessThanOrEqual(grants.length);
-    for (const grant of grants)
-      expect((await send(url, grant.token)).status).toBe(401);
+    for (const [n, grant] of grants.entries())
+      expect(
+        (await send(url, grant.token, "/v1/messages", tag(`retry-${n}`))).status
+      ).toBe(401);
     expect(() => relay.grant(scope())).toThrow();
-    expect(up.seen).toHaveLength(before);
     // 같은 로그인으로는 풀리지 않는다.
     await relay.recover();
     expect(relay.failed()).toBe(true);
-    login = "new-login";
-    await relay.recover();
-    expect(relay.failed()).toBe(false);
+    await probeAfterNewLogin(relay, url, () => {
+      login = "new-login";
+    });
+    // 처음 보낸 요청은 중계가 끊기 전에 이미 상류로 나갔을 수 있어 늦게 도착할 수 있다(아래 시험이 그 순서를 강제한다).
+    // 상류가 받은 요청은 처음 보낸 것과 확인 요청뿐이고, 실패 뒤의 재시도는 하나도 없다.
+    const initials = grants.map((_, n) => `initial-${n}`);
+    const reached = arrived(up.seen).filter((name) => name !== "probe");
+    for (const name of reached) expect(initials).toContain(name);
+    expect(new Set(reached).size).toBe(reached.length);
+    expect(arrived(up.seen)).toContain("probe");
+  });
+
+  it("a run's first request that reaches the upstream only after the login was rejected is not a retry: every run's retry is refused and none reaches the upstream (#184)", async () => {
+    // A와 B가 같은 원본을 쓴다. B의 요청은 중계가 상류로 보냈지만 전송 구간에 붙잡혀 있다. 그 사이 A의 요청이 거부돼 연결이 실패하고
+    // 중계는 B의 요청을 끊는다. 이미 보낸 B의 바이트는 실패 확정과 재시도가 끝난 뒤에야 상류에 도착한다.
+    const held = heldReads(2, "expired-login");
+    let login: string | undefined;
+    let transport!: Awaited<ReturnType<typeof holdingTransport>>;
+    const { up, relay, url } = await setup({
+      credential: async () => login ?? held.credential(),
+      through: async (target) =>
+        (transport = await holdingTransport(target, "initial-b")).url,
+    });
+    const notified: boolean[] = [];
+    relay.onFailure(() => notified.push(relay.failed()));
+    const a = relay.grant(scope());
+    const b = relay.grant(scope());
+    const first = send(url, a.token, "/v1/rejected", tag("initial-a"));
+    await held.started[0];
+    const second = send(url, b.token, "/v1/rejected", tag("initial-b")).then(
+      (response) => response.status,
+      () => "cut"
+    );
+    await held.started[1];
+    held.release(1);
+    await transport.parked;
+    held.release(0);
+    expect((await first).status).toBe(503);
+    // 중계가 실패를 확정하며 B의 진행 중 요청을 끊는다.
+    expect(await second).toBe("cut");
+
+    expect(relay.failed()).toBe(true);
+    expect(notified).toEqual([true]);
+    expect(a.failed.aborted).toBe(true);
+    expect(b.failed.aborted).toBe(true);
+    expect(() => relay.grant(scope())).toThrow();
+    expect(await statusOf(url, a.token, "retry-a")).toBe(401);
+    expect(await statusOf(url, b.token, "retry-b")).toBe(401);
+
+    transport.deliver();
+    await expect.poll(() => arrived(up.seen)).toContain("initial-b");
+    // 늦게 도착한 B의 첫 요청 뒤에도 재시도는 여전히 거부된다.
+    expect(await statusOf(url, a.token, "retry-a-again")).toBe(401);
+    expect(await statusOf(url, b.token, "retry-b-again")).toBe(401);
+    await probeAfterNewLogin(relay, url, () => {
+      login = "new-login";
+    });
+    // 상류가 받은 것은 두 실행의 첫 요청과 확인 요청뿐이다. 어느 재시도도 닿지 않았다.
+    expect(arrived(up.seen)).toEqual(["initial-a", "initial-b", "probe"]);
   });
 
   it("a request still reading the credential when another run's login is rejected does not reach the upstream", async () => {
