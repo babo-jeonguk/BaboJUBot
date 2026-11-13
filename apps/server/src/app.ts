@@ -1238,8 +1238,9 @@ export async function startServer({
 
   if (webDistDir && fs.existsSync(webDistDir)) {
     app.use(express.static(webDistDir));
+    // 경로를 `root`로 넘겨야 설치 경로의 점 폴더(`.worktrees`·`~/.local`)를 숨김 파일로 보고 거절하지 않는다.
     app.get("/{*path}", (_req, res) =>
-      res.sendFile(path.join(webDistDir, "index.html"))
+      res.sendFile("index.html", { root: webDistDir })
     );
   }
 
