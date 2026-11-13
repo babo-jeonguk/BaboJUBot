@@ -24,6 +24,7 @@ import {
 import { z } from "zod";
 import { startServer } from "./app.ts";
 import { shutdownBudget } from "./shutdown-budget.ts";
+import { closeStarted } from "./shutdown.ts";
 import { onStopRequest } from "./stop-request.ts";
 
 // 환경 변수
@@ -124,7 +125,8 @@ const fakeProviderSettings = fakeProviderSettingsSchema.parse(
 
 // 종료: SIGINT(Ctrl+C)·SIGTERM·SIGHUP(터미널 닫힘)과, IPC 채널로 띄운 부모의 멈춤 메시지·채널 끊김(stop-request.ts)은
 // 이 진입점만 받는다. Windows의 부모는 신호로 정리를 맡길 수 없어 메시지를 보낸다. 서버 정리를 끝낸 뒤 DB를 닫고, 성공하면 0,
-// 정리나 시작에 실패하면 1로 끝난다. 시작하는 동안 온 요청은 시작을 마친 뒤 같은 순서로 정리한다(서버는 띄우지 않는다).
+// 정리나 시작에 실패하면 1로 끝난다. 닫는 순서와 실패 알림은 shutdown.ts가 맡는다. 시작하는 동안 온 요청은 시작을 마친 뒤 같은 순서로
+// 정리한다(서버는 띄우지 않는다).
 // 요청이 여러 번 와도 정리는 한 번이다.
 // 정리가 시한 안에 끝나지 않으면 1로 끝내고, 그때 내장 Postgres는 DB 패키지가 프로세스 종료 때 멈춘다(즉시 정지).
 const shutdownDeadlineMs = readShutdownDeadline(
@@ -181,21 +183,10 @@ async function shutdown(reason: string) {
     );
     process.exit(1);
   }, budget.cleanupMs).unref();
-  let failed = false;
-  const fail = (error: unknown) => {
-    failed = true;
-    console.error("[server] shutdown failed", error);
-  };
-  // 시작이 실패했으면 열린 자원은 시작 쪽이 이미 닫았다. 실패는 그대로 알린다.
-  const started = await startup.catch((error: unknown) => {
-    failed = true;
-    console.error("[server] start failed", error);
-  });
-  if (started) {
-    await started.server?.close().catch(fail);
-    await started.handle.close().catch(fail);
-  }
-  process.exit(failed ? 1 : 0);
+  const ok = await closeStarted(startup, (message, error) =>
+    console.error(message, error)
+  );
+  process.exit(ok ? 0 : 1);
 }
 
 /** 정리 시한. Node 타이머는 1ms 미만이나 2147483647ms 초과를 1ms로 바꾸므로 그 범위의 정수만 받는다. */

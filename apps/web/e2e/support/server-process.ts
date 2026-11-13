@@ -17,7 +17,8 @@ import path from "node:path";
 // - 성공은 멈추라고 한 뒤 종료 코드 0으로 끝나고, 서버가 띄운 내장 Postgres가 끝났고 그 dataDir를 서버가 지웠을 때다.
 //   그 뒤에 임시 폴더를 지운다. 폴더를 지워 정리를 대신하지 않는다.
 // - 멈추라고 하기 전에 서버가 끝났으면 종료 코드가 0이어도 실패다. 시한을 넘기면 강제로 끝내고 실패로 알린다.
-//   실패할 때도 이 프로세스가 띄운 서버와 그 Postgres만 끝내고 그 임시 폴더를 지운다.
+//   실패하면 이 서버와, 잠금 파일이 이 서버의 임시 폴더에 남은 모든 Postgres를 끝내고 그들이 끝나기를 기다린 뒤 폴더를 지운다.
+//   그래도 살아 있는 프로세스가 있으면 폴더를 남기고 그 경로를 알린다.
 
 /** apps/server/src/stop-request.ts의 `stopRequest`와 같은 모양. 서버 패키지 코드를 화면 시험에 들이지 않으려고 따로 적는다. */
 const stopRequest = { type: "babojubot:stop" };
@@ -121,6 +122,34 @@ export async function startServerProcess({
   child.on("error", () => {});
 
   let postgresPid = 0;
+  /**
+   * 실패한 뒤 이 서버가 띄운 프로세스를 강제로 끝내고, 아직 살아 있는 pid를 모아 돌려준다. 이 서버와, 이 서버의 임시 폴더에
+   * 잠금 파일을 남긴 모든 Postgres가 대상이다. 끝나기를 기다린 뒤에도 살아 있는 것만 남긴다.
+   */
+  async function cleanUpAfterFailure() {
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+    await within(
+      exited.catch(() => undefined),
+      killWaitMs
+    );
+    const pids = lockedPostgresPids(temp);
+    for (const pid of pids) {
+      if (alive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* Already gone. */
+        }
+      }
+      await gone(pid, postgresExitMs);
+    }
+    const left: number[] = [];
+    if (child.pid && alive(child.pid)) left.push(child.pid);
+    for (const pid of pids) if (alive(pid)) left.push(pid);
+    return left;
+  }
+
   let stopping: Promise<void> | undefined;
   const stop = () =>
     (stopping ??= (async () => {
@@ -137,9 +166,13 @@ export async function startServerProcess({
             `${label}가 끝났지만 임시 내장 Postgres 폴더가 남았다(${left.join(", ")}): ${output()}`
           );
       } catch (error) {
+        const left = await cleanUpAfterFailure();
+        if (left.length > 0)
+          throw new Error(
+            `${error instanceof Error ? error.message : String(error)} — 남은 프로세스(pid ${left.join(", ")})가 있어 폴더를 지우지 않았다: ${folder}`,
+            { cause: error }
+          );
         failure = error;
-        killQuietly(child.pid);
-        killQuietly(postgresPid);
       }
       try {
         rmSync(folder, { recursive: true, force: true, maxRetries: 5 });
@@ -215,7 +248,9 @@ function waitForReadyLine(
   });
 }
 
-/** 멈춤 메시지로 정리를 맡기고 시한 안에 끝나기를 기다린다. 넘기면 강제로 끝내고 실패로 알린다. */
+/**
+ * 멈춤 메시지로 정리를 맡기고 시한 안에 끝나기를 기다린다. 시한은 요청을 보내는 일부터 덮는다. 넘기면 강제로 끝내고 실패로 알린다.
+ */
 async function stopChild(
   child: ChildProcess,
   exited: Promise<Exit>,
@@ -227,10 +262,20 @@ async function stopChild(
     throw new Error(
       `${label}가 멈추라고 하기 전에 끝났다(code ${child.exitCode}, signal ${child.signalCode}): ${output()}`
     );
-  const sent = await new Promise<Error | null>((resolve) =>
-    child.send(stopRequest, (error) => resolve(error ?? null))
+  // 보내기가 성공하면 이 약속은 끝나지 않는다. 서버가 채널을 읽지 않으면 보내기 콜백도 오지 않으므로, 시한이 보내기와 종료를 함께 덮는다.
+  const sendFailed = new Promise<Error>((resolve) =>
+    child.send(stopRequest, (error) => {
+      if (error) resolve(error);
+    })
   );
-  if (sent) {
+  const outcome = await within(
+    Promise.race<{ exit: Exit } | { error: Error }>([
+      exited.then((exit) => ({ exit })),
+      sendFailed.then((error) => ({ error })),
+    ]),
+    exitWaitMs
+  );
+  if (outcome && "error" in outcome) {
     // 확인과 보내기 사이에 서버가 끝나고 있었으면 채널이 닫혀 보내기가 실패한다. 그때도 멈추라고 하기 전에 끝난 것이다.
     const early = await within(exited, killWaitMs);
     if (early)
@@ -238,14 +283,13 @@ async function stopChild(
         `${label}가 멈추라고 하기 전에 끝났다(code ${early.code}, signal ${early.signal}): ${output()}`
       );
     throw new Error(
-      `${label}에 멈춤 요청을 보내지 못했다: ${sent.message}: ${output()}`
+      `${label}에 멈춤 요청을 보내지 못했다: ${outcome.error.message}: ${output()}`
     );
   }
-  const exit = await within(exited, exitWaitMs);
-  if (exit) {
-    if (exit.code !== 0)
+  if (outcome) {
+    if (outcome.exit.code !== 0)
       throw new Error(
-        `${label}가 정리에 실패했다(code ${exit.code}, signal ${exit.signal}): ${output()}`
+        `${label}가 정리에 실패했다(code ${outcome.exit.code}, signal ${outcome.exit.signal}): ${output()}`
       );
     return;
   }
@@ -261,7 +305,32 @@ function temporaryPostgresEntries(temp: string) {
   return readdirSync(temp).filter((name) => name.startsWith("babojubot-pg-"));
 }
 
-/** 준비된 서버가 띄운 임시 내장 Postgres의 프로세스 ID(dataDir의 postmaster.pid 첫 줄). */
+/**
+ * 이 서버의 임시 폴더에 잠금 파일(postmaster.pid)이 남은 Postgres 프로세스 ID들. Postgres는 정상 정지할 때 postmaster.pid를
+ * 지우므로, 잠금 파일이 이 서버의 임시 폴더에 남아 있으면 그 Postgres는 이 서버가 띄운 것이다. 이미 정상 정지한 Postgres는
+ * pid가 다시 쓰였어도 대상이 되지 않는다.
+ */
+function lockedPostgresPids(temp: string) {
+  const pids: number[] = [];
+  for (const entry of temporaryPostgresEntries(temp)) {
+    if (entry.endsWith(".owner")) continue;
+    let pid: number;
+    try {
+      pid = Number(
+        readFileSync(path.join(temp, entry, "postmaster.pid"), "utf8").split(
+          /\r?\n/
+        )[0]
+      );
+    } catch {
+      /* 잠금 파일이 없거나 읽을 수 없다: 정상 정지했거나 아직 쓰지 않았다. */
+      continue;
+    }
+    if (pid > 0) pids.push(pid);
+  }
+  return pids;
+}
+
+/** 준비된 서버가 띄운 임시 내장 Postgres의 프로세스 ID(임시 폴더의 잠금 파일). */
 function readPostgresPid(temp: string) {
   const dirs = temporaryPostgresEntries(temp).filter(
     (name) => !name.endsWith(".owner")
@@ -270,12 +339,10 @@ function readPostgresPid(temp: string) {
     throw new Error(
       `임시 내장 Postgres 폴더가 하나가 아니다: ${dirs.join(", ")}`
     );
-  const pid = Number(
-    readFileSync(path.join(temp, dirs[0]!, "postmaster.pid"), "utf8").split(
-      /\r?\n/
-    )[0]
-  );
-  if (!(pid > 0)) throw new Error(`내장 Postgres의 pid를 읽지 못했다: ${pid}`);
+  const pids = lockedPostgresPids(temp);
+  const pid = pids[0];
+  if (pids.length !== 1 || pid === undefined)
+    throw new Error(`내장 Postgres의 pid를 읽지 못했다: ${pid}`);
   return pid;
 }
 
@@ -296,15 +363,6 @@ async function gone(pid: number, ms: number) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return true;
-}
-
-function killQuietly(pid: number | undefined) {
-  if (!pid || !alive(pid)) return;
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    /* Already gone. */
-  }
 }
 
 async function within<T>(promise: Promise<T>, ms: number) {
