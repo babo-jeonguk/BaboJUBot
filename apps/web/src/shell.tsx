@@ -114,6 +114,9 @@ export function Shell() {
   useRouteFocus(pathname, content, main);
   return (
     <Tooltip.Provider delayDuration={150}>
+      <a href="#main" className="skip-link">
+        본문으로 건너뛰기
+      </a>
       <div className="flex h-screen overflow-hidden">
         <div className="hidden md:flex">
           <Rail />
@@ -161,6 +164,7 @@ export function Shell() {
           />
         )}
         <main
+          id="main"
           ref={main}
           tabIndex={-1}
           className="flex min-w-0 flex-1 flex-col overflow-auto pb-20 outline-none has-[[data-fill-height]]:pb-0"

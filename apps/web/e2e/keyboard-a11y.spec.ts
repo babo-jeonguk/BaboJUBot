@@ -210,6 +210,8 @@ test("the dashboard bars leave the Tab order and the number table gives every da
   const table = values.getByRole("table");
   await expect(table).toContainText("단위: 회");
   await expect(table.getByRole("row")).toHaveCount(15);
+  // 각 행의 날짜가 행 머리라 화면 읽기 프로그램이 칸마다 날짜와 계열을 함께 읽는다.
+  await expect(table.getByRole("rowheader")).toHaveCount(14);
   for (const name of [
     "날짜",
     "실행 중",
@@ -879,4 +881,22 @@ test("at 200% browser zoom of a 1280 px window the main screens do not scroll si
   } finally {
     await zoomed.close();
   }
+});
+
+test("the Lead chat composer shows a visible focus style", async ({ page }) => {
+  const created = await page.request.post("/api/organizations", {
+    data: { name: "A11y composer", ...goalInput },
+  });
+  expect(created.status()).toBe(201);
+  const org = (await created.json()) as { id: string };
+  await page.goto(`/orgs/${org.id}/chat`);
+
+  const input = page.getByLabel("Lead에게 보낼 메시지");
+  await input.focus();
+  const outline = await input.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { style: style.outlineStyle, width: style.outlineWidth };
+  });
+  expect(outline.style).not.toBe("none");
+  expect(Number.parseFloat(outline.width)).toBeGreaterThan(0);
 });

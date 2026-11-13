@@ -1,4 +1,4 @@
-// 셸 이동·포커스·탭·인라인 확인의 접근성 회귀(#151 F2·F3·F7·F14·F16). 역할 기반 locator, 포커스, 페이지 제목,
+// 셸 이동·포커스·탭·인라인 확인·건너뛰기 링크의 접근성 회귀(#151 F1·F2·F3·F7·F14·F16). 역할 기반 locator, 포커스, 페이지 제목,
 // ARIA 연결로 확인한다. 실제 스크린 리더 낭독은 이 검사 범위 밖이다.
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
@@ -496,4 +496,19 @@ test("cancelling the final completion confirmation returns focus to its button w
   }
   expect(decisions).toEqual([]);
   await expect(page.getByRole("main")).toContainText("검토 대기");
+});
+
+test("a skip link moves focus to main before the rail and section navigation", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const skip = page.getByRole("link", { name: "본문으로 건너뛰기" });
+  await expect(skip).toBeAttached();
+  // 포커스 전에는 화면에서 감춰 두고, 첫 Tab에서 보이는 위치로 올린다.
+  await expect(skip).toHaveCSS("position", "absolute");
+  await page.keyboard.press("Tab");
+  await expect(skip).toBeFocused();
+  await expect(skip).toHaveCSS("position", "fixed");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("main#main")).toBeFocused();
 });

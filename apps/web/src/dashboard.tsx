@@ -339,12 +339,20 @@ function DayChart({
             </caption>
             <thead className="text-slate-600">
               <tr>
-                <th className="py-1 pr-2 font-medium">날짜</th>
+                <th scope="col" className="py-1 pr-2 font-medium">
+                  날짜
+                </th>
                 {display ? (
-                  <th className="py-1 pr-2 font-medium">{title}</th>
+                  <th scope="col" className="py-1 pr-2 font-medium">
+                    {title}
+                  </th>
                 ) : (
                   series.map((s) => (
-                    <th key={s.key} className="py-1 pr-2 font-medium">
+                    <th
+                      key={s.key}
+                      scope="col"
+                      className="py-1 pr-2 font-medium"
+                    >
                       {s.label}
                     </th>
                   ))
@@ -354,7 +362,9 @@ function DayChart({
             <tbody>
               {[...days].reverse().map((d) => (
                 <tr key={d.date} className="border-t border-slate-100">
-                  <td className="py-1 pr-2">{d.date}</td>
+                  <th scope="row" className="py-1 pr-2 font-normal">
+                    {d.date}
+                  </th>
                   {display ? (
                     <td className="py-1 pr-2">{display(d).label}</td>
                   ) : (
