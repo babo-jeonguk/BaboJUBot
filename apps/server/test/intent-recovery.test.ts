@@ -1168,18 +1168,6 @@ describe("file artifact preparation outside the locks and its settlement through
     await writeFile(path.join(held.workspace!.cwd, name), content);
     return { taskId, title: name, path: name };
   };
-  /** 실제 파일 읽기를 세고, 읽은 조직·경로를 남긴다. */
-  const countReads = () => {
-    const real = Workspaces.prototype.readArtifact;
-    const reads: string[] = [];
-    vi.spyOn(Workspaces.prototype, "readArtifact").mockImplementation(
-      async function (this: Workspaces, orgId: string, requested: string) {
-        reads.push(requested);
-        return real.call(this, orgId, requested);
-      }
-    );
-    return reads;
-  };
   const artifactsOf = async (
     api: ReturnType<typeof http>,
     orgId: string,
@@ -1191,32 +1179,50 @@ describe("file artifact preparation outside the locks and its settlement through
     ).artifacts;
 
   /**
-   * 조직 폴더 reader 대역. 첫 읽기만 진입을 알리고(`reached`) 풀어 줄 때까지(`release`) 기다린 뒤 `finish`대로 끝낸다(실제 읽기를 넘겨받음).
-   * 나머지 읽기는 실제로 읽는다.
+   * 조직 폴더 reader 대역(앞서 건 대역을 바꾼다). 읽은 경로를 `reads`에 남긴다. 앞의 `held`개 읽기는 모두 들어오면 `reached`로 알리고
+   * `release`까지 기다린 뒤 `finish`대로 끝낸다(실제 읽기를 넘겨받음). 나머지 읽기는 실제로 읽는다.
    */
-  const gateFirstRead = (
+  const holdReads = (
     finish: (
       read: () => Promise<ArtifactFileRead>
-    ) => Promise<ArtifactFileRead> = (read) => read()
+    ) => Promise<ArtifactFileRead> = (read) => read(),
+    held = 1
   ) => {
     vi.restoreAllMocks();
     const real = Workspaces.prototype.readArtifact;
+    const reads: string[] = [];
     let entered!: () => void;
     const reached = new Promise<void>((resolve) => (entered = resolve));
     let release!: () => void;
     const released = new Promise<void>((resolve) => (release = resolve));
-    let reads = 0;
     vi.spyOn(Workspaces.prototype, "readArtifact").mockImplementation(
       async function (this: Workspaces, orgId: string, requested: string) {
         const read = () => real.call(this, orgId, requested);
-        if (++reads > 1) return read();
-        entered();
+        reads.push(requested);
+        if (reads.length > held) return read();
+        if (reads.length === held) entered();
         await released;
         return finish(read);
       }
     );
-    return { reached, release };
+    return { reads, reached, release };
   };
+  /** 실제로 읽으며 읽은 경로만 남긴다. */
+  const countReads = () => holdReads(undefined, 0).reads;
+  const invalidToken = {
+    status: 401,
+    body: { error: { code: "invalid_token" } },
+  };
+  const interrupt = (
+    api: ReturnType<typeof http>,
+    orgId: string,
+    agentId: string
+  ) =>
+    api.request(
+      "POST",
+      `/api/organizations/${orgId}/agents/${agentId}/interrupt`,
+      {}
+    );
   /** 이 조직에 산출물 효과가 남았는지: 산출물 기록 Event와 그 도구의 공개 활동 요약. */
   const artifactEffects = async (api: ReturnType<typeof http>, orgId: string) =>
     (await api.events(orgId)).filter(
@@ -1279,7 +1285,7 @@ describe("file artifact preparation outside the locks and its settlement through
     async (ending, blocked) => {
       const { org, task, held, api, db } = await heldLead("같은 키 경쟁 조직");
       const input = await fileOf(held, task.id, "경쟁.md", "# 승자 내용");
-      const reader = gateFirstRead(async () => {
+      const reader = holdReads(async () => {
         if (ending === "a general exception") throw new Error("reader crashed");
         if (ending === "a refusal value")
           return { ok: false, refusal: "file_not_found" };
@@ -1323,14 +1329,14 @@ describe("file artifact preparation outside the locks and its settlement through
     };
     const internal = { status: 500, body: { error: { code: "internal" } } };
     // 같은 키의 다른 호출이 없으면 원래 오류이며 의도도 효과도 남기지 않는다.
-    let reader = gateFirstRead(crash);
+    let reader = holdReads(crash);
     const alone = api.tool(token, "/artifacts", input, "k-alone");
     await reader.reached;
     reader.release();
     expect(await alone).toEqual(internal);
     expect(await findIntentByKey(db, org.lead.id, "k-alone")).toBe(undefined);
     // 키가 다른 호출의 성공은 쓰지 않는다.
-    reader = gateFirstRead(crash);
+    reader = holdReads(crash);
     const otherKey = api.tool(token, "/artifacts", input, "k-mine");
     await reader.reached;
     const theirs = await api.tool(token, "/artifacts", input, "k-theirs");
@@ -1339,7 +1345,7 @@ describe("file artifact preparation outside the locks and its settlement through
     expect(await otherKey).toEqual(internal);
     expect(await findIntentByKey(db, org.lead.id, "k-mine")).toBe(undefined);
     // 같은 키라도 입력이 다르면 충돌이다.
-    reader = gateFirstRead(crash);
+    reader = holdReads(crash);
     const otherInput = api.tool(
       token,
       "/artifacts",
@@ -1355,27 +1361,23 @@ describe("file artifact preparation outside the locks and its settlement through
       status: 409,
       body: { error: { code: "idempotency_conflict" } },
     });
-    // 같은 키·입력의 성공이 있어도 그사이 사용자가 실행을 중단했으면 거부한다.
-    reader = gateFirstRead(crash);
+    // 같은 키의 성공이 있어도 그사이 사용자가 실행을 중단했으면 거부한다. 입력이 달라도 충돌보다 실행 신원이 먼저다.
+    reader = holdReads(crash, 2);
     const cancelled = api.tool(token, "/artifacts", input, "k-cancelled");
+    const cancelledOther = api.tool(
+      token,
+      "/artifacts",
+      { ...input, title: "다른 입력" },
+      "k-cancelled"
+    );
     await reader.reached;
     expect(
       (await api.tool(token, "/artifacts", input, "k-cancelled")).status
     ).toBe(201);
-    expect(
-      (
-        await api.request(
-          "POST",
-          `/api/organizations/${org.id}/agents/${org.lead.id}/interrupt`,
-          {}
-        )
-      ).status
-    ).toBe(200);
+    expect((await interrupt(api, org.id, org.lead.id)).status).toBe(200);
     reader.release();
-    expect(await cancelled).toEqual({
-      status: 401,
-      body: { error: { code: "invalid_token" } },
-    });
+    expect(await cancelled).toEqual(invalidToken);
+    expect(await cancelledOther).toEqual(invalidToken);
     expect(
       (await artifactsOf(api, org.id, task.id)).map((a) => a.title)
     ).toEqual(["거부.md", "거부.md", "거부.md"]);
@@ -1387,7 +1389,7 @@ describe("file artifact preparation outside the locks and its settlement through
       const { org, task, held, gate, api, db } =
         await heldLead("제어 우선 조직");
       const input = await fileOf(held, task.id, "느린.md", "# 느린 읽기");
-      const reader = gateFirstRead();
+      const reader = holdReads();
       const call = api.tool(held.access.token, "/artifacts", input, "k-slow");
       await reader.reached;
       // 읽기가 멈춰 있는 동안 제어가 끝난다(DB 잠금을 쥔 채 읽지 않는다).
@@ -1401,17 +1403,18 @@ describe("file artifact preparation outside the locks and its settlement through
           { timeout: 10_000, interval: 20 }
         );
       } else {
-        const route =
+        const done =
           control === "interrupt"
-            ? `/api/organizations/${org.id}/agents/${org.lead.id}/interrupt`
-            : `/api/organizations/${org.id}/${control}`;
-        expect((await api.request("POST", route, {})).status).toBe(200);
+            ? await interrupt(api, org.id, org.lead.id)
+            : await api.request(
+                "POST",
+                `/api/organizations/${org.id}/${control}`,
+                {}
+              );
+        expect(done.status).toBe(200);
       }
       reader.release();
-      expect(await call).toEqual({
-        status: 401,
-        body: { error: { code: "invalid_token" } },
-      });
+      expect(await call).toEqual(invalidToken);
       expect(await findIntentByKey(db, org.lead.id, "k-slow")).toBe(undefined);
       expect(await artifactsOf(api, org.id, task.id)).toEqual([]);
       expect(await artifactEffects(api, org.id)).toEqual([]);
