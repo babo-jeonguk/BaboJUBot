@@ -604,9 +604,12 @@ export function orgToolsRouter({
     const fixed = { params: req.params, body: req.body ?? null };
     const request = JSON.stringify(fixed);
     const digest = digestOf(request);
-    const settleIntent = (intent: StoredIntent) => {
+    const settleIntent = async (intent: StoredIntent) => {
+      // 충돌 응답보다 실행 신원이 먼저다. 취소·종료된 실행 시도는 같은 키에 무엇이 있는지도 받지 않는다.
       if (intent.tool !== name || intent.digest !== digest)
-        return failure(409, "idempotency_conflict");
+        return (await findActiveRun(db, run.id))
+          ? failure(409, "idempotency_conflict")
+          : failure(401, "invalid_token");
       // 이 기능 전에 남은 기록은 입력을 고정하지 않았다. digest가 같으므로 이번 입력과 같다. 저장된 표기를 읽을 수 없어도 마찬가지다.
       const input = intentInput(
         name,
@@ -665,8 +668,10 @@ export function orgToolsRouter({
     if (name !== "record_artifact") return { kind: "ready", source: null };
     const artifact = input as OrgToolParsedInput<"record_artifact">;
     if (!(await taskInOrganization(db, run.organizationId, artifact.taskId))) {
-      const [code, status] = problemResponses.not_found;
-      return { kind: "refused", response: failure(status, code) };
+      return {
+        kind: "refused",
+        response: await respondWrite({ kind: "invalid", problem: "not_found" }),
+      };
     }
     return {
       kind: "ready",
