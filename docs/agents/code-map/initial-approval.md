@@ -11,7 +11,7 @@
 | 승인 요청 전 Lead 환경 점검 지침                   | harness/roles/lead/role.json, harness/skills/check-research-environment                                                                                                                                                          | 승인 API(Lead 사본), 초기 승인 E2E(환경 명세 표)                                             |
 | 거부 Event·전이 경합·결정 단일 적용                | [db/tool-calls.ts](../../../packages/db/src/tool-calls.ts) `gateToolCall`·`toolWrite`, [db/approvals.ts](../../../packages/db/src/approvals.ts) `decideApproval`, [rows.ts](../../../packages/db/src/rows.ts) `lockOrganization` | 승인 API                                                                                     |
 | 에이전트·조직 템플릿 사본, admission bundle 버전   | [db/harness.ts](../../../packages/db/src/harness.ts), db/runs.ts `claimNextRun`, run-reads.ts `selectWakes`                                                                                                                      | 승인 API                                                                                     |
-| 결정 API·작업자별 모델 확인                        | server/app.ts, server/providers.ts `modelsFor`, server/tools.ts                                                                                                                                                                  | 승인 API, 승인 프로바이더 API                                                                |
+| 결정 API·작업자별 모델 확인                        | server/app.ts, server/user-actions.ts `decideApproval`, server/providers.ts `modelsFor`, server/tools.ts                                                                                                                                                                  | 승인 API, 승인 프로바이더 API                                                                |
 | 가짜 Lead의 승인 요청·재제출                       | runtime/scripted.ts `demoLeadScript`·`demoProposal`                                                                                                                                                                              | 가짜 프로바이더 테스트                                                                       |
 | 결정 폼·작업자 표·완료 기준 제안                   | [web/approvals.tsx](../../../apps/web/src/approvals.tsx) `WorkerChoiceTable`·`DecidedWorkerTable`·`ProposedCriteria`, [worker-choices.ts](../../../apps/web/src/worker-choices.ts), pages.tsx `OrganizationDashboard`            | 초기 승인 E2E, [작업자 프로바이더 E2E](../../../apps/web/e2e/worker-provider-choice.spec.ts) |
 
@@ -22,7 +22,7 @@
 ```text
 scripted(생성 깨우기) → /api/tools/initial-approval(server/tools; 예전 조직은 먼저 /api/tools/goal)
   → gateToolCall(core checkToolCall; 거부 시 tool.refused) → toolWrite → 승인 요청
-결정 폼 → POST /api/organizations/:id/approvals/:approvalId/decision(app) → (작업자별 모델이 있으면 modelsFor)
+결정 폼·채널 답 → POST /api/organizations/:id/approvals/:approvalId/decision(app)·channelInlet → user-actions decideApproval(작업자별 모델이 있으면 modelsFor)
   → decideApproval(core planApprovalDecision) → 작업자·사본·단계·Lead 깨우기·approval.decided
   → EventHub → kick → claim 때 사본의 bundle 버전
 ```

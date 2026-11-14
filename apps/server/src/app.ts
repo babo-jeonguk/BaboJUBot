@@ -48,21 +48,15 @@ import {
   type ChannelReplyResult,
   type ChannelResponse,
   type ChannelRoute,
-  type Conversation,
-  type ConversationMessage,
   type NotificationChannel,
-  type OrganizationDetail,
   type ProviderConnection,
   type RuntimeAdapter,
-  type SendOwnerMessageInput,
   type StreamFrame,
   type StreamScope,
 } from "@babojubot/contracts";
 import {
   controlAgent,
   controlOrganization,
-  decideApproval,
-  decideResult,
   editInstructionCopy,
   editQueuedMessage,
   editResearchMap,
@@ -99,9 +93,7 @@ import {
   listRuns,
   listTasks,
   insertOrganizationCreation,
-  insertOwnerMessage,
   recoverInterruptedSteers,
-  settleSteer,
   insertOwnerTaskComment,
   recordFakeChannelMessage,
   sendQueuedMessageNow,
@@ -124,11 +116,7 @@ import {
   type MapCommand,
   type Stored,
 } from "@babojubot/db";
-import {
-  findLead,
-  planOrganizationCreation,
-  planOwnerMessage,
-} from "@babojubot/core";
+import { findLead, planOrganizationCreation } from "@babojubot/core";
 import { createFakeChannel, createFakeProvider } from "@babojubot/runtime";
 import express, { type ErrorRequestHandler } from "express";
 import type { z } from "zod";
@@ -147,6 +135,7 @@ import {
   loadHarnessLibrary,
 } from "./harness.ts";
 import { HeartbeatScheduler } from "./heartbeat.ts";
+import { createUserActions } from "./user-actions.ts";
 import { IsolationGate } from "./isolation.ts";
 import { NotificationRelay } from "./notifications.ts";
 import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
@@ -322,74 +311,25 @@ export async function startServer({
     pollMs: notificationPollMs,
   });
   const source = { newId: randomUUID, now };
+  const afterCommit = {
+    hub,
+    dispatcher,
+    ensureWorkspace: (id: string) => workspaces.ensure(id),
+  };
   /**
    * 사용자가 한 일 하나: 저장한 뒤 commit 뒤 할 일(Event 알리기·취소·조직 재개·깨우기)을 하고 돌려줄 값 또는 거부 이유를 돌려준다.
    * 사용자 HTTP 경로가 모두 이 길을 쓴다. 알림이 실패해도 저장된 결과는 그대로다.
+   * 사용자 메시지·승인 결정·결과 검토는 웹과 채널이 함께 쓰는 {@link createUserActions}가 이 순서를 맡는다.
    */
   const complete = async <T, R extends string>(result: Promise<Stored<T, R>>) =>
-    completeStored(
-      { hub, dispatcher, ensureWorkspace: (id) => workspaces.ensure(id) },
-      await result
-    );
-  /**
-   * Lead 대화에 사용자 메시지를 남긴다. `conversation`은 같은 조직의 대화(호출한 쪽이 조직 안에서 찾은 것)이고, `new`면 이 메시지로
-   * 새 대화를 시작한다. 새 대화는 메시지와 같은 transaction에 남으므로 메시지를 받지 않으면 대화도 남지 않는다.
-   * Lead가 실행 중이면 메시지는 다음 실행 시도에 반영된다. `중단하고 보내기`면 commit 뒤 진행 중 실행 시도에 취소를 보내고,
-   * 그 실행 시도가 정리를 끝내면 다음 실행 시도가 메시지를 받는다. `실행 중 끼워 넣기`면 commit 뒤 진행 중 실행 시도의 프로바이더에 넣고
-   * 그 결과(받음, 거절이면 줄 세우기)를 남긴 메시지를 돌려준다. 넣을 실행 시도가 없었으면 처음부터 줄 세운 메시지다.
-   */
-  const sendOwnerMessage = async (
-    organization: OrganizationDetail,
-    conversation: Pick<Conversation, "id"> | "new",
-    input: Required<SendOwnerMessageInput>
-  ): Promise<
-    Outcome<
-      { conversation: Conversation | null; message: ConversationMessage },
-      "organization_closed" | "queue_full"
-    >
-  > => {
-    const sent = await complete(
-      insertOwnerMessage(
-        db,
-        planOwnerMessage(
-          { organizationId: organization.id, agents: organization.agents },
-          conversation,
-          input,
-          source
-        ),
-        { steerable: registry.steerable }
-      )
-    );
-    if (sent.kind !== "ok") return sent;
-    const { steerRunId, ...value } = sent.value;
-    if (!steerRunId) return { kind: "ok", value };
-    const { message } = value;
-    const outcome = await dispatcher.steer({
-      runId: steerRunId,
-      messageId: message.id,
-      conversationId: message.conversationId,
-      body: message.body,
-    });
-    const settled = await complete(
-      settleSteer(
-        db,
-        {
-          organizationId: message.organizationId,
-          messageId: message.id,
-          runId: steerRunId,
-          outcome,
-        },
-        source
-      )
-    );
-    return {
-      kind: "ok",
-      value: {
-        ...value,
-        message: (settled.kind === "ok" && settled.value) || message,
-      },
-    };
-  };
+    completeStored(afterCommit, await result);
+  const actions = createUserActions({
+    db,
+    source,
+    providers: registry,
+    dispatcher,
+    afterCommit,
+  });
 
   const app = express();
   app.use(express.json({ limit: jsonBodyLimitBytes }));
@@ -834,7 +774,7 @@ export async function startServer({
     if (!input) return;
     respond(
       res,
-      await sendOwnerMessage(chat.org, chat.conversation, input),
+      await actions.sendMessage(chat.org, chat.conversation, input),
       201,
       (sent) => sent.message
     );
@@ -851,7 +791,7 @@ export async function startServer({
     if (!org || !findLead(org.agents)) return refuseOwner(res, "not_found");
     const input = parseInput(res, sendOwnerMessageInputSchema, req.body);
     if (!input) return;
-    respond(res, await sendOwnerMessage(org, "new", input), 201);
+    respond(res, await actions.sendMessage(org, "new", input), 201);
   });
 
   app.get(
@@ -1175,19 +1115,12 @@ export async function startServer({
     async (req, res) => {
       const input = parseInput(res, decideApprovalInputSchema, req.body);
       if (!input) return;
-      // 모델 목록은 잠금 밖에서 받아 오고, 확인은 이미 결정한 요청인지 본 뒤 결정 규칙 안에서 한다.
-      const connections = await registry.modelsFor(input.choices ?? []);
       respond(
         res,
-        await complete(
-          decideApproval(
-            db,
-            req.params.id,
-            req.params.approvalId,
-            input,
-            source,
-            connections
-          )
+        await actions.decideApproval(
+          req.params.id,
+          req.params.approvalId,
+          input
         )
       );
     }
@@ -1221,14 +1154,10 @@ export async function startServer({
       if (!input) return;
       respond(
         res,
-        await complete(
-          decideResult(
-            db,
-            req.params.id,
-            req.params.submissionId,
-            input,
-            source
-          )
+        await actions.decideResult(
+          req.params.id,
+          req.params.submissionId,
+          input
         )
       );
     }
@@ -1357,9 +1286,7 @@ export async function startServer({
       inlet: channelInlet({
         channel: channel.name,
         db,
-        source,
-        complete,
-        sendOwnerMessage,
+        actions,
       }),
       routes: {
         get: (path, route) => channelRouter.get(path, channelRoute(route)),

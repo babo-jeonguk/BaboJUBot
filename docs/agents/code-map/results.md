@@ -9,7 +9,7 @@
 | 최종 완료·일시정지·중단 뒤 실행 시도가 생김                  | core/run.ts `admitsRuns`·`runBlockingStages`, db/runs.ts `claimNextRun`·`listAgentsWithPendingWakes`                                                               | [DB](../../../packages/db/src/runs.test.ts) `admission and organization stage` |
 | 제출·결정 저장, 옛 제출 409                                  | [db/results.ts](../../../packages/db/src/results.ts) `submitResult`·`decideResult`                                                                                 | 결과 API                                                                       |
 | Inbox 조회                                                   | [db/inbox.ts](../../../packages/db/src/inbox.ts) `listInbox`                                                                                                       | 결과 API, 알림 API                                                             |
-| 결정 API                                                     | server/app.ts `/results`; 도구 handler는 server/tools.ts                                                                                                           | 결과 API                                                                       |
+| 결정 API                                                     | server/app.ts `/results`, user-actions.ts `decideResult`; 도구 handler는 server/tools.ts                                                                                                           | 결과 API                                                                       |
 | 가짜 Lead 제출·재제출                                        | runtime/scripted.ts `demoLeadScript`·`submitResultScript`                                                                                                          | 결과 API `demo Lead result submission`                                         |
 | 결과 검토 목록·상세·결정 폼                                  | [web/results.tsx](../../../apps/web/src/results.tsx), inbox.tsx `InboxPanel`, pages.tsx, api.ts `useDecideResult`                                                  | 결과 검토 E2E                                                                  |
 
@@ -19,7 +19,7 @@
 
 ```text
 scripted(Lead) → /api/tools/results(server/tools) → submitResult(toolWrite, core planResultSubmission) → result.submitted
-결정 폼 → POST /api/organizations/:id/results/:submissionId/decision(app)
+결정 폼·채널 답 → POST /api/organizations/:id/results/:submissionId/decision(app)·channelInlet → user-actions decideResult
   → decideResult(core planResultDecision) → result.decided → EventHub → kick(Lead)
 최종 완료 뒤 깨우기 → claimNextRun(admitsRuns) → 실행 시도 없음
 ```
