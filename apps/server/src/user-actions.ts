@@ -27,7 +27,7 @@ import {
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { ProviderRegistry } from "./providers.ts";
 
-export type SentOwnerMessage = Outcome<
+type SentOwnerMessage = Outcome<
   { conversation: Conversation | null; message: ConversationMessage },
   "organization_closed" | "queue_full"
 >;
@@ -47,7 +47,7 @@ export type UserActions = {
    * 프로바이더에 넣기 → 그 결과(받음, 거절이면 줄 세우기) 저장 → commit 뒤 처리 순서로 하고 결과를 남긴 메시지를 돌려준다.
    * 두 저장은 서로 다른 commit이며 하나로 합치지 않는다. 넣을 실행 시도가 없었으면 처음부터 줄 세운 메시지다.
    */
-  sendMessage: (
+  sendOwnerMessage: (
     organization: OrganizationDetail,
     conversation: Pick<Conversation, "id"> | "new",
     input: Required<SendOwnerMessageInput>
@@ -86,7 +86,7 @@ export function createUserActions({
     completeStored(afterCommit, await stored);
 
   return {
-    async sendMessage(organization, conversation, input) {
+    async sendOwnerMessage(organization, conversation, input) {
       const sent = await complete(
         insertOwnerMessage(
           db,

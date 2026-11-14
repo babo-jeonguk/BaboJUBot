@@ -722,11 +722,10 @@ describe("goal and initial research approval", () => {
     expect(again.status).toBe(409);
   });
 
-  it("applies one of concurrent dashboard and channel decisions once, keeping the requested environment check record as sent", async () => {
+  it("applies one of concurrent dashboard and channel decisions once", async () => {
     const lead = leadRuns(proposeScript);
     t = await startTestServer({ runtime: lead.runtime });
     const { org, approvalId } = await awaitingApproval("두 길 동시 결정");
-    const requested = await approval(org.id, approvalId);
     await t.deliverNotifications();
     const message = fakeChannelMessagesSchema
       .parse(await get("/api/channels/fake/messages"))
@@ -763,12 +762,40 @@ describe("goal and initial research approval", () => {
         .flatMap((r) => r.wakeReasons)
         .filter((r) => r.kind === "approval_decision")
     ).toHaveLength(1);
-    // 요청의 환경 명세(환경 점검 결과 포함)는 어느 길로 결정해도 Lead가 올린 그대로다.
-    const decided = await approval(org.id, approvalId);
-    expect(decided.proposal).toEqual(requested.proposal);
-    if (decided.kind !== "initial_research") throw new Error(decided.kind);
-    expect(decided.proposal.environment).toBe(proposal.environment);
   });
+
+  it.each(["dashboard", "channel"] as const)(
+    "keeps the requested environment check record as sent after approving through the %s",
+    async (via) => {
+      t = await startTestServer({ runtime: leadRuns(proposeScript).runtime });
+      const { org, approvalId } = await awaitingApproval(`${via} 환경 명세`);
+      const requested = await approval(org.id, approvalId);
+      let res;
+      if (via === "dashboard")
+        res = await decide(org.id, approvalId, { decision: "approve" });
+      else {
+        await t.deliverNotifications();
+        const message = fakeChannelMessagesSchema
+          .parse(await get("/api/channels/fake/messages"))
+          .find(
+            (m) => m.kind === "approval_request" && m.sourceId === approvalId
+          )!;
+        res = await t.request(
+          "POST",
+          `/api/channels/fake/messages/${message.id}/reply`,
+          { decision: "approve" }
+        );
+      }
+      expect(res.status).toBe(200);
+      await t.drain();
+      // 요청의 환경 명세(환경 점검 결과 포함)는 결정 뒤에도 Lead가 올린 그대로다. 점검 결과로 승인을 막지 않는다.
+      const decided = await approval(org.id, approvalId);
+      expect(decided.status).toBe("approved");
+      expect(decided.proposal).toEqual(requested.proposal);
+      if (decided.kind !== "initial_research") throw new Error(decided.kind);
+      expect(decided.proposal.environment).toBe(proposal.environment);
+    }
+  );
 
   it("has no setting that skips the initial research approval: the request always waits for the owner", async () => {
     const lead = leadRuns(proposeScript, {

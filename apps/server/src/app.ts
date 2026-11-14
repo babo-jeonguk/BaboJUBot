@@ -135,7 +135,6 @@ import {
   loadHarnessLibrary,
 } from "./harness.ts";
 import { HeartbeatScheduler } from "./heartbeat.ts";
-import { createUserActions } from "./user-actions.ts";
 import { IsolationGate } from "./isolation.ts";
 import { NotificationRelay } from "./notifications.ts";
 import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
@@ -143,6 +142,7 @@ import { createProviderRegistry } from "./providers.ts";
 import { ReadinessMonitor } from "./readiness.ts";
 import { createRunRequestAssembler } from "./run-request.ts";
 import { orgToolsRouter } from "./tools.ts";
+import { createUserActions } from "./user-actions.ts";
 
 /**
  * JSON 요청 본문 크기 상한(바이트). 계약상 가장 큰 본문은 지침 사본 편집(UTF-8 {@link instructionMaxBytes}바이트)과
@@ -774,7 +774,7 @@ export async function startServer({
     if (!input) return;
     respond(
       res,
-      await actions.sendMessage(chat.org, chat.conversation, input),
+      await actions.sendOwnerMessage(chat.org, chat.conversation, input),
       201,
       (sent) => sent.message
     );
@@ -791,7 +791,7 @@ export async function startServer({
     if (!org || !findLead(org.agents)) return refuseOwner(res, "not_found");
     const input = parseInput(res, sendOwnerMessageInputSchema, req.body);
     if (!input) return;
-    respond(res, await actions.sendMessage(org, "new", input), 201);
+    respond(res, await actions.sendOwnerMessage(org, "new", input), 201);
   });
 
   app.get(

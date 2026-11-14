@@ -5,8 +5,8 @@
 ```text
 사용자 HTTP → app.ts parseInput(422) → db 저장 함수(Stored: 값 + commit 뒤 할 일, 또는 거부 이유)
   → server/after-commit.ts completeStored → app.ts respond(거부는 problems.ts ownerRefusalResponses)
-사용자 메시지·승인 결정·결과 검토 → server/user-actions.ts createUserActions(웹·채널 공통: 모델 목록 → db 저장 → commit마다 completeStored 한 번)
-  → 웹은 respond, 채널은 channel-replies.ts가 응답으로 바꿈(commit 뒤 처리를 다시 하지 않음)
+사용자 메시지·승인 결정·결과 검토 → app.ts 경로·channel-replies.ts channelInlet → server/user-actions.ts createUserActions → (승인 결정이면 providers.ts modelsFor) → db 저장
+  → completeStored(commit마다) → app.ts respond·channel-replies.ts 응답
 commit 뒤 할 일(applyAfterCommit) → Event·settings_changed 알리기 → 취소 → 재개한 조직의 깨우기 → 에이전트 촉진 → 프로바이더 자리 촉진
 ```
 

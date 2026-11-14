@@ -23,7 +23,7 @@
 commit 뒤 → NotificationRelay.kick → claimNotifications → channel.deliver(transaction 밖) → settleNotification
 서버 시작 → channel.listen({ inlet: channelInlet })
 가짜 채널 답 → POST /api/channels/fake/messages/:id/reply → createFakeChannel → inlet
-  → findRepliedNotification → user-actions(sendMessage·decideApproval·decideResult, 웹과 같은 길) → fakeChannelResponse
+  → findRepliedNotification → user-actions(sendOwnerMessage·decideApproval·decideResult) → fakeChannelResponse
 Inbox 정리 → PUT /api/organizations/:id/inbox/:kind/:sourceId → updateInboxItem → inbox_item.updated
 ```
 

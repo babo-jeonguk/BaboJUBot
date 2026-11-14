@@ -38,7 +38,7 @@ export function channelInlet({
 }: {
   channel: string;
   db: Database;
-  actions: Pick<UserActions, "sendMessage" | "decideApproval" | "decideResult">;
+  actions: UserActions;
   log?: (line: string) => void;
 }): ChannelInlet {
   const receive = async (
@@ -65,7 +65,7 @@ export function channelInlet({
         );
         if (!organization || !conversation)
           return [notificationId, refused("not_found")];
-        const sent = await actions.sendMessage(
+        const sent = await actions.sendOwnerMessage(
           organization,
           conversation,
           parsed.input
