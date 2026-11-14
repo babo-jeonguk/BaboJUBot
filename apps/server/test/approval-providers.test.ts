@@ -359,7 +359,8 @@ async function leadSession(name: string) {
       {
         ...fake2!,
         listModels: async () => {
-          await fake2Hold?.wait(new AbortController().signal);
+          // 테스트가 gate를 열지 못하고 끝나도 목록 받기는 시한 뒤에 멈춤을 푼다.
+          await fake2Hold?.wait(AbortSignal.timeout(10_000));
           return fake2Models;
         },
       },
@@ -664,13 +665,24 @@ describe("one worker request decided through the dashboard and the channel at on
         decision: "approve",
         choices: [{ provider: "fake-2", model: "fake-2-max" }],
       });
-      await gate.reached;
-      const won = await decideVia(winnerVia, s.org.id, approvalId, {
-        decision: "reject",
-        note: "지금은 아니요",
-      });
+      let won;
+      try {
+        await Promise.race([
+          gate.reached,
+          held.then(() => {
+            throw new Error("the decision did not wait on the model list");
+          }),
+        ]);
+        won = await decideVia(winnerVia, s.org.id, approvalId, {
+          decision: "reject",
+          note: "지금은 아니요",
+        });
+      } finally {
+        // 중간에 실패해도 붙잡은 결정을 풀고 끝까지 받는다. 그 결과는 아래에서 보므로 원래 실패를 가리지 않는다.
+        gate.open();
+        await held.catch(() => {});
+      }
       expect(won.status).toBe(200);
-      gate.open();
       const lost = await held;
       expect([lost.status, lost.body.error?.code]).toEqual([
         409,
