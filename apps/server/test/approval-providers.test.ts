@@ -15,7 +15,7 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import { startTestServer, within, type TestServer } from "./support.ts";
 
 // Lead의 프로바이더·모델 제안과 사용자가 승인하며 바꾼 값(#95). 가짜 연결 둘(`fake`, `fake-2`)로 검증한다.
 
@@ -665,25 +665,34 @@ describe("one worker request decided through the dashboard and the channel at on
         decision: "approve",
         choices: [{ provider: "fake-2", model: "fake-2-max" }],
       });
+      // 결과는 아래에서 시한 안에 받는다. 테스트가 먼저 실패해 서버를 닫으며 끊겨도 처리되지 않은 오류로 남지 않는다.
+      held.catch(() => {});
       let won;
       try {
-        await Promise.race([
-          gate.reached,
-          held.then(() => {
-            throw new Error("the decision did not wait on the model list");
+        await within(
+          Promise.race([
+            gate.reached,
+            held.then(() => {
+              throw new Error("the decision did not wait on the model list");
+            }),
+          ]),
+          "the first decision reaching the model list"
+        );
+        won = await within(
+          decideVia(winnerVia, s.org.id, approvalId, {
+            decision: "reject",
+            note: "지금은 아니요",
           }),
-        ]);
-        won = await decideVia(winnerVia, s.org.id, approvalId, {
-          decision: "reject",
-          note: "지금은 아니요",
-        });
+          "the other decision while the first is held"
+        );
       } finally {
-        // 중간에 실패해도 붙잡은 결정을 풀고 끝까지 받는다. 그 결과는 아래에서 보므로 원래 실패를 가리지 않는다.
         gate.open();
-        await held.catch(() => {});
       }
       expect(won.status).toBe(200);
-      const lost = await held;
+      const lost = await within(
+        held,
+        "the held decision after the gate opened"
+      );
       expect([lost.status, lost.body.error?.code]).toEqual([
         409,
         "already_decided",

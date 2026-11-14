@@ -7,6 +7,7 @@ import {
 } from "@babojubot/db/testing";
 import { afterEach, expect, it, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
+import { within } from "./support.ts";
 
 // 조직을 만든 직후의 폴더 준비와 실행 시도 준비가 겹칠 수 있다. 겹쳤다고 표식이 없는 것으로 보면 멀쩡한 실행이 실패한다.
 // 첫 준비가 기록을 확인하는 동안 다른 준비가 표식을 쓰고 기록까지 남기는 순간을 만든다.
@@ -58,24 +59,6 @@ afterEach(async () => {
   hold.reset();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
-
-/** 막힌 순서를 시한 안에 그 이름으로 알린다. 테스트 전체 시한까지 기다리지 않는다. */
-async function within<T>(work: Promise<T>, what: string, ms = 10_000) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${what} did not finish in ${ms}ms`)),
-          ms
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 it.each([
   ["reaches the check at once", 0],
