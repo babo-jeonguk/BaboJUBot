@@ -6,29 +6,24 @@ import {
   type ChannelInlet,
   type ChannelReply,
   type ChannelReplyResult,
-  type Conversation,
-  type ConversationMessage,
   type DecideApprovalInput,
   type DecideResultInput,
   type NotificationKind,
-  type OrganizationDetail,
   type SendOwnerMessageInput,
 } from "@babojubot/contracts";
 import {
-  decideApproval,
-  decideResult,
   findConversation,
   findOrganization,
   findRepliedNotification,
   refused,
   type Database,
-  type Stored,
 } from "@babojubot/db";
-import type { RecordSource } from "@babojubot/core";
 import type { Outcome } from "./after-commit.ts";
+import type { UserActions } from "./user-actions.ts";
 
 /**
- * 채널 하나의 받는 입구. 답한 알림을 찾아 그 알림의 조직·원본에만 대시보드와 같은 저장 → commit 뒤 할 일을 한다.
+ * 채널 하나의 받는 입구. 답한 알림을 찾아 그 알림의 조직·원본에만 대시보드와 같은 사용자 행동({@link UserActions})을 하고 그 결과를
+ * 답으로 바꾼다. commit 뒤 처리는 사용자 행동이 이미 마쳤으므로 여기서 다시 하지 않는다.
  * Lead 메시지 알림의 글 답장은 그 메시지가 있는 대화에 사용자 메시지로, 승인 요청·결과 제출 알림의 결정은 그 원본의 결정으로 들어간다.
  * 알림 종류에 맞지 않는 답·알림을 가리키지 않는 답은 `reply_not_allowed`, 모르는 알림은 `not_found`이며 아무것도 남기지 않는다.
  * 끝난 조직의 거부(`organization_closed`)와 이미 한 결정의 거부는 대시보드와 같은 저장 규칙이 조직 잠금 아래에서 한다.
@@ -38,22 +33,12 @@ import type { Outcome } from "./after-commit.ts";
 export function channelInlet({
   channel,
   db,
-  source,
-  complete,
-  sendOwnerMessage,
+  actions,
   log = (line) => console.info(line),
 }: {
   channel: string;
   db: Database;
-  source: RecordSource;
-  complete: <T, R extends string>(
-    result: Promise<Stored<T, R>>
-  ) => Promise<Outcome<T, R>>;
-  sendOwnerMessage: (
-    organization: OrganizationDetail,
-    conversation: Pick<Conversation, "id">,
-    input: Required<SendOwnerMessageInput>
-  ) => Promise<Outcome<{ message: ConversationMessage }, string>>;
+  actions: UserActions;
   log?: (line: string) => void;
 }): ChannelInlet {
   const receive = async (
@@ -80,7 +65,7 @@ export function channelInlet({
         );
         if (!organization || !conversation)
           return [notificationId, refused("not_found")];
-        const sent = await sendOwnerMessage(
+        const sent = await actions.sendOwnerMessage(
           organization,
           conversation,
           parsed.input
@@ -90,13 +75,17 @@ export function channelInlet({
         break;
       }
       case "approval_request":
-        outcome = await complete(
-          decideApproval(db, organizationId, sourceId, parsed.input, source)
+        outcome = await actions.decideApproval(
+          organizationId,
+          sourceId,
+          parsed.input
         );
         break;
       case "result_submission":
-        outcome = await complete(
-          decideResult(db, organizationId, sourceId, parsed.input, source)
+        outcome = await actions.decideResult(
+          organizationId,
+          sourceId,
+          parsed.input
         );
         break;
     }

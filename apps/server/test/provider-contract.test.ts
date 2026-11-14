@@ -1,6 +1,7 @@
 import {
   conversationMessageListSchema,
   conversationMessageSchema,
+  fakeChannelMessagesSchema,
   organizationDetailSchema,
   providerCatalogSchema,
   providerSettingsSchema,
@@ -189,6 +190,58 @@ describe("steering into the running run", () => {
     await t!.drain();
     expect(received().at(-1)).toEqual(["끼워 넣기 거절"]);
   });
+
+  it.each(["accepted", "rejected"] as const)(
+    "takes a channel reply to a Lead message the same way when the provider's steer is %s",
+    async (steerOutcome) => {
+      const { agents } = await serverWith({ fake: { steerOutcome } });
+      const org = await createOrganization("채널 끼워 넣기 조직");
+      agents.queue(org.lead.id, leadReplyScript);
+      await send(org.id, "안녕하세요");
+      await t!.drain();
+      await t!.deliverNotifications();
+      const message = fakeChannelMessagesSchema
+        .parse(await get("/api/channels/fake/messages"))
+        .find((m) => m.organizationId === org.id && m.kind === "lead_message")!;
+      const gate = createGate();
+      agents.queue(org.lead.id, holding(gate));
+      await send(org.id, "긴 일을 시작해 주세요");
+      await gate.reached;
+      const running = (await runsOf(org.id)).find(
+        (r) => r.status === "running"
+      )!;
+
+      const replied = await t!.request(
+        "POST",
+        `/api/channels/fake/messages/${message.id}/reply`,
+        { body: "이 방향으로 가 주세요", delivery: "steer" }
+      );
+      expect(replied.status).toBe(201);
+      expect(conversationMessageSchema.parse(replied.body)).toMatchObject(
+        steerOutcome === "accepted"
+          ? {
+              conversationId: org.conversationId,
+              delivery: "steer",
+              deliveredToRunId: running.id,
+            }
+          : {
+              conversationId: org.conversationId,
+              delivery: "next_run",
+              deliveredToRunId: null,
+            }
+      );
+
+      gate.open();
+      await t!.drain();
+      // 받은 메시지는 다음 실행 시도에 다시 가지 않고, 거절된 메시지는 다음 실행 시도가 받는다.
+      expect(
+        agents
+          .of(org.lead.id)
+          .flatMap((r) => bodies(r.request.wakeReasons))
+          .filter((b) => b === "이 방향으로 가 주세요")
+      ).toHaveLength(steerOutcome === "accepted" ? 0 : 1);
+    }
+  );
 
   it("queues directly on a provider that cannot steer, which says so in its capabilities", async () => {
     const { org, gate, queue } = await heldLead("fake-2", {

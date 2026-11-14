@@ -595,6 +595,68 @@ describe("channel replies", () => {
     });
   });
 
+  it("settles concurrent dashboard and channel decisions on a result submission once", async () => {
+    const agents = scriptedAgents();
+    t = await startTestServer({ runtime: agents.runtime });
+    const org = await researching(agents, "결과 동시 결정 조직");
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "create_task",
+        input: { title: "오류 분류", assigneeAgentId: org.workers[0]!.id },
+      })
+    );
+    await say(org.id, "작업을 맡겨 주세요");
+    await t.drain();
+    const [task] = await tasksOf(org.id);
+    const [artifact] = (await taskDetail(org.id, task!.id)).artifacts;
+    agents.queue(
+      org.lead.id,
+      calls({
+        tool: "submit_result",
+        input: { summary: "오류 유형 세 가지", artifactIds: [artifact!.id] },
+      })
+    );
+    await say(org.id, "결과를 정리해 주세요");
+    await t.drain();
+    await t.deliverNotifications();
+    const message = (await channelOf(org.id)).find(
+      (m) => m.kind === "result_submission"
+    )!;
+    const decideOnDashboard = (body: unknown) =>
+      t!.request(
+        "POST",
+        `/api/organizations/${org.id}/results/${message.sourceId}/decision`,
+        body
+      );
+    const leadRuns = agents.of(org.lead.id).length;
+
+    const results = await Promise.all([
+      decideOnDashboard({ decision: "complete" }),
+      reply(message.id, { decision: "request_changes", note: "보강" }),
+      reply(message.id, { decision: "complete" }),
+      decideOnDashboard({ decision: "request_changes", note: "다시" }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409, 409, 409]);
+    for (const r of results.filter((r) => r.status === 409))
+      expect(r.body).toEqual({ error: { code: "already_decided" } });
+    await t.drain();
+
+    const winner = results.find((r) => r.status === 200)!.body as {
+      status: string;
+    };
+    expect(
+      (await eventsOf(org.id)).filter((e) => e.type === "result.decided")
+    ).toHaveLength(1);
+    // 최종 완료면 조직이 끝나 Lead가 깨지 않고, 수정 요청이면 Lead가 한 번 깬다.
+    expect((await organization(org.id)).stage).toBe(
+      winner.status === "completed" ? "completed" : "researching"
+    );
+    expect(agents.of(org.lead.id).length - leadRuns).toBe(
+      winner.status === "completed" ? 0 : 1
+    );
+  });
+
   it("refuses replies to failed runs, text replies to approval requests and replies in a closed organization, leaving nothing behind", async () => {
     const agents = scriptedAgents();
     t = await startTestServer({ runtime: agents.runtime });

@@ -5,6 +5,7 @@ import {
   approvalSchema,
   approvalSummaryListSchema,
   eventListSchema,
+  fakeChannelMessagesSchema,
   flowTemplateCopySchema,
   inboxSchema,
   needsAttention,
@@ -720,6 +721,81 @@ describe("goal and initial research approval", () => {
     });
     expect(again.status).toBe(409);
   });
+
+  it("applies one of concurrent dashboard and channel decisions once", async () => {
+    const lead = leadRuns(proposeScript);
+    t = await startTestServer({ runtime: lead.runtime });
+    const { org, approvalId } = await awaitingApproval("두 길 동시 결정");
+    await t.deliverNotifications();
+    const message = fakeChannelMessagesSchema
+      .parse(await get("/api/channels/fake/messages"))
+      .find((m) => m.kind === "approval_request" && m.sourceId === approvalId)!;
+    const reply = (body: Record<string, unknown>) =>
+      t!.request(
+        "POST",
+        `/api/channels/fake/messages/${message.id}/reply`,
+        body
+      );
+
+    const results = await Promise.all([
+      decide(org.id, approvalId, { decision: "approve" }),
+      reply({ decision: "reject", note: "아니오" }),
+      decide(org.id, approvalId, { decision: "request_changes", note: "수정" }),
+      reply({ decision: "approve" }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409, 409, 409]);
+    for (const r of results.filter((r) => r.status === 409))
+      expect(r.body).toEqual({ error: { code: "already_decided" } });
+    await t.drain();
+
+    const winner = approvalSchema.parse(
+      results.find((r) => r.status === 200)!.body
+    );
+    expect(
+      (await events(org.id)).filter((e) => e.type === "approval.decided")
+    ).toHaveLength(1);
+    expect(
+      (await organization(org.id)).agents.filter((a) => a.role === "worker")
+    ).toHaveLength(winner.status === "approved" ? 2 : 0);
+    expect(
+      lead.requests
+        .flatMap((r) => r.wakeReasons)
+        .filter((r) => r.kind === "approval_decision")
+    ).toHaveLength(1);
+  });
+
+  it.each(["dashboard", "channel"] as const)(
+    "keeps the requested environment check record as sent after approving through the %s",
+    async (via) => {
+      t = await startTestServer({ runtime: leadRuns(proposeScript).runtime });
+      const { org, approvalId } = await awaitingApproval(`${via} 환경 명세`);
+      const requested = await approval(org.id, approvalId);
+      let res;
+      if (via === "dashboard")
+        res = await decide(org.id, approvalId, { decision: "approve" });
+      else {
+        await t.deliverNotifications();
+        const message = fakeChannelMessagesSchema
+          .parse(await get("/api/channels/fake/messages"))
+          .find(
+            (m) => m.kind === "approval_request" && m.sourceId === approvalId
+          )!;
+        res = await t.request(
+          "POST",
+          `/api/channels/fake/messages/${message.id}/reply`,
+          { decision: "approve" }
+        );
+      }
+      expect(res.status).toBe(200);
+      await t.drain();
+      // 요청의 환경 명세(환경 점검 결과 포함)는 결정 뒤에도 Lead가 올린 그대로다. 점검 결과로 승인을 막지 않는다.
+      const decided = await approval(org.id, approvalId);
+      expect(decided.status).toBe("approved");
+      expect(decided.proposal).toEqual(requested.proposal);
+      if (decided.kind !== "initial_research") throw new Error(decided.kind);
+      expect(decided.proposal.environment).toBe(proposal.environment);
+    }
+  );
 
   it("has no setting that skips the initial research approval: the request always waits for the owner", async () => {
     const lead = leadRuns(proposeScript, {

@@ -1,12 +1,13 @@
 import {
   approvalSchema,
+  fakeChannelMessagesSchema,
   organizationDetailSchema,
   orgTools,
   providerCatalogSchema,
   type Approval,
 } from "@babojubot/contracts";
 import { createFakeProviders, type Script } from "@babojubot/runtime";
-import { createGate } from "@babojubot/runtime/testing";
+import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   idle,
@@ -14,7 +15,7 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import { startTestServer, within, type TestServer } from "./support.ts";
 
 // Lead의 프로바이더·모델 제안과 사용자가 승인하며 바꾼 값(#95). 가짜 연결 둘(`fake`, `fake-2`)로 검증한다.
 
@@ -46,6 +47,26 @@ const decide = (orgId: string, approvalId: string, body: unknown) =>
     `/api/organizations/${orgId}/approvals/${approvalId}/decision`,
     body
   );
+/** 대시보드 결정 명령 또는 가짜 채널에 보낸 승인 요청 알림에 단 결정 답. 두 길은 같은 응답 코드·본문으로 답한다. */
+type Via = "dashboard" | "channel";
+const decideVia = async (
+  via: Via,
+  orgId: string,
+  approvalId: string,
+  body: unknown
+) => {
+  if (via === "dashboard") return decide(orgId, approvalId, body);
+  await t!.deliverNotifications();
+  const message = fakeChannelMessagesSchema
+    .parse(await get("/api/channels/fake/messages"))
+    .find((m) => m.kind === "approval_request" && m.sourceId === approvalId);
+  if (!message) throw new Error(`no channel message for ${approvalId}`);
+  return t!.request(
+    "POST",
+    `/api/channels/fake/messages/${message.id}/reply`,
+    body
+  );
+};
 const choiceOf = ({
   provider,
   model,
@@ -322,6 +343,7 @@ async function leadSession(name: string) {
     { id: "fake-2-mini", label: "미니" },
     { id: "fake-2-max", label: "맥스" },
   ];
+  let fake2Hold: Gate | undefined;
   const [fake, fake2] = createFakeProviders(2, {
     adapter: () => ({
       ...agents.runtime,
@@ -332,7 +354,17 @@ async function leadSession(name: string) {
     }),
   });
   t = await startTestServer({
-    providers: [fake!, { ...fake2!, listModels: async () => fake2Models }],
+    providers: [
+      fake!,
+      {
+        ...fake2!,
+        listModels: async () => {
+          // 테스트가 gate를 열지 못하고 끝나도 목록 받기는 시한 뒤에 멈춤을 푼다.
+          await fake2Hold?.wait(AbortSignal.timeout(10_000));
+          return fake2Models;
+        },
+      },
+    ],
   });
   const org = await researching(agents, name);
   const gate = createGate();
@@ -342,6 +374,7 @@ async function leadSession(name: string) {
   const token = tokens.get(org.lead.id)!;
   return {
     org,
+    agents,
     tool: (method: string, path: string, body?: unknown) =>
       t!.tool(token, method, path, body),
     addWorker: (body: unknown, key?: string) =>
@@ -352,6 +385,11 @@ async function leadSession(name: string) {
     /** `fake-2`의 모델 목록에서 이 모델을 뺀다. */
     dropFake2Model(id: string) {
       fake2Models = fake2Models.filter((m) => m.id !== id);
+    },
+    /** 이제부터 `fake-2`의 모델 목록을 받아 오는 일을 돌려준 gate가 열릴 때까지 멈춘다. */
+    holdFake2Models() {
+      fake2Hold = createGate();
+      return fake2Hold;
     },
     async finish() {
       agents.queue(org.lead.id, idle, idle);
@@ -495,4 +533,190 @@ describe("Lead provider proposals when adding a worker", () => {
       )
     ).toBe(true);
   });
+});
+
+describe.each<Via>(["dashboard", "channel"])(
+  "worker provider and model choices decided through the %s",
+  (via) => {
+    it("hires with a valid choice that differs from the Lead's proposal, refuses unknown and mismatched choices the same way, and answers a repeat as already decided", async () => {
+      const agents = await leadProposes(
+        proposing([
+          {
+            role: "researcher",
+            count: 2,
+            provider: "fake-2",
+            model: "fake-2-mini",
+          },
+        ])
+      );
+      const org = await create(`${via} 선택 조직`);
+      const lead = org.agents.find((a) => a.role === "lead")!;
+      const [pending] = await pendingOf(org.id);
+      const kept = { provider: "fake-2", model: "fake-2-mini" };
+      const changed = { provider: "fake", model: "fake-max" };
+
+      for (const [body, code] of [
+        [{ decision: "approve", choices: [changed] }, "invalid_input"],
+        [
+          {
+            decision: "approve",
+            choices: [kept, { provider: "nope", model: null }],
+          },
+          "unknown_provider",
+        ],
+        [
+          {
+            decision: "approve",
+            choices: [kept, { provider: "fake", model: "fake-2-max" }],
+          },
+          "unknown_model",
+        ],
+      ] as const) {
+        const res = await decideVia(via, org.id, pending!.id, body);
+        expect(
+          [res.status, res.body.error?.code],
+          JSON.stringify(body)
+        ).toEqual([422, code]);
+      }
+      expect((await approval(org.id, pending!.id)).status).toBe("pending");
+      expect(await workersOf(org.id)).toEqual([]);
+
+      agents.queue(lead.id, idle);
+      const res = await decideVia(via, org.id, pending!.id, {
+        decision: "approve",
+        choices: [kept, changed],
+      });
+      expect(res.status).toBe(200);
+      await t!.drain();
+      const workers = await workersOf(org.id);
+      expect(workers.map(choiceOf)).toEqual([kept, changed]);
+      expect((await approval(org.id, pending!.id)).decidedWorkers).toEqual(
+        workers.map((w) => ({ agentId: w.id, ...choiceOf(w) }))
+      );
+      expect((await organization(org.id)).stage).toBe("researching");
+
+      // 결정한 뒤 목록이 바뀌어도 이미 결정한 요청이라는 판정이 먼저다. 작업자·Event가 더 생기지 않는다.
+      agents.dropFake2Model("fake-2-mini");
+      const again = await decideVia(via, org.id, pending!.id, {
+        decision: "approve",
+        choices: [kept, { provider: "fake-2", model: "fake-2-gone" }],
+      });
+      expect([again.status, again.body.error?.code]).toEqual([
+        409,
+        "already_decided",
+      ]);
+      await t!.drain();
+      expect(await workersOf(org.id)).toHaveLength(2);
+      expect(
+        (await eventsOf(org.id)).filter((e) => e.type === "approval.decided")
+      ).toHaveLength(1);
+    });
+
+    it("adds a worker on a provider the Owner chose instead of the Lead's proposal", async () => {
+      const s = await leadSession(`${via} 작업자 추가 선택 조직`);
+      await t!.request(
+        "PUT",
+        `/api/organizations/${s.org.id}/approval-policy`,
+        { addWorker: true }
+      );
+      const res = await s.addWorker({ role: "researcher", provider: "fake" });
+      const approvalId = res.body.approval.id as string;
+      await s.finish();
+
+      expect(
+        (
+          await decideVia(via, s.org.id, approvalId, {
+            decision: "approve",
+            choices: [{ provider: "fake-2", model: "fake-2-max" }],
+          })
+        ).status
+      ).toBe(200);
+      await t!.drain();
+      expect(choiceOf((await workersOf(s.org.id)).at(-1)!)).toEqual({
+        provider: "fake-2",
+        model: "fake-2-max",
+      });
+      expect((await organization(s.org.id)).stage).toBe("researching");
+    });
+  }
+);
+
+describe("one worker request decided through the dashboard and the channel at once", () => {
+  it.each([
+    ["channel", "dashboard"],
+    ["dashboard", "channel"],
+  ] as const)(
+    "settles it once: a decision through the %s held on the model list loses to one through the %s",
+    async (heldVia, winnerVia) => {
+      const s = await leadSession(`${heldVia} 대기 작업자 결정 조직`);
+      await t!.request(
+        "PUT",
+        `/api/organizations/${s.org.id}/approval-policy`,
+        { addWorker: true }
+      );
+      const res = await s.addWorker({ role: "researcher" });
+      const approvalId = res.body.approval.id as string;
+      await s.finish();
+      const workers = (await workersOf(s.org.id)).length;
+
+      // 먼저 보낸 결정은 조직 잠금 밖에서 모델 목록을 받다가 멈추고, 그사이 다른 길의 결정이 확정된다.
+      const gate = s.holdFake2Models();
+      const held = decideVia(heldVia, s.org.id, approvalId, {
+        decision: "approve",
+        choices: [{ provider: "fake-2", model: "fake-2-max" }],
+      });
+      // 결과는 아래에서 시한 안에 받는다. 테스트가 먼저 실패해 서버를 닫으며 끊겨도 처리되지 않은 오류로 남지 않는다.
+      held.catch(() => {});
+      let won;
+      try {
+        await within(
+          Promise.race([
+            gate.reached,
+            held.then(() => {
+              throw new Error("the decision did not wait on the model list");
+            }),
+          ]),
+          "the first decision reaching the model list"
+        );
+        won = await within(
+          decideVia(winnerVia, s.org.id, approvalId, {
+            decision: "reject",
+            note: "지금은 아니요",
+          }),
+          "the other decision while the first is held"
+        );
+      } finally {
+        gate.open();
+      }
+      expect(won.status).toBe(200);
+      const lost = await within(
+        held,
+        "the held decision after the gate opened"
+      );
+      expect([lost.status, lost.body.error?.code]).toEqual([
+        409,
+        "already_decided",
+      ]);
+      await t!.drain();
+
+      expect((await approval(s.org.id, approvalId)).status).toBe("rejected");
+      expect(await workersOf(s.org.id)).toHaveLength(workers);
+      expect(
+        (await eventsOf(s.org.id)).filter(
+          (e) =>
+            e.type === "approval.decided" && e.payload.approvalId === approvalId
+        )
+      ).toHaveLength(1);
+      expect(
+        s.agents
+          .of(s.org.lead.id)
+          .flatMap((r) => r.request.wakeReasons)
+          .filter(
+            (r) =>
+              r.kind === "approval_decision" && r.approvalKind === "add_worker"
+          )
+          .map((r) => r.kind === "approval_decision" && r.decision)
+      ).toEqual(["reject"]);
+    }
+  );
 });
