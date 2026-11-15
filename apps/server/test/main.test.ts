@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
 
@@ -42,12 +42,14 @@ const stopRequests = [
   },
 ];
 
+// 외부 DB는 시험마다 새로 만든다. 같이 쓰면 앞 시험이 남긴 일(예: 조직 생성의 Lead 깨우기)을 뒤 시험의 서버가 이어받아
+// 그 시험의 결과가 실행 순서에 달린다.
 let external: TestDatabase;
-beforeAll(async () => {
+beforeEach(async () => {
   external = await createTestDatabase();
 });
-afterAll(async () => {
-  await external?.close();
+afterEach(async () => {
+  await external.close();
 });
 
 it("starts against an external Postgres URL and leaves that Postgres running on shutdown", async () => {
