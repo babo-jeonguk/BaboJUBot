@@ -100,7 +100,8 @@ describe("closeStarted", () => {
     ]);
   });
 
-  // 정리 시한이 지나면 진입점이 어디서 멈췄는지 알린다. 서버를 닫는 중이면 서버가 알리는 진행(예: 기다리는 요청)을 붙인다.
+  // 정리 시한이 지나면 진입점이 어디서 멈췄는지 알린다. 서버·DB가 알리는 진행(예: 기다리는 요청, Postgres 정지)과
+  // 지금 단계에 머문 시간, 앞 단계마다 걸린 시간을 붙인다.
   it("names the step it is on while closing", async () => {
     const { report } = reporter();
     let where = () => "";
@@ -124,19 +125,26 @@ describe("closeStarted", () => {
       report,
       (describe) => (where = describe)
     );
-    expect(where()).toBe("the start");
+    expect(where()).toMatch(/^the start for \d+\.\ds$/);
     startup({
       server: {
         close: () => (serverClosing(), serverClosed),
         progress: () => "waiting for requests: GET /api/inbox",
       },
-      handle: { close: () => (databaseClosing(), databaseClosed) },
+      handle: {
+        close: () => (databaseClosing(), databaseClosed),
+        progress: () => "stopping Postgres (fast)",
+      },
     });
     await atServer;
-    expect(where()).toBe("the server (waiting for requests: GET /api/inbox)");
+    expect(where()).toMatch(
+      /^the server \(waiting for requests: GET \/api\/inbox\) for \d+\.\ds, after the start \d+\.\ds$/
+    );
     releaseServer();
     await atDatabase;
-    expect(where()).toBe("the database");
+    expect(where()).toMatch(
+      /^the database \(stopping Postgres \(fast\)\) for \d+\.\ds, after the start \d+\.\ds, the server \d+\.\ds$/
+    );
     releaseDatabase();
     expect(await closing).toBe(true);
   });

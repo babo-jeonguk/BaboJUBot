@@ -48,8 +48,15 @@ type Lease = { generation: number; previous: Owner | undefined };
 /** 이 프로세스가 켠 postgres. `identity`는 OS가 매긴 프로세스 생성 신원이다(`processIdentity`). */
 type Started = { pid: number; identity: string | undefined };
 
-/** 켠 embedded cluster. `port`는 Postgres가 실제로 듣는 port다. `stop`이 돌아오면 postgres는 끝났다. */
-export type EmbeddedCluster = { port: number; stop: () => Promise<void> };
+/**
+ * 켠 embedded cluster. `port`는 Postgres가 실제로 듣는 port다. `stop`이 돌아오면 postgres는 끝났다.
+ * `stopping`은 `stop`이 지금 하는 일이다(정리 시한이 지났을 때의 안내).
+ */
+export type EmbeddedCluster = {
+  port: number;
+  stop: () => Promise<void>;
+  stopping: () => string;
+};
 
 /**
  * embedded cluster를 띄우고, Postgres가 실제로 듣는 port와 멈추는 함수를 돌려준다(`EmbeddedCluster`).
@@ -87,15 +94,27 @@ export async function startEmbeddedCluster(
   // `exit`에서는 동기 작업만 할 수 있다. 켜는 중에 끝나면 보내지 않는다. 그 postgres는 이 프로세스를 주인으로 기록하고 있어
   // 다음 시작이 멈춘다.
   let started: Started | undefined;
+  let stopPhase = "not stopping";
   const stopOnExit = () => {
     if (started) stopNow(pgCtl, dataDir, started, emergencyBudgetMs);
   };
   // 비상 정지는 정지가 끝난 뒤에야 내려놓는다.
   const stop = async () => {
-    await stopCluster(pgCtl, dataDir, stopSeconds, !persistent);
+    stopPhase = "stopping Postgres";
+    await stopCluster(
+      pgCtl,
+      dataDir,
+      stopSeconds,
+      !persistent,
+      (mode) => (stopPhase = `stopping Postgres (${mode})`)
+    );
     process.off("exit", stopOnExit);
     if (persistent) releaseOwner(dataDir, lease);
-    else await removeTemporary(dataDir);
+    else {
+      stopPhase = "removing its temporary folder";
+      await removeTemporary(dataDir);
+    }
+    stopPhase = "stopped";
   };
   process.on("exit", stopOnExit);
   const log = path.join(dataDir, logName);
@@ -135,7 +154,7 @@ export async function startEmbeddedCluster(
             pid: running.pid,
             identity: processIdentity(running.pid),
           };
-        return { port: chosen, stop };
+        return { port: chosen, stop, stopping: () => stopPhase };
       }
       const tail = await logTail(log);
       if (
@@ -211,15 +230,20 @@ async function stopLeftover(
   await stopCluster(pgCtl, dataDir, leftoverStopSeconds, !persistent);
 }
 
-/** 정상 정지를 기다린다. 시한 안에 멈추지 않으면 `escalate`일 때 즉시 정지까지 하고, 그래도 돌면 끄는 방법과 함께 실패한다. */
+/**
+ * 정상 정지를 기다린다. 시한 안에 멈추지 않으면 `escalate`일 때 즉시 정지까지 하고, 그래도 돌면 끄는 방법과 함께 실패한다.
+ * 정지 방식을 바꿀 때마다 `onMode`로 알린다.
+ */
 async function stopCluster(
   pgCtl: string,
   dataDir: string,
   seconds: number,
-  escalate: boolean
+  escalate: boolean,
+  onMode: (mode: string) => void = () => {}
 ) {
   for (const mode of escalate ? ["fast", "immediate"] : ["fast"]) {
     if (!(await isRunning(pgCtl, dataDir))) return;
+    onMode(mode);
     await run(pgCtl, [
       "stop",
       "-D",

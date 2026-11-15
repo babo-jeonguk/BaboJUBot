@@ -19,6 +19,41 @@ import { candidatePort } from "./ports.ts";
 import { createTestDatabase } from "./testing.ts";
 
 describe("embedded Postgres lifetime", () => {
+  // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
+  it("reports what closing is doing, from the connections to stopping Postgres", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    try {
+      const handle = await openDatabase({
+        embedded: { dataDir, persistent: false },
+      });
+      expect(handle.progress()).toBe("open");
+      const seen = new Set<string>();
+      let closed = false;
+      const closing = handle.close().finally(() => (closed = true));
+      while (!closed) {
+        seen.add(handle.progress());
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await closing;
+      expect(handle.progress()).toBe("closed");
+      expect(seen).toContain("stopping Postgres (fast)");
+      expect(
+        [...seen].filter(
+          (step) =>
+            ![
+              "closing connections",
+              "stopping Postgres",
+              "stopping Postgres (fast)",
+              "removing its temporary folder",
+              "stopped",
+            ].includes(step)
+        )
+      ).toEqual([]);
+    } finally {
+      await removeCluster(dataDir);
+    }
+  }, 60_000);
+
   it("closes and removes a non-persistent dataDir after Postgres died on its own", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     let handle: Awaited<ReturnType<typeof openDatabase>> | undefined;
