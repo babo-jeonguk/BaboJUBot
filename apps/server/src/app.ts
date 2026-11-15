@@ -248,8 +248,9 @@ export async function startServer({
   const hub = new EventHub();
   // 조직 도구만 담은 앱. 라우터는 dispatcher·압축을 만든 뒤에 건다. 전용 listener는 처음 필요할 때 연다.
   const toolsApp = express();
-  /** 두 앱의 처리기와 Event stream 연결 확인 중 아직 끝나지 않은 것. */
+  /** 두 앱의 처리기, Event stream 연결 확인, 격리 중계가 시작한 DB 작업 중 아직 끝나지 않은 것. */
   const inFlight = new InFlight();
+  trackHandlers(toolsApp, inFlight);
   /** 인증 중계 실패 알림의 해제. 서버를 끌 때 푼다. */
   const stopRelayWatch: (() => void)[] = [];
   const connectionOf = (id: string) =>
@@ -335,6 +336,7 @@ export async function startServer({
   });
 
   const app = express();
+  trackHandlers(app, inFlight);
   app.use(express.json({ limit: jsonBodyLimitBytes }));
   const compactionTools = compactions.router();
   const { router: organizationTools, settle: settleIntent } = orgToolsRouter({
@@ -376,12 +378,17 @@ export async function startServer({
   const stopRevalidating = relay
     ? hub.subscribe({ kind: "all" }, (event) => {
         if (event.type.startsWith("run.")) return;
-        void relay.revalidate(event.organizationId).catch(() => {});
+        void inFlight
+          .track(() => relay.revalidate(event.organizationId))
+          .catch(() => {});
       })
     : () => {};
   relay?.attach({
-    research: async (identity) =>
-      (await loadResearchDestinations(db, identity.organizationId)) ?? [],
+    research: (identity) =>
+      inFlight.track(
+        async () =>
+          (await loadResearchDestinations(db, identity.organizationId)) ?? []
+      ),
     tools: toolsApp,
     protectedPorts,
     refused: (identity, { host, port, reason }) => {
@@ -394,19 +401,21 @@ export async function startServer({
       const key = `${target} ${reason}`;
       if (seen.has(key) || seen.size >= 50) return;
       seen.add(key);
-      void appendRunActivity(db, runId, {
-        source: "runtime",
-        activity: {
-          type: "progress",
-          text: `외부 연결 거부: ${target}. ${egressRefusalMessages[reason]}`,
-        },
-      })
-        .then((event) => {
-          // 끝난 실행 시도에는 남지 않는다. 그때 기록도 지운다.
-          if (!event) return void refusalsSeen.delete(runId);
-          return applyAfterCommit({ hub, dispatcher }, { events: [event] });
+      void inFlight.track(() =>
+        appendRunActivity(db, runId, {
+          source: "runtime",
+          activity: {
+            type: "progress",
+            text: `외부 연결 거부: ${target}. ${egressRefusalMessages[reason]}`,
+          },
         })
-        .catch(() => {});
+          .then((event) => {
+            // 끝난 실행 시도에는 남지 않는다. 그때 기록도 지운다.
+            if (!event) return void refusalsSeen.delete(runId);
+            return applyAfterCommit({ hub, dispatcher }, { events: [event] });
+          })
+          .catch(() => {})
+      );
     },
   });
 
@@ -1177,11 +1186,13 @@ export async function startServer({
   }
 
   app.use(serverErrors);
-  // 경로를 모두 건 뒤 처리기를 센다. 서버를 끌 때 처리 중인 처리기가 끝난 뒤 DB를 닫게 한다.
-  trackHandlers(app, inFlight);
-  trackHandlers(toolsApp, inFlight);
 
   const server = http.createServer(app);
+  /** 끄기를 시작했는가. 그 뒤 받은 요청은 처리하되 응답 뒤 연결을 닫아, 같은 연결로 요청이 이어지지 않게 한다. */
+  let stopping = false;
+  server.prependListener("request", (_req, res) => {
+    if (stopping) res.setHeader("Connection", "close");
+  });
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     void inFlight
@@ -1240,6 +1251,7 @@ export async function startServer({
    * heartbeat가 새 깨우기를 만들지 않게 한 뒤 실행 시도를 끝내고, 그 사이 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
    */
   const stop = async () => {
+    stopping = true;
     // 한 부분을 닫다 실패해도 나머지(특히 포트)는 닫고, 실패는 모두 닫은 뒤에 알린다.
     const failures: unknown[] = [];
     for (const close of [
@@ -1258,9 +1270,9 @@ export async function startServer({
       },
       () => notifications.close(),
       () => channel.close(),
-      // 새 연결을 그만 받고, 처리 중인 처리기가 모두 끝난 뒤 남은 연결을 닫는다. 연결이 아니라 처리기를 기다린다.
+      // 새 연결을 그만 받고, 처리 중인 처리기와 서버가 시작한 DB 작업이 모두 끝난 뒤 남은 연결을 닫는다. 연결이 아니라 처리기를 기다린다.
       // 실행 시도를 멈추면 도구 요청을 보낸 쪽이 먼저 떠나 연결은 없어도 서버 쪽 처리기는 DB를 계속 쓴다.
-      // 처리기가 끝나지 않으면 기다리는 쪽(main의 정리 시한)이 실패로 끝낸다.
+      // 끄는 중에 받은 요청은 응답 뒤 연결을 닫으므로 기다림이 이어지지 않는다. 처리기가 끝나지 않으면 main의 정리 시한이 실패로 끝낸다.
       async () => {
         for (const client of wss.clients) client.terminate();
         wss.close();

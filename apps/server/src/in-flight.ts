@@ -1,7 +1,7 @@
 import type express from "express";
 
 /**
- * 서버가 받은 요청의 처리기가 끝났는지 센다. 서버를 끌 때 DB를 닫기 전에 처리 중인 처리기를 모두 기다리는 데 쓴다.
+ * 서버가 받은 요청의 처리기와 서버가 기다리지 않고 시작한 DB 작업이 끝났는지 센다. 서버를 끌 때 DB를 닫기 전에 모두 기다리는 데 쓴다.
  * 연결이 아니라 처리기를 센다. 실행 시도가 멈춰 요청을 보낸 쪽이 먼저 떠나도 서버 쪽 처리기는 계속 돌며 DB를 쓰기 때문이다.
  */
 export class InFlight {
@@ -44,22 +44,32 @@ type Layer = {
   route?: { stack: Layer[] };
 };
 
+/** 이미 세는 stack. 앱 둘이 같은 router를 달아도 한 번만 센다. 한 stack은 한 InFlight만 센다. */
+const watched = new WeakSet<Layer[]>();
+
 /**
- * 앱에 건 모든 처리기(하위 router와 경로 처리기 포함)를 `inFlight`로 센다. 경로를 모두 건 뒤, 요청을 받기 전에 한 번 부른다.
- * 경로마다 손으로 감싸지 않으므로 새 경로도 빠지지 않는다. 오류 처리기는 인자 4개를 유지해야 Express가 오류 처리기로 알아본다.
+ * 앱에 건 처리기를 모두 `inFlight`로 센다. 지금 걸린 것과 이 뒤에 앱·하위 router·경로에 거는 것 모두다
+ * (채널은 서버가 시작한 뒤 경로를 건다). 앱을 만든 직후 한 번 부른다. 오류 처리기는 인자 4개를 유지해야 Express가 알아본다.
+ * Express 5(router 2)가 층을 각 stack 배열에 `push`로 더하는 것에 기댄다. 판을 올리면 `in-flight.test.ts`가 이것을 확인한다.
+ * `express()` 앱을 하위 앱으로 달면 그 안의 처리기는 세지 못하므로 하위에는 `express.Router()`를 단다.
  */
 export function trackHandlers(app: express.Express, inFlight: InFlight) {
-  const seen = new WeakSet<Layer[]>();
-  const visit = (stack: Layer[]) => {
-    if (seen.has(stack)) return;
-    seen.add(stack);
-    for (const layer of stack) {
-      if (layer.route) visit(layer.route.stack);
-      else if (layer.handle.stack) visit(layer.handle.stack);
-      else layer.handle = wrap(layer.handle, inFlight);
-    }
+  const adopt = (layer: Layer) => {
+    if (layer.route) watch(layer.route.stack);
+    else if (layer.handle.stack) watch(layer.handle.stack);
+    else layer.handle = wrap(layer.handle, inFlight);
   };
-  visit((app.router as unknown as { stack: Layer[] }).stack);
+  const watch = (stack: Layer[]) => {
+    if (watched.has(stack)) return;
+    watched.add(stack);
+    stack.forEach(adopt);
+    const push = stack.push.bind(stack);
+    stack.push = (...layers: Layer[]) => {
+      layers.forEach(adopt);
+      return push(...layers);
+    };
+  };
+  watch((app.router as unknown as { stack: Layer[] }).stack);
 }
 
 function wrap(handle: Layer["handle"], inFlight: InFlight): Layer["handle"] {
