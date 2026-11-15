@@ -122,7 +122,11 @@ async function abandon(
  * 처리기를 멈춰 둔 채 서버를 끈다. HTTP 단계가 시작하면 처리기를 풀고, 그 저장이 열린 DB에서 끝난 뒤에야
  * 끄기가 끝나는지 순서로 본다. 고치기 전의 끄기는 연결만 닫고 곧바로 끝나 저장보다 먼저 끝난다.
  */
-async function stopWhileHeld(t: TestServer, hold: ReturnType<typeof held.arm>) {
+async function stopWhileHeld(
+  t: TestServer,
+  hold: ReturnType<typeof held.arm>,
+  waitingFor: string
+) {
   const stream = await openEventStream(t.baseUrl);
   const errors = vi.spyOn(console, "error");
   const order: string[] = [];
@@ -131,6 +135,10 @@ async function stopWhileHeld(t: TestServer, hold: ReturnType<typeof held.arm>) {
   const stopping = t.stopServer().then(() => order.push("stopped"));
   try {
     await within(stream.closed, "the HTTP step of stopping");
+    // 정리 시한이 지나면 이 값이 무엇을 기다리다 멈췄는지 알린다.
+    await vi.waitFor(() =>
+      expect(t.stopProgress()).toBe(`waiting for requests: ${waitingFor}`)
+    );
   } finally {
     held.releaseAll();
   }
@@ -177,21 +185,21 @@ describe("stopping the server", () => {
     expect(created.status).toBe(201);
     // 생성으로 깨어난 Lead가 맥락을 읽는 도구 요청. 끄기가 실행 시도를 멈추면 요청을 보낸 쪽이 먼저 떠난다.
     await within(read.entered.promise, "the Lead's context read");
-    await stopWhileHeld(t, read);
+    await stopWhileHeld(t, read, "GET /api/tools/run-context");
   });
 
   it("waits for a user request whose client left before closing", async () => {
     t = await startTestServer();
     const list = held.arm("organizations");
     await abandon(t.baseUrl, "/api/organizations", list);
-    await stopWhileHeld(t, list);
+    await stopWhileHeld(t, list, "GET /api/organizations");
   });
 
   it("waits for a channel request registered after the server started", async () => {
     t = await startTestServer();
     const messages = held.arm("channel_messages");
     await abandon(t.baseUrl, "/api/channels/fake/messages", messages);
-    await stopWhileHeld(t, messages);
+    await stopWhileHeld(t, messages, "GET /api/channels/fake/messages");
   });
 
   // 끄기를 시작할 때 처리 중이던 연결은 서버가 바로 닫지 않는다. 그 연결로 끄는 중에 들어온 요청은 처리하되

@@ -55,6 +55,8 @@ export type TestServer = {
   deliverNotifications: () => Promise<void>;
   /** 서버(실행 중인 실행 시도 포함)만 멈추고 DB는 남긴다. */
   stopServer: () => Promise<void>;
+  /** 서버를 끄는 중이면 지금 하는 단계(정리 시한이 지났을 때 알리는 값). */
+  stopProgress: () => string;
   /** 구독 준비(`ready`)까지 기다린 Event stream 연결. `origin`을 주면 브라우저처럼 Origin header를 보낸다. */
   subscribe: (
     scope: StreamScope,
@@ -151,6 +153,7 @@ export async function startTestServer(
     tickHeartbeats: () => server.tickHeartbeats(),
     tickCompactions: () => server.tickCompactions(),
     deliverNotifications: () => server.deliverNotifications(),
+    stopProgress: () => server.progress(),
     async stopServer() {
       serverStopped = true;
       for (const socket of sockets) socket.terminate();
