@@ -5,6 +5,7 @@ import {
 } from "@babojubot/runtime";
 import { CompactionScheduler } from "./compaction.ts";
 import { Workspaces } from "./workspace.ts";
+import { InFlight, trackHandlers } from "./in-flight.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -247,6 +248,8 @@ export async function startServer({
   const hub = new EventHub();
   // 조직 도구만 담은 앱. 라우터는 dispatcher·압축을 만든 뒤에 건다. 전용 listener는 처음 필요할 때 연다.
   const toolsApp = express();
+  /** 두 앱의 처리기와 Event stream 연결 확인 중 아직 끝나지 않은 것. */
+  const inFlight = new InFlight();
   /** 인증 중계 실패 알림의 해제. 서버를 끌 때 푼다. */
   const stopRelayWatch: (() => void)[] = [];
   const connectionOf = (id: string) =>
@@ -1174,14 +1177,19 @@ export async function startServer({
   }
 
   app.use(serverErrors);
+  // 경로를 모두 건 뒤 처리기를 센다. 서버를 끌 때 처리 중인 처리기가 끝난 뒤 DB를 닫게 한다.
+  trackHandlers(app, inFlight);
+  trackHandlers(toolsApp, inFlight);
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
-    void upgrade(req, socket, head).catch((error) => {
-      console.error("[event-stream]", error);
-      refuse(socket, 500);
-    });
+    void inFlight
+      .track(() => upgrade(req, socket, head))
+      .catch((error) => {
+        console.error("[event-stream]", error);
+        refuse(socket, 500);
+      });
   });
 
   async function upgrade(
@@ -1250,11 +1258,18 @@ export async function startServer({
       },
       () => notifications.close(),
       () => channel.close(),
+      // 새 연결을 그만 받고, 처리 중인 처리기가 모두 끝난 뒤 남은 연결을 닫는다. 연결이 아니라 처리기를 기다린다.
+      // 실행 시도를 멈추면 도구 요청을 보낸 쪽이 먼저 떠나 연결은 없어도 서버 쪽 처리기는 DB를 계속 쓴다.
+      // 처리기가 끝나지 않으면 기다리는 쪽(main의 정리 시한)이 실패로 끝낸다.
       async () => {
         for (const client of wss.clients) client.terminate();
         wss.close();
+        const closed = new Promise<void>((resolve) =>
+          server.close(() => resolve())
+        );
+        await inFlight.idle();
         server.closeAllConnections();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await closed;
       },
     ])
       try {
