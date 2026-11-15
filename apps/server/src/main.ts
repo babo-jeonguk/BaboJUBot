@@ -176,15 +176,19 @@ async function start() {
 }
 
 async function shutdown(reason: string) {
+  /** 지금 닫는 것. 정리 시한이 지나면 어디서 멈췄는지 함께 알린다. */
+  let closing = () => "the start";
   // 시한이 지나 끝낼 때도 DB 패키지가 프로세스 종료 때 내장 Postgres에 즉시 정지를 보낸다. 그 몫까지 시한 안에 들게 먼저 끊는다.
   setTimeout(() => {
     console.error(
-      `[server] shutdown after ${reason} did not finish in ${shutdownDeadlineMs / 1000}s`
+      `[server] shutdown after ${reason} did not finish in ${shutdownDeadlineMs / 1000}s while closing ${closing()}`
     );
     process.exit(1);
   }, budget.cleanupMs).unref();
-  const ok = await closeStarted(startup, (message, error) =>
-    console.error(message, error)
+  const ok = await closeStarted(
+    startup,
+    (message, error) => console.error(message, error),
+    (where) => (closing = where)
   );
   process.exit(ok ? 0 : 1);
 }

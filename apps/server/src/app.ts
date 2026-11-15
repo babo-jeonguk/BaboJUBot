@@ -194,6 +194,11 @@ export type RunningServer = {
   /** 주입한 시계의 지금 시각으로 보낼 차례인 알림을 모두 보내 본다. 테스트 helper(서버는 스스로 보낸다). */
   deliverNotifications: () => Promise<void>;
   /**
+   * 끄는 중이면 지금 단계. 처리 중인 요청을 기다리면 `waiting for requests: GET /api/inbox, …`, 아니면 `closing <단계>`다.
+   * 끄기 전에는 `running`, 끝나면 `stopped`. 진입점이 정리 시한을 넘기면 알린다.
+   */
+  progress: () => string;
+  /**
    * 진행 중인 실행 시도를 취소하고 프로바이더가 정리를 끝낸 뒤 서버를 닫는다. DB는 닫지 않는다.
    * 한 부분을 닫다 실패해도 나머지를 닫고, 모두 닫은 뒤 그 실패들을 던진다.
    */
@@ -379,7 +384,10 @@ export async function startServer({
     ? hub.subscribe({ kind: "all" }, (event) => {
         if (event.type.startsWith("run.")) return;
         void inFlight
-          .track(() => relay.revalidate(event.organizationId))
+          .track(
+            () => relay.revalidate(event.organizationId),
+            "isolation relay policy revalidation"
+          )
           .catch(() => {});
       })
     : () => {};
@@ -387,7 +395,8 @@ export async function startServer({
     research: (identity) =>
       inFlight.track(
         async () =>
-          (await loadResearchDestinations(db, identity.organizationId)) ?? []
+          (await loadResearchDestinations(db, identity.organizationId)) ?? [],
+        "isolation relay policy lookup"
       ),
     tools: toolsApp,
     protectedPorts,
@@ -401,20 +410,22 @@ export async function startServer({
       const key = `${target} ${reason}`;
       if (seen.has(key) || seen.size >= 50) return;
       seen.add(key);
-      void inFlight.track(() =>
-        appendRunActivity(db, runId, {
-          source: "runtime",
-          activity: {
-            type: "progress",
-            text: `외부 연결 거부: ${target}. ${egressRefusalMessages[reason]}`,
-          },
-        })
-          .then((event) => {
-            // 끝난 실행 시도에는 남지 않는다. 그때 기록도 지운다.
-            if (!event) return void refusalsSeen.delete(runId);
-            return applyAfterCommit({ hub, dispatcher }, { events: [event] });
+      void inFlight.track(
+        () =>
+          appendRunActivity(db, runId, {
+            source: "runtime",
+            activity: {
+              type: "progress",
+              text: `외부 연결 거부: ${target}. ${egressRefusalMessages[reason]}`,
+            },
           })
-          .catch(() => {})
+            .then((event) => {
+              // 끝난 실행 시도에는 남지 않는다. 그때 기록도 지운다.
+              if (!event) return void refusalsSeen.delete(runId);
+              return applyAfterCommit({ hub, dispatcher }, { events: [event] });
+            })
+            .catch(() => {}),
+        "isolation relay refusal record"
       );
     },
   });
@@ -1196,7 +1207,7 @@ export async function startServer({
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     void inFlight
-      .track(() => upgrade(req, socket, head))
+      .track(() => upgrade(req, socket, head), "event stream connection")
       .catch((error) => {
         console.error("[event-stream]", error);
         refuse(socket, 500);
@@ -1246,6 +1257,8 @@ export async function startServer({
   });
   const address = server.address() as net.AddressInfo;
   url = `http://${host}:${address.port}`;
+  /** 끄기의 지금 단계. 정리 시한이 지나면 `progress`가 이것으로 어디서 멈췄는지 알린다. */
+  let stopStep: string | undefined;
   /**
    * 서버를 끈다. 정상 종료와 시작 실패가 같은 길을 쓴다. 각 부분은 시작하지 않았거나 일부만 시작했어도 닫을 수 있다.
    * heartbeat가 새 깨우기를 만들지 않게 한 뒤 실행 시도를 끝내고, 그 사이 쌓인 알림은 outbox에 남아 다음 시작에 보낸다.
@@ -1254,41 +1267,53 @@ export async function startServer({
     stopping = true;
     // 한 부분을 닫다 실패해도 나머지(특히 포트)는 닫고, 실패는 모두 닫은 뒤에 알린다.
     const failures: unknown[] = [];
-    for (const close of [
-      () => heartbeats.close(),
-      () => compactions.close(),
-      () => {
-        for (const unwatch of stopRelayWatch.splice(0)) unwatch();
-      },
-      () => readiness.close(),
-      () => dispatcher.close(),
-      () => gate.close(),
+    for (const [step, close] of [
+      ["heartbeats", () => heartbeats.close()],
+      ["compactions", () => compactions.close()],
+      [
+        "relay failure watches",
+        () => {
+          for (const unwatch of stopRelayWatch.splice(0)) unwatch();
+        },
+      ],
+      ["readiness checks", () => readiness.close()],
+      ["runs", () => dispatcher.close()],
+      ["isolation gate", () => gate.close()],
       // 실행 시도가 모두 끝난 뒤 남은 중계를 닫고 정책을 뗀다.
-      async () => {
-        stopRevalidating();
-        await relay?.close();
-      },
-      () => notifications.close(),
-      () => channel.close(),
+      [
+        "isolation relay",
+        async () => {
+          stopRevalidating();
+          await relay?.close();
+        },
+      ],
+      ["notifications", () => notifications.close()],
+      ["notification channel", () => channel.close()],
       // 새 연결을 그만 받고, 처리 중인 처리기와 서버가 시작한 DB 작업이 모두 끝난 뒤 남은 연결을 닫는다. 연결이 아니라 처리기를 기다린다.
       // 실행 시도를 멈추면 도구 요청을 보낸 쪽이 먼저 떠나 연결은 없어도 서버 쪽 처리기는 DB를 계속 쓴다.
       // 끄는 중에 받은 요청은 응답 뒤 연결을 닫으므로 기다림이 이어지지 않는다. 처리기가 끝나지 않으면 main의 정리 시한이 실패로 끝낸다.
-      async () => {
-        for (const client of wss.clients) client.terminate();
-        wss.close();
-        const closed = new Promise<void>((resolve) =>
-          server.close(() => resolve())
-        );
-        await inFlight.idle();
-        server.closeAllConnections();
-        await closed;
-      },
-    ])
+      [
+        "requests",
+        async () => {
+          for (const client of wss.clients) client.terminate();
+          wss.close();
+          const closed = new Promise<void>((resolve) =>
+            server.close(() => resolve())
+          );
+          await inFlight.idle();
+          stopStep = "connections";
+          server.closeAllConnections();
+          await closed;
+        },
+      ],
+    ] as const)
       try {
+        stopStep = step;
         await close();
       } catch (error) {
         failures.push(error);
       }
+    stopStep = "done";
     if (failures.length)
       throw new AggregateError(failures, "stopping the server failed");
   };
@@ -1334,6 +1359,14 @@ export async function startServer({
     tickHeartbeats: () => heartbeats.tick(),
     tickCompactions: () => compactions.tick(),
     deliverNotifications: () => notifications.flush(),
+    progress: () =>
+      stopStep === undefined
+        ? "running"
+        : stopStep === "done"
+          ? "stopped"
+          : stopStep === "requests"
+            ? `waiting for requests: ${inFlight.pending().join(", ")}`
+            : `closing ${stopStep}`,
     close: stop,
   };
 }

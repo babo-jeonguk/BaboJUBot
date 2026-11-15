@@ -5,36 +5,44 @@ import type express from "express";
  * 연결이 아니라 처리기를 센다. 실행 시도가 멈춰 요청을 보낸 쪽이 먼저 떠나도 서버 쪽 처리기는 계속 돌며 DB를 쓰기 때문이다.
  */
 export class InFlight {
-  private count = 0;
+  /** 끝나지 않은 일과 그 이름. */
+  private running = new Map<symbol, string>();
   private waiters: (() => void)[] = [];
 
-  /** 일 하나를 센다. promise면 끝날 때까지, 아니면 바로 끝난 것으로 본다. 돌려준 값은 그대로다. */
-  track<T>(work: () => T): T {
-    this.count++;
+  /** 일 하나를 `label`로 센다. promise면 끝날 때까지, 아니면 바로 끝난 것으로 본다. 돌려준 값은 그대로다. */
+  track<T>(work: () => T, label: string): T {
+    const id = Symbol(label);
+    this.running.set(id, label);
     let value: T;
     try {
       value = work();
     } catch (error) {
-      this.leave();
+      this.leave(id);
       throw error;
     }
     if (value instanceof Promise)
       value.then(
-        () => this.leave(),
-        () => this.leave()
+        () => this.leave(id),
+        () => this.leave(id)
       );
-    else this.leave();
+    else this.leave(id);
     return value;
   }
 
   /** 세고 있는 일이 모두 끝나면 풀린다. 그 사이 새로 시작한 일도 기다린다. */
   idle(): Promise<void> {
-    if (this.count === 0) return Promise.resolve();
+    if (this.running.size === 0) return Promise.resolve();
     return new Promise((resolve) => this.waiters.push(resolve));
   }
 
-  private leave() {
-    if (--this.count > 0) return;
+  /** 끝나지 않은 일의 이름. 같은 이름은 한 번만, 시작한 순서로. */
+  pending(): string[] {
+    return [...new Set(this.running.values())];
+  }
+
+  private leave(id: symbol) {
+    this.running.delete(id);
+    if (this.running.size > 0) return;
     for (const resolve of this.waiters.splice(0)) resolve();
   }
 }
@@ -75,9 +83,24 @@ export function trackHandlers(app: express.Express, inFlight: InFlight) {
 function wrap(handle: Layer["handle"], inFlight: InFlight): Layer["handle"] {
   return handle.length === 4
     ? function (this: unknown, error, req, res, next) {
-        return inFlight.track(() => handle.call(this, error, req, res, next));
+        return inFlight.track(
+          () => handle.call(this, error, req, res, next),
+          requestLabel(req)
+        );
       }
     : function (this: unknown, req, res, next) {
-        return inFlight.track(() => handle.call(this, req, res, next));
+        return inFlight.track(
+          () => handle.call(this, req, res, next),
+          requestLabel(req)
+        );
       };
+}
+
+/** 요청의 이름: 방법과 경로(query 제외). 예: `GET /api/inbox`. */
+function requestLabel(req: unknown) {
+  const { method, originalUrl } = req as {
+    method: string;
+    originalUrl: string;
+  };
+  return `${method} ${originalUrl.split("?")[0]}`;
 }
