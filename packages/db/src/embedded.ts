@@ -7,7 +7,7 @@ import EmbeddedPostgres, { getBinaries } from "embedded-postgres";
 import pg from "pg";
 import { candidatePort } from "./ports.ts";
 
-/** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 정지 때 dataDir를 지운다. */
+/** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 디스크 확정 기록 없이 띄우고 정지 때 dataDir를 지운다. */
 export type EmbeddedOptions = {
   dataDir: string;
   /** 듣는 port. 없으면 켤 때 빈 port를 골라 Postgres가 실제로 잡은 번호를 쓴다. */
@@ -26,10 +26,18 @@ export const clusterUrl = (port: number, database: string) =>
 //   그래서 터미널의 Ctrl+C·창 닫기가 Postgres에 바로 가지 않고, Windows 관리자 계정에서도 켜진다. Windows에서 pg_ctl에 출력
 //   통로를 주면 Postgres가 그 통로를 물려받아 닫히지 않으므로 출력은 버리고 끝남 코드만 본다. 실패 이유는 Postgres 로그에서 읽는다.
 // - 끄기: 정상 정지(fast)를 요청하고 끝날 때까지 기다린다. Windows도 Postgres 자체 신호로 정상 정지한다.
+// - 임시 cluster: 멈출 때 지우므로 디스크 확정 기록(fsync)·commit 확정 대기·전체 page 기록을 끄고 띄운다(PostgreSQL 문서 「Non-Durable Settings」).
+//   켜 두면 정지 때 밀린 기록을 확정하느라 디스크가 느린 곳(Windows CI의 OS 디스크)에서 몇 초씩 걸려 서버 정리 시한을 넘긴다.
 // - 주인: dataDir 하나는 한 프로세스만 쓴다(`acquireOwner`). 만들기·남은 Postgres 정리·켜기·끄기·지우기는 주인만 한다.
 // - 다음 시작: 강제로 끝난 프로세스가 남긴 Postgres는 기록된 주인이 죽었고 그 서버가 이 dataDir를 쓰는 것이 접속으로 확인될
 //   때만 멈춘다. 잠금 파일(postmaster.pid)만으로는 무관한 프로세스와 구별할 수 없다.
 // - port: 정한 port가 없으면 빈 port 후보로 켜고, 그 후보를 잡지 못했으면(그 사이 남이 잡았거나 그 port만 막힘) 다른 후보로 다시 켠다. 번호만 미리 받아 두면 다른 프로세스가 먼저 잡을 수 있다.
+/** 임시 cluster의 Postgres 설정. 멈출 때 지우는 데이터라 디스크 확정 기록을 기다리지 않는다(위 「임시 cluster」). */
+const temporarySettings = [
+  "fsync=off",
+  "synchronous_commit=off",
+  "full_page_writes=off",
+];
 const startSeconds = 60;
 // 정상 종료 때의 정지 시한. 서버 정리 시한(main.ts)이 먼저 지나면 프로세스 종료 때 즉시 정지가 따른다.
 const stopSeconds = 30;
@@ -132,7 +140,9 @@ export async function startEmbeddedCluster(
         "listen_addresses=127.0.0.1",
         "-c",
         "lc_messages=C",
-        ...settings.flatMap((setting) => ["-c", setting]),
+        ...[...(persistent ? [] : temporarySettings), ...settings].flatMap(
+          (setting) => ["-c", setting]
+        ),
       ];
       const code = await run(pgCtl, [
         "start",

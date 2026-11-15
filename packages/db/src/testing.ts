@@ -34,13 +34,8 @@ export type TestDatabase = DatabaseHandle;
 /** 테스트 실행이 띄운 cluster의 port를 담는 환경 변수. vitest globalSetup이 정하고 작업자 프로세스가 물려받는다. */
 const clusterPortEnv = "BABOJUBOT_TEST_CLUSTER_PORT";
 const templateName = "babojubot_template";
-// 테스트 DB는 버리므로 디스크에 내려 쓰기를 기다리지 않는다. 서버 테스트 파일들이 동시에 연결을 연다.
-const testSettings = [
-  "fsync=off",
-  "synchronous_commit=off",
-  "full_page_writes=off",
-  "max_connections=500",
-];
+// 서버 테스트 파일들이 동시에 연결을 연다. 임시 cluster라 디스크 확정 기록은 startEmbeddedCluster가 끈다.
+const testSettings = ["max_connections=500"];
 
 /**
  * 테스트 실행 하나가 같이 쓰는 embedded Postgres를 띄우고, migration을 적용한 원본 DB를 만든다.
