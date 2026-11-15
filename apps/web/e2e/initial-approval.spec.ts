@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { inboxOrganizationLinks } from "./support/organization.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
 async function openInbox(page: Page) {
@@ -32,7 +33,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   // Inbox → Inbox 상세(요약) → 원래 화면의 승인 요청 상세.
   await openInbox(page);
   const inbox = page.getByRole("list", { name: "주의 필요" });
-  await inbox.getByRole("link", { name: new RegExp(name) }).click();
+  await inboxOrganizationLinks(inbox, org.id, new RegExp(name)).click();
   await expect(page).toHaveURL(
     /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
   );
@@ -80,7 +81,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   // Lead가 사유를 받아 다시 제출한 새 요청이 Inbox에 새로고침 없이 나타난다.
   // 이번에는 Inbox 상세의 요약에서 결정한다. 계획은 앞부분만 보이고 줄였다는 안내가 있다.
   await openInbox(page);
-  await inbox.getByRole("link", { name: new RegExp(name) }).click();
+  await inboxOrganizationLinks(inbox, org.id, new RegExp(name)).click();
   await expect(page).toHaveURL(
     /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
   );
@@ -187,16 +188,18 @@ test("an organization created with empty completion criteria gets the Lead's pro
   await expect(dialog.getByLabel(/완료 기준/)).toHaveValue("");
   await dialog.getByRole("button", { name: "만들기" }).click();
   await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/chat$/);
+  const orgId = new URL(page.url()).pathname.split("/")[2]!;
   await expect(
     page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
   ).toContainText("제가 제안한 완료 기준");
 
   // Inbox 상세의 요약에서 Lead가 제안한 완료 기준을 보고 승인한다.
   await openInbox(page);
-  await page
-    .getByRole("list", { name: "주의 필요" })
-    .getByRole("link", { name: new RegExp(name) })
-    .click();
+  await inboxOrganizationLinks(
+    page.getByRole("list", { name: "주의 필요" }),
+    orgId,
+    new RegExp(name)
+  ).click();
   const criteria = page.getByTestId("proposal-completion-criteria");
   await expect(criteria).toContainText("Lead 제안");
   await expect(criteria).toContainText(
@@ -211,7 +214,6 @@ test("an organization created with empty completion criteria gets the Lead's pro
   await expect(page.getByTestId("proposal-completion-criteria")).toContainText(
     "Lead 제안"
   );
-  const orgId = page.url().match(/\/orgs\/([0-9a-f-]{36})\//)![1];
   await page.goto(`/orgs/${orgId}`);
   await expect(page.getByTestId("completion-criteria")).toContainText(
     "결과 요약과 근거 산출물이 있다"

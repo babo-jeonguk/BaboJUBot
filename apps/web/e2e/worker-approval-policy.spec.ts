@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import { goalInput, inboxOrganizationLinks } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
@@ -82,10 +82,11 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   // Inbox → 작업자 추가 요청의 Inbox 상세(요약). 수정 요청은 없고, 반려에는 사유가 필요하다.
   const openRequest = async () => {
     await openInbox(page);
-    await page
-      .getByRole("list", { name: "주의 필요" })
-      .getByRole("link", { name: new RegExp(`작업자 추가 승인 요청.*${name}`) })
-      .click();
+    await inboxOrganizationLinks(
+      page.getByRole("list", { name: "주의 필요" }),
+      org.id,
+      new RegExp(`작업자 추가 승인 요청.*${name}`)
+    ).click();
     await expect(page).toHaveURL(
       /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
     );
