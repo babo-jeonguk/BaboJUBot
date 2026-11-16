@@ -327,14 +327,146 @@ test("result decisions say what they do to a paused organization, focus the reco
   await expect(otherDecision).toContainText("연구를 최종 완료했습니다");
   await expect(evidence).toBeFocused();
 
-  // 오래된 화면의 수정 요청은 409로 거절되고, 먼저 온 최종 완료를 결정 기록으로 보이되 포커스를 옮기지 않는다.
-  await staleDecision.getByLabel(/의견/).fill("늦게 보낸 수정 요청");
-  await staleDecision.getByRole("button", { name: "수정 요청" }).click();
-  await expect(staleDecision).toContainText("연구를 최종 완료했습니다");
-  await expect(staleDecision.getByRole("button")).toHaveCount(0);
-  await expect(staleDecision).not.toContainText("늦게 보낸 수정 요청");
-  await expect(staleDecision).not.toBeFocused();
+  // 오래된 화면의 수정 요청은 409로 거절되고, 먼저 온 최종 완료를 결정 기록으로 보인다. 응답을 기다리는 사이 머리의
+  // 링크로 옮긴 포커스는 409 뒤에도 그 링크에 남는다.
+  const staleHeld = await holdDecisionReply(stale);
+  try {
+    await staleDecision.getByLabel(/의견/).fill("늦게 보낸 수정 요청");
+    await staleDecision.getByRole("button", { name: "수정 요청" }).click();
+    await staleHeld.sent;
+    const staleKept = stale.getByRole("link", {
+      name: /원래 화면에서 자세히 보기/,
+    });
+    await staleKept.focus();
+    await expect(staleKept).toBeFocused();
+    staleHeld.release();
+    await staleHeld.delivered;
+    await expect(staleDecision).toContainText("연구를 최종 완료했습니다");
+    await expect(staleDecision.getByRole("button")).toHaveCount(0);
+    await expect(staleDecision).not.toContainText("늦게 보낸 수정 요청");
+    await expect(staleKept).toBeFocused();
+  } finally {
+    await staleHeld.dispose();
+  }
   expect(await stage(page, org)).toBe("completed");
+});
+
+test("switching between result submissions on the Inbox and detail screens leaves each one's note, completion confirm and decided-here focus behind", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const [org, otherOrg] = await Promise.all([
+    newOrganization(page, "결정 표시 전환 E2E 조직"),
+    newOrganization(page, "결정 표시 전환 E2E 다른 조직"),
+  ]);
+  const submitResult = async (o: Org) => {
+    await approveInitial(page, o);
+    return requestResult(page, o);
+  };
+  const [first, other] = await Promise.all([
+    submitResult(org),
+    submitResult(otherOrg),
+  ]);
+
+  // 첫 제출에 수정을 요청해 Lead가 다시 제출하게 한다.
+  await post(page, org.api(`/results/${first}/decision`), {
+    decision: "request_changes",
+    note: "근거를 보완해 주세요",
+  });
+  /** Lead가 `previous`에 이어 다시 낸 검토 대기 제출의 ID. */
+  const resubmittedAfter = async (previous: string) => {
+    const find = async () =>
+      (
+        await get<
+          { id: string; status: string; previousSubmissionId: string | null }[]
+        >(page, org.api("/results"))
+      ).find(
+        (s) => s.status === "pending" && s.previousSubmissionId === previous
+      )?.id;
+    await expect.poll(find, leadWork).toBeTruthy();
+    await runsSettled(page, org);
+    return (await find())!;
+  };
+  const second = await resubmittedAfter(first);
+
+  const decision = page.getByRole("region", { name: "결정" });
+  const note = decision.getByLabel(/의견/);
+  const confirm = decision.getByRole("group", { name: /최종 완료할까요/ });
+
+  // 상세: 다시 낸 제출에 의견을 쓰고 완료 확인을 연 채 직전 제출로 옮긴다. 결정 기록이 아니라 새 화면 제목이 포커스를 받는다.
+  await page.goto(`/orgs/${org.id}/results/${second}`);
+  const title = page.getByRole("heading", { level: 1, name: "결과 제출" });
+  await note.fill("다시 낸 제출의 의견");
+  await decision.getByRole("button", { name: "최종 완료" }).click();
+  await expect(confirm).toBeVisible();
+  await page.getByRole("link", { name: "직전 제출 보기" }).click();
+  await expect(page).toHaveURL(`/orgs/${org.id}/results/${first}`);
+  await expect(decision).toContainText("근거를 보완해 주세요");
+  await expect(title).toBeFocused();
+
+  // 다시 낸 제출로 돌아오면 의견은 비어 있고 완료 확인은 닫혀 있다.
+  await page.getByRole("link", { name: "다시 제출된 결과 보기" }).click();
+  await expect(page).toHaveURL(`/orgs/${org.id}/results/${second}`);
+  await expect(note).toHaveValue("");
+  await expect(confirm).toHaveCount(0);
+
+  // 여기서 결정하면 그 결정 기록으로 포커스가 간다. 이어서 직전 제출을 열어도 그 결정 기록이 아니라 새 화면 제목이
+  // 포커스를 받는다.
+  await note.fill("한 번 더 보완해 주세요");
+  await decision.getByRole("button", { name: "수정 요청" }).click();
+  await expect(decision).toContainText("수정 요청됨");
+  await expect(decision).toBeFocused();
+  await page.getByRole("link", { name: "직전 제출 보기" }).click();
+  await expect(page).toHaveURL(`/orgs/${org.id}/results/${first}`);
+  await expect(decision).toContainText("근거를 보완해 주세요");
+  await expect(title).toBeFocused();
+
+  // Lead가 한 번 더 낸 제출을 Inbox에서 다룬다.
+  const third = await resubmittedAfter(second);
+
+  // Inbox: 다른 조직의 제출을 먼저 열어 두어, 돌아올 때 불러오는 동안 화면이 비지 않고 같은 자리에서 바뀐다.
+  await openWithLiveEvents(
+    page,
+    `/inbox/${otherOrg.id}/result_submission/${other}`
+  );
+  await expect(note).toBeVisible();
+  await page.getByRole("button", { name: "Inbox 열기" }).click();
+  const inbox = page.getByRole("complementary", { name: "Inbox" });
+  await inbox.getByRole("button", { name: "전체 조직" }).click();
+  const pick = async (o: Org, id: string) => {
+    const href = `/inbox/${o.id}/result_submission/${id}`;
+    await inbox.locator(`a[href="${href}"]`).click();
+    await expect(page).toHaveURL(href);
+  };
+  await pick(org, third);
+  await note.fill("세 번째 제출의 의견");
+  await decision.getByRole("button", { name: "최종 완료" }).click();
+  await expect(confirm).toBeVisible();
+
+  // 다른 항목으로 옮기면 그 항목의 의견은 비어 있고 완료 확인은 닫혀 있다.
+  await pick(otherOrg, other);
+  await expect(note).toHaveValue("");
+  await expect(confirm).toHaveCount(0);
+
+  // 이 항목을 여기서 결정한 뒤 세 번째 제출로 옮긴다. 그 제출이 다른 곳에서 결정돼 누르려던 버튼이 사라져도,
+  // 방금 결정한 상태가 따라가지 않아 결정 기록을 비롯해 어디로도 포커스를 옮기지 않는다.
+  await note.fill("다른 조직 제출의 의견");
+  await decision.getByRole("button", { name: "수정 요청" }).click();
+  await expect(decision).toContainText("수정 요청됨");
+  await expect(decision).toBeFocused();
+  await pick(org, third);
+  await expect(note).toHaveValue("");
+  const complete = decision.getByRole("button", { name: "최종 완료" });
+  await complete.focus();
+  await expect(complete).toBeFocused();
+  await post(page, org.api(`/results/${third}/decision`), {
+    decision: "complete",
+  });
+  await expect(decision).toContainText("연구를 최종 완료했습니다");
+  await expect(decision).not.toBeFocused();
+  expect(
+    await page.evaluate(() => document.activeElement === document.body)
+  ).toBe(true);
 });
 
 test("a result submitted to an organization that is then stopped cannot be decided on the detail or Inbox screens", async ({

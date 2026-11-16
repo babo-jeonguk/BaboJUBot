@@ -501,7 +501,11 @@ test("deciding from the Inbox detail after another surface decided first shows t
   await expect(decision).toContainText("승인됨");
   await expect(decision).not.toContainText("늦게 보낸 반려");
   await expect(decision.getByRole("button")).toHaveCount(0);
+  // 누른 반려 버튼은 사라졌지만, 결정 기록을 비롯해 어디로도 포커스를 옮기지 않는다.
   await expect(decision).not.toBeFocused();
+  expect(
+    await page.evaluate(() => document.activeElement === document.body)
+  ).toBe(true);
 });
 
 test("global settings shows the provider settings and the places for environment templates, secrets and messaging apps", async ({
