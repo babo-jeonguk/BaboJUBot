@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -9,6 +9,29 @@ const shot = async (page: Page, name: string) => {
   await page.waitForTimeout(300); // 고른 칸 테두리 전환이 끝난 뒤 찍는다.
   await page.screenshot({ path: `${shots}/${name}.png` });
 };
+
+/**
+ * 한눈에 맞추기(`fitView`)는 다음 frame에 돌아 그 전에 잰 위치는 맞춘 뒤와 다르다. 연달아 두 번 잰 위치가 같아질 때까지
+ * 기다렸다가 그 위치를 돌려준다. 한 번만 재면 상자마다 다른 배치에서 잰 값을 비교할 수 있다.
+ */
+async function settledBoxes<L extends Locator[]>(locators: [...L]) {
+  type Box = { x: number; y: number; width: number; height: number };
+  let boxes: Box[] = [];
+  let last = "";
+  await expect
+    .poll(async () => {
+      boxes = await Promise.all(
+        locators.map(async (l) => (await l.boundingBox())!)
+      );
+      const now = JSON.stringify(boxes);
+      const same = now === last;
+      last = now;
+      return same;
+    })
+    .toBe(true);
+  // 넘긴 개수만큼 돌려준다. 상자마다 따로 잴 때와 달리 부를 때마다 위치가 확정된 값이다.
+  return boxes as { [K in keyof L]: Box };
+}
 
 type Org = { id: string; agents: { id: string; role: string; name: string }[] };
 
@@ -54,9 +77,11 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
       name: typeof name === "string" ? new RegExp(name) : name,
     });
   // Lead가 위, 작업자가 아래에 나란히 있고 Lead와 연결된다.
-  const leadBox = (await node(lead.name).boundingBox())!;
-  const workerBox = (await node(worker!.name).boundingBox())!;
-  const otherBox = (await node(other!.name).boundingBox())!;
+  const [leadBox, workerBox, otherBox] = await settledBoxes([
+    node(lead.name),
+    node(worker!.name),
+    node(other!.name),
+  ]);
   expect(workerBox.y).toBeGreaterThan(leadBox.y + leadBox.height);
   expect(Math.abs(workerBox.y - otherBox.y)).toBeLessThan(2);
   await expect(chart.locator(".react-flow__edge")).toHaveCount(2);
