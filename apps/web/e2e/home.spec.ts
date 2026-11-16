@@ -232,12 +232,16 @@ test("the home is a lobby of rooms in creation order: attention shows in place, 
 
   // 390px에서도 가로로 넘치지 않는다(붙어 있던 Inbox는 닫힌다).
   await page.setViewportSize({ width: 390, height: 844 });
+  // 붙은 Inbox 닫힘과 좁은 화면 배치는 다음 frame의 media query 변화로 그려진다. 닫힌 뒤에 잰다.
+  await expect(inbox).toBeHidden();
   await expect(room(later)).toBeVisible();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      )
     )
-  ).toBe(true);
+    .toBe(true);
   await page.setViewportSize({ width: 1440, height: 900 });
 
   // 방 머리는 조직 화면으로, 캐릭터는 그 에이전트 화면으로 간다.

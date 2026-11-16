@@ -1,4 +1,4 @@
-import type { Locator } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 /**
  * API로 조직을 만들 때 쓰는 기본 연구 목표와 완료 기준. 조직을 만들면 가짜 Lead가 이 목표로 곧바로 초기 연구 승인을 요청한다.
@@ -40,4 +40,36 @@ export function inboxOrganizationItems(list: Locator, organizationId: string) {
   return list.getByRole("listitem").filter({
     has: list.page().locator(`a[href^="/inbox/${organizationId}/"]`),
   });
+}
+
+/**
+ * API로 조직을 만들고, 생성으로 깨어난 가짜 Lead가 초기 연구 승인을 요청하고 첫 실행 시도를 끝낼 때까지 기다린다.
+ * 실행 시도는 그때까지 쌓인 깨움을 모두 한꺼번에 받으므로, 바로 이어 보낸 메시지(`실패 연습` 등)가 생성의 깨움과
+ * 한 실행 시도로 묶이면 초기 연구 승인 요청이 생기지 않는다. 이어서 메시지를 보낼 spec은 이 함수로 만든다.
+ */
+export async function createSettledOrganization(
+  page: Page,
+  name: string,
+  input: { goal: string; completionCriteria: string } = goalInput
+) {
+  const created = await page.request.post("/api/organizations", {
+    data: { name, ...input },
+  });
+  expect(created.status()).toBe(201);
+  const org = (await created.json()) as {
+    id: string;
+    agents: { id: string; role: string }[];
+  };
+  await expect
+    .poll(
+      async () => {
+        const list = (await (
+          await page.request.get(`/api/organizations/${org.id}/runs`)
+        ).json()) as { status: string }[];
+        return list.length > 0 && list.every((r) => r.status === "completed");
+      },
+      { timeout: 30_000 }
+    )
+    .toBe(true);
+  return org;
 }

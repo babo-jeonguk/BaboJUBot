@@ -1,5 +1,9 @@
 import { expect, test, type Locator } from "@playwright/test";
-import { goalInput, inboxOrganizationItems } from "./support/organization.ts";
+import {
+  createSettledOrganization,
+  goalInput,
+  inboxOrganizationItems,
+} from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 15_000 };
@@ -175,10 +179,7 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
 }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   const name = "Inbox 모바일 조직";
-  const created = await page.request.post("/api/organizations", {
-    data: { name, ...goalInput },
-  });
-  const org = (await created.json()) as { id: string };
+  const org = await createSettledOrganization(page, name);
   await page.request.post(`/api/organizations/${org.id}/messages`, {
     data: { body: "실패 연습" },
   });
@@ -211,14 +212,10 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   page,
 }) => {
   const name = "Inbox 상세 조직";
-  const created = await page.request.post("/api/organizations", {
-    data: {
-      name,
-      goal: "Inbox 상세 확인",
-      completionCriteria: "요약에서 결정한다",
-    },
+  const org = await createSettledOrganization(page, name, {
+    goal: "Inbox 상세 확인",
+    completionCriteria: "요약에서 결정한다",
   });
-  const org = (await created.json()) as { id: string };
   const say = (body: string) =>
     page.request.post(`/api/organizations/${org.id}/messages`, {
       data: { body },
@@ -239,6 +236,8 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   });
   await expect(request).toBeVisible(runs);
   await expect(request).toContainText(name);
+  // 실패 항목은 승인 요청 뒤의 다음 실행 시도가 끝나야 생긴다.
+  await expect(failure).toBeVisible(runs);
   await expect(failure).toContainText(name);
 
   // 실패 상세를 열면 읽음이 되어 주의 필요에서 빠진다.
@@ -377,11 +376,7 @@ test("when marking an opened item read fails, the Inbox detail says so and retri
   page,
 }) => {
   const name = "Inbox 읽음 실패 조직";
-  const org = (await (
-    await page.request.post("/api/organizations", {
-      data: { name, ...goalInput },
-    })
-  ).json()) as { id: string };
+  const org = await createSettledOrganization(page, name);
   await page.request.post(`/api/organizations/${org.id}/messages`, {
     data: { body: "실패 연습" },
   });
@@ -420,11 +415,7 @@ test("when the read-on-open reply is lost after the server marked the item read,
   page,
 }) => {
   const name = "Inbox 읽음 응답 유실 조직";
-  const org = (await (
-    await page.request.post("/api/organizations", {
-      data: { name, ...goalInput },
-    })
-  ).json()) as { id: string };
+  const org = await createSettledOrganization(page, name);
   await page.request.post(`/api/organizations/${org.id}/messages`, {
     data: { body: "실패 연습" },
   });

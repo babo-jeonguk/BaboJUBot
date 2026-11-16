@@ -126,7 +126,10 @@ test("pausing one agent from its detail page holds its messages until it resumes
   await expect(
     control.getByRole("button", { name: /에이전트 재개/ })
   ).toBeVisible();
-  await expect(page.getByText("일시정지", { exact: true })).toBeVisible();
+  // 레일에는 다른 spec이 멈춰 둔 조직의 `일시정지`도 보이므로 본문에서 찾는다.
+  await expect(
+    page.getByRole("main").getByText("일시정지", { exact: true })
+  ).toBeVisible();
   await page.request.post(org.api("/messages"), {
     data: { body: "Lead가 멈춘 동안 보낸 메시지" },
   });
