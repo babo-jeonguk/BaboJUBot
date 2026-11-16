@@ -1,10 +1,13 @@
 // Synthetic Codex on this machine for the login refresh tests (#148). No network requests.
-// Usage: codex-refresh.mjs <log file> <ok|slow|fail>.
+// Usage: codex-refresh.mjs <log file> <ok|slow|fail|fail-once|silent|exit|stall>.
 // As `app-server`, it answers initialize and `account/read` with `refreshToken: true`. On ok/slow it writes a new login through the
 // CODEX_HOME/auth.json link onto its target (like Codex: a new file renamed over the target), with an access token that expires in an
-// hour, and appends a line to the log. On fail it answers with an error and changes nothing.
+// hour, and appends a line to the log. On fail it answers with an error and changes nothing. On silent it never answers `account/read`,
+// on exit it ends (code 1) instead of answering it, and on stall it answers initialize and `account/read` each after 700 ms.
+// On fail-once it fails like fail the first time (leaving `<log>.failed`) and refreshes like ok after that.
 import { createInterface } from "node:readline";
 import {
+  access,
   appendFile,
   readFile,
   realpath,
@@ -20,6 +23,7 @@ if (rest.includes("--version")) {
 }
 if (rest.includes("login")) process.exit(0);
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const jwt = (claims) =>
   [{ alg: "none" }, claims]
     .map((part) => Buffer.from(JSON.stringify(part)).toString("base64url"))
@@ -28,7 +32,7 @@ const jwt = (claims) =>
 async function refresh() {
   const target = await realpath(path.join(process.env.CODEX_HOME, "auth.json"));
   const login = JSON.parse(await readFile(target, "utf8"));
-  if (mode === "slow") await new Promise((resolve) => setTimeout(resolve, 300));
+  if (mode === "slow") await pause(300);
   const count =
     (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean)
       .length + 1;
@@ -48,11 +52,32 @@ const input = createInterface({ input: process.stdin });
 input.on("line", async (line) => {
   if (!line.trim()) return;
   const frame = JSON.parse(line);
-  if (frame.method === "initialize") out({ id: frame.id, result: {} });
-  else if (frame.method === "account/read") {
+  if (frame.method === "initialize") {
+    if (mode === "stall") await pause(700);
+    out({ id: frame.id, result: {} });
+  } else if (frame.method === "account/read") {
     if (frame.params?.refreshToken !== true) {
       out({ id: frame.id, result: { account: null } });
       return;
+    }
+    if (mode === "silent") return;
+    if (mode === "exit") process.exit(1);
+    if (mode === "stall") await pause(700);
+    if (mode === "fail-once") {
+      const marker = `${log}.failed`;
+      if (
+        !(await access(marker).then(
+          () => true,
+          () => false
+        ))
+      ) {
+        await writeFile(marker, "");
+        out({
+          id: frame.id,
+          error: { code: -32000, message: "refresh failed" },
+        });
+        return;
+      }
     }
     if (mode === "fail") {
       out({ id: frame.id, error: { code: -32000, message: "refresh failed" } });

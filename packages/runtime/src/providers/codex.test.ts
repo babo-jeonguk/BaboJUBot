@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCodexProvider } from "./codex.ts";
+import { createCodexProvider, type CodexOptions } from "./codex.ts";
 import { request } from "./test-support.ts";
 const roots: string[] = [];
 afterEach(async () => {
@@ -413,5 +413,363 @@ describe("usage numbers outside the contract (#140)", () => {
       cacheWriteTokens: null,
       costUsd: null,
     });
+  });
+});
+
+describe("one app-server connection per call (#145)", () => {
+  type Step = {
+    delayMs?: number;
+    result?: unknown;
+    error?: unknown;
+    silent?: boolean;
+    frames?: unknown[];
+    exit?: number;
+  };
+  /** A provider whose program is the scripted peer. `sent()` lists the frames the program received, in order. */
+  async function scripted(
+    steps: Record<string, Step[]>,
+    timeouts?: CodexOptions["timeouts"]
+  ) {
+    const root = await mkdtemp(path.join(tmpdir(), "codex-lifetime-"));
+    roots.push(root);
+    const log = path.join(root, "received.jsonl");
+    const script = path.join(root, "script.json");
+    await writeFile(script, JSON.stringify({ log, steps }));
+    const provider = createCodexProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/codex-peer.synthetic.mjs"),
+        script,
+      ],
+      ...(timeouts ? { timeouts } : {}),
+    });
+    const lines = async () =>
+      (await readFile(log, "utf8").catch(() => ""))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, any>);
+    const sent = async () =>
+      (await lines()).filter((line) => line.pid === undefined);
+    const methods = async () => (await sent()).map((line) => line.method);
+    /** Whether any program this provider started is still running. */
+    const running = async () =>
+      (await lines())
+        .filter((line) => line.pid !== undefined)
+        .some((line) => {
+          try {
+            process.kill(line.pid, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+    return { provider, sent, methods, running };
+  }
+  const page = (models: string[], nextCursor: string | null) => ({
+    result: {
+      data: models.map((model) => ({
+        model,
+        displayName: model.toUpperCase(),
+      })),
+      nextCursor,
+    },
+  });
+
+  describe("the model list", () => {
+    it("follows every page and starts no model turn", async () => {
+      const t = await scripted({
+        "model/list": [page(["one"], "next"), page(["two"], null)],
+      });
+      expect(
+        await t.provider.listModels!(new AbortController().signal)
+      ).toEqual([
+        { id: "one", label: "ONE" },
+        { id: "two", label: "TWO" },
+      ]);
+      const sent = await t.sent();
+      expect(sent.map((frame) => frame.method)).toEqual([
+        "initialize",
+        "initialized",
+        "model/list",
+        "model/list",
+      ]);
+      expect(sent[3]!.params.cursor).toBe("next");
+      expect(await t.running()).toBe(false);
+    });
+
+    it.each([
+      ["an error", { error: { code: -32000, message: "no" } }],
+      ["the program ending", { silent: true, exit: 1 }],
+    ])(
+      "returns nothing, not the pages it got, when the next page ends with %s",
+      async (_case, ending) => {
+        const t = await scripted({
+          "model/list": [page(["one"], "next"), ending],
+        });
+        expect(
+          await t.provider.listModels!(new AbortController().signal)
+        ).toEqual([]);
+        expect(await t.methods()).toEqual([
+          "initialize",
+          "initialized",
+          "model/list",
+          "model/list",
+        ]);
+        expect(await t.running()).toBe(false);
+      }
+    );
+
+    it("keeps one deadline for the whole list instead of starting it again for each page", async () => {
+      // Each answer comes well within the deadline, but all of them together do not.
+      const t = await scripted(
+        {
+          "model/list": [
+            { ...page(["one"], "next"), delayMs: 2_500 },
+            { ...page(["two"], null), delayMs: 2_500 },
+          ],
+        },
+        // Each page is well inside the limit and leaves the program 1.5 s to start; the two pages together are not.
+        { modelList: 4_000 }
+      );
+      expect(
+        await t.provider.listModels!(new AbortController().signal)
+      ).toEqual([]);
+      expect(await t.methods()).toEqual([
+        "initialize",
+        "initialized",
+        "model/list",
+        "model/list",
+      ]);
+      expect(await t.running()).toBe(false);
+    });
+
+    it("stops at once when cancelled while waiting for a page", async () => {
+      const t = await scripted({
+        "model/list": [page(["one"], "next"), { silent: true }],
+      });
+      const cancel = new AbortController();
+      const listed = t.provider.listModels!(cancel.signal);
+      await expect
+        .poll(async () => (await t.methods()).length, { timeout: 5_000 })
+        .toBe(4);
+      cancel.abort();
+      expect(await listed).toEqual([]);
+      expect(await t.running()).toBe(false);
+    }, 10_000);
+  });
+
+  describe("a run", () => {
+    const thread = { result: { thread: { id: "thread-new" } } };
+    const turnThatCompletes = (threadId: string) => ({
+      result: { turn: { id: "turn-one" } },
+      frames: [
+        {
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId,
+            tokenUsage: { total: { inputTokens: 4, outputTokens: 2 } },
+          },
+        },
+        {
+          method: "turn/completed",
+          params: { threadId, turn: { id: "turn-one", status: "completed" } },
+        },
+      ],
+    });
+    const resumed = () => {
+      const input = request();
+      input.previousSession = {
+        id: "thread-old",
+        tokens: { inputTokens: 10, outputTokens: 10 },
+      };
+      return input;
+    };
+    const watch = () => {
+      const progress: string[] = [];
+      let returned = false,
+        late = 0;
+      return {
+        progress,
+        control: (signal = new AbortController().signal) => ({
+          signal,
+          emit: async (activity: unknown) => {
+            if (returned) late++;
+            const { type, text } = activity as { type: string; text?: string };
+            if (type === "progress") progress.push(text!);
+          },
+        }),
+        returned: () => {
+          returned = true;
+        },
+        late: () => late,
+      };
+    };
+
+    it("fails when an ordinary request goes unanswered, without sending it again", async () => {
+      const t = await scripted(
+        { "thread/start": [{ silent: true }] },
+        { request: 2_000 }
+      );
+      const result = await t.provider.adapter.execute(request(), {
+        signal: new AbortController().signal,
+        emit: async () => {},
+      });
+      expect(result.stopReason).toBe("failed");
+      expect(await t.methods()).toEqual([
+        "initialize",
+        "initialized",
+        "thread/start",
+      ]);
+      expect(await t.running()).toBe(false);
+    });
+
+    it("fails at once, not after the request limit, when the program dies while a request waits", async () => {
+      const t = await scripted({
+        "thread/start": [{ silent: true, exit: 1 }],
+      });
+      const result = await t.provider.adapter.execute(request(), {
+        signal: new AbortController().signal,
+        emit: async () => {},
+      });
+      expect(result.stopReason).toBe("failed");
+      expect(await t.running()).toBe(false);
+    }, 10_000);
+
+    it("keeps the run when a steer goes unanswered, and does not send the steer again", async () => {
+      const t = await scripted(
+        {
+          "thread/start": [thread],
+          "turn/start": [{ result: { turn: { id: "turn-one" } } }],
+          "turn/steer": [
+            {
+              silent: true,
+              delayMs: 500,
+              frames: turnThatCompletes("thread-new").frames,
+            },
+          ],
+        },
+        { steer: 200 }
+      );
+      const input = request();
+      let steered: Promise<unknown> | undefined;
+      const result = await t.provider.adapter.execute(input, {
+        signal: new AbortController().signal,
+        emit: async () => {
+          steered ??= t.provider.adapter.steer!({
+            runId: input.identity.runId,
+            messageId: crypto.randomUUID(),
+            conversationId: crypto.randomUUID(),
+            body: "추가",
+          }).then(
+            (outcome) => ({ outcome }),
+            (error: unknown) => ({ error })
+          );
+        },
+      });
+      // Not answered is neither accepted nor refused: the delivery is unknown.
+      expect(await steered).toEqual({ error: expect.any(Error) });
+      expect(result.stopReason).toBe("completed");
+      expect(
+        (await t.methods()).filter((m) => m === "turn/steer")
+      ).toHaveLength(1);
+    });
+
+    it("starts one new thread only when the program refuses the old one, with the usage counted from zero", async () => {
+      const t = await scripted({
+        "thread/resume": [{ error: { code: -32600, message: "not found" } }],
+        "thread/start": [thread],
+        "turn/start": [turnThatCompletes("thread-new")],
+      });
+      const w = watch();
+      const result = await t.provider.adapter.execute(resumed(), w.control());
+      expect(result.stopReason).toBe("completed");
+      expect(result.nextSession?.id).toBe("thread-new");
+      expect(result.usage).toMatchObject({ inputTokens: 4, outputTokens: 2 });
+      expect(
+        w.progress.filter((text) => text.includes("새 세션"))
+      ).toHaveLength(1);
+      expect(await t.methods()).toEqual([
+        "initialize",
+        "initialized",
+        "thread/resume",
+        "thread/start",
+        "turn/start",
+      ]);
+    });
+
+    it("tries the new thread only once when it is refused too", async () => {
+      const refused = { error: { code: -32600, message: "no" } };
+      const t = await scripted({
+        "thread/resume": [refused],
+        "thread/start": [refused],
+      });
+      const w = watch();
+      const result = await t.provider.adapter.execute(resumed(), w.control());
+      expect(result.stopReason).toBe("failed");
+      expect(await t.methods()).toEqual([
+        "initialize",
+        "initialized",
+        "thread/resume",
+        "thread/start",
+      ]);
+      expect(
+        w.progress.filter((text) => text.includes("새 세션"))
+      ).toHaveLength(1);
+    });
+
+    it.each([
+      ["goes unanswered", { silent: true }, { request: 2_000 }],
+      ["ends with the program", { silent: true, exit: 1 }, undefined],
+    ])(
+      "does not start a new thread when the resume %s",
+      async (_case, step, timeouts) => {
+        const t = await scripted({ "thread/resume": [step] }, timeouts);
+        const w = watch();
+        const result = await t.provider.adapter.execute(resumed(), w.control());
+        w.returned();
+        expect(result.stopReason).toBe("failed");
+        expect(await t.methods()).toEqual([
+          "initialize",
+          "initialized",
+          "thread/resume",
+        ]);
+        expect(w.progress).toEqual([]);
+        expect(await t.running()).toBe(false);
+      }
+    );
+
+    it.each([
+      ["the handshake", "initialize"],
+      ["the resume", "thread/resume"],
+    ])(
+      "takes a cancel during %s at once and starts nothing after it",
+      async (_case, method) => {
+        const t = await scripted({ [method]: [{ silent: true }] });
+        const w = watch();
+        const cancel = new AbortController();
+        const running = t.provider.adapter.execute(
+          resumed(),
+          w.control(cancel.signal)
+        );
+        await expect
+          .poll(async () => (await t.methods()).includes(method), {
+            timeout: 5_000,
+          })
+          .toBe(true);
+        cancel.abort();
+        const result = await running;
+        w.returned();
+        expect(result.stopReason).toBe("cancelled");
+        const methods = await t.methods();
+        expect(methods.at(-1)).toBe(method);
+        expect(methods).not.toContain("thread/start");
+        expect(methods).not.toContain("turn/start");
+        expect(w.progress).toEqual([]);
+        expect(await t.running()).toBe(false);
+        expect(w.late()).toBe(0);
+      },
+      10_000
+    );
   });
 });

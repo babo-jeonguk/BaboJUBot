@@ -19,7 +19,7 @@ import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
-import { createCodexProvider } from "./codex.ts";
+import { createCodexProvider, type CodexOptions } from "./codex.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { createAntigravityProvider } from "./antigravity.ts";
 import {
@@ -27,6 +27,7 @@ import {
   type ContainerSettings,
 } from "./container.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
+import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
@@ -120,6 +121,33 @@ async function setup(programs: Record<string, string[]>) {
   };
 }
 
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+// A container program that leaves a child sharing its output. The child records whether the relay is still open when it is told
+// to stop, then ends. The program ends on its first input line, or 1.2 s after its input closes.
+const leftBehind = `
+  const fs = require("node:fs"), path = require("node:path");
+  const relay = JSON.parse(process.env.FAKE_DOCKER_MOUNTS).find((m) => m.target === "/run/babojubot").source;
+  const record = JSON.stringify([process.argv[1], path.join(relay, "egress.sock")]);
+  require("node:child_process").spawn(process.execPath, ["-e", \`
+    const [log, egress] = \${record};
+    process.on("SIGTERM", () => {
+      require("node:fs").writeFileSync(log, require("node:fs").existsSync(egress) ? "relay open" : "relay closed");
+      process.exit(0);
+    });
+    setInterval(() => {}, 1000);
+    console.log(JSON.stringify({ pid: process.pid }));
+  \`], { stdio: ["ignore", "inherit", "ignore"] });
+  process.stdin.once("data", () => process.exit(0));
+  // Cancelled: the input closes, and the program takes a while (past the drain wait, before the stop timer) to end.
+  process.stdin.on("end", () => setTimeout(() => process.exit(0), 1200));
+`;
 const runCall = (calls: Call[]) => {
   const runs = calls.filter((c) => c.args.includes("run"));
   expect(runs).toHaveLength(1);
@@ -377,6 +405,71 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     const calls = await env.calls();
     expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
   });
+
+  it("takes the relay back before stopping what a finished program left running, even when that keeps its output open", async () => {
+    const env = await setup({ codex: [process.execPath, "-e", leftBehind] });
+    // The program shares the Docker program's output, so the child it leaves holds that output open after both end.
+    await writeFile(path.join(env.state, "pass-output"), "");
+    const log = path.join(env.root, "relay-at-stop");
+    let child = 0;
+    const started = startProcess({
+      command: ["unused"],
+      args: [log],
+      cwd: env.root,
+      env: { PATH: process.env.PATH },
+      container: {
+        settings: env.container,
+        mounts: [],
+        labels: {},
+        program: "codex",
+        env: {},
+        relay: { identity: { organizationId: env.org }, required: [] },
+      },
+      onFrame: async (frame) => {
+        child = (frame as { pid: number }).pid;
+        started.write({ go: true });
+      },
+    });
+    try {
+      await started.done;
+      // The child recorded, when it was told to stop, whether the relay was still open.
+      expect(await readFile(log, "utf8")).toBe("relay closed");
+    } finally {
+      if (child && alive(child)) process.kill(child, "SIGKILL");
+    }
+  }, 20_000);
+
+  it("takes the relay back before stopping what a cancelled program left running, when the program ends before its stop timer", async () => {
+    const env = await setup({ codex: [process.execPath, "-e", leftBehind] });
+    await writeFile(path.join(env.state, "pass-output"), "");
+    const log = path.join(env.root, "relay-at-stop");
+    let child = 0;
+    const started = startProcess({
+      command: ["unused"],
+      args: [log],
+      cwd: env.root,
+      env: { PATH: process.env.PATH },
+      container: {
+        settings: env.container,
+        mounts: [],
+        labels: {},
+        program: "codex",
+        env: {},
+        relay: { identity: { organizationId: env.org }, required: [] },
+      },
+      onFrame: async (frame) => {
+        child = (frame as { pid: number }).pid;
+        // Cancel: close the input. The stop timer would signal the group 2 s later; the program ends at about 1.2 s.
+        started.end();
+      },
+    });
+    try {
+      await started.done;
+      expect(await readFile(log, "utf8")).toBe("relay closed");
+    } finally {
+      if (child && alive(child)) process.kill(child, "SIGKILL");
+    }
+  }, 20_000);
 
   it("takes the relay back before removing the container, even when Docker cannot remove it", async () => {
     const env = await setup({
@@ -946,9 +1039,11 @@ describe.skipIf(process.platform === "win32")(
     };
     async function codexSetup(
       login: string | null = JSON.stringify(realLogin),
-      command?: [string, ...string[]]
+      command?: [string, ...string[]],
+      timeouts?: CodexOptions["timeouts"],
+      program: string[] = relayProgram.codex
     ) {
-      const env = await setup(relayProgram);
+      const env = await setup({ codex: program });
       const loginFolder = path.join(env.root, "providers/codex/login");
       await mkdir(loginFolder, { recursive: true });
       if (login !== null)
@@ -967,6 +1062,7 @@ describe.skipIf(process.platform === "win32")(
             fixture("replay.mjs"),
             fixture("codex-finish.synthetic.json"),
           ],
+          ...(timeouts ? { timeouts } : {}),
         });
         return provider.credentialRelay!;
       });
@@ -1056,6 +1152,45 @@ describe.skipIf(process.platform === "win32")(
         await t.network.close();
       }
     });
+
+    it.each([
+      ["a request goes unanswered", "--never-start-thread"],
+      ["the program dies while a request waits", "--die-on-thread"],
+    ])(
+      "when %s, the run fails and returns only after the grant is refused, its own folder deleted and the container removed",
+      async (_case, flag) => {
+        const t = await codexSetup(undefined, undefined, { request: 2_000 }, [
+          process.execPath,
+          fixture("codex-relay.mjs"),
+          flag,
+        ]);
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.input(), control());
+          expect(result.stopReason).toBe("failed");
+          const calls = await t.env.calls();
+          const run = runCall(calls);
+          expect(removed(calls, nameOf(run))).toBe(true);
+          const mount = valuesOf(run.args, "--mount").find((spec) =>
+            spec.includes(`target=${path.join(t.organization, "auth.json")},`)
+          );
+          await expect(
+            stat(/source=([^,]+)/.exec(mount!)![1]!)
+          ).rejects.toThrow();
+          const grant = (await t.seen()).login.tokens.access_token!;
+          const after = await fetch(
+            `${t.network.tools}/api/relay/codex/responses`,
+            { method: "POST", headers: { authorization: `Bearer ${grant}` } }
+          );
+          expect(after.status).toBe(401);
+          expect(t.network.urls).toHaveLength(0);
+        } finally {
+          await t.network.close();
+        }
+      },
+      10_000
+    );
 
     it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
       const t = await codexSetup(null);
@@ -1154,7 +1289,10 @@ describe.skipIf(process.platform === "win32")(
         },
         last_refresh: new Date(Date.now() - 86_400_000).toISOString(),
       });
-    async function refreshSetup(mode: "ok" | "slow" | "fail") {
+    async function refreshSetup(
+      mode: "ok" | "slow" | "fail" | "fail-once" | "silent" | "exit" | "stall",
+      timeouts?: CodexOptions["timeouts"]
+    ) {
       const log = path.join(
         await realpath(
           await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
@@ -1162,12 +1300,11 @@ describe.skipIf(process.platform === "win32")(
         "refreshes.log"
       );
       roots.push(path.dirname(log));
-      const t = await codexSetup(expiringLogin(), [
-        process.execPath,
-        fixture("codex-refresh.mjs"),
-        log,
-        mode,
-      ]);
+      const t = await codexSetup(
+        expiringLogin(),
+        [process.execPath, fixture("codex-refresh.mjs"), log, mode],
+        timeouts
+      );
       const refreshes = async () =>
         (await readFile(log, "utf8").catch(() => ""))
           .split("\n")
@@ -1229,6 +1366,51 @@ describe.skipIf(process.platform === "win32")(
         const again = await t.provider().adapter.execute(t.input(), control());
         expect(again.stopReason).toBe("failed");
         expect(t.network.urls).toHaveLength(0);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it.each([
+      ["goes unanswered", "silent", { refresh: 500 }],
+      ["ends with the program", "exit", undefined],
+      [
+        "takes longer in all than its one limit, though each step is within it",
+        "stall",
+        { refresh: 1_000 },
+      ],
+    ] as const)(
+      "fails the run, and starts no model turn, when the refresh %s",
+      async (_case, mode, timeouts) => {
+        const t = await refreshSetup(mode, timeouts);
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.input(), control());
+          expect(result.stopReason).toBe("failed");
+          expect(result.error).toContain("인증 중계");
+          expect(await t.refreshes()).toBe(0);
+          expect(t.network.urls).toHaveLength(0);
+        } finally {
+          await t.network.close();
+        }
+      },
+      10_000
+    );
+
+    it("refreshes again after a failed refresh once the relay is checked again", async () => {
+      const t = await refreshSetup("fail-once");
+      try {
+        const first = await t.provider().adapter.execute(t.input(), control());
+        expect(first.stopReason).toBe("failed");
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        // Checking the relay again reads the login, which runs a new refresh instead of reusing the failed one.
+        await t.provider().credentialRelay!.recover();
+        expect(await t.refreshes()).toBe(1);
+        expect(t.provider().credentialRelay!.failed()).toBe(false);
+        const again = await t.provider().adapter.execute(t.input(), control());
+        expect(again.stopReason).toBe("completed");
+        expect(await t.refreshes()).toBe(1);
       } finally {
         await t.network.close();
       }

@@ -21,6 +21,8 @@ export const probeTimeoutMs = 15_000;
 export const startupLimitMs = 5 * 60 * 1000;
 /** 이보다 긴 출력 한 줄은 메모리를 지키려고 그 줄만 버린다. */
 const defaultMaxLineLength = 64 * 1024 * 1024;
+/** 프로그램이 끝난 뒤 남은 출력을 읽을 시간. 남긴 자식이 출력을 쥐고 있어 출력이 닫히지 않을 때만 쓰인다. */
+const exitDrainMs = 1000;
 
 /** 프로그램 출력이 로그인 문제를 말하는가. 공개 기록에 옮기지 않고 판단에만 쓴다. */
 export const saysLoginProblem = (text: unknown) =>
@@ -216,6 +218,8 @@ export function startProcess(options: {
       child.kill("SIGKILL");
     }
   let closed = false,
+    finished = false,
+    leaderExited = false,
     broken = false,
     skipping = false,
     buffer = "",
@@ -223,7 +227,7 @@ export function startProcess(options: {
   const decoder = new StringDecoder("utf8");
   // 모르는 출력(안내문 등)은 건너뛴다. 프레임 처리 실패도 실행 시도를 끝내지 않는다.
   const deliver = (line: string) => {
-    if (!line.trim()) return;
+    if (finished || !line.trim()) return;
     let frame: unknown;
     try {
       frame = JSON.parse(line);
@@ -238,12 +242,14 @@ export function startProcess(options: {
   };
   let term: ReturnType<typeof setTimeout> | undefined,
     kill: ReturnType<typeof setTimeout> | undefined;
+  // 대표 프로세스를 끝내려는 신호다. 끝난 뒤 남은 그룹은 finish가 중계를 먼저 닫고 정리한다.
   const signalGroup = (signal: NodeJS.Signals) => {
-    if (child.pid) signalProcessTree(child.pid, signal);
+    if (child.pid && !leaderExited) signalProcessTree(child.pid, signal);
   };
   const end = () => {
     if (closed || term) return;
     child.stdin.end();
+    if (leaderExited) return;
     term = setTimeout(() => {
       signalGroup("SIGTERM");
       kill = setTimeout(() => signalGroup("SIGKILL"), 2000);
@@ -255,8 +261,13 @@ export function startProcess(options: {
     child.stdin.write(JSON.stringify(frame) + "\n");
     return true;
   };
+  let reportInputFailure!: () => void;
+  const inputFailed = new Promise<void>((resolve) => {
+    reportInputFailure = resolve;
+  });
   child.stdin.on("error", () => {
     broken = true;
+    reportInputFailure();
     end();
   });
   // 끝부분만 남긴다. 판단과 서버 진단에만 쓰고 공개 기록에 옮기지 않는다.
@@ -279,6 +290,10 @@ export function startProcess(options: {
       skipping = true;
     }
   });
+  let reportExit!: () => void;
+  const exited = new Promise<void>((resolve) => {
+    reportExit = resolve;
+  });
   const done = new Promise<{
     code: number | null;
     broken: boolean;
@@ -287,13 +302,17 @@ export function startProcess(options: {
     child.on("error", () => {
       broken = true;
     });
-    child.on("close", (code) => {
+    let drain: ReturnType<typeof setTimeout> | undefined;
+    let outputClosed = false;
+    const finish = (code: number | null) => {
+      if (finished) return;
       closed = true;
       clearTimeout(term);
       clearTimeout(kill);
-      const rest = buffer + decoder.end();
-      buffer = "";
-      if (!skipping && rest.length <= maxLineLength) deliver(rest);
+      clearTimeout(drain);
+      finished = true;
+      // 끝나기 전에 낸 출력을 다 처리한 순간을 알린다. 출력이 닫히지 않은 채 시작했으면 그때까지 읽은 출력까지다. 실제 정리(중계·자식·컨테이너)는 아래가 하고 done이 기다린다.
+      void queue.then(reportExit);
       void (async () => {
         // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
         try {
@@ -303,6 +322,11 @@ export function startProcess(options: {
           console.error(
             "[provider] the isolated run relay could not be closed"
           );
+        }
+        // 출력이 아직 열려 있으면(남긴 자식이 쥐고 있음) 이쪽 끝을 닫는다. 그 뒤로 온 출력은 읽지 않는다.
+        if (!outputClosed) {
+          child.stdout.destroy();
+          child.stderr.destroy();
         }
         // The leader may exit before its shell/MCP children. Do not release the attempt while they live.
         let stopped = true;
@@ -344,11 +368,30 @@ export function startProcess(options: {
           );
         resolve({ code, broken, stderr });
       })();
+    };
+    child.on("exit", (code) => {
+      leaderExited = true;
+      clearTimeout(term);
+      clearTimeout(kill);
+      // 프로그램이 끝났다. 보통은 곧 출력이 닫히고(close) 거기서 정리한다. 남긴 자식이 출력을 쥐고 있으면 close가 오지 않으므로, 남은 출력을 읽을 시간만 두고 같은 정리를 시작한다. 취소 중이던 종료 타이머도 여기서 멈춘다(남은 그룹은 finish가 중계를 먼저 닫고 정리).
+      if (!finished) drain = setTimeout(() => finish(code), exitDrainMs);
+    });
+    child.on("close", (code) => {
+      outputClosed = true;
+      if (finished) return;
+      const rest = buffer + decoder.end();
+      buffer = "";
+      if (!skipping && rest.length <= maxLineLength) deliver(rest);
+      finish(code);
     });
   });
   return {
     write,
     end,
+    /** 프로그램이 끝나고 그 전에 낸 출력의 처리도 끝났다. 남긴 자식이 출력을 쥐어 출력이 닫히지 않으면 종료 뒤 exitDrainMs까지 읽은 출력만 처리한다. 정리 완료는 기다리지 않는다(정리 완료는 done). */
+    exited,
+    /** 입력 쓰기가 실패했다. 이후 보낸 내용은 프로그램에 닿지 않는다. 프로그램 종료는 end()의 순서대로 따로 진행한다. */
+    inputFailed,
     done,
     interrupt: () => signalGroup("SIGINT"),
     endInput: () => child.stdin.end(),
