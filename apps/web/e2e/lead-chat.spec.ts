@@ -76,8 +76,24 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
   await expect(
     stream.getByText("조직 도구 send_message").first()
   ).toBeVisible();
+  // 답장한 실행 시도(가장 최근)가 끝나기를 서버에서 확인하고, 그 실행 시도의 링크를 ID로 고른다. 위 두 문구는 앞선
+  // 실행 시도에도 있어 이번 실행 시도를 가리지 못한다.
+  let replyRunId = "";
+  await expect
+    .poll(
+      async () => {
+        const [latest] = (await (
+          await page.request.get(`/api/organizations/${org.id}/runs`)
+        ).json()) as { id: string; status: string }[];
+        replyRunId = latest?.id ?? "";
+        return latest?.status;
+      },
+      { timeout: 15_000 }
+    )
+    .toBe("completed");
   await stream
     .getByRole("link", { name: /^실행 시도 / })
+    .and(stream.locator(`a[href$="/runs/${replyRunId}"]`))
     .first()
     .click();
 

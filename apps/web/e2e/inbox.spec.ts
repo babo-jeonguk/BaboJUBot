@@ -338,6 +338,9 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
     .getByRole("button", { name: "보관" })
     .click();
   await expect(decidedItem).toHaveCount(0);
+  // 보관한 항목의 상세가 열린 채이면 주소가 이미 같아 다시 열기를 확인하지 못한다. 다른 화면에서 다시 연다.
+  await page.goto("/inbox");
+  await expect(page).not.toHaveURL(decidedUrl);
   await panel.getByRole("button", { name: /^보관됨 \d/ }).click();
   const archivedDecided = panel
     .getByRole("list", { name: "보관됨" })

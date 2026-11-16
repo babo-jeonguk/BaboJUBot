@@ -42,13 +42,18 @@ test("a clock server records and cuts days by the time the test sets, not the wa
     expect(created.status()).toBe(201);
     const org = (await created.json()) as { id: string };
     // 생성으로 깨어난 Lead의 실행 시도는 서버 시계로 시작·종료 시각을 적는다.
+    // 새로 띄운 서버에서 생성으로 깨어난 Lead의 실행 시도 전체를 기다리므로 기본 5초보다 넉넉히 둔다(다른 spec과 같은 30초).
     await expect
-      .poll(async () =>
-        (
-          (await (
-            await request.get(`${server.url}/api/organizations/${org.id}/runs`)
-          ).json()) as { startedAt: string; finishedAt: string | null }[]
-        ).map((r) => [r.startedAt, r.finishedAt])
+      .poll(
+        async () =>
+          (
+            (await (
+              await request.get(
+                `${server.url}/api/organizations/${org.id}/runs`
+              )
+            ).json()) as { startedAt: string; finishedAt: string | null }[]
+          ).map((r) => [r.startedAt, r.finishedAt]),
+        { timeout: 30_000 }
       )
       .toEqual([["2026-03-10T14:59:00.000Z", "2026-03-10T14:59:00.000Z"]]);
     const dashboard = async () =>
