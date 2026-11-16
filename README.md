@@ -1,5 +1,7 @@
 # BaboJUBot
 
+[![CI](https://github.com/babo-jeonguk/BaboJUBot/actions/workflows/scaffold.yml/badge.svg?branch=main)](https://github.com/babo-jeonguk/BaboJUBot/actions/workflows/scaffold.yml?branch=main)
+
 > Autonomous AI research teams with human governance and observable workflows.
 
 BaboJUBot turns complex research goals into executed, verified results using autonomous AI research teams.
@@ -25,6 +27,8 @@ For each research objective, BaboJUBot creates an independent research organizat
 - **Node.js**: 24.x
 - **pnpm**: 10.33.0
 - **Git**
+
+The pnpm version is pinned in `package.json` (`packageManager`): current pnpm releases switch to the pinned version automatically inside this repository, and `corepack enable` (bundled with Node.js) selects it anywhere else.
 
 ### Installation & Launch
 
