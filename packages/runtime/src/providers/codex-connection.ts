@@ -88,8 +88,9 @@ export function openCodexConnection(
       if (frame.id === undefined) onNotification?.(frame);
     },
   });
-  // 예고 없이 끝나도 같은 길로 닫는다. 정리 완료(done)를 기다리지 않고 대기를 바로 끝낸다.
+  // 예고 없이 끝나거나 입력 쓰기가 실패해도 같은 길로 닫는다. 정리 완료(done)를 기다리지 않고 대기를 바로 끝낸다.
   void child.exited.then(markClosed);
+  void child.inputFailed.then(markClosed);
   const write = (frame: unknown) => {
     try {
       return child.write(frame);

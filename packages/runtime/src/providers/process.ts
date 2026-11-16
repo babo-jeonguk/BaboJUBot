@@ -255,8 +255,13 @@ export function startProcess(options: {
     child.stdin.write(JSON.stringify(frame) + "\n");
     return true;
   };
+  let reportInputFailure!: () => void;
+  const inputFailed = new Promise<void>((resolve) => {
+    reportInputFailure = resolve;
+  });
   child.stdin.on("error", () => {
     broken = true;
+    reportInputFailure();
     end();
   });
   // 끝부분만 남긴다. 판단과 서버 진단에만 쓰고 공개 기록에 옮기지 않는다.
@@ -290,6 +295,11 @@ export function startProcess(options: {
   }>((resolve) => {
     child.on("error", () => {
       broken = true;
+    });
+    child.on("exit", () => {
+      if (closed || !child.pid) return;
+      // 프로그램이 끝났다. 남긴 자식이 출력을 쥐고 있으면 close가 오지 않아 정리와 대기 해제가 함께 멈춘다. 그 자식을 지금 끝낸다. 남은 출력은 그대로 읽고, 기록 정리 판단은 close 쪽이 한다.
+      void stopProcessGroup(child.pid).catch(() => {});
     });
     child.on("close", (code) => {
       closed = true;
@@ -357,6 +367,8 @@ export function startProcess(options: {
     end,
     /** 프로그램이 끝나고 그 전에 낸 출력의 처리도 끝났다. 정리 완료는 기다리지 않는다(정리 완료는 done). */
     exited,
+    /** 입력 쓰기가 실패했다. 이후 보낸 내용은 프로그램에 닿지 않는다. 프로그램 종료는 end()의 순서대로 따로 진행한다. */
+    inputFailed,
     done,
     interrupt: () => signalGroup("SIGINT"),
     endInput: () => child.stdin.end(),
