@@ -525,11 +525,12 @@ describe("one app-server connection per call (#145)", () => {
       const t = await scripted(
         {
           "model/list": [
-            { ...page(["one"], "next"), delayMs: 700 },
-            { ...page(["two"], null), delayMs: 700 },
+            { ...page(["one"], "next"), delayMs: 2_500 },
+            { ...page(["two"], null), delayMs: 2_500 },
           ],
         },
-        { modelList: 1_000 }
+        // Each page is well inside the limit and leaves the program 1.5 s to start; the two pages together are not.
+        { modelList: 4_000 }
       );
       expect(
         await t.provider.listModels!(new AbortController().signal)
