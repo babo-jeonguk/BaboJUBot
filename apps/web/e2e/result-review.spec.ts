@@ -169,6 +169,8 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(list.getByRole("link").nth(1)).toContainText("수정 요청됨");
   await page.goto("/inbox");
   const panel = page.getByRole("complementary", { name: "Inbox" });
+  // 목록을 받기 전에는 항목이 하나도 없어 아래 0개 확인이 그냥 통과한다. 개수가 보이면(받은 뒤) 확인한다.
+  await expect(panel.getByRole("button", { name: /^전체 \d/ })).toBeVisible();
   await expect(inboxOrganizationLinks(attention, org.id)).toHaveCount(0);
   await panel.getByRole("button", { name: /^전체 \d/ }).click();
   const all = panel.getByRole("list", { name: "전체" });

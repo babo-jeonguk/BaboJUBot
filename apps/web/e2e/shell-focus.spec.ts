@@ -1,7 +1,7 @@
 // 셸 이동·포커스·탭·인라인 확인·건너뛰기 링크의 접근성 회귀(#151 F1·F2·F3·F7·F14·F16). 역할 기반 locator, 포커스, 페이지 제목,
 // ARIA 연결로 확인한다. 실제 스크린 리더 낭독은 이 검사 범위 밖이다.
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import { goalInput, inboxOrganizationLinks } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
@@ -411,7 +411,7 @@ test("the narrow Inbox drawer still traps focus and returns it to its trigger", 
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   // 초기 승인 요청이 Inbox 항목이 된다.
-  await createOrganization(page, "Inbox drawer 조직");
+  const org = await createOrganization(page, "Inbox drawer 조직");
   await openWithLiveEvents(page, "/");
   // drawer가 열리면 바깥이 접근성 트리에서 숨으므로 트리거는 속성으로 찾는다.
   const trigger = page.locator('main button[aria-label^="Inbox · "]');
@@ -435,7 +435,8 @@ test("the narrow Inbox drawer still traps focus and returns it to its trigger", 
 
   // 항목을 골라 화면을 옮기면 drawer가 닫히고 새 화면 제목이 포커스를 받는다.
   await trigger.click();
-  const item = drawer.getByRole("link").first();
+  // 공용 DB의 다른 조직 항목이나 늦게 도착한 항목으로 순서가 바뀔 수 있어, 이 조직의 항목을 조직 ID로 고른다.
+  const item = inboxOrganizationLinks(drawer, org.id);
   await expect(item).toBeVisible(runs);
   const href = await item.getAttribute("href");
   await item.click();

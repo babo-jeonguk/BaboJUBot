@@ -81,7 +81,11 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   // Lead가 사유를 받아 다시 제출한 새 요청이 Inbox에 새로고침 없이 나타난다.
   // 이번에는 Inbox 상세의 요약에서 결정한다. 계획은 앞부분만 보이고 줄였다는 안내가 있다.
   await openInbox(page);
-  await inboxOrganizationLinks(inbox, org.id, new RegExp(name)).click();
+  // 앞서 결정한 첫 요청 항목이 아직 목록에 남아 있을 수 있어, 첫 요청과 다른 승인 요청의 항목을 고른다.
+  const firstId = firstUrl.split("/").pop()!;
+  await inboxOrganizationLinks(inbox, org.id, new RegExp(name))
+    .and(inbox.locator(`a[href*="/approval/"]:not([href$="/${firstId}"])`))
+    .click();
   await expect(page).toHaveURL(
     /\/inbox\/[0-9a-f-]{36}\/approval\/[0-9a-f-]{36}$/
   );

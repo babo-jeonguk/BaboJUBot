@@ -63,9 +63,12 @@ test("a stream the server refuses fails at once with the reason", async ({
   });
   const before = listeners(page);
   const started = Date.now();
-  await expect(openWithLiveEvents(page, "/")).rejects.toThrow(
+  // 화면을 받아 띄우는 시간도 재는 시간에 들어가므로 기다림 시한을 넉넉히 두고, 시한까지 기다리지 않았는지만 본다.
+  await expect(
+    openWithLiveEvents(page, "/", { timeout: 30_000 })
+  ).rejects.toThrow(
     /^\/ 화면의 Event stream\(\/api\/events\): ready frame을 받기 전에 오류가 났다\(.*404/
   );
-  expect(Date.now() - started).toBeLessThan(5_000);
+  expect(Date.now() - started).toBeLessThan(15_000);
   expect(listeners(page)).toBe(before);
 });

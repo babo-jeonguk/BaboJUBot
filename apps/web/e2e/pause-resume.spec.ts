@@ -126,7 +126,10 @@ test("pausing one agent from its detail page holds its messages until it resumes
   await expect(
     control.getByRole("button", { name: /에이전트 재개/ })
   ).toBeVisible();
-  await expect(page.getByText("일시정지", { exact: true })).toBeVisible();
+  // 레일에는 다른 spec이 멈춰 둔 조직의 `일시정지`도 보이므로 본문에서 찾는다.
+  await expect(
+    page.getByRole("main").getByText("일시정지", { exact: true })
+  ).toBeVisible();
   await page.request.post(org.api("/messages"), {
     data: { body: "Lead가 멈춘 동안 보낸 메시지" },
   });
@@ -337,6 +340,8 @@ test("queued messages wait above the composer where the owner can edit one in pl
   // 쓰던 글이 있으면 ↑는 줄을 건드리지 않는다. 빈 입력창의 ↑는 가장 최근 메시지를 입력창에 되돌린다.
   await input.fill("쓰던 글");
   await input.press("ArrowUp");
+  // 줄 수는 원래 3개라 그것만으로는 아무 일도 없었는지 모른다. 되돌리면 입력창이 바로 바뀌므로 입력창을 본다.
+  await expect(input).toHaveValue("쓰던 글");
   await expect(queued).toHaveCount(3);
   await input.fill("");
   await input.press("ArrowUp");

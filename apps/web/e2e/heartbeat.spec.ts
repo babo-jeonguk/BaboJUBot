@@ -94,6 +94,8 @@ test("the owner turns an agent's heartbeat on, changes its interval, sees the ne
     .getByRole("region", { name: "에이전트 제어" })
     .getByRole("button", { name: /에이전트 재개/ })
     .click();
+  // 재개가 반영된 뒤에 다음 단계로 간다. 누른 것만으로는 재개를 확인하지 않는다.
+  await expect(status(other)).not.toContainText("일시정지 중");
 
   await toggle(other).uncheck();
   await save(other).click();

@@ -162,6 +162,9 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(history).toContainText("상태 제안됨 → 진행 중");
 
   // 주 부모 변경: 다른 문제 아래로.
+  // 주 부모가 바뀌면 지도 질의를 다시 받아 노드를 새로 배치한다. 그 전의 연결 경로를 기억해 두고 바뀐 뒤에 잰다.
+  const primaryPath = `svg.rm-layer path[data-id="primary:${childId}"]`;
+  const pathBefore = await curve(primaryPath);
   await panel.getByRole("button", { name: "주 부모 변경" }).click();
   await panel.getByLabel("새 주 부모 검색").fill("정리 2");
   await panel.getByRole("option", { name: /연구 문제 정리 2/ }).click();
@@ -172,6 +175,8 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(history).toContainText(
     "주 부모: “연구 문제 정리 1” → “연구 문제 정리 2”"
   );
+  // 편집 기록은 노드 질의로, 배치는 지도 질의로 따로 온다. 새 배치가 그려진 뒤에 위치를 잰다.
+  await expect.poll(() => curve(primaryPath)).not.toEqual(pathBefore);
 
   // 보조 연결 추가: 원래 문제를 뒷받침한다. 주 배치는 바뀌지 않는다.
   const before = await first.boundingBox();
@@ -405,14 +410,13 @@ test("parallel secondary links between the same two nodes are drawn apart and li
   };
   await sameCurves();
 
-  // 선택한 노드에 닿은 연결의 종류 이름도 서로 겹치지 않는다.
-  const labelsApart = async () => {
-    const boxes = await page
-      .locator(".react-flow__edge-textwrapper")
-      .evaluateAll((els) =>
-        els.map((el) => el.getBoundingClientRect().toJSON() as DOMRect)
-      );
-    expect(boxes).toHaveLength(4);
+  // 선택한 노드에 닿은 연결의 종류 이름도 서로 겹치지 않는다. 이름표는 그린 뒤 크기를 재서 자리를 잡으므로 자리를 잡을 때까지 기다린다.
+  const labels = page.locator(".react-flow__edge-textwrapper");
+  await expect(labels).toHaveCount(4);
+  await expect(async () => {
+    const boxes = await labels.evaluateAll((els) =>
+      els.map((el) => el.getBoundingClientRect().toJSON() as DOMRect)
+    );
     for (const [i, a] of boxes.entries())
       for (const b of boxes.slice(i + 1))
         expect(
@@ -421,8 +425,7 @@ test("parallel secondary links between the same two nodes are drawn apart and li
             a.right <= b.left ||
             b.right <= a.left
         ).toBe(true);
-  };
-  await labelsApart();
+  }).toPass({ timeout: 5_000 });
 
   // 상세 패널은 관계마다 한 행씩 보인다. 같은 종류의 두 연결도 따로 보인다.
   const panel = page.getByRole("complementary", { name: "노드 상세" });
