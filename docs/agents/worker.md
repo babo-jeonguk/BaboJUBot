@@ -40,7 +40,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 
 출력 JSONL·stderr(`.err`)·brief는 Git 제외 로컬 폴더에 두고, 제품 런타임 데이터와 섞지 않습니다.
 
-**Paseo:** parent가 `create_agent`로 `dev-worker` mode subagent를 띄웁니다. 넘길 값은 [개발 오케스트레이션 §3](dev-orchestration.md#3-agent-띄우기)에 있습니다.
+**Paseo:** parent가 `worker-deepseek` profile 값을 옮겨 `create_agent`로 subagent를 띄웁니다. 옮기는 방법은 [개발 오케스트레이션 §3](dev-orchestration.md#3-agent-띄우기)을 봅니다.
 
 ## 5. 멈춤과 재시도
 
