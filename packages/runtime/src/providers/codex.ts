@@ -25,6 +25,7 @@ import {
   usageAmount,
 } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
+import { openCodexConnection, ProtocolRejection } from "./codex-connection.ts";
 import {
   startProcess,
   probeTimeoutMs,
@@ -59,6 +60,8 @@ export type CodexOptions = {
   container?: ContainerSettings;
   /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
   relay?: { upstream?: string; verified?: boolean };
+  /** 시험이 줄이는 시한(ms). 제품은 기본값(일반 요청 120초, 끼워 넣기 10초, 모델 목록·로그인 갱신 전체 60초)을 쓴다. */
+  timeouts?: Partial<Record<keyof typeof defaultTimeouts, number>>;
 };
 /**
  * Codex의 인증 중계(#148). Codex의 ChatGPT 로그인은 custom provider(`requires_openai_auth`)를 거쳐 중계로 간다.
@@ -164,8 +167,6 @@ async function placeLoginPlaceholder(at: string): Promise<void> {
       throw error;
   }
 }
-/** 갱신을 기다리는 한도. */
-const refreshTimeoutMs = 60_000;
 /** Codex 자신은 접근 토큰 만료 5분 전, 또는 마지막 갱신 8일 뒤에 갱신한다. 서버는 그보다 조금 일찍 갱신한다. */
 const refreshWindowMs = 10 * 60 * 1000;
 const refreshIntervalMs = 8 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000;
@@ -271,15 +272,21 @@ const execKeys = {
   cacheWrite: "cache_write_input_tokens",
   output: "output_tokens",
 };
-class ProtocolRejection extends Error {
-  constructor() {
-    super("Protocol request rejected");
-  }
-}
-/** 세션 시작·재개 같은 요청의 응답 제한. 큰 세션을 불러오면 오래 걸린다. */
-const requestTimeoutMs = 2 * 60 * 1000;
-/** 끼워 넣기 응답 제한. 넘겨도 실행 시도는 끝내지 않는다. */
-const steerTimeoutMs = 10_000;
+/** 지금부터 `limitMs` 뒤에 끝나는 시한 하나. 부를 때마다 남은 시간을 요청 제한으로 준다. */
+const remainingOf = (limitMs: number) => {
+  const deadline = Date.now() + limitMs;
+  return () => ({ timeoutMs: deadline - Date.now() });
+};
+const defaultTimeouts = {
+  /** 세션 시작·재개 같은 요청의 응답 제한. 큰 세션을 불러오면 오래 걸린다. 넘기면 실행 시도를 끝낸다. */
+  request: 2 * 60 * 1000,
+  /** 끼워 넣기 응답 제한. 넘기면 전달 여부를 모르는 오류이며 실행 시도는 끝내지 않는다. */
+  steer: 10_000,
+  /** 모델 목록 전체(초기화부터 마지막 페이지까지)의 한도. 페이지마다 다시 시작하지 않는다. */
+  modelList: 60_000,
+  /** 로그인 갱신 전체(초기화와 account/read)의 한도. 단계마다 다시 시작하지 않는다. */
+  refresh: 60_000,
+};
 
 export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const id = options.id ?? "codex";
@@ -295,6 +302,16 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     setAside: path.join(home, "set-aside"),
   });
   const command = options.command ?? commandFor(id, "codex");
+  const timeouts = { ...defaultTimeouts, ...options.timeouts };
+  /** 모델 목록·로그인 갱신용 app-server. 이 컴퓨터의 연결 폴더에서 돈다. */
+  const openAppServer = () =>
+    openCodexConnection({
+      stateDir: home,
+      command,
+      args: ["app-server"],
+      cwd: home,
+      env: environment(),
+    });
   const environment = (codexHome = home, isolated = false) =>
     providerEnvironment(id, codexHome, { CODEX_HOME: codexHome }, { isolated });
   let refreshing: Promise<void> | undefined;
@@ -306,35 +323,21 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     (refreshing ??= (async () => {
       await mkdir(home, { recursive: true, mode: 0o700 });
       await shareLogin(path.join(home, "auth.json"));
-      const child = startProcess({
-        stateDir: home,
-        command,
-        args: ["app-server"],
-        cwd: home,
-        env: environment(),
-        onFrame: async (raw) => {
-          const frame = record(raw);
-          if (frame.method) return;
-          if (frame.id === 1 && !frame.error) {
-            child.write({ method: "initialized" });
-            child.write({
-              id: 2,
-              method: "account/read",
-              params: { refreshToken: true },
-            });
-          } else child.end();
-        },
-      });
-      const timer = setTimeout(() => child.end(), refreshTimeoutMs);
+      const connection = openAppServer();
+      // 한도는 프로그램을 띄운 때부터 하나다. 초기화와 account/read가 이어 쓴다.
+      const left = remainingOf(timeouts.refresh);
       try {
-        child.write({
-          id: 1,
-          method: "initialize",
-          params: { clientInfo: { name: "babojubot", version: "0.0.0" } },
-        });
-        await child.done;
+        await connection.initialize(left());
+        await connection.request(
+          "account/read",
+          { refreshToken: true },
+          left()
+        );
+      } catch {
+        // 갱신했는지는 응답이 아니라 원본을 다시 읽어 판단한다(currentLogin).
       } finally {
-        clearTimeout(timer);
+        connection.close();
+        await connection.done;
       }
     })().finally(() => {
       refreshing = undefined;
@@ -407,32 +410,27 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     models: [],
     async listModels(signal) {
       if ((await readiness(signal)).status === "not_ready") return [];
-      const models: { id: string; label: string }[] = [];
-      let complete = false,
-        id = 1;
-      const child = startProcess({
-        stateDir: home,
-        command,
-        args: ["app-server"],
-        cwd: home,
-        env: environment(),
-        onFrame: async (raw) => {
-          const frame = record(raw);
-          if (frame.id !== id || frame.method) return;
-          if (frame.error) {
-            child.end();
-            return;
-          }
-          if (id === 1) {
-            child.write({ method: "initialized" });
-            child.write({
-              id: ++id,
-              method: "model/list",
-              params: { limit: 100, includeHidden: false },
-            });
-            return;
-          }
-          const result = record(frame.result);
+      if (signal.aborted) return [];
+      const connection = openAppServer();
+      const stop = () => connection.close();
+      signal.addEventListener("abort", stop, { once: true });
+      // 목록 전체의 한도 하나를 모든 페이지가 이어 쓴다.
+      const left = remainingOf(timeouts.modelList);
+      // 모든 페이지를 받은 목록만 쓴다. 중간에 끝나면 받은 페이지를 버린다.
+      let models: { id: string; label: string }[] = [];
+      try {
+        await connection.initialize(left());
+        let cursor: string | undefined;
+        do {
+          const result = await connection.request(
+            "model/list",
+            {
+              limit: 100,
+              includeHidden: false,
+              ...(cursor === undefined ? {} : { cursor }),
+            },
+            left()
+          );
           if (Array.isArray(result.data))
             for (const rawModel of result.data) {
               const model = record(rawModel);
@@ -445,39 +443,19 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                       : model.model,
                 });
             }
-          if (typeof result.nextCursor === "string")
-            child.write({
-              id: ++id,
-              method: "model/list",
-              params: {
-                limit: 100,
-                includeHidden: false,
-                cursor: result.nextCursor,
-              },
-            });
-          else {
-            complete = true;
-            child.end();
-          }
-        },
-      });
-      const stop = () => child.end();
-      signal.addEventListener("abort", stop, { once: true });
-      const timer = setTimeout(stop, 60000);
-      try {
-        if (signal.aborted) stop();
-        else
-          child.write({
-            id: 1,
-            method: "initialize",
-            params: { clientInfo: { name: "babojubot", version: "0.0.0" } },
-          });
-        await child.done;
-        return complete && !signal.aborted ? models : [];
+          cursor =
+            typeof result.nextCursor === "string"
+              ? result.nextCursor
+              : undefined;
+        } while (cursor !== undefined);
+      } catch {
+        models = [];
       } finally {
-        clearTimeout(timer);
         signal.removeEventListener("abort", stop);
+        connection.close();
+        await connection.done;
       }
+      return signal.aborted ? [] : models;
     },
     adapter: {
       capabilities: {
@@ -576,22 +554,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           }
           let result = failed(),
             threadId = "",
-            turnId = "",
-            sequence = 0;
+            turnId = "";
           let totals: CodexTotals | undefined;
           let baseline = readTotals(
             request.previousSession?.tokens,
             appServerKeys
           );
           let activities = Promise.resolve();
-          const pending = new Map<
-            number,
-            {
-              resolve: (value: Record<string, unknown>) => void;
-              reject: (error: Error) => void;
-              timer: ReturnType<typeof setTimeout>;
-            }
-          >();
           const relayBase = new URL(
             `/api/relay/${encodeURIComponent(id)}`,
             request.access.toolsBaseUrl
@@ -668,7 +637,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             return outcome;
           }
           args.unshift("app-server");
-          const child = startProcess({
+          const connection = openCodexConnection({
             // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
             stateDir: home,
             command,
@@ -676,17 +645,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             cwd,
             env,
             container,
-            onFrame: async (raw) => {
-              const frame = record(raw);
-              if (typeof frame.id === "number" && !frame.method) {
-                const waiter = pending.get(frame.id);
-                if (!waiter) return;
-                pending.delete(frame.id);
-                clearTimeout(waiter.timer);
-                if (frame.error) waiter.reject(new ProtocolRejection());
-                else waiter.resolve(record(frame.result));
-                return;
-              }
+            onNotification: (frame) => {
               const params = record(frame.params);
               if (params.threadId !== threadId) return;
               if (frame.method === "thread/tokenUsage/updated") {
@@ -724,54 +683,24 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                   saysLoginProblem(record(turn.error).message)
                 )
                   result.errorCode = "login_required";
-                child.end();
+                connection.close();
               }
             },
           });
-          const rpc = (
-            method: string,
-            params: unknown,
-            timeoutMs = requestTimeoutMs,
-            endOnTimeout = true
-          ) =>
-            new Promise<Record<string, unknown>>((resolve, reject) => {
-              const id = ++sequence;
-              const timer = setTimeout(() => {
-                pending.delete(id);
-                reject(new Error("Protocol response timed out"));
-                if (endOnTimeout) child.end();
-              }, timeoutMs);
-              pending.set(id, { resolve, reject, timer });
-              if (!child.write({ id, method, params })) {
-                clearTimeout(timer);
-                pending.delete(id);
-                reject(new Error("Protocol closed"));
-              }
-            });
-          void child.done.then(() => {
-            for (const item of pending.values()) {
-              clearTimeout(item.timer);
-              item.reject(new Error("Protocol closed"));
-            }
-            pending.clear();
-          });
+          /** 일반 요청. 응답이 없으면 실패이며 다시 보내지 않는다(아래 catch가 연결을 닫는다). */
+          const rpc = (method: string, params: unknown) =>
+            connection.request(method, params, { timeoutMs: timeouts.request });
           const cancel = () => {
+            // 응답은 기다리지 않는다. 닫으면 대기는 곧바로 끝난다.
             if (threadId && turnId)
-              child.write({
-                id: ++sequence,
-                method: "turn/interrupt",
-                params: { threadId, turnId },
-              });
-            child.end();
+              void rpc("turn/interrupt", { threadId, turnId }).catch(() => {});
+            connection.close();
           };
           runControl.signal.addEventListener("abort", cancel, { once: true });
           try {
             if (runControl.signal.aborted) cancel();
             else {
-              await rpc("initialize", {
-                clientInfo: { name: "babojubot", version: "0.0.0" },
-              });
-              child.write({ method: "initialized" });
+              await connection.initialize({ timeoutMs: timeouts.request });
               const config = {
                 cwd,
                 model: request.model,
@@ -795,10 +724,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                   }
                 );
               } catch (error) {
-                // 문구에 기대지 않는다. 프로그램이 재개를 거절하면 새 세션으로 시작한다.
+                // 문구에 기대지 않는다. 프로그램이 재개를 명시적으로 거절했을 때만 새 세션으로 한 번 시작한다.
+                // 응답 없음·연결 닫힘·취소는 거절이 아니다.
                 if (
                   !request.previousSession ||
-                  !(error instanceof ProtocolRejection)
+                  !(error instanceof ProtocolRejection) ||
+                  runControl.signal.aborted ||
+                  connection.closed
                 )
                   throw error;
                 baseline = readTotals({}, appServerKeys);
@@ -824,11 +756,12 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               });
               turnId = String(record(turn.turn).id);
               active.set(request.identity.runId, async (message) => {
-                if (runControl.signal.aborted || child.closed)
+                if (runControl.signal.aborted || connection.closed)
                   return "rejected";
                 const expectedTurnId = turnId;
                 try {
-                  const ack = await rpc(
+                  // 응답이 없으면 전달 여부를 모르는 오류로 알린다. 실행 시도는 이어 가고 다시 보내지 않는다.
+                  const ack = await connection.request(
                     "turn/steer",
                     {
                       threadId,
@@ -836,8 +769,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                       clientUserMessageId: message.messageId,
                       input: [{ type: "text", text: message.body }],
                     },
-                    steerTimeoutMs,
-                    false
+                    { timeoutMs: timeouts.steer }
                   );
                   return ack.turnId === expectedTurnId
                     ? "accepted"
@@ -855,9 +787,10 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               );
             }
           } catch {
-            child.end();
+            connection.close();
           }
-          await child.done;
+          // 대기는 이미 끝났다. 프로세스·자식·컨테이너·중계 정리가 끝난 뒤에 돌아간다.
+          await connection.done;
           runControl.signal.removeEventListener("abort", cancel);
           active.delete(request.identity.runId);
           await activities;

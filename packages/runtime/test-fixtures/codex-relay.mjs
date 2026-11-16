@@ -2,7 +2,8 @@
 // Like Codex with a ChatGPT login and a custom provider (`requires_openai_auth`), it reads the access token (and the account id, when
 // present) from CODEX_HOME/auth.json and calls `<base_url>/responses` of the `babojubot_relay` provider given with `-c`.
 // It appends the login it saw to CODEX_HOME/seen-auth.jsonl for the test. On 200 the turn completes; otherwise it keeps retrying like a
-// CLI would until its input closes, then exits 1.
+// CLI would until its input closes, then exits 1. With `--never-start-thread` it leaves `thread/start` unanswered; with
+// `--die-on-thread` it ends (code 1) instead of answering it.
 import { createInterface } from "node:readline";
 import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -80,9 +81,14 @@ input.on("line", (line) => {
   if (!line.trim()) return;
   const frame = JSON.parse(line);
   if (frame.method === "initialize") out({ id: frame.id, result: {} });
-  else if (frame.method === "thread/start" || frame.method === "thread/resume")
+  else if (
+    frame.method === "thread/start" ||
+    frame.method === "thread/resume"
+  ) {
+    if (args.includes("--never-start-thread")) return;
+    if (args.includes("--die-on-thread")) process.exit(1);
     out({ id: frame.id, result: { thread: { id: threadId } } });
-  else if (frame.method === "turn/start") {
+  } else if (frame.method === "turn/start") {
     out({ id: frame.id, result: { turn: { id: turnId } } });
     void runTurn();
   } else if (typeof frame.id === "number") out({ id: frame.id, result: {} });

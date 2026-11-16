@@ -19,7 +19,7 @@ import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
-import { createCodexProvider } from "./codex.ts";
+import { createCodexProvider, type CodexOptions } from "./codex.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { createAntigravityProvider } from "./antigravity.ts";
 import {
@@ -946,9 +946,11 @@ describe.skipIf(process.platform === "win32")(
     };
     async function codexSetup(
       login: string | null = JSON.stringify(realLogin),
-      command?: [string, ...string[]]
+      command?: [string, ...string[]],
+      timeouts?: CodexOptions["timeouts"],
+      program: string[] = relayProgram.codex
     ) {
-      const env = await setup(relayProgram);
+      const env = await setup({ codex: program });
       const loginFolder = path.join(env.root, "providers/codex/login");
       await mkdir(loginFolder, { recursive: true });
       if (login !== null)
@@ -967,6 +969,7 @@ describe.skipIf(process.platform === "win32")(
             fixture("replay.mjs"),
             fixture("codex-finish.synthetic.json"),
           ],
+          ...(timeouts ? { timeouts } : {}),
         });
         return provider.credentialRelay!;
       });
@@ -1056,6 +1059,45 @@ describe.skipIf(process.platform === "win32")(
         await t.network.close();
       }
     });
+
+    it.each([
+      ["a request goes unanswered", "--never-start-thread"],
+      ["the program dies while a request waits", "--die-on-thread"],
+    ])(
+      "when %s, the run fails and returns only after the grant is refused, its own folder deleted and the container removed",
+      async (_case, flag) => {
+        const t = await codexSetup(undefined, undefined, { request: 500 }, [
+          process.execPath,
+          fixture("codex-relay.mjs"),
+          flag,
+        ]);
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.input(), control());
+          expect(result.stopReason).toBe("failed");
+          const calls = await t.env.calls();
+          const run = runCall(calls);
+          expect(removed(calls, nameOf(run))).toBe(true);
+          const mount = valuesOf(run.args, "--mount").find((spec) =>
+            spec.includes(`target=${path.join(t.organization, "auth.json")},`)
+          );
+          await expect(
+            stat(/source=([^,]+)/.exec(mount!)![1]!)
+          ).rejects.toThrow();
+          const grant = (await t.seen()).login.tokens.access_token!;
+          const after = await fetch(
+            `${t.network.tools}/api/relay/codex/responses`,
+            { method: "POST", headers: { authorization: `Bearer ${grant}` } }
+          );
+          expect(after.status).toBe(401);
+          expect(t.network.urls).toHaveLength(0);
+        } finally {
+          await t.network.close();
+        }
+      },
+      10_000
+    );
 
     it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
       const t = await codexSetup(null);
@@ -1154,7 +1196,10 @@ describe.skipIf(process.platform === "win32")(
         },
         last_refresh: new Date(Date.now() - 86_400_000).toISOString(),
       });
-    async function refreshSetup(mode: "ok" | "slow" | "fail") {
+    async function refreshSetup(
+      mode: "ok" | "slow" | "fail" | "fail-once" | "silent" | "exit" | "stall",
+      timeouts?: CodexOptions["timeouts"]
+    ) {
       const log = path.join(
         await realpath(
           await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
@@ -1162,12 +1207,11 @@ describe.skipIf(process.platform === "win32")(
         "refreshes.log"
       );
       roots.push(path.dirname(log));
-      const t = await codexSetup(expiringLogin(), [
-        process.execPath,
-        fixture("codex-refresh.mjs"),
-        log,
-        mode,
-      ]);
+      const t = await codexSetup(
+        expiringLogin(),
+        [process.execPath, fixture("codex-refresh.mjs"), log, mode],
+        timeouts
+      );
       const refreshes = async () =>
         (await readFile(log, "utf8").catch(() => ""))
           .split("\n")
@@ -1229,6 +1273,51 @@ describe.skipIf(process.platform === "win32")(
         const again = await t.provider().adapter.execute(t.input(), control());
         expect(again.stopReason).toBe("failed");
         expect(t.network.urls).toHaveLength(0);
+      } finally {
+        await t.network.close();
+      }
+    });
+
+    it.each([
+      ["goes unanswered", "silent", { refresh: 500 }],
+      ["ends with the program", "exit", undefined],
+      [
+        "takes longer in all than its one limit, though each step is within it",
+        "stall",
+        { refresh: 1_000 },
+      ],
+    ] as const)(
+      "fails the run, and starts no model turn, when the refresh %s",
+      async (_case, mode, timeouts) => {
+        const t = await refreshSetup(mode, timeouts);
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.input(), control());
+          expect(result.stopReason).toBe("failed");
+          expect(result.error).toContain("인증 중계");
+          expect(await t.refreshes()).toBe(0);
+          expect(t.network.urls).toHaveLength(0);
+        } finally {
+          await t.network.close();
+        }
+      },
+      10_000
+    );
+
+    it("refreshes again after a failed refresh once the relay is checked again", async () => {
+      const t = await refreshSetup("fail-once");
+      try {
+        const first = await t.provider().adapter.execute(t.input(), control());
+        expect(first.stopReason).toBe("failed");
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        // Checking the relay again reads the login, which runs a new refresh instead of reusing the failed one.
+        await t.provider().credentialRelay!.recover();
+        expect(await t.refreshes()).toBe(1);
+        expect(t.provider().credentialRelay!.failed()).toBe(false);
+        const again = await t.provider().adapter.execute(t.input(), control());
+        expect(again.stopReason).toBe("completed");
+        expect(await t.refreshes()).toBe(1);
       } finally {
         await t.network.close();
       }

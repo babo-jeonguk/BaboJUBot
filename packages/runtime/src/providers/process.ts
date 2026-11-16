@@ -279,6 +279,10 @@ export function startProcess(options: {
       skipping = true;
     }
   });
+  let reportExit!: () => void;
+  const exited = new Promise<void>((resolve) => {
+    reportExit = resolve;
+  });
   const done = new Promise<{
     code: number | null;
     broken: boolean;
@@ -294,6 +298,8 @@ export function startProcess(options: {
       const rest = buffer + decoder.end();
       buffer = "";
       if (!skipping && rest.length <= maxLineLength) deliver(rest);
+      // 끝나기 전에 낸 출력을 다 처리한 순간을 알린다. 실제 정리(중계·자식·컨테이너)는 아래가 하고 done이 기다린다.
+      void queue.then(reportExit);
       void (async () => {
         // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
         try {
@@ -349,6 +355,8 @@ export function startProcess(options: {
   return {
     write,
     end,
+    /** 프로그램이 끝나고 그 전에 낸 출력의 처리도 끝났다. 정리 완료는 기다리지 않는다(정리 완료는 done). */
+    exited,
     done,
     interrupt: () => signalGroup("SIGINT"),
     endInput: () => child.stdin.end(),
