@@ -5,7 +5,7 @@ import {
   type ResultDecision,
   type ResultSubmission,
 } from "@babojubot/contracts";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
@@ -14,8 +14,15 @@ import {
   useResultSubmission,
   useResultSubmissions,
 } from "./api.ts";
+import {
+  closedOrganizationNotice,
+  DecisionArea,
+  DecisionFormFrame,
+  DecisionRecord,
+} from "./decision.tsx";
 import { Markdown } from "./markdown.tsx";
 import {
+  Block,
   formatLabel,
   formatTime,
   Loading,
@@ -148,14 +155,14 @@ export function ResultSubmissionPage() {
         )}
       </div>
 
-      <Block label="결과 요약">
+      <Block variant="detail" label="결과 요약">
         <Markdown
           text={s.summary}
           className="px-4 py-3 text-sm text-slate-800"
           data-testid="result-summary"
         />
       </Block>
-      <Block label="완료 기준">
+      <Block variant="detail" label="완료 기준">
         <dl className="grid gap-x-4 gap-y-2 p-4 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
           <dd className="min-w-0">
@@ -167,7 +174,7 @@ export function ResultSubmissionPage() {
           </dd>
         </dl>
       </Block>
-      <Block label={`근거 산출물 ${s.artifacts.length}개`}>
+      <Block variant="detail" label={`근거 산출물 ${s.artifacts.length}개`}>
         <Evidence orgId={orgId} submission={s} agents={agents} />
       </Block>
 
@@ -178,15 +185,6 @@ export function ResultSubmissionPage() {
         stage={org.data?.stage}
       />
     </Page>
-  );
-}
-
-function Block({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <section aria-label={label} className="mb-5">
-      <h2 className="mb-2 text-sm font-semibold text-slate-600">{label}</h2>
-      <div className="card">{children}</div>
-    </section>
   );
 }
 
@@ -223,8 +221,8 @@ function Evidence({
 }
 
 /**
- * 결정 영역: 검토 대기면 결정 폼, 아니면 결정 기록. 결과 제출 상세와 Inbox 상세가 함께 쓰며,
- * 의견 초안과 "이 화면에서 결정함"은 제출마다 따로다(`key`).
+ * 결정 영역: 검토 대기면 결정 폼, 아니면 결정 기록(`DecisionArea`). 결과 제출 상세와 Inbox 상세가 함께 쓰며,
+ * 의견 초안·완료 확인과 "이 화면에서 결정함"은 제출마다 따로다(`key`).
  */
 export function ResultDecision({
   orgId,
@@ -235,63 +233,56 @@ export function ResultDecision({
   submission: ResultSubmission;
   stage: LifecycleStage | undefined;
 }) {
-  const [decidedHere, setDecidedHere] = useState(false);
-  return s.status === "pending" ? (
-    <DecisionForm
-      orgId={orgId}
-      submissionId={s.id}
-      stage={stage}
-      onDecided={() => setDecidedHere(true)}
+  const decide = useDecideResult(orgId, s.id);
+  return (
+    <DecisionArea
+      pending={s.status === "pending"}
+      form={(onDecided) => (
+        <DecisionForm stage={stage} decide={decide} onDecided={onDecided} />
+      )}
+      record={(focus) => <DecisionReceipt submission={s} focus={focus} />}
     />
-  ) : (
-    <DecisionReceipt submission={s} focus={decidedHere} />
   );
 }
 
 /**
  * 결과 검토 결정 폼. 두 결정이 한 제출 상태를 함께 쓰므로 하나를 보내는 동안 모두 잠근다.
  * 수정 요청은 의견이 있어야 보낼 수 있고 의견과 함께 Lead를 깨운다. 최종 완료는 되돌릴 수 없어 한 번 더 확인한다.
- * 실패하면 의견을 그대로 둔다.
+ * 실패하면 의견을 그대로 둔다. 일시정지 중의 수정 요청은 조직을 재개하고 최종 완료는 연구를 끝내므로 미리 알린다.
+ * 중단된 조직에서는 결정할 수 없다.
  */
 function DecisionForm({
-  orgId,
-  submissionId,
   stage,
+  decide,
   onDecided,
 }: {
-  orgId: string;
-  submissionId: string;
   stage: LifecycleStage | undefined;
+  decide: ReturnType<typeof useDecideResult>;
   onDecided: () => void;
 }) {
   const [note, setNote] = useState("");
-  const decide = useDecideResult(orgId, submissionId);
   const { trigger: completeTrigger, ...complete } = useInlineConfirm(
     decide.isPending
   );
   const trimmed = note.trim();
-  const alreadyDecided =
-    decide.error instanceof ApiError && decide.error.code === "already_decided";
   const closed = stage === "stopped";
+  const notice = closed
+    ? closedOrganizationNotice
+    : stage === "paused"
+      ? "조직이 일시정지 중입니다 · 수정 요청하면 재개 · 최종 완료하면 연구 종료"
+      : null;
   const send = (decision: ResultDecision) =>
     decide.mutate(
       { decision, note: trimmed || undefined },
       { onSuccess: onDecided }
     );
   return (
-    <section
-      id="decision"
-      aria-label="결정"
-      className="card scroll-mt-4 p-4 ring-2 ring-amber-200"
+    <DecisionFormFrame
+      notice={notice}
+      sending={decide.isPending}
+      error={decide.error}
+      subject="제출"
     >
-      <h2 className="mb-3 text-sm font-semibold">결정</h2>
-      {(stage === "paused" || closed) && (
-        <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
-          {closed
-            ? "중단된 조직이라 결정할 수 없습니다."
-            : "조직이 일시정지 중입니다"}
-        </p>
-      )}
       <label
         htmlFor="result-note"
         className="mb-1 block text-xs text-slate-600"
@@ -354,26 +345,11 @@ function DecisionForm({
           </button>
         )}
       </div>
-      {decide.isPending && (
-        <p role="status" className="mt-2 text-xs text-slate-500">
-          결정을 보내는 중…
-        </p>
-      )}
-      {decide.isError && (
-        <p role="alert" className="mt-2 text-xs text-rose-600">
-          {alreadyDecided
-            ? "이미 결정된 제출입니다. 최신 결정을 불러옵니다."
-            : decide.error instanceof ApiError &&
-                decide.error.code === "organization_closed"
-              ? "조직이 중단되어 결정을 받지 않았습니다."
-              : "보내지 못했습니다. 다시 시도하세요."}
-        </p>
-      )}
-    </section>
+    </DecisionFormFrame>
   );
 }
 
-/** 결정 기록. 이 화면에서 방금 결정했으면 사라진 버튼 대신 기록으로 포커스를 옮긴다. */
+/** 결정 기록. 이 화면에서 방금 결정했으면 사라진 버튼 대신 기록으로 포커스를 옮긴다(`DecisionRecord`). */
 function DecisionReceipt({
   submission: s,
   focus,
@@ -381,35 +357,18 @@ function DecisionReceipt({
   submission: ResultSubmission;
   focus: boolean;
 }) {
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (focus) ref.current?.focus();
-  }, [focus]);
   return (
-    <section
-      ref={ref}
-      tabIndex={-1}
-      aria-label="결정"
-      className="card p-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-300"
+    <DecisionRecord
+      focus={focus}
+      title={resultStatusLabel[s.status]}
+      decidedAt={s.decidedAt}
+      note={{ label: "의견", text: s.decisionNote }}
     >
-      <h2 className="mb-2 text-sm font-semibold">
-        {resultStatusLabel[s.status]}
-        {s.decidedAt && (
-          <span className="ml-2 font-normal text-slate-500">
-            {formatTime(s.decidedAt)}
-          </span>
-        )}
-      </h2>
-      {s.decisionNote && (
-        <p className="mb-2 break-words whitespace-pre-wrap">
-          의견: {s.decisionNote}
-        </p>
-      )}
       <p className="text-slate-500">
         {s.status === "completed"
           ? "연구를 최종 완료했습니다."
           : "연구 진행으로 돌아갔습니다."}
       </p>
-    </section>
+    </DecisionRecord>
   );
 }

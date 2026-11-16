@@ -11,7 +11,7 @@
 | Inbox 조회                                                   | [db/inbox.ts](../../../packages/db/src/inbox.ts) `listInbox`                                                                                                       | 결과 API, 알림 API                                                             |
 | 결정 API                                                     | server/app.ts `/results`, user-actions.ts `decideResult`; 도구 handler는 server/tools.ts                                                                                                           | 결과 API                                                                       |
 | 가짜 Lead 제출·재제출                                        | runtime/scripted.ts `demoLeadScript`·`submitResultScript`                                                                                                          | 결과 API `demo Lead result submission`                                         |
-| 결과 검토 목록·상세·결정 폼                                  | [web/results.tsx](../../../apps/web/src/results.tsx), inbox.tsx `InboxPanel`, pages.tsx, api.ts `useDecideResult`                                                  | 결과 검토 E2E                                                                  |
+| 결과 검토 목록·상세·결정 폼                                  | [web/results.tsx](../../../apps/web/src/results.tsx), inbox.tsx `InboxPanel`, pages.tsx, decision.tsx, api.ts `useDecideResult`·`decisionCachePolicy`                                                  | 결과 검토 E2E                                                                  |
 
 ## 연결 경로
 

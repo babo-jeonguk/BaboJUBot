@@ -1,6 +1,12 @@
 // 셸 이동·포커스·탭·인라인 확인·건너뛰기 링크의 접근성 회귀(#151 F1·F2·F3·F7·F14·F16). 역할 기반 locator, 포커스, 페이지 제목,
 // ARIA 연결로 확인한다. 실제 스크린 리더 낭독은 이 검사 범위 밖이다.
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Locator,
+  type Page,
+  type Route,
+} from "@playwright/test";
 import { goalInput, inboxOrganizationLinks } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -451,7 +457,7 @@ test("the narrow Inbox drawer still traps focus and returns it to its trigger", 
   await expect(trigger).toBeFocused();
 });
 
-test("cancelling the final completion confirmation returns focus to its button without deciding", async ({
+test("cancelling the final completion confirmation returns focus to its button without deciding, and it cannot be cancelled while sending", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -493,25 +499,61 @@ test("cancelling the final completion confirmation returns focus to its button w
     if (r.method() === "POST" && r.url().includes("/decision"))
       decisions.push(r.url());
   });
+  // 원래 상세와 Inbox 상세가 같은 확인을 쓴다.
+  const paths = [
+    `/orgs/${org.id}/results/${submissionId}`,
+    `/inbox/${org.id}/result_submission/${submissionId}`,
+  ];
+  const decision = page.getByRole("region", { name: "결정" });
+  const trigger = decision.getByRole("button", { name: "최종 완료" });
+  const confirm = decision.getByRole("group", { name: "최종 완료할까요?" });
   for (const size of widths) {
     await page.setViewportSize({ width: size.width, height: size.height });
-    await openWithLiveEvents(page, `/orgs/${org.id}/results/${submissionId}`);
-    const decision = page.getByRole("region", { name: "결정" });
-    const trigger = decision.getByRole("button", { name: "최종 완료" });
-    const confirm = decision.getByRole("group", { name: "최종 완료할까요?" });
+    for (const path of paths) {
+      await openWithLiveEvents(page, path);
+      await trigger.click();
+      await expect(confirm.getByRole("button", { name: "취소" })).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(confirm).toBeHidden();
+      await expect(trigger).toBeFocused();
 
-    await trigger.click();
-    await expect(confirm.getByRole("button", { name: "취소" })).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(confirm).toBeHidden();
-    await expect(trigger).toBeFocused();
-
-    await page.keyboard.press("Enter");
-    await expect(confirm).toBeVisible();
-    await confirm.getByRole("button", { name: "취소" }).click();
-    await expect(confirm).toBeHidden();
-    await expect(trigger).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(confirm).toBeVisible();
+      await confirm.getByRole("button", { name: "취소" }).click();
+      await expect(confirm).toBeHidden();
+      await expect(trigger).toBeFocused();
+    }
   }
   expect(decisions).toEqual([]);
   await expect(page.getByRole("main")).toContainText("검토 대기");
+
+  // 보내는 동안에는 Escape로도 취소로도 닫히지 않고, 성공하면 최종 포커스는 트리거가 아니라 결정 기록이다.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openWithLiveEvents(page, paths[1]!);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let reached!: () => void;
+  const sent = new Promise<void>((resolve) => (reached = resolve));
+  const hold = async (route: Route) => {
+    reached();
+    await released;
+    await route.continue();
+  };
+  await page.route(/\/decision$/, hold);
+  try {
+    await trigger.click();
+    await confirm.getByRole("button", { name: "최종 완료" }).click();
+    await sent;
+    await expect(confirm.getByRole("button", { name: "취소" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(confirm).toBeVisible();
+    release();
+    await expect(decision).toContainText("연구를 최종 완료했습니다");
+    await expect(decision).toBeFocused();
+    await expect(page).toHaveURL(paths[1]!);
+  } finally {
+    release();
+    await page.unroute(/\/decision$/, hold);
+  }
+  expect(decisions).toHaveLength(1);
 });

@@ -36,6 +36,7 @@ import {
   taskListSchema,
   type AddResearchLinkInput,
   type AgentCommand,
+  type Approval,
   type CreateOrganizationInput,
   type CreateResearchNodeInput,
   type DecideApprovalInput,
@@ -47,6 +48,7 @@ import {
   type OrganizationCommand,
   type OrganizationDetail,
   type ProviderChoice,
+  type ResultSubmission,
   type UpdateAgentProfileInput,
   type UpdateProviderDefaultsInput,
   type UpdateApprovalPolicyInput,
@@ -59,6 +61,8 @@ import {
 import {
   queryOptions,
   useMutation,
+  type QueryClient,
+  type QueryKey,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -931,17 +935,36 @@ export function useUpdateInboxItem(item: {
 }
 
 /**
- * 승인 결정 제어 명령. 성공하거나 이미 결정됐다는 응답을 받으면 그 조직과 Inbox를 다시 불러와 서버의 결과를 보인다.
- * 결과를 미리 화면에 반영하지 않는다.
+ * 결정 제어 명령(승인·결과 검토)의 화면 갱신 정책. 성공 응답으로 그 원본 단건을 바로 바꾸고, 그 조직 범위(목록·조직 상태)와
+ * Inbox를 다시 불러온다. 이미 결정됐다는 거절에도 같은 영역을 다시 불러와 먼저 온 결정을 보인다.
+ * 다시 불러오기를 기다리지 않으며, 결과를 응답 전에 미리 화면에 반영하지 않는다.
  */
-export function useDecideApproval(orgId: string, approvalId: string) {
-  const queryClient = useQueryClient();
+function decisionCachePolicy<T>(
+  queryClient: QueryClient,
+  orgId: string,
+  itemKey: QueryKey
+) {
   const refresh = () => {
     void queryClient.invalidateQueries({
       queryKey: queryKeys.organization(orgId),
     });
     void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
   };
+  return {
+    onSuccess: (item: T) => {
+      queryClient.setQueryData(itemKey, item);
+      refresh();
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.code === "already_decided")
+        refresh();
+    },
+  };
+}
+
+/** 승인 결정 제어 명령. 화면 갱신은 `decisionCachePolicy`를 따른다. */
+export function useDecideApproval(orgId: string, approvalId: string) {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: DecideApprovalInput) =>
       request(
@@ -953,14 +976,11 @@ export function useDecideApproval(orgId: string, approvalId: string) {
           body: JSON.stringify(input),
         }
       ),
-    onSuccess: (approval) => {
-      queryClient.setQueryData(queryKeys.approval(orgId, approvalId), approval);
-      refresh();
-    },
-    onError: (error) => {
-      if (error instanceof ApiError && error.code === "already_decided")
-        refresh();
-    },
+    ...decisionCachePolicy<Approval>(
+      queryClient,
+      orgId,
+      queryKeys.approval(orgId, approvalId)
+    ),
   });
 }
 
@@ -984,18 +1004,9 @@ export function useResultSubmission(orgId: string, submissionId: string) {
   });
 }
 
-/**
- * 결과 검토 제어 명령(수정 요청·최종 완료). 성공하거나 이미 결정됐다는 응답을 받으면 그 조직과 Inbox를 다시 불러와
- * 서버의 결과를 보인다. 결과를 미리 화면에 반영하지 않는다.
- */
+/** 결과 검토 제어 명령(수정 요청·최종 완료). 화면 갱신은 `decisionCachePolicy`를 따른다. */
 export function useDecideResult(orgId: string, submissionId: string) {
   const queryClient = useQueryClient();
-  const refresh = () => {
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.organization(orgId),
-    });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
-  };
   return useMutation({
     mutationFn: (input: DecideResultInput) =>
       request(
@@ -1003,17 +1014,11 @@ export function useDecideResult(orgId: string, submissionId: string) {
         orgPath(orgId, `/results/${encodeURIComponent(submissionId)}/decision`),
         json("POST", input)
       ),
-    onSuccess: (submission) => {
-      queryClient.setQueryData(
-        queryKeys.result(orgId, submissionId),
-        submission
-      );
-      refresh();
-    },
-    onError: (error) => {
-      if (error instanceof ApiError && error.code === "already_decided")
-        refresh();
-    },
+    ...decisionCachePolicy<ResultSubmission>(
+      queryClient,
+      orgId,
+      queryKeys.result(orgId, submissionId)
+    ),
   });
 }
 
