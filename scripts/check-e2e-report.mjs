@@ -1,6 +1,7 @@
 // CI의 E2E 결과(Playwright JSON 보고서, apps/web/playwright.config.ts)를 판정하고 통과·실패·건너뜀 수를 로그에 남긴다.
 // 실행기의 종료 코드만으로는 알 수 없는 것을 막는다: 테스트가 하나도 돌지 않음, 예상 밖 건너뜀, 서버 수명 시험이 빠짐.
-// 사용: node scripts/check-e2e-report.mjs <report.json>
+// 여러 보고서(Windows의 shard별 보고서)를 주면 합쳐서 한 실행으로 판정한다.
+// 사용: node scripts/check-e2e-report.mjs <report.json> [<report.json> ...]
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -92,16 +93,32 @@ export function judge(report) {
   return { summary, skips, problems };
 }
 
+/** 여러 보고서(shard별)를 한 보고서로 합친다. 서버 수명 시험은 어느 shard에 있어도 된다. */
+export function combine(reports) {
+  return {
+    suites: reports.flatMap((report) => report.suites ?? []),
+    errors: reports.flatMap((report) => report.errors ?? []),
+  };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const file = process.argv[2];
-  let report;
-  try {
-    report = JSON.parse(readFileSync(file, "utf8"));
-  } catch (error) {
-    console.error(`cannot read E2E report ${file}: ${error.message}`);
+  const files = process.argv.slice(2);
+  if (files.length === 0) {
+    console.error(
+      "usage: node scripts/check-e2e-report.mjs <report.json> [<report.json> ...]"
+    );
     process.exit(1);
   }
-  const { summary, skips, problems } = judge(report);
+  const reports = [];
+  for (const file of files) {
+    try {
+      reports.push(JSON.parse(readFileSync(file, "utf8")));
+    } catch (error) {
+      console.error(`cannot read E2E report ${file}: ${error.message}`);
+      process.exit(1);
+    }
+  }
+  const { summary, skips, problems } = judge(combine(reports));
   console.log(
     `E2E: ${summary.total} tests, ${summary.passed} passed, ${summary.failed} failed, ${summary.flaky} flaky, ${summary.skipped} skipped`
   );

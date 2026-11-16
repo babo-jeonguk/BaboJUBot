@@ -14,7 +14,7 @@ const workflow = parse(
   )
 );
 // macOS·Windows도 필수다. 실제 프로그램 연결·파일 경계·부팅 검사가 시스템마다 달라 그 시스템에서만 드러나는 결함을 막는다.
-// Windows의 서버 정상 종료와 화면 E2E(e2e-windows)도 코드 변경마다 성공해야 한다.
+// Windows의 서버 정상 종료와 화면 E2E(두 shard job e2e-windows-1·2와 보고서 판정 e2e-windows)도 코드 변경마다 성공해야 한다.
 const suites = [
   "unit",
   "runtime",
@@ -23,6 +23,8 @@ const suites = [
   "opencode",
   "macos",
   "windows",
+  "e2e-windows-1",
+  "e2e-windows-2",
   "e2e-windows",
 ];
 // 파일 시스템별 전체 검증 job. changes의 files 출력이 true일 때만 돌고 그때는 모두 성공해야 한다.
@@ -140,28 +142,89 @@ test("runs the macOS and Windows suites on their own systems", () => {
   );
 });
 
-// Windows E2E는 그 시스템에서 서버 멈춤 시험과 Chromium 전체 E2E를 돌고, 결과 수·서버 수명 시험을 판정하며 실패 자료를 남긴다.
-test("runs the server stop checks and the whole E2E on Windows and judges its report", () => {
-  const job = workflow.jobs["test-e2e-windows"];
-  assert.equal(job["runs-on"], "windows-latest");
-  assert.equal(job.if, "needs.changes.outputs.code == 'true'");
-  assert.ok(job["timeout-minutes"] > 0);
-  const runs = job.steps.map((each) => each.run ?? "");
-  const index = (pattern) => runs.findIndex((run) => pattern.test(run));
-  assert.ok(index(/test\/main\.test\.ts/) >= 0, "server stop checks");
-  assert.ok(index(/playwright install chromium/) >= 0, "Chromium");
-  const e2e = index(/^pnpm run test:e2e$/);
-  const report = index(/^node scripts\/check-e2e-report\.mjs /);
-  assert.ok(e2e >= 0 && report > e2e, "E2E then its report check");
-  // 앞 단계가 실패해도 보고서는 판정해 수를 남긴다. 실패를 성공으로 바꾸지 않는다.
-  assert.equal(job.steps[report].if, "${{ !cancelled() }}");
-  for (const each of job.steps)
-    assert.notEqual(each["continue-on-error"], true);
-  const keep = job.steps.find((each) =>
-    each.uses?.startsWith("actions/upload-artifact@")
+// Windows E2E는 두 job으로 나눠(Playwright shard) 동시에 돌고, 판정 job이 두 보고서를 합쳐 결과 수·서버 수명 시험을 판정한다.
+test("splits the Windows E2E into two shard jobs and judges their reports together", () => {
+  const shards = [1, 2].map((n) => workflow.jobs[`test-e2e-windows-${n}`]);
+  const stopCheck = (each) => /test\/main\.test\.ts/.test(each.run ?? "");
+  shards.forEach((job, i) => {
+    const n = i + 1;
+    assert.equal(job.name, `e2e on windows-latest (${n}/2)`);
+    assert.equal(job["runs-on"], "windows-latest");
+    assert.equal(job.if, "needs.changes.outputs.code == 'true'");
+    assert.ok(job["timeout-minutes"] > 0);
+    const runs = job.steps.map((each) => each.run ?? "");
+    assert.ok(
+      runs.some((run) => /playwright install chromium/.test(run)),
+      "Chromium"
+    );
+    assert.ok(
+      runs.includes(
+        `pnpm --filter @babojubot/web exec playwright test --shard=${n}/2`
+      ),
+      `shard ${n}/2`
+    );
+    for (const each of job.steps)
+      assert.notEqual(each["continue-on-error"], true);
+    const uploads = job.steps.filter((each) =>
+      each.uses?.startsWith("actions/upload-artifact@")
+    );
+    // 실패해도 보고서는 넘겨 판정 job이 수를 남긴다. 다시 돌린 시도도 같은 이름으로 찾는다.
+    const report = uploads.find(
+      (each) => each.with.path === "apps/web/test-results/e2e-report.json"
+    );
+    assert.equal(report?.if, "${{ !cancelled() }}");
+    assert.equal(report.with.name, `e2e-windows-report-${n}`);
+    assert.equal(report.with.overwrite, true);
+    const traces = uploads.find(
+      (each) => each.with.path === "apps/web/test-results/"
+    );
+    assert.equal(traces?.if, "failure()");
+  });
+  // 서버 멈춤 시험은 1/2에서만 돈다.
+  assert.deepEqual(
+    shards.map((job) => job.steps.some(stopCheck)),
+    [true, false]
   );
-  assert.equal(keep?.if, "failure()");
-  assert.equal(keep.with.path, "apps/web/test-results/");
+  // 두 job은 shard 번호와 멈춤 시험 말고 같은 단계를 돈다. 한쪽만 고치면 그 shard만 다르게 돈다.
+  const shape = (job, n) =>
+    JSON.stringify(job.steps.filter((each) => !stopCheck(each)))
+      .replaceAll(`${n}/2`, "N/2")
+      .replaceAll(`-${n}"`, '-N"');
+  assert.equal(shape(shards[0], 1), shape(shards[1], 2));
+
+  // 판정 job은 shard가 실패해도 돌아 두 보고서를 합쳐 판정한다. 보고서가 빠지면 실패한다.
+  const judge = workflow.jobs["test-e2e-windows"];
+  assert.equal(judge.name, "e2e on windows-latest");
+  assert.deepEqual(judge.needs, [
+    "changes",
+    "test-e2e-windows-1",
+    "test-e2e-windows-2",
+  ]);
+  assert.equal(
+    judge.if,
+    "${{ always() && needs.changes.outputs.code == 'true' }}"
+  );
+  const downloads = judge.steps.filter((each) =>
+    each.uses?.startsWith("actions/download-artifact@")
+  );
+  assert.deepEqual(
+    downloads.map((each) => [each.with.name, each.with.path]),
+    [
+      ["e2e-windows-report-1", "e2e-reports/1"],
+      ["e2e-windows-report-2", "e2e-reports/2"],
+    ]
+  );
+  assert.equal(downloads[1].if, "${{ !cancelled() }}");
+  const check = judge.steps.find((each) =>
+    /check-e2e-report\.mjs/.test(each.run ?? "")
+  );
+  assert.equal(
+    check?.run,
+    "node scripts/check-e2e-report.mjs e2e-reports/1/e2e-report.json e2e-reports/2/e2e-report.json"
+  );
+  assert.equal(check.if, "${{ !cancelled() }}");
+  for (const each of judge.steps)
+    assert.notEqual(each["continue-on-error"], true);
   // Linux E2E도 같은 보고서 판정을 하고, E2E가 실패해도 수를 남긴다.
   const linux = workflow.jobs.check.steps.find((each) =>
     /check-e2e-report\.mjs/.test(each.run ?? "")
