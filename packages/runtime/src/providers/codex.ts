@@ -1,11 +1,4 @@
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -42,14 +35,11 @@ import {
 } from "./container.ts";
 import {
   createCredentialRelay,
-  credentialResidue,
   type RelayGrant,
   type RelayProfile,
-  residueRefusal,
 } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
-import { connectionFolders } from "./folders.ts";
-import { loginLink } from "./login-link.ts";
+import { type AttemptLoginFile, fileLogin } from "./file-login.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -145,26 +135,6 @@ async function isRelayLogin(file: string): Promise<boolean> {
     );
   } catch {
     return false;
-  }
-}
-/**
- * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 실행 시도마다 그 위에 자기 로그인 파일을 넣는 자리다(Docker는 넣을 자리가 있어야 한다).
- * 원본을 가리키는 링크는 따라가 쓰지 않도록 먼저 지운다. 같은 조직의 다른 실행 시도가 함께 두어도 같은 내용이다.
- */
-async function placeLoginPlaceholder(at: string): Promise<void> {
-  if (await isRelayLogin(at)) return;
-  await rm(at, { force: true });
-  try {
-    await writeFile(at, JSON.stringify(relayLogin("")), {
-      mode: 0o600,
-      flag: "wx",
-    });
-  } catch (error) {
-    if (
-      (error as NodeJS.ErrnoException).code !== "EEXIST" ||
-      !(await isRelayLogin(at))
-    )
-      throw error;
   }
 }
 /** Codex 자신은 접근 토큰 만료 5분 전, 또는 마지막 갱신 8일 뒤에 갱신한다. 서버는 그보다 조금 일찍 갱신한다. */
@@ -290,17 +260,14 @@ const defaultTimeouts = {
 
 export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const id = options.id ?? "codex";
-  const folders = connectionFolders(options.dataDir, id);
-  const home = folders.connection;
-  /** 연결의 로그인 원본. 컨테이너에는 넣지 않는다(#148). */
-  const loginFolder = path.join(home, "login");
-  const original = path.join(loginFolder, "auth.json");
-  const shareLogin = loginLink({
-    original,
-    fallback: path.join(home, "auth.json"),
+  // 연결의 로그인 하나를 모든 조직이 같이 쓰고, 격리 실행에는 권한만 든 실행 시도 전용 로그인을 넣는다(#146·#148).
+  const login = fileLogin(options.dataDir, id, {
     label: "Codex",
-    setAside: path.join(home, "set-aside"),
+    loginFile: "auth.json",
+    contents: (token) => JSON.stringify(relayLogin(token)),
+    isStandIn: isRelayLogin,
   });
+  const { home, original } = login;
   const command = options.command ?? commandFor(id, "codex");
   const timeouts = { ...defaultTimeouts, ...options.timeouts };
   /** 모델 목록·로그인 갱신용 app-server. 이 컴퓨터의 연결 폴더에서 돈다. */
@@ -321,8 +288,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
    */
   const refreshLogin = () =>
     (refreshing ??= (async () => {
-      await mkdir(home, { recursive: true, mode: 0o700 });
-      await shareLogin(path.join(home, "auth.json"));
+      await login.prepareConnection();
       const connection = openAppServer();
       // 한도는 프로그램을 띄운 때부터 하나다. 초기화와 account/read가 이어 쓴다.
       const left = remainingOf(timeouts.refresh);
@@ -362,8 +328,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const readiness = async (
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> => {
-    await mkdir(home, { recursive: true, mode: 0o700 });
-    await shareLogin(path.join(home, "auth.json"));
+    await login.prepareConnection();
     const probe = (args: string[]) =>
       runProbe(command, args, {
         env: environment(),
@@ -476,31 +441,17 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             },
           }),
       async execute(request, control) {
-        await mkdir(home, { recursive: true, mode: 0o700 });
         if (control.signal.aborted)
           return { ...failed(), stopReason: "cancelled", error: null };
-        // 그 조직의 제품 폴더로 돈다. 로그인은 연결의 원본 하나를 링크로 쓴다.
-        const organization = folders.organization(
-          request.identity.organizationId
-        );
-        await shareLogin(path.join(home, "auth.json"));
-        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크는 컨테이너 안에서 비어 있고, 조직 폴더에 남은 보통 파일이나 다른 곳을 가리키는 링크면 시작하지 않는다.
+        // 그 조직의 제품 폴더로 돈다. 로그인은 연결의 원본 하나를 같이 쓴다.
         const isolated = request.execution === "container";
-        const loginAt = path.join(organization, "auth.json");
-        if (
-          isolated &&
-          (await credentialResidue(organization, ["auth.json"], original)) &&
-          !(await isRelayLogin(loginAt))
-        )
-          return { ...failed(), error: residueRefusal };
-        // 격리 실행이 조직 폴더에 남긴 자리 표시는 로그인이 아니다. 이 컴퓨터의 실행이 그것을 연결의 로그인으로 옮기지 않게 먼저 지운다.
-        if (!isolated && (await isRelayLogin(loginAt)))
-          await rm(loginAt, { force: true });
-        const linked =
-          !isolated && (await shareLogin(path.join(organization, "auth.json")));
-        const codexHome = linked || isolated ? organization : home;
-        // 격리 실행은 로그인 링크를 만들지 않으므로, 컨테이너에 넣을 제품 폴더를 여기서 만든다.
-        if (isolated) await mkdir(codexHome, { recursive: true, mode: 0o700 });
+        const prepared = await login.prepare(
+          request.identity.organizationId,
+          isolated
+        );
+        if (prepared.refusal !== undefined)
+          return { ...failed(), error: prepared.refusal };
+        const codexHome = prepared.home;
         const cwd = request.workspace?.cwd ?? codexHome;
         const placement = placeAttempt(options.container, codexHome, request);
         if (!placement) return failed();
@@ -508,7 +459,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         let grant: RelayGrant | undefined;
         let attempt: string | undefined;
         try {
-          if (isolated) {
+          let loginFile: AttemptLoginFile | undefined;
+          if (prepared.attemptLogin) {
             try {
               grant = relay.grant({
                 signal: control.signal,
@@ -518,17 +470,10 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             } catch {
               return { ...failed(), error: relayFailure };
             }
-            // 조직 폴더는 그 조직의 모든 컨테이너에 쓰기로 들어간다. 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 두고,
-            // 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 넣는다. 조직 폴더에는 권한 없는 자리 표시만 둔다.
             attempt = await mkdtemp(
               path.join(os.tmpdir(), "babojubot-attempt-")
             );
-            await writeFile(
-              path.join(attempt, "auth.json"),
-              JSON.stringify(relayLogin(grant.token)),
-              { mode: 0o600, flag: "wx" }
-            );
-            await placeLoginPlaceholder(loginAt);
+            loginFile = await prepared.attemptLogin(attempt, grant.token);
           }
           let container: ContainerLaunch | undefined;
           try {
@@ -536,16 +481,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               cwd,
               program: "codex",
               destinations: providerDestinations.codex,
-              ...(attempt
-                ? {
-                    files: [
-                      {
-                        source: path.join(attempt, "auth.json"),
-                        target: loginAt,
-                      },
-                    ],
-                  }
-                : {}),
+              ...(loginFile ? { files: [loginFile] } : {}),
             });
           } catch (error) {
             if (error instanceof ContainerRefusal)
@@ -636,6 +572,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               };
             return outcome;
           }
+          // 준비가 끝난 뒤 프로세스를 띄우기 직전에 취소를 다시 본다. 준비 중에 취소됐으면 띄우지 않는다.
+          if (control.signal.aborted)
+            return { ...failed(), stopReason: "cancelled", error: null };
+          if (grant?.failed.aborted)
+            return { ...failed(), error: relayFailure, nextSession: null };
           args.unshift("app-server");
           const connection = openCodexConnection({
             // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
@@ -851,6 +792,9 @@ async function executeExec(
   if (typeof request.previousSession?.id === "string")
     args.push("resume", request.previousSession.id);
   args.push("-");
+  // 준비(와 새 세션으로 다시 시도하기 전의 알림) 뒤 프로세스를 띄우기 직전에 취소를 다시 본다.
+  if (control.signal.aborted)
+    return { ...failed(), stopReason: "cancelled", error: null };
   const child = startProcess({
     stateDir,
     command,
