@@ -175,6 +175,18 @@ test("judges shard reports together, with the server lifecycle checks in either 
   );
   assert.deepEqual(problems, []);
   assert.equal(summary.total, 4);
+  // 같은 보고서를 두 번 넘기면 shard가 겹친 것을 실행 오류로 본다.
+  assert.ok(
+    judge(combine([report(required), report(required)])).problems.some(
+      (problem) => /shard reports overlap: .*works/.test(problem)
+    )
+  );
+  // 시험이 하나도 없는 shard도 실행 오류로 본다.
+  assert.ok(
+    judge(combine([report(required), report([])])).problems.includes(
+      "run error: shard report 2 ran no test"
+    )
+  );
   // shard 하나만 보면 다른 shard에 있는 서버 수명 시험이 빠진다.
   assert.notDeepEqual(judge(report([first])).problems, []);
 });
@@ -186,14 +198,19 @@ test("fails the command when one of several reports is unreadable or none is giv
     new URL("./check-e2e-report.mjs", import.meta.url)
   );
   const good = path.join(dir, "good.json");
+  const other = path.join(dir, "other.json");
   const bad = path.join(dir, "bad.json");
   writeFileSync(good, JSON.stringify(report(required)));
+  writeFileSync(other, JSON.stringify(report([passing("home.spec.ts")])));
   writeFileSync(bad, "not json");
   const run = (...args) =>
     spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
-  const ok = run(good, good);
+  const overlapped = run(good, good);
+  assert.equal(overlapped.status, 1);
+  assert.match(overlapped.stderr, /shard reports overlap/);
+  const ok = run(good, other);
   assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /E2E: 6 tests, 6 passed/);
+  assert.match(ok.stdout, /E2E: 4 tests, 4 passed/);
   const failed = run(good, bad);
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /cannot read E2E report/);

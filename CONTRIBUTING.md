@@ -47,7 +47,7 @@ BABOJUBOT_PROVIDERS=opencode pnpm start   # 감시 없는 서버가 대시보드
 기능 브랜치 push만으로는 중복 실행하지 않고, 같은 PR의 오래된 실행은 취소합니다.
 `main`의 필수 검사는 workflow의 `ci / …` job 전체이며, 실행 환경과 검사 이름은 workflow를 기준으로 합니다.
 표준 GitHub-hosted runner를 쓰는 공개 저장소의 실행 시간은 무료입니다([GitHub 과금 문서](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
-실패한 E2E의 trace 등 결과물만 3일 보관하며 artifact·cache 저장 공간 한도는 별도로 관리합니다.
+Windows E2E의 shard별 결과 보고서 2개는 판정 job에 넘기려고 성공·실패와 관계없이 3일 보관하고, 실패한 E2E의 trace 등 결과물은 실패할 때만 3일 보관합니다. artifact·cache 저장 공간 한도는 별도로 관리합니다.
 
 조직 폴더(`organizations/<조직 ID>/`)에는 자기 조직 ID를 적은 `workspace-identity.json`이 있습니다. 다른 조직의 폴더가 그 자리에 놓이거나 이 파일이 없어지면 그 조직의 실행은 이유를 보이며 실패합니다. 데이터 폴더를 옮기거나 복원할 때는 이 파일을 함께 옮기면 그대로 동작합니다. 예전 조직은 첫 실행 때 현재 폴더를 믿고 한 번 적습니다.
 

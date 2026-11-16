@@ -52,6 +52,18 @@ function collect(suites, out = []) {
   return out;
 }
 
+/** 보고서의 spec마다 위치·제목 열쇠를 모은다. */
+function specKeys(suites, out = new Set()) {
+  for (const suite of suites ?? []) {
+    for (const spec of suite.specs ?? [])
+      out.add(
+        `${spec.file ?? suite.file}:${spec.line}:${spec.column} › ${spec.title}`
+      );
+    specKeys(suite.suites, out);
+  }
+  return out;
+}
+
 /** 판정한다. `problems`가 비어 있어야 성공이다. */
 export function judge(report) {
   const tests = collect(report.suites);
@@ -93,11 +105,26 @@ export function judge(report) {
   return { summary, skips, problems };
 }
 
-/** 여러 보고서(shard별)를 한 보고서로 합친다. 서버 수명 시험은 어느 shard에 있어도 된다. */
+/** 여러 보고서(shard별)를 한 보고서로 합친다. 합친 보고서에 shard끼리 겹친 spec과 아무 시험도 돌지 않은 shard를 실행 오류로 덧붙인다(같은 보고서를 두 번 넘기거나 두 job이 같은 절반을 돌면 나머지 절반이 빠진다). 서버 수명 시험은 어느 shard에 있어도 된다. */
 export function combine(reports) {
+  const errors = reports.flatMap((report) => report.errors ?? []);
+  if (reports.length > 1) {
+    reports.forEach((report, index) => {
+      if (collect(report.suites).length === 0)
+        errors.push({ message: `shard report ${index + 1} ran no test` });
+    });
+    const seen = new Set();
+    const duplicated = new Set();
+    for (const report of reports)
+      for (const key of specKeys(report.suites))
+        if (seen.has(key)) duplicated.add(key);
+        else seen.add(key);
+    for (const key of duplicated)
+      errors.push({ message: `shard reports overlap: ${key}` });
+  }
   return {
     suites: reports.flatMap((report) => report.suites ?? []),
-    errors: reports.flatMap((report) => report.errors ?? []),
+    errors,
   };
 }
 
