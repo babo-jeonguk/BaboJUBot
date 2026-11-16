@@ -33,3 +33,11 @@ export function inboxOrganizationLinks(
     ? links
     : links.and(list.getByRole("link", { name }));
 }
+
+/** Inbox 목록에서 이 조직의 항목(`listitem`). 항목 안의 정리 버튼까지 다룰 때 쓴다. */
+export function inboxOrganizationItems(list: Locator, organizationId: string) {
+  // `has`는 항목 안에서 찾으므로 목록에서 이어 만든 locator가 아니라 page 기준 locator를 넘긴다.
+  return list.getByRole("listitem").filter({
+    has: list.page().locator(`a[href^="/inbox/${organizationId}/"]`),
+  });
+}

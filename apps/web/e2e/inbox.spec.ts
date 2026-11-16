@@ -1,5 +1,5 @@
 import { expect, test, type Locator } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import { goalInput, inboxOrganizationItems } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 15_000 };
@@ -190,12 +190,12 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
     .click();
   const drawer = page.getByRole("dialog", { name: "Inbox" });
   // 이 조직에는 생성 뒤 가짜 Lead가 낸 초기 연구 승인 요청도 있다.
-  const item = drawer
-    .getByRole("list", { name: "주의 필요" })
-    .getByRole("listitem")
-    .filter({ hasText: name })
-    .filter({ hasText: "실행 시도 실패" });
+  const attention = drawer.getByRole("list", { name: "주의 필요" });
+  const item = inboxOrganizationItems(attention, org.id).filter({
+    hasText: "실행 시도 실패",
+  });
   await expect(item).toBeVisible(runs);
+  await expect(item).toContainText(name);
   await item.getByRole("link").click();
   await expect(drawer).toBeHidden();
   await expect(page).toHaveURL(new RegExp(`/inbox/${org.id}/run_failure/`));
@@ -231,15 +231,15 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
     .click();
   const panel = page.getByRole("complementary", { name: "Inbox" });
   const attention = panel.getByRole("list", { name: "주의 필요" });
-  const failure = attention
-    .getByRole("listitem")
-    .filter({ hasText: name })
-    .filter({ hasText: "실행 시도 실패" });
-  const request = attention
-    .getByRole("listitem")
-    .filter({ hasText: name })
-    .filter({ hasText: "초기 연구 승인 요청" });
+  const failure = inboxOrganizationItems(attention, org.id).filter({
+    hasText: "실행 시도 실패",
+  });
+  const request = inboxOrganizationItems(attention, org.id).filter({
+    hasText: "초기 연구 승인 요청",
+  });
   await expect(request).toBeVisible(runs);
+  await expect(request).toContainText(name);
+  await expect(failure).toContainText(name);
 
   // 실패 상세를 열면 읽음이 되어 주의 필요에서 빠진다.
   await failure.getByRole("link").click();
@@ -287,11 +287,11 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
       },
     })
   ).json()) as { id: string };
-  const otherRequest = attention
-    .getByRole("listitem")
-    .filter({ hasText: otherName })
-    .filter({ hasText: "초기 연구 승인 요청" });
+  const otherRequest = inboxOrganizationItems(attention, other.id).filter({
+    hasText: "초기 연구 승인 요청",
+  });
   await expect(otherRequest).toBeVisible(runs);
+  await expect(otherRequest).toContainText(otherName);
   await request.getByRole("link").click();
   await expect(page).toHaveURL(
     new RegExp(`/inbox/${org.id}/approval/[0-9a-f-]{36}$`)

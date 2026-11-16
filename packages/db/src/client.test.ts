@@ -19,6 +19,77 @@ import { candidatePort } from "./ports.ts";
 import { createTestDatabase } from "./testing.ts";
 
 describe("embedded Postgres lifetime", () => {
+  // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
+  it("reports what closing is doing, from the connections to stopping Postgres", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    try {
+      const handle = await openDatabase({
+        embedded: { dataDir, persistent: false },
+      });
+      expect(handle.progress()).toBe("open");
+      const seen = new Set<string>();
+      let closed = false;
+      const closing = handle.close().finally(() => (closed = true));
+      while (!closed) {
+        seen.add(handle.progress());
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await closing;
+      expect(handle.progress()).toBe("closed");
+      expect(seen).toContain("stopping Postgres (fast)");
+      expect(
+        [...seen].filter(
+          (step) =>
+            ![
+              "closing connections",
+              "stopping Postgres",
+              "stopping Postgres (fast)",
+              "removing its temporary folder",
+              "stopped",
+            ].includes(step)
+        )
+      ).toEqual([]);
+    } finally {
+      await removeCluster(dataDir);
+    }
+  }, 60_000);
+
+  // 임시 cluster는 멈출 때 지우므로 디스크에 확정 기록(fsync)을 기다릴 까닭이 없다. 기다리면 정지 때 밀린 기록을 확정하느라
+  // 디스크가 느린 곳(Windows CI의 OS 디스크)에서 몇 초씩 걸려 서버 정리 시한을 넘긴다. 영구 DB는 확정 기록을 그대로 한다.
+  it.each([
+    { kind: "a temporary", persistent: false, setting: "off" },
+    { kind: "a persistent", persistent: true, setting: "on" },
+  ])(
+    "turns durable disk writes $setting in $kind cluster",
+    async ({ persistent, setting }) => {
+      const dataDir = await fsp.mkdtemp(
+        path.join(os.tmpdir(), "babojubot-pg-")
+      );
+      try {
+        const handle = await openDatabase({
+          embedded: { dataDir, persistent },
+        });
+        try {
+          const { rows } = await withClient(handle.url, (client) =>
+            client.query<{ name: string; setting: string }>(
+              "select name, setting from pg_settings where name in ('fsync', 'synchronous_commit', 'full_page_writes') order by name"
+            )
+          );
+          expect(rows).toEqual([
+            { name: "fsync", setting },
+            { name: "full_page_writes", setting },
+            { name: "synchronous_commit", setting },
+          ]);
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await removeCluster(dataDir);
+      }
+    },
+    60_000
+  );
+
   it("closes and removes a non-persistent dataDir after Postgres died on its own", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     let handle: Awaited<ReturnType<typeof openDatabase>> | undefined;

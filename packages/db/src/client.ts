@@ -28,6 +28,8 @@ export type DatabaseHandle = {
   db: Database;
   url: string;
   close: () => Promise<void>;
+  /** `close`가 지금 하는 일(연결 정리, embedded Postgres 정지 등). 정리 시한이 지났을 때 어디서 멈췄는지 알린다. */
+  progress: () => string;
 };
 
 export type DatabaseOptions =
@@ -50,10 +52,10 @@ export async function openDatabase(
 ): Promise<DatabaseHandle> {
   if ("url" in options) return connect(options.url, async () => {});
 
-  const { port, stop } = await startEmbeddedCluster(options.embedded);
+  const { port, stop, stopping } = await startEmbeddedCluster(options.embedded);
   try {
     await ensureDatabase(clusterUrl(port, "postgres"));
-    return await connect(clusterUrl(port, databaseName), stop);
+    return await connect(clusterUrl(port, databaseName), stop, stopping);
   } catch (error) {
     await stop();
     throw error;
@@ -86,7 +88,8 @@ export async function withClient<T>(
 
 async function connect(
   url: string,
-  release: () => Promise<void>
+  release: () => Promise<void>,
+  releasing: () => string = () => "releasing"
 ): Promise<DatabaseHandle> {
   const pool = new pg.Pool({ connectionString: url });
   // 쉬는 연결이 끊기면(Postgres 재시작 등) pool이 그 연결을 버린다. listener가 없으면 프로세스가 죽는다.
@@ -94,20 +97,30 @@ async function connect(
   // 쓰는 중인 연결이 끊기면 pool의 error로 오지 않고 그 연결에서 난다. 그 일은 쿼리 실패로 이미 알게 되므로 여기서는 프로세스만 살린다.
   pool.on("connect", (client) => client.on("error", () => {}));
   const db = drizzle(pool, { schema });
+  let closing: "open" | "connections" | "release" | "closed" = "open";
   const close = async () => {
     try {
+      closing = "connections";
       await pool.end();
     } finally {
+      closing = "release";
       await release();
+      closing = "closed";
     }
   };
+  const progress = () =>
+    closing === "connections"
+      ? "closing connections"
+      : closing === "release"
+        ? releasing()
+        : closing;
   try {
     await migrateDatabase(db);
   } catch (error) {
     await close();
     throw error;
   }
-  return { db, url, close };
+  return { db, url, close, progress };
 }
 
 /**

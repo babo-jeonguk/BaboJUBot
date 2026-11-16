@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { closeStarted } from "./shutdown.ts";
+import { closeStarted, type Started } from "./shutdown.ts";
 
 // 서버 진입점(main.ts)의 정리 순서: 서버를 닫고 DB를 닫는다. 하나가 실패해도 나머지를 닫고, 실패는 알린 뒤 false로 돌려준다
 // (진입점은 그때 1로 끝난다). 실제 서버·DB로는 닫기 실패를 결정적으로 만들 수 없어 이 경계에서 확인한다.
@@ -98,6 +98,55 @@ describe("closeStarted", () => {
       ["[server] shutdown failed", serverError],
       ["[server] shutdown failed", databaseError],
     ]);
+  });
+
+  // 정리 시한이 지나면 진입점이 어디서 멈췄는지 알린다. 서버·DB가 알리는 진행(예: 기다리는 요청, Postgres 정지)과
+  // 지금 단계에 머문 시간, 앞 단계마다 걸린 시간을 붙인다.
+  it("names the step it is on while closing", async () => {
+    const { report } = reporter();
+    let where = () => "";
+    let releaseServer!: () => void;
+    let releaseDatabase!: () => void;
+    let serverClosing!: () => void;
+    let databaseClosing!: () => void;
+    const serverClosed = new Promise<void>(
+      (resolve) => (releaseServer = resolve)
+    );
+    const databaseClosed = new Promise<void>(
+      (resolve) => (releaseDatabase = resolve)
+    );
+    const atServer = new Promise<void>((resolve) => (serverClosing = resolve));
+    const atDatabase = new Promise<void>(
+      (resolve) => (databaseClosing = resolve)
+    );
+    let startup!: (started: Started) => void;
+    const closing = closeStarted(
+      new Promise<Started>((resolve) => (startup = resolve)),
+      report,
+      (describe) => (where = describe)
+    );
+    expect(where()).toMatch(/^the start for \d+\.\ds$/);
+    startup({
+      server: {
+        close: () => (serverClosing(), serverClosed),
+        progress: () => "waiting for requests: GET /api/inbox",
+      },
+      handle: {
+        close: () => (databaseClosing(), databaseClosed),
+        progress: () => "stopping Postgres (fast)",
+      },
+    });
+    await atServer;
+    expect(where()).toMatch(
+      /^the server \(waiting for requests: GET \/api\/inbox\) for \d+\.\ds, after the start \d+\.\ds$/
+    );
+    releaseServer();
+    await atDatabase;
+    expect(where()).toMatch(
+      /^the database \(stopping Postgres \(fast\)\) for \d+\.\ds, after the start \d+\.\ds, the server \d+\.\ds$/
+    );
+    releaseDatabase();
+    expect(await closing).toBe(true);
   });
 
   it("reports a failed start and has nothing left to close", async () => {

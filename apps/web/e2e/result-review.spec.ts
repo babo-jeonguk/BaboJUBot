@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import {
+  goalInput,
+  inboxOrganizationItems,
+  inboxOrganizationLinks,
+} from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
@@ -40,11 +44,10 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await page.request.post(api("/messages"), {
     data: { body: "결과 제출 부탁해요" },
   });
-  const item = page
-    .getByRole("list", { name: "주의 필요" })
-    .getByRole("link")
-    .filter({ hasText: name });
+  const attention = page.getByRole("list", { name: "주의 필요" });
+  const item = inboxOrganizationLinks(attention, org.id);
   await expect(item).toContainText("결과 제출", runs);
+  await expect(item).toContainText(name);
   await item.click();
   await expect(page).toHaveURL(
     /\/inbox\/[0-9a-f-]{36}\/result_submission\/[0-9a-f-]{36}$/
@@ -166,16 +169,14 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(list.getByRole("link").nth(1)).toContainText("수정 요청됨");
   await page.goto("/inbox");
   const panel = page.getByRole("complementary", { name: "Inbox" });
-  await expect(
-    panel.getByRole("list", { name: "주의 필요" }).filter({ hasText: name })
-  ).toHaveCount(0);
+  await expect(inboxOrganizationLinks(attention, org.id)).toHaveCount(0);
   await panel.getByRole("button", { name: /^전체 \d/ }).click();
-  const kept = panel
-    .getByRole("list", { name: "전체" })
-    .getByRole("listitem")
-    .filter({ hasText: name })
-    .filter({ hasText: "결과 제출" });
+  const all = panel.getByRole("list", { name: "전체" });
+  const kept = inboxOrganizationItems(all, org.id).filter({
+    hasText: "결과 제출",
+  });
   await expect(kept).toHaveCount(2);
+  await expect(kept).toContainText([name, name]);
   await expect(kept.filter({ hasText: "최종 완료" })).toHaveCount(1);
   await expect(kept.filter({ hasText: "수정 요청됨" })).toHaveCount(1);
 });
