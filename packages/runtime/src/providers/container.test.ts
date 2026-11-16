@@ -27,6 +27,7 @@ import {
   type ContainerSettings,
 } from "./container.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
+import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
@@ -120,6 +121,31 @@ async function setup(programs: Record<string, string[]>) {
   };
 }
 
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+// A container program that leaves a child sharing its output. The child records whether the relay is still open when it is told
+// to stop, then ends. The program ends on its first input line.
+const leftBehind = `
+  const fs = require("node:fs"), path = require("node:path");
+  const relay = JSON.parse(process.env.FAKE_DOCKER_MOUNTS).find((m) => m.target === "/run/babojubot").source;
+  const record = JSON.stringify([process.argv[1], path.join(relay, "egress.sock")]);
+  require("node:child_process").spawn(process.execPath, ["-e", \`
+    const [log, egress] = \${record};
+    process.on("SIGTERM", () => {
+      require("node:fs").writeFileSync(log, require("node:fs").existsSync(egress) ? "relay open" : "relay closed");
+      process.exit(0);
+    });
+    setInterval(() => {}, 1000);
+    console.log(JSON.stringify({ pid: process.pid }));
+  \`], { stdio: ["ignore", "inherit", "ignore"] });
+  process.stdin.once("data", () => process.exit(0));
+`;
 const runCall = (calls: Call[]) => {
   const runs = calls.filter((c) => c.args.includes("run"));
   expect(runs).toHaveLength(1);
@@ -377,6 +403,39 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     const calls = await env.calls();
     expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
   });
+
+  it("takes the relay back before stopping what a finished program left running, even when that keeps its output open", async () => {
+    const env = await setup({ codex: [process.execPath, "-e", leftBehind] });
+    // The program shares the Docker program's output, so the child it leaves holds that output open after both end.
+    await writeFile(path.join(env.state, "pass-output"), "");
+    const log = path.join(env.root, "relay-at-stop");
+    let child = 0;
+    const started = startProcess({
+      command: ["unused"],
+      args: [log],
+      cwd: env.root,
+      env: { PATH: process.env.PATH },
+      container: {
+        settings: env.container,
+        mounts: [],
+        labels: {},
+        program: "codex",
+        env: {},
+        relay: { identity: { organizationId: env.org }, required: [] },
+      },
+      onFrame: async (frame) => {
+        child = (frame as { pid: number }).pid;
+        started.write({ go: true });
+      },
+    });
+    try {
+      await started.done;
+      // The child recorded, when it was told to stop, whether the relay was still open.
+      expect(await readFile(log, "utf8")).toBe("relay closed");
+    } finally {
+      if (child && alive(child)) process.kill(child, "SIGKILL");
+    }
+  }, 20_000);
 
   it("takes the relay back before removing the container, even when Docker cannot remove it", async () => {
     const env = await setup({

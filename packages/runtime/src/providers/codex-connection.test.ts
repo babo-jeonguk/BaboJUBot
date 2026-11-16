@@ -242,6 +242,48 @@ describe("a Codex app-server connection", () => {
     30_000
   );
 
+  // A child that left the program's process group cannot be stopped with it (on Windows no child can once the program has ended).
+  // The waits still end when the program ends, and its last answer still arrives.
+  it("fails waiting requests when the program dies even if a child it cannot stop keeps its output open", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
+    roots.push(root);
+    const program = `
+      const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true });
+      console.log(JSON.stringify({ method: "child", params: { pid: child.pid } }));
+      require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
+        const frame = JSON.parse(line);
+        if (frame.method === "answered")
+          process.stdout.write(JSON.stringify({ id: frame.id, result: { which: "answered" } }) + "\\n", () => process.exit(3));
+      });`;
+    let child = 0;
+    let started!: () => void;
+    const childStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const connection = openCodexConnection({
+      command: [process.execPath],
+      args: ["-e", program],
+      cwd: root,
+      env: { PATH: process.env.PATH },
+      onNotification: (frame) => {
+        child = record(frame.params).pid as number;
+        started();
+      },
+    });
+    try {
+      await childStarted;
+      const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
+      const failure = expect(waiting).rejects.toBeInstanceOf(ProtocolClosed);
+      expect(
+        await connection.request("answered", {}, { timeoutMs: 15_000 })
+      ).toEqual({ which: "answered" });
+      await failure;
+      expect((await connection.done).code).toBe(3);
+    } finally {
+      if (child && alive(child)) process.kill(child, "SIGKILL");
+    }
+  }, 30_000);
+
   it("delivers a response the process wrote right before it exited", async () => {
     const connection = await peer([
       { input: { id: 1, method: "last" } },

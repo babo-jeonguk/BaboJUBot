@@ -2,7 +2,8 @@
 // argv: <stateDir> <programs JSON> <docker args...>
 // - records every call as one JSON line in <stateDir>/calls.jsonl ({ args, env } where env is the container env of `run`)
 // - `run ... <image> <program> <args...>`: runs programs[<program>] on this machine with the container env and --workdir,
-//   passes stdin/stdout through and forwards SIGINT/SIGTERM. With BABOJUBOT_INBOUND_PORT it stands in for the image's relay.mjs:
+//   passes stdin/stdout through and forwards SIGINT/SIGTERM. With <stateDir>/pass-output the program shares this program's output
+//   directly and this program ends when the program itself ends, even if a child the program left keeps that output open. With BABOJUBOT_INBOUND_PORT it stands in for the image's relay.mjs:
 //   once the program prints a `{"url":"http://127.0.0.1:N"}` frame it keeps connections open to the relay folder's inbound.sock
 //   (the `/run/babojubot` mount source) and joins each to port N on its first byte.
 // - `rm`: succeeds and records whether the last run's relay socket (`egress.sock`) still existed (`relayOpen`).
@@ -99,6 +100,7 @@ if (verb === "run") {
       if (!used) setTimeout(() => offer(port), 100).unref();
     });
   };
+  const passOutput = existsSync(path.join(stateDir, "pass-output"));
   const mapped = programs[program];
   if (!mapped) {
     process.stderr.write(`fake docker: unknown program ${program}\n`);
@@ -115,10 +117,10 @@ if (verb === "run") {
         mounts.map(({ source, target }) => ({ source, target }))
       ),
     },
-    stdio: ["inherit", "pipe", "inherit"],
+    stdio: passOutput ? "inherit" : ["inherit", "pipe", "inherit"],
   });
   let buffer = "";
-  child.stdout.on("data", (chunk) => {
+  child.stdout?.on("data", (chunk) => {
     process.stdout.write(chunk);
     buffer += chunk.toString();
     for (let n; (n = buffer.indexOf("\n")) >= 0;) {
@@ -135,7 +137,9 @@ if (verb === "run") {
   });
   for (const signal of ["SIGINT", "SIGTERM"])
     process.on(signal, () => child.kill(signal));
-  child.on("close", (code, signal) => process.exit(code ?? (signal ? 137 : 1)));
+  child.on(passOutput ? "exit" : "close", (code, signal) =>
+    process.exit(code ?? (signal ? 137 : 1))
+  );
 } else {
   const failing = existsSync(path.join(stateDir, "rm-fails"));
   if (verb === "rm") {
