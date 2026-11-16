@@ -247,8 +247,9 @@ describe("a Codex app-server connection", () => {
   it("fails waiting requests when the program dies even if a child it cannot stop keeps its output open", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
     roots.push(root);
+    // The child runs outside the test folder: on Windows a just-killed process can still hold its folder, which blocks removing it.
     const program = `
-      const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true });
+      const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true, cwd: require("os").tmpdir() });
       console.log(JSON.stringify({ method: "child", params: { pid: child.pid } }));
       require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
         const frame = JSON.parse(line);
