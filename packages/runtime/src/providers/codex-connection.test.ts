@@ -16,6 +16,15 @@ afterEach(async () => {
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
   );
 });
+const record = (value: unknown) => value as Record<string, unknown>;
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 async function peer(steps: unknown[]) {
   const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
   roots.push(root);
@@ -144,7 +153,7 @@ describe("a Codex app-server connection", () => {
   // On windows-latest CI the request did not end within 15 s with this program; closing fd 0 most likely does not break the pipe there.
   // Windows write failures stay unchecked here; the rest of the connection runs on every platform.
   it.skipIf(process.platform === "win32")(
-    "ends a request whose write fails, and the connection with it",
+    "ends a request as soon as its write fails, while the program is still running, and the connection with it",
     async () => {
       // The program closes its input but keeps running, so writing to it fails (EPIPE).
       const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
@@ -153,20 +162,26 @@ describe("a Codex app-server connection", () => {
       const closedInput = new Promise<void>((resolve) => {
         ready = resolve;
       });
+      let pid = 0;
       const connection = openCodexConnection({
         command: [process.execPath],
         args: [
           "-e",
-          `require("fs").closeSync(0); console.log(JSON.stringify({ method: "ready" })); setInterval(() => {}, 1000)`,
+          `require("fs").closeSync(0); console.log(JSON.stringify({ method: "ready", params: { pid: process.pid } })); setInterval(() => {}, 1000)`,
         ],
         cwd: root,
         env: { PATH: process.env.PATH },
-        onNotification: () => ready(),
+        onNotification: (frame) => {
+          pid = record(frame.params).pid as number;
+          ready();
+        },
       });
       await closedInput;
       await expect(
         connection.request("lost", {}, { timeoutMs: 60_000 })
       ).rejects.toBeInstanceOf(ProtocolClosed);
+      // The failed write ends the wait at once, not when the program has been stopped about two seconds later.
+      expect(alive(pid)).toBe(true);
       expect(connection.closed).toBe(true);
       await expect(
         connection.request("after", {}, { timeoutMs: 60_000 })
@@ -174,6 +189,57 @@ describe("a Codex app-server connection", () => {
       await connection.done;
     },
     15_000
+  );
+
+  // Windows cannot find the children of a program that has already ended, so they are only stopped with the whole tree on cancel.
+  it.skipIf(process.platform === "win32")(
+    "fails waiting requests when the program dies even if a child it left behind keeps its output open, and keeps its last answer",
+    async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
+      roots.push(root);
+      // The program starts a child that shares its output and never ends, answers one request, then exits with the other unanswered.
+      const program = `
+        const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"] });
+        console.log(JSON.stringify({ method: "child", params: { pid: child.pid } }));
+        require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
+          const frame = JSON.parse(line);
+          if (frame.method === "answered")
+            process.stdout.write(JSON.stringify({ id: frame.id, result: { which: "answered" } }) + "\\n", () => process.exit(3));
+        });`;
+      let child = 0;
+      let started!: () => void;
+      const childStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const connection = openCodexConnection({
+        command: [process.execPath],
+        args: ["-e", program],
+        cwd: root,
+        env: { PATH: process.env.PATH },
+        onNotification: (frame) => {
+          child = record(frame.params).pid as number;
+          started();
+        },
+      });
+      try {
+        await childStarted;
+        const waiting = connection.request(
+          "waiting",
+          {},
+          { timeoutMs: 15_000 }
+        );
+        const failure = expect(waiting).rejects.toBeInstanceOf(ProtocolClosed);
+        expect(
+          await connection.request("answered", {}, { timeoutMs: 15_000 })
+        ).toEqual({ which: "answered" });
+        await failure;
+        expect((await connection.done).code).toBe(3);
+        expect(alive(child)).toBe(false);
+      } finally {
+        if (child && alive(child)) process.kill(child, "SIGKILL");
+      }
+    },
+    30_000
   );
 
   it("delivers a response the process wrote right before it exited", async () => {
