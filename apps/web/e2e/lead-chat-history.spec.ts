@@ -53,20 +53,28 @@ const post = async (page: Page, url: string, data: unknown = {}) =>
   expect((await page.request.post(url, { data })).ok()).toBe(true);
 
 /**
+ * 가짜 Lead를 `실행 유지 연습`으로 붙잡는다. 이 부탁으로 시작한 실행 시도가 실행 중이 될 때까지 기다린다.
+ * 대화에는 앞서 보낸 같은 문구가 남아 있을 수 있어 문구로 찾지 않고 서버의 실행 상태를 본다.
+ */
+async function holdLead(page: Page, org: Org) {
+  await post(page, org.api("/messages"), { body: "실행 유지 연습" });
+  await expect
+    .poll(async () => {
+      const [latest] = (await (
+        await page.request.get(org.api("/runs"))
+      ).json()) as { status: string }[];
+      return latest?.status;
+    }, runs)
+    .toBe("running");
+}
+
+/**
  * 받은 메시지를 API로 쌓는다. 가짜 Lead를 `실행 유지 연습`으로 붙잡아 둔 채 상한(20)만큼 줄 세우고 실행을 중단하면
  * 다음 실행 시도가 그 20개를 한꺼번에 받고 답장한다. 한 번에 22개 남짓이 대화에 쌓인다.
  */
 async function seedTranscript(page: Page, org: Org, rounds: number) {
   for (let round = 0; round < rounds; round++) {
-    await post(page, org.api("/messages"), { body: "실행 유지 연습" });
-    await expect
-      .poll(async () => {
-        const [latest] = (await (
-          await page.request.get(org.api("/runs"))
-        ).json()) as { status: string }[];
-        return latest?.status;
-      }, runs)
-      .toBe("running");
+    await holdLead(page, org);
     for (let i = 1; i <= 20; i++)
       await post(page, org.api("/messages"), {
         body: `기록 ${round + 1}-${i}`,
@@ -226,10 +234,11 @@ test("stays at the bottom while the queue above the composer and the composer it
   await expect.poll(gap).toBeLessThanOrEqual(1);
 
   // 입력창 위 줄 세운 메시지 목록이 자라면 대화 영역이 줄어든다. 사용자가 스크롤하지 않았으니 맨 아래에 남는다.
-  await post(page, org.api("/messages"), { body: "실행 유지 연습" });
-  await expect(
-    scroller.getByText("실행 유지 연습", { exact: true })
-  ).toBeVisible(runs);
+  await holdLead(page, org);
+  await expect(scroller.locator('[data-author="owner"]').last()).toContainText(
+    "실행 유지 연습",
+    runs
+  );
   for (let i = 1; i <= 5; i++)
     await post(page, org.api("/messages"), { body: `줄 ${i}` });
   await expect(page.getByText("줄 세운 메시지 5/20")).toBeVisible();
