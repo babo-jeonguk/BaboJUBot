@@ -1066,7 +1066,7 @@ describe.skipIf(process.platform === "win32")(
     ])(
       "when %s, the run fails and returns only after the grant is refused, its own folder deleted and the container removed",
       async (_case, flag) => {
-        const t = await codexSetup(undefined, undefined, { request: 500 }, [
+        const t = await codexSetup(undefined, undefined, { request: 2_000 }, [
           process.execPath,
           fixture("codex-relay.mjs"),
           flag,

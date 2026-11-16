@@ -608,7 +608,7 @@ describe("one app-server connection per call (#145)", () => {
     it("fails when an ordinary request goes unanswered, without sending it again", async () => {
       const t = await scripted(
         { "thread/start": [{ silent: true }] },
-        { request: 300 }
+        { request: 2_000 }
       );
       const result = await t.provider.adapter.execute(request(), {
         signal: new AbortController().signal,
@@ -718,12 +718,12 @@ describe("one app-server connection per call (#145)", () => {
     });
 
     it.each([
-      ["goes unanswered", { silent: true }],
-      ["ends with the program", { silent: true, exit: 1 }],
+      ["goes unanswered", { silent: true }, { request: 2_000 }],
+      ["ends with the program", { silent: true, exit: 1 }, undefined],
     ])(
       "does not start a new thread when the resume %s",
-      async (_case, step) => {
-        const t = await scripted({ "thread/resume": [step] }, { request: 300 });
+      async (_case, step, timeouts) => {
+        const t = await scripted({ "thread/resume": [step] }, timeouts);
         const w = watch();
         const result = await t.provider.adapter.execute(resumed(), w.control());
         w.returned();
