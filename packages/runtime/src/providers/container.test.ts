@@ -130,7 +130,7 @@ const alive = (pid: number) => {
   }
 };
 // A container program that leaves a child sharing its output. The child records whether the relay is still open when it is told
-// to stop, then ends. The program ends on its first input line.
+// to stop, then ends. The program ends on its first input line, or 1.2 s after its input closes.
 const leftBehind = `
   const fs = require("node:fs"), path = require("node:path");
   const relay = JSON.parse(process.env.FAKE_DOCKER_MOUNTS).find((m) => m.target === "/run/babojubot").source;
@@ -145,6 +145,8 @@ const leftBehind = `
     console.log(JSON.stringify({ pid: process.pid }));
   \`], { stdio: ["ignore", "inherit", "ignore"] });
   process.stdin.once("data", () => process.exit(0));
+  // Cancelled: the input closes, and the program takes a while (past the drain wait, before the stop timer) to end.
+  process.stdin.on("end", () => setTimeout(() => process.exit(0), 1200));
 `;
 const runCall = (calls: Call[]) => {
   const runs = calls.filter((c) => c.args.includes("run"));
@@ -431,6 +433,38 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     try {
       await started.done;
       // The child recorded, when it was told to stop, whether the relay was still open.
+      expect(await readFile(log, "utf8")).toBe("relay closed");
+    } finally {
+      if (child && alive(child)) process.kill(child, "SIGKILL");
+    }
+  }, 20_000);
+
+  it("takes the relay back before stopping what a cancelled program left running, when the program ends before its stop timer", async () => {
+    const env = await setup({ codex: [process.execPath, "-e", leftBehind] });
+    await writeFile(path.join(env.state, "pass-output"), "");
+    const log = path.join(env.root, "relay-at-stop");
+    let child = 0;
+    const started = startProcess({
+      command: ["unused"],
+      args: [log],
+      cwd: env.root,
+      env: { PATH: process.env.PATH },
+      container: {
+        settings: env.container,
+        mounts: [],
+        labels: {},
+        program: "codex",
+        env: {},
+        relay: { identity: { organizationId: env.org }, required: [] },
+      },
+      onFrame: async (frame) => {
+        child = (frame as { pid: number }).pid;
+        // Cancel: close the input. The stop timer would signal the group 2 s later; the program ends at about 1.2 s.
+        started.end();
+      },
+    });
+    try {
+      await started.done;
       expect(await readFile(log, "utf8")).toBe("relay closed");
     } finally {
       if (child && alive(child)) process.kill(child, "SIGKILL");
