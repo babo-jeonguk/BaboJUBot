@@ -20,25 +20,32 @@ Paseo로 여러 agent를 배치·감독하는 방법을 다룹니다. 단계별 
 
 ## 2. profile
 
-앱에서 고르는 preset입니다.
+앱에서 고르는 preset이며, parent가 subagent를 띄울 때 쓰는 값도 여기서 가져옵니다. provider·model·mode·thinking·기능값은 `~/.paseo/config.json`의 `agentProfiles`에만 두고 문서에 옮겨 적지 않습니다.
 
-| profile | provider/model | mode | 용도 |
-| --- | --- | --- | --- |
-| `research-codex-main` / `-sub` | `codex` / `codex-sub`, `gpt-6.1-sol` | `auto-review` | research |
-| `parent-claude-main` / `-sub` | `claude-main` / `claude-sub`, `claude-opus-5-5` | `auto` | implement·review-fix·merge |
-| `worker-deepseek` | `opencode`, `opencode-go/deepseek-v4.1-flash` | `dev-worker` | 슬라이스·fix worker |
-| `doc-worker-deepseek` | `opencode`, `opencode-go/deepseek-v4.1-flash` | `dev-doc-worker` | 승인된 문서 수정 |
-| `auditor-codex-main` / `-sub` | `codex` / `codex-sub`, `gpt-6.1-sol` | `full-access` | docs·issue 감사 |
+| profile | 용도 |
+| --- | --- |
+| `research-codex-main` / `-sub` | research |
+| `parent-claude-main` / `-sub` | implement·review-fix·merge |
+| `worker-deepseek` | 슬라이스·fix worker |
+| `doc-worker-deepseek` | 승인된 문서 수정 |
+| `auditor-codex-main` / `-sub` | docs·issue 감사 |
 
 ## 3. agent 띄우기
 
-`create_agent`와 `paseo run`에는 profile 인자가 없으므로 parent가 아래 값을 직접 넘깁니다. 피드백은 같은 agent ID에 `send_agent_prompt`로 보냅니다.
+`create_agent`와 `paseo run`에는 profile 인자가 없습니다. parent는 띄우기 전에 `list_profiles`로 해당 profile을 읽고, 그 profile에 있는 값을 빠짐없이 `create_agent`로 옮깁니다. 필요한 profile이 없으면 띄우지 않고 사용자에게 알립니다. 피드백은 같은 agent ID에 `send_agent_prompt`로 보냅니다.
 
-| 띄울 agent | `create_agent` 값 |
+| profile 값 | `create_agent` 값 |
 | --- | --- |
-| 슬라이스·fix worker | provider `opencode/opencode-go/deepseek-v4.1-flash`, `settings.modeId: dev-worker`, `settings.features.auto_accept: false` |
-| 문서 worker | provider `opencode/opencode-go/deepseek-v4.1-flash`, `settings.modeId: dev-doc-worker`, `settings.features.auto_accept: false` |
-| auditor | provider `codex/gpt-6.1-sol` 또는 `codex-sub/gpt-6.1-sol`, `settings.modeId: full-access`, `settings.thinkingOptionId: high`, prompt에 “파일을 고치지 않는다” 포함 |
+| `provider`, `model` | `provider: "<provider>/<model>"` |
+| `modeId` | `settings.modeId` |
+| `thinkingOptionId` | `settings.thinkingOptionId` |
+| 기능값(`featureValues`) | `settings.features` |
+
+| 띄울 agent | profile | 덧붙일 것 |
+| --- | --- | --- |
+| 슬라이스·fix worker | `worker-deepseek` | 없음 |
+| 문서 worker | `doc-worker-deepseek` | 없음 |
+| auditor | `auditor-codex-main` 또는 `-sub`(§4) | prompt에 “파일을 고치지 않는다” 포함 |
 
 worker 권한은 [dev-worker](../../.opencode/agents/dev-worker.md)와 [dev-doc-worker](../../.opencode/agents/dev-doc-worker.md)가 정합니다.
 
