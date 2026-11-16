@@ -33,6 +33,7 @@ import { ResultDecision } from "./results.tsx";
 import {
   approvalKindLabel,
   ApprovalStatusBadge,
+  Block,
   formatTime,
   inboxKindLabel,
   Loading,
@@ -166,17 +167,6 @@ function Organize({ orgId, kind, sourceId }: Props & { kind: InboxItemKind }) {
   );
 }
 
-function Block({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <section aria-label={label} className="mb-4">
-      <h2 className="mb-1.5 text-sm font-semibold text-slate-600">{label}</h2>
-      <div className="card px-4 py-3 text-sm break-words whitespace-pre-wrap text-slate-800">
-        {children}
-      </div>
-    </section>
-  );
-}
-
 /**
  * 긴 글은 앞부분만 보이고, 잘린 글은 아래가 흐려져 줄였다는 것을 숨기지 않는다. 잘렸으면 바로 아래에 그 사실과
  * 전체를 읽을 원래 화면 링크(머리의 `원래 화면에서 자세히 보기`와 같은 곳)를 둔다. 펼치기는 따로 두지 않는다.
@@ -267,7 +257,7 @@ function ProposalSummary({
 }) {
   if (a.kind === "add_worker")
     return (
-      <Block label="추가할 작업자">
+      <Block variant="inbox" label="추가할 작업자">
         <span className="font-medium">{a.proposal.label}</span>{" "}
         <span className="text-xs text-slate-500">{a.proposal.role}</span> · 1명
         · 받을 사본 {a.proposal.files.length}개
@@ -288,7 +278,7 @@ function ProposalSummary({
           <ProposedCriteria proposal={p} />
         </dl>
       </section>
-      <Block label="팀 구성">
+      <Block variant="inbox" label="팀 구성">
         {p.team.map((m) => `${m.label} ${m.count}명`).join(" · ")}
       </Block>
       <Excerpt label="초기 연구 계획" text={p.plan} original={original} />
@@ -297,7 +287,9 @@ function ProposalSummary({
         text={p.environment}
         original={original}
       />
-      <Block label="연구 흐름 템플릿">{p.template.label}</Block>
+      <Block variant="inbox" label="연구 흐름 템플릿">
+        {p.template.label}
+      </Block>
     </>
   );
 }
@@ -362,7 +354,7 @@ function SubmissionSummary({
           </dd>
         </dl>
       </section>
-      <Block label={`근거 산출물 ${s.artifacts.length}개`}>
+      <Block variant="inbox" label={`근거 산출물 ${s.artifacts.length}개`}>
         {s.artifacts.map((a) => a.title).join("\n")}
       </Block>
     </>
@@ -396,9 +388,11 @@ function RunFailureSummary({ orgId, sourceId }: Props) {
         meta={`${nameOf(org.data?.agents ?? [], r.agentId)} · ${formatTime(r.startedAt)} 시작${r.finishedAt ? ` · ${formatTime(r.finishedAt)} 종료` : ""}`}
         originalLabel="실행 기록 보기"
       />
-      <Block label="실패 사유">{r.error ?? "사유가 남지 않았습니다."}</Block>
+      <Block variant="inbox" label="실패 사유">
+        {r.error ?? "사유가 남지 않았습니다."}
+      </Block>
       {r.summary && (
-        <Block label="실행 요약">
+        <Block variant="inbox" label="실행 요약">
           <Markdown text={r.summary} />
         </Block>
       )}

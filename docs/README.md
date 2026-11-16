@@ -57,6 +57,7 @@
 - [프로바이더 운영 안내](providers.md): 연결 설정, 제품 로그인, 정리, 압축, 수동 실제 시험.
 - [#98–101 구현 근거](research/issue-98-101-implementation.md): 원문 재확인, 확정 결정, 검증 범위.
 - [#149 구현 기록](research/issue-149-implementation.md): 컨테이너 시작 환경·mount·네트워크 경계의 원문 재확인, 배치 비교, 검증 범위.
+- [#144 구현 기록](research/issue-144-implementation.md): 결정 표시·캐시 갱신 공통화의 권고 적용, 원문 확인, 검증 범위.
 - [#154 실모델 장애 검사 기록](research/issue-154-chaos-verification.md): 대상 커밋·환경·명령·결과·미실행 범위, 발견한 결함.
 - [#153 파일 경로 격리 검증 기록](research/issue-153-file-boundary-verification.md): 파일 시스템 여덟 곳의 환경 식별·사례별 결과·CI 시간·미검증 범위.
 - [OpenCode 2.x 지침 주입 조사](research/opencode-2-instructions.md): 기본 지침 보존과 세션 지침 API 추가.

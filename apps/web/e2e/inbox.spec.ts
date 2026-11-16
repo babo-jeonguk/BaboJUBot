@@ -495,11 +495,17 @@ test("deciding from the Inbox detail after another surface decided first shows t
   expect(approved.ok()).toBe(true);
 
   // 이 화면의 반려는 409로 거절되고, 최신 상태를 다시 불러와 먼저 온 승인을 결정 기록으로 보인다.
+  // 이 화면의 성공이 아니므로 결정 기록으로 포커스를 옮기지 않는다.
   await decision.getByLabel(/결정 사유/).fill("늦게 보낸 반려");
   await decision.getByRole("button", { name: "반려" }).click();
   await expect(decision).toContainText("승인됨");
   await expect(decision).not.toContainText("늦게 보낸 반려");
   await expect(decision.getByRole("button")).toHaveCount(0);
+  // 누른 반려 버튼은 사라졌지만, 결정 기록을 비롯해 어디로도 포커스를 옮기지 않는다.
+  await expect(decision).not.toBeFocused();
+  expect(
+    await page.evaluate(() => document.activeElement === document.body)
+  ).toBe(true);
 });
 
 test("global settings shows the provider settings and the places for environment templates, secrets and messaging apps", async ({

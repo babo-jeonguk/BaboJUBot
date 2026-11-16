@@ -10,13 +10,7 @@ import {
   type ProposedWorker,
   type ProviderChoice,
 } from "@babojubot/contracts";
-import {
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router";
 import {
   ApiError,
@@ -26,6 +20,12 @@ import {
   useProviderSettings,
 } from "./api.ts";
 import { focusFirstChoiceProblem, isChoiceRefusal } from "./choice-problems.ts";
+import {
+  closedOrganizationNotice,
+  DecisionArea,
+  DecisionFormFrame,
+  DecisionRecord,
+} from "./decision.tsx";
 import { Markdown } from "./markdown.tsx";
 import {
   changedChoiceFields,
@@ -41,6 +41,7 @@ import {
   approvalKindLabel,
   approvalStatusLabel,
   ApprovalStatusBadge,
+  Block,
   decisionLabel,
   formatTime,
   Loading,
@@ -159,7 +160,7 @@ function InitialResearchContent({
   const choiceLabel = useChoiceLabel();
   return (
     <>
-      <Block label="연구 목표와 완료 기준">
+      <Block variant="detail" label="연구 목표와 완료 기준">
         <dl className="grid gap-x-4 gap-y-2 p-4 text-sm sm:grid-cols-[7rem_1fr]">
           <dt className="text-slate-500">연구 목표</dt>
           <dd className="min-w-0">
@@ -168,10 +169,10 @@ function InitialResearchContent({
           <ProposedCriteria proposal={proposal} />
         </dl>
       </Block>
-      <Block label="초기 연구 계획">
+      <Block variant="detail" label="초기 연구 계획">
         <Text>{proposal.plan}</Text>
       </Block>
-      <Block label="팀 구성">
+      <Block variant="detail" label="팀 구성">
         <ul className="divide-y divide-slate-100">
           {proposal.team.map((m) => (
             <li key={m.role} className="px-4 py-3 text-sm">
@@ -202,10 +203,10 @@ function InitialResearchContent({
           ))}
         </ul>
       </Block>
-      <Block label="연구 환경 명세">
+      <Block variant="detail" label="연구 환경 명세">
         <Text>{proposal.environment}</Text>
       </Block>
-      <Block label="연구 흐름 템플릿">
+      <Block variant="detail" label="연구 흐름 템플릿">
         <div className="space-y-2 p-4 text-sm">
           <div>
             <span className="font-medium">{proposal.template.label}</span>{" "}
@@ -238,7 +239,7 @@ function AddWorkerContent({
 }) {
   const choiceLabel = useChoiceLabel();
   return (
-    <Block label="추가할 작업자">
+    <Block variant="detail" label="추가할 작업자">
       <div className="px-4 py-3 text-sm">
         <div className="flex items-center gap-2">
           <span className="font-medium">{proposal.label}</span>
@@ -270,15 +271,6 @@ function AddWorkerContent({
         ))}
       </ul>
     </Block>
-  );
-}
-
-function Block({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <section aria-label={label} className="mb-5">
-      <h2 className="mb-2 text-sm font-semibold text-slate-600">{label}</h2>
-      <div className="card">{children}</div>
-    </section>
   );
 }
 
@@ -314,8 +306,8 @@ const decisionStyle: Record<ApprovalDecision, string> = {
 const noteLabel = "결정 사유";
 
 /**
- * 결정 영역: 결정 대기면 결정 폼, 아니면 결정 기록. 승인 요청 상세와 Inbox 상세가 함께 쓴다.
- * 이 화면에서 방금 결정했으면 사라진 버튼 대신 결정 기록으로 포커스를 옮긴다.
+ * 결정 영역: 결정 대기면 결정 폼, 아니면 결정 기록(`DecisionArea`). 승인 요청 상세와 Inbox 상세가 함께 쓰며,
+ * 사유 초안과 "이 화면에서 결정함"은 요청마다 따로다(`key`).
  */
 export function ApprovalDecision({
   orgId,
@@ -326,16 +318,23 @@ export function ApprovalDecision({
   approval: Approval;
   stage: LifecycleStage | undefined;
 }) {
-  const [decidedHere, setDecidedHere] = useState(false);
-  return a.status === "pending" ? (
-    <DecisionForm
-      orgId={orgId}
-      approval={a}
-      stage={stage}
-      onDecided={() => setDecidedHere(true)}
+  const decide = useDecideApproval(orgId, a.id);
+  return (
+    <DecisionArea
+      pending={a.status === "pending"}
+      form={(onDecided) => (
+        <DecisionForm
+          orgId={orgId}
+          approval={a}
+          stage={stage}
+          decide={decide}
+          onDecided={onDecided}
+        />
+      )}
+      record={(focus) => (
+        <DecisionReceipt orgId={orgId} approval={a} focus={focus} />
+      )}
     />
-  ) : (
-    <DecisionReceipt orgId={orgId} approval={a} focus={decidedHere} />
   );
 }
 
@@ -561,16 +560,17 @@ function DecisionForm({
   orgId,
   approval,
   stage,
+  decide,
   onDecided,
 }: {
   orgId: string;
   approval: Approval;
   stage: LifecycleStage | undefined;
+  decide: ReturnType<typeof useDecideApproval>;
   onDecided: () => void;
 }) {
   const { id: approvalId, kind } = approval;
   const [note, setNote] = useState("");
-  const decide = useDecideApproval(orgId, approvalId);
   const providerSettings = useProviderSettings();
   const settings = providerSettings.data;
   const workerDefault = settings?.workerDefault;
@@ -583,28 +583,27 @@ function DecisionForm({
   const choices = decisionChoices(workers, draft, workerDefault);
   const base = decisionChoices(workers, undefined, workerDefault).shown;
   const trimmed = note.trim();
-  const alreadyDecided =
-    decide.error instanceof ApiError && decide.error.code === "already_decided";
   const changesStage = kind === "initial_research";
   const closed = changesStage && stage === "stopped";
-  const pausedNotice =
-    stage !== "paused"
+  const notice = closed
+    ? closedOrganizationNotice
+    : stage !== "paused"
       ? null
       : changesStage
         ? "조직이 일시정지 중입니다 · 결정하면 재개"
         : "조직이 일시정지 중입니다";
   return (
-    <section
-      id="decision"
-      aria-label="결정"
-      className="card scroll-mt-4 p-4 ring-2 ring-amber-200"
+    <DecisionFormFrame
+      notice={notice}
+      sending={decide.isPending}
+      error={decide.error}
+      subject="요청"
+      describeError={(error) =>
+        isChoiceRefusal(error.code)
+          ? "서버가 고른 프로바이더나 모델을 받지 않았습니다. 표시한 칸을 고치세요."
+          : undefined
+      }
     >
-      <h2 className="mb-3 text-sm font-semibold">결정</h2>
-      {(pausedNotice || closed) && (
-        <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
-          {closed ? "중단된 조직이라 결정할 수 없습니다." : pausedNotice}
-        </p>
-      )}
       <WorkerChoiceTable
         idPrefix={idPrefix}
         workers={workers}
@@ -698,25 +697,7 @@ function DecisionForm({
           </button>
         ))}
       </div>
-      {decide.isPending && (
-        <p role="status" className="mt-2 text-xs text-slate-500">
-          결정을 보내는 중…
-        </p>
-      )}
-      {decide.isError && (
-        <p role="alert" className="mt-2 text-xs text-rose-600">
-          {alreadyDecided
-            ? "이미 결정된 요청입니다. 최신 결정을 불러옵니다."
-            : decide.error instanceof ApiError &&
-                decide.error.code === "organization_closed"
-              ? "조직이 중단되어 결정을 받지 않았습니다."
-              : decide.error instanceof ApiError &&
-                  isChoiceRefusal(decide.error.code)
-                ? "서버가 고른 프로바이더나 모델을 받지 않았습니다. 표시한 칸을 고치세요."
-                : "보내지 못했습니다. 다시 시도하세요."}
-        </p>
-      )}
-    </section>
+    </DecisionFormFrame>
   );
 }
 
@@ -729,30 +710,13 @@ function DecisionReceipt({
   approval: Approval;
   focus: boolean;
 }) {
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (focus) ref.current?.focus();
-  }, [focus]);
   return (
-    <section
-      ref={ref}
-      tabIndex={-1}
-      aria-label="결정"
-      className="card p-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-300"
+    <DecisionRecord
+      focus={focus}
+      title={approvalStatusLabel[a.status]}
+      decidedAt={a.decidedAt}
+      note={{ label: "사유", text: a.decisionNote }}
     >
-      <h2 className="mb-2 text-sm font-semibold">
-        {approvalStatusLabel[a.status]}
-        {a.decidedAt && (
-          <span className="ml-2 font-normal text-slate-500">
-            {formatTime(a.decidedAt)}
-          </span>
-        )}
-      </h2>
-      {a.decisionNote && (
-        <p className="mb-2 break-words whitespace-pre-wrap">
-          사유: {a.decisionNote}
-        </p>
-      )}
       <DecidedWorkerTable orgId={orgId} approval={a} />
       <p className="text-slate-500">
         {a.status === "approved" ? (
@@ -773,6 +737,6 @@ function DecisionReceipt({
           "작업자를 만들지 않았습니다."
         )}
       </p>
-    </section>
+    </DecisionRecord>
   );
 }

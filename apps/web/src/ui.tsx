@@ -453,6 +453,43 @@ export function Page({
   );
 }
 
+/**
+ * 원본 상세(승인 요청·결과 제출)와 Inbox 상세의 이름 붙은 묶음. 둘의 구조는 같고 스타일만 다르다(`variant`).
+ * `detail`은 본문이 여백을 정하고, `inbox`는 짧은 요약이라 묶음이 여백·글자·줄바꿈을 정한다. 무엇을 보일지는 고르지 않는다.
+ */
+export type BlockVariant = "detail" | "inbox";
+const blockStyle: Record<
+  BlockVariant,
+  { section: string; heading: string; body: string }
+> = {
+  detail: { section: "mb-5", heading: "mb-2", body: "card" },
+  inbox: {
+    section: "mb-4",
+    heading: "mb-1.5",
+    body: "card px-4 py-3 text-sm break-words whitespace-pre-wrap text-slate-800",
+  },
+};
+
+export function Block({
+  label,
+  variant,
+  children,
+}: {
+  label: string;
+  variant: BlockVariant;
+  children: ReactNode;
+}) {
+  const style = blockStyle[variant];
+  return (
+    <section aria-label={label} className={style.section}>
+      <h2 className={`${style.heading} text-sm font-semibold text-slate-600`}>
+        {label}
+      </h2>
+      <div className={style.body}>{children}</div>
+    </section>
+  );
+}
+
 export const abbr = (name: string) => [...name].slice(0, 2).join("");
 export const hue = (id: string) =>
   [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
