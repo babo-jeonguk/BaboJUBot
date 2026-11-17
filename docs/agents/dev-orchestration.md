@@ -14,7 +14,7 @@ Paseo로 여러 agent를 배치·감독하는 방법을 다룹니다. 단계별 
 | merge | merge 전 문서·이슈 감사와 merge | Claude Opus 5.5 | auditor 2개, `dev-doc-worker` |
 
 - worker·auditor·문서 worker는 상위 대화가 아니라 parent의 현재 workspace에 `create_agent`로 **subagent**를 띄웁니다.
-- 다른 작업이 같은 폴더를 쓰면 Paseo로 worktree workspace를 새로 만듭니다. 파일을 고치는 agent는 폴더당 하나입니다.
+- 다른 작업이 같은 폴더를 쓰면 `create_workspace`(`isolation: "worktree"`)로 worktree workspace를 새로 만듭니다.
 - research mode는 로컬 조사 캐시와 `docs/research`에 쓸 수 있어야 합니다.
 - worktree는 base branch에서 만들어지므로 `.opencode/agents/`와 [paseo.json](../../paseo.json)이 base에 커밋돼 있어야 worker mode와 setup(`pnpm install --frozen-lockfile`)이 적용됩니다.
 

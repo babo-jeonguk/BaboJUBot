@@ -43,7 +43,7 @@
 - 기존 변경을 보존하며 로컬 base를 remote로 fast-forward합니다. 고유 커밋·미커밋 변경이 막으면 덮어쓰지 않고 보고합니다. base에 완전히 포함된 미사용 브랜치만 로컬 `git branch -d`, 원격 `git push origin --delete`로 정리하며 외부 fork는 보존합니다.
 - `git fetch --prune` 후 base의 로컬/원격 SHA, worktree, PR·주요 이슈, 브랜치 삭제/보존 결과를 확인합니다.
 - 새 통합 변경·실패 조사 등 이유가 있을 때만 병합 후 검사를 반복합니다. base push CI는 확인 시점의 상태를 보고하고, 종료 대기는 사용자 요청이나 구체적 조사에 필요할 때 합니다.
-- 이 이슈용으로 Paseo가 만든 worktree workspace를 썼다면 merge 결과를 이슈에 남긴 뒤 `paseo workspace archive <workspace-id>`로 정리하고, 그다음 merge한 branch를 삭제합니다. 원래 checkout 폴더의 workspace는 archive하지 않습니다(그 workspace의 다른 대화까지 보관됨). 다른 workspace가 쓰는 branch는 보존합니다.
+- 이 이슈용 worktree workspace를 썼다면 merge 결과를 이슈에 남긴 뒤 `paseo workspace archive <workspace-id>`로 정리하고, 그다음 merge한 branch를 삭제합니다. 원래 checkout 폴더의 workspace는 archive하지 않습니다(그 workspace의 다른 대화까지 보관됨). 다른 workspace가 쓰는 branch는 보존합니다.
 
 **완료:** 기록·로컬 base·worktree·브랜치 결과가 확인됐습니다. 후처리 실패 시 병합 성공과 미완료를 구분하고 안전한 처리를 이어가며 blocker를 남깁니다.
 
