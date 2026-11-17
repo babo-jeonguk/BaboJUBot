@@ -16,6 +16,7 @@ import {
   type SessionState,
 } from "@babojubot/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { probeTimeoutMs } from "./providers/process.ts";
 
 // 프로바이더 계약(contracts `RuntimeAdapter`)의 공통 검사. 프로바이더 adapter마다 장면 두 개를 주고 같은 약속과
 // 그 adapter가 선언한 일(`capabilities`)이 동작과 맞는지 확인한다.
@@ -46,12 +47,20 @@ export type RuntimeContractOptions = {
   finishes: RuntimeContractScene;
   /** 취소할 때까지 일하는 요청. */
   worksUntilCancelled: RuntimeContractScene;
-  /** 취소를 받은 뒤 `cancelled`로 끝나야 하는 시간. */
+  /** 취소를 받은 뒤 `cancelled`로 끝나야 하는 시간. 일을 시작한 뒤에 취소하므로 프로그램 시작은 들어가지 않는다. */
   cancelWithinMs?: number;
-  /** 스스로 끝나는 요청을 기다리는 시간. */
+  /** 일을 시작한 뒤 스스로 끝나기까지 기다리는 시간. 프로그램 시작은 `startWithinMs`가 따로 잰다. */
   finishWithinMs?: number;
-  /** 일을 시작했다는 신호(도구 호출·활동)가 없을 때 취소 전에 기다리는 시간. */
-  startupMs?: number;
+  /**
+   * 요청을 받고 일을 시작했다는 신호(도구 호출·활동)를 내기까지의 시간. 프로그램 시작처럼 검사 대상이 아닌 준비를 담아
+   * 느린 실행기를 감당하게 잡고, 취소·완료 시한과 따로 잰다(#215).
+   */
+  startWithinMs?: number;
+  /**
+   * `worksUntilCancelled`가 취소될 때까지 일을 시작했다는 신호를 내지 않는 adapter(프로그램을 띄우지 않는 in-process 가짜)만 준다.
+   * 그때는 신호 대신 이 시간 뒤에 취소한다. 주지 않으면 신호를 `startWithinMs` 안에 기다린 뒤 취소한다.
+   */
+  quietStartMs?: number;
   /** 이 adapter가 이어 가지 못하는 세션(만료 등). 세션 이어가기를 선언한 adapter는 꼭 준다. */
   unusableSession?: SessionState;
   /**
@@ -76,7 +85,7 @@ export type RuntimeContractOptions = {
       body: string
     ) => boolean;
   };
-  /** 준비 확인을 기다리는 시간. */
+  /** 준비 확인을 기다리는 시간. 확인은 프로그램을 띄우므로 제품의 확인 시한(`probeTimeoutMs`) 두 번을 담는다. */
   readinessWithinMs?: number;
 };
 
@@ -208,11 +217,12 @@ export function describeRuntimeContract(
     worksUntilCancelled,
     cancelWithinMs = 5_000,
     finishWithinMs = 10_000,
-    startupMs = 200,
+    startWithinMs = 30_000,
+    quietStartMs,
     unusableSession,
     resumes,
     steers,
-    readinessWithinMs = 10_000,
+    readinessWithinMs = 2 * probeTimeoutMs,
   }: RuntimeContractOptions
 ): void {
   const { capabilities } = adapter;
@@ -263,16 +273,11 @@ export function describeRuntimeContract(
           open = undefined;
         };
       };
-      // 도구 호출이나 활동이 일을 시작했다는 신호다. `started`는 신호가 없어도 `startupMs` 뒤에 풀린다.
-      // 시작을 기다려야 결과가 정해지는 검사는 시간과 무관한 `working`을 기다린다.
+      // 도구 호출이나 활동이 일을 시작했다는 신호다. 시한을 재는 검사는 이 신호를 `startWithinMs` 안에 기다린 뒤 잰다.
       let markWorking!: () => void;
       const working = new Promise<void>((resolve) => {
         markWorking = resolve;
       });
-      const started = Promise.race([
-        working,
-        new Promise<void>((resolve) => setTimeout(resolve, startupMs)),
-      ]);
       tools.onRequest.add(markWorking);
       const result = adapter
         .execute(request, {
@@ -287,6 +292,16 @@ export function describeRuntimeContract(
           returned = true;
           tools.onRequest.delete(markWorking);
         });
+      /**
+       * 일을 시작했다는 신호나 결과 중 먼저 오는 것을 `startWithinMs` 안에 기다린다. 준비가 끝난 뒤에 취소·완료 시한을 재려고
+       * 쓴다. 신호 없이 끝나는 실행 시도도 여기서 막히지 않는다.
+       */
+      const started = () =>
+        deadline(
+          Promise.race([working, result.then(() => {})]),
+          startWithinMs,
+          "did not show that it started working"
+        );
       return {
         token,
         messages,
@@ -329,6 +344,7 @@ export function describeRuntimeContract(
       "finishes a request on its own with a public result and public activities only",
       async () => {
         const attempt = run(finishes);
+        await attempt.started();
         const result = await deadline(
           attempt.result,
           finishWithinMs,
@@ -337,14 +353,15 @@ export function describeRuntimeContract(
         expect(result.stopReason).not.toBe("cancelled");
         await expectSettled(attempt, result);
       },
-      finishWithinMs + settleMs
+      startWithinMs + finishWithinMs + settleMs
     );
 
     it(
       "settles as cancelled soon after a cancel and stays quiet afterwards",
       async () => {
         const attempt = run(worksUntilCancelled);
-        await attempt.started;
+        if (quietStartMs === undefined) await attempt.started();
+        else await new Promise((resolve) => setTimeout(resolve, quietStartMs));
         expect(attempt.returned, "returned before it was cancelled").toBe(
           false
         );
@@ -360,7 +377,7 @@ export function describeRuntimeContract(
         expect(result.stopReason).toBe("cancelled");
         await expectSettled(attempt, result);
       },
-      startupMs + cancelWithinMs + settleMs
+      (quietStartMs ?? startWithinMs) + cancelWithinMs + settleMs
     );
 
     const evidenceOf = (
@@ -390,6 +407,7 @@ export function describeRuntimeContract(
         }),
         agent
       );
+      await attempt.started();
       const result = await deadline(
         attempt.result,
         finishWithinMs,
@@ -431,7 +449,7 @@ export function describeRuntimeContract(
           expect(usage?.costUsd ?? null).not.toBeNull();
         else expect(usage?.costUsd ?? null).toBeNull();
       },
-      finishWithinMs + settleMs
+      startWithinMs + finishWithinMs + settleMs
     );
 
     if (capabilities.resume) {
@@ -465,7 +483,7 @@ export function describeRuntimeContract(
           expect(resumes!.recalled(fresh.evidence, given)).toBe(false);
           expect(resumes!.recalled(fresh.evidence, other)).toBe(false);
         },
-        4 * finishWithinMs + settleMs
+        4 * (startWithinMs + finishWithinMs) + settleMs
       );
 
       it(
@@ -485,7 +503,7 @@ export function describeRuntimeContract(
             progress(fresh.attempt.activities)
           );
         },
-        2 * finishWithinMs + settleMs
+        2 * (startWithinMs + finishWithinMs) + settleMs
       );
     } else
       it(
@@ -493,7 +511,7 @@ export function describeRuntimeContract(
         async () => {
           expect((await finish()).result.nextSession).toBeNull();
         },
-        finishWithinMs + settleMs
+        startWithinMs + finishWithinMs + settleMs
       );
 
     if (capabilities.steer)
@@ -503,7 +521,7 @@ export function describeRuntimeContract(
           const attempt = run(steers!.scene);
           await deadline(
             attempt.working,
-            finishWithinMs,
+            startWithinMs,
             "did not show that it started working"
           );
           const steer = (runId: string, body: string) =>
@@ -539,7 +557,7 @@ export function describeRuntimeContract(
           expect(await steer(attempt.runId, "늦은 말")).toBe("rejected");
           await expectSettled(attempt, result);
         },
-        3 * finishWithinMs + settleMs
+        startWithinMs + 2 * finishWithinMs + settleMs
       );
 
     it(

@@ -30,7 +30,6 @@ for (const kind of ["antigravity", "opencode"] as const) {
     `${kind} synthetic process (not recorded model evidence)`,
     {
       adapter: provider.adapter,
-      startupMs: 2000,
       finishes: saying("진행 상황을 알려 주세요"),
       worksUntilCancelled: saying("실행 유지 연습"),
       unusableSession: { id: "expired" },
@@ -64,7 +63,6 @@ describeRuntimeContract(
         path.resolve("test-fixtures/antigravity-recorded.json"),
       ],
     }).adapter,
-    startupMs: 2000,
     finishes: saying("진행 상황을 알려 주세요"),
     worksUntilCancelled: saying("실행 유지 연습"),
     unusableSession: { id: "expired" },
@@ -89,7 +87,6 @@ describeRuntimeContract(
         path.resolve("test-fixtures/opencode-recorded.json"),
       ],
     }).adapter,
-    startupMs: 2000,
     finishes: saying("진행 상황을 알려 주세요"),
     worksUntilCancelled: saying("실행 유지 연습"),
     unusableSession: { id: "expired" },
