@@ -21,11 +21,6 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-/** 놓아준 응답의 뒤처리(라이브러리의 Promise 연쇄와 setTimeout 0 일괄 알림)가 끝나기를 기다린다(live-refresh.test.ts와 같음). */
-async function settle() {
-  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
 let client: QueryClient;
 const unsubscribes: (() => void)[] = [];
 
@@ -43,6 +38,10 @@ afterEach(() => {
 /**
  * 화면처럼 그 key를 보고 있는 observer를 붙이고, 놓아줄 때까지 끝나지 않는 조회를 출발시킨다.
  * 출발했는지(조회 함수가 불렸는지)를 기다린 뒤 돌려준다.
+ *
+ * `release`는 응답을 놓아주고 라이브러리가 그 응답을 다 처리할 때까지 기다린다. 라이브러리는 조회를 출발시킬 때
+ * 응답에 결과 처리를 먼저 걸어 두므로, 응답을 기다린 뒤에는 그 처리가 이미 돌았다. 그 조회를 기다리던 observer의
+ * fetch는 결과를 캐시에 쓴 뒤에, 취소됐으면 취소 때 끝난다. 둘 다 끝난 뒤의 캐시가 최종 상태다.
  */
 async function startHeldFetch<T>(queryKey: QueryKey) {
   const response = deferred<T>();
@@ -57,12 +56,19 @@ async function startHeldFetch<T>(queryKey: QueryKey) {
     },
   });
   unsubscribes.push(observer.subscribe(() => {}));
-  // 이미 데이터가 있어 observer가 스스로 조회하지 않는 경우에도 조회를 출발시킨다.
-  if (client.getQueryState(queryKey)?.fetchStatus !== "fetching")
-    void observer.refetch();
+  // 처음 불러오는 key는 observer가 붙으며 출발한 조회에 합류하고, 데이터가 있어 스스로 조회하지 않는 key는 새로 출발시킨다.
+  const settled = observer.refetch();
   await reached.promise;
   expect(client.getQueryState(queryKey)?.fetchStatus).toBe("fetching");
-  return { observer, release: response.resolve, calls: () => calls };
+  return {
+    observer,
+    async release(value: T) {
+      response.resolve(value);
+      await response.promise;
+      await settled;
+    },
+    calls: () => calls,
+  };
 }
 
 test("a fetch that started before the write and arrives after it does not overwrite the mutation response", async () => {
@@ -76,8 +82,7 @@ test("a fetch that started before the write and arrives after it does not overwr
   expect(client.getQueryData(key)).toEqual([{ id: "c1", unread: false }]);
 
   // 먼저 출발한 조회의 서버 응답(읽음 전)이 늦게 도착한다.
-  fetch.release([{ id: "c1", unread: true }]);
-  await settle();
+  await fetch.release([{ id: "c1", unread: true }]);
 
   expect(client.getQueryData(key)).toEqual([{ id: "c1", unread: false }]);
   expect(fetch.observer.getCurrentResult()).toMatchObject({
@@ -117,8 +122,7 @@ test("while the key is loading for the first time the mutation response shows an
     data: [{ id: "c1", unread: false }],
   });
 
-  fetch.release([{ id: "c1", unread: true }]);
-  await settle();
+  await fetch.release([{ id: "c1", unread: true }]);
   expect(fetch.observer.getCurrentResult()).toMatchObject({
     status: "success",
     fetchStatus: "idle",
@@ -138,9 +142,8 @@ test("fetches of the same kind of key in another organization, and of other keys
 
   await writeMutationResult(client, key, { id: orgA, name: "A 변경" });
 
-  child.release([{ id: "c1", unread: true }]);
-  other.release({ id: orgB, name: "B 조회" });
-  await settle();
+  await child.release([{ id: "c1", unread: true }]);
+  await other.release({ id: orgB, name: "B 조회" });
 
   expect(client.getQueryData(key)).toEqual({ id: orgA, name: "A 변경" });
   expect(client.getQueryData(queryKeys.conversations(orgA))).toEqual([
