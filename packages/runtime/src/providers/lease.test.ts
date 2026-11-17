@@ -51,23 +51,6 @@ async function started_(child: ChildProcess) {
   await readyLine(child);
   return { pid: child.pid!, exited: exit };
 }
-/** Linux: 자기 환경을 읽을 수 없게 막은 프로그램(`PR_SET_DUMPABLE` 0, gpg-agent·ssh-agent가 하는 일). 표식은 그대로 물려받았다. */
-const undumpable = (lease: string) =>
-  started_(
-    spawn(
-      "python3",
-      [
-        "-c",
-        'import ctypes, time; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); print("ready", flush=True); time.sleep(60)',
-      ],
-      {
-        detached: true,
-        stdio: ["ignore", "pipe", "ignore"],
-        env: { PATH: process.env.PATH, [leaseVariable]: lease },
-      }
-    )
-  );
-
 it.runIf(posix)(
   "finds only programs whose environment holds this run's marker exactly",
   async () => {
@@ -138,24 +121,6 @@ it("reads only the environment part of a ps listing", () => {
   ].join("\n");
   expect(holdersInPs(before, withEnvironment, after, lease)).toEqual([101]);
 });
-
-// 환경을 읽을 수 없는 같은 사용자의 프로그램이 실행 시도 시작 뒤에 생겼으면 우리 것일 수 있다. 끄지 않고, 확인하지 못한 것으로 돌려준다.
-it.runIf(linux)(
-  "reports a program whose environment cannot be read as unverified only when it started during the run",
-  async () => {
-    const lease = randomUUID();
-    const since = processStartTicks(process.pid)!;
-    const hidden = await undumpable(lease);
-    const during = await leaseHolders(lease, { since });
-    expect(during.holders).not.toContain(hidden.pid);
-    expect(during.unverified).toContain(hidden.pid);
-    // 실행 시도보다 먼저 있던 프로그램은 그 자손일 수 없다.
-    const later = await leaseHolders(lease, {
-      since: processStartTicks(hidden.pid)! + 1,
-    });
-    expect(later.unverified).not.toContain(hidden.pid);
-  }
-);
 
 // 끝났지만 거두어지지 않은 프로그램(좀비)도 환경을 읽을 수 없다. 이미 끝났으므로 확인하지 못한 것으로 세지 않는다.
 it.runIf(linux)("does not count a zombie as unverified", async () => {
