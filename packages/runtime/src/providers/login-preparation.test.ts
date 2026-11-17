@@ -48,16 +48,13 @@ type Gate = {
 };
 let gate: Gate | undefined;
 /**
- * 로그인 옮기기와 중계 읽기의 경합 순간을 정하는 끼움(#209). `afterRename`은 그 rename을 한 뒤 돌려주기 전에 기다려 다음 작업을
- * 붙잡고, `onRead`는 파일 읽기의 결과를 받아 돌려주기 전에 기다릴 것을 정한다.
+ * 로그인 옮기기와 중계 읽기의 차례를 보는 끼움(#209). `afterRename`은 그 rename을 한 뒤 불리고, 기다릴 것을 돌려주면 그동안 다음
+ * 작업을 붙잡는다. `onRead`는 파일 읽기를 시작할 때 불린다.
  */
 let race:
   | {
-      afterRename?: (from: string) => Promise<void> | undefined;
-      onRead?: (
-        file: string,
-        result: Promise<unknown>
-      ) => Promise<void> | undefined;
+      afterRename?: (from: string, to: string) => Promise<void> | undefined;
+      onRead?: (file: string) => void;
     }
   | undefined;
 /** 링크 만들기를 거절하는 오류 코드(권한 없는 Windows·링크를 모르는 파일 시스템). */
@@ -87,20 +84,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     rename: async (...args: Parameters<typeof actual.rename>) => {
       await hold("rename", args[0]);
       await actual.rename(...args);
-      await race?.afterRename?.(String(args[0]));
+      await race?.afterRename?.(String(args[0]), String(args[1]));
     },
     readFile: ((...args: Parameters<typeof actual.readFile>) => {
-      const result = actual.readFile(...args);
-      const wait = race?.onRead?.(String(args[0]), result);
-      return wait
-        ? result.then(
-            (value) => wait.then(() => value),
-            (error: unknown) =>
-              wait.then(() => {
-                throw error;
-              })
-          )
-        : result;
+      race?.onRead?.(String(args[0]));
+      return actual.readFile(...args);
     }) as typeof actual.readFile,
     writeFile: (...args: Parameters<typeof actual.writeFile>) => {
       const held = hold("writeFile", args[0]);
@@ -254,7 +242,7 @@ async function setup(connection: (typeof connections)[number]) {
     grants.push(issued.token);
     return issued;
   };
-  /** 중계가 받은 요청을 넘긴 뒤 부르는 함수. 중계는 원본 읽기까지 이어서 하므로, 넘긴 직후에 읽기가 시작됐는지 볼 수 있다. */
+  /** 중계가 받은 요청을 넘겨받은 뒤 부르는 함수. */
   const handed: { then?: () => void } = {};
   const relayUrl = await listen((req, res) => {
     relay.handle(req, res);
@@ -474,8 +462,10 @@ describe.each(connections)("$name", (connection) => {
   );
 
   // #209: 중계는 이 컴퓨터의 실행이 읽는 연결의 로그인을 읽는다. 로그인을 원본 자리와 연결 폴더 자리 사이에서 옮기는 동안 온 요청은
-  // 옮기기가 끝날 때까지 기다리고, 옮긴 자리의 로그인으로 간다.
-  /** 중계에 모델 요청 하나를 보낸다. 중계가 요청을 넘겨받으면(원본 읽기를 시작하면) `handed`가 풀린다. */
+  // 옮기기가 끝날 때까지 로그인을 읽지 않고 기다렸다가, 옮긴 자리의 로그인으로 간다. 옮기는 도중에 읽으면 되돌아오는 방향의 rename 두 번
+  // 사이에서 두 자리 모두 비어 보인다(조사 E24). 그 실패가 나는지는 파일 입출력이 끝나는 때에 달려 있으므로, 시험은 실패 결과 대신
+  // 중계가 로그인을 읽기 시작한 때와 옮기기가 끝난 때의 차례를 본다.
+  /** 중계에 모델 요청 하나를 보낸다. 중계가 요청을 넘겨받으면 `handed`가 풀리고, 응답이 오면 `settled()`가 참이 된다. */
   const relayRequest = (env: Awaited<ReturnType<typeof setup>>) => {
     const { token } = env.relay.grant({
       signal: new AbortController().signal,
@@ -485,6 +475,7 @@ describe.each(connections)("$name", (connection) => {
     const handed = new Promise<void>((resolve) => {
       env.handed.then = resolve;
     });
+    let settled = false;
     const answer = fetch(`${env.relayUrl}${connection.route}`, {
       method: "POST",
       headers: {
@@ -494,10 +485,21 @@ describe.each(connections)("$name", (connection) => {
       body: "{}",
       signal: AbortSignal.timeout(10_000),
     });
-    return { handed, answer };
+    const done = () => {
+      settled = true;
+    };
+    answer.then(done, done);
+    return { handed, answer, settled: () => settled };
   };
+  /** 로그인 자리 읽기를 시작한 차례를 `events`에 적는다. */
+  const recordReads =
+    (env: Awaited<ReturnType<typeof setup>>, events: string[]) =>
+    (file: string) => {
+      if (file === env.original) events.push("read original");
+      if (file === env.connectionPlace) events.push("read connection place");
+    };
 
-  it("sends a relay request that comes while the login is moved back to the login folder with that login, between the two renames of the move as well", async () => {
+  it("holds a relay request that comes while the login is moved back to the login folder, between the two renames of the move as well, then sends it with that login", async () => {
     const env = await setup(connection);
     // 링크를 만들 수 없던 동안 원본은 연결 폴더 자리의 보통 파일로 옮겨져 있었다. 링크를 만들 수 있게 되면 격리를 끈 실행의 준비가
     // 그 파일을 원본 자리로 옮기고(첫 rename) 그 자리에 원본을 가리키는 링크를 둔다(둘째 rename).
@@ -515,19 +517,18 @@ describe.each(connections)("$name", (connection) => {
     const second = new Promise<void>((resolve) => {
       releaseSecond = resolve;
     });
-    /** 두 rename 사이에 시작한 연결 자리 읽기. 둘째 rename 전에 끝나게 한다. */
-    const between: Promise<unknown>[] = [];
+    const events: string[] = [];
     race = {
-      // 첫 rename을 한 뒤 둘째 rename을 붙잡는다: 원본 자리에만 로그인이 있고 연결 자리는 비어 있다.
-      afterRename: (from) =>
-        from === env.connectionPlace ? (firstDone(), second) : undefined,
-      onRead(file, result) {
-        // 첫 rename 전에 시작한 원본 읽기는 첫 rename 뒤에 결과(없음)를 돌려준다.
-        if (file === env.original) return firstMoved;
-        if (file === env.connectionPlace)
-          between.push(result.catch(() => undefined));
+      afterRename(from, to) {
+        // 첫 rename을 한 뒤 둘째 rename을 붙잡는다: 원본 자리에만 로그인이 있고 연결 자리는 비어 있다.
+        if (from === env.connectionPlace) {
+          firstDone();
+          return second;
+        }
+        if (to === env.connectionPlace) events.push("moved");
         return undefined;
       },
+      onRead: recordReads(env, events),
     };
     const running = env.provider.adapter.execute(
       await env.requestFor(crypto.randomUUID()),
@@ -536,14 +537,16 @@ describe.each(connections)("$name", (connection) => {
     await first.reached;
     const request = relayRequest(env);
     await request.handed;
+    expect(request.settled()).toBe(false);
     first.release();
     await firstMoved;
-    // 그때까지 받은 읽기 결과가 이어 시작하는 읽기를 모두 시작하게 한 뒤, 그 읽기가 끝나야 둘째 rename을 한다.
-    await new Promise((resolve) => setImmediate(resolve));
-    await Promise.all(between);
+    // 두 rename 사이: 요청은 아직 끝나지 않았고 상류에도 가지 않았다.
+    expect(request.settled()).toBe(false);
+    expect(env.upstreamSeen).toEqual([]);
     releaseSecond();
     const response = await request.answer;
     expect(response.status).toBe(200);
+    expect(events).toEqual(["moved", "read original"]);
     expect(env.upstreamSeen).toEqual(["Bearer moving-access"]);
     expect(env.relay.failed()).toBe(false);
     await running;
@@ -557,6 +560,14 @@ describe.each(connections)("$name", (connection) => {
     });
     refusal = "ENOTSUP";
     const held = holdAt("rename", (file) => file === env.original);
+    const events: string[] = [];
+    race = {
+      afterRename(from) {
+        if (from === env.original) events.push("moved");
+        return undefined;
+      },
+      onRead: recordReads(env, events),
+    };
     const running = env.provider.adapter.execute(
       await env.requestFor(crypto.randomUUID()),
       control()
@@ -564,9 +575,13 @@ describe.each(connections)("$name", (connection) => {
     await held.reached;
     const request = relayRequest(env);
     await request.handed;
+    // 옮기는 rename을 붙잡은 동안: 요청은 아직 끝나지 않았고 상류에도 가지 않았다.
+    expect(request.settled()).toBe(false);
+    expect(env.upstreamSeen).toEqual([]);
     held.release();
     const response = await request.answer;
     expect(response.status).toBe(200);
+    expect(events).toEqual(["moved", "read original", "read connection place"]);
     expect(env.upstreamSeen).toEqual(["Bearer moving-access"]);
     expect(env.relay.failed()).toBe(false);
     await running;
