@@ -91,3 +91,40 @@ export const saying =
       },
     };
   };
+
+/**
+ * A clock that moves only when the test says (#215). Limits on it measure only the step under test (starting a program takes
+ * no time on it however slow the machine is), and the order of timers and program events is set by state, not by real time.
+ */
+export function manualClock() {
+  let now = 0,
+    sequence = 0;
+  const timers = new Map<
+    number,
+    { at: number; setAt: number; callback: () => void }
+  >();
+  return {
+    now: () => now,
+    setTimeout: (callback: () => void, ms: number) => {
+      timers.set(++sequence, { at: now + ms, setAt: now, callback });
+      return sequence;
+    },
+    clearTimeout: (handle: unknown) => {
+      timers.delete(handle as number);
+    },
+    /** The delays of the timers still waiting, in the order they were set. */
+    scheduled: () =>
+      [...timers.values()].map((timer) => timer.at - timer.setAt),
+    /** Moves the time on and runs, in order, every timer that is due by then. */
+    advance(ms: number) {
+      now += ms;
+      const due = [...timers]
+        .filter(([, timer]) => timer.at <= now)
+        .sort(([, a], [, b]) => a.at - b.at);
+      for (const [handle, timer] of due) {
+        timers.delete(handle);
+        timer.callback();
+      }
+    },
+  };
+}

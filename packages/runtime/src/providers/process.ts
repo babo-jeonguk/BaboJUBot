@@ -162,6 +162,22 @@ export function runProbe(
 }
 
 /** One process group per attempt. Raw stderr is drained, never propagated to public logs. */
+/**
+ * 시한·타이머가 쓰는 시계. 제품은 실제 시계(`realClock`)를 쓰고, 시험은 시간을 직접 넘기는 시계를 넣어 프로그램 시작처럼
+ * 재려는 단계가 아닌 일이 시한을 먹지 않게 하거나, 타이머와 프로그램의 순서를 실제 시간 대신 상태로 정한다(#215).
+ */
+export type Clock = {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+};
+export const realClock: Clock = {
+  now: () => Date.now(),
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (handle) =>
+    clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 export function startProcess(options: {
   command: readonly [string, ...string[]];
   args: string[];
@@ -171,7 +187,10 @@ export function startProcess(options: {
   maxLineLength?: number;
   onFrame: (frame: unknown) => Promise<void>;
   container?: ContainerLaunch;
+  /** 정지 타이머와 종료 뒤 출력 대기의 시계. 기본은 실제 시계다. */
+  clock?: Clock;
 }) {
+  const clock = options.clock ?? realClock;
   const maxLineLength = options.maxLineLength ?? defaultMaxLineLength;
   const lease = crypto.randomUUID();
   const name = options.container ? "babojubot-" + lease : undefined;
@@ -282,8 +301,7 @@ export function startProcess(options: {
         console.warn("[provider] a protocol frame could not be handled");
       });
   };
-  let term: ReturnType<typeof setTimeout> | undefined,
-    kill: ReturnType<typeof setTimeout> | undefined;
+  let term: unknown, kill: unknown;
   // 대표 프로세스를 끝내려는 신호다. 끝난 뒤 남은 그룹은 finish가 중계를 먼저 닫고 정리한다.
   const signalGroup = (signal: NodeJS.Signals) => {
     if (child.pid && !leaderExited) signalProcessTree(child.pid, signal);
@@ -292,9 +310,9 @@ export function startProcess(options: {
     if (closed || term) return;
     child.stdin.end();
     if (leaderExited) return;
-    term = setTimeout(() => {
+    term = clock.setTimeout(() => {
       signalGroup("SIGTERM");
-      kill = setTimeout(() => signalGroup("SIGKILL"), 2000);
+      kill = clock.setTimeout(() => signalGroup("SIGKILL"), 2000);
     }, 2000);
   };
   const write = (frame: unknown) => {
@@ -364,14 +382,14 @@ export function startProcess(options: {
     child.on("error", () => {
       broken = true;
     });
-    let drain: ReturnType<typeof setTimeout> | undefined;
+    let drain: unknown;
     let outputClosed = false;
     const finish = (code: number | null) => {
       if (finished) return;
       closed = true;
-      clearTimeout(term);
-      clearTimeout(kill);
-      clearTimeout(drain);
+      clock.clearTimeout(term);
+      clock.clearTimeout(kill);
+      clock.clearTimeout(drain);
       finished = true;
       // 끝나기 전에 낸 출력을 다 처리한 순간을 알린다. 출력이 닫히지 않은 채 시작했으면 그때까지 읽은 출력까지다. 실제 정리(중계·자식·컨테이너)는 아래가 하고 done이 기다린다.
       void queue.then(reportExit);
@@ -453,10 +471,10 @@ export function startProcess(options: {
     };
     child.on("exit", (code) => {
       leaderExited = true;
-      clearTimeout(term);
-      clearTimeout(kill);
+      clock.clearTimeout(term);
+      clock.clearTimeout(kill);
       // 프로그램이 끝났다. 보통은 곧 출력이 닫히고(close) 거기서 정리한다. 남긴 자식이 출력을 쥐고 있으면 close가 오지 않으므로, 남은 출력을 읽을 시간만 두고 같은 정리를 시작한다. 취소 중이던 종료 타이머도 여기서 멈춘다(남은 그룹은 finish가 중계를 먼저 닫고 정리).
-      if (!finished) drain = setTimeout(() => finish(code), exitDrainMs);
+      if (!finished) drain = clock.setTimeout(() => finish(code), exitDrainMs);
     });
     child.on("close", (code) => {
       outputClosed = true;

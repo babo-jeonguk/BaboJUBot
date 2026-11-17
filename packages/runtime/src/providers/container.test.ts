@@ -26,7 +26,7 @@ import {
   createDockerEnvironment,
   type ContainerSettings,
 } from "./container.ts";
-import { attachedRelayHub, request } from "./test-support.ts";
+import { attachedRelayHub, manualClock, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 
@@ -148,7 +148,7 @@ const alive = (pid: number) => {
   }
 };
 // A container program that leaves a child sharing its output. The child records whether the relay is still open when it is told
-// to stop, then ends. The program ends on its first input line, or 1.2 s after its input closes.
+// to stop, then ends. The program ends on its first input line, or, after its input closes, once the file `<log>.exit` exists.
 const leftBehind = `
   const fs = require("node:fs"), path = require("node:path");
   const relay = JSON.parse(process.env.FAKE_DOCKER_MOUNTS).find((m) => m.target === "/run/babojubot").source;
@@ -163,9 +163,13 @@ const leftBehind = `
     console.log(JSON.stringify({ pid: process.pid }));
   \`], { stdio: ["ignore", "inherit", "ignore"] });
   process.stdin.once("data", () => process.exit(0));
-  // Cancelled: the input closes, and the program takes a while (past the drain wait, before the stop timer) to end.
-  process.stdin.on("end", () => setTimeout(() => process.exit(0), 1200));
+  // Cancelled: the input closes, and the program ends when the test lets it.
+  process.stdin.on("end", () =>
+    setInterval(() => fs.existsSync(process.argv[1] + ".exit") && process.exit(0), 10)
+  );
 `;
+/** Starting a (fake Docker) program and seeing it react, on a slow machine (#215). */
+const programStart = { timeout: 30_000 };
 const runCall = (calls: Call[]) => {
   const runs = calls.filter((c) => c.args.includes("run"));
   expect(runs).toHaveLength(1);
@@ -462,7 +466,11 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
     let child = 0;
+    // The stop timer (2 s after the cancel) and the wait for output after the program ends (1 s) run on the test clock, so the
+    // program ends between them by state, not by racing them on a slow machine.
+    const clock = manualClock();
     const started = startProcess({
+      clock,
       command: ["unused"],
       args: [log],
       cwd: env.root,
@@ -477,11 +485,17 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
       },
       onFrame: async (frame) => {
         child = (frame as { pid: number }).pid;
-        // Cancel: close the input. The stop timer would signal the group 2 s later; the program ends at about 1.2 s.
+        // Cancel: close the input. The stop timer would signal the group 2 s later.
         started.end();
       },
     });
     try {
+      await expect.poll(() => clock.scheduled(), programStart).toEqual([2_000]);
+      clock.advance(1_500);
+      // The program ends 1.5 s after the cancel; the output wait then runs past the moment the stop timer was set for.
+      await writeFile(log + ".exit", "");
+      await expect.poll(() => clock.scheduled(), programStart).toContain(1_000);
+      clock.advance(1_000);
       await started.done;
       expect(await readFile(log, "utf8")).toBe("relay closed");
     } finally {
@@ -2044,7 +2058,7 @@ describe.skipIf(process.platform === "win32")(
             headers: { authorization: `Bearer ${grants[0]}` },
           });
           expect(after.status).toBe(401);
-          await expect.poll(() => network.closed.length).toBe(1);
+          await expect.poll(() => network.closed.length, programStart).toBe(1);
           const result = await running;
           expect(result.stopReason).toBe("cancelled");
           expect(network.urls).toHaveLength(1);

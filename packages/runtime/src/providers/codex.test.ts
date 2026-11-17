@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCodexProvider, type CodexOptions } from "./codex.ts";
-import type { Clock } from "./codex-connection.ts";
-import { request } from "./test-support.ts";
+import type { Clock } from "./process.ts";
+import { manualClock, request } from "./test-support.ts";
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -416,37 +416,6 @@ describe("usage numbers outside the contract (#140)", () => {
     });
   });
 });
-
-/**
- * A clock that moves only when the test says (#215). Request limits then measure only the step under test: starting the
- * program and answering the handshake take no time on it however slow the machine is.
- */
-function manualClock() {
-  let now = 0,
-    sequence = 0;
-  const timers = new Map<number, { at: number; callback: () => void }>();
-  return {
-    now: () => now,
-    setTimeout: (callback: () => void, ms: number) => {
-      timers.set(++sequence, { at: now + ms, callback });
-      return sequence;
-    },
-    clearTimeout: (handle: unknown) => {
-      timers.delete(handle as number);
-    },
-    /** Moves the time on and runs, in order, every timer that is due by then. */
-    advance(ms: number) {
-      now += ms;
-      const due = [...timers]
-        .filter(([, timer]) => timer.at <= now)
-        .sort(([, a], [, b]) => a.at - b.at);
-      for (const [handle, timer] of due) {
-        timers.delete(handle);
-        timer.callback();
-      }
-    },
-  } satisfies Clock & Record<string, unknown>;
-}
 
 describe("one app-server connection per call (#145)", () => {
   type Step = {
