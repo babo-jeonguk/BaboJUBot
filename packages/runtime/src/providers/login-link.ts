@@ -34,8 +34,15 @@ const noLinks = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP"]);
  * 원본을 가리키는 이미 있는 링크) 아무것도 옮기지 않는다. 원본을 옮기면 이미 있는 링크가 원본을 잃는다.
  * 읽을 수 없을 때만(없거나 대상이 없는 링크) 원본을 그 자리로 옮긴다. 복사하지 않으므로 로그인은 하나다.
  * 다시 링크를 만들 수 있게 되면 `linkLogin`이 `fallback`의 보통 파일을 원본으로 옮긴다(가장 최근 로그인).
+ * 두 자리에 모두 보통 파일이 있으면 연결 폴더의 파일이 로그인이고(이 컴퓨터의 실행, 로그인 명령, 갱신이 그것을 쓴다),
+ * 로그인 폴더의 파일은 로그인이 하나가 되도록 지우지 않고 `set-aside`로 옮긴다(2026-11-17 사용자 결정, #209).
  */
-async function keepAtFallback(original: string, fallback: string) {
+async function keepAtFallback(
+  original: string,
+  fallback: string,
+  label: string,
+  setAside: string
+) {
   const readable = await stat(fallback).then(
     (found) => found.isFile(),
     (error: NodeJS.ErrnoException) => {
@@ -43,7 +50,31 @@ async function keepAtFallback(original: string, fallback: string) {
       throw error;
     }
   );
-  if (readable) return;
+  if (readable) {
+    const fallbackEntry = await lstat(fallback);
+    if (fallbackEntry.isFile()) {
+      const source = await lstat(original).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        }
+      );
+      if (source?.isFile()) {
+        await mkdir(setAside, { recursive: true, mode: 0o700 });
+        await rename(
+          original,
+          path.join(
+            setAside,
+            `${Date.now()}-${randomUUID()}-${path.basename(original)}`
+          )
+        );
+        console.warn(
+          `[provider] the ${label} login folder also held a login file; the connection folder's login is used and the other was moved to the connection's set-aside folder`
+        );
+      }
+    }
+    return;
+  }
   const source = await lstat(original).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
@@ -96,7 +127,7 @@ async function linkLogin(
           `[provider] this machine cannot create file links; ${label} runs share the connection folder`
         );
       }
-      await keepAtFallback(original, fallback);
+      await keepAtFallback(original, fallback, label, setAside);
       return false;
     }
     throw error;
