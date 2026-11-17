@@ -69,7 +69,7 @@ function groupAlive(group: number) {
 }
 /** The group is already authenticated by spawn ownership or the recovery lease. */
 export async function stopProcessGroup(group: number) {
-  // Windows는 대표 프로세스가 끝나면 자식을 찾을 수 없다. 취소 때 트리를 끝내는 것으로 대신한다.
+  // Windows는 대표 프로세스가 끝나면 자식을 찾을 수 없다. 대표인 묶음 실행기가 끝나며 묶음을 닫아 남은 것을 끈다(windows-job.ts).
   if (!groupAlive(group)) return;
   const signal = (value: NodeJS.Signals) => {
     try {

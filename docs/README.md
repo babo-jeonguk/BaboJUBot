@@ -61,6 +61,8 @@
 - [#154 실모델 장애 검사 기록](research/issue-154-chaos-verification.md): 대상 커밋·환경·명령·결과·미실행 범위, 발견한 결함.
 - [#153 파일 경로 격리 검증 기록](research/issue-153-file-boundary-verification.md): 파일 시스템 여덟 곳의 환경 식별·사례별 결과·CI 시간·미검증 범위.
 - [OpenCode 2.x 지침 주입 조사](research/opencode-2-instructions.md): 기본 지침 보존과 세션 지침 API 추가.
+- [#205 Windows 후손 정리 조사](research/issue-205-references.md): 로컬 C# 묶음 실행기·백신 차단·libuv 소유권 연쇄의 선례와 미검증 조건.
+- [#205 구현 기록](research/issue-205-implementation.md): 묶음 실행기의 원문 확인, 사용자 결정, Windows CI 첫 단계 확인과 시험 결과·미검증 범위.
 - [#189 Windows E2E 정상 종료 조사](research/issue-189-references.md): IPC 종료 요청·공용 서버 수명 소유·Windows E2E CI 권고와 미검증 범위.
 - [#211 구현 기록](research/issue-211-implementation.md): 변경 응답 캐시 쓰기 공통 규칙의 원문 확인, 적용·제외 위치, 순서 강제 시험과 대조 결과.
 - [#211 늦은 조회 덮어쓰기 조사](research/issue-211-references.md): 변경 응답을 덮는 먼저 출발한 조회의 취소·순서를 강제하는 시험·E2E 대상 범위 좁히기 근거.
