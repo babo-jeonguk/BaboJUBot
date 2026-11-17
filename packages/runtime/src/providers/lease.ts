@@ -202,10 +202,35 @@ const send = (pids: number[], signal: NodeJS.Signals) => {
 };
 const pollMs = 50;
 
+/** 조회가 전체 시한을 넘겼다는 표시. 처음 조회면 조회 실패로 던지고, 그 뒤의 조회면 버린다(조회 자체의 실패와 구분한다). */
+class LookupTimeout extends Error {}
+
+/** 조회가 정해진 시간 안에 끝나지 않으면 `LookupTimeout`을 던진다. 늦게 끝난 조회의 결과는 쓰지 않고, 그 조회의 실패도 처리해 둔다(처리되지 않은 거부가 남지 않게). */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(new LookupTimeout("Run marker lookup did not finish in time")),
+      ms
+    );
+  });
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    clearTimeout(timer);
+    promise.catch(() => {
+      // 시한이 지나 이미 포기한 조회다. 늦은 거부를 여기서 거둔다.
+    });
+  }
+}
+
 /**
  * 이 표식을 가진 프로그램을 시스템 전체에서 찾아 끈다. 보유자는 처음 확인한 때 TERM을 받고, 그 보유자의 유예(graceMs)가 지난 뒤에만 KILL을 받는다.
  * 신호는 매번 바로 앞에서 다시 찾은 번호에만 보낸다(찾기와 신호 사이의 아주 짧은 틈은 남는다). 확인하지 못한 프로그램은 유예 동안 다시 찾아 보며 신호를 보내지 않는다.
- * 전체는 graceMs + waitMs 안에 끝나고, 그때까지 끝나지 않았거나(자기 유예를 다 받지 못한 늦게 확인된 보유자 포함) 확인하지 못한 프로그램은 `left`로 돌려준다. 조회가 실패하면 던진다.
+ * 조회는 처음 것도 전체 시한(graceMs + waitMs) 안에 끝나야 한다. 처음 조회가 시한을 넘기면 조회 실패로 던진다. 그 뒤의 조회가 시한을 넘기면 버리고 마지막으로 끝난 조회 결과를 돌려준다.
+ * 시한이 지난 뒤에는 새로 찾지 않고 신호도 보내지 않는다. 시한이 지난 뒤에 돌아온 조회 결과로도 신호를 보내지 않는다.
+ * 더 이상 보이지 않는 프로그램은 `stopped`, 아직 보이거나 확인하지 못한 프로그램은 `left`로 돌려주며 두 곳에 함께 넣지 않는다.
  */
 export async function stopLeaseHolders(
   lease: string,
@@ -224,9 +249,11 @@ export async function stopLeaseHolders(
   const begin = Date.now();
   const deadline = begin + graceMs + waitMs;
   const termAt = new Map<number, number>(); // pid별 TERM을 받은 시각
-  let lookup = await find(lease);
+  let lookup = await within(find(lease), Math.max(0, deadline - Date.now()));
   for (;;) {
     const now = Date.now();
+    // 시한이 지난 뒤에 돌아온 조회 결과로는 신호를 보내지 않는다. 결과의 `left`가 아직 남은 것을 알려 준다.
+    if (now >= deadline) break;
     for (const pid of lookup.holders) {
       const at = termAt.get(pid);
       if (at === undefined) {
@@ -238,12 +265,22 @@ export async function stopLeaseHolders(
     const settled =
       !lookup.holders.length &&
       (!lookup.unverified.length || now - begin >= graceMs);
-    if (settled || now >= deadline) break;
+    if (settled) break;
     await delay(pollMs);
-    lookup = await find(lease);
+    // 시한이 지난 뒤에는 새로 찾지 않는다. 마지막으로 끝난 조회가 본 것을 그대로 돌려준다.
+    if (Date.now() >= deadline) break;
+    try {
+      lookup = await within(find(lease), deadline - Date.now());
+    } catch (e) {
+      // 시한까지 끝나지 않은 조회는 버린다. 조회 자체의 실패는 그대로 던진다.
+      if (e instanceof LookupTimeout) break;
+      throw e;
+    }
   }
   return {
-    stopped: [...termAt.keys()].filter((pid) => !lookup.holders.includes(pid)),
+    stopped: [...termAt.keys()].filter(
+      (pid) => !lookup.holders.includes(pid) && !lookup.unverified.includes(pid)
+    ),
     left: [...new Set([...lookup.holders, ...lookup.unverified])],
   };
 }
