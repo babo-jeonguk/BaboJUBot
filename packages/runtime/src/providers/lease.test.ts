@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   leaseEntry,
   leaseHolders,
@@ -270,6 +270,7 @@ it.runIf(posix)(
 
 // 전체 시한 안에 자기 유예를 받을 수 없을 만큼 늦게 확인된 보유자는 강제로 끄지 않고 끄지 못한 것으로 돌려준다(정리 실패·기록 유지).
 // 끝나지 않는 보유자(없는 번호를 계속 돌려주는 조회) 하나가 시한까지 정리를 붙잡는 동안, 다른 프로그램이 시한 직전에 처음 확인된다.
+// macOS 조회(`ps` 세 번)는 수백 ms가 걸릴 수 있다. 시한(2초) 직전 0.5초 안에 처음 확인되도록 두고, TERM을 받았다는 줄은 잠깐 기다려 본다.
 it.runIf(posix)(
   "leaves a holder confirmed too late for its grace running and reports it",
   async () => {
@@ -278,10 +279,10 @@ it.runIf(posix)(
     const stuck = 2 ** 22 + 1;
     const begin = Date.now();
     const result = await stopLeaseHolders(lease, {
-      graceMs: 300,
-      waitMs: 300,
+      graceMs: 1000,
+      waitMs: 1000,
       find: async (value) =>
-        Date.now() - begin < 500
+        Date.now() - begin < 1500
           ? { holders: [stuck], unverified: [late.pid] }
           : {
               holders: [stuck, ...(await leaseHolders(value)).holders],
@@ -289,7 +290,10 @@ it.runIf(posix)(
             },
     });
     expect(result.left).toContain(late.pid);
-    expect(late.termAt()).toBeDefined();
+    await vi.waitFor(() => expect(late.termAt()).toBeDefined(), {
+      timeout: 2000,
+      interval: 25,
+    });
     expect(exited(late.pid)).toBe(false);
   },
   30_000
