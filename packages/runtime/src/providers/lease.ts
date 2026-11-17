@@ -203,11 +203,9 @@ const send = (pids: number[], signal: NodeJS.Signals) => {
 const pollMs = 50;
 
 /**
- * 이 표식을 가진 프로그램을 시스템 전체에서 찾아 끈다. TERM → 유예 → KILL 순서이고, 매 단계 표식으로 다시 찾는다.
- * KILL은 바로 앞에서 다시 찾은 번호에만 보낸다. 그 사이 끝나 다른 프로그램에 재사용된 번호는 받지 않는다(찾기와 신호 사이의 아주 짧은 틈은 남는다).
- * 확인하지 못한 프로그램은 유예 동안 다시 찾아 보고, 확인된 것은 끈다. 신호는 보내지 않고 끝까지 확인하지 못한 것은 `left`에 남긴다.
- * 끈 것(`stopped`)과 기다림이 끝날 때까지 남은 것, 즉 아직 돌거나 확인하지 못한 프로그램(`left`)을 돌려준다.
- * 조회가 실패하면 던진다.
+ * 이 표식을 가진 프로그램을 시스템 전체에서 찾아 끈다. 보유자는 처음 확인한 때 TERM을 받고, 그 보유자의 유예(graceMs)가 지난 뒤에만 KILL을 받는다.
+ * 신호는 매번 바로 앞에서 다시 찾은 번호에만 보낸다(찾기와 신호 사이의 아주 짧은 틈은 남는다). 확인하지 못한 프로그램은 유예 동안 다시 찾아 보며 신호를 보내지 않는다.
+ * 전체는 graceMs + waitMs 안에 끝나고, 그때까지 끝나지 않았거나(자기 유예를 다 받지 못한 늦게 확인된 보유자 포함) 확인하지 못한 프로그램은 `left`로 돌려준다. 조회가 실패하면 던진다.
  */
 export async function stopLeaseHolders(
   lease: string,
@@ -223,33 +221,29 @@ export async function stopLeaseHolders(
     waitMs?: number;
   } = {}
 ) {
+  const begin = Date.now();
+  const deadline = begin + graceMs + waitMs;
+  const termAt = new Map<number, number>(); // pid별 TERM을 받은 시각
   let lookup = await find(lease);
-  if (!lookup.holders.length && !lookup.unverified.length)
-    return { stopped: [], left: [] };
-  const signalled = new Set(lookup.holders);
-  send(lookup.holders, "SIGTERM");
-  const grace = Date.now() + graceMs;
-  while (
-    (lookup.holders.length || lookup.unverified.length) &&
-    Date.now() < grace
-  ) {
-    await delay(pollMs);
-    lookup = await find(lease);
-    // 확인하지 못했던 프로그램이 표식을 확인하면 그때 끈다.
-    const fresh = lookup.holders.filter((pid) => !signalled.has(pid));
-    send(fresh, "SIGTERM");
-    for (const pid of fresh) signalled.add(pid);
-  }
-  // 커널 작업에 묶여 죽지 않는 프로그램을 끝없이 기다리지 않는다.
-  const deadline = Date.now() + waitMs;
-  while (lookup.holders.length && Date.now() < deadline) {
-    send(lookup.holders, "SIGKILL");
-    for (const pid of lookup.holders) signalled.add(pid);
+  for (;;) {
+    const now = Date.now();
+    for (const pid of lookup.holders) {
+      const at = termAt.get(pid);
+      if (at === undefined) {
+        send([pid], "SIGTERM");
+        termAt.set(pid, now);
+      } else if (now - at >= graceMs) send([pid], "SIGKILL");
+    }
+    // 확인하지 못한 것은 유예(graceMs) 동안만 다시 찾아 본다. 보유자가 남아 있으면 시한까지 계속 본다.
+    const settled =
+      !lookup.holders.length &&
+      (!lookup.unverified.length || now - begin >= graceMs);
+    if (settled || now >= deadline) break;
     await delay(pollMs);
     lookup = await find(lease);
   }
   return {
-    stopped: [...signalled].filter((pid) => !lookup.holders.includes(pid)),
+    stopped: [...termAt.keys()].filter((pid) => !lookup.holders.includes(pid)),
     left: [...new Set([...lookup.holders, ...lookup.unverified])],
   };
 }
