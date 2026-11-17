@@ -699,28 +699,32 @@ describe("one app-server connection per call (#145)", () => {
           },
         },
       });
+      /** The step, then the turn completes. Tying the end to a step keeps the order fixed instead of racing a clock. */
+      const thenCompletes = (step: Step): Step => ({
+        ...step,
+        frames: turnThatCompletes("thread-new").frames,
+      });
       /**
-       * A run whose steer is never answered and whose turn completes `completeAfterMs` after the steer.
-       * `steered()` settles to `{ outcome }` or `{ error }` with how long the steer took.
+       * A run that steers once. By default the steer is never answered and the record read decides; the turn completes only
+       * when a step says so (`thenCompletes`). `steered()` settles to `{ outcome }` or `{ error }` with how long the steer took.
        */
-      async function unansweredSteer(
-        read: Step[],
-        completeAfterMs: number,
-        timeouts: CodexOptions["timeouts"] = { steer: 200, steerRecord: 300 },
-        cancel?: AbortController
-      ) {
+      async function steerOnce({
+        steer = { silent: true },
+        read,
+        timeouts = { steer: 200, steerRecord: 300 },
+        cancel = new AbortController(),
+      }: {
+        steer?: Step;
+        read?: Step;
+        timeouts?: CodexOptions["timeouts"];
+        cancel?: AbortController;
+      }) {
         const t = await scripted(
           {
             "thread/start": [thread],
             "turn/start": [{ result: { turn: { id: "turn-one" } } }],
-            "turn/steer": [
-              {
-                silent: true,
-                delayMs: completeAfterMs,
-                frames: turnThatCompletes("thread-new").frames,
-              },
-            ],
-            "thread/read": read,
+            "turn/steer": [steer],
+            ...(read ? { "thread/read": [read] } : {}),
           },
           timeouts
         );
@@ -729,7 +733,7 @@ describe("one app-server connection per call (#145)", () => {
           | Promise<{ outcome?: unknown; error?: unknown; ms: number }>
           | undefined;
         const run = t.provider.adapter.execute(input, {
-          signal: cancel?.signal ?? new AbortController().signal,
+          signal: cancel.signal,
           emit: async () => {
             const start = Date.now();
             steered ??= t.provider.adapter.steer!({
@@ -750,7 +754,9 @@ describe("one app-server connection per call (#145)", () => {
       }
 
       it("takes the steer as accepted when the conversation record holds its message number", async () => {
-        const t = await unansweredSteer([recordWith(null, messageId)], 1_000);
+        const t = await steerOnce({
+          read: thenCompletes(recordWith(null, messageId)),
+        });
         expect((await t.steered()).outcome).toBe("accepted");
         expect((await t.run).stopReason).toBe("completed");
         const methods = await t.methods();
@@ -766,23 +772,23 @@ describe("one app-server connection per call (#145)", () => {
       });
 
       it("takes it as accepted when the number appears more than once", async () => {
-        const t = await unansweredSteer(
-          [recordWith(messageId, messageId)],
-          1_000
-        );
+        const t = await steerOnce({
+          read: thenCompletes(recordWith(messageId, messageId)),
+        });
         expect((await t.steered()).outcome).toBe("accepted");
-        await t.run;
+        expect((await t.run).stopReason).toBe("completed");
       });
 
-      it.each([
+      const unknownCases: [string, Step][] = [
         ["holds no such message", recordWith(null)],
         ["holds only another message's number", recordWith("message-other")],
         ["is refused", { error: { code: -32600, message: "no" } }],
         ["is not a record", { result: { thread: { id: "thread-new" } } }],
-      ])(
+      ];
+      it.each(unknownCases)(
         "keeps the delivery unknown when the record %s",
         async (_case, read) => {
-          const t = await unansweredSteer([read as Step], 1_000);
+          const t = await steerOnce({ read: thenCompletes(read) });
           expect(await t.steered()).toMatchObject({
             error: expect.any(Error),
           });
@@ -791,39 +797,23 @@ describe("one app-server connection per call (#145)", () => {
       );
 
       it("keeps the delivery unknown, within both limits, when the record read goes unanswered", async () => {
-        const t = await unansweredSteer([{ silent: true }], 3_000);
+        // The turn only ends 3 s after the read is sent, well past both limits.
+        const t = await steerOnce({
+          read: thenCompletes({ silent: true, delayMs: 3_000 }),
+        });
         const steered = await t.steered();
         expect(steered).toMatchObject({ error: expect.any(Error) });
-        // Steer limit 200 ms plus record limit 300 ms; the turn only ends at 3 s.
+        // Steer limit 200 ms plus record limit 300 ms.
         expect(steered.ms).toBeLessThan(1_500);
         expect((await t.run).stopReason).toBe("completed");
       }, 10_000);
 
       it("does not read the record when the program refuses the steer", async () => {
-        const t = await scripted({
-          "thread/start": [thread],
-          "turn/start": [{ result: { turn: { id: "turn-one" } } }],
-          "turn/steer": [
-            {
-              error: { code: -32600, message: "no" },
-              frames: turnThatCompletes("thread-new").frames,
-            },
-          ],
+        const t = await steerOnce({
+          steer: thenCompletes({ error: { code: -32600, message: "no" } }),
         });
-        const input = request();
-        let steered: Promise<unknown> | undefined;
-        await t.provider.adapter.execute(input, {
-          signal: new AbortController().signal,
-          emit: async () => {
-            steered ??= t.provider.adapter.steer!({
-              runId: input.identity.runId,
-              messageId,
-              conversationId: crypto.randomUUID(),
-              body: "추가",
-            });
-          },
-        });
-        expect(await steered).toBe("rejected");
+        expect((await t.steered()).outcome).toBe("rejected");
+        expect((await t.run).stopReason).toBe("completed");
         expect(await t.methods()).not.toContain("thread/read");
       });
 
@@ -834,17 +824,15 @@ describe("one app-server connection per call (#145)", () => {
         "stops checking at once, without accepting, when %s during the check",
         async (_case, ending) => {
           const cancel = new AbortController();
-          const read: Step =
-            ending === "exit"
-              ? { delayMs: 300, silent: true, exit: 1 }
-              : // The record would hold the number, but only after the run is gone.
-                { ...recordWith(messageId), delayMs: 3_000 };
-          const t = await unansweredSteer(
-            [read],
-            8_000,
-            { steer: 200, steerRecord: 5_000 },
-            cancel
-          );
+          const t = await steerOnce({
+            read:
+              ending === "exit"
+                ? { delayMs: 300, silent: true, exit: 1 }
+                : // The record would hold the number, but only after the run is gone.
+                  thenCompletes({ ...recordWith(messageId), delayMs: 3_000 }),
+            timeouts: { steer: 200, steerRecord: 5_000 },
+            cancel,
+          });
           if (ending === "cancel") {
             await expect
               .poll(async () => (await t.methods()).includes("thread/read"), {

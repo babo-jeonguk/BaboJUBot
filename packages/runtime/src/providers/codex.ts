@@ -184,6 +184,15 @@ const failed = (): RunResult => ({
 });
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+/** `thread/read`(턴 포함) 결과에 이 `clientId`를 단 사용자 메시지가 있는가(#206). 여럿이어도 있다. */
+const holdsClientMessage = (read: Record<string, unknown>, clientId: string) =>
+  list(record(read.thread).turns).some((turn) =>
+    list(record(turn).items).some((raw) => {
+      const item = record(raw);
+      return item.type === "userMessage" && item.clientId === clientId;
+    })
+  );
 /** Codex가 알려 준 세션 누계 하나. */
 type CodexTotals = Record<
   "input" | "cachedInput" | "cacheWrite" | "output",
@@ -702,9 +711,10 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 ],
               });
               turnId = String(record(turn.turn).id);
+              const ended = () =>
+                runControl.signal.aborted || connection.closed;
               active.set(request.identity.runId, async (message) => {
-                if (runControl.signal.aborted || connection.closed)
-                  return "rejected";
+                if (ended()) return "rejected";
                 const expectedTurnId = turnId;
                 /**
                  * 대화 기록에 이 메시지 번호가 남았는가(#206). 기록을 한 번만 읽고 모델 턴은 시작하지 않는다.
@@ -717,17 +727,9 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                       { threadId, includeTurns: true },
                       { timeoutMs: timeouts.steerRecord }
                     );
-                    if (runControl.signal.aborted || connection.closed)
-                      return false;
-                    const turns = record(read.thread).turns;
-                    return (Array.isArray(turns) ? turns : []).some((turn) => {
-                      const items = record(turn).items;
-                      return (Array.isArray(items) ? items : []).some(
-                        (item) =>
-                          record(item).type === "userMessage" &&
-                          record(item).clientId === message.messageId
-                      );
-                    });
+                    return (
+                      !ended() && holdsClientMessage(read, message.messageId)
+                    );
                   } catch {
                     return false;
                   }
