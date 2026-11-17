@@ -1,11 +1,13 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
 import { claudeModels, claudeModelsFor } from "./claude-models.ts";
 import { request } from "./test-support.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
+
+// 시험 폴더는 정리가 지운다(시험이 실패해도 같다).
+const folders = testFolders();
 
 const saved = { ...process.env };
 afterEach(() => {
@@ -94,44 +96,40 @@ it("reads the setting of that connection only", () => {
 });
 
 it("hands the chosen ID to Claude unchanged, including a context suffix", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-claude-models-"));
-  try {
-    const fixture = path.join(root, "model.json");
-    await writeFile(
-      fixture,
-      JSON.stringify({
-        // 인수가 다르면 재생 프로그램이 실패로 끝나 실행 시도도 실패한다.
-        argv: { "--model": "claude-opus-4-8[1m]" },
-        steps: [
-          { input: { type: "user" } },
-          {
-            frame: { type: "system", subtype: "init", session_id: "session" },
+  const root = await folders.make("babojubot-claude-models-");
+  const fixture = path.join(root, "model.json");
+  await writeFile(
+    fixture,
+    JSON.stringify({
+      // 인수가 다르면 재생 프로그램이 실패로 끝나 실행 시도도 실패한다.
+      argv: { "--model": "claude-opus-4-8[1m]" },
+      steps: [
+        { input: { type: "user" } },
+        {
+          frame: { type: "system", subtype: "init", session_id: "session" },
+        },
+        {
+          frame: {
+            type: "result",
+            subtype: "success",
+            session_id: "session",
           },
-          {
-            frame: {
-              type: "result",
-              subtype: "success",
-              session_id: "session",
-            },
-          },
-          { exit: 0 },
-        ],
-      })
-    );
-    const provider = createClaudeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        fixture,
+        },
+        { exit: 0 },
       ],
-    });
-    const result = await provider.adapter.execute(
-      { ...request(), model: "claude-opus-4-8[1m]" },
-      { signal: new AbortController().signal, emit: async () => {} }
-    );
-    expect(result.stopReason).toBe("completed");
-  } finally {
-    await removeFolder(root);
-  }
+    })
+  );
+  const provider = createClaudeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      fixture,
+    ],
+  });
+  const result = await provider.adapter.execute(
+    { ...request(), model: "claude-opus-4-8[1m]" },
+    { signal: new AbortController().signal, emit: async () => {} }
+  );
+  expect(result.stopReason).toBe("completed");
 });

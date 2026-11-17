@@ -1,16 +1,12 @@
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { request } from "./test-support.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
 
 // `agy acp`(Agent Client Protocol) 대화를 정해진 순서로 재생해 adapter를 본다. 프레임 모양은 agy 1.5.4의 실제 출력(#148)을 따른다.
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
-});
+const folders = testFolders();
 const rpc = (id: number, body: Record<string, unknown>) => ({
   frame: { jsonrpc: "2.0", id, ...body },
 });
@@ -53,8 +49,7 @@ async function run(
   steps: Record<string, unknown>[],
   options: { model?: string } = {}
 ) {
-  const root = await mkdtemp(path.join(tmpdir(), "agy-acp-"));
-  roots.push(root);
+  const root = await folders.make("agy-acp-");
   const fixture = path.join(root, "fixture.json");
   await writeFile(
     fixture,
@@ -161,8 +156,7 @@ describe("a turn the program ends with its error notice", () => {
    * 그 기록 한 줄을 쓰고 같은 대화를 하는 프로그램.
    */
   async function failing(log: string) {
-    const root = await mkdtemp(path.join(tmpdir(), "agy-acp-error-"));
-    roots.push(root);
+    const root = await folders.make("agy-acp-error-");
     const script = path.join(root, "agy.mjs");
     await writeFile(
       script,

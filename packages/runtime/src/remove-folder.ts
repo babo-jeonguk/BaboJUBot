@@ -6,8 +6,8 @@ import { rm as fsRm } from "node:fs/promises";
  */
 const transient = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EMFILE", "ENFILE"]);
 /** 다시 시도하는 횟수와 첫 기다림. Node 자체 시험 도구(`test/common/tmpdir.js`)와 같은 값이다. */
-export const removeRetries = 3;
-export const removeRetryDelayMs = 100;
+const removeRetries = 3;
+const removeRetryDelayMs = 100;
 
 type Remove = (
   folder: string,

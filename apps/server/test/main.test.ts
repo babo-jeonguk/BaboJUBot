@@ -353,6 +353,7 @@ type MainProcess = ChildProcess & {
   stdoutText: () => string;
   stderrText: () => string;
   exited: Promise<Exit>;
+  closed: Promise<void>;
   ready: Promise<void>;
 };
 
@@ -410,6 +411,13 @@ function startMain(
   });
   void exited.catch(() => {});
   child.exited = exited;
+  // 종료 뒤 stdio까지 닫힌 때. spawn이 실패하면 close 없이 error만 온다.
+  child.closed = new Promise<void>((resolve) => {
+    child.once("close", () => resolve());
+    child.once("error", () => {
+      if (child.pid === undefined) resolve();
+    });
+  });
   child.ready = waitForReady(
     child,
     () => stdout,
@@ -512,6 +520,26 @@ async function stopMain(child: MainProcess, { group = false } = {}) {
   } catch (error) {
     // spawn 오류는 시작 실패로 이미 드러났다. 끝나지 않는 자식만 실패로 알린다.
     if (child.exitCode === null && child.signalCode === null) throw error;
+  }
+  // 폴더를 지우기 전에 stdio 닫힘까지 확인한다.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      child.closed,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `server ${child.pid} did not close its output in ${killWaitMs}ms`
+              )
+            ),
+          killWaitMs
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

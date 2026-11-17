@@ -1,14 +1,13 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll } from "vitest";
 import { describeRuntimeContract } from "./runtime-contract.ts";
 import { createAntigravityProvider } from "./providers/antigravity.ts";
 import { createOpenCodeProvider } from "./providers/opencode.ts";
 import { saying } from "./providers/test-support.ts";
-import { removeFolder } from "./remove-folder.ts";
-const root = await mkdtemp(path.join(tmpdir(), "other-provider-contract-"));
-afterAll(() => removeFolder(root));
+import { testFolders } from "./providers/test-folders.ts";
+// 이 파일의 시험이 모두 끝난 뒤 정리가 지운다.
+const root = await testFolders(afterAll).make("other-provider-contract-");
 // `pnpm provider:login antigravity`가 남기는 자리(연결 폴더)에만 로그인이 있다. 실행 시도는 조직 폴더로 돌므로
 // 이 로그인이 조직 실행에서 보여야 공통 검사(녹화 재생 포함)가 통과한다(#126).
 const antigravityLogin = path.join(

@@ -1,89 +1,79 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request, saying } from "./test-support.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
+
+// 시험 폴더는 정리가 지운다(시험이 실패해도 같다).
+const folders = testFolders();
 it("runs an isolated v2 server per attempt, uses a free model, and stops it after success", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "opencode-test-"));
-  try {
-    const provider = createOpenCodeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/opencode-simulator.mjs"),
-      ],
-    });
-    expect(
-      await provider.adapter.checkReadiness(new AbortController().signal)
-    ).toMatchObject({ status: "ready" });
-    const input = request();
-    input.instructions = [{ path: "role.md", content: "제품 역할 지침" }];
-    const result = await provider.adapter.execute(input, {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
-    expect(result.stopReason).toBe("completed");
-    expect(result.nextSession?.id).toMatch(/^ses_/);
-    expect(result.usage).toEqual({
-      inputTokens: 12,
-      outputTokens: 3,
-      cacheReadTokens: 5,
-      cacheWriteTokens: 0,
-      costUsd: 0,
-    });
-  } finally {
-    await removeFolder(root);
-  }
+  const root = await folders.make("opencode-test-");
+  const provider = createOpenCodeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/opencode-simulator.mjs"),
+    ],
+  });
+  expect(
+    await provider.adapter.checkReadiness(new AbortController().signal)
+  ).toMatchObject({ status: "ready" });
+  const input = request();
+  input.instructions = [{ path: "role.md", content: "제품 역할 지침" }];
+  const result = await provider.adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.stopReason).toBe("completed");
+  expect(result.nextSession?.id).toMatch(/^ses_/);
+  expect(result.usage).toEqual({
+    inputTokens: 12,
+    outputTokens: 3,
+    cacheReadTokens: 5,
+    cacheWriteTokens: 0,
+    costUsd: 0,
+  });
 }, 20000);
 
 it("keeps its SSE stream alive beyond the startup timeout", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "opencode-long-"));
-  try {
-    const provider = createOpenCodeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/opencode-simulator.mjs"),
-      ],
-    });
-    const input = request();
-    input.wakeReasons = saying("느린 작업")(
-      input.access,
-      input.identity
-    ).wakeReasons;
-    const result = await provider.adapter.execute(input, {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
-    expect(result.stopReason).toBe("completed");
-  } finally {
-    await removeFolder(root);
-  }
+  const root = await folders.make("opencode-long-");
+  const provider = createOpenCodeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/opencode-simulator.mjs"),
+    ],
+  });
+  const input = request();
+  input.wakeReasons = saying("느린 작업")(
+    input.access,
+    input.identity
+  ).wakeReasons;
+  const result = await provider.adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.stopReason).toBe("completed");
 }, 20000);
 
 describe("usage numbers outside the contract (#140)", () => {
   async function run(usage: { before: unknown; after: unknown }) {
-    const root = await mkdtemp(path.join(tmpdir(), "opencode-usage-"));
-    try {
-      const file = path.join(root, "usage.json");
-      await writeFile(file, JSON.stringify(usage));
-      return await createOpenCodeProvider({
-        dataDir: root,
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-          "--usage",
-          file,
-        ],
-      }).adapter.execute(request(), {
-        signal: new AbortController().signal,
-        emit: async () => {},
-      });
-    } finally {
-      await removeFolder(root);
-    }
+    const root = await folders.make("opencode-usage-");
+    const file = path.join(root, "usage.json");
+    await writeFile(file, JSON.stringify(usage));
+    return await createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--usage",
+        file,
+      ],
+    }).adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
   }
 
   it("leaves a decreased, fractional or unsafe session total unreported and keeps the success and the other figures", async () => {
@@ -150,33 +140,29 @@ describe("failed executions (#147)", () => {
   const secret = "sk-synthetic-147-secret";
   const research = "합성 연구 입력 147";
   async function run(failing: { error: unknown; foreign?: boolean }) {
-    const root = await mkdtemp(path.join(tmpdir(), "opencode-failed-"));
-    try {
-      const file = path.join(root, "fail.json");
-      await writeFile(file, JSON.stringify(failing));
-      const activities: unknown[] = [];
-      const input = request();
-      const result = await createOpenCodeProvider({
-        dataDir: root,
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-          "--fail",
-          file,
-        ],
-      }).adapter.execute(input, {
-        signal: new AbortController().signal,
-        emit: async (activity) => {
-          activities.push(activity);
-        },
-      });
-      const prompts = (await readFile(file + ".prompts", "utf8"))
-        .trim()
-        .split("\n").length;
-      return { result, activities, prompts, token: input.access.token };
-    } finally {
-      await removeFolder(root);
-    }
+    const root = await folders.make("opencode-failed-");
+    const file = path.join(root, "fail.json");
+    await writeFile(file, JSON.stringify(failing));
+    const activities: unknown[] = [];
+    const input = request();
+    const result = await createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--fail",
+        file,
+      ],
+    }).adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async (activity) => {
+        activities.push(activity);
+      },
+    });
+    const prompts = (await readFile(file + ".prompts", "utf8"))
+      .trim()
+      .split("\n").length;
+    return { result, activities, prompts, token: input.access.token };
   }
   // 원문 message·body와 덧붙은 필드에 비밀값·연구 내용이 섞여 있어도 공개 결과로 옮기지 않는다.
   const tainted = (type: string, status?: number) => ({
@@ -283,52 +269,44 @@ describe("one organization folder (#147)", () => {
   };
 
   it("starts the servers of two agents one at a time and lets both runs finish", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "opencode-race-"));
-    try {
-      const adapter = racingAdapter(root);
-      const first = request();
-      const results = await Promise.all(
-        [first, sameOrganization(first.identity.organizationId)].map((input) =>
-          adapter.execute(input, {
-            signal: new AbortController().signal,
-            emit: async () => {},
-          })
-        )
-      );
-      expect(results.map((r) => r.stopReason)).toEqual([
-        "completed",
-        "completed",
-      ]);
-      expect(results[0]!.nextSession?.id).not.toBe(results[1]!.nextSession?.id);
-    } finally {
-      await removeFolder(root);
-    }
+    const root = await folders.make("opencode-race-");
+    const adapter = racingAdapter(root);
+    const first = request();
+    const results = await Promise.all(
+      [first, sameOrganization(first.identity.organizationId)].map((input) =>
+        adapter.execute(input, {
+          signal: new AbortController().signal,
+          emit: async () => {},
+        })
+      )
+    );
+    expect(results.map((r) => r.stopReason)).toEqual([
+      "completed",
+      "completed",
+    ]);
+    expect(results[0]!.nextSession?.id).not.toBe(results[1]!.nextSession?.id);
   }, 30000);
 
   it("stops waiting for its turn when cancelled and hands the turn on", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "opencode-race-"));
-    try {
-      const adapter = racingAdapter(root);
-      const first = request();
-      const organizationId = first.identity.organizationId;
-      const run = (input: ReturnType<typeof request>, signal: AbortSignal) =>
-        adapter.execute(input, { signal, emit: async () => {} });
-      const running = run(first, new AbortController().signal);
-      const cancel = new AbortController();
-      const waiting = run(sameOrganization(organizationId), cancel.signal);
-      setTimeout(() => cancel.abort(), 50);
-      expect(await waiting).toMatchObject({
-        stopReason: "cancelled",
-        error: null,
-      });
-      const after = run(
-        sameOrganization(organizationId),
-        new AbortController().signal
-      );
-      expect((await running).stopReason).toBe("completed");
-      expect((await after).stopReason).toBe("completed");
-    } finally {
-      await removeFolder(root);
-    }
+    const root = await folders.make("opencode-race-");
+    const adapter = racingAdapter(root);
+    const first = request();
+    const organizationId = first.identity.organizationId;
+    const run = (input: ReturnType<typeof request>, signal: AbortSignal) =>
+      adapter.execute(input, { signal, emit: async () => {} });
+    const running = run(first, new AbortController().signal);
+    const cancel = new AbortController();
+    const waiting = run(sameOrganization(organizationId), cancel.signal);
+    setTimeout(() => cancel.abort(), 50);
+    expect(await waiting).toMatchObject({
+      stopReason: "cancelled",
+      error: null,
+    });
+    const after = run(
+      sameOrganization(organizationId),
+      new AbortController().signal
+    );
+    expect((await running).stopReason).toBe("completed");
+    expect((await after).stopReason).toBe("completed");
   }, 30000);
 });

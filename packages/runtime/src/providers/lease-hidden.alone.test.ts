@@ -1,23 +1,21 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { leaseHolders, leaseVariable, processStartTicks } from "./lease.ts";
 import { startProcess } from "./process.ts";
 import { killAndWait, readyLine } from "./process-test-support.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
 
 // 환경을 읽을 수 없게 막은 프로그램(gpg-agent·ssh-agent처럼 PR_SET_DUMPABLE 0)은 표식을 확인할 수 없다(#219, PR #220 외부 리뷰 SPEC-2).
 // 이 실행 시도가 시작한 뒤 서버와 같은 cgroup에 생긴 같은 사용자의 산 프로그램이면 우리 것일 수 있어 "확인하지 못함"으로 둔다.
 // 이 시험이 띄운 프로그램은 같은 시각의 다른 시험 실행 시도에도 그렇게 보이므로, 이 파일은 다른 시험과 겹치지 않게 따로 돈다.
 const pids: number[] = [];
-const roots: string[] = [];
+const folders = testFolders();
 afterEach(async () => {
   vi.restoreAllMocks();
   await killAndWait(pids.splice(0));
-  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 
 const hide =
@@ -77,8 +75,7 @@ describe.runIf(process.platform === "linux")(
 
     // 프로그램이 남긴 것 가운데 확인하지 못한 것이 있으면 끄지 않고, 정리 성공으로 보지 않는다(경고, 기록 유지).
     it("keep the run's record and are left running", async () => {
-      const stateDir = await mkdtemp(path.join(tmpdir(), "babojubot-hidden-"));
-      roots.push(stateDir);
+      const stateDir = await folders.make("babojubot-hidden-");
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       let pid: number | undefined;
       const run = startProcess({

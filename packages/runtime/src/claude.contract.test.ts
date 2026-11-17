@@ -1,19 +1,18 @@
 import { saying } from "./providers/test-support.ts";
 import { describeRuntimeContract } from "./runtime-contract.ts";
 import { createClaudeProvider } from "./providers/claude.ts";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll } from "vitest";
-import { removeFolder } from "./remove-folder.ts";
-const dataDir = await mkdtemp(path.join(tmpdir(), "claude-contract-"));
+import { testFolders } from "./providers/test-folders.ts";
+// 이 파일의 시험이 모두 끝난 뒤 정리가 지운다.
+const dataDir = await testFolders(afterAll).make("claude-contract-");
 await mkdir(path.join(dataDir, "providers/claude"), { recursive: true });
 await writeFile(
   path.join(dataDir, "providers/claude/setup-token"),
   "synthetic-login",
   { mode: 0o600 }
 );
-afterAll(() => removeFolder(dataDir));
 
 for (const recorded of [false, true])
   describeRuntimeContract(

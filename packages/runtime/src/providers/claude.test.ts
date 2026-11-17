@@ -1,18 +1,13 @@
-import { mkdtemp, readFile, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { request } from "./test-support.ts";
 import { createClaudeProvider } from "./claude.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
 
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
-});
+const folders = testFolders();
 async function home() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-claude-"));
-  roots.push(root);
+  const root = await folders.make("babojubot-claude-");
   await mkdir(path.join(root, "providers/claude"), { recursive: true });
   await writeFile(
     path.join(root, "providers/claude/setup-token"),

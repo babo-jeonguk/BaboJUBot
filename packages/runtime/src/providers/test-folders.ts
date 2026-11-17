@@ -42,6 +42,11 @@ export function testFolders(hook: Hook = afterEach) {
       folders.push(folder);
       return folder;
     },
+    /** 다른 곳(다른 기준 폴더·realpath)에서 만든 폴더의 정리를 맡는다. */
+    adopt(folder: string) {
+      folders.push(folder);
+      return folder;
+    },
     /** 폴더를 지우기 전에 끝나야 하는 것. `stop`은 그것을 멈추고 끝날 때까지 기다린다. */
     own(stop: () => Promise<unknown>, what = "a test resource") {
       stops.push({ stop, what });

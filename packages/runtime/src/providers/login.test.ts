@@ -1,23 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ProviderConnection } from "@babojubot/contracts";
-import { afterEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
 import { runLogin } from "./login.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
 
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
-});
+const folders = testFolders();
 
 async function tempDir() {
-  const dir = await mkdtemp(path.join(tmpdir(), "babojubot-login-"));
-  roots.push(dir);
+  const dir = await folders.make("babojubot-login-");
   return dir;
 }
 

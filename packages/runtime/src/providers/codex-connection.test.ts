@@ -13,7 +13,7 @@ import { testFolders } from "./test-folders.ts";
 // 시험이 연 연결은 정리가 닫고 프로그램 정리(done)까지 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
 const folders = testFolders();
 /** 정리가 닫고 끝을 기다리는 연결. */
-function open(options: Parameters<typeof openCodexConnection>[0]) {
+function openOwned(options: Parameters<typeof openCodexConnection>[0]) {
   const connection = openCodexConnection(options);
   folders.own(async () => {
     connection.close();
@@ -34,7 +34,7 @@ async function peer(steps: unknown[]) {
   const root = await folders.make("codex-connection-");
   const file = path.join(root, "peer.json");
   await writeFile(file, JSON.stringify({ steps }));
-  return open({
+  return openOwned({
     command: [process.execPath, path.resolve("test-fixtures/replay.mjs")],
     args: [file],
     cwd: root,
@@ -166,7 +166,7 @@ describe("a Codex app-server connection", () => {
         ready = resolve;
       });
       let pid = 0;
-      const connection = open({
+      const connection = openOwned({
         command: [process.execPath],
         args: [
           "-e",
@@ -213,7 +213,7 @@ describe("a Codex app-server connection", () => {
       const childStarted = new Promise<void>((resolve) => {
         started = resolve;
       });
-      const connection = open({
+      const connection = openOwned({
         command: [process.execPath],
         args: ["-e", program],
         cwd: root,
@@ -262,7 +262,7 @@ describe("a Codex app-server connection", () => {
     const childStarted = new Promise<void>((resolve) => {
       started = resolve;
     });
-    const connection = open({
+    const connection = openOwned({
       command: [process.execPath],
       args: ["-e", program],
       cwd: root,
@@ -316,7 +316,7 @@ describe("a Codex app-server connection", () => {
         ],
       })
     );
-    const connection = open({
+    const connection = openOwned({
       command: [process.execPath, path.resolve("test-fixtures/replay.mjs")],
       args: [file],
       cwd: root,

@@ -1,21 +1,19 @@
 import {
   chmod,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   readlink,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { createCodexProvider } from "./codex.ts";
 import { request } from "./test-support.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
 
 // 링크를 만들 수 없는 컴퓨터에서는 실행이 연결 폴더로 대신 돈다. 그때도 연결의 로그인 하나를 읽어야 한다.
 // 로그인 원본이 이미 로그인 전용 폴더로 옮겨진 뒤(다른 컴퓨터에서 옮긴 제품 폴더, 링크만 사라진 경우)도 같다(PR #135 SPEC-1).
@@ -37,10 +35,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const roots: string[] = [];
+const folders = testFolders();
 afterEach(async () => {
   refusal = null;
-  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 const control = () => ({
   signal: new AbortController().signal,
@@ -49,8 +46,7 @@ const control = () => ({
 const fixture = (name: string) => path.resolve("test-fixtures", name);
 
 async function setup() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-login-link-"));
-  roots.push(root);
+  const root = await folders.make("babojubot-login-link-");
   const requestFor = async (
     organizationId = crypto.randomUUID()
   ): Promise<RunRequest> => {

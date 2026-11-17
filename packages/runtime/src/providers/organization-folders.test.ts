@@ -13,23 +13,20 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { createClaudeProvider } from "./claude.ts";
 import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request, attachedRelayHub } from "./test-support.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { testFolders } from "./test-folders.ts";
 
 // 조직별 제품 폴더(사용자 결정 2026-11-06, docs/research/org-product-folders-references.md).
 // 같은 연결이라도 조직마다 제품 폴더(설정·세션·확장)를 따로 쓴다. 연결 폴더는 로그인 원본·준비 확인·모델 목록·프로세스 기록에만 쓰고
 // 컨테이너에 넣지 않는다. 한 조직이 써 둔 설정을 다른 조직의 프로그램이 읽어 그 조직의 실행 시도 토큰을 내보내지 못하게 한다.
 
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
-});
+const folders = testFolders();
 const fixture = (name: string) => path.resolve("test-fixtures", name);
 const control = () => ({
   signal: new AbortController().signal,
@@ -53,7 +50,7 @@ async function setup() {
   const root = await realpath(
     await mkdtemp(path.join(tmpdir(), "babojubot-org-folders-"))
   );
-  roots.push(root);
+  folders.adopt(root);
   const dump = path.join(root, "env.jsonl");
   // 받은 환경을 한 줄로 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 어느 폴더로 띄웠는지는 남는다.
   // 스크립트 파일로 둔다. `node -e`이면 프로바이더가 붙이는 `--print` 같은 인자를 node가 자기 옵션으로 읽는다.
