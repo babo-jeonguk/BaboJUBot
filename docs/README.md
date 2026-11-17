@@ -63,6 +63,8 @@
 - [OpenCode 2.x 지침 주입 조사](research/opencode-2-instructions.md): 기본 지침 보존과 세션 지침 API 추가.
 - [#205 Windows 후손 정리 조사](research/issue-205-references.md): 로컬 C# 묶음 실행기·백신 차단·libuv 소유권 연쇄의 선례와 미검증 조건.
 - [#205 구현 기록](research/issue-205-implementation.md): 묶음 실행기의 원문 확인, 사용자 결정, Windows CI 첫 단계 확인과 시험 결과·미검증 범위.
+- [하위 프로세스 정리 조사](research/orphan-process-cleanup-references.md): 프로바이더가 먼저 죽은 뒤 새 세션 자손을 회수하는 OS별 수단(cgroup·subreaper·표식 탐색·Job Object)의 선례와 한계.
+- [#219 구현 기록](research/issue-219-implementation.md): Linux·macOS 표식 정리의 원문 확인, 사용자 결정, 수정 전후 시험 도구 결과와 미검증 범위.
 - [#189 Windows E2E 정상 종료 조사](research/issue-189-references.md): IPC 종료 요청·공용 서버 수명 소유·Windows E2E CI 권고와 미검증 범위.
 - [#211 구현 기록](research/issue-211-implementation.md): 변경 응답 캐시 쓰기 공통 규칙의 원문 확인, 적용·제외 위치, 순서 강제 시험과 대조 결과.
 - [#211 늦은 조회 덮어쓰기 조사](research/issue-211-references.md): 변경 응답을 덮는 먼저 출발한 조회의 취소·순서를 강제하는 시험·E2E 대상 범위 좁히기 근거.
