@@ -10,13 +10,12 @@ import {
 } from "./cli-tolerance-support.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 실제 프로그램이 흔히 하는 행동 때문에 멀쩡한 실행 시도를 버리지 않는다. 최종 결과를 받았으면 성공이고, 모르는 출력은 건너뛴다.
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 async function home() {
   return createCliHome((root) => {

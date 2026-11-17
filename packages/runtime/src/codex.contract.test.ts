@@ -1,12 +1,13 @@
 import { saying } from "./providers/test-support.ts";
 import { describeRuntimeContract } from "./runtime-contract.ts";
 import { createCodexProvider } from "./providers/codex.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll } from "vitest";
+import { removeFolder } from "./remove-folder.ts";
 const dataDir = await mkdtemp(path.join(tmpdir(), "claude-contract-"));
-afterAll(() => rm(dataDir, { recursive: true, force: true }));
+afterAll(() => removeFolder(dataDir));
 
 for (const [mode, recorded] of [
   ["app-server", false],

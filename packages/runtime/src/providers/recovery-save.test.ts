@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { recordProcess } from "./recovery.ts";
+import { killAndWait } from "./process-test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // Windows에서는 다른 프로그램이 기록을 읽는 동안 덮어쓰기가 EPERM으로 잠깐 실패한다. 그 순간을 그대로 만든다.
 const rename = vi.hoisted(() => ({ blocked: 0, tried: 0 }));
@@ -29,10 +31,9 @@ afterEach(async () => {
   rename.blocked = 0;
   rename.tried = 0;
   vi.restoreAllMocks();
-  for (const child of children.splice(0)) child.kill("SIGKILL");
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  // 프로그램이 끝난 것을 확인한 뒤에 폴더를 지운다.
+  await killAndWait(children.splice(0).map((child) => child.pid!));
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 async function running() {
   const home = await mkdtemp(path.join(tmpdir(), "babojubot-save-"));

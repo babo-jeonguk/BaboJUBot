@@ -1,0 +1,71 @@
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { removeFolder } from "../remove-folder.ts";
+import path from "node:path";
+import { expect, it } from "vitest";
+import { testFolders } from "./test-folders.ts";
+
+// 정리는 폴더를 쓰던 것이 모두 끝난 뒤에 폴더를 지운다. hook을 바꿔 끼워 정리를 시험이 직접 부른다.
+function folders() {
+  let cleanup!: () => Promise<void>;
+  const made = testFolders((run) => {
+    cleanup = run;
+  });
+  return { ...made, cleanup: () => cleanup() };
+}
+
+it("waits for what uses the folder to finish before removing it", async () => {
+  const test = folders();
+  const root = await test.make("test-folders-");
+  const order: string[] = [];
+  test.own(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    order.push(existsSync(root) ? "stopped with folder" : "folder gone");
+  });
+  await test.cleanup();
+  expect(order).toEqual(["stopped with folder"]);
+  expect(existsSync(root)).toBe(false);
+});
+
+it("keeps the folder and reports the failure when something using it does not stop", async () => {
+  const test = folders();
+  const root = await test.make("test-folders-");
+  try {
+    test.own(async () => {
+      throw new Error("did not stop");
+    });
+    await expect(test.cleanup()).rejects.toThrow("did not stop");
+    expect(existsSync(root)).toBe(true);
+  } finally {
+    await removeFolder(root);
+  }
+});
+
+it("stops a program still running in the folder and waits until it has ended and closed its output", async () => {
+  const test = folders();
+  const root = await test.make("test-folders-");
+  await writeFile(path.join(root, "a.txt"), "");
+  const child = test.ownChild(
+    spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+  );
+  await new Promise((resolve) => child.once("spawn", resolve));
+  await test.cleanup();
+  expect(child.signalCode ?? child.exitCode).not.toBeNull();
+  expect(child.stdout!.destroyed && child.stderr!.destroyed).toBe(true);
+  expect(existsSync(root)).toBe(false);
+});
+
+it("counts a program that already ended as stopped", async () => {
+  const test = folders();
+  const root = await test.make("test-folders-");
+  const child = test.ownChild(
+    spawn(process.execPath, ["-e", ""], { cwd: root, stdio: "pipe" })
+  );
+  await new Promise((resolve) => child.once("close", resolve));
+  await test.cleanup();
+  expect(existsSync(root)).toBe(false);
+});

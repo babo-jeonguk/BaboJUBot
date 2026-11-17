@@ -5,7 +5,6 @@ import {
   readdir,
   readFile,
   realpath,
-  rm,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,14 +16,13 @@ import {
 } from "./antigravity.ts";
 import { configScript, ownerMark } from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 예전 판이 작업 폴더에 둔 설정의 남은 것만 서버 시작 때 지운다(#148부터 실행은 설정 파일을 쓰지 않는다). 우리 표시가 없는 파일은
 // 비어 있어도 건드리지 않는다. 지우기는 처음 확인한 .agents 폴더 안에서만 일어난다. 그 폴더를 다른 조직으로 바꿔치기해도 그곳에는 닿지 않는다.
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 const ownedLeftover = JSON.stringify({ babojubotOwner: ownerMark });
 async function workspace() {

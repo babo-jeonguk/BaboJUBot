@@ -1,16 +1,15 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { request } from "./test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // `agy acp`(Agent Client Protocol) 대화를 정해진 순서로 재생해 adapter를 본다. 프레임 모양은 agy 1.5.4의 실제 출력(#148)을 따른다.
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 const rpc = (id: number, body: Record<string, unknown>) => ({
   frame: { jsonrpc: "2.0", id, ...body },

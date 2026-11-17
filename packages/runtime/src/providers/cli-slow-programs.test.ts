@@ -1,14 +1,14 @@
-import { rm } from "node:fs/promises";
 import path from "node:path";
 import { describe, it, type TestContext } from "vitest";
 import { adapters, control, createCliHome } from "./cli-tolerance-support.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 서로 독립인 실제 자식 프로세스 시나리오라 겹쳐 돌린다. 지연은 줄이지 않고, 홈은 테스트마다 하나씩 만들어 그 테스트가 끝날 때 지운다.
 async function home(onTestFinished: TestContext["onTestFinished"]) {
   return createCliHome((root) => {
-    onTestFinished(() => rm(root, { recursive: true, force: true }));
+    onTestFinished(() => removeFolder(root));
   });
 }
 

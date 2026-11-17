@@ -1,14 +1,13 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCodexProvider, type CodexOptions } from "./codex.ts";
 import { request } from "./test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 it("initializes an app-server, runs a turn, and keeps unreported usage null", async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "codex-test-"));
@@ -35,7 +34,7 @@ it("initializes an app-server, runs a turn, and keeps unreported usage null", as
       costUsd: null,
     });
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    await removeFolder(dataDir);
   }
 });
 it("accepts steering only after the expected turn acknowledgment", async () => {
@@ -66,7 +65,7 @@ it("accepts steering only after the expected turn acknowledgment", async () => {
     expect(result.stopReason).toBe("completed");
     expect(await provider.adapter.steer!(message)).toBe("rejected");
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    await removeFolder(dataDir);
   }
 });
 it("resumes the requested thread and reports only this attempt usage", async () => {
@@ -98,7 +97,7 @@ it("resumes the requested thread and reports only this attempt usage", async () 
       costUsd: null,
     });
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    await removeFolder(dataDir);
   }
 });
 it("checks version and product login without starting a model turn", async () => {
@@ -116,7 +115,7 @@ it("checks version and product login without starting a model turn", async () =>
       await provider.adapter.checkReadiness(new AbortController().signal)
     ).toEqual({ status: "unknown", reason: "credentials_unverified" });
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    await removeFolder(dataDir);
   }
 });
 it("runs the exec alternative with steering explicitly unsupported", async () => {
@@ -147,7 +146,7 @@ it("runs the exec alternative with steering explicitly unsupported", async () =>
       costUsd: null,
     });
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    await removeFolder(dataDir);
   }
 });
 it("reads the app-server model catalog without starting a model turn", async () => {

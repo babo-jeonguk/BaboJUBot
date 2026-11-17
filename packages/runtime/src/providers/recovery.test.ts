@@ -1,12 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-  readdir,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -17,6 +10,7 @@ import {
 } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "./lease.ts";
 import { readyLine } from "./process-test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
 // 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
@@ -51,9 +45,7 @@ afterEach(async () => {
       // 이미 끝났다.
     }
   for (const group of groups.splice(0)) await until(() => groupGone(group));
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 async function records() {
   const root = await mkdtemp(path.join(tmpdir(), "babojubot-recovery-"));

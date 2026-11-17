@@ -1,10 +1,11 @@
 import { saying } from "./providers/test-support.ts";
 import { describeRuntimeContract } from "./runtime-contract.ts";
 import { createClaudeProvider } from "./providers/claude.ts";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll } from "vitest";
+import { removeFolder } from "./remove-folder.ts";
 const dataDir = await mkdtemp(path.join(tmpdir(), "claude-contract-"));
 await mkdir(path.join(dataDir, "providers/claude"), { recursive: true });
 await writeFile(
@@ -12,7 +13,7 @@ await writeFile(
   "synthetic-login",
   { mode: 0o600 }
 );
-afterAll(() => rm(dataDir, { recursive: true, force: true }));
+afterAll(() => removeFolder(dataDir));
 
 for (const recorded of [false, true])
   describeRuntimeContract(

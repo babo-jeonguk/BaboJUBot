@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,12 +8,11 @@ import type { ProviderConnection } from "@babojubot/contracts";
 import { afterEach, expect, it } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
 import { runLogin } from "./login.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 
 async function tempDir() {

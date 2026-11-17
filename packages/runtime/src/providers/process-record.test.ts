@@ -1,8 +1,9 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { startProcess } from "./process.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 자리는 반납해도, 끝났음을 확인하지 못한 프로세스의 복구 기록은 다음 시작 때 다시 보도록 남긴다.
 const stop = vi.hoisted(() => ({
@@ -43,9 +44,7 @@ afterEach(async () => {
   stop.leaseFails = false;
   stop.leaseLeft = false;
   vi.restoreAllMocks();
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 async function run() {
   const stateDir = await mkdtemp(path.join(tmpdir(), "babojubot-record-"));

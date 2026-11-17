@@ -29,6 +29,7 @@ import {
 import { attachedRelayHub, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
@@ -55,9 +56,7 @@ const saved = { ...process.env };
 afterEach(async () => {
   refusal = null;
   process.env = { ...saved };
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  await Promise.all(roots.splice(0).map((root) => removeFolder(root)));
 });
 
 type Call = {

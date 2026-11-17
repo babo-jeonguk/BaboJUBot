@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request, saying } from "./test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 it("runs an isolated v2 server per attempt, uses a free model, and stops it after success", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "opencode-test-"));
   try {
@@ -33,7 +34,7 @@ it("runs an isolated v2 server per attempt, uses a free model, and stops it afte
       costUsd: 0,
     });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeFolder(root);
   }
 }, 20000);
 
@@ -58,7 +59,7 @@ it("keeps its SSE stream alive beyond the startup timeout", async () => {
     });
     expect(result.stopReason).toBe("completed");
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeFolder(root);
   }
 }, 20000);
 
@@ -81,7 +82,7 @@ describe("usage numbers outside the contract (#140)", () => {
         emit: async () => {},
       });
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeFolder(root);
     }
   }
 
@@ -174,7 +175,7 @@ describe("failed executions (#147)", () => {
         .split("\n").length;
       return { result, activities, prompts, token: input.access.token };
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeFolder(root);
     }
   }
   // 원문 message·body와 덧붙은 필드에 비밀값·연구 내용이 섞여 있어도 공개 결과로 옮기지 않는다.
@@ -300,7 +301,7 @@ describe("one organization folder (#147)", () => {
       ]);
       expect(results[0]!.nextSession?.id).not.toBe(results[1]!.nextSession?.id);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeFolder(root);
     }
   }, 30000);
 
@@ -327,7 +328,7 @@ describe("one organization folder (#147)", () => {
       expect((await running).stopReason).toBe("completed");
       expect((await after).stopReason).toBe("completed");
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeFolder(root);
     }
   }, 30000);
 });

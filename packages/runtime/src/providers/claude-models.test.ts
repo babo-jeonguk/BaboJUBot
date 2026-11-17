@@ -1,10 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
 import { claudeModels, claudeModelsFor } from "./claude-models.ts";
 import { request } from "./test-support.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 const saved = { ...process.env };
 afterEach(() => {
@@ -131,6 +132,6 @@ it("hands the chosen ID to Claude unchanged, including a context suffix", async 
     );
     expect(result.stopReason).toBe("completed");
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeFolder(root);
   }
 });
