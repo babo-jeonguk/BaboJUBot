@@ -1,9 +1,17 @@
 import crossSpawn from "cross-spawn";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { startProcess } from "./process.ts";
 import { prepareJobObjectLauncher } from "./job-object.ts";
 
@@ -11,7 +19,12 @@ import { prepareJobObjectLauncher } from "./job-object.ts";
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
 const windows = process.platform === "win32";
 const roots: string[] = [];
-const leftovers: number[] = [];
+/** 시험이 연 실행 시도. 끝마다 마저 끝내 묶음을 닫는다. */
+const attempts: ReturnType<typeof startProcess>[] = [];
+/** 실행 시도의 프로그램이 띄운 자손의 번호. 번호만 알므로 끄지 않고 꺼졌는지만 확인한다. */
+const descendants: number[] = [];
+/** 시험이 직접 띄운 프로그램. 핸들로 끄고 끝날 때까지 기다린다. */
+const spawned: ChildProcess[] = [];
 let dataDir = "";
 
 const alive = (pid: number) => {
@@ -28,6 +41,20 @@ const temp = async (name: string) => {
   return root;
 };
 const record = (frame: unknown) => frame as Record<string, unknown>;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** 정리의 시한. 넘기면 무엇을 기다렸는지 남기고 실패한다. */
+function within<T>(promise: Promise<T>, ms: number, what: string) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${what} did not happen within ${ms} ms`)),
+        ms
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
 /** 묶음 실행기 없이 지금처럼(cross-spawn) 띄운 결과. 인수 전달이 같은지 비교하는 기준이다. */
 const direct = (command: string, args: string[], cwd: string) =>
   JSON.parse(
@@ -38,7 +65,7 @@ const direct = (command: string, args: string[], cwd: string) =>
     }).stdout as string
   ) as unknown;
 
-/** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 번호를 남겨 끝에 정리한다. */
+/** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 번호를 남겨 끝에 꺼졌는지 확인한다. */
 function run(
   script: string,
   options: {
@@ -60,11 +87,12 @@ function run(
     onFrame: async (frame) => {
       frames.push(record(frame));
       if (typeof record(frame).child === "number") {
-        leftovers.push(record(frame).child as number);
+        descendants.push(record(frame).child as number);
         reportChild(record(frame).child as number);
       }
     },
   });
+  attempts.push(attempt);
   return { attempt, frames, child };
 }
 
@@ -111,8 +139,35 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect(launcher).toMatchObject({ ok: true });
   }, 180_000);
 
+  afterEach(async () => {
+    await Promise.all(
+      spawned.splice(0).map(async (child) => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGKILL");
+        await within(exited, 10_000, `the exit of process ${child.pid}`);
+      })
+    );
+    // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
+    await Promise.all(
+      attempts.splice(0).map((attempt) => {
+        attempt.end();
+        return within(attempt.done, 30_000, "the end of a run");
+      })
+    );
+    // 번호는 재사용될 수 있으므로 다시 끄지 않는다. 꺼지지 않았으면 시험이 남긴 것으로 보고 실패한다.
+    const pids = descendants.splice(0);
+    const until = Date.now() + 10_000;
+    while (pids.some(alive)) {
+      if (Date.now() >= until)
+        throw new Error(
+          `processes a run started are still running: ${pids.filter(alive).join(", ")}`
+        );
+      await sleep(50);
+    }
+  }, 60_000);
+
   afterAll(async () => {
-    for (const pid of leftovers) if (alive(pid)) process.kill(pid, "SIGKILL");
     await Promise.all(
       roots.map((root) => rm(root, { recursive: true, force: true }))
     );
@@ -160,6 +215,21 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect(alive(pid)).toBe(false);
   }, 30_000);
 
+  it("passes input to the program and keeps its error output without the launcher's status line", async () => {
+    const { attempt, frames } = run(
+      `process.stderr.write("program error line\\n");
+       require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
+         console.log(JSON.stringify({ got: JSON.parse(line) }));
+         process.exit(0);
+       });`
+    );
+    expect(attempt.write({ hello: "입력" })).toBe(true);
+    const exit = await attempt.done;
+    expect(exit.code).toBe(0);
+    expect(frames).toEqual([{ got: { hello: "입력" } }]);
+    expect(exit.stderr).toBe("program error line\n");
+  });
+
   it("leaves other runs and other programs running", async () => {
     const bystander = spawn(
       process.execPath,
@@ -168,7 +238,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
         stdio: "ignore",
       }
     );
-    leftovers.push(bystander.pid!);
+    spawned.push(bystander);
     const other = run(`${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`);
     const otherChild = await other.child;
     const { attempt, child } = run(
@@ -253,7 +323,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
         TMP: process.env.TMP,
       },
     });
-    leftovers.push(server.pid!);
+    spawned.push(server);
     const seen: Record<string, number> = {};
     await new Promise<void>((resolve, reject) => {
       let text = "";
@@ -267,13 +337,13 @@ describe.runIf(windows)("startProcess on Windows", () => {
         if (seen.child && seen.program) resolve();
       });
     });
-    leftovers.push(seen.child!, seen.program!);
+    descendants.push(seen.child!, seen.program!);
     const ended = new Promise((resolve) => server.on("exit", resolve));
     server.kill("SIGKILL");
     await ended;
     const until = Date.now() + 10_000;
     while ((alive(seen.child!) || alive(seen.program!)) && Date.now() < until)
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await sleep(50);
     expect(alive(seen.program!)).toBe(false);
     expect(alive(seen.child!)).toBe(false);
   }, 60_000);
