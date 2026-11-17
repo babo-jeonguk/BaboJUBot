@@ -411,13 +411,16 @@ function startMain(
   });
   void exited.catch(() => {});
   child.exited = exited;
-  // 종료 뒤 stdio까지 닫힌 때. spawn이 실패하면 close 없이 error만 온다.
-  child.closed = new Promise<void>((resolve) => {
-    child.once("close", () => resolve());
-    child.once("error", () => {
-      if (child.pid === undefined) resolve();
-    });
-  });
+  // 출력(stdout·stderr)이 닫힌 때. 자식의 close 이벤트는 IPC 채널까지 세어 부모가 채널을 끊으면 오지 않을 수 있어 출력만 본다.
+  child.closed = Promise.all(
+    [child.stdout!, child.stderr!].map(
+      (stream) =>
+        new Promise<void>((resolve) => {
+          if (stream.closed) resolve();
+          else stream.once("close", () => resolve());
+        })
+    )
+  ).then(() => {});
   child.ready = waitForReady(
     child,
     () => stdout,
