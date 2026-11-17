@@ -1,5 +1,6 @@
 import crossSpawn from "cross-spawn";
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -65,7 +66,10 @@ const direct = (command: string, args: string[], cwd: string) =>
     }).stdout as string
   ) as unknown;
 
-/** 시험이 직접 띄운 프로그램을 끄고 끝날 때까지 기다린다. 시작하지 못한 프로그램은 `exit`가 오지 않고 끌 것도 없다. */
+/**
+ * 시험이 직접 띄운 프로그램을 끄고 끝날 때까지 기다린다. 끝남은 `exit`로만 인정한다. `error`(끄지 못함)나 시한 초과는 실패다.
+ * 시작하지 못한 프로그램은 `exit`가 오지 않고 끌 것도 없다.
+ */
 async function stopSpawned(child: ChildProcess) {
   if (
     child.pid === undefined ||
@@ -73,12 +77,16 @@ async function stopSpawned(child: ChildProcess) {
     child.signalCode !== null
   )
     return;
-  const ended = new Promise((resolve) => {
-    child.once("exit", resolve);
-    child.once("error", resolve);
-  });
-  child.kill("SIGKILL");
-  await within(ended, 10_000, `the exit of process ${child.pid}`);
+  const exited = once(child, "exit", { signal: AbortSignal.timeout(10_000) });
+  const sent = child.kill("SIGKILL");
+  try {
+    await exited;
+  } catch (error) {
+    throw new Error(
+      `process ${child.pid} did not exit${sent ? "" : " (the kill signal was not delivered)"}`,
+      { cause: error }
+    );
+  }
 }
 /** 번호는 재사용될 수 있으므로 다시 끄지 않는다. 시한 안에 꺼지지 않았으면 시험이 남긴 것으로 보고 실패한다. */
 async function descendantsGone(pids: number[]) {
