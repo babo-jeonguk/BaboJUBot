@@ -30,6 +30,7 @@
   - macOS에서 `-E` 줄에 표식이 있는데 실행 인자 경계를 확인할 수 없는 프로그램을 건너뛰어 "없음"으로 쳤다. 실제 보유자의 실행 인자가 조회 사이에 바뀌면 정리 성공·기록 삭제가 됐다(SPEC-3). 원인은 1회차 Linux와 같다: "우리 것 아님"과 "판단할 수 없음"을 같은 결과로 냈다. `lookupInPs`가 이런 프로그램을 `unverified`로 돌려주고, `stopLeaseHolders`는 확인하지 못한 것이 있으면 유예 동안 다시 찾아 확인된 보유자는 끄고 끝까지 모르면 신호 없이 실패로 돌려준다. 그래서 Linux에서 계속 확인할 수 없는 프로그램이 있으면 정리 실패를 알기까지 유예 2초를 더 쓴다.
   - 시험 준비 실패에도 띄운 프로그램을 그룹째 정리하고(STD-2), 준비 줄 대기는 종료(`exit`)도 본다(STD-1).
 - **외부 리뷰 3회차(PR #220)** 뒤 바꾼 것: 2회차의 "유예 동안 다시 찾기"가 유예 창 하나를 모두가 같이 쓰는 두 단계(TERM 단계 → KILL 단계) 위에 얹혀, 유예 끝 무렵 처음 확인된 보유자가 TERM 뒤 50ms 남짓 만에 KILL을 받았다(SPEC-4). 리뷰가 세 번 수렴하지 않았고 매번 앞 수정이 만든 단계 경계에서 지적이 나와, 다음 수정 전에 사용자에게 원인과 접근을 보고했다(사용자 결정 2026-11-17: 규칙 단순화 후 수정). `stopLeaseHolders`를 반복 하나와 프로그램별 규칙으로 바꿨다: 처음 확인한 때 TERM, 그 프로그램의 유예가 지난 뒤에만 KILL, 확인하지 못한 것은 신호 없이 유예 동안만 다시 찾기, 전체는 유예 + 대기 시한 안. 시한까지 자기 유예를 다 받지 못한 늦은 보유자는 끄지 않고 `left`로 돌려준다(정리 실패·기록 유지). 시험 도움 시험이 남기던 자손도 정리한다(STD-3).
+- **외부 리뷰 4회차(PR #220)** 뒤 바꾼 것: 전체 시한(유예 + 대기)이 찾기와 찾기 사이에서만 지켜져, 찾기 한 번(macOS `ps` 세 번은 각 15초까지, Linux `/proc` 읽기는 멈춘 프로그램에 막힐 수 있음)이 시한을 넘길 수 있었고, 시한 뒤에 돌아온 찾기 결과로 신호를 보냈다(SPEC-5). 찾기도 남은 시간으로 묶었다. 첫 찾기가 시한에 걸리면 찾기 실패로 던지고, 그 뒤의 찾기가 걸리면 버리고 마지막으로 끝난 찾기 결과를 `left`로 돌려준다. 시한 뒤에는 새로 찾지 않고 신호도 보내지 않는다. 처음에는 "시한에 걸린 찾기는 늘 실패"로 맡겼다가, 시한 직전에 시작한 정상 찾기까지 실패가 되는 것을 worker가 찾아 멈췄고 규칙을 위처럼 고쳤다. `stopped`는 마지막 찾기의 `holders`와 `unverified`를 모두 뺀다(SPEC-6, 같은 번호가 `stopped`와 `left`에 함께 들어가던 것).
 - **바꾸지 않은 것**: Windows 묶음 경로, 컨테이너 정리, 짧은 확인 실행(`runProbe`), 공개 API·DB schema·계약·대시보드.
 
 ## 검증
@@ -49,6 +50,7 @@
 | 외부 리뷰 2회차: macOS 표식 후보의 실행 인자가 조회 사이에 바뀌면 "확인하지 못함", 다시 찾아 확인되면 끔, 끝까지 모르면 신호 없이 `left` | `lease.test.ts` "does not take a marked program whose command line changed…", "looks again at unverified programs…", "reports unverified programs as left…" | 새 조회 결과(`lookupInPs`)를 쓰는 시험. 리뷰의 예는 수정 전 결과가 보유자·미확인 모두 없음 |
 | 외부 리뷰 2회차: 준비 줄 없이 끝난 프로그램은 자손이 출력을 쥐고 있어도 곧 실패로 봄 | `process-test-support.test.ts` | 실패(4,065ms 뒤 실패, 기준 3,000ms) |
 | 외부 리뷰 3회차: 늦게 확인된 보유자도 TERM 뒤 자기 유예를 다 받은 뒤 KILL, 시한까지 유예를 받을 수 없으면 끄지 않고 `left` | `lease.test.ts` "gives a holder confirmed late its own grace before KILL", "leaves a holder confirmed too late for its grace running and reports it" | 실패(TERM→KILL 75ms, 늦은 보유자를 KILL) |
+| 외부 리뷰 4회차: 시한을 넘긴 찾기는 버리고 그 뒤 신호 없음, 첫 찾기가 시한을 넘기면 실패, `stopped`와 `left`가 겹치지 않음 | `lease.test.ts` "gives up on a lookup that outlasts…", "gives up on a first lookup…", "does not report a program as both stopped and left" | 실패(시한 넘긴 결과로 TERM, 첫 찾기 무한 대기, 같은 번호가 양쪽) |
 
 시험 도구 수정 전후(이 컴퓨터 Linux arm64, Claude Code 2.1.326·Codex 0.169.0, 가짜 모델):
 
