@@ -9,25 +9,37 @@ test("keeps a draft edited while the previous message is being sent", async ({
     data: { name: "초안 보존 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  await page.goto(`/orgs/${org.id}/chat`);
   const input = page.getByLabel("Lead에게 보낼 메시지");
   let release!: () => void;
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route(`**/api/organizations/${org.id}/messages`, async (route) => {
-    if (route.request().method() !== "POST") return route.continue();
-    const response = await route.fetch();
-    await held;
-    await route.fulfill({ response });
-  });
+  // 보내기 응답과 함께 대화 목록·메시지 칸의 조회도 붙잡아 두 칸을 불러오는 중으로 둔다. 두 칸의 숨은
+  // `불러오는 중…` 안내도 role="status"라 화면 전체에서 찾으면 전송 상태와 함께 잡힌다(#211).
+  await page.route(
+    (url) =>
+      url.pathname === `/api/organizations/${org.id}/conversations` ||
+      url.pathname === `/api/organizations/${org.id}/messages`,
+    async (route) => {
+      const response = await route.fetch();
+      await held;
+      await route.fulfill({ response });
+    }
+  );
   try {
+    await page.goto(`/orgs/${org.id}/chat`);
+    await expect(page.getByText("불러오는 중…")).toHaveCount(2);
+    // 전송 상태는 입력창 영역 안에서 찾는다.
+    const composer = page.locator("form").filter({ has: input });
+    const sending = composer
+      .getByRole("status")
+      .filter({ hasText: /^전송 중…$/ });
     await input.fill("첫 메시지");
     await page.getByRole("button", { name: "보내기", exact: true }).click();
-    await expect(page.getByRole("status")).toHaveText("전송 중…");
+    await expect(sending).toBeVisible();
     await input.fill("다음 메시지 초안");
     release();
-    await expect(page.getByRole("status")).toHaveCount(0);
+    await expect(sending).toHaveCount(0);
     await expect(input).toHaveValue("다음 메시지 초안");
     await expect(
       page.getByRole("button", { name: "보내기", exact: true })

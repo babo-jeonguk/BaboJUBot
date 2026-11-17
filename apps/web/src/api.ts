@@ -67,6 +67,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { z } from "zod";
+import { writeMutationResult } from "./mutation-cache.ts";
 
 /** 조직 범위 조회는 모두 그 조직 key 아래에 두어, 조직 Event가 오면 한꺼번에 다시 불러온다. */
 export const queryKeys = {
@@ -207,14 +208,19 @@ export function useCreateOrganization() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       }),
-    onSuccess: (org: OrganizationDetail) => {
-      queryClient.setQueryData(queryKeys.organization(org.id), org);
+    onSuccess: async (org: OrganizationDetail) => {
       const { agents: _agents, ...summary } = org;
-      queryClient.setQueryData<Organization[]>(
-        queryKeys.organizations,
-        (list) =>
-          list && !list.some((o) => o.id === org.id) ? [...list, summary] : list
-      );
+      await Promise.all([
+        writeMutationResult(queryClient, queryKeys.organization(org.id), org),
+        writeMutationResult<Organization[]>(
+          queryClient,
+          queryKeys.organizations,
+          (list) =>
+            list && !list.some((o) => o.id === org.id)
+              ? [...list, summary]
+              : list
+        ),
+      ]);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.organizations,
         exact: true,
@@ -384,7 +390,7 @@ export function useMarkConversationRead(orgId: string) {
         }
       ),
     onSuccess: (list) =>
-      queryClient.setQueryData(queryKeys.conversations(orgId), list),
+      writeMutationResult(queryClient, queryKeys.conversations(orgId), list),
   });
 }
 
@@ -610,8 +616,9 @@ export function useUpdateApprovalPolicy(orgId: string) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       }),
-    onSuccess: (org) => {
-      queryClient.setQueryData<OrganizationDetail>(
+    onSuccess: async (org) => {
+      await writeMutationResult<OrganizationDetail>(
+        queryClient,
         queryKeys.organization(orgId),
         (detail) => detail && { ...detail, ...org }
       );
@@ -642,9 +649,8 @@ export function useUpdateNetworkPolicy(orgId: string) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       }),
-    onSuccess: (policy) => {
-      queryClient.setQueryData(queryKeys.networkPolicy(orgId), policy);
-    },
+    onSuccess: (policy) =>
+      writeMutationResult(queryClient, queryKeys.networkPolicy(orgId), policy),
   });
 }
 
@@ -661,8 +667,9 @@ export function useControlOrganization(orgId: string) {
         headers: { "content-type": "application/json" },
         body: "{}",
       }),
-    onSuccess: (org) => {
-      queryClient.setQueryData<OrganizationDetail>(
+    onSuccess: async (org) => {
+      await writeMutationResult<OrganizationDetail>(
+        queryClient,
         queryKeys.organization(orgId),
         (detail) => detail && { ...detail, ...org }
       );
@@ -691,8 +698,12 @@ export function useControlAgent(orgId: string, agentId: string) {
           body: "{}",
         }
       ),
-    onSuccess: (agent) => {
-      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+    onSuccess: async (agent) => {
+      await writeMutationResult(
+        queryClient,
+        queryKeys.agent(orgId, agentId),
+        agent
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.organization(orgId),
       });
@@ -717,9 +728,8 @@ export function useUpdateHeartbeat(orgId: string, agentId: string) {
           body: JSON.stringify(input),
         }
       ),
-    onSuccess: (agent) => {
-      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
-    },
+    onSuccess: (agent) =>
+      writeMutationResult(queryClient, queryKeys.agent(orgId, agentId), agent),
   });
 }
 
@@ -744,9 +754,8 @@ function useProviderSettingsMutation<I>(
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body(input)),
       }),
-    onSuccess: (settings) => {
-      queryClient.setQueryData(queryKeys.providers, settings);
-    },
+    onSuccess: (settings) =>
+      writeMutationResult(queryClient, queryKeys.providers, settings),
   });
 }
 
@@ -789,9 +798,8 @@ export function useRecheckProvider() {
         `/api/providers/${encodeURIComponent(provider)}/readiness`,
         { method: "POST" }
       ),
-    onSuccess: (settings) => {
-      queryClient.setQueryData(queryKeys.providers, settings);
-    },
+    onSuccess: (settings) =>
+      writeMutationResult(queryClient, queryKeys.providers, settings),
   });
 }
 
@@ -812,8 +820,12 @@ export function useUpdateAgentProvider(orgId: string, agentId: string) {
           body: JSON.stringify(input),
         }
       ),
-    onSuccess: (agent) => {
-      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+    onSuccess: async (agent) => {
+      await writeMutationResult(
+        queryClient,
+        queryKeys.agent(orgId, agentId),
+        agent
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.organization(orgId),
         exact: true,
@@ -839,8 +851,12 @@ export function useUpdateAgentProfile(orgId: string, agentId: string) {
           body: JSON.stringify(input),
         }
       ),
-    onSuccess: (agent) => {
-      queryClient.setQueryData(queryKeys.agent(orgId, agentId), agent);
+    onSuccess: async (agent) => {
+      await writeMutationResult(
+        queryClient,
+        queryKeys.agent(orgId, agentId),
+        agent
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.organization(orgId),
         exact: true,
@@ -951,8 +967,8 @@ function decisionCachePolicy<T>(
     void queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
   };
   return {
-    onSuccess: (item: T) => {
-      queryClient.setQueryData(itemKey, item);
+    onSuccess: async (item: T) => {
+      await writeMutationResult(queryClient, itemKey, item);
       refresh();
     },
     onError: (error: Error) => {
