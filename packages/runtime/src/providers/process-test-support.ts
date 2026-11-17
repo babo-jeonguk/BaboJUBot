@@ -1,18 +1,26 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-/** 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다. */
+/**
+ * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다.
+ * 종료는 `exit`로 본다. 출력을 물려받은 자손이 출력을 쥐고 있으면 `close`는 늦게 오기 때문이다.
+ * 종료 직전에 쓴 줄은 `exit` 뒤에 도착할 수 있어 잠깐(`drainMs`) 더 읽은 뒤 실패로 본다.
+ */
 export function readyLine(
   child: ChildProcess,
   line = "ready",
-  timeoutMs = 10_000
+  timeoutMs = 10_000,
+  drainMs = 1000
 ) {
   return new Promise<void>((resolve, reject) => {
     let buffer = "";
+    let drain: ReturnType<typeof setTimeout> | undefined;
     const done = (error?: Error) => {
       clearTimeout(timer);
+      clearTimeout(drain);
       child.stdout!.off("data", read);
       child.off("error", fail);
+      child.off("exit", exited);
       child.off("close", closed);
       if (error) reject(error);
       else resolve();
@@ -25,13 +33,18 @@ export function readyLine(
       }
     };
     const fail = (error: Error) => done(error);
-    const closed = () => done(new Error(`exited before printing ${line}`));
+    const early = () => new Error(`exited before printing ${line}`);
+    const exited = () => {
+      drain ??= setTimeout(() => done(early()), drainMs);
+    };
+    const closed = () => done(early());
     const timer = setTimeout(
       () => done(new Error(`no ${line} line within ${timeoutMs} ms`)),
       timeoutMs
     );
     child.stdout!.on("data", read);
     child.once("error", fail);
+    child.once("exit", exited);
     child.once("close", closed);
   });
 }

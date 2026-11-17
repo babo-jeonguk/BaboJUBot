@@ -2,10 +2,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import {
-  holdersInPs,
   leaseEntry,
   leaseHolders,
   leaseVariable,
+  lookupInPs,
   processStartTicks,
   stopLeaseHolders,
 } from "./lease.ts";
@@ -85,6 +85,7 @@ it.runIf(linux)(
 
 // macOS `ps -E`는 실행 인자 뒤에 환경 변수를 붙인다. 실행 인자 부분은 비교하지 않는다.
 // 실행 인자를 따로 받은 두 목록(앞·뒤)이 같고, `-E` 줄이 그 실행 인자와 경계(공백)에서 이어질 때만 그 뒤를 환경 변수로 본다.
+// 그렇게 확인할 수 없는데 `-E` 줄에 표식이 있으면 우리 것인지 모른다. 끄지 않고 "확인하지 못함"으로 둔다(PR #220 외부 리뷰 SPEC-3).
 it("reads only the environment part of a ps listing", () => {
   const lease = "lease-1";
   const entry = leaseEntry(lease);
@@ -119,7 +120,23 @@ it("reads only the environment part of a ps listing", () => {
     `  107 node ${entry}`,
     "  108 node",
   ].join("\n");
-  expect(holdersInPs(before, withEnvironment, after, lease)).toEqual([101]);
+  expect(lookupInPs(before, withEnvironment, after, lease)).toEqual({
+    holders: [101],
+    unverified: [104, 106, 107, 108],
+  });
+});
+
+// 표식을 환경에 가진 프로그램의 실행 인자가 세 조회 사이에 바뀌었다. 표식이 없는 것으로 치면 정리 성공이 되어 기록이 지워진다.
+it("does not take a marked program whose command line changed for an absent one", () => {
+  const entry = leaseEntry("abc");
+  expect(
+    lookupInPs(
+      "  123 node old.js",
+      `  123 node new.js ${entry}`,
+      "  123 node new.js",
+      "abc"
+    )
+  ).toEqual({ holders: [], unverified: [123] });
 });
 
 // 끝났지만 거두어지지 않은 프로그램(좀비)도 환경을 읽을 수 없다. 이미 끝났으므로 확인하지 못한 것으로 세지 않는다.
@@ -201,13 +218,33 @@ it.runIf(posix)(
   30_000
 );
 
-// 확인하지 못한 프로그램에는 신호를 보내지 않고, 끄지 못한 것(`left`)으로 돌려준다.
+// 처음에 확인하지 못한 프로그램은 유예 동안 다시 찾아 본다. 표식이 확인되면 끈다.
+it.runIf(posix)(
+  "looks again at unverified programs and stops them once the marker is confirmed",
+  async () => {
+    const lease = randomUUID();
+    const holder = await program({ env: { [leaseVariable]: lease } });
+    let lookups = 0;
+    const result = await stopLeaseHolders(lease, {
+      find: async (value) =>
+        lookups++ === 0
+          ? { holders: [], unverified: [holder.pid] }
+          : { holders: (await leaseHolders(value)).holders, unverified: [] },
+    });
+    await holder.exited;
+    expect(result).toEqual({ stopped: [holder.pid], left: [] });
+  },
+  30_000
+);
+
+// 확인하지 못한 프로그램에는 신호를 보내지 않고, 끝까지 확인하지 못하면 끄지 못한 것(`left`)으로 돌려준다.
 it.runIf(posix)(
   "reports unverified programs as left without signalling them",
   async () => {
     const unknown = await program();
     const result = await stopLeaseHolders("lease", {
       find: async () => ({ holders: [], unverified: [unknown.pid] }),
+      graceMs: 200,
     });
     expect(result).toEqual({ stopped: [], left: [unknown.pid] });
     expect(exited(unknown.pid)).toBe(false);
