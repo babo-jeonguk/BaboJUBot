@@ -1,4 +1,4 @@
-// BaboJUBot Windows job runner (#205).
+// BaboJUBot Windows job object launcher (#205).
 //
 // On Windows the server starts this program in place of a provider program. It starts the provider inside a new job object
 // that ends every process in it when the job closes, waits for the provider, ends whatever the provider left running, and
@@ -8,9 +8,9 @@
 //
 // Command line: <this program> <application path in base64 UTF-8> <provider command line, passed on verbatim>
 // Before the provider can run, one status line goes to standard error:
-//   "[babojubot-job] ok"              the provider runs inside the job
-//   "[babojubot-job] warning: <why>"  the provider runs without the job (the job could not be made or joined)
-//   "[babojubot-job] failed: <why>"   the provider did not start
+//   "[babojubot-job-object] ok"              the provider runs inside the job
+//   "[babojubot-job-object] warning: <why>"  the provider runs without the job (the job could not be made or joined)
+//   "[babojubot-job-object] failed: <why>"   the provider did not start
 //
 // The server compiles this file with the C# compiler of the .NET Framework that ships with Windows, so it stays within C# 5.
 using System;
@@ -18,7 +18,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
-static class JobRunner
+static class JobObjectLauncher
 {
     const int JobObjectBasicAccountingInformation = 1;
     const int JobObjectExtendedLimitInformation = 9;
@@ -144,12 +144,12 @@ static class JobRunner
         }
         catch (FormatException)
         {
-            Status("failed: the runner's command line could not be read");
+            Status("failed: the launcher's command line could not be read");
             return 1;
         }
         if (application.Length == 0 || commandLine.Length == 0)
         {
-            Status("failed: the runner was not given a program");
+            Status("failed: the launcher was not given a program");
             return 1;
         }
 
@@ -178,7 +178,7 @@ static class JobRunner
         {
             int error = Marshal.GetLastWin32Error();
             TerminateProcess(info.hProcess, 1);
-            Write(STD_ERROR_HANDLE, "[babojubot-job] the program could not be resumed (error " + error + ")\n");
+            Write(STD_ERROR_HANDLE, "[babojubot-job-object] the program could not be resumed (error " + error + ")\n");
             return 1;
         }
         CloseHandle(info.hThread);
@@ -189,7 +189,7 @@ static class JobRunner
         return unchecked((int)code);
     }
 
-    // Splits "<runner> <first> <rest>" without unquoting the rest, so the provider gets the exact command line the server built.
+    // Splits "<launcher> <first> <rest>" without unquoting the rest, so the provider gets the exact command line the server built.
     static string SplitCommandLine(string line, out string first)
     {
         int i = 0;
@@ -286,7 +286,7 @@ static class JobRunner
 
     static void Status(string text)
     {
-        Write(STD_ERROR_HANDLE, "[babojubot-job] " + text + "\n");
+        Write(STD_ERROR_HANDLE, "[babojubot-job-object] " + text + "\n");
     }
 
     static void Write(int which, string text)

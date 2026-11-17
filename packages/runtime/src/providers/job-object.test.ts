@@ -1,11 +1,11 @@
 import crossSpawn from "cross-spawn";
 import { spawn } from "node:child_process";
-import { mkdtemp, readdir, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { startProcess } from "./process.ts";
-import { prepareWindowsJobRunner } from "./windows-job.ts";
+import { prepareJobObjectLauncher } from "./job-object.ts";
 
 // Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
@@ -68,6 +68,32 @@ function run(
   return { attempt, frames, child };
 }
 
+/** 받은 인수를 프레임 하나로 알리는 프로그램(`print.js`)을 둔 폴더. 공백·한글 경로다. */
+async function printer(name: string) {
+  const root = await temp(`babojubot-job ${name} 한글-`);
+  await writeFile(
+    path.join(root, "print.js"),
+    `console.log(JSON.stringify({ argv: process.argv.slice(2) }));`
+  );
+  return root;
+}
+/** 실행 시도가 지금처럼(묶음 없이) 돌고 서버 운영 기록에 묶음이 없다고 경고한다. */
+async function expectRunWithoutJob() {
+  const warn = vi.spyOn(console, "warn");
+  try {
+    const { attempt, frames } = run(
+      `console.log(JSON.stringify({ ran: true }));`
+    );
+    expect((await attempt.done).code).toBe(0);
+    expect(frames).toEqual([{ ran: true }]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("no Windows job object")
+    );
+  } finally {
+    warn.mockRestore();
+  }
+}
+
 // 남긴 자식을 띄워 그 번호를 알린다. stdio는 남긴 자식이 프로그램의 출력을 쥐는지 정한다.
 const leaveChild = (stdio: string, extra = "") =>
   `const c = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ${stdio}${extra} });
@@ -78,11 +104,11 @@ describe.runIf(windows)("startProcess on Windows", () => {
     dataDir = await temp("babojubot-job-");
     // 구현 첫 단계의 확인: 이 컴퓨터의 기본 .NET Framework C# 컴파일러로 실행기를 만들고 해가 없는 실행이 된다.
     const started = Date.now();
-    const runner = await prepareWindowsJobRunner(dataDir);
+    const launcher = await prepareJobObjectLauncher(dataDir);
     console.log(
-      `[windows-job] prepared in ${Date.now() - started} ms: ${JSON.stringify(runner)}`
+      `[job-object] prepared in ${Date.now() - started} ms: ${JSON.stringify(launcher)}`
     );
-    expect(runner).toMatchObject({ ok: true });
+    expect(launcher).toMatchObject({ ok: true });
   }, 180_000);
 
   afterAll(async () => {
@@ -159,11 +185,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
   }, 30_000);
 
   it("passes arguments through a .cmd program as they are", async () => {
-    const root = await temp("babojubot-job cmd 한글-");
-    await writeFile(
-      path.join(root, "print.js"),
-      `console.log(JSON.stringify({ argv: process.argv.slice(2) }));`
-    );
+    const root = await printer("cmd");
     await writeFile(
       path.join(root, "print.cmd"),
       `@"${process.execPath}" "%~dp0print.js" %*\r\n`
@@ -188,11 +210,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
   });
 
   it("passes arguments to a program found on its path as they are", async () => {
-    const root = await temp("babojubot-job exe 한글-");
-    await writeFile(
-      path.join(root, "print.js"),
-      `console.log(JSON.stringify({ argv: process.argv.slice(2) }));`
-    );
+    const root = await printer("exe");
     const args = ['say "hi"', "back\\slash\\", 'a\\\\"b', "", "한글 인수"];
     const { attempt, frames } = run("", {
       command: ["node", path.join(root, "print.js")],
@@ -212,9 +230,9 @@ describe.runIf(windows)("startProcess on Windows", () => {
     const url = (file: string) => new URL(`./${file}`, import.meta.url).href;
     await writeFile(
       path.join(root, "server.mjs"),
-      `import { prepareWindowsJobRunner } from ${JSON.stringify(url("windows-job.ts"))};
+      `import { prepareJobObjectLauncher } from ${JSON.stringify(url("job-object.ts"))};
        import { startProcess } from ${JSON.stringify(url("process.ts"))};
-       await prepareWindowsJobRunner(${JSON.stringify(dataDir)});
+       await prepareJobObjectLauncher(${JSON.stringify(dataDir)});
        const program = ${JSON.stringify(
          `${leaveChild(`"ignore"`)} console.log(JSON.stringify({ program: process.pid })); setInterval(() => {}, 1000);`
        )};
@@ -228,11 +246,18 @@ describe.runIf(windows)("startProcess on Windows", () => {
     );
     const server = spawn(process.execPath, [path.join(root, "server.mjs")], {
       stdio: ["ignore", "pipe", "inherit"],
+      env: {
+        PATH: process.env.PATH,
+        SystemRoot: process.env.SystemRoot,
+        TEMP: process.env.TEMP,
+        TMP: process.env.TMP,
+      },
     });
     leftovers.push(server.pid!);
     const seen: Record<string, number> = {};
     await new Promise<void>((resolve, reject) => {
       let text = "";
+      server.on("error", reject);
       server.on("exit", () => reject(new Error("the server ended early")));
       server.stdout.on("data", (chunk: Buffer) => {
         text += chunk.toString();
@@ -253,45 +278,34 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect(alive(seen.child!)).toBe(false);
   }, 60_000);
 
-  it("runs without the runner and warns when the runner cannot start", async () => {
+  // 프로그램을 찾지 못하면 지금처럼 시작 실패로 알린다. 실행기의 cmd.exe 경유로 바뀌어 종료 코드 1로 끝나지 않는다.
+  it("reports a program that is not found as a start failure", async () => {
+    const { attempt } = run("", { command: ["babojubot-no-such-program"] });
+    expect((await attempt.done).broken).toBe(true);
+  });
+
+  it("runs without the launcher and warns when the launcher cannot start", async () => {
     const tools = path.join(dataDir, "tools");
     for (const file of await readdir(tools))
       await rm(path.join(tools, file), { force: true });
-    const warn = vi.spyOn(console, "warn");
-    try {
-      const { attempt, frames } = run(
-        `console.log(JSON.stringify({ ran: true }));`
-      );
-      expect((await attempt.done).code).toBe(0);
-      expect(frames).toEqual([{ ran: true }]);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("no Windows job object")
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    await expectRunWithoutJob();
   });
 
-  it("runs without the runner and warns when it could not be prepared", async () => {
+  it("runs without the launcher and warns when it could not be prepared", async () => {
     const other = await temp("babojubot-job-none-");
-    await mkdir(other, { recursive: true });
-    const warn = vi.spyOn(console, "warn");
-    try {
-      expect(
-        await prepareWindowsJobRunner(other, {
-          compilers: [path.join(other, "missing", "csc.exe")],
-        })
-      ).toMatchObject({ ok: false });
-      const { attempt, frames } = run(
-        `console.log(JSON.stringify({ ran: true }));`
-      );
-      expect((await attempt.done).code).toBe(0);
-      expect(frames).toEqual([{ ran: true }]);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("no Windows job object")
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    expect(
+      await prepareJobObjectLauncher(other, {
+        compilers: [path.join(other, "missing", "csc.exe")],
+      })
+    ).toMatchObject({ ok: false });
+    await expectRunWithoutJob();
+  });
+
+  // 준비 중 어떤 실패도 서버 시작을 막지 않는다. 데이터 폴더의 `tools` 자리에 파일이 있어 폴더를 만들 수 없는 경우다.
+  it("does not throw when the launcher's folder cannot be made", async () => {
+    const other = await temp("babojubot-job-blocked-");
+    await writeFile(path.join(other, "tools"), "");
+    expect(await prepareJobObjectLauncher(other)).toMatchObject({ ok: false });
+    await expectRunWithoutJob();
   });
 });

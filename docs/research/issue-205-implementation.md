@@ -27,8 +27,8 @@
 
 ## 결정과 구현
 
-- **실행기**: `packages/runtime/src/providers/windows-job-runner.cs`(C# 5). 명령줄은 `<실행기> <프로그램 경로 base64> <프로그램 명령줄 그대로>`다. 명령줄을 다시 감싸지 않으려고 실행기는 자기 명령줄 원문(`GetCommandLineW`)에서 나머지를 그대로 떼어 `CreateProcessW`에 넘긴다. 프로그램이 돌기 전에 표준 오류에 상태 줄(`[babojubot-job] ok`·`warning: …`·`failed: …`)을 하나 쓴다. 프로그램이 끝나면 `TerminateJobObject` 뒤 묶음이 빌 때까지 최대 10초 기다리고 그 종료 코드로 끝난다.
-- **준비**: `windows-job.ts` `prepareWindowsJobRunner(dataDir)`를 서버 시작(`app.ts`, 복구 직후)에서 기다린다. Windows가 아니면 아무것도 하지 않는다. 결과는 모듈 상태로 두고 `startProcess`가 읽는다. 준비를 부르지 않은 프로세스(대부분의 시험)는 지금처럼 묶음 없이 돌고 경고하지 않는다.
+- **실행기**: `packages/runtime/src/providers/job-object-launcher.cs`(C# 5). 명령줄은 `<실행기> <프로그램 경로 base64> <프로그램 명령줄 그대로>`다. 명령줄을 다시 감싸지 않으려고 실행기는 자기 명령줄 원문(`GetCommandLineW`)에서 나머지를 그대로 떼어 `CreateProcessW`에 넘긴다. 프로그램이 돌기 전에 표준 오류에 상태 줄(`[babojubot-job-object] ok`·`warning: …`·`failed: …`)을 하나 쓴다. 프로그램이 끝나면 `TerminateJobObject` 뒤 묶음이 빌 때까지 최대 10초 기다리고 그 종료 코드로 끝난다.
+- **준비**: `job-object.ts` `prepareJobObjectLauncher(dataDir)`를 서버 시작(`app.ts`, 복구 직후)에서 기다린다. Windows가 아니면 아무것도 하지 않는다. 결과는 모듈 상태로 두고 `startProcess`가 읽는다. 준비를 부르지 않은 프로세스(대부분의 시험)는 지금처럼 묶음 없이 돌고 경고하지 않는다.
 - **startProcess**: 컨테이너가 아니고 준비된 실행기가 있으면 실행기로 띄운다. 대표 PID·실행 기록·취소 순서·`finish`는 그대로이며 대표가 실행기일 뿐이다. 상태 줄은 오류 출력 끝부분에서 떼어 낸다.
 - **바꾸지 않은 것**: Linux·macOS 경로, 짧은 확인 실행(`runProbe`), 공개 API·DB schema·계약.
 
@@ -38,13 +38,13 @@
 
 | 경계 | 검사 |
 | --- | --- |
-| 첫 단계: 기본 .NET Framework C# 컴파일러로 만들고 해가 없는 실행 | `windows-job.test.ts` `beforeAll`(준비 시간·결과를 로그에 남김) |
+| 첫 단계: 기본 .NET Framework C# 컴파일러로 만들고 해가 없는 실행 | `job-object.test.ts` `beforeAll`(준비 시간·결과를 로그에 남김) |
 | 출력을 쥔 남은 자식, 마지막 출력(20만 자 한 줄)·종료 코드 3 | 같은 파일 첫 시험 |
 | 출력을 쥐지 않은 남은 자식, `detached` 자식 | 둘째·셋째 시험 |
 | 취소(입력 닫기 → 트리 종료) | 넷째 시험 |
 | 다른 실행 시도의 자식과 시험이 띄운 무관한 프로그램은 산다 | 다섯째 시험 |
 | `.cmd` 시작 파일(공백·한글 경로, 따옴표·메타문자·`%PATH%`·빈 인수)과 경로 검색 프로그램의 인수 | cross-spawn 직접 실행 결과와 비교 |
-| 서버 강제 종료 연쇄 | 합성 서버(`prepareWindowsJobRunner`+`startProcess`)를 `TerminateProcess`로 끝낸 뒤 프로그램과 그 자식이 꺼짐 |
+| 서버 강제 종료 연쇄 | 합성 서버(`prepareJobObjectLauncher`+`startProcess`)를 `TerminateProcess`로 끝낸 뒤 프로그램과 그 자식이 꺼짐 |
 | 실행기를 띄우지 못함(지워짐), 준비 실패(컴파일러 없음) | 지금처럼 돌고 경고 |
 | Linux·macOS 기존 검사 | CI `tests / runtime`·`runtime on macos-latest` |
 
