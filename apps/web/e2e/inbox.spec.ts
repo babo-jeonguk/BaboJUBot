@@ -257,6 +257,8 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
       }[]
     ).find((i) => i.kind === "run_failure" && i.run?.organizationId === org.id)
       ?.read;
+  // 보장의 한계(#215): 열린 상세가 읽음으로 되돌리는 요청을 보내지 않았다는 것을 알리는 신호는 없다. 그래서 그런 요청이
+  // 보통 나갈 시간을 기다린 뒤 서버 값을 본다. 느린 기기에서 그 요청이 더 늦게 나가면 결함이 있어도 이 확인은 통과한다.
   await page.waitForTimeout(1_000);
   expect(await failureRead()).toBe(false);
   await expect(main.getByRole("button", { name: "읽지 않음" })).toHaveCount(0);

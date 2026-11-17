@@ -176,8 +176,14 @@ test("the demo scenario walks one organization from creation with a goal through
       .getByRole("region", { name: "승인 정책" })
       .getByRole("checkbox", { name: /작업자 추가/ });
     await expect(policy).not.toBeChecked();
+    // 저장 확정은 서버의 성공 응답이다. `저장하는 중…`이 없다는 것은 저장을 시작하기 전에도 참이라 확정이 아니다(#215).
+    const saved = page.waitForResponse(
+      (res) =>
+        res.url().endsWith("/approval-policy") &&
+        res.request().method() !== "GET"
+    );
     await policy.check();
-    await expect(page.getByText("저장하는 중…")).toHaveCount(0);
+    expect((await saved).ok()).toBe(true);
     // 다시 불러와도 켜져 있으면 서버에 저장된 값이다.
     await page.reload();
     await expect(policy).toBeChecked();
