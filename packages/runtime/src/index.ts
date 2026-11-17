@@ -15,6 +15,7 @@ export * from "./providers/codex.ts";
 export * from "./providers/opencode.ts";
 export * from "./providers/antigravity.ts";
 export * from "./providers/recovery.ts";
+export { prepareJobObjectLauncher } from "./providers/job-object.ts";
 export * from "./providers/login.ts";
 export * from "./providers/container.ts";
 export * from "./providers/credential-relay.ts";

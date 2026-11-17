@@ -4,11 +4,15 @@ import {
   stopProcessGroup,
 } from "./recovery.ts";
 import spawn from "cross-spawn";
-import type { ChildProcessByStdio } from "node:child_process";
+import {
+  spawn as spawnChild,
+  type ChildProcessByStdio,
+} from "node:child_process";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import type { ContainerLaunch } from "./container.ts";
+import { jobObjectLaunch, readLauncherStatus } from "./job-object.ts";
 import {
   dockerClientEnv,
   dockerRunArgs,
@@ -176,36 +180,68 @@ export function startProcess(options: {
     required: options.container.relay.required,
     inbound: options.container.relay.inbound !== undefined,
   });
-  const child = spawn(
-    options.container
-      ? options.container.settings.docker[0]
-      : options.command[0],
-    options.container
-      ? [
-          ...options.container.settings.docker.slice(1),
-          ...dockerRunArgs(options.container, {
-            name: name!,
-            cwd: options.cwd,
-            env: { ...options.env, ...options.container.env },
-            args: options.args,
-            relay: relay!.directory,
-          }),
-        ]
-      : [...options.command.slice(1), ...options.args],
-    {
+  const env = options.container
+    ? {
+        ...dockerClientEnv({ ...options.env, ...options.container.env }),
+        BABOJUBOT_PROCESS_LEASE: lease,
+      }
+    : { ...options.env, BABOJUBOT_PROCESS_LEASE: lease };
+  // Windows에는 프로세스 그룹이 없다. 묶음 실행기가 프로그램을 묶음(Job Object)에 넣어 띄워, 먼저 끝난 프로그램이 남긴 것도 끈다(#205).
+  const job = options.container
+    ? undefined
+    : jobObjectLaunch(options.command, options.args, {
+        env: options.env,
+        cwd: options.cwd,
+      });
+  const withoutJob = (reason: string) =>
+    console.warn(
+      `[provider] this run has no Windows job object, so programs it leaves behind may keep running: ${reason}`
+    );
+  if (job && "unavailable" in job) withoutJob(job.unavailable);
+  let launcher: ChildProcessByStdio<Writable, Readable, Readable> | undefined;
+  if (job && "launch" in job) {
+    launcher = spawnChild(job.launch.file, job.launch.args, {
+      ...job.launch.options,
       cwd: options.cwd,
-      env: options.container
-        ? {
-            ...dockerClientEnv({ ...options.env, ...options.container.env }),
-            BABOJUBOT_PROCESS_LEASE: lease,
-          }
-        : { ...options.env, BABOJUBOT_PROCESS_LEASE: lease },
+      env,
       stdio: ["pipe", "pipe", "pipe"],
-      // Windows에는 프로세스 그룹이 없다. 새 콘솔 창도 띄우지 않는다.
-      detached: process.platform !== "win32",
       windowsHide: true,
+    });
+    // 실행기를 띄우지 못했다(백신이 지웠거나 막음). 프로그램은 아직 시작하지 않았으므로 지금처럼 띄운다.
+    if (launcher.pid === undefined) {
+      launcher.on("error", () => {});
+      withoutJob("the job object launcher could not start");
+      launcher = undefined;
     }
-  ) as ChildProcessByStdio<Writable, Readable, Readable>;
+  }
+  const runsInJob = launcher !== undefined;
+  const child =
+    launcher ??
+    (spawn(
+      options.container
+        ? options.container.settings.docker[0]
+        : options.command[0],
+      options.container
+        ? [
+            ...options.container.settings.docker.slice(1),
+            ...dockerRunArgs(options.container, {
+              name: name!,
+              cwd: options.cwd,
+              env: { ...options.env, ...options.container.env },
+              args: options.args,
+              relay: relay!.directory,
+            }),
+          ]
+        : [...options.command.slice(1), ...options.args],
+      {
+        cwd: options.cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        // Windows에는 프로세스 그룹이 없다. 새 콘솔 창도 띄우지 않는다.
+        detached: process.platform !== "win32",
+        windowsHide: true,
+      }
+    ) as ChildProcessByStdio<Writable, Readable, Readable>);
   relay?.ready.catch(() => {
     console.error("[provider] the isolated run relay could not open");
     child.kill("SIGKILL");
@@ -272,8 +308,28 @@ export function startProcess(options: {
   });
   // 끝부분만 남긴다. 판단과 서버 진단에만 쓰고 공개 기록에 옮기지 않는다.
   let stderr = "";
+  // 묶음 실행기는 프로그램이 돌기 전에 상태 줄 하나를 쓴다. 그 줄은 떼어 판단하고 나머지만 프로그램의 오류 출력으로 둔다.
+  let pendingStatus: string | undefined = runsInJob ? "" : undefined;
   child.stderr.on("data", (chunk: Buffer) => {
-    stderr = (stderr + chunk.toString()).slice(-8192);
+    let text = chunk.toString();
+    if (pendingStatus !== undefined) {
+      pendingStatus += text;
+      const newline = pendingStatus.indexOf("\n");
+      if (newline < 0 && pendingStatus.length < 4096) return;
+      const status = readLauncherStatus(
+        newline < 0 ? pendingStatus : pendingStatus.slice(0, newline)
+      );
+      text = status ? pendingStatus.slice(newline + 1) : pendingStatus;
+      pendingStatus = undefined;
+      if (status?.kind === "warning") withoutJob(status.reason);
+      if (status?.kind === "failed") {
+        broken = true;
+        console.error(
+          `[provider] the program could not start: ${status.reason}`
+        );
+      }
+    }
+    stderr = (stderr + text).slice(-8192);
   });
   child.stdout.on("data", (chunk: Buffer) => {
     buffer += decoder.write(chunk);
