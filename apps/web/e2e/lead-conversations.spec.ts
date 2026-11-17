@@ -4,7 +4,7 @@ import {
   messageAnswered,
   runsSettled,
 } from "./support/organization.ts";
-import { openWithLiveEvents } from "./support/live-events.ts";
+import { firstLoad, openWithLiveEvents } from "./support/live-events.ts";
 
 const uuidPath = /\/chat\/[0-9a-f-]{36}$/;
 
@@ -45,7 +45,12 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
 
   // 다른 탭은 기본 대화를 보고 있다.
   const other = await context.newPage();
+  const conversations = firstLoad(
+    other,
+    `/api/organizations/${org.id}/conversations`
+  );
   await openWithLiveEvents(other, `/orgs/${org.id}/chat`);
+  await conversations;
   await expect(listOf(other).getByRole("link")).toHaveText([
     /새 대화/,
     /기본 대화/,
