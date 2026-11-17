@@ -12,6 +12,8 @@ export const kindLabels = {
 // 실행 컴퓨터를 받지 못한 job에 GitHub가 남기는 주석. 공개 API 계약은 아니므로 다른 세 표시와 함께일 때만 믿는다.
 const notAcquired = /The job was not acquired by Runner/;
 const requestTimeoutMs = 10_000;
+// 끝나지 않고 멈춘 job이 판정 입력(needs.<job>.result)에 오는 값.
+const stoppedResults = new Set(["cancelled", "abandoned"]);
 // 판정 job(5분) 안에서 조회 전체가 끝나도록 둔 상한. 넘으면 남은 job은 "알 수 없음"이다.
 const lookupDeadlineMs = 60_000;
 
@@ -76,7 +78,8 @@ async function classifyJob(failure, job, context) {
       reason: `결과 failure, 실패한 단계 ${failed.length}개`,
     };
   }
-  if (failure.result !== "cancelled" || job.conclusion !== "cancelled")
+  // 실행 컴퓨터를 받지 못한 job은 판정 입력에 'abandoned'로 오기도 한다(run 44134168705). job 기록은 둘 다 cancelled다.
+  if (!stoppedResults.has(failure.result) || job.conclusion !== "cancelled")
     return {
       kind: "unknown",
       reason: `판정 입력 '${failure.result}', job 기록 '${job.conclusion}'`,

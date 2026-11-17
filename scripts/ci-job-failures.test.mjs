@@ -309,3 +309,18 @@ test("gives up within the overall lookup deadline and calls the rest unknown", a
   assert.match(row.reason, /주석 조회 실패/);
   assert.ok(Date.now() - started < 5_000);
 });
+
+// run 44134168705의 files / macos: 실행 컴퓨터를 받지 못한 job이 판정 입력(needs.<job>.result)에는 'abandoned'로,
+// job 기록에는 cancelled로 왔다. 판정 입력 값이 아니라 job 기록과 주석으로 분류한다.
+test("calls an unassigned job unassigned when the gate input says abandoned", async () => {
+  const job = { ...unassignedJob, id: 134219118748, name: "files / macos" };
+  const { fetch } = fakeApi({
+    [jobsPath()]: { body: { total_count: 1, jobs: [job] } },
+    [notesPath(job.id)]: { body: [unassignedNote, capacityNote] },
+  });
+  const [row] = await classifyFailures(
+    [failure(job.name, "abandoned")],
+    context({ fetch })
+  );
+  assert.equal(row.kind, "unassigned");
+});
