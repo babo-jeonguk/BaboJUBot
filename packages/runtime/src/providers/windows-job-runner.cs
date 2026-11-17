@@ -155,7 +155,7 @@ static class JobRunner
 
         string warning = null;
         IntPtr job = CreateKillOnCloseJob(ref warning);
-        ProcessInformation info;
+        ProcessInformation info = new ProcessInformation();
         // Windows 10 and later can start the program already inside the job. Otherwise start it suspended and add it before it runs.
         bool started = job != IntPtr.Zero && StartInJob(application, commandLine, job, out info);
         if (!started)
