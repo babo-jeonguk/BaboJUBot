@@ -18,6 +18,22 @@ export function isReadyFrame(payload: string | Buffer) {
 export const pageLoad = { timeout: 30_000 };
 
 /**
+ * 화면이 처음 부르는 조회(경로가 `apiPath`이거나 그 정규식에 맞는 GET)의 응답. 화면을 열기 전에 불러 두고 연 뒤에 기다린다.
+ * 첫 데이터는 화면을 불러오는 일의 몫이므로 `pageLoad` 상한으로 기다리고, 그 뒤의 화면 확인은 기본 대기로 한다(#215).
+ */
+export function firstLoad(page: Page, apiPath: string | RegExp) {
+  return page.waitForResponse((res) => {
+    const { pathname } = new URL(res.url());
+    return (
+      res.request().method() === "GET" &&
+      (typeof apiPath === "string"
+        ? pathname === apiPath
+        : apiPath.test(pathname))
+    );
+  }, pageLoad);
+}
+
+/**
  * 화면을 열고 그 화면의 전체 조직 Event stream 구독이 성립할 때까지 기다린다. 그 뒤의 변화는 새로고침 없이 Event로 화면에 닿는다.
  * ready frame이 `timeout` 안에 오지 않거나 그 전에 page·Event stream이 닫히거나 오류가 나면 무엇을 기다렸는지 밝히며 실패한다.
  * 어느 경우든 등록한 listener를 해제하므로 같은 page에서 여러 번 불러도 쌓이지 않는다.

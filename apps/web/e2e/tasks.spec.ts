@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { firstApprovalId, goalInput } from "./support/organization.ts";
-import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
+import {
+  firstLoad,
+  openWithLiveEvents,
+  pageLoad,
+} from "./support/live-events.ts";
 
 test("the owner watches tasks appear and complete live, reads the self-report and artifact, and comments to wake the worker", async ({
   page,
@@ -11,7 +15,9 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   const org = (await created.json()) as { id: string };
   const approvalId = await firstApprovalId(page.request, org.id);
 
+  const tasks = firstLoad(page, `/api/organizations/${org.id}/tasks`);
   await openWithLiveEvents(page, `/orgs/${org.id}/tasks`);
+  await tasks;
   await expect(page.getByRole("main")).toContainText("아직 작업이 없습니다");
 
   // 승인하면 가짜 Lead가 작업자마다 작업을 맡기고, 작업자가 완료한다. 새로고침 없이 목록에 보인다.
