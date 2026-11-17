@@ -2,13 +2,11 @@ import { constants } from "node:fs";
 import {
   access,
   lstat,
-  mkdir,
   mkdtemp,
   readFile,
   realpath,
   readdir,
   rm,
-  writeFile,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,14 +31,11 @@ import {
 } from "./container.ts";
 import {
   createCredentialRelay,
-  credentialResidue,
   type RelayGrant,
   type RelayProfile,
-  residueRefusal,
 } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
-import { connectionFolders } from "./folders.ts";
-import { loginLink } from "./login-link.ts";
+import { fileLogin } from "./file-login.ts";
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 /** 프로그램이 JSON-RPC 오류로 거절한 요청. */
@@ -95,26 +90,6 @@ async function isRelayToken(file: string): Promise<boolean> {
     );
   } catch {
     return false;
-  }
-}
-/**
- * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 실행 시도마다 그 위에 자기 로그인 파일을 넣는 자리다.
- * 원본을 가리키는 링크는 따라가 쓰지 않도록 먼저 지운다.
- */
-async function placeTokenPlaceholder(at: string): Promise<void> {
-  if (await isRelayToken(at)) return;
-  await rm(at, { force: true });
-  try {
-    await writeFile(at, JSON.stringify(relayToken("")), {
-      mode: 0o600,
-      flag: "wx",
-    });
-  } catch (error) {
-    if (
-      (error as NodeJS.ErrnoException).code !== "EEXIST" ||
-      !(await isRelayToken(at))
-    )
-      throw error;
   }
 }
 /** 갱신을 서두르는 여유. 만료가 이보다 가까우면 쓰기 전에 갱신한다. */
@@ -188,31 +163,20 @@ export function createAntigravityProvider(options: {
   relay?: { upstream?: string; verified?: boolean };
 }): ProviderConnection {
   const connectionId = options.id ?? "antigravity";
-  const folders = connectionFolders(options.dataDir, connectionId);
-  const home = folders.connection,
-    command = options.command ?? commandFor(connectionId, "agy");
-  /** 연결의 로그인 원본. 컨테이너에는 넣지 않는다(#148). */
-  const loginFolder = path.join(home, "login");
-  const original = path.join(loginFolder, "antigravity-oauth-token");
+  const command = options.command ?? commandFor(connectionId, "agy");
+  // 연결의 로그인 하나를 모든 조직이 같이 쓰고, 격리 실행에는 권한만 든 실행 시도 전용 로그인을 넣는다(#146·#148).
   // 키링이 없는 컴퓨터·컨테이너에서 agy는 HOME의 이 파일로 로그인하고, 갱신하면 링크를 따라 원본 자리에 덮어쓴다(1.5.3 실측, #126).
-  const tokenAt = (productHome: string) =>
-    path.join(
-      productHome,
+  const login = fileLogin(options.dataDir, connectionId, {
+    label: "Antigravity",
+    loginFile: path.join(
       ".gemini",
       "antigravity-cli",
       "antigravity-oauth-token"
-    );
-  const shareLogin = loginLink({
-    original,
-    fallback: tokenAt(home),
-    label: "Antigravity",
-    setAside: path.join(home, "set-aside"),
+    ),
+    contents: (token) => JSON.stringify(relayToken(token)),
+    isStandIn: isRelayToken,
   });
-  /** 연결 폴더도 조직 폴더와 같은 링크로 로그인을 읽는다. 로그인 명령·준비 확인·모델 목록이 조직 실행과 같은 로그인을 본다. */
-  const prepare = async () => {
-    await mkdir(home, { recursive: true, mode: 0o700 });
-    await shareLogin(tokenAt(home));
-  };
+  const { home, original } = login;
   const env = (productHome = home, isolated = false) =>
     providerEnvironment(
       connectionId,
@@ -242,7 +206,7 @@ export function createAntigravityProvider(options: {
    */
   const refreshLogin = () =>
     (refreshing ??= (async () => {
-      await prepare();
+      await login.prepareConnection();
       await probe(["models"], AbortSignal.timeout(probeTimeoutMs)).catch(
         () => undefined
       );
@@ -279,16 +243,16 @@ export function createAntigravityProvider(options: {
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       try {
-        await prepare();
+        await login.prepareConnection();
         // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
         // Windows의 access는 링크를 따라가지 않으므로 실제 파일을 찾아 본다.
-        const login = await realpath(tokenAt(home)).catch(
+        const file = await realpath(login.loginFileIn(home)).catch(
           (error: NodeJS.ErrnoException) => {
             if (error.code === "ENOENT") return undefined;
             throw error;
           }
         );
-        if (login) await access(login, constants.R_OK | constants.W_OK);
+        if (file) await access(file, constants.R_OK | constants.W_OK);
       } catch {
         return { status: "not_ready", reason: "check_failed" };
       }
@@ -318,37 +282,19 @@ export function createAntigravityProvider(options: {
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
-        // 그 조직의 제품 폴더로 돈다. 로그인은 연결의 원본 하나를 링크로 쓴다.
-        const organization = folders.organization(
-          request.identity.organizationId
-        );
-        await prepare();
-        // 격리 실행에는 연결의 로그인을 넣지 않는다(#148). 원본을 가리키는 알려진 링크와 이 어댑터의 자리 표시는 괜찮고,
-        // 조직 폴더에 남은 다른 로그인 흔적이 있으면 시작하지 않는다.
+        // 그 조직의 제품 폴더로 돈다. 로그인은 연결의 원본 하나를 같이 쓴다.
         const isolated = request.execution === "container";
-        const loginAt = tokenAt(organization);
-        if (
-          isolated &&
-          (await credentialResidue(
-            organization,
-            [path.relative(organization, loginAt)],
-            original
-          )) &&
-          !(await isRelayToken(loginAt))
-        )
-          return failure(residueRefusal);
-        // 격리 실행이 남긴 자리 표시는 로그인이 아니다. 이 컴퓨터의 실행이 그것을 치우게 먼저 지운다.
-        if (!isolated && (await isRelayToken(loginAt)))
-          await rm(loginAt, { force: true });
-        const linked = !isolated && (await shareLogin(loginAt));
-        const productHome = linked || isolated ? organization : home;
+        const prepared = await login.prepare(
+          request.identity.organizationId,
+          isolated
+        );
+        if (prepared.refusal !== undefined) return failure(prepared.refusal);
+        const productHome = prepared.home;
         const placement = placeAttempt(options.container, productHome, request);
         if (!placement) return failure();
-        // 준비 확인을 거치지 않아도 실행 환경은 있어야 한다.
-        await mkdir(productHome, { recursive: true, mode: 0o700 });
         const cwd = await realpath(request.workspace?.cwd ?? productHome);
         let container: ContainerLaunch | undefined;
-        if (placement.container) {
+        if (placement.container && prepared.attemptLogin) {
           try {
             grant = relay.grant({
               signal: control.signal,
@@ -358,22 +304,14 @@ export function createAntigravityProvider(options: {
           } catch {
             return failure(relayFailure);
           }
-          // 조직 폴더는 그 조직의 모든 컨테이너에 쓰기로 들어간다. 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 두고,
-          // 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 넣는다. 조직 폴더에는 권한 없는 자리 표시만 둔다.
           attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
-          const file = path.join(attempt, "antigravity-oauth-token");
-          await writeFile(file, JSON.stringify(relayToken(grant.token)), {
-            mode: 0o600,
-            flag: "wx",
-          });
-          await mkdir(path.dirname(loginAt), { recursive: true, mode: 0o700 });
-          await placeTokenPlaceholder(loginAt);
+          const file = await prepared.attemptLogin(attempt, grant.token);
           try {
             container = placement.container({
               cwd,
               program: "agy",
               destinations: providerDestinations.antigravity,
-              files: [{ source: file, target: loginAt }],
+              files: [file],
             });
           } catch (error) {
             if (error instanceof ContainerRefusal)
@@ -428,6 +366,10 @@ export function createAntigravityProvider(options: {
             reject: (error: Error) => void;
           }
         >();
+        // 준비가 끝난 뒤 프로세스를 띄우기 직전에 취소를 다시 본다. 준비 중에 취소됐으면 띄우지 않는다.
+        if (control.signal.aborted)
+          return { ...failure(), stopReason: "cancelled", error: null };
+        if (grant?.failed.aborted) return failure(relayFailure);
         const child = startProcess({
           // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
           stateDir: home,
@@ -663,7 +605,7 @@ export function createAntigravityProvider(options: {
     adapter,
     models: [],
     async listModels(signal) {
-      await prepare();
+      await login.prepareConnection();
       return (await probe(["models"], signal)).split("\n").flatMap((line) => {
         const [id, label] = line.split("\t");
         return id && label ? [{ id, label }] : [];
