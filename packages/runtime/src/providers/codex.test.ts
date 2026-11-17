@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCodexProvider, type CodexOptions } from "./codex.ts";
+import type { Clock } from "./codex-connection.ts";
 import { request } from "./test-support.ts";
 const roots: string[] = [];
 afterEach(async () => {
@@ -416,8 +417,41 @@ describe("usage numbers outside the contract (#140)", () => {
   });
 });
 
+/**
+ * A clock that moves only when the test says (#215). Request limits then measure only the step under test: starting the
+ * program and answering the handshake take no time on it however slow the machine is.
+ */
+function manualClock() {
+  let now = 0,
+    sequence = 0;
+  const timers = new Map<number, { at: number; callback: () => void }>();
+  return {
+    now: () => now,
+    setTimeout: (callback: () => void, ms: number) => {
+      timers.set(++sequence, { at: now + ms, callback });
+      return sequence;
+    },
+    clearTimeout: (handle: unknown) => {
+      timers.delete(handle as number);
+    },
+    /** Moves the time on and runs, in order, every timer that is due by then. */
+    advance(ms: number) {
+      now += ms;
+      const due = [...timers]
+        .filter(([, timer]) => timer.at <= now)
+        .sort(([, a], [, b]) => a.at - b.at);
+      for (const [handle, timer] of due) {
+        timers.delete(handle);
+        timer.callback();
+      }
+    },
+  } satisfies Clock & Record<string, unknown>;
+}
+
 describe("one app-server connection per call (#145)", () => {
   type Step = {
+    /** Answer only once the test calls `release` with this name. */
+    holdUntil?: string;
     delayMs?: number;
     result?: unknown;
     error?: unknown;
@@ -425,10 +459,14 @@ describe("one app-server connection per call (#145)", () => {
     frames?: unknown[];
     exit?: number;
   };
-  /** A provider whose program is the scripted peer. `sent()` lists the frames the program received, in order. */
+  /**
+   * A provider whose program is the scripted peer. `sent()` lists the frames the program received, in order. With a `clock`, the
+   * request limits run on it instead of real time.
+   */
   async function scripted(
     steps: Record<string, Step[]>,
-    timeouts?: CodexOptions["timeouts"]
+    timeouts?: CodexOptions["timeouts"],
+    clock?: Clock
   ) {
     const root = await mkdtemp(path.join(tmpdir(), "codex-lifetime-"));
     roots.push(root);
@@ -443,6 +481,7 @@ describe("one app-server connection per call (#145)", () => {
         script,
       ],
       ...(timeouts ? { timeouts } : {}),
+      ...(clock ? { clock } : {}),
     });
     const lines = async () =>
       (await readFile(log, "utf8").catch(() => ""))
@@ -464,8 +503,24 @@ describe("one app-server connection per call (#145)", () => {
             return false;
           }
         });
-    return { provider, sent, methods, running };
+    /**
+     * Waits until the program has received `count` requests of `method`. The bound covers starting the program on a slow machine;
+     * a handshake that never finishes fails here, not as the limit under test.
+     */
+    const arrived = async (method: string, count = 1) =>
+      expect
+        .poll(
+          async () =>
+            (await methods()).filter((m) => m === method).length >= count,
+          { timeout: 30_000, message: `${method} ×${count} never arrived` }
+        )
+        .toBe(true);
+    /** Lets the program answer the steps held with `holdUntil: name`. */
+    const release = (name: string) => writeFile(path.join(root, name), "");
+    return { provider, sent, methods, running, arrived, release };
   }
+  /** Starting the program and answering the handshake take longer than the request limit under test (#213 A). */
+  const slowHandshake = { initialize: [{ delayMs: 2_500 }] };
   const page = (models: string[], nextCursor: string | null) => ({
     result: {
       data: models.map((model) => ({
@@ -521,20 +576,29 @@ describe("one app-server connection per call (#145)", () => {
     );
 
     it("keeps one deadline for the whole list instead of starting it again for each page", async () => {
-      // Each answer comes well within the deadline, but all of them together do not.
+      // Each page takes 2.5 s on the test clock, well within the 4 s deadline, but the two together do not. The slow handshake
+      // takes no time on that clock, so the deadline ends at the second page, not at the start.
+      const clock = manualClock();
       const t = await scripted(
         {
+          ...slowHandshake,
           "model/list": [
-            { ...page(["one"], "next"), delayMs: 2_500 },
-            { ...page(["two"], null), delayMs: 2_500 },
+            { ...page(["one"], "next"), holdUntil: "first" },
+            { ...page(["two"], null), holdUntil: "second" },
           ],
         },
-        // Each page is well inside the limit and leaves the program 1.5 s to start; the two pages together are not.
-        { modelList: 4_000 }
+        { modelList: 4_000 },
+        clock
       );
-      expect(
-        await t.provider.listModels!(new AbortController().signal)
-      ).toEqual([]);
+      const listed = t.provider.listModels!(new AbortController().signal);
+      await t.arrived("model/list", 1);
+      clock.advance(2_500);
+      await t.release("first");
+      await t.arrived("model/list", 2);
+      clock.advance(2_500);
+      // A deadline started again for the second page would still have 1.5 s left and take this answer.
+      await t.release("second");
+      expect(await listed).toEqual([]);
       expect(await t.methods()).toEqual([
         "initialize",
         "initialized",
@@ -550,13 +614,12 @@ describe("one app-server connection per call (#145)", () => {
       });
       const cancel = new AbortController();
       const listed = t.provider.listModels!(cancel.signal);
-      await expect
-        .poll(async () => (await t.methods()).length, { timeout: 5_000 })
-        .toBe(4);
+      await t.arrived("model/list", 2);
       cancel.abort();
+      // The default limit (60 s) is past the test limit, so returning at all is returning at once.
       expect(await listed).toEqual([]);
       expect(await t.running()).toBe(false);
-    }, 10_000);
+    });
   });
 
   describe("a run", () => {
@@ -607,14 +670,19 @@ describe("one app-server connection per call (#145)", () => {
     };
 
     it("fails when an ordinary request goes unanswered, without sending it again", async () => {
+      const clock = manualClock();
       const t = await scripted(
-        { "thread/start": [{ silent: true }] },
-        { request: 2_000 }
+        { ...slowHandshake, "thread/start": [{ silent: true }] },
+        { request: 2_000 },
+        clock
       );
-      const result = await t.provider.adapter.execute(request(), {
+      const running = t.provider.adapter.execute(request(), {
         signal: new AbortController().signal,
         emit: async () => {},
       });
+      await t.arrived("thread/start");
+      clock.advance(2_000);
+      const result = await running;
       expect(result.stopReason).toBe("failed");
       expect(await t.methods()).toEqual([
         "initialize",
@@ -634,17 +702,19 @@ describe("one app-server connection per call (#145)", () => {
       });
       expect(result.stopReason).toBe("failed");
       expect(await t.running()).toBe(false);
-    }, 10_000);
+    });
 
     it("keeps the run when a steer goes unanswered, and does not send the steer again", async () => {
+      // The one steer case on the real clock: the steer limit really runs out. The turn ends only after the record is read,
+      // which happens only after that limit, so the order does not depend on how fast the machine is.
       const t = await scripted(
         {
           "thread/start": [thread],
           "turn/start": [{ result: { turn: { id: "turn-one" } } }],
-          "turn/steer": [
+          "turn/steer": [{ silent: true }],
+          "thread/read": [
             {
-              silent: true,
-              delayMs: 500,
+              result: { thread: { id: "thread-new", turns: [] } },
               frames: turnThatCompletes("thread-new").frames,
             },
           ],
@@ -704,21 +774,23 @@ describe("one app-server connection per call (#145)", () => {
         ...step,
         frames: turnThatCompletes("thread-new").frames,
       });
+      const limits = { steer: 200, steerRecord: 300 };
       /**
-       * A run that steers once. By default the steer is never answered and the record read decides; the turn completes only
-       * when a step says so (`thenCompletes`). `steered()` settles to `{ outcome }` or `{ error }` with how long the steer took.
+       * A run that steers once, with the limits on the test clock. By default the steer is never answered: its limit runs
+       * out once the program has it, and the record read decides. The record limit runs out only when a test moves the clock
+       * on, so a slow answer is never taken for no answer. The turn completes only when a step says so (`thenCompletes`).
+       * `steered()` settles to `{ outcome }` or `{ error }`.
        */
       async function steerOnce({
         steer = { silent: true },
         read,
-        timeouts = { steer: 200, steerRecord: 300 },
         cancel = new AbortController(),
       }: {
         steer?: Step;
         read?: Step;
-        timeouts?: CodexOptions["timeouts"];
         cancel?: AbortController;
       }) {
+        const clock = manualClock();
         const t = await scripted(
           {
             "thread/start": [thread],
@@ -726,31 +798,29 @@ describe("one app-server connection per call (#145)", () => {
             "turn/steer": [steer],
             ...(read ? { "thread/read": [read] } : {}),
           },
-          timeouts
+          limits,
+          clock
         );
         const input = request();
         let steered:
-          | Promise<{ outcome?: unknown; error?: unknown; ms: number }>
-          | undefined;
+          Promise<{ outcome?: unknown; error?: unknown }> | undefined;
         const run = t.provider.adapter.execute(input, {
           signal: cancel.signal,
           emit: async () => {
-            const start = Date.now();
             steered ??= t.provider.adapter.steer!({
               runId: input.identity.runId,
               messageId,
               conversationId: crypto.randomUUID(),
               body: "추가",
             }).then(
-              (outcome) => ({ outcome, ms: Date.now() - start }),
-              (error: unknown) => ({ error, ms: Date.now() - start })
+              (outcome) => ({ outcome }),
+              (error: unknown) => ({ error })
             );
           },
         });
-        await expect
-          .poll(() => steered !== undefined, { timeout: 5_000 })
-          .toBe(true);
-        return { ...t, run, steered: () => steered! };
+        await t.arrived("turn/steer");
+        if (steer.silent) clock.advance(limits.steer);
+        return { ...t, clock, run, steered: () => steered! };
       }
 
       it("takes the steer as accepted when the conversation record holds its message number", async () => {
@@ -797,16 +867,18 @@ describe("one app-server connection per call (#145)", () => {
       );
 
       it("keeps the delivery unknown, within both limits, when the record read goes unanswered", async () => {
-        // The turn only ends 3 s after the read is sent, well past both limits.
+        // The turn only ends once the test lets the read go, after both limits.
         const t = await steerOnce({
-          read: thenCompletes({ silent: true, delayMs: 3_000 }),
+          read: thenCompletes({ silent: true, holdUntil: "turn-ends" }),
         });
-        const steered = await t.steered();
-        expect(steered).toMatchObject({ error: expect.any(Error) });
-        // Steer limit 200 ms plus record limit 300 ms.
-        expect(steered.ms).toBeLessThan(1_500);
+        await t.arrived("thread/read");
+        // The steer limit has run out; the record limit runs out now. Nothing else moves the clock, so settling here is
+        // settling within the two limits.
+        t.clock.advance(limits.steerRecord);
+        expect(await t.steered()).toMatchObject({ error: expect.any(Error) });
+        await t.release("turn-ends");
         expect((await t.run).stopReason).toBe("completed");
-      }, 10_000);
+      });
 
       it("does not read the record when the program refuses the steer", async () => {
         const t = await steerOnce({
@@ -827,30 +899,25 @@ describe("one app-server connection per call (#145)", () => {
           const t = await steerOnce({
             read:
               ending === "exit"
-                ? { delayMs: 300, silent: true, exit: 1 }
+                ? { silent: true, exit: 1 }
                 : // The record would hold the number, but only after the run is gone.
-                  thenCompletes({ ...recordWith(messageId), delayMs: 3_000 }),
-            timeouts: { steer: 200, steerRecord: 5_000 },
+                  thenCompletes({
+                    ...recordWith(messageId),
+                    holdUntil: "after-cancel",
+                  }),
             cancel,
           });
-          if (ending === "cancel") {
-            await expect
-              .poll(async () => (await t.methods()).includes("thread/read"), {
-                timeout: 5_000,
-              })
-              .toBe(true);
-            cancel.abort();
-          }
-          const steered = await t.steered();
-          expect(steered).toMatchObject({ error: expect.any(Error) });
-          expect(steered.ms).toBeLessThan(2_000);
+          await t.arrived("thread/read");
+          if (ending === "cancel") cancel.abort();
+          // The record limit never runs out on the test clock, so settling at all is stopping at once.
+          expect(await t.steered()).toMatchObject({ error: expect.any(Error) });
+          if (ending === "cancel") await t.release("after-cancel");
           const result = await t.run;
           expect(result.stopReason).toBe(
             ending === "cancel" ? "cancelled" : "failed"
           );
           expect(await t.running()).toBe(false);
-        },
-        15_000
+        }
       );
     });
 
@@ -898,14 +965,23 @@ describe("one app-server connection per call (#145)", () => {
     });
 
     it.each([
-      ["goes unanswered", { silent: true }, { request: 2_000 }],
-      ["ends with the program", { silent: true, exit: 1 }, undefined],
+      ["goes unanswered", { silent: true }],
+      ["ends with the program", { silent: true, exit: 1 }],
     ])(
       "does not start a new thread when the resume %s",
-      async (_case, step, timeouts) => {
-        const t = await scripted({ "thread/resume": [step] }, timeouts);
+      async (_case, step) => {
+        const clock = manualClock();
+        const t = await scripted(
+          { ...slowHandshake, "thread/resume": [step] },
+          { request: 2_000 },
+          clock
+        );
         const w = watch();
-        const result = await t.provider.adapter.execute(resumed(), w.control());
+        const running = t.provider.adapter.execute(resumed(), w.control());
+        await t.arrived("thread/resume");
+        // Only the unanswered resume runs out its limit. The one that ends with the program must fail without it.
+        if (!("exit" in step)) clock.advance(2_000);
+        const result = await running;
         w.returned();
         expect(result.stopReason).toBe("failed");
         expect(await t.methods()).toEqual([
@@ -931,11 +1007,7 @@ describe("one app-server connection per call (#145)", () => {
           resumed(),
           w.control(cancel.signal)
         );
-        await expect
-          .poll(async () => (await t.methods()).includes(method), {
-            timeout: 5_000,
-          })
-          .toBe(true);
+        await t.arrived(method);
         cancel.abort();
         const result = await running;
         w.returned();
@@ -947,8 +1019,7 @@ describe("one app-server connection per call (#145)", () => {
         expect(w.progress).toEqual([]);
         expect(await t.running()).toBe(false);
         expect(w.late()).toBe(0);
-      },
-      10_000
+      }
     );
   });
 });

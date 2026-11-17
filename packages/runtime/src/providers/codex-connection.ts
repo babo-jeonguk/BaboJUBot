@@ -26,6 +26,22 @@ export class ProtocolClosed extends Error {
   }
 }
 
+/**
+ * 요청 시한이 쓰는 시계. 제품은 실제 시계(`realClock`)를 쓰고, 시험은 시간을 직접 넘기는 시계를 넣어
+ * 프로그램 시작처럼 재려는 단계가 아닌 일이 시한을 먹지 않게 한다(#215).
+ */
+export type Clock = {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+};
+export const realClock: Clock = {
+  now: () => Date.now(),
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (handle) =>
+    clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 export type RequestOptions = {
   /** 이 요청의 응답 제한(ms). 0 이하면 보내지 않고 시간 초과로 끝낸다. 전체 시한을 이어 쓰려면 남은 시간을 넘긴다. */
   timeoutMs: number;
@@ -38,15 +54,17 @@ export function openCodexConnection(
   options: Omit<Parameters<typeof startProcess>[0], "onFrame"> & {
     /** 서버 알림(ID 없는 method 프레임). 프레임 처리 순서 안에서 부르므로 다음 요청을 기다리지 말고 곧 돌아와야 한다. */
     onNotification?: (frame: Record<string, unknown>) => void;
+    /** 요청 시한의 시계. 기본은 실제 시계다. */
+    clock?: Clock;
   }
 ) {
-  const { onNotification, ...launch } = options;
+  const { onNotification, clock = realClock, ...launch } = options;
   const pending = new Map<
     number,
     {
       resolve: (value: Record<string, unknown>) => void;
       reject: (error: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
+      timer: unknown;
     }
   >();
   let sequence = 0,
@@ -59,7 +77,7 @@ export function openCodexConnection(
     const waiter = pending.get(id);
     if (!waiter) return;
     pending.delete(id);
-    clearTimeout(waiter.timer);
+    clock.clearTimeout(waiter.timer);
     if ("error" in outcome) waiter.reject(outcome.error);
     else waiter.resolve(outcome.result);
   };
@@ -111,7 +129,7 @@ export function openCodexConnection(
       pending.set(id, {
         resolve,
         reject,
-        timer: setTimeout(
+        timer: clock.setTimeout(
           () => settle(id, { error: new ProtocolTimeout() }),
           timeoutMs
         ),

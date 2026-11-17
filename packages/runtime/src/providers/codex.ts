@@ -19,8 +19,10 @@ import {
 } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import {
+  type Clock,
   openCodexConnection,
   ProtocolRejection,
+  realClock,
   ProtocolTimeout,
 } from "./codex-connection.ts";
 import {
@@ -56,6 +58,8 @@ export type CodexOptions = {
   relay?: { upstream?: string; verified?: boolean };
   /** 시험이 줄이는 시한(ms). 제품은 기본값(일반 요청 120초, 끼워 넣기 10초, 모델 목록·로그인 갱신 전체 60초)을 쓴다. */
   timeouts?: Partial<Record<keyof typeof defaultTimeouts, number>>;
+  /** 위 시한이 쓰는 시계. 제품은 실제 시계를 쓰고, 시험은 시간을 직접 넘기는 시계를 넣는다(#215). */
+  clock?: Clock;
 };
 /**
  * Codex의 인증 중계(#148). Codex의 ChatGPT 로그인은 custom provider(`requires_openai_auth`)를 거쳐 중계로 간다.
@@ -256,9 +260,9 @@ const execKeys = {
   output: "output_tokens",
 };
 /** 지금부터 `limitMs` 뒤에 끝나는 시한 하나. 부를 때마다 남은 시간을 요청 제한으로 준다. */
-const remainingOf = (limitMs: number) => {
-  const deadline = Date.now() + limitMs;
-  return () => ({ timeoutMs: deadline - Date.now() });
+const remainingOf = (clock: Clock, limitMs: number) => {
+  const deadline = clock.now() + limitMs;
+  return () => ({ timeoutMs: deadline - clock.now() });
 };
 const defaultTimeouts = {
   /** 세션 시작·재개 같은 요청의 응답 제한. 큰 세션을 불러오면 오래 걸린다. 넘기면 실행 시도를 끝낸다. */
@@ -285,6 +289,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
   const { home } = login;
   const command = options.command ?? commandFor(id, "codex");
   const timeouts = { ...defaultTimeouts, ...options.timeouts };
+  const clock = options.clock ?? realClock;
   /** 모델 목록·로그인 갱신용 app-server. 이 컴퓨터의 연결 폴더에서 돈다. */
   const openAppServer = () =>
     openCodexConnection({
@@ -293,6 +298,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
       args: ["app-server"],
       cwd: home,
       env: environment(),
+      clock,
     });
   const environment = (codexHome = home, isolated = false) =>
     providerEnvironment(id, codexHome, { CODEX_HOME: codexHome }, { isolated });
@@ -306,7 +312,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
       await login.prepareConnection();
       const connection = openAppServer();
       // 한도는 프로그램을 띄운 때부터 하나다. 초기화와 account/read가 이어 쓴다.
-      const left = remainingOf(timeouts.refresh);
+      const left = remainingOf(clock, timeouts.refresh);
       try {
         await connection.initialize(left());
         await connection.request(
@@ -398,7 +404,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
       const stop = () => connection.close();
       signal.addEventListener("abort", stop, { once: true });
       // 목록 전체의 한도 하나를 모든 페이지가 이어 쓴다.
-      const left = remainingOf(timeouts.modelList);
+      const left = remainingOf(clock, timeouts.modelList);
       // 모든 페이지를 받은 목록만 쓴다. 중간에 끝나면 받은 페이지를 버린다.
       let models: { id: string; label: string }[] = [];
       try {
@@ -604,6 +610,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
             cwd,
             env,
             container,
+            clock,
             onNotification: (frame) => {
               const params = record(frame.params);
               if (params.threadId !== threadId) return;
