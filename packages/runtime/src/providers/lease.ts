@@ -9,6 +9,8 @@ import { readdir, readFile } from "node:fs/promises";
  * 알려진 한계: 표식 변수를 일부러 지운 프로그램은 찾지 못한다. 환경을 읽을 수 없게 막은 프로그램(Linux에서 dump 불가로 바꾼 프로그램 등)은
  * 대표가 시작한 뒤 서버와 같은 cgroup에 생겼으면 확인하지 못한 것(`unverified`)으로 남아 정리가 실패하고(신호는 보내지 않는다), 그 전에 있던 것과 다른 cgroup의 것은 무시한다.
  * 같은 cgroup에 실행 중 생긴 관계없는 프로그램도 확인하지 못한 것으로 본다. macOS에서는 그런 프로그램이 아예 보이지 않는다(`ps`가 환경을 보여주지 않는다).
+ * 대신 표식이 보이는데 세 조회 사이에 실행 인자가 바뀌어 환경 변수 부분을 확인할 수 없는 프로그램은 확인하지 못한 것으로 남는다(신호는 보내지 않는다).
+ * 끝까지 확인할 수 없으면 정리가 실패한다.
  */
 export const leaseVariable = "BABOJUBOT_PROCESS_LEASE";
 export const leaseEntry = (lease: string) => `${leaseVariable}=${lease}`;
@@ -137,32 +139,41 @@ function byPid(listing: string) {
 
 /**
  * macOS: 같은 목록을 환경 변수 없이(`before`)와 있이(`withEnvironment`), 다시 없이(`after`) 받아, 실행 인자 뒤에 붙은 환경 변수 부분만 공백으로 나눠 정확히 비교한다.
- * 실행 인자에 표식 문자열을 가진 프로그램은 대상이 아니다. 앞·뒤 두 조회의 실행 인자가 같고 `-E` 줄이 그 실행 인자와 공백 경계에서 이어질 때만 그 뒤를 환경 변수로 본다.
- * 두 조회 사이에 실행 인자가 바뀐 프로그램은 이번에는 건너뛰고 다음 조회에서 다시 본다.
+ * `-E` 줄에 표식 문자열이 없으면 우리 것이 아니다. 앞·뒤 두 조회의 실행 인자가 같고 `-E` 줄이 그 실행 인자와 공백 경계에서 이어질 때만 그 뒤를 환경 변수로 보고,
+ * 그 안에 표식이 있으면 `holders`에 넣는다. 확인할 수 없으면 `unverified`에 넣는다(실행 인자에만 있는 표식과 환경에 있는 표식을 가릴 수 없다).
+ * 확인하지 못한 프로그램에는 신호를 보내지 않고 다음 조회에서 다시 본다.
  */
-export function holdersInPs(
+export function lookupInPs(
   before: string,
   withEnvironment: string,
   after: string,
   lease: string
-) {
+): LeaseLookup {
   const plainBefore = byPid(before);
   const plainAfter = byPid(after);
   const entry = leaseEntry(lease);
-  const found: number[] = [];
+  const holders: number[] = [];
+  const unverified: number[] = [];
   for (const [pid, line] of byPid(withEnvironment)) {
+    if (!line.split(/\s+/).includes(entry)) continue;
     const command = plainBefore.get(pid);
-    if (command === undefined || plainAfter.get(pid) !== command) continue;
-    if (!line.startsWith(command + " ")) continue;
+    const confirmed =
+      command !== undefined &&
+      plainAfter.get(pid) === command &&
+      line.startsWith(command + " ");
+    if (!confirmed) {
+      unverified.push(pid);
+      continue;
+    }
     if (
       line
         .slice(command.length + 1)
         .split(/\s+/)
         .includes(entry)
     )
-      found.push(pid);
+      holders.push(pid);
   }
-  return found;
+  return { holders, unverified };
 }
 
 /** 이 표식을 가진 프로그램과, 우리 것일 수 있지만 확인하지 못한 프로그램(서버 자신 제외). 조회 자체가 실패하면(`/proc`·`ps`를 읽지 못함) 던진다. */
@@ -173,15 +184,7 @@ export async function leaseHolders(
   const found: LeaseLookup =
     process.platform === "linux"
       ? await linuxHolders(lease, since)
-      : {
-          holders: holdersInPs(
-            await ps([]),
-            await ps(["-E"]),
-            await ps([]),
-            lease
-          ),
-          unverified: [],
-        };
+      : lookupInPs(await ps([]), await ps(["-E"]), await ps([]), lease);
   return {
     holders: found.holders.filter((pid) => pid !== process.pid),
     unverified: found.unverified.filter((pid) => pid !== process.pid),
@@ -202,7 +205,8 @@ const pollMs = 50;
 /**
  * 이 표식을 가진 프로그램을 시스템 전체에서 찾아 끈다. TERM → 유예 → KILL 순서이고, 매 단계 표식으로 다시 찾는다.
  * KILL은 바로 앞에서 다시 찾은 번호에만 보낸다. 그 사이 끝나 다른 프로그램에 재사용된 번호는 받지 않는다(찾기와 신호 사이의 아주 짧은 틈은 남는다).
- * 확인하지 못한 프로그램에는 신호를 보내지 않는다. 끈 것(`stopped`)과 기다림이 끝날 때까지 남은 것, 즉 아직 돌거나 확인하지 못한 프로그램(`left`)을 돌려준다.
+ * 확인하지 못한 프로그램은 유예 동안 다시 찾아 보고, 확인된 것은 끈다. 신호는 보내지 않고 끝까지 확인하지 못한 것은 `left`에 남긴다.
+ * 끈 것(`stopped`)과 기다림이 끝날 때까지 남은 것, 즉 아직 돌거나 확인하지 못한 프로그램(`left`)을 돌려준다.
  * 조회가 실패하면 던진다.
  */
 export async function stopLeaseHolders(
@@ -220,13 +224,21 @@ export async function stopLeaseHolders(
   } = {}
 ) {
   let lookup = await find(lease);
-  if (!lookup.holders.length) return { stopped: [], left: lookup.unverified };
+  if (!lookup.holders.length && !lookup.unverified.length)
+    return { stopped: [], left: [] };
   const signalled = new Set(lookup.holders);
   send(lookup.holders, "SIGTERM");
   const grace = Date.now() + graceMs;
-  while (lookup.holders.length && Date.now() < grace) {
+  while (
+    (lookup.holders.length || lookup.unverified.length) &&
+    Date.now() < grace
+  ) {
     await delay(pollMs);
     lookup = await find(lease);
+    // 확인하지 못했던 프로그램이 표식을 확인하면 그때 끈다.
+    const fresh = lookup.holders.filter((pid) => !signalled.has(pid));
+    send(fresh, "SIGTERM");
+    for (const pid of fresh) signalled.add(pid);
   }
   // 커널 작업에 묶여 죽지 않는 프로그램을 끝없이 기다리지 않는다.
   const deadline = Date.now() + waitMs;
