@@ -34,7 +34,7 @@
 
 ## 검증 경계와 결과
 
-Windows 시험은 `packages/runtime/src/providers/job-object.test.ts`(Windows에서만 돈다)이며 모두 `startProcess`·`prepareJobObjectLauncher` 바깥에서 본다. 최종 head `596e07d`의 [CI run 44050989175](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/44050989175) 전체 성공. `runtime on windows-latest`에서 이 파일 12건 통과(그 job 415 통과·154 건너뜀), 실행기 준비 1646ms.
+Windows 시험은 `packages/runtime/src/providers/job-object.test.ts`(Windows에서만 돈다)이며 모두 `startProcess`·`prepareJobObjectLauncher` 바깥에서 본다. 코드 최종 head `d9e7847`의 PR [CI run 44073402214](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/44073402214) 필수 검사 모두 성공. `runtime on windows-latest`에서 이 파일 13건 통과(그 job 416 통과·154 건너뜀). 실행기 준비는 windows-latest에서 1.6–2.1초였다. 아래 표는 처음 12건에 외부 리뷰 1회차의 입력·오류 출력 시험을 더한 13건이다. 처음 12건은 head `596e07d`의 run 44050989175에서 처음 통과했다.
 
 | 경계 | 검사 | 결과 |
 | --- | --- | --- |
@@ -49,7 +49,12 @@ Windows 시험은 `packages/runtime/src/providers/job-object.test.ts`(Windows에
 | 실행기를 띄우지 못함(지워짐), 준비 실패(컴파일러 없음), `tools` 폴더를 만들 수 없음(던지지 않음) | 지금처럼 돌고 경고 | 통과 |
 | Linux·macOS 기존 검사 | `tests / runtime`·`runtime on macos-latest` | 통과 |
 
-같은 브랜치의 이전 head `9555620` run 44048971116에서 `e2e on windows-latest (2/2)`의 첫 시험(`provider-contract.spec.ts:48`)이 한 번 실패했다. `/settings`의 API 요청 넷이 10초 동안 응답 없이 남아 live event ready를 받지 못했다(trace의 network 기록). 실패 job만 다시 돌리자 통과했고, 최종 head에서도 통과했다. 최근 CI 100회에 같은 실패는 없었다. 공용 서버는 준비가 끝난 뒤에야 시작 줄을 내고 E2E의 가짜 프로바이더는 실행기를 쓰지 않으므로 직접 경로는 찾지 못했다. 원인은 확인하지 못했다.
+Windows E2E는 이 브랜치에서 두 번 서로 다른 모양으로 실패했고, 둘 다 실패한 job만 다시 돌리자 통과했다. 원인은 확인하지 못했다.
+
+- head `9555620` run 44048971116, `e2e on windows-latest (2/2)`의 첫 시험(`provider-contract.spec.ts:48`): `/settings`의 API 요청 넷이 10초 동안 응답 없이 남아 live event ready를 받지 못했다(trace의 network 기록).
+- head `d9e7847` run 44073402214, `e2e on windows-latest (1/2)`: 시계 고정 격리 서버 정리 중 `postgres.log` 잠김(EBUSY)과 `lead-conversations.spec.ts:12`의 응답 대기 시한 초과.
+
+같은 기간 main도 Windows E2E가 5회 중 1회 실패했고, 소요 시간은 main과 비슷했다(210–354초). 이 PR이 E2E에 더하는 것은 서버 시작 때의 실행기 준비뿐이며, E2E의 가짜 프로바이더는 실행기를 쓰지 않는다. 두 모양은 제품 결함 없는 CI 실패를 모은 [#213](https://github.com/babo-jeonguk/BaboJUBot/issues/213)과 Windows 파일 잠김 묶음 [#216](https://github.com/babo-jeonguk/BaboJUBot/issues/216)의 계열이라 그 이슈들에 사례로 연결한다.
 
 ## 로컬 리뷰 (1회차, 검토 SHA `0ab201b`, 수정 SHA `596e07d`)
 
@@ -98,6 +103,14 @@ P1·P2 회귀 시험은 수정과 같은 커밋에 넣었고, Windows에서만 �
 | STD-4 | Standards | 수정 | 직접 띄운 무관한 프로그램은 `error`를 관찰하지 않아 시작 실패가 처리되지 않은 오류가 될 수 있었고, 정리는 `pid` 없는 프로그램을 조용히 건너뛰었다. 직접 띄우는 것은 띄우는 순간 오류를 관찰하는 `spawnTracked` 하나로만 띄우고, 시작하지 못한 프로그램은 그 오류를 정리 실패로 알린다 |
 | STD-5 | Standards | 수정 | 생존 확인이 어떤 오류든 꺼짐으로 보아 권한 거부를 정리 완료로 셀 수 있었다. `recovery.ts`의 `processAlive`와 같이 `ESRCH`만 꺼짐으로 본다 |
 | 설계 권고 | Standards | 반영 | 실행 시도 마무리의 `end()`가 동기로 던져도 다음 정리 단계가 돌도록 `async`로 감쌌다 |
+
+## 병합 전 감사 (head `d9e7847`)
+
+문서·이슈 감사(Codex sub)를 읽기 전용으로 돌렸다. 두 감사 뒤 `git status --short`는 비어 있었다.
+
+- 문서: 이 기록의 최종 head 문구만 갱신 필요(위에 반영). `docs/providers.md`의 Windows 묶음 절, 코드 지도, 문서 지도, README·현재 구현 현황·CONTRIBUTING·GLOSSARY·전체 구조는 유지.
+- 이슈: 확정 결정과 어긋난 구현 없음. US2(예고 없는 프로그램 사망)는 프로그램 종료 뒤의 같은 정리 경로와 취소의 강제 종료로, US13(내장 DB 보호)은 무관한 프로그램의 생존으로 대신 확인했다. 실제 DB를 둔 음성 대조와 프로그램만 외부에서 죽이는 전용 시험은 없다. #205에는 병합 뒤 결과를, #213·#216에는 위 E2E 사례를 남긴다. #145·#189·#211 등 닫힌 이슈는 유지.
+- 후속 후보: 기본 설치 Windows 10·11·ARM64·일반 권한·실제 보안 제품 호환성 확인, `JOB_LIST`·배정 실패 때 한 번만 시작·경고·정리 확인.
 
 ## 미검증
 
