@@ -28,27 +28,46 @@
 ## 결정과 구현
 
 - **실행기**: `packages/runtime/src/providers/job-object-launcher.cs`(C# 5). 명령줄은 `<실행기> <프로그램 경로 base64> <프로그램 명령줄 그대로>`다. 명령줄을 다시 감싸지 않으려고 실행기는 자기 명령줄 원문(`GetCommandLineW`)에서 나머지를 그대로 떼어 `CreateProcessW`에 넘긴다. 프로그램이 돌기 전에 표준 오류에 상태 줄(`[babojubot-job-object] ok`·`warning: …`·`failed: …`)을 하나 쓴다. 프로그램이 끝나면 `TerminateJobObject` 뒤 묶음이 빌 때까지 최대 10초 기다리고 그 종료 코드로 끝난다.
-- **준비**: `job-object.ts` `prepareJobObjectLauncher(dataDir)`를 서버 시작(`app.ts`, 복구 직후)에서 기다린다. Windows가 아니면 아무것도 하지 않는다. 결과는 모듈 상태로 두고 `startProcess`가 읽는다. 준비를 부르지 않은 프로세스(대부분의 시험)는 지금처럼 묶음 없이 돌고 경고하지 않는다.
-- **startProcess**: 컨테이너가 아니고 준비된 실행기가 있으면 실행기로 띄운다. 대표 PID·실행 기록·취소 순서·`finish`는 그대로이며 대표가 실행기일 뿐이다. 상태 줄은 오류 출력 끝부분에서 떼어 낸다.
+- **준비**: `job-object.ts` `prepareJobObjectLauncher(dataDir)`를 서버 시작(`app.ts`, 복구 직후)에서 기다린다. 어떤 실패도 던지지 않고 이유와 경고로 돌려주며, 다른 소스로 만든 예전 실행기는 지운다. Windows가 아니면 아무것도 하지 않는다. 명세의 “처음 쓸 때”는 한 컴퓨터에서 처음 쓸 때로 읽었다. `startProcess`는 동기라 첫 실행 시도에서 만들면 그동안의 실행 시도가 묶음 없이 돌기 때문이다. 결과는 모듈 상태로 두고 `startProcess`가 읽는다. 준비를 부르지 않은 프로세스(대부분의 시험)는 지금처럼 묶음 없이 돌고 경고하지 않는다.
+- **startProcess**: 컨테이너가 아니고 준비된 실행기가 있으며 cross-spawn이 프로그램을 찾으면 실행기로 띄운다. 찾지 못하면 지금처럼 cross-spawn이 띄워 시작 실패로 알린다. 대표 PID·실행 기록·취소 순서·`finish`는 그대로이며 대표가 실행기일 뿐이다. 상태 줄은 오류 출력 끝부분에서 떼어 낸다.
 - **바꾸지 않은 것**: Linux·macOS 경로, 짧은 확인 실행(`runProbe`), 공개 API·DB schema·계약.
 
 ## 검증 경계와 결과
 
-결과는 아래 [CI 결과](#ci-결과)에 적는다.
+Windows 시험은 `packages/runtime/src/providers/job-object.test.ts`(Windows에서만 돈다)이며 모두 `startProcess`·`prepareJobObjectLauncher` 바깥에서 본다. 최종 head `596e07d`의 [CI run 44050989175](https://github.com/babo-jeonguk/BaboJUBot/actions/runs/44050989175) 전체 성공. `runtime on windows-latest`에서 이 파일 12건 통과(그 job 415 통과·154 건너뜀), 실행기 준비 1646ms.
 
-| 경계 | 검사 |
-| --- | --- |
-| 첫 단계: 기본 .NET Framework C# 컴파일러로 만들고 해가 없는 실행 | `job-object.test.ts` `beforeAll`(준비 시간·결과를 로그에 남김) |
-| 출력을 쥔 남은 자식, 마지막 출력(20만 자 한 줄)·종료 코드 3 | 같은 파일 첫 시험 |
-| 출력을 쥐지 않은 남은 자식, `detached` 자식 | 둘째·셋째 시험 |
-| 취소(입력 닫기 → 트리 종료) | 넷째 시험 |
-| 다른 실행 시도의 자식과 시험이 띄운 무관한 프로그램은 산다 | 다섯째 시험 |
-| `.cmd` 시작 파일(공백·한글 경로, 따옴표·메타문자·`%PATH%`·빈 인수)과 경로 검색 프로그램의 인수 | cross-spawn 직접 실행 결과와 비교 |
-| 서버 강제 종료 연쇄 | 합성 서버(`prepareJobObjectLauncher`+`startProcess`)를 `TerminateProcess`로 끝낸 뒤 프로그램과 그 자식이 꺼짐 |
-| 실행기를 띄우지 못함(지워짐), 준비 실패(컴파일러 없음) | 지금처럼 돌고 경고 |
-| Linux·macOS 기존 검사 | CI `tests / runtime`·`runtime on macos-latest` |
+| 경계 | 검사 | 결과 |
+| --- | --- | --- |
+| 첫 단계: 기본 .NET Framework C# 컴파일러로 만들고 해가 없는 실행 | `beforeAll`(준비 시간·결과를 로그에 남김) | windows-latest에서 `Framework64` csc로 1.6–1.7초. 첫 run은 C# 확정 대입 오류(CS0170)로 컴파일 실패 → 경고·묶음 없이 도는 경로가 실제로 동작했고, 수정 뒤 성공 |
+| 출력을 쥔 남은 자식, 마지막 출력(20만 자 한 줄)·종료 코드 3 | 첫 시험 | 통과 |
+| 출력을 쥐지 않은 남은 자식, `detached` 자식 | 둘째·셋째 시험 | 통과 |
+| 취소(입력 닫기 → 트리 종료) | 넷째 시험 | 통과 |
+| 다른 실행 시도의 자식과 시험이 띄운 무관한 프로그램은 산다 | 다섯째 시험 | 통과 |
+| `.cmd` 시작 파일(공백·한글 경로, 따옴표·메타문자·`%PATH%`·빈 인수)과 경로 검색 프로그램의 인수 | cross-spawn 직접 실행 결과와 비교 | 통과 |
+| 서버 강제 종료 연쇄 | 합성 서버(`prepareJobObjectLauncher`+`startProcess`)를 `TerminateProcess`로 끝낸 뒤 프로그램과 그 자식이 10초 안에 꺼짐 | 통과 |
+| 찾지 못한 프로그램은 시작 실패(`broken`) | 리뷰 P2 회귀 시험 | 통과 |
+| 실행기를 띄우지 못함(지워짐), 준비 실패(컴파일러 없음), `tools` 폴더를 만들 수 없음(던지지 않음) | 지금처럼 돌고 경고 | 통과 |
+| Linux·macOS 기존 검사 | `tests / runtime`·`runtime on macos-latest` | 통과 |
 
-## CI 결과
+같은 브랜치의 이전 head `9555620` run 44048971116에서 `e2e on windows-latest (2/2)`의 첫 시험(`provider-contract.spec.ts:48`)이 한 번 실패했다. `/settings`의 API 요청 넷이 10초 동안 응답 없이 남아 live event ready를 받지 못했다(trace의 network 기록). 실패 job만 다시 돌리자 통과했고, 최종 head에서도 통과했다. 최근 CI 100회에 같은 실패는 없었다. 공용 서버는 준비가 끝난 뒤에야 시작 줄을 내고 E2E의 가짜 프로바이더는 실행기를 쓰지 않으므로 직접 경로는 찾지 못했다. 원인은 확인하지 못했다.
+
+## 로컬 리뷰 (1회차, 검토 SHA `0ab201b`, 수정 SHA `596e07d`)
+
+| ID | 축 | 판정 | 근거·처리 |
+| --- | --- | --- | --- |
+| P1 | Spec | 수정 | 준비 중 파일 오류가 던져져 서버 시작이 실패할 수 있었다(US8 위반). 준비 전체를 실패 값으로 바꾸고 정리 실패도 삼킨다. 회귀 시험: `tools` 자리에 파일 |
+| P2 | Spec | 수정 | 찾지 못한 프로그램이 cross-spawn의 cmd.exe 경유로 실행기에 들어가 시작 실패(ENOENT)가 종료 코드 1로 바뀌었다. cross-spawn ENOENT 판단과 같은 `file` 없음이면 실행기를 쓰지 않는다. 회귀 시험 추가 |
+| P3 | Spec | 의도된 동작 | 서버 시작 때 준비. 위 “준비” 항목의 이유 |
+| P4 | Spec | 일부 수정 | 예전 해시 실행기를 지운다. 종료 뒤 묶음 끄기·10초 대기(정리 완료 때 남은 프로그램이 꺼져 있음을 결정적으로 보장)와 상태 줄(US9 경고)은 의도된 동작 |
+| S1 | Standards | 수정 | 이 절에 CI 결과를 채웠다 |
+| S2 | Standards | 수정 | “job runner”는 외부 job adapter([전체 구조](../architecture.md))와 겹친다. 코드·로그 이름을 `job object launcher`(`job-object.ts`·`job-object-launcher.cs`)로 바꿨다. 한국어는 “묶음 실행기” 그대로 |
+| S3 | Standards | 수정 | 문서 지도의 issue 조사 표에 #205를 넣었다 |
+| S4·S5·S8 | Standards | 수정 | Windows 폴더 대체값·상태 줄 읽기(`readLauncherStatus`)·시험 fixture를 한 곳으로 모았다. 합성 서버 시험은 최소 환경 변수와 `error` 관찰을 쓴다 |
+| S6 | Standards | 의도된 동작 | 실행기는 서버 프로세스에 하나라 모듈 상태로 둔다. 상태를 바꾸는 시험은 파일 끝에 모았다 |
+| S7 | Standards | 의도된 동작 | cross-spawn `_parse` 사용은 같은 명령 해석을 지키려는 선택이며 판은 lockfile이 고정한다 |
+| S9 | Standards | 반증 | 주석 언어 규칙은 문서에 없고 `process.ts`에도 영어 주석이 있다 |
+
+P1·P2 회귀 시험은 수정과 같은 커밋에 넣었고, Windows에서만 돌아 수정 전 실패를 CI로 따로 확인하지 않았다. 수정 전 코드에서의 실패는 코드 경로로만 판단했다.
 
 ## 미검증
 
