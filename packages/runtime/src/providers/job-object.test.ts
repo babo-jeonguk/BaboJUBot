@@ -26,14 +26,17 @@ const attempts: ReturnType<typeof startProcess>[] = [];
 const descendants: number[] = [];
 /** 시험이 직접 띄운 프로그램. 핸들로 끄고 끝날 때까지 기다린다. */
 const spawned: ChildProcess[] = [];
+/** 시험이 직접 띄운 프로그램의 시작 실패. 정리 때 실패로 알린다. */
+const startFailures = new WeakMap<ChildProcess, Error>();
 let dataDir = "";
 
+/** 번호로 프로세스가 있는지 본다. 없다는 답(ESRCH)만 꺼진 것으로 보고, 권한 거부 같은 다른 오류는 있는 것으로 본다(recovery.ts와 같은 규칙). */
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
   }
 };
 const temp = async (name: string) => {
@@ -66,17 +69,29 @@ const direct = (command: string, args: string[], cwd: string) =>
     }).stdout as string
   ) as unknown;
 
+/** 시험이 직접 프로그램을 띄운다. 띄우는 순간 오류를 관찰해 시작 실패가 처리되지 않은 오류가 되지 않게 하고, 정리 때 알린다. */
+function spawnTracked(
+  command: string,
+  args: string[],
+  options: Parameters<typeof spawn>[2]
+) {
+  const child = spawn(command, args, options);
+  child.on("error", (error) => {
+    if (child.pid === undefined) startFailures.set(child, error);
+  });
+  spawned.push(child);
+  return child;
+}
 /**
  * 시험이 직접 띄운 프로그램을 끄고 끝날 때까지 기다린다. 끝남은 `exit`로만 인정한다. `error`(끄지 못함)나 시한 초과는 실패다.
- * 시작하지 못한 프로그램은 `exit`가 오지 않고 끌 것도 없다.
+ * 시작하지 못한 프로그램은 `exit`가 오지 않고 끌 것도 없으므로 기다리지 않고 그 시작 실패를 알린다.
  */
 async function stopSpawned(child: ChildProcess) {
-  if (
-    child.pid === undefined ||
-    child.exitCode !== null ||
-    child.signalCode !== null
-  )
-    return;
+  if (child.pid === undefined)
+    throw new Error("a process the test started could not start", {
+      cause: startFailures.get(child),
+    });
+  if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, "exit", { signal: AbortSignal.timeout(10_000) });
   const sent = child.kill("SIGKILL");
   try {
@@ -184,9 +199,9 @@ describe.runIf(windows)("startProcess on Windows", () => {
     await settle(spawned.splice(0).map(stopSpawned));
     // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
     await settle(
-      attempts.splice(0).map((attempt) => {
+      attempts.splice(0).map(async (attempt) => {
         attempt.end();
-        return within(attempt.done, 30_000, "the end of a run");
+        await within(attempt.done, 30_000, "the end of a run");
       })
     );
     await settle([descendantsGone(descendants.splice(0))]);
@@ -258,14 +273,11 @@ describe.runIf(windows)("startProcess on Windows", () => {
   });
 
   it("leaves other runs and other programs running", async () => {
-    const bystander = spawn(
+    const bystander = spawnTracked(
       process.execPath,
       ["-e", "setInterval(() => {}, 1000)"],
-      {
-        stdio: "ignore",
-      }
+      { stdio: "ignore" }
     );
-    spawned.push(bystander);
     const other = run(`${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`);
     const otherChild = await other.child;
     const { attempt, child } = run(
@@ -341,22 +353,25 @@ describe.runIf(windows)("startProcess on Windows", () => {
          onFrame: async (frame) => console.log(JSON.stringify(frame)),
        });`
     );
-    const server = spawn(process.execPath, [path.join(root, "server.mjs")], {
-      stdio: ["ignore", "pipe", "inherit"],
-      env: {
-        PATH: process.env.PATH,
-        SystemRoot: process.env.SystemRoot,
-        TEMP: process.env.TEMP,
-        TMP: process.env.TMP,
-      },
-    });
-    spawned.push(server);
+    const server = spawnTracked(
+      process.execPath,
+      [path.join(root, "server.mjs")],
+      {
+        stdio: ["ignore", "pipe", "inherit"],
+        env: {
+          PATH: process.env.PATH,
+          SystemRoot: process.env.SystemRoot,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+        },
+      }
+    );
     const seen: Record<string, number> = {};
     await new Promise<void>((resolve, reject) => {
       let text = "";
       server.on("error", reject);
       server.on("exit", () => reject(new Error("the server ended early")));
-      server.stdout.on("data", (chunk: Buffer) => {
+      server.stdout!.on("data", (chunk: Buffer) => {
         text += chunk.toString();
         for (const line of text.split("\n").slice(0, -1))
           Object.assign(seen, JSON.parse(line));
