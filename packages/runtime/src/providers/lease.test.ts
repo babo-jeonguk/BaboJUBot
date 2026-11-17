@@ -299,6 +299,60 @@ it.runIf(posix)(
   30_000
 );
 
+// 조회 하나가 전체 시한(유예 + 대기)을 넘겨도 기다리지 않는다. 시한이 지나면 조회 실패로 보고(기록 유지), 늦게 돌아온 조회 결과로는 신호를 보내지 않는다(PR #220 외부 리뷰 SPEC-5).
+it.runIf(posix)(
+  "gives up on a lookup that outlasts the overall limit and sends nothing after it",
+  async () => {
+    const lease = randomUUID();
+    const late = await termWatcher(lease);
+    const stuck = 2 ** 22 + 1;
+    let lookups = 0;
+    const begin = Date.now();
+    await expect(
+      stopLeaseHolders(lease, {
+        graceMs: 100,
+        waitMs: 100,
+        find: async () => {
+          if (lookups++ === 0) return { holders: [stuck], unverified: [] };
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          return { holders: [stuck, late.pid], unverified: [] };
+        },
+      })
+    ).rejects.toThrow();
+    expect(Date.now() - begin).toBeLessThan(500);
+    // 늦게 돌아온 조회가 끝난 뒤에도 TERM을 받지 않았다.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(late.termAt()).toBeUndefined();
+  },
+  30_000
+);
+
+it("gives up on a first lookup that outlasts the overall limit", async () => {
+  const begin = Date.now();
+  await expect(
+    stopLeaseHolders("lease", {
+      graceMs: 100,
+      waitMs: 100,
+      find: () => new Promise(() => {}),
+    })
+  ).rejects.toThrow();
+  expect(Date.now() - begin).toBeLessThan(500);
+});
+
+// 끈 것(`stopped`)과 끄지 못한 것(`left`)에 같은 번호가 함께 들어가지 않는다. TERM을 보낸 뒤 확인하지 못하게 된 것은 끄지 못한 것이다(SPEC-6).
+it("does not report a program as both stopped and left", async () => {
+  const pid = 2 ** 22 + 3;
+  let lookups = 0;
+  const result = await stopLeaseHolders("lease", {
+    graceMs: 200,
+    find: async () =>
+      lookups++ === 0
+        ? { holders: [pid], unverified: [] }
+        : { holders: [], unverified: [pid] },
+  });
+  expect(result).toEqual({ stopped: [], left: [pid] });
+});
+
 // 처음에 확인하지 못한 프로그램은 유예 동안 다시 찾아 본다. 표식이 확인되면 끈다.
 it.runIf(posix)(
   "looks again at unverified programs and stops them once the marker is confirmed",
