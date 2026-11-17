@@ -5,16 +5,22 @@ import {
   holdersInPs,
   leaseEntry,
   leaseHolders,
+  leaseVariable,
   stopLeaseHolders,
 } from "./lease.ts";
 
 // 실행 시도의 프로그램과 그 자손은 표식 환경 변수를 물려받는다. 프로세스 그룹 밖으로 나간 자손도 이 표식으로 찾는다(#219).
 const posix = process.platform !== "win32";
 const started: ChildProcess[] = [];
-afterEach(() => {
-  for (const child of started.splice(0))
-    if (child.exitCode === null && child.signalCode === null)
+afterEach(async () => {
+  await Promise.all(
+    started.splice(0).map(async (child) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = new Promise((resolve) => child.once("exit", resolve));
       child.kill("SIGKILL");
+      await exited;
+    })
+  );
 });
 
 /** 새 세션(`detached`)에서 오래 도는 프로그램. 준비 줄을 낸 뒤에 돌려준다. */
@@ -42,9 +48,11 @@ async function program(
   const exited = new Promise<void>((resolve) =>
     child.on("exit", () => resolve())
   );
+  // 준비 줄 전에 끝나면 기다리지 않고 실패한다.
   await new Promise<void>((resolve, reject) => {
     child.stdout!.once("data", () => resolve());
     child.once("error", reject);
+    child.once("close", () => reject(new Error("exited before ready")));
   });
   return { pid: child.pid!, exited };
 }
@@ -62,10 +70,10 @@ it.runIf(posix)(
   async () => {
     const lease = randomUUID();
     const entry = leaseEntry(lease);
-    const holder = await program({ env: { BABOJUBOT_PROCESS_LEASE: lease } });
+    const holder = await program({ env: { [leaseVariable]: lease } });
     const inArgs = await program({ args: [entry] });
     const otherRun = await program({
-      env: { BABOJUBOT_PROCESS_LEASE: randomUUID() },
+      env: { [leaseVariable]: randomUUID() },
     });
     const insideValue = await program({ env: { OTHER: entry } });
     const unrelated = await program();
@@ -117,7 +125,7 @@ it.runIf(posix)(
   async () => {
     const lease = randomUUID();
     const holder = await program({
-      env: { BABOJUBOT_PROCESS_LEASE: lease },
+      env: { [leaseVariable]: lease },
       ignoreTerm: true,
     });
     const result = await stopLeaseHolders(lease);
@@ -133,7 +141,7 @@ it.runIf(posix)(
   async () => {
     const lease = randomUUID();
     const holder = await program({
-      env: { BABOJUBOT_PROCESS_LEASE: lease },
+      env: { [leaseVariable]: lease },
       ignoreTerm: true,
     });
     // 첫 조회가 표식이 없는 프로그램을 잘못 돌려준 경우다(번호 재사용을 흉내 낸다). 그 프로그램도 TERM은 무시한다.

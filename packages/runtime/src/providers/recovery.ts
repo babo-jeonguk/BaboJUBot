@@ -318,13 +318,16 @@ async function recoverLinuxGroup(
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
   const remaining = members(saved.pid);
-  let marker = false;
+  let memberHoldsLease = false;
   for (const member of remaining)
     if (saved.lease && (await holdsLease(member.pid, saved.lease))) {
-      marker = true;
+      memberHoldsLease = true;
       break;
     }
-  if ((leader?.start === saved.start && leader.group === saved.pid) || marker)
+  if (
+    (leader?.start === saved.start && leader.group === saved.pid) ||
+    memberHoldsLease
+  )
     await stopProcessGroup(saved.pid);
   else if (!leader && remaining.length)
     return {

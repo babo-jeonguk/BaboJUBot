@@ -15,6 +15,7 @@ import {
   recordProcess,
   recoverProviderProcesses,
 } from "./recovery.ts";
+import { leaseVariable } from "./lease.ts";
 
 // 표식 조회 실패를 주입한다.
 const lease = vi.hoisted(() => ({ fails: false }));
@@ -328,16 +329,26 @@ it("recovers every connection folder, including named ones", async () => {
 const platforms = [...new Set([process.platform, withoutProc])].filter(
   (platform) => platform !== "win32"
 );
-const marked = (value: string, script = "setInterval(() => {}, 1000)") => {
-  const child = spawn(process.execPath, ["-e", script], {
-    detached: true,
-    stdio: "ignore",
-    env: { PATH: process.env.PATH, BABOJUBOT_PROCESS_LEASE: value },
+/** 표식을 가진 새 세션 프로그램. 표식은 exec 뒤에 보이므로 준비 줄을 낸 뒤에 돌려준다. */
+const marked = async (
+  value: string,
+  script = "setInterval(() => {}, 1000)"
+) => {
+  const child = spawn(
+    process.execPath,
+    ["-e", `console.log("ready"); ${script}`],
+    {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { PATH: process.env.PATH, [leaseVariable]: value },
+    }
+  );
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  await new Promise<void>((resolve, reject) => {
+    child.stdout.once("data", () => resolve());
+    child.once("close", () => reject(new Error("exited before ready")));
   });
-  return {
-    child,
-    closed: new Promise((resolve) => child.on("close", resolve)),
-  };
+  return { child, closed };
 };
 async function recordFor(directory: string, pid: number, value: string) {
   const boot =
@@ -355,11 +366,10 @@ it.each(platforms)(
   async (platform) => {
     const { root, directory } = await records();
     const value = crypto.randomUUID();
-    const leftover = marked(value);
-    const ignored = marked(crypto.randomUUID());
+    const leftover = await marked(value);
+    const ignored = await marked(crypto.randomUUID());
     const finished = spawnSync(process.execPath, ["-e", ""]).pid;
     try {
-      await new Promise((resolve) => setTimeout(resolve, 200));
       await recordFor(directory, finished, value);
       await recoverProviderProcesses(root, { platform });
       await leftover.closed;
@@ -379,7 +389,7 @@ it.each(platforms)(
   async (platform) => {
     const { root, directory } = await records();
     const value = crypto.randomUUID();
-    const leader = marked(
+    const leader = await marked(
       value,
       `require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }).unref()`
     );
@@ -404,7 +414,12 @@ it.skipIf(process.platform === "win32")(
     const finished = spawnSync(process.execPath, ["-e", ""]).pid;
     await recordFor(directory, finished, "lease");
     lease.fails = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await recoverProviderProcesses(root);
     expect(await readdir(directory)).toEqual([`${finished}.json`]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("it stays for the next start")
+    );
+    warn.mockRestore();
   }
 );

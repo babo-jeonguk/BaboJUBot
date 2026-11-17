@@ -399,17 +399,21 @@ export function startProcess(options: {
           }
         // 프로그램이 새 세션에 띄운 명령은 그룹 밖에 있다. 프로그램이 어떻게 끝났든 표식으로 시스템 전체에서 찾아 끈다(#219).
         // 컨테이너는 아래에서 통째로 지우고, Windows는 묶음이 끈다.
-        if (!options.container && process.platform !== "win32")
+        if (!options.container && process.platform !== "win32") {
+          let left = true;
           try {
-            if ((await stopLeaseHolders(lease)).left.length)
-              throw new Error("Programs with the run marker did not stop");
+            left = (await stopLeaseHolders(lease)).left.length > 0;
           } catch {
+            // 찾기 자체가 실패했으면 끝났음을 확인하지 못한 것이다.
+          }
+          if (left) {
             stopped = false;
             broken = true;
             console.error(
               "[provider] programs this run started could not all be stopped; releasing the run and keeping its recovery record"
             );
           }
+        }
         // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
         if (
           options.container &&

@@ -34,8 +34,8 @@
 | 같은 시점의 다른 실행 시도 자손, 표식 없는 프로그램, 서버 자신은 산다 | `process-leftovers.test.ts` 마지막 건 | 실패(우리 자손이 남음) |
 | 실행 인자 속 표식, 다른 lease, 다른 변수의 값 속 표식(Linux는 공백 뒤 포함)은 대상이 아니다. macOS `ps`는 환경 부분만 본다 | `lease.test.ts` | 새 모듈 |
 | TERM을 무시하면 KILL, KILL 직전 재조회에서 빠진 번호는 신호를 받지 않음, 조회 실패·시간 초과 보고 | `lease.test.ts` | 새 모듈 |
-| 실행 시도 끝의 조회 실패: `broken`, 경고, 기록 유지 | `process-record.test.ts` | 실패 |
-| 재시작 복구: 대표·그룹이 없고 표식 자손만 남음(Linux 경로·macOS 경로), 표식을 가진 그룹이 대표 없이 남음, 조회 실패 시 기록 유지 | `recovery.test.ts` | Linux 경로의 그룹 건만 통과, 나머지 실패 |
+| 실행 시도 끝의 조회 실패·시간 안에 꺼지지 않음: `broken`, 경고, 기록 유지 | `process-record.test.ts` | 실패(조회 실패 건으로 확인) |
+| 재시작 복구: 대표·그룹이 없고 표식 자손만 남음(Linux 경로·macOS 경로), 표식을 가진 그룹이 대표 없이 남음, 조회 실패 시 기록 유지와 경고 | `recovery.test.ts` | Linux 경로의 그룹 건만 통과, 나머지 실패 |
 
 시험 도구 수정 전후(이 컴퓨터 Linux arm64, Claude Code 2.1.326·Codex 0.169.0, 가짜 모델):
 
@@ -53,6 +53,8 @@
 | codex nested host | 남음 1 | 정리됨 0 |
 
 수정 후 8건 모두 끝난 뒤 `http.server`가 남지 않았다.
+
+macOS의 `ps -E` 조회는 macOS에서만 돈다. 이 컴퓨터에서 macOS 경로(`withoutProc`)를 시험하는 복구 시험도 표식 찾기는 `/proc`를 쓰므로, `ps` 경로는 CI `runtime on macos-latest`의 `lease.test.ts`·`process-leftovers.test.ts`·`recovery.test.ts`로 확인한다.
 
 ## 미검증
 
