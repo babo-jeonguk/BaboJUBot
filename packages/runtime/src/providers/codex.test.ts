@@ -675,6 +675,185 @@ describe("one app-server connection per call (#145)", () => {
       ).toHaveLength(1);
     });
 
+    describe("when a steer goes unanswered", () => {
+      const messageId = "message-206";
+      const recordWith = (...clientIds: (string | null)[]) => ({
+        result: {
+          thread: {
+            id: "thread-new",
+            turns: [
+              {
+                id: "turn-one",
+                status: "inProgress",
+                items: [
+                  ...clientIds.map((clientId, i) => ({
+                    type: "userMessage",
+                    id: `item-${i}`,
+                    clientId,
+                    content: [],
+                  })),
+                  { type: "agentMessage", id: "item-agent", text: "" },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      /** The step, then the turn completes. Tying the end to a step keeps the order fixed instead of racing a clock. */
+      const thenCompletes = (step: Step): Step => ({
+        ...step,
+        frames: turnThatCompletes("thread-new").frames,
+      });
+      /**
+       * A run that steers once. By default the steer is never answered and the record read decides; the turn completes only
+       * when a step says so (`thenCompletes`). `steered()` settles to `{ outcome }` or `{ error }` with how long the steer took.
+       */
+      async function steerOnce({
+        steer = { silent: true },
+        read,
+        timeouts = { steer: 200, steerRecord: 300 },
+        cancel = new AbortController(),
+      }: {
+        steer?: Step;
+        read?: Step;
+        timeouts?: CodexOptions["timeouts"];
+        cancel?: AbortController;
+      }) {
+        const t = await scripted(
+          {
+            "thread/start": [thread],
+            "turn/start": [{ result: { turn: { id: "turn-one" } } }],
+            "turn/steer": [steer],
+            ...(read ? { "thread/read": [read] } : {}),
+          },
+          timeouts
+        );
+        const input = request();
+        let steered:
+          | Promise<{ outcome?: unknown; error?: unknown; ms: number }>
+          | undefined;
+        const run = t.provider.adapter.execute(input, {
+          signal: cancel.signal,
+          emit: async () => {
+            const start = Date.now();
+            steered ??= t.provider.adapter.steer!({
+              runId: input.identity.runId,
+              messageId,
+              conversationId: crypto.randomUUID(),
+              body: "추가",
+            }).then(
+              (outcome) => ({ outcome, ms: Date.now() - start }),
+              (error: unknown) => ({ error, ms: Date.now() - start })
+            );
+          },
+        });
+        await expect
+          .poll(() => steered !== undefined, { timeout: 5_000 })
+          .toBe(true);
+        return { ...t, run, steered: () => steered! };
+      }
+
+      it("takes the steer as accepted when the conversation record holds its message number", async () => {
+        const t = await steerOnce({
+          read: thenCompletes(recordWith(null, messageId)),
+        });
+        expect((await t.steered()).outcome).toBe("accepted");
+        expect((await t.run).stopReason).toBe("completed");
+        const methods = await t.methods();
+        expect(methods.filter((m) => m === "turn/steer")).toHaveLength(1);
+        expect(methods.filter((m) => m === "thread/read")).toHaveLength(1);
+        // Checking the record starts no model turn.
+        expect(methods.filter((m) => m === "turn/start")).toHaveLength(1);
+        const read = (await t.sent()).find((f) => f.method === "thread/read");
+        expect(read!.params).toEqual({
+          threadId: "thread-new",
+          includeTurns: true,
+        });
+      });
+
+      it("takes it as accepted when the number appears more than once", async () => {
+        const t = await steerOnce({
+          read: thenCompletes(recordWith(messageId, messageId)),
+        });
+        expect((await t.steered()).outcome).toBe("accepted");
+        expect((await t.run).stopReason).toBe("completed");
+      });
+
+      const unknownCases: [string, Step][] = [
+        ["holds no such message", recordWith(null)],
+        ["holds only another message's number", recordWith("message-other")],
+        ["is refused", { error: { code: -32600, message: "no" } }],
+        ["is not a record", { result: { thread: { id: "thread-new" } } }],
+      ];
+      it.each(unknownCases)(
+        "keeps the delivery unknown when the record %s",
+        async (_case, read) => {
+          const t = await steerOnce({ read: thenCompletes(read) });
+          expect(await t.steered()).toMatchObject({
+            error: expect.any(Error),
+          });
+          expect((await t.run).stopReason).toBe("completed");
+        }
+      );
+
+      it("keeps the delivery unknown, within both limits, when the record read goes unanswered", async () => {
+        // The turn only ends 3 s after the read is sent, well past both limits.
+        const t = await steerOnce({
+          read: thenCompletes({ silent: true, delayMs: 3_000 }),
+        });
+        const steered = await t.steered();
+        expect(steered).toMatchObject({ error: expect.any(Error) });
+        // Steer limit 200 ms plus record limit 300 ms.
+        expect(steered.ms).toBeLessThan(1_500);
+        expect((await t.run).stopReason).toBe("completed");
+      }, 10_000);
+
+      it("does not read the record when the program refuses the steer", async () => {
+        const t = await steerOnce({
+          steer: thenCompletes({ error: { code: -32600, message: "no" } }),
+        });
+        expect((await t.steered()).outcome).toBe("rejected");
+        expect((await t.run).stopReason).toBe("completed");
+        expect(await t.methods()).not.toContain("thread/read");
+      });
+
+      it.each([
+        ["the run is cancelled", "cancel"],
+        ["the program ends", "exit"],
+      ] as const)(
+        "stops checking at once, without accepting, when %s during the check",
+        async (_case, ending) => {
+          const cancel = new AbortController();
+          const t = await steerOnce({
+            read:
+              ending === "exit"
+                ? { delayMs: 300, silent: true, exit: 1 }
+                : // The record would hold the number, but only after the run is gone.
+                  thenCompletes({ ...recordWith(messageId), delayMs: 3_000 }),
+            timeouts: { steer: 200, steerRecord: 5_000 },
+            cancel,
+          });
+          if (ending === "cancel") {
+            await expect
+              .poll(async () => (await t.methods()).includes("thread/read"), {
+                timeout: 5_000,
+              })
+              .toBe(true);
+            cancel.abort();
+          }
+          const steered = await t.steered();
+          expect(steered).toMatchObject({ error: expect.any(Error) });
+          expect(steered.ms).toBeLessThan(2_000);
+          const result = await t.run;
+          expect(result.stopReason).toBe(
+            ending === "cancel" ? "cancelled" : "failed"
+          );
+          expect(await t.running()).toBe(false);
+        },
+        15_000
+      );
+    });
+
     it("starts one new thread only when the program refuses the old one, with the usage counted from zero", async () => {
       const t = await scripted({
         "thread/resume": [{ error: { code: -32600, message: "not found" } }],
