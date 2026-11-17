@@ -116,6 +116,8 @@ async function upstream() {
 }
 
 /** 시험 요청마다 붙이는 이름. 중계는 이 header를 그대로 상류에 넘기므로, 상류가 받은 요청이 어느 요청인지 가린다. */
+/** Waiting for the relay to close or reach a connection: a socket event, bounded for a slow runner (#215). */
+const settles = { timeout: 15_000 };
 const requestTag = "x-test-request";
 const tag = (name: string) => ({ [requestTag]: name });
 /** 권한으로 이름 붙인 요청을 보내고 상태만 돌려준다. */
@@ -352,7 +354,7 @@ describe("the credential relay", () => {
     ).rejects.toThrow();
     expect((await send(url, grant.token)).status).toBe(401);
     expect(up.seen).toHaveLength(1);
-    await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
+    await expect.poll(() => up.closed, settles).toEqual(["/base/v1/stream"]);
     expect(grant.failed.aborted).toBe(false);
   });
 
@@ -933,7 +935,7 @@ describe("the credential relay with runs that overlap (#148)", () => {
     expect((await send(url, a.token)).status).toBe(401);
     expect((await send(url, b.token)).status).toBe(200);
     expect(b.failed.aborted).toBe(false);
-    await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
+    await expect.poll(() => up.closed, settles).toEqual(["/base/v1/stream"]);
     await streamB.cancel();
   });
 
@@ -955,7 +957,7 @@ describe("the credential relay with runs that overlap (#148)", () => {
     for (const grant of [streaming, rejected])
       expect((await send(url, grant.token)).status).toBe(401);
     expect(up.seen).toHaveLength(before);
-    await expect.poll(() => up.closed).toEqual(["/base/v1/stream"]);
+    await expect.poll(() => up.closed, settles).toEqual(["/base/v1/stream"]);
   });
 
   it("when several runs' requests are rejected at the same time, the connection fails for all of them and no retry reaches the upstream afterwards", async () => {
@@ -1039,7 +1041,7 @@ describe("the credential relay with runs that overlap (#148)", () => {
     expect(await statusOf(url, b.token, "retry-b")).toBe(401);
 
     transport.deliver();
-    await expect.poll(() => arrived(up.seen)).toContain("initial-b");
+    await expect.poll(() => arrived(up.seen), settles).toContain("initial-b");
     // 늦게 도착한 B의 첫 요청 뒤에도 재시도는 여전히 거부된다.
     expect(await statusOf(url, a.token, "retry-a-again")).toBe(401);
     expect(await statusOf(url, b.token, "retry-b-again")).toBe(401);

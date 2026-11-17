@@ -825,17 +825,24 @@ it("cancels a run that is waiting for a background command", async () => {
     ],
   });
   const controller = new AbortController();
-  const started = Date.now();
+  let cancelledAt = 0;
   const result = await provider.adapter.execute(request(), {
     signal: controller.signal,
     emit: async (value) => {
       const activity = value as { type?: string; text?: string };
-      if (activity.type === "progress" && activity.text?.includes("백그라운드"))
+      if (
+        activity.type === "progress" &&
+        activity.text?.includes("백그라운드")
+      ) {
+        cancelledAt ||= Date.now();
         controller.abort();
+      }
     },
   });
   expect(result.stopReason).toBe("cancelled");
-  expect(Date.now() - started).toBeLessThan(15_000);
+  // 취소부터 잰다. 프로그램 시작은 이 상한에 넣지 않는다(#215). 백그라운드 명령은 끝나지 않으므로 기다렸다면 넘는다.
+  expect(cancelledAt).toBeGreaterThan(0);
+  expect(Date.now() - cancelledAt).toBeLessThan(15_000);
 });
 
 /** 백그라운드 작업이 알리기 전에 끝나는 녹화를 고쳐 재생한다. */

@@ -208,10 +208,14 @@ describe("Codex login link", () => {
     let results: boolean[];
     try {
       // 첫 호출이 원본 로그인을 옮기는 rename에 들어갔다. 그동안 다른 호출은 그 rename에 들어오지 못한다.
-      await vi.waitFor(() => {
-        expect(originalRenames).toBe(1);
-        expect(completed).toBe(0);
-      });
+      // 다른 호출이 시작하는 시간을 담아 느린 실행기를 감당하게 기다린다(#215).
+      await vi.waitFor(
+        () => {
+          expect(originalRenames).toBe(1);
+          expect(completed).toBe(0);
+        },
+        { timeout: 15_000 }
+      );
     } finally {
       release();
       const settled = await Promise.allSettled(operations);

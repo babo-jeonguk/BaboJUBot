@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -41,7 +42,8 @@ async function running() {
     stdio: "ignore",
   });
   children.push(child);
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   const directory = path.join(home, "processes");
   return {
     home,
@@ -74,6 +76,8 @@ it("does not save the start time after forgetting a held record", async () => {
     interval: 10,
   });
   forget();
+  // 보장의 한계(#215): 잊은 기록은 다시 쓰려는 시도(250ms 뒤)에서 아무것도 하지 않고 끝나며, 그 끝은 밖에서 보이지 않는다.
+  // 그래서 그 시도가 보통 끝나는 시간을 기다린 뒤 기록이 없음을 본다. 느린 기기에서 시도가 이보다 늦으면 결함이 있어도 통과한다.
   await new Promise((resolve) => setTimeout(resolve, 1000));
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
