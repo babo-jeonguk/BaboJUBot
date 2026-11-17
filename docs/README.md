@@ -61,6 +61,7 @@
 - [#154 실모델 장애 검사 기록](research/issue-154-chaos-verification.md): 대상 커밋·환경·명령·결과·미실행 범위, 발견한 결함.
 - [#153 파일 경로 격리 검증 기록](research/issue-153-file-boundary-verification.md): 파일 시스템 여덟 곳의 환경 식별·사례별 결과·CI 시간·미검증 범위.
 - [OpenCode 2.x 지침 주입 조사](research/opencode-2-instructions.md): 기본 지침 보존과 세션 지침 API 추가.
+- [#189 Windows E2E 정상 종료 조사](research/issue-189-references.md): IPC 종료 요청·공용 서버 수명 소유·Windows E2E CI 권고와 미검증 범위.
 - [서버 종료 순서 조사](research/graceful-shutdown-references.md): 종료 신호를 누가 받고 DB를 언제 닫는지, embedded-postgres 종료 hook 처리.
 - [내장 Postgres 수명 조사](research/embedded-postgres-lifecycle-references.md): 강제 종료 뒤 남은 DB 정리, pg_ctl로 켜고 끄기, Windows 정지와 관리자 계정.
 
