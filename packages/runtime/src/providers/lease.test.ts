@@ -218,6 +218,83 @@ it.runIf(posix)(
   30_000
 );
 
+/** TERM을 받으면 "term" 줄을 내고 무시하는 표식 프로그램. TERM을 받은 시각과 끝난 시각을 잰다. */
+async function termWatcher(lease: string) {
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      'process.on("SIGTERM", () => console.log("term")); console.log("ready"); setInterval(() => {}, 1000);',
+    ],
+    {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { PATH: process.env.PATH, [leaseVariable]: lease },
+    }
+  );
+  started.push(child.pid!);
+  let termAt: number | undefined;
+  let buffer = "";
+  child.stdout!.on("data", (chunk: Buffer) => {
+    buffer += String(chunk);
+    if (termAt === undefined && buffer.includes("term\n")) termAt = Date.now();
+  });
+  const exitAt = new Promise<number>((resolve) =>
+    child.on("exit", () => resolve(Date.now()))
+  );
+  await readyLine(child);
+  return { pid: child.pid!, termAt: () => termAt, exitAt };
+}
+
+// 확인하지 못했던 프로그램이 유예가 거의 끝날 때 처음 보유자로 확인되어도, 그 프로그램은 TERM 뒤 자기 유예를 다 받은 뒤에야 KILL을 받는다(PR #220 외부 리뷰 SPEC-4).
+it.runIf(posix)(
+  "gives a holder confirmed late its own grace before KILL",
+  async () => {
+    const lease = randomUUID();
+    const late = await termWatcher(lease);
+    const begin = Date.now();
+    const result = await stopLeaseHolders(lease, {
+      graceMs: 1000,
+      find: async (value) =>
+        Date.now() - begin < 900
+          ? { holders: [], unverified: [late.pid] }
+          : { holders: (await leaseHolders(value)).holders, unverified: [] },
+    });
+    const killedAt = await late.exitAt;
+    expect(late.termAt()).toBeDefined();
+    expect(killedAt - late.termAt()!).toBeGreaterThanOrEqual(900);
+    expect(result).toEqual({ stopped: [late.pid], left: [] });
+  },
+  30_000
+);
+
+// 전체 시한 안에 자기 유예를 받을 수 없을 만큼 늦게 확인된 보유자는 강제로 끄지 않고 끄지 못한 것으로 돌려준다(정리 실패·기록 유지).
+// 끝나지 않는 보유자(없는 번호를 계속 돌려주는 조회) 하나가 시한까지 정리를 붙잡는 동안, 다른 프로그램이 시한 직전에 처음 확인된다.
+it.runIf(posix)(
+  "leaves a holder confirmed too late for its grace running and reports it",
+  async () => {
+    const lease = randomUUID();
+    const late = await termWatcher(lease);
+    const stuck = 2 ** 22 + 1;
+    const begin = Date.now();
+    const result = await stopLeaseHolders(lease, {
+      graceMs: 300,
+      waitMs: 300,
+      find: async (value) =>
+        Date.now() - begin < 500
+          ? { holders: [stuck], unverified: [late.pid] }
+          : {
+              holders: [stuck, ...(await leaseHolders(value)).holders],
+              unverified: [],
+            },
+    });
+    expect(result.left).toContain(late.pid);
+    expect(late.termAt()).toBeDefined();
+    expect(exited(late.pid)).toBe(false);
+  },
+  30_000
+);
+
 // 처음에 확인하지 못한 프로그램은 유예 동안 다시 찾아 본다. 표식이 확인되면 끈다.
 it.runIf(posix)(
   "looks again at unverified programs and stops them once the marker is confirmed",
