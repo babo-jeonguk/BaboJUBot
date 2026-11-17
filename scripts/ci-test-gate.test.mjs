@@ -54,6 +54,7 @@ function runGate({
   results = {},
   fileResults = {},
   executablePath = process.env.PATH,
+  summary,
 } = {}) {
   const needs = {
     changes: { result: changes, outputs: { code, files } },
@@ -77,9 +78,15 @@ function runGate({
     ),
   };
   const env = { PATH: executablePath };
+  if (summary) env.GITHUB_STEP_SUMMARY = summary;
   // Windows child processes may need the system root to load runtime DLLs.
   if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
   for (const [name, expression] of Object.entries(step.env)) {
+    // 실패 이유 조회용 토큰. 시험에서는 비워 조회 없이 판정만 본다.
+    if (name === "GITHUB_TOKEN") {
+      assert.equal(expression, "${{ github.token }}");
+      continue;
+    }
     const match = expression.match(
       /^\$\{\{\s*needs\.([\w-]+)\.(result|outputs\.code|outputs\.files)\s*\}\}$/
     );
@@ -374,4 +381,116 @@ test("runs the real workflow gate without any executable on PATH", (context) => 
     executablePath: emptyPath,
     results: { opencode: "cancelled" },
   });
+});
+
+// 실패 이유는 job 이름으로 job 기록을 찾는다. 판정 스크립트의 이름이 workflow의 name과 같아야 한다.
+test("names each failed job by its workflow name in the log and the job summary", (context) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-gate-summary-"));
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const suite of suites) {
+    const summary = path.join(dir, `${suite}.md`);
+    const result = runGate({ results: { [suite]: "cancelled" }, summary });
+    assert.notEqual(result.status, 0);
+    const name = workflow.jobs[`test-${suite}`].name;
+    assert.ok(
+      result.stderr.includes(`${name} did not finish as success: 'cancelled'`),
+      result.stderr
+    );
+    // 토큰이 없어 조회하지 못한 job은 알 수 없음이다. 판정은 그대로 실패다.
+    assert.ok(
+      readFileSync(summary, "utf8").includes(
+        `| ${name} | cancelled | success | 알 수 없음 |`
+      ),
+      suite
+    );
+  }
+  for (const suite of fileSuites) {
+    const result = runGate({
+      files: "true",
+      fileResults: { [suite]: "failure" },
+    });
+    assert.ok(
+      result.stderr.includes(
+        `${workflow.jobs[suite].name} did not finish as success`
+      ),
+      result.stderr
+    );
+  }
+});
+
+test("lists every failed job, not only the first", () => {
+  const result = runGate({ results: { unit: "failure", macos: "cancelled" } });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /\| tests \/ unit \| failure \|/);
+  assert.match(result.stdout, /\| runtime on macos-latest \| cancelled \|/);
+});
+
+test("writes 'no failures' to the job summary when the gate passes", (context) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-gate-summary-"));
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  const summary = path.join(dir, "summary.md");
+  assert.equal(runGate({ summary }).status, 0);
+  assert.match(readFileSync(summary, "utf8"), /실패 없음/);
+});
+
+test("lets the gate read job records and notes but not rerun anything", () => {
+  assert.deepEqual(gate.permissions, {
+    contents: "read",
+    actions: "read",
+    checks: "read",
+  });
+});
+
+const runSteps = (job) => job.steps.filter((each) => each.run);
+// 시험·내려받기 단계는 job보다 짧은 시한을 둔다. 단계 시한에 걸리면 그 단계만 실패해 뒤의 보고 단계(`!cancelled()`·`failure()`)가 돈다.
+test("gives test and install steps their own time limit inside the job's", () => {
+  const timed = [
+    ["check", /^pnpm run |playwright install/],
+    ["test-unit", /run test/],
+    ["test-runtime", /run test/],
+    ["test-db", /run test|check-test-exit-code|boot-check/],
+    ["test-server", /vitest run/],
+    ["test-opencode", /vitest run|curl /],
+    ["test-macos", /test|typecheck|vitest/],
+    ["test-windows", /test|typecheck|vitest/],
+    ["test-e2e-windows-1", /vitest|playwright/],
+    ["test-e2e-windows-2", /playwright/],
+  ];
+  for (const [id, pattern] of timed) {
+    const job = workflow.jobs[id];
+    const steps = runSteps(job).filter((each) => pattern.test(each.run));
+    assert.ok(steps.length > 0, id);
+    for (const each of steps) {
+      assert.ok(each["timeout-minutes"] > 0, `${id}: ${each.run}`);
+      // 정리·보고 단계가 돌 여유를 남긴다.
+      assert.ok(
+        each["timeout-minutes"] <= job["timeout-minutes"] - 5,
+        `${id}: ${each.run}`
+      );
+    }
+  }
+});
+
+// apt는 시간 초과·연결 실패 같은 일시적인 받기 오류에만 Acquire::Retries를 쓴다. 종료 코드 100만 보고 다시 돌리지 않는다.
+test("lets apt retry transient download failures before every apt install", () => {
+  const config = /Acquire::Retries "2";.*\/etc\/apt\/apt\.conf\.d\/zzz-/;
+  const linuxE2e = runSteps(workflow.jobs.check);
+  const install = linuxE2e.findIndex((each) => /--with-deps/.test(each.run));
+  const retries = linuxE2e.findIndex((each) => config.test(each.run));
+  assert.ok(retries >= 0 && retries < install);
+  assert.equal(linuxE2e[retries].if, linuxE2e[install].if);
+  const disk = runSteps(workflow.jobs["test-runtime"]).find((each) =>
+    /apt-get install/.test(each.run)
+  );
+  assert.ok(
+    disk.run.search(config) >= 0 &&
+      disk.run.search(config) < disk.run.indexOf("apt-get update")
+  );
+  // 이 저장소에서 apt를 쓰는 곳은 위 둘뿐이다. 새로 생기면 같은 설정을 먼저 둔다.
+  const aptUsers = Object.entries(workflow.jobs).flatMap(([id, job]) =>
+    (job.steps ?? [])
+      .filter((each) => /apt-get|--with-deps/.test(each.run ?? ""))
+      .map(() => id)
+  );
+  assert.deepEqual(aptUsers, ["check", "test-runtime"]);
 });

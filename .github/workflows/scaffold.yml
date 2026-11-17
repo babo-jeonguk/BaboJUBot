@@ -81,10 +81,17 @@ jobs:
           cache: true
       - if: env.RUN == 'true'
         run: pnpm install --frozen-lockfile
+      # Playwright는 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다(playwright-core
+      # downloadBrowserWithProgressBar). 시스템 의존성은 apt가 받으므로 apt의 받기 재시도만 켠다(아래 단계).
+      - name: Let apt retry transient download failures
+        if: env.RUN == 'true' && matrix.script == 'test:e2e'
+        run: echo 'Acquire::Retries "2";' | sudo tee /etc/apt/apt.conf.d/zzz-babojubot-retries
       - name: Install Chromium and system dependencies
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
+        timeout-minutes: 5
         run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium
       - if: env.RUN == 'true'
+        timeout-minutes: 12
         run: pnpm run ${{ matrix.script }}
       # 통과·실패·건너뜀 수를 남기고, 예상 밖 건너뜀과 빠진 서버 수명 시험을 실패로 본다.
       - name: Check E2E report
@@ -117,6 +124,7 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - name: Run unit tests
+        timeout-minutes: 12
         run: pnpm --filter @babojubot/contracts --filter @babojubot/core --filter @babojubot/web run test
   test-runtime:
     name: tests / runtime
@@ -141,6 +149,8 @@ jobs:
         run: |
           img="$RUNNER_TEMP/no-links.img"
           dir="$RUNNER_TEMP/no-links"
+          # apt의 받기 재시도는 시간 초과·연결 실패 같은 일시적인 오류에만 걸린다. 잘못된 패키지 이름·404는 바로 실패한다.
+          echo 'Acquire::Retries "2";' | sudo tee /etc/apt/apt.conf.d/zzz-babojubot-retries
           command -v mkfs.vfat >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q dosfstools; }
           truncate -s 64M "$img"
           mkfs.vfat "$img"
@@ -149,6 +159,7 @@ jobs:
           [ "$(findmnt -n -o FSTYPE -T "$dir")" = vfat ] || { echo "::error::$dir is not on vfat"; exit 1; }
           echo "BABOJUBOT_TEST_NO_LINK_DIR=$dir" >> "$GITHUB_ENV"
       - name: Run runtime tests
+        timeout-minutes: 12
         run: pnpm --filter @babojubot/runtime run test
   test-db:
     name: tests / db
@@ -168,11 +179,14 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - name: Run DB tests
+        timeout-minutes: 8
         run: pnpm --filter @babojubot/db run test
       # DB 테스트가 실패 코드를 0으로 덮어쓰지 않는지, 실패한 서버 테스트와 실패한 DB 준비도 실패로 끝나는지 본다.
       - name: Check test exit codes
+        timeout-minutes: 3
         run: node scripts/check-test-exit-code.mjs
       - name: Check boot script isolation
+        timeout-minutes: 5
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
   test-server:
     name: tests / server
@@ -192,6 +206,7 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - name: Run server tests
+        timeout-minutes: 12
         run: pnpm --filter @babojubot/server exec vitest run --exclude test/opencode-real-cli.test.ts
   test-opencode:
     name: tests / opencode
@@ -212,18 +227,26 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델 검사(apps/server/test/opencode-real-cli.test.ts)용. 모델 호출·로그인은 없다.
       # 공식 설치 스크립트와 npm은 1.x라 GitHub 릴리스 묶음을 받는다(docker/runner와 같은 방식). 판은 #147 프로토콜 기준이다.
+      # 일시적인 오류(시간 초과·연결 거부·HTTP 408·429·5xx)만 두 번 더 받는다(curl --retry). 404 같은 오류는 바로 실패한다.
+      # 파일로 받아야 curl이 다시 받기 전에 받다 만 내용을 버린다. 시도마다 남는 경고와 마지막 오류가 로그에 남는다.
       - name: Install OpenCode
+        timeout-minutes: 5
         env:
           OPENCODE_VERSION: "2.2.6"
         run: |
+          archive="$RUNNER_TEMP/opencode-linux-x64.tar.gz"
           mkdir -p "$RUNNER_TEMP/opencode"
-          curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
-            | tar -xz -C "$RUNNER_TEMP/opencode" opencode
+          curl -fSL --no-progress-meter --retry 2 --retry-connrefused --connect-timeout 20 --max-time 120 -o "$archive" \
+            "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" ||
+            { echo "::error::OpenCode download failed after up to 3 attempts; the last error is above"; exit 1; }
+          tar -xzf "$archive" -C "$RUNNER_TEMP/opencode" opencode
           "$RUNNER_TEMP/opencode/opencode" --version
           echo "BABOJUBOT_TEST_OPENCODE=$RUNNER_TEMP/opencode/opencode" >> "$GITHUB_ENV"
       - name: Run real OpenCode CLI tests
+        timeout-minutes: 10
         run: pnpm --filter @babojubot/server exec vitest run test/opencode-real-cli.test.ts
   # 지점 보호가 기대하는 `ci / test` 이름을 유지하는 집계 job. 각 테스트 job의 성공·건너뜀·취소를 하나씩 판정한다.
+  # 실패한 job마다 이유(시험 실패·실행 컴퓨터 미배정·취소·알 수 없음)를 job summary 표로 남긴다. 판정은 바꾸지 않는다.
   test:
     name: ci / test
     needs:
@@ -246,6 +269,11 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # 실패 이유를 붙이려고 이번 시도의 job 기록과 주석만 읽는다. 다시 돌리는 권한(actions: write)은 두지 않는다.
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -271,6 +299,7 @@ jobs:
           FILES_LINUX_RESULT: ${{ needs.files-linux.result }}
           FILES_WINDOWS_RESULT: ${{ needs.files-windows.result }}
           FILES_MACOS_RESULT: ${{ needs.files-macos.result }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/check-ci-test-gate.mjs
   # 실제 프로그램 연결은 세 OS를 지원한다. DB가 필요 없는 연결 검사만 돈다. 시스템마다 하나의 독립 job이며
   # `ci / test`가 각 결과를 직접 판정한다(matrix 요약은 개별 실패를 가릴 수 있다). 두 job의 단계는 같아야 한다(scripts/ci-test-gate.test.mjs).
@@ -293,17 +322,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
+        timeout-minutes: 3
         run: node --test scripts/ci-test-gate.test.mjs
-      - run: pnpm --filter @babojubot/runtime run typecheck
-      - run: pnpm --filter @babojubot/runtime test
+      - timeout-minutes: 5
+        run: pnpm --filter @babojubot/runtime run typecheck
+      - timeout-minutes: 12
+        run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
       - if: needs.changes.outputs.files != 'true'
+        timeout-minutes: 8
         run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
       # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
       # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
+        timeout-minutes: 8
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
   test-windows:
     name: runtime on windows-latest
@@ -324,17 +358,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
+        timeout-minutes: 3
         run: node --test scripts/ci-test-gate.test.mjs
-      - run: pnpm --filter @babojubot/runtime run typecheck
-      - run: pnpm --filter @babojubot/runtime test
+      - timeout-minutes: 5
+        run: pnpm --filter @babojubot/runtime run typecheck
+      - timeout-minutes: 12
+        run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
       - if: needs.changes.outputs.files != 'true'
+        timeout-minutes: 8
         run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
       # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
       # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
+        timeout-minutes: 8
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
   # Windows의 서버 정상 종료와 화면 E2E(#189). Windows에서는 부모가 신호로 서버에 정리를 맡길 수 없어 멈춤 메시지를 쓴다.
   # 서버 진입점의 멈춤 시험(POSIX 전용 신호·프로세스 그룹 시험은 건너뜀)과 Chromium 전체 E2E를 이 시스템에서 돈다.
@@ -358,10 +397,14 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - name: Check server stop on this system
+        timeout-minutes: 8
         run: pnpm --filter @babojubot/server exec vitest run src/stop-request.test.ts test/main.test.ts
+      # Playwright가 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다.
       - name: Install Chromium
+        timeout-minutes: 8
         run: pnpm --filter @babojubot/web exec playwright install chromium
       - name: Run E2E
+        timeout-minutes: 25
         run: pnpm --filter @babojubot/web exec playwright test --shard=1/2
       # 다시 돌린 시도(re-run)에서도 판정 job이 같은 이름으로 찾도록 시도 번호를 붙이지 않고 덮어쓴다.
       - name: Keep E2E report
@@ -398,9 +441,12 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
+      # Playwright가 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다.
       - name: Install Chromium
+        timeout-minutes: 8
         run: pnpm --filter @babojubot/web exec playwright install chromium
       - name: Run E2E
+        timeout-minutes: 25
         run: pnpm --filter @babojubot/web exec playwright test --shard=2/2
       # 다시 돌린 시도(re-run)에서도 판정 job이 같은 이름으로 찾도록 시도 번호를 붙이지 않고 덮어쓴다.
       - name: Keep E2E report
