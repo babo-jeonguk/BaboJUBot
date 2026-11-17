@@ -1,7 +1,5 @@
 import { type Clock, realClock, startProcess } from "./process.ts";
 
-export { type Clock, realClock };
-
 /**
  * Codex app-server 연결 하나(#145). 모델 목록·실행 시도·로그인 갱신이 함께 쓰는 연결 처리다.
  * 요청 ID·응답 짝짓기·대기 중인 요청·timer·닫힘을 이 연결이 끝까지 맡는다. 대기는 연결마다 따로이며 다른 연결로 넘기지 않는다.

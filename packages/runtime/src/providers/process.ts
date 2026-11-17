@@ -161,7 +161,6 @@ export function runProbe(
   });
 }
 
-/** One process group per attempt. Raw stderr is drained, never propagated to public logs. */
 /**
  * 시한·타이머가 쓰는 시계. 제품은 실제 시계(`realClock`)를 쓰고, 시험은 시간을 직접 넘기는 시계를 넣어 프로그램 시작처럼
  * 재려는 단계가 아닌 일이 시한을 먹지 않게 하거나, 타이머와 프로그램의 순서를 실제 시간 대신 상태로 정한다(#215).
@@ -178,6 +177,7 @@ export const realClock: Clock = {
     clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
+/** One process group per attempt. Raw stderr is drained, never propagated to public logs. */
 export function startProcess(options: {
   command: readonly [string, ...string[]];
   args: string[];

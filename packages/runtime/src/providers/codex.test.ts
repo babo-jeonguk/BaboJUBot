@@ -488,6 +488,15 @@ describe("one app-server connection per call (#145)", () => {
     const release = (name: string) => writeFile(path.join(root, name), "");
     return { provider, sent, methods, running, arrived, release };
   }
+  /** Whether `promise` has settled by now. Settling is a step the test can see; time passing is not. */
+  const settled = async (promise: Promise<unknown>) =>
+    Promise.race([
+      promise.then(
+        () => true,
+        () => true
+      ),
+      new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+    ]);
   /** Starting the program and answering the handshake take longer than the request limit under test (#213 A). */
   const slowHandshake = { initialize: [{ delayMs: 2_500 }] };
   const page = (models: string[], nextCursor: string | null) => ({
@@ -650,7 +659,10 @@ describe("one app-server connection per call (#145)", () => {
         emit: async () => {},
       });
       await t.arrived("thread/start");
-      clock.advance(2_000);
+      // The run waits on the unanswered request until its limit runs out, and fails only then.
+      clock.advance(1_999);
+      expect(await settled(running)).toBe(false);
+      clock.advance(1);
       const result = await running;
       expect(result.stopReason).toBe("failed");
       expect(await t.methods()).toEqual([
@@ -948,8 +960,13 @@ describe("one app-server connection per call (#145)", () => {
         const w = watch();
         const running = t.provider.adapter.execute(resumed(), w.control());
         await t.arrived("thread/resume");
-        // Only the unanswered resume runs out its limit. The one that ends with the program must fail without it.
-        if (!("exit" in step)) clock.advance(2_000);
+        // Only the unanswered resume runs out its limit, and fails only then. The one that ends with the program must fail
+        // without it.
+        if (!("exit" in step)) {
+          clock.advance(1_999);
+          expect(await settled(running)).toBe(false);
+          clock.advance(1);
+        }
         const result = await running;
         w.returned();
         expect(result.stopReason).toBe("failed");

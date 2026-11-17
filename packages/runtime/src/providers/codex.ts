@@ -19,12 +19,11 @@ import {
 } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import {
-  type Clock,
   openCodexConnection,
   ProtocolRejection,
-  realClock,
   ProtocolTimeout,
 } from "./codex-connection.ts";
+import { type Clock, realClock } from "./process.ts";
 import {
   startProcess,
   probeTimeoutMs,
