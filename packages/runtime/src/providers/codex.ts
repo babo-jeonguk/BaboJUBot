@@ -18,7 +18,11 @@ import {
   usageAmount,
 } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
-import { openCodexConnection, ProtocolRejection } from "./codex-connection.ts";
+import {
+  openCodexConnection,
+  ProtocolRejection,
+  ProtocolTimeout,
+} from "./codex-connection.ts";
 import {
   startProcess,
   probeTimeoutMs,
@@ -252,6 +256,8 @@ const defaultTimeouts = {
   request: 2 * 60 * 1000,
   /** 끼워 넣기 응답 제한. 넘기면 전달 여부를 모르는 오류이며 실행 시도는 끝내지 않는다. */
   steer: 10_000,
+  /** 끼워 넣기 응답이 없을 때 대화 기록을 한 번 읽는 제한(#206). 끼워 넣기 제한과 합쳐 기다림은 20초를 넘지 않는다. */
+  steerRecord: 10_000,
   /** 모델 목록 전체(초기화부터 마지막 페이지까지)의 한도. 페이지마다 다시 시작하지 않는다. */
   modelList: 60_000,
   /** 로그인 갱신 전체(초기화와 account/read)의 한도. 단계마다 다시 시작하지 않는다. */
@@ -700,8 +706,35 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 if (runControl.signal.aborted || connection.closed)
                   return "rejected";
                 const expectedTurnId = turnId;
+                /**
+                 * 대화 기록에 이 메시지 번호가 남았는가(#206). 기록을 한 번만 읽고 모델 턴은 시작하지 않는다.
+                 * 읽지 못했거나 그사이 실행 시도가 끝났으면 받았다고 보지 않는다.
+                 */
+                const recorded = async () => {
+                  try {
+                    const read = await connection.request(
+                      "thread/read",
+                      { threadId, includeTurns: true },
+                      { timeoutMs: timeouts.steerRecord }
+                    );
+                    if (runControl.signal.aborted || connection.closed)
+                      return false;
+                    const turns = record(read.thread).turns;
+                    return (Array.isArray(turns) ? turns : []).some((turn) => {
+                      const items = record(turn).items;
+                      return (Array.isArray(items) ? items : []).some(
+                        (item) =>
+                          record(item).type === "userMessage" &&
+                          record(item).clientId === message.messageId
+                      );
+                    });
+                  } catch {
+                    return false;
+                  }
+                };
                 try {
-                  // 응답이 없으면 전달 여부를 모르는 오류로 알린다. 실행 시도는 이어 가고 다시 보내지 않는다.
+                  // 응답이 없으면 기록을 한 번 확인하고, 거기에도 없으면 전달 여부를 모르는 오류로 알린다.
+                  // 실행 시도는 이어 가고 다시 보내지 않는다. 명시적 거절·연결 닫힘은 확인하지 않는다.
                   const ack = await connection.request(
                     "turn/steer",
                     {
@@ -717,6 +750,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                     : "rejected";
                 } catch (error) {
                   if (error instanceof ProtocolRejection) return "rejected";
+                  if (error instanceof ProtocolTimeout && (await recorded()))
+                    return "accepted";
                   throw error;
                 }
               });
