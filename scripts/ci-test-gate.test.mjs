@@ -442,17 +442,19 @@ test("lets the gate read job records and notes but not rerun anything", () => {
 });
 
 const runSteps = (job) => job.steps.filter((each) => each.run);
-// 시험·내려받기 단계는 job보다 짧은 시한을 둔다. 단계 시한에 걸리면 그 단계만 실패해 뒤의 보고 단계(`!cancelled()`·`failure()`)가 돈다.
-test("gives test and install steps their own time limit inside the job's", () => {
+// 시험·내려받기 단계마다 시한을 두고, 한 job 안의 단계 시한 합은 job 시한보다 5분 이상 짧다. 그래서 어떤 단계가 멈춰도
+// job 시한보다 먼저 그 단계 시한에 걸려 그 단계만 실패하고, 뒤의 보고 단계(`!cancelled()`·`failure()`)가 돈다.
+// 단계 시한에 걸린 단계는 실패로 끝나고 두 보고 단계가 모두 돈다(#218, GitHub Actions run 44133006534에서 확인).
+test("gives test and install steps time limits that fit inside the job's with room for reports", () => {
   const timed = [
     ["check", /^pnpm run |playwright install/],
     ["test-unit", /run test/],
-    ["test-runtime", /run test/],
+    ["test-runtime", /run test|apt-get/],
     ["test-db", /run test|check-test-exit-code|boot-check/],
     ["test-server", /vitest run/],
     ["test-opencode", /vitest run|curl /],
-    ["test-macos", /test|typecheck|vitest/],
-    ["test-windows", /test|typecheck|vitest/],
+    ["test-macos", /runtime test|vitest|boot-check/],
+    ["test-windows", /runtime test|vitest|boot-check/],
     ["test-e2e-windows-1", /vitest|playwright/],
     ["test-e2e-windows-2", /playwright/],
   ];
@@ -460,14 +462,13 @@ test("gives test and install steps their own time limit inside the job's", () =>
     const job = workflow.jobs[id];
     const steps = runSteps(job).filter((each) => pattern.test(each.run));
     assert.ok(steps.length > 0, id);
-    for (const each of steps) {
+    for (const each of steps)
       assert.ok(each["timeout-minutes"] > 0, `${id}: ${each.run}`);
-      // 정리·보고 단계가 돌 여유를 남긴다.
-      assert.ok(
-        each["timeout-minutes"] <= job["timeout-minutes"] - 5,
-        `${id}: ${each.run}`
-      );
-    }
+    const total = job.steps.reduce(
+      (sum, each) => sum + (each["timeout-minutes"] ?? 0),
+      0
+    );
+    assert.ok(total <= job["timeout-minutes"] - 5, `${id}: ${total} minutes`);
   }
 });
 

@@ -3,7 +3,11 @@
 // 실패하면 job마다 실패 이유(시험 실패·실행 컴퓨터 미배정·취소·알 수 없음)를 로그와 job summary에 표로 남긴다(#218).
 // 분류는 설명일 뿐이다. 통과·실패는 아래 decide()만 정하고, 분류 조회가 실패해도 바뀌지 않는다.
 import { appendFileSync } from "node:fs";
-import { classifyFailures, renderReport } from "./ci-job-failures.mjs";
+import {
+  classifyFailures,
+  renderReport,
+  unknownRows,
+} from "./ci-job-failures.mjs";
 
 // [job 이름(GitHub가 보여 주는 name), 결과 환경 변수]. 이름은 workflow와 같아야 한다(scripts/ci-test-gate.test.mjs).
 const suites = [
@@ -102,11 +106,10 @@ try {
   report = renderReport(rows, notes);
 } catch (error) {
   report = renderReport(
-    failures.map((each) => ({
-      ...each,
-      kind: "unknown",
-      reason: `분류 실패: ${error instanceof Error ? error.message : error}`,
-    })),
+    unknownRows(
+      failures,
+      `분류 실패: ${error instanceof Error ? error.message : error}`
+    ),
     notes
   );
 }

@@ -88,7 +88,10 @@ jobs:
         run: echo 'Acquire::Retries "2";' | sudo tee /etc/apt/apt.conf.d/zzz-babojubot-retries
       - name: Install Chromium and system dependencies
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
-        timeout-minutes: 5
+        timeout-minutes: 3
+        # 시도마다 번호와 오류를 로그에 남긴다.
+        env:
+          DEBUG: pw:install
         run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium
       - if: env.RUN == 'true'
         timeout-minutes: 12
@@ -179,7 +182,7 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - name: Run DB tests
-        timeout-minutes: 8
+        timeout-minutes: 7
         run: pnpm --filter @babojubot/db run test
       # DB 테스트가 실패 코드를 0으로 덮어쓰지 않는지, 실패한 서버 테스트와 실패한 DB 준비도 실패로 끝나는지 본다.
       - name: Check test exit codes
@@ -322,22 +325,20 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
-        timeout-minutes: 3
         run: node --test scripts/ci-test-gate.test.mjs
-      - timeout-minutes: 5
-        run: pnpm --filter @babojubot/runtime run typecheck
-      - timeout-minutes: 12
+      - run: pnpm --filter @babojubot/runtime run typecheck
+      - timeout-minutes: 8
         run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
       - if: needs.changes.outputs.files != 'true'
-        timeout-minutes: 8
+        timeout-minutes: 4
         run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
       # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
       # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
-        timeout-minutes: 8
+        timeout-minutes: 3
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
   test-windows:
     name: runtime on windows-latest
@@ -358,22 +359,20 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
-        timeout-minutes: 3
         run: node --test scripts/ci-test-gate.test.mjs
-      - timeout-minutes: 5
-        run: pnpm --filter @babojubot/runtime run typecheck
-      - timeout-minutes: 12
+      - run: pnpm --filter @babojubot/runtime run typecheck
+      - timeout-minutes: 8
         run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
       - if: needs.changes.outputs.files != 'true'
-        timeout-minutes: 8
+        timeout-minutes: 4
         run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
       # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
       # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
-        timeout-minutes: 8
+        timeout-minutes: 3
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
   # Windows의 서버 정상 종료와 화면 E2E(#189). Windows에서는 부모가 신호로 서버에 정리를 맡길 수 없어 멈춤 메시지를 쓴다.
   # 서버 진입점의 멈춤 시험(POSIX 전용 신호·프로세스 그룹 시험은 건너뜀)과 Chromium 전체 E2E를 이 시스템에서 돈다.
@@ -397,11 +396,14 @@ jobs:
           cache: true
       - run: pnpm install --frozen-lockfile
       - name: Check server stop on this system
-        timeout-minutes: 8
+        timeout-minutes: 5
         run: pnpm --filter @babojubot/server exec vitest run src/stop-request.test.ts test/main.test.ts
       # Playwright가 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다.
       - name: Install Chromium
-        timeout-minutes: 8
+        timeout-minutes: 5
+        # 시도마다 번호와 오류를 로그에 남긴다.
+        env:
+          DEBUG: pw:install
         run: pnpm --filter @babojubot/web exec playwright install chromium
       - name: Run E2E
         timeout-minutes: 25
@@ -443,7 +445,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Playwright가 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다.
       - name: Install Chromium
-        timeout-minutes: 8
+        timeout-minutes: 5
+        # 시도마다 번호와 오류를 로그에 남긴다.
+        env:
+          DEBUG: pw:install
         run: pnpm --filter @babojubot/web exec playwright install chromium
       - name: Run E2E
         timeout-minutes: 25

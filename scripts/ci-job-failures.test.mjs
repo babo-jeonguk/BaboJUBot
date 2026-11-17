@@ -55,6 +55,11 @@ function fakeApi(routes) {
     calls.push({ url: String(url), init });
     const route = routes[String(url).slice(api.length)];
     if (route instanceof Error) throw route;
+    // 응답하지 않는 서버: 호출자가 신호로 끊을 때까지 기다린다.
+    if (route === "hang")
+      return new Promise((_, reject) =>
+        init.signal.addEventListener("abort", () => reject(init.signal.reason))
+      );
     const { status = 200, body, link } = route ?? { status: 404, body: {} };
     return new Response(JSON.stringify(body), {
       status,
@@ -274,4 +279,33 @@ test("classifies an unassigned job and a test failure in the same run separately
 
 test("reports no failures", () => {
   assert.match(renderReport([]), /실패 없음/);
+});
+
+// 대기 중에 사람이나 concurrency가 취소한 job은 실행기·단계·주석이 모두 없다. 미배정 표시 일부만 맞으므로 알 수 없음이다.
+test("calls a job cancelled while still queued unknown", async () => {
+  const { fetch } = fakeApi({
+    [jobsPath()]: { body: { total_count: 1, jobs: [unassignedJob] } },
+    [notesPath(unassignedJob.id)]: { body: [] },
+  });
+  const [row] = await classifyFailures(
+    [failure(unassignedJob.name)],
+    context({ fetch })
+  );
+  assert.equal(row.kind, "unknown");
+  assert.match(row.reason, /실행기 없음, 단계 0개, 미배정 주석 없음/);
+});
+
+test("gives up within the overall lookup deadline and calls the rest unknown", async () => {
+  const { fetch } = fakeApi({
+    [jobsPath()]: { body: { total_count: 1, jobs: [unassignedJob] } },
+    [notesPath(unassignedJob.id)]: "hang",
+  });
+  const started = Date.now();
+  const [row] = await classifyFailures(
+    [failure(unassignedJob.name)],
+    context({ fetch, deadlineMs: 200 })
+  );
+  assert.equal(row.kind, "unknown");
+  assert.match(row.reason, /주석 조회 실패/);
+  assert.ok(Date.now() - started < 5_000);
 });

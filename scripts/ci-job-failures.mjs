@@ -12,24 +12,26 @@ export const kindLabels = {
 // 실행 컴퓨터를 받지 못한 job에 GitHub가 남기는 주석. 공개 API 계약은 아니므로 다른 세 표시와 함께일 때만 믿는다.
 const notAcquired = /The job was not acquired by Runner/;
 const requestTimeoutMs = 10_000;
+// 판정 job(5분) 안에서 조회 전체가 끝나도록 둔 상한. 넘으면 남은 job은 "알 수 없음"이다.
+const lookupDeadlineMs = 60_000;
 
 /**
  * @param {{ name: string, result: string, expected: string }[]} failures 판정이 실패로 센 job
  * @param {{ apiUrl?: string, repository?: string, runId?: string, runAttempt?: string, token?: string,
- *   fetch?: typeof globalThis.fetch }} context
+ *   fetch?: typeof globalThis.fetch, deadlineMs?: number }} context
  * @returns {Promise<{ name: string, result: string, expected: string, kind: keyof kindLabels, reason: string }[]>}
  */
 export async function classifyFailures(failures, context) {
   if (failures.length === 0) return [];
+  context = {
+    ...context,
+    deadline: AbortSignal.timeout(context.deadlineMs ?? lookupDeadlineMs),
+  };
   let jobs;
   try {
     jobs = await listAttemptJobs(context);
   } catch (error) {
-    return failures.map((each) => ({
-      ...each,
-      kind: "unknown",
-      reason: `job 목록 조회 실패: ${message(error)}`,
-    }));
+    return unknownRows(failures, `job 목록 조회 실패: ${message(error)}`);
   }
   const attempt = Number(context.runAttempt);
   const rows = [];
@@ -51,8 +53,15 @@ export async function classifyFailures(failures, context) {
   return rows;
 }
 
+/** 분류하지 못한 실패를 "알 수 없음"으로 남긴다. */
+export function unknownRows(failures, reason) {
+  return failures.map((each) => ({ ...each, kind: "unknown", reason }));
+}
+
 async function classifyJob(failure, job, context) {
-  const ran = job.runner_id > 0 && (job.steps?.length ?? 0) > 0;
+  const stepCount = job.steps?.length ?? 0;
+  const hasRunner = job.runner_id > 0;
+  const ran = hasRunner && stepCount > 0;
   if (failure.result === "failure") {
     const failed = (job.steps ?? []).filter(
       (step) => step.conclusion === "failure"
@@ -72,23 +81,25 @@ async function classifyJob(failure, job, context) {
       kind: "unknown",
       reason: `판정 입력 '${failure.result}', job 기록 '${job.conclusion}'`,
     };
-  const noRunner = !(job.runner_id > 0);
-  const noSteps = (job.steps?.length ?? 0) === 0;
-  let note;
+  let hasNotAcquiredNote;
   try {
     const notes = await fetchAll(
       `${base(context)}/repos/${context.repository}/check-runs/${job.id}/annotations`,
       context,
       (body) => body
     );
-    note = notes.some((each) => notAcquired.test(each.message ?? ""));
+    hasNotAcquiredNote = notes.some((each) =>
+      notAcquired.test(each.message ?? "")
+    );
   } catch (error) {
     return { kind: "unknown", reason: `주석 조회 실패: ${message(error)}` };
   }
-  const signs = `실행기 ${noRunner ? "없음" : "있음"}, 단계 ${job.steps?.length ?? 0}개, 미배정 주석 ${note ? "있음" : "없음"}`;
-  if (noRunner && noSteps && note) return { kind: "unassigned", reason: signs };
+  const signs = `실행기 ${hasRunner ? "있음" : "없음"}, 단계 ${stepCount}개, 미배정 주석 ${hasNotAcquiredNote ? "있음" : "없음"}`;
+  if (!hasRunner && stepCount === 0 && hasNotAcquiredNote)
+    return { kind: "unassigned", reason: signs };
   // 실행기를 받아 단계가 돈 뒤 끊긴 job은 사람이 취소했거나 concurrency가 취소했다.
-  if (ran && !note) return { kind: "cancelled", reason: signs };
+  // 미배정 표시가 일부만 있으면(예: 대기 중 취소돼 실행기·단계·주석이 모두 없음) 알 수 없음이다(#218).
+  if (ran && !hasNotAcquiredNote) return { kind: "cancelled", reason: signs };
   return { kind: "unknown", reason: signs };
 }
 
@@ -103,7 +114,7 @@ async function listAttemptJobs(context) {
 }
 
 // 모든 쪽을 읽는다. 다음 쪽은 GitHub가 준 Link 헤더의 rel="next"를 따른다.
-async function fetchAll(url, context, items) {
+async function fetchAll(url, context, pickList) {
   const fetch = context.fetch ?? globalThis.fetch;
   const all = [];
   let next = `${url}?per_page=100&page=1`;
@@ -115,10 +126,13 @@ async function fetchAll(url, context, items) {
         authorization: `Bearer ${context.token}`,
         "x-github-api-version": "2022-11-28",
       },
-      signal: AbortSignal.timeout(requestTimeoutMs),
+      signal: AbortSignal.any([
+        context.deadline,
+        AbortSignal.timeout(requestTimeoutMs),
+      ]),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const list = items(await response.json());
+    const list = pickList(await response.json());
     if (!Array.isArray(list)) throw new Error("예상과 다른 응답");
     all.push(...list);
     next = /<([^>]+)>;\s*rel="next"/.exec(
