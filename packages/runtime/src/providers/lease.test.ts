@@ -299,7 +299,8 @@ it.runIf(posix)(
   30_000
 );
 
-// 조회 하나가 전체 시한(유예 + 대기)을 넘겨도 기다리지 않는다. 시한이 지나면 조회 실패로 보고(기록 유지), 늦게 돌아온 조회 결과로는 신호를 보내지 않는다(PR #220 외부 리뷰 SPEC-5).
+// 조회 하나가 전체 시한(유예 + 대기)을 넘겨도 기다리지 않는다. 시한에 걸린 조회는 버리고 마지막으로 끝난 조회가 본 것을 끄지 못한 것(`left`)으로 돌려주며,
+// 늦게 돌아온 조회 결과로는 신호를 보내지 않는다(PR #220 외부 리뷰 SPEC-5). 끝난 조회가 하나도 없으면 조회 실패로 던진다(아래 시험).
 it.runIf(posix)(
   "gives up on a lookup that outlasts the overall limit and sends nothing after it",
   async () => {
@@ -308,18 +309,17 @@ it.runIf(posix)(
     const stuck = 2 ** 22 + 1;
     let lookups = 0;
     const begin = Date.now();
-    await expect(
-      stopLeaseHolders(lease, {
-        graceMs: 100,
-        waitMs: 100,
-        find: async () => {
-          if (lookups++ === 0) return { holders: [stuck], unverified: [] };
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          return { holders: [stuck, late.pid], unverified: [] };
-        },
-      })
-    ).rejects.toThrow();
+    const result = await stopLeaseHolders(lease, {
+      graceMs: 100,
+      waitMs: 100,
+      find: async () => {
+        if (lookups++ === 0) return { holders: [stuck], unverified: [] };
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return { holders: [stuck, late.pid], unverified: [] };
+      },
+    });
     expect(Date.now() - begin).toBeLessThan(500);
+    expect(result.left).toEqual([stuck]);
     // 늦게 돌아온 조회가 끝난 뒤에도 TERM을 받지 않았다.
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(late.termAt()).toBeUndefined();
