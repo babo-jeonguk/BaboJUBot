@@ -2190,6 +2190,8 @@ describe.skipIf(process.platform === "win32")(
       },
     ];
 
+    const byName = (name: string) =>
+      connections.find((connection) => connection.name === name)!;
     async function noLinkSetup(
       connection: (typeof connections)[number],
       login: string | null,
@@ -2412,7 +2414,7 @@ describe.skipIf(process.platform === "win32")(
             .join(".") + ".sig";
         return codexLogin(jwt, "first-refresh");
       })();
-      const t = await noLinkSetup(connections[0]!, expiring, {
+      const t = await noLinkSetup(byName("Codex (app-server)"), expiring, {
         create: (options) =>
           createCodexProvider({
             ...options,
@@ -2448,7 +2450,7 @@ describe.skipIf(process.platform === "win32")(
 
     it("refreshes an expiring Antigravity login with agy on this machine at the connection folder's place, and the model gets the refreshed login", async () => {
       const t = await noLinkSetup(
-        connections[2]!,
+        byName("Antigravity"),
         agyLogin("old-agy-access", {
           expired: true,
           token: {

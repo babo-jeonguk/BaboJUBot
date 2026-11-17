@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -350,6 +350,8 @@ describe.each([
       cleanups.push(() => new Promise((resolve) => server.close(resolve)));
       const provider = connection.create({
         dataDir,
+        // 연결 확인은 프로그램을 띄우지 못하고(없는 프로그램) 끝난다. 로그인 자리 준비는 그 앞에서 한다.
+        command: [path.join(dataDir, "no-such-program")],
         relay: {
           upstream: `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`,
           verified: true,
@@ -395,18 +397,15 @@ describe.each([
         reason: "credential_relay_failed",
       });
       await expect(gate.place(target)).rejects.toThrow("로그인을 쓰지 못해");
+      const folder = path.join(dataDir, "providers", connection.id);
       /** 다시 로그인한다. 로그인 명령은 연결 폴더에서 돌아 그 자리에 쓴다. */
       const logIn = async () => {
-        const at = path.join(
-          dataDir,
-          "providers",
-          connection.id,
-          ...connection.place
-        );
+        const at = path.join(folder, ...connection.place);
         await mkdir(path.dirname(at), { recursive: true });
         await writeFile(at, connection.login, { mode: 0o600 });
       };
-      return { target, logIn };
+      const original = path.join(folder, "login", connection.place.at(-1)!);
+      return { target, logIn, provider, original };
     }
 
     it("clears the relay failure on the check after logging in again at the connection folder's place, and lets the next isolated run start", async () => {
@@ -418,10 +417,14 @@ describe.each([
       });
     });
 
-    it("clears the relay failure on the first check after links become possible", async () => {
-      const { target, logIn } = await failedRelay();
+    it("clears the relay failure on the first check after links become possible, and keeps it clear once the check moves the login back to the login folder", async () => {
+      const { target, logIn, provider, original } = await failedRelay();
       await logIn();
       refusal = null;
+      // 준비 확인은 격리 관문(중계 복구)을 먼저 보고 그다음 연결을 확인한다. 연결 확인이 로그인을 원본 자리로 되돌린다.
+      await expect(gate!.readiness(target)).resolves.toBeNull();
+      await provider.adapter.checkReadiness(AbortSignal.timeout(10_000));
+      expect(await readFile(original, "utf8")).toBe(connection.login);
       await expect(gate!.readiness(target)).resolves.toBeNull();
       await expect(gate!.place(target)).resolves.toMatchObject({
         execution: "container",

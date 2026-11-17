@@ -15,15 +15,13 @@ import path from "node:path";
  * 로그인 원본마다 링크 작업과 로그인 읽기(`readLogin`)를 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다.
  * 옮기는 중에 읽으면 원본이 두 자리 사이에 있어 어느 쪽에서도 못 읽을 수 있다(#209).
  */
-const linking = new Map<string, Promise<unknown>>();
+const turns = new Map<string, Promise<unknown>>();
 function oneAtATime<T>(key: string, task: () => Promise<T>): Promise<T> {
-  const next = (linking.get(key) ?? Promise.resolve())
-    .catch(() => {})
-    .then(task);
-  linking.set(key, next);
+  const next = (turns.get(key) ?? Promise.resolve()).catch(() => {}).then(task);
+  turns.set(key, next);
   void next
     .finally(() => {
-      if (linking.get(key) === next) linking.delete(key);
+      if (turns.get(key) === next) turns.delete(key);
     })
     .catch(() => {});
   return next;
