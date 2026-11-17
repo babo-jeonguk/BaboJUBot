@@ -48,7 +48,12 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import {
+  eventuallyMs,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
 
 // 서버 재시작 복구. 실행 중 서버가 멈추면 그 실행 시도는 `server_restart`로 끝나고, 받은 깨우기는 다시 처리되어 새 실행 시도가 생긴다.
 
@@ -669,7 +674,10 @@ describe("server start recovery barrier", () => {
       stream = await listen(base);
       // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
       await http.say(early!.organizationId, "복구 중에 보낸 메시지");
-      await new Promise((r) => setTimeout(r, 300));
+      // 시간을 기다리지 않는다. 복구가 끝나기 전의 촉진은 응답 전에 그 자리에서 버려지고(`kick`), 메시지의 Event는 응답 전에
+      // 나간다. 그래서 응답과 이 연결의 순서 표시 뒤에 보면 이 요청이 남긴 것은 모두 보인다. 붙잡아 둔 뒤쪽 복구는
+      // `held`가 열기 전에는 끝나지 않으므로, 그 알림도 이때까지 나갈 수 없다.
+      await stream.caughtUp();
       expect(runtime.executions()).toEqual([]);
       expect(stream.types().filter((t) => t !== "message.created")).toEqual([]);
       expect(await runStatus(late!.runId)).toBe("running");
@@ -807,7 +815,12 @@ async function until(check: () => Promise<boolean>) {
   }
 }
 
-type Stream = { types: () => string[]; close: () => void };
+type Stream = {
+  types: () => string[];
+  /** 서버가 지금까지 이 연결로 보낸 Event를 모두 받을 때까지 기다린다(ping 뒤의 pong은 그 앞 frame 뒤에 온다). */
+  caughtUp: () => Promise<void>;
+  close: () => void;
+};
 
 /** 전체 Event stream을 구독해 받은 Event 종류를 순서대로 모은다. 서버가 듣기 시작할 때까지 다시 시도한다. */
 async function listen(base: string): Promise<Stream> {
@@ -825,5 +838,17 @@ async function listen(base: string): Promise<Stream> {
         });
       })
   );
-  return { types: () => [...types], close: () => socket.close() };
+  return {
+    types: () => [...types],
+    caughtUp: () =>
+      within(
+        new Promise<void>((resolve) => {
+          socket.once("pong", () => resolve());
+          socket.ping();
+        }),
+        "the Event stream's pong",
+        eventuallyMs
+      ),
+    close: () => socket.close(),
+  };
 }

@@ -16,7 +16,7 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import { eventually, startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -97,7 +97,7 @@ async function waitForSettingsWriters(count: number) {
         and query like '%provider_%' and pid <> pg_backend_pid()
     `);
       return rows[0]!.waiting;
-    })
+    }, eventually)
     .toBe(count);
 }
 
@@ -142,7 +142,7 @@ describe("concurrent global settings writes", () => {
       expect((await restoring!).status).toBe(200);
       expect(await settings()).toMatchObject(final);
       await expect
-        .poll(() => watcher.settingsSignals())
+        .poll(() => watcher.settingsSignals(), eventually)
         .toBe(repeatChoice ? 1 : 2);
       expect(watcher.events).toEqual([]);
     }
@@ -163,7 +163,7 @@ describe("concurrent global settings writes", () => {
       });
       expect(saved.status).toBe(200);
     }
-    await expect.poll(() => watcher.settingsSignals()).toBe(1);
+    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
   });
 
   it("signals a limit replacement even when the competing insert was initially invisible", async () => {
@@ -190,7 +190,7 @@ describe("concurrent global settings writes", () => {
     }
     expect((await saving).status).toBe(200);
     expect((await settings()).providers[0]!.maxConcurrentRuns).toBe(2);
-    await expect.poll(() => watcher.settingsSignals()).toBe(1);
+    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
   });
 });
 
@@ -236,7 +236,7 @@ describe("provider connections and agent choices", () => {
       model: "fake-2-max",
     });
     // 전역 설정은 조직 Event가 아니라 다시 불러오라는 신호로 다른 화면에 간다.
-    await expect.poll(() => watcher.settingsSignals()).toBe(1);
+    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
     expect(watcher.events).toEqual([]);
 
     // 고르지 않은 Lead는 Lead 기본값, 승인으로 생긴 작업자는 작업자 기본값을 복사하고 각자의 연결로 실행된다.
@@ -420,7 +420,7 @@ describe("concurrent run cap per connection", () => {
       model: null,
     });
     await expect
-      .poll(() => connections.runsOf(leadOf(elsewhere).id).length)
+      .poll(() => connections.runsOf(leadOf(elsewhere).id).length, eventually)
       .toBe(1);
     // 상한을 넘는 깨우기는 실행 시도 없이 기다린다.
     expect(await runsOf(second.id)).toEqual([]);

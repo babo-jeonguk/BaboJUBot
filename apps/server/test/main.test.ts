@@ -221,10 +221,10 @@ posix.each(posixStopRequests)(
       send(child);
       const { code } = await waitExit(child, shutdownWaitMs);
       expect(code, child.stderrText()).toBe(1);
-      // 시한은 프로세스가 끝나는 시각까지다. 프로세스 종료 때의 비상 정지도 그 안에 든다.
-      // 타이머를 이 경계에 두므로 스케줄러가 늦게 깨는 몫을 더 두되, 기본 시한(30s)보다는 크게 짧게 잡는다.
-      expect(Date.now() - stoppedAt).toBeLessThan(2_000 + 1_000);
-      expect(child.stderrText()).toContain("did not finish");
+      // 정한 시한(2s)으로 끝났다는 것은 그 시한을 적은 진단으로 본다. 걸린 시간은 기본 시한(30s)을 쓰지 않았다는 것만
+      // 확인한다. 시한에 1초 여유만 두면 느린 실행기에서 스케줄러가 늦게 깨는 몫이 시한 검사를 깨뜨린다(#215).
+      expect(child.stderrText()).toContain("did not finish in 2s");
+      expect(Date.now() - stoppedAt).toBeLessThan(15_000);
 
       process.kill(postgresPid, "SIGCONT");
       const deadline = Date.now() + 15_000;

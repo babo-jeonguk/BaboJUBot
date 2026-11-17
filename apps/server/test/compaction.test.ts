@@ -1,5 +1,13 @@
 import { afterEach, expect, it } from "vitest";
-import { startTestServer, type TestServer } from "./support.ts";
+import {
+  eventually,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
+
+const leadOf = (org: { agents: { id: string; role: string }[] }) =>
+  org.agents.find((a) => a.role === "lead")!.id;
 let t: TestServer | undefined;
 afterEach(async () => {
   await t?.close();
@@ -195,7 +203,8 @@ it("keeps a normal wake pending while compaction owns the session and uses the c
         })
       ).status
     ).toBe(201);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 메시지의 촉진을 처리한 뒤에 본다. 압축 중이면 실행 시도를 시작하지 않고 처리가 끝난다.
+    await within(t.kickHandled(leadOf(org)), "handling the message's kick");
     expect(runs).toBe(1);
   } finally {
     finish();
@@ -275,7 +284,11 @@ it.each([
         })
       ).status
     ).toBe(201);
+    await within(t.kickHandled(leadOf(org)), "handling the message's kick");
+    expect(runs).toBe(1);
     now = new Date("2026-01-01T01:08:59Z");
+    // 압축 시한 확인(250ms 간격)이 시한 전 시각을 보고 멈추지 않는지는 알릴 신호가 없어 그 간격 몇 번을 기다려 본다.
+    // 느린 기기에서는 그 사이 확인이 돌지 않아 결함이 있어도 통과할 수 있다. 이 시험이 보장하는 한계다(#215).
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(runs).toBe(1);
     now = new Date("2026-01-01T01:09:00Z");
@@ -391,7 +404,7 @@ it("uses spare provider capacity for another organization while one compaction i
   now = new Date("2026-01-01T00:54:00Z");
   const tick = t.tickCompactions();
   try {
-    await expect.poll(() => calls, { timeout: 2000 }).toBe(2);
+    await expect.poll(() => calls, eventually).toBe(2);
   } finally {
     release();
     await tick;

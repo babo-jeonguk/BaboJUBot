@@ -21,7 +21,7 @@ import {
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, idle, scriptedAgents } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import { eventually, startTestServer, type TestServer } from "./support.ts";
 
 // 넓힌 프로바이더 계약(#96): 실행 중 끼워 넣기와 거절 뒤 줄 세우기, 준비 확인의 갱신 시점, 실행 시도 상세의 사용량.
 
@@ -310,7 +310,7 @@ describe("provider readiness", () => {
       providerSettingsSchema.parse(rechecked.body).providers[1]!.readiness
     ).toMatchObject({ status: "ready", reason: null, checking: false });
     // 확인을 시작할 때와 끝낼 때 다시 불러오라는 신호가 간다.
-    await expect.poll(() => watcher.settingsSignals()).toBe(2);
+    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(2);
     expect(
       (await t!.request("POST", "/api/providers/nope/readiness")).status
     ).toBe(404);
@@ -320,7 +320,7 @@ describe("provider readiness", () => {
       202
     );
     await expect
-      .poll(async () => (await readinessOf("fake-2")).reason)
+      .poll(async () => (await readinessOf("fake-2")).reason, eventually)
       .toBe("credentials_unverified");
     expect(watcher.events).toEqual([]);
   });
@@ -434,7 +434,7 @@ describe("provider readiness", () => {
     await send(org.id, "로그인 실패");
     await t!.drain();
     await expect
-      .poll(async () => (await readinessOf("fake")).reason)
+      .poll(async () => (await readinessOf("fake")).reason, eventually)
       .toBe("product_login_missing");
     expect(checks).toBe(2);
   });

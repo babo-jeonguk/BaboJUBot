@@ -635,7 +635,10 @@ describe("chaos harness on a fake connection", () => {
       launch: { ...launchAll, scenes: ["a"] },
       connection: "fake-live",
       scenes: [hang],
-      sceneMs: 15_000,
+      // 장면 시한은 장면 전체(서버 시작·내장 DB 초기화·조직 생성·실행 시작 포함)에 걸리는 하네스의 계약이라 준비와
+      // 떼어 잴 수 없다. 이 장면은 시한까지 끝나지 않으므로 시한이 곧 시험 시간이다. 느린 실행기에서도 준비(실행 1회)가
+      // 시한 안에 들게 준비 시간의 여러 배를 두고, 나머지는 시험 시한(120s) 안에 정리할 몫으로 남긴다(#215).
+      sceneMs: 30_000,
     });
     const [scene] = summary.scenes;
     expect(scene).toMatchObject({
@@ -833,8 +836,12 @@ describe("chaos harness on a fake connection", () => {
     });
     try {
       const at = Date.now();
-      await expect(server.start(AbortSignal.timeout(200))).rejects.toThrow();
-      expect(Date.now() - at).toBeLessThan(10_000);
+      // 멈춘 이유는 시작 실패가 아니라 중단 신호다. 걸린 시간은 시작 대기(180s)까지 가지 않았다는 것만 본다. 짧은
+      // 상한은 느린 실행기에서 서버 프로세스를 띄우고 끝내는 시간까지 재게 된다(#215).
+      await expect(
+        server.start(AbortSignal.timeout(200))
+      ).rejects.toMatchObject({ name: "TimeoutError" });
+      expect(Date.now() - at).toBeLessThan(60_000);
       expect(server.running).toBe(false);
     } finally {
       // 실패해도 띄운 서버·DB·홈을 남기지 않는다.

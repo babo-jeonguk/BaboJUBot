@@ -12,7 +12,7 @@ import { leadReplyScript, type Script } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { calls, goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import { eventually, startTestServer, type TestServer } from "./support.ts";
 
 // 조직 대시보드 요약과 홈 개요(#62). 수는 조직 원장에서 바로 센 값과 같아야 하고 다른 조직을 섞지 않는다.
 
@@ -321,7 +321,9 @@ describe("running runs on the dashboard and home", () => {
       await say(b.id, "오래 걸리는 일");
       await Promise.all([stuck.reached, held.reached, heldB.reached]);
       // Lead 실행 시도가 끝날 때까지 기다린다.
-      await expect.poll(async () => (await runningRuns(a.id)).length).toBe(2);
+      await expect
+        .poll(async () => (await runningRuns(a.id)).length, eventually)
+        .toBe(2);
 
       const before = await overview();
       expect(before.runs).toEqual({ running: 3, cancelling: 0 });
@@ -474,14 +476,16 @@ describe("rooms on the home", () => {
       await say(room.id, "작업을 맡겨 주세요");
       await held.reached;
       await expect
-        .poll(async () =>
-          (await allRuns(room.id)).some(
-            (r) => r.agentId === second.id && r.status === "failed"
-          )
+        .poll(
+          async () =>
+            (await allRuns(room.id)).some(
+              (r) => r.agentId === second.id && r.status === "failed"
+            ),
+          eventually
         )
         .toBe(true);
       await expect
-        .poll(async () => (await runningRuns(room.id)).length)
+        .poll(async () => (await runningRuns(room.id)).length, eventually)
         .toBe(1);
       expect(
         (

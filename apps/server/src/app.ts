@@ -189,6 +189,8 @@ export type RunningServer = {
   url: string;
   /** 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. 테스트 helper. */
   drain: () => Promise<void>;
+  /** 이 에이전트가 받은 촉진의 처리가 끝날 때까지 기다린다(`RunDispatcher.handled`). 테스트 helper. */
+  kickHandled: (agentId: string) => Promise<void>;
   /** 주입한 시계의 지금 시각으로 지난 heartbeat를 처리한다. 테스트 helper(서버는 주기적으로 스스로 확인한다). */
   tickHeartbeats: () => Promise<void>;
   tickCompactions: () => Promise<void>;
@@ -1359,6 +1361,7 @@ export async function startServer({
   return {
     url,
     drain: () => dispatcher.drain(),
+    kickHandled: (agentId) => dispatcher.handled(agentId),
     tickHeartbeats: () => heartbeats.tick(),
     tickCompactions: () => compactions.tick(),
     deliverNotifications: () => notifications.flush(),
