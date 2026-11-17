@@ -5,7 +5,7 @@
 | 연결 | 시험한 판 | 실행 방식 | 지침 | 끼워 넣기 |
 | --- | --- | --- | --- | --- |
 | Claude Code | 2.1.317 | 실행마다 duplex stream-json | 기본 지침에 파일로 append | 살아 있는 입력 큐에 전달 |
-| Codex | 0.166.0 | app-server 기본, `BABOJUBOT_CODEX_MODE=exec` 선택 | developerInstructions | app-server 턴 ACK(답이 없으면 대화 기록의 메시지 번호로 확인); exec 미지원 |
+| Codex | 0.166.0, 0.169.0(끼워 넣기·기록 읽기만 확인, #206) | app-server 기본, `BABOJUBOT_CODEX_MODE=exec` 선택 | developerInstructions | app-server 턴 ACK(답이 없으면 대화 기록의 메시지 번호로 확인); exec 미지원 |
 | OpenCode | 2.2.5, 2.2.6 | 실행마다 `serve --stdio`로 HTTP 서버 시작, 조직 도구 호출 키 plugin | 기본 지침 유지, session instructions API 추가 | `delivery: steer` 응답 |
 | Antigravity | 1.5.4(가짜 상류로 합성 확인) | 실행마다 `agy acp`(Agent Client Protocol) 세션 하나 | 첫 입력 앞에 추가 | 미지원 |
 
