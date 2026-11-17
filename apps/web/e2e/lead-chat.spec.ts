@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import {
+  goalInput,
+  messageAnswered,
+  runsSettled,
+} from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 test("keeps a draft edited while the previous message is being sent", async ({
@@ -61,6 +65,7 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
 
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
   // 조직을 만들면 가짜 Lead가 깨어나 초기 연구 승인을 요청했다고 먼저 알린다.
+  await runsSettled(page.request, org.id);
   const conversation = page.getByRole("list", { name: "대화" });
   await expect(conversation.locator('[data-author="agent"]')).toContainText(
     "초기 연구 승인을 요청했습니다"
@@ -70,6 +75,11 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
   await page.getByRole("button", { name: "보내기", exact: true }).click();
 
   // Lead의 답장은 새로고침 없이 Event stream으로 나타난다.
+  await messageAnswered(
+    page.request,
+    org.id,
+    "데이터셋은 무엇을 쓸 계획인가요"
+  );
   const reply = conversation
     .locator('[data-author="agent"]')
     .filter({ hasText: "데이터셋은 무엇을 쓸 계획인가요" });

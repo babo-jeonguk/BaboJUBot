@@ -3,6 +3,7 @@ import {
   goalInput,
   inboxOrganizationItems,
   inboxOrganizationLinks,
+  firstApprovalId,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -19,14 +20,7 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  let approvalId = "";
-  await expect
-    .poll(async () => {
-      const res = await page.request.get(api("/approvals"));
-      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
-      return approvalId;
-    })
-    .not.toBe("");
+  const approvalId = await firstApprovalId(page.request, org.id);
   await page.request.post(api(`/approvals/${approvalId}/decision`), {
     data: { decision: "approve" },
   });

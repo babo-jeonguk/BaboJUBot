@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
-import { openWithLiveEvents } from "./support/live-events.ts";
+import { firstApprovalId, goalInput } from "./support/organization.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 
 /** 스크린샷을 남길 곳. 지정하면 조직도·꾸미기 창을 찍는다(사람이 보는 확인용이며 비교하지 않는다). */
 const shots = process.env.E2E_SHOTS;
@@ -13,6 +13,7 @@ const shot = async (page: Page, name: string) => {
 /**
  * 한눈에 맞추기(`fitView`)는 다음 frame에 돌아 그 전에 잰 위치는 맞춘 뒤와 다르다. 연달아 두 번 잰 위치가 같아질 때까지
  * 기다렸다가 그 위치를 돌려준다. 한 번만 재면 상자마다 다른 배치에서 잰 값을 비교할 수 있다.
+ * 첫 배치는 화면을 불러오는 일의 끝이므로 그 상한(`pageLoad`)으로 기다린다. 부하가 큰 기기에서 기본 5초를 넘겼다(#215).
  */
 async function settledBoxes<L extends Locator[]>(locators: [...L]) {
   type Box = { x: number; y: number; width: number; height: number };
@@ -27,7 +28,7 @@ async function settledBoxes<L extends Locator[]>(locators: [...L]) {
       const same = now === last;
       last = now;
       return same;
-    })
+    }, pageLoad)
     .toBe(true);
   // 넘긴 개수만큼 돌려준다. 상자마다 따로 잴 때와 달리 부를 때마다 위치가 확정된 값이다.
   return boxes as { [K in keyof L]: Box };
@@ -42,14 +43,7 @@ async function teamOrganization(page: Page, name: string) {
   });
   const { id } = (await created.json()) as Org;
   const api = (path: string) => `/api/organizations/${id}${path}`;
-  let approvalId = "";
-  await expect
-    .poll(async () => {
-      const res = await page.request.get(api("/approvals"));
-      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
-      return approvalId;
-    })
-    .not.toBe("");
+  const approvalId = await firstApprovalId(page.request, id);
   const decided = await page.request.post(
     api(`/approvals/${approvalId}/decision`),
     { data: { decision: "approve" } }

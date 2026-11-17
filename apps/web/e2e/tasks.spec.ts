@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
-import { openWithLiveEvents } from "./support/live-events.ts";
+import { firstApprovalId, goalInput } from "./support/organization.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 
 test("the owner watches tasks appear and complete live, reads the self-report and artifact, and comments to wake the worker", async ({
   page,
@@ -9,16 +9,7 @@ test("the owner watches tasks appear and complete live, reads the self-report an
     data: { name: "작업 E2E 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  let approvalId = "";
-  await expect
-    .poll(async () => {
-      const res = await page.request.get(
-        `/api/organizations/${org.id}/approvals`
-      );
-      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
-      return approvalId;
-    })
-    .not.toBe("");
+  const approvalId = await firstApprovalId(page.request, org.id);
 
   await openWithLiveEvents(page, `/orgs/${org.id}/tasks`);
   await expect(page.getByRole("main")).toContainText("아직 작업이 없습니다");
@@ -121,8 +112,19 @@ test("shows a missing task or artifact as not found", async ({ page }) => {
     data: { name: "없는 작업 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  await page.goto(`/orgs/${org.id}/tasks/${crypto.randomUUID()}`);
-  await expect(page.getByText("찾을 수 없는 작업")).toBeVisible();
-  await page.goto(`/orgs/${org.id}/artifacts/${crypto.randomUUID()}`);
-  await expect(page.getByText("찾을 수 없는 산출물")).toBeVisible();
+  // 화면이 서버의 404를 받은 뒤에 표시를 본다. 페이지를 불러오는 시간은 기본 대기에 넣지 않는다(#215).
+  const notFound = async (kind: "tasks" | "artifacts", text: string) => {
+    const id = crypto.randomUUID();
+    const answered = page.waitForResponse(
+      (res) =>
+        res.url().endsWith(`/api/organizations/${org.id}/${kind}/${id}`) &&
+        res.status() === 404,
+      pageLoad
+    );
+    await page.goto(`/orgs/${org.id}/${kind}/${id}`, pageLoad);
+    await answered;
+    await expect(page.getByText(text)).toBeVisible();
+  };
+  await notFound("tasks", "찾을 수 없는 작업");
+  await notFound("artifacts", "찾을 수 없는 산출물");
 });

@@ -1,6 +1,10 @@
 import { expect, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
-import { goalInput } from "./support/organization.ts";
+import {
+  goalInput,
+  messageAnswered,
+  runsSettled,
+} from "./support/organization.ts";
 import { test } from "./support/shared-settings.ts";
 
 // E2E 서버는 가짜 프로바이더 연결 둘(`fake`, `fake-2`)을 띄운다(playwright.config.ts `BABOJUBOT_FAKE_PROVIDERS`).
@@ -151,6 +155,7 @@ test("the owner picks the Lead's provider when creating an organization and late
   const leadId = org.agents.find((a) => a.role === "lead")!.id;
 
   // 만든 Lead는 고른 프로바이더로 깨어났고, 실행 시도 목록 행에 프로바이더·모델이 보인다.
+  await runsSettled(request, orgId);
   await openWithLiveEvents(page, `/orgs/${orgId}/agents/${leadId}`);
   const recent = page.getByRole("region", { name: "최근 실행 시도" });
   await expect(recent.getByRole("listitem")).toHaveCount(1);
@@ -212,6 +217,7 @@ test("the owner picks the Lead's provider when creating an organization and late
     data: { body: "다음 실행 시도" },
   });
   expect(sent.status()).toBe(201);
+  await messageAnswered(request, orgId, "다음 실행 시도");
   await expect(recent.getByRole("listitem")).toHaveCount(2);
   await expect(recent.getByRole("listitem").first()).toContainText(
     "가짜 프로바이더 2 · 기본 모델"

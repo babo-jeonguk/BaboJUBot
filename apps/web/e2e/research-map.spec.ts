@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import { firstApprovalId, goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /**
@@ -52,16 +52,7 @@ async function researchingOrganization(page: Page, name: string) {
     data: { name, ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  let approvalId = "";
-  await expect
-    .poll(async () => {
-      const res = await page.request.get(
-        `/api/organizations/${org.id}/approvals`
-      );
-      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
-      return approvalId;
-    })
-    .not.toBe("");
+  const approvalId = await firstApprovalId(page.request, org.id);
   return { id: org.id, approvalId };
 }
 

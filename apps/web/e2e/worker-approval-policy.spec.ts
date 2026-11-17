@@ -1,5 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
-import { goalInput, inboxOrganizationLinks } from "./support/organization.ts";
+import {
+  firstApprovalId,
+  goalInput,
+  inboxOrganizationLinks,
+} from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
@@ -24,14 +28,7 @@ test("the owner turns on the worker approval policy in settings, sees it in anot
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  let approvalId = "";
-  await expect
-    .poll(async () => {
-      const res = await page.request.get(api("/approvals"));
-      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
-      return approvalId;
-    })
-    .not.toBe("");
+  const approvalId = await firstApprovalId(page.request, org.id);
   await page.request.post(api(`/approvals/${approvalId}/decision`), {
     data: { decision: "approve" },
   });

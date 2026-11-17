@@ -1,6 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import { test } from "./support/isolated-server.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { runsSettled } from "./support/organization.ts";
 
 /** 화면을 열어 구독 성립을 기다린 뒤, 이후 화면 갱신이 새로고침 없이 일어났는지 확인할 표식을 심는다. */
 async function openMarked(page: Page, path: string) {
@@ -43,6 +44,7 @@ test("creating an organization with a goal opens its Lead chat, wakes the Lead a
   await expect(dialog).toBeHidden();
   await expect(page.getByText("Research Lead", { exact: true })).toBeVisible();
   // Lead 대화로 목표를 보내지 않아도 생성으로 깨어난 Lead가 초기 연구 승인을 요청한다.
+  await runsSettled(page.request, new URL(page.url()).pathname.split("/")[2]!);
   await expect(
     page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
   ).toContainText("초기 연구 승인을 요청했습니다");

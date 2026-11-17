@@ -1,4 +1,9 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  type APIRequestContext,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 
 /**
  * API로 조직을 만들 때 쓰는 기본 연구 목표와 완료 기준. 조직을 만들면 가짜 Lead가 이 목표로 곧바로 초기 연구 승인을 요청한다.
@@ -60,16 +65,79 @@ export async function createSettledOrganization(
     id: string;
     agents: { id: string; role: string }[];
   };
-  await expect
-    .poll(
-      async () => {
-        const list = (await (
-          await page.request.get(`/api/organizations/${org.id}/runs`)
-        ).json()) as { status: string }[];
-        return list.length > 0 && list.every((r) => r.status === "completed");
-      },
-      { timeout: 30_000 }
-    )
-    .toBe(true);
+  await runsSettled(page.request, org.id);
   return org;
+}
+
+/**
+ * 가짜 Lead 실행 시도 하나를 기다리는 상한(#215). 깨우기 → 가짜 프로바이더 → DB → Event를 거치고, 가짜 프로바이더의
+ * 동시 실행 칸(2)을 앞 spec의 조직이 쓰고 있으면 그 실행이 끝나기를 기다린다. 2 CPU에 부하를 건 기기에서 기본 5초를
+ * 넘겼다. 이 대기는 실행 시도가 끝났는지만 보고, 화면 확인은 그 뒤에 기본 대기로 한다.
+ */
+export const leadRun = { timeout: 30_000 };
+
+/** 이 조직에 실행 시도가 생기고 모두 끝날 때까지 기다린다. 조직을 만든 뒤 생성으로 깨어난 Lead의 실행 시도를 기다릴 때 쓴다. */
+export async function runsSettled(
+  request: APIRequestContext,
+  organizationId: string
+) {
+  await expect
+    .poll(async () => {
+      const list = (await (
+        await request.get(`/api/organizations/${organizationId}/runs`)
+      ).json()) as { status: string }[];
+      // 실패하면 기다리던 실행 시도들의 상태가 그대로 보이게 상태 목록을 비교한다.
+      return list.map((r) => r.status).join(",");
+    }, leadRun)
+    .toMatch(/^completed(,completed)*$/);
+}
+
+/**
+ * 이 조직의 첫 승인 요청 ID. 조직을 만들면 가짜 Lead가 초기 연구 승인을 요청하는데, 그 요청이 생길 때까지 기다린다.
+ * 실행 시도가 끝났는지는 보지 않는다. 그것까지 필요하면 `runsSettled`를 함께 쓴다.
+ */
+export async function firstApprovalId(
+  request: APIRequestContext,
+  organizationId: string
+) {
+  let approvalId = "";
+  await expect
+    .poll(async () => {
+      const res = await request.get(
+        `/api/organizations/${organizationId}/approvals`
+      );
+      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
+      return approvalId;
+    }, leadRun)
+    .not.toBe("");
+  return approvalId;
+}
+
+/**
+ * 사용자가 보낸 메시지(`body`)를 받은 실행 시도가 끝날 때까지 기다린다. 메시지가 전달된 실행 시도의 ID로 찾으므로 앞서 끝난
+ * 실행 시도에 속지 않는다. 기본 대화가 아니면 `conversationId`를 준다.
+ */
+export async function messageAnswered(
+  request: APIRequestContext,
+  organizationId: string,
+  body: string,
+  conversationId?: string
+) {
+  const api = `/api/organizations/${organizationId}`;
+  const messages = conversationId
+    ? `${api}/conversations/${conversationId}/messages`
+    : `${api}/messages`;
+  await expect
+    .poll(async () => {
+      const { messages: list } = (await (
+        await request.get(messages)
+      ).json()) as {
+        messages: { body: string; deliveredToRunId: string | null }[];
+      };
+      const runId = list.find((m) => m.body === body)?.deliveredToRunId;
+      if (!runId) return "not delivered";
+      const run = await request.get(`${api}/runs/${runId}`);
+      return ((await run.json()) as { status: string }).status;
+    }, leadRun)
+    .toBe("completed");
 }
