@@ -21,8 +21,10 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-/** 놓아준 응답의 뒤처리(라이브러리의 then 사슬)가 모두 끝나도록 대기열을 한 번 비운다. */
-const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+/** 놓아준 응답의 뒤처리(라이브러리의 Promise 연쇄와 setTimeout 0 일괄 알림)가 끝나기를 기다린다(live-refresh.test.ts와 같음). */
+async function settle() {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+}
 
 let client: QueryClient;
 const unsubscribes: (() => void)[] = [];

@@ -118,6 +118,12 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   const stale = new Promise<Request>((resolve) => {
     staleSeen = resolve;
   });
+  // 옛 목록이 끝내 오지 않아도 정리에서 읽음 기록을 보내 붙잡힌 요청이 남지 않게 한다.
+  let letReadThrough!: () => void;
+  const readHeld = new Promise<void>((resolve) => {
+    letReadThrough = resolve;
+  });
+  void stale.then(() => letReadThrough());
   let releaseStale!: () => void;
   const staleHeld = new Promise<void>((resolve) => {
     releaseStale = resolve;
@@ -144,7 +150,7 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   await other.route(
     (url) => url.pathname === `${listPath}/${unseenConversation.id}/read`,
     async (route) => {
-      await stale;
+      await readHeld;
       await route.continue();
     }
   );
@@ -180,6 +186,7 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     await expect(unread).toHaveCount(0);
   } finally {
     releaseStale();
+    letReadThrough();
     await other.unrouteAll({ behavior: "wait" });
   }
 
