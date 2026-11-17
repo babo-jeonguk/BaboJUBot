@@ -65,6 +65,33 @@ const direct = (command: string, args: string[], cwd: string) =>
     }).stdout as string
   ) as unknown;
 
+/** 시험이 직접 띄운 프로그램을 끄고 끝날 때까지 기다린다. 시작하지 못한 프로그램은 `exit`가 오지 않고 끌 것도 없다. */
+async function stopSpawned(child: ChildProcess) {
+  if (
+    child.pid === undefined ||
+    child.exitCode !== null ||
+    child.signalCode !== null
+  )
+    return;
+  const ended = new Promise((resolve) => {
+    child.once("exit", resolve);
+    child.once("error", resolve);
+  });
+  child.kill("SIGKILL");
+  await within(ended, 10_000, `the exit of process ${child.pid}`);
+}
+/** 번호는 재사용될 수 있으므로 다시 끄지 않는다. 시한 안에 꺼지지 않았으면 시험이 남긴 것으로 보고 실패한다. */
+async function descendantsGone(pids: number[]) {
+  const until = Date.now() + 10_000;
+  while (pids.some(alive)) {
+    if (Date.now() >= until)
+      throw new Error(
+        `processes a run started are still running: ${pids.filter(alive).join(", ")}`
+      );
+    await sleep(50);
+  }
+}
+
 /** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 번호를 남겨 끝에 꺼졌는지 확인한다. */
 function run(
   script: string,
@@ -139,32 +166,24 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect(launcher).toMatchObject({ ok: true });
   }, 180_000);
 
+  // 정리 단계는 앞 단계가 실패해도 모두 돈다. 실패는 모아 마지막에 함께 알린다.
   afterEach(async () => {
-    await Promise.all(
-      spawned.splice(0).map(async (child) => {
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        const exited = new Promise((resolve) => child.once("exit", resolve));
-        child.kill("SIGKILL");
-        await within(exited, 10_000, `the exit of process ${child.pid}`);
-      })
-    );
+    const failures: unknown[] = [];
+    const settle = async (steps: Promise<unknown>[]) => {
+      for (const result of await Promise.allSettled(steps))
+        if (result.status === "rejected") failures.push(result.reason);
+    };
+    await settle(spawned.splice(0).map(stopSpawned));
     // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
-    await Promise.all(
+    await settle(
       attempts.splice(0).map((attempt) => {
         attempt.end();
         return within(attempt.done, 30_000, "the end of a run");
       })
     );
-    // 번호는 재사용될 수 있으므로 다시 끄지 않는다. 꺼지지 않았으면 시험이 남긴 것으로 보고 실패한다.
-    const pids = descendants.splice(0);
-    const until = Date.now() + 10_000;
-    while (pids.some(alive)) {
-      if (Date.now() >= until)
-        throw new Error(
-          `processes a run started are still running: ${pids.filter(alive).join(", ")}`
-        );
-      await sleep(50);
-    }
+    await settle([descendantsGone(descendants.splice(0))]);
+    if (failures.length)
+      throw new AggregateError(failures, "the test cleanup failed");
   }, 60_000);
 
   afterAll(async () => {
