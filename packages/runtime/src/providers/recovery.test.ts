@@ -15,7 +15,12 @@ import {
   recordProcess,
   recoverProviderProcesses,
 } from "./recovery.ts";
-import { leaseVariable } from "./lease.ts";
+import { leaseVariable, processStartTicks } from "./lease.ts";
+import { killAndWait, readyLine } from "./process-test-support.ts";
+
+// Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
+// 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
+const testStart = () => String(processStartTicks(process.pid) ?? 1);
 
 // 표식 조회 실패를 주입한다.
 const lease = vi.hoisted(() => ({ fails: false }));
@@ -23,9 +28,12 @@ vi.mock("./lease.ts", async (original) => {
   const real = await original<typeof import("./lease.ts")>();
   return {
     ...real,
-    stopLeaseHolders: async (value: string) => {
+    stopLeaseHolders: async (
+      value: string,
+      options?: Parameters<typeof real.stopLeaseHolders>[1]
+    ) => {
       if (lease.fails) throw new Error("ps failed");
-      return real.stopLeaseHolders(value);
+      return real.stopLeaseHolders(value, options);
     },
   };
 });
@@ -102,7 +110,7 @@ it.runIf(process.platform === "linux")(
         path.join(directory, `${group}.json`),
         JSON.stringify({
           pid: group,
-          start: "1",
+          start: testStart(),
           group,
           boot: (
             await readFile("/proc/sys/kernel/random/boot_id", "utf8")
@@ -344,10 +352,7 @@ const marked = async (
     }
   );
   const closed = new Promise((resolve) => child.on("close", resolve));
-  await new Promise<void>((resolve, reject) => {
-    child.stdout.once("data", () => resolve());
-    child.once("close", () => reject(new Error("exited before ready")));
-  });
+  await readyLine(child);
   return { child, closed };
 };
 async function recordFor(directory: string, pid: number, value: string) {
@@ -357,7 +362,7 @@ async function recordFor(directory: string, pid: number, value: string) {
       : undefined;
   await writeFile(
     path.join(directory, `${pid}.json`),
-    JSON.stringify({ pid, start: "1", group: pid, boot, lease: value })
+    JSON.stringify({ pid, start: testStart(), group: pid, boot, lease: value })
   );
 }
 
@@ -376,8 +381,7 @@ it.each(platforms)(
       expect(gone(ignored.child.pid!)).toBe(false);
       expect(await readdir(directory)).toEqual([]);
     } finally {
-      for (const { child } of [leftover, ignored])
-        if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
+      await killAndWait([leftover.child.pid!, ignored.child.pid!]);
     }
   },
   30_000
@@ -402,6 +406,7 @@ it.each(platforms)(
       expect(await readdir(directory)).toEqual([]);
     } finally {
       if (!groupGone(group)) process.kill(-group, "SIGKILL");
+      await until(() => groupGone(group));
     }
   },
   30_000

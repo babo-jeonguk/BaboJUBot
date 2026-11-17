@@ -1,0 +1,84 @@
+import { execFileSync, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+/** 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다. */
+export function readyLine(
+  child: ChildProcess,
+  line = "ready",
+  timeoutMs = 10_000
+) {
+  return new Promise<void>((resolve, reject) => {
+    let buffer = "";
+    const done = (error?: Error) => {
+      clearTimeout(timer);
+      child.stdout!.off("data", read);
+      child.off("error", fail);
+      child.off("close", closed);
+      if (error) reject(error);
+      else resolve();
+    };
+    const read = (chunk: Buffer) => {
+      buffer += chunk.toString();
+      for (let newline; (newline = buffer.indexOf("\n")) >= 0;) {
+        if (buffer.slice(0, newline).trim() === line) return done();
+        buffer = buffer.slice(newline + 1);
+      }
+    };
+    const fail = (error: Error) => done(error);
+    const closed = () => done(new Error(`exited before printing ${line}`));
+    const timer = setTimeout(
+      () => done(new Error(`no ${line} line within ${timeoutMs} ms`)),
+      timeoutMs
+    );
+    child.stdout!.on("data", read);
+    child.once("error", fail);
+    child.once("close", closed);
+  });
+}
+
+/** 프로세스가 끝났는가. 거두어지기 전의 좀비도 끝난 것으로 본다. */
+export function exited(pid: number) {
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ESRCH") return true;
+  }
+  try {
+    const state =
+      process.platform === "linux"
+        ? readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)![0]
+        : execFileSync("ps", ["-o", "stat=", "-p", String(pid)], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }).trim()[0];
+    return state === "Z" || state === "X" || state === undefined;
+  } catch {
+    // 묻는 사이에 끝났다.
+    return true;
+  }
+}
+
+/** 모두 끝날 때까지 시한 안에서 기다린다. 넘으면 남은 번호와 함께 실패한다. */
+export async function untilExited(pids: number[], timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const left = pids.filter((pid) => !exited(pid));
+    if (!left.length) return;
+    if (Date.now() >= deadline)
+      throw new Error(
+        `still running after ${timeoutMs} ms: ${left.join(", ")}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** 시험 정리: SIGKILL을 보내고 끝날 때까지 기다린다. */
+export async function killAndWait(pids: number[]) {
+  for (const pid of pids)
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // 이미 끝났다.
+    }
+  await untilExited(pids);
+}

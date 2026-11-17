@@ -25,11 +25,14 @@ vi.mock("./lease.ts", async (original) => {
   const real = await original<typeof import("./lease.ts")>();
   return {
     ...real,
-    stopLeaseHolders: async (lease: string) => {
+    stopLeaseHolders: async (
+      lease: string,
+      options?: Parameters<typeof real.stopLeaseHolders>[1]
+    ) => {
       if (stop.leaseFails) throw new Error("ps failed");
       // 끝까지 꺼지지 않은 프로그램이 남은 결과다.
       if (stop.leaseLeft) return { stopped: [], left: [2 ** 22 + 1] };
-      return real.stopLeaseHolders(lease);
+      return real.stopLeaseHolders(lease, options);
     },
   };
 });
