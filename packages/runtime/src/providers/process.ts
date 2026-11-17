@@ -13,7 +13,7 @@ import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import type { ContainerLaunch } from "./container.ts";
 import { jobObjectLaunch, readLauncherStatus } from "./job-object.ts";
-import { leaseVariable, stopLeaseHolders } from "./lease.ts";
+import { leaseVariable, processStartTicks, stopLeaseHolders } from "./lease.ts";
 import {
   dockerClientEnv,
   dockerRunArgs,
@@ -243,6 +243,11 @@ export function startProcess(options: {
         windowsHide: true,
       }
     ) as ChildProcessByStdio<Writable, Readable, Readable>);
+  // 표식을 읽을 수 없는 프로그램은 이 실행 시도가 시작한 뒤에 생겼을 때만 우리 것일 수 있다. 대표의 시작 시각을 기준으로 둔다(Linux).
+  const since =
+    process.platform === "linux" && child.pid
+      ? processStartTicks(child.pid)
+      : undefined;
   relay?.ready.catch(() => {
     console.error("[provider] the isolated run relay could not open");
     child.kill("SIGKILL");
@@ -402,7 +407,10 @@ export function startProcess(options: {
         if (!options.container && process.platform !== "win32") {
           let left = true;
           try {
-            left = (await stopLeaseHolders(lease)).left.length > 0;
+            // 대표의 시작 시각을 읽지 못했으면 가장 넓게 본다.
+            left =
+              (await stopLeaseHolders(lease, { since: since ?? 0 })).left
+                .length > 0;
           } catch {
             // 찾기 자체가 실패했으면 끝났음을 확인하지 못한 것이다.
           }

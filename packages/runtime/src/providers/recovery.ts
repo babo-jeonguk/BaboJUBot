@@ -301,7 +301,11 @@ async function recoverRecord(saved: ProcessRecord, platform: NodeJS.Platform) {
       : await recoverWithoutProc(saved, platform);
   // 그룹 밖(새 세션)으로 나간 자손도 이 실행 시도의 표식을 가진다. 표식으로 시스템 전체에서 찾아 끈다(#219). Windows는 묶음이 끈다.
   if (saved.lease && platform !== "win32") {
-    const { left } = await stopLeaseHolders(saved.lease);
+    // 기록한 대표의 시작 시각 뒤에 생긴, 환경을 읽을 수 없는 프로그램은 우리 것일 수 있어 확인하지 못한 것으로 남는다.
+    const since = Number.isFinite(Number(saved.start))
+      ? Number(saved.start)
+      : undefined;
+    const { left } = await stopLeaseHolders(saved.lease, { since });
     if (left.length)
       throw new Error("Programs with the run marker did not stop");
   }
