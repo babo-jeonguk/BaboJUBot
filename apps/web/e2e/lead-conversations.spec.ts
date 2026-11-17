@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -102,15 +102,86 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     { data: { body: "평가 지표를 정리해 주세요" } }
   );
   expect(started.status()).toBe(201);
+  const { conversation: unseenConversation } = (await started.json()) as {
+    conversation: { id: string };
+  };
   const unseen = listOf(other).getByRole("link", {
     name: /평가 지표를 정리해 주세요/,
   });
-  await expect(unseen.getByTestId("conversation-unread")).toBeVisible();
-  await unseen.click();
-  await expect(thread(other).locator('[data-author="agent"]')).toContainText(
-    "평가 지표를 정리해 주세요"
+  const unread = unseen.getByTestId("conversation-unread");
+  await expect(unread).toBeVisible();
+
+  // 열 때 함께 나가는 목록 조회가 읽음 기록보다 먼저 서버 상태(읽지 않음)를 받고, 읽음이 화면에 반영된 뒤에야
+  // 도착하게 한다. 늦게 온 옛 목록이 읽음을 덮으면 점이 다시 나타난다(#211).
+  const listPath = `/api/organizations/${org.id}/conversations`;
+  let staleSeen!: (request: Request) => void;
+  const stale = new Promise<Request>((resolve) => {
+    staleSeen = resolve;
+  });
+  let releaseStale!: () => void;
+  const staleHeld = new Promise<void>((resolve) => {
+    releaseStale = resolve;
+  });
+  let holding = true;
+  await other.route(
+    (url) => url.pathname === listPath,
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const response = await route.fetch();
+      const list = (await response.json()) as { id: string; unread: boolean }[];
+      if (
+        holding &&
+        list.some((c) => c.id === unseenConversation.id && c.unread)
+      ) {
+        holding = false;
+        staleSeen(route.request());
+        await staleHeld;
+      }
+      await route.fulfill({ response });
+    }
   );
-  await expect(unseen.getByTestId("conversation-unread")).toHaveCount(0);
+  // 옛 목록을 받아 둔 뒤에야 읽음 기록이 서버에 닿는다.
+  await other.route(
+    (url) => url.pathname === `${listPath}/${unseenConversation.id}/read`,
+    async (route) => {
+      await stale;
+      await route.continue();
+    }
+  );
+  try {
+    const read = other.waitForResponse(
+      (r) =>
+        r.url().endsWith(`${listPath}/${unseenConversation.id}/read`) &&
+        r.request().method() === "PUT"
+    );
+    await unseen.click();
+    await expect(thread(other).locator('[data-author="agent"]')).toContainText(
+      "평가 지표를 정리해 주세요"
+    );
+    const staleRequest = await stale;
+    expect((await read).ok()).toBe(true);
+    await expect(unread).toHaveCount(0);
+
+    // 옛 목록을 놓아주고, 브라우저가 받아 화면이 그 응답을 처리할 기회를 준 뒤에도 점이 없다.
+    const delivered = other.waitForEvent(
+      "requestfinished",
+      (r) => r === staleRequest
+    );
+    releaseStale();
+    await delivered;
+    await other.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() =>
+            setTimeout(() => requestAnimationFrame(() => resolve()), 0)
+          )
+        )
+    );
+    await expect(unread).toHaveCount(0);
+  } finally {
+    releaseStale();
+    await other.unrouteAll({ behavior: "wait" });
+  }
 
   // 기본 대화로 돌아가도 생성 알림과 처음 주고받은 두 메시지뿐이다.
   await listOf(page)
