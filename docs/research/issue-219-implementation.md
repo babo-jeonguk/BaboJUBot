@@ -29,6 +29,7 @@
 - **외부 리뷰 2회차(PR #220)** 뒤 바꾼 것:
   - macOS에서 `-E` 줄에 표식이 있는데 실행 인자 경계를 확인할 수 없는 프로그램을 건너뛰어 "없음"으로 쳤다. 실제 보유자의 실행 인자가 조회 사이에 바뀌면 정리 성공·기록 삭제가 됐다(SPEC-3). 원인은 1회차 Linux와 같다: "우리 것 아님"과 "판단할 수 없음"을 같은 결과로 냈다. `lookupInPs`가 이런 프로그램을 `unverified`로 돌려주고, `stopLeaseHolders`는 확인하지 못한 것이 있으면 유예 동안 다시 찾아 확인된 보유자는 끄고 끝까지 모르면 신호 없이 실패로 돌려준다. 그래서 Linux에서 계속 확인할 수 없는 프로그램이 있으면 정리 실패를 알기까지 유예 2초를 더 쓴다.
   - 시험 준비 실패에도 띄운 프로그램을 그룹째 정리하고(STD-2), 준비 줄 대기는 종료(`exit`)도 본다(STD-1).
+- **외부 리뷰 3회차(PR #220)** 뒤 바꾼 것: 2회차의 "유예 동안 다시 찾기"가 유예 창 하나를 모두가 같이 쓰는 두 단계(TERM 단계 → KILL 단계) 위에 얹혀, 유예 끝 무렵 처음 확인된 보유자가 TERM 뒤 50ms 남짓 만에 KILL을 받았다(SPEC-4). 리뷰가 세 번 수렴하지 않았고 매번 앞 수정이 만든 단계 경계에서 지적이 나와, 다음 수정 전에 사용자에게 원인과 접근을 보고했다(사용자 결정 2026-11-17: 규칙 단순화 후 수정). `stopLeaseHolders`를 반복 하나와 프로그램별 규칙으로 바꿨다: 처음 확인한 때 TERM, 그 프로그램의 유예가 지난 뒤에만 KILL, 확인하지 못한 것은 신호 없이 유예 동안만 다시 찾기, 전체는 유예 + 대기 시한 안. 시한까지 자기 유예를 다 받지 못한 늦은 보유자는 끄지 않고 `left`로 돌려준다(정리 실패·기록 유지). 시험 도움 시험이 남기던 자손도 정리한다(STD-3).
 - **바꾸지 않은 것**: Windows 묶음 경로, 컨테이너 정리, 짧은 확인 실행(`runProbe`), 공개 API·DB schema·계약·대시보드.
 
 ## 검증
@@ -47,6 +48,7 @@
 | 외부 리뷰 1회차: 환경을 숨긴 프로그램은 실행 시도 중 생겼을 때만 확인하지 못함, 다른 cgroup은 제외, 남긴 실행 시도는 기록 유지·경고·신호 없음, 좀비는 세지 않음 | `lease-hidden.alone.test.ts`(따로 돎), `lease.test.ts` 좀비 건 | 실행 시도 건은 실패(`broken`이 false, 읽기 거부를 표식 없음으로 봄). 나머지는 새 조회 결과(`unverified`)를 쓰는 시험 |
 | 외부 리뷰 2회차: macOS 표식 후보의 실행 인자가 조회 사이에 바뀌면 "확인하지 못함", 다시 찾아 확인되면 끔, 끝까지 모르면 신호 없이 `left` | `lease.test.ts` "does not take a marked program whose command line changed…", "looks again at unverified programs…", "reports unverified programs as left…" | 새 조회 결과(`lookupInPs`)를 쓰는 시험. 리뷰의 예는 수정 전 결과가 보유자·미확인 모두 없음 |
 | 외부 리뷰 2회차: 준비 줄 없이 끝난 프로그램은 자손이 출력을 쥐고 있어도 곧 실패로 봄 | `process-test-support.test.ts` | 실패(4,065ms 뒤 실패, 기준 3,000ms) |
+| 외부 리뷰 3회차: 늦게 확인된 보유자도 TERM 뒤 자기 유예를 다 받은 뒤 KILL, 시한까지 유예를 받을 수 없으면 끄지 않고 `left` | `lease.test.ts` "gives a holder confirmed late its own grace before KILL", "leaves a holder confirmed too late for its grace running and reports it" | 실패(TERM→KILL 75ms, 늦은 보유자를 KILL) |
 
 시험 도구 수정 전후(이 컴퓨터 Linux arm64, Claude Code 2.1.326·Codex 0.169.0, 가짜 모델):
 
