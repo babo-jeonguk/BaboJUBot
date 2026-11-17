@@ -16,9 +16,23 @@ import {
   recoverProviderProcesses,
 } from "./recovery.ts";
 
+// 표식 조회 실패를 주입한다.
+const lease = vi.hoisted(() => ({ fails: false }));
+vi.mock("./lease.ts", async (original) => {
+  const real = await original<typeof import("./lease.ts")>();
+  return {
+    ...real,
+    stopLeaseHolders: async (value: string) => {
+      if (lease.fails) throw new Error("ps failed");
+      return real.stopLeaseHolders(value);
+    },
+  };
+});
+
 // 복구 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
 const roots: string[] = [];
 afterEach(async () => {
+  lease.fails = false;
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
   );
@@ -309,3 +323,88 @@ it("recovers every connection folder, including named ones", async () => {
   await recoverProviderProcesses(root);
   expect(await readdir(directory)).toEqual([]);
 });
+
+// 서버가 강제로 끝난 뒤 에이전트까지 죽으면 대표와 그룹은 사라지고 새 세션의 명령만 남는다. 표식으로 우리 것임을 확인해 끈다(#219).
+const platforms = [...new Set([process.platform, withoutProc])].filter(
+  (platform) => platform !== "win32"
+);
+const marked = (value: string, script = "setInterval(() => {}, 1000)") => {
+  const child = spawn(process.execPath, ["-e", script], {
+    detached: true,
+    stdio: "ignore",
+    env: { PATH: process.env.PATH, BABOJUBOT_PROCESS_LEASE: value },
+  });
+  return {
+    child,
+    closed: new Promise((resolve) => child.on("close", resolve)),
+  };
+};
+async function recordFor(directory: string, pid: number, value: string) {
+  const boot =
+    process.platform === "linux"
+      ? (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()
+      : undefined;
+  await writeFile(
+    path.join(directory, `${pid}.json`),
+    JSON.stringify({ pid, start: "1", group: pid, boot, lease: value })
+  );
+}
+
+it.each(platforms)(
+  "stops a marked program left in another session after the leader and its group are gone (%s)",
+  async (platform) => {
+    const { root, directory } = await records();
+    const value = crypto.randomUUID();
+    const leftover = marked(value);
+    const ignored = marked(crypto.randomUUID());
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await recordFor(directory, finished, value);
+      await recoverProviderProcesses(root, { platform });
+      await leftover.closed;
+      expect(gone(ignored.child.pid!)).toBe(false);
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      for (const { child } of [leftover, ignored])
+        if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
+    }
+  },
+  30_000
+);
+
+// 대표만 끝나고 그룹이 남았을 때 /proc가 없으면 번호만으로는 우리 것인지 몰랐다. 남은 것이 모두 표식을 가졌으면 끄고 기록을 지운다.
+it.each(platforms)(
+  "stops a leftover group whose members carry the run marker (%s)",
+  async (platform) => {
+    const { root, directory } = await records();
+    const value = crypto.randomUUID();
+    const leader = marked(
+      value,
+      `require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }).unref()`
+    );
+    await leader.closed;
+    const group = leader.child.pid!;
+    try {
+      await recordFor(directory, group, value);
+      await recoverProviderProcesses(root, { platform });
+      await until(() => groupGone(group));
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      if (!groupGone(group)) process.kill(-group, "SIGKILL");
+    }
+  },
+  30_000
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps the record when programs with the run marker could not be looked up",
+  async () => {
+    const { root, directory } = await records();
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    await recordFor(directory, finished, "lease");
+    lease.fails = true;
+    await recoverProviderProcesses(root);
+    expect(await readdir(directory)).toEqual([`${finished}.json`]);
+  }
+);

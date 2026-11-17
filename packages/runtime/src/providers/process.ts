@@ -13,6 +13,7 @@ import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import type { ContainerLaunch } from "./container.ts";
 import { jobObjectLaunch, readLauncherStatus } from "./job-object.ts";
+import { leaseVariable, stopLeaseHolders } from "./lease.ts";
 import {
   dockerClientEnv,
   dockerRunArgs,
@@ -183,9 +184,9 @@ export function startProcess(options: {
   const env = options.container
     ? {
         ...dockerClientEnv({ ...options.env, ...options.container.env }),
-        BABOJUBOT_PROCESS_LEASE: lease,
+        [leaseVariable]: lease,
       }
-    : { ...options.env, BABOJUBOT_PROCESS_LEASE: lease };
+    : { ...options.env, [leaseVariable]: lease };
   // Windows에는 프로세스 그룹이 없다. 묶음 실행기가 프로그램을 묶음(Job Object)에 넣어 띄워, 먼저 끝난 프로그램이 남긴 것도 끈다(#205).
   const job = options.container
     ? undefined
@@ -394,6 +395,19 @@ export function startProcess(options: {
             broken = true;
             console.error(
               "[provider] a process group could not be stopped; releasing the run and keeping its recovery record"
+            );
+          }
+        // 프로그램이 새 세션에 띄운 명령은 그룹 밖에 있다. 프로그램이 어떻게 끝났든 표식으로 시스템 전체에서 찾아 끈다(#219).
+        // 컨테이너는 아래에서 통째로 지우고, Windows는 묶음이 끈다.
+        if (!options.container && process.platform !== "win32")
+          try {
+            if ((await stopLeaseHolders(lease)).left.length)
+              throw new Error("Programs with the run marker did not stop");
+          } catch {
+            stopped = false;
+            broken = true;
+            console.error(
+              "[provider] programs this run started could not all be stopped; releasing the run and keeping its recovery record"
             );
           }
         // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.

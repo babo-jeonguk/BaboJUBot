@@ -8,6 +8,7 @@ import {
   renameSync,
 } from "node:fs";
 import path from "node:path";
+import { holdsLease, stopLeaseHolders } from "./lease.ts";
 const boot = () =>
   readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 function identity(pid: number) {
@@ -195,21 +196,29 @@ function processAlive(pid: number) {
     return (e as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
-/** /proc가 없는 시스템의 복구. 기록한 시작 시각과 같은 프로세스만 우리 것으로 보고 끝낸다. */
+/** 우리 것인지 확인하지 못하고 남긴 것. 표식 정리 뒤에도 남았으면 기록을 남긴다. */
+type Unidentified = { remains: () => boolean; reason: string };
+/** /proc가 없는 시스템의 그룹 복구. 기록한 시작 시각과 같은 프로세스만 우리 것으로 보고 끝낸다. */
 async function recoverWithoutProc(
   saved: { pid: number; started?: number },
   platform: NodeJS.Platform
-) {
+): Promise<Unidentified | undefined> {
   if (!processAlive(saved.pid)) {
-    // 대표는 끝났는데 자식이 남았으면 번호만으로 우리 것인지 알 수 없다. 건드리지 않고 기록을 남긴다.
-    if (platform !== "win32" && groupAlive(saved.pid))
-      throw new Error("Cannot identify the remaining process group");
-    return;
+    // 대표는 끝났는데 자식이 남았으면 번호만으로 우리 것인지 알 수 없다. 표식으로 확인되는 것만 끈다.
+    return platform !== "win32" && groupAlive(saved.pid)
+      ? {
+          remains: () => groupAlive(saved.pid),
+          reason: "Cannot identify the remaining process group",
+        }
+      : undefined;
   }
-  // 살아 있는데 시작 시각을 모르거나 기록에 없으면 우리 것인지 알 수 없다. 끝난 것으로 치지 않고 기록을 남긴다.
+  // 살아 있는데 시작 시각을 모르거나 기록에 없으면 번호만으로 우리 것인지 알 수 없다. 끝난 것으로 치지 않고 표식으로 확인되는 것만 끈다.
   const started = processStartedAt(saved.pid, platform);
   if (started === undefined || saved.started === undefined)
-    throw new Error("Cannot identify a remaining process");
+    return {
+      remains: () => processAlive(saved.pid),
+      reason: "Cannot identify a remaining process",
+    };
   if (started !== saved.started) return;
   if (platform === "win32") {
     execFileSync("taskkill", ["/F", "/T", "/PID", String(saved.pid)], {
@@ -284,13 +293,24 @@ function readRecord(file: string) {
     : undefined;
 }
 async function recoverRecord(saved: ProcessRecord, platform: NodeJS.Platform) {
-  if (platform !== "linux") {
-    await recoverWithoutProc(saved, platform);
-    return;
+  // 다른 부팅의 기록이 가리키는 프로세스는 이미 없다.
+  if (platform === "linux" && saved.boot !== boot()) return;
+  const unidentified =
+    platform === "linux"
+      ? await recoverLinuxGroup(saved)
+      : await recoverWithoutProc(saved, platform);
+  // 그룹 밖(새 세션)으로 나간 자손도 이 실행 시도의 표식을 가진다. 표식으로 시스템 전체에서 찾아 끈다(#219). Windows는 묶음이 끈다.
+  if (saved.lease && platform !== "win32") {
+    const { left } = await stopLeaseHolders(saved.lease);
+    if (left.length)
+      throw new Error("Programs with the run marker did not stop");
   }
-  if (saved.boot !== boot()) {
-    return;
-  }
+  if (unidentified?.remains())
+    throw new Error(`${unidentified.reason}; manual cleanup required`);
+}
+async function recoverLinuxGroup(
+  saved: ProcessRecord
+): Promise<Unidentified | undefined> {
   let leader: ReturnType<typeof identity> | undefined;
   try {
     leader = identity(saved.pid);
@@ -298,22 +318,17 @@ async function recoverRecord(saved: ProcessRecord, platform: NodeJS.Platform) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
   const remaining = members(saved.pid);
-  const marker = remaining.some((member) => {
-    try {
-      return (
-        !!saved.lease &&
-        readFileSync(`/proc/${member.pid}/environ`).includes(
-          Buffer.from(`BABOJUBOT_PROCESS_LEASE=${saved.lease}\0`)
-        )
-      );
-    } catch {
-      return false;
+  let marker = false;
+  for (const member of remaining)
+    if (saved.lease && (await holdsLease(member.pid, saved.lease))) {
+      marker = true;
+      break;
     }
-  });
   if ((leader?.start === saved.start && leader.group === saved.pid) || marker)
     await stopProcessGroup(saved.pid);
   else if (!leader && remaining.length)
-    throw new Error(
-      "Cannot authenticate an orphaned provider process group; manual cleanup required"
-    );
+    return {
+      remains: () => members(saved.pid).length > 0,
+      reason: "Cannot authenticate an orphaned provider process group",
+    };
 }
