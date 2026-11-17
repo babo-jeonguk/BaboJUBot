@@ -9,7 +9,7 @@
     "./runtime-contract": "./src/runtime-contract.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.alone.config.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

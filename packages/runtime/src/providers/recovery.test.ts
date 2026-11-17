@@ -15,10 +15,42 @@ import {
   recordProcess,
   recoverProviderProcesses,
 } from "./recovery.ts";
+import { leaseVariable, processStartTicks } from "./lease.ts";
+import { readyLine } from "./process-test-support.ts";
+
+// Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
+// 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
+const testStart = () => String(processStartTicks(process.pid) ?? 1);
+
+// 표식 조회 실패를 주입한다.
+const lease = vi.hoisted(() => ({ fails: false }));
+vi.mock("./lease.ts", async (original) => {
+  const real = await original<typeof import("./lease.ts")>();
+  return {
+    ...real,
+    stopLeaseHolders: async (
+      value: string,
+      options?: Parameters<typeof real.stopLeaseHolders>[1]
+    ) => {
+      if (lease.fails) throw new Error("ps failed");
+      return real.stopLeaseHolders(value, options);
+    },
+  };
+});
 
 // 복구 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
 const roots: string[] = [];
+// 시험이 새 세션으로 띄운 프로그램(그룹 번호 = 프로그램 번호). 띄우자마자 넣어, 준비나 단언이 실패해도 그룹째 끄고 끝날 때까지 기다린다.
+const groups: number[] = [];
 afterEach(async () => {
+  lease.fails = false;
+  for (const group of groups)
+    try {
+      process.kill(-group, "SIGKILL");
+    } catch {
+      // 이미 끝났다.
+    }
+  for (const group of groups.splice(0)) await until(() => groupGone(group));
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
   );
@@ -87,7 +119,7 @@ it.runIf(process.platform === "linux")(
         path.join(directory, `${group}.json`),
         JSON.stringify({
           pid: group,
-          start: "1",
+          start: testStart(),
           group,
           boot: (
             await readFile("/proc/sys/kernel/random/boot_id", "utf8")
@@ -309,3 +341,91 @@ it("recovers every connection folder, including named ones", async () => {
   await recoverProviderProcesses(root);
   expect(await readdir(directory)).toEqual([]);
 });
+
+// 서버가 강제로 끝난 뒤 에이전트까지 죽으면 대표와 그룹은 사라지고 새 세션의 명령만 남는다. 표식으로 우리 것임을 확인해 끈다(#219).
+const platforms = [...new Set([process.platform, withoutProc])].filter(
+  (platform) => platform !== "win32"
+);
+/** 표식을 가진 새 세션 프로그램. 표식은 exec 뒤에 보이므로 준비 줄을 낸 뒤에 돌려준다. */
+const marked = async (
+  value: string,
+  script = "setInterval(() => {}, 1000)"
+) => {
+  const child = spawn(
+    process.execPath,
+    ["-e", `console.log("ready"); ${script}`],
+    {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { PATH: process.env.PATH, [leaseVariable]: value },
+    }
+  );
+  groups.push(child.pid!);
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  await readyLine(child);
+  return { child, closed };
+};
+async function recordFor(directory: string, pid: number, value: string) {
+  const boot =
+    process.platform === "linux"
+      ? (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()
+      : undefined;
+  await writeFile(
+    path.join(directory, `${pid}.json`),
+    JSON.stringify({ pid, start: testStart(), group: pid, boot, lease: value })
+  );
+}
+
+it.each(platforms)(
+  "stops a marked program left in another session after the leader and its group are gone (%s)",
+  async (platform) => {
+    const { root, directory } = await records();
+    const value = crypto.randomUUID();
+    const leftover = await marked(value);
+    const ignored = await marked(crypto.randomUUID());
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    await recordFor(directory, finished, value);
+    await recoverProviderProcesses(root, { platform });
+    await leftover.closed;
+    expect(gone(ignored.child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
+);
+
+// 대표만 끝나고 그룹이 남았을 때 /proc가 없으면 번호만으로는 우리 것인지 몰랐다. 남은 것이 모두 표식을 가졌으면 끄고 기록을 지운다.
+it.each(platforms)(
+  "stops a leftover group whose members carry the run marker (%s)",
+  async (platform) => {
+    const { root, directory } = await records();
+    const value = crypto.randomUUID();
+    const leader = await marked(
+      value,
+      `require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }).unref()`
+    );
+    await leader.closed;
+    const group = leader.child.pid!;
+    await recordFor(directory, group, value);
+    await recoverProviderProcesses(root, { platform });
+    await until(() => groupGone(group));
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps the record when programs with the run marker could not be looked up",
+  async () => {
+    const { root, directory } = await records();
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    await recordFor(directory, finished, "lease");
+    lease.fails = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await recoverProviderProcesses(root);
+    expect(await readdir(directory)).toEqual([`${finished}.json`]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("it stays for the next start")
+    );
+    warn.mockRestore();
+  }
+);
