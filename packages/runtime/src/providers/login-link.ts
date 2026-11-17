@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
+  readFile,
   readlink,
   rename,
   rm,
@@ -10,16 +11,17 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-/** 로그인 원본마다 링크 작업을 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다. */
-const linking = new Map<string, Promise<unknown>>();
+/**
+ * 로그인 원본마다 링크 작업과 로그인 읽기(`readLogin`)를 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다.
+ * 옮기는 중에 읽으면 원본이 두 자리 사이에 있어 어느 쪽에서도 못 읽을 수 있다(#209).
+ */
+const turns = new Map<string, Promise<unknown>>();
 function oneAtATime<T>(key: string, task: () => Promise<T>): Promise<T> {
-  const next = (linking.get(key) ?? Promise.resolve())
-    .catch(() => {})
-    .then(task);
-  linking.set(key, next);
+  const next = (turns.get(key) ?? Promise.resolve()).catch(() => {}).then(task);
+  turns.set(key, next);
   void next
     .finally(() => {
-      if (linking.get(key) === next) linking.delete(key);
+      if (turns.get(key) === next) turns.delete(key);
     })
     .catch(() => {});
   return next;
@@ -32,8 +34,15 @@ const noLinks = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP"]);
  * 원본을 가리키는 이미 있는 링크) 아무것도 옮기지 않는다. 원본을 옮기면 이미 있는 링크가 원본을 잃는다.
  * 읽을 수 없을 때만(없거나 대상이 없는 링크) 원본을 그 자리로 옮긴다. 복사하지 않으므로 로그인은 하나다.
  * 다시 링크를 만들 수 있게 되면 `linkLogin`이 `fallback`의 보통 파일을 원본으로 옮긴다(가장 최근 로그인).
+ * 두 자리에 모두 보통 파일이 있으면 연결 폴더의 파일이 로그인이고(이 컴퓨터의 실행, 로그인 명령, 갱신이 그것을 쓴다),
+ * 로그인 폴더의 파일은 로그인이 하나가 되도록 지우지 않고 `set-aside`로 옮긴다(2026-11-17 사용자 결정, #209).
  */
-async function keepAtFallback(original: string, fallback: string) {
+async function keepAtFallback(
+  original: string,
+  fallback: string,
+  label: string,
+  setAside: string
+) {
   const readable = await stat(fallback).then(
     (found) => found.isFile(),
     (error: NodeJS.ErrnoException) => {
@@ -41,7 +50,31 @@ async function keepAtFallback(original: string, fallback: string) {
       throw error;
     }
   );
-  if (readable) return;
+  if (readable) {
+    const fallbackEntry = await lstat(fallback);
+    if (fallbackEntry.isFile()) {
+      const source = await lstat(original).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        }
+      );
+      if (source?.isFile()) {
+        await mkdir(setAside, { recursive: true, mode: 0o700 });
+        await rename(
+          original,
+          path.join(
+            setAside,
+            `${Date.now()}-${randomUUID()}-${path.basename(original)}`
+          )
+        );
+        console.warn(
+          `[provider] the ${label} login folder also held a login file; the connection folder's login is used and the other was moved to the connection's set-aside folder`
+        );
+      }
+    }
+    return;
+  }
   const source = await lstat(original).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
@@ -94,7 +127,7 @@ async function linkLogin(
           `[provider] this machine cannot create file links; ${label} runs share the connection folder`
         );
       }
-      await keepAtFallback(original, fallback);
+      await keepAtFallback(original, fallback, label, setAside);
       return false;
     }
     throw error;
@@ -143,4 +176,18 @@ export function loginLink(options: {
     oneAtATime(original, () =>
       linkLogin(original, fallback, at, label, setAside)
     );
+}
+
+/**
+ * 이 컴퓨터의 실행이 지금 읽는 연결의 로그인(#209). 원본 자리에 있으면 그것을, 없으면 연결 폴더의 자리 `fallback`을 읽는다.
+ * 링크를 만들 수 없는 컴퓨터에서는 원본이 `fallback`의 보통 파일로 옮겨져 있고, 링크면 따라가 읽는다. 둘 다 없으면 던진다.
+ * 같은 원본의 링크 작업과 차례를 지킨다. 원본을 되돌려 옮기는 rename 두 번 사이에 읽으면 두 자리 모두 비어 있다.
+ */
+export function readLogin(original: string, fallback: string) {
+  return oneAtATime(original, () =>
+    readFile(original, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return readFile(fallback, "utf8");
+    })
+  );
 }

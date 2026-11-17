@@ -3,7 +3,8 @@
 // present) from CODEX_HOME/auth.json and calls `<base_url>/responses` of the `babojubot_relay` provider given with `-c`.
 // It appends the login it saw to CODEX_HOME/seen-auth.jsonl for the test. On 200 the turn completes; otherwise it keeps retrying like a
 // CLI would until its input closes, then exits 1. With `--never-start-thread` it leaves `thread/start` unanswered; with
-// `--die-on-thread` it ends (code 1) instead of answering it.
+// `--die-on-thread` it ends (code 1) instead of answering it. As `exec` it calls the relay until it answers 200, then prints the exec
+// JSON lines of a finished turn and exits 0; it keeps retrying until it is stopped otherwise.
 import { createInterface } from "node:readline";
 import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -71,6 +72,21 @@ async function runTurn() {
       });
       completed = true;
       return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+if (args[0] === "exec") {
+  process.stdin.resume();
+  for (;;) {
+    if ((await call()) === 200) {
+      out({ type: "thread.started", thread_id: threadId });
+      out({
+        type: "turn.completed",
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      });
+      process.exit(0);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

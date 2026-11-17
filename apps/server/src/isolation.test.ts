@@ -1,12 +1,43 @@
-import { createRelayHub, type DockerEnvironment } from "@babojubot/runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
+import type net from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  createAntigravityProvider,
+  createCodexProvider,
+  createRelayHub,
+  type CredentialRelay,
+  type DockerEnvironment,
+} from "@babojubot/runtime";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
 import { IsolationGate } from "./isolation.ts";
 
+/** 링크 만들기를 거절하는 오류 코드(링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
+let refusal: string | null = null;
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    symlink: (...args: Parameters<typeof actual.symlink>) =>
+      refusal
+        ? Promise.reject(
+            Object.assign(new Error(`${refusal}: cannot link`), {
+              code: refusal,
+            })
+          )
+        : actual.symlink(...args),
+  };
+});
+
 let gate: IsolationGate | undefined;
+const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
+  refusal = null;
   await gate?.close();
   gate = undefined;
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
 /** Docker가 응답하지 않는 환경. 받은 중단 신호도 따르지 않는다(끝난 시험 컨테이너를 지우는 중 등). */
@@ -272,3 +303,132 @@ describe("IsolationGate", () => {
     });
   });
 });
+
+// #209: 링크를 만들 수 없는 컴퓨터에서도 로그인을 고친 뒤의 준비 확인이 중계 실패를 푼다. 중계는 이 컴퓨터의 실행이 읽는 로그인을 읽는다.
+describe.each([
+  {
+    name: "Codex",
+    id: "codex",
+    create: createCodexProvider,
+    place: ["auth.json"],
+    login: JSON.stringify({
+      tokens: { access_token: "fixed-access", account_id: "fixed-account" },
+    }),
+    route: "/responses",
+  },
+  {
+    name: "Antigravity",
+    id: "antigravity",
+    create: createAntigravityProvider,
+    place: [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+    login: JSON.stringify({
+      token: {
+        access_token: "fixed-access",
+        expiry: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+    }),
+    route: "/v1internal:streamGenerateContent",
+  },
+])(
+  "readiness of a $name connection on a machine that cannot create links",
+  (connection) => {
+    /** 안전 확인을 통과하는 Docker. */
+    const safe: DockerEnvironment = {
+      ...unresponsive,
+      async checkDaemon() {},
+      async probe() {
+        return { interfaces: [], reached: [], proxied: [], toolsReached: true };
+      },
+    };
+    async function failedRelay() {
+      const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-gate-"));
+      cleanups.push(() => rm(dataDir, { recursive: true, force: true }));
+      const server = http.createServer((_req, res) => res.writeHead(200).end());
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve)
+      );
+      cleanups.push(() => new Promise((resolve) => server.close(resolve)));
+      const provider = connection.create({
+        dataDir,
+        // 연결 확인은 프로그램을 띄우지 못하고(없는 프로그램) 끝난다. 로그인 자리 준비는 그 앞에서 한다.
+        command: [path.join(dataDir, "no-such-program")],
+        relay: {
+          upstream: `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`,
+          verified: true,
+        },
+      });
+      const relay = provider.credentialRelay as CredentialRelay;
+      const target = { isolatable: true, credentialRelay: relay };
+      gate = new IsolationGate({
+        docker: safe,
+        protectedPorts: () => [5432],
+        readIsolated: async () => true,
+        hostUrl: () => "http://127.0.0.1:1",
+      });
+      refusal = "EOPNOTSUPP";
+      // 로그인이 어디에도 없다. 격리 실행의 모델 요청이 중계 실패로 끝난다.
+      const relayServer = http.createServer((req, res) =>
+        relay.handle(req, res)
+      );
+      await new Promise<void>((resolve) =>
+        relayServer.listen(0, "127.0.0.1", resolve)
+      );
+      cleanups.push(() => {
+        relayServer.closeAllConnections();
+        return new Promise((resolve) => relayServer.close(resolve));
+      });
+      const { token } = relay.grant({
+        signal: new AbortController().signal,
+        organizationId: crypto.randomUUID(),
+        runId: crypto.randomUUID(),
+      });
+      const port = (relayServer.address() as net.AddressInfo).port;
+      const refused = await fetch(
+        `http://127.0.0.1:${port}${connection.route}`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: "{}",
+        }
+      );
+      expect(refused.status).toBe(503);
+      await expect(gate.readiness(target)).resolves.toEqual({
+        status: "not_ready",
+        reason: "credential_relay_failed",
+      });
+      await expect(gate.place(target)).rejects.toThrow("로그인을 쓰지 못해");
+      const folder = path.join(dataDir, "providers", connection.id);
+      /** 다시 로그인한다. 로그인 명령은 연결 폴더에서 돌아 그 자리에 쓴다. */
+      const logIn = async () => {
+        const at = path.join(folder, ...connection.place);
+        await mkdir(path.dirname(at), { recursive: true });
+        await writeFile(at, connection.login, { mode: 0o600 });
+      };
+      const original = path.join(folder, "login", connection.place.at(-1)!);
+      return { target, logIn, provider, original };
+    }
+
+    it("clears the relay failure on the check after logging in again at the connection folder's place, and lets the next isolated run start", async () => {
+      const { target, logIn } = await failedRelay();
+      await logIn();
+      await expect(gate!.readiness(target)).resolves.toBeNull();
+      await expect(gate!.place(target)).resolves.toMatchObject({
+        execution: "container",
+      });
+    });
+
+    it("clears the relay failure on the first check after links become possible, and keeps it clear once the check moves the login back to the login folder", async () => {
+      const { target, logIn, provider, original } = await failedRelay();
+      await logIn();
+      refusal = null;
+      // 준비 확인은 격리 관문(중계 복구)을 먼저 보고 그다음 연결을 확인한다. 연결 확인이 로그인을 원본 자리로 되돌린다.
+      await expect(gate!.readiness(target)).resolves.toBeNull();
+      await provider.adapter.checkReadiness(AbortSignal.timeout(10_000));
+      expect(await readFile(original, "utf8")).toBe(connection.login);
+      await expect(gate!.readiness(target)).resolves.toBeNull();
+      await expect(gate!.place(target)).resolves.toMatchObject({
+        execution: "container",
+      });
+    });
+  }
+);

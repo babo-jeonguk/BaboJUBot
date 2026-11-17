@@ -176,7 +176,7 @@ export function createAntigravityProvider(options: {
     contents: (token) => JSON.stringify(relayToken(token)),
     isStandIn: isRelayToken,
   });
-  const { home, original } = login;
+  const { home } = login;
   const env = (productHome = home, isolated = false) =>
     providerEnvironment(
       connectionId,
@@ -201,8 +201,8 @@ export function createAntigravityProvider(options: {
   };
   let refreshing: Promise<void> | undefined;
   /**
-   * 원본 로그인을 이 컴퓨터의 agy로 갱신한다(#148). `agy models`는 만료된 로그인을 갱신해 연결 폴더의 링크를 따라 원본 자리에 쓴다
-   * (1.5.4 합성 확인). 연결마다 한 번에 하나만 하고, 그동안 온 요청은 같은 갱신을 기다린다.
+   * 연결의 로그인을 이 컴퓨터의 agy로 갱신한다(#148). `agy models`는 만료된 로그인을 갱신해 연결 폴더의 링크를 따라 원본 자리에 쓴다
+   * (1.5.4 합성 확인). 링크를 만들 수 없는 컴퓨터면 연결 폴더 자리의 보통 파일에 덮어쓴다(1.5.9 실행 확인, #209). 연결마다 한 번에 하나만 하고, 그동안 온 요청은 같은 갱신을 기다린다.
    */
   const refreshLogin = () =>
     (refreshing ??= (async () => {
@@ -213,15 +213,18 @@ export function createAntigravityProvider(options: {
     })().finally(() => {
       refreshing = undefined;
     }));
-  /** 중계가 쓸 원본 접근 토큰. 곧 끝나면 먼저 갱신하고, 갱신한 뒤에도 끝나 가면 갱신 실패로 던진다(중계 실패, Q6). */
+  /**
+   * 중계가 쓸 연결의 접근 토큰. 이 컴퓨터의 실행이 읽는 자리를 읽는다(#209). 곧 끝나면 먼저 갱신하고, 갱신한 뒤에도 끝나 가면
+   * 갱신 실패로 던진다(중계 실패, Q6).
+   */
   const currentAccess = async () => {
-    let login = accessOf(await readFile(original, "utf8"));
-    if (login.expiring) {
+    let current = accessOf(await login.read());
+    if (current.expiring) {
       await refreshLogin();
-      login = accessOf(await readFile(original, "utf8"));
-      if (login.expiring) throw new Error("login refresh failed");
+      current = accessOf(await login.read());
+      if (current.expiring) throw new Error("login refresh failed");
     }
-    return login.token;
+    return current.token;
   };
   const relay = createCredentialRelay({
     profile: {

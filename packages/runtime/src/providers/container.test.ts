@@ -16,8 +16,8 @@ import { tmpdir } from "node:os";
 import http from "node:http";
 import type net from "node:net";
 import path from "node:path";
-import type { RunRequest } from "@babojubot/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeProvider } from "./claude.ts";
 import { createCodexProvider, type CodexOptions } from "./codex.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
@@ -33,9 +33,27 @@ import type { CredentialRelay } from "./credential-relay.ts";
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
 
+/** 링크 만들기를 거절하는 오류 코드(권한 없는 Windows·링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
+let refusal: string | null = null;
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    symlink: (...args: Parameters<typeof actual.symlink>) =>
+      refusal
+        ? Promise.reject(
+            Object.assign(new Error(`${refusal}: cannot link`), {
+              code: refusal,
+            })
+          )
+        : actual.symlink(...args),
+  };
+});
+
 const roots: string[] = [];
 const saved = { ...process.env };
 afterEach(async () => {
+  refusal = null;
   process.env = { ...saved };
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
@@ -53,10 +71,10 @@ const fixture = (name: string) => path.resolve("test-fixtures", name);
 const canonicalTemp = (folder: string) =>
   path.join(realpathSync(path.dirname(folder)), path.basename(folder));
 
-async function setup(programs: Record<string, string[]>) {
+async function setup(programs: Record<string, string[]>, base = tmpdir()) {
   // 임시 폴더가 링크 뒤에 있으면(macOS) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
   const root = await realpath(
-    await mkdtemp(path.join(tmpdir(), "babojubot-container-"))
+    await mkdtemp(path.join(base, "babojubot-container-"))
   );
   roots.push(root);
   const state = path.join(root, "docker-state");
@@ -2085,6 +2103,503 @@ describe.skipIf(process.platform === "win32")(
         );
       }
     );
+  }
+);
+
+// #209: 링크를 만들 수 없는 컴퓨터에서는 연결의 로그인이 연결 폴더 자리에 있다. 중계는 이 컴퓨터의 실행이 읽는 그 로그인을 읽는다.
+describe.skipIf(process.platform === "win32")(
+  "an isolated attempt on a machine that cannot create links (#209)",
+  () => {
+    const codexLogin = (access: string, refresh = "real-codex-refresh") =>
+      JSON.stringify({
+        tokens: {
+          id_token: "real-id",
+          access_token: access,
+          refresh_token: refresh,
+          account_id: "real-account",
+        },
+        last_refresh: new Date().toISOString(),
+      });
+    const agyLogin = (access: string, fields: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        token: {
+          access_token: access,
+          token_type: "Bearer",
+          refresh_token: "real-agy-refresh",
+          expiry: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+        auth_method: "consumer",
+        ...fields,
+      });
+    const codexRelay = [process.execPath, fixture("codex-relay.mjs")];
+    const agy = [process.execPath, fixture("antigravity-simulator.mjs")];
+    const connections: {
+      name: string;
+      id: string;
+      programs: Record<string, string[]>;
+      place: string[];
+      login: (access: string) => string;
+      create: (
+        options: Parameters<typeof createCodexProvider>[0]
+      ) => ProviderConnection;
+    }[] = [
+      {
+        name: "Codex (app-server)",
+        id: "codex",
+        programs: { codex: codexRelay },
+        place: ["auth.json"],
+        login: (access: string) => codexLogin(access),
+        create: (options: Parameters<typeof createCodexProvider>[0]) =>
+          createCodexProvider({
+            ...options,
+            command: [
+              process.execPath,
+              fixture("replay.mjs"),
+              fixture("codex-finish.synthetic.json"),
+            ],
+          }),
+      },
+      {
+        name: "Codex (exec)",
+        id: "codex",
+        programs: { codex: codexRelay },
+        place: ["auth.json"],
+        login: (access: string) => codexLogin(access),
+        create: (options: Parameters<typeof createCodexProvider>[0]) =>
+          createCodexProvider({
+            ...options,
+            mode: "exec",
+            command: [
+              process.execPath,
+              fixture("replay.mjs"),
+              fixture("codex-exec.synthetic.json"),
+            ],
+          }),
+      },
+      {
+        name: "Antigravity",
+        id: "antigravity",
+        programs: { agy },
+        place: [".gemini", "antigravity-cli", "antigravity-oauth-token"],
+        login: (access: string) => agyLogin(access),
+        create: (options: Parameters<typeof createAntigravityProvider>[0]) =>
+          createAntigravityProvider({
+            ...options,
+            command: agy as [string, ...string[]],
+          }),
+      },
+    ];
+
+    const byName = (name: string) =>
+      connections.find((connection) => connection.name === name)!;
+    async function noLinkSetup(
+      connection: (typeof connections)[number],
+      login: string | null,
+      options: {
+        create?: (
+          options: Parameters<typeof createCodexProvider>[0]
+        ) => ProviderConnection;
+        /** 데이터 폴더를 만들 곳. 기본은 임시 폴더다. */
+        base?: string;
+      } = {}
+    ) {
+      const create = options.create ?? connection.create;
+      const env = await setup(connection.programs, options.base);
+      const folder = path.join(env.root, "providers", connection.id);
+      const original = path.join(folder, "login", connection.place.at(-1)!);
+      /** 연결 폴더의 로그인 자리. 링크를 만들 수 없으면 이 컴퓨터의 실행·로그인 명령·갱신이 여기의 로그인을 읽고 쓴다. */
+      const connectionPlace = path.join(folder, ...connection.place);
+      if (login !== null) {
+        await mkdir(path.dirname(original), { recursive: true });
+        await writeFile(original, login, { mode: 0o600 });
+      }
+      let provider!: ProviderConnection;
+      const network = await relayed(connection.id, (upstream) => {
+        provider = create({
+          dataDir: env.root,
+          container: env.container,
+          relay: { upstream, verified: true },
+        });
+        return provider.credentialRelay!;
+      });
+      const isolated = () => {
+        const request = env.isolated();
+        request.access = { ...request.access, toolsBaseUrl: network.tools };
+        return request;
+      };
+      const onHost = () => {
+        const request = isolated();
+        delete request.execution;
+        return request;
+      };
+      /** 연결 폴더 자리에 다시 로그인한다(로그인 명령은 연결 폴더에서 돈다: 링크면 따라가 원본에, 아니면 그 자리에 쓴다). */
+      const logIn = async (contents: string) => {
+        await mkdir(path.dirname(connectionPlace), { recursive: true });
+        await writeFile(connectionPlace, contents, { mode: 0o600 });
+      };
+      /** 연결 폴더 안에서 그 값을 담은 보통 파일. */
+      const holding = async (secret: string) => {
+        const found: string[] = [];
+        const look = async (at: string): Promise<void> => {
+          const info = await lstat(at).catch(() => undefined);
+          if (info?.isDirectory())
+            for (const name of await readdir(at))
+              await look(path.join(at, name));
+          else if (
+            info?.isFile() &&
+            (await readFile(at, "utf8")).includes(secret)
+          )
+            found.push(at);
+        };
+        await look(folder);
+        return found;
+      };
+      const runs = async () =>
+        (await env.calls()).filter((call) => call.args.includes("run"));
+      const authorizations = () =>
+        network.seen.map((headers) => headers.authorization);
+      return {
+        env,
+        network,
+        provider: () => provider,
+        folder,
+        original,
+        connectionPlace,
+        isolated,
+        onHost,
+        logIn,
+        holding,
+        runs,
+        authorizations,
+      };
+    }
+
+    describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
+      "that refuses links with %s",
+      (code) => {
+        it.each(connections)(
+          "completes an isolated $name run with the connection's login, and puts no connection folder, login folder or login in any mount",
+          async (connection) => {
+            const t = await noLinkSetup(
+              connection,
+              connection.login("real-access")
+            );
+            refusal = code;
+            try {
+              const result = await t
+                .provider()
+                .adapter.execute(t.isolated(), control());
+              expect(result.stopReason).toBe("completed");
+              expect(t.authorizations()).toEqual(["Bearer real-access"]);
+              expect(t.provider().credentialRelay!.failed()).toBe(false);
+              const [run] = await t.runs();
+              const sources = valuesOf(run!.args, "--mount").map(
+                (mount) => /source=([^,]+)/.exec(mount)![1]!
+              );
+              const organization = path.join(
+                t.folder,
+                "organizations",
+                t.env.org
+              );
+              expect(
+                sources.filter(
+                  (source) => !path.relative(t.folder, source).startsWith("..")
+                )
+              ).toEqual([organization]);
+              expect(JSON.stringify(run)).not.toContain("real-access");
+              // 로그인은 연결 폴더 자리 하나에만 있다. 조직 폴더에도 없다.
+              expect(await t.holding("real-access")).toEqual([
+                t.connectionPlace,
+              ]);
+            } finally {
+              await t.network.close();
+            }
+          },
+          20_000
+        );
+      }
+    );
+
+    it.each(connections)(
+      "sends the next isolated $name run with a login made again at the connection folder's place",
+      async (connection) => {
+        const t = await noLinkSetup(
+          connection,
+          connection.login("first-access")
+        );
+        refusal = "EPERM";
+        try {
+          const first = await t
+            .provider()
+            .adapter.execute(t.isolated(), control());
+          expect(first.stopReason).toBe("completed");
+          await t.logIn(connection.login("second-access"));
+          const second = await t
+            .provider()
+            .adapter.execute(t.isolated(), control());
+          expect(second.stopReason).toBe("completed");
+          expect(t.authorizations()).toEqual([
+            "Bearer first-access",
+            "Bearer second-access",
+          ]);
+          expect(await t.holding("first-access")).toEqual([]);
+          expect(await t.holding("second-access")).toEqual([t.connectionPlace]);
+        } finally {
+          await t.network.close();
+        }
+      },
+      20_000
+    );
+
+    // 링크를 풀어 복사한 데이터 폴더나 링크 대신 보통 파일을 쓰는 프로그램 판이면 로그인 전용 폴더와 연결 폴더 자리에 로그인 파일이
+    // 하나씩 남는다. 링크를 만들 수 없는 컴퓨터의 실행·로그인 명령·갱신은 연결 폴더 자리의 것을 읽고 쓰므로 그것이 연결의 로그인이다.
+    // 로그인 전용 폴더의 것은 지우지 않고 연결 폴더 `set-aside/`로 치운다(2026-11-17 사용자 결정).
+    it.each(connections)(
+      "sends an isolated $name run with the login at the connection folder's place when the login folder also holds one, and sets the login folder's aside",
+      async (connection) => {
+        const t = await noLinkSetup(
+          connection,
+          connection.login("copied-access")
+        );
+        await t.logIn(connection.login("newer-access"));
+        refusal = "EPERM";
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.isolated(), control());
+          expect(result.stopReason).toBe("completed");
+          expect(t.authorizations()).toEqual(["Bearer newer-access"]);
+          expect(await t.holding("newer-access")).toEqual([t.connectionPlace]);
+          const aside = await t.holding("copied-access");
+          expect(aside.map((file) => path.dirname(file))).toEqual([
+            path.join(t.folder, "set-aside"),
+          ]);
+          await expect(lstat(t.original)).rejects.toThrow();
+        } finally {
+          await t.network.close();
+        }
+      },
+      20_000
+    );
+
+    it.each(connections)(
+      "ends an isolated $name run as a relay failure, with nothing reaching the model, when there is no login anywhere",
+      async (connection) => {
+        const t = await noLinkSetup(connection, null);
+        refusal = "EPERM";
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.isolated(), control());
+          expect(result.stopReason).toBe("failed");
+          expect(result.error).toContain("인증 중계");
+          expect(t.provider().credentialRelay!.failed()).toBe(true);
+          expect(t.network.urls).toEqual([]);
+        } finally {
+          await t.network.close();
+        }
+      },
+      20_000
+    );
+
+    it.each(connections)(
+      "completes the next isolated $name run after a relay failure once the login is made again at the connection folder's place and the relay is checked again",
+      async (connection) => {
+        const t = await noLinkSetup(connection, null);
+        refusal = "EPERM";
+        try {
+          const first = await t
+            .provider()
+            .adapter.execute(t.isolated(), control());
+          expect(first.stopReason).toBe("failed");
+          expect(t.provider().credentialRelay!.failed()).toBe(true);
+          await t.logIn(connection.login("fixed-access"));
+          await t.provider().credentialRelay!.recover();
+          expect(t.provider().credentialRelay!.failed()).toBe(false);
+          const next = await t
+            .provider()
+            .adapter.execute(t.isolated(), control());
+          expect(next.stopReason).toBe("completed");
+          expect(t.authorizations()).toEqual(["Bearer fixed-access"]);
+        } finally {
+          await t.network.close();
+        }
+      },
+      20_000
+    );
+
+    it("refreshes an expiring Codex login once on this machine at the connection folder's place, and the model gets the refreshed login", async () => {
+      const log = path.join(
+        await realpath(
+          await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
+        ),
+        "refreshes.log"
+      );
+      roots.push(path.dirname(log));
+      const expiring = (() => {
+        const jwt =
+          [{ alg: "none" }, { exp: Math.floor(Date.now() / 1000) + 60 }]
+            .map((part) =>
+              Buffer.from(JSON.stringify(part)).toString("base64url")
+            )
+            .join(".") + ".sig";
+        return codexLogin(jwt, "first-refresh");
+      })();
+      const t = await noLinkSetup(byName("Codex (app-server)"), expiring, {
+        create: (options) =>
+          createCodexProvider({
+            ...options,
+            command: [
+              process.execPath,
+              fixture("codex-refresh.mjs"),
+              log,
+              "ok",
+            ],
+          }),
+      });
+      refusal = "EPERM";
+      try {
+        const result = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(result.stopReason).toBe("completed");
+        expect(
+          (await readFile(log, "utf8")).split("\n").filter(Boolean)
+        ).toHaveLength(1);
+        const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
+          tokens: Record<string, string>;
+        };
+        expect(login.tokens.refresh_token).toBe("rotated-refresh-1");
+        expect(t.authorizations()).toEqual([
+          `Bearer ${login.tokens.access_token}`,
+        ]);
+        await expect(stat(t.original)).rejects.toThrow();
+      } finally {
+        await t.network.close();
+      }
+    }, 20_000);
+
+    it("refreshes an expiring Antigravity login with agy on this machine at the connection folder's place, and the model gets the refreshed login", async () => {
+      const t = await noLinkSetup(
+        byName("Antigravity"),
+        agyLogin("old-agy-access", {
+          expired: true,
+          token: {
+            access_token: "old-agy-access",
+            token_type: "Bearer",
+            refresh_token: "real-agy-refresh",
+            expiry: new Date(Date.now() - 60_000).toISOString(),
+          },
+        })
+      );
+      refusal = "EPERM";
+      try {
+        const result = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(result.stopReason).toBe("completed");
+        const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
+          token: Record<string, string>;
+          refreshed: number;
+        };
+        expect(login.refreshed).toBe(1);
+        expect(t.authorizations()).toEqual([
+          `Bearer ${login.token.access_token}`,
+        ]);
+        await expect(stat(t.original)).rejects.toThrow();
+      } finally {
+        await t.network.close();
+      }
+    }, 20_000);
+
+    it.each(connections)(
+      "keeps one $name login while links become impossible and possible again among isolated runs and runs with isolation off, and the model gets the last login",
+      async (connection) => {
+        const t = await noLinkSetup(connection, connection.login("login-1"));
+        const run = async (request: RunRequest) =>
+          (await t.provider().adapter.execute(request, control())).stopReason;
+        try {
+          expect(await run(t.isolated())).toBe("completed");
+          expect(await run(t.onHost())).toBe("completed");
+          // 링크를 모르는 디스크로 데이터 폴더를 옮기면 링크는 따라오지 않는다.
+          refusal = "EPERM";
+          await rm(t.connectionPlace, { force: true });
+          expect(await run(t.onHost())).toBe("completed");
+          expect(await run(t.isolated())).toBe("completed");
+          await t.logIn(connection.login("login-2"));
+          expect(await run(t.isolated())).toBe("completed");
+          expect(await run(t.onHost())).toBe("completed");
+          refusal = null;
+          expect(await run(t.onHost())).toBe("completed");
+          expect(await run(t.isolated())).toBe("completed");
+          await t.logIn(connection.login("login-3"));
+          expect(await run(t.isolated())).toBe("completed");
+          expect(t.authorizations()).toEqual([
+            "Bearer login-1",
+            "Bearer login-1",
+            "Bearer login-2",
+            "Bearer login-2",
+            "Bearer login-3",
+          ]);
+          // 원본은 하나다: 로그인 전용 폴더의 원본만 로그인을 담고, 연결 폴더 자리는 그것을 가리킨다.
+          expect(await t.holding("login-")).toEqual([t.original]);
+          expect((await lstat(t.connectionPlace)).isSymbolicLink()).toBe(true);
+          expect(t.provider().credentialRelay!.failed()).toBe(false);
+        } finally {
+          await t.network.close();
+        }
+      },
+      30_000
+    );
+
+    /**
+     * 링크를 모르는 실제 디스크(CI는 vfat 이미지를 loop로 붙인다)의 폴더. 링크 거절을 흉내 내지 않고 대표 장면을 돈다.
+     * 붙일 수 없는 환경(로컬 기본값, macOS, Windows)에서는 비어 있어 건너뛴다.
+     */
+    const volume = process.env.BABOJUBOT_TEST_NO_LINK_DIR;
+    describe.skipIf(!volume)("on a real disk that refuses links", () => {
+      it("refuses a file link in that folder", async () => {
+        const probe = await mkdtemp(path.join(volume!, "babojubot-probe-"));
+        roots.push(probe);
+        await writeFile(path.join(probe, "target"), "");
+        const code = await symlink(
+          path.join(probe, "target"),
+          path.join(probe, "link"),
+          "file"
+        ).then(
+          () => "linked",
+          (error: NodeJS.ErrnoException) => error.code
+        );
+        expect(["EPERM", "ENOTSUP", "EOPNOTSUPP"]).toContain(code);
+      });
+
+      it.each(connections)(
+        "completes isolated $name runs with the connection's login, and the next one with a login made again",
+        async (connection) => {
+          const t = await noLinkSetup(connection, connection.login("disk-1"), {
+            base: volume!,
+          });
+          try {
+            const run = async () =>
+              (await t.provider().adapter.execute(t.isolated(), control()))
+                .stopReason;
+            expect(await run()).toBe("completed");
+            await t.logIn(connection.login("disk-2"));
+            expect(await run()).toBe("completed");
+            expect(t.authorizations()).toEqual([
+              "Bearer disk-1",
+              "Bearer disk-2",
+            ]);
+            expect(await t.holding("disk-2")).toEqual([t.connectionPlace]);
+            for (const call of await t.runs())
+              expect(JSON.stringify(call)).not.toMatch(/disk-1|disk-2/);
+          } finally {
+            await t.network.close();
+          }
+        },
+        30_000
+      );
+    });
   }
 );
 
