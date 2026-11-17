@@ -2,7 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { credentialResidue, residueRefusal } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
-import { loginLink } from "./login-link.ts";
+import { loginLink, readLogin } from "./login-link.ts";
 
 /**
  * 로그인을 파일로 같이 쓰는 연결(Codex·Antigravity)마다 다른 것. 나머지 준비 순서는 `fileLogin`이 맡는다(#146).
@@ -130,5 +130,10 @@ export function fileLogin(
     await mkdir(productHome, { recursive: true, mode: 0o700 });
     return { home: productHome };
   };
-  return { home, original, loginFileIn, prepareConnection, prepare };
+  /**
+   * 이 컴퓨터의 실행·로그인 명령·갱신이 지금 읽는 연결의 로그인(#209). 인증 중계가 쓴다. 링크를 만들 수 없는 컴퓨터에서는 원본이
+   * 연결 폴더 자리에 있으므로 그 자리를 읽는다. 복사본은 만들지 않는다.
+   */
+  const read = () => readLogin(original, loginFileIn(home));
+  return { home, original, loginFileIn, prepareConnection, prepare, read };
 }

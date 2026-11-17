@@ -41,12 +41,14 @@ vi.mock("cross-spawn", async (importOriginal) => {
 
 /** 붙잡아 둘 파일 작업 하나. 그 작업에 들어오면 알리고, 풀어 줄 때까지 기다린 뒤 실제로 한다. */
 type Gate = {
-  operation: "symlink" | "writeFile";
+  operation: "symlink" | "writeFile" | "rename";
   matches: (file: string) => boolean;
   entered: (file: string) => void;
   held: Promise<void>;
 };
 let gate: Gate | undefined;
+/** 읽은 파일. 로그인을 옮기는 동안 읽었는지 본다. */
+const reads: string[] = [];
 /** 링크 만들기를 거절하는 오류 코드(권한 없는 Windows·링크를 모르는 파일 시스템). */
 let refusal: string | null = null;
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -71,6 +73,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         ? held.then(() => actual.symlink(...args))
         : actual.symlink(...args);
     },
+    rename: (...args: Parameters<typeof actual.rename>) => {
+      const held = hold("rename", args[0]);
+      return held
+        ? held.then(() => actual.rename(...args))
+        : actual.rename(...args);
+    },
+    readFile: (...args: Parameters<typeof actual.readFile>) => {
+      reads.push(String(args[0]));
+      return actual.readFile(...args);
+    },
     writeFile: (...args: Parameters<typeof actual.writeFile>) => {
       const held = hold("writeFile", args[0]);
       return held
@@ -86,6 +98,7 @@ afterEach(async () => {
   gate = undefined;
   refusal = null;
   spawned.length = 0;
+  reads.length = 0;
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -95,6 +108,12 @@ afterEach(async () => {
   );
 });
 const fixture = (name: string) => path.resolve("test-fixtures", name);
+const listen = async (handler: http.RequestListener) => {
+  const server = http.createServer(handler);
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+};
 const control = (signal = new AbortController().signal) => ({
   signal,
   emit: async () => {},
@@ -104,6 +123,7 @@ type Create = (options: {
   dataDir: string;
   command?: readonly [string, ...string[]];
   container?: ContainerSettings;
+  relay?: { upstream?: string; verified?: boolean };
 }) => ProviderConnection;
 const connections: {
   name: string;
@@ -115,6 +135,9 @@ const connections: {
   original: string;
   /** 잘못된 조직 ID를 받은 실행이 끝나는 방식. Codex는 던지고, Antigravity는 실패로 돌려준다(변경 전과 같음). */
   invalidOrganization: "throws" | "fails";
+  /** 그 접근 토큰을 담은 연결의 로그인(합성)과, 중계가 그 로그인을 넣어 보내는 모델 요청 경로. */
+  login: (access: string) => string;
+  route: string;
 }[] = [
   {
     name: "Codex (app-server)",
@@ -123,6 +146,11 @@ const connections: {
     place: ["auth.json"],
     original: "auth.json",
     invalidOrganization: "throws",
+    login: (access) =>
+      JSON.stringify({
+        tokens: { access_token: access, account_id: "synthetic-account" },
+      }),
+    route: "/responses",
   },
   {
     name: "Codex (exec)",
@@ -131,6 +159,11 @@ const connections: {
     place: ["auth.json"],
     original: "auth.json",
     invalidOrganization: "throws",
+    login: (access) =>
+      JSON.stringify({
+        tokens: { access_token: access, account_id: "synthetic-account" },
+      }),
+    route: "/responses",
   },
   {
     name: "Antigravity",
@@ -139,6 +172,14 @@ const connections: {
     place: [".gemini", "antigravity-cli", "antigravity-oauth-token"],
     original: "antigravity-oauth-token",
     invalidOrganization: "fails",
+    login: (access) =>
+      JSON.stringify({
+        token: {
+          access_token: access,
+          expiry: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      }),
+    route: "/v1internal:streamGenerateContent",
   },
 ];
 
@@ -172,10 +213,18 @@ async function setup(connection: (typeof connections)[number]) {
   const original = path.join(folder, "login", connection.original);
   await mkdir(path.dirname(original), { recursive: true });
   await writeFile(original, '{"synthetic-login":1}', { mode: 0o600 });
+  /** 모의 모델 서비스. 중계가 넣어 보낸 인증을 남기고 200으로 답한다. */
+  const upstreamSeen: (string | undefined)[] = [];
+  const upstream = await listen((req, res) => {
+    upstreamSeen.push(req.headers.authorization);
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
   const provider = connection.create({
     dataDir: root,
     command: dumper,
     container,
+    relay: { upstream, verified: true },
   });
   /** 발급한 실행 시도 권한. */
   const grants: string[] = [];
@@ -186,24 +235,21 @@ async function setup(connection: (typeof connections)[number]) {
     grants.push(issued.token);
     return issued;
   };
+  /** 중계가 받은 요청을 넘긴 뒤 부르는 함수. 중계는 원본 읽기까지 이어서 하므로, 넘긴 직후에 읽기가 시작됐는지 볼 수 있다. */
+  const handed: { then?: () => void } = {};
+  const relayUrl = await listen((req, res) => {
+    relay.handle(req, res);
+    handed.then?.();
+  });
   /** 중계에 그 권한으로 경로 밖 요청을 보낸 응답 코드. 살아 있는 권한이면 403(경로 거절), 거둔 권한이면 401이다. */
-  const relayStatus = async (token: string) => {
-    if (!servers[0]) {
-      const server = http.createServer((req, res) => relay.handle(req, res));
-      servers.push(server);
-      await new Promise<void>((resolve) =>
-        server.listen(0, "127.0.0.1", resolve)
-      );
-    }
-    const port = (servers[0]!.address() as net.AddressInfo).port;
-    return (
-      await fetch(`http://127.0.0.1:${port}/not-a-route`, {
+  const relayStatus = async (token: string) =>
+    (
+      await fetch(`${relayUrl}/not-a-route`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(5_000),
       })
     ).status;
-  };
   const requestFor = async (
     organizationId: string,
     execution?: "container"
@@ -243,6 +289,12 @@ async function setup(connection: (typeof connections)[number]) {
     root,
     folder,
     original,
+    /** 연결 폴더의 로그인 자리. 링크를 만들 수 없으면 원본이 여기 보통 파일로 있다. */
+    connectionPlace: path.join(folder, ...connection.place),
+    upstreamSeen,
+    relay,
+    relayUrl,
+    handed,
     provider,
     grants,
     relayStatus,
@@ -399,6 +451,79 @@ describe.each(connections)("$name", (connection) => {
       expect((await env.dumps()).map((one) => one.HOME)).toEqual([
         env.organization(a),
       ]);
+    }
+  );
+
+  // #209: 중계는 이 컴퓨터의 실행이 읽는 연결의 로그인을 읽는다. 로그인을 원본 자리와 연결 폴더 자리 사이에서 옮기는 동안 온 요청은
+  // 옮기기가 끝날 때까지 기다리고, 옮긴 자리의 로그인으로 간다. 옮기는 중에 읽으면 두 자리 모두에서 못 읽을 수 있다.
+  it.each([
+    {
+      direction: "back to the login folder when links become possible",
+      async arrange(env: Awaited<ReturnType<typeof setup>>, login: string) {
+        // 링크를 만들 수 없던 동안 원본은 연결 폴더 자리의 보통 파일로 옮겨져 있었다.
+        await rm(env.original, { force: true });
+        await mkdir(path.dirname(env.connectionPlace), { recursive: true });
+        await writeFile(env.connectionPlace, login, { mode: 0o600 });
+        return env.connectionPlace;
+      },
+    },
+    {
+      direction: "to the connection folder when links become impossible",
+      async arrange(env: Awaited<ReturnType<typeof setup>>, login: string) {
+        await writeFile(env.original, login, { mode: 0o600 });
+        refusal = "ENOTSUP";
+        return env.original;
+      },
+    },
+  ])(
+    "holds a relay request while the login is being moved $direction, then sends it with that login",
+    async ({ arrange }) => {
+      const env = await setup(connection);
+      const login = connection.login("moving-access");
+      const moved = await arrange(env, login);
+      const issued = env.relay.grant({
+        signal: new AbortController().signal,
+        organizationId: crypto.randomUUID(),
+        runId: crypto.randomUUID(),
+      });
+      // 격리를 끈 실행의 준비가 연결 자리의 로그인을 옮기기 시작한다.
+      const held = holdAt("rename", (file) => file === moved);
+      const running = env.provider.adapter.execute(
+        await env.requestFor(crypto.randomUUID()),
+        control()
+      );
+      await held.reached;
+      reads.length = 0;
+      const handed = new Promise<void>((resolve) => {
+        env.handed.then = resolve;
+      });
+      let answered = false;
+      const answer = fetch(`${env.relayUrl}${connection.route}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${issued.token}`,
+          "content-type": "application/json",
+        },
+        body: "{}",
+        signal: AbortSignal.timeout(10_000),
+      }).then((response) => {
+        answered = true;
+        return response;
+      });
+      await handed;
+      // 중계는 요청을 받았지만 옮기는 동안에는 어느 자리의 로그인도 읽지 않고 기다린다.
+      expect(
+        reads.filter(
+          (file) => file === env.original || file === env.connectionPlace
+        )
+      ).toEqual([]);
+      expect(answered).toBe(false);
+      held.release();
+      const response = await answer;
+      expect(response.status).toBe(200);
+      expect(env.upstreamSeen).toEqual(["Bearer moving-access"]);
+      expect(env.relay.failed()).toBe(false);
+      await running;
     }
   );
 

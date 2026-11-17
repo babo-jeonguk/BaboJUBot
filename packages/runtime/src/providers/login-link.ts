@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
+  readFile,
   readlink,
   rename,
   rm,
@@ -10,7 +11,10 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-/** 로그인 원본마다 링크 작업을 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다. */
+/**
+ * 로그인 원본마다 링크 작업과 로그인 읽기(`readLogin`)를 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다.
+ * 옮기는 중에 읽으면 원본이 두 자리 사이에 있어 어느 쪽에서도 못 읽을 수 있다(#209).
+ */
 const linking = new Map<string, Promise<unknown>>();
 function oneAtATime<T>(key: string, task: () => Promise<T>): Promise<T> {
   const next = (linking.get(key) ?? Promise.resolve())
@@ -143,4 +147,18 @@ export function loginLink(options: {
     oneAtATime(original, () =>
       linkLogin(original, fallback, at, label, setAside)
     );
+}
+
+/**
+ * 이 컴퓨터의 실행이 지금 읽는 연결의 로그인(#209). 원본 자리에 있으면 그것을, 없으면 연결 폴더의 자리 `fallback`을 읽는다.
+ * 링크를 만들 수 없는 컴퓨터에서는 원본이 `fallback`의 보통 파일로 옮겨져 있고, 링크면 따라가 읽는다. 둘 다 없으면 던진다.
+ * 같은 원본의 링크 작업과 차례를 지킨다. 원본을 되돌려 옮기는 rename 두 번 사이에 읽으면 두 자리 모두 비어 있다.
+ */
+export function readLogin(original: string, fallback: string) {
+  return oneAtATime(original, () =>
+    readFile(original, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return readFile(fallback, "utf8");
+    })
+  );
 }

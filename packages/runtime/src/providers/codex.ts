@@ -282,7 +282,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     contents: (token) => JSON.stringify(relayLogin(token)),
     isStandIn: isRelayLogin,
   });
-  const { home, original } = login;
+  const { home } = login;
   const command = options.command ?? commandFor(id, "codex");
   const timeouts = { ...defaultTimeouts, ...options.timeouts };
   /** 모델 목록·로그인 갱신용 app-server. 이 컴퓨터의 연결 폴더에서 돈다. */
@@ -298,8 +298,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     providerEnvironment(id, codexHome, { CODEX_HOME: codexHome }, { isolated });
   let refreshing: Promise<void> | undefined;
   /**
-   * 원본 로그인을 이 컴퓨터의 Codex로 갱신한다(#148). 갱신은 컨테이너가 아니라 서버가 맡는다. 연결 폴더의 로그인 링크를 따라
-   * Codex가 원본 자리에 새 로그인을 쓴다. 연결마다 한 번에 하나만 하고, 그동안 온 요청은 같은 갱신을 기다린다.
+   * 연결의 로그인을 이 컴퓨터의 Codex로 갱신한다(#148). 갱신은 컨테이너가 아니라 서버가 맡는다. 연결 폴더의 로그인 링크를 따라
+   * Codex가 원본 자리에 새 로그인을 쓰고, 링크를 만들 수 없는 컴퓨터면 연결 폴더 자리의 보통 파일에 쓴다(#209). 연결마다 한 번에 하나만 하고, 그동안 온 요청은 같은 갱신을 기다린다.
    */
   const refreshLogin = () =>
     (refreshing ??= (async () => {
@@ -323,12 +323,15 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
     })().finally(() => {
       refreshing = undefined;
     }));
-  /** 중계가 쓸 원본 로그인. 곧 끝나면 먼저 갱신하고, 갱신한 뒤에도 끝나 가면 갱신 실패로 던진다(중계 실패, Q6). */
+  /**
+   * 중계가 쓸 연결의 로그인. 이 컴퓨터의 실행이 읽는 자리를 읽는다(#209). 곧 끝나면 먼저 갱신하고, 갱신한 뒤에도 끝나 가면
+   * 갱신 실패로 던진다(중계 실패, Q6).
+   */
   const currentLogin = async () => {
-    const login = await readFile(original, "utf8");
-    if (!needsRefresh(login)) return login;
+    const current = await login.read();
+    if (!needsRefresh(current)) return current;
     await refreshLogin();
-    const refreshed = await readFile(original, "utf8");
+    const refreshed = await login.read();
     if (needsRefresh(refreshed)) throw new Error("login refresh failed");
     return refreshed;
   };
