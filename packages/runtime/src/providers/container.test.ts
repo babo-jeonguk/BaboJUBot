@@ -2351,6 +2351,37 @@ describe.skipIf(process.platform === "win32")(
       20_000
     );
 
+    // 링크를 풀어 복사한 데이터 폴더나 링크 대신 보통 파일을 쓰는 프로그램 판이면 로그인 전용 폴더와 연결 폴더 자리에 로그인 파일이
+    // 하나씩 남는다. 링크를 만들 수 없는 컴퓨터의 실행·로그인 명령·갱신은 연결 폴더 자리의 것을 읽고 쓰므로 그것이 연결의 로그인이다.
+    // 로그인 전용 폴더의 것은 지우지 않고 연결 폴더 `set-aside/`로 치운다(2026-11-17 사용자 결정).
+    it.each(connections)(
+      "sends an isolated $name run with the login at the connection folder's place when the login folder also holds one, and sets the login folder's aside",
+      async (connection) => {
+        const t = await noLinkSetup(
+          connection,
+          connection.login("copied-access")
+        );
+        await t.logIn(connection.login("newer-access"));
+        refusal = "EPERM";
+        try {
+          const result = await t
+            .provider()
+            .adapter.execute(t.isolated(), control());
+          expect(result.stopReason).toBe("completed");
+          expect(t.authorizations()).toEqual(["Bearer newer-access"]);
+          expect(await t.holding("newer-access")).toEqual([t.connectionPlace]);
+          const aside = await t.holding("copied-access");
+          expect(aside.map((file) => path.dirname(file))).toEqual([
+            path.join(t.folder, "set-aside"),
+          ]);
+          await expect(lstat(t.original)).rejects.toThrow();
+        } finally {
+          await t.network.close();
+        }
+      },
+      20_000
+    );
+
     it.each(connections)(
       "ends an isolated $name run as a relay failure, with nothing reaching the model, when there is no login anywhere",
       async (connection) => {

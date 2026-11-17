@@ -101,19 +101,48 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const roots: string[] = [];
 const servers: http.Server[] = [];
+/** 시험이 붙잡은 작업을 푸는 함수. 단언이 실패해 시험이 풀지 못한 것도 정리가 푼다. */
+const holds: (() => void)[] = [];
+/** 시험이 시작한 실행. 정리는 붙잡은 작업을 푼 뒤 시한 안에서 이것들이 끝나기를 기다린다. */
+const runs: Promise<unknown>[] = [];
 afterEach(async () => {
   gate = undefined;
-  refusal = null;
-  spawned.length = 0;
-  race = undefined;
-  for (const server of servers.splice(0)) {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+  for (const release of holds.splice(0)) release();
+  let limit: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.allSettled(runs.splice(0)),
+      new Promise((_, reject) => {
+        limit = setTimeout(
+          () => reject(new Error("a run did not end within 10s after cleanup")),
+          10_000
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(limit);
+    // 풀려난 실행이 끝난 뒤에 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남는다.
+    refusal = null;
+    spawned.length = 0;
+    race = undefined;
+    for (const server of servers.splice(0)) {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+    await Promise.all(
+      roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
+    );
   }
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
 });
+/** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
+function hold() {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  holds.push(release);
+  return { held, release };
+}
 const fixture = (name: string) => path.resolve("test-fixtures", name);
 const listen = async (handler: http.RequestListener) => {
   const server = http.createServer(handler);
@@ -235,6 +264,12 @@ async function setup(connection: (typeof connections)[number]) {
   });
   /** 발급한 실행 시도 권한. */
   const grants: string[] = [];
+  const execute = provider.adapter.execute.bind(provider.adapter);
+  provider.adapter.execute = (...args) => {
+    const run = execute(...args);
+    runs.push(run);
+    return run;
+  };
   const relay = provider.credentialRelay as CredentialRelay;
   const grant = relay.grant.bind(relay);
   relay.grant = (scope) => {
@@ -318,7 +353,7 @@ function holdAt(
   operation: Gate["operation"],
   matches: (file: string) => boolean
 ) {
-  let release!: () => void;
+  const { held, release } = hold();
   let entered!: (file: string) => void;
   // 준비가 그 작업에 끝내 들어오지 않으면 시험 시한까지 기다리지 않고 바로 실패한다.
   const reached = new Promise<string>((resolve, reject) => {
@@ -335,9 +370,7 @@ function holdAt(
     operation,
     matches,
     entered,
-    held: new Promise<void>((resolve) => {
-      release = resolve;
-    }),
+    held,
   };
   return { reached, release };
 }
@@ -513,17 +546,14 @@ describe.each(connections)("$name", (connection) => {
     const firstMoved = new Promise<void>((resolve) => {
       firstDone = resolve;
     });
-    let releaseSecond!: () => void;
-    const second = new Promise<void>((resolve) => {
-      releaseSecond = resolve;
-    });
+    const second = hold();
     const events: string[] = [];
     race = {
       afterRename(from, to) {
         // 첫 rename을 한 뒤 둘째 rename을 붙잡는다: 원본 자리에만 로그인이 있고 연결 자리는 비어 있다.
         if (from === env.connectionPlace) {
           firstDone();
-          return second;
+          return second.held;
         }
         if (to === env.connectionPlace) events.push("moved");
         return undefined;
@@ -543,7 +573,7 @@ describe.each(connections)("$name", (connection) => {
     // 두 rename 사이: 요청은 아직 끝나지 않았고 상류에도 가지 않았다.
     expect(request.settled()).toBe(false);
     expect(env.upstreamSeen).toEqual([]);
-    releaseSecond();
+    second.release();
     const response = await request.answer;
     expect(response.status).toBe(200);
     expect(events).toEqual(["moved", "read original"]);
