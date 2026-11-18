@@ -14,7 +14,14 @@ import net from "node:net";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import { destinationSchema, type RunRequest } from "@babojubot/contracts";
 import {
   ContainerRefusal,
@@ -484,18 +491,15 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
       let write;
       try { fs.writeFileSync(file, "changed"); write = "ok"; } catch (e) { write = e.code; }
       console.log(JSON.stringify({ content, write }));`;
-    try {
-      const own = await inContainer(org, script, {
-        files: [{ source: path.join(attempt, "mcp_config.json"), target }],
-      });
-      expect(own.frame).toEqual({ content: "attempt secret", write: "EROFS" });
-      expect(await readFile(target, "utf8")).toBe("placeholder");
-      expect((await inContainer(org, script)).frame).toMatchObject({
-        content: "placeholder",
-      });
-    } finally {
-      await removeFolder(attempt);
-    }
+    onTestFinished(() => removeFolder(attempt));
+    const own = await inContainer(org, script, {
+      files: [{ source: path.join(attempt, "mcp_config.json"), target }],
+    });
+    expect(own.frame).toEqual({ content: "attempt secret", write: "EROFS" });
+    expect(await readFile(target, "utf8")).toBe("placeholder");
+    expect((await inContainer(org, script)).frame).toMatchObject({
+      content: "placeholder",
+    });
   }, 120_000);
 
   it("removes only this product folder's leftover containers", async () => {

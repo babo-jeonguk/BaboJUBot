@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { removeFolder } from "../remove-folder.ts";
 import path from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { testFolders } from "./test-folders.ts";
 import type { RunResult, RuntimeAdapter } from "@babojubot/contracts";
 import { request } from "./test-support.ts";
@@ -59,15 +59,12 @@ it("waits for what uses the folder to finish before removing it", async () => {
 it("keeps the folder and reports the failure when something using it does not stop", async () => {
   const test = folders();
   const root = await test.make("test-folders-");
-  try {
-    test.own(async () => {
-      throw new Error("did not stop");
-    });
-    await expect(test.cleanup()).rejects.toThrow("did not stop");
-    expect(existsSync(root)).toBe(true);
-  } finally {
-    await removeFolder(root);
-  }
+  onTestFinished(() => removeFolder(root));
+  test.own(async () => {
+    throw new Error("did not stop");
+  });
+  await expect(test.cleanup()).rejects.toThrow("did not stop");
+  expect(existsSync(root)).toBe(true);
 });
 
 it("stops a program still running in the folder and waits until it has ended and closed its output", async () => {
@@ -138,19 +135,16 @@ it("stops a provider run a failed test left in progress and removes the folder o
 it("keeps the folder and fails by name when a provider run does not end after the stop", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
-  try {
-    const provider = test.ownProvider(heldProvider([], root, true));
-    void provider.adapter.execute(request(), {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
-    await expect(test.cleanup()).rejects.toThrow(
-      "provider run did not stop within 50ms"
-    );
-    expect(existsSync(root)).toBe(true);
-  } finally {
-    await removeFolder(root);
-  }
+  onTestFinished(() => removeFolder(root));
+  const provider = test.ownProvider(heldProvider([], root, true));
+  void provider.adapter.execute(request(), {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  await expect(test.cleanup()).rejects.toThrow(
+    "provider run did not stop within 50ms"
+  );
+  expect(existsSync(root)).toBe(true);
 });
 
 it("owns the runs of providers made by a factory passed around as a value", async () => {
@@ -173,20 +167,17 @@ it("owns the runs of providers made by a factory passed around as a value", asyn
 it("owns a provider once even when it is handed to cleanup twice", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
-  try {
-    // owning으로 묶은 factory가 만든 연결을 다시 ownProvider로 감싸도 실행은 정리에 한 번만 맡겨진다.
-    const create = test.owning(() => heldProvider([], root, true));
-    const provider = test.ownProvider(create());
-    void provider.adapter.execute(request(), {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
-    const failure = await test.cleanup().catch((error: unknown) => error);
-    expect(failure).not.toBeInstanceOf(AggregateError);
-    expect(failure).toMatchObject({
-      message: "provider run did not stop within 50ms",
-    });
-  } finally {
-    await removeFolder(root);
-  }
+  onTestFinished(() => removeFolder(root));
+  // owning으로 묶은 factory가 만든 연결을 다시 ownProvider로 감싸도 실행은 정리에 한 번만 맡겨진다.
+  const create = test.owning(() => heldProvider([], root, true));
+  const provider = test.ownProvider(create());
+  void provider.adapter.execute(request(), {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  const failure = await test.cleanup().catch((error: unknown) => error);
+  expect(failure).not.toBeInstanceOf(AggregateError);
+  expect(failure).toMatchObject({
+    message: "provider run did not stop within 50ms",
+  });
 });

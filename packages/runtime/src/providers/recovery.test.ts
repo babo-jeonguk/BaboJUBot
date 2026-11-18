@@ -9,7 +9,7 @@ import {
   recoverProviderProcesses,
 } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "./lease.ts";
-import { readyLine } from "./process-test-support.ts";
+import { killUnlessGone, readyLine } from "./process-test-support.ts";
 import { testFolders } from "./test-folders.ts";
 import { withCleanup } from "../test-cleanup.ts";
 
@@ -82,14 +82,6 @@ const groupGone = (group: number) => {
     return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
 };
-/** 시험 정리: 그룹에 SIGKILL을 보낸다. 그룹이 이미 끝났으면(ESRCH) 넘어가고, 다른 실패는 알린다. */
-const killGroup = (group: number) => {
-  try {
-    process.kill(-group, "SIGKILL");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
-  }
-};
 const until = (done: () => boolean) =>
   expect.poll(done, { timeout: 10_000, interval: 25 }).toBe(true);
 
@@ -112,7 +104,7 @@ it.runIf(process.platform === "linux")(
     const group = leader.pid!;
     // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
     await withCleanup(async (defer) => {
-      defer(() => killGroup(group));
+      defer(() => killUnlessGone(-group));
       await writeFile(
         path.join(directory, `${group}.json`),
         JSON.stringify({
@@ -260,7 +252,7 @@ it.skipIf(process.platform === "win32")(
     const group = leader.pid!;
     // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
     await withCleanup(async (defer) => {
-      defer(() => killGroup(group));
+      defer(() => killUnlessGone(-group));
       await writeFile(
         path.join(directory, `${group}.json`),
         JSON.stringify({ pid: group, lease: "lease" })

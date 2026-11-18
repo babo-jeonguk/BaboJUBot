@@ -4,7 +4,7 @@ import { gzipSync } from "node:zlib";
 import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import {
   createCredentialRelay,
   credentialResidue,
@@ -1082,34 +1082,31 @@ describe("the credential relay with runs that overlap (#148)", () => {
 describe("login residue in an organization's product folder", () => {
   it("counts a regular file or folder as residue, and a link as residue unless it is the known link to the connection's login", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
-    try {
-      const login = path.join(root, "connection/login/auth.json");
-      expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
-      // 연결의 로그인 원본을 가리키는 링크는 컨테이너 안에서 비어 있다.
-      await symlink(login, path.join(root, "auth.json"));
-      expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
-      // 알려진 원본이 없는 프로그램에서는 어떤 링크도 안전하다고 볼 수 없다.
-      expect(await credentialResidue(root, ["auth.json"])).toBe(true);
-      // 컨테이너 안에서 닿을 수 있는 다른 곳을 가리키는 링크는 남은 로그인이다.
-      await mkdir(path.join(root, "copy"));
-      await symlink(
-        path.join(root, "copy/auth.json"),
-        path.join(root, "other.json")
-      );
-      expect(await credentialResidue(root, ["other.json"], login)).toBe(true);
-      await mkdir(path.join(root, "config"));
-      await writeFile(path.join(root, "config/.credentials.json"), "{}");
-      expect(
-        await credentialResidue(root, ["auth.json", "config/.credentials.json"])
-      ).toBe(true);
-      // 상위가 파일이면 그 아래 로그인은 없다.
-      await writeFile(path.join(root, "file"), "");
-      expect(await credentialResidue(root, ["file/auth.json"], login)).toBe(
-        false
-      );
-    } finally {
-      await removeFolder(root);
-    }
+    onTestFinished(() => removeFolder(root));
+    const login = path.join(root, "connection/login/auth.json");
+    expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+    // 연결의 로그인 원본을 가리키는 링크는 컨테이너 안에서 비어 있다.
+    await symlink(login, path.join(root, "auth.json"));
+    expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+    // 알려진 원본이 없는 프로그램에서는 어떤 링크도 안전하다고 볼 수 없다.
+    expect(await credentialResidue(root, ["auth.json"])).toBe(true);
+    // 컨테이너 안에서 닿을 수 있는 다른 곳을 가리키는 링크는 남은 로그인이다.
+    await mkdir(path.join(root, "copy"));
+    await symlink(
+      path.join(root, "copy/auth.json"),
+      path.join(root, "other.json")
+    );
+    expect(await credentialResidue(root, ["other.json"], login)).toBe(true);
+    await mkdir(path.join(root, "config"));
+    await writeFile(path.join(root, "config/.credentials.json"), "{}");
+    expect(
+      await credentialResidue(root, ["auth.json", "config/.credentials.json"])
+    ).toBe(true);
+    // 상위가 파일이면 그 아래 로그인은 없다.
+    await writeFile(path.join(root, "file"), "");
+    expect(await credentialResidue(root, ["file/auth.json"], login)).toBe(
+      false
+    );
   });
 
   // 폴더 권한으로 읽기를 막는다. root는 권한을 넘고, Windows는 POSIX 권한 비트로 읽기를 막지 않는다.
@@ -1117,14 +1114,14 @@ describe("login residue in an organization's product folder", () => {
     "counts a path it cannot inspect as residue",
     async () => {
       const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
-      try {
-        await mkdir(path.join(root, "locked"));
-        await chmod(path.join(root, "locked"), 0o000);
-        expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
-      } finally {
+      // 막은 권한을 되돌린 뒤에 폴더를 지운다.
+      onTestFinished(async () => {
         await chmod(path.join(root, "locked"), 0o700);
         await removeFolder(root);
-      }
+      });
+      await mkdir(path.join(root, "locked"));
+      await chmod(path.join(root, "locked"), 0o000);
+      expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
     }
   );
 });
