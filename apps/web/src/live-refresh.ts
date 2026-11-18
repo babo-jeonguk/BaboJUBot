@@ -10,10 +10,22 @@ import type { Query, QueryClient, QueryFilters } from "@tanstack/react-query";
  * 보고 있는 화면이 없는 조회는 오래됨으로만 표시해 다음에 볼 때 다시 불러오게 한다.
  * 조회의 `meta.liveRefresh`가 함수면 다시 불러오는 대신 그것을 부른다(쪽으로 나눈 대화는 새 메시지만 이어 받는다).
  * 그사이 그 조회가 스스로 불러오기 시작했으면(더 오래된 쪽 등) 그 결과가 덮어쓸 수 있으므로 끝난 뒤 한 번 더 부른다.
+ *
+ * `onQueued`는 진행 중인 조회에 신호가 와서 끝난 뒤 다시 불러오기로 표시된 조회(`queryHash`) 목록이 바뀔 때만 불린다.
+ * 그 순간은 밖에서 보이지 않으므로 시험이 순서를 확인하는 관찰점으로 쓴다(`live-events.ts`가 문서 루트의 data 속성으로 낸다).
  */
-export function createLiveRefresh(queryClient: QueryClient) {
+export function createLiveRefresh(
+  queryClient: QueryClient,
+  { onQueued }: { onQueued?: (queryHashes: string[]) => void } = {}
+) {
   const cache = queryClient.getQueryCache();
   const dirty = new Set<Query>();
+  /** 진행 중에 신호를 받아 끝난 뒤 다시 불러올 조회. */
+  const queued = new Set<Query>();
+  const publish = () => onQueued?.([...queued].map((query) => query.queryHash));
+  const unqueue = (query: Query) => {
+    if (queued.delete(query)) publish();
+  };
   const running = new Set<Query>();
   const waiting = new Set<() => void>();
   let disposed = false;
@@ -48,6 +60,7 @@ export function createLiveRefresh(queryClient: QueryClient) {
           continue;
         }
         dirty.delete(query);
+        unqueue(query);
         const custom = query.meta?.liveRefresh;
         if (typeof custom === "function") {
           try {
@@ -68,6 +81,7 @@ export function createLiveRefresh(queryClient: QueryClient) {
     } finally {
       running.delete(query);
       dirty.delete(query);
+      unqueue(query);
     }
   };
 
@@ -75,14 +89,24 @@ export function createLiveRefresh(queryClient: QueryClient) {
     /** 필터에 맞는 조회를 다시 불러오게 한다. 필터가 없으면 전체(구독 성립·재연결 복구). */
     refresh(filters?: QueryFilters) {
       if (disposed) return;
+      let changed = false;
       for (const query of cache.findAll(filters)) {
         dirty.add(query);
+        if (query.state.fetchStatus !== "idle" && !queued.has(query)) {
+          queued.add(query);
+          changed = true;
+        }
         if (!running.has(query)) void drain(query);
       }
+      if (changed) publish();
     },
     dispose() {
       disposed = true;
       dirty.clear();
+      if (queued.size > 0) {
+        queued.clear();
+        publish();
+      }
       waiting.forEach((done) => done());
     },
   };

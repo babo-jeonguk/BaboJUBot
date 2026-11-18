@@ -12,7 +12,16 @@ import { createLiveRefresh } from "./live-refresh.ts";
 export function useLiveEvents() {
   const queryClient = useQueryClient();
   useEffect(() => {
-    const live = createLiveRefresh(queryClient);
+    // 관찰점: 진행 중인 조회에 신호가 와서 끝난 뒤 다시 불러올 조회 목록. E2E가 "늦은 응답을 붙잡은 동안 후속 Event를
+    // 처리했다"를 확인하는 데 쓴다. 보이지 않는 data 속성이라 화면·화면 읽기에 영향이 없고, 목록이 바뀔 때만 쓴다.
+    const root = document.documentElement;
+    const live = createLiveRefresh(queryClient, {
+      onQueued: (queryHashes) => {
+        if (queryHashes.length > 0)
+          root.dataset.liveRefreshQueued = JSON.stringify(queryHashes);
+        else delete root.dataset.liveRefreshQueued;
+      },
+    });
     let socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
