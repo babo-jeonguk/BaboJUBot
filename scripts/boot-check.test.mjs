@@ -175,13 +175,17 @@ test(
       escaped.unref();
       console.log(JSON.stringify({ escaped: escaped.pid }));
     `;
-    const error = await supervise(["-e", script], process.env).then(
-      () => assert.fail("the supervisor did not report the running process"),
-      (error) => error
+    // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
+    const { result, error } = await supervise(["-e", script], process.env).then(
+      (result) => ({ result }),
+      (error) => ({ error })
     );
-    const escaped = Number(/"escaped":(\d+)/.exec(error.message)?.[1]);
-    const scope = /could not clean up (\S+)/.exec(error.message)?.[1];
+    const escaped = Number(
+      /"escaped":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
+    );
+    const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
     try {
+      assert.ok(error, "the supervisor did not report the running process");
       assert.ok(error instanceof AggregateError, String(error));
       assert.ok(scope, error.message);
       const messages = error.errors.map((e) => e.message).join("\n");
@@ -194,6 +198,53 @@ test(
     } finally {
       if (escaped && isAlive(escaped)) process.kill(escaped, "SIGKILL");
       if (escaped) await waitUntil(() => !isAlive(escaped), 10_000);
+      if (scope) await removeFolder(scope);
+    }
+  }
+);
+
+// 명령줄에 폴더 이름이 없어도, 끝난 실행의 출력 통로를 아직 쥔 프로세스는 그 폴더를 쓰고 있을 수 있다. 출력이 닫힌 것을
+// 확인하지 못하면 폴더를 남긴다. 그룹을 벗어나 출력을 물려받고 폴더를 작업 폴더로 쓰는 프로세스로 만든다.
+test(
+  "the supervisor keeps the folder and reports it when a process still holds the run's output",
+  {
+    timeout: 60_000,
+    skip:
+      process.platform === "win32" &&
+      "POSIX process groups only; Windows ends the whole tree while the parent is alive",
+  },
+  async () => {
+    const script = `
+      const { spawn } = require("node:child_process");
+      const held = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd: require("node:os").tmpdir(),
+        detached: true,
+        stdio: ["ignore", "inherit", "ignore"],
+      });
+      held.unref();
+      console.log(JSON.stringify({ held: held.pid }));
+    `;
+    // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
+    const { result, error } = await supervise(["-e", script], process.env).then(
+      (result) => ({ result }),
+      (error) => ({ error })
+    );
+    const held = Number(
+      /"held":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
+    );
+    const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
+    try {
+      assert.ok(error, "the supervisor did not report the held output");
+      assert.ok(error instanceof AggregateError, String(error));
+      assert.ok(scope, error.message);
+      assert.match(
+        error.errors.map((e) => e.message).join("\n"),
+        new RegExp(`kept ${RegExp.escape(scope)}`)
+      );
+      assert.equal(existsSync(scope), true, `${scope} was removed`);
+    } finally {
+      if (held && isAlive(held)) process.kill(held, "SIGKILL");
+      if (held) await waitUntil(() => !isAlive(held), 10_000);
       if (scope) await removeFolder(scope);
     }
   }
