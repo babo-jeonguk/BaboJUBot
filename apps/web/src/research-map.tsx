@@ -208,8 +208,8 @@ const linkColor = (kinds: FlowKind[], name: string) =>
 function layoutKey(nodes: ResearchNode[]) {
   return JSON.stringify(nodes.map((n) => [n.id, n.parentNodeId]));
 }
-/** Dagre 배치. 주 연결 트리를 왼쪽에서 오른쪽으로 놓는다. 좌표는 카드 왼쪽 위다. */
 const layoutItemsSchema = z.array(z.tuple([z.string(), z.string().nullable()]));
+/** Dagre 배치. 주 연결 트리를 왼쪽에서 오른쪽으로 놓는다. 좌표는 카드 왼쪽 위다. */
 function layoutOf(key: string): Map<string, XY> {
   const items = layoutItemsSchema.parse(JSON.parse(key));
   const g = new dagre.graphlib.Graph();
@@ -939,11 +939,11 @@ function MapWorkspace({
   }, [open, index]);
   // 고른 노드에서 Escape는 선택을 푼다. 이미 고른 노드에서 Enter·Space는 다시 상세 패널 제목으로 간다(React Flow는 고른 노드를 다시 고르지 않는다).
   const onCanvasKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const card = (e.target as HTMLElement).closest<HTMLElement>(
-      ".react-flow__node"
-    );
-    const id = card?.getAttribute("data-id");
-    if (!card || !id || id !== selected) return;
+    if (!(e.target instanceof Element)) return;
+    const card = e.target.closest(".react-flow__node");
+    if (!(card instanceof HTMLElement)) return;
+    const id = card.getAttribute("data-id");
+    if (!id || id !== selected) return;
     if (e.key === "Escape") {
       select(undefined);
       // React Flow는 Escape로 선택을 풀며 다음 프레임에 노드에서 포커스를 뺀다(handleNodeClick). 그 뒤에 그 노드로 되돌려

@@ -134,11 +134,11 @@ export function Shell() {
                 if (focusLost()) sheetOpener.current?.focus();
               }}
               onClick={(e) => {
-                const closer = (e.target as HTMLElement).closest(
-                  "a, button[data-closes-sheet]"
-                );
-                if (!closer) return;
-                setSheet(false);
+                if (
+                  e.target instanceof Element &&
+                  e.target.closest("a, button[data-closes-sheet]")
+                )
+                  setSheet(false);
               }}
             >
               <Dialog.Title className="sr-only">탐색</Dialog.Title>
