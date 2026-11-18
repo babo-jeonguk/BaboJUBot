@@ -126,3 +126,20 @@ it("keeps the folder and fails by name when a provider run does not end after th
     await removeFolder(root);
   }
 });
+
+it("owns the runs of providers made by a factory passed around as a value", async () => {
+  const test = folders();
+  const root = await test.make("test-folders-");
+  const order: string[] = [];
+  // 시험 표(describe.each·it.each)나 연결 설정에 담아 넘긴 factory도 만든 연결의 실행을 정리에 맡긴다.
+  const table = [{ create: test.owning(() => heldProvider(order, root)) }];
+  for (const { create } of table)
+    void create().adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+  // 실행이 끝나기 전에 시험이 다른 단언(poll)에서 실패했다.
+  await test.cleanup();
+  expect(order).toEqual(["run ended with folder"]);
+  expect(existsSync(root)).toBe(false);
+});
