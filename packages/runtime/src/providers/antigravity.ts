@@ -6,7 +6,6 @@ import {
   readFile,
   realpath,
   readdir,
-  rm,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +36,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
+import { removeAttemptFolder } from "./attempt-folder.ts";
 /** 프로그램이 JSON-RPC 오류로 거절한 요청. */
 class AcpRejection extends Error {}
 /** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */
@@ -592,9 +592,17 @@ export function createAntigravityProvider(options: {
       } finally {
         grant?.revoke();
         if (attempt)
-          await rm(attempt, { recursive: true, force: true }).catch(() => {});
+          await removeAttemptFolder(attempt, {
+            kind: "attempt folder",
+            connection: connectionId,
+            runId: request.identity.runId,
+          });
         if (logs)
-          await rm(logs, { recursive: true, force: true }).catch(() => {});
+          await removeAttemptFolder(logs, {
+            kind: "log folder",
+            connection: connectionId,
+            runId: request.identity.runId,
+          });
       }
     },
   };

@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -46,6 +46,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { type AttemptLoginFile, fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
+import { removeAttemptFolder } from "./attempt-folder.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -797,7 +798,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         } finally {
           grant?.revoke();
           if (attempt)
-            await rm(attempt, { recursive: true, force: true }).catch(() => {});
+            await removeAttemptFolder(attempt, {
+              kind: "attempt folder",
+              connection: id,
+              runId: request.identity.runId,
+            });
         }
       },
     },
