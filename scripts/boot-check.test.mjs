@@ -549,13 +549,24 @@ async function within(promise, ms) {
   }
 }
 
-async function waitUntil(check, ms) {
+/**
+ * `check`가 `ms` 안에 참이 되면 true, 아니면 false. 남은 프로세스처럼 종료를 알릴 수단이 없는 상태를 다시 확인한다.
+ * 첫 확인은 바로 하고, 거짓일 때만 50ms 뒤 다시 확인한다. 무엇이 남았는지는 부른 쪽이 알린다. node:test에는 조건 대기가 없어 직접 둔다.
+ */
+function waitUntil(check, ms) {
   const deadline = Date.now() + ms;
-  while (!check()) {
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return true;
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      try {
+        if (check()) resolve(true);
+        else if (Date.now() >= deadline) resolve(false);
+        else setTimeout(poll, 50);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    poll();
+  });
 }
 
 function isAlive(pid) {
