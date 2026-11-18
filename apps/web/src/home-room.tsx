@@ -53,13 +53,11 @@ export function Room({
       data-mode={mode}
       data-attention={(mode !== "closed" && attention > 0) || undefined}
       data-wide={isWideRoom(org) || undefined}
-      style={
-        {
-          "--wall": `hsl(${h} 70% 95%)`,
-          "--wall-deep": `hsl(${h} 45% 88%)`,
-          "--wall-base": `hsl(${h} 30% 80%)`,
-        } as CSSProperties
-      }
+      style={{
+        "--wall": `hsl(${h} 70% 95%)`,
+        "--wall-deep": `hsl(${h} 45% 88%)`,
+        "--wall-base": `hsl(${h} 30% 80%)`,
+      }}
     >
       <Link to={orgPath} className="room-head">
         <span
@@ -239,27 +237,25 @@ function Seat({
         : deskTop - Math.round(d.face * 0.09);
   const chairW = Math.round(d.face * 0.92);
   const seed = hashOf(agent.id);
-  const style = {
+  const style: CSSProperties = {
     width: d.w,
     height: deskTop + d.face + 14,
     "--stagger": `-${(seed % 1100) / 1000}s`,
     "--bob": `${1 + (seed % 5) / 20}s`,
-  } as CSSProperties;
+  };
   const inner = (
     <>
       {lead && <span className="seat-rug" aria-hidden />}
       <span
         className="seat-chair"
         aria-hidden
-        style={
-          {
-            left: d.faceX + (d.face - chairW) / 2,
-            width: chairW,
-            bottom: deskTop - 12,
-            height: Math.round(d.face * 0.95),
-            "--seat-color": color.fill,
-          } as CSSProperties
-        }
+        style={{
+          left: d.faceX + (d.face - chairW) / 2,
+          width: chairW,
+          bottom: deskTop - 12,
+          height: Math.round(d.face * 0.95),
+          "--seat-color": color.fill,
+        }}
       />
       {pose !== "away" && (
         <span
@@ -431,11 +427,7 @@ function Lounge({
       <span className="lounge-rug" aria-hidden />
       <div className="lounge-sofas">
         {Array.from({ length: sofas }, (_, s) => (
-          <div
-            className="sofa"
-            key={s}
-            style={{ "--face": `${face}px` } as CSSProperties}
-          >
+          <div className="sofa" key={s} style={{ "--face": `${face}px` }}>
             <span className="sofa-back" aria-hidden />
             <div className="sofa-spots">
               {Array.from({ length: perSofa }, (_, i) => {
@@ -449,11 +441,9 @@ function Lounge({
                           className="sofa-sitter"
                           aria-label={`${a.name} · 쉬는 중`}
                           data-agent-id={a.id}
-                          style={
-                            {
-                              "--stagger": `-${(hashOf(a.id) % 900) / 300}s`,
-                            } as CSSProperties
-                          }
+                          style={{
+                            "--stagger": `-${(hashOf(a.id) % 900) / 300}s`,
+                          }}
                         >
                           <AgentFace
                             appearance={a.appearance}

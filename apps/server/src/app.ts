@@ -210,11 +210,16 @@ export type RunningServer = {
 
 /** 사용자 API와 전용 도구 listener 모두 이 JSON 오류 계약으로 답한다. */
 const serverErrors: ErrorRequestHandler = (error, _req, res, _next) => {
-  if (error?.type === "entity.parse.failed") {
+  const failure: unknown = error;
+  const type =
+    typeof failure === "object" && failure !== null && "type" in failure
+      ? failure.type
+      : undefined;
+  if (type === "entity.parse.failed") {
     res.status(400).json({ error: { code: "invalid_json" } });
     return;
   }
-  if (error?.type === "entity.too.large") {
+  if (type === "entity.too.large") {
     res.status(413).json({ error: { code: "body_too_large" } });
     return;
   }

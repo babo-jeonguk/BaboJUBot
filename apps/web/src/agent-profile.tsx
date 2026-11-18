@@ -193,12 +193,10 @@ export function FaceCustomizer({
               >
                 <span
                   className="block h-7 w-7 rounded-full ring-2 ring-inset"
-                  style={
-                    {
-                      background: faceColorStyle[color].fill,
-                      "--tw-ring-color": faceColorStyle[color].shade,
-                    } as React.CSSProperties
-                  }
+                  style={{
+                    background: faceColorStyle[color].fill,
+                    "--tw-ring-color": faceColorStyle[color].shade,
+                  }}
                 />
               </Choice>
             ))}

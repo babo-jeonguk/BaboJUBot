@@ -48,7 +48,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
@@ -219,7 +218,7 @@ function layoutOf(key: string): Map<string, XY> {
   dagre.layout(g);
   return new Map(
     items.map(([id]) => {
-      const p = g.node(id);
+      const p = g.node(id) as { x: number; y: number };
       return [id, { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 }];
     })
   );
@@ -985,7 +984,7 @@ function MapWorkspace({
         <div
           ref={canvas}
           className={`rm-canvas card relative h-[60vh] min-h-[420px] flex-1 overflow-hidden lg:h-auto ${focus ? "rm-focus" : ""}`}
-          style={{ "--rm-dash-scale": dashScale } as CSSProperties}
+          style={{ "--rm-dash-scale": dashScale }}
           data-testid="map-canvas"
           onKeyDown={onCanvasKeyDown}
         >

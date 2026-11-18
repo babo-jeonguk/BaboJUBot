@@ -1,4 +1,5 @@
 import { type Clock, realClock, startProcess } from "./process.ts";
+import { record } from "./record.ts";
 
 /**
  * Codex app-server 연결 하나(#145). 모델 목록·실행 시도·로그인 갱신이 함께 쓰는 연결 처리다.
@@ -30,9 +31,6 @@ export type RequestOptions = {
   /** 이 요청의 응답 제한(ms). 0 이하면 보내지 않고 시간 초과로 끝낸다. 전체 시한을 이어 쓰려면 남은 시간을 넘긴다. */
   timeoutMs: number;
 };
-
-const record = (value: unknown): Record<string, unknown> =>
-  value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
 export function openCodexConnection(
   options: Omit<Parameters<typeof startProcess>[0], "onFrame"> & {

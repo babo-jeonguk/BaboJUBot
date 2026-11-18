@@ -110,12 +110,10 @@ export function AgentFace({
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
-      style={
-        {
-          "--blink-duration": `${3.8 + (beat % 23) / 10}s`,
-          "--blink-delay": `-${(beat % 37) / 10}s`,
-        } as React.CSSProperties
-      }
+      style={{
+        "--blink-duration": `${3.8 + (beat % 23) / 10}s`,
+        "--blink-delay": `-${(beat % 37) / 10}s`,
+      }}
     >
       <g className="face-body">
         {appearance.accessory === "headphones" && (

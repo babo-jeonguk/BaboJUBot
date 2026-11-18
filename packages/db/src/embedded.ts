@@ -511,10 +511,15 @@ function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
 
 function readOwnerFile(file: string): Owner | undefined {
   try {
-    const owner = JSON.parse(fs.readFileSync(file, "utf8"));
-    return Number.isInteger(owner?.pid) &&
-      typeof owner?.persistent === "boolean"
-      ? { pid: owner.pid, persistent: owner.persistent }
+    const owner: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (typeof owner !== "object" || owner === null || Array.isArray(owner))
+      return undefined;
+    if (!("pid" in owner) || !("persistent" in owner)) return undefined;
+    const { pid, persistent } = owner;
+    return typeof pid === "number" &&
+      Number.isInteger(pid) &&
+      typeof persistent === "boolean"
+      ? { pid, persistent }
       : undefined;
   } catch {
     return undefined;

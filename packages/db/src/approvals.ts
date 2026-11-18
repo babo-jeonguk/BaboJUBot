@@ -298,12 +298,30 @@ const toApproval = ({
   createdAt,
   decidedAt,
   ...row
-}: typeof approvals.$inferSelect): Approval =>
-  ({
+}: typeof approvals.$inferSelect): Approval => {
+  const shared = {
     ...row,
     createdAt: createdAt.toISOString(),
     decidedAt: decidedAt?.toISOString() ?? null,
-  }) as Approval;
+  };
+  return row.kind === "initial_research"
+    ? {
+        ...shared,
+        kind: row.kind,
+        proposal: row.proposal as Extract<
+          Approval,
+          { kind: "initial_research" }
+        >["proposal"],
+      }
+    : {
+        ...shared,
+        kind: row.kind,
+        proposal: row.proposal as Extract<
+          Approval,
+          { kind: "add_worker" }
+        >["proposal"],
+      };
+};
 
 export const toApprovalSummary = (
   row: typeof approvals.$inferSelect
