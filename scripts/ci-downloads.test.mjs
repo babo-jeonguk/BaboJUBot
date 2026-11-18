@@ -160,9 +160,10 @@ test(
   }
 );
 
-// 연결은 됐는데 본문이 멈추는 서버. 시험에서는 전송 시한만 1초로 줄인다(뒤에 준 --max-time이 앞의 값을 덮는다).
+// 연결은 됐는데 본문이 멈추는 서버. 멈춤 판정(--speed-limit 아래로 --speed-time 동안)만 1초로 줄인다(뒤에 준 값이 앞의 값을 덮는다).
+// 시도마다의 상한(--max-time)까지 기다리지 않고 멈춤만으로 끊는지 본다.
 test(
-  "retries a stalled transfer as a timeout and fails with that error after three attempts",
+  "retries a stalled transfer as a timeout without waiting for the per-attempt limit and fails with that error after three attempts",
   { skip: !hasCurl },
   async (context) => {
     const requests = [];
@@ -184,7 +185,7 @@ test(
       "curl",
       [
         ...flags,
-        "--max-time",
+        "--speed-time",
         "1",
         "--retry-delay",
         "0",
@@ -196,13 +197,28 @@ test(
     );
     let stderr = "";
     child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    // 멈춤으로 끊지 못하면 시도마다 상한까지 기다리므로 시험 시한을 둔다. 넘기면 종료 코드 없이(null) 실패한다.
+    const deadline = setTimeout(() => child.kill(), 20_000);
     const status = await new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("close", resolve);
-    });
+    }).finally(() => clearTimeout(deadline));
     assert.equal(status, 28, stderr);
     assert.equal(requests.length, 3);
     assert.match(stderr, /retries? left/);
     assert.match(stderr, /timed out/i);
   }
 );
+
+// OpenCode 묶음은 약 122MB다. 느리지만 받고 있는 전송은 끊지 않고(시도마다 --max-time 동안 받으면 끝나는 속도 이상),
+// 멈춘 전송만 --speed-limit·--speed-time으로 끊는다. #221 CI에서 Ubuntu 미러가 느려 3분 시한에 설치가 끊긴 일이 있다
+// (run 44222170536). 시도마다 상한은 이 묶음을 초당 400KB로 받을 시간 이상이다.
+test("cuts only a stalled download and gives a slow one time to finish", () => {
+  const value = (name) => Number(flags[flags.indexOf(name) + 1]);
+  assert.ok(value("--speed-limit") > 0 && value("--speed-time") > 0);
+  const archiveBytes = 122 * 1024 * 1024;
+  assert.ok(
+    value("--max-time") >= archiveBytes / (400 * 1024),
+    `--max-time ${value("--max-time")}s is too short for a slow mirror`
+  );
+});

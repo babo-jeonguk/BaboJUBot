@@ -518,3 +518,15 @@ test("limits only the E2E run in the check matrix, not check, typecheck, lint or
     ]
   );
 });
+
+// 단계 시한은 느리지만 진행 중인 설치를 끊지 않을 만큼 넉넉해야 한다. Linux의 Chromium·시스템 의존성 설치는 최근 35회 중
+// 최대 511초였고, #221 CI(run 44222170536)에서는 Ubuntu 미러가 느려 3분 시한에 끊겼다.
+test("gives the Linux Chromium and system dependency install room for a slow package mirror", () => {
+  const install = runSteps(workflow.jobs.check).find((each) =>
+    /--with-deps/.test(each.run)
+  );
+  assert.ok(
+    install["timeout-minutes"] >= 12,
+    `${install["timeout-minutes"]} minutes`
+  );
+});
