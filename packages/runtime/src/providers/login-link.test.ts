@@ -139,17 +139,10 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         await chmod(antigravityToken(connection), 0o400);
         refusal = code;
         expect(
-          await folders
-            .ownProvider(
-              createAntigravityProvider({
-                dataDir: env.root,
-                command: [
-                  process.execPath,
-                  fixture("antigravity-simulator.mjs"),
-                ],
-              })
-            )
-            .adapter.checkReadiness(new AbortController().signal)
+          await createAntigravityProvider({
+            dataDir: env.root,
+            command: [process.execPath, fixture("antigravity-simulator.mjs")],
+          }).adapter.checkReadiness(new AbortController().signal)
         ).toEqual({ status: "not_ready", reason: "check_failed" });
       },
       20000

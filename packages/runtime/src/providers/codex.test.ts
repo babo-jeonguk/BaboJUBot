@@ -198,22 +198,18 @@ describe("usage numbers outside the contract (#140)", () => {
     await writeFile(file, JSON.stringify(fixture));
     const input = request();
     input.previousSession = { id: "thread-one", tokens: saved };
-    return folders
-      .ownProvider(
-        createCodexProvider({
-          dataDir: root,
-          mode,
-          command: [
-            process.execPath,
-            path.resolve("test-fixtures/replay.mjs"),
-            file,
-          ],
-        })
-      )
-      .adapter.execute(input, {
-        signal: new AbortController().signal,
-        emit: async () => {},
-      });
+    return createCodexProvider({
+      dataDir: root,
+      mode,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        file,
+      ],
+    }).adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
   }
   const warnings = () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -348,23 +344,19 @@ describe("usage numbers outside the contract (#140)", () => {
     const input = request();
     input.previousSession = { id: "thread-one", tokens: { inputTokens: 2 } };
     const controller = new AbortController();
-    return folders
-      .ownProvider(
-        createCodexProvider({
-          dataDir: root,
-          command: [
-            process.execPath,
-            path.resolve("test-fixtures/replay.mjs"),
-            file,
-          ],
-        })
-      )
-      .adapter.execute(input, {
-        signal: controller.signal,
-        emit: async () => {
-          if (ending === "cancel") controller.abort();
-        },
-      });
+    return createCodexProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        file,
+      ],
+    }).adapter.execute(input, {
+      signal: controller.signal,
+      emit: async () => {
+        if (ending === "cancel") controller.abort();
+      },
+    });
   }
 
   it("keeps the total already reported when the run is cancelled before the turn completes", async () => {

@@ -64,22 +64,18 @@ describe("usage numbers outside the contract (#140)", () => {
     const root = await folders.make("opencode-usage-");
     const file = path.join(root, "usage.json");
     await writeFile(file, JSON.stringify(usage));
-    return await folders
-      .ownProvider(
-        createOpenCodeProvider({
-          dataDir: root,
-          command: [
-            process.execPath,
-            path.resolve("test-fixtures/opencode-simulator.mjs"),
-            "--usage",
-            file,
-          ],
-        })
-      )
-      .adapter.execute(request(), {
-        signal: new AbortController().signal,
-        emit: async () => {},
-      });
+    return await createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--usage",
+        file,
+      ],
+    }).adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
   }
 
   it("leaves a decreased, fractional or unsafe session total unreported and keeps the success and the other figures", async () => {
@@ -151,24 +147,20 @@ describe("failed executions (#147)", () => {
     await writeFile(file, JSON.stringify(failing));
     const activities: unknown[] = [];
     const input = request();
-    const result = await folders
-      .ownProvider(
-        createOpenCodeProvider({
-          dataDir: root,
-          command: [
-            process.execPath,
-            path.resolve("test-fixtures/opencode-simulator.mjs"),
-            "--fail",
-            file,
-          ],
-        })
-      )
-      .adapter.execute(input, {
-        signal: new AbortController().signal,
-        emit: async (activity) => {
-          activities.push(activity);
-        },
-      });
+    const result = await createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--fail",
+        file,
+      ],
+    }).adapter.execute(input, {
+      signal: new AbortController().signal,
+      emit: async (activity) => {
+        activities.push(activity);
+      },
+    });
     const prompts = (await readFile(file + ".prompts", "utf8"))
       .trim()
       .split("\n").length;

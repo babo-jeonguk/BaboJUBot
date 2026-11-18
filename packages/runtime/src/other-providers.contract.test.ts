@@ -21,17 +21,15 @@ const antigravityLogin = path.join(
 await mkdir(path.dirname(antigravityLogin), { recursive: true });
 await writeFile(antigravityLogin, JSON.stringify({ synthetic: true }));
 for (const kind of ["antigravity", "opencode"] as const) {
-  const provider = folders.ownProvider(
-    (kind === "antigravity"
-      ? createAntigravityProvider
-      : createOpenCodeProvider)({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve(`test-fixtures/${kind}-simulator.mjs`),
-      ],
-    })
-  );
+  const provider = (
+    kind === "antigravity" ? createAntigravityProvider : createOpenCodeProvider
+  )({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve(`test-fixtures/${kind}-simulator.mjs`),
+    ],
+  });
   describeRuntimeContract(
     `${kind} synthetic process (not recorded model evidence)`,
     {

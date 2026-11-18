@@ -32,25 +32,21 @@ async function workspace() {
   await mkdir(agents, { recursive: true });
   await mkdir(otherAgents, { recursive: true });
   const execute = () =>
-    folders
-      .ownProvider(
-        createAntigravityProvider({
-          dataDir: root,
-          command: [
-            process.execPath,
-            path.resolve("test-fixtures/quirky-cli.synthetic.mjs"),
-            "antigravity",
-            "plain",
-          ],
-        })
-      )
-      .adapter.execute(
-        {
-          ...request(),
-          workspace: { cwd, organization: cwd, personal: cwd, peers: [] },
-        },
-        { signal: new AbortController().signal, emit: async () => {} }
-      );
+    createAntigravityProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/quirky-cli.synthetic.mjs"),
+        "antigravity",
+        "plain",
+      ],
+    }).adapter.execute(
+      {
+        ...request(),
+        workspace: { cwd, organization: cwd, personal: cwd, peers: [] },
+      },
+      { signal: new AbortController().signal, emit: async () => {} }
+    );
   return {
     root,
     cwd,

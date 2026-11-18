@@ -5,7 +5,7 @@ import {
   control,
   createCliHome,
 } from "./cli-tolerance-support.ts";
-import { createOpenCodeProvider } from "./opencode.ts";
+import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -80,16 +80,15 @@ describe.concurrent("slow programs", () => {
 
   it("lets OpenCode answer slowly", async ({ expect, onTestFinished }) => {
     const folders = testFolders(onTestFinished);
-    const provider = folders.ownProvider(
-      createOpenCodeProvider({
-        dataDir: await home(folders),
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-          "--slow-model",
-        ],
-      })
-    );
+    const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
+    const provider = createOpenCodeProvider({
+      dataDir: await home(folders),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--slow-model",
+      ],
+    });
     const result = await provider.adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 40_000);

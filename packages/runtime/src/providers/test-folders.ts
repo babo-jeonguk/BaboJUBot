@@ -48,24 +48,29 @@ export function testFolders(
    * 시험이 결과를 기다리기 전에 단언·시한으로 실패해도, 정리가 멈춤 신호를 보내고 그 호출이 끝난 뒤에 폴더를 지운다.
    * 프로바이더는 프로그램과 그 정리가 끝난 뒤에 반환하므로, 호출이 끝나면 폴더 안의 프로그램도 끝났다.
    */
+  /** 이미 정리에 맡긴 adapter. 같은 연결을 다시 맡겨도 실행이 두 번 등록되지 않는다(두 번 기다리고 두 번 실패를 알리지 않는다). */
+  const owned = new WeakSet<RuntimeAdapter>();
   const ownProvider = <T extends Provider>(provider: T): T => {
+    if (owned.has(provider.adapter)) return provider;
     const { adapter, listModels } = provider;
     const { precompact } = adapter;
+    const ownedAdapter: RuntimeAdapter = {
+      ...adapter,
+      execute: (request, control) =>
+        ownCall(control.signal, (signal) =>
+          adapter.execute(request, { ...control, signal })
+        ),
+      checkReadiness: (signal) =>
+        ownCall(signal, (joined) => adapter.checkReadiness(joined)),
+      ...(precompact && {
+        precompact: (request, signal) =>
+          ownCall(signal, (joined) => precompact(request, joined)),
+      }),
+    };
+    owned.add(ownedAdapter);
     return {
       ...provider,
-      adapter: {
-        ...adapter,
-        execute: (request, control) =>
-          ownCall(control.signal, (signal) =>
-            adapter.execute(request, { ...control, signal })
-          ),
-        checkReadiness: (signal) =>
-          ownCall(signal, (joined) => adapter.checkReadiness(joined)),
-        ...(precompact && {
-          precompact: (request, signal) =>
-            ownCall(signal, (joined) => precompact(request, joined)),
-        }),
-      } satisfies RuntimeAdapter,
+      adapter: ownedAdapter,
       ...(listModels && {
         listModels: (signal: AbortSignal) =>
           ownCall(signal, (joined) => listModels(joined)),
