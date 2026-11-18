@@ -1736,9 +1736,21 @@ describe.skipIf(process.platform === "win32")(
             }
           )
           .toBe(true);
-        // 옮기기가 끝나지 않은 동안 같은 조직의 격리 실행이 시작한다.
-        const isolated = t.provider().adapter.execute(t.input(), control());
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        // 옮기기가 끝나지 않은 동안 같은 조직의 격리 실행이 시작한다. 그 실행은 옮기기를 기다린다고 알린 자리에서 멈춘다.
+        let waiting!: (text: string) => void;
+        const waitingForCopy = new Promise<string>((resolve) => {
+          waiting = resolve;
+        });
+        const isolated = t.provider().adapter.execute(t.input(), {
+          signal: new AbortController().signal,
+          emit: async (activity: unknown) => {
+            const { type, text } = activity as { type: string; text?: string };
+            if (type === "progress" && text) waiting(text);
+          },
+        });
+        expect(await waitingForCopy).toBe(
+          "로그인 정보를 옮기는 중이라 끝날 때까지 기다립니다."
+        );
         expect(
           (await t.env.calls()).some((call) => call.args.includes("run"))
         ).toBe(false);

@@ -23,9 +23,34 @@ vi.mock("node:fs", async (original) => {
   };
 });
 
+// 시작 시각 조회(execFile)를 붙잡으면 시험이 그 응답을 넘기는 때를 정한다. 붙잡지 않으면 실제로 묻는다.
+const query = vi.hoisted(() => ({
+  hold: false,
+  answer: undefined as (() => void) | undefined,
+}));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: (...args: unknown[]) => {
+      if (!query.hold)
+        return (actual.execFile as (...a: unknown[]) => unknown)(...args);
+      const callback = args.at(-1) as (
+        error: Error | null,
+        stdout: string
+      ) => void;
+      query.answer = () => callback(null, new Date().toISOString());
+      return undefined;
+    },
+  };
+});
+
 const withoutProc = process.platform === "linux" ? "darwin" : process.platform;
 const folders = testFolders();
 afterEach(async () => {
+  vi.useRealTimers();
+  query.hold = false;
+  query.answer = undefined;
   rename.blocked = 0;
   rename.tried = 0;
   vi.restoreAllMocks();
@@ -65,16 +90,26 @@ it("saves the start time once the record stops being held", async () => {
 
 it("does not save the start time after forgetting a held record", async () => {
   const { home, pid, directory } = await running();
+  // 조회 응답과 다시 쓰기 타이머를 시험이 돌린다. 둘 다 그 자리에서 끝나므로 돌린 직후에 본다.
+  query.hold = true;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const forget = recordProcess(home, pid, "lease", { platform: withoutProc });
   rename.blocked = 1;
-  await vi.waitFor(() => expect(rename.tried).toBe(1), {
-    timeout: 20_000,
-    interval: 10,
-  });
+  query.answer!();
+  expect(rename.tried).toBe(1);
   forget();
-  // 보장의 한계(#215): 잊은 기록은 다시 쓰려는 시도(250ms 뒤)에서 아무것도 하지 않고 끝나며, 그 끝은 밖에서 보이지 않는다.
-  // 그래서 그 시도가 보통 끝나는 시간을 기다린 뒤 기록이 없음을 본다. 느린 기기에서 시도가 이보다 늦으면 결함이 있어도 통과한다.
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  vi.runOnlyPendingTimers();
+  expect(rename.tried).toBe(1);
+  expect(await readdir(directory)).toEqual([]);
+}, 30_000);
+
+it("does not save the start time when its query answers after the record was forgotten", async () => {
+  const { home, pid, directory } = await running();
+  query.hold = true;
+  const forget = recordProcess(home, pid, "lease", { platform: withoutProc });
+  expect(await readdir(directory)).toHaveLength(1);
+  forget();
+  query.answer!();
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 

@@ -554,9 +554,15 @@ export function createOpenCodeProvider(options: {
         }
         await prepare();
         await mkdir(organization, { recursive: true, mode: 0o700 });
-        // 이 컴퓨터의 실행이 옮기던 로그인은 다 옮겨진 뒤에 본다.
-        if (placement.container)
-          await Promise.all(copying.get(organizationId) ?? []);
+        // 이 컴퓨터의 실행이 옮기던 로그인은 다 옮겨진 뒤에 본다. 기다릴 옮기기가 있으면 실행 활동에 알린다.
+        const copies = placement.container && copying.get(organizationId);
+        if (copies && copies.size > 0) {
+          await control.emit({
+            type: "progress",
+            text: "로그인 정보를 옮기는 중이라 끝날 때까지 기다립니다.",
+          });
+          await Promise.all(copies);
+        }
         // 격리 실행은 조직 폴더에 남은 로그인을 컨테이너가 읽을 수 있으므로, 서버를 띄우기 전에 확인하고 시작하지 않는다.
         if (
           placement.container &&

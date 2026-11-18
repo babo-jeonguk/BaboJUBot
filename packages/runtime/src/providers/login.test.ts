@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ProviderConnection } from "@babojubot/contracts";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { runLogin } from "./login.ts";
 import { testFolders } from "./test-folders.ts";
@@ -96,12 +97,19 @@ async function typeAfterPrompt(
   text: () => string,
   chunks: Array<string | Error>
 ) {
-  while (!text().includes("empty to skip"))
-    await new Promise((r) => setTimeout(r, 10));
+  await vi.waitUntil(() => text().includes("empty to skip"), {
+    timeout: 5_000,
+    interval: 10,
+  });
+  // 조각마다 입력을 읽는 쪽이 받은 뒤에 다음 조각을 보낸다. 읽기 전에 입력이 끊기면 받지 못한 조각이 버려진다.
   for (const chunk of chunks) {
-    if (chunk instanceof Error) input.destroy(chunk);
-    else input.write(chunk);
-    await new Promise((r) => setTimeout(r, 10));
+    if (chunk instanceof Error) {
+      input.destroy(chunk);
+      continue;
+    }
+    const read = once(input, "data");
+    input.write(chunk);
+    await read;
   }
 }
 

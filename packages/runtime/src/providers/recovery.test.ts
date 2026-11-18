@@ -81,11 +81,8 @@ const groupGone = (group: number) => {
     return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
 };
-const until = async (done: () => boolean) => {
-  for (let i = 0; i < 400 && !done(); i++)
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  expect(done()).toBe(true);
-};
+const until = (done: () => boolean) =>
+  expect.poll(done, { timeout: 10_000, interval: 25 }).toBe(true);
 
 it("starts even when a record can be neither read nor removed", async () => {
   const { root, directory } = await records();
@@ -231,23 +228,6 @@ it("stops a process it recorded itself", async () => {
     expect(await readdir(path.dirname(file))).toEqual([]);
   } finally {
     if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
-  }
-}, 30_000);
-
-it("does not write the record again after forgetting it", async () => {
-  const { root } = await records();
-  const home = path.join(root, "providers/claude");
-  const child = longRunning();
-  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
-  await once(child, "spawn");
-  try {
-    recordProcess(home, child.pid!, "lease")();
-    // 보장의 한계(#215): 잊은 뒤에 끝나는 시작 시각 조회는 끝났다는 신호를 밖으로 내지 않는다. 그래서 조회가 보통 끝나는
-    // 시간을 기다린 뒤 기록이 없음을 본다. 느린 기기에서 조회가 이보다 늦게 끝나면 결함이 있어도 이 시험은 통과한다.
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    expect(await readdir(path.join(home, "processes"))).toEqual([]);
-  } finally {
-    process.kill(child.pid!, "SIGKILL");
   }
 }, 30_000);
 

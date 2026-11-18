@@ -1,4 +1,4 @@
-// Synthetic leader exits on interrupt; child ignores TERM and keeps acting until it is killed.
+// Synthetic leader exits on interrupt; child ignores TERM, leaves its pid and keeps running until it is killed.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 if (process.argv.includes("--version")) {
@@ -9,7 +9,7 @@ const child = spawn(
   process.execPath,
   [
     "-e",
-    `process.on('SIGTERM',()=>{}); let beats=0; const beat=()=>require('node:fs').writeFileSync(process.env.HOME+'/orphan-heartbeat',String(++beats)); beat(); process.send('ready'); setInterval(beat,20);`,
+    `process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(process.env.HOME+'/orphan-pid',String(process.pid)); process.send('ready'); setInterval(()=>{},1000);`,
   ],
   { env: process.env, stdio: ["ignore", "ignore", "ignore", "ipc"] }
 );
