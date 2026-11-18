@@ -143,3 +143,24 @@ it("owns the runs of providers made by a factory passed around as a value", asyn
   expect(order).toEqual(["run ended with folder"]);
   expect(existsSync(root)).toBe(false);
 });
+
+it("owns a provider once even when it is handed to cleanup twice", async () => {
+  const test = folders({ stopTimeoutMs: 50 });
+  const root = await test.make("test-folders-");
+  try {
+    // owning으로 묶은 factory가 만든 연결을 다시 ownProvider로 감싸도 실행은 정리에 한 번만 맡겨진다.
+    const create = test.owning(() => heldProvider([], root, true));
+    const provider = test.ownProvider(create());
+    void provider.adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    const failure = await test.cleanup().catch((error: unknown) => error);
+    expect(failure).not.toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      message: "provider run did not stop within 50ms",
+    });
+  } finally {
+    await removeFolder(root);
+  }
+});
