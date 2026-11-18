@@ -154,6 +154,36 @@ permissions:
   - action: shell
     resource: "pnpm exec eslint *--fix*"
     effect: deny
+  - action: shell
+    resource: "pnpm --filter * exec vitest run *--passWithNoTests*"
+    effect: deny
+  - action: shell
+    resource: "pnpm --filter * exec vitest run *--config*"
+    effect: deny
+  - action: shell
+    resource: "pnpm --filter * exec vitest run * -c *"
+    effect: deny
+  - action: shell
+    resource: "pnpm --filter * exec vitest run *--exclude*"
+    effect: deny
+  - action: shell
+    resource: "pnpm exec eslint *--config*"
+    effect: deny
+  - action: shell
+    resource: "pnpm exec eslint * -c *"
+    effect: deny
+  - action: shell
+    resource: "pnpm exec eslint *--no-config-lookup*"
+    effect: deny
+  - action: shell
+    resource: "pnpm exec eslint *--rule*"
+    effect: deny
+  - action: shell
+    resource: "pnpm exec eslint *--ignore-pattern*"
+    effect: deny
+  - action: shell
+    resource: "pnpm exec eslint *--no-ignore*"
+    effect: deny
   - action: subagent
     resource: "*"
     effect: deny

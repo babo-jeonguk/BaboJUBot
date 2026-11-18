@@ -4,31 +4,37 @@
 // Contract: docs/agents/worker.md.
 //
 // usage: node .agents/scripts/accept-worker.mjs --base <sha> --allow <pattern>...
-//          [--test <command>]...
+//          --reported <file>... --test <command>...
 //
 // `*` in a pattern matches any characters, `/` included, as in OpenCode permissions.
 // Exit codes: 0 accepted; 1 rejected; 2 usage.
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { parse } from "yaml";
 
 const USAGE =
-  "usage: accept-worker.mjs --base <sha> --allow <pattern>... [--test <command>]...";
+  "usage: accept-worker.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
 const OUTPUT_LINES = 40;
 
 function parseArgs(argv) {
-  const options = { base: "", allow: [], test: [] };
+  const options = { base: "", allow: [], reported: [], test: [] };
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index]?.replace(/^--/, "");
     const value = argv[index + 1];
-    if (value === undefined || !["base", "allow", "test"].includes(name))
+    if (
+      value === undefined ||
+      !["base", "allow", "reported", "test"].includes(name)
+    )
       usage(`bad argument: ${argv[index]}`);
     if (name === "base") options.base = value;
     else options[name].push(value);
   }
-  if (!options.base || options.allow.length === 0)
-    usage("--base and --allow are required");
+  if (
+    !options.base ||
+    !options.allow.length ||
+    !options.reported.length ||
+    !options.test.length
+  )
+    usage("--base, --allow, --reported and --test are required");
   return options;
 }
 
@@ -66,16 +72,19 @@ function changedFiles(root, base) {
   return [
     ...new Set([
       ...list("diff", "--name-only", "--no-renames", "-z", base),
+      ...list("diff", "--cached", "--name-only", "--no-renames", "-z", base),
       ...list("ls-files", "--others", "--exclude-standard", "-z"),
     ]),
   ].sort();
 }
 
+// Read from the base commit: the change under review must not decide what it may change.
 // OpenCode applies the last rule that matches, so a later allow can reopen a denied path.
-function editRules(root) {
-  const definition = readFileSync(
-    join(root, ".opencode/agents/dev-worker.md"),
-    "utf8"
+function editRules(root, base) {
+  const definition = git(
+    root,
+    "show",
+    `${base}:.opencode/agents/dev-worker.md`
   );
   const frontmatter = definition.match(/^---\n([\s\S]*?)\n---/)?.[1];
   if (!frontmatter) reject(["dev-worker.md has no frontmatter"]);
@@ -113,19 +122,31 @@ const head = git(root, "rev-parse", "HEAD").trim();
 const base = git(root, "rev-parse", `${options.base}^{commit}`).trim();
 if (head !== base) reject([`HEAD moved from ${base} to ${head}`]);
 
-const files = changedFiles(root, base);
-if (files.length === 0) reject(["no files changed"]);
-const rules = editRules(root);
+const rules = editRules(root, base);
 const allowed = options.allow.map(matcher);
-const reasons = files.flatMap((file) => {
-  if (isProtected(rules, file)) return [`protected file changed: ${file}`];
-  if (!allowed.some((pattern) => pattern.test(file)))
-    return [`outside the brief: ${file}`];
-  return [];
-});
-if (reasons.length > 0) reject(reasons);
+const reported = new Set(options.reported);
 
+function checkChange() {
+  const files = changedFiles(root, base);
+  if (files.length === 0) reject(["no files changed"]);
+  const reasons = files.flatMap((file) => {
+    const found = [];
+    if (isProtected(rules, file)) found.push(`protected file changed: ${file}`);
+    else if (!allowed.some((pattern) => pattern.test(file)))
+      found.push(`outside the brief: ${file}`);
+    if (!reported.has(file)) found.push(`changed but not reported: ${file}`);
+    return found;
+  });
+  for (const file of reported)
+    if (!files.includes(file))
+      reasons.push(`reported but not changed: ${file}`);
+  if (reasons.length > 0) reject(reasons);
+  return files;
+}
+
+checkChange();
 for (const command of options.test) runTest(root, command);
+const files = checkChange();
 console.log(
   `accepted: ${plural(files.length, "file")}, ${plural(options.test.length, "test command")} passed`
 );
