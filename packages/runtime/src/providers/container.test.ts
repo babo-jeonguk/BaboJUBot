@@ -433,10 +433,10 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
     let child = 0;
-    // 프로그램이 남긴 자식을 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
-    onTestFinished(async () => {
+    // 프로그램이 남긴 자식은 시험 폴더에서 돈다. 폴더를 지우기 전에 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
+    folders.own(async () => {
       if (child) await killAndWait([child]);
-    });
+    }, "the child the program left");
     const started = startProcess({
       command: ["unused"],
       args: [log],
@@ -466,10 +466,10 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
     let child = 0;
-    // 프로그램이 남긴 자식을 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
-    onTestFinished(async () => {
+    // 프로그램이 남긴 자식은 시험 폴더에서 돈다. 폴더를 지우기 전에 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
+    folders.own(async () => {
       if (child) await killAndWait([child]);
-    });
+    }, "the child the program left");
     // The stop timer (2 s after the cancel) and the wait for output after the program ends (1 s) run on the test clock, so the
     // program ends between them by state, not by racing them on a slow machine.
     const clock = manualClock();

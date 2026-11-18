@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   openCodexConnection,
   ProtocolClosed,
@@ -224,10 +224,10 @@ describe("a Codex app-server connection", () => {
           started();
         },
       });
-      // 프로그램이 남긴 자식을 끈다. 이미 끝났으면 넘어간다.
-      onTestFinished(() => {
+      // 프로그램이 남긴 자식을 시험 폴더를 지우기 전에 끈다. 이미 끝났으면 넘어간다.
+      folders.own(async () => {
         if (child) killUnlessGone(child);
-      });
+      }, "the child the program left");
 
       await childStarted;
       const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
@@ -270,10 +270,10 @@ describe("a Codex app-server connection", () => {
         started();
       },
     });
-    // 프로그램이 남긴 자식을 끈다. 이미 끝났으면 넘어간다.
-    onTestFinished(() => {
+    // 프로그램이 남긴 자식을 시험 폴더를 지우기 전에 끈다. 이미 끝났으면 넘어간다.
+    folders.own(async () => {
       if (child) killUnlessGone(child);
-    });
+    }, "the child the program left");
 
     await childStarted;
     const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
