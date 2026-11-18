@@ -23,7 +23,7 @@
 ## 3. brief
 
 - 이슈/PR·회차, 시험을 커밋한 base SHA, 역할(구현/리뷰 대응). 리뷰 대응이면 finding ID·축
-- 관찰 가능한 완료 동작, 통과시킬 시험과 시험·타입 검사·lint 실행 명령(`pnpm exec eslint <파일>`)
+- 관찰 가능한 완료 동작, 통과시킬 시험과 시험·타입 검사(`pnpm --filter <패키지> run typecheck:src`)·lint 실행 명령(`pnpm exec eslint <파일>`)
 - 고칠 파일 패턴·심볼과 지킬 구조 제약
 - 확인된 원인과 `file:line`, 바꿀 구조, 지울 guard
 - 보고 형식: 바꾼 파일, 실행한 명령과 결과, 실패·미검증 사항

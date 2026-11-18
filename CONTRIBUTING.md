@@ -12,6 +12,8 @@ pnpm dev          # 개발용 hot reload. 서버(http://127.0.0.1:3100, 가짜 �
 pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 embedded Postgres 하나를 띄우고 테스트마다 DB를 복제합니다. 끝으로 테스트 실패가 실패 종료로 이어지는지 확인합니다.
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
+pnpm typecheck:src
+pnpm typecheck:test
 pnpm lint         # 시험 코드에는 시험 전용 규칙(폴더 지우기는 removeFolder로)을, 제품 코드에는 제품 규칙(바깥 데이터는 확인 뒤 사용, runtime의 프로그램 실행은 정해진 파일에서만)을 더 겁니다. lint 예외 주석에는 `-- 이유`를 씁니다.
 pnpm check        # Markdown 로컬 링크 검사, lint 규칙 회귀(scripts/lint-rules.test.mjs, scripts/product-lint-rules.test.mjs)와 CI 회귀 검사(테스트 집계 scripts/ci-test-gate.test.mjs, 실패 이유 분류 scripts/ci-job-failures.test.mjs, 내려받기 재시도 scripts/ci-downloads.test.mjs, 실행 판정 scripts/ci-changes.test.mjs, 파일 경계 결과표 scripts/file-boundary-report.test.mjs, E2E 결과 판정 scripts/check-e2e-report.test.mjs). 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
 ```
