@@ -149,9 +149,80 @@ const syncCommandTimeout = {
   },
 };
 
+const ignoredErrorGuide =
+  "버려야 하면 @babojubot/contracts의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfUnreadable(읽을 수 없으면 아님), settled(순서만 지킴). CODING_STANDARDS.md#제품-코드";
+
+/** 오류를 받는 처리기의 자리: `.catch(처리기)`, `.then(성공, 처리기)`. */
+const handlerPositions = new Map([
+  ["catch", 0],
+  ["then", 1],
+]);
+const functionTypes = new Set([
+  "ArrowFunctionExpression",
+  "FunctionExpression",
+]);
+
+/** 본문이 다른 오류를 던지는 한 문장뿐인가(`catch { throw new Refusal() }`, `.catch(() => { throw … })`). */
+function onlyThrows(body) {
+  return (
+    body.type === "BlockStatement" &&
+    body.body.length === 1 &&
+    body.body[0].type === "ThrowStatement"
+  );
+}
+
+/** `_`로 시작해 쓰지 않는다고 표시한 오류 이름인가. */
+const markedUnused = (param) =>
+  param?.type === "Identifier" && param.name.startsWith("_");
+
+/**
+ * 오류를 받지 않고 버리면 의도한 처리(파일 없음은 없는 것)와 실수(권한 오류까지 빈 결과로 바꿈)가 코드에서 같아 보인다.
+ * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, `_`를 붙인 오류 이름을 막는다.
+ * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다. 받고 쓰지 않는 오류는 `no-unused-vars`가 막는다.
+ * 알려진 한계: 이름으로 넘긴 처리기(`.then(settle, settle)`), `void error`처럼 쓰는 척만 하는 처리, 이름 붙은 함수를
+ * 의도와 다르게 쓰는 것(바깥 입출력을 `orIfUnreadable`로 감싸기)은 판정하지 않으며 리뷰가 본다.
+ */
+const noIgnoredError = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Disallow dropping an error without naming it or the intent in product code",
+    },
+    schema: [],
+    messages: {
+      unnamed: `오류를 받지 않고 버리면 왜 버리는지 보이지 않습니다. 오류를 받아 검사하거나 다시 던지세요. ${ignoredErrorGuide}`,
+      underscore: `\`_\`를 붙여 쓰지 않는 오류도 버리는 것입니다. 오류를 받아 검사하거나 다시 던지세요. ${ignoredErrorGuide}`,
+    },
+  },
+  create(context) {
+    return {
+      CatchClause(node) {
+        if (markedUnused(node.param))
+          context.report({ node: node.param, messageId: "underscore" });
+        else if (!node.param && !onlyThrows(node.body))
+          context.report({ node, messageId: "unnamed" });
+      },
+      CallExpression(node) {
+        const { callee } = node;
+        if (callee.type !== "MemberExpression" || callee.computed) return;
+        const position = handlerPositions.get(callee.property.name);
+        const handler =
+          position === undefined ? undefined : node.arguments[position];
+        if (!handler || !functionTypes.has(handler.type)) return;
+        if (markedUnused(handler.params[0]))
+          context.report({ node: handler.params[0], messageId: "underscore" });
+        else if (handler.params.length === 0 && !onlyThrows(handler.body))
+          context.report({ node: handler, messageId: "unnamed" });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
     "sync-command-timeout": syncCommandTimeout,
+    "no-ignored-error": noIgnoredError,
   },
 };
