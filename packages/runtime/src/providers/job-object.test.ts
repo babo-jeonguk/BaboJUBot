@@ -46,7 +46,6 @@ const temp = async (name: string) => {
   return root;
 };
 const record = (frame: unknown) => frame as Record<string, unknown>;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** 정리의 시한. 넘기면 무엇을 기다렸는지 남기고 실패한다. */
 function within<T>(promise: Promise<T>, ms: number, what: string) {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -106,14 +105,13 @@ async function stopSpawned(child: ChildProcess) {
 }
 /** 번호는 재사용될 수 있으므로 다시 끄지 않는다. 시한 안에 꺼지지 않았으면 시험이 남긴 것으로 보고 실패한다. */
 async function descendantsGone(pids: number[]) {
-  const until = Date.now() + 10_000;
-  while (pids.some(alive)) {
-    if (Date.now() >= until)
+  await vi
+    .waitUntil(() => !pids.some(alive), { timeout: 10_000, interval: 50 })
+    .catch(() => {
       throw new Error(
-        `processes a run started are still running: ${pids.filter(alive).join(", ")}`
+        `processes a run started are still running after 10000 ms: ${pids.filter(alive).join(", ")}`
       );
-    await sleep(50);
-  }
+    });
 }
 
 /** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 번호를 남겨 끝에 꺼졌는지 확인한다. */
@@ -382,11 +380,12 @@ describe.runIf(windows)("startProcess on Windows", () => {
     const ended = new Promise((resolve) => server.on("exit", resolve));
     server.kill("SIGKILL");
     await ended;
-    const until = Date.now() + 10_000;
-    while ((alive(seen.child!) || alive(seen.program!)) && Date.now() < until)
-      await sleep(50);
-    expect(alive(seen.program!)).toBe(false);
-    expect(alive(seen.child!)).toBe(false);
+    await expect
+      .poll(() => [alive(seen.program!), alive(seen.child!)], {
+        timeout: 10_000,
+        interval: 50,
+      })
+      .toEqual([false, false]);
   }, 60_000);
 
   // 프로그램을 찾지 못하면 지금처럼 시작 실패로 알린다. 실행기의 cmd.exe 경유로 바뀌어 종료 코드 1로 끝나지 않는다.

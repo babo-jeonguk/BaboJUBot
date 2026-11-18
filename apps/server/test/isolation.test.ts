@@ -817,6 +817,19 @@ describe("organization network allow list", () => {
   it("shows a refused destination in the run's activity with the reason and how to allow it", async () => {
     const fake = fakeDocker();
     const heads: string[] = [];
+    const progressOf = async (orgId: string) =>
+      eventListSchema
+        .parse(await get(`/api/organizations/${orgId}/events`))
+        .flatMap((event) =>
+          event.type === "run.activity" &&
+          event.payload.activity.source === "runtime" &&
+          event.payload.activity.activity.type === "progress"
+            ? [event.payload.activity.activity.text]
+            : []
+        );
+    const refusal = expect.stringMatching(
+      /^외부 연결 거부: example\.invalid:443\. .*네트워크 허용 목록/
+    );
     const { connection } = realConnection(
       async (request) => {
         if (request.execution !== "container") return;
@@ -832,7 +845,10 @@ describe("organization network allow list", () => {
           );
           socket.destroy();
           heads.push(head);
-          await new Promise((resolve) => setTimeout(resolve, 300));
+          // 거부 기록은 끝나지 않은 실행 시도에만 남는다. 기록이 실행 활동에 저장된 뒤에 실행을 끝낸다.
+          await expect
+            .poll(() => progressOf(request.identity.organizationId), eventually)
+            .toContainEqual(refusal);
         } finally {
           await own.close();
         }
@@ -850,19 +866,6 @@ describe("organization network allow list", () => {
     const org = await createOrganization("real");
     await t.drain();
     expect(heads).toEqual([expect.stringMatching(/^HTTP\/1\.1 403/)]);
-    const activities = eventListSchema
-      .parse(await get(`/api/organizations/${org.id}/events`))
-      .flatMap((event) =>
-        event.type === "run.activity" &&
-        event.payload.activity.source === "runtime" &&
-        event.payload.activity.activity.type === "progress"
-          ? [event.payload.activity.activity.text]
-          : []
-      );
-    expect(activities).toContainEqual(
-      expect.stringMatching(
-        /^외부 연결 거부: example\.invalid:443\. .*네트워크 허용 목록/
-      )
-    );
+    expect(await progressOf(org.id)).toContainEqual(refusal);
   });
 });

@@ -125,9 +125,15 @@ describe("ReadinessMonitor with the isolation safety check", () => {
   });
 
   it("closes without waiting for a safety check that is still running", async () => {
-    const { monitor, stored } = monitorWith(() => new Promise(() => {}));
+    let reached!: () => void;
+    const safetyCheckRunning = new Promise<void>((r) => (reached = r));
+    const { monitor, stored } = monitorWith(() => {
+      reached();
+      return new Promise(() => {});
+    });
     const check = monitor.check("p");
-    await new Promise((r) => setTimeout(r, 50));
+    // 안전 확인이 도는 중에 닫는다.
+    await safetyCheckRunning;
     await monitor.close();
     await check;
     expect(stored.has("p")).toBe(false);

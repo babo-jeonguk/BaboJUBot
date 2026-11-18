@@ -46,6 +46,8 @@ const connections = (server: http.Server) =>
 async function upstream() {
   const seen: Seen[] = [];
   const closed: string[] = [];
+  /** 열려 있는 `/v1/stream` 응답(도착 순서). 시험이 조각을 더 보낼 수 있다. */
+  const streams: http.ServerResponse[] = [];
   const url = await listen((req, res) => {
     seen.push({ method: req.method!, url: req.url!, headers: req.headers });
     req.resume();
@@ -97,6 +99,7 @@ async function upstream() {
     if (req.url?.startsWith("/base/v1/stream")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write("data: first\n\n");
+      streams.push(res);
       res.on("close", () => closed.push(req.url!));
       return;
     }
@@ -106,7 +109,18 @@ async function upstream() {
     });
     res.end(JSON.stringify({ ok: true }));
   });
-  return { url: `${url}/base`, seen, closed, server: servers.at(-1)! };
+  const server = servers.at(-1)!;
+  /** 상류가 받은 연결 수(닫힌 것 포함). */
+  let opened = 0;
+  server.on("connection", () => opened++);
+  return {
+    url: `${url}/base`,
+    seen,
+    closed,
+    streams,
+    server,
+    opened: () => opened,
+  };
 }
 
 /** 시험 요청마다 붙이는 이름. 중계는 이 header를 그대로 상류에 넘기므로, 상류가 받은 요청이 어느 요청인지 가린다. */
@@ -230,7 +244,7 @@ async function setup(
     },
   });
   const url = await listen((req, res) => relay.handle(req, res));
-  return { up, relay, url, reads: () => reads };
+  return { up, relay, url, server: servers.at(-1)!, reads: () => reads };
 }
 
 const send = (
@@ -484,7 +498,7 @@ describe("the credential relay", () => {
     const startedReading = new Promise<void>((resolve) => {
       started = resolve;
     });
-    const { up, relay, url } = await setup({
+    const { up, relay, url, server } = await setup({
       credential: async () => {
         started();
         await reading;
@@ -502,12 +516,14 @@ describe("the credential relay", () => {
     await startedReading;
     controller.abort();
     expect(await request).toBe("aborted");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 중계가 끊긴 연결을 처리한 뒤에 원본 읽기를 끝낸다.
+    await expect.poll(() => connections(server), settles).toBe(0);
     release();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(up.seen).toHaveLength(0);
-    // 상류에 연결도 열지 않는다(열린 채 남지 않는다).
-    expect(await connections(up.server)).toBe(0);
+    // 판정 시점: 그 뒤 보낸 확인 요청이 상류의 답까지 받은 다음. 중계가 그보다 먼저 시작한 전송은 그 사이에 상류에 닿는다.
+    expect(await statusOf(url, relay.grant(scope()).token, "probe")).toBe(200);
+    expect(arrived(up.seen)).toEqual(["probe"]);
+    // 상류에 연결도 열지 않았다(확인 요청의 연결 하나뿐이다).
+    expect(up.opened()).toBe(1);
   });
 
   it("fails the connection when the credential cannot be read: every run's grant is withdrawn first, new runs are refused until it can be read again", async () => {
@@ -864,17 +880,6 @@ describe("the credential relay with runs that overlap (#148)", () => {
       release: (n: number) => releases[n]!(),
     };
   }
-  /** stream이 끝나지도 끊기지도 않고 열려 있는가. 잠깐 기다려 본다. */
-  async function stillOpen(reader: ReadableStreamDefaultReader<Uint8Array>) {
-    const outcome = await Promise.race([
-      reader.read().then(
-        ({ done }) => (done ? "ended" : "data"),
-        () => "cut"
-      ),
-      new Promise((resolve) => setTimeout(() => resolve("open"), 100)),
-    ]);
-    return outcome === "open";
-  }
   const cutOff = (reader: ReadableStreamDefaultReader<Uint8Array>) =>
     (async () => {
       for (;;) if ((await reader.read()).done) return "ended";
@@ -908,9 +913,10 @@ describe("the credential relay with runs that overlap (#148)", () => {
     cancel.abort();
     held.release(0);
     expect(await request).not.toBe(200);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(up.seen).toHaveLength(0);
-    expect(await connections(up.server)).toBe(0);
+    // 판정 시점은 위 시험과 같이 확인 요청이 상류의 답까지 받은 다음이다.
+    expect(await statusOf(url, relay.grant(scope()).token, "probe")).toBe(200);
+    expect(arrived(up.seen)).toEqual(["probe"]);
+    expect(up.opened()).toBe(1);
     expect(relay.failed()).toBe(false);
   });
 
@@ -925,7 +931,11 @@ describe("the credential relay with runs that overlap (#148)", () => {
     await streamB.read();
     cancelA.abort();
     await expect(cutOff(streamA)).rejects.toThrow();
-    expect(await stillOpen(streamB)).toBe(true);
+    // B의 stream은 그대로 이어진다: 상류가 더 보낸 조각이 B에 닿는다.
+    up.streams[1]!.write("data: after\n\n");
+    expect(new TextDecoder().decode((await streamB.read()).value)).toBe(
+      "data: after\n\n"
+    );
     expect((await send(url, a.token)).status).toBe(401);
     expect((await send(url, b.token)).status).toBe(200);
     expect(b.failed.aborted).toBe(false);

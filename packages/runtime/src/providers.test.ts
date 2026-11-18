@@ -118,10 +118,10 @@ describe("listProviderModels", () => {
     expect(await listProviderModels(connection, options)).toEqual([
       { id: "live-1", label: "모델" },
     ]);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(await listProviderModels(connection, options)).toEqual([
-      { id: "live-2", label: "모델" },
-    ]);
+    // 뒤에서 받은 새 목록이 보일 때까지 기다린다.
+    await expect
+      .poll(() => listProviderModels(connection, options), { timeout: 5_000 })
+      .toEqual([{ id: "live-2", label: "모델" }]);
   });
 
   it("waits for a new list when the caller asks for a fresh one", async () => {

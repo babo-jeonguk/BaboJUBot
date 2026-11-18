@@ -1,5 +1,6 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { vi } from "vitest";
 
 /**
  * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다.
@@ -73,16 +74,13 @@ export function exited(pid: number) {
 
 /** 모두 끝날 때까지 시한 안에서 기다린다. 넘으면 남은 번호와 함께 실패한다. */
 export async function untilExited(pids: number[], timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const left = pids.filter((pid) => !exited(pid));
-    if (!left.length) return;
-    if (Date.now() >= deadline)
+  await vi
+    .waitUntil(() => pids.every(exited), { timeout: timeoutMs, interval: 25 })
+    .catch(() => {
       throw new Error(
-        `still running after ${timeoutMs} ms: ${left.join(", ")}`
+        `still running after ${timeoutMs} ms: ${pids.filter((pid) => !exited(pid)).join(", ")}`
       );
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+    });
 }
 
 /** 시험 정리: SIGKILL을 보내고 끝날 때까지 기다린다. */

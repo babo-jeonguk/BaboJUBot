@@ -1,4 +1,4 @@
-// 시험 코드 전용 lint 규칙. 코드 모양만으로는 판단할 수 없고 값이 어디로 가는지 따라가야 하는 규칙을 둔다.
+// 시험 코드 전용 lint 규칙. 선택자만으로는 판단할 수 없는 규칙(값이 어디로 가는지, 타이머가 무엇을 하는지)을 둔다.
 // 설정은 eslint.config.js의 `testFiles` 범위에 걸고, 회귀 시험은 scripts/lint-rules.test.mjs가 맡는다.
 
 const clocks = new Set(["Date", "performance"]);
@@ -149,7 +149,127 @@ const noElapsedTimeAssertion = {
   },
 };
 
+const timerModules = /^(node:)?timers\/promises$/;
+const isFunction = (node) =>
+  node?.type === "ArrowFunctionExpression" ||
+  node?.type === "FunctionExpression";
+
+/** `Promise.race([...])`·`Promise.any([...])`의 한쪽으로 바로 넣은 값인가. */
+function raceMember(node) {
+  const array = node.parent;
+  if (array?.type !== "ArrayExpression") return false;
+  const call = array.parent;
+  return (
+    call?.type === "CallExpression" &&
+    call.arguments[0] === array &&
+    call.callee.type === "MemberExpression" &&
+    !call.callee.computed &&
+    call.callee.object.type === "Identifier" &&
+    call.callee.object.name === "Promise" &&
+    (call.callee.property.name === "race" ||
+      call.callee.property.name === "any")
+  );
+}
+
+/** `node`를 품은 가장 가까운 `new Promise(executor)`의 executor. */
+function enclosingExecutor(node) {
+  for (let parent = node.parent; parent; parent = parent.parent)
+    if (
+      isFunction(parent) &&
+      parent.parent?.type === "NewExpression" &&
+      parent.parent.callee.type === "Identifier" &&
+      parent.parent.callee.name === "Promise" &&
+      parent.parent.arguments[0] === parent
+    )
+      return parent;
+  return undefined;
+}
+
+/** 타이머 콜백이 `resolve`를 인자 없이 부르기만 하는가(`resolve` 자체, `() => resolve()`, `() => { resolve(); }`). */
+function onlyWakes(callback, resolve) {
+  if (callback?.type === "Identifier") return callback.name === resolve;
+  if (!isFunction(callback)) return false;
+  let body = callback.body;
+  if (body.type === "BlockStatement") {
+    if (body.body.length !== 1 || body.body[0].type !== "ExpressionStatement")
+      return false;
+    body = body.body[0].expression;
+  }
+  return (
+    body.type === "CallExpression" &&
+    body.callee.type === "Identifier" &&
+    body.callee.name === resolve &&
+    body.arguments.length === 0
+  );
+}
+
+/**
+ * 시험이 정해진 시간만큼 잠들어 기다리면 결과가 실행기 속도에 달린다(CODING_STANDARDS.md#시간).
+ * 타이머가 잠든 쪽을 깨우기만 하면 기다림으로 보고 짚는다.
+ * - `new Promise((r) => setTimeout(r, N))`·`setTimeout(() => r(), N)`: await하든, `.then`으로 잇든, 함수가 돌려주든(잠듦 도움 함수) 같다.
+ * - `node:timers/promises`에서 가져온 것(`setTimeout`·`scheduler.wait` 등)의 호출, `.waitForTimeout(…)`(Playwright).
+ * 타이머가 무언가를 하면 기다림이 아니다: 실패를 알리는 상한(`reject`·중단·kill), 값을 넘기는 타이머(가짜의 늦은 응답, 상한의 표지),
+ * 가짜가 응답을 보내는 타이머, 깨어나 같은 조건을 다시 확인하는 타이머(`setTimeout(poll, N)`), 시계 주입 타이머(`clock.setTimeout`).
+ * `Promise.race`·`Promise.any`의 한쪽으로 바로 넣은 타이머는 다른 쪽을 기다리는 상한이다. 지연이 0이거나 없는 것은 시간을 기다리지 않는다.
+ * 그래서 표지 값으로 "아무 일도 없었다"를 확인하는 경주(`resolve("open")`)는 짚지 않는다. 다시 확인하는 반복의 상한 유무도 보지 않는다.
+ */
+const noFixedTimeWait = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow waiting a fixed time in tests instead of a state or a signal",
+    },
+    schema: [],
+    messages: {
+      fixed:
+        "시험이 정해진 시간만큼 잠들어 기다립니다. 잠든 시간은 신호가 아니어서 느린 실행기에서는 기다리던 일이 아직 끝나지 않습니다. 상태·준비 줄·처리 끝 신호를 vi.waitFor·expect.poll·공용 상한(eventually·leadRun·pageLoad)으로 기다리고, 타이머 순서는 시계를 주입해(manualClock·가짜 타이머) 시험이 정하세요. CODING_STANDARDS.md#시간",
+    },
+  },
+  create(context) {
+    /** `timers/promises`에서 가져온 이름. */
+    const timers = new Set();
+    const report = (node) => context.report({ node, messageId: "fixed" });
+    return {
+      ImportDeclaration(node) {
+        if (!timerModules.test(node.source.value)) return;
+        for (const specifier of node.specifiers)
+          timers.add(specifier.local.name);
+      },
+      CallExpression(node) {
+        const { callee } = node;
+        if (
+          callee.type === "MemberExpression" &&
+          !callee.computed &&
+          callee.property.name === "waitForTimeout"
+        )
+          return report(node);
+        if (callee.type === "Identifier" && timers.has(callee.name))
+          return report(node);
+        if (
+          callee.type === "MemberExpression" &&
+          callee.object.type === "Identifier" &&
+          timers.has(callee.object.name)
+        )
+          return report(node);
+        if (callee.type !== "Identifier" || callee.name !== "setTimeout")
+          return;
+        const delay = node.arguments[1];
+        if (!delay || (delay.type === "Literal" && delay.value === 0)) return;
+        const executor = enclosingExecutor(node);
+        const resolve = executor?.params[0];
+        if (resolve?.type !== "Identifier" || raceMember(executor.parent))
+          return;
+        if (onlyWakes(node.arguments[0], resolve.name)) report(node);
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
-  rules: { "no-elapsed-time-assertion": noElapsedTimeAssertion },
+  rules: {
+    "no-elapsed-time-assertion": noElapsedTimeAssertion,
+    "no-fixed-time-wait": noFixedTimeWait,
+  },
 };

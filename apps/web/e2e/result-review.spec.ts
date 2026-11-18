@@ -145,16 +145,18 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await expect(main).toContainText("지금 조직 단계");
   await expect(main.getByText("최종 완료").first()).toBeVisible();
 
-  // 최종 완료 뒤 메시지를 보내도 새 실행 시도가 시작되지 않는다.
+  // 최종 완료 뒤 메시지는 거절되어 저장되지 않으므로 깨울 것이 없고, 새 실행 시도가 시작되지 않는다.
+  // 거절 응답이 그 처리의 끝이다. 완료 뒤 깨우기가 실행 시도를 만들지 않는 것은 서버 시험(results.test.ts)이 처리 끝 뒤에 본다.
   const runCount = async () =>
     ((await (await page.request.get(api("/runs"))).json()) as unknown[]).length;
   const before = await runCount();
-  await page.request.post(api("/messages"), {
+  const late = await page.request.post(api("/messages"), {
     data: { body: "완료 뒤 메시지" },
   });
-  // 보장의 한계(#215): 깨우지 않기로 한 처리가 끝났다는 신호는 E2E가 쓰는 API에 없다(서버 시험은 촉진 처리의 끝을 기다린다).
-  // 그래서 실행 시도가 보통 생길 시간을 기다린 뒤 개수를 본다. 느린 기기에서는 결함이 있어도 이 확인이 통과할 수 있다.
-  await page.waitForTimeout(1_000);
+  expect(late.status()).toBe(409);
+  expect(await late.json()).toEqual({
+    error: { code: "organization_closed" },
+  });
   expect(await runCount()).toBe(before);
 
   // 결과 검토 목록에는 두 제출과 각 결정이 남고, Inbox에서도 주의 필요에서만 빠져 전체에 결정 상태와 함께 남는다.

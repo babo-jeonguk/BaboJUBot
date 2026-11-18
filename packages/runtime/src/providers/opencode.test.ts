@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
@@ -274,11 +275,14 @@ describe("one organization folder (#147)", () => {
     const root = await folders.make("opencode-race-");
     const adapter = racingAdapter(root);
     const first = request();
+    const activities: unknown[] = [];
     const results = await Promise.all(
       [first, sameOrganization(first.identity.organizationId)].map((input) =>
         adapter.execute(input, {
           signal: new AbortController().signal,
-          emit: async () => {},
+          emit: async (activity) => {
+            activities.push(activity);
+          },
         })
       )
     );
@@ -286,6 +290,15 @@ describe("one organization folder (#147)", () => {
       "completed",
       "completed",
     ]);
+    // 둘이 함께 시작하고 먼저 뜨는 서버가 300ms 넘게 차례를 쥐므로, 뒤의 실행 하나만 기다렸다고 알린다.
+    expect(
+      activities.filter((activity) =>
+        isDeepStrictEqual(activity, {
+          type: "progress",
+          text: "먼저 시작한 OpenCode가 준비될 때까지 기다립니다.",
+        })
+      )
+    ).toHaveLength(1);
     expect(results[0]!.nextSession?.id).not.toBe(results[1]!.nextSession?.id);
   }, 30000);
 

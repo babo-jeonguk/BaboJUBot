@@ -256,8 +256,13 @@ export function createOpenCodeProvider(options: {
    * (2.2.6 실제 CLI 확인: `table … already exists`, #147). 띄우는 동안만 차례를 지키며, 띄운 서버의 실행은 함께 돈다.
    * 차례를 기다리다 취소되면 기다림을 그만두고 차례를 넘긴다.
    */
-  const startupTurn = async (folder: string, signal: AbortSignal) => {
-    const previous = startups.get(folder) ?? Promise.resolve();
+  const startupTurn = async (
+    folder: string,
+    signal: AbortSignal,
+    waiting?: () => Promise<void>
+  ) => {
+    const ahead = startups.get(folder);
+    const previous = ahead ?? Promise.resolve();
     let release!: () => void;
     const done = new Promise<void>((resolve) => {
       release = resolve;
@@ -269,6 +274,8 @@ export function createOpenCodeProvider(options: {
     });
     let onAbort: (() => void) | undefined;
     try {
+      // 먼저 시작한 서버가 아직 뜨는 중이면 실행 활동에 알린다.
+      if (ahead) await waiting?.();
       await Promise.race([
         previous,
         new Promise<never>((_, reject) => {
@@ -289,9 +296,10 @@ export function createOpenCodeProvider(options: {
     signal: AbortSignal,
     config: Record<string, unknown> = {},
     container?: ContainerLaunch,
-    productHome = home
+    productHome = home,
+    waiting?: () => Promise<void>
   ) {
-    const release = await startupTurn(productHome, signal);
+    const release = await startupTurn(productHome, signal, waiting);
     try {
       return await launch(signal, config, container, productHome);
     } finally {
@@ -554,9 +562,15 @@ export function createOpenCodeProvider(options: {
         }
         await prepare();
         await mkdir(organization, { recursive: true, mode: 0o700 });
-        // 이 컴퓨터의 실행이 옮기던 로그인은 다 옮겨진 뒤에 본다.
-        if (placement.container)
-          await Promise.all(copying.get(organizationId) ?? []);
+        // 이 컴퓨터의 실행이 옮기던 로그인은 다 옮겨진 뒤에 본다. 기다릴 옮기기가 있으면 실행 활동에 알린다.
+        const copies = placement.container && copying.get(organizationId);
+        if (copies && copies.size > 0) {
+          await control.emit({
+            type: "progress",
+            text: "로그인 정보를 옮기는 중이라 끝날 때까지 기다립니다.",
+          });
+          await Promise.all(copies);
+        }
         // 격리 실행은 조직 폴더에 남은 로그인을 컨테이너가 읽을 수 있으므로, 서버를 띄우기 전에 확인하고 시작하지 않는다.
         if (
           placement.container &&
@@ -653,7 +667,12 @@ export function createOpenCodeProvider(options: {
           runControl.signal,
           config,
           container,
-          organization
+          organization,
+          () =>
+            control.emit({
+              type: "progress",
+              text: "먼저 시작한 OpenCode가 준비될 때까지 기다립니다.",
+            })
         );
         const api = service;
         // 격리 실행에는 연결의 로그인을 옮기지 않는다(#148). 조직 폴더에 옮겨 둔 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.

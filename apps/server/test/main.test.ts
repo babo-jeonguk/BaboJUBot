@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
 
@@ -220,10 +220,9 @@ posix.each(posixStopRequests)(
       expect(child.stderrText()).toContain("did not finish in 2s");
 
       process.kill(postgresPid, "SIGCONT");
-      const deadline = Date.now() + 15_000;
-      while (isAlive(postgresPid) && Date.now() < deadline)
-        await new Promise((r) => setTimeout(r, 50));
-      await expectGone(postgresPid);
+      await expect
+        .poll(() => isAlive(postgresPid), { timeout: 15_000, interval: 50 })
+        .toBe(false);
     } finally {
       await stopMain(child);
       await stopLeftover(postgresPid);
@@ -545,18 +544,25 @@ async function stopMain(child: MainProcess, { group = false } = {}) {
 }
 
 async function waitForPath(child: MainProcess, target: string) {
-  const deadline = Date.now() + readyTimeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(target)) return;
-    if (child.exitCode !== null || child.signalCode !== null)
+  let ended: Error | undefined;
+  await vi
+    .waitUntil(
+      () => {
+        if (existsSync(target)) return true;
+        if (child.exitCode !== null || child.signalCode !== null)
+          ended = new Error(
+            `server ended before ${target} appeared (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
+          );
+        return ended !== undefined;
+      },
+      { timeout: readyTimeoutMs, interval: 10 }
+    )
+    .catch(() => {
       throw new Error(
-        `server ended before ${target} appeared (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
+        `${target} did not appear in ${readyTimeoutMs}ms: ${child.stderrText()}`
       );
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(
-    `${target} did not appear in ${readyTimeoutMs}ms: ${child.stderrText()}`
-  );
+    });
+  if (ended) throw ended;
 }
 
 function killGroup(child: ChildProcess) {

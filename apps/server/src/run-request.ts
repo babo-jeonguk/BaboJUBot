@@ -6,7 +6,9 @@ import { loadRunContext, type ClaimedRun, type Database } from "@babojubot/db";
 /** admission이 고정한 실행 시도와 그 토큰으로 실행 시도 요청 한 장을 만든다. 실행 시도가 사라졌으면 throw한다. */
 export type RunRequestAssembler = (
   claimed: ClaimedRun,
-  token: string
+  token: string,
+  /** 실행 시도의 진행 문구를 남긴다(실행 활동). */
+  progress?: (text: string) => void
 ) => Promise<RunRequest>;
 
 /**
@@ -20,13 +22,15 @@ export function createRunRequestAssembler({
   workspaces,
 }: {
   db: Database;
-  place: (provider: string) => Promise<Placement>;
+  place: (provider: string, waiting?: () => void) => Promise<Placement>;
   workspaces: Workspaces;
 }): RunRequestAssembler {
-  return async ({ run, wakeReasons, instructions }, token) => {
+  return async ({ run, wakeReasons, instructions }, token, progress) => {
     const loaded = await loadRunContext(db, run.id);
     if (!loaded) throw new Error(`run ${run.id} disappeared`);
-    const placement = await place(run.provider);
+    const placement = await place(run.provider, () =>
+      progress?.("격리 실행 환경이 안전한지 확인하고 있습니다.")
+    );
     return {
       identity: loaded.identity,
       access: { toolsBaseUrl: placement.toolsBaseUrl, token },

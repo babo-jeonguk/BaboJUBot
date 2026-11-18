@@ -298,7 +298,7 @@ export async function startServer({
     now,
     assemble: createRunRequestAssembler({
       db,
-      place: (provider) => gate.place(connectionOf(provider)),
+      place: (provider, waiting) => gate.place(connectionOf(provider), waiting),
       workspaces,
     }),
     onLoginRequired: (provider) => void readiness.check(provider),

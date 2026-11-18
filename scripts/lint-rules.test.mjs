@@ -208,3 +208,77 @@ test("code outside tests may assert elapsed time", async () => {
       place
     );
 });
+
+/** 고정 시간 기다림 규칙의 메시지만. */
+const waitMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-fixed-time-wait");
+
+test("test code may not wait a fixed time", async () => {
+  const waits = {
+    "an awaited sleep": `await new Promise((resolve) => setTimeout(resolve, 50));\n`,
+    "a timer that only calls resolve": `await new Promise((r) => setTimeout(() => r(), 50));\n`,
+    "a timer block that only calls resolve": `await new Promise((r) => {\n  setTimeout(() => {\n    r();\n  }, 50);\n});\n`,
+    "a sleep chained with then": `const sent = new Promise((r) => setTimeout(r, 1000)).then(() => send());\nawait sent;\n`,
+    // 도움 함수로 감싸는 우회: 정의에서 짚는다.
+    "a sleep helper": `const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));\nawait sleep(50);\n`,
+    "a sleep between checks": `while (!done()) await new Promise((r) => setTimeout(r, 10));\n`,
+    "timers/promises": `import { setTimeout } from "node:timers/promises";\nawait setTimeout(50);\n`,
+    "timers/promises under another name": `import { setTimeout as sleep } from "timers/promises";\nawait sleep(50);\n`,
+    "the timers/promises scheduler": `import { scheduler } from "node:timers/promises";\nawait scheduler.wait(50);\n`,
+    waitForTimeout: `await page.waitForTimeout(300);\n`,
+  };
+  for (const [shape, code] of Object.entries(waits))
+    for (const place of testPlaces) {
+      const [message, ...rest] = waitMessages(await lint(code, place));
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 대안과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, /vi\.waitFor·expect\.poll/);
+      assert.match(message.message, /manualClock/);
+      assert.match(message.message, /CODING_STANDARDS\.md#시간/);
+    }
+});
+
+test("test code may use timers that bound a wait, answer late, check again or come from a clock", async () => {
+  const allowed = [
+    // 시계를 주입한 타이머는 시험이 시간을 정한다.
+    `await new Promise((resolve) => clock.setTimeout(resolve, 1000));\n`,
+    // 실패를 알리는 상한과 경주의 상한.
+    `await Promise.race([work, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 5000))]);\n`,
+    `await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 2000))]);\n`,
+    `const deadline = setTimeout(() => child.kill(), 20_000);\nclearTimeout(deadline);\n`,
+    // 값을 넘기는 타이머: 가짜의 늦은 응답, 상한의 표지.
+    `const check = () => new Promise((resolve) => setTimeout(() => resolve(unavailable), 100));\nawait check();\n`,
+    `const timedOut = new Promise((resolve) => setTimeout(() => resolve(undefined), 1000));\nawait Promise.race([exit, timedOut]);\n`,
+    // 가짜가 응답을 보내는 타이머.
+    `setTimeout(() => res.end("late"), 50);\n`,
+    `await new Promise((resolve, reject) => setTimeout(() => route.fulfill({ response }).then(resolve, reject), 50));\n`,
+    // 깨어나 같은 조건을 다시 확인하는 타이머.
+    `await new Promise((resolve) => {\n  const poll = () => (done() ? resolve() : setTimeout(poll, 50));\n  poll();\n});\n`,
+    // 이벤트 루프 차례 넘기기는 시간을 기다리지 않는다.
+    `await new Promise((resolve) => setTimeout(resolve, 0));\nawait new Promise((resolve) => setImmediate(resolve));\nawait new Promise((resolve) => setTimeout(resolve));\n`,
+    // timers/promises가 아닌 곳의 같은 이름, Playwright의 다른 대기.
+    `import { setTimeout as later } from "./elsewhere.mjs";\nawait later(50);\nawait page.waitForURL("/");\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(waitMessages(await lint(code, place)), [], code);
+});
+
+test("code outside tests may wait a fixed time", async () => {
+  for (const place of [
+    "scripts/lint-sample.mjs",
+    "scripts/live/lint-sample.mjs",
+    "packages/runtime/test-fixtures/lint-sample.mjs",
+  ])
+    assert.deepEqual(
+      waitMessages(
+        await lint(
+          `await new Promise((resolve) => setTimeout(resolve, 50));\n`,
+          place
+        )
+      ),
+      [],
+      place
+    );
+});

@@ -81,8 +81,13 @@ function observe(queryKey: readonly unknown[], queryFn: () => Promise<number>) {
   return unsubscribe;
 }
 
+/** 관찰점(`onQueued`)이 알린 목록을 차례로 남긴다. */
+let queuedSeen: string[][];
 function startLiveRefresh() {
-  const live = createLiveRefresh(client);
+  queuedSeen = [];
+  const live = createLiveRefresh(client, {
+    onQueued: (hashes) => queuedSeen.push(hashes),
+  });
   cleanups.push(live.dispose);
   return live;
 }
@@ -101,17 +106,24 @@ describe("live refresh", () => {
     server.version = 1;
     live.refresh({ queryKey: key });
     await flush();
+    // 첫 신호는 조회를 시작할 뿐이다. 진행 중에 온 신호부터 끝난 뒤 다시 불러오기로 표시되고, 한 번만 알린다.
+    expect(queuedSeen).toEqual([]);
     for (let v = 2; v <= 10; v++) {
       server.version = v;
       live.refresh({ queryKey: key });
     }
     await flush();
     expect(server.running).toBe(1);
+    const hash = JSON.stringify(key);
+    expect(queuedSeen).toEqual([[hash]]);
 
     await server.release();
     expect(data(key)).toBe(1);
+    // 다시 불러오기를 시작하면 표시가 풀린다.
+    expect(queuedSeen).toEqual([[hash], []]);
     await server.release();
     expect(data(key)).toBe(10);
+    expect(queuedSeen).toEqual([[hash], []]);
     expect(server.pending()).toBe(0);
     expect(server.calls).toBe(3);
     expect(server.maxRunning).toBe(1);

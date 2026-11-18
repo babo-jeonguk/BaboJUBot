@@ -1,18 +1,20 @@
 // boot-check의 단계 진행과 멈춤을 가짜 단계로 돌린다. 정리하는 쪽은 흐름 하나뿐이므로, 멈춤이 DB를 여는 중이나
 // 닫는 중에 와도 그 작업이 끝나기 전에는 정리가 시작되지 않아야 한다. 작업을 붙잡아 둔 채 멈춤을 요청하고, 정리가 아직
 // 없는지 본 뒤 작업을 풀어 순서를 확인한다(실제 Postgres는 scripts/boot-check.test.mjs가 돌린다).
+// 멈춤 요청은 이유를 남기고 동기로 돌아오므로, 요청 직후가 그 처리의 끝이다. 시간을 기다리지 않는다.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createStop, runBootCheckFlow } from "./boot-check-flow.mjs";
 
 test("waits for an opening database before it cleans up on stop", async () => {
   const opening = deferred();
-  const { events, ops, stop } = fakeRun({ open: () => opening.promise });
+  const { events, ops, stop, reached } = fakeRun({
+    open: () => opening.promise,
+  });
   const run = runBootCheckFlow(ops);
-  await until(() => events.includes("open:start"));
+  await reached("open:start");
 
   stop.request("stop requested");
-  await settle();
   assert.deepEqual(after(events, "open:start"), ["stop requested"]);
 
   opening.resolve("handle");
@@ -28,12 +30,13 @@ test("waits for an opening database before it cleans up on stop", async () => {
 
 test("waits for a closing database before it cleans up on stop", async () => {
   const closing = deferred();
-  const { events, ops, stop } = fakeRun({ close: () => closing.promise });
+  const { events, ops, stop, reached } = fakeRun({
+    close: () => closing.promise,
+  });
   const run = runBootCheckFlow(ops);
-  await until(() => events.includes("close:handle"));
+  await reached("close:handle");
 
   stop.request("stop requested");
-  await settle();
   assert.deepEqual(after(events, "close:handle"), ["stop requested"]);
 
   closing.resolve();
@@ -48,11 +51,11 @@ test("waits for a closing database before it cleans up on stop", async () => {
 
 test("stops at the next step after a server start and cleans up once", async () => {
   const starting = deferred();
-  const { events, ops, stop } = fakeRun({
+  const { events, ops, stop, reached } = fakeRun({
     serve: (label) => (label === "first start" ? starting.promise : undefined),
   });
   const run = runBootCheckFlow(ops);
-  await until(() => events.includes("serve:first start"));
+  await reached("serve:first start");
 
   stop.request("stop requested");
   starting.resolve();
@@ -86,7 +89,9 @@ test("fails and still cleans up when a step fails", async () => {
   assert.equal(events.filter((event) => event === "cleanUp").length, 1);
 });
 
-test("gives up after the stop grace when a step never finishes", async () => {
+test("gives up after the stop grace when a step never finishes", (t) => {
+  // 유예 타이머를 시험이 옮긴다.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   let expired = 0;
   const stop = createStop({
     graceMs: 50,
@@ -96,43 +101,60 @@ test("gives up after the stop grace when a step never finishes", async () => {
   stop.request("first");
   stop.request("second");
   assert.equal(stop.reason, "first");
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  t.mock.timers.tick(49);
+  assert.equal(expired, 0);
+  t.mock.timers.tick(1);
+  assert.equal(expired, 1);
+  // 두 번째 요청은 유예를 다시 걸지 않는다.
+  t.mock.timers.tick(1_000);
   assert.equal(expired, 1);
 });
 
 /** 기록되는 가짜 단계. `overrides`의 함수가 promise를 돌려주면 그 단계는 그 promise가 끝날 때까지 걸려 있다. */
 function fakeRun(overrides = {}) {
   const events = [];
+  /** 기록을 기다리는 쪽. 기록이 남으면 그 자리에서 풀린다. */
+  const waiters = [];
+  const note = (event) => {
+    events.push(event);
+    for (const waiter of waiters.splice(0))
+      if (waiter.event === event) waiter.resolve();
+      else waiters.push(waiter);
+  };
+  const reached = (event) =>
+    events.includes(event)
+      ? Promise.resolve()
+      : new Promise((resolve) => waiters.push({ event, resolve }));
   const stop = createStop({
     graceMs: 60_000,
-    onGraceExpired: () => events.push("grace expired"),
-    log: (message) => events.push(message),
+    onGraceExpired: () => note("grace expired"),
+    log: (message) => note(message),
   });
   const ops = {
     stop,
     log: () => {},
     async serve(label) {
-      events.push(`serve:${label}`);
+      note(`serve:${label}`);
       await overrides.serve?.(label);
     },
     expectLeftover: () => {},
     expectCleanStart: () => {},
     async open() {
-      events.push("open:start");
+      note("open:start");
       const handle = overrides.open ? await overrides.open() : "handle";
-      events.push("open:end");
+      note("open:end");
       return handle;
     },
     async close(handle) {
-      events.push(`close:${handle}`);
+      note(`close:${handle}`);
       await overrides.close?.(handle);
     },
     expectClosed: () => {},
     async cleanUp() {
-      events.push("cleanUp");
+      note("cleanUp");
     },
   };
-  return { events, ops, stop };
+  return { events, ops, stop, reached };
 }
 
 function deferred() {
@@ -146,11 +168,3 @@ function deferred() {
 }
 
 const after = (events, marker) => events.slice(events.indexOf(marker) + 1);
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
-
-async function until(check) {
-  for (let i = 0; !check(); i++) {
-    if (i > 200) throw new Error("condition never held");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
