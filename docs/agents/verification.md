@@ -25,7 +25,7 @@
 - 잠든 시간이나 부수적인 횟수 대신 관찰 가능한 상태·준비 줄(handshake)을 기다립니다.
 - 시한을 검사하는 시험은 준비(프로그램 시작·화면 첫 로드)가 끝난 것을 먼저 확인하고 그 시한만 잽니다. 타이머와 프로그램의 순서가 실제 시간 창에 달리면 시계를 주입해 순서를 상태로 정합니다(`packages/runtime/src/providers/test-support.ts` `manualClock`).
 - 기다림의 상한은 그 대기에 명시하고 느린 실행기(2 vCPU)를 감당하게 잡습니다. 신호를 기다리는 대기는 공용 상한(`apps/web/e2e/support/organization.ts` `leadRun`, `apps/server/test/support.ts` `eventually`)을 쓰고, 화면 첫 로드 같은 공용 준비의 상한(`apps/web/e2e/support/live-events.ts` `pageLoad`)은 검사 대기와 따로 둡니다. 시험 전체의 기본 시한을 올리지 않습니다.
-- "아무 일도 없었다"는 처리가 끝났다는 신호(`kickHandled`, Event stream의 `expectNoEvents`) 뒤에 확인합니다. 신호가 없으면 고정 대기 옆에 보장의 한계를 적습니다.
+- "아무 일도 없었다"는 처리가 끝났다는 신호 뒤에 확인합니다. 백그라운드 작업이 남길 Event는 `kickHandled`나 `drain`으로 작업 끝을 먼저 기다리고, `expectNoEvents(since)`는 Event stream의 pong까지 받은 Event가 `since`개에서 늘지 않았는지 봅니다. 신호가 없으면 고정 대기 옆에 보장의 한계를 적습니다.
 - 기다릴 대상은 그 동작이 새로 만든 것(서버 상태, 새 항목의 ID, 마지막 메시지)으로 찾습니다. 앞서 화면에 있던 같은 문구로 찾으면 기다리지 않고 통과하거나, 새 항목이 먼저 뜨면 둘이 잡혀 실패합니다.
 - 신호를 보내기 전에 완전한 stdout 줄을 모으고 exit/error 관찰을 등록합니다.
 - 준비와 정리에는 시한을 두고, 정리는 `finally`에서 기다립니다.
