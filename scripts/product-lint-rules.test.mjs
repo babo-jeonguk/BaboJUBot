@@ -292,6 +292,9 @@ test("product code does not assert a type on data it has just read", async () =>
     "through unknown": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as unknown as Row;\n`,
     "a response body": `type Row = { id: number };\nexport const read = async (res: Response) => (await res.json()) as Row;\n`,
     "a body promise": `type Row = { id: number };\nexport const read = (res: Response) => res.json() as Promise<Row>;\n`,
+    "parsed text with a default": `type Row = { id: number };\nexport const read = (text: string) => (JSON.parse(text) ?? {}) as Row;\n`,
+    "a body with a default": `type Row = { id: number };\nexport const read = async (res: Response) => ((await res.json()) ?? {}) as Row;\n`,
+    "a body read in then": `type Row = { id: number };\nexport const read = (url: string) => fetch(url).then((res) => res.json()) as Promise<Row>;\n`,
     "a body with a fallback": `type Row = { id: number };\nexport const read = async (res: Response) =>\n  (await res.json().catch(() => undefined)) as Row | undefined;\n`,
   };
   for (const place of productPlaces)
@@ -308,6 +311,7 @@ test("product code does not assert a type on data it has just read", async () =>
     "asserted as unknown": `export const read = (text: string) => JSON.parse(text) as unknown;\n`,
     "a body as unknown": `export const read = async (res: Response): Promise<unknown> => res.json();\n`,
     "another value": `export const read = (value: unknown) => value as string;\n`,
+    "another then": `export const read = (work: Promise<unknown>) => work.then((value) => String(value)) as Promise<string>;\n`,
   };
   for (const [shape, code] of Object.entries(checked))
     assert.deepEqual(await lint(code, productPlaces[0], parsedRule), [], shape);

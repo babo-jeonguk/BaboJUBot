@@ -65,26 +65,42 @@ const refused = [
 ];
 
 test("after a refusal the fresh list moves focus to the field with the problem", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const focus = vi.fn();
   const getElementById = vi.fn(() => ({ focus }));
   vi.stubGlobal("document", { getElementById });
-  await refreshChoiceProblem(async () => ({ data: { providers } }), refused);
+  await refreshChoiceProblem(
+    async () => ({ data: { providers }, error: null }),
+    refused
+  );
   expect(getElementById).toHaveBeenCalledWith("lead-provider");
   expect(focus).toHaveBeenCalledOnce();
+  expect(warn).not.toHaveBeenCalled();
 });
 
-test("a list that could not be fetched leaves focus alone", async () => {
+// 조회 실패는 거부가 아니라 결과의 `error`로 온다.
+test("a list that could not be fetched is reported and leaves focus alone", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const getElementById = vi.fn();
   vi.stubGlobal("document", { getElementById });
-  await refreshChoiceProblem(async () => ({ data: undefined }), refused);
+  const failure = new Error("offline");
+  await refreshChoiceProblem(
+    async () => ({ data: undefined, error: failure }),
+    refused
+  );
   expect(getElementById).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
 });
 
-test("a failure while refreshing is reported and does not escape", async () => {
+test("a failed refresh is reported and the list already held is still used", async () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const focus = vi.fn();
+  vi.stubGlobal("document", { getElementById: () => ({ focus }) });
   const failure = new Error("offline");
-  await expect(
-    refreshChoiceProblem(() => Promise.reject(failure), refused)
-  ).resolves.toBeUndefined();
+  await refreshChoiceProblem(
+    async () => ({ data: { providers }, error: failure }),
+    refused
+  );
+  expect(focus).toHaveBeenCalledOnce();
   expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
 });

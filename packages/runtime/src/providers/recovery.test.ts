@@ -462,6 +462,7 @@ it.each([
 });
 
 // 지원하는 예전 형식: /proc가 없는 시스템의 기록에는 시작 시각·부팅 식별자가 없을 수 있고, 표식이 없는 기록도 읽는다.
+// Windows는 표식으로 프로그램을 찾아 끄지 않고 묶음 실행기가 끄므로, 표식 정리를 보는 이 시험을 건너뛴다.
 it.skipIf(process.platform === "win32")(
   "still recovers the record shapes it has written before",
   async () => {
@@ -492,7 +493,7 @@ it.skipIf(process.platform === "win32")(
   30_000
 );
 
-// 정상 기록: 쓰지 않는 필드(프로세스 상태 등)가 더 있어도 그대로 읽는다.
+// 정상 기록: 쓰지 않는 필드(프로세스 상태 등)가 더 있어도 그대로 읽는다. Windows는 표식 정리를 하지 않아 건너뛴다.
 it.skipIf(process.platform === "win32")(
   "reads a complete record with the fields it does not use",
   async () => {
