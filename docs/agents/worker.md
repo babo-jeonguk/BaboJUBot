@@ -58,10 +58,10 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 ## 6. 검토·인수
 
 - 스크립트 요약(`status`·`session`·`written`·`denied`·`errors`·마지막 보고, Paseo는 마지막 보고)으로 worker의 검사 결과와 미검증 사항을 확인합니다.
-- 커밋 전에 [accept-worker.mjs](../../.agents/scripts/accept-worker.mjs)로 슬라이스의 핵심 시험과 바뀐 파일의 lint를 다시 돌립니다. 이 스크립트는 판단 근거를 모을 뿐이고, 받아들일지는 parent가 정합니다. `--allow`·`--reported`·`--test`는 값마다 반복합니다. 이 스크립트는 HEAD가 base 그대로인지, 바뀐 파일이 brief 범위 안이고 worker가 보고한 목록과 같은지, 시험·검사 설정이 그대로인지 시험 전후로 확인합니다. 보호 파일은 base 커밋의 권한으로 판정하고, 성공하면 한 줄만 출력합니다. Git이 무시하는 파일은 보지 않습니다.
+- 커밋 전에 [check-worker-change.mjs](../../.agents/scripts/check-worker-change.mjs)로 슬라이스의 핵심 시험과 바뀐 파일의 lint를 다시 돌립니다. 이 스크립트는 판단 근거를 모을 뿐이고, 받아들일지는 parent가 정합니다. `--allow`·`--reported`·`--test`는 값마다 반복합니다. 이 스크립트는 HEAD가 base 그대로인지, 바뀐 파일이 brief 범위 안이고 worker가 보고한 목록과 같은지, 시험·검사 설정이 그대로인지 시험 전후로 확인합니다. 보호 파일은 base 커밋의 권한으로 판정하고, 성공하면 한 줄만 출력합니다. Git이 무시하는 파일은 보지 않습니다.
 
   ```bash
-  node .agents/scripts/accept-worker.mjs --base <시험 커밋> --allow '<파일 패턴>' \
+  node .agents/scripts/check-worker-change.mjs --base <시험 커밋> --allow '<파일 패턴>' \
     --reported <worker가 보고한 파일> --test '<핵심 시험 명령>' --test 'pnpm exec eslint <바뀐 파일>'
   ```
 

@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-// Checks a code worker's uncommitted change before the parent accepts it. The files a worker may
+// Checks a code worker's uncommitted change so the parent can decide whether to accept it. The files a worker may
 // not edit come from .opencode/agents/dev-worker.md, so the permission and this check cannot drift.
 // Contract: docs/agents/worker.md.
 //
-// usage: node .agents/scripts/accept-worker.mjs --base <sha> --allow <pattern>...
+// usage: node .agents/scripts/check-worker-change.mjs --base <sha> --allow <pattern>...
 //          --reported <file>... --test <command>...
 //
 // `*` in a pattern matches any characters, `/` included, as in OpenCode permissions.
-// Exit codes: 0 accepted; 1 rejected; 2 usage.
+// Exit codes: 0 no problem found; 1 problem found; 2 usage.
 import { execFileSync, spawnSync } from "node:child_process";
 import { parse } from "yaml";
 
 const USAGE =
-  "usage: accept-worker.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
+  "usage: check-worker-change.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
 const OUTPUT_LINES = 40;
 
 function parseArgs(argv) {
@@ -43,8 +43,8 @@ function usage(message) {
   process.exit(2);
 }
 
-function reject(reasons) {
-  console.error(reasons.map((reason) => `rejected: ${reason}`).join("\n"));
+function fail(reasons) {
+  console.error(reasons.map((reason) => `problem: ${reason}`).join("\n"));
   process.exit(1);
 }
 
@@ -87,7 +87,7 @@ function editRules(root, base) {
     `${base}:.opencode/agents/dev-worker.md`
   );
   const frontmatter = definition.match(/^---\n([\s\S]*?)\n---/)?.[1];
-  if (!frontmatter) reject(["dev-worker.md has no frontmatter"]);
+  if (!frontmatter) fail(["dev-worker.md has no frontmatter"]);
   return parse(frontmatter)
     .permissions.filter((rule) => rule.action === "edit")
     .map((rule) => ({ ...rule, matches: matcher(rule.resource) }));
@@ -111,7 +111,7 @@ function runTest(root, command) {
     .slice(-OUTPUT_LINES)
     .join("\n");
   const ending = result.error?.message ?? `exit ${result.status}`;
-  reject([`test command failed (${ending}): ${command}\n${output}`]);
+  fail([`test command failed (${ending}): ${command}\n${output}`]);
 }
 
 const plural = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -120,7 +120,7 @@ const options = parseArgs(process.argv.slice(2));
 const root = git(process.cwd(), "rev-parse", "--show-toplevel").trim();
 const head = git(root, "rev-parse", "HEAD").trim();
 const base = git(root, "rev-parse", `${options.base}^{commit}`).trim();
-if (head !== base) reject([`HEAD moved from ${base} to ${head}`]);
+if (head !== base) fail([`HEAD moved from ${base} to ${head}`]);
 
 const rules = editRules(root, base);
 const allowed = options.allow.map(matcher);
@@ -128,7 +128,7 @@ const reported = new Set(options.reported);
 
 function checkChange() {
   const files = changedFiles(root, base);
-  if (files.length === 0) reject(["no files changed"]);
+  if (files.length === 0) fail(["no files changed"]);
   const reasons = files.flatMap((file) => {
     const found = [];
     if (isProtected(rules, file)) found.push(`protected file changed: ${file}`);
@@ -140,7 +140,7 @@ function checkChange() {
   for (const file of reported)
     if (!files.includes(file))
       reasons.push(`reported but not changed: ${file}`);
-  if (reasons.length > 0) reject(reasons);
+  if (reasons.length > 0) fail(reasons);
   return files;
 }
 
@@ -148,5 +148,5 @@ checkChange();
 for (const command of options.test) runTest(root, command);
 const files = checkChange();
 console.log(
-  `accepted: ${plural(files.length, "file")}, ${plural(options.test.length, "test command")} passed`
+  `ok: ${plural(files.length, "file")}, ${plural(options.test.length, "test command")} passed`
 );
