@@ -72,9 +72,11 @@ export default defineConfig([
     // 시험의 임시 폴더는 공용 정리 함수로만 지운다. 함수 이름을 바꿔 가져오면 이 검사를 피하므로 그것도 막는다.
     // 시험은 실제로 잰 경과 시간을 단언하지 않는다(CODING_STANDARDS.md#시간). 값이 변수를 거쳐 단언에 닿는지 따라가야 해서 규칙을 따로 둔다.
     // 시험은 정해진 시간만큼 잠들어 기다리지 않는다. 타이머 콜백이 Promise의 resolve만 부르는지 봐야 해서 규칙을 따로 둔다.
+    // 시험의 finally는 정리를 기다리거나 던질 수 있는 동기 정리를 부르지 않는다(CODING_STANDARDS.md#정리). 함수 경계와 안쪽 try…catch를 봐야 해서 규칙을 따로 둔다.
     files: testFiles,
     plugins: { tests: testRules },
     rules: {
+      "tests/no-cleanup-in-finally": "error",
       "tests/no-elapsed-time-assertion": "error",
       "tests/no-fixed-time-wait": "error",
       "no-restricted-syntax": [
