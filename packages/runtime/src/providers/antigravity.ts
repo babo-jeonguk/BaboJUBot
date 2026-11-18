@@ -36,8 +36,7 @@ import {
 } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { fileLogin } from "./file-login.ts";
-const record = (value: unknown): Record<string, unknown> =>
-  value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+import { record } from "./record.ts";
 /** 프로그램이 JSON-RPC 오류로 거절한 요청. */
 class AcpRejection extends Error {}
 /** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */

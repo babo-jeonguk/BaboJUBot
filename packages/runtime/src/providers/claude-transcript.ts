@@ -10,6 +10,7 @@ import {
   type SessionMaintenance,
   type UsageAmount,
 } from "@babojubot/contracts";
+import { record } from "./record.ts";
 
 /** Claude's saved cumulative session cost, as written to the session transcript. A bad saved figure stays an anomaly. */
 export type ClaudeSessionCost = {
@@ -56,11 +57,6 @@ async function sessionTranscripts<T>(
   }
 }
 
-const record = (value: unknown): Record<string, unknown> | undefined =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-
 /** Product-owned transcripts only; bounded tail read, no transcript text leaves this module. */
 export async function claudeSessionFacts(
   home: string,
@@ -80,11 +76,10 @@ export async function claudeSessionFacts(
         continue;
       }
       const row = record(parsed);
-      if (!row || row.isSidechain || row.sessionId !== id) continue;
+      if (row.isSidechain || row.sessionId !== id) continue;
       if (row.subtype === "compact_boundary" || row.isCompactSummary) break;
       if (row.type !== "assistant") continue;
-      const usage = record(record(row.message)?.usage);
-      if (!usage) continue;
+      const usage = record(record(row.message).usage);
       if (typeof row.timestamp !== "string") continue;
       const at = Date.parse(row.timestamp);
       if (!Number.isFinite(at)) continue;
@@ -101,16 +96,13 @@ export async function claudeSessionFacts(
         lastRequestAt: new Date(at).toISOString(),
         ttlMs: 3600000,
       };
-      const ephemeral5m = record(
-        usage.cache_creation
-      )?.ephemeral_5m_input_tokens;
+      const creation = record(usage.cache_creation);
+      const ephemeral5m = creation.ephemeral_5m_input_tokens;
       if (typeof ephemeral5m === "number" && ephemeral5m > 0) {
         facts.ttlMs = 300000;
         return facts;
       }
-      const ephemeral1h = record(
-        usage.cache_creation
-      )?.ephemeral_1h_input_tokens;
+      const ephemeral1h = creation.ephemeral_1h_input_tokens;
       if (typeof ephemeral1h === "number" && ephemeral1h > 0) return facts;
     }
     return facts;
@@ -136,7 +128,7 @@ export async function claudeSessionCost(
         continue;
       }
       const row = record(parsed);
-      if (!row || row.type !== "cost-state" || row.sessionId !== id) continue;
+      if (row.type !== "cost-state" || row.sessionId !== id) continue;
       const total = row.totalCostUSD;
       const modelUsage = row.modelUsage;
       /** All models' counts; a model without the count leaves the session's total unknown, a bad count makes it an anomaly. */
