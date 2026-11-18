@@ -11,7 +11,9 @@
   },
   "scripts": {
     "test": "vitest run && vitest run --config vitest.alone.config.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:src": "tsc -p tsconfig.src.json",
+    "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@babojubot/contracts": "workspace:*",

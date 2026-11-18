@@ -38,9 +38,8 @@ import {
 } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
+import { record } from "./record.ts";
 import { removeAttemptFolder } from "./attempt-folder.ts";
-const object = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const failure = (): RunResult => ({
   stopReason: "failed",
   error: "프로바이더 실행이 실패했습니다.",
@@ -54,7 +53,7 @@ const failure = (): RunResult => ({
  * 요청 거부와 명시적 인증 실패만 구분하며, 그 밖의 종류와 모양이 맞지 않는 값은 일반 실패다.
  */
 function failedExecution(error: unknown): RunResult {
-  const { type, status } = object(error);
+  const { type, status } = record(error);
   const http =
     typeof status === "number" &&
     Number.isInteger(status) &&
@@ -149,7 +148,7 @@ function goKey(dataHome: string): string | undefined {
       )
       .get() as { value?: unknown } | undefined;
     if (typeof row?.value !== "string") return undefined;
-    const value = object(JSON.parse(row.value));
+    const value = record(JSON.parse(row.value));
     return value.type === "key" && typeof value.key === "string" && value.key
       ? value.key
       : undefined;
@@ -377,7 +376,7 @@ export function createOpenCodeProvider(options: {
         },
         ...(container ? { container } : {}),
         onFrame: async (raw) => {
-          const url = object(raw).url;
+          const url = record(raw).url;
           if (typeof url === "string") {
             if (container) {
               // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
@@ -463,7 +462,7 @@ export function createOpenCodeProvider(options: {
         lifetime,
         async json(route: string, method = "GET", body?: unknown) {
           const response = await request(route, method, body);
-          return object(await response.json());
+          return record(await response.json());
         },
       };
     } catch (error) {
@@ -497,7 +496,7 @@ export function createOpenCodeProvider(options: {
   };
   /** 서버 응답의 `data` 목록. */
   const entries = (value: Record<string, unknown>) =>
-    Array.isArray(value.data) ? value.data.map(object) : [];
+    Array.isArray(value.data) ? value.data.map(record) : [];
   const models = entries;
   /**
    * 조직 폴더에 로그인이 하나도 없으면 연결의 로그인을 옮겨 넣는다. `auth import`와 같은 규칙으로 같은 ID는 건너뛰고, 세션은 옮기지 않는다.
@@ -737,7 +736,7 @@ export function createOpenCodeProvider(options: {
         let session: Record<string, unknown> | undefined;
         if (typeof input.previousSession?.id === "string") {
           try {
-            session = object(
+            session = record(
               (
                 await api.json(
                   `/api/session/${encodeURIComponent(input.previousSession.id)}`
@@ -762,7 +761,7 @@ export function createOpenCodeProvider(options: {
         }
         const model = { providerID: selected.providerID, id: selected.id };
         if (!session)
-          session = object(
+          session = record(
             (
               await api.json("/api/session", "POST", {
                 location: { directory: input.workspace?.cwd ?? organization },
@@ -815,11 +814,11 @@ export function createOpenCodeProvider(options: {
               if (!data) continue;
               let event: Record<string, unknown>;
               try {
-                event = object(JSON.parse(data));
+                event = record(JSON.parse(data));
               } catch {
                 continue;
               }
-              const payload = object(event.data);
+              const payload = record(event.data);
               if (payload.sessionID !== id) continue;
               if (event.type === "session.execution.started") {
                 began = true;
@@ -894,7 +893,7 @@ export function createOpenCodeProvider(options: {
           if (!finished) return failure();
           // 실패를 같은 요청으로 다시 보내지 않는다. 요청 거부는 다시 보내도 거부된다.
           if (!success) return failedExecution(failedError);
-          const after = object((await api.json(route)).data);
+          const after = record((await api.json(route)).data);
           return {
             stopReason: "completed",
             error: null,
@@ -955,7 +954,7 @@ function isFree(model: Record<string, unknown>) {
     Array.isArray(model.cost) &&
     model.cost.length > 0 &&
     model.cost.every(
-      (item) => object(item).input === 0 && object(item).output === 0
+      (item) => record(item).input === 0 && record(item).output === 0
     )
   );
 }
@@ -968,10 +967,10 @@ function sessionUsage(
   before: Record<string, unknown>,
   after: Record<string, unknown>
 ): Usage {
-  const b = object(before.tokens),
-    a = object(after.tokens),
-    bc = object(b.cache),
-    ac = object(a.cache);
+  const b = record(before.tokens),
+    a = record(after.tokens),
+    bc = record(b.cache),
+    ac = record(a.cache);
   const delta = (unit: UsageUnit, a: unknown, b: unknown) =>
     subtractUsage(unit, usageAmount(unit, a), usageAmount(unit, b) ?? 0);
   return providerUsage(provider, {

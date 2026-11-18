@@ -17,7 +17,10 @@ import { testFolders } from "./test-folders.ts";
 const testStart = () => String(processStartTicks(process.pid) ?? 1);
 
 // 표식 조회 실패를 주입한다.
-const lease = vi.hoisted(() => ({ fails: false }));
+const lease = vi.hoisted(() => ({
+  fails: false,
+  stopped: [] as unknown[],
+}));
 vi.mock("./lease.ts", async (original) => {
   const real = await original<typeof import("./lease.ts")>();
   return {
@@ -26,6 +29,7 @@ vi.mock("./lease.ts", async (original) => {
       value: string,
       options?: Parameters<typeof real.stopLeaseHolders>[1]
     ) => {
+      lease.stopped.push(value);
       if (lease.fails) throw new Error("ps failed");
       return real.stopLeaseHolders(value, options);
     },
@@ -38,6 +42,7 @@ const folders = testFolders();
 const groups: number[] = [];
 afterEach(async () => {
   lease.fails = false;
+  lease.stopped = [];
   for (const group of groups)
     try {
       process.kill(-group, "SIGKILL");
@@ -385,14 +390,21 @@ const marked = async (
   await readyLine(child);
   return { child, closed };
 };
+/** 지금 부팅의 식별자. Linux만 기록에 남긴다. */
+const currentBoot = async () =>
+  process.platform === "linux"
+    ? (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()
+    : undefined;
 async function recordFor(directory: string, pid: number, value: string) {
-  const boot =
-    process.platform === "linux"
-      ? (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()
-      : undefined;
   await writeFile(
     path.join(directory, `${pid}.json`),
-    JSON.stringify({ pid, start: testStart(), group: pid, boot, lease: value })
+    JSON.stringify({
+      pid,
+      start: testStart(),
+      group: pid,
+      boot: await currentBoot(),
+      lease: value,
+    })
   );
 }
 
@@ -448,4 +460,124 @@ it.skipIf(process.platform === "win32")(
     );
     warn.mockRestore();
   }
+);
+
+// 형식이 깨진 기록은 어떤 프로세스도 가리키지 않는다. 그 값으로 프로그램을 찾아 끄지 않고 기록만 지운다.
+it.each([
+  ["a run marker that is not text", { lease: 5 }],
+  ["a leader start that is not text", { start: 5 }],
+  ["a boot id that is not text", { boot: 5 }],
+  ["a start time that is not a number", { started: "1" }],
+])("does not trust a record with %s", async (_shape, broken) => {
+  const { root, directory } = await records();
+  const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+  await writeFile(
+    path.join(directory, `${finished}.json`),
+    JSON.stringify({
+      pid: finished,
+      start: testStart(),
+      group: finished,
+      boot: await currentBoot(),
+      lease: crypto.randomUUID(),
+      ...broken,
+    })
+  );
+  await recoverProviderProcesses(root);
+  expect(lease.stopped).toEqual([]);
+  expect(await readdir(directory)).toEqual([]);
+});
+
+it.each([
+  ["null", null],
+  ["a list", [1]],
+  ["text", "record"],
+])("removes a record that is %s", async (_shape, content) => {
+  const { root, directory } = await records();
+  const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+  await writeFile(
+    path.join(directory, `${finished}.json`),
+    JSON.stringify(content)
+  );
+  await recoverProviderProcesses(root);
+  expect(lease.stopped).toEqual([]);
+  expect(await readdir(directory)).toEqual([]);
+});
+
+// 지원하는 예전 형식: /proc가 없는 시스템의 기록에는 시작 시각·부팅 식별자가 없을 수 있고, 표식이 없는 기록도 읽는다.
+// Windows는 표식으로 프로그램을 찾아 끄지 않고 묶음 실행기가 끄므로, 표식 정리를 보는 이 시험을 건너뛴다.
+it.skipIf(process.platform === "win32")(
+  "still recovers the record shapes it has written before",
+  async () => {
+    for (const fields of [{}, { started: 1 }]) {
+      const { root, directory } = await records();
+      const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+      const value = crypto.randomUUID();
+      await writeFile(
+        path.join(directory, `${finished}.json`),
+        JSON.stringify({ pid: finished, lease: value, ...fields })
+      );
+      lease.stopped = [];
+      await recoverProviderProcesses(root, { platform: withoutProc });
+      expect(lease.stopped).toEqual([value]);
+      expect(await readdir(directory)).toEqual([]);
+    }
+    const { root, directory } = await records();
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    await writeFile(
+      path.join(directory, `${finished}.json`),
+      JSON.stringify({ pid: finished })
+    );
+    lease.stopped = [];
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    expect(lease.stopped).toEqual([]);
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
+);
+
+// 정상 기록: 쓰지 않는 필드(프로세스 상태 등)가 더 있어도 그대로 읽는다. Windows는 표식 정리를 하지 않아 건너뛴다.
+it.skipIf(process.platform === "win32")(
+  "reads a complete record with the fields it does not use",
+  async () => {
+    const { root, directory } = await records();
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    const value = crypto.randomUUID();
+    await writeFile(
+      path.join(directory, `${finished}.json`),
+      JSON.stringify({
+        pid: finished,
+        start: testStart(),
+        group: finished,
+        state: "S",
+        boot: await currentBoot(),
+        lease: value,
+      })
+    );
+    await recoverProviderProcesses(root);
+    expect(lease.stopped).toEqual([value]);
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
+);
+
+// 시작 시각이 없는 Linux 기록은 대표를 확인할 수 없다. 대표도 그룹도 없으면 남은 것이 없으므로 표식만 정리하고 기록을 지운다.
+it.skipIf(process.platform !== "linux")(
+  "finishes a Linux record without a leader start once nothing is left",
+  async () => {
+    const { root, directory } = await records();
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    const value = crypto.randomUUID();
+    await writeFile(
+      path.join(directory, `${finished}.json`),
+      JSON.stringify({
+        pid: finished,
+        boot: await currentBoot(),
+        lease: value,
+      })
+    );
+    await recoverProviderProcesses(root);
+    expect(lease.stopped).toEqual([value]);
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
 );

@@ -6,6 +6,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 import productRules from "./scripts/eslint-product-rules.mjs";
 import testRules from "./scripts/eslint-test-rules.mjs";
+import { testFiles } from "./scripts/test-files.mjs";
 
 // 도메인 규칙과 seam 계약은 프레임워크·DB·화면에 의존하지 않는다(docs/architecture.md 패키지 구성).
 const framework = [
@@ -19,19 +20,6 @@ const framework = [
   "react-dom",
   "@tanstack/*",
   "@radix-ui/*",
-];
-
-// 시험 코드: 시험 파일과 시험 폴더, src 안의 시험 도움 파일. 시험 전용 규칙은 이 범위에 건다.
-// 외부 프로그램을 흉내 내는 가짜 CLI(`*/test-fixtures/`)와 손으로 돌리는 스크립트(`scripts/live/` 등)는 시험 코드가 아니다.
-const testFiles = [
-  "**/*.test.{ts,tsx,mts,mjs,js}",
-  "**/*.spec.{ts,tsx}",
-  "apps/web/e2e/**",
-  "apps/web/test/**",
-  "apps/server/test/**",
-  "packages/runtime/src/testing.ts",
-  "packages/runtime/src/providers/{test-support,test-folders,*-support}.ts",
-  "packages/db/src/{testing,test-cluster}.ts",
 ];
 
 // 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다.
@@ -184,10 +172,19 @@ export default defineConfig([
     // 바깥 데이터(JSON.parse, 외부 프로그램 출력)는 unknown으로 받아 모양을 확인하거나 스키마로 읽은 뒤 쓴다.
     // 객체 리터럴은 `as`로 타입을 우기지 않고 선언하거나 `satisfies`로 맞춘다. 느슨한 비교는 `== null`만 쓴다.
     // 이 규칙들은 `as`를 붙인 값은 보지 않는다. `as`는 라이브러리 선언이 any로 비운 값이나 저장 때 보장한 짝처럼
-    // 실제 타입을 아는 자리에만 쓰고, 바깥 데이터를 확인 없이 단언하지 않는 것은 리뷰가 본다.
+    // 실제 타입을 아는 자리에만 쓴다. JSON.parse·응답 본문에 바로 붙인 단정은 product 규칙이 막고,
+    // 타입 없는 중간 변수를 거친 단정은 잡지 못하므로 리뷰가 본다.
+    // 시작한 Promise의 실패는 기다리거나 받고, 결과를 기다리지 않을 때는 `void`로 드러낸다. 폐기 예정 기능은 쓰지 않는다.
+    // 외부 프로그램을 동기로 띄우면 끝날 때까지 서버 전체가 멈추므로, 동기 실행은 옵션 객체에 timeout을 둘 때만 쓴다.
     files: productFiles,
     ignores: testFiles,
+    plugins: { product: productRules },
     rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/no-deprecated": "error",
+      "product/no-assertion-on-parsed-data": "error",
+      "product/sync-command-timeout": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",
@@ -199,14 +196,6 @@ export default defineConfig([
       ],
       eqeqeq: ["error", "always", { null: "ignore" }],
     },
-  },
-  {
-    // 외부 프로그램을 동기로 띄우면 끝날 때까지 서버 전체가 멈춘다. 동기 실행은 옵션 객체에 timeout을 둘 때만 쓴다.
-    // 호출의 옵션 객체를 봐야 해서 규칙을 따로 둔다.
-    files: productFiles,
-    ignores: testFiles,
-    plugins: { product: productRules },
-    rules: { "product/sync-command-timeout": "error" },
   },
   {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.

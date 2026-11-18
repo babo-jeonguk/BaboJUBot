@@ -125,9 +125,10 @@ export function LeadChat({
           <Dialog.Content
             aria-describedby={undefined}
             className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col bg-white p-4 shadow-pop data-[state=closed]:animate-slide-out-left data-[state=open]:animate-slide-in-left"
-            onClick={(e) =>
-              (e.target as HTMLElement).closest("a") && setSheet(false)
-            }
+            onClick={(e) => {
+              if (e.target instanceof Element && e.target.closest("a"))
+                setSheet(false);
+            }}
           >
             <Dialog.Title className="sr-only">대화 목록</Dialog.Title>
             {list}

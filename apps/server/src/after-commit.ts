@@ -49,15 +49,15 @@ export async function applyAfterCommit(
         );
       }
   if (events.length)
-    bestEffort(`publishing events ${events.map((e) => e.id)}`, () =>
+    void bestEffort(`publishing events ${events.map((e) => e.id)}`, () =>
       hub.publish(...events)
     );
   if (settingsChanged)
-    bestEffort("signalling a settings change", () =>
+    void bestEffort("signalling a settings change", () =>
       hub.publishSettingsChanged()
     );
   if (cancellation)
-    bestEffort(`cancelling runs ${cancellation.runIds}`, () =>
+    void bestEffort(`cancelling runs ${cancellation.runIds}`, () =>
       dispatcher.cancel(cancellation)
     );
   if (resumedOrganizationId)
@@ -66,7 +66,7 @@ export async function applyAfterCommit(
       () => dispatcher.kickOrganization(resumedOrganizationId)
     );
   for (const agentId of woken ?? [])
-    bestEffort(`kicking agent ${agentId}`, () => dispatcher.kick(agentId));
+    void bestEffort(`kicking agent ${agentId}`, () => dispatcher.kick(agentId));
   for (const provider of providersFreed ?? [])
     await bestEffort(`kicking agents waiting for provider ${provider}`, () =>
       dispatcher.kickProvider(provider)

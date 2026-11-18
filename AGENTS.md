@@ -22,7 +22,7 @@
 - PR 병합 → [병합 절차](docs/agents/pr-merge.md)
 - PR·이슈 본문 → [PR 양식](.github/PULL_REQUEST_TEMPLATE.md)·[이슈 양식](.github/ISSUE_TEMPLATE/)
 - 검증·검사 결과 재사용 → [검증 기준](docs/agents/verification.md)
-- 시험·CI 작성·수정 → [코드 작성 기준](CODING_STANDARDS.md)
+- 제품 코드·시험·CI 작성·수정 → [코드 작성 기준](CODING_STANDARDS.md)
 - 코드 worker 위임 → [코드 worker](docs/agents/worker.md); Paseo 배치 → [개발 오케스트레이션](docs/agents/dev-orchestration.md)
 - 지금 구현된 동작·규칙·응답 코드 → [현재 구현 현황](docs/current-implementation.md)
 - 코드 탐색·버그 추적 → [코드 지도](docs/agents/code-map.md)

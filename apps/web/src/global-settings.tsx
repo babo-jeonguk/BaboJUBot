@@ -13,7 +13,11 @@ import {
   useUpdateProviderLimit,
   useUpdateIsolation,
 } from "./api.ts";
-import { focusFirstChoiceProblem, isChoiceRefusal } from "./choice-problems.ts";
+import {
+  focusFirstChoiceProblem,
+  isChoiceRefusal,
+  refreshChoiceProblem,
+} from "./choice-problems.ts";
 import {
   ProviderChoiceFields,
   ReadinessBadge,
@@ -126,12 +130,11 @@ function Defaults({ settings }: { settings: ProviderSettings }) {
         }
         update.mutate(value, {
           onSuccess: () => setDraft(null),
-          onError: async (error) => {
+          onError: (error) => {
             if (!(error instanceof ApiError && isChoiceRefusal(error.code)))
               return;
             setShowProblem(true);
-            const fresh = (await list.refetch()).data;
-            if (fresh) focusFirstChoiceProblem(fresh.providers, fields(value));
+            void refreshChoiceProblem(list.refetch, fields(value));
           },
         });
       }}

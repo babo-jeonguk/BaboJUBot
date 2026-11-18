@@ -749,7 +749,7 @@ export async function startServer({
 
   /**
    * 조직 안의 대화. 경로에 대화가 없으면 기본 대화다. 다른 조직의 대화는 없는 대화와 같은 404다.
-   * 끝난 조직의 대화도 읽을 수 있고, 보내기는 기존 규칙(끝난 조직의 `중단하고 보내기`만 409)을 따른다.
+   * 끝난 조직의 대화도 읽을 수 있다. 새 메시지를 받을지는 계약의 `newMessageRefusal`이 정한다.
    */
   const findChat = async (organizationId: string, conversationId?: string) => {
     const org = await findOrganization(db, organizationId);

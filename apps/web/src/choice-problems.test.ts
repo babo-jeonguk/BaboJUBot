@@ -1,6 +1,10 @@
 import type { ProviderSummary } from "@babojubot/contracts";
-import { expect, test } from "vitest";
-import { choiceProblem, firstChoiceProblem } from "./choice-problems.ts";
+import { afterEach, expect, test, vi } from "vitest";
+import {
+  choiceProblem,
+  firstChoiceProblem,
+  refreshChoiceProblem,
+} from "./choice-problems.ts";
 
 const connection = (id: string, models: string[]) =>
   ({
@@ -50,4 +54,53 @@ test("the first problem in field order names its field, or none when every choic
       { idPrefix: "lead", choice: { provider: "fake", model: null } },
     ])
   ).toBe(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+const refused = [
+  { idPrefix: "lead", choice: { provider: "gone", model: null } },
+];
+
+test("after a refusal the fresh list moves focus to the field with the problem", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const focus = vi.fn();
+  const getElementById = vi.fn(() => ({ focus }));
+  vi.stubGlobal("document", { getElementById });
+  await refreshChoiceProblem(
+    async () => ({ data: { providers }, error: null }),
+    refused
+  );
+  expect(getElementById).toHaveBeenCalledWith("lead-provider");
+  expect(focus).toHaveBeenCalledOnce();
+  expect(warn).not.toHaveBeenCalled();
+});
+
+// 조회 실패는 거부가 아니라 결과의 `error`로 온다.
+test("a list that could not be fetched is reported and leaves focus alone", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const getElementById = vi.fn();
+  vi.stubGlobal("document", { getElementById });
+  const failure = new Error("offline");
+  await refreshChoiceProblem(
+    async () => ({ data: undefined, error: failure }),
+    refused
+  );
+  expect(getElementById).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
+});
+
+test("a failed refresh is reported and the list already held is still used", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const focus = vi.fn();
+  vi.stubGlobal("document", { getElementById: () => ({ focus }) });
+  const failure = new Error("offline");
+  await refreshChoiceProblem(
+    async () => ({ data: { providers }, error: failure }),
+    refused
+  );
+  expect(focus).toHaveBeenCalledOnce();
+  expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
 });

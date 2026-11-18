@@ -2,6 +2,7 @@ import {
   closedStages,
   dashboardDays,
   dashboardRecentEventLimit,
+  runEndReasonSchema,
   runStatuses,
   taskStatuses,
   type DashboardDay,
@@ -48,9 +49,7 @@ function knownTimeZones(db: Database) {
 
 const zeros = <K extends string>(keys: readonly K[]) =>
   Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;
-const endReasons = runStatuses.filter(
-  (s): s is RunEndReason => s !== "running"
-);
+const endReasons = runEndReasonSchema.options;
 
 export type DashboardResult =
   | { kind: "not_found" }
