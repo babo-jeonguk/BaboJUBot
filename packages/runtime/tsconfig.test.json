@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*.test.ts",
+    "src/testing.ts",
+    "src/test-cleanup.ts",
+    "src/providers/test-support.ts",
+    "src/providers/test-folders.ts",
+    "src/providers/*-support.ts",
+    "vitest.config.ts"
+  ]
+}

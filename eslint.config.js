@@ -5,6 +5,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 import testRules from "./scripts/eslint-test-rules.mjs";
+import { testFiles } from "./scripts/test-files.mjs";
 
 // 도메인 규칙과 seam 계약은 프레임워크·DB·화면에 의존하지 않는다(docs/architecture.md 패키지 구성).
 const framework = [
@@ -18,19 +19,6 @@ const framework = [
   "react-dom",
   "@tanstack/*",
   "@radix-ui/*",
-];
-
-// 시험 코드: 시험 파일과 시험 폴더, src 안의 시험 도움 파일. 시험 전용 규칙은 이 범위에 건다.
-// 외부 프로그램을 흉내 내는 가짜 CLI(`*/test-fixtures/`)와 손으로 돌리는 스크립트(`scripts/live/` 등)는 시험 코드가 아니다.
-const testFiles = [
-  "**/*.test.{ts,tsx,mts,mjs,js}",
-  "**/*.spec.{ts,tsx}",
-  "apps/web/e2e/**",
-  "apps/web/test/**",
-  "apps/server/test/**",
-  "packages/runtime/src/{testing,test-cleanup}.ts",
-  "packages/runtime/src/providers/{test-support,test-folders,*-support}.ts",
-  "packages/db/src/{testing,test-cluster}.ts",
 ];
 
 // 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다.
