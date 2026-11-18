@@ -31,6 +31,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 사용자 제어 명령: 조직 일시정지·재개·중단, 에이전트 일시정지·재개·실행 중단, Lead 대화의 `중단하고 보내기`(#59).
 
@@ -455,16 +456,17 @@ describe("organization stop", () => {
     expect((await organization(org.id)).stage).toBe("stopped");
 
     await t.stopServer();
-    const restarted = await startServer({
-      db: t.db,
-      port: 0,
-      runtime: agents.runtime,
-    });
-    try {
+    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
+    await withCleanup(async (defer) => {
+      const restarted = await startServer({
+        db: t!.db,
+        port: 0,
+        runtime: agents.runtime,
+      });
+      defer(() => restarted.close());
+
       await restarted.drain();
-    } finally {
-      await restarted.close();
-    }
+    });
     const { listRuns } = await import("@babojubot/db");
     // 생성 깨우기를 받은 실행 시도와 중단으로 취소된 실행 시도뿐이다.
     expect(await listRuns(t.db, org.id)).toHaveLength(2);

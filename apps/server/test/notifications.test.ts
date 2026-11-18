@@ -16,7 +16,7 @@ import {
 } from "@babojubot/contracts";
 import { leadReplyScript } from "@babojubot/runtime";
 import { createTestDatabase } from "@babojubot/db/testing";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { startServer } from "../src/index.ts";
 import {
   chatMessages,
@@ -27,6 +27,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -282,12 +283,15 @@ describe("notification outbox and fake channel", () => {
     await t.deliverNotifications();
     await t.stopServer();
 
-    const restarted = await startServer({
-      db: t.db,
-      port: 0,
-      now: () => new Date(Date.now() + 60_000),
-    });
-    try {
+    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
+    await withCleanup(async (defer) => {
+      const restarted = await startServer({
+        db: t!.db,
+        port: 0,
+        now: () => new Date(Date.now() + 60_000),
+      });
+      defer(() => restarted.close());
+
       await restarted.deliverNotifications();
       const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
       const records = fakeChannelMessagesSchema
@@ -296,9 +300,7 @@ describe("notification outbox and fake channel", () => {
       expect(records.map((m) => [m.kind, m.sourceId])).toEqual([
         ["approval_request", org.approvalId],
       ]);
-    } finally {
-      await restarted.close();
-    }
+    });
   });
 
   it("an approval decision through the fake channel has the same effect as the dashboard's", async () => {
@@ -822,23 +824,20 @@ describe("channel replies", () => {
 
   it("refuses to start with more than one channel", async () => {
     const database = await createTestDatabase();
-    try {
-      const quiet = (name: string): NotificationChannel => ({
-        name,
-        deliver: async () => {},
-        listen: () => {},
-        close: async () => {},
-      });
-      await expect(
-        startServer({
-          db: database.db,
-          port: 0,
-          notificationChannels: [quiet("a"), quiet("b")],
-        })
-      ).rejects.toThrow("exactly one notification channel");
-    } finally {
-      await database.close();
-    }
+    onTestFinished(() => database.close());
+    const quiet = (name: string): NotificationChannel => ({
+      name,
+      deliver: async () => {},
+      listen: () => {},
+      close: async () => {},
+    });
+    await expect(
+      startServer({
+        db: database.db,
+        port: 0,
+        notificationChannels: [quiet("a"), quiet("b")],
+      })
+    ).rejects.toThrow("exactly one notification channel");
   });
 
   it("stops everything it started and closes the channel when the channel fails to start", async () => {
@@ -909,35 +908,32 @@ describe("channel replies", () => {
       });
     const closing = (probe: net.Server) =>
       new Promise<void>((resolve) => probe.close(() => resolve()));
+    onTestFinished(() => database.close());
+    const probe = await listening(0);
+    const { port } = probe.address() as net.AddressInfo;
+    await closing(probe);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const probe = await listening(0);
-      const { port } = probe.address() as net.AddressInfo;
-      await closing(probe);
-      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-      try {
-        await expect(
-          startServer({
-            db: database.db,
-            port,
-            notificationChannels: [
-              {
-                name: "broken",
-                deliver: async () => {},
-                listen: () => {
-                  throw new Error("토큰 거부");
-                },
-                close: () => Promise.reject(new Error("끊기 실패")),
+      await expect(
+        startServer({
+          db: database.db,
+          port,
+          notificationChannels: [
+            {
+              name: "broken",
+              deliver: async () => {},
+              listen: () => {
+                throw new Error("토큰 거부");
               },
-            ],
-          })
-        ).rejects.toThrow("토큰 거부");
-      } finally {
-        logged.mockRestore();
-      }
-      await closing(await listening(port));
+              close: () => Promise.reject(new Error("끊기 실패")),
+            },
+          ],
+        })
+      ).rejects.toThrow("토큰 거부");
     } finally {
-      await database.close();
+      logged.mockRestore();
     }
+    await closing(await listening(port));
   });
 });
 
