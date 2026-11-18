@@ -37,6 +37,7 @@ import {
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const ids = scenes.map((s) => s.id);
 const launchAll = { scenes: ids, maxLiveRuns: 24 };
@@ -770,59 +771,59 @@ describe("chaos harness on a fake connection", () => {
     await once(leader, "exit");
     const group = leader.pid;
     let home;
-    try {
-      const planted = {
-        id: "a",
-        title: "남은 프로세스",
-        minLiveRuns: 0,
-        database: "ephemeral",
-        async run(ctx) {
-          home = ctx.home;
-          const dir = path.join(home, "providers/opencode/processes");
-          await mkdir(dir, { recursive: true });
-          await writeFile(
-            path.join(dir, `${group}.json`),
-            JSON.stringify({
-              pid: group,
-              start: "0",
-              group,
-              boot: readFileSync(
-                "/proc/sys/kernel/random/boot_id",
-                "utf8"
-              ).trim(),
-            })
-          );
-          return { checks: [check("ran", true)], observations: {} };
-        },
-      };
-      const { summary } = await runChaos({
-        launch: { ...launchAll, scenes: ["a"] },
-        connection: "fake-live",
-        scenes: [planted],
-      });
-      const [scene] = summary.scenes;
-      expect(scene.outcome).toBe("failed");
-      expect(scene.cleanup).toMatchObject({
-        homeKept: true,
-        homeRemoved: false,
-        providerRecordsLeft: 1,
-      });
-      // 사람이 정리할 수 있게 기록을 지우지 않는다.
-      expect(
-        existsSync(
-          path.join(home, "providers/opencode/processes", `${group}.json`)
-        )
-      ).toBe(true);
-    } finally {
+    // 남은 그룹을 끄고 홈을 지운다. 그룹이 이미 끝났으면 넘어간다.
+    // 남은 sleep은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 끝나기를 기다리지 않고 지운다.
+    // (부모 sh가 먼저 끝나 sleep은 다른 프로세스가 거둔다. 거두지 않는 환경에서는 종료 확인이 시한까지 기다리게 된다.)
+    onTestFinished(async () => {
       try {
         process.kill(-group, "SIGKILL");
-      } catch {
-        /* 이미 끝났다. */
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
       }
-      // 남은 sleep은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 끝나기를 기다리지 않고 지운다.
-      // (부모 sh가 먼저 끝나 sleep은 다른 프로세스가 거둔다. 거두지 않는 환경에서는 종료 확인이 시한까지 기다리게 된다.)
       if (home) await removeFolder(home);
-    }
+    });
+    const planted = {
+      id: "a",
+      title: "남은 프로세스",
+      minLiveRuns: 0,
+      database: "ephemeral",
+      async run(ctx) {
+        home = ctx.home;
+        const dir = path.join(home, "providers/opencode/processes");
+        await mkdir(dir, { recursive: true });
+        await writeFile(
+          path.join(dir, `${group}.json`),
+          JSON.stringify({
+            pid: group,
+            start: "0",
+            group,
+            boot: readFileSync(
+              "/proc/sys/kernel/random/boot_id",
+              "utf8"
+            ).trim(),
+          })
+        );
+        return { checks: [check("ran", true)], observations: {} };
+      },
+    };
+    const { summary } = await runChaos({
+      launch: { ...launchAll, scenes: ["a"] },
+      connection: "fake-live",
+      scenes: [planted],
+    });
+    const [scene] = summary.scenes;
+    expect(scene.outcome).toBe("failed");
+    expect(scene.cleanup).toMatchObject({
+      homeKept: true,
+      homeRemoved: false,
+      providerRecordsLeft: 1,
+    });
+    // 사람이 정리할 수 있게 기록을 지우지 않는다.
+    expect(
+      existsSync(
+        path.join(home, "providers/opencode/processes", `${group}.json`)
+      )
+    ).toBe(true);
   }, 120_000);
 
   it("stops waiting for a server start when the scene is aborted", async () => {
@@ -834,18 +835,18 @@ describe("chaos harness on a fake connection", () => {
       connection: "fake-live",
       database: "persistent",
     });
-    try {
+    // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 서버를 끈 뒤에 그 폴더를 지운다.
+    await withCleanup(async (defer) => {
+      const folder = folderCleanup(() => removeFolder(harnessDir));
+      defer(folder.cleanUp);
+      folder.own(() => server.dispose());
       // 멈춘 이유는 시작 실패가 아니라 중단 신호(그 신호의 이유 TimeoutError)다. 시작 대기(180s)까지 갔다면 시작 실패
       // ("not ready in time")로 끝나므로 이유가 다르다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
       await expect(
         server.start(AbortSignal.timeout(200))
       ).rejects.toMatchObject({ name: "TimeoutError" });
       expect(server.running).toBe(false);
-    } finally {
-      // 실패해도 띄운 서버·DB·홈을 남기지 않는다.
-      await server.dispose();
-      await removeFolder(harnessDir);
-    }
+    });
     expect(postgresAlive(home)).toBe(false);
   }, 60_000);
 });

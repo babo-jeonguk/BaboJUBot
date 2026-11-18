@@ -19,6 +19,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, quietCreation } from "./scenarios.ts";
 import { startTestServer, within, type TestServer } from "./support.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 /**
  * 저장 경계에 건 실패. 실행 시도 admission(`claimNextRun`)과 종료 저장(`finishRun`) 중 대상(에이전트·실행 시도)이 맞는 호출만,
@@ -82,11 +83,10 @@ const store = vi.hoisted(() => {
       },
     });
     await fault.around?.();
-    try {
-      return await save(faulty as never);
-    } finally {
-      await fault.around?.();
-    }
+    return withCleanup(async (defer) => {
+      defer(() => fault.around?.());
+      return save(faulty as never);
+    });
   }
   return { faults, guard };
 });

@@ -16,6 +16,7 @@ import {
   scriptedAgents,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -188,19 +189,19 @@ describe("heartbeat", () => {
     await t.stopServer();
 
     time.advance(minutes(55));
-    const restarted = await startServer({
-      db: t.db,
-      port: 0,
-      runtime: agents.runtime,
-      now: time.now,
-    });
-    try {
+    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
+    await withCleanup(async (defer) => {
+      const restarted = await startServer({
+        db: t!.db,
+        port: 0,
+        runtime: agents.runtime,
+        now: time.now,
+      });
+      defer(() => restarted.close());
       await restarted.tickHeartbeats();
       await restarted.tickHeartbeats();
       await restarted.drain();
-    } finally {
-      await restarted.close();
-    }
+    });
     expect(reasons(agents.of(org.lead.id)).map((r) => r.kind)).toEqual([
       "heartbeat",
     ]);

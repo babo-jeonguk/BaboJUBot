@@ -14,6 +14,7 @@ import {
   sentMessage,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const runs = { timeout: 20_000 };
 const widths = [
@@ -115,7 +116,9 @@ for (const size of widths) {
         await held;
         await route.continue();
       });
-      try {
+      await withCleanup(async (defer) => {
+        defer(() => page.unrouteAll({ behavior: "wait" }));
+        defer(() => release());
         if (mobile) {
           await page.getByRole("button", { name: "탐색 열기" }).click();
           await page
@@ -130,10 +133,7 @@ for (const size of widths) {
         }
         await expect(page).toHaveURL(new RegExp(`/orgs/${second.id}$`));
         await expect(page).toHaveTitle("대시보드 · BaboJUBot");
-      } finally {
-        release();
-        await page.unrouteAll({ behavior: "wait" });
-      }
+      });
       await expect(h1).toHaveText(second.name);
       await expect(h1).toBeFocused();
       await expect(page).toHaveTitle(`대시보드 · ${second.name} · BaboJUBot`);
@@ -323,7 +323,9 @@ for (const size of widths) {
         await held;
         await route.abort();
       });
-      try {
+      await withCleanup(async (defer) => {
+        defer(() => page.unrouteAll({ behavior: "wait" }));
+        defer(() => release());
         await trigger.click();
         await confirm
           .getByRole("button", { name: "중단", exact: true })
@@ -333,10 +335,7 @@ for (const size of widths) {
         ).toBeDisabled();
         await page.keyboard.press("Escape");
         await expect(confirm).toBeVisible();
-      } finally {
-        release();
-        await page.unrouteAll({ behavior: "wait" });
-      }
+      });
       await expect(confirm).toBeHidden();
       await expect(page.getByTestId("org-stage")).not.toHaveText("중단됨");
     });
@@ -558,7 +557,9 @@ test("cancelling the final completion confirmation returns focus to its button w
     await route.continue();
   };
   await page.route(/\/decision$/, hold);
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => page.unroute(/\/decision$/, hold));
+    defer(() => release());
     await trigger.click();
     await confirm.getByRole("button", { name: "최종 완료" }).click();
     await sent;
@@ -569,9 +570,6 @@ test("cancelling the final completion confirmation returns focus to its button w
     await expect(decision).toContainText("연구를 최종 완료했습니다");
     await expect(decision).toBeFocused();
     await expect(page).toHaveURL(paths[1]!);
-  } finally {
-    release();
-    await page.unroute(/\/decision$/, hold);
-  }
+  });
   expect(decisions).toHaveLength(1);
 });

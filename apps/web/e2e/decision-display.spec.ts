@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { createSettledOrganization } from "./support/organization.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 승인 요청·결과 제출의 결정 영역(#144): 이 화면의 성공만 결정 기록으로 포커스를 옮기고, 다른 화면의 결정(Event)과
 // 이미 결정됐다는 거절(409), 다른 항목으로 옮긴 뒤의 늦은 응답은 지금 포커스를 그대로 둔다.
@@ -134,7 +135,8 @@ test("an approval decided here focuses its record even when the Event lands befo
   const decision = page.getByRole("region", { name: "결정" });
   await expect(decision).toContainText(pausedNotice);
   const held = await holdDecisionReply(page);
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => held.dispose());
     await decision.getByRole("button", { name: "승인" }).click();
     await held.sent;
     await expect(decision).toContainText("승인됨");
@@ -148,9 +150,7 @@ test("an approval decided here focuses its record even when the Event lands befo
     await expect(page).toHaveURL(path);
     await expect(kept).toBeFocused();
     await expect(otherDecision).not.toBeFocused();
-  } finally {
-    await held.dispose();
-  }
+  });
   // 일시정지 중의 초기 연구 승인 결정은 조직을 재개한다.
   expect(await stage(page, org)).toBe("researching");
 });
@@ -209,7 +209,8 @@ test("a stopped organization refuses initial approval decisions but still takes 
 
   // 승인을 보내고 응답이 오기 전에 Inbox에서 다음 요청으로 옮겨 사유를 쓴다. 늦게 온 응답은 그 요청의 포커스·초안을 건드리지 않는다.
   const held = await holdDecisionReply(page);
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => held.dispose());
     await decision.getByRole("button", { name: "승인" }).click();
     await held.sent;
     await page.getByRole("button", { name: "Inbox 열기" }).click();
@@ -227,9 +228,7 @@ test("a stopped organization refuses initial approval decisions but still takes 
     await expect(note).toBeFocused();
     await expect(note).toHaveValue("다음 요청의 사유");
     await expect(decision.getByRole("button", { name: "반려" })).toBeEnabled();
-  } finally {
-    await held.dispose();
-  }
+  });
   // 일시정지 중의 작업자 추가 승인은 작업자를 더하지만 조직은 일시정지 그대로다.
   expect(
     (await get<{ status: string }>(page, org.api(`/approvals/${first!.id}`)))
@@ -278,7 +277,8 @@ test("result decisions say what they do to a paused organization, focus the reco
   await expect(decision).toContainText(pausedNotice);
   await decision.getByLabel(/의견/).fill("한계도 적어 주세요");
   const held = await holdDecisionReply(page);
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => held.dispose());
     await decision.getByRole("button", { name: "수정 요청" }).click();
     await held.sent;
     await expect(decision).toContainText("수정 요청됨");
@@ -289,9 +289,7 @@ test("result decisions say what they do to a paused organization, focus the reco
     await expect(decision).toBeFocused();
     await expect(page).toHaveURL(path);
     await expect(kept).toBeFocused();
-  } finally {
-    await held.dispose();
-  }
+  });
   // 일시정지 중의 수정 요청은 조직을 재개한다(Lead가 다시 제출하면 결과 검토로 넘어간다).
   await expect.poll(() => stage(page, org)).not.toBe("paused");
 
@@ -330,7 +328,8 @@ test("result decisions say what they do to a paused organization, focus the reco
   // 오래된 화면의 수정 요청은 409로 거절되고, 먼저 온 최종 완료를 결정 기록으로 보인다. 응답을 기다리는 사이 머리의
   // 링크로 옮긴 포커스는 409 뒤에도 그 링크에 남는다.
   const staleHeld = await holdDecisionReply(stale);
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => staleHeld.dispose());
     await staleDecision.getByLabel(/의견/).fill("늦게 보낸 수정 요청");
     await staleDecision.getByRole("button", { name: "수정 요청" }).click();
     await staleHeld.sent;
@@ -345,9 +344,7 @@ test("result decisions say what they do to a paused organization, focus the reco
     await expect(staleDecision.getByRole("button")).toHaveCount(0);
     await expect(staleDecision).not.toContainText("늦게 보낸 수정 요청");
     await expect(staleKept).toBeFocused();
-  } finally {
-    await staleHeld.dispose();
-  }
+  });
   expect(await stage(page, org)).toBe("completed");
 });
 

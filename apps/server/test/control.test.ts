@@ -31,6 +31,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 사용자 제어 명령: 조직 일시정지·재개·중단, 에이전트 일시정지·재개·실행 중단, Lead 대화의 `중단하고 보내기`(#59).
 
@@ -455,16 +456,16 @@ describe("organization stop", () => {
     expect((await organization(org.id)).stage).toBe("stopped");
 
     await t.stopServer();
-    const restarted = await startServer({
-      db: t.db,
-      port: 0,
-      runtime: agents.runtime,
-    });
-    try {
+    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
+    await withCleanup(async (defer) => {
+      const restarted = await startServer({
+        db: t!.db,
+        port: 0,
+        runtime: agents.runtime,
+      });
+      defer(() => restarted.close());
       await restarted.drain();
-    } finally {
-      await restarted.close();
-    }
+    });
     const { listRuns } = await import("@babojubot/db");
     // 생성 깨우기를 받은 실행 시도와 중단으로 취소된 실행 시도뿐이다.
     expect(await listRuns(t.db, org.id)).toHaveLength(2);
@@ -560,65 +561,67 @@ describe("interrupt and send", () => {
   it("joins a run still cleaning up after an earlier cancel instead of recording it as idle", async () => {
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
-    // 단언이 실패해도 프로바이더를 놓아 서버를 닫을 수 있게 한다.
-    onTestFinished(() => release());
-    let reachedHold!: () => void;
-    const holdReached = new Promise<void>((r) => (reachedHold = r));
-    const received: WakeReason[][] = [];
-    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
-    const slow: RuntimeAdapter = {
-      ...fakeDeclarations(),
-      async execute(request): Promise<RunResult> {
-        received.push(request.wakeReasons);
-        if (received.length === 1) {
-          reachedHold();
-          await released;
-        }
-        return {
-          stopReason: "completed",
-          error: null,
-          summary: null,
-          usage: null,
-          nextSession: null,
-        };
-      },
-    };
-    t = await startTestServer({ runtime: quietCreation(slow) });
-    const org = await createOrganization("정리 중 중단하고 보내기");
-    await say(org.id, "긴 일을 시작해 주세요");
-    await holdReached;
-    const [running] = await runsOf(org.id);
+    await withCleanup(async (defer) => {
+      // 단언이 실패해도 서버를 닫기 전에 붙잡은 프로바이더를 놓아 준다. Vitest는 afterEach(서버 닫기)를 onTestFinished보다 먼저 돌린다.
+      defer(() => release());
+      let reachedHold!: () => void;
+      const holdReached = new Promise<void>((r) => (reachedHold = r));
+      const received: WakeReason[][] = [];
+      // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
+      const slow: RuntimeAdapter = {
+        ...fakeDeclarations(),
+        async execute(request): Promise<RunResult> {
+          received.push(request.wakeReasons);
+          if (received.length === 1) {
+            reachedHold();
+            await released;
+          }
+          return {
+            stopReason: "completed",
+            error: null,
+            summary: null,
+            usage: null,
+            nextSession: null,
+          };
+        },
+      };
+      t = await startTestServer({ runtime: quietCreation(slow) });
+      const org = await createOrganization("정리 중 중단하고 보내기");
+      await say(org.id, "긴 일을 시작해 주세요");
+      await holdReached;
+      const [running] = await runsOf(org.id);
 
-    const first = await interrupt(org.id, "방향을 바꿔 주세요");
-    const second = await interrupt(org.id, "이것도 반영해 주세요");
-    // 정리 중인 실행 시도도 실행 중이며, 처음 취소 사유를 그대로 둔다.
-    expect(await runsOf(org.id)).toEqual([
-      expect.objectContaining({
+      const first = await interrupt(org.id, "방향을 바꿔 주세요");
+      const second = await interrupt(org.id, "이것도 반영해 주세요");
+      // 정리 중인 실행 시도도 실행 중이며, 처음 취소 사유를 그대로 둔다.
+      expect(await runsOf(org.id)).toEqual([
+        expect.objectContaining({
+          id: running!.id,
+          status: "running",
+          cancelReason: "owner_interrupt",
+        }),
+      ]);
+      expect(
+        (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
+      ).toMatchObject([
+        { payload: { runId: running!.id, messageId: first.id } },
+        { payload: { runId: running!.id, messageId: second.id } },
+      ]);
+
+      release();
+      await t.drain();
+      const [next, cancelled] = await runsOf(org.id);
+      expect(cancelled).toMatchObject({
         id: running!.id,
-        status: "running",
+        status: "cancelled",
         cancelReason: "owner_interrupt",
-      }),
-    ]);
-    expect(
-      (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
-    ).toMatchObject([
-      { payload: { runId: running!.id, messageId: first.id } },
-      { payload: { runId: running!.id, messageId: second.id } },
-    ]);
-
-    release();
-    await t.drain();
-    const [next, cancelled] = await runsOf(org.id);
-    expect(cancelled).toMatchObject({
-      id: running!.id,
-      status: "cancelled",
-      cancelReason: "owner_interrupt",
+      });
+      expect(next).toMatchObject({ status: "completed", wakeCount: 2 });
+      expect(bodies(received.at(-1)!)).toEqual([
+        "방향을 바꿔 주세요",
+        "이것도 반영해 주세요",
+      ]);
     });
-    expect(next).toMatchObject({ status: "completed", wakeCount: 2 });
-    expect(bodies(received.at(-1)!)).toEqual([
-      "방향을 바꿔 주세요",
-      "이것도 반영해 주세요",
-    ]);
   });
 });
 
@@ -680,46 +683,55 @@ describe("stop the current run", () => {
   it("changes nothing when the agent is idle or its run is already being cancelled", async () => {
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
-    onTestFinished(() => release());
-    let reachedHold!: () => void;
-    const holdReached = new Promise<void>((r) => (reachedHold = r));
-    let executed = 0;
-    // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
-    const slow: RuntimeAdapter = {
-      ...fakeDeclarations(),
-      async execute(): Promise<RunResult> {
-        if (++executed === 1) {
-          reachedHold();
-          await released;
-        }
-        return {
-          stopReason: "completed",
-          error: null,
-          summary: null,
-          usage: null,
-          nextSession: null,
-        };
-      },
-    };
-    t = await startTestServer({ runtime: quietCreation(slow) });
-    const org = await createOrganization("쉬는 Lead의 실행 중단");
-    const idleStop = await control(org.id, "interrupt", org.lead.id);
-    expect(idleStop.status).toBe(200);
-    expect(
-      (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
-    ).toEqual([]);
+    await withCleanup(async (defer) => {
+      // 단언이 실패해도 서버를 닫기 전에 붙잡은 프로바이더를 놓아 준다. Vitest는 afterEach(서버 닫기)를 onTestFinished보다 먼저 돌린다.
+      defer(() => release());
+      let reachedHold!: () => void;
+      const holdReached = new Promise<void>((r) => (reachedHold = r));
+      let executed = 0;
+      // 첫 실행 시도는 취소를 받고도 정리를 늦게 끝내는 프로바이더.
+      const slow: RuntimeAdapter = {
+        ...fakeDeclarations(),
+        async execute(): Promise<RunResult> {
+          if (++executed === 1) {
+            reachedHold();
+            await released;
+          }
+          return {
+            stopReason: "completed",
+            error: null,
+            summary: null,
+            usage: null,
+            nextSession: null,
+          };
+        },
+      };
+      t = await startTestServer({ runtime: quietCreation(slow) });
+      const org = await createOrganization("쉬는 Lead의 실행 중단");
+      const idleStop = await control(org.id, "interrupt", org.lead.id);
+      expect(idleStop.status).toBe(200);
+      expect(
+        (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
+      ).toEqual([]);
 
-    await say(org.id, "긴 일을 시작해 주세요");
-    await holdReached;
-    expect((await control(org.id, "interrupt", org.lead.id)).status).toBe(200);
-    // 정리 중인 실행 시도에 다시 내린 실행 중단은 아무것도 남기지 않는다.
-    expect((await control(org.id, "interrupt", org.lead.id)).status).toBe(200);
-    expect(
-      (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
-    ).toHaveLength(1);
-    release();
-    await t.drain();
-    expect((await runsOf(org.id)).map((r) => r.status)).toEqual(["cancelled"]);
+      await say(org.id, "긴 일을 시작해 주세요");
+      await holdReached;
+      expect((await control(org.id, "interrupt", org.lead.id)).status).toBe(
+        200
+      );
+      // 정리 중인 실행 시도에 다시 내린 실행 중단은 아무것도 남기지 않는다.
+      expect((await control(org.id, "interrupt", org.lead.id)).status).toBe(
+        200
+      );
+      expect(
+        (await eventsOf(org.id)).filter((e) => e.type === "agent.interrupted")
+      ).toHaveLength(1);
+      release();
+      await t.drain();
+      expect((await runsOf(org.id)).map((r) => r.status)).toEqual([
+        "cancelled",
+      ]);
+    });
   });
 
   it("does not reach another organization's agent", async () => {
@@ -734,64 +746,68 @@ describe("cancellation boundary", () => {
   it("closes a cancelled run's token at once and keeps its late result from becoming a success", async () => {
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
-    let reachedHold!: () => void;
-    const holdReached = new Promise<void>((r) => (reachedHold = r));
-    const late: { status: number }[] = [];
-    // 취소를 무시하고 계속 도구를 쓰려는 프로바이더.
-    const stubborn: RuntimeAdapter = {
-      ...fakeDeclarations(),
-      async execute(request): Promise<RunResult> {
-        reachedHold();
-        await released;
-        for (const { method, path } of [
-          orgTools.get_run_context,
-          orgTools.send_message,
-        ]) {
-          const res = await t!.tool(
-            request.access.token,
-            method,
-            path,
-            method === "POST" ? { body: "취소 뒤 답장" } : undefined
-          );
-          late.push({ status: res.status });
-        }
-        return {
-          stopReason: "completed",
-          error: null,
-          summary: "끝까지 했다",
-          usage: null,
-          nextSession: null,
-        };
-      },
-    };
-    t = await startTestServer({ runtime: quietCreation(stubborn) });
-    const org = await createOrganization("늦은 결과");
-    await say(org.id, "일해 주세요");
-    await holdReached;
+    await withCleanup(async (defer) => {
+      // 단언이 실패해도 서버를 닫기 전에 붙잡은 프로바이더를 놓아 준다. Vitest는 afterEach(서버 닫기)를 onTestFinished보다 먼저 돌린다.
+      defer(() => release());
+      let reachedHold!: () => void;
+      const holdReached = new Promise<void>((r) => (reachedHold = r));
+      const late: { status: number }[] = [];
+      // 취소를 무시하고 계속 도구를 쓰려는 프로바이더.
+      const stubborn: RuntimeAdapter = {
+        ...fakeDeclarations(),
+        async execute(request): Promise<RunResult> {
+          reachedHold();
+          await released;
+          for (const { method, path } of [
+            orgTools.get_run_context,
+            orgTools.send_message,
+          ]) {
+            const res = await t!.tool(
+              request.access.token,
+              method,
+              path,
+              method === "POST" ? { body: "취소 뒤 답장" } : undefined
+            );
+            late.push({ status: res.status });
+          }
+          return {
+            stopReason: "completed",
+            error: null,
+            summary: "끝까지 했다",
+            usage: null,
+            nextSession: null,
+          };
+        },
+      };
+      t = await startTestServer({ runtime: quietCreation(stubborn) });
+      const org = await createOrganization("늦은 결과");
+      await say(org.id, "일해 주세요");
+      await holdReached;
 
-    await control(org.id, "pause");
-    release();
-    await t.drain();
-    expect(late).toEqual([{ status: 401 }, { status: 401 }]);
-    expect(await runsOf(org.id)).toEqual([
-      expect.objectContaining({
-        status: "cancelled",
-        cancelReason: "organization_paused",
-      }),
-    ]);
-    const conversation = await chatMessages(t, org.id);
-    expect(conversation.map((m: { author: string }) => m.author)).toEqual([
-      "owner",
-    ]);
-    const finished = (await eventsOf(org.id)).filter(
-      (e): e is Extract<Event, { type: "run.finished" }> =>
-        e.type === "run.finished"
-    );
-    // 생성 깨우기를 받은 실행 시도는 맥락만 읽고 끝났다.
-    expect(finished.map((e) => e.payload.stopReason)).toEqual([
-      "completed",
-      "cancelled",
-    ]);
+      await control(org.id, "pause");
+      release();
+      await t.drain();
+      expect(late).toEqual([{ status: 401 }, { status: 401 }]);
+      expect(await runsOf(org.id)).toEqual([
+        expect.objectContaining({
+          status: "cancelled",
+          cancelReason: "organization_paused",
+        }),
+      ]);
+      const conversation = await chatMessages(t, org.id);
+      expect(conversation.map((m: { author: string }) => m.author)).toEqual([
+        "owner",
+      ]);
+      const finished = (await eventsOf(org.id)).filter(
+        (e): e is Extract<Event, { type: "run.finished" }> =>
+          e.type === "run.finished"
+      );
+      // 생성 깨우기를 받은 실행 시도는 맥락만 읽고 끝났다.
+      expect(finished.map((e) => e.payload.stopReason)).toEqual([
+        "completed",
+        "cancelled",
+      ]);
+    });
   });
 });
 

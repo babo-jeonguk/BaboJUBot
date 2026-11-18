@@ -17,7 +17,7 @@ import http from "node:http";
 import type net from "node:net";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import {
   createCodexProvider as unownedCodexProvider,
@@ -33,6 +33,7 @@ import { attachedRelayHub, manualClock, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
+import { killAndWait } from "./process-test-support.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
@@ -156,14 +157,6 @@ async function setup(programs: Record<string, string[]>, base = tmpdir()) {
   };
 }
 
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 // A container program that leaves a child sharing its output. The child records whether the relay is still open when it is told
 // to stop, then ends. The program ends on its first input line, or, after its input closes, once the file `<log>.exit` exists.
 const leftBehind = `
@@ -451,6 +444,10 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
     let child = 0;
+    // 프로그램이 남긴 자식은 시험 폴더에서 돈다. 폴더를 지우기 전에 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
+    folders.own(async () => {
+      if (child) await killAndWait([child]);
+    }, "the child the program left");
     const started = startProcess({
       command: ["unused"],
       args: [log],
@@ -469,13 +466,10 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         started.write({ go: true });
       },
     });
-    try {
-      await started.done;
-      // The child recorded, when it was told to stop, whether the relay was still open.
-      expect(await readFile(log, "utf8")).toBe("relay closed");
-    } finally {
-      if (child && alive(child)) process.kill(child, "SIGKILL");
-    }
+
+    await started.done;
+    // The child recorded, when it was told to stop, whether the relay was still open.
+    expect(await readFile(log, "utf8")).toBe("relay closed");
   }, 20_000);
 
   it("takes the relay back before stopping what a cancelled program left running, when the program ends before its stop timer", async () => {
@@ -483,6 +477,10 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
     let child = 0;
+    // 프로그램이 남긴 자식은 시험 폴더에서 돈다. 폴더를 지우기 전에 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
+    folders.own(async () => {
+      if (child) await killAndWait([child]);
+    }, "the child the program left");
     // The stop timer (2 s after the cancel) and the wait for output after the program ends (1 s) run on the test clock, so the
     // program ends between them by state, not by racing them on a slow machine.
     const clock = manualClock();
@@ -506,18 +504,15 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         started.end();
       },
     });
-    try {
-      await expect.poll(() => clock.scheduled(), programStart).toEqual([2_000]);
-      clock.advance(1_500);
-      // The program ends 1.5 s after the cancel; the output wait then runs past the moment the stop timer was set for.
-      await writeFile(log + ".exit", "");
-      await expect.poll(() => clock.scheduled(), programStart).toContain(1_000);
-      clock.advance(1_000);
-      await started.done;
-      expect(await readFile(log, "utf8")).toBe("relay closed");
-    } finally {
-      if (child && alive(child)) process.kill(child, "SIGKILL");
-    }
+
+    await expect.poll(() => clock.scheduled(), programStart).toEqual([2_000]);
+    clock.advance(1_500);
+    // The program ends 1.5 s after the cancel; the output wait then runs past the moment the stop timer was set for.
+    await writeFile(log + ".exit", "");
+    await expect.poll(() => clock.scheduled(), programStart).toContain(1_000);
+    clock.advance(1_000);
+    await started.done;
+    expect(await readFile(log, "utf8")).toBe("relay closed");
   }, 20_000);
 
   it("takes the relay back before removing the container, even when Docker cannot remove it", async () => {
@@ -999,13 +994,14 @@ async function relayed(
     req.url = req.url.slice(prefix.length);
     relay.handle(req, res);
   });
-  const close = async () => {
+  // 시험이 끝나면 두 서버를 닫는다. 서버를 연 직후에 정리를 등록하므로, 이것을 쓰는 시험은 따로 닫지 않는다.
+  onTestFinished(async () => {
     for (const server of servers) {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
-  };
-  return { tools, seen, urls, closed, close };
+  });
+  return { tools, seen, urls, closed };
 }
 
 describe.skipIf(process.platform === "win32")(
@@ -1034,33 +1030,28 @@ describe.skipIf(process.platform === "win32")(
         });
         return provider.credentialRelay!;
       });
-      try {
-        const input = env.isolated();
-        input.access = { ...input.access, toolsBaseUrl: network.tools };
-        const result = await provider.adapter.execute(input, control());
-        expect(result.stopReason).toBe("completed");
-        expect(network.seen).toHaveLength(1);
-        expect(network.seen[0]!.authorization).toBe("Bearer synthetic-login");
-        const run = runCall(await env.calls());
-        expect(JSON.stringify(run)).not.toMatch(
-          /synthetic-login|api-key-secret/
-        );
-        expect(run.env).not.toHaveProperty("ANTHROPIC_API_KEY");
-        // 실행 시도가 끝나면 그 권한은 거둬진다.
-        const after = await fetch(
-          `${network.tools}/api/relay/claude/v1/messages`,
-          {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${run.env!.CLAUDE_CODE_OAUTH_TOKEN}`,
-            },
-          }
-        );
-        expect(after.status).toBe(401);
-        expect(network.seen).toHaveLength(1);
-      } finally {
-        await network.close();
-      }
+
+      const input = env.isolated();
+      input.access = { ...input.access, toolsBaseUrl: network.tools };
+      const result = await provider.adapter.execute(input, control());
+      expect(result.stopReason).toBe("completed");
+      expect(network.seen).toHaveLength(1);
+      expect(network.seen[0]!.authorization).toBe("Bearer synthetic-login");
+      const run = runCall(await env.calls());
+      expect(JSON.stringify(run)).not.toMatch(/synthetic-login|api-key-secret/);
+      expect(run.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+      // 실행 시도가 끝나면 그 권한은 거둬진다.
+      const after = await fetch(
+        `${network.tools}/api/relay/claude/v1/messages`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${run.env!.CLAUDE_CODE_OAUTH_TOKEN}`,
+          },
+        }
+      );
+      expect(after.status).toBe(401);
+      expect(network.seen).toHaveLength(1);
     });
 
     it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
@@ -1074,23 +1065,20 @@ describe.skipIf(process.platform === "win32")(
         });
         return provider.credentialRelay!;
       });
-      try {
-        const input = env.isolated();
-        input.access = { ...input.access, toolsBaseUrl: network.tools };
-        const result = await provider.adapter.execute(input, control());
-        expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("인증 중계");
-        expect(network.seen).toHaveLength(0);
-        expect(provider.credentialRelay!.failed()).toBe(true);
-        // 복구 전에는 새 실행 시도도 시작하지 않는다.
-        const again = await provider.adapter.execute(env.isolated(), control());
-        expect(again.stopReason).toBe("failed");
-        expect(
-          (await env.calls()).filter((call) => call.args.includes("run"))
-        ).toHaveLength(1);
-      } finally {
-        await network.close();
-      }
+
+      const input = env.isolated();
+      input.access = { ...input.access, toolsBaseUrl: network.tools };
+      const result = await provider.adapter.execute(input, control());
+      expect(result.stopReason).toBe("failed");
+      expect(result.error).toContain("인증 중계");
+      expect(network.seen).toHaveLength(0);
+      expect(provider.credentialRelay!.failed()).toBe(true);
+      // 복구 전에는 새 실행 시도도 시작하지 않는다.
+      const again = await provider.adapter.execute(env.isolated(), control());
+      expect(again.stopReason).toBe("failed");
+      expect(
+        (await env.calls()).filter((call) => call.args.includes("run"))
+      ).toHaveLength(1);
     });
 
     it("does not start when a login is left in the organization's product folder", async () => {
@@ -1197,55 +1185,50 @@ describe.skipIf(process.platform === "win32")(
 
     it("lets the program reach the model only through the relay, which puts the connection's access token and account in place of the run's grant", async () => {
       const t = await codexSetup();
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("completed");
-        expect(t.network.urls).toEqual(["/responses"]);
-        expect(t.network.seen[0]!.authorization).toBe(
-          "Bearer real-access-token"
-        );
-        expect(t.network.seen[0]!["chatgpt-account-id"]).toBe("real-account");
-        const seen = await t.seen();
-        // 컨테이너의 로그인 파일에는 이 실행 시도의 권한만 있다. 갱신 값·계정은 없다.
-        const grant = seen.login.tokens.access_token!;
-        expect(grant).not.toBe("real-access-token");
-        expect(seen.login.tokens.refresh_token ?? "").toBe("");
-        expect(seen.login.tokens.account_id).toBeUndefined();
-        expect(JSON.stringify(seen)).not.toMatch(
-          /real-access-token|real-refresh-token|real-account|real-id-token/
-        );
-        // 모델 통신과 ChatGPT 보조 요청은 중계 주소로, 갱신은 중계 안의 허용하지 않은 경로로 간다.
-        const relayBase = `${t.network.tools}/api/relay/codex`;
-        expect(seen.args.join(" ")).toContain(`base_url="${relayBase}"`);
-        expect(seen.args.join(" ")).toContain(
-          `chatgpt_base_url="${relayBase}/backend-api/"`
-        );
-        expect(seen.refreshUrl).toBe(`${relayBase}/oauth/token`);
-        const run = runCall(await t.env.calls());
-        expect(JSON.stringify(run)).not.toMatch(
-          /real-access-token|real-refresh-token|real-id-token/
-        );
-        // 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 있고, 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 들어간다.
-        // 조직 폴더(그 조직의 모든 컨테이너에 들어간다)에는 권한 값이 없는 자리 표시만 남는다.
-        const loginAt = path.join(t.organization, "auth.json");
-        const mount = valuesOf(run.args, "--mount").find((spec) =>
-          spec.includes(`target=${loginAt},`)
-        );
-        expect(mount).toMatch(/,readonly$/);
-        const source = /source=([^,]+)/.exec(mount!)![1]!;
-        expect(source).not.toContain(t.organization);
-        await expect(stat(source)).rejects.toThrow();
-        expect(await readFile(loginAt, "utf8")).not.toContain(grant);
-        // 실행 시도가 끝나면 권한을 거둔다.
-        const after = await fetch(`${relayBase}/responses`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${grant}` },
-        });
-        expect(after.status).toBe(401);
-        expect(t.network.urls).toHaveLength(1);
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("completed");
+      expect(t.network.urls).toEqual(["/responses"]);
+      expect(t.network.seen[0]!.authorization).toBe("Bearer real-access-token");
+      expect(t.network.seen[0]!["chatgpt-account-id"]).toBe("real-account");
+      const seen = await t.seen();
+      // 컨테이너의 로그인 파일에는 이 실행 시도의 권한만 있다. 갱신 값·계정은 없다.
+      const grant = seen.login.tokens.access_token!;
+      expect(grant).not.toBe("real-access-token");
+      expect(seen.login.tokens.refresh_token ?? "").toBe("");
+      expect(seen.login.tokens.account_id).toBeUndefined();
+      expect(JSON.stringify(seen)).not.toMatch(
+        /real-access-token|real-refresh-token|real-account|real-id-token/
+      );
+      // 모델 통신과 ChatGPT 보조 요청은 중계 주소로, 갱신은 중계 안의 허용하지 않은 경로로 간다.
+      const relayBase = `${t.network.tools}/api/relay/codex`;
+      expect(seen.args.join(" ")).toContain(`base_url="${relayBase}"`);
+      expect(seen.args.join(" ")).toContain(
+        `chatgpt_base_url="${relayBase}/backend-api/"`
+      );
+      expect(seen.refreshUrl).toBe(`${relayBase}/oauth/token`);
+      const run = runCall(await t.env.calls());
+      expect(JSON.stringify(run)).not.toMatch(
+        /real-access-token|real-refresh-token|real-id-token/
+      );
+      // 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 있고, 이 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 들어간다.
+      // 조직 폴더(그 조직의 모든 컨테이너에 들어간다)에는 권한 값이 없는 자리 표시만 남는다.
+      const loginAt = path.join(t.organization, "auth.json");
+      const mount = valuesOf(run.args, "--mount").find((spec) =>
+        spec.includes(`target=${loginAt},`)
+      );
+      expect(mount).toMatch(/,readonly$/);
+      const source = /source=([^,]+)/.exec(mount!)![1]!;
+      expect(source).not.toContain(t.organization);
+      await expect(stat(source)).rejects.toThrow();
+      expect(await readFile(loginAt, "utf8")).not.toContain(grant);
+      // 실행 시도가 끝나면 권한을 거둔다.
+      const after = await fetch(`${relayBase}/responses`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant}` },
+      });
+      expect(after.status).toBe(401);
+      expect(t.network.urls).toHaveLength(1);
     });
 
     it.each([
@@ -1259,116 +1242,99 @@ describe.skipIf(process.platform === "win32")(
           fixture("codex-relay.mjs"),
           flag,
         ]);
-        try {
-          const result = await t
-            .provider()
-            .adapter.execute(t.input(), control());
-          expect(result.stopReason).toBe("failed");
-          const calls = await t.env.calls();
-          const run = runCall(calls);
-          expect(removed(calls, nameOf(run))).toBe(true);
-          const mount = valuesOf(run.args, "--mount").find((spec) =>
-            spec.includes(`target=${path.join(t.organization, "auth.json")},`)
-          );
-          await expect(
-            stat(/source=([^,]+)/.exec(mount!)![1]!)
-          ).rejects.toThrow();
-          const grant = (await t.seen()).login.tokens.access_token!;
-          const after = await fetch(
-            `${t.network.tools}/api/relay/codex/responses`,
-            { method: "POST", headers: { authorization: `Bearer ${grant}` } }
-          );
-          expect(after.status).toBe(401);
-          expect(t.network.urls).toHaveLength(0);
-        } finally {
-          await t.network.close();
-        }
+
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("failed");
+        const calls = await t.env.calls();
+        const run = runCall(calls);
+        expect(removed(calls, nameOf(run))).toBe(true);
+        const mount = valuesOf(run.args, "--mount").find((spec) =>
+          spec.includes(`target=${path.join(t.organization, "auth.json")},`)
+        );
+        await expect(
+          stat(/source=([^,]+)/.exec(mount!)![1]!)
+        ).rejects.toThrow();
+        const grant = (await t.seen()).login.tokens.access_token!;
+        const after = await fetch(
+          `${t.network.tools}/api/relay/codex/responses`,
+          { method: "POST", headers: { authorization: `Bearer ${grant}` } }
+        );
+        expect(after.status).toBe(401);
+        expect(t.network.urls).toHaveLength(0);
       },
       10_000
     );
 
     it("ends the run as failed with the reason when the relay cannot read the login, and the program's own retries never reach the model", async () => {
       const t = await codexSetup(null);
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("인증 중계");
-        expect(t.network.urls).toHaveLength(0);
-        expect(t.provider().credentialRelay!.failed()).toBe(true);
-        // 복구 전에는 새 실행 시도도 시작하지 않는다.
-        const again = await t.provider().adapter.execute(t.input(), control());
-        expect(again.stopReason).toBe("failed");
-        expect(
-          (await t.env.calls()).filter((call) => call.args.includes("run"))
-        ).toHaveLength(1);
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("failed");
+      expect(result.error).toContain("인증 중계");
+      expect(t.network.urls).toHaveLength(0);
+      expect(t.provider().credentialRelay!.failed()).toBe(true);
+      // 복구 전에는 새 실행 시도도 시작하지 않는다.
+      const again = await t.provider().adapter.execute(t.input(), control());
+      expect(again.stopReason).toBe("failed");
+      expect(
+        (await t.env.calls()).filter((call) => call.args.includes("run"))
+      ).toHaveLength(1);
     });
 
     it("replaces the link to the connection's login this machine left without writing through it, and starts again over the placeholder it left", async () => {
       const t = await codexSetup();
-      try {
-        const original = path.join(t.loginFolder, "auth.json");
-        const before = await readFile(original, "utf8");
-        await mkdir(t.organization, { recursive: true });
-        await symlink(original, path.join(t.organization, "auth.json"));
-        const first = await t.provider().adapter.execute(t.input(), control());
-        expect(first.stopReason).toBe("completed");
-        // 원본 로그인은 그대로다.
-        expect(await readFile(original, "utf8")).toBe(before);
-        // 이 어댑터가 남긴 자리 표시 위에서 다음 실행도 시작한다.
-        const second = await t.provider().adapter.execute(t.input(), control());
-        expect(second.stopReason).toBe("completed");
-        expect(await readFile(original, "utf8")).toBe(before);
-        expect(t.network.urls).toHaveLength(2);
-      } finally {
-        await t.network.close();
-      }
+
+      const original = path.join(t.loginFolder, "auth.json");
+      const before = await readFile(original, "utf8");
+      await mkdir(t.organization, { recursive: true });
+      await symlink(original, path.join(t.organization, "auth.json"));
+      const first = await t.provider().adapter.execute(t.input(), control());
+      expect(first.stopReason).toBe("completed");
+      // 원본 로그인은 그대로다.
+      expect(await readFile(original, "utf8")).toBe(before);
+      // 이 어댑터가 남긴 자리 표시 위에서 다음 실행도 시작한다.
+      const second = await t.provider().adapter.execute(t.input(), control());
+      expect(second.stopReason).toBe("completed");
+      expect(await readFile(original, "utf8")).toBe(before);
+      expect(t.network.urls).toHaveLength(2);
     });
 
     it("gives two runs of one organization at the same time each its own grant", async () => {
       const t = await codexSetup();
-      try {
-        const results = await Promise.all([
-          t.provider().adapter.execute(t.input(), control()),
-          t.provider().adapter.execute(t.input(), control()),
-        ]);
-        expect(results.map((result) => result.stopReason)).toEqual([
-          "completed",
-          "completed",
-        ]);
-        const grants = (await t.seenAll()).map(
-          (record) => record.login.tokens.access_token
-        );
-        expect(grants).toHaveLength(2);
-        expect(new Set(grants).size).toBe(2);
-        expect(t.network.urls).toEqual(["/responses", "/responses"]);
-      } finally {
-        await t.network.close();
-      }
+
+      const results = await Promise.all([
+        t.provider().adapter.execute(t.input(), control()),
+        t.provider().adapter.execute(t.input(), control()),
+      ]);
+      expect(results.map((result) => result.stopReason)).toEqual([
+        "completed",
+        "completed",
+      ]);
+      const grants = (await t.seenAll()).map(
+        (record) => record.login.tokens.access_token
+      );
+      expect(grants).toHaveLength(2);
+      expect(new Set(grants).size).toBe(2);
+      expect(t.network.urls).toEqual(["/responses", "/responses"]);
     });
 
     it("a run with isolation off does not take the placeholder as the connection's login", async () => {
       const t = await codexSetup();
-      try {
-        const original = path.join(t.loginFolder, "auth.json");
-        const before = await readFile(original, "utf8");
-        expect(
-          (await t.provider().adapter.execute(t.input(), control())).stopReason
-        ).toBe("completed");
-        const host = t.input();
-        delete host.execution;
-        expect(
-          (await t.provider().adapter.execute(host, control())).stopReason
-        ).toBe("completed");
-        expect(await readFile(original, "utf8")).toBe(before);
-        expect(
-          await readFile(path.join(t.organization, "auth.json"), "utf8")
-        ).toBe(before);
-      } finally {
-        await t.network.close();
-      }
+
+      const original = path.join(t.loginFolder, "auth.json");
+      const before = await readFile(original, "utf8");
+      expect(
+        (await t.provider().adapter.execute(t.input(), control())).stopReason
+      ).toBe("completed");
+      const host = t.input();
+      delete host.execution;
+      expect(
+        (await t.provider().adapter.execute(host, control())).stopReason
+      ).toBe("completed");
+      expect(await readFile(original, "utf8")).toBe(before);
+      expect(
+        await readFile(path.join(t.organization, "auth.json"), "utf8")
+      ).toBe(before);
     });
 
     /** Codex의 접근 토큰처럼 만료 시각이 든 JWT 모양 값. */
@@ -1409,61 +1375,52 @@ describe.skipIf(process.platform === "win32")(
 
     it("refreshes a login about to expire once on this machine, before sending the model request with the new access token", async () => {
       const t = await refreshSetup("ok");
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("completed");
-        expect(await t.refreshes()).toBe(1);
-        const login = JSON.parse(
-          await readFile(path.join(t.loginFolder, "auth.json"), "utf8")
-        ) as { tokens: Record<string, string> };
-        expect(login.tokens.refresh_token).toBe("rotated-refresh-1");
-        expect(t.network.seen[0]!.authorization).toBe(
-          `Bearer ${login.tokens.access_token}`
-        );
-        // 컨테이너는 새 로그인도 보지 못한다.
-        expect(JSON.stringify(await t.seen())).not.toContain(
-          login.tokens.access_token
-        );
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("completed");
+      expect(await t.refreshes()).toBe(1);
+      const login = JSON.parse(
+        await readFile(path.join(t.loginFolder, "auth.json"), "utf8")
+      ) as { tokens: Record<string, string> };
+      expect(login.tokens.refresh_token).toBe("rotated-refresh-1");
+      expect(t.network.seen[0]!.authorization).toBe(
+        `Bearer ${login.tokens.access_token}`
+      );
+      // 컨테이너는 새 로그인도 보지 못한다.
+      expect(JSON.stringify(await t.seen())).not.toContain(
+        login.tokens.access_token
+      );
     });
 
     it("refreshes once when two runs need the expiring login at the same time", async () => {
       const t = await refreshSetup("slow");
-      try {
-        const results = await Promise.all([
-          t.provider().adapter.execute(t.input(), control()),
-          t.provider().adapter.execute(t.input(), control()),
-        ]);
-        expect(results.map((result) => result.stopReason)).toEqual([
-          "completed",
-          "completed",
-        ]);
-        expect(await t.refreshes()).toBe(1);
-        expect(t.network.seen).toHaveLength(2);
-        expect(t.network.seen[0]!.authorization).toBe(
-          t.network.seen[1]!.authorization
-        );
-      } finally {
-        await t.network.close();
-      }
+
+      const results = await Promise.all([
+        t.provider().adapter.execute(t.input(), control()),
+        t.provider().adapter.execute(t.input(), control()),
+      ]);
+      expect(results.map((result) => result.stopReason)).toEqual([
+        "completed",
+        "completed",
+      ]);
+      expect(await t.refreshes()).toBe(1);
+      expect(t.network.seen).toHaveLength(2);
+      expect(t.network.seen[0]!.authorization).toBe(
+        t.network.seen[1]!.authorization
+      );
     });
 
     it("fails the run and the connection when the refresh fails, and nothing reaches the model", async () => {
       const t = await refreshSetup("fail");
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("인증 중계");
-        expect(t.provider().credentialRelay!.failed()).toBe(true);
-        expect(t.network.urls).toHaveLength(0);
-        const again = await t.provider().adapter.execute(t.input(), control());
-        expect(again.stopReason).toBe("failed");
-        expect(t.network.urls).toHaveLength(0);
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("failed");
+      expect(result.error).toContain("인증 중계");
+      expect(t.provider().credentialRelay!.failed()).toBe(true);
+      expect(t.network.urls).toHaveLength(0);
+      const again = await t.provider().adapter.execute(t.input(), control());
+      expect(again.stopReason).toBe("failed");
+      expect(t.network.urls).toHaveLength(0);
     });
 
     it.each([
@@ -1478,76 +1435,62 @@ describe.skipIf(process.platform === "win32")(
       "fails the run, and starts no model turn, when the refresh %s",
       async (_case, mode, timeouts) => {
         const t = await refreshSetup(mode, timeouts);
-        try {
-          const result = await t
-            .provider()
-            .adapter.execute(t.input(), control());
-          expect(result.stopReason).toBe("failed");
-          expect(result.error).toContain("인증 중계");
-          expect(await t.refreshes()).toBe(0);
-          expect(t.network.urls).toHaveLength(0);
-        } finally {
-          await t.network.close();
-        }
+
+        const result = await t.provider().adapter.execute(t.input(), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("인증 중계");
+        expect(await t.refreshes()).toBe(0);
+        expect(t.network.urls).toHaveLength(0);
       },
       10_000
     );
 
     it("refreshes again after a failed refresh once the relay is checked again", async () => {
       const t = await refreshSetup("fail-once");
-      try {
-        const first = await t.provider().adapter.execute(t.input(), control());
-        expect(first.stopReason).toBe("failed");
-        expect(t.provider().credentialRelay!.failed()).toBe(true);
-        // Checking the relay again reads the login, which runs a new refresh instead of reusing the failed one.
-        await t.provider().credentialRelay!.recover();
-        expect(await t.refreshes()).toBe(1);
-        expect(t.provider().credentialRelay!.failed()).toBe(false);
-        const again = await t.provider().adapter.execute(t.input(), control());
-        expect(again.stopReason).toBe("completed");
-        expect(await t.refreshes()).toBe(1);
-      } finally {
-        await t.network.close();
-      }
+
+      const first = await t.provider().adapter.execute(t.input(), control());
+      expect(first.stopReason).toBe("failed");
+      expect(t.provider().credentialRelay!.failed()).toBe(true);
+      // Checking the relay again reads the login, which runs a new refresh instead of reusing the failed one.
+      await t.provider().credentialRelay!.recover();
+      expect(await t.refreshes()).toBe(1);
+      expect(t.provider().credentialRelay!.failed()).toBe(false);
+      const again = await t.provider().adapter.execute(t.input(), control());
+      expect(again.stopReason).toBe("completed");
+      expect(await t.refreshes()).toBe(1);
     });
 
     it("does not refresh a login that is not about to expire", async () => {
       const t = await refreshSetup("ok");
-      try {
-        await writeFile(
-          path.join(t.loginFolder, "auth.json"),
-          JSON.stringify({
-            ...realLogin,
-            tokens: {
-              ...realLogin.tokens,
-              access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
-            },
-          })
-        );
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("completed");
-        expect(await t.refreshes()).toBe(0);
-      } finally {
-        await t.network.close();
-      }
+
+      await writeFile(
+        path.join(t.loginFolder, "auth.json"),
+        JSON.stringify({
+          ...realLogin,
+          tokens: {
+            ...realLogin.tokens,
+            access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+          },
+        })
+      );
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("completed");
+      expect(await t.refreshes()).toBe(0);
     });
 
     it("does not start over a real-looking login left in the organization's product folder", async () => {
       const t = await codexSetup();
-      try {
-        await mkdir(t.organization, { recursive: true });
-        await writeFile(
-          path.join(t.organization, "auth.json"),
-          JSON.stringify({ ...realLogin, tokens: { ...realLogin.tokens } })
-        );
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("로그인 기록");
-        expect(await t.env.calls()).toEqual([]);
-        expect(t.network.urls).toHaveLength(0);
-      } finally {
-        await t.network.close();
-      }
+
+      await mkdir(t.organization, { recursive: true });
+      await writeFile(
+        path.join(t.organization, "auth.json"),
+        JSON.stringify({ ...realLogin, tokens: { ...realLogin.tokens } })
+      );
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("failed");
+      expect(result.error).toContain("로그인 기록");
+      expect(await t.env.calls()).toEqual([]);
+      expect(t.network.urls).toHaveLength(0);
     });
   }
 );
@@ -1616,15 +1559,12 @@ describe.skipIf(process.platform === "win32")(
 
     it("sends the free model through the relay with the public key only, as today", async () => {
       const t = await openCodeSetup();
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("completed");
-        expect(t.network.urls).toEqual(["/openai/v1/responses"]);
-        expect(t.network.seen[0]!.authorization).toBe("Bearer public");
-        expect(t.network.seen[0]!["x-api-key"]).toBeUndefined();
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("completed");
+      expect(t.network.urls).toEqual(["/openai/v1/responses"]);
+      expect(t.network.seen[0]!.authorization).toBe("Bearer public");
+      expect(t.network.seen[0]!["x-api-key"]).toBeUndefined();
     }, 20000);
 
     it.each([
@@ -1646,22 +1586,19 @@ describe.skipIf(process.platform === "win32")(
       "sends %s Go model through the relay, which puts the connection's Go key in place of the run's grant",
       async (_family, model, upstreamPath, header, value) => {
         const t = await openCodeSetup();
-        try {
-          const result = await t
-            .provider()
-            .adapter.execute(t.input(model), control());
-          expect(result.stopReason).toBe("completed");
-          expect(t.network.urls).toEqual([upstreamPath]);
-          expect(t.network.seen[0]![header]).toBe(value);
-          const run = runCall(await t.env.calls());
-          expect(JSON.stringify(run)).not.toContain("real-go-key");
-          // 조직의 제품 폴더에는 로그인을 옮기지 않는다.
-          await expect(
-            stat(path.join(t.organization, "data", "opencode", "opencode.db"))
-          ).rejects.toThrow();
-        } finally {
-          await t.network.close();
-        }
+
+        const result = await t
+          .provider()
+          .adapter.execute(t.input(model), control());
+        expect(result.stopReason).toBe("completed");
+        expect(t.network.urls).toEqual([upstreamPath]);
+        expect(t.network.seen[0]![header]).toBe(value);
+        const run = runCall(await t.env.calls());
+        expect(JSON.stringify(run)).not.toContain("real-go-key");
+        // 조직의 제품 폴더에는 로그인을 옮기지 않는다.
+        await expect(
+          stat(path.join(t.organization, "data", "opencode", "opencode.db"))
+        ).rejects.toThrow();
       },
       20000
     );
@@ -1685,156 +1622,144 @@ describe.skipIf(process.platform === "win32")(
       "does not start a container over %s left in the organization's product folder",
       async (_case, leave) => {
         const t = await openCodeSetup();
-        try {
-          await leave(path.join(t.organization, "data"));
-          const result = await t
-            .provider()
-            .adapter.execute(t.input("opencode-go/glm-5.3"), control());
-          expect(result.stopReason).toBe("failed");
-          expect(result.error).toContain("로그인 기록");
-          expect(await t.env.calls()).toEqual([]);
-          expect(t.network.urls).toHaveLength(0);
-        } finally {
-          await t.network.close();
-        }
+
+        await leave(path.join(t.organization, "data"));
+        const result = await t
+          .provider()
+          .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("로그인 기록");
+        expect(await t.env.calls()).toEqual([]);
+        expect(t.network.urls).toHaveLength(0);
       },
       20000
     );
 
     it("copies no connection login into the organization's product folder while an isolated run of the organization is still going, even after isolation is turned off (PR #171 SP-2)", async () => {
       const t = await openCodeSetup(true, true);
-      try {
-        // 이 컴퓨터의 실행이 조직 폴더로 옮겨 가는 연결의 로그인(시뮬레이터 저장소).
-        await writeFile(
-          path.join(
-            t.env.root,
-            "providers/opencode/data/synthetic-credentials.json"
-          ),
-          JSON.stringify([
-            {
-              id: "cred_synthetic",
-              integrationID: "opencode-go",
-              label: "Go",
-              active: true,
-              value: { type: "key", key: "synthetic-key" },
-            },
-          ])
-        );
-        const cancel = new AbortController();
-        const isolated = t
-          .provider()
-          .adapter.execute(t.input(), control(cancel.signal));
-        // 격리 실행의 컨테이너가 조직 제품 폴더를 넣은 채 모델 응답을 기다린다.
-        await expect
-          .poll(() => t.network.urls.length, { timeout: 10_000 })
-          .toBe(1);
-        // 그 사이 사용자가 격리를 끄고, 같은 조직의 다음 실행이 이 컴퓨터에서 돈다.
-        const base = t.input();
-        const host = await t.provider().adapter.execute(
+
+      // 이 컴퓨터의 실행이 조직 폴더로 옮겨 가는 연결의 로그인(시뮬레이터 저장소).
+      await writeFile(
+        path.join(
+          t.env.root,
+          "providers/opencode/data/synthetic-credentials.json"
+        ),
+        JSON.stringify([
           {
-            ...base,
-            execution: "host",
-            identity: { ...base.identity, runId: crypto.randomUUID() },
+            id: "cred_synthetic",
+            integrationID: "opencode-go",
+            label: "Go",
+            active: true,
+            value: { type: "key", key: "synthetic-key" },
           },
-          control()
-        );
-        expect(host.stopReason).toBe("completed");
-        await expect(
-          stat(path.join(t.organization, "data", "synthetic-credentials.json"))
-        ).rejects.toThrow();
-        cancel.abort();
-        expect((await isolated).stopReason).toBe("cancelled");
-      } finally {
-        await t.network.close();
-      }
+        ])
+      );
+      const cancel = new AbortController();
+      const isolated = t
+        .provider()
+        .adapter.execute(t.input(), control(cancel.signal));
+      // 격리 실행의 컨테이너가 조직 제품 폴더를 넣은 채 모델 응답을 기다린다.
+      await expect
+        .poll(() => t.network.urls.length, { timeout: 10_000 })
+        .toBe(1);
+      // 그 사이 사용자가 격리를 끄고, 같은 조직의 다음 실행이 이 컴퓨터에서 돈다.
+      const base = t.input();
+      const host = await t.provider().adapter.execute(
+        {
+          ...base,
+          execution: "host",
+          identity: { ...base.identity, runId: crypto.randomUUID() },
+        },
+        control()
+      );
+      expect(host.stopReason).toBe("completed");
+      await expect(
+        stat(path.join(t.organization, "data", "synthetic-credentials.json"))
+      ).rejects.toThrow();
+      cancel.abort();
+      expect((await isolated).stopReason).toBe("cancelled");
     }, 30_000);
 
     it("starts no container for an isolated run while a run with isolation off is still copying the login into the organization, and refuses once the copy has landed (PR #171 REC-1)", async () => {
       const t = await openCodeSetup();
-      try {
-        await writeFile(
-          path.join(
-            t.env.root,
-            "providers/opencode/data/synthetic-credentials.json"
-          ),
-          JSON.stringify([
-            {
-              id: "cred_synthetic",
-              integrationID: "opencode-go",
-              label: "Go",
-              active: true,
-              value: { type: "key", key: "synthetic-key" },
-            },
-          ])
-        );
-        // 이 컴퓨터의 실행이 조직 폴더에 로그인을 쓰는 순간을 붙잡아 둔다.
-        const data = path.join(t.organization, "data");
-        await mkdir(data, { recursive: true });
-        const hold = path.join(data, "hold-credential");
-        await writeFile(hold, "");
-        const base = t.input();
-        const host = t.provider().adapter.execute(
+
+      await writeFile(
+        path.join(
+          t.env.root,
+          "providers/opencode/data/synthetic-credentials.json"
+        ),
+        JSON.stringify([
           {
-            ...base,
-            execution: "host",
-            identity: { ...base.identity, runId: crypto.randomUUID() },
+            id: "cred_synthetic",
+            integrationID: "opencode-go",
+            label: "Go",
+            active: true,
+            value: { type: "key", key: "synthetic-key" },
           },
-          control()
-        );
-        await expect
-          .poll(
-            () =>
-              stat(`${hold}.reached`).then(
-                () => true,
-                () => false
-              ),
-            {
-              timeout: 10_000,
-            }
-          )
-          .toBe(true);
-        // 옮기기가 끝나지 않은 동안 같은 조직의 격리 실행이 시작한다. 그 실행은 옮기기를 기다린다고 알린 자리에서 멈춘다.
-        let waiting!: (text: string) => void;
-        const waitingForCopy = new Promise<string>((resolve) => {
-          waiting = resolve;
-        });
-        const isolated = t.provider().adapter.execute(t.input(), {
-          signal: new AbortController().signal,
-          emit: async (activity: unknown) => {
-            const { type, text } = activity as { type: string; text?: string };
-            if (type === "progress" && text) waiting(text);
-          },
-        });
-        expect(await waitingForCopy).toBe(
-          "로그인 정보를 옮기는 중이라 끝날 때까지 기다립니다."
-        );
-        expect(
-          (await t.env.calls()).some((call) => call.args.includes("run"))
-        ).toBe(false);
-        await rm(hold);
-        expect((await host).stopReason).toBe("completed");
-        const refused = await isolated;
-        expect(refused.stopReason).toBe("failed");
-        expect(refused.error).toContain("로그인 기록");
-        expect(t.network.urls).toHaveLength(0);
-      } finally {
-        await t.network.close();
-      }
+        ])
+      );
+      // 이 컴퓨터의 실행이 조직 폴더에 로그인을 쓰는 순간을 붙잡아 둔다.
+      const data = path.join(t.organization, "data");
+      await mkdir(data, { recursive: true });
+      const hold = path.join(data, "hold-credential");
+      await writeFile(hold, "");
+      const base = t.input();
+      const host = t.provider().adapter.execute(
+        {
+          ...base,
+          execution: "host",
+          identity: { ...base.identity, runId: crypto.randomUUID() },
+        },
+        control()
+      );
+      await expect
+        .poll(
+          () =>
+            stat(`${hold}.reached`).then(
+              () => true,
+              () => false
+            ),
+          {
+            timeout: 10_000,
+          }
+        )
+        .toBe(true);
+      // 옮기기가 끝나지 않은 동안 같은 조직의 격리 실행이 시작한다. 그 실행은 옮기기를 기다린다고 알린 자리에서 멈춘다.
+      let waiting!: (text: string) => void;
+      const waitingForCopy = new Promise<string>((resolve) => {
+        waiting = resolve;
+      });
+      const isolated = t.provider().adapter.execute(t.input(), {
+        signal: new AbortController().signal,
+        emit: async (activity: unknown) => {
+          const { type, text } = activity as { type: string; text?: string };
+          if (type === "progress" && text) waiting(text);
+        },
+      });
+      expect(await waitingForCopy).toBe(
+        "로그인 정보를 옮기는 중이라 끝날 때까지 기다립니다."
+      );
+      expect(
+        (await t.env.calls()).some((call) => call.args.includes("run"))
+      ).toBe(false);
+      await rm(hold);
+      expect((await host).stopReason).toBe("completed");
+      const refused = await isolated;
+      expect(refused.stopReason).toBe("failed");
+      expect(refused.error).toContain("로그인 기록");
+      expect(t.network.urls).toHaveLength(0);
     }, 30_000);
 
     it("ends the run as failed with the reason when the relay cannot read the Go login", async () => {
       const t = await openCodeSetup(false);
-      try {
-        const result = await t
-          .provider()
-          .adapter.execute(t.input("opencode-go/glm-5.3"), control());
-        expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("인증 중계");
-        expect(t.provider().credentialRelay!.failed()).toBe(true);
-        expect(t.network.urls).toHaveLength(0);
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t
+        .provider()
+        .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+      expect(result.stopReason).toBe("failed");
+      expect(result.error).toContain("인증 중계");
+      expect(t.provider().credentialRelay!.failed()).toBe(true);
+      expect(t.network.urls).toHaveLength(0);
     }, 20000);
   }
 );
@@ -1898,50 +1823,42 @@ describe.skipIf(process.platform === "win32")(
 
     it("lets the program reach the model only through the relay, which puts the connection's access token in place of the run's grant", async () => {
       const t = await agySetup();
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("completed");
-        expect(t.network.urls).toEqual([
-          "/v1internal:streamGenerateContent?alt=sse",
-        ]);
-        expect(t.network.seen[0]!.authorization).toBe("Bearer real-agy-access");
-        const run = runCall(await t.env.calls());
-        expect(JSON.stringify(run)).not.toMatch(
-          /real-agy-access|real-agy-refresh/
-        );
-        expect(run.env?.CLOUD_CODE_URL).toBe(
-          `${t.network.tools}/api/relay/antigravity`
-        );
-        // 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 있고 이 컨테이너에만 로그인 자리 위에 읽기로 들어간다.
-        const mount = valuesOf(run.args, "--mount").find((spec) =>
-          spec.includes(`target=${t.loginAt},`)
-        );
-        expect(mount).toMatch(/,readonly$/);
-        await expect(
-          stat(/source=([^,]+)/.exec(mount!)![1]!)
-        ).rejects.toThrow();
-        // 조직 폴더에는 권한 없는 자리 표시만 남는다.
-        const placeholder = JSON.parse(await readFile(t.loginAt, "utf8")) as {
-          token: Record<string, string>;
-        };
-        expect(placeholder.token.access_token).toBe("");
-        expect(placeholder.token.refresh_token).toBeUndefined();
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("completed");
+      expect(t.network.urls).toEqual([
+        "/v1internal:streamGenerateContent?alt=sse",
+      ]);
+      expect(t.network.seen[0]!.authorization).toBe("Bearer real-agy-access");
+      const run = runCall(await t.env.calls());
+      expect(JSON.stringify(run)).not.toMatch(
+        /real-agy-access|real-agy-refresh/
+      );
+      expect(run.env?.CLOUD_CODE_URL).toBe(
+        `${t.network.tools}/api/relay/antigravity`
+      );
+      // 권한이 든 로그인 파일은 이 실행 시도 전용 폴더에 있고 이 컨테이너에만 로그인 자리 위에 읽기로 들어간다.
+      const mount = valuesOf(run.args, "--mount").find((spec) =>
+        spec.includes(`target=${t.loginAt},`)
+      );
+      expect(mount).toMatch(/,readonly$/);
+      await expect(stat(/source=([^,]+)/.exec(mount!)![1]!)).rejects.toThrow();
+      // 조직 폴더에는 권한 없는 자리 표시만 남는다.
+      const placeholder = JSON.parse(await readFile(t.loginAt, "utf8")) as {
+        token: Record<string, string>;
+      };
+      expect(placeholder.token.access_token).toBe("");
+      expect(placeholder.token.refresh_token).toBeUndefined();
     }, 20000);
 
     it("ends the run as failed with the reason when the relay cannot read the login", async () => {
       const t = await agySetup(null);
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("인증 중계");
-        expect(t.provider().credentialRelay!.failed()).toBe(true);
-        expect(t.network.urls).toHaveLength(0);
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("failed");
+      expect(result.error).toContain("인증 중계");
+      expect(t.provider().credentialRelay!.failed()).toBe(true);
+      expect(t.network.urls).toHaveLength(0);
     }, 20000);
 
     it("refreshes a login about to expire with agy on this machine before the relay uses it", async () => {
@@ -1956,36 +1873,30 @@ describe.skipIf(process.platform === "win32")(
           },
         })
       );
-      try {
-        const result = await t.provider().adapter.execute(t.input(), control());
-        expect(result.stopReason).toBe("completed");
-        const login = JSON.parse(await readFile(t.original, "utf8")) as {
-          token: Record<string, string>;
-          refreshed: number;
-        };
-        expect(login.refreshed).toBe(1);
-        expect(login.token.access_token).not.toBe("old-agy-access");
-        expect(t.network.seen[0]!.authorization).toBe(
-          `Bearer ${login.token.access_token}`
-        );
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t.provider().adapter.execute(t.input(), control());
+      expect(result.stopReason).toBe("completed");
+      const login = JSON.parse(await readFile(t.original, "utf8")) as {
+        token: Record<string, string>;
+        refreshed: number;
+      };
+      expect(login.refreshed).toBe(1);
+      expect(login.token.access_token).not.toBe("old-agy-access");
+      expect(t.network.seen[0]!.authorization).toBe(
+        `Bearer ${login.token.access_token}`
+      );
     }, 20000);
 
     it("a run with isolation off does not take the placeholder as the connection's login", async () => {
       const t = await agySetup();
-      try {
-        const before = await readFile(t.original, "utf8");
-        await t.provider().adapter.execute(t.input(), control());
-        const host = t.input();
-        delete host.execution;
-        await t.provider().adapter.execute(host, control());
-        expect(await readFile(t.original, "utf8")).toBe(before);
-        expect(await readFile(t.loginAt, "utf8")).toBe(before);
-      } finally {
-        await t.network.close();
-      }
+
+      const before = await readFile(t.original, "utf8");
+      await t.provider().adapter.execute(t.input(), control());
+      const host = t.input();
+      delete host.execution;
+      await t.provider().adapter.execute(host, control());
+      expect(await readFile(t.original, "utf8")).toBe(before);
+      expect(await readFile(t.loginAt, "utf8")).toBe(before);
     }, 20000);
   }
 );
@@ -2115,35 +2026,29 @@ describe.skipIf(process.platform === "win32")(
           },
           { hold: true }
         );
-        try {
-          const input = env.isolated();
-          input.access = { ...input.access, toolsBaseUrl: network.tools };
-          const cancel = new AbortController();
-          const running = provider.adapter.execute(
-            input,
-            control(cancel.signal)
-          );
-          await expect
-            .poll(() => network.urls.length, { timeout: 10_000 })
-            .toBe(1);
-          cancel.abort();
-          // 중단이 효력을 갖는 순간부터 그 권한의 새 요청은 상류에 닿지 않는다.
-          const after = await fetch(`${network.tools}/api/relay/${id}/any`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${grants[0]}` },
-          });
-          expect(after.status).toBe(401);
-          await expect.poll(() => network.closed.length, programStart).toBe(1);
-          const result = await running;
-          expect(result.stopReason).toBe("cancelled");
-          expect(network.urls).toHaveLength(1);
-          // 실행 시도는 컨테이너를 지운 뒤에야 끝난다(그 전에 같은 자리를 다시 쓰지 않는다).
-          const calls = await env.calls();
-          expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
-          expect(grants).toHaveLength(1);
-        } finally {
-          await network.close();
-        }
+
+        const input = env.isolated();
+        input.access = { ...input.access, toolsBaseUrl: network.tools };
+        const cancel = new AbortController();
+        const running = provider.adapter.execute(input, control(cancel.signal));
+        await expect
+          .poll(() => network.urls.length, { timeout: 10_000 })
+          .toBe(1);
+        cancel.abort();
+        // 중단이 효력을 갖는 순간부터 그 권한의 새 요청은 상류에 닿지 않는다.
+        const after = await fetch(`${network.tools}/api/relay/${id}/any`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${grants[0]}` },
+        });
+        expect(after.status).toBe(401);
+        await expect.poll(() => network.closed.length, programStart).toBe(1);
+        const result = await running;
+        expect(result.stopReason).toBe("cancelled");
+        expect(network.urls).toHaveLength(1);
+        // 실행 시도는 컨테이너를 지운 뒤에야 끝난다(그 전에 같은 자리를 다시 쓰지 않는다).
+        const calls = await env.calls();
+        expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
+        expect(grants).toHaveLength(1);
       },
       30_000
     );
@@ -2374,35 +2279,30 @@ describe.skipIf(process.platform === "win32")(
               connection.login("real-access")
             );
             refusal = code;
-            try {
-              const result = await t
-                .provider()
-                .adapter.execute(t.isolated(), control());
-              expect(result.stopReason).toBe("completed");
-              expect(t.authorizations()).toEqual(["Bearer real-access"]);
-              expect(t.provider().credentialRelay!.failed()).toBe(false);
-              const [run] = await t.runs();
-              const sources = valuesOf(run!.args, "--mount").map(
-                (mount) => /source=([^,]+)/.exec(mount)![1]!
-              );
-              const organization = path.join(
-                t.folder,
-                "organizations",
-                t.env.org
-              );
-              expect(
-                sources.filter(
-                  (source) => !path.relative(t.folder, source).startsWith("..")
-                )
-              ).toEqual([organization]);
-              expect(JSON.stringify(run)).not.toContain("real-access");
-              // 로그인은 연결 폴더 자리 하나에만 있다. 조직 폴더에도 없다.
-              expect(await t.holding("real-access")).toEqual([
-                t.connectionPlace,
-              ]);
-            } finally {
-              await t.network.close();
-            }
+
+            const result = await t
+              .provider()
+              .adapter.execute(t.isolated(), control());
+            expect(result.stopReason).toBe("completed");
+            expect(t.authorizations()).toEqual(["Bearer real-access"]);
+            expect(t.provider().credentialRelay!.failed()).toBe(false);
+            const [run] = await t.runs();
+            const sources = valuesOf(run!.args, "--mount").map(
+              (mount) => /source=([^,]+)/.exec(mount)![1]!
+            );
+            const organization = path.join(
+              t.folder,
+              "organizations",
+              t.env.org
+            );
+            expect(
+              sources.filter(
+                (source) => !path.relative(t.folder, source).startsWith("..")
+              )
+            ).toEqual([organization]);
+            expect(JSON.stringify(run)).not.toContain("real-access");
+            // 로그인은 연결 폴더 자리 하나에만 있다. 조직 폴더에도 없다.
+            expect(await t.holding("real-access")).toEqual([t.connectionPlace]);
           },
           20_000
         );
@@ -2417,25 +2317,22 @@ describe.skipIf(process.platform === "win32")(
           connection.login("first-access")
         );
         refusal = "EPERM";
-        try {
-          const first = await t
-            .provider()
-            .adapter.execute(t.isolated(), control());
-          expect(first.stopReason).toBe("completed");
-          await t.logIn(connection.login("second-access"));
-          const second = await t
-            .provider()
-            .adapter.execute(t.isolated(), control());
-          expect(second.stopReason).toBe("completed");
-          expect(t.authorizations()).toEqual([
-            "Bearer first-access",
-            "Bearer second-access",
-          ]);
-          expect(await t.holding("first-access")).toEqual([]);
-          expect(await t.holding("second-access")).toEqual([t.connectionPlace]);
-        } finally {
-          await t.network.close();
-        }
+
+        const first = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(first.stopReason).toBe("completed");
+        await t.logIn(connection.login("second-access"));
+        const second = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(second.stopReason).toBe("completed");
+        expect(t.authorizations()).toEqual([
+          "Bearer first-access",
+          "Bearer second-access",
+        ]);
+        expect(await t.holding("first-access")).toEqual([]);
+        expect(await t.holding("second-access")).toEqual([t.connectionPlace]);
       },
       20_000
     );
@@ -2452,21 +2349,18 @@ describe.skipIf(process.platform === "win32")(
         );
         await t.logIn(connection.login("newer-access"));
         refusal = "EPERM";
-        try {
-          const result = await t
-            .provider()
-            .adapter.execute(t.isolated(), control());
-          expect(result.stopReason).toBe("completed");
-          expect(t.authorizations()).toEqual(["Bearer newer-access"]);
-          expect(await t.holding("newer-access")).toEqual([t.connectionPlace]);
-          const aside = await t.holding("copied-access");
-          expect(aside.map((file) => path.dirname(file))).toEqual([
-            path.join(t.folder, "set-aside"),
-          ]);
-          await expect(lstat(t.original)).rejects.toThrow();
-        } finally {
-          await t.network.close();
-        }
+
+        const result = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(result.stopReason).toBe("completed");
+        expect(t.authorizations()).toEqual(["Bearer newer-access"]);
+        expect(await t.holding("newer-access")).toEqual([t.connectionPlace]);
+        const aside = await t.holding("copied-access");
+        expect(aside.map((file) => path.dirname(file))).toEqual([
+          path.join(t.folder, "set-aside"),
+        ]);
+        await expect(lstat(t.original)).rejects.toThrow();
       },
       20_000
     );
@@ -2476,17 +2370,14 @@ describe.skipIf(process.platform === "win32")(
       async (connection) => {
         const t = await noLinkSetup(connection, null);
         refusal = "EPERM";
-        try {
-          const result = await t
-            .provider()
-            .adapter.execute(t.isolated(), control());
-          expect(result.stopReason).toBe("failed");
-          expect(result.error).toContain("인증 중계");
-          expect(t.provider().credentialRelay!.failed()).toBe(true);
-          expect(t.network.urls).toEqual([]);
-        } finally {
-          await t.network.close();
-        }
+
+        const result = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("인증 중계");
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        expect(t.network.urls).toEqual([]);
       },
       20_000
     );
@@ -2496,23 +2387,20 @@ describe.skipIf(process.platform === "win32")(
       async (connection) => {
         const t = await noLinkSetup(connection, null);
         refusal = "EPERM";
-        try {
-          const first = await t
-            .provider()
-            .adapter.execute(t.isolated(), control());
-          expect(first.stopReason).toBe("failed");
-          expect(t.provider().credentialRelay!.failed()).toBe(true);
-          await t.logIn(connection.login("fixed-access"));
-          await t.provider().credentialRelay!.recover();
-          expect(t.provider().credentialRelay!.failed()).toBe(false);
-          const next = await t
-            .provider()
-            .adapter.execute(t.isolated(), control());
-          expect(next.stopReason).toBe("completed");
-          expect(t.authorizations()).toEqual(["Bearer fixed-access"]);
-        } finally {
-          await t.network.close();
-        }
+
+        const first = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(first.stopReason).toBe("failed");
+        expect(t.provider().credentialRelay!.failed()).toBe(true);
+        await t.logIn(connection.login("fixed-access"));
+        await t.provider().credentialRelay!.recover();
+        expect(t.provider().credentialRelay!.failed()).toBe(false);
+        const next = await t
+          .provider()
+          .adapter.execute(t.isolated(), control());
+        expect(next.stopReason).toBe("completed");
+        expect(t.authorizations()).toEqual(["Bearer fixed-access"]);
       },
       20_000
     );
@@ -2547,25 +2435,22 @@ describe.skipIf(process.platform === "win32")(
           }),
       });
       refusal = "EPERM";
-      try {
-        const result = await t
-          .provider()
-          .adapter.execute(t.isolated(), control());
-        expect(result.stopReason).toBe("completed");
-        expect(
-          (await readFile(log, "utf8")).split("\n").filter(Boolean)
-        ).toHaveLength(1);
-        const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
-          tokens: Record<string, string>;
-        };
-        expect(login.tokens.refresh_token).toBe("rotated-refresh-1");
-        expect(t.authorizations()).toEqual([
-          `Bearer ${login.tokens.access_token}`,
-        ]);
-        await expect(stat(t.original)).rejects.toThrow();
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t
+        .provider()
+        .adapter.execute(t.isolated(), control());
+      expect(result.stopReason).toBe("completed");
+      expect(
+        (await readFile(log, "utf8")).split("\n").filter(Boolean)
+      ).toHaveLength(1);
+      const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
+        tokens: Record<string, string>;
+      };
+      expect(login.tokens.refresh_token).toBe("rotated-refresh-1");
+      expect(t.authorizations()).toEqual([
+        `Bearer ${login.tokens.access_token}`,
+      ]);
+      await expect(stat(t.original)).rejects.toThrow();
     }, 20_000);
 
     it("refreshes an expiring Antigravity login with agy on this machine at the connection folder's place, and the model gets the refreshed login", async () => {
@@ -2582,23 +2467,20 @@ describe.skipIf(process.platform === "win32")(
         })
       );
       refusal = "EPERM";
-      try {
-        const result = await t
-          .provider()
-          .adapter.execute(t.isolated(), control());
-        expect(result.stopReason).toBe("completed");
-        const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
-          token: Record<string, string>;
-          refreshed: number;
-        };
-        expect(login.refreshed).toBe(1);
-        expect(t.authorizations()).toEqual([
-          `Bearer ${login.token.access_token}`,
-        ]);
-        await expect(stat(t.original)).rejects.toThrow();
-      } finally {
-        await t.network.close();
-      }
+
+      const result = await t
+        .provider()
+        .adapter.execute(t.isolated(), control());
+      expect(result.stopReason).toBe("completed");
+      const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
+        token: Record<string, string>;
+        refreshed: number;
+      };
+      expect(login.refreshed).toBe(1);
+      expect(t.authorizations()).toEqual([
+        `Bearer ${login.token.access_token}`,
+      ]);
+      await expect(stat(t.original)).rejects.toThrow();
     }, 20_000);
 
     it.each(connections)(
@@ -2607,36 +2489,33 @@ describe.skipIf(process.platform === "win32")(
         const t = await noLinkSetup(connection, connection.login("login-1"));
         const run = async (request: RunRequest) =>
           (await t.provider().adapter.execute(request, control())).stopReason;
-        try {
-          expect(await run(t.isolated())).toBe("completed");
-          expect(await run(t.onHost())).toBe("completed");
-          // 링크를 모르는 디스크로 데이터 폴더를 옮기면 링크는 따라오지 않는다.
-          refusal = "EPERM";
-          await rm(t.connectionPlace, { force: true });
-          expect(await run(t.onHost())).toBe("completed");
-          expect(await run(t.isolated())).toBe("completed");
-          await t.logIn(connection.login("login-2"));
-          expect(await run(t.isolated())).toBe("completed");
-          expect(await run(t.onHost())).toBe("completed");
-          refusal = null;
-          expect(await run(t.onHost())).toBe("completed");
-          expect(await run(t.isolated())).toBe("completed");
-          await t.logIn(connection.login("login-3"));
-          expect(await run(t.isolated())).toBe("completed");
-          expect(t.authorizations()).toEqual([
-            "Bearer login-1",
-            "Bearer login-1",
-            "Bearer login-2",
-            "Bearer login-2",
-            "Bearer login-3",
-          ]);
-          // 원본은 하나다: 로그인 전용 폴더의 원본만 로그인을 담고, 연결 폴더 자리는 그것을 가리킨다.
-          expect(await t.holding("login-")).toEqual([t.original]);
-          expect((await lstat(t.connectionPlace)).isSymbolicLink()).toBe(true);
-          expect(t.provider().credentialRelay!.failed()).toBe(false);
-        } finally {
-          await t.network.close();
-        }
+
+        expect(await run(t.isolated())).toBe("completed");
+        expect(await run(t.onHost())).toBe("completed");
+        // 링크를 모르는 디스크로 데이터 폴더를 옮기면 링크는 따라오지 않는다.
+        refusal = "EPERM";
+        await rm(t.connectionPlace, { force: true });
+        expect(await run(t.onHost())).toBe("completed");
+        expect(await run(t.isolated())).toBe("completed");
+        await t.logIn(connection.login("login-2"));
+        expect(await run(t.isolated())).toBe("completed");
+        expect(await run(t.onHost())).toBe("completed");
+        refusal = null;
+        expect(await run(t.onHost())).toBe("completed");
+        expect(await run(t.isolated())).toBe("completed");
+        await t.logIn(connection.login("login-3"));
+        expect(await run(t.isolated())).toBe("completed");
+        expect(t.authorizations()).toEqual([
+          "Bearer login-1",
+          "Bearer login-1",
+          "Bearer login-2",
+          "Bearer login-2",
+          "Bearer login-3",
+        ]);
+        // 원본은 하나다: 로그인 전용 폴더의 원본만 로그인을 담고, 연결 폴더 자리는 그것을 가리킨다.
+        expect(await t.holding("login-")).toEqual([t.original]);
+        expect((await lstat(t.connectionPlace)).isSymbolicLink()).toBe(true);
+        expect(t.provider().credentialRelay!.failed()).toBe(false);
       },
       30_000
     );
@@ -2668,23 +2547,20 @@ describe.skipIf(process.platform === "win32")(
           const t = await noLinkSetup(connection, connection.login("disk-1"), {
             base: volume!,
           });
-          try {
-            const run = async () =>
-              (await t.provider().adapter.execute(t.isolated(), control()))
-                .stopReason;
-            expect(await run()).toBe("completed");
-            await t.logIn(connection.login("disk-2"));
-            expect(await run()).toBe("completed");
-            expect(t.authorizations()).toEqual([
-              "Bearer disk-1",
-              "Bearer disk-2",
-            ]);
-            expect(await t.holding("disk-2")).toEqual([t.connectionPlace]);
-            for (const call of await t.runs())
-              expect(JSON.stringify(call)).not.toMatch(/disk-1|disk-2/);
-          } finally {
-            await t.network.close();
-          }
+
+          const run = async () =>
+            (await t.provider().adapter.execute(t.isolated(), control()))
+              .stopReason;
+          expect(await run()).toBe("completed");
+          await t.logIn(connection.login("disk-2"));
+          expect(await run()).toBe("completed");
+          expect(t.authorizations()).toEqual([
+            "Bearer disk-1",
+            "Bearer disk-2",
+          ]);
+          expect(await t.holding("disk-2")).toEqual([t.connectionPlace]);
+          for (const call of await t.runs())
+            expect(JSON.stringify(call)).not.toMatch(/disk-1|disk-2/);
         },
         30_000
       );

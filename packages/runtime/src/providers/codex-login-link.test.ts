@@ -6,6 +6,7 @@ import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import { loginLink } from "./login-link.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
+import { withCleanup } from "../test-cleanup.ts";
 
 // Codex 로그인 하나를 연결의 모든 조직이 링크로 같이 쓴다(docs/research/org-product-folders-references.md 사용자 결정).
 // 링크를 만들 수 없는 컴퓨터와 여러 조직이 한꺼번에 시작하는 장면에서도 로그인이 남아야 한다.
@@ -193,8 +194,13 @@ describe("Codex login link", () => {
       share(links[1]!),
       otherShare(links[2]!),
     ].map(track);
-    let results: boolean[];
-    try {
+    let settled: PromiseSettledResult<boolean>[] = [];
+    // 붙잡은 rename을 풀고 모든 호출이 끝난 뒤에 결과를 본다.
+    await withCleanup(async (defer) => {
+      defer(async () => {
+        release();
+        settled = await Promise.allSettled(operations);
+      });
       // 첫 호출이 원본 로그인을 옮기는 rename에 들어갔다. 그동안 다른 호출은 그 rename에 들어오지 못한다.
       // 다른 호출이 시작하는 시간을 담아 느린 실행기를 감당하게 기다린다(#215).
       await vi.waitFor(
@@ -204,13 +210,10 @@ describe("Codex login link", () => {
         },
         { timeout: 15_000 }
       );
-    } finally {
-      release();
-      const settled = await Promise.allSettled(operations);
-      results = settled.flatMap((one) =>
-        one.status === "fulfilled" ? [one.value] : []
-      );
-    }
+    });
+    const results = settled.flatMap((one) =>
+      one.status === "fulfilled" ? [one.value] : []
+    );
     expect(results).toEqual([true, true, true, true]);
     expect(originalRenames).toBe(1);
     expect((await lstat(original)).isFile()).toBe(true);

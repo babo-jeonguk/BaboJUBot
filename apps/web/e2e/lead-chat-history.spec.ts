@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { settledBoxes } from "./support/layout.ts";
 import { goalInput, leadComposer } from "./support/organization.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // Lead 대화는 가장 최근 쪽(50개)만 먼저 그리고, 위로 올리면 더 오래된 쪽을 붙인다.
 // 맨 아래를 따라가는 동안에는 가장 최근 창(100개 이하)만 남기고, 위로 올리면 덜어 낸 쪽을 다시 받는다.
@@ -112,7 +113,9 @@ test("the Lead chat shows the latest 50 messages and loads older ones on scroll-
     await held;
     await route.continue();
   });
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => page.unrouteAll({ behavior: "wait" }));
+    defer(() => release());
     const top = messages.first();
     const topId = await top.getAttribute("data-message-id");
     await scroller.hover();
@@ -135,10 +138,7 @@ test("the Lead chat shows the latest 50 messages and loads older ones on scroll-
       scroller.locator(`[data-message-id="${topId}"]`)
     );
     expect(Math.abs(after - before)).toBeLessThan(40);
-  } finally {
-    release();
-    await page.unrouteAll({ behavior: "wait" });
-  }
+  });
 
   // 키보드로 `이전 메시지 보기`를 누르면 남은 쪽을 받고, 처음까지 오면 버튼이 사라진다.
   await older.focus();

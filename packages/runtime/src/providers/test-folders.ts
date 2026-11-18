@@ -5,6 +5,7 @@ import path from "node:path";
 import type { RuntimeAdapter } from "@babojubot/contracts";
 import { afterEach } from "vitest";
 import { removeFolder } from "../remove-folder.ts";
+import { cleanUpAll } from "../test-cleanup.ts";
 
 type Hook = (cleanup: () => Promise<void>) => void;
 /** 시험이 만든 프로바이더 연결. 멈춤 신호를 받는 호출(실행·준비 확인·압축·모델 목록)을 정리가 맡는다. */
@@ -91,7 +92,10 @@ export function testFolders(
         ? failures[0]
         : new AggregateError(failures, "test cleanup failed");
     }
-    await Promise.all(folders.splice(0).map((folder) => removeFolder(folder)));
+    // 한 폴더를 지우지 못해도 나머지를 지우고, 지우지 못한 폴더를 모두 알린다.
+    await cleanUpAll(
+      folders.splice(0).map((folder) => () => removeFolder(folder))
+    );
   });
   return {
     /** 새 임시 폴더. 정리 때 지운다. */

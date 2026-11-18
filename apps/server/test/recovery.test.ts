@@ -54,6 +54,7 @@ import {
   within,
   type TestServer,
 } from "./support.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 서버 재시작 복구. 실행 중 서버가 멈추면 그 실행 시도는 `server_restart`로 끝나고, 받은 깨우기는 다시 처리되어 새 실행 시도가 생긴다.
 
@@ -484,8 +485,13 @@ async function crashAndRestart(
       if (timer) clearTimeout(timer);
     }
   };
-  let orgId: string;
-  try {
+  // 시험이 어디서 실패하든 서버 프로세스를 끄고 끝나기를 기다린다. 그 뒤에 같은 DB로 다시 띄워 복구를 본다.
+  const orgId = await withCleanup(async (defer) => {
+    defer(async () => {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      await exitedWithin(10_000);
+    });
     // 준비 줄은 조각나서 온다. 완전한 줄이 모이거나 프로세스가 끝나기를 기다리되 15초에서 멈춘다.
     let startLimit: ReturnType<typeof setTimeout> | undefined;
     const started = await Promise.race([
@@ -509,9 +515,8 @@ async function crashAndRestart(
     if (readyError) throw readyError;
     const before = api(() => readyUrl!);
     const org = legacy
-      ? await insertLegacyOrganization(database.db, "crash 조직")
+      ? await insertLegacyOrganization(database!.db, "crash 조직")
       : await before.createOrganization("crash 조직");
-    orgId = org.id;
     if (say) await before.say(org.id, say);
     await vi
       .waitUntil(() => committed(before, org.id), {
@@ -524,16 +529,8 @@ async function crashAndRestart(
     if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
     await exitedWithin(10_000);
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* 이미 끝났다. */
-      }
-    }
-    await exitedWithin(10_000);
-  }
+    return org.id;
+  });
   server = await startServer({ db: database.db, port: 0 });
   await server.drain();
   const http = api(() => server!.url);
@@ -682,12 +679,16 @@ describe("server start recovery barrier", () => {
       port,
       runtime: runtime.adapter,
     });
-    let stream: Stream;
-    try {
+    // 붙잡은 행은 시험이 실패해도 풀고, 그 복구 저장이 끝나기를 기다린다.
+    const stream = await withCleanup(async (defer) => {
+      defer(async () => {
+        held.open();
+        await holding;
+      });
       await until(
         async () => (await runStatus(early!.runId)) === "server_restart"
       );
-      stream = await listen(base);
+      const stream = await listen(base);
       // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
       await http.say(early!.organizationId, "복구 중에 보낸 메시지");
       // 시간을 기다리지 않는다. 복구가 끝나기 전의 촉진은 응답 전에 그 자리에서 버려지고(`kick`), 메시지의 Event는 응답 전에
@@ -697,10 +698,8 @@ describe("server start recovery barrier", () => {
       expect(runtime.executions()).toEqual([]);
       expect(stream.types().filter((t) => t !== "message.created")).toEqual([]);
       expect(await runStatus(late!.runId)).toBe("running");
-    } finally {
-      held.open();
-      await holding;
-    }
+      return stream;
+    });
     server = await starting;
     await server.drain();
     stream.close();

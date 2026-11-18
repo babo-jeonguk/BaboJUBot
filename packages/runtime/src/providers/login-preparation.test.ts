@@ -22,6 +22,7 @@ import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { removeFolder } from "../remove-folder.ts";
+import { cleanUpAll, withCleanup } from "../test-cleanup.ts";
 
 // 로그인을 파일로 같이 쓰는 Codex·Antigravity의 실행 준비(#146). 조직 신원 확인 → 연결 로그인 준비 → 격리 실행이면 흔적 검사·
 // 실행 시도 전용 로그인 파일, 격리를 끈 실행이면 조직 자리 링크 → 돌 제품 폴더 → 프로세스 시작. 준비 중에 취소하면 시작한
@@ -109,9 +110,23 @@ const runs: Promise<unknown>[] = [];
 afterEach(async () => {
   gate = undefined;
   for (const release of holds.splice(0)) release();
-  let limit: NodeJS.Timeout | undefined;
   const folders = roots.splice(0);
-  try {
+  // 풀려난 실행이 끝나기를 시한 안에서 기다린다. 끝나든 시한이 지나든 서버를 닫고 상태를 되돌린다.
+  await withCleanup(async (defer) => {
+    defer(() =>
+      cleanUpAll(
+        servers.splice(0).map((server) => async () => {
+          server.closeAllConnections();
+          await new Promise((resolve) => server.close(resolve));
+        })
+      )
+    );
+    defer(() => {
+      refusal = null;
+      spawned.length = 0;
+      race = undefined;
+    });
+    let limit: NodeJS.Timeout | undefined;
     await Promise.race([
       Promise.allSettled(runs.splice(0)),
       new Promise((_, reject) => {
@@ -120,20 +135,11 @@ afterEach(async () => {
           10_000
         );
       }),
-    ]);
-  } finally {
-    clearTimeout(limit);
-    // 풀려난 실행이 끝난 뒤에 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남는다.
-    refusal = null;
-    spawned.length = 0;
-    race = undefined;
-    for (const server of servers.splice(0)) {
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-    }
-  }
-  // 실행이 모두 끝났을 때만 지운다. 끝나지 않은 실행이 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다.
-  await Promise.all(folders.map((root) => removeFolder(root)));
+    ]).finally(() => clearTimeout(limit));
+  });
+  // 실행이 모두 끝났을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 끝나지 않은 실행이
+  // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다.
+  await cleanUpAll(folders.map((root) => () => removeFolder(root)));
 });
 /** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
 function hold() {

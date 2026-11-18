@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { organizationDetailSchema } from "@babojubot/contracts";
 import { createTestDatabase } from "@babojubot/db/testing";
-import { expect, it } from "vitest";
+import { expect, it, onTestFinished } from "vitest";
 import { startServer } from "../src/index.ts";
 import { goal } from "./scenarios.ts";
 
@@ -20,17 +20,14 @@ it("keeps the product folder of a server started without one outside the reposit
   expect(relative.startsWith("..") || path.isAbsolute(relative)).toBe(false);
 
   const database = await createTestDatabase();
+  onTestFinished(() => database.close());
   const server = await startServer({ db: database.db, port: 0 });
-  try {
-    const res = await fetch(`${server.url}/api/organizations`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "임시 폴더 조직", ...goal }),
-    });
-    const org = organizationDetailSchema.parse(await res.json());
-    expect(existsSync(path.join(home!, "organizations", org.id))).toBe(true);
-  } finally {
-    await server.close();
-    await database.close();
-  }
+  onTestFinished(() => server.close());
+  const res = await fetch(`${server.url}/api/organizations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "임시 폴더 조직", ...goal }),
+  });
+  const org = organizationDetailSchema.parse(await res.json());
+  expect(existsSync(path.join(home!, "organizations", org.id))).toBe(true);
 });

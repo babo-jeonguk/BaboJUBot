@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
 import {
   planOrganizationCreation,
   type AgentRoleSource,
@@ -69,7 +70,7 @@ export async function startTestCluster(): Promise<() => Promise<void>> {
 
 /**
  * 테스트마다 따로 쓰는 DB. 테스트 실행이 띄운 cluster(`startTestCluster`)에 원본 DB를 복제하며,
- * `close`가 그 DB를 지운다.
+ * `close`가 연결을 닫고 그 DB를 지운다.
  */
 export async function createTestDatabase(): Promise<DatabaseHandle> {
   const port = Number(process.env[clusterPortEnv]);
@@ -100,13 +101,8 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   }
   return {
     ...handle,
-    close: async () => {
-      try {
-        await handle.close();
-      } finally {
-        await drop();
-      }
-    },
+    // 연결 닫기가 실패해도 DB를 지우고, 둘 다 실패하면 둘 다 알린다.
+    close: () => cleanUpAll([() => handle.close(), drop]),
   };
 }
 

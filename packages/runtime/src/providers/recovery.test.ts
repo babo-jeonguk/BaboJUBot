@@ -9,8 +9,9 @@ import {
   recoverProviderProcesses,
 } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "./lease.ts";
-import { readyLine } from "./process-test-support.ts";
+import { killUnlessGone, readyLine } from "./process-test-support.ts";
 import { testFolders } from "./test-folders.ts";
+import { withCleanup } from "../test-cleanup.ts";
 
 // Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
 // 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
@@ -106,7 +107,9 @@ it.runIf(process.platform === "linux")(
     });
     await new Promise((resolve) => leader.on("close", resolve));
     const group = leader.pid!;
-    try {
+    // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
+    await withCleanup(async (defer) => {
+      defer(() => killUnlessGone(-group));
       await writeFile(
         path.join(directory, `${group}.json`),
         JSON.stringify({
@@ -123,9 +126,7 @@ it.runIf(process.platform === "linux")(
       expect(() => process.kill(-group, 0)).not.toThrow();
       // 끝났음을 확인하지 못했으니 기록을 남겨 다음 시작 때 다시 본다.
       expect(await readdir(directory)).toEqual([`${group}.json`]);
-    } finally {
-      process.kill(-group, "SIGKILL");
-    }
+    });
     await until(() => groupGone(group));
     await recoverProviderProcesses(root);
     expect(await readdir(directory)).toEqual([]);
@@ -150,26 +151,23 @@ const gone = (pid: number) => {
 
 it("stops a leftover process on systems without /proc", async () => {
   const { root, directory } = await records();
-  const child = longRunning();
+  const child = folders.ownChild(longRunning());
   // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
   await once(child, "spawn");
-  try {
-    await writeFile(
-      path.join(directory, `${child.pid}.json`),
-      JSON.stringify({
-        pid: child.pid,
-        lease: "lease",
-        started: processStartedAt(child.pid!, withoutProc),
-      })
-    );
-    const closed = new Promise((resolve) => child.on("close", resolve));
-    await recoverProviderProcesses(root, { platform: withoutProc });
-    await closed;
-    expect(gone(child.pid!)).toBe(true);
-    expect(await readdir(directory)).toEqual([]);
-  } finally {
-    if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
-  }
+
+  await writeFile(
+    path.join(directory, `${child.pid}.json`),
+    JSON.stringify({
+      pid: child.pid,
+      lease: "lease",
+      started: processStartedAt(child.pid!, withoutProc),
+    })
+  );
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  await recoverProviderProcesses(root, { platform: withoutProc });
+  await closed;
+  expect(gone(child.pid!)).toBe(true);
+  expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
 // 시작 시각을 묻는 명령이 답하지 않아도 복구는 정해진 상한 안에 다음으로 넘어간다. 우리 것인지 모르는 프로세스와 그 기록은
@@ -217,88 +215,76 @@ it.skipIf(process.platform === "win32")(
 // 번호가 같아도 시작 시각이 다르면 남이다. 시작 시각은 언제 물어도 같으므로 여유를 두지 않는다.
 it("leaves a process whose start differs from the recorded one", async () => {
   const { root, directory } = await records();
-  const child = longRunning();
+  const child = folders.ownChild(longRunning());
   // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
   await once(child, "spawn");
-  try {
-    const started = processStartedAt(child.pid!, withoutProc)!;
-    await writeFile(
-      path.join(directory, `${child.pid}.json`),
-      JSON.stringify({ pid: child.pid, lease: "lease", started: started - 1 })
-    );
-    await recoverProviderProcesses(root, { platform: withoutProc });
-    expect(gone(child.pid!)).toBe(false);
-    expect(await readdir(directory)).toEqual([]);
-  } finally {
-    process.kill(child.pid!, "SIGKILL");
-  }
+
+  const started = processStartedAt(child.pid!, withoutProc)!;
+  await writeFile(
+    path.join(directory, `${child.pid}.json`),
+    JSON.stringify({ pid: child.pid, lease: "lease", started: started - 1 })
+  );
+  await recoverProviderProcesses(root, { platform: withoutProc });
+  expect(gone(child.pid!)).toBe(false);
+  expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
 // 시작 시각을 남기기 전에 서버가 죽은 기록이다. 우리 것인지 모르니 건드리지 않고 남긴다.
 it("keeps a record without a start and leaves the process alone", async () => {
   const { root, directory } = await records();
-  const child = longRunning();
+  const child = folders.ownChild(longRunning());
   // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
   await once(child, "spawn");
   const file = `${child.pid}.json`;
-  try {
-    await writeFile(
-      path.join(directory, file),
-      JSON.stringify({ pid: child.pid, lease: "lease" })
-    );
-    await recoverProviderProcesses(root, { platform: withoutProc });
-    expect(gone(child.pid!)).toBe(false);
-    expect(await readdir(directory)).toEqual([file]);
-  } finally {
-    process.kill(child.pid!, "SIGKILL");
-  }
+
+  await writeFile(
+    path.join(directory, file),
+    JSON.stringify({ pid: child.pid, lease: "lease" })
+  );
+  await recoverProviderProcesses(root, { platform: withoutProc });
+  expect(gone(child.pid!)).toBe(false);
+  expect(await readdir(directory)).toEqual([file]);
 }, 30_000);
 
 // 이 시스템의 실제 경로: 기록을 남기면 다음 시작 때 그 프로세스를 찾아 끝낸다.
 it("stops a process it recorded itself", async () => {
   const { root } = await records();
   const home = path.join(root, "providers/claude");
-  const child = longRunning();
+  const child = folders.ownChild(longRunning());
   // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
   await once(child, "spawn");
   const file = path.join(home, "processes", `${child.pid}.json`);
-  try {
-    recordProcess(home, child.pid!, "lease");
-    await vi.waitFor(
-      async () => expect(await readFile(file, "utf8")).toMatch(/"start(ed)?"/),
-      { timeout: 20_000, interval: 50 }
-    );
-    const closed = new Promise((resolve) => child.on("close", resolve));
-    await recoverProviderProcesses(root);
-    await closed;
-    expect(gone(child.pid!)).toBe(true);
-    expect(await readdir(path.dirname(file))).toEqual([]);
-  } finally {
-    if (!gone(child.pid!)) process.kill(child.pid!, "SIGKILL");
-  }
+
+  recordProcess(home, child.pid!, "lease");
+  await vi.waitFor(
+    async () => expect(await readFile(file, "utf8")).toMatch(/"start(ed)?"/),
+    { timeout: 20_000, interval: 50 }
+  );
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  await recoverProviderProcesses(root);
+  await closed;
+  expect(gone(child.pid!)).toBe(true);
+  expect(await readdir(path.dirname(file))).toEqual([]);
 }, 30_000);
 
 // 기록은 서버 밖의 프로그램도 고칠 수 있다. 이름과 맞지 않거나 번호가 아닌 기록으로는 아무것도 끝내지 않는다.
 it("does not act on a record that does not match its name", async () => {
   const { root, directory } = await records();
-  const child = longRunning();
+  const child = folders.ownChild(longRunning());
   // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
   await once(child, "spawn");
-  try {
-    await writeFile(
-      path.join(directory, "123.json"),
-      JSON.stringify({ pid: child.pid, lease: "lease" })
-    );
-    await writeFile(
-      path.join(directory, "124.json"),
-      JSON.stringify({ pid: "124; echo hello", lease: "lease" })
-    );
-    await recoverProviderProcesses(root, { platform: withoutProc });
-    expect(gone(child.pid!)).toBe(false);
-    expect(await readdir(directory)).toEqual([]);
-  } finally {
-    process.kill(child.pid!, "SIGKILL");
-  }
+
+  await writeFile(
+    path.join(directory, "123.json"),
+    JSON.stringify({ pid: child.pid, lease: "lease" })
+  );
+  await writeFile(
+    path.join(directory, "124.json"),
+    JSON.stringify({ pid: "124; echo hello", lease: "lease" })
+  );
+  await recoverProviderProcesses(root, { platform: withoutProc });
+  expect(gone(child.pid!)).toBe(false);
+  expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
 it.skipIf(process.platform === "win32")(
@@ -311,7 +297,9 @@ it.skipIf(process.platform === "win32")(
     });
     await new Promise((resolve) => leader.on("close", resolve));
     const group = leader.pid!;
-    try {
+    // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
+    await withCleanup(async (defer) => {
+      defer(() => killUnlessGone(-group));
       await writeFile(
         path.join(directory, `${group}.json`),
         JSON.stringify({ pid: group, lease: "lease" })
@@ -319,9 +307,7 @@ it.skipIf(process.platform === "win32")(
       await recoverProviderProcesses(root, { platform: withoutProc });
       expect(groupGone(group)).toBe(false);
       expect(await readdir(directory)).toEqual([`${group}.json`]);
-    } finally {
-      process.kill(-group, "SIGKILL");
-    }
+    });
     await until(() => groupGone(group));
     await recoverProviderProcesses(root, { platform: withoutProc });
     expect(await readdir(directory)).toEqual([]);
@@ -335,10 +321,17 @@ it("keeps the record of a live process whose start cannot be read", async () => 
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
   });
+  const closed = once(child, "close");
   // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
   await once(child, "spawn");
   const file = `${child.pid}.json`;
-  try {
+  // 프로그램은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
+  await withCleanup(async (defer) => {
+    defer(async () => {
+      child.kill("SIGKILL");
+      await closed;
+    });
+    defer(() => vi.unstubAllEnvs());
     await writeFile(
       path.join(directory, file),
       JSON.stringify({ pid: child.pid, lease: "lease", started: 1 })
@@ -348,12 +341,7 @@ it("keeps the record of a live process whose start cannot be read", async () => 
     vi.unstubAllEnvs();
     expect(gone(child.pid!)).toBe(false);
     expect(await readdir(directory)).toEqual([file]);
-  } finally {
-    vi.unstubAllEnvs();
-    const closed = new Promise((resolve) => child.on("close", resolve));
-    child.kill("SIGKILL");
-    await closed;
-  }
+  });
   await recoverProviderProcesses(root, { platform: withoutProc });
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);

@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { keepAppending } from "./appending-writer.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // timer를 멈춰도 이미 시작한 쓰기는 계속된다. 그 쓰기가 폴더 정리와 겹치면 끝난 시험 뒤에 오류가 난다.
 // writer를 멈추는 쪽은 새 쓰기를 막고, 시작한 쓰기가 모두 끝날 때까지 기다리며, 그 실패를 숨기지 않는다.
@@ -95,14 +96,11 @@ it("waits for the append in progress when the test fails before it stops the wri
   const held = heldAppend();
   const writer = keepAppending("run.log", "더\n", { append: held.append });
   await held.firstStarted;
-  // 시험 본문이 단언에서 실패해도 정리(finally)가 writer를 멈추고 진행 중인 쓰기를 기다린다.
-  const test = (async () => {
-    try {
-      throw new Error("assertion failed");
-    } finally {
-      await writer.stop();
-    }
-  })();
+  // 시험 본문이 단언에서 실패해도 등록한 정리가 writer를 멈추고 진행 중인 쓰기를 기다린다.
+  const test = withCleanup(async (defer) => {
+    defer(() => writer.stop());
+    throw new Error("assertion failed");
+  });
   expect(await settled(test)).toBe(false);
   held.release();
   await expect(test).rejects.toThrow("assertion failed");

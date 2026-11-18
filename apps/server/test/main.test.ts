@@ -7,9 +7,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
+import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 /** DB 닫기를 실패시키는 preload(`startMain`의 `preload`). */
@@ -45,16 +46,18 @@ const stopRequests = [
 // 외부 DB는 시험마다 새로 만든다. 같이 쓰면 앞 시험이 남긴 일(예: 조직 생성의 Lead 깨우기)을 뒤 시험의 서버가 이어받아
 // 그 시험의 결과가 실행 순서에 달린다.
 let external: TestDatabase;
-beforeEach(async () => {
-  external = await createTestDatabase();
-});
-afterEach(async () => {
-  await external.close();
+// 시험의 서버가 이 DB를 쓰므로 서버를 끈 뒤에 닫는다. 먼저 등록한 정리는 시험이 등록한 정리보다 뒤에 돈다.
+beforeEach(async ({ onTestFinished }) => {
+  const database = await createTestDatabase();
+  external = database;
+  onTestFinished(() => database.close());
 });
 
 it("starts against an external Postgres URL and leaves that Postgres running on shutdown", async () => {
-  const child = startMain({ DATABASE_URL: external.url });
-  try {
+  // 서버를 끈 뒤에 외부 DB가 남았는지 본다.
+  await withCleanup(async (defer) => {
+    const child = startMain({ DATABASE_URL: external.url });
+    defer(() => stopMain(child));
     await child.ready;
     expect(child.stdoutText()).toContain("external Postgres");
     const url = child.stdoutText().match(/BaboJUBot server on (\S+)/)![1]!;
@@ -65,9 +68,7 @@ it("starts against an external Postgres URL and leaves that Postgres running on 
       body: JSON.stringify({ name: "외부 DB 조직", goal: "외부 DB 목표" }),
     });
     expect(res.status).toBe(201);
-  } finally {
-    await stopMain(child);
-  }
+  });
 
   // The server only owned its connections: the external database still answers.
   expect((await listOrganizations(external.db)).map((o) => o.name)).toContain(
@@ -87,11 +88,8 @@ it("ignores the parent's server settings that the test did not choose", async ()
     if (saved === undefined) delete process.env.BABOJUBOT_MODEL_DESTINATIONS;
     else process.env.BABOJUBOT_MODEL_DESTINATIONS = saved;
   }
-  try {
-    await child!.ready;
-  } finally {
-    await stopMain(child!);
-  }
+  onTestFinished(() => stopMain(child!));
+  await child!.ready;
 });
 
 // 종료 신호는 서버 진입점 하나가 받아, 서버 정리를 끝낸 뒤 DB를 닫고 성공으로 끝난다.
@@ -100,15 +98,12 @@ posix.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
   "finishes its own shutdown on %s with an external Postgres",
   async (signal) => {
     const child = startMain({ DATABASE_URL: external.url });
-    try {
-      await child.ready;
-      child.kill(signal);
-      const { code } = await waitExit(child, shutdownWaitMs);
-      expect(code, child.stderrText()).toBe(0);
-      expect(child.stderrText()).toBe("");
-    } finally {
-      await stopMain(child);
-    }
+    onTestFinished(() => stopMain(child));
+    await child.ready;
+    child.kill(signal);
+    const { code } = await waitExit(child, shutdownWaitMs);
+    expect(code, child.stderrText()).toBe(0);
+    expect(child.stderrText()).toBe("");
   },
   60_000
 );
@@ -119,15 +114,12 @@ posix.each(["SIGINT", "SIGHUP"] as const)(
   "closes the embedded Postgres only after its own shutdown when the terminal sends %s to the whole group",
   async (signal) => {
     const child = startMain({ BABOJUBOT_EPHEMERAL_DB: "1" }, { group: true });
-    try {
-      await child.ready;
-      process.kill(-child.pid!, signal);
-      const { code } = await waitExit(child, shutdownWaitMs);
-      expect(code, child.stderrText()).toBe(0);
-      expect(child.stderrText()).toBe("");
-    } finally {
-      await stopMain(child, { group: true });
-    }
+    onTestFinished(() => stopMain(child, { group: true }));
+    await child.ready;
+    process.kill(-child.pid!, signal);
+    const { code } = await waitExit(child, shutdownWaitMs);
+    expect(code, child.stderrText()).toBe(0);
+    expect(child.stderrText()).toBe("");
   },
   60_000
 );
@@ -144,22 +136,20 @@ it.each(stopRequests)(
       { ipc }
     );
     let postgresPid = 0;
-    try {
-      postgresPid = await waitForPostmaster(child, pidFile, {
-        timeoutMs: readyTimeoutMs,
-      });
-      expect(postgresPid).toBeGreaterThan(0);
-      send(child);
-      const { code } = await waitExit(child, shutdownWaitMs);
-      expect(code, child.stderrText()).toBe(0);
-      expect(child.stdoutText()).not.toContain("BaboJUBot server on");
-      await expectGone(postgresPid);
-      expect(existsSync(pidFile)).toBe(false);
-    } finally {
-      await stopMain(child);
-      await stopLeftover(postgresPid);
-      await removeFolder(home);
-    }
+    const folder = folderCleanup(() => removeFolder(home));
+    onTestFinished(folder.cleanUp);
+    folder.own(() => stopLeftover(postgresPid));
+    folder.own(() => stopMain(child));
+    postgresPid = await waitForPostmaster(child, pidFile, {
+      timeoutMs: readyTimeoutMs,
+    });
+    expect(postgresPid).toBeGreaterThan(0);
+    send(child);
+    const { code } = await waitExit(child, shutdownWaitMs);
+    expect(code, child.stderrText()).toBe(0);
+    expect(child.stdoutText()).not.toContain("BaboJUBot server on");
+    await expectGone(postgresPid);
+    expect(existsSync(pidFile)).toBe(false);
   },
   60_000
 );
@@ -174,18 +164,16 @@ it.each(stopRequests)(
       { BABOJUBOT_HOME: home, EMBEDDED_POSTGRES_PORT: "65536" },
       { ipc }
     );
-    try {
-      await waitForPath(child, path.join(home, "postgres"));
-      send(child);
-      const { code } = await waitExit(child, shutdownWaitMs);
-      expect(code, child.stderrText()).toBe(1);
-      expect(child.stderrText()).toContain(
-        "embedded Postgres exited before it was ready"
-      );
-    } finally {
-      await stopMain(child);
-      await removeFolder(home);
-    }
+    const folder = folderCleanup(() => removeFolder(home));
+    onTestFinished(folder.cleanUp);
+    folder.own(() => stopMain(child));
+    await waitForPath(child, path.join(home, "postgres"));
+    send(child);
+    const { code } = await waitExit(child, shutdownWaitMs);
+    expect(code, child.stderrText()).toBe(1);
+    expect(child.stderrText()).toContain(
+      "embedded Postgres exited before it was ready"
+    );
   },
   60_000
 );
@@ -233,31 +221,28 @@ posix.each(posixStopRequests)(
       { ipc }
     );
     let postgresPid = 0;
-    try {
-      await child.ready;
-      postgresPid = Number(
-        readFileSync(
-          path.join(home, "postgres", "postmaster.pid"),
-          "utf8"
-        ).split("\n")[0]
-      );
-      process.kill(postgresPid, "SIGSTOP");
-      send(child);
-      const { code } = await waitExit(child, shutdownWaitMs);
-      expect(code, child.stderrText()).toBe(1);
-      // 정한 시한(2s)으로 끝났다는 것은 그 시한을 적은 진단으로 본다. 진단은 프로세스를 끝내는 시한 타이머가 낸다.
-      // 시한을 정리 몫과 비상 정지 몫으로 나누는 계산은 shutdown-budget.test.ts가 본다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
-      expect(child.stderrText()).toContain("did not finish in 2s");
+    const folder = folderCleanup(() => removeFolder(home));
+    onTestFinished(folder.cleanUp);
+    folder.own(() => stopLeftover(postgresPid));
+    folder.own(() => stopMain(child));
+    await child.ready;
+    postgresPid = Number(
+      readFileSync(path.join(home, "postgres", "postmaster.pid"), "utf8").split(
+        "\n"
+      )[0]
+    );
+    process.kill(postgresPid, "SIGSTOP");
+    send(child);
+    const { code } = await waitExit(child, shutdownWaitMs);
+    expect(code, child.stderrText()).toBe(1);
+    // 정한 시한(2s)으로 끝났다는 것은 그 시한을 적은 진단으로 본다. 진단은 프로세스를 끝내는 시한 타이머가 낸다.
+    // 시한을 정리 몫과 비상 정지 몫으로 나누는 계산은 shutdown-budget.test.ts가 본다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
+    expect(child.stderrText()).toContain("did not finish in 2s");
 
-      process.kill(postgresPid, "SIGCONT");
-      await expect
-        .poll(() => isAlive(postgresPid), { timeout: 15_000, interval: 50 })
-        .toBe(false);
-    } finally {
-      await stopMain(child);
-      await stopLeftover(postgresPid);
-      await removeFolder(home);
-    }
+    process.kill(postgresPid, "SIGCONT");
+    await expect
+      .poll(() => isAlive(postgresPid), { timeout: 15_000, interval: 50 })
+      .toBe(false);
   },
   60_000
 );
@@ -270,22 +255,19 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
   );
-  let postgres: TemporaryPostgres | undefined;
-  try {
-    await child.ready;
-    postgres = temporaryPostgres(temp.dir);
-    expect(isAlive(postgres.pid)).toBe(true);
-    child.send(stopRequest);
-    const { code } = await waitExit(child, shutdownWaitMs);
-    expect(code, child.stderrText()).toBe(0);
-    expect(child.stderrText()).toBe("");
-    await expectGone(postgres.pid);
-    expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
-  } finally {
-    await stopMain(child);
-    await stopLeftover(postgres?.pid);
-    await removeFolder(temp.dir);
-  }
+  const folder = folderCleanup(() => removeFolder(temp.dir));
+  onTestFinished(folder.cleanUp);
+  folder.own(() => stopMain(child));
+  await child.ready;
+  const postgres = temporaryPostgres(temp.dir);
+  folder.own(() => stopLeftover(postgres.pid));
+  expect(isAlive(postgres.pid)).toBe(true);
+  child.send(stopRequest);
+  const { code } = await waitExit(child, shutdownWaitMs);
+  expect(code, child.stderrText()).toBe(0);
+  expect(child.stderrText()).toBe("");
+  await expectGone(postgres.pid);
+  expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
 }, 60_000);
 
 // 부모가 사라져 채널이 끊겨도 서버를 챙길 쪽이 없으므로 같은 정리를 하고 끝난다. 부모와 서버가 함께 강제로 끝나는 경우는
@@ -296,64 +278,55 @@ it("finishes its own shutdown when the parent's channel closes", async () => {
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
   );
-  let postgres: TemporaryPostgres | undefined;
-  try {
-    await child.ready;
-    postgres = temporaryPostgres(temp.dir);
-    child.disconnect();
-    const { code } = await waitExit(child, shutdownWaitMs);
-    expect(code, child.stderrText()).toBe(0);
-    expect(child.stderrText()).toBe("");
-    await expectGone(postgres.pid);
-    expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
-  } finally {
-    await stopMain(child);
-    await stopLeftover(postgres?.pid);
-    await removeFolder(temp.dir);
-  }
+  const folder = folderCleanup(() => removeFolder(temp.dir));
+  onTestFinished(folder.cleanUp);
+  folder.own(() => stopMain(child));
+  await child.ready;
+  const postgres = temporaryPostgres(temp.dir);
+  folder.own(() => stopLeftover(postgres.pid));
+  child.disconnect();
+  const { code } = await waitExit(child, shutdownWaitMs);
+  expect(code, child.stderrText()).toBe(0);
+  expect(child.stderrText()).toBe("");
+  await expectGone(postgres.pid);
+  expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
 }, 60_000);
 
 // 멈춤 요청이 겹쳐도(같은 메시지 여러 번, 신호와 메시지) 정리는 한 번이다. 두 번 닫으면 DB 연결 닫기가 오류를 낸다.
 it("cleans up once when stop requests repeat", async () => {
   const child = startMain({ DATABASE_URL: external.url }, { ipc: true });
-  try {
-    await child.ready;
-    child.send(stopRequest);
-    child.send(stopRequest);
-    if (process.platform !== "win32") child.kill("SIGTERM");
-    child.send(stopRequest);
-    const { code } = await waitExit(child, shutdownWaitMs);
-    expect(code, child.stderrText()).toBe(0);
-    expect(child.stderrText()).toBe("");
-  } finally {
-    await stopMain(child);
-  }
+  onTestFinished(() => stopMain(child));
+  await child.ready;
+  child.send(stopRequest);
+  child.send(stopRequest);
+  if (process.platform !== "win32") child.kill("SIGTERM");
+  child.send(stopRequest);
+  const { code } = await waitExit(child, shutdownWaitMs);
+  expect(code, child.stderrText()).toBe(0);
+  expect(child.stderrText()).toBe("");
 }, 60_000);
 
 // 멈춤 메시지가 아닌 메시지로는 멈추지 않는다. 어떤 메시지가 요청인지는 단위 시험(src/stop-request.test.ts)이 정하고,
 // 여기서는 실제 채널로 받은 다른 메시지 뒤에도 API가 응답하고 마지막 멈춤 메시지로 정상 종료하는지 본다.
 it("keeps serving after messages that are not a stop request", async () => {
   const child = startMain({ DATABASE_URL: external.url }, { ipc: true });
-  try {
-    await child.ready;
-    const url = child.stdoutText().match(/BaboJUBot server on (\S+)/)![1]!;
-    for (const message of ["shutdown", { type: "stop" }, { id: 1 }])
-      await new Promise<void>((resolve, reject) =>
-        child.send(message, (error) => (error ? reject(error) : resolve()))
-      );
-    const res = await fetch(`${url}/api/organizations`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "메시지 뒤 조직", goal: "계속 응답" }),
-    });
-    expect(res.status).toBe(201);
-    expect(child.exitCode).toBeNull();
-    child.send(stopRequest);
-    const { code } = await waitExit(child, shutdownWaitMs);
-    expect(code, child.stderrText()).toBe(0);
-  } finally {
-    await stopMain(child);
-  }
+  onTestFinished(() => stopMain(child));
+  await child.ready;
+  const url = child.stdoutText().match(/BaboJUBot server on (\S+)/)![1]!;
+  for (const message of ["shutdown", { type: "stop" }, { id: 1 }])
+    await new Promise<void>((resolve, reject) =>
+      child.send(message, (error) => (error ? reject(error) : resolve()))
+    );
+  const res = await fetch(`${url}/api/organizations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "메시지 뒤 조직", goal: "계속 응답" }),
+  });
+  expect(res.status).toBe(201);
+  expect(child.exitCode).toBeNull();
+  child.send(stopRequest);
+  const { code } = await waitExit(child, shutdownWaitMs);
+  expect(code, child.stderrText()).toBe(0);
 }, 60_000);
 
 // 정리 시한이 잘못 설정되면 시작하지 않고 설정 오류로 알린다. Node 타이머는 1ms 미만이나 2147483647ms 초과를
@@ -365,12 +338,9 @@ it.each(["-1", "0", "1.5", "Infinity", "2147483648", "soon"])(
       DATABASE_URL: external.url,
       BABOJUBOT_SHUTDOWN_TIMEOUT_MS: value,
     });
-    try {
-      expect(await startOutcome(child)).toEqual({ code: 1 });
-      expect(child.stderrText()).toContain("BABOJUBOT_SHUTDOWN_TIMEOUT_MS");
-    } finally {
-      await stopMain(child);
-    }
+    onTestFinished(() => stopMain(child));
+    expect(await startOutcome(child)).toEqual({ code: 1 });
+    expect(child.stderrText()).toContain("BABOJUBOT_SHUTDOWN_TIMEOUT_MS");
   },
   60_000
 );

@@ -12,6 +12,7 @@ import {
   postToGitHub,
 } from "./gh-post.mjs";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -57,11 +58,10 @@ function createFixture() {
 
 async function withFixture(run) {
   const fixture = createFixture();
-  try {
+  return withCleanup(async (defer) => {
+    defer(() => removeFolder(fixture));
     return await run(fixture);
-  } finally {
-    await removeFolder(fixture);
-  }
+  });
 }
 
 test("published text rejects references readers cannot open", async () => {

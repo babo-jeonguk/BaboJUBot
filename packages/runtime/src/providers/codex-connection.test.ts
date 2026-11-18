@@ -8,6 +8,7 @@ import {
   ProtocolTimeout,
 } from "./codex-connection.ts";
 import { testFolders } from "./test-folders.ts";
+import { killUnlessGone } from "./process-test-support.ts";
 
 // 합성 peer(replay.mjs)로 응답·종료를 정한다. 모델·네트워크는 쓰지 않는다.
 // 시험이 연 연결은 정리가 닫고 프로그램 정리(done)까지 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
@@ -223,23 +224,20 @@ describe("a Codex app-server connection", () => {
           started();
         },
       });
-      try {
-        await childStarted;
-        const waiting = connection.request(
-          "waiting",
-          {},
-          { timeoutMs: 15_000 }
-        );
-        const failure = expect(waiting).rejects.toBeInstanceOf(ProtocolClosed);
-        expect(
-          await connection.request("answered", {}, { timeoutMs: 15_000 })
-        ).toEqual({ which: "answered" });
-        await failure;
-        expect((await connection.done).code).toBe(3);
-        expect(alive(child)).toBe(false);
-      } finally {
-        if (child && alive(child)) process.kill(child, "SIGKILL");
-      }
+      // 프로그램이 남긴 자식을 시험 폴더를 지우기 전에 끈다. 이미 끝났으면 넘어간다.
+      folders.own(async () => {
+        if (child) killUnlessGone(child);
+      }, "the child the program left");
+
+      await childStarted;
+      const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
+      const failure = expect(waiting).rejects.toBeInstanceOf(ProtocolClosed);
+      expect(
+        await connection.request("answered", {}, { timeoutMs: 15_000 })
+      ).toEqual({ which: "answered" });
+      await failure;
+      expect((await connection.done).code).toBe(3);
+      expect(alive(child)).toBe(false);
     },
     30_000
   );
@@ -272,18 +270,19 @@ describe("a Codex app-server connection", () => {
         started();
       },
     });
-    try {
-      await childStarted;
-      const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
-      const failure = expect(waiting).rejects.toBeInstanceOf(ProtocolClosed);
-      expect(
-        await connection.request("answered", {}, { timeoutMs: 15_000 })
-      ).toEqual({ which: "answered" });
-      await failure;
-      expect((await connection.done).code).toBe(3);
-    } finally {
-      if (child && alive(child)) process.kill(child, "SIGKILL");
-    }
+    // 프로그램이 남긴 자식을 시험 폴더를 지우기 전에 끈다. 이미 끝났으면 넘어간다.
+    folders.own(async () => {
+      if (child) killUnlessGone(child);
+    }, "the child the program left");
+
+    await childStarted;
+    const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
+    const failure = expect(waiting).rejects.toBeInstanceOf(ProtocolClosed);
+    expect(
+      await connection.request("answered", {}, { timeoutMs: 15_000 })
+    ).toEqual({ which: "answered" });
+    await failure;
+    expect((await connection.done).code).toBe(3);
   }, 30_000);
 
   it("delivers a response the process wrote right before it exited", async () => {
