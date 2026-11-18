@@ -43,6 +43,35 @@ export function testFolders(
     });
     return started;
   };
+  /**
+   * 시험이 만든 프로바이더 연결. 그 연결로 시작한 실행 시도·준비 확인·압축·모델 목록 조회를 정리가 맡는다.
+   * 시험이 결과를 기다리기 전에 단언·시한으로 실패해도, 정리가 멈춤 신호를 보내고 그 호출이 끝난 뒤에 폴더를 지운다.
+   * 프로바이더는 프로그램과 그 정리가 끝난 뒤에 반환하므로, 호출이 끝나면 폴더 안의 프로그램도 끝났다.
+   */
+  const ownProvider = <T extends Provider>(provider: T): T => {
+    const { adapter, listModels } = provider;
+    const { precompact } = adapter;
+    return {
+      ...provider,
+      adapter: {
+        ...adapter,
+        execute: (request, control) =>
+          ownCall(control.signal, (signal) =>
+            adapter.execute(request, { ...control, signal })
+          ),
+        checkReadiness: (signal) =>
+          ownCall(signal, (joined) => adapter.checkReadiness(joined)),
+        ...(precompact && {
+          precompact: (request, signal) =>
+            ownCall(signal, (joined) => precompact(request, joined)),
+        }),
+      } satisfies RuntimeAdapter,
+      ...(listModels && {
+        listModels: (signal: AbortSignal) =>
+          ownCall(signal, (joined) => listModels(joined)),
+      }),
+    };
+  };
   hook(async () => {
     const failures: unknown[] = [];
     for (const { stop, what } of stops.splice(0).reverse())
@@ -75,34 +104,14 @@ export function testFolders(
     own(stop: () => Promise<unknown>, what = "a test resource") {
       stops.push({ stop, what });
     },
+    /** 시험이 만든 프로바이더 연결을 정리에 맡긴다(위 `ownProvider`). */
+    ownProvider,
     /**
-     * 시험이 만든 프로바이더 연결. 그 연결로 시작한 실행 시도·준비 확인·압축·모델 목록 조회를 정리가 맡는다.
-     * 시험이 결과를 기다리기 전에 단언·시한으로 실패해도, 정리가 멈춤 신호를 보내고 그 호출이 끝난 뒤에 폴더를 지운다.
-     * 프로바이더는 프로그램과 그 정리가 끝난 뒤에 반환하므로, 호출이 끝나면 폴더 안의 프로그램도 끝났다.
+     * 프로바이더 factory를 감싼다. 만든 연결은 모두 `ownProvider`로 정리에 맡긴다. 시험 파일은 가져온 factory를 이것으로 한 번
+     * 묶어 쓰므로, 시험 표(describe.each·it.each)나 연결 설정에 값으로 넘긴 factory로 만든 연결도 빠지지 않는다.
      */
-    ownProvider<T extends Provider>(provider: T): T {
-      const { adapter, listModels } = provider;
-      const { precompact } = adapter;
-      return {
-        ...provider,
-        adapter: {
-          ...adapter,
-          execute: (request, control) =>
-            ownCall(control.signal, (signal) =>
-              adapter.execute(request, { ...control, signal })
-            ),
-          checkReadiness: (signal) =>
-            ownCall(signal, (joined) => adapter.checkReadiness(joined)),
-          ...(precompact && {
-            precompact: (request, signal) =>
-              ownCall(signal, (joined) => precompact(request, joined)),
-          }),
-        } satisfies RuntimeAdapter,
-        ...(listModels && {
-          listModels: (signal: AbortSignal) =>
-            ownCall(signal, (joined) => listModels(joined)),
-        }),
-      };
+    owning<A extends unknown[], T extends Provider>(create: (...args: A) => T) {
+      return (...args: A): T => ownProvider(create(...args));
     },
     /**
      * 시험이 띄운 프로그램. 정리 때 아직 돌면 SIGKILL을 보내고, 종료와 stdio 닫힘(`close`)을 기다린다.

@@ -5,11 +5,13 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ProviderConnection } from "@babojubot/contracts";
 import { expect, it } from "vitest";
-import { createClaudeProvider } from "./claude.ts";
+import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { runLogin } from "./login.ts";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createClaudeProvider = folders.owning(unownedClaudeProvider);
 
 async function tempDir() {
   const dir = await folders.make("babojubot-login-");
@@ -19,16 +21,14 @@ async function tempDir() {
 it("runs the login with the connection's environment and saves a pasted token privately", async () => {
   const dataDir = await tempDir();
   const seen = path.join(dataDir, "seen-home");
-  const provider = folders.ownProvider(
-    createClaudeProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        "-e",
-        `require("node:fs").writeFileSync(${JSON.stringify(seen)}, process.env.HOME)`,
-      ],
-    })
-  );
+  const provider = createClaudeProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      "-e",
+      `require("node:fs").writeFileSync(${JSON.stringify(seen)}, process.env.HOME)`,
+    ],
+  });
   const input = new PassThrough();
   const done = runLogin(provider, {
     input,

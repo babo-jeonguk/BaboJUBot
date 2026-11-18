@@ -1,13 +1,15 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createClaudeProvider } from "./claude.ts";
+import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { claudeModels, claudeModelsFor } from "./claude-models.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 시험 폴더는 정리가 지운다(시험이 실패해도 같다).
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createClaudeProvider = folders.owning(unownedClaudeProvider);
 
 const saved = { ...process.env };
 afterEach(() => {
@@ -27,10 +29,9 @@ it("lists real model versions instead of only the short family names", () => {
 });
 
 it("gives the built-in list to a connection with nothing added", () => {
-  expect(
-    folders.ownProvider(createClaudeProvider({ dataDir: "/tmp/product" }))
-      .models
-  ).toEqual(claudeModels);
+  expect(createClaudeProvider({ dataDir: "/tmp/product" }).models).toEqual(
+    claudeModels
+  );
 });
 
 it("adds new models at the end, in the order written", () => {
@@ -120,16 +121,14 @@ it("hands the chosen ID to Claude unchanged, including a context suffix", async 
       ],
     })
   );
-  const provider = folders.ownProvider(
-    createClaudeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        fixture,
-      ],
-    })
-  );
+  const provider = createClaudeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      fixture,
+    ],
+  });
   const result = await provider.adapter.execute(
     { ...request(), model: "claude-opus-4-8[1m]" },
     { signal: new AbortController().signal, emit: async () => {} }

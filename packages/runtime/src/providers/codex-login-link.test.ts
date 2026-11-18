@@ -2,7 +2,7 @@ import { lstat, mkdir, readFile, readlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCodexProvider } from "./codex.ts";
+import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import { loginLink } from "./login-link.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -51,6 +51,8 @@ afterEach(() => {
 });
 // 시험이 시작한 준비 확인·실행은 정리가 멈추고 끝나기를 기다린 뒤에 폴더를 지운다(ownProvider). 단언이 실패하거나 시한을 넘긴 시험도 같다.
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createCodexProvider = folders.owning(unownedCodexProvider);
 const control = () => ({
   signal: new AbortController().signal,
   emit: async () => {},
@@ -69,12 +71,10 @@ async function setup() {
   await mkdir(connection, { recursive: true });
   // 연결 폴더에 바로 있는 로그인(로그인 명령이 쓴 파일, 예전 판의 로그인).
   await writeFile(path.join(connection, "auth.json"), '{"synthetic":1}');
-  const provider = folders.ownProvider(
-    createCodexProvider({
-      dataDir: root,
-      command: [process.execPath, script],
-    })
-  );
+  const provider = createCodexProvider({
+    dataDir: root,
+    command: [process.execPath, script],
+  });
   const requestFor = async (organizationId: string): Promise<RunRequest> => {
     const input = request();
     input.identity.organizationId = organizationId;

@@ -1,22 +1,25 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createCodexProvider, type CodexOptions } from "./codex.ts";
+import {
+  createCodexProvider as unownedCodexProvider,
+  type CodexOptions,
+} from "./codex.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createCodexProvider = folders.owning(unownedCodexProvider);
 it("initializes an app-server, runs a turn, and keeps unreported usage null", async () => {
   const dataDir = await folders.make("codex-test-");
-  const provider = folders.ownProvider(
-    createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-finish.synthetic.json"),
-      ],
-    })
-  );
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-finish.synthetic.json"),
+    ],
+  });
   const result = await provider.adapter.execute(request(), {
     signal: new AbortController().signal,
     emit: async () => {},
@@ -33,16 +36,14 @@ it("initializes an app-server, runs a turn, and keeps unreported usage null", as
 });
 it("accepts steering only after the expected turn acknowledgment", async () => {
   const dataDir = await folders.make("codex-steer-");
-  const provider = folders.ownProvider(
-    createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-steer.synthetic.json"),
-      ],
-    })
-  );
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-steer.synthetic.json"),
+    ],
+  });
   const input = request();
   const message = {
     runId: input.identity.runId,
@@ -62,16 +63,14 @@ it("accepts steering only after the expected turn acknowledgment", async () => {
 });
 it("resumes the requested thread and reports only this attempt usage", async () => {
   const dataDir = await folders.make("codex-resume-");
-  const provider = folders.ownProvider(
-    createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-resume.synthetic.json"),
-      ],
-    })
-  );
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-resume.synthetic.json"),
+    ],
+  });
   const input = request();
   input.previousSession = {
     id: "thread-one",
@@ -92,33 +91,29 @@ it("resumes the requested thread and reports only this attempt usage", async () 
 });
 it("checks version and product login without starting a model turn", async () => {
   const dataDir = await folders.make("codex-readiness-");
-  const provider = folders.ownProvider(
-    createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-finish.synthetic.json"),
-      ],
-    })
-  );
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-finish.synthetic.json"),
+    ],
+  });
   expect(
     await provider.adapter.checkReadiness(new AbortController().signal)
   ).toEqual({ status: "unknown", reason: "credentials_unverified" });
 });
 it("runs the exec alternative with steering explicitly unsupported", async () => {
   const dataDir = await folders.make("codex-exec-");
-  const provider = folders.ownProvider(
-    createCodexProvider({
-      dataDir,
-      mode: "exec",
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-exec.synthetic.json"),
-      ],
-    })
-  );
+  const provider = createCodexProvider({
+    dataDir,
+    mode: "exec",
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-exec.synthetic.json"),
+    ],
+  });
   expect(provider.adapter.capabilities.steer).toBe(false);
   expect(provider.adapter.steer).toBeUndefined();
   const result = await provider.adapter.execute(request(), {
@@ -166,16 +161,14 @@ it("reads the app-server model catalog without starting a model turn", async () 
       ],
     })
   );
-  const provider = folders.ownProvider(
-    createCodexProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        fixture,
-      ],
-    })
-  );
+  const provider = createCodexProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      fixture,
+    ],
+  });
   expect(await provider.listModels!(new AbortController().signal)).toEqual([
     { id: "model-one", label: "Model One" },
   ]);
@@ -426,17 +419,15 @@ describe("one app-server connection per call (#145)", () => {
     const log = path.join(root, "received.jsonl");
     const script = path.join(root, "script.json");
     await writeFile(script, JSON.stringify({ log, steps }));
-    const provider = folders.ownProvider(
-      createCodexProvider({
-        dataDir: root,
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/codex-peer.synthetic.mjs"),
-          script,
-        ],
-        ...(timeouts ? { timeouts } : {}),
-      })
-    );
+    const provider = createCodexProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/codex-peer.synthetic.mjs"),
+        script,
+      ],
+      ...(timeouts ? { timeouts } : {}),
+    });
     const lines = async () =>
       (await readFile(log, "utf8").catch(() => ""))
         .split("\n")

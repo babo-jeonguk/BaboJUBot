@@ -1,12 +1,14 @@
 import { readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createAntigravityProvider } from "./antigravity.ts";
+import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // `agy acp`(Agent Client Protocol) 대화를 정해진 순서로 재생해 adapter를 본다. 프레임 모양은 agy 1.5.4의 실제 출력(#148)을 따른다.
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 const rpc = (id: number, body: Record<string, unknown>) => ({
   frame: { jsonrpc: "2.0", id, ...body },
 });

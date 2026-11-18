@@ -1,12 +1,14 @@
 import { saying } from "./providers/test-support.ts";
 import { describeRuntimeContract } from "./runtime-contract.ts";
-import { createClaudeProvider } from "./providers/claude.ts";
+import { createClaudeProvider as unownedClaudeProvider } from "./providers/claude.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll } from "vitest";
 import { testFolders } from "./providers/test-folders.ts";
 // 이 파일의 시험이 모두 끝난 뒤 정리가 지운다.
 const folders = testFolders(afterAll);
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createClaudeProvider = folders.owning(unownedClaudeProvider);
 const dataDir = await folders.make("claude-contract-");
 await mkdir(path.join(dataDir, "providers/claude"), { recursive: true });
 await writeFile(
@@ -21,21 +23,19 @@ for (const recorded of [false, true])
       ? "Claude with recorded protocol output (reviewed real frames, scripted behaviour)"
       : "Claude synthetic process (not recorded model evidence)",
     {
-      adapter: folders.ownProvider(
-        createClaudeProvider({
-          dataDir,
-          command: [
-            process.execPath,
-            path.resolve("test-fixtures/claude-simulator.mjs"),
-            ...(recorded
-              ? [
-                  "--recording",
-                  path.resolve("test-fixtures/claude-recorded.json"),
-                ]
-              : []),
-          ],
-        })
-      ).adapter,
+      adapter: createClaudeProvider({
+        dataDir,
+        command: [
+          process.execPath,
+          path.resolve("test-fixtures/claude-simulator.mjs"),
+          ...(recorded
+            ? [
+                "--recording",
+                path.resolve("test-fixtures/claude-recorded.json"),
+              ]
+            : []),
+        ],
+      }).adapter,
       startupMs: 2000,
       finishes: saying("진행 상황을 알려 주세요"),
       worksUntilCancelled: saying("실행 유지 연습"),

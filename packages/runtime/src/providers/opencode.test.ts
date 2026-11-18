@@ -1,23 +1,23 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
-import { createOpenCodeProvider } from "./opencode.ts";
+import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
 import { request, saying } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 시험 폴더는 정리가 지운다(시험이 실패해도 같다).
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 it("runs an isolated v2 server per attempt, uses a free model, and stops it after success", async () => {
   const root = await folders.make("opencode-test-");
-  const provider = folders.ownProvider(
-    createOpenCodeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/opencode-simulator.mjs"),
-      ],
-    })
-  );
+  const provider = createOpenCodeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/opencode-simulator.mjs"),
+    ],
+  });
   expect(
     await provider.adapter.checkReadiness(new AbortController().signal)
   ).toMatchObject({ status: "ready" });
@@ -40,15 +40,13 @@ it("runs an isolated v2 server per attempt, uses a free model, and stops it afte
 
 it("keeps its SSE stream alive beyond the startup timeout", async () => {
   const root = await folders.make("opencode-long-");
-  const provider = folders.ownProvider(
-    createOpenCodeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/opencode-simulator.mjs"),
-      ],
-    })
-  );
+  const provider = createOpenCodeProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/opencode-simulator.mjs"),
+    ],
+  });
   const input = request();
   input.wakeReasons = saying("느린 작업")(
     input.access,
@@ -265,16 +263,14 @@ describe("failed executions (#147)", () => {
 // #147: 실제 2.2.6은 새 조직 폴더에 서버 둘이 함께 뜨면 DB를 함께 만들다 하나가 끝났다. 시뮬레이터 `--startup-race`가 그 합성이다.
 describe("one organization folder (#147)", () => {
   const racingAdapter = (root: string) =>
-    folders.ownProvider(
-      createOpenCodeProvider({
-        dataDir: root,
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-          "--startup-race",
-        ],
-      })
-    ).adapter;
+    createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--startup-race",
+      ],
+    }).adapter;
   const sameOrganization = (organizationId: string) => {
     const input = request();
     input.identity.organizationId = organizationId;

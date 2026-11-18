@@ -10,7 +10,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import {
   cleanupAntigravityWorkspaces,
-  createAntigravityProvider,
+  createAntigravityProvider as unownedAntigravityProvider,
 } from "./antigravity.ts";
 import { configScript, ownerMark } from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
@@ -19,6 +19,8 @@ import { testFolders } from "./test-folders.ts";
 // 예전 판이 작업 폴더에 둔 설정의 남은 것만 서버 시작 때 지운다(#148부터 실행은 설정 파일을 쓰지 않는다). 우리 표시가 없는 파일은
 // 비어 있어도 건드리지 않는다. 지우기는 처음 확인한 .agents 폴더 안에서만 일어난다. 그 폴더를 다른 조직으로 바꿔치기해도 그곳에는 닿지 않는다.
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 const ownedLeftover = JSON.stringify({ babojubotOwner: ownerMark });
 async function workspace() {
   const created = await folders.make("agy-config-");

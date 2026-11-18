@@ -1,19 +1,23 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createClaudeProvider } from "./claude.ts";
+import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import {
-  adapters,
+  cliAdapters,
   control,
   createCliHome,
   quirky,
 } from "./cli-tolerance-support.ts";
-import { createOpenCodeProvider } from "./opencode.ts";
+import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 실제 프로그램이 흔히 하는 행동 때문에 멀쩡한 실행 시도를 버리지 않는다. 최종 결과를 받았으면 성공이고, 모르는 출력은 건너뛴다.
 const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createClaudeProvider = folders.owning(unownedClaudeProvider);
+const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
+const adapters = cliAdapters(folders);
 async function home() {
   return createCliHome((root) => {
     folders.adopt(root);
@@ -26,9 +30,7 @@ describe.each(Object.keys(adapters) as (keyof typeof adapters)[])(
     it.each(["plain", "banner", "exits-1", "slow-exit"])(
       "when the program behaves: %s",
       async (variant) => {
-        const { adapter } = folders.ownProvider(
-          adapters[name](await home(), variant)
-        );
+        const { adapter } = adapters[name](await home(), variant);
         const result = await adapter.execute(request(), control());
         expect(result.stopReason).toBe("completed");
       },
@@ -39,39 +41,33 @@ describe.each(Object.keys(adapters) as (keyof typeof adapters)[])(
 
 describe("unknown output", () => {
   it("lets Claude print a line longer than a few megabytes", async () => {
-    const { adapter } = folders.ownProvider(
-      adapters.claude(await home(), "long-line")
-    );
+    const { adapter } = adapters.claude(await home(), "long-line");
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 20_000);
 
   it("reads an OpenCode event stream that ends lines with CRLF", async () => {
-    const provider = folders.ownProvider(
-      createOpenCodeProvider({
-        dataDir: await home(),
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-          "--sse-crlf",
-        ],
-      })
-    );
+    const provider = createOpenCodeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--sse-crlf",
+      ],
+    });
     const result = await provider.adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 20_000);
 
   it("ignores an OpenCode event that is not JSON", async () => {
-    const provider = folders.ownProvider(
-      createOpenCodeProvider({
-        dataDir: await home(),
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-          "--sse-noise",
-        ],
-      })
-    );
+    const provider = createOpenCodeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--sse-noise",
+      ],
+    });
     const result = await provider.adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 20_000);
@@ -79,9 +75,7 @@ describe("unknown output", () => {
 
 describe("failures around the run", () => {
   it("finishes the run when recording an activity fails", async () => {
-    const { adapter } = folders.ownProvider(
-      adapters.claude(await home(), "plain")
-    );
+    const { adapter } = adapters.claude(await home(), "plain");
     const result = await adapter.execute(
       request(),
       control(async () => {
@@ -94,9 +88,7 @@ describe("failures around the run", () => {
   it.each(["codex app-server", "antigravity"] as const)(
     "%s runs when only the version probe fails",
     async (name) => {
-      const { adapter } = folders.ownProvider(
-        adapters[name](await home(), "version-fails")
-      );
+      const { adapter } = adapters[name](await home(), "version-fails");
       const result = await adapter.execute(request(), control());
       expect(result.stopReason).toBe("completed");
     },
@@ -105,12 +97,10 @@ describe("failures around the run", () => {
 
   it("still reports nothing as success when the program ends without a result", async () => {
     const dataDir = await home();
-    const { adapter } = folders.ownProvider(
-      createClaudeProvider({
-        dataDir,
-        command: [process.execPath, "-e", "process.stdin.pause()"],
-      })
-    );
+    const { adapter } = createClaudeProvider({
+      dataDir,
+      command: [process.execPath, "-e", "process.stdin.pause()"],
+    });
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("failed");
   }, 20_000);
@@ -135,9 +125,7 @@ describe("Antigravity login", () => {
   }, 20_000);
 
   it("reports a run without a login as needing one", async () => {
-    const { adapter } = folders.ownProvider(
-      adapters.antigravity(await home(), "logged-out")
-    );
+    const { adapter } = adapters.antigravity(await home(), "logged-out");
     const result = await adapter.execute(request(), control());
     expect(result).toMatchObject({
       stopReason: "failed",
@@ -153,9 +141,7 @@ const withSession = (id: string) => ({
 
 describe("what the program reports", () => {
   it("does not take a Claude error result for a success", async () => {
-    const { adapter } = folders.ownProvider(
-      adapters.claude(await home(), "api-error")
-    );
+    const { adapter } = adapters.claude(await home(), "api-error");
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("failed");
     expect(result.errorCode).toBeUndefined();
@@ -165,9 +151,7 @@ describe("what the program reports", () => {
   it.each(["claude", "codex app-server", "codex exec"] as const)(
     "%s reports a rejected login as needing one",
     async (name) => {
-      const { adapter } = folders.ownProvider(
-        adapters[name](await home(), "auth-fail")
-      );
+      const { adapter } = adapters[name](await home(), "auth-fail");
       const result = await adapter.execute(request(), control());
       expect(result).toMatchObject({
         stopReason: "failed",
@@ -179,9 +163,7 @@ describe("what the program reports", () => {
 
   it("subtracts what the resumed Codex exec session already counted", async () => {
     const dataDir = await home();
-    const { adapter } = folders.ownProvider(
-      adapters["codex exec"](dataDir, "cumulative")
-    );
+    const { adapter } = adapters["codex exec"](dataDir, "cumulative");
     const first = await adapter.execute(request(), control());
     expect(first.usage).toMatchObject({
       inputTokens: 5219,
@@ -204,9 +186,7 @@ describe("a session that cannot be resumed", () => {
   it.each(["claude", "codex app-server", "codex exec"] as const)(
     "%s starts a new one whatever the program said",
     async (name) => {
-      const { adapter } = folders.ownProvider(
-        adapters[name](await home(), "fails-on-resume")
-      );
+      const { adapter } = adapters[name](await home(), "fails-on-resume");
       const progress: unknown[] = [];
       const result = await adapter.execute(withSession("old-session"), {
         signal: new AbortController().signal,
@@ -221,15 +201,13 @@ describe("a session that cannot be resumed", () => {
   );
 
   it("OpenCode starts a new one for any refused session", async () => {
-    const provider = folders.ownProvider(
-      createOpenCodeProvider({
-        dataDir: await home(),
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-        ],
-      })
-    );
+    const provider = createOpenCodeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+      ],
+    });
     const result = await provider.adapter.execute(
       withSession("bad-format"),
       control()
@@ -255,15 +233,13 @@ describe("Claude login and steering", () => {
   it("runs without a token file when the program has another login", async () => {
     const dataDir = await home();
     await rm(path.join(dataDir, "providers/claude/setup-token"));
-    const { adapter } = folders.ownProvider(adapters.claude(dataDir, "plain"));
+    const { adapter } = adapters.claude(dataDir, "plain");
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 20_000);
 
   it("refuses a slash command but takes a message starting with a path", async () => {
-    const { adapter } = folders.ownProvider(
-      adapters.claude(await home(), "waits-for-steer")
-    );
+    const { adapter } = adapters.claude(await home(), "waits-for-steer");
     const input = request();
     const steer = (body: string) =>
       adapter.steer!({
@@ -290,38 +266,35 @@ describe("Claude login and steering", () => {
 
 describe("connections", () => {
   it("runs Codex when another login is in use and the status check says no", async () => {
-    const { adapter } = folders.ownProvider(
-      adapters["codex app-server"](await home(), "no-file-login")
+    const { adapter } = adapters["codex app-server"](
+      await home(),
+      "no-file-login"
     );
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 20_000);
 
   it("falls back to a listed model when OpenCode has no free one", async () => {
-    const provider = folders.ownProvider(
-      createOpenCodeProvider({
-        dataDir: await home(),
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/opencode-simulator.mjs"),
-          "--no-free",
-        ],
-      })
-    );
+    const provider = createOpenCodeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--no-free",
+      ],
+    });
     const result = await provider.adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 20_000);
 
   it("gives each named connection its own id and folder", async () => {
     const dataDir = await home();
-    const provider = folders.ownProvider(
-      createClaudeProvider({
-        dataDir,
-        id: "claude-work",
-        label: "Claude Code (work)",
-        command: quirky("claude", "plain"),
-      })
-    );
+    const provider = createClaudeProvider({
+      dataDir,
+      id: "claude-work",
+      label: "Claude Code (work)",
+      command: quirky("claude", "plain"),
+    });
     expect([provider.id, provider.label]).toEqual([
       "claude-work",
       "Claude Code (work)",
@@ -333,9 +306,7 @@ describe("connections", () => {
   });
 
   it("lets Claude take models beyond the short list", async () => {
-    const { openModels } = folders.ownProvider(
-      adapters.claude(await home(), "plain")
-    );
+    const { openModels } = adapters.claude(await home(), "plain");
     expect(openModels).toBe(true);
   });
 });

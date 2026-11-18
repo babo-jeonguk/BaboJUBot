@@ -1,6 +1,10 @@
 import path from "node:path";
 import { describe, it } from "vitest";
-import { adapters, control, createCliHome } from "./cli-tolerance-support.ts";
+import {
+  cliAdapters,
+  control,
+  createCliHome,
+} from "./cli-tolerance-support.ts";
 import { createOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -16,9 +20,8 @@ describe.concurrent("slow programs", () => {
     onTestFinished,
   }) => {
     const folders = testFolders(onTestFinished);
-    const { adapter } = folders.ownProvider(
-      adapters.claude(await home(folders), "slow-start")
-    );
+    const adapters = cliAdapters(folders);
+    const { adapter } = adapters.claude(await home(folders), "slow-start");
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 30_000);
@@ -28,9 +31,8 @@ describe.concurrent("slow programs", () => {
     onTestFinished,
   }) => {
     const folders = testFolders(onTestFinished);
-    const { adapter } = folders.ownProvider(
-      adapters.antigravity(await home(folders), "slow-start")
-    );
+    const adapters = cliAdapters(folders);
+    const { adapter } = adapters.antigravity(await home(folders), "slow-start");
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 30_000);
@@ -40,8 +42,10 @@ describe.concurrent("slow programs", () => {
     onTestFinished,
   }) => {
     const folders = testFolders(onTestFinished);
-    const { adapter } = folders.ownProvider(
-      adapters["codex app-server"](await home(folders), "slow-answer")
+    const adapters = cliAdapters(folders);
+    const { adapter } = adapters["codex app-server"](
+      await home(folders),
+      "slow-answer"
     );
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
@@ -52,8 +56,10 @@ describe.concurrent("slow programs", () => {
     onTestFinished,
   }) => {
     const folders = testFolders(onTestFinished);
-    const { adapter } = folders.ownProvider(
-      adapters["codex app-server"](await home(folders), "ignores-steer")
+    const adapters = cliAdapters(folders);
+    const { adapter } = adapters["codex app-server"](
+      await home(folders),
+      "ignores-steer"
     );
     const input = request();
     let steered: Promise<unknown> | undefined;
