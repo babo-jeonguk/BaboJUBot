@@ -9,13 +9,18 @@
 // `*` in a pattern matches any characters, `/` included, as in OpenCode permissions.
 // Exit codes: 0 accepted; 1 rejected; 2 usage.
 import { execFileSync, spawn } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { parse } from "yaml";
 
 const USAGE =
   "usage: accept-worker.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>... [--test-timeout <seconds>]";
 const OUTPUT_LINES = 40;
 const OUTPUT_CHARS = 1024 * 1024;
-const STOP_GRACE_MS = 5_000;
+const STOP_GRACE_MS = 2_000;
+const STOP_LIMIT_MS = 10_000;
+const STOP_POLL_MS = 25;
+const OUTPUT_DRAIN_MS = 1_000;
 
 function parseArgs(argv) {
   const options = {
@@ -108,72 +113,117 @@ function isProtected(rules, file) {
   return rules.findLast((rule) => rule.matches.test(file))?.effect === "deny";
 }
 
-// Each command runs in its own process group so a stuck run can be stopped with what it started.
-function stopGroup(child, signal) {
-  try {
-    process.kill(-child.pid, signal);
-  } catch {
-    // The process group may already be gone.
-  }
-}
-
-function runCommand(root, command, timeoutSeconds) {
-  return new Promise((done) => {
-    const child = spawn(command, {
-      cwd: root,
-      shell: true,
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let output = "";
-    let timedOut = false;
-    let killTimer;
-    const collect = (chunk) => {
-      output = `${output}${chunk}`.slice(-OUTPUT_CHARS);
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    const forward = (signal) => {
-      stopGroup(child, signal);
-      process.exit(1);
-    };
-    process.once("SIGINT", forward);
-    process.once("SIGTERM", forward);
-    const limit = setTimeout(() => {
-      timedOut = true;
-      stopGroup(child, "SIGTERM");
-      killTimer = setTimeout(() => {
-        stopGroup(child, "SIGKILL");
-        finish(`exit ${child.exitCode ?? child.signalCode}`);
-      }, STOP_GRACE_MS);
-    }, timeoutSeconds * 1000);
-    let finished = false;
-    function finish(ending) {
-      if (finished) return;
-      finished = true;
-      clearTimeout(limit);
-      clearTimeout(killTimer);
-      process.off("SIGINT", forward);
-      process.off("SIGTERM", forward);
-      child.stdout.destroy();
-      child.stderr.destroy();
-      done({
-        ending: timedOut ? `timed out after ${timeoutSeconds}s` : ending,
-        output,
-      });
+// True while the group has a running member. On Linux a finished member waiting to be collected
+// does not count, as in stopProcessGroup (packages/runtime/src/providers/recovery.ts).
+function groupAlive(group) {
+  if (process.platform === "win32") return false;
+  if (process.platform !== "linux") {
+    try {
+      process.kill(-group, 0);
+      return true;
+    } catch (error) {
+      return error.code !== "ESRCH";
     }
-    child.on("error", (error) => finish(error.message));
-    child.on("close", (code, signal) =>
-      finish(code === 0 ? null : `exit ${code ?? signal}`)
-    );
+  }
+  return readdirSync("/proc").some((name) => {
+    if (!/^\d+$/.test(name)) return false;
+    try {
+      const stat = readFileSync(`/proc/${name}/stat`, "utf8");
+      const [state, , memberGroup] = stat
+        .slice(stat.lastIndexOf(")") + 2)
+        .split(" ");
+      return Number(memberGroup) === group && !["Z", "X"].includes(state);
+    } catch {
+      return false; // The process ended while the list was being read.
+    }
   });
 }
 
+function signalGroup(group, signal) {
+  try {
+    process.kill(-group, signal);
+  } catch {
+    // The group may already be gone.
+  }
+}
+
+async function waitForGroupEnd(group, limitMs) {
+  const until = Date.now() + limitMs;
+  while (groupAlive(group) && Date.now() < until) await delay(STOP_POLL_MS);
+  return !groupAlive(group);
+}
+
+// The shell ending says nothing about what it started, so only the group itself decides.
+async function stopGroup(group) {
+  if (!groupAlive(group)) return true;
+  signalGroup(group, "SIGTERM");
+  if (await waitForGroupEnd(group, STOP_GRACE_MS)) return true;
+  signalGroup(group, "SIGKILL");
+  return waitForGroupEnd(group, STOP_LIMIT_MS);
+}
+
+// Each command runs in its own process group so that everything it started can be stopped.
+async function runCommand(root, command, timeoutSeconds) {
+  const child = spawn(command, {
+    cwd: root,
+    shell: true,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  const collect = (chunk) => {
+    output = `${output}${chunk}`.slice(-OUTPUT_CHARS);
+  };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+  const forward = (signal) => {
+    signalGroup(child.pid, signal);
+    process.exit(1);
+  };
+  process.once("SIGINT", forward);
+  process.once("SIGTERM", forward);
+
+  const closed = new Promise((done) => child.once("close", done));
+  let limit;
+  const ending = await Promise.race([
+    new Promise((done) => {
+      child.once("error", (error) => done(error.message));
+      child.once("exit", (code, signal) =>
+        done(code === 0 ? null : `exit ${code ?? signal}`)
+      );
+    }),
+    new Promise((done) => {
+      limit = setTimeout(
+        () => done(`timed out after ${timeoutSeconds}s`),
+        timeoutSeconds * 1000
+      );
+    }),
+  ]);
+  clearTimeout(limit);
+
+  const stopped = child.pid === undefined || (await stopGroup(child.pid));
+  // Output still on its way arrives once the group is gone; a program outside it may hold the pipe.
+  await Promise.race([closed, delay(OUTPUT_DRAIN_MS)]);
+  child.stdout.destroy();
+  child.stderr.destroy();
+  process.off("SIGINT", forward);
+  process.off("SIGTERM", forward);
+  return { ending, output, stopped };
+}
+
 async function runTest(root, command, timeoutSeconds) {
-  const { ending, output } = await runCommand(root, command, timeoutSeconds);
-  if (!ending) return;
-  const tail = output.trimEnd().split("\n").slice(-OUTPUT_LINES).join("\n");
-  reject([`test command failed (${ending}): ${command}\n${tail}`]);
+  const { ending, output, stopped } = await runCommand(
+    root,
+    command,
+    timeoutSeconds
+  );
+  const reasons = [];
+  if (ending) {
+    const tail = output.trimEnd().split("\n").slice(-OUTPUT_LINES).join("\n");
+    reasons.push(`test command failed (${ending}): ${command}\n${tail}`);
+  }
+  if (!stopped) reasons.push(`programs still running after: ${command}`);
+  if (reasons.length > 0) reject(reasons);
 }
 
 const plural = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
