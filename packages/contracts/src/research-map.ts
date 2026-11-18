@@ -25,16 +25,13 @@ export const researchNodeStatuses = [
 export const researchNodeStatusSchema = z.enum(researchNodeStatuses);
 export type ResearchNodeStatus = z.infer<typeof researchNodeStatusSchema>;
 /** 수정으로 고를 수 있는 상태. 폐기는 폐기 명령으로만 한다. */
-export const researchNodeWorkStatuses = [
-  "proposed",
-  "in_progress",
-  "done",
-  "rejected",
-] as const;
-export const researchNodeWorkStatusSchema = z.enum(researchNodeWorkStatuses);
+export const researchNodeWorkStatusSchema = researchNodeStatusSchema.exclude([
+  "discarded",
+]);
 export type ResearchNodeWorkStatus = z.infer<
   typeof researchNodeWorkStatusSchema
 >;
+export const researchNodeWorkStatuses = researchNodeWorkStatusSchema.options;
 
 /**
  * 사용자가 연구 지도를 편집할 수 있는 조직 단계: 초기 연구 승인 뒤, 최종 완료·중단 전. 에이전트의 지도 쓰기 도구는

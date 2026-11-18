@@ -571,7 +571,7 @@ function moveTabFocus(e: KeyboardEvent<HTMLElement>) {
   const tabs = [
     ...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'),
   ];
-  const at = tabs.indexOf(e.target as HTMLElement);
+  const at = tabs.findIndex((tab) => tab === e.target);
   if (at < 0) return;
   const next = {
     ArrowRight: (at + 1) % tabs.length,

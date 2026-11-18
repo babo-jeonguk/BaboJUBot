@@ -31,6 +31,7 @@ import {
   type SessionState,
   type SessionMaintenance,
   type OrgToolName,
+  type ResearchNodeWorkStatus,
   type Usage,
   type WakeKind,
 } from "@babojubot/contracts";
@@ -532,9 +533,9 @@ export const researchNodes = pgTable(
     title: text("title").notNull(),
     body: text("body").notNull(),
     status: text("status", { enum: researchNodeStatuses }).notNull(),
-    statusBeforeDiscard: text("status_before_discard", {
-      enum: researchNodeWorkStatuses,
-    }),
+    statusBeforeDiscard: text(
+      "status_before_discard"
+    ).$type<ResearchNodeWorkStatus>(),
     parentNodeId: uuid("parent_node_id"),
     createdByAuthor: text("created_by_author", {
       enum: messageAuthors,

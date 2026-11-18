@@ -23,6 +23,11 @@ import {
 // Control Plane → Agent Runtime 실행 시도 계약(docs/architecture.md).
 // 요청 · 진행(공개 활동) · 종료 · 제어(취소)의 네 면을 따로 정의한다.
 
+/** 프로바이더가 돌려주는 종료 사유. */
+export const runStopReasons = ["completed", "failed", "cancelled"] as const;
+export const runStopReasonSchema = z.enum(runStopReasons);
+export type RunStopReason = z.infer<typeof runStopReasonSchema>;
+
 /**
  * 실행 시도 상태. `running` 밖의 값은 모두 종료이며 종료 사유와 같은 말을 쓴다.
  * `server_restart`는 프로바이더가 아니라 Control Plane이 정한다. 서버가 멈춰(종료·crash) 끝내지 못한 실행 시도이며,
@@ -30,18 +35,11 @@ import {
  */
 export const runStatuses = [
   "running",
-  "completed",
-  "failed",
-  "cancelled",
+  ...runStopReasons,
   "server_restart",
 ] as const;
 export const runStatusSchema = z.enum(runStatuses);
 export type RunStatus = z.infer<typeof runStatusSchema>;
-
-/** 프로바이더가 돌려주는 종료 사유. */
-export const runStopReasons = ["completed", "failed", "cancelled"] as const;
-export const runStopReasonSchema = z.enum(runStopReasons);
-export type RunStopReason = z.infer<typeof runStopReasonSchema>;
 
 /** 저장한 실행 시도 종료 사유: 프로바이더의 종료 사유와 서버 재시작. */
 export const runEndReasonSchema = runStatusSchema.exclude(["running"]);

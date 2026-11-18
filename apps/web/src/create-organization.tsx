@@ -72,7 +72,7 @@ export function CreateOrganizationProvider({
       if (attempt.current !== mine) return;
       setOpen(false);
       clear();
-      navigate(`/orgs/${org.id}/chat`);
+      void navigate(`/orgs/${org.id}/chat`);
     } catch {
       // 오류는 create.error로 보이고 입력은 그대로 둔다.
     }

@@ -4,6 +4,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 import tseslint from "typescript-eslint";
+import productRules from "./scripts/eslint-product-rules.mjs";
 import testRules from "./scripts/eslint-test-rules.mjs";
 import { testFiles } from "./scripts/test-files.mjs";
 
@@ -173,10 +174,17 @@ export default defineConfig([
     // 바깥 데이터(JSON.parse, 외부 프로그램 출력)는 unknown으로 받아 모양을 확인하거나 스키마로 읽은 뒤 쓴다.
     // 객체 리터럴은 `as`로 타입을 우기지 않고 선언하거나 `satisfies`로 맞춘다. 느슨한 비교는 `== null`만 쓴다.
     // 이 규칙들은 `as`를 붙인 값은 보지 않는다. `as`는 라이브러리 선언이 any로 비운 값이나 저장 때 보장한 짝처럼
-    // 실제 타입을 아는 자리에만 쓰고, 바깥 데이터를 확인 없이 단언하지 않는 것은 리뷰가 본다.
+    // 실제 타입을 아는 자리에만 쓴다. JSON.parse·응답 본문에 바로 붙인 단정은 product 규칙이 막고,
+    // 타입 없는 중간 변수를 거친 단정은 잡지 못하므로 리뷰가 본다.
+    // 시작한 Promise의 실패는 기다리거나 받고, 결과를 기다리지 않을 때는 `void`로 드러낸다. 폐기 예정 기능은 쓰지 않는다.
     files: productFiles,
     ignores: testFiles,
+    plugins: { product: productRules },
     rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/no-deprecated": "error",
+      "product/no-assertion-on-parsed-data": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",

@@ -165,6 +165,8 @@ export class ApiError extends Error {
   }
 }
 
+const apiFailureSchema = z.object({ error: z.object({ code: z.string() }) });
+
 export async function request<T extends z.ZodType>(
   schema: T,
   path: string,
@@ -172,9 +174,12 @@ export async function request<T extends z.ZodType>(
 ): Promise<z.infer<T>> {
   const res = await fetch(path, init);
   if (!res.ok) {
-    const body = (await res.json().catch(() => undefined)) as
-      { error?: { code?: string } } | undefined;
-    throw new ApiError(res.status, body?.error?.code);
+    const body: unknown = await res.json().catch(() => undefined);
+    const failure = apiFailureSchema.safeParse(body);
+    throw new ApiError(
+      res.status,
+      failure.success ? failure.data.error.code : undefined
+    );
   }
   return schema.parse(await res.json());
 }

@@ -4,7 +4,13 @@ import {
   sendAgentMessageInputSchema,
   sendOwnerMessageInputSchema,
 } from "./message.ts";
-import { runResultSchema, runtimeActivitySchema } from "./run.ts";
+import {
+  runEndReasonSchema,
+  runResultSchema,
+  runStatuses,
+  runStopReasons,
+  runtimeActivitySchema,
+} from "./run.ts";
 
 describe("runtimeActivitySchema", () => {
   it("accepts the public activity kinds", () => {
@@ -107,5 +113,25 @@ describe("message inputs", () => {
         unread: true,
       }).success
     ).toBe(false);
+  });
+});
+
+// 저장·집계·화면이 이 순서를 그대로 쓴다.
+describe("run status lists", () => {
+  it("keeps the values and order of the statuses and stop reasons", () => {
+    expect(runStopReasons).toEqual(["completed", "failed", "cancelled"]);
+    expect(runStatuses).toEqual([
+      "running",
+      "completed",
+      "failed",
+      "cancelled",
+      "server_restart",
+    ]);
+    expect(runEndReasonSchema.options).toEqual([
+      "completed",
+      "failed",
+      "cancelled",
+      "server_restart",
+    ]);
   });
 });

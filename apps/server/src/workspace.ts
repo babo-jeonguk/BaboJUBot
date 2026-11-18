@@ -523,10 +523,11 @@ async function readIdentity(file: string) {
   }
   if (!info.isFile() || info.size > identityMaxBytes) return null;
   try {
-    const value = JSON.parse(await readFile(file, "utf8")) as {
-      organizationId?: unknown;
-    } | null;
-    return typeof value?.organizationId === "string"
+    const value: unknown = JSON.parse(await readFile(file, "utf8"));
+    return typeof value === "object" &&
+      value !== null &&
+      "organizationId" in value &&
+      typeof value.organizationId === "string"
       ? value.organizationId
       : null;
   } catch (e) {

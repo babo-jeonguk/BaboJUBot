@@ -188,3 +188,153 @@ test("product code compares strictly except for the null check", async () => {
       place
     );
 });
+
+const asyncWork = `const work = async () => 1;\n`;
+const floatingRule = ["@typescript-eslint/no-floating-promises"];
+
+test("product code handles the failure of every promise it starts", async () => {
+  const floating = {
+    "a bare call": `${asyncWork}export function run() {\n  work();\n}\n`,
+    "then without a rejection handler": `${asyncWork}export function run() {\n  work().then(() => 1);\n}\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(floating))
+      assert.equal(
+        (await lint(code, place, floatingRule)).length,
+        1,
+        `${place}: ${shape}`
+      );
+  const handled = {
+    awaited: `${asyncWork}export async function run() {\n  await work();\n}\n`,
+    "marked with void": `${asyncWork}export function run() {\n  void work();\n}\n`,
+    caught: `${asyncWork}export function run() {\n  work().catch((error: unknown) => console.warn(error));\n}\n`,
+    returned: `${asyncWork}export function run() {\n  return work();\n}\n`,
+  };
+  for (const [shape, code] of Object.entries(handled))
+    assert.deepEqual(
+      await lint(code, productPlaces[0], floatingRule),
+      [],
+      shape
+    );
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(floating["a bare call"], place, floatingRule),
+      [],
+      place
+    );
+});
+
+const misusedRule = ["@typescript-eslint/no-misused-promises"];
+
+test("product code does not pass an async function where the result is dropped", async () => {
+  const misused = {
+    "a callback": `${asyncWork}export const run = (items: number[]) => items.forEach(work);\n`,
+    "a handler property": `const on = (handlers: { onError: () => void }) => handlers;\nexport const run = () => on({ onError: async () => {} });\n`,
+    "a condition": `${asyncWork}export const run = () => (work() ? 1 : 2);\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(misused))
+      assert.equal(
+        (await lint(code, place, misusedRule)).length,
+        1,
+        `${place}: ${shape}`
+      );
+  // 화면 이벤트 처리기도 같은 자리다.
+  assert.equal(
+    (
+      await lint(
+        `export const view = <button onClick={async () => {}} />;\n`,
+        "apps/web/src/shell.tsx",
+        misusedRule
+      )
+    ).length,
+    1
+  );
+  assert.deepEqual(
+    await lint(
+      `${asyncWork}export const view = <button onClick={() => void work()} />;\n`,
+      "apps/web/src/shell.tsx",
+      misusedRule
+    ),
+    []
+  );
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(misused["a callback"], place, misusedRule),
+      [],
+      place
+    );
+});
+
+const deprecatedRule = ["@typescript-eslint/no-deprecated"];
+
+test("product code does not use what is marked deprecated", async () => {
+  const uses = (tag) =>
+    `${tag}const old = () => 1;\nexport const value = old();\n`;
+  const deprecated = uses(`/** @deprecated 새 함수를 씁니다. */\n`);
+  for (const place of productPlaces)
+    assert.equal(
+      (await lint(deprecated, place, deprecatedRule)).length,
+      1,
+      place
+    );
+  assert.deepEqual(await lint(uses(""), productPlaces[0], deprecatedRule), []);
+  for (const place of testPlaces)
+    assert.deepEqual(await lint(deprecated, place, deprecatedRule), [], place);
+});
+
+const parsedRule = ["product/no-assertion-on-parsed-data"];
+
+test("product code does not assert a type on data it has just read", async () => {
+  const asserted = {
+    "parsed text": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as Row;\n`,
+    "parsed text or null": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as Row | null;\n`,
+    "through unknown": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as unknown as Row;\n`,
+    "a response body": `type Row = { id: number };\nexport const read = async (res: Response) => (await res.json()) as Row;\n`,
+    "a body promise": `type Row = { id: number };\nexport const read = (res: Response) => res.json() as Promise<Row>;\n`,
+    "parsed text with a default": `type Row = { id: number };\nexport const read = (text: string) => (JSON.parse(text) ?? {}) as Row;\n`,
+    "a body with a default": `type Row = { id: number };\nexport const read = async (res: Response) => ((await res.json()) ?? {}) as Row;\n`,
+    "a body read in then": `type Row = { id: number };\nexport const read = (url: string) => fetch(url).then((res) => res.json()) as Promise<Row>;\n`,
+    "a body with a fallback": `type Row = { id: number };\nexport const read = async (res: Response) =>\n  (await res.json().catch(() => undefined)) as Row | undefined;\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(asserted)) {
+      const [message, ...rest] = await lint(code, place, parsedRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 가야 할 모양을 알려 준다.
+      assert.match(message.message, /unknown/);
+      assert.match(message.message, /safeParse/);
+    }
+  const checked = {
+    "received as unknown": `export const read = (text: string) => {\n  const row: unknown = JSON.parse(text);\n  return typeof row === "number" ? row : undefined;\n};\n`,
+    "asserted as unknown": `export const read = (text: string) => JSON.parse(text) as unknown;\n`,
+    "a body as unknown": `export const read = async (res: Response): Promise<unknown> => res.json();\n`,
+    "another value": `export const read = (value: unknown) => value as string;\n`,
+    "another then": `export const read = (work: Promise<unknown>) => work.then((value) => String(value)) as Promise<string>;\n`,
+  };
+  for (const [shape, code] of Object.entries(checked))
+    assert.deepEqual(await lint(code, productPlaces[0], parsedRule), [], shape);
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(asserted["parsed text"], place, parsedRule),
+      [],
+      place
+    );
+});
+
+test("the read-assertion rule does not replace the bans already on server and runtime code", async () => {
+  // 같은 규칙 이름을 뒤 블록이 덮어쓰면 기존 금지가 조용히 사라진다.
+  const [hub] = await lint(
+    `declare const hub: { publish(): void };\nhub.publish();\n`,
+    "apps/server/src/app.ts",
+    ["no-restricted-syntax"]
+  );
+  assert.ok(hub, "the server's commit-effect ban is gone");
+  const [launch] = await lint(
+    `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
+    "packages/runtime/src/providers/claude.ts",
+    ["no-restricted-syntax"]
+  );
+  assert.ok(launch, "the runtime's launch ban is gone");
+});

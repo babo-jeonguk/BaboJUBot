@@ -1,6 +1,6 @@
 // 공통 셸: 왼쪽 조직 레일 + 선택 조직의 세로 섹션 목록 + 본문(#50 결정 C).
 // 768px 미만에서는 레일과 섹션 목록이 왼쪽 시트로 바뀐다.
-import type { Organization } from "@babojubot/contracts";
+import { isClosedStage, type Organization } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import {
@@ -134,11 +134,11 @@ export function Shell() {
                 if (focusLost()) sheetOpener.current?.focus();
               }}
               onClick={(e) => {
-                const closer = (e.target as HTMLElement).closest(
-                  "a, button[data-closes-sheet]"
-                );
-                if (!closer) return;
-                setSheet(false);
+                if (
+                  e.target instanceof Element &&
+                  e.target.closest("a, button[data-closes-sheet]")
+                )
+                  setSheet(false);
               }}
             >
               <Dialog.Title className="sr-only">탐색</Dialog.Title>
@@ -437,7 +437,7 @@ function Rail() {
 function RailOrganization({ org, on }: { org: Organization; on: boolean }) {
   const stage = stageLabel[org.stage];
   const attention = useAttention(org.id);
-  const dim = org.stage === "completed" || org.stage === "stopped";
+  const dim = isClosedStage(org.stage);
   return (
     <Tip
       content={

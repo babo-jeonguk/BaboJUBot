@@ -19,7 +19,11 @@ import {
   useOrganization,
   useProviderSettings,
 } from "./api.ts";
-import { focusFirstChoiceProblem, isChoiceRefusal } from "./choice-problems.ts";
+import {
+  focusFirstChoiceProblem,
+  isChoiceRefusal,
+  refreshChoiceProblem,
+} from "./choice-problems.ts";
 import {
   closedOrganizationNotice,
   DecisionArea,
@@ -676,18 +680,16 @@ function DecisionForm({
                     setChoiceDraft(draftKey, undefined);
                     onDecided();
                   },
-                  onError: async (error) => {
+                  onError: (error) => {
                     if (!(
                       error instanceof ApiError && isChoiceRefusal(error.code)
                     ))
                       return;
                     setShowProblem(true);
-                    const fresh = (await providerSettings.refetch()).data;
-                    if (fresh)
-                      focusFirstChoiceProblem(
-                        fresh.providers,
-                        changedFields(choices.shown)
-                      );
+                    void refreshChoiceProblem(
+                      providerSettings.refetch,
+                      changedFields(choices.shown)
+                    );
                   },
                 }
               );

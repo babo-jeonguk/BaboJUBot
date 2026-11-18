@@ -8,6 +8,7 @@ import {
   renameSync,
 } from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import { holdsLease, stopLeaseHolders } from "./lease.ts";
 const boot = () =>
   readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
@@ -266,30 +267,29 @@ export async function recoverProviderProcesses(
     }
   }
 }
-type ProcessRecord = {
-  pid: number;
-  start: string;
-  group: number;
-  boot: string;
-  lease?: string;
-  started?: number;
-};
+/** 복구 기록에서 쓰는 필드. 번호 말고는 없어도 된다: /proc가 없는 시스템의 기록에는 시작 시각·부팅 식별자가 없고 시작 시각(`started`)은 나중에 채워진다. */
+// 1번은 신호를 보내면 모든 프로세스에 간다. 이 번호는 명령에도 쓰이니 숫자인지 꼭 본다.
+const processRecordSchema = z.object({
+  pid: z.number().int().gt(1),
+  start: z.string().optional(),
+  boot: z.string().optional(),
+  lease: z.string().optional(),
+  started: z.number().optional(),
+});
+type ProcessRecord = z.infer<typeof processRecordSchema>;
 /** 쓸 수 없는 기록(깨졌거나, 이름과 번호가 다름)은 어떤 프로세스도 가리키지 않는다. 파일을 읽지 못한 오류는 그대로 던져 기록을 남긴다. */
 function readRecord(file: string) {
-  let saved: Partial<ProcessRecord> | null;
+  let saved: unknown;
   try {
-    saved = JSON.parse(
-      readFileSync(file, "utf8")
-    ) as Partial<ProcessRecord> | null;
+    saved = JSON.parse(readFileSync(file, "utf8"));
   } catch (e) {
     if (e instanceof SyntaxError) return undefined;
     throw e;
   }
-  // 1번은 신호를 보내면 모든 프로세스에 간다. 이 번호는 명령에도 쓰이니 숫자인지 꼭 본다.
-  return Number.isInteger(saved?.pid) &&
-    saved!.pid! > 1 &&
-    saved!.pid === Number(path.basename(file, ".json"))
-    ? (saved as ProcessRecord)
+  const record = processRecordSchema.safeParse(saved);
+  return record.success &&
+    record.data.pid === Number(path.basename(file, ".json"))
+    ? record.data
     : undefined;
 }
 async function recoverRecord(saved: ProcessRecord, platform: NodeJS.Platform) {
@@ -329,7 +329,7 @@ async function recoverLinuxGroup(
       break;
     }
   if (
-    (leader?.start === saved.start && leader.group === saved.pid) ||
+    (leader && leader.start === saved.start && leader.group === saved.pid) ||
     memberHoldsLease
   )
     await stopProcessGroup(saved.pid);
