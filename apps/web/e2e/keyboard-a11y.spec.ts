@@ -5,6 +5,7 @@ import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput, railOrganizationLink } from "./support/organization.ts";
 import { test as settingsTest } from "./support/shared-settings.ts";
 import { expectNoHorizontalOverflow } from "./support/layout.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 키보드·포커스·접근 이름과 상태·실패 복구·실제 대비(#152). 실제 화면 읽기 프로그램은 실행하지 않고 Chromium 접근성 트리로 확인한다.
 
@@ -653,7 +654,10 @@ settingsTest(
       await held;
       await route.fallback();
     });
-    try {
+    await withCleanup(async (defer) => {
+      defer(() => page.unrouteAll({ behavior: "wait" }));
+      defer(() => release());
+
       await isolation.click();
       await expect(isolation).toHaveAccessibleDescription(
         "격리 실행 저장하는 중…"
@@ -661,10 +665,7 @@ settingsTest(
       release();
       await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
       expect(await isolation.isChecked()).toBe(was);
-    } finally {
-      release();
-      await page.unrouteAll({ behavior: "wait" });
-    }
+    });
   }
 );
 
@@ -709,7 +710,10 @@ test("a policy switch's saving or saved state stays with its organization when h
     await held;
     await route.fallback();
   });
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => page.unrouteAll({ behavior: "wait" }));
+    defer(() => release());
+
     await policy.click();
     await expect(policy).toHaveAccessibleDescription(/저장하는 중…$/);
     const saved = page.waitForResponse(
@@ -721,10 +725,7 @@ test("a policy switch's saving or saved state stays with its organization when h
     await expect(policy).toHaveAccessibleDescription("");
     release();
     await saved;
-  } finally {
-    release();
-    await page.unrouteAll({ behavior: "wait" });
-  }
+  });
   await expect(policy).not.toBeChecked();
   await expect(policy).toHaveAccessibleDescription("");
 
@@ -808,7 +809,10 @@ test("reduced motion stops spin and pulse loops while normal motion keeps them, 
   expect(await probe()).toEqual(["spin infinite", "pulse infinite"]);
   // 불러오는 중 자리 표시도 글로 읽힌다.
   await page.route(`**${org.api("/dashboard*")}`, () => undefined);
-  try {
+  // 붙잡은 요청은 끝내지 않고 버린다.
+  await withCleanup(async (defer) => {
+    defer(() => page.unrouteAll({ behavior: "ignoreErrors" }));
+
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`/orgs/${org.id}/dashboard`);
     // 칸마다 숨은 안내가 하나씩 있다. 본문 영역에 하나 이상 있으면 된다.
@@ -818,10 +822,7 @@ test("reduced motion stops spin and pulse loops while normal motion keeps them, 
         .getByRole("status")
         .filter({ hasText: "불러오는 중…" })
     ).not.toHaveCount(0);
-  } finally {
-    // 붙잡은 요청은 끝내지 않고 버린다.
-    await page.unrouteAll({ behavior: "ignoreErrors" });
-  }
+  });
 });
 
 /** 주요 화면이 옆으로 넘치지 않고 핵심 조작이 화면에 닿는지 본다. */
@@ -874,7 +875,9 @@ test("at 200% browser zoom of a 1280 px window the main screens do not scroll si
     zoom: 2,
     window: { width: 1280, height: 800 },
   });
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => zoomed.close());
+
     const view = zoomed.pages()[0] ?? (await zoomed.newPage());
     await view.goto("/");
     // 창 폭 1280px의 200% 확대: 화소 비율은 2, CSS 폭은 창 안쪽 폭의 절반이다. Windows는 창 크기에 테두리(양쪽 8px)가
@@ -887,9 +890,7 @@ test("at 200% browser zoom of a 1280 px window the main screens do not scroll si
     expect(cssWidth).toBeLessThanOrEqual(640);
     expect(cssWidth).toBeGreaterThan(600);
     await expectMainScreensFit(view, org, "200%");
-  } finally {
-    await zoomed.close();
-  }
+  });
 });
 
 test("the Lead chat composer shows a visible focus style", async ({ page }) => {

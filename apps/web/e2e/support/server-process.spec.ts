@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { cleanUpAll, withCleanup } from "@babojubot/runtime/test-cleanup";
 import { expect, test } from "@playwright/test";
 import { alive, gone, startServerProcess } from "./server-process.ts";
 
@@ -46,39 +47,44 @@ function misbehaving(
      * 시험이 실패하거나 helper가 폴더를 남겨도 가짜 Postgres와 폴더를 남기지 않는다. 폴더는 가짜 Postgres가 끝난 뒤에 지우고,
      * 끝나지 않으면 폴더를 남긴 채 그 사실로 실패한다.
      */
-    cleanup: async () => {
-      if (existsSync(file)) {
-        const { postgresPid, temp } = state();
-        if (alive(postgresPid)) process.kill(postgresPid, "SIGKILL");
-        if (!(await gone(postgresPid, killWaitMs)))
-          throw new Error(
-            `가짜 Postgres(pid ${postgresPid})가 ${killWaitMs}ms 안에 끝나지 않아 폴더를 남겼다: ${temp}`
-          );
-        const undeletable = path.join(temp, "undeletable");
-        if (existsSync(undeletable)) chmodSync(undeletable, 0o700);
-        await removeFolder(path.dirname(temp));
-      }
-      await removeFolder(dir);
-    },
+    cleanup: () =>
+      cleanUpAll([
+        async () => {
+          if (!existsSync(file)) return;
+          const { postgresPid, temp } = state();
+          if (alive(postgresPid)) process.kill(postgresPid, "SIGKILL");
+          if (!(await gone(postgresPid, killWaitMs)))
+            throw new Error(
+              `가짜 Postgres(pid ${postgresPid})가 ${killWaitMs}ms 안에 끝나지 않아 폴더를 남겼다: ${temp}`
+            );
+          const undeletable = path.join(temp, "undeletable");
+          if (existsSync(undeletable)) chmodSync(undeletable, 0o700);
+          await removeFolder(path.dirname(temp));
+        },
+        // 상태 파일의 폴더는 가짜 서버의 임시 폴더와 따로 있어, 그 폴더를 남겨도 지운다.
+        () => removeFolder(dir),
+      ]),
   };
 }
 
 test("a server that ends before it is ready leaves behind no Postgres it started", async () => {
   const fake = misbehaving("exit-before-ready");
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => fake.cleanup());
+
     await expect(fake.start()).rejects.toThrow(/시작 전에 끝났다/);
     const { postgresPid, temp } = fake.state();
     expect(alive(postgresPid)).toBe(false);
     expect(existsSync(path.dirname(temp))).toBe(false);
-  } finally {
-    await fake.cleanup();
-  }
+  });
 });
 
 test("a server that stopped answering is killed with its Postgres within the deadline, even when the stop request cannot be written", async () => {
   test.setTimeout(60_000);
   const fake = misbehaving("hang");
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => fake.cleanup());
+
     const server = await fake.start();
     expect(alive(server.postgresPid)).toBe(true);
     // 서버가 읽지 않는 채널을 채워, 멈춤 메시지를 보내는 일 자체가 끝나지 않게 한다.
@@ -87,14 +93,14 @@ test("a server that stopped answering is killed with its Postgres within the dea
     expect(alive(server.pid)).toBe(false);
     expect(alive(server.postgresPid)).toBe(false);
     expect(existsSync(server.folder)).toBe(false);
-  } finally {
-    await fake.cleanup();
-  }
+  });
 });
 
 test("a server that closed its channel is reported and killed with its Postgres", async () => {
   const fake = misbehaving("disconnect");
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => fake.cleanup());
+
     const server = await fake.start();
     if (server.child.connected)
       await new Promise((resolve) => server.child.once("disconnect", resolve));
@@ -102,14 +108,14 @@ test("a server that closed its channel is reported and killed with its Postgres"
     expect(alive(server.pid)).toBe(false);
     expect(alive(server.postgresPid)).toBe(false);
     expect(existsSync(server.folder)).toBe(false);
-  } finally {
-    await fake.cleanup();
-  }
+  });
 });
 
 test("a Postgres that outlives its removed lock file keeps the folder, and the failure names it", async () => {
   const fake = misbehaving("leave-postgres-on-stop");
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => fake.cleanup());
+
     const server = await fake.start();
     const error = await server.stop().then(
       () => undefined,
@@ -122,15 +128,15 @@ test("a Postgres that outlives its removed lock file keeps the folder, and the f
     // 잠금 파일이 없어 신원을 확인할 수 없는 프로세스는 끝내지 않고, 그 프로세스가 쓸 수 있는 폴더도 지우지 않는다.
     expect(alive(server.postgresPid)).toBe(true);
     expect(existsSync(server.folder)).toBe(true);
-  } finally {
-    await fake.cleanup();
-  }
+  });
 });
 
 test("a server that ends before it is ready and whose folder cannot be removed reports both failures", async () => {
   test.skip(process.platform === "win32", noFolderPermissionsOnWindows);
   const fake = misbehaving("exit-before-ready-undeletable");
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => fake.cleanup());
+
     const error = await fake.start().then(
       () => undefined,
       (e: unknown) => e as Error
@@ -141,14 +147,14 @@ test("a server that ends before it is ready and whose folder cannot be removed r
       `폴더를 지우지 못했다: ${path.dirname(temp)}`
     );
     expect(alive(postgresPid)).toBe(false);
-  } finally {
-    await fake.cleanup();
-  }
+  });
 });
 
 test("a cleanup step that fails does not hide the start failure, and an unchecked folder is kept and named", async () => {
   const fake = misbehaving("exit-before-ready-without-temp");
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => fake.cleanup());
+
     const error = await fake.start().then(
       () => undefined,
       (e: unknown) => e as Error
@@ -159,7 +165,5 @@ test("a cleanup step that fails does not hide the start failure, and an unchecke
     // 남은 Postgres를 확인하지 못했으므로 폴더를 지우지 않고 경로를 알린다.
     expect(error?.message).toContain(folder);
     expect(existsSync(folder)).toBe(true);
-  } finally {
-    await fake.cleanup();
-  }
+  });
 });

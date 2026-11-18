@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import { startIsolatedServer } from "./isolated-server.ts";
 import { goalInput } from "./organization.ts";
 import { alive } from "./server-process.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 모든 OS(Windows 포함)에서 같은 멈춤 경로(부모의 멈춤 메시지)로 확인한다.
 test("stopping a server that is still running succeeds after it stops its Postgres and removes its data", async () => {
@@ -35,7 +36,9 @@ test("a clock server records and cuts days by the time the test sets, not the wa
   const server = await startIsolatedServer({
     clock: "2026-03-10T14:59:00.000Z",
   });
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => server.stop());
+
     const created = await request.post(`${server.url}/api/organizations`, {
       data: { name: "시계 조직", ...goalInput },
     });
@@ -69,18 +72,16 @@ test("a clock server records and cuts days by the time the test sets, not the wa
     expect(after.asOf).toBe("2026-03-10T15:00:01.000Z");
     expect(after.days.at(-1)!.date).toBe("2026-03-11");
     await expect(server.setNow("어제")).rejects.toThrow(/시각이 아니다/);
-  } finally {
-    await server.stop();
-  }
+  });
 });
 
 test("only a server started with a clock can move it", async () => {
   const server = await startIsolatedServer();
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => server.stop());
+
     await expect(server.setNow("2026-03-10T15:00:01.000Z")).rejects.toThrow(
       /`clock`/
     );
-  } finally {
-    await server.stop();
-  }
+  });
 });

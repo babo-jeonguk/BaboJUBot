@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput } from "./support/organization.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 넓힌 프로바이더 계약(#96)의 화면. E2E 서버의 `fake`는 끼워 넣기를 하고 준비됨이며, `fake-2`는 끼워 넣기를 못 하고
 // 제품 로그인이 없어 준비안됨이다(playwright.config.ts `BABOJUBOT_FAKE_PROVIDER_SETTINGS`).
@@ -81,7 +82,10 @@ test("the global settings show each connection's readiness with a recheck, and a
     await held;
     await route.continue();
   });
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => page.unrouteAll({ behavior: "wait" }));
+    defer(() => release());
+
     await fake2
       .getByRole("button", { name: "가짜 프로바이더 2 다시 확인" })
       .click();
@@ -92,10 +96,7 @@ test("the global settings show each connection's readiness with a recheck, and a
     ).toBeVisible();
     release();
     await expect(fake2.getByTestId("readiness-badge")).toHaveText("!준비안됨");
-  } finally {
-    release();
-    await page.unrouteAll({ behavior: "wait" });
-  }
+  });
 
   // 준비안됨 연결도 고르기 목록에 남고, 고르면 칸 옆에 그 배지가 보인다.
   const lead = providers.getByRole("combobox", {

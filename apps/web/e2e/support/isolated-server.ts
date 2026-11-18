@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test as base } from "@playwright/test";
 import { startServerProcess } from "./server-process.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 공용 E2E 서버(e2e/global-setup.ts)는 모든 spec과 반복 실행이 DB 하나를 같이 써서 비어 있다고 가정할 수 없다.
 // 빈 상태나 전체 개수처럼 서버 전체를 보는 검사는 이 fixture가 테스트마다 띄우는 자기 서버에서 한다.
@@ -87,11 +88,11 @@ export const test = base.extend({
   // eslint-disable-next-line no-empty-pattern -- Playwright는 fixture의 첫 인자가 객체 분해여야 의존 fixture를 읽는다.
   baseURL: async ({}, use) => {
     const server = await startIsolatedServer();
-    try {
+    await withCleanup(async (defer) => {
+      defer(() => server.stop());
+
       await use(server.url);
-    } finally {
-      await server.stop();
-    }
+    });
   },
 });
 
@@ -104,11 +105,11 @@ export const withServerClock = (clock: string) =>
     // eslint-disable-next-line no-empty-pattern -- Playwright는 fixture의 첫 인자가 객체 분해여야 의존 fixture를 읽는다.
     server: async ({}, use) => {
       const server = await startIsolatedServer({ clock });
-      try {
+      await withCleanup(async (defer) => {
+        defer(() => server.stop());
+
         await use(server);
-      } finally {
-        await server.stop();
-      }
+      });
     },
     baseURL: async ({ server }, use) => use(server.url),
   });

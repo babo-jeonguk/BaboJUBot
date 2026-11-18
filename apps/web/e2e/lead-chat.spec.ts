@@ -7,6 +7,7 @@ import {
   sendingMessage,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 test("keeps a draft edited while the previous message is being sent", async ({
   page,
@@ -32,7 +33,10 @@ test("keeps a draft edited while the previous message is being sent", async ({
       await route.fulfill({ response });
     }
   );
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => page.unrouteAll({ behavior: "wait" }));
+    defer(() => release());
+
     await page.goto(`/orgs/${org.id}/chat`);
     // 대화 목록 칸과 메시지 칸이 둘 다 불러오는 중이다. 숨은 안내라 본문 영역 안에서 세고, 하나는 대화 목록의 것이다.
     await expect(
@@ -59,10 +63,7 @@ test("keeps a draft edited while the previous message is being sent", async ({
     await expect(
       page.getByRole("button", { name: "보내기", exact: true })
     ).toBeEnabled();
-  } finally {
-    release();
-    await page.unrouteAll({ behavior: "wait" });
-  }
+  });
 });
 
 test("talking to the Lead shows its reply, the run in activity and run detail, and the Lead's recent runs", async ({
