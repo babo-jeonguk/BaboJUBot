@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -23,6 +23,7 @@ import {
   ProtocolRejection,
   ProtocolTimeout,
 } from "./codex-connection.ts";
+import { readRegularFile } from "./regular-file.ts";
 import { type Clock, realClock } from "./process.ts";
 import {
   startProcess,
@@ -132,9 +133,9 @@ const relayLogin = (token: string) => ({
 /** 이 어댑터가 남긴 가짜 로그인 파일인가. 서버가 실행 중에 멈춰 남은 파일이면 다음 실행을 시작한다. */
 async function isRelayLogin(file: string): Promise<boolean> {
   try {
-    const found = await lstat(file);
-    if (!found.isFile()) return false;
-    const login = record(JSON.parse(await readFile(file, "utf8")));
+    const text = await readRegularFile(file);
+    if (text === undefined) return false;
+    const login = record(JSON.parse(text));
     const tokens = record(login.tokens);
     return (
       tokens.id_token === relayIdToken &&

@@ -22,6 +22,7 @@ import {
   saysLoginProblem,
 } from "./process.ts";
 import { clearOwnedConfig } from "./antigravity-config.ts";
+import { readRegularFile } from "./regular-file.ts";
 import type { ContainerSettings } from "./container.ts";
 import {
   ContainerRefusal,
@@ -80,8 +81,9 @@ const relayToken = (accessToken: string) => ({
 /** 이 어댑터가 둔 가짜 로그인(자리 표시)인가. */
 async function isRelayToken(file: string): Promise<boolean> {
   try {
-    if (!(await lstat(file)).isFile()) return false;
-    const login = record(JSON.parse(await readFile(file, "utf8")));
+    const text = await readRegularFile(file);
+    if (text === undefined) return false;
+    const login = record(JSON.parse(text));
     const token = record(login.token);
     return (
       token.expiry === relayExpiry &&
