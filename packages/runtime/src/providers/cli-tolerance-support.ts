@@ -4,6 +4,7 @@ import path from "node:path";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { createClaudeProvider } from "./claude.ts";
 import { createCodexProvider } from "./codex.ts";
+import type { testFolders } from "./test-folders.ts";
 
 export const quirky = (kind: string, variant: string) =>
   [
@@ -18,23 +19,30 @@ export const control = (emit: () => Promise<void> = async () => {}) => ({
   emit,
 });
 
-export const adapters = {
-  claude: (dataDir: string, variant: string) =>
-    createClaudeProvider({ dataDir, command: quirky("claude", variant) }),
-  "codex app-server": (dataDir: string, variant: string) =>
-    createCodexProvider({ dataDir, command: quirky("codex", variant) }),
-  "codex exec": (dataDir: string, variant: string) =>
+/** 이 시험들이 쓰는 CLI 연결. 만든 연결은 시험 정리가 실행을 맡는다(`testFolders().owning`). */
+export const cliAdapters = (
+  folders: Pick<ReturnType<typeof testFolders>, "owning">
+) => ({
+  claude: folders.owning((dataDir: string, variant: string) =>
+    createClaudeProvider({ dataDir, command: quirky("claude", variant) })
+  ),
+  "codex app-server": folders.owning((dataDir: string, variant: string) =>
+    createCodexProvider({ dataDir, command: quirky("codex", variant) })
+  ),
+  "codex exec": folders.owning((dataDir: string, variant: string) =>
     createCodexProvider({
       dataDir,
       mode: "exec",
       command: quirky("codex", variant),
-    }),
-  antigravity: (dataDir: string, variant: string) =>
+    })
+  ),
+  antigravity: folders.owning((dataDir: string, variant: string) =>
     createAntigravityProvider({
       dataDir,
       command: quirky("antigravity", variant),
-    }),
-};
+    })
+  ),
+});
 
 export async function createCliHome(
   onCreated: (root: string) => void

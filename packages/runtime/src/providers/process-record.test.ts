@@ -1,8 +1,8 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { startProcess } from "./process.ts";
+import { testFolders } from "./test-folders.ts";
 
 // 자리는 반납해도, 끝났음을 확인하지 못한 프로세스의 복구 기록은 다음 시작 때 다시 보도록 남긴다.
 const stop = vi.hoisted(() => ({
@@ -37,19 +37,15 @@ vi.mock("./lease.ts", async (original) => {
   };
 });
 
-const roots: string[] = [];
+const folders = testFolders();
 afterEach(async () => {
   stop.fails = false;
   stop.leaseFails = false;
   stop.leaseLeft = false;
   vi.restoreAllMocks();
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
 });
 async function run() {
-  const stateDir = await mkdtemp(path.join(tmpdir(), "babojubot-record-"));
-  roots.push(stateDir);
+  const stateDir = await folders.make("babojubot-record-");
   const exit = await startProcess({
     stateDir,
     command: [process.execPath, "-e", ""],

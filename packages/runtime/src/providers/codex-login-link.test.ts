@@ -1,19 +1,11 @@
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readlink,
-  rm,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, mkdir, readFile, readlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCodexProvider } from "./codex.ts";
+import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import { loginLink } from "./login-link.ts";
 import { request } from "./test-support.ts";
+import { testFolders } from "./test-folders.ts";
 
 // Codex 로그인 하나를 연결의 모든 조직이 링크로 같이 쓴다(docs/research/org-product-folders-references.md 사용자 결정).
 // 링크를 만들 수 없는 컴퓨터와 여러 조직이 한꺼번에 시작하는 장면에서도 로그인이 남아야 한다.
@@ -50,25 +42,24 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const roots: string[] = [];
-afterEach(async () => {
+afterEach(() => {
   refuseLinks = false;
   gatedOriginal = undefined;
   enteredOriginalRename = undefined;
   heldOriginalRename = undefined;
   originalRenames = 0;
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
 });
+// 시험이 시작한 준비 확인·실행은 정리가 멈추고 끝나기를 기다린 뒤에 폴더를 지운다(ownProvider). 단언이 실패하거나 시한을 넘긴 시험도 같다.
+const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createCodexProvider = folders.owning(unownedCodexProvider);
 const control = () => ({
   signal: new AbortController().signal,
   emit: async () => {},
 });
 
 async function setup() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-codex-login-"));
-  roots.push(root);
+  const root = await folders.make("babojubot-codex-login-");
   const dump = path.join(root, "env.jsonl");
   const script = path.join(root, "dump-env.cjs");
   // 받은 환경을 한 줄로 남기고 끝나는 프로그램. 실행은 실패하지만 어느 폴더로 띄웠는지는 남는다.
@@ -105,10 +96,8 @@ describe("Codex login link", () => {
     const env = await setup();
     refuseLinks = true;
     await env.provider.adapter.checkReadiness(new AbortController().signal);
-    await env.provider.adapter.execute(
-      await env.requestFor(crypto.randomUUID()),
-      control()
-    );
+    const input = await env.requestFor(crypto.randomUUID());
+    await env.provider.adapter.execute(input, control());
     // 링크 없이 도는 실행은 연결 폴더를 쓰므로 로그인도 그 자리에 그대로 있어야 한다.
     const login = path.join(env.connection, "auth.json");
     expect((await lstat(login)).isFile()).toBe(true);
@@ -166,8 +155,7 @@ describe("Codex login link", () => {
   });
 
   it("serializes concurrent link calls for one login at the original migration", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "babojubot-codex-login-"));
-    roots.push(root);
+    const root = await folders.make("babojubot-codex-login-");
     const connection = path.join(root, "providers/codex");
     const original = path.join(connection, "login", "auth.json");
     const fallback = path.join(connection, "auth.json");

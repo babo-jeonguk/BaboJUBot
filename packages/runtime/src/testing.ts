@@ -78,3 +78,4 @@ export const writes =
     step.do === "send_message"
       ? tool === "send_message"
       : step.do === "call" && step.tool === tool;
+export { removeFolder } from "./remove-folder.ts";

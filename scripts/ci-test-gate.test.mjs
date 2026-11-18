@@ -54,6 +54,7 @@ function runGate({
   results = {},
   fileResults = {},
   executablePath = process.env.PATH,
+  summary,
 } = {}) {
   const needs = {
     changes: { result: changes, outputs: { code, files } },
@@ -77,9 +78,15 @@ function runGate({
     ),
   };
   const env = { PATH: executablePath };
+  if (summary) env.GITHUB_STEP_SUMMARY = summary;
   // Windows child processes may need the system root to load runtime DLLs.
   if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
   for (const [name, expression] of Object.entries(step.env)) {
+    // 실패 이유 조회용 토큰. 시험에서는 비워 조회 없이 판정만 본다.
+    if (name === "GITHUB_TOKEN") {
+      assert.equal(expression, "${{ github.token }}");
+      continue;
+    }
     const match = expression.match(
       /^\$\{\{\s*needs\.([\w-]+)\.(result|outputs\.code|outputs\.files)\s*\}\}$/
     );
@@ -374,4 +381,152 @@ test("runs the real workflow gate without any executable on PATH", (context) => 
     executablePath: emptyPath,
     results: { opencode: "cancelled" },
   });
+});
+
+// 실패 이유는 job 이름으로 job 기록을 찾는다. 판정 스크립트의 이름이 workflow의 name과 같아야 한다.
+test("names each failed job by its workflow name in the log and the job summary", (context) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-gate-summary-"));
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const suite of suites) {
+    const summary = path.join(dir, `${suite}.md`);
+    const result = runGate({ results: { [suite]: "cancelled" }, summary });
+    assert.notEqual(result.status, 0);
+    const name = workflow.jobs[`test-${suite}`].name;
+    assert.ok(
+      result.stderr.includes(`${name} did not finish as success: 'cancelled'`),
+      result.stderr
+    );
+    // 토큰이 없어 조회하지 못한 job은 알 수 없음이다. 판정은 그대로 실패다.
+    assert.ok(
+      readFileSync(summary, "utf8").includes(
+        `| ${name} | cancelled | success | 알 수 없음 |`
+      ),
+      suite
+    );
+  }
+  for (const suite of fileSuites) {
+    const result = runGate({
+      files: "true",
+      fileResults: { [suite]: "failure" },
+    });
+    assert.ok(
+      result.stderr.includes(
+        `${workflow.jobs[suite].name} did not finish as success`
+      ),
+      result.stderr
+    );
+  }
+});
+
+test("lists every failed job, not only the first", () => {
+  const result = runGate({ results: { unit: "failure", macos: "cancelled" } });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /\| tests \/ unit \| failure \|/);
+  assert.match(result.stdout, /\| runtime on macos-latest \| cancelled \|/);
+});
+
+test("writes 'no failures' to the job summary when the gate passes", (context) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-gate-summary-"));
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  const summary = path.join(dir, "summary.md");
+  assert.equal(runGate({ summary }).status, 0);
+  assert.match(readFileSync(summary, "utf8"), /실패 없음/);
+});
+
+test("lets the gate read job records and notes but not rerun anything", () => {
+  assert.deepEqual(gate.permissions, {
+    contents: "read",
+    actions: "read",
+    checks: "read",
+  });
+});
+
+const runSteps = (job) => job.steps.filter((each) => each.run);
+// 시험·내려받기 단계마다 시한을 두고, 한 job 안의 단계 시한 합은 job 시한보다 5분 이상 짧다. 그래서 어떤 단계가 멈춰도
+// job 시한보다 먼저 그 단계 시한에 걸려 그 단계만 실패하고, 뒤의 보고 단계(`!cancelled()`·`failure()`)가 돈다.
+// 단계 시한에 걸린 단계는 실패로 끝나고 두 보고 단계가 모두 돈다(#218, GitHub Actions run 44133006534에서 확인).
+test("gives test and install steps time limits that fit inside the job's with room for reports", () => {
+  const timed = [
+    ["check", /^pnpm run test:e2e$|playwright install/],
+    ["test-unit", /run test/],
+    ["test-runtime", /run test|apt-get/],
+    ["test-db", /run test|check-test-exit-code|boot-check/],
+    ["test-server", /vitest run/],
+    ["test-opencode", /vitest run|curl /],
+    ["test-macos", /runtime test|vitest|boot-check/],
+    ["test-windows", /runtime test|vitest|boot-check/],
+    ["test-e2e-windows-1", /vitest|playwright/],
+    ["test-e2e-windows-2", /playwright/],
+  ];
+  for (const [id, pattern] of timed) {
+    const job = workflow.jobs[id];
+    const steps = runSteps(job).filter((each) => pattern.test(each.run));
+    assert.ok(steps.length > 0, id);
+    for (const each of steps)
+      assert.ok(each["timeout-minutes"] > 0, `${id}: ${each.run}`);
+    const total = job.steps.reduce(
+      (sum, each) => sum + (each["timeout-minutes"] ?? 0),
+      0
+    );
+    assert.ok(total <= job["timeout-minutes"] - 5, `${id}: ${total} minutes`);
+  }
+});
+
+// apt는 시간 초과·연결 실패 같은 일시적인 받기 오류에만 Acquire::Retries를 쓴다. 종료 코드 100만 보고 다시 돌리지 않는다.
+test("lets apt retry transient download failures before every apt install", () => {
+  const config = /Acquire::Retries "2";.*\/etc\/apt\/apt\.conf\.d\/zzz-/;
+  const linuxE2e = runSteps(workflow.jobs.check);
+  const install = linuxE2e.findIndex((each) => /--with-deps/.test(each.run));
+  const retries = linuxE2e.findIndex((each) => config.test(each.run));
+  assert.ok(retries >= 0 && retries < install);
+  assert.equal(linuxE2e[retries].if, linuxE2e[install].if);
+  const disk = runSteps(workflow.jobs["test-runtime"]).find((each) =>
+    /apt-get install/.test(each.run)
+  );
+  assert.ok(
+    disk.run.search(config) >= 0 &&
+      disk.run.search(config) < disk.run.indexOf("apt-get update")
+  );
+  // 이 저장소에서 apt를 쓰는 곳은 위 둘뿐이다. 새로 생기면 같은 설정을 먼저 둔다.
+  const aptUsers = Object.entries(workflow.jobs).flatMap(([id, job]) =>
+    (job.steps ?? [])
+      .filter((each) => /apt-get|--with-deps/.test(each.run ?? ""))
+      .map(() => id)
+  );
+  assert.deepEqual(aptUsers, ["check", "test-runtime"]);
+});
+
+// #218이 시한을 요구한 것은 시험 실행이다. check matrix의 문서 검사·타입·lint·빌드는 예전처럼 job 시한만 받고,
+// E2E 실행만 따로 단계 시한을 받는다(PR #221 외부 리뷰 SPEC-1).
+test("limits only the E2E run in the check matrix, not check, typecheck, lint or build", () => {
+  const runs = runSteps(workflow.jobs.check).filter((each) =>
+    /^pnpm run /.test(each.run)
+  );
+  assert.deepEqual(
+    runs.map((each) => [each.if, each.run, each["timeout-minutes"]]),
+    [
+      [
+        "env.RUN == 'true' && matrix.script != 'test:e2e'",
+        "pnpm run ${{ matrix.script }}",
+        undefined,
+      ],
+      [
+        "env.RUN == 'true' && matrix.script == 'test:e2e'",
+        "pnpm run test:e2e",
+        12,
+      ],
+    ]
+  );
+});
+
+// 단계 시한은 느리지만 진행 중인 설치를 끊지 않을 만큼 넉넉해야 한다. Linux의 Chromium·시스템 의존성 설치는 최근 35회 중
+// 최대 511초였고, #221 CI(run 44222170536)에서는 Ubuntu 미러가 느려 3분 시한에 끊겼다.
+test("gives the Linux Chromium and system dependency install room for a slow package mirror", () => {
+  const install = runSteps(workflow.jobs.check).find((each) =>
+    /--with-deps/.test(each.run)
+  );
+  assert.ok(
+    install["timeout-minutes"] >= 12,
+    `${install["timeout-minutes"]} minutes`
+  );
 });

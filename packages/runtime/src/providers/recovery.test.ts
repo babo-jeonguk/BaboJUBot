@@ -1,14 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-  readdir,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -18,6 +10,7 @@ import {
 } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "./lease.ts";
 import { readyLine } from "./process-test-support.ts";
+import { testFolders } from "./test-folders.ts";
 
 // Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
 // 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
@@ -40,7 +33,7 @@ vi.mock("./lease.ts", async (original) => {
 });
 
 // 복구 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
-const roots: string[] = [];
+const folders = testFolders();
 // 시험이 새 세션으로 띄운 프로그램(그룹 번호 = 프로그램 번호). 띄우자마자 넣어, 준비나 단언이 실패해도 그룹째 끄고 끝날 때까지 기다린다.
 const groups: number[] = [];
 afterEach(async () => {
@@ -52,13 +45,9 @@ afterEach(async () => {
       // 이미 끝났다.
     }
   for (const group of groups.splice(0)) await until(() => groupGone(group));
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
 });
 async function records() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-recovery-"));
-  roots.push(root);
+  const root = await folders.make("babojubot-recovery-");
   const directory = path.join(root, "providers/claude/processes");
   await mkdir(directory, { recursive: true });
   return { root, directory };
@@ -343,8 +332,7 @@ it("keeps the record of a live process whose start cannot be read", async () => 
 }, 30_000);
 
 it("recovers every connection folder, including named ones", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-recovery-"));
-  roots.push(root);
+  const root = await folders.make("babojubot-recovery-");
   const directory = path.join(root, "providers/claude-work/processes");
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, "123.json"), "broken");

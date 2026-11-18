@@ -30,6 +30,7 @@
 - 신호를 보내기 전에 완전한 stdout 줄을 모으고 exit/error 관찰을 등록합니다.
 - 준비와 정리에는 시한을 두고, 정리는 `finally`에서 기다립니다.
 - 상속 환경 변수·port·임시 폴더를 분리하고, 실패를 숨기려고 재시도나 단언 약화를 쓰지 않습니다.
+- 임시 폴더는 그 안에서 돈 프로그램의 종료·stdio 닫힘과 진행 중인 쓰기의 완료를 확인한 뒤 지웁니다. 지우기는 Windows의 일시적인 잠김만 정해진 횟수 다시 시도하고 소진하면 실패합니다(`packages/runtime/src/remove-folder.ts`, runtime 시험은 `packages/runtime/src/providers/test-folders.ts`). 시험 파일은 가져온 프로바이더 factory를 `owning`으로 한 번 묶어 써서, 어디로 넘긴 factory로 만든 연결이든 시험이 실패해도 그 실행이 끝난 뒤에 지웁니다.
 - E2E spec은 서버·DB 하나를 같이 쓰고 실행 순서로 DB 상태를 정하지 않습니다. 자기 조직은 조직 ID로 고르고(표시 이름은 유일하지 않음, `apps/web/e2e/support/organization.ts`), 빈 상태·전체 개수 검사는 자기 서버(`apps/web/e2e/support/isolated-server.ts`)에서 합니다. 날짜별 기대값은 실행하는 날의 벽시계나 막대 위치(마지막·끝에서 둘째)에 묶지 않고, 서버 시계를 정하는 자기 서버(`withServerClock`)에서 기록 시각·기준 시각·브라우저 시간대를 맞춰 날짜(`data-date`)로 검사합니다.
 - 저장 확정은 버튼이 잠기거나 클릭이 끝난 것이 아니라 성공 응답과 그 안의 저장값입니다. 전역 설정을 바꾸는 spec은 `apps/web/e2e/support/shared-settings.ts`의 `test`로 시작 전 값을 되돌립니다.
 - 50번 반복하는 스트레스 검사보다 결정적인 gate 경쟁 하나와 실제 통합 검사 하나를 선호합니다.

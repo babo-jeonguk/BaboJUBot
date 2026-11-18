@@ -19,6 +19,7 @@ import {
   type ContainerSettings,
 } from "./container.ts";
 import { createRelayHub } from "./relay.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 격리 실행의 폴더 권한(#149). 서버가 정한 신원(조직·에이전트)에 맞는 자리만, 링크를 따라가지 않고 확인한 실제 폴더로 넣는다.
 // 맞지 않으면 프로바이더를 띄우기 전에 거부한다. 거부 이유에는 이 컴퓨터의 경로를 넣지 않는다.
@@ -65,10 +66,8 @@ beforeEach(async () => {
   await mkdir(login, { recursive: true });
 });
 afterEach(async () => {
-  await rm(root, { recursive: true, force: true });
-  await Promise.all(
-    attempts.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))
-  );
+  await removeFolder(root);
+  await Promise.all(attempts.splice(0).map((dir) => removeFolder(dir)));
 });
 
 const workspace = (
@@ -153,21 +152,21 @@ describe.skipIf(process.platform === "win32")("container mount grants", () => {
 
   it("refuses a pre-planted link in place of a mount source or one of its folders", async () => {
     const shared = path.join(data, "organizations", org, "shared");
-    await rm(shared, { recursive: true });
+    await removeFolder(shared);
     await symlink(path.join(data, "organizations", otherOrg, "shared"), shared);
     expect(refusal(() => launch())).toBe("mount_link");
 
     await rm(shared);
     await mkdir(shared);
     const personal = path.join(data, "organizations", org, "agents", agent);
-    await rm(personal, { recursive: true });
+    await removeFolder(personal);
     await symlink(root, personal);
     expect(refusal(() => launch())).toBe("mount_link");
   });
 
   it("refuses when the organization's own folder is replaced by a link to another organization", async () => {
     const own = path.join(data, "organizations", org);
-    await rm(own, { recursive: true });
+    await removeFolder(own);
     await symlink(path.join(data, "organizations", otherOrg), own);
     expect(refusal(() => launch())).toBe("mount_link");
   });
@@ -202,7 +201,7 @@ describe.skipIf(process.platform === "win32")("container mount grants", () => {
 
   it("refuses missing folders and files where folders belong", async () => {
     const personal = path.join(data, "organizations", org, "agents", agent);
-    await rm(personal, { recursive: true });
+    await removeFolder(personal);
     expect(refusal(() => launch())).toBe("mount_missing");
     await writeFile(personal, "not a folder");
     expect(refusal(() => launch())).toBe("mount_type");

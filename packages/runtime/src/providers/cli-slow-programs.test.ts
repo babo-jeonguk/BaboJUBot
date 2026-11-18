@@ -1,26 +1,27 @@
-import { rm } from "node:fs/promises";
 import path from "node:path";
-import { describe, it, type TestContext } from "vitest";
-import { adapters, control, createCliHome } from "./cli-tolerance-support.ts";
-import { createOpenCodeProvider } from "./opencode.ts";
+import { describe, it } from "vitest";
+import {
+  cliAdapters,
+  control,
+  createCliHome,
+} from "./cli-tolerance-support.ts";
+import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
+import { testFolders } from "./test-folders.ts";
 
 // 서로 독립인 실제 자식 프로세스 시나리오라 겹쳐 돌린다. 지연은 줄이지 않고, 홈은 테스트마다 하나씩 만들어 그 테스트가 끝날 때 지운다.
-async function home(onTestFinished: TestContext["onTestFinished"]) {
-  return createCliHome((root) => {
-    onTestFinished(() => rm(root, { recursive: true, force: true }));
-  });
-}
+// 시험마다 정리를 따로 둔다(onTestFinished). 그 시험의 실행이 끝난 뒤 그 홈만 지운다.
+const home = (folders: ReturnType<typeof testFolders>) =>
+  createCliHome((root) => void folders.adopt(root));
 
 describe.concurrent("slow programs", () => {
   it("lets Claude take longer than a few seconds to start", async ({
     expect,
     onTestFinished,
   }) => {
-    const { adapter } = adapters.claude(
-      await home(onTestFinished),
-      "slow-start"
-    );
+    const folders = testFolders(onTestFinished);
+    const adapters = cliAdapters(folders);
+    const { adapter } = adapters.claude(await home(folders), "slow-start");
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 30_000);
@@ -29,10 +30,9 @@ describe.concurrent("slow programs", () => {
     expect,
     onTestFinished,
   }) => {
-    const { adapter } = adapters.antigravity(
-      await home(onTestFinished),
-      "slow-start"
-    );
+    const folders = testFolders(onTestFinished);
+    const adapters = cliAdapters(folders);
+    const { adapter } = adapters.antigravity(await home(folders), "slow-start");
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 30_000);
@@ -41,8 +41,10 @@ describe.concurrent("slow programs", () => {
     expect,
     onTestFinished,
   }) => {
+    const folders = testFolders(onTestFinished);
+    const adapters = cliAdapters(folders);
     const { adapter } = adapters["codex app-server"](
-      await home(onTestFinished),
+      await home(folders),
       "slow-answer"
     );
     const result = await adapter.execute(request(), control());
@@ -53,8 +55,10 @@ describe.concurrent("slow programs", () => {
     expect,
     onTestFinished,
   }) => {
+    const folders = testFolders(onTestFinished);
+    const adapters = cliAdapters(folders);
     const { adapter } = adapters["codex app-server"](
-      await home(onTestFinished),
+      await home(folders),
       "ignores-steer"
     );
     const input = request();
@@ -75,8 +79,10 @@ describe.concurrent("slow programs", () => {
   }, 30_000);
 
   it("lets OpenCode answer slowly", async ({ expect, onTestFinished }) => {
+    const folders = testFolders(onTestFinished);
+    const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
     const provider = createOpenCodeProvider({
-      dataDir: await home(onTestFinished),
+      dataDir: await home(folders),
       command: [
         process.execPath,
         path.resolve("test-fixtures/opencode-simulator.mjs"),

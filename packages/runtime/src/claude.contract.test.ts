@@ -1,18 +1,21 @@
 import { saying } from "./providers/test-support.ts";
 import { describeRuntimeContract } from "./runtime-contract.ts";
-import { createClaudeProvider } from "./providers/claude.ts";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createClaudeProvider as unownedClaudeProvider } from "./providers/claude.ts";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll } from "vitest";
-const dataDir = await mkdtemp(path.join(tmpdir(), "claude-contract-"));
+import { testFolders } from "./providers/test-folders.ts";
+// 이 파일의 시험이 모두 끝난 뒤 정리가 지운다.
+const folders = testFolders(afterAll);
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createClaudeProvider = folders.owning(unownedClaudeProvider);
+const dataDir = await folders.make("claude-contract-");
 await mkdir(path.join(dataDir, "providers/claude"), { recursive: true });
 await writeFile(
   path.join(dataDir, "providers/claude/setup-token"),
   "synthetic-login",
   { mode: 0o600 }
 );
-afterAll(() => rm(dataDir, { recursive: true, force: true }));
 
 for (const recorded of [false, true])
   describeRuntimeContract(

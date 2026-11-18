@@ -1,12 +1,14 @@
 import { saying } from "./providers/test-support.ts";
 import { describeRuntimeContract } from "./runtime-contract.ts";
-import { createCodexProvider } from "./providers/codex.ts";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createCodexProvider as unownedCodexProvider } from "./providers/codex.ts";
 import path from "node:path";
 import { afterAll } from "vitest";
-const dataDir = await mkdtemp(path.join(tmpdir(), "claude-contract-"));
-afterAll(() => rm(dataDir, { recursive: true, force: true }));
+import { testFolders } from "./providers/test-folders.ts";
+// 이 파일의 시험이 모두 끝난 뒤 정리가 지운다.
+const folders = testFolders(afterAll);
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createCodexProvider = folders.owning(unownedCodexProvider);
+const dataDir = await folders.make("claude-contract-");
 
 for (const [mode, recorded] of [
   ["app-server", false],

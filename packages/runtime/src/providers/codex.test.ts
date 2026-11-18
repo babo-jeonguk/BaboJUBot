@@ -1,170 +1,138 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCodexProvider, type CodexOptions } from "./codex.ts";
+import { describe, expect, it, vi } from "vitest";
+import {
+  createCodexProvider as unownedCodexProvider,
+  type CodexOptions,
+} from "./codex.ts";
 import type { Clock } from "./process.ts";
 import { manualClock, request } from "./test-support.ts";
-const roots: string[] = [];
-/** 폴더를 지우기 전에 할 정리. 시험이 중간에 실패해도 돈다. */
-const beforeRemoving: (() => Promise<void>)[] = [];
-afterEach(async () => {
-  // 정리 하나가 실패해도 나머지 정리와 폴더 삭제는 한다. 정리 실패는 시험의 원래 실패와 따로 알린다.
-  const failures: unknown[] = [];
-  try {
-    for (const cleanup of beforeRemoving.splice(0))
-      await cleanup().catch((error: unknown) => failures.push(error));
-  } finally {
-    await Promise.all(
-      roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-    );
-  }
-  if (failures.length)
-    throw new AggregateError(failures, "cleanup after the test failed");
-});
+import { testFolders } from "./test-folders.ts";
+const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createCodexProvider = folders.owning(unownedCodexProvider);
 it("initializes an app-server, runs a turn, and keeps unreported usage null", async () => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "codex-test-"));
-  try {
-    const provider = createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-finish.synthetic.json"),
-      ],
-    });
-    const result = await provider.adapter.execute(request(), {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
-    expect(result.stopReason).toBe("completed");
-    expect(result.nextSession?.id).toBe("thread-one");
-    expect(result.usage).toEqual({
-      inputTokens: 9,
-      outputTokens: 5,
-      cacheReadTokens: 3,
-      cacheWriteTokens: null,
-      costUsd: null,
-    });
-  } finally {
-    await rm(dataDir, { recursive: true, force: true });
-  }
+  const dataDir = await folders.make("codex-test-");
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-finish.synthetic.json"),
+    ],
+  });
+  const result = await provider.adapter.execute(request(), {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.stopReason).toBe("completed");
+  expect(result.nextSession?.id).toBe("thread-one");
+  expect(result.usage).toEqual({
+    inputTokens: 9,
+    outputTokens: 5,
+    cacheReadTokens: 3,
+    cacheWriteTokens: null,
+    costUsd: null,
+  });
 });
 it("accepts steering only after the expected turn acknowledgment", async () => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "codex-steer-"));
-  try {
-    const provider = createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-steer.synthetic.json"),
-      ],
-    });
-    const input = request();
-    const message = {
-      runId: input.identity.runId,
-      messageId: crypto.randomUUID(),
-      conversationId: crypto.randomUUID(),
-      body: "추가 검증",
-    };
-    expect(provider.adapter.capabilities.steer).toBe(true);
-    const result = await provider.adapter.execute(input, {
-      signal: new AbortController().signal,
-      emit: async () => {
-        expect(await provider.adapter.steer!(message)).toBe("accepted");
-      },
-    });
-    expect(result.stopReason).toBe("completed");
-    expect(await provider.adapter.steer!(message)).toBe("rejected");
-  } finally {
-    await rm(dataDir, { recursive: true, force: true });
-  }
+  const dataDir = await folders.make("codex-steer-");
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-steer.synthetic.json"),
+    ],
+  });
+  const input = request();
+  const message = {
+    runId: input.identity.runId,
+    messageId: crypto.randomUUID(),
+    conversationId: crypto.randomUUID(),
+    body: "추가 검증",
+  };
+  expect(provider.adapter.capabilities.steer).toBe(true);
+  const result = await provider.adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {
+      expect(await provider.adapter.steer!(message)).toBe("accepted");
+    },
+  });
+  expect(result.stopReason).toBe("completed");
+  expect(await provider.adapter.steer!(message)).toBe("rejected");
 });
 it("resumes the requested thread and reports only this attempt usage", async () => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "codex-resume-"));
-  try {
-    const provider = createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-resume.synthetic.json"),
-      ],
-    });
-    const input = request();
-    input.previousSession = {
-      id: "thread-one",
-      tokens: { inputTokens: 8, outputTokens: 1, cachedInputTokens: 2 },
-    };
-    const result = await provider.adapter.execute(input, {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
-    expect(result.stopReason).toBe("completed");
-    expect(result.usage).toEqual({
-      inputTokens: 3,
-      outputTokens: 4,
-      cacheReadTokens: 1,
-      cacheWriteTokens: null,
-      costUsd: null,
-    });
-  } finally {
-    await rm(dataDir, { recursive: true, force: true });
-  }
+  const dataDir = await folders.make("codex-resume-");
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-resume.synthetic.json"),
+    ],
+  });
+  const input = request();
+  input.previousSession = {
+    id: "thread-one",
+    tokens: { inputTokens: 8, outputTokens: 1, cachedInputTokens: 2 },
+  };
+  const result = await provider.adapter.execute(input, {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.stopReason).toBe("completed");
+  expect(result.usage).toEqual({
+    inputTokens: 3,
+    outputTokens: 4,
+    cacheReadTokens: 1,
+    cacheWriteTokens: null,
+    costUsd: null,
+  });
 });
 it("checks version and product login without starting a model turn", async () => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "codex-readiness-"));
-  try {
-    const provider = createCodexProvider({
-      dataDir,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-finish.synthetic.json"),
-      ],
-    });
-    expect(
-      await provider.adapter.checkReadiness(new AbortController().signal)
-    ).toEqual({ status: "unknown", reason: "credentials_unverified" });
-  } finally {
-    await rm(dataDir, { recursive: true, force: true });
-  }
+  const dataDir = await folders.make("codex-readiness-");
+  const provider = createCodexProvider({
+    dataDir,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-finish.synthetic.json"),
+    ],
+  });
+  expect(
+    await provider.adapter.checkReadiness(new AbortController().signal)
+  ).toEqual({ status: "unknown", reason: "credentials_unverified" });
 });
 it("runs the exec alternative with steering explicitly unsupported", async () => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "codex-exec-"));
-  try {
-    const provider = createCodexProvider({
-      dataDir,
-      mode: "exec",
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        path.resolve("test-fixtures/codex-exec.synthetic.json"),
-      ],
-    });
-    expect(provider.adapter.capabilities.steer).toBe(false);
-    expect(provider.adapter.steer).toBeUndefined();
-    const result = await provider.adapter.execute(request(), {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
-    expect(result.stopReason).toBe("completed");
-    expect(result.nextSession?.id).toBe("exec-thread");
-    expect(result.usage).toEqual({
-      inputTokens: 9,
-      outputTokens: 5,
-      cacheReadTokens: 3,
-      cacheWriteTokens: null,
-      costUsd: null,
-    });
-  } finally {
-    await rm(dataDir, { recursive: true, force: true });
-  }
+  const dataDir = await folders.make("codex-exec-");
+  const provider = createCodexProvider({
+    dataDir,
+    mode: "exec",
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/codex-exec.synthetic.json"),
+    ],
+  });
+  expect(provider.adapter.capabilities.steer).toBe(false);
+  expect(provider.adapter.steer).toBeUndefined();
+  const result = await provider.adapter.execute(request(), {
+    signal: new AbortController().signal,
+    emit: async () => {},
+  });
+  expect(result.stopReason).toBe("completed");
+  expect(result.nextSession?.id).toBe("exec-thread");
+  expect(result.usage).toEqual({
+    inputTokens: 9,
+    outputTokens: 5,
+    cacheReadTokens: 3,
+    cacheWriteTokens: null,
+    costUsd: null,
+  });
 });
 it("reads the app-server model catalog without starting a model turn", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "codex-catalog-"));
-  roots.push(root);
+  const root = await folders.make("codex-catalog-");
   const fixture = path.join(root, "catalog.json");
   await writeFile(
     fixture,
@@ -215,8 +183,7 @@ describe("usage numbers outside the contract (#140)", () => {
     totals: Record<string, unknown>,
     saved: Saved
   ) {
-    const root = await mkdtemp(path.join(tmpdir(), "codex-usage-"));
-    roots.push(root);
+    const root = await folders.make("codex-usage-");
     const source = path.resolve(
       mode === "exec"
         ? "test-fixtures/codex-exec.synthetic.json"
@@ -351,8 +318,7 @@ describe("usage numbers outside the contract (#140)", () => {
     ending: "cancel" | "exit",
     totals: Record<string, unknown>
   ) {
-    const root = await mkdtemp(path.join(tmpdir(), "codex-usage-"));
-    roots.push(root);
+    const root = await folders.make("codex-usage-");
     const fixture = JSON.parse(
       await readFile(
         path.resolve("test-fixtures/codex-resume.synthetic.json"),
@@ -448,8 +414,7 @@ describe("one app-server connection per call (#145)", () => {
     timeouts?: CodexOptions["timeouts"],
     clock?: Clock
   ) {
-    const root = await mkdtemp(path.join(tmpdir(), "codex-lifetime-"));
-    roots.push(root);
+    const root = await folders.make("codex-lifetime-");
     const log = path.join(root, "received.jsonl");
     const script = path.join(root, "script.json");
     await writeFile(script, JSON.stringify({ log, steps }));
@@ -500,14 +465,14 @@ describe("one app-server connection per call (#145)", () => {
         .toBe(true);
     /** Lets the program answer the steps held with `holdUntil: name`. */
     const release = (name: string) => writeFile(path.join(root, name), "");
-    // However the test ends, let every held answer go and see the programs end before the folder is removed (#215). A program
-    // that still runs then (a test that failed with its connection open) is stopped, and that is reported as a cleanup failure
-    // apart from the test's own.
+    // However the test ends, let every held answer go and see the programs end before the folder is removed (#215). The
+    // cleanup first stops the provider's calls (registered later, stopped first), which closes their connections. A program that
+    // still runs then is stopped, and that is reported as a cleanup failure apart from the test's own.
     const held = Object.values(steps)
       .flat()
       .flatMap((step) => (step.holdUntil ? [step.holdUntil] : []));
     if (held.length)
-      beforeRemoving.push(async () => {
+      folders.own(async () => {
         await Promise.all(held.map(release));
         const ended = await expect
           .poll(running, { timeout: 10_000 })
@@ -529,7 +494,7 @@ describe("one app-server connection per call (#145)", () => {
         throw new Error(
           `scripted programs ${left.join(", ")} still ran after their held answers were let go; stopped them`
         );
-      });
+      }, "held scripted answers");
     return { provider, sent, methods, running, arrived, release };
   }
   /** Whether `promise` has settled by now. Settling is a step the test can see; time passing is not. */

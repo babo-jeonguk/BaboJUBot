@@ -1,16 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
+import { removeFolder } from "@babojubot/runtime/testing";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
@@ -157,8 +152,8 @@ it.each(stopRequests)(
       expect(existsSync(pidFile)).toBe(false);
     } finally {
       await stopMain(child);
-      killLeftover(postgresPid);
-      rmSync(home, { recursive: true, force: true });
+      await stopLeftover(postgresPid);
+      await removeFolder(home);
     }
   },
   60_000
@@ -184,7 +179,7 @@ it.each(stopRequests)(
       );
     } finally {
       await stopMain(child);
-      rmSync(home, { recursive: true, force: true });
+      await removeFolder(home);
     }
   },
   60_000
@@ -233,8 +228,8 @@ posix.each(posixStopRequests)(
       await expectGone(postgresPid);
     } finally {
       await stopMain(child);
-      killLeftover(postgresPid);
-      rmSync(home, { recursive: true, force: true });
+      await stopLeftover(postgresPid);
+      await removeFolder(home);
     }
   },
   60_000
@@ -261,8 +256,8 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
     expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
   } finally {
     await stopMain(child);
-    killLeftover(postgres?.pid);
-    rmSync(temp.dir, { recursive: true, force: true });
+    await stopLeftover(postgres?.pid);
+    await removeFolder(temp.dir);
   }
 }, 60_000);
 
@@ -286,8 +281,8 @@ it("finishes its own shutdown when the parent's channel closes", async () => {
     expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
   } finally {
     await stopMain(child);
-    killLeftover(postgres?.pid);
-    rmSync(temp.dir, { recursive: true, force: true });
+    await stopLeftover(postgres?.pid);
+    await removeFolder(temp.dir);
   }
 }, 60_000);
 
@@ -358,6 +353,7 @@ type MainProcess = ChildProcess & {
   stdoutText: () => string;
   stderrText: () => string;
   exited: Promise<Exit>;
+  closed: Promise<void>;
   ready: Promise<void>;
 };
 
@@ -415,6 +411,16 @@ function startMain(
   });
   void exited.catch(() => {});
   child.exited = exited;
+  // 출력(stdout·stderr)이 닫힌 때. 자식의 close 이벤트는 IPC 채널까지 세어 부모가 채널을 끊으면 오지 않을 수 있어 출력만 본다.
+  child.closed = Promise.all(
+    [child.stdout!, child.stderr!].map(
+      (stream) =>
+        new Promise<void>((resolve) => {
+          if (stream.closed) resolve();
+          else stream.once("close", () => resolve());
+        })
+    )
+  ).then(() => {});
   child.ready = waitForReady(
     child,
     () => stdout,
@@ -518,6 +524,26 @@ async function stopMain(child: MainProcess, { group = false } = {}) {
     // spawn 오류는 시작 실패로 이미 드러났다. 끝나지 않는 자식만 실패로 알린다.
     if (child.exitCode === null && child.signalCode === null) throw error;
   }
+  // 폴더를 지우기 전에 stdio 닫힘까지 확인한다.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      child.closed,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `server ${child.pid} did not close its output in ${killWaitMs}ms`
+              )
+            ),
+          killWaitMs
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function waitForPath(child: MainProcess, target: string) {
@@ -579,8 +605,8 @@ async function expectGone(pid: number) {
   await expect.poll(() => isAlive(pid), { timeout: 5_000 }).toBe(false);
 }
 
-/** 시험이 실패해 남은 Postgres만 끝낸다. */
-function killLeftover(pid: number | undefined) {
+/** 시험이 실패해 남은 Postgres만 끝내고, 끝난 것을 확인한다. 그 뒤에야 폴더를 지운다. */
+async function stopLeftover(pid: number | undefined) {
   if (!pid || !isAlive(pid)) return;
   try {
     if (process.platform !== "win32") process.kill(pid, "SIGCONT");
@@ -588,6 +614,7 @@ function killLeftover(pid: number | undefined) {
   } catch {
     /* Already gone between the check and the signal. */
   }
+  await expectGone(pid);
 }
 
 function isAlive(pid: number) {

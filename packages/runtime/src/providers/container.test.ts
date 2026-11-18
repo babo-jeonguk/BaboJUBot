@@ -18,10 +18,13 @@ import type net from "node:net";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createClaudeProvider } from "./claude.ts";
-import { createCodexProvider, type CodexOptions } from "./codex.ts";
-import { createOpenCodeProvider } from "./opencode.ts";
-import { createAntigravityProvider } from "./antigravity.ts";
+import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
+import {
+  createCodexProvider as unownedCodexProvider,
+  type CodexOptions,
+} from "./codex.ts";
+import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
+import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import {
   createDockerEnvironment,
   type ContainerSettings,
@@ -29,6 +32,7 @@ import {
 import { attachedRelayHub, manualClock, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
+import { testFolders } from "./test-folders.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
@@ -50,14 +54,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const roots: string[] = [];
+const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createClaudeProvider = folders.owning(unownedClaudeProvider);
+const createCodexProvider = folders.owning(unownedCodexProvider);
+const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
+const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 const saved = { ...process.env };
 afterEach(async () => {
   refusal = null;
   process.env = { ...saved };
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
 });
 
 type Call = {
@@ -76,7 +82,7 @@ async function setup(programs: Record<string, string[]>, base = tmpdir()) {
   const root = await realpath(
     await mkdtemp(path.join(base, "babojubot-container-"))
   );
-  roots.push(root);
+  folders.adopt(root);
   const state = path.join(root, "docker-state");
   await mkdir(state);
   const org = crypto.randomUUID(),
@@ -1331,7 +1337,7 @@ describe.skipIf(process.platform === "win32")(
         ),
         "refreshes.log"
       );
-      roots.push(path.dirname(log));
+      folders.adopt(path.dirname(log));
       const t = await codexSetup(
         expiringLogin(),
         [process.execPath, fixture("codex-refresh.mjs"), log, mode],
@@ -2449,7 +2455,7 @@ describe.skipIf(process.platform === "win32")(
         ),
         "refreshes.log"
       );
-      roots.push(path.dirname(log));
+      folders.adopt(path.dirname(log));
       const expiring = (() => {
         const jwt =
           [{ alg: "none" }, { exp: Math.floor(Date.now() / 1000) + 60 }]
@@ -2574,7 +2580,7 @@ describe.skipIf(process.platform === "win32")(
     describe.skipIf(!volume)("on a real disk that refuses links", () => {
       it("refuses a file link in that folder", async () => {
         const probe = await mkdtemp(path.join(volume!, "babojubot-probe-"));
-        roots.push(probe);
+        folders.adopt(probe);
         await writeFile(path.join(probe, "target"), "");
         const code = await symlink(
           path.join(probe, "target"),
@@ -2619,8 +2625,7 @@ describe.skipIf(process.platform === "win32")(
 
 describe("the Docker engine check", () => {
   async function engine(files: Record<string, string> = {}) {
-    const root = await mkdtemp(path.join(tmpdir(), "babojubot-engine-"));
-    roots.push(root);
+    const root = await folders.make("babojubot-engine-");
     for (const [name, value] of Object.entries(files))
       await writeFile(path.join(root, name), value);
     return createDockerEnvironment({
