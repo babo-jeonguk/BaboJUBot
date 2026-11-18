@@ -32,6 +32,7 @@ import { conversations, organizations, wakes } from "./schema.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -322,30 +323,30 @@ async function withDatabaseBefore(
     path.dirname(fileURLToPath(import.meta.url)),
     "../migrations"
   );
-  const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
-  await fsp.cp(migrations, before, { recursive: true });
-  const journalPath = path.join(before, "meta/_journal.json");
-  const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
-    entries: { tag: string }[];
-  };
-  const index = journal.entries.findIndex((e) => e.tag === tag);
-  journal.entries = journal.entries.slice(0, index);
-  await fsp.writeFile(journalPath, JSON.stringify(journal));
+  await withCleanup(async (defer) => {
+    const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
+    defer(() => removeFolder(before));
+    await fsp.cp(migrations, before, { recursive: true });
+    const journalPath = path.join(before, "meta/_journal.json");
+    const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
+      entries: { tag: string }[];
+    };
+    const index = journal.entries.findIndex((e) => e.tag === tag);
+    journal.entries = journal.entries.slice(0, index);
+    await fsp.writeFile(journalPath, JSON.stringify(journal));
 
-  const name = `backfill_${randomUUID().replaceAll("-", "")}`;
-  await t.db.execute(sql.raw(`create database ${name}`));
-  const url = new URL(t.url);
-  url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString() });
-  try {
+    const name = `backfill_${randomUUID().replaceAll("-", "")}`;
+    await t.db.execute(sql.raw(`create database ${name}`));
+    defer(() => t.db.execute(sql.raw(`drop database ${name}`)));
+    const url = new URL(t.url);
+    url.pathname = `/${name}`;
+    const pool = new pg.Pool({ connectionString: url.toString() });
+    // 연결을 닫은 뒤에 그 DB를 지운다.
+    defer(() => pool.end());
     const db = drizzle(pool);
     await migrate(db, { migrationsFolder: before });
     await fn(pool, () => migrate(db, { migrationsFolder: migrations }));
-  } finally {
-    await pool.end();
-    await t.db.execute(sql.raw(`drop database ${name}`));
-    await removeFolder(before);
-  }
+  });
 }
 
 describe("migration 0014_lead_conversations", () => {
@@ -880,16 +881,17 @@ async function migrationStatement(prefix: string, index: number) {
  * backfill 결과가 제약을 지키는지도 확인한다. 이 파일의 검사는 차례로 돌아 다른 검사와 겹치지 않는다.
  */
 async function withoutDeliveredAtCheck(fn: () => Promise<void>) {
-  await t.db.execute(
-    sql`alter table messages drop constraint messages_delivered_at_check`
-  );
-  try {
-    await fn();
-  } finally {
+  await withCleanup(async (defer) => {
     await t.db.execute(
-      sql`alter table messages add constraint messages_delivered_at_check check ((delivered_seq is null) = (delivered_at is null))`
+      sql`alter table messages drop constraint messages_delivered_at_check`
     );
-  }
+    defer(() =>
+      t.db.execute(
+        sql`alter table messages add constraint messages_delivered_at_check check ((delivered_seq is null) = (delivered_at is null))`
+      )
+    );
+    await fn();
+  });
 }
 
 // 조직의 기본 대화는 하나뿐이다.
