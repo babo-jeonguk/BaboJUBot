@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, lstat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
@@ -39,6 +39,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { record } from "./record.ts";
+import { removeAttemptFolder } from "./attempt-folder.ts";
 const failure = (): RunResult => ({
   stopReason: "failed",
   error: "프로바이더 실행이 실패했습니다.",
@@ -296,11 +297,12 @@ export function createOpenCodeProvider(options: {
     config: Record<string, unknown> = {},
     container?: ContainerLaunch,
     productHome = home,
-    waiting?: () => Promise<void>
+    waiting?: () => Promise<void>,
+    runId?: string
   ) {
     const release = await startupTurn(productHome, signal, waiting);
     try {
-      return await launch(signal, config, container, productHome);
+      return await launch(signal, config, container, productHome, runId);
     } finally {
       release();
     }
@@ -310,86 +312,106 @@ export function createOpenCodeProvider(options: {
     signal: AbortSignal,
     config: Record<string, unknown>,
     container: ContainerLaunch | undefined,
-    productHome: string
+    productHome: string,
+    runId?: string
   ) {
     const directory = await mkdtemp(path.join(productHome, "attempt-")),
       password = crypto.randomUUID();
-    // 조직 도구 호출마다 같은 호출 키를 넣는 plugin. 설정 폴더의 `plugins/`는 OpenCode가 스스로 읽는다.
-    await mkdir(path.join(directory, "plugins"), { mode: 0o700 });
-    await writeFile(
-      path.join(directory, "plugins", "babojubot-organization-keys.js"),
-      organizationKeysPluginSource,
-      { mode: 0o600 }
-    );
     const lifetime = new AbortController();
     let interrupt: (() => void) | undefined;
+    let child: ReturnType<typeof startProcess> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let listening = false;
+    let cleaned = false;
     const abort = () => {
       if (interrupt) interrupt();
       else lifetime.abort();
     };
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-    let resolveUrl!: (url: string) => void;
-    const ready = new Promise<string>((resolve) => {
-      resolveUrl = resolve;
-    });
-    const child = startProcess({
-      // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
-      stateDir: home,
-      command,
-      args: container
-        ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
-        : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
-      cwd: productHome,
-      env: {
-        ...env(productHome, Boolean(container)),
-        OPENCODE_CONFIG_DIR: directory,
-        OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-        OPENCODE_SERVER_PASSWORD: password,
-      },
-      ...(container ? { container } : {}),
-      onFrame: async (raw) => {
-        const url = record(raw).url;
-        if (typeof url === "string") {
-          if (container) {
-            // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
-            let parsed: URL | undefined;
-            try {
-              parsed = new URL(url);
-            } catch {
-              parsed = undefined;
-            }
-            if (parsed?.protocol === "http:") {
-              try {
-                resolveUrl(await child.inboundOrigin());
-              } catch {
-                lifetime.abort();
-              }
-            }
-          } else {
-            const parsed = new URL(url);
-            if (parsed.hostname === "127.0.0.1" && parsed.protocol === "http:")
-              resolveUrl(parsed.origin);
-          }
-        }
-      },
-    });
-    const stop = () => child.end();
-    lifetime.signal.addEventListener("abort", stop, { once: true });
-    if (lifetime.signal.aborted) stop();
-    const timer = setTimeout(() => lifetime.abort(), startupLimitMs);
-    const close = async () => {
-      clearTimeout(timer);
+    /** 지금까지 만든 것 중 이미 있는 것만 되돌린다. 성공한 뒤 부르는 `close`도 이것을 한 번만 쓴다. */
+    const cleanup = async () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (timer) clearTimeout(timer);
       lifetime.abort();
-      child.end();
-      await child.done;
-      signal.removeEventListener("abort", abort);
-      await rm(directory, { recursive: true, force: true });
+      if (child) {
+        child.end();
+        await child.done;
+      }
+      if (listening) signal.removeEventListener("abort", abort);
+      await removeAttemptFolder(directory, {
+        kind: "attempt folder",
+        connection: connectionId,
+        runId,
+      });
     };
+    const close = cleanup;
     try {
+      // 조직 도구 호출마다 같은 호출 키를 넣는 plugin. 설정 폴더의 `plugins/`는 OpenCode가 스스로 읽는다.
+      await mkdir(path.join(directory, "plugins"), { mode: 0o700 });
+      await writeFile(
+        path.join(directory, "plugins", "babojubot-organization-keys.js"),
+        organizationKeysPluginSource,
+        { mode: 0o600 }
+      );
+      signal.addEventListener("abort", abort, { once: true });
+      listening = true;
+      if (signal.aborted) abort();
+      let resolveUrl!: (url: string) => void;
+      const ready = new Promise<string>((resolve) => {
+        resolveUrl = resolve;
+      });
+      const started = startProcess({
+        // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
+        stateDir: home,
+        command,
+        args: container
+          ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
+          : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
+        cwd: productHome,
+        env: {
+          ...env(productHome, Boolean(container)),
+          OPENCODE_CONFIG_DIR: directory,
+          OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+          OPENCODE_SERVER_PASSWORD: password,
+        },
+        ...(container ? { container } : {}),
+        onFrame: async (raw) => {
+          const url = record(raw).url;
+          if (typeof url === "string") {
+            if (container) {
+              // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
+              let parsed: URL | undefined;
+              try {
+                parsed = new URL(url);
+              } catch {
+                parsed = undefined;
+              }
+              if (parsed?.protocol === "http:") {
+                try {
+                  resolveUrl(await started.inboundOrigin());
+                } catch {
+                  lifetime.abort();
+                }
+              }
+            } else {
+              const parsed = new URL(url);
+              if (
+                parsed.hostname === "127.0.0.1" &&
+                parsed.protocol === "http:"
+              )
+                resolveUrl(parsed.origin);
+            }
+          }
+        },
+      });
+      child = started;
+      const stop = () => started.end();
+      lifetime.signal.addEventListener("abort", stop, { once: true });
+      if (lifetime.signal.aborted) stop();
+      timer = setTimeout(() => lifetime.abort(), startupLimitMs);
       const base = await Promise.race([
         ready,
-        child.done.then(() => {
+        started.done.then(() => {
           throw new Error("Provider closed");
         }),
         new Promise<never>((_, reject) =>
@@ -436,16 +458,23 @@ export function createOpenCodeProvider(options: {
         setInterrupt: (callback: () => void) => {
           interrupt = callback;
         },
-        closed: child.done,
+        closed: started.done,
         lifetime,
         async json(route: string, method = "GET", body?: unknown) {
           const response = await request(route, method, body);
           return record(await response.json());
         },
       };
-    } catch (e) {
-      await close();
-      throw e;
+    } catch (error) {
+      try {
+        await cleanup();
+      } catch (cleanupError) {
+        console.warn(
+          `[provider] could not clean up after preparing the OpenCode server of run ${runId ?? "(none)"} on connection ${connectionId}`,
+          cleanupError
+        );
+      }
+      throw error;
     }
   }
   const active = new Map<
@@ -671,7 +700,8 @@ export function createOpenCodeProvider(options: {
             control.emit({
               type: "progress",
               text: "먼저 시작한 OpenCode가 준비될 때까지 기다립니다.",
-            })
+            }),
+          input.identity.runId
         );
         const api = service;
         // 격리 실행에는 연결의 로그인을 옮기지 않는다(#148). 조직 폴더에 옮겨 둔 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.

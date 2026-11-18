@@ -64,7 +64,7 @@ Inbox는 레일·768px 미만 상단 바의 Inbox 버튼과 홈의 `주의 필�
 
 ## 서버 종료와 데이터 폴더
 
-서버는 SIGINT·SIGTERM·SIGHUP으로 정리를 시작하고, Node IPC 채널로 서버를 직접 띄운 부모는 멈춤 메시지(`{ type: "babojubot:stop" }`, [`stop-request.ts`](../apps/server/src/stop-request.ts))로 정리를 맡깁니다. Windows에서는 신호로 정리를 맡길 수 없어 E2E가 이 길을 씁니다. 채널이 끊겨도(부모가 사라짐) 같은 정리를 합니다. 정리는 새 연결을 받지 않고, 이미 받은 요청의 처리와 서버가 시작한 DB 작업이 모두 끝난 뒤(요청을 보낸 쪽이 먼저 떠났어도) DB를 닫습니다. 정리 중에 받은 요청은 처리한 뒤 그 연결을 닫습니다. 정리 시한(`BABOJUBOT_SHUTDOWN_TIMEOUT_MS`, 기본 30초)이 지나면 어디서 멈췄는지(닫던 부분과 기다리던 요청)를 오류 출력에 남기고 실패로 끝납니다. 서버를 Docker·Kubernetes·systemd로 돌리면 그 정지 시한을 이 값보다 길게 둡니다.
+서버는 SIGINT·SIGTERM·SIGHUP으로 정리를 시작하고, Node IPC 채널로 서버를 직접 띄운 부모는 멈춤 메시지(`{ type: "babojubot:stop" }`, [`stop-request.ts`](../apps/server/src/stop-request.ts))로 정리를 맡깁니다. Windows에서는 신호로 정리를 맡길 수 없어 E2E가 이 길을 씁니다. 채널이 끊겨도(부모가 사라짐) 같은 정리를 합니다. 정리는 새 연결을 받지 않고, 이미 받은 요청의 처리와 서버가 시작한 DB 작업이 모두 끝난 뒤(요청을 보낸 쪽이 먼저 떠났어도) DB를 닫습니다. 정리 중에 받은 요청은 처리한 뒤 그 연결을 닫습니다. 정리 시한(`BABOJUBOT_SHUTDOWN_TIMEOUT_MS`, 기본 30초)이 지나면 어디서 멈췄는지(닫던 부분과 기다리던 요청)를 오류 출력에 남기고 실패로 끝납니다. 서버를 Docker·Kubernetes·systemd로 돌리면 그 정지 시한을 이 값보다 길게 둡니다. 시작(DB 연결·migration·HTTP 서버 시작)이 실패하면 시작을 막은 원래 오류로 끝나고, 그 뒤 DB를 닫거나 내장 Postgres를 멈추다 난 오류는 원래 오류를 덮지 않고 오류 출력에 따로 남습니다. 내장 Postgres는 어느 단계에서 실패해도 한 번만 멈춥니다.
 
 서버가 강제로 끝나 남은 내장 Postgres는 다음 시작이 정상 정지하고 다시 띄웁니다. 다른 프로세스가 아직 쓰고 있거나 BaboJUBot이 띄운 것인지 확인할 수 없으면 끄는 명령을 알리고 시작하지 않습니다. 멈출 때 지우는 임시 내장 Postgres(테스트·E2E)는 디스크 확정 기록(fsync)을 끄고 띄우며, 영구 DB는 그대로 기록합니다.
 

@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -23,6 +23,7 @@ import {
   ProtocolRejection,
   ProtocolTimeout,
 } from "./codex-connection.ts";
+import { readRegularFile } from "./regular-file.ts";
 import { type Clock, realClock } from "./process.ts";
 import {
   startProcess,
@@ -46,6 +47,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { type AttemptLoginFile, fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
+import { removeAttemptFolder } from "./attempt-folder.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -131,9 +133,9 @@ const relayLogin = (token: string) => ({
 /** 이 어댑터가 남긴 가짜 로그인 파일인가. 서버가 실행 중에 멈춰 남은 파일이면 다음 실행을 시작한다. */
 async function isRelayLogin(file: string): Promise<boolean> {
   try {
-    const found = await lstat(file);
-    if (!found.isFile()) return false;
-    const login = record(JSON.parse(await readFile(file, "utf8")));
+    const text = await readRegularFile(file);
+    if (text === undefined) return false;
+    const login = record(JSON.parse(text));
     const tokens = record(login.tokens);
     return (
       tokens.id_token === relayIdToken &&
@@ -797,7 +799,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         } finally {
           grant?.revoke();
           if (attempt)
-            await rm(attempt, { recursive: true, force: true }).catch(() => {});
+            await removeAttemptFolder(attempt, {
+              kind: "attempt folder",
+              connection: id,
+              runId: request.identity.runId,
+            });
         }
       },
     },

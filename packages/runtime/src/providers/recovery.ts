@@ -41,6 +41,10 @@ function members(group: number) {
     });
 }
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** 복구 도우미 명령이 서버를 붙잡을 수 있는 가장 긴 시간. 느린 Windows에서는 PowerShell이 뜨는 데 몇 초 걸린다. */
+const helperCommandTimeoutMs = 10_000;
+/** Windows에서 시작 시각을 묻는 명령의 제한. 붙잡는 것이 없어 더 기다려도 되고, 실패하면 시작 시각 없는 기록으로 남으며 복구는 이미 그것을 모르는 것으로 다룬다. */
+const startRecordTimeoutMs = 30_000;
 /** 프로세스와 그 자식들에게 신호를 보낸다. Windows는 프로세스 그룹이 없어 taskkill로 트리를 끝낸다. */
 export function signalProcessTree(pid: number, signal: NodeJS.Signals) {
   if (process.platform === "win32") {
@@ -48,7 +52,12 @@ export function signalProcessTree(pid: number, signal: NodeJS.Signals) {
     if (signal === "SIGINT") return;
     const args = ["/T", "/PID", String(pid)];
     if (signal === "SIGKILL") args.unshift("/F");
-    execFile("taskkill", args, { windowsHide: true }, () => {});
+    execFile(
+      "taskkill",
+      args,
+      { windowsHide: true, timeout: helperCommandTimeoutMs },
+      () => {}
+    );
     return;
   }
   try {
@@ -122,6 +131,7 @@ export function processStartedAt(pid: number, platform: NodeJS.Platform) {
         env: startQueryEnv(),
         windowsHide: true,
         stdio: ["ignore", "pipe", "ignore"],
+        timeout: helperCommandTimeoutMs,
       })
     );
   } catch {
@@ -177,7 +187,12 @@ export function recordProcess(
   execFile(
     command,
     args,
-    { encoding: "utf8", env: startQueryEnv(), windowsHide: true },
+    {
+      encoding: "utf8",
+      env: startQueryEnv(),
+      windowsHide: true,
+      timeout: startRecordTimeoutMs,
+    },
     (error, stdout) => {
       const started = error ? undefined : parseStart(stdout);
       if (started !== undefined) saveStarted(started, startSaveTries);
@@ -225,6 +240,7 @@ async function recoverWithoutProc(
     execFileSync("taskkill", ["/F", "/T", "/PID", String(saved.pid)], {
       windowsHide: true,
       stdio: "ignore",
+      timeout: helperCommandTimeoutMs,
     });
     return;
   }

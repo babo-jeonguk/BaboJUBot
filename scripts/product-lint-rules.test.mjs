@@ -338,3 +338,52 @@ test("the read-assertion rule does not replace the bans already on server and ru
   );
   assert.ok(launch, "the runtime's launch ban is gone");
 });
+
+const syncCommandRule = ["product/sync-command-timeout"];
+
+test("product code runs a program synchronously only with a timeout", async () => {
+  const unbounded = {
+    "an execFileSync without options": `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", ["-o", "lstart="]);\n`,
+    "an execFileSync without a timeout": `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", [], { encoding: "utf8" });\n`,
+    "a spawnSync without a timeout": `import { spawnSync } from "child_process";\nexport const out = () => spawnSync("taskkill", ["/F"], { stdio: "ignore" });\n`,
+    "an execSync without a timeout": `import { execSync } from "node:child_process";\nexport const out = () => execSync("ps");\n`,
+    "a renamed import": `import { execFileSync as run } from "node:child_process";\nexport const out = () => run("ps", []);\n`,
+    "a namespace call": `import * as cp from "node:child_process";\nexport const out = () => cp.spawnSync("ps", [], { encoding: "utf8" });\n`,
+    // Node는 timeout이 0이거나 undefined면 기다림에 끝을 두지 않는다.
+    "a zero timeout": `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", [], { timeout: 0 });\n`,
+    "an undefined timeout": `import { spawnSync } from "node:child_process";\nexport const out = () => spawnSync("ps", [], { timeout: undefined });\n`,
+    // 옵션을 변수로 넘기면 상한이 있는지 확인할 수 없다.
+    "options in a variable": `import { execFileSync } from "node:child_process";\nconst options = { timeout: 1000 };\nexport const out = () => execFileSync("ps", [], options);\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(unbounded)) {
+      const [message, ...rest] = await lint(code, place, syncCommandRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 비동기 실행과 상한 옵션을 안내한다.
+      assert.match(message.message, /execFile/);
+      assert.match(message.message, /timeout/);
+    }
+  const bounded = [
+    `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", [], { encoding: "utf8", timeout: 5000 });\n`,
+    `import { spawnSync } from "node:child_process";\nconst timeout = 5000;\nexport const out = () => spawnSync("ps", ["-p", "1"], { timeout });\n`,
+    `import { execSync } from "node:child_process";\nexport const out = () => execSync("ps", { timeout: 5000 });\n`,
+    // 비동기 실행은 서버를 멈추지 않는다.
+    `import { execFile } from "node:child_process";\nexport const out = () => execFile("ps", [], () => {});\n`,
+    // child_process가 아닌 같은 이름의 함수는 대상이 아니다.
+    `const execFileSync = (name: string) => name;\nexport const out = () => execFileSync("ps");\n`,
+  ];
+  for (const place of productPlaces)
+    for (const code of bounded)
+      assert.deepEqual(
+        await lint(code, place, syncCommandRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(Object.values(unbounded)[0], place, syncCommandRule),
+      [],
+      place
+    );
+});

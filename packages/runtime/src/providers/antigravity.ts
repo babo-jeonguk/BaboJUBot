@@ -6,7 +6,6 @@ import {
   readFile,
   realpath,
   readdir,
-  rm,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +22,7 @@ import {
   saysLoginProblem,
 } from "./process.ts";
 import { clearOwnedConfig } from "./antigravity-config.ts";
+import { readRegularFile } from "./regular-file.ts";
 import type { ContainerSettings } from "./container.ts";
 import {
   ContainerRefusal,
@@ -37,6 +37,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
+import { removeAttemptFolder } from "./attempt-folder.ts";
 /** 프로그램이 JSON-RPC 오류로 거절한 요청. */
 class AcpRejection extends Error {}
 /** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */
@@ -80,8 +81,9 @@ const relayToken = (accessToken: string) => ({
 /** 이 어댑터가 둔 가짜 로그인(자리 표시)인가. */
 async function isRelayToken(file: string): Promise<boolean> {
   try {
-    if (!(await lstat(file)).isFile()) return false;
-    const login = record(JSON.parse(await readFile(file, "utf8")));
+    const text = await readRegularFile(file);
+    if (text === undefined) return false;
+    const login = record(JSON.parse(text));
     const token = record(login.token);
     return (
       token.expiry === relayExpiry &&
@@ -592,9 +594,17 @@ export function createAntigravityProvider(options: {
       } finally {
         grant?.revoke();
         if (attempt)
-          await rm(attempt, { recursive: true, force: true }).catch(() => {});
+          await removeAttemptFolder(attempt, {
+            kind: "attempt folder",
+            connection: connectionId,
+            runId: request.identity.runId,
+          });
         if (logs)
-          await rm(logs, { recursive: true, force: true }).catch(() => {});
+          await removeAttemptFolder(logs, {
+            kind: "log folder",
+            connection: connectionId,
+            runId: request.identity.runId,
+          });
       }
     },
   };

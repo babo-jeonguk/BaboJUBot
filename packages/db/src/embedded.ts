@@ -91,9 +91,16 @@ export async function startEmbeddedCluster(
     await stopLeftover(pgCtl, dataDir, persistent, lease.previous);
   } catch (error) {
     // 켜기 전이다. postgres가 없으면 임시 cluster는 통째로 지운다. 그 밖에는(영구 DB이거나 확인하지 못한 postgres가 있음)
-    // 손대지 않고, 다음 시작이 같은 판단을 다시 할 수 있게 치운 죽은 주인을 되돌린다.
-    if (!persistent && !readPidFile(dataDir)) await removeTemporary(dataDir);
-    else releaseOwner(dataDir, lease, lease.previous);
+    // 손대지 않고, 다음 시작이 같은 판단을 다시 할 수 있게 치운 죽은 주인을 되돌린다. 정리가 실패해도 원래 오류를 덮지 않는다.
+    try {
+      if (!persistent && !readPidFile(dataDir)) await removeTemporary(dataDir);
+      else releaseOwner(dataDir, lease, lease.previous);
+    } catch (cleanupError) {
+      console.error(
+        "[db] cleaning up after a failed start failed",
+        cleanupError
+      );
+    }
     throw error;
   }
 
@@ -544,7 +551,12 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
     acquireOwner(dataDir, false);
     return { dataDir, persistent: false };
   } catch (error) {
-    await removeTemporary(dataDir);
+    await removeTemporary(dataDir).catch((removeError: unknown) =>
+      console.error(
+        "[db] removing the temporary folder after a failed start failed",
+        removeError
+      )
+    );
     throw error;
   }
 }

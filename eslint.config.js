@@ -177,6 +177,7 @@ export default defineConfig([
     // 실제 타입을 아는 자리에만 쓴다. JSON.parse·응답 본문에 바로 붙인 단정은 product 규칙이 막고,
     // 타입 없는 중간 변수를 거친 단정은 잡지 못하므로 리뷰가 본다.
     // 시작한 Promise의 실패는 기다리거나 받고, 결과를 기다리지 않을 때는 `void`로 드러낸다. 폐기 예정 기능은 쓰지 않는다.
+    // 외부 프로그램을 동기로 띄우면 끝날 때까지 서버 전체가 멈추므로, 동기 실행은 옵션 객체에 timeout을 둘 때만 쓴다.
     files: productFiles,
     ignores: testFiles,
     plugins: { product: productRules },
@@ -185,6 +186,7 @@ export default defineConfig([
       "@typescript-eslint/no-misused-promises": "error",
       "@typescript-eslint/no-deprecated": "error",
       "product/no-assertion-on-parsed-data": "error",
+      "product/sync-command-timeout": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",

@@ -1,7 +1,7 @@
 import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import type { ClaudeSessionCost } from "./claude-transcript.ts";
 import { claudeModelsFor } from "./claude-models.ts";
-import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, readFile, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -48,6 +48,7 @@ import {
   type RelayProfile,
   residueRefusal,
 } from "./credential-relay.ts";
+import { removeAttemptFolder } from "./attempt-folder.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
@@ -347,7 +348,11 @@ async function executeClaude(
       destinations: providerDestinations.claude,
     });
   } catch (error) {
-    await rm(temp, { recursive: true, force: true });
+    await removeAttemptFolder(temp, {
+      kind: "attempt folder",
+      connection: connection.id,
+      runId: request.runId,
+    });
     if (error instanceof ContainerRefusal)
       return { ...failed(), error: error.message };
     throw error;
@@ -670,6 +675,10 @@ async function executeClaude(
     }
   } finally {
     grant?.revoke();
-    await rm(temp, { recursive: true, force: true });
+    await removeAttemptFolder(temp, {
+      kind: "attempt folder",
+      connection: connection.id,
+      runId: request.runId,
+    });
   }
 }

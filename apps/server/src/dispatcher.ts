@@ -158,6 +158,11 @@ export class RunDispatcher {
     this.#pumps.set(agentId, pump);
   }
 
+  /** 이 서버가 지금 그 실행 시도를 실행하고 있는가. */
+  running(runId: string): boolean {
+    return this.#active.has(runId);
+  }
+
   /**
    * commit된 사용자 제어 취소를 진행 중인 프로바이더에 보낸다. 프로바이더가 정리를 끝내 종료가 저장될 때까지 그 에이전트의 다음 실행 시도는 없다.
    * admission과 프로바이더 등록 사이의 실행 시도는 등록 직후 DB의 취소 요청을 다시 읽어 받는다(`#execute`).

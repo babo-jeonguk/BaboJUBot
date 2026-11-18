@@ -142,6 +142,7 @@ import { NotificationRelay } from "./notifications.ts";
 import { ownerRefusalResponses, type OwnerRefusal } from "./problems.ts";
 import { createProviderRegistry } from "./providers.ts";
 import { ReadinessMonitor } from "./readiness.ts";
+import { RefusalLog } from "./refusal-log.ts";
 import { createRunRequestAssembler } from "./run-request.ts";
 import { orgToolsRouter } from "./tools.ts";
 import { createUserActions } from "./user-actions.ts";
@@ -384,12 +385,28 @@ export async function startServer({
   toolsApp.use(serverErrors);
   // 격리 실행의 중계에 정책·조직 도구를 붙인다(#149). 붙이기 전에는 실행 시도 컨테이너가 시작하지 않는다.
   // 거부는 실행 활동에 이유와 함께 남긴다(같은 목적지·이유는 실행 시도마다 한 번, 많아도 50번까지).
-  const refusalsSeen = new Map<string, Set<string>>();
+  // 실행 시도가 끝나면 그 실행 시도의 기록 상태를 버린다.
   const relay = isolation?.docker.settings.relay;
+  const refusals = new RefusalLog({
+    write: async (runId, text) => {
+      const event = await appendRunActivity(db, runId, {
+        source: "runtime",
+        activity: { type: "progress", text },
+      });
+      if (!event) return false;
+      await applyAfterCommit({ hub, dispatcher }, { events: [event] });
+      return true;
+    },
+    running: (runId) => dispatcher.running(runId),
+  });
   // 허용 목록을 줄이거나 단계가 바뀌어(예: 연구 진행 → 일시정지·최종 완료) 더 이상 허용되지 않는 열린 연결을 끊는다.
   // 조직의 상태 변화 Event마다 그 조직의 열린 중계를 다시 본다(실행 시도 활동 Event는 정책을 바꾸지 않아 건너뛴다).
   const stopRevalidating = relay
     ? hub.subscribe({ kind: "all" }, (event) => {
+        if (event.type === "run.finished") {
+          refusals.finished(event.payload.runId);
+          return;
+        }
         if (event.type.startsWith("run.")) return;
         void inFlight
           .track(
@@ -413,28 +430,18 @@ export async function startServer({
       console.warn(`[isolation] relay refused ${target} (${reason})`);
       const runId = identity.runId;
       if (!runId) return;
-      const seen = refusalsSeen.get(runId) ?? new Set<string>();
-      refusalsSeen.set(runId, seen);
       const key = `${target} ${reason}`;
-      if (seen.has(key) || seen.size >= 50) return;
-      seen.add(key);
-      void inFlight.track(
-        () =>
-          appendRunActivity(db, runId, {
-            source: "runtime",
-            activity: {
-              type: "progress",
-              text: `외부 연결 거부: ${target}. ${egressRefusalMessages[reason]}`,
-            },
-          })
-            .then((event) => {
-              // 끝난 실행 시도에는 남지 않는다. 그때 기록도 지운다.
-              if (!event) return void refusalsSeen.delete(runId);
-              return applyAfterCommit({ hub, dispatcher }, { events: [event] });
-            })
-            .catch(() => {}),
-        "isolation relay refusal record"
-      );
+      void inFlight
+        .track(
+          () =>
+            refusals.record(
+              runId,
+              key,
+              `외부 연결 거부: ${target}. ${egressRefusalMessages[reason]}`
+            ),
+          "isolation relay refusal record"
+        )
+        .catch(() => {});
     },
   });
 

@@ -27,6 +27,7 @@ export class CompactionScheduler {
   >();
   readonly controllers = new Map<string, AbortController>();
   private running: Promise<void> | undefined;
+  private again = false;
   private jobs = new Set<Promise<void>>();
   private settlements = new Map<
     string,
@@ -88,7 +89,7 @@ export class CompactionScheduler {
     await recoverCompactions(this.options.db);
   }
   start() {
-    this.timer = setInterval(() => void this.scan(), 1000);
+    this.timer = setInterval(() => this.kick(), 1000);
     this.timer.unref();
   }
   async tick() {
@@ -96,15 +97,27 @@ export class CompactionScheduler {
     await Promise.all([...this.jobs]);
     await this.settle();
   }
+  // 타이머 확인은 도는 동안 온 신호를 후속 확인 하나로 합친다. 직접 부른 확인은 부른 뒤에 시작한 확인이 끝날 때까지 기다린다.
   private async scan() {
-    while (this.running) await this.running;
     if (this.closed) return;
-    this.running = this.sweep();
-    try {
-      await this.running;
-    } finally {
-      this.running = undefined;
+    if (this.running) {
+      this.again = true;
+      await this.running; // 이 확인의 finally가 후속 확인을 이미 시작했다.
+    } else this.kick();
+    await this.running;
+  }
+  private kick(): void {
+    if (this.closed) return;
+    if (this.running) {
+      this.again = true;
+      return;
     }
+    this.running = this.sweep().finally(() => {
+      this.running = undefined;
+      if (!this.again) return;
+      this.again = false;
+      this.kick();
+    });
   }
   private async sweep() {
     const { db, providers, now } = this.options;
