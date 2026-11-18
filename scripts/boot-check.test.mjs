@@ -16,6 +16,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
+import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;
@@ -28,7 +29,13 @@ test(
   { timeout: testTimeoutMs },
   async () => {
     const listener = await occupyOldDefaultPort();
-    try {
+    // 다른 프로그램이 쥔 옛 기본 port는 시험이 실패해도 놓아 준다.
+    await withCleanup(async (defer) => {
+      defer(async () => {
+        if (listener)
+          await new Promise((resolve) => listener.server.close(resolve));
+      });
+
       const result = await supervise(["scripts/boot-check.mjs"], pollutedEnv());
       const output = describe(result);
       assert.equal(result.overrun, false, `boot check overran\n${output}`);
@@ -53,10 +60,7 @@ test(
           `boot check requested the unrelated listener on port ${oldDefaultPort}\n${output}`
         );
       }
-    } finally {
-      if (listener)
-        await new Promise((resolve) => listener.server.close(resolve));
-    }
+    });
   }
 );
 
@@ -184,7 +188,20 @@ test(
       /"escaped":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
     );
     const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
-    try {
+    // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
+    await withCleanup(async (defer) => {
+      const folder = folderCleanup(async () => {
+        if (scope) await removeFolder(scope);
+      });
+      defer(folder.cleanUp);
+      folder.own(async () => {
+        if (!escaped) return;
+        killUnlessGone(escaped);
+        if (!(await waitUntil(() => !isAlive(escaped), 10_000)))
+          throw new Error(
+            `the escaped process (pid ${escaped}) did not end in 10s`
+          );
+      });
       assert.ok(error, "the supervisor did not report the running process");
       assert.ok(error instanceof AggregateError, String(error));
       assert.ok(scope, error.message);
@@ -195,11 +212,7 @@ test(
       );
       assert.match(messages, new RegExp(`kept ${RegExp.escape(scope)}`));
       assert.equal(existsSync(scope), true, `${scope} was removed`);
-    } finally {
-      if (escaped && isAlive(escaped)) process.kill(escaped, "SIGKILL");
-      if (escaped) await waitUntil(() => !isAlive(escaped), 10_000);
-      if (scope) await removeFolder(scope);
-    }
+    });
   }
 );
 
@@ -233,7 +246,20 @@ test(
       /"held":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
     );
     const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
-    try {
+    // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
+    await withCleanup(async (defer) => {
+      const folder = folderCleanup(async () => {
+        if (scope) await removeFolder(scope);
+      });
+      defer(folder.cleanUp);
+      folder.own(async () => {
+        if (!held) return;
+        killUnlessGone(held);
+        if (!(await waitUntil(() => !isAlive(held), 10_000)))
+          throw new Error(
+            `the process holding the output (pid ${held}) did not end in 10s`
+          );
+      });
       assert.ok(error, "the supervisor did not report the held output");
       assert.ok(error instanceof AggregateError, String(error));
       assert.ok(scope, error.message);
@@ -242,11 +268,7 @@ test(
         new RegExp(`kept ${RegExp.escape(scope)}`)
       );
       assert.equal(existsSync(scope), true, `${scope} was removed`);
-    } finally {
-      if (held && isAlive(held)) process.kill(held, "SIGKILL");
-      if (held) await waitUntil(() => !isAlive(held), 10_000);
-      if (scope) await removeFolder(scope);
-    }
+    });
   }
 );
 
@@ -305,7 +327,6 @@ async function supervise(
   let child;
   let result;
   let failure;
-  let problems;
   // 띄운 실행의 출력 통로가 닫힌 것을 확인했는가. 띄우지 못했으면 확인할 출력이 없다.
   let outputClosed = true;
   try {
@@ -352,10 +373,10 @@ async function supervise(
     };
   } catch (error) {
     failure = error;
-  } finally {
-    problems = await cleanUpScope(scope, child, outputClosed);
-    if (result) result.leftAfterCleanup = leftovers(scope);
   }
+  // 실행의 실패는 위에서 모두 받았다. 정리는 단계마다 따로 시도하고 그 실패를 모아 원래 실패와 함께 알린다.
+  const problems = await cleanUpScope(scope, child, outputClosed);
+  if (result) result.leftAfterCleanup = leftovers(scope);
   if (problems.length > 0)
     throw new AggregateError(
       failure ? [failure, ...problems] : problems,
@@ -567,6 +588,15 @@ function waitUntil(check, ms) {
     };
     poll();
   });
+}
+
+/** 시험 정리: SIGKILL을 보낸다. 대상이 이미 끝났으면(ESRCH) 넘어가고 다른 실패는 알린다. */
+function killUnlessGone(pid) {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
 }
 
 function isAlive(pid) {
