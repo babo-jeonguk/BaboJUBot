@@ -18,7 +18,8 @@
     "typecheck:src": "pnpm -r --if-present run typecheck:src",
     "typecheck:test": "pnpm -r --if-present run typecheck:test",
     "lint": "eslint .",
-    "check": "node scripts/check-project.mjs && node --test scripts/check-project.test.mjs scripts/gh-post.test.mjs scripts/lint-rules.test.mjs scripts/product-lint-rules.test.mjs .agents/scripts/check-worker-change.test.mjs && node --test scripts/ci-test-gate.test.mjs scripts/ci-job-failures.test.mjs scripts/ci-downloads.test.mjs scripts/ci-changes.test.mjs scripts/file-boundary-report.test.mjs scripts/check-e2e-report.test.mjs",
+    "check": "node scripts/check-project.mjs && node --test scripts/check-project.test.mjs scripts/gh-post.test.mjs scripts/lint-rules.test.mjs scripts/product-lint-rules.test.mjs .agents/scripts/check-worker-change.test.mjs && node --test scripts/ci-test-gate.test.mjs scripts/ci-job-failures.test.mjs scripts/ci-downloads.test.mjs scripts/ci-changes.test.mjs scripts/file-boundary-report.test.mjs scripts/check-e2e-report.test.mjs scripts/verify-changed.test.mjs",
+    "verify:changed": "node scripts/verify-changed.mjs",
     "provider:login": "node scripts/provider-login.mjs",
     "runner:build": "docker build -t babojubot-runner docker/runner",
     "prepare": "husky"
