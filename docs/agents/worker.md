@@ -14,7 +14,7 @@
 - worker는 시험·단언·검사 설정·검사 명령을 고치거나 끄지 않습니다. 시험이 틀려 보이거나 brief 밖 변경·설계 판단·허용되지 않은 명령이 필요하면 멈추고 보고합니다.
 - 인수·커밋·push·PR과 추가 agent 생성은 parent만 합니다.
 
-시험·검사 설정 수정 거부와 허용 명령은 [dev-worker](../../.opencode/agents/dev-worker.md) 권한이 강제하고, 실제 변경은 §6의 인수 검사가 다시 확인합니다. 나머지는 이 계약과 parent의 diff 검토로 지킵니다.
+시험·검사 설정 수정 거부와 허용 명령은 [dev-worker](../../.opencode/agents/dev-worker.md) 권한이 강제하고, 실제 변경은 §6의 확인 스크립트가 다시 확인합니다. 나머지는 이 계약과 parent의 diff 검토로 지킵니다.
 
 ## 2. 모델
 
@@ -58,7 +58,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 ## 6. 검토·인수
 
 - 스크립트 요약(`status`·`session`·`written`·`denied`·`errors`·마지막 보고, Paseo는 마지막 보고)으로 worker의 검사 결과와 미검증 사항을 확인합니다.
-- 커밋 전에 [accept-worker.mjs](../../.agents/scripts/accept-worker.mjs)로 슬라이스의 핵심 시험과 바뀐 파일의 lint를 다시 돌립니다. `--allow`·`--reported`·`--test`는 값마다 반복합니다. 이 스크립트는 HEAD가 base 그대로인지, 바뀐 파일이 brief 범위 안이고 worker가 보고한 목록과 같은지, 시험·검사 설정이 그대로인지 시험 전후로 확인합니다. 보호 파일은 base 커밋의 권한으로 판정하고, 성공하면 한 줄만 출력합니다. Git이 무시하는 파일은 보지 않습니다.
+- 커밋 전에 [accept-worker.mjs](../../.agents/scripts/accept-worker.mjs)로 슬라이스의 핵심 시험과 바뀐 파일의 lint를 다시 돌립니다. 이 스크립트는 판단 근거를 모을 뿐이고, 받아들일지는 parent가 정합니다. `--allow`·`--reported`·`--test`는 값마다 반복합니다. 이 스크립트는 HEAD가 base 그대로인지, 바뀐 파일이 brief 범위 안이고 worker가 보고한 목록과 같은지, 시험·검사 설정이 그대로인지 시험 전후로 확인합니다. 보호 파일은 base 커밋의 권한으로 판정하고, 성공하면 한 줄만 출력합니다. Git이 무시하는 파일은 보지 않습니다.
 
   ```bash
   node .agents/scripts/accept-worker.mjs --base <시험 커밋> --allow '<파일 패턴>' \
