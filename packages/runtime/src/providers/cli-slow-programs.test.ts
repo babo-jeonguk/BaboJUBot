@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it } from "vitest";
 import {
@@ -5,6 +6,7 @@ import {
   control,
   createCliHome,
 } from "./cli-tolerance-support.ts";
+import { ProtocolTimeout } from "./codex-connection.ts";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -61,21 +63,44 @@ describe.concurrent("slow programs", () => {
       await home(folders),
       "ignores-steer"
     );
-    const input = request();
-    let steered: Promise<unknown> | undefined;
+    // 프로그램은 받은 끼워 넣기를 작업 폴더에 남긴다.
+    const cwd = await folders.make("babojubot-steer-");
+    const input = { ...request(), workspace: { cwd, organization: cwd } };
+    const messageId = crypto.randomUUID();
+    // 프로그램은 adapter가 응답을 기다리다 그만둔 뒤에야 턴을 끝낸다. 끼워 넣기가 그 전에 결과로 돌아오면(보내지 않았거나
+    // 답을 받았으면) 턴이 끝나지 않으므로, 실행을 멈춰 시험이 그 결과로 실패하게 한다.
+    const stop = new AbortController();
+    let steered: Promise<{ outcome: unknown } | { error: unknown }> | undefined;
     const result = await adapter.execute(input, {
-      signal: new AbortController().signal,
+      signal: stop.signal,
       emit: async () => {
         steered ??= adapter.steer!({
           runId: input.identity.runId,
-          messageId: crypto.randomUUID(),
+          messageId,
           conversationId: crypto.randomUUID(),
           body: "말",
-        }).catch(() => "rejected");
+        }).then(
+          (outcome) => {
+            stop.abort();
+            return { outcome };
+          },
+          (error: unknown) => ({ error })
+        );
       },
     });
+    // 응답이 없으면 거절("rejected")이 아니라 전달 여부를 모르는 시한 초과다.
+    expect(await steered).toEqual({ error: expect.any(ProtocolTimeout) });
     expect(result.stopReason).toBe("completed");
-    expect(await steered).toBe("rejected");
+    const received = await readFile(
+      path.join(cwd, "steers-received.jsonl"),
+      "utf8"
+    );
+    expect(
+      received
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as unknown)
+    ).toEqual([{ messageId }]);
   }, 30_000);
 
   it("lets OpenCode answer slowly", async ({ expect, onTestFinished }) => {

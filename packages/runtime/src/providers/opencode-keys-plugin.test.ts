@@ -34,8 +34,14 @@ async function mcpServer(reply: (body: any) => unknown) {
   };
 }
 
-/** plugin을 불러 setup하고, 조직 도구 둘과 다른 도구 하나가 있는 가짜 editor에 transform을 적용한다. */
-async function loadPlugin(url: string) {
+/**
+ * plugin을 불러 setup하고, 조직 도구 둘과 다른 도구 하나가 있는 가짜 editor에 transform을 적용한다.
+ * 권한 확인은 요청을 `permissions`에 남긴 뒤 `check`의 결과를 돌려준다. 시험은 `check`로 확인을 붙잡거나 거부한다.
+ */
+async function loadPlugin(
+  url: string,
+  check: (request: unknown) => Promise<void> = async () => {}
+) {
   process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
     mcp: {
       servers: {
@@ -82,7 +88,10 @@ async function loadPlugin(url: string) {
   };
   const ctx = {
     permission: {
-      assert: async (request: unknown) => void permissions.push(request),
+      assert: (request: unknown) => {
+        permissions.push(request);
+        return check(request);
+      },
     },
     tool: {
       transform: async (fn: (editor: unknown) => void) => {
@@ -117,15 +126,33 @@ describe("OpenCode organization call key plugin", () => {
       ],
       structuredContent: { id: body.params.arguments.body },
     }));
+    // 세 호출의 권한 확인을 모두 붙잡는다. 셋이 확인에 닿은 뒤 풀어 준다.
+    let allow!: () => void;
+    const held = new Promise<void>((resolve) => (allow = resolve));
+    let checking!: () => void;
+    const allChecking = new Promise<void>((resolve) => (checking = resolve));
+    let checks = 0;
     const { tools, permissions, cleanup, callKey } = await loadPlugin(
-      server.url
+      server.url,
+      () => {
+        if (++checks === 3) checking();
+        return held;
+      }
     );
     const send = tools.get("organization_send_message")!.execute;
-    const [a, b, c] = await Promise.all([
-      send({ body: "같은 내용" }, context("call_a")),
-      send({ body: "같은 내용" }, context("call_b")),
-      send({ body: "같은 내용" }, context("call_a", "msg-2")),
-    ]);
+    const calls = [
+      context("call_a"),
+      context("call_b"),
+      context("call_a", "msg-2"),
+    ];
+    const sending = Promise.all(
+      calls.map((call) => send({ body: "같은 내용" }, call))
+    );
+    await allChecking;
+    // 권한 확인이 끝나기 전에는 아무것도 보내지 않는다.
+    expect(server.captured).toEqual([]);
+    allow();
+    const [a, b, c] = await sending;
     expect(a).toEqual({
       output: { id: "같은 내용" },
       content: [{ type: "text", text: '{"id":"같은 내용"}' }],
@@ -144,12 +171,38 @@ describe("OpenCode organization call key plugin", () => {
       expect(headers.authorization).toBe("Bearer token-1");
       expect(headers["babojubot-call-key"]).toBe("required");
     }
-    expect(permissions).toHaveLength(3);
-    expect(permissions[0]).toMatchObject({
-      action: "organization_send_message",
-    });
+    expect(permissions).toEqual(
+      calls.map(({ messageID, id }) =>
+        expect.objectContaining({
+          action: "organization_send_message",
+          source: { type: "tool", messageID, id },
+        })
+      )
+    );
     // 다른 도구는 건드리지 않는다.
     expect(tools.get("bash")!.execute).toBe("native");
+    cleanup?.();
+  });
+
+  it("does not send a call the permission check refuses", async () => {
+    const server = await mcpServer(() => ({
+      content: [{ type: "text", text: "{}" }],
+    }));
+    const refusal = new Error("permission refused");
+    const { tools, cleanup, callKey } = await loadPlugin(
+      server.url,
+      async (request) => {
+        if ((request as { source: { id: string } }).source.id === "refused")
+          throw refusal;
+      }
+    );
+    const send = tools.get("organization_send_message")!.execute;
+    await expect(send({ body: "x" }, context("refused"))).rejects.toBe(refusal);
+    // 거부 뒤에 보낸 호출이 끝난 것을 순서 신호로 삼아, 서버가 받은 것이 그 호출 하나뿐인지 본다.
+    await send({ body: "y" }, context("allowed"));
+    expect(
+      server.captured.map((x) => x.body.params._meta["idempotency-key"])
+    ).toEqual([callKey(context("allowed"))]);
     cleanup?.();
   });
 

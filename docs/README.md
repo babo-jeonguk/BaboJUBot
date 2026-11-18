@@ -51,6 +51,7 @@
 | [design-guidelines-pan2.md](research/design-guidelines-pan2.md) | 판 2 화면은 Apple HIG·One UI·Material 3·SEED·토스 가이드의 어떤 패턴을 따르고, 설명문 없이 상태를 어떻게 보이는가? |
 | [artifact-path-confinement.md](research/artifact-path-confinement.md) | 에이전트가 준 파일 경로를 Linux·macOS·Windows에서 공유 폴더 안에 가두려면 어떤 표기를 먼저 거부하고 어떻게 푸는가? |
 | [ai-anti-patterns-beyond-lint.md](research/ai-anti-patterns-beyond-lint.md) | AI 코딩 에이전트가 반복하는 안티 패턴 중 현행 검사에 걸리지 않는 것은 무엇이고, 어떤 증거로 판정할 수 있는가? |
+| [test-anti-patterns-beyond-lint.md](research/test-anti-patterns-beyond-lint.md) | 정적 분석이 놓치는 시험 안티 패턴은 무엇이고, 어떤 근거로 찾고 막을 수 있는가? |
 | [codebase-bad-examples-audit.md](research/codebase-bad-examples-audit.md) | 2026-11-18 제품 코드에 에이전트가 따라 쓰기 쉬운 나쁜 본보기가 어디에 몇 군데 있고, 좋은 형태는 무엇인가? |
 | [coding-standards-references.md](research/coding-standards-references.md) | mattpocock-skills의 code-review는 `CODING_STANDARDS.md`를 누가·언제 읽고 어떤 모양을 기대하는가? |
 

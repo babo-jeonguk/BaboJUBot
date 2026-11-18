@@ -270,13 +270,17 @@ describe("wake queue admission", () => {
 
   it("lets only one of many concurrent claims start a run for the agent", async () => {
     const { lead, send, claim } = await organization();
-    for (const body of ["a", "b", "c"]) await send(body);
+    const sent = [];
+    for (const body of ["a", "b", "c"]) sent.push(await send(body));
 
     const claims = await Promise.all(Array.from({ length: 6 }, () => claim()));
 
     const started = claims.filter((c) => c !== undefined);
     expect(started).toHaveLength(1);
-    expect(started[0]!.wakeReasons).toHaveLength(3);
+    // 개수가 아니라 보낸 메시지 셋을 도착 순서대로 한 번씩 받았는지 본다.
+    expect(started[0]!.wakeReasons.map(messageIdOf)).toEqual(
+      sent.map((message) => message.id)
+    );
     const runs = await listRuns(t.db, lead.organizationId, {
       agentId: lead.id,
     });
