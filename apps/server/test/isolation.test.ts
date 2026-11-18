@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { jsonBodyLimitBytes } from "../src/app.ts";
 import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { eventually, startTestServer, type TestServer } from "./support.ts";
+import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -77,24 +78,26 @@ describe("isolation switch", () => {
     await t.stopServer();
     const db = t.db;
     const { startServer } = await import("../src/index.ts");
-    const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-isolation-"));
-    let again: Awaited<ReturnType<typeof startServer>> | undefined;
-    try {
-      again = await startServer({
+    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
+    await withCleanup(async (defer) => {
+      const dataDir = await mkdtemp(
+        path.join(tmpdir(), "babojubot-isolation-")
+      );
+      // 폴더는 그 폴더를 쓰는 서버가 닫힌 뒤에 지운다. 닫기가 실패하면 폴더를 남긴다.
+      const folder = folderCleanup(() => removeFolder(dataDir));
+      defer(folder.cleanUp);
+      const again = await startServer({
         db,
         port: 0,
         dataDir,
         providers: createFakeProviders(1),
       });
+      folder.own(() => again.close());
       const res = await fetch(again.url + "/api/providers");
       expect(providerSettingsSchema.parse(await res.json()).isolated).toBe(
         true
       );
-    } finally {
-      // 폴더는 그 폴더를 쓰는 서버가 닫힌 뒤에 지운다. 닫기가 실패하면 폴더를 남긴다.
-      await again?.close();
-      await removeFolder(dataDir);
-    }
+    });
   });
 });
 
@@ -180,11 +183,12 @@ function fakeDocker(
     },
     async probe(input) {
       probes.push(input);
-      const opened = relay.open({
-        identity: { organizationId: "isolation-probe" },
-        required: input.forbidden.map(({ host, port }) => ({ host, port })),
-      });
-      try {
+      return withCleanup(async (defer) => {
+        const opened = relay.open({
+          identity: { organizationId: "isolation-probe" },
+          required: input.forbidden.map(({ host, port }) => ({ host, port })),
+        });
+        defer(() => opened.close());
         await opened.ready;
         const tools = await overSocket(
           path.join(opened.directory, "tools.sock"),
@@ -209,9 +213,7 @@ function fakeDocker(
           proxied,
           toolsReached: tools,
         };
-      } finally {
-        await opened.close();
-      }
+      });
     },
     async removeOrphans() {},
   };
@@ -261,19 +263,21 @@ function realConnection(
           await onRequest?.(request);
           if (request.execution !== "container" || !relay)
             return fake!.adapter.execute(request, control);
-          const own = relay().open({
-            identity: request.identity,
-            required: [],
-          });
-          const bridge = net.createServer((client) => {
-            const upstream = net.connect(
-              path.join(own.directory, "tools.sock")
-            );
-            client.on("error", () => upstream.destroy());
-            upstream.on("error", () => client.destroy());
-            client.pipe(upstream).pipe(client);
-          });
-          try {
+          return withCleanup(async (defer) => {
+            const own = relay().open({
+              identity: request.identity,
+              required: [],
+            });
+            defer(() => own.close());
+            const bridge = net.createServer((client) => {
+              const upstream = net.connect(
+                path.join(own.directory, "tools.sock")
+              );
+              client.on("error", () => upstream.destroy());
+              upstream.on("error", () => client.destroy());
+              client.pipe(upstream).pipe(client);
+            });
+            defer(() => bridge.close());
             await own.ready;
             await new Promise<void>((resolve) =>
               bridge.listen(0, "127.0.0.1", resolve)
@@ -289,10 +293,7 @@ function realConnection(
               },
               control
             );
-          } finally {
-            bridge.close();
-            await own.close();
-          }
+          });
         },
       },
     },
@@ -323,19 +324,21 @@ describe("isolated runs", () => {
       async (request) => {
         if (request.execution !== "container") return;
         // 컨테이너 안 시작 프로그램처럼 이 실행 시도의 중계 소켓으로 조직 도구를 부른다.
-        const own = fake.relay.open({
-          identity: request.identity,
-          required: [],
-        });
-        const other = fake.relay.open({
-          identity: {
-            organizationId: crypto.randomUUID(),
-            agentId: crypto.randomUUID(),
-            runId: crypto.randomUUID(),
-          },
-          required: [],
-        });
-        try {
+        await withCleanup(async (defer) => {
+          const own = fake.relay.open({
+            identity: request.identity,
+            required: [],
+          });
+          defer(() => own.close());
+          const other = fake.relay.open({
+            identity: {
+              organizationId: crypto.randomUUID(),
+              agentId: crypto.randomUUID(),
+              runId: crypto.randomUUID(),
+            },
+            required: [],
+          });
+          defer(() => other.close());
           await Promise.all([own.ready, other.ready]);
           const auth = { authorization: `Bearer ${request.access.token}` };
           const mcp = (directory: string) =>
@@ -363,9 +366,7 @@ describe("isolated runs", () => {
               })
             ).status,
           });
-        } finally {
-          await Promise.all([own.close(), other.close()]);
-        }
+        });
       },
       () => fake.relay
     );
@@ -491,8 +492,12 @@ describe("isolated runs", () => {
         }
         return;
       }
-      const own = fake.relay.open({ identity: request.identity, required: [] });
-      try {
+      await withCleanup(async (defer) => {
+        const own = fake.relay.open({
+          identity: request.identity,
+          required: [],
+        });
+        defer(() => own.close());
         await own.ready;
         answers.container = [];
         for (const body of bodies)
@@ -507,9 +512,7 @@ describe("isolated runs", () => {
               }
             )
           );
-      } finally {
-        await own.close();
-      }
+      });
     });
     t = await startTestServer({
       providers: [...createFakeProviders(1), connection],
@@ -833,11 +836,12 @@ describe("organization network allow list", () => {
     const { connection } = realConnection(
       async (request) => {
         if (request.execution !== "container") return;
-        const own = fake.relay.open({
-          identity: request.identity,
-          required: [],
-        });
-        try {
+        await withCleanup(async (defer) => {
+          const own = fake.relay.open({
+            identity: request.identity,
+            required: [],
+          });
+          defer(() => own.close());
           await own.ready;
           const { head, socket } = await connectOver(
             own.directory,
@@ -849,9 +853,7 @@ describe("organization network allow list", () => {
           await expect
             .poll(() => progressOf(request.identity.organizationId), eventually)
             .toContainEqual(refusal);
-        } finally {
-          await own.close();
-        }
+        });
       },
       () => fake.relay
     );
