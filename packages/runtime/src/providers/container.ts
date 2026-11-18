@@ -640,16 +640,15 @@ export function createDockerEnvironment(
       );
       signal.throwIfAborted();
       if (info.code !== 0) throw new Error("docker is not available");
-      let parsed: {
-        OperatingSystem?: unknown;
-        SecurityOptions?: unknown;
-        OSType?: unknown;
-      };
+      let value: unknown;
       try {
-        parsed = JSON.parse(info.stdout);
+        value = JSON.parse(info.stdout);
       } catch {
         throw new Error("docker info could not be read");
       }
+      if (typeof value !== "object" || value === null || Array.isArray(value))
+        throw new Error("docker info could not be read");
+      const parsed = value as Record<string, unknown>;
       if (parsed.OSType !== "linux")
         throw new Error("docker daemon is not a Linux engine");
       if (

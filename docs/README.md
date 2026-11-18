@@ -74,6 +74,8 @@
 - [내장 Postgres 수명 조사](research/embedded-postgres-lifecycle-references.md): 강제 종료 뒤 남은 DB 정리, pg_ctl로 켜고 끄기, Windows 정지와 관리자 계정.
 - [#209 구현 기록](research/issue-209-implementation.md): 인증 중계가 링크 불가 컴퓨터에서 읽는 로그인 자리의 원문 재확인, 경합 시험, 검증 범위.
 - [링크 불가 컴퓨터의 격리 실행 로그인 조사](research/relay-login-no-links-references.md): 링크를 만들 수 없을 때 공유 로그인의 단일 원본·인증 중계의 읽는 자리·실패 안내를 다른 도구가 어떻게 다루는가, 실제 vfat 확인과 선택지 셋.
+- [반복 지적 코드 패턴 조사](research/review-pattern-history.md): PR·이슈·대화 기록에서 되풀이된 지적, 실제 영향, 기계 판정 가능성과 규칙으로 만들지 않을 것.
+- [정적 분석 규칙 조사](research/static-analysis-rules-references.md): 반복 패턴별 lint·타입·검사 도구의 적중·오탐·비용과 채택·보류·배제 권고.
 
 ## 작성·갱신 기준
 

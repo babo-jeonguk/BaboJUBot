@@ -323,11 +323,18 @@ function readPinned(start: string, args: string[]): Promise<PinnedRead> {
       (error, stdout) => {
         if (!error) {
           const at = stdout.indexOf(0x0a);
-          return resolve({
-            ok: true,
-            parts: JSON.parse(stdout.subarray(0, at).toString("utf8")),
-            bytes: stdout.subarray(at + 1),
-          });
+          let parts: unknown;
+          try {
+            parts = JSON.parse(stdout.subarray(0, at).toString("utf8"));
+          } catch {
+            parts = undefined;
+          }
+          if (
+            !Array.isArray(parts) ||
+            !parts.every((part): part is string => typeof part === "string")
+          )
+            return reject(new Error("file reader returned an invalid header"));
+          return resolve({ ok: true, parts, bytes: stdout.subarray(at + 1) });
         }
         // 끝난 코드가 있으면 읽기를 거부한 것이고, 없으면 띄우지 못했거나 시간이 넘은 서버 쪽 문제다.
         const code = error.code;

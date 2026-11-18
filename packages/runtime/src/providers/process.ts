@@ -95,8 +95,11 @@ export function providerEnvironment(
         .split(",")
         .map((name) => name.trim())
         .filter(Boolean);
-  const picked = [...sharedVariables, ...named].flatMap((name) =>
-    process.env[name] === undefined ? [] : [[name, process.env[name]]]
+  const picked = [...sharedVariables, ...named].flatMap(
+    (name): [string, string][] => {
+      const value = process.env[name];
+      return value === undefined ? [] : [[name, value]];
+    }
   );
   return {
     ...Object.fromEntries(picked),

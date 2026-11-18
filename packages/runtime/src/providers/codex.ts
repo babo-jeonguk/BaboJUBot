@@ -45,6 +45,7 @@ import {
 } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
 import { type AttemptLoginFile, fileLogin } from "./file-login.ts";
+import { record } from "./record.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -185,8 +186,6 @@ const failed = (): RunResult => ({
   usage: null,
   nextSession: null,
 });
-const record = (value: unknown): Record<string, unknown> =>
-  value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 /** `thread/read`(턴 포함) 결과에 이 `clientId`를 단 사용자 메시지가 있는가(#206). 여럿이어도 있다. */
 const holdsClientMessage = (read: Record<string, unknown>, clientId: string) =>
