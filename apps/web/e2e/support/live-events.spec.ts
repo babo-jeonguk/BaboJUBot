@@ -34,13 +34,12 @@ test("a page whose stream never sends ready fails within the deadline, naming wh
     } as unknown as typeof WebSocket;
   });
   const before = listeners(page);
-  const started = Date.now();
+  // 실패 문구의 시한은 실패를 낸 타이머의 시한이다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
   await expect(
     openWithLiveEvents(page, "/", { timeout: 2_000 })
   ).rejects.toThrow(
     "/ 화면의 Event stream(/api/events): 화면을 열기 시작한 뒤 2000ms 안에 ready frame을 받지 못했다"
   );
-  expect(Date.now() - started).toBeLessThan(5_000);
   expect(listeners(page)).toBe(before);
 });
 
@@ -62,13 +61,12 @@ test("a stream the server refuses fails at once with the reason", async ({
     };
   });
   const before = listeners(page);
-  const started = Date.now();
-  // 화면을 받아 띄우는 시간도 재는 시간에 들어가므로 기다림 시한을 넉넉히 두고, 시한까지 기다리지 않았는지만 본다.
+  // 시한까지 기다렸다면 시한 문구("…안에 ready frame을 받지 못했다")로 실패한다. 오류 문구로 실패했다는 것이 오류에서 바로
+  // 멈췄다는 뜻이다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
   await expect(
     openWithLiveEvents(page, "/", { timeout: 30_000 })
   ).rejects.toThrow(
     /^\/ 화면의 Event stream\(\/api\/events\): ready frame을 받기 전에 오류가 났다\(.*404/
   );
-  expect(Date.now() - started).toBeLessThan(15_000);
   expect(listeners(page)).toBe(before);
 });

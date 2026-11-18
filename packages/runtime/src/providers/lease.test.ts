@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import {
   leaseEntry,
   leaseHolders,
@@ -8,8 +8,10 @@ import {
   lookupInPs,
   processStartTicks,
   stopLeaseHolders,
+  type LeaseLookup,
 } from "./lease.ts";
 import { exited, killAndWait, readyLine } from "./process-test-support.ts";
+import { manualClock } from "./test-support.ts";
 
 // 실행 시도의 프로그램과 그 자손은 표식 환경 변수를 물려받는다. 프로세스 그룹 밖으로 나간 자손도 이 표식으로 찾는다(#219).
 const posix = process.platform !== "win32";
@@ -157,16 +159,12 @@ it.runIf(linux)("does not count a zombie as unverified", async () => {
     if (line.includes("\n")) break;
   }
   const zombie = Number(line.trim());
-  await new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + 5000;
-    const check = () =>
-      exited(zombie)
-        ? resolve()
-        : Date.now() > deadline
-          ? reject(new Error("the forked child did not exit"))
-          : setTimeout(check, 25);
-    check();
-  });
+  await vi.waitFor(
+    () => {
+      if (!exited(zombie)) throw new Error("the forked child did not exit");
+    },
+    { timeout: 5000, interval: 25 }
+  );
   expect(
     (await leaseHolders(randomUUID(), { since })).unverified
   ).not.toContain(zombie);
@@ -218,132 +216,180 @@ it.runIf(posix)(
   30_000
 );
 
-/** TERM을 받으면 "term" 줄을 내고 무시하는 표식 프로그램. TERM을 받은 시각과 끝난 시각을 잰다. */
-async function termWatcher(lease: string) {
-  const child = spawn(
-    process.execPath,
-    [
-      "-e",
-      'process.on("SIGTERM", () => console.log("term")); console.log("ready"); setInterval(() => {}, 1000);',
-    ],
-    {
-      detached: true,
-      stdio: ["ignore", "pipe", "ignore"],
-      env: { PATH: process.env.PATH, [leaseVariable]: lease },
-    }
-  );
-  started.push(child.pid!);
-  let termAt: number | undefined;
-  let buffer = "";
-  child.stdout!.on("data", (chunk: Buffer) => {
-    buffer += String(chunk);
-    if (termAt === undefined && buffer.includes("term\n")) termAt = Date.now();
-  });
-  const exitAt = new Promise<number>((resolve) =>
-    child.on("exit", () => resolve(Date.now()))
-  );
-  await readyLine(child);
-  return { pid: child.pid!, termAt: () => termAt, exitAt };
+/**
+ * 정리의 시한 규칙을 가짜 시계로 시험한다(#225). 시한·유예·다시 찾기 간격을 이 시계로 재고, 조회가 끝나는 때도 시험이 이 시계로 정한다.
+ * 조회가 실제로 하는 일(`answer`)이 모두 끝나 정리가 시계만 기다릴 때에만 시간을 다음 타이머까지 옮기므로, 실행기가 느려도 순서가 같다.
+ * 신호는 보내지 않고 `process.kill` 호출을 그때의 시각과 함께 기록한다. 실제 TERM·KILL 전달은 위의 실제 프로그램 시험이 본다.
+ */
+function fakeTime() {
+  const clock = manualClock();
+  const signals: { pid: number; signal: string; at: number }[] = [];
+  const kill = vi
+    .spyOn(process, "kill")
+    .mockImplementation((pid: number, signal?: string | number) => {
+      signals.push({ pid, signal: String(signal), at: clock.now() });
+      return true;
+    });
+  onTestFinished(() => kill.mockRestore());
+  let working = 0;
+  let calls = 0;
+  let finished = 0;
+  return {
+    clock,
+    /** 그 번호가 받은 신호와 시각. */
+    signalsTo: (pid: number) =>
+      signals
+        .filter((each) => each.pid === pid)
+        .map(({ signal, at }) => ({ signal, at })),
+    /** 끝난 조회 수. */
+    finished: () => finished,
+    /**
+     * 조회. 몇 번째 조회인지(0부터)와 시작한 시각으로 `answer`가 답을 정하고, 그 뒤 `takesMs`만큼 가짜 시계로 걸린다.
+     */
+    find(
+      answer: (
+        call: number,
+        startedAt: number
+      ) => LeaseLookup | Promise<LeaseLookup>,
+      takesMs: (call: number) => number = () => 0
+    ) {
+      return async () => {
+        const call = calls++;
+        const startedAt = clock.now();
+        working++;
+        let found: LeaseLookup;
+        try {
+          found = await answer(call, startedAt);
+        } finally {
+          working--;
+        }
+        const takes = takesMs(call);
+        if (takes > 0)
+          await new Promise((resolve) =>
+            clock.setTimeout(() => resolve(null), takes)
+          );
+        finished++;
+        return found;
+      };
+    },
+    /** 정리가 끝날 때까지 돌린다. 기다리는 일이 없는데 끝나지 않으면 실패한다. */
+    async run<T>(work: Promise<T>): Promise<T> {
+      let settled = false;
+      work.then(
+        () => (settled = true),
+        () => (settled = true)
+      );
+      for (;;) {
+        await new Promise((resolve) => setImmediate(resolve));
+        if (settled) return work;
+        if (working > 0) continue;
+        const next = clock.untilNext();
+        if (next === undefined)
+          throw new Error("the cleanup waits on nothing and never ends");
+        clock.advance(next);
+      }
+    },
+  };
 }
 
 // 확인하지 못했던 프로그램이 유예가 거의 끝날 때 처음 보유자로 확인되어도, 그 프로그램은 TERM 뒤 자기 유예를 다 받은 뒤에야 KILL을 받는다(PR #220 외부 리뷰 SPEC-4).
-it.runIf(posix)(
-  "gives a holder confirmed late its own grace before KILL",
-  async () => {
-    const lease = randomUUID();
-    const late = await termWatcher(lease);
-    const begin = Date.now();
-    const result = await stopLeaseHolders(lease, {
+it("gives a holder confirmed late its own grace before KILL", async () => {
+  const fake = fakeTime();
+  const late = 2 ** 22 + 7;
+  const killed = () =>
+    fake.signalsTo(late).some(({ signal }) => signal === "SIGKILL");
+  const result = await fake.run(
+    stopLeaseHolders("lease", {
+      clock: fake.clock,
       graceMs: 1000,
-      find: async (value) =>
-        Date.now() - begin < 900
-          ? { holders: [], unverified: [late.pid] }
-          : { holders: (await leaseHolders(value)).holders, unverified: [] },
-    });
-    const killedAt = await late.exitAt;
-    expect(late.termAt()).toBeDefined();
-    expect(killedAt - late.termAt()!).toBeGreaterThanOrEqual(900);
-    expect(result).toEqual({ stopped: [late.pid], left: [] });
-  },
-  30_000
-);
+      find: fake.find((_, startedAt) =>
+        startedAt < 900
+          ? { holders: [], unverified: [late] }
+          : { holders: killed() ? [] : [late], unverified: [] }
+      ),
+    })
+  );
+  const [term, kill, ...rest] = fake.signalsTo(late);
+  expect([term?.signal, kill?.signal, rest]).toEqual([
+    "SIGTERM",
+    "SIGKILL",
+    [],
+  ]);
+  // 처음 확인된 때 TERM을 받고, 전체 유예(시작 뒤 1000)가 아니라 자기 유예가 지난 뒤에 KILL을 받는다.
+  expect(term!.at).toBeGreaterThanOrEqual(900);
+  expect(kill!.at - term!.at).toBeGreaterThanOrEqual(1000);
+  expect(result).toEqual({ stopped: [late], left: [] });
+});
 
 // 전체 시한 안에 자기 유예를 받을 수 없을 만큼 늦게 확인된 보유자는 강제로 끄지 않고 끄지 못한 것으로 돌려준다(정리 실패·기록 유지).
-// 끝나지 않는 보유자(없는 번호를 계속 돌려주는 조회) 하나가 시한까지 정리를 붙잡는 동안, 다른 프로그램이 시한 직전에 처음 확인된다.
-// macOS 조회(`ps` 세 번)는 수백 ms가 걸릴 수 있다. 시한(2초) 직전 0.5초 안에 처음 확인되도록 두고, TERM을 받았다는 줄은 잠깐 기다려 본다.
-it.runIf(posix)(
-  "leaves a holder confirmed too late for its grace running and reports it",
-  async () => {
-    const lease = randomUUID();
-    const late = await termWatcher(lease);
-    const stuck = 2 ** 22 + 1;
-    const begin = Date.now();
-    const result = await stopLeaseHolders(lease, {
+// 끝나지 않는 보유자(TERM·KILL을 받아도 계속 보이는 번호) 하나가 시한까지 정리를 붙잡는 동안, 다른 프로그램이 시한(2000) 직전에 처음 확인된다.
+it("leaves a holder confirmed too late for its grace running and reports it", async () => {
+  const fake = fakeTime();
+  const stuck = 2 ** 22 + 1;
+  const late = 2 ** 22 + 9;
+  const result = await fake.run(
+    stopLeaseHolders("lease", {
+      clock: fake.clock,
       graceMs: 1000,
       waitMs: 1000,
-      find: async (value) =>
-        Date.now() - begin < 1500
-          ? { holders: [stuck], unverified: [late.pid] }
-          : {
-              holders: [stuck, ...(await leaseHolders(value)).holders],
-              unverified: [],
-            },
-    });
-    expect(result.left).toContain(late.pid);
-    await vi.waitFor(() => expect(late.termAt()).toBeDefined(), {
-      timeout: 2000,
-      interval: 25,
-    });
-    expect(exited(late.pid)).toBe(false);
-  },
-  30_000
-);
+      find: fake.find((_, startedAt) =>
+        startedAt < 1900
+          ? { holders: [stuck], unverified: [late] }
+          : { holders: [stuck, late], unverified: [] }
+      ),
+    })
+  );
+  expect(fake.signalsTo(late).map(({ signal }) => signal)).toEqual(["SIGTERM"]);
+  expect(fake.signalsTo(late)[0]!.at).toBeGreaterThanOrEqual(1900);
+  expect(result).toEqual({ stopped: [], left: [stuck, late] });
+});
 
 // 조회 하나가 전체 시한(유예 + 대기)을 넘겨도 기다리지 않는다. 시한에 걸린 조회는 버리고 마지막으로 끝난 조회가 본 것을 끄지 못한 것(`left`)으로 돌려주며,
 // 늦게 돌아온 조회 결과로는 신호를 보내지 않는다(PR #220 외부 리뷰 SPEC-5). 끝난 조회가 하나도 없으면 조회 실패로 던진다(아래 시험).
-// 신호는 `process.kill` 호출을 그대로 기록해 본다. 늦은 조회가 끝난 것은 주입한 조회가 알린다(고정 대기 없음, PR #220 외부 리뷰 STD-4).
 it("gives up on a lookup that outlasts the overall limit and sends nothing after it", async () => {
+  const fake = fakeTime();
   const stuck = 2 ** 22 + 1;
   const late = 2 ** 22 + 5;
-  const kill = vi.spyOn(process, "kill");
-  let reportFinished!: () => void;
-  const lateLookupFinished = new Promise<void>(
-    (resolve) => (reportFinished = resolve)
-  );
-  let lookups = 0;
-  const begin = Date.now();
-  try {
-    const result = await stopLeaseHolders("lease", {
+  const result = await fake.run(
+    stopLeaseHolders("lease", {
+      clock: fake.clock,
       graceMs: 100,
       waitMs: 100,
-      find: async () => {
-        if (lookups++ === 0) return { holders: [stuck], unverified: [] };
-        await new Promise((resolve) => setTimeout(resolve, 600));
-        reportFinished();
-        return { holders: [stuck, late], unverified: [] };
-      },
-    });
-    expect(Date.now() - begin).toBeLessThan(500);
-    expect(result.left).toEqual([stuck]);
-    // 늦은 조회가 끝나고 그 뒤에 이어질 수 있는 일까지 돈 다음에도 그 결과로 신호를 보내지 않았다.
-    await lateLookupFinished;
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(kill.mock.calls.map(([pid]) => pid)).not.toContain(late);
-  } finally {
-    kill.mockRestore();
-  }
+      // 처음 조회는 바로 끝나고, 그 뒤 조회는 600 걸린다(시한 200을 넘긴다).
+      find: fake.find(
+        (call) =>
+          call === 0
+            ? { holders: [stuck], unverified: [] }
+            : { holders: [stuck, late], unverified: [] },
+        (call) => (call === 0 ? 0 : 600)
+      ),
+    })
+  );
+  // 늦은 조회가 끝나기 전, 시한에 끝냈다.
+  expect(fake.clock.now()).toBe(200);
+  expect(fake.finished()).toBe(1);
+  expect(result.left).toEqual([stuck]);
+  // 늦은 조회가 끝나고 그 뒤에 이어질 수 있는 일까지 돈 다음에도 그 결과로 신호를 보내지 않았다.
+  fake.clock.advance(1000);
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(fake.finished()).toBe(2);
+  expect(fake.signalsTo(late)).toEqual([]);
 });
 
 it("gives up on a first lookup that outlasts the overall limit", async () => {
-  const begin = Date.now();
+  const fake = fakeTime();
   await expect(
-    stopLeaseHolders("lease", {
-      graceMs: 100,
-      waitMs: 100,
-      find: () => new Promise(() => {}),
-    })
-  ).rejects.toThrow();
-  expect(Date.now() - begin).toBeLessThan(500);
+    fake.run(
+      stopLeaseHolders("lease", {
+        clock: fake.clock,
+        graceMs: 100,
+        waitMs: 100,
+        find: () => new Promise(() => {}),
+      })
+    )
+  ).rejects.toThrow("Run marker lookup did not finish in time");
+  // 시한(유예 + 대기)에 실패했다.
+  expect(fake.clock.now()).toBe(200);
 });
 
 // 끈 것(`stopped`)과 끄지 못한 것(`left`)에 같은 번호가 함께 들어가지 않는다. TERM을 보낸 뒤 확인하지 못하게 된 것은 끄지 못한 것이다(SPEC-6).

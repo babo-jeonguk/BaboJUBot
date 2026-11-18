@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { type Clock, realClock } from "./clock.ts";
 
 /**
  * 실행 시도의 표식. 실행 시도마다 고유한 값을 프로그램 환경에 넣으면 그 자손이 모두 물려받는다.
@@ -191,7 +192,6 @@ export async function leaseHolders(
   };
 }
 
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const send = (pids: number[], signal: NodeJS.Signals) => {
   for (const pid of pids)
     try {
@@ -206,10 +206,14 @@ const pollMs = 50;
 class LookupTimeout extends Error {}
 
 /** 조회가 정해진 시간 안에 끝나지 않으면 `LookupTimeout`을 던진다. 늦게 끝난 조회의 결과는 쓰지 않고, 그 조회의 실패도 처리해 둔다(처리되지 않은 거부가 남지 않게). */
-async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
+async function within<T>(
+  promise: Promise<T>,
+  ms: number,
+  clock: Clock
+): Promise<T> {
+  let timer: unknown;
   const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(
+    timer = clock.setTimeout(
       () =>
         reject(new LookupTimeout("Run marker lookup did not finish in time")),
       ms
@@ -218,7 +222,7 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
   try {
     return await Promise.race([promise, expired]);
   } finally {
-    clearTimeout(timer);
+    clock.clearTimeout(timer);
     promise.catch(() => {
       // 시한이 지나 이미 포기한 조회다. 늦은 거부를 여기서 거둔다.
     });
@@ -231,6 +235,7 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
  * 조회는 처음 것도 전체 시한(graceMs + waitMs) 안에 끝나야 한다. 처음 조회가 시한을 넘기면 조회 실패로 던진다. 그 뒤의 조회가 시한을 넘기면 버리고 마지막으로 끝난 조회 결과를 돌려준다.
  * 시한이 지난 뒤에는 새로 찾지 않고 신호도 보내지 않는다. 시한이 지난 뒤에 돌아온 조회 결과로도 신호를 보내지 않는다.
  * 더 이상 보이지 않는 프로그램은 `stopped`, 아직 보이거나 확인하지 못한 프로그램은 `left`로 돌려주며 두 곳에 함께 넣지 않는다.
+ * 시한·유예·다시 찾기 간격은 `clock`(기본은 실제 시계)으로 잰다. 시험은 가짜 시계로 조회가 끝나는 때와 시한의 순서를 정한다(#225).
  */
 export async function stopLeaseHolders(
   lease: string,
@@ -239,19 +244,25 @@ export async function stopLeaseHolders(
     find = (value) => leaseHolders(value, { since }),
     graceMs = 2000,
     waitMs = 10_000,
+    clock = realClock,
   }: {
     since?: number;
     find?: (lease: string) => Promise<LeaseLookup>;
     graceMs?: number;
     waitMs?: number;
+    clock?: Clock;
   } = {}
 ) {
-  const begin = Date.now();
+  const begin = clock.now();
   const deadline = begin + graceMs + waitMs;
   const termAt = new Map<number, number>(); // pid별 TERM을 받은 시각
-  let lookup = await within(find(lease), Math.max(0, deadline - Date.now()));
+  let lookup = await within(
+    find(lease),
+    Math.max(0, deadline - clock.now()),
+    clock
+  );
   for (;;) {
-    const now = Date.now();
+    const now = clock.now();
     // 시한이 지난 뒤에 돌아온 조회 결과로는 신호를 보내지 않는다. 결과의 `left`가 아직 남은 것을 알려 준다.
     if (now >= deadline) break;
     for (const pid of lookup.holders) {
@@ -266,11 +277,13 @@ export async function stopLeaseHolders(
       !lookup.holders.length &&
       (!lookup.unverified.length || now - begin >= graceMs);
     if (settled) break;
-    await delay(pollMs);
+    await new Promise((resolve) =>
+      clock.setTimeout(() => resolve(null), pollMs)
+    );
     // 시한이 지난 뒤에는 새로 찾지 않는다. 마지막으로 끝난 조회가 본 것을 그대로 돌려준다.
-    if (Date.now() >= deadline) break;
+    if (clock.now() >= deadline) break;
     try {
-      lookup = await within(find(lease), deadline - Date.now());
+      lookup = await within(find(lease), deadline - clock.now(), clock);
     } catch (e) {
       // 시한까지 끝나지 않은 조회는 버린다. 조회 자체의 실패는 그대로 던진다.
       if (e instanceof LookupTimeout) break;

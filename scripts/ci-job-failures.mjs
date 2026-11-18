@@ -20,14 +20,14 @@ const lookupDeadlineMs = 60_000;
 /**
  * @param {{ name: string, result: string, expected: string }[]} failures 판정이 실패로 센 job
  * @param {{ apiUrl?: string, repository?: string, runId?: string, runAttempt?: string, token?: string,
- *   fetch?: typeof globalThis.fetch, deadlineMs?: number }} context
+ *   fetch?: typeof globalThis.fetch, deadline?: AbortSignal }} context 조회 전체 시한(`deadline`)은 시험이 신호로 넣는다. 기본은 60초다.
  * @returns {Promise<{ name: string, result: string, expected: string, kind: keyof kindLabels, reason: string }[]>}
  */
 export async function classifyFailures(failures, context) {
   if (failures.length === 0) return [];
   context = {
     ...context,
-    deadline: AbortSignal.timeout(context.deadlineMs ?? lookupDeadlineMs),
+    deadline: context.deadline ?? AbortSignal.timeout(lookupDeadlineMs),
   };
   let jobs;
   try {

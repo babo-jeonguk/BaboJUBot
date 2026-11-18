@@ -139,3 +139,72 @@ test("a lint exception needs a reason, names its rules and is removed once unuse
   assert.equal(unused[0].severity, 2);
   assert.match(unused[0].message, /Unused eslint-disable directive/);
 });
+
+/** 경과 시간 단언 규칙의 메시지만. */
+const elapsedMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-elapsed-time-assertion");
+
+test("test code may not assert real elapsed time", async () => {
+  const asserted = {
+    "expect on the difference": `expect(Date.now() - started).toBeLessThan(5000);\n`,
+    "performance.now": `expect(performance.now() - started).toBeLessThan(5000);\n`,
+    "assert.ok on a comparison": `assert.ok(Date.now() - started < 5000);\n`,
+    "assert on a comparison": `assert(Date.now() - started < 5000);\n`,
+    "the expected side": `expect(5000).toBeGreaterThan(Date.now() - started);\n`,
+    "a rounded value": `expect(Math.round((Date.now() - started) / 1000)).toBe(0);\n`,
+    // 변수에 담았다 비교하는 우회.
+    "a variable": `const elapsed = Date.now() - started;\nexpect(elapsed).toBeLessThan(5000);\n`,
+    "a reassigned variable": `let elapsed = 0;\nelapsed = Date.now() - started;\nassert.ok(elapsed < 5000);\n`,
+    "a value computed from a variable": `const ms = Date.now() - started;\nconst seconds = ms / 1000;\nexpect(seconds).toBeLessThan(5);\n`,
+    // 두 시각을 따로 담아 빼는 우회(외부 리뷰 SPEC-A).
+    "two stored times": `const started = Date.now();\nconst finished = Date.now();\nexpect(finished - started).toBeLessThan(500);\n`,
+    "a reassigned stored time": `let started = 0;\nlet finished = 0;\nstarted = performance.now();\nfinished = performance.now();\nassert.ok(finished - started < 500);\n`,
+  };
+  for (const [shape, code] of Object.entries(asserted))
+    for (const place of testPlaces) {
+      const [message, ...rest] = elapsedMessages(await lint(code, place));
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 대안과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, /manualClock/);
+      assert.match(message.message, /순서·상태/);
+      assert.match(message.message, /CODING_STANDARDS\.md#시간/);
+    }
+});
+
+test("test code may make past times, log or record durations, wait to a deadline and assert a fake clock", async () => {
+  const allowed = [
+    // 지난 시각을 데이터로 만든다.
+    `expect(isExpired({ expiry: new Date(Date.now() - 60_000).toISOString() })).toBe(true);\n`,
+    `expect(judge({ deadlineAt: Date.now() - 1 })).toBe("expired");\n`,
+    `const serverNow = () => new Date(Date.now() - 5 * 60_000);\nexpect(serverNow()).toBeDefined();\n`,
+    // 걸린 시간을 로그로 남기거나 측정값으로 기록한다(성능 측정).
+    "console.log(`prepared in ${Date.now() - started} ms`);\n",
+    `const openMs = Date.now() - opened;\nconsole.log(JSON.stringify({ openMs }));\n`,
+    `const fps = () => Math.round((frames * 1000) / (Date.now() - t0));\nconsole.log(fps());\n`,
+    // 시각 변수를 로그·데이터에만 쓰거나, 그 시각에서 상수를 빼 지난 시각을 만든다.
+    "const finished = Date.now();\nconsole.log(`took ${finished - started} ms`);\nexpect(new Date(finished)).toBeDefined();\n",
+    `const finished = Date.now();\nexpect(isExpired({ expiry: finished - 60_000 })).toBe(true);\nexpect(finished - 60_000).toBeLessThan(finished);\n`,
+    // 대기의 상한과 남은 시간.
+    `const deadline = Date.now() + 5000;\nwhile (Date.now() < deadline) await tick();\nawait wait(deadline - Date.now());\nexpect(done).toBe(true);\n`,
+    // 가짜 시계의 시간은 시험이 정한다.
+    `expect(clock.now() - begin).toBe(1000);\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(elapsedMessages(await lint(code, place)), [], code);
+});
+
+test("code outside tests may assert elapsed time", async () => {
+  for (const place of [
+    "scripts/lint-sample.mjs",
+    "scripts/live/lint-sample.mjs",
+  ])
+    assert.deepEqual(
+      elapsedMessages(
+        await lint(`assert.ok(Date.now() - started < 5000);\n`, place)
+      ),
+      [],
+      place
+    );
+});

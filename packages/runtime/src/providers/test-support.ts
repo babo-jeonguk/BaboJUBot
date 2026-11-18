@@ -115,6 +115,11 @@ export function manualClock() {
     /** The delays of the timers still waiting, in the order they were set. */
     scheduled: () =>
       [...timers.values()].map((timer) => timer.at - timer.setAt),
+    /** How long until the earliest waiting timer is due, or undefined when no timer is waiting. */
+    untilNext: () =>
+      timers.size
+        ? Math.min(...[...timers.values()].map((timer) => timer.at)) - now
+        : undefined,
     /**
      * Moves the time on and runs, in order, every timer that is due by then, including ones a callback sets on the way (a stop
      * timer that sets a kill timer runs both), each at its own time as on the real clock.

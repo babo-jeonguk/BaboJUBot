@@ -451,7 +451,6 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
 
   it("removes a container that ignores the stop signals as the last step of cancellation", async () => {
     const org = await organization();
-    const started = Date.now();
     const child = startProcess({
       command: ["unused"],
       args: [
@@ -465,9 +464,10 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
         child.end();
       },
     });
+    // 신호를 무시하는 컨테이너도 취소가 끝나면(마지막 단계로 지워져) 남지 않는다. 멈춤 단계의 순서는 가짜 docker로
+    // container.test.ts가 보고, 끝나지 않으면 시험 시한에 걸린다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
     const done = await child.done;
     expect(done.broken).toBe(false);
-    expect(Date.now() - started).toBeLessThan(60_000);
     expect(containersOf(settings.owner)).toBe("");
   }, 120_000);
 

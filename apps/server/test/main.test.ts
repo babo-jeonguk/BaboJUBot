@@ -212,14 +212,12 @@ posix.each(posixStopRequests)(
         ).split("\n")[0]
       );
       process.kill(postgresPid, "SIGSTOP");
-      const stoppedAt = Date.now();
       send(child);
       const { code } = await waitExit(child, shutdownWaitMs);
       expect(code, child.stderrText()).toBe(1);
-      // 정한 시한(2s)으로 끝났다는 것은 그 시한을 적은 진단으로 본다. 걸린 시간은 기본 시한(30s)을 쓰지 않았다는 것만
-      // 확인한다. 시한에 1초 여유만 두면 느린 실행기에서 스케줄러가 늦게 깨는 몫이 시한 검사를 깨뜨린다(#215).
+      // 정한 시한(2s)으로 끝났다는 것은 그 시한을 적은 진단으로 본다. 진단은 프로세스를 끝내는 시한 타이머가 낸다.
+      // 시한을 정리 몫과 비상 정지 몫으로 나누는 계산은 shutdown-budget.test.ts가 본다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
       expect(child.stderrText()).toContain("did not finish in 2s");
-      expect(Date.now() - stoppedAt).toBeLessThan(15_000);
 
       process.kill(postgresPid, "SIGCONT");
       const deadline = Date.now() + 15_000;

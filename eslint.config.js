@@ -4,6 +4,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 import tseslint from "typescript-eslint";
+import testRules from "./scripts/eslint-test-rules.mjs";
 
 // 도메인 규칙과 seam 계약은 프레임워크·DB·화면에 의존하지 않는다(docs/architecture.md 패키지 구성).
 const framework = [
@@ -69,8 +70,11 @@ export default defineConfig([
   },
   {
     // 시험의 임시 폴더는 공용 정리 함수로만 지운다. 함수 이름을 바꿔 가져오면 이 검사를 피하므로 그것도 막는다.
+    // 시험은 실제로 잰 경과 시간을 단언하지 않는다(CODING_STANDARDS.md#시간). 값이 변수를 거쳐 단언에 닿는지 따라가야 해서 규칙을 따로 둔다.
     files: testFiles,
+    plugins: { tests: testRules },
     rules: {
+      "tests/no-elapsed-time-assertion": "error",
       "no-restricted-syntax": [
         "error",
         {
