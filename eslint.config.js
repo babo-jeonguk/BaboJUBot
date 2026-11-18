@@ -4,6 +4,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 import tseslint from "typescript-eslint";
+import productRules from "./scripts/eslint-product-rules.mjs";
 import testRules from "./scripts/eslint-test-rules.mjs";
 
 // 도메인 규칙과 seam 계약은 프레임워크·DB·화면에 의존하지 않는다(docs/architecture.md 패키지 구성).
@@ -198,6 +199,14 @@ export default defineConfig([
       ],
       eqeqeq: ["error", "always", { null: "ignore" }],
     },
+  },
+  {
+    // 외부 프로그램을 동기로 띄우면 끝날 때까지 서버 전체가 멈춘다. 동기 실행은 옵션 객체에 timeout을 둘 때만 쓴다.
+    // 호출의 옵션 객체를 봐야 해서 규칙을 따로 둔다.
+    files: productFiles,
+    ignores: testFiles,
+    plugins: { product: productRules },
+    rules: { "product/sync-command-timeout": "error" },
   },
   {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.

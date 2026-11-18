@@ -167,6 +167,48 @@ it("stops a leftover process on systems without /proc", async () => {
   }
 }, 30_000);
 
+// 시작 시각을 묻는 명령이 답하지 않아도 복구는 정해진 상한 안에 다음으로 넘어간다. 우리 것인지 모르는 프로세스와 그 기록은
+// 그대로 둔다. 답하지 않는 명령은 PATH 앞에 둔 가짜 ps가 맡는다(60초 뒤에야 다른 시작 시각을 답한다).
+// Windows는 PowerShell에 묻는데, 답하지 않는 PowerShell을 시험이 대신 둘 수 없다. 그 호출의 상한은 lint가 강제한다.
+it.skipIf(process.platform === "win32")(
+  "moves on and keeps the record when the start time query does not answer",
+  async () => {
+    const { root, directory } = await records();
+    const child = longRunning();
+    // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+    await once(child, "spawn");
+    const file = `${child.pid}.json`;
+    try {
+      await writeFile(
+        path.join(directory, file),
+        JSON.stringify({
+          pid: child.pid,
+          started: processStartedAt(child.pid!, withoutProc),
+        })
+      );
+      const fake = await folders.make("babojubot-fake-ps-");
+      await writeFile(
+        path.join(fake, "ps"),
+        `#!${process.execPath}\nsetTimeout(() => console.log("Mon Jan  1 00:00:00 2024"), 60_000);\n`,
+        { mode: 0o755 }
+      );
+      vi.stubEnv("PATH", `${fake}${path.delimiter}${process.env.PATH}`);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await recoverProviderProcesses(root, { platform: withoutProc });
+      } finally {
+        vi.unstubAllEnvs();
+        warn.mockRestore();
+      }
+      expect(gone(child.pid!)).toBe(false);
+      expect(await readdir(directory)).toEqual([file]);
+    } finally {
+      process.kill(child.pid!, "SIGKILL");
+    }
+  },
+  120_000
+);
+
 // 번호가 같아도 시작 시각이 다르면 남이다. 시작 시각은 언제 물어도 같으므로 여유를 두지 않는다.
 it("leaves a process whose start differs from the recorded one", async () => {
   const { root, directory } = await records();

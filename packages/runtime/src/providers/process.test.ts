@@ -1,5 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { runProbe, startProcess } from "./process.ts";
+import { testFolders } from "./test-folders.ts";
+
+const folders = testFolders();
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/** 시험이 띄운 프로그램이 남았으면 끝낸다. */
+const killIfAlive = (pid: number) => {
+  if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+};
 
 const run = async (
   script: string,
@@ -110,4 +127,69 @@ describe("runProbe", () => {
   it("stops a program that outlives its limit", async () => {
     await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toThrow();
   });
+
+  // 취소해 종료 신호를 보내도 끝나지 않는 프로그램은 유예 뒤 강제로 끝낸다. 호출자의 기다림이 그 프로그램에 매이지 않는다.
+  // Windows의 종료는 프로그램이 거부할 수 없어 이 상황을 만들 수 없다.
+  it.skipIf(process.platform === "win32")(
+    "forces a cancelled program that ignores the stop signal to end",
+    async () => {
+      const folder = await folders.make("babojubot-probe-");
+      const ready = path.join(folder, "ready");
+      const controller = new AbortController();
+      const probing = runProbe(
+        [
+          process.execPath,
+          "-e",
+          `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000);`,
+        ],
+        [],
+        {
+          env: { PATH: process.env.PATH },
+          cwd: process.cwd(),
+          signal: controller.signal,
+          timeout: 60_000,
+          maxBuffer: 1024,
+        }
+      );
+      void probing.catch(() => {});
+      let pid = 0;
+      try {
+        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {
+          timeout: 20_000,
+          interval: 25,
+        });
+        pid = Number(readFileSync(ready, "utf8"));
+        controller.abort();
+        await expect(probing).rejects.toThrow();
+        expect(alive(pid)).toBe(false);
+      } finally {
+        killIfAlive(pid);
+      }
+    },
+    30_000
+  );
+
+  // 프로그램이 끝났어도 그 출력을 물려받은 다른 프로그램이 남으면 출력이 닫히지 않는다. 시한이 지나면 기다림을 끝내고
+  // 실패로 돌려주며, 회수하지 못한 것을 기록한다.
+  it("ends the wait after its limit when the program's output stays open", async () => {
+    const folder = await folders.make("babojubot-probe-");
+    const holderFile = path.join(folder, "holder");
+    const logged = [
+      vi.spyOn(console, "warn").mockImplementation(() => {}),
+      vi.spyOn(console, "error").mockImplementation(() => {}),
+    ];
+    try {
+      await expect(
+        probe(
+          `const holder = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
+          500
+        )
+      ).rejects.toThrow();
+      expect(logged.some((spy) => spy.mock.calls.length > 0)).toBe(true);
+    } finally {
+      for (const spy of logged) spy.mockRestore();
+      if (existsSync(holderFile))
+        killIfAlive(Number(readFileSync(holderFile, "utf8")));
+    }
+  }, 30_000);
 });
