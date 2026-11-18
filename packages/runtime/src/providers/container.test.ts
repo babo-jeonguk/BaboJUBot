@@ -39,10 +39,20 @@ import { testFolders } from "./test-folders.ts";
 
 /** 링크 만들기를 거절하는 오류 코드(권한 없는 Windows·링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
 let refusal: string | null = null;
+/** 이 이름이 경로에 든 폴더 지우기가 잠긴 파일처럼(EBUSY) 계속 실패한다. 비어 있으면 실제로 지운다. */
+const locked = vi.hoisted(() => ({ folder: null as RegExp | null }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    rm: (...args: Parameters<typeof actual.rm>) =>
+      locked.folder?.test(String(args[0]))
+        ? Promise.reject(
+            Object.assign(new Error("EBUSY: resource busy or locked, rm"), {
+              code: "EBUSY",
+            })
+          )
+        : actual.rm(...args),
     symlink: (...args: Parameters<typeof actual.symlink>) =>
       refusal
         ? Promise.reject(
@@ -63,6 +73,7 @@ const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 const saved = { ...process.env };
 afterEach(async () => {
   refusal = null;
+  locked.folder = null;
   process.env = { ...saved };
 });
 
@@ -670,6 +681,52 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     expect(run.args[run.args.indexOf(image) + 1]).toBe("codex");
     expect(valuesOf(run.args, "--workdir")).toEqual([env.shared]);
     expect(removed(calls, nameOf(run))).toBe(true);
+  });
+
+  // 실행 시도 전용 폴더(실행 시도의 로그인 파일이 든 곳)를 끝내 지우지 못해도 실행 결과는 그대로이고, 운영자가 찾을 수 있게
+  // 연결과 실행 시도 ID를 진단으로 남긴다. 진단에는 파일 내용이나 토큰을 담지 않는다.
+  it("keeps a finished Codex run's result and records an attempt folder it cannot remove", async () => {
+    const env = await setup({
+      codex: [
+        process.execPath,
+        fixture("replay.mjs"),
+        fixture("codex-finish.synthetic.json"),
+      ],
+    });
+    const provider = createCodexProvider({
+      dataDir: env.root,
+      container: env.container,
+    });
+    const input = env.isolated();
+    const logged = [
+      vi.spyOn(console, "warn").mockImplementation(() => {}),
+      vi.spyOn(console, "error").mockImplementation(() => {}),
+    ];
+    locked.folder = /babojubot-attempt-/;
+    try {
+      const result = await provider.adapter.execute(input, control());
+      expect(result.stopReason).toBe("completed");
+      const lines = logged.flatMap((spy) =>
+        spy.mock.calls.map((call) => call.map(String).join(" "))
+      );
+      expect(
+        lines.some(
+          (line) =>
+            line.includes("codex") && line.includes(input.identity.runId)
+        ),
+        lines.join("\n")
+      ).toBe(true);
+      expect(lines.join("\n")).not.toContain(input.access.token);
+    } finally {
+      locked.folder = null;
+      for (const spy of logged) spy.mockRestore();
+      // 지우지 못하게 한 실행 시도 폴더는 시험 정리가 지운다. 컨테이너에 넣은 로그인 파일의 폴더에서 찾는다.
+      for (const call of await env.calls())
+        for (const mount of valuesOf(call.args, "--mount")) {
+          const source = /source=([^,]*babojubot-attempt-[^,/\\]*)/.exec(mount);
+          if (source) folders.adopt(source[1]!);
+        }
+    }
   });
 
   it("controls OpenCode in a container with no network through connections the container offers to its relay", async () => {
