@@ -123,7 +123,8 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
   await page.getByRole("button", { name: worker!.name, exact: true }).click();
   await input.fill("research lead");
   await input.press("Enter");
-  await expect(page.getByRole("alert")).toHaveText(
+  // 오류는 이름 칸 바로 아래에 있다. 칸을 감싼 요소 안에서 찾는다.
+  await expect(input.locator("..").getByRole("alert")).toHaveText(
     "같은 이름의 에이전트가 이미 있습니다. 다른 이름을 적으세요."
   );
   await input.fill("  통계 담당  ");

@@ -59,8 +59,12 @@ test("the owner changes one worker's model on the approval detail, reverts and c
     .selectOption({ label: "가짜 프로바이더 2" });
   await expect(model).toHaveValue("");
   await model.selectOption({ label: "미니" });
-  await page.getByRole("link", { name: "설정" }).first().click();
-  await expect(page).toHaveURL(/\/settings$/);
+  // 이 조직의 설정 화면으로 떠난다. 레일의 `전역 설정`도 이름에 `설정`이 들어 있어 조직 화면 탐색 안에서 찾는다.
+  await page
+    .getByRole("navigation", { name: "조직 화면" })
+    .getByRole("link", { name: "설정", exact: true })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`/orgs/${org.id}/settings$`));
   await page.goBack();
   await expect(decision.getByLabel("연구원 2번 모델")).toHaveValue(
     "fake-2-mini"

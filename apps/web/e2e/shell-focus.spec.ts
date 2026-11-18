@@ -7,7 +7,12 @@ import {
   type Page,
   type Route,
 } from "@playwright/test";
-import { goalInput, inboxOrganizationLinks } from "./support/organization.ts";
+import {
+  goalInput,
+  inboxOrganizationLinks,
+  messageAnswered,
+  sentMessage,
+} from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
@@ -83,14 +88,25 @@ for (const size of widths) {
       });
       await composer.click();
       await composer.fill("쓰는 중");
-      await page.request.post(`/api/organizations/${first.id}/messages`, {
-        data: { body: "다른 탭에서 보낸 메시지" },
-      });
-      await expect(
-        page.getByText("다른 탭에서 보낸 메시지").first()
-      ).toBeVisible(runs);
+      const sent = await sentMessage(
+        await page.request.post(`/api/organizations/${first.id}/messages`, {
+          data: { body: "다른 탭에서 보낸 메시지" },
+        })
+      );
+      // 보낸 메시지는 그 ID로 찾는다. 가짜 Lead의 답장이 받은 글을 그대로 옮겨 적어 같은 글이 대화에 둘 생긴다.
+      const transcript = page.getByRole("list", { name: "대화" });
+      const posted = transcript.locator(`[data-message-id="${sent.id}"]`);
+      await expect(posted).toContainText("다른 탭에서 보낸 메시지", runs);
       await expect(composer).toBeFocused();
       await expect(composer).toHaveValue("쓰는 중");
+      await messageAnswered(page.request, first.id, sent);
+      await expect(
+        transcript
+          .locator('[data-author="agent"]')
+          .filter({ hasText: "다른 탭에서 보낸 메시지" })
+      ).toBeVisible(runs);
+      await expect(posted).toContainText("다른 탭에서 보낸 메시지");
+      await expect(composer).toBeFocused();
 
       // 다른 조직으로 옮기면 그 조직 정보를 불러오는 동안에도 앞 조직 이름이 제목에 남지 않는다.
       let release = () => {};
@@ -145,7 +161,9 @@ for (const size of widths) {
         });
       });
       await page.goto("/");
-      await expect(page.getByText("아직 연구 조직이 없습니다")).toBeVisible();
+      await expect(
+        page.getByRole("main").getByText("아직 연구 조직이 없습니다")
+      ).toBeVisible();
       const h1 = page.getByRole("heading", { level: 1 });
       await expect(h1).toHaveCount(1);
       await expect(h1).toHaveText("연구 조직 홈");

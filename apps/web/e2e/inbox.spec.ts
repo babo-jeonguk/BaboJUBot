@@ -185,9 +185,10 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
   });
   await openWithLiveEvents(page, "/");
 
+  // 좁은 화면에서는 본문 위 상단 바의 Inbox 버튼으로 연다.
   await page
+    .getByRole("main")
     .getByRole("button", { name: /^Inbox · 주의 필요/ })
-    .first()
     .click();
   const drawer = page.getByRole("dialog", { name: "Inbox" });
   // 이 조직에는 생성 뒤 가짜 Lead가 낸 초기 연구 승인 요청도 있다.
@@ -223,8 +224,8 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await openWithLiveEvents(page, "/");
   await say("실패 연습");
   await page
+    .getByRole("navigation", { name: "연구 조직" })
     .getByRole("button", { name: /^Inbox · 주의 필요/ })
-    .first()
     .click();
   const panel = page.getByRole("complementary", { name: "Inbox" });
   const attention = panel.getByRole("list", { name: "주의 필요" });
@@ -371,18 +372,18 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
 
   // 없는 항목, 다른 조직 주소의 항목, 실패하지 않은 실행 시도, 모르는 종류는 찾을 수 없다고 알린다.
   await page.goto(`/inbox/${org.id}/approval/${crypto.randomUUID()}`);
-  await expect(page.getByText("찾을 수 없는 승인 요청")).toBeVisible();
+  await expect(main.getByText("찾을 수 없는 승인 요청")).toBeVisible();
   const approvalId = new URL(decidedUrl).pathname.split("/").pop();
   await page.goto(`/inbox/${other.id}/approval/${approvalId}`);
-  await expect(page.getByText("찾을 수 없는 승인 요청")).toBeVisible();
+  await expect(main.getByText("찾을 수 없는 승인 요청")).toBeVisible();
   const orgRuns = (await (
     await page.request.get(`/api/organizations/${org.id}/runs`)
   ).json()) as { id: string; status: string }[];
   const completed = orgRuns.find((r) => r.status === "completed")!;
   await page.goto(`/inbox/${org.id}/run_failure/${completed.id}`);
-  await expect(page.getByText("찾을 수 없는 실패한 실행 시도")).toBeVisible();
+  await expect(main.getByText("찾을 수 없는 실패한 실행 시도")).toBeVisible();
   await page.goto(`/inbox/${org.id}/unknown/${crypto.randomUUID()}`);
-  await expect(page.getByText("찾을 수 없는 Inbox 항목")).toBeVisible();
+  await expect(main.getByText("찾을 수 없는 Inbox 항목")).toBeVisible();
 });
 
 test("when marking an opened item read fails, the Inbox detail says so and retries on request", async ({
