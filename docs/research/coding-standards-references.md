@@ -2,7 +2,7 @@
 
 조사일: 2026-10-30. 대상: 로컬 `code-review` skill과 외부 리뷰 요청이 Standards 축의 근거로 찾는 `CODING_STANDARDS.md`(이 저장소에 없음). 1차 출처(mattpocock/skills 저장소와 그 저장소가 링크하는 Matt Pocock의 공개 저장소)만 읽었다. 결정 문서가 아니며, 권고는 맨 끝 「BaboJUBot에 대한 함의」에만 둔다. 클론: `/tmp/research-mp-skills/`, `/tmp/research-mp-sandcastle/`, `/tmp/research-mp-mise/`(git 밖, 스크립트 미실행).
 
-결정(2026-10-30, [PR #90](https://github.com/babo-jeonguk/BaboJUBot/pull/90)): 사용자가 이 조사를 보고 `CODING_STANDARDS.md`를 만들지 않기로 했다. 맨 끝 「BaboJUBot에 대한 함의」는 채택되지 않은 권고다.
+결정(2026-10-30, [PR #90](https://github.com/babo-jeonguk/BaboJUBot/pull/90)): 사용자가 이 조사를 보고 `CODING_STANDARDS.md`를 만들지 않기로 했다. 맨 끝 「BaboJUBot에 대한 함의」는 채택되지 않은 권고다. 2026-11-18 사용자가 이 결정을 바꿔, v1.3.2부터 code-review가 기준 파일을 반드시 리뷰 목록에 넣는 것을 근거로 루트 `CODING_STANDARDS.md`(시험·CI 판단 규칙)를 만들었다.
 
 ## Brief
 
