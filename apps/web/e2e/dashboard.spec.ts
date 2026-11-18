@@ -2,6 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { withServerClock } from "./support/isolated-server.ts";
 import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { expectNoHorizontalOverflow } from "./support/layout.ts";
 
 const runs = { timeout: 20_000 };
 
@@ -99,8 +100,9 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   const daysBeforeMidnight = await serverDays();
   expect(daysBeforeMidnight).toHaveLength(14);
   expect(daysBeforeMidnight.at(-1)).toBe(day);
-  expect(await shownDays(runChart)).toEqual(daysBeforeMidnight);
-  expect(await shownDays(rateChart)).toEqual(daysBeforeMidnight);
+  // 화면이 보인 직후 한 번만 읽지 않고, 막대가 서버의 날짜가 될 때까지 다시 읽는다.
+  await expect.poll(() => shownDays(runChart)).toEqual(daysBeforeMidnight);
+  await expect.poll(() => shownDays(rateChart)).toEqual(daysBeforeMidnight);
 
   // 가짜 Lead는 `실행 유지 연습` 부탁을 받으면 취소될 때까지 실행 시도를 끝내지 않는다.
   await org.say("실행 유지 연습");
@@ -215,7 +217,7 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   );
   const daysAfterMidnight = await serverDays();
   expect(daysAfterMidnight).toEqual([...daysBeforeMidnight.slice(1), nextDay]);
-  expect(await shownDays(rateChart)).toEqual(daysAfterMidnight);
+  await expect.poll(() => shownDays(rateChart)).toEqual(daysAfterMidnight);
   await expect(bar(rateChart, nextDay)).toHaveAttribute(
     "aria-label",
     `${label(nextDay)}: ${rate(0, 1)}`
@@ -287,9 +289,5 @@ test("the dashboard and home follow a running agent, metrics and the 14 days liv
   // 좁은 화면에서도 대시보드가 가로로 넘치지 않는다.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByTestId("metric-runs")).toBeVisible();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth
-    )
-  ).toBe(true);
+  await expectNoHorizontalOverflow(page);
 });

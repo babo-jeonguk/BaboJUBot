@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import { goalInput, leadComposer } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
 const runs = { timeout: 20_000 };
@@ -63,7 +63,9 @@ test("the owner pauses the organization from the dashboard, sees it in another t
     data: { body: "멈춘 동안 보낸 메시지" },
   });
   await other.goto(`/orgs/${org.id}/chat`);
-  await expect(other.getByText("조직이 일시정지 중입니다")).toBeVisible();
+  await expect(
+    leadComposer(other).getByText("조직이 일시정지 중입니다")
+  ).toBeVisible();
   // 아직 전달되지 않은 메시지는 대화가 아니라 입력창 위의 줄에 있다.
   await expect(other.getByTestId("queued-message")).toHaveText([
     "멈춘 동안 보낸 메시지",
@@ -230,7 +232,9 @@ test("the Lead chat composer follows the Lead: send when idle, stop while runnin
   );
   await input.fill("방향을 바꿔 주세요");
   await interrupt.click();
-  await expect(page.getByRole("alert")).toContainText("보내지 못했습니다");
+  await expect(leadComposer(page).getByRole("alert")).toContainText(
+    "보내지 못했습니다"
+  );
   await expect(input).toHaveValue("방향을 바꿔 주세요");
   await page.unrouteAll({ behavior: "wait" });
 
@@ -415,7 +419,9 @@ test("messages held by a paused organization wait in the queue, can be edited, w
     "멈춘 동안 둘",
     "멈춘 동안 셋",
   ]);
-  await expect(page.getByText("조직이 일시정지 중입니다")).toBeVisible();
+  await expect(
+    leadComposer(page).getByText("조직이 일시정지 중입니다")
+  ).toBeVisible();
   // 일시정지 중 입력창은 `보내기` 하나다.
   await input.fill("쓰는 중");
   await expect(
@@ -454,7 +460,10 @@ test("messages held by a paused organization wait in the queue, can be edited, w
     await route.continue();
   });
   await editor.press("Enter");
-  await expect(page.getByText("이미 전달된 메시지입니다")).toBeVisible(runs);
+  // 줄 세운 메시지 명령의 실패는 토스트로 알린다.
+  await expect(
+    page.getByTestId("toast").filter({ hasText: "이미 전달된 메시지입니다" })
+  ).toBeVisible(runs);
   await expect(queued).toHaveCount(0, runs);
   // 재개 뒤 지금 보낸 메시지를 먼저 받으므로 대화에서 먼저 줄 세운 메시지보다 앞에 놓인다.
   await expect(
@@ -536,7 +545,9 @@ test("a conversation with nothing queued says the queue is full when other conve
   await openWithLiveEvents(page, `/orgs/${org.id}/chat/${conversation.id}`);
   await expect(page.getByTestId("queued-message")).toHaveCount(0);
   await expect(
-    page.getByText("다른 대화에 줄 세운 메시지가 가득 찼습니다 · 20/20")
+    leadComposer(page).getByText(
+      "다른 대화에 줄 세운 메시지가 가득 찼습니다 · 20/20"
+    )
   ).toBeVisible();
   await page.getByLabel("Lead에게 보낼 메시지").fill("하나 더");
   await expect(

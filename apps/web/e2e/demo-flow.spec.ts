@@ -3,6 +3,7 @@ import { openWithLiveEvents } from "./support/live-events.ts";
 import {
   goalInput,
   inboxOrganizationLinks,
+  leadComposer,
   railOrganizationLink,
 } from "./support/organization.ts";
 
@@ -199,7 +200,9 @@ test("the demo scenario walks one organization from creation with a goal through
     await expect(stageLink("일시정지")).toBeVisible();
 
     await page.goto(orgPath("/chat"));
-    await expect(page.getByText("조직이 일시정지 중입니다")).toBeVisible();
+    await expect(
+      leadComposer(page).getByText("조직이 일시정지 중입니다")
+    ).toBeVisible();
     await send("작업자 추가: researcher");
     await expect(page.getByTestId("queued-message")).toHaveText([
       "작업자 추가: researcher",

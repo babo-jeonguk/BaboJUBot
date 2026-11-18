@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { firstApprovalId, goalInput } from "./support/organization.ts";
-import { openWithLiveEvents } from "./support/live-events.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
+import { settledBoxes } from "./support/layout.ts";
 
 /**
  * 연구 지도 화면을 연다. 지도 화면은 셸이 뜬 뒤 따로 불러오는 코드·조회를 거쳐 그려져, 새 context의 첫 표시는
@@ -129,12 +130,17 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
     ((await page.locator(selector).getAttribute("d")) ?? "")
       .match(/-?[\d.]+/g)!
       .map(Number);
-  const strong = await curve(
-    `.react-flow__edge[data-id="primary:${childId}"] path.react-flow__edge-path`
-  );
-  const faint = await curve(`svg.rm-layer path[data-id="primary:${childId}"]`);
-  expect(faint).toHaveLength(strong.length);
-  faint.forEach((v, i) => expect(v).toBeCloseTo(strong[i]!, 0));
+  // 두 경로는 그리는 때가 달라 자리 잡을 때까지 둘 다 다시 읽는다.
+  await expect(async () => {
+    const strong = await curve(
+      `.react-flow__edge[data-id="primary:${childId}"] path.react-flow__edge-path`
+    );
+    const faint = await curve(
+      `svg.rm-layer path[data-id="primary:${childId}"]`
+    );
+    expect(faint).toHaveLength(strong.length);
+    faint.forEach((v, i) => expect(v).toBeCloseTo(strong[i]!, 0));
+  }).toPass(pageLoad);
 
   // 제목·상태 수정. 편집 기록에 편집자가 남는다.
   await panel
@@ -170,7 +176,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect.poll(() => curve(primaryPath)).not.toEqual(pathBefore);
 
   // 보조 연결 추가: 원래 문제를 뒷받침한다. 주 배치는 바뀌지 않는다.
-  const before = await first.boundingBox();
+  const [before] = await settledBoxes([first]);
   await panel.getByRole("button", { name: "보조 연결" }).click();
   await panel.getByLabel("연결할 노드 검색").fill("정리 1");
   await panel.getByRole("option", { name: /연구 문제 정리 1/ }).click();
@@ -178,7 +184,14 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await panel.getByRole("button", { name: "보조 연결 추가" }).click();
   await expect(panel.locator("[data-link-id]")).toHaveCount(1);
   await expect(panel.locator("[data-link-id]")).toContainText("─뒷받침→");
-  expect(await first.boundingBox()).toEqual(before);
+  // 보조 연결은 지도 질의를 다시 받아 그린다. 새 연결이 지도에 그려진 뒤 자리 잡은 위치를 잰다.
+  const linkId = await panel
+    .locator("[data-link-id]")
+    .getAttribute("data-link-id");
+  await expect(
+    page.locator(`svg.rm-links path[data-id="${linkId}"]`)
+  ).toHaveCount(1);
+  expect(await settledBoxes([first])).toEqual([before]);
 
   // 거부·실패한 편집은 지도를 바꾸지 않고 이유를 보이며 입력을 지우지 않는다.
   await page.route(
@@ -245,7 +258,7 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
 
   // 노드 끌기는 보기 상태다. 편집 기록도 Lead 깨우기도 만들지 않는다.
   const edits = await mapEditCount(page, org.id);
-  const box = (await first.boundingBox())!;
+  const [box] = await settledBoxes([first]);
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height + 80, {
@@ -269,9 +282,12 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
 
   // 좁은 화면에서는 상세 패널이 지도 아래에 쌓인다.
   await page.setViewportSize({ width: 390, height: 844 });
-  const canvas = await page.getByTestId("map-canvas").boundingBox();
-  const aside = await panel.boundingBox();
-  expect(aside!.y).toBeGreaterThanOrEqual(canvas!.y + canvas!.height - 1);
+  // 좁은 화면 배치는 media query가 바뀐 다음 그리기에서 바뀐다. 자리 잡은 위치를 잰다.
+  const [canvas, aside] = await settledBoxes([
+    page.getByTestId("map-canvas"),
+    panel,
+  ]);
+  expect(aside.y).toBeGreaterThanOrEqual(canvas.y + canvas.height - 1);
   await panel
     .getByRole("button", { name: "＋ 하위 노드" })
     .scrollIntoViewIfNeeded();
@@ -315,10 +331,8 @@ test("discarding two nodes in a row keeps both undo toasts, each undoing its own
   await expect(toasts).toHaveCount(2);
   await expect(toasts.nth(0)).toContainText("연구 문제 정리 1");
   await expect(toasts.nth(1)).toContainText("연구 문제 정리 2");
-  const [top, bottom] = [
-    (await toasts.nth(0).boundingBox())!,
-    (await toasts.nth(1).boundingBox())!,
-  ];
+  // 토스트는 들어오는 움직임이 끝난 자리에서 잰다.
+  const [top, bottom] = await settledBoxes([toasts.nth(0), toasts.nth(1)]);
   expect(bottom.y).toBeGreaterThan(top.y);
   await expect(
     toasts.getByRole("button", { name: "폐기 취소", exact: true })
@@ -381,8 +395,14 @@ test("parallel secondary links between the same two nodes are drawn apart and li
     )
   );
   for (const p of paths) await expect(p).toHaveCount(1);
-  const shapes = await Promise.all(paths.map((p) => p.getAttribute("d")));
-  expect(new Set(shapes).size).toBe(4);
+  // 연결 경로는 노드 크기를 잰 뒤 다시 그려진다. 네 경로가 서로 다를 때까지 다시 읽는다.
+  await expect
+    .poll(
+      async () =>
+        new Set(await Promise.all(paths.map((p) => p.getAttribute("d")))).size,
+      pageLoad
+    )
+    .toBe(4);
 
   // 연한 보조 연결은 노드 아래 정적 레이어에 있고, 강조한 연결은 그 위에 같은 경로로 겹쳐 그린다.
   const sameCurves = async () => {
@@ -399,7 +419,7 @@ test("parallel secondary links between the same two nodes are drawn apart and li
       faint.forEach((v, i) => expect(v).toBeCloseTo(strong[i]!, 0));
     }
   };
-  await sameCurves();
+  await expect(sameCurves).toPass(pageLoad);
 
   // 선택한 노드에 닿은 연결의 종류 이름도 서로 겹치지 않는다. 이름표는 그린 뒤 크기를 재서 자리를 잡으므로 자리를 잡을 때까지 기다린다.
   const labels = page.locator(".react-flow__edge-textwrapper");

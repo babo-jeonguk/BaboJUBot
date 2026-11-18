@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { expectNoHorizontalOverflow } from "./support/layout.ts";
 
 async function openArtifactsFixture(
   page: Page,
@@ -82,11 +83,7 @@ test("file artifact rows retain their suffix at 390px and open preserved text or
   const { org, actual, row } = await openArtifactsFixture(page);
   await expect(row).toBeVisible();
   await expect(row).toContainText("42 B");
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth
-    )
-  ).toBe(true);
+  await expectNoHorizontalOverflow(page);
   await row.focus();
   await expect(page.getByRole("tooltip")).toContainText(actual[0]!.file.name);
   await row.blur();

@@ -7,6 +7,7 @@ import {
   sentMessage,
 } from "./support/organization.ts";
 import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
+import { expectNoHorizontalOverflow, settledBoxes } from "./support/layout.ts";
 
 const uuidPath = /\/chat\/[0-9a-f-]{36}$/;
 
@@ -249,14 +250,10 @@ test("on a narrow screen the conversation list opens from the chat header and th
   );
   const input = page.getByLabel("Lead에게 보낼 메시지");
   await expect(input).toBeInViewport();
-  const box = await input.boundingBox();
-  expect(box!.y + box!.height).toBeGreaterThan(844 * 0.7);
+  const [box] = await settledBoxes([input]);
+  expect(box.y + box.height).toBeGreaterThan(844 * 0.7);
   // 화면이 옆으로 넘치지 않는다.
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth
-    )
-  ).toBe(true);
+  await expectNoHorizontalOverflow(page);
 
   // 머리의 새 대화 버튼으로 빈 새 대화를 시작한다.
   await page.getByRole("link", { name: "새 대화" }).click();

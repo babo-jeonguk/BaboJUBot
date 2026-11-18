@@ -266,10 +266,106 @@ const noFixedTimeWait = {
   },
 };
 
+/** `node`가 `x.<이름>(…)` 호출이면 그 이름. */
+const methodOf = (node) =>
+  node?.type === "CallExpression" &&
+  node.callee.type === "MemberExpression" &&
+  !node.callee.computed &&
+  node.callee.property.type === "Identifier"
+    ? node.callee.property.name
+    : undefined;
+const positions = new Set(["first", "last", "nth"]);
+const queries = /^(getBy[A-Z][A-Za-z]*|locator)$/;
+// 접근성 이름이나 글자로 찾는 검색.
+const nameQueries = new Set([
+  "getByText",
+  "getByLabel",
+  "getByTitle",
+  "getByAltText",
+  "getByPlaceholder",
+]);
+const hasOption = (argument, name) =>
+  argument?.type === "ObjectExpression" &&
+  argument.properties.some(
+    (p) =>
+      p.type === "Property" &&
+      !p.computed &&
+      p.key.type === "Identifier" &&
+      p.key.name === name
+  );
+/** 이름·글자로 걸러 찾는 단계인가: `getByText(…)`·`getByRole(r, { name })`·`.filter({ hasText })` 등. */
+function matchesByName(call) {
+  const method = methodOf(call);
+  return (
+    nameQueries.has(method) ||
+    (method === "getByRole" && hasOption(call.arguments[1], "name")) ||
+    (method === "filter" && hasOption(call.arguments[0], "hasText"))
+  );
+}
+
+/**
+ * E2E가 대상을 화면 전체나 순서로 찾으면 같은 문구가 다른 영역에 생길 때 다른 요소를 잡거나 여럿이 잡힌다(CODING_STANDARDS.md#화면).
+ * 세 모양을 짚는다. 페이지인지는 타입(Playwright `Page`)으로 가린다.
+ * - 화면 전체에서 글자로 찾기: `page.getByText(…)`.
+ * - 화면 전체에서 찾은 것 중 순서로 고르기: `page.getByRole(…)[.filter(…)·.and(…)].first()`·`.last()`·`.nth(…)`.
+ * - 이름·글자로 찾은 것 중 순서로 고르기(영역 안이어도): `area.getByText(…).first()`, `getByRole(r, { name }).nth(i)`, `.filter({ hasText }).first()`.
+ * 영역·대화상자·조작 요소를 페이지에서 찾는 것, 이름 없는 목록 항목을 순서로 고르는 것(순서 확인), `a.or(b).first()`(둘 중 먼저 뜨는 것)는 짚지 않는다.
+ * 변수에 담은 locator는 따라가지 않는다. 화면에 하나뿐인지(오류·상태 안내, 이동 주소)는 판단이 필요해 CODING_STANDARDS.md에 둔다.
+ */
+const noPageWideLocator = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow finding an E2E target by text on the whole page or by position among page-wide or same-name matches",
+    },
+    schema: [],
+    messages: {
+      pageText:
+        "화면 전체에서 글자로 대상을 찾습니다. 같은 글이 대화 목록·활동·알림 같은 다른 영역에 생기면 다른 요소를 잡거나 여럿이 잡혀 실패합니다. 그 조직·대화·영역 locator(영역 이름, 조직 ID로 고른 locator) 안에서 찾고, 기다릴 대상은 동작이 새로 만든 ID로 찾으세요. CODING_STANDARDS.md#화면",
+      pagePosition:
+        "화면 전체에서 찾은 여러 요소 중 순서(first·last·nth)로 하나를 고릅니다. 화면이 바뀌면 다른 요소를 고릅니다. 그 영역 locator 안에서 하나만 맞게 찾고, 동작이 새로 만든 것은 그 ID로 찾으세요. CODING_STANDARDS.md#화면",
+      namePosition:
+        "이름·글자로 찾은 요소가 여럿이라 순서(first·last·nth)로 고릅니다. 이번 동작의 것인지 가리지 못해, 앞서 있던 같은 이름을 잡고 기다리지 않고 통과할 수 있습니다. 동작이 새로 만든 ID(data 속성, 주소)로 하나만 고르거나 그 영역 안으로 좁히세요. 순서 자체를 확인할 때는 이름 없이 목록 항목을 순서로 고르세요. CODING_STANDARDS.md#화면",
+    },
+  },
+  create(context) {
+    const services = context.sourceCode.parserServices;
+    if (!services?.program)
+      throw new Error(
+        "tests/no-page-wide-locator needs type information (parserOptions.projectService)"
+      );
+    /** Playwright `Page` 값인가. */
+    const isPage = (node) =>
+      services.getTypeAtLocation(node).getSymbol()?.getName() === "Page";
+    return {
+      CallExpression(node) {
+        const method = methodOf(node);
+        if (method === "getByText" && isPage(node.callee.object))
+          return context.report({ node, messageId: "pageText" });
+        if (!positions.has(method)) return;
+        // 고르기 직전의 거르기(`filter`·`and`)를 건너 찾은 단계까지 내려간다.
+        let found = node.callee.object;
+        let byName = false;
+        for (;;) {
+          byName ||= matchesByName(found);
+          const step = methodOf(found);
+          if (step !== "filter" && step !== "and") break;
+          found = found.callee.object;
+        }
+        if (queries.test(methodOf(found) ?? "") && isPage(found.callee.object))
+          return context.report({ node, messageId: "pagePosition" });
+        if (byName) context.report({ node, messageId: "namePosition" });
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
   rules: {
     "no-elapsed-time-assertion": noElapsedTimeAssertion,
     "no-fixed-time-wait": noFixedTimeWait,
+    "no-page-wide-locator": noPageWideLocator,
   },
 };

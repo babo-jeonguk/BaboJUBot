@@ -142,8 +142,8 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await other.close();
   await expect(decision).toContainText("최종 완료", runs);
   await expect(decision.getByRole("button")).toHaveCount(0);
-  await expect(main).toContainText("지금 조직 단계");
-  await expect(main.getByText("최종 완료").first()).toBeVisible();
+  // 이 제출의 결정과 따로 보이는 지금 조직 단계도 최종 완료다.
+  await expect(main.getByText(/^지금 조직 단계 최종 완료$/)).toBeVisible();
 
   // 최종 완료 뒤 메시지는 거절되어 저장되지 않으므로 깨울 것이 없고, 새 실행 시도가 시작되지 않는다.
   // 거절 응답이 그 처리의 끝이다. 완료 뒤 깨우기가 실행 시도를 만들지 않는 것은 서버 시험(results.test.ts)이 처리 끝 뒤에 본다.
@@ -187,7 +187,9 @@ test("shows a missing result submission as not found", async ({ page }) => {
   });
   const org = (await created.json()) as { id: string };
   await page.goto(`/orgs/${org.id}/results/${crypto.randomUUID()}`);
-  await expect(page.getByText("찾을 수 없는 결과 제출")).toBeVisible();
+  await expect(
+    page.getByRole("main").getByText("찾을 수 없는 결과 제출")
+  ).toBeVisible();
   await page.goto(`/orgs/${org.id}/review`);
   await expect(page.getByRole("main")).toContainText(
     "아직 제출된 결과가 없습니다"

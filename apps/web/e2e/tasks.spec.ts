@@ -126,7 +126,7 @@ test("shows a missing task or artifact as not found", async ({ page }) => {
     );
     await page.goto(`/orgs/${org.id}/${kind}/${id}`, pageLoad);
     await answered;
-    await expect(page.getByText(text)).toBeVisible(pageLoad);
+    await expect(page.getByRole("main").getByText(text)).toBeVisible(pageLoad);
   };
   await notFound("tasks", "찾을 수 없는 작업");
   await notFound("artifacts", "찾을 수 없는 산출물");

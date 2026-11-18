@@ -99,6 +99,18 @@ export default defineConfig([
     },
   },
   {
+    // E2E는 대상을 그 조직·대화·영역 안에서 찾는다(CODING_STANDARDS.md#화면). 페이지인지 타입으로 가려야 해서 타입 정보를 쓴다.
+    files: ["apps/web/e2e/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    plugins: { tests: testRules },
+    rules: { "tests/no-page-wide-locator": "error" },
+  },
+  {
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "error",

@@ -83,6 +83,9 @@ test("the owner sets the Lead and worker defaults and each connection's run cap,
   await expect(value(other)).toHaveValue("무제한");
   await more(page).click();
   await expect(value(page)).toHaveValue("1");
+  // 다른 탭이 이 변경을 받은 뒤에 그 칸에 쓴다. 입력 중에 갱신이 오면 칸이 서버 값으로 다시 그려져 선택이 풀리고, 넣은
+  // 글이 그 뒤에 붙는다(Windows CI에서 "5" 대신 "15").
+  await expect(value(other)).toHaveValue("1");
   // 숫자 칸에 적은 값은 Enter로 저장하고, 0 이상 정수가 아니면 되돌린다.
   await value(other).fill("5");
   await value(other).press("Enter");

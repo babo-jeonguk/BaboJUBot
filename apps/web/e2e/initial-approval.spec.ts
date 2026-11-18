@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 import { inboxOrganizationLinks, runsSettled } from "./support/organization.ts";
+import { expectNoHorizontalOverflow } from "./support/layout.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
 async function openInbox(page: Page) {
@@ -115,11 +116,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   await expect(decision).toContainText("승인됨");
   await expect(decision).toBeFocused();
   await expect(page).toHaveURL(summaryUrl);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth
-    )
-  ).toBe(true);
+  await expectNoHorizontalOverflow(page);
   await page.setViewportSize({ width: 1280, height: 800 });
 
   // 원래 화면도 같은 결정 기록이다.
