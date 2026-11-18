@@ -115,3 +115,68 @@ test(
     assert.match(result.stderr, /503/);
   }
 );
+
+// 모든 시도가 전송 시한까지 기다렸다 끝나도 단계 시한 안에서 마지막 오류와 안내를 남겨야 한다(PR #221 외부 리뷰 SPEC-2).
+// 최악 시간 = 시도 수 × --max-time + 재시도 대기(1초부터 두 배씩, curl --retry 문서) + 압축 풀기·안내 여유 30초.
+test("fits every attempt's worst case inside the install step's time limit", () => {
+  const value = (name) => Number(flags[flags.indexOf(name) + 1]);
+  const retries = value("--retry");
+  const perAttempt = value("--max-time");
+  assert.ok(perAttempt > 0, "--max-time bounds each attempt");
+  const waits = Array.from({ length: retries }, (_, i) => 2 ** i).reduce(
+    (sum, each) => sum + each,
+    0
+  );
+  const worst = (retries + 1) * perAttempt + waits + 30;
+  assert.ok(
+    worst <= install["timeout-minutes"] * 60,
+    `${worst}s > ${install["timeout-minutes"]} minutes`
+  );
+});
+
+// 연결은 됐는데 본문이 멈추는 서버. 시험에서는 전송 시한만 1초로 줄인다(뒤에 준 --max-time이 앞의 값을 덮는다).
+test(
+  "retries a stalled transfer as a timeout and fails with that error after three attempts",
+  { skip: !hasCurl },
+  async (context) => {
+    const requests = [];
+    const sockets = new Set();
+    const server = createServer((request, response) => {
+      requests.push(request.url);
+      response.writeHead(200, { "content-length": "100" });
+      response.write("partial");
+    });
+    server.on("connection", (socket) => sockets.add(socket));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    context.after(() => {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    });
+    const dir = mkdtempSync(path.join(tmpdir(), "ci-download-"));
+    context.after(() => rmSync(dir, { recursive: true, force: true }));
+    const child = spawn(
+      "curl",
+      [
+        ...flags,
+        "--max-time",
+        "1",
+        "--retry-delay",
+        "0",
+        "-o",
+        path.join(dir, "archive.tar.gz"),
+        `http://127.0.0.1:${server.address().port}/opencode.tar.gz`,
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] }
+    );
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    const status = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    assert.equal(status, 28, stderr);
+    assert.equal(requests.length, 3);
+    assert.match(stderr, /retries? left/);
+    assert.match(stderr, /timed out/i);
+  }
+);

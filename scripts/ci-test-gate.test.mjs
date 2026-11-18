@@ -447,7 +447,7 @@ const runSteps = (job) => job.steps.filter((each) => each.run);
 // 단계 시한에 걸린 단계는 실패로 끝나고 두 보고 단계가 모두 돈다(#218, GitHub Actions run 44133006534에서 확인).
 test("gives test and install steps time limits that fit inside the job's with room for reports", () => {
   const timed = [
-    ["check", /^pnpm run |playwright install/],
+    ["check", /^pnpm run test:e2e$|playwright install/],
     ["test-unit", /run test/],
     ["test-runtime", /run test|apt-get/],
     ["test-db", /run test|check-test-exit-code|boot-check/],
@@ -494,4 +494,27 @@ test("lets apt retry transient download failures before every apt install", () =
       .map(() => id)
   );
   assert.deepEqual(aptUsers, ["check", "test-runtime"]);
+});
+
+// #218이 시한을 요구한 것은 시험 실행이다. check matrix의 문서 검사·타입·lint·빌드는 예전처럼 job 시한만 받고,
+// E2E 실행만 따로 단계 시한을 받는다(PR #221 외부 리뷰 SPEC-1).
+test("limits only the E2E run in the check matrix, not check, typecheck, lint or build", () => {
+  const runs = runSteps(workflow.jobs.check).filter((each) =>
+    /^pnpm run /.test(each.run)
+  );
+  assert.deepEqual(
+    runs.map((each) => [each.if, each.run, each["timeout-minutes"]]),
+    [
+      [
+        "env.RUN == 'true' && matrix.script != 'test:e2e'",
+        "pnpm run ${{ matrix.script }}",
+        undefined,
+      ],
+      [
+        "env.RUN == 'true' && matrix.script == 'test:e2e'",
+        "pnpm run test:e2e",
+        12,
+      ],
+    ]
+  );
 });
