@@ -90,8 +90,14 @@ test("after a test that failed mid-save, the settings are the ones from before i
 });
 
 // 서버로 보낸 저장의 응답을 기다리지 않고 끝난 테스트(응답 대기 시한을 넘긴 경우와 같다). 정리는 그 저장이 끝난 뒤에 되돌려야
-// 늦게 끝난 저장이 되돌린 값을 덮지 않는다. 느린 서버는 route가 1초 뒤 page와 상관없는 연결로 같은 PUT을 보내 흉내 낸다.
+// 늦게 끝난 저장이 되돌린 값을 덮지 않는다. 느린 서버는 route가 page와 상관없는 연결로 같은 PUT을 보내 흉내 낸다. 그 PUT은
+// 테스트 본문이 끝난 뒤(afterEach) 보낸다. Playwright는 afterEach 뒤에 fixture를 정리하므로, 정리가 시작될 때 저장은 늘 오는 중이다.
 let lateWrite: Promise<unknown> | undefined;
+let sendLateWrite: (() => void) | undefined;
+test.afterEach(() => {
+  sendLateWrite?.();
+  sendLateWrite = undefined;
+});
 
 test("a test that ends while a released settings save is still on its way restores after that save", async ({
   page,
@@ -117,11 +123,13 @@ test("a test that ends while a released settings save is still on its way restor
     await page.route("**/api/providers/defaults", async (route) => {
       if (slowed || route.request().method() !== "PUT") return route.fallback();
       slowed = true;
-      const sent = new Promise((resolve) => setTimeout(resolve, 1000)).then(
-        () =>
-          slowServer.put(route.request().url(), {
-            data: route.request().postDataJSON(),
-          })
+      const bodyEnded = new Promise<void>(
+        (resolve) => (sendLateWrite = resolve)
+      );
+      const sent = bodyEnded.then(() =>
+        slowServer.put(route.request().url(), {
+          data: route.request().postDataJSON(),
+        })
       );
       lateWrite = sent.finally(() => slowServer.dispose());
       takeOver();
