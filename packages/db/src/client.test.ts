@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import pg from "pg";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   clusterUrl,
   ephemeralCluster,
@@ -111,10 +111,9 @@ describe("embedded Postgres lifetime", () => {
       }
 
       process.kill(pid, "SIGKILL");
-      const deadline = Date.now() + 15_000;
-      while (isAlive(pid) && Date.now() < deadline)
-        await new Promise((r) => setTimeout(r, 50));
-      expect(isAlive(pid)).toBe(false);
+      await expect
+        .poll(() => isAlive(pid), { timeout: 15_000, interval: 50 })
+        .toBe(false);
 
       await handle.close();
       handle = undefined;
@@ -208,10 +207,9 @@ describe("embedded Postgres lifetime", () => {
         await exited.within(30_000);
         expect(child.exitCode).toBe(code);
 
-        const deadline = Date.now() + 15_000;
-        while (isAlive(pid) && Date.now() < deadline)
-          await new Promise((r) => setTimeout(r, 50));
-        expect(isAlive(pid)).toBe(false);
+        await expect
+          .poll(() => isAlive(pid), { timeout: 15_000, interval: 50 })
+          .toBe(false);
 
         const handle = await openDatabase({
           embedded: { dataDir, persistent: true },
@@ -286,10 +284,9 @@ describe("embedded Postgres lifetime", () => {
         await exited.within(30_000);
         expect(child.exitCode).toBe(1);
 
-        const deadline = Date.now() + 20_000;
-        while (isAlive(postmaster) && Date.now() < deadline)
-          await new Promise((r) => setTimeout(r, 50));
-        expect(isAlive(postmaster)).toBe(false);
+        await expect
+          .poll(() => isAlive(postmaster), { timeout: 20_000, interval: 50 })
+          .toBe(false);
       } finally {
         await killPostgres(backend, postmaster);
         if (child) await killHard(child);
@@ -614,9 +611,9 @@ describe("a Postgres left by a killed process", () => {
       await lines.next();
       postmaster = readPostmaster(dataDir);
       process.kill(postmaster, "SIGKILL");
-      const deadline = Date.now() + 10_000;
-      while (isAlive(postmaster) && Date.now() < deadline)
-        await new Promise((r) => setTimeout(r, 50));
+      await expect
+        .poll(() => isAlive(postmaster), { timeout: 10_000, interval: 50 })
+        .toBe(false);
       fs.writeFileSync(
         path.join(dataDir, "postmaster.pid"),
         `${unrelated.pid}\n${dataDir}\n0\n0\n`
@@ -624,8 +621,13 @@ describe("a Postgres left by a killed process", () => {
       const exited = watchExit(child);
       child.stdin!.write("end\n");
       await exited.within(30_000);
-      await new Promise((r) => setTimeout(r, 500));
-      expect(isAlive(unrelated.pid!)).toBe(true);
+      // 즉시 정지는 프로세스가 끝나기 전에(exit에서 동기로) 보낸다. 끝난 뒤 시험이 보낸 SIGTERM으로 끝났으면 그 전에 받은 신호가 없다.
+      const unrelatedExit = watchExit(unrelated);
+      unrelated.kill("SIGTERM");
+      expect(await unrelatedExit.within(10_000)).toEqual({
+        code: null,
+        signal: "SIGTERM",
+      });
     } finally {
       await killHard(child);
       await killHard(unrelated);
@@ -644,8 +646,12 @@ describe("a Postgres left by a killed process", () => {
       const identity = processIdentity(first.pid!);
       expect(identity).toBeTruthy();
       expect(processIdentity(first.pid!)).toBe(identity);
-      // ps의 시작 시각은 초 단위이므로 1초 넘게 뒤에 시작한다.
-      await new Promise((r) => setTimeout(r, 1_100));
+      // ps의 시작 시각은 초 단위이므로 벽시계가 다음 초로 넘어간 뒤에 시작한다.
+      const startedIn = Math.floor(Date.now() / 1000);
+      await vi.waitUntil(() => Math.floor(Date.now() / 1000) > startedIn, {
+        timeout: 2_000,
+        interval: 20,
+      });
       second = spawn("sleep", ["60"], { stdio: "ignore" });
       expect(processIdentity(second.pid!)).toBeTruthy();
       expect(processIdentity(second.pid!)).not.toBe(identity);
@@ -763,9 +769,10 @@ async function stopPostgres(pid: number) {
     // Between the check and the signal the process may be gone.
     return;
   }
-  const deadline = Date.now() + 10_000;
-  while (isAlive(pid) && Date.now() < deadline)
-    await new Promise((r) => setTimeout(r, 50));
+  // 시한 안에 끝나지 않으면 아래 강제 정지로 넘어간다.
+  await vi
+    .waitUntil(() => !isAlive(pid), { timeout: 10_000, interval: 50 })
+    .catch(() => {});
   await killPostgres(pid);
 }
 
@@ -783,9 +790,9 @@ async function killPostgres(...pids: number[]) {
     } catch {
       // Between the check and the signal the process may be gone.
     }
-  const deadline = Date.now() + 10_000;
-  while (alive.some(isAlive) && Date.now() < deadline)
-    await new Promise((r) => setTimeout(r, 50));
+  await vi
+    .waitUntil(() => !alive.some(isAlive), { timeout: 10_000, interval: 50 })
+    .catch(() => {});
   const left = alive.filter(isAlive);
   if (left.length > 0)
     throw new Error(
@@ -941,6 +948,8 @@ async function killHard(child: Spawned) {
 // 종료 관찰은 spawn 직후에 붙이고, 끝나기를 기다리는 시한은 기다리기 시작할 때부터 센다.
 // spawn부터 세면 오래 살아 있어야 하는 자식(경쟁에서 이긴 쪽)이 끝내라는 요청을 받기도 전에 시한이 지난다.
 it("counts an exit deadline from when the wait starts, not from the spawn", async () => {
+  // 시한 타이머를 가짜로 바꿔 시간을 시험이 옮긴다. 시한을 spawn(관찰 시작)부터 셌다면 아래에서 3초를 옮길 때 이미 지난다.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const child = spawn(
     process.execPath,
     [
@@ -953,15 +962,15 @@ it("counts an exit deadline from when the wait starts, not from the spawn", asyn
   const exit = watchExit(child);
   try {
     await lineReader(child, 30_000).next();
-    // 기다리는 시한(2.5초)보다 오래 산 뒤에 끝내라고 한다. 그 시한은 입력을 받은 자식이 끝나기까지를 담는다. 1초로는
-    // 느린 실행기에서 그 몫이 모자랐다(#215).
-    await new Promise((r) => setTimeout(r, 3_000));
+    // 기다리는 시한(2.5초)보다 오래 산 뒤에 끝내라고 한다.
+    vi.advanceTimersByTime(3_000);
     child.stdin!.write("end\n");
     await expect(exit.within(2_500)).resolves.toEqual({
       code: 0,
       signal: null,
     });
   } finally {
+    vi.useRealTimers();
     await killHard(child);
   }
 }, 30_000);
@@ -993,7 +1002,20 @@ it("fails only the work on a connection cut while in use, without crashing the p
       await withClient(database.url, (client) =>
         client.query("select pg_terminate_backend($1)", [rows[0]!.pid])
       );
-      await new Promise((r) => setTimeout(r, 200));
+      // 끊은 backend가 끝날 때까지 기다린 뒤 같은 연결로 쓴다.
+      await expect
+        .poll(
+          () =>
+            withClient(database.url, async (client) => {
+              const { rowCount } = await client.query(
+                "select 1 from pg_stat_activity where pid = $1",
+                [rows[0]!.pid]
+              );
+              return rowCount;
+            }),
+          { timeout: 15_000, interval: 20 }
+        )
+        .toBe(0);
       await tx.execute(sql`select 1`);
     });
     await expect(work).rejects.toThrow();
