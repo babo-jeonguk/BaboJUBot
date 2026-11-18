@@ -40,6 +40,9 @@ test("runtime code launches programs only through the process owners", async () 
     "a namespace import": `import * as cp from "child_process";\ncp.execFile("x");\n`,
     "a re-export": `export { execFile } from "node:child_process";\n`,
     "a dynamic import": `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
+    // runtime이 의존하는 cross-spawn도 같은 실행이다.
+    "cross-spawn": `import spawn from "cross-spawn";\nspawn("x");\n`,
+    "cross-spawn dynamically": `const { default: spawn } = await import("cross-spawn");\nspawn("x");\n`,
   };
   for (const place of [
     "packages/runtime/src/providers/claude.ts",
@@ -66,6 +69,7 @@ test("process owners, type imports and code outside runtime may use child_proces
     "packages/runtime/src/providers/recovery.ts",
     "packages/runtime/src/providers/lease.ts",
     "packages/runtime/src/providers/antigravity-config.ts",
+    "packages/runtime/src/providers/login.ts",
     // 시험 코드와 다른 패키지는 이 경계 밖이다.
     "packages/runtime/src/providers/process-test-support.ts",
     "packages/runtime/src/providers/process.test.ts",
@@ -136,7 +140,7 @@ test("product code declares the type of an object literal instead of asserting i
     `type Row = { id: number };\nexport const row = { id: 1 } satisfies Row;\n`,
     `export const row = { id: 1 } as const;\n`,
     // 객체 리터럴이 아닌 값의 단언은 이 규칙의 대상이 아니다.
-    `export const value = JSON.parse("1") as unknown as number;\n`,
+    `export const text = (value: unknown) => value as string;\n`,
   ];
   for (const place of productPlaces)
     for (const code of allowed)

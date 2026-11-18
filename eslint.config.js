@@ -44,7 +44,9 @@ const processOwners = [
   "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
   "lease.ts", // 실행 칸을 쥔 프로그램 조회
   "antigravity-config.ts", // 빈 환경으로 도는 Antigravity 설정 스크립트
+  "login.ts", // 사용자 터미널을 그대로 넘기는 대화형 로그인
 ].map((name) => `packages/runtime/src/providers/${name}`);
+const launchers = ["child_process", "node:child_process", "cross-spawn"];
 const launchMessage =
   "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 이 함수들이 providerEnvironment로 격리 실행의 환경을 만들고, 입력·시작 오류와 종료를 처리합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
 
@@ -164,8 +166,10 @@ export default defineConfig([
     },
   },
   {
-    // 바깥 데이터(JSON.parse, 외부 프로그램 출력, 라이브러리의 any)는 unknown으로 받아 모양을 확인하거나 스키마로 읽은 뒤 쓴다.
+    // 바깥 데이터(JSON.parse, 외부 프로그램 출력)는 unknown으로 받아 모양을 확인하거나 스키마로 읽은 뒤 쓴다.
     // 객체 리터럴은 `as`로 타입을 우기지 않고 선언하거나 `satisfies`로 맞춘다. 느슨한 비교는 `== null`만 쓴다.
+    // 이 규칙들은 `as`를 붙인 값은 보지 않는다. `as`는 라이브러리 선언이 any로 비운 값이나 저장 때 보장한 짝처럼
+    // 실제 타입을 아는 자리에만 쓰고, 바깥 데이터를 확인 없이 단언하지 않는 것은 리뷰가 본다.
     files: productFiles,
     ignores: testFiles,
     rules: {
@@ -183,14 +187,15 @@ export default defineConfig([
   },
   {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.
-    // 정적 import·re-export·문자열 dynamic import를 막는다. 계산한 경로의 import나 createRequire는 잡지 못한다.
+    // child_process와 runtime이 의존하는 cross-spawn의 정적 import·re-export·문자열 dynamic import를 막는다.
+    // 계산한 경로의 import나 createRequire는 잡지 못한다.
     files: ["packages/runtime/src/**/*.ts"],
     ignores: [...testFiles, ...processOwners],
     rules: {
       "no-restricted-imports": [
         "error",
         {
-          paths: ["child_process", "node:child_process"].map((name) => ({
+          paths: launchers.map((name) => ({
             name,
             allowTypeImports: true,
             message: launchMessage,
@@ -200,7 +205,8 @@ export default defineConfig([
       "no-restricted-syntax": [
         "error",
         {
-          selector: "ImportExpression[source.value=/^(node:)?child_process$/]",
+          selector:
+            "ImportExpression[source.value=/^((node:)?child_process|cross-spawn)$/]",
           message: launchMessage,
         },
       ],
