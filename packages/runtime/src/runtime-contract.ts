@@ -43,7 +43,7 @@ export type RuntimeContractEvidence = {
 
 export type RuntimeContractOptions = {
   adapter: RuntimeAdapter;
-  /** 스스로 끝나는 요청. */
+  /** 스스로 끝나는 요청. 끝나기 전에 일을 시작했다는 신호(도구 호출·활동)를 낸다. 그 뒤부터 완료 시한을 잰다. */
   finishes: RuntimeContractScene;
   /** 취소할 때까지 일하는 요청. */
   worksUntilCancelled: RuntimeContractScene;
@@ -274,9 +274,13 @@ export function describeRuntimeContract(
         };
       };
       // 도구 호출이나 활동이 일을 시작했다는 신호다. 시한을 재는 검사는 이 신호를 `startWithinMs` 안에 기다린 뒤 잰다.
+      let showedWork = false;
       let markWorking!: () => void;
       const working = new Promise<void>((resolve) => {
-        markWorking = resolve;
+        markWorking = () => {
+          showedWork = true;
+          resolve();
+        };
       });
       tools.onRequest.add(markWorking);
       const result = adapter
@@ -293,15 +297,26 @@ export function describeRuntimeContract(
           tools.onRequest.delete(markWorking);
         });
       /**
-       * 일을 시작했다는 신호나 결과 중 먼저 오는 것을 `startWithinMs` 안에 기다린다. 준비가 끝난 뒤에 취소·완료 시한을 재려고
-       * 쓴다. 신호 없이 끝나는 실행 시도도 여기서 막히지 않는다.
+       * 일을 시작했다는 신호를 `startWithinMs` 안에 기다린다. 준비가 끝난 뒤에 취소·완료 시한을 재려고 쓴다. 신호 없이 끝나면
+       * 그 뒤의 시한이 아무것도 재지 못하므로 기다리지 않고 실패한다(완료를 시작으로 치면 완료 시한이 준비 상한에 묻힌다).
        */
-      const started = () =>
-        deadline(
-          Promise.race([working, result.then(() => {})]),
+      const started = async () => {
+        await deadline(
+          Promise.race([
+            working,
+            result.then(
+              () => {},
+              () => {}
+            ),
+          ]),
           startWithinMs,
           "did not show that it started working"
         );
+        if (!showedWork)
+          throw new Error(
+            "ended without showing that it started working, so its time limit measures nothing"
+          );
+      };
       return {
         token,
         messages,

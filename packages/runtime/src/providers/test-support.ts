@@ -115,16 +115,23 @@ export function manualClock() {
     /** The delays of the timers still waiting, in the order they were set. */
     scheduled: () =>
       [...timers.values()].map((timer) => timer.at - timer.setAt),
-    /** Moves the time on and runs, in order, every timer that is due by then. */
+    /**
+     * Moves the time on and runs, in order, every timer that is due by then, including ones a callback sets on the way (a stop
+     * timer that sets a kill timer runs both), each at its own time as on the real clock.
+     */
     advance(ms: number) {
-      now += ms;
-      const due = [...timers]
-        .filter(([, timer]) => timer.at <= now)
-        .sort(([, a], [, b]) => a.at - b.at);
-      for (const [handle, timer] of due) {
+      const until = now + ms;
+      for (;;) {
+        const next = [...timers]
+          .filter(([, timer]) => timer.at <= until)
+          .sort(([ha, a], [hb, b]) => a.at - b.at || ha - hb)[0];
+        if (!next) break;
+        const [handle, timer] = next;
         timers.delete(handle);
+        now = timer.at;
         timer.callback();
       }
+      now = until;
     },
   };
 }

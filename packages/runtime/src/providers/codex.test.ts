@@ -6,7 +6,10 @@ import { createCodexProvider, type CodexOptions } from "./codex.ts";
 import type { Clock } from "./process.ts";
 import { manualClock, request } from "./test-support.ts";
 const roots: string[] = [];
+/** 폴더를 지우기 전에 할 정리. 시험이 중간에 실패해도 돈다. */
+const beforeRemoving: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  for (const cleanup of beforeRemoving.splice(0)) await cleanup();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
   );
@@ -486,6 +489,16 @@ describe("one app-server connection per call (#145)", () => {
         .toBe(true);
     /** Lets the program answer the steps held with `holdUntil: name`. */
     const release = (name: string) => writeFile(path.join(root, name), "");
+    // However the test ends, let every held answer go and wait for the programs to end before the folder is removed, so a
+    // failure is not followed by a program left polling for its release in a folder being removed (#215).
+    const held = Object.values(steps)
+      .flat()
+      .flatMap((step) => (step.holdUntil ? [step.holdUntil] : []));
+    if (held.length)
+      beforeRemoving.push(async () => {
+        await Promise.all(held.map(release));
+        await expect.poll(running, { timeout: 30_000 }).toBe(false);
+      });
     return { provider, sent, methods, running, arrived, release };
   }
   /** Whether `promise` has settled by now. Settling is a step the test can see; time passing is not. */
@@ -804,9 +817,15 @@ describe("one app-server connection per call (#145)", () => {
         return { ...t, clock, run, steered: () => steered! };
       }
 
+      /**
+       * The record answers 350 ms late in real time, past the 300 ms record limit. The limit runs on the test clock, so a slow
+       * answer is still read (#213: on the real clock this answer was taken for none, and `outcome` was undefined).
+       */
+      const slowRead = (step: Step): Step => ({ ...step, delayMs: 350 });
+
       it("takes the steer as accepted when the conversation record holds its message number", async () => {
         const t = await steerOnce({
-          read: thenCompletes(recordWith(null, messageId)),
+          read: thenCompletes(slowRead(recordWith(null, messageId))),
         });
         expect((await t.steered()).outcome).toBe("accepted");
         expect((await t.run).stopReason).toBe("completed");
@@ -839,7 +858,8 @@ describe("one app-server connection per call (#145)", () => {
       it.each(unknownCases)(
         "keeps the delivery unknown when the record %s",
         async (_case, read) => {
-          const t = await steerOnce({ read: thenCompletes(read) });
+          // Late too, so the delivery stays unknown for what the record says, not because its limit ran out.
+          const t = await steerOnce({ read: thenCompletes(slowRead(read)) });
           expect(await t.steered()).toMatchObject({
             error: expect.any(Error),
           });
