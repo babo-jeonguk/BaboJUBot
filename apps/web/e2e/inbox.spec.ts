@@ -5,6 +5,7 @@ import {
   inboxOrganizationItems,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { expectNoHorizontalOverflow } from "./support/layout.ts";
 
 const runs = { timeout: 15_000 };
 /** 행 앞 선택 단추의 체크박스 모양. 선택 중이 아니면 조직 아바타가 보이고 이 모양은 숨는다. */
@@ -202,11 +203,7 @@ test("on a phone the top bar opens the Inbox as a drawer that closes when an ite
   await expect(drawer).toBeHidden();
   await expect(page).toHaveURL(new RegExp(`/inbox/${org.id}/run_failure/`));
   await expect(page.getByRole("region", { name: "실패 사유" })).toBeVisible();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth
-    )
-  ).toBe(true);
+  await expectNoHorizontalOverflow(page);
 });
 
 test("the Inbox detail summarizes an item without marking it read, keeps a decided item's address, and reports missing items", async ({

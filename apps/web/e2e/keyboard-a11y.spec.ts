@@ -4,6 +4,7 @@ import { lowContrastTexts } from "./support/contrast.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput, railOrganizationLink } from "./support/organization.ts";
 import { test as settingsTest } from "./support/shared-settings.ts";
+import { expectNoHorizontalOverflow } from "./support/layout.ts";
 
 // 키보드·포커스·접근 이름과 상태·실패 복구·실제 대비(#152). 실제 화면 읽기 프로그램은 실행하지 않고 Chromium 접근성 트리로 확인한다.
 
@@ -842,12 +843,7 @@ async function expectMainScreensFit(page: Page, org: Org, at: string) {
   ] as const) {
     await openWithLiveEvents(page, path);
     await expect(ready, `${path} @${at}`).toBeVisible({ timeout: 20_000 });
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth
-      ),
-      `${path} @${at}`
-    ).toBe(true);
+    await expectNoHorizontalOverflow(page, `${path} @${at}`);
     await ready.scrollIntoViewIfNeeded();
     await expect(ready).toBeInViewport();
   }
