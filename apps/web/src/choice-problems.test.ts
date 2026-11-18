@@ -1,6 +1,10 @@
 import type { ProviderSummary } from "@babojubot/contracts";
-import { expect, test } from "vitest";
-import { choiceProblem, firstChoiceProblem } from "./choice-problems.ts";
+import { afterEach, expect, test, vi } from "vitest";
+import {
+  choiceProblem,
+  firstChoiceProblem,
+  refreshChoiceProblem,
+} from "./choice-problems.ts";
 
 const connection = (id: string, models: string[]) =>
   ({
@@ -50,4 +54,37 @@ test("the first problem in field order names its field, or none when every choic
       { idPrefix: "lead", choice: { provider: "fake", model: null } },
     ])
   ).toBe(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+const refused = [
+  { idPrefix: "lead", choice: { provider: "gone", model: null } },
+];
+
+test("after a refusal the fresh list moves focus to the field with the problem", async () => {
+  const focus = vi.fn();
+  const getElementById = vi.fn(() => ({ focus }));
+  vi.stubGlobal("document", { getElementById });
+  await refreshChoiceProblem(async () => ({ data: { providers } }), refused);
+  expect(getElementById).toHaveBeenCalledWith("lead-provider");
+  expect(focus).toHaveBeenCalledOnce();
+});
+
+test("a list that could not be fetched leaves focus alone", async () => {
+  const getElementById = vi.fn();
+  vi.stubGlobal("document", { getElementById });
+  await refreshChoiceProblem(async () => ({ data: undefined }), refused);
+  expect(getElementById).not.toHaveBeenCalled();
+});
+
+test("a failure while refreshing is reported and does not escape", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const failure = new Error("offline");
+  await expect(
+    refreshChoiceProblem(() => Promise.reject(failure), refused)
+  ).resolves.toBeUndefined();
+  expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
 });
