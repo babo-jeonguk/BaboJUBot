@@ -835,13 +835,11 @@ describe("chaos harness on a fake connection", () => {
       database: "persistent",
     });
     try {
-      const at = Date.now();
-      // 멈춘 이유는 시작 실패가 아니라 중단 신호다. 걸린 시간은 시작 대기(180s)까지 가지 않았다는 것만 본다. 짧은
-      // 상한은 느린 실행기에서 서버 프로세스를 띄우고 끝내는 시간까지 재게 된다(#215).
+      // 멈춘 이유는 시작 실패가 아니라 중단 신호(그 신호의 이유 TimeoutError)다. 시작 대기(180s)까지 갔다면 시작 실패
+      // ("not ready in time")로 끝나므로 이유가 다르다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
       await expect(
         server.start(AbortSignal.timeout(200))
       ).rejects.toMatchObject({ name: "TimeoutError" });
-      expect(Date.now() - at).toBeLessThan(60_000);
       expect(server.running).toBe(false);
     } finally {
       // 실패해도 띄운 서버·DB·홈을 남기지 않는다.

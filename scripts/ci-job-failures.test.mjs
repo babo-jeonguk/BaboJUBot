@@ -295,19 +295,26 @@ test("calls a job cancelled while still queued unknown", async () => {
   assert.match(row.reason, /실행기 없음, 단계 0개, 미배정 주석 없음/);
 });
 
+// 전체 시한은 응답하지 않는 조회가 시작된 뒤에 지나게 한다. 조회마다의 시한(10초)이 아니라 전체 시한이 그 조회를 끊었다는 것은
+// 실패 이유에 담긴 시한의 이유로 본다(걸린 시간을 재지 않는다, CODING_STANDARDS.md#시간).
 test("gives up within the overall lookup deadline and calls the rest unknown", async () => {
+  const overall = new AbortController();
   const { fetch } = fakeApi({
     [jobsPath()]: { body: { total_count: 1, jobs: [unassignedJob] } },
     [notesPath(unassignedJob.id)]: "hang",
   });
-  const started = Date.now();
+  const hangingThenDeadline = (url, init) => {
+    const response = fetch(url, init);
+    if (String(url).includes("/annotations"))
+      overall.abort(new Error("전체 조회 시한이 지났다"));
+    return response;
+  };
   const [row] = await classifyFailures(
     [failure(unassignedJob.name)],
-    context({ fetch, deadlineMs: 200 })
+    context({ fetch: hangingThenDeadline, deadline: overall.signal })
   );
   assert.equal(row.kind, "unknown");
-  assert.match(row.reason, /주석 조회 실패/);
-  assert.ok(Date.now() - started < 5_000);
+  assert.match(row.reason, /주석 조회 실패: 전체 조회 시한이 지났다/);
 });
 
 // run 44134168705의 files / macos: 실행 컴퓨터를 받지 못한 job이 판정 입력(needs.<job>.result)에는 'abandoned'로,

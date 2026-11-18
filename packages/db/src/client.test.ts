@@ -143,21 +143,18 @@ describe("embedded Postgres lifetime", () => {
       });
       const exited = watchExit(child);
       let output = "";
-      let failedAt = 0;
       child.stdout!.on("data", (chunk) => {
         output += chunk;
-        failedAt ||= Date.now();
       });
-      await exited.within(30_000);
+      // 시작에 실패한 뒤 프로세스를 붙잡는 것이 없어 스스로(신호 없이 0으로) 끝난다. 붙잡혔다면 이 기다림이 실패한다.
+      // 이 시험을 만들 때 가르던 것(embedded-postgres가 등록한 exit-hook이 멈춘 종료 hook을 5초 뒤에야 강제로 끝냄)은 그
+      // 등록을 지운 pnpm 패치(patches/embedded-postgres@18.6.0-beta.19.patch)로 없어졌다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
+      expect(await exited.within(30_000)).toEqual({ code: 0, signal: null });
 
       // 왜 끝났는지 알 수 있어야 한다. 시스템마다 이유가 달라 Postgres가 남긴 말을 그대로 보인다.
       expect(output).toMatch(
         /failed: embedded Postgres exited before it was ready: \S+/
       );
-      // embedded-postgres의 종료 hook이 멈추면 exit-hook이 5초 뒤에야 강제 종료한다. 시작 실패를 알린 때부터 재므로
-      // 프로세스 시작·Postgres 초기화 시간은 들지 않는다. 남는 것은 실패 뒤 종료 시간과 5초 사이의 차이이며, 그 차이가
-      // 이 시험이 가르는 대상이라 더 넓힐 수 없다(#215).
-      expect(Date.now() - failedAt).toBeLessThan(4_000);
     } finally {
       if (child) await killHard(child);
       await removeCluster(dataDir);

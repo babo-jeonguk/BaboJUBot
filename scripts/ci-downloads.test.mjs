@@ -149,7 +149,7 @@ test(
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     context.after(() => server.close());
-    const started = Date.now();
+    // 600초를 기다렸다면 download의 시한(20초)에 curl이 꺼져 종료 코드가 없다(null). 22는 curl이 스스로 끝냈다는 뜻이다.
     const result = await download(
       `http://127.0.0.1:${server.address().port}/opencode.tar.gz`,
       context
@@ -157,7 +157,6 @@ test(
     assert.equal(result.status, 22, result.stderr);
     assert.equal(requests.length, 1);
     assert.match(result.stderr, /429/);
-    assert.ok(Date.now() - started < 10_000);
   }
 );
 
