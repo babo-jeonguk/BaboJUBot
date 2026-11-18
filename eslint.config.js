@@ -33,6 +33,21 @@ const testFiles = [
   "packages/db/src/{testing,test-cluster}.ts",
 ];
 
+// 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다.
+const productFiles = ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"];
+
+// runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수를 거친다.
+const processOwners = [
+  "process.ts", // startProcess·runProbe: 환경 작성과 입력·시작 오류·종료를 맡는 공용 실행
+  "container.ts", // docker 클라이언트 호출과 격리 확인
+  "job-object.ts", // Windows 묶음 실행기
+  "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
+  "lease.ts", // 실행 칸을 쥔 프로그램 조회
+  "antigravity-config.ts", // 빈 환경으로 도는 Antigravity 설정 스크립트
+].map((name) => `packages/runtime/src/providers/${name}`);
+const launchMessage =
+  "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 이 함수들이 providerEnvironment로 격리 실행의 환경을 만들고, 입력·시작 오류와 종료를 처리합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
+
 const standards = "CODING_STANDARDS.md#정리";
 // rm·rmSync는 recursive일 때만 폴더를 지운다(파일 지우기는 허용). rmdir·rmdirSync는 옵션 없이도 빈 폴더를 지운다.
 const removers = "/^(rm|rmSync|rmdir|rmdirSync)$/";
@@ -144,6 +159,49 @@ export default defineConfig([
             "CallExpression[callee.object.name='dispatcher'][callee.property.name=/^(cancel|kick|kickOrganization|kickProvider)$/]",
           message:
             "저장 결과의 commit 뒤 할 일로 담아 applyAfterCommit으로 적용합니다.",
+        },
+      ],
+    },
+  },
+  {
+    // 바깥 데이터(JSON.parse, 외부 프로그램 출력, 라이브러리의 any)는 unknown으로 받아 모양을 확인하거나 스키마로 읽은 뒤 쓴다.
+    // 객체 리터럴은 `as`로 타입을 우기지 않고 선언하거나 `satisfies`로 맞춘다. 느슨한 비교는 `== null`만 쓴다.
+    files: productFiles,
+    ignores: testFiles,
+    rules: {
+      "@typescript-eslint/no-unsafe-assignment": "error",
+      "@typescript-eslint/no-unsafe-member-access": "error",
+      "@typescript-eslint/no-unsafe-call": "error",
+      "@typescript-eslint/no-unsafe-return": "error",
+      "@typescript-eslint/no-unsafe-argument": "error",
+      "@typescript-eslint/consistent-type-assertions": [
+        "error",
+        { assertionStyle: "as", objectLiteralTypeAssertions: "never" },
+      ],
+      eqeqeq: ["error", "always", { null: "ignore" }],
+    },
+  },
+  {
+    // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.
+    // 정적 import·re-export·문자열 dynamic import를 막는다. 계산한 경로의 import나 createRequire는 잡지 못한다.
+    files: ["packages/runtime/src/**/*.ts"],
+    ignores: [...testFiles, ...processOwners],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: ["child_process", "node:child_process"].map((name) => ({
+            name,
+            allowTypeImports: true,
+            message: launchMessage,
+          })),
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportExpression[source.value=/^(node:)?child_process$/]",
+          message: launchMessage,
         },
       ],
     },
