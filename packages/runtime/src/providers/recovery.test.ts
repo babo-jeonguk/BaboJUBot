@@ -516,3 +516,25 @@ it.skipIf(process.platform === "win32")(
   },
   30_000
 );
+
+// 시작 시각이 없는 Linux 기록은 대표를 확인할 수 없다. 대표도 그룹도 없으면 남은 것이 없으므로 표식만 정리하고 기록을 지운다.
+it.skipIf(process.platform !== "linux")(
+  "finishes a Linux record without a leader start once nothing is left",
+  async () => {
+    const { root, directory } = await records();
+    const finished = spawnSync(process.execPath, ["-e", ""]).pid;
+    const value = crypto.randomUUID();
+    await writeFile(
+      path.join(directory, `${finished}.json`),
+      JSON.stringify({
+        pid: finished,
+        boot: await currentBoot(),
+        lease: value,
+      })
+    );
+    await recoverProviderProcesses(root);
+    expect(lease.stopped).toEqual([value]);
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
+);
