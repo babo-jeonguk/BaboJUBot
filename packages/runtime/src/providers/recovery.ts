@@ -329,7 +329,7 @@ async function recoverLinuxGroup(
       break;
     }
   if (
-    (leader?.start === saved.start && leader.group === saved.pid) ||
+    (leader && leader.start === saved.start && leader.group === saved.pid) ||
     memberHoldsLease
   )
     await stopProcessGroup(saved.pid);
