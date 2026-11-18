@@ -1,3 +1,4 @@
+import { continueAfterFailure, failureCode } from "@babojubot/contracts";
 import type { AfterCommit, Stored } from "@babojubot/db";
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
@@ -42,10 +43,11 @@ export async function applyAfterCommit(
     ))
       try {
         await ensureWorkspace(id);
-      } catch {
+      } catch (error) {
         report(
           "[workspace] folder preparation failed; the next run assembly will retry",
-          id
+          id,
+          error
         );
       }
   if (events.length)
@@ -93,11 +95,14 @@ function bestEffort(
 
 /** 진단을 남긴다. 진단 자체가 실패해도 나머지 효과를 막지 않는다. */
 function report(...args: unknown[]): void {
-  try {
-    console.error(...args);
-  } catch {
-    /* 진단을 남길 곳이 없어도 이미 저장된 결과와 다른 효과는 그대로다. */
-  }
+  continueAfterFailure(
+    () => console.error(...args),
+    (error) => {
+      process.stderr.write(
+        `[after-commit] a diagnostic could not be written (${failureCode(error)})\n`
+      );
+    }
+  );
 }
 
 export type Outcome<T, R extends string> =

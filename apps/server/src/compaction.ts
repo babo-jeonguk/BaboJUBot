@@ -2,7 +2,11 @@ import { relayIdentityHeaders } from "@babojubot/runtime";
 import { completeStored } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import express from "express";
-import type { OrgToolName, RuntimeAdapter } from "@babojubot/contracts";
+import {
+  failureCode,
+  type OrgToolName,
+  type RuntimeAdapter,
+} from "@babojubot/contracts";
 import {
   claimCompaction,
   compactionLeaseActive,
@@ -167,7 +171,13 @@ export class CompactionScheduler {
         .then((active) => {
           if (!active) controller.abort();
         })
-        .catch(() => controller.abort());
+        .catch((error: unknown) => {
+          console.error(
+            "[compaction] lease check failed; stopping the compaction",
+            error
+          );
+          controller.abort();
+        });
     }, 250);
     let result: { ok: boolean; nextSession: typeof lease.session | null } = {
       ok: false,
@@ -185,8 +195,11 @@ export class CompactionScheduler {
         },
         controller.signal
       );
-    } catch {
-      /* Provider failures remain private and do not become Run activity. */
+    } catch (error) {
+      console.error(
+        `[compaction] provider compaction failed (${failureCode(error)})`
+      );
+      /* Provider failures stay out of Run activity; the server log keeps only the failure code. */
     } finally {
       clearInterval(check);
       this.tokens.delete(digest);
@@ -205,9 +218,10 @@ export class CompactionScheduler {
           this.settlements.delete(id);
           if (!this.closed && stored)
             await completeStored(this.options, stored);
-        } catch {
+        } catch (error) {
           console.error(
-            "[compaction] settlement failed; will retry without sending compact again"
+            "[compaction] settlement failed; will retry without sending compact again",
+            error
           );
         }
       }
