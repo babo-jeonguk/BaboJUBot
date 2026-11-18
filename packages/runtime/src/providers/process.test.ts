@@ -171,25 +171,30 @@ describe("runProbe", () => {
 
   // 프로그램이 끝났어도 그 출력을 물려받은 다른 프로그램이 남으면 출력이 닫히지 않는다. 시한이 지나면 기다림을 끝내고
   // 실패로 돌려주며, 회수하지 못한 것을 기록한다.
-  it("ends the wait after its limit when the program's output stays open", async () => {
-    const folder = await folders.make("babojubot-probe-");
-    const holderFile = path.join(folder, "holder");
-    const logged = [
-      vi.spyOn(console, "warn").mockImplementation(() => {}),
-      vi.spyOn(console, "error").mockImplementation(() => {}),
-    ];
-    try {
-      await expect(
-        probe(
-          `const holder = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
-          500
-        )
-      ).rejects.toThrow();
-      expect(logged.some((spy) => spy.mock.calls.length > 0)).toBe(true);
-    } finally {
-      for (const spy of logged) spy.mockRestore();
-      if (existsSync(holderFile))
-        killIfAlive(Number(readFileSync(holderFile, "utf8")));
-    }
-  }, 30_000);
+  // Windows에서는 물려받은 출력이 프로그램 종료 뒤 출력을 붙잡지 않아(CI에서 바로 닫힘을 확인) 이 상황이 이렇게 생기지 않는다.
+  it.skipIf(process.platform === "win32")(
+    "ends the wait after its limit when the program's output stays open",
+    async () => {
+      const folder = await folders.make("babojubot-probe-");
+      const holderFile = path.join(folder, "holder");
+      const logged = [
+        vi.spyOn(console, "warn").mockImplementation(() => {}),
+        vi.spyOn(console, "error").mockImplementation(() => {}),
+      ];
+      try {
+        await expect(
+          probe(
+            `const holder = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
+            500
+          )
+        ).rejects.toThrow();
+        expect(logged.some((spy) => spy.mock.calls.length > 0)).toBe(true);
+      } finally {
+        for (const spy of logged) spy.mockRestore();
+        if (existsSync(holderFile))
+          killIfAlive(Number(readFileSync(holderFile, "utf8")));
+      }
+    },
+    30_000
+  );
 });
