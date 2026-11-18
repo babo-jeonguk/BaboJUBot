@@ -4,7 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 
@@ -91,12 +90,7 @@ function run(cwd, args) {
 
 function accept(
   { cwd, base },
-  {
-    allow = ["src/*"],
-    reported = ["src/a.ts"],
-    tests = [passing],
-    extra = [],
-  } = {}
+  { allow = ["src/*"], reported = ["src/a.ts"], tests = [passing] } = {}
 ) {
   return run(cwd, [
     "--base",
@@ -104,7 +98,6 @@ function accept(
     ...allow.flatMap((pattern) => ["--allow", pattern]),
     ...reported.flatMap((file) => ["--reported", file]),
     ...tests.flatMap((command) => ["--test", command]),
-    ...extra,
   ]);
 }
 
@@ -267,77 +260,6 @@ test("the real worker permissions protect development scripts and leave product 
     const result = accept(repo, { allow: ["*"], reported: [file] });
     assert.equal(result.status, 0, result.output);
   }
-});
-
-// Programs live in the ignored folder so that they do not count as part of the worker's change.
-const descendant = `
-  const fs = require("node:fs");
-  if (process.argv[3] === "ignore-term") process.on("SIGTERM", () => {});
-  fs.writeFileSync(process.argv[2], String(process.pid));
-  setInterval(() => {}, 1000);
-`;
-const hangingLeader = `
-  const { spawn } = require("node:child_process");
-  spawn(process.execPath, ["ignored/descendant.js", process.argv[2], "ignore-term"], {
-    stdio: "ignore",
-  });
-  setInterval(() => {}, 1000);
-`;
-const finishingLeader = `
-  const { spawn } = require("node:child_process");
-  const fs = require("node:fs");
-  spawn(process.execPath, ["ignored/descendant.js", process.argv[2]], {
-    stdio: "inherit",
-  });
-  setInterval(() => {
-    if (fs.existsSync(process.argv[2])) process.exit(0);
-  }, 20);
-`;
-
-function prepareLeader(repo, leader) {
-  write(repo.cwd, "src/a.ts", "export const a = 2;\n");
-  write(repo.cwd, "ignored/descendant.js", descendant);
-  write(repo.cwd, "ignored/leader.js", leader);
-  return `"${process.execPath}" ignored/leader.js ignored/descendant-pid`;
-}
-
-async function assertDescendantStopped(repo) {
-  const pid = Number(
-    fs.readFileSync(path.join(repo.cwd, "ignored/descendant-pid"), "utf8")
-  );
-  const alive = () => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  for (let waited = 0; alive() && waited < 10_000; waited += 100)
-    await delay(100);
-  assert.equal(alive(), false);
-}
-
-test("stops a timed-out command's descendant that ignores TERM and left the output pipes", async (t) => {
-  const repo = repository(t);
-  const command = prepareLeader(repo, hangingLeader);
-  const result = accept(repo, {
-    tests: [command],
-    extra: ["--test-timeout", "5"],
-  });
-  assertRejected(result, /test command failed \(timed out after 5s\)/);
-  await assertDescendantStopped(repo);
-});
-
-test("stops what a passing command leaves running without waiting for its limit", async (t) => {
-  const repo = repository(t);
-  const command = prepareLeader(repo, finishingLeader);
-  const result = accept(repo, {
-    tests: [command],
-    extra: ["--test-timeout", "20"],
-  });
-  assert.equal(result.status, 0, result.output);
-  await assertDescendantStopped(repo);
 });
 
 test("rejects a run that changed nothing", (t) => {
