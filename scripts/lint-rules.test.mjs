@@ -397,3 +397,88 @@ test("code outside the E2E may search a whole page", async () => {
       place
     );
 });
+
+/** finally 정리 규칙의 메시지만. */
+const finallyMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-cleanup-in-finally");
+
+test("test code may not wait or call a failing cleanup in finally", async () => {
+  const awaited = {
+    "one awaited close": `try {\n  check();\n} finally {\n  await server.close();\n}\n`,
+    "cleanups one after another": `try {\n  check();\n} finally {\n  await stopMain(child);\n  await removeFolder(home);\n}\n`,
+    "a guarded close": `try {\n  check();\n} finally {\n  if (child) await killHard(child);\n}\n`,
+    "a close in a loop": `try {\n  check();\n} finally {\n  for (const child of children) await killHard(child);\n}\n`,
+    // 끝나기만 하는 기다림과 실패를 삼키는 기다림도 같은 모양이라, 실패할 수 있는 새 정리가 이 모양을 따라 한다.
+    "a wait that only ends": `try {\n  check();\n} finally {\n  await new Promise((resolve) => server.close(resolve));\n}\n`,
+    "a swallowed close": `try {\n  check();\n} finally {\n  await client.end().catch(() => {});\n}\n`,
+    "a close inside a nested try": `try {\n  check();\n} finally {\n  try {\n    await server.close();\n  } catch (error) {\n    failures.push(error);\n  }\n}\n`,
+    "for await": `try {\n  check();\n} finally {\n  for await (const line of lines) handle(line);\n}\n`,
+    // Playwright fixture가 use 뒤에 정리하는 모양.
+    "a fixture's cleanup": `const fixture = async ({}, use) => {\n  const server = await start();\n  try {\n    await use(server.url);\n  } finally {\n    await server.stop();\n  }\n};\nexport { fixture };\n`,
+  };
+  const thrown = {
+    "process.kill": `try {\n  check();\n} finally {\n  process.kill(pid, "SIGKILL");\n}\n`,
+    // 살아 있는지 확인해도 그 사이에 끝날 수 있다.
+    "a checked process.kill": `try {\n  check();\n} finally {\n  if (alive(pid)) process.kill(pid, "SIGKILL");\n}\n`,
+    "fs.rmSync": `import fs from "node:fs";\ntry {\n  check();\n} finally {\n  fs.rmSync("link", { force: true });\n}\n`,
+    chmodSync: `import { chmodSync } from "node:fs";\ntry {\n  check();\n} finally {\n  chmodSync("dir", 0o700);\n}\n`,
+  };
+  for (const [kind, shapes, pattern] of [
+    ["await", awaited, /onTestFinished/],
+    ["sync", thrown, /이미 사라진 대상/],
+  ])
+    for (const [shape, code] of Object.entries(shapes))
+      for (const place of testPlaces) {
+        const [message, ...rest] = finallyMessages(await lint(code, place));
+        assert.ok(message, `${place}: ${shape} not reported`);
+        assert.deepEqual(rest, [], `${place}: ${shape}`);
+        // 메시지가 원래 실패를 가리는 까닭, 대안과 기준 문서의 절을 알려 준다.
+        assert.match(
+          message.message,
+          /원래 실패를 가리고/,
+          `${kind}: ${shape}`
+        );
+        assert.match(message.message, pattern, `${kind}: ${shape}`);
+        assert.match(message.message, /withCleanup/, `${kind}: ${shape}`);
+        assert.match(message.message, /CODING_STANDARDS\.md#정리/);
+        // 실패를 삼키라고 안내하지 않는다.
+        assert.doesNotMatch(message.message, /catch/);
+      }
+});
+
+test("test code may release without waiting in finally and register cleanups where it takes a resource", async () => {
+  const allowed = [
+    // 기다리지 않고 실패하지 않는 되돌리기·풀기.
+    `try {\n  await check();\n} finally {\n  clearTimeout(timer);\n  warn.mockRestore();\n  gate.open();\n  vi.useRealTimers();\n}\n`,
+    // 기다림은 본문과 catch에서 한다.
+    `try {\n  await check();\n} catch (error) {\n  await report(error);\n}\n`,
+    // 이미 사라진 대상만 넘어가는 동기 끄기.
+    `try {\n  check();\n} finally {\n  try {\n    process.kill(pid, "SIGKILL");\n  } catch (error) {\n    if (error.code !== "ESRCH") failures.push(error);\n  }\n}\n`,
+    // 자원을 잡은 직후 러너나 withCleanup에 정리를 등록한다.
+    `import { onTestFinished } from "vitest";\nconst server = await start();\nonTestFinished(async () => {\n  await server.close();\n  await removeFolder(dir);\n});\n`,
+    `import { withCleanup } from "@babojubot/runtime/test-cleanup";\nawait withCleanup(async (defer) => {\n  const child = spawn();\n  defer(() => killHard(child));\n  await check(child);\n});\n`,
+    // finally 밖의 끄기·지우기와 Promise의 finally 메서드.
+    `process.kill(pid, "SIGKILL");\nfs.rmSync("file", { force: true });\nawait work().finally(() => clearTimeout(timer));\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(finallyMessages(await lint(code, place)), [], code);
+});
+
+test("code outside tests may wait in finally", async () => {
+  for (const place of [
+    "scripts/lint-sample.mjs",
+    "scripts/live/lint-sample.mjs",
+    "packages/runtime/test-fixtures/lint-sample.mjs",
+  ])
+    assert.deepEqual(
+      finallyMessages(
+        await lint(
+          `try {\n  check();\n} finally {\n  await server.close();\n  process.kill(pid, "SIGKILL");\n}\n`,
+          place
+        )
+      ),
+      [],
+      place
+    );
+});

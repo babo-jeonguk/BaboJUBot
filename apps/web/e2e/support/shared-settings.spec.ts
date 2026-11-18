@@ -6,6 +6,7 @@ import {
   type SharedSettings,
   type Snapshot,
 } from "./shared-settings.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 앞 테스트가 전역 설정을 바꾸고 화면의 저장을 붙잡은 채 끝나도 fixture가 시작 전 값으로 되돌렸는지 다음 테스트가 확인한다.
 // 정리는 테스트 결과와 상관없이 같은 길로 돈다. 그래서 정리 자체의 실패(멈춘 route callback, 되돌리기 실패)는 정상 종료 경우에서
@@ -109,7 +110,11 @@ test("a test that ends while a released settings save is still on its way restor
   expect(before.compaction?.thresholdTokens).not.toBe(600000);
   const slowServer = await playwright.request.newContext({ baseURL });
   // 준비 중 실패해도 연결을 닫는다. 늦은 저장을 보냈으면 그 저장이 끝난 뒤 lateWrite가 닫는다.
-  try {
+  await withCleanup(async (defer) => {
+    defer(async () => {
+      if (!lateWrite) await slowServer.dispose();
+    });
+
     await openWithLiveEvents(page, "/settings");
     const form = page.getByRole("form", { name: "기본 프로바이더" });
     const threshold = form.getByRole("spinbutton", { name: "압축 기준" });
@@ -145,9 +150,7 @@ test("a test that ends while a released settings save is still on its way restor
     held.release().catch(() => {});
     // 느린 서버가 저장을 넘겨받은 뒤에 끝낸다. 그 전에 끝나면 아래 finally가 연결을 닫아 버린다.
     await tookOver;
-  } finally {
-    if (!lateWrite) await slowServer.dispose();
-  }
+  });
 });
 
 test("after a test that ended with a save on its way, the settings are the ones from before it", async ({

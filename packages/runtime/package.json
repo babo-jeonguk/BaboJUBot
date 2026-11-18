@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./testing": "./src/testing.ts",
     "./runtime-contract": "./src/runtime-contract.ts",
-    "./remove-folder": "./src/remove-folder.ts"
+    "./remove-folder": "./src/remove-folder.ts",
+    "./test-cleanup": "./src/test-cleanup.ts"
   },
   "scripts": {
     "test": "vitest run && vitest run --config vitest.alone.config.ts",

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { pinnedReader } from "../src/workspace.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 /**
  * 파일 경계 시험이 임시 폴더를 만드는 곳. 환경별 전체 검증(CI `files-*` job)은 시험용 디스크·공유의 폴더를
@@ -79,15 +80,23 @@ export const featureGaps = () =>
     const probe = await realpath(
       await mkdtemp(path.join(filesBase(), "bjc-probe-"))
     );
-    const attempt = async (work: () => Promise<unknown>) => {
-      try {
-        await work();
-        return "";
-      } catch (error) {
-        return (error as NodeJS.ErrnoException).code ?? String(error);
-      }
-    };
-    try {
+    return withCleanup(async (defer) => {
+      // 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다.
+      defer(() =>
+        remove(probe).catch(async (error: NodeJS.ErrnoException) =>
+          console.warn(
+            `could not remove ${probe} (${error.code}); left: ${JSON.stringify(await listEntries(probe))}`
+          )
+        )
+      );
+      const attempt = async (work: () => Promise<unknown>) => {
+        try {
+          await work();
+          return "";
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code ?? String(error);
+        }
+      };
       await writeFile(path.join(probe, "file"), "x");
       await mkdir(path.join(probe, "folder"));
       return {
@@ -114,14 +123,7 @@ export const featureGaps = () =>
             )
           : "not Windows",
       };
-    } finally {
-      // 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다.
-      await remove(probe).catch(async (error: NodeJS.ErrnoException) =>
-        console.warn(
-          `could not remove ${probe} (${error.code}); left: ${JSON.stringify(await listEntries(probe))}`
-        )
-      );
-    }
+    });
   })());
 
 /** 폴더 안의 항목과 종류. 지우지 못한 이유를 보일 때 쓴다. */

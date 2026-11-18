@@ -40,6 +40,7 @@ import { Workspaces, WorkspaceIdentityError } from "../src/workspace.ts";
 import { calls, idle, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // #150 실행 의도 복구. 모든 조직 쓰기 도구 호출은 효과보다 먼저 실행 의도(도구·입력·원본 자료)로 남고, 효과와 최초 결과는 함께 정산된다.
 // 서버가 멈추면 다음 실행 시도가 모델을 부르기 전에 남은 의도를 정산하고 그 결과를 깨우기 사유로 받는다. 정산이 막히면 에이전트는
@@ -1426,14 +1427,13 @@ describe("file artifact preparation outside the locks and its settlement through
     const { agents, org, task, held, api, restart, db } =
       await heldLead("정산 실패 조직");
     const input = await fileOf(held, task.id, "실패.md", "# 수락 때 내용");
-    const undo = await failArtifactRecord(db);
-    try {
+    // 넣은 DB 장애는 시험이 실패해도 걷어 내고, 그 뒤의 복구를 이어서 본다.
+    await withCleanup(async (defer) => {
+      defer(await failArtifactRecord(db));
       expect(
         await api.tool(held.access.token, "/artifacts", input, "k-fail")
       ).toEqual({ status: 500, body: { error: { code: "internal" } } });
-    } finally {
-      await undo();
-    }
+    });
     // 수락한 의도와 고정 자료는 남고(복구 대상), 정산 transaction의 것은 모두 없다.
     expect(await findIntentByKey(db, org.lead.id, "k-fail")).toMatchObject({
       status: "accepted",

@@ -83,13 +83,17 @@ export async function untilExited(pids: number[], timeoutMs = 5000) {
     });
 }
 
+/** 시험 정리: SIGKILL을 보낸다. 대상이 이미 끝났으면(ESRCH) 넘어가고 다른 실패는 알린다. 프로세스 그룹은 음수 번호로 준다. */
+export function killUnlessGone(pid: number) {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
 /** 시험 정리: SIGKILL을 보내고 끝날 때까지 기다린다. */
 export async function killAndWait(pids: number[]) {
-  for (const pid of pids)
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // 이미 끝났다.
-    }
+  for (const pid of pids) killUnlessGone(pid);
   await untilExited(pids);
 }

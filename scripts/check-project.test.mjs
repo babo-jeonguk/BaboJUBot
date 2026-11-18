@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -42,7 +43,8 @@ test("check-project checks Git's file list without scanning ignored worktrees", 
   const fixture = fs.mkdtempSync(
     path.join(os.tmpdir(), "babojubot-check-project-")
   );
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => removeFolder(fixture));
     copyFromRepository(
       "scripts/check-project.mjs",
       path.join(fixture, "scripts/check-project.mjs")
@@ -104,7 +106,5 @@ test("check-project checks Git's file list without scanning ignored worktrees", 
     const tracked = runCheckerFailure(fixture);
     assert.notEqual(tracked.status, 0);
     assert.match(tracked.output, /Broken local link/);
-  } finally {
-    await removeFolder(fixture);
-  }
+  });
 });

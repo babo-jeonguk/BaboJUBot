@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { alive, type ServerProcess } from "./server-process.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 공용 E2E 서버의 수명은 globalSetup이 가진다(e2e/global-setup.ts). 테스트가 성공해도, 본문이 실패해도, setup이 서버를 띄운 뒤
 // 실패해도 Playwright가 끝나기 전에 서버가 정상 정리(종료 코드 0, 내장 Postgres 정지와 그 dataDir 삭제)를 마치고 폴더가 남지
@@ -44,7 +45,8 @@ function runEnv(extra: Record<string, string>) {
 async function runShared(failure: "none" | "body" | "setup") {
   const dir = mkdtempSync(path.join(os.tmpdir(), "babojubot-shared-run-"));
   const stateFile = path.join(dir, "state.json");
-  try {
+  return withCleanup(async (defer) => {
+    defer(() => removeFolder(dir));
     const child = spawn(process.execPath, [cli, "test", "--config", config], {
       cwd: path.dirname(config),
       env: runEnv({
@@ -79,9 +81,7 @@ async function runShared(failure: "none" | "body" | "setup") {
       ? (JSON.parse(readFileSync(stateFile, "utf8")) as SharedState)
       : undefined;
     return { code, output, state };
-  } finally {
-    await removeFolder(dir);
-  }
+  });
 }
 
 /** 안쪽 실행이 끝났을 때 공용 서버가 남긴 것이 없다. 다음 서버를 띄우기 전에 본다. */

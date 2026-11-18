@@ -8,6 +8,7 @@ import {
 } from "./support/organization.ts";
 import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 import { expectNoHorizontalOverflow, settledBoxes } from "./support/layout.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const uuidPath = /\/chat\/[0-9a-f-]{36}$/;
 
@@ -174,7 +175,10 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
       await route.continue();
     }
   );
-  try {
+  await withCleanup(async (defer) => {
+    defer(() => other.unrouteAll({ behavior: "wait" }));
+    defer(() => letReadThrough());
+    defer(() => releaseStale());
     const read = other.waitForResponse(
       (r) =>
         r.url().endsWith(`${listPath}/${unseenConversation.id}/read`) &&
@@ -204,11 +208,7 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
         )
     );
     await expect(unread).toHaveCount(0);
-  } finally {
-    releaseStale();
-    letReadThrough();
-    await other.unrouteAll({ behavior: "wait" });
-  }
+  });
 
   // 기본 대화로 돌아가도 생성 알림과 처음 주고받은 두 메시지뿐이다.
   await listOf(page)

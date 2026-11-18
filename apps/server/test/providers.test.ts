@@ -17,6 +17,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { eventually, startTestServer, type TestServer } from "./support.ts";
+import { cleanUpAll, withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -127,17 +128,21 @@ describe("concurrent global settings writes", () => {
       const final = repeatChoice ? replacement : original;
       const changing = t.request("PUT", "/api/providers/defaults", replacement);
       let restoring: ReturnType<TestServer["request"]> | undefined;
-      try {
+      // 붙잡은 행을 풀고 경쟁한 쓰기가 모두 끝나기를 기다린다. 하나가 실패해도 나머지를 기다린다.
+      await withCleanup(async (defer) => {
+        defer(() =>
+          cleanUpAll([
+            () => locked.open(),
+            () => blocker,
+            () => changing,
+            () => restoring,
+          ])
+        );
         // 첫 PUT이 lead를 잡고 worker를 기다리면, 두 번째 PUT은 lead를 기다린다.
         await waitForSettingsWriters(1);
-        restoring = t.request("PUT", "/api/providers/defaults", final);
+        restoring = t!.request("PUT", "/api/providers/defaults", final);
         await waitForSettingsWriters(2);
-      } finally {
-        locked.open();
-        await blocker;
-        await changing;
-        await restoring;
-      }
+      });
       expect((await changing).status).toBe(200);
       expect((await restoring!).status).toBe(200);
       expect(await settings()).toMatchObject(final);
@@ -181,13 +186,13 @@ describe("concurrent global settings writes", () => {
     const saving = t.request("PUT", "/api/providers/fake/limit", {
       maxConcurrentRuns: 2,
     });
-    try {
+    // 붙잡은 insert를 풀고 두 쓰기가 끝나기를 기다린다. 하나가 실패해도 나머지를 기다린다.
+    await withCleanup(async (defer) => {
+      defer(() =>
+        cleanUpAll([() => inserted.open(), () => inserting, () => saving])
+      );
       await waitForSettingsWriters(1);
-    } finally {
-      inserted.open();
-      await inserting;
-      await saving;
-    }
+    });
     expect((await saving).status).toBe(200);
     expect((await settings()).providers[0]!.maxConcurrentRuns).toBe(2);
     await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);

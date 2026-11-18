@@ -20,6 +20,7 @@ import {
 import { scriptedAgents, serverHelpers, calls, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 let t: TestServer | undefined;
 let root = "";
 afterEach(async () => {
@@ -272,13 +273,15 @@ it("passes organization and personal folders, freezes files, replays across HTTP
   await t.drain();
   await t.stopServer();
   await removeFolder(path.dirname(workspace.cwd));
-  const restarted = await startServer({
-    db: t.db,
-    port: 0,
-    runtime: agents.runtime,
-    dataDir: root,
-  });
-  try {
+  // 다시 띄운 서버는 시험 서버의 DB와 폴더를 쓰므로, 그것들을 정리하는 afterEach보다 먼저 시험 안에서 닫는다.
+  await withCleanup(async (defer) => {
+    const restarted = await startServer({
+      db: t!.db,
+      port: 0,
+      runtime: agents.runtime,
+      dataDir: root,
+    });
+    defer(() => restarted.close());
     const preserved = await fetch(
       `${restarted.url}/api/organizations/${org.id}/artifacts/${registered.body.id}`
     ).then((r) => r.json());
@@ -302,9 +305,7 @@ it("passes organization and personal folders, freezes files, replays across HTTP
     expect((await stat(nextRequest.workspace!.personal!)).isDirectory()).toBe(
       true
     );
-  } finally {
-    await restarted.close();
-  }
+  });
 });
 
 it("starts and serves other organizations when one organization's folder path is broken, and repairs it on that organization's next run", async () => {
@@ -320,30 +321,32 @@ it("starts and serves other organizations when one organization's folder path is
   await removeFolder(brokenShared);
   await writeFile(brokenShared, "폴더 자리에 놓인 파일");
 
-  const restarted = await startServer({
-    db: t.db,
-    port: 0,
-    runtime: agents.runtime,
-    dataDir: root,
-  });
-  const say = async (orgId: string, body: string) => {
-    const res = await fetch(
-      `${restarted.url}/api/organizations/${orgId}/messages`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body }),
-      }
-    );
-    expect(res.status).toBe(201);
-  };
-  const runsOf = async (orgId: string) =>
-    runSummaryListSchema.parse(
-      await fetch(`${restarted.url}/api/organizations/${orgId}/runs`).then(
-        (r) => r.json()
-      )
-    );
-  try {
+  // 다시 띄운 서버는 시험 서버의 DB와 폴더를 쓰므로, 그것들을 정리하는 afterEach보다 먼저 시험 안에서 닫는다.
+  await withCleanup(async (defer) => {
+    const restarted = await startServer({
+      db: t!.db,
+      port: 0,
+      runtime: agents.runtime,
+      dataDir: root,
+    });
+    defer(() => restarted.close());
+    const say = async (orgId: string, body: string) => {
+      const res = await fetch(
+        `${restarted.url}/api/organizations/${orgId}/messages`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ body }),
+        }
+      );
+      expect(res.status).toBe(201);
+    };
+    const runsOf = async (orgId: string) =>
+      runSummaryListSchema.parse(
+        await fetch(`${restarted.url}/api/organizations/${orgId}/runs`).then(
+          (r) => r.json()
+        )
+      );
     let healthyRequest!: RunRequest;
     agents.queue(healthy.lead.id, (r) => {
       healthyRequest = r;
@@ -370,7 +373,5 @@ it("starts and serves other organizations when one organization's folder path is
     expect((await stat(repairedRequest.workspace!.cwd)).isDirectory()).toBe(
       true
     );
-  } finally {
-    await restarted.close();
-  }
+  });
 });

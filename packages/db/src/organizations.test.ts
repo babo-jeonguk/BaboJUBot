@@ -9,7 +9,14 @@ import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import {
   findOrganization,
   insertOrganizationCreation,
@@ -24,6 +31,7 @@ import { updateProviderLimit } from "./providers.ts";
 import { listAgentsWithPendingWakes } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -321,9 +329,10 @@ describe("agent names", () => {
     );
     // 조직 행을 잠그지 않는 쓰기가 같은 이름을 먼저 잡고 아직 commit하지 않았다. 이름 변경은 그 이름을 보지 못한 채
     // 저장하다 unique index에서 기다리고, 그 쓰기가 commit하면 index 위반을 같은 name_taken으로 돌려준다.
-    const other = new pg.Client({ connectionString: t.url });
-    await other.connect();
-    try {
+    await withCleanup(async (defer) => {
+      const other = new pg.Client({ connectionString: t.url });
+      await other.connect();
+      defer(() => other.end());
       await other.query("begin");
       await other.query("update agents set name = $1 where id = $2", [
         "Statistician",
@@ -347,9 +356,7 @@ describe("agent names", () => {
         .toBeGreaterThan(0);
       await other.query("commit");
       expect(await renaming).toEqual({ kind: "refused", reason: "name_taken" });
-    } finally {
-      await other.end();
-    }
+    });
     expect(await namesOf(orgId)).toEqual(["Research Lead", "Statistician"]);
   });
 
@@ -360,6 +367,7 @@ describe("agent names", () => {
     );
     // 0017 직전까지만 적용한 DB를 같은 cluster에 따로 만든다.
     const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
+    onTestFinished(() => removeFolder(before));
     await fsp.cp(migrations, before, { recursive: true });
     const journalPath = path.join(before, "meta/_journal.json");
     const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
@@ -373,72 +381,71 @@ describe("agent names", () => {
 
     const name = `dedupe_${randomUUID().replaceAll("-", "")}`;
     await t.db.execute(sql.raw(`create database ${name}`));
+    onTestFinished(async () => {
+      await t.db.execute(sql.raw(`drop database ${name}`));
+    });
     const url = new URL(t.url);
     url.pathname = `/${name}`;
     const pool = new pg.Pool({ connectionString: url.toString() });
-    try {
-      const db = drizzle(pool);
-      await migrate(db, { migrationsFolder: before });
-      const orgA = randomUUID();
-      const orgB = randomUUID();
-      await pool.query(
-        `insert into organizations (id, name, goal, stage, created_at) values
+    // 연결을 닫은 뒤에 그 DB를 지운다.
+    onTestFinished(() => pool.end());
+    const db = drizzle(pool);
+    await migrate(db, { migrationsFolder: before });
+    const orgA = randomUUID();
+    const orgB = randomUUID();
+    await pool.query(
+      `insert into organizations (id, name, goal, stage, created_at) values
           ($1, 'A', '목표', 'researching', now()), ($2, 'B', '목표', 'researching', now())`,
-        [orgA, orgB]
+      [orgA, orgB]
+    );
+    // A: Lead를 "연구원 1"로 바꾼 뒤 팀을 승인해 겹친 이름, 대소문자만 다른 이름, 붙일 이름 " 2"를 이미 쓰는 이름.
+    // B: 다른 조직의 같은 이름은 그대로다.
+    const agentsOf = [
+      [orgA, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
+      [orgA, "worker", "연구원 1", "2026-01-02T00:00:00Z"],
+      [orgA, "worker", "연구원 2", "2026-01-02T00:00:00.001Z"],
+      [orgA, "worker", "Analyst", "2026-01-03T00:00:00Z"],
+      [orgA, "worker", "analyst", "2026-01-04T00:00:00Z"],
+      [orgA, "worker", "ANALYST", "2026-01-05T00:00:00Z"],
+      [orgA, "worker", "analyst 2", "2026-01-06T00:00:00Z"],
+      [orgB, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
+    ] as const;
+    for (const [org, role, agentName, at] of agentsOf)
+      await pool.query(
+        `insert into agents (id, organization_id, role, name, created_at) values ($1, $2, $3, $4, $5)`,
+        [randomUUID(), org, role, agentName, at]
       );
-      // A: Lead를 "연구원 1"로 바꾼 뒤 팀을 승인해 겹친 이름, 대소문자만 다른 이름, 붙일 이름 " 2"를 이미 쓰는 이름.
-      // B: 다른 조직의 같은 이름은 그대로다.
-      const agentsOf = [
-        [orgA, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
-        [orgA, "worker", "연구원 1", "2026-01-02T00:00:00Z"],
-        [orgA, "worker", "연구원 2", "2026-01-02T00:00:00.001Z"],
-        [orgA, "worker", "Analyst", "2026-01-03T00:00:00Z"],
-        [orgA, "worker", "analyst", "2026-01-04T00:00:00Z"],
-        [orgA, "worker", "ANALYST", "2026-01-05T00:00:00Z"],
-        [orgA, "worker", "analyst 2", "2026-01-06T00:00:00Z"],
-        [orgB, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
-      ] as const;
-      for (const [org, role, agentName, at] of agentsOf)
-        await pool.query(
-          `insert into agents (id, organization_id, role, name, created_at) values ($1, $2, $3, $4, $5)`,
-          [randomUUID(), org, role, agentName, at]
-        );
 
-      await migrate(db, { migrationsFolder: migrations });
+    await migrate(db, { migrationsFolder: migrations });
 
-      const { rows } = await pool.query<{
-        organization_id: string;
-        name: string;
-      }>(
-        `select organization_id, name from agents order by organization_id = $1 desc, created_at`,
-        [orgA]
-      );
-      expect(rows.map((r) => r.name)).toEqual([
-        "연구원 1",
-        "연구원 1 2",
-        "연구원 2",
-        "Analyst",
-        "analyst 3",
-        "ANALYST 4",
-        "analyst 2",
-        "연구원 1",
-      ]);
-      // migration 0021: 프로바이더 열 전에 생긴 에이전트는 가짜 프로바이더·기본 모델로 채워진다.
-      const { rows: providers } = await pool.query(
-        `select distinct provider, model from agents`
-      );
-      expect(providers).toEqual([{ provider: "fake", model: null }]);
-      // index가 생겨 이제 겹치는 이름을 받지 않는다.
-      await expect(
-        pool.query(
-          `insert into agents (id, organization_id, role, name, provider, created_at) values ($1, $2, 'worker', 'ANALYST', 'fake', now())`,
-          [randomUUID(), orgA]
-        )
-      ).rejects.toMatchObject({ code: "23505" });
-    } finally {
-      await pool.end();
-      await t.db.execute(sql.raw(`drop database ${name}`));
-      await removeFolder(before);
-    }
+    const { rows } = await pool.query<{
+      organization_id: string;
+      name: string;
+    }>(
+      `select organization_id, name from agents order by organization_id = $1 desc, created_at`,
+      [orgA]
+    );
+    expect(rows.map((r) => r.name)).toEqual([
+      "연구원 1",
+      "연구원 1 2",
+      "연구원 2",
+      "Analyst",
+      "analyst 3",
+      "ANALYST 4",
+      "analyst 2",
+      "연구원 1",
+    ]);
+    // migration 0021: 프로바이더 열 전에 생긴 에이전트는 가짜 프로바이더·기본 모델로 채워진다.
+    const { rows: providers } = await pool.query(
+      `select distinct provider, model from agents`
+    );
+    expect(providers).toEqual([{ provider: "fake", model: null }]);
+    // index가 생겨 이제 겹치는 이름을 받지 않는다.
+    await expect(
+      pool.query(
+        `insert into agents (id, organization_id, role, name, provider, created_at) values ($1, $2, 'worker', 'ANALYST', 'fake', now())`,
+        [randomUUID(), orgA]
+      )
+    ).rejects.toMatchObject({ code: "23505" });
   });
 });

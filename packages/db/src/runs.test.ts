@@ -33,6 +33,7 @@ import {
   failRunEnd,
   type TestDatabase,
 } from "./testing.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -675,12 +676,10 @@ async function failingRunFinishedEvents(
   runId: string,
   during: () => Promise<void>
 ) {
-  const restore = await failRunEnd(t.db, runId);
-  try {
+  await withCleanup(async (defer) => {
+    defer(await failRunEnd(t.db, runId));
     await during();
-  } finally {
-    await restore();
-  }
+  });
 }
 
 const usage = (inputTokens: number): Usage => ({

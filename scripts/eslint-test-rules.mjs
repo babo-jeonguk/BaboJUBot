@@ -361,9 +361,87 @@ const noPageWideLocator = {
   },
 };
 
+/** 동기로 던지는 정리: `process.kill`(대상이 이미 사라지면 ESRCH)과 이름이 `Sync`로 끝나는 호출(`fs.rmSync`·`chmodSync` 등). */
+function throwsSync(call) {
+  const { callee } = call;
+  if (callee.type === "Identifier") return /Sync$/.test(callee.name);
+  if (callee.type !== "MemberExpression" || callee.computed) return false;
+  const name = callee.property.name;
+  return (
+    /Sync$/.test(name) ||
+    (name === "kill" &&
+      callee.object.type === "Identifier" &&
+      callee.object.name === "process")
+  );
+}
+
+/**
+ * 시험의 `finally`에서 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛴다
+ * (CODING_STANDARDS.md#정리). 두 모양을 짚는다.
+ * - `finally` 안의 기다림(`await`·`for await`). 하나뿐이어도, 끝나기만 하는 기다림이어도 짚는다. 이 모양이 남으면 실패할 수
+ *   있는 새 정리가 그것을 따라 한다. 정리는 자원을 잡은 직후 `onTestFinished`·`withCleanup`에 등록한다.
+ * - `finally` 안에서 `try…catch` 밖에 둔 동기 `process.kill`과 `*Sync` 호출. 살아 있는지 먼저 확인해도 그 사이에 끝날 수 있다.
+ * `finally` 안에 정의한 함수의 몸은 따로 돈다고 보고 보지 않는다. 기다리지 않는 다른 호출(`clearTimeout`·`mockRestore`·`child.kill`)은
+ * 던지는지 모양으로 알 수 없어 짚지 않는다.
+ */
+const noCleanupInFinally = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow waiting or calling a cleanup that can throw in a test's finally block",
+    },
+    schema: [],
+    messages: {
+      awaited:
+        "finally에서 정리를 기다립니다. 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛰어 프로그램·폴더가 남습니다. 자원을 잡은 직후 정리를 등록하세요: Vitest는 onTestFinished, 시험 중간·node:test·Playwright는 withCleanup(@babojubot/runtime/test-cleanup)의 defer. 등록한 정리는 역순으로 모두 돌고 그 실패는 원래 실패와 함께 보고됩니다. 앞 단계가 끝나야 하는 정리(프로그램을 끈 뒤 그 폴더 지우기)는 한 등록 안에 차례로 두고, 서로 무관한 단계는 cleanUpAll로 모두 시도하세요. CODING_STANDARDS.md#정리",
+      thrown:
+        "finally에서 던질 수 있는 동기 정리(process.kill·*Sync)를 부릅니다. 대상이 이미 끝났거나 지우기가 실패하면 그 오류가 시험의 원래 실패를 가리고 뒤 정리를 건너뜁니다. 이미 사라진 대상만 넘어가는 끄기 함수(killAndWait 등)를 쓰고, 정리는 자원을 잡은 직후 onTestFinished나 withCleanup(@babojubot/runtime/test-cleanup)의 defer로 등록하세요. CODING_STANDARDS.md#정리",
+    },
+  },
+  create(context) {
+    const reported = new Set();
+    /**
+     * `node`가 함수 경계를 넘지 않고 닿는 `finally` 블록. `guardable`이면 그 사이의 `try…catch` 본문 안은 지킨 것으로 보고 넘긴다.
+     */
+    function enclosingFinally(node, guardable) {
+      let child = node;
+      for (let parent = node.parent; parent; parent = parent.parent) {
+        if (isFunction(parent) || parent.type === "FunctionDeclaration")
+          return undefined;
+        if (parent.type === "TryStatement") {
+          if (parent.finalizer === child) return parent.finalizer;
+          if (guardable && parent.block === child && parent.handler)
+            return undefined;
+        }
+        child = parent;
+      }
+      return undefined;
+    }
+    const awaited = (node) => {
+      const block = enclosingFinally(node, false);
+      // 한 블록은 한 번만 알린다. 정리를 옮기면 블록의 기다림이 모두 없어진다.
+      if (!block || reported.has(block)) return;
+      reported.add(block);
+      context.report({ node, messageId: "awaited" });
+    };
+    return {
+      AwaitExpression: awaited,
+      ForOfStatement(node) {
+        if (node.await) awaited(node);
+      },
+      CallExpression(node) {
+        if (throwsSync(node) && enclosingFinally(node, true))
+          context.report({ node, messageId: "thrown" });
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
   rules: {
+    "no-cleanup-in-finally": noCleanupInFinally,
     "no-elapsed-time-assertion": noElapsedTimeAssertion,
     "no-fixed-time-wait": noFixedTimeWait,
     "no-page-wide-locator": noPageWideLocator,

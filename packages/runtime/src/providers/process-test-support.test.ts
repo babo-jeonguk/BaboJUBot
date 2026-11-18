@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { expect, it } from "vitest";
+import { finished } from "node:stream/promises";
+import { expect, it, onTestFinished } from "vitest";
 import { killAndWait, readyLine } from "./process-test-support.ts";
 
 // 준비 줄 없이 끝난 프로그램을 시한(10초)까지 기다리지 않는다. 출력을 물려받은 자손이 남아 출력이 닫히지 않아도 종료로 판단한다(PR #220 외부 리뷰 STD-1).
@@ -18,14 +19,17 @@ it.skipIf(process.platform === "win32")(
     );
     let descendant = "";
     child.stderr!.on("data", (chunk: Buffer) => (descendant += String(chunk)));
-    try {
-      await expect(readyLine(child, "ready", 10_000, 500)).rejects.toThrow(
-        "exited before printing ready"
-      );
-    } finally {
+    const errorsEnded = finished(child.stderr!);
+    // 자손은 오류 출력을 물려받지 않으므로 그 출력은 프로그램이 끝나면 닫힌다. 닫힌 뒤에 읽어야 번호를 다 받았다.
+    onTestFinished(async () => {
+      child.kill("SIGKILL");
+      await errorsEnded;
       const pid = Number(descendant.trim());
       if (pid > 1) await killAndWait([pid]);
-    }
+    });
+    await expect(readyLine(child, "ready", 10_000, 500)).rejects.toThrow(
+      "exited before printing ready"
+    );
   }
 );
 
