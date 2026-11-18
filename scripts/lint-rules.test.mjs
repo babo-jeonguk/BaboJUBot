@@ -35,6 +35,12 @@ const folderRemovals = {
   "fs.rmSync": `import fs from "node:fs";\nfs.rmSync("dir", { force: true, recursive: true });\n`,
   "fsp.rm": `import fsp from "node:fs/promises";\nawait fsp.rm("dir", { recursive: true, force: true });\n`,
   "fs.promises.rm": `import fs from "node:fs";\nawait fs.promises.rm("dir", { recursive: true });\n`,
+  // rmdir은 recursive 없이도 빈 폴더를 지운다.
+  "rmdir without options": `import { rmdir } from "node:fs/promises";\nawait rmdir("dir");\n`,
+  "rmdirSync without options": `import { rmdirSync } from "node:fs";\nrmdirSync("dir");\n`,
+  "fs.rmdirSync": `import fs from "node:fs";\nfs.rmdirSync("dir");\n`,
+  "fs.rmdir with a callback": `import fs from "node:fs";\nfs.rmdir("dir", () => {});\n`,
+  "fsp.rmdir": `import fsp from "node:fs/promises";\nawait fsp.rmdir("dir");\n`,
 };
 
 /** 폴더 지우기 규칙의 메시지만. */

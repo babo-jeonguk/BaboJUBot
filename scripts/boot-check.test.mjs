@@ -155,6 +155,50 @@ test(
   }
 );
 
+// 폴더를 쓰는 프로세스가 끝났는지 확인하지 못하면 폴더를 지우지 않는다. 지우면 남은 프로세스와 그 작업 파일의 관계가 끊겨
+// 원인을 볼 수 없다. 그룹을 벗어나 폴더 이름을 인수로 들고 도는 프로세스로 만든다(Postgres가 아니라 감독자가 끝내지 않는다).
+test(
+  "the supervisor keeps the folder and reports it when a process using it does not end",
+  {
+    timeout: 60_000,
+    skip:
+      process.platform === "win32" &&
+      "Windows finds the folder's processes only through its postmaster.pid files",
+  },
+  async () => {
+    const script = `
+      const { spawn } = require("node:child_process");
+      const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", require("node:os").tmpdir()], {
+        detached: true,
+        stdio: "ignore",
+      });
+      escaped.unref();
+      console.log(JSON.stringify({ escaped: escaped.pid }));
+    `;
+    const error = await supervise(["-e", script], process.env).then(
+      () => assert.fail("the supervisor did not report the running process"),
+      (error) => error
+    );
+    const escaped = Number(/"escaped":(\d+)/.exec(error.message)?.[1]);
+    const scope = /could not clean up (\S+)/.exec(error.message)?.[1];
+    try {
+      assert.ok(error instanceof AggregateError, String(error));
+      assert.ok(scope, error.message);
+      const messages = error.errors.map((e) => e.message).join("\n");
+      assert.match(
+        messages,
+        /wait for the folder's processes to end: still running/
+      );
+      assert.match(messages, new RegExp(`kept ${RegExp.escape(scope)}`));
+      assert.equal(existsSync(scope), true, `${scope} was removed`);
+    } finally {
+      if (escaped && isAlive(escaped)) process.kill(escaped, "SIGKILL");
+      if (escaped) await waitUntil(() => !isAlive(escaped), 10_000);
+      if (scope) await removeFolder(scope);
+    }
+  }
+);
+
 const noLeftovers = { folders: [], processes: [] };
 
 /** 부모 셸에 남은 실제 서비스 설정을 흉내 낸다. boot-check는 이것을 서버에 넘기지 않아야 한다. */
