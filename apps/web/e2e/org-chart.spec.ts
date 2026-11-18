@@ -1,6 +1,7 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { firstApprovalId, goalInput } from "./support/organization.ts";
 import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
+import { expectNoHorizontalOverflow, settledBoxes } from "./support/layout.ts";
 
 /** 스크린샷을 남길 곳. 지정하면 조직도·꾸미기 창을 찍는다(사람이 보는 확인용이며 비교하지 않는다). */
 const shots = process.env.E2E_SHOTS;
@@ -21,30 +22,6 @@ const shot = async (page: Page, name: string) => {
   );
   await page.screenshot({ path: `${shots}/${name}.png` });
 };
-
-/**
- * 한눈에 맞추기(`fitView`)는 다음 frame에 돌아 그 전에 잰 위치는 맞춘 뒤와 다르다. 연달아 두 번 잰 위치가 같아질 때까지
- * 기다렸다가 그 위치를 돌려준다. 한 번만 재면 상자마다 다른 배치에서 잰 값을 비교할 수 있다.
- * 첫 배치는 화면을 불러오는 일의 끝이므로 그 상한(`pageLoad`)으로 기다린다. 부하가 큰 기기에서 기본 5초를 넘겼다(#215).
- */
-async function settledBoxes<L extends Locator[]>(locators: [...L]) {
-  type Box = { x: number; y: number; width: number; height: number };
-  let boxes: Box[] = [];
-  let last = "";
-  await expect
-    .poll(async () => {
-      boxes = await Promise.all(
-        locators.map(async (l) => (await l.boundingBox())!)
-      );
-      const now = JSON.stringify(boxes);
-      const same = now === last;
-      last = now;
-      return same;
-    }, pageLoad)
-    .toBe(true);
-  // 넘긴 개수만큼 돌려준다. 상자마다 따로 잴 때와 달리 부를 때마다 위치가 확정된 값이다.
-  return boxes as { [K in keyof L]: Box };
-}
 
 type Org = { id: string; agents: { id: string; role: string; name: string }[] };
 
@@ -123,7 +100,8 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
   await page.getByRole("button", { name: worker!.name, exact: true }).click();
   await input.fill("research lead");
   await input.press("Enter");
-  await expect(page.getByRole("alert")).toHaveText(
+  // 오류는 이름 칸 바로 아래에 있다. 칸을 감싼 요소 안에서 찾는다.
+  await expect(input.locator("..").getByRole("alert")).toHaveText(
     "같은 이름의 에이전트가 이미 있습니다. 다른 이름을 적으세요."
   );
   await input.fill("  통계 담당  ");
@@ -192,12 +170,10 @@ test("the org chart stacks the team under the Lead at 390px without overflowing,
   const chart = page.getByRole("region", { name: "조직도" });
   const links = chart.getByRole("link");
   await expect(links).toHaveCount(3);
-  const boxes = await Promise.all(
-    [lead, ...workers].map(
-      async (a) =>
-        (await chart
-          .getByRole("link", { name: new RegExp(a.name) })
-          .boundingBox())!
+  // 좁은 화면 배치도 한눈에 맞추기가 다음 frame에 돈다. 자리 잡은 위치를 잰다.
+  const boxes = await settledBoxes(
+    [lead, ...workers].map((a) =>
+      chart.getByRole("link", { name: new RegExp(a.name) })
     )
   );
   for (const box of boxes) {
@@ -208,9 +184,7 @@ test("the org chart stacks the team under the Lead at 390px without overflowing,
   expect(boxes[1]!.y).toBeGreaterThan(boxes[0]!.y + boxes[0]!.height);
   expect(boxes[2]!.y).toBeGreaterThan(boxes[1]!.y + boxes[1]!.height);
   expect(boxes[1]!.x).toBeGreaterThan(boxes[0]!.x);
-  expect(
-    await page.evaluate(() => document.documentElement.scrollWidth)
-  ).toBeLessThanOrEqual(390);
+  await expectNoHorizontalOverflow(page);
   await expect(chart.locator(".face-eye").first()).toHaveCSS(
     "animation-name",
     "none"

@@ -4,6 +4,7 @@ import { lowContrastTexts } from "./support/contrast.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput, railOrganizationLink } from "./support/organization.ts";
 import { test as settingsTest } from "./support/shared-settings.ts";
+import { expectNoHorizontalOverflow } from "./support/layout.ts";
 
 // 키보드·포커스·접근 이름과 상태·실패 복구·실제 대비(#152). 실제 화면 읽기 프로그램은 실행하지 않고 Chromium 접근성 트리로 확인한다.
 
@@ -558,7 +559,8 @@ test("field errors are linked to their field and focused on submit, while server
       : route.fallback()
   );
   await name.press("Enter");
-  await expect(page.getByRole("alert")).toHaveText(
+  // 오류는 이름 칸 바로 아래에 있다. 칸을 감싼 요소 안에서 찾는다.
+  await expect(name.locator("..").getByRole("alert")).toHaveText(
     "이름을 바꾸지 못했습니다. 다시 시도하세요."
   );
   await expect(name).not.toHaveAttribute("aria-invalid", /.*/);
@@ -627,9 +629,9 @@ settingsTest(
       route.fulfill({ status: 500, json: { error: { code: "internal" } } })
     );
     await policy.click();
-    await expect(page.getByRole("alert")).toHaveText(
-      `${label} 설정을 저장하지 못했습니다. 다시 시도하세요.`
-    );
+    await expect(
+      page.getByRole("listitem").filter({ has: policy }).getByRole("alert")
+    ).toHaveText(`${label} 설정을 저장하지 못했습니다. 다시 시도하세요.`);
     await expect(policy).toHaveAccessibleDescription("");
     expect(await policy.isChecked()).toBe(!before);
     await page.unrouteAll({ behavior: "wait" });
@@ -774,7 +776,10 @@ test("a clipped Inbox excerpt says so and links to the original screen, where th
   await expect(page).toHaveURL(
     new RegExp(`/orgs/${org.id}/approvals/${org.approvalId}$`)
   );
-  const last = page.getByText("마지막 계획 줄");
+  // 원래 화면의 같은 이름 영역에는 계획 전체가 있다.
+  const last = page
+    .getByRole("region", { name: "초기 연구 계획" })
+    .getByText("마지막 계획 줄");
   await last.scrollIntoViewIfNeeded();
   await expect(last).toBeInViewport();
 });
@@ -806,9 +811,13 @@ test("reduced motion stops spin and pulse loops while normal motion keeps them, 
   try {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`/orgs/${org.id}/dashboard`);
+    // 칸마다 숨은 안내가 하나씩 있다. 본문 영역에 하나 이상 있으면 된다.
     await expect(
-      page.getByRole("status").filter({ hasText: "불러오는 중…" }).first()
-    ).toBeAttached();
+      page
+        .getByRole("main")
+        .getByRole("status")
+        .filter({ hasText: "불러오는 중…" })
+    ).not.toHaveCount(0);
   } finally {
     // 붙잡은 요청은 끝내지 않고 버린다.
     await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -834,12 +843,7 @@ async function expectMainScreensFit(page: Page, org: Org, at: string) {
   ] as const) {
     await openWithLiveEvents(page, path);
     await expect(ready, `${path} @${at}`).toBeVisible({ timeout: 20_000 });
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth
-      ),
-      `${path} @${at}`
-    ).toBe(true);
+    await expectNoHorizontalOverflow(page, `${path} @${at}`);
     await ready.scrollIntoViewIfNeeded();
     await expect(ready).toBeInViewport();
   }

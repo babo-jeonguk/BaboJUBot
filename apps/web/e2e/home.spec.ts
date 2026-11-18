@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
+import { expectNoHorizontalOverflow, settled } from "./support/layout.ts";
 
 const runs = { timeout: 20_000 };
 
@@ -197,12 +198,15 @@ test("the home is a lobby of rooms in creation order: attention shows in place, 
     / 6명$/,
     runs
   );
-  expect(await widthOf()).toBeLessThan(0.55);
-  const tops = await room(first)
-    .locator(".room-desks .seat")
-    .evaluateAll((seats) =>
-      seats.map((s) => Math.round(s.getBoundingClientRect().top))
-    );
+  // 새 자리는 다음 그리기에서 놓인다. 7명일 때처럼 자리 잡을 때까지 다시 잰다.
+  await expect.poll(widthOf).toBeLessThan(0.55);
+  const tops = await settled(() =>
+    room(first)
+      .locator(".room-desks .seat")
+      .evaluateAll((seats) =>
+        seats.map((s) => Math.round(s.getBoundingClientRect().top))
+      )
+  );
   expect(tops).toHaveLength(5);
   expect(new Set(tops).size).toBe(1);
   await first.addWorker();
@@ -235,13 +239,7 @@ test("the home is a lobby of rooms in creation order: attention shows in place, 
   // 붙은 Inbox 닫힘과 좁은 화면 배치는 다음 frame의 media query 변화로 그려진다. 닫힌 뒤에 잰다.
   await expect(inbox).toBeHidden();
   await expect(room(later)).toBeVisible();
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth
-      )
-    )
-    .toBe(true);
+  await expectNoHorizontalOverflow(page);
   await page.setViewportSize({ width: 1440, height: 900 });
 
   // 방 머리는 조직 화면으로, 캐릭터는 그 에이전트 화면으로 간다.

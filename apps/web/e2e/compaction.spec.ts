@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { test } from "./support/shared-settings.ts";
+import { expectNoHorizontalOverflow } from "./support/layout.ts";
 
 test("compaction inputs keep intermediate text, clamp on blur and save with defaults at 390px", async ({
   page,
@@ -70,11 +71,7 @@ test("compaction inputs keep intermediate text, clamp on blur and save with defa
   await page.reload();
   await expect(threshold).toHaveValue("50000");
   await expect(ratio).toHaveValue("95");
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth
-    )
-  ).toBe(true);
+  await expectNoHorizontalOverflow(page);
   await page.screenshot({
     path: "/tmp/babojubot-compaction-390.png",
     fullPage: true,

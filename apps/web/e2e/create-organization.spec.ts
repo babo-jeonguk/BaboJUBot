@@ -23,7 +23,9 @@ test("creating an organization with a goal opens its Lead chat, wakes the Lead a
 
   // 이 테스트는 자기만 쓰는 빈 서버(support/isolated-server.ts)에서 돈다. 빈 상태와 전체 조직 수를 그 서버 기준으로 본다.
   // 조직 없음 빈 상태에서 dialog를 연다. 이름과 연구 목표가 있어야 만들 수 있고 완료 기준은 비워도 된다.
-  await expect(page.getByText("아직 연구 조직이 없습니다")).toBeVisible();
+  await expect(
+    page.getByRole("main").getByText("아직 연구 조직이 없습니다")
+  ).toBeVisible();
   await page.getByRole("button", { name: "＋ 새 연구 조직" }).click();
   const dialog = page.getByRole("dialog", { name: "새 연구 조직" });
   const create = dialog.getByRole("button", { name: "만들기" });
@@ -42,7 +44,12 @@ test("creating an organization with a goal opens its Lead chat, wakes the Lead a
 
   await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/chat$/);
   await expect(dialog).toBeHidden();
-  await expect(page.getByText("Research Lead", { exact: true })).toBeVisible();
+  // 대화 머리에 Lead 링크가 보인다.
+  await expect(
+    page
+      .getByRole("main")
+      .getByRole("link", { name: "Research Lead", exact: true })
+  ).toBeVisible();
   // Lead 대화로 목표를 보내지 않아도 생성으로 깨어난 Lead가 초기 연구 승인을 요청한다.
   await runsSettled(page.request, new URL(page.url()).pathname.split("/")[2]!);
   await expect(

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   goalInput,
+  leadComposer,
   messageAnswered,
   runsSettled,
   sendingMessage,
@@ -33,9 +34,18 @@ test("keeps a draft edited while the previous message is being sent", async ({
   );
   try {
     await page.goto(`/orgs/${org.id}/chat`);
-    await expect(page.getByText("불러오는 중…")).toHaveCount(2);
+    // 대화 목록 칸과 메시지 칸이 둘 다 불러오는 중이다. 숨은 안내라 본문 영역 안에서 세고, 하나는 대화 목록의 것이다.
+    await expect(
+      page
+        .getByRole("main")
+        .getByRole("status")
+        .filter({ hasText: "불러오는 중…" })
+    ).toHaveCount(2);
+    await expect(
+      page.getByRole("navigation", { name: "대화 목록" }).getByRole("status")
+    ).toHaveText("불러오는 중…");
     // 전송 상태는 입력창 영역 안에서 찾는다.
-    const composer = page.locator("form").filter({ has: input });
+    const composer = leadComposer(page);
     const sending = composer
       .getByRole("status")
       .filter({ hasText: /^전송 중…$/ });
@@ -91,14 +101,8 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
   const sections = page.getByRole("navigation", { name: "조직 화면" });
   await sections.getByRole("link", { name: "활동" }).click();
   const stream = page.getByRole("list", { name: "활동 stream" });
-  await expect(
-    stream.getByText("Research Lead 실행 시도 완료").first()
-  ).toBeVisible();
-  await expect(
-    stream.getByText("조직 도구 send_message").first()
-  ).toBeVisible();
-  // 답장한 실행 시도(가장 최근)가 끝나기를 서버에서 확인하고, 그 실행 시도의 링크를 ID로 고른다. 위 두 문구는 앞선
-  // 실행 시도에도 있어 이번 실행 시도를 가리지 못한다.
+  // 답장한 실행 시도(가장 최근)가 끝나기를 서버에서 확인하고, 그 실행 시도의 줄을 ID로 고른다. 실행 시도 완료·도구 호출
+  // 문구는 생성으로 깨어난 앞선 실행 시도에도 있어 문구만으로는 이번 실행 시도를 가리지 못한다.
   let replyRunId = "";
   await expect
     .poll(
@@ -112,14 +116,20 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
       { timeout: 15_000 }
     )
     .toBe("completed");
-  await stream
-    .getByRole("link", { name: /^실행 시도 / })
-    .and(stream.locator(`a[href$="/runs/${replyRunId}"]`))
-    .first()
-    .click();
+  const replyEvents = stream.getByRole("listitem").filter({
+    has: page.locator(`a[href="/orgs/${org.id}/runs/${replyRunId}"]`),
+  });
+  const replyCompleted = replyEvents.filter({
+    hasText: "Research Lead 실행 시도 완료",
+  });
+  await expect(replyCompleted).toBeVisible();
+  await expect(
+    replyEvents.filter({ hasText: "조직 도구 send_message" })
+  ).toBeVisible();
+  await replyCompleted.getByRole("link", { name: /^실행 시도 / }).click();
 
-  await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}$/);
-  const runUrl = page.url();
+  const runUrl = new RegExp(`/orgs/${org.id}/runs/${replyRunId}$`);
+  await expect(page).toHaveURL(runUrl);
   await expect(page.getByRole("region", { name: "깨우기 사유" })).toContainText(
     "데이터셋은 무엇을 쓸 계획인가요"
   );
@@ -132,16 +142,22 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
   );
 
   // 에이전트 상세에서 Lead의 상태와 최근 실행 시도를 보고 그 실행 시도로 간다.
+  const { agents } = (await (
+    await page.request.get(`/api/organizations/${org.id}`)
+  ).json()) as { agents: { id: string; role: string }[] };
+  const leadId = agents.find((a) => a.role === "lead")!.id;
   await sections.getByRole("link", { name: "에이전트" }).click();
   await page
+    .getByRole("region", { name: "조직도" })
     .getByRole("link", { name: /Research Lead/ })
-    .first()
     .click();
-  await expect(page).toHaveURL(/\/agents\/[0-9a-f-]{36}$/);
+  await expect(page).toHaveURL(new RegExp(`/orgs/${org.id}/agents/${leadId}$`));
   await expect(
     page.getByRole("heading", { name: "Research Lead" })
   ).toBeVisible();
-  await expect(page.getByText("대기", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("main").getByText("대기", { exact: true })
+  ).toBeVisible();
   // 최근 실행 시도는 이 대화의 것과 생성으로 깨어난 첫 실행 시도다.
   const recent = page.getByRole("region", { name: "최근 실행 시도" });
   await expect(recent.getByRole("link")).toHaveCount(2);

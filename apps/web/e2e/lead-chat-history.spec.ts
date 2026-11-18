@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
-import { goalInput } from "./support/organization.ts";
+import { settledBoxes } from "./support/layout.ts";
+import { goalInput, leadComposer } from "./support/organization.ts";
 
 // Lead 대화는 가장 최근 쪽(50개)만 먼저 그리고, 위로 올리면 더 오래된 쪽을 붙인다.
 // 맨 아래를 따라가는 동안에는 가장 최근 창(100개 이하)만 남기고, 위로 올리면 덜어 낸 쪽을 다시 받는다.
@@ -84,13 +85,10 @@ async function seedTranscript(page: Page, org: Org, rounds: number) {
   }
 }
 
-/** 스크롤 영역 위쪽에서 메시지까지의 거리. */
+/** 스크롤 영역 위쪽에서 메시지까지의 거리. 이전 메시지를 붙인 뒤 보던 자리를 되잡는 일이 다음 frame에 끝날 수 있어 자리 잡은 값을 잰다. */
 const offsetIn = async (scroller: Locator, message: Locator) => {
-  const [outer, inner] = await Promise.all([
-    scroller.boundingBox(),
-    message.boundingBox(),
-  ]);
-  return inner!.y - outer!.y;
+  const [outer, inner] = await settledBoxes([scroller, message]);
+  return inner.y - outer.y;
 };
 
 test("the Lead chat shows the latest 50 messages and loads older ones on scroll-up or with the button, keeping the view in place", async ({
@@ -241,7 +239,9 @@ test("stays at the bottom while the queue above the composer and the composer it
   );
   for (let i = 1; i <= 5; i++)
     await post(page, org.api("/messages"), { body: `줄 ${i}` });
-  await expect(page.getByText("줄 세운 메시지 5/20")).toBeVisible();
+  await expect(
+    leadComposer(page).getByText("줄 세운 메시지 5/20")
+  ).toBeVisible();
   await expect.poll(gap).toBeLessThanOrEqual(1);
 
   // 여러 줄을 입력해 입력창이 자라도 마찬가지다.

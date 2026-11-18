@@ -49,6 +49,16 @@ export function inboxOrganizationItems(list: Locator, organizationId: string) {
 }
 
 /**
+ * Lead 대화의 입력창 영역: 줄 세운 메시지 목록, 입력창, 그 아래 전송·일시정지·가득 참 안내. 같은 안내 문구가 승인·결과 화면과
+ * 대화 목록 미리보기에도 있으므로 입력창 안내는 이 안에서 찾는다.
+ */
+export function leadComposer(page: Page) {
+  return page
+    .locator("form")
+    .filter({ has: page.getByLabel("Lead에게 보낼 메시지") });
+}
+
+/**
  * API로 조직을 만들고, 생성으로 깨어난 가짜 Lead가 초기 연구 승인을 요청하고 첫 실행 시도를 끝낼 때까지 기다린다.
  * 실행 시도는 그때까지 쌓인 깨움을 모두 한꺼번에 받으므로, 바로 이어 보낸 메시지(`실패 연습` 등)가 생성의 깨움과
  * 한 실행 시도로 묶이면 초기 연구 승인 요청이 생기지 않는다. 이어서 메시지를 보낼 spec은 이 함수로 만든다.
