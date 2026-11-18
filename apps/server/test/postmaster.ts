@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { vi } from "vitest";
 
 /** 서버 자식 프로세스에서 Postgres 준비를 기다리는 데 필요한 관찰만 모은다. */
 export type ObservedChild = {
@@ -15,19 +16,35 @@ export async function waitForPostmaster(
     read = (file: string) => readFileSync(file, "utf8"),
   }: { timeoutMs: number; read?: (file: string) => string }
 ) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null)
+  // 확인은 바로 한 번 하고, 그 뒤 간격마다 다시 한다. 준비·자식 종료·읽기 오류 중 하나를 보면 끝낸다.
+  let seen: { pid: number } | { error: unknown } | undefined;
+  await vi
+    .waitUntil(
+      () => {
+        if (child.exitCode !== null || child.signalCode !== null)
+          seen = {
+            error: new Error(
+              `server ended before Postgres started (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
+            ),
+          };
+        else
+          try {
+            const pid = readPid(pidFile, read);
+            if (pid !== undefined) seen = { pid };
+          } catch (error) {
+            seen = { error };
+          }
+        return seen !== undefined;
+      },
+      { timeout: timeoutMs, interval: 20 }
+    )
+    .catch(() => {
       throw new Error(
-        `server ended before Postgres started (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
+        `Postgres did not start in ${timeoutMs}ms: ${child.stderrText()}`
       );
-    const pid = readPid(pidFile, read);
-    if (pid !== undefined) return pid;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  throw new Error(
-    `Postgres did not start in ${timeoutMs}ms: ${child.stderrText()}`
-  );
+    });
+  if ("error" in seen!) throw seen.error;
+  return seen!.pid;
 }
 
 /**

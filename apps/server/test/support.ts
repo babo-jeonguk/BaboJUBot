@@ -11,6 +11,7 @@ import {
   type StreamScope,
 } from "@babojubot/contracts";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
+import { vi } from "vitest";
 import WebSocket from "ws";
 import {
   startServer,
@@ -25,6 +26,13 @@ import { removeFolder } from "@babojubot/runtime/remove-folder";
  */
 export const eventuallyMs = 15_000;
 export const eventually = { timeout: eventuallyMs };
+/**
+ * 서버 시작의 준비 확인이 끝나기를 기다리는 상한. 제품의 준비 확인은 격리 안전 확인 시한(60초, `src/isolation.ts`)과
+ * 연결 확인 시한(30초, `src/readiness.ts`) 안에 끝나므로 그 합(90초)에 여유를 둔다. 이보다 짧으면 제품이 정한 시한 안의
+ * 느린 확인을 시험이 실패로 바꾼다. 시험 시한(120초, `vitest.config.ts`)보다는 짧아, 시한에 걸리기 전에 무엇을 기다리다
+ * 실패했는지 알린다. 검사가 기다리는 신호의 상한(`eventuallyMs`)과 따로 두는 것은 이 대기가 검사가 아닌 공용 준비라서다.
+ */
+export const readinessSettleMs = 100_000;
 
 export type Subscription = {
   /** 받은 Event frame. */
@@ -99,12 +107,15 @@ export type TestServerOptions = {
   isolation?: ServerOptions["isolation"];
   /** 빌드한 화면 디렉터리. 있으면 API 밖의 경로에 SPA로 낸다. */
   webDistDir?: string;
+  /** 서버 시작의 준비 확인을 기다리는 상한. 기본은 `readinessSettleMs`이며 서버에는 넘기지 않는다. */
+  readinessSettleMs?: number;
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */
-export async function startTestServer(
-  options: TestServerOptions = {}
-): Promise<TestServer> {
+export async function startTestServer({
+  readinessSettleMs: settleMs = readinessSettleMs,
+  ...options
+}: TestServerOptions = {}): Promise<TestServer> {
   const database = await createTestDatabase();
   // 넘겨받은 폴더는 넘긴 쪽이 치운다. 이 helper가 만든 폴더만 지운다.
   let ownDataDir: string | undefined;
@@ -148,14 +159,42 @@ export async function startTestServer(
       dataDir,
     });
     // 서버 시작의 준비 확인이 끝난 뒤에 검사를 시작한다. 그래야 그 확인의 설정 변경 신호가 검사가 센 신호에 섞이지 않는다.
-    for (let settled = false; !settled;) {
-      const { body } = await request("GET", "/api/providers");
-      settled = body.providers.every(
-        (p: { readiness: { checking: boolean; reason: string | null } }) =>
-          !p.readiness.checking && p.readiness.reason !== "not_checked"
-      );
-      if (!settled) await new Promise((r) => setTimeout(r, 10));
-    }
+    // 조회가 실패하면(응답이 깨짐 등) 다시 묻지 않고 그 오류로 실패한다.
+    let unsettled: string[] | undefined;
+    let failed: { error: unknown } | undefined;
+    await vi
+      .waitUntil(
+        async () => {
+          try {
+            const { body } = await request("GET", "/api/providers");
+            unsettled = body.providers
+              .filter(
+                (p: {
+                  readiness: { checking: boolean; reason: string | null };
+                }) =>
+                  p.readiness.checking || p.readiness.reason === "not_checked"
+              )
+              .map(
+                (p: {
+                  id: string;
+                  readiness: { checking: boolean; reason: string | null };
+                }) =>
+                  `${p.id} (${p.readiness.checking ? "checking" : "not_checked"})`
+              );
+            return unsettled!.length === 0;
+          } catch (error) {
+            failed = { error };
+            return true;
+          }
+        },
+        { timeout: settleMs, interval: 10 }
+      )
+      .catch(() => {
+        throw new Error(
+          `the test server's providers did not finish their startup readiness check in ${settleMs}ms: ${unsettled ? unsettled.join(", ") : "no answer from GET /api/providers yet"}`
+        );
+      });
+    if (failed) throw failed.error;
   } catch (error) {
     // 원래 실패를 그대로 알린다. 치우기는 단계마다 따로 시도하고, 실패하면 그 실패를 원래 실패와 함께 알린다.
     const failures: unknown[] = [];

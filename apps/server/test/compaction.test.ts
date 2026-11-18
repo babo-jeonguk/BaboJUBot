@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   eventually,
   startTestServer,
@@ -11,6 +11,7 @@ const leadOf = (org: { agents: { id: string; role: string }[] }) =>
   org.agents.find((a) => a.role === "lead")!.id;
 let t: TestServer | undefined;
 afterEach(async () => {
+  vi.useRealTimers();
   await t?.close();
 });
 it("persists compaction settings with provider defaults and rejects invalid ranges", async () => {
@@ -229,6 +230,7 @@ it.each([
     let now = new Date("2026-01-01T00:00:00Z"),
       runs = 0,
       resumed: unknown,
+      compacting: AbortSignal | undefined,
       started!: () => void;
     const began = new Promise<void>((resolve) => {
       started = resolve;
@@ -259,6 +261,7 @@ it.each([
           };
         },
         async precompact(_input, signal) {
+          compacting = signal;
           started();
           await new Promise((resolve) =>
             signal.addEventListener("abort", resolve, { once: true })
@@ -276,6 +279,8 @@ it.each([
     ).body;
     await t.drain();
     now = new Date("2026-01-01T00:54:00Z");
+    // 압축 시한 확인(250ms 간격의 setInterval)을 시험이 돌린다. 제품에서 setInterval은 주기 확인만 쓰고, 그 밖의 타이머는 실제 시간 그대로다.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const tick = t.tickCompactions();
     await began;
     expect(
@@ -288,11 +293,14 @@ it.each([
     await within(t.kickHandled(leadOf(org)), "handling the message's kick");
     expect(runs).toBe(1);
     now = new Date("2026-01-01T01:08:59Z");
-    // 압축 시한 확인(250ms 간격)이 시한 전 시각을 보고 멈추지 않는지는 알릴 신호가 없어 그 간격 몇 번을 기다려 본다.
-    // 느린 기기에서는 그 사이 확인이 돌지 않아 결함이 있어도 통과할 수 있다. 이 시험이 보장하는 한계다(#215).
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // 시한 전 시각을 본 확인은 압축을 멈추지 않는다. 시한 판단은 확인 안에서 바로 하므로 확인을 돌린 직후에 본다.
+    vi.advanceTimersByTime(250);
+    expect(compacting?.aborted).toBe(false);
     expect(runs).toBe(1);
     now = new Date("2026-01-01T01:09:00Z");
+    vi.advanceTimersByTime(250);
+    expect(compacting?.aborted).toBe(true);
+    vi.useRealTimers();
     await tick;
     await t.drain();
     expect(runs).toBe(2);

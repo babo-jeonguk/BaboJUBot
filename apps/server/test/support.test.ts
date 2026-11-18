@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { afterEach, expect, it, vi } from "vitest";
+import type { ProviderConnection } from "@babojubot/contracts";
+import { createFakeProviders } from "@babojubot/runtime";
 import { startTestServer } from "./support.ts";
 
 // 시험 서버 helper가 서버를 넘기기 전에 실패하면, 자기가 만든 것(서버·DB·작업 폴더)을 치우고 원래 오류로 실패한다.
@@ -49,4 +51,35 @@ it("leaves a workspace folder it was given when the server cannot start", async 
     startTestServer({ notificationChannels: [], dataDir: given })
   ).rejects.toThrow("exactly one notification channel is supported, got 0");
   expect(await readdir(temp)).toEqual([path.basename(given)]);
+});
+
+it("fails naming what it waited for and cleans up when the startup readiness check does not finish within its limit", async () => {
+  const temp = await ownTemporaryFolder();
+  // 준비 확인을 시험이 붙잡아 끝나지 않게 한다. 상한 0이면 첫 확인에서 상한이 지나므로 실행기 속도와 상관없이 상한에 걸린다.
+  const [fake] = createFakeProviders(1);
+  const held: ProviderConnection = {
+    ...fake!,
+    id: "held",
+    adapter: {
+      ...fake!.adapter,
+      // 서버를 닫으면 멈춤 신호로 끝난다.
+      checkReadiness: (signal) =>
+        new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          })
+        ),
+    },
+  };
+  const failure = await startTestServer({
+    providers: [held],
+    readinessSettleMs: 0,
+  }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).not.toBeInstanceOf(AggregateError);
+  expect((failure as Error).message).toMatch(
+    /^the test server's providers did not finish their startup readiness check in 0ms: (held \((checking|not_checked)\)|no answer from GET \/api\/providers yet)$/
+  );
+  // 넘기기 전 실패의 정리를 모두 마쳤다(정리 실패가 없어 원래 오류 그대로다). 작업 폴더는 서버가 닫힌 것을 확인한 뒤에만 지운다.
+  expect(await readdir(temp)).toEqual([]);
 });
