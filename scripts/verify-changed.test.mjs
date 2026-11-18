@@ -113,6 +113,7 @@ for (const file of [
   "eslint.config.js",
   "scripts/test-files.mjs",
   "scripts/eslint-test-rules.mjs",
+  "scripts/eslint-product-rules.mjs",
   "tsconfig.base.json",
   "package.json",
   "pnpm-lock.yaml",
