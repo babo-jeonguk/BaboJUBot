@@ -206,7 +206,8 @@ test(
     assert.equal(status, 28, stderr);
     assert.equal(requests.length, 3);
     assert.match(stderr, /retries? left/);
-    assert.match(stderr, /timed out/i);
+    // 시도마다 상한(timed out)이 아니라 멈춤 판정(too slow)으로 끊겼다.
+    assert.match(stderr, /Operation too slow/);
   }
 );
 

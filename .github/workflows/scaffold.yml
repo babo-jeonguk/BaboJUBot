@@ -57,7 +57,7 @@ jobs:
     needs: changes
     # 로컬 개발 환경과 같은 Ubuntu LTS를 사용하고 OS 판 변경은 별도로 검증한다.
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -83,12 +83,13 @@ jobs:
         run: pnpm install --frozen-lockfile
       # Playwright는 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다(playwright-core
       # downloadBrowserWithProgressBar). 시스템 의존성은 apt가 받으므로 apt의 받기 재시도만 켠다(아래 단계).
+      # 느린 미러에서는 설치가 8분 넘게 걸린 적이 있다(최근 35회 최대 511초). 그래서 설치 단계 시한을 12분으로 둔다.
       - name: Let apt retry transient download failures
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
         run: echo 'Acquire::Retries "2";' | sudo tee /etc/apt/apt.conf.d/zzz-babojubot-retries
       - name: Install Chromium and system dependencies
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
-        timeout-minutes: 3
+        timeout-minutes: 12
         # 시도마다 번호와 오류를 로그에 남긴다.
         env:
           DEBUG: pw:install
@@ -220,7 +221,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -236,15 +237,15 @@ jobs:
       # 공식 설치 스크립트와 npm은 1.x라 GitHub 릴리스 묶음을 받는다(docker/runner와 같은 방식). 판은 #147 프로토콜 기준이다.
       # 일시적인 오류(시간 초과·연결 거부·HTTP 408·429·5xx)만 두 번 더 받는다(curl --retry). 404 같은 오류는 바로 실패한다.
       # 파일로 받아야 curl이 다시 받기 전에 받다 만 내용을 버린다. 시도마다 남는 경고와 마지막 오류가 로그에 남는다.
-      # 시도마다 60초, 서버가 요구한 대기를 포함한 재시도 전체는 180초로 묶는다. 그 안에 시작한 마지막 시도가 60초를 다 써도(최악 4분) 단계 시한 5분 안에 마지막 오류와 안내가 남는다.
+      # 약 122MB 묶음이다. 초당 100KB 아래로 30초 멈춘 시도만 끊고, 느리게 받는 시도는 6분까지 둔다. 서버가 요구한 대기를 포함한 재시도 전체는 180초로 묶어, 그 안에 시작한 마지막 시도가 6분을 다 써도(최악 9분 반) 단계 시한 10분 안에 마지막 오류와 안내가 남는다.
       - name: Install OpenCode
-        timeout-minutes: 5
+        timeout-minutes: 10
         env:
           OPENCODE_VERSION: "2.2.6"
         run: |
           archive="$RUNNER_TEMP/opencode-linux-x64.tar.gz"
           mkdir -p "$RUNNER_TEMP/opencode"
-          curl -fSL --no-progress-meter --retry 2 --retry-connrefused --connect-timeout 15 --max-time 60 --retry-max-time 180 -o "$archive" \
+          curl -fSL --no-progress-meter --retry 2 --retry-connrefused --connect-timeout 15 --speed-limit 102400 --speed-time 30 --max-time 360 --retry-max-time 180 -o "$archive" \
             "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" ||
             { echo "::error::OpenCode download failed after up to 3 attempts; the last error is above"; exit 1; }
           tar -xzf "$archive" -C "$RUNNER_TEMP/opencode" opencode
