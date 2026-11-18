@@ -6,6 +6,12 @@ import type { ProviderChoice, ProviderSummary } from "@babojubot/contracts";
 
 export type ChoiceProblem = "unknown_provider" | "unknown_model";
 
+/** 프로바이더·모델 칸 묶음 하나: 칸 id의 앞부분과 그 칸의 선택. */
+export type ChoiceField = {
+  idPrefix: string;
+  choice: ProviderChoice | undefined;
+};
+
 /**
  * 이 서버에 없는 연결이면 프로바이더 칸, 고른 연결의 목록에 없는 모델이면 모델 칸의 문제다. 서버처럼 목록이 비었으면(받아 오지
  * 못한 때 포함) 모델이 틀렸다고 단정하지 않는다.
@@ -34,7 +40,7 @@ export const choiceFieldIds = (idPrefix: string) => ({
 /** 칸 순서대로 처음 문제가 있는 칸. */
 export function firstChoiceProblem(
   providers: readonly ProviderSummary[],
-  fields: { idPrefix: string; choice: ProviderChoice | undefined }[]
+  fields: ChoiceField[]
 ): { fieldId: string; problem: ChoiceProblem } | undefined {
   for (const { idPrefix, choice } of fields) {
     const problem = choice && choiceProblem(providers, choice);
@@ -46,7 +52,7 @@ export function firstChoiceProblem(
 /** 처음 문제가 있는 칸으로 포커스를 옮기고, 그런 칸이 있었는지 돌려준다. 제출할 때 부른다. */
 export function focusFirstChoiceProblem(
   providers: readonly ProviderSummary[],
-  fields: { idPrefix: string; choice: ProviderChoice | undefined }[]
+  fields: ChoiceField[]
 ) {
   const problem = firstChoiceProblem(providers, fields);
   if (problem) document.getElementById(problem.fieldId)?.focus();
@@ -54,21 +60,20 @@ export function focusFirstChoiceProblem(
 }
 
 /**
- * 서버가 고른 값을 거부한 뒤 목록을 다시 받아 문제 칸으로 포커스를 옮긴다. 칸의 안내는 이미 보이므로, 다시 받다 실패해도
- * 저장 실패 처리를 막지 않고 진단만 남긴다. 실패를 돌려주지 않으므로 호출자는 기다리지 않아도 된다.
+ * 서버가 고른 값을 거부한 뒤 목록을 다시 받아 문제 칸으로 포커스를 옮긴다. 조회 실패는 거부가 아니라 결과의 `error`로 온다.
+ * 칸의 안내는 이미 보이므로 실패는 진단만 남기고, 가지고 있는 목록이 있으면 그 목록으로 칸을 찾는다.
  */
 export async function refreshChoiceProblem(
   refetch: () => Promise<{
     data?: { providers: readonly ProviderSummary[] } | undefined;
+    error: unknown;
   }>,
-  fields: { idPrefix: string; choice: ProviderChoice | undefined }[]
+  fields: ChoiceField[]
 ) {
-  try {
-    const { data } = await refetch();
-    if (data) focusFirstChoiceProblem(data.providers, fields);
-  } catch (error) {
+  const { data, error } = await refetch();
+  if (error)
     console.warn("[settings] could not refresh the provider list", error);
-  }
+  if (data) focusFirstChoiceProblem(data.providers, fields);
 }
 
 /** 서버가 저장 때 프로바이더·모델을 거부했다(그사이 목록이 바뀜). 목록을 다시 받아 칸의 오류로 보인다. */
