@@ -89,6 +89,19 @@ for (const action of ["subagent", "webfetch", "external_directory"])
     ).test(devWorker),
     `dev-worker.md must deny ${action}`
   );
+// worker가 통과시킬 시험과 검사 설정을 스스로 고치지 못하게 한다.
+for (const resource of [
+  "*.test.*",
+  "*.spec.*",
+  "*eslint.config.*",
+  "*package.json",
+])
+  assert(
+    devWorker.includes(
+      `action: edit\n    resource: "${resource}"\n    effect: deny`
+    ),
+    `dev-worker.md must deny editing ${resource}`
+  );
 console.log(
   `Checked local links in ${markdownFiles} Markdown files. No product functionality was tested.`
 );
