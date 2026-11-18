@@ -170,7 +170,14 @@ async function start() {
     });
     return { handle, label, server };
   } catch (error) {
-    await handle.close();
+    await handle
+      .close()
+      .catch((closeError: unknown) =>
+        console.error(
+          "[server] closing the database after a failed start failed",
+          closeError
+        )
+      );
     throw error;
   }
 }

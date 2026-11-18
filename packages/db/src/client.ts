@@ -53,13 +53,19 @@ export async function openDatabase(
   if ("url" in options) return connect(options.url, async () => {});
 
   const { port, stop, stopping } = await startEmbeddedCluster(options.embedded);
+  // `connect`가 불린 뒤에는 그 handle의 `close`가 정지를 맡는다. 여기서 멈추면 같은 cluster를 두 번 멈추게 된다.
   try {
     await ensureDatabase(clusterUrl(port, "postgres"));
-    return await connect(clusterUrl(port, databaseName), stop, stopping);
   } catch (error) {
-    await stop();
+    await stop().catch((stopError: unknown) =>
+      console.error(
+        "[db] stopping Postgres after a failed start failed",
+        stopError
+      )
+    );
     throw error;
   }
+  return connect(clusterUrl(port, databaseName), stop, stopping);
 }
 
 async function ensureDatabase(url: string) {
@@ -79,11 +85,22 @@ export async function withClient<T>(
 ): Promise<T> {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
+  let result: T;
   try {
-    return await use(client);
-  } finally {
-    await client.end();
+    result = await use(client);
+  } catch (error) {
+    await client
+      .end()
+      .catch((endError: unknown) =>
+        console.error(
+          "[db] closing the connection after a failed use failed",
+          endError
+        )
+      );
+    throw error;
   }
+  await client.end();
+  return result;
 }
 
 async function connect(
@@ -99,14 +116,23 @@ async function connect(
   const db = drizzle(pool, { schema });
   let closing: "open" | "connections" | "release" | "closed" = "open";
   const close = async () => {
+    const errors: unknown[] = [];
+    closing = "connections";
     try {
-      closing = "connections";
       await pool.end();
-    } finally {
-      closing = "release";
-      await release();
-      closing = "closed";
+    } catch (error) {
+      errors.push(error);
     }
+    closing = "release";
+    try {
+      await release();
+    } catch (error) {
+      errors.push(error);
+    }
+    closing = "closed";
+    if (errors.length === 2)
+      throw new AggregateError(errors, "closing the database failed");
+    if (errors.length === 1) throw errors[0];
   };
   const progress = () =>
     closing === "connections"
@@ -117,7 +143,12 @@ async function connect(
   try {
     await migrateDatabase(db);
   } catch (error) {
-    await close();
+    await close().catch((closeError: unknown) =>
+      console.error(
+        "[db] closing the database after a failed migration failed",
+        closeError
+      )
+    );
     throw error;
   }
   return { db, url, close, progress };
