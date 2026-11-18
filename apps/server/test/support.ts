@@ -19,6 +19,7 @@ import {
   type ServerOptions,
 } from "../src/index.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
 
 /**
  * 서버 작업·Event·준비 확인처럼 끝나는 신호가 오는 대기의 상한(#215). 신호가 오면 바로 끝나므로 넉넉해도 통과 시간은
@@ -88,6 +89,7 @@ export type TestServer = {
     scope: StreamScope,
     options?: { origin?: string }
   ) => Promise<Subscription>;
+  /** 서버·DB·이 helper가 만든 작업 폴더를 치운다. 각 단계를 따로 시도하고 실패를 모아 알린다. */
   close: () => Promise<void>;
 };
 
@@ -315,10 +317,24 @@ export async function startTestServer({
       });
     },
     async close() {
-      for (const socket of sockets) socket.terminate();
-      if (!serverStopped) await server.close();
-      await database.close();
-      if (ownDataDir) await removeFolder(ownDataDir);
+      // 넘기기 전 실패의 정리와 같은 순서다. 서버가 닫힌 것을 확인하지 못하면 그 서버가 쓰는 폴더는 남기고 그 사실을 알린다.
+      let serverClosed = serverStopped;
+      await cleanUpAll([
+        async () => {
+          for (const socket of sockets) socket.terminate();
+          if (!serverClosed) await server.close();
+          serverClosed = true;
+        },
+        () => database.close(),
+        async () => {
+          if (!ownDataDir) return;
+          if (!serverClosed)
+            throw new Error(
+              `kept ${ownDataDir}: the test server did not close`
+            );
+          await removeFolder(ownDataDir);
+        },
+      ]);
     },
   };
 }
