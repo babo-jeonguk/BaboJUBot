@@ -177,37 +177,33 @@ it.skipIf(process.platform === "win32")(
   "moves on and keeps the record when the start time query does not answer",
   async () => {
     const { root, directory } = await records();
-    const child = longRunning();
+    const child = folders.ownChild(longRunning());
     // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
     await once(child, "spawn");
     const file = `${child.pid}.json`;
+    await writeFile(
+      path.join(directory, file),
+      JSON.stringify({
+        pid: child.pid,
+        started: processStartedAt(child.pid!, withoutProc),
+      })
+    );
+    const fake = await folders.make("babojubot-fake-ps-");
+    await writeFile(
+      path.join(fake, "ps"),
+      `#!${process.execPath}\nsetTimeout(() => console.log("Mon Jan  1 00:00:00 2024"), 60_000);\n`,
+      { mode: 0o755 }
+    );
+    vi.stubEnv("PATH", `${fake}${path.delimiter}${process.env.PATH}`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      await writeFile(
-        path.join(directory, file),
-        JSON.stringify({
-          pid: child.pid,
-          started: processStartedAt(child.pid!, withoutProc),
-        })
-      );
-      const fake = await folders.make("babojubot-fake-ps-");
-      await writeFile(
-        path.join(fake, "ps"),
-        `#!${process.execPath}\nsetTimeout(() => console.log("Mon Jan  1 00:00:00 2024"), 60_000);\n`,
-        { mode: 0o755 }
-      );
-      vi.stubEnv("PATH", `${fake}${path.delimiter}${process.env.PATH}`);
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      try {
-        await recoverProviderProcesses(root, { platform: withoutProc });
-      } finally {
-        vi.unstubAllEnvs();
-        warn.mockRestore();
-      }
-      expect(gone(child.pid!)).toBe(false);
-      expect(await readdir(directory)).toEqual([file]);
+      await recoverProviderProcesses(root, { platform: withoutProc });
     } finally {
-      process.kill(child.pid!, "SIGKILL");
+      vi.unstubAllEnvs();
+      warn.mockRestore();
     }
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([file]);
   },
   120_000
 );

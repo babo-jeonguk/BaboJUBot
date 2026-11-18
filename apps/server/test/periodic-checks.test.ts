@@ -1,5 +1,5 @@
 import type { RuntimeAdapter } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { CompactionScheduler } from "../src/compaction.ts";
 import type { RunDispatcher } from "../src/dispatcher.ts";
 import type { EventHub } from "../src/event-hub.ts";
@@ -93,41 +93,39 @@ describe.each(["heartbeats", "compactions"] as const)(
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const scheduler = schedulers[kind]();
       const release = queries.holdNext();
+      // 단언이 먼저 실패해도 붙잡은 조회를 풀어야 닫기가 그 확인을 기다리다 멈추지 않는다.
+      onTestFinished(() => {
+        release();
+        return scheduler.close();
+      });
       scheduler.start();
-      try {
-        vi.advanceTimersByTime(pollMs);
-        await vi.waitFor(() => expect(queries.counted[kind]).toBe(1));
-        // 첫 확인이 붙잡힌 동안 주기가 네 번 더 지난다.
-        vi.advanceTimersByTime(pollMs * 4);
-        release();
-        // 직접 부른 확인은 부른 뒤에 시작한 확인이 끝날 때까지 기다린다. 밀린 주기와 함께 후속 확인 하나로 합쳐진다.
-        await scheduler.tick();
-        expect(queries.counted[kind]).toBe(2);
-      } finally {
-        // 단언이 먼저 실패해도 붙잡은 조회를 풀어야 닫기가 그 확인을 기다리다 멈추지 않는다.
-        release();
-        await scheduler.close();
-      }
+      vi.advanceTimersByTime(pollMs);
+      await vi.waitFor(() => expect(queries.counted[kind]).toBe(1));
+      // 첫 확인이 붙잡힌 동안 주기가 네 번 더 지난다.
+      vi.advanceTimersByTime(pollMs * 4);
+      release();
+      // 직접 부른 확인은 부른 뒤에 시작한 확인이 끝날 때까지 기다린다. 밀린 주기와 함께 후속 확인 하나로 합쳐진다.
+      await scheduler.tick();
+      expect(queries.counted[kind]).toBe(2);
     });
 
     // 직접 부른 확인은 진행 중인 확인을 자기 확인으로 치지 않는다. 부른 뒤의 상태를 읽은 확인이 끝나야 돌아온다.
     it("makes a direct check wait for a check that starts after the call", async () => {
       const scheduler = schedulers[kind]();
       const release = queries.holdNext();
-      try {
-        const first = scheduler.tick();
-        await vi.waitFor(() => expect(queries.counted[kind]).toBe(1));
-        let returned = false;
-        const second = scheduler.tick().then(() => (returned = true));
+      onTestFinished(() => {
         release();
-        await first;
-        await second;
-        expect(returned).toBe(true);
-        expect(queries.counted[kind]).toBe(2);
-      } finally {
-        release();
-        await scheduler.close();
-      }
+        return scheduler.close();
+      });
+      const first = scheduler.tick();
+      await vi.waitFor(() => expect(queries.counted[kind]).toBe(1));
+      let returned = false;
+      const second = scheduler.tick().then(() => (returned = true));
+      release();
+      await first;
+      await second;
+      expect(returned).toBe(true);
+      expect(queries.counted[kind]).toBe(2);
     });
   }
 );

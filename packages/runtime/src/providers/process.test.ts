@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { runProbe, startProcess } from "./process.ts";
+import { killAndWait } from "./process-test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();
@@ -13,9 +14,9 @@ const alive = (pid: number) => {
     return false;
   }
 };
-/** 시험이 띄운 프로그램이 남았으면 끝낸다. */
-const killIfAlive = (pid: number) => {
-  if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+/** 시험 프로그램이 `file`에 남긴 번호의 프로그램을 끝낸다. 번호를 남기기 전이면 할 일이 없다. */
+const stopRecorded = async (file: string) => {
+  if (existsSync(file)) await killAndWait([Number(readFileSync(file, "utf8"))]);
 };
 
 const run = async (
@@ -152,19 +153,16 @@ describe("runProbe", () => {
         }
       );
       void probing.catch(() => {});
-      let pid = 0;
-      try {
-        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {
-          timeout: 20_000,
-          interval: 25,
-        });
-        pid = Number(readFileSync(ready, "utf8"));
-        controller.abort();
-        await expect(probing).rejects.toThrow();
-        expect(alive(pid)).toBe(false);
-      } finally {
-        killIfAlive(pid);
-      }
+      // 시험이 먼저 실패해도 그 프로그램을 끝낸 뒤 폴더를 지운다.
+      folders.own(() => stopRecorded(ready), "the check program");
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {
+        timeout: 20_000,
+        interval: 25,
+      });
+      const pid = Number(readFileSync(ready, "utf8"));
+      controller.abort();
+      await expect(probing).rejects.toThrow();
+      expect(alive(pid)).toBe(false);
     },
     30_000
   );
@@ -177,23 +175,24 @@ describe("runProbe", () => {
     async () => {
       const folder = await folders.make("babojubot-probe-");
       const holderFile = path.join(folder, "holder");
+      folders.own(
+        () => stopRecorded(holderFile),
+        "the program holding the output"
+      );
       const logged = [
         vi.spyOn(console, "warn").mockImplementation(() => {}),
         vi.spyOn(console, "error").mockImplementation(() => {}),
       ];
-      try {
-        await expect(
-          probe(
-            `const holder = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
-            500
-          )
-        ).rejects.toThrow();
-        expect(logged.some((spy) => spy.mock.calls.length > 0)).toBe(true);
-      } finally {
+      onTestFinished(() => {
         for (const spy of logged) spy.mockRestore();
-        if (existsSync(holderFile))
-          killIfAlive(Number(readFileSync(holderFile, "utf8")));
-      }
+      });
+      await expect(
+        probe(
+          `const holder = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
+          500
+        )
+      ).rejects.toThrow();
+      expect(logged.some((spy) => spy.mock.calls.length > 0)).toBe(true);
     },
     30_000
   );

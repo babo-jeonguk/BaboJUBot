@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ephemeralCluster, startEmbeddedCluster } from "./embedded.ts";
 
 // 임시 cluster를 만들다 실패한 뒤 그 폴더를 지우는 정리까지 실패하게 한다. 지우기·주인 기록 폴더 만들기를 시험이 고른
@@ -63,18 +64,19 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       new Error("injected: removing the folder failed"),
       { code: "EACCES" }
     );
+    // 지우기를 실패시킨 폴더는 시험 정리가 지운다. 실패 주입은 그 전에 afterEach가 끈다.
+    onTestFinished(() =>
+      cleanUpAll([
+        () => removeFolder(options.dataDir),
+        () => removeFolder(`${options.dataDir}.owner`),
+      ])
+    );
     const logs = logged();
-    try {
-      inject.removeFails = removeError;
-      await expect(startEmbeddedCluster(options)).rejects.toThrow(
-        "could not create embedded Postgres"
-      );
-      expect(logs()).toContain(removeError);
-    } finally {
-      inject.removeFails = undefined;
-      await removeFolder(options.dataDir);
-      await removeFolder(`${options.dataDir}.owner`);
-    }
+    inject.removeFails = removeError;
+    await expect(startEmbeddedCluster(options)).rejects.toThrow(
+      "could not create embedded Postgres"
+    );
+    expect(logs()).toContain(removeError);
   }, 60_000);
 
   it("keeps the ownership error and records the removal failure", async () => {
@@ -86,19 +88,20 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       new Error("injected: removing the folder failed"),
       { code: "EACCES" }
     );
+    onTestFinished(() =>
+      cleanUpAll(
+        inject.made
+          .splice(0)
+          .flatMap((made) => [
+            () => removeFolder(made),
+            () => removeFolder(`${made}.owner`),
+          ])
+      )
+    );
     const logs = logged();
-    try {
-      inject.ownerFolderFails = ownerError;
-      inject.removeFails = removeError;
-      await expect(ephemeralCluster()).rejects.toBe(ownerError);
-      expect(logs()).toContain(removeError);
-    } finally {
-      inject.ownerFolderFails = undefined;
-      inject.removeFails = undefined;
-      for (const made of inject.made.splice(0)) {
-        await removeFolder(made);
-        await removeFolder(`${made}.owner`);
-      }
-    }
+    inject.ownerFolderFails = ownerError;
+    inject.removeFails = removeError;
+    await expect(ephemeralCluster()).rejects.toBe(ownerError);
+    expect(logs()).toContain(removeError);
   });
 });

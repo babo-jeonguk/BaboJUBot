@@ -185,22 +185,19 @@ it("ends with the HTTP start error and records the database close failure when b
     taken.once("error", reject);
     taken.listen(0, "127.0.0.1", resolve);
   });
+  onTestFinished(
+    () => new Promise<void>((resolve) => taken.close(() => resolve()))
+  );
   const { port } = taken.address() as { port: number };
   const child = startMain(
     { DATABASE_URL: external.url, PORT: String(port) },
     { preload: failDatabaseClose }
   );
-  try {
-    const { code } = await waitExit(child, shutdownWaitMs);
-    expect(code, child.stderrText()).toBe(1);
-    expect(child.stderrText()).toContain("EADDRINUSE");
-    expect(child.stderrText()).toContain(
-      "injected: closing the database failed"
-    );
-  } finally {
-    await stopMain(child);
-    await new Promise<void>((resolve) => taken.close(() => resolve()));
-  }
+  onTestFinished(() => stopMain(child));
+  const { code } = await waitExit(child, shutdownWaitMs);
+  expect(code, child.stderrText()).toBe(1);
+  expect(child.stderrText()).toContain("EADDRINUSE");
+  expect(child.stderrText()).toContain("injected: closing the database failed");
 }, 60_000);
 
 // 정리가 멈추면 정해진 시한(BABOJUBOT_SHUTDOWN_TIMEOUT_MS)에 실패로 끝난다. 서버를 감싼 실행기(Playwright·Docker·

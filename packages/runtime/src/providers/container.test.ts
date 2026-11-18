@@ -697,31 +697,31 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
       vi.spyOn(console, "warn").mockImplementation(() => {}),
       vi.spyOn(console, "error").mockImplementation(() => {}),
     ];
-    locked.folder = /babojubot-attempt-/;
-    try {
-      const result = await provider.adapter.execute(input, control());
-      expect(result.stopReason).toBe("completed");
-      const lines = logged.flatMap((spy) =>
-        spy.mock.calls.map((call) => call.map(String).join(" "))
-      );
-      expect(
-        lines.some(
-          (line) =>
-            line.includes("codex") && line.includes(input.identity.runId)
-        ),
-        lines.join("\n")
-      ).toBe(true);
-      expect(lines.join("\n")).not.toContain(input.access.token);
-    } finally {
-      locked.folder = null;
+    onTestFinished(() => {
       for (const spy of logged) spy.mockRestore();
-      // 지우지 못하게 한 실행 시도 폴더는 시험 정리가 지운다. 컨테이너에 넣은 로그인 파일의 폴더에서 찾는다.
+    });
+    // 지우지 못하게 한 실행 시도 폴더는 시험 정리가 지운다. 컨테이너에 넣은 로그인 파일의 폴더에서 찾는다.
+    // 실패 주입은 그 전에 afterEach가 끈다.
+    folders.own(async () => {
       for (const call of await env.calls())
         for (const mount of valuesOf(call.args, "--mount")) {
           const source = /source=([^,]*babojubot-attempt-[^,/\\]*)/.exec(mount);
           if (source) folders.adopt(source[1]!);
         }
-    }
+    }, "the attempt folder whose removal was made to fail");
+    locked.folder = /babojubot-attempt-/;
+    const result = await provider.adapter.execute(input, control());
+    expect(result.stopReason).toBe("completed");
+    const lines = logged.flatMap((spy) =>
+      spy.mock.calls.map((call) => call.map(String).join(" "))
+    );
+    expect(
+      lines.some(
+        (line) => line.includes("codex") && line.includes(input.identity.runId)
+      ),
+      lines.join("\n")
+    ).toBe(true);
+    expect(lines.join("\n")).not.toContain(input.access.token);
   });
 
   it("controls OpenCode in a container with no network through connections the container offers to its relay", async () => {
