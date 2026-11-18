@@ -1,13 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.
 // - 제품 폴더와 임시 폴더(TMP)를 새 임시 폴더 하나 안에 만들어 넘긴다. 임시 내장 Postgres(BABOJUBOT_EPHEMERAL_DB)의 dataDir도
@@ -126,9 +121,9 @@ export async function startServerProcess({
   let postgresPid = 0;
 
   /** 폴더를 지운다. 지우지 못하면 `failures`에 남긴다. */
-  function removeFolder(failures: unknown[]) {
+  async function removeTemp(failures: unknown[]) {
     try {
-      rmSync(folder, { recursive: true, force: true, maxRetries: 5 });
+      await removeFolder(folder);
     } catch (error) {
       failures.push(
         new Error(`${label}의 폴더를 지우지 못했다: ${folder}`, {
@@ -188,7 +183,7 @@ export async function startServerProcess({
           `남은 프로세스(pid ${left.join(", ")})가 있어 ${label}의 폴더를 지우지 않았다: ${folder}`
         )
       );
-    else removeFolder(failures);
+    else await removeTemp(failures);
     throw combine(failures);
   }
 
@@ -210,7 +205,7 @@ export async function startServerProcess({
         return release([error]);
       }
       const failures: unknown[] = [];
-      removeFolder(failures);
+      await removeTemp(failures);
       if (failures.length > 0) throw combine(failures);
     })());
 
@@ -417,7 +412,7 @@ export function alive(pid: number) {
 }
 
 /** 프로세스가 `ms` 안에 사라지면 true. 사라지기를 짧은 간격으로 확인한다. */
-async function gone(pid: number, ms: number) {
+export async function gone(pid: number, ms: number) {
   const deadline = Date.now() + ms;
   while (alive(pid)) {
     if (Date.now() >= deadline) return false;

@@ -3,10 +3,10 @@
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import {
   LaunchRefused,
   claimLiveRun,
@@ -36,6 +36,7 @@ import {
   chaosServer,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 const ids = scenes.map((s) => s.id);
 const launchAll = { scenes: ids, maxLiveRuns: 24 };
@@ -127,6 +128,8 @@ describe("chaos harness environment", () => {
 describe("chaos harness budget gate", () => {
   async function gated(budget, readiness = { status: "ready", reason: null }) {
     const dir = await mkdtemp(path.join(tmpdir(), "chaos-gate-"));
+    // 시험이 중간에 실패해도 지운다.
+    onTestFinished(() => removeFolder(dir));
     const files = {
       ledgerFile: path.join(dir, "ledger.jsonl"),
       budgetFile: path.join(dir, "budget.json"),
@@ -200,7 +203,6 @@ describe("chaos harness budget gate", () => {
       ["end", null],
       ["refused", "run_limit"],
     ]);
-    await rm(g.dir, { recursive: true, force: true });
   });
 
   it("refuses by the scene budget and after the deadline before starting", async () => {
@@ -239,7 +241,6 @@ describe("chaos harness budget gate", () => {
         .filter((e) => e.kind === "refused")
         .map((e) => e.reason)
     ).toEqual(["scene_run_limit", "time_limit", "no_budget"]);
-    await rm(g.dir, { recursive: true, force: true });
   });
 
   it("starts no live run while no free model is confirmed", async () => {
@@ -257,13 +258,14 @@ describe("chaos harness budget gate", () => {
     expect(g.ledger.read().map((e) => [e.kind, e.reason ?? null])).toEqual([
       ["refused", "no_free_model"],
     ]);
-    await rm(g.dir, { recursive: true, force: true });
   });
 
   it("ends a run cancelled during the free-model check as cancelled, not as a refusal", async () => {
     // 서버 재시작 장면은 다시 대기한 깨우기를 받은 실행을 확인하자마자 중단한다. 그 중단이 준비 확인 중에 오면
     // 확인은 실패로 돌아오지만, 그것은 비용 경계의 거절이 아니라 시작 전 취소다.
     const dir = await mkdtemp(path.join(tmpdir(), "chaos-gate-"));
+    // 시험이 중간에 실패해도 지운다.
+    onTestFinished(() => removeFolder(dir));
     const files = {
       ledgerFile: path.join(dir, "ledger.jsonl"),
       budgetFile: path.join(dir, "budget.json"),
@@ -316,7 +318,6 @@ describe("chaos harness budget gate", () => {
         .read()
         .map((e) => e.kind)
     ).toEqual(["cancelled_before_start"]);
-    await rm(dir, { recursive: true, force: true });
   });
 
   it("ends a run cancelled before it reaches the gate as cancelled even while a ready result is reused", async () => {
@@ -338,7 +339,6 @@ describe("chaos harness budget gate", () => {
       "end",
       "cancelled_before_start",
     ]);
-    await rm(g.dir, { recursive: true, force: true });
   });
 
   const run = (g, n) => g.run(n);
@@ -531,14 +531,12 @@ describe("chaos harness evidence", () => {
   });
 
   it("writes the evidence file readable by the owner only", async () => {
-    const dir = path.join(
-      await mkdtemp(path.join(tmpdir(), "chaos-evidence-")),
-      "run"
-    );
+    const parent = await mkdtemp(path.join(tmpdir(), "chaos-evidence-"));
+    onTestFinished(() => removeFolder(parent));
+    const dir = path.join(parent, "run");
     const { file } = await writeEvidence(dir, { outcome: "passed" }, new Set());
     expect(statSync(dir).mode & 0o777).toBe(0o700);
     expect(statSync(file).mode & 0o777).toBe(0o600);
-    await rm(path.dirname(dir), { recursive: true, force: true });
   });
 });
 
@@ -821,7 +819,9 @@ describe("chaos harness on a fake connection", () => {
       } catch {
         /* 이미 끝났다. */
       }
-      if (home) await rm(home, { recursive: true, force: true });
+      // 남은 sleep은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 끝나기를 기다리지 않고 지운다.
+      // (부모 sh가 먼저 끝나 sleep은 다른 프로세스가 거둔다. 거두지 않는 환경에서는 종료 확인이 시한까지 기다리게 된다.)
+      if (home) await removeFolder(home);
     }
   }, 120_000);
 
@@ -846,7 +846,7 @@ describe("chaos harness on a fake connection", () => {
     } finally {
       // 실패해도 띄운 서버·DB·홈을 남기지 않는다.
       await server.dispose();
-      await rm(harnessDir, { recursive: true, force: true });
+      await removeFolder(harnessDir);
     }
     expect(postgresAlive(home)).toBe(false);
   }, 60_000);

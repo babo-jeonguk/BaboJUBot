@@ -17,6 +17,7 @@ import {
 } from "./client.ts";
 import { candidatePort } from "./ports.ts";
 import { createTestDatabase } from "./testing.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 describe("embedded Postgres lifetime", () => {
   // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
@@ -452,7 +453,7 @@ describe("a Postgres left by a killed process", () => {
         if (owner === "a dead process") {
           const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
           await watchExit(gone).within(10_000);
-          recordOwner(dataDir, { pid: gone.pid!, persistent: true });
+          await recordOwner(dataDir, { pid: gone.pid!, persistent: true });
         }
         await expect(
           openDatabase({
@@ -553,7 +554,7 @@ describe("a Postgres left by a killed process", () => {
     // 새 폴더에서 셋이 동시에 cluster를 만들고 켜게 한다. 주인이 하나가 아니면 만들기·켜기를 함께 시도해 부딪힌다.
     const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
     await watchExit(gone).within(10_000);
-    recordOwner(dataDir, { pid: gone.pid!, persistent: true });
+    await recordOwner(dataDir, { pid: gone.pid!, persistent: true });
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
     const script = `
       const db = await import(${JSON.stringify(clientModule)});
@@ -732,7 +733,7 @@ describe("a Postgres left by a killed process", () => {
       expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     } finally {
       fs.rmSync(link, { force: true });
-      fs.rmSync(outside, { recursive: true, force: true });
+      await removeFolder(outside);
       if (next) await removeCluster(next.dataDir);
     }
   });
@@ -749,17 +750,17 @@ function isAlive(pid: number) {
 
 /** 테스트가 만든 cluster 폴더와 그 옆의 주인 기록을 지운다. */
 async function removeCluster(dataDir: string) {
-  await fsp.rm(dataDir, { recursive: true, force: true });
-  await fsp.rm(`${dataDir}.owner`, { recursive: true, force: true });
+  await removeFolder(dataDir);
+  await removeFolder(`${dataDir}.owner`);
 }
 
 /** 주인 기록을 그 프로세스가 지금 주인인 것으로 바꿔 둔다. */
-function recordOwner(
+async function recordOwner(
   dataDir: string,
   owner: { pid: number; persistent: boolean }
 ) {
   const dir = `${dataDir}.owner`;
-  fs.rmSync(dir, { recursive: true, force: true });
+  await removeFolder(dir);
   fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir, "1"), JSON.stringify(owner));
 }

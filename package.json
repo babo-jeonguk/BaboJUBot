@@ -16,12 +16,14 @@
     "test:e2e": "pnpm --filter @babojubot/web run test:e2e",
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "eslint .",
-    "check": "node scripts/check-project.mjs && node --test scripts/check-project.test.mjs scripts/gh-post.test.mjs && node --test scripts/ci-test-gate.test.mjs scripts/ci-job-failures.test.mjs scripts/ci-downloads.test.mjs scripts/ci-changes.test.mjs scripts/file-boundary-report.test.mjs scripts/check-e2e-report.test.mjs",
+    "check": "node scripts/check-project.mjs && node --test scripts/check-project.test.mjs scripts/gh-post.test.mjs scripts/lint-rules.test.mjs && node --test scripts/ci-test-gate.test.mjs scripts/ci-job-failures.test.mjs scripts/ci-downloads.test.mjs scripts/ci-changes.test.mjs scripts/file-boundary-report.test.mjs scripts/check-e2e-report.test.mjs",
     "provider:login": "node scripts/provider-login.mjs",
     "runner:build": "docker build -t babojubot-runner docker/runner",
     "prepare": "husky"
   },
   "devDependencies": {
+    "@babojubot/runtime": "workspace:*",
+    "@eslint-community/eslint-plugin-eslint-comments": "4.8.1",
     "@eslint/js": "10.0.1",
     "@types/node": "24.19.2",
     "eslint": "10.12.0",

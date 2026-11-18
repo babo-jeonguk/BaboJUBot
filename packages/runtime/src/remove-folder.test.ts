@@ -43,6 +43,22 @@ it("fails with the original error once the retries run out", async () => {
   expect(waits).toEqual([100, 200, 300]);
 });
 
+it("retries as many times as asked, waiting longer each time, for a slow volume", async () => {
+  const busy = failure("ENOTEMPTY");
+  const waits: number[] = [];
+  await expect(
+    removeFolder("root", {
+      retries: 5,
+      retryDelayMs: 200,
+      rm: async () => {
+        throw busy;
+      },
+      wait: async (ms) => void waits.push(ms),
+    })
+  ).rejects.toBe(busy);
+  expect(waits).toEqual([200, 400, 600, 800, 1000]);
+});
+
 it("fails at once on an error that waiting does not fix", async () => {
   const rm = failing("EACCES");
   await expect(

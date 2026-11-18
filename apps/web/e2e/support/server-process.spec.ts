@@ -1,15 +1,10 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { expect, test } from "@playwright/test";
-import { alive, startServerProcess } from "./server-process.ts";
+import { alive, gone, startServerProcess } from "./server-process.ts";
 
 // E2E 서버 프로세스 helper의 실패 경로. 고장 난 가짜 서버(misbehaving-server.mjs)로 만든다. 어느 경우든 helper는 시한 안에
 // 실패를 알리고, 그 서버와 서버가 자기 임시 폴더에 띄운 Postgres를 끝내고, 그 임시 폴더를 지운다. 끝나지 않은 프로세스가 있거나
@@ -19,6 +14,8 @@ const entry = fileURLToPath(
   new URL("./misbehaving-server.mjs", import.meta.url)
 );
 type FakeState = { postgresPid: number; temp: string };
+/** 정리가 SIGKILL을 보낸 가짜 Postgres가 끝나기까지. */
+const killWaitMs = 10_000;
 
 /** 지울 수 없는 폴더로 정리 실패를 만드는 시험의 건너뜀 이유(scripts/check-e2e-report.mjs의 허용 목록과 같다). */
 const noFolderPermissionsOnWindows =
@@ -45,22 +42,23 @@ function misbehaving(
         env: { MISBEHAVE: mode, MISBEHAVE_STATE: file },
         label: "고장 난 시험 서버",
       }),
-    /** 시험이 실패하거나 helper가 폴더를 남겨도 가짜 Postgres와 폴더를 남기지 않는다. */
-    cleanup: () => {
-      try {
+    /**
+     * 시험이 실패하거나 helper가 폴더를 남겨도 가짜 Postgres와 폴더를 남기지 않는다. 폴더는 가짜 Postgres가 끝난 뒤에 지우고,
+     * 끝나지 않으면 폴더를 남긴 채 그 사실로 실패한다.
+     */
+    cleanup: async () => {
+      if (existsSync(file)) {
         const { postgresPid, temp } = state();
         if (alive(postgresPid)) process.kill(postgresPid, "SIGKILL");
+        if (!(await gone(postgresPid, killWaitMs)))
+          throw new Error(
+            `가짜 Postgres(pid ${postgresPid})가 ${killWaitMs}ms 안에 끝나지 않아 폴더를 남겼다: ${temp}`
+          );
         const undeletable = path.join(temp, "undeletable");
         if (existsSync(undeletable)) chmodSync(undeletable, 0o700);
-        rmSync(path.dirname(temp), {
-          recursive: true,
-          force: true,
-          maxRetries: 5,
-        });
-      } catch {
-        /* 가짜 서버가 상태를 적기 전이다. */
+        await removeFolder(path.dirname(temp));
       }
-      rmSync(dir, { recursive: true, force: true });
+      await removeFolder(dir);
     },
   };
 }
@@ -73,7 +71,7 @@ test("a server that ends before it is ready leaves behind no Postgres it started
     expect(alive(postgresPid)).toBe(false);
     expect(existsSync(path.dirname(temp))).toBe(false);
   } finally {
-    fake.cleanup();
+    await fake.cleanup();
   }
 });
 
@@ -90,7 +88,7 @@ test("a server that stopped answering is killed with its Postgres within the dea
     expect(alive(server.postgresPid)).toBe(false);
     expect(existsSync(server.folder)).toBe(false);
   } finally {
-    fake.cleanup();
+    await fake.cleanup();
   }
 });
 
@@ -105,7 +103,7 @@ test("a server that closed its channel is reported and killed with its Postgres"
     expect(alive(server.postgresPid)).toBe(false);
     expect(existsSync(server.folder)).toBe(false);
   } finally {
-    fake.cleanup();
+    await fake.cleanup();
   }
 });
 
@@ -125,7 +123,7 @@ test("a Postgres that outlives its removed lock file keeps the folder, and the f
     expect(alive(server.postgresPid)).toBe(true);
     expect(existsSync(server.folder)).toBe(true);
   } finally {
-    fake.cleanup();
+    await fake.cleanup();
   }
 });
 
@@ -144,7 +142,7 @@ test("a server that ends before it is ready and whose folder cannot be removed r
     );
     expect(alive(postgresPid)).toBe(false);
   } finally {
-    fake.cleanup();
+    await fake.cleanup();
   }
 });
 
@@ -162,6 +160,6 @@ test("a cleanup step that fails does not hide the start failure, and an unchecke
     expect(error?.message).toContain(folder);
     expect(existsSync(folder)).toBe(true);
   } finally {
-    fake.cleanup();
+    await fake.cleanup();
   }
 });

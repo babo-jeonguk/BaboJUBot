@@ -23,6 +23,7 @@ import { createTestDatabase, type TestDatabase } from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
 import { listAgentsWithPendingWakes } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -432,7 +433,7 @@ describe("agent names", () => {
     } finally {
       await pool.end();
       await t.db.execute(sql.raw(`drop database ${name}`));
-      await fsp.rm(before, { recursive: true, force: true });
+      await removeFolder(before);
     }
   });
 });

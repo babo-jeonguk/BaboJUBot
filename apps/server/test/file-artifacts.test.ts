@@ -19,11 +19,12 @@ import {
 } from "@babojubot/contracts";
 import { scriptedAgents, serverHelpers, calls, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 let t: TestServer | undefined;
 let root = "";
 afterEach(async () => {
   await t?.close();
-  if (root) await rm(root, { recursive: true, force: true });
+  if (root) await removeFolder(root);
 });
 it("passes organization and personal folders, freezes files, replays across HTTP/MCP after deletion, and refuses escaping paths", async () => {
   root = await mkdtemp(path.join(tmpdir(), "artifact-test-"));
@@ -270,7 +271,7 @@ it("passes organization and personal folders, freezes files, replays across HTTP
   gate.open();
   await t.drain();
   await t.stopServer();
-  await rm(path.dirname(workspace.cwd), { recursive: true });
+  await removeFolder(path.dirname(workspace.cwd));
   const restarted = await startServer({
     db: t.db,
     port: 0,
@@ -316,7 +317,7 @@ it("starts and serves other organizations when one organization's folder path is
   await t.stopServer();
 
   const brokenShared = path.join(root, "organizations", broken.id, "shared");
-  await rm(brokenShared, { recursive: true });
+  await removeFolder(brokenShared);
   await writeFile(brokenShared, "폴더 자리에 놓인 파일");
 
   const restarted = await startServer({

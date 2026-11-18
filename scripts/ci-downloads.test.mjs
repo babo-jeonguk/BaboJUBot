@@ -3,12 +3,13 @@
 // 시도가 다 떨어지면 마지막 오류로 실패하는지 본다(#218). curl이 없으면 건너뛴다.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 const workflow = parse(
   readFileSync(
@@ -59,7 +60,7 @@ async function serve(statuses, context) {
 
 async function download(url, context) {
   const dir = mkdtempSync(path.join(tmpdir(), "ci-download-"));
-  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  context.after(() => removeFolder(dir));
   const file = path.join(dir, "archive.tar.gz");
   // 시험에서는 재시도 사이 대기를 0초로 둔다. 시도 횟수와 오류 판단은 workflow 옵션 그대로다.
   const child = spawn(
@@ -180,7 +181,7 @@ test(
       server.close();
     });
     const dir = mkdtempSync(path.join(tmpdir(), "ci-download-"));
-    context.after(() => rmSync(dir, { recursive: true, force: true }));
+    context.after(() => removeFolder(dir));
     const child = spawn(
       "curl",
       [

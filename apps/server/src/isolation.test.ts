@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
 import { IsolationGate } from "./isolation.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 /** 링크 만들기를 거절하는 오류 코드(링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
 let refusal: string | null = null;
@@ -32,12 +33,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 let gate: IsolationGate | undefined;
+/** 시험이 맡긴 정리. 늦게 맡긴 것부터 한다. 임시 폴더는 먼저 맡기므로 그 폴더를 쓰는 서버가 닫힌 뒤에 지운다. */
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   refusal = null;
   await gate?.close();
   gate = undefined;
-  for (const cleanup of cleanups.splice(0)) await cleanup();
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 /** Docker가 응답하지 않는 환경. 받은 중단 신호도 따르지 않는다(끝난 시험 컨테이너를 지우는 중 등). */
@@ -342,7 +344,7 @@ describe.each([
     };
     async function failedRelay() {
       const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-gate-"));
-      cleanups.push(() => rm(dataDir, { recursive: true, force: true }));
+      cleanups.push(() => removeFolder(dataDir));
       const server = http.createServer((_req, res) => res.writeHead(200).end());
       await new Promise<void>((resolve) =>
         server.listen(0, "127.0.0.1", resolve)

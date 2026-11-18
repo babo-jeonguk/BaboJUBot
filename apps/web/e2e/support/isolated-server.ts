@@ -84,7 +84,7 @@ function clockSetter(child: ChildProcess, enabled: boolean) {
 
 /** 테스트마다 빈 DB의 자기 서버를 띄우고 `baseURL`을 그 서버로 바꾼다. 테스트가 끝나면 서버를 멈추고 그 폴더를 지운다. */
 export const test = base.extend({
-  // eslint-disable-next-line no-empty-pattern
+  // eslint-disable-next-line no-empty-pattern -- Playwright는 fixture의 첫 인자가 객체 분해여야 의존 fixture를 읽는다.
   baseURL: async ({}, use) => {
     const server = await startIsolatedServer();
     try {
@@ -101,7 +101,7 @@ export const test = base.extend({
  */
 export const withServerClock = (clock: string) =>
   base.extend<{ server: IsolatedServer }>({
-    // eslint-disable-next-line no-empty-pattern
+    // eslint-disable-next-line no-empty-pattern -- Playwright는 fixture의 첫 인자가 객체 분해여야 의존 fixture를 읽는다.
     server: async ({}, use) => {
       const server = await startIsolatedServer({ clock });
       try {

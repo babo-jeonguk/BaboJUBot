@@ -5,6 +5,7 @@ import {
   within,
   type TestServer,
 } from "./support.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 const leadOf = (org: { agents: { id: string; role: string }[] }) =>
   org.agents.find((a) => a.role === "lead")!.id;
@@ -494,7 +495,7 @@ it.each([
   async (_label, minutes, expected) => {
     const { createScriptedRuntime } = await import("@babojubot/runtime");
     const { startServer } = await import("../src/index.ts");
-    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { mkdtemp } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
     const dataDir = await mkdtemp(path.join(tmpdir(), "compact-restart-"));
@@ -549,7 +550,7 @@ it.each([
       expect(calls).toBe(expected);
     } finally {
       await restarted?.close();
-      await rm(dataDir, { recursive: true, force: true });
+      await removeFolder(dataDir);
     }
   }
 );

@@ -8,12 +8,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -305,9 +306,7 @@ async function cleanUpScope(scope, child) {
     if (!(await waitUntil(() => runningIn(scope).length === 0, 10_000)))
       throw new Error(`still running: ${runningIn(scope).join("; ")}`);
   });
-  await attempt("remove the folder", () =>
-    rm(scope, { recursive: true, force: true, maxRetries: 5 })
-  );
+  await attempt("remove the folder", () => removeFolder(scope));
   return problems;
 }
 

@@ -6,12 +6,12 @@ import {
   mkdtemp,
   readdir,
   realpath,
-  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { pinnedReader } from "../src/workspace.ts";
 
 /**
@@ -27,9 +27,9 @@ export async function scratch(prefix: string) {
   made.push(created);
   return created;
 }
-/** 지운다. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 다시 시도한다(Node `rm`의 maxRetries). */
+/** 지운다. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 기본보다 길게 다시 시도한다. */
 export const remove = (folder: string) =>
-  rm(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  removeFolder(folder, { retries: 10, retryDelayMs: 200 });
 export async function cleanup() {
   await Promise.all(made.splice(0).map(remove));
 }

@@ -14,6 +14,7 @@ import { featureGaps, filesBase, remove } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { WorkspaceIdentityError, Workspaces } from "../src/workspace.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // 링크를 만들 수 없는 파일 시스템(FAT32)에서는 링크가 필요한 시험을 건너뛴다. 그 볼륨의 링크 없는 경계 사례는
 // workspace-cases.test.ts가 같은 볼륨에서 돌고, 링크 사례는 적용 불가로 결과표에 남는다.
@@ -94,10 +95,10 @@ withLinks.each(["shared", "."])(
       JSON.stringify({ version: 1, organizationId: "organization-two" })
     );
     await writeFile(path.join(other, "secret.md"), "다른 조직");
-    await rm(shared, { recursive: true });
+    await removeFolder(shared);
     if (replaced === "shared") await symlink(other, shared);
     else {
-      await rm(path.dirname(shared), { recursive: true });
+      await removeFolder(path.dirname(shared));
       await symlink(path.dirname(other), path.dirname(shared));
     }
     await expect(read(root, "secret.md")).rejects.toThrow(
@@ -153,7 +154,7 @@ it("accepts a folder restored by copying, and a data folder that moved", async (
   await writeFile(path.join(shared, "a.md"), "내용");
   const organizations = path.join(root, "organizations");
   await cp(organizations, `${organizations}-copy`, { recursive: true });
-  await rm(organizations, { recursive: true });
+  await removeFolder(organizations);
   await rename(`${organizations}-copy`, organizations);
   const moved = `${root}-moved`;
   roots.push(moved);

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -17,6 +17,7 @@ import {
   type RunningServer,
   type ServerOptions,
 } from "../src/index.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 /**
  * 서버 작업·Event·준비 확인처럼 끝나는 신호가 오는 대기의 상한(#215). 신호가 오면 바로 끝나므로 넉넉해도 통과 시간은
@@ -247,7 +248,7 @@ export async function startTestServer(
       for (const socket of sockets) socket.terminate();
       if (!serverStopped) await server.close();
       await database.close();
-      if (!options.dataDir) await rm(dataDir, { recursive: true, force: true });
+      if (!options.dataDir) await removeFolder(dataDir);
     },
   };
 }

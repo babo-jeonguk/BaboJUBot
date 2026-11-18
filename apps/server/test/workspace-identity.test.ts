@@ -15,13 +15,14 @@ import { insertLegacyOrganization } from "@babojubot/db/testing";
 import { afterEach, expect, it } from "vitest";
 import { scriptedAgents, serverHelpers, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // 조직 폴더는 자기 조직 ID를 안다. 경로 이름만으로는 다른 조직의 폴더를 구별할 수 없기 때문이다.
 let t: TestServer | undefined;
 let root = "";
 afterEach(async () => {
   await t?.close();
-  if (root) await rm(root, { recursive: true, force: true });
+  if (root) await removeFolder(root);
 });
 async function server() {
   root = await mkdtemp(path.join(tmpdir(), "identity-test-"));
@@ -133,7 +134,7 @@ it("repairs a folder that is gone altogether, since nothing can be mistaken", as
   const { agents, researching, say, folder, claimed, latestRun } =
     await server();
   const org = await researching(agents, "폴더 없어진 조직");
-  await rm(folder(org.id), { recursive: true });
+  await removeFolder(folder(org.id));
   agents.queue(org.lead.id, idle);
   await say(org.id, "실행");
   await t!.drain();
@@ -146,7 +147,7 @@ it("accepts a folder restored by copying, whose file numbers all changed", async
   const org = await researching(agents, "복원 조직");
   const backup = `${folder(org.id)}-backup`;
   await cp(folder(org.id), backup, { recursive: true });
-  await rm(folder(org.id), { recursive: true });
+  await removeFolder(folder(org.id));
   await rename(backup, folder(org.id));
   agents.queue(org.lead.id, idle);
   await say(org.id, "실행");
@@ -158,7 +159,7 @@ it("accepts a folder restored by copying, whose file numbers all changed", async
 it("names the mark when the file system stops it being read", async () => {
   const { agents, researching, say, folder, latestRun } = await server();
   const org = await researching(agents, "읽을 수 없는 표식");
-  await rm(folder(org.id), { recursive: true });
+  await removeFolder(folder(org.id));
   await writeFile(folder(org.id), "폴더 자리에 놓인 파일");
   await say(org.id, "실행");
   await t!.drain();
