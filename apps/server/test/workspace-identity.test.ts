@@ -16,6 +16,7 @@ import { afterEach, expect, it } from "vitest";
 import { scriptedAgents, serverHelpers, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 조직 폴더는 자기 조직 ID를 안다. 경로 이름만으로는 다른 조직의 폴더를 구별할 수 없기 때문이다.
 let t: TestServer | undefined;
@@ -175,8 +176,10 @@ it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
     const { agents, say, folder, latestRun } = await server();
     const org = await insertLegacyOrganization(t!.db, "쓸 수 없는 표식");
     await mkdir(folder(org.id), { recursive: true });
-    await chmod(folder(org.id), 0o555);
-    try {
+    // 막은 쓰기 권한은 서버와 폴더를 정리하는 afterEach보다 먼저 시험 안에서 되돌린다.
+    await withCleanup(async (defer) => {
+      await chmod(folder(org.id), 0o555);
+      defer(() => chmod(folder(org.id), 0o755));
       agents.queue(org.lead.id, idle);
       await say(org.id, "실행");
       await t!.drain();
@@ -184,8 +187,6 @@ it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
       expect(failed.status).toBe("failed");
       expect(failed.error).toContain("workspace-identity.json");
       expect(failed.error).toContain("EACCES");
-    } finally {
-      await chmod(folder(org.id), 0o755);
-    }
+    });
   }
 );

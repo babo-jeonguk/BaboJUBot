@@ -26,6 +26,7 @@ import {
   runPinned,
   windows,
 } from "./files-volume.ts";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // #153: 파일 경로 격리의 사례 표(C01–C37, F1–F6)를 지금 이 파일 시스템에서 확인한다. 같은 파일이 일반 PR의 세 OS와
 // 환경별 전체 검증의 각 디스크(NTFS·FAT·SMB, APFS·HFS+)에서 돈다. 사례마다 결과를 test meta(`cases`)에 남기고
@@ -662,14 +663,16 @@ it("C17 refuses a Unix socket", async (context) => {
       "Windows의 Node는 경로 socket 대신 named pipe를 쓴다"
     );
   const { read, shared } = await world();
-  const server = createServer();
-  const listening = await new Promise<string>((resolve) => {
-    server.once("error", (error: NodeJS.ErrnoException) =>
-      resolve(error.code ?? String(error))
-    );
-    server.listen(path.join(shared, "s"), () => resolve(""));
-  });
-  try {
+  // socket 파일은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 닫는다.
+  await withCleanup(async (defer) => {
+    const server = createServer();
+    const listening = await new Promise<string>((resolve) => {
+      server.once("error", (error: NodeJS.ErrnoException) =>
+        resolve(error.code ?? String(error))
+      );
+      server.listen(path.join(shared, "s"), () => resolve(""));
+    });
+    defer(() => new Promise((resolve) => server.close(resolve)));
     if (listening)
       without(
         context,
@@ -678,9 +681,7 @@ it("C17 refuses a Unix socket", async (context) => {
         `socket을 만들지 못함: ${listening}`
       );
     expect(await read("s")).toEqual(refusal("not_regular_file"));
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
+  });
   note(context, "C17", "pass");
 });
 
@@ -914,9 +915,12 @@ it("C26 refuses a file it may not read and a folder it may not search", async (c
   await writeFile(file, "A:locked");
   await mkdir(folder);
   await writeFile(path.join(folder, "a.md"), "A:locked/a.md");
-  const fileDenied = await deny(file, false);
-  const folderDenied = await deny(folder, true);
-  try {
+  // 막은 권한은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 되돌린다.
+  await withCleanup(async (defer) => {
+    const fileDenied = await deny(file, false);
+    defer(() => allow(file, false));
+    const folderDenied = await deny(folder, true);
+    defer(() => allow(folder, true));
     const failed = fileDenied ?? folderDenied;
     if (failed) without(context, "C26", failed.outcome, failed.reason);
     // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
@@ -947,10 +951,7 @@ it("C26 refuses a file it may not read and a folder it may not search", async (c
       expect(ours).toEqual({ refused: "file_unreadable" });
       note(context, "C26", "pass");
     }
-  } finally {
-    await allow(file, false);
-    await allow(folder, true);
-  }
+  });
 });
 
 it("C27 refuses Windows drive-relative names as outside and keeps them as plain names elsewhere", async (context) => {

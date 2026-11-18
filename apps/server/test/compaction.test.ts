@@ -6,6 +6,7 @@ import {
   type TestServer,
 } from "./support.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
 
 const leadOf = (org: { agents: { id: string; role: string }[] }) =>
   org.agents.find((a) => a.role === "lead")!.id;
@@ -196,22 +197,24 @@ it("keeps a normal wake pending while compaction owns the session and uses the c
   await t.drain();
   now = new Date("2026-01-01T00:54:00Z");
   const tick = t.tickCompactions();
-  await began;
-  try {
+  // 붙잡은 압축을 풀고 그 처리가 끝나기를 기다린 뒤에 다음 실행 시도를 본다.
+  await withCleanup(async (defer) => {
+    defer(async () => {
+      finish();
+      await tick;
+    });
+    await began;
     expect(
       (
-        await t.request("POST", `/api/organizations/${org.id}/messages`, {
+        await t!.request("POST", `/api/organizations/${org.id}/messages`, {
           body: "계속",
         })
       ).status
     ).toBe(201);
     // 메시지의 촉진을 처리한 뒤에 본다. 압축 중이면 실행 시도를 시작하지 않고 처리가 끝난다.
-    await within(t.kickHandled(leadOf(org)), "handling the message's kick");
+    await within(t!.kickHandled(leadOf(org)), "handling the message's kick");
     expect(runs).toBe(1);
-  } finally {
-    finish();
-    await tick;
-  }
+  });
   await t.drain();
   expect(runs).toBe(2);
 });
@@ -412,12 +415,14 @@ it("uses spare provider capacity for another organization while one compaction i
   await t.drain();
   now = new Date("2026-01-01T00:54:00Z");
   const tick = t.tickCompactions();
-  try {
+  // 붙잡은 압축을 풀고, 시험 서버를 닫는 afterEach보다 먼저 그 처리가 끝나기를 기다린다.
+  await withCleanup(async (defer) => {
+    defer(async () => {
+      release();
+      await tick;
+    });
     await expect.poll(() => calls, eventually).toBe(2);
-  } finally {
-    release();
-    await tick;
-  }
+  });
 });
 it("reuses the preceding MCP catalog even when that run changes the organization stage", async () => {
   const { createScriptedRuntime } = await import("@babojubot/runtime");
@@ -534,8 +539,11 @@ it.each([
         return { ok: true, nextSession: input.session };
       },
     };
-    let restarted: Awaited<ReturnType<typeof startServer>> | undefined;
-    try {
+    // 다시 띄운 서버를 닫은 뒤에 그 폴더를 지운다. 닫기가 실패하면 폴더를 남긴다.
+    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 정리한다.
+    await withCleanup(async (defer) => {
+      const folder = folderCleanup(() => removeFolder(dataDir));
+      defer(folder.cleanUp);
       t = await startTestServer({ dataDir, now: () => now, runtime });
       await t.request("POST", "/api/organizations", {
         name: "재시작",
@@ -545,20 +553,18 @@ it.each([
       await t.drain();
       await t.stopServer();
       now = new Date(Date.UTC(2026, 0, 1, 0, minutes));
-      restarted = await startServer({
+      const restarted = await startServer({
         db: t.db,
         dataDir,
         port: 0,
         now: () => now,
         runtime,
       });
+      folder.own(() => restarted.close());
       await restarted.tickCompactions();
       expect(calls).toBe(expected);
       await restarted.tickCompactions();
       expect(calls).toBe(expected);
-    } finally {
-      await restarted?.close();
-      await removeFolder(dataDir);
-    }
+    });
   }
 );
