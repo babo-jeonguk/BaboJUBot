@@ -22,8 +22,8 @@ async function lint(code, filePath) {
 const testPlaces = [
   "apps/server/test/lint-sample.test.ts",
   "apps/server/test/lint-sample-support.ts",
-  "apps/web/e2e/support/lint-sample.ts",
-  // src 안은 타입 정보로 검사하므로(TypeScript 프로젝트에 든 파일만) 있는 시험 파일 자리를 빌린다.
+  // src 안과 E2E는 타입 정보로 검사하므로(TypeScript 프로젝트에 든 파일만) 있는 파일 자리를 빌린다.
+  "apps/web/e2e/support/organization.ts",
   "packages/db/src/client.test.ts",
   "scripts/lint-sample.test.mjs",
 ];
@@ -287,7 +287,7 @@ test("code outside tests may wait a fixed time", async () => {
 const locatorMessages = (messages) =>
   messages.filter((m) => m.ruleId === "tests/no-page-wide-locator");
 
-// E2E는 타입 정보로 페이지를 가리므로(TypeScript 프로젝트에 든 파일만) 있는 E2E 파일 자리를 빌린다.
+// E2E는 타입 정보로 페이지를 가리므로 있는 E2E 파일 자리를 빌린다.
 const e2ePlaces = [
   "apps/web/e2e/home.spec.ts",
   "apps/web/e2e/support/organization.ts",
