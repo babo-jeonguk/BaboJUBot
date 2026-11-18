@@ -158,6 +158,9 @@ permissions:
     resource: "pnpm --filter * run typecheck:test"
     effect: allow
   - action: shell
+    resource: "pnpm verify:changed*"
+    effect: allow
+  - action: shell
     resource: "pnpm exec eslint *"
     effect: allow
   - action: shell
