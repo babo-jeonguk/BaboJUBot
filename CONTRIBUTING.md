@@ -59,7 +59,7 @@ Windows E2E의 shard별 결과 보고서 2개는 판정 job에 넘기려고 성�
 
 ## 검증 기준
 
-검사 시점·완료 검사·결과 재사용은 [검증 기준](docs/agents/verification.md)을 따릅니다.
+검사 시점·완료 검사·결과 재사용은 [검증 기준](docs/agents/verification.md)을, 시험·CI 작성은 [코드 작성 기준](CODING_STANDARDS.md)을 따릅니다.
 
 ## 문서
 

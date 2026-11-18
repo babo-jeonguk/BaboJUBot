@@ -24,6 +24,7 @@
 - 현상만 지우는 수정이나 리뷰가 제안한 방법을 그대로 따르지 않습니다. 증상에서 "왜"를 거슬러 그 문제를 허용한 설계(빠지거나 중복된 책임, 흩어진 규칙, 잘못된 순서 등)를 찾아 없애고, 그 원인 때문에 붙였던 guard·예외 처리도 지웁니다.
 - 가능한 경우 수정 전 실패를 재현하고, 같은 원인의 다른 위치·인접 실패 경로까지 확인해 원인 경계에서 고칩니다. 범위는 해당 원인·계약에 한정합니다.
 - 원인 분석·재현·회귀 테스트 작성·검증 판단은 직접 하고, 회귀 테스트를 먼저 커밋한 뒤 제품 코드 수정을 [코드 worker](worker.md)에 맡깁니다.
+- 새 CI·시험 실패 모양이면 `/retro`로 코드 모양으로 판정할 수 있는지 나눠, 판정할 수 있으면 lint·`pnpm check`에, 판단이 필요하면 [코드 작성 기준](../../CODING_STANDARDS.md)에 더합니다.
 - 회귀 테스트로 수정 전 실패·수정 후 통과를 확인합니다. 제품에 없는 재시도·깨우기를 helper로 추가해 결함을 가리지 않습니다. 재현이 어려우면 한계를 남깁니다.
 - 검사는 [검증 기준](verification.md)의 시점·범위대로 하고, 재검토 수렴 후 문서·검증 근거를 갱신합니다. 기존 PR은 같은 브랜치에 커밋·push하고 CI를 확인합니다.
 
@@ -44,8 +45,8 @@
 아래를 실제 값으로 채워 **백틱 5개의 단일 블록**으로 전달합니다. 링크는 고정 SHA·결정 댓글을 쓰고 자격 증명·실제 연구 데이터는 제외합니다.
 
 `````text
-mattpocock-skills v1.3.2의 code-review 방식으로 Standards와 Spec을 분리해 검토해 주세요.
-https://github.com/mattpocock/skills/blob/v1.3.2/skills/engineering/code-review/SKILL.md
+mattpocock-skills `5863806`의 code-review 방식으로 Standards와 Spec을 분리해 검토해 주세요. Standards는 저장소 표준(`CODING_STANDARDS.md`, `CONTRIBUTING.md`)을 기준으로 봅니다.
+https://github.com/mattpocock/skills/blob/5863806dd4e15c63174bee4e7515a4256792ecfa/skills/engineering/code-review/SKILL.md
 Repository / PR: <주소>
 Spec·확정 결정 / 저장소 표준: <링크; 이슈 없는 작업은 승인된 요구를 기재>
 Base / Head SHA: <각 SHA>

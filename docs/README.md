@@ -16,12 +16,13 @@
 
 ## 개발 운영
 
-작업할 때 읽을 문서는 [AGENTS](../AGENTS.md)의 Routing이 정합니다([CLAUDE](../CLAUDE.md)는 참조만 유지). 개발 문서는 세 층으로 나누고 층마다 맡는 질문이 다릅니다.
+작업할 때 읽을 문서는 [AGENTS](../AGENTS.md)의 Routing이 정합니다([CLAUDE](../CLAUDE.md)는 참조만 유지). 개발 문서는 네 층으로 나누고 층마다 맡는 질문이 다릅니다.
 
 | 층 | 맡는 질문 | 문서 |
 | --- | --- | --- |
 | 단계 | 무엇을, 어떤 순서로, 언제 끝났다고 보는가 | [issue-tracker](agents/issue-tracker.md)(+[triage-labels](agents/triage-labels.md)) → [implementation](agents/implementation.md) → [review-fixes](agents/review-fixes.md) → [pr-merge](agents/pr-merge.md) |
 | 도구 | 어떻게 하는가 | [verification](agents/verification.md), [worker](agents/worker.md), [dev-orchestration](agents/dev-orchestration.md), [commit-messages](agents/commit-messages.md), [domain](agents/domain.md), [code-map](agents/code-map.md) |
+| 작성 기준 | 코드·시험·CI가 어떤 모양이어야 하는가 | [CODING_STANDARDS](../CODING_STANDARDS.md)(판단 규칙, 리뷰 기준), [lint 설정](../eslint.config.js)·`pnpm check`(코드 모양으로 판정하는 규칙) |
 | 양식 | 어떤 모양으로 쓰는가 | [PR 양식](../.github/PULL_REQUEST_TEMPLATE.md), [이슈 양식](../.github/ISSUE_TEMPLATE/), [외부 리뷰 요청](agents/review-fixes.md#외부-리뷰-요청-형식), [worker brief](agents/worker.md#3-brief) |
 
 사람용 설치·명령·데모·DB·CI는 [CONTRIBUTING](../CONTRIBUTING.md)이 맡습니다.
