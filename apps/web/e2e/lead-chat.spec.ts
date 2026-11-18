@@ -3,6 +3,7 @@ import {
   goalInput,
   messageAnswered,
   runsSettled,
+  sendingMessage,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -72,14 +73,12 @@ test("talking to the Lead shows its reply, the run in activity and run detail, a
   );
   const input = page.getByLabel("Lead에게 보낼 메시지");
   await input.fill("데이터셋은 무엇을 쓸 계획인가요");
-  await page.getByRole("button", { name: "보내기", exact: true }).click();
+  const asked = await sendingMessage(page, () =>
+    page.getByRole("button", { name: "보내기", exact: true }).click()
+  );
 
   // Lead의 답장은 새로고침 없이 Event stream으로 나타난다.
-  await messageAnswered(
-    page.request,
-    org.id,
-    "데이터셋은 무엇을 쓸 계획인가요"
-  );
+  await messageAnswered(page.request, org.id, asked);
   const reply = conversation
     .locator('[data-author="agent"]')
     .filter({ hasText: "데이터셋은 무엇을 쓸 계획인가요" });

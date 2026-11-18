@@ -4,6 +4,7 @@ import {
   goalInput,
   messageAnswered,
   runsSettled,
+  sentMessage,
 } from "./support/organization.ts";
 import { test } from "./support/shared-settings.ts";
 
@@ -216,8 +217,7 @@ test("the owner picks the Lead's provider when creating an organization and late
   const sent = await request.post(`/api/organizations/${orgId}/messages`, {
     data: { body: "다음 실행 시도" },
   });
-  expect(sent.status()).toBe(201);
-  await messageAnswered(request, orgId, "다음 실행 시도");
+  await messageAnswered(request, orgId, await sentMessage(sent));
   await expect(recent.getByRole("listitem")).toHaveCount(2);
   await expect(recent.getByRole("listitem").first()).toContainText(
     "가짜 프로바이더 2 · 기본 모델"

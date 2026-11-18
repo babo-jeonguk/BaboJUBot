@@ -1,10 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { firstApprovalId, goalInput } from "./support/organization.ts";
-import {
-  firstLoad,
-  openWithLiveEvents,
-  pageLoad,
-} from "./support/live-events.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 
 test("the owner watches tasks appear and complete live, reads the self-report and artifact, and comments to wake the worker", async ({
   page,
@@ -15,10 +11,11 @@ test("the owner watches tasks appear and complete live, reads the self-report an
   const org = (await created.json()) as { id: string };
   const approvalId = await firstApprovalId(page.request, org.id);
 
-  const tasks = firstLoad(page, `/api/organizations/${org.id}/tasks`);
   await openWithLiveEvents(page, `/orgs/${org.id}/tasks`);
-  await tasks;
-  await expect(page.getByRole("main")).toContainText("아직 작업이 없습니다");
+  await expect(page.getByRole("main")).toContainText(
+    "아직 작업이 없습니다",
+    pageLoad
+  );
 
   // 승인하면 가짜 Lead가 작업자마다 작업을 맡기고, 작업자가 완료한다. 새로고침 없이 목록에 보인다.
   await page.request.post(
@@ -118,7 +115,7 @@ test("shows a missing task or artifact as not found", async ({ page }) => {
     data: { name: "없는 작업 조직", ...goalInput },
   });
   const org = (await created.json()) as { id: string };
-  // 화면이 서버의 404를 받은 뒤에 표시를 본다. 페이지를 불러오는 시간은 기본 대기에 넣지 않는다(#215).
+  // 서버가 404로 답했는지 보고, 새로 연 화면이 그것을 처음 그리기까지는 화면 로드 상한으로 기다린다(#215).
   const notFound = async (kind: "tasks" | "artifacts", text: string) => {
     const id = crypto.randomUUID();
     const answered = page.waitForResponse(
@@ -129,7 +126,7 @@ test("shows a missing task or artifact as not found", async ({ page }) => {
     );
     await page.goto(`/orgs/${org.id}/${kind}/${id}`, pageLoad);
     await answered;
-    await expect(page.getByText(text)).toBeVisible();
+    await expect(page.getByText(text)).toBeVisible(pageLoad);
   };
   await notFound("tasks", "찾을 수 없는 작업");
   await notFound("artifacts", "찾을 수 없는 산출물");

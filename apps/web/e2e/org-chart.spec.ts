@@ -1,10 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { firstApprovalId, goalInput } from "./support/organization.ts";
-import {
-  firstLoad,
-  openWithLiveEvents,
-  pageLoad,
-} from "./support/live-events.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 
 /** 스크린샷을 남길 곳. 지정하면 조직도·꾸미기 창을 찍는다(사람이 보는 확인용이며 비교하지 않는다). */
 const shots = process.env.E2E_SHOTS;
@@ -164,11 +160,10 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
   ).toHaveAttribute("data-accessory", "glasses");
 
   // 활동에 이름 바꾸기가 남는다.
-  const activity = firstLoad(page, `/api/organizations/${org.id}/events`);
   await page.goto(`/orgs/${org.id}/activity`, pageLoad);
-  await activity;
   await expect(page.getByRole("list", { name: "활동 stream" })).toContainText(
-    `${worker!.name} → 통계 담당`
+    `${worker!.name} → 통계 담당`,
+    pageLoad
   );
 });
 

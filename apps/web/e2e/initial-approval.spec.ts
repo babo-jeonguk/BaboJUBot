@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { firstLoad, openWithLiveEvents } from "./support/live-events.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 import { inboxOrganizationLinks, runsSettled } from "./support/organization.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
@@ -137,21 +137,19 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   const copyIdOf = async (worker: string) => {
     await page.goto(`/orgs/${org.id}/agents`);
     await team.getByRole("link", { name: new RegExp(worker) }).click();
-    const instructions = firstLoad(
-      page,
-      new RegExp(`^/api/organizations/${org.id}/agents/[^/]+/instructions$`)
-    );
     await page
       .getByRole("navigation", { name: "에이전트 상세 탭" })
       .getByRole("link", { name: "Role·Soul·Skill" })
       .click();
-    await instructions;
     const copies = page.getByRole("region", { name: "Role·Soul·Skill 사본" });
-    await expect(copies.getByRole("tab")).toHaveText([
-      "Role · AGENTS.md",
-      "Soul · SOUL.md",
-      "Skill · skills/record-research-node/SKILL.md",
-    ]);
+    await expect(copies.getByRole("tab")).toHaveText(
+      [
+        "Role · AGENTS.md",
+        "Soul · SOUL.md",
+        "Skill · skills/record-research-node/SKILL.md",
+      ],
+      pageLoad
+    );
     await expect(
       copies.getByRole("tabpanel").getByRole("heading", { name: "Researcher" })
     ).toBeVisible();

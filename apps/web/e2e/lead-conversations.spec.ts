@@ -3,8 +3,10 @@ import {
   goalInput,
   messageAnswered,
   runsSettled,
+  sendingMessage,
+  sentMessage,
 } from "./support/organization.ts";
-import { firstLoad, openWithLiveEvents } from "./support/live-events.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 
 const uuidPath = /\/chat\/[0-9a-f-]{36}$/;
 
@@ -22,9 +24,12 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   });
   const org = (await created.json()) as { id: string };
   const input = page.getByLabel("Lead에게 보낼 메시지");
+  /** 화면에서 보내고 서버가 저장한 메시지를 돌려준다. */
   const send = async (p: Page, body: string) => {
     await p.getByLabel("Lead에게 보낼 메시지").fill(body);
-    await p.getByRole("button", { name: "보내기", exact: true }).click();
+    return sendingMessage(p, () =>
+      p.getByRole("button", { name: "보내기", exact: true }).click()
+    );
   };
 
   // 생성으로 깨어난 Lead는 사용자 메시지 없이 한 일(초기 연구 승인 요청)을 기본 대화로 알린다.
@@ -35,8 +40,11 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     "초기 연구 승인을 요청했습니다"
   );
   // 기본 대화에서 한 번 주고받는다.
-  await send(page, "기본 대화의 질문입니다");
-  await messageAnswered(page.request, org.id, "기본 대화의 질문입니다");
+  await messageAnswered(
+    page.request,
+    org.id,
+    await send(page, "기본 대화의 질문입니다")
+  );
   await expect(
     thread(page)
       .locator('[data-author="agent"]')
@@ -45,16 +53,11 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
 
   // 다른 탭은 기본 대화를 보고 있다.
   const other = await context.newPage();
-  const conversations = firstLoad(
-    other,
-    `/api/organizations/${org.id}/conversations`
-  );
   await openWithLiveEvents(other, `/orgs/${org.id}/chat`);
-  await conversations;
-  await expect(listOf(other).getByRole("link")).toHaveText([
-    /새 대화/,
-    /기본 대화/,
-  ]);
+  await expect(listOf(other).getByRole("link")).toHaveText(
+    [/새 대화/, /기본 대화/],
+    pageLoad
+  );
 
   // 새 대화는 빈 화면에서 입력창에 바로 쓸 수 있고, 보내기 전에는 목록에 생기지 않는다.
   await listOf(page).getByRole("link", { name: "새 대화" }).click();
@@ -65,15 +68,10 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   await expect(listOf(page).getByRole("listitem")).toHaveCount(1);
 
   await input.fill("학습 데이터 후보를 비교해 주세요");
-  await page.keyboard.press("Enter");
+  const first = await sendingMessage(page, () => page.keyboard.press("Enter"));
   await expect(page).toHaveURL(uuidPath);
   const conversationUrl = new URL(page.url()).pathname;
-  await messageAnswered(
-    page.request,
-    org.id,
-    "학습 데이터 후보를 비교해 주세요",
-    conversationUrl.split("/").at(-1)
-  );
+  await messageAnswered(page.request, org.id, first);
   await expect(
     page.getByRole("heading", { name: "학습 데이터 후보를 비교해 주세요" })
   ).toBeVisible();
@@ -104,13 +102,11 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     .getByRole("link", { name: /학습 데이터 후보를 비교해 주세요/ })
     .click();
   await expect(other).toHaveURL(conversationUrl);
-  await send(page, "라이선스도 같이 봐 주세요");
   // 서버가 메시지를 받아 Lead가 답할 때까지 기다린 뒤 다른 탭의 화면을 본다.
   await messageAnswered(
     page.request,
     org.id,
-    "라이선스도 같이 봐 주세요",
-    conversationUrl.split("/").at(-1)
+    await send(page, "라이선스도 같이 봐 주세요")
   );
   await expect(thread(other).locator('[data-author="owner"]')).toHaveText([
     /학습 데이터 후보를 비교해 주세요/,
@@ -125,20 +121,13 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     `/api/organizations/${org.id}/conversations`,
     { data: { body: "평가 지표를 정리해 주세요" } }
   );
-  expect(started.status()).toBe(201);
-  const { conversation: unseenConversation } = (await started.json()) as {
-    conversation: { id: string };
-  };
+  const unseenMessage = await sentMessage(started);
+  const unseenConversation = { id: unseenMessage.conversationId };
   const unseen = listOf(other).getByRole("link", {
     name: /평가 지표를 정리해 주세요/,
   });
   const unread = unseen.getByTestId("conversation-unread");
-  await messageAnswered(
-    page.request,
-    org.id,
-    "평가 지표를 정리해 주세요",
-    unseenConversation.id
-  );
+  await messageAnswered(page.request, org.id, unseenMessage);
   await expect(unread).toBeVisible();
 
   // 열 때 함께 나가는 목록 조회가 읽음 기록보다 먼저 서버 상태(읽지 않음)를 받고, 읽음이 화면에 반영된 뒤에야
@@ -241,9 +230,8 @@ test("on a narrow screen the conversation list opens from the chat header and th
     `/api/organizations/${org.id}/conversations`,
     { data: { body: "좁은 화면에서 이어 갈 대화" } }
   );
-  const { conversation } = (await started.json()) as {
-    conversation: { id: string };
-  };
+  const startedMessage = await sentMessage(started);
+  const conversation = { id: startedMessage.conversationId };
 
   await page.setViewportSize({ width: 390, height: 844 });
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
@@ -255,12 +243,7 @@ test("on a narrow screen the conversation list opens from the chat header and th
   await sheet.getByRole("link", { name: /좁은 화면에서 이어 갈 대화/ }).click();
   await expect(sheet).toBeHidden();
   await expect(page).toHaveURL(new RegExp(`/chat/${conversation.id}$`));
-  await messageAnswered(
-    page.request,
-    org.id,
-    "좁은 화면에서 이어 갈 대화",
-    conversation.id
-  );
+  await messageAnswered(page.request, org.id, startedMessage);
   await expect(thread(page).locator('[data-author="agent"]')).toContainText(
     "좁은 화면에서 이어 갈 대화"
   );

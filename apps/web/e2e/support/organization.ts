@@ -1,6 +1,7 @@
 import {
   expect,
   type APIRequestContext,
+  type APIResponse,
   type Locator,
   type Page,
 } from "@playwright/test";
@@ -113,28 +114,59 @@ export async function firstApprovalId(
   return approvalId;
 }
 
+/** 서버가 저장한 사용자 메시지. 보내기 응답에서 받는다. */
+export type SentMessage = { id: string; conversationId: string };
+
+/** 보내기 응답(`/messages`는 메시지, 새 대화는 `{ conversation, message }`)에서 저장된 메시지를 꺼낸다. */
+export async function sentMessage(
+  response: Pick<APIResponse, "status" | "json">
+): Promise<SentMessage> {
+  expect(response.status()).toBe(201);
+  const body = (await response.json()) as
+    SentMessage | { message: SentMessage };
+  return "message" in body ? body.message : body;
+}
+
 /**
- * 사용자가 보낸 메시지(`body`)를 받은 실행 시도가 끝날 때까지 기다린다. 메시지가 전달된 실행 시도의 ID로 찾으므로 앞서 끝난
- * 실행 시도에 속지 않는다. 기본 대화가 아니면 `conversationId`를 준다.
+ * 화면에서 메시지를 보내는 `send`를 하고, 서버가 저장한 그 메시지를 돌려준다. 보내기 요청은 `send` 전에 기다리기 시작한다.
+ */
+export async function sendingMessage(
+  page: Page,
+  send: () => Promise<unknown>
+): Promise<SentMessage> {
+  const posted = page.waitForResponse((res) => {
+    const { pathname } = new URL(res.url());
+    return (
+      res.request().method() === "POST" &&
+      /^\/api\/organizations\/[^/]+\/(messages|conversations|conversations\/[^/]+\/messages)$/.test(
+        pathname
+      )
+    );
+  }, leadRun);
+  await send();
+  return sentMessage(await posted);
+}
+
+/**
+ * 보낸 메시지(`sent`, 보내기 응답의 메시지)를 받은 실행 시도가 끝날 때까지 기다린다. 메시지 ID로 그 메시지를 찾고, 그 메시지가
+ * 전달된 실행 시도의 ID로 상태를 보므로 같은 글의 앞선 메시지나 앞서 끝난 실행 시도에 속지 않는다(#215).
  */
 export async function messageAnswered(
   request: APIRequestContext,
   organizationId: string,
-  body: string,
-  conversationId?: string
+  sent: SentMessage
 ) {
   const api = `/api/organizations/${organizationId}`;
-  const messages = conversationId
-    ? `${api}/conversations/${conversationId}/messages`
-    : `${api}/messages`;
   await expect
     .poll(async () => {
-      const { messages: list } = (await (
-        await request.get(messages)
+      const { messages } = (await (
+        await request.get(
+          `${api}/conversations/${sent.conversationId}/messages`
+        )
       ).json()) as {
-        messages: { body: string; deliveredToRunId: string | null }[];
+        messages: { id: string; deliveredToRunId: string | null }[];
       };
-      const runId = list.find((m) => m.body === body)?.deliveredToRunId;
+      const runId = messages.find((m) => m.id === sent.id)?.deliveredToRunId;
       if (!runId) return "not delivered";
       const run = await request.get(`${api}/runs/${runId}`);
       return ((await run.json()) as { status: string }).status;
