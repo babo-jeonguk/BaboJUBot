@@ -53,6 +53,7 @@ import {
   type RefObject,
 } from "react";
 import { Link, useSearchParams } from "react-router";
+import { z } from "zod";
 import {
   ApiError,
   useEditResearchMap,
@@ -208,8 +209,9 @@ function layoutKey(nodes: ResearchNode[]) {
   return JSON.stringify(nodes.map((n) => [n.id, n.parentNodeId]));
 }
 /** Dagre 배치. 주 연결 트리를 왼쪽에서 오른쪽으로 놓는다. 좌표는 카드 왼쪽 위다. */
+const layoutItemsSchema = z.array(z.tuple([z.string(), z.string().nullable()]));
 function layoutOf(key: string): Map<string, XY> {
-  const items = JSON.parse(key) as [string, string | null][];
+  const items = layoutItemsSchema.parse(JSON.parse(key));
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "LR", nodesep: 14, ranksep: 72 });
   g.setDefaultEdgeLabel(() => ({}));

@@ -53,6 +53,24 @@ export function focusFirstChoiceProblem(
   return problem !== undefined;
 }
 
+/**
+ * 서버가 고른 값을 거부한 뒤 목록을 다시 받아 문제 칸으로 포커스를 옮긴다. 칸의 안내는 이미 보이므로, 다시 받다 실패해도
+ * 저장 실패 처리를 막지 않고 진단만 남긴다. 실패를 돌려주지 않으므로 호출자는 기다리지 않아도 된다.
+ */
+export async function refreshChoiceProblem(
+  refetch: () => Promise<{
+    data?: { providers: readonly ProviderSummary[] } | undefined;
+  }>,
+  fields: { idPrefix: string; choice: ProviderChoice | undefined }[]
+) {
+  try {
+    const { data } = await refetch();
+    if (data) focusFirstChoiceProblem(data.providers, fields);
+  } catch (error) {
+    console.warn("[settings] could not refresh the provider list", error);
+  }
+}
+
 /** 서버가 저장 때 프로바이더·모델을 거부했다(그사이 목록이 바뀜). 목록을 다시 받아 칸의 오류로 보인다. */
 export const isChoiceRefusal = (code: string | undefined) =>
   code === "unknown_provider" || code === "unknown_model";

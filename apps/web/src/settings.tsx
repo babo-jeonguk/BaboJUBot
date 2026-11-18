@@ -5,7 +5,7 @@ import {
   type Destination,
   type OrganizationDetail,
 } from "@babojubot/contracts";
-import { useState, type FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 import {
   useNetworkPolicy,
   useUpdateApprovalPolicy,
@@ -64,7 +64,7 @@ function NetworkPolicySection({ org }: { org: OrganizationDetail }) {
   const destinations = policy.data?.destinations ?? [];
   const save = (next: Destination[], done?: () => void) =>
     update.mutate({ destinations: next }, { onSuccess: done });
-  const add = (event: FormEvent) => {
+  const add = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     const parsed = destinationSchema.safeParse({
       host,
