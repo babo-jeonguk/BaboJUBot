@@ -9,13 +9,15 @@ import { testFolders } from "./test-folders.ts";
 const folders = testFolders();
 it("runs an isolated v2 server per attempt, uses a free model, and stops it after success", async () => {
   const root = await folders.make("opencode-test-");
-  const provider = createOpenCodeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/opencode-simulator.mjs"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+      ],
+    })
+  );
   expect(
     await provider.adapter.checkReadiness(new AbortController().signal)
   ).toMatchObject({ status: "ready" });
@@ -38,13 +40,15 @@ it("runs an isolated v2 server per attempt, uses a free model, and stops it afte
 
 it("keeps its SSE stream alive beyond the startup timeout", async () => {
   const root = await folders.make("opencode-long-");
-  const provider = createOpenCodeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/opencode-simulator.mjs"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+      ],
+    })
+  );
   const input = request();
   input.wakeReasons = saying("느린 작업")(
     input.access,
@@ -62,18 +66,22 @@ describe("usage numbers outside the contract (#140)", () => {
     const root = await folders.make("opencode-usage-");
     const file = path.join(root, "usage.json");
     await writeFile(file, JSON.stringify(usage));
-    return await createOpenCodeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/opencode-simulator.mjs"),
-        "--usage",
-        file,
-      ],
-    }).adapter.execute(request(), {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
+    return await folders
+      .ownProvider(
+        createOpenCodeProvider({
+          dataDir: root,
+          command: [
+            process.execPath,
+            path.resolve("test-fixtures/opencode-simulator.mjs"),
+            "--usage",
+            file,
+          ],
+        })
+      )
+      .adapter.execute(request(), {
+        signal: new AbortController().signal,
+        emit: async () => {},
+      });
   }
 
   it("leaves a decreased, fractional or unsafe session total unreported and keeps the success and the other figures", async () => {
@@ -145,20 +153,24 @@ describe("failed executions (#147)", () => {
     await writeFile(file, JSON.stringify(failing));
     const activities: unknown[] = [];
     const input = request();
-    const result = await createOpenCodeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/opencode-simulator.mjs"),
-        "--fail",
-        file,
-      ],
-    }).adapter.execute(input, {
-      signal: new AbortController().signal,
-      emit: async (activity) => {
-        activities.push(activity);
-      },
-    });
+    const result = await folders
+      .ownProvider(
+        createOpenCodeProvider({
+          dataDir: root,
+          command: [
+            process.execPath,
+            path.resolve("test-fixtures/opencode-simulator.mjs"),
+            "--fail",
+            file,
+          ],
+        })
+      )
+      .adapter.execute(input, {
+        signal: new AbortController().signal,
+        emit: async (activity) => {
+          activities.push(activity);
+        },
+      });
     const prompts = (await readFile(file + ".prompts", "utf8"))
       .trim()
       .split("\n").length;
@@ -253,14 +265,16 @@ describe("failed executions (#147)", () => {
 // #147: 실제 2.2.6은 새 조직 폴더에 서버 둘이 함께 뜨면 DB를 함께 만들다 하나가 끝났다. 시뮬레이터 `--startup-race`가 그 합성이다.
 describe("one organization folder (#147)", () => {
   const racingAdapter = (root: string) =>
-    createOpenCodeProvider({
-      dataDir: root,
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/opencode-simulator.mjs"),
-        "--startup-race",
-      ],
-    }).adapter;
+    folders.ownProvider(
+      createOpenCodeProvider({
+        dataDir: root,
+        command: [
+          process.execPath,
+          path.resolve("test-fixtures/opencode-simulator.mjs"),
+          "--startup-race",
+        ],
+      })
+    ).adapter;
   const sameOrganization = (organizationId: string) => {
     const input = request();
     input.identity.organizationId = organizationId;

@@ -2,28 +2,52 @@ import type { ChildProcess } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { RuntimeAdapter } from "@babojubot/contracts";
 import { afterEach } from "vitest";
 import { removeFolder } from "../remove-folder.ts";
 
 type Hook = (cleanup: () => Promise<void>) => void;
-
-/** 정리에서 기다리는 시한. 넘으면 그것이 끝나지 않은 채로 시험이 실패한다. */
-const stopTimeoutMs = 10_000;
+/** 시험이 만든 프로바이더 연결. 멈춤 신호를 받는 호출(실행·준비 확인·압축·모델 목록)을 정리가 맡는다. */
+type Provider = {
+  adapter: RuntimeAdapter;
+  listModels?: (signal: AbortSignal) => Promise<unknown>;
+};
 
 /**
  * 시험 폴더를 만들고 정리까지 맡는다. 정리는 hook(기본: 시험마다)에서 기다리며, 시험이 성공했든 중간에 실패했든 같은 순서다.
- * 1. `own`·`ownChild`로 맡긴 것(폴더 안에서 도는 프로그램, 진행 중인 실행·쓰기)을 늦게 맡긴 것부터 멈추고, 끝나기를 시한 안에서 기다린다.
+ * 1. `own`·`ownChild`·`ownProvider`로 맡긴 것(폴더 안에서 도는 프로그램, 진행 중인 실행·쓰기)을 늦게 맡긴 것부터 멈추고, 끝나기를 시한 안에서 기다린다.
  * 2. 모두 끝났을 때만 폴더를 지운다(`removeFolder`: Windows의 일시적인 잠김만 정해진 횟수 다시 시도).
  * 끝나지 않은 것이 있으면 폴더는 지우지 않는다. 지우기가 그 탓에 실패해 원인을 가리지 않도록, 그 실패만 알린다.
  */
-export function testFolders(hook: Hook = afterEach) {
+export function testFolders(
+  hook: Hook = afterEach,
+  // 정리에서 기다리는 시한. 넘으면 그것이 끝나지 않은 채로 시험이 실패한다.
+  { stopTimeoutMs = 10_000 }: { stopTimeoutMs?: number } = {}
+) {
   const folders: string[] = [];
   const stops: { stop: () => Promise<unknown>; what: string }[] = [];
+  /** 정리가 멈춤 신호를 보내고 끝나기를 기다리는 호출. 시험이 넘긴 신호도 그대로 듣는다. */
+  const ownCall = <R>(
+    signal: AbortSignal,
+    start: (signal: AbortSignal) => Promise<R>
+  ) => {
+    const stop = new AbortController();
+    const started = start(AbortSignal.any([signal, stop.signal]));
+    stops.push({
+      what: "provider run",
+      stop: async () => {
+        stop.abort();
+        // 실행의 실패는 시험이 결과로 본다. 정리는 끝났는지만 기다린다.
+        await Promise.allSettled([started]);
+      },
+    });
+    return started;
+  };
   hook(async () => {
     const failures: unknown[] = [];
     for (const { stop, what } of stops.splice(0).reverse())
       try {
-        await within(stop(), what);
+        await within(stop(), what, stopTimeoutMs);
       } catch (error) {
         failures.push(error);
       }
@@ -52,6 +76,35 @@ export function testFolders(hook: Hook = afterEach) {
       stops.push({ stop, what });
     },
     /**
+     * 시험이 만든 프로바이더 연결. 그 연결로 시작한 실행 시도·준비 확인·압축·모델 목록 조회를 정리가 맡는다.
+     * 시험이 결과를 기다리기 전에 단언·시한으로 실패해도, 정리가 멈춤 신호를 보내고 그 호출이 끝난 뒤에 폴더를 지운다.
+     * 프로바이더는 프로그램과 그 정리가 끝난 뒤에 반환하므로, 호출이 끝나면 폴더 안의 프로그램도 끝났다.
+     */
+    ownProvider<T extends Provider>(provider: T): T {
+      const { adapter, listModels } = provider;
+      const { precompact } = adapter;
+      return {
+        ...provider,
+        adapter: {
+          ...adapter,
+          execute: (request, control) =>
+            ownCall(control.signal, (signal) =>
+              adapter.execute(request, { ...control, signal })
+            ),
+          checkReadiness: (signal) =>
+            ownCall(signal, (joined) => adapter.checkReadiness(joined)),
+          ...(precompact && {
+            precompact: (request, signal) =>
+              ownCall(signal, (joined) => precompact(request, joined)),
+          }),
+        } satisfies RuntimeAdapter,
+        ...(listModels && {
+          listModels: (signal: AbortSignal) =>
+            ownCall(signal, (joined) => listModels(joined)),
+        }),
+      };
+    },
+    /**
      * 시험이 띄운 프로그램. 정리 때 아직 돌면 SIGKILL을 보내고, 종료와 stdio 닫힘(`close`)을 기다린다.
      * 출력을 물려받은 자손이 남으면 `close`가 오지 않으므로, 그런 자손은 시험이 따로 끝낸다.
      */
@@ -76,7 +129,11 @@ export function testFolders(hook: Hook = afterEach) {
   };
 }
 
-async function within(stopping: Promise<unknown>, what: string) {
+async function within(
+  stopping: Promise<unknown>,
+  what: string,
+  stopTimeoutMs: number
+) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([

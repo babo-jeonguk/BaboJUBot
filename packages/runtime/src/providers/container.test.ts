@@ -200,10 +200,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     process.env.BABOJUBOT_CLAUDE_PASS_ENV = "GH_TOKEN,GITHUB_TOKEN";
     // 이 컴퓨터의 프로그램 위치 설정은 컨테이너에서 쓰지 않는다. 컨테이너에는 이미지의 프로그램이 있다.
     process.env.BABOJUBOT_CLAUDE_COMMAND = "/host/only/claude";
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     expect(provider.isolatable).toBe(true);
 
     const result = await provider.adapter.execute(env.isolated(), control());
@@ -298,10 +300,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         fixture("claude-finish.synthetic.json"),
       ],
     });
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     const result = await provider.adapter.execute(env.isolated(), control());
     expect(result.stopReason).toBe("completed");
     const run = runCall(await env.calls());
@@ -370,10 +374,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         agy: [process.execPath, fixture("replay.mjs"), recording],
       }),
     ];
-    const provider = createAntigravityProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createAntigravityProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     const result = await provider.adapter.execute(env.isolated(), control());
     expect(result.stopReason).toBe("completed");
     const run = runCall(await env.calls());
@@ -391,10 +397,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     const config = path.join(env.shared, ".agents/mcp_config.json");
     await mkdir(path.dirname(config));
     await writeFile(config, '{"user":"keep"}');
-    const provider = createAntigravityProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createAntigravityProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     await provider.adapter.execute(env.isolated(), control());
     expect(await readFile(config, "utf8")).toBe('{"user":"keep"}');
     expect((await env.calls()).some((c) => c.args.includes("run"))).toBe(true);
@@ -408,10 +416,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         fixture("claude-cancel.synthetic.json"),
       ],
     });
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     const controller = new AbortController();
     const result = await provider.adapter.execute(env.isolated(), {
       signal: controller.signal,
@@ -497,10 +507,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     });
     // Docker 프로그램은 끝났지만 daemon이 컨테이너를 지우지 못한다. 컨테이너가 살아 있어도 중계는 이미 닫혀 있어야 한다.
     await writeFile(path.join(env.state, "rm-fails"), "");
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     const controller = new AbortController();
     const result = await provider.adapter.execute(env.isolated(), {
       signal: controller.signal,
@@ -545,15 +557,17 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
 
   it("keeps running on this machine when isolation is off", async () => {
     const env = await setup({});
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      container: env.container,
-      command: [
-        process.execPath,
-        fixture("replay.mjs"),
-        fixture("claude-finish.synthetic.json"),
-      ],
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        container: env.container,
+        command: [
+          process.execPath,
+          fixture("replay.mjs"),
+          fixture("claude-finish.synthetic.json"),
+        ],
+      })
+    );
     const input = env.isolated();
     delete input.execution;
     expect((await provider.adapter.execute(input, control())).stopReason).toBe(
@@ -601,10 +615,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         claude: [process.execPath, fixture("replay.mjs"), compact],
       }),
     ] as unknown as ContainerSettings["docker"];
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     const result = await provider.adapter.precompact!(
       {
         session: {
@@ -636,10 +652,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         fixture("codex-finish.synthetic.json"),
       ],
     });
-    const provider = createCodexProvider({
-      dataDir: env.root,
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createCodexProvider({
+        dataDir: env.root,
+        container: env.container,
+      })
+    );
     expect(provider.isolatable).toBe(true);
     const result = await provider.adapter.execute(env.isolated(), control());
     expect(result.stopReason).toBe("completed");
@@ -654,12 +672,14 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     const env = await setup({
       opencode: [process.execPath, fixture("opencode-simulator.mjs")],
     });
-    const provider = createOpenCodeProvider({
-      dataDir: env.root,
-      // 연결 폴더의 로그인을 읽는 이 컴퓨터의 프로그램도 가짜로 둔다.
-      command: [process.execPath, fixture("opencode-simulator.mjs")],
-      container: env.container,
-    });
+    const provider = folders.ownProvider(
+      createOpenCodeProvider({
+        dataDir: env.root,
+        // 연결 폴더의 로그인을 읽는 이 컴퓨터의 프로그램도 가짜로 둔다.
+        command: [process.execPath, fixture("opencode-simulator.mjs")],
+        container: env.container,
+      })
+    );
     expect(provider.isolatable).toBe(true);
     const result = await provider.adapter.execute(env.isolated(), control());
     expect(result.stopReason).toBe("completed");
@@ -701,11 +721,13 @@ describe.skipIf(process.platform === "win32")(
         path.join(connection, "data", "synthetic-credentials.json"),
         JSON.stringify([login])
       );
-      const provider = createOpenCodeProvider({
-        dataDir: env.root,
-        command: [process.execPath, fixture("opencode-simulator.mjs")],
-        container: env.container,
-      });
+      const provider = folders.ownProvider(
+        createOpenCodeProvider({
+          dataDir: env.root,
+          command: [process.execPath, fixture("opencode-simulator.mjs")],
+          container: env.container,
+        })
+      );
       const result = await provider.adapter.execute(env.isolated(), control());
       expect(result.stopReason).toBe("completed");
       const data = path.join(connection, "organizations", env.org, "data");
@@ -948,11 +970,13 @@ describe.skipIf(process.platform === "win32")(
       process.env.BABOJUBOT_CLAUDE_PASS_ENV = "ANTHROPIC_API_KEY";
       let provider!: ReturnType<typeof createClaudeProvider>;
       const network = await relayed("claude", (upstream) => {
-        provider = createClaudeProvider({
-          dataDir: env.root,
-          container: env.container,
-          relay: { upstream, verified: true },
-        });
+        provider = folders.ownProvider(
+          createClaudeProvider({
+            dataDir: env.root,
+            container: env.container,
+            relay: { upstream, verified: true },
+          })
+        );
         return provider.credentialRelay!;
       });
       try {
@@ -988,11 +1012,13 @@ describe.skipIf(process.platform === "win32")(
       const env = await setup(relayProgram);
       let provider!: ReturnType<typeof createClaudeProvider>;
       const network = await relayed("claude", (upstream) => {
-        provider = createClaudeProvider({
-          dataDir: env.root,
-          container: env.container,
-          relay: { upstream, verified: true },
-        });
+        provider = folders.ownProvider(
+          createClaudeProvider({
+            dataDir: env.root,
+            container: env.container,
+            relay: { upstream, verified: true },
+          })
+        );
         return provider.credentialRelay!;
       });
       try {
@@ -1024,11 +1050,13 @@ describe.skipIf(process.platform === "win32")(
       );
       await mkdir(config, { recursive: true });
       await writeFile(path.join(config, ".credentials.json"), "{}");
-      const provider = createClaudeProvider({
-        dataDir: env.root,
-        container: env.container,
-        relay: { verified: true },
-      });
+      const provider = folders.ownProvider(
+        createClaudeProvider({
+          dataDir: env.root,
+          container: env.container,
+          relay: { verified: true },
+        })
+      );
       const result = await provider.adapter.execute(env.isolated(), control());
       expect(result.stopReason).toBe("failed");
       expect(result.error).toContain("로그인 기록");
@@ -1068,18 +1096,20 @@ describe.skipIf(process.platform === "win32")(
         });
       let provider!: ReturnType<typeof createCodexProvider>;
       const network = await relayed("codex", (upstream) => {
-        provider = createCodexProvider({
-          dataDir: env.root,
-          container: env.container,
-          relay: { upstream, verified: true },
-          // 격리를 끈 실행과 로그인 갱신은 이 컴퓨터의 프로그램으로 돈다.
-          command: command ?? [
-            process.execPath,
-            fixture("replay.mjs"),
-            fixture("codex-finish.synthetic.json"),
-          ],
-          ...(timeouts ? { timeouts } : {}),
-        });
+        provider = folders.ownProvider(
+          createCodexProvider({
+            dataDir: env.root,
+            container: env.container,
+            relay: { upstream, verified: true },
+            // 격리를 끈 실행과 로그인 갱신은 이 컴퓨터의 프로그램으로 돈다.
+            command: command ?? [
+              process.execPath,
+              fixture("replay.mjs"),
+              fixture("codex-finish.synthetic.json"),
+            ],
+            ...(timeouts ? { timeouts } : {}),
+          })
+        );
         return provider.credentialRelay!;
       });
       const organization = path.join(
@@ -1515,12 +1545,14 @@ describe.skipIf(process.platform === "win32")(
       const network = await relayed(
         "opencode",
         (upstream) => {
-          provider = createOpenCodeProvider({
-            dataDir: env.root,
-            command: [process.execPath, fixture("opencode-simulator.mjs")],
-            container: env.container,
-            relay: { upstream, verified: true },
-          });
+          provider = folders.ownProvider(
+            createOpenCodeProvider({
+              dataDir: env.root,
+              command: [process.execPath, fixture("opencode-simulator.mjs")],
+              container: env.container,
+              relay: { upstream, verified: true },
+            })
+          );
           return provider.credentialRelay!;
         },
         { hold }
@@ -1772,13 +1804,15 @@ describe.skipIf(process.platform === "win32")(
         await writeFile(original, JSON.stringify(login), { mode: 0o600 });
       let provider!: ReturnType<typeof createAntigravityProvider>;
       const network = await relayed("antigravity", (upstream) => {
-        provider = createAntigravityProvider({
-          dataDir: env.root,
-          container: env.container,
-          relay: { upstream, verified: true },
-          // 격리를 끈 실행과 로그인 갱신(`agy models`)은 이 컴퓨터의 프로그램으로 돈다.
-          command: [process.execPath, fixture("antigravity-simulator.mjs")],
-        });
+        provider = folders.ownProvider(
+          createAntigravityProvider({
+            dataDir: env.root,
+            container: env.container,
+            relay: { upstream, verified: true },
+            // 격리를 끈 실행과 로그인 갱신(`agy models`)은 이 컴퓨터의 프로그램으로 돈다.
+            command: [process.execPath, fixture("antigravity-simulator.mjs")],
+          })
+        );
         return provider.credentialRelay!;
       });
       const organization = path.join(
@@ -2148,14 +2182,16 @@ describe.skipIf(process.platform === "win32")(
         place: ["auth.json"],
         login: (access: string) => codexLogin(access),
         create: (options: Parameters<typeof createCodexProvider>[0]) =>
-          createCodexProvider({
-            ...options,
-            command: [
-              process.execPath,
-              fixture("replay.mjs"),
-              fixture("codex-finish.synthetic.json"),
-            ],
-          }),
+          folders.ownProvider(
+            createCodexProvider({
+              ...options,
+              command: [
+                process.execPath,
+                fixture("replay.mjs"),
+                fixture("codex-finish.synthetic.json"),
+              ],
+            })
+          ),
       },
       {
         name: "Codex (exec)",
@@ -2164,15 +2200,17 @@ describe.skipIf(process.platform === "win32")(
         place: ["auth.json"],
         login: (access: string) => codexLogin(access),
         create: (options: Parameters<typeof createCodexProvider>[0]) =>
-          createCodexProvider({
-            ...options,
-            mode: "exec",
-            command: [
-              process.execPath,
-              fixture("replay.mjs"),
-              fixture("codex-exec.synthetic.json"),
-            ],
-          }),
+          folders.ownProvider(
+            createCodexProvider({
+              ...options,
+              mode: "exec",
+              command: [
+                process.execPath,
+                fixture("replay.mjs"),
+                fixture("codex-exec.synthetic.json"),
+              ],
+            })
+          ),
       },
       {
         name: "Antigravity",
@@ -2181,10 +2219,12 @@ describe.skipIf(process.platform === "win32")(
         place: [".gemini", "antigravity-cli", "antigravity-oauth-token"],
         login: (access: string) => agyLogin(access),
         create: (options: Parameters<typeof createAntigravityProvider>[0]) =>
-          createAntigravityProvider({
-            ...options,
-            command: agy as [string, ...string[]],
-          }),
+          folders.ownProvider(
+            createAntigravityProvider({
+              ...options,
+              command: agy as [string, ...string[]],
+            })
+          ),
       },
     ];
 
@@ -2445,15 +2485,17 @@ describe.skipIf(process.platform === "win32")(
       })();
       const t = await noLinkSetup(byName("Codex (app-server)"), expiring, {
         create: (options) =>
-          createCodexProvider({
-            ...options,
-            command: [
-              process.execPath,
-              fixture("codex-refresh.mjs"),
-              log,
-              "ok",
-            ],
-          }),
+          folders.ownProvider(
+            createCodexProvider({
+              ...options,
+              command: [
+                process.execPath,
+                fixture("codex-refresh.mjs"),
+                log,
+                "ok",
+              ],
+            })
+          ),
       });
       refusal = "EPERM";
       try {

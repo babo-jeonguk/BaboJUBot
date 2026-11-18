@@ -80,10 +80,12 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         '{"synthetic":1}'
       );
       refusal = code;
-      const provider = createAntigravityProvider({
-        dataDir: env.root,
-        command: [process.execPath, fixture("antigravity-simulator.mjs")],
-      });
+      const provider = folders.ownProvider(
+        createAntigravityProvider({
+          dataDir: env.root,
+          command: [process.execPath, fixture("antigravity-simulator.mjs")],
+        })
+      );
       expect(
         await provider.adapter.checkReadiness(new AbortController().signal)
       ).toEqual({ status: "ready", reason: null });
@@ -114,10 +116,12 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(dump)}, (() => { try { return fs.readFileSync(require("node:path").join(process.env.CODEX_HOME, "auth.json"), "utf8"); } catch { return "missing"; } })() + "\\n");`
       );
       refusal = code;
-      const provider = createCodexProvider({
-        dataDir: env.root,
-        command: [process.execPath, script],
-      });
+      const provider = folders.ownProvider(
+        createCodexProvider({
+          dataDir: env.root,
+          command: [process.execPath, script],
+        })
+      );
       await provider.adapter.execute(await env.requestFor(), control());
       expect((await readFile(dump, "utf8")).trim().split("\n").at(-1)).toBe(
         '{"synthetic":1}'
@@ -136,10 +140,17 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         await chmod(antigravityToken(connection), 0o400);
         refusal = code;
         expect(
-          await createAntigravityProvider({
-            dataDir: env.root,
-            command: [process.execPath, fixture("antigravity-simulator.mjs")],
-          }).adapter.checkReadiness(new AbortController().signal)
+          await folders
+            .ownProvider(
+              createAntigravityProvider({
+                dataDir: env.root,
+                command: [
+                  process.execPath,
+                  fixture("antigravity-simulator.mjs"),
+                ],
+              })
+            )
+            .adapter.checkReadiness(new AbortController().signal)
         ).toEqual({ status: "not_ready", reason: "check_failed" });
       },
       20000
@@ -177,14 +188,21 @@ describe("a file left at an organization's login place", () => {
       await writeFile(planted, '{"planted":1}');
       const provider =
         name === "Codex"
-          ? createCodexProvider({
-              dataDir: env.root,
-              command: [process.execPath, "-e", ""],
-            })
-          : createAntigravityProvider({
-              dataDir: env.root,
-              command: [process.execPath, fixture("antigravity-simulator.mjs")],
-            });
+          ? folders.ownProvider(
+              createCodexProvider({
+                dataDir: env.root,
+                command: [process.execPath, "-e", ""],
+              })
+            )
+          : folders.ownProvider(
+              createAntigravityProvider({
+                dataDir: env.root,
+                command: [
+                  process.execPath,
+                  fixture("antigravity-simulator.mjs"),
+                ],
+              })
+            );
       await provider.adapter.execute(input, control());
       expect(await readFile(login, "utf8")).toBe('{"real":1}');
       expect(await readlink(planted)).toBe(login);
@@ -206,10 +224,12 @@ describe("a file left at an organization's login place", () => {
     // 로그인 전용 폴더가 생기기 전의 판은 연결 폴더에 로그인을 두었다.
     await mkdir(connection, { recursive: true });
     await writeFile(path.join(connection, "auth.json"), '{"older":1}');
-    const provider = createCodexProvider({
-      dataDir: env.root,
-      command: [process.execPath, "-e", ""],
-    });
+    const provider = folders.ownProvider(
+      createCodexProvider({
+        dataDir: env.root,
+        command: [process.execPath, "-e", ""],
+      })
+    );
     await provider.adapter.execute(await env.requestFor(), control());
     expect(
       await readFile(path.join(connection, "login", "auth.json"), "utf8")
@@ -240,10 +260,12 @@ describe("a machine that stops being able to create links", () => {
       recursive: true,
     });
     await writeFile(antigravityToken(connection), '{"synthetic":1}');
-    const provider = createAntigravityProvider({
-      dataDir: env.root,
-      command: [process.execPath, fixture("antigravity-simulator.mjs")],
-    });
+    const provider = folders.ownProvider(
+      createAntigravityProvider({
+        dataDir: env.root,
+        command: [process.execPath, fixture("antigravity-simulator.mjs")],
+      })
+    );
     const a = crypto.randomUUID(),
       b = crypto.randomUUID();
     // 링크를 만들 수 있을 때 조직 A가 먼저 돌아 링크가 생겼다.
@@ -278,10 +300,12 @@ describe("a machine that stops being able to create links", () => {
     await mkdir(connection, { recursive: true });
     await writeFile(path.join(connection, "auth.json"), '{"old":1}');
     const reader = await codexReader(env.root);
-    const provider = createCodexProvider({
-      dataDir: env.root,
-      command: reader.command,
-    });
+    const provider = folders.ownProvider(
+      createCodexProvider({
+        dataDir: env.root,
+        command: reader.command,
+      })
+    );
     const a = crypto.randomUUID();
     await provider.adapter.execute(await env.requestFor(a), control());
     expect(await reader.last()).toBe('{"old":1}');

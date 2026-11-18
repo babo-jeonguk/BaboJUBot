@@ -49,17 +49,12 @@ afterEach(() => {
   heldOriginalRename = undefined;
   originalRenames = 0;
 });
-// 시험이 시작한 준비 확인·실행은 정리가 멈추고 끝나기를 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
+// 시험이 시작한 준비 확인·실행은 정리가 멈추고 끝나기를 기다린 뒤에 폴더를 지운다(ownProvider). 단언이 실패하거나 시한을 넘긴 시험도 같다.
 const folders = testFolders();
-function owned<T>(start: (signal: AbortSignal) => Promise<T>) {
-  const controller = new AbortController();
-  const started = start(controller.signal);
-  folders.own(async () => {
-    controller.abort();
-    await Promise.allSettled([started]);
-  }, "Codex run");
-  return started;
-}
+const control = () => ({
+  signal: new AbortController().signal,
+  emit: async () => {},
+});
 
 async function setup() {
   const root = await folders.make("babojubot-codex-login-");
@@ -74,10 +69,12 @@ async function setup() {
   await mkdir(connection, { recursive: true });
   // 연결 폴더에 바로 있는 로그인(로그인 명령이 쓴 파일, 예전 판의 로그인).
   await writeFile(path.join(connection, "auth.json"), '{"synthetic":1}');
-  const provider = createCodexProvider({
-    dataDir: root,
-    command: [process.execPath, script],
-  });
+  const provider = folders.ownProvider(
+    createCodexProvider({
+      dataDir: root,
+      command: [process.execPath, script],
+    })
+  );
   const requestFor = async (organizationId: string): Promise<RunRequest> => {
     const input = request();
     input.identity.organizationId = organizationId;
@@ -98,11 +95,9 @@ describe("Codex login link", () => {
   it("leaves the login in the connection folder when this machine cannot create file links", async () => {
     const env = await setup();
     refuseLinks = true;
-    await owned((signal) => env.provider.adapter.checkReadiness(signal));
+    await env.provider.adapter.checkReadiness(new AbortController().signal);
     const input = await env.requestFor(crypto.randomUUID());
-    await owned((signal) =>
-      env.provider.adapter.execute(input, { signal, emit: async () => {} })
-    );
+    await env.provider.adapter.execute(input, control());
     // 링크 없이 도는 실행은 연결 폴더를 쓰므로 로그인도 그 자리에 그대로 있어야 한다.
     const login = path.join(env.connection, "auth.json");
     expect((await lstat(login)).isFile()).toBe(true);
@@ -122,12 +117,10 @@ describe("Codex login link", () => {
     const requests = await Promise.all(organizations.map(env.requestFor));
     const started = await Promise.allSettled([
       ...[1, 2, 3, 4].map(() =>
-        owned((signal) => env.provider.adapter.checkReadiness(signal))
+        env.provider.adapter.checkReadiness(new AbortController().signal)
       ),
       ...requests.map((input) =>
-        owned((signal) =>
-          env.provider.adapter.execute(input, { signal, emit: async () => {} })
-        )
+        env.provider.adapter.execute(input, control())
       ),
     ]);
     const readiness = started.slice(0, 4);

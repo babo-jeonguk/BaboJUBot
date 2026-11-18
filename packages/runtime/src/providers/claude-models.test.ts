@@ -27,9 +27,10 @@ it("lists real model versions instead of only the short family names", () => {
 });
 
 it("gives the built-in list to a connection with nothing added", () => {
-  expect(createClaudeProvider({ dataDir: "/tmp/product" }).models).toEqual(
-    claudeModels
-  );
+  expect(
+    folders.ownProvider(createClaudeProvider({ dataDir: "/tmp/product" }))
+      .models
+  ).toEqual(claudeModels);
 });
 
 it("adds new models at the end, in the order written", () => {
@@ -119,14 +120,16 @@ it("hands the chosen ID to Claude unchanged, including a context suffix", async 
       ],
     })
   );
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      fixture,
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        fixture,
+      ],
+    })
+  );
   const result = await provider.adapter.execute(
     { ...request(), model: "claude-opus-4-8[1m]" },
     { signal: new AbortController().signal, emit: async () => {} }

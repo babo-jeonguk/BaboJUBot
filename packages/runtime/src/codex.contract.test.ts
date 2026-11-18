@@ -5,7 +5,8 @@ import path from "node:path";
 import { afterAll } from "vitest";
 import { testFolders } from "./providers/test-folders.ts";
 // 이 파일의 시험이 모두 끝난 뒤 정리가 지운다.
-const dataDir = await testFolders(afterAll).make("claude-contract-");
+const folders = testFolders(afterAll);
+const dataDir = await folders.make("claude-contract-");
 
 for (const [mode, recorded] of [
   ["app-server", false],
@@ -18,20 +19,22 @@ for (const [mode, recorded] of [
       ? `Codex ${mode} with recorded protocol output (reviewed real frames, scripted behaviour)`
       : `Codex ${mode} synthetic process (not recorded model evidence)`,
     {
-      adapter: createCodexProvider({
-        dataDir,
-        mode,
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/codex-simulator.mjs"),
-          ...(recorded
-            ? [
-                "--recording",
-                path.resolve(`test-fixtures/codex-${mode}-recorded.json`),
-              ]
-            : []),
-        ],
-      }).adapter,
+      adapter: folders.ownProvider(
+        createCodexProvider({
+          dataDir,
+          mode,
+          command: [
+            process.execPath,
+            path.resolve("test-fixtures/codex-simulator.mjs"),
+            ...(recorded
+              ? [
+                  "--recording",
+                  path.resolve(`test-fixtures/codex-${mode}-recorded.json`),
+                ]
+              : []),
+          ],
+        })
+      ).adapter,
       startupMs: 2000,
       finishes: saying("진행 상황을 알려 주세요"),
       worksUntilCancelled: saying("실행 유지 연습"),

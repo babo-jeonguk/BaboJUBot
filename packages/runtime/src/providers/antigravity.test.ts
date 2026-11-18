@@ -59,21 +59,25 @@ async function run(
       steps,
     })
   );
-  const result = await createAntigravityProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      fixture,
-    ],
-  }).adapter.execute(
-    {
-      ...request(),
-      ...(options.model ? { model: options.model } : {}),
-      workspace: { cwd: root, organization: root, personal: root, peers: [] },
-    },
-    { signal: new AbortController().signal, emit: async () => {} }
-  );
+  const result = await folders
+    .ownProvider(
+      createAntigravityProvider({
+        dataDir: root,
+        command: [
+          process.execPath,
+          path.resolve("test-fixtures/replay.mjs"),
+          fixture,
+        ],
+      })
+    )
+    .adapter.execute(
+      {
+        ...request(),
+        ...(options.model ? { model: options.model } : {}),
+        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      },
+      { signal: new AbortController().signal, emit: async () => {} }
+    );
   return { result, root };
 }
 const prompt = {
@@ -176,16 +180,25 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
 }`
     );
-    return createAntigravityProvider({
-      dataDir: root,
-      command: [process.execPath, script],
-    }).adapter.execute(
-      {
-        ...request(),
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      },
-      { signal: new AbortController().signal, emit: async () => {} }
-    );
+    return folders
+      .ownProvider(
+        createAntigravityProvider({
+          dataDir: root,
+          command: [process.execPath, script],
+        })
+      )
+      .adapter.execute(
+        {
+          ...request(),
+          workspace: {
+            cwd: root,
+            organization: root,
+            personal: root,
+            peers: [],
+          },
+        },
+        { signal: new AbortController().signal, emit: async () => {} }
+      );
   }
 
   it("fails the run, and needs a login when the program's log says the login was refused", async () => {

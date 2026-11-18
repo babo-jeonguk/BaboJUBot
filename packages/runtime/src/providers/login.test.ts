@@ -19,14 +19,16 @@ async function tempDir() {
 it("runs the login with the connection's environment and saves a pasted token privately", async () => {
   const dataDir = await tempDir();
   const seen = path.join(dataDir, "seen-home");
-  const provider = createClaudeProvider({
-    dataDir,
-    command: [
-      process.execPath,
-      "-e",
-      `require("node:fs").writeFileSync(${JSON.stringify(seen)}, process.env.HOME)`,
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir,
+      command: [
+        process.execPath,
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(seen)}, process.env.HOME)`,
+      ],
+    })
+  );
   const input = new PassThrough();
   const done = runLogin(provider, {
     input,

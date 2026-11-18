@@ -244,10 +244,12 @@ describe.each(providers)("%s", (_name, create, id, configVariable) => {
 describe("Claude", () => {
   it("compacts a session in its organization's product folder", async () => {
     const env = await setup();
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      command: env.dumper,
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        command: env.dumper,
+      })
+    );
     const organizationId = crypto.randomUUID();
     await provider.adapter.precompact!(
       {
@@ -277,10 +279,12 @@ describe("Claude", () => {
       path.join(env.root, "providers/claude/setup-token"),
       "synthetic-login"
     );
-    const provider = createClaudeProvider({
-      dataDir: env.root,
-      command: env.dumper,
-    });
+    const provider = folders.ownProvider(
+      createClaudeProvider({
+        dataDir: env.root,
+        command: env.dumper,
+      })
+    );
     await provider.adapter.execute(
       await env.requestFor(crypto.randomUUID()),
       control()
@@ -297,10 +301,12 @@ describe("Codex", () => {
     await mkdir(connection, { recursive: true });
     // 연결 폴더에 바로 있던 예전 로그인.
     await writeFile(path.join(connection, "auth.json"), '{"synthetic":1}');
-    const provider = createCodexProvider({
-      dataDir: env.root,
-      command: env.dumper,
-    });
+    const provider = folders.ownProvider(
+      createCodexProvider({
+        dataDir: env.root,
+        command: env.dumper,
+      })
+    );
     const organizationId = crypto.randomUUID();
     await provider.adapter.execute(
       await env.requestFor(organizationId),
@@ -333,10 +339,12 @@ describe("Codex", () => {
     await writeFile(victim, "keep me");
     await mkdir(path.join(connection, "login"), { recursive: true });
     await symlink(victim, path.join(connection, "login", "auth.json"));
-    const provider = createCodexProvider({
-      dataDir: env.root,
-      command: env.dumper,
-    });
+    const provider = folders.ownProvider(
+      createCodexProvider({
+        dataDir: env.root,
+        command: env.dumper,
+      })
+    );
     await provider.adapter.checkReadiness(new AbortController().signal);
     const original = path.join(connection, "login", "auth.json");
     await expect(lstat(original)).rejects.toThrow();
@@ -367,10 +375,12 @@ describe("OpenCode", () => {
       JSON.stringify([login])
     );
     await writeFile(path.join(connection, "data", "ses_old.note"), "old");
-    const provider = createOpenCodeProvider({
-      dataDir: env.root,
-      command: [process.execPath, fixture("opencode-simulator.mjs")],
-    });
+    const provider = folders.ownProvider(
+      createOpenCodeProvider({
+        dataDir: env.root,
+        command: [process.execPath, fixture("opencode-simulator.mjs")],
+      })
+    );
     const organizationId = crypto.randomUUID();
     const result = await provider.adapter.execute(
       await env.requestFor(organizationId),
@@ -406,10 +416,12 @@ describe("OpenCode", () => {
       path.join(data, "synthetic-credentials.json"),
       JSON.stringify([own])
     );
-    const provider = createOpenCodeProvider({
-      dataDir: env.root,
-      command: [process.execPath, fixture("opencode-simulator.mjs")],
-    });
+    const provider = folders.ownProvider(
+      createOpenCodeProvider({
+        dataDir: env.root,
+        command: [process.execPath, fixture("opencode-simulator.mjs")],
+      })
+    );
     const result = await provider.adapter.execute(
       await env.requestFor(organizationId),
       control()
@@ -433,11 +445,13 @@ describe("OpenCode", () => {
           opencode: [process.execPath, fixture("opencode-simulator.mjs")],
         }),
       ] as unknown as ContainerSettings["docker"];
-      const provider = createOpenCodeProvider({
-        dataDir: env.root,
-        command: [path.join(env.root, "missing-opencode")],
-        container: env.container,
-      });
+      const provider = folders.ownProvider(
+        createOpenCodeProvider({
+          dataDir: env.root,
+          command: [path.join(env.root, "missing-opencode")],
+          container: env.container,
+        })
+      );
       const result = await provider.adapter.execute(
         await env.requestFor(crypto.randomUUID(), "container"),
         control()
@@ -453,10 +467,12 @@ describe("Antigravity", () => {
   const tokenAt = (home: string) =>
     path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
   const simulator = (root: string) =>
-    createAntigravityProvider({
-      dataDir: root,
-      command: [process.execPath, fixture("antigravity-simulator.mjs")],
-    });
+    folders.ownProvider(
+      createAntigravityProvider({
+        dataDir: root,
+        command: [process.execPath, fixture("antigravity-simulator.mjs")],
+      })
+    );
 
   it("links every organization's login file to the connection's one login and moves an older login there", async () => {
     const env = await setup();

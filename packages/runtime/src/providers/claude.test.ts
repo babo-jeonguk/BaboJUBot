@@ -17,10 +17,12 @@ async function home() {
   return root;
 }
 it("reports a missing program without exposing credentials or raw process errors", async () => {
-  const provider = createClaudeProvider({
-    dataDir: await home(),
-    command: ["/missing/claude"],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: await home(),
+      command: ["/missing/claude"],
+    })
+  );
   expect(
     await provider.adapter.checkReadiness(new AbortController().signal)
   ).toEqual({ status: "not_ready", reason: "program_missing" });
@@ -33,14 +35,16 @@ it("reports a missing program without exposing credentials or raw process errors
 });
 it("finishes a duplex stream, normalizes missing usage and publishes no raw content", async () => {
   const root = await home();
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-finish.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-finish.synthetic.json"),
+      ],
+    })
+  );
   const activities: unknown[] = [];
   const result = await provider.adapter.execute(request(), {
     signal: new AbortController().signal,
@@ -63,14 +67,16 @@ it("finishes a duplex stream, normalizes missing usage and publishes no raw cont
 });
 it("interrupts through the protocol and deletes attempt credentials after process exit", async () => {
   const root = await home();
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-cancel.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-cancel.synthetic.json"),
+      ],
+    })
+  );
   const controller = new AbortController();
   const input = request();
   const result = await provider.adapter.execute(input, {
@@ -89,14 +95,16 @@ it("interrupts through the protocol and deletes attempt credentials after proces
   ).toEqual([]);
 });
 it("delivers steering to the active stream and rejects unknown and finished runs", async () => {
-  const provider = createClaudeProvider({
-    dataDir: await home(),
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-steer.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-steer.synthetic.json"),
+      ],
+    })
+  );
   const input = request();
   const message = {
     runId: input.identity.runId,
@@ -163,25 +171,29 @@ const costState = (
 async function costPeer(root: string, scene: unknown) {
   const file = path.join(root, `scene-${crypto.randomUUID()}.json`);
   await writeFile(file, JSON.stringify(scene));
-  return createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/claude-cost-state.synthetic.mjs"),
-      file,
-    ],
-  });
+  return folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/claude-cost-state.synthetic.mjs"),
+        file,
+      ],
+    })
+  );
 }
 it("resumes the requested session and subtracts the cost Claude saved for it", async () => {
   const root = await home();
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-resume.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-resume.synthetic.json"),
+      ],
+    })
+  );
   const input = request();
   await saveCost(
     root,
@@ -199,14 +211,16 @@ it("resumes the requested session and subtracts the cost Claude saved for it", a
   expect(result.usage?.costUsd).toBeCloseTo(0.03);
 });
 it("does not guess a resumed session's cost when Claude's saved cost cannot be read", async () => {
-  const provider = createClaudeProvider({
-    dataDir: await home(),
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-resume.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-resume.synthetic.json"),
+      ],
+    })
+  );
   const input = request();
   // A copy of the cost in the session state is not Claude's record and is not used.
   input.previousSession = { id: "session-one", costUsd: 0.02 };
@@ -575,14 +589,16 @@ it("records the latest primary-session token size, request timestamp and cache T
       }),
     ].join("\n")
   );
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-finish.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-finish.synthetic.json"),
+      ],
+    })
+  );
   const result = await provider.adapter.execute(input, {
     signal: new AbortController().signal,
     emit: async () => {},
@@ -628,14 +644,16 @@ it("compacts the saved launch with the same session and requires a compact bound
       ],
     })
   );
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      fixture,
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        fixture,
+      ],
+    })
+  );
   expect(provider.adapter.capabilities.precompact).toBe(true);
   const session = {
     id: "session-one",
@@ -684,13 +702,15 @@ it("compacts the saved launch with the same session and requires a compact bound
 it("waits for an orphaned child to exit before settling cancellation", async () => {
   const root = await home(),
     controller = new AbortController();
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/claude-orphan.synthetic.mjs"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/claude-orphan.synthetic.mjs"),
+      ],
+    })
+  );
   const input = request();
   const result = await provider.adapter.execute(input, {
     signal: controller.signal,
@@ -713,15 +733,17 @@ it("waits for an orphaned child to exit before settling cancellation", async () 
 
 it("compacts through the real compact protocol output", async () => {
   const root = await home();
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/claude-simulator.mjs"),
-      "--recording",
-      path.resolve("test-fixtures/claude-recorded.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/claude-simulator.mjs"),
+        "--recording",
+        path.resolve("test-fixtures/claude-recorded.json"),
+      ],
+    })
+  );
   const session = {
     id: "session-one",
     costUsd: 0,
@@ -739,14 +761,16 @@ it("compacts through the real compact protocol output", async () => {
 // 제품은 입력만 닫고 프로그램이 스스로 끝날 때까지 기다리며, 마지막 턴의 결과로 실행 시도를 끝낸다.
 // 실제 Claude 2.1.317 녹화: 기다리는 서브에이전트 → 45초 백그라운드 명령 → 첫 결과 → 명령 끝 → 두 번째 턴(init이 다시 온다) → 결과.
 it("keeps the run open for a background command and finishes with the turn that handles its outcome", async () => {
-  const provider = createClaudeProvider({
-    dataDir: await home(),
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-background-recorded.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-background-recorded.json"),
+      ],
+    })
+  );
   const input = request();
   const progress: string[] = [];
   let steeredAfterFirstTurn: string | undefined;
@@ -787,14 +811,16 @@ it("keeps the run open for a background command and finishes with the turn that 
 // PR #130 리뷰 SPEC-03: 기다리는(foreground) 서브에이전트는 시작 신호만 내고 끝 신호를 약속하지 않는다.
 // 백그라운드 일은 Claude가 내는 살아 있는 목록으로만 판단하므로, 이 실행은 결과대로 끝난다.
 it("finishes with its result when a foreground task never reports back", async () => {
-  const provider = createClaudeProvider({
-    dataDir: await home(),
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-foreground-task.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-foreground-task.synthetic.json"),
+      ],
+    })
+  );
   const progress: string[] = [];
   const result = await provider.adapter.execute(request(), {
     signal: new AbortController().signal,
@@ -810,14 +836,16 @@ it("finishes with its result when a foreground task never reports back", async (
 });
 
 it("cancels a run that is waiting for a background command", async () => {
-  const provider = createClaudeProvider({
-    dataDir: await home(),
-    command: [
-      process.execPath,
-      path.resolve("test-fixtures/replay.mjs"),
-      path.resolve("test-fixtures/claude-background-hang.synthetic.json"),
-    ],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: await home(),
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        path.resolve("test-fixtures/claude-background-hang.synthetic.json"),
+      ],
+    })
+  );
   const controller = new AbortController();
   const started = Date.now();
   const result = await provider.adapter.execute(request(), {
@@ -846,10 +874,16 @@ async function runBackgroundLost(
   const root = await home();
   const file = path.join(root, "lost.json");
   await writeFile(file, JSON.stringify(fixture));
-  const provider = createClaudeProvider({
-    dataDir: root,
-    command: [process.execPath, path.resolve("test-fixtures/replay.mjs"), file],
-  });
+  const provider = folders.ownProvider(
+    createClaudeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        file,
+      ],
+    })
+  );
   return provider.adapter.execute(request(), {
     signal: new AbortController().signal,
     emit: async () => {},
