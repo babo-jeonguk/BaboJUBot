@@ -518,7 +518,13 @@ describe("one app-server connection per call (#145)", () => {
           );
         if (ended) return;
         const left = await alive();
-        for (const pid of left) process.kill(pid, "SIGKILL");
+        for (const pid of left)
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch (error) {
+            // Ended on its own between the check and the kill; go on with the others.
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
         await expect.poll(running, { timeout: 10_000 }).toBe(false);
         throw new Error(
           `scripted programs ${left.join(", ")} still ran after their held answers were let go; stopped them`
