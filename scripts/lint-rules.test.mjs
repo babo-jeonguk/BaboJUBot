@@ -282,3 +282,118 @@ test("code outside tests may wait a fixed time", async () => {
       place
     );
 });
+
+/** 화면 전체 검색 규칙의 메시지만. */
+const locatorMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-page-wide-locator");
+
+// E2E는 타입 정보로 페이지를 가리므로(TypeScript 프로젝트에 든 파일만) 있는 E2E 파일 자리를 빌린다.
+const e2ePlaces = [
+  "apps/web/e2e/home.spec.ts",
+  "apps/web/e2e/support/organization.ts",
+];
+// 시험이 받는 page와 다른 탭(`context.newPage()`), 영역 locator.
+const e2eHead = `import type { BrowserContext, Locator, Page } from "@playwright/test";\ndeclare const page: Page;\ndeclare const context: BrowserContext;\ndeclare const area: Locator;\nconst other = await context.newPage();\nexport {};\n`;
+
+test("an E2E may not search the whole page by text or pick by position among page-wide or same-name matches", async () => {
+  const found = {
+    // 화면 전체에서 글자로 찾기.
+    "page text": [`await page.getByText("대기").click();\n`, /글자로/],
+    "another tab's text": [
+      `await other.getByText("조직이 일시정지 중입니다").isVisible();\n`,
+      /글자로/,
+    ],
+    "page text in an or": [
+      `await area.or(page.getByText("실패")).waitFor();\n`,
+      /글자로/,
+    ],
+    // 화면 전체 검색에서 순서로 고르기.
+    "page role first": [
+      `await page.getByRole("link", { name: "설정" }).first().click();\n`,
+      /화면 전체에서 찾은/,
+    ],
+    "page filter last": [
+      `await page.getByRole("status").filter({ hasText: "불러오는 중" }).last().waitFor();\n`,
+      /화면 전체에서 찾은/,
+    ],
+    "page locator nth": [
+      `await page.locator("[data-author]").nth(1).click();\n`,
+      /화면 전체에서 찾은/,
+    ],
+    // 이름·글자로 찾은 것 중 순서로 고르기(영역 안이어도).
+    "area text first": [
+      `await area.getByText("실행 시도 완료").first().waitFor();\n`,
+      /이름·글자로 찾은/,
+    ],
+    "area named role nth": [
+      `await area.getByRole("button", { name: "취소" }).nth(1).click();\n`,
+      /이름·글자로 찾은/,
+    ],
+    "area label last": [
+      `await area.getByLabel("제목").last().fill("x");\n`,
+      /이름·글자로 찾은/,
+    ],
+    "a text filter then first": [
+      `await area.getByRole("listitem").filter({ hasText: "완료" }).first().click();\n`,
+      /이름·글자로 찾은/,
+    ],
+    "an and after a named match": [
+      `await area.getByRole("link", { name: /^실행 시도/ }).and(area.locator("a")).first().click();\n`,
+      /이름·글자로 찾은/,
+    ],
+  };
+  for (const [shape, [code, kind]] of Object.entries(found))
+    for (const place of e2ePlaces) {
+      const [message, ...rest] = locatorMessages(
+        await lint(e2eHead + code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, kind, shape);
+      // 메시지가 대안과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, /영역|ID/);
+      assert.match(message.message, /CODING_STANDARDS\.md#화면/);
+    }
+});
+
+test("an E2E may find areas on the page, search inside them, pick list items by order and wait for either of two", async () => {
+  const allowed = [
+    // 영역·대화상자·조작 요소를 페이지에서 찾고 그 안에서 글자로 찾는다.
+    `const map = page.getByRole("region", { name: "연구 지도" });\nawait map.getByText("연구 문제").click();\nawait page.getByRole("dialog", { name: "새 연구 조직" }).getByLabel("조직 이름").fill("x");\n`,
+    `await page.getByRole("button", { name: "저장" }).click();\nawait page.getByLabel("Lead에게 보낼 메시지").fill("x");\nawait page.getByTestId("run-stop-reason").waitFor();\n`,
+    `await other.getByRole("main").getByText("찾을 수 없는 승인 요청").waitFor();\n`,
+    // 이름 없는 목록 항목을 순서로 고르는 것은 순서 확인이다.
+    `const rows = area.getByRole("row");\nawait rows.nth(1).click();\nawait area.getByRole("listitem").first().waitFor();\nawait area.locator("[data-date]").last().hover();\n`,
+    `await page.getByRole("region", { name: "최근 실행 시도" }).getByRole("link").first().click();\n`,
+    // 둘 중 먼저 뜨는 것을 기다린다(Playwright 문서의 관용 표현).
+    `await area.or(page.getByRole("alert")).first().waitFor();\n`,
+    // 변수에 담은 locator는 따라가지 않는다.
+    `const links = page.getByRole("link");\nawait links.first().click();\n`,
+  ];
+  for (const code of allowed)
+    for (const place of e2ePlaces) {
+      const messages = await lint(e2eHead + code, place);
+      // 코드가 읽히지 않아 통과하는 것이 아니다.
+      assert.deepEqual(
+        messages.filter((m) => m.fatal),
+        [],
+        code
+      );
+      assert.deepEqual(locatorMessages(messages), [], code);
+    }
+});
+
+test("code outside the E2E may search a whole page", async () => {
+  for (const place of [
+    "apps/server/test/lint-sample.test.ts",
+    "scripts/lint-sample.test.mjs",
+    "scripts/live/lint-sample.mjs",
+  ])
+    assert.deepEqual(
+      locatorMessages(
+        await lint(`await page.getByText("대기").first().click();\n`, place)
+      ),
+      [],
+      place
+    );
+});
