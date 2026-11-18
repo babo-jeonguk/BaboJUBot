@@ -4,7 +4,12 @@
 const childProcess = new Set(["child_process", "node:child_process"]);
 const syncLaunchers = new Set(["execFileSync", "spawnSync", "execSync"]);
 
-/** 옵션 객체 리터럴이 `timeout` 속성을 직접 갖는가(`{ timeout: ms }`, `{ timeout }`). */
+/** 상한이 없다는 뜻인 값: Node는 `timeout`이 0이거나 없으면 기다림에 끝을 두지 않는다. */
+const unbounded = (value) =>
+  (value.type === "Literal" && value.value === 0) ||
+  (value.type === "Identifier" && value.name === "undefined");
+
+/** 옵션 객체 리터럴이 `timeout` 속성을 직접 갖는가(`{ timeout: ms }`, `{ timeout }`). 0·undefined는 상한이 아니다. */
 const hasTimeout = (node) =>
   node.type === "ObjectExpression" &&
   node.properties.some(
@@ -13,14 +18,16 @@ const hasTimeout = (node) =>
       !property.computed &&
       ((property.key.type === "Identifier" &&
         property.key.name === "timeout") ||
-        (property.key.type === "Literal" && property.key.value === "timeout"))
+        (property.key.type === "Literal" &&
+          property.key.value === "timeout")) &&
+      !unbounded(property.value)
   );
 
 /**
  * 외부 프로그램을 동기로 띄우면 그 프로그램이 끝날 때까지 이벤트 루프 전체가 멈춘다. 서버 시작·복구 중에 답하지 않는
  * 보조 명령(ps, PowerShell, taskkill)이 서버를 붙잡지 않도록, 동기 실행은 옵션 객체 리터럴에 `timeout`을 둘 때만 허용한다.
  * child_process에서 가져온 이름(바꾼 이름 포함)과 `모듈.execFileSync(...)` 모양의 호출을 본다. 옵션을 변수로 넘기면 상한을
- * 확인할 수 없으므로 짚는다. 계산한 경로로 가져오거나 함수를 다른 변수에 옮겨 부르는 것은 따라가지 않는다.
+ * 확인할 수 없으므로 짚는다. 계산한 경로로 가져오거나 구조 분해·다른 변수로 함수를 옮겨 부르는 것은 따라가지 않는다.
  */
 const syncCommandTimeout = {
   meta: {

@@ -199,6 +199,9 @@ test("product code runs a program synchronously only with a timeout", async () =
     "an execSync without a timeout": `import { execSync } from "node:child_process";\nexport const out = () => execSync("ps");\n`,
     "a renamed import": `import { execFileSync as run } from "node:child_process";\nexport const out = () => run("ps", []);\n`,
     "a namespace call": `import * as cp from "node:child_process";\nexport const out = () => cp.spawnSync("ps", [], { encoding: "utf8" });\n`,
+    // Node는 timeout이 0이거나 undefined면 기다림에 끝을 두지 않는다.
+    "a zero timeout": `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", [], { timeout: 0 });\n`,
+    "an undefined timeout": `import { spawnSync } from "node:child_process";\nexport const out = () => spawnSync("ps", [], { timeout: undefined });\n`,
     // 옵션을 변수로 넘기면 상한이 있는지 확인할 수 없다.
     "options in a variable": `import { execFileSync } from "node:child_process";\nconst options = { timeout: 1000 };\nexport const out = () => execFileSync("ps", [], options);\n`,
   };
