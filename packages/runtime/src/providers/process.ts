@@ -29,6 +29,8 @@ export const startupLimitMs = 5 * 60 * 1000;
 const defaultMaxLineLength = 64 * 1024 * 1024;
 /** 프로그램이 끝난 뒤 남은 출력을 읽을 시간. 남긴 자식이 출력을 쥐고 있어 출력이 닫히지 않을 때만 쓰인다. */
 const exitDrainMs = 1000;
+/** 멈춘 확인 프로그램이 끝나기를 기다리는 시간. 이만큼 기다린 뒤 강제로 끝내고, 다시 이만큼 기다린 뒤 기다림을 포기한다. */
+const probeStopGraceMs = 2_000;
 
 /** 프로그램 출력이 로그인 문제를 말하는가. 공개 기록에 옮기지 않고 판단에만 쓴다. */
 export const saysLoginProblem = (text: unknown) =>
@@ -144,12 +146,40 @@ export function runProbe(
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = limit(stderr + chunk.toString());
     });
-    const stop = () => child.kill();
+    let settled = false;
+    let stopped = false;
+    let stopTimer: ReturnType<typeof setTimeout> | undefined;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(timer);
+      child.kill();
+      stopTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+        forceTimer = setTimeout(() => {
+          console.warn(
+            "[provider] a check program's output did not close after it was stopped"
+          );
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(
+            Object.assign(new Error("Program did not close"), {
+              code: "killed",
+            })
+          );
+        }, probeStopGraceMs);
+      }, probeStopGraceMs);
+    };
     const timer = setTimeout(stop, options.timeout);
     options.signal.addEventListener("abort", stop, { once: true });
     if (options.signal.aborted) stop();
     const finish = (error?: Error & { code?: unknown }) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(stopTimer);
+      clearTimeout(forceTimer);
       options.signal.removeEventListener("abort", stop);
       if (error) reject(Object.assign(error, { stdout, stderr }));
       else resolve({ stdout, stderr });
