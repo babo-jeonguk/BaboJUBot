@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 const workflow = parse(
   readFileSync(
@@ -374,7 +375,7 @@ test("rejects a partial rerun where one test recovered but another still failed"
 // that boundary on any OS by removing every executable from the child PATH.
 test("runs the real workflow gate without any executable on PATH", (context) => {
   const emptyPath = mkdtempSync(path.join(tmpdir(), "ci-gate-no-shell-"));
-  context.after(() => rmSync(emptyPath, { recursive: true, force: true }));
+  context.after(() => removeFolder(emptyPath));
   assert.equal(runGate({ executablePath: emptyPath }).status, 0);
   assert.equal(runGate({ code: "false", executablePath: emptyPath }).status, 0);
   assertRejected({
@@ -386,7 +387,7 @@ test("runs the real workflow gate without any executable on PATH", (context) => 
 // 실패 이유는 job 이름으로 job 기록을 찾는다. 판정 스크립트의 이름이 workflow의 name과 같아야 한다.
 test("names each failed job by its workflow name in the log and the job summary", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "ci-gate-summary-"));
-  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  context.after(() => removeFolder(dir));
   for (const suite of suites) {
     const summary = path.join(dir, `${suite}.md`);
     const result = runGate({ results: { [suite]: "cancelled" }, summary });
@@ -427,7 +428,7 @@ test("lists every failed job, not only the first", () => {
 
 test("writes 'no failures' to the job summary when the gate passes", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "ci-gate-summary-"));
-  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  context.after(() => removeFolder(dir));
   const summary = path.join(dir, "summary.md");
   assert.equal(runGate({ summary }).status, 0);
   assert.match(readFileSync(summary, "utf8"), /실패 없음/);

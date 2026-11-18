@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
 import { within } from "./support.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // 조직을 만든 직후의 폴더 준비와 실행 시도 준비가 겹칠 수 있다. 겹쳤다고 표식이 없는 것으로 보면 멀쩡한 실행이 실패한다.
 // 첫 준비가 기록을 확인하는 동안 다른 준비가 표식을 쓰고 기록까지 남기는 순간을 만든다.
@@ -72,7 +73,7 @@ it.each([
     const root = await mkdtemp(path.join(tmpdir(), "identity-race-"));
     cleanups.push(
       () => database.close(),
-      () => rm(root, { recursive: true, force: true })
+      () => removeFolder(root)
     );
     const org = await insertLegacyOrganization(database.db, "겹친 준비");
     const workspaces = new Workspaces(root, database.db);

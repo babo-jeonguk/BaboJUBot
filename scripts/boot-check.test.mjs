@@ -8,12 +8,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -154,6 +155,101 @@ test(
   }
 );
 
+// 폴더를 쓰는 프로세스가 끝났는지 확인하지 못하면 폴더를 지우지 않는다. 지우면 남은 프로세스와 그 작업 파일의 관계가 끊겨
+// 원인을 볼 수 없다. 그룹을 벗어나 폴더 이름을 인수로 들고 도는 프로세스로 만든다(Postgres가 아니라 감독자가 끝내지 않는다).
+test(
+  "the supervisor keeps the folder and reports it when a process using it does not end",
+  {
+    timeout: 60_000,
+    skip:
+      process.platform === "win32" &&
+      "Windows finds the folder's processes only through its postmaster.pid files",
+  },
+  async () => {
+    const script = `
+      const { spawn } = require("node:child_process");
+      const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", require("node:os").tmpdir()], {
+        detached: true,
+        stdio: "ignore",
+      });
+      escaped.unref();
+      console.log(JSON.stringify({ escaped: escaped.pid }));
+    `;
+    // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
+    const { result, error } = await supervise(["-e", script], process.env).then(
+      (result) => ({ result }),
+      (error) => ({ error })
+    );
+    const escaped = Number(
+      /"escaped":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
+    );
+    const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
+    try {
+      assert.ok(error, "the supervisor did not report the running process");
+      assert.ok(error instanceof AggregateError, String(error));
+      assert.ok(scope, error.message);
+      const messages = error.errors.map((e) => e.message).join("\n");
+      assert.match(
+        messages,
+        /wait for the folder's processes to end: still running/
+      );
+      assert.match(messages, new RegExp(`kept ${RegExp.escape(scope)}`));
+      assert.equal(existsSync(scope), true, `${scope} was removed`);
+    } finally {
+      if (escaped && isAlive(escaped)) process.kill(escaped, "SIGKILL");
+      if (escaped) await waitUntil(() => !isAlive(escaped), 10_000);
+      if (scope) await removeFolder(scope);
+    }
+  }
+);
+
+// 명령줄에 폴더 이름이 없어도, 끝난 실행의 출력 통로를 아직 쥔 프로세스는 그 폴더를 쓰고 있을 수 있다. 출력이 닫힌 것을
+// 확인하지 못하면 폴더를 남긴다. 그룹을 벗어나 출력을 물려받고 폴더를 작업 폴더로 쓰는 프로세스로 만든다.
+test(
+  "the supervisor keeps the folder and reports it when a process still holds the run's output",
+  {
+    timeout: 60_000,
+    skip:
+      process.platform === "win32" &&
+      "POSIX process groups only; Windows ends the whole tree while the parent is alive",
+  },
+  async () => {
+    const script = `
+      const { spawn } = require("node:child_process");
+      const held = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd: require("node:os").tmpdir(),
+        detached: true,
+        stdio: ["ignore", "inherit", "ignore"],
+      });
+      held.unref();
+      console.log(JSON.stringify({ held: held.pid }));
+    `;
+    // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
+    const { result, error } = await supervise(["-e", script], process.env).then(
+      (result) => ({ result }),
+      (error) => ({ error })
+    );
+    const held = Number(
+      /"held":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
+    );
+    const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
+    try {
+      assert.ok(error, "the supervisor did not report the held output");
+      assert.ok(error instanceof AggregateError, String(error));
+      assert.ok(scope, error.message);
+      assert.match(
+        error.errors.map((e) => e.message).join("\n"),
+        new RegExp(`kept ${RegExp.escape(scope)}`)
+      );
+      assert.equal(existsSync(scope), true, `${scope} was removed`);
+    } finally {
+      if (held && isAlive(held)) process.kill(held, "SIGKILL");
+      if (held) await waitUntil(() => !isAlive(held), 10_000);
+      if (scope) await removeFolder(scope);
+    }
+  }
+);
+
 const noLeftovers = { folders: [], processes: [] };
 
 /** 부모 셸에 남은 실제 서비스 설정을 흉내 낸다. boot-check는 이것을 서버에 넘기지 않아야 한다. */
@@ -210,6 +306,8 @@ async function supervise(
   let result;
   let failure;
   let problems;
+  // 띄운 실행의 출력 통로가 닫힌 것을 확인했는가. 띄우지 못했으면 확인할 출력이 없다.
+  let outputClosed = true;
   try {
     child = spawn(process.execPath, args, {
       cwd: root,
@@ -217,6 +315,7 @@ async function supervise(
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
+    outputClosed = false;
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -239,7 +338,7 @@ async function supervise(
     let exit = await within(exited, limit);
     const overrun = !exit;
     if (!exit) exit = await forceStop(child, exited, graceMs);
-    const outputClosed = (await within(closed, 5_000)) === true;
+    outputClosed = (await within(closed, 5_000)) === true;
     if (!outputClosed) {
       child.stdout.destroy();
       child.stderr.destroy();
@@ -254,7 +353,7 @@ async function supervise(
   } catch (error) {
     failure = error;
   } finally {
-    problems = await cleanUpScope(scope, child);
+    problems = await cleanUpScope(scope, child, outputClosed);
     if (result) result.leftAfterCleanup = leftovers(scope);
   }
   if (problems.length > 0)
@@ -283,31 +382,50 @@ async function forceStop(child, exited, graceMs) {
   return within(exited, 10_000);
 }
 
-/** 정상으로 끝났어도 남은 것을 치운다. 단계마다 따로 시도하고 실패한 단계를 모아 돌려준다. */
-async function cleanUpScope(scope, child) {
+/**
+ * 정상으로 끝났어도 남은 것을 치운다. 단계마다 따로 시도하고 실패한 단계를 모아 돌려준다.
+ * 폴더는 그 폴더를 쓰는 프로세스가 모두 끝난 것을 확인했을 때만 지운다. 확인하지 못하면 폴더를 남기고 그 사실을 알린다.
+ * 끝난 실행의 출력 통로를 아직 누가 쥐고 있으면(`outputClosed`가 거짓) 명령줄에 폴더가 없어도 그 폴더를 쓰는 중일 수 있어 남긴다.
+ * Postgres 멈추기가 실패해도 남은 프로세스는 마지막 확인이 따로 보므로, 그 실패만으로 폴더를 남기지 않는다.
+ */
+async function cleanUpScope(scope, child, outputClosed) {
   const problems = [];
   const attempt = async (what, work) => {
     try {
       await work();
+      return true;
     } catch (error) {
       problems.push(new Error(`${what}: ${error?.message ?? error}`));
+      return false;
     }
   };
   // POSIX에서 그룹에 남은 자식. Windows는 트리를 부모가 살아 있을 때만 따라갈 수 있어 forceStop에서 끝냈다.
-  if (child && process.platform !== "win32")
-    await attempt("stop the process group", () =>
+  const groupStopped =
+    !child ||
+    process.platform === "win32" ||
+    (await attempt("stop the process group", () =>
       signalGroup(child, "SIGKILL")
-    );
+    ));
   await attempt("stop the Postgres left in the folder", () =>
     stopPostmasters(scope)
   );
-  await attempt("wait for the folder's processes to end", async () => {
-    if (!(await waitUntil(() => runningIn(scope).length === 0, 10_000)))
-      throw new Error(`still running: ${runningIn(scope).join("; ")}`);
-  });
-  await attempt("remove the folder", () =>
-    rm(scope, { recursive: true, force: true, maxRetries: 5 })
+  const ended = await attempt(
+    "wait for the folder's processes to end",
+    async () => {
+      if (!(await waitUntil(() => runningIn(scope).length === 0, 10_000)))
+        throw new Error(`still running: ${runningIn(scope).join("; ")}`);
+    }
   );
+  if (groupStopped && ended && outputClosed)
+    await attempt("remove the folder", () => removeFolder(scope));
+  else
+    problems.push(
+      new Error(
+        outputClosed
+          ? `kept ${scope}: its processes were not confirmed to have ended`
+          : `kept ${scope}: a process still holds the run's output`
+      )
+    );
   return problems;
 }
 

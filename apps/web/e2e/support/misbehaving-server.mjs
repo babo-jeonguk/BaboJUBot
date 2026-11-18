@@ -10,9 +10,10 @@
 // - exit-before-ready-undeletable: 임시 폴더에 지울 수 없는 폴더(쓰기 권한 없음, POSIX)를 만들고 시작 줄 전에 끝난다.
 // 가짜 Postgres의 pid와 임시 폴더를 `MISBEHAVE_STATE` 파일에 적는다(시험이 정리를 확인한다).
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 const temp = os.tmpdir();
 const dataDir = path.join(temp, "babojubot-pg-fake");
@@ -51,15 +52,15 @@ switch (process.env.MISBEHAVE) {
     setInterval(() => {}, 1000);
     break;
   case "leave-postgres-on-stop":
-    process.on("message", (message) => {
+    process.on("message", async (message) => {
       if (message?.type !== "babojubot:stop") return;
-      rmSync(dataDir, { recursive: true, force: true });
+      await removeFolder(dataDir);
       process.exit(0);
     });
     process.stdout.write(ready);
     break;
   case "exit-before-ready-without-temp":
-    rmSync(temp, { recursive: true, force: true });
+    await removeFolder(temp);
     process.exit(1);
     break;
   case "exit-before-ready-undeletable": {

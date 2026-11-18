@@ -1,3 +1,4 @@
+import comments from "@eslint-community/eslint-plugin-eslint-comments/configs";
 import js from "@eslint/js";
 import { defineConfig, globalIgnores } from "eslint/config";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -18,6 +19,26 @@ const framework = [
   "@radix-ui/*",
 ];
 
+// 시험 코드: 시험 파일과 시험 폴더, src 안의 시험 도움 파일. 시험 전용 규칙은 이 범위에 건다.
+// 외부 프로그램을 흉내 내는 가짜 CLI(`*/test-fixtures/`)와 손으로 돌리는 스크립트(`scripts/live/` 등)는 시험 코드가 아니다.
+const testFiles = [
+  "**/*.test.{ts,tsx,mts,mjs,js}",
+  "**/*.spec.{ts,tsx}",
+  "apps/web/e2e/**",
+  "apps/web/test/**",
+  "apps/server/test/**",
+  "packages/runtime/src/testing.ts",
+  "packages/runtime/src/providers/{test-support,test-folders,*-support}.ts",
+  "packages/db/src/{testing,test-cluster}.ts",
+];
+
+const standards = "CODING_STANDARDS.md#정리";
+// rm·rmSync는 recursive일 때만 폴더를 지운다(파일 지우기는 허용). rmdir·rmdirSync는 옵션 없이도 빈 폴더를 지운다.
+const removers = "/^(rm|rmSync|rmdir|rmdirSync)$/";
+const recursiveRemovers = "/^(rm|rmSync)$/";
+const folderRemovers = "/^(rmdir|rmdirSync)$/";
+const removeFolderMessage = `시험의 폴더 지우기는 removeFolder(@babojubot/runtime/remove-folder)로 합니다. 폴더 안에서 돈 프로그램의 종료와 stdio 닫힘을 먼저 기다린 뒤 부르세요. Windows의 일시적인 잠김만 정해진 횟수 다시 시도합니다. ${standards}`;
+
 export default defineConfig([
   globalIgnores([
     ".babojubot/**",
@@ -34,6 +55,43 @@ export default defineConfig([
   js.configs.recommended,
   tseslint.configs.recommended,
   { languageOptions: { globals: globals.node } },
+  {
+    // lint 예외는 이유를 적고(`-- 이유`), 규칙을 이름으로 고르며, 더는 필요 없으면 지운다.
+    linterOptions: {
+      reportUnusedDisableDirectives: "error",
+      reportUnusedInlineConfigs: "error",
+    },
+    plugins: comments.recommended.plugins,
+    rules: {
+      "@eslint-community/eslint-comments/require-description": "error",
+      "@eslint-community/eslint-comments/no-unlimited-disable": "error",
+    },
+  },
+  {
+    // 시험의 임시 폴더는 공용 정리 함수로만 지운다. 함수 이름을 바꿔 가져오면 이 검사를 피하므로 그것도 막는다.
+    files: testFiles,
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: `CallExpression[callee.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
+          message: removeFolderMessage,
+        },
+        {
+          selector: `CallExpression[callee.property.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
+          message: removeFolderMessage,
+        },
+        {
+          selector: `CallExpression[callee.name=${folderRemovers}], CallExpression[callee.property.name=${folderRemovers}]`,
+          message: removeFolderMessage,
+        },
+        {
+          selector: `ImportDeclaration[source.value=/^(node:)?fs(\\/promises)?$/] > ImportSpecifier[imported.name=${removers}][local.name!=${removers}]`,
+          message: `fs의 지우기 함수 이름을 바꿔 가져오면 폴더 지우기 검사를 피합니다. 이름 그대로 가져오세요. ${removeFolderMessage}`,
+        },
+      ],
+    },
+  },
   {
     rules: {
       "@typescript-eslint/no-unused-vars": [

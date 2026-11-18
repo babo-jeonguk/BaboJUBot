@@ -11,6 +11,7 @@ import {
   loadContext,
   postToGitHub,
 } from "./gh-post.mjs";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -54,17 +55,17 @@ function createFixture() {
   return fixture;
 }
 
-function withFixture(run) {
+async function withFixture(run) {
   const fixture = createFixture();
   try {
-    return run(fixture);
+    return await run(fixture);
   } finally {
-    fs.rmSync(fixture, { recursive: true, force: true });
+    await removeFolder(fixture);
   }
 }
 
-test("published text rejects references readers cannot open", () => {
-  withFixture((fixture) => {
+test("published text rejects references readers cannot open", async () => {
+  await withFixture((fixture) => {
     const context = loadContext(fixture);
     const rejected = [
       "근거는 `.reference-cache/issue-1/`에 있다.",
@@ -85,8 +86,8 @@ test("published text rejects references readers cannot open", () => {
   });
 });
 
-test("published text allows names, product settings, prose and committed links", () => {
-  withFixture((fixture) => {
+test("published text allows names, product settings, prose and committed links", async () => {
+  await withFixture((fixture) => {
     const context = loadContext(fixture);
     const allowed = [
       "제품 데이터는 `BABOJUBOT_HOME` 아래에 둔다.",
@@ -109,8 +110,8 @@ test("published text allows names, product settings, prose and committed links",
   });
 });
 
-test("each finding names the line and the reference", () => {
-  withFixture((fixture) => {
+test("each finding names the line and the reference", async () => {
+  await withFixture((fixture) => {
     const [finding] = findLocalOnlyReferences(
       "첫 줄\n자세한 건 `.scratch/x.md` 참고",
       loadContext(fixture)
@@ -136,8 +137,8 @@ function post(fixture, args, { stdin = "" } = {}) {
   return { status, calls, errors: errors.join("\n") };
 }
 
-test("a clean body is passed to gh unchanged", () => {
-  withFixture((fixture) => {
+test("a clean body is passed to gh unchanged", async () => {
+  await withFixture((fixture) => {
     fs.writeFileSync(path.join(fixture, "body.md"), "결과를 요약했다.\n");
     const args = ["issue", "comment", "12", "--body-file", "body.md"];
     const { status, calls } = post(fixture, args);
@@ -146,8 +147,8 @@ test("a clean body is passed to gh unchanged", () => {
   });
 });
 
-test("a body with a local-only path is not posted", () => {
-  withFixture((fixture) => {
+test("a body with a local-only path is not posted", async () => {
+  await withFixture((fixture) => {
     fs.writeFileSync(
       path.join(fixture, "body.md"),
       "요약\n\n원문은 `.reference-cache/issue-1/`\n"
@@ -166,8 +167,8 @@ test("a body with a local-only path is not posted", () => {
   });
 });
 
-test("every text option of issue and pr commands is checked", () => {
-  withFixture((fixture) => {
+test("every text option of issue and pr commands is checked", async () => {
+  await withFixture((fixture) => {
     fs.writeFileSync(path.join(fixture, "bad.md"), "see .scratch/x\n");
     const cases = [
       ["issue", "comment", "1", "--body", "see .scratch/x"],
@@ -189,8 +190,8 @@ test("every text option of issue and pr commands is checked", () => {
   });
 });
 
-test("a body read from stdin is checked and handed to gh", () => {
-  withFixture((fixture) => {
+test("a body read from stdin is checked and handed to gh", async () => {
+  await withFixture((fixture) => {
     const args = ["pr", "comment", "3", "--body-file", "-"];
     const clean = post(fixture, args, { stdin: "요약만 남긴다.\n" });
     assert.equal(clean.status, 0);
@@ -202,8 +203,8 @@ test("a body read from stdin is checked and handed to gh", () => {
   });
 });
 
-test("usage errors do not reach gh", () => {
-  withFixture((fixture) => {
+test("usage errors do not reach gh", async () => {
+  await withFixture((fixture) => {
     for (const args of [
       [],
       ["api", "repos/acme/demo/issues/1/comments", "-f", "body=x"],
@@ -217,8 +218,8 @@ test("usage errors do not reach gh", () => {
   });
 });
 
-test("the command stops before gh when the body has a local-only path", () => {
-  withFixture((fixture) => {
+test("the command stops before gh when the body has a local-only path", async () => {
+  await withFixture((fixture) => {
     const result = spawnSync(
       process.execPath,
       [

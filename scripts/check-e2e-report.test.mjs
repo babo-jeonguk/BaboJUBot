@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { combine, judge, requiredFiles } from "./check-e2e-report.mjs";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // Playwright JSON 보고서의 모양(파일별 suite → specs → tests)을 줄여 만든다.
 const passing = (file, title = "works") => ({
@@ -143,7 +144,7 @@ for (const [name, tests, errors] of [
 
 test("prints the counts and fails the command for a rejected or unreadable report", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "e2e-report-"));
-  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  context.after(() => removeFolder(dir));
   const script = fileURLToPath(
     new URL("./check-e2e-report.mjs", import.meta.url)
   );
@@ -193,7 +194,7 @@ test("judges shard reports together, with the server lifecycle checks in either 
 
 test("fails the command when one of several reports is unreadable or none is given", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "e2e-report-"));
-  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  context.after(() => removeFolder(dir));
   const script = fileURLToPath(
     new URL("./check-e2e-report.mjs", import.meta.url)
   );

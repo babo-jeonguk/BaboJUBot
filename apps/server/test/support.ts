@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -17,6 +17,7 @@ import {
   type RunningServer,
   type ServerOptions,
 } from "../src/index.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 /**
  * 서버 작업·Event·준비 확인처럼 끝나는 신호가 오는 대기의 상한(#215). 신호가 오면 바로 끝나므로 넉넉해도 통과 시간은
@@ -105,21 +106,9 @@ export async function startTestServer(
   options: TestServerOptions = {}
 ): Promise<TestServer> {
   const database = await createTestDatabase();
-  const dataDir =
-    options.dataDir ??
-    (await mkdtemp(path.join(tmpdir(), "babojubot-workspaces-")));
-  let server: RunningServer;
-  try {
-    server = await startServer({
-      db: database.db,
-      port: 0,
-      dataDir,
-      ...options,
-    });
-  } catch (error) {
-    await database.close();
-    throw error;
-  }
+  // 넘겨받은 폴더는 넘긴 쪽이 치운다. 이 helper가 만든 폴더만 지운다.
+  let ownDataDir: string | undefined;
+  let server: RunningServer | undefined;
   const sockets = new Set<WebSocket>();
   let serverStopped = false;
 
@@ -129,7 +118,7 @@ export async function startTestServer(
     body,
     headers = {}
   ) => {
-    const res = await fetch(server.url + path, {
+    const res = await fetch(server!.url + path, {
       method,
       headers: {
         ...headers,
@@ -145,14 +134,57 @@ export async function startTestServer(
     const text = await res.text();
     return { status: res.status, body: text ? JSON.parse(text) : undefined };
   };
-  // 서버 시작의 준비 확인이 끝난 뒤에 검사를 시작한다. 그래야 그 확인의 설정 변경 신호가 검사가 센 신호에 섞이지 않는다.
-  for (let settled = false; !settled;) {
-    const { body } = await request("GET", "/api/providers");
-    settled = body.providers.every(
-      (p: { readiness: { checking: boolean; reason: string | null } }) =>
-        !p.readiness.checking && p.readiness.reason !== "not_checked"
-    );
-    if (!settled) await new Promise((r) => setTimeout(r, 10));
+  // 서버를 넘기기 전(폴더 만들기·서버 시작·준비 확인)의 실패는 여기서 치운다.
+  try {
+    const dataDir =
+      options.dataDir ??
+      (ownDataDir = await mkdtemp(
+        path.join(tmpdir(), "babojubot-workspaces-")
+      ));
+    server = await startServer({
+      db: database.db,
+      port: 0,
+      ...options,
+      dataDir,
+    });
+    // 서버 시작의 준비 확인이 끝난 뒤에 검사를 시작한다. 그래야 그 확인의 설정 변경 신호가 검사가 센 신호에 섞이지 않는다.
+    for (let settled = false; !settled;) {
+      const { body } = await request("GET", "/api/providers");
+      settled = body.providers.every(
+        (p: { readiness: { checking: boolean; reason: string | null } }) =>
+          !p.readiness.checking && p.readiness.reason !== "not_checked"
+      );
+      if (!settled) await new Promise((r) => setTimeout(r, 10));
+    }
+  } catch (error) {
+    // 원래 실패를 그대로 알린다. 치우기는 단계마다 따로 시도하고, 실패하면 그 실패를 원래 실패와 함께 알린다.
+    const failures: unknown[] = [];
+    const serverClosed =
+      !server ||
+      (await server.close().then(
+        () => true,
+        (closing) => {
+          failures.push(closing);
+          return false;
+        }
+      ));
+    await database.close().catch((closing) => failures.push(closing));
+    // 서버가 닫힌 것을 확인하지 못하면 그 서버가 쓰는 폴더는 남긴다.
+    if (ownDataDir && serverClosed)
+      await removeFolder(ownDataDir).catch((removing) =>
+        failures.push(removing)
+      );
+    else if (ownDataDir)
+      failures.push(
+        new Error(`kept ${ownDataDir}: the test server did not close`)
+      );
+    if (failures.length > 0)
+      throw new AggregateError(
+        [error, ...failures],
+        "the test server was not handed over and cleaning up after it failed",
+        { cause: error }
+      );
+    throw error;
   }
 
   return {
@@ -247,7 +279,7 @@ export async function startTestServer(
       for (const socket of sockets) socket.terminate();
       if (!serverStopped) await server.close();
       await database.close();
-      if (!options.dataDir) await rm(dataDir, { recursive: true, force: true });
+      if (ownDataDir) await removeFolder(ownDataDir);
     },
   };
 }

@@ -56,7 +56,13 @@ export async function startTestCluster(): Promise<() => Promise<void>> {
       await stop();
     };
   } catch (error) {
-    await stop();
+    // 준비 실패를 그대로 알린다. 멈추기가 실패하면 그 실패를 함께 알린다.
+    await stop().catch((stopping) => {
+      throw new AggregateError(
+        [error, stopping],
+        "the test cluster was not prepared and stopping it failed"
+      );
+    });
     throw error;
   }
 }
@@ -84,7 +90,12 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   try {
     handle = await openDatabase({ url: clusterUrl(port, name) });
   } catch (error) {
-    await drop();
+    await drop().catch((dropping) => {
+      throw new AggregateError(
+        [error, dropping],
+        "the test database did not open and dropping it failed"
+      );
+    });
     throw error;
   }
   return {

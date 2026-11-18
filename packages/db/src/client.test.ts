@@ -17,6 +17,7 @@ import {
 } from "./client.ts";
 import { candidatePort } from "./ports.ts";
 import { createTestDatabase } from "./testing.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 describe("embedded Postgres lifetime", () => {
   // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
@@ -119,13 +120,7 @@ describe("embedded Postgres lifetime", () => {
       handle = undefined;
       expect(fs.existsSync(dataDir)).toBe(false);
     } finally {
-      if (pid && isAlive(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* Already gone. */
-        }
-      }
+      await killPostgres(pid);
       await handle?.close().catch(() => {});
       await removeCluster(dataDir);
     }
@@ -226,7 +221,7 @@ describe("embedded Postgres lifetime", () => {
         });
         await handle.close();
       } finally {
-        if (pid && isAlive(pid)) process.kill(pid, "SIGKILL");
+        await killPostgres(pid);
         if (child) await killHard(child);
         await removeCluster(dataDir);
       }
@@ -299,15 +294,7 @@ describe("embedded Postgres lifetime", () => {
           await new Promise((r) => setTimeout(r, 50));
         expect(isAlive(postmaster)).toBe(false);
       } finally {
-        for (const pid of [backend, postmaster])
-          if (pid && isAlive(pid)) {
-            try {
-              process.kill(pid, "SIGCONT");
-              process.kill(pid, "SIGKILL");
-            } catch {
-              // Between the check and the signal the process may be gone. Continue with the rest.
-            }
-          }
+        await killPostgres(backend, postmaster);
         if (child) await killHard(child);
         await removeCluster(dataDir);
       }
@@ -452,7 +439,7 @@ describe("a Postgres left by a killed process", () => {
         if (owner === "a dead process") {
           const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
           await watchExit(gone).within(10_000);
-          recordOwner(dataDir, { pid: gone.pid!, persistent: true });
+          await recordOwner(dataDir, { pid: gone.pid!, persistent: true });
         }
         await expect(
           openDatabase({
@@ -553,7 +540,7 @@ describe("a Postgres left by a killed process", () => {
     // 새 폴더에서 셋이 동시에 cluster를 만들고 켜게 한다. 주인이 하나가 아니면 만들기·켜기를 함께 시도해 부딪힌다.
     const gone = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
     await watchExit(gone).within(10_000);
-    recordOwner(dataDir, { pid: gone.pid!, persistent: true });
+    await recordOwner(dataDir, { pid: gone.pid!, persistent: true });
     const clientModule = fileURLToPath(new URL("./client.ts", import.meta.url));
     const script = `
       const db = await import(${JSON.stringify(clientModule)});
@@ -732,7 +719,7 @@ describe("a Postgres left by a killed process", () => {
       expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     } finally {
       fs.rmSync(link, { force: true });
-      fs.rmSync(outside, { recursive: true, force: true });
+      await removeFolder(outside);
       if (next) await removeCluster(next.dataDir);
     }
   });
@@ -749,17 +736,17 @@ function isAlive(pid: number) {
 
 /** 테스트가 만든 cluster 폴더와 그 옆의 주인 기록을 지운다. */
 async function removeCluster(dataDir: string) {
-  await fsp.rm(dataDir, { recursive: true, force: true });
-  await fsp.rm(`${dataDir}.owner`, { recursive: true, force: true });
+  await removeFolder(dataDir);
+  await removeFolder(`${dataDir}.owner`);
 }
 
 /** 주인 기록을 그 프로세스가 지금 주인인 것으로 바꿔 둔다. */
-function recordOwner(
+async function recordOwner(
   dataDir: string,
   owner: { pid: number; persistent: boolean }
 ) {
   const dir = `${dataDir}.owner`;
-  fs.rmSync(dir, { recursive: true, force: true });
+  await removeFolder(dir);
   fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir, "1"), JSON.stringify(owner));
 }
@@ -782,13 +769,31 @@ async function stopPostgres(pid: number) {
   const deadline = Date.now() + 10_000;
   while (isAlive(pid) && Date.now() < deadline)
     await new Promise((r) => setTimeout(r, 50));
-  if (isAlive(pid)) {
+  await killPostgres(pid);
+}
+
+/**
+ * 남은 Postgres를 강제로 끝내고 사라진 것을 확인한다. 모두에게 신호를 먼저 보낸 뒤 기다린다. 시한 안에 끝나지 않으면 실패하므로,
+ * 뒤따르는 폴더 삭제는 일어나지 않고 폴더가 남는다(쓰는 중인 폴더를 지워 원인을 가리지 않는다).
+ */
+async function killPostgres(...pids: number[]) {
+  const alive = pids.filter((pid) => pid && isAlive(pid));
+  for (const pid of alive)
     try {
+      // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다.
+      if (process.platform !== "win32") process.kill(pid, "SIGCONT");
       process.kill(pid, "SIGKILL");
     } catch {
-      /* Already gone. */
+      // Between the check and the signal the process may be gone.
     }
-  }
+  const deadline = Date.now() + 10_000;
+  while (alive.some(isAlive) && Date.now() < deadline)
+    await new Promise((r) => setTimeout(r, 50));
+  const left = alive.filter(isAlive);
+  if (left.length > 0)
+    throw new Error(
+      `Postgres ${left.join(", ")} did not end after SIGKILL; its folder is kept`
+    );
 }
 
 type Spawned = ReturnType<typeof spawn>;
@@ -916,7 +921,12 @@ async function holdDatabase(open: string) {
     const lines = lineReader(child);
     return { child, line: await lines.next() };
   } catch (error) {
-    await killHard(child);
+    await killHard(child).catch((killing) => {
+      throw new AggregateError(
+        [error, killing],
+        "the child did not open the database and stopping it failed"
+      );
+    });
     throw error;
   }
 }

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -37,7 +38,7 @@ function runCheckerFailure(fixture) {
   assert.fail("check-project.mjs unexpectedly succeeded");
 }
 
-test("check-project checks Git's file list without scanning ignored worktrees", () => {
+test("check-project checks Git's file list without scanning ignored worktrees", async () => {
   const fixture = fs.mkdtempSync(
     path.join(os.tmpdir(), "babojubot-check-project-")
   );
@@ -104,6 +105,6 @@ test("check-project checks Git's file list without scanning ignored worktrees", 
     assert.notEqual(tracked.status, 0);
     assert.match(tracked.output, /Broken local link/);
   } finally {
-    fs.rmSync(fixture, { recursive: true, force: true });
+    await removeFolder(fixture);
   }
 });

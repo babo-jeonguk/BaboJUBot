@@ -26,6 +26,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -180,7 +181,7 @@ describe("Role·Soul·Skill copy editing", () => {
     } finally {
       await t?.close();
       t = undefined;
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeFolder(dir);
     }
   });
 

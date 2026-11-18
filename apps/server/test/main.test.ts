@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
-import { removeFolder } from "@babojubot/runtime/testing";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";

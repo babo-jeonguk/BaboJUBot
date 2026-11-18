@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -25,6 +25,7 @@ import {
   type ModelRequest,
 } from "./local-model.ts";
 import { startTestServer, type TestServer } from "./support.ts";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // #147: 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델로, 조직 도구 MCP → OpenCode가 모델에 보내는 도구 정의 → 실행 시도 종료·저장·API까지를 본다.
 // 가짜 모델은 대상 upstream이 거부한 `\0` 표기의 도구 정의를 400으로 거부한다. 실제 모델 호출·로그인·모델 목록 다운로드는 없다.
@@ -104,7 +105,7 @@ describe.skipIf(!program)(
     afterAll(async () => {
       await t?.close();
       await model?.close();
-      await rm(dataDir, { recursive: true, force: true });
+      await removeFolder(dataDir);
     });
 
     const useOpenCode = async (orgId: string, agentId: string) => {
