@@ -42,6 +42,25 @@ export async function cleanUpAll(steps: Iterable<CleanupStep>): Promise<void> {
 }
 
 /**
+ * 폴더와 그 안에서 도는 프로그램의 정리. 폴더를 만든 직후 `cleanUp`을 러너나 `withCleanup`에 등록하고, 프로그램을 띄우면 그
+ * 멈춤을 `own`으로 맡긴다. `cleanUp`은 맡긴 멈춤을 역순으로 모두 시도하고, 모두 끝났을 때만 폴더를 지운다. 끝나지 않은 것이
+ * 있으면 폴더를 남기고 그 실패를 알린다(살아 있는 프로그램의 폴더는 지우지 못하거나, 지워도 그 프로그램이 남는다).
+ */
+export function folderCleanup(remove: CleanupStep) {
+  const stops: CleanupStep[] = [];
+  return {
+    /** 폴더를 지우기 전에 끝나야 하는 것. `stop`은 그것을 멈추고 끝날 때까지 기다린다. */
+    own(stop: CleanupStep) {
+      stops.push(stop);
+    },
+    cleanUp: async () => {
+      await cleanUpAll(stops.splice(0).reverse());
+      await remove();
+    },
+  };
+}
+
+/**
  * `body`를 하고, `body`가 `defer`로 등록한 정리를 등록 역순으로 모두 한다. 자원을 잡은 직후 그 정리를 등록한다.
  * 본문만 실패하면 그 실패를 그대로, 정리만 실패하면 정리 실패를 알린다. 둘 다 실패하면 원래 실패를 첫 자리에, 정리 실패를
  * 그 뒤에 둔 `AggregateError`로 함께 알린다.

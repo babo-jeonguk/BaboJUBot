@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanUpAll, withCleanup } from "./test-cleanup.ts";
+import { cleanUpAll, folderCleanup, withCleanup } from "./test-cleanup.ts";
 
 // 정리 실패가 시험의 원래 실패를 가리지 않고, 한 정리가 실패해도 나머지 정리를 한다.
 describe("withCleanup", () => {
@@ -120,5 +120,28 @@ describe("cleanUpAll", () => {
     expect((outcome as AggregateError).message).toBe(
       "정리가 실패했다: did not stop — 그리고 folder is locked"
     );
+  });
+});
+
+describe("folderCleanup", () => {
+  it("stops what runs in the folder in reverse order before removing it", async () => {
+    const ran: string[] = [];
+    const folder = folderCleanup(() => ran.push("remove"));
+    folder.own(() => ran.push("database"));
+    folder.own(async () => ran.push("server"));
+    await folder.cleanUp();
+    expect(ran).toEqual(["server", "database", "remove"]);
+  });
+
+  it("keeps the folder when something in it does not stop, after trying the other stops", async () => {
+    const server = new Error("server did not stop");
+    const ran: string[] = [];
+    const folder = folderCleanup(() => ran.push("remove"));
+    folder.own(() => ran.push("database"));
+    folder.own(() => {
+      throw server;
+    });
+    await expect(folder.cleanUp()).rejects.toBe(server);
+    expect(ran).toEqual(["database"]);
   });
 });
