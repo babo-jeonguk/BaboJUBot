@@ -120,13 +120,7 @@ describe("embedded Postgres lifetime", () => {
       handle = undefined;
       expect(fs.existsSync(dataDir)).toBe(false);
     } finally {
-      if (pid && isAlive(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* Already gone. */
-        }
-      }
+      await killPostgres(pid);
       await handle?.close().catch(() => {});
       await removeCluster(dataDir);
     }
@@ -227,7 +221,7 @@ describe("embedded Postgres lifetime", () => {
         });
         await handle.close();
       } finally {
-        if (pid && isAlive(pid)) process.kill(pid, "SIGKILL");
+        await killPostgres(pid);
         if (child) await killHard(child);
         await removeCluster(dataDir);
       }
@@ -300,15 +294,7 @@ describe("embedded Postgres lifetime", () => {
           await new Promise((r) => setTimeout(r, 50));
         expect(isAlive(postmaster)).toBe(false);
       } finally {
-        for (const pid of [backend, postmaster])
-          if (pid && isAlive(pid)) {
-            try {
-              process.kill(pid, "SIGCONT");
-              process.kill(pid, "SIGKILL");
-            } catch {
-              // Between the check and the signal the process may be gone. Continue with the rest.
-            }
-          }
+        await killPostgres(backend, postmaster);
         if (child) await killHard(child);
         await removeCluster(dataDir);
       }
@@ -783,13 +769,31 @@ async function stopPostgres(pid: number) {
   const deadline = Date.now() + 10_000;
   while (isAlive(pid) && Date.now() < deadline)
     await new Promise((r) => setTimeout(r, 50));
-  if (isAlive(pid)) {
+  await killPostgres(pid);
+}
+
+/**
+ * 남은 Postgres를 강제로 끝내고 사라진 것을 확인한다. 모두에게 신호를 먼저 보낸 뒤 기다린다. 시한 안에 끝나지 않으면 실패하므로,
+ * 뒤따르는 폴더 삭제는 일어나지 않고 폴더가 남는다(쓰는 중인 폴더를 지워 원인을 가리지 않는다).
+ */
+async function killPostgres(...pids: number[]) {
+  const alive = pids.filter((pid) => pid && isAlive(pid));
+  for (const pid of alive)
     try {
+      // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다.
+      if (process.platform !== "win32") process.kill(pid, "SIGCONT");
       process.kill(pid, "SIGKILL");
     } catch {
-      /* Already gone. */
+      // Between the check and the signal the process may be gone.
     }
-  }
+  const deadline = Date.now() + 10_000;
+  while (alive.some(isAlive) && Date.now() < deadline)
+    await new Promise((r) => setTimeout(r, 50));
+  const left = alive.filter(isAlive);
+  if (left.length > 0)
+    throw new Error(
+      `Postgres ${left.join(", ")} did not end after SIGKILL; its folder is kept`
+    );
 }
 
 type Spawned = ReturnType<typeof spawn>;
@@ -917,7 +921,12 @@ async function holdDatabase(open: string) {
     const lines = lineReader(child);
     return { child, line: await lines.next() };
   } catch (error) {
-    await killHard(child);
+    await killHard(child).catch((killing) => {
+      throw new AggregateError(
+        [error, killing],
+        "the child did not open the database and stopping it failed"
+      );
+    });
     throw error;
   }
 }

@@ -33,7 +33,10 @@ const testFiles = [
 ];
 
 const standards = "CODING_STANDARDS.md#정리";
+// rm·rmSync는 recursive일 때만 폴더를 지운다(파일 지우기는 허용). rmdir·rmdirSync는 옵션 없이도 빈 폴더를 지운다.
 const removers = "/^(rm|rmSync|rmdir|rmdirSync)$/";
+const recursiveRemovers = "/^(rm|rmSync)$/";
+const folderRemovers = "/^(rmdir|rmdirSync)$/";
 const removeFolderMessage = `시험의 폴더 지우기는 removeFolder(@babojubot/runtime/remove-folder)로 합니다. 폴더 안에서 돈 프로그램의 종료와 stdio 닫힘을 먼저 기다린 뒤 부르세요. Windows의 일시적인 잠김만 정해진 횟수 다시 시도합니다. ${standards}`;
 
 export default defineConfig([
@@ -71,11 +74,15 @@ export default defineConfig([
       "no-restricted-syntax": [
         "error",
         {
-          selector: `CallExpression[callee.name=${removers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
+          selector: `CallExpression[callee.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
           message: removeFolderMessage,
         },
         {
-          selector: `CallExpression[callee.property.name=${removers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
+          selector: `CallExpression[callee.property.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
+          message: removeFolderMessage,
+        },
+        {
+          selector: `CallExpression[callee.name=${folderRemovers}], CallExpression[callee.property.name=${folderRemovers}]`,
           message: removeFolderMessage,
         },
         {

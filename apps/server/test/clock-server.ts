@@ -87,7 +87,13 @@ const startup = (async () => {
     });
     return { handle, server };
   } catch (error) {
-    await handle.close();
+    // 시작 실패를 그대로 알린다. DB 닫기가 실패하면 그 실패를 함께 알린다.
+    await handle.close().catch((closing) => {
+      throw new AggregateError(
+        [error, closing],
+        "the server did not start and closing its database failed"
+      );
+    });
     throw error;
   }
 })();

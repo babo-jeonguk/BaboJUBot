@@ -106,19 +106,35 @@ export async function startTestServer(
   options: TestServerOptions = {}
 ): Promise<TestServer> {
   const database = await createTestDatabase();
-  const dataDir =
-    options.dataDir ??
-    (await mkdtemp(path.join(tmpdir(), "babojubot-workspaces-")));
+  // 넘겨받은 폴더는 넘긴 쪽이 치운다. 이 helper가 만든 폴더만 지운다.
+  let ownDataDir: string | undefined;
   let server: RunningServer;
   try {
+    const dataDir =
+      options.dataDir ??
+      (ownDataDir = await mkdtemp(
+        path.join(tmpdir(), "babojubot-workspaces-")
+      ));
     server = await startServer({
       db: database.db,
       port: 0,
-      dataDir,
       ...options,
+      dataDir,
     });
   } catch (error) {
-    await database.close();
+    // 시작 실패를 그대로 알린다. 치우기가 실패하면 그 실패를 시작 실패와 함께 알린다.
+    const failures: unknown[] = [];
+    await database.close().catch((closing) => failures.push(closing));
+    if (ownDataDir)
+      await removeFolder(ownDataDir).catch((removing) =>
+        failures.push(removing)
+      );
+    if (failures.length > 0)
+      throw new AggregateError(
+        [error, ...failures],
+        "the test server did not start and cleaning up after it failed",
+        { cause: error }
+      );
     throw error;
   }
   const sockets = new Set<WebSocket>();
@@ -248,7 +264,7 @@ export async function startTestServer(
       for (const socket of sockets) socket.terminate();
       if (!serverStopped) await server.close();
       await database.close();
-      if (!options.dataDir) await removeFolder(dataDir);
+      if (ownDataDir) await removeFolder(ownDataDir);
     },
   };
 }

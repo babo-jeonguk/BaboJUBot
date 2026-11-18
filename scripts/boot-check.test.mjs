@@ -328,29 +328,45 @@ async function forceStop(child, exited, graceMs) {
   return within(exited, 10_000);
 }
 
-/** 정상으로 끝났어도 남은 것을 치운다. 단계마다 따로 시도하고 실패한 단계를 모아 돌려준다. */
+/**
+ * 정상으로 끝났어도 남은 것을 치운다. 단계마다 따로 시도하고 실패한 단계를 모아 돌려준다.
+ * 폴더는 그 폴더를 쓰는 프로세스가 모두 끝난 것을 확인했을 때만 지운다. 확인하지 못하면 폴더를 남기고 그 사실을 알린다.
+ * Postgres 멈추기가 실패해도 남은 프로세스는 마지막 확인이 따로 보므로, 그 실패만으로 폴더를 남기지 않는다.
+ */
 async function cleanUpScope(scope, child) {
   const problems = [];
   const attempt = async (what, work) => {
     try {
       await work();
+      return true;
     } catch (error) {
       problems.push(new Error(`${what}: ${error?.message ?? error}`));
+      return false;
     }
   };
   // POSIX에서 그룹에 남은 자식. Windows는 트리를 부모가 살아 있을 때만 따라갈 수 있어 forceStop에서 끝냈다.
-  if (child && process.platform !== "win32")
-    await attempt("stop the process group", () =>
+  const groupStopped =
+    !child ||
+    process.platform === "win32" ||
+    (await attempt("stop the process group", () =>
       signalGroup(child, "SIGKILL")
-    );
+    ));
   await attempt("stop the Postgres left in the folder", () =>
     stopPostmasters(scope)
   );
-  await attempt("wait for the folder's processes to end", async () => {
-    if (!(await waitUntil(() => runningIn(scope).length === 0, 10_000)))
-      throw new Error(`still running: ${runningIn(scope).join("; ")}`);
-  });
-  await attempt("remove the folder", () => removeFolder(scope));
+  const ended = await attempt(
+    "wait for the folder's processes to end",
+    async () => {
+      if (!(await waitUntil(() => runningIn(scope).length === 0, 10_000)))
+        throw new Error(`still running: ${runningIn(scope).join("; ")}`);
+    }
+  );
+  if (groupStopped && ended)
+    await attempt("remove the folder", () => removeFolder(scope));
+  else
+    problems.push(
+      new Error(`kept ${scope}: its processes were not confirmed to have ended`)
+    );
   return problems;
 }
 

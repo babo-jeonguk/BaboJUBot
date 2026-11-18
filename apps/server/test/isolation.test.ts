@@ -3,6 +3,7 @@ import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 import {
   eventListSchema,
   organizationDetailSchema,
@@ -76,19 +77,23 @@ describe("isolation switch", () => {
     await t.stopServer();
     const db = t.db;
     const { startServer } = await import("../src/index.ts");
-    const again = await startServer({
-      db,
-      port: 0,
-      dataDir: await mkdtemp(path.join(tmpdir(), "babojubot-isolation-")),
-      providers: createFakeProviders(1),
-    });
+    const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-isolation-"));
+    let again: Awaited<ReturnType<typeof startServer>> | undefined;
     try {
+      again = await startServer({
+        db,
+        port: 0,
+        dataDir,
+        providers: createFakeProviders(1),
+      });
       const res = await fetch(again.url + "/api/providers");
       expect(providerSettingsSchema.parse(await res.json()).isolated).toBe(
         true
       );
     } finally {
-      await again.close();
+      // 폴더는 그 폴더를 쓰는 서버가 닫힌 뒤에 지운다. 닫기가 실패하면 폴더를 남긴다.
+      await again?.close();
+      await removeFolder(dataDir);
     }
   });
 });
