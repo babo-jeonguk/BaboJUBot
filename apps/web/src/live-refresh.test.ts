@@ -48,7 +48,10 @@ function fakeServer() {
   return server;
 }
 
-/** Query의 알림(setTimeout 0 일괄 처리)과 Promise 연쇄가 끝나기를 기다린다. */
+/**
+ * Query의 알림(setTimeout 0 일괄 처리)과 Promise 연쇄가 끝나기를 기다린다. 시간이 아니라 이벤트 루프 차례를 세므로 느린
+ * 기기의 영향은 없다. 한계(#215): 처리에 차례가 더 걸리게 바뀌면 그 뒤의 "다시 부르지 않았다" 확인이 너무 일찍 볼 수 있다.
+ */
 async function flush() {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 }

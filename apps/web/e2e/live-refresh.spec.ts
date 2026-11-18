@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { goalInput } from "./support/organization.ts";
+import { firstApprovalId, goalInput } from "./support/organization.ts";
 import { isReadyFrame, openWithLiveEvents } from "./support/live-events.ts";
 
 /**
@@ -36,14 +36,7 @@ async function awaitingApproval(page: Page, name: string) {
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  let approvalId = "";
-  await expect
-    .poll(async () => {
-      const res = await page.request.get(api("/approvals"));
-      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
-      return approvalId;
-    })
-    .not.toBe("");
+  const approvalId = await firstApprovalId(page.request, org.id);
   const approve = async () => {
     const decided = await page.request.post(
       api(`/approvals/${approvalId}/decision`),

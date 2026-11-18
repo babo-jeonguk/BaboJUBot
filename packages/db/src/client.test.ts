@@ -159,7 +159,9 @@ describe("embedded Postgres lifetime", () => {
       expect(output).toMatch(
         /failed: embedded Postgres exited before it was ready: \S+/
       );
-      // embedded-postgres의 종료 hook이 멈추면 exit-hook이 5초 뒤에야 강제 종료한다.
+      // embedded-postgres의 종료 hook이 멈추면 exit-hook이 5초 뒤에야 강제 종료한다. 시작 실패를 알린 때부터 재므로
+      // 프로세스 시작·Postgres 초기화 시간은 들지 않는다. 남는 것은 실패 뒤 종료 시간과 5초 사이의 차이이며, 그 차이가
+      // 이 시험이 가르는 대상이라 더 넓힐 수 없다(#215).
       expect(Date.now() - failedAt).toBeLessThan(4_000);
     } finally {
       if (child) await killHard(child);
@@ -944,10 +946,11 @@ it("counts an exit deadline from when the wait starts, not from the spawn", asyn
   const exit = watchExit(child);
   try {
     await lineReader(child, 30_000).next();
-    // 기다리는 시한(1초)보다 오래 산 뒤에 끝내라고 한다.
-    await new Promise((r) => setTimeout(r, 1_500));
+    // 기다리는 시한(2.5초)보다 오래 산 뒤에 끝내라고 한다. 그 시한은 입력을 받은 자식이 끝나기까지를 담는다. 1초로는
+    // 느린 실행기에서 그 몫이 모자랐다(#215).
+    await new Promise((r) => setTimeout(r, 3_000));
     child.stdin!.write("end\n");
-    await expect(exit.within(1_000)).resolves.toEqual({
+    await expect(exit.within(2_500)).resolves.toEqual({
       code: 0,
       signal: null,
     });

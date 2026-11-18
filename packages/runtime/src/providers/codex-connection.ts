@@ -1,4 +1,4 @@
-import { startProcess } from "./process.ts";
+import { type Clock, realClock, startProcess } from "./process.ts";
 
 /**
  * Codex app-server 연결 하나(#145). 모델 목록·실행 시도·로그인 갱신이 함께 쓰는 연결 처리다.
@@ -38,15 +38,17 @@ export function openCodexConnection(
   options: Omit<Parameters<typeof startProcess>[0], "onFrame"> & {
     /** 서버 알림(ID 없는 method 프레임). 프레임 처리 순서 안에서 부르므로 다음 요청을 기다리지 말고 곧 돌아와야 한다. */
     onNotification?: (frame: Record<string, unknown>) => void;
+    /** 요청 시한의 시계. 기본은 실제 시계다. 프로세스 정리 타이머에는 넘기지 않는다. */
+    clock?: Clock;
   }
 ) {
-  const { onNotification, ...launch } = options;
+  const { onNotification, clock = realClock, ...launch } = options;
   const pending = new Map<
     number,
     {
       resolve: (value: Record<string, unknown>) => void;
       reject: (error: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
+      timer: unknown;
     }
   >();
   let sequence = 0,
@@ -59,7 +61,7 @@ export function openCodexConnection(
     const waiter = pending.get(id);
     if (!waiter) return;
     pending.delete(id);
-    clearTimeout(waiter.timer);
+    clock.clearTimeout(waiter.timer);
     if ("error" in outcome) waiter.reject(outcome.error);
     else waiter.resolve(outcome.result);
   };
@@ -111,7 +113,7 @@ export function openCodexConnection(
       pending.set(id, {
         resolve,
         reject,
-        timer: setTimeout(
+        timer: clock.setTimeout(
           () => settle(id, { error: new ProtocolTimeout() }),
           timeoutMs
         ),

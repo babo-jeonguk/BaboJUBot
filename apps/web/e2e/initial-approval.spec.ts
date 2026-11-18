@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openWithLiveEvents } from "./support/live-events.ts";
-import { inboxOrganizationLinks } from "./support/organization.ts";
+import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
+import { inboxOrganizationLinks, runsSettled } from "./support/organization.ts";
 
 /** 레일의 Inbox 버튼으로 Inbox 패널을 연다. 이미 열려 있으면 그대로 둔다(버튼은 여닫기). */
 async function openInbox(page: Page) {
@@ -26,6 +26,7 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   const org = (await created.json()) as { id: string };
 
   await openWithLiveEvents(page, `/orgs/${org.id}/chat`);
+  await runsSettled(page.request, org.id);
   await expect(
     page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
   ).toContainText("초기 연구 승인을 요청했습니다");
@@ -141,11 +142,14 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
       .getByRole("link", { name: "Role·Soul·Skill" })
       .click();
     const copies = page.getByRole("region", { name: "Role·Soul·Skill 사본" });
-    await expect(copies.getByRole("tab")).toHaveText([
-      "Role · AGENTS.md",
-      "Soul · SOUL.md",
-      "Skill · skills/record-research-node/SKILL.md",
-    ]);
+    await expect(copies.getByRole("tab")).toHaveText(
+      [
+        "Role · AGENTS.md",
+        "Soul · SOUL.md",
+        "Skill · skills/record-research-node/SKILL.md",
+      ],
+      pageLoad
+    );
     await expect(
       copies.getByRole("tabpanel").getByRole("heading", { name: "Researcher" })
     ).toBeVisible();
@@ -193,6 +197,7 @@ test("an organization created with empty completion criteria gets the Lead's pro
   await dialog.getByRole("button", { name: "만들기" }).click();
   await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/chat$/);
   const orgId = new URL(page.url()).pathname.split("/")[2]!;
+  await runsSettled(page.request, orgId);
   await expect(
     page.getByRole("list", { name: "대화" }).locator('[data-author="agent"]')
   ).toContainText("제가 제안한 완료 기준");

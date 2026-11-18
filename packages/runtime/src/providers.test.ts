@@ -59,18 +59,27 @@ describe("listProviderModels", () => {
   it("answers from the fixed list when the wait runs out, then uses the list that arrives late", async () => {
     const fetched = [{ id: "live-1", label: "받아 온 모델" }];
     let calls = 0;
+    // The list arrives only when the test lets it, so the wait surely runs out first however slow the machine is (#215).
+    let arrive!: () => void;
+    const late = new Promise<void>((resolve) => {
+      arrive = resolve;
+    });
     const connection = {
       ...base!,
       listModels: async () => {
         calls++;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await late;
         return fetched;
       },
     };
     expect(await listProviderModels(connection, { timeoutMs: 5 })).toEqual(
       fixed
     );
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    arrive();
+    // The fetch the first caller gave up on goes on: a caller that waits gets its list, and a later one gets it at once.
+    expect(await listProviderModels(connection, { timeoutMs: 15_000 })).toEqual(
+      fetched
+    );
     expect(await listProviderModels(connection, { timeoutMs: 5 })).toEqual(
       fetched
     );
@@ -135,13 +144,16 @@ describe("listProviderModels", () => {
   });
 
   it("stops a fetch that outlives its limit", async () => {
-    let aborted = false;
+    let stopped!: () => void;
+    const aborted = new Promise<void>((resolve) => {
+      stopped = resolve;
+    });
     const connection = {
       ...base!,
       listModels: (signal: AbortSignal) =>
         new Promise<never>((_, reject) =>
           signal.addEventListener("abort", () => {
-            aborted = true;
+            stopped();
             reject(new Error("stopped"));
           })
         ),
@@ -149,7 +161,7 @@ describe("listProviderModels", () => {
     expect(
       await listProviderModels(connection, { timeoutMs: 5, fetchLimitMs: 20 })
     ).toEqual(fixed);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(aborted).toBe(true);
+    // The fetch is stopped by its limit; a fetch left running would never settle this and the test would run out (#215).
+    await aborted;
   });
 });

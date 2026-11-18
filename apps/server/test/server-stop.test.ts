@@ -3,7 +3,12 @@ import { eventStreamPath } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { goal, quietCreation } from "./scenarios.ts";
-import { startTestServer, within, type TestServer } from "./support.ts";
+import {
+  eventually,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
 
 /**
  * 서버 처리기 안의 DB 호출을 멈춰 둔다. 걸어 둔 곳마다 첫 호출만 멈추고, 풀면 실제 저장을 돌린 결과를 `done`에 남긴다.
@@ -136,8 +141,10 @@ async function stopWhileHeld(
   try {
     await within(stream.closed, "the HTTP step of stopping");
     // 정리 시한이 지나면 이 값이 무엇을 기다리다 멈췄는지 알린다.
-    await vi.waitFor(() =>
-      expect(t.stopProgress()).toBe(`waiting for requests: ${waitingFor}`)
+    await vi.waitFor(
+      () =>
+        expect(t.stopProgress()).toBe(`waiting for requests: ${waitingFor}`),
+      eventually
     );
   } finally {
     held.releaseAll();

@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -148,7 +149,8 @@ const gone = (pid: number) => {
 it("stops a leftover process on systems without /proc", async () => {
   const { root, directory } = await records();
   const child = longRunning();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   try {
     await writeFile(
       path.join(directory, `${child.pid}.json`),
@@ -172,7 +174,8 @@ it("stops a leftover process on systems without /proc", async () => {
 it("leaves a process whose start differs from the recorded one", async () => {
   const { root, directory } = await records();
   const child = longRunning();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   try {
     const started = processStartedAt(child.pid!, withoutProc)!;
     await writeFile(
@@ -191,7 +194,8 @@ it("leaves a process whose start differs from the recorded one", async () => {
 it("keeps a record without a start and leaves the process alone", async () => {
   const { root, directory } = await records();
   const child = longRunning();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   const file = `${child.pid}.json`;
   try {
     await writeFile(
@@ -211,7 +215,8 @@ it("stops a process it recorded itself", async () => {
   const { root } = await records();
   const home = path.join(root, "providers/claude");
   const child = longRunning();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   const file = path.join(home, "processes", `${child.pid}.json`);
   try {
     recordProcess(home, child.pid!, "lease");
@@ -233,9 +238,12 @@ it("does not write the record again after forgetting it", async () => {
   const { root } = await records();
   const home = path.join(root, "providers/claude");
   const child = longRunning();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   try {
     recordProcess(home, child.pid!, "lease")();
+    // 보장의 한계(#215): 잊은 뒤에 끝나는 시작 시각 조회는 끝났다는 신호를 밖으로 내지 않는다. 그래서 조회가 보통 끝나는
+    // 시간을 기다린 뒤 기록이 없음을 본다. 느린 기기에서 조회가 이보다 늦게 끝나면 결함이 있어도 이 시험은 통과한다.
     await new Promise((resolve) => setTimeout(resolve, 3000));
     expect(await readdir(path.join(home, "processes"))).toEqual([]);
   } finally {
@@ -247,7 +255,8 @@ it("does not write the record again after forgetting it", async () => {
 it("does not act on a record that does not match its name", async () => {
   const { root, directory } = await records();
   const child = longRunning();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   try {
     await writeFile(
       path.join(directory, "123.json"),
@@ -299,7 +308,8 @@ it("keeps the record of a live process whose start cannot be read", async () => 
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
   });
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+  await once(child, "spawn");
   const file = `${child.pid}.json`;
   try {
     await writeFile(

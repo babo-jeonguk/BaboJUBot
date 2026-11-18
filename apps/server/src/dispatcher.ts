@@ -224,6 +224,15 @@ export class RunDispatcher {
   }
 
   /**
+   * 이 에이전트의 촉진 처리(실행 시도를 시작했다면 그 끝까지, 처리 중 다시 받은 촉진까지)가 끝날 때까지 기다린다.
+   * 처리 중이 아니면 바로 끝난다. 다른 에이전트는 기다리지 않는다. 테스트 helper: "실행 시도가 시작되지 않았다"를 시간이 아니라
+   * 처리가 끝났다는 신호 뒤에 확인한다(#215).
+   */
+  async handled(agentId: string): Promise<void> {
+    for (let pump; (pump = this.#pumps.get(agentId));) await pump;
+  }
+
+  /**
    * 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. 테스트 helper.
    * 다른 프로세스가 실행 중이라 처리할 수 없는 깨우기가 남으면 오래 기다리지 않고 실패한다.
    */

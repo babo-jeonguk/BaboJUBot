@@ -3,9 +3,11 @@
 // The script is { log, steps: { "<method>": [step, ...] } }. It appends every input line to `log` (first line: its pid), then answers
 // each request by the next step for its method (the last step repeats; a method without steps gets `{}`). Lines are handled one by one
 // as they arrive, so a delayed step does not hold back the next line. A step is
-// { delayMs?, result?, error?, silent?, frames?, exit? }: after `delayMs` it answers with `error`, or `result` (default `{}`), unless
-// `silent`; then writes `frames`; then exits with `exit`. The peer exits when its input closes.
-import { appendFileSync, readFileSync } from "node:fs";
+// { holdUntil?, delayMs?, result?, error?, silent?, frames?, exit? }: once the file `holdUntil` (a name next to the script) exists
+// and after `delayMs`, it answers with `error`, or `result` (default `{}`), unless `silent`; then writes `frames`; then exits with
+// `exit`. `holdUntil` lets a test decide when a request is answered. The peer exits when its input closes.
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -28,6 +30,10 @@ input.on("line", async (line) => {
   const index = seen[frame.method] ?? 0;
   seen[frame.method] = index + 1;
   const step = steps[Math.min(index, steps.length - 1)];
+  if (step.holdUntil) {
+    const release = path.join(path.dirname(args[0]), step.holdUntil);
+    while (!existsSync(release)) await new Promise((r) => setTimeout(r, 10));
+  }
   if (step.delayMs) await new Promise((r) => setTimeout(r, step.delayMs));
   if (!step.silent)
     out(

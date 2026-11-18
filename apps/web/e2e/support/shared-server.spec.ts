@@ -16,8 +16,12 @@ import { alive, type ServerProcess } from "./server-process.ts";
 const cli = createRequire(import.meta.url).resolve("@playwright/test/cli");
 /** 안쪽 실행의 setup이 적는 공용 서버(shared-server-run/setup.ts). */
 type SharedState = Pick<ServerProcess, "pid" | "postgresPid" | "folder">;
-/** 안쪽 실행 하나의 시한. 시작(내장 DB)·정리(서버 정리 시한 + 여유)를 넉넉히 담고 바깥 테스트 시한(120초)보다 짧다. */
-const runTimeoutMs = 90_000;
+/**
+ * 안쪽 실행 하나의 시한. 시작(내장 DB 초기화)·안쪽 테스트·정리(서버 정리 시한 + 여유)를 담는 공용 준비의 상한이다(#215).
+ * 바깥 테스트 시한은 이 시한에 여유를 더해 따로 정하므로, 느린 기기에서도 안쪽 실행이 바깥 시한에 먼저 걸리지 않는다.
+ */
+const runTimeoutMs = 180_000;
+test.describe.configure({ timeout: runTimeoutMs + 30_000 });
 
 const config = fileURLToPath(
   new URL("./shared-server-run/playwright.config.ts", import.meta.url)

@@ -886,6 +886,8 @@ describe("channel replies", () => {
       })
     ).rejects.toThrow("토큰 거부");
     const seen = attempts;
+    // 멈추지 않은 주기 확인이 없다는 것을 알릴 신호는 없다. 확인 간격(10ms)의 스무 배를 기다려 본다. 느린 기기에서는
+    // 그 사이 주기 확인이 한 번도 돌지 않아 결함이 있어도 통과할 수 있다. 이 시험이 보장하는 한계다(#215).
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(attempts).toBe(seen);
     expect(closed).toBe(1);
@@ -995,9 +997,8 @@ describe("Inbox", () => {
     expect(
       await tidy(org.id, "run_failure", first, { read: true, archived: true })
     ).toMatchObject({ status: 200, body: { read: true, archived: true } });
-    const seen = stream.events.length;
-    await new Promise((r) => setTimeout(r, 300));
-    expect(stream.events).toHaveLength(seen);
+    // 앞의 두 변경이 남긴 Event 둘 뒤로 늘지 않았다.
+    await stream.expectNoEvents(2);
     stream.close();
 
     const [archived, unread] = (await inboxOf(org.id)).filter(

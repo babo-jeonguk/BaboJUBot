@@ -18,13 +18,25 @@ import {
   type ServerOptions,
 } from "../src/index.ts";
 
+/**
+ * 서버 작업·Event·준비 확인처럼 끝나는 신호가 오는 대기의 상한(#215). 신호가 오면 바로 끝나므로 넉넉해도 통과 시간은
+ * 늘지 않는다. 느린 실행기(Windows 2 vCPU)에서는 서버 작업 하나가 기본 1~2초를 넘길 수 있어 그것을 감당하는 값이다.
+ */
+export const eventuallyMs = 15_000;
+export const eventually = { timeout: eventuallyMs };
+
 export type Subscription = {
   /** 받은 Event frame. */
   events: Event[];
-  /** 다음 Event를 기다린다. 이미 받은 것이 있으면 바로 돌려준다. */
+  /** 다음 Event를 기다린다. 이미 받은 것이 있으면 바로 돌려준다. 기본 상한은 `eventuallyMs`다. */
   next: (timeoutMs?: number) => Promise<Event>;
-  /** 잠시 기다린 뒤 이 구독이 Event를 하나도 받지 않았는지 확인한다. */
-  expectNoEvents: (ms?: number) => Promise<void>;
+  /**
+   * 이 구독이 받은 Event가 `since`개(기본 0)에서 늘지 않았는지 확인한다. 시간을 재지 않고 순서 표시를 쓴다: 이 연결로
+   * ping을 보내 pong을 받으면, 서버가 그 전에 이 연결로 보낸 Event는 모두 받은 것이다(한 연결의 frame은 보낸 순서로 온다).
+   * 서버는 요청의 Event를 응답 전에 보내므로(commit 뒤 할 일), 끝난 요청이 남긴 Event는 빠짐없이 본다.
+   * 한계: 응답 뒤에 따로 도는 일(실행 시도 등)이 나중에 남길 Event는 보지 못한다. 그런 일은 그 끝(`drain` 등)을 먼저 기다린다.
+   */
+  expectNoEvents: (since?: number) => Promise<void>;
   /** 받은 전역 설정 변경 신호(`settings_changed`) 수. */
   settingsSignals: () => number;
   close: () => void;
@@ -48,6 +60,11 @@ export type TestServer = {
   ) => Promise<{ status: number; body: any }>;
   /** 깨우기 대기열이 비고 실행 중인 실행 시도가 모두 끝날 때까지 기다린다. */
   drain: () => Promise<void>;
+  /**
+   * 이 에이전트가 받은 촉진의 처리가 끝날 때까지 기다린다. 요청의 촉진은 응답 전에 시작하므로, 요청 뒤에 부르면 그 요청이
+   * 실행 시도를 시작했는지(시작했다면 그 끝까지)가 정해진 뒤다. "시작하지 않았다"를 시간 대신 이것 뒤에 확인한다.
+   */
+  kickHandled: (agentId: string) => Promise<void>;
   /** 서버 시계의 지금 시각으로 지난 heartbeat를 처리한다. */
   tickHeartbeats: () => Promise<void>;
   tickCompactions: () => Promise<void>;
@@ -150,6 +167,7 @@ export async function startTestServer(
         token === undefined ? {} : { authorization: `Bearer ${token}` }
       ),
     drain: () => server.drain(),
+    kickHandled: (agentId) => server.kickHandled(agentId),
     tickHeartbeats: () => server.tickHeartbeats(),
     tickCompactions: () => server.tickCompactions(),
     deliverNotifications: () => server.deliverNotifications(),
@@ -190,7 +208,7 @@ export async function startTestServer(
         });
         const subscription: Subscription = {
           events,
-          next(timeoutMs = 2_000) {
+          next(timeoutMs = eventuallyMs) {
             return new Promise((ok, fail) => {
               const take = () => {
                 if (taken >= events.length) return false;
@@ -206,10 +224,19 @@ export async function startTestServer(
               if (!take()) waiter = take;
             });
           },
-          async expectNoEvents(ms = 300) {
-            await new Promise((r) => setTimeout(r, ms));
-            if (events.length)
-              throw new Error(`unexpected Event: ${JSON.stringify(events)}`);
+          async expectNoEvents(since = 0) {
+            await within(
+              new Promise<void>((ok) => {
+                socket.once("pong", () => ok());
+                socket.ping();
+              }),
+              "the Event stream's pong",
+              eventuallyMs
+            );
+            if (events.length > since)
+              throw new Error(
+                `unexpected Event: ${JSON.stringify(events.slice(since))}`
+              );
           },
           settingsSignals: () => settingsSignals,
           close: () => socket.close(),

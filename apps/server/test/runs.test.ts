@@ -18,7 +18,7 @@ import {
 } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, quietCreation } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import { startTestServer, within, type TestServer } from "./support.ts";
 
 /**
  * 저장 경계에 건 실패. 실행 시도 admission(`claimNextRun`)과 종료 저장(`finishRun`) 중 대상(에이전트·실행 시도)이 맞는 호출만,
@@ -400,7 +400,9 @@ describe("Lead conversation", () => {
     await gate.reached;
     // 자리가 하나라 B는 A의 종료가 자리를 비울 때까지 기다린다. 그 뒤 B를 깨우는 것은 다시 저장한 종료의 자리 촉진뿐이다.
     await say(b.id, "B의 메시지");
-    await new Promise((r) => setTimeout(r, 200));
+    // B의 촉진 처리가 끝난 뒤에 본다. 자리가 없으면 실행 시도를 시작하지 않고 끝난다. 잘못 시작했다면 그 실행 시도가
+    // 붙잡혀 이 대기가 시한을 넘기거나, 끝나서 아래 단언이 실패한다.
+    await within(t.kickHandled(b.lead.id), "handling B's kick");
     expect(executions).toEqual([a.lead.id]);
     gate.open();
     while ((await watchB.next(10_000)).type !== "run.finished") {

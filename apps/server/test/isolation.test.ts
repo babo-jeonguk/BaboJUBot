@@ -22,7 +22,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { jsonBodyLimitBytes } from "../src/app.ts";
 import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import { eventually, startTestServer, type TestServer } from "./support.ts";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -49,7 +49,9 @@ describe("isolation switch", () => {
     expect(providerSettingsSchema.parse(on.body).isolated).toBe(true);
     expect((await settings()).isolated).toBe(true);
     // 다른 탭은 전역 설정 변경 신호로 다시 불러온다.
-    await expect.poll(() => watcher.settingsSignals()).toBeGreaterThan(0);
+    await expect
+      .poll(() => watcher.settingsSignals(), eventually)
+      .toBeGreaterThan(0);
     watcher.close();
 
     const off = await t.request("PUT", "/api/providers/isolation", {
@@ -377,7 +379,7 @@ describe("isolated runs", () => {
 
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await expect
-      .poll(() => readinessOf("real"))
+      .poll(() => readinessOf("real"), eventually)
       .toMatchObject({ checking: false });
     expect((await readinessOf("real")).reason ?? "").not.toMatch(/^isolation_/);
 
@@ -435,7 +437,7 @@ describe("isolated runs", () => {
     });
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await expect
-      .poll(() => readinessOf("real"))
+      .poll(() => readinessOf("real"), eventually)
       .toMatchObject({
         status: "not_ready",
         reason: "credential_relay_unverified",
@@ -512,7 +514,7 @@ describe("isolated runs", () => {
     await t.drain();
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await expect
-      .poll(() => readinessOf("real"))
+      .poll(() => readinessOf("real"), eventually)
       .toMatchObject({ checking: false });
     await createOrganization("real");
     await t.drain();
@@ -568,11 +570,11 @@ describe("isolated runs", () => {
       });
       await t.request("PUT", "/api/providers/isolation", { isolated: true });
       await expect
-        .poll(() => readinessOf("real"))
+        .poll(() => readinessOf("real"), eventually)
         .toMatchObject({ status: "not_ready", reason, checking: false });
       // 가짜 연결은 프로그램을 띄우지 않으므로 격리와 상관없다.
       await expect
-        .poll(() => readinessOf("fake"))
+        .poll(() => readinessOf("fake"), eventually)
         .toMatchObject({ status: "ready", reason: null, checking: false });
 
       // 준비안됨이어도 고를 수 있지만, 안전하지 않은 구성으로는 컨테이너도 이 컴퓨터도 실행하지 않는다.
@@ -595,11 +597,11 @@ describe("isolated runs", () => {
     });
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await expect
-      .poll(() => readinessOf("real"))
+      .poll(() => readinessOf("real"), eventually)
       .toMatchObject({ reason: "isolation_unavailable", checking: false });
     await t.request("PUT", "/api/providers/isolation", { isolated: false });
     await expect
-      .poll(async () => (await readinessOf("real")).reason ?? "")
+      .poll(async () => (await readinessOf("real")).reason ?? "", eventually)
       .not.toMatch(/^isolation_/);
     const org = await createOrganization("real");
     await t.drain();
@@ -838,7 +840,7 @@ describe("organization network allow list", () => {
     });
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await expect
-      .poll(() => readinessOf("real"))
+      .poll(() => readinessOf("real"), eventually)
       .toMatchObject({ checking: false });
     const org = await createOrganization("real");
     await t.drain();

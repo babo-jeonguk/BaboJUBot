@@ -12,6 +12,13 @@ export function isReadyFrame(payload: string | Buffer) {
 }
 
 /**
+ * 화면을 처음 불러오고 구독이 성립하기까지, 그리고 새로 연 화면이 첫 데이터를 받아 처음 그리기까지의 상한(#215). 검사 대상이
+ * 아닌 공용 준비이므로 검사 대기와 따로 둔다. 새 context가 프로덕션 빌드를 받아 실행하므로 부하가 큰 기기에서 몇 초가 걸린다.
+ * 새로 연 화면의 첫 표시 단언에는 이 상한을 주고, 그 화면에서 한 동작의 결과는 기본 대기로 본다.
+ */
+export const pageLoad = { timeout: 30_000 };
+
+/**
  * 화면을 열고 그 화면의 전체 조직 Event stream 구독이 성립할 때까지 기다린다. 그 뒤의 변화는 새로고침 없이 Event로 화면에 닿는다.
  * ready frame이 `timeout` 안에 오지 않거나 그 전에 page·Event stream이 닫히거나 오류가 나면 무엇을 기다렸는지 밝히며 실패한다.
  * 어느 경우든 등록한 listener를 해제하므로 같은 page에서 여러 번 불러도 쌓이지 않는다.
@@ -22,7 +29,7 @@ export function isReadyFrame(payload: string | Buffer) {
 export async function openWithLiveEvents(
   page: Page,
   path: string,
-  { timeout = 10_000 } = {}
+  { timeout = pageLoad.timeout } = {}
 ) {
   await test.step(
     `${path} 화면을 열고 Event stream 구독 성립을 기다린다`,

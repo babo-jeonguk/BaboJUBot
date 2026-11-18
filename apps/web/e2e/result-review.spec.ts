@@ -3,6 +3,7 @@ import {
   goalInput,
   inboxOrganizationItems,
   inboxOrganizationLinks,
+  firstApprovalId,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
 
@@ -19,14 +20,7 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   });
   const org = (await created.json()) as { id: string };
   const api = (path: string) => `/api/organizations/${org.id}${path}`;
-  let approvalId = "";
-  await expect
-    .poll(async () => {
-      const res = await page.request.get(api("/approvals"));
-      approvalId = ((await res.json()) as { id: string }[])[0]?.id ?? "";
-      return approvalId;
-    })
-    .not.toBe("");
+  const approvalId = await firstApprovalId(page.request, org.id);
   await page.request.post(api(`/approvals/${approvalId}/decision`), {
     data: { decision: "approve" },
   });
@@ -158,6 +152,8 @@ test("the owner reviews a submitted result from the Inbox, requests changes, and
   await page.request.post(api("/messages"), {
     data: { body: "완료 뒤 메시지" },
   });
+  // 보장의 한계(#215): 깨우지 않기로 한 처리가 끝났다는 신호는 E2E가 쓰는 API에 없다(서버 시험은 촉진 처리의 끝을 기다린다).
+  // 그래서 실행 시도가 보통 생길 시간을 기다린 뒤 개수를 본다. 느린 기기에서는 결함이 있어도 이 확인이 통과할 수 있다.
   await page.waitForTimeout(1_000);
   expect(await runCount()).toBe(before);
 
