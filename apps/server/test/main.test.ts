@@ -2,7 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
@@ -11,6 +12,10 @@ import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+/** DB 닫기를 실패시키는 preload(`startMain`의 `preload`). */
+const failDatabaseClose = fileURLToPath(
+  new URL("./fixtures/fail-database-close.ts", import.meta.url)
+);
 const readyTimeoutMs = 45_000;
 // 종료 신호 뒤 서버가 끝나기까지. 서버의 기본 종료 시한(30초)보다 길게 둔다.
 const shutdownWaitMs = 35_000;
@@ -184,6 +189,31 @@ it.each(stopRequests)(
   },
   60_000
 );
+
+// HTTP 서버가 시작하지 못하면 그 오류로 실패한다. 뒤이어 DB를 닫다 난 오류는 원래 오류를 덮지 않고 따로 남는다.
+it("ends with the HTTP start error and records the database close failure when both fail", async () => {
+  const taken = createServer();
+  await new Promise<void>((resolve, reject) => {
+    taken.once("error", reject);
+    taken.listen(0, "127.0.0.1", resolve);
+  });
+  const { port } = taken.address() as { port: number };
+  const child = startMain(
+    { DATABASE_URL: external.url, PORT: String(port) },
+    { preload: failDatabaseClose }
+  );
+  try {
+    const { code } = await waitExit(child, shutdownWaitMs);
+    expect(code, child.stderrText()).toBe(1);
+    expect(child.stderrText()).toContain("EADDRINUSE");
+    expect(child.stderrText()).toContain(
+      "injected: closing the database failed"
+    );
+  } finally {
+    await stopMain(child);
+    await new Promise<void>((resolve) => taken.close(() => resolve()));
+  }
+}, 60_000);
 
 // 정리가 멈추면 정해진 시한(BABOJUBOT_SHUTDOWN_TIMEOUT_MS)에 실패로 끝난다. 서버를 감싼 실행기(Playwright·Docker·
 // Kubernetes)는 그보다 긴 시한을 두어, 서버가 스스로 끝나며 내장 Postgres를 멈출 기회를 갖는다.
@@ -378,12 +408,19 @@ function inheritedEnv() {
   return env;
 }
 
-/** `ipc`면 부모와의 IPC 채널을 열어 띄운다(멈춤 메시지·채널 끊김 시험). */
+/** `ipc`면 부모와의 IPC 채널을 열어 띄운다(멈춤 메시지·채널 끊김 시험). `preload`는 서버보다 먼저 불러올 모듈이다. */
 function startMain(
   env: Record<string, string>,
-  { group = false, ipc = false } = {}
+  {
+    group = false,
+    ipc = false,
+    preload,
+  }: { group?: boolean; ipc?: boolean; preload?: string } = {}
 ): MainProcess {
-  const child = spawn(process.execPath, [main], {
+  const args = preload
+    ? ["--import", pathToFileURL(preload).href, main]
+    : [main];
+  const child = spawn(process.execPath, args, {
     env: {
       ...inheritedEnv(),
       HOST: "127.0.0.1",
