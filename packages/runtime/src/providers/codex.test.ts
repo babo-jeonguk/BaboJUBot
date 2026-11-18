@@ -9,10 +9,18 @@ const roots: string[] = [];
 /** 폴더를 지우기 전에 할 정리. 시험이 중간에 실패해도 돈다. */
 const beforeRemoving: (() => Promise<void>)[] = [];
 afterEach(async () => {
-  for (const cleanup of beforeRemoving.splice(0)) await cleanup();
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
+  // 정리 하나가 실패해도 나머지 정리와 폴더 삭제는 한다. 정리 실패는 시험의 원래 실패와 따로 알린다.
+  const failures: unknown[] = [];
+  try {
+    for (const cleanup of beforeRemoving.splice(0))
+      await cleanup().catch((error: unknown) => failures.push(error));
+  } finally {
+    await Promise.all(
+      roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
+    );
+  }
+  if (failures.length)
+    throw new AggregateError(failures, "cleanup after the test failed");
 });
 it("initializes an app-server, runs a turn, and keeps unreported usage null", async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "codex-test-"));
@@ -463,18 +471,21 @@ describe("one app-server connection per call (#145)", () => {
     const sent = async () =>
       (await lines()).filter((line) => line.pid === undefined);
     const methods = async () => (await sent()).map((line) => line.method);
-    /** Whether any program this provider started is still running. */
-    const running = async () =>
+    /** The programs this provider started that are still running. */
+    const alive = async () =>
       (await lines())
         .filter((line) => line.pid !== undefined)
-        .some((line) => {
+        .map((line) => line.pid as number)
+        .filter((pid) => {
           try {
-            process.kill(line.pid, 0);
+            process.kill(pid, 0);
             return true;
           } catch {
             return false;
           }
         });
+    /** Whether any program this provider started is still running. */
+    const running = async () => (await alive()).length > 0;
     /**
      * Waits until the program has received `count` requests of `method`. The bound covers starting the program on a slow machine;
      * a handshake that never finishes fails here, not as the limit under test.
@@ -489,15 +500,29 @@ describe("one app-server connection per call (#145)", () => {
         .toBe(true);
     /** Lets the program answer the steps held with `holdUntil: name`. */
     const release = (name: string) => writeFile(path.join(root, name), "");
-    // However the test ends, let every held answer go and wait for the programs to end before the folder is removed, so a
-    // failure is not followed by a program left polling for its release in a folder being removed (#215).
+    // However the test ends, let every held answer go and see the programs end before the folder is removed (#215). A program
+    // that still runs then (a test that failed with its connection open) is stopped, and that is reported as a cleanup failure
+    // apart from the test's own.
     const held = Object.values(steps)
       .flat()
       .flatMap((step) => (step.holdUntil ? [step.holdUntil] : []));
     if (held.length)
       beforeRemoving.push(async () => {
         await Promise.all(held.map(release));
-        await expect.poll(running, { timeout: 30_000 }).toBe(false);
+        const ended = await expect
+          .poll(running, { timeout: 10_000 })
+          .toBe(false)
+          .then(
+            () => true,
+            () => false
+          );
+        if (ended) return;
+        const left = await alive();
+        for (const pid of left) process.kill(pid, "SIGKILL");
+        await expect.poll(running, { timeout: 10_000 }).toBe(false);
+        throw new Error(
+          `scripted programs ${left.join(", ")} still ran after their held answers were let go; stopped them`
+        );
       });
     return { provider, sent, methods, running, arrived, release };
   }
