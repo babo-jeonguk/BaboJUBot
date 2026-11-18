@@ -137,7 +137,6 @@ test("an approval decided here focuses its record even when the Event lands befo
   const held = await holdDecisionReply(page);
   await withCleanup(async (defer) => {
     defer(() => held.dispose());
-
     await decision.getByRole("button", { name: "승인" }).click();
     await held.sent;
     await expect(decision).toContainText("승인됨");
@@ -212,7 +211,6 @@ test("a stopped organization refuses initial approval decisions but still takes 
   const held = await holdDecisionReply(page);
   await withCleanup(async (defer) => {
     defer(() => held.dispose());
-
     await decision.getByRole("button", { name: "승인" }).click();
     await held.sent;
     await page.getByRole("button", { name: "Inbox 열기" }).click();
@@ -281,7 +279,6 @@ test("result decisions say what they do to a paused organization, focus the reco
   const held = await holdDecisionReply(page);
   await withCleanup(async (defer) => {
     defer(() => held.dispose());
-
     await decision.getByRole("button", { name: "수정 요청" }).click();
     await held.sent;
     await expect(decision).toContainText("수정 요청됨");
@@ -333,7 +330,6 @@ test("result decisions say what they do to a paused organization, focus the reco
   const staleHeld = await holdDecisionReply(stale);
   await withCleanup(async (defer) => {
     defer(() => staleHeld.dispose());
-
     await staleDecision.getByLabel(/의견/).fill("늦게 보낸 수정 요청");
     await staleDecision.getByRole("button", { name: "수정 요청" }).click();
     await staleHeld.sent;

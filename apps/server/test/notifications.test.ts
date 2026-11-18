@@ -291,7 +291,6 @@ describe("notification outbox and fake channel", () => {
         now: () => new Date(Date.now() + 60_000),
       });
       defer(() => restarted.close());
-
       await restarted.deliverNotifications();
       const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
       const records = fakeChannelMessagesSchema

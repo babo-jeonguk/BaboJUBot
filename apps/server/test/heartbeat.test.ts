@@ -198,7 +198,6 @@ describe("heartbeat", () => {
         now: time.now,
       });
       defer(() => restarted.close());
-
       await restarted.tickHeartbeats();
       await restarted.tickHeartbeats();
       await restarted.drain();

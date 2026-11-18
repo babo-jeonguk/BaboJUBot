@@ -79,7 +79,6 @@ test("the command exits non-zero when one case is unverified", async () => {
   const folder = mkdtempSync(path.join(tmpdir(), "bj-report-"));
   await withCleanup(async (defer) => {
     defer(() => removeFolder(folder));
-
     writeFileSync(path.join(folder, "NTFS.meta.json"), JSON.stringify(meta));
     writeFileSync(
       path.join(folder, "NTFS.json"),

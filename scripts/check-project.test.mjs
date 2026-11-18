@@ -45,7 +45,6 @@ test("check-project checks Git's file list without scanning ignored worktrees", 
   );
   await withCleanup(async (defer) => {
     defer(() => removeFolder(fixture));
-
     copyFromRepository(
       "scripts/check-project.mjs",
       path.join(fixture, "scripts/check-project.mjs")

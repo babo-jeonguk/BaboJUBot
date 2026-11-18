@@ -71,7 +71,6 @@ test("a server that ends before it is ready leaves behind no Postgres it started
   const fake = misbehaving("exit-before-ready");
   await withCleanup(async (defer) => {
     defer(() => fake.cleanup());
-
     await expect(fake.start()).rejects.toThrow(/시작 전에 끝났다/);
     const { postgresPid, temp } = fake.state();
     expect(alive(postgresPid)).toBe(false);
@@ -84,7 +83,6 @@ test("a server that stopped answering is killed with its Postgres within the dea
   const fake = misbehaving("hang");
   await withCleanup(async (defer) => {
     defer(() => fake.cleanup());
-
     const server = await fake.start();
     expect(alive(server.postgresPid)).toBe(true);
     // 서버가 읽지 않는 채널을 채워, 멈춤 메시지를 보내는 일 자체가 끝나지 않게 한다.
@@ -100,7 +98,6 @@ test("a server that closed its channel is reported and killed with its Postgres"
   const fake = misbehaving("disconnect");
   await withCleanup(async (defer) => {
     defer(() => fake.cleanup());
-
     const server = await fake.start();
     if (server.child.connected)
       await new Promise((resolve) => server.child.once("disconnect", resolve));
@@ -115,7 +112,6 @@ test("a Postgres that outlives its removed lock file keeps the folder, and the f
   const fake = misbehaving("leave-postgres-on-stop");
   await withCleanup(async (defer) => {
     defer(() => fake.cleanup());
-
     const server = await fake.start();
     const error = await server.stop().then(
       () => undefined,
@@ -136,7 +132,6 @@ test("a server that ends before it is ready and whose folder cannot be removed r
   const fake = misbehaving("exit-before-ready-undeletable");
   await withCleanup(async (defer) => {
     defer(() => fake.cleanup());
-
     const error = await fake.start().then(
       () => undefined,
       (e: unknown) => e as Error
@@ -154,7 +149,6 @@ test("a cleanup step that fails does not hide the start failure, and an unchecke
   const fake = misbehaving("exit-before-ready-without-temp");
   await withCleanup(async (defer) => {
     defer(() => fake.cleanup());
-
     const error = await fake.start().then(
       () => undefined,
       (e: unknown) => e as Error

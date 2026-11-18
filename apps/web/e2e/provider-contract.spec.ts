@@ -85,7 +85,6 @@ test("the global settings show each connection's readiness with a recheck, and a
   await withCleanup(async (defer) => {
     defer(() => page.unrouteAll({ behavior: "wait" }));
     defer(() => release());
-
     await fake2
       .getByRole("button", { name: "가짜 프로바이더 2 다시 확인" })
       .click();

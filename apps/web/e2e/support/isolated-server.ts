@@ -90,7 +90,6 @@ export const test = base.extend({
     const server = await startIsolatedServer();
     await withCleanup(async (defer) => {
       defer(() => server.stop());
-
       await use(server.url);
     });
   },
@@ -107,7 +106,6 @@ export const withServerClock = (clock: string) =>
       const server = await startIsolatedServer({ clock });
       await withCleanup(async (defer) => {
         defer(() => server.stop());
-
         await use(server);
       });
     },

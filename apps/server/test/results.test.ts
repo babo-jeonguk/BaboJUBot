@@ -373,7 +373,6 @@ describe("result submission and final completion", () => {
         runtime: agents.runtime,
       });
       defer(() => restarted.close());
-
       await restarted.drain();
     });
     const { listRuns } = await import("@babojubot/db");

@@ -36,7 +36,6 @@ test("keeps a draft edited while the previous message is being sent", async ({
   await withCleanup(async (defer) => {
     defer(() => page.unrouteAll({ behavior: "wait" }));
     defer(() => release());
-
     await page.goto(`/orgs/${org.id}/chat`);
     // 대화 목록 칸과 메시지 칸이 둘 다 불러오는 중이다. 숨은 안내라 본문 영역 안에서 세고, 하나는 대화 목록의 것이다.
     await expect(

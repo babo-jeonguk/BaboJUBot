@@ -179,7 +179,6 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     defer(() => other.unrouteAll({ behavior: "wait" }));
     defer(() => letReadThrough());
     defer(() => releaseStale());
-
     const read = other.waitForResponse(
       (r) =>
         r.url().endsWith(`${listPath}/${unseenConversation.id}/read`) &&

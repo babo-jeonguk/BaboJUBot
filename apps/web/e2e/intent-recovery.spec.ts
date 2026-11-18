@@ -59,7 +59,6 @@ test("a blocked recovery shows its reason, the owner retries it, and the notice 
   await withCleanup(async (defer) => {
     defer(() => page.unrouteAll({ behavior: "wait" }));
     defer(() => release());
-
     await page.route(
       (url) => url.pathname === agentPath,
       async (route) => route.fulfill({ status: 200, json: await detail() })

@@ -119,7 +119,6 @@ for (const size of widths) {
       await withCleanup(async (defer) => {
         defer(() => page.unrouteAll({ behavior: "wait" }));
         defer(() => release());
-
         if (mobile) {
           await page.getByRole("button", { name: "탐색 열기" }).click();
           await page
@@ -327,7 +326,6 @@ for (const size of widths) {
       await withCleanup(async (defer) => {
         defer(() => page.unrouteAll({ behavior: "wait" }));
         defer(() => release());
-
         await trigger.click();
         await confirm
           .getByRole("button", { name: "중단", exact: true })
@@ -562,7 +560,6 @@ test("cancelling the final completion confirmation returns focus to its button w
   await withCleanup(async (defer) => {
     defer(() => page.unroute(/\/decision$/, hold));
     defer(() => release());
-
     await trigger.click();
     await confirm.getByRole("button", { name: "최종 완료" }).click();
     await sent;

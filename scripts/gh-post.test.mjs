@@ -60,7 +60,6 @@ async function withFixture(run) {
   const fixture = createFixture();
   return withCleanup(async (defer) => {
     defer(() => removeFolder(fixture));
-
     return await run(fixture);
   });
 }

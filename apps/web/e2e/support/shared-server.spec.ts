@@ -47,7 +47,6 @@ async function runShared(failure: "none" | "body" | "setup") {
   const stateFile = path.join(dir, "state.json");
   return withCleanup(async (defer) => {
     defer(() => removeFolder(dir));
-
     const child = spawn(process.execPath, [cli, "test", "--config", config], {
       cwd: path.dirname(config),
       env: runEnv({

@@ -38,7 +38,6 @@ test("a clock server records and cuts days by the time the test sets, not the wa
   });
   await withCleanup(async (defer) => {
     defer(() => server.stop());
-
     const created = await request.post(`${server.url}/api/organizations`, {
       data: { name: "시계 조직", ...goalInput },
     });
@@ -79,7 +78,6 @@ test("only a server started with a clock can move it", async () => {
   const server = await startIsolatedServer();
   await withCleanup(async (defer) => {
     defer(() => server.stop());
-
     await expect(server.setNow("2026-03-10T15:00:01.000Z")).rejects.toThrow(
       /`clock`/
     );

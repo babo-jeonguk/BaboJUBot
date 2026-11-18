@@ -657,7 +657,6 @@ settingsTest(
     await withCleanup(async (defer) => {
       defer(() => page.unrouteAll({ behavior: "wait" }));
       defer(() => release());
-
       await isolation.click();
       await expect(isolation).toHaveAccessibleDescription(
         "격리 실행 저장하는 중…"
@@ -713,7 +712,6 @@ test("a policy switch's saving or saved state stays with its organization when h
   await withCleanup(async (defer) => {
     defer(() => page.unrouteAll({ behavior: "wait" }));
     defer(() => release());
-
     await policy.click();
     await expect(policy).toHaveAccessibleDescription(/저장하는 중…$/);
     const saved = page.waitForResponse(
@@ -812,7 +810,6 @@ test("reduced motion stops spin and pulse loops while normal motion keeps them, 
   // 붙잡은 요청은 끝내지 않고 버린다.
   await withCleanup(async (defer) => {
     defer(() => page.unrouteAll({ behavior: "ignoreErrors" }));
-
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`/orgs/${org.id}/dashboard`);
     // 칸마다 숨은 안내가 하나씩 있다. 본문 영역에 하나 이상 있으면 된다.
@@ -877,7 +874,6 @@ test("at 200% browser zoom of a 1280 px window the main screens do not scroll si
   });
   await withCleanup(async (defer) => {
     defer(() => zoomed.close());
-
     const view = zoomed.pages()[0] ?? (await zoomed.newPage());
     await view.goto("/");
     // 창 폭 1280px의 200% 확대: 화소 비율은 2, CSS 폭은 창 안쪽 폭의 절반이다. Windows는 창 크기에 테두리(양쪽 8px)가

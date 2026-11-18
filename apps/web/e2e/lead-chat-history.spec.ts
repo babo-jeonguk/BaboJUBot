@@ -116,7 +116,6 @@ test("the Lead chat shows the latest 50 messages and loads older ones on scroll-
   await withCleanup(async (defer) => {
     defer(() => page.unrouteAll({ behavior: "wait" }));
     defer(() => release());
-
     const top = messages.first();
     const topId = await top.getAttribute("data-message-id");
     await scroller.hover();
