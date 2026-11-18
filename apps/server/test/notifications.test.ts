@@ -875,21 +875,27 @@ describe("channel replies", () => {
         closed++;
       },
     };
-    await expect(
-      startServer({
-        db: t.db,
-        port: 0,
-        now: () => new Date(base + tick++ * 10_000),
-        notificationChannels: [broken],
-        notificationPollMs: 10,
-        heartbeatPollMs: 10,
-      })
-    ).rejects.toThrow("토큰 거부");
-    const seen = attempts;
-    // 멈추지 않은 주기 확인이 없다는 것을 알릴 신호는 없다. 확인 간격(10ms)의 스무 배를 기다려 본다. 느린 기기에서는
-    // 그 사이 주기 확인이 한 번도 돌지 않아 결함이 있어도 통과할 수 있다. 이 시험이 보장하는 한계다(#215).
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(attempts).toBe(seen);
+    // 주기 확인(setInterval)을 시험이 돌린다. 제품에서 setInterval은 주기 확인만 쓰고, 그 밖의 타이머는 실제 시간 그대로다.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      await expect(
+        startServer({
+          db: t.db,
+          port: 0,
+          now: () => new Date(base + tick++ * 10_000),
+          notificationChannels: [broken],
+          notificationPollMs: 10,
+          heartbeatPollMs: 10,
+        })
+      ).rejects.toThrow("토큰 거부");
+      // 실패한 시작은 주기 확인을 하나도 남기지 않는다. 남았다면 시간을 옮길 때 재시도 예정이 지난 알림을 다시 보낸다.
+      expect(vi.getTimerCount()).toBe(0);
+      const seen = attempts;
+      vi.advanceTimersByTime(200);
+      expect(attempts).toBe(seen);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(closed).toBe(1);
   });
 

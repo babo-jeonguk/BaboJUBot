@@ -411,14 +411,21 @@ export function alive(pid: number) {
   }
 }
 
-/** 프로세스가 `ms` 안에 사라지면 true. 사라지기를 짧은 간격으로 확인한다. */
-export async function gone(pid: number, ms: number) {
+/**
+ * 프로세스가 `ms` 안에 사라지면 true, 아니면 false. 이 서버가 띄우지 않은 Postgres 후손은 종료를 알릴 수단이 없어 상태를 다시 확인한다.
+ * 첫 확인은 바로 하고, 아직 살아 있을 때만 50ms 뒤 다시 확인한다. 어느 pid가 남았는지는 부른 쪽이 알린다.
+ * Playwright 전역 준비·정리에서도 돌아 `expect.poll` 대신 상한을 직접 둔다.
+ */
+export function gone(pid: number, ms: number) {
   const deadline = Date.now() + ms;
-  while (alive(pid)) {
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return true;
+  return new Promise<boolean>((resolve) => {
+    const check = () => {
+      if (!alive(pid)) resolve(true);
+      else if (Date.now() >= deadline) resolve(false);
+      else setTimeout(check, 50);
+    };
+    check();
+  });
 }
 
 async function within<T>(promise: Promise<T>, ms: number) {

@@ -246,6 +246,15 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await expect(main.getByRole("region", { name: "실패 사유" })).toBeVisible();
   await expect(failure).toHaveCount(0);
   // 상세에서 읽지 않음으로 되돌리면 주의 필요로 돌아오고, 열려 있는 동안 다시 읽음으로 바뀌지 않는다.
+  // 화면이 이 실패 항목에 보낸 읽음 변경을 순서대로 남긴다.
+  const failureWrites: boolean[] = [];
+  page.on("request", (sent) => {
+    if (
+      sent.method() === "PUT" &&
+      sent.url().includes(`/api/organizations/${org.id}/inbox/run_failure/`)
+    )
+      failureWrites.push((sent.postDataJSON() as { read: boolean }).read);
+  });
   await main.getByRole("button", { name: "읽지 않음" }).click();
   await expect(failure).toContainText("읽지 않음");
   const failureRead = async () =>
@@ -257,10 +266,6 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
       }[]
     ).find((i) => i.kind === "run_failure" && i.run?.organizationId === org.id)
       ?.read;
-  // 보장의 한계(#215): 열린 상세가 읽음으로 되돌리는 요청을 보내지 않았다는 것을 알리는 신호는 없다. 그래서 그런 요청이
-  // 보통 나갈 시간을 기다린 뒤 서버 값을 본다. 느린 기기에서 그 요청이 더 늦게 나가면 결함이 있어도 이 확인은 통과한다.
-  await page.waitForTimeout(1_000);
-  expect(await failureRead()).toBe(false);
   await expect(main.getByRole("button", { name: "읽지 않음" })).toHaveCount(0);
 
   // 여러 항목을 체크하면 체크한 것만 한꺼번에 읽음이 된다.
@@ -270,6 +275,9 @@ test("the Inbox detail summarizes an item without marking it read, keeps a decid
   await expect(selection).toContainText("2개 선택");
   await selection.getByRole("button", { name: "모두 읽음" }).click();
   await expect(failure).toHaveCount(0);
+  // 열린 상세는 읽지 않음으로 되돌린 뒤 읽음 요청을 보내지 않았다. 그런 요청은 화면이 다음 입력(체크)을 처리하기 전에
+  // 나가므로 "모두 읽음"의 요청보다 앞에 남는다. 남은 읽음 요청은 "모두 읽음"의 것 하나뿐이다.
+  expect(failureWrites).toEqual([false, true]);
   // 승인 요청은 결정 여부가 주의를 정하므로 읽음을 되돌리는 버튼이 없고, 읽지 않음 표시만 사라진다.
   await expect(request).not.toContainText("읽지 않음");
   await expect(request.getByRole("button", { name: "읽지 않음" })).toHaveCount(

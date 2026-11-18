@@ -2,6 +2,7 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { request } from "./test-support.ts";
+import { exited } from "./process-test-support.ts";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -683,6 +684,15 @@ it("compacts the saved launch with the same session and requires a compact bound
     ).ok
   ).toBe(false);
 });
+/** 신호 0이 닿는가(프로세스가 있는가). */
+const signalReaches = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 it("waits for an orphaned child to exit before settling cancellation", async () => {
   const root = await home(),
     controller = new AbortController();
@@ -701,16 +711,21 @@ it("waits for an orphaned child to exit before settling cancellation", async () 
     },
   });
   expect(result.stopReason).toBe("cancelled");
-  // The child keeps writing while it lives, so a run that settles early would see this change.
-  const heartbeat = path.join(
-    root,
-    "providers/claude/organizations",
-    input.identity.organizationId,
-    "orphan-heartbeat"
+  // 취소가 끝났을 때 고아 자식도 이미 끝났어야 한다. Windows에는 거두지 않은 좀비가 없어 신호 0으로 본다.
+  const orphan = Number(
+    await readFile(
+      path.join(
+        root,
+        "providers/claude/organizations",
+        input.identity.organizationId,
+        "orphan-pid"
+      ),
+      "utf8"
+    )
   );
-  const settled = await readFile(heartbeat, "utf8");
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  expect(await readFile(heartbeat, "utf8")).toBe(settled);
+  expect(
+    process.platform === "win32" ? !signalReaches(orphan) : exited(orphan)
+  ).toBe(true);
 });
 
 it("compacts through the real compact protocol output", async () => {

@@ -69,6 +69,7 @@
 - [#189 Windows E2E 정상 종료 조사](research/issue-189-references.md): IPC 종료 요청·공용 서버 수명 소유·Windows E2E CI 권고와 미검증 범위.
 - [#211 구현 기록](research/issue-211-implementation.md): 변경 응답 캐시 쓰기 공통 규칙의 원문 확인, 적용·제외 위치, 순서 강제 시험과 대조 결과.
 - [#211 늦은 조회 덮어쓰기 조사](research/issue-211-references.md): 변경 응답을 덮는 먼저 출발한 조회의 취소·순서를 강제하는 시험·E2E 대상 범위 좁히기 근거.
+- [고정 시간 대기 조사](research/fixed-time-waits-references.md): 늦은 응답을 시험이 붙잡고 풀어 주는 방식과 조건·상한이 있는 다시 확인의 선례.
 - [서버 종료 순서 조사](research/graceful-shutdown-references.md): 종료 신호를 누가 받고 DB를 언제 닫는지, embedded-postgres 종료 hook 처리.
 - [내장 Postgres 수명 조사](research/embedded-postgres-lifecycle-references.md): 강제 종료 뒤 남은 DB 정리, pg_ctl로 켜고 끄기, Windows 정지와 관리자 계정.
 - [#209 구현 기록](research/issue-209-implementation.md): 인증 중계가 링크 불가 컴퓨터에서 읽는 로그인 자리의 원문 재확인, 경합 시험, 검증 범위.

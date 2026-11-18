@@ -332,14 +332,19 @@ describe("agent names", () => {
       const renaming = updateAgentProfile(t.db, orgId, lead.id, {
         name: "statistician",
       });
-      for (;;) {
-        const { rows } = await t.db.execute<{ waiting: number }>(
-          sql`select count(*)::int as waiting from pg_stat_activity
-            where wait_event_type = 'Lock' and query like 'update "agents"%'`
-        );
-        if (rows[0]!.waiting > 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      // 이름 변경이 unique index에서 기다리기 시작할 때까지. 상한은 느린 실행기에서 질의가 잠금에 닿기까지를 감당한다(#215).
+      await expect
+        .poll(
+          async () =>
+            (
+              await t.db.execute<{ waiting: number }>(
+                sql`select count(*)::int as waiting from pg_stat_activity
+                  where wait_event_type = 'Lock' and query like 'update "agents"%'`
+              )
+            ).rows[0]!.waiting,
+          { timeout: 15_000, interval: 20 }
+        )
+        .toBeGreaterThan(0);
       await other.query("commit");
       expect(await renaming).toEqual({ kind: "refused", reason: "name_taken" });
     } finally {

@@ -155,12 +155,45 @@ const cardsInView = (page: Page) =>
       }));
   });
 
+/**
+ * 화면 이동·배치·패널 효과가 멈출 때까지: 지도 viewport 변환과 카드 위치를 다시 읽어 연달아 두 번 같아질 때까지 기다린다.
+ * 다음 측정이 앞 동작의 효과와 겹치지 않게 한다.
+ */
+async function settled(page: Page) {
+  let last = "";
+  await expect
+    .poll(
+      async () => {
+        const now = await page.evaluate(() =>
+          JSON.stringify([
+            document
+              .querySelector(".react-flow__viewport")
+              ?.getAttribute("style"),
+            [
+              ...document.querySelectorAll<HTMLElement>(
+                '[data-testid="map-node"]'
+              ),
+            ].map((e) => {
+              const r = e.getBoundingClientRect();
+              return [r.x, r.y, r.width, r.height];
+            }),
+          ])
+        );
+        const same = now === last;
+        last = now;
+        return same;
+      },
+      { timeout: 30_000, intervals: [100] }
+    )
+    .toBe(true);
+}
+
 /** 화면 안 카드 n개. 모자라면 화면 맞춤을 누른다. */
 async function cards(page: Page, n: number) {
   let found = await cardsInView(page);
   if (found.length < n) {
     await page.locator(".react-flow__controls-fitview").click();
-    await page.waitForTimeout(500);
+    await settled(page);
     found = await cardsInView(page);
   }
   if (found.length < n) throw new Error(`화면 안 카드가 ${n}개보다 적다`);
@@ -203,7 +236,7 @@ async function measure(
     { polling: "raf", timeout: 30_000 }
   );
   const openMs = Date.now() - opened;
-  await page.waitForTimeout(800);
+  await settled(page);
 
   // 화면 끌기: 빈 pane 한 점을 잡고 끈다.
   const canvas = (await page.getByTestId("map-canvas").boundingBox())!;
@@ -238,7 +271,7 @@ async function measure(
     );
     for (let i = 0; i < 30; i++) await page.mouse.wheel(0, i < 15 ? -60 : 60);
   });
-  await page.waitForTimeout(800);
+  await settled(page);
 
   // 노드 끌기: 화면 안 카드 하나를 하위 노드와 함께 끈다(보기 상태).
   const [grab] = await cards(page, 1);
@@ -250,12 +283,12 @@ async function measure(
     await page.mouse.up();
   });
   await page.getByRole("button", { name: /자동 정렬로 되돌리기/ }).click();
-  await page.waitForTimeout(500);
+  await settled(page);
 
   // 노드 선택(상세 패널이 열린다)과, 패널이 열린 채 다른 노드 선택.
   const [first] = await cards(page, 1);
   const select = await selectMs(page, first!.id);
-  await page.waitForTimeout(300);
+  await settled(page);
   const second = (await cards(page, 2)).find((c) => c.id !== first!.id)!;
   const reselect = await selectMs(page, second.id);
 

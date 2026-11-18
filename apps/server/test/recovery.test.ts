@@ -38,7 +38,7 @@ import {
   type Gate,
 } from "@babojubot/runtime/testing";
 import WebSocket from "ws";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import {
   calls,
@@ -415,6 +415,9 @@ async function crashAndRestart(
   let readyUrl: string | undefined;
   let readyError: Error | undefined;
   let spawnError: Error | undefined;
+  // 완전한 준비 줄(또는 읽지 못한 줄)을 받으면 알린다.
+  let lineRead!: () => void;
+  const startLine = new Promise<void>((resolve) => (lineRead = resolve));
   child.stdout!.setEncoding("utf8");
   child.stderr!.setEncoding("utf8");
   // 준비 줄을 읽기 전부터 stdout을 끝까지 비우고, exit/error는 spawn 직후에 붙여 한 번만 오는 사건을 놓치지 않는다.
@@ -435,9 +438,13 @@ async function crashAndRestart(
           `crash server wrote an unreadable start line: ${JSON.stringify(line)}`,
           { cause: error }
         );
+        lineRead();
         break;
       }
-      if (readyUrl) break;
+      if (readyUrl) {
+        lineRead();
+        break;
+      }
     }
     if (pendingLine.length > 4000) pendingLine = pendingLine.slice(-4000);
   });
@@ -479,20 +486,25 @@ async function crashAndRestart(
   };
   let orgId: string;
   try {
-    // 준비 줄은 조각나서 온다. 완전한 줄이 모일 때까지 기다리되 15초에서 멈춘다.
-    const deadline = Date.now() + 15_000;
-    while (!readyUrl && !readyError) {
+    // 준비 줄은 조각나서 온다. 완전한 줄이 모이거나 프로세스가 끝나기를 기다리되 15초에서 멈춘다.
+    let startLimit: ReturnType<typeof setTimeout> | undefined;
+    const started = await Promise.race([
+      startLine.then(() => "line" as const),
+      exited.then(() => "exited" as const),
+      new Promise<"late">((resolve) => {
+        startLimit = setTimeout(() => resolve("late"), 15_000);
+      }),
+    ]).finally(() => clearTimeout(startLimit));
+    if (started === "late")
+      throw new Error(
+        `crash server was not ready in 15s: stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`
+      );
+    if (started === "exited") {
       if (spawnError)
         throw new Error(`crash server could not start: ${spawnError.message}`);
-      if (child.exitCode !== null || child.signalCode !== null)
-        throw new Error(
-          `crash server exited before it was ready (code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`
-        );
-      if (Date.now() >= deadline)
-        throw new Error(
-          `crash server was not ready in 15s: stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`
-        );
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      throw new Error(
+        `crash server exited before it was ready (code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`
+      );
     }
     if (readyError) throw readyError;
     const before = api(() => readyUrl!);
@@ -501,10 +513,14 @@ async function crashAndRestart(
       : await before.createOrganization("crash 조직");
     orgId = org.id;
     if (say) await before.say(org.id, say);
-    for (let i = 0; !(await committed(before, org.id)); i++) {
-      if (i > 200) throw new Error(`${stopAfter} never committed`);
-      await new Promise((r) => setTimeout(r, 25));
-    }
+    await vi
+      .waitUntil(() => committed(before, org.id), {
+        timeout: 5_000,
+        interval: 25,
+      })
+      .catch(() => {
+        throw new Error(`${stopAfter} never committed in 5s`);
+      });
     if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
     await exitedWithin(10_000);
@@ -809,10 +825,14 @@ async function freePort() {
 }
 
 async function until(check: () => Promise<boolean>) {
-  for (let i = 0; !(await check().catch(() => false)); i++) {
-    if (i > 400) throw new Error("condition never held");
-    await new Promise((r) => setTimeout(r, 25));
-  }
+  await vi
+    .waitUntil(() => check().catch(() => false), {
+      timeout: 10_000,
+      interval: 25,
+    })
+    .catch(() => {
+      throw new Error("condition never held in 10s");
+    });
 }
 
 type Stream = {

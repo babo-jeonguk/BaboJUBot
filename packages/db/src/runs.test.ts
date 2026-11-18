@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { RunResult, Usage, WakeReason } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   insertOwnerMessage,
   listConversationMessages,
@@ -300,17 +300,20 @@ describe("wake queue admission", () => {
  * 다른 연결이 행 잠금을 기다리기 시작할 때까지. 상한은 횟수가 아니라 시간이며, 느린 실행기에서 다른 연결의 질의가
  * 잠금에 닿기까지를 감당한다(#215). 잠금 대기가 보이면 바로 끝나므로 넉넉해도 통과 시간은 늘지 않는다.
  */
-const someoneWaitsForALock = async () => {
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    const { rows } = await t.db.execute(
-      sql`select 1 from pg_stat_activity where wait_event_type = 'Lock'`
-    );
-    if (rows.length) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error("no connection waited for a lock");
-};
+const someoneWaitsForALock = () =>
+  vi
+    .waitUntil(
+      async () =>
+        (
+          await t.db.execute(
+            sql`select 1 from pg_stat_activity where wait_event_type = 'Lock'`
+          )
+        ).rows.length > 0,
+      { timeout: 15_000, interval: 10 }
+    )
+    .catch(() => {
+      throw new Error("no connection waited for a lock in 15s");
+    });
 
 describe("admission and organization stage", () => {
   it("serializes a claim behind a stage transition that wakes the same agent, and refuses it once the organization is completed", async () => {

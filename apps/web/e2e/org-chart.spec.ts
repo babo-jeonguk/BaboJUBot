@@ -6,7 +6,19 @@ import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 const shots = process.env.E2E_SHOTS;
 const shot = async (page: Page, name: string) => {
   if (!shots) return;
-  await page.waitForTimeout(300); // 고른 칸 테두리 전환이 끝난 뒤 찍는다.
+  // 고른 칸 테두리 전환 같은 화면 효과가 끝난 뒤 찍는다. 끝없는 반복(spin·pulse)은 기다리지 않는다.
+  await page.waitForFunction(
+    () =>
+      document
+        .getAnimations()
+        .every(
+          (a) =>
+            a.playState !== "running" ||
+            a.effect?.getComputedTiming().iterations === Infinity
+        ),
+    null,
+    { timeout: 5_000 }
+  );
   await page.screenshot({ path: `${shots}/${name}.png` });
 };
 

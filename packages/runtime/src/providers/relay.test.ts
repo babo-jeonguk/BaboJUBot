@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { destinationSchema, type Destination } from "@babojubot/contracts";
 import { createRelayHub, type RelayHooks } from "./relay.ts";
 
@@ -396,17 +396,34 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       addresses: ["127.0.0.1", "::1"],
     });
     let calls = 0;
+    // 중계가 목적지와 연 소켓을 잡아, 목적지가 끊은 것을 중계가 받았는지 본다.
+    const connect = vi.spyOn(net, "connect");
+    cleanups.push(() => void connect.mockRestore());
+    const relayToTarget = () =>
+      connect.mock.results
+        .map((result) => result.value as net.Socket)
+        .find((socket) => socket.remotePort === target.port);
     const env = hub({
       research: async () => {
         calls += 1;
         // 첫 판정 중에 정책이 바뀐 것처럼 재검사를 돌려, 연결 뒤 한 번 더 보게 한다.
         if (calls === 1) await env.relays.revalidate(identity.organizationId);
-        // 연결 뒤 재검사(세 번째)를 기다리는 동안 목적지가 연결을 RST로 끊는다.
+        // 연결 뒤 재검사(세 번째)를 기다리는 동안 목적지가 연결을 RST로 끊고, 중계의 소켓이 그 끊김으로 닫힌 뒤에 답한다.
         if (calls === 3) {
-          while (target.accepted.length === 0)
-            await new Promise((resolve) => setTimeout(resolve, 5));
+          await vi.waitUntil(
+            () => target.accepted.length > 0 && relayToTarget(),
+            {
+              timeout: 5_000,
+              interval: 5,
+            }
+          );
+          const socket = relayToTarget()!;
+          // RST는 오류(ECONNRESET) 뒤 close로 온다. once(…, "close")는 그 오류로 거절되므로 close만 듣는다.
+          const closed = new Promise((resolve) =>
+            socket.once("close", resolve)
+          );
           target.accepted.at(-1)!.resetAndDestroy();
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await closed;
         }
         return [entry];
       },
