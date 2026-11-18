@@ -15,6 +15,7 @@ const sharedSettings = new Set([
   "pnpm-workspace.yaml",
   "scripts/test-files.mjs",
   "scripts/eslint-test-rules.mjs",
+  "scripts/eslint-product-rules.mjs",
 ]);
 
 const lintExtensions = new Set([
