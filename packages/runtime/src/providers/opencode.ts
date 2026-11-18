@@ -752,7 +752,7 @@ export function createOpenCodeProvider(options: {
           const decoder = new TextDecoder();
           let buffer = "";
           for await (const chunk of stream.body!) {
-            buffer += decoder.decode(chunk, { stream: true });
+            buffer += decoder.decode(chunk as Uint8Array, { stream: true });
             if (buffer.length > maxEventLength) buffer = "";
             let boundary: RegExpExecArray | null;
             while ((boundary = /\r?\n\r?\n/.exec(buffer))) {

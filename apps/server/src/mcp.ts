@@ -110,8 +110,8 @@ export function mcpRoutes(
       return;
     }
     // Reconstruct the existing HTTP wire representation, preserving field order and omitted defaults for stored receipts.
-    const pathParams: Record<string, unknown> = Object.create(null);
-    const body: Record<string, unknown> = Object.create(null);
+    const pathParams = Object.create(null) as Record<string, unknown>;
+    const body = Object.create(null) as Record<string, unknown>;
     const names: readonly string[] = orgTools[name].params;
     for (const key of names)
       if (key in args) pathParams[key] = (args as Record<string, unknown>)[key];

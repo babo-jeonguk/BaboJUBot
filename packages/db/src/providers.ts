@@ -265,7 +265,7 @@ const toReadiness = (
     status: row.status,
     reason: row.reason,
     checkedAt: row.checkedAt.toISOString(),
-  }) as StoredReadiness;
+  }) satisfies StoredReadiness;
 
 /** 연결별 마지막 준비 확인 결과. 확인한 적 없는 연결은 들어 있지 않다. */
 export async function readProviderReadiness(

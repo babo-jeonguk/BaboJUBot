@@ -323,9 +323,26 @@ function readPinned(start: string, args: string[]): Promise<PinnedRead> {
       (error, stdout) => {
         if (!error) {
           const at = stdout.indexOf(0x0a);
+          let parts: string[];
+          try {
+            const value: unknown = JSON.parse(
+              stdout.subarray(0, at).toString("utf8")
+            );
+            if (
+              !Array.isArray(value) ||
+              !value.every((part): part is string => typeof part === "string")
+            ) {
+              reject(new Error("file reader returned an invalid header"));
+              return;
+            }
+            parts = value;
+          } catch {
+            reject(new Error("file reader returned an invalid header"));
+            return;
+          }
           return resolve({
             ok: true,
-            parts: JSON.parse(stdout.subarray(0, at).toString("utf8")),
+            parts,
             bytes: stdout.subarray(at + 1),
           });
         }

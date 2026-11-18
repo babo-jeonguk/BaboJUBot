@@ -436,7 +436,7 @@ async function store(
     case "insert_link":
       await tx.insert(researchLinks).values({
         ...change.link,
-        ...authorRow(change.link.createdBy, "createdBy"),
+        ...createdByRow(change.link.createdBy),
         createdAt: new Date(change.link.createdAt),
       });
       break;
@@ -455,7 +455,7 @@ async function store(
   const { editor, ...edit } = plan.edit;
   await tx.insert(researchMapEdits).values({
     ...edit,
-    ...authorRow(editor, "editor"),
+    ...editorRow(editor),
     createdAt: new Date(edit.createdAt),
   });
   if (plan.wake)
@@ -478,16 +478,17 @@ async function selectTaskRow(
   return row;
 }
 
-const authorRow = <P extends "createdBy" | "editor">(
-  actor: MapActor,
-  prefix: P
-) =>
-  ({
-    [`${prefix}Author`]: actor.author,
-    [`${prefix}AgentId`]: actor.author === "agent" ? actor.agentId : null,
-    [`${prefix}RunId`]: actor.author === "agent" ? actor.runId : null,
-  }) as Record<`${P}Author`, MapActor["author"]> &
-    Record<`${P}AgentId` | `${P}RunId`, string | null>;
+const createdByRow = (actor: MapActor) => ({
+  createdByAuthor: actor.author,
+  createdByAgentId: actor.author === "agent" ? actor.agentId : null,
+  createdByRunId: actor.author === "agent" ? actor.runId : null,
+});
+
+const editorRow = (actor: MapActor) => ({
+  editorAuthor: actor.author,
+  editorAgentId: actor.author === "agent" ? actor.agentId : null,
+  editorRunId: actor.author === "agent" ? actor.runId : null,
+});
 
 const actorOf = (
   author: MapActor["author"],
@@ -500,7 +501,7 @@ const actorOf = (
 
 const nodeRow = ({ createdBy, ...node }: ResearchNode) => ({
   ...node,
-  ...authorRow(createdBy, "createdBy"),
+  ...createdByRow(createdBy),
   createdAt: new Date(node.createdAt),
   updatedAt: new Date(node.updatedAt),
 });
