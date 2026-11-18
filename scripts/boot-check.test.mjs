@@ -306,6 +306,8 @@ async function supervise(
   let result;
   let failure;
   let problems;
+  // 띄운 실행의 출력 통로가 닫힌 것을 확인했는가. 띄우지 못했으면 확인할 출력이 없다.
+  let outputClosed = true;
   try {
     child = spawn(process.execPath, args, {
       cwd: root,
@@ -313,6 +315,7 @@ async function supervise(
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
+    outputClosed = false;
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -335,7 +338,7 @@ async function supervise(
     let exit = await within(exited, limit);
     const overrun = !exit;
     if (!exit) exit = await forceStop(child, exited, graceMs);
-    const outputClosed = (await within(closed, 5_000)) === true;
+    outputClosed = (await within(closed, 5_000)) === true;
     if (!outputClosed) {
       child.stdout.destroy();
       child.stderr.destroy();
@@ -350,7 +353,7 @@ async function supervise(
   } catch (error) {
     failure = error;
   } finally {
-    problems = await cleanUpScope(scope, child);
+    problems = await cleanUpScope(scope, child, outputClosed);
     if (result) result.leftAfterCleanup = leftovers(scope);
   }
   if (problems.length > 0)
@@ -382,9 +385,10 @@ async function forceStop(child, exited, graceMs) {
 /**
  * 정상으로 끝났어도 남은 것을 치운다. 단계마다 따로 시도하고 실패한 단계를 모아 돌려준다.
  * 폴더는 그 폴더를 쓰는 프로세스가 모두 끝난 것을 확인했을 때만 지운다. 확인하지 못하면 폴더를 남기고 그 사실을 알린다.
+ * 끝난 실행의 출력 통로를 아직 누가 쥐고 있으면(`outputClosed`가 거짓) 명령줄에 폴더가 없어도 그 폴더를 쓰는 중일 수 있어 남긴다.
  * Postgres 멈추기가 실패해도 남은 프로세스는 마지막 확인이 따로 보므로, 그 실패만으로 폴더를 남기지 않는다.
  */
-async function cleanUpScope(scope, child) {
+async function cleanUpScope(scope, child, outputClosed) {
   const problems = [];
   const attempt = async (what, work) => {
     try {
@@ -412,11 +416,15 @@ async function cleanUpScope(scope, child) {
         throw new Error(`still running: ${runningIn(scope).join("; ")}`);
     }
   );
-  if (groupStopped && ended)
+  if (groupStopped && ended && outputClosed)
     await attempt("remove the folder", () => removeFolder(scope));
   else
     problems.push(
-      new Error(`kept ${scope}: its processes were not confirmed to have ended`)
+      new Error(
+        outputClosed
+          ? `kept ${scope}: its processes were not confirmed to have ended`
+          : `kept ${scope}: a process still holds the run's output`
+      )
     );
   return problems;
 }
