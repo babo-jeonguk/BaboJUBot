@@ -9,7 +9,7 @@
 | 구현 worker | parent가 시험을 커밋한 슬라이스의 제품 코드 | 요구·완료 동작·수정 범위·통과시킬 시험·검사 명령 |
 | 리뷰 대응 worker | 검증된 리뷰 finding의 제품 코드 | finding 판정·원인·수정 방향·회귀 테스트 |
 
-- parent는 설계·원인 분석·재현을 맡고, 시험·문서·의존성·검사 설정을 직접 고칩니다. 시험은 worker를 띄우기 전에 커밋합니다.
+- parent는 설계·원인 분석·재현을 맡고, 시험·문서·의존성·검사 설정·개발 스크립트(`scripts/`)를 직접 고칩니다. 시험은 worker를 띄우기 전에 커밋합니다.
 - worker는 brief가 허용한 제품 코드만 고치고 설계를 고르지 않습니다. 시험·lint·타입 검사를 직접 돌려 통과할 때까지 고칩니다.
 - worker는 시험·단언·검사 설정·검사 명령을 고치거나 끄지 않습니다. 시험이 틀려 보이거나 brief 밖 변경·설계 판단·허용되지 않은 명령이 필요하면 멈추고 보고합니다.
 - 인수·커밋·push·PR과 추가 agent 생성은 parent만 합니다.
@@ -58,7 +58,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 ## 6. 검토·인수
 
 - 스크립트 요약(`status`·`session`·`written`·`denied`·`errors`·마지막 보고, Paseo는 마지막 보고)으로 worker의 검사 결과와 미검증 사항을 확인합니다.
-- 커밋 전에 [accept-worker.mjs](../../.agents/scripts/accept-worker.mjs)로 슬라이스의 핵심 시험과 바뀐 파일의 lint를 다시 돌립니다. `--allow`·`--reported`·`--test`는 값마다 반복합니다. 이 스크립트는 HEAD가 base 그대로인지, 바뀐 파일이 brief 범위 안이고 worker가 보고한 목록과 같은지, 시험·검사 설정이 그대로인지 시험 전후로 확인합니다. 보호 파일은 base 커밋의 권한으로 판정하고, 성공하면 한 줄만 출력합니다. Git이 무시하는 파일은 보지 않습니다.
+- 커밋 전에 [accept-worker.mjs](../../.agents/scripts/accept-worker.mjs)로 슬라이스의 핵심 시험과 바뀐 파일의 lint를 다시 돌립니다. `--allow`·`--reported`·`--test`는 값마다 반복합니다. 명령마다 상한은 기본 10분이고, 더 오래 걸리는 시험은 `--test-timeout <초>`로 늘립니다. 이 스크립트는 HEAD가 base 그대로인지, 바뀐 파일이 brief 범위 안이고 worker가 보고한 목록과 같은지, 시험·검사 설정이 그대로인지 시험 전후로 확인합니다. 보호 파일은 base 커밋의 권한으로 판정하고, 성공하면 한 줄만 출력합니다. Git이 무시하는 파일은 보지 않습니다.
 
   ```bash
   node .agents/scripts/accept-worker.mjs --base <시험 커밋> --allow '<파일 패턴>' \

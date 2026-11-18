@@ -4,28 +4,37 @@
 // Contract: docs/agents/worker.md.
 //
 // usage: node .agents/scripts/accept-worker.mjs --base <sha> --allow <pattern>...
-//          --reported <file>... --test <command>...
+//          --reported <file>... --test <command>... [--test-timeout <seconds>]
 //
 // `*` in a pattern matches any characters, `/` included, as in OpenCode permissions.
 // Exit codes: 0 accepted; 1 rejected; 2 usage.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { parse } from "yaml";
 
 const USAGE =
-  "usage: accept-worker.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
+  "usage: accept-worker.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>... [--test-timeout <seconds>]";
 const OUTPUT_LINES = 40;
+const OUTPUT_CHARS = 1024 * 1024;
+const STOP_GRACE_MS = 5_000;
 
 function parseArgs(argv) {
-  const options = { base: "", allow: [], reported: [], test: [] };
+  const options = {
+    base: "",
+    allow: [],
+    reported: [],
+    test: [],
+    testTimeout: 600,
+  };
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index]?.replace(/^--/, "");
     const value = argv[index + 1];
     if (
       value === undefined ||
-      !["base", "allow", "reported", "test"].includes(name)
+      !["base", "allow", "reported", "test", "test-timeout"].includes(name)
     )
       usage(`bad argument: ${argv[index]}`);
     if (name === "base") options.base = value;
+    else if (name === "test-timeout") options.testTimeout = Number(value);
     else options[name].push(value);
   }
   if (
@@ -35,6 +44,8 @@ function parseArgs(argv) {
     !options.test.length
   )
     usage("--base, --allow, --reported and --test are required");
+  if (!(options.testTimeout > 0))
+    usage("--test-timeout must be a positive number of seconds");
   return options;
 }
 
@@ -97,21 +108,72 @@ function isProtected(rules, file) {
   return rules.findLast((rule) => rule.matches.test(file))?.effect === "deny";
 }
 
-function runTest(root, command) {
-  const result = spawnSync(command, {
-    cwd: root,
-    shell: true,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+// Each command runs in its own process group so a stuck run can be stopped with what it started.
+function stopGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    // The process group may already be gone.
+  }
+}
+
+function runCommand(root, command, timeoutSeconds) {
+  return new Promise((done) => {
+    const child = spawn(command, {
+      cwd: root,
+      shell: true,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    let timedOut = false;
+    let killTimer;
+    const collect = (chunk) => {
+      output = `${output}${chunk}`.slice(-OUTPUT_CHARS);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    const forward = (signal) => {
+      stopGroup(child, signal);
+      process.exit(1);
+    };
+    process.once("SIGINT", forward);
+    process.once("SIGTERM", forward);
+    const limit = setTimeout(() => {
+      timedOut = true;
+      stopGroup(child, "SIGTERM");
+      killTimer = setTimeout(() => {
+        stopGroup(child, "SIGKILL");
+        finish(`exit ${child.exitCode ?? child.signalCode}`);
+      }, STOP_GRACE_MS);
+    }, timeoutSeconds * 1000);
+    let finished = false;
+    function finish(ending) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(limit);
+      clearTimeout(killTimer);
+      process.off("SIGINT", forward);
+      process.off("SIGTERM", forward);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      done({
+        ending: timedOut ? `timed out after ${timeoutSeconds}s` : ending,
+        output,
+      });
+    }
+    child.on("error", (error) => finish(error.message));
+    child.on("close", (code, signal) =>
+      finish(code === 0 ? null : `exit ${code ?? signal}`)
+    );
   });
-  if (result.status === 0) return;
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`
-    .trimEnd()
-    .split("\n")
-    .slice(-OUTPUT_LINES)
-    .join("\n");
-  const ending = result.error?.message ?? `exit ${result.status}`;
-  reject([`test command failed (${ending}): ${command}\n${output}`]);
+}
+
+async function runTest(root, command, timeoutSeconds) {
+  const { ending, output } = await runCommand(root, command, timeoutSeconds);
+  if (!ending) return;
+  const tail = output.trimEnd().split("\n").slice(-OUTPUT_LINES).join("\n");
+  reject([`test command failed (${ending}): ${command}\n${tail}`]);
 }
 
 const plural = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -145,7 +207,8 @@ function checkChange() {
 }
 
 checkChange();
-for (const command of options.test) runTest(root, command);
+for (const command of options.test)
+  await runTest(root, command, options.testTimeout);
 const files = checkChange();
 console.log(
   `accepted: ${plural(files.length, "file")}, ${plural(options.test.length, "test command")} passed`

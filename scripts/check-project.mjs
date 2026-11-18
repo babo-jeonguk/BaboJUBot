@@ -95,6 +95,7 @@ for (const resource of [
   "*.spec.*",
   "*eslint.config.*",
   "*package.json",
+  "scripts/*",
 ])
   assert(
     devWorker.includes(

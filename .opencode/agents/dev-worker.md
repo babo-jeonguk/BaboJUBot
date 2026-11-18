@@ -98,6 +98,9 @@ permissions:
     resource: "patches/*"
     effect: deny
   - action: edit
+    resource: "*/patches/*"
+    effect: deny
+  - action: edit
     resource: "*vitest.workspace.*"
     effect: deny
   - action: edit
@@ -131,10 +134,10 @@ permissions:
     resource: "*.opencode/*"
     effect: deny
   - action: edit
-    resource: "scripts/check-*"
+    resource: "scripts/*"
     effect: deny
   - action: edit
-    resource: "scripts/eslint-*"
+    resource: "*/scripts/*"
     effect: deny
   - action: edit
     resource: "*.md"
