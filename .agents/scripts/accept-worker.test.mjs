@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 
@@ -59,15 +60,16 @@ function commit(cwd, message) {
 }
 
 function write(cwd, file, content) {
+  fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
   fs.writeFileSync(path.join(cwd, file), content);
 }
 
-function repository(t) {
+function repository(t, definition = workerDefinition) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "babojubot-accept-"));
   t.after(() => removeFolder(cwd));
   fs.mkdirSync(path.join(cwd, ".opencode/agents"), { recursive: true });
   fs.mkdirSync(path.join(cwd, "src"));
-  write(cwd, ".opencode/agents/dev-worker.md", workerDefinition);
+  write(cwd, ".opencode/agents/dev-worker.md", definition);
   write(cwd, ".gitignore", "ignored/\n");
   write(cwd, "src/a.ts", "export const a = 1;\n");
   write(cwd, "src/a.test.ts", "// test\n");
@@ -89,7 +91,12 @@ function run(cwd, args) {
 
 function accept(
   { cwd, base },
-  { allow = ["src/*"], reported = ["src/a.ts"], tests = [passing] } = {}
+  {
+    allow = ["src/*"],
+    reported = ["src/a.ts"],
+    tests = [passing],
+    extra = [],
+  } = {}
 ) {
   return run(cwd, [
     "--base",
@@ -97,6 +104,7 @@ function accept(
     ...allow.flatMap((pattern) => ["--allow", pattern]),
     ...reported.flatMap((file) => ["--reported", file]),
     ...tests.flatMap((command) => ["--test", command]),
+    ...extra,
   ]);
 }
 
@@ -228,6 +236,66 @@ test("rejects a change that the test commands leave behind", (t) => {
     ],
   });
   assertRejected(result, /protected file changed: src\/a\.test\.ts/);
+});
+
+test("the real worker permissions protect development scripts and leave product code editable", (t) => {
+  const definition = fs.readFileSync(
+    fileURLToPath(
+      new URL("../../.opencode/agents/dev-worker.md", import.meta.url)
+    ),
+    "utf8"
+  );
+  for (const file of [
+    "scripts/ci-changes.mjs",
+    "scripts/boot-check.mjs",
+    "scripts/file-boundary-run.mjs",
+    "scripts/live/chaos-run.mjs",
+    "patches/some-package.patch",
+  ]) {
+    const repo = repository(t, definition);
+    write(repo.cwd, file, "// changed\n");
+    const result = accept(repo, { allow: ["*"], reported: [file] });
+    assertRejected(result, new RegExp(`protected file changed: ${file}`));
+  }
+  for (const file of [
+    "packages/core/src/approval.ts",
+    "apps/server/src/main.ts",
+    "apps/web/src/App.tsx",
+  ]) {
+    const repo = repository(t, definition);
+    write(repo.cwd, file, "// changed\n");
+    const result = accept(repo, { allow: ["*"], reported: [file] });
+    assert.equal(result.status, 0, result.output);
+  }
+});
+
+test("stops a test command that outlasts its limit, along with the programs it started", async (t) => {
+  const repo = repository(t);
+  write(repo.cwd, "src/a.ts", "export const a = 2;\n");
+  const pidFile = path.join(repo.cwd, "child-pid");
+  const program = `
+    const { spawn } = require("node:child_process");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });
+    require("node:fs").writeFileSync(process.argv[1], String(child.pid));
+    setInterval(() => {}, 1000);
+  `.replaceAll("\n", " ");
+  const result = accept(repo, {
+    tests: [`"${process.execPath}" -e '${program}' "${pidFile}"`],
+    extra: ["--test-timeout", "3"],
+  });
+  assertRejected(result, /test command failed \(timed out after 3s\)/);
+  const pid = Number(fs.readFileSync(pidFile, "utf8"));
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let waited = 0; alive() && waited < 10_000; waited += 100)
+    await delay(100);
+  assert.equal(alive(), false);
 });
 
 test("rejects a run that changed nothing", (t) => {
