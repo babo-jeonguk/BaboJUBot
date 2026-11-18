@@ -104,6 +104,8 @@ describe.each(["heartbeats", "compactions"] as const)(
         await scheduler.tick();
         expect(queries.counted[kind]).toBe(2);
       } finally {
+        // 단언이 먼저 실패해도 붙잡은 조회를 풀어야 닫기가 그 확인을 기다리다 멈추지 않는다.
+        release();
         await scheduler.close();
       }
     });
@@ -112,16 +114,20 @@ describe.each(["heartbeats", "compactions"] as const)(
     it("makes a direct check wait for a check that starts after the call", async () => {
       const scheduler = schedulers[kind]();
       const release = queries.holdNext();
-      const first = scheduler.tick();
-      await vi.waitFor(() => expect(queries.counted[kind]).toBe(1));
-      let returned = false;
-      const second = scheduler.tick().then(() => (returned = true));
-      release();
-      await first;
-      await second;
-      expect(returned).toBe(true);
-      expect(queries.counted[kind]).toBe(2);
-      await scheduler.close();
+      try {
+        const first = scheduler.tick();
+        await vi.waitFor(() => expect(queries.counted[kind]).toBe(1));
+        let returned = false;
+        const second = scheduler.tick().then(() => (returned = true));
+        release();
+        await first;
+        await second;
+        expect(returned).toBe(true);
+        expect(queries.counted[kind]).toBe(2);
+      } finally {
+        release();
+        await scheduler.close();
+      }
     });
   }
 );
