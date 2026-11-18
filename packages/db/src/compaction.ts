@@ -1,7 +1,7 @@
 import { stored } from "./stored.ts";
 import { randomUUID } from "node:crypto";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
-import type { SessionState } from "@babojubot/contracts";
+import { isClosedStage, type SessionState } from "@babojubot/contracts";
 import { admitsProviderRun } from "@babojubot/core";
 import type { Database } from "./client.ts";
 import type { Executor } from "./rows.ts";
@@ -62,7 +62,7 @@ export async function claimCompaction(
       .from(organizations)
       .where(eq(organizations.id, candidate.organizationId))
       .for("share");
-    if (!org || org.stage === "stopped" || org.stage === "completed") return;
+    if (!org || isClosedStage(org.stage)) return;
     const [agent] = await tx
       .select()
       .from(agents)
@@ -152,8 +152,7 @@ export async function finishCompaction(
       result.ok &&
       result.nextSession &&
       org &&
-      org.stage !== "stopped" &&
-      org.stage !== "completed" &&
+      !isClosedStage(org.stage) &&
       agent?.sessionGeneration === lease.generation
     )
       await tx
@@ -183,10 +182,7 @@ export async function compactionLeaseActive(db: Database, id: string) {
     .innerJoin(agents, eq(agents.id, leases.agentId))
     .where(and(eq(leases.id, id), eq(leases.status, "running")));
   return (
-    !!row &&
-    row.generation === row.leaseGeneration &&
-    row.stage !== "stopped" &&
-    row.stage !== "completed"
+    !!row && row.generation === row.leaseGeneration && !isClosedStage(row.stage)
   );
 }
 /** A dispatched command may have completed before a crash. Never blindly repeat it. */
