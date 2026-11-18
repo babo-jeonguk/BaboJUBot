@@ -423,8 +423,13 @@ export class RunDispatcher {
     | { kind: "blocked"; reason: AgentRecoveryBlockReason }
   > {
     const { run } = claimed;
+    const progress = (text: string) =>
+      void this.#emit(run.id, { type: "progress", text });
     if (!claimed.wakeReasons.some((r) => r.kind === "intent_recovery"))
-      return { kind: "ok", request: await this.#assemble(claimed, token) };
+      return {
+        kind: "ok",
+        request: await this.#assemble(claimed, token, progress),
+      };
     for (let attempt = 1; ; attempt++) {
       try {
         const listed = await listIntentsToSettle(this.#db, run);
@@ -457,7 +462,8 @@ export class RunDispatcher {
         );
         const request = await this.#assemble(
           { ...claimed, wakeReasons },
-          token
+          token,
+          progress
         );
         if (!adapter) throw new Error("provider connection is missing");
         if (signal.aborted) return { kind: "run_finished" };

@@ -183,6 +183,37 @@ describe("IsolationGate", () => {
     await off.close();
   });
 
+  it("tells a run that waits for an unfinished safety check, and not one whose result is already decided", async () => {
+    gate = new IsolationGate({
+      docker: unresponsive,
+      protectedPorts: () => [5432],
+      readIsolated: async () => true,
+      hostUrl: () => "http://127.0.0.1:1",
+    });
+    const waiting = vi.fn();
+    const placing = gate.place(verified, waiting);
+    await vi.waitFor(() => expect(waiting).toHaveBeenCalledTimes(1));
+    // 닫으면 확인이 끝나 격리 환경 없음이 된다.
+    await gate.close();
+    await expect(placing).rejects.toThrow(
+      "격리 실행 환경이 안전한지 확인하지 못해 실행하지 않았습니다."
+    );
+    // Windows는 Docker를 부르지 않고 바로 정하므로 기다림이 없다.
+    const windows = new IsolationGate({
+      docker: unresponsive,
+      protectedPorts: () => [5432],
+      readIsolated: async () => true,
+      hostUrl: () => "http://127.0.0.1:1",
+      platform: "win32",
+    });
+    const immediate = vi.fn();
+    await expect(windows.place(verified, immediate)).rejects.toThrow(
+      "확인하지 못해"
+    );
+    expect(immediate).not.toHaveBeenCalled();
+    await windows.close();
+  });
+
   it("decides that the environment is unavailable when the safety check does not finish within its time", async () => {
     gate = new IsolationGate({
       docker: unresponsive,

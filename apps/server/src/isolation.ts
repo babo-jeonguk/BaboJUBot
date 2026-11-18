@@ -63,6 +63,8 @@ export class IsolationGate {
   /** 관문의 수명. 닫으면 진행 중인 확인을 끝내고 새 확인을 하지 않는다. */
   readonly #lifetime = new AbortController();
   #current: Promise<Safety> | undefined;
+  /** 결과가 정해진 안전 확인. 아직 없는 확인을 기다리는 실행 시도만 진행 문구를 남긴다. */
+  readonly #settled = new WeakSet<Promise<Safety>>();
 
   constructor(options: {
     docker: DockerEnvironment | undefined;
@@ -85,19 +87,35 @@ export class IsolationGate {
   }
 
   check(): Promise<Safety> {
-    return (this.#current ??= this.#probe());
+    if (this.#current) return this.#current;
+    // Docker를 부르지 않는 결과(Docker 없음·Windows·닫힘)는 바로 정해져 기다림이 없다.
+    const immediate =
+      !this.#docker || this.#windows || this.#lifetime.signal.aborted;
+    const current = this.#probe();
+    if (immediate) this.#settled.add(current);
+    else {
+      const settle = () => void this.#settled.add(current);
+      current.then(settle, settle);
+    }
+    return (this.#current = current);
   }
 
   invalidate(): void {
     this.#current = undefined;
   }
 
-  async place(target: IsolationTarget | undefined): Promise<Placement> {
+  /** `waiting`은 아직 끝나지 않은 안전 확인을 기다리게 될 때 한 번 부른다(실행 활동의 진행 문구). */
+  async place(
+    target: IsolationTarget | undefined,
+    waiting?: () => void
+  ): Promise<Placement> {
     if (target?.isolatable !== true || !(await this.#readIsolated()))
       return { toolsBaseUrl: this.#hostUrl() };
     const refusal = relayRefusal(target);
     if (refusal) throw new IsolationError(relayRefusalText[refusal]);
-    const safety = await this.check();
+    const checking = this.check();
+    if (!this.#settled.has(checking)) waiting?.();
+    const safety = await checking;
     if (safety.status === "safe")
       return { execution: "container", toolsBaseUrl: safety.toolsBaseUrl };
     // 확인하지 못한 것은 다음 실행 시도 때 다시 본다. 안전하지 않다는 결과는 다음 준비 확인까지 둔다.
