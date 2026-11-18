@@ -1,19 +1,15 @@
-import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { request } from "./test-support.ts";
-import { createClaudeProvider } from "./claude.ts";
+import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
+import { testFolders } from "./test-folders.ts";
 
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
-});
+const folders = testFolders();
+// 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
+const createClaudeProvider = folders.owning(unownedClaudeProvider);
 async function home() {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-claude-"));
-  roots.push(root);
+  const root = await folders.make("babojubot-claude-");
   await mkdir(path.join(root, "providers/claude"), { recursive: true });
   await writeFile(
     path.join(root, "providers/claude/setup-token"),

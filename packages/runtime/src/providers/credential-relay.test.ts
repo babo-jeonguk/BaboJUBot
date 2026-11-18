@@ -1,14 +1,7 @@
 import http from "node:http";
 import net from "node:net";
 import { gzipSync } from "node:zlib";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,6 +11,7 @@ import {
   type RelayProfile,
 } from "./credential-relay.ts";
 import { relayIdentityHeaders } from "./relay.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
@@ -1102,7 +1096,7 @@ describe("login residue in an organization's product folder", () => {
         false
       );
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeFolder(root);
     }
   });
 
@@ -1117,7 +1111,7 @@ describe("login residue in an organization's product folder", () => {
         expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
       } finally {
         await chmod(path.join(root, "locked"), 0o700);
-        await rm(root, { recursive: true, force: true });
+        await removeFolder(root);
       }
     }
   );

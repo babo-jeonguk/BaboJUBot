@@ -1,21 +1,26 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   openCodexConnection,
   ProtocolClosed,
   ProtocolRejection,
   ProtocolTimeout,
 } from "./codex-connection.ts";
+import { testFolders } from "./test-folders.ts";
 
 // 합성 peer(replay.mjs)로 응답·종료를 정한다. 모델·네트워크는 쓰지 않는다.
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
-  );
-});
+// 시험이 연 연결은 정리가 닫고 프로그램 정리(done)까지 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
+const folders = testFolders();
+/** 정리가 닫고 끝을 기다리는 연결. */
+function openOwned(options: Parameters<typeof openCodexConnection>[0]) {
+  const connection = openCodexConnection(options);
+  folders.own(async () => {
+    connection.close();
+    await connection.done;
+  }, "Codex connection");
+  return connection;
+}
 const record = (value: unknown) => value as Record<string, unknown>;
 const alive = (pid: number) => {
   try {
@@ -26,11 +31,10 @@ const alive = (pid: number) => {
   }
 };
 async function peer(steps: unknown[]) {
-  const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
-  roots.push(root);
+  const root = await folders.make("codex-connection-");
   const file = path.join(root, "peer.json");
   await writeFile(file, JSON.stringify({ steps }));
-  return openCodexConnection({
+  return openOwned({
     command: [process.execPath, path.resolve("test-fixtures/replay.mjs")],
     args: [file],
     cwd: root,
@@ -156,14 +160,13 @@ describe("a Codex app-server connection", () => {
     "ends a request as soon as its write fails, while the program is still running, and the connection with it",
     async () => {
       // The program closes its input but keeps running, so writing to it fails (EPIPE).
-      const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
-      roots.push(root);
+      const root = await folders.make("codex-connection-");
       let ready!: () => void;
       const closedInput = new Promise<void>((resolve) => {
         ready = resolve;
       });
       let pid = 0;
-      const connection = openCodexConnection({
+      const connection = openOwned({
         command: [process.execPath],
         args: [
           "-e",
@@ -195,8 +198,7 @@ describe("a Codex app-server connection", () => {
   it.skipIf(process.platform === "win32")(
     "fails waiting requests when the program dies even if a child it left behind keeps its output open, and keeps its last answer",
     async () => {
-      const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
-      roots.push(root);
+      const root = await folders.make("codex-connection-");
       // The program starts a child that shares its output and never ends, answers one request, then exits with the other unanswered.
       const program = `
         const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"] });
@@ -211,7 +213,7 @@ describe("a Codex app-server connection", () => {
       const childStarted = new Promise<void>((resolve) => {
         started = resolve;
       });
-      const connection = openCodexConnection({
+      const connection = openOwned({
         command: [process.execPath],
         args: ["-e", program],
         cwd: root,
@@ -245,8 +247,7 @@ describe("a Codex app-server connection", () => {
   // A child that left the program's process group cannot be stopped with it (on Windows no child can once the program has ended).
   // The waits still end when the program ends, and its last answer still arrives.
   it("fails waiting requests when the program dies even if a child it cannot stop keeps its output open", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
-    roots.push(root);
+    const root = await folders.make("codex-connection-");
     // The child runs outside the test folder: on Windows a just-killed process can still hold its folder, which blocks removing it.
     const program = `
       const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true, cwd: require("os").tmpdir() });
@@ -261,7 +262,7 @@ describe("a Codex app-server connection", () => {
     const childStarted = new Promise<void>((resolve) => {
       started = resolve;
     });
-    const connection = openCodexConnection({
+    const connection = openOwned({
       command: [process.execPath],
       args: ["-e", program],
       cwd: root,
@@ -299,8 +300,7 @@ describe("a Codex app-server connection", () => {
 
   it("hands notifications to the caller in order, and runs the handshake", async () => {
     const seen: unknown[] = [];
-    const root = await mkdtemp(path.join(tmpdir(), "codex-connection-"));
-    roots.push(root);
+    const root = await folders.make("codex-connection-");
     const file = path.join(root, "peer.json");
     await writeFile(
       file,
@@ -316,7 +316,7 @@ describe("a Codex app-server connection", () => {
         ],
       })
     );
-    const connection = openCodexConnection({
+    const connection = openOwned({
       command: [process.execPath, path.resolve("test-fixtures/replay.mjs")],
       args: [file],
       cwd: root,

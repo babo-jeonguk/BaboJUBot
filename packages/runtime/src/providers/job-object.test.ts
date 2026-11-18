@@ -15,6 +15,7 @@ import {
 } from "vitest";
 import { startProcess } from "./process.ts";
 import { prepareJobObjectLauncher } from "./job-object.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
@@ -210,9 +211,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
   }, 60_000);
 
   afterAll(async () => {
-    await Promise.all(
-      roots.map((root) => rm(root, { recursive: true, force: true }))
-    );
+    await Promise.all(roots.map((root) => removeFolder(root)));
   });
 
   it("stops a child that holds the output after the program ends, and keeps the last output and exit code", async () => {

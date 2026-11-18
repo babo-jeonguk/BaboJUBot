@@ -6,7 +6,6 @@ import {
   mkdtemp,
   readFile,
   realpath,
-  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -27,6 +26,7 @@ import {
 } from "./container.ts";
 import { startProcess } from "./process.ts";
 import { createRelayHub } from "./relay.ts";
+import { removeFolder } from "../remove-folder.ts";
 
 // 실제 Docker가 있는 환경에서만 도는 격리 경계 검사(#102, #149). Docker가 없으면 건너뛰고 그 사실을 출력한다.
 // 이미지는 Node 공개 이미지(기본 node:24-bookworm-slim, BABOJUBOT_TEST_CONTAINER_BASE로 바꿈)에 제품의 시작 프로그램
@@ -112,7 +112,7 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
     } catch {
       /* 만들지 못했다. */
     }
-    await rm(root, { recursive: true, force: true });
+    await removeFolder(root);
   }, 120_000);
 
   const containersOf = (owner: string) =>
@@ -285,7 +285,7 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
   it("refuses a pre-planted link to another organization before any container starts", async () => {
     const org = await organization();
     const other = await organization();
-    await rm(org.shared, { recursive: true });
+    await removeFolder(org.shared);
     await symlink(other.shared, org.shared);
     const before = docker(["ps", "-aq"]).trim();
     expect(() => launchFor(org)).toThrow(ContainerRefusal);
@@ -494,7 +494,7 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
         content: "placeholder",
       });
     } finally {
-      await rm(attempt, { recursive: true, force: true });
+      await removeFolder(attempt);
     }
   }, 120_000);
 
