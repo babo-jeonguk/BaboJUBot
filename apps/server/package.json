@@ -10,7 +10,9 @@
     "dev": "node --watch src/main.ts",
     "start": "node src/main.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:src": "tsc -p tsconfig.src.json",
+    "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@babojubot/contracts": "workspace:*",
