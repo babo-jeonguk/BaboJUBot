@@ -18,11 +18,13 @@ function unwrap(node) {
   return value;
 }
 
-/** `JSON.parse(...)`, 응답 본문 `x.json()`, 그 실패를 받은 `x.json().catch(...)`인가. */
+/** `JSON.parse(...)`, 응답 본문 `x.json()`, 그 값에 기본값을 붙이거나 `.catch`·`.then`으로 이어 받은 값인가. */
 function readsOutsideData(node) {
-  const call = unwrap(node);
-  if (call.type !== "CallExpression") return false;
-  const { callee } = call;
+  const value = unwrap(node);
+  if (value.type === "LogicalExpression")
+    return readsOutsideData(value.left) || readsOutsideData(value.right);
+  if (value.type !== "CallExpression") return false;
+  const { callee } = value;
   if (callee.type !== "MemberExpression" || callee.computed) return false;
   switch (callee.property.name) {
     case "parse":
@@ -33,6 +35,14 @@ function readsOutsideData(node) {
       return true;
     case "catch":
       return readsOutsideData(callee.object);
+    case "then": {
+      const [callback] = value.arguments;
+      return (
+        callback?.type === "ArrowFunctionExpression" &&
+        callback.body.type !== "BlockStatement" &&
+        readsOutsideData(callback.body)
+      );
+    }
     default:
       return false;
   }
@@ -41,7 +51,8 @@ function readsOutsideData(node) {
 /**
  * 문자열을 JSON으로 읽은 결과나 응답 본문에 바로 타입을 단정하면 잘못된 입력이 타입을 믿는 코드까지 내려간다.
  * `as unknown`은 확인 전의 값이라는 뜻이므로 허용한다.
- * 알려진 한계: 읽는 자리만 본다. 타입 없는 중간 변수를 거친 값의 단정은 잡지 못하며 그 경우는 리뷰가 본다.
+ * 알려진 한계: 읽는 자리만 본다. 타입 없는 중간 변수, 블록 본문의 콜백, `globalThis.JSON`을 거친 값의 단정은 잡지 못하며
+ * 그 경우는 리뷰가 본다.
  */
 const noAssertionOnParsedData = {
   meta: {
