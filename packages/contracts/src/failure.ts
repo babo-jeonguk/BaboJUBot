@@ -4,8 +4,47 @@
 
 /** 오류의 `code`가 주어진 것 중 하나인가. Node 파일·프로세스 오류(`ENOENT`·`ESRCH` 등)를 `orIfMissing`의 "없음"으로 고를 때 쓴다. */
 export function hasErrorCode(...codes: string[]): (error: unknown) => boolean {
-  void codes;
-  throw new Error("not implemented");
+  const wanted = new Set(codes);
+  return (error) => {
+    const code = errorCode(error);
+    return code !== undefined && wanted.has(code);
+  };
+}
+
+/** 오류가 문자열 `code`를 가지면 그것. 없거나 문자열이 아니면 `undefined`. */
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** `read`가 promise를 돌려주는지 값의 `then`으로 가른다. 화면도 쓰므로 다른 realm의 promise도 받는다. */
+function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
+  return (
+    typeof (value as { then?: unknown } | null | undefined)?.then === "function"
+  );
+}
+
+/**
+ * 동기·비동기 읽기를 한 번만 감싸 실패를 `onFailure`에 맡긴다. `onFailure`가 던지면 그대로 드러난다.
+ * `read`가 promise를 돌려주면 결과도 promise다.
+ */
+function recover<T, F>(
+  read: () => T | Promise<T>,
+  onFailure: (error: unknown) => F
+): T | F | Promise<T | F> {
+  let value: T | Promise<T>;
+  try {
+    value = read();
+  } catch (error) {
+    return onFailure(error);
+  }
+  if (isThenable(value)) {
+    return Promise.resolve(value).then(undefined, (error: unknown) =>
+      onFailure(error)
+    );
+  }
+  return value;
 }
 
 /**
@@ -27,10 +66,10 @@ export function orIfMissing<T, F>(
   isMissing: (error: unknown) => boolean,
   fallback: F
 ): T | F | Promise<T | F> {
-  void read;
-  void isMissing;
-  void fallback;
-  throw new Error("not implemented");
+  return recover(read, (error) => {
+    if (isMissing(error)) return fallback;
+    throw error;
+  });
 }
 
 /**
@@ -49,15 +88,17 @@ export function continueAfterFailure<T>(
   work: () => T | Promise<T>,
   report: (error: unknown) => void
 ): T | undefined | Promise<T | undefined> {
-  void work;
-  void report;
-  throw new Error("not implemented");
+  return recover(work, (error) => {
+    report(error);
+    return undefined;
+  });
 }
 
 /**
  * 읽을 수 없으면 아님. 해석(JSON·URL·인코딩)이나 확인이 실패하면 정해진 부정 결과(아님·없음·거부)를 돌려준다.
- * 실패는 그 결과로 드러나므로 진단을 남기지 않는다. 해석이나 판정 한 단계만 감싸고, 파일 읽기 같은 바깥 입출력을
- * 함께 감싸지 않는다(그 실패는 `orIfMissing`이나 `continueAfterFailure`로 고른다). `read`가 promise를 돌려주면 결과도 promise다.
+ * 실패는 그 결과로 드러나므로 진단을 남기지 않는다. 해석이나 확인 한 단계만 감싼다. "없음"과 권한·디스크 오류를 나눠야 하는
+ * 읽기는 감싸지 않고 `orIfMissing`을 쓴다. 프로세스 상태 조회처럼 "알 수 없음"이 곧 정해진 결과인 확인은 감싸도 된다.
+ * `read`가 promise를 돌려주면 결과도 promise다.
  */
 export function orIfUnreadable<T, F>(
   read: () => Promise<T>,
@@ -68,9 +109,7 @@ export function orIfUnreadable<T, F>(
   read: () => T | Promise<T>,
   fallback: F
 ): T | F | Promise<T | F> {
-  void read;
-  void fallback;
-  throw new Error("not implemented");
+  return recover(read, () => fallback);
 }
 
 /**
@@ -78,12 +117,13 @@ export function orIfUnreadable<T, F>(
  * (대기 고리의 다음 일, 화면 저장 요청의 상태, 중단 요청 뒤에 연결을 닫는 단계 등).
  */
 export function settled(promise: PromiseLike<unknown>): Promise<void> {
-  void promise;
-  throw new Error("not implemented");
+  return Promise.allSettled([promise]).then(() => undefined);
 }
 
 /** 기록에 남길 짧은 오류 이름. `code`가 문자열이면 그것(`EACCES`), 아니면 오류 종류(`TypeError`), 그것도 없으면 `unknown`. 오류 문구는 담지 않는다. */
 export function failureCode(error: unknown): string {
-  void error;
-  throw new Error("not implemented");
+  const code = errorCode(error);
+  if (code !== undefined) return code;
+  if (error instanceof Error) return error.name;
+  return "unknown";
 }
