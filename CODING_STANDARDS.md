@@ -39,7 +39,7 @@
 정리가 부실하면 Windows에서 폴더가 잠기고(#216) 남은 프로그램이 다음 시험을 방해합니다(#205).
 
 - 준비와 정리에는 시한을 두고, 정리는 `finally`에서 기다립니다. 정리 실패는 시험의 원래 실패와 따로 보고합니다.
-- 임시 폴더는 그 안에서 돈 프로그램의 종료·stdio 닫힘과 진행 중인 쓰기의 완료를 확인한 뒤 지웁니다. 지우기는 Windows의 일시적인 잠김만 정해진 횟수 다시 시도하고 소진하면 실패합니다(`packages/runtime/src/remove-folder.ts`, runtime 시험은 `packages/runtime/src/providers/test-folders.ts`). 시험 파일은 가져온 프로바이더 factory를 `owning`으로 한 번 묶어 써서, 어디로 넘긴 factory로 만든 연결이든 시험이 실패해도 그 실행이 끝난 뒤에 지웁니다.
+- 임시 폴더는 그 안에서 돈 프로그램의 종료·stdio 닫힘과 진행 중인 쓰기의 완료를 확인한 뒤 지웁니다. 확인 대상은 시험이 띄웠거나 식별할 수 있는 프로그램(자기가 띄운 프로세스와 그 프로세스 그룹, 명령줄·표시 파일로 찾는 프로그램)이며, 숨어서 그 폴더를 쓰는 임의의 프로그램까지 찾지는 않습니다. 지우기는 Windows의 일시적인 잠김만 정해진 횟수 다시 시도하고 소진하면 실패합니다(`packages/runtime/src/remove-folder.ts`, runtime 시험은 `packages/runtime/src/providers/test-folders.ts`). 시험 파일은 가져온 프로바이더 factory를 `owning`으로 한 번 묶어 써서, 어디로 넘긴 factory로 만든 연결이든 시험이 실패해도 그 실행이 끝난 뒤에 지웁니다.
 - 시험이 붙잡은 자원(요청, 실행, 프로그램)은 성공과 실패 모두에서 풀어 줍니다.
 
 ## 화면
