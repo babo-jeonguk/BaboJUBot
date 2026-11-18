@@ -50,6 +50,8 @@ function keepsValue(parent, child) {
 /**
  * 시험이 실제 시계로 잰 경과 시간(`Date.now() - 시작`)을 단언하면 결과가 실행기 속도에 달린다(CODING_STANDARDS.md#시간).
  * 경과 시간이 계산·비교를 거쳐 단언 호출의 인자가 되면 짚는다(`expect(Date.now() - t)`, `assert.ok(Date.now() - t < 5000)`).
+ * 실제 시계로 초기화·대입한 변수에서 빼는 것도 경과 시간이다(`const finished = Date.now(); expect(finished - started)`).
+ * 시각을 객체 속성이나 Promise에 담았다 빼는 것(`signal.at - term.at`)은 따라가지 않는다.
  * 변수에 담은 경과 시간은 그 변수를 읽는 곳까지 따라간다. 시작 시각이 상수인 것(`Date.now() - 60_000`, 지난 시각 만들기)과
  * 객체·`new Date(...)`·다른 함수에 넘긴 값, 로그·측정값으로 남기는 것, 남은 시간(`시한 - Date.now()`), 시한 비교(`Date.now() < deadline`)는 짚지 않는다.
  * 경과 시간으로 시험의 흐름을 가르는 것(`Date.now() - t < 900 ? a : b`)은 대기 상한과 모양으로 구분되지 않아 짚지 않는다.
@@ -111,6 +113,18 @@ const noElapsedTimeAssertion = {
       );
     }
 
+    /** 실제 시계를 읽은 값인가: `Date.now()`·`performance.now()` 호출, 또는 그 호출로 초기화·대입한 적이 있는 변수. */
+    function isClockTime(node) {
+      if (readsClock(node)) return true;
+      if (node.type !== "Identifier") return false;
+      const variable = findVariable(node);
+      return (
+        variable?.references.some(
+          (reference) => reference.writeExpr && readsClock(reference.writeExpr)
+        ) ?? false
+      );
+    }
+
     function findVariable(identifier) {
       for (
         let scope = sourceCode.getScope(identifier);
@@ -125,7 +139,7 @@ const noElapsedTimeAssertion = {
 
     return {
       BinaryExpression(node) {
-        if (node.operator !== "-" || !readsClock(node.left)) return;
+        if (node.operator !== "-" || !isClockTime(node.left)) return;
         // 상수를 뺀 것은 지난 시각을 만드는 것이다.
         if (node.right.type === "Literal") return;
         if (follow(node, new Set()))

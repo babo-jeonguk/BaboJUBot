@@ -156,6 +156,9 @@ test("test code may not assert real elapsed time", async () => {
     "a variable": `const elapsed = Date.now() - started;\nexpect(elapsed).toBeLessThan(5000);\n`,
     "a reassigned variable": `let elapsed = 0;\nelapsed = Date.now() - started;\nassert.ok(elapsed < 5000);\n`,
     "a value computed from a variable": `const ms = Date.now() - started;\nconst seconds = ms / 1000;\nexpect(seconds).toBeLessThan(5);\n`,
+    // 두 시각을 따로 담아 빼는 우회(외부 리뷰 SPEC-A).
+    "two stored times": `const started = Date.now();\nconst finished = Date.now();\nexpect(finished - started).toBeLessThan(500);\n`,
+    "a reassigned stored time": `let started = 0;\nlet finished = 0;\nstarted = performance.now();\nfinished = performance.now();\nassert.ok(finished - started < 500);\n`,
   };
   for (const [shape, code] of Object.entries(asserted))
     for (const place of testPlaces) {
@@ -179,6 +182,9 @@ test("test code may make past times, log or record durations, wait to a deadline
     "console.log(`prepared in ${Date.now() - started} ms`);\n",
     `const openMs = Date.now() - opened;\nconsole.log(JSON.stringify({ openMs }));\n`,
     `const fps = () => Math.round((frames * 1000) / (Date.now() - t0));\nconsole.log(fps());\n`,
+    // 시각 변수를 로그·데이터에만 쓰거나, 그 시각에서 상수를 빼 지난 시각을 만든다.
+    "const finished = Date.now();\nconsole.log(`took ${finished - started} ms`);\nexpect(new Date(finished)).toBeDefined();\n",
+    `const finished = Date.now();\nexpect(isExpired({ expiry: finished - 60_000 })).toBe(true);\nexpect(finished - 60_000).toBeLessThan(finished);\n`,
     // 대기의 상한과 남은 시간.
     `const deadline = Date.now() + 5000;\nwhile (Date.now() < deadline) await tick();\nawait wait(deadline - Date.now());\nexpect(done).toBe(true);\n`,
     // 가짜 시계의 시간은 시험이 정한다.
