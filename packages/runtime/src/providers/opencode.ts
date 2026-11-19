@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { mkdir, mkdtemp, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +11,12 @@ import type {
 } from "@babojubot/contracts";
 import {
   callKeyRequiredHeader,
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+  orIfUnreadable,
+  settled,
   subtractUsage,
   usageAmount,
 } from "@babojubot/contracts";
@@ -135,12 +142,20 @@ const relayFailure =
   "인증 중계가 연결의 로그인을 쓰지 못해 실행을 끝냈습니다. 로그인을 확인한 뒤 다시 실행하세요.";
 /**
  * 인증 중계가 이 컴퓨터에서 연결의 Go 키를 읽는다. 컨테이너에는 키를 주지 않는다.
- * DB가 없거나 값이 Go 키가 아니면 `undefined`다.
+ * DB가 없거나 값이 Go 키가 아니면 `undefined`다. 그 밖의 읽기 오류는 던진다.
  */
 function goKey(dataHome: string): string | undefined {
   const file = path.join(dataHome, "opencode", "opencode.db");
   let db: DatabaseSync | undefined;
   try {
+    if (
+      !orIfMissing(
+        () => lstatSync(file),
+        hasErrorCode("ENOENT", "ENOTDIR"),
+        undefined
+      )
+    )
+      return undefined;
     db = new DatabaseSync(file, { readOnly: true });
     const row = db
       .prepare(
@@ -148,12 +163,11 @@ function goKey(dataHome: string): string | undefined {
       )
       .get() as { value?: unknown } | undefined;
     if (typeof row?.value !== "string") return undefined;
-    const value = record(JSON.parse(row.value));
-    return value.type === "key" && typeof value.key === "string" && value.key
+    const stored = row.value;
+    const value = orIfUnreadable(() => record(JSON.parse(stored)), undefined);
+    return value?.type === "key" && typeof value.key === "string" && value.key
       ? value.key
       : undefined;
-  } catch {
-    return undefined;
   } finally {
     db?.close();
   }
@@ -164,34 +178,46 @@ function goKey(dataHome: string): string | undefined {
  */
 async function openCodeLoginResidue(dataHome: string): Promise<boolean> {
   const folder = path.join(dataHome, "opencode");
-  try {
-    await lstat(path.join(folder, "auth.json"));
+  if (
+    await orIfMissing(
+      async () => {
+        await lstat(path.join(folder, "auth.json"));
+        return true;
+      },
+      hasErrorCode("ENOENT", "ENOTDIR"),
+      false
+    )
+  )
     return true;
-  } catch {
-    /* 옛 로그인 파일이 없다. */
-  }
   const file = path.join(folder, "opencode.db");
-  try {
-    await lstat(file);
-  } catch {
+  if (
+    !(await orIfMissing(
+      async () => {
+        await lstat(file);
+        return true;
+      },
+      hasErrorCode("ENOENT", "ENOTDIR"),
+      false
+    ))
+  )
     return false;
-  }
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(file, { readOnly: true });
-    for (const table of ["credential", "account", "control_account"]) {
-      try {
-        const row = db.prepare(`select count(*) as n from "${table}"`).get() as
-          { n?: unknown } | undefined;
-        if (typeof row?.n === "number" && row.n > 0) return true;
-      } catch (error) {
-        // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
-        if (!/no such table/i.test(String(error))) throw error;
+    return orIfUnreadable(() => {
+      db = new DatabaseSync(file, { readOnly: true });
+      for (const table of ["credential", "account", "control_account"]) {
+        try {
+          const row = db
+            .prepare(`select count(*) as n from "${table}"`)
+            .get() as { n?: unknown } | undefined;
+          if (typeof row?.n === "number" && row.n > 0) return true;
+        } catch (error) {
+          // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
+          if (!/no such table/i.test(String(error))) throw error;
+        }
       }
-    }
-    return false;
-  } catch {
-    return true;
+      return false;
+    }, true);
   } finally {
     db?.close();
   }
@@ -240,14 +266,20 @@ export function createOpenCodeProvider(options: {
     await mkdir(home, { recursive: true, mode: 0o700 });
     if (warnedSystemConfig) return;
     // 이 프로그램은 시스템 설정을 끌 방법이 없다. 막지 않고 알린다.
-    try {
-      await lstat("/etc/opencode");
+    if (
+      await orIfMissing(
+        async () => {
+          await lstat("/etc/opencode");
+          return true;
+        },
+        hasErrorCode("ENOENT"),
+        false
+      )
+    ) {
       warnedSystemConfig = true;
       console.warn(
         "[provider] /etc/opencode exists; OpenCode will also read this machine's system configuration"
       );
-    } catch {
-      /* 시스템 설정이 없다. */
     }
   };
   const startups = new Map<string, Promise<void>>();
@@ -380,16 +412,14 @@ export function createOpenCodeProvider(options: {
           if (typeof url === "string") {
             if (container) {
               // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
-              let parsed: URL | undefined;
-              try {
-                parsed = new URL(url);
-              } catch {
-                parsed = undefined;
-              }
+              const parsed = orIfUnreadable(() => new URL(url), undefined);
               if (parsed?.protocol === "http:") {
                 try {
                   resolveUrl(await started.inboundOrigin());
-                } catch {
+                } catch (error) {
+                  console.warn(
+                    `[provider] the OpenCode inbound relay could not open; stopping the server (${failureCode(error)})`
+                  );
                   lifetime.abort();
                 }
               }
@@ -522,7 +552,10 @@ export function createOpenCodeProvider(options: {
           .catch((e: unknown) => {
             if (!(e instanceof HttpFailure && e.status === 409)) throw e;
           });
-    } catch {
+    } catch (error) {
+      console.warn(
+        `[provider] the OpenCode login could not be moved; the run goes on without it (${failureCode(error)})`
+      );
       // 옮기지 못해도 실행은 그대로 한다. 무료 모델은 로그인 없이 돌고, 로그인이 필요하면 실행 시도가 로그인 필요로 드러난다. 중단은 다음 단계가 처리한다.
     } finally {
       await source?.close();
@@ -620,15 +653,19 @@ export function createOpenCodeProvider(options: {
           throw error;
         }
         if (placement.container) {
-          try {
-            grant = relay.grant({
-              signal: control.signal,
-              organizationId: input.identity.organizationId,
-              runId: input.identity.runId,
-            });
-          } catch {
-            return { ...failure(), error: relayFailure };
-          }
+          grant = continueAfterFailure(
+            () =>
+              relay.grant({
+                signal: control.signal,
+                organizationId: input.identity.organizationId,
+                runId: input.identity.runId,
+              }),
+            (error) =>
+              console.warn(
+                `[provider] the isolated run relay refused a grant (${failureCode(error)})`
+              )
+          );
+          if (!grant) return { ...failure(), error: relayFailure };
         }
         const runControl = grant
           ? {
@@ -812,12 +849,11 @@ export function createOpenCodeProvider(options: {
                 .map((line) => line.slice(5).trimStart())
                 .join("\n");
               if (!data) continue;
-              let event: Record<string, unknown>;
-              try {
-                event = record(JSON.parse(data));
-              } catch {
-                continue;
-              }
+              const event = orIfUnreadable(
+                () => record(JSON.parse(data)),
+                undefined
+              );
+              if (!event) continue;
               const payload = record(event.data);
               if (payload.sessionID !== id) continue;
               if (event.type === "session.execution.started") {
@@ -847,7 +883,13 @@ export function createOpenCodeProvider(options: {
           throw new Error("Event stream ended");
         })();
         // Attach a handler immediately: a disconnected stream is a failed attempt, never a false success.
-        void events.catch(() => end());
+        void events.catch((error: unknown) => {
+          if (!runControl.signal.aborted)
+            console.warn(
+              `[provider] the OpenCode event stream failed; the run ends as failed (${failureCode(error)})`
+            );
+          end();
+        });
         active.set(input.identity.runId, async (message) => {
           if (!began || finished || runControl.signal.aborted)
             return "rejected";
@@ -869,10 +911,9 @@ export function createOpenCodeProvider(options: {
           }
         });
         const cancel = () => {
-          void api
-            .request(route + "/interrupt", "POST", undefined, 1500)
-            .catch(() => {})
-            .finally(() => api.lifetime.abort());
+          void settled(
+            api.request(route + "/interrupt", "POST", undefined, 1500)
+          ).then(() => api.lifetime.abort());
         };
         // Server lifetime uses a separate signal below so interrupt can be sent before escalation.
         api.setInterrupt(cancel);
@@ -904,7 +945,11 @@ export function createOpenCodeProvider(options: {
         } finally {
           api.setInterrupt(() => api.lifetime.abort());
         }
-      } catch {
+      } catch (error) {
+        if (!control.signal.aborted)
+          console.warn(
+            `[provider] the OpenCode run failed (${failureCode(error)})`
+          );
         if (grant?.failed.aborted && !control.signal.aborted)
           return { ...failure(), error: relayFailure };
         return control.signal.aborted
@@ -915,7 +960,7 @@ export function createOpenCodeProvider(options: {
         active.delete(input.identity.runId);
         try {
           await service?.close();
-          await events?.catch(() => {});
+          if (events) await settled(events);
         } finally {
           // 컨테이너를 지운 뒤에야 이 격리 실행을 센 것에서 뺀다.
           if (counted) {

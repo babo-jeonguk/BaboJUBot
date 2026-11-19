@@ -9,6 +9,13 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+  orIfUnreadable,
+} from "@babojubot/contracts";
 import { holdsLease, stopLeaseHolders } from "./lease.ts";
 const boot = () =>
   readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
@@ -123,7 +130,7 @@ function parseStart(text: string) {
 }
 /** /proc가 없는 시스템에서 프로세스 시작 시각. 물어볼 수 없으면 `undefined`다. */
 export function processStartedAt(pid: number, platform: NodeJS.Platform) {
-  try {
+  return orIfUnreadable(() => {
     const [command, args] = startQuery(pid, platform);
     return parseStart(
       execFileSync(command, args, {
@@ -134,9 +141,7 @@ export function processStartedAt(pid: number, platform: NodeJS.Platform) {
         timeout: helperCommandTimeoutMs,
       })
     );
-  } catch {
-    return undefined;
-  }
+  }, undefined);
 }
 // Windows는 다른 프로그램이 파일을 열어 둔 동안 덮어쓰기를 거절한다. 잠깐이므로 약 5초 동안 다시 시도한다.
 const startSaveTries = 20;
@@ -172,9 +177,11 @@ export function recordProcess(
     if (forgotten) return;
     try {
       write({ pid, lease, started });
-    } catch {
+    } catch (error) {
       if (tries <= 1) {
-        console.warn("[provider] could not save a process start time");
+        console.warn(
+          `[provider] could not save a process start time (${failureCode(error)})`
+        );
         return;
       }
       setTimeout(
@@ -251,12 +258,19 @@ export async function recoverProviderProcesses(
   dataDir: string,
   { platform = process.platform }: { platform?: NodeJS.Platform } = {}
 ) {
-  let connections: string[];
-  try {
-    connections = readdirSync(path.join(dataDir, "providers"));
-  } catch {
-    return;
-  }
+  const connections =
+    continueAfterFailure(
+      () =>
+        orIfMissing(
+          () => readdirSync(path.join(dataDir, "providers")),
+          hasErrorCode("ENOENT"),
+          []
+        ),
+      (error) =>
+        console.warn(
+          `[provider] the provider process records could not be listed; leftover processes are not recovered at this start (${failureCode(error)})`
+        )
+    ) ?? [];
   for (const provider of connections) {
     const directory = path.join(dataDir, "providers", provider, "processes");
     let files: string[];
@@ -275,9 +289,9 @@ export async function recoverProviderProcesses(
         const saved = readRecord(file);
         if (saved) await recoverRecord(saved, platform);
         rmSync(file, { force: true });
-      } catch {
+      } catch (error) {
         console.warn(
-          `[provider] could not recover ${provider} process record ${name}; it stays for the next start`
+          `[provider] could not recover ${provider} process record ${name}; it stays for the next start (${failureCode(error)})`
         );
       }
     }

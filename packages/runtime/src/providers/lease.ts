@@ -1,6 +1,13 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfUnreadable,
+  settled,
+} from "@babojubot/contracts";
 import { type Clock, realClock } from "./clock.ts";
 
 /**
@@ -24,16 +31,14 @@ const unreadable = (e: unknown) =>
 /** Linux: 프로세스 시작 시각(부팅 뒤 clock tick, /proc/<pid>/stat 22번째 칸). 그 밖의 시스템이거나 읽지 못하면 undefined. */
 export function processStartTicks(pid: number): number | undefined {
   if (process.platform !== "linux") return undefined;
-  try {
+  return orIfUnreadable(() => {
     const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
       .split(") ")
       .at(-1)!
       .split(" ");
     const start = Number(fields[19]);
     return Number.isFinite(start) ? start : undefined;
-  } catch {
-    return undefined;
-  }
+  }, undefined);
 }
 
 /** Linux: 환경 변수 항목 하나가 표식과 정확히 같은가. 끝났거나 읽을 수 없는 프로세스(다른 사용자 등)는 아니다. */
@@ -59,7 +64,7 @@ async function mayBeOurs(
   serverCgroup: string | undefined
 ) {
   if (serverCgroup === undefined) return false;
-  try {
+  return orIfUnreadable(async () => {
     const status = await readFile(`/proc/${pid}/status`, "utf8");
     const uid = /^Uid:\s+(\d+)/m.exec(status);
     if (!uid || Number(uid[1]) !== process.getuid!()) return false;
@@ -73,9 +78,7 @@ async function mayBeOurs(
     if (!Number.isFinite(start) || start < since) return false;
     // 실행 시도의 자손은 서버의 cgroup을 물려받는다. 다른 cgroup(데스크톱 앱·systemd 서비스)의 프로그램은 우리 것이 아니다.
     return (await readFile(`/proc/${pid}/cgroup`, "utf8")) === serverCgroup;
-  } catch {
-    return false;
-  }
+  }, false);
 }
 
 async function linuxHolders(
@@ -100,8 +103,9 @@ async function linuxHolders(
       if (code !== "EACCES" && code !== "EPERM") throw e;
       // 환경을 읽지 못했다. 이 실행 시도 뒤에 생긴 같은 사용자의 산 프로세스면 우리 것일 수 있다.
       if (since !== undefined) {
-        serverCgroup ??= readFile("/proc/self/cgroup", "utf8").catch(
-          () => undefined
+        serverCgroup ??= orIfUnreadable(
+          () => readFile("/proc/self/cgroup", "utf8"),
+          undefined
         );
         if (await mayBeOurs(pid, since, await serverCgroup))
           unverified.push(pid);
@@ -194,11 +198,16 @@ export async function leaseHolders(
 
 const send = (pids: number[], signal: NodeJS.Signals) => {
   for (const pid of pids)
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // 이미 끝났거나 신호를 보낼 수 없다. 끝나지 않았으면 다음 조회에 다시 잡혀 결과의 `left`에 남는다.
-    }
+    // 이미 끝났거나 신호를 보낼 수 없다. 끝나지 않았으면 다음 조회에 다시 잡혀 결과의 `left`에 남는다.
+    continueAfterFailure(
+      () => process.kill(pid, signal),
+      (error) => {
+        if (!hasErrorCode("ESRCH")(error))
+          console.warn(
+            `[provider] could not signal process ${pid}; the next lookup reports it if it is still there (${failureCode(error)})`
+          );
+      }
+    );
 };
 const pollMs = 50;
 
@@ -223,9 +232,8 @@ async function within<T>(
     return await Promise.race([promise, expired]);
   } finally {
     clock.clearTimeout(timer);
-    promise.catch(() => {
-      // 시한이 지나 이미 포기한 조회다. 늦은 거부를 여기서 거둔다.
-    });
+    // 시한이 지나 이미 포기한 조회다. 늦은 결과는 일부러 버린다.
+    void settled(promise);
   }
 }
 

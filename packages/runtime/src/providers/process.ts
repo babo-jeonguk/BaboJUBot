@@ -11,6 +11,7 @@ import {
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
+import { failureCode, orIfUnreadable } from "@babojubot/contracts";
 import { type Clock, realClock } from "./clock.ts";
 import type { ContainerLaunch } from "./container.ts";
 import { jobObjectLaunch, readLauncherStatus } from "./job-object.ts";
@@ -27,6 +28,8 @@ export const probeTimeoutMs = 15_000;
 export const startupLimitMs = 5 * 60 * 1000;
 /** 이보다 긴 출력 한 줄은 메모리를 지키려고 그 줄만 버린다. */
 const defaultMaxLineLength = 64 * 1024 * 1024;
+/** JSON으로 읽지 못한 줄. 들어온 `unknown`과 겹치지 않는 값이다. */
+const unreadable = Symbol("unreadable");
 /** 프로그램이 끝난 뒤 남은 출력을 읽을 시간. 남긴 자식이 출력을 쥐고 있어 출력이 닫히지 않을 때만 쓰인다. */
 const exitDrainMs = 1000;
 /** 멈춘 확인 프로그램이 끝나기를 기다리는 시간. 이만큼 기다린 뒤 강제로 끝내고, 다시 이만큼 기다린 뒤 기다림을 포기한다. */
@@ -288,15 +291,20 @@ export function startProcess(options: {
     process.platform === "linux" && child.pid
       ? processStartTicks(child.pid)
       : undefined;
-  relay?.ready.catch(() => {
-    console.error("[provider] the isolated run relay could not open");
+  relay?.ready.catch((error: unknown) => {
+    console.error(
+      `[provider] the isolated run relay could not open (${failureCode(error)})`
+    );
     child.kill("SIGKILL");
   });
   let forget = () => {};
   if (options.stateDir && child.pid)
     try {
       forget = recordProcess(options.stateDir, child.pid, lease);
-    } catch {
+    } catch (error) {
+      console.error(
+        `[provider] the process record could not be saved; stopping the program (${failureCode(error)})`
+      );
       child.kill("SIGKILL");
     }
   let closed = false,
@@ -310,16 +318,14 @@ export function startProcess(options: {
   // 모르는 출력(안내문 등)은 건너뛴다. 프레임 처리 실패도 실행 시도를 끝내지 않는다.
   const deliver = (line: string) => {
     if (finished || !line.trim()) return;
-    let frame: unknown;
-    try {
-      frame = JSON.parse(line);
-    } catch {
-      return;
-    }
+    const frame = orIfUnreadable((): unknown => JSON.parse(line), unreadable);
+    if (frame === unreadable) return;
     queue = queue
       .then(() => options.onFrame(frame))
-      .catch(() => {
-        console.warn("[provider] a protocol frame could not be handled");
+      .catch((error: unknown) => {
+        console.warn(
+          `[provider] a protocol frame could not be handled (${failureCode(error)})`
+        );
       });
   };
   let term: unknown, kill: unknown;
@@ -418,10 +424,10 @@ export function startProcess(options: {
         // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
         try {
           await relay?.close();
-        } catch {
+        } catch (error) {
           broken = true;
           console.error(
-            "[provider] the isolated run relay could not be closed"
+            `[provider] the isolated run relay could not be closed (${failureCode(error)})`
           );
         }
         // 출력이 아직 열려 있으면(남긴 자식이 쥐고 있음) 이쪽 끝을 닫는다. 그 뒤로 온 출력은 읽지 않는다.
@@ -434,11 +440,11 @@ export function startProcess(options: {
         if (child.pid)
           try {
             await stopProcessGroup(child.pid);
-          } catch {
+          } catch (error) {
             stopped = false;
             broken = true;
             console.error(
-              "[provider] a process group could not be stopped; releasing the run and keeping its recovery record"
+              `[provider] a process group could not be stopped; releasing the run and keeping its recovery record (${failureCode(error)})`
             );
           }
         // 프로그램이 새 세션에 띄운 명령은 그룹 밖에 있다. 프로그램이 어떻게 끝났든 표식으로 시스템 전체에서 찾아 끈다(#219).
@@ -450,7 +456,10 @@ export function startProcess(options: {
             left =
               (await stopLeaseHolders(lease, { since: since ?? 0 })).left
                 .length > 0;
-          } catch {
+          } catch (error) {
+            console.error(
+              `[provider] the lease holder lookup failed (${failureCode(error)})`
+            );
             // 찾기 자체가 실패했으면 끝났음을 확인하지 못한 것이다.
           }
           if (left) {
@@ -475,10 +484,10 @@ export function startProcess(options: {
         if (stopped)
           try {
             forget();
-          } catch {
+          } catch (error) {
             broken = true;
             console.error(
-              "[provider] process exited but its recovery record could not be removed"
+              `[provider] process exited but its recovery record could not be removed (${failureCode(error)})`
             );
           }
         if (code)
