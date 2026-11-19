@@ -35,6 +35,7 @@ import { applyAfterCommit } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import { IsolationError } from "./isolation.ts";
 import type { RunRequestAssembler } from "./run-request.ts";
+import { RerunLoop } from "./rerun-loop.ts";
 import { issueRunToken } from "./run-token.ts";
 import type { IntentSettler } from "./tools.ts";
 import { WorkspaceIdentityError } from "./workspace.ts";
@@ -82,8 +83,8 @@ export class RunDispatcher {
   readonly #providers: ReadonlyMap<string, RuntimeAdapter>;
   readonly #now: () => Date;
   readonly #assemble: RunRequestAssembler;
-  readonly #pumps = new Map<string, Promise<void>>();
-  readonly #kickedAgain = new Set<string>();
+  /** 에이전트별 깨우기 처리. 한 번 깨운 에이전트의 것은 서버가 도는 동안 남는다. */
+  readonly #loops = new Map<string, RerunLoop>();
   /** 진행 중인 실행 시도와 그 연결의 adapter. 끼워 넣기는 여기 있는 실행 시도에만 간다. */
   readonly #active = new Map<
     string,
@@ -147,15 +148,7 @@ export class RunDispatcher {
    */
   kick(agentId: string): void {
     if (this.#closed || !this.#recovered) return;
-    if (this.#pumps.has(agentId)) {
-      this.#kickedAgain.add(agentId);
-      return;
-    }
-    const pump = this.#dispatch(agentId).finally(() => {
-      this.#pumps.delete(agentId);
-      if (this.#kickedAgain.delete(agentId)) this.kick(agentId);
-    });
-    this.#pumps.set(agentId, pump);
+    this.#loopOf(agentId).request();
   }
 
   /** 이 서버가 지금 그 실행 시도를 실행하고 있는가. */
@@ -234,7 +227,7 @@ export class RunDispatcher {
    * 처리가 끝났다는 신호 뒤에 확인한다(#215).
    */
   async handled(agentId: string): Promise<void> {
-    for (let pump; (pump = this.#pumps.get(agentId));) await pump;
+    await this.#loops.get(agentId)?.settled();
   }
 
   /**
@@ -243,7 +236,7 @@ export class RunDispatcher {
    */
   async drain(): Promise<void> {
     for (let round = 0; round < 50; round++) {
-      while (this.#pumps.size) await Promise.all(this.#pumps.values());
+      await this.#settledAll();
       const agents = await listAgentsWithPendingWakes(this.#db);
       if (!agents.length || this.#closed) return;
       for (const agentId of agents) this.kick(agentId);
@@ -261,7 +254,29 @@ export class RunDispatcher {
     this.#recovery.abort();
     for (const { controller } of this.#active.values())
       controller.abort(shutdown);
-    while (this.#pumps.size) await Promise.all(this.#pumps.values());
+    await Promise.all([...this.#loops.values()].map((loop) => loop.close()));
+  }
+
+  #loopOf(agentId: string): RerunLoop {
+    let loop = this.#loops.get(agentId);
+    if (!loop)
+      this.#loops.set(
+        agentId,
+        (loop = new RerunLoop(
+          () => this.#dispatch(agentId),
+          (error) =>
+            console.error(`[runs] dispatch for agent ${agentId} stopped`, error)
+        ))
+      );
+    return loop;
+  }
+
+  /** 모든 에이전트의 깨우기 처리가 끝날 때까지 기다린다. 처리 중에 다른 에이전트를 깨우면 그것도 기다린다. */
+  async #settledAll(): Promise<void> {
+    while ([...this.#loops.values()].some((loop) => loop.busy))
+      await Promise.all(
+        [...this.#loops.values()].map((loop) => loop.settled())
+      );
   }
 
   /** DB 오류 후 같은 admission·종료 저장을 다시 시도한다. 프로바이더를 재실행하지 않는다. */
