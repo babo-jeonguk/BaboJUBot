@@ -17,7 +17,7 @@ import {
   prepareJobObjectLauncher,
 } from "@babojubot/runtime/launch";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
-import { sharedVariables } from "../../packages/runtime/src/providers/process.ts";
+import { sharedVariables } from "@babojubot/runtime";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");

@@ -410,3 +410,81 @@ test("launch owners end short commands at their time limit", async () => {
         `${place}: ${code}`
       );
 });
+
+const scopeRule = ["product/runtime-import-scope"];
+
+test("db and development scripts reach runtime only through the listed entry points", async () => {
+  const refused = [
+    // db는 pg_ctl 실행 말고는 runtime에 기대지 않는다.
+    [
+      "packages/db/src/client.ts",
+      `import { launchTree } from "@babojubot/runtime/launch";\nvoid launchTree;\n`,
+    ],
+    [
+      "packages/db/src/client.ts",
+      `import { createConnection } from "@babojubot/runtime";\nvoid createConnection;\n`,
+    ],
+    [
+      "packages/db/src/client.ts",
+      `import { recordProcess } from "../../runtime/src/providers/recovery.ts";\nvoid recordProcess;\n`,
+    ],
+    [
+      "packages/db/src/client.ts",
+      `const runtime = await import("@babojubot/runtime/testing");\nvoid runtime;\n`,
+    ],
+    // 스크립트는 runtime 내부 파일과 목록에 없는 하위 경로를 가져오지 않는다.
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { sharedVariables } from "../../packages/runtime/src/providers/process.ts";\nvoid sharedVariables;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { openLifelines } from "@babojubot/runtime/lifelines";\nvoid openLifelines;\n`,
+    ],
+    [
+      ".agents/scripts/run-worker.mjs",
+      `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
+    ],
+  ];
+  for (const [place, code] of refused) {
+    const [message, ...rest] = await lint(code, place, scopeRule);
+    assert.ok(message, `${place}: ${code} not reported`);
+    assert.deepEqual(rest, [], `${place}: ${code}`);
+    // 이유와 대안, 옮길 곳을 알려 준다.
+    assert.match(message.message, /@babojubot\/runtime\/launch/);
+    assert.match(message.message, /@babojubot\/process/);
+  }
+  const kept = [
+    [
+      "packages/db/src/embedded.ts",
+      `import { runCommand } from "@babojubot/runtime/bounded-command";\nvoid runCommand;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { createConnection } from "../packages/runtime/src/index.ts";\nvoid createConnection;\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { sharedVariables } from "@babojubot/runtime";\nimport { launchTree } from "@babojubot/runtime/launch";\nimport { runCommand } from "@babojubot/runtime/bounded-command";\nimport { withCleanup } from "@babojubot/runtime/test-cleanup";\nvoid [sharedVariables, launchTree, runCommand, withCleanup];\n`,
+    ],
+    // 시험 코드와 runtime 자신은 범위 밖이다.
+    [
+      "scripts/gh-post.test.mjs",
+      `import { openLifelines } from "@babojubot/runtime/lifelines";\nvoid openLifelines;\n`,
+    ],
+    [
+      "packages/db/src/client.test.ts",
+      `import { removeFolder } from "@babojubot/runtime/remove-folder";\nvoid removeFolder;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { recordProcess } from "./recovery.ts";\nvoid recordProcess;\n`,
+    ],
+  ];
+  for (const [place, code] of kept)
+    assert.deepEqual(
+      await lint(code, place, scopeRule),
+      [],
+      `${place}: ${code}`
+    );
+});

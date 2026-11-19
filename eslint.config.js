@@ -324,6 +324,41 @@ export default defineConfig([
     rules: { "product/no-direct-launch": "error" },
   },
   {
+    // db는 Control Plane이다(docs/architecture.md). 프로세스 바탕이 runtime에 있는 동안 내장 Postgres의 pg_ctl 실행만 그 하위 경로를 쓴다.
+    files: ["packages/db/src/**/*.{ts,tsx}"],
+    ignores: testFiles,
+    plugins: { product: productRules },
+    rules: {
+      "product/runtime-import-scope": [
+        "error",
+        {
+          allowed: ["@babojubot/runtime/bounded-command"],
+          why: "db(Control Plane)가 프로바이더 adapter 패키지(runtime)에 기대면 저장소가 실행 계층에 묶입니다.",
+        },
+      ],
+    },
+  },
+  {
+    // 개발 스크립트는 제품 API(패키지 입구)와 프로세스 바탕, 아직 옮기지 않은 정리 도움만 runtime에서 가져온다.
+    files: scriptFiles,
+    ignores: scriptIgnores,
+    plugins: { product: productRules },
+    rules: {
+      "product/runtime-import-scope": [
+        "error",
+        {
+          allowed: [
+            "@babojubot/runtime",
+            "@babojubot/runtime/launch",
+            "@babojubot/runtime/bounded-command",
+            "@babojubot/runtime/test-cleanup",
+          ],
+          why: "runtime의 내부 파일·다른 하위 경로에 기대면 runtime 안을 바꿀 때 스크립트가 함께 깨지고, 그 모양이 다른 스크립트로 퍼집니다.",
+        },
+      ],
+    },
+  },
+  {
     // 실행 소유 파일의 짧은 명령도 시한에 끝을 보장한다(CODING_STANDARDS.md#제품-코드). Node의 timeout은 신호만 보내고 기다린다.
     files: launchOwners,
     plugins: { product: productRules },

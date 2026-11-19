@@ -525,6 +525,79 @@ const boundedCommand = {
   },
 };
 
+/**
+ * runtime에서 가져올 수 있는 길을 묶는다(#262). 프로세스 띄우기·끄기의 바탕은 지금 runtime에 있고, #265 뒤 새 패키지(@babojubot/process)로
+ * 옮긴다. 그때까지 다른 module(db, 개발 스크립트)이 runtime의 하위 경로·내부 파일에 기대는 길이 퍼지지 않게, 설정에 적은 가져오기만
+ * 받는다. `allowed`의 값은 패키지 이름 경로(`@babojubot/runtime/launch`)이고, 상대 경로로 runtime의 `src/index.ts`를 가리키는 것은
+ * 패키지 이름(`@babojubot/runtime`)과 같게 본다.
+ */
+const runtimeImportScope = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "allow only the listed runtime entry points outside runtime until the process tools move to their own package",
+    },
+    schema: [
+      {
+        type: "object",
+        properties: {
+          allowed: { type: "array", items: { type: "string" } },
+          why: { type: "string" },
+        },
+        required: ["allowed", "why"],
+        additionalProperties: false,
+      },
+    ],
+    messages: {
+      outside:
+        "{{source}}: {{why}} 이 자리에서 runtime은 {{allowed}}만 가져옵니다. 프로세스 띄우기·끄기는 @babojubot/runtime/launch(launchTree·runTree), 공용 실행 위에 놓을 수 없는 짧은 명령은 @babojubot/runtime/bounded-command(runCommand)를 쓰세요. 이 바탕은 #265 뒤 @babojubot/process로 옮깁니다(docs/architecture.md 패키지 구성).",
+    },
+  },
+  create(context) {
+    const { allowed, why } = context.options[0];
+    const dir = context.filename.replaceAll("\\", "/").replace(/\/[^/]*$/, "");
+    /** runtime을 가리키면 패키지 이름 경로로 바꾼 값, 아니면 undefined. */
+    const runtimeEntry = (source) => {
+      if (typeof source !== "string") return undefined;
+      if (
+        source === "@babojubot/runtime" ||
+        source.startsWith("@babojubot/runtime/")
+      )
+        return source;
+      if (!source.startsWith(".")) return undefined;
+      const parts = [];
+      for (const part of `${dir}/${source}`.split("/"))
+        if (part === "..") parts.pop();
+        else if (part !== ".") parts.push(part);
+      const resolved = parts.join("/");
+      const at = resolved.indexOf("packages/runtime/");
+      if (at < 0) return undefined;
+      const inside = resolved.slice(at + "packages/runtime/".length);
+      return inside === "src/index.ts"
+        ? "@babojubot/runtime"
+        : `packages/runtime/${inside}`;
+    };
+    const check = (node, source) => {
+      const entry = runtimeEntry(source);
+      if (entry === undefined || allowed.includes(entry)) return;
+      context.report({
+        node,
+        messageId: "outside",
+        data: { source, why, allowed: allowed.join(", ") },
+      });
+    };
+    return {
+      ImportDeclaration: (node) => check(node, node.source.value),
+      ExportNamedDeclaration: (node) =>
+        node.source && check(node, node.source.value),
+      ExportAllDeclaration: (node) => check(node, node.source.value),
+      ImportExpression: (node) =>
+        node.source.type === "Literal" && check(node, node.source.value),
+    };
+  },
+};
+
 const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
 const recoveryFile = "packages/runtime/src/providers/recovery";
 
@@ -618,6 +691,7 @@ export default {
     "no-process-group-signal": noProcessGroupSignal,
     "no-direct-launch": noDirectLaunch,
     "bounded-command": boundedCommand,
+    "runtime-import-scope": runtimeImportScope,
     "no-group-stop-import": noGroupStopImport,
   },
 };
