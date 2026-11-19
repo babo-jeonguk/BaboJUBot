@@ -124,7 +124,12 @@ export default defineConfig([
           message: `unknown·any를 거친 이중 단언은 TypeScript가 두 타입이 겹치는지 보지 않게 해, T의 필수 필드가 빠지거나 T가 바뀌어도 타입 검사가 통과합니다. ${fixtureAlternatives} 있는 객체에 속성을 덧붙여 읽는 것이면 \`x as typeof x & { … }\` 한 번으로 씁니다.`,
         },
         {
-          // `{ … } as T`. `as const`와 unknown·any·never로 바꾸는 단언은 데이터를 T로 주장하지 않으므로 보지 않는다.
+          // `x as never`(꺾쇠 단언 포함). never는 어느 타입에도 들어가므로 모든 타입 검사를 끈다.
+          selector: `${assertions}[typeAnnotation.type='TSNeverKeyword']`,
+          message: `\`as never\`는 어느 타입 자리에도 들어가는 값을 만들어 그 자리의 타입 검사를 끕니다. 시험 경로가 쓰지 않는 의존성은 읽으면 이름과 함께 실패하는 대역(\`unused\`, apps/server/test/stand-ins.ts)으로 넣고, 타입이 막는 값을 일부러 넣는 시험은 그 필드에만 \`outsideContract\`를 쓰거나 저장된 데이터라면 SQL로 넣습니다. ${fixtureAlternatives}`,
+        },
+        {
+          // `{ … } as T`. `as const`와 unknown·any로 바꾸는 단언은 데이터를 T로 주장하지 않으므로 보지 않는다. never는 위 규칙이 본다.
           selector: `${assertions}[expression.type='ObjectExpression']:not([typeAnnotation.type=/^TS(Unknown|Any|Never)Keyword$/]):not([typeAnnotation.typeName.name='const'])`,
           message: `객체 리터럴에 붙인 \`{ … } as T\`는 필드를 빠뜨리거나 T에 없는 필드를 넣어도 통과합니다. ${fixtureAlternatives}`,
         },

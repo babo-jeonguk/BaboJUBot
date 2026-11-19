@@ -985,6 +985,10 @@ const fixtureAssertions = {
   "an object literal as its type": `type Result = { stopReason: string; error: string | null };\nexport const result = { stopReason: "cancelled" } as Result;\n`,
   "an object literal argument": `type Options = { a: number };\ndeclare function f(options: Options): void;\nf({} as Options);\n`,
   "an angle-bracket object literal": `type Options = { a: number };\nexport const options = <Options>{};\n`,
+  // never는 어느 자리에도 들어가 그 자리의 타입 검사를 끈다. 쓰지 않는 의존성 채우기와 일부러 넣는 틀린 값이 이 모양이었다.
+  "a placeholder as never": `declare class Workspaces {\n  constructor(root: string, db: { query(): void });\n}\nexport const w = new Workspaces("root", null as never);\n`,
+  "an object literal as never": `declare function set(value: { color: "sky" }): void;\nset({ color: "neon" } as never);\n`,
+  "an angle-bracket never": `declare const value: string;\nexport const n: number = <never>value;\n`,
 };
 
 for (const [shape, code] of Object.entries(fixtureAssertions))
@@ -998,6 +1002,11 @@ for (const [shape, code] of Object.entries(fixtureAssertions))
       assert.match(message.message, /satisfies T/);
       assert.match(message.message, /fakeDeclarations/);
       assert.match(message.message, /Pick<T, …>/);
+      // never는 쓰지 않는 의존성의 대역과 일부러 넣는 틀린 값의 자리를 알려 준다.
+      if (shape.includes("never")) {
+        assert.match(message.message, /unused/);
+        assert.match(message.message, /outsideContract/);
+      }
     }
   });
 
@@ -1005,8 +1014,12 @@ test("test code may check data against its type, add properties with one asserti
   const allowed = [
     // 완전한 값과 그 타입의 확인.
     `type Result = { stopReason: string; error: string | null };\nexport const a: Result = { stopReason: "cancelled", error: null };\nexport const b = { stopReason: "cancelled", error: null } satisfies Result;\n`,
-    // as const, 객체 리터럴을 unknown·any·never로 바꾸기(T라고 주장하지 않는다).
-    `export const a = { kind: "a" } as const;\nexport const b = { kind: "a" } as unknown;\nexport const c = { kind: "a" } as any;\nexport const d = { color: "neon" } as never;\n`,
+    // as const, 객체 리터럴을 unknown·any로 바꾸기(T라고 주장하지 않는다).
+    `export const a = { kind: "a" } as const;\nexport const b = { kind: "a" } as unknown;\nexport const c = { kind: "a" } as any;\n`,
+    // 이름 붙은 대역과 타입 밖 값(stand-ins.ts의 모양): 단언 하나가 그 함수 안에만 있다.
+    `export function unused<T extends object>(name: string): T {\n  const target: object = Object.create(null);\n  return new Proxy(target, { get: () => { throw new Error(name); } }) as T;\n}\nexport const outsideContract = <T>(value: unknown): T => value as T;\n`,
+    // never를 돌려주는 함수와 never 타입 표기는 단언이 아니다.
+    `export const fail = (message: string): never => {\n  throw new Error(message);\n};\nexport function assertNever(value: never): never {\n  throw new Error(String(value));\n}\n`,
     // 있는 객체에 속성을 덧붙여 읽기, 이미 검사한 값·식의 단언 한 번, 빈 배열의 원소 타입, non-null.
     `declare const window: { name: string };\nexport const marker = (window as typeof window & { marker: number }).marker;\nexport const parsed = JSON.parse("{}") as { a: number };\nexport const list = [] as string[];\ndeclare const maybe: string | undefined;\nexport const sure = maybe!;\n`,
     // 단언 하나 안의 unknown(이중 단언이 아님).
