@@ -128,6 +128,17 @@ function parseStart(text: string) {
   const at = Date.parse(text.trim());
   return Number.isFinite(at) ? at : undefined;
 }
+/**
+ * 시작 시각을 묻지 못한 원인을 남긴다. 그사이 끝난 프로세스는 물을 것이 없으므로(답이다) 남기지 않는다.
+ * `outcome`은 모르는 시작 시각을 어떻게 다루는지다.
+ */
+const unaskedStart = (pid: number, outcome: string) => (error: unknown) => {
+  if (processAlive(pid))
+    console.warn(
+      `[provider] the start time of process ${pid} could not be asked; ${outcome} (${failureCode(error)})`
+    );
+};
+
 /** /proc가 없는 시스템에서 프로세스 시작 시각. 물어볼 수 없으면 원인을 남기고 `undefined`다(우리 것으로 보지 않는다). */
 export function processStartedAt(pid: number, platform: NodeJS.Platform) {
   return orIfProbeFailed(
@@ -144,10 +155,7 @@ export function processStartedAt(pid: number, platform: NodeJS.Platform) {
       );
     },
     undefined,
-    (error) =>
-      console.warn(
-        `[provider] the start time of process ${pid} could not be asked; it is not taken as ours (${failureCode(error)})`
-      )
+    unaskedStart(pid, "it is not taken as ours")
   );
 }
 // Windows는 다른 프로그램이 파일을 열어 둔 동안 덮어쓰기를 거절한다. 잠깐이므로 약 5초 동안 다시 시도한다.
@@ -209,9 +217,7 @@ export function recordProcess(
     },
     (error, stdout) => {
       if (error) {
-        console.warn(
-          `[provider] the start time of process ${pid} could not be asked; its record stays without one (${failureCode(error)})`
-        );
+        unaskedStart(pid, "its record stays without one")(error);
         return;
       }
       const started = parseStart(stdout);
