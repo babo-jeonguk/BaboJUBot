@@ -63,7 +63,13 @@ export function signalProcessTree(pid: number, signal: NodeJS.Signals) {
       "taskkill",
       args,
       { windowsHide: true, timeout: helperCommandTimeoutMs },
-      () => {}
+      // 이미 끝난 트리는 끌 것이 없다(답이다). 아직 도는데 taskkill이 실패하면 원인을 남긴다.
+      (error) => {
+        if (error && processAlive(pid))
+          console.warn(
+            `[provider] taskkill could not signal process tree ${pid} with ${signal} (${failureCode(error)})`
+          );
+      }
     );
     return;
   }

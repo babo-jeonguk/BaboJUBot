@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { failureCode, isDisconnect } from "@babojubot/contracts";
 
 export const ownerMark = "babojubot-antigravity-v1";
 const unsafe = 3;
@@ -74,7 +75,13 @@ function run(cwd: string) {
         else reject(error);
       }
     );
-    child.stdin?.on("error", () => {});
+    // 설정 스크립트가 입력을 읽기 전에 끝나면 끊김(EPIPE)이 난다. 끝난 결과는 위 끝남 코드가 알린다.
+    child.stdin?.on("error", (error) => {
+      if (!isDisconnect(error))
+        console.warn(
+          `[provider] writing to the Antigravity config script's input failed (${failureCode(error)})`
+        );
+    });
     child.stdin?.end();
   });
 }

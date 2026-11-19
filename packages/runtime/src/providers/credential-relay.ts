@@ -8,6 +8,7 @@ import {
   continueAfterFailure,
   failureCode,
   hasErrorCode,
+  isDisconnect,
   orIfMissing,
   orIfProbeFailed,
   orIfUnreadable,
@@ -436,7 +437,12 @@ export function createCredentialRelay(options: {
           done();
           outgoing.destroy();
         });
-        outgoing.on("error", () => {
+        outgoing.on("error", (error) => {
+          // 프로그램이 먼저 떠나 요청을 끊은 것은 답이다. 그 밖의 실패는 원인을 남긴다.
+          if (!isDisconnect(error))
+            console.warn(
+              `[provider] the credential relay could not reach the upstream; it answered 502 (${failureCode(error)})`
+            );
           done();
           deny(res, 502, "relay_upstream_failed");
         });
@@ -488,16 +494,32 @@ export function createCredentialRelay(options: {
             ? incoming
             : incoming.pipe(echoGuard(secrets));
           guarded.pipe(res);
-          guarded.on("error", () => {
+          guarded.on("error", (error) => {
+            if (!isDisconnect(error))
+              console.warn(
+                `[provider] the credential relay stopped passing an upstream answer (${failureCode(error)})`
+              );
             incoming.destroy();
             res.destroy();
             done();
           });
           incoming.on("end", done);
-          incoming.on("error", () => res.destroy());
+          incoming.on("error", (error) => {
+            if (!isDisconnect(error))
+              console.warn(
+                `[provider] an upstream answer broke off in the credential relay (${failureCode(error)})`
+              );
+            res.destroy();
+          });
         });
         req.pipe(outgoing);
-        req.on("error", () => outgoing.destroy());
+        req.on("error", (error) => {
+          if (!isDisconnect(error))
+            console.warn(
+              `[provider] a run's request broke off in the credential relay (${failureCode(error)})`
+            );
+          outgoing.destroy();
+        });
       })().catch((error: unknown) => {
         console.warn(
           `[provider] the relay failed a request (${failureCode(error)})`

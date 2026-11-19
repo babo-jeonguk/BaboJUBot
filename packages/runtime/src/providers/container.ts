@@ -530,6 +530,13 @@ const probeScript = `
 const net = require("node:net");
 const os = require("node:os");
 const input = JSON.parse(process.argv[1]);
+// 금지 목적지에 닿지 못한 연결 오류는 답이다. 그 밖의 오류와 중계·조직 도구 연결의 오류는 원인을 남긴다.
+const failures = [];
+const unreachable = (error) =>
+  ["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "EPERM", "EACCES", "ENOTFOUND", "EAI_AGAIN"].includes(error.code);
+const note = (probe, error, expected) => {
+  if (!expected(error)) failures.push({ probe, code: typeof error.code === "string" ? error.code : error.name });
+};
 const attempt = (host, port) =>
   new Promise((resolve) => {
     const socket = net.connect({ host, port });
@@ -543,7 +550,7 @@ const attempt = (host, port) =>
     socket.setTimeout(3000);
     socket.once("connect", () => finish(true));
     socket.once("timeout", () => finish(false));
-    socket.once("error", () => finish(false));
+    socket.once("error", (error) => { note("direct", error, unreachable); finish(false); });
   });
 const proxied = (host, port) =>
   new Promise((resolve) => {
@@ -554,7 +561,7 @@ const proxied = (host, port) =>
       resolve(value);
     };
     socket.setTimeout(5000, () => finish(false));
-    socket.once("error", () => finish(false));
+    socket.once("error", (error) => { note("proxied", error, () => false); finish(false); });
     socket.on("connect", () =>
       socket.write("CONNECT " + (host.includes(":") ? "[" + host + "]" : host) + ":" + port + " HTTP/1.1\\r\\n\\r\\n")
     );
@@ -572,7 +579,7 @@ const tools = () =>
       resolve(value);
     };
     socket.setTimeout(5000, () => finish(false));
-    socket.once("error", () => finish(false));
+    socket.once("error", (error) => { note("tools", error, () => false); finish(false); });
     socket.on("connect", () => socket.write("GET /api/tools/probe HTTP/1.1\\r\\nHost: tools\\r\\nConnection: close\\r\\n\\r\\n"));
     socket.on("data", (chunk) => {
       text += chunk;
@@ -594,6 +601,7 @@ const tools = () =>
       reached: direct.flat(),
       proxied: relayed.flat(),
       toolsReached,
+      failures,
       proxyEnv: process.env.HTTPS_PROXY === "http://127.0.0.1:${relayPorts.proxy}",
     })
   );
@@ -608,6 +616,14 @@ const isTarget = (value: unknown): value is { host: string; port: number } =>
   value !== null &&
   typeof (value as { host?: unknown }).host === "string" &&
   typeof (value as { port?: unknown }).port === "number";
+
+const isProbeFailure = (
+  value: unknown
+): value is { probe: string; code: string } =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { probe?: unknown }).probe === "string" &&
+  typeof (value as { code?: unknown }).code === "string";
 
 export function createDockerEnvironment(
   settings: ContainerSettings
@@ -739,9 +755,18 @@ export function createDockerEnvironment(
           !Array.isArray(value.proxied) ||
           !value.proxied.every(isTarget) ||
           typeof value.toolsReached !== "boolean" ||
+          !Array.isArray(value.failures) ||
+          !value.failures.every(isProbeFailure) ||
           typeof value.proxyEnv !== "boolean"
         )
           throw new Error("isolation probe returned an invalid result");
+        for (const failure of value.failures as {
+          probe: string;
+          code: string;
+        }[])
+          console.warn(
+            `[provider] the isolation probe's ${failure.probe} check failed (${failure.code})`
+          );
         return {
           interfaces: value.interfaces as string[],
           reached: value.reached as { host: string; port: number }[],

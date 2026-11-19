@@ -119,25 +119,33 @@ export default {
       return applied;
     };
     const stop = new AbortController();
+    /** 오류의 짧은 이름. 문구에는 모델 출력이 섞일 수 있어 담지 않는다. */
+    const failureName = (error) => (typeof error?.code === "string" ? error.code : error?.name ?? "unknown");
     void (async () => {
+      let last;
       for (let attempt = 0; attempt < 600 && !stop.signal.aborted; attempt++) {
         try {
-          if (await ensure()) break;
-        } catch {
-          /* 다음 확인에서 다시 본다. */
+          if (await ensure()) return;
+        } catch (error) {
+          // 다음 확인에서 다시 본다. 끝까지 적용하지 못하면 마지막 실패를 남긴다.
+          last = error;
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
+      if (!stop.signal.aborted)
+        console.error("[babojubot] organization tool keys were not applied" + (last === undefined ? "" : " (" + failureName(last) + ")"));
     })();
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ types: ["mcp.tools.changed"], signal: stop.signal })) {
           if (event?.data?.server !== server) continue;
           await new Promise((resolve) => setTimeout(resolve, 300));
-          await ensure().catch(() => {});
+          await ensure().catch((error) => console.error("[babojubot] organization tool keys could not be applied again (" + failureName(error) + ")"));
         }
-      } catch {
-        /* 목록 바뀜 알림을 받지 못하는 판이면 처음 확인만 한다. */
+      } catch (error) {
+        // 목록 바뀜 알림을 받지 못하는 판이면 처음 확인만 한다. 멈추며 끝난 것은 답이다.
+        if (!stop.signal.aborted)
+          console.error("[babojubot] tool change events are not available; only the first check applies (" + failureName(error) + ")");
       }
     })();
     return () => stop.abort();

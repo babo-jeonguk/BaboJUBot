@@ -11,7 +11,11 @@ import {
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { failureCode, orIfUnreadable } from "@babojubot/contracts";
+import {
+  failureCode,
+  isDisconnect,
+  orIfUnreadable,
+} from "@babojubot/contracts";
 import { type Clock, realClock } from "./clock.ts";
 import type { ContainerLaunch } from "./container.ts";
 import { jobObjectLaunch, readLauncherStatus } from "./job-object.ts";
@@ -253,8 +257,11 @@ export function startProcess(options: {
     });
     // 실행기를 띄우지 못했다(백신이 지웠거나 막음). 프로그램은 아직 시작하지 않았으므로 지금처럼 띄운다.
     if (launcher.pid === undefined) {
-      launcher.on("error", () => {});
-      withoutJob("the job object launcher could not start");
+      launcher.on("error", (error) =>
+        withoutJob(
+          `the job object launcher could not start (${failureCode(error)})`
+        )
+      );
       launcher = undefined;
     }
   }
@@ -352,7 +359,12 @@ export function startProcess(options: {
   const inputFailed = new Promise<void>((resolve) => {
     reportInputFailure = resolve;
   });
-  child.stdin.on("error", () => {
+  // 프로그램이 끝나 입력이 끊긴 것(EPIPE)은 답이다. 그 밖의 쓰기 실패는 원인을 남긴다. 어느 쪽이든 입력은 실패로 본다.
+  child.stdin.on("error", (error) => {
+    if (!isDisconnect(error))
+      console.warn(
+        `[provider] writing to the program's input failed (${failureCode(error)})`
+      );
     broken = true;
     reportInputFailure();
     end();
@@ -406,7 +418,10 @@ export function startProcess(options: {
     broken: boolean;
     stderr: string;
   }>((resolve) => {
-    child.on("error", () => {
+    child.on("error", (error) => {
+      console.warn(
+        `[provider] the program could not be started or signalled (${failureCode(error)})`
+      );
       broken = true;
     });
     let drain: unknown;

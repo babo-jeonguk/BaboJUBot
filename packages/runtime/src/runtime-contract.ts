@@ -170,8 +170,8 @@ async function startFakeToolServer() {
     },
     onRequest,
     close: () =>
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
         // fetch가 열어 둔 keep-alive 연결도 닫는다.
         server.closeAllConnections();
       }),

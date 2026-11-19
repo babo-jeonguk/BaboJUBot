@@ -1317,13 +1317,19 @@ export async function startServer({
         async () => {
           for (const client of wss.clients) client.terminate();
           wss.close();
+          // 닫기 실패는 연결 정리를 마친 뒤 드러낸다(기다리는 동안 처리되지 않은 거절로 두지 않는다).
+          let closeFailure: unknown;
           const closed = new Promise<void>((resolve) =>
-            server.close(() => resolve())
+            server.close((error) => {
+              if (error) closeFailure = error;
+              resolve();
+            })
           );
           await inFlight.idle();
           stopStep = "connections";
           server.closeAllConnections();
           await closed;
+          if (closeFailure !== undefined) throw closeFailure;
         },
       ],
     ] as const)

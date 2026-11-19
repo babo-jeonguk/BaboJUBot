@@ -18,6 +18,17 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+/**
+ * 상대가 연결·파이프를 끊어 난 오류인가(EPIPE·ECONNRESET·ECONNABORTED, Windows 파이프의 EOF). 쓰던 상대가 떠난 것은 답이므로,
+ * 오류 이벤트 처리기가 이것만 원인 없이 넘기고 그 밖의 오류는 원인을 남기거나 드러낼 때 고른다.
+ */
+export const isDisconnect = hasErrorCode(
+  "EPIPE",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EOF"
+);
+
 /** `read`가 promise를 돌려주는지 값의 `then`으로 가른다. 화면도 쓰므로 다른 realm의 promise도 받는다. */
 function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
   return (
