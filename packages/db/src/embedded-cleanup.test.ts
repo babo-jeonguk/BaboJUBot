@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,8 @@ const inject = vi.hoisted(() => ({
   ownerFolderFails: undefined as Error | undefined,
   /** 주인 기록 파일(`<dataDir>.owner/<번호>`)을 읽으면 이 오류로 실패한다. */
   ownerReadFails: undefined as Error | undefined,
+  /** 정하면 이 폴더 안의 주인 기록만 실패한다. */
+  ownerReadFailsIn: undefined as string | undefined,
   /** 이 시험이 만든 임시 폴더. 지우기를 실패시킨 폴더를 시험 끝에 치운다. */
   made: [] as string[],
 }));
@@ -43,7 +46,12 @@ vi.mock("node:fs", async (importOriginal) => {
     return real.mkdirSync(target, options);
   }) as typeof real.mkdirSync;
   const readFileSync = ((...args: Parameters<typeof real.readFileSync>) => {
-    if (inject.ownerReadFails && /\.owner[\\/]\d+$/.test(String(args[0])))
+    const file = String(args[0]);
+    if (
+      inject.ownerReadFails &&
+      /\.owner[\\/]\d+$/.test(file) &&
+      (!inject.ownerReadFailsIn || file.startsWith(inject.ownerReadFailsIn))
+    )
       throw inject.ownerReadFails;
     return real.readFileSync(...args);
   }) as typeof real.readFileSync;
@@ -66,6 +74,7 @@ afterEach(() => {
   inject.removeFails = undefined;
   inject.ownerFolderFails = undefined;
   inject.ownerReadFails = undefined;
+  inject.ownerReadFailsIn = undefined;
   vi.restoreAllMocks();
 });
 
@@ -146,5 +155,43 @@ describe("an owner record that cannot be read", () => {
     ).rejects.toBe(denied);
     inject.ownerReadFails = undefined;
     expect(fs.readdirSync(owners).sort()).toEqual(["1"]);
+  });
+});
+
+// 남은 임시 cluster를 치우는 것은 덤이다. 그중 하나의 주인 기록을 읽지 못해도 새 임시 cluster는 뜨고, 그 항목은 손대지 않고 남긴다.
+describe("a leftover temporary cluster whose owner record cannot be read", () => {
+  it("is left with a warning while a new temporary cluster still starts", async () => {
+    // 기록만 남은 남은 cluster. 주인은 살아 있는 이 시험 프로세스라 동시에 도는 다른 시험 프로세스는 치우지 않는다.
+    const leftover = path.join(os.tmpdir(), `babojubot-pg-${randomUUID()}`);
+    const owners = `${leftover}.owner`;
+    onTestFinished(() => removeFolder(owners));
+    fs.mkdirSync(owners);
+    fs.writeFileSync(
+      path.join(owners, "1"),
+      JSON.stringify({ pid: process.pid, persistent: false })
+    );
+    inject.ownerReadFails = Object.assign(
+      new Error("injected: the leftover owner record could not be read"),
+      { code: "EACCES" }
+    );
+    inject.ownerReadFailsIn = owners;
+    const logs = logged();
+
+    const options = await ephemeralCluster();
+    onTestFinished(() =>
+      cleanUpAll([
+        () => removeFolder(options.dataDir),
+        () => removeFolder(`${options.dataDir}.owner`),
+      ])
+    );
+    inject.ownerReadFails = undefined;
+
+    expect(fs.existsSync(options.dataDir)).toBe(true);
+    expect(fs.readdirSync(owners)).toEqual(["1"]);
+    expect(
+      logs().some(
+        (value) => typeof value === "string" && value.includes(leftover)
+      )
+    ).toBe(true);
   });
 });
