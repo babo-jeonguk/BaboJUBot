@@ -43,6 +43,17 @@ test("runtime code launches programs only through the process owners", async () 
     // runtime이 의존하는 cross-spawn도 같은 실행이다.
     "cross-spawn": `import spawn from "cross-spawn";\nspawn("x");\n`,
     "cross-spawn dynamically": `const { default: spawn } = await import("cross-spawn");\nspawn("x");\n`,
+    // 실행 경계 검사를 거치지 않고 모듈을 불러오는 길도 막는다. 계산한 경로·template literal의 import는 무엇을 가져오는지 lint가 볼 수 없다.
+    "a computed dynamic import": `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\n`,
+    "a template literal dynamic import":
+      "const cp = await import(`node:child_process`);\n",
+    createRequire: `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("child_process");\n`,
+    "createRequire renamed": `import { createRequire as make } from "module";\nmake(import.meta.url)("child_process");\n`,
+    "createRequire on the module": `import nodeModule from "node:module";\nnodeModule.createRequire(import.meta.url)("child_process");\n`,
+    "createRequire from a dynamic import": `const { createRequire } = await import("node:module");\ncreateRequire(import.meta.url)("child_process");\n`,
+    "createRequire re-exported": `export { createRequire } from "node:module";\n`,
+    "createRequire by a string key": `import * as nodeModule from "node:module";\nnodeModule["createRequire"](import.meta.url)("child_process");\n`,
+    "process.getBuiltinModule": `process.getBuiltinModule("node:child_process").spawn("x");\n`,
   };
   for (const place of [
     "packages/runtime/src/providers/claude.ts",
@@ -77,6 +88,25 @@ test("process owners, type imports and code outside runtime may use child_proces
     "apps/server/src/workspace.ts",
   ])
     assert.deepEqual(await lint(named, place, launchRules), [], place);
+  // 실행 경계 밖의 모듈 불러오기는 막지 않는다: 문자열 경로의 import, node:module의 다른 함수.
+  for (const [shape, code] of Object.entries({
+    "a string dynamic import": `const claude = await import("./claude.ts");\nvoid claude;\n`,
+    "another node:module export": `import { isBuiltin } from "node:module";\nisBuiltin("fs");\n`,
+  }))
+    assert.deepEqual(
+      await lint(code, "packages/runtime/src/providers/claude.ts", launchRules),
+      [],
+      shape
+    );
+  // 실행 소유 파일과 runtime 밖은 createRequire·계산한 경로의 import를 쓸 수 있다.
+  const bypasses = `import { createRequire } from "node:module";\nconst name = String(Date.now());\nawait import(name);\ncreateRequire(import.meta.url)(name);\n`;
+  for (const place of [
+    "packages/runtime/src/providers/process.ts",
+    "packages/runtime/src/providers/process.test.ts",
+    "packages/db/src/embedded.ts",
+    "apps/server/src/workspace.ts",
+  ])
+    assert.deepEqual(await lint(bypasses, place, launchRules), [], place);
   assert.deepEqual(
     await lint(
       `import type { ChildProcess } from "node:child_process";\nexport type Child = ChildProcess;\n`,
@@ -85,6 +115,47 @@ test("process owners, type imports and code outside runtime may use child_proces
     ),
     []
   );
+});
+
+// 화면 파일(.tsx)도 같은 제품 규칙을 받는다. 확장자만 바꿔 규칙을 피하지 못한다. packages의 src에는 아직 .tsx가 없어
+// 파일 자리를 빌릴 수 없으므로, 그 자리에 걸리는 설정을 본다.
+test("product rules reach .tsx files in packages as they reach .ts files", async () => {
+  const productRuleNames = [
+    "product/no-ignored-error",
+    "@typescript-eslint/no-floating-promises",
+    "@typescript-eslint/switch-exhaustiveness-check",
+  ];
+  const typed = (config) =>
+    Boolean(config.languageOptions?.parserOptions?.projectService);
+  for (const place of [
+    "packages/db/src/view.tsx",
+    "packages/runtime/src/providers/view.tsx",
+    "apps/server/src/view.tsx",
+  ]) {
+    const ts = await eslint.calculateConfigForFile(place.replace(/x$/, ""));
+    const tsx = await eslint.calculateConfigForFile(place);
+    for (const rule of productRuleNames) {
+      assert.ok(ts.rules[rule], `${place}: ${rule} is not on .ts`);
+      assert.deepEqual(tsx.rules[rule], ts.rules[rule], `${place}: ${rule}`);
+    }
+    assert.ok(typed(tsx), `${place}: no type information`);
+    // 서버·runtime의 경계 금지도 같은 모양이다.
+    assert.deepEqual(
+      tsx.rules["no-restricted-syntax"],
+      ts.rules["no-restricted-syntax"],
+      `${place}: no-restricted-syntax`
+    );
+    assert.deepEqual(
+      tsx.rules["no-restricted-imports"],
+      ts.rules["no-restricted-imports"],
+      `${place}: no-restricted-imports`
+    );
+  }
+  // 시험 파일은 .tsx여도 제품 규칙 밖이다.
+  const testTsx = await eslint.calculateConfigForFile(
+    "packages/db/src/view.test.tsx"
+  );
+  assert.equal(testTsx.rules["product/no-ignored-error"], undefined);
 });
 
 const unsafeRules = [
