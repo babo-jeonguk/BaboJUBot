@@ -15,7 +15,7 @@ pnpm typecheck
 pnpm typecheck:src  # 제품 코드만 타입 검사
 pnpm typecheck:test # 시험 코드를 시작점으로 타입 검사(가져다 쓰는 제품 코드도 함께 검사)
 pnpm lint         # 시험 코드에는 시험 전용 규칙(폴더 지우기는 removeFolder로)을, 제품 코드에는 제품 규칙(바깥 데이터는 확인 뒤 사용, JSON·응답 본문을 읽자마자 타입 단정 금지, 비동기 실패 방치 금지, 폐기 예정 기능 금지, runtime의 프로그램 실행은 정해진 파일에서만)을 더 겁니다. lint 예외 주석에는 `-- 이유`를 씁니다.
-pnpm check        # Markdown 로컬 링크 검사, lint 규칙 회귀(scripts/lint-rules.test.mjs, scripts/product-lint-rules.test.mjs, scripts/script-lint-rules.test.mjs)와 CI 회귀 검사(테스트 집계 scripts/ci-test-gate.test.mjs, 실패 이유 분류 scripts/ci-job-failures.test.mjs, 내려받기 재시도 scripts/ci-downloads.test.mjs, 실행 판정 scripts/ci-changes.test.mjs, 파일 경계 결과표 scripts/file-boundary-report.test.mjs, E2E 결과 판정 scripts/check-e2e-report.test.mjs, 바뀐 파일 검사 범위 scripts/verify-changed.test.mjs, 실제 프로바이더 확인의 정리 scripts/live/check-server.test.mjs, 시험용 명령 찾기 scripts/live/processes.test.mjs). 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
+pnpm check        # Markdown 로컬 링크 검사, lint 규칙 회귀(scripts/lint-rules.test.mjs, scripts/product-lint-rules.test.mjs, scripts/script-lint-rules.test.mjs)와 CI 회귀 검사(테스트 집계 scripts/ci-test-gate.test.mjs, 실패 이유 분류 scripts/ci-job-failures.test.mjs, 내려받기 재시도 scripts/ci-downloads.test.mjs, 실행 판정 scripts/ci-changes.test.mjs, 파일 경계 결과표 scripts/file-boundary-report.test.mjs, E2E 결과 판정 scripts/check-e2e-report.test.mjs, 바뀐 파일 검사 범위 scripts/verify-changed.test.mjs, 실제 프로바이더 확인의 정리 scripts/live/check-server.test.mjs, 시험용 명령 찾기 scripts/live/processes.test.mjs, 장애 검사 실행 관문 scripts/live/chaos-budget.test.mjs, worker 실행 시간 한도 .agents/scripts/run-worker.test.mjs). 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
 pnpm verify:changed  # 바뀐 파일 기준으로 lint·타입 검사할 범위를 정해 돌리고 pnpm check까지 실행. --dry-run은 명령만 출력
 ```
 
