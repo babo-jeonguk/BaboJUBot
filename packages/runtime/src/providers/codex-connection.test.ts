@@ -8,7 +8,7 @@ import {
   ProtocolTimeout,
 } from "./codex-connection.ts";
 import { testFolders } from "./test-folders.ts";
-import { killUnlessGone } from "./process-test-support.ts";
+import { killUnlessGone, processAlive } from "../test-cleanup.ts";
 
 // 합성 peer(replay.mjs)로 응답·종료를 정한다. 모델·네트워크는 쓰지 않는다.
 // 시험이 연 연결은 정리가 닫고 프로그램 정리(done)까지 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
@@ -23,14 +23,7 @@ function openOwned(options: Parameters<typeof openCodexConnection>[0]) {
   return connection;
 }
 const record = (value: unknown) => value as Record<string, unknown>;
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
+const alive = processAlive;
 async function peer(steps: unknown[]) {
   const root = await folders.make("codex-connection-");
   const file = path.join(root, "peer.json");
