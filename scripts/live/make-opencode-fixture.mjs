@@ -3,6 +3,7 @@
 // 사용: node scripts/live/make-opencode-fixture.mjs <녹화 폴더> <출력 파일>
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { orIfUnreadable } from "../../packages/contracts/src/failure.ts";
 
 const [directory, output] = process.argv.slice(2);
 const keptStrings = new Set([
@@ -31,11 +32,8 @@ const events = (text) =>
       .map((line) => line.slice(5).trimStart())
       .join("\n");
     if (!data) return [];
-    try {
-      return [JSON.parse(data)];
-    } catch {
-      return [];
-    }
+    // JSON이 아닌 이벤트는 건너뛴다.
+    return orIfUnreadable(() => [JSON.parse(data)], []);
   });
 
 let best;

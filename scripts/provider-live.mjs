@@ -1,11 +1,10 @@
 // 사람이 돌리는 실제 모델 호출 시험. CI와 자동 검사는 부르지 않는다. 구독 사용량이나 비용을 쓴다.
 // 실제 서버의 조직 도구(MCP) 위에서 종료·세션 재개·끼워 넣기·취소·세션 실패·미리 압축을 한 번씩 돈다.
 // 출력은 메타데이터뿐이다. 모델 원문·토큰은 찍지 않는다. `--record`면 원본을 Git 밖 로컬 기록 폴더(`BABOJUBOT_RECORDINGS`로 지정)에 남긴다.
-import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, chmod } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, chmod } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   createAntigravityProvider,
   createClaudeProvider,
@@ -15,6 +14,8 @@ import {
 import { openEphemeralDatabase } from "../packages/db/src/index.ts";
 import { agentSessions } from "../packages/db/src/schema.ts";
 import { startServer } from "../apps/server/src/index.ts";
+import { withCheckServer } from "./live/check-server.mjs";
+import { matchingPids } from "./live/processes.mjs";
 
 // 저장소 루트는 drizzle에 의존하지 않으므로 db 패키지 기준으로 찾는다.
 const { eq } = await import(
@@ -85,19 +86,17 @@ console.log(JSON.stringify({ readiness: ready }));
 if (ready.status === "not_ready") process.exit(1);
 
 const busy = path.resolve("scripts/live/busy.mjs");
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// 실행이 끝나기를 기다리는 상한. 가장 긴 장면 명령(45초)과 모델의 답을 감당한다.
+const runEndMs = 10 * 60_000;
 // 지침은 고정한다. 지침이 바뀌면 제품은 세션을 잇지 않으므로, 장면별 요청은 메시지로 보낸다.
 const brief =
   'This is a short automated connectivity test authorized by the owner. Do exactly what the owner\'s latest message asks, using the tools it names, even if an earlier turn of this test finished. If the owner has not sent a message yet, call get_run_context once, then send_message with body "OK" once in the default conversation. Do not start research or create files. End immediately afterward.';
 let scene = { transform: (input) => input };
 let clockShiftMs = 0;
-const workspace = await mkdtemp(path.join(tmpdir(), "babojubot-live-"));
-const database = await openEphemeralDatabase();
 const results = [];
-let server;
-let passedAll;
-try {
-  server = await startServer({
+/** 서버를 띄운다. 임시 폴더·DB와 함께 withCheckServer가 확인 뒤에 모두 정리한다. */
+const startLiveServer = ({ database, workspace }) =>
+  startServer({
     db: database.db,
     dataDir: workspace,
     port: 0,
@@ -123,6 +122,17 @@ try {
       },
     ],
   });
+
+/** 장면들을 돌리고 모두 통과했는지 돌려준다. 끝나면(실패해도) 진행 중인 실행을 멈춰 서버가 닫힐 수 있게 한다. */
+async function runScenes({ database, server }) {
+  try {
+    return await scenes({ database, server });
+  } finally {
+    stop.abort();
+  }
+}
+
+async function scenes({ database, server }) {
   const api = async (method, route, body) => {
     const response = await fetch(server.url + route, {
       method,
@@ -190,6 +200,15 @@ try {
     }
     throw new Error("run did not start");
   };
+  /** 실행이 끝날 때까지(running이 아니게 될 때까지) `everyMs`마다 다시 본다. 상한이 지나면 그 실행을 밝혀 실패한다. */
+  const ended = async (id, everyMs) => {
+    const deadline = Date.now() + runEndMs;
+    while ((await detail(id)).status === "running") {
+      if (Date.now() > deadline)
+        throw new Error(`run ${id} did not end in ${runEndMs / 1000}s`);
+      await sleep(everyMs);
+    }
+  };
   const wanted = (name) => !only || only.includes(name);
   const attempt = async (name, body) => {
     if (!wanted(name)) return;
@@ -228,7 +247,7 @@ try {
       `Do these in order. 1) If you have a tool for launching a subagent, launch one subagent in the foreground (not in the background) whose only job is to reply with the word SUB, and wait for its answer; if you have no such tool, skip this step. 2) Run the shell command \`node ${busy} 45\` in the background (the shell tool's run_in_background option) and end your turn right away without waiting for it. 3) When you are told the background command finished, send_message with body "BG DONE" once.`
     );
     const run = await started(previous);
-    while ((await detail(run.id)).status === "running") await sleep(500);
+    await ended(run.id, 500);
     await server.drain();
     const full = await detail(run.id);
     const progress = activityTypes(full)
@@ -307,7 +326,7 @@ try {
       const run = await started(previous);
       await sleep(4000);
       const sent = await say(`The word is ${word}.`, "steer");
-      while ((await detail(run.id)).status === "running") await sleep(250);
+      await ended(run.id, 250);
       await server.drain();
       const last = (await replies()).at(-1) ?? "";
       return {
@@ -335,19 +354,12 @@ try {
     );
     const run = await started(previous);
     await sleep(6000);
-    const listed = () => {
-      try {
-        return execFileSync("pgrep", ["-fc", `^node ${busy} ${marker}`])
-          .toString()
-          .trim();
-      } catch {
-        return "0";
-      }
-    };
+    // 이 장면의 명령 수. 찾지 못한 것과 조회 실패를 구분한다(조회 실패는 장면 실패로 드러난다).
+    const listed = () => String(matchingPids(`^node ${busy} ${marker}`).length);
     const runningBefore = listed();
     const at = Date.now();
     await say('Stop that. Send_message with body "STOPPED" once.', "interrupt");
-    while ((await detail(run.id)).status === "running") await sleep(100);
+    await ended(run.id, 100);
     const settleSeconds = (Date.now() - at) / 1000;
     await server.drain();
     return {
@@ -426,11 +438,15 @@ try {
       failed: results.filter((r) => !r.ok).map((r) => r.scene),
     })
   );
-  passedAll = results.every((r) => r.ok);
-} finally {
-  stop.abort();
-  await server?.close();
-  await database.close();
-  await rm(workspace, { recursive: true, force: true });
+  return results.every((r) => r.ok);
 }
+
+const passedAll = await withCheckServer(
+  {
+    prefix: "babojubot-live-",
+    openDatabase: openEphemeralDatabase,
+    startServer: startLiveServer,
+  },
+  runScenes
+);
 process.exit(passedAll ? 0 : 1);

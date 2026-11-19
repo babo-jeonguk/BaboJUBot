@@ -3,14 +3,21 @@
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
-  existsSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeSync,
   closeSync,
 } from "node:fs";
 import path from "node:path";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+  orIfUnreadable,
+} from "../../packages/contracts/src/failure.ts";
 
 /** 이슈 #154에서 합의한 상한. 여기보다 크게 실행하지 않는다. */
 export const limits = Object.freeze({
@@ -121,8 +128,12 @@ export function createLedger(file) {
       );
     },
     read() {
-      if (!existsSync(file)) return [];
-      return readFileSync(file, "utf8")
+      // 아직 아무것도 적지 않았으면 기록이 없다.
+      return orIfMissing(
+        () => readFileSync(file, "utf8"),
+        hasErrorCode("ENOENT"),
+        ""
+      )
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line));
@@ -135,8 +146,17 @@ export function writeBudget(file, budget) {
   writeSecretFile(file, JSON.stringify(budget), { replace: true });
 }
 
+/**
+ * 서버 프로세스가 실행마다 읽는 예산. 파일이 없거나(ENOENT) 내용을 해석할 수 없으면 예산이 없는 것(null)이고, 그러면 실제 실행을
+ * 시작하지 않는다. 그 밖의 읽기 오류(권한·디스크)는 "예산 없음"으로 숨기지 않고 던진다. 읽기와 해석을 따로 감싼다.
+ */
 export function readBudget(file) {
-  return JSON.parse(readFileSync(file, "utf8"));
+  const text = orIfMissing(
+    () => readFileSync(file, "utf8"),
+    hasErrorCode("ENOENT"),
+    null
+  );
+  return text === null ? null : orIfUnreadable(() => JSON.parse(text), null);
 }
 
 /** 지금 실제 실행 하나를 시작해도 되는지. 시작 전에 확인하고, 되면 기록까지 한 번에 한다. */
@@ -179,15 +199,37 @@ const stableJson = (value) =>
       : v
   );
 
-/** 0600으로 새 파일을 만든다. 있으면 실패한다(`replace`면 지우고 만든다). 토큰·설정처럼 남이 읽으면 안 되는 값에 쓴다. */
+/**
+ * 0600으로 새 파일을 만든다. 있으면 실패한다. 토큰·설정처럼 남이 읽으면 안 되는 값에 쓴다.
+ * `replace`면 옆에 새로 쓴 뒤 이름을 바꿔 한 번에 바꾼다. 다른 프로세스가 읽는 도중에도 이전 내용이나 새 내용만 보이고,
+ * 지운 사이의 빈 자리나 쓰는 중인 내용은 보이지 않는다.
+ */
 export function writeSecretFile(file, content, { replace = false } = {}) {
-  if (replace) rmSync(file, { force: true });
+  if (!replace) return writeNewSecretFile(file, content);
+  const next = `${file}.${process.pid}.next`;
+  rmSync(next, { force: true });
+  writeNewSecretFile(next, content);
+  renameSync(next, file);
+}
+
+/** 쓰기가 실패하면 만든 파일을 닫고 지운 뒤(각 실패는 따로 알림) 원래 실패를 던진다. 반쯤 쓴 비밀 파일을 남기지 않는다. */
+function writeNewSecretFile(file, content) {
   const fd = openSync(file, "wx", 0o600);
   try {
     writeSync(fd, content);
-  } finally {
-    closeSync(fd);
+  } catch (error) {
+    const report = (what) => (cleanupError) =>
+      console.error(
+        `[chaos] ${what} a half-written secret file failed (${failureCode(cleanupError)})`
+      );
+    continueAfterFailure(() => closeSync(fd), report("closing"));
+    continueAfterFailure(
+      () => rmSync(file, { force: true }),
+      report("removing")
+    );
+    throw error;
   }
+  closeSync(fd);
 }
 
 const refusal = (reason) => ({
@@ -210,35 +252,33 @@ export function gateConnection(
   { live, ledgerFile, budgetFile, tokenDir, controlFile, brief }
 ) {
   const ledger = createLedger(ledgerFile);
-  const control = () => {
-    try {
-      return JSON.parse(readFileSync(controlFile, "utf8"));
-    } catch {
-      return {};
-    }
-  };
+  // 제어 파일이 아직 없으면 주입할 것이 없다. 깨진 제어 파일은 검사를 잘못 이끌므로 드러낸다.
+  const control = () =>
+    orIfMissing(
+      () => JSON.parse(readFileSync(controlFile, "utf8")),
+      hasErrorCode("ENOENT"),
+      {}
+    );
   const inner = connection.adapter;
   let readyUntil = 0;
   const adapter = {
     ...inner,
     async execute(request, ctl) {
       const runId = request.identity.runId;
-      let budget = null;
-      try {
-        budget = readBudget(budgetFile);
-      } catch {
-        /* 예산이 없으면 실제 실행을 시작하지 않는다. */
-      }
+      // 예산이 없거나 깨졌으면 아래에서 실제 실행을 시작하지 않는다. 읽기 오류는 그대로 드러난다.
+      const budget = readBudget(budgetFile);
       if (live) {
         // 준비됨 결과는 60초 다시 쓴다. 지난 결과가 없거나 오래됐으면 새로 확인한다.
         let ready = { status: "ready", reason: null };
         if (Date.now() >= readyUntil) {
-          ready = null;
-          try {
-            ready = await inner.checkReadiness(ctl.signal);
-          } catch {
-            /* 확인하지 못하면 시작하지 않는다. */
-          }
+          // 확인이 실패하면 그 원인을 남기고 준비되지 않은 것으로 본다. 아래에서 시작하지 않는다.
+          ready = await continueAfterFailure(
+            () => inner.checkReadiness(ctl.signal),
+            (error) =>
+              console.error(
+                `[chaos] readiness check failed (${failureCode(error)}); the live run is not started`
+              )
+          );
           if (ready?.status === "ready") readyUntil = Date.now() + 60_000;
         }
         // 취소된 실행은 시작하지 않고 취소로 끝낸다. 준비 확인을 새로 했든 지난 결과를 썼든 같고, 비용 경계의 거절도 아니다.
@@ -280,8 +320,7 @@ export function gateConnection(
           connection: connection.id,
         });
       }
-      const tokenFile = path.join(tokenDir, `${runId}.token`);
-      if (live) writeSecretFile(tokenFile, request.access.token);
+      // 실패할 수 있는 준비(제어 파일 읽기, 입력 조립)는 토큰을 쓰기 전에 끝낸다. 토큰을 쓴 바로 다음부터 정리가 지킨다.
       const settings = control();
       const input = {
         ...request,
@@ -292,12 +331,21 @@ export function gateConnection(
           ? { context: { ...request.context, conversation: [] } }
           : {}),
       };
+      const tokenFile = path.join(tokenDir, `${runId}.token`);
+      if (live) writeSecretFile(tokenFile, request.access.token);
       let result;
       try {
         result = await inner.execute(input, ctl);
         return result;
       } finally {
-        rmSync(tokenFile, { force: true });
+        // 토큰을 지우지 못해도 실행 기록은 남긴다. 토큰 폴더는 장면 정리가 통째로 지운다.
+        continueAfterFailure(
+          () => rmSync(tokenFile, { force: true }),
+          (error) =>
+            console.error(
+              `[chaos] run token was not removed (${failureCode(error)})`
+            )
+        );
         ledger.append({
           kind: "end",
           scene: budget?.scene ?? null,
