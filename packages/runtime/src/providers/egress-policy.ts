@@ -2,6 +2,7 @@ import {
   cidrContains,
   formatIp,
   normalizeHost,
+  orIfUnreadable,
   parseCidr,
   parseIp,
   type Destination,
@@ -186,15 +187,11 @@ export async function decideDestination(
   if (entries.length === 0)
     return { allowed: false, reason: "destination_not_allowed" };
   const literal = parseIp(host);
-  let texts: string[];
-  if (literal) texts = [host];
-  else {
-    try {
-      texts = await resolve(host);
-    } catch {
-      return { allowed: false, reason: "not_resolved" };
-    }
-  }
+  const resolved = literal
+    ? [host]
+    : await orIfUnreadable(() => resolve(host), undefined);
+  if (!resolved) return { allowed: false, reason: "not_resolved" };
+  const texts: string[] = resolved;
   const addresses = texts.map((text) => parseIp(text));
   if (addresses.length === 0 || addresses.some((address) => !address))
     return { allowed: false, reason: "not_resolved" };

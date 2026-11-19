@@ -4,7 +4,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, readlink } from "node:fs/promises";
 import path from "node:path";
 import { Transform } from "node:stream";
-import type { CredentialRelayEndpoint } from "@babojubot/contracts";
+import {
+  continueAfterFailure,
+  failureCode,
+  orIfUnreadable,
+  type CredentialRelayEndpoint,
+} from "@babojubot/contracts";
 import { relayIdentityHeaders } from "./relay.ts";
 
 /**
@@ -237,16 +242,13 @@ export function createCredentialRelay(options: {
   let failedWith: string | null = null;
 
   /** 프로필의 `authorize`로 얻는 주입 비밀. 던지거나 비어 있으면 그 원본을 쓸 수 없다. */
-  const secretsOf = (credential: string): string[] | undefined => {
-    try {
+  const secretsOf = (credential: string): string[] | undefined =>
+    orIfUnreadable(() => {
       const secrets = profile
         .authorize(credential)
         .secrets.filter((secret) => secret.length > 0);
       return secrets.length > 0 ? secrets : undefined;
-    } catch {
-      return undefined;
-    }
-  };
+    }, undefined);
 
   const revoke = (token: string, failure: boolean) => {
     const state = grants.get(token);
@@ -279,14 +281,14 @@ export function createCredentialRelay(options: {
     for (const token of [...grants.keys()]) revoke(token, true);
     for (const listener of listeners) listener();
   };
-  const read = async () => {
-    try {
-      const value = (await options.credential())?.trim();
-      return value || undefined;
-    } catch {
-      return undefined;
-    }
-  };
+  const read = async () =>
+    continueAfterFailure(
+      async () => (await options.credential())?.trim() || undefined,
+      (error) =>
+        console.warn(
+          `[provider] the relay could not read its credential (${failureCode(error)})`
+        )
+    );
 
   return {
     verified: options.verified,
@@ -412,7 +414,10 @@ export function createCredentialRelay(options: {
             path: `${base}${route.upstreamPath ?? route.path}${target.search}`,
             headers,
           });
-        } catch {
+        } catch (error) {
+          console.warn(
+            `[provider] the relay could not send a request upstream (${failureCode(error)})`
+          );
           if (!route.fixed) fail("unusable", credential);
           return deny(res, 503, "relay_unavailable");
         }
@@ -490,7 +495,12 @@ export function createCredentialRelay(options: {
         });
         req.pipe(outgoing);
         req.on("error", () => outgoing.destroy());
-      })().catch(() => deny(res, 500, "relay_failed"));
+      })().catch((error: unknown) => {
+        console.warn(
+          `[provider] the relay failed a request (${failureCode(error)})`
+        );
+        deny(res, 500, "relay_failed");
+      });
     },
   };
 }
@@ -521,13 +531,8 @@ export async function credentialResidue(
     }
     if (!found.isSymbolicLink()) return true;
     if (known === undefined) return true;
-    let target: string;
-    try {
-      target = await readlink(at);
-    } catch {
-      return true;
-    }
-    if (target !== known) return true;
+    const target = await orIfUnreadable(() => readlink(at), undefined);
+    if (target === undefined || target !== known) return true;
   }
   return false;
 }

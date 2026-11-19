@@ -1,5 +1,11 @@
-import { modelOptionSchema, type ModelOption } from "@babojubot/contracts";
+import {
+  modelOptionSchema,
+  orIfUnreadable,
+  type ModelOption,
+} from "@babojubot/contracts";
 import { settingName } from "./process.ts";
+
+const unreadable = Symbol("unreadable");
 
 /**
  * 제품에 담아 내는 Claude 모델 목록. 고르는 칸에 이 순서로 보이고, 고른 ID를 그대로 `--model`로 넘긴다.
@@ -35,10 +41,8 @@ export function claudeModelsFor(id: string): ModelOption[] {
   const merged = [...claudeModels];
   const raw = process.env[name]?.trim();
   if (!raw) return merged;
-  let rows: unknown;
-  try {
-    rows = JSON.parse(raw);
-  } catch {
+  const rows = orIfUnreadable((): unknown => JSON.parse(raw), unreadable);
+  if (rows === unreadable) {
     console.warn(`[providers] ${name} is not valid JSON; ignoring it`);
     return merged;
   }

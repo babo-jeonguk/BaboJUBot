@@ -4,13 +4,19 @@ import { constants } from "node:fs";
 import path from "node:path";
 import {
   addUsage,
+  failureCode,
+  hasErrorCode,
   isTokenCount,
   isUsageAnomaly,
+  orIfMissing,
+  orIfUnreadable,
   usageAmount,
   type SessionMaintenance,
   type UsageAmount,
 } from "@babojubot/contracts";
 import { record } from "./record.ts";
+
+const unreadable = Symbol("unreadable");
 
 /** Claude's saved cumulative session cost, as written to the session transcript. A bad saved figure stays an anomaly. */
 export type ClaudeSessionCost = {
@@ -31,12 +37,17 @@ async function sessionTranscripts<T>(
 ): Promise<T | undefined> {
   if (!/^[a-zA-Z0-9-]+$/.test(id)) return;
   const projects = path.join(home, "config/projects");
-  let folders;
-  try {
-    folders = await readdir(projects, { withFileTypes: true });
-  } catch {
-    return;
-  }
+  const folders = await orIfMissing(
+    () => readdir(projects, { withFileTypes: true }),
+    hasErrorCode("ENOENT", "ENOTDIR"),
+    undefined
+  ).catch((error: unknown) => {
+    console.warn(
+      `[provider] the Claude session folders could not be read (${failureCode(error)})`
+    );
+    return undefined;
+  });
+  if (!folders) return;
   for (const folder of folders) {
     if (!folder.isDirectory()) continue;
     let file;
@@ -49,7 +60,11 @@ async function sessionTranscripts<T>(
       if (!info.isFile()) continue;
       const value = await read(file, info.size);
       if (value !== undefined) return value;
-    } catch {
+    } catch (error) {
+      if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
+        console.warn(
+          `[provider] a Claude session transcript could not be read (${failureCode(error)})`
+        );
       /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
     } finally {
       await file?.close();
@@ -69,12 +84,11 @@ export async function claudeSessionFacts(
     const lines = buffer.toString("utf8").split("\n");
     let facts: SessionMaintenance | undefined;
     for (let index = lines.length - 1; index >= 0; index--) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(lines[index]!);
-      } catch {
-        continue;
-      }
+      const parsed = orIfUnreadable(
+        (): unknown => JSON.parse(lines[index]!),
+        unreadable
+      );
+      if (parsed === unreadable) continue;
       const row = record(parsed);
       if (row.isSidechain || row.sessionId !== id) continue;
       if (row.subtype === "compact_boundary" || row.isCompactSummary) break;
@@ -121,12 +135,11 @@ export async function claudeSessionCost(
       line++;
       const text = raw.trim();
       if (!text) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        continue;
-      }
+      const parsed = orIfUnreadable(
+        (): unknown => JSON.parse(text),
+        unreadable
+      );
+      if (parsed === unreadable) continue;
       const row = record(parsed);
       if (row.type !== "cost-state" || row.sessionId !== id) continue;
       const total = row.totalCostUSD;

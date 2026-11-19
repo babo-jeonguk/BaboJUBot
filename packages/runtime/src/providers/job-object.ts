@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { continueAfterFailure, failureCode } from "@babojubot/contracts";
 
 /**
  * Windows 묶음 실행기(#205). Windows에는 프로세스 그룹이 없어, 프로그램이 먼저 끝나면 남긴 프로그램을 찾을 수 없다.
@@ -210,11 +211,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 지우지 못해도(다른 서버가 쓰는 중, 백신이 잡고 있음) 준비를 실패로 만들지 않는다. 다음 시작 때 다시 지운다. */
 function remove(file: string) {
-  try {
-    rmSync(file, { force: true });
-  } catch {
-    /* Left for the next start. */
-  }
+  continueAfterFailure(
+    () => rmSync(file, { force: true }),
+    (error) =>
+      console.warn(
+        `[provider] an old launcher file could not be removed; the next start tries again (${failureCode(error)})`
+      )
+  );
 }
 
 /** 같은 소스로 만든 실행기가 있고 시험 실행이 되면 그것을 쓰고, 아니면 고유한 임시 이름으로 만들어 시험한 뒤 공개한다. */
@@ -259,13 +262,17 @@ async function build(
 
 /** 다른 소스로 만든 예전 실행기를 지운다. 만드는 중인 다른 서버의 임시 파일은 건드리지 않는다. */
 function removeOldLaunchers(directory: string, current: string) {
-  try {
-    for (const name of readdirSync(directory))
-      if (publishedName.test(name) && path.join(directory, name) !== current)
-        remove(path.join(directory, name));
-  } catch {
-    /* Left for the next start. */
-  }
+  continueAfterFailure(
+    () => {
+      for (const name of readdirSync(directory))
+        if (publishedName.test(name) && path.join(directory, name) !== current)
+          remove(path.join(directory, name));
+    },
+    (error) =>
+      console.warn(
+        `[provider] old launchers could not be listed; the next start tries again (${failureCode(error)})`
+      )
+  );
 }
 
 /**
