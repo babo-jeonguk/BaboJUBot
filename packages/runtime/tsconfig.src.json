@@ -3,6 +3,7 @@
   "include": ["src"],
   "exclude": [
     "src/**/*.test.ts",
+    "src/**/*.test.tsx",
     "src/testing.ts",
     "src/test-cleanup.ts",
     "src/providers/test-support.ts",

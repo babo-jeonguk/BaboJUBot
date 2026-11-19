@@ -92,10 +92,16 @@ export class IsolationGate {
     // Docker를 부르지 않는 결과(Docker 없음·Windows·닫힘)는 바로 정해져 기다림이 없다.
     const immediate =
       !this.#docker || this.#windows || this.#lifetime.signal.aborted;
-    const current = this.#probe();
-    if (immediate) this.#settled.add(current);
-    else void settled(current.finally(() => this.#settled.add(current)));
-    return (this.#current = current);
+    // 확인을 시작하기 전에 진행 중인 확인으로 둔다. 시작하는 사이 다시 불려도 같은 확인을 받는다.
+    const current = Promise.withResolvers<Safety>();
+    this.#current = current.promise;
+    if (immediate) this.#settled.add(current.promise);
+    else
+      void settled(
+        current.promise.finally(() => this.#settled.add(current.promise))
+      );
+    current.resolve(this.#probe());
+    return current.promise;
   }
 
   invalidate(): void {

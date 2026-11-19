@@ -1,5 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "include": ["src", "drizzle.config.ts"],
-  "exclude": ["src/**/*.test.ts", "src/testing.ts", "src/test-cluster.ts"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/testing.ts",
+    "src/test-cluster.ts"
+  ]
 }
