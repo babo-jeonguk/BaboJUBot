@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
@@ -10,6 +11,8 @@ import { ephemeralCluster, startEmbeddedCluster } from "./embedded.ts";
 const inject = vi.hoisted(() => ({
   removeFails: undefined as Error | undefined,
   ownerFolderFails: undefined as Error | undefined,
+  /** 주인 기록 파일(`<dataDir>.owner/<번호>`)을 읽으면 이 오류로 실패한다. */
+  ownerReadFails: undefined as Error | undefined,
   /** 이 시험이 만든 임시 폴더. 지우기를 실패시킨 폴더를 시험 끝에 치운다. */
   made: [] as string[],
 }));
@@ -39,7 +42,17 @@ vi.mock("node:fs", async (importOriginal) => {
       throw inject.ownerFolderFails;
     return real.mkdirSync(target, options);
   }) as typeof real.mkdirSync;
-  return { ...real, mkdirSync, default: { ...real, mkdirSync } };
+  const readFileSync = ((...args: Parameters<typeof real.readFileSync>) => {
+    if (inject.ownerReadFails && /\.owner[\\/]\d+$/.test(String(args[0])))
+      throw inject.ownerReadFails;
+    return real.readFileSync(...args);
+  }) as typeof real.readFileSync;
+  return {
+    ...real,
+    mkdirSync,
+    readFileSync,
+    default: { ...real, mkdirSync, readFileSync },
+  };
 });
 
 /** console.error·warn으로 남긴 값들. 정리 실패가 원래 오류와 따로 기록됐는지 본다. */
@@ -52,6 +65,7 @@ function logged() {
 afterEach(() => {
   inject.removeFails = undefined;
   inject.ownerFolderFails = undefined;
+  inject.ownerReadFails = undefined;
   vi.restoreAllMocks();
 });
 
@@ -103,5 +117,34 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
     inject.removeFails = removeError;
     await expect(ephemeralCluster()).rejects.toBe(ownerError);
     expect(logs()).toContain(removeError);
+  });
+});
+
+// 주인 기록을 읽지 못한 것은 주인이 없는 것과 다르다. 주인 없음으로 보면 살아 있는 다른 주인의 cluster를 다음 세대로 가져간다.
+describe("an owner record that cannot be read", () => {
+  it("fails the start with the read error and does not take ownership", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "babojubot-owner-"));
+    onTestFinished(() => removeFolder(root));
+    // dataDir 자리에 파일을 두어, 주인을 잘못 가져가더라도 Postgres를 띄우기 전에 실패하게 한다.
+    const dataDir = path.join(root, "data");
+    fs.writeFileSync(dataDir, "");
+    const owners = `${dataDir}.owner`;
+    fs.mkdirSync(owners);
+    fs.writeFileSync(
+      path.join(owners, "1"),
+      JSON.stringify({ pid: process.pid, persistent: true })
+    );
+    const denied = Object.assign(
+      new Error("injected: the owner record could not be read"),
+      { code: "EACCES" }
+    );
+    inject.ownerReadFails = denied;
+    logged();
+
+    await expect(
+      startEmbeddedCluster({ dataDir, persistent: true })
+    ).rejects.toBe(denied);
+    inject.ownerReadFails = undefined;
+    expect(fs.readdirSync(owners).sort()).toEqual(["1"]);
   });
 });
