@@ -171,3 +171,48 @@ test("cleanup chains in finally and catch blocks are reported in product code an
         `${place}: ${code}`
       );
 });
+
+const groupRule = ["product/no-process-group-signal"];
+const groupSignals = {
+  "process.kill on a negative pid": `export function stop(group) {\n  process.kill(-group, "SIGTERM");\n}\n`,
+  "killUnlessGone on a negative pid": `export function stop(killUnlessGone, group) {\n  return killUnlessGone(-group, "SIGKILL");\n}\n`,
+  "processAlive on a negative pid": `export function alive(processAlive, group) {\n  return processAlive(-group);\n}\n`,
+};
+const keptGroupCalls = [
+  // 프로세스 하나에 보내는 신호와 자식 객체의 kill.
+  `export function alive(pid) {\n  process.kill(pid, 0);\n}\n`,
+  `export function stop(child) {\n  child.kill("SIGTERM");\n}\n`,
+  // 그룹 끄기는 제품 함수로.
+  `export async function stop(stopProcessGroup, child) {\n  await stopProcessGroup(child.pid);\n}\n`,
+];
+
+test("signalling a process group is left to the product's process group stop", async () => {
+  for (const place of chainPlaces) {
+    for (const [shape, code] of Object.entries(groupSignals)) {
+      const [message, ...rest] = await lint(code, place, groupRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 이유와 대안을 알려 준다.
+      assert.match(message.message, /stopProcessGroup/);
+      assert.match(message.message, /recovery\.ts/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+    for (const code of keptGroupCalls)
+      assert.deepEqual(
+        await lint(code, place, groupRule),
+        [],
+        `${place}: ${code}`
+      );
+  }
+  // 그 함수를 둔 파일과 시험 코드는 범위 밖이다.
+  for (const place of [
+    "packages/runtime/src/providers/recovery.ts",
+    ...chainTestPlaces,
+  ])
+    for (const code of Object.values(groupSignals))
+      assert.deepEqual(
+        await lint(code, place, groupRule),
+        [],
+        `${place}: ${code}`
+      );
+});
