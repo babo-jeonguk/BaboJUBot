@@ -97,23 +97,45 @@ function psState(pid: number) {
   );
 }
 
-/** 모두 끝날 때까지 시한 안에서 기다린다. 넘으면 남은 번호와 함께, 조회가 실패하면 그 원인(pid 포함)으로 실패한다. */
+/**
+ * 모두 끝날 때까지 시한 안에서 기다린다. 대상마다 따로 보므로 한 대상의 조회가 실패해도 나머지가 끝나기를 계속 기다린다.
+ * 시한을 넘기면 남은 번호를, 조회가 실패한 대상은 그 원인(pid 포함)을 모두 모아 실패한다.
+ */
 export async function untilExited(pids: number[], timeoutMs = 5000) {
-  let lookup: { error: unknown } | undefined;
-  const done = () => {
+  const lookups = new Map<number, unknown>();
+  /** 끝났거나 조회가 실패해 더 기다리지 않는 대상인가. */
+  const settled = (pid: number) => {
+    if (lookups.has(pid)) return true;
     try {
-      return pids.every(exited);
+      return exited(pid);
     } catch (error) {
-      lookup = { error };
+      lookups.set(pid, error);
       return true;
     }
   };
-  await vi.waitUntil(done, { timeout: timeoutMs, interval: 25 }).catch(() => {
-    throw new Error(
-      `still running after ${timeoutMs} ms: ${pids.filter((pid) => !exited(pid)).join(", ")}`
+  const failures: unknown[] = [];
+  await vi
+    .waitUntil(() => pids.every(settled), { timeout: timeoutMs, interval: 25 })
+    .catch(() => {
+      const running = pids.filter((pid) => !settled(pid));
+      if (running.length > 0)
+        failures.push(
+          new Error(
+            `still running after ${timeoutMs} ms: ${running.join(", ")}`
+          )
+        );
+    });
+  failures.push(...lookups.values());
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(
+      failures,
+      failures
+        .map((failure) =>
+          failure instanceof Error ? failure.message : String(failure)
+        )
+        .join(" — 그리고 ")
     );
-  });
-  if (lookup) throw lookup.error;
 }
 
 /** 시험 정리: 모두에게 SIGKILL을 보내고 끝날 때까지 기다린다. 한 대상에 보내지 못해도 나머지에 보내고 기다린 뒤 함께 알린다. */

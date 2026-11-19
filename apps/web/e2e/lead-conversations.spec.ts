@@ -132,19 +132,14 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
   await messageAnswered(page.request, org.id, unseenMessage);
   await expect(unread).toBeVisible();
 
-  // 열 때 함께 나가는 목록 조회가 읽음 기록보다 먼저 서버 상태(읽지 않음)를 받고, 읽음이 화면에 반영된 뒤에야
-  // 도착하게 한다. 늦게 온 옛 목록이 읽음을 덮으면 점이 다시 나타난다(#211).
+  // 읽음 기록보다 먼저 서버 상태(읽지 않음)를 받은 목록 조회가, 읽음이 화면에 반영된 뒤에야 도착하게 한다. 늦게 온 옛 목록이
+  // 읽음을 덮으면 점이 다시 나타난다(#211). 옛 목록은 이 시험이 낸 Event로 다시 불러오게 해 붙잡는다. 화면이 스스로 다시
+  // 부르는 때(늦게 온 다른 Event)에 기대면 그 조회가 대화를 열기 전에 모두 끝난 실행에서 붙잡을 목록이 오지 않는다.
   const listPath = `/api/organizations/${org.id}/conversations`;
   let staleSeen!: (request: Request) => void;
   const stale = new Promise<Request>((resolve) => {
     staleSeen = resolve;
   });
-  // 옛 목록이 끝내 오지 않아도 정리에서 읽음 기록을 보내 붙잡힌 요청이 남지 않게 한다.
-  let letReadThrough!: () => void;
-  const readHeld = new Promise<void>((resolve) => {
-    letReadThrough = resolve;
-  });
-  void stale.then(() => letReadThrough());
   let releaseStale!: () => void;
   const staleHeld = new Promise<void>((resolve) => {
     releaseStale = resolve;
@@ -167,18 +162,19 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
       await route.fulfill({ response });
     }
   );
-  // 옛 목록을 받아 둔 뒤에야 읽음 기록이 서버에 닿는다.
-  await other.route(
-    (url) => url.pathname === `${listPath}/${unseenConversation.id}/read`,
-    async (route) => {
-      await readHeld;
-      await route.continue();
-    }
-  );
   await withCleanup(async (defer) => {
     defer(() => other.unrouteAll({ behavior: "wait" }));
-    defer(() => letReadThrough());
     defer(() => releaseStale());
+    // 승인 정책을 바꾸면 Event 하나만 남고 아무도 깨우지 않는다. 그 Event를 받은 다른 탭이 대화 목록을 다시 불러온다.
+    const changed = await page.request.put(
+      `/api/organizations/${org.id}/approval-policy`,
+      {
+        data: { addWorker: true },
+      }
+    );
+    expect(changed.status()).toBe(200);
+    // 옛 목록(읽지 않음)이 붙잡힌 뒤에 대화를 열어, 읽음 기록은 그 목록보다 늦게 서버에 닿는다.
+    const staleRequest = await stale;
     const read = other.waitForResponse(
       (r) =>
         r.url().endsWith(`${listPath}/${unseenConversation.id}/read`) &&
@@ -188,7 +184,6 @@ test("starts a second conversation, gets the Lead's reply there, and leaves the 
     await expect(thread(other).locator('[data-author="agent"]')).toContainText(
       "평가 지표를 정리해 주세요"
     );
-    const staleRequest = await stale;
     expect((await read).ok()).toBe(true);
     await expect(unread).toHaveCount(0);
 

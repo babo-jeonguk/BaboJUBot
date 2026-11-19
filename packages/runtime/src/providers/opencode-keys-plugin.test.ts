@@ -2,6 +2,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
+import { answering } from "../testing.ts";
 
 // 제품이 OpenCode 설정 폴더에 써 넣는 plugin을 OpenCode 없이 그 공개 API 모양(ctx.tool.transform·editor.update)의 가짜로 돌린다.
 // 실제 OpenCode 2.2.6에서의 동작은 apps/server/test/opencode-real-cli.test.ts가 본다.
@@ -15,16 +16,18 @@ afterEach(async () => {
 
 async function mcpServer(reply: (body: any) => unknown) {
   const captured: Captured[] = [];
-  const server = http.createServer(async (req, res) => {
-    let raw = "";
-    for await (const chunk of req) raw += chunk;
-    const body = JSON.parse(raw);
-    captured.push({ headers: req.headers, body });
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({ jsonrpc: "2.0", id: body.id, result: reply(body) })
-    );
-  });
+  const server = http.createServer(
+    answering(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw);
+      captured.push({ headers: req.headers, body });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({ jsonrpc: "2.0", id: body.id, result: reply(body) })
+      );
+    })
+  );
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   close = () =>
     new Promise((resolve, reject) =>

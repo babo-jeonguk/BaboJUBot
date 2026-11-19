@@ -156,7 +156,7 @@ test("the Lead chat shows the latest 50 messages and loads older ones on scroll-
   const asked = scroller.locator('[data-author="owner"]').last();
   await expect(asked).toContainText("새 소식이 있나요?", runs);
   expect(await scroller.evaluate((el) => el.scrollTop)).toBeLessThan(200);
-  expect(await messages.count()).toBeGreaterThan(loaded);
+  await expect.poll(() => messages.count()).toBeGreaterThan(loaded);
 
   // 맨 아래에서 64px보다 멀면 버튼이 있고 그 안이면 없다. 맨 아래로 돌아오면 가장 최근 창(100개 이하)만 남긴다.
   await scroller.evaluate((el) =>

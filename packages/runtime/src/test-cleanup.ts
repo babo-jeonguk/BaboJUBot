@@ -135,3 +135,14 @@ export function killUnlessGone(
     });
   }
 }
+
+/**
+ * 시험이 나중에 기다리는 Promise를 표시하고 그대로 돌려준다. 기다리기 전에 거절돼도 러너가 그 거절을 처리되지 않은 거절로
+ * 알리지 않는다. 거절은 나중에 기다리는 곳이 받는다(그 전에 시험이 실패해 정리로 끝나면 시험의 실패가 보고된다).
+ * 시작하자마자 거절될 수 있는 대기(자식 프로그램의 `exit`·`error`, 붙잡은 요청의 응답)를 먼저 만들고 다른 단계를 거쳐 기다릴 때
+ * 쓴다. 결과를 끝내 보지 않는 Promise에는 쓰지 않는다. 그런 작업은 기다려 결과를 단언한다(CODING_STANDARDS.md#단언).
+ */
+export function awaitedLater<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {});
+  return promise;
+}

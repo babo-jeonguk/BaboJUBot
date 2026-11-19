@@ -8,6 +8,7 @@ import {
 } from "@babojubot/contracts";
 import { createFakeProviders, type Script } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
+import { awaitedLater } from "@babojubot/runtime/test-cleanup";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   idle,
@@ -661,12 +662,13 @@ describe("one worker request decided through the dashboard and the channel at on
 
       // 먼저 보낸 결정은 조직 잠금 밖에서 모델 목록을 받다가 멈추고, 그사이 다른 길의 결정이 확정된다.
       const gate = s.holdFake2Models();
-      const held = decideVia(heldVia, s.org.id, approvalId, {
-        decision: "approve",
-        choices: [{ provider: "fake-2", model: "fake-2-max" }],
-      });
       // 결과는 아래에서 시한 안에 받는다. 테스트가 먼저 실패해 서버를 닫으며 끊겨도 처리되지 않은 오류로 남지 않는다.
-      held.catch(() => {});
+      const held = awaitedLater(
+        decideVia(heldVia, s.org.id, approvalId, {
+          decision: "approve",
+          choices: [{ provider: "fake-2", model: "fake-2-max" }],
+        })
+      );
       let won;
       try {
         await within(

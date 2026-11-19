@@ -44,6 +44,25 @@ const scriptIgnores = [
   "scripts/fixtures/**",
 ];
 
+// 타입 정보로 검사하는 시험 코드: 디스크에 있는 시험 파일(폴더 glob이 잡는 폴더는 뺀다). TypeScript 파일은 각 패키지의
+// tsconfig.json, scripts·.agents의 .mjs는 그 폴더의 tsconfig.json(allowJs)으로 타입 정보를 얻는다. 어느 프로젝트에도 들지 않는
+// 시험 폴더의 .mjs(가짜 서버·시험)는 기본 프로젝트로 읽는다.
+const typedTestFiles = globSync([...testFiles, ".agents/scripts/*.test.mjs"], {
+  cwd: import.meta.dirname,
+  exclude: (entry) => /(^|[\\/])node_modules$/.test(entry),
+}).filter((file) => /\.(ts|tsx|mts|mjs|js)$/.test(file));
+// 타입 정보를 만드는 project service는 lint 실행 하나에 하나뿐이어서 처음 만든 설정을 모두 같이 쓴다. 그래서 타입 정보를 쓰는
+// 설정은 모두 이 값을 넘긴다.
+const projectService = {
+  // 기본 프로젝트도 Node 타입을 읽고 JS를 받는다(scripts/tsconfig.json의 설정).
+  defaultProject: "scripts/tsconfig.json",
+  allowDefaultProject: [
+    "apps/server/test/*.mjs",
+    "apps/server/test/fixtures/*.mjs",
+    "apps/web/e2e/support/*.mjs",
+  ],
+};
+
 // runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수를 거친다.
 const processOwners = [
   "process.ts", // startProcess·runProbe: 환경 작성과 입력·시작 오류·종료를 맡는 공용 실행
@@ -119,10 +138,14 @@ export default defineConfig([
     // process.kill의 실패는 오류 코드를 보고 넘긴다(CODING_STANDARDS.md#정리). catch가 받은 오류를 읽는지 봐야 해서 규칙을 따로 둔다.
     // Node 서버 닫기의 실패를 Promise 이행으로 버리지 않는다(CODING_STANDARDS.md#정리). close 콜백과 서버의 출처를 봐야 해서 규칙을 따로 둔다.
     // 시험은 process.env를 직접 바꾸지 않는다(CODING_STANDARDS.md#격리). 가져오기·구조 분해로 받은 env까지 출처를 따라가야 해서 규칙을 따로 둔다.
+    // 시험은 기다리지 않는 Promise의 거절을 빈 처리기로 버리지 않는다(CODING_STANDARDS.md#단언). 처리기의 몸과 같은 Promise를 돌려주는지 봐야 해서 규칙을 따로 둔다.
+    // awaitedLater로 표시한 Promise는 담아 두고 뒤에서 기다린다(CODING_STANDARDS.md#단언). 출처와 담은 바인딩의 기다림을 따라가야 해서 규칙을 따로 둔다.
     files: testFiles,
     plugins: { tests: testRules },
     rules: {
       "tests/no-cleanup-in-finally": "error",
+      "tests/no-dropped-rejection": "error",
+      "tests/no-unawaited-later": "error",
       "tests/no-elapsed-time-assertion": "error",
       "tests/no-expected-failure": "error",
       "tests/no-fixed-time-wait": "error",
@@ -169,15 +192,49 @@ export default defineConfig([
   },
   {
     // E2E는 대상을 그 조직·대화·영역 안에서 찾는다(CODING_STANDARDS.md#화면). 페이지인지 타입으로 가려야 해서 타입 정보를 쓴다.
+    // 화면 상태는 다시 시도하는 web-first 단언으로 확인한다(CODING_STANDARDS.md#화면). Playwright locator인지 타입으로 가린다.
     files: ["apps/web/e2e/**/*.ts"],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService,
         tsconfigRootDir: import.meta.dirname,
       },
     },
     plugins: { tests: testRules },
-    rules: { "tests/no-page-wide-locator": "error" },
+    rules: {
+      "tests/no-one-shot-ui-read": "error",
+      "tests/no-page-wide-locator": "error",
+    },
+  },
+  {
+    // 시험 코드도 시작한 Promise를 기다리거나 받는다(CODING_STANDARDS.md#단언). 기다리지 않은 단언(Playwright의 `expect(…).toHaveText`,
+    // `expect(…).resolves`)은 결과와 상관없이 통과하고, 버린 실패는 시험이 끝난 뒤 다른 시험에서 터진다. `void`로 버리는 것도 짚는다.
+    // 비동기 함수를 반환값을 보지 않는 자리(이벤트 listener, `new Promise` executor)에 넘기면 그 실패가 버려지므로 그것도 막는다.
+    // 타입 정보는 디스크에 있는 파일에만 생긴다. lint 시험이 lintText로 넣는 없는 경로는 이 규칙을 받지 않는다.
+    // node:test의 `test`·`describe`가 돌려주는 Promise는 러너가 기다린다.
+    files: typedTestFiles,
+    languageOptions: {
+      parserOptions: {
+        projectService,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-floating-promises": [
+        "error",
+        {
+          ignoreVoid: false,
+          allowForKnownSafeCalls: [
+            {
+              from: "package",
+              package: "node:test",
+              name: ["test", "describe", "it", "suite"],
+            },
+          ],
+        },
+      ],
+      "@typescript-eslint/no-misused-promises": "error",
+    },
   },
   {
     rules: {
@@ -192,7 +249,7 @@ export default defineConfig([
     files: productFiles,
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService,
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -279,7 +336,7 @@ export default defineConfig([
     ignores: scriptIgnores,
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService,
         tsconfigRootDir: import.meta.dirname,
       },
     },

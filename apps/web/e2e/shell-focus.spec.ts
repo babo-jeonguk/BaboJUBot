@@ -35,7 +35,11 @@ async function createOrganization(page: Page, label: string) {
 }
 
 /** 요소의 id. ARIA 연결(`aria-controls`·`aria-labelledby`)을 비교할 때 쓴다. */
-const idOf = (locator: Locator) => locator.getAttribute("id");
+/** 요소의 id. 이 화면의 id는 요소를 그릴 때 정해지고 바뀌지 않으므로, 있는 것을 확인한 뒤 한 번 읽어 기대값으로 쓴다. */
+const idOf = async (locator: Locator) => {
+  await expect(locator).toHaveAttribute("id", /.+/);
+  return (await locator.getAttribute("id"))!;
+};
 
 for (const size of widths) {
   test.describe(`${size.name} ${size.width}px`, () => {
@@ -182,8 +186,8 @@ for (const size of widths) {
       const tablist = page.getByRole("tablist", { name: "사본 파일" });
       const tabs = tablist.getByRole("tab");
       await expect(tabs.first()).toBeVisible();
+      await expect.poll(() => tabs.count()).toBeGreaterThanOrEqual(2);
       const count = await tabs.count();
-      expect(count).toBeGreaterThanOrEqual(2);
       const afterSecond = 2 % count;
       const panel = page.getByRole("tabpanel");
 
@@ -194,12 +198,10 @@ for (const size of widths) {
         await expect(tablist.locator('[aria-selected="true"]')).toHaveCount(1);
         await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
         await expect(tab).toHaveAttribute("tabindex", "0");
-        const tabId = await idOf(tab);
-        expect(tabId).toBeTruthy();
-        await expect(panel).toHaveAttribute("aria-labelledby", tabId!);
+        await expect(panel).toHaveAttribute("aria-labelledby", await idOf(tab));
         for (let i = 0; i < count; i++) {
+          await expect(tabs.nth(i)).toHaveAttribute("aria-controls", /.+/);
           const controls = await tabs.nth(i).getAttribute("aria-controls");
-          expect(controls).toBeTruthy();
           await expect(page.locator(`[id="${controls}"]`)).toHaveRole(
             "tabpanel"
           );
@@ -380,9 +382,7 @@ test("the docked Inbox takes focus when opened, is linked from its triggers, and
     await page.keyboard.press("Enter");
     await expect(panel).toBeVisible();
     await expect(heading).toBeFocused();
-    const controls = await trigger.getAttribute("aria-controls");
-    expect(controls).toBeTruthy();
-    expect(await panel.getAttribute("id")).toBe(controls);
+    await expect(trigger).toHaveAttribute("aria-controls", await idOf(panel));
     await expect(trigger).toHaveAttribute("aria-expanded", "true");
 
     // 패널 안에서 Tab으로 이어 간다.
@@ -405,9 +405,7 @@ test("the docked Inbox takes focus when opened, is linked from its triggers, and
   await page.keyboard.press("Enter");
   await expect(panel).toContainText("주의가 필요한 항목이 없습니다.");
   await expect(heading).toBeFocused();
-  expect(await attention.getAttribute("aria-controls")).toBe(
-    await panel.getAttribute("id")
-  );
+  await expect(attention).toHaveAttribute("aria-controls", await idOf(panel));
   await panel.getByRole("button", { name: "Inbox 닫기" }).click();
   await expect(attention).toBeFocused();
   await page.unrouteAll({ behavior: "wait" });
@@ -442,9 +440,7 @@ test("the narrow Inbox drawer still traps focus and returns it to its trigger", 
   const drawer = page.getByRole("dialog", { name: "Inbox" });
   await expect(drawer).toBeVisible();
   await expect(drawer.locator(":focus")).toHaveCount(1);
-  expect(await trigger.getAttribute("aria-controls")).toBe(
-    await drawer.getAttribute("id")
-  );
+  await expect(trigger).toHaveAttribute("aria-controls", await idOf(drawer));
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
   await expect(trigger).toBeFocused();

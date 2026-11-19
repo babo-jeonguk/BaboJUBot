@@ -80,13 +80,12 @@ test("the owner edits an agent's Role copy, keeps the draft through a failure, a
   await expect(editor).toHaveValue(edited);
 
   // 새로고침·탭 닫기는 브라우저 확인 창을 띄우고, 머무르면 편집 내용이 그대로다.
-  let unloadPrompt: string | undefined;
-  page.once("dialog", (dialog) => {
-    unloadPrompt = dialog.type();
-    void dialog.dismiss();
-  });
+  // runBeforeUnload이면 close는 페이지가 닫히기를 기다리지 않는다. 확인 창은 그 뒤에 받아 닫는다.
+  const prompt = page.waitForEvent("dialog");
   await page.close({ runBeforeUnload: true });
-  await expect.poll(() => unloadPrompt).toBe("beforeunload");
+  const dialog = await prompt;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
   expect(page.isClosed()).toBe(false);
   await expect(editor).toHaveValue(edited);
 
