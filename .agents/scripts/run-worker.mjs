@@ -9,7 +9,8 @@
 //
 // Exit codes: 0 finished without an error event; 2 error event (move to the next model);
 // 3 no session started twice (parent takes over); 4 opencode failed without an error event or
-// was stopped at --limit (default 110 minutes, inside the parent's 2-hour background limit); 1 usage.
+// the call reached --limit (a limit on the whole call, retries included; default 110 minutes, inside
+// the parent's 2-hour background limit); 1 usage.
 import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -136,7 +137,8 @@ function readEvents() {
 
 const sessionOf = (events) => events.find((e) => e.sessionID)?.sessionID ?? "";
 
-function runOnce() {
+/** One launch of opencode. It is stopped at the call's deadline (`deadlineAt`, shared by every attempt). */
+function runOnce(deadlineAt) {
   const out = openSync(opts.out, "w");
   const err = openSync(errFile, "w");
   child = spawn("opencode", args, {
@@ -155,10 +157,13 @@ function runOnce() {
       stop(proc);
     }
   }, opts.startCheckMs);
-  const limit = setTimeout(() => {
-    overLimit = true;
-    stop(proc);
-  }, opts.limitMs);
+  const limit = setTimeout(
+    () => {
+      overLimit = true;
+      stop(proc);
+    },
+    Math.max(0, deadlineAt - Date.now())
+  );
   return new Promise((done) => {
     proc.on("error", (error) => {
       clearTimeout(check);
@@ -174,14 +179,22 @@ function runOnce() {
 }
 
 const started = Date.now();
+// --limit bounds the whole call, retries included: one deadline from the start, and no new attempt once it is reached.
+const deadlineAt = started + opts.limitMs;
 let attempts = 0;
 let result;
 let events;
 do {
   attempts += 1;
-  result = await runOnce();
+  result = await runOnce(deadlineAt);
   events = readEvents();
-} while (attempts < 2 && !result.spawnError && !sessionOf(events));
+} while (
+  attempts < 2 &&
+  !result.spawnError &&
+  !result.overLimit &&
+  Date.now() < deadlineAt &&
+  !sessionOf(events)
+);
 
 const session = sessionOf(events);
 const errors = events
@@ -228,12 +241,12 @@ let status;
 let exitCode;
 if (result.spawnError)
   [status, exitCode] = [`spawn failed: ${result.spawnError}`, 4];
-else if (result.overLimit)
+else if (errors.length) [status, exitCode] = ["error", 2];
+else if (result.overLimit || (!session && Date.now() >= deadlineAt))
   [status, exitCode] = [
     `stopped after the ${opts.limitMs / 60_000}-minute limit`,
     4,
   ];
-else if (errors.length) [status, exitCode] = ["error", 2];
 else if (!session) [status, exitCode] = ["no session started", 3];
 else if (result.code !== 0)
   [status, exitCode] = [`opencode exited ${result.signal ?? result.code}`, 4];
