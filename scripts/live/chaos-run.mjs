@@ -398,6 +398,7 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
       );
     }
   );
+  // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
   cleanup.commandPidsLeft = left?.length ?? null;
   // 이미 끝난 명령(ESRCH)은 넘어가고, 끄지 못한 명령은 세고 알린 뒤 나머지 정리를 이어 간다.
   for (const pid of left ?? [])
