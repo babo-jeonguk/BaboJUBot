@@ -24,16 +24,20 @@ if (!volume || !/^[\w.-]+$/.test(volume) || !fileSystem) {
   process.exit(2);
 }
 mkdirSync(reports, { recursive: true });
+// 수동 실행은 지정한 commit을 checkout하므로 GITHUB_SHA가 아니라 실제로 받은 commit을 남긴다. 읽지 못하면 그 이유를 남긴다.
+const head = spawnSync("git", ["rev-parse", "HEAD"], {
+  cwd: root,
+  encoding: "utf8",
+  timeout: 30_000,
+});
 const meta = {
   volume,
   fileSystem,
   dir: dir ?? "",
-  // 수동 실행은 지정한 commit을 checkout하므로 GITHUB_SHA가 아니라 실제로 받은 commit을 남긴다.
   sha:
-    spawnSync("git", ["rev-parse", "HEAD"], {
-      cwd: root,
-      encoding: "utf8",
-    }).stdout?.trim() || "local",
+    head.status === 0
+      ? head.stdout.trim()
+      : `unknown (git rev-parse HEAD: ${head.error?.message ?? head.stderr.trim()})`,
 };
 const finish = (fields, code) => {
   writeFileSync(

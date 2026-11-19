@@ -5,6 +5,12 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  continueAfterFailure,
+  failureCode,
+  settled,
+} from "../../packages/contracts/src/failure.ts";
+import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
+import {
   createLedger,
   limits,
   sceneRunCap,
@@ -44,14 +50,16 @@ export async function runChaos({
   startedAt = Date.now(),
 }) {
   const deadlineAt = startedAt + totalMs - cleanupReserveMs;
-  const runDir = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-run-"));
-  await chmod(runDir, 0o700);
-  const ledger = createLedger(path.join(runDir, "ledger.jsonl"));
-  const budgetFile = path.join(runDir, "budget.json");
   const secrets = new Set();
   const results = [];
   const fake = connection !== "opencode";
-  try {
+  // 실행 기록·예산 폴더는 만든 직후 지우기를 등록한다. 장면이 실패해도 지우고, 지우기 실패는 그 실패와 함께 알린다.
+  await withCleanup(async (defer) => {
+    const runDir = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-run-"));
+    defer(() => rm(runDir, { recursive: true, force: true }));
+    await chmod(runDir, 0o700);
+    const ledger = createLedger(path.join(runDir, "ledger.jsonl"));
+    const budgetFile = path.join(runDir, "budget.json");
     for (const scene of scenes) {
       const base = {
         id: scene.id,
@@ -103,9 +111,7 @@ export async function runChaos({
         `${scene.id} ${scene.title}: ${last.outcome}${last.reason ? ` (${last.reason})` : ""}`
       );
     }
-  } finally {
-    await rm(runDir, { recursive: true, force: true });
-  }
+  });
   const liveRuns = results.reduce((n, r) => n + (r.liveRuns ?? 0), 0);
   const inputTokens = results.reduce((n, r) => n + (r.inputTokens ?? 0), 0);
   const allChecks = results.flatMap((r) => r.checks);
@@ -257,7 +263,8 @@ async function runScene({
         once: true,
       })
     );
-    aborted.catch(() => {});
+    // 중단 실패는 아래 경주가 받는다. 경주가 먼저 끝난 뒤의 거절이 처리되지 않은 거절로 남지 않게 끝남만 지킨다.
+    void settled(aborted);
     ({ checks, observations } = await Promise.race([scene.run(ctx), aborted]));
     outcome = sceneOutcome(checks);
   } catch (error) {
@@ -339,21 +346,39 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
     cleanup.homeKept = leftovers.homeKept;
     cleanup.providerRecordsFound = leftovers.providerRecordsFound;
     cleanup.providerRecordsLeft = leftovers.providerRecordsLeft;
-  } catch {
+  } catch (error) {
     cleanup.problems++;
+    // 증거에는 남기지 않고 터미널에만 짧은 오류 이름을 보인다.
+    console.error(
+      `[chaos] scene server cleanup failed (${failureCode(error)})`
+    );
     // 홈에는 아직 프로세스 기록이 남아 있을 수 있다. 지우지 않고 남긴다.
     cleanup.homeKept = existsSync(home);
   }
   cleanup.serverStopped = !server.running;
   // 이 장면 표시가 붙은 시험용 명령만 남아 있으면 끝낸다. 다른 작업의 프로세스는 표시가 달라 건드리지 않는다.
-  const left = busyPids(marker);
-  cleanup.commandPidsLeft = left.length;
-  for (const pid of left)
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* 이미 끝났다. */
+  // 조회가 실패하면 남은 명령을 모르므로 그 수를 비우고(null) 문제로 센 뒤 나머지 정리를 이어 간다.
+  const left = continueAfterFailure(
+    () => busyPids(marker),
+    (error) => {
+      cleanup.problems++;
+      console.error(
+        `[chaos] could not list test commands (${failureCode(error.cause ?? error)})`
+      );
     }
+  );
+  cleanup.commandPidsLeft = left?.length ?? null;
+  // 이미 끝난 명령(ESRCH)은 넘어가고, 끄지 못한 명령은 세고 알린 뒤 나머지 정리를 이어 간다.
+  for (const pid of left ?? [])
+    continueAfterFailure(
+      () => killUnlessGone(pid),
+      (error) => {
+        cleanup.problems++;
+        console.error(
+          `[chaos] could not stop test command ${pid} (${failureCode(error.cause ?? error)})`
+        );
+      }
+    );
   await rm(harnessDir, { recursive: true, force: true });
   cleanup.homeRemoved = !existsSync(home);
   return cleanup;

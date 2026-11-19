@@ -7,6 +7,12 @@ import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+} from "../../packages/contracts/src/failure.ts";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
 import { sharedVariables } from "../../packages/runtime/src/providers/process.ts";
 
@@ -111,12 +117,32 @@ export function chaosServer({
     return info;
   }
 
-  /** 서버 프로세스만 SIGKILL로 끝낸다. 내장 DB와 프로바이더 프로세스는 남는다(다음 시작이 정리). */
+  /**
+   * 서버 프로세스만 SIGKILL로 끝낸다. 내장 DB와 프로바이더 프로세스는 남는다(다음 시작이 정리).
+   * SIGKILL 뒤에도 끝나지 않으면 기다림을 30초에서 끊고 pid와 함께 실패한다.
+   */
   async function kill() {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     forced = true;
     child.kill("SIGKILL");
-    await exited;
+    const pid = child.pid;
+    let timer;
+    const late = new Promise((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `chaos server ${pid} did not exit within 30s after SIGKILL`
+            )
+          ),
+        30_000
+      );
+    });
+    try {
+      await Promise.race([exited, late]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** 정상 종료(SIGTERM). 진행 중인 실행은 제품이 취소·정리한다. 시한 안에 끝나지 않으면 SIGKILL한다. */
@@ -218,13 +244,9 @@ export function processRecordPids(home) {
   );
 }
 
-function readdir(dir) {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
+/** 폴더의 이름 목록. 폴더가 없으면 빈 목록이고, 권한·디스크 오류는 드러낸다. */
+const readdir = (dir) =>
+  orIfMissing(() => readdirSync(dir), hasErrorCode("ENOENT"), []);
 
 // ---------- 자식 프로세스 ----------
 
@@ -336,16 +358,36 @@ async function runChild(configFile) {
       providers,
     });
   } catch (error) {
-    await handle.close();
+    // DB 닫기가 실패해도 그것은 따로 알리고, 시작 실패를 그대로 드러낸다.
+    await continueAfterFailure(
+      () => handle.close(),
+      (closeError) =>
+        console.error(
+          `[chaos-server] closing the database after a failed start failed (${failureCode(closeError)})`
+        )
+    );
     throw error;
   }
   let stopping;
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
     process.on(signal, () => {
       stopping ??= (async () => {
+        // 서버 닫기가 실패해도 DB를 닫는다. 실패는 무엇이 실패했는지 알리고 종료 코드로 드러낸다.
         let failed = false;
-        await server.close().catch(() => (failed = true));
-        await handle.close().catch(() => (failed = true));
+        const report = (what) => (error) => {
+          failed = true;
+          console.error(
+            `[chaos-server] ${what} failed (${failureCode(error)})`
+          );
+        };
+        await continueAfterFailure(
+          () => server.close(),
+          report("closing the server")
+        );
+        await continueAfterFailure(
+          () => handle.close(),
+          report("closing the database")
+        );
         process.exit(failed ? 1 : 0);
       })();
     });

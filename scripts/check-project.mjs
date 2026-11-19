@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  gitIgnores,
   ignoredDotFolderPattern,
   loadIgnoredDotFolders,
 } from "./ignored-dot-folders.mjs";
@@ -13,18 +14,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [".gitignore", "AGENTS.md", "GLOSSARY.md", "docs/features.md"];
 for (const location of required)
   assert(fs.existsSync(path.join(root, location)), `Missing ${location}`);
-
-function isGitIgnored(location) {
-  try {
-    execFileSync("git", ["check-ignore", "--no-index", "-q", location], {
-      cwd: root,
-      stdio: "ignore",
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const ignoredFolderPath = ignoredDotFolderPattern(loadIgnoredDotFolders(root));
 // 그 폴더를 작업 위치로 정하는 도구 정의(agent skill·권한 설정)만 이름을 쓸 수 있다.
@@ -36,7 +25,7 @@ const repositoryFiles = new Set(
   execFileSync(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { cwd: root, encoding: "utf8" }
+    { cwd: root, encoding: "utf8", timeout: 60_000 }
   )
     .split("\0")
     .filter(Boolean)
@@ -44,10 +33,15 @@ const repositoryFiles = new Set(
 for (const relative of repositoryFiles) {
   if (!relative.endsWith(".md")) continue;
   const location = path.join(root, relative);
-  // index에는 있지만 작업 트리에서 지운 파일은 검사하지 않는다.
-  if (!fs.existsSync(location)) continue;
+  // index에는 있지만 작업 트리에서 지운 파일은 검사하지 않는다. 그 밖의 읽기 오류는 드러낸다.
+  let content;
+  try {
+    content = fs.readFileSync(location, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") continue;
+    throw error;
+  }
   markdownFiles++;
-  const content = fs.readFileSync(location, "utf8");
   if (!toolDefinitions.some((prefix) => relative.startsWith(prefix)))
     content.split("\n").forEach((line, index) => {
       assert(
@@ -62,7 +56,7 @@ for (const relative of repositoryFiles) {
     const resolved = path.resolve(path.dirname(location), local);
     assert(fs.existsSync(resolved), `Broken local link ${location}: ${target}`);
     assert(
-      !isGitIgnored(resolved),
+      !gitIgnores(root, resolved),
       `Link to Git-ignored path ${location}: ${target}`
     );
   }
