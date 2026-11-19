@@ -25,9 +25,14 @@ const framework = [
 
 // 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다.
 const productFiles = ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"];
-// 개발 스크립트: 사람과 CI가 돌리는 scripts 아래 .mjs에서 시험 코드를 뺀 곳. 시험이 부르는 가짜 프로그램(`test-fixtures`)과
-// 일부러 실패하는 시험 묶음(`scripts/fixtures`)은 시험 쪽이다. 타입 정보는 scripts/tsconfig.json(allowJs)으로 얻는다.
-const scriptFiles = ["scripts/**/*.mjs"];
+// 개발 스크립트: 사람과 CI가 돌리는 scripts 아래 .mjs와 agent가 직접 돌리는 도구 스크립트(.agents의 scripts)에서 시험 코드를
+// 뺀 곳. 시험이 부르는 가짜 프로그램(`test-fixtures`)과 일부러 실패하는 시험 묶음(`scripts/fixtures`)은 시험 쪽이다.
+// 타입 정보는 각 폴더의 tsconfig.json(allowJs)으로 얻는다.
+const scriptFiles = [
+  "scripts/**/*.mjs",
+  ".agents/scripts/*.mjs",
+  ".agents/skills/*/scripts/*.mjs",
+];
 // 타입 정보는 디스크에 있는 파일에만 생긴다. lint 시험이 lintText로 넣는 없는 경로는 타입 정보 없는 규칙만 받는다.
 const scriptsOnDisk = globSync(scriptFiles, { cwd: import.meta.dirname });
 const scriptIgnores = [

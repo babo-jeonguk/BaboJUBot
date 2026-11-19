@@ -875,6 +875,39 @@ function awaitsIn(fn) {
 export const skippedCleanupIn = (block) => firstSkipped(block, awaitsIn(block));
 
 /**
+ * `block` 안에서 던질 수 있는 동기 정리(`process.kill`·`*Sync`, `no-cleanup-in-finally`와 같은 판정)가 실패하면 건너뛰는 뒤 정리가
+ * 있는 첫 정리(`{ node, messageId }`). 정리 중 하나 이상이 동기인 연쇄만 본다(기다린 정리끼리는 `skippedCleanupIn`이 본다).
+ * - try 밖: 동기 정리 뒤에 다른 정리(동기 정리·기다린 정리 호출)가 이어지거나, 기다린 정리 뒤에 동기 정리가 이어지거나, 동기 정리를
+ *   반복문 안에서 부른다(`skipped`).
+ * - 블록 안 try(catch가 있는 것) 본문: 같은 본문에 그런 정리가 이어진다(`caught`).
+ * 블록 안에 정의한 함수(`continueAfterFailure(() => rmSync(…))` 등)의 몸은 따로 돈다고 보고 보지 않는다.
+ */
+export function skippedSyncCleanupIn(block, sourceCode) {
+  const steps = [];
+  walkBody(block, (node) => {
+    if (node.type === "CallExpression" && throwsSync(node, sourceCode))
+      steps.push({ node, sync: true });
+    else if (
+      node.type === "AwaitExpression" &&
+      cleanupCall(node.argument, failurePath(node, block).loopVariables)
+    )
+      steps.push({ node, sync: false });
+  });
+  for (const [index, step] of steps.entries()) {
+    const path = failurePath(step.node, block);
+    const messageId = path.guard ? "caught" : "skipped";
+    if (step.sync && path.inLoop) return { node: step.node, messageId };
+    const skipped = steps
+      .slice(index + 1)
+      .filter((next) => step.sync || next.sync)
+      .filter((next) => !path.guard || contains(path.guard.block, next.node))
+      .some((next) => mayFollow(step.node, next.node));
+    if (skipped) return { node: step.node, messageId };
+  }
+  return undefined;
+}
+
+/**
  * 공용 정리 hook이 정리를 차례로 기다리면 앞 정리가 실패한 순간 hook이 끝나 뒤 자원(listener·폴더·서버)이 남는다
  * (CODING_STANDARDS.md#정리). hook 함수 안(안에 정의한 함수는 빼고)의 모양을 짚는다.
  * - 정리 호출을 기다린 뒤에 다른 기다림이 있다(`await t.close(); await model.close();`).

@@ -21,6 +21,7 @@ const sharedSettings = new Set([
   "scripts/eslint-test-rules.mjs",
   "scripts/eslint-product-rules.mjs",
   "scripts/tsconfig.json",
+  ".agents/tsconfig.json",
 ]);
 
 const lintExtensions = new Set([

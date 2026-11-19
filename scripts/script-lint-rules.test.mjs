@@ -24,12 +24,16 @@ async function lint(code, filePath, rules) {
 const scriptPlaces = [
   "scripts/provider-live.mjs",
   "scripts/live/chaos-run.mjs",
+  // agent가 직접 읽고 돌리는 도구 스크립트도 같은 규칙을 받는다.
+  ".agents/scripts/run-worker.mjs",
+  ".agents/skills/reference-first/scripts/mock-llm.mjs",
 ];
 // 시험 파일, 시험이 부르는 가짜 프로그램, 일부러 실패하는 시험 묶음은 스크립트 규칙을 받지 않는다.
 const scriptTestPlaces = [
   "scripts/gh-post.test.mjs",
   "scripts/test-fixtures/stuck-run.mjs",
   "scripts/fixtures/test-exit-code/broken-setup.mjs",
+  ".agents/scripts/check-worker-change.test.mjs",
 ];
 
 const scriptRules = {
@@ -99,9 +103,14 @@ const chains = {
   "an optional cleanup followed by a folder removal": `import { rm } from "node:fs/promises";\nexport async function run(server, dir) {\n  try {\n    await server?.listen();\n  } finally {\n    await server?.close();\n    await rm(dir, { recursive: true, force: true });\n  }\n}\n`,
   "a cleanup followed by any other wait": `export async function run(service, events) {\n  try {\n    await service.start();\n  } finally {\n    await service.close();\n    await events;\n  }\n}\n`,
   "cleanups awaited in a loop": `export async function run(work, cleanups) {\n  try {\n    await work();\n  } finally {\n    for (const cleanup of cleanups) await cleanup();\n  }\n}\n`,
+  "sync cleanups one after another": `import { closeSync, rmSync } from "node:fs";\nexport async function run(fd, dir) {\n  try {\n    await fd.sync();\n  } finally {\n    closeSync(fd);\n    rmSync(dir, { recursive: true, force: true });\n  }\n}\n`,
+  "a sync cleanup before an awaited one": `import { rmSync } from "node:fs";\nexport async function run(server, dir) {\n  try {\n    await server.listen();\n  } catch (error) {\n    rmSync(dir, { recursive: true, force: true });\n    await server.close();\n    throw error;\n  }\n}\n`,
+  "an awaited cleanup before a sync one": `import { rmSync } from "node:fs";\nexport async function run(server, dir) {\n  try {\n    await server.listen();\n  } finally {\n    await server.close();\n    rmSync(dir, { recursive: true, force: true });\n  }\n}\n`,
+  "process.kill in a loop": `export async function run(work, pids) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) process.kill(pid, "SIGKILL");\n  }\n}\n`,
 };
 const caughtChains = {
   "two cleanups in one try": `export async function run(server, db, report) {\n  try {\n    await server.listen();\n  } finally {\n    try {\n      await server.close();\n      await db.close();\n    } catch (error) {\n      report(error);\n    }\n  }\n}\n`,
+  "two sync cleanups in one try": `import { closeSync, rmSync } from "node:fs";\nexport async function run(fd, dir, report) {\n  try {\n    await fd.sync();\n  } finally {\n    try {\n      closeSync(fd);\n      rmSync(dir, { force: true });\n    } catch (error) {\n      report(error);\n    }\n  }\n}\n`,
 };
 const keptChains = [
   // 정리마다 실패를 받는다.
@@ -119,6 +128,12 @@ const keptChains = [
   `export async function run(service, closeServiceThenDrainEvents) {\n  try {\n    await service.start();\n  } finally {\n    await closeServiceThenDrainEvents();\n  }\n}\n`,
   // 실패 경로가 아닌 곳의 차례 정리는 이 규칙이 보지 않는다.
   `export async function shutdown(server, db) {\n  await server.close();\n  await db.close();\n}\n`,
+  // 동기 정리 하나뿐이다(연쇄가 아니다).
+  `import { closeSync } from "node:fs";\nexport async function run(fd) {\n  try {\n    await fd.sync();\n  } finally {\n    closeSync(fd);\n  }\n}\n`,
+  // 동기 정리마다 실패를 받는다.
+  `import { closeSync, rmSync } from "node:fs";\nexport async function run(fd, dir, report) {\n  try {\n    await fd.sync();\n  } finally {\n    try {\n      closeSync(fd);\n    } catch (error) {\n      report(error);\n    }\n    rmSync(dir, { force: true });\n  }\n}\n`,
+  // 이름 붙은 함수 안의 동기 정리는 블록의 연쇄가 아니다.
+  `import { closeSync, rmSync } from "node:fs";\nexport async function run(fd, dir, continueAfterFailure, report) {\n  try {\n    await fd.sync();\n  } finally {\n    continueAfterFailure(() => closeSync(fd), report);\n    rmSync(dir, { force: true });\n  }\n}\n`,
 ];
 
 test("cleanup chains in finally and catch blocks are reported in product code and scripts", async () => {
@@ -133,11 +148,12 @@ test("cleanup chains in finally and catch blocks are reported in product code an
       // 무엇이 남는지와 쓸 수단·작성 기준을 알려 준다.
       assert.match(
         message.message,
-        shape in caughtChains ? /한 try…catch/ : /차례로 기다립니다/
+        shape in caughtChains ? /한 try…catch/ : /차례로 기다리거나/
       );
       assert.match(message.message, /AggregateError/);
       assert.match(message.message, /withCleanup/);
       assert.match(message.message, /Promise\.all/);
+      assert.match(message.message, /continueAfterFailure/);
       assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
     }
     for (const code of keptChains)
