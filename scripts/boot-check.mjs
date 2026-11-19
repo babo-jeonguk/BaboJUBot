@@ -93,6 +93,7 @@ async function serveAndKill(label) {
   current = {
     label,
     server,
+    exited,
     output: () => outputTail(stdoutTail, stderrTail),
   };
   server.stdout?.setEncoding("utf8");
@@ -336,19 +337,32 @@ const stop = createStop({
   graceMs: stopGraceMs,
   log: (message) => console.log(message),
   // 멈춤 시한 안에 흐름이 끝나지 않았다(단계 하나가 끝나지 않음). 떠 있는 서버만 끝내고 남았을 수 있는 것을 밝혀 실패한다.
-  onGraceExpired: () => {
-    console.log(
-      `${stop.reason}: cleanup did not finish in ${stopGraceMs / 1000}s; the server, Postgres, and ${home} may remain${current ? current.output() : ""}`
-    );
-    // 이미 끝났으면 자식 종료는 아무것도 하지 않는다. 그 밖의 실패는 남기고 그대로 끝낸다.
+  onGraceExpired: () => void killServerAndExit(),
+});
+/**
+ * 멈춤 시한이 지났을 때: 떠 있는 서버를 강제로 끝내고, 끝난 것을 상한(stopWaitMs) 안에서 확인한 뒤 실패로 끝낸다.
+ * 신호만 보내고 떠나지 않는다. 끝나지 않았으면 그 pid를 남은 것으로 밝힌다. 이미 끝났으면 자식 종료는 아무것도 하지 않는다.
+ */
+async function killServerAndExit() {
+  const running = current;
+  if (running) {
     continueAfterFailure(
-      () => current?.server.kill("SIGKILL"),
+      () => running.server.kill("SIGKILL"),
       (error) =>
         console.log(`could not kill the server (${failureCode(error)})`)
     );
-    process.exit(1);
-  },
-});
+    const gone = await Promise.race([
+      running.exited.then(() => true),
+      delay(stopWaitMs).then(() => false),
+    ]);
+    if (!gone)
+      console.log(
+        `server ${running.server.pid} did not exit within ${stopWaitMs}ms after SIGKILL and may remain`
+      );
+  }
+  process.exit(1);
+}
+
 setTimeout(
   () => stop.request(`boot check did not finish in ${runDeadlineMs / 1000}s`),
   runDeadlineMs

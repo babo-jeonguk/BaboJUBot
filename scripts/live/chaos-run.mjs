@@ -22,6 +22,7 @@ import {
   writeSecretFile,
 } from "./chaos-budget.mjs";
 import { chaosServer, processRecordPids } from "./chaos-server.mjs";
+import { stillRunning } from "./processes.mjs";
 import {
   brief,
   busyPids,
@@ -331,16 +332,14 @@ async function runScene({
 /** 장면 정리. 정리에서 난 문제도 결과에 남긴다. */
 /**
  * 장면의 임시 홈과 검사 폴더(0700)를 만들고 `ready`(예산 쓰기)를 한다. 준비가 실패하면 그때까지 만든 폴더를 지우고 원래 실패를
- * 던진다(지우기 실패는 따로 알린다). 성공하면 두 폴더의 정리는 장면 끝의 `cleanupScene`이 맡는다.
+ * 던진다(지우기 실패는 따로 알린다). 성공하면 두 폴더의 정리는 장면 끝의 `cleanupScene`이 맡는다. 폴더는 `root` 아래에 만든다.
  */
-async function prepareScene(ready) {
+export async function prepareScene(ready, root = tmpdir()) {
   const made = [];
   try {
-    const home = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-home-"));
+    const home = await mkdtemp(path.join(root, "babojubot-chaos-home-"));
     made.push(home);
-    const harnessDir = await mkdtemp(
-      path.join(tmpdir(), "babojubot-chaos-scene-")
-    );
+    const harnessDir = await mkdtemp(path.join(root, "babojubot-chaos-scene-"));
     made.push(harnessDir);
     await chmod(home, 0o700);
     await chmod(harnessDir, 0o700);
@@ -411,6 +410,22 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
         );
       }
     );
+  // 신호만 보내고 떠나지 않는다. 끈 명령이 실제로 끝났는지 상한 안에서 확인하고, 남은 것은 세고 알린다.
+  const survivors = await continueAfterFailure(
+    () => stillRunning(left ?? [], 10_000),
+    (error) => {
+      cleanup.problems++;
+      console.error(
+        `[chaos] could not confirm the test commands ended (${failureCode(error.cause ?? error)})`
+      );
+    }
+  );
+  if (survivors?.length) {
+    cleanup.problems++;
+    console.error(
+      `[chaos] test commands still running after SIGKILL: ${survivors.join(", ")}`
+    );
+  }
   await rm(harnessDir, { recursive: true, force: true });
   cleanup.homeRemoved = !existsSync(home);
   return cleanup;
