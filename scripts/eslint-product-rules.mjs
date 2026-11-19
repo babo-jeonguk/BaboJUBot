@@ -155,7 +155,7 @@ const syncCommandTimeout = {
 };
 
 const ignoredErrorGuide =
-  "버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). CODING_STANDARDS.md#제품-코드";
+  '버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). 오류 이벤트 처리기(on("error", …))와 오류를 넘기는 콜백(execFile·close 등)도 같습니다: 상대가 끊어 난 오류(EPIPE·ECONNRESET)만 isDisconnect로 확인해 넘기고, 그 밖의 오류는 원인을 남기거나 드러냅니다. CODING_STANDARDS.md#제품-코드';
 
 /** 오류를 받는 처리기의 자리: `.catch(처리기)`, `.then(성공, 처리기)`. */
 const handlerPositions = new Map([
@@ -176,16 +176,40 @@ function onlyThrows(body) {
   );
 }
 
-/** `_`로 시작해 쓰지 않는다고 표시하고 실제로 쓰지 않는 오류 이름인가. 쓰는 이름이면 버리는 것이 아니다. */
-const markedUnused = (context, param) =>
-  param?.type === "Identifier" &&
-  param.name.startsWith("_") &&
-  context.sourceCode
-    .getDeclaredVariables(param.parent)
+/**
+ * 함수가 첫 매개변수로 받는 오류를 버리는 모양. 매개변수가 없거나(다른 오류를 던지는 한 문장뿐이면 아님), 받고도 쓰지 않는다
+ * (`_`를 붙였든 아니든). 구조 분해·기본값으로 받는 매개변수는 보지 않는다. `catch` 절은 `{ params, body, scope: 절 }`로 넘긴다.
+ */
+function droppedError(context, fn) {
+  const [param] = fn.params;
+  if (!param) return onlyThrows(fn.body) ? undefined : "unnamed";
+  if (param.type !== "Identifier") return undefined;
+  const used = context.sourceCode
+    .getDeclaredVariables(fn.scope ?? fn)
     .some(
       (variable) =>
-        variable.name === param.name && variable.references.length === 0
+        variable.name === param.name && variable.references.length > 0
     );
+  if (used) return undefined;
+  return param.name.startsWith("_") ? "underscore" : "unused";
+}
+
+/** 오류 이벤트 처리기를 붙이는 메서드. `x.on("error", 처리기)`의 처리기는 오류를 첫 인수로 받는다. */
+const listenerMethods = new Set([
+  "on",
+  "once",
+  "addListener",
+  "prependListener",
+  "prependOnceListener",
+]);
+/** 끝날 때 오류(없으면 null)를 첫 인수로 넘기는 마지막 인수 콜백을 받는 호출: child_process의 execFile·exec, 서버·스트림의 close, stream의 pipeline·finished. */
+const errorFirstCalls = new Set([
+  "execFile",
+  "exec",
+  "close",
+  "pipeline",
+  "finished",
+]);
 
 /** 호출하는 메서드 이름. `x.catch(...)`와 `x["catch"](...)` 모두 본다. */
 function calledMethod(callee) {
@@ -199,10 +223,12 @@ function calledMethod(callee) {
 
 /**
  * 오류를 받지 않고 버리면 의도한 처리(파일 없음은 없는 것)와 실수(권한 오류까지 빈 결과로 바꿈)가 코드에서 같아 보인다.
- * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, `_`를 붙인 오류 이름을 막는다.
- * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다. 받고 쓰지 않는 오류는 `no-unused-vars`가 막는다.
+ * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, 오류 이벤트 처리기(`on`·`once` 등의 "error"),
+ * 오류를 첫 인수로 넘기는 콜백(`execFile`·`exec`·`close`·`pipeline`·`finished`의 마지막 인수), 받고도 쓰지 않는 오류 이름(`_` 포함)을 막는다.
+ * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다.
  * 알려진 한계: 이름으로 넘긴 처리기(`.then(settle, settle)`), 기본값·나머지 매개변수로 받는 오류, `void error`처럼 쓰는 척만 하는
- * 처리는 판정하지 않으며 리뷰가 본다. `orIfUnreadable` 콜백 안의 입출력은 `no-io-in-unreadable`이 본다.
+ * 처리, 위 목록 밖의 오류 우선 콜백(`fs`의 콜백, `write(chunk, 콜백)` 등), 글로 넣는 코드(OpenCode plugin·컨테이너 확인 스크립트의
+ * 문자열)는 판정하지 않으며 리뷰가 본다. `orIfUnreadable` 콜백 안의 입출력은 `no-io-in-unreadable`이 본다.
  */
 const noIgnoredError = {
   meta: {
@@ -215,25 +241,38 @@ const noIgnoredError = {
     messages: {
       unnamed: `오류를 받지 않고 버리면 왜 버리는지 보이지 않습니다. 오류를 받아 검사하거나 다시 던지세요. ${ignoredErrorGuide}`,
       underscore: `\`_\`를 붙여 쓰지 않는 오류도 버리는 것입니다. 오류를 받아 검사하거나 다시 던지세요. ${ignoredErrorGuide}`,
+      unused: `오류를 받고도 쓰지 않으면 버리는 것입니다. 오류를 검사하거나 원인을 남기거나 다시 던지세요. ${ignoredErrorGuide}`,
     },
   },
   create(context) {
     return {
       CatchClause(node) {
-        if (markedUnused(context, node.param))
-          context.report({ node: node.param, messageId: "underscore" });
-        else if (!node.param && !onlyThrows(node.body))
-          context.report({ node, messageId: "unnamed" });
+        const messageId = droppedError(context, {
+          params: node.param ? [node.param] : [],
+          body: node.body,
+          scope: node,
+        });
+        if (messageId) context.report({ node: node.param ?? node, messageId });
       },
       CallExpression(node) {
-        const position = handlerPositions.get(calledMethod(node.callee));
-        const handler =
-          position === undefined ? undefined : node.arguments[position];
+        const method = calledMethod(node.callee);
+        const name =
+          method ??
+          (node.callee.type === "Identifier" ? node.callee.name : undefined);
+        let handler;
+        if (handlerPositions.has(method))
+          handler = node.arguments[handlerPositions.get(method)];
+        else if (
+          listenerMethods.has(method) &&
+          node.arguments[0]?.type === "Literal" &&
+          node.arguments[0].value === "error"
+        )
+          handler = node.arguments[1];
+        else if (errorFirstCalls.has(name)) handler = node.arguments.at(-1);
         if (!handler || !functionTypes.has(handler.type)) return;
-        if (markedUnused(context, handler.params[0]))
-          context.report({ node: handler.params[0], messageId: "underscore" });
-        else if (handler.params.length === 0 && !onlyThrows(handler.body))
-          context.report({ node: handler, messageId: "unnamed" });
+        const messageId = droppedError(context, handler);
+        if (messageId)
+          context.report({ node: handler.params[0] ?? handler, messageId });
       },
     };
   },

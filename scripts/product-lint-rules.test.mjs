@@ -587,3 +587,52 @@ test("orIfUnreadable callbacks do no I/O in product code", async () => {
         `${place}: ${code}`
       );
 });
+
+test("product code does not drop the error an error listener or an error-first callback receives", async () => {
+  const dropped = {
+    "an error listener without a parameter": `export const watch = (socket) => socket.on("error", () => socket.destroy());\n`,
+    "an empty once error listener": `export const watch = (socket) => socket.once("error", () => {});\n`,
+    "an error listener that names the error and does not use it": `export const watch = (socket) => socket.on("error", (error) => {\n  socket.destroy();\n});\n`,
+    "an underscored error listener": `export const watch = (socket) => socket.addListener("error", (_error) => socket.destroy());\n`,
+    "a prepended error listener": `export const watch = (socket) => socket.prependListener("error", function () {\n  socket.destroy();\n});\n`,
+    "an execFile callback without a parameter": `import { execFile } from "node:child_process";\nexport const stop = (pid) => execFile("taskkill", ["/PID", String(pid)], { timeout: 1000 }, () => {});\n`,
+    "an execFile callback that ignores the error": `import { execFile } from "node:child_process";\nexport const ask = (resolve) => execFile("ps", [], { timeout: 1000 }, (error, stdout) => resolve(stdout));\n`,
+    "a server close callback without a parameter": `export const stop = (server) => new Promise((resolve) => server.close(() => resolve()));\n`,
+    "a pipeline callback without a parameter": `import { pipeline } from "node:stream";\nexport const copy = (from, to, done) => pipeline(from, to, () => done());\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(dropped)) {
+      const [message, ...rest] = await lint(code, place, ignoredErrorRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 끊김을 고르는 함수와 작성 기준을 안내한다.
+      assert.match(message.message, /isDisconnect/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+  const kept = [
+    // 상대가 끊은 것만 넘기고 그 밖의 오류는 원인을 남긴다.
+    `import { failureCode, isDisconnect } from "@babojubot/contracts";\nexport const watch = (socket) =>\n  socket.on("error", (error) => {\n    if (!isDisconnect(error)) console.warn(\`socket failed (\${failureCode(error)})\`);\n    socket.destroy();\n  });\n`,
+    `export const listen = (server, reject) => server.once("error", reject);\n`,
+    `export const stop = (server) => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));\n`,
+    `import { execFile } from "node:child_process";\nexport const ask = (resolve, reject) => execFile("ps", [], { timeout: 1000 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));\n`,
+    // 다른 오류를 던지는 한 문장뿐인 처리, 오류가 아닌 이벤트, 오류를 넘기지 않는 콜백은 보지 않는다.
+    `export const watch = (socket) => socket.on("error", () => {\n  throw new Error("socket failed");\n});\n`,
+    `export const watch = (socket, done) => socket.on("close", () => done());\n`,
+    `export const start = (server, ready) => server.listen(0, "127.0.0.1", () => ready());\n`,
+    `export const close = (db) => db.close();\n`,
+  ];
+  for (const place of productPlaces)
+    for (const code of kept)
+      assert.deepEqual(
+        await lint(code, place, ignoredErrorRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    for (const code of Object.values(dropped))
+      assert.deepEqual(
+        await lint(code, place, ignoredErrorRule),
+        [],
+        `${place}: ${code}`
+      );
+});

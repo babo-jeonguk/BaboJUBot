@@ -88,6 +88,21 @@ test("development scripts get the product rules", async () => {
       );
 });
 
+// 오류 이벤트 처리기도 오류를 받아 확인한다. 상대가 끊은 것만 넘기고 나머지는 남긴다.
+test("development scripts do not drop the error an error listener receives", async () => {
+  const reported = `export const watch = (child) => child.stdin.on("error", () => {});\n`;
+  const kept = `import { isDisconnect } from "../packages/contracts/src/failure.ts";\nexport const watch = (child, record) =>\n  child.stdin.on("error", (error) => {\n    if (!isDisconnect(error)) record("stdin-error", { code: error.code });\n  });\n`;
+  const rule = ["product/no-ignored-error"];
+  for (const place of scriptPlaces) {
+    const [message, ...rest] = await lint(reported, place, rule);
+    assert.ok(message, `${place}: not reported`);
+    assert.deepEqual(rest, [], place);
+    assert.deepEqual(await lint(kept, place, rule), [], `${place}: ${kept}`);
+  }
+  for (const place of scriptTestPlaces)
+    assert.deepEqual(await lint(reported, place, rule), [], place);
+});
+
 const chainRule = ["product/no-cleanup-chain"];
 // 정리 연쇄 규칙은 제품 코드와 스크립트에 건다. 시험 코드는 시험 전용 정리 규칙이 본다.
 const chainPlaces = [

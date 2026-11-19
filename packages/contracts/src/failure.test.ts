@@ -4,6 +4,7 @@ import {
   continueAfterFailure,
   failureCode,
   hasErrorCode,
+  isDisconnect,
   orIfMissing,
   orIfProbeFailed,
   orIfUnreadable,
@@ -24,6 +25,17 @@ describe("hasErrorCode", () => {
     expect(missing({ code: 2 })).toBe(false);
     expect(missing("ENOENT")).toBe(false);
     expect(missing(undefined)).toBe(false);
+  });
+});
+
+describe("isDisconnect", () => {
+  it("matches only errors left by a peer that closed the connection or pipe", () => {
+    for (const code of ["EPIPE", "ECONNRESET", "ECONNABORTED", "EOF"])
+      expect(isDisconnect(coded(code))).toBe(true);
+    for (const code of ["EACCES", "ETIMEDOUT", "ECONNREFUSED", "EMFILE"])
+      expect(isDisconnect(coded(code))).toBe(false);
+    expect(isDisconnect(new Error("EPIPE"))).toBe(false);
+    expect(isDisconnect(undefined)).toBe(false);
   });
 });
 

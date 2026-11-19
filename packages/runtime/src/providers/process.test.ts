@@ -121,6 +121,20 @@ describe("runProbe", () => {
     ).rejects.toMatchObject({ code: 1, stderr: "not signed in\n" });
   });
 
+  it("leaves why a run's program could not be started", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const child = startProcess({
+      command: ["/missing/program"],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      onFrame: async () => {},
+    });
+    expect((await child.done).broken).toBe(true);
+    expect(warned).toHaveBeenCalledWith(expect.stringContaining("(ENOENT)"));
+  });
+
   it("reports a missing program", async () => {
     await expect(
       runProbe(["/missing/program"], [], {
