@@ -4,15 +4,9 @@ import { once } from "node:events";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { existsSync } from "node:fs";
+import { TreeLaunchRefused } from "./launch.ts";
 import { startProcess } from "./process.ts";
 import { prepareJobObjectLauncher } from "./job-object.ts";
 import { removeFolder } from "../remove-folder.ts";
@@ -155,21 +149,29 @@ async function printer(name: string) {
   );
   return root;
 }
-/** 실행 시도가 지금처럼(묶음 없이) 돌고 서버 운영 기록에 묶음이 없다고 경고한다. */
-async function expectRunWithoutJob() {
-  const warn = vi.spyOn(console, "warn");
+/** 프로그램이 돌았으면 남기는 표시 파일과, 그 파일을 남기는 프로그램. */
+async function marker() {
+  const file = path.join(await temp("babojubot-job-refused-"), "ran");
+  return {
+    file,
+    script: `require("node:fs").writeFileSync(${JSON.stringify(file)}, "")`,
+  };
+}
+/**
+ * 정리 장치를 쓸 수 없으면 실행 시도를 띄우지 않고, 무엇이 없어 준비하지 못했는지 담은 이름 붙은 실패(`TreeLaunchRefused`)로 거절한다
+ * (#262 사용자 결정: 묶음 없이 띄우는 길은 없다). 프로그램은 돌지 않는다.
+ */
+async function expectRefusedRun(reason: RegExp) {
+  const ran = await marker();
+  let refusal: unknown;
   try {
-    const { attempt, frames } = run(
-      `console.log(JSON.stringify({ ran: true }));`
-    );
-    expect((await attempt.done).code).toBe(0);
-    expect(frames).toEqual([{ ran: true }]);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("no Windows job object")
-    );
-  } finally {
-    warn.mockRestore();
+    run(ran.script);
+  } catch (error) {
+    refusal = error;
   }
+  expect(refusal).toBeInstanceOf(TreeLaunchRefused);
+  expect(refusal).toMatchObject({ message: expect.stringMatching(reason) });
+  expect(existsSync(ran.file)).toBe(false);
 }
 
 // 남긴 자식을 띄운다. 자식이 연결을 쥐었다는 답을 받은 뒤에(넷째 핸들로 알림) 그 이름을 알리고 `then`을 한다. stdio는 남긴 자식이
@@ -400,28 +402,33 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect((await attempt.done).broken).toBe(true);
   });
 
-  it("runs without the launcher and warns when the launcher cannot start", async () => {
+  // 실행기 파일이 사라졌다(백신 등). 묶음 없이 대신 띄우지 않고 시작 실패로 끝난다.
+  it("fails to start, without running the program, when the launcher cannot start", async () => {
     const tools = path.join(dataDir, "tools");
     for (const file of await readdir(tools))
       await rm(path.join(tools, file), { force: true });
-    await expectRunWithoutJob();
+    const ran = await marker();
+    const { attempt, frames } = run(ran.script);
+    expect((await attempt.done).broken).toBe(true);
+    expect(frames).toEqual([]);
+    expect(existsSync(ran.file)).toBe(false);
   });
 
-  it("runs without the launcher and warns when it could not be prepared", async () => {
+  it("refuses the run and names what was missing when the launcher could not be prepared", async () => {
     const other = await temp("babojubot-job-none-");
     expect(
       await prepareJobObjectLauncher(other, {
         compilers: [path.join(other, "missing", "csc.exe")],
       })
     ).toMatchObject({ ok: false });
-    await expectRunWithoutJob();
+    await expectRefusedRun(/C# compiler of the \.NET Framework was not found/);
   });
 
-  // 준비 중 어떤 실패도 서버 시작을 막지 않는다. 데이터 폴더의 `tools` 자리에 파일이 있어 폴더를 만들 수 없는 경우다.
-  it("does not throw when the launcher's folder cannot be made", async () => {
+  // 준비 중 어떤 실패도 서버 시작을 막지 않는다. 데이터 폴더의 `tools` 자리에 파일이 있어 폴더를 만들 수 없는 경우다. 실행 시도는 거절한다.
+  it("does not throw when the launcher's folder cannot be made, and refuses the run", async () => {
     const other = await temp("babojubot-job-blocked-");
     await writeFile(path.join(other, "tools"), "");
     expect(await prepareJobObjectLauncher(other)).toMatchObject({ ok: false });
-    await expectRunWithoutJob();
+    await expectRefusedRun(/could not be prepared/);
   });
 });
