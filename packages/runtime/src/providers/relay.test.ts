@@ -475,15 +475,21 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const relay = relays.open({
       identity,
       required: [
-        destination({ host: "localhost", port, addresses: ["127.0.0.1"] }),
+        // 이 컴퓨터에 따라 localhost는 두 주소로 풀린다. 둘 다 적어야 연결 시도까지 간다.
+        destination({
+          host: "localhost",
+          port,
+          addresses: ["127.0.0.1", "::1"],
+        }),
       ],
     });
     await relay.ready;
     const answer = await connectVia(relay.directory, `localhost:${port}`);
     answer.socket.destroy();
     expect(answer.head).toMatch(/^HTTP\/1\.1 502/);
+    // 마지막으로 시도한 주소의 실패 코드는 이 컴퓨터의 IPv6 설정에 따라 다르다(ECONNREFUSED·EADDRNOTAVAIL 등).
     expect(warned).toHaveBeenCalledWith(
-      expect.stringContaining("(ECONNREFUSED)")
+      expect.stringMatching(/answered 502 \(E[A-Z]+\)$/)
     );
   });
 
