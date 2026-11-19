@@ -776,32 +776,30 @@ async function stopPostgres(pid: number) {
 }
 
 /**
- * 남은 Postgres를 강제로 끝내고 사라진 것을 확인한다. 모두에게 신호를 먼저 보낸 뒤 기다린다. 시한 안에 끝나지 않으면 실패하므로,
+ * 남은 Postgres를 강제로 끝내고 사라진 것을 확인한다. 모두에게 신호를 먼저 보낸 뒤 하나씩 기다린다. 시한 안에 끝나지 않으면 실패하므로,
  * 뒤따르는 폴더 삭제는 일어나지 않고 폴더가 남는다(쓰는 중인 폴더를 지워 원인을 가리지 않는다).
+ * 대상마다 따로 시도한다. 한 대상의 신호나 조회가 실패해도 다른 대상에 보내고 기다린 뒤 그 실패를 함께 알린다.
  */
 async function killPostgres(...pids: number[]) {
-  const alive = pids.filter((pid) => pid && isAlive(pid));
-  // 모두에게 먼저 보낸다. 한 대상에 보내지 못해도 나머지에 보내고 기다린 뒤, 그 실패를 함께 알린다.
+  const targets = pids.filter((pid) => pid > 0);
   await cleanUpAll([
-    ...alive.map((pid) => () => {
-      // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다.
-      if (process.platform !== "win32") killUnlessGone(pid, "SIGCONT");
+    ...targets.map((pid) => () => {
+      // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다. 이미 끝났으면(ESRCH) 넘어간다.
+      if (process.platform !== "win32" && !killUnlessGone(pid, "SIGCONT"))
+        return;
       killUnlessGone(pid);
     }),
-    async () => {
-      // 시한이 지나면 아래에서 남은 것을 알린다. 조회 실패도 아래에서 다시 물어 그 원인으로 알린다.
+    ...targets.map((pid) => async () => {
+      // 시한이 지났으면 남은 것으로, 조회가 실패했으면 다시 물어 그 원인으로 알린다.
       await vi
-        .waitUntil(() => !alive.some(isAlive), {
-          timeout: 10_000,
-          interval: 50,
-        })
-        .catch(() => {});
-      const left = alive.filter(isAlive);
-      if (left.length > 0)
-        throw new Error(
-          `Postgres ${left.join(", ")} did not end after SIGKILL; its folder is kept`
-        );
-    },
+        .waitUntil(() => !isAlive(pid), { timeout: 10_000, interval: 50 })
+        .catch(() => {
+          if (isAlive(pid))
+            throw new Error(
+              `Postgres ${pid} did not end after SIGKILL; its folder is kept`
+            );
+        });
+    }),
   ]);
 }
 
