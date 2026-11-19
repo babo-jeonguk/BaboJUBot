@@ -306,7 +306,7 @@ const noProcessGroupSignal = {
     schema: [],
     messages: {
       group:
-        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/runtime/src/providers/recovery.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. stopProcessGroup(@babojubot/runtime/process-group)을 쓰세요. 그룹이 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
+        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/runtime/src/providers/recovery.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. 프로그램은 launchTree(@babojubot/runtime/launch)로 띄우고 그 stop()으로 끄세요. 트리 전체가 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
@@ -327,6 +327,206 @@ const noProcessGroupSignal = {
   },
 };
 
+const asyncLaunchers = new Set(["spawn", "fork", "exec", "execFile"]);
+const crossSpawn = "cross-spawn";
+const launchAlternatives =
+  "오래 도는 자식은 공용 실행으로 띄우세요: launchTree(@babojubot/runtime/launch, runtime 안은 providers/launch.ts)가 띄우면서 그 트리를 끄는 stop()을 함께 돌려줍니다(Linux·macOS는 프로세스 그룹과 표식, Windows는 묶음). 끝까지 돌릴 짧은 명령은 runTree가 상한·취소에서 트리를 끄고 확인합니다. 결과를 기다려도 되는 짧은 명령은 timeout을 둔 동기 실행(execFileSync·spawnSync)을 씁니다. 트리를 끄면 안 되는 실행(그 자체가 데몬을 띄움)만 eslint.config.js의 launchOwners에 이유와 함께 올립니다. CODING_STANDARDS.md#제품-코드";
+
+/** 가져오는 곳이 child_process인가, cross-spawn인가. */
+const launchModule = (source) =>
+  childProcess.has(source)
+    ? "child_process"
+    : source === crossSpawn
+      ? crossSpawn
+      : undefined;
+
+/** 호출·읽기에 쓴 속성 이름. 계산한 이름이면 `undefined`, 문자열 그대로면 그 값. */
+function propertyName(member) {
+  if (!member.computed) return member.property.name;
+  return member.property.type === "Literal" &&
+    typeof member.property.value === "string"
+    ? member.property.value
+    : undefined;
+}
+
+/**
+ * 오래 도는 자식을 child_process(`spawn`·`fork`·`exec`·`execFile`)나 cross-spawn(비동기 기본 함수·`spawn`)으로 직접 띄우는 것을 막는다.
+ * 직접 띄우면 끄기를 따로 짜야 하고, 그 복사본이 신호만 보내고 떠나기·대표만 기다리기·Windows에서 아무것도 끄지 않기를 되풀이했다
+ * (#255, #262). 이름 그대로·바꿔 가져오기, 모듈 객체(`* as cp`·기본 가져오기)에서 읽기, 다시 내보내기, 문자열 경로의 dynamic import,
+ * `require`·`getBuiltinModule`로 불러오기를 본다. 동기 실행(`*Sync`, cross-spawn `.sync`)은 막지 않는다(상한은 `sync-command-timeout`).
+ * 알려진 한계: 계산한 경로의 dynamic import, 모듈 객체를 다른 변수·함수로 넘긴 뒤의 호출은 따라가지 않는다.
+ */
+const noDirectLaunch = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "launch long-running children only through the shared launch that returns their stop",
+    },
+    schema: [],
+    messages: {
+      direct: `{{name}}으로 자식을 직접 띄웁니다. 띄우기와 끄기를 따로 짜면 끄기가 띄운 방법과 맞지 않습니다(Windows에서 아무것도 끄지 않음, 새 세션으로 나간 자식을 놓침, 신호만 보내고 떠남). ${launchAlternatives}`,
+      loaded: `{{name}}을 import 밖에서 불러오면 무엇을 쓰는지 lint가 따라가지 못합니다. ${launchAlternatives}`,
+    },
+  },
+  create(context) {
+    /** 이 파일에서 모듈 객체를 가리키는 지역 이름 → 모듈 종류. */
+    const modules = new Map();
+    const report = (node, name, messageId = "direct") =>
+      context.report({ node, messageId, data: { name } });
+    const banned = (module, name) =>
+      module === crossSpawn
+        ? name === "spawn" || name === "default"
+        : asyncLaunchers.has(name);
+    const reExport = (node) => {
+      const module = launchModule(node.source?.value);
+      if (!module) return;
+      if (node.type === "ExportAllDeclaration")
+        return report(node, `${node.source.value}의 export *`);
+      for (const specifier of node.specifiers)
+        if (banned(module, specifier.local.name ?? specifier.local.value))
+          report(specifier, `${node.source.value}의 ${specifier.local.name}`);
+    };
+    return {
+      ImportDeclaration(node) {
+        if (node.importKind === "type") return;
+        const module = launchModule(node.source.value);
+        if (!module) return;
+        for (const specifier of node.specifiers) {
+          if (specifier.importKind === "type") continue;
+          if (specifier.type === "ImportSpecifier") {
+            const name = specifier.imported.name ?? specifier.imported.value;
+            if (banned(module, name))
+              report(specifier, `${node.source.value}의 ${name}`);
+          } else modules.set(specifier.local.name, module);
+        }
+      },
+      ExportNamedDeclaration: reExport,
+      ExportAllDeclaration: reExport,
+      ImportExpression(node) {
+        const module = launchModule(node.source.value);
+        if (module)
+          report(node, `${node.source.value}의 dynamic import`, "loaded");
+      },
+      CallExpression(node) {
+        const { callee } = node;
+        const [first] = node.arguments;
+        const loader =
+          callee.type === "Identifier"
+            ? callee.name
+            : callee.type === "MemberExpression"
+              ? propertyName(callee)
+              : undefined;
+        if (
+          (loader === "require" || loader === "getBuiltinModule") &&
+          first?.type === "Literal" &&
+          launchModule(first.value)
+        )
+          return report(node, `${loader}("${first.value}")`, "loaded");
+        // cross-spawn의 기본 함수 자체를 부른다(`spawn(...)`).
+        if (
+          callee.type === "Identifier" &&
+          modules.get(callee.name) === crossSpawn
+        )
+          report(node, `${crossSpawn}`);
+      },
+      MemberExpression(node) {
+        if (node.object.type !== "Identifier") return;
+        const module = modules.get(node.object.name);
+        if (!module) return;
+        const name = propertyName(node);
+        if (name === undefined) report(node, `${node.object.name}[…]`);
+        else if (banned(module, name))
+          report(node, `${node.object.name}.${name}`);
+      },
+    };
+  },
+};
+
+const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
+const recoveryFile = "packages/runtime/src/providers/recovery";
+
+/**
+ * 그룹 끄기의 반쪽(`stopProcessGroup`·`interruptProcessGroup`)만 가져다 쓰지 못하게 한다. 그룹 끄기는 그룹으로 띄운 트리에만 맞고,
+ * 띄운 방법을 모르는 쪽이 빌려 쓰면 Windows에서 아무것도 끄지 않고 성공하거나 새 세션으로 나간 자식을 놓친다(#262).
+ * - `outside: true`(runtime 밖): recovery.ts를 가리키는 가져오기·다시 내보내기·dynamic import와, 어디서든 그 두 이름을 가져오는 것.
+ * - `outside: false`(runtime 안, 공용 실행·복구 밖): recovery.ts에서 그 두 이름을 가져오거나 다시 내보내는 것과 `export *`.
+ */
+const noGroupStopImport = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "keep the process group stop inside the shared launch and the restart recovery",
+    },
+    schema: [
+      {
+        type: "object",
+        properties: { outside: { type: "boolean" } },
+        additionalProperties: false,
+      },
+    ],
+    messages: {
+      recovery:
+        "runtime 밖에서 providers/recovery.ts를 가져옵니다. 그 파일은 서버 재시작 뒤의 정리와 공용 실행이 쓰는 그룹 끄기를 담습니다. 프로그램을 띄우고 끄는 일은 launchTree(@babojubot/runtime/launch)가 돌려주는 stop()으로, 재시작 복구는 @babojubot/runtime의 recoverProviderProcesses로 합니다. CODING_STANDARDS.md#제품-코드",
+      half: "{{name}}만 가져다 쓰면 띄운 방법과 맞지 않는 끄기가 됩니다(Windows에서 아무것도 끄지 않고 성공, 새 세션으로 나간 자식을 놓침). 띄울 때 launchTree가 돌려준 stop()·interrupt()를 쓰세요. 그룹 끄기는 공용 실행(providers/launch.ts)과 재시작 복구(recovery.ts)만 씁니다. CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    const outside = context.options[0]?.outside ?? true;
+    const dir = context.filename.replaceAll("\\", "/").replace(/\/[^/]*$/, "");
+    /** 가져오는 곳이 runtime의 recovery.ts인가(상대 경로를 풀어 본다). */
+    const isRecovery = (source) => {
+      if (typeof source !== "string") return false;
+      if (/^@babojubot\/runtime\/.*recovery/.test(source)) return true;
+      if (!source.startsWith(".")) return false;
+      const parts = [];
+      for (const part of `${dir}/${source}`.split("/"))
+        if (part === "..") parts.pop();
+        else if (part !== ".") parts.push(part);
+      return parts
+        .join("/")
+        .replace(/\.(ts|js|mjs)$/, "")
+        .endsWith(recoveryFile);
+    };
+    const check = (node, specifiers = []) => {
+      const fromRecovery = isRecovery(node.source?.value);
+      if (outside && fromRecovery)
+        return context.report({ node, messageId: "recovery" });
+      if (node.type === "ExportAllDeclaration" && fromRecovery)
+        return context.report({
+          node,
+          messageId: "half",
+          data: { name: "recovery.ts의 export *" },
+        });
+      for (const specifier of specifiers) {
+        const name =
+          specifier.type === "ImportSpecifier"
+            ? (specifier.imported.name ?? specifier.imported.value)
+            : specifier.type === "ExportSpecifier"
+              ? specifier.local.name
+              : undefined;
+        if (groupStoppers.has(name) && (outside || fromRecovery))
+          context.report({
+            node: specifier,
+            messageId: "half",
+            data: { name },
+          });
+      }
+    };
+    return {
+      ImportDeclaration: (node) => check(node, node.specifiers),
+      ExportNamedDeclaration: (node) =>
+        node.source && check(node, node.specifiers),
+      ExportAllDeclaration: (node) => check(node),
+      ImportExpression(node) {
+        if (outside && isRecovery(node.source.value))
+          context.report({ node, messageId: "recovery" });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -334,5 +534,7 @@ export default {
     "no-ignored-error": noIgnoredError,
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
+    "no-direct-launch": noDirectLaunch,
+    "no-group-stop-import": noGroupStopImport,
   },
 };

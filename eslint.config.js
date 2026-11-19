@@ -44,19 +44,28 @@ const scriptIgnores = [
   "scripts/fixtures/**",
 ];
 
-// runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수를 거친다.
+// runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수(startProcess·runProbe)를 거치고,
+// 그 함수들은 공용 실행(launch.ts)으로 띄운다.
 const processOwners = [
-  "process.ts", // startProcess·runProbe: 환경 작성과 입력·시작 오류·종료를 맡는 공용 실행
+  "launch.ts", // 공용 실행: 띄우기와 그 트리의 끄기(stop)를 한 쌍으로 돌려준다
   "container.ts", // docker 클라이언트 호출과 격리 확인
   "job-object.ts", // Windows 묶음 실행기
   "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
   "lease.ts", // 실행 칸을 쥔 프로그램 조회
-  "antigravity-config.ts", // 빈 환경으로 도는 Antigravity 설정 스크립트
   "login.ts", // 사용자 터미널을 그대로 넘기는 대화형 로그인
 ].map((name) => `packages/runtime/src/providers/${name}`);
+// 제품 코드·개발 스크립트에서 오래 도는 자식을 child_process·cross-spawn으로 직접 띄워도 되는 파일. 그 밖은 공용 실행
+// (@babojubot/runtime/launch)으로 띄운다(product/no-direct-launch). runtime의 위 파일들은 공용 실행이 그 위에 서는 실행(그룹·표식·
+// 묶음 조회, 복구 보조 명령, 대화형 로그인 등)이다. 그 밖은 공용 실행의 끄기가 맞지 않는 실행만 둔다.
+const launchOwners = [
+  ...processOwners,
+  // 내장 Postgres는 pg_ctl이 띄운 데몬이 pg_ctl보다 오래 살아야 한다. 공용 실행의 끄기는 그 데몬까지 끄므로 맞지 않는다.
+  // 데몬의 끄기는 pg_ctl stop과 잠금 파일·생성 신원 확인이 맡는다. pg_ctl의 기다림은 -t로 끝을 둔다.
+  "packages/db/src/embedded.ts",
+];
 const launchers = ["child_process", "node:child_process", "cross-spawn"];
 const launchMessage =
-  "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 이 함수들이 providerEnvironment로 격리 실행의 환경을 만들고, 입력·시작 오류와 종료를 처리합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
+  "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 호출자는 providerEnvironment로 격리 실행의 환경을 만들고, 이 함수들이 공용 실행(providers/launch.ts)으로 띄워 입력·시작 오류와 종료를 처리하고 트리 전체를 끈 것을 확인합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
 
 // import 검사를 거치지 않고 모듈을 불러오는 길. 이름 그대로 가져오기·바꿔 가져오기·모듈 객체에서 읽기·구조 분해를 모두 본다.
 // node:module은 createRequire·Module._load처럼 import 검사를 거치지 않는 길이 여럿이라 모듈째 막고(타입은 허용),
@@ -298,12 +307,37 @@ export default defineConfig([
     rules: { "product/no-cleanup-chain": "error" },
   },
   {
-    // 프로세스 그룹(음수 pid)에 신호를 보내는 일은 제품의 그룹 끄기(stopProcessGroup)만 한다(CODING_STANDARDS.md#제품-코드).
+    // 프로세스 그룹(음수 pid)에 신호를 보내는 일은 제품의 그룹 끄기(recovery.ts)만 한다(CODING_STANDARDS.md#제품-코드).
     // 시험 코드는 이 범위에 아직 넣지 않았다.
     files: [...productFiles, ...scriptFiles],
     ignores: [...scriptIgnores, "packages/runtime/src/providers/recovery.ts"],
     plugins: { product: productRules },
     rules: { "product/no-process-group-signal": "error" },
+  },
+  {
+    // 오래 도는 자식은 띄우면서 그 트리의 끄기를 함께 돌려주는 공용 실행으로만 띄운다(CODING_STANDARDS.md#제품-코드, #262).
+    // 직접 띄운 쪽이 끄기를 따로 짜면 Windows에서 아무것도 끄지 않거나 새 세션으로 나간 자식을 놓쳤다. 시험 코드는 아직 넣지 않았다.
+    files: [...productFiles, ...scriptFiles],
+    ignores: [...scriptIgnores, ...launchOwners],
+    plugins: { product: productRules },
+    rules: { "product/no-direct-launch": "error" },
+  },
+  {
+    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. runtime 밖은 recovery.ts를 가져오지 않고, runtime 안에서도 공용 실행과 복구만 그룹을 끈다.
+    files: [...productFiles, ...scriptFiles],
+    ignores: [...scriptIgnores, "packages/runtime/src/**"],
+    plugins: { product: productRules },
+    rules: { "product/no-group-stop-import": ["error", { outside: true }] },
+  },
+  {
+    files: ["packages/runtime/src/**/*.{ts,tsx}"],
+    ignores: [
+      ...testFiles,
+      "packages/runtime/src/providers/launch.ts",
+      "packages/runtime/src/providers/recovery.ts",
+    ],
+    plugins: { product: productRules },
+    rules: { "product/no-group-stop-import": ["error", { outside: false }] },
   },
   {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.
