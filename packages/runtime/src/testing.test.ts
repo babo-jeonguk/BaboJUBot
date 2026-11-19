@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
 import { expect, it, onTestFinished } from "vitest";
 
-const testing = fileURLToPath(new URL("./testing.ts", import.meta.url));
+// 자식의 import에는 파일 주소를 넘긴다. Windows 경로(`C:\\…`)는 ESM import가 받지 않는다.
+const testing = new URL("./testing.ts", import.meta.url).href;
 
 // 가짜 HTTP 서버의 처리기가 실패하면 요청한 쪽은 500을 받고, 러너는 잡히지 않은 오류로 그 실패를 받는다(CODING_STANDARDS.md#단언).
 // 러너가 받는 것을 보려고 그 서버를 자식 프로그램으로 띄운다. 자식은 응답 상태를 알린 뒤 잡히지 않은 오류로 끝나야 한다.
@@ -29,8 +29,16 @@ it("answers a failed fake-server handler with a 500 and reports the failure as a
   let stderr = "";
   child.stderr.on("data", (chunk) => (stderr += chunk));
   const exited = once(child, "exit");
-  const [port] = (await once(child.stdout, "data")) as [Buffer];
-  const response = await fetch(`http://127.0.0.1:${String(port).trim()}/x`);
+  // 듣기 전에 끝나면(가져오기 실패 등) 기다리지 않고 그 이유로 실패한다.
+  const port = await Promise.race([
+    once(child.stdout, "data").then(([chunk]) => String(chunk).trim()),
+    exited.then(([code]) => {
+      throw new Error(
+        `fake server exited (${String(code)}) before listening: ${stderr}`
+      );
+    }),
+  ]);
+  const response = await fetch(`http://127.0.0.1:${port}/x`);
   const answered = { status: response.status, body: await response.text() };
   const [code] = (await exited) as [number | null];
   expect(answered.status).toBe(500);
