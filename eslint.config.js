@@ -139,11 +139,13 @@ export default defineConfig([
     // Node 서버 닫기의 실패를 Promise 이행으로 버리지 않는다(CODING_STANDARDS.md#정리). close 콜백과 서버의 출처를 봐야 해서 규칙을 따로 둔다.
     // 시험은 process.env를 직접 바꾸지 않는다(CODING_STANDARDS.md#격리). 가져오기·구조 분해로 받은 env까지 출처를 따라가야 해서 규칙을 따로 둔다.
     // 시험은 기다리지 않는 Promise의 거절을 빈 처리기로 버리지 않는다(CODING_STANDARDS.md#단언). 처리기의 몸과 같은 Promise를 돌려주는지 봐야 해서 규칙을 따로 둔다.
+    // awaitedLater로 표시한 Promise는 담아 두고 뒤에서 기다린다(CODING_STANDARDS.md#단언). 출처와 담은 바인딩의 기다림을 따라가야 해서 규칙을 따로 둔다.
     files: testFiles,
     plugins: { tests: testRules },
     rules: {
       "tests/no-cleanup-in-finally": "error",
       "tests/no-dropped-rejection": "error",
+      "tests/no-unawaited-later": "error",
       "tests/no-elapsed-time-assertion": "error",
       "tests/no-expected-failure": "error",
       "tests/no-fixed-time-wait": "error",

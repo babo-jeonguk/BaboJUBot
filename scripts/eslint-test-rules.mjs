@@ -2197,11 +2197,195 @@ const noDroppedRejection = {
   },
 };
 
+const cleanupModule =
+  /^(@babojubot\/runtime\/test-cleanup|(\.{1,2}\/)+(.*\/)?test-cleanup(\.ts)?)$/;
+/** 함수 안까지 모든 노드를 `found`에 넘긴다. */
+function walkAll(node, found) {
+  if (!node || typeof node.type !== "string") return;
+  found(node);
+  for (const key of Object.keys(node)) {
+    if (key === "parent") continue;
+    const value = node[key];
+    if (Array.isArray(value)) value.forEach((item) => walkAll(item, found));
+    else if (value && typeof value.type === "string") walkAll(value, found);
+  }
+}
+
+/**
+ * `node`의 값이 기다려지는가: 위로 가며 `await`·`return`(화살표 식 몸 포함)에 닿으면 참. 그 사이에 값을 넘기는 자리는 배열 원소,
+ * 다른 호출의 인자(`Promise.all([...])`·`within(x, ms)`·`expect(x)`), 그 값의 메서드(`x.catch(…)`·`expect(x).rejects.toBe(…)`)다.
+ * 문·다른 자리에 닿으면 거짓.
+ */
+function awaitedValue(node) {
+  let child = node;
+  for (let parent = child.parent; parent; parent = child.parent) {
+    if (parent.type === "AwaitExpression" || parent.type === "ReturnStatement")
+      return true;
+    if (parent.type === "ArrowFunctionExpression") return parent.body === child;
+    const passes =
+      parent.type === "ArrayExpression" ||
+      (parent.type === "MemberExpression" && parent.object === child) ||
+      (parent.type === "CallExpression" &&
+        (parent.callee === child || parent.arguments.includes(child)));
+    if (!passes) return false;
+    child = parent;
+  }
+  return false;
+}
+
+/**
+ * `awaitedLater`(먼저 만들고 뒤에서 기다리는 Promise의 표시)는 빈 처리기를 붙이므로, 표시한 Promise를 정말 뒤에서 기다려야 한다
+ * (CODING_STANDARDS.md#단언). 기다리지 않으면 `tests/no-dropped-rejection`이 막는 거절 버리기가 이 함수 안으로 옮겨진 것과 같다.
+ * 출처로 판정한다: `@babojubot/runtime/test-cleanup`·상대 경로 `test-cleanup`에서 가져온 `awaitedLater`(다른 이름 포함), 이름공간
+ * 가져오기의 `x.awaitedLater`, 그것을 받은 `const`. 짚는 모양:
+ * - 부른 결과를 `const` 변수나 객체 속성(`child.exited = …`)에 바로 담지 않는 것(`awaitedLater(p);`, `await awaitedLater(p)`, 인자로 넘기기).
+ * - 담은 `const`를 같은 파일 어디서도 기다리지 않는 것. 기다림은 `await`·`return`, 그 값을 넘긴 배열·호출·메서드 끝의 `await`·`return`이다
+ *   (`await Promise.all([x])`, `await expect(x).rejects…`, `await within(x.catch(…), ms)`).
+ * - 담은 속성 이름을 같은 파일에서 읽어 기다리는 곳이 없는 것.
+ * - 부르지 않고 함수 값으로 넘기는 것(`items.map(awaitedLater)`). 결과를 따라갈 수 없다.
+ * 속성을 다른 파일에서 읽어 기다리는 것과, 기다리는 자리가 실제로 실행되는지는 따라가지 않는다.
+ */
+const noUnawaitedLater = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "require a promise marked with awaitedLater to be stored and awaited later in the same file",
+    },
+    schema: [],
+    messages: {
+      notStored:
+        "awaitedLater의 결과를 const 변수나 객체 속성에 바로 담지 않습니다. 이 함수는 빈 처리기를 붙여 거절을 감추므로, 담아 둔 Promise를 뒤에서 기다려야 그 실패가 시험에 닿습니다. 바로 기다릴 Promise면 awaitedLater 없이 await하세요. CODING_STANDARDS.md#단언",
+      notAwaited:
+        "awaitedLater로 표시한 Promise를 이 파일에서 기다리지 않습니다. 빈 처리기가 그 거절을 감춰 실패해도 시험이 통과합니다. 뒤에서 await하거나(Promise.all·expect(…).rejects 포함) 돌려주세요. 기다릴 필요가 없으면 awaitedLater를 쓰지 말고 결과를 단언하세요. CODING_STANDARDS.md#단언",
+      notCalled:
+        "awaitedLater를 부르지 않고 값으로 넘깁니다. 표시한 Promise를 기다리는지 따라갈 수 없습니다. 그 자리에서 불러 결과를 담고 기다리세요. CODING_STANDARDS.md#단언",
+    },
+  },
+  create(context) {
+    const { sourceCode } = context;
+    /** `identifier`가 test-cleanup의 awaitedLater(다른 이름·그것을 받은 const 포함)인가. */
+    const isAwaitedLater = (identifier, seen = new Set()) => {
+      const variable = bindingOf(sourceCode, identifier);
+      if (!variable || seen.has(variable)) return false;
+      seen.add(variable);
+      const origin = importOf(variable);
+      if (origin)
+        return (
+          cleanupModule.test(origin.source) &&
+          origin.imported === "awaitedLater"
+        );
+      const def = variable.defs[0];
+      return (
+        def.type === "Variable" &&
+        def.parent.kind === "const" &&
+        def.node.init?.type === "Identifier" &&
+        isAwaitedLater(def.node.init, seen)
+      );
+    };
+    /** `x.awaitedLater`의 x가 test-cleanup의 이름공간 가져오기인가. */
+    const namespaceMember = (member) => {
+      if (
+        memberName(member) !== "awaitedLater" ||
+        member.object.type !== "Identifier"
+      )
+        return false;
+      const origin = importOf(bindingOf(sourceCode, member.object));
+      return (
+        origin !== undefined &&
+        origin.imported === "*" &&
+        cleanupModule.test(origin.source)
+      );
+    };
+    /** 파일 전체의 `.name` 속성 읽기 가운데 기다려지는 것이 있는가. */
+    const propertyAwaited = (name) => {
+      let found = false;
+      walkAll(sourceCode.ast, (node) => {
+        if (
+          !found &&
+          node.type === "MemberExpression" &&
+          memberName(node) === name &&
+          awaitedValue(node)
+        )
+          found = true;
+      });
+      return found;
+    };
+    /** 부른 결과가 담긴 곳을 보고 알린다. */
+    const checkCall = (call) => {
+      const parent = call.parent;
+      if (
+        parent.type === "VariableDeclarator" &&
+        parent.init === call &&
+        parent.id.type === "Identifier" &&
+        parent.parent.kind === "const"
+      ) {
+        const [variable] = sourceCode.getDeclaredVariables(parent);
+        const awaited = variable.references.some(
+          (reference) =>
+            reference.isRead() && awaitedValue(reference.identifier)
+        );
+        if (!awaited) context.report({ node: call, messageId: "notAwaited" });
+        return;
+      }
+      if (
+        parent.type === "AssignmentExpression" &&
+        parent.right === call &&
+        parent.operator === "=" &&
+        parent.left.type === "MemberExpression"
+      ) {
+        const name = memberName(parent.left);
+        if (name === undefined || !propertyAwaited(name))
+          context.report({ node: call, messageId: "notAwaited" });
+        return;
+      }
+      context.report({ node: call, messageId: "notStored" });
+    };
+    /** awaitedLater를 가리키는 자리 하나. 부르는 자리면 결과를 보고, const로 다시 받는 자리는 넘기고, 그 밖은 값으로 넘긴 것이다. */
+    const visit = (reference) => {
+      const parent = reference.parent;
+      if (parent.type === "CallExpression" && parent.callee === reference)
+        return checkCall(parent);
+      if (
+        parent.type === "VariableDeclarator" &&
+        parent.init === reference &&
+        parent.parent.kind === "const"
+      )
+        return;
+      context.report({ node: reference, messageId: "notCalled" });
+    };
+    return {
+      Identifier(node) {
+        const parent = node.parent;
+        // 선언·가져오기·속성 이름 자리는 값을 쓰는 곳이 아니다.
+        if (
+          (parent.type === "MemberExpression" &&
+            parent.property === node &&
+            !parent.computed) ||
+          parent.type === "ImportSpecifier" ||
+          parent.type === "ImportDefaultSpecifier" ||
+          parent.type === "ImportNamespaceSpecifier" ||
+          (parent.type === "VariableDeclarator" && parent.id === node) ||
+          (parent.type === "Property" &&
+            parent.key === node &&
+            !parent.computed)
+        )
+          return;
+        if (isAwaitedLater(node)) visit(node);
+      },
+      MemberExpression(node) {
+        if (namespaceMember(node)) visit(node);
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
   rules: {
     "no-cleanup-in-finally": noCleanupInFinally,
     "no-dropped-rejection": noDroppedRejection,
+    "no-unawaited-later": noUnawaitedLater,
     "no-elapsed-time-assertion": noElapsedTimeAssertion,
     "no-expected-failure": noExpectedFailure,
     "no-fixed-time-wait": noFixedTimeWait,

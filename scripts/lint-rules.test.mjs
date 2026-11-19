@@ -1577,3 +1577,107 @@ test("JS tests may not leave a promise unawaited either, while node:test's own t
       place
     );
 });
+
+/** awaitedLater 규칙의 메시지만. */
+const laterMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-unawaited-later");
+const laterImport = `import { awaitedLater } from "@babojubot/runtime/test-cleanup";\n`;
+const laterHead = `const p = Promise.resolve(1);\nconst use = (value) => value;\nconst child = {};\n`;
+
+test("a promise marked with awaitedLater must be stored and awaited later in the same file", async () => {
+  const found = {
+    "a dropped call": [
+      `${laterImport}${laterHead}awaitedLater(p);\n`,
+      /담지 않습니다/,
+    ],
+    "an awaited call": [
+      `${laterImport}${laterHead}await awaitedLater(p);\n`,
+      /담지 않습니다/,
+    ],
+    "a call passed on": [
+      `${laterImport}${laterHead}use(awaitedLater(p));\n`,
+      /담지 않습니다/,
+    ],
+    "a let": [
+      `${laterImport}${laterHead}let later = awaitedLater(p);\nawait later;\n`,
+      /담지 않습니다/,
+    ],
+    "a const never awaited": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nuse(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a const only chained": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nlater.then(() => 1);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a property never awaited": [
+      `${laterImport}${laterHead}child.exited = awaitedLater(p);\nuse(child.exited);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a computed property": [
+      `${laterImport}${laterHead}const key = "exited";\nchild[key] = awaitedLater(p);\nawait child[key];\n`,
+      /기다리지 않습니다/,
+    ],
+    // 출처로 판정한다: 다른 이름, 상대 경로, 이름공간, 다시 받은 const.
+    "an aliased import": [
+      `import { awaitedLater as later } from "@babojubot/runtime/test-cleanup";\n${laterHead}later(p);\n`,
+      /담지 않습니다/,
+    ],
+    "a relative import": [
+      `import { awaitedLater } from "../test-cleanup.ts";\n${laterHead}const x = awaitedLater(p);\nuse(x);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a namespace import": [
+      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}cleanup.awaitedLater(p);\n`,
+      /담지 않습니다/,
+    ],
+    "a const alias": [
+      `${laterImport}${laterHead}const mark = awaitedLater;\nmark(p);\n`,
+      /담지 않습니다/,
+    ],
+    "the function passed as a value": [
+      `${laterImport}${laterHead}[p].map(awaitedLater);\n`,
+      /부르지 않고/,
+    ],
+  };
+  for (const [shape, [code, kind]] of Object.entries(found))
+    for (const place of testPlaces) {
+      const [message, ...rest] = laterMessages(await lint(code, place));
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, kind, shape);
+      assert.match(message.message, /CODING_STANDARDS\.md#단언/);
+    }
+});
+
+test("a promise marked with awaitedLater may be awaited, collected, expected, returned or read back from its property", async () => {
+  const allowed = [
+    `const later = awaitedLater(p);\nawait later;\n`,
+    `const later = awaitedLater(p);\nawait Promise.all([later, p]);\n`,
+    `const later = awaitedLater(p);\nawait expect(later).rejects.toThrow("x");\n`,
+    `const later = awaitedLater(p);\nawait use(later.catch(() => undefined));\n`,
+    `export function start() {\n  const later = awaitedLater(p);\n  return later;\n}\n`,
+    `const later = awaitedLater(p);\nexport const read = () => later;\n`,
+    // 속성은 같은 파일의 다른 함수에서 읽어 기다려도 된다.
+    `child.exited = awaitedLater(p);\nexport async function wait() {\n  return await Promise.race([child.exited, p]);\n}\n`,
+    `child.exited = awaitedLater(p);\nawait child.exited;\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        laterMessages(await lint(laterImport + laterHead + code, place)),
+        [],
+        `${place}: ${code}`
+      );
+  // 같은 이름의 지역 함수와 다른 모듈의 함수는 보지 않는다.
+  for (const code of [
+    `const awaitedLater = (x) => x;\nconst p = Promise.resolve(1);\nawaitedLater(p);\n`,
+    `import { awaitedLater } from "./elsewhere.mjs";\nconst p = Promise.resolve(1);\nawaitedLater(p);\n`,
+  ])
+    for (const place of testPlaces)
+      assert.deepEqual(
+        laterMessages(await lint(code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
