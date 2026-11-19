@@ -438,12 +438,207 @@ const noCleanupInFinally = {
   },
 };
 
+/** 시험 함수 이름인가: `it`·`test`, `base.extend`로 만든 `settingsTest` 같은 이름. */
+const isTestName = (node) =>
+  node?.type === "Identifier" && /^(it|test)$|Test$/.test(node.name);
+// 시험 하나를 등록하는 수식어(`test.only(…)`·`it.skip(…)`). `describe`·hook·`step`은 시험이 아니다.
+const caseModifiers = new Set([
+  "only",
+  "skip",
+  "fixme",
+  "fail",
+  "fails",
+  "concurrent",
+  "sequential",
+  "todo",
+]);
+
+/** `call`이 시험 하나를 등록하면 그 본문 함수: `test(이름, fn)`, `it.only(이름, fn)`, `test.each(표)(이름, fn)`. */
+function testBody(call) {
+  let callee = call.callee;
+  if (
+    callee.type === "CallExpression" &&
+    callee.callee.type === "MemberExpression" &&
+    !callee.callee.computed &&
+    callee.callee.property.name === "each"
+  )
+    callee = callee.callee.object;
+  while (
+    callee.type === "MemberExpression" &&
+    !callee.computed &&
+    caseModifiers.has(callee.property.name)
+  )
+    callee = callee.object;
+  if (!isTestName(callee)) return undefined;
+  const body = call.arguments.at(-1);
+  return isFunction(body) ? body : undefined;
+}
+
+/**
+ * 시험이 실패할 것으로 표시하면(Playwright `test.fail`, Vitest `it.fails`) 어떤 이유로 실패해도 기대한 실패로 통과한다
+ * (CODING_STANDARDS.md#단언). 설정 변경이 앞서 실패하거나 정리가 실패해도 드러나지 않는다. 시험 함수 이름(`it`·`test`·`…Test`)에
+ * 붙은 `fail`·`fails`를 모두 짚는다(`test.fail(…)`·`test.fail.only(…)`·본문 안의 `test.fail(조건, 이유)`). `assert.fail`처럼 다른 값의
+ * `fail`은 짚지 않는다.
+ */
+const noExpectedFailure = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow marking a test as expected to fail (test.fail, it.fails)",
+    },
+    schema: [],
+    messages: {
+      expected:
+        "시험을 실패할 것으로 표시합니다(test.fail·it.fails). 어떤 이유로 실패해도 기대한 실패로 통과해, 준비가 앞서 실패하거나 정리가 실패해도 드러나지 않습니다. 의도된 실패는 그 실패를 내는 실행을 따로 돌려 종료 코드와 고유한 오류 문구만 실패로 인정하세요(Playwright는 apps/web/e2e/support/playwright-run.ts의 runPlaywright, 거절은 expect(…).rejects.toThrow(문구)). CODING_STANDARDS.md#단언",
+    },
+  },
+  create(context) {
+    return {
+      MemberExpression(node) {
+        if (
+          !node.computed &&
+          (node.property.name === "fail" || node.property.name === "fails") &&
+          isTestName(node.object)
+        )
+          context.report({ node, messageId: "expected" });
+      },
+    };
+  },
+};
+
+const perTestHookNames = new Set(["beforeEach", "afterEach"]);
+/** `call`이 시험마다 도는 hook(`beforeEach(fn)`·`test.afterEach(fn)`)이면 그 함수. */
+function perTestHook(call) {
+  const { callee } = call;
+  const name =
+    callee.type === "Identifier"
+      ? callee.name
+      : callee.type === "MemberExpression" &&
+          !callee.computed &&
+          isTestName(callee.object)
+        ? callee.property.name
+        : undefined;
+  if (!perTestHookNames.has(name)) return undefined;
+  const body = call.arguments.at(-1);
+  return isFunction(body) ? body : undefined;
+}
+
+/** `node`를 품은 가장 가까운 시험 본문(또는 `bodies`에 든 함수). */
+function enclosingTestBody(node, bodies) {
+  for (let parent = node.parent; parent; parent = parent.parent)
+    if (bodies.has(parent)) return parent;
+  return undefined;
+}
+
+/**
+ * 시험끼리 상태를 넘기면 앞 시험이 실패하거나 한 시험만 이름으로 돌릴 때 엉뚱한 곳에서 실패한다(CODING_STANDARDS.md#격리).
+ * 두 모양을 짚는다.
+ * - 시험 밖(파일·describe)에 선언한 변수를 한 시험 본문이 대입하고, 그 변수를 대입하지 않는 다른 시험 본문이 읽는 것. 본문 안에 정의한 함수(route
+ *   callback 등)도 그 시험으로 본다. hook의 대입·읽기는 준비·정리하는 모양이라 짚지 않고, `beforeEach`·`afterEach`가 대입하는
+ *   변수(시험마다 만들거나 비우는 값)는 시험이 대입해도 다음 시험에 남지 않으므로 짚지 않는다. 시험 밖에 정의한 도움 함수가 대입하거나 읽는 것과 객체 속성·배열 내용을 바꾸는 것(`state.x = …`·`push`)은
+ *   따라가지 않는다.
+ * - 시험을 차례대로 묶는 것: `describe.configure({ mode: "serial" })`, `describe.serial(…)`.
+ */
+const noStateBetweenTests = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow passing state from one test to another through an outer variable or serial mode",
+    },
+    schema: [],
+    messages: {
+      shared:
+        "다른 시험이 대입한 값을 이 시험이 읽습니다(`{{name}}`). 앞 시험이 실패하거나 이 시험만 이름으로 돌리면 값이 없어 엉뚱한 곳에서 실패합니다. 준비는 beforeEach·fixture가 시험마다 만들고, 한 동작과 그 뒤의 확인은 한 시험 안에 두세요. 시험이 끝난 뒤(fixture 정리 뒤)의 상태는 그 시험을 따로 실행해 확인합니다(apps/web/e2e/support/playwright-run.ts). CODING_STANDARDS.md#격리",
+      serial:
+        "시험을 차례대로 묶습니다. 앞 시험이 실패하면 뒤 시험이 돌지 않고, 뒤 시험이 앞 시험이 남긴 상태에 기대게 됩니다. 시험마다 혼자 돌아도 통과하게 준비를 각 시험·beforeEach·fixture에 두세요. CODING_STANDARDS.md#격리",
+    },
+  },
+  create(context) {
+    const { sourceCode } = context;
+    const bodies = new Set();
+    const perTestHooks = new Set();
+    const report = (node) => context.report({ node, messageId: "serial" });
+    return {
+      CallExpression(node) {
+        const body = testBody(node);
+        if (body) bodies.add(body);
+        const hook = perTestHook(node);
+        if (hook) perTestHooks.add(hook);
+        const method = methodOf(node);
+        const owner = node.callee.object;
+        const onDescribe =
+          owner?.type === "MemberExpression" &&
+          !owner.computed &&
+          owner.property.name === "describe";
+        if (method === "serial" && onDescribe) report(node);
+        if (
+          method === "configure" &&
+          onDescribe &&
+          node.arguments[0]?.type === "ObjectExpression" &&
+          node.arguments[0].properties.some(
+            (p) =>
+              p.type === "Property" &&
+              !p.computed &&
+              p.key.type === "Identifier" &&
+              p.key.name === "mode" &&
+              p.value.type === "Literal" &&
+              p.value.value === "serial"
+          )
+        )
+          report(node);
+      },
+      "Program:exit"() {
+        for (const scope of sourceCode.scopeManager.scopes)
+          for (const variable of scope.variables) {
+            const [declared] = variable.identifiers;
+            if (!declared || enclosingTestBody(declared, bodies)) continue;
+            const writes = variable.references.filter(
+              (reference) => reference.isWrite() && !reference.init
+            );
+            // 시험마다 도는 hook이 대입하면(afterEach가 비우기 등) 앞 시험의 값이 다음 시험에 남지 않는다.
+            if (
+              writes.some((reference) =>
+                enclosingTestBody(reference.identifier, perTestHooks)
+              )
+            )
+              continue;
+            const writers = new Set();
+            for (const reference of writes) {
+              const body = enclosingTestBody(reference.identifier, bodies);
+              if (body) writers.add(body);
+            }
+            if (!writers.size) continue;
+            const reported = new Set();
+            for (const reference of variable.references) {
+              if (!reference.isRead()) continue;
+              const body = enclosingTestBody(reference.identifier, bodies);
+              // 자기 본문에서도 대입하는 시험은 자기 값을 쓴다(시험마다 대입하고 afterEach가 정리하는 모양).
+              if (!body || writers.has(body) || reported.has(body)) continue;
+              {
+                reported.add(body);
+                context.report({
+                  node: reference.identifier,
+                  messageId: "shared",
+                  data: { name: variable.name },
+                });
+              }
+            }
+          }
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
   rules: {
     "no-cleanup-in-finally": noCleanupInFinally,
     "no-elapsed-time-assertion": noElapsedTimeAssertion,
+    "no-expected-failure": noExpectedFailure,
     "no-fixed-time-wait": noFixedTimeWait,
     "no-page-wide-locator": noPageWideLocator,
+    "no-state-between-tests": noStateBetweenTests,
   },
 };
