@@ -14,6 +14,7 @@ import { featureGaps, filesBase, remove } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { WorkspaceIdentityError, Workspaces } from "../src/workspace.ts";
+import { unused } from "./stand-ins.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // 링크를 만들 수 없는 파일 시스템(FAT32)에서는 링크가 필요한 시험을 건너뛴다. 그 볼륨의 링크 없는 경계 사례는
@@ -46,7 +47,7 @@ async function folder() {
   return { root, shared };
 }
 const read = (root: string, relative: string) =>
-  new Workspaces(root, null as never).readArtifact(org, relative);
+  new Workspaces(root, unused("db")).readArtifact(org, relative);
 /** 받은 파일의 본문. 거부됐으면 실패한다. */
 const content = async (root: string, relative: string) => {
   const result = await read(root, relative);

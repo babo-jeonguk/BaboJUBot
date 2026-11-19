@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
+import { unused } from "./stand-ins.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 
 // 서버 프로세스가 경로를 풀면서 본 위치를 남기고, 본 바로 뒤에 바꿔치기를 넣는다.
@@ -68,7 +69,7 @@ async function folder() {
 /** 읽은 결과(본문 또는 거부 이유)와, 서버 프로세스가 조직 폴더 안에서 본 위치. */
 async function read(root: string, requested: string) {
   probe.seen = [];
-  const result = await new Workspaces(root, null as never).readArtifact(
+  const result = await new Workspaces(root, unused("db")).readArtifact(
     org,
     requested
   );

@@ -39,11 +39,11 @@ type StoreFault = {
 };
 const store = vi.hoisted(() => {
   const faults: { admission?: StoreFault; finish?: StoreFault } = {};
-  async function guard<T>(
+  async function guard<D extends object, T>(
     boundary: keyof typeof faults,
     target: string,
-    db: object,
-    save: (db: never) => Promise<T>
+    db: D,
+    save: (db: D) => Promise<T>
   ): Promise<T> {
     const fault = faults[boundary];
     if (
@@ -51,7 +51,7 @@ const store = vi.hoisted(() => {
       fault.target !== target ||
       fault.injected.length >= fault.times
     )
-      return save(db as never);
+      return save(db);
     const failure = new Error(`injected ${boundary} failure`);
     type Transaction = (
       body: (tx: unknown) => Promise<unknown>,
@@ -85,7 +85,7 @@ const store = vi.hoisted(() => {
     await fault.around?.();
     return withCleanup(async (defer) => {
       defer(() => fault.around?.());
-      return save(faulty as never);
+      return save(faulty);
     });
   }
   return { faults, guard };

@@ -284,11 +284,25 @@ describe("demo Lead scenario", () => {
     ).toBe(true);
 
     // 요청 뒤 서버가 멈춰 같은 깨우기를 다시 받으면 이미 한 요청은 건너뛴다.
-    const resumed = demoLeadScript(
-      at("awaiting_approval", [created()], "오류 절반", null)
+    const resumedRequest = at(
+      "awaiting_approval",
+      [created()],
+      "오류 절반",
+      null
     );
+    const resumed = demoLeadScript(resumedRequest);
     const step = resumed.steps.find((s) => s.do === "call");
-    expect(step?.do === "call" && step.when?.({} as never)).toBe(false);
+    expect(
+      step?.do === "call" &&
+        step.when?.({
+          request: resumedRequest,
+          context: undefined,
+          sent: [],
+          calls: [],
+          steered: [],
+          notes: [],
+        })
+    ).toBe(false);
   });
 
   it("proposes criteria again when resubmitting for an organization still without any", () => {

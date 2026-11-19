@@ -16,6 +16,7 @@ import path from "node:path";
 import type { ArtifactFileRead } from "@babojubot/contracts";
 import { afterEach, beforeAll, expect, it, type TestContext } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
+import { unused } from "./stand-ins.ts";
 import {
   cleanup,
   featureGaps,
@@ -93,7 +94,7 @@ async function world() {
   await writeFile(path.join(root, "outside.md"), outsideBytes);
   await mkdir(path.join(root, "outside-dir"));
   await writeFile(path.join(root, "outside-dir", "a.md"), outsideBytes);
-  const workspaces = new Workspaces(root, null as never);
+  const workspaces = new Workspaces(root, unused("db"));
   /** 서버와 같은 읽기. 성공한 응답의 실제 바이트에 다른 조직·밖의 내용이 없는지도 본다. */
   const read = async (requested: string): Promise<ArtifactFileRead> => {
     const result = await workspaces.readArtifact(A, requested);
@@ -1296,7 +1297,7 @@ it("C36 matches the working folder part with its exact case and names inside the
     await writeFile(path.join(twin, "a.md"), outsideBytes);
     expect(await osOpen(path.join(twin, "a.md"))).toBe(outsideBytes);
     expect(
-      await new Workspaces(parent, null as never).readArtifact(
+      await new Workspaces(parent, unused("db")).readArtifact(
         A,
         path.join(twin, "a.md")
       )
