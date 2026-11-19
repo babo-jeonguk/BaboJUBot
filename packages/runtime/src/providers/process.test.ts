@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { runProbe, startProcess } from "./process.ts";
 import { killAndWait } from "./process-test-support.ts";
-import { processAlive } from "../test-cleanup.ts";
+import { awaitedLater, processAlive } from "../test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();
@@ -159,22 +159,23 @@ describe("runProbe", () => {
       const folder = await folders.make("babojubot-probe-");
       const ready = path.join(folder, "ready");
       const controller = new AbortController();
-      const probing = runProbe(
-        [
-          process.execPath,
-          "-e",
-          `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000);`,
-        ],
-        [],
-        {
-          env: { PATH: process.env.PATH },
-          cwd: process.cwd(),
-          signal: controller.signal,
-          timeout: 60_000,
-          maxBuffer: 1024,
-        }
+      const probing = awaitedLater(
+        runProbe(
+          [
+            process.execPath,
+            "-e",
+            `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000);`,
+          ],
+          [],
+          {
+            env: { PATH: process.env.PATH },
+            cwd: process.cwd(),
+            signal: controller.signal,
+            timeout: 60_000,
+            maxBuffer: 1024,
+          }
+        )
       );
-      void probing.catch(() => {});
       // 시험이 먼저 실패해도 그 프로그램을 끝낸 뒤 폴더를 지운다.
       folders.own(() => stopRecorded(ready), "the check program");
       await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {

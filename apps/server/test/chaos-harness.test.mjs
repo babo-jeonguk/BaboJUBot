@@ -6,7 +6,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   LaunchRefused,
   claimLiveRun,
@@ -37,7 +37,11 @@ import {
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
+import {
+  awaitedLater,
+  folderCleanup,
+  withCleanup,
+} from "@babojubot/runtime/test-cleanup";
 
 const ids = scenes.map((s) => s.id);
 const launchAll = { scenes: ids, maxLiveRuns: 24 };
@@ -840,11 +844,17 @@ describe("chaos harness on a fake connection", () => {
       const folder = folderCleanup(() => removeFolder(harnessDir));
       defer(folder.cleanUp);
       folder.own(() => server.dispose());
-      // 멈춘 이유는 시작 실패가 아니라 중단 신호(그 신호의 이유 TimeoutError)다. 시작 대기(180s)까지 갔다면 시작 실패
-      // ("not ready in time")로 끝나므로 이유가 다르다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
-      await expect(
-        server.start(AbortSignal.timeout(200))
-      ).rejects.toMatchObject({ name: "TimeoutError" });
+      // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
+      // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
+      const scene = new AbortController();
+      const starting = awaitedLater(server.start(scene.signal));
+      await vi.waitUntil(() => server.starts === 1, {
+        timeout: 30_000,
+        interval: 10,
+      });
+      const reason = new Error("scene aborted");
+      scene.abort(reason);
+      await expect(starting).rejects.toBe(reason);
       expect(server.running).toBe(false);
     });
     expect(postgresAlive(home)).toBe(false);

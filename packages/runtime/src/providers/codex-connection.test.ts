@@ -155,13 +155,16 @@ describe("a Codex app-server connection", () => {
         order.push("request");
         return error;
       });
-    void connection.done.then(() => order.push("cleanup"));
+    const cleaned = connection.done.then((exit) => {
+      order.push("cleanup");
+      return exit;
+    });
     expect(await waiting).toBeInstanceOf(ProtocolClosed);
     expect(connection.closed).toBe(true);
     await expect(
       connection.request("after", {}, { timeoutMs: 60_000 })
     ).rejects.toBeInstanceOf(ProtocolClosed);
-    expect((await connection.done).code).toBe(3);
+    expect((await cleaned).code).toBe(3);
     expect(order).toEqual(["request", "cleanup"]);
   });
 

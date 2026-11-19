@@ -1,5 +1,6 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { answering } from "@babojubot/runtime/testing";
 
 /**
  * 실제 OpenCode가 부르는 OpenAI 호환 가짜 모델(#147). 받은 요청 본문을 모두 남기고, 계정·실제 모델 없이 답한다.
@@ -60,81 +61,110 @@ export async function startLocalModel() {
    */
   let toolCalls:
     ((request: ModelRequest) => ModelToolCall[] | undefined) | undefined;
-  const server = http.createServer(async (req, res) => {
-    let raw = "";
-    for await (const chunk of req) raw += chunk;
-    if (req.method !== "POST" || !req.url?.endsWith("/chat/completions")) {
-      res.writeHead(404).end();
-      return;
-    }
-    const body = JSON.parse(raw) as ModelRequest["body"];
-    const request = { raw, body };
-    requests.push(request);
-    const last = wakeText(request);
-    const refuse = (status: number, code: string) => {
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error: {
-            message: `${code} ${modelSecret} ${last}`,
-            type:
-              status === 401 ? "authentication_error" : "invalid_request_error",
-            code,
-          },
-        })
-      );
-    };
-    if (raw.includes(refusedPattern) || last.includes(rejectMarker))
-      return refuse(400, "upstream_rejected_request");
-    if (last.includes(authMarker)) return refuse(401, "invalid_api_key");
-    const usage = { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 };
-    const base = {
-      id: "chatcmpl-local",
-      created: 0,
-      model: "test",
-    };
-    if (!body.stream) {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
+  const server = http.createServer(
+    answering(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      if (req.method !== "POST" || !req.url?.endsWith("/chat/completions")) {
+        res.writeHead(404).end();
+        return;
+      }
+      const body = JSON.parse(raw) as ModelRequest["body"];
+      const request = { raw, body };
+      requests.push(request);
+      const last = wakeText(request);
+      const refuse = (status: number, code: string) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: `${code} ${modelSecret} ${last}`,
+              type:
+                status === 401
+                  ? "authentication_error"
+                  : "invalid_request_error",
+              code,
+            },
+          })
+        );
+      };
+      if (raw.includes(refusedPattern) || last.includes(rejectMarker))
+        return refuse(400, "upstream_rejected_request");
+      if (last.includes(authMarker)) return refuse(401, "invalid_api_key");
+      const usage = {
+        prompt_tokens: 10,
+        completion_tokens: 1,
+        total_tokens: 11,
+      };
+      const base = {
+        id: "chatcmpl-local",
+        created: 0,
+        model: "test",
+      };
+      if (!body.stream) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ...base,
+            object: "chat.completion",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "완료" },
+                finish_reason: "stop",
+              },
+            ],
+            usage,
+          })
+        );
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (data: unknown) =>
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      const planned =
+        body.messages?.at(-1)?.role === "user"
+          ? toolCalls?.(request)
+          : undefined;
+      if (planned?.length) {
+        send({
           ...base,
-          object: "chat.completion",
+          object: "chat.completion.chunk",
           choices: [
             {
               index: 0,
-              message: { role: "assistant", content: "완료" },
-              finish_reason: "stop",
+              delta: {
+                role: "assistant",
+                tool_calls: planned.map((call, index) => ({
+                  index,
+                  id: call.id,
+                  type: "function",
+                  function: {
+                    name: call.name,
+                    arguments: JSON.stringify(call.arguments),
+                  },
+                })),
+              },
+              finish_reason: null,
             },
           ],
+        });
+        send({
+          ...base,
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
           usage,
-        })
-      );
-      return;
-    }
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    const send = (data: unknown) =>
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    const planned =
-      body.messages?.at(-1)?.role === "user" ? toolCalls?.(request) : undefined;
-    if (planned?.length) {
+        });
+        res.end("data: [DONE]\n\n");
+        return;
+      }
       send({
         ...base,
         object: "chat.completion.chunk",
         choices: [
           {
             index: 0,
-            delta: {
-              role: "assistant",
-              tool_calls: planned.map((call, index) => ({
-                index,
-                id: call.id,
-                type: "function",
-                function: {
-                  name: call.name,
-                  arguments: JSON.stringify(call.arguments),
-                },
-              })),
-            },
+            delta: { role: "assistant", content: "완료" },
             finish_reason: null,
           },
         ],
@@ -142,31 +172,12 @@ export async function startLocalModel() {
       send({
         ...base,
         object: "chat.completion.chunk",
-        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
         usage,
       });
       res.end("data: [DONE]\n\n");
-      return;
-    }
-    send({
-      ...base,
-      object: "chat.completion.chunk",
-      choices: [
-        {
-          index: 0,
-          delta: { role: "assistant", content: "완료" },
-          finish_reason: null,
-        },
-      ],
-    });
-    send({
-      ...base,
-      object: "chat.completion.chunk",
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      usage,
-    });
-    res.end("data: [DONE]\n\n");
-  });
+    })
+  );
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {

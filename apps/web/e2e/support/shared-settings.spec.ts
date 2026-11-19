@@ -145,3 +145,29 @@ test("a test that ends while a released settings save is still on its way restor
   ]);
   await expectSettingsAsBefore(request, before, output);
 });
+
+test("a test whose sent settings save never gets a reply fails its cleanup in time and still hands back the settings", async ({
+  request,
+  baseURL,
+}) => {
+  const before = await readSettings(request);
+  const { code, output, result, log } = await runCheck(
+    "stuck-save.check.ts",
+    baseURL!
+  );
+  // 정리는 응답을 시한(10초) 안에서만 기다리고 그 사실 하나로 실패한다. 응답을 다시 기다려 멈추면 안쪽 시한(60초)에 걸려 다른 오류가 된다.
+  expect(
+    result.errors.map((e) => e.message?.split("\n")[0]),
+    output
+  ).toEqual([
+    "Error: 10000ms 안에 이 테스트가 보낸 전역 설정 변경이 끝나지 않았다",
+  ]);
+  expect(result.status, output).toBe("failed");
+  expect(code, output).toBe(1);
+  // 실패한 뒤에도 되돌리기를 했다.
+  expect(log, output).toContainEqual({
+    step: "api put",
+    path: "/api/providers/defaults",
+  });
+  await expectSettingsAsBefore(request, before, output);
+});

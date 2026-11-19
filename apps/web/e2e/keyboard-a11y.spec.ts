@@ -345,12 +345,14 @@ test("research map nodes move focus to the detail heading and back, the pickers 
   ).toHaveAttribute("aria-selected", "true");
   const linkKinds = panel.getByRole("group", { name: "연결 종류" });
   const firstKind = linkKinds.getByRole("radio", { checked: true });
-  const firstKindName = await firstKind.getAttribute("value");
+  // 처음 고른 종류의 값은 화살표를 누르기 전에 한 번 읽어 둔다(그 뒤의 선택과 비교할 기대값).
+  await expect(firstKind).toHaveAttribute("value", /.+/);
+  const firstKindName = (await firstKind.getAttribute("value"))!;
   await firstKind.focus();
   await page.keyboard.press("ArrowRight");
   const chosenKind = linkKinds.getByRole("radio", { checked: true });
   await expect(chosenKind).toBeFocused();
-  expect(await chosenKind.getAttribute("value")).not.toBe(firstKindName);
+  await expect(chosenKind).not.toHaveAttribute("value", firstKindName);
   const kindLabel = (await chosenKind.evaluate(
     (el) => el.parentElement!.textContent
   ))!.trim();
@@ -623,7 +625,7 @@ settingsTest(
     await policy.focus();
     await page.keyboard.press("Space");
     await expect(policy).toHaveAccessibleDescription(`${label} 저장됨`);
-    expect(await policy.isChecked()).toBe(!before);
+    await expect(policy).toBeChecked({ checked: !before });
     await expect(policy).toBeFocused();
     // 실패하면 성공을 알리지 않고, 오류와 함께 저장된 값으로 돌아간다.
     await page.route(`**${org.api("/approval-policy")}`, (route) =>
@@ -634,11 +636,11 @@ settingsTest(
       page.getByRole("listitem").filter({ has: policy }).getByRole("alert")
     ).toHaveText(`${label} 설정을 저장하지 못했습니다. 다시 시도하세요.`);
     await expect(policy).toHaveAccessibleDescription("");
-    expect(await policy.isChecked()).toBe(!before);
+    await expect(policy).toBeChecked({ checked: !before });
     await page.unrouteAll({ behavior: "wait" });
     await policy.click();
     await expect(policy).toHaveAccessibleDescription(`${label} 저장됨`);
-    expect(await policy.isChecked()).toBe(before);
+    await expect(policy).toBeChecked({ checked: before });
     await expectReadable(page);
 
     // 전역 격리 실행: 두 번째 저장 동안은 `저장하는 중…`이고, 끝나야 다시 `저장됨`이다. 켠 것은 되돌린다.
@@ -663,7 +665,7 @@ settingsTest(
       );
       release();
       await expect(isolation).toHaveAccessibleDescription("격리 실행 저장됨");
-      expect(await isolation.isChecked()).toBe(was);
+      await expect(isolation).toBeChecked({ checked: was });
     });
   }
 );
