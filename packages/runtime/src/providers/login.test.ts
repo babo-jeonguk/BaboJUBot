@@ -9,6 +9,7 @@ import { expect, it, vi } from "vitest";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { runLogin } from "./login.ts";
 import { testFolders } from "./test-folders.ts";
+import { commandFailure, probeEnvironment } from "./test-support.ts";
 
 const folders = testFolders();
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
@@ -216,14 +217,23 @@ it("leaves a terminal that was already in raw mode in raw mode", async () => {
 const fixture = fileURLToPath(
   new URL("../../test-fixtures/login-pty.mjs", import.meta.url)
 );
-const python =
-  process.platform === "win32"
-    ? undefined
-    : ["python3", "python"].find(
-        (name) =>
-          spawnSync(name, ["-c", "import pty"], { stdio: "ignore" }).status ===
-          0
-      );
+// CI(Linux·macOS)는 BABOJUBOT_REQUIRE_PYTHON_PTY=1로 이 검사를 필수로 정한다. 그때 python pty가 없으면 원인과 함께 실패한다.
+const python = probeEnvironment({
+  variable: "BABOJUBOT_REQUIRE_PYTHON_PTY",
+  what: "python pty 실제 터미널",
+  ...(process.platform === "win32" && {
+    unsupported: "Windows에는 POSIX pty가 없다(ConPTY는 범위 밖)",
+  }),
+  probe: () => {
+    const failures: string[] = [];
+    for (const name of ["python3", "python"]) {
+      const missing = commandFailure(name, ["-c", "import pty"]);
+      if (missing === undefined) return { value: name };
+      failures.push(missing);
+    }
+    return { missing: failures.join(" / ") };
+  },
+});
 
 // 프롬프트를 기다렸다가 입력을 보내고, 끝까지 읽은 transcript와 종료 코드를 JSON으로 낸다.
 const driver = String.raw`

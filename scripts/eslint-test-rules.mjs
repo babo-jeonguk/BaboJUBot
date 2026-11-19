@@ -1628,6 +1628,145 @@ const noStateBetweenTests = {
   },
 };
 
+/** 이름이 `name`인 속성 접근인가(`x.name`·`x["name"]`). 계산된 이름은 문자열 리터럴만 본다. */
+const memberNamed = (node, name) =>
+  node.type === "MemberExpression" &&
+  (node.computed
+    ? node.property.type === "Literal" && node.property.value === name
+    : node.property.name === name);
+
+/** 선언 없는 전역 이름인가(같은 이름의 지역 값이 아님). */
+const globalName = (sourceCode, node, names) =>
+  node.type === "Identifier" &&
+  names.includes(node.name) &&
+  !bindingOf(sourceCode, node);
+
+/**
+ * 한 번만 값을 받는 변수의 그 선언(`const x = …`·`const { a: x } = …`). 다시 대입하거나 매개변수·가져오기면 undefined.
+ * 같은 파일 안에서 값의 출처를 따라갈 때 쓴다.
+ */
+function onlyDeclarator(variable) {
+  const def = variable?.defs[0];
+  if (variable?.defs.length !== 1 || def.type !== "Variable") return undefined;
+  if (variable.references.filter((ref) => ref.isWrite()).length > 1)
+    return undefined;
+  return def.node.init ? def.node : undefined;
+}
+
+/**
+ * `node`가 Node의 `process`인가. 이름이 아니라 출처로 본다: 전역 `process`·`globalThis.process`·`global.process`,
+ * `node:process`에서 가져온 기본·이름공간, 같은 파일에서 그 값을 한 번 받은 변수(`const p = process`).
+ * 같은 이름의 지역 값(`const process = fake`)·매개변수는 아니다.
+ */
+function isProcess(node, sourceCode, depth = 0) {
+  if (depth > 5) return false;
+  if (globalName(sourceCode, node, ["process"])) return true;
+  if (
+    memberNamed(node, "process") &&
+    globalName(sourceCode, node.object, ["globalThis", "global"])
+  )
+    return true;
+  if (node.type !== "Identifier") return false;
+  const variable = bindingOf(sourceCode, node);
+  if (importedFrom(sourceCode, node, processModules, ["default", "*"]))
+    return true;
+  const declarator = onlyDeclarator(variable);
+  return (
+    declarator?.id.type === "Identifier" &&
+    isProcess(declarator.init, sourceCode, depth + 1)
+  );
+}
+
+/**
+ * `node`가 `process.env` 객체인가. `process`(위 출처)의 `env`, `node:process`에서 가져온 `env`(다른 이름으로 가져와도),
+ * 같은 파일에서 그것을 한 번 받은 변수(`const env = process.env`, `const { env } = process`·`globalThis.process`).
+ * 새로 만든 객체(`{ ...process.env }`)·매개변수·같은 이름의 지역 값은 아니다.
+ */
+function isProcessEnv(node, sourceCode, depth = 0) {
+  if (depth > 5) return false;
+  if (memberNamed(node, "env")) return isProcess(node.object, sourceCode);
+  if (node.type !== "Identifier") return false;
+  if (importedFrom(sourceCode, node, processModules, ["env"])) return true;
+  const declarator = onlyDeclarator(bindingOf(sourceCode, node));
+  if (!declarator) return false;
+  if (declarator.id.type === "Identifier")
+    return isProcessEnv(declarator.init, sourceCode, depth + 1);
+  // `const { env } = process`·`const { env: e } = process`. 안쪽 패턴이 이 이름을 받는 `env` 속성이어야 한다.
+  return (
+    declarator.id.type === "ObjectPattern" &&
+    declarator.id.properties.some(
+      (property) =>
+        property.type === "Property" &&
+        !property.computed &&
+        (property.key.name ?? property.key.value) === "env" &&
+        property.value.type === "Identifier" &&
+        property.value.name === node.name
+    ) &&
+    isProcess(declarator.init, sourceCode, depth + 1)
+  );
+}
+
+const envChangingCalls = {
+  Object: ["assign", "defineProperty", "defineProperties"],
+  Reflect: ["set", "deleteProperty", "defineProperty"],
+};
+
+/**
+ * 시험이 프로세스 환경을 직접 바꾸면 원래 값을 잃고, 복원을 빠뜨리거나 다른 정리 뒤에 두면 뒤 시험·같은 프로세스의 다른 파일이
+ * 그 값을 물려받는다(CODING_STANDARDS.md#격리). `process.env`의 항목 대입·복합 대입·증감·`delete`, `process.env` 자체의 대입,
+ * `Object.assign`·`Reflect.set` 같은 호출로 바꾸기를 짚는다. `process.env`는 이름이 아니라 출처로 본다(`isProcessEnv`).
+ */
+const noProcessEnvChange = {
+  meta: {
+    type: "problem",
+    docs: { description: "disallow changing process.env in tests" },
+    schema: [],
+    messages: {
+      change:
+        "시험이 process.env를 직접 바꾸면 원래 값을 잃고(대입·delete), 복원을 빠뜨리거나 다른 정리 뒤에 두면 뒤 시험·같은 프로세스의 다른 파일이 그 값을 물려받습니다. `vi.stubEnv(name, value)`로 바꾸고 바로 `onTestFinished(() => { vi.unstubAllEnvs(); })`(또는 그 일만 하는 `afterEach`)로 시작 전 값으로 돌려놓으세요. 자식 프로세스에 줄 환경은 `{ ...process.env, NAME: value }`처럼 새 객체로 만들어 넘기고, Vitest globalSetup이 시험에 넘길 값은 `provide`·`inject`로, Playwright globalSetup은 파일로 넘깁니다. CODING_STANDARDS.md#격리",
+    },
+  },
+  create(context) {
+    const { sourceCode } = context;
+    /** 바꾸는 대상(`target`)이 `process.env`의 항목이거나 `process.env` 자체인가. */
+    const changesEnv = (target) =>
+      target.type === "MemberExpression" &&
+      (isProcessEnv(target.object, sourceCode) ||
+        isProcessEnv(target, sourceCode));
+    const report = (node) => context.report({ node, messageId: "change" });
+    return {
+      AssignmentExpression(node) {
+        if (changesEnv(node.left)) report(node);
+      },
+      UpdateExpression(node) {
+        if (changesEnv(node.argument)) report(node);
+      },
+      UnaryExpression(node) {
+        if (node.operator === "delete" && changesEnv(node.argument))
+          report(node);
+      },
+      CallExpression(node) {
+        const { callee } = node;
+        if (
+          callee.type !== "MemberExpression" ||
+          callee.object.type !== "Identifier" ||
+          !globalName(sourceCode, callee.object, Object.keys(envChangingCalls))
+        )
+          return;
+        const [target] = node.arguments;
+        if (
+          envChangingCalls[callee.object.name].some((name) =>
+            memberNamed(callee, name)
+          ) &&
+          target &&
+          isProcessEnv(target, sourceCode)
+        )
+          report(node);
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
   rules: {
@@ -1638,6 +1777,7 @@ export default {
     "no-ignored-close-error": noIgnoredCloseError,
     "no-ignored-kill-error": noIgnoredKillError,
     "no-page-wide-locator": noPageWideLocator,
+    "no-process-env-change": noProcessEnvChange,
     "no-skipped-cleanup": noSkippedCleanup,
     "no-state-between-tests": noStateBetweenTests,
   },

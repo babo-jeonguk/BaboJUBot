@@ -36,6 +36,7 @@ async function runShared(failure: "none" | "body" | "setup") {
     const { code, output } = await runPlaywright({
       config,
       timeoutMs: runTimeoutMs,
+      prefix: "SHARED_SERVER_RUN_",
       env: {
         SHARED_SERVER_RUN_STATE: stateFile,
         SHARED_SERVER_RUN_OUTPUT: path.join(dir, "results"),

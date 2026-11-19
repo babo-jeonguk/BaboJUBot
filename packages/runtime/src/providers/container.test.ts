@@ -71,11 +71,10 @@ const createClaudeProvider = folders.owning(unownedClaudeProvider);
 const createCodexProvider = folders.owning(unownedCodexProvider);
 const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
-const saved = { ...process.env };
-afterEach(async () => {
+afterEach(() => {
   refusal = null;
   locked.folder = null;
-  process.env = { ...saved };
+  vi.unstubAllEnvs();
 });
 
 type Call = {
@@ -211,11 +210,11 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
       "synthetic-login",
       { mode: 0o600 }
     );
-    process.env.GH_TOKEN = "github-secret";
-    process.env.GITHUB_TOKEN = "github-secret";
-    process.env.BABOJUBOT_CLAUDE_PASS_ENV = "GH_TOKEN,GITHUB_TOKEN";
+    vi.stubEnv("GH_TOKEN", "github-secret");
+    vi.stubEnv("GITHUB_TOKEN", "github-secret");
+    vi.stubEnv("BABOJUBOT_CLAUDE_PASS_ENV", "GH_TOKEN,GITHUB_TOKEN");
     // 이 컴퓨터의 프로그램 위치 설정은 컨테이너에서 쓰지 않는다. 컨테이너에는 이미지의 프로그램이 있다.
-    process.env.BABOJUBOT_CLAUDE_COMMAND = "/host/only/claude";
+    vi.stubEnv("BABOJUBOT_CLAUDE_COMMAND", "/host/only/claude");
     const provider = createClaudeProvider({
       dataDir: env.root,
       container: env.container,
@@ -1018,8 +1017,8 @@ describe.skipIf(process.platform === "win32")(
         "synthetic-login",
         { mode: 0o600 }
       );
-      process.env.ANTHROPIC_API_KEY = "api-key-secret";
-      process.env.BABOJUBOT_CLAUDE_PASS_ENV = "ANTHROPIC_API_KEY";
+      vi.stubEnv("ANTHROPIC_API_KEY", "api-key-secret");
+      vi.stubEnv("BABOJUBOT_CLAUDE_PASS_ENV", "ANTHROPIC_API_KEY");
       let provider!: ReturnType<typeof createClaudeProvider>;
       const network = await relayed("claude", (upstream) => {
         provider = createClaudeProvider({
@@ -2630,7 +2629,7 @@ describe("the Docker engine check", () => {
   });
 
   it("refuses a daemon on another computer, whose folders this computer cannot check", async () => {
-    process.env.DOCKER_HOST = "tcp://10.0.0.9:2375";
+    vi.stubEnv("DOCKER_HOST", "tcp://10.0.0.9:2375");
     await expect(
       (await engine()).checkDaemon(AbortSignal.timeout(10_000))
     ).rejects.toThrow(/not on this computer/);

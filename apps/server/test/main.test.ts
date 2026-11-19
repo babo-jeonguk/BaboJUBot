@@ -84,17 +84,13 @@ it("starts against an external Postgres URL and leaves that Postgres running on 
 // 부모 셸의 서버 설정(BABOJUBOT_*)은 이 파일의 서버 시험에 새지 않는다. 시험이 고르지 않은 설정이 고장 나 있어도
 // 서버는 그 설정과 무관하게 뜬다. 고장 난 모델 목적지 설정으로 확인한다(서버가 시작할 때 JSON으로 읽는다).
 it("ignores the parent's server settings that the test did not choose", async () => {
-  const saved = process.env.BABOJUBOT_MODEL_DESTINATIONS;
-  process.env.BABOJUBOT_MODEL_DESTINATIONS = "not json";
-  let child: MainProcess | undefined;
-  try {
-    child = startMain({ DATABASE_URL: external.url });
-  } finally {
-    if (saved === undefined) delete process.env.BABOJUBOT_MODEL_DESTINATIONS;
-    else process.env.BABOJUBOT_MODEL_DESTINATIONS = saved;
-  }
-  onTestFinished(() => stopMain(child!));
-  await child!.ready;
+  vi.stubEnv("BABOJUBOT_MODEL_DESTINATIONS", "not json");
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
+  const child = startMain({ DATABASE_URL: external.url });
+  onTestFinished(() => stopMain(child));
+  await child.ready;
 });
 
 // 종료 신호는 서버 진입점 하나가 받아, 서버 정리를 끝낸 뒤 DB를 닫고 성공으로 끝난다.

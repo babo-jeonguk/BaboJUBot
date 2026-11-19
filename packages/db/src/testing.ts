@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
+import { inject } from "vitest";
+import type { TestProject } from "vitest/node";
 import {
   planOrganizationCreation,
   type AgentRoleSource,
@@ -32,8 +34,12 @@ import {
 
 export type TestDatabase = DatabaseHandle;
 
-/** 테스트 실행이 띄운 cluster의 port를 담는 환경 변수. vitest globalSetup이 정하고 작업자 프로세스가 물려받는다. */
-const clusterPortEnv = "BABOJUBOT_TEST_CLUSTER_PORT";
+declare module "vitest" {
+  export interface ProvidedContext {
+    /** 테스트 실행이 띄운 cluster의 port. vitest globalSetup(`startTestCluster`)이 넘기고 시험이 `inject`로 받는다. */
+    testClusterPort: number;
+  }
+}
 const templateName = "babojubot_template";
 // 서버 테스트 파일들이 동시에 연결을 연다. 임시 cluster라 디스크 확정 기록은 startEmbeddedCluster가 끈다.
 const testSettings = ["max_connections=500"];
@@ -42,7 +48,9 @@ const testSettings = ["max_connections=500"];
  * 테스트 실행 하나가 같이 쓰는 embedded Postgres를 띄우고, migration을 적용한 원본 DB를 만든다.
  * vitest globalSetup용이다. 돌려준 함수가 cluster를 멈추고 dataDir를 지운다.
  */
-export async function startTestCluster(): Promise<() => Promise<void>> {
+export async function startTestCluster(
+  project: Pick<TestProject, "provide">
+): Promise<() => Promise<void>> {
   const options = await ephemeralCluster();
   const { port, stop } = await startEmbeddedCluster(options, testSettings);
   try {
@@ -51,11 +59,8 @@ export async function startTestCluster(): Promise<() => Promise<void>> {
     );
     // 원본에 연결이 남으면 복제할 수 없으므로 migration 뒤 바로 닫는다.
     await (await openDatabase({ url: clusterUrl(port, templateName) })).close();
-    process.env[clusterPortEnv] = String(port);
-    return async () => {
-      delete process.env[clusterPortEnv];
-      await stop();
-    };
+    project.provide("testClusterPort", port);
+    return stop;
   } catch (error) {
     // 준비 실패를 그대로 알린다. 멈추기가 실패하면 그 실패를 함께 알린다.
     await stop().catch((stopping) => {
@@ -68,16 +73,22 @@ export async function startTestCluster(): Promise<() => Promise<void>> {
   }
 }
 
+/** 테스트 실행이 띄운 cluster(`startTestCluster`)의 port. */
+export function testClusterPort() {
+  const port = inject("testClusterPort");
+  if (!port)
+    throw new Error(
+      "테스트 cluster가 없습니다. vitest 설정의 globalSetup에 packages/db/src/test-cluster.ts를 넣으세요."
+    );
+  return port;
+}
+
 /**
  * 테스트마다 따로 쓰는 DB. 테스트 실행이 띄운 cluster(`startTestCluster`)에 원본 DB를 복제하며,
  * `close`가 연결을 닫고 그 DB를 지운다.
  */
 export async function createTestDatabase(): Promise<DatabaseHandle> {
-  const port = Number(process.env[clusterPortEnv]);
-  if (!port)
-    throw new Error(
-      "테스트 cluster가 없습니다. vitest 설정의 globalSetup에 packages/db/src/test-cluster.ts를 넣으세요."
-    );
+  const port = testClusterPort();
   const admin = clusterUrl(port, "postgres");
   const name = `test_${randomUUID().replaceAll("-", "")}`;
   await withClient(admin, (client) =>

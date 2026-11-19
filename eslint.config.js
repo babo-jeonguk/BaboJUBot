@@ -105,6 +105,7 @@ export default defineConfig([
     // 공용 정리 hook은 앞 정리가 실패해도 뒤 정리를 한다(CODING_STANDARDS.md#정리). 기다림의 순서와 반복문·try를 봐야 해서 규칙을 따로 둔다.
     // process.kill의 실패는 오류 코드를 보고 넘긴다(CODING_STANDARDS.md#정리). catch가 받은 오류를 읽는지 봐야 해서 규칙을 따로 둔다.
     // Node 서버 닫기의 실패를 Promise 이행으로 버리지 않는다(CODING_STANDARDS.md#정리). close 콜백과 서버의 출처를 봐야 해서 규칙을 따로 둔다.
+    // 시험은 process.env를 직접 바꾸지 않는다(CODING_STANDARDS.md#격리). 가져오기·구조 분해로 받은 env까지 출처를 따라가야 해서 규칙을 따로 둔다.
     files: testFiles,
     plugins: { tests: testRules },
     rules: {
@@ -114,6 +115,7 @@ export default defineConfig([
       "tests/no-fixed-time-wait": "error",
       "tests/no-ignored-close-error": "error",
       "tests/no-ignored-kill-error": "error",
+      "tests/no-process-env-change": "error",
       "tests/no-skipped-cleanup": "error",
       "tests/no-state-between-tests": "error",
       "no-restricted-syntax": [

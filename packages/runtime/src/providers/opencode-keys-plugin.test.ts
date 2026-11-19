@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
 
 // 제품이 OpenCode 설정 폴더에 써 넣는 plugin을 OpenCode 없이 그 공개 API 모양(ctx.tool.transform·editor.update)의 가짜로 돌린다.
@@ -11,7 +11,6 @@ let close: (() => Promise<void>) | undefined;
 afterEach(async () => {
   await close?.();
   close = undefined;
-  delete process.env.OPENCODE_CONFIG_CONTENT;
 });
 
 async function mcpServer(reply: (body: any) => unknown) {
@@ -45,18 +44,25 @@ async function loadPlugin(
   url: string,
   check: (request: unknown) => Promise<void> = async () => {}
 ) {
-  process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
-    mcp: {
-      servers: {
-        organization: {
-          url,
-          headers: {
-            Authorization: "Bearer token-1",
-            "babojubot-call-key": "required",
+  // plugin은 OpenCode가 넘긴 설정을 환경에서 읽는다. 시험이 끝나면 서버 닫기와 무관하게 시작 전 값으로 돌린다.
+  vi.stubEnv(
+    "OPENCODE_CONFIG_CONTENT",
+    JSON.stringify({
+      mcp: {
+        servers: {
+          organization: {
+            url,
+            headers: {
+              Authorization: "Bearer token-1",
+              "babojubot-call-key": "required",
+            },
           },
         },
       },
-    },
+    })
+  );
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
   });
   const module = await import(
     `data:text/javascript;charset=utf-8,${encodeURIComponent(organizationKeysPluginSource)}`

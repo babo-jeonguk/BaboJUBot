@@ -15,6 +15,7 @@
 - optional 값끼리 다르다고 비교하기 전에 각 값이 있는지 확인합니다. 한쪽이 비어 있어도 "다르다"는 통과합니다.
 - 개수 대신 기대한 항목을 비교합니다. 하나가 빠지고 하나가 겹쳐도 개수는 같습니다. 순서가 계약이 아니면 순서와 무관하게 비교합니다.
 - 순서를 약속하는 시험은 순서를 관찰합니다. 앞 단계를 gate로 붙잡아 그동안 뒤 단계가 없음을 보고, 거부된 앞 단계 뒤에는 뒤 단계가 없음을 봅니다. 각 단계의 최종 기록만 보면 순서가 뒤집혀도 통과합니다.
+- 경로 시험은 실제 서버의 HTTP 진입점에서 메서드·상태·응답을 봅니다(`apps/server/test/tool-routes.test.ts`). 프레임워크 내부 구조(Express `router.stack`)를 읽으면 다른 처리에 잘못 연결된 경로와 틀린 응답이 통과합니다.
 - 단언을 새로 쓰거나 고치면 그 단언이 막을 결함을 제품 코드에 잠시 넣어 실패를 확인하고 되돌립니다. 결과는 PR에 적습니다.
 
 ## 시험 데이터
@@ -54,6 +55,8 @@
 시험끼리 상태를 나누면 실행 순서·동시 실행에 따라 결과가 바뀝니다. 빈 DB를 전제한 E2E와 고정 조직 이름이 두 번째 실행에서 실패했습니다(#178, #181).
 
 - 상속 환경 변수·port·임시 폴더는 시험마다 따로 둡니다.
+- 프로세스 환경은 `vi.stubEnv`로 바꾸고 바꾼 직후 시작 전 값으로 돌려놓는 정리(`onTestFinished(() => { vi.unstubAllEnvs(); })` 또는 그 일만 하는 `afterEach`)를 둡니다. `process.env`에 대입·`delete`하면 원래 값을 잃고, 복원을 다른 정리 뒤에 두면 앞 정리가 실패할 때 건너뜁니다. 직접 변경은 가져오기·구조 분해로 받은 `env`까지 lint(`tests/no-process-env-change`)가 막습니다. Vitest globalSetup이 시험에 넘길 값은 `provide`·`inject`(`packages/db/src/testing.ts` `testClusterPort`), Playwright globalSetup은 파일(`apps/web/e2e/support/shared-server-run/setup.ts`)로 넘깁니다. 파일 전체에 거는 stub(`apps/server/test/product-home.ts`)은 시험의 `vi.unstubAllEnvs()`가 함께 풀므로 시험마다 다시 겁니다.
+- 자식 프로세스의 환경은 새 객체로 만들어 넘기고, 자식이 읽는 시험 전용 키는 부모에서 물려받지 않고 모든 분기에서 정합니다(`apps/web/e2e/support/playwright-run.ts`의 `prefix`). 부모 셸에 남은 실패 스위치가 새면 성공 실행도 실패합니다.
 - 각 시험은 이름으로 혼자 돌려도 통과합니다. 한 시험이 대입한 바깥 변수를 다른 시험이 읽는 모양과 시험을 차례대로 묶는 모양은 lint(`tests/no-state-between-tests`)가 막고, 도움 함수를 거쳐 넘기는 것도 같습니다. 동작과 그 뒤의 확인은 한 시험 안에 두고, 시험이 끝난 뒤(fixture 정리 뒤)에야 보이는 상태는 그 시험을 따로 실행해 바깥 시험이 확인합니다(`apps/web/e2e/support/shared-settings.spec.ts`).
 - 앞 시험이 남긴 데이터를 시험 대상 함수로 치우지 않습니다. 알림 claim 시험이 앞 시험의 알림을 claim으로 보내 치우자, claim의 결함이 그 결함과 무관한 뒤 시험의 실패로 번졌습니다(#243). 대상 함수가 DB 전체를 보면 시험마다 자기 DB(`createTestDatabase`)를 씁니다.
 - E2E spec은 서버·DB 하나를 같이 쓰고 실행 순서로 DB 상태를 정하지 않습니다. 자기 조직은 조직 ID로 고르고(표시 이름은 유일하지 않음, `apps/web/e2e/support/organization.ts`), 빈 상태·전체 개수 검사는 자기 서버(`apps/web/e2e/support/isolated-server.ts`)에서 합니다.
@@ -91,8 +94,9 @@ E2E가 화면 전체에서 대상을 찾아 Windows에서 실행마다 다른 �
 
 ## CI 설정
 
-내려받기·설치의 일시적인 실패가 시험과 무관하게 job을 실패시켰습니다(#218). 지금 있는 단계는 `pnpm check`가 확인하고, 새로 넣는 단계는 아래 규칙을 따릅니다.
+내려받기·설치의 일시적인 실패가 시험과 무관하게 job을 실패시켰습니다(#218). 반대로 Docker 확인이 실패하면 Docker 시험 전체가 조용히 건너뛰어진 채 job이 성공할 수 있었습니다(#243). 지금 있는 단계는 `pnpm check`가 확인하고, 새로 넣는 단계는 아래 규칙을 따릅니다.
 
+- 바깥 환경(Docker, python pty, systemd 사용자 scope)이 있어야 도는 시험은 그 확인을 `probeEnvironment`(`packages/runtime/src/providers/test-support.ts`)로 합니다. CI는 그 시험이 도는 단계에 환경 변수로 필수를 명시하고(`BABOJUBOT_REQUIRE_DOCKER=1` 등), 그때 확인이 실패하면 건너뛰지 않고 명령·종료 코드·stderr와 함께 실패합니다. 변수가 없을 때(로컬)와 그 OS가 지원하지 않을 때(이유를 적음)만 건너뜁니다. `CI` 같은 일반 변수로 필수 여부를 짐작하지 않습니다.
 - 내려받기·설치는 일시적인 오류(시간 초과, 연결 실패, 5xx)만 정해진 횟수 다시 시도하고, 그 밖의 오류는 바로 실패합니다. 다시 시도를 모두 해도 그 단계의 시한 안에 끝나야 합니다.
 
 ## 실패한 시험을 고칠 때

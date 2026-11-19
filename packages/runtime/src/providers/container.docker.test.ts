@@ -35,8 +35,12 @@ import { startProcess } from "./process.ts";
 import { createRelayHub } from "./relay.ts";
 import { removeFolder } from "../remove-folder.ts";
 import { cleanUpAll } from "../test-cleanup.ts";
+import { commandFailure, probeEnvironment } from "./test-support.ts";
 
-// 실제 Docker가 있는 환경에서만 도는 격리 경계 검사(#102, #149). Docker가 없으면 건너뛰고 그 사실을 출력한다.
+// 실제 Docker가 있는 환경에서만 도는 격리 경계 검사(#102, #149). 로컬에서 Docker를 쓸 수 없으면 원인을 출력하고 건너뛴다.
+// Linux CI는 BABOJUBOT_REQUIRE_DOCKER=1로 이 검사를 필수로 정한다(.github/workflows/scaffold.yml `tests / runtime`). 그때는
+// Docker 확인이 실패하면 건너뛰지 않고 명령·종료 코드·stderr와 함께 실패한다(test-support.ts `probeEnvironment`).
+// Windows·macOS 실행기에는 Linux 컨테이너용 Docker가 없어 건너뛴다.
 // 이미지는 Node 공개 이미지(기본 node:24-bookworm-slim, BABOJUBOT_TEST_CONTAINER_BASE로 바꿈)에 제품의 시작 프로그램
 // (docker/runner의 entry.sh·relay.mjs)만 얹어 만든다. 네 프로바이더가 든 제품 공통 이미지 검사는 아니다.
 const base =
@@ -52,19 +56,21 @@ const docker = (args: string[], timeout = 60_000, input?: string) =>
     stdio: "pipe",
     ...(input !== undefined ? { input } : {}),
   });
-const available = (() => {
-  if (process.platform !== "linux") return false;
-  try {
-    docker(["info", "--format", "{{.ServerVersion}}"], 20_000);
-    return true;
-  } catch {
-    return false;
-  }
-})();
-if (!available)
-  console.log(
-    "[docker] Docker를 쓸 수 없어 격리 실행의 Docker 검사(폴더 권한·신뢰된 시작 환경·네트워크 없음·중계·컨테이너 제거)를 건너뜁니다."
-  );
+const available = probeEnvironment({
+  variable: "BABOJUBOT_REQUIRE_DOCKER",
+  what: "Docker 격리 실행(폴더 권한·신뢰된 시작 환경·네트워크 없음·중계·컨테이너 제거)",
+  ...(process.platform !== "linux" && {
+    unsupported: `${process.platform} 실행기에는 Linux 컨테이너용 Docker가 없다`,
+  }),
+  probe: () => {
+    const missing = commandFailure("docker", [
+      "info",
+      "--format",
+      "{{.ServerVersion}}",
+    ]);
+    return missing === undefined ? { value: true } : { missing };
+  },
+});
 
 describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
   const suffix = crypto.randomUUID().slice(0, 8);
@@ -376,7 +382,11 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
     const allowedPort = (allowed.address() as net.AddressInfo).port;
     const forbiddenPort = (forbidden.address() as net.AddressInfo).port;
     research = [
-      { host: "localhost", port: allowedPort, addresses: ["127.0.0.1", "::1"] },
+      {
+        host: "localhost",
+        port: allowedPort,
+        addresses: ["127.0.0.1", "::1"],
+      },
     ];
     const script = `
       const net = require("node:net");

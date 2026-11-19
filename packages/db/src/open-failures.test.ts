@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDatabase, withClient } from "./client.ts";
 import { clusterUrl, startEmbeddedCluster } from "./embedded.ts";
 import { candidatePort } from "./ports.ts";
+import { testClusterPort } from "./testing.ts";
 
 // DB를 여는 단계(cluster 시작 → DB 연결 → migration)와 닫는 단계에서 실패를 일부러 일으킨다. cluster는 시험 실행이 띄운
 // 공용 cluster(globalSetup)를 가리키는 가짜로 바꿔 정지 횟수와 정지 실패를 시험이 정한다.
@@ -16,8 +17,6 @@ vi.mock("drizzle-orm/node-postgres/migrator", async (importOriginal) => {
   return { ...real, migrate: vi.fn(real.migrate) };
 });
 const { migrate } = await import("drizzle-orm/node-postgres/migrator");
-
-const testClusterPort = () => Number(process.env.BABOJUBOT_TEST_CLUSTER_PORT);
 
 /** 정지를 세는 가짜 cluster. `stopFails`면 정지가 그 오류로 실패한다. */
 function fakeCluster(port: number, stopFails?: Error) {

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { defaultApprovalPolicy, type RunRequest } from "@babojubot/contracts";
 import { createRelayHub } from "./relay.ts";
 
@@ -139,4 +140,59 @@ export function manualClock() {
       now = until;
     },
   };
+}
+
+/** 확인 명령 하나의 결과. 성공(종료 코드 0)이면 `undefined`, 아니면 명령·종료 코드·신호·오류·stderr를 담은 실패 이유. */
+export function commandFailure(
+  command: string,
+  args: string[],
+  timeout = 20_000
+): string | undefined {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout });
+  if (!result.error && result.status === 0) return undefined;
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  return [
+    [command, ...args].join(" "),
+    `종료 코드 ${result.status ?? "없음"}`,
+    ...(result.signal ? [`신호 ${result.signal}`] : []),
+    ...(code ? [`오류 ${code}`] : []),
+    `stderr: ${result.stderr?.trim() || "(없음)"}`,
+  ].join(", ");
+}
+
+/**
+ * 시험이 쓰는 바깥 환경(Docker, python pty, systemd 사용자 scope)을 확인한다. 쓸 수 있으면 `probe`의 값을, 건너뛸 때는
+ * `undefined`를 돌려준다.
+ * - `unsupported`: 이 OS가 그 환경을 지원하지 않는 이유. 있으면 확인 없이 그 이유로 건너뛴다.
+ * - 지원하는 OS에서 확인이 실패하면, CI가 그 단계에 `variable=1`을 두어 필수로 정했을 때는 확인 결과(명령·종료 코드·stderr)와
+ *   함께 던져 시험 파일이 실패한다. 변수가 없으면(로컬) 이유를 출력하고 건너뛴다. `1`·빈 값 밖의 값은 잘못 쓴 것이라 던진다.
+ */
+export function probeEnvironment<T>({
+  variable,
+  what,
+  unsupported,
+  probe,
+}: {
+  variable: string;
+  what: string;
+  unsupported?: string;
+  probe: () => { value: T } | { missing: string };
+}): T | undefined {
+  const required = process.env[variable] ?? "";
+  if (required !== "" && required !== "1")
+    throw new Error(
+      `${variable}는 1(필수)이거나 비어 있어야 한다: ${JSON.stringify(required)}`
+    );
+  if (unsupported) {
+    console.log(`[${what}] ${unsupported}. 건너뜁니다.`);
+    return undefined;
+  }
+  const found = probe();
+  if ("value" in found) return found.value;
+  if (required === "1")
+    throw new Error(
+      `${variable}=1이라 ${what} 시험은 필수인데 쓸 수 없다: ${found.missing}`
+    );
+  console.log(`[${what}] 쓸 수 없어 건너뜁니다: ${found.missing}`);
+  return undefined;
 }

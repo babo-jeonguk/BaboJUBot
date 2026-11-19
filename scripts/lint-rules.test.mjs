@@ -1042,3 +1042,101 @@ test("product code may assert types", async () => {
     []
   );
 });
+
+// ---------- 프로세스 환경 직접 변경 (#243) ----------
+
+/** process.env 직접 변경 규칙의 메시지만. */
+const envMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-process-env-change");
+
+const envChanges = {
+  // 감사가 찾은 모양: 원래 값을 덮어쓰고, 복원은 서버 닫기 뒤에서 지운다.
+  "an assignment to an entry": `process.env.OPENCODE_CONFIG_CONTENT = "{}";\n`,
+  "a computed entry": `const name = "SETTING";\nprocess.env[name] = "1";\n`,
+  "a compound assignment": `process.env.PATH += ":/extra";\n`,
+  "an update": `process.env.COUNT++;\n`,
+  "a deleted entry": `delete process.env.OPENCODE_CONFIG_CONTENT;\n`,
+  "a deleted computed entry": `const name = "SETTING";\ndelete process.env[name];\n`,
+  // 시험이 저장해 둔 사본으로 환경 전체를 바꾸기.
+  "a replaced environment": `const saved = { ...process.env };\nprocess.env = { ...saved };\n`,
+  "a computed env member": `process["env"].SETTING = "1";\n`,
+  "Object.assign": `Object.assign(process.env, { SETTING: "1" });\n`,
+  "Reflect.set": `Reflect.set(process.env, "SETTING", "1");\n`,
+  "Reflect.deleteProperty": `Reflect.deleteProperty(process.env, "SETTING");\n`,
+  // 계산된 문자열 메서드 이름.
+  'Object["assign"]': `Object["assign"](process.env, { SETTING: "1" });\n`,
+  'Reflect["set"]': `Reflect["set"](process.env, "SETTING", "1");\n`,
+  // 전역 객체를 거친 process.
+  "globalThis.process": `globalThis.process.env.SETTING = "1";\n`,
+  "a deleted entry through global": `delete global.process.env["SETTING"];\n`,
+  "Object.assign through globalThis": `Object.assign(globalThis.process.env, { SETTING: "1" });\n`,
+  // node:process에서 가져온 env·process(다른 이름으로 가져와도).
+  "an imported env": `import { env } from "node:process";\nenv.SETTING = "1";\n`,
+  "an imported env under another name": `import { env as variables } from "process";\ndelete variables.SETTING;\n`,
+  "a default-imported process": `import proc from "node:process";\nproc.env.SETTING = "1";\n`,
+  "a namespace-imported process": `import * as proc from "node:process";\nproc.env = {};\n`,
+  // 같은 파일에서 그 값을 받은 변수.
+  "a destructured env": `const { env } = process;\nenv.SETTING = "1";\n`,
+  "a renamed destructured env from globalThis": `const { env: variables } = globalThis.process;\nconst name = "SETTING";\ndelete variables[name];\n`,
+  "a variable holding process.env": `const env = process.env;\nReflect.set(env, "SETTING", "1");\n`,
+  "a variable holding process": `const proc = process;\nproc.env.SETTING = "1";\n`,
+};
+
+for (const [shape, code] of Object.entries(envChanges))
+  test(`test code may not change process.env with ${shape}`, async () => {
+    for (const place of testPlaces) {
+      const [message, ...rest] = envMessages(await lint(code, place));
+      assert.ok(message, `${place}: not reported`);
+      assert.deepEqual(rest, [], place);
+      // 메시지가 이유와 대안(stub과 복원, 자식 환경, globalSetup이 넘기는 값)을 알려 준다.
+      assert.match(message.message, /원래 값을 잃고/);
+      assert.match(message.message, /vi\.stubEnv/);
+      assert.match(message.message, /vi\.unstubAllEnvs/);
+      assert.match(message.message, /새 객체/);
+      assert.match(message.message, /provide/);
+      assert.match(message.message, /CODING_STANDARDS\.md#격리/);
+    }
+  });
+
+test("test code may read process.env, stub it, build a child's environment from it and change values of the same names that are not it", async () => {
+  const allowed = [
+    // 읽기와 runner의 stub·복원.
+    `export const home = process.env.HOME;\nexport const has = "PATH" in process.env;\n`,
+    `import { onTestFinished, vi } from "vitest";\nvi.stubEnv("SETTING", "1");\nonTestFinished(() => {\n  vi.unstubAllEnvs();\n});\n`,
+    // 자식에 줄 환경은 새 객체로 만들고 그 객체를 바꾼다.
+    `const env = { ...process.env, SETTING: "1" };\nenv.OTHER = "2";\ndelete env.PATH;\nObject.assign(env, { MORE: "3" });\nexport { env };\n`,
+    // 다른 객체의 env 속성.
+    `const options = { env: {} };\noptions.env = { SETTING: "1" };\noptions.env.SETTING = "2";\n`,
+    // 같은 이름의 지역 값·매개변수(그림자 바인딩).
+    `const process = { env: {} };\nprocess.env.SETTING = "1";\ndelete process.env.SETTING;\n`,
+    `export function set(process, env) {\n  process.env.SETTING = "1";\n  env.SETTING = "1";\n  Object.assign(env, {});\n}\n`,
+    `const globalThis = { process: { env: {} } };\nglobalThis.process.env.SETTING = "1";\n`,
+    // 다른 모듈의 env, 다른 객체에서 꺼낸 env, 다른 이름의 속성.
+    `import { env } from "./config.js";\nenv.SETTING = "1";\n`,
+    `const config = { env: {} };\nconst { env } = config;\nenv.SETTING = "1";\n`,
+    `const { argv } = process;\nargv[0] = "node";\ndelete argv[1];\n`,
+    // 바꾸지 않는 메서드는 계산된 이름이어도 짚지 않는다.
+    `export const keys = Object["keys"](process.env);\nexport const has = Reflect["has"](process.env, "PATH");\n`,
+    // 새 값을 다시 받은 변수는 더는 process.env가 아니다.
+    `let env = process.env;\nenv = { ...env };\nenv.SETTING = "1";\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        envMessages(await lint(code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+test("code outside tests may set process.env", async () => {
+  assert.deepEqual(
+    envMessages(
+      await lint(
+        envChanges["an assignment to an entry"],
+        "scripts/lint-sample.mjs"
+      )
+    ),
+    []
+  );
+});
