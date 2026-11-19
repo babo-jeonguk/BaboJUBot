@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { runProbe, startProcess } from "./process.ts";
 import { killAndWait } from "./process-test-support.ts";
@@ -51,17 +52,30 @@ it("skips lines that are not JSON and keeps reading", async () => {
 });
 
 it("skips only the line that is over the limit, across chunks", async () => {
-  const { frames, exit } = await run(
-    `const w = (s) => new Promise((r) => process.stdout.write(s, r));
-     (async () => {
-       await w('{"n":1}\\n');
-       await w('x'.repeat(2000));
-       await new Promise((r) => setTimeout(r, 50));
-       await w('y'.repeat(2000) + '\\n');
-       await w('{"n":2}\\n');
-     })();`,
-    { maxLineLength: 1000 }
-  );
+  // 넘친 줄의 앞부분을 부모가 읽은 뒤에야 자식이 나머지를 쓴다(부모가 앞 프레임을 받고 입력으로 알린다). 앞 프레임과 앞부분은
+  // 한 번에 쓰므로(POSIX는 512바이트 이하 쓰기를 파이프에 한꺼번에 넣는다) 부모가 앞 프레임을 받았을 때 앞부분도 받았다.
+  // 나머지의 `{"n":0}`은 한도 안이라, 넘친 줄의 끝으로 버리지 않고 새 줄로 읽으면 프레임으로 잡힌다.
+  const frames: unknown[] = [];
+  const child = startProcess({
+    command: [
+      process.execPath,
+      "-e",
+      `process.stdout.write('{"n":1}\\n' + 'x'.repeat(40));
+       process.stdin.once("data", () => {
+         process.stdout.write('{"n":0}\\n{"n":2}\\n');
+         process.stdin.destroy();
+       });`,
+    ],
+    args: [],
+    cwd: process.cwd(),
+    env: { PATH: process.env.PATH },
+    maxLineLength: 16,
+    onFrame: async (frame) => {
+      frames.push(frame);
+      if (isDeepStrictEqual(frame, { n: 1 })) child.write({ go: true });
+    },
+  });
+  const exit = await child.done;
   expect(frames).toEqual([{ n: 1 }, { n: 2 }]);
   expect(exit.broken).toBe(false);
 });

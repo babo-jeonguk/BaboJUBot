@@ -2080,9 +2080,10 @@ describe.skipIf(process.platform === "win32")(
         const open = hub.open.bind(hub);
         hub.open = (input) => {
           opened.push(input.required.map(({ host }) => host));
-          // 열린 목적지만 본다. 프로그램은 닿지 않는 중계를 다시 시도하므로 곧 멈춘다.
-          setTimeout(() => stop.abort(), 100);
-          return open(input);
+          // 열린 목적지만 본다. 프로그램은 닿지 않는 중계를 계속 다시 시도해 스스로 끝나지 않으므로, 중계를 연 뒤 실행을 멈춘다.
+          const relay = open(input);
+          stop.abort();
+          return relay;
         };
         const provider = create({
           dataDir: env.root,

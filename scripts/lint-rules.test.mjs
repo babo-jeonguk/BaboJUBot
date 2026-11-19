@@ -283,6 +283,76 @@ test("code outside tests may wait a fixed time", async () => {
     );
 });
 
+test("test code may not abort after a fixed time or count event loop turns as the end of the work", async () => {
+  const ordered = {
+    // 정해진 시간 뒤 중단.
+    "an abort timer": [
+      `setTimeout(() => cancel.abort(), 50);\n`,
+      /정해진 시간 뒤에 중단/,
+    ],
+    "an abort timer block with a reason": [
+      `setTimeout(() => {\n  stop.abort(new Error("stop"));\n}, 100);\n`,
+      /정해진 시간 뒤에 중단/,
+    ],
+    "an abort timer with a variable delay": [
+      `setTimeout(() => controller.abort(), delay);\n`,
+      /정해진 시간 뒤에 중단/,
+    ],
+    // 정해진 횟수만큼 차례 넘기기.
+    "a counted zero timer": [
+      `for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));\n`,
+      /정해진 횟수/,
+    ],
+    "a counted timer without a delay": [
+      `for (let i = 0; i < 2; i++) await new Promise((r) => setTimeout(() => r()));\n`,
+      /정해진 횟수/,
+    ],
+    "a counted setImmediate block": [
+      `for (let i = 0; i < 3; i++) {\n  await new Promise((resolve) => setImmediate(resolve));\n}\n`,
+      /정해진 횟수/,
+    ],
+    "counted microtasks": [
+      `for (const _ of [1, 2]) await Promise.resolve();\nfor (let i = 0; i < 2; i++) await new Promise((r) => queueMicrotask(r));\nfor (let i = 0; i < 2; i++) await new Promise((r) => process.nextTick(r));\n`,
+      /정해진 횟수/,
+    ],
+  };
+  for (const [shape, [code, kind]] of Object.entries(ordered))
+    for (const place of testPlaces) {
+      const messages = waitMessages(await lint(code, place));
+      assert.ok(messages.length, `${place}: ${shape} not reported`);
+      for (const message of messages) {
+        assert.match(message.message, kind, `${place}: ${shape}`);
+        // 메시지가 대안과 기준 문서의 절을 알려 준다.
+        assert.match(message.message, /신호/);
+        assert.match(message.message, /CODING_STANDARDS\.md#순서/);
+      }
+    }
+  // 한 반복은 한 번만 알린다.
+  assert.equal(
+    waitMessages(await lint(ordered["counted microtasks"][0], testPlaces[0]))
+      .length,
+    3
+  );
+});
+
+test("test code may abort on a signal, keep an abort timer as a bound and repeat a turn until a condition holds", async () => {
+  const allowed = [
+    // 신호를 받은 뒤 중단한다.
+    `await waiting;\ncancel.abort();\nentered.then(() => stop.abort());\n`,
+    // 담아 두고 푸는 상한.
+    `const deadline = setTimeout(() => cancel.abort(), 5000);\nclearTimeout(deadline);\n`,
+    // 조건을 다시 확인하는 반복.
+    `while (!closed) await new Promise((r) => setImmediate(r));\n`,
+    `do await new Promise((r) => setTimeout(r, 0));\nwhile (scheduled > 0);\n`,
+    `for (;;) {\n  await new Promise((r) => setImmediate(r));\n  if (done()) break;\n}\n`,
+    // 차례가 아닌 일을 기다리는 반복.
+    `for (const item of items) await handle(item);\nfor (let i = 0; i < 3; i++) await server.release();\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(waitMessages(await lint(code, place)), [], code);
+});
+
 /** 화면 전체 검색 규칙의 메시지만. */
 const locatorMessages = (messages) =>
   messages.filter((m) => m.ruleId === "tests/no-page-wide-locator");
