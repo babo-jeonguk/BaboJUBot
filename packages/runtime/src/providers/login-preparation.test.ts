@@ -463,7 +463,10 @@ describe.each(connections)("$name", (connection) => {
         await env.requestFor(crypto.randomUUID(), "container"),
         control()
       );
-      expect(spawned).toHaveLength(1);
+      // 정리의 docker 명령(rm·inspect)도 공용 실행으로 띄우므로, 실행 시도를 띄운 docker run만 센다.
+      expect(spawned.filter((command) => command.includes("run"))).toHaveLength(
+        1
+      );
     }
   );
 

@@ -172,11 +172,14 @@ async function expectRunWithoutJob() {
   }
 }
 
-// 남긴 자식을 띄워, 그 자식이 쥔 연결의 이름을 알린다. stdio는 남긴 자식이 프로그램의 출력을 쥐는지 정한다.
-const leaveChild = (stdio: string, extra = "") => {
+// 남긴 자식을 띄운다. 자식이 연결을 쥐었다는 답을 받은 뒤에(넷째 핸들로 알림) 그 이름을 알리고 `then`을 한다. stdio는 남긴 자식이
+// 프로그램의 출력을 쥐는지 정한다. Windows의 Node.js는 detached가 아닌 자식을 자기가 끝날 때 함께 끄므로(libuv의 job) 프로그램보다
+// 오래 남는 자식은 detached로만 만들 수 있다.
+const leaveChild = (stdio: string, then: string) => {
   const name = unique("child");
-  return `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold(name)} setInterval(() => {}, 1000);`)}], { stdio: ${stdio}${extra} });
-   console.log(JSON.stringify({ child: ${JSON.stringify(name)} }));`;
+  const child = `${lifelines.hold(name, 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
+  return `const c = require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: [...${stdio}, "pipe"], detached: true });
+   c.stdio[3].once("data", () => { console.log(JSON.stringify({ child: ${JSON.stringify(name)} })); ${then} });`;
 };
 
 describe.runIf(windows)("startProcess on Windows", () => {
@@ -221,8 +224,10 @@ describe.runIf(windows)("startProcess on Windows", () => {
 
   it("stops a child that holds the output after the program ends, and keeps the last output and exit code", async () => {
     const { attempt, frames, child } = run(
-      `${leaveChild(`["ignore", "inherit", "ignore"]`)}
-       process.stdout.write(JSON.stringify({ last: "x".repeat(200000) }) + "\\n", () => process.exit(3));`
+      leaveChild(
+        `["ignore", "inherit", "ignore"]`,
+        `process.stdout.write(JSON.stringify({ last: "x".repeat(200000) }) + "\\n", () => process.exit(3));`
+      )
     );
     const name = await child;
     const exit = await attempt.done;
@@ -232,28 +237,20 @@ describe.runIf(windows)("startProcess on Windows", () => {
     await lifelines.closed(name);
   });
 
+  // 남긴 자식은 모두 detached다(leaveChild). 예전의 "detached로 띄운 자식" 시험은 이 시험과 같아져 합쳤다.
   it("stops a child that does not hold the output after the program ends", async () => {
     const { attempt, child } = run(
-      `${leaveChild(`"ignore"`)} setTimeout(() => process.exit(0), 100);`
+      leaveChild(`["ignore", "ignore", "ignore"]`, "process.exit(0);")
     );
     const name = await child;
     expect((await attempt.done).code).toBe(0);
     await lifelines.closed(name);
   });
 
-  it("stops a child that the program started detached", async () => {
-    const { attempt, child } = run(
-      `${leaveChild(`"ignore"`, ", detached: true")} setTimeout(() => process.exit(0), 100);`
-    );
-    const name = await child;
-    await attempt.done;
-    await lifelines.closed(name);
-  });
-
   it("stops the program and what it started when the run is cancelled", async () => {
     // The program ignores the end of its input, so only the tree stop ends it.
     const { attempt, child } = run(
-      `${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`
+      `${leaveChild(`["ignore", "ignore", "ignore"]`, "")} setInterval(() => {}, 1000);`
     );
     const name = await child;
     attempt.end();
@@ -284,11 +281,13 @@ describe.runIf(windows)("startProcess on Windows", () => {
       { stdio: "ignore" }
     );
     await lifelines.connected(bystanderName);
-    const other = run(`${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`);
+    const other = run(
+      `${leaveChild(`["ignore", "ignore", "ignore"]`, "")} setInterval(() => {}, 1000);`
+    );
     const otherChild = await other.child;
     await lifelines.connected(otherChild);
     const { attempt, child } = run(
-      `${leaveChild(`"ignore"`)} setTimeout(() => process.exit(0), 100);`
+      leaveChild(`["ignore", "ignore", "ignore"]`, "process.exit(0);")
     );
     const name = await child;
     await attempt.done;
@@ -351,7 +350,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
        import { startProcess } from ${JSON.stringify(url("process.ts"))};
        await prepareJobObjectLauncher(${JSON.stringify(dataDir)});
        const program = ${JSON.stringify(
-         `${lifelines.hold(programName)} ${leaveChild(`"ignore"`)} console.log(JSON.stringify({ program: ${JSON.stringify(programName)} })); setInterval(() => {}, 1000);`
+         `${lifelines.hold(programName, `console.log(JSON.stringify({ program: ${JSON.stringify(programName)} }));`)} ${leaveChild(`["ignore", "ignore", "ignore"]`, "")} setInterval(() => {}, 1000);`
        )};
        startProcess({
          command: [process.execPath, "-e", program],

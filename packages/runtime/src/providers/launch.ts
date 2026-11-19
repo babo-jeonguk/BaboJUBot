@@ -150,7 +150,14 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
         requireJob: options.withoutJob === "refuse",
       })
     : undefined;
-  if (job && job.kind !== "launch" && options.withoutJob === "refuse")
+  // 찾지 못한 프로그램은 거절하지 않고 시작 실패로 알린다(cross-spawn이 띄우는 cmd.exe는 아무것도 띄우지 않고 끝난다).
+  const notFound = job?.kind === "not-found";
+  if (
+    job &&
+    job.kind !== "launch" &&
+    !notFound &&
+    options.withoutJob === "refuse"
+  )
     throw new TreeLaunchRefused(refusal(job));
   let unconfined: { reason: string; prepared: boolean } | undefined =
     job?.kind === "unavailable"
@@ -221,8 +228,9 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     };
   });
   child.on("error", (error) => {
-    // 띄운 뒤의 오류(신호를 보내지 못함 등)는 끝남이 아니다. 끝났는지는 stop()이 확인한다.
-    if (pid !== undefined) return;
+    // 띄운 뒤의 오류(신호를 보내지 못함 등)는 끝남이 아니다. 끝났는지는 stop()이 확인한다. 찾지 못한 프로그램을 cross-spawn이
+    // cmd.exe로 띄웠으면 cmd.exe가 끝날 때 종료 대신 이 오류(ENOENT)가 온다.
+    if (pid !== undefined && !notFound) return;
     reportStart({ kind: "failed", reason: error.message, error });
     reportExit({ code: null, signal: null });
   });
@@ -288,13 +296,15 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     });
   } else {
     controlClosed();
-    child.once("spawn", () =>
-      reportStart(
-        unconfined
-          ? { kind: "unconfined", ...unconfined }
-          : { kind: "confined" }
-      )
-    );
+    // 찾지 못한 프로그램은 cmd.exe가 시작해도 시작한 것이 아니다. 위 오류가 시작 실패를 알린다.
+    if (!notFound)
+      child.once("spawn", () =>
+        reportStart(
+          unconfined
+            ? { kind: "unconfined", ...unconfined }
+            : { kind: "confined" }
+        )
+      );
     child.once("exit", (code, signal) => reportExit({ code, signal }));
   }
   const send = (command: string) => {

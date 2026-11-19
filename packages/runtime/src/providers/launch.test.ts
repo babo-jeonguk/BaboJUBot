@@ -93,10 +93,11 @@ describe("launchTree", () => {
   }, 60_000);
 
   // 대표가 먼저 끝나도 그 자손은 stop()까지 돈다(모든 시스템이 같다). Windows에서 대표가 끝나며 남긴 자손도 stop()이 끈다.
+  // Windows의 Node.js는 detached가 아닌 자식을 자기가 끝날 때 함께 끄므로, 대표보다 오래 남는 자식은 detached로 만든다.
   it("keeps what a leader left until stop, then stops it", async () => {
     const left = unique("left");
     const tree = launch(
-      `${child(left, '{ stdio: "ignore" }')} setTimeout(() => process.exit(3), 200);`
+      `${child(left, '{ stdio: "ignore", detached: true }')} setTimeout(() => process.exit(3), 200);`
     );
     await lifelines.connected(left);
     expect(await tree.exited).toMatchObject({ code: 3 });
@@ -109,7 +110,7 @@ describe("launchTree", () => {
     const leader = unique("leader");
     const left = unique("left");
     const tree = launch(
-      `${lifelines.hold(leader)} ${child(left, '{ stdio: "ignore" }')} ${keep}`
+      `${lifelines.hold(leader)} ${child(left, '{ stdio: "ignore", detached: true }')} ${keep}`
     );
     await lifelines.connected(leader);
     await lifelines.connected(left);

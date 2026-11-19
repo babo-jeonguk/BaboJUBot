@@ -119,7 +119,7 @@ export type JobObjectLaunch =
   | { kind: "unavailable"; reason: string }
   /** 이 프로세스가 준비를 부르지 않았다(Windows 밖, 대부분의 시험). */
   | { kind: "unprepared" }
-  /** 프로그램을 찾지 못했다. 직접 띄우면 시작 실패(ENOENT)로 알린다. */
+  /** 프로그램을 찾지 못했다. cross-spawn으로 띄우면 cmd.exe가 돌다 끝나며 시작 실패(ENOENT)로 알린다. */
   | { kind: "not-found" };
 
 /** 프로그램을 묶음 실행기로 띄우는 방법. */
@@ -128,24 +128,25 @@ export function jobObjectLaunch(
   args: readonly string[],
   options: { env: NodeJS.ProcessEnv; cwd: string; requireJob: boolean }
 ): JobObjectLaunch {
-  if (!launcher) return { kind: "unprepared" };
-  if (!launcher.ok) return { kind: "unavailable", reason: launcher.reason };
+  // 찾지 못한 프로그램을 cross-spawn은 cmd.exe로 띄웠다가, cmd.exe가 끝날 때 종료 대신 시작 오류(ENOENT)를 알린다. 준비와 상관없이
+  // 먼저 가려 둔다.
   const resolved = resolvedCommand(
     command[0],
     [...command.slice(1), ...args],
     options
   );
-  return resolved
-    ? {
-        kind: "launch",
-        launch: launcherSpawn(
-          launcher.file,
-          resolved.application,
-          resolved.commandLine,
-          options.requireJob
-        ),
-      }
-    : { kind: "not-found" };
+  if (!resolved) return { kind: "not-found" };
+  if (!launcher) return { kind: "unprepared" };
+  if (!launcher.ok) return { kind: "unavailable", reason: launcher.reason };
+  return {
+    kind: "launch",
+    launch: launcherSpawn(
+      launcher.file,
+      resolved.application,
+      resolved.commandLine,
+      options.requireJob
+    ),
+  };
 }
 
 const windowsFolder = () =>
