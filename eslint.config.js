@@ -24,6 +24,14 @@ const framework = [
 
 // 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다.
 const productFiles = ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"];
+// 개발 스크립트: 사람과 CI가 돌리는 scripts 아래 .mjs에서 시험 코드를 뺀 곳. 시험이 부르는 가짜 프로그램(`test-fixtures`)과
+// 일부러 실패하는 시험 묶음(`scripts/fixtures`)은 시험 쪽이다. 타입 정보는 scripts/tsconfig.json(allowJs)으로 얻는다.
+const scriptFiles = ["scripts/**/*.mjs"];
+const scriptIgnores = [
+  ...testFiles,
+  "**/test-fixtures/**",
+  "scripts/fixtures/**",
+];
 
 // runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수를 거친다.
 const processOwners = [
@@ -230,6 +238,35 @@ export default defineConfig([
       ],
       eqeqeq: ["error", "always", { null: "ignore" }],
     },
+  },
+  {
+    // 개발 스크립트에도 제품 규칙 중 모양으로 판정하는 것과 타입 정보로 Promise를 보는 것을 건다(#255). 에이전트는 스크립트도
+    // 본보기로 삼는다. 타입 표기가 없는 JS는 값이 모두 any라 no-unsafe-*는 뜻이 없고, 단언 규칙은 JS에 단언 문법이 없어 걸지 않는다.
+    files: scriptFiles,
+    ignores: scriptIgnores,
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    plugins: { product: productRules },
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/no-deprecated": "error",
+      "product/sync-command-timeout": "error",
+      "product/no-ignored-error": "error",
+      eqeqeq: ["error", "always", { null: "ignore" }],
+    },
+  },
+  {
+    // finally·catch에서 서로 무관한 정리를 차례로 기다리면 앞 정리가 실패한 곳에서 뒤 정리를 건너뛴다(CODING_STANDARDS.md#제품-코드).
+    // 시험의 공용 정리 hook 규칙과 같은 판정을 쓴다. 시험 코드는 시험 전용 정리 규칙이 본다.
+    files: [...productFiles, ...scriptFiles],
+    ignores: scriptIgnores,
+    plugins: { product: productRules },
+    rules: { "product/no-cleanup-chain": "error" },
   },
   {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.

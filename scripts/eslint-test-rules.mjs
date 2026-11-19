@@ -869,6 +869,12 @@ function awaitsIn(fn) {
 }
 
 /**
+ * `block`(함수·`finally`·`catch`의 몸) 안의 기다림 중 실패하면 뒤 정리를 건너뛰는 첫 정리(`{ node, messageId }`). 없으면 undefined.
+ * 제품 코드·스크립트의 정리 연쇄 규칙(scripts/eslint-product-rules.mjs `no-cleanup-chain`)이 이 판정을 그대로 쓴다.
+ */
+export const skippedCleanupIn = (block) => firstSkipped(block, awaitsIn(block));
+
+/**
  * 공용 정리 hook이 정리를 차례로 기다리면 앞 정리가 실패한 순간 hook이 끝나 뒤 자원(listener·폴더·서버)이 남는다
  * (CODING_STANDARDS.md#정리). hook 함수 안(안에 정의한 함수는 빼고)의 모양을 짚는다.
  * - 정리 호출을 기다린 뒤에 다른 기다림이 있다(`await t.close(); await model.close();`).
