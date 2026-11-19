@@ -64,6 +64,7 @@ function git(root, ...args) {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
     timeout: 60_000,
+    killSignal: "SIGKILL",
   });
 }
 
@@ -107,6 +108,7 @@ function runTest(root, command) {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
     timeout: TEST_LIMIT_MS,
+    killSignal: "SIGKILL",
   });
   if (result.status === 0) return;
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`

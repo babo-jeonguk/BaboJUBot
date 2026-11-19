@@ -43,6 +43,7 @@ for (const { name, workspace, args, expected } of cases) {
       cwd,
       encoding: "utf8",
       timeout: 300_000,
+      killSignal: "SIGKILL",
       env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
     }
   );

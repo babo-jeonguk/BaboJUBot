@@ -13,6 +13,7 @@ import {
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import { continueAfterFailure, failureCode } from "@babojubot/contracts";
+import { boundChild, runCommand, type BoundedExit } from "./bounded-command.ts";
 
 /**
  * Windows 묶음 실행기(#205). Windows에는 프로세스 그룹이 없어, 프로그램이 먼저 끝나면 남긴 프로그램을 찾을 수 없다.
@@ -156,91 +157,85 @@ const windowsFolder = () =>
  * 실행기를 띄워 제어 통로의 약속대로 도는지 본다. 해가 없는 `cmd /c exit 7`을 묶음 안에서 돌려, 시작 결과 `ok`, 프로그램 끝 `exit 7`을
  * 받은 뒤 끄기를 보내 `ended`를 받고 실행기가 끝나야 성공이다.
  */
-function trial(file: string) {
+async function trial(
+  file: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
   const cmd = path.join(windowsFolder(), "System32", "cmd.exe");
   const launch = launcherSpawn(file, cmd, "cmd.exe /d /c exit 7", false);
-  return new Promise<{ ok: true } | { ok: false; reason: string }>(
-    (resolve) => {
-      const child = spawnChild(launch.file, launch.args, {
-        ...launch.options,
-        stdio: ["ignore", "ignore", "pipe", "pipe"],
-        windowsHide: true,
-        timeout: trialLimitMs,
-      });
-      const control = child.stdio[3] as Duplex;
-      const lines: string[] = [];
-      let pending = "";
-      let stderr = "";
-      control.on("data", (chunk: Buffer) => {
-        pending += chunk.toString();
-        for (let newline; (newline = pending.indexOf("\n")) >= 0;) {
-          const line = pending.slice(0, newline).trimEnd();
-          pending = pending.slice(newline + 1);
-          lines.push(line);
-          if (line === "exit 7") control.write("stop\n");
-        }
-      });
-      // 실행기가 끝나 통로가 닫히면 쓰기가 실패할 수 있다. 결과는 받은 줄로 판단한다.
-      control.on("error", (error) => {
-        lines.push(`control channel error: ${error.message}`);
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr = (stderr + chunk.toString()).slice(0, 4096);
-      });
-      child.on("error", (error) =>
-        resolve({
-          ok: false,
-          reason: `the job object launcher could not start: ${error.message}`,
-        })
-      );
-      child.on("close", (code, signal) => {
-        const status = readLauncherStatus(lines[0] ?? "");
-        if (
-          status?.kind === "ok" &&
-          lines[1] === "exit 7" &&
-          lines[2] === "ended"
-        )
-          resolve({ ok: true });
-        else if (status && status.kind !== "ok")
-          resolve({ ok: false, reason: status.reason });
-        else
-          resolve({
-            ok: false,
-            reason: `the job object launcher's trial ended with ${signal ?? `code ${code}`} after ${JSON.stringify(lines)}${stderr ? `: ${stderr.trim()}` : ""}`,
-          });
-      });
+  const child = spawnChild(launch.file, launch.args, {
+    ...launch.options,
+    stdio: ["ignore", "ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const control = child.stdio[3] as Duplex;
+  const lines: string[] = [];
+  let pending = "";
+  let stderr = "";
+  control.on("data", (chunk: Buffer) => {
+    pending += chunk.toString();
+    for (let newline; (newline = pending.indexOf("\n")) >= 0;) {
+      const line = pending.slice(0, newline).trimEnd();
+      pending = pending.slice(newline + 1);
+      lines.push(line);
+      if (line === "exit 7") control.write("stop\n");
     }
+  });
+  // 실행기가 끝나 통로가 닫히면 쓰기가 실패할 수 있다. 결과는 받은 줄로 판단하고 실패는 그 줄에 남긴다.
+  control.on("error", (error) => {
+    lines.push(`control channel error: ${error.message}`);
+  });
+  const controlClosed = new Promise<void>((resolve) =>
+    control.once("close", () => resolve())
   );
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString()).slice(0, 4096);
+  });
+  let exit: BoundedExit;
+  try {
+    // 시한에 SIGKILL로 끝내고 끝을 보장한다. 끝나지 않으면 준비 실패로 다룬다.
+    exit = await boundChild(child, { limitMs: trialLimitMs });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `the job object launcher's trial did not end: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  // 끝나기 전에 쓴 줄을 마저 읽는다. 통로가 닫히지 않아도 잠깐만 기다린다.
+  let drain: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    controlClosed,
+    new Promise<void>((resolve) => {
+      drain = setTimeout(resolve, 1000);
+    }),
+  ]);
+  clearTimeout(drain);
+  control.destroy();
+  const status = readLauncherStatus(lines[0] ?? "");
+  if (status?.kind === "ok" && lines[1] === "exit 7" && lines[2] === "ended")
+    return { ok: true };
+  if (status && status.kind !== "ok")
+    return { ok: false, reason: status.reason };
+  return {
+    ok: false,
+    reason: `the job object launcher's trial ended with ${exit.killed ? "its time limit" : (exit.signal ?? `code ${exit.code}`)} after ${JSON.stringify(lines)}${stderr ? `: ${stderr.trim()}` : ""}`,
+  };
 }
 
-function compile(compiler: string, source: string, out: string) {
-  return new Promise<string | undefined>((resolve) => {
-    const child = spawnChild(
+/** C# 컴파일러로 실행기를 만든다. 시한에 끝을 보장하고(`runCommand`), 실패하면 그 이유를 돌려준다. */
+async function compile(compiler: string, source: string, out: string) {
+  let result: Awaited<ReturnType<typeof runCommand>>;
+  try {
+    result = await runCommand(
       compiler,
       ["/nologo", "/target:exe", "/optimize+", `/out:${out}`, source],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        timeout: compileLimitMs,
-      }
+      { limitMs: compileLimitMs, maxOutputBytes: 64 * 1024 }
     );
-    let output = "";
-    const keep = (chunk: Buffer) => {
-      output = (output + chunk.toString()).slice(-2000);
-    };
-    child.stdout.on("data", keep);
-    child.stderr.on("data", keep);
-    child.on("error", (error) =>
-      resolve(`the C# compiler could not start: ${error.message}`)
-    );
-    child.on("close", (code, signal) =>
-      resolve(
-        code === 0
-          ? undefined
-          : `the C# compiler ended with ${signal ?? `code ${code}`}: ${output.trim()}`
-      )
-    );
-  });
+  } catch (error) {
+    return `the C# compiler could not run: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (result.code === 0) return undefined;
+  const output = (result.stdout + result.stderr).trim().slice(-2000);
+  return `the C# compiler ended with ${result.killed ? "its time limit" : (result.signal ?? `code ${result.code}`)}: ${output}`;
 }
 
 function compilers() {
@@ -333,7 +328,7 @@ export async function prepareJobObjectLauncher(
   } catch (error) {
     launcher = {
       ok: false,
-      reason: `the job object launcher could not be prepared: ${(error as Error).message}`,
+      reason: `the job object launcher could not be prepared: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
   if (launcher.ok) removeOldLaunchers(directory, launcher.file);

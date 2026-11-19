@@ -23,24 +23,36 @@ vi.mock("node:fs", async (original) => {
   };
 });
 
-// 시작 시각 조회(execFile)를 붙잡으면 시험이 그 응답을 넘기는 때를 정한다. 붙잡지 않으면 실제로 묻는다.
+// 시작 시각 조회(runCommand)를 붙잡으면 시험이 그 응답을 넘기는 때를 정한다. 붙잡지 않으면 실제로 묻는다. `answer()`가 돌려주는
+// 약속은 기록 쪽이 그 응답을 받은 뒤에 이행한다(같은 약속에 나중에 붙인 처리라 기록 쪽 처리가 먼저 돈다).
 const query = vi.hoisted(() => ({
   hold: false,
-  answer: undefined as (() => void) | undefined,
+  answer: undefined as (() => Promise<void>) | undefined,
 }));
-vi.mock("node:child_process", async (original) => {
-  const actual = await original<typeof import("node:child_process")>();
+vi.mock("./bounded-command.ts", async (original) => {
+  const actual = await original<typeof import("./bounded-command.ts")>();
   return {
     ...actual,
-    execFile: (...args: unknown[]) => {
-      if (!query.hold)
-        return (actual.execFile as (...a: unknown[]) => unknown)(...args);
-      const callback = args.at(-1) as (
-        error: Error | null,
-        stdout: string
-      ) => void;
-      query.answer = () => callback(null, new Date().toISOString());
-      return undefined;
+    runCommand: (...args: Parameters<typeof actual.runCommand>) => {
+      if (!query.hold) return actual.runCommand(...args);
+      let answer!: () => void;
+      const answered = new Promise<
+        Awaited<ReturnType<typeof actual.runCommand>>
+      >((resolve) => {
+        answer = () =>
+          resolve({
+            code: 0,
+            signal: null,
+            killed: false,
+            stdout: new Date().toISOString(),
+            stderr: "",
+          });
+      });
+      query.answer = () => {
+        answer();
+        return answered.then(() => undefined);
+      };
+      return answered;
     },
   };
 });
@@ -95,7 +107,7 @@ it("does not save the start time after forgetting a held record", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const forget = recordProcess(home, pid, "lease", { platform: withoutProc });
   rename.blocked = 1;
-  query.answer!();
+  await query.answer!();
   expect(rename.tried).toBe(1);
   forget();
   vi.runOnlyPendingTimers();
@@ -109,7 +121,7 @@ it("does not save the start time when its query answers after the record was for
   const forget = recordProcess(home, pid, "lease", { platform: withoutProc });
   expect(await readdir(directory)).toHaveLength(1);
   forget();
-  query.answer!();
+  await query.answer!();
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 

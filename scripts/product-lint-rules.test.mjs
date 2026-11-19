@@ -438,16 +438,29 @@ test("product code runs a program synchronously only with a timeout", async () =
       const [message, ...rest] = await lint(code, place, syncCommandRule);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
-      // 비동기 실행과 상한 옵션을 안내한다.
-      assert.match(message.message, /execFile/);
+      // 비동기 실행(공용 실행)과 상한·강제 종료 옵션을 안내한다.
+      assert.match(message.message, /runTree/);
       assert.match(message.message, /timeout/);
+      assert.match(message.message, /killSignal/);
+    }
+  // 시한은 있지만 시한에 신호(기본 SIGTERM)만 보내 끝을 보장하지 않는다(#262).
+  const soft = {
+    "a timeout without a kill signal": `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", [], { timeout: 5000 });\n`,
+    "a timeout with SIGTERM": `import { spawnSync } from "node:child_process";\nexport const out = () => spawnSync("ps", [], { timeout: 5000, killSignal: "SIGTERM" });\n`,
+    "a kill signal in a variable": `import { execSync } from "node:child_process";\nconst killSignal = "SIGKILL";\nexport const out = () => execSync("ps", { timeout: 5000, killSignal });\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(soft)) {
+      const [message, ...rest] = await lint(code, place, syncCommandRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /killSignal: "SIGKILL"/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
     }
   const bounded = [
-    `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", [], { encoding: "utf8", timeout: 5000 });\n`,
-    `import { spawnSync } from "node:child_process";\nconst timeout = 5000;\nexport const out = () => spawnSync("ps", ["-p", "1"], { timeout });\n`,
-    `import { execSync } from "node:child_process";\nexport const out = () => execSync("ps", { timeout: 5000 });\n`,
-    // 비동기 실행은 서버를 멈추지 않는다.
-    `import { execFile } from "node:child_process";\nexport const out = () => execFile("ps", [], () => {});\n`,
+    `import { execFileSync } from "node:child_process";\nexport const out = () => execFileSync("ps", [], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });\n`,
+    `import { spawnSync } from "node:child_process";\nconst timeout = 5000;\nexport const out = () => spawnSync("ps", ["-p", "1"], { timeout, killSignal: "SIGKILL" });\n`,
+    `import { execSync } from "node:child_process";\nexport const out = () => execSync("ps", { timeout: 5000, "killSignal": "SIGKILL" });\n`,
     // child_process가 아닌 같은 이름의 함수는 대상이 아니다.
     `const execFileSync = (name: string) => name;\nexport const out = () => execFileSync("ps");\n`,
   ];

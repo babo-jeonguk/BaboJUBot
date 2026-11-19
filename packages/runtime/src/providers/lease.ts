@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import {
@@ -8,6 +7,7 @@ import {
   orIfUnreadable,
   settled,
 } from "@babojubot/contracts";
+import { runCommand } from "./bounded-command.ts";
 import { type Clock, realClock } from "./clock.ts";
 
 /**
@@ -160,20 +160,23 @@ async function linuxHolders(
   return { holders, unverified };
 }
 
-const ps = (extra: string[]) =>
-  new Promise<string>((resolve, reject) =>
-    execFile(
-      "ps",
-      ["-A", "-ww", ...extra, "-o", "pid=,command="],
-      {
-        encoding: "utf8",
-        env: { ...process.env, LC_ALL: "C" },
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: 15_000,
-      },
-      (error, stdout) => (error ? reject(error) : resolve(stdout))
-    )
+/** `ps` 목록. 시한(15초)에 끝을 보장하고(`runCommand`), 끝나지 않거나 실패하면 던진다. 공용 실행의 끄기가 쓰는 조회라 그 위에 놓지 않는다. */
+const ps = async (extra: string[]) => {
+  const result = await runCommand(
+    "ps",
+    ["-A", "-ww", ...extra, "-o", "pid=,command="],
+    {
+      env: { ...process.env, LC_ALL: "C" },
+      maxOutputBytes: 64 * 1024 * 1024,
+      limitMs: 15_000,
+    }
   );
+  if (result.killed || result.code !== 0)
+    throw new Error(
+      `ps ended with ${result.killed ? "its time limit" : (result.signal ?? `code ${result.code}`)}`
+    );
+  return result.stdout;
+};
 
 /** `ps -o pid=,command=` 출력의 번호별 줄. */
 function byPid(listing: string) {

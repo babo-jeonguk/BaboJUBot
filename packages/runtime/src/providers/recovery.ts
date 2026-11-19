@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   writeFileSync,
@@ -16,6 +16,7 @@ import {
   orIfMissing,
   orIfUnreadable,
 } from "@babojubot/contracts";
+import { runCommand } from "./bounded-command.ts";
 import { holdsLease, stopLeaseHolders } from "./lease.ts";
 const boot = () =>
   readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
@@ -136,6 +137,7 @@ export function processStartedAt(pid: number, platform: NodeJS.Platform) {
         windowsHide: true,
         stdio: ["ignore", "pipe", "ignore"],
         timeout: helperCommandTimeoutMs,
+        killSignal: "SIGKILL",
       })
     );
   }, undefined);
@@ -188,19 +190,20 @@ export function recordProcess(
     }
   };
   const [command, args] = startQuery(pid, platform);
-  execFile(
-    command,
-    args,
-    {
-      encoding: "utf8",
-      env: startQueryEnv(),
-      windowsHide: true,
-      timeout: startRecordTimeoutMs,
-    },
-    (error, stdout) => {
-      const started = error ? undefined : parseStart(stdout);
+  // 시한(30초)에 끝을 보장한다. 답이 없거나 끝내지 못하면 시작 시각 없는 기록으로 남고, 복구는 그것을 모르는 것으로 다룬다.
+  void runCommand(command, args, {
+    env: startQueryEnv(),
+    limitMs: startRecordTimeoutMs,
+    maxOutputBytes: 4096,
+  }).then(
+    (result) => {
+      const started = result.code === 0 ? parseStart(result.stdout) : undefined;
       if (started !== undefined) saveStarted(started, startSaveTries);
-    }
+    },
+    (error: unknown) =>
+      console.warn(
+        `[provider] a process start time query did not end; the record keeps no start time (${failureCode(error)})`
+      )
   );
   return () => {
     forgotten = true;
@@ -249,6 +252,7 @@ async function recoverWithoutProc(
           windowsHide: true,
           stdio: "ignore",
           timeout: helperCommandTimeoutMs,
+          killSignal: "SIGKILL",
         }),
       (error) =>
         console.warn(

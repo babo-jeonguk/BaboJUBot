@@ -26,6 +26,7 @@ function gitOutput(root, args, { absent = [] } = {}) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 30_000,
+    killSignal: "SIGKILL",
   });
   if (result.error) throw result.error;
   if (result.status === 0) return result.stdout.trim();
@@ -298,6 +299,7 @@ if (
       // 대화형 입력(편집기·질문)을 받는 gh도 끝나도록 넉넉한 상한을 둔다.
       const result = spawnSync("gh", args, {
         timeout: 30 * 60_000,
+        killSignal: "SIGKILL",
         input,
         stdio: [input === undefined ? "inherit" : "pipe", "inherit", "inherit"],
       });

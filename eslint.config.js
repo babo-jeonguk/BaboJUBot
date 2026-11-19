@@ -48,6 +48,7 @@ const scriptIgnores = [
 // 그 함수들은 공용 실행(launch.ts)으로 띄운다.
 const processOwners = [
   "launch.ts", // 공용 실행: 띄우기와 그 트리의 끄기(stop)를 한 쌍으로 돌려준다
+  "bounded-command.ts", // 공용 실행 위에 놓을 수 없는 짧은 명령: 시한에 SIGKILL과 끝 보장
   "container.ts", // docker 클라이언트 호출과 격리 확인
   "job-object.ts", // Windows 묶음 실행기
   "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
@@ -321,6 +322,12 @@ export default defineConfig([
     ignores: [...scriptIgnores, ...launchOwners],
     plugins: { product: productRules },
     rules: { "product/no-direct-launch": "error" },
+  },
+  {
+    // 실행 소유 파일의 짧은 명령도 시한에 끝을 보장한다(CODING_STANDARDS.md#제품-코드). Node의 timeout은 신호만 보내고 기다린다.
+    files: launchOwners,
+    plugins: { product: productRules },
+    rules: { "product/bounded-command": "error" },
   },
   {
     // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. runtime 밖은 recovery.ts를 가져오지 않고, runtime 안에서도 공용 실행과 복구만 그룹을 끈다.

@@ -91,19 +91,31 @@ const unbounded = (value) =>
   (value.type === "Literal" && value.value === 0) ||
   (value.type === "Identifier" && value.name === "undefined");
 
+/** 옵션 객체 리터럴에서 이름이 `name`인 속성. */
+const optionNamed = (node, name) =>
+  node.type === "ObjectExpression"
+    ? node.properties.find(
+        (property) =>
+          property.type === "Property" &&
+          !property.computed &&
+          ((property.key.type === "Identifier" && property.key.name === name) ||
+            (property.key.type === "Literal" && property.key.value === name))
+      )
+    : undefined;
 /** 옵션 객체 리터럴이 `timeout` 속성을 직접 갖는가(`{ timeout: ms }`, `{ timeout }`). 0·undefined는 상한이 아니다. */
-const hasTimeout = (node) =>
-  node.type === "ObjectExpression" &&
-  node.properties.some(
-    (property) =>
-      property.type === "Property" &&
-      !property.computed &&
-      ((property.key.type === "Identifier" &&
-        property.key.name === "timeout") ||
-        (property.key.type === "Literal" &&
-          property.key.value === "timeout")) &&
-      !unbounded(property.value)
+const hasTimeout = (node) => {
+  const timeout = optionNamed(node, "timeout");
+  return timeout !== undefined && !unbounded(timeout.value);
+};
+/** 시한에 강제로 끝내는가(`killSignal: "SIGKILL"`). 기본(SIGTERM)은 무시하는 프로그램을 끝내지 못해 기다림이 끝나지 않는다. */
+const killsAtTimeout = (node) => {
+  const kill = optionNamed(node, "killSignal");
+  return (
+    kill !== undefined &&
+    kill.value.type === "Literal" &&
+    kill.value.value === "SIGKILL"
   );
+};
 
 /**
  * 외부 프로그램을 동기로 띄우면 그 프로그램이 끝날 때까지 이벤트 루프 전체가 멈춘다. 서버 시작·복구 중에 답하지 않는
@@ -116,12 +128,13 @@ const syncCommandTimeout = {
     type: "problem",
     docs: {
       description:
-        "require a timeout option on synchronous child_process calls in product code",
+        "require a timeout that ends the program on synchronous child_process calls",
     },
     schema: [],
     messages: {
       missing:
-        "{{name}} 호출은 프로그램이 끝날 때까지 서버·스크립트 전체를 멈춥니다. 비동기 실행(execFile·spawn, runtime 연결 코드는 providers/process.ts의 runProbe)을 쓰거나, 동기 실행이 꼭 필요하면 옵션 객체 리터럴에 timeout을 두고 상한이 지난 결과(error.code === \"ETIMEDOUT\")를 '모름'으로 처리하세요.",
+        '{{name}} 호출은 프로그램이 끝날 때까지 서버·스크립트 전체를 멈춥니다. 비동기 실행(공용 실행의 runTree, @babojubot/runtime/launch)을 쓰거나, 동기 실행이 꼭 필요하면 옵션 객체 리터럴에 timeout과 killSignal: "SIGKILL"을 두고 상한이 지난 결과(error.code === "ETIMEDOUT")를 \'모름\'으로 처리하세요.',
+      soft: '{{name}}의 timeout은 시한에 신호(기본 SIGTERM)만 보내고 끝날 때까지 기다립니다. 신호를 무시하는 프로그램이면 기다림이 끝나지 않습니다. 옵션 객체 리터럴에 killSignal: "SIGKILL"을 두어 시한에 끝을 보장하세요. CODING_STANDARDS.md#제품-코드',
     },
   },
   create(context) {
@@ -147,8 +160,12 @@ const syncCommandTimeout = {
                 syncLaunchers.has(callee.property.name)
               ? callee.property.name
               : undefined;
-        if (!name || node.arguments.some(hasTimeout)) return;
-        context.report({ node, messageId: "missing", data: { name } });
+        if (!name) return;
+        const options = node.arguments.find(hasTimeout);
+        if (!options)
+          return context.report({ node, messageId: "missing", data: { name } });
+        if (!killsAtTimeout(options))
+          context.report({ node, messageId: "soft", data: { name } });
       },
     };
   },
@@ -443,6 +460,71 @@ const noDirectLaunch = {
   },
 };
 
+/**
+ * 실행 소유 파일에서 Node.js의 시한에 끝을 맡기는 비동기 실행을 막는다. 비동기 `execFile`·`exec`는 시한에 신호만 보내고 출력이 닫히기를
+ * 기다려, 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않는다. `spawn`·`fork`의 `timeout`도 신호만 보낸다(#262).
+ * 짧은 명령은 runCommand·boundChild(providers/bounded-command.ts, 시한에 SIGKILL과 끝 보장), 트리를 끌 명령은 runTree를 쓴다.
+ * 알려진 한계: 모듈 객체를 다른 변수로 넘긴 뒤의 호출, 옵션을 변수로 넘긴 `spawn`의 `timeout`은 보지 않는다.
+ */
+const boundedCommand = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "end short commands at their time limit instead of leaving it to Node's timeout signal",
+    },
+    schema: [],
+    messages: {
+      callback:
+        "비동기 {{name}}은 시한에 신호만 보내고 출력이 닫히기를 기다립니다. 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않습니다. 짧은 명령은 runCommand(providers/bounded-command.ts, @babojubot/runtime/bounded-command)로 돌려 시한에 SIGKILL로 끝내고 끝을 보장하세요. 트리를 끌 명령은 runTree(@babojubot/runtime/launch)를 씁니다. CODING_STANDARDS.md#제품-코드",
+      timeout:
+        "{{name}}의 timeout은 시한에 신호만 보내고 끝을 보장하지 않습니다. timeout 없이 띄우고 boundChild(providers/bounded-command.ts)로 시한에 SIGKILL을 보내고 끝을 기다리세요. CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    /** child_process에서 가져온 비동기 실행의 지역 이름 → 원래 이름, 그리고 모듈 객체의 지역 이름. */
+    const named = new Map();
+    const modules = new Set();
+    const launcherOf = (callee) => {
+      if (callee.type === "Identifier") return named.get(callee.name);
+      if (
+        callee.type === "MemberExpression" &&
+        callee.object.type === "Identifier" &&
+        modules.has(callee.object.name)
+      ) {
+        const name = propertyName(callee);
+        return asyncLaunchers.has(name) ? name : undefined;
+      }
+      return undefined;
+    };
+    return {
+      ImportDeclaration(node) {
+        if (!childProcess.has(node.source.value) || node.importKind === "type")
+          return;
+        for (const specifier of node.specifiers) {
+          if (specifier.importKind === "type") continue;
+          if (specifier.type === "ImportSpecifier") {
+            const name = specifier.imported.name ?? specifier.imported.value;
+            if (asyncLaunchers.has(name)) named.set(specifier.local.name, name);
+          } else modules.add(specifier.local.name);
+        }
+      },
+      CallExpression(node) {
+        const name = launcherOf(node.callee);
+        if (!name) return;
+        if (name === "execFile" || name === "exec")
+          return context.report({
+            node,
+            messageId: "callback",
+            data: { name },
+          });
+        if (node.arguments.some(hasTimeout))
+          context.report({ node, messageId: "timeout", data: { name } });
+      },
+    };
+  },
+};
+
 const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
 const recoveryFile = "packages/runtime/src/providers/recovery";
 
@@ -535,6 +617,7 @@ export default {
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
     "no-direct-launch": noDirectLaunch,
+    "bounded-command": boundedCommand,
     "no-group-stop-import": noGroupStopImport,
   },
 };

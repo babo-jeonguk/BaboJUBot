@@ -13,6 +13,7 @@ export function matchingPids(pattern) {
     spawnSync("pgrep", ["-f", pattern], {
       encoding: "utf8",
       timeout: 10_000,
+      killSignal: "SIGKILL",
     }),
     pattern
   );

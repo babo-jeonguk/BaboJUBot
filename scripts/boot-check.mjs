@@ -266,7 +266,11 @@ async function stopLeftPostgres() {
           "-t",
           String(cleanupTimeoutMs / 1000),
         ],
-        { stdio: "ignore", timeout: cleanupTimeoutMs + 5_000 }
+        {
+          stdio: "ignore",
+          timeout: cleanupTimeoutMs + 5_000,
+          killSignal: "SIGKILL",
+        }
       ),
     (error) =>
       console.log(

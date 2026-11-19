@@ -51,7 +51,7 @@ const scriptRules = {
   },
   "product/sync-command-timeout": {
     reported: `import { execFileSync } from "node:child_process";\nexecFileSync("git", ["status"]);\n`,
-    kept: `import { execFileSync } from "node:child_process";\nexecFileSync("git", ["status"], { timeout: 10_000 });\n`,
+    kept: `import { execFileSync } from "node:child_process";\nexecFileSync("git", ["status"], { timeout: 10_000, killSignal: "SIGKILL" });\n`,
   },
   "product/no-ignored-error": {
     reported: `try {\n  JSON.parse("x");\n} catch {\n  console.log("not JSON");\n}\n`,
@@ -237,8 +237,8 @@ const directLaunches = {
 };
 // 막지 않는 모양: 상한을 둔 동기 실행, cross-spawn의 동기 실행, 타입만 가져오기, 공용 실행.
 const keptLaunches = [
-  `import { execFileSync, spawnSync } from "node:child_process";\nexecFileSync("x", [], { timeout: 1000 });\nspawnSync("x", [], { timeout: 1000 });\n`,
-  `import crossSpawn from "cross-spawn";\ncrossSpawn.sync("x", [], { timeout: 1000 });\n`,
+  `import { execFileSync, spawnSync } from "node:child_process";\nexecFileSync("x", [], { timeout: 1000, killSignal: "SIGKILL" });\nspawnSync("x", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
+  `import crossSpawn from "cross-spawn";\ncrossSpawn.sync("x", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
   `import type { ChildProcess } from "node:child_process";\nexport type Child = ChildProcess;\n`,
   `import { launchTree } from "@babojubot/runtime/launch";\nconst tree = launchTree({ command: ["x"], args: [], cwd: ".", env: {}, stdio: "pipe", withoutJob: "warn" });\nawait tree.stop();\n`,
 ];
@@ -362,4 +362,51 @@ test("the process group stop stays inside the shared launch and the restart reco
       [],
       `${place}: ${code}`
     );
+});
+
+const boundedRule = ["product/bounded-command"];
+// 실행 소유 파일에서 Node.js의 시한에 끝을 맡기는 비동기 실행(#262).
+const softCommands = {
+  "an async execFile": `import { execFile } from "node:child_process";\nexecFile("ps", [], { timeout: 1000 }, () => {});\n`,
+  "an async exec": `import { exec } from "node:child_process";\nexec("ps", () => {});\n`,
+  "execFile from a namespace": `import * as cp from "node:child_process";\ncp.execFile("ps", [], () => {});\n`,
+  "a spawn with a timeout": `import { spawn } from "node:child_process";\nspawn("csc", [], { stdio: "ignore", timeout: 1000 });\n`,
+  "a renamed spawn with a timeout": `import { spawn as run } from "node:child_process";\nrun("csc", [], { timeout: 1000 });\n`,
+};
+// 막지 않는 모양: timeout 없는 spawn(끝은 boundChild가 맡음), 시한에 강제 종료하는 동기 실행, 짧은 명령 실행 함수.
+const boundedCommands = [
+  `import { spawn } from "node:child_process";\nspawn("csc", [], { stdio: "ignore" });\n`,
+  `import { execFileSync } from "node:child_process";\nexecFileSync("ps", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
+  `import { runCommand } from "./bounded-command.ts";\nawait runCommand("ps", [], { limitMs: 1000, maxOutputBytes: 1024 });\n`,
+];
+
+test("launch owners end short commands at their time limit", async () => {
+  for (const place of [
+    "packages/runtime/src/providers/lease.ts",
+    "packages/runtime/src/providers/job-object.ts",
+    "packages/db/src/embedded.ts",
+  ]) {
+    for (const [shape, code] of Object.entries(softCommands)) {
+      const [message, ...rest] = await lint(code, place, boundedRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /SIGKILL/);
+      assert.match(message.message, /bounded-command/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+    for (const code of boundedCommands)
+      assert.deepEqual(
+        await lint(code, place, boundedRule),
+        [],
+        `${place}: ${code}`
+      );
+  }
+  // 실행 소유 파일 밖은 직접 띄우기 규칙(product/no-direct-launch)이 막고, 시험 코드는 범위 밖이다.
+  for (const place of ["apps/server/src/app.ts", ...chainTestPlaces])
+    for (const code of Object.values(softCommands))
+      assert.deepEqual(
+        await lint(code, place, boundedRule),
+        [],
+        `${place}: ${code}`
+      );
 });

@@ -9,6 +9,7 @@
     "./runtime-contract": "./src/runtime-contract.ts",
     "./remove-folder": "./src/remove-folder.ts",
     "./launch": "./src/providers/launch.ts",
+    "./bounded-command": "./src/providers/bounded-command.ts",
     "./lifelines": "./src/providers/lifeline-support.ts",
     "./test-cleanup": "./src/test-cleanup.ts"
   },
