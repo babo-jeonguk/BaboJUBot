@@ -22,8 +22,11 @@ const framework = [
   "@radix-ui/*",
 ];
 
-// 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다.
-const productFiles = ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"];
+// 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다. 화면 파일(.tsx)도 같은 규칙을 받는다.
+const productFiles = [
+  "apps/*/src/**/*.{ts,tsx}",
+  "packages/*/src/**/*.{ts,tsx}",
+];
 
 // runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수를 거친다.
 const processOwners = [
@@ -38,6 +41,11 @@ const processOwners = [
 const launchers = ["child_process", "node:child_process", "cross-spawn"];
 const launchMessage =
   "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 이 함수들이 providerEnvironment로 격리 실행의 환경을 만들고, 입력·시작 오류와 종료를 처리합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
+
+// import 검사를 거치지 않고 모듈을 불러오는 길. 이름 그대로 가져오기·바꿔 가져오기·모듈 객체에서 읽기·구조 분해를 모두 본다.
+const moduleLoaders = "/^(createRequire|getBuiltinModule)$/";
+const loaderMessage = `createRequire·process.getBuiltinModule은 import 검사를 거치지 않고 모듈을 불러오므로 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
+const computedImportMessage = `계산한 경로·template literal의 dynamic import는 무엇을 가져오는지 lint가 볼 수 없어 child_process 금지를 피합니다. 경로를 문자열 그대로 적으세요(\`await import("./claude.ts")\`). ${launchMessage}`;
 
 const standards = "CODING_STANDARDS.md#정리";
 // rm·rmSync는 recursive일 때만 폴더를 지운다(파일 지우기는 허용). rmdir·rmdirSync는 옵션 없이도 빈 폴더를 지운다.
@@ -158,7 +166,7 @@ export default defineConfig([
   },
   {
     // 계약의 union(깨우기 사유·이벤트·단계 등)에 값이 늘면 그 값을 다루지 않는 switch를 lint가 짚는다.
-    files: ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"],
+    files: productFiles,
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -175,12 +183,12 @@ export default defineConfig([
   {
     // commit 뒤 할 일(Event 알리기·취소·조직 재개·깨우기)은 저장 결과에 담아 applyAfterCommit 한 곳이 적용한다(#84).
     // 실행 시도 자체의 흐름은 dispatcher가, 저장과 상관없이 시작·끝나는 준비 확인 중 신호는 readiness가 맡는다.
-    files: ["apps/server/src/**/*.ts"],
+    files: ["apps/server/src/**/*.{ts,tsx}"],
     ignores: [
       "apps/server/src/after-commit.ts",
       "apps/server/src/dispatcher.ts",
       "apps/server/src/readiness.ts",
-      "**/*.test.ts",
+      ...testFiles,
     ],
     rules: {
       "no-restricted-syntax": [
@@ -234,8 +242,8 @@ export default defineConfig([
   {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.
     // child_process와 runtime이 의존하는 cross-spawn의 정적 import·re-export·문자열 dynamic import를 막는다.
-    // 계산한 경로의 import나 createRequire는 잡지 못한다.
-    files: ["packages/runtime/src/**/*.ts"],
+    // 이 검사를 피하는 길(계산한 경로·template literal의 import, createRequire, process.getBuiltinModule)도 막는다.
+    files: ["packages/runtime/src/**/*.{ts,tsx}"],
     ignores: [...testFiles, ...processOwners],
     rules: {
       "no-restricted-imports": [
@@ -254,6 +262,21 @@ export default defineConfig([
           selector:
             "ImportExpression[source.value=/^((node:)?child_process|cross-spawn)$/]",
           message: launchMessage,
+        },
+        {
+          // 문자열이 아닌 경로. 문자열 경로는 위 규칙과 no-restricted-imports가 본다.
+          selector: "ImportExpression:not([source.type='Literal'])",
+          message: computedImportMessage,
+        },
+        {
+          selector: [
+            `ImportSpecifier[imported.name=${moduleLoaders}]`,
+            `ExportSpecifier[local.name=${moduleLoaders}]`,
+            `MemberExpression[property.name=${moduleLoaders}]`,
+            `MemberExpression[property.value=${moduleLoaders}]`,
+            `ObjectPattern > Property[key.name=${moduleLoaders}]`,
+          ].join(", "),
+          message: loaderMessage,
         },
       ],
     },
