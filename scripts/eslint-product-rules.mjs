@@ -257,7 +257,7 @@ const noIgnoredError = {
 };
 
 const chainAlternatives =
-  "서로 무관한 정리는 모두 시도하고 실패를 모아 알리세요. 정리마다 catch를 두고 실패를 모아 원래 실패와 함께 던지거나(`AggregateError`, apps/server/src/app.ts의 서버 끄기), 스크립트는 자원을 잡은 직후 withCleanup의 defer로 등록하거나 cleanUpAll(@babojubot/runtime/test-cleanup)로 모두 시도합니다. 실패를 스스로 기록하고 던지지 않는 정리(removeAttemptFolder 등)끼리는 Promise.all로 함께 시작해 한 번 기다립니다. 동기 정리는 정리마다 continueAfterFailure(@babojubot/contracts)로 실패를 남기고 다음 정리로 갑니다. 앞 단계가 끝나야 안전한 단계(서비스를 닫은 뒤 그 이벤트 흐름이 끝나기를 기다림)는 그 순서를 이름으로 드러낸 함수 하나로 묶습니다. CODING_STANDARDS.md#제품-코드";
+  "서로 무관한 정리는 모두 시도하고 실패를 모아 알리세요. 정리마다 catch를 두고 실패를 모아 원래 실패와 함께 던지거나(`AggregateError`, apps/server/src/app.ts의 서버 끄기), 스크립트는 자원을 잡은 직후 withCleanup의 defer로 등록하거나 attemptAll(@babojubot/contracts)로 모두 시도합니다. 실패를 스스로 기록하고 던지지 않는 정리(removeAttemptFolder 등)끼리는 Promise.all로 함께 시작해 한 번 기다립니다. 동기 정리는 정리마다 continueAfterFailure(@babojubot/contracts)로 실패를 남기고 다음 정리로 갑니다. 앞 단계가 끝나야 안전한 단계(서비스를 닫은 뒤 그 이벤트 흐름이 끝나기를 기다림)는 그 순서를 이름으로 드러낸 함수 하나로 묶습니다. CODING_STANDARDS.md#제품-코드";
 
 /**
  * 실패 경로(`finally`·`catch`의 몸)에서 정리를 차례로 기다리면 앞 정리가 실패한 순간 블록이 끝나 뒤 정리(DB 닫기·폴더 지우기)를
@@ -598,6 +598,80 @@ const runtimeImportScope = {
   },
 };
 
+/**
+ * 실패를 모으는 일을 직접 짜지 않는다. 받은 오류를 배열에 넣는 `catch`(절·`.catch` 처리기·`.then`의 거부 처리기)는 "모두 시도하고 실패를
+ * 모아 알리기"를 다시 짜는 모양이다. 같은 일을 하는 도구가 이름만 달리 여럿 생겼다(#263 외부 리뷰 1회차 뒤).
+ * `attemptAll`(던짐)·`attemptEach`(실패 목록)·`combinedFailure`(목록을 하나로, `@babojubot/contracts`의 failure.ts)를 쓴다.
+ * 알려진 한계: 오류를 다른 이름에 담았다가 넣거나, 배열 말고 다른 곳(Map·문자열)에 모으는 것은 보지 않는다.
+ */
+const noFailureCollecting = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "collect failures only through attemptAll, attemptEach and combinedFailure",
+    },
+    schema: [],
+    messages: {
+      collected:
+        "받은 오류를 배열에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다. 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    /** `body` 안(안쪽 함수 제외)에서 `name`을 배열 `push`에 넘기는 호출. */
+    const pushes = (body, name) => {
+      const found = [];
+      const visit = (node) => {
+        if (!node || typeof node.type !== "string") return;
+        if (
+          node !== body &&
+          (node.type === "FunctionDeclaration" ||
+            node.type === "FunctionExpression" ||
+            node.type === "ArrowFunctionExpression")
+        )
+          return;
+        if (
+          node.type === "CallExpression" &&
+          node.callee.type === "MemberExpression" &&
+          !node.callee.computed &&
+          node.callee.property.name === "push" &&
+          node.arguments.some(
+            (arg) =>
+              (arg.type === "Identifier" && arg.name === name) ||
+              (arg.type === "SpreadElement" &&
+                arg.argument.type === "Identifier" &&
+                arg.argument.name === name)
+          )
+        )
+          found.push(node);
+        for (const key of Object.keys(node)) {
+          if (key === "parent") continue;
+          const value = node[key];
+          if (Array.isArray(value)) value.forEach(visit);
+          else if (value && typeof value.type === "string") visit(value);
+        }
+      };
+      visit(body);
+      return found;
+    };
+    const check = (param, body) => {
+      if (param?.type !== "Identifier") return;
+      for (const node of pushes(body, param.name))
+        context.report({ node, messageId: "collected" });
+    };
+    return {
+      CatchClause: (node) => check(node.param, node.body),
+      CallExpression(node) {
+        const position = handlerPositions.get(calledMethod(node.callee));
+        const handler =
+          position === undefined ? undefined : node.arguments[position];
+        if (handler && functionTypes.has(handler.type))
+          check(handler.params[0], handler.body);
+      },
+    };
+  },
+};
+
 const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
 const recoveryFile = "packages/runtime/src/providers/recovery";
 
@@ -692,6 +766,7 @@ export default {
     "no-direct-launch": noDirectLaunch,
     "bounded-command": boundedCommand,
     "runtime-import-scope": runtimeImportScope,
+    "no-failure-collecting": noFailureCollecting,
     "no-group-stop-import": noGroupStopImport,
   },
 };

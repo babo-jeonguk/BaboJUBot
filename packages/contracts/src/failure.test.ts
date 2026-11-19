@@ -223,7 +223,7 @@ describe("attemptAll", () => {
     );
     await expect(attempt).rejects.toMatchObject({
       name: "AggregateError",
-      message: "cleanup failed: first failed; third failed",
+      message: "cleanup failed: first failed — 그리고 third failed",
       errors: [first, third],
     });
     expect(done).toEqual(["first", "second", "third"]);

@@ -496,3 +496,52 @@ test("db and development scripts reach runtime only through the listed entry poi
       `${place}: ${code}`
     );
 });
+
+const collectingRule = ["product/no-failure-collecting"];
+
+test("failures are collected only through attemptAll, attemptEach and combinedFailure", async () => {
+  const collected = {
+    "a loop that pushes caught errors": `export async function run(steps) {\n  const failures = [];\n  for (const step of steps)\n    try {\n      await step();\n    } catch (error) {\n      failures.push(error);\n    }\n  return failures;\n}\n`,
+    "a helper that pushes a caught error": `const failures = [];\nexport const attempt = async (step) => {\n  try {\n    await step();\n  } catch (problem) {\n    failures.push(problem);\n  }\n};\n`,
+    "a .catch handler that pushes": `const failures = [];\nexport const close = (db) => db.close().catch((closing) => failures.push(closing));\n`,
+    "a .then rejection handler that pushes": `const failures = [];\nexport const close = (db) => db.close().then(() => true, (closing) => { failures.push(closing); return false; });\n`,
+  };
+  const places = [
+    "apps/server/src/app.ts",
+    "packages/runtime/src/providers/claude.ts",
+    "scripts/live/chaos-run.mjs",
+    "packages/runtime/src/providers/process.test.ts",
+    "apps/server/test/support.ts",
+  ];
+  for (const place of places)
+    for (const [shape, code] of Object.entries(collected)) {
+      const [message, ...rest] = await lint(code, place, collectingRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /attemptAll/);
+      assert.match(message.message, /combinedFailure/);
+    }
+  const kept = [
+    // 공용 도구로 모으기.
+    `import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";\nexport async function run(steps, error) {\n  await attemptAll(steps, "x");\n  const failures = await attemptEach(steps);\n  throw combinedFailure([error, ...failures], "y");\n}\n`,
+    // 오류를 모으지 않는 catch, 오류가 아닌 값을 넣는 처리기.
+    `export function read(text, seen) {\n  try {\n    return JSON.parse(text);\n  } catch (error) {\n    seen.push(text);\n    throw error;\n  }\n}\n`,
+    `export const watch = (hub, events) => hub.subscribe((event) => events.push(event));\n`,
+  ];
+  for (const place of places)
+    for (const code of kept)
+      assert.deepEqual(
+        await lint(code, place, collectingRule),
+        [],
+        `${place}: ${code}`
+      );
+  // 공용 도구를 둔 파일은 범위 밖이다.
+  assert.deepEqual(
+    await lint(
+      Object.values(collected)[0],
+      "packages/contracts/src/failure.ts",
+      collectingRule
+    ),
+    []
+  );
+});

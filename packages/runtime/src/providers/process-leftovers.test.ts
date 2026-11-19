@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { startProcess } from "./process.ts";
-import { cleanUpAll } from "../test-cleanup.ts";
 import { exited, killAndWait, untilExited } from "./process-test-support.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // Claude Code·Codex·Antigravity는 셸 명령을 새 세션에 띄운다. 프로그램이 어떻게 끝나든, 실행 시도의 정리가 끝나면(`done`)
 // 그 명령과 명령이 띄운 프로그램도 꺼져 있어야 한다. 프로세스 그룹 밖이므로 표식으로 찾는다(#219).
@@ -12,7 +12,7 @@ const runs: ReturnType<typeof startProcess>[] = [];
 // 단계가 실패해도 나머지를 하고 실패를 모아 알린다. 남은 프로그램을 먼저 꺼서 실행 시도의 정리가 그것에 매이지 않는다.
 afterEach(async () => {
   const ended = runs.splice(0);
-  await cleanUpAll([
+  await attemptAll([
     ...ended.map((run) => () => run.end()),
     () => killAndWait(pids.splice(0)),
     ...ended.map((run) => () => run.done),

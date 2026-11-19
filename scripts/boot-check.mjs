@@ -13,8 +13,9 @@ import {
   launchTree,
   prepareJobObjectLauncher,
 } from "@babojubot/runtime/launch";
-import { cleanUpAll, processAlive } from "@babojubot/runtime/test-cleanup";
+import { processAlive } from "@babojubot/runtime/test-cleanup";
 import {
+  attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
@@ -382,7 +383,7 @@ const { code } = await runBootCheckFlow({
   },
   cleanUp: async () => {
     // 남은 DB를 pg_ctl로 멈추고, 띄운 서버 트리가 모두 끝난 것을 확인한다. 하나가 실패해도 다른 하나는 한다.
-    await cleanUpAll([
+    await attemptAll([
       stopLeftPostgres,
       async () => {
         await Promise.all(servers.map((tree) => tree.stop()));

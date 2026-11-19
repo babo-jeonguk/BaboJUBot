@@ -22,7 +22,11 @@ import {
   it,
   onTestFinished,
 } from "vitest";
-import { destinationSchema, type RunRequest } from "@babojubot/contracts";
+import {
+  attemptAll,
+  destinationSchema,
+  type RunRequest,
+} from "@babojubot/contracts";
 import {
   ContainerRefusal,
   createDockerEnvironment,
@@ -34,7 +38,6 @@ import {
 import { startProcess } from "./process.ts";
 import { createRelayHub } from "./relay.ts";
 import { removeFolder } from "../remove-folder.ts";
-import { cleanUpAll } from "../test-cleanup.ts";
 import { commandFailure, probeEnvironment } from "./test-support.ts";
 
 // 실제 Docker가 있는 환경에서만 도는 격리 경계 검사(#102, #149). 로컬에서 Docker를 쓸 수 없으면 원인을 출력하고 건너뛴다.
@@ -138,10 +141,10 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
   // 중계는 컨테이너와 무관하게 닫는다. 이미지와 폴더는 그것을 쓰는 컨테이너를 지운 뒤에만 지우고, 지우기 실패도 알린다.
   afterAll(
     () =>
-      cleanUpAll([
+      attemptAll([
         async () => {
           await environment?.removeOrphans();
-          await cleanUpAll([
+          await attemptAll([
             () => {
               if (built) docker(["image", "rm", "-f", image]);
             },

@@ -5,41 +5,10 @@
 // 실패는 `AggregateError`로 묶는다. Vitest·Playwright는 목록을 펼쳐 하나씩 보이고, 목록을 펼치지 않는 출력(node:test의 TAP)을
 // 위해 메시지에도 모든 실패를 이어 적는다.
 
-/** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. */
+import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
+
+/** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. 모두 시도하기는 `attemptAll`(`@babojubot/contracts`)이 한다. */
 export type CleanupStep = () => unknown;
-
-const describe = (failure: unknown) =>
-  failure instanceof Error ? failure.message : String(failure);
-const joined = (failures: unknown[]) =>
-  failures.map(describe).join(" — 그리고 ");
-
-/** 단계를 차례로 모두 시도하고 실패를 돌려준다. */
-async function attempt(steps: Iterable<CleanupStep>) {
-  const failures: unknown[] = [];
-  for (const step of steps)
-    try {
-      await step();
-    } catch (error) {
-      failures.push(error);
-    }
-  return failures;
-}
-
-/** 정리 실패가 하나면 그 오류를 그대로, 여럿이면 함께 묶은 오류. */
-function cleanupFailure(failures: unknown[]) {
-  return failures.length === 1
-    ? failures[0]
-    : new AggregateError(failures, `정리가 실패했다: ${joined(failures)}`);
-}
-
-/**
- * 서로 기다리지 않는 정리 단계를 차례로 모두 시도한다. 앞 단계가 실패해도 다음 단계를 하고, 실패를 모두 모아 알린다.
- * 앞 단계가 끝나야 하는 단계(프로그램을 끈 뒤 그 폴더 지우기)는 이것이 끝난 뒤에 이어 부른다. 이것이 던지면 이어지지 않는다.
- */
-export async function cleanUpAll(steps: Iterable<CleanupStep>): Promise<void> {
-  const failures = await attempt(steps);
-  if (failures.length > 0) throw cleanupFailure(failures);
-}
 
 /**
  * 폴더와 그 안에서 도는 프로그램의 정리. 폴더를 만든 직후 `cleanUp`을 러너나 `withCleanup`에 등록하고, 프로그램을 띄우면 그
@@ -60,7 +29,7 @@ export function folderCleanup(remove: CleanupStep) {
     },
     cleanUp: () =>
       (cleaning ??= (async () => {
-        await cleanUpAll([...stops].reverse());
+        await attemptAll([...stops].reverse());
         await remove();
       })()),
   };
@@ -81,16 +50,15 @@ export async function withCleanup<T>(
   } catch (error) {
     outcome = { failed: true, error };
   }
-  const failures = await attempt(steps.reverse());
+  const failures = await attemptEach(steps.reverse());
   if (!outcome.failed) {
-    if (failures.length > 0) throw cleanupFailure(failures);
+    if (failures.length > 0) throw combinedFailure(failures, "정리가 실패했다");
     return outcome.value;
   }
   if (failures.length === 0) throw outcome.error;
-  const all = [outcome.error, ...failures];
-  throw new AggregateError(
-    all,
-    `시험이 실패했고 정리도 실패했다: ${joined(all)}`,
+  throw combinedFailure(
+    [outcome.error, ...failures],
+    "시험이 실패했고 정리도 실패했다",
     { cause: outcome.error }
   );
 }

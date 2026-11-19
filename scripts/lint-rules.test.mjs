@@ -585,7 +585,7 @@ test("a shared cleanup hook may not stop at the first failing cleanup", async ()
 /** 정리 hook 규칙의 메시지가 이유, 대안(모두 시도·각각 등록·폴더 순서)과 기준 문서의 절을 알려 준다. */
 function assertCleanupAdvice(message) {
   assert.match(message.message, /뒤 자원/);
-  assert.match(message.message, /cleanUpAll/);
+  assert.match(message.message, /attemptAll/);
   assert.match(message.message, /onTestFinished/);
   assert.match(message.message, /folderCleanup\(…\)\.own\(…\)/);
   assert.match(message.message, /CODING_STANDARDS\.md#정리/);
@@ -641,11 +641,11 @@ test("cleanup hooks are told by where they come from, and the same check covers 
 
 test("a shared cleanup hook may try every cleanup, and a resource's own cleanup may chain its steps", async () => {
   const allowed = [
-    `afterAll(() => cleanUpAll([() => folder?.cleanUp(), () => model?.close()]));\n`,
+    `afterAll(() => attemptAll([() => folder?.cleanUp(), () => model?.close()]));\n`,
     // 그 폴더를 쓰는 서버를 끈 뒤에 지운다. 끄기가 실패하면 폴더를 남긴다.
     `afterEach(async () => {\n  await t?.close();\n  t = undefined;\n  if (root) await removeFolder(root);\n});\n`,
     // 앞 단계가 끝나야 하는 단계는 한 단계 안에 둔다.
-    `afterAll(() =>\n  cleanUpAll([\n    async () => {\n      await environment.removeOrphans();\n      await removeFolder(root);\n    },\n    () => relays.close(),\n  ])\n);\n`,
+    `afterAll(() =>\n  attemptAll([\n    async () => {\n      await environment.removeOrphans();\n      await removeFolder(root);\n    },\n    () => relays.close(),\n  ])\n);\n`,
     // 실패를 모은다.
     `afterEach(async () => {\n  for (const server of servers)\n    try {\n      await server.close();\n    } catch (error) {\n      failures.push(error);\n    }\n  report(failures);\n});\n`,
     // 정리가 아닌 기다림과 정리 하나.
@@ -797,7 +797,7 @@ test("test code may not fulfil a Promise with the error of a Node server's close
       typedPlaces,
     ],
     "servers from a typed list": [
-      `import http from "node:http";\nimport type { Server } from "node:net";\nconst servers: http.Server[] = [];\nconst wires: { server: Server }[] = [];\nfor (const wire of wires.splice(0)) await new Promise((resolve) => wire.server.close(resolve));\nawait cleanUpAll(servers.map((server) => () => new Promise((resolve) => server.close(resolve))));\n`,
+      `import http from "node:http";\nimport type { Server } from "node:net";\nconst servers: http.Server[] = [];\nconst wires: { server: Server }[] = [];\nfor (const wire of wires.splice(0)) await new Promise((resolve) => wire.server.close(resolve));\nawait attemptAll(servers.map((server) => () => new Promise((resolve) => server.close(resolve))));\n`,
       typedPlaces,
     ],
   };
@@ -809,7 +809,7 @@ test("test code may not fulfil a Promise with the error of a Node server's close
         // 메시지가 이유, 대안과 기준 문서의 절을 알려 준다.
         assert.match(message.message, /Promise가 이행/);
         assert.match(message.message, /reject\(error\)/);
-        assert.match(message.message, /cleanUpAll/);
+        assert.match(message.message, /attemptAll/);
         assert.match(message.message, /CODING_STANDARDS\.md#정리/);
       }
     }

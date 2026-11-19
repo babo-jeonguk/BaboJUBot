@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ephemeralCluster, startEmbeddedCluster } from "./embedded.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // 임시 cluster를 만들다 실패한 뒤 그 폴더를 지우는 정리까지 실패하게 한다. 지우기·주인 기록 폴더 만들기를 시험이 고른
 // 경로에서만 실패시킨다.
@@ -89,7 +89,7 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
     );
     // 지우기를 실패시킨 폴더는 시험 정리가 지운다. 실패 주입은 그 전에 afterEach가 끈다.
     onTestFinished(() =>
-      cleanUpAll([
+      attemptAll([
         () => removeFolder(options.dataDir),
         () => removeFolder(`${options.dataDir}.owner`),
       ])
@@ -112,7 +112,7 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       { code: "EACCES" }
     );
     onTestFinished(() =>
-      cleanUpAll(
+      attemptAll(
         inject.made
           .splice(0)
           .flatMap((made) => [
@@ -179,7 +179,7 @@ describe("a leftover temporary cluster whose owner record cannot be read", () =>
 
     const options = await ephemeralCluster();
     onTestFinished(() =>
-      cleanUpAll([
+      attemptAll([
         () => removeFolder(options.dataDir),
         () => removeFolder(`${options.dataDir}.owner`),
       ])

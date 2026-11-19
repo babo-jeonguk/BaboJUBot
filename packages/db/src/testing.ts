@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
 import { inject } from "vitest";
 import type { TestProject } from "vitest/node";
 import {
@@ -31,6 +30,7 @@ import {
   runs,
   toolOperations,
 } from "./schema.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 export type TestDatabase = DatabaseHandle;
 
@@ -113,7 +113,7 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   return {
     ...handle,
     // 연결 닫기가 실패해도 DB를 지우고, 둘 다 실패하면 둘 다 알린다.
-    close: () => cleanUpAll([() => handle.close(), drop]),
+    close: () => attemptAll([() => handle.close(), drop]),
   };
 }
 

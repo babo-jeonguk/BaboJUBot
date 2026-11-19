@@ -5,15 +5,12 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  attemptAll,
   continueAfterFailure,
   failureCode,
   settled,
 } from "../../packages/contracts/src/failure.ts";
-import {
-  cleanUpAll,
-  killUnlessGone,
-  withCleanup,
-} from "@babojubot/runtime/test-cleanup";
+import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
 import {
   createLedger,
   limits,
@@ -348,7 +345,7 @@ export async function prepareScene(ready, root = tmpdir()) {
   } catch (error) {
     await continueAfterFailure(
       () =>
-        cleanUpAll(
+        attemptAll(
           made.map((dir) => () => rm(dir, { recursive: true, force: true }))
         ),
       (cleanupError) =>

@@ -56,6 +56,7 @@ import {
   type RuntimeAdapter,
   type StreamFrame,
   type StreamScope,
+  attemptAll,
 } from "@babojubot/contracts";
 import {
   controlAgent,
@@ -1286,8 +1287,7 @@ export async function startServer({
   const stop = async () => {
     stopping = true;
     // 한 부분을 닫다 실패해도 나머지(특히 포트)는 닫고, 실패는 모두 닫은 뒤에 알린다.
-    const failures: unknown[] = [];
-    for (const [step, close] of [
+    const steps = [
       ["heartbeats", () => heartbeats.close()],
       ["compactions", () => compactions.close()],
       [
@@ -1326,16 +1326,18 @@ export async function startServer({
           await closed;
         },
       ],
-    ] as const)
-      try {
-        stopStep = step;
-        await close();
-      } catch (error) {
-        failures.push(error);
-      }
-    stopStep = "done";
-    if (failures.length)
-      throw new AggregateError(failures, "stopping the server failed");
+    ] as const;
+    try {
+      await attemptAll(
+        steps.map(([step, close]) => () => {
+          stopStep = step;
+          return close();
+        }),
+        "stopping the server failed"
+      );
+    } finally {
+      stopStep = "done";
+    }
   };
   try {
     // 결과를 받지 못한 끼워 넣기를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.

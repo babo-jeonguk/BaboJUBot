@@ -416,6 +416,13 @@ export default defineConfig([
     },
   },
   {
+    // 실패를 모으는 일은 failure.ts의 attemptAll·attemptEach·combinedFailure만 한다(CODING_STANDARDS.md#제품-코드). 제품 코드·개발 스크립트·시험 모두.
+    files: [...productFiles, ...scriptFiles, ...testFiles],
+    ignores: ["packages/contracts/src/failure.ts"],
+    plugins: { product: productRules },
+    rules: { "product/no-failure-collecting": "error" },
+  },
+  {
     // 실행 소유 파일의 짧은 명령도 시한에 끝을 보장한다(CODING_STANDARDS.md#제품-코드). Node의 timeout은 신호만 보내고 기다린다.
     files: launchOwners,
     plugins: { product: productRules },

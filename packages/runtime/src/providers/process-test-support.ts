@@ -1,7 +1,8 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { vi } from "vitest";
-import { cleanUpAll, killUnlessGone, processAlive } from "../test-cleanup.ts";
+import { killUnlessGone, processAlive } from "../test-cleanup.ts";
+import { attemptAll, combinedFailure } from "@babojubot/contracts";
 
 /**
  * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다.
@@ -126,21 +127,13 @@ export async function untilExited(pids: number[], timeoutMs = 5000) {
         );
     });
   failures.push(...lookups.values());
-  if (failures.length === 1) throw failures[0];
-  if (failures.length > 1)
-    throw new AggregateError(
-      failures,
-      failures
-        .map((failure) =>
-          failure instanceof Error ? failure.message : String(failure)
-        )
-        .join(" — 그리고 ")
-    );
+  if (failures.length)
+    throw combinedFailure(failures, "processes did not all end");
 }
 
 /** 시험 정리: 모두에게 SIGKILL을 보내고 끝날 때까지 기다린다. 한 대상에 보내지 못해도 나머지에 보내고 기다린 뒤 함께 알린다. */
 export async function killAndWait(pids: number[]) {
-  await cleanUpAll([
+  await attemptAll([
     ...pids.map((pid) => () => killUnlessGone(pid)),
     () => untilExited(pids),
   ]);

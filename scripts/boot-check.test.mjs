@@ -17,12 +17,12 @@ import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import {
-  cleanUpAll,
   folderCleanup,
   killUnlessGone,
   processAlive as isAlive,
   withCleanup,
 } from "@babojubot/runtime/test-cleanup";
+import { attemptAll } from "../packages/contracts/src/failure.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;
@@ -501,7 +501,7 @@ function killTree(child) {
  */
 async function stopPostmasters(scope) {
   if (process.platform === "win32") return;
-  await cleanUpAll(
+  await attemptAll(
     postmasterPids(scope).map((pid) => async () => {
       if (!commandLine(pid).includes(scope)) return;
       for (const signal of ["SIGQUIT", "SIGKILL"]) {

@@ -4,15 +4,16 @@ import net from "node:net";
 import path from "node:path";
 import {
   approvalSummaryListSchema,
-  eventStreamPath,
-  streamFrameSchema,
-  type RuntimeAdapter,
+  attemptAll,
   conversationMessageListSchema,
   conversationPageSchema,
   eventListSchema,
+  eventStreamPath,
   organizationDetailSchema,
   runDetailSchema,
   runSummaryListSchema,
+  streamFrameSchema,
+  type RuntimeAdapter,
 } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
 import {
@@ -54,7 +55,7 @@ import {
   within,
   type TestServer,
 } from "./support.ts";
-import { cleanUpAll, withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // 서버 재시작 복구. 실행 중 서버가 멈추면 그 실행 시도는 `server_restart`로 끝나고, 받은 깨우기는 다시 처리되어 새 실행 시도가 생긴다.
 
@@ -67,7 +68,7 @@ afterEach(() => {
   database = undefined;
   t = undefined;
   // 서버를 먼저 닫고 그 DB를 닫는다. 한 단계가 실패해도 나머지를 닫는다.
-  return cleanUpAll([
+  return attemptAll([
     () => running?.close(),
     () => db?.close(),
     () => test?.close(),

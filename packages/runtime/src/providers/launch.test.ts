@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { attemptAll } from "@babojubot/contracts";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -30,14 +31,10 @@ beforeAll(async () => {
 }, 180_000);
 // 앞 트리가 끄기에 실패해도 나머지를 끈다. 실패는 모아 알린다.
 afterEach(async () => {
-  const results = await Promise.allSettled(
-    trees.splice(0).map((tree) => tree.stop())
+  await attemptAll(
+    trees.splice(0).map((tree) => () => tree.stop()),
+    "a tree the test started did not stop"
   );
-  const failures = results.flatMap((result) =>
-    result.status === "rejected" ? [result.reason] : []
-  );
-  if (failures.length)
-    throw new AggregateError(failures, "a tree the test started did not stop");
 }, 60_000);
 afterAll(async () => {
   await lifelines.close();

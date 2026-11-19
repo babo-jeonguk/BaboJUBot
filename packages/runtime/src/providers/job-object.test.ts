@@ -10,8 +10,8 @@ import { TreeLaunchRefused } from "./launch.ts";
 import { startProcess } from "./process.ts";
 import { prepareJobObjectLauncher } from "./job-object.ts";
 import { removeFolder } from "../remove-folder.ts";
-import { cleanUpAll } from "../test-cleanup.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
@@ -199,26 +199,22 @@ describe.runIf(windows)("startProcess on Windows", () => {
 
   // 정리 단계는 앞 단계가 실패해도 모두 돈다. 실패는 모아 마지막에 함께 알린다.
   afterEach(async () => {
-    const failures: unknown[] = [];
-    const settle = async (steps: Promise<unknown>[]) => {
-      for (const result of await Promise.allSettled(steps))
-        if (result.status === "rejected") failures.push(result.reason);
-    };
-    await settle(spawned.splice(0).map(stopSpawned));
-    // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
-    await settle(
-      attempts.splice(0).map(async (attempt) => {
-        attempt.end();
-        await within(attempt.done, 30_000, "the end of a run");
-      })
+    await attemptAll(
+      [
+        ...spawned.splice(0).map((child) => () => stopSpawned(child)),
+        // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
+        ...attempts.splice(0).map((attempt) => async () => {
+          attempt.end();
+          await within(attempt.done, 30_000, "the end of a run");
+        }),
+        () => descendantsGone(descendants.splice(0)),
+      ],
+      "the test cleanup failed"
     );
-    await settle([descendantsGone(descendants.splice(0))]);
-    if (failures.length)
-      throw new AggregateError(failures, "the test cleanup failed");
   }, 60_000);
 
   afterAll(async () => {
-    await cleanUpAll([
+    await attemptAll([
       () => lifelines.close(),
       ...roots.map((root) => () => removeFolder(root)),
     ]);
