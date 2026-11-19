@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { orIfUnreadable } from "../../packages/contracts/src/failure.ts";
 
 const [directory, ...command] = process.argv.slice(2);
 const startedAt = Date.now();
@@ -100,17 +101,14 @@ child.stdout.on("data", (chunk) => {
     while ((newline = pending.indexOf("\n")) >= 0) {
       let line = pending.slice(0, newline);
       pending = pending.slice(newline + 1);
-      try {
-        const frame = JSON.parse(line);
-        if (typeof frame?.url === "string" && frame.url.startsWith("http:")) {
-          const origin = await proxy(new URL(frame.url).origin);
-          line = JSON.stringify({
-            ...frame,
-            url: origin + new URL(frame.url).pathname,
-          });
-        }
-      } catch {
-        /* JSON이 아닌 줄은 그대로 넘긴다. */
+      // JSON이 아닌 줄은 그대로 넘긴다. 해석만 감싸고, 기록 proxy를 띄우지 못한 실패는 드러낸다.
+      const frame = orIfUnreadable(() => JSON.parse(line), undefined);
+      if (typeof frame?.url === "string" && frame.url.startsWith("http:")) {
+        const origin = await proxy(new URL(frame.url).origin);
+        line = JSON.stringify({
+          ...frame,
+          url: origin + new URL(frame.url).pathname,
+        });
       }
       process.stdout.write(line + "\n");
     }

@@ -7,7 +7,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { processAlive } from "@babojubot/runtime/test-cleanup";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+} from "../packages/contracts/src/failure.ts";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import { createStop, runBootCheckFlow } from "./boot-check-flow.mjs";
 
@@ -85,6 +93,7 @@ async function serveAndKill(label) {
   current = {
     label,
     server,
+    exited,
     output: () => outputTail(stdoutTail, stderrTail),
   };
   server.stdout?.setEncoding("utf8");
@@ -123,8 +132,14 @@ async function serveAndKill(label) {
     }
 
     let overview;
+    // 마지막 시도가 왜 답을 받지 못했는지. 시한에 닿아 멈출 때 원인으로 함께 알린다.
+    let lastAttempt = "no attempt yet";
     while (overview === undefined) {
-      stop.throwIfStopped(label);
+      // 멈춤 문구는 다른 단계와 같은 "단계: 이유"로 시작하고, 마지막 시도가 답을 받지 못한 원인을 뒤에 붙인다.
+      if (stop.reason)
+        throw new Error(
+          `${label}: ${stop.reason} (last /api/overview attempt: ${lastAttempt})`
+        );
       if (spawnError)
         throw new Error(
           `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
@@ -133,14 +148,19 @@ async function serveAndKill(label) {
         throw new Error(
           `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
         );
-      try {
-        const response = await fetch(`${readyUrl}/api/overview`, {
-          signal: AbortSignal.timeout(fetchTimeoutMs),
-        });
-        if (response.ok) overview = await response.json();
-      } catch {
-        /* 아직 듣지 않았거나 응답이 늦다. 시한 안에서 다시 본다. */
-      }
+      // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
+      overview = await continueAfterFailure(
+        async () => {
+          const response = await fetch(`${readyUrl}/api/overview`, {
+            signal: AbortSignal.timeout(fetchTimeoutMs),
+          });
+          lastAttempt = `HTTP ${response.status}`;
+          return response.ok ? await response.json() : undefined;
+        },
+        (error) => {
+          lastAttempt = failureCode(error.cause ?? error);
+        }
+      );
       if (overview === undefined) await delay(250);
     }
     console.log(
@@ -166,23 +186,24 @@ async function serveAndKill(label) {
 
 /** 이 스크립트가 띄운 서버만 끝낸다. 이미 끝났으면 그 종료를 기다린다. */
 async function stopServer(server, exited, hasExited) {
-  if (!hasExited() && server.pid !== undefined) {
-    try {
-      if (process.platform === "win32")
-        execFileSync("taskkill", ["/F", "/PID", String(server.pid)], {
-          stdio: "ignore",
-          timeout: stopWaitMs,
-        });
-      else server.kill("SIGKILL");
-    } catch {
-      // 강제 종료 명령이 실패하면 이 프로세스의 자식 종료로 한 번 더 시도한다.
-      try {
+  if (!hasExited() && server.pid !== undefined)
+    // 강제 종료 명령이 실패하면 무엇이 실패했는지 남기고 이 프로세스의 자식 종료로 한 번 더 시도한다. 그 사이 끝났으면
+    // 자식 종료는 아무것도 하지 않는다. 끝났는지는 아래에서 종료를 기다려 확인한다.
+    continueAfterFailure(
+      () =>
+        process.platform === "win32"
+          ? execFileSync("taskkill", ["/F", "/PID", String(server.pid)], {
+              stdio: "ignore",
+              timeout: stopWaitMs,
+            })
+          : server.kill("SIGKILL"),
+      (error) => {
+        console.log(
+          `force stop of server ${server.pid} failed (${failureCode(error)}); killing the child directly`
+        );
         server.kill("SIGKILL");
-      } catch {
-        /* 그 사이 끝났다. 아래에서 종료를 기다린다. */
       }
-    }
-  }
+    );
   let timer;
   try {
     await Promise.race([
@@ -219,8 +240,14 @@ function expectCleanStart(label) {
 
 /** postmaster.pid의 첫 줄 pid와 넷째 줄 port. DB를 다시 열 때 실제 port가 필요하다. */
 function readPostmaster() {
-  if (!existsSync(pidFile)) return undefined;
-  const [pidLine, , , portLine] = readFileSync(pidFile, "utf8").split("\n");
+  // Postgres가 멈추면 이 파일을 지운다. 없으면 떠 있지 않은 것이다.
+  const text = orIfMissing(
+    () => readFileSync(pidFile, "utf8"),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
+  if (text === undefined) return undefined;
+  const [pidLine, , , portLine] = text.split("\n");
   const pid = Number(pidLine);
   const port = Number(portLine);
   return {
@@ -236,28 +263,32 @@ function readPostmaster() {
  */
 async function stopLeftPostgres() {
   const running = readPostmaster();
-  if (!running?.pid || !isAlive(running.pid)) return;
-  try {
-    execFileSync(
-      await pgCtl(),
-      [
-        "stop",
-        "-D",
-        dataDir,
-        "-m",
-        "immediate",
-        "-w",
-        "-t",
-        String(cleanupTimeoutMs / 1000),
-      ],
-      { stdio: "ignore", timeout: cleanupTimeoutMs + 5_000 }
-    );
-  } catch {
-    /* 이미 멈췄거나 시한 안에 멈추지 않았다. 아래에서 확인한다. */
-  }
+  if (!running?.pid || !processAlive(running.pid)) return;
+  // 이미 멈췄거나 시한 안에 멈추지 않았으면 pg_ctl이 실패한다. 무엇이 실패했는지 남기고, 멈췄는지는 아래에서 확인한다.
+  await continueAfterFailure(
+    async () =>
+      execFileSync(
+        await pgCtl(),
+        [
+          "stop",
+          "-D",
+          dataDir,
+          "-m",
+          "immediate",
+          "-w",
+          "-t",
+          String(cleanupTimeoutMs / 1000),
+        ],
+        { stdio: "ignore", timeout: cleanupTimeoutMs + 5_000 }
+      ),
+    (error) =>
+      console.log(
+        `pg_ctl stop of Postgres ${running.pid} did not succeed (${failureCode(error)}); checking whether it stopped`
+      )
+  );
   const deadline = Date.now() + cleanupTimeoutMs;
-  while (isAlive(running.pid) && Date.now() < deadline) await delay(100);
-  if (isAlive(running.pid))
+  while (processAlive(running.pid) && Date.now() < deadline) await delay(100);
+  if (processAlive(running.pid))
     throw new Error(
       `leftover embedded Postgres (pid ${running.pid}) did not stop in ${cleanupTimeoutMs}ms`
     );
@@ -270,15 +301,6 @@ async function pgCtl() {
     pathToFileURL(require.resolve("embedded-postgres")).href
   );
   return (await getBinaries()).pg_ctl;
-}
-
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
 }
 
 function readPort(name) {
@@ -309,26 +331,38 @@ function outputTail(...texts) {
   return output ? `\n${output.slice(-4000)}` : "\n(no output)";
 }
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** 지금 떠 있는 서버. 멈춤 시한이 지나 강제로 끝낼 때만 쓴다. */
 let current;
 const stop = createStop({
   graceMs: stopGraceMs,
   log: (message) => console.log(message),
   // 멈춤 시한 안에 흐름이 끝나지 않았다(단계 하나가 끝나지 않음). 떠 있는 서버만 끝내고 남았을 수 있는 것을 밝혀 실패한다.
-  onGraceExpired: () => {
-    console.log(
-      `${stop.reason}: cleanup did not finish in ${stopGraceMs / 1000}s; the server, Postgres, and ${home} may remain${current ? current.output() : ""}`
-    );
-    try {
-      current?.server.kill("SIGKILL");
-    } catch {
-      /* 이미 끝났다. */
-    }
-    process.exit(1);
-  },
+  onGraceExpired: () => void killServerAndExit(),
 });
+/**
+ * 멈춤 시한이 지났을 때: 떠 있는 서버를 강제로 끝내고, 끝난 것을 상한(stopWaitMs) 안에서 확인한 뒤 실패로 끝낸다.
+ * 신호만 보내고 떠나지 않는다. 끝나지 않았으면 그 pid를 남은 것으로 밝힌다. 이미 끝났으면 자식 종료는 아무것도 하지 않는다.
+ */
+async function killServerAndExit() {
+  const running = current;
+  if (running) {
+    continueAfterFailure(
+      () => running.server.kill("SIGKILL"),
+      (error) =>
+        console.log(`could not kill the server (${failureCode(error)})`)
+    );
+    const gone = await Promise.race([
+      running.exited.then(() => true),
+      delay(stopWaitMs).then(() => false),
+    ]);
+    if (!gone)
+      console.log(
+        `server ${running.server.pid} did not exit within ${stopWaitMs}ms after SIGKILL and may remain`
+      );
+  }
+  process.exit(1);
+}
+
 setTimeout(
   () => stop.request(`boot check did not finish in ${runDeadlineMs / 1000}s`),
   runDeadlineMs

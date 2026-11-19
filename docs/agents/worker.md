@@ -37,7 +37,7 @@
 
 ```bash
 node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <원인>" \
-  --out <출력>.jsonl (--brief <지침 파일> | --message "<메시지>") [--session <sessionID>]
+  --out <출력>.jsonl (--brief <지침 파일> | --message "<메시지>") [--session <sessionID>] [--limit <분>]
 ```
 
 출력 JSONL·stderr(`.err`)·brief는 Git 제외 로컬 폴더에 두고, 제품 런타임 데이터와 섞지 않습니다.
@@ -51,7 +51,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 | 0 | `error` 이벤트 없이 끝남 | 마지막 보고와 diff 검토(§6) |
 | 2 | `error` 이벤트(rate limit·quota·429 등) | 그 회차에서 그 모델을 다시 쓰지 않고 다음 모델로. session이 있으면 `--session <id> --message "Continue the brief from where you stopped."`, 없으면 같은 brief |
 | 3 | 3분(`--start-check`) 안에 session이 생기지 않아 한 번 다시 띄웠는데도 실패 | worker를 더 띄우지 않고 parent가 직접 수정 |
-| 4 | `error` 이벤트 없이 OpenCode 실패 | `.err`·diff를 보고 판단 |
+| 4 | `error` 이벤트 없이 OpenCode 실패, 시간 한도(`--limit`, 기본 110분)에 닿아 멈춤, 또는 worker의 프로세스 그룹이 끝난 것을 확인하지 못함. 한도는 다시 띄우기를 포함한 호출 전체 상한이다. 멈추기(세션 확인·한도·runner가 받은 신호)는 제품의 그룹 끄기(`stopProcessGroup`)로 하고 그 시도는 끄기 결과로 끝나며, 끄기를 확인하지 못하면 다시 띄우지 않고 이유를 상태에 남긴다. runner가 신호로 멈췄으면 128+신호 번호로 끝난다 | `.err`·diff를 보고 판단. 그룹을 확인하지 못했으면 남은 프로세스를 먼저 정리 |
 
 모든 모델이 한도면 parent가 직접 고치고 이유를 보고에 남깁니다.
 

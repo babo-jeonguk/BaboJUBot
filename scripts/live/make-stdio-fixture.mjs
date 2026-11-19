@@ -4,6 +4,7 @@
 // claude-background는 provider-live의 background 장면을 replay.mjs 순서(입력 → 첫 결과 → 입력 닫힘 → 나머지 → 종료)로 만든다.
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { orIfUnreadable } from "../../packages/contracts/src/failure.ts";
 
 const [provider, output, ...directories] = process.argv.slice(2);
 const versions = {
@@ -68,13 +69,10 @@ async function runs() {
         .map((row) => row.text)
         .join("")
         .split("\n")
-        .flatMap((line) => {
-          try {
-            return line.trim() ? [JSON.parse(line)] : [];
-          } catch {
-            return [];
-          }
-        });
+        // 빈 줄과 JSON이 아닌 줄(프로그램의 다른 출력)은 건너뛴다.
+        .flatMap((line) =>
+          line.trim() ? orIfUnreadable(() => [JSON.parse(line)], []) : []
+        );
       if (frames.length) found.push(frames);
     }
   return found;

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -18,5 +19,20 @@ export function ignoredDotFolderPattern(names, flags = "") {
       .map((name) => name.replace(/[.]/g, "\\."))
       .join("|")})(?![\\w.-])`,
     flags
+  );
+}
+
+/** Git이 무시하는 경로인가. check-ignore는 무시하면 0, 아니면 1로 끝난다. 그 밖의 실패는 "아니다"가 아니라 오류다. */
+export function gitIgnores(root, location) {
+  const result = spawnSync(
+    "git",
+    ["check-ignore", "--no-index", "-q", location],
+    { cwd: root, encoding: "utf8", timeout: 30_000 }
+  );
+  if (result.error) throw result.error;
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(
+    `git check-ignore failed for ${location} (exit ${result.status ?? result.signal}): ${result.stderr.trim()}`
   );
 }

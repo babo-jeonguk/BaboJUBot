@@ -1,12 +1,19 @@
 // 실모델 장애 검사의 장면 정의. 장면은 제품 불변 조건만 검사(check)로 판정하고, 모델이 지시를 따랐는지는 관찰값으로만 남긴다.
 // 장면은 사용자 API·조직 도구 HTTP·이 홈의 DB만 읽는다. 모델 원문·메시지 본문·토큰은 결과에 넣지 않는다(chaos-run.mjs가 다시 검사).
 // 가짜 연결(`fake-live`)로도 같은 장면이 돈다. 가짜는 `busy.mjs <초>`가 든 메시지를 받으면 그 시간(줄인 값) 동안 일한다.
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { processAlive } from "@babojubot/runtime/test-cleanup";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+} from "../../packages/contracts/src/failure.ts";
 import { limits, maxOverlap } from "./chaos-budget.mjs";
+import { matchingPids } from "./processes.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const busyScript = path.join(here, "busy.mjs");
@@ -192,27 +199,12 @@ const seconds = (ctx, n) =>
 const longCommand = (ctx, n) =>
   `node ${busyScript} ${seconds(ctx, n)} ${ctx.marker}`;
 
-/** 이 장면이 띄운 시험용 긴 명령의 PID. 다른 작업의 프로세스는 표시(marker)가 달라 잡히지 않는다. */
-export function busyPids(marker) {
-  try {
-    return execFileSync("pgrep", ["-f", `busy\\.mjs [0-9]+ ${marker}$`])
-      .toString()
-      .split("\n")
-      .filter(Boolean)
-      .map(Number);
-  } catch {
-    return [];
-  }
-}
-
-const alive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-};
+/**
+ * 이 장면이 띄운 시험용 긴 명령의 PID. 다른 작업의 프로세스는 표시(marker)가 달라 잡히지 않는다. 조회가 실패하면 없음으로 바꾸지
+ * 않고 던진다.
+ */
+export const busyPids = (marker) =>
+  matchingPids(`busy\\.mjs [0-9]+ ${marker}$`);
 
 const runsOf = async (ctx, org) =>
   (await ctx.api("GET", `/api/organizations/${org.id}/runs`)).body;
@@ -242,16 +234,18 @@ async function say(ctx, org, body, delivery = "next_run") {
 
 /** 실행 시도 토큰. 서버 프로세스가 0600 파일로 둔 것을 읽고 비밀값으로 등록한다. 실행이 끝나면 파일은 지워진다. */
 function tokenOf(ctx, runId) {
-  try {
-    const token = readFileSync(
-      path.join(ctx.server.files.tokens, `${runId}.token`),
-      "utf8"
-    );
-    ctx.secrets.add(token);
-    return token;
-  } catch {
-    return null;
-  }
+  // 실행이 아직 토큰을 두지 않았거나 이미 끝나 지웠으면 없음이다. 그 밖의 읽기 오류는 드러낸다.
+  const token = orIfMissing(
+    () =>
+      readFileSync(
+        path.join(ctx.server.files.tokens, `${runId}.token`),
+        "utf8"
+      ),
+    hasErrorCode("ENOENT"),
+    null
+  );
+  if (token !== null) ctx.secrets.add(token);
+  return token;
 }
 
 /** 조직 도구를 실행 시도 토큰으로 직접 부른다(같은 호출 키 재생). */
@@ -427,7 +421,7 @@ async function cancelScene(ctx) {
     async () => (await runOf(ctx, org, run.id)).status !== "running",
     { ms: 60_000 }
   );
-  const pidsAfterEnd = pids.filter(alive);
+  const pidsAfterEnd = pids.filter((pid) => processAlive(pid));
   const next = await newRun(ctx, org, [...known, run.id], 120_000).catch(
     unlessBroken(null)
   );
@@ -545,11 +539,11 @@ async function restartScene(ctx) {
     oldWakeIds: first.wakeIds,
     source: fakeOr(ctx),
   });
-  const oldPidsLeft = first.pids.filter(alive);
+  const oldPidsLeft = first.pids.filter((pid) => processAlive(pid));
   // 이전 실행의 프로바이더 프로그램(기록에 남은 프로세스 그룹 대표)도 끝나고 그 기록이 지워져야 한다.
   const recordsAfter = ctx.processRecordPids();
   const oldRecordsLeft = recordsBefore.filter(
-    (pid) => alive(pid) || recordsAfter.includes(pid)
+    (pid) => processAlive(pid) || recordsAfter.includes(pid)
   );
   return {
     checks: [
@@ -1115,12 +1109,18 @@ async function steerKillScene(ctx) {
     ctx.secrets.add(body);
     // 두 번째 강제 종료 전에 찍은 실행 목록. 이 뒤에 생긴 실행만 새 실행으로 본다.
     const beforeSecondKill = (await runsOf(ctx, org)).map((r) => r.id);
-    const inFlight = ctx
-      .api("POST", `/api/organizations/${org.id}/messages`, {
-        body,
-        delivery: "steer",
-      })
-      .catch(() => null);
+    // 이 요청이 가는 동안 서버를 강제로 끝내므로 연결이 끊겨 실패할 수 있다. 결과는 보지 않고, 실패하면 그 원인만 남긴다.
+    const inFlight = continueAfterFailure(
+      () =>
+        ctx.api("POST", `/api/organizations/${org.id}/messages`, {
+          body,
+          delivery: "steer",
+        }),
+      (error) =>
+        console.error(
+          `[chaos] the steer sent across the forced kill got no answer (${failureCode(error.cause ?? error)})`
+        )
+    );
     await sleep(30, ctx.signal);
     await killAndRestart(ctx);
     await inFlight;

@@ -606,6 +606,11 @@ export function createOpenCodeProvider(options: {
         events: Promise<void> | undefined;
       const organizationId = input.identity.organizationId;
       let counted = false;
+      /** 서비스를 닫은 뒤 그 이벤트 흐름이 끝나기를 기다린다. 이벤트 흐름은 서비스가 닫혀야 끝나므로 닫기가 실패하면 기다리지 않는 한 단계다. */
+      const closeServiceThenDrainEvents = async () => {
+        await service?.close();
+        if (events) await settled(events);
+      };
       try {
         // 그 조직의 제품 폴더로 돈다.
         const organization = folders.organization(
@@ -959,8 +964,7 @@ export function createOpenCodeProvider(options: {
         grant?.revoke();
         active.delete(input.identity.runId);
         try {
-          await service?.close();
-          if (events) await settled(events);
+          await closeServiceThenDrainEvents();
         } finally {
           // 컨테이너를 지운 뒤에야 이 격리 실행을 센 것에서 뺀다.
           if (counted) {

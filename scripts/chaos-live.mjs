@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 import { LaunchRefused, limits, parseLaunch } from "./live/chaos-budget.mjs";
 import { exitCodeOf, runChaos, writeEvidence } from "./live/chaos-run.mjs";
 import { scrubEnvironment } from "./live/chaos-server.mjs";
@@ -52,8 +53,12 @@ process.on("SIGINT", () => {
 async function preflight() {
   const { createOpenCodeProvider } =
     await import("../packages/runtime/src/index.ts");
-  const home = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-preflight-"));
-  try {
+  // 임시 홈은 만든 직후 지우기를 등록한다. 지우기 실패는 확인의 원래 실패를 가리지 않고 함께 알린다.
+  return withCleanup(async (defer) => {
+    const home = await mkdtemp(
+      path.join(tmpdir(), "babojubot-chaos-preflight-")
+    );
+    defer(() => rm(home, { recursive: true, force: true }));
     const connection = createOpenCodeProvider({ dataDir: home });
     const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(60_000)]);
     const readiness = await connection.adapter.checkReadiness(signal);
@@ -62,9 +67,7 @@ async function preflight() {
         problem: `무료 모델을 확인하지 못함(${readiness.status}, ${readiness.reason})`,
       };
     return { readiness: readiness.status };
-  } finally {
-    await rm(home, { recursive: true, force: true });
-  }
+  });
 }
 
 const evidenceDir = path.join(

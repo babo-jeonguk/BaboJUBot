@@ -14,6 +14,8 @@ import { parse } from "yaml";
 const USAGE =
   "usage: check-worker-change.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
 const OUTPUT_LINES = 40;
+// A stuck test command must not hold the parent forever. The repository's full check fits well inside this.
+const TEST_LIMIT_MS = 30 * 60_000;
 
 function parseArgs(argv) {
   const options = { base: "", allow: [], reported: [], test: [] };
@@ -61,6 +63,7 @@ function git(root, ...args) {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    timeout: 60_000,
   });
 }
 
@@ -103,6 +106,7 @@ function runTest(root, command) {
     shell: true,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    timeout: TEST_LIMIT_MS,
   });
   if (result.status === 0) return;
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`

@@ -1,7 +1,5 @@
 // Manual model invocation. Never imported by CI or the automatic test suite.
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import {
   createClaudeProvider,
   createCodexProvider,
@@ -10,6 +8,7 @@ import {
 } from "../packages/runtime/src/index.ts";
 import { openEphemeralDatabase } from "../packages/db/src/index.ts";
 import { startServer } from "../apps/server/src/index.ts";
+import { withCheckServer } from "./live/check-server.mjs";
 const [provider, consent] = process.argv.slice(2);
 const factories = {
   claude: createClaudeProvider,
@@ -51,12 +50,9 @@ const controller = new AbortController();
 const ready = await connection.adapter.checkReadiness(controller.signal);
 console.log("readiness:", ready);
 if (ready.status === "not_ready") process.exit(1);
-const workspace = await mkdtemp(path.join(tmpdir(), "babojubot-smoke-")),
-  database = await openEphemeralDatabase();
-let server;
-const timer = setTimeout(() => controller.abort(), 60000);
-try {
-  server = await startServer({
+/** 서버를 띄운다. 임시 폴더·DB와 함께 withCheckServer가 확인 뒤에 모두 정리한다. */
+const startSmokeServer = ({ database, workspace }) =>
+  startServer({
     db: database.db,
     dataDir: workspace,
     port: 0,
@@ -87,6 +83,19 @@ try {
       },
     ],
   });
+
+/** 조직 하나를 만들어 한 번 답하는지 본다. 끝나면(실패해도) 진행 중인 실행을 멈춰 서버가 닫힐 수 있게 한다. */
+async function smoke({ server }) {
+  const timer = setTimeout(() => controller.abort(), 60000);
+  try {
+    await check(server);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+async function check(server) {
   const created = await fetch(server.url + "/api/organizations", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -139,10 +148,13 @@ try {
   );
   process.exitCode =
     run.status === "completed" && reply && contextCalled ? 0 : 1;
-} finally {
-  clearTimeout(timer);
-  controller.abort();
-  await server?.close();
-  await database.close();
-  await rm(workspace, { recursive: true, force: true });
 }
+
+await withCheckServer(
+  {
+    prefix: "babojubot-smoke-",
+    openDatabase: openEphemeralDatabase,
+    startServer: startSmokeServer,
+  },
+  smoke
+);
