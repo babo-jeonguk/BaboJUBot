@@ -246,6 +246,8 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     };
   });
   let launcherExit: TreeExit | undefined;
+  /** 제어 통로가 실패했으면 그 오류 이름. */
+  let controlFailure: string | undefined;
   let controlClosed!: () => void;
   const launcherGone = Promise.all([
     new Promise<void>((resolve) => {
@@ -280,9 +282,9 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
         else if (line === "ended" || line.startsWith("left: ")) reportEnd(line);
       }
     });
-    // 실행기가 끝나 통로가 닫힌 뒤의 쓰기 실패다. 끝났는지는 실행기의 답과 통로의 닫힘으로 판단한다.
+    // 통로의 읽기·쓰기 실패. 끝났는지는 실행기의 답과 통로의 닫힘으로 판단하고, 답 없이 닫혔으면 이 원인을 함께 알린다.
     control.on("error", (error) => {
-      pending = `control channel error: ${failureCode(error)}\n`;
+      controlFailure = failureCode(error);
     });
     control.once("close", () => controlClosed());
     void launcherGone.then(() => {
@@ -322,7 +324,7 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     );
     if (end === undefined)
       throw new Error(
-        "the job object launcher ended without confirming that its programs ended"
+        `the job object launcher ended without confirming that its programs ended${controlFailure ? ` (control channel: ${controlFailure})` : ""}`
       );
     if (end !== "ended")
       throw new Error(`programs in the job object did not end (${end})`);
@@ -341,6 +343,7 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
             windowsHide: true,
             stdio: "ignore",
             timeout: leaderStopLimitMs,
+            killSignal: "SIGKILL",
           }),
         (error) =>
           // 이미 끝났으면 taskkill이 실패한다. 끝났는지는 아래에서 대표의 끝으로 확인한다.
