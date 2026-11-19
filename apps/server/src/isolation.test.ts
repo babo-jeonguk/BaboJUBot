@@ -10,10 +10,11 @@ import {
   type CredentialRelay,
   type DockerEnvironment,
 } from "@babojubot/runtime";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
 import { IsolationGate } from "./isolation.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { folderCleanup } from "@babojubot/runtime/test-cleanup";
 
 /** 링크 만들기를 거절하는 오류 코드(링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
 let refusal: string | null = null;
@@ -33,13 +34,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 let gate: IsolationGate | undefined;
-/** 시험이 맡긴 정리. 늦게 맡긴 것부터 한다. 임시 폴더는 먼저 맡기므로 그 폴더를 쓰는 서버가 닫힌 뒤에 지운다. */
-const cleanups: (() => Promise<unknown>)[] = [];
-afterEach(async () => {
+afterEach(() => {
   refusal = null;
-  await gate?.close();
+  const closing = gate;
   gate = undefined;
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  return closing?.close();
 });
 
 /** Docker가 응답하지 않는 환경. 받은 중단 신호도 따르지 않는다(끝난 시험 컨테이너를 지우는 중 등). */
@@ -375,12 +374,14 @@ describe.each([
     };
     async function failedRelay() {
       const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-gate-"));
-      cleanups.push(() => removeFolder(dataDir));
+      // 폴더는 그것을 쓰는 서버가 모두 닫힌 뒤에 지운다. 닫지 못한 서버가 있으면 폴더를 남기고 알린다.
+      const cleanup = folderCleanup(() => removeFolder(dataDir));
+      onTestFinished(cleanup.cleanUp);
       const server = http.createServer((_req, res) => res.writeHead(200).end());
       await new Promise<void>((resolve) =>
         server.listen(0, "127.0.0.1", resolve)
       );
-      cleanups.push(() => new Promise((resolve) => server.close(resolve)));
+      cleanup.own(() => new Promise((resolve) => server.close(resolve)));
       const provider = connection.create({
         dataDir,
         // 연결 확인은 프로그램을 띄우지 못하고(없는 프로그램) 끝난다. 로그인 자리 준비는 그 앞에서 한다.
@@ -406,7 +407,7 @@ describe.each([
       await new Promise<void>((resolve) =>
         relayServer.listen(0, "127.0.0.1", resolve)
       );
-      cleanups.push(() => {
+      cleanup.own(() => {
         relayServer.closeAllConnections();
         return new Promise((resolve) => relayServer.close(resolve));
       });

@@ -9,7 +9,14 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import type { RunRequest } from "@babojubot/contracts";
 import {
   ContainerRefusal,
@@ -44,7 +51,6 @@ let root: string;
 let data: string;
 let home: string;
 let login: string;
-const attempts: string[] = [];
 
 beforeEach(async () => {
   root = await realpath(
@@ -65,10 +71,7 @@ beforeEach(async () => {
   await mkdir(home, { recursive: true });
   await mkdir(login, { recursive: true });
 });
-afterEach(async () => {
-  await removeFolder(root);
-  await Promise.all(attempts.splice(0).map((dir) => removeFolder(dir)));
-});
+afterEach(() => removeFolder(root));
 
 const workspace = (
   organizationId = org,
@@ -125,7 +128,8 @@ async function attemptDir() {
   const dir = await realpath(
     await mkdtemp(path.join(tmpdir(), "babojubot-attempt-"))
   );
-  attempts.push(dir);
+  // root와 무관한 폴더라 따로 등록한다. root를 지우지 못해도 이 폴더는 지운다.
+  onTestFinished(() => removeFolder(dir));
   return dir;
 }
 

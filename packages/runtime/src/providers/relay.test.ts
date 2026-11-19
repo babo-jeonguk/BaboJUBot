@@ -2,17 +2,12 @@ import { existsSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { destinationSchema, type Destination } from "@babojubot/contracts";
 import { createRelayHub, type RelayHooks } from "./relay.ts";
 
 // 격리 실행의 중계(#149). 컨테이너에는 네트워크가 없고, 실행 시도마다 연 파일 소켓으로만 바깥과 조직 도구에 닿는다.
 // 여기서는 컨테이너 쪽 대신 시험이 그 소켓에 직접 붙는다. 금지 목적지는 실제 listener가 연결을 받지 않았는지까지 본다.
-
-const cleanups: (() => Promise<void> | void)[] = [];
-afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-});
 
 const destination = (value: unknown): Destination =>
   destinationSchema.parse(value);
@@ -28,7 +23,8 @@ async function fixture(kind: "echo" | "http") {
       : net.createServer((socket) => socket.pipe(socket));
   server.on("connection", (socket: net.Socket) => accepted.push(socket));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  cleanups.push(
+  // 러너가 시험이 끝나면 등록 역순으로 모두 정리한다. 중계 닫기가 실패해도 이 listener를 닫는다.
+  onTestFinished(
     () =>
       new Promise<void>((resolve) => {
         for (const socket of accepted) socket.destroy();
@@ -56,7 +52,7 @@ function hub(overrides: Partial<RelayHooks> = {}) {
     refused: (_identity, detail) => refused.push(detail),
     ...overrides,
   });
-  cleanups.push(() => relays.close());
+  onTestFinished(() => relays.close());
   return {
     relays,
     refused,
@@ -250,7 +246,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await new Promise<void>((resolve) =>
       redirecting.listen(0, "127.0.0.1", resolve)
     );
-    cleanups.push(
+    onTestFinished(
       () => new Promise<void>((resolve) => redirecting.close(() => resolve()))
     );
     const port = (redirecting.address() as net.AddressInfo).port;
@@ -371,7 +367,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const relay = env.relays.open({ identity, required: [] });
     await relay.ready;
     const socket = net.connect(path.join(relay.directory, "egress.sock"));
-    cleanups.push(() => void socket.destroy());
+    onTestFinished(() => void socket.destroy());
     socket.on("error", () => {});
     // 응답을 읽어야 끝(FIN)을 받고 닫힌다.
     let answer = "";
@@ -398,7 +394,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     let calls = 0;
     // 중계가 목적지와 연 소켓을 잡아, 목적지가 끊은 것을 중계가 받았는지 본다.
     const connect = vi.spyOn(net, "connect");
-    cleanups.push(() => void connect.mockRestore());
+    onTestFinished(() => void connect.mockRestore());
     const relayToTarget = () =>
       connect.mock.results
         .map((result) => result.value as net.Socket)
@@ -432,7 +428,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const uncaught: unknown[] = [];
     const onUncaught = (error: unknown) => uncaught.push(error);
     process.on("uncaughtException", onUncaught);
-    cleanups.push(() => void process.off("uncaughtException", onUncaught));
+    onTestFinished(() => void process.off("uncaughtException", onUncaught));
     const relay = env.relays.open({ identity, required: [] });
     await relay.ready;
     const viaProxy = () =>
@@ -566,7 +562,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         });
         reverse();
       });
-      cleanups.push(() => void socket.destroy());
+      onTestFinished(() => void socket.destroy());
     };
     reverse();
     const origin = await relay.inboundOrigin();

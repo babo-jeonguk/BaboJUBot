@@ -26,6 +26,7 @@ import {
 } from "./local-model.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { cleanUpAll, folderCleanup } from "@babojubot/runtime/test-cleanup";
 
 // #147: 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델로, 조직 도구 MCP → OpenCode가 모델에 보내는 도구 정의 → 실행 시도 종료·저장·API까지를 본다.
 // 가짜 모델은 대상 upstream이 거부한 `\0` 표기의 도구 정의를 400으로 거부한다. 실제 모델 호출·로그인·모델 목록 다운로드는 없다.
@@ -80,12 +81,14 @@ describe.skipIf(!program)(
   () => {
     let t: TestServer;
     let model: Awaited<ReturnType<typeof startLocalModel>>;
-    let dataDir: string;
+    let folder: ReturnType<typeof folderCleanup> | undefined;
     const agents = scriptedAgents();
     const { get, researching, create, say } = serverHelpers(() => t);
     beforeAll(async () => {
       model = await startLocalModel();
-      dataDir = await mkdtemp(path.join(tmpdir(), "opencode-real-"));
+      const dataDir = await mkdtemp(path.join(tmpdir(), "opencode-real-"));
+      // OpenCode가 아직 쓰는 dataDir는 서버가 닫힌 뒤에만 지운다.
+      folder = folderCleanup(() => removeFolder(dataDir));
       const [fake] = createFakeProviders(1, { adapter: () => agents.runtime });
       t = await startTestServer({
         providers: [
@@ -101,12 +104,10 @@ describe.skipIf(!program)(
           }),
         ],
       });
+      folder.own(() => t.close());
     });
-    afterAll(async () => {
-      await t?.close();
-      await model?.close();
-      await removeFolder(dataDir);
-    });
+    // 서버·폴더 정리와 모델 서버 닫기는 서로 무관하다. 한쪽이 실패해도 다른 쪽을 한다.
+    afterAll(() => cleanUpAll([() => folder?.cleanUp(), () => model?.close()]));
 
     const useOpenCode = async (orgId: string, agentId: string) => {
       const res = await t.request(
