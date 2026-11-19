@@ -387,3 +387,55 @@ test("product code runs a program synchronously only with a timeout", async () =
       place
     );
 });
+
+const ignoredErrorRule = ["product/no-ignored-error"];
+
+test("product code does not drop an error without naming it", async () => {
+  const dropped = {
+    "a catch without an error variable": `export function read(text: string) {\n  try {\n    return JSON.parse(text) as unknown;\n  } catch {\n    return undefined;\n  }\n}\n`,
+    "an empty catch without an error variable": `export function run(work: () => void) {\n  try {\n    work();\n  } catch {\n    // 실패해도 괜찮다.\n  }\n}\n`,
+    "a .catch handler without a parameter": `export const read = (work: Promise<string>) => work.catch(() => "");\n`,
+    "a .catch function expression without a parameter": `export const read = (work: Promise<string>) => work.catch(function () {\n  return "";\n});\n`,
+    "a .then rejection handler without a parameter": `export const read = (work: Promise<string>) => work.then((text) => text, () => "");\n`,
+    "an underscored catch variable": `export function read(text: string) {\n  try {\n    return JSON.parse(text) as unknown;\n  } catch (_error) {\n    return undefined;\n  }\n}\n`,
+    "an underscored .catch parameter": `export const read = (work: Promise<string>) => work.catch((_error: unknown) => "");\n`,
+    "an underscored .then rejection parameter": `export const read = (work: Promise<string>) => work.then(undefined, (_error: unknown) => "");\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(dropped)) {
+      const [message, ...rest] = await lint(code, place, ignoredErrorRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 쓸 이름 붙은 함수와 작성 기준을 안내한다.
+      assert.match(message.message, /orIfMissing/);
+      assert.match(message.message, /continueAfterFailure/);
+      assert.match(message.message, /orIfUnreadable/);
+      assert.match(message.message, /settled/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+  const kept = [
+    // 오류를 받아 검사한다.
+    `export function read(text: string) {\n  try {\n    return JSON.parse(text) as unknown;\n  } catch (error) {\n    if (error instanceof SyntaxError) return undefined;\n    throw error;\n  }\n}\n`,
+    `export const read = (work: Promise<string>) =>\n  work.catch((error: unknown) => {\n    console.warn("read failed", error);\n    return "";\n  });\n`,
+    `export const read = (work: Promise<string>) =>\n  work.then(\n    (text) => text,\n    (error: unknown) => {\n      throw new Error("read failed", { cause: error });\n    }\n  );\n`,
+    // 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니다.
+    `export function read(text: string) {\n  try {\n    return JSON.parse(text) as unknown;\n  } catch {\n    throw new Error("unreadable");\n  }\n}\n`,
+    `export const read = (work: Promise<string>) =>\n  work.catch(() => {\n    throw new Error("unreadable");\n  });\n`,
+    // 이름 붙은 함수와 성공 처리만 있는 then.
+    `import { orIfUnreadable, settled } from "@babojubot/contracts";\nexport const read = (text: string) => orIfUnreadable((): unknown => JSON.parse(text), undefined);\nexport const wait = (work: Promise<string>) => settled(work.then((text) => text.trim()));\n`,
+  ];
+  for (const place of productPlaces)
+    for (const code of kept)
+      assert.deepEqual(
+        await lint(code, place, ignoredErrorRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    for (const code of Object.values(dropped))
+      assert.deepEqual(
+        await lint(code, place, ignoredErrorRule),
+        [],
+        `${place}: ${code}`
+      );
+});
