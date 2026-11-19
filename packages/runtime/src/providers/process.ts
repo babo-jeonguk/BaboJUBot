@@ -313,6 +313,12 @@ export function startProcess(options: {
       skipping = true;
     }
   });
+  /** 줄바꿈 없이 남은 마지막 줄을 넘긴다. 한 번만 한다. */
+  const deliverRest = () => {
+    const rest = buffer + decoder.end();
+    buffer = "";
+    if (!skipping && rest.length <= maxLineLength) deliver(rest);
+  };
   const outputEnd = (stream: NodeJS.ReadableStream) =>
     new Promise<void>((resolve) => stream.once("close", () => resolve()));
   let reportExit!: () => void;
@@ -394,7 +400,12 @@ export function startProcess(options: {
       leaderExited = true;
       clock.clearTimeout(term);
       // 프로그램이 끝났다. 보통은 곧 출력이 닫히고(아래) 거기서 정리한다. 남긴 자식이 출력을 쥐고 있으면 닫히지 않으므로, 남은 출력을 읽을 시간만 두고 같은 정리를 시작한다. 취소 중이던 종료 타이머도 여기서 멈춘다(남은 트리는 finish가 중계를 먼저 닫고 끈다).
-      if (!finished) drain = clock.setTimeout(() => finish(code), exitDrainMs);
+      if (!finished)
+        drain = clock.setTimeout(() => {
+          // 프로그램은 끝났으므로 지금까지 읽은 마지막 줄(줄바꿈 없이 끝난 줄)도 그 출력이다. 그 뒤로 온 출력은 읽지 않는다.
+          if (!finished) deliverRest();
+          finish(code);
+        }, exitDrainMs);
     });
     void Promise.all([
       tree.exited,
@@ -403,9 +414,7 @@ export function startProcess(options: {
     ]).then(([{ code }]) => {
       outputClosed = true;
       if (finished) return;
-      const rest = buffer + decoder.end();
-      buffer = "";
-      if (!skipping && rest.length <= maxLineLength) deliver(rest);
+      deliverRest();
       finish(code);
     });
   });

@@ -81,6 +81,17 @@ it("reads a last line that has no newline", async () => {
   expect(exit.broken).toBe(false);
 });
 
+// 프로그램이 남긴 자식이 출력을 쥐면 출력이 닫히지 않아 종료 뒤 잠깐만 읽고 정리한다. 그때도 프로그램이 줄바꿈 없이 끝낸 마지막 줄은
+// 그 프로그램의 출력이다(Windows에서는 실행기가 끝날 때까지 출력의 닫힘이 늦게 올 수 있다). 남긴 자식은 실행 시도의 끄기가 끈다.
+it("reads a last line that has no newline when a child keeps the output open", async () => {
+  const keep = `require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true }).unref();`;
+  const { frames, exit } = await run(
+    `${keep} process.stdout.write('{"n":1}');`
+  );
+  expect(frames).toEqual([{ n: 1 }]);
+  expect(exit.broken).toBe(false);
+});
+
 it("keeps reading after a frame handler fails", async () => {
   const { frames, exit } = await run(
     `console.log('{"n":1}'); console.log('{"n":2}');`,

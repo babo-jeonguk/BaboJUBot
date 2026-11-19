@@ -28,17 +28,18 @@ import { cleanUpAll, withCleanup } from "../test-cleanup.ts";
 // 실행 시도 전용 로그인 파일, 격리를 끈 실행이면 조직 자리 링크 → 돌 제품 폴더 → 프로세스 시작. 준비 중에 취소하면 시작한
 // 파일 작업은 끝내고 프로세스는 띄우지 않는다. 링크를 만들 수 없는 컴퓨터에서도 격리 실행은 조직 제품 폴더로만 돈다.
 
-/** 띄운 프로세스(이 컴퓨터의 프로그램이나 docker)의 명령. 실제로 프로세스를 시작했는지 여기서 본다. */
+/**
+ * 띄운 프로세스(이 컴퓨터의 프로그램이나 docker)의 명령. 실제로 프로세스를 시작했는지 여기서 본다. 실행 시도는 공용 실행(`launchTree`)
+ * 하나로만 띄우므로 그 입구를 본다(Windows는 묶음 실행기로 띄워 cross-spawn을 거치지 않는다).
+ */
 const spawned: string[][] = [];
-vi.mock("cross-spawn", async (importOriginal) => {
-  const actual = await importOriginal<{
-    default: (...args: unknown[]) => unknown;
-  }>();
-  const spawn = (command: string, args: string[] = [], ...rest: unknown[]) => {
-    spawned.push([command, ...args]);
-    return actual.default(command, args, ...rest);
-  };
-  return { ...actual, default: Object.assign(spawn, actual.default) };
+vi.mock("./launch.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./launch.ts")>();
+  const launchTree = ((options: Parameters<typeof actual.launchTree>[0]) => {
+    spawned.push([...options.command, ...options.args]);
+    return actual.launchTree(options);
+  }) as typeof actual.launchTree;
+  return { ...actual, launchTree };
 });
 
 /** 붙잡아 둘 파일 작업 하나. 그 작업에 들어오면 알리고, 풀어 줄 때까지 기다린 뒤 실제로 한다. */
