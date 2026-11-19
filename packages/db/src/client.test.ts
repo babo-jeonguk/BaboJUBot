@@ -182,9 +182,12 @@ describe("embedded Postgres lifetime", () => {
         // 신호 handler를 먼저 설치한 뒤 알리므로, 준비를 본 쪽이 보내는 신호를 놓치지 않는다.
         "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); console.log("started"); setInterval(() => {}, 1000);`,
       }[end];
+      // Postgres 번호는 자식이 알린다. 자식은 알린 직후 끝나며 Postgres를 멈추므로, 시험이 그 뒤에 잠금 파일을 읽으면 이미 없을 수 있다.
       const script = `
         const { openDatabase } = await import(${JSON.stringify(clientModule)});
+        const { readFileSync } = await import("node:fs");
         await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
+        console.log(readFileSync(${JSON.stringify(path.join(dataDir, "postmaster.pid"))}, "utf8").split("\\n")[0]);
         ${finish}
       `;
       let pid = 0;
@@ -199,12 +202,9 @@ describe("embedded Postgres lifetime", () => {
       cluster.own(() => killHard(child));
       const exited = watchExit(child);
       const lines = lineReader(child);
+      pid = Number(await lines.next());
+      expect(pid).toBeGreaterThan(0);
       await lines.next();
-      pid = Number(
-        fs
-          .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
-          .split("\n")[0]
-      );
       if (signal) child.kill(signal);
       await exited.within(30_000);
       expect(child.exitCode).toBe(code);
