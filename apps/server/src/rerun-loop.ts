@@ -8,6 +8,7 @@
 export class RerunLoop {
   readonly #check: () => Promise<void>;
   readonly #onError: (error: unknown) => void;
+  readonly #onIdle: () => void;
   #running: Promise<void> | undefined;
   #again = false;
   #closed = false;
@@ -19,12 +20,7 @@ export class RerunLoop {
   ) {
     this.#check = check;
     this.#onError = onError;
-    void onIdle;
-  }
-
-  /** 도는 회차가 있는가. dispatcher가 `RerunLoops`로 옮기면 지운다. */
-  get busy(): boolean {
-    return this.#running !== undefined;
+    this.#onIdle = onIdle;
   }
 
   /** 확인을 요청한다. 도는 중이면 끝난 뒤 한 번 더 돌게 한다. 닫힌 뒤에는 아무것도 하지 않는다. */
@@ -42,9 +38,11 @@ export class RerunLoop {
       }
     })().finally(() => {
       this.#running = undefined;
-      if (!this.#again) return;
-      this.#again = false;
-      this.request();
+      if (this.#again) {
+        this.#again = false;
+        this.request();
+      }
+      if (!this.#running) this.#onIdle();
     });
   }
 
@@ -78,40 +76,66 @@ export class RerunLoop {
  * 쉬게 된 키는 잊는다. 그 뒤 같은 키를 요청하면 새로 시작한다. 그래서 들고 있는 것은 지금 도는 키뿐이다.
  */
 export class RerunLoops {
+  readonly #loops = new Map<string, RerunLoop>();
+  readonly #check: (key: string) => Promise<void>;
+  readonly #onError: (key: string, error: unknown) => void;
+  #closed = false;
+
   constructor(
     check: (key: string) => Promise<void>,
     onError: (key: string, error: unknown) => void
   ) {
-    void check;
-    void onError;
-    throw new Error("RerunLoops is not implemented yet");
+    this.#check = check;
+    this.#onError = onError;
   }
 
   /** 그 키의 확인을 요청한다. 그 키가 도는 중이면 끝난 뒤 한 번 더 돌게 한다. 닫힌 뒤에는 아무것도 하지 않는다. */
   request(key: string): void {
-    void key;
-    throw new Error("RerunLoops is not implemented yet");
+    if (this.#closed) return;
+    let loop = this.#loops.get(key);
+    if (!loop) {
+      loop = new RerunLoop(
+        () => this.#check(key),
+        (error) => this.#onError(key, error),
+        () => this.#loops.delete(key)
+      );
+      this.#loops.set(key, loop);
+    }
+    loop.request();
   }
 
   /** 그 키가 도는 중인가(재실행을 기다리는 중 포함). */
   busy(key: string): boolean {
-    void key;
-    throw new Error("RerunLoops is not implemented yet");
+    return this.#loops.has(key);
   }
 
   /** 그 키가 쉴 때까지 기다린다. 기다리는 사이 그 키를 다시 요청해 새로 시작했으면 그것도 기다린다. */
   async settled(key: string): Promise<void> {
-    void key;
-    throw new Error("RerunLoops is not implemented yet");
+    // 기다린 루프가 아직 있으면 그것은 쉬고 있으므로 다시 기다리지 않는다. 그사이 새로 시작한 루프만 이어서 기다린다.
+    let waited: RerunLoop | undefined;
+    for (let loop; (loop = this.#loops.get(key)) && loop !== waited;) {
+      await loop.settled();
+      waited = loop;
+    }
   }
 
   /** 모든 키가 쉴 때까지 기다린다. 기다리는 사이 시작한 키(다른 키의 회차가 요청한 것 포함)도 기다린다. */
   async settledAll(): Promise<void> {
-    throw new Error("RerunLoops is not implemented yet");
+    // settled와 같이, 기다린 루프는 다시 기다리지 않고 그사이 시작한 루프만 이어서 기다린다.
+    const waited = new Set<RerunLoop>();
+    for (;;) {
+      const loops = [...this.#loops.values()].filter(
+        (loop) => !waited.has(loop)
+      );
+      if (!loops.length) return;
+      await Promise.all(loops.map((loop) => loop.settled()));
+      for (const loop of loops) waited.add(loop);
+    }
   }
 
   /** 새 요청을 받지 않고, 도는 키가 모두 끝날 때까지 기다린다. 아직 시작하지 않은 재실행은 돌지 않는다. */
   async close(): Promise<void> {
-    throw new Error("RerunLoops is not implemented yet");
+    this.#closed = true;
+    await Promise.all([...this.#loops.values()].map((loop) => loop.close()));
   }
 }
