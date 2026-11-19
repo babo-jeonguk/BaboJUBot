@@ -374,7 +374,13 @@ describe("buildInitialResearchProposal", () => {
     roles: new Map([
       [
         "researcher",
-        { agent: "worker", label: "연구원", files: [], heartbeatMinutes: 60 },
+        {
+          agent: "worker",
+          label: "연구원",
+          skills: [],
+          files: [],
+          heartbeatMinutes: 60,
+        },
       ],
     ]),
     templates: new Map([
@@ -391,7 +397,7 @@ describe("buildInitialResearchProposal", () => {
         },
       ],
     ]),
-  } as unknown as HarnessLibraryContents;
+  };
   const input = {
     plan: "계획",
     environment: "환경",

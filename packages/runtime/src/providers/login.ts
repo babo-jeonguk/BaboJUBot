@@ -78,10 +78,10 @@ async function readHiddenLine(
  * 연결의 제품 로그인. 실행 시도와 같은 환경으로 프로그램의 로그인을 띄우고, 토큰을 보여 주는 프로그램이면
  * 붙여 넣은 값을 제품 폴더에 저장한다. 토큰은 명령 인수와 화면에 남지 않는다. 모든 OS에서 같은 명령이다.
  * 입력이 터미널이면 붙여 넣은 토큰을 echo 없이 읽고, 모든 경로에서 끝나면 터미널을 원래 상태로 되돌린다.
- * Ctrl-C는 토큰을 저장하지 않고 AbortError로 끝난다.
+ * Ctrl-C는 토큰을 저장하지 않고 AbortError로 끝난다. 연결에서는 ID와 로그인 방법만 읽는다.
  */
 export async function runLogin(
-  connection: ProviderConnection,
+  connection: Pick<ProviderConnection, "id" | "login">,
   {
     input = process.stdin,
     output = process.stdout,

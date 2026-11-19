@@ -1,18 +1,19 @@
-import type { ProviderSummary } from "@babojubot/contracts";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   choiceProblem,
   firstChoiceProblem,
   refreshChoiceProblem,
+  type ChoiceConnections,
 } from "./choice-problems.ts";
 
-const connection = (id: string, models: string[]) =>
-  ({
-    id,
-    label: id,
-    models: models.map((m) => ({ id: m, label: m })),
-  }) as unknown as ProviderSummary;
-const providers = [connection("fake", ["fake-mini"]), connection("fake-2", [])];
+const connection = (id: string, models: string[]) => ({
+  id,
+  models: models.map((m) => ({ id: m, label: m })),
+});
+const providers: ChoiceConnections = [
+  connection("fake", ["fake-mini"]),
+  connection("fake-2", []),
+];
 
 test("a choice of a listed connection and its listed or default model has no problem", () => {
   expect(choiceProblem(providers, { provider: "fake", model: null })).toBe(

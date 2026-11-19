@@ -6,6 +6,12 @@ import type { ProviderChoice, ProviderSummary } from "@babojubot/contracts";
 
 export type ChoiceProblem = "unknown_provider" | "unknown_model";
 
+/** 확인에 쓰는 연결의 ID와 모델 목록. 서버의 확인(core `ProviderModels`)과 같은 범위다. */
+export type ChoiceConnections = readonly Pick<
+  ProviderSummary,
+  "id" | "models"
+>[];
+
 /** 프로바이더·모델 칸 묶음 하나: 칸 id의 앞부분과 그 칸의 선택. */
 export type ChoiceField = {
   idPrefix: string;
@@ -17,7 +23,7 @@ export type ChoiceField = {
  * 못한 때 포함) 모델이 틀렸다고 단정하지 않는다.
  */
 export function choiceProblem(
-  providers: readonly ProviderSummary[],
+  providers: ChoiceConnections,
   { provider, model }: ProviderChoice
 ): ChoiceProblem | undefined {
   const connection = providers.find((p) => p.id === provider);
@@ -39,7 +45,7 @@ export const choiceFieldIds = (idPrefix: string) => ({
 
 /** 칸 순서대로 처음 문제가 있는 칸. */
 export function firstChoiceProblem(
-  providers: readonly ProviderSummary[],
+  providers: ChoiceConnections,
   fields: ChoiceField[]
 ): { fieldId: string; problem: ChoiceProblem } | undefined {
   for (const { idPrefix, choice } of fields) {
@@ -51,7 +57,7 @@ export function firstChoiceProblem(
 
 /** 처음 문제가 있는 칸으로 포커스를 옮기고, 그런 칸이 있었는지 돌려준다. 제출할 때 부른다. */
 export function focusFirstChoiceProblem(
-  providers: readonly ProviderSummary[],
+  providers: ChoiceConnections,
   fields: ChoiceField[]
 ) {
   const problem = firstChoiceProblem(providers, fields);
@@ -65,7 +71,7 @@ export function focusFirstChoiceProblem(
  */
 export async function refreshChoiceProblem(
   refetch: () => Promise<{
-    data?: { providers: readonly ProviderSummary[] } | undefined;
+    data?: { providers: ChoiceConnections } | undefined;
     error: unknown;
   }>,
   fields: ChoiceField[]
