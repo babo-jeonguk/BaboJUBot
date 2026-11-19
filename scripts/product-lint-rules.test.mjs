@@ -80,12 +80,11 @@ test("runtime code launches programs only through the process owners", async () 
 test("process owners, type imports and code outside runtime may use child_process", async () => {
   const named = `import { execFile } from "node:child_process";\nexecFile("x");\n`;
   for (const place of [
-    "packages/runtime/src/providers/process.ts",
+    "packages/runtime/src/providers/launch.ts",
     "packages/runtime/src/providers/container.ts",
     "packages/runtime/src/providers/job-object.ts",
     "packages/runtime/src/providers/recovery.ts",
     "packages/runtime/src/providers/lease.ts",
-    "packages/runtime/src/providers/antigravity-config.ts",
     "packages/runtime/src/providers/login.ts",
     // 시험 코드와 다른 패키지는 이 경계 밖이다.
     "packages/runtime/src/providers/process-test-support.ts",
@@ -109,7 +108,7 @@ test("process owners, type imports and code outside runtime may use child_proces
   // 실행 소유 파일과 runtime 밖은 node:module·계산한 경로의 import·process의 계산한 이름을 쓸 수 있다.
   const bypasses = `import { createRequire } from "node:module";\nconst name = String(Date.now());\nawait import(name);\ncreateRequire(import.meta.url)(name);\nvoid process[name as keyof typeof process];\n`;
   for (const place of [
-    "packages/runtime/src/providers/process.ts",
+    "packages/runtime/src/providers/launch.ts",
     "packages/runtime/src/providers/process.test.ts",
     "packages/db/src/embedded.ts",
     "apps/server/src/workspace.ts",

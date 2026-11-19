@@ -182,8 +182,8 @@ const keptGroupCalls = [
   // 프로세스 하나에 보내는 신호와 자식 객체의 kill.
   `export function alive(pid) {\n  process.kill(pid, 0);\n}\n`,
   `export function stop(child) {\n  child.kill("SIGTERM");\n}\n`,
-  // 그룹 끄기는 제품 함수로.
-  `export async function stop(stopProcessGroup, child) {\n  await stopProcessGroup(child.pid);\n}\n`,
+  // 그룹 끄기는 띄울 때 받은 트리의 끄기로.
+  `export async function stop(tree) {\n  await tree.stop();\n}\n`,
 ];
 
 test("signalling a process group is left to the product's process group stop", async () => {
@@ -193,7 +193,7 @@ test("signalling a process group is left to the product's process group stop", a
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       // 이유와 대안을 알려 준다.
-      assert.match(message.message, /stopProcessGroup/);
+      assert.match(message.message, /launchTree/);
       assert.match(message.message, /recovery\.ts/);
       assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
     }
@@ -215,4 +215,151 @@ test("signalling a process group is left to the product's process group stop", a
         [],
         `${place}: ${code}`
       );
+});
+
+const launchRule = ["product/no-direct-launch"];
+// 오래 도는 자식을 직접 띄우는 모양. 이름 그대로·바꿔 가져오기, 모듈 객체, 다시 내보내기, import 밖에서 불러오기.
+const directLaunches = {
+  "spawn imported by name": `import { spawn } from "node:child_process";\nspawn("x", []);\n`,
+  "execFile renamed": `import { execFile as run } from "child_process";\nrun("x", [], () => {});\n`,
+  "fork imported by name": `import { fork } from "node:child_process";\nfork("x.js");\n`,
+  "exec imported by name": `import { exec } from "node:child_process";\nexec("x", () => {});\n`,
+  "spawn from a namespace": `import * as cp from "node:child_process";\ncp.spawn("x", []);\n`,
+  "execFile from the default import": `import cp from "node:child_process";\ncp.execFile("x", [], () => {});\n`,
+  "a computed name on the module": `import * as cp from "node:child_process";\nconst name = "spawn";\ncp[name]("x", []);\n`,
+  "cross-spawn called": `import spawn from "cross-spawn";\nspawn("x", []);\n`,
+  "cross-spawn spawn": `import crossSpawn from "cross-spawn";\ncrossSpawn.spawn("x", []);\n`,
+  "spawn re-exported": `export { spawn } from "node:child_process";\n`,
+  "child_process re-exported whole": `export * from "node:child_process";\n`,
+  "child_process imported at run time": `const cp = await import("node:child_process");\nvoid cp;\n`,
+  "child_process from require": `import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nrequire("child_process");\n`,
+  "child_process from getBuiltinModule": `process.getBuiltinModule("node:child_process");\n`,
+};
+// 막지 않는 모양: 상한을 둔 동기 실행, cross-spawn의 동기 실행, 타입만 가져오기, 공용 실행.
+const keptLaunches = [
+  `import { execFileSync, spawnSync } from "node:child_process";\nexecFileSync("x", [], { timeout: 1000 });\nspawnSync("x", [], { timeout: 1000 });\n`,
+  `import crossSpawn from "cross-spawn";\ncrossSpawn.sync("x", [], { timeout: 1000 });\n`,
+  `import type { ChildProcess } from "node:child_process";\nexport type Child = ChildProcess;\n`,
+  `import { launchTree } from "@babojubot/runtime/launch";\nconst tree = launchTree({ command: ["x"], args: [], cwd: ".", env: {}, stdio: "pipe", withoutJob: "warn" });\nawait tree.stop();\n`,
+];
+const launchPlaces = [
+  "apps/server/src/app.ts",
+  "packages/db/src/client.ts",
+  "packages/runtime/src/providers/claude.ts",
+  ...scriptPlaces,
+];
+
+test("long-running children are launched only through the shared launch", async () => {
+  for (const place of launchPlaces) {
+    for (const [shape, code] of Object.entries(directLaunches)) {
+      if (place.endsWith(".mjs") && shape.includes("type")) continue;
+      const messages = await lint(code, place, launchRule);
+      assert.ok(messages.length > 0, `${place}: ${shape} not reported`);
+      // 이유와 대안(공용 실행과 그 끄기, 동기 실행, 실행 소유 목록)을 알려 준다.
+      assert.match(messages[0].message, /launchTree/);
+      assert.match(messages[0].message, /stop\(\)/);
+      assert.match(messages[0].message, /launchOwners/);
+      assert.match(messages[0].message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+    for (const code of keptLaunches) {
+      if (place.endsWith(".mjs") && code.includes("import type")) continue;
+      assert.deepEqual(
+        await lint(code, place, launchRule),
+        [],
+        `${place}: ${code}`
+      );
+    }
+  }
+  // 실행 소유 파일(공용 실행과 그것이 서는 실행, 데몬을 띄우는 pg_ctl)과 시험 코드는 범위 밖이다.
+  for (const place of [
+    "packages/runtime/src/providers/launch.ts",
+    "packages/runtime/src/providers/lease.ts",
+    "packages/db/src/embedded.ts",
+    ...chainTestPlaces,
+  ])
+    for (const code of Object.values(directLaunches).filter(
+      (code) => !code.includes("getBuiltinModule")
+    ))
+      assert.deepEqual(
+        await lint(code, place, launchRule),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+const halfRule = ["product/no-group-stop-import"];
+// runtime 밖에서 그룹 끄기의 반쪽이나 recovery.ts를 가져오는 모양.
+const outsideHalves = {
+  "recovery.ts by a relative path": [
+    "scripts/live/chaos-run.mjs",
+    `import { recoverProviderProcesses } from "../../packages/runtime/src/providers/recovery.ts";\nawait recoverProviderProcesses(".");\n`,
+  ],
+  "stopProcessGroup from the runtime package": [
+    ".agents/scripts/run-worker.mjs",
+    `import { stopProcessGroup } from "@babojubot/runtime";\nawait stopProcessGroup(1);\n`,
+  ],
+  "a runtime subpath that opens recovery": [
+    "apps/server/src/app.ts",
+    `import { stopProcessGroup } from "@babojubot/runtime/recovery";\nawait stopProcessGroup(1);\n`,
+  ],
+  "recovery.ts imported at run time": [
+    "scripts/live/chaos-run.mjs",
+    `const recovery = await import("../../packages/runtime/src/providers/recovery.ts");\nvoid recovery;\n`,
+  ],
+};
+// runtime 안에서 공용 실행·복구 밖이 그룹 끄기를 가져오는 모양.
+const insideHalves = {
+  "stopProcessGroup in process.ts": `import { stopProcessGroup } from "./recovery.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  "interruptProcessGroup re-exported": `export { interruptProcessGroup } from "./recovery.ts";\n`,
+  "everything from recovery re-exported": `export * from "./recovery.ts";\n`,
+};
+
+test("the process group stop stays inside the shared launch and the restart recovery", async () => {
+  for (const [shape, [place, code]] of Object.entries(outsideHalves)) {
+    const [message, ...rest] = await lint(code, place, halfRule);
+    assert.ok(message, `${place}: ${shape} not reported`);
+    assert.deepEqual(rest, [], `${place}: ${shape}`);
+    assert.match(message.message, /launchTree/);
+    assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+  }
+  for (const [shape, code] of Object.entries(insideHalves)) {
+    const place = "packages/runtime/src/providers/process.ts";
+    const [message, ...rest] = await lint(code, place, halfRule);
+    assert.ok(message, `${place}: ${shape} not reported`);
+    assert.deepEqual(rest, [], `${place}: ${shape}`);
+    assert.match(message.message, /stop\(\)/);
+  }
+  // 막지 않는 모양: runtime 밖의 재시작 복구와 공용 실행, runtime 안의 다른 recovery 함수, 공용 실행·복구 자신과 시험 코드.
+  const kept = [
+    [
+      "apps/server/src/app.ts",
+      `import { recoverProviderProcesses } from "@babojubot/runtime";\nawait recoverProviderProcesses(".");\n`,
+    ],
+    [
+      ".agents/scripts/run-worker.mjs",
+      `import { launchTree } from "@babojubot/runtime/launch";\nvoid launchTree;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/process.ts",
+      `import { recordProcess } from "./recovery.ts";\nvoid recordProcess;\n`,
+    ],
+    [
+      "packages/runtime/src/index.ts",
+      `export { recoverProviderProcesses } from "./providers/recovery.ts";\n`,
+    ],
+    [
+      "packages/runtime/src/providers/launch.ts",
+      insideHalves["stopProcessGroup in process.ts"],
+    ],
+    [
+      "packages/runtime/src/providers/recovery.test.ts",
+      insideHalves["stopProcessGroup in process.ts"],
+    ],
+  ];
+  for (const [place, code] of kept)
+    assert.deepEqual(
+      await lint(code, place, halfRule),
+      [],
+      `${place}: ${code}`
+    );
 });

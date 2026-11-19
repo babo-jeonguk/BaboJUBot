@@ -16,7 +16,8 @@ import {
 import { startProcess } from "./process.ts";
 import { prepareJobObjectLauncher } from "./job-object.ts";
 import { removeFolder } from "../remove-folder.ts";
-import { processAlive } from "../test-cleanup.ts";
+import { cleanUpAll } from "../test-cleanup.ts";
+import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 
 // Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
@@ -24,16 +25,21 @@ const windows = process.platform === "win32";
 const roots: string[] = [];
 /** 시험이 연 실행 시도. 끝마다 마저 끝내 묶음을 닫는다. */
 const attempts: ReturnType<typeof startProcess>[] = [];
-/** 실행 시도의 프로그램이 띄운 자손의 번호. 번호만 알므로 끄지 않고 꺼졌는지만 확인한다. */
-const descendants: number[] = [];
+/**
+ * 실행 시도의 프로그램과 그 자손이 쥔 연결의 이름. 끝마다 그 연결이 닫혔는지(그 프로세스가 끝났는지) 본다. 번호(pid)로 나중에 다시
+ * 보면 그사이 Windows가 그 번호를 다른 프로세스에 다시 줘 "살아 있음"으로 잘못 볼 수 있다(#259).
+ */
+const descendants: string[] = [];
+let lifelines: Lifelines;
+let count = 0;
+/** 시험마다 겹치지 않는 연결 이름. */
+const unique = (label: string) => `${label}-${++count}`;
 /** 시험이 직접 띄운 프로그램. 핸들로 끄고 끝날 때까지 기다린다. */
 const spawned: ChildProcess[] = [];
 /** 시험이 직접 띄운 프로그램의 시작 실패. 정리 때 실패로 알린다. */
 const startFailures = new WeakMap<ChildProcess, Error>();
 let dataDir = "";
 
-/** 번호로 프로세스가 있는지 본다. 없다는 답(ESRCH)만 꺼진 것으로 보고, 다른 오류는 pid·원인과 함께 실패한다. */
-const alive = processAlive;
 const temp = async (name: string) => {
   const root = await mkdtemp(path.join(tmpdir(), name));
   roots.push(root);
@@ -97,18 +103,19 @@ async function stopSpawned(child: ChildProcess) {
     );
   }
 }
-/** 번호는 재사용될 수 있으므로 다시 끄지 않는다. 시한 안에 꺼지지 않았으면 시험이 남긴 것으로 보고 실패한다. */
-async function descendantsGone(pids: number[]) {
-  await vi
-    .waitUntil(() => !pids.some(alive), { timeout: 10_000, interval: 50 })
-    .catch(() => {
-      throw new Error(
-        `processes a run started are still running after 10000 ms: ${pids.filter(alive).join(", ")}`
-      );
-    });
+/** 실행 시도가 띄운 프로세스가 모두 끝났는지 그 연결로 본다. 시한 안에 닫히지 않은 연결이 있으면 그 이름과 함께 실패한다. */
+async function descendantsGone(names: string[]) {
+  const results = await Promise.allSettled(
+    names.map((name) => lifelines.closed(name))
+  );
+  const left = names.filter((_, i) => results[i]!.status === "rejected");
+  if (left.length)
+    throw new Error(
+      `processes a run started are still running after 10000 ms: ${left.join(", ")}`
+    );
 }
 
-/** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 번호를 남겨 끝에 꺼졌는지 확인한다. */
+/** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 연결 이름을 남겨 끝에 꺼졌는지 확인한다. */
 function run(
   script: string,
   options: {
@@ -118,8 +125,8 @@ function run(
   } = {}
 ) {
   const frames: Record<string, unknown>[] = [];
-  let reportChild!: (pid: number) => void;
-  const child = new Promise<number>((resolve) => {
+  let reportChild!: (name: string) => void;
+  const child = new Promise<string>((resolve) => {
     reportChild = resolve;
   });
   const attempt = startProcess({
@@ -129,9 +136,9 @@ function run(
     env: { PATH: process.env.PATH },
     onFrame: async (frame) => {
       frames.push(record(frame));
-      if (typeof record(frame).child === "number") {
-        descendants.push(record(frame).child as number);
-        reportChild(record(frame).child as number);
+      if (typeof record(frame).child === "string") {
+        descendants.push(record(frame).child as string);
+        reportChild(record(frame).child as string);
       }
     },
   });
@@ -165,13 +172,16 @@ async function expectRunWithoutJob() {
   }
 }
 
-// 남긴 자식을 띄워 그 번호를 알린다. stdio는 남긴 자식이 프로그램의 출력을 쥐는지 정한다.
-const leaveChild = (stdio: string, extra = "") =>
-  `const c = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ${stdio}${extra} });
-   console.log(JSON.stringify({ child: c.pid }));`;
+// 남긴 자식을 띄워, 그 자식이 쥔 연결의 이름을 알린다. stdio는 남긴 자식이 프로그램의 출력을 쥐는지 정한다.
+const leaveChild = (stdio: string, extra = "") => {
+  const name = unique("child");
+  return `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold(name)} setInterval(() => {}, 1000);`)}], { stdio: ${stdio}${extra} });
+   console.log(JSON.stringify({ child: ${JSON.stringify(name)} }));`;
+};
 
 describe.runIf(windows)("startProcess on Windows", () => {
   beforeAll(async () => {
+    lifelines = await openLifelines();
     dataDir = await temp("babojubot-job-");
     // 구현 첫 단계의 확인: 이 컴퓨터의 기본 .NET Framework C# 컴파일러로 실행기를 만들고 해가 없는 실행이 된다.
     const started = Date.now();
@@ -203,7 +213,10 @@ describe.runIf(windows)("startProcess on Windows", () => {
   }, 60_000);
 
   afterAll(async () => {
-    await Promise.all(roots.map((root) => removeFolder(root)));
+    await cleanUpAll([
+      () => lifelines.close(),
+      ...roots.map((root) => () => removeFolder(root)),
+    ]);
   });
 
   it("stops a child that holds the output after the program ends, and keeps the last output and exit code", async () => {
@@ -211,30 +224,30 @@ describe.runIf(windows)("startProcess on Windows", () => {
       `${leaveChild(`["ignore", "inherit", "ignore"]`)}
        process.stdout.write(JSON.stringify({ last: "x".repeat(200000) }) + "\\n", () => process.exit(3));`
     );
-    const pid = await child;
+    const name = await child;
     const exit = await attempt.done;
     expect(exit.code).toBe(3);
     expect(exit.broken).toBe(false);
     expect(frames.at(-1)).toEqual({ last: "x".repeat(200000) });
-    expect(alive(pid)).toBe(false);
+    await lifelines.closed(name);
   });
 
   it("stops a child that does not hold the output after the program ends", async () => {
     const { attempt, child } = run(
       `${leaveChild(`"ignore"`)} setTimeout(() => process.exit(0), 100);`
     );
-    const pid = await child;
+    const name = await child;
     expect((await attempt.done).code).toBe(0);
-    expect(alive(pid)).toBe(false);
+    await lifelines.closed(name);
   });
 
   it("stops a child that the program started detached", async () => {
     const { attempt, child } = run(
       `${leaveChild(`"ignore"`, ", detached: true")} setTimeout(() => process.exit(0), 100);`
     );
-    const pid = await child;
+    const name = await child;
     await attempt.done;
-    expect(alive(pid)).toBe(false);
+    await lifelines.closed(name);
   });
 
   it("stops the program and what it started when the run is cancelled", async () => {
@@ -242,10 +255,10 @@ describe.runIf(windows)("startProcess on Windows", () => {
     const { attempt, child } = run(
       `${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`
     );
-    const pid = await child;
+    const name = await child;
     attempt.end();
     await attempt.done;
-    expect(alive(pid)).toBe(false);
+    await lifelines.closed(name);
   }, 30_000);
 
   it("passes input to the program and keeps its error output without the launcher's status line", async () => {
@@ -264,24 +277,27 @@ describe.runIf(windows)("startProcess on Windows", () => {
   });
 
   it("leaves other runs and other programs running", async () => {
-    const bystander = spawnTracked(
+    const bystanderName = unique("bystander");
+    spawnTracked(
       process.execPath,
-      ["-e", "setInterval(() => {}, 1000)"],
+      ["-e", `${lifelines.hold(bystanderName)} setInterval(() => {}, 1000);`],
       { stdio: "ignore" }
     );
+    await lifelines.connected(bystanderName);
     const other = run(`${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`);
     const otherChild = await other.child;
+    await lifelines.connected(otherChild);
     const { attempt, child } = run(
       `${leaveChild(`"ignore"`)} setTimeout(() => process.exit(0), 100);`
     );
-    const pid = await child;
+    const name = await child;
     await attempt.done;
-    expect(alive(pid)).toBe(false);
-    expect(alive(bystander.pid!)).toBe(true);
-    expect(alive(otherChild)).toBe(true);
+    await lifelines.closed(name);
+    expect(lifelines.open(bystanderName)).toBe(true);
+    expect(lifelines.open(otherChild)).toBe(true);
     other.attempt.end();
     await other.attempt.done;
-    expect(alive(otherChild)).toBe(false);
+    await lifelines.closed(otherChild);
   }, 30_000);
 
   it("passes arguments through a .cmd program as they are", async () => {
@@ -327,6 +343,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
   // 서버가 강제로 끝나면 Node.js가 자식(묶음 실행기)을 끄고, 그 묶음이 닫혀 실행 시도의 프로그램이 모두 꺼진다.
   it("stops the run's programs when the server is killed", async () => {
     const root = await temp("babojubot-job-server-");
+    const programName = unique("program");
     const url = (file: string) => new URL(`./${file}`, import.meta.url).href;
     await writeFile(
       path.join(root, "server.mjs"),
@@ -334,7 +351,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
        import { startProcess } from ${JSON.stringify(url("process.ts"))};
        await prepareJobObjectLauncher(${JSON.stringify(dataDir)});
        const program = ${JSON.stringify(
-         `${leaveChild(`"ignore"`)} console.log(JSON.stringify({ program: process.pid })); setInterval(() => {}, 1000);`
+         `${lifelines.hold(programName)} ${leaveChild(`"ignore"`)} console.log(JSON.stringify({ program: ${JSON.stringify(programName)} })); setInterval(() => {}, 1000);`
        )};
        startProcess({
          command: [process.execPath, "-e", program],
@@ -357,7 +374,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
         },
       }
     );
-    const seen: Record<string, number> = {};
+    const seen: Record<string, string> = {};
     await new Promise<void>((resolve, reject) => {
       let text = "";
       server.on("error", reject);
@@ -374,12 +391,8 @@ describe.runIf(windows)("startProcess on Windows", () => {
     const ended = new Promise((resolve) => server.on("exit", resolve));
     server.kill("SIGKILL");
     await ended;
-    await expect
-      .poll(() => [alive(seen.program!), alive(seen.child!)], {
-        timeout: 10_000,
-        interval: 50,
-      })
-      .toEqual([false, false]);
+    await lifelines.closed(seen.program!);
+    await lifelines.closed(seen.child!);
   }, 60_000);
 
   // 프로그램을 찾지 못하면 지금처럼 시작 실패로 알린다. 실행기의 cmd.exe 경유로 바뀌어 종료 코드 1로 끝나지 않는다.
