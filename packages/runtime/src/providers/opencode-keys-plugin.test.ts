@@ -27,7 +27,10 @@ async function mcpServer(reply: (body: any) => unknown) {
     );
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  close = () => new Promise((r) => server.close(() => r()));
+  close = () =>
+    new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve()))
+    );
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/tools/mcp`,
     captured,

@@ -823,7 +823,9 @@ async function freePort() {
   const probe = net.createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
   const { port } = probe.address() as net.AddressInfo;
-  await new Promise((resolve) => probe.close(resolve));
+  await new Promise<void>((resolve, reject) =>
+    probe.close((error) => (error ? reject(error) : resolve()))
+  );
   return port;
 }
 

@@ -117,7 +117,9 @@ afterEach(async () => {
       cleanUpAll(
         servers.splice(0).map((server) => async () => {
           server.closeAllConnections();
-          await new Promise((resolve) => server.close(resolve));
+          await new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve()))
+          );
         })
       )
     );

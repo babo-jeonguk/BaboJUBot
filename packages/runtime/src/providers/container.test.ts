@@ -964,13 +964,18 @@ async function relayed(
   const urls: string[] = [];
   /** 상류에서 끊긴 요청의 경로. `hold`면 상류는 답하지 않고 요청을 열어 둔다. */
   const closed: string[] = [];
-  const servers: http.Server[] = [];
+  // 서버마다 연 직후에 닫기를 따로 등록한다. 한 서버를 닫지 못해도 다른 서버를 닫고, 이것을 쓰는 시험은 따로 닫지 않는다.
   const listen = async (handler: http.RequestListener) => {
     const server = http.createServer(handler);
-    servers.push(server);
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve)
     );
+    onTestFinished(() => {
+      server.closeAllConnections();
+      return new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      );
+    });
     return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
   };
   const upstream = await listen((req, res) => {
@@ -993,13 +998,6 @@ async function relayed(
     }
     req.url = req.url.slice(prefix.length);
     relay.handle(req, res);
-  });
-  // 시험이 끝나면 두 서버를 닫는다. 서버를 연 직후에 정리를 등록하므로, 이것을 쓰는 시험은 따로 닫지 않는다.
-  onTestFinished(async () => {
-    for (const server of servers) {
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-    }
   });
   return { tools, seen, urls, closed };
 }

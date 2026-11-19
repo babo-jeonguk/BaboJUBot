@@ -12,22 +12,31 @@ import {
 } from "./credential-relay.ts";
 import { relayIdentityHeaders } from "./relay.ts";
 import { removeFolder } from "../remove-folder.ts";
+import { cleanUpAll } from "../test-cleanup.ts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
 type Seen = { method: string; url: string; headers: http.IncomingHttpHeaders };
 const servers: http.Server[] = [];
 const wires: { server: net.Server; sockets: Set<net.Socket> }[] = [];
-afterEach(async () => {
-  for (const wire of wires.splice(0)) {
-    for (const socket of wire.sockets) socket.destroy();
-    await new Promise((resolve) => wire.server.close(resolve));
-  }
-  for (const server of servers.splice(0)) {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  }
-});
+/** 서버를 닫는다. 닫기 실패(이미 닫힘 등)는 거절로 알린다. */
+const closeServer = (server: net.Server) =>
+  new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve()))
+  );
+// 한 서버를 닫지 못해도 나머지를 닫는다.
+afterEach(() =>
+  cleanUpAll([
+    ...wires.splice(0).map((wire) => () => {
+      for (const socket of wire.sockets) socket.destroy();
+      return closeServer(wire.server);
+    }),
+    ...servers.splice(0).map((server) => () => {
+      server.closeAllConnections();
+      return closeServer(server);
+    }),
+  ])
+);
 async function listen(handler: http.RequestListener) {
   const server = http.createServer(handler);
   servers.push(server);

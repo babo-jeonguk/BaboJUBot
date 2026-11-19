@@ -906,7 +906,9 @@ describe("channel replies", () => {
         probe.listen(port, "127.0.0.1", () => resolve(probe));
       });
     const closing = (probe: net.Server) =>
-      new Promise<void>((resolve) => probe.close(() => resolve()));
+      new Promise<void>((resolve, reject) =>
+        probe.close((error) => (error ? reject(error) : resolve()))
+      );
     onTestFinished(() => database.close());
     const probe = await listening(0);
     const { port } = probe.address() as net.AddressInfo;

@@ -178,9 +178,9 @@ export async function startLocalModel() {
       toolCalls = plan;
     },
     close: () =>
-      new Promise<void>((resolve) => {
+      new Promise<void>((resolve, reject) => {
         server.closeAllConnections();
-        server.close(() => resolve());
+        server.close((error) => (error ? reject(error) : resolve()));
       }),
   };
 }

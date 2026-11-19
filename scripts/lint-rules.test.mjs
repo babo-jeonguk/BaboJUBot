@@ -575,11 +575,65 @@ test("a shared cleanup hook may not stop at the first failing cleanup", async ()
       );
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
-      // 메시지가 이유, 대안과 기준 문서의 절을 알려 준다.
-      assert.match(message.message, /뒤 자원/);
-      assert.match(message.message, /cleanUpAll/);
-      assert.match(message.message, /folderCleanup/);
-      assert.match(message.message, /CODING_STANDARDS\.md#정리/);
+      assert.equal(message.messageId, "skipped", shape);
+      assertCleanupAdvice(message);
+    }
+});
+
+/** 정리 hook 규칙의 메시지가 이유, 대안(모두 시도·각각 등록·폴더 순서)과 기준 문서의 절을 알려 준다. */
+function assertCleanupAdvice(message) {
+  assert.match(message.message, /뒤 자원/);
+  assert.match(message.message, /cleanUpAll/);
+  assert.match(message.message, /onTestFinished/);
+  assert.match(message.message, /folderCleanup\(…\)\.own\(…\)/);
+  assert.match(message.message, /CODING_STANDARDS\.md#정리/);
+}
+
+test("catching every cleanup in one try still skips the later ones", async () => {
+  const shapes = {
+    // 서버 닫기가 실패하면 catch로 넘어가 모델 서버를 닫지 않는다(#248 리뷰).
+    "two closes in one try": `afterAll(async () => {\n  try {\n    await server.close();\n    await model.close();\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
+    // 한 서버가 실패하면 남은 서버를 닫지 않는다.
+    "a try around the whole loop": `afterEach(async () => {\n  try {\n    for (const server of servers) await server.close();\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
+    "a later close nested in the same try": `afterEach(async () => {\n  try {\n    await server.close();\n    if (model) {\n      await model.close();\n    }\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
+  };
+  for (const [shape, code] of Object.entries(shapes))
+    for (const place of testPlaces) {
+      const [message, ...rest] = skippedCleanupMessages(
+        await lint(code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.equal(message.messageId, "caught", shape);
+      assert.match(message.message, /한 try…catch/);
+      assertCleanupAdvice(message);
+    }
+});
+
+test("cleanup hooks are told by where they come from, and the same check covers a hook's helper and a fixture", async () => {
+  const shapes = {
+    "a Vitest hook under another name": `import { afterAll as atLast } from "vitest";\natLast(async () => {\n  await server.close();\n  await model.close();\n});\n`,
+    "a node:test hook under another name": `import { after as atEnd } from "node:test";\natEnd(async () => {\n  await server.close();\n  await model.close();\n});\n`,
+    "node:test's default export": `import nodeTest from "node:test";\nnodeTest.after(async () => {\n  await server.close();\n  await model.close();\n});\n`,
+    // 저장소 지원 파일이 넓혀 다시 내보낸 Playwright test(apps/web/e2e/support/shared-settings-run/fixture.ts).
+    "a Playwright test a support file re-exports": `import { test } from "./fixture.ts";\ntest.afterAll(async () => {\n  await server.stop();\n  await relays.close();\n});\n`,
+    "a test extended in the same file": `import { test as base } from "@playwright/test";\nconst settingsTest = base.extend({});\nsettingsTest.afterEach(async () => {\n  await server.stop();\n  await relays.close();\n});\n`,
+    "Promises that each close a server, in a loop": `afterEach(async () => {\n  for (const server of servers.splice(0))\n    await new Promise((resolve, reject) =>\n      server.close((error) => (error ? reject(error) : resolve()))\n    );\n});\n`,
+    // hook만 부르는 같은 파일 함수 한 단계.
+    "a helper only the hook calls": `async function finish() {\n  await server.close();\n  await model.close();\n}\nafterAll(async () => {\n  await finish();\n});\n`,
+    "a helper given as the hook": `const finish = async () => {\n  await server.close();\n  await model.close();\n};\nafterEach(finish);\n`,
+    // fixture의 use 뒤 정리도 hook과 같다.
+    "cleanups after use in a Playwright fixture": `import { test as base } from "@playwright/test";\nexport const test = base.extend({\n  servers: async ({ page }, provide) => {\n    await provide(page);\n    await server.close();\n    await model.close();\n  },\n});\n`,
+    "a fixture given with options": `import { test as base } from "@playwright/test";\nexport const test = base.extend({\n  servers: [\n    async ({ page }, use) => {\n      await use(page);\n      try {\n        await server.close();\n        await model.close();\n      } catch (error) {\n        failures.push(error);\n      }\n    },\n    { auto: true },\n  ],\n});\n`,
+  };
+  for (const [shape, code] of Object.entries(shapes))
+    for (const place of testPlaces) {
+      const [message, ...rest] = skippedCleanupMessages(
+        await lint(code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assertCleanupAdvice(message);
     }
 });
 
@@ -596,6 +650,24 @@ test("a shared cleanup hook may try every cleanup, and a resource's own cleanup 
     `afterEach(async () => {\n  await Promise.allSettled(preparations.splice(0));\n  await server?.close();\n});\n`,
     // 자원 하나를 잡은 직후 등록한 정리는 그 단계를 차례로 잇는다.
     `onTestFinished(async () => {\n  await chmod(locked, 0o700);\n  await removeFolder(root);\n});\n`,
+    // 정리마다 따로 catch한다.
+    `afterAll(async () => {\n  try {\n    await server.close();\n  } catch (error) {\n    failures.push(error);\n  }\n  try {\n    await model.close();\n  } catch (error) {\n    failures.push(error);\n  }\n  report(failures);\n});\n`,
+    // 서로 다른 갈래의 정리는 한 번에 하나만 돈다.
+    `afterEach(async () => {\n  if (remote) await remote.close();\n  else await local.close();\n});\n`,
+    `afterEach(async () => {\n  try {\n    if (remote) await remote.close();\n    else await local.close();\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
+    // try 안에서도 끈 뒤에 그 폴더를 지운다. 끄기가 실패하면 폴더를 남긴다.
+    `afterEach(async () => {\n  try {\n    await server.stop();\n    await removeFolder(root);\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
+    // return 뒤의 정리는 앞 정리와 이어지지 않는다.
+    `afterEach(async () => {\n  if (shared) {\n    await shared.close();\n    return;\n  }\n  await own.close();\n});\n`,
+    // 같은 이름의 지역 함수는 hook이 아니다(scripts/boot-check-flow.test.mjs의 after).
+    `const after = (run) => run();\nafter(async () => {\n  await server.close();\n  await model.close();\n});\n`,
+    `import { afterAll } from "./schedule.ts";\nafterAll(async () => {\n  await server.close();\n  await model.close();\n});\n`,
+    // 시험도 부르는 함수는 호출마다 자원·순서가 달라 그 함수만 보고 판단하지 않는다.
+    `async function finish() {\n  await server.close();\n  await model.close();\n}\nafterAll(async () => {\n  await finish();\n});\ntest("restarts", async () => {\n  await finish();\n});\n`,
+    // fixture가 use 뒤에 실패를 모아 차례로 시도한다(apps/web/e2e/support/shared-settings.ts).
+    `import { test as base } from "@playwright/test";\nexport const test = base.extend({\n  settings: async ({ page }, use) => {\n    await server.close();\n    await use(page);\n    for (const gate of gates) await attempt(gate.settle);\n    await attempt(() => restore(page));\n  },\n});\n`,
+    // Playwright가 아닌 extend의 함수는 fixture가 아니다.
+    `const schema = base.extend({\n  parse: async (value, use) => {\n    await use(value);\n    await a.close();\n    await b.close();\n  },\n});\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
@@ -629,6 +701,29 @@ test("test code may not ignore the error of process.kill", async () => {
       `for (const group of groups)\n  try {\n    if (alive(group)) process.kill(-group, "SIGCONT");\n    process.kill(-group, "SIGKILL");\n  } catch {\n    // 이미 끝났다.\n  }\n`,
       "signal",
     ],
+    // 오류를 읽어도 로그만 남기고 같은 답을 내면 넘긴 것과 같다.
+    "a logged liveness check": [
+      "function alive(pid) {\n  try {\n    process.kill(pid, 0);\n    return true;\n  } catch (error) {\n    console.warn(`확인하지 못했다: ${error.message}`);\n    return false;\n  }\n}\n",
+      "probe",
+    ],
+    "an error dropped with void": [
+      `try {\n  process.kill(pid, "SIGKILL");\n} catch (error) {\n  void error;\n}\n`,
+      "signal",
+    ],
+    // 출처로 본다: 다른 이름으로 가져온 kill, node:process에서 가져온 process.
+    "kill imported under another name": [
+      `import { kill as signal } from "node:process";\ntry {\n  signal(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+      "signal",
+    ],
+    "process imported from node:process": [
+      `import proc from "node:process";\nfunction alive(pid) {\n  try {\n    proc.kill(pid, 0);\n    return true;\n  } catch {\n    return false;\n  }\n}\n`,
+      "probe",
+    ],
+    // 안쪽 catch가 ESRCH 밖의 실패를 다시 던져도 바깥 catch가 삼킨다.
+    "an outer catch swallowing what an inner catch rethrows": [
+      `try {\n  try {\n    process.kill(pid, "SIGKILL");\n  } catch (error) {\n    if (error.code !== "ESRCH") throw error;\n  }\n} catch {\n  /* ignore */\n}\n`,
+      "signal",
+    ],
   };
   for (const [shape, [code, kind]] of Object.entries(shapes))
     for (const place of testPlaces) {
@@ -654,6 +749,15 @@ test("test code may pass over a finished process by its error code", async () =>
     `expect(() => process.kill(pid, 0)).not.toThrow();\n`,
     // 끄기가 아닌 조회의 실패는 이 규칙이 보지 않는다.
     `try {\n  parse(text);\n} catch {\n  return undefined;\n}\n`,
+    // 같은 이름의 지역 값은 Node의 process가 아니다.
+    `function stop(process) {\n  try {\n    process.kill();\n  } catch {\n    /* the fake has no process */\n  }\n}\n`,
+    // 안쪽 catch가 오류 코드를 보고 처리한 kill은 바깥 catch 탓이 아니다.
+    `try {\n  try {\n    process.kill(pid, "SIGKILL");\n  } catch (error) {\n    if (error.code !== "ESRCH") failures.push(error);\n  }\n  await removeFolder(root);\n} catch {\n  /* the folder was already gone */\n}\n`,
+    // 로그를 남기고 모으거나 다른 도움 함수에 넘기면 나중에 실패시킬 수 있다.
+    `try {\n  process.kill(pid, "SIGKILL");\n} catch (error) {\n  console.warn(error);\n  failures.push(error);\n}\n`,
+    `function alive(pid) {\n  try {\n    process.kill(pid, 0);\n    return true;\n  } catch (error) {\n    log.warn(error);\n    return false;\n  }\n}\n`,
+    // 코드를 보고 ESRCH 밖은 "아직 있음"으로 답해 다시 확인한다(packages/runtime/src/providers/recovery.test.ts의 groupGone).
+    `const groupGone = (group) => {\n  try {\n    process.kill(-group, 0);\n    return false;\n  } catch (e) {\n    return e.code === "ESRCH";\n  }\n};\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
@@ -664,18 +768,87 @@ test("test code may pass over a finished process by its error code", async () =>
       );
 });
 
-test("code outside tests may chain cleanups and ignore kill errors", async () => {
+/** 서버 닫기 오류 규칙의 메시지만. */
+const closeErrorMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-ignored-close-error");
+/** 타입 표기를 쓰는 예를 돌릴 TypeScript 자리. */
+const typedPlaces = testPlaces.filter((place) => place.endsWith(".ts"));
+
+test("test code may not fulfil a Promise with the error of a Node server's close", async () => {
+  const shapes = {
+    // 열리지 않았거나 이미 닫힌 서버면 오류 객체로 이행한다.
+    "resolve given to close": [
+      `import { createServer } from "node:net";\nconst server = createServer();\nonTestFinished(() => new Promise((resolve) => server.close(resolve)));\n`,
+      testPlaces,
+    ],
+    "a callback that drops the error": [
+      `import http from "node:http";\nconst server = http.createServer();\nawait new Promise((r) => server.close(() => r()));\n`,
+      testPlaces,
+    ],
+    // 같은 파일 함수가 돌려준 객체의 서버(scripts/boot-check.test.mjs).
+    "a server a same-file function returns": [
+      `import http from "node:http";\nasync function occupy() {\n  const server = http.createServer();\n  return { server };\n}\nconst listener = await occupy();\nawait new Promise((resolve) => listener.server.close(resolve));\n`,
+      testPlaces,
+    ],
+    "a parameter typed as a server": [
+      `import net from "node:net";\nexport const closing = (probe: net.Server) =>\n  new Promise<void>((resolve) => probe.close(() => resolve()));\n`,
+      typedPlaces,
+    ],
+    "servers from a typed list": [
+      `import http from "node:http";\nimport type { Server } from "node:net";\nconst servers: http.Server[] = [];\nconst wires: { server: Server }[] = [];\nfor (const wire of wires.splice(0)) await new Promise((resolve) => wire.server.close(resolve));\nawait cleanUpAll(servers.map((server) => () => new Promise((resolve) => server.close(resolve))));\n`,
+      typedPlaces,
+    ],
+  };
+  for (const [shape, [code, places]] of Object.entries(shapes))
+    for (const place of places) {
+      const messages = closeErrorMessages(await lint(code, place));
+      assert.ok(messages.length > 0, `${place}: ${shape} not reported`);
+      for (const message of messages) {
+        // 메시지가 이유, 대안과 기준 문서의 절을 알려 준다.
+        assert.match(message.message, /Promise가 이행/);
+        assert.match(message.message, /reject\(error\)/);
+        assert.match(message.message, /cleanUpAll/);
+        assert.match(message.message, /CODING_STANDARDS\.md#정리/);
+      }
+    }
+  assert.equal(
+    closeErrorMessages(
+      await lint(shapes["servers from a typed list"][0], typedPlaces[0])
+    ).length,
+    2
+  );
+});
+
+test("test code may reject with a close error and leave other close callbacks alone", async () => {
+  const allowed = [
+    `import http from "node:http";\nconst server = http.createServer();\nawait new Promise((resolve, reject) =>\n  server.close((error) => (error ? reject(error) : resolve()))\n);\n`,
+    `import http from "node:http";\nconst server = http.createServer();\nawait new Promise((resolve) =>\n  server.close((error) => {\n    if (error) failures.push(error);\n    resolve();\n  })\n);\n`,
+    // 출처를 모르는 값과 성공만 알리는 close(dgram 소켓)는 보지 않는다.
+    `await new Promise((resolve) => watcher.close(resolve));\n`,
+    `import dgram from "node:dgram";\nconst socket = dgram.createSocket("udp4");\nawait new Promise((resolve) => socket.close(resolve));\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        closeErrorMessages(await lint(code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+test("code outside tests may chain cleanups and ignore kill and close errors", async () => {
   for (const place of [
     "scripts/lint-sample.mjs",
     "scripts/live/lint-sample.mjs",
     "packages/runtime/test-fixtures/lint-sample.mjs",
   ]) {
     const messages = await lint(
-      `afterEach(async () => {\n  await a.close();\n  await b.close();\n});\ntry {\n  process.kill(pid, 0);\n} catch {\n  /* gone */\n}\n`,
+      `import http from "node:http";\nafterEach(async () => {\n  await a.close();\n  await b.close();\n});\ntry {\n  process.kill(pid, 0);\n} catch {\n  /* gone */\n}\nconst server = http.createServer();\nawait new Promise((resolve) => server.close(resolve));\n`,
       place
     );
     assert.deepEqual(skippedCleanupMessages(messages), [], place);
     assert.deepEqual(killErrorMessages(messages), [], place);
+    assert.deepEqual(closeErrorMessages(messages), [], place);
   }
 });
 

@@ -38,7 +38,10 @@ async function occupyPort() {
   const { port } = server.address() as net.AddressInfo;
   return {
     port,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      ),
   };
 }
 
