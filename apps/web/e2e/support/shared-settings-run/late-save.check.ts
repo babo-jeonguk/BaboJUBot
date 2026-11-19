@@ -68,7 +68,7 @@ test("ends while a released settings save is still on its way", async ({
     );
     await form.getByRole("button", { name: /^저장/ }).click();
     await held.arrived();
-    held.release().catch(() => {});
+    held.send();
     // 느린 서버가 저장을 넘겨받은 뒤에 끝낸다. 그 전에 끝나면 위 정리가 연결을 닫아 버린다.
     await tookOver;
   });

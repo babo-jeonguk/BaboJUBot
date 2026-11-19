@@ -102,8 +102,10 @@ describe("closing a database that fails", () => {
     const stop = fakeCluster(testClusterPort(), stopError);
     const handle = await openDatabase(embedded);
     const poolError = new Error("injected: closing the connections failed");
-    const end = pg.Pool.prototype.end as (this: pg.Pool) => Promise<void>;
-    vi.spyOn(pg.Pool.prototype, "end").mockImplementationOnce(async function (
+    // 제품은 Promise를 돌려주는 end()만 부른다. 콜백 판(end(cb): void)은 빼고 그 판만 바꾼다.
+    const pools: { end(this: pg.Pool): Promise<void> } = pg.Pool.prototype;
+    const end = pools.end;
+    vi.spyOn(pools, "end").mockImplementationOnce(async function (
       this: pg.Pool
     ) {
       await end.call(this);
@@ -124,8 +126,11 @@ describe("a one-off connection that fails", () => {
   it("keeps the work's error and records the close failure", async () => {
     const workError = new Error("injected: the work failed");
     const closeError = new Error("injected: closing the connection failed");
-    const end = pg.Client.prototype.end as (this: pg.Client) => Promise<void>;
-    vi.spyOn(pg.Client.prototype, "end").mockImplementationOnce(async function (
+    // 제품은 Promise를 돌려주는 end()만 부른다. 콜백 판(end(cb): void)은 빼고 그 판만 바꾼다.
+    const clients: { end(this: pg.Client): Promise<void> } =
+      pg.Client.prototype;
+    const end = clients.end;
+    vi.spyOn(clients, "end").mockImplementationOnce(async function (
       this: pg.Client
     ) {
       await end.call(this);

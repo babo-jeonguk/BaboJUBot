@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { OrgToolName, RuntimeAdapter } from "@babojubot/contracts";
 import {
   createScriptedRuntime,
@@ -37,17 +38,19 @@ export function createGate(): Gate {
   return {
     reached,
     open: () => release(),
-    wait(signal) {
+    async wait(signal) {
       markReached();
-      return new Promise<void>((resolve, reject) => {
-        const abort = () => reject(signal.reason);
-        if (signal.aborted) return abort();
+      signal.throwIfAborted();
+      let abort!: () => void;
+      const aborted = new Promise<never>((_, reject) => {
+        abort = () => reject(signal.reason);
         signal.addEventListener("abort", abort, { once: true });
-        void opened.then(() => {
-          signal.removeEventListener("abort", abort);
-          resolve();
-        });
       });
+      try {
+        await Promise.race([opened, aborted]);
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
     },
   };
 }
@@ -78,3 +81,23 @@ export const writes =
     step.do === "send_message"
       ? tool === "send_message"
       : step.do === "call" && step.tool === tool;
+
+/**
+ * 가짜 HTTP 서버(`http.createServer`)에 넘길 요청 처리기. 비동기 처리기가 실패하면 그 오류를 요청한 쪽에 돌려준다: 응답을 아직
+ * 시작하지 않았으면 500과 오류 문구로, 시작했으면 연결을 끊는다. 실패가 처리되지 않은 거절로 버려지거나 요청이 응답 없이
+ * 멈추지 않고, 그 요청을 보낸 시험이 실패를 받는다(CODING_STANDARDS.md#단언).
+ */
+export function answering(
+  handle: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>
+): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    handle(req, res).catch((error: unknown) => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      if (res.headersSent) res.destroy(failure);
+      else
+        res
+          .writeHead(500, { "content-type": "text/plain" })
+          .end(`fake server failed: ${failure.stack ?? failure.message}`);
+    });
+  };
+}

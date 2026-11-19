@@ -19,6 +19,7 @@ import { candidatePort } from "./ports.ts";
 import { createTestDatabase } from "./testing.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import {
+  awaitedLater,
   cleanUpAll,
   folderCleanup,
   killUnlessGone,
@@ -877,15 +878,16 @@ type Exit = { code: number | null; signal: NodeJS.Signals | null };
  * spawn부터 세면 오래 살아 있어야 하는 자식이 끝내라는 요청을 받기도 전에 시한이 지난다.
  */
 function watchExit(child: Spawned) {
-  const exited = new Promise<Exit>((resolve, reject) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resolve({ code: child.exitCode, signal: child.signalCode });
-      return;
-    }
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-    child.once("error", reject);
-  });
-  exited.catch(() => {});
+  const exited = awaitedLater(
+    new Promise<Exit>((resolve, reject) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve({ code: child.exitCode, signal: child.signalCode });
+        return;
+      }
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+      child.once("error", reject);
+    })
+  );
   return {
     async within(timeoutMs: number): Promise<Exit> {
       let timer: ReturnType<typeof setTimeout> | undefined;

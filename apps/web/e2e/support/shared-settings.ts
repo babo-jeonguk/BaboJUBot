@@ -38,6 +38,11 @@ export type HeldWrite = {
   arrived: () => Promise<Request>;
   /** 붙잡은 요청을 서버로 보내고 서버 응답을 돌려준다. 응답 없이 실패하면 오류다. */
   release: () => Promise<Response>;
+  /**
+   * 닿은 요청을 서버로 보내기만 하고 응답은 기다리지 않는다. 응답을 기다리지 않고 끝나는 테스트를 흉내 낼 때 쓴다.
+   * 그 요청은 이 테스트의 화면이 보낸 요청이므로 정리가 끝나기를 기다린다. 닿기 전에 부르면 오류다.
+   */
+  send: () => void;
 };
 
 export type SharedSettings = {
@@ -149,6 +154,11 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
           failAfter(arrival, `${url} PUT이 route에 닿지 않았다`);
         return {
           arrived,
+          send: () => {
+            if (!taken)
+              throw new Error(`${url} PUT이 아직 route에 닿지 않았다`);
+            decide(true);
+          },
           release: async () => {
             const request = await arrived();
             decide(true);

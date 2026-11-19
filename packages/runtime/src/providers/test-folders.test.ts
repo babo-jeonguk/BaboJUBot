@@ -96,30 +96,45 @@ it("counts a program that already ended as stopped", async () => {
   expect(existsSync(root)).toBe(false);
 });
 
-/** 멈춤 신호를 받아야 끝나는 실행 시도. `never`면 신호를 받아도 끝나지 않는다. */
-function heldProvider(order: string[], root: string, never = false) {
+/**
+ * 멈춤 신호를 받아야 끝나는 실행 시도. `stuck`을 주면 신호를 받아도 끝나지 않고, 시험이 `stuck`을 풀어야 끝난다.
+ * 끝날 때 그 폴더가 아직 있었는지 `order`에 남긴다.
+ */
+function heldProvider(order: string[], root: string, stuck?: Promise<void>) {
+  const end = (): RunResult => {
+    order.push(existsSync(root) ? "run ended with folder" : "folder gone");
+    return {
+      stopReason: "cancelled",
+      error: null,
+      summary: null,
+      usage: null,
+      nextSession: null,
+    };
+  };
   const execute: RuntimeAdapter["execute"] = (_request, { signal }) =>
-    new Promise<RunResult>((resolve) => {
-      if (never) return;
-      signal.addEventListener("abort", () =>
-        setTimeout(() => {
-          order.push(
-            existsSync(root) ? "run ended with folder" : "folder gone"
+    stuck
+      ? stuck.then(end)
+      : new Promise<RunResult>((resolve) => {
+          signal.addEventListener("abort", () =>
+            setTimeout(() => resolve(end()), 20)
           );
-          resolve({
-            stopReason: "cancelled",
-            error: null,
-            summary: null,
-            usage: null,
-            nextSession: null,
-          });
-        }, 20)
-      );
-    });
+        });
   return {
     adapter: { ...fakeDeclarations(), execute } satisfies RuntimeAdapter,
   };
 }
+
+/** 시험이 풀 때까지 끝나지 않게 붙잡는 문. */
+function stuckRun() {
+  let letGo!: () => void;
+  const stuck = new Promise<void>((resolve) => (letGo = resolve));
+  return { stuck, letGo };
+}
+
+const runOptions = () => ({
+  signal: new AbortController().signal,
+  emit: async () => {},
+});
 
 it("stops a provider run a failed test left in progress and removes the folder only after the run ends", async () => {
   const test = folders();
@@ -127,28 +142,29 @@ it("stops a provider run a failed test left in progress and removes the folder o
   const order: string[] = [];
   const provider = test.ownProvider(heldProvider(order, root));
   // 시험이 실행을 시작한 뒤 결과를 기다리기 전에 단언·시한으로 실패했다.
-  void provider.adapter.execute(request(), {
-    signal: new AbortController().signal,
-    emit: async () => {},
-  });
+  const run = provider.adapter.execute(request(), runOptions());
   await test.cleanup();
   expect(order).toEqual(["run ended with folder"]);
   expect(existsSync(root)).toBe(false);
+  await expect(run).resolves.toMatchObject({ stopReason: "cancelled" });
 });
 
 it("keeps the folder and fails by name when a provider run does not end after the stop", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
   onTestFinished(() => removeFolder(root));
-  const provider = test.ownProvider(heldProvider([], root, true));
-  void provider.adapter.execute(request(), {
-    signal: new AbortController().signal,
-    emit: async () => {},
-  });
+  const { stuck, letGo } = stuckRun();
+  const order: string[] = [];
+  const provider = test.ownProvider(heldProvider(order, root, stuck));
+  const run = provider.adapter.execute(request(), runOptions());
   await expect(test.cleanup()).rejects.toThrow(
     "provider run did not stop within 50ms"
   );
   expect(existsSync(root)).toBe(true);
+  // 남긴 폴더 안에서 실행이 늦게 끝난다.
+  letGo();
+  await expect(run).resolves.toMatchObject({ stopReason: "cancelled" });
+  expect(order).toEqual(["run ended with folder"]);
 });
 
 it("owns the runs of providers made by a factory passed around as a value", async () => {
@@ -157,31 +173,31 @@ it("owns the runs of providers made by a factory passed around as a value", asyn
   const order: string[] = [];
   // 시험 표(describe.each·it.each)나 연결 설정에 담아 넘긴 factory도 만든 연결의 실행을 정리에 맡긴다.
   const table = [{ create: test.owning(() => heldProvider(order, root)) }];
-  for (const { create } of table)
-    void create().adapter.execute(request(), {
-      signal: new AbortController().signal,
-      emit: async () => {},
-    });
+  const runs = table.map(({ create }) =>
+    create().adapter.execute(request(), runOptions())
+  );
   // 실행이 끝나기 전에 시험이 다른 단언(poll)에서 실패했다.
   await test.cleanup();
   expect(order).toEqual(["run ended with folder"]);
   expect(existsSync(root)).toBe(false);
+  for (const result of await Promise.all(runs))
+    expect(result).toMatchObject({ stopReason: "cancelled" });
 });
 
 it("owns a provider once even when it is handed to cleanup twice", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
   onTestFinished(() => removeFolder(root));
+  const { stuck, letGo } = stuckRun();
   // owning으로 묶은 factory가 만든 연결을 다시 ownProvider로 감싸도 실행은 정리에 한 번만 맡겨진다.
-  const create = test.owning(() => heldProvider([], root, true));
+  const create = test.owning(() => heldProvider([], root, stuck));
   const provider = test.ownProvider(create());
-  void provider.adapter.execute(request(), {
-    signal: new AbortController().signal,
-    emit: async () => {},
-  });
+  const run = provider.adapter.execute(request(), runOptions());
   const failure = await test.cleanup().catch((error: unknown) => error);
   expect(failure).not.toBeInstanceOf(AggregateError);
   expect(failure).toMatchObject({
     message: "provider run did not stop within 50ms",
   });
+  letGo();
+  await expect(run).resolves.toMatchObject({ stopReason: "cancelled" });
 });

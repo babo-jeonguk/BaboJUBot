@@ -78,7 +78,8 @@ async function requestResult(page: Page, org: Org) {
 
 /**
  * 결정 POST를 가로챈다. `reply`는 서버까지 보내 저장하게 한 뒤 응답만 `release`까지 붙잡아, 그사이 서버의 Event가 응답보다
- * 먼저 화면에 닿게 한다. `sent`는 서버가 응답한 뒤 풀리고, `delivered`는 화면이 응답을 받은 뒤 풀린다. 끝나면 `dispose`로 푼다.
+ * 먼저 화면에 닿게 한다. `sent`는 서버가 응답한 뒤 풀린다. `deliver`는 응답을 놓아주고 화면이 그 응답을 받을 때까지 기다린다.
+ * 응답은 놓아주기 전에는 끝나지 않으므로 그 대기는 놓아줄 때 건다. 끝나면 `dispose`로 푼다.
  */
 async function holdDecisionReply(page: Page) {
   let release!: () => void;
@@ -86,12 +87,6 @@ async function holdDecisionReply(page: Page) {
   let reached!: () => void;
   const sent = new Promise<void>((resolve) => (reached = resolve));
   const url = /\/decision$/;
-  const delivered = page.waitForEvent("requestfinished", {
-    predicate: (request) => url.test(request.url()),
-    timeout: 60_000,
-  });
-  // 앞서 실패해 응답이 끝나지 않으면 이 대기는 page와 함께 거절된다. 기다리지 않은 거절이 다른 오류로 보이지 않게 한다.
-  delivered.catch(() => {});
   const handler = async (route: Route) => {
     const response = await route.fetch();
     reached();
@@ -101,8 +96,15 @@ async function holdDecisionReply(page: Page) {
   await page.route(url, handler);
   return {
     sent,
-    delivered,
     release,
+    deliver: async () => {
+      const delivered = page.waitForEvent("requestfinished", {
+        predicate: (request) => url.test(request.url()),
+        timeout: 60_000,
+      });
+      release();
+      await delivered;
+    },
     dispose: async () => {
       release();
       await page.unroute(url, handler);
@@ -223,8 +225,7 @@ test("a stopped organization refuses initial approval decisions but still takes 
     await expect(note).toHaveValue("");
     await note.fill("다음 요청의 사유");
     await expect(note).toBeFocused();
-    held.release();
-    await held.delivered;
+    await held.deliver();
     await expect(note).toBeFocused();
     await expect(note).toHaveValue("다음 요청의 사유");
     await expect(decision.getByRole("button", { name: "반려" })).toBeEnabled();
@@ -338,8 +339,7 @@ test("result decisions say what they do to a paused organization, focus the reco
     });
     await staleKept.focus();
     await expect(staleKept).toBeFocused();
-    staleHeld.release();
-    await staleHeld.delivered;
+    await staleHeld.deliver();
     await expect(staleDecision).toContainText("연구를 최종 완료했습니다");
     await expect(staleDecision.getByRole("button")).toHaveCount(0);
     await expect(staleDecision).not.toContainText("늦게 보낸 수정 요청");

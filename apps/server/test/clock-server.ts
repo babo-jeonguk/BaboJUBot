@@ -53,19 +53,22 @@ const stop = () => {
     console.error(`[clock-server] shutdown did not finish in ${deadlineMs}ms`);
     process.exit(1);
   }, budget.cleanupMs).unref();
-  void (async () => {
-    let failed = false;
-    const fail = (error: unknown) => {
-      failed = true;
-      console.error("[clock-server] shutdown failed", error);
-    };
+  let failed = false;
+  const fail = (error: unknown) => {
+    failed = true;
+    console.error("[clock-server] shutdown failed", error);
+  };
+  const shutdown = async () => {
     const started = await startup.catch(fail);
     if (started) {
       await started.server?.close().catch(fail);
       await started.handle.close().catch(fail);
     }
-    process.exit(failed ? 1 : 0);
-  })();
+  };
+  // 끝나기 전의 실패도 남기고 실패 코드로 끝낸다.
+  shutdown()
+    .catch(fail)
+    .finally(() => process.exit(failed ? 1 : 0));
 };
 onStopRequest(process, stop);
 

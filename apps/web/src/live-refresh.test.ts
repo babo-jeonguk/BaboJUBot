@@ -140,7 +140,7 @@ describe("live refresh", () => {
     observe(key, server.queryFn);
     await server.release();
     // 화면 이동·focus 등으로 Event 이전에 시작된 조회.
-    void client.refetchQueries({ queryKey: key });
+    const earlier = client.refetchQueries({ queryKey: key });
     await flush();
     const live = startLiveRefresh();
 
@@ -153,6 +153,7 @@ describe("live refresh", () => {
     await server.release();
     expect(data(key)).toBe(1);
     expect(server.maxRunning).toBe(1);
+    await earlier;
   });
 
   test("a signal during the first load without cached data fetches again after it", async () => {
@@ -290,7 +291,7 @@ describe("live refresh", () => {
     await flush();
     expect(catchUps).toBe(1);
     // 이어 받는 동안 화면이 스스로 불러오기 시작하면(더 오래된 쪽) 그 결과가 덮어쓸 수 있으므로 끝난 뒤 한 번 더 이어 받는다.
-    void client.refetchQueries({ queryKey: key });
+    const own = client.refetchQueries({ queryKey: key });
     await flush();
     finishCatchUp();
     await flush();
@@ -301,6 +302,7 @@ describe("live refresh", () => {
     await flush();
     expect(server.calls).toBe(2);
     expect(catchUps).toBe(2);
+    await own;
   });
 
   test("a query no screen is watching is only marked stale", async () => {
@@ -359,7 +361,7 @@ describe("live refresh", () => {
     await flush();
     // mutation 성공의 직접 갱신은 기본값대로 진행 중 조회를 취소하고 새로 시작한다.
     server.version = 2;
-    void client.invalidateQueries({ queryKey: key });
+    const mutated = client.invalidateQueries({ queryKey: key });
     await flush();
     server.version = 3;
     live.refresh({ queryKey: key });
@@ -369,6 +371,7 @@ describe("live refresh", () => {
     await server.release();
     expect(data(key)).toBe(3);
     expect(server.pending()).toBe(0);
+    await mutated;
   });
 
   test("a query that loses its screen during a fetch is marked stale after that fetch ends", async () => {
@@ -376,7 +379,7 @@ describe("live refresh", () => {
     const key = ["organizations", "a"];
     const leave = observe(key, server.queryFn);
     await server.release();
-    void client.refetchQueries({ queryKey: key });
+    const earlier = client.refetchQueries({ queryKey: key });
     await flush();
     leave();
     const live = startLiveRefresh();
@@ -385,6 +388,7 @@ describe("live refresh", () => {
     await server.release();
     expect(server.calls).toBe(2);
     expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    await earlier;
   });
 
   test("after dispose a running fetch's completion starts nothing new", async () => {
