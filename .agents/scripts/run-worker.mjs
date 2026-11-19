@@ -15,12 +15,14 @@ import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { killUnlessGone } from "@babojubot/runtime/test-cleanup";
+import { setTimeout as sleep } from "node:timers/promises";
+import { killUnlessGone, processAlive } from "@babojubot/runtime/test-cleanup";
 import {
   continueAfterFailure,
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
+  settled,
 } from "../../packages/contracts/src/failure.ts";
 
 const USAGE = `usage: run-worker.mjs --model <provider/model> --title <title> --out <file.jsonl>
@@ -100,28 +102,56 @@ if (opts.session) args.push("-s", opts.session);
 args.push(message);
 
 let child = null;
+// A signal to the runner stops the worker the same way as the limit, and the runner ends only after the group is gone.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-  process.on(signal, () => {
-    stop(child);
-    process.exit(128 + { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 }[signal]);
-  });
+  process.on(signal, () => void stopThenExit(signal));
 }
 
-// The worker runs in its own process group so a stalled run can be stopped with everything it started.
-// A group that is already gone (ESRCH) is passed over; any other failure is reported, since the group may still run.
+// How long the group gets to end after SIGTERM, and after SIGKILL, before the runner gives up on it.
+const termGraceMs = 5_000;
+const killWaitMs = 10_000;
+
+/**
+ * Stops the worker's process group (the worker runs in its own group so it can be stopped with everything it started)
+ * and resolves once the whole group is gone: SIGTERM, then SIGKILL if anything is left after the grace, then a bounded
+ * wait. A group that is already gone (ESRCH) is fine; any other failure to signal or check it rejects with its cause,
+ * since the group may still run. Every stop goes through here, and one call per worker is shared.
+ */
+const stopping = new WeakMap();
 function stop(proc) {
-  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
-  const signalGroup = (signal) =>
-    continueAfterFailure(
-      () => killUnlessGone(-proc.pid, signal),
-      (error) =>
-        console.error(
-          `could not send ${signal} to the worker process group ${proc.pid}: ${error.cause?.message ?? error.message}`
-        )
-    );
-  signalGroup("SIGTERM");
-  setTimeout(() => signalGroup("SIGKILL"), 5000).unref();
+  if (!stopping.has(proc)) stopping.set(proc, stopGroup(proc.pid));
+  return stopping.get(proc);
 }
+
+async function stopGroup(pgid) {
+  if (!killUnlessGone(-pgid, "SIGTERM")) return;
+  if (await groupEnds(pgid, termGraceMs)) return;
+  killUnlessGone(-pgid, "SIGKILL");
+  if (!(await groupEnds(pgid, killWaitMs)))
+    throw new Error(
+      `the worker process group ${pgid} was still running ${killWaitMs / 1000}s after SIGKILL`
+    );
+}
+
+/** Whether the group is gone within `withinMs`. A member is alive until it is reaped (signal 0 answers for zombies too). */
+async function groupEnds(pgid, withinMs) {
+  const deadline = Date.now() + withinMs;
+  while (processAlive(-pgid)) {
+    if (Date.now() >= deadline) return false;
+    await sleep(100);
+  }
+  return true;
+}
+
+async function stopThenExit(signal) {
+  if (child) await continueAfterFailure(() => stop(child), reportStopFailure);
+  process.exit(128 + { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 }[signal]);
+}
+
+const reportStopFailure = (error) =>
+  console.error(
+    `could not confirm the worker process group stopped: ${error.cause?.message ?? error.message}`
+  );
 
 // Events written so far. No output file yet means no events; a line that is not JSON (a partly written last line) is skipped.
 function readEvents() {
@@ -154,13 +184,15 @@ function runOnce(deadlineAt) {
   const check = setTimeout(() => {
     if (!sessionOf(readEvents())) {
       stalled = true;
-      stop(proc);
+      // The exit handler below waits for this stop and receives its failure.
+      void settled(stop(proc));
     }
   }, opts.startCheckMs);
   const limit = setTimeout(
     () => {
       overLimit = true;
-      stop(proc);
+      // The exit handler below waits for this stop and receives its failure.
+      void settled(stop(proc));
     },
     Math.max(0, deadlineAt - Date.now())
   );
@@ -173,7 +205,14 @@ function runOnce(deadlineAt) {
     proc.on("exit", (code, signal) => {
       clearTimeout(check);
       clearTimeout(limit);
-      done({ code: code ?? 128, signal, stalled, overLimit });
+      const ended = { code: code ?? 128, signal, stalled, overLimit };
+      // A stopped worker's leader can end while the rest of its group is still running. Wait for the whole group
+      // before this attempt counts as over, and report a group that could not be confirmed gone.
+      if (!stalled && !overLimit) return done(ended);
+      stop(proc).then(
+        () => done(ended),
+        (error) => done({ ...ended, stopFailure: error })
+      );
     });
   });
 }
@@ -241,6 +280,11 @@ let status;
 let exitCode;
 if (result.spawnError)
   [status, exitCode] = [`spawn failed: ${result.spawnError}`, 4];
+else if (result.stopFailure)
+  [status, exitCode] = [
+    `stopped, but ${result.stopFailure.cause?.message ?? result.stopFailure.message}`,
+    4,
+  ];
 else if (errors.length) [status, exitCode] = ["error", 2];
 else if (result.overLimit || (!session && Date.now() >= deadlineAt))
   [status, exitCode] = [
