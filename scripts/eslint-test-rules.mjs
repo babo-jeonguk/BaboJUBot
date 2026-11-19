@@ -531,6 +531,221 @@ const noCleanupInFinally = {
   },
 };
 
+// 여러 자원을 함께 정리하는 hook: 시험마다(`afterEach`), 파일·describe마다(`afterAll`, node:test의 `after`). 자원 하나를 잡은
+// 직후 등록하는 정리(`onTestFinished`·`t.after`·`defer`)는 그 자원의 단계를 차례로 잇는 자리라 보지 않는다.
+const sharedHookNames = new Set(["afterEach", "afterAll"]);
+/** `call`이 여러 자원을 함께 정리하는 hook(`afterEach(fn)`·`test.afterAll(fn)`·`after(fn)`)이면 그 함수. */
+function sharedCleanupHook(call) {
+  const { callee } = call;
+  const name =
+    callee.type === "Identifier"
+      ? callee.name === "after"
+        ? "afterAll"
+        : callee.name
+      : callee.type === "MemberExpression" &&
+          !callee.computed &&
+          isTestName(callee.object)
+        ? callee.property.name
+        : undefined;
+  if (!sharedHookNames.has(name)) return undefined;
+  const body = call.arguments.find(isFunction);
+  return body?.body.type === "BlockStatement" ? body : undefined;
+}
+
+// 정리로 보는 호출 이름: 닫기·끄기·풀기·지우기.
+const cleanupNames =
+  /^(close|dispose|destroy|end|release|terminate|cleanUp|cleanup|stop[A-Z]?\w*|remove[A-Z]?\w*|kill[A-Z]?\w*)$/;
+/** 기다리는 값이 정리 호출(`server.close()`·`t?.close()`·`removeFolder(dir)`)이거나 반복 변수의 호출(`cleanup()`)인가. */
+function cleanupCall(argument, loopVariables) {
+  const call =
+    argument.type === "ChainExpression" ? argument.expression : argument;
+  if (call.type !== "CallExpression") return false;
+  const { callee } = call;
+  if (callee.type === "Identifier")
+    return cleanupNames.test(callee.name) || loopVariables.has(callee.name);
+  return (
+    callee.type === "MemberExpression" &&
+    !callee.computed &&
+    cleanupNames.test(callee.property.name)
+  );
+}
+
+/** 기다리는 값이 폴더 지우기(`removeFolder(dir)`)인가. */
+function folderRemoval(argument) {
+  const call =
+    argument.type === "ChainExpression" ? argument.expression : argument;
+  if (call.type !== "CallExpression") return false;
+  const { callee } = call;
+  const name =
+    callee.type === "Identifier"
+      ? callee.name
+      : callee.type === "MemberExpression" && !callee.computed
+        ? callee.property.name
+        : undefined;
+  return name === "removeFolder";
+}
+
+/**
+ * 공용 정리 hook이 정리를 차례로 기다리면 앞 정리가 실패한 순간 hook이 끝나 뒤 자원(listener·폴더·서버)이 남는다
+ * (CODING_STANDARDS.md#정리). hook 함수 안(안에 정의한 함수는 빼고)의 두 모양을 짚는다.
+ * - 정리 호출을 기다린 뒤에 다른 기다림이 있다(`await t.close(); await model.close();`).
+ * - 반복문 안에서 정리 호출을 기다린다(`for (const cleanup of cleanups) await cleanup();`). 한 번 실패하면 남은 차례를 건너뛴다.
+ * 그 기다림을 `try…catch`로 감싸 실패를 모으는 모양은 짚지 않는다. 정리인지는 호출 이름(닫기·끄기·지우기)과 반복 변수로 본다.
+ * 끄기 뒤에 폴더 지우기(`removeFolder`)만 이어지면 짚지 않는다. 그 폴더를 쓰는 프로그램을 끈 뒤에 지우는 순서로, 끄기가 실패하면
+ * 폴더를 남기는 것이 맞다. 그 밖에 앞 단계가 끝나야 안전한 단계인지는 모양으로 알 수 없어 한 단계로 묶어 등록하게 한다.
+ */
+const noSkippedCleanup = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow a shared cleanup hook that stops at the first failing cleanup",
+    },
+    schema: [],
+    messages: {
+      skipped:
+        "정리 hook이 정리를 차례로 기다립니다. 앞 정리가 실패하면 hook이 거기서 끝나 뒤 자원(서버·listener·폴더)이 남습니다. 자원을 잡은 직후 onTestFinished(Vitest)나 withCleanup의 defer로 따로 등록하거나, 서로 무관한 단계는 cleanUpAll(@babojubot/runtime/test-cleanup)로 모두 시도하세요. 앞 단계가 끝나야 안전한 단계(프로그램을 끈 뒤 그 폴더 지우기)는 folderCleanup이나 cleanUpAll의 한 단계 안에 차례로 둡니다. CODING_STANDARDS.md#정리",
+    },
+  },
+  create(context) {
+    /** `node`부터 `hook`까지 함수 경계를 넘지 않고 올라가며, 지나는 반복문의 변수와 실패를 잡는 try가 있는지 본다. */
+    function scope(node, hook) {
+      const loopVariables = new Set();
+      let inLoop = false;
+      let child = node;
+      for (let parent = node.parent; parent !== hook; parent = parent.parent) {
+        if (isFunction(parent) || parent.type === "FunctionDeclaration")
+          return undefined;
+        if (
+          parent.type === "TryStatement" &&
+          parent.block === child &&
+          parent.handler
+        )
+          return undefined;
+        if (
+          (parent.type === "ForOfStatement" ||
+            parent.type === "ForInStatement" ||
+            parent.type === "ForStatement" ||
+            parent.type === "WhileStatement" ||
+            parent.type === "DoWhileStatement") &&
+          parent.body === child
+        ) {
+          inLoop = true;
+          const left = parent.left?.declarations?.[0]?.id ?? parent.left;
+          if (left?.type === "Identifier") loopVariables.add(left.name);
+        }
+        child = parent;
+      }
+      return { inLoop, loopVariables };
+    }
+    return {
+      CallExpression(call) {
+        const hook = sharedCleanupHook(call);
+        if (!hook) return;
+        const awaits = [];
+        const visit = (node) => {
+          if (!node || typeof node.type !== "string") return;
+          if (
+            node !== hook &&
+            (isFunction(node) || node.type === "FunctionDeclaration")
+          )
+            return;
+          if (node.type === "AwaitExpression") awaits.push(node);
+          for (const key of Object.keys(node)) {
+            if (key === "parent") continue;
+            const value = node[key];
+            if (Array.isArray(value)) value.forEach(visit);
+            else if (value && typeof value.type === "string") visit(value);
+          }
+        };
+        visit(hook.body);
+        for (const [index, node] of awaits.entries()) {
+          const where = scope(node, hook);
+          if (!where || !cleanupCall(node.argument, where.loopVariables))
+            continue;
+          const later = awaits.slice(index + 1);
+          const thenRemovesFolder =
+            !folderRemoval(node.argument) &&
+            later.every((next) => folderRemoval(next.argument));
+          if (where.inLoop || (later.length > 0 && !thenRemovesFolder)) {
+            context.report({ node, messageId: "skipped" });
+            return;
+          }
+        }
+      },
+    };
+  },
+};
+
+/** try 블록(안에 정의한 함수는 빼고)이 부르는 `process.kill` 호출들. */
+function killsIn(block) {
+  const kills = [];
+  const visit = (node) => {
+    if (!node || typeof node.type !== "string") return;
+    if (isFunction(node) || node.type === "FunctionDeclaration") return;
+    if (
+      node.type === "CallExpression" &&
+      node.callee.type === "MemberExpression" &&
+      !node.callee.computed &&
+      node.callee.property.name === "kill" &&
+      node.callee.object.type === "Identifier" &&
+      node.callee.object.name === "process"
+    )
+      kills.push(node);
+    for (const key of Object.keys(node)) {
+      if (key === "parent") continue;
+      const value = node[key];
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value.type === "string") visit(value);
+    }
+  };
+  visit(block);
+  return kills;
+}
+
+/**
+ * `process.kill`의 실패를 오류 코드를 보지 않고 넘기면 권한·I/O 오류가 "이미 끝남"으로 숨는다(CODING_STANDARDS.md#정리).
+ * 남은 프로그램의 폴더를 지우거나, 끄지 못한 프로그램을 끈 것으로 본다. `process.kill`을 부르는 try의 catch가 오류를 받지
+ * 않거나 받은 오류를 읽지 않으면 짚는다. 신호 0(살아 있는지 확인)과 다른 신호(끄기)를 나눠 알린다.
+ */
+const noIgnoredKillError = {
+  meta: {
+    type: "problem",
+    docs: {
+      description: "disallow ignoring the error of process.kill in tests",
+    },
+    schema: [],
+    messages: {
+      probe:
+        '신호 0의 실패를 오류 코드를 보지 않고 넘깁니다. 권한 거부(EPERM)·I/O 오류까지 "프로세스가 끝났다"로 숨어, 남은 프로그램의 폴더를 지우거나 멈춤 확인이 일찍 통과합니다. processAlive(@babojubot/runtime/test-cleanup)를 쓰세요. "프로세스 없음"(ESRCH)만 끝난 것으로 보고 다른 실패는 pid·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
+      signal:
+        '끄는 신호의 실패를 오류 코드를 보지 않고 넘깁니다. 권한 거부(EPERM) 같은 실패까지 "이미 끝났다"로 숨어 프로그램이 남습니다. killUnlessGone(@babojubot/runtime/test-cleanup)을 쓰세요. 이미 끝난 대상(ESRCH)만 넘어가고 다른 실패는 pid·신호·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
+    },
+  },
+  create(context) {
+    const ignored = (handler) =>
+      !handler.param ||
+      context.sourceCode
+        .getDeclaredVariables(handler)
+        .every((variable) => variable.references.length === 0);
+    return {
+      TryStatement(node) {
+        if (!node.handler || !ignored(node.handler)) return;
+        const kills = killsIn(node.block);
+        if (kills.length === 0) return;
+        const probe = kills.some(
+          ({ arguments: [, signal] }) =>
+            signal?.type === "Literal" && signal.value === 0
+        );
+        context.report({
+          node: node.handler,
+          messageId: probe ? "probe" : "signal",
+        });
+      },
+    };
+  },
+};
+
 /** 시험 함수 이름인가: `it`·`test`, `base.extend`로 만든 `settingsTest` 같은 이름. */
 const isTestName = (node) =>
   node?.type === "Identifier" && /^(it|test)$|Test$/.test(node.name);
@@ -731,7 +946,9 @@ export default {
     "no-elapsed-time-assertion": noElapsedTimeAssertion,
     "no-expected-failure": noExpectedFailure,
     "no-fixed-time-wait": noFixedTimeWait,
+    "no-ignored-kill-error": noIgnoredKillError,
     "no-page-wide-locator": noPageWideLocator,
+    "no-skipped-cleanup": noSkippedCleanup,
     "no-state-between-tests": noStateBetweenTests,
   },
 };

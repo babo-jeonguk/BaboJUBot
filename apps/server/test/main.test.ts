@@ -10,7 +10,12 @@ import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
-import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
+import {
+  folderCleanup,
+  killUnlessGone,
+  processAlive,
+  withCleanup,
+} from "@babojubot/runtime/test-cleanup";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 /** DB 닫기를 실패시키는 preload(`startMain`의 `preload`). */
@@ -570,11 +575,7 @@ async function waitForPath(child: MainProcess, target: string) {
 }
 
 function killGroup(child: ChildProcess) {
-  try {
-    process.kill(-child.pid!, "SIGKILL");
-  } catch {
-    /* Already gone. */
-  }
+  killUnlessGone(-child.pid!);
 }
 
 /** 서버의 임시 폴더. 임시 내장 Postgres(`openEphemeralDatabase`)는 이 안에 dataDir를 만든다. */
@@ -616,20 +617,10 @@ async function expectGone(pid: number) {
 /** 시험이 실패해 남은 Postgres만 끝내고, 끝난 것을 확인한다. 그 뒤에야 폴더를 지운다. */
 async function stopLeftover(pid: number | undefined) {
   if (!pid || !isAlive(pid)) return;
-  try {
-    if (process.platform !== "win32") process.kill(pid, "SIGCONT");
-    process.kill(pid, "SIGKILL");
-  } catch {
-    /* Already gone between the check and the signal. */
-  }
+  // 확인과 신호 사이에 끝났으면(ESRCH) 넘어간다. 그 밖의 실패는 pid와 함께 알린다.
+  if (process.platform !== "win32") killUnlessGone(pid, "SIGCONT");
+  killUnlessGone(pid);
   await expectGone(pid);
 }
 
-function isAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const isAlive = processAlive;

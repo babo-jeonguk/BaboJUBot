@@ -40,7 +40,7 @@ import { Workspaces, WorkspaceIdentityError } from "../src/workspace.ts";
 import { calls, idle, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
 
 // #150 실행 의도 복구. 모든 조직 쓰기 도구 호출은 효과보다 먼저 실행 의도(도구·입력·원본 자료)로 남고, 효과와 최초 결과는 함께 정산된다.
 // 서버가 멈추면 다음 실행 시도가 모델을 부르기 전에 남은 의도를 정산하고 그 결과를 깨우기 사유로 받는다. 정산이 막히면 에이전트는
@@ -50,14 +50,19 @@ import { withCleanup } from "@babojubot/runtime/test-cleanup";
 let t: TestServer | undefined;
 let restarted: RunningServer | undefined;
 let root = "";
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  await restarted?.close();
-  restarted = undefined;
-  await t?.close();
+  const [first, again, dir] = [t, restarted, root];
   t = undefined;
-  if (root) await removeFolder(root);
+  restarted = undefined;
   root = "";
+  // 두 서버가 같은 폴더를 쓴다. 다시 띄운 서버부터 둘 다 닫기를 시도하고, 모두 닫혔을 때만 폴더를 지운다.
+  const folder = folderCleanup(async () => {
+    if (dir) await removeFolder(dir);
+  });
+  folder.own(() => first?.close());
+  folder.own(() => again?.close());
+  return folder.cleanUp();
 });
 
 const http = (base: () => string) => {

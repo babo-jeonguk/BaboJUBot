@@ -21,6 +21,8 @@ import { removeFolder } from "@babojubot/runtime/remove-folder";
 import {
   cleanUpAll,
   folderCleanup,
+  killUnlessGone,
+  processAlive,
   withCleanup,
 } from "@babojubot/runtime/test-cleanup";
 
@@ -458,12 +460,7 @@ describe("a Postgres left by a killed process", () => {
     process.kill(backend, "SIGSTOP");
     // 멈춘 연결 프로세스를 먼저 풀어야 Postgres가 정지한다.
     cluster.own(() => {
-      if (!isAlive(backend)) return;
-      try {
-        process.kill(backend, "SIGCONT");
-      } catch {
-        /* Between the check and the signal the process may be gone. */
-      }
+      killUnlessGone(backend, "SIGCONT");
     });
     await killHard(held.child);
 
@@ -691,14 +688,7 @@ describe("a Postgres left by a killed process", () => {
   });
 });
 
-function isAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const isAlive = processAlive;
 
 /** 테스트가 만든 cluster 폴더와 그 옆의 주인 기록을 지운다. */
 async function removeCluster(dataDir: string) {
@@ -725,15 +715,59 @@ function readPostmaster(dataDir: string) {
   );
 }
 
+// 남은 Postgres를 끄는 정리는 한 대상의 조회·신호가 실패해도 다른 대상에 신호를 보내고 끝나기를 기다린 뒤, 그 실패를 함께
+// 알린다. 대상을 미리 한꺼번에 조회하면 첫 조회의 실패가 나머지 대상의 신호까지 막는다(#248 리뷰 SPEC-1).
+it("signals every leftover Postgres even when one of them cannot be looked up", async () => {
+  const sleeper = () =>
+    spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+  const refused = sleeper();
+  const other = sleeper();
+  onTestFinished(() =>
+    cleanUpAll([() => killHard(refused), () => killHard(other)])
+  );
+  const otherExit = watchExit(other);
+  // `refused`에 대한 신호 0과 끄기는 권한 거부로 실패한다. 다른 대상의 신호는 그대로 보낸다.
+  const kill = process.kill.bind(process);
+  const sent: [number, string | number | undefined][] = [];
+  const failure = Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+  vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    sent.push([pid, signal]);
+    if (pid === refused.pid) throw failure;
+    return kill(pid, signal);
+  });
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
+
+  const outcome = await killPostgres(refused.pid!, other.pid!).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(sent).toContainEqual([other.pid, "SIGKILL"]);
+  expect(await otherExit.within(10_000)).toEqual({
+    code: null,
+    signal: "SIGKILL",
+  });
+  // 보내지 못한 첫 신호와 끝났는지 확인하지 못한 것을 함께 알린다.
+  const first = process.platform === "win32" ? "SIGKILL" : "SIGCONT";
+  expect(outcome).toBeInstanceOf(AggregateError);
+  expect(
+    (outcome as AggregateError).errors.map((error: Error) => [
+      error.message,
+      error.cause,
+    ])
+  ).toEqual([
+    [`프로세스 ${refused.pid}에 ${first}을 보내지 못했다`, failure],
+    [`프로세스 ${refused.pid}가 있는지 확인하지 못했다`, failure],
+  ]);
+});
+
 /** 남은 postgres를 즉시 정지로 멈추고 끝날 때까지 기다린다. */
 async function stopPostgres(pid: number) {
-  if (!pid || !isAlive(pid)) return;
-  try {
-    process.kill(pid, "SIGQUIT");
-  } catch {
-    // Between the check and the signal the process may be gone.
-    return;
-  }
+  // 이미 끝났으면(ESRCH) 할 일이 없다. 그 밖의 실패는 pid와 함께 알린다.
+  if (!pid || !killUnlessGone(pid, "SIGQUIT")) return;
   // 시한 안에 끝나지 않으면 아래 강제 정지로 넘어간다.
   await vi
     .waitUntil(() => !isAlive(pid), { timeout: 10_000, interval: 50 })
@@ -742,27 +776,31 @@ async function stopPostgres(pid: number) {
 }
 
 /**
- * 남은 Postgres를 강제로 끝내고 사라진 것을 확인한다. 모두에게 신호를 먼저 보낸 뒤 기다린다. 시한 안에 끝나지 않으면 실패하므로,
+ * 남은 Postgres를 강제로 끝내고 사라진 것을 확인한다. 모두에게 신호를 먼저 보낸 뒤 하나씩 기다린다. 시한 안에 끝나지 않으면 실패하므로,
  * 뒤따르는 폴더 삭제는 일어나지 않고 폴더가 남는다(쓰는 중인 폴더를 지워 원인을 가리지 않는다).
+ * 대상마다 따로 시도한다. 한 대상의 신호나 조회가 실패해도 다른 대상에 보내고 기다린 뒤 그 실패를 함께 알린다.
  */
 async function killPostgres(...pids: number[]) {
-  const alive = pids.filter((pid) => pid && isAlive(pid));
-  for (const pid of alive)
-    try {
-      // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다.
-      if (process.platform !== "win32") process.kill(pid, "SIGCONT");
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Between the check and the signal the process may be gone.
-    }
-  await vi
-    .waitUntil(() => !alive.some(isAlive), { timeout: 10_000, interval: 50 })
-    .catch(() => {});
-  const left = alive.filter(isAlive);
-  if (left.length > 0)
-    throw new Error(
-      `Postgres ${left.join(", ")} did not end after SIGKILL; its folder is kept`
-    );
+  const targets = pids.filter((pid) => pid > 0);
+  await cleanUpAll([
+    ...targets.map((pid) => () => {
+      // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다. 이미 끝났으면(ESRCH) 넘어간다.
+      if (process.platform !== "win32" && !killUnlessGone(pid, "SIGCONT"))
+        return;
+      killUnlessGone(pid);
+    }),
+    ...targets.map((pid) => async () => {
+      // 시한이 지났으면 남은 것으로, 조회가 실패했으면 다시 물어 그 원인으로 알린다.
+      await vi
+        .waitUntil(() => !isAlive(pid), { timeout: 10_000, interval: 50 })
+        .catch(() => {
+          if (isAlive(pid))
+            throw new Error(
+              `Postgres ${pid} did not end after SIGKILL; its folder is kept`
+            );
+        });
+    }),
+  ]);
 }
 
 type Spawned = ReturnType<typeof spawn>;

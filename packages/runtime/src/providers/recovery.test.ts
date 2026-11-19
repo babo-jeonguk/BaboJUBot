@@ -9,9 +9,14 @@ import {
   recoverProviderProcesses,
 } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "./lease.ts";
-import { killUnlessGone, readyLine } from "./process-test-support.ts";
+import { readyLine } from "./process-test-support.ts";
 import { testFolders } from "./test-folders.ts";
-import { withCleanup } from "../test-cleanup.ts";
+import {
+  cleanUpAll,
+  killUnlessGone,
+  processAlive,
+  withCleanup,
+} from "../test-cleanup.ts";
 
 // Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
 // 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
@@ -41,16 +46,22 @@ vi.mock("./lease.ts", async (original) => {
 const folders = testFolders();
 // 시험이 새 세션으로 띄운 프로그램(그룹 번호 = 프로그램 번호). 띄우자마자 넣어, 준비나 단언이 실패해도 그룹째 끄고 끝날 때까지 기다린다.
 const groups: number[] = [];
-afterEach(async () => {
+afterEach(() => {
   lease.fails = false;
   lease.stopped = [];
-  for (const group of groups)
-    try {
-      process.kill(-group, "SIGKILL");
-    } catch {
-      // 이미 끝났다.
-    }
-  for (const group of groups.splice(0)) await until(() => groupGone(group));
+  // 그룹마다 끄고 끝나기를 기다린다. 한 그룹이 실패해도 나머지 그룹을 정리한다.
+  return cleanUpAll(
+    groups.splice(0).map((group) => async () => {
+      try {
+        killUnlessGone(-group);
+      } catch (error) {
+        // 거두어지기 전의 프로세스만 남은 그룹에 macOS는 EPERM으로 답한다(groupGone). 끝났는지는 아래 기다림이 확인한다.
+        const code = ((error as Error).cause as NodeJS.ErrnoException).code;
+        if (process.platform !== "darwin" || code !== "EPERM") throw error;
+      }
+      await until(() => groupGone(group));
+    })
+  );
 });
 async function records() {
   const root = await folders.make("babojubot-recovery-");
@@ -140,14 +151,7 @@ const longRunning = () =>
     detached: true,
     stdio: "ignore",
   });
-const gone = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch {
-    return true;
-  }
-};
+const gone = (pid: number) => !processAlive(pid);
 
 it("stops a leftover process on systems without /proc", async () => {
   const { root, directory } = await records();

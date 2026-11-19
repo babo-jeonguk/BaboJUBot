@@ -4,17 +4,11 @@ import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { runProbe, startProcess } from "./process.ts";
 import { killAndWait } from "./process-test-support.ts";
+import { processAlive } from "../test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
+const alive = processAlive;
 /** 시험 프로그램이 `file`에 남긴 번호의 프로그램을 끝낸다. 번호를 남기기 전이면 할 일이 없다. */
 const stopRecorded = async (file: string) => {
   if (existsSync(file)) await killAndWait([Number(readFileSync(file, "utf8"))]);

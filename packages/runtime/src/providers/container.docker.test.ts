@@ -34,6 +34,7 @@ import {
 import { startProcess } from "./process.ts";
 import { createRelayHub } from "./relay.ts";
 import { removeFolder } from "../remove-folder.ts";
+import { cleanUpAll } from "../test-cleanup.ts";
 
 // 실제 Docker가 있는 환경에서만 도는 격리 경계 검사(#102, #149). Docker가 없으면 건너뛰고 그 사실을 출력한다.
 // 이미지는 Node 공개 이미지(기본 node:24-bookworm-slim, BABOJUBOT_TEST_CONTAINER_BASE로 바꿈)에 제품의 시작 프로그램
@@ -88,6 +89,7 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
   };
   let environment: DockerEnvironment;
   let root: string;
+  let built = false;
   beforeAll(async () => {
     try {
       docker(["image", "inspect", base]);
@@ -106,21 +108,31 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
         'ENTRYPOINT ["/usr/local/bin/babojubot-entry"]',
       ].join("\n")
     );
+    built = true;
     environment = createDockerEnvironment(settings);
     root = await realpath(
       await mkdtemp(path.join(tmpdir(), "babojubot-docker-"))
     );
   }, 660_000);
-  afterAll(async () => {
-    await environment?.removeOrphans();
-    await relays.close();
-    try {
-      docker(["image", "rm", "-f", image]);
-    } catch {
-      /* 만들지 못했다. */
-    }
-    await removeFolder(root);
-  }, 120_000);
+  // 중계는 컨테이너와 무관하게 닫는다. 이미지와 폴더는 그것을 쓰는 컨테이너를 지운 뒤에만 지우고, 지우기 실패도 알린다.
+  afterAll(
+    () =>
+      cleanUpAll([
+        async () => {
+          await environment?.removeOrphans();
+          await cleanUpAll([
+            () => {
+              if (built) docker(["image", "rm", "-f", image]);
+            },
+            async () => {
+              if (root) await removeFolder(root);
+            },
+          ]);
+        },
+        () => relays.close(),
+      ]),
+    120_000
+  );
 
   const containersOf = (owner: string) =>
     docker(["ps", "-aq", "--filter", `label=babojubot.owner=${owner}`]).trim();

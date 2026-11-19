@@ -16,7 +16,13 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
-import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
+import {
+  cleanUpAll,
+  folderCleanup,
+  killUnlessGone,
+  processAlive as isAlive,
+  withCleanup,
+} from "@babojubot/runtime/test-cleanup";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;
@@ -487,23 +493,22 @@ function killTree(child) {
  * 폴더 안의 postmaster.pid가 가리키는 Postgres를 멈춘다. pg_ctl이 띄운 Postgres는 자기 세션을 만들어 그룹을 벗어난다.
  * pid는 재사용될 수 있으므로 그 프로세스의 명령줄에 이 감독자의 폴더가 있을 때만 신호를 보낸다(POSIX). Windows는 명령줄을
  * 싸게 확인할 수 없어 신호를 보내지 않는다. 그 Postgres가 살아 있으면 남은 것으로 드러난다.
+ * pid마다 따로 시도한다. 한 pid의 신호나 조회가 실패해도 다른 pid를 멈추고, 그 실패를 함께 알린다.
  */
 async function stopPostmasters(scope) {
-  for (const pid of postmasterPids(scope)) {
-    if (process.platform === "win32" || !commandLine(pid).includes(scope))
-      continue;
-    for (const signal of ["SIGQUIT", "SIGKILL"]) {
-      try {
-        process.kill(pid, signal);
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
+  if (process.platform === "win32") return;
+  await cleanUpAll(
+    postmasterPids(scope).map((pid) => async () => {
+      if (!commandLine(pid).includes(scope)) return;
+      for (const signal of ["SIGQUIT", "SIGKILL"]) {
+        if (!killUnlessGone(pid, signal)) return;
+        if (await waitUntil(() => !isAlive(pid), 10_000)) return;
       }
-      if (await waitUntil(() => !isAlive(pid), 10_000)) break;
-    }
-  }
+    })
+  );
 }
 
-/** 폴더 안 postmaster.pid들이 가리키는 살아 있는 pid. 그 사이 지워진 파일은 넘어간다. */
+/** 폴더 안 postmaster.pid들이 가리키는 pid. 그 사이 지워진 파일은 넘어간다. 살아 있는지는 쓰는 쪽이 pid마다 본다. */
 function postmasterPids(scope) {
   const pids = [];
   for (const file of findFiles(scope, "postmaster.pid")) {
@@ -514,7 +519,7 @@ function postmasterPids(scope) {
       if (error.code === "ENOENT") continue;
       throw error;
     }
-    if (Number.isInteger(pid) && pid > 0 && isAlive(pid)) pids.push(pid);
+    if (Number.isInteger(pid) && pid > 0) pids.push(pid);
   }
   return pids;
 }
@@ -544,7 +549,9 @@ function commandLine(pid) {
 function runningIn(folder) {
   if (process.platform === "win32")
     return existsSync(folder)
-      ? postmasterPids(folder).map((pid) => `postmaster ${pid}`)
+      ? postmasterPids(folder)
+          .filter(isAlive)
+          .map((pid) => `postmaster ${pid}`)
       : [];
   return execFileSync("ps", ["-A", "-o", "pid=,args="], { encoding: "utf8" })
     .split("\n")
@@ -588,22 +595,4 @@ function waitUntil(check, ms) {
     };
     poll();
   });
-}
-
-/** 시험 정리: SIGKILL을 보낸다. 대상이 이미 끝났으면(ESRCH) 넘어가고 다른 실패는 알린다. */
-function killUnlessGone(pid) {
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch (error) {
-    if (error.code !== "ESRCH") throw error;
-  }
-}
-
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
 }

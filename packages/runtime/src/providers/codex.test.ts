@@ -8,6 +8,7 @@ import {
 import type { Clock } from "./process.ts";
 import { manualClock, request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
+import { processAlive } from "../test-cleanup.ts";
 const folders = testFolders();
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
 const createCodexProvider = folders.owning(unownedCodexProvider);
@@ -441,14 +442,7 @@ describe("one app-server connection per call (#145)", () => {
       (await lines())
         .filter((line) => line.pid !== undefined)
         .map((line) => line.pid as number)
-        .filter((pid) => {
-          try {
-            process.kill(pid, 0);
-            return true;
-          } catch {
-            return false;
-          }
-        });
+        .filter(processAlive);
     /** Whether any program this provider started is still running. */
     const running = async () => (await alive()).length > 0;
     /**

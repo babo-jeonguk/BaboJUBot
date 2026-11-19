@@ -553,6 +553,132 @@ test("code outside tests may wait in finally", async () => {
     );
 });
 
+/** 정리 hook 규칙의 메시지만. */
+const skippedCleanupMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-skipped-cleanup");
+
+test("a shared cleanup hook may not stop at the first failing cleanup", async () => {
+  const shapes = {
+    // 앞 정리가 실패하면 뒤 모델 서버를 닫지 않는다(#243).
+    "two closes one after another": `afterAll(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
+    "a list of cleanups in a loop": `afterEach(async () => {\n  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();\n});\n`,
+    "a close in a loop block": `afterEach(async () => {\n  for (const server of servers) {\n    await server.close();\n  }\n});\n`,
+    "a folder removal before another removal": `afterEach(async () => {\n  await removeFolder(root);\n  await Promise.all(attempts.map((dir) => removeFolder(dir)));\n});\n`,
+    "a close before a later wait": `afterEach(async () => {\n  refusal = null;\n  await gate?.close();\n  for (const step of steps) step();\n  await settle();\n});\n`,
+    "Playwright's afterAll": `test.afterAll(async () => {\n  await server.stop();\n  await relays.close();\n});\n`,
+    "node:test's after": `after(async () => {\n  await environment.removeOrphans();\n  await relays.close();\n});\n`,
+  };
+  for (const [shape, code] of Object.entries(shapes))
+    for (const place of testPlaces) {
+      const [message, ...rest] = skippedCleanupMessages(
+        await lint(code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 이유, 대안과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, /뒤 자원/);
+      assert.match(message.message, /cleanUpAll/);
+      assert.match(message.message, /folderCleanup/);
+      assert.match(message.message, /CODING_STANDARDS\.md#정리/);
+    }
+});
+
+test("a shared cleanup hook may try every cleanup, and a resource's own cleanup may chain its steps", async () => {
+  const allowed = [
+    `afterAll(() => cleanUpAll([() => folder?.cleanUp(), () => model?.close()]));\n`,
+    // 그 폴더를 쓰는 서버를 끈 뒤에 지운다. 끄기가 실패하면 폴더를 남긴다.
+    `afterEach(async () => {\n  await t?.close();\n  t = undefined;\n  if (root) await removeFolder(root);\n});\n`,
+    // 앞 단계가 끝나야 하는 단계는 한 단계 안에 둔다.
+    `afterAll(() =>\n  cleanUpAll([\n    async () => {\n      await environment.removeOrphans();\n      await removeFolder(root);\n    },\n    () => relays.close(),\n  ])\n);\n`,
+    // 실패를 모은다.
+    `afterEach(async () => {\n  for (const server of servers)\n    try {\n      await server.close();\n    } catch (error) {\n      failures.push(error);\n    }\n  report(failures);\n});\n`,
+    // 정리가 아닌 기다림과 정리 하나.
+    `afterEach(async () => {\n  await Promise.allSettled(preparations.splice(0));\n  await server?.close();\n});\n`,
+    // 자원 하나를 잡은 직후 등록한 정리는 그 단계를 차례로 잇는다.
+    `onTestFinished(async () => {\n  await chmod(locked, 0o700);\n  await removeFolder(root);\n});\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        skippedCleanupMessages(await lint(code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+/** 끄기 오류 규칙의 메시지만. */
+const killErrorMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-ignored-kill-error");
+
+test("test code may not ignore the error of process.kill", async () => {
+  const shapes = {
+    // 권한 오류도 "끝났다"가 된다(#243).
+    "a liveness check answering false": [
+      `function alive(pid) {\n  try {\n    process.kill(pid, 0);\n    return true;\n  } catch {\n    return false;\n  }\n}\n`,
+      "probe",
+    ],
+    "a liveness check with an unread error": [
+      `const gone = (pid) => {\n  try {\n    process.kill(pid, 0);\n    return false;\n  } catch (error) {\n    return true;\n  }\n};\n`,
+      "probe",
+    ],
+    "a swallowed kill": [
+      `try {\n  process.kill(pid, "SIGKILL");\n} catch {\n  /* Already gone. */\n}\n`,
+      "signal",
+    ],
+    "a swallowed group kill after a check": [
+      `for (const group of groups)\n  try {\n    if (alive(group)) process.kill(-group, "SIGCONT");\n    process.kill(-group, "SIGKILL");\n  } catch {\n    // 이미 끝났다.\n  }\n`,
+      "signal",
+    ],
+  };
+  for (const [shape, [code, kind]] of Object.entries(shapes))
+    for (const place of testPlaces) {
+      const [message, ...rest] = killErrorMessages(await lint(code, place));
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.equal(message.messageId, kind, shape);
+      // 메시지가 이유, 대안과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, /EPERM/);
+      assert.match(
+        message.message,
+        kind === "probe" ? /processAlive/ : /killUnlessGone/
+      );
+      assert.match(message.message, /ESRCH/);
+      assert.match(message.message, /CODING_STANDARDS\.md#정리/);
+    }
+});
+
+test("test code may pass over a finished process by its error code", async () => {
+  const allowed = [
+    `function alive(pid) {\n  try {\n    process.kill(pid, 0);\n    return true;\n  } catch (error) {\n    if (error.code === "ESRCH") return false;\n    throw error;\n  }\n}\n`,
+    `import { killUnlessGone, processAlive } from "@babojubot/runtime/test-cleanup";\nif (processAlive(pid)) killUnlessGone(pid);\n`,
+    `expect(() => process.kill(pid, 0)).not.toThrow();\n`,
+    // 끄기가 아닌 조회의 실패는 이 규칙이 보지 않는다.
+    `try {\n  parse(text);\n} catch {\n  return undefined;\n}\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        killErrorMessages(await lint(code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+test("code outside tests may chain cleanups and ignore kill errors", async () => {
+  for (const place of [
+    "scripts/lint-sample.mjs",
+    "scripts/live/lint-sample.mjs",
+    "packages/runtime/test-fixtures/lint-sample.mjs",
+  ]) {
+    const messages = await lint(
+      `afterEach(async () => {\n  await a.close();\n  await b.close();\n});\ntry {\n  process.kill(pid, 0);\n} catch {\n  /* gone */\n}\n`,
+      place
+    );
+    assert.deepEqual(skippedCleanupMessages(messages), [], place);
+    assert.deepEqual(killErrorMessages(messages), [], place);
+  }
+});
+
 /** 기대 실패 규칙의 메시지만. */
 const expectedFailureMessages = (messages) =>
   messages.filter((m) => m.ruleId === "tests/no-expected-failure");

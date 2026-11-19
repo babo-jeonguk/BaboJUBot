@@ -8,6 +8,7 @@
 //   살아 있다(잠금 파일을 지운 뒤에도 끝나지 않는 Postgres).
 // - exit-before-ready-without-temp: 임시 폴더를 통째로 지우고 시작 줄 전에 끝난다(정리가 임시 폴더를 읽지 못한다).
 // - exit-before-ready-undeletable: 임시 폴더에 지울 수 없는 폴더(쓰기 권한 없음, POSIX)를 만들고 시작 줄 전에 끝난다.
+// - exit-before-ready-unreadable-lock: 읽을 수 없는 잠금 파일(그 자리에 폴더)을 가진 두 번째 Postgres 폴더를 만들고 시작 줄 전에 끝난다.
 // 가짜 Postgres의 pid와 임시 폴더를 `MISBEHAVE_STATE` 파일에 적는다(시험이 정리를 확인한다).
 import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
@@ -61,6 +62,13 @@ switch (process.env.MISBEHAVE) {
     break;
   case "exit-before-ready-without-temp":
     await removeFolder(temp);
+    process.exit(1);
+    break;
+  case "exit-before-ready-unreadable-lock":
+    // 파일 대신 폴더라 읽으면 EISDIR로 실패한다(모든 OS). 잠금 파일이 없는 것(ENOENT)과 다르다.
+    mkdirSync(path.join(temp, "babojubot-pg-unreadable", "postmaster.pid"), {
+      recursive: true,
+    });
     process.exit(1);
     break;
   case "exit-before-ready-undeletable": {
