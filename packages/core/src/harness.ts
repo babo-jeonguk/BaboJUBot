@@ -3,6 +3,7 @@ import {
   harnessNameSchema,
   instructionMaxBytes,
   isClosedStage,
+  orIfUnreadable,
   type AgentRole,
   type EditInstructionCopyInput,
   type FlowTemplateSnapshot,
@@ -203,9 +204,8 @@ export function planInstructionEdit(
 
 function isLoadableSkill(path: string, content: string) {
   const dir = /^skills\/([^/]+)\/SKILL\.md$/.exec(path)?.[1];
-  try {
-    return parseSkillFrontmatter(content).name === dir;
-  } catch {
-    return false;
-  }
+  return orIfUnreadable(
+    () => parseSkillFrontmatter(content).name === dir,
+    false
+  );
 }

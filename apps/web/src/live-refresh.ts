@@ -1,3 +1,4 @@
+import { settled } from "@babojubot/contracts";
 import type { Query, QueryClient, QueryFilters } from "@tanstack/react-query";
 
 /**
@@ -63,11 +64,10 @@ export function createLiveRefresh(
         unqueue(query);
         const custom = query.meta?.liveRefresh;
         if (typeof custom === "function") {
-          try {
-            await (custom as () => Promise<unknown>)();
-          } catch {
-            // 다음 Event나 재연결이 다시 맞춘다.
-          }
+          // 다음 Event나 재연결이 다시 맞춘다.
+          await settled(
+            Promise.resolve().then(custom as () => Promise<unknown>)
+          );
           if (query.state.fetchStatus !== "idle") dirty.add(query);
           continue;
         }

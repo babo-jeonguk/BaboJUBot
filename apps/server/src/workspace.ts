@@ -11,6 +11,7 @@ import {
 import path from "node:path";
 import {
   artifactFileMaxBytes,
+  orIfUnreadable,
   type ArtifactFileRead,
   type ArtifactFileRefusal,
   type ArtifactSnapshot,
@@ -323,12 +324,10 @@ function readPinned(start: string, args: string[]): Promise<PinnedRead> {
       (error, stdout) => {
         if (!error) {
           const at = stdout.indexOf(0x0a);
-          let parts: unknown;
-          try {
-            parts = JSON.parse(stdout.subarray(0, at).toString("utf8"));
-          } catch {
-            parts = undefined;
-          }
+          const parts = orIfUnreadable(
+            (): unknown => JSON.parse(stdout.subarray(0, at).toString("utf8")),
+            undefined
+          );
           if (
             !Array.isArray(parts) ||
             !parts.every((part): part is string => typeof part === "string")
@@ -484,15 +483,15 @@ export class Workspaces {
       ".tsv": "text/tab-separated-values",
     };
     if (textTypes[extension]) {
-      try {
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        if (!text.includes("\0")) {
-          content = text;
-          mediaType = textTypes[extension]!;
-          format = mediaType === "text/markdown" ? "markdown" : "text";
-        }
-      } catch {
-        /* Invalid UTF-8 remains a binary artifact. */
+      const text = orIfUnreadable(
+        () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+        undefined
+      );
+      // Invalid UTF-8 remains a binary artifact.
+      if (text !== undefined && !text.includes("\0")) {
+        content = text;
+        mediaType = textTypes[extension]!;
+        format = mediaType === "text/markdown" ? "markdown" : "text";
       }
     }
     return {

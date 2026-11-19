@@ -10,10 +10,14 @@ const swap = vi.hoisted(() => ({
   /** 이 경로를 열면, 연 직후 `replacement`를 그 경로로 옮긴다. */
   path: undefined as string | undefined,
   replacement: undefined as string | undefined,
+  /** 이 경로를 열면 이 오류로 실패한다. */
+  failing: undefined as { path: string; error: Error } | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const open: typeof real.open = async (file, ...rest) => {
+    if (swap.failing && String(file) === swap.failing.path)
+      throw swap.failing.error;
     const handle = await real.open(file, ...rest);
     if (swap.path && String(file) === swap.path && swap.replacement) {
       await real.rename(swap.replacement, swap.path);
@@ -28,6 +32,7 @@ const folders = testFolders();
 afterEach(() => {
   swap.path = undefined;
   swap.replacement = undefined;
+  swap.failing = undefined;
 });
 
 describe("reading a file only if it is a regular file", () => {
@@ -43,6 +48,18 @@ describe("reading a file only if it is a regular file", () => {
     expect(await readRegularFile(path.join(root, "missing"))).toBeUndefined();
     await mkdir(path.join(root, "folder"));
     expect(await readRegularFile(path.join(root, "folder"))).toBeUndefined();
+  });
+
+  // 없는 것과 읽을 수 없는 것은 다르다. 권한·디스크 오류를 "파일 없음"으로 바꾸면 실제 장애가 조용히 사라진다.
+  it("throws an open error other than a missing path, a link or a folder", async () => {
+    const root = await folders.make("babojubot-regular-");
+    const file = path.join(root, "login.json");
+    await writeFile(file, "content");
+    const denied = Object.assign(new Error("permission denied"), {
+      code: "EACCES",
+    });
+    swap.failing = { path: file, error: denied };
+    await expect(readRegularFile(file)).rejects.toBe(denied);
   });
 
   // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하다. 링크를 거절하는 동작은 POSIX에서 본다.

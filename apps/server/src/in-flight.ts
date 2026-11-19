@@ -1,4 +1,5 @@
 import type express from "express";
+import { settled } from "@babojubot/contracts";
 
 /**
  * 서버가 받은 요청의 처리기와 서버가 기다리지 않고 시작한 DB 작업이 끝났는지 센다. 서버를 끌 때 DB를 닫기 전에 모두 기다리는 데 쓴다.
@@ -21,10 +22,7 @@ export class InFlight {
       throw error;
     }
     if (value instanceof Promise)
-      value.then(
-        () => this.leave(id),
-        () => this.leave(id)
-      );
+      void settled(value.finally(() => this.leave(id)));
     else this.leave(id);
     return value;
   }

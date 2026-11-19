@@ -5,7 +5,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  continueAfterFailure,
   egressRefusalMessages,
+  failureCode,
+  orIfUnreadable,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
@@ -178,11 +181,14 @@ export function createRelayHub(): RelayHub {
     port: number,
     reason: EgressRefusal
   ) => {
-    try {
-      hooks?.refused?.(relay.identity, { host, port, reason });
-    } catch {
-      /* 알리기 실패는 거부를 바꾸지 않는다. */
-    }
+    /* 알리기 실패는 거부를 바꾸지 않는다. */
+    continueAfterFailure(
+      () => hooks?.refused?.(relay.identity, { host, port, reason }),
+      (error) =>
+        console.warn(
+          `[provider] a relay refusal could not be reported; the refusal stands (${failureCode(error)})`
+        )
+    );
   };
 
   const rulesFor = (
@@ -196,9 +202,14 @@ export function createRelayHub(): RelayHub {
 
   /** 다시 볼 때의 지금 규칙. 연구 목록을 읽지 못하거나 붙인 것이 없으면 필수 목적지만 쓴다. */
   const currentRules = async (relay: Relay): Promise<EgressRules> => {
-    const research = await Promise.resolve(hooks?.research(relay.identity))
-      .then((value) => value ?? [])
-      .catch(() => []);
+    const research =
+      (await continueAfterFailure(
+        async () => (await hooks?.research(relay.identity)) ?? [],
+        (error) =>
+          console.warn(
+            `[provider] the research destinations could not be read; only required destinations are allowed (${failureCode(error)})`
+          )
+      )) ?? [];
     return rulesFor(relay, research);
   };
 
@@ -210,12 +221,15 @@ export function createRelayHub(): RelayHub {
   };
 
   const decide = async (relay: Relay, host: string, port: number) => {
-    let research: readonly Destination[];
-    try {
-      research = await hooks!.research(relay.identity);
-    } catch {
+    const research = await continueAfterFailure(
+      () => hooks!.research(relay.identity),
+      (error) =>
+        console.warn(
+          `[provider] the research destinations could not be read; the connection is refused (${failureCode(error)})`
+        )
+    );
+    if (!research)
       return { allowed: false as const, reason: "policy_unavailable" as const };
-    }
     return decideDestination(rulesFor(relay, research), host, port, resolveAll);
   };
 
@@ -235,8 +249,9 @@ export function createRelayHub(): RelayHub {
           client.end(refusalHead(decision.reason));
           return;
         }
-        const dialed = await dial(decision.addresses, target.port).catch(
-          () => undefined
+        const dialed = await orIfUnreadable(
+          () => dial(decision.addresses, target.port),
+          undefined
         );
         if (!dialed) {
           client.end(
@@ -283,12 +298,7 @@ export function createRelayHub(): RelayHub {
       });
     });
     server.on("request", (req, res) => {
-      let url: URL | undefined;
-      try {
-        url = new URL(req.url ?? "");
-      } catch {
-        url = undefined;
-      }
+      const url = orIfUnreadable(() => new URL(req.url ?? ""), undefined);
       if (!url || url.protocol !== "http:") {
         res.writeHead(400, {
           "x-babojubot-refusal": "protocol_not_supported",
@@ -320,8 +330,9 @@ export function createRelayHub(): RelayHub {
           res.end();
         };
         // CONNECT와 같이 확인한 주소에 차례로 붙는다(이름을 다시 풀지 않는다).
-        const dialed = await dial(decision.addresses, port).catch(
-          () => undefined
+        const dialed = await orIfUnreadable(
+          () => dial(decision.addresses, port),
+          undefined
         );
         if (!dialed) return void badGateway();
         const socket = dialed.socket;
@@ -476,7 +487,16 @@ export function createRelayHub(): RelayHub {
             ]
           : []),
       ]).then(() => {});
-      ready.catch(() => void relay.close());
+      // 준비 실패는 ready를 기다리는 쪽(실행 시도·격리 확인)도 받는다. 그쪽이 붙기 전에 실패해도 중계는 스스로 닫는다.
+      void continueAfterFailure(
+        () => ready,
+        (error) => {
+          console.warn(
+            `[provider] the isolated run relay could not open; closing it (${failureCode(error)})`
+          );
+          void relay.close();
+        }
+      );
       const take = () =>
         new Promise<net.Socket>((resolve, reject) => {
           const socket = idle.shift();
@@ -510,7 +530,12 @@ export function createRelayHub(): RelayHub {
                   client.pipe(reverse).pipe(client);
                   client.resume();
                 },
-                () => client.destroy()
+                (error: unknown) => {
+                  console.warn(
+                    `[provider] no reverse relay connection was free; closing the inbound connection (${failureCode(error)})`
+                  );
+                  client.destroy();
+                }
               );
             });
             servers.push(server);
