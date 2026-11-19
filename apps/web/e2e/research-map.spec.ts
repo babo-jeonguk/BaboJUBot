@@ -155,21 +155,22 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   const childId = new URL(page.url()).searchParams.get("node")!;
   expect(childId).not.toBe(parentId);
   // 프레임마다 허용한 상태 중 하나다: 고르기 전(부모), 주소만 새 노드, 패널도 새 노드. 상태는 뒤로 가지 않고 새 노드에서 끝난다.
-  const states = frames.map(({ url, panel: shown, heading, status }) =>
-    url === parentId &&
-    shown === parentId &&
-    heading?.startsWith("연구 문제 정리 1 · ")
+  // 패널은 어느 상태에서든 그 노드의 제목과 상태(부모도 새 노드도 "제안됨")를 함께 보인다.
+  const shows = (
+    { panel: shown, heading, status }: SelectionFrame,
+    id: string,
+    title: string
+  ) =>
+    shown === id && heading?.startsWith(`${title} · `) && status === "제안됨";
+  const states = frames.map((frame) =>
+    frame.url === parentId && shows(frame, parentId, "연구 문제 정리 1")
       ? "parent"
-      : url === childId &&
-          shown === parentId &&
-          heading?.startsWith("연구 문제 정리 1 · ")
+      : frame.url === childId && shows(frame, parentId, "연구 문제 정리 1")
         ? "url-first"
-        : url === childId &&
-            shown === childId &&
-            heading?.startsWith("잡음 구간이 오류의 원인이다 · ") &&
-            status === "제안됨"
+        : frame.url === childId &&
+            shows(frame, childId, "잡음 구간이 오류의 원인이다")
           ? "child"
-          : JSON.stringify({ url, panel: shown, heading, status })
+          : JSON.stringify({ ...frame, frames: undefined })
   );
   const order = ["parent", "url-first", "child"];
   // 기록이 실제로 있어야 한다. 비어 있으면 아래 확인이 모두 통과한다.
