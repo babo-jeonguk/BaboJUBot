@@ -635,18 +635,20 @@ export function createAntigravityProvider(options: {
           : failure();
       } finally {
         grant?.revoke();
-        if (attempt)
-          await removeAttemptFolder(attempt, {
-            kind: "attempt folder",
-            connection: connectionId,
-            runId: request.identity.runId,
-          });
-        if (logs)
-          await removeAttemptFolder(logs, {
-            kind: "log folder",
-            connection: connectionId,
-            runId: request.identity.runId,
-          });
+        await Promise.all([
+          attempt &&
+            removeAttemptFolder(attempt, {
+              kind: "attempt folder",
+              connection: connectionId,
+              runId: request.identity.runId,
+            }),
+          logs &&
+            removeAttemptFolder(logs, {
+              kind: "log folder",
+              connection: connectionId,
+              runId: request.identity.runId,
+            }),
+        ]);
       }
     },
   };
