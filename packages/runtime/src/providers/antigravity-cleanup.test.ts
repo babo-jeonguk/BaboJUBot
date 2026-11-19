@@ -1,6 +1,6 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { cleanupAntigravityWorkspaces } from "./antigravity.ts";
 import { ownerMark } from "./antigravity-config.ts";
 import { testFolders } from "./test-folders.ts";
@@ -40,4 +40,29 @@ it("checks at server start only the organizations that have a configuration fold
 
   expect(helper.clears).toBe(1);
   expect(await readdir(agents)).toEqual([]);
+});
+
+// 서버 시작은 이 정리 때문에 멈추지 않는다. 조직 폴더가 없으면 조용히 넘어가고, 그 밖의 이유로 목록을 읽지 못하면 경고하고 넘어간다.
+it("stays quiet at server start when there is no organization folder", async () => {
+  const root = await folders.make("agy-cleanup-");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+
+  await cleanupAntigravityWorkspaces(root);
+
+  expect(warn).not.toHaveBeenCalled();
+  expect(helper.clears).toBe(0);
+});
+
+it("warns with the failure code and goes on when the organization folders cannot be listed", async () => {
+  const root = await folders.make("agy-cleanup-");
+  // 목록을 읽을 수 없는 자리: 폴더 자리에 파일이 있다(ENOTDIR). 없음과 다른 오류다.
+  await writeFile(path.join(root, "organizations"), "");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+
+  await cleanupAntigravityWorkspaces(root);
+
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining("ENOTDIR"));
+  expect(helper.clears).toBe(0);
 });
