@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
@@ -195,5 +196,68 @@ describe("failureCode", () => {
     );
     expect(failureCode("plain")).toBe("unknown");
     expect(failureCode(undefined)).toBe("unknown");
+  });
+});
+
+describe("attemptAll", () => {
+  // 서로 독립인 정리(끄기·닫기·지우기)를 차례로 기다리면 앞 정리가 실패한 곳에서 뒤 정리를 건너뛴다(#263 외부 리뷰 S1·S2).
+  it("does every step though an earlier one fails, and throws the failures together", async () => {
+    const done: string[] = [];
+    const first = new Error("first failed");
+    const third = new Error("third failed");
+    const attempt = attemptAll(
+      [
+        async () => {
+          done.push("first");
+          throw first;
+        },
+        () => {
+          done.push("second");
+        },
+        async () => {
+          done.push("third");
+          throw third;
+        },
+      ],
+      "cleanup failed"
+    );
+    await expect(attempt).rejects.toMatchObject({
+      name: "AggregateError",
+      message: "cleanup failed: first failed; third failed",
+      errors: [first, third],
+    });
+    expect(done).toEqual(["first", "second", "third"]);
+  });
+
+  it("does the steps in order, one after another", async () => {
+    const done: string[] = [];
+    let releaseFirst!: () => void;
+    const attempt = attemptAll(
+      [
+        () =>
+          new Promise<void>((resolve) => {
+            releaseFirst = () => {
+              done.push("first");
+              resolve();
+            };
+          }),
+        () => {
+          done.push("second");
+        },
+      ],
+      "cleanup failed"
+    );
+    await settled(Promise.resolve());
+    expect(done).toEqual([]);
+    releaseFirst();
+    await attempt;
+    expect(done).toEqual(["first", "second"]);
+  });
+
+  it("throws a single failure as it is", async () => {
+    const only = new Error("only");
+    await expect(
+      attemptAll([() => Promise.reject(only), () => undefined], "x")
+    ).rejects.toBe(only);
   });
 });
