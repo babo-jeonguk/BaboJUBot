@@ -171,16 +171,33 @@ function onlyThrows(body) {
   );
 }
 
-/** `_`로 시작해 쓰지 않는다고 표시한 오류 이름인가. */
-const markedUnused = (param) =>
-  param?.type === "Identifier" && param.name.startsWith("_");
+/** `_`로 시작해 쓰지 않는다고 표시하고 실제로 쓰지 않는 오류 이름인가. 쓰는 이름이면 버리는 것이 아니다. */
+const markedUnused = (context, param) =>
+  param?.type === "Identifier" &&
+  param.name.startsWith("_") &&
+  context.sourceCode
+    .getDeclaredVariables(param.parent)
+    .some(
+      (variable) =>
+        variable.name === param.name && variable.references.length === 0
+    );
+
+/** 호출하는 메서드 이름. `x.catch(...)`와 `x["catch"](...)` 모두 본다. */
+function calledMethod(callee) {
+  if (callee.type !== "MemberExpression") return undefined;
+  if (!callee.computed) return callee.property.name;
+  return callee.property.type === "Literal" &&
+    typeof callee.property.value === "string"
+    ? callee.property.value
+    : undefined;
+}
 
 /**
  * 오류를 받지 않고 버리면 의도한 처리(파일 없음은 없는 것)와 실수(권한 오류까지 빈 결과로 바꿈)가 코드에서 같아 보인다.
  * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, `_`를 붙인 오류 이름을 막는다.
  * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다. 받고 쓰지 않는 오류는 `no-unused-vars`가 막는다.
- * 알려진 한계: 이름으로 넘긴 처리기(`.then(settle, settle)`), `void error`처럼 쓰는 척만 하는 처리, 이름 붙은 함수를
- * 의도와 다르게 쓰는 것(바깥 입출력을 `orIfUnreadable`로 감싸기)은 판정하지 않으며 리뷰가 본다.
+ * 알려진 한계: 이름으로 넘긴 처리기(`.then(settle, settle)`), 기본값·나머지 매개변수로 받는 오류, `void error`처럼 쓰는 척만 하는
+ * 처리, 이름 붙은 함수를 의도와 다르게 쓰는 것(권한 오류까지 `orIfUnreadable`로 덮기)은 판정하지 않으며 리뷰가 본다.
  */
 const noIgnoredError = {
   meta: {
@@ -198,19 +215,17 @@ const noIgnoredError = {
   create(context) {
     return {
       CatchClause(node) {
-        if (markedUnused(node.param))
+        if (markedUnused(context, node.param))
           context.report({ node: node.param, messageId: "underscore" });
         else if (!node.param && !onlyThrows(node.body))
           context.report({ node, messageId: "unnamed" });
       },
       CallExpression(node) {
-        const { callee } = node;
-        if (callee.type !== "MemberExpression" || callee.computed) return;
-        const position = handlerPositions.get(callee.property.name);
+        const position = handlerPositions.get(calledMethod(node.callee));
         const handler =
           position === undefined ? undefined : node.arguments[position];
         if (!handler || !functionTypes.has(handler.type)) return;
-        if (markedUnused(handler.params[0]))
+        if (markedUnused(context, handler.params[0]))
           context.report({ node: handler.params[0], messageId: "underscore" });
         else if (handler.params.length === 0 && !onlyThrows(handler.body))
           context.report({ node: handler, messageId: "unnamed" });

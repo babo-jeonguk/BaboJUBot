@@ -400,6 +400,7 @@ test("product code does not drop an error without naming it", async () => {
     "an underscored catch variable": `export function read(text: string) {\n  try {\n    return JSON.parse(text) as unknown;\n  } catch (_error) {\n    return undefined;\n  }\n}\n`,
     "an underscored .catch parameter": `export const read = (work: Promise<string>) => work.catch((_error: unknown) => "");\n`,
     "an underscored .then rejection parameter": `export const read = (work: Promise<string>) => work.then(undefined, (_error: unknown) => "");\n`,
+    "a bracketed .catch handler without a parameter": `export const read = (work: Promise<string>) => work["catch"](() => "");\n`,
   };
   for (const place of productPlaces)
     for (const [shape, code] of Object.entries(dropped)) {
@@ -421,6 +422,8 @@ test("product code does not drop an error without naming it", async () => {
     // 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니다.
     `export function read(text: string) {\n  try {\n    return JSON.parse(text) as unknown;\n  } catch {\n    throw new Error("unreadable");\n  }\n}\n`,
     `export const read = (work: Promise<string>) =>\n  work.catch(() => {\n    throw new Error("unreadable");\n  });\n`,
+    // `_`를 붙였어도 쓰는 오류는 버리는 것이 아니다.
+    `export function read(text: string) {\n  try {\n    return JSON.parse(text) as unknown;\n  } catch (_error) {\n    throw new Error("unreadable", { cause: _error });\n  }\n}\n`,
     // 이름 붙은 함수와 성공 처리만 있는 then.
     `import { orIfUnreadable, settled } from "@babojubot/contracts";\nexport const read = (text: string) => orIfUnreadable((): unknown => JSON.parse(text), undefined);\nexport const wait = (work: Promise<string>) => settled(work.then((text) => text.trim()));\n`,
   ];
