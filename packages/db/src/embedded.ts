@@ -467,7 +467,7 @@ function generations(dir: string): number[] {
   }
 }
 
-/** 지금 기록. `owner`가 없으면 내려놓았거나 읽을 수 없는 기록이다. */
+/** 지금 기록. `owner`가 없으면 내려놓았거나 내용을 해석할 수 없는 기록이다. 읽기 오류는 던진다. */
 function latest(dir: string): { generation: number; owner: Owner | undefined } {
   const generation = generations(dir).at(-1) ?? 0;
   return {
@@ -544,10 +544,14 @@ function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
 }
 
 function readOwnerFile(file: string): Owner | undefined {
-  const owner = orIfUnreadable(
-    (): unknown => JSON.parse(fs.readFileSync(file, "utf8")),
+  // 세대가 넘어가며 지워진 기록은 없는 것이다(acquireOwner가 다시 본다). 그 밖의 읽기 오류는 던진다.
+  const text = orIfMissing(
+    () => fs.readFileSync(file, "utf8"),
+    hasErrorCode("ENOENT"),
     undefined
   );
+  if (text === undefined) return undefined;
+  const owner = orIfUnreadable((): unknown => JSON.parse(text), undefined);
   if (typeof owner !== "object" || owner === null || Array.isArray(owner))
     return undefined;
   if (!("pid" in owner) || !("persistent" in owner)) return undefined;
@@ -620,7 +624,7 @@ async function removeTemporaryLeftovers() {
     const folder = fs.lstatSync(dataDir, { throwIfNoEntry: false });
     if (folder && !folder.isDirectory()) continue;
     const { owner } = latest(ownerDir(dataDir));
-    // 죽은 임시 주인의 것, 또는 주인 없이(내려놓았거나 읽을 수 없음) 기록만 남고 dataDir가 없는 것만 치운다.
+    // 죽은 임시 주인의 것, 또는 주인 없이(내려놓았거나 내용을 해석할 수 없음) 기록만 남고 dataDir가 없는 것만 치운다.
     if (owner ? owner.persistent || isAlive(owner.pid) : folder !== undefined)
       continue;
     const lease = continueAfterFailure(
