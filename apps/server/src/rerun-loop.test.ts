@@ -231,6 +231,36 @@ describe("RerunLoop", () => {
     expect(checks.log).toEqual(["start 1", "end 1", "closed"]);
   });
 
+  it("folds a request the check makes before its first await into a rerun instead of a second pass alongside", async () => {
+    const checks = heldChecks();
+    let requestedAgain = false;
+    const loop: RerunLoop = new RerunLoop(async () => {
+      if (!requestedAgain) {
+        requestedAgain = true;
+        loop.request();
+      }
+      await checks.check();
+    }, failures().onError);
+
+    loop.request();
+    await checks.entered(1);
+    expect(checks.passes()).toBe(1);
+    const settled = loop.settled().then(() => checks.log.push("settled"));
+    checks.finish(1);
+    await checks.entered(2);
+    await nextTurn();
+    checks.finish(2);
+    await settled;
+
+    expect(checks.log).toEqual([
+      "start 1",
+      "end 1",
+      "start 2",
+      "end 2",
+      "settled",
+    ]);
+  });
+
   it("tells onIdle once the last pass ends, not between a pass and its rerun", async () => {
     const checks = heldChecks();
     const loop = new RerunLoop(checks.check, failures().onError, () =>
@@ -360,6 +390,77 @@ describe("RerunLoops", () => {
       "end 2",
       "start 3",
       "end 3",
+      "settled",
+    ]);
+  });
+
+  it("folds a request for the same key that the check makes before its first await into a rerun", async () => {
+    const checks = heldChecksByKey();
+    let requestedAgain = false;
+    const loops: RerunLoops = new RerunLoops(async (key) => {
+      if (!requestedAgain) {
+        requestedAgain = true;
+        loops.request(key);
+      }
+      await checks.check(key);
+    }, failures().onError);
+
+    loops.request("a");
+    await checks.of("a").entered(1);
+    expect(checks.of("a").passes()).toBe(1);
+    const settled = loops
+      .settled("a")
+      .then(() => checks.of("a").log.push("settled"));
+    checks.of("a").finish(1);
+    await checks.of("a").entered(2);
+    expect(loops.busy("a")).toBe(true);
+    await nextTurn();
+    checks.of("a").finish(2);
+    await settled;
+
+    expect(loops.busy("a")).toBe(false);
+    expect(checks.of("a").log).toEqual([
+      "start 1",
+      "end 1",
+      "start 2",
+      "end 2",
+      "settled",
+    ]);
+  });
+
+  it("keeps waiting for a key that starts again right after it was forgotten", async () => {
+    const checks = heldChecksByKey();
+    const forgotten: string[] = [];
+    const loops: RerunLoops = new RerunLoops(
+      checks.check,
+      failures().onError,
+      (key) => {
+        forgotten.push(key);
+        // 잊은 바로 그 순간에 같은 키가 다시 온다(다른 경로의 깨우기처럼). 새 루프가 생긴다.
+        if (forgotten.length === 1) loops.request(key);
+      }
+    );
+
+    loops.request("a");
+    await checks.of("a").entered(1);
+    const settled = loops
+      .settled("a")
+      .then(() => checks.of("a").log.push("settled"));
+    checks.of("a").finish(1);
+    await checks.of("a").entered(2);
+    expect(forgotten).toEqual(["a"]);
+    expect(loops.busy("a")).toBe(true);
+    await nextTurn();
+    checks.of("a").finish(2);
+    await settled;
+
+    expect(forgotten).toEqual(["a", "a"]);
+    expect(loops.busy("a")).toBe(false);
+    expect(checks.of("a").log).toEqual([
+      "start 1",
+      "end 1",
+      "start 2",
+      "end 2",
       "settled",
     ]);
   });

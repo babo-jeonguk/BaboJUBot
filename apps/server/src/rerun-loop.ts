@@ -83,10 +83,12 @@ export class RerunLoops {
 
   constructor(
     check: (key: string) => Promise<void>,
-    onError: (key: string, error: unknown) => void
+    onError: (key: string, error: unknown) => void,
+    onIdle: (key: string) => void = () => {}
   ) {
     this.#check = check;
     this.#onError = onError;
+    void onIdle;
   }
 
   /** 그 키의 확인을 요청한다. 그 키가 도는 중이면 끝난 뒤 한 번 더 돌게 한다. 닫힌 뒤에는 아무것도 하지 않는다. */
