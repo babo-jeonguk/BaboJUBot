@@ -112,7 +112,7 @@ type Row = {
 /** fn 동안 그려진 animation frame의 초당 수. */
 async function fps(page: Page, fn: () => Promise<void>) {
   await page.evaluate(() => {
-    const w = window as unknown as { frames_: number; stop_: boolean };
+    const w = window as typeof window & { frames_: number; stop_: boolean };
     w.frames_ = 0;
     w.stop_ = false;
     const tick = () => {
@@ -124,7 +124,7 @@ async function fps(page: Page, fn: () => Promise<void>) {
   const t0 = Date.now();
   await fn();
   const frames = await page.evaluate(() => {
-    const w = window as unknown as { frames_: number; stop_: boolean };
+    const w = window as typeof window & { frames_: number; stop_: boolean };
     w.stop_ = true;
     return w.frames_;
   });

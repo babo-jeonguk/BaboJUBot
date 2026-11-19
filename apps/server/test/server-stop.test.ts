@@ -21,12 +21,15 @@ const held = vi.hoisted(() => {
     resolve: (value: T) => void;
     reject: (error: unknown) => void;
   };
-  const deferred = <T>() => {
-    const parts = {} as Deferred<T>;
-    parts.promise = new Promise<T>((resolve, reject) =>
-      Object.assign(parts, { resolve, reject })
-    );
-    return parts;
+  const deferred = <T>(): Deferred<T> => {
+    // Promise의 executor는 생성자 안에서 바로 돌므로 돌려주기 전에 둘 다 정해진다.
+    let resolve!: Deferred<T>["resolve"];
+    let reject!: Deferred<T>["reject"];
+    const promise = new Promise<T>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    return { promise, resolve, reject };
   };
   type Held = {
     entered: Deferred<void>;

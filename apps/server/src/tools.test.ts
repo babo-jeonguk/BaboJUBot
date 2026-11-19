@@ -17,8 +17,11 @@ describe("organization tool routes", () => {
     const served = router.stack.flatMap((layer) =>
       layer.route && layer.route.path !== "/mcp"
         ? Object.keys(
-            (layer.route as unknown as { methods: Record<string, boolean> })
-              .methods
+            (
+              layer.route as typeof layer.route & {
+                methods: Record<string, boolean>;
+              }
+            ).methods
           ).map((method) => `${method.toUpperCase()} ${layer.route!.path}`)
         : []
     );

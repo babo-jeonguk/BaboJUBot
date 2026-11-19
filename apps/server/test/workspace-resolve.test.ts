@@ -22,7 +22,7 @@ const probe = vi.hoisted(() => ({
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const watched = {} as Record<string, unknown>;
+  const watched: Record<string, unknown> = {};
   for (const name of [
     "lstat",
     "stat",

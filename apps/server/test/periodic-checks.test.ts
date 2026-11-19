@@ -1,8 +1,8 @@
 import type { RuntimeAdapter } from "@babojubot/contracts";
+import { createScriptedRuntime } from "@babojubot/runtime";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { CompactionScheduler } from "../src/compaction.ts";
-import type { RunDispatcher } from "../src/dispatcher.ts";
-import type { EventHub } from "../src/event-hub.ts";
+import type { AfterCommitDeps } from "../src/after-commit.ts";
 import { HeartbeatScheduler } from "../src/heartbeat.ts";
 
 // 주기 확인(heartbeat·압축)이 DB를 몇 번 읽는지 센다. 첫 조회를 시험이 붙잡아 느린 확인을 만들고, 그동안 타이머 주기를
@@ -40,16 +40,16 @@ vi.mock("@babojubot/db", async (importOriginal) => ({
 
 const pollMs = 1_000;
 const unused = {} as never;
-const dispatcher = {
+const dispatcher: AfterCommitDeps["dispatcher"] = {
   cancel: vi.fn(),
   kick: vi.fn(),
   kickOrganization: vi.fn(),
   kickProvider: vi.fn(),
-} as unknown as RunDispatcher;
-const hub = {
+};
+const hub: AfterCommitDeps["hub"] = {
   publish: vi.fn(),
   publishSettingsChanged: vi.fn(),
-} as unknown as EventHub;
+};
 
 afterEach(() => {
   vi.useRealTimers();
@@ -73,9 +73,11 @@ const schedulers = {
         [
           "compacting",
           {
-            capabilities: { precompact: true },
+            ...createScriptedRuntime({
+              settings: { capabilities: { precompact: true } },
+            }),
             precompact: async () => ({ ok: true, nextSession: null }),
-          } as unknown as RuntimeAdapter,
+          } satisfies RuntimeAdapter,
         ],
       ]),
       dispatcher,

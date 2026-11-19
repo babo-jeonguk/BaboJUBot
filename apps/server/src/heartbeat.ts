@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { runDueHeartbeats, type Database } from "@babojubot/db";
-import { applyAfterCommit } from "./after-commit.ts";
-import type { RunDispatcher } from "./dispatcher.ts";
-import type { EventHub } from "./event-hub.ts";
+import { applyAfterCommit, type AfterCommitDeps } from "./after-commit.ts";
 
 /**
  * 주입한 시계로 지난 heartbeat를 찾아 깨우기를 남기는 scheduler. 깨우기는 다른 깨우기와 같은 대기열에 들어가고,
@@ -13,8 +11,8 @@ import type { EventHub } from "./event-hub.ts";
  */
 export class HeartbeatScheduler {
   readonly #db: Database;
-  readonly #hub: EventHub;
-  readonly #dispatcher: RunDispatcher;
+  readonly #hub: AfterCommitDeps["hub"];
+  readonly #dispatcher: AfterCommitDeps["dispatcher"];
   readonly #now: () => Date;
   readonly #pollMs: number;
   #timer: NodeJS.Timeout | undefined;
@@ -24,8 +22,9 @@ export class HeartbeatScheduler {
 
   constructor(options: {
     db: Database;
-    hub: EventHub;
-    dispatcher: RunDispatcher;
+    /** 저장 뒤 할 일(`applyAfterCommit`)에만 넘긴다. */
+    hub: AfterCommitDeps["hub"];
+    dispatcher: AfterCommitDeps["dispatcher"];
     now: () => Date;
     pollMs: number;
   }) {

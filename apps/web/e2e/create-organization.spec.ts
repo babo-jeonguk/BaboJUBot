@@ -7,11 +7,13 @@ import { runsSettled } from "./support/organization.ts";
 async function openMarked(page: Page, path: string) {
   await openWithLiveEvents(page, path);
   await page.evaluate(
-    () => ((window as unknown as { marker: number }).marker = 1)
+    () => ((window as typeof window & { marker: number }).marker = 1)
   );
 }
 const notReloaded = (page: Page) =>
-  page.evaluate(() => (window as unknown as { marker?: number }).marker === 1);
+  page.evaluate(
+    () => (window as typeof window & { marker?: number }).marker === 1
+  );
 
 test("creating an organization with a goal opens its Lead chat, wakes the Lead and shows up everywhere without reload", async ({
   page,

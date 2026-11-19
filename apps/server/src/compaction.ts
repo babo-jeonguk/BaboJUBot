@@ -1,6 +1,5 @@
 import { relayIdentityHeaders } from "@babojubot/runtime";
-import { completeStored } from "./after-commit.ts";
-import type { EventHub } from "./event-hub.ts";
+import { completeStored, type AfterCommitDeps } from "./after-commit.ts";
 import express from "express";
 import {
   failureCode,
@@ -15,7 +14,6 @@ import {
   recoverCompactions,
   type Database,
 } from "@babojubot/db";
-import type { RunDispatcher } from "./dispatcher.ts";
 import type { Placement } from "./isolation.ts";
 import { issueRunToken, digestRunToken } from "./run-token.ts";
 import { mcpRoutes } from "./mcp.ts";
@@ -45,8 +43,9 @@ export class CompactionScheduler {
   private readonly options: {
     db: Database;
     providers: ReadonlyMap<string, RuntimeAdapter>;
-    dispatcher: RunDispatcher;
-    hub: EventHub;
+    /** 저장 뒤 할 일(`completeStored`)에만 넘긴다. */
+    dispatcher: AfterCommitDeps["dispatcher"];
+    hub: AfterCommitDeps["hub"];
     now: () => Date;
     place: (provider: string) => Promise<Placement>;
   };
