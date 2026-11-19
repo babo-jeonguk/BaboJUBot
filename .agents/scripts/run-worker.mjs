@@ -8,16 +8,20 @@
 //          [--session <sessionID>] [--start-check <seconds>] [--limit <minutes>]
 //
 // Exit codes: 0 finished without an error event; 2 error event (move to the next model);
-// 3 no session started twice (parent takes over); 4 opencode failed without an error event, the call
-// reached --limit (a limit on the whole call, retries included; default 110 minutes, inside the parent's
-// 2-hour background limit), or the worker's process group could not be confirmed stopped (no retry
-// after that); 128+n stopped by signal n; 1 usage.
-import { spawn } from "node:child_process";
+// 3 no session started twice (parent takes over); 4 opencode failed without an error event, could not start (on Windows also
+// when the job object launcher is not available: the runner refuses to start a worker it could not stop), the call reached
+// --limit (a limit on the whole call, retries included; default 110 minutes, inside the parent's 2-hour background limit), or
+// the worker's process tree could not be confirmed stopped (no retry after that); 128+n stopped by signal n; 1 usage.
 import { closeSync, openSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stopProcessGroup } from "@babojubot/runtime/process-group";
 import {
+  launchTree,
+  prepareJobObjectLauncher,
+} from "@babojubot/runtime/launch";
+import {
+  continueAfterFailure,
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
@@ -114,27 +118,45 @@ function readEvents() {
 
 const sessionOf = (events) => events.find((e) => e.sessionID)?.sessionID ?? "";
 
-/** Launches opencode in its own process group, so a stop reaches everything it started. */
+/**
+ * Launches opencode through the product's shared launch, which returns the tree with the stop that matches how it was
+ * launched: its own process group and a marker (Linux, macOS; commands that leave for a new session carry the marker), or
+ * a Windows job object. The stop confirms the whole tree ended and rejects when it cannot. On Windows a worker is not
+ * started without the job object (the launch throws, and the call ends with the reason).
+ */
 function launch() {
   const out = openSync(opts.out, "w");
   const err = openSync(errFile, "w");
-  const proc = spawn("opencode", args, {
-    env: { ...process.env, OPENCODE_CONFIG: config },
-    stdio: ["ignore", out, err],
-    detached: true,
-  });
-  closeSync(out);
-  closeSync(err);
-  return proc;
+  try {
+    return launchTree({
+      command: ["opencode"],
+      args,
+      cwd: process.cwd(),
+      env: { ...process.env, OPENCODE_CONFIG: config },
+      stdio: ["ignore", out, err],
+      withoutJob: "refuse",
+    });
+  } finally {
+    // opencode holds its own copies. A file that cannot be closed only stays open until the runner ends.
+    continueAfterFailure(
+      () => closeSync(out),
+      (error) => console.error(`could not close ${opts.out}: ${error}`)
+    );
+    continueAfterFailure(
+      () => closeSync(err),
+      (error) => console.error(`could not close ${errFile}: ${error}`)
+    );
+  }
 }
 
+// Windows only: build the job object launcher once into a folder of this user (a no-op elsewhere). If it cannot be prepared,
+// the launch refuses with the reason.
+await prepareJobObjectLauncher(join(tmpdir(), "babojubot-worker"));
 const started = Date.now();
-// Stopping the worker is the product's process group stop: SIGTERM, a grace, SIGKILL, and a bounded check that the
-// whole group is gone (it rejects when it cannot confirm that). The start check, --limit and a signal to the runner all
-// stop through it, and the attempt ends with its result (worker-run.mjs).
+// The start check, --limit and a signal to the runner all stop through the tree's own stop, and the attempt ends with its
+// result (worker-run.mjs). A worker that ends on its own is stopped too, for what it left running.
 const workerRun = createWorkerRun({
   launch,
-  stop: (proc) => stopProcessGroup(proc.pid),
   hasSession: () => Boolean(sessionOf(readEvents())),
   startCheckMs: opts.startCheckMs,
   limitMs: opts.limitMs,
