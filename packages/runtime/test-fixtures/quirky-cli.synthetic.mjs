@@ -1,5 +1,6 @@
 // Synthetic peer that behaves like a real CLI on a bad day: banners, big lines, slow answers, untidy exits.
 // Not a recording. Usage: quirky-cli.synthetic.mjs <claude|codex|antigravity> <variant> [adapter arguments...]
+import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const [kind, variant] = process.argv.slice(2);
@@ -150,7 +151,7 @@ if (kind === "codex" && args.includes("exec")) {
 
 if (kind === "codex")
   for await (const line of input) {
-    const { id, method } = JSON.parse(line);
+    const { id, method, params } = JSON.parse(line);
     if (method === "initialize") out({ id, result: {} });
     if (method === "thread/resume") {
       if (variant === "fails-on-resume")
@@ -177,7 +178,9 @@ if (kind === "codex")
         });
         continue;
       }
-      if (variant === "ignores-steer") await sleep(11_000);
+      // 끼워 넣기에 답하지 않는 프로그램. 받은 끼워 넣기는 작업 폴더의 `steers-received.jsonl`에 남긴다. 턴은 adapter가
+      // 끼워 넣기 응답을 기다리다 그만두고 대화 기록을 읽으러 온 뒤에 끝낸다(그 읽기에도 답하지 않는다). 시간 창에 기대지 않는다.
+      if (variant === "ignores-steer") continue;
       out({
         method: "turn/completed",
         params: {
@@ -187,6 +190,19 @@ if (kind === "codex")
       });
       if (variant === "exits-1" || variant === "slow-exit") await finish();
     }
+    if (variant === "ignores-steer" && method === "turn/steer")
+      appendFileSync(
+        "steers-received.jsonl",
+        JSON.stringify({ messageId: params.clientUserMessageId }) + "\n"
+      );
+    if (variant === "ignores-steer" && method === "thread/read")
+      out({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-one",
+          turn: { id: "turn-one", status: "completed" },
+        },
+      });
   }
 
 // `agy acp`(Agent Client Protocol, 줄 단위 JSON-RPC).

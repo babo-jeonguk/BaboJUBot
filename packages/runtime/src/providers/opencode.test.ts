@@ -299,7 +299,10 @@ describe("one organization folder (#147)", () => {
         })
       )
     ).toHaveLength(1);
-    expect(results[0]!.nextSession?.id).not.toBe(results[1]!.nextSession?.id);
+    // 두 실행 모두 세션을 남겼는지 먼저 본다. 한쪽이 비어 있으면 아래 비교는 다르다는 이유로 통과한다.
+    const sessions = results.map((r) => r.nextSession?.id);
+    expect(sessions).toEqual([expect.any(String), expect.any(String)]);
+    expect(sessions[0]).not.toBe(sessions[1]);
   }, 30000);
 
   it("stops waiting for its turn when cancelled and hands the turn on", async () => {
