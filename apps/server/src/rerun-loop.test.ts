@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RerunLoop, RerunLoops } from "./rerun-loop.ts";
 
 /** 풀거나 거절할 수 있는 Promise. 시험이 회차의 시작과 끝을 정한다. */
@@ -56,6 +56,32 @@ function failures() {
 
 /** 틀린 구현이라면 기다리던 쪽이 이 사이에 먼저 풀린다. 이벤트 루프 차례 하나는 그때까지의 microtask를 모두 처리한다. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * 기다림이 이벤트 루프 차례 하나 안에 끝나는가. 회차와 콜백이 모두 곧바로 끝나는 시험에서 쓴다.
+ * 회차 완료 표시가 풀리지 않는 구현이면 `"pending"`으로 남는다.
+ */
+async function outcomeSoon(waiting: Promise<unknown>) {
+  let outcome: "pending" | "resolved" | { rejected: unknown } = "pending";
+  void waiting.then(
+    () => (outcome = "resolved"),
+    (error: unknown) => (outcome = { rejected: error })
+  );
+  await nextTurn();
+  return outcome;
+}
+
+/** 콜백이 던진 오류가 서버 로그(console.error)에 남았는지 본다. 시험 출력에는 찍지 않는다. */
+function serverLog() {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  return {
+    includes: (value: unknown) => logged.mock.calls.flat().includes(value),
+  };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("RerunLoop", () => {
   it("runs one pass at a time and folds the requests made during a pass into one rerun", async () => {
@@ -317,6 +343,77 @@ describe("RerunLoop", () => {
       "idle",
     ]);
   });
+
+  it("ends the pass, logs both errors and serves the next request when onError throws", async () => {
+    const log = serverLog();
+    const failure = new Error("check failed");
+    const broken = new Error("onError failed");
+    let passes = 0;
+    const loop = new RerunLoop(
+      async () => {
+        passes++;
+        if (passes === 1) throw failure;
+      },
+      () => {
+        throw broken;
+      }
+    );
+
+    loop.request();
+    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    // 실패를 넘겨받을 곳이 던졌어도 두 오류 모두 버리지 않는다.
+    expect(log.includes(failure)).toBe(true);
+    expect(log.includes(broken)).toBe(true);
+
+    // 회차 완료 표시가 풀렸으므로 다음 요청이 새 회차로 돈다.
+    expect(await outcomeSoon(loop.runNow())).toBe("resolved");
+    expect(passes).toBe(2);
+    expect(await outcomeSoon(loop.close())).toBe("resolved");
+  });
+
+  it("ends the pass, hands the error to onError and serves the next request when onIdle throws", async () => {
+    const { errors, onError } = failures();
+    const broken = new Error("onIdle failed");
+    let passes = 0;
+    const loop = new RerunLoop(
+      async () => {
+        passes++;
+      },
+      onError,
+      () => {
+        throw broken;
+      }
+    );
+
+    loop.request();
+    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(errors).toEqual([broken]);
+
+    expect(await outcomeSoon(loop.runNow())).toBe("resolved");
+    expect(passes).toBe(2);
+    expect(errors).toEqual([broken, broken]);
+    expect(await outcomeSoon(loop.close())).toBe("resolved");
+  });
+
+  it("logs the onIdle error when onError throws too, and still ends the pass", async () => {
+    const log = serverLog();
+    const idleBroken = new Error("onIdle failed");
+    const reportBroken = new Error("onError failed");
+    const loop = new RerunLoop(
+      () => Promise.resolve(),
+      () => {
+        throw reportBroken;
+      },
+      () => {
+        throw idleBroken;
+      }
+    );
+
+    loop.request();
+    expect(await outcomeSoon(loop.close())).toBe("resolved");
+    expect(log.includes(idleBroken)).toBe(true);
+    expect(log.includes(reportBroken)).toBe(true);
+  });
 });
 
 /** 키마다 따로 멈춰 있는 확인. 키의 n번째 회차는 `of(key).entered(n)`·`of(key).finish(n)`로 다룬다. */
@@ -545,5 +642,58 @@ describe("RerunLoops", () => {
     expect(checks.of("c").passes()).toBe(0);
     expect(loops.busy("a")).toBe(false);
     expect(loops.busy("c")).toBe(false);
+  });
+
+  it("forgets the key and serves it again when onError throws", async () => {
+    const log = serverLog();
+    const failure = new Error("check failed");
+    const broken = new Error("onError failed");
+    const passes = new Map<string, number>();
+    const loops = new RerunLoops(
+      async (key) => {
+        const n = (passes.get(key) ?? 0) + 1;
+        passes.set(key, n);
+        if (n === 1) throw failure;
+      },
+      () => {
+        throw broken;
+      }
+    );
+
+    loops.request("a");
+    expect(await outcomeSoon(loops.settled("a"))).toBe("resolved");
+    expect(loops.busy("a")).toBe(false);
+    expect(log.includes(failure)).toBe(true);
+    expect(log.includes(broken)).toBe(true);
+
+    loops.request("a");
+    expect(await outcomeSoon(loops.settledAll())).toBe("resolved");
+    expect(passes.get("a")).toBe(2);
+    expect(await outcomeSoon(loops.close())).toBe("resolved");
+  });
+
+  it("forgets the key, hands the error to onError with its key and serves it again when onIdle throws", async () => {
+    const errors: [string, unknown][] = [];
+    const broken = new Error("onIdle failed");
+    const passes = new Map<string, number>();
+    const loops = new RerunLoops(
+      async (key) => {
+        passes.set(key, (passes.get(key) ?? 0) + 1);
+      },
+      (key, error) => errors.push([key, error]),
+      () => {
+        throw broken;
+      }
+    );
+
+    loops.request("a");
+    expect(await outcomeSoon(loops.settled("a"))).toBe("resolved");
+    expect(loops.busy("a")).toBe(false);
+    expect(errors).toEqual([["a", broken]]);
+
+    loops.request("a");
+    expect(await outcomeSoon(loops.settledAll())).toBe("resolved");
+    expect(passes.get("a")).toBe(2);
+    expect(await outcomeSoon(loops.close())).toBe("resolved");
   });
 });

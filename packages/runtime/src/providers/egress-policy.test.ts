@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { destinationSchema, type Destination } from "@babojubot/contracts";
 import { decideDestination, type EgressRules } from "./egress-policy.ts";
 
@@ -182,6 +182,25 @@ describe("egress destination decision", () => {
         resolver({})
       )
     ).toEqual({ allowed: false, reason: "not_resolved" });
+  });
+
+  it("leaves why a name could not be resolved when it refuses the connection", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const busy = Object.assign(new Error("lookup failed"), {
+      code: "EAI_AGAIN",
+    });
+    expect(
+      await decideDestination(
+        rules([{ host: "api.example.com", port: 443 }]),
+        "api.example.com",
+        443,
+        async () => {
+          throw busy;
+        }
+      )
+    ).toEqual({ allowed: false, reason: "not_resolved" });
+    expect(warned).toHaveBeenCalledWith(expect.stringContaining("(EAI_AGAIN)"));
   });
 
   it("rejects ambiguous names in the policy itself", () => {

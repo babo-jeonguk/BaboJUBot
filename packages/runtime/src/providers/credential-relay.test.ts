@@ -4,7 +4,7 @@ import { gzipSync } from "node:zlib";
 import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   createCredentialRelay,
   credentialResidue,
@@ -1131,6 +1131,26 @@ describe("login residue in an organization's product folder", () => {
       await mkdir(path.join(root, "locked"));
       await chmod(path.join(root, "locked"), 0o000);
       expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
+    }
+  );
+
+  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
+    "leaves why it could not inspect a path it counts as residue",
+    async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
+      onTestFinished(async () => {
+        await chmod(path.join(root, "locked"), 0o700);
+        await removeFolder(root);
+      });
+      await mkdir(path.join(root, "locked"));
+      await chmod(path.join(root, "locked"), 0o000);
+      const login = path.join(root, "connection/login/auth.json");
+      expect(await credentialResidue(root, ["locked/auth.json"], login)).toBe(
+        true
+      );
+      expect(warned).toHaveBeenCalledWith(expect.stringContaining("(EACCES)"));
     }
   );
 });

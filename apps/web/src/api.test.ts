@@ -47,3 +47,20 @@ test.each([
   expect(error.status).toBe(502);
   expect(error.code).toBeUndefined();
 });
+
+test("a failure whose body cannot be read surfaces that read failure instead of a plain failure", async () => {
+  const broken = new Error("connection reset");
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            controller.error(broken);
+          },
+        }),
+        { status: 500 }
+      )
+  );
+  await expect(request(z.unknown(), "/api/x")).rejects.toBe(broken);
+});

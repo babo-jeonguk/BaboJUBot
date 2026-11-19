@@ -174,6 +174,20 @@ it("stops a leftover process on systems without /proc", async () => {
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
+// 시작 시각을 묻지 못하면 우리 것으로 보지 않고(끄지 않음) 그 원인을 남긴다. 끝난 프로세스에 물으면 ps가 실패한다.
+it.skipIf(process.platform === "win32")(
+  "leaves why it could not ask a process's start time",
+  () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const ended = spawnSync(process.execPath, ["-e", ""]).pid;
+    expect(processStartedAt(ended, withoutProc)).toBeUndefined();
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringContaining("start time of process")
+    );
+  }
+);
+
 // 시작 시각을 묻는 명령이 답하지 않아도 복구는 정해진 상한 안에 다음으로 넘어간다. 우리 것인지 모르는 프로세스와 그 기록은
 // 그대로 둔다. 답하지 않는 명령은 PATH 앞에 둔 가짜 ps가 맡는다(60초 뒤에야 다른 시작 시각을 답한다).
 // Windows는 PowerShell에 묻는데, 답하지 않는 PowerShell을 시험이 대신 둘 수 없다. 그 호출의 상한은 lint가 강제한다.

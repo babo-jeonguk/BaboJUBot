@@ -459,6 +459,34 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(await viaProxy()).toBe(200);
   });
 
+  it("answers 502 and leaves why when it cannot connect to an allowed destination", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    // 받는 곳이 없는 포트: 잠깐 열어 번호를 받고 닫는다.
+    const listener = net.createServer();
+    await new Promise<void>((resolve) =>
+      listener.listen(0, "127.0.0.1", resolve)
+    );
+    const port = (listener.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve, reject) =>
+      listener.close((error) => (error ? reject(error) : resolve()))
+    );
+    const { relays } = hub();
+    const relay = relays.open({
+      identity,
+      required: [
+        destination({ host: "localhost", port, addresses: ["127.0.0.1"] }),
+      ],
+    });
+    await relay.ready;
+    const answer = await connectVia(relay.directory, `localhost:${port}`);
+    answer.socket.destroy();
+    expect(answer.head).toMatch(/^HTTP\/1\.1 502/);
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringContaining("(ECONNREFUSED)")
+    );
+  });
+
   it("refuses when the policy cannot be read", async () => {
     const target = await fixture("echo");
     const { relays } = hub({

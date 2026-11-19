@@ -77,6 +77,23 @@ describe("a Codex app-server connection", () => {
     await connection.done;
   });
 
+  it("fails a request it cannot write with that error and keeps the connection open", async () => {
+    // 쓰지 못한 요청(직렬화할 수 없는 값)은 프로그램에 닿지 않았다. 연결이 닫힌 것으로 바꾸지 않고 그 원인으로 실패한다.
+    const connection = await peer([
+      { input: { id: 2, method: "next" } },
+      { frame: { id: 2, result: {} } },
+    ]);
+    await expect(
+      connection.request("unwritable", { size: 1n }, { timeoutMs: 5_000 })
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(connection.closed).toBe(false);
+    expect(await connection.request("next", {}, { timeoutMs: 5_000 })).toEqual(
+      {}
+    );
+    connection.close();
+    await connection.done;
+  });
+
   it("times a request out without closing, and a late answer does not complete the next request", async () => {
     const connection = await peer([
       { input: { id: 1, method: "slow" } },
