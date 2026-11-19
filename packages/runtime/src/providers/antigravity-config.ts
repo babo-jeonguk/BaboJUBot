@@ -62,7 +62,6 @@ async function run(cwd: string) {
     cwd,
     // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
     env: process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {},
-    withoutJob: "warn",
     limitMs: 30_000,
     maxOutputBytes: 64 * 1024,
     overflow: "truncate",

@@ -59,7 +59,6 @@ function launch(script: string) {
     cwd: process.cwd(),
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
     stdio: ["ignore", "ignore", "ignore"],
-    withoutJob: "refuse",
   });
   trees.push(tree);
   return tree;
@@ -72,7 +71,7 @@ describe("launchTree", () => {
     const tree = launch(
       `${lifelines.hold(leader)} ${child(stubborn, '{ stdio: "ignore" }', ignoreTerm)} ${keep}`
     );
-    expect(await tree.started).toEqual({ kind: "confined" });
+    expect(await tree.started).toEqual({ kind: "running" });
     await lifelines.connected(leader);
     await lifelines.connected(stubborn);
     await tree.stop();
@@ -154,7 +153,6 @@ describe("launchTree", () => {
          cwd: process.cwd(),
          env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
          stdio: ["ignore", "ignore", "ignore"],
-         withoutJob: "refuse",
        });
        setInterval(() => {}, 1000);`
     );
@@ -164,7 +162,6 @@ describe("launchTree", () => {
       cwd: process.cwd(),
       env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
       stdio: ["ignore", "ignore", "ignore"],
-      withoutJob: "refuse",
     });
     trees.push(tree);
     await lifelines.connected(inner, 30_000);
@@ -179,7 +176,6 @@ describe("launchTree", () => {
       cwd: process.cwd(),
       env: { PATH: process.env.PATH },
       stdio: ["ignore", "ignore", "ignore"],
-      withoutJob: "warn",
     });
     trees.push(tree);
     expect((await tree.started).kind).toBe("failed");
@@ -197,7 +193,7 @@ describe.runIf(windows)("launchTree on Windows", () => {
         "-e",
         `import { launchTree } from ${JSON.stringify(pathToFileURL(path.join(import.meta.dirname, "launch.ts")).href)};
          try {
-           launchTree({ command: [process.execPath, "-e", ""], args: [], cwd: process.cwd(), env: {}, stdio: "pipe", withoutJob: "refuse" });
+           launchTree({ command: [process.execPath, "-e", ""], args: [], cwd: process.cwd(), env: {}, stdio: "pipe" });
            console.log("started");
          } catch (error) {
            console.log(error.name + ": " + error.message);
@@ -206,7 +202,7 @@ describe.runIf(windows)("launchTree on Windows", () => {
       { encoding: "utf8", timeout: 60_000 }
     );
     expect(result.stdout).toMatch(
-      /^TreeLaunchRefused: the Windows job object launcher was not prepared/
+      /^TreeLaunchRefused: Windows 정리 장치\(Job Object\)를 준비하지 못해 프로그램을 시작하지 않았습니다\. 이유: the job object launcher was not prepared/
     );
   });
 });
@@ -218,7 +214,6 @@ describe("runTree", () => {
       args: [],
       cwd: process.cwd(),
       env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
-      withoutJob: "refuse",
       limitMs,
       maxOutputBytes: 1024,
       overflow: "stop",

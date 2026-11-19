@@ -134,7 +134,6 @@ function launch() {
       cwd: process.cwd(),
       env: { ...process.env, OPENCODE_CONFIG: config },
       stdio: ["ignore", out, err],
-      withoutJob: "refuse",
     });
   } finally {
     // opencode holds its own copies. A file that cannot be closed only stays open until the runner ends.

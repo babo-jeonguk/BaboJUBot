@@ -1340,7 +1340,8 @@ export async function startServer({
   try {
     // 결과를 받지 못한 끼워 넣기를 줄 세운 메시지로 되돌리고 남은 실행 시도를 복구한다. 그 뒤에 heartbeat가 새 깨우기를 만든다.
     await recoverProviderProcesses(dataDir);
-    // Windows에서 실행 시도의 프로그램을 묶음에 넣어 띄우는 실행기를 준비한다(#205). 준비하지 못하면 경고하고 묶음 없이 돈다.
+    // Windows에서 실행 시도의 프로그램을 묶음에 넣어 띄우는 실행기를 준비한다(#205). 준비하지 못해도 서버는 뜨지만, 실행 시도는
+    // 띄우지 않고 그 이유로 실패한다(#262 사용자 결정).
     await prepareJobObjectLauncher(dataDir);
     // 지난 실행이 남긴 이 제품 폴더의 컨테이너를 실행 시도를 시작하기 전에 지운다. Docker가 없으면 건너뛴다.
     await isolation?.docker

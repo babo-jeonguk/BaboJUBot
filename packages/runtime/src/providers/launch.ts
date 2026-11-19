@@ -1,18 +1,18 @@
 import spawn from "cross-spawn";
-import {
-  execFileSync,
-  spawn as spawnChild,
-  type ChildProcess,
-} from "node:child_process";
+import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { Duplex, Readable, Writable } from "node:stream";
+import { Readable, Writable, type Duplex } from "node:stream";
 import {
   continueAfterFailure,
   failureCode,
   hasErrorCode,
   settled,
 } from "@babojubot/contracts";
-import { jobObjectLaunch, readLauncherStatus } from "./job-object.ts";
+import {
+  jobObjectLaunch,
+  jobObjectProblem,
+  readLauncherStatus,
+} from "./job-object.ts";
 import { processStartTicks, stopLeaseHolders, withLease } from "./lease.ts";
 import { interruptProcessGroup, stopProcessGroup } from "./recovery.ts";
 
@@ -31,9 +31,9 @@ export { prepareJobObjectLauncher } from "./job-object.ts";
  * 보는 대신 그룹·표식·묶음의 남은 수로 한다(번호는 재사용된다, #259). 대표가 먼저 끝나도 그 자손은 `stop()`까지 남는다(모든 시스템이
  * 같다). 그래서 띄운 쪽은 대표가 끝났든 아니든 언제나 `stop()`으로 끝낸다.
  *
- * Windows에서 묶음 실행기를 쓸 수 없으면 `withoutJob`이 정한다. `"refuse"`는 띄우지 않고 이유와 함께 던진다(작업자 실행기).
- * `"warn"`은 묶음 없이 띄우고 `started`에 그 이유를 알린다(제품의 실행 시도는 서버 운영 기록에 경고한다). 그때 `stop()`은 대표의
- * 끝만 확인한다.
+ * Windows에서 묶음 실행기를 쓸 수 없으면(준비하지 못함, 이 프로세스가 준비하지 않음) 띄우지 않고 무엇이 없었는지 담은
+ * `TreeLaunchRefused`를 던진다. 묶음 없이 띄우는 길은 두지 않는다(#262 사용자 결정, 제품의 실행 시도와 작업자 실행기 모두). 그 길의
+ * 끄기는 대표의 끝만 확인할 수 있어 트리 전체의 끝을 약속하는 `stop()`과 맞지 않는다.
  */
 
 /** 표준 입력·출력·오류. `"pipe"`는 셋 모두 파이프다. 숫자는 이미 연 파일 기술자다. */
@@ -51,16 +51,13 @@ export type TreeLaunch = {
   cwd: string;
   env: NodeJS.ProcessEnv;
   stdio: TreeStdio;
-  /** Windows에서 묶음 실행기를 쓸 수 없을 때: 띄우지 않고 던지기(`"refuse"`) 또는 묶음 없이 띄우고 알리기(`"warn"`). */
-  withoutJob: "refuse" | "warn";
 };
 
-/** 띄운 결과. `confined`만 `stop()`이 트리 전체의 끝을 확인한다. */
+/** 띄운 결과. */
 export type TreeStart =
-  | { kind: "confined" }
-  /** Windows에서 묶음 없이 돈다. `prepared`가 거짓이면 이 프로세스가 묶음 실행기를 준비한 적이 없다(대부분의 시험). */
-  | { kind: "unconfined"; reason: string; prepared: boolean }
-  /** 프로그램이 시작하지 못했다. 직접 띄운 시작 오류(ENOENT 등)는 `error`에 그대로 둔다. */
+  /** 돈다. `stop()`이 트리 전체의 끝을 확인한다. */
+  | { kind: "running" }
+  /** 프로그램이 시작하지 못했다. 시작 오류(ENOENT 등)는 `error`에 그대로 둔다. */
   | { kind: "failed"; reason: string; error?: unknown };
 
 export type TreeExit = { code: number | null; signal: NodeJS.Signals | null };
@@ -87,10 +84,28 @@ export type LaunchedTree<In = Writable | null, Out = Readable | null> = {
   stop(options?: { graceMs?: number }): Promise<void>;
 };
 
-/** Windows에서 묶음 실행기를 쓸 수 없어 `withoutJob: "refuse"`가 띄우기를 거절했다. */
+/**
+ * Windows에서 묶음 실행기를 쓸 수 없어 프로그램을 띄우지 않았다. 문구는 제품이 쓴 안내라 실행 시도의 실패 원인으로 그대로 보인다
+ * (서버 dispatcher). 무엇이 없어 준비하지 못했는지를 담는다.
+ */
 export class TreeLaunchRefused extends Error {
   override name = "TreeLaunchRefused";
 }
+
+/**
+ * Windows에서 묶음 실행기를 쓸 수 없으면 그 이유와 함께 `TreeLaunchRefused`를 던진다. 다른 시스템에서는 아무것도 하지 않는다.
+ * 띄우기 전에 다른 자원(격리 실행의 중계)을 여는 쪽은 그 전에 부른다.
+ */
+export function requireJobObject() {
+  if (!windows()) return;
+  const problem = jobObjectProblem();
+  if (problem !== undefined) throw refusedFor(problem);
+}
+
+const refusedFor = (problem: string) =>
+  new TreeLaunchRefused(
+    `Windows 정리 장치(Job Object)를 준비하지 못해 프로그램을 시작하지 않았습니다. 이유: ${problem}`
+  );
 
 /** 실행기가 끄기를 받고 묶음을 비웠다고 답할 때까지의 상한. 실행기가 묶음을 기다리는 10초에 여유를 둔다. */
 const launcherStopLimitMs = 20_000;
@@ -119,17 +134,38 @@ async function within<T>(promise: Promise<T>, ms: number, what: string) {
   }
 }
 
-function refusal(job: ReturnType<typeof jobObjectLaunch>) {
-  switch (job.kind) {
-    case "unavailable":
-      return `the Windows job object launcher is not available: ${job.reason}`;
-    case "unprepared":
-      return "the Windows job object launcher was not prepared in this process (prepareJobObjectLauncher)";
-    case "not-found":
-      return "the program was not found";
-    case "launch":
-      return "the job object launcher could not start";
-  }
+/**
+ * 찾지 못한 프로그램(Windows). 아무것도 띄우지 않고 cross-spawn과 같은 시작 오류(ENOENT)로 끝난 트리를 돌려준다. cross-spawn은 이때
+ * cmd.exe를 묶음 밖에서 띄우므로 쓰지 않는다.
+ */
+function missingProgram(options: TreeLaunch, lease: string): LaunchedTree {
+  const [command] = options.command;
+  const error = Object.assign(new Error(`spawn ${command} ENOENT`), {
+    code: "ENOENT",
+    errno: "ENOENT",
+    syscall: `spawn ${command}`,
+    path: command,
+    spawnargs: [...options.command.slice(1), ...options.args],
+  });
+  const stdio =
+    options.stdio === "pipe" ? ["pipe", "pipe", "pipe"] : options.stdio;
+  const closedOutput = (kind: unknown) =>
+    kind === "pipe" ? Readable.from([]) : null;
+  return {
+    pid: undefined,
+    lease,
+    stdin:
+      stdio[0] === "pipe"
+        ? new Writable({ write: (_chunk, _encoding, done) => done() })
+        : null,
+    stdout: closedOutput(stdio[1]),
+    stderr: closedOutput(stdio[2]),
+    started: Promise.resolve({ kind: "failed", reason: error.message, error }),
+    exited: Promise.resolve({ code: null, signal: null }),
+    interrupt: () => {},
+    killLeader: () => {},
+    stop: () => Promise.resolve(),
+  };
 }
 
 export function launchTree(
@@ -143,67 +179,36 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     options.stdio === "pipe"
       ? (["pipe", "pipe", "pipe"] as const)
       : options.stdio;
-  const job = windows()
-    ? jobObjectLaunch(options.command, options.args, {
-        env: options.env,
-        cwd: options.cwd,
-        requireJob: options.withoutJob === "refuse",
-      })
-    : undefined;
-  // 찾지 못한 프로그램은 거절하지 않고 시작 실패로 알린다(cross-spawn이 띄우는 cmd.exe는 아무것도 띄우지 않고 끝난다).
-  const notFound = job?.kind === "not-found";
-  if (
-    job &&
-    job.kind !== "launch" &&
-    !notFound &&
-    options.withoutJob === "refuse"
-  )
-    throw new TreeLaunchRefused(refusal(job));
-  let unconfined: { reason: string; prepared: boolean } | undefined =
-    job?.kind === "unavailable"
-      ? { reason: job.reason, prepared: true }
-      : job?.kind === "unprepared"
-        ? {
-            reason:
-              "the Windows job object launcher was not prepared in this process",
-            prepared: false,
-          }
-        : undefined;
-  const direct = () =>
-    spawn(options.command[0], [...options.command.slice(1), ...options.args], {
-      cwd: options.cwd,
-      env,
-      stdio: [...stdio],
-      // Linux·macOS: 자기 프로세스 그룹. Windows에는 그룹이 없고 새 콘솔 창도 띄우지 않는다.
-      detached: !windows(),
-      windowsHide: true,
-    });
   let child: ChildProcess;
   let control: Duplex | undefined;
-  if (job?.kind === "launch") {
-    const launcher = spawnChild(job.launch.file, job.launch.args, {
+  if (windows()) {
+    const job = jobObjectLaunch(options.command, options.args, {
+      env: options.env,
+      cwd: options.cwd,
+    });
+    if (job.kind === "not-found") return missingProgram(options, lease);
+    if (job.kind === "unavailable") throw refusedFor(job.reason);
+    // 실행기를 띄우지 못하면(백신이 지웠거나 막음) 프로그램은 시작하지 않은 채 시작 실패로 끝난다(아래 error).
+    child = spawnChild(job.launch.file, job.launch.args, {
       ...job.launch.options,
       cwd: options.cwd,
       env,
       stdio: [...stdio, "pipe"],
       windowsHide: true,
     });
-    if (launcher.pid === undefined && options.withoutJob === "warn") {
-      // 실행기를 띄우지 못했다(백신이 지웠거나 막음). 프로그램은 아직 시작하지 않았으므로 묶음 없이 띄운다. 시작 오류는 이유로만 쓴다.
-      const without = {
-        reason: "the job object launcher could not start",
-        prepared: true,
-      };
-      launcher.on("error", (error) => {
-        without.reason += ` (${failureCode(error)})`;
-      });
-      unconfined = without;
-      child = direct();
-    } else {
-      child = launcher;
-      control = (launcher.stdio[3] ?? undefined) as Duplex | undefined;
-    }
-  } else child = direct();
+    control = (child.stdio[3] ?? undefined) as Duplex | undefined;
+  } else
+    child = spawn(
+      options.command[0],
+      [...options.command.slice(1), ...options.args],
+      {
+        cwd: options.cwd,
+        env,
+        stdio: [...stdio],
+        // 자기 프로세스 그룹.
+        detached: true,
+      }
+    );
   const pid = child.pid;
   // 표식을 읽을 수 없는 프로그램은 이 트리가 시작한 뒤에 생겼을 때만 우리 것일 수 있다. 대표의 시작 시각을 기준으로 둔다(Linux).
   const since =
@@ -228,9 +233,8 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     };
   });
   child.on("error", (error) => {
-    // 띄운 뒤의 오류(신호를 보내지 못함 등)는 끝남이 아니다. 끝났는지는 stop()이 확인한다. 찾지 못한 프로그램을 cross-spawn이
-    // cmd.exe로 띄웠으면 cmd.exe가 끝날 때 종료 대신 이 오류(ENOENT)가 온다.
-    if (pid !== undefined && !notFound) return;
+    // 띄운 뒤의 오류(신호를 보내지 못함 등)는 끝남이 아니다. 끝났는지는 stop()이 확인한다.
+    if (pid !== undefined) return;
     reportStart({ kind: "failed", reason: error.message, error });
     reportExit({ code: null, signal: null });
   });
@@ -268,13 +272,7 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
         const line = pending.slice(0, newline).trimEnd();
         pending = pending.slice(newline + 1);
         const status = readLauncherStatus(line);
-        if (status?.kind === "ok") reportStart({ kind: "confined" });
-        else if (status?.kind === "warning")
-          reportStart({
-            kind: "unconfined",
-            reason: status.reason,
-            prepared: true,
-          });
+        if (status?.kind === "ok") reportStart({ kind: "running" });
         else if (status?.kind === "failed")
           reportStart({ kind: "failed", reason: status.reason });
         else if (/^exit -?\d+$/.test(line))
@@ -298,15 +296,7 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     });
   } else {
     controlClosed();
-    // 찾지 못한 프로그램은 cmd.exe가 시작해도 시작한 것이 아니다. 위 오류가 시작 실패를 알린다.
-    if (!notFound)
-      child.once("spawn", () =>
-        reportStart(
-          unconfined
-            ? { kind: "unconfined", ...unconfined }
-            : { kind: "confined" }
-        )
-      );
+    child.once("spawn", () => reportStart({ kind: "running" }));
     child.once("exit", (code, signal) => reportExit({ code, signal }));
   }
   const send = (command: string) => {
@@ -333,25 +323,6 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
       leaderStopLimitMs,
       "the job object launcher did not exit"
     );
-  };
-  /** 묶음 없는 Windows: 대표의 트리를 강제로 끝내고(부모 관계로 찾음) 대표의 끝만 확인한다. 시작 때 알린 한계다. */
-  const stopWithoutJob = async () => {
-    if (!leaderDone)
-      continueAfterFailure(
-        () =>
-          execFileSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
-            windowsHide: true,
-            stdio: "ignore",
-            timeout: leaderStopLimitMs,
-            killSignal: "SIGKILL",
-          }),
-        (error) =>
-          // 이미 끝났으면 taskkill이 실패한다. 끝났는지는 아래에서 대표의 끝으로 확인한다.
-          console.warn(
-            `[launch] taskkill of ${pid} did not succeed; checking whether it ended (${failureCode(error)})`
-          )
-      );
-    await within(exited, leaderStopLimitMs, `process ${pid} did not end`);
   };
   /** Linux·macOS: 그룹 밖(새 세션)으로 나간 자손을 표식으로 찾아 끈다. */
   const stopMarked = async () => {
@@ -390,8 +361,8 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
         cause: error,
       });
     }
-    if (control) await stopThroughLauncher();
-    else if (windows()) await stopWithoutJob();
+    // Windows는 묶음 실행기로만 띄운다. 통로가 없으면 끝을 확인할 수 없어 stopThroughLauncher가 던진다.
+    if (windows()) await stopThroughLauncher();
     else await stopMarked();
     // 그룹이 끝났으면 대표도 끝났다. 그 끝(exit)이 전달될 때까지 기다린다.
     await within(

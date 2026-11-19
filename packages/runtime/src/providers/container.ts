@@ -6,7 +6,7 @@ import {
   type Destination,
   type RunRequest,
 } from "@babojubot/contracts";
-import { runTree } from "./launch.ts";
+import { runTree, TreeLaunchRefused } from "./launch.ts";
 import type { RelayHub, RelayIdentity } from "./relay.ts";
 
 /** 격리 실행의 Docker 설정. 서버가 시작할 때 정한다. */
@@ -498,7 +498,6 @@ export async function runDocker(
       args,
       cwd: process.cwd(),
       env: dockerClientEnv({}),
-      withoutJob: "warn",
       limitMs: timeoutMs,
       ...(signal ? { signal } : {}),
       maxOutputBytes: 1024 * 1024,
@@ -508,7 +507,11 @@ export async function runDocker(
     return {
       code: null,
       stdout: "",
-      stderr: `the docker client could not be confirmed stopped (${failureCode(error)})`,
+      // Windows에서 묶음 실행기를 쓸 수 없어 띄우지 않았거나, 띄운 클라이언트가 끝났음을 확인하지 못했다.
+      stderr:
+        error instanceof TreeLaunchRefused
+          ? error.message
+          : `the docker client could not be confirmed stopped (${failureCode(error)})`,
     };
   }
   if (!run.started) return { code: null, stdout: "", stderr: run.reason };

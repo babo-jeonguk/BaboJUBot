@@ -12,7 +12,7 @@ function fakeWorker(pid, stop) {
   let reportExit;
   const tree = {
     pid,
-    started: Promise.resolve({ kind: "confined" }),
+    started: Promise.resolve({ kind: "running" }),
     exited: new Promise((resolve) => {
       reportExit = resolve;
     }),

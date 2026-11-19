@@ -8,7 +8,12 @@ import {
   dockerRunArgs,
   removeContainer,
 } from "./container.ts";
-import { launchTree, runTree } from "./launch.ts";
+import {
+  launchTree,
+  requireJobObject,
+  runTree,
+  TreeLaunchRefused,
+} from "./launch.ts";
 import { recordProcess } from "./recovery.ts";
 
 /** 프로그램이 있는지 보는 짧은 확인의 제한. 바쁜 컴퓨터에서도 넘지 않을 만큼 넉넉하게 둔다. */
@@ -132,13 +137,14 @@ export async function runProbe(
       args,
       cwd: options.cwd,
       env: options.env,
-      withoutJob: "warn",
       limitMs: options.timeout,
       signal: options.signal,
       maxOutputBytes: options.maxBuffer,
       overflow: "truncate",
     });
   } catch (error) {
+    // Windows에서 묶음 실행기를 쓸 수 없어 띄우지 않았다. 그 이유를 그대로 알린다.
+    if (error instanceof TreeLaunchRefused) throw failed(error, {});
     // 끝났음을 확인하지 못했다. 그 트리는 남았을 수 있다.
     throw failed(new Error("Program did not stop", { cause: error }), {
       code: "killed",
@@ -191,6 +197,8 @@ export function startProcess(options: {
   const name = options.container
     ? `babojubot-${crypto.randomUUID()}`
     : undefined;
+  // Windows에서 묶음 실행기를 쓸 수 없으면 아무것도 열기 전에 그 이유로 거절한다(TreeLaunchRefused, 실행 시도의 실패 원인으로 보인다).
+  requireJobObject();
   // 컨테이너는 네트워크가 없다. 이 실행 시도의 중계를 먼저 열고(못 열면 띄우지 않고 던진다) 그 폴더를 넣는다. 끝나면 닫는다.
   const relay = options.container?.settings.relay.open({
     identity: options.container.relay.identity,
@@ -213,17 +221,11 @@ export function startProcess(options: {
       : { command: options.command, args: options.args, env: options.env }),
     cwd: options.cwd,
     stdio: "pipe",
-    withoutJob: "warn",
   });
   /** 트리를 끈다. 결과는 정리(finish)가 같은 끄기를 기다려 받는다. */
   const stopTree = () => void settled(tree.stop());
   let broken = false;
-  // Windows에서 묶음 없이 돌면 남긴 프로그램이 남을 수 있다. 묶음 실행기를 준비한 서버만 경고한다(준비하지 않은 시험은 조용히 돈다).
   const started = tree.started.then((start) => {
-    if (start.kind === "unconfined" && start.prepared)
-      console.warn(
-        `[provider] this run has no Windows job object, so programs it leaves behind may keep running: ${start.reason}`
-      );
     if (start.kind === "failed") {
       broken = true;
       if (start.error === undefined)

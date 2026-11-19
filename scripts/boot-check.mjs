@@ -82,7 +82,6 @@ async function serveAndKill(label) {
     cwd: process.cwd(),
     env: serverEnv(),
     stdio: ["ignore", "pipe", "pipe"],
-    withoutJob: "refuse",
   });
   servers.push(server);
   let stdoutTail = "";

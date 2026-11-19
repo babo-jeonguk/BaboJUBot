@@ -20,7 +20,7 @@ import { boundChild, runCommand, type BoundedExit } from "./bounded-command.ts";
  * 서버는 시작할 때 저장소의 C# 소스를 Windows에 기본으로 있는 .NET Framework C# 컴파일러로 데이터 폴더에 한 번 만들어 두고
  * (소스 해시로 판단), 공용 실행(`launch.ts`)이 프로그램을 이 실행기로 띄운다. 실행기는 프로그램을 묶음(Job Object)에 넣어 띄우고,
  * 공용 실행의 끄기 요청(제어 통로의 `stop`)이나 서버가 사라져 통로가 끝나면 묶음 안의 프로그램을 모두 끄고 남은 수를 알린다.
- * 통로의 약속은 job-object-launcher.cs 머리말에 있다. 준비하지 못하면 제품의 실행 시도는 묶음 없이 돌고 경고한다.
+ * 통로의 약속은 job-object-launcher.cs 머리말에 있다. 준비하지 못하면 공용 실행이 프로그램을 띄우지 않고 거절한다(#262 사용자 결정).
  */
 const sourceFile = new URL("./job-object-launcher.cs", import.meta.url);
 const filePrefix = "job-object-launcher-";
@@ -36,12 +36,10 @@ let launcher: JobObjectLauncher | undefined;
 /** 실행기가 제어 통로에 맨 먼저(프로그램이 돌기 전에) 쓰는 시작 결과 줄을 읽는다. 시작 결과 줄이 아니면 `undefined`다. */
 export function readLauncherStatus(
   line: string
-): { kind: "ok" } | { kind: "warning" | "failed"; reason: string } | undefined {
-  const match = /^(?:(ok)|(warning|failed): (.*))$/.exec(line.trimEnd());
+): { kind: "ok" } | { kind: "failed"; reason: string } | undefined {
+  const match = /^(?:(ok)|failed: (.*))$/.exec(line.trimEnd());
   if (!match) return undefined;
-  return match[1]
-    ? { kind: "ok" }
-    : { kind: match[2] as "warning" | "failed", reason: match[3]! };
+  return match[1] ? { kind: "ok" } : { kind: "failed", reason: match[2]! };
 }
 
 /** Windows 명령줄 한 인수를 MSVCRT 규칙으로 감싼다. Node.js(libuv)가 인수를 넘길 때와 같은 결과로 풀린다. */
@@ -93,22 +91,13 @@ function resolvedCommand(
 }
 
 /**
- * 실행기로 띄우는 Node.js spawn 인자. 명령줄은 다시 감싸지 않고 그대로 넘긴다. `requireJob`이면 실행기는 묶음을 만들거나 넣지
- * 못할 때 프로그램을 띄우지 않고 실패를 알린다. 띄울 때 넷째 표준 핸들(stdio[3])에 파이프를 두어 제어 통로로 쓴다.
+ * 실행기로 띄우는 Node.js spawn 인자. 명령줄은 다시 감싸지 않고 그대로 넘긴다. 실행기는 묶음을 만들거나 넣지 못하면 프로그램을
+ * 띄우지 않고 실패를 알린다. 띄울 때 넷째 표준 핸들(stdio[3])에 파이프를 두어 제어 통로로 쓴다.
  */
-function launcherSpawn(
-  file: string,
-  application: string,
-  commandLine: string,
-  requireJob: boolean
-) {
+function launcherSpawn(file: string, application: string, commandLine: string) {
   return {
     file,
-    args: [
-      requireJob ? "require" : "allow",
-      Buffer.from(application, "utf8").toString("base64"),
-      commandLine,
-    ],
+    args: [Buffer.from(application, "utf8").toString("base64"), commandLine],
     options: { argv0: `"${file}"`, windowsVerbatimArguments: true },
   };
 }
@@ -116,18 +105,23 @@ function launcherSpawn(
 /** 실행기로 띄우는 방법, 또는 띄울 수 없는 이유. */
 export type JobObjectLaunch =
   | { kind: "launch"; launch: ReturnType<typeof launcherSpawn> }
-  /** 서버가 준비하다 실패했다. */
+  /** 쓸 수 없다: 준비하다 실패했거나 이 프로세스가 준비를 부르지 않았다. 이유는 `jobObjectProblem`과 같다. */
   | { kind: "unavailable"; reason: string }
-  /** 이 프로세스가 준비를 부르지 않았다(Windows 밖, 대부분의 시험). */
-  | { kind: "unprepared" }
   /** 프로그램을 찾지 못했다. cross-spawn으로 띄우면 cmd.exe가 돌다 끝나며 시작 실패(ENOENT)로 알린다. */
   | { kind: "not-found" };
+
+/** 묶음 실행기를 쓸 수 없는 이유. 쓸 수 있으면 `undefined`다. */
+export function jobObjectProblem() {
+  if (!launcher)
+    return "the job object launcher was not prepared in this process (prepareJobObjectLauncher)";
+  return launcher.ok ? undefined : launcher.reason;
+}
 
 /** 프로그램을 묶음 실행기로 띄우는 방법. */
 export function jobObjectLaunch(
   command: readonly [string, ...string[]],
   args: readonly string[],
-  options: { env: NodeJS.ProcessEnv; cwd: string; requireJob: boolean }
+  options: { env: NodeJS.ProcessEnv; cwd: string }
 ): JobObjectLaunch {
   // 찾지 못한 프로그램을 cross-spawn은 cmd.exe로 띄웠다가, cmd.exe가 끝날 때 종료 대신 시작 오류(ENOENT)를 알린다. 준비와 상관없이
   // 먼저 가려 둔다.
@@ -137,15 +131,15 @@ export function jobObjectLaunch(
     options
   );
   if (!resolved) return { kind: "not-found" };
-  if (!launcher) return { kind: "unprepared" };
-  if (!launcher.ok) return { kind: "unavailable", reason: launcher.reason };
+  const problem = jobObjectProblem();
+  if (problem !== undefined || !launcher?.ok)
+    return { kind: "unavailable", reason: problem ?? "unknown" };
   return {
     kind: "launch",
     launch: launcherSpawn(
       launcher.file,
       resolved.application,
-      resolved.commandLine,
-      options.requireJob
+      resolved.commandLine
     ),
   };
 }
@@ -161,7 +155,7 @@ async function trial(
   file: string
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const cmd = path.join(windowsFolder(), "System32", "cmd.exe");
-  const launch = launcherSpawn(file, cmd, "cmd.exe /d /c exit 7", false);
+  const launch = launcherSpawn(file, cmd, "cmd.exe /d /c exit 7");
   const child = spawnChild(launch.file, launch.args, {
     ...launch.options,
     stdio: ["ignore", "ignore", "pipe", "pipe"],
@@ -213,8 +207,7 @@ async function trial(
   const status = readLauncherStatus(lines[0] ?? "");
   if (status?.kind === "ok" && lines[1] === "exit 7" && lines[2] === "ended")
     return { ok: true };
-  if (status && status.kind !== "ok")
-    return { ok: false, reason: status.reason };
+  if (status?.kind === "failed") return { ok: false, reason: status.reason };
   return {
     ok: false,
     reason: `the job object launcher's trial ended with ${exit.killed ? "its time limit" : (exit.signal ?? `code ${exit.code}`)} after ${JSON.stringify(lines)}${stderr ? `: ${stderr.trim()}` : ""}`,
@@ -314,7 +307,7 @@ function removeOldLaunchers(directory: string, current: string) {
 
 /**
  * 서버 시작 때 한 번 부른다. Windows에서 묶음 실행기를 데이터 폴더(`tools/`)에 준비하고, 이후 실행 시도가 그것을 쓴다.
- * 어떤 이유로든 준비하지 못하면 던지지 않고 서버 운영 기록에 경고하며, 실행 시도는 지금처럼 묶음 없이 돈다.
+ * 어떤 이유로든 준비하지 못하면 던지지 않고(서버는 뜬다) 서버 운영 기록에 남긴다. 그때 실행 시도는 띄우지 않고 그 이유로 실패한다.
  * Windows가 아니면 아무것도 하지 않는다.
  */
 export async function prepareJobObjectLauncher(
@@ -334,7 +327,7 @@ export async function prepareJobObjectLauncher(
   if (launcher.ok) removeOldLaunchers(directory, launcher.file);
   else
     console.warn(
-      `[provider] the Windows job object launcher is not available, so programs a run leaves behind may keep running: ${launcher.reason}`
+      `[provider] the Windows job object launcher is not available, so runs are refused until it is: ${launcher.reason}`
     );
   return launcher;
 }

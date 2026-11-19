@@ -89,7 +89,6 @@ export function chaosServer({
       cwd: repoRoot,
       env: chaosEnvironment(process.env, home),
       stdio: ["ignore", "pipe", "pipe"],
-      withoutJob: "refuse",
     });
     trees.push(child);
     leaderGone = false;

@@ -5,17 +5,16 @@
 // output and error as they are; nothing is relayed, and this launcher closes its own copies once the program runs, so the server
 // sees the output end when the program's tree closes it.
 //
-// Command line: <this program> <require|allow> <application path in base64 UTF-8> <program command line, passed on verbatim>
-// "require" refuses to start the program when the job cannot be made or joined; "allow" starts it without the job and warns.
+// Command line: <this program> <application path in base64 UTF-8> <program command line, passed on verbatim>
+// The program never runs outside the job: when the job cannot be made or joined, the launcher reports "failed" and does not run it.
 //
 // The server talks to this launcher over a control channel: the fourth standard handle Node.js passes (stdio[3], a pipe).
 // The program does not inherit it. Lines this launcher writes:
-//   "ok" | "warning: <why>" | "failed: <why>"   once, how the start went ("failed": the program did not start, nothing follows)
+//   "ok" | "failed: <why>"                     once, how the start went ("failed": the program did not start, nothing follows)
 //   "exit <code>"                              the program ended (on its own or by "kill-leader")
 //   "ended" | "left: <n>" | "left: unknown (error <e>)"
 //                                              the reply to a stop: nothing in the job runs any more, or what was still running
-//                                              after ten seconds. Without a job, "ended" means the program ended. The launcher
-//                                              exits right after.
+//                                              after ten seconds. The launcher exits right after.
 // Lines the server writes:
 //   "stop"         end everything in the job, report, and exit. The end of the channel (the server is gone) does the same.
 //   "kill-leader"  end the program only, as a crash would. What it started keeps running until "stop".
@@ -167,10 +166,10 @@ static class JobObjectLauncher
         // The end of the channel tells this launcher the server is gone. The program must not keep it open.
         SetHandleInformation(control, HANDLE_FLAG_INHERIT, 0);
 
-        string mode, encoded, application, commandLine;
+        string encoded, application, commandLine;
         try
         {
-            commandLine = SplitCommandLine(Marshal.PtrToStringUni(GetCommandLineW()), out mode, out encoded);
+            commandLine = SplitCommandLine(Marshal.PtrToStringUni(GetCommandLineW()), out encoded);
             application = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
         }
         catch (FormatException)
@@ -178,23 +177,22 @@ static class JobObjectLauncher
             Report("failed: the launcher's command line could not be read");
             return 1;
         }
-        if ((mode != "require" && mode != "allow") || application.Length == 0 || commandLine.Length == 0)
+        if (application.Length == 0 || commandLine.Length == 0)
         {
             Report("failed: the launcher was not given a program");
             return 1;
         }
-        bool requireJob = mode == "require";
 
-        string warning = null;
-        IntPtr job = CreateKillOnCloseJob(ref warning);
-        if (job == IntPtr.Zero && requireJob)
+        string problem = null;
+        IntPtr job = CreateKillOnCloseJob(ref problem);
+        if (job == IntPtr.Zero)
         {
-            Report("failed: " + warning);
+            Report("failed: " + problem);
             return 1;
         }
         ProcessInformation info = new ProcessInformation();
         // Windows 10 and later can start the program already inside the job. Otherwise start it suspended and add it before it runs.
-        bool started = job != IntPtr.Zero && StartInJob(application, commandLine, job, out info);
+        bool started = StartInJob(application, commandLine, job, out info);
         if (!started)
         {
             if (!Start(application, commandLine, IntPtr.Zero, out info))
@@ -202,17 +200,13 @@ static class JobObjectLauncher
                 Report("failed: the program could not start (error " + Marshal.GetLastWin32Error() + ")");
                 return 1;
             }
-            if (job != IntPtr.Zero && !AssignProcessToJobObject(job, info.hProcess))
+            // The program was made suspended and has not run. It runs only once it is in the job.
+            if (!AssignProcessToJobObject(job, info.hProcess))
             {
-                warning = "the program could not join a job object (error " + Marshal.GetLastWin32Error() + ")";
-                CloseHandle(job);
-                job = IntPtr.Zero;
-                if (requireJob)
-                {
-                    TerminateProcess(info.hProcess, 1);
-                    Report("failed: " + warning);
-                    return 1;
-                }
+                int error = Marshal.GetLastWin32Error();
+                TerminateProcess(info.hProcess, 1);
+                Report("failed: the program could not join a job object (error " + error + ")");
+                return 1;
             }
         }
         if (ResumeThread(info.hThread) == 0xFFFFFFFF)
@@ -223,7 +217,7 @@ static class JobObjectLauncher
             return 1;
         }
         CloseHandle(info.hThread);
-        Report(warning == null ? "ok" : "warning: " + warning);
+        Report("ok");
         // The program holds its own copies of the standard handles.
         CloseStandardHandles();
 
@@ -244,7 +238,7 @@ static class JobObjectLauncher
             if (exited) Sleep(50);
             else WaitForSingleObject(info.hProcess, 50);
         }
-        string end = job != IntPtr.Zero ? EndJob(job) : EndProgram(info.hProcess);
+        string end = EndJob(job);
         if (!exited && WaitForSingleObject(info.hProcess, 0) == WAIT_OBJECT_0)
         {
             code = ExitCode(info.hProcess);
@@ -303,8 +297,8 @@ static class JobObjectLauncher
         return command;
     }
 
-    // Splits "<launcher> <mode> <encoded> <rest>" without unquoting the rest, so the program gets the exact command line the server built.
-    static string SplitCommandLine(string line, out string mode, out string encoded)
+    // Splits "<launcher> <encoded> <rest>" without unquoting the rest, so the program gets the exact command line the server built.
+    static string SplitCommandLine(string line, out string encoded)
     {
         int i = 0;
         if (i < line.Length && line[i] == '"')
@@ -313,7 +307,6 @@ static class JobObjectLauncher
             i = close < 0 ? line.Length : close + 1;
         }
         while (i < line.Length && line[i] != ' ' && line[i] != '\t') i++;
-        mode = NextToken(line, ref i);
         encoded = NextToken(line, ref i);
         return i < line.Length ? line.Substring(i) : "";
     }
@@ -330,12 +323,12 @@ static class JobObjectLauncher
     }
 
     // The handle is not inheritable and has no name, so only this program holds it.
-    static IntPtr CreateKillOnCloseJob(ref string warning)
+    static IntPtr CreateKillOnCloseJob(ref string problem)
     {
         IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
         if (job == IntPtr.Zero)
         {
-            warning = "a job object could not be made (error " + Marshal.GetLastWin32Error() + ")";
+            problem = "a job object could not be made (error " + Marshal.GetLastWin32Error() + ")";
             return IntPtr.Zero;
         }
         // No breakaway flag: programs in the job cannot leave it.
@@ -343,7 +336,7 @@ static class JobObjectLauncher
         limit.Basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limit, Marshal.SizeOf(typeof(ExtendedLimit))))
         {
-            warning = "a job object could not be set to end its programs (error " + Marshal.GetLastWin32Error() + ")";
+            problem = "a job object could not be set to end its programs (error " + Marshal.GetLastWin32Error() + ")";
             CloseHandle(job);
             return IntPtr.Zero;
         }
@@ -405,13 +398,6 @@ static class JobObjectLauncher
             if (i >= 1000) return "left: " + accounting.ActiveProcesses;
             Sleep(10);
         }
-    }
-
-    // Without a job only the program itself can be ended and checked.
-    static string EndProgram(IntPtr process)
-    {
-        TerminateProcess(process, 1);
-        return WaitForSingleObject(process, 10000) == WAIT_OBJECT_0 ? "ended" : "left: 1";
     }
 
     static void Report(string text)
