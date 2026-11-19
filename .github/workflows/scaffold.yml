@@ -168,6 +168,12 @@ jobs:
           echo "BABOJUBOT_TEST_NO_LINK_DIR=$dir" >> "$GITHUB_ENV"
       - name: Run runtime tests
         timeout-minutes: 12
+        # 바깥 환경이 필요한 시험은 이 job에서 필수다. 확인이 실패하면 건너뛰지 않고 원인과 함께 실패한다(test-support.ts probeEnvironment):
+        # 실제 Docker 격리(container.docker.test.ts), python pty 실제 터미널(login.test.ts), systemd 사용자 scope(lease-hidden.alone.test.ts).
+        env:
+          BABOJUBOT_REQUIRE_DOCKER: "1"
+          BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
+          BABOJUBOT_REQUIRE_SYSTEMD_SCOPE: "1"
         run: pnpm --filter @babojubot/runtime run test
   test-db:
     name: tests / db
@@ -333,7 +339,10 @@ jobs:
       - name: Check CI gate portability
         run: node --test scripts/ci-test-gate.test.mjs
       - run: pnpm --filter @babojubot/runtime run typecheck
+      # python pty 실제 터미널 시험(login.test.ts)은 필수다. Windows는 POSIX pty가 없어 그 시험만 OS 이유로 건너뛴다.
       - timeout-minutes: 8
+        env:
+          BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
         run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
@@ -367,7 +376,10 @@ jobs:
       - name: Check CI gate portability
         run: node --test scripts/ci-test-gate.test.mjs
       - run: pnpm --filter @babojubot/runtime run typecheck
+      # python pty 실제 터미널 시험(login.test.ts)은 필수다. Windows는 POSIX pty가 없어 그 시험만 OS 이유로 건너뛴다.
       - timeout-minutes: 8
+        env:
+          BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
         run: pnpm --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
