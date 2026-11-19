@@ -381,7 +381,12 @@ describe.each([
       await new Promise<void>((resolve) =>
         server.listen(0, "127.0.0.1", resolve)
       );
-      cleanup.own(() => new Promise((resolve) => server.close(resolve)));
+      cleanup.own(
+        () =>
+          new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve()))
+          )
+      );
       const provider = connection.create({
         dataDir,
         // 연결 확인은 프로그램을 띄우지 못하고(없는 프로그램) 끝난다. 로그인 자리 준비는 그 앞에서 한다.
@@ -409,7 +414,9 @@ describe.each([
       );
       cleanup.own(() => {
         relayServer.closeAllConnections();
-        return new Promise((resolve) => relayServer.close(resolve));
+        return new Promise<void>((resolve, reject) =>
+          relayServer.close((error) => (error ? reject(error) : resolve()))
+        );
       });
       const { token } = relay.grant({
         signal: new AbortController().signal,

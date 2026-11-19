@@ -247,7 +247,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       redirecting.listen(0, "127.0.0.1", resolve)
     );
     onTestFinished(
-      () => new Promise<void>((resolve) => redirecting.close(() => resolve()))
+      () =>
+        new Promise<void>((resolve, reject) =>
+          redirecting.close((error) => (error ? reject(error) : resolve()))
+        )
     );
     const port = (redirecting.address() as net.AddressInfo).port;
     const { relays } = hub();

@@ -191,7 +191,10 @@ it("ends with the HTTP start error and records the database close failure when b
     taken.listen(0, "127.0.0.1", resolve);
   });
   onTestFinished(
-    () => new Promise<void>((resolve) => taken.close(() => resolve()))
+    () =>
+      new Promise<void>((resolve, reject) =>
+        taken.close((error) => (error ? reject(error) : resolve()))
+      )
   );
   const { port } = taken.address() as { port: number };
   const child = startMain(

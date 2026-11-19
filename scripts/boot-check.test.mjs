@@ -39,7 +39,11 @@ test(
     await withCleanup(async (defer) => {
       defer(async () => {
         if (listener)
-          await new Promise((resolve) => listener.server.close(resolve));
+          await new Promise((resolve, reject) =>
+            listener.server.close((error) =>
+              error ? reject(error) : resolve()
+            )
+          );
       });
 
       const result = await supervise(["scripts/boot-check.mjs"], pollutedEnv());

@@ -672,7 +672,6 @@ it("C17 refuses a Unix socket", async (context) => {
       );
       server.listen(path.join(shared, "s"), () => resolve(""));
     });
-    defer(() => new Promise((resolve) => server.close(resolve)));
     if (listening)
       without(
         context,
@@ -680,6 +679,13 @@ it("C17 refuses a Unix socket", async (context) => {
         "unverified",
         `socket을 만들지 못함: ${listening}`
       );
+    // 연 서버만 닫는다. 열지 못한 서버를 닫으면 ERR_SERVER_NOT_RUNNING으로 실패한다.
+    defer(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        )
+    );
     expect(await read("s")).toEqual(refusal("not_regular_file"));
   });
   note(context, "C17", "pass");
