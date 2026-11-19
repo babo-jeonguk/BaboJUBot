@@ -155,7 +155,7 @@ const syncCommandTimeout = {
 };
 
 const ignoredErrorGuide =
-  "버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfUnreadable(읽을 수 없으면 아님), settled(순서만 지킴). CODING_STANDARDS.md#제품-코드";
+  "버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). CODING_STANDARDS.md#제품-코드";
 
 /** 오류를 받는 처리기의 자리: `.catch(처리기)`, `.then(성공, 처리기)`. */
 const handlerPositions = new Map([
@@ -202,7 +202,7 @@ function calledMethod(callee) {
  * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, `_`를 붙인 오류 이름을 막는다.
  * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다. 받고 쓰지 않는 오류는 `no-unused-vars`가 막는다.
  * 알려진 한계: 이름으로 넘긴 처리기(`.then(settle, settle)`), 기본값·나머지 매개변수로 받는 오류, `void error`처럼 쓰는 척만 하는
- * 처리, 이름 붙은 함수를 의도와 다르게 쓰는 것(권한 오류까지 `orIfUnreadable`로 덮기)은 판정하지 않으며 리뷰가 본다.
+ * 처리는 판정하지 않으며 리뷰가 본다. `orIfUnreadable` 콜백 안의 입출력은 `no-io-in-unreadable`이 본다.
  */
 const noIgnoredError = {
   meta: {
@@ -234,6 +234,123 @@ const noIgnoredError = {
           context.report({ node: handler.params[0], messageId: "underscore" });
         else if (handler.params.length === 0 && !onlyThrows(handler.body))
           context.report({ node: handler, messageId: "unnamed" });
+      },
+    };
+  },
+};
+
+const unreadableGuide =
+  "읽기는 콜백 밖에서 하세요: 데이터 파일은 orIfMissing(없음만 기본값), 실패하면 안전한 결과로 가는 확인 호출(프로세스 조회·연결·이름 풀이·다른 프로그램의 저장소 열기)은 orIfProbeFailed(원인을 report로 남김)로 감싸고, 읽은 값의 해석만 orIfUnreadable로 감쌉니다. 응답 본문은 await res.text()로 받아 끊김을 드러낸 뒤 해석합니다. CODING_STANDARDS.md#제품-코드";
+
+/** 입출력으로 보는 호출 이름의 앞부분. 파일 읽기·쓰기·열기, 명령 실행이다. `*Sync`(동기 입출력)는 따로 본다. */
+const ioPrefix =
+  /^(read|write|append|open|exists|realpath|copyFile|mkdir|unlink|rename|spawn|execFile|execSync|fork)/;
+/** 입출력으로 보는 호출 이름. 파일 상태, 연결·요청·질의, 이름 풀이, 응답 본문 읽기다. */
+const ioNames = new Set([
+  "stat",
+  "lstat",
+  "access",
+  "rm",
+  "fetch",
+  "connect",
+  "createConnection",
+  "request",
+  "query",
+  "lookup",
+  "json",
+  "text",
+  "arrayBuffer",
+  "blob",
+  "formData",
+]);
+
+/** 호출 대상의 이름들. `fs.realpathSync.native(…)`는 `native`·`realpathSync`, `readFile(…)`은 `readFile`. 맨 앞 객체 이름은 빼고 본다. */
+function calleeNames(callee) {
+  if (callee.type === "Identifier") return [callee.name];
+  const names = [];
+  for (let at = callee; at.type === "MemberExpression"; at = at.object) {
+    const name = at.computed
+      ? at.property.type === "Literal" && typeof at.property.value === "string"
+        ? at.property.value
+        : undefined
+      : at.property.name;
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+/** 입출력 호출로 보는 이름이면 그 이름. 정규식의 `exec`와 겹치는 child_process `exec`는 가져온 이름으로 부를 때만 본다. */
+function ioCallName(callee) {
+  if (callee.type === "Identifier" && callee.name === "exec") return "exec";
+  return calleeNames(callee).find(
+    (name) => ioNames.has(name) || ioPrefix.test(name) || /Sync$/.test(name)
+  );
+}
+
+/**
+ * `orIfUnreadable`은 이미 손에 든 값의 동기 해석·확인 한 단계만 감싼다. 콜백 안의 입출력은 권한·디스크·연결 오류까지 아님·없음으로
+ * 바꿔 원인을 지우므로(#246 리뷰 S1, #258 리뷰 STD-1), 콜백 안의 `async`·`await`와 파일 읽기·쓰기, 명령·연결·이름 풀이·응답 본문
+ * 읽기 직접 호출을 막는다. lint가 안을 보도록 콜백은 그 자리에 쓰게 한다(이름으로 넘긴 함수는 막는다).
+ * 가져온 이름을 바꿔 불러도(`import { orIfUnreadable as parse }`) 본다. 판정은 호출 이름으로 하므로 같은 이름의 순수 함수
+ * (`text()`·`request()` 등)도 짚는다. 그런 함수는 콜백 밖에서 부르고 결과만 해석한다.
+ * 알려진 한계: 콜백이 부르는 함수 안의 동기 입출력(`orIfUnreadable(() => parseConfig(file), …)`의 `parseConfig`가 `readFileSync`를 부름)은
+ * 모양으로 보이지 않으며 리뷰가 본다. 비동기 입출력은 promise를 돌려주므로 타입 검사와 실행 중 거부(`AsyncReadError`)가 막는다.
+ */
+const noIoInUnreadable = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Disallow I/O inside the callback of orIfUnreadable, which only wraps one synchronous parse",
+    },
+    schema: [],
+    messages: {
+      io: `orIfUnreadable 콜백 안에서 {{name}}을(를) 부릅니다. orIfUnreadable은 이미 손에 든 값의 동기 해석 한 단계만 감쌉니다. 입출력의 실패(권한·디스크·연결)를 아님·없음으로 바꾸면 원인이 사라집니다. ${unreadableGuide}`,
+      async: `orIfUnreadable 콜백이 비동기입니다(async·await). orIfUnreadable은 동기 해석만 받고, promise를 받으면 AsyncReadError를 던집니다. 비동기 입출력은 확인 호출이므로 orIfProbeFailed로 원인을 남기거나 없음만 기본값이면 orIfMissing을 쓰세요. ${unreadableGuide}`,
+      named: `orIfUnreadable에 콜백을 이름으로 넘깁니다. lint가 콜백 안의 입출력을 볼 수 있도록 해석을 그 자리에 쓰세요(orIfUnreadable(() => JSON.parse(text), undefined)). ${unreadableGuide}`,
+    },
+  },
+  create(context) {
+    /** 이 파일에서 orIfUnreadable을 가리키는 지역 이름. */
+    const names = new Set(["orIfUnreadable"]);
+    const { visitorKeys } = context.sourceCode;
+    /** 콜백 몸 전체를 돌며 `await`와 입출력 호출을 짚는다. 안쪽 함수도 본다. */
+    const inspect = (node) => {
+      if (node.type === "AwaitExpression")
+        context.report({ node, messageId: "async" });
+      if (node.type === "CallExpression" || node.type === "NewExpression") {
+        const name = ioCallName(node.callee);
+        if (name) context.report({ node, messageId: "io", data: { name } });
+      }
+      for (const key of visitorKeys[node.type] ?? []) {
+        const child = node[key];
+        for (const item of Array.isArray(child) ? child : [child])
+          if (item && typeof item.type === "string") inspect(item);
+      }
+    };
+    return {
+      ImportSpecifier(node) {
+        const imported =
+          node.imported.type === "Identifier"
+            ? node.imported.name
+            : node.imported.value;
+        if (imported === "orIfUnreadable") names.add(node.local.name);
+      },
+      CallExpression(node) {
+        const { callee } = node;
+        const called =
+          callee.type === "Identifier"
+            ? names.has(callee.name)
+            : calledMethod(callee) === "orIfUnreadable";
+        if (!called) return;
+        const [read] = node.arguments;
+        if (!read) return;
+        if (!functionTypes.has(read.type)) {
+          context.report({ node: read, messageId: "named" });
+          return;
+        }
+        if (read.async) context.report({ node: read, messageId: "async" });
+        inspect(read.body);
       },
     };
   },
@@ -332,6 +449,7 @@ export default {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
     "sync-command-timeout": syncCommandTimeout,
     "no-ignored-error": noIgnoredError,
+    "no-io-in-unreadable": noIoInUnreadable,
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
   },

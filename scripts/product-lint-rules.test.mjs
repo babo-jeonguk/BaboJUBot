@@ -521,3 +521,69 @@ test("product code does not drop an error without naming it", async () => {
         `${place}: ${code}`
       );
 });
+
+const unreadableRule = ["product/no-io-in-unreadable"];
+const unreadableImport = `import { orIfUnreadable } from "@babojubot/contracts";\n`;
+
+/** orIfUnreadable 콜백 안의 입출력. 제품 코드와 개발 스크립트가 같은 모양을 받는다(scripts/script-lint-rules.test.mjs). */
+const unreadableIo = {
+  "a file read": `import { readFileSync } from "node:fs";\n${unreadableImport}export const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
+  "a file read on the module": `import fs from "node:fs";\n${unreadableImport}export const read = (file) => orIfUnreadable(() => fs.readFileSync(file, "utf8").split(" ")[19], undefined);\n`,
+  "a nested sync call": `import fs from "node:fs";\n${unreadableImport}export const same = (a, b) => orIfUnreadable(() => fs.realpathSync.native(a) === b, false);\n`,
+  "a file status": `import { statSync } from "node:fs";\n${unreadableImport}export const big = (file) => orIfUnreadable(() => statSync(file).size > 10, false);\n`,
+  "a command": `import { execFileSync } from "node:child_process";\n${unreadableImport}export const start = (pid) => orIfUnreadable(() => execFileSync("ps", ["-p", String(pid)], { timeout: 1000 }), undefined);\n`,
+  "a spawned command": `import { spawnSync } from "node:child_process";\n${unreadableImport}export const start = () => orIfUnreadable(() => spawnSync("ps", [], { timeout: 1000 }).stdout, undefined);\n`,
+  "a child_process exec": `import { exec } from "node:child_process";\n${unreadableImport}export const run = () => orIfUnreadable(() => exec("ps"), undefined);\n`,
+  "a database opened": `import { DatabaseSync } from "node:sqlite";\n${unreadableImport}export const open = (file) => orIfUnreadable(() => new DatabaseSync(file), undefined);\n`,
+  "a connection": `${unreadableImport}export const check = (client) => orIfUnreadable(() => client.connect(), false);\n`,
+  "a request": `${unreadableImport}export const check = (connection) => orIfUnreadable(() => connection.request("thread/read", {}), false);\n`,
+  "a fetch": `${unreadableImport}export const check = (url) => orIfUnreadable(() => fetch(url), undefined);\n`,
+  "a name lookup": `import { lookup } from "node:dns/promises";\n${unreadableImport}export const check = (host) => orIfUnreadable(() => lookup(host), undefined);\n`,
+  "a response body": `${unreadableImport}export const body = (res) => orIfUnreadable(() => res.json(), undefined);\n`,
+  "a file write": `import { writeFileSync } from "node:fs";\n${unreadableImport}export const save = (file) => orIfUnreadable(() => writeFileSync(file, "x"), undefined);\n`,
+  "an async callback": `${unreadableImport}export const check = (work) => orIfUnreadable(async () => work, false);\n`,
+  "an await": `import { readFile } from "node:fs/promises";\n${unreadableImport}export const read = async (file) => orIfUnreadable(async () => JSON.parse(await readFile(file, "utf8")), undefined);\n`,
+  "a renamed import": `import { readFileSync } from "node:fs";\nimport { orIfUnreadable as parsed } from "@babojubot/contracts";\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
+  "a namespace import": `import { readFileSync } from "node:fs";\nimport * as failure from "@babojubot/contracts";\nexport const read = (file) => failure.orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`,
+  "a callback passed by name": `${unreadableImport}const parse = () => JSON.parse("1");\nexport const read = () => orIfUnreadable(parse, undefined);\n`,
+};
+
+/** 이미 손에 든 값의 동기 해석·확인 한 단계. 정규식의 exec는 명령이 아니다. */
+const unreadableKept = [
+  `${unreadableImport}export const read = (text) => orIfUnreadable(() => JSON.parse(text), undefined);\n`,
+  `${unreadableImport}export const host = (origin) => orIfUnreadable(() => new URL(origin).host, false);\n`,
+  `${unreadableImport}export const decode = (bytes) => orIfUnreadable(() => new TextDecoder("utf-8", { fatal: true }).decode(bytes), undefined);\n`,
+  `${unreadableImport}export const claims = (token) => orIfUnreadable(() => JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")), undefined);\n`,
+  `${unreadableImport}export const uid = (status) => orIfUnreadable(() => Number(/^Uid:\\s+(\\d+)/m.exec(status)[1]), undefined);\n`,
+  `${unreadableImport}export const valid = (schema, text) => orIfUnreadable(() => schema.safeParse(JSON.parse(text)), undefined);\n`,
+  // 입출력은 콜백 밖에서 하고, 확인 호출은 원인을 남기는 함수로 감싼다.
+  `import { readFileSync } from "node:fs";\nimport { hasErrorCode, orIfMissing, orIfProbeFailed, orIfUnreadable } from "@babojubot/contracts";\nexport const read = (file, report) => {\n  const text = orIfMissing(() => readFileSync(file, "utf8"), hasErrorCode("ENOENT"), undefined);\n  const start = orIfProbeFailed(() => readFileSync("/proc/1/stat", "utf8"), undefined, report);\n  return [text === undefined ? undefined : orIfUnreadable(() => JSON.parse(text), undefined), start];\n};\n`,
+];
+
+test("orIfUnreadable callbacks do no I/O in product code", async () => {
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(unreadableIo)) {
+      const messages = await lint(code, place, unreadableRule);
+      assert.ok(messages.length > 0, `${place}: ${shape} not reported`);
+      // 이유와 쓸 함수, 작성 기준을 안내한다.
+      for (const { message } of messages) {
+        assert.match(message, /orIfProbeFailed/);
+        assert.match(message, /orIfMissing/);
+        assert.match(message, /CODING_STANDARDS\.md#제품-코드/);
+      }
+    }
+  for (const place of productPlaces)
+    for (const code of unreadableKept)
+      assert.deepEqual(
+        await lint(code, place, unreadableRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    for (const code of Object.values(unreadableIo))
+      assert.deepEqual(
+        await lint(code, place, unreadableRule),
+        [],
+        `${place}: ${code}`
+      );
+});

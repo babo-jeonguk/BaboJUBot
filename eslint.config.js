@@ -240,6 +240,7 @@ export default defineConfig([
     // 시작한 Promise의 실패는 기다리거나 받고, 결과를 기다리지 않을 때는 `void`로 드러낸다. 폐기 예정 기능은 쓰지 않는다.
     // 외부 프로그램을 동기로 띄우면 끝날 때까지 서버 전체가 멈추므로, 동기 실행은 옵션 객체에 timeout을 둘 때만 쓴다.
     // 오류는 받아 검사하거나 다시 던진다. 버려야 하면 왜 버리는지 이름 붙은 함수(contracts의 failure.ts)로 드러낸다.
+    // `orIfUnreadable`은 동기 해석 한 단계만 감싼다. 콜백 안의 입출력은 확인 호출(`orIfProbeFailed`)이나 읽기(`orIfMissing`)로 꺼낸다.
     files: productFiles,
     ignores: testFiles,
     plugins: { product: productRules },
@@ -250,6 +251,7 @@ export default defineConfig([
       "product/no-assertion-on-parsed-data": "error",
       "product/sync-command-timeout": "error",
       "product/no-ignored-error": "error",
+      "product/no-io-in-unreadable": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",
@@ -271,6 +273,7 @@ export default defineConfig([
     rules: {
       "product/sync-command-timeout": "error",
       "product/no-ignored-error": "error",
+      "product/no-io-in-unreadable": "error",
       eqeqeq: ["error", "always", { null: "ignore" }],
     },
   },

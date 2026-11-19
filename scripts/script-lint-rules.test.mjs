@@ -57,6 +57,10 @@ const scriptRules = {
     reported: `try {\n  JSON.parse("x");\n} catch {\n  console.log("not JSON");\n}\n`,
     kept: `try {\n  JSON.parse("x");\n} catch (error) {\n  if (!(error instanceof SyntaxError)) throw error;\n}\n`,
   },
+  "product/no-io-in-unreadable": {
+    reported: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
+    kept: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => {\n  const text = readFileSync(file, "utf8");\n  return orIfUnreadable(() => JSON.parse(text), undefined);\n};\n`,
+  },
   eqeqeq: {
     reported: `export const same = (a, b) => a == b;\n`,
     kept: `export const same = (a, b) => a === b;\nexport const none = (a) => a == null;\n`,
