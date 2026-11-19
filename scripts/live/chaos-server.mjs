@@ -7,6 +7,7 @@ import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
@@ -166,7 +167,6 @@ export function chaosServer({
    * 다른 작업의 프로세스는 건드리지 않는다(이 홈의 기록과 이 홈의 DB만 본다).
    */
   async function dispose() {
-    await stop();
     const leftovers = {
       postgres: false,
       providerRecordsFound: 0,
@@ -178,35 +178,42 @@ export function chaosServer({
     const { recoverProviderProcesses } =
       await import("../../packages/runtime/src/index.ts");
     const pgDir = path.join(home, "postgres");
-    if (
-      database === "persistent" &&
-      existsSync(path.join(pgDir, "postmaster.pid"))
-    ) {
-      leftovers.postgres = true;
-      // 남은 DB는 제품 경로로 열면 정상 정지하고 다시 띄운다. 닫으면 정상 정지한다.
-      const handle = await openDatabase({
-        embedded: { dataDir: pgDir, persistent: true },
-      });
-      await handle.close();
-    }
-    if (database === "ephemeral" && forced) {
-      // 강제로 끝난 프로세스의 임시 DB는 다음 임시 DB를 열 때 제품이 정리한다.
-      const handle = await openEphemeralDatabase();
-      await handle.close();
-    }
-    leftovers.providerRecordsFound = processRecordPids(home).length;
-    await recoverProviderProcesses(home);
-    leftovers.providerRecordsLeft = processRecordPids(home).length;
-    // 띄운 모든 서버 트리가 끝났는지 확인한다. 제품 정리가 놓친 것도 여기서 끈다. 확인하지 못하면 홈을 남기고 실패한다.
-    const stops = await Promise.allSettled(trees.map((tree) => tree.stop()));
-    const failures = stops.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : []
-    );
-    if (failures.length)
-      throw new AggregateError(
-        failures,
-        `[chaos] ${failures.length} server tree(s) could not be confirmed stopped; kept ${home}`
-      );
+    // 서버 멈춤, 남은 DB·기록의 제품 정리, 띄운 모든 서버 트리 끄기. 앞 단계가 실패해도 트리는 끄고, 실패를 모아 알린다(홈은 남긴다).
+    await cleanUpScene({
+      stopServer: () => stop(),
+      cleanLeftovers: [
+        async () => {
+          if (
+            database === "persistent" &&
+            existsSync(path.join(pgDir, "postmaster.pid"))
+          ) {
+            leftovers.postgres = true;
+            // 남은 DB는 제품 경로로 열면 정상 정지하고 다시 띄운다. 닫으면 정상 정지한다.
+            const handle = await openDatabase({
+              embedded: { dataDir: pgDir, persistent: true },
+            });
+            await handle.close();
+          }
+          if (database === "ephemeral" && forced) {
+            // 강제로 끝난 프로세스의 임시 DB는 다음 임시 DB를 열 때 제품이 정리한다.
+            const handle = await openEphemeralDatabase();
+            await handle.close();
+          }
+        },
+        async () => {
+          leftovers.providerRecordsFound = processRecordPids(home).length;
+          await recoverProviderProcesses(home);
+          leftovers.providerRecordsLeft = processRecordPids(home).length;
+        },
+      ],
+      // 제품 정리가 놓친 것도 여기서 끈다. 확인하지 못한 트리가 있으면 실패한다.
+      stopTrees: () =>
+        attemptAll(
+          trees.map((tree) => () => tree.stop()),
+          "[chaos] server trees could not be confirmed stopped"
+        ),
+      message: `[chaos] the scene server could not be cleaned up; kept ${home}`,
+    });
     if (leftovers.providerRecordsLeft > 0) {
       // 우리 것인지 확인하지 못한 기록은 지우지 않는다. 사람이 정리할 수 있게 홈을 남긴다.
       leftovers.homeKept = true;
@@ -243,6 +250,28 @@ export function chaosServer({
       return !!child && !leaderGone;
     },
   };
+}
+
+/**
+ * 장면 서버의 마지막 정리 순서. 남은 DB·기록의 제품 정리(`cleanLeftovers`, 서로 독립)는 서버가 멈춘 뒤에만 한다: 살아 있는 서버의 DB를
+ * 제품 경로로 끄지 않는다. 띄운 서버 트리 끄기(`stopTrees`)는 앞 단계가 실패해도 한다. 실패는 모아 던진다(`attemptAll`).
+ */
+export async function cleanUpScene({
+  stopServer,
+  cleanLeftovers,
+  stopTrees,
+  message,
+}) {
+  await attemptAll(
+    [
+      async () => {
+        await stopServer();
+        await attemptAll(cleanLeftovers, message);
+      },
+      stopTrees,
+    ],
+    message
+  );
 }
 
 /** 서버 출력은 증거에 넣지 않는다. 사람이 원인을 보도록 터미널에만 보이고, 오류에는 짧은 문구만 담는다. */

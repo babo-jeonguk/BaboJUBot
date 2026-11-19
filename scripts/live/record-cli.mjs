@@ -40,12 +40,14 @@ process.on("SIGINT", () => {
   record("signal", { signal: "SIGINT" });
   child.interrupt();
 });
-// 끄라는 신호다. 트리를 끄고 그 끝(아래 exited)을 기다려 끝난다.
+// 끄라는 신호다. 아래 흐름이 트리를 끄고 그 결과로 끝난다.
+let requestStop;
+const stopRequested = new Promise((resolve) => {
+  requestStop = resolve;
+});
 process.on("SIGTERM", () => {
   record("signal", { signal: "SIGTERM" });
-  void child
-    .stop()
-    .catch((error) => record("stop-failed", { code: failureCode(error) }));
+  requestStop();
 });
 
 process.stdin.on("data", (chunk) => {
@@ -138,15 +140,9 @@ child.stdout.on("data", (chunk) => {
   });
 });
 void (async () => {
-  const started = await child.started;
-  if (started.kind === "failed") {
-    record("spawn-error", { code: failureCode(started.error) });
-    log.end(() => process.exit(127));
-    return;
-  }
-  const { code, signal } = await child.exited;
-  record("exit", { code, signal });
-  // 프로그램이 남긴 것까지 끈다. 끝났음을 확인하지 못하면 그 이유를 남기고 실패로 끝난다.
+  // 프로그램이 끝나거나 끄라는 신호가 오면 트리를 끈다(프로그램이 남긴 것까지). 끄기를 시작한 뒤의 끝은 끄기의 결과가 정한다: 끝났음을
+  // 확인하지 못하면 그 이유를 남기고 실패로 끝난다.
+  await Promise.race([child.exited, stopRequested]);
   const stopped = await child.stop().then(
     () => true,
     (error) => {
@@ -154,6 +150,15 @@ void (async () => {
       return false;
     }
   );
+  if (stopped && (await child.started).kind === "failed") {
+    record("spawn-error", { code: failureCode((await child.started).error) });
+    log.end(() => process.exit(127));
+    return;
+  }
+  const { code, signal } = stopped
+    ? await child.exited
+    : { code: null, signal: null };
+  record("exit", { code, signal });
   await queue;
   if (pending) process.stdout.write(pending);
   log.end(() => process.exit(stopped ? (code ?? 1) : 1));

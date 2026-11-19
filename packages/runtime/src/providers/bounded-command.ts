@@ -127,16 +127,20 @@ export async function runCommand(
   };
   const stdout = collect(child.stdout);
   const stderr = collect(child.stderr);
-  const exit = await boundChild(child, options);
-  let drain: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    Promise.all([stdout.closed, stderr.closed]),
-    new Promise<void>((resolve) => {
-      drain = setTimeout(resolve, drainMs);
-    }),
-  ]);
-  clearTimeout(drain);
-  child.stdout?.destroy();
-  child.stderr?.destroy();
-  return { ...exit, stdout: stdout.text(), stderr: stderr.text() };
+  try {
+    const exit = await boundChild(child, options);
+    let drain: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.all([stdout.closed, stderr.closed]),
+      new Promise<void>((resolve) => {
+        drain = setTimeout(resolve, drainMs);
+      }),
+    ]);
+    clearTimeout(drain);
+    return { ...exit, stdout: stdout.text(), stderr: stderr.text() };
+  } finally {
+    // 끝을 확인하지 못해 던질 때도 이쪽 출력 끝은 닫는다.
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  }
 }

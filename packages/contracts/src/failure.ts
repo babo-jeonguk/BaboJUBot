@@ -128,3 +128,27 @@ export function failureCode(error: unknown): string {
   if (error instanceof Error) return error.name;
   return "unknown";
 }
+
+/**
+ * 서로 독립인 일(끄기·닫기·지우기 같은 정리)을 차례로 모두 한다. 앞 일이 실패해도 뒤 일을 하고, 실패는 모아 마지막에 던진다. 실패가
+ * 하나면 그 오류를 그대로, 여럿이면 `message`와 각 문구를 담은 AggregateError를 던진다. 앞 일이 끝나야 안전한 뒤 일은 여기 넣지 않고
+ * 그 순서를 드러낸 한 단계로 묶는다(#263 외부 리뷰 S1·S2: 차례로 기다린 정리가 앞의 실패에 뒤를 건너뛰었다).
+ */
+export async function attemptAll(
+  steps: Iterable<() => unknown>,
+  message: string
+): Promise<void> {
+  const failures: unknown[] = [];
+  for (const step of steps)
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length)
+    throw new AggregateError(
+      failures,
+      `${message}: ${failures.map((error) => (error instanceof Error ? error.message : String(error))).join("; ")}`
+    );
+}

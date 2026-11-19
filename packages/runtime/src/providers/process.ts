@@ -222,10 +222,19 @@ export function startProcess(options: {
     cwd: options.cwd,
     stdio: "pipe",
   });
-  /** 트리를 끈다. 결과는 정리(finish)가 같은 끄기를 기다려 받는다. */
-  const stopTree = () => void settled(tree.stop());
-  let broken = false;
-  const started = tree.started.then((start) => {
+  /** 끄기가 끝났는데 대표가 끝나지 않았을 때(끄기 실패) 정리를 시작한다. 실행 시도의 정리가 정해지면 바뀐다. */
+  let finishWithoutLeader = () => {};
+  /**
+   * 트리를 끈다. 결과는 정리(finish)가 같은 끄기를 기다려 받는다. 끄기를 시작한 뒤의 끝은 끄기의 결과가 정한다: 대표가 SIGKILL 뒤에도
+   * 끝나지 않아 끄기가 실패하면 대표의 끝을 기다리지 않고 그 실패로 정리한다(#263 외부 리뷰 SP1).
+   */
+  const stopTree = () =>
+    void settled(tree.stop()).then(() => {
+      if (!leaderExited) finishWithoutLeader();
+    });
+  let broken = false,
+    leaderExited = false;
+  void tree.started.then((start) => {
     if (start.kind === "failed") {
       broken = true;
       if (start.error === undefined)
@@ -252,7 +261,6 @@ export function startProcess(options: {
     }
   let closed = false,
     finished = false,
-    leaderExited = false,
     skipping = false,
     buffer = "",
     queue = Promise.resolve();
@@ -376,7 +384,6 @@ export function startProcess(options: {
             "[provider] a container could not be removed; it is removed at the next server start"
           );
         }
-        await started;
         await queue;
         if (stopped)
           try {
@@ -396,6 +403,7 @@ export function startProcess(options: {
         resolve({ code, broken, stderr });
       })();
     };
+    finishWithoutLeader = () => finish(null);
     void tree.exited.then(({ code }) => {
       leaderExited = true;
       clock.clearTimeout(term);

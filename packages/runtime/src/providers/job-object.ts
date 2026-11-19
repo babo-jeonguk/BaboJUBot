@@ -188,22 +188,24 @@ async function trial(
   try {
     // 시한에 SIGKILL로 끝내고 끝을 보장한다. 끝나지 않으면 준비 실패로 다룬다.
     exit = await boundChild(child, { limitMs: trialLimitMs });
+    // 끝나기 전에 쓴 줄을 마저 읽는다. 통로가 닫히지 않아도 잠깐만 기다린다.
+    let drain: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      controlClosed,
+      new Promise<void>((resolve) => {
+        drain = setTimeout(resolve, 1000);
+      }),
+    ]);
+    clearTimeout(drain);
   } catch (error) {
     return {
       ok: false,
       reason: `the job object launcher's trial did not end: ${error instanceof Error ? error.message : String(error)}`,
     };
+  } finally {
+    // 끝을 확인하지 못해 돌아갈 때도 통로를 닫는다.
+    control.destroy();
   }
-  // 끝나기 전에 쓴 줄을 마저 읽는다. 통로가 닫히지 않아도 잠깐만 기다린다.
-  let drain: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    controlClosed,
-    new Promise<void>((resolve) => {
-      drain = setTimeout(resolve, 1000);
-    }),
-  ]);
-  clearTimeout(drain);
-  control.destroy();
   const status = readLauncherStatus(lines[0] ?? "");
   if (status?.kind === "ok" && lines[1] === "exit 7" && lines[2] === "ended")
     return { ok: true };
