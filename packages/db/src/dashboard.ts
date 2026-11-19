@@ -40,8 +40,13 @@ function knownTimeZones(db: Database) {
   if (!names) {
     names = db
       .execute<{ name: string }>(sql`select name from pg_timezone_names`)
-      .then((result) => new Set(result.rows.map((r) => r.name)));
-    names.catch(() => timeZoneNames.delete(db));
+      .then(
+        (result) => new Set(result.rows.map((r) => r.name)),
+        (error: unknown) => {
+          timeZoneNames.delete(db);
+          throw error;
+        }
+      );
     timeZoneNames.set(db, names);
   }
   return names;
