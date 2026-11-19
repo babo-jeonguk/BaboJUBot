@@ -283,6 +283,14 @@ export default defineConfig([
     rules: { "product/no-cleanup-chain": "error" },
   },
   {
+    // 프로세스 그룹(음수 pid)에 신호를 보내는 일은 제품의 그룹 끄기(stopProcessGroup)만 한다(CODING_STANDARDS.md#제품-코드).
+    // 시험 코드는 이 범위에 아직 넣지 않았다.
+    files: [...productFiles, ...scriptFiles],
+    ignores: [...scriptIgnores, "packages/runtime/src/providers/recovery.ts"],
+    plugins: { product: productRules },
+    rules: { "product/no-process-group-signal": "error" },
+  },
+  {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.
     // child_process와 runtime이 의존하는 cross-spawn의 정적 import·re-export·문자열 dynamic import를 막는다.
     // 계산한 경로의 import나 createRequire는 잡지 못한다.

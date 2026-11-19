@@ -288,11 +288,51 @@ const noCleanupChain = {
   },
 };
 
+const groupSignalers = new Set(["kill", "killUnlessGone", "processAlive"]);
+
+/**
+ * 프로세스 그룹(음수 pid)에 신호를 보내는 일은 packages/runtime/src/providers/recovery.ts만 한다. 그룹 끄기는 생존 확인·SIGTERM·유예·
+ * SIGKILL·상한 있는 확인이 한 벌이어야 하고, 손으로 짠 복사본은 신호만 보내고 확인 없이 떠나는 빈틈을 되풀이했다(#255 리뷰 SPEC-3·4).
+ * `process.kill(-x, …)`, `killUnlessGone(-x, …)`, `processAlive(-x)`처럼 첫 인수가 음수 부호 식인 호출을 짚는다. 음수 값을 변수에 담아
+ * 넘기는 호출은 따라가지 않으며 리뷰가 본다.
+ */
+const noProcessGroupSignal = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "allow signalling a process group (a negative pid) only in the product's process group stop",
+    },
+    schema: [],
+    messages: {
+      group:
+        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/runtime/src/providers/recovery.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. stopProcessGroup(@babojubot/runtime/process-group)을 쓰세요. 그룹이 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    return {
+      CallExpression(node) {
+        const name =
+          calledMethod(node.callee) ??
+          (node.callee.type === "Identifier" ? node.callee.name : undefined);
+        const [target] = node.arguments;
+        if (
+          groupSignalers.has(name) &&
+          target?.type === "UnaryExpression" &&
+          target.operator === "-"
+        )
+          context.report({ node, messageId: "group" });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
     "sync-command-timeout": syncCommandTimeout,
     "no-ignored-error": noIgnoredError,
     "no-cleanup-chain": noCleanupChain,
+    "no-process-group-signal": noProcessGroupSignal,
   },
 };
