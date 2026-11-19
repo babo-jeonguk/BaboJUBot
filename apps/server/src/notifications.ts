@@ -7,6 +7,7 @@ import {
   type Database,
 } from "@babojubot/db";
 import type { EventHub } from "./event-hub.ts";
+import { RerunLoop } from "./rerun-loop.ts";
 
 /**
  * 알림 outbox를 채널로 보낸다. 원본은 outbox이고 Event 알림은 빨리 보내라는 신호일 뿐이라, 서버 시작과 주기 확인이
@@ -21,9 +22,13 @@ export class NotificationRelay {
   #now: () => Date;
   #pollMs: number;
   #leaseMs: number;
-  #running: Promise<void> | null = null;
-  #again = false;
-  #closed = false;
+  readonly #loop = new RerunLoop(
+    () => this.#pass(),
+    (error) => {
+      // 남은 항목은 outbox에 그대로 있고 다음 신호·주기 확인이 다시 보낸다.
+      console.error("[notifications]", error);
+    }
+  );
   #timer: ReturnType<typeof setInterval> | undefined;
   #unsubscribe: (() => void) | undefined;
 
@@ -47,54 +52,34 @@ export class NotificationRelay {
 
   start() {
     this.#unsubscribe = this.#hub.subscribe({ kind: "all" }, (event) => {
-      if (notificationOf(event)) this.kick();
+      if (notificationOf(event)) this.#loop.request();
     });
-    this.#timer = setInterval(() => this.kick(), this.#pollMs);
+    this.#timer = setInterval(() => this.#loop.request(), this.#pollMs);
     this.#timer.unref();
-    this.kick();
-  }
-
-  kick() {
-    if (this.#closed) return;
-    if (this.#running) {
-      this.#again = true;
-      return;
-    }
-    this.#running = this.#pass().finally(() => {
-      this.#running = null;
-      if (!this.#again) return;
-      this.#again = false;
-      this.kick();
-    });
+    this.#loop.request();
   }
 
   /** 지금 보낼 차례인 알림을 모두 보내 볼 때까지 기다린다. 테스트 helper. */
   async flush() {
-    this.kick();
-    while (this.#running) await this.#running;
+    this.#loop.request();
+    await this.#loop.settled();
   }
 
   async close() {
-    this.#closed = true;
     clearInterval(this.#timer);
     this.#unsubscribe?.();
-    while (this.#running) await this.#running;
+    await this.#loop.close();
   }
 
   async #pass() {
-    try {
-      for (;;) {
-        const claimed = await claimNotifications(this.#db, {
-          now: this.#now(),
-          leaseMs: this.#leaseMs,
-          limit: 20,
-        });
-        if (!claimed.length) return;
-        for (const claim of claimed) await this.#deliver(claim);
-      }
-    } catch (error) {
-      // 남은 항목은 outbox에 그대로 있고 다음 신호·주기 확인이 다시 보낸다.
-      console.error("[notifications]", error);
+    for (;;) {
+      const claimed = await claimNotifications(this.#db, {
+        now: this.#now(),
+        leaseMs: this.#leaseMs,
+        limit: 20,
+      });
+      if (!claimed.length) return;
+      for (const claim of claimed) await this.#deliver(claim);
     }
   }
 

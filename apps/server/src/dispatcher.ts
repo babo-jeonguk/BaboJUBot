@@ -35,6 +35,7 @@ import { applyAfterCommit } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import { IsolationError } from "./isolation.ts";
 import type { RunRequestAssembler } from "./run-request.ts";
+import { RerunLoops } from "./rerun-loop.ts";
 import { issueRunToken } from "./run-token.ts";
 import type { IntentSettler } from "./tools.ts";
 import { WorkspaceIdentityError } from "./workspace.ts";
@@ -82,8 +83,12 @@ export class RunDispatcher {
   readonly #providers: ReadonlyMap<string, RuntimeAdapter>;
   readonly #now: () => Date;
   readonly #assemble: RunRequestAssembler;
-  readonly #pumps = new Map<string, Promise<void>>();
-  readonly #kickedAgain = new Set<string>();
+  /** 에이전트별 깨우기 처리. 처리가 끝난 에이전트는 잊고, 다시 깨우면 새로 시작한다. */
+  readonly #handling = new RerunLoops(
+    (agentId) => this.#dispatch(agentId),
+    (agentId, error) =>
+      console.error(`[runs] dispatch for agent ${agentId} stopped`, error)
+  );
   /** 진행 중인 실행 시도와 그 연결의 adapter. 끼워 넣기는 여기 있는 실행 시도에만 간다. */
   readonly #active = new Map<
     string,
@@ -147,15 +152,7 @@ export class RunDispatcher {
    */
   kick(agentId: string): void {
     if (this.#closed || !this.#recovered) return;
-    if (this.#pumps.has(agentId)) {
-      this.#kickedAgain.add(agentId);
-      return;
-    }
-    const pump = this.#dispatch(agentId).finally(() => {
-      this.#pumps.delete(agentId);
-      if (this.#kickedAgain.delete(agentId)) this.kick(agentId);
-    });
-    this.#pumps.set(agentId, pump);
+    this.#handling.request(agentId);
   }
 
   /** 이 서버가 지금 그 실행 시도를 실행하고 있는가. */
@@ -234,7 +231,7 @@ export class RunDispatcher {
    * 처리가 끝났다는 신호 뒤에 확인한다(#215).
    */
   async handled(agentId: string): Promise<void> {
-    for (let pump; (pump = this.#pumps.get(agentId));) await pump;
+    await this.#handling.settled(agentId);
   }
 
   /**
@@ -243,7 +240,7 @@ export class RunDispatcher {
    */
   async drain(): Promise<void> {
     for (let round = 0; round < 50; round++) {
-      while (this.#pumps.size) await Promise.all(this.#pumps.values());
+      await this.#handling.settledAll();
       const agents = await listAgentsWithPendingWakes(this.#db);
       if (!agents.length || this.#closed) return;
       for (const agentId of agents) this.kick(agentId);
@@ -261,7 +258,7 @@ export class RunDispatcher {
     this.#recovery.abort();
     for (const { controller } of this.#active.values())
       controller.abort(shutdown);
-    while (this.#pumps.size) await Promise.all(this.#pumps.values());
+    await this.#handling.close();
   }
 
   /** DB 오류 후 같은 admission·종료 저장을 다시 시도한다. 프로바이더를 재실행하지 않는다. */
