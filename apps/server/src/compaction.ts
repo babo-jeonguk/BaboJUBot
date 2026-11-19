@@ -187,7 +187,10 @@ export class CompactionScheduler {
   private settling: Promise<void> | undefined;
   private async settle() {
     while (this.settling) await this.settling;
-    this.settling = (async () => {
+    // 정산을 시작하기 전에 진행 중으로 표시한다. 그 사이 다시 불린 정산은 이 정산이 끝나기를 기다린다.
+    const settling = Promise.withResolvers<void>();
+    this.settling = settling.promise;
+    try {
       for (const [id, result] of this.settlements) {
         try {
           const stored = await finishCompaction(this.options.db, id, result);
@@ -201,11 +204,9 @@ export class CompactionScheduler {
           );
         }
       }
-    })();
-    try {
-      await this.settling;
     } finally {
       this.settling = undefined;
+      settling.resolve();
     }
   }
   async close() {

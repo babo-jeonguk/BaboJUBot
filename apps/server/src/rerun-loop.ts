@@ -30,20 +30,26 @@ export class RerunLoop {
       this.#again = true;
       return;
     }
-    this.#running = (async () => {
-      try {
-        await this.#check();
-      } catch (error) {
-        this.#onError(error);
-      }
-    })().finally(() => {
+    // 확인을 부르기 전에 도는 중으로 표시한다. 확인이 첫 await 전에 같은 루프를 다시 요청해도 재실행으로 모인다.
+    const pass = Promise.withResolvers<void>();
+    this.#running = pass.promise;
+    void this.#pass().then(() => {
       this.#running = undefined;
       if (this.#again) {
         this.#again = false;
         this.request();
       }
       if (!this.#running) this.#onIdle();
+      pass.resolve();
     });
+  }
+
+  async #pass(): Promise<void> {
+    try {
+      await this.#check();
+    } catch (error) {
+      this.#onError(error);
+    }
   }
 
   /**
@@ -54,7 +60,7 @@ export class RerunLoop {
     if (this.#closed) return;
     if (this.#running) {
       this.#again = true;
-      await this.#running; // 이 회차의 finally가 재실행을 이미 시작했다.
+      await this.#running; // 이 회차가 끝나며 재실행을 이미 시작했다.
     } else this.request();
     await this.#running;
   }
@@ -74,11 +80,13 @@ export class RerunLoop {
 /**
  * 키마다 따로 도는 `RerunLoop`들. 같은 키는 한 번에 한 회차만 돌고, 다른 키는 서로 기다리지 않는다.
  * 쉬게 된 키는 잊는다. 그 뒤 같은 키를 요청하면 새로 시작한다. 그래서 들고 있는 것은 지금 도는 키뿐이다.
+ * `onIdle`은 키를 잊은 뒤 그 키로 부른다.
  */
 export class RerunLoops {
   readonly #loops = new Map<string, RerunLoop>();
   readonly #check: (key: string) => Promise<void>;
   readonly #onError: (key: string, error: unknown) => void;
+  readonly #onIdle: (key: string) => void;
   #closed = false;
 
   constructor(
@@ -88,7 +96,7 @@ export class RerunLoops {
   ) {
     this.#check = check;
     this.#onError = onError;
-    void onIdle;
+    this.#onIdle = onIdle;
   }
 
   /** 그 키의 확인을 요청한다. 그 키가 도는 중이면 끝난 뒤 한 번 더 돌게 한다. 닫힌 뒤에는 아무것도 하지 않는다. */
@@ -99,7 +107,10 @@ export class RerunLoops {
       loop = new RerunLoop(
         () => this.#check(key),
         (error) => this.#onError(key, error),
-        () => this.#loops.delete(key)
+        () => {
+          this.#loops.delete(key);
+          this.#onIdle(key);
+        }
       );
       this.#loops.set(key, loop);
     }
