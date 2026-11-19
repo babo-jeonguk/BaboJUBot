@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { NewEvent } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished } from "vitest";
 import {
   claimNotifications,
   findRepliedNotification,
@@ -19,14 +19,14 @@ import { events, notificationOutbox } from "./schema.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
 
+// claim은 DB 전체에서 보낼 항목을 가져가므로, 검사마다 자기 DB에서 자기가 만든 항목만 본다.
 let t: TestDatabase;
-beforeAll(async () => {
-  t = await createTestDatabase();
-  // 이 파일의 검사들은 한 DB에 진행 중인 실행 시도를 남긴다. 가짜 연결의 동시 실행 상한을 풀어 서로 막지 않게 한다.
+beforeEach(async () => {
+  const database = await createTestDatabase();
+  onTestFinished(() => database.close());
+  t = database;
+  // 한 검사가 조직 여럿의 실행 시도를 열어 둔다. 가짜 연결의 동시 실행 상한을 풀어 서로 막지 않게 한다.
   await updateProviderLimit(t.db, "fake", 0);
-});
-afterAll(async () => {
-  await t?.close();
 });
 
 const source = { newId: randomUUID, now: () => new Date() };
@@ -86,20 +86,6 @@ async function organization() {
 
 const outboxOf = async (organizationId: string) =>
   (await listOutbox(t.db)).filter((e) => e.organizationId === organizationId);
-
-/** 다른 테스트의 항목은 먼저 보낸 것으로 정리해 이 테스트의 claim만 남긴다. */
-async function settleEverything() {
-  for (;;) {
-    const claimed = await claimNotifications(t.db, {
-      now: new Date(Date.now() + 3_600_000),
-      leaseMs: lease,
-      limit: 100,
-    });
-    if (!claimed.length) return;
-    for (const c of claimed)
-      await settleNotification(t.db, c, { kind: "sent" }, new Date());
-  }
-}
 
 describe("notification outbox", () => {
   it("stores the delivery intent with the Event in the same transaction, once per Event", async () => {
@@ -177,7 +163,6 @@ describe("notification outbox", () => {
   });
 
   it("claims each due entry once, assembles the content, and settles only with the current claim", async () => {
-    await settleEverything();
     const org = await organization();
     const { messageId } = await org.leadMessage("실험 결과를 보고합니다");
     const now = new Date();
@@ -254,7 +239,6 @@ describe("notification outbox", () => {
   });
 
   it("waits out the retry delay after a failed delivery", async () => {
-    await settleEverything();
     const org = await organization();
     await org.leadMessage("재시도할 보고");
     const now = new Date();
@@ -297,7 +281,6 @@ describe("notification outbox", () => {
 
 describe("notification content", () => {
   it("settles an entry whose content cannot be built as a failed attempt and still hands out the others", async () => {
-    await settleEverything();
     const org = await organization();
     const [created] = await t.db
       .select({ id: events.id })
@@ -337,18 +320,11 @@ describe("notification content", () => {
       nextAttemptAt: new Date(now.getTime() + 1_000).toISOString(),
       lastError: expect.stringContaining("원본"),
     });
-    for (const c of claimed)
-      await settleNotification(t.db, c, { kind: "sent" }, now);
-    await t.db
-      .update(notificationOutbox)
-      .set({ sentAt: now })
-      .where(eq(notificationOutbox.id, broken!.id));
   });
 });
 
 describe("fake channel record", () => {
   it("keeps one record per notification even when the same notification arrives twice", async () => {
-    await settleEverything();
     const org = await organization();
     await org.leadMessage("두 번 보낼 보고");
     const [claim] = await claimNotifications(t.db, {
@@ -380,16 +356,11 @@ describe("fake channel record", () => {
     // 정산 전이라 전송 기록이 있어도 outbox는 아직 보내지 않은 상태다.
     const [entry] = await outboxOf(org.organizationId);
     expect(entry!.delivery.status).toBe("pending");
-    await t.db
-      .update(notificationOutbox)
-      .set({ claimToken: null, claimExpiresAt: null })
-      .where(eq(notificationOutbox.id, claim!.id));
   });
 });
 
 describe("app messages linked to notifications", () => {
   it("links the app message a channel sent to the notification, keyed by the channel name", async () => {
-    await settleEverything();
     const org = await organization();
     const { messageId } = await org.leadMessage("답장받을 보고");
     const [claim] = await claimNotifications(t.db, {

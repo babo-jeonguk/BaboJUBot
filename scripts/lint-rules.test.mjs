@@ -482,3 +482,114 @@ test("code outside tests may wait in finally", async () => {
       place
     );
 });
+
+/** 기대 실패 규칙의 메시지만. */
+const expectedFailureMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-expected-failure");
+
+test("test code may not mark a test as expected to fail", async () => {
+  const shapes = {
+    // 본문 맨 앞에 두면 그 뒤의 어느 실패든 기대한 실패가 된다.
+    "Playwright test.fail in the body": `test("saves", async () => {\n  test.fail(true, "on purpose");\n  await save();\n});\n`,
+    "Playwright test.fail declaring a test": `test.fail("saves", async () => {\n  await save();\n});\n`,
+    "test.fail.only": `test.fail.only("saves", async () => {\n  await save();\n});\n`,
+    "a test made by extend": `settingsTest.fail("saves", async () => {\n  await save();\n});\n`,
+    "Vitest it.fails": `it.fails("saves", async () => {\n  await save();\n});\n`,
+  };
+  for (const [shape, code] of Object.entries(shapes))
+    for (const place of testPlaces) {
+      const [message, ...rest] = expectedFailureMessages(
+        await lint(code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 까닭, 대안(따로 돌린 실행의 종료 코드·고유 문구)과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, /어떤 이유로 실패해도/);
+      assert.match(message.message, /runPlaywright/);
+      assert.match(message.message, /rejects\.toThrow/);
+      assert.match(message.message, /CODING_STANDARDS\.md#단언/);
+    }
+});
+
+test("test code may fail on purpose through other values and check a failure by its message", async () => {
+  const allowed = [
+    `import assert from "node:assert/strict";\nassert.fail("unexpectedly succeeded");\n`,
+    `gate.fail();\nrun.fails = 1;\n`,
+    `await expect(save()).rejects.toThrow("저장 실패");\n`,
+    `test.skip(process.platform === "win32", "Windows에서는 막을 수 없다");\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        expectedFailureMessages(await lint(code, place)),
+        [],
+        code
+      );
+});
+
+/** 시험 사이 상태 규칙의 메시지만. */
+const stateMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-state-between-tests");
+
+test("test code may not pass state from one test to another", async () => {
+  const shared = {
+    "a value one test sets and another reads": `let before;\ntest("changes", async () => {\n  before = await read();\n  await change();\n});\ntest("restores", async () => {\n  expect(await read()).toEqual(before);\n});\n`,
+    "a value set inside a callback of a test": `let lateWrite;\ntest("sends", async ({ page }) => {\n  await page.route("**", (route) => {\n    lateWrite = send(route);\n  });\n});\ntest("waits", async () => {\n  await lateWrite;\n});\n`,
+    "a describe-level value": `describe("outbox", () => {\n  let claim;\n  it("claims", async () => {\n    claim = await claimOne();\n  });\n  it("settles", async () => {\n    await settle(claim);\n  });\n});\n`,
+    "a value that a beforeAll prepared and a test replaces": `let server;\nbeforeAll(async () => {\n  server = await start();\n});\nit("restarts", async () => {\n  server = await restart(server);\n});\nit("reads", async () => {\n  expect(await server.get()).toBe(1);\n});\n`,
+    "test.each": `let last;\ntest.each([1, 2])("stores %s", async (n) => {\n  last = await store(n);\n});\ntest("reads", () => {\n  expect(last).toBe(2);\n});\n`,
+  };
+  const serial = {
+    "serial mode": `test.describe.configure({ mode: "serial" });\ntest("a", () => {});\n`,
+    "a serial group": `test.describe.serial("steps", () => {\n  test("a", () => {});\n});\n`,
+  };
+  for (const [kind, shapes, pattern] of [
+    ["shared", shared, /다른 시험이 대입한 값/],
+    ["serial", serial, /차례대로 묶습니다/],
+  ])
+    for (const [shape, code] of Object.entries(shapes))
+      for (const place of testPlaces) {
+        const [message, ...rest] = stateMessages(await lint(code, place));
+        assert.ok(message, `${place}: ${shape} not reported`);
+        assert.deepEqual(rest, [], `${place}: ${shape}`);
+        assert.match(message.message, pattern, `${kind}: ${shape}`);
+        // 메시지가 혼자 돌릴 때 실패하는 까닭, 대안과 기준 문서의 절을 알려 준다.
+        assert.match(message.message, /beforeEach·fixture/, shape);
+        assert.match(message.message, /CODING_STANDARDS\.md#격리/);
+      }
+});
+
+test("test code may prepare state in hooks and keep each test's own values", async () => {
+  const allowed = [
+    // hook이 시험마다 만들고 정리한다.
+    `let t;\nbeforeEach(async () => {\n  t = await createTestDatabase();\n});\nit("a", async () => {\n  await use(t);\n});\nit("b", async () => {\n  await use(t);\n});\n`,
+    // 파일 하나에 한 번 준비하고 시험은 읽기만 한다.
+    `let server;\nbeforeAll(async () => {\n  server = await start();\n});\nafterAll(() => server.close());\nit("a", async () => {\n  await server.get();\n});\nit("b", async () => {\n  await server.get();\n});\n`,
+    // 시험마다 자기 서버를 대입하고 afterEach가 닫고 비운다. 도움 함수가 대입하는 시험도 같다.
+    `let t;\nafterEach(async () => {\n  await t?.close();\n  t = undefined;\n});\nasync function session() {\n  t = await startTestServer();\n  return t;\n}\nit("a", async () => {\n  t = await startTestServer();\n  await t.get();\n});\nit("b", async () => {\n  await session();\n  await t.get();\n});\n`,
+    // 시험이 남긴 것을 afterEach가 쓴다(본문이 끝난 뒤 보내기).
+    `let sendLate;\ntest.afterEach(() => {\n  sendLate?.();\n  sendLate = undefined;\n});\ntest("a", async () => {\n  sendLate = () => send();\n});\n`,
+    // 시험 안의 변수, 한 시험이 쓰고 읽는 바깥 변수, 다른 모드.
+    `let count = 0;\ntest("a", () => {\n  let local;\n  local = 1;\n  count += local;\n  expect(count).toBe(1);\n});\ntest("b", () => {\n  let local = 2;\n  expect(local).toBe(2);\n});\ntest.describe.configure({ mode: "parallel", timeout: 1000 });\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(stateMessages(await lint(code, place)), [], code);
+});
+
+test("code outside tests may share state between calls and mark failures", async () => {
+  for (const place of [
+    "scripts/lint-sample.mjs",
+    "packages/runtime/test-fixtures/lint-sample.mjs",
+  ]) {
+    const messages = await lint(
+      `let before;\ntest("a", () => {\n  before = 1;\n});\ntest("b", () => {\n  read(before);\n});\ntest.fail("c", () => {});\ntest.describe.configure({ mode: "serial" });\n`,
+      place
+    );
+    assert.deepEqual(
+      [...stateMessages(messages), ...expectedFailureMessages(messages)],
+      [],
+      place
+    );
+  }
+});
