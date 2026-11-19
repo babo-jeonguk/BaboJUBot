@@ -44,11 +44,24 @@ const scriptIgnores = [
   "scripts/fixtures/**",
 ];
 
-// 타입 정보로 검사하는 시험 코드: 디스크에 있는 TypeScript 시험 파일. 타입 정보는 TypeScript 프로젝트에 든 파일에만 생긴다.
-const typedTestFiles = globSync(testFiles, {
+// 타입 정보로 검사하는 시험 코드: 디스크에 있는 시험 파일(폴더 glob이 잡는 폴더는 뺀다). TypeScript 파일은 각 패키지의
+// tsconfig.json, scripts·.agents의 .mjs는 그 폴더의 tsconfig.json(allowJs)으로 타입 정보를 얻는다. 어느 프로젝트에도 들지 않는
+// 시험 폴더의 .mjs(가짜 서버·시험)는 기본 프로젝트로 읽는다.
+const typedTestFiles = globSync([...testFiles, ".agents/scripts/*.test.mjs"], {
   cwd: import.meta.dirname,
   exclude: (entry) => /(^|[\\/])node_modules$/.test(entry),
-}).filter((file) => /\.(ts|tsx|mts)$/.test(file));
+}).filter((file) => /\.(ts|tsx|mts|mjs|js)$/.test(file));
+// 타입 정보를 만드는 project service는 lint 실행 하나에 하나뿐이어서 처음 만든 설정을 모두 같이 쓴다. 그래서 타입 정보를 쓰는
+// 설정은 모두 이 값을 넘긴다.
+const projectService = {
+  // 기본 프로젝트도 Node 타입을 읽고 JS를 받는다(scripts/tsconfig.json의 설정).
+  defaultProject: "scripts/tsconfig.json",
+  allowDefaultProject: [
+    "apps/server/test/*.mjs",
+    "apps/server/test/fixtures/*.mjs",
+    "apps/web/e2e/support/*.mjs",
+  ],
+};
 
 // runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수를 거친다.
 const processOwners = [
@@ -181,7 +194,7 @@ export default defineConfig([
     files: ["apps/web/e2e/**/*.ts"],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService,
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -192,21 +205,31 @@ export default defineConfig([
     },
   },
   {
-    // 시험 코드도 시작한 Promise를 기다리거나 받는다(CODING_STANDARDS.md#순서). 기다리지 않은 단언(Playwright의 `expect(…).toHaveText`,
+    // 시험 코드도 시작한 Promise를 기다리거나 받는다(CODING_STANDARDS.md#단언). 기다리지 않은 단언(Playwright의 `expect(…).toHaveText`,
     // `expect(…).resolves`)은 결과와 상관없이 통과하고, 버린 실패는 시험이 끝난 뒤 다른 시험에서 터진다. `void`로 버리는 것도 짚는다.
     // 비동기 함수를 반환값을 보지 않는 자리(이벤트 listener, `new Promise` executor)에 넘기면 그 실패가 버려지므로 그것도 막는다.
     // 타입 정보는 디스크에 있는 파일에만 생긴다. lint 시험이 lintText로 넣는 없는 경로는 이 규칙을 받지 않는다.
+    // node:test의 `test`·`describe`가 돌려주는 Promise는 러너가 기다린다.
     files: typedTestFiles,
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService,
         tsconfigRootDir: import.meta.dirname,
       },
     },
     rules: {
       "@typescript-eslint/no-floating-promises": [
         "error",
-        { ignoreVoid: false },
+        {
+          ignoreVoid: false,
+          allowForKnownSafeCalls: [
+            {
+              from: "package",
+              package: "node:test",
+              name: ["test", "describe", "it", "suite"],
+            },
+          ],
+        },
       ],
       "@typescript-eslint/no-misused-promises": "error",
     },
@@ -224,7 +247,7 @@ export default defineConfig([
     files: productFiles,
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService,
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -311,7 +334,7 @@ export default defineConfig([
     ignores: scriptIgnores,
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService,
         tsconfigRootDir: import.meta.dirname,
       },
     },

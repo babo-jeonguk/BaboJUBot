@@ -1541,3 +1541,37 @@ test("test code may bound a wait with a timed signal, expect another failure und
         `${place}: ${code}`
       );
 });
+
+// JS 시험(node:test·가짜 서버)도 타입 정보로 본다. scripts·.agents는 그 폴더의 tsconfig.json, 시험 폴더의 .mjs는 기본 프로젝트다.
+const jsPromisePlaces = [
+  "scripts/gh-post.test.mjs",
+  "scripts/live/processes.test.mjs",
+  ".agents/scripts/check-worker-change.test.mjs",
+  "apps/server/test/chaos-harness.test.mjs",
+  "apps/web/e2e/support/misbehaving-server.mjs",
+];
+const jsPromiseHead = `import assert from "node:assert/strict";\nimport { describe, test } from "node:test";\nasync function work() {}\n`;
+
+test("JS tests may not leave a promise unawaited either, while node:test's own test calls stay as they are", async () => {
+  const found = [
+    `work();\n`,
+    `void work();\n`,
+    `assert.rejects(work());\n`,
+    `process.once("beforeExit", async () => {\n  await work();\n});\n`,
+  ];
+  for (const code of found)
+    for (const place of jsPromisePlaces) {
+      const [message, ...rest] = promiseMessages(
+        await lint(jsPromiseHead + code, place)
+      );
+      assert.ok(message, `${place}: ${code} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${code}`);
+    }
+  const allowed = `await work();\nawait assert.rejects(work());\ntest("runs", async () => {\n  await work();\n});\ndescribe("group", () => {\n  test("inside", () => {});\n});\n`;
+  for (const place of jsPromisePlaces)
+    assert.deepEqual(
+      promiseMessages(await lint(jsPromiseHead + allowed, place)),
+      [],
+      place
+    );
+});
