@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   intentRequestSchema,
+  orIfUnreadable,
   type AgentRecoveryBlockReason,
   type IntentOutcome,
   type IntentRequest,
@@ -224,12 +225,11 @@ export const decodeIntentRequest = (
   request: string | null
 ): IntentRequest | null => {
   if (request === null) return null;
-  try {
-    const parsed = intentRequestSchema.safeParse(JSON.parse(request));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
+  const parsed = orIfUnreadable(
+    () => intentRequestSchema.safeParse(JSON.parse(request)),
+    undefined
+  );
+  return parsed?.success ? parsed.data : null;
 };
 
 /** 실행 시도가 받은 복구 깨우기가 가리키는, 서버 재시작으로 끝난 실행 시도들(subquery). */

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import {
   processStartedAt,
   recordProcess,
@@ -569,3 +569,42 @@ it.skipIf(process.platform !== "linux")(
   },
   30_000
 );
+
+// 복구 기록을 담는 폴더 자체를 읽지 못해도 서버는 뜬다. 폴더가 없으면 조용히 넘어가고, 그 밖의 이유면 경고하고 넘어간다.
+it("stays quiet when there is no provider record folder", async () => {
+  const root = await folders.make("babojubot-recovery-");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+
+  await recoverProviderProcesses(root);
+
+  expect(warn).not.toHaveBeenCalled();
+});
+
+it("warns with the failure code and goes on when the provider record folder cannot be listed", async () => {
+  const root = await folders.make("babojubot-recovery-");
+  // 목록을 읽을 수 없는 자리: 폴더 자리에 파일이 있다(ENOTDIR). 없음과 다른 오류다.
+  await writeFile(path.join(root, "providers"), "");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+
+  await recoverProviderProcesses(root);
+
+  expect(warn).toHaveBeenCalledWith(
+    expect.stringMatching(/process records could not be listed.*\(ENOTDIR\)/)
+  );
+});
+
+it("warns with the failure code and goes on when one connection's record folder cannot be listed", async () => {
+  const root = await folders.make("babojubot-recovery-");
+  await mkdir(path.join(root, "providers", "codex"), { recursive: true });
+  await writeFile(path.join(root, "providers", "codex", "processes"), "");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+
+  await recoverProviderProcesses(root);
+
+  expect(warn).toHaveBeenCalledWith(
+    expect.stringMatching(/codex process records.*\(ENOTDIR\)/)
+  );
+});

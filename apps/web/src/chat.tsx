@@ -4,6 +4,7 @@ import {
   maxQueuedMessages,
   messageBodyMaxLength,
   ownerActions,
+  settled,
   type Agent,
   type AgentDetail,
   type ProviderSummary,
@@ -999,12 +1000,12 @@ function Composer({
   const submit = async (delivery: MessageDelivery) => {
     const body = text.trim();
     if (!body || busy || full) return;
-    try {
-      await send.mutateAsync({ body, delivery });
-      setText((current) => (current.trim() === body ? "" : current));
-    } catch {
-      // 오류는 send.isError로 보이고 입력은 그대로 둔다.
-    }
+    // 실패는 send.error로 보이고 입력은 그대로 둔다.
+    await settled(
+      send.mutateAsync({ body, delivery }).then(() => {
+        setText((current) => (current.trim() === body ? "" : current));
+      })
+    );
   };
   const stopRun = () =>
     stop.mutate("interrupt", { onSuccess: () => input.current?.focus() });

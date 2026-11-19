@@ -1,4 +1,5 @@
 import {
+  continueAfterFailure,
   defaultCompactionSettings,
   type ProviderSettings,
   type ProviderSummary,
@@ -291,13 +292,16 @@ function Readiness({ provider }: { provider: ProviderSummary }) {
   const checking = readiness.checking || recheck.isPending;
   const copy = async () => {
     if (!loginCommand) return;
-    try {
-      await navigator.clipboard.writeText(loginCommand);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // 복사하지 못하면 버튼은 그대로다.
-    }
+    // 복사하지 못하면 버튼은 그대로다.
+    await continueAfterFailure(
+      async () => {
+        await navigator.clipboard.writeText(loginCommand);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      (error) =>
+        console.warn("[settings] the login command could not be copied", error)
+    );
   };
   return (
     <>

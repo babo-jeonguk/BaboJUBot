@@ -16,6 +16,10 @@ import type {
 } from "@babojubot/contracts";
 import {
   addUsage,
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
   subtractUsage,
   unreportedUsage,
   usageAmount,
@@ -139,16 +143,15 @@ const runUsage = (
   ),
   costUsd: subtractUsage("usd", after.costUsd, baseline.costUsd),
 });
-/** 연결 폴더의 제품 로그인 토큰이 있으면 환경에 넣는다. 모든 조직이 이 로그인 하나를 쓴다. 없어도 프로그램에 다른 로그인이 있을 수 있으므로 막지 않는다. */
+/** 연결 폴더의 제품 로그인 토큰이 있으면 환경에 넣는다. 모든 조직이 이 로그인 하나를 쓴다. 토큰 파일이 없으면 프로그램에 다른 로그인이 있을 수 있으므로 넘어가고, 그 밖의 읽기 오류는 던진다. */
 async function withLogin(connection: string, env: NodeJS.ProcessEnv) {
-  try {
-    const token = (
-      await readFile(path.join(connection, "setup-token"), "utf8")
-    ).trim();
-    if (token) return { ...env, CLAUDE_CODE_OAUTH_TOKEN: token };
-  } catch {
-    /* 토큰 파일이 없다. */
-  }
+  const text = await orIfMissing(
+    () => readFile(path.join(connection, "setup-token"), "utf8"),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
+  const token = text?.trim();
+  if (token) return { ...env, CLAUDE_CODE_OAUTH_TOKEN: token };
   return env;
 }
 const relayFailure =
@@ -361,17 +364,22 @@ async function executeClaude(
   // 권한은 실행 시도를 정리하는 이 try 안에서 받는다. 어디서 끝나든 finally가 거둔다.
   let grant: RelayGrant | undefined;
   try {
-    if (placement.container)
-      try {
-        grant = connection.relay.grant({
-          signal: control.signal,
-          organizationId: request.organizationId,
-          // 세션 정비(압축)에는 실행이 없다. #149 중계도 그때는 실행 신원을 넣지 않는다.
-          ...(request.runId ? { runId: request.runId } : {}),
-        });
-      } catch {
-        return { ...failed(), error: relayFailure };
-      }
+    if (placement.container) {
+      grant = continueAfterFailure(
+        () =>
+          connection.relay.grant({
+            signal: control.signal,
+            organizationId: request.organizationId,
+            // 세션 정비(압축)에는 실행이 없다. #149 중계도 그때는 실행 신원을 넣지 않는다.
+            ...(request.runId ? { runId: request.runId } : {}),
+          }),
+        (error) =>
+          console.warn(
+            `[provider] the isolated run relay refused a grant (${failureCode(error)})`
+          )
+      );
+      if (!grant) return { ...failed(), error: relayFailure };
+    }
     const config = path.join(temp, "mcp.json");
     await writeFile(
       config,

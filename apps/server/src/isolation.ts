@@ -1,7 +1,8 @@
 import os from "node:os";
-import type {
-  ProviderConnection,
-  ProviderReadinessCheck,
+import {
+  settled,
+  type ProviderConnection,
+  type ProviderReadinessCheck,
 } from "@babojubot/contracts";
 import {
   containerToolsOrigin,
@@ -93,10 +94,7 @@ export class IsolationGate {
       !this.#docker || this.#windows || this.#lifetime.signal.aborted;
     const current = this.#probe();
     if (immediate) this.#settled.add(current);
-    else {
-      const settle = () => void this.#settled.add(current);
-      current.then(settle, settle);
-    }
+    else void settled(current.finally(() => this.#settled.add(current)));
     return (this.#current = current);
   }
 

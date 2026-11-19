@@ -10,7 +10,14 @@ import {
 import os from "node:os";
 import path from "node:path";
 import type { ProviderConnection, RunResult } from "@babojubot/contracts";
-import { usageAmount } from "@babojubot/contracts";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+  orIfUnreadable,
+  usageAmount,
+} from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import {
   startProcess,
@@ -80,39 +87,35 @@ const relayToken = (accessToken: string) => ({
 });
 /** 이 어댑터가 둔 가짜 로그인(자리 표시)인가. */
 async function isRelayToken(file: string): Promise<boolean> {
-  try {
-    const text = await readRegularFile(file);
-    if (text === undefined) return false;
-    const login = record(JSON.parse(text));
-    const token = record(login.token);
-    return (
-      token.expiry === relayExpiry &&
-      (token.refresh_token === undefined || token.refresh_token === "")
-    );
-  } catch {
-    return false;
-  }
+  const text = await readRegularFile(file);
+  if (text === undefined) return false;
+  const login = orIfUnreadable(() => record(JSON.parse(text)), undefined);
+  if (!login) return false;
+  const token = record(login.token);
+  return (
+    token.expiry === relayExpiry &&
+    (token.refresh_token === undefined || token.refresh_token === "")
+  );
 }
 /** 갱신을 서두르는 여유. 만료가 이보다 가까우면 쓰기 전에 갱신한다. */
 const refreshWindowMs = 10 * 60 * 1000;
 /** 원본 로그인의 접근 토큰. 곧 끝나면 `undefined`가 아니라 `expiring`이 참이다. */
 function accessOf(text: string): { token?: string; expiring: boolean } {
-  try {
-    const token = record(record(JSON.parse(text)).token);
-    const access =
-      typeof token.access_token === "string" && token.access_token
-        ? token.access_token
-        : undefined;
-    const expiry =
-      typeof token.expiry === "string" ? Date.parse(token.expiry) : Number.NaN;
-    return {
-      token: access,
-      expiring:
-        Number.isFinite(expiry) && expiry - Date.now() <= refreshWindowMs,
-    };
-  } catch {
-    return { expiring: false };
-  }
+  const token = orIfUnreadable(
+    () => record(record(JSON.parse(text)).token),
+    undefined
+  );
+  if (!token) return { expiring: false };
+  const access =
+    typeof token.access_token === "string" && token.access_token
+      ? token.access_token
+      : undefined;
+  const expiry =
+    typeof token.expiry === "string" ? Date.parse(token.expiry) : Number.NaN;
+  return {
+    token: access,
+    expiring: Number.isFinite(expiry) && expiry - Date.now() <= refreshWindowMs,
+  };
 }
 /** ACP `session/prompt` 결과의 사용량. 입력은 이미 캐시 읽기를 뺀 값이다(1.5.4). */
 function promptUsage(connectionId: string, raw: unknown) {
@@ -135,18 +138,31 @@ const failure = (error = "프로바이더를 실행하지 못했습니다."): Ru
 /** Called before admission on server startup. Unowned files are left for execute to report. */
 export async function cleanupAntigravityWorkspaces(dataDir: string) {
   const organizations = path.join(dataDir, "organizations");
-  for (const org of await readdir(organizations, { withFileTypes: true }).catch(
-    () => []
-  )) {
+  const entries =
+    (await continueAfterFailure(
+      () =>
+        orIfMissing(
+          () => readdir(organizations, { withFileTypes: true }),
+          hasErrorCode("ENOENT"),
+          []
+        ),
+      (error) =>
+        console.warn(
+          `[provider] the organization folders could not be listed; Antigravity configuration is not cleared at this start (${failureCode(error)})`
+        )
+    )) ?? [];
+  for (const org of entries) {
     if (!org.isDirectory()) continue;
     const shared = path.join(organizations, org.name, "shared");
     // 정리는 조직마다 별도 프로세스를 띄운다. 설정 폴더가 없으면 지울 것이 없으므로 띄우지 않는다.
     if (await missing(path.join(shared, ".agents"))) continue;
-    try {
-      await clearOwnedConfig(shared);
-    } catch {
-      /* Preserve unowned files. */
-    }
+    await continueAfterFailure(
+      () => clearOwnedConfig(shared),
+      (error) =>
+        console.warn(
+          `[provider] the Antigravity configuration of organization ${org.name} could not be cleared; unowned files are kept (${failureCode(error)})`
+        )
+    );
   }
 }
 const missing = (file: string) =>
@@ -208,8 +224,12 @@ export function createAntigravityProvider(options: {
   const refreshLogin = () =>
     (refreshing ??= (async () => {
       await login.prepareConnection();
-      await probe(["models"], AbortSignal.timeout(probeTimeoutMs)).catch(
-        () => undefined
+      await continueAfterFailure(
+        () => probe(["models"], AbortSignal.timeout(probeTimeoutMs)),
+        (error) =>
+          console.warn(
+            `[provider] the Antigravity login refresh failed; the next read decides (${failureCode(error)})`
+          )
       );
     })().finally(() => {
       refreshing = undefined;
@@ -246,20 +266,26 @@ export function createAntigravityProvider(options: {
     },
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
-      try {
-        await login.prepareConnection();
-        // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
-        // Windows의 access는 링크를 따라가지 않으므로 실제 파일을 찾아 본다.
-        const file = await realpath(login.loginFileIn(home)).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return undefined;
-            throw error;
-          }
-        );
-        if (file) await access(file, constants.R_OK | constants.W_OK);
-      } catch {
-        return { status: "not_ready", reason: "check_failed" };
-      }
+      const checked = await continueAfterFailure(
+        async () => {
+          await login.prepareConnection();
+          // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
+          // Windows의 access는 링크를 따라가지 않으므로 실제 파일을 찾아 본다.
+          const file = await realpath(login.loginFileIn(home)).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") return undefined;
+              throw error;
+            }
+          );
+          if (file) await access(file, constants.R_OK | constants.W_OK);
+          return true;
+        },
+        (error) =>
+          console.warn(
+            `[provider] the Antigravity login check failed (${failureCode(error)})`
+          )
+      );
+      if (!checked) return { status: "not_ready", reason: "check_failed" };
       // 로그인이 맞는지는 프로그램의 응답으로 판단한다. 목록 조회는 모델을 부르지 않는다.
       try {
         await probe(["models"], signal);
@@ -299,15 +325,19 @@ export function createAntigravityProvider(options: {
         const cwd = await realpath(request.workspace?.cwd ?? productHome);
         let container: ContainerLaunch | undefined;
         if (placement.container && prepared.attemptLogin) {
-          try {
-            grant = relay.grant({
-              signal: control.signal,
-              organizationId: request.identity.organizationId,
-              runId: request.identity.runId,
-            });
-          } catch {
-            return failure(relayFailure);
-          }
+          grant = continueAfterFailure(
+            () =>
+              relay.grant({
+                signal: control.signal,
+                organizationId: request.identity.organizationId,
+                runId: request.identity.runId,
+              }),
+            (error) =>
+              console.warn(
+                `[provider] the isolated run relay refused a grant (${failureCode(error)})`
+              )
+          );
+          if (!grant) return failure(relayFailure);
           attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
           const file = await prepared.attemptLogin(attempt, grant.token);
           try {
@@ -550,7 +580,11 @@ export function createAntigravityProvider(options: {
               ],
             });
           }
-        } catch {
+        } catch (error) {
+          if (!runControl.signal.aborted)
+            console.warn(
+              `[provider] the Antigravity session ended without a result (${failureCode(error)})`
+            );
           /* 결과 없이 끝났다. 아래에서 끝난 방식으로 정한다. */
         } finally {
           clearTimeout(startup);
@@ -582,12 +616,20 @@ export function createAntigravityProvider(options: {
         };
         // 실행 오류의 자세한 이유는 프로그램의 기록 파일에만 있다(1.5.4).
         if (errored && logFile) {
-          const log = await readFile(logFile, "utf8").catch(() => "");
+          const log = await orIfMissing(
+            () => readFile(logFile, "utf8"),
+            hasErrorCode("ENOENT"),
+            ""
+          );
           if (saysLoginProblem(log.slice(-4096)))
             result.errorCode = "login_required";
         }
         return result;
-      } catch {
+      } catch (error) {
+        if (!control.signal.aborted)
+          console.warn(
+            `[provider] the Antigravity run failed (${failureCode(error)})`
+          );
         return control.signal.aborted
           ? { ...failure(), stopReason: "cancelled", error: null }
           : failure();

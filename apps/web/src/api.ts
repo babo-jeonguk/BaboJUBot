@@ -20,6 +20,7 @@ import {
   organizationListSchema,
   organizationSchema,
   networkPolicySchema,
+  orIfUnreadable,
   overviewSchema,
   providerSettingsSchema,
   researchLinkSchema,
@@ -174,7 +175,10 @@ export async function request<T extends z.ZodType>(
 ): Promise<z.infer<T>> {
   const res = await fetch(path, init);
   if (!res.ok) {
-    const body: unknown = await res.json().catch(() => undefined);
+    const body: unknown = await orIfUnreadable(
+      (): Promise<unknown> => res.json(),
+      undefined
+    );
     const failure = apiFailureSchema.safeParse(body);
     throw new ApiError(
       res.status,

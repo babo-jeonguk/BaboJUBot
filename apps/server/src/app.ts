@@ -32,6 +32,7 @@ import {
   markConversationReadInputSchema,
   organizationCommands,
   orgToolsBasePath,
+  orIfUnreadable,
   sendOwnerMessageInputSchema,
   editQueuedMessageInputSchema,
   conversationPageQuerySchema,
@@ -413,7 +414,9 @@ export async function startServer({
             () => relay.revalidate(event.organizationId),
             "isolation relay policy revalidation"
           )
-          .catch(() => {});
+          .catch((error: unknown) =>
+            console.error("[isolation] relay policy revalidation failed", error)
+          );
       })
     : () => {};
   relay?.attach({
@@ -441,7 +444,9 @@ export async function startServer({
             ),
           "isolation relay refusal record"
         )
-        .catch(() => {});
+        .catch((error: unknown) =>
+          console.error("[isolation] relay refusal record failed", error)
+        );
     },
   });
 
@@ -1462,11 +1467,7 @@ function respond<T>(
 function isSameOrigin(req: http.IncomingMessage) {
   const origin = req.headers.origin;
   if (origin === undefined) return true;
-  try {
-    return new URL(origin).host === req.headers.host;
-  } catch {
-    return false;
-  }
+  return orIfUnreadable(() => new URL(origin).host === req.headers.host, false);
 }
 
 function refuse(socket: Duplex, status: number) {

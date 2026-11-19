@@ -5,6 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import EmbeddedPostgres, { getBinaries } from "embedded-postgres";
 import pg from "pg";
+import {
+  continueAfterFailure,
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+  orIfUnreadable,
+} from "@babojubot/contracts";
 import { candidatePort } from "./ports.ts";
 
 /** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 디스크 확정 기록 없이 띄우고 정지 때 dataDir를 지운다. */
@@ -138,7 +145,14 @@ export async function startEmbeddedCluster(
   try {
     for (let attempt = 1; ; attempt++) {
       const chosen = port ?? (await candidatePort());
-      await fsp.rm(log, { force: true }).catch(() => {});
+      await continueAfterFailure(
+        () => fsp.rm(log, { force: true }),
+        (error) =>
+          console.error(
+            "[db] the previous Postgres log could not be removed; the new start writes after it",
+            error
+          )
+      );
       // 접속하는 주소(clusterUrl의 127.0.0.1)에서만 듣는다. localhost로 두면 127.0.0.1을 남이 잡았을 때 ::1에서만 듣고 성공으로 켜져, 접속이 그 port를 잡은 다른 프로그램으로 간다.
       const options = [
         "-p",
@@ -318,15 +332,15 @@ export function processIdentity(
 ): string | undefined {
   if (process.platform === "win32") return undefined;
   if (process.platform === "linux") {
-    try {
-      return fs
-        .readFileSync(`/proc/${pid}/stat`, "utf8")
-        .split(") ")
-        .at(-1)!
-        .split(" ")[19];
-    } catch {
-      return undefined;
-    }
+    return orIfUnreadable(
+      () =>
+        fs
+          .readFileSync(`/proc/${pid}/stat`, "utf8")
+          .split(") ")
+          .at(-1)!
+          .split(" ")[19],
+      undefined
+    );
   }
   if (timeoutMs < 1) return undefined;
   const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
@@ -352,24 +366,30 @@ async function servesDataDir(port: number, dataDir: string) {
   });
   client.on("error", () => {});
   try {
-    await client.connect();
-    const { rows } = await client.query<{ data_directory: string }>(
-      "show data_directory"
-    );
-    return samePath(rows[0]!.data_directory, dataDir);
-  } catch {
-    return false;
+    return await orIfUnreadable(async () => {
+      await client.connect();
+      const { rows } = await client.query<{ data_directory: string }>(
+        "show data_directory"
+      );
+      return samePath(rows[0]!.data_directory, dataDir);
+    }, false);
   } finally {
-    await client.end().catch(() => {});
+    await continueAfterFailure(
+      () => client.end(),
+      (error) =>
+        console.error(
+          "[db] closing the data directory check connection failed",
+          error
+        )
+    );
   }
 }
 
 function samePath(a: string, b: string) {
-  try {
-    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
-  } catch {
-    return false;
-  }
+  return orIfUnreadable(
+    () => fs.realpathSync.native(a) === fs.realpathSync.native(b),
+    false
+  );
 }
 
 const stopCommand = (pgCtl: string, dataDir: string) =>
@@ -385,7 +405,13 @@ function run(file: string, args: string[]): Promise<number> {
 }
 
 async function logTail(log: string) {
-  const text = await fsp.readFile(log, "utf8").catch(() => "");
+  const text = await orIfMissing(
+    () => fsp.readFile(log, "utf8"),
+    hasErrorCode("ENOENT"),
+    ""
+  ).catch(
+    (error: unknown) => `Postgres log could not be read (${failureCode(error)})`
+  );
   return text.trim().slice(-1000) || "Postgres wrote no log";
 }
 
@@ -405,16 +431,14 @@ function couldNotBindPort(log: string) {
 function readPidFile(
   dataDir: string
 ): { pid: number; port: number } | undefined {
-  try {
-    const [pid, , , port] = fs
-      .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
-      .split("\n");
-    return Number(pid) > 0
-      ? { pid: Number(pid), port: Number(port) }
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  const text = orIfMissing(
+    () => fs.readFileSync(path.join(dataDir, "postmaster.pid"), "utf8"),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
+  if (text === undefined) return undefined;
+  const [pid, , , port] = text.split("\n");
+  return Number(pid) > 0 ? { pid: Number(pid), port: Number(port) } : undefined;
 }
 
 // 주인 기록: dataDir 옆 `<dataDir>.owner/` 폴더에 세대 번호 이름의 파일(`1`, `2`, …)을 둔다. 가장 큰 번호가 지금 기록이다.
@@ -443,7 +467,7 @@ function generations(dir: string): number[] {
   }
 }
 
-/** 지금 기록. `owner`가 없으면 내려놓았거나 읽을 수 없는 기록이다. */
+/** 지금 기록. `owner`가 없으면 내려놓았거나 내용을 해석할 수 없는 기록이다. 읽기 오류는 던진다. */
 function latest(dir: string): { generation: number; owner: Owner | undefined } {
   const generation = generations(dir).at(-1) ?? 0;
   return {
@@ -469,13 +493,16 @@ function claim(dir: string, generation: number, record: object): boolean {
   }
 }
 
-/** 지난 기록 정리는 덤이다. Windows에서 다른 프로세스가 잠깐 읽는 중이면 지우지 못해도 더 작은 번호라 판단에 쓰이지 않는다. */
+/** 지난 기록 정리는 덤이다. Windows에서 다른 프로세스가 잠깐 읽는 중이면 지우지 못해도 더 작은 번호라 판단에 쓰이지 않는다. 그 실패는 기록에 남긴다. */
 function removeQuietly(file: string) {
-  try {
-    fs.rmSync(file, { force: true });
-  } catch {
-    /* 더 작은 번호로 남는다. */
-  }
+  continueAfterFailure(
+    () => fs.rmSync(file, { force: true }),
+    (error) =>
+      console.error(
+        `[db] an old owner record ${file} could not be removed; the larger number still decides`,
+        error
+      )
+  );
 }
 
 /**
@@ -517,20 +544,23 @@ function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
 }
 
 function readOwnerFile(file: string): Owner | undefined {
-  try {
-    const owner: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (typeof owner !== "object" || owner === null || Array.isArray(owner))
-      return undefined;
-    if (!("pid" in owner) || !("persistent" in owner)) return undefined;
-    const { pid, persistent } = owner;
-    return typeof pid === "number" &&
-      Number.isInteger(pid) &&
-      typeof persistent === "boolean"
-      ? { pid, persistent }
-      : undefined;
-  } catch {
+  // 세대가 넘어가며 지워진 기록은 없는 것이다(acquireOwner가 다시 본다). 그 밖의 읽기 오류는 던진다.
+  const text = orIfMissing(
+    () => fs.readFileSync(file, "utf8"),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
+  if (text === undefined) return undefined;
+  const owner = orIfUnreadable((): unknown => JSON.parse(text), undefined);
+  if (typeof owner !== "object" || owner === null || Array.isArray(owner))
     return undefined;
-  }
+  if (!("pid" in owner) || !("persistent" in owner)) return undefined;
+  const { pid, persistent } = owner;
+  return typeof pid === "number" &&
+    Number.isInteger(pid) &&
+    typeof persistent === "boolean"
+    ? { pid, persistent }
+    : undefined;
 }
 
 /** 다른 사용자의 프로세스면 EPERM이며 살아 있다. pid가 재사용됐으면 살아 있다고 보아 손대지 않는다. */
@@ -564,14 +594,25 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
 /**
  * 강제로 끝난 프로세스가 남긴 임시 cluster를 멈추고 지운다. 주인 기록(`*.owner/`)이 있는 것만 보며, 그 dataDir의 주인이
  * 되어야 손댄다(주인이 살아 있거나 다른 프로세스가 먼저 치우는 중이면 둔다). 그 Postgres가 그 dataDir를 쓰는지 확인할 수 없으면
- * 둔다. 실패는 알리기만 하고 새 cluster는 그대로 띄운다.
+ * 둔다. 실패는 알리기만 하고 새 cluster는 그대로 띄운다. 살피지 못한 항목은 손대지 않고 남긴다.
  * tmp는 다른 프로그램도 쓰므로 이름만 믿지 않는다. 주인 기록과 dataDir는 tmp 바로 아래의 실제 폴더여야 하며 링크는 따라가지 않는다.
  */
 async function removeTemporaryLeftovers() {
   const tmp = os.tmpdir();
-  const entries = await fsp
-    .readdir(tmp, { withFileTypes: true })
-    .catch(() => [] as fs.Dirent[]);
+  const entries =
+    (await continueAfterFailure(
+      () =>
+        orIfMissing(
+          () => fsp.readdir(tmp, { withFileTypes: true }),
+          hasErrorCode("ENOENT"),
+          [] as fs.Dirent[]
+        ),
+      (error) =>
+        console.error(
+          "[db] the temporary folder could not be listed; leftover temporary clusters are not cleaned at this start",
+          error
+        )
+    )) ?? [];
   for (const entry of entries) {
     if (
       !entry.isDirectory() ||
@@ -580,18 +621,33 @@ async function removeTemporaryLeftovers() {
     )
       continue;
     const dataDir = path.join(tmp, entry.name.slice(0, -ownerSuffix.length));
-    const folder = fs.lstatSync(dataDir, { throwIfNoEntry: false });
+    // 남은 cluster 하나를 살피지 못하면 그것만 기록하고 건너뛴다. 주인 자리를 가져가거나 지우지 않는다.
+    const inspected = continueAfterFailure(
+      () => ({
+        folder: fs.lstatSync(dataDir, { throwIfNoEntry: false }),
+        owner: latest(ownerDir(dataDir)).owner,
+      }),
+      (error) =>
+        console.error(
+          `[db] the leftover temporary cluster ${dataDir} could not be inspected; it is left`,
+          error
+        )
+    );
+    if (!inspected) continue;
+    const { folder, owner } = inspected;
     if (folder && !folder.isDirectory()) continue;
-    const { owner } = latest(ownerDir(dataDir));
-    // 죽은 임시 주인의 것, 또는 주인 없이(내려놓았거나 읽을 수 없음) 기록만 남고 dataDir가 없는 것만 치운다.
+    // 죽은 임시 주인의 것, 또는 주인 없이(내려놓았거나 내용을 해석할 수 없음) 기록만 남고 dataDir가 없는 것만 치운다.
     if (owner ? owner.persistent || isAlive(owner.pid) : folder !== undefined)
       continue;
-    let lease: Lease;
-    try {
-      lease = acquireOwner(dataDir, false);
-    } catch {
-      continue;
-    }
+    const lease = continueAfterFailure(
+      () => acquireOwner(dataDir, false),
+      (error) =>
+        console.error(
+          `[db] the leftover temporary cluster ${dataDir} could not be taken over; it is left`,
+          error
+        )
+    );
+    if (!lease) continue;
     try {
       const { pg_ctl: pgCtl } = await getBinaries();
       const running = readPidFile(dataDir);

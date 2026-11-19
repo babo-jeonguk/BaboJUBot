@@ -281,8 +281,9 @@ export class RunDispatcher {
         if (this.#closed) return;
         try {
           await delay(backoffMs, undefined, { signal: this.#recovery.signal });
-        } catch {
-          return;
+        } catch (error) {
+          if (this.#recovery.signal.aborted) return;
+          throw error;
         }
         backoffMs = Math.min(backoffMs * 2, 5_000);
       }
@@ -482,8 +483,9 @@ export class RunDispatcher {
           return { kind: "blocked", reason: "retry_exhausted" };
         try {
           await delay(100 * 2 ** attempt, undefined, { signal });
-        } catch {
-          return { kind: "run_finished" };
+        } catch (error) {
+          if (signal.aborted) return { kind: "run_finished" };
+          throw error;
         }
       }
     }

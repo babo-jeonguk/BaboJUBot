@@ -3,10 +3,12 @@ import type { AddressInfo } from "node:net";
 import {
   orgTools,
   orgToolsBasePath,
+  orIfUnreadable,
   providerCapabilitiesSchema,
   providerReadinessCheckSchema,
   runResultSchema,
   runtimeActivitySchema,
+  settled,
   type ConversationMessage,
   type RunCancel,
   type RunIdentity,
@@ -123,12 +125,11 @@ async function startFakeToolServer() {
           context: request.context,
         });
       if (at === route("send_message")) {
-        let raw: unknown;
-        try {
-          raw = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-        } catch {
-          return refuse(422, "invalid_input");
-        }
+        const raw = orIfUnreadable(
+          (): unknown => JSON.parse(Buffer.concat(chunks).toString() || "{}"),
+          undefined
+        );
+        if (raw === undefined) return refuse(422, "invalid_input");
         const input = orgTools.send_message.input.safeParse(raw);
         if (!input.success) return refuse(422, "invalid_input");
         const conversationId =
@@ -302,13 +303,7 @@ export function describeRuntimeContract(
        */
       const started = async () => {
         await deadline(
-          Promise.race([
-            working,
-            result.then(
-              () => {},
-              () => {}
-            ),
-          ]),
+          Promise.race([working, settled(result)]),
           startWithinMs,
           "did not show that it started working"
         );

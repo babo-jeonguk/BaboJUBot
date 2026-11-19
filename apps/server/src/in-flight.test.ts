@@ -86,3 +86,16 @@ describe("trackHandlers", () => {
     await inFlight.idle();
   });
 });
+
+// 센 일이 끝난 것은 그 일을 기다린 쪽이 다음 줄을 실행하기 전에 반영된다. 끝난 일을 아직 도는 것으로 알리면 종료 진단과 대기가 틀린다.
+describe("counting tracked work", () => {
+  it("stops counting a promise before whoever awaited it goes on", async () => {
+    const flight = new InFlight();
+    await flight.track(() => Promise.resolve(), "done");
+    expect(flight.pending()).toEqual([]);
+    await flight
+      .track(() => Promise.reject(new Error("failed")), "failed")
+      .catch((error: unknown) => error);
+    expect(flight.pending()).toEqual([]);
+  });
+});

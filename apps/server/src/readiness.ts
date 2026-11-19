@@ -1,5 +1,6 @@
 import {
   providerReadinessCheckSchema,
+  settled,
   type ProviderConnection,
   type ProviderReadinessCheck,
 } from "@babojubot/contracts";
@@ -100,10 +101,7 @@ export class ReadinessMonitor {
             return;
           await this.#save(provider, result, startedAt);
         });
-        this.#saving.set(
-          provider,
-          saving.catch(() => {})
-        );
+        this.#saving.set(provider, settled(saving));
         await saving;
       } catch (error) {
         console.error(`[providers] ${provider} readiness not saved`, error);

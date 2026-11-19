@@ -1,4 +1,8 @@
-import { eventStreamPath, streamFrameSchema } from "@babojubot/contracts";
+import {
+  eventStreamPath,
+  orIfUnreadable,
+  streamFrameSchema,
+} from "@babojubot/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { queryKeys } from "./api.ts";
@@ -32,13 +36,11 @@ export function useLiveEvents() {
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(url);
       socket.onmessage = (message) => {
-        let frame;
-        try {
-          frame = streamFrameSchema.safeParse(JSON.parse(String(message.data)));
-        } catch {
-          return;
-        }
-        if (!frame.success) return;
+        const frame = orIfUnreadable(
+          () => streamFrameSchema.safeParse(JSON.parse(String(message.data))),
+          undefined
+        );
+        if (!frame?.success) return;
         if (frame.data.type === "ready") {
           attempt = 0;
           live.refresh();

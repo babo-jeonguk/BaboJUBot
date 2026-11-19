@@ -13,7 +13,11 @@ import type {
   UsageField,
 } from "@babojubot/contracts";
 import {
+  continueAfterFailure,
+  failureCode,
   isUsageAnomaly,
+  orIfUnreadable,
+  settled,
   subtractUsage,
   usageAmount,
 } from "@babojubot/contracts";
@@ -85,20 +89,20 @@ export const codexRelayProfile: RelayProfile = {
         ? tokens.account_id
         : undefined;
     if (!account && typeof tokens.id_token === "string") {
-      try {
-        const payload = tokens.id_token.split(".")[1];
-        const claims = record(
-          JSON.parse(Buffer.from(payload!, "base64url").toString("utf8"))
-        );
-        const auth = record(claims["https://api.openai.com/auth"]);
-        if (
-          typeof auth.chatgpt_account_id === "string" &&
-          auth.chatgpt_account_id
-        )
-          account = auth.chatgpt_account_id;
-      } catch {
-        /* 계정을 읽지 못했다. */
-      }
+      const payload = tokens.id_token.split(".")[1];
+      const claims = orIfUnreadable(
+        () =>
+          record(
+            JSON.parse(Buffer.from(payload!, "base64url").toString("utf8"))
+          ),
+        undefined
+      );
+      const auth = record(claims?.["https://api.openai.com/auth"]);
+      if (
+        typeof auth.chatgpt_account_id === "string" &&
+        auth.chatgpt_account_id
+      )
+        account = auth.chatgpt_account_id;
     }
     if (!account) throw new Error("no account id");
     return {
@@ -132,45 +136,38 @@ const relayLogin = (token: string) => ({
 });
 /** 이 어댑터가 남긴 가짜 로그인 파일인가. 서버가 실행 중에 멈춰 남은 파일이면 다음 실행을 시작한다. */
 async function isRelayLogin(file: string): Promise<boolean> {
-  try {
-    const text = await readRegularFile(file);
-    if (text === undefined) return false;
-    const login = record(JSON.parse(text));
-    const tokens = record(login.tokens);
-    return (
-      tokens.id_token === relayIdToken &&
-      (tokens.refresh_token === undefined || tokens.refresh_token === "") &&
-      tokens.account_id === undefined &&
-      (login.OPENAI_API_KEY === undefined || login.OPENAI_API_KEY === null)
-    );
-  } catch {
-    return false;
-  }
+  const text = await readRegularFile(file);
+  if (text === undefined) return false;
+  const login = orIfUnreadable(() => record(JSON.parse(text)), undefined);
+  if (!login) return false;
+  const tokens = record(login.tokens);
+  return (
+    tokens.id_token === relayIdToken &&
+    (tokens.refresh_token === undefined || tokens.refresh_token === "") &&
+    tokens.account_id === undefined &&
+    (login.OPENAI_API_KEY === undefined || login.OPENAI_API_KEY === null)
+  );
 }
 /** Codex 자신은 접근 토큰 만료 5분 전, 또는 마지막 갱신 8일 뒤에 갱신한다. 서버는 그보다 조금 일찍 갱신한다. */
 const refreshWindowMs = 10 * 60 * 1000;
 const refreshIntervalMs = 8 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000;
 /** JWT 모양 값의 만료 시각(ms). 읽지 못하면 undefined. */
 function jwtExpiry(token: string): number | undefined {
-  try {
-    const claims = record(
-      JSON.parse(
-        Buffer.from(token.split(".")[1]!, "base64url").toString("utf8")
-      )
-    );
-    return typeof claims.exp === "number" ? claims.exp * 1000 : undefined;
-  } catch {
-    return undefined;
-  }
+  const claims = orIfUnreadable(
+    () =>
+      record(
+        JSON.parse(
+          Buffer.from(token.split(".")[1]!, "base64url").toString("utf8")
+        )
+      ),
+    undefined
+  );
+  return typeof claims?.exp === "number" ? claims.exp * 1000 : undefined;
 }
 /** 원본 로그인을 갱신해야 하는가. Codex와 같은 규칙이다: 접근 토큰에 만료 시각이 있으면 그것으로, 없으면 마지막 갱신 시각으로 본다. */
 function needsRefresh(text: string): boolean {
-  let login: Record<string, unknown>;
-  try {
-    login = record(JSON.parse(text));
-  } catch {
-    return false;
-  }
+  const login = orIfUnreadable(() => record(JSON.parse(text)), undefined);
+  if (!login) return false;
   const access = record(login.tokens).access_token;
   if (typeof access !== "string" || !access) return false;
   const expiry = jwtExpiry(access);
@@ -320,8 +317,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           { refreshToken: true },
           left()
         );
-      } catch {
+      } catch (error) {
         // 갱신했는지는 응답이 아니라 원본을 다시 읽어 판단한다(currentLogin).
+        console.warn(
+          `[provider] the Codex login refresh failed; the next read decides (${failureCode(error)})`
+        );
       } finally {
         connection.close();
         await connection.done;
@@ -437,7 +437,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               ? result.nextCursor
               : undefined;
         } while (cursor !== undefined);
-      } catch {
+      } catch (error) {
+        if (!signal.aborted)
+          console.warn(
+            `[provider] the Codex model list could not be read (${failureCode(error)})`
+          );
         models = [];
       } finally {
         signal.removeEventListener("abort", stop);
@@ -485,15 +489,19 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         try {
           let loginFile: AttemptLoginFile | undefined;
           if (prepared.attemptLogin) {
-            try {
-              grant = relay.grant({
-                signal: control.signal,
-                organizationId: request.identity.organizationId,
-                runId: request.identity.runId,
-              });
-            } catch {
-              return { ...failed(), error: relayFailure };
-            }
+            grant = continueAfterFailure(
+              () =>
+                relay.grant({
+                  signal: control.signal,
+                  organizationId: request.identity.organizationId,
+                  runId: request.identity.runId,
+                }),
+              (error) =>
+                console.warn(
+                  `[provider] the isolated run relay refused a grant (${failureCode(error)})`
+                )
+            );
+            if (!grant) return { ...failed(), error: relayFailure };
             attempt = await mkdtemp(
               path.join(os.tmpdir(), "babojubot-attempt-")
             );
@@ -659,7 +667,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           const cancel = () => {
             // 응답은 기다리지 않는다. 닫으면 대기는 곧바로 끝난다.
             if (threadId && turnId)
-              void rpc("turn/interrupt", { threadId, turnId }).catch(() => {});
+              void settled(rpc("turn/interrupt", { threadId, turnId }));
             connection.close();
           };
           runControl.signal.addEventListener("abort", cancel, { once: true });
@@ -730,8 +738,8 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                  * 대화 기록에 이 메시지 번호가 남았는가(#206). 기록을 한 번만 읽고 모델 턴은 시작하지 않는다.
                  * 읽지 못했거나 그사이 실행 시도가 끝났으면 받았다고 보지 않는다.
                  */
-                const recorded = async () => {
-                  try {
+                const recorded = async () =>
+                  orIfUnreadable(async () => {
                     const read = await connection.request(
                       "thread/read",
                       { threadId, includeTurns: true },
@@ -740,10 +748,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                     return (
                       !ended() && holdsClientMessage(read, message.messageId)
                     );
-                  } catch {
-                    return false;
-                  }
-                };
+                  }, false);
                 try {
                   // 응답이 없으면 기록을 한 번 확인하고, 거기에도 없으면 전달 여부를 모르는 오류로 알린다.
                   // 실행 시도는 이어 가고 다시 보내지 않는다. 명시적 거절·연결 닫힘은 확인하지 않는다.
@@ -774,7 +779,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 })
               );
             }
-          } catch {
+          } catch (error) {
+            if (!runControl.signal.aborted)
+              console.warn(
+                `[provider] the Codex run failed; closing its connection (${failureCode(error)})`
+              );
             connection.close();
           }
           // 대기는 이미 끝났다. 프로세스·자식·컨테이너·중계 정리가 끝난 뒤에 돌아간다.

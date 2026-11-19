@@ -9,6 +9,7 @@ import dagre from "@dagrejs/dagre";
 import {
   ownerMapEditStages,
   researchNodeWorkStatuses,
+  settled,
   type Agent,
   type FlowKind,
   type LifecycleStage,
@@ -1353,8 +1354,8 @@ function NodeDetail({
               value={node.status}
               disabled={status.isPending}
               onChange={(e) =>
-                void status
-                  .mutateAsync({
+                void settled(
+                  status.mutateAsync({
                     op: "update_node",
                     nodeId: node.id,
                     input: {
@@ -1362,7 +1363,7 @@ function NodeDetail({
                         .value as (typeof researchNodeWorkStatuses)[number],
                     },
                   })
-                  .catch(() => undefined)
+                )
               }
               className="rounded-lg bg-white px-2 py-1 text-xs text-slate-700 ring-1 ring-slate-200"
             >
@@ -1557,16 +1558,16 @@ function TitleForm({ orgId, node }: { orgId: string; node: ResearchNode }) {
   const submit = async () => {
     const title = text.trim();
     if (!title || title === node.title) return;
-    try {
-      await save.mutateAsync({
-        op: "update_node",
-        nodeId: node.id,
-        input: { title },
-      });
-      setDraft(null);
-    } catch {
-      // 오류는 save.error로 보이고 초안은 그대로 둔다.
-    }
+    // 실패는 save.error로 보이고 초안은 그대로 둔다.
+    await settled(
+      save
+        .mutateAsync({
+          op: "update_node",
+          nodeId: node.id,
+          input: { title },
+        })
+        .then(() => setDraft(null))
+    );
   };
   return (
     <form
@@ -1646,16 +1647,18 @@ function AddNodeForm({
   const add = useEditResearchMap(orgId);
   const submit = async () => {
     if (!title.trim() || add.isPending) return;
-    try {
-      const created = await add.mutateAsync({
-        op: "create_node",
-        input: { kind, title: title.trim(), parentNodeId: parent?.id },
-      } satisfies MapEdit);
-      setTitle("");
-      onDone(created.id);
-    } catch {
-      // 입력은 그대로 둔다.
-    }
+    // 실패는 add.error로 보이고 입력은 그대로 둔다.
+    await settled(
+      add
+        .mutateAsync({
+          op: "create_node",
+          input: { kind, title: title.trim(), parentNodeId: parent?.id },
+        } satisfies MapEdit)
+        .then((created) => {
+          setTitle("");
+          onDone(created.id);
+        })
+    );
   };
   return (
     <form
@@ -1909,13 +1912,15 @@ function ParentForm({
         className="btn-primary w-full"
         disabled={value === node.parentNodeId || change.isPending}
         onClick={() =>
-          void change
-            .mutateAsync({
-              op: "change_parent",
-              nodeId: node.id,
-              parentNodeId: value,
-            })
-            .then(onDone, () => undefined)
+          void settled(
+            change
+              .mutateAsync({
+                op: "change_parent",
+                nodeId: node.id,
+                parentNodeId: value,
+              })
+              .then(onDone)
+          )
         }
       >
         주 부모를 {target ? `“${target.title}”` : "없음"}(으)로 변경
@@ -1989,12 +1994,14 @@ function LinkForm({
         disabled={!target || add.isPending}
         onClick={() =>
           target &&
-          void add
-            .mutateAsync({
-              op: "add_link",
-              input: { sourceNodeId: from!, targetNodeId: to!, kind },
-            })
-            .then(onDone, () => undefined)
+          void settled(
+            add
+              .mutateAsync({
+                op: "add_link",
+                input: { sourceNodeId: from!, targetNodeId: to!, kind },
+              })
+              .then(onDone)
+          )
         }
       >
         보조 연결 추가
@@ -2020,12 +2027,10 @@ function DiscardControl({
   const toast = useToast();
   const hintId = useId();
   const restore = () =>
-    edit
-      .mutateAsync({ op: "restore_node", nodeId: node.id })
-      .catch(() => undefined);
+    settled(edit.mutateAsync({ op: "restore_node", nodeId: node.id }));
   const discard = () =>
-    void edit.mutateAsync({ op: "discard_node", nodeId: node.id }).then(
-      () =>
+    void settled(
+      edit.mutateAsync({ op: "discard_node", nodeId: node.id }).then(() =>
         toast({
           message: `'${node.title}' 노드를 폐기했습니다. 노드 상세의 ‘폐기 취소’로도 되돌릴 수 있습니다`,
           action: {
@@ -2033,10 +2038,14 @@ function DiscardControl({
             onAction: () =>
               void edit
                 .mutateAsync({ op: "restore_node", nodeId: node.id })
-                .catch(() => toast({ message: "폐기를 취소하지 못했습니다" })),
+                .catch((error: unknown) =>
+                  toast({
+                    message: `폐기를 취소하지 못했습니다. ${editFailure(error)}`,
+                  })
+                ),
           },
-        }),
-      () => undefined
+        })
+      )
     );
   const gone = discarded(node);
   return (
