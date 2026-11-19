@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { cleanUpAll, withCleanup } from "@babojubot/runtime/test-cleanup";
+import {
+  cleanUpAll,
+  killUnlessGone,
+  withCleanup,
+} from "@babojubot/runtime/test-cleanup";
 import { expect, test } from "@playwright/test";
 import { alive, gone, startServerProcess } from "./server-process.ts";
 
@@ -31,6 +35,7 @@ function misbehaving(
     | "leave-postgres-on-stop"
     | "exit-before-ready-undeletable"
     | "exit-before-ready-without-temp"
+    | "exit-before-ready-unreadable-lock"
 ) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "babojubot-misbehave-"));
   const file = path.join(dir, "state.json");
@@ -52,7 +57,7 @@ function misbehaving(
         async () => {
           if (!existsSync(file)) return;
           const { postgresPid, temp } = state();
-          if (alive(postgresPid)) process.kill(postgresPid, "SIGKILL");
+          killUnlessGone(postgresPid);
           if (!(await gone(postgresPid, killWaitMs)))
             throw new Error(
               `가짜 Postgres(pid ${postgresPid})가 ${killWaitMs}ms 안에 끝나지 않아 폴더를 남겼다: ${temp}`
@@ -159,5 +164,27 @@ test("a cleanup step that fails does not hide the start failure, and an unchecke
     // 남은 Postgres를 확인하지 못했으므로 폴더를 지우지 않고 경로를 알린다.
     expect(error?.message).toContain(folder);
     expect(existsSync(folder)).toBe(true);
+  });
+});
+
+// 잠금 파일을 읽지 못하면 그 폴더의 Postgres가 남았는지 모른다. 없는 것으로 보고 폴더를 지우지 않고, 읽지 못한 파일과 원인을 알린다(#243).
+test("a lock file that cannot be read is reported with its path, and the folder is kept", async () => {
+  const fake = misbehaving("exit-before-ready-unreadable-lock");
+  await withCleanup(async (defer) => {
+    defer(() => fake.cleanup());
+    const error = await fake.start().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    const { temp } = fake.state();
+    const lock = path.join(temp, "babojubot-pg-unreadable", "postmaster.pid");
+    expect(error?.message).toMatch(/시작 전에 끝났다/);
+    expect(error?.message).toContain(
+      `잠금 파일을 읽지 못했다(EISDIR): ${lock}`
+    );
+    expect(error?.message).toContain(
+      `남은 Postgres를 확인하지 못해 고장 난 시험 서버의 폴더를 지우지 않았다: ${path.dirname(temp)}`
+    );
+    expect(existsSync(path.dirname(temp))).toBe(true);
   });
 });

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { killUnlessGone, processAlive } from "@babojubot/runtime/test-cleanup";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.
 // - 제품 폴더와 임시 폴더(TMP)를 새 임시 폴더 하나 안에 만들어 넘긴다. 임시 내장 Postgres(BABOJUBOT_EPHEMERAL_DB)의 dataDir도
@@ -154,27 +155,34 @@ export async function startServerProcess({
       undefined,
       () => lockedPostgresPids(temp)
     );
-    for (const pid of locked ?? []) {
-      if (alive(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* Already gone. */
-        }
-      }
-    }
+    // 이미 끝난 것(ESRCH)은 넘어가고, 보내지 못한 것은 실패로 남긴다.
+    for (const pid of locked ?? [])
+      await attempt(failures, undefined, () => {
+        killUnlessGone(pid);
+      });
     // 준비 때 읽은 pid는 잠금 파일이 지워져도 이 서버의 Postgres다. 끝내지는 않고, 폴더를 지우기 전에 끝나기를 기다린다.
     const watched = [
       ...new Set([...(locked ?? []), ...(postgresPid ? [postgresPid] : [])]),
     ];
-    for (const pid of watched) await gone(pid, postgresExitMs);
-    const left: number[] = [];
-    if (child.pid && alive(child.pid)) left.push(child.pid);
-    for (const pid of watched) if (alive(pid)) left.push(pid);
+    await attempt(failures, undefined, async () => {
+      for (const pid of watched) await gone(pid, postgresExitMs);
+    });
+    // `undefined`는 남은 프로세스를 조회하지 못했다는 뜻이다(권한·I/O 오류). 끝났다고 보지 않는다.
+    const left = await attempt<number[] | undefined>(failures, undefined, () =>
+      [child.pid, ...watched].filter(
+        (pid): pid is number => !!pid && alive(pid)
+      )
+    );
     if (locked === undefined)
       failures.push(
         new Error(
           `남은 Postgres를 확인하지 못해 ${label}의 폴더를 지우지 않았다: ${folder}`
+        )
+      );
+    else if (left === undefined)
+      failures.push(
+        new Error(
+          `남은 프로세스를 확인하지 못해 ${label}의 폴더를 지우지 않았다: ${folder}`
         )
       );
     else if (left.length > 0)
@@ -370,16 +378,17 @@ function lockedPostgresPids(temp: string) {
   const pids: number[] = [];
   for (const entry of temporaryPostgresEntries(temp)) {
     if (entry.endsWith(".owner")) continue;
+    const file = path.join(temp, entry, "postmaster.pid");
     let pid: number;
     try {
-      pid = Number(
-        readFileSync(path.join(temp, entry, "postmaster.pid"), "utf8").split(
-          /\r?\n/
-        )[0]
-      );
-    } catch {
-      /* 잠금 파일이 없거나 읽을 수 없다: 정상 정지했거나 아직 쓰지 않았다. */
-      continue;
+      pid = Number(readFileSync(file, "utf8").split(/\r?\n/)[0]);
+    } catch (error) {
+      // 잠금 파일이 없다: 정상 정지했거나 아직 쓰지 않았다. 읽지 못한 것은 남은 Postgres를 모르는 것이라 알린다.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      throw new Error(`잠금 파일을 읽지 못했다(${code}): ${file}`, {
+        cause: error,
+      });
     }
     if (pid > 0) pids.push(pid);
   }
@@ -402,27 +411,26 @@ function readPostgresPid(temp: string) {
   return pid;
 }
 
-export function alive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** 프로세스가 아직 있는가. "프로세스 없음"만 끝난 것으로 보고, 다른 조회 실패는 pid·원인과 함께 던진다. */
+export const alive = processAlive;
 
 /**
  * 프로세스가 `ms` 안에 사라지면 true, 아니면 false. 이 서버가 띄우지 않은 Postgres 후손은 종료를 알릴 수단이 없어 상태를 다시 확인한다.
- * 첫 확인은 바로 하고, 아직 살아 있을 때만 50ms 뒤 다시 확인한다. 어느 pid가 남았는지는 부른 쪽이 알린다.
+ * 첫 확인은 바로 하고, 아직 살아 있을 때만 50ms 뒤 다시 확인한다. 어느 pid가 남았는지는 부른 쪽이 알린다. 조회가 실패하면 그 원인으로 거절한다.
  * Playwright 전역 준비·정리에서도 돌아 `expect.poll` 대신 상한을 직접 둔다.
  */
 export function gone(pid: number, ms: number) {
   const deadline = Date.now() + ms;
-  return new Promise<boolean>((resolve) => {
+  return new Promise<boolean>((resolve, reject) => {
     const check = () => {
-      if (!alive(pid)) resolve(true);
-      else if (Date.now() >= deadline) resolve(false);
-      else setTimeout(check, 50);
+      try {
+        if (!alive(pid)) resolve(true);
+        else if (Date.now() >= deadline) resolve(false);
+        else setTimeout(check, 50);
+      } catch (error) {
+        // 조회가 실패하면 끝났는지 모른다. 그 원인으로 실패한다.
+        reject(error);
+      }
     };
     check();
   });

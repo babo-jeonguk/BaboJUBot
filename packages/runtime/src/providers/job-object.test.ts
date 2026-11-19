@@ -16,6 +16,7 @@ import {
 import { startProcess } from "./process.ts";
 import { prepareJobObjectLauncher } from "./job-object.ts";
 import { removeFolder } from "../remove-folder.ts";
+import { processAlive } from "../test-cleanup.ts";
 
 // Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
@@ -31,15 +32,8 @@ const spawned: ChildProcess[] = [];
 const startFailures = new WeakMap<ChildProcess, Error>();
 let dataDir = "";
 
-/** 번호로 프로세스가 있는지 본다. 없다는 답(ESRCH)만 꺼진 것으로 보고, 권한 거부 같은 다른 오류는 있는 것으로 본다(recovery.ts와 같은 규칙). */
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-};
+/** 번호로 프로세스가 있는지 본다. 없다는 답(ESRCH)만 꺼진 것으로 보고, 다른 오류는 pid·원인과 함께 실패한다. */
+const alive = processAlive;
 const temp = async (name: string) => {
   const root = await mkdtemp(path.join(tmpdir(), name));
   roots.push(root);

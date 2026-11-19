@@ -16,7 +16,12 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
-import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
+import {
+  folderCleanup,
+  killUnlessGone,
+  processAlive as isAlive,
+  withCleanup,
+} from "@babojubot/runtime/test-cleanup";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;
@@ -588,22 +593,4 @@ function waitUntil(check, ms) {
     };
     poll();
   });
-}
-
-/** 시험 정리: SIGKILL을 보낸다. 대상이 이미 끝났으면(ESRCH) 넘어가고 다른 실패는 알린다. */
-function killUnlessGone(pid) {
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch (error) {
-    if (error.code !== "ESRCH") throw error;
-  }
-}
-
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
 }
