@@ -1,5 +1,6 @@
 import comments from "@eslint-community/eslint-plugin-eslint-comments/configs";
 import js from "@eslint/js";
+import { globSync } from "node:fs";
 import { defineConfig, globalIgnores } from "eslint/config";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
@@ -27,6 +28,8 @@ const productFiles = ["apps/*/src/**/*.{ts,tsx}", "packages/*/src/**/*.ts"];
 // 개발 스크립트: 사람과 CI가 돌리는 scripts 아래 .mjs에서 시험 코드를 뺀 곳. 시험이 부르는 가짜 프로그램(`test-fixtures`)과
 // 일부러 실패하는 시험 묶음(`scripts/fixtures`)은 시험 쪽이다. 타입 정보는 scripts/tsconfig.json(allowJs)으로 얻는다.
 const scriptFiles = ["scripts/**/*.mjs"];
+// 타입 정보는 디스크에 있는 파일에만 생긴다. lint 시험이 lintText로 넣는 없는 경로는 타입 정보 없는 규칙만 받는다.
+const scriptsOnDisk = globSync(scriptFiles, { cwd: import.meta.dirname });
 const scriptIgnores = [
   ...testFiles,
   "**/test-fixtures/**",
@@ -244,20 +247,26 @@ export default defineConfig([
     // 본보기로 삼는다. 타입 표기가 없는 JS는 값이 모두 any라 no-unsafe-*는 뜻이 없고, 단언 규칙은 JS에 단언 문법이 없어 걸지 않는다.
     files: scriptFiles,
     ignores: scriptIgnores,
+    plugins: { product: productRules },
+    rules: {
+      "product/sync-command-timeout": "error",
+      "product/no-ignored-error": "error",
+      eqeqeq: ["error", "always", { null: "ignore" }],
+    },
+  },
+  {
+    files: scriptsOnDisk,
+    ignores: scriptIgnores,
     languageOptions: {
       parserOptions: {
         projectService: true,
         tsconfigRootDir: import.meta.dirname,
       },
     },
-    plugins: { product: productRules },
     rules: {
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
       "@typescript-eslint/no-deprecated": "error",
-      "product/sync-command-timeout": "error",
-      "product/no-ignored-error": "error",
-      eqeqeq: ["error", "always", { null: "ignore" }],
     },
   },
   {
