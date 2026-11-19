@@ -8,6 +8,7 @@ import {
   continueAfterFailure,
   egressRefusalMessages,
   failureCode,
+  orIfProbeFailed,
   orIfUnreadable,
   type Destination,
   type EgressRefusal,
@@ -191,6 +192,17 @@ export function createRelayHub(): RelayHub {
     );
   };
 
+  /** 확인한 주소에 붙는다. 붙지 못하면 원인을 남기고 `undefined`(부르는 쪽이 502로 답한다). */
+  const dialAllowed = (addresses: string[], port: number) =>
+    orIfProbeFailed(
+      () => dial(addresses, port),
+      undefined,
+      (error) =>
+        console.warn(
+          `[provider] the relay could not connect to an allowed destination; it answered 502 (${failureCode(error)})`
+        )
+    );
+
   const rulesFor = (
     relay: Relay,
     research: readonly Destination[]
@@ -249,10 +261,7 @@ export function createRelayHub(): RelayHub {
           client.end(refusalHead(decision.reason));
           return;
         }
-        const dialed = await orIfUnreadable(
-          () => dial(decision.addresses, target.port),
-          undefined
-        );
+        const dialed = await dialAllowed(decision.addresses, target.port);
         if (!dialed) {
           client.end(
             "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
@@ -330,10 +339,7 @@ export function createRelayHub(): RelayHub {
           res.end();
         };
         // CONNECT와 같이 확인한 주소에 차례로 붙는다(이름을 다시 풀지 않는다).
-        const dialed = await orIfUnreadable(
-          () => dial(decision.addresses, port),
-          undefined
-        );
+        const dialed = await dialAllowed(decision.addresses, port);
         if (!dialed) return void badGateway();
         const socket = dialed.socket;
         const tunnel: Tunnel = {

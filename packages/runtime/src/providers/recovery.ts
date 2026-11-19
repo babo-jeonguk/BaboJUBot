@@ -14,7 +14,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
-  orIfUnreadable,
+  orIfProbeFailed,
 } from "@babojubot/contracts";
 import { holdsLease, stopLeaseHolders } from "./lease.ts";
 const boot = () =>
@@ -128,20 +128,27 @@ function parseStart(text: string) {
   const at = Date.parse(text.trim());
   return Number.isFinite(at) ? at : undefined;
 }
-/** /proc가 없는 시스템에서 프로세스 시작 시각. 물어볼 수 없으면 `undefined`다. */
+/** /proc가 없는 시스템에서 프로세스 시작 시각. 물어볼 수 없으면 원인을 남기고 `undefined`다(우리 것으로 보지 않는다). */
 export function processStartedAt(pid: number, platform: NodeJS.Platform) {
-  return orIfUnreadable(() => {
-    const [command, args] = startQuery(pid, platform);
-    return parseStart(
-      execFileSync(command, args, {
-        encoding: "utf8",
-        env: startQueryEnv(),
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: helperCommandTimeoutMs,
-      })
-    );
-  }, undefined);
+  return orIfProbeFailed(
+    () => {
+      const [command, args] = startQuery(pid, platform);
+      return parseStart(
+        execFileSync(command, args, {
+          encoding: "utf8",
+          env: startQueryEnv(),
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: helperCommandTimeoutMs,
+        })
+      );
+    },
+    undefined,
+    (error) =>
+      console.warn(
+        `[provider] the start time of process ${pid} could not be asked; it is not taken as ours (${failureCode(error)})`
+      )
+  );
 }
 // Windows는 다른 프로그램이 파일을 열어 둔 동안 덮어쓰기를 거절한다. 잠깐이므로 약 5초 동안 다시 시도한다.
 const startSaveTries = 20;
@@ -201,7 +208,13 @@ export function recordProcess(
       timeout: startRecordTimeoutMs,
     },
     (error, stdout) => {
-      const started = error ? undefined : parseStart(stdout);
+      if (error) {
+        console.warn(
+          `[provider] the start time of process ${pid} could not be asked; its record stays without one (${failureCode(error)})`
+        );
+        return;
+      }
+      const started = parseStart(stdout);
       if (started !== undefined) saveStarted(started, startSaveTries);
     }
   );

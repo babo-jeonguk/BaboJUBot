@@ -10,6 +10,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
+  orIfProbeFailed,
   orIfUnreadable,
 } from "@babojubot/contracts";
 import { candidatePort } from "./ports.ts";
@@ -322,6 +323,12 @@ function stopNow(
   });
 }
 
+/** 프로세스 신원을 읽지 못한 원인을 남긴다. 모르는 신원은 같은 프로세스로 보지 않는다(손대지 않는다). */
+const unknownIdentity = (pid: number) => (error: unknown) =>
+  console.warn(
+    `[db] could not read the identity of process ${pid}; it is not taken as the same process (${failureCode(error)})`
+  );
+
 /**
  * OS가 매긴 프로세스 생성 신원. 같은 pid라도 나중에 시작한 다른 프로세스면 달라진다. Linux는 /proc의 시작 tick,
  * 그 밖의 POSIX는 ps의 시작 시각이다. Windows는 쓰지 않는다(`stopNow` 참고). 알 수 없으면 undefined.
@@ -332,15 +339,18 @@ export function processIdentity(
 ): string | undefined {
   if (process.platform === "win32") return undefined;
   if (process.platform === "linux") {
-    return orIfUnreadable(
+    // 끝난 프로세스는 신원이 없다(답이다). 그 밖의 읽기 실패는 원인을 남기고 모르는 것으로 본다.
+    const stat = orIfProbeFailed(
       () =>
-        fs
-          .readFileSync(`/proc/${pid}/stat`, "utf8")
-          .split(") ")
-          .at(-1)!
-          .split(" ")[19],
-      undefined
+        orIfMissing(
+          () => fs.readFileSync(`/proc/${pid}/stat`, "utf8"),
+          hasErrorCode("ENOENT", "ESRCH"),
+          undefined
+        ),
+      undefined,
+      unknownIdentity(pid)
     );
+    return stat?.split(") ").at(-1)!.split(" ")[19];
   }
   if (timeoutMs < 1) return undefined;
   const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
@@ -349,6 +359,10 @@ export function processIdentity(
     stdio: ["ignore", "pipe", "ignore"],
     timeout: timeoutMs,
   });
+  if (result.error) {
+    unknownIdentity(pid)(result.error);
+    return undefined;
+  }
   const text = result.status === 0 ? result.stdout.trim() : "";
   return text || undefined;
 }
@@ -364,15 +378,27 @@ async function servesDataDir(port: number, dataDir: string) {
     connectionString: clusterUrl(port, "postgres"),
     connectionTimeoutMillis: 5_000,
   });
-  client.on("error", () => {});
+  // 접속한 뒤 끊기는 오류도 이 확인의 실패다. 원인을 남긴다(접속·질의의 실패는 아래 확인이 남긴다).
+  client.on("error", (error) =>
+    console.warn(
+      `[db] the data directory check connection failed (${failureCode(error)})`
+    )
+  );
   try {
-    return await orIfUnreadable(async () => {
-      await client.connect();
-      const { rows } = await client.query<{ data_directory: string }>(
-        "show data_directory"
-      );
-      return samePath(rows[0]!.data_directory, dataDir);
-    }, false);
+    return await orIfProbeFailed(
+      async () => {
+        await client.connect();
+        const { rows } = await client.query<{ data_directory: string }>(
+          "show data_directory"
+        );
+        return samePath(rows[0]!.data_directory, dataDir);
+      },
+      false,
+      (error) =>
+        console.warn(
+          `[db] could not ask Postgres on port ${port} which data directory it serves (${failureCode(error)})`
+        )
+    );
   } finally {
     await continueAfterFailure(
       () => client.end(),
@@ -386,10 +412,7 @@ async function servesDataDir(port: number, dataDir: string) {
 }
 
 function samePath(a: string, b: string) {
-  return orIfUnreadable(
-    () => fs.realpathSync.native(a) === fs.realpathSync.native(b),
-    false
-  );
+  return fs.realpathSync.native(a) === fs.realpathSync.native(b);
 }
 
 const stopCommand = (pgCtl: string, dataDir: string) =>

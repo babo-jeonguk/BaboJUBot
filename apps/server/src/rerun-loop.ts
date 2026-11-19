@@ -1,8 +1,11 @@
+import { continueAfterFailure } from "@babojubot/contracts";
+
 /**
  * 한 번에 한 회차만 도는 확인. 도는 동안 온 요청은 하나로 모아, 그 회차가 끝난 뒤 한 번 더 돈다.
  * 주기 확인(heartbeat·압축·알림)이 이 모양을 쓰고, 키마다 따로 도는 확인(에이전트별 깨우기 처리)은 `RerunLoops`를 쓴다.
  * 새 확인도 이 두 클래스를 쓴다.
  * 회차의 실패(거절·동기 throw)는 `onError`에 넘기고 다음 요청을 계속 받는다. 기다리는 쪽에는 실패를 던지지 않는다.
+ * `onError`·`onIdle`이 던져도 회차는 끝나고(기다리는 쪽이 풀리고) 다음 요청을 받는다. `onIdle`이 던진 오류는 `onError`로, `onError`가 던진 오류는 넘겨받던 실패와 함께 서버 로그(console.error)로 보낸다.
  * 마지막 회차가 끝나 쉬게 되면(재실행 없이 끝나거나 닫혀서 재실행을 버리면) `onIdle`을 부른다. 회차와 그 재실행 사이에는 부르지 않는다.
  */
 export class RerunLoop {
@@ -39,7 +42,11 @@ export class RerunLoop {
         this.#again = false;
         this.request();
       }
-      if (!this.#running) this.#onIdle();
+      if (!this.#running)
+        continueAfterFailure(
+          () => this.#onIdle(),
+          (error) => this.#fail(error)
+        );
       pass.resolve();
     });
   }
@@ -48,8 +55,21 @@ export class RerunLoop {
     try {
       await this.#check();
     } catch (error) {
-      this.#onError(error);
+      this.#fail(error);
     }
+  }
+
+  /** 실패를 `onError`에 넘긴다. `onError`가 던지면 넘기던 실패와 함께 서버 로그에 남기고, 회차는 그대로 끝낸다. */
+  #fail(error: unknown): void {
+    continueAfterFailure(
+      () => this.#onError(error),
+      (thrown) =>
+        console.error(
+          "[rerun-loop] onError threw while handling a failure; the failure and what onError threw follow",
+          error,
+          thrown
+        )
+    );
   }
 
   /**
@@ -81,6 +101,7 @@ export class RerunLoop {
  * 키마다 따로 도는 `RerunLoop`들. 같은 키는 한 번에 한 회차만 돌고, 다른 키는 서로 기다리지 않는다.
  * 쉬게 된 키는 잊는다. 그 뒤 같은 키를 요청하면 새로 시작한다. 그래서 들고 있는 것은 지금 도는 키뿐이다.
  * `onIdle`은 키를 잊은 뒤 그 키로 부른다.
+ * 콜백이 던질 때도 `RerunLoop`과 같다: 키를 잊고, `onIdle`이 던진 오류는 그 키로 `onError`에 넘긴다.
  */
 export class RerunLoops {
   readonly #loops = new Map<string, RerunLoop>();

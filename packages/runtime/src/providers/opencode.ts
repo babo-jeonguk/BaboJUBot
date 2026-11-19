@@ -15,6 +15,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
+  orIfProbeFailed,
   orIfUnreadable,
   settled,
   subtractUsage,
@@ -203,21 +204,28 @@ async function openCodeLoginResidue(dataHome: string): Promise<boolean> {
     return false;
   let db: DatabaseSync | undefined;
   try {
-    return orIfUnreadable(() => {
-      db = new DatabaseSync(file, { readOnly: true });
-      for (const table of ["credential", "account", "control_account"]) {
-        try {
-          const row = db
-            .prepare(`select count(*) as n from "${table}"`)
-            .get() as { n?: unknown } | undefined;
-          if (typeof row?.n === "number" && row.n > 0) return true;
-        } catch (error) {
-          // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
-          if (!/no such table/i.test(String(error))) throw error;
+    return orIfProbeFailed(
+      () => {
+        db = new DatabaseSync(file, { readOnly: true });
+        for (const table of ["credential", "account", "control_account"]) {
+          try {
+            const row = db
+              .prepare(`select count(*) as n from "${table}"`)
+              .get() as { n?: unknown } | undefined;
+            if (typeof row?.n === "number" && row.n > 0) return true;
+          } catch (error) {
+            // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
+            if (!/no such table/i.test(String(error))) throw error;
+          }
         }
-      }
-      return false;
-    }, true);
+        return false;
+      },
+      true,
+      (error) =>
+        console.warn(
+          `[provider] the OpenCode login store could not be read; it counts as a remaining login (${failureCode(error)})`
+        )
+    );
   } finally {
     db?.close();
   }

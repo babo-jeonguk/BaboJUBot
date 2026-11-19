@@ -16,6 +16,7 @@ import {
   continueAfterFailure,
   failureCode,
   isUsageAnomaly,
+  orIfProbeFailed,
   orIfUnreadable,
   settled,
   subtractUsage,
@@ -739,16 +740,23 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                  * 읽지 못했거나 그사이 실행 시도가 끝났으면 받았다고 보지 않는다.
                  */
                 const recorded = async () =>
-                  orIfUnreadable(async () => {
-                    const read = await connection.request(
-                      "thread/read",
-                      { threadId, includeTurns: true },
-                      { timeoutMs: timeouts.steerRecord }
-                    );
-                    return (
-                      !ended() && holdsClientMessage(read, message.messageId)
-                    );
-                  }, false);
+                  orIfProbeFailed(
+                    async () => {
+                      const read = await connection.request(
+                        "thread/read",
+                        { threadId, includeTurns: true },
+                        { timeoutMs: timeouts.steerRecord }
+                      );
+                      return (
+                        !ended() && holdsClientMessage(read, message.messageId)
+                      );
+                    },
+                    false,
+                    (error) =>
+                      console.warn(
+                        `[provider] the Codex thread record could not be read; the steer delivery stays unknown (${failureCode(error)})`
+                      )
+                  );
                 try {
                   // 응답이 없으면 기록을 한 번 확인하고, 거기에도 없으면 전달 여부를 모르는 오류로 알린다.
                   // 실행 시도는 이어 가고 다시 보내지 않는다. 명시적 거절·연결 닫힘은 확인하지 않는다.

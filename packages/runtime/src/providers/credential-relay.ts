@@ -7,6 +7,9 @@ import { Transform } from "node:stream";
 import {
   continueAfterFailure,
   failureCode,
+  hasErrorCode,
+  orIfMissing,
+  orIfProbeFailed,
   orIfUnreadable,
   type CredentialRelayEndpoint,
 } from "@babojubot/contracts";
@@ -520,19 +523,27 @@ export async function credentialResidue(
   known?: string
 ): Promise<boolean> {
   for (const relative of paths) {
-    const at = path.join(home, relative);
-    let found;
-    try {
-      found = await lstat(at);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ENOTDIR") continue;
-      return true;
-    }
-    if (!found.isSymbolicLink()) return true;
-    if (known === undefined) return true;
-    const target = await orIfUnreadable(() => readlink(at), undefined);
-    if (target === undefined || target !== known) return true;
+    const residue = await orIfProbeFailed(
+      () => residueAt(path.join(home, relative), known),
+      true,
+      (error) =>
+        console.warn(
+          `[provider] a login path in the organization folder could not be checked; it counts as a remaining login (${failureCode(error)})`
+        )
+    );
+    if (residue) return true;
   }
   return false;
+}
+
+/** 경로 하나가 남은 로그인인가. 없으면(상위가 파일인 것 포함) 아니고, 알려진 원본을 가리키는 링크만 아니다. 확인하지 못하면 던진다. */
+async function residueAt(at: string, known: string | undefined) {
+  const found = await orIfMissing(
+    () => lstat(at),
+    hasErrorCode("ENOENT", "ENOTDIR"),
+    undefined
+  );
+  if (!found) return false;
+  if (!found.isSymbolicLink() || known === undefined) return true;
+  return (await readlink(at)) !== known;
 }
