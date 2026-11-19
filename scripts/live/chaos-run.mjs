@@ -9,7 +9,11 @@ import {
   failureCode,
   settled,
 } from "../../packages/contracts/src/failure.ts";
-import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
+import {
+  cleanUpAll,
+  killUnlessGone,
+  withCleanup,
+} from "@babojubot/runtime/test-cleanup";
 import {
   createLedger,
   limits,
@@ -166,18 +170,14 @@ async function runScene({
   globalDeadlineAt,
 }) {
   const at = Date.now();
-  const home = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-home-"));
-  const harnessDir = await mkdtemp(
-    path.join(tmpdir(), "babojubot-chaos-scene-")
+  const { home, harnessDir } = await prepareScene(() =>
+    writeBudget(budgetFile, {
+      scene: scene.id,
+      maxLiveRuns: launch.maxLiveRuns,
+      sceneMaxRuns: sceneRunCap(scene.id),
+      deadlineAt: sceneDeadlineAt,
+    })
   );
-  await chmod(home, 0o700);
-  await chmod(harnessDir, 0o700);
-  writeBudget(budgetFile, {
-    scene: scene.id,
-    maxLiveRuns: launch.maxLiveRuns,
-    sceneMaxRuns: sceneRunCap(scene.id),
-    deadlineAt: sceneDeadlineAt,
-  });
   const server = chaosServer({
     home,
     harnessDir,
@@ -329,6 +329,38 @@ async function runScene({
 }
 
 /** 장면 정리. 정리에서 난 문제도 결과에 남긴다. */
+/**
+ * 장면의 임시 홈과 검사 폴더(0700)를 만들고 `ready`(예산 쓰기)를 한다. 준비가 실패하면 그때까지 만든 폴더를 지우고 원래 실패를
+ * 던진다(지우기 실패는 따로 알린다). 성공하면 두 폴더의 정리는 장면 끝의 `cleanupScene`이 맡는다.
+ */
+async function prepareScene(ready) {
+  const made = [];
+  try {
+    const home = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-home-"));
+    made.push(home);
+    const harnessDir = await mkdtemp(
+      path.join(tmpdir(), "babojubot-chaos-scene-")
+    );
+    made.push(harnessDir);
+    await chmod(home, 0o700);
+    await chmod(harnessDir, 0o700);
+    ready();
+    return { home, harnessDir };
+  } catch (error) {
+    await continueAfterFailure(
+      () =>
+        cleanUpAll(
+          made.map((dir) => () => rm(dir, { recursive: true, force: true }))
+        ),
+      (cleanupError) =>
+        console.error(
+          `[chaos] scene folders were not removed after a failed start (${failureCode(cleanupError)})`
+        )
+    );
+    throw error;
+  }
+}
+
 export async function cleanupScene({ server, home, harnessDir, marker }) {
   const cleanup = {
     serverStopped: false,

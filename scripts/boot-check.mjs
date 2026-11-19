@@ -15,7 +15,6 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
-  orIfUnreadable,
 } from "../packages/contracts/src/failure.ts";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import { createStop, runBootCheckFlow } from "./boot-check-flow.mjs";
@@ -132,8 +131,14 @@ async function serveAndKill(label) {
     }
 
     let overview;
+    // 마지막 시도가 왜 답을 받지 못했는지. 시한에 닿아 멈출 때 원인으로 함께 알린다.
+    let lastAttempt = "no attempt yet";
     while (overview === undefined) {
-      stop.throwIfStopped(label);
+      // 멈춤 문구는 다른 단계와 같은 "단계: 이유"로 시작하고, 마지막 시도가 답을 받지 못한 원인을 뒤에 붙인다.
+      if (stop.reason)
+        throw new Error(
+          `${label}: ${stop.reason} (last /api/overview attempt: ${lastAttempt})`
+        );
       if (spawnError)
         throw new Error(
           `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
@@ -142,13 +147,19 @@ async function serveAndKill(label) {
         throw new Error(
           `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
         );
-      // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 시한 안에서 다시 본다.
-      overview = await orIfUnreadable(async () => {
-        const response = await fetch(`${readyUrl}/api/overview`, {
-          signal: AbortSignal.timeout(fetchTimeoutMs),
-        });
-        return response.ok ? await response.json() : undefined;
-      }, undefined);
+      // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
+      overview = await continueAfterFailure(
+        async () => {
+          const response = await fetch(`${readyUrl}/api/overview`, {
+            signal: AbortSignal.timeout(fetchTimeoutMs),
+          });
+          lastAttempt = `HTTP ${response.status}`;
+          return response.ok ? await response.json() : undefined;
+        },
+        (error) => {
+          lastAttempt = failureCode(error.cause ?? error);
+        }
+      );
       if (overview === undefined) await delay(250);
     }
     console.log(

@@ -146,8 +146,17 @@ export function writeBudget(file, budget) {
   writeSecretFile(file, JSON.stringify(budget), { replace: true });
 }
 
+/**
+ * 서버 프로세스가 실행마다 읽는 예산. 파일이 없거나(ENOENT) 내용을 해석할 수 없으면 예산이 없는 것(null)이고, 그러면 실제 실행을
+ * 시작하지 않는다. 그 밖의 읽기 오류(권한·디스크)는 "예산 없음"으로 숨기지 않고 던진다. 읽기와 해석을 따로 감싼다.
+ */
 export function readBudget(file) {
-  return JSON.parse(readFileSync(file, "utf8"));
+  const text = orIfMissing(
+    () => readFileSync(file, "utf8"),
+    hasErrorCode("ENOENT"),
+    null
+  );
+  return text === null ? null : orIfUnreadable(() => JSON.parse(text), null);
 }
 
 /** 지금 실제 실행 하나를 시작해도 되는지. 시작 전에 확인하고, 되면 기록까지 한 번에 한다. */
@@ -203,13 +212,24 @@ export function writeSecretFile(file, content, { replace = false } = {}) {
   renameSync(next, file);
 }
 
+/** 쓰기가 실패하면 만든 파일을 닫고 지운 뒤(각 실패는 따로 알림) 원래 실패를 던진다. 반쯤 쓴 비밀 파일을 남기지 않는다. */
 function writeNewSecretFile(file, content) {
   const fd = openSync(file, "wx", 0o600);
   try {
     writeSync(fd, content);
-  } finally {
-    closeSync(fd);
+  } catch (error) {
+    const report = (what) => (cleanupError) =>
+      console.error(
+        `[chaos] ${what} a half-written secret file failed (${failureCode(cleanupError)})`
+      );
+    continueAfterFailure(() => closeSync(fd), report("closing"));
+    continueAfterFailure(
+      () => rmSync(file, { force: true }),
+      report("removing")
+    );
+    throw error;
   }
+  closeSync(fd);
 }
 
 const refusal = (reason) => ({
@@ -245,16 +265,19 @@ export function gateConnection(
     ...inner,
     async execute(request, ctl) {
       const runId = request.identity.runId;
-      // 예산을 읽을 수 없으면(없거나 깨짐) 예산이 없는 것이고, 아래에서 실제 실행을 시작하지 않는다.
-      const budget = orIfUnreadable(() => readBudget(budgetFile), null);
+      // 예산이 없거나 깨졌으면 아래에서 실제 실행을 시작하지 않는다. 읽기 오류는 그대로 드러난다.
+      const budget = readBudget(budgetFile);
       if (live) {
         // 준비됨 결과는 60초 다시 쓴다. 지난 결과가 없거나 오래됐으면 새로 확인한다.
         let ready = { status: "ready", reason: null };
         if (Date.now() >= readyUntil) {
-          // 확인하지 못하면 준비되지 않은 것이고, 아래에서 시작하지 않는다.
-          ready = await orIfUnreadable(
+          // 확인이 실패하면 그 원인을 남기고 준비되지 않은 것으로 본다. 아래에서 시작하지 않는다.
+          ready = await continueAfterFailure(
             () => inner.checkReadiness(ctl.signal),
-            null
+            (error) =>
+              console.error(
+                `[chaos] readiness check failed (${failureCode(error)}); the live run is not started`
+              )
           );
           if (ready?.status === "ready") readyUntil = Date.now() + 60_000;
         }
@@ -297,8 +320,7 @@ export function gateConnection(
           connection: connection.id,
         });
       }
-      const tokenFile = path.join(tokenDir, `${runId}.token`);
-      if (live) writeSecretFile(tokenFile, request.access.token);
+      // 실패할 수 있는 준비(제어 파일 읽기, 입력 조립)는 토큰을 쓰기 전에 끝낸다. 토큰을 쓴 바로 다음부터 정리가 지킨다.
       const settings = control();
       const input = {
         ...request,
@@ -309,6 +331,8 @@ export function gateConnection(
           ? { context: { ...request.context, conversation: [] } }
           : {}),
       };
+      const tokenFile = path.join(tokenDir, `${runId}.token`);
+      if (live) writeSecretFile(tokenFile, request.access.token);
       let result;
       try {
         result = await inner.execute(input, ctl);

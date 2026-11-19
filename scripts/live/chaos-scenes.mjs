@@ -7,9 +7,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { processAlive } from "@babojubot/runtime/test-cleanup";
 import {
+  continueAfterFailure,
+  failureCode,
   hasErrorCode,
   orIfMissing,
-  orIfUnreadable,
 } from "../../packages/contracts/src/failure.ts";
 import { limits, maxOverlap } from "./chaos-budget.mjs";
 import { matchingPids } from "./processes.mjs";
@@ -1108,14 +1109,17 @@ async function steerKillScene(ctx) {
     ctx.secrets.add(body);
     // 두 번째 강제 종료 전에 찍은 실행 목록. 이 뒤에 생긴 실행만 새 실행으로 본다.
     const beforeSecondKill = (await runsOf(ctx, org)).map((r) => r.id);
-    // 이 요청이 가는 동안 서버를 강제로 끝내므로 연결이 끊겨 실패하는 것이 정상이다. 결과는 보지 않고 끝남만 기다린다.
-    const inFlight = orIfUnreadable(
+    // 이 요청이 가는 동안 서버를 강제로 끝내므로 연결이 끊겨 실패할 수 있다. 결과는 보지 않고, 실패하면 그 원인만 남긴다.
+    const inFlight = continueAfterFailure(
       () =>
         ctx.api("POST", `/api/organizations/${org.id}/messages`, {
           body,
           delivery: "steer",
         }),
-      null
+      (error) =>
+        console.error(
+          `[chaos] the steer sent across the forced kill got no answer (${failureCode(error.cause ?? error)})`
+        )
     );
     await sleep(30, ctx.signal);
     await killAndRestart(ctx);
