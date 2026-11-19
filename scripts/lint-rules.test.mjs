@@ -255,8 +255,10 @@ test("test code may use timers that bound a wait, answer late, check again or co
     `await new Promise((resolve, reject) => setTimeout(() => route.fulfill({ response }).then(resolve, reject), 50));\n`,
     // 깨어나 같은 조건을 다시 확인하는 타이머.
     `await new Promise((resolve) => {\n  const poll = () => (done() ? resolve() : setTimeout(poll, 50));\n  poll();\n});\n`,
-    // 이벤트 루프 차례 넘기기는 시간을 기다리지 않는다.
-    `await new Promise((resolve) => setTimeout(resolve, 0));\nawait new Promise((resolve) => setImmediate(resolve));\nawait new Promise((resolve) => setTimeout(resolve));\n`,
+    // 이벤트 루프 차례 하나는 시간을 기다리지 않는다(잇달아 쓰면 횟수 세기로 짚는다).
+    `await new Promise((resolve) => setTimeout(resolve, 0));\n`,
+    `await new Promise((resolve) => setImmediate(resolve));\n`,
+    `await new Promise((resolve) => setTimeout(resolve));\n`,
     // timers/promises가 아닌 곳의 같은 이름, Playwright의 다른 대기.
     `import { setTimeout as later } from "./elsewhere.mjs";\nawait later(50);\nawait page.waitForURL("/");\n`,
   ];
