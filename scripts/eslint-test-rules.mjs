@@ -2199,6 +2199,24 @@ const noDroppedRejection = {
 
 const cleanupModule =
   /^(@babojubot\/runtime\/test-cleanup|(\.{1,2}\/)+(.*\/)?test-cleanup(\.ts)?)$/;
+/**
+ * 속성의 경로: 루트 식별자(또는 `this`)의 이름과 속성 이름들(`child.exited`, `this.server.closed`). 루트가 식별자·`this`가
+ * 아니거나(호출 결과 등) 계산된 이름이 끼면 따라갈 수 없어 undefined다. 같은 객체를 다른 이름으로 부르면 다른 경로다.
+ */
+function objectPath(member) {
+  const names = [];
+  let node = member;
+  while (node.type === "MemberExpression") {
+    const name = memberName(node);
+    if (name === undefined) return undefined;
+    names.unshift(name);
+    node = node.object;
+  }
+  if (node.type === "Identifier") return [node.name, ...names].join(".");
+  if (node.type === "ThisExpression") return ["this", ...names].join(".");
+  return undefined;
+}
+
 /** 함수 안까지 모든 노드를 `found`에 넘긴다. */
 function walkAll(node, found) {
   if (!node || typeof node.type !== "string") return;
@@ -2241,9 +2259,11 @@ function awaitedValue(node) {
  * - 부른 결과를 `const` 변수나 객체 속성(`child.exited = …`)에 바로 담지 않는 것(`awaitedLater(p);`, `await awaitedLater(p)`, 인자로 넘기기).
  * - 담은 `const`를 같은 파일 어디서도 기다리지 않는 것. 기다림은 `await`·`return`, 그 값을 넘긴 배열·호출·메서드 끝의 `await`·`return`이다
  *   (`await Promise.all([x])`, `await expect(x).rejects…`, `await within(x.catch(…), ms)`).
- * - 담은 속성 이름을 같은 파일에서 읽어 기다리는 곳이 없는 것.
+ * - 담은 속성을 같은 파일에서 같은 경로(루트 식별자·`this`의 이름과 속성 이름들, `child.exited`)로 읽어 기다리는 곳이 없는 것.
+ *   경로로 따라갈 수 없는 자리(계산된 이름, 호출 결과의 속성)와 같은 객체를 다른 이름으로 읽는 것은 기다리지 않은 것으로 본다.
  * - 부르지 않고 함수 값으로 넘기는 것(`items.map(awaitedLater)`). 결과를 따라갈 수 없다.
- * 속성을 다른 파일에서 읽어 기다리는 것과, 기다리는 자리가 실제로 실행되는지는 따라가지 않는다.
+ * 속성을 다른 파일에서 읽어 기다리는 것은 따라가지 않아 짚는다. 루트는 이름으로 맞추므로 같은 이름으로 넘겨받은 객체(다른 함수의
+ * 매개변수 `child`)는 같은 경로다. 기다리는 자리가 실제로 실행되는지는 따라가지 않는다.
  */
 const noUnawaitedLater = {
   meta: {
@@ -2297,14 +2317,14 @@ const noUnawaitedLater = {
         cleanupModule.test(origin.source)
       );
     };
-    /** 파일 전체의 `.name` 속성 읽기 가운데 기다려지는 것이 있는가. */
-    const propertyAwaited = (name) => {
+    /** 파일 전체에서 같은 경로(`child.exited`)의 속성 읽기 가운데 기다려지는 것이 있는가. */
+    const propertyAwaited = (path) => {
       let found = false;
       walkAll(sourceCode.ast, (node) => {
         if (
           !found &&
           node.type === "MemberExpression" &&
-          memberName(node) === name &&
+          objectPath(node) === path &&
           awaitedValue(node)
         )
           found = true;
@@ -2334,8 +2354,8 @@ const noUnawaitedLater = {
         parent.operator === "=" &&
         parent.left.type === "MemberExpression"
       ) {
-        const name = memberName(parent.left);
-        if (name === undefined || !propertyAwaited(name))
+        const path = objectPath(parent.left);
+        if (path === undefined || !propertyAwaited(path))
           context.report({ node: call, messageId: "notAwaited" });
         return;
       }

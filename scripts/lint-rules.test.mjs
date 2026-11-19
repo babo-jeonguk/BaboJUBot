@@ -1614,6 +1614,22 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}child.exited = awaitedLater(p);\nuse(child.exited);\n`,
       /기다리지 않습니다/,
     ],
+    "a same-name property of another object": [
+      `${laterImport}${laterHead}const other = {};\nchild.exited = awaitedLater(p);\nawait other.exited;\n`,
+      /기다리지 않습니다/,
+    ],
+    "the same object under another name": [
+      `${laterImport}${laterHead}child.exited = awaitedLater(p);\nconst alias = child;\nawait alias.exited;\n`,
+      /기다리지 않습니다/,
+    ],
+    "a shorter path": [
+      `${laterImport}${laterHead}child.run = {};\nchild.run.exited = awaitedLater(p);\nawait child.exited;\n`,
+      /기다리지 않습니다/,
+    ],
+    "a property of a call result": [
+      `${laterImport}${laterHead}const make = () => child;\nmake().exited = awaitedLater(p);\nawait make().exited;\n`,
+      /기다리지 않습니다/,
+    ],
     "a computed property": [
       `${laterImport}${laterHead}const key = "exited";\nchild[key] = awaitedLater(p);\nawait child[key];\n`,
       /기다리지 않습니다/,
@@ -1661,6 +1677,10 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     // 속성은 같은 파일의 다른 함수에서 읽어 기다려도 된다.
     `child.exited = awaitedLater(p);\nexport async function wait() {\n  return await Promise.race([child.exited, p]);\n}\n`,
     `child.exited = awaitedLater(p);\nawait child.exited;\n`,
+    // 같은 이름으로 넘겨받은 객체, 깊은 경로, this.
+    `child.exited = awaitedLater(p);\nexport const wait = (child) => Promise.race([child.exited, p]);\n`,
+    `child.run = {};\nchild.run.exited = awaitedLater(p);\nawait child.run.exited;\n`,
+    `export class Server {\n  start() {\n    this.exited = awaitedLater(p);\n  }\n  async stop() {\n    await this.exited;\n  }\n}\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
