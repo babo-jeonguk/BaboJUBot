@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RerunLoop } from "./rerun-loop.ts";
+import { RerunLoop, RerunLoops } from "./rerun-loop.ts";
 
 /** 풀거나 거절할 수 있는 Promise. 시험이 회차의 시작과 끝을 정한다. */
 function gate() {
@@ -64,7 +64,6 @@ describe("RerunLoop", () => {
 
     loop.request();
     await checks.entered(1);
-    expect(loop.busy).toBe(true);
     loop.request();
     loop.request();
     loop.request();
@@ -76,7 +75,6 @@ describe("RerunLoop", () => {
     await loop.settled();
 
     expect(checks.log).toEqual(["start 1", "end 1", "start 2", "end 2"]);
-    expect(loop.busy).toBe(false);
   });
 
   it("does not rerun when nothing was requested during the pass", async () => {
@@ -231,6 +229,220 @@ describe("RerunLoop", () => {
     await loop.settled();
 
     expect(checks.log).toEqual(["start 1", "end 1", "closed"]);
-    expect(loop.busy).toBe(false);
+  });
+
+  it("tells onIdle once the last pass ends, not between a pass and its rerun", async () => {
+    const checks = heldChecks();
+    const loop = new RerunLoop(checks.check, failures().onError, () =>
+      checks.log.push("idle")
+    );
+
+    loop.request();
+    await checks.entered(1);
+    loop.request();
+    checks.finish(1);
+    await checks.entered(2);
+    checks.finish(2);
+    await loop.settled();
+    loop.request();
+    await checks.entered(3);
+    checks.finish(3);
+    await loop.settled();
+
+    expect(checks.log).toEqual([
+      "start 1",
+      "end 1",
+      "start 2",
+      "end 2",
+      "idle",
+      "start 3",
+      "end 3",
+      "idle",
+    ]);
+  });
+
+  it("tells onIdle after a failed pass and when close drops the pending rerun", async () => {
+    const checks = heldChecks();
+    const loop = new RerunLoop(checks.check, failures().onError, () =>
+      checks.log.push("idle")
+    );
+
+    loop.request();
+    await checks.entered(1);
+    checks.fail(1, new Error("check failed"));
+    await loop.settled();
+    loop.request();
+    await checks.entered(2);
+    loop.request();
+    const closed = loop.close();
+    checks.finish(2);
+    await closed;
+
+    expect(checks.log).toEqual([
+      "start 1",
+      "end 1",
+      "idle",
+      "start 2",
+      "end 2",
+      "idle",
+    ]);
+  });
+});
+
+/** 키마다 따로 멈춰 있는 확인. 키의 n번째 회차는 `of(key).entered(n)`·`of(key).finish(n)`로 다룬다. */
+function heldChecksByKey() {
+  const byKey = new Map<string, ReturnType<typeof heldChecks>>();
+  const of = (key: string) => {
+    let found = byKey.get(key);
+    if (!found) byKey.set(key, (found = heldChecks()));
+    return found;
+  };
+  return { of, check: (key: string) => of(key).check() };
+}
+
+describe("RerunLoops", () => {
+  it("runs each key on its own, one pass at a time per key", async () => {
+    const checks = heldChecksByKey();
+    const loops = new RerunLoops(checks.check, failures().onError);
+
+    loops.request("a");
+    await checks.of("a").entered(1);
+    // a가 도는 동안에도 b는 따로 돈다.
+    loops.request("b");
+    await checks.of("b").entered(1);
+    loops.request("a");
+    checks.of("a").finish(1);
+    await checks.of("a").entered(2);
+    checks.of("a").finish(2);
+    checks.of("b").finish(1);
+    await loops.settledAll();
+
+    expect(checks.of("a").log).toEqual([
+      "start 1",
+      "end 1",
+      "start 2",
+      "end 2",
+    ]);
+    expect(checks.of("b").log).toEqual(["start 1", "end 1"]);
+  });
+
+  it("forgets a key once its passes end, and runs it again on the next request", async () => {
+    const checks = heldChecksByKey();
+    const loops = new RerunLoops(checks.check, failures().onError);
+
+    loops.request("a");
+    await checks.of("a").entered(1);
+    expect(loops.busy("a")).toBe(true);
+    loops.request("a");
+    checks.of("a").finish(1);
+    await checks.of("a").entered(2);
+    // 재실행 사이에는 쉬지 않으므로 잊지 않는다.
+    expect(loops.busy("a")).toBe(true);
+    checks.of("a").finish(2);
+    await loops.settled("a");
+    expect(loops.busy("a")).toBe(false);
+
+    loops.request("a");
+    expect(loops.busy("a")).toBe(true);
+    await checks.of("a").entered(3);
+    const settled = loops
+      .settled("a")
+      .then(() => checks.of("a").log.push("settled"));
+    await nextTurn();
+    checks.of("a").finish(3);
+    await settled;
+
+    expect(loops.busy("a")).toBe(false);
+    expect(checks.of("a").log).toEqual([
+      "start 1",
+      "end 1",
+      "start 2",
+      "end 2",
+      "start 3",
+      "end 3",
+      "settled",
+    ]);
+  });
+
+  it("resolves at once for a key that is not running", async () => {
+    const checks = heldChecksByKey();
+    const loops = new RerunLoops(checks.check, failures().onError);
+
+    await loops.settled("a");
+    await loops.settledAll();
+
+    expect(checks.of("a").passes()).toBe(0);
+  });
+
+  it("waits for every key, including one requested by another key's pass", async () => {
+    const order: string[] = [];
+    const aDone = gate();
+    const bEntered = gate();
+    const bDone = gate();
+    const loops: RerunLoops = new RerunLoops(async (key) => {
+      order.push(`start ${key}`);
+      if (key === "a") {
+        await aDone.promise;
+        // 기다리기를 시작한 뒤에 다른 키가 생긴다(dispatcher의 자리 촉진처럼).
+        loops.request("b");
+      } else {
+        bEntered.resolve();
+        await bDone.promise;
+      }
+      order.push(`end ${key}`);
+    }, failures().onError);
+
+    loops.request("a");
+    const settled = loops.settledAll().then(() => order.push("settled"));
+    aDone.resolve();
+    await bEntered.promise;
+    await nextTurn();
+    bDone.resolve();
+    await settled;
+
+    expect(order).toEqual(["start a", "start b", "end a", "end b", "settled"]);
+    expect(loops.busy("a")).toBe(false);
+    expect(loops.busy("b")).toBe(false);
+  });
+
+  it("hands a failed pass to onError with its key and forgets the key", async () => {
+    const checks = heldChecksByKey();
+    const errors: [string, unknown][] = [];
+    const loops = new RerunLoops(checks.check, (key, error) =>
+      errors.push([key, error])
+    );
+    const failure = new Error("check failed");
+
+    loops.request("a");
+    await checks.of("a").entered(1);
+    checks.of("a").fail(1, failure);
+    await loops.settled("a");
+
+    expect(errors).toEqual([["a", failure]]);
+    expect(loops.busy("a")).toBe(false);
+  });
+
+  it("on close, waits for every running key, drops pending reruns and ignores later requests", async () => {
+    const checks = heldChecksByKey();
+    const loops = new RerunLoops(checks.check, failures().onError);
+
+    loops.request("a");
+    loops.request("b");
+    await checks.of("a").entered(1);
+    await checks.of("b").entered(1);
+    loops.request("a");
+    const closed = loops.close().then(() => checks.of("a").log.push("closed"));
+    await nextTurn();
+    checks.of("a").finish(1);
+    checks.of("b").finish(1);
+    await closed;
+    loops.request("a");
+    loops.request("c");
+
+    expect(checks.of("a").log).toEqual(["start 1", "end 1", "closed"]);
+    expect(checks.of("b").log).toEqual(["start 1", "end 1"]);
+    expect(checks.of("c").passes()).toBe(0);
+    expect(loops.busy("a")).toBe(false);
+    expect(loops.busy("c")).toBe(false);
   });
 });
