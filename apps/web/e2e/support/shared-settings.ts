@@ -40,7 +40,7 @@ export type HeldWrite = {
   release: () => Promise<Response>;
   /**
    * 닿은 요청을 서버로 보내기만 하고 응답은 기다리지 않는다. 응답을 기다리지 않고 끝나는 테스트를 흉내 낼 때 쓴다.
-   * 그 요청은 이 테스트의 화면이 보낸 요청이므로 정리가 끝나기를 기다린다. 닿기 전에 부르면 오류다.
+   * 정리가 그 응답을 기다려 성공 응답인지 확인하고, 아니면 정리를 실패로 알린다. 닿기 전에 부르면 오류다.
    */
   send: () => void;
 };
@@ -122,6 +122,8 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
       // 붙잡았다가 보내지 않고 끊은 요청. 서버에 닿지 않았고, 붙잡힌 채 화면이 이동해 취소됐으면 응답도 실패도 알리지 않으므로
       // 정리는 이 요청을 기다리지 않는다. 서버로 보낸 요청은 다른 화면 요청처럼 정리가 끝날 때까지 기다린다.
       const unsent = new Set<Request>();
+      // `send`로 보내고 테스트가 응답을 보지 않은 요청. 정리가 응답을 기다려 성공했는지 본다.
+      const sent: { url: string; request: Request }[] = [];
 
       const holdWrite = async (target: Page, url: string) => {
         let decide!: (send: boolean) => void;
@@ -129,12 +131,14 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
         let arrive!: (request: Request) => void;
         const arrival = new Promise<Request>((resolve) => (arrive = resolve));
         let taken = false;
+        let heldRequest: Request | undefined;
         let running: Promise<void> = Promise.resolve();
         const handler = (route: Route) => {
           if (taken || route.request().method() !== "PUT")
             return route.fallback();
           taken = true;
-          arrive(route.request());
+          heldRequest = route.request();
+          arrive(heldRequest);
           running = decision.then((send) => {
             if (send) return route.fallback();
             unsent.add(route.request());
@@ -155,8 +159,9 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
         return {
           arrived,
           send: () => {
-            if (!taken)
+            if (!heldRequest)
               throw new Error(`${url} PUT이 아직 route에 닿지 않았다`);
+            sent.push({ url, request: heldRequest });
             decide(true);
           },
           release: async () => {
@@ -195,6 +200,15 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
           "이 테스트가 보낸 전역 설정 변경이 끝나지 않았다"
         )
       );
+      // `send`로 보낸 요청은 테스트가 응답을 보지 않았으므로 여기서 성공 응답인지 본다.
+      for (const { url, request: write } of sent)
+        await attempt(async () => {
+          const response = await write.response();
+          if (!response?.ok())
+            throw new Error(
+              `send로 보낸 ${url} PUT이 ${response ? `${response.status()}로` : "응답 없이"} 끝났다`
+            );
+        });
       await attempt(() => restore(request, initial));
       if (problems.length === 1) throw problems[0];
       if (problems.length > 1)

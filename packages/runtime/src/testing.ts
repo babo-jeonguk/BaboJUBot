@@ -83,9 +83,10 @@ export const writes =
       : step.do === "call" && step.tool === tool;
 
 /**
- * 가짜 HTTP 서버(`http.createServer`)에 넘길 요청 처리기. 비동기 처리기가 실패하면 그 오류를 요청한 쪽에 돌려준다: 응답을 아직
- * 시작하지 않았으면 500과 오류 문구로, 시작했으면 연결을 끊는다. 실패가 처리되지 않은 거절로 버려지거나 요청이 응답 없이
- * 멈추지 않고, 그 요청을 보낸 시험이 실패를 받는다(CODING_STANDARDS.md#단언).
+ * 가짜 HTTP 서버(`http.createServer`)에 넘길 요청 처리기. 비동기 처리기가 실패하면 두 곳에 알린다.
+ * - 요청한 쪽: 응답을 아직 시작하지 않았으면 500과 오류 문구로, 시작했으면 연결을 끊는다. 요청이 응답 없이 멈추지 않는다.
+ * - 러너: 같은 오류를 잡히지 않은 오류로 다시 던진다. Vitest는 그 실행을 실패로 알리므로, 요청한 쪽(시험 대상)이 500을 넘겨
+ *   버려도 가짜 서버의 고장이 통과로 묻히지 않는다(CODING_STANDARDS.md#단언).
  */
 export function answering(
   handle: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>
@@ -93,11 +94,24 @@ export function answering(
   return (req, res) => {
     handle(req, res).catch((error: unknown) => {
       const failure = error instanceof Error ? error : new Error(String(error));
-      if (res.headersSent) res.destroy(failure);
-      else
+      // 응답을 다 보낸 뒤에 던진다. 먼저 던지면 실행이 끝나며 응답이 끊길 수 있다.
+      const report = () =>
+        setImmediate(() => {
+          throw new Error(
+            `가짜 HTTP 서버가 ${req.method} ${req.url}을 처리하지 못했다`,
+            { cause: failure }
+          );
+        });
+      if (res.headersSent) {
+        res.destroy(failure);
+        report();
+      } else
         res
           .writeHead(500, { "content-type": "text/plain" })
-          .end(`fake server failed: ${failure.stack ?? failure.message}`);
+          .end(
+            `fake server failed: ${failure.stack ?? failure.message}`,
+            report
+          );
     });
   };
 }
