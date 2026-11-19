@@ -75,13 +75,21 @@ test("development scripts get the product rules", async () => {
         `${place}: ${kept}`
       );
     }
+  // 시험 쪽은 스크립트 규칙을 받지 않는다. Promise 규칙은 시험 규칙이 시험 파일에도 건다(scripts/lint-rules.test.mjs).
+  const testPromiseRules = new Set([
+    "@typescript-eslint/no-floating-promises",
+    "@typescript-eslint/no-misused-promises",
+  ]);
   for (const place of scriptTestPlaces)
-    for (const [rule, { reported }] of Object.entries(scriptRules))
-      assert.deepEqual(
-        await lint(reported, place, [rule]),
-        [],
+    for (const [rule, { reported }] of Object.entries(scriptRules)) {
+      const expected =
+        testPromiseRules.has(rule) && place.endsWith(".test.mjs") ? 1 : 0;
+      assert.equal(
+        (await lint(reported, place, [rule])).length,
+        expected,
         `${place}: ${rule}`
       );
+    }
 });
 
 const chainRule = ["product/no-cleanup-chain"];

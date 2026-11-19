@@ -53,10 +53,16 @@ switch (process.env.MISBEHAVE) {
     setInterval(() => {}, 1000);
     break;
   case "leave-postgres-on-stop":
-    process.on("message", async (message) => {
+    process.on("message", (message) => {
       if (message?.type !== "babojubot:stop") return;
-      await removeFolder(dataDir);
-      process.exit(0);
+      // 지우지 못하면 그 원인을 남기고 실패 코드로 끝난다.
+      removeFolder(dataDir).then(
+        () => process.exit(0),
+        (error) => {
+          console.error("[misbehaving-server] data folder not removed", error);
+          process.exit(1);
+        }
+      );
     });
     process.stdout.write(ready);
     break;

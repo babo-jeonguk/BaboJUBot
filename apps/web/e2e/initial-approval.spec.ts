@@ -131,7 +131,8 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
   await decision.getByRole("link", { name: "팀 보기" }).click();
   const team = page.getByRole("region", { name: "조직도" });
   await expect(team).toContainText("작업자 2명");
-  const copyIdOf = async (worker: string) => {
+  /** 작업자의 Role·Soul·Skill 사본 화면을 열고 그 사본의 ID 자리를 돌려준다. */
+  const openCopies = async (worker: string) => {
     await page.goto(`/orgs/${org.id}/agents`);
     await team.getByRole("link", { name: new RegExp(worker) }).click();
     await page
@@ -158,12 +159,13 @@ test("the owner reviews the initial research request from the Inbox, asks for ch
     await expect(
       copies.locator("textarea, input, [contenteditable]")
     ).toHaveCount(0);
-    return copies.getByTestId("copy-id").textContent();
+    const id = copies.getByTestId("copy-id");
+    await expect(id).toHaveText(/\S/);
+    return id;
   };
-  const first = await copyIdOf("연구원 1");
-  const second = await copyIdOf("연구원 2");
-  expect(first).toBeTruthy();
-  expect(first).not.toBe(second);
+  // 첫 사본의 ID는 다른 작업자의 화면으로 옮기기 전에 한 번 읽어 둔다(사본마다 정해진 값).
+  const first = (await (await openCopies("연구원 1")).textContent())!;
+  await expect(await openCopies("연구원 2")).not.toHaveText(first);
 
   // 조직 대시보드에 단계와 목표·완료 기준이 보인다.
   await page.goto(`/orgs/${org.id}`);

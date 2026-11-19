@@ -294,10 +294,11 @@ test("product code handles the failure of every promise it starts", async () => 
       [],
       shape
     );
+  // 시험 코드도 같은 규칙을 받는다(시험 규칙은 `void`로 버리는 것까지 짚는다, scripts/lint-rules.test.mjs).
   for (const place of testPlaces)
-    assert.deepEqual(
-      await lint(floating["a bare call"], place, floatingRule),
-      [],
+    assert.equal(
+      (await lint(floating["a bare call"], place, floatingRule)).length,
+      1,
       place
     );
 });
@@ -336,10 +337,11 @@ test("product code does not pass an async function where the result is dropped",
     ),
     []
   );
+  // 시험 코드도 같은 규칙을 받는다(scripts/lint-rules.test.mjs).
   for (const place of testPlaces)
-    assert.deepEqual(
-      await lint(misused["a callback"], place, misusedRule),
-      [],
+    assert.equal(
+      (await lint(misused["a callback"], place, misusedRule)).length,
+      1,
       place
     );
 });

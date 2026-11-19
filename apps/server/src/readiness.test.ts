@@ -12,36 +12,53 @@ const notReady: ProviderReadinessCheck = {
   reason: "credentials_invalid",
 };
 
-/** 첫 저장은 `gate`를 열 때까지 붙잡아 두고, 부른 차례를 남기는 가짜 저장. */
+/**
+ * 연결 `p`의 첫 저장은 `gate`를 열 때까지 붙잡아 두고, 부른 차례를 남기는 가짜 저장. 다른 연결 `q`는 저장 차례를 기다리지
+ * 않으므로, 그 저장이 시작되면(`otherSaving`) 그보다 먼저 시작한 `p`의 확인도 저장 차례를 정하는 자리까지 왔다.
+ */
 const fakes = () => {
   const gate = createGate();
   const stored = new Map<string, ProviderReadinessCheck>();
   const calls: string[] = [];
   const results = [ready, notReady];
   let saves = 0;
-  const connection: ProviderConnection = {
-    id: "p",
-    label: "P",
+  let otherSaved!: () => void;
+  const otherSaving = new Promise<void>((resolve) => (otherSaved = resolve));
+  const connection = (
+    id: string,
+    checkReadiness: () => Promise<ProviderReadinessCheck>
+  ): ProviderConnection => ({
+    id,
+    label: id.toUpperCase(),
     models: [],
     adapter: {
       ...fakeDeclarations(),
       async execute() {
         throw new Error("unused");
       },
-      async checkReadiness() {
-        return results.shift()!;
-      },
+      checkReadiness,
     },
-  };
+  });
   const save = async (provider: string, check: ProviderReadinessCheck) => {
-    const name = ++saves === 1 ? "A" : "B";
+    const name = provider === "q" ? "Q" : ++saves === 1 ? "A" : "B";
     calls.push(`start ${name}`);
     if (name === "A") await gate.wait(new AbortController().signal);
+    if (name === "Q") otherSaved();
     stored.set(provider, check);
     calls.push(`end ${name}`);
     return check;
   };
-  return { gate, stored, calls, connection, save };
+  return {
+    gate,
+    stored,
+    calls,
+    otherSaving,
+    connections: [
+      connection("p", async () => results.shift()!),
+      connection("q", async () => ready),
+    ],
+    save,
+  };
 };
 
 describe("ReadinessMonitor", () => {
@@ -49,7 +66,7 @@ describe("ReadinessMonitor", () => {
     const f = fakes();
     const monitor = new ReadinessMonitor({
       save: f.save,
-      connections: [f.connection],
+      connections: f.connections,
       hub: { publishSettingsChanged() {} },
       now: () => new Date("2026-10-31T00:00:00.000Z"),
     });
@@ -57,15 +74,23 @@ describe("ReadinessMonitor", () => {
     const a = monitor.check("p");
     await f.gate.reached;
     const b = monitor.check("p");
-    await new Promise((r) => setTimeout(r, 0));
-    await new Promise((r) => setTimeout(r, 0));
+    // B와 같은 길을 거치는 다른 연결의 확인을 B 뒤에 시작해, 그 저장이 시작된 것을 B의 도착 신호로 쓴다. 그때 B는 A의
+    // 저장을 기다리고 있어야 한다.
+    const other = monitor.check("q");
+    await f.otherSaving;
+    expect(f.calls).toEqual(["start A", "start Q", "end Q"]);
     expect(monitor.checking("p")).toBe(true);
 
     f.gate.open();
-    await Promise.all([a, b]);
+    await Promise.all([a, b, other]);
     expect(f.stored.get("p")).toEqual(notReady);
     expect(monitor.checking("p")).toBe(false);
-    expect(f.calls).toEqual(["start A", "end A", "start B", "end B"]);
+    expect(f.calls.filter((call) => !call.endsWith("Q"))).toEqual([
+      "start A",
+      "end A",
+      "start B",
+      "end B",
+    ]);
   });
 });
 

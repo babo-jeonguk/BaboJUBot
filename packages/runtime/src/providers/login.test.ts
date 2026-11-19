@@ -32,12 +32,11 @@ it("runs the login with the connection's environment and saves a pasted token pr
     ],
   });
   const input = new PassThrough();
-  const done = runLogin(provider, {
-    input,
-    output: new PassThrough(),
-    stdio: "ignore",
-  });
-  setTimeout(() => input.end("pasted-token\n"), 300);
+  const { output, text } = recordedOutput(false);
+  const done = runLogin(provider, { input, output, stdio: "ignore" });
+  // 로그인 프로그램이 끝나고 토큰을 묻는 프롬프트가 나온 뒤에 붙여 넣는다.
+  await typeAfterPrompt(input, text, ["pasted-token\n"]);
+  input.end();
   await done;
   const home = path.join(dataDir, "providers/claude");
   expect(await readFile(seen, "utf8")).toBe(home);

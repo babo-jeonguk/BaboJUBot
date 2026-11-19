@@ -56,6 +56,21 @@ const docker = (args: string[], timeout = 60_000, input?: string) =>
     stdio: "pipe",
     ...(input !== undefined ? { input } : {}),
   });
+/**
+ * 시험이 띄운 컨테이너를 강제로 지운다. 이미 없으면("No such container") 넘어가고, 그 밖의 실패(데몬 오류·권한)는 컨테이너 ID·
+ * 원인과 함께 알린다.
+ */
+function removeContainer(id: string) {
+  try {
+    docker(["rm", "-f", id]);
+  } catch (error) {
+    const stderr = String((error as { stderr?: unknown }).stderr ?? "");
+    if (/no such container/i.test(stderr)) return;
+    throw new Error(`컨테이너 ${id}를 지우지 못했다: ${stderr.trim()}`, {
+      cause: error,
+    });
+  }
+}
 const available = probeEnvironment({
   variable: "BABOJUBOT_REQUIRE_DOCKER",
   what: "Docker 격리 실행(폴더 권한·신뢰된 시작 환경·네트워크 없음·중계·컨테이너 제거)",
@@ -538,20 +553,14 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
         image,
         "300",
       ]).trim();
+    // 띄운 컨테이너마다 바로 정리를 등록한다. 이 제품의 것은 시험 대상이 지우므로 정리 때는 이미 없을 수 있다.
     const mine = run(settings.owner);
+    onTestFinished(() => removeContainer(mine));
     const othersOwner = `${settings.owner}-other`;
     const theirs = run(othersOwner);
-    try {
-      await environment.removeOrphans();
-      expect(containersOf(settings.owner)).toBe("");
-      expect(containersOf(othersOwner)).toBe(theirs.slice(0, 12));
-    } finally {
-      for (const id of [mine, theirs])
-        try {
-          docker(["rm", "-f", id]);
-        } catch {
-          /* already removed */
-        }
-    }
+    onTestFinished(() => removeContainer(theirs));
+    await environment.removeOrphans();
+    expect(containersOf(settings.owner)).toBe("");
+    expect(containersOf(othersOwner)).toBe(theirs.slice(0, 12));
   }, 120_000);
 });

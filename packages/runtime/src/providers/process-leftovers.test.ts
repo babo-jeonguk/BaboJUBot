@@ -1,19 +1,22 @@
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { startProcess } from "./process.ts";
+import { cleanUpAll } from "../test-cleanup.ts";
 import { exited, killAndWait, untilExited } from "./process-test-support.ts";
 
 // Claude Code·Codex·Antigravity는 셸 명령을 새 세션에 띄운다. 프로그램이 어떻게 끝나든, 실행 시도의 정리가 끝나면(`done`)
 // 그 명령과 명령이 띄운 프로그램도 꺼져 있어야 한다. 프로세스 그룹 밖이므로 표식으로 찾는다(#219).
 const pids: number[] = [];
 const runs: ReturnType<typeof startProcess>[] = [];
-// 단언이 실패해도 시작한 실행 시도는 끝내고 정리를 기다린다. 남은 번호는 그 뒤에 끄고 끝날 때까지 기다린다.
+// 단언이 실패해도 시작한 실행 시도를 모두 끝내고, 남은 번호를 끄고, 실행 시도마다 정리를 기다린다. 서로 무관한 단계라 앞
+// 단계가 실패해도 나머지를 하고 실패를 모아 알린다. 남은 프로그램을 먼저 꺼서 실행 시도의 정리가 그것에 매이지 않는다.
 afterEach(async () => {
-  for (const run of runs.splice(0)) {
-    run.end();
-    await run.done;
-  }
-  await killAndWait(pids.splice(0));
+  const ended = runs.splice(0);
+  await cleanUpAll([
+    ...ended.map((run) => () => run.end()),
+    () => killAndWait(pids.splice(0)),
+    ...ended.map((run) => () => run.done),
+  ]);
 });
 const alive = (pid: number) => !exited(pid);
 
@@ -39,12 +42,8 @@ ${keep};
 
 function start(then: string) {
   let report!: (frame: { child: number; grandchild: number }) => void;
-  let reportEnd!: (error: Error) => void;
-  const left = new Promise<{ child: number; grandchild: number }>(
-    (resolve, reject) => {
-      report = resolve;
-      reportEnd = reject;
-    }
+  const reported = new Promise<{ child: number; grandchild: number }>(
+    (resolve) => (report = resolve)
   );
   const run = startProcess({
     command: [process.execPath, "-e", leaving(then)],
@@ -59,7 +58,12 @@ function start(then: string) {
   });
   runs.push(run);
   // 번호를 알리기 전에 프로그램이 끝나면 기다리지 않고 실패한다.
-  void run.exited.then(() => reportEnd(new Error("exited before reporting")));
+  const left = Promise.race([
+    reported,
+    run.exited.then(() => {
+      throw new Error("exited before reporting");
+    }),
+  ]);
   return { run, left };
 }
 
