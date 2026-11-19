@@ -168,8 +168,8 @@ describe("settled", () => {
     const work = new Promise<void>((resolve) => (finish = resolve));
     let done = false;
     const waiting = settled(work).then(() => (done = true));
-    // 작업을 기다리지 않고 몇 차례 뒤 풀리는 구현도 걸러지게 여러 번 양보한다.
-    for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+    // 이미 끝난 작업을 기다린 settled가 풀린 것을 신호로 쓴다. 작업을 보지 않고 풀리는 구현이라면 먼저 만든 쪽이 이때 이미 풀렸다.
+    await settled(Promise.resolve());
     expect(done).toBe(false);
     finish();
     await waiting;
