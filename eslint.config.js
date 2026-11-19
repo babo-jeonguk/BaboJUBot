@@ -51,13 +51,6 @@ const assertions = ":matches(TSAsExpression, TSTypeAssertion)";
 const fixtureAlternatives =
   "실제 값을 흉내 내는 데이터는 완전한 값으로 만들어 `satisfies T`나 타입 표기(`const x: T = …`)로 확인하고, 있는 가짜·builder(`fakeDeclarations`·`createScriptedRuntime` 등)를 재사용하세요. 진입점이 정말 일부 필드만 쓰면 그 매개변수 타입을 그 범위(`Pick<T, …>`)로 좁힙니다. CODING_STANDARDS.md#시험-데이터";
 
-// 시험은 프로세스 환경을 직접 바꾸지 않는다(CODING_STANDARDS.md#격리). `process.env` 자체와 그 항목의 대입·삭제, 그것을 바꾸는 호출을 막는다.
-const processEnv = "[object.name='process'][property.name='env']";
-const processEnvEntry =
-  "[object.type='MemberExpression'][object.object.name='process'][object.property.name='env']";
-const processEnvMessage =
-  "시험이 process.env를 직접 바꾸면 원래 값을 잃고(대입·delete), 복원을 빠뜨리거나 다른 정리 뒤에 두면 뒤 시험·같은 프로세스의 다른 파일이 그 값을 물려받습니다. `vi.stubEnv(name, value)`로 바꾸고 바로 `onTestFinished(() => { vi.unstubAllEnvs(); })`(또는 그 일만 하는 `afterEach`)로 시작 전 값으로 돌려놓으세요. 자식 프로세스에 줄 환경은 `{ ...process.env, NAME: value }`처럼 새 객체로 만들어 넘기고, Vitest globalSetup이 시험에 넘길 값은 `provide`·`inject`로, Playwright globalSetup은 파일로 넘깁니다. CODING_STANDARDS.md#격리";
-
 export default defineConfig([
   globalIgnores([
     ".babojubot/**",
@@ -96,6 +89,7 @@ export default defineConfig([
     // 공용 정리 hook은 앞 정리가 실패해도 뒤 정리를 한다(CODING_STANDARDS.md#정리). 기다림의 순서와 반복문·try를 봐야 해서 규칙을 따로 둔다.
     // process.kill의 실패는 오류 코드를 보고 넘긴다(CODING_STANDARDS.md#정리). catch가 받은 오류를 읽는지 봐야 해서 규칙을 따로 둔다.
     // Node 서버 닫기의 실패를 Promise 이행으로 버리지 않는다(CODING_STANDARDS.md#정리). close 콜백과 서버의 출처를 봐야 해서 규칙을 따로 둔다.
+    // 시험은 process.env를 직접 바꾸지 않는다(CODING_STANDARDS.md#격리). 가져오기·구조 분해로 받은 env까지 출처를 따라가야 해서 규칙을 따로 둔다.
     files: testFiles,
     plugins: { tests: testRules },
     rules: {
@@ -105,6 +99,7 @@ export default defineConfig([
       "tests/no-fixed-time-wait": "error",
       "tests/no-ignored-close-error": "error",
       "tests/no-ignored-kill-error": "error",
+      "tests/no-process-env-change": "error",
       "tests/no-skipped-cleanup": "error",
       "tests/no-state-between-tests": "error",
       "no-restricted-syntax": [
@@ -124,21 +119,6 @@ export default defineConfig([
         {
           selector: `ImportDeclaration[source.value=/^(node:)?fs(\\/promises)?$/] > ImportSpecifier[imported.name=${removers}][local.name!=${removers}]`,
           message: `fs의 지우기 함수 이름을 바꿔 가져오면 폴더 지우기 검사를 피합니다. 이름 그대로 가져오세요. ${removeFolderMessage}`,
-        },
-        {
-          // `process.env.X = …`·`process.env[X] = …`(복합 대입 포함)·`process.env = …`.
-          selector: `AssignmentExpression > MemberExpression.left${processEnvEntry}, AssignmentExpression > MemberExpression.left${processEnv}`,
-          message: processEnvMessage,
-        },
-        {
-          // `delete process.env.X`.
-          selector: `UnaryExpression[operator='delete'] > MemberExpression.argument${processEnvEntry}`,
-          message: processEnvMessage,
-        },
-        {
-          // `Object.assign(process.env, …)`·`Reflect.set(process.env, …)`처럼 process.env를 바꾸는 호출.
-          selector: `CallExpression[callee.object.name=/^(Object|Reflect)$/][callee.property.name=/^(assign|defineProperty|defineProperties|set|deleteProperty)$/] > MemberExpression.arguments:first-child${processEnv}`,
-          message: processEnvMessage,
         },
         {
           // `x as unknown as T`·`x as any as T`(꺾쇠 단언 포함).
