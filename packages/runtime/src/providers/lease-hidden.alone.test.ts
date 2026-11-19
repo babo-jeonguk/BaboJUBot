@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { leaseHolders, leaseVariable, processStartTicks } from "./lease.ts";
 import { startProcess } from "./process.ts";
 import { killAndWait, readyLine } from "./process-test-support.ts";
+import { commandFailure, probeEnvironment } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 환경을 읽을 수 없게 막은 프로그램(gpg-agent·ssh-agent처럼 PR_SET_DUMPABLE 0)은 표식을 확인할 수 없다(#219, PR #220 외부 리뷰 SPEC-2).
@@ -31,12 +32,24 @@ async function hidden(lease: string, prefix: string[] = []) {
   await readyLine(child);
   return child.pid!;
 }
-// 다른 cgroup에 띄울 수 있는가(systemd 사용자 관리자가 있는 Linux). 없으면 그 시험만 건너뛴다.
-const scopes =
-  process.platform === "linux" &&
-  spawnSync("systemd-run", ["--user", "--scope", "--quiet", "true"], {
-    stdio: "ignore",
-  }).status === 0;
+// 다른 cgroup에 띄울 수 있는가(systemd 사용자 관리자가 있는 Linux). 로컬에서 없으면 그 시험만 건너뛴다. Linux CI는
+// BABOJUBOT_REQUIRE_SYSTEMD_SCOPE=1로 필수로 정하며, 그때 띄울 수 없으면 원인과 함께 실패한다.
+const scopes = probeEnvironment({
+  variable: "BABOJUBOT_REQUIRE_SYSTEMD_SCOPE",
+  what: "systemd 사용자 scope",
+  ...(process.platform !== "linux" && {
+    unsupported: `${process.platform}에는 systemd가 없다`,
+  }),
+  probe: () => {
+    const missing = commandFailure("systemd-run", [
+      "--user",
+      "--scope",
+      "--quiet",
+      "true",
+    ]);
+    return missing === undefined ? { value: true } : { missing };
+  },
+});
 
 describe.runIf(process.platform === "linux")(
   "programs that hide their environment",
@@ -56,7 +69,7 @@ describe.runIf(process.platform === "linux")(
     });
 
     // 실행 시도의 자손은 서버의 cgroup을 물려받는다. 다른 cgroup(데스크톱 앱·systemd 서비스)의 프로그램은 우리 것이 아니다.
-    it.runIf(scopes)(
+    it.runIf(scopes === true)(
       "are not ours when they run in another cgroup",
       async () => {
         const lease = randomUUID();

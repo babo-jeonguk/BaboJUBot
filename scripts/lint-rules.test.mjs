@@ -1042,3 +1042,78 @@ test("product code may assert types", async () => {
     []
   );
 });
+
+// ---------- 프로세스 환경 직접 변경 (#243) ----------
+
+/** process.env 직접 변경 규칙의 메시지만. */
+const envMessages = (messages) =>
+  messages.filter(
+    (m) =>
+      m.ruleId === "no-restricted-syntax" &&
+      /process\.env를 직접 바꾸면/.test(m.message)
+  );
+
+const envChanges = {
+  // 감사가 찾은 모양: 원래 값을 덮어쓰고, 복원은 서버 닫기 뒤에서 지운다.
+  "an assignment to an entry": `process.env.OPENCODE_CONFIG_CONTENT = "{}";\n`,
+  "a computed entry": `const name = "SETTING";\nprocess.env[name] = "1";\n`,
+  "a compound assignment": `process.env.PATH += ":/extra";\n`,
+  "a deleted entry": `delete process.env.OPENCODE_CONFIG_CONTENT;\n`,
+  "a deleted computed entry": `const name = "SETTING";\ndelete process.env[name];\n`,
+  // 시험이 저장해 둔 사본으로 환경 전체를 바꾸기.
+  "a replaced environment": `const saved = { ...process.env };\nprocess.env = { ...saved };\n`,
+  "Object.assign": `Object.assign(process.env, { SETTING: "1" });\n`,
+  "Reflect.set": `Reflect.set(process.env, "SETTING", "1");\n`,
+  "Reflect.deleteProperty": `Reflect.deleteProperty(process.env, "SETTING");\n`,
+};
+
+for (const [shape, code] of Object.entries(envChanges))
+  test(`test code may not change process.env with ${shape}`, async () => {
+    for (const place of testPlaces) {
+      const [message, ...rest] = envMessages(await lint(code, place));
+      assert.ok(message, `${place}: not reported`);
+      assert.deepEqual(rest, [], place);
+      // 메시지가 이유와 대안(stub과 복원, 자식 환경, globalSetup이 넘기는 값)을 알려 준다.
+      assert.match(message.message, /원래 값을 잃고/);
+      assert.match(message.message, /vi\.stubEnv/);
+      assert.match(message.message, /vi\.unstubAllEnvs/);
+      assert.match(message.message, /새 객체/);
+      assert.match(message.message, /provide/);
+      assert.match(message.message, /CODING_STANDARDS\.md#격리/);
+    }
+  });
+
+test("test code may read process.env, stub it and build a child's environment from it", async () => {
+  const allowed = [
+    // 읽기와 runner의 stub·복원.
+    `export const home = process.env.HOME;\nexport const has = "PATH" in process.env;\n`,
+    `import { onTestFinished, vi } from "vitest";\nvi.stubEnv("SETTING", "1");\nonTestFinished(() => {\n  vi.unstubAllEnvs();\n});\n`,
+    // 자식에 줄 환경은 새 객체로 만들고 그 객체를 바꾼다.
+    `const env = { ...process.env, SETTING: "1" };\nenv.OTHER = "2";\ndelete env.PATH;\nObject.assign(env, { MORE: "3" });\nexport { env };\n`,
+    // 다른 객체의 env 속성.
+    `const options = { env: {} as Record<string, string> };\noptions.env = { SETTING: "1" };\noptions.env.SETTING = "2";\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces) {
+      const typed = place.endsWith(".ts")
+        ? code
+        : code.replace(" as Record<string, string>", "");
+      assert.deepEqual(
+        envMessages(await lint(typed, place)),
+        [],
+        `${place}: ${code}`
+      );
+    }
+});
+
+test("code outside tests may set process.env", async () => {
+  assert.deepEqual(
+    envMessages(
+      await lint(
+        envChanges["an assignment to an entry"],
+        "scripts/lint-sample.mjs"
+      )
+    ),
+    []
+  );
+});

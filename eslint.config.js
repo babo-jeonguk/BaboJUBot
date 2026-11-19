@@ -51,6 +51,13 @@ const assertions = ":matches(TSAsExpression, TSTypeAssertion)";
 const fixtureAlternatives =
   "실제 값을 흉내 내는 데이터는 완전한 값으로 만들어 `satisfies T`나 타입 표기(`const x: T = …`)로 확인하고, 있는 가짜·builder(`fakeDeclarations`·`createScriptedRuntime` 등)를 재사용하세요. 진입점이 정말 일부 필드만 쓰면 그 매개변수 타입을 그 범위(`Pick<T, …>`)로 좁힙니다. CODING_STANDARDS.md#시험-데이터";
 
+// 시험은 프로세스 환경을 직접 바꾸지 않는다(CODING_STANDARDS.md#격리). `process.env` 자체와 그 항목의 대입·삭제, 그것을 바꾸는 호출을 막는다.
+const processEnv = "[object.name='process'][property.name='env']";
+const processEnvEntry =
+  "[object.type='MemberExpression'][object.object.name='process'][object.property.name='env']";
+const processEnvMessage =
+  "시험이 process.env를 직접 바꾸면 원래 값을 잃고(대입·delete), 복원을 빠뜨리거나 다른 정리 뒤에 두면 뒤 시험·같은 프로세스의 다른 파일이 그 값을 물려받습니다. `vi.stubEnv(name, value)`로 바꾸고 바로 `onTestFinished(() => { vi.unstubAllEnvs(); })`(또는 그 일만 하는 `afterEach`)로 시작 전 값으로 돌려놓으세요. 자식 프로세스에 줄 환경은 `{ ...process.env, NAME: value }`처럼 새 객체로 만들어 넘기고, Vitest globalSetup이 시험에 넘길 값은 `provide`·`inject`로, Playwright globalSetup은 파일로 넘깁니다. CODING_STANDARDS.md#격리";
+
 export default defineConfig([
   globalIgnores([
     ".babojubot/**",
@@ -117,6 +124,21 @@ export default defineConfig([
         {
           selector: `ImportDeclaration[source.value=/^(node:)?fs(\\/promises)?$/] > ImportSpecifier[imported.name=${removers}][local.name!=${removers}]`,
           message: `fs의 지우기 함수 이름을 바꿔 가져오면 폴더 지우기 검사를 피합니다. 이름 그대로 가져오세요. ${removeFolderMessage}`,
+        },
+        {
+          // `process.env.X = …`·`process.env[X] = …`(복합 대입 포함)·`process.env = …`.
+          selector: `AssignmentExpression > MemberExpression.left${processEnvEntry}, AssignmentExpression > MemberExpression.left${processEnv}`,
+          message: processEnvMessage,
+        },
+        {
+          // `delete process.env.X`.
+          selector: `UnaryExpression[operator='delete'] > MemberExpression.argument${processEnvEntry}`,
+          message: processEnvMessage,
+        },
+        {
+          // `Object.assign(process.env, …)`·`Reflect.set(process.env, …)`처럼 process.env를 바꾸는 호출.
+          selector: `CallExpression[callee.object.name=/^(Object|Reflect)$/][callee.property.name=/^(assign|defineProperty|defineProperties|set|deleteProperty)$/] > MemberExpression.arguments:first-child${processEnv}`,
+          message: processEnvMessage,
         },
         {
           // `x as unknown as T`·`x as any as T`(꺾쇠 단언 포함).

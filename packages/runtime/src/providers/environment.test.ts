@@ -1,17 +1,16 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { commandFor, providerEnvironment } from "./process.ts";
 
-const saved = { ...process.env };
 afterEach(() => {
-  process.env = { ...saved };
+  vi.unstubAllEnvs();
 });
 
 it("passes network, certificate and locale settings but no personal secrets", () => {
-  process.env.HTTPS_PROXY = "http://proxy";
-  process.env.NODE_EXTRA_CA_CERTS = "/certs.pem";
-  process.env.LANG = "ko_KR.UTF-8";
-  process.env.ANTHROPIC_API_KEY = "personal-key";
-  process.env.CLAUDE_CODE_SESSION_ID = "this-session";
+  vi.stubEnv("HTTPS_PROXY", "http://proxy");
+  vi.stubEnv("NODE_EXTRA_CA_CERTS", "/certs.pem");
+  vi.stubEnv("LANG", "ko_KR.UTF-8");
+  vi.stubEnv("ANTHROPIC_API_KEY", "personal-key");
+  vi.stubEnv("CLAUDE_CODE_SESSION_ID", "this-session");
   const env = providerEnvironment("claude", "/product", { HOME: "/product" });
   expect(env).toMatchObject({
     HTTPS_PROXY: "http://proxy",
@@ -25,9 +24,9 @@ it("passes network, certificate and locale settings but no personal secrets", ()
 });
 
 it("passes only the variables named for that connection", () => {
-  process.env.ANTHROPIC_API_KEY = "chosen";
-  process.env.OPENAI_API_KEY = "other";
-  process.env.BABOJUBOT_CLAUDE_WORK_PASS_ENV = "ANTHROPIC_API_KEY, MISSING";
+  vi.stubEnv("ANTHROPIC_API_KEY", "chosen");
+  vi.stubEnv("OPENAI_API_KEY", "other");
+  vi.stubEnv("BABOJUBOT_CLAUDE_WORK_PASS_ENV", "ANTHROPIC_API_KEY, MISSING");
   expect(
     providerEnvironment("claude-work", "/product", {}).ANTHROPIC_API_KEY
   ).toBe("chosen");
@@ -41,7 +40,7 @@ it("passes only the variables named for that connection", () => {
 
 it("lets the program location be chosen for a connection", () => {
   expect(commandFor("claude", "claude")).toEqual(["claude"]);
-  process.env.BABOJUBOT_CLAUDE_WORK_COMMAND = "/opt/claude/bin/claude";
+  vi.stubEnv("BABOJUBOT_CLAUDE_WORK_COMMAND", "/opt/claude/bin/claude");
   expect(commandFor("claude-work", "claude")).toEqual([
     "/opt/claude/bin/claude",
   ]);

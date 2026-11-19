@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
@@ -200,38 +200,36 @@ describe.each(providers)("%s", (_name, create, id, configVariable) => {
       const env = await setup();
       const setting = `BABOJUBOT_${id.toUpperCase()}_PASS_ENV`;
       // 사용자가 그 연결에 적어 둔 다른 로그인(API 키·클라우드 키 같은 것). 컨테이너 전체가 장악돼도 나가면 안 된다.
-      process.env.ORG_FOLDERS_NAMED_SECRET = "named-secret";
-      process.env[setting] = "ORG_FOLDERS_NAMED_SECRET";
-      try {
-        const a = crypto.randomUUID(),
-          b = crypto.randomUUID();
-        await create({
-          dataDir: env.root,
-          command: env.dumper,
-        }).adapter.execute(await env.requestFor(a), control());
-        await create({
-          dataDir: env.root,
-          command: env.dumper,
-          container: env.container,
-        }).adapter.execute(await env.requestFor(b, "container"), control());
-        const connection = path.join(env.root, "providers", id);
-        const dumped = await env.dumps();
-        const onHost = dumped.filter(
-          (one) => one.HOME === path.join(connection, "organizations", a)
-        );
-        const inContainer = dumped.filter(
-          (one) => one.HOME === path.join(connection, "organizations", b)
-        );
-        expect(onHost.length).toBeGreaterThan(0);
-        expect(inContainer.length).toBeGreaterThan(0);
-        for (const one of onHost)
-          expect(one.ORG_FOLDERS_NAMED_SECRET).toBe("named-secret");
-        for (const one of inContainer)
-          expect(one).not.toHaveProperty("ORG_FOLDERS_NAMED_SECRET");
-      } finally {
-        delete process.env.ORG_FOLDERS_NAMED_SECRET;
-        delete process.env[setting];
-      }
+      vi.stubEnv("ORG_FOLDERS_NAMED_SECRET", "named-secret");
+      vi.stubEnv(setting, "ORG_FOLDERS_NAMED_SECRET");
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      const a = crypto.randomUUID(),
+        b = crypto.randomUUID();
+      await create({
+        dataDir: env.root,
+        command: env.dumper,
+      }).adapter.execute(await env.requestFor(a), control());
+      await create({
+        dataDir: env.root,
+        command: env.dumper,
+        container: env.container,
+      }).adapter.execute(await env.requestFor(b, "container"), control());
+      const connection = path.join(env.root, "providers", id);
+      const dumped = await env.dumps();
+      const onHost = dumped.filter(
+        (one) => one.HOME === path.join(connection, "organizations", a)
+      );
+      const inContainer = dumped.filter(
+        (one) => one.HOME === path.join(connection, "organizations", b)
+      );
+      expect(onHost.length).toBeGreaterThan(0);
+      expect(inContainer.length).toBeGreaterThan(0);
+      for (const one of onHost)
+        expect(one.ORG_FOLDERS_NAMED_SECRET).toBe("named-secret");
+      for (const one of inContainer)
+        expect(one).not.toHaveProperty("ORG_FOLDERS_NAMED_SECRET");
     }
   );
 

@@ -11,9 +11,8 @@ const folders = testFolders();
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
 const createClaudeProvider = folders.owning(unownedClaudeProvider);
 
-const saved = { ...process.env };
 afterEach(() => {
-  process.env = { ...saved };
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 const additional = "BABOJUBOT_CLAUDE_ADDITIONAL_MODELS";
@@ -35,10 +34,13 @@ it("gives the built-in list to a connection with nothing added", () => {
 });
 
 it("adds new models at the end, in the order written", () => {
-  process.env[additional] = JSON.stringify([
-    { id: "claude-mythos-5-1", label: "Mythos 5.1" },
-    { id: "gateway/custom", label: "Custom" },
-  ]);
+  vi.stubEnv(
+    additional,
+    JSON.stringify([
+      { id: "claude-mythos-5-1", label: "Mythos 5.1" },
+      { id: "gateway/custom", label: "Custom" },
+    ])
+  );
   const models = claudeModelsFor("claude");
   expect(models.slice(0, claudeModels.length)).toEqual(claudeModels);
   expect(models.slice(claudeModels.length)).toEqual([
@@ -48,9 +50,10 @@ it("adds new models at the end, in the order written", () => {
 });
 
 it("renames a built-in model in place when the ID is the same", () => {
-  process.env[additional] = JSON.stringify([
-    { id: "claude-opus-5-5", label: "Main model" },
-  ]);
+  vi.stubEnv(
+    additional,
+    JSON.stringify([{ id: "claude-opus-5-5", label: "Main model" }])
+  );
   const models = claudeModelsFor("claude");
   expect(models).toHaveLength(claudeModels.length);
   const at = claudeModels.findIndex((m) => m.id === "claude-opus-5-5");
@@ -61,7 +64,7 @@ it.each(["not json", '{"id":"x","label":"X"}'])(
   "warns and keeps the built-in list when the setting is unusable: %s",
   (value) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    process.env[additional] = value;
+    vi.stubEnv(additional, value);
     expect(claudeModelsFor("claude")).toEqual(claudeModels);
     expect(warn).toHaveBeenCalledOnce();
   }
@@ -69,11 +72,10 @@ it.each(["not json", '{"id":"x","label":"X"}'])(
 
 it("skips only the unusable rows and warns about each", () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  process.env[additional] = JSON.stringify([
-    { id: "kept", label: "Kept" },
-    { id: "no-label" },
-    "text",
-  ]);
+  vi.stubEnv(
+    additional,
+    JSON.stringify([{ id: "kept", label: "Kept" }, { id: "no-label" }, "text"])
+  );
   expect(claudeModelsFor("claude").slice(claudeModels.length)).toEqual([
     { id: "kept", label: "Kept" },
   ]);
@@ -82,17 +84,19 @@ it("skips only the unusable rows and warns about each", () => {
 
 it("keeps the built-in name when a rename has nothing to show", () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  process.env[additional] = JSON.stringify([
-    { id: "claude-opus-5-5", label: "   " },
-  ]);
+  vi.stubEnv(
+    additional,
+    JSON.stringify([{ id: "claude-opus-5-5", label: "   " }])
+  );
   expect(claudeModelsFor("claude")).toEqual(claudeModels);
   expect(warn).toHaveBeenCalledOnce();
 });
 
 it("reads the setting of that connection only", () => {
-  process.env.BABOJUBOT_CLAUDE_WORK_ADDITIONAL_MODELS = JSON.stringify([
-    { id: "work-only", label: "Work" },
-  ]);
+  vi.stubEnv(
+    "BABOJUBOT_CLAUDE_WORK_ADDITIONAL_MODELS",
+    JSON.stringify([{ id: "work-only", label: "Work" }])
+  );
   expect(claudeModelsFor("claude")).toEqual(claudeModels);
   expect(claudeModelsFor("claude-work").at(-1)?.id).toBe("work-only");
 });
