@@ -79,12 +79,16 @@ export default defineConfig([
     // 시험은 실제로 잰 경과 시간을 단언하지 않는다(CODING_STANDARDS.md#시간). 값이 변수를 거쳐 단언에 닿는지 따라가야 해서 규칙을 따로 둔다.
     // 시험은 정해진 시간만큼 잠들어 기다리지 않는다. 타이머 콜백이 Promise의 resolve만 부르는지 봐야 해서 규칙을 따로 둔다.
     // 시험의 finally는 정리를 기다리거나 던질 수 있는 동기 정리를 부르지 않는다(CODING_STANDARDS.md#정리). 함수 경계와 안쪽 try…catch를 봐야 해서 규칙을 따로 둔다.
+    // 시험을 실패 예정으로 표시하지 않는다(CODING_STANDARDS.md#단언). 시험 함수 이름에 붙은 fail인지 봐야 해서 규칙을 따로 둔다.
+    // 시험끼리 바깥 변수나 차례 묶기로 상태를 넘기지 않는다(CODING_STANDARDS.md#격리). 변수를 대입·읽는 시험 본문과 hook을 가려야 해서 규칙을 따로 둔다.
     files: testFiles,
     plugins: { tests: testRules },
     rules: {
       "tests/no-cleanup-in-finally": "error",
       "tests/no-elapsed-time-assertion": "error",
+      "tests/no-expected-failure": "error",
       "tests/no-fixed-time-wait": "error",
+      "tests/no-state-between-tests": "error",
       "no-restricted-syntax": [
         "error",
         {

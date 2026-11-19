@@ -1,162 +1,146 @@
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
-import { openWithLiveEvents } from "./live-events.ts";
-import {
-  readSettings,
-  test,
-  type SharedSettings,
-  type Snapshot,
-} from "./shared-settings.ts";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { expect, test, type APIRequestContext } from "@playwright/test";
+import type {
+  JSONReport,
+  JSONReportSuite,
+  JSONReportTestResult,
+} from "@playwright/test/reporter";
+import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { runPlaywright } from "./playwright-run.ts";
+import type { Entry } from "./shared-settings-run/fixture.ts";
+import { readSettings } from "./shared-settings.ts";
 
-// 앞 테스트가 전역 설정을 바꾸고 화면의 저장을 붙잡은 채 끝나도 fixture가 시작 전 값으로 되돌렸는지 다음 테스트가 확인한다.
-// 정리는 테스트 결과와 상관없이 같은 길로 돈다. 그래서 정리 자체의 실패(멈춘 route callback, 되돌리기 실패)는 정상 종료 경우에서
-// 드러나게 하고, 중간 단언 실패 경우는 test.fail로 따로 둔다(test.fail은 정리의 실패도 기대한 실패로 삼키므로 이것만으로는 부족하다).
-test.describe.configure({ mode: "serial" });
+// `sharedSettings` fixture(shared-settings.ts)는 테스트가 전역 설정을 바꾸고 화면의 저장을 붙잡은 채 끝나거나 실패해도,
+// 보낸 저장이 끝나기를 기다린 뒤 시작 전 값으로 되돌린다. fixture 정리는 테스트가 끝난 뒤에 돌므로, 그 fixture를 쓰는 테스트 하나를
+// 안쪽 Playwright 실행(shared-settings-run/)으로 띄우고 바깥 테스트가 그 실행의 결과·기록과 정리 뒤 설정을 본다. 안쪽 실행은 이
+// E2E의 화면·API 서버를 같이 쓴다. 바깥 E2E는 한 번에 테스트 하나만 돌므로(playwright.config.ts `workers`) 그동안 다른 테스트가
+// 전역 설정을 바꾸지 않는다.
 
-let before: Snapshot | undefined;
+/** 안쪽 실행 하나의 시한. 브라우저 시작과 안쪽 테스트(시한 60초)·fixture 정리를 담는다. 바깥 테스트 시한은 여유를 더한다. */
+const runTimeoutMs = 120_000;
+test.describe.configure({ timeout: runTimeoutMs + 30_000 });
 
-/** API로 전역 설정을 바꾸고, 화면에서 압축 기준 저장을 붙잡은 채 화면을 다시 연다. 붙잡은 저장은 서버에 가지 않았다. */
-async function leaveSettingsMidSave(
-  page: Page,
-  request: APIRequestContext,
-  sharedSettings: SharedSettings
-) {
-  before = sharedSettings.initial;
-  const changes: [string, unknown][] = [
-    [
-      "/api/providers/defaults",
-      {
-        leadDefault: { provider: "fake-2", model: "fake-2-max" },
-        workerDefault: { provider: "fake-2", model: null },
-        compaction: { thresholdTokens: 300000, ratio: 0.8 },
+const config = fileURLToPath(
+  new URL("./shared-settings-run/playwright.config.ts", import.meta.url)
+);
+
+/** 안쪽 실행의 테스트 결과(JSON 보고서)를 모두 편다. */
+function resultsOf(suites: JSONReportSuite[] | undefined): {
+  title: string;
+  results: JSONReportTestResult[];
+}[] {
+  return (suites ?? []).flatMap((suite) => [
+    ...suite.specs.flatMap((spec) =>
+      spec.tests.map((t) => ({ title: spec.title, results: t.results }))
+    ),
+    ...resultsOf(suite.suites),
+  ]);
+}
+
+/** `file`(shared-settings-run/의 `*.check.ts`)의 테스트 하나를 안쪽 실행으로 돌린다. */
+async function runCheck(file: string, baseURL: string) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "babojubot-settings-run-"));
+  const reportFile = path.join(dir, "report.json");
+  const logFile = path.join(dir, "log.jsonl");
+  return withCleanup(async (defer) => {
+    defer(() => removeFolder(dir));
+    const { code, output } = await runPlaywright({
+      config,
+      timeoutMs: runTimeoutMs,
+      args: [file],
+      env: {
+        SHARED_SETTINGS_RUN_URL: baseURL,
+        SHARED_SETTINGS_RUN_REPORT: reportFile,
+        SHARED_SETTINGS_RUN_LOG: logFile,
+        SHARED_SETTINGS_RUN_OUTPUT: path.join(dir, "results"),
       },
-    ],
-    ["/api/providers/isolation", { isolated: !before.isolated }],
-    ["/api/providers/fake/limit", { maxConcurrentRuns: 7 }],
-  ];
-  for (const [path, data] of changes)
-    expect((await request.put(path, { data })).status()).toBe(200);
+    });
+    expect(existsSync(reportFile), output).toBe(true);
+    const report = JSON.parse(readFileSync(reportFile, "utf8")) as JSONReport;
+    expect(report.errors, output).toEqual([]);
+    const tests = resultsOf(report.suites);
+    // 안쪽 실행은 다시 시도하지 않으므로 테스트 하나에 결과 하나다.
+    expect(
+      tests.map((t) => t.results.length),
+      output
+    ).toEqual([1]);
+    const log = existsSync(logFile)
+      ? readFileSync(logFile, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as Entry)
+      : [];
+    return { code, output, result: tests[0]!.results[0]!, log };
+  });
+}
 
-  await openWithLiveEvents(page, "/settings");
-  const form = page.getByRole("form", { name: "기본 프로바이더" });
-  const threshold = form.getByRole("spinbutton", { name: "압축 기준" });
-  await expect(threshold).toHaveValue("300000");
-  await threshold.fill("600000");
-  await threshold.blur();
-  const held = await sharedSettings.holdWrite(
-    page,
-    "**/api/providers/defaults"
+/** 안쪽 실행이 끝난 뒤 서버의 전역 설정이 안쪽 실행 전 값과 같다. */
+async function expectSettingsAsBefore(
+  request: APIRequestContext,
+  before: Awaited<ReturnType<typeof readSettings>>,
+  output: string
+) {
+  expect(await readSettings(request), output).toEqual(before);
+}
+
+test("a test that ends while a settings save is held cleans up and hands back the settings it started with", async ({
+  request,
+  baseURL,
+}) => {
+  const before = await readSettings(request);
+  const { code, output, result } = await runCheck(
+    "ends-mid-save.check.ts",
+    baseURL!
   );
-  await form.getByRole("button", { name: /^저장/ }).click();
-  await held.arrived();
-  // 붙잡힌 저장이 있는 채로 화면을 다시 열어도 정리는 멈추지 않는다.
-  await page.reload();
-  await expect(threshold).toHaveValue("300000");
-}
-
-async function expectSettingsFromBefore(request: APIRequestContext) {
-  expect(before, "앞 테스트가 시작 전 값을 남겼다").toBeDefined();
-  expect(await readSettings(request)).toEqual(before);
-  before = undefined;
-}
-
-test("a test that ends while a settings save is held cleans up without errors", async ({
-  page,
-  request,
-  sharedSettings,
-}) => {
-  await leaveSettingsMidSave(page, request, sharedSettings);
+  // fixture 정리가 실패하면 그 실패가 이 테스트의 오류로 남는다.
+  expect(result.errors, output).toEqual([]);
+  expect(result.status, output).toBe("passed");
+  expect(code, output).toBe(0);
+  await expectSettingsAsBefore(request, before, output);
 });
 
-test("after a test that ended mid-save, the settings are the ones from before it", async ({
+test("a test that fails while a settings save is held keeps only its own failure and hands back the settings it started with", async ({
   request,
+  baseURL,
 }) => {
-  await expectSettingsFromBefore(request);
-});
-
-test("a test that fails while a settings save is held still hands back the settings it started with", async ({
-  page,
-  request,
-  sharedSettings,
-}) => {
-  test.fail(true, "중간 단언 실패를 일부러 만든다");
-  await leaveSettingsMidSave(page, request, sharedSettings);
-  expect("저장 도중 실패").toBe("저장 확정");
-});
-
-test("after a test that failed mid-save, the settings are the ones from before it", async ({
-  request,
-}) => {
-  await expectSettingsFromBefore(request);
-});
-
-// 서버로 보낸 저장의 응답을 기다리지 않고 끝난 테스트(응답 대기 시한을 넘긴 경우와 같다). 정리는 그 저장이 끝난 뒤에 되돌려야
-// 늦게 끝난 저장이 되돌린 값을 덮지 않는다. 느린 서버는 route가 page와 상관없는 연결로 같은 PUT을 보내 흉내 낸다. 그 PUT은
-// 테스트 본문이 끝난 뒤(afterEach) 보낸다. Playwright는 afterEach 뒤에 fixture를 정리하므로, 정리가 시작될 때 저장은 늘 오는 중이다.
-let lateWrite: Promise<unknown> | undefined;
-let sendLateWrite: (() => void) | undefined;
-test.afterEach(() => {
-  sendLateWrite?.();
-  sendLateWrite = undefined;
+  const before = await readSettings(request);
+  const { code, output, result } = await runCheck(
+    "fails-mid-save.check.ts",
+    baseURL!
+  );
+  // 실패는 본문 끝의 의도된 오류 하나다. 설정 변경이 앞서 실패했거나 fixture 정리가 실패하면 다른 오류가 남는다.
+  expect(
+    result.errors.map((e) => e.message?.split("\n")[0]),
+    output
+  ).toEqual(["Error: mid-save body failed on purpose"]);
+  expect(result.status, output).toBe("failed");
+  expect(code, output).toBe(1);
+  await expectSettingsAsBefore(request, before, output);
 });
 
 test("a test that ends while a released settings save is still on its way restores after that save", async ({
-  page,
-  playwright,
-  baseURL,
-  sharedSettings,
-}) => {
-  before = sharedSettings.initial;
-  expect(before.compaction?.thresholdTokens).not.toBe(600000);
-  const slowServer = await playwright.request.newContext({ baseURL });
-  // 준비 중 실패해도 연결을 닫는다. 늦은 저장을 보냈으면 그 저장이 끝난 뒤 lateWrite가 닫는다.
-  await withCleanup(async (defer) => {
-    defer(async () => {
-      if (!lateWrite) await slowServer.dispose();
-    });
-
-    await openWithLiveEvents(page, "/settings");
-    const form = page.getByRole("form", { name: "기본 프로바이더" });
-    const threshold = form.getByRole("spinbutton", { name: "압축 기준" });
-    await threshold.fill("600000");
-    await threshold.blur();
-    // 나중에 등록한 route가 먼저 돈다. 붙잡은 요청을 보내면 아래 느린 서버로 넘어간다. 이 route를 테스트 내내 두는 것은
-    // page의 route가 모두 없어지면 붙잡혀 있던 요청이 곧바로 서버로 가기 때문이다(정리가 문 route를 떼어도 느린 서버는 남는다).
-    let slowed = false;
-    let takeOver!: () => void;
-    const tookOver = new Promise<void>((resolve) => (takeOver = resolve));
-    await page.route("**/api/providers/defaults", async (route) => {
-      if (slowed || route.request().method() !== "PUT") return route.fallback();
-      slowed = true;
-      const bodyEnded = new Promise<void>(
-        (resolve) => (sendLateWrite = resolve)
-      );
-      const sent = bodyEnded.then(() =>
-        slowServer.put(route.request().url(), {
-          data: route.request().postDataJSON(),
-        })
-      );
-      lateWrite = sent.finally(() => slowServer.dispose());
-      takeOver();
-      // 정리가 이 저장을 기다리지 않으면 page가 먼저 닫혀 응답을 넘길 곳이 없다.
-      await route.fulfill({ response: await sent }).catch(() => {});
-    });
-    const held = await sharedSettings.holdWrite(
-      page,
-      "**/api/providers/defaults"
-    );
-    await form.getByRole("button", { name: /^저장/ }).click();
-    await held.arrived();
-    held.release().catch(() => {});
-    // 느린 서버가 저장을 넘겨받은 뒤에 끝낸다. 그 전에 끝나면 아래 finally가 연결을 닫아 버린다.
-    await tookOver;
-  });
-});
-
-test("after a test that ended with a save on its way, the settings are the ones from before it", async ({
   request,
+  baseURL,
 }) => {
-  expect(lateWrite, "앞 테스트가 저장을 보냈다").toBeDefined();
-  await lateWrite;
-  await expectSettingsFromBefore(request);
+  const before = await readSettings(request);
+  // 늦은 저장은 압축 기준을 600000으로 바꾼다. 시작 값이 이미 그 값이면 늦은 저장이 되돌린 값을 덮어도 알 수 없다.
+  expect(before.compaction).toBeDefined();
+  expect(before.compaction!.thresholdTokens).not.toBe(600000);
+  const { code, output, result, log } = await runCheck(
+    "late-save.check.ts",
+    baseURL!
+  );
+  expect(result.errors, output).toEqual([]);
+  expect(result.status, output).toBe("passed");
+  expect(code, output).toBe(0);
+  // 늦은 저장이 서버에 받아들여진 뒤에 fixture가 되돌리기 시작했다. 거절된 저장은 아무것도 바꾸지 않아 되돌린 값과 비교해도 드러나지 않는다.
+  expect(log.slice(0, 2), output).toEqual([
+    { step: "late write answered", status: 200, thresholdTokens: 600000 },
+    { step: "api put", path: "/api/providers/defaults" },
+  ]);
+  await expectSettingsAsBefore(request, before, output);
 });
