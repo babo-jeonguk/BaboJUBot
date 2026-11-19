@@ -192,23 +192,27 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
       for (const gate of gates) await attempt(gate.settle);
       page.context().off("request", onRequest);
       // 실패한 요청은 null, 서버에 닿은 요청은 그 응답으로 끝난다. 그 뒤에는 화면이 보낸 변경이 되돌린 값을 덮지 않는다.
-      await attempt(() =>
-        failAfter(
-          Promise.all(
-            writes.filter((r) => !unsent.has(r)).map((r) => r.response())
-          ),
+      // 응답은 시한을 둔 이 한 번만 기다린다. 시한을 넘기면 그 실패를 남기고 되돌리기로 간다.
+      const pending = writes.filter((r) => !unsent.has(r));
+      let answered: Map<Request, Response | null> | undefined;
+      await attempt(async () => {
+        const responses = await failAfter(
+          Promise.all(pending.map((r) => r.response())),
           "이 테스트가 보낸 전역 설정 변경이 끝나지 않았다"
-        )
-      );
-      // `send`로 보낸 요청은 테스트가 응답을 보지 않았으므로 여기서 성공 응답인지 본다.
-      for (const { url, request: write } of sent)
-        await attempt(async () => {
-          const response = await write.response();
+        );
+        answered = new Map(pending.map((r, i) => [r, responses[i]!]));
+      });
+      // `send`로 보낸 요청은 테스트가 응답을 보지 않았으므로 위에서 받은 응답이 성공인지 본다. 응답을 받지 못했으면 위의 실패가 남았다.
+      if (answered)
+        for (const { url, request: write } of sent) {
+          const response = answered.get(write);
           if (!response?.ok())
-            throw new Error(
-              `send로 보낸 ${url} PUT이 ${response ? `${response.status()}로` : "응답 없이"} 끝났다`
+            problems.push(
+              new Error(
+                `send로 보낸 ${url} PUT이 ${response ? `${response.status()}로` : "응답 없이"} 끝났다`
+              )
             );
-        });
+        }
       await attempt(() => restore(request, initial));
       if (problems.length === 1) throw problems[0];
       if (problems.length > 1)
