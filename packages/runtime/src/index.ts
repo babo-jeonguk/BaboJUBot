@@ -14,7 +14,8 @@ export * from "./providers/claude.ts";
 export * from "./providers/codex.ts";
 export * from "./providers/opencode.ts";
 export * from "./providers/antigravity.ts";
-export * from "./providers/recovery.ts";
+// 재시작 복구만 연다. 그룹 끄기는 runtime 안의 공용 실행(launch.ts)과 복구만 쓴다(lint).
+export { recoverProviderProcesses } from "./providers/recovery.ts";
 export { prepareJobObjectLauncher } from "./providers/job-object.ts";
 export * from "./providers/login.ts";
 export * from "./providers/container.ts";
