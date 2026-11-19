@@ -259,6 +259,20 @@ describe("one organization folder (#147)", () => {
   const waitingText = "먼저 시작한 OpenCode가 준비될 때까지 기다립니다.";
   const isWaiting = (activity: unknown) =>
     isDeepStrictEqual(activity, { type: "progress", text: waitingText });
+  type Run = Promise<{ stopReason: string }>;
+  /**
+   * 도착 신호를 다시 확인해 기다린다. 상한(20초, 시험 시한 안)을 넘으면 `check`가 던진 오류(못 받은 신호)로 실패하고,
+   * 그 전에 실행이 끝나면 그 결과와 함께 실패한다.
+   */
+  const arrival = (check: () => unknown, runs: Run[]) =>
+    Promise.race([
+      vi.waitFor(check, { timeout: 20_000 }),
+      Promise.any(runs).then((result) => {
+        throw new Error(
+          `a run ended (${result.stopReason}) before the signal arrived`
+        );
+      }),
+    ]);
   const racing = async () => {
     const root = await folders.make("opencode-race-");
     const gate = path.join(root, "startup-gate");
@@ -273,16 +287,17 @@ describe("one organization folder (#147)", () => {
     }).adapter;
     return {
       adapter,
-      /** 먼저 차례를 잡은 서버가 gate에 닿을 때까지 기다린다. 그 전에 실행이 끝나면 그 결과와 함께 실패한다. */
-      atGate: (run: Promise<{ stopReason: string }>) =>
-        Promise.race([
-          vi.waitFor(() => stat(`${gate}.reached`), { timeout: 20_000 }),
-          run.then((result) => {
+      /** 먼저 차례를 잡은 서버가 gate에 닿을 때까지 기다린다. */
+      atGate: (run: Run) =>
+        arrival(async () => {
+          try {
+            await stat(`${gate}.reached`);
+          } catch {
             throw new Error(
-              `the run ended (${result.stopReason}) before its server started`
+              "the first OpenCode server did not reach the startup gate"
             );
-          }),
-        ]),
+          }
+        }, [run]),
       openGate: () => writeFile(gate, ""),
     };
   };
@@ -292,25 +307,20 @@ describe("one organization folder (#147)", () => {
     input.context.organization.id = organizationId;
     return input;
   };
-  /** 실행 활동에 차례 대기 문구가 오면 풀린다. 그 전에 실행이 끝나면 그 결과와 함께 실패한다. */
+  /** 실행 활동에 차례 대기 문구가 왔는지 기록하고, 그 도착을 기다린다. */
   const waitingSignal = () => {
-    let seen!: () => void;
-    const waited = new Promise<void>((resolve) => {
-      seen = resolve;
-    });
+    let seen = false;
     return {
       emit: async (activity: unknown) => {
-        if (isWaiting(activity)) seen();
+        if (isWaiting(activity)) seen = true;
       },
-      before: (runs: Promise<{ stopReason: string }>[]) =>
-        Promise.race([
-          waited,
-          Promise.any(runs).then((result) => {
+      before: (runs: Run[]) =>
+        arrival(() => {
+          if (!seen)
             throw new Error(
-              `a run ended (${result.stopReason}) before one waited for its turn`
+              "OpenCode startup waiting progress was not observed"
             );
-          }),
-        ]),
+        }, runs),
     };
   };
 
