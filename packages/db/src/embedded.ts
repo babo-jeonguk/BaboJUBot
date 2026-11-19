@@ -594,7 +594,7 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
 /**
  * 강제로 끝난 프로세스가 남긴 임시 cluster를 멈추고 지운다. 주인 기록(`*.owner/`)이 있는 것만 보며, 그 dataDir의 주인이
  * 되어야 손댄다(주인이 살아 있거나 다른 프로세스가 먼저 치우는 중이면 둔다). 그 Postgres가 그 dataDir를 쓰는지 확인할 수 없으면
- * 둔다. 실패는 알리기만 하고 새 cluster는 그대로 띄운다.
+ * 둔다. 실패는 알리기만 하고 새 cluster는 그대로 띄운다. 살피지 못한 항목은 손대지 않고 남긴다.
  * tmp는 다른 프로그램도 쓰므로 이름만 믿지 않는다. 주인 기록과 dataDir는 tmp 바로 아래의 실제 폴더여야 하며 링크는 따라가지 않는다.
  */
 async function removeTemporaryLeftovers() {
@@ -621,9 +621,21 @@ async function removeTemporaryLeftovers() {
     )
       continue;
     const dataDir = path.join(tmp, entry.name.slice(0, -ownerSuffix.length));
-    const folder = fs.lstatSync(dataDir, { throwIfNoEntry: false });
+    // 남은 cluster 하나를 살피지 못하면 그것만 기록하고 건너뛴다. 주인 자리를 가져가거나 지우지 않는다.
+    const inspected = continueAfterFailure(
+      () => ({
+        folder: fs.lstatSync(dataDir, { throwIfNoEntry: false }),
+        owner: latest(ownerDir(dataDir)).owner,
+      }),
+      (error) =>
+        console.error(
+          `[db] the leftover temporary cluster ${dataDir} could not be inspected; it is left`,
+          error
+        )
+    );
+    if (!inspected) continue;
+    const { folder, owner } = inspected;
     if (folder && !folder.isDirectory()) continue;
-    const { owner } = latest(ownerDir(dataDir));
     // 죽은 임시 주인의 것, 또는 주인 없이(내려놓았거나 내용을 해석할 수 없음) 기록만 남고 dataDir가 없는 것만 치운다.
     if (owner ? owner.persistent || isAlive(owner.pid) : folder !== undefined)
       continue;
