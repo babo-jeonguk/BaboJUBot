@@ -123,14 +123,25 @@ child.stdout.on("data", (chunk) => {
     }
   });
 });
+/** 기록을 닫고 끝낸다. 기록을 다 쓰지 못한 녹화는 쓸 수 없으므로 원인을 오류 출력에 남기고 실패로 끝낸다. */
+const exitAfterLog = (code) =>
+  log.end((error) => {
+    if (error)
+      process.stderr.write(
+        "[record-cli] the recording could not be written (" +
+          (error.code ?? error.name) +
+          ")\n"
+      );
+    process.exit(error ? 1 : code);
+  });
 child.on("close", (code, signal) => {
   record("exit", { code, signal });
   void queue.then(() => {
     if (pending) process.stdout.write(pending);
-    log.end(() => process.exit(code ?? 1));
+    exitAfterLog(code ?? 1);
   });
 });
 child.on("error", (error) => {
   record("spawn-error", { code: error.code });
-  log.end(() => process.exit(127));
+  exitAfterLog(127);
 });

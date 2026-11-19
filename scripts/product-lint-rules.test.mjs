@@ -601,6 +601,7 @@ test("product code does not drop the error an error listener or an error-first c
     "an execFile callback that ignores the error": `import { execFile } from "node:child_process";\nexport const ask = (resolve) => execFile("ps", [], { timeout: 1000 }, (error, stdout) => resolve(stdout));\n`,
     "a server close callback without a parameter": `export const stop = (server) => new Promise((resolve) => server.close(() => resolve()));\n`,
     "a pipeline callback without a parameter": `import { pipeline } from "node:stream";\nexport const copy = (from, to, done) => pipeline(from, to, () => done());\n`,
+    "a stream end callback without a parameter": `export const finish = (log, code) => log.end(() => process.exit(code));\n`,
   };
   for (const place of productPlaces)
     for (const [shape, code] of Object.entries(dropped)) {

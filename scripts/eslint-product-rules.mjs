@@ -202,11 +202,16 @@ const listenerMethods = new Set([
   "prependListener",
   "prependOnceListener",
 ]);
-/** 끝날 때 오류(없으면 null)를 첫 인수로 넘기는 마지막 인수 콜백을 받는 호출: child_process의 execFile·exec, 서버·스트림의 close, stream의 pipeline·finished. */
+/**
+ * 끝날 때 오류(없으면 null)를 첫 인수로 넘기는 마지막 인수 콜백을 받는 호출: child_process의 execFile·exec, 서버·스트림의 close,
+ * 쓰기 스트림의 write·end, stream의 pipeline·finished.
+ */
 const errorFirstCalls = new Set([
   "execFile",
   "exec",
   "close",
+  "write",
+  "end",
   "pipeline",
   "finished",
 ]);
@@ -224,10 +229,10 @@ function calledMethod(callee) {
 /**
  * 오류를 받지 않고 버리면 의도한 처리(파일 없음은 없는 것)와 실수(권한 오류까지 빈 결과로 바꿈)가 코드에서 같아 보인다.
  * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, 오류 이벤트 처리기(`on`·`once` 등의 "error"),
- * 오류를 첫 인수로 넘기는 콜백(`execFile`·`exec`·`close`·`pipeline`·`finished`의 마지막 인수), 받고도 쓰지 않는 오류 이름(`_` 포함)을 막는다.
+ * 오류를 첫 인수로 넘기는 콜백(`execFile`·`exec`·`close`·`write`·`end`·`pipeline`·`finished`의 마지막 인수), 받고도 쓰지 않는 오류 이름(`_` 포함)을 막는다.
  * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다.
  * 알려진 한계: 이름으로 넘긴 처리기(`.then(settle, settle)`), 기본값·나머지 매개변수로 받는 오류, `void error`처럼 쓰는 척만 하는
- * 처리, 위 목록 밖의 오류 우선 콜백(`fs`의 콜백, `write(chunk, 콜백)` 등), 글로 넣는 코드(OpenCode plugin·컨테이너 확인 스크립트의
+ * 처리, 위 목록 밖의 오류 우선 콜백(`fs`의 콜백 등), 글로 넣는 코드(OpenCode plugin·컨테이너 확인 스크립트의
  * 문자열)는 판정하지 않으며 리뷰가 본다. `orIfUnreadable` 콜백 안의 입출력은 `no-io-in-unreadable`이 본다.
  */
 const noIgnoredError = {
