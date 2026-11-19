@@ -29,6 +29,47 @@ afterEach(async () => {
 
 const { get, say, eventsOf } = serverHelpers(() => t!);
 
+/**
+ * 도구마다 성공 응답의 상태. contracts의 도구 목록에는 상태가 없고 서버(`apps/server/src/tools.ts`)가 처리 함수마다 정하므로,
+ * 여기 그 HTTP 계약을 적는다. 읽기는 200, 새 기록을 만드는 쓰기는 201, 있는 것을 바꾸는 쓰기는 200이다. `add_worker`는 승인
+ * 정책이 꺼진 이 조직에서 바로 고용해 201이다(켜져 있으면 202, apps/server/test/approval-providers.test.ts가 본다).
+ * 도구가 늘면 이 표에 없다는 타입 오류가 난다.
+ */
+const successStatus: Record<OrgToolName, 200 | 201> = {
+  get_run_context: 200,
+  get_message: 200,
+  get_harness_library: 200,
+  list_providers: 200,
+  list_tasks: 200,
+  get_task: 200,
+  get_artifact: 200,
+  get_research_map: 200,
+  get_research_node: 200,
+  recall_memory: 200,
+  send_message: 201,
+  record_goal: 201,
+  request_initial_approval: 201,
+  create_task: 201,
+  comment_task: 201,
+  record_artifact: 201,
+  message_agent: 201,
+  add_worker: 201,
+  create_research_node: 201,
+  add_research_link: 201,
+  submit_result: 201,
+  write_memory: 201,
+  start_task: 200,
+  complete_task: 200,
+  update_research_node: 200,
+  assign_research_node_parent: 200,
+  change_research_node_parent: 200,
+  discard_research_node: 200,
+  restore_research_node: 200,
+  link_task_research_node: 200,
+  relink_task_research_node: 200,
+  unlink_task_research_node: 200,
+};
+
 /** 계약 밖의 호출 키(200자 초과). 쓰기 도구는 이 키를 무엇보다 먼저 보고 효과 없이 거절한다. */
 const badKey = "k".repeat(201);
 const methods = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -73,7 +114,7 @@ it("serves each organization tool at its method and path, and nothing else there
       ...headers,
     });
   const called: OrgToolName[] = [];
-  /** 도구 하나를 그 경로로 부른다. 성공 상태와 그 도구의 output 계약을 지켜야 한다. */
+  /** 도구 하나를 그 경로로 부른다. 그 도구의 성공 상태(`successStatus`)와 output 계약을 지켜야 한다. */
   const call = async (
     tool: OrgToolName,
     input: Record<string, unknown> = {},
@@ -85,10 +126,10 @@ it("serves each organization tool at its method and path, and nothing else there
       pathOf(tool) + query,
       method === "GET" ? undefined : input
     );
-    expect(
-      [tool, res.status >= 200 && res.status < 300],
-      JSON.stringify(res.body)
-    ).toEqual([tool, true]);
+    expect([tool, res.status], JSON.stringify(res.body)).toEqual([
+      tool,
+      successStatus[tool],
+    ]);
     called.push(tool);
     return orgTools[tool].output.parse(res.body) as { id?: string };
   };
