@@ -4,7 +4,10 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { orIfUnreadable } from "../../packages/contracts/src/failure.ts";
+import {
+  isDisconnect,
+  orIfUnreadable,
+} from "../../packages/contracts/src/failure.ts";
 
 const [directory, ...command] = process.argv.slice(2);
 const startedAt = Date.now();
@@ -33,7 +36,10 @@ process.stdin.on("end", () => {
   record("stdin-end", {});
   child.stdin.end();
 });
-child.stdin.on("error", () => {});
+// 프로그램이 끝나 입력이 끊긴 것(EPIPE)은 답이다. 그 밖의 쓰기 실패는 기록에 남긴다.
+child.stdin.on("error", (error) => {
+  if (!isDisconnect(error)) record("stdin-error", { code: error.code });
+});
 child.stderr.on("data", (chunk) => {
   record("stderr", { text: chunk.toString() });
   process.stderr.write(chunk);
@@ -72,7 +78,10 @@ function proxy(target) {
               record("http-end", { id });
               res.end();
             });
-            answer.on("error", () => res.destroy());
+            answer.on("error", (error) => {
+              record("http-error", { id, code: error.code });
+              res.destroy();
+            });
           }
         );
         upstream.on("error", (error) => {
