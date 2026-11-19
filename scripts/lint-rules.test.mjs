@@ -1140,3 +1140,404 @@ test("code outside tests may set process.env", async () => {
     []
   );
 });
+
+/** 기다리지 않은 Promise 규칙(타입 정보)의 메시지만. */
+const promiseMessages = (messages) =>
+  messages.filter((m) =>
+    /^@typescript-eslint\/no-(floating|misused)-promises$/.test(m.ruleId ?? "")
+  );
+
+// 타입 정보는 TypeScript 프로젝트에 든 파일에만 생기므로 있는 시험 파일 자리를 빌린다. 서버·화면·패키지·E2E.
+const promisePlaces = [
+  "apps/server/test/main.test.ts",
+  "apps/web/src/live-refresh.test.ts",
+  "packages/runtime/src/providers/process.test.ts",
+  "packages/db/src/client.test.ts",
+  "apps/web/e2e/home.spec.ts",
+  "apps/web/e2e/support/organization.ts",
+];
+const isE2E = (place) => place.startsWith("apps/web/e2e/");
+// 러너마다 같은 모양을 쓴다. E2E는 Playwright, 나머지는 Vitest의 expect다.
+const promiseHead = (place) =>
+  `import { expect } from "${isE2E(place) ? "@playwright/test" : "vitest"}";\nimport http from "node:http";\ndeclare const reply: Promise<number>;\ndeclare function work(): Promise<void>;\nexport {};\n`;
+const e2eOnly = `import type { Locator } from "@playwright/test";\ndeclare const status: Locator;\n`;
+
+test("tests may not leave a promise unawaited, drop it with void, or hand an async function to a callback that ignores its result", async () => {
+  const found = {
+    "an unawaited resolves assertion": `expect(reply).resolves.toBe(1);\n`,
+    "an unawaited rejects assertion": `expect(reply).rejects.toThrow("x");\n`,
+    "an unawaited poll": `expect.poll(() => 1).toBe(1);\n`,
+    "background work left running": `work();\n`,
+    "a then without a failure handler": `reply.then((value) => value + 1);\n`,
+    "work dropped with void": `void work();\n`,
+    "an assertion dropped with void": `void expect(reply).resolves.toBe(1);\n`,
+    "an async request handler": `http.createServer(async (_req, res) => {\n  await work();\n  res.end();\n});\n`,
+    "an async listener": `process.once("beforeExit", async () => {\n  await work();\n});\n`,
+  };
+  for (const [shape, code] of Object.entries(found))
+    for (const place of promisePlaces) {
+      const [message, ...rest] = promiseMessages(
+        await lint(promiseHead(place) + code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+    }
+  // Playwright의 web-first 단언을 기다리지 않은 모양.
+  for (const place of promisePlaces.filter(isE2E))
+    for (const code of [
+      `expect(status).toHaveText("저장됨");\n`,
+      `expect(status).not.toBeVisible();\n`,
+      `void expect(status).toBeChecked();\n`,
+    ]) {
+      const [message, ...rest] = promiseMessages(
+        await lint(promiseHead(place) + e2eOnly + code, place)
+      );
+      assert.ok(message, `${place}: ${code} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${code}`);
+    }
+});
+
+test("tests may await, return, collect or later await a promise and hand failures of a fake server back to its caller", async () => {
+  const allowed = [
+    `await expect(reply).resolves.toBe(1);\nawait expect.poll(() => 1).toBe(1);\nawait work();\n`,
+    `export function started() {\n  return work();\n}\nexport const arrow = () => work();\n`,
+    `await Promise.all([work(), work()]);\n`,
+    // 먼저 시작해 두고 뒤에서 기다린다.
+    `const later = work();\nawait reply;\nawait later;\n`,
+    // 나중에 기다릴 Promise의 표시.
+    `import { awaitedLater } from "@babojubot/runtime/test-cleanup";\nconst exited = awaitedLater(work());\nawait exited;\n`,
+    // 실패를 받는 처리기가 있다.
+    `reply.then(\n  (value) => value,\n  (error: unknown) => {\n    throw error;\n  }\n);\n`,
+    // 가짜 서버의 실패는 요청한 쪽에 응답으로 돌려준다.
+    `import { answering } from "@babojubot/runtime/testing";\nhttp.createServer(\n  answering(async (_req, res) => {\n    await work();\n    res.end();\n  })\n);\n`,
+  ];
+  for (const code of allowed)
+    for (const place of promisePlaces)
+      assert.deepEqual(
+        promiseMessages(await lint(promiseHead(place) + code, place)),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of promisePlaces.filter(isE2E))
+    assert.deepEqual(
+      promiseMessages(
+        await lint(
+          promiseHead(place) +
+            e2eOnly +
+            `await expect(status).toHaveText("저장됨");\nawait expect(status).not.toBeVisible();\n`,
+          place
+        )
+      ),
+      [],
+      place
+    );
+});
+
+/** 빈 처리기로 거절 버리기 규칙의 메시지만. */
+const droppedMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-dropped-rejection");
+const droppedHead = `declare const p: Promise<number>;\ndeclare const failures: unknown[];\nexport {};\n`;
+
+test("tests may not drop the rejection of a promise they do not wait for with an empty handler", async () => {
+  const found = {
+    "an empty catch": `p.catch(() => {});\n`,
+    "an empty catch dropped with void": `void p.catch(() => {});\n`,
+    "a catch returning undefined": `p.catch(() => undefined);\n`,
+    "a catch returning a fixed value": `p.catch(() => false);\n`,
+    "a catch that only returns": `p.catch(function () {\n  return;\n});\n`,
+    "a catch ignoring its error": `p.catch((_error) => {});\n`,
+    "an optional catch": `p?.catch(() => {});\n`,
+    "an empty failure handler of then": `p.then(undefined, () => {});\n`,
+    "then with both handlers dropping": `p.then(\n  () => 1,\n  () => void 0\n);\n`,
+    "a named empty function": `const ignore = () => {};\np.catch(ignore);\n`,
+    "a declared empty function": `function ignore() {}\np.catch(ignore);\n`,
+    "a catch on a promise another function keeps": `export function keep(q: Promise<number>) {\n  q.catch(() => {});\n  failures.push(q);\n}\n`,
+    "a catch on a promise only an inner function returns": `export function keep(q: Promise<number>) {\n  q.catch(() => {});\n  return () => {\n    return q;\n  };\n}\n`,
+  };
+  for (const [shape, code] of Object.entries(found))
+    for (const place of testPlaces) {
+      const [message, ...rest] = droppedMessages(
+        await lint(droppedHead + code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 대안과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, /awaitedLater/);
+      assert.match(message.message, /CODING_STANDARDS\.md#단언/);
+    }
+});
+
+test("tests may use a caught value, handle the error, or mark a promise they hand back for a later wait", async () => {
+  const allowed = [
+    // 값으로 쓴다.
+    `export const value = await p.catch(() => undefined);\nexport const text = await p.catch(() => "");\n`,
+    `export const later = p.catch(() => 0);\n`,
+    // 오류를 받아 남기거나 다시 던진다.
+    `p.catch((error: unknown) => {\n  failures.push(error);\n});\n`,
+    `p.catch((error: unknown) => {\n  throw new Error("failed", { cause: error });\n});\n`,
+    `p.then(undefined, (error: unknown) => failures.push(error));\n`,
+    // 같은 Promise를 그대로 돌려줘 나중에 기다리게 한다(awaitedLater).
+    `export function awaitedLater<T>(promise: Promise<T>) {\n  promise.catch(() => {});\n  return promise;\n}\n`,
+    `export const mark = <T,>(promise: Promise<T>) => {\n  promise.catch(() => {});\n  return promise;\n};\n`,
+    // 실패를 받지 않는 finally.
+    `p.finally(() => {});\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        droppedMessages(await lint(droppedHead + code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+test("code outside tests may drop a rejection", async () => {
+  assert.deepEqual(
+    droppedMessages(
+      await lint(
+        droppedHead + `p.catch(() => {});\n`,
+        "scripts/lint-sample.mjs"
+      )
+    ),
+    []
+  );
+});
+
+/** 화면 상태 한 번 읽기 규칙의 메시지만. */
+const oneShotMessages = (messages) =>
+  messages.filter((m) => m.ruleId === "tests/no-one-shot-ui-read");
+const oneShotHead = `import { expect, type Locator, type Page } from "@playwright/test";\ndeclare const page: Page;\ndeclare const box: Locator;\nexport {};\n`;
+
+test("an E2E may not assert a UI state it read once from a locator", async () => {
+  const found = {
+    "isChecked into toBe": [
+      `expect(await box.isChecked()).toBe(true);\n`,
+      "isChecked",
+      "toBeChecked",
+    ],
+    "isVisible negated": [
+      `expect(!(await box.isVisible())).toBe(false);\n`,
+      "isVisible",
+      "toBeVisible",
+    ],
+    "isHidden truthy": [
+      `expect(await box.isHidden()).toBeTruthy();\n`,
+      "isHidden",
+      "toBeHidden",
+    ],
+    "isEnabled with not": [
+      `expect(await box.isEnabled()).not.toBe(false);\n`,
+      "isEnabled",
+      "toBeEnabled",
+    ],
+    isDisabled: [
+      `expect(await box.isDisabled()).toBe(false);\n`,
+      "isDisabled",
+      "toBeDisabled",
+    ],
+    isEditable: [
+      `expect(await box.isEditable()).toBe(true);\n`,
+      "isEditable",
+      "toBeEditable",
+    ],
+    "getAttribute compared to another read": [
+      `expect(await box.getAttribute("aria-controls")).toBe("panel");\n`,
+      "getAttribute",
+      "toHaveAttribute",
+    ],
+    "textContent trimmed": [
+      `expect((await box.textContent())!.trim()).toBe("저장됨");\n`,
+      "textContent",
+      "toHaveText",
+    ],
+    "innerText with a fallback": [
+      `expect((await box.innerText()) ?? "").toContain("저장");\n`,
+      "innerText",
+      "toHaveText",
+    ],
+    innerHTML: [
+      `expect(await box.innerHTML()).toContain("<b>");\n`,
+      "innerHTML",
+      "toHaveText",
+    ],
+    "allTextContents length": [
+      `expect((await box.allTextContents()).length).toBe(2);\n`,
+      "allTextContents",
+      "toHaveText",
+    ],
+    allInnerTexts: [
+      `expect(await box.allInnerTexts()).toEqual(["a"]);\n`,
+      "allInnerTexts",
+      "toHaveText",
+    ],
+    "inputValue converted": [
+      `expect(Number(await box.inputValue())).toBeGreaterThan(1);\n`,
+      "inputValue",
+      "toHaveValue",
+    ],
+    "count with any matcher": [
+      `expect(await box.count()).toBeGreaterThan(3);\n`,
+      "count",
+      "toHaveCount",
+    ],
+    "a soft assertion": [
+      `expect.soft(await box.count()).toBe(1);\n`,
+      "count",
+      "toHaveCount",
+    ],
+    "page title": [
+      `expect(await page.title()).toBe("홈");\n`,
+      "title",
+      "toHaveTitle",
+    ],
+    "an asserted type": [
+      `expect((await box.getAttribute("id")) as string).toBe("x");\n`,
+      "getAttribute",
+      "toHaveAttribute",
+    ],
+    "an optional chain": [
+      `expect((await box.textContent())?.trim()).toBe("x");\n`,
+      "textContent",
+      "toHaveText",
+    ],
+    "a computed method name": [
+      `expect(await box["isChecked"]()).toBe(true);\n`,
+      "isChecked",
+      "toBeChecked",
+    ],
+    // 변수에 담아 읽는 우회.
+    "a read kept in a variable": [
+      `const checked = await box.isChecked();\nexpect(checked).toBe(true);\n`,
+      "isChecked",
+      "toBeChecked",
+    ],
+    "a read assigned later": [
+      `let id: string | null = null;\nid = await box.getAttribute("id");\nexpect(id).toBeTruthy();\n`,
+      "getAttribute",
+      "toHaveAttribute",
+    ],
+    "a read through two variables": [
+      `const n = await box.count();\nconst total = n + 1;\nexpect(total).toBe(3);\n`,
+      "count",
+      "toHaveCount",
+    ],
+    // 같은 파일의 도움 함수로 감싸는 우회.
+    "a helper returning a read": [
+      `const idOf = (l: Locator) => l.getAttribute("id");\nexpect(await idOf(box)).toBe("x");\n`,
+      "getAttribute",
+      "toHaveAttribute",
+    ],
+    "an async helper returning a read": [
+      `async function countOf(l: Locator) {\n  return l.count();\n}\nconst n = await countOf(box);\nexpect(n).toBe(1);\n`,
+      "count",
+      "toHaveCount",
+    ],
+    // 다시 시도하는 자리 밖에서 읽고 그 안에서 단언하면 다시 읽지 않는다.
+    "a read outside the retried block": [
+      `const n = await box.count();\nawait expect(async () => {\n  expect(n).toBe(1);\n}).toPass();\n`,
+      "count",
+      "toHaveCount",
+    ],
+  };
+  for (const [shape, [code, method, matcher]] of Object.entries(found))
+    for (const place of e2ePlaces) {
+      const [message, ...rest] = oneShotMessages(
+        await lint(oneShotHead + code, place)
+      );
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, new RegExp(`${method}\\(\\)`), shape);
+      // 메시지가 대안과 기준 문서의 절을 알려 준다.
+      assert.match(message.message, new RegExp(matcher), shape);
+      assert.match(message.message, /expect\.poll/);
+      assert.match(message.message, /CODING_STANDARDS\.md#화면/);
+    }
+});
+
+test("an E2E may wait with web-first assertions, compare against a value read before an action, and read inside a retried block", async () => {
+  const allowed = [
+    `await expect(box).toBeChecked();\nawait expect(box).toHaveAttribute("id", /.+/);\nawait expect(box).toHaveCount(2);\nawait expect(page).toHaveTitle("홈");\n`,
+    // 동작 전에 읽은 순간 값은 기대값 자리에 둔다.
+    `const before = await box.isChecked();\nawait box.click();\nawait expect(box).toBeChecked({ checked: !before });\n`,
+    `const loaded = await box.count();\nawait expect.poll(() => box.count()).toBeGreaterThan(loaded);\n`,
+    `await expect(box).toHaveAttribute("aria-controls", (await box.getAttribute("id"))!);\n`,
+    // 다시 시도하는 자리 안에서 읽고 단언한다.
+    `await expect.poll(async () => (await box.textContent())?.trim()).toBe("x");\n`,
+    `await expect(async () => {\n  expect(await box.count()).toBe(1);\n}).toPass();\n`,
+    `const check = async () => {\n  const n = await box.count();\n  expect(n).toBe(1);\n};\nawait expect(check).toPass();\n`,
+    `const read = (l: Locator) => l.getAttribute("d");\nawait expect(async () => {\n  expect(await read(box)).toBe("M0");\n}).toPass();\n`,
+    `async function settledCount() {\n  expect(await box.count()).toBe(1);\n}\nawait expect(settledCount).toPass();\n`,
+    `await expect\n  .poll(async () => {\n    const n = await box.count();\n    expect(n).toBeGreaterThan(0);\n    return n;\n  })\n  .toBe(2);\n`,
+    // 흐름을 가르는 읽기, 단언하지 않는 읽기.
+    `if ((await box.getAttribute("aria-expanded")) !== "true") await box.click();\nconst name = await box.textContent();\nawait page.getByRole("link", { name: name! }).click();\n`,
+    // Playwright locator가 아닌 같은 이름의 메서드.
+    `const fake = { count: async () => 1, isChecked: async () => true };\nexpect(await fake.count()).toBe(1);\nexpect(await fake.isChecked()).toBe(true);\n`,
+  ];
+  for (const code of allowed)
+    for (const place of e2ePlaces)
+      assert.deepEqual(
+        oneShotMessages(await lint(oneShotHead + code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+test("test code may not end a start on a fixed time or count event loop turns in a row", async () => {
+  const found = {
+    // 중단 시한의 이유로 거절되기를 기대한다.
+    "an expected timeout": [
+      `await expect(server.start(AbortSignal.timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
+      /정해진 시간 뒤에 중단/,
+    ],
+    "an expected abort in an options object": [
+      `await expect(run({ signal: AbortSignal.timeout(50) })).rejects.toThrow(/AbortError/);\n`,
+      /정해진 시간 뒤에 중단/,
+    ],
+    "a timed signal kept in a const": [
+      `const signal = AbortSignal.timeout(100);\nawait expect(server.start(signal)).rejects.toHaveProperty("name", "TimeoutError");\n`,
+      /정해진 시간 뒤에 중단/,
+    ],
+    "assert.rejects with the abort's name": [
+      `await assert.rejects(server.start(AbortSignal.timeout(200)), { name: "AbortError" });\n`,
+      /정해진 시간 뒤에 중단/,
+    ],
+    // 잇달아 차례 넘기기.
+    "two zero timers in a row": [
+      `await new Promise((r) => setTimeout(r, 0));\nawait new Promise((r) => setTimeout(r, 0));\n`,
+      /정해진 횟수/,
+    ],
+    "mixed turns in a block": [
+      `{\n  await Promise.resolve();\n  await new Promise((r) => setImmediate(r));\n  await new Promise((r) => process.nextTick(r));\n}\n`,
+      /정해진 횟수/,
+    ],
+  };
+  for (const [shape, [code, kind]] of Object.entries(found))
+    for (const place of testPlaces) {
+      const [message, ...rest] = waitMessages(await lint(code, place));
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, kind, shape);
+      assert.match(message.message, /신호/);
+      assert.match(message.message, /CODING_STANDARDS\.md#순서/);
+    }
+});
+
+test("test code may bound a wait with a timed signal, expect another failure under it, and take a single turn", async () => {
+  const allowed = [
+    // 성공을 기다리는 상한, 다른 이유의 거절을 기대하는 상한.
+    `await expect(check(AbortSignal.timeout(10_000))).resolves.toBeUndefined();\nawait expect(check(AbortSignal.timeout(10_000))).rejects.toThrow(/not on this computer/);\nawait expect(check(AbortSignal.timeout(10_000))).rejects.toThrow();\n`,
+    // 신호를 받은 뒤 중단한다.
+    `const scene = new AbortController();\nconst starting = server.start(scene.signal);\nawait arrived;\nscene.abort(new Error("stop"));\nawait expect(starting).rejects.toThrow("stop");\n`,
+    // 같은 이름의 지역 AbortSignal.
+    `const AbortSignal = { timeout: (ms: number) => ms };\nawait expect(start(AbortSignal.timeout(1))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
+    // 차례 하나, 사이에 다른 일이 있는 차례.
+    `await new Promise((r) => setImmediate(r));\nexpect(done).toBe(false);\nawait new Promise((r) => setImmediate(r));\n`,
+  ];
+  for (const code of allowed)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        waitMessages(await lint(code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});

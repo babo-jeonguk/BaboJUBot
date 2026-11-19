@@ -286,10 +286,27 @@ function waitsOneTurn(statement) {
  * - 정해진 시간 뒤 중단: `setTimeout(() => x.abort(), N)`처럼 돌려받은 타이머를 버리고 콜백이 `abort`만 부르는 것. 상대가 그때쯤 어떤
  *   분기에 들어갔으리라 보고 중단하므로, 늦으면 그 분기를 거치지 않고 통과한다. 타이머를 담아 두는 상한(`const t = setTimeout(…)`·
  *   `clearTimeout(t)`)과 kill·reject는 짚지 않는다.
+ *   중단 시한(`AbortSignal.timeout(N)`)을 넘긴 호출이 그 시한의 이유(`TimeoutError`·`AbortError`)로 거절되기를 기대하는 것
+ *   (`await expect(start(AbortSignal.timeout(200))).rejects.toMatchObject({ name: "TimeoutError" })`, `assert.rejects(…, 이유)`)도
+ *   같다. 시한이 오기 전에 그 분기에 들어가리라 보고 중단 시점을 시간으로 맞춘다. 같은 파일에서 그 시한을 담은 `const`와 옵션
+ *   객체의 속성(`{ signal: AbortSignal.timeout(N) }`)도 본다. 다른 이유의 거절이나 성공을 기다리는 상한은 짚지 않는다.
  * - 정해진 횟수만큼 차례 넘기기: `for (…) await new Promise((r) => setTimeout(r, 0))`처럼 반복의 몸이 이벤트 루프 차례를 기다리기만
- *   하는 것(`setTimeout(r)`·`setImmediate(r)`·`queueMicrotask(r)`·`process.nextTick(r)`·`Promise.resolve()`). 처리에 차례가 더
- *   걸리면 끝나기 전에 본다. 조건을 다시 확인하는 `while`·`do…while`과 도움 함수를 부르는 반복은 짚지 않는다.
+ *   하는 것(`setTimeout(r)`·`setImmediate(r)`·`queueMicrotask(r)`·`process.nextTick(r)`·`Promise.resolve()`), 그런 기다림을
+ *   두 번 이상 잇달아 쓰는 것. 처리에 차례가 더 걸리면 끝나기 전에 본다. 조건을 다시 확인하는 `while`·`do…while`과 도움 함수를
+ *   부르는 반복은 짚지 않는다.
  */
+// 중단 시한이 낸 거절의 이름.
+const abortNames = /TimeoutError|AbortError/;
+/** 기대하는 거절이 중단 시한의 이유인가: 그 이름을 담은 글자·정규식, 그런 값을 속성으로 둔 객체(`{ name: "TimeoutError" }`). */
+function namesAbort(node) {
+  if (node.type === "Literal")
+    return abortNames.test(String(node.regex?.pattern ?? node.value));
+  return (
+    node.type === "ObjectExpression" &&
+    node.properties.some((p) => p.type === "Property" && namesAbort(p.value))
+  );
+}
+
 const noFixedTimeWait = {
   meta: {
     type: "problem",
@@ -308,6 +325,7 @@ const noFixedTimeWait = {
     },
   },
   create(context) {
+    const { sourceCode } = context;
     /** `timers/promises`에서 가져온 이름. */
     const timers = new Set();
     const report = (node) => context.report({ node, messageId: "fixed" });
@@ -315,10 +333,77 @@ const noFixedTimeWait = {
       if (waitsOneTurn(onlyStatement(node.body)))
         context.report({ node, messageId: "turns" });
     };
+    /** 차례 넘기기를 잇달아 쓴 문 목록. 이어진 묶음마다 처음 문에서 한 번 알린다. */
+    const consecutive = (statements) => {
+      for (let i = 0; i + 1 < statements.length; i++) {
+        if (!waitsOneTurn(statements[i]) || !waitsOneTurn(statements[i + 1]))
+          continue;
+        context.report({ node: statements[i], messageId: "turns" });
+        while (i + 1 < statements.length && waitsOneTurn(statements[i + 1]))
+          i++;
+      }
+    };
+    /** 전역 `AbortSignal.timeout(…)`인가. 같은 파일의 `const`에 담은 것도 본다. */
+    const timedSignal = (node) => {
+      if (node?.type === "Identifier") {
+        const def = bindingOf(sourceCode, node)?.defs[0];
+        return (
+          def?.type === "Variable" &&
+          def.parent.kind === "const" &&
+          timedSignal(def.node.init)
+        );
+      }
+      return (
+        node?.type === "CallExpression" &&
+        memberName(node.callee) === "timeout" &&
+        node.callee.object.type === "Identifier" &&
+        node.callee.object.name === "AbortSignal" &&
+        !bindingOf(sourceCode, node.callee.object)
+      );
+    };
+    /** 호출이 중단 시한을 받는가: 인자 자체이거나 옵션 객체의 속성 값. */
+    const takesTimedSignal = (call) =>
+      call.arguments.some(
+        (argument) =>
+          timedSignal(argument) ||
+          (argument.type === "ObjectExpression" &&
+            argument.properties.some(
+              (property) =>
+                property.type === "Property" && timedSignal(property.value)
+            ))
+      );
+    /** 호출이 중단 시한의 이유(`TimeoutError`·`AbortError`)로 거절되기를 기대하는가: `expect(call).rejects.…(이유)`, `assert.rejects(call, 이유)`. */
+    const expectsAbort = (call) => {
+      const parent = call.parent;
+      if (parent?.type !== "CallExpression" || parent.arguments[0] !== call)
+        return false;
+      if (
+        parent.callee.type === "Identifier" &&
+        parent.callee.name === "expect"
+      ) {
+        if (memberName(parent.parent) !== "rejects") return false;
+        let matcher = parent.parent;
+        while (matcher.parent?.type === "MemberExpression")
+          matcher = matcher.parent;
+        return (
+          matcher.parent?.type === "CallExpression" &&
+          matcher.parent.callee === matcher &&
+          matcher.parent.arguments.some(namesAbort)
+        );
+      }
+      return (
+        memberName(parent.callee) === "rejects" &&
+        parent.callee.object.type === "Identifier" &&
+        parent.callee.object.name === "assert" &&
+        parent.arguments.slice(1).some(namesAbort)
+      );
+    };
     return {
       ForStatement: loop,
       ForOfStatement: loop,
       ForInStatement: loop,
+      Program: (node) => consecutive(node.body),
+      BlockStatement: (node) => consecutive(node.body),
       ImportDeclaration(node) {
         if (!timerModules.test(node.source.value)) return;
         for (const specifier of node.specifiers)
@@ -326,6 +411,8 @@ const noFixedTimeWait = {
       },
       CallExpression(node) {
         const { callee } = node;
+        if (takesTimedSignal(node) && expectsAbort(node))
+          return context.report({ node, messageId: "abortAfter" });
         if (
           callee.type === "MemberExpression" &&
           !callee.computed &&
@@ -449,6 +536,249 @@ const noPageWideLocator = {
         if (queries.test(methodOf(found) ?? "") && isPage(found.callee.object))
           return context.report({ node, messageId: "pagePosition" });
         if (byName) context.report({ node, messageId: "namePosition" });
+      },
+    };
+  },
+};
+
+// 화면 상태를 한 번 읽는 메서드와, 그 상태를 다시 시도하며 기다리는 web-first 단언.
+const locatorReads = new Map([
+  ["isChecked", "toBeChecked"],
+  ["isVisible", "toBeVisible"],
+  ["isHidden", "toBeHidden"],
+  ["isEnabled", "toBeEnabled"],
+  ["isDisabled", "toBeDisabled"],
+  ["isEditable", "toBeEditable"],
+  ["getAttribute", "toHaveAttribute"],
+  ["textContent", "toHaveText"],
+  ["innerText", "toHaveText"],
+  ["innerHTML", "toHaveText"],
+  ["allTextContents", "toHaveText"],
+  ["allInnerTexts", "toHaveText"],
+  ["inputValue", "toHaveValue"],
+  ["count", "toHaveCount"],
+]);
+const pageReads = new Map([["title", "toHaveTitle"]]);
+// 읽은 값이 바뀌지 않고 단언까지 가는 형변환 함수(`Number(await count())`).
+const conversions = new Set(["Number", "String", "Boolean"]);
+
+/** 점·문자열 대괄호로 쓴 속성 이름(`x.a`·`x["a"]`). */
+function memberName(member) {
+  if (member.type !== "MemberExpression") return undefined;
+  if (!member.computed) return member.property.name;
+  return member.property.type === "Literal" &&
+    typeof member.property.value === "string"
+    ? member.property.value
+    : undefined;
+}
+
+/** 읽은 값이 그대로(또는 꺼내·바꿔) 다음 식으로 가는 자리: 기다림, 부정·비교, 단언, `?? ""`, `.trim()`·`.length`, `Number(…)`. */
+function carriesRead(parent, child) {
+  switch (parent.type) {
+    case "AwaitExpression":
+    case "UnaryExpression":
+    case "BinaryExpression":
+    case "LogicalExpression":
+    case "TSNonNullExpression":
+    case "TSAsExpression":
+    case "ChainExpression":
+      return true;
+    case "MemberExpression":
+      return parent.object === child;
+    case "CallExpression":
+      return (
+        parent.callee === child ||
+        (parent.arguments.includes(child) &&
+          parent.callee.type === "Identifier" &&
+          conversions.has(parent.callee.name))
+      );
+    default:
+      return false;
+  }
+}
+
+/** `return` 문·화살표 함수의 식 몸이 속한 함수. */
+function returningFunction(node) {
+  if (node.type === "ArrowFunctionExpression") return node;
+  for (let parent = node.parent; parent; parent = parent.parent)
+    if (isFunction(parent) || parent.type === "FunctionDeclaration")
+      return parent;
+  return undefined;
+}
+
+/** `value`가 다시 시도하는 자리에 넘겨지는가: `expect.poll(value)`·`expect(value).toPass()`. */
+function retriedArgument(value) {
+  const call = value.parent;
+  if (call?.type !== "CallExpression" || call.arguments[0] !== value)
+    return false;
+  const { callee } = call;
+  const isExpect = (n) => n.type === "Identifier" && n.name === "expect";
+  return (
+    (memberName(callee) === "poll" && isExpect(callee.object)) ||
+    (isExpect(callee) && memberName(call.parent) === "toPass")
+  );
+}
+
+/**
+ * `node`를 품은 가장 가까운 다시 시도하는 함수. 그 자리에 바로 넘긴 함수(`expect(async () => …).toPass()`)와, 이름을 붙여
+ * 넘긴 같은 파일의 함수(`const check = async () => …; await expect(check).toPass()`)를 본다.
+ */
+function retryingFunction(node, sourceCode) {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (!isFunction(parent) && parent.type !== "FunctionDeclaration") continue;
+    if (retriedArgument(parent)) return parent;
+    const declarator = parent.parent;
+    const variable =
+      parent.type === "FunctionDeclaration"
+        ? sourceCode.getDeclaredVariables(parent)[0]
+        : declarator?.type === "VariableDeclarator" &&
+            declarator.init === parent
+          ? sourceCode.getDeclaredVariables(declarator)[0]
+          : undefined;
+    if (variable?.references.some((r) => retriedArgument(r.identifier)))
+      return parent;
+  }
+  return undefined;
+}
+
+/** `call`이 단언의 대상 자리 `expect(x)`·`expect.soft(x)`이고 `child`가 그 x인가. */
+function assertionSubject(call, child) {
+  if (call.type !== "CallExpression" || call.arguments[0] !== child)
+    return false;
+  const { callee } = call;
+  return (
+    (callee.type === "Identifier" && callee.name === "expect") ||
+    (memberName(callee) === "soft" &&
+      callee.object.type === "Identifier" &&
+      callee.object.name === "expect")
+  );
+}
+
+/**
+ * E2E가 화면 상태를 한 번 읽어(`await locator.isChecked()`·`getAttribute`·`count`·`textContent` 등) 그 값을 단언하면, 읽는
+ * 순간 화면이 아직 바뀌지 않았을 때 실패하고 바뀌기 전의 값을 읽어 통과하기도 한다(CODING_STANDARDS.md#화면).
+ * 읽은 값이 기다림·부정·비교·꺼내기(`.trim()`)·형변환을 거쳐 `expect(…)`의 대상이 되면 짚고, 변수에 담으면 그 변수를 읽는 곳까지,
+ * 같은 파일의 이름 있는 함수가 돌려주면 그 함수를 부른 곳까지 따라간다. Playwright `Locator`·`Page`인지는 타입으로 가리므로 같은
+ * 이름의 다른 메서드는 보지 않는다.
+ * 읽은 값을 기대값 자리에 두는 것(`toBeChecked({ checked: !before })`, 동작 전에 읽은 ID)과 흐름을 가르는 것(`if`), 다시 시도하는
+ * 함수(`expect.poll`·`expect(fn).toPass()`) 안에서 읽고 단언하는 것은 짚지 않는다. 객체·배열에 담았다 꺼내는 값, 다른 파일의 함수가 돌려준 값, `evaluate`로 읽은 값은 따라가지 않는다.
+ */
+const noOneShotUiRead = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow asserting a UI state read once from a Playwright locator instead of a retrying web-first assertion",
+    },
+    schema: [],
+    messages: {
+      once: "화면 상태를 {{method}}()로 한 번 읽어 단언합니다. 읽는 순간 화면이 아직 바뀌지 않았으면 실패하고, 바뀌기 전의 값을 읽어 통과하기도 합니다. 다시 시도하며 기다리는 web-first 단언(`await expect(locator).{{matcher}}(…)`)이나 `expect.poll`로 확인하세요. 동작 전후의 순간 값을 비교하는 것이 계약이면 읽은 값은 기대값 자리에 둡니다(`toBeChecked({ checked: !before })`). CODING_STANDARDS.md#화면",
+    },
+  },
+  create(context) {
+    const { sourceCode } = context;
+    const services = sourceCode.parserServices;
+    if (!services?.program)
+      throw new Error(
+        "tests/no-one-shot-ui-read needs type information (parserOptions.projectService)"
+      );
+    const typeName = (node) =>
+      services.getTypeAtLocation(node).getSymbol()?.getName();
+
+    /**
+     * `node`의 값이 단언 대상에 닿는지 위로 따라간다. 변수에 담기면 그 변수를 읽는 곳마다, 함수가 돌려주면 그 함수를 부른 곳마다
+     * 다시 따라간다. `origin`은 값을 얻는 자리(읽기 또는 도움 함수 호출)다. 그 자리와 단언이 함께 다시 시도하는 함수
+     * (`expect.poll`·`toPass`) 안에 있으면 다시 읽으므로 한 번 읽기가 아니다.
+     */
+    function reachesSubject(node, seen, origin = node) {
+      let child = node;
+      for (let parent = child.parent; parent; parent = child.parent) {
+        if (assertionSubject(parent, child)) {
+          const retry = retryingFunction(parent, sourceCode);
+          return !retry || !contains(retry, origin);
+        }
+        if (
+          parent.type === "VariableDeclarator" &&
+          parent.init === child &&
+          parent.id.type === "Identifier"
+        )
+          return sourceCode
+            .getDeclaredVariables(parent)
+            .some((variable) => readsReach(variable, seen, origin));
+        if (
+          parent.type === "AssignmentExpression" &&
+          parent.right === child &&
+          parent.left.type === "Identifier"
+        ) {
+          const variable = bindingOf(sourceCode, parent.left);
+          return variable ? readsReach(variable, seen, origin) : false;
+        }
+        // 읽은 값을 돌려주는 같은 파일의 도움 함수(`const idOf = (l) => l.getAttribute("id")`)는 그 호출을 읽기로 본다.
+        if (
+          parent.type === "ReturnStatement" ||
+          (parent.type === "ArrowFunctionExpression" && parent.body === child)
+        )
+          return callsReach(returningFunction(parent), seen);
+        if (!carriesRead(parent, child)) return false;
+        child = parent;
+      }
+      return false;
+    }
+
+    function readsReach(variable, seen, origin) {
+      if (seen.has(variable)) return false;
+      seen.add(variable);
+      return variable.references.some(
+        (reference) =>
+          reference.isRead() &&
+          reachesSubject(reference.identifier, seen, origin)
+      );
+    }
+
+    /** 함수의 이름 변수(`function f`·`const f = …`). 이름 없이 넘긴 함수면 undefined. */
+    function nameOf(fn) {
+      if (fn?.type === "FunctionDeclaration" && fn.id)
+        return sourceCode.getDeclaredVariables(fn)[0];
+      const declarator = fn?.parent;
+      if (
+        declarator?.type === "VariableDeclarator" &&
+        declarator.init === fn &&
+        declarator.id.type === "Identifier"
+      )
+        return sourceCode.getDeclaredVariables(declarator)[0];
+      return undefined;
+    }
+
+    /** 함수를 부른 곳마다 그 결과가 단언 대상에 닿는지 본다. */
+    function callsReach(fn, seen) {
+      const variable = nameOf(fn);
+      if (!variable || seen.has(fn)) return false;
+      seen.add(fn);
+      return variable.references.some(({ identifier }) => {
+        const call = identifier.parent;
+        return (
+          call.type === "CallExpression" &&
+          call.callee === identifier &&
+          reachesSubject(call, seen, call)
+        );
+      });
+    }
+
+    return {
+      CallExpression(node) {
+        const method = memberName(node.callee);
+        const reads =
+          locatorReads.has(method) && typeName(node.callee.object) === "Locator"
+            ? locatorReads
+            : pageReads.has(method) && typeName(node.callee.object) === "Page"
+              ? pageReads
+              : undefined;
+        if (!reads || !reachesSubject(node, new Set())) return;
+        context.report({
+          node,
+          messageId: "once",
+          data: { method, matcher: reads.get(method) },
+        });
       },
     };
   },
@@ -1728,15 +2058,117 @@ const noProcessEnvChange = {
   },
 };
 
+/** 식이 값을 남기지 않는가: `undefined`, `void …`, 글자·숫자 같은 고정 값. */
+const constantValue = (node) =>
+  node.type === "Literal" ||
+  (node.type === "Identifier" && node.name === "undefined") ||
+  (node.type === "UnaryExpression" && node.operator === "void");
+
+/** 함수가 받은 것을 보지 않고 끝나는가: 빈 몸, 고정 값만 돌려주는 몸(`() => {}`·`() => undefined`·`() => { return false; }`). */
+function dropsArgument(fn) {
+  if (!isFunction(fn) && fn?.type !== "FunctionDeclaration") return false;
+  const { body } = fn;
+  if (body.type !== "BlockStatement") return constantValue(body);
+  if (body.body.length === 0) return true;
+  const [only] = body.body;
+  return (
+    body.body.length === 1 &&
+    only.type === "ReturnStatement" &&
+    (!only.argument || constantValue(only.argument))
+  );
+}
+
+/** 처리기 자리의 값이 받은 오류를 버리는 함수인가. 같은 파일의 함수 이름(`const noop = () => {}`)이면 그 정의를 본다. */
+function dropsRejection(handler, sourceCode) {
+  if (!handler) return false;
+  if (handler.type !== "Identifier") return dropsArgument(handler);
+  const def = bindingOf(sourceCode, handler)?.defs[0];
+  if (def?.type === "FunctionName") return dropsArgument(def.node);
+  return (
+    def?.type === "Variable" &&
+    def.parent.kind === "const" &&
+    dropsArgument(def.node.init)
+  );
+}
+
+/** 식의 값이 버려지는가: 문 자체이거나 `void`로 버린 문. */
+function discarded(node) {
+  let child = node;
+  if (child.parent.type === "ChainExpression") child = child.parent;
+  if (
+    child.parent.type === "UnaryExpression" &&
+    child.parent.operator === "void"
+  )
+    child = child.parent;
+  return child.parent.type === "ExpressionStatement";
+}
+
+/** `identifier`의 변수(매개변수·지역 변수)를 그 변수를 만든 함수가 그대로 돌려주는가(`function f(p) { …; return p; }`). */
+function returnedAsIs(identifier, sourceCode) {
+  const variable = bindingOf(sourceCode, identifier);
+  if (!variable) return false;
+  return variable.references.some((reference) => {
+    const { parent } = reference.identifier;
+    return (
+      parent.type === "ReturnStatement" &&
+      returningFunction(parent) === variable.scope.block
+    );
+  });
+}
+
+/**
+ * 시험이 기다리지 않는 Promise의 거절을 빈 처리기로 버리면, 그 작업이 실패해도 시험이 통과하고 실패는 어디에도 남지 않는다
+ * (CODING_STANDARDS.md#단언). 타입 정보 규칙(`no-floating-promises`)은 `.catch(…)`가 붙은 Promise를 처리한 것으로 보므로,
+ * 이 모양이 그 검사를 비켜 가는 길이 된다. 문으로 버린(`void` 포함) `p.catch(처리기)`·`p.then(…, 처리기)`에서 처리기가 받은 오류를
+ * 보지 않고 끝나면 짚는다(`() => {}`·`() => undefined`·고정 값, 같은 파일의 그런 함수 이름).
+ * 값으로 쓰는 것(`await p.catch(() => undefined)`)과 함수가 같은 Promise를 그대로 돌려주는 것(`awaitedLater`처럼 나중에 기다릴
+ * Promise를 표시만 하는 함수)은 짚지 않는다.
+ */
+const noDroppedRejection = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow dropping the rejection of a promise a test does not wait for with an empty handler",
+    },
+    schema: [],
+    messages: {
+      dropped:
+        "기다리지 않는 Promise의 거절을 빈 처리기로 버립니다. 그 작업이 실패해도 시험이 통과하고 실패가 어디에도 남지 않습니다. 결과를 기다려 단언하세요. 시험이 나중에 기다리는 Promise가 그 전에 거절될 수 있으면 awaitedLater(@babojubot/runtime/test-cleanup)로 감싸 두고 그 Promise를 기다립니다. CODING_STANDARDS.md#단언",
+    },
+  },
+  create(context) {
+    const { sourceCode } = context;
+    return {
+      CallExpression(node) {
+        const method = methodOf(node);
+        const handler =
+          method === "catch"
+            ? node.arguments[0]
+            : method === "then"
+              ? node.arguments[1]
+              : undefined;
+        if (!dropsRejection(handler, sourceCode) || !discarded(node)) return;
+        const promise = node.callee.object;
+        if (promise.type === "Identifier" && returnedAsIs(promise, sourceCode))
+          return;
+        context.report({ node, messageId: "dropped" });
+      },
+    };
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
   rules: {
     "no-cleanup-in-finally": noCleanupInFinally,
+    "no-dropped-rejection": noDroppedRejection,
     "no-elapsed-time-assertion": noElapsedTimeAssertion,
     "no-expected-failure": noExpectedFailure,
     "no-fixed-time-wait": noFixedTimeWait,
     "no-ignored-close-error": noIgnoredCloseError,
     "no-ignored-kill-error": noIgnoredKillError,
+    "no-one-shot-ui-read": noOneShotUiRead,
     "no-page-wide-locator": noPageWideLocator,
     "no-process-env-change": noProcessEnvChange,
     "no-skipped-cleanup": noSkippedCleanup,
