@@ -51,6 +51,7 @@ async function runCheck(file: string, baseURL: string) {
     const { code, output } = await runPlaywright({
       config,
       timeoutMs: runTimeoutMs,
+      prefix: "SHARED_SETTINGS_RUN_",
       args: [file],
       env: {
         SHARED_SETTINGS_RUN_URL: baseURL,

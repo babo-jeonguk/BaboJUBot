@@ -168,6 +168,9 @@ jobs:
           echo "BABOJUBOT_TEST_NO_LINK_DIR=$dir" >> "$GITHUB_ENV"
       - name: Run runtime tests
         timeout-minutes: 12
+        # 실제 Docker 격리 검사(container.docker.test.ts)는 이 job에서 필수다. Docker를 쓸 수 없으면 건너뛰지 않고 원인과 함께 실패한다.
+        env:
+          BABOJUBOT_REQUIRE_DOCKER: "1"
         run: pnpm --filter @babojubot/runtime run test
   test-db:
     name: tests / db
