@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
@@ -254,51 +254,101 @@ describe("failed executions (#147)", () => {
 });
 
 // #147: 실제 2.2.6은 새 조직 폴더에 서버 둘이 함께 뜨면 DB를 함께 만들다 하나가 끝났다. 시뮬레이터 `--startup-race`가 그 합성이다.
+// 먼저 차례를 잡은 서버는 시험이 gate를 열 때까지 뜨는 중에 머문다. 뒤 실행이 차례를 기다린다고 알린 것을 받은 뒤에 열거나 취소한다.
 describe("one organization folder (#147)", () => {
-  const racingAdapter = (root: string) =>
-    createOpenCodeProvider({
+  const waitingText = "먼저 시작한 OpenCode가 준비될 때까지 기다립니다.";
+  const isWaiting = (activity: unknown) =>
+    isDeepStrictEqual(activity, { type: "progress", text: waitingText });
+  type Run = Promise<{ stopReason: string }>;
+  /**
+   * 도착 신호를 다시 확인해 기다린다. 상한(20초, 시험 시한 안)을 넘으면 `check`가 던진 오류(못 받은 신호)로 실패하고,
+   * 그 전에 실행이 끝나면 그 결과와 함께 실패한다.
+   */
+  const arrival = (check: () => unknown, runs: Run[]) =>
+    Promise.race([
+      vi.waitFor(check, { timeout: 20_000 }),
+      Promise.any(runs).then((result) => {
+        throw new Error(
+          `a run ended (${result.stopReason}) before the signal arrived`
+        );
+      }),
+    ]);
+  const racing = async () => {
+    const root = await folders.make("opencode-race-");
+    const gate = path.join(root, "startup-gate");
+    const adapter = createOpenCodeProvider({
       dataDir: root,
       command: [
         process.execPath,
         path.resolve("test-fixtures/opencode-simulator.mjs"),
         "--startup-race",
+        gate,
       ],
     }).adapter;
+    return {
+      adapter,
+      /** 먼저 차례를 잡은 서버가 gate에 닿을 때까지 기다린다. */
+      atGate: (run: Run) =>
+        arrival(async () => {
+          try {
+            await stat(`${gate}.reached`);
+          } catch {
+            throw new Error(
+              "the first OpenCode server did not reach the startup gate"
+            );
+          }
+        }, [run]),
+      openGate: () => writeFile(gate, ""),
+    };
+  };
   const sameOrganization = (organizationId: string) => {
     const input = request();
     input.identity.organizationId = organizationId;
     input.context.organization.id = organizationId;
     return input;
   };
+  /** 실행 활동에 차례 대기 문구가 왔는지 기록하고, 그 도착을 기다린다. */
+  const waitingSignal = () => {
+    let seen = false;
+    return {
+      emit: async (activity: unknown) => {
+        if (isWaiting(activity)) seen = true;
+      },
+      before: (runs: Run[]) =>
+        arrival(() => {
+          if (!seen)
+            throw new Error(
+              "OpenCode startup waiting progress was not observed"
+            );
+        }, runs),
+    };
+  };
 
   it("starts the servers of two agents one at a time and lets both runs finish", async () => {
-    const root = await folders.make("opencode-race-");
-    const adapter = racingAdapter(root);
+    const { adapter, openGate } = await racing();
     const first = request();
     const activities: unknown[] = [];
-    const results = await Promise.all(
-      [first, sameOrganization(first.identity.organizationId)].map((input) =>
+    const waiting = waitingSignal();
+    const runs = [first, sameOrganization(first.identity.organizationId)].map(
+      (input) =>
         adapter.execute(input, {
           signal: new AbortController().signal,
           emit: async (activity) => {
             activities.push(activity);
+            await waiting.emit(activity);
           },
         })
-      )
     );
+    // 먼저 차례를 잡은 서버는 gate가 닫혀 있는 동안 뜨는 중이다. 뒤 실행이 기다린다고 알린 뒤에 연다.
+    await waiting.before(runs);
+    await openGate();
+    const results = await Promise.all(runs);
     expect(results.map((r) => r.stopReason)).toEqual([
       "completed",
       "completed",
     ]);
-    // 둘이 함께 시작하고 먼저 뜨는 서버가 300ms 넘게 차례를 쥐므로, 뒤의 실행 하나만 기다렸다고 알린다.
-    expect(
-      activities.filter((activity) =>
-        isDeepStrictEqual(activity, {
-          type: "progress",
-          text: "먼저 시작한 OpenCode가 준비될 때까지 기다립니다.",
-        })
-      )
-    ).toHaveLength(1);
+    // 뒤의 실행 하나만 기다렸다고 알린다.
+    expect(activities.filter(isWaiting)).toHaveLength(1);
     // 두 실행 모두 세션을 남겼는지 먼저 본다. 한쪽이 비어 있으면 아래 비교는 다르다는 이유로 통과한다.
     const sessions = results.map((r) => r.nextSession?.id);
     expect(sessions).toEqual([expect.any(String), expect.any(String)]);
@@ -306,24 +356,37 @@ describe("one organization folder (#147)", () => {
   }, 30000);
 
   it("stops waiting for its turn when cancelled and hands the turn on", async () => {
-    const root = await folders.make("opencode-race-");
-    const adapter = racingAdapter(root);
+    const { adapter, atGate, openGate } = await racing();
     const first = request();
     const organizationId = first.identity.organizationId;
-    const run = (input: ReturnType<typeof request>, signal: AbortSignal) =>
-      adapter.execute(input, { signal, emit: async () => {} });
+    const run = (
+      input: ReturnType<typeof request>,
+      signal: AbortSignal,
+      emit: (activity: unknown) => Promise<void> = async () => {}
+    ) => adapter.execute(input, { signal, emit });
     const running = run(first, new AbortController().signal);
+    // 취소할 실행이 뒤 차례가 되게, 앞 실행의 서버가 뜨는 중(gate)에 닿은 뒤에 시작한다.
+    await atGate(running);
     const cancel = new AbortController();
-    const waiting = run(sameOrganization(organizationId), cancel.signal);
-    setTimeout(() => cancel.abort(), 50);
+    const signal = waitingSignal();
+    const waiting = run(
+      sameOrganization(organizationId),
+      cancel.signal,
+      signal.emit
+    );
+    // 차례를 기다리는 분기에 들어간 것을 확인한 뒤 취소한다. 앞 서버는 아직 뜨는 중이다(gate가 닫혀 있다).
+    await signal.before([running, waiting]);
+    cancel.abort();
     expect(await waiting).toMatchObject({
       stopReason: "cancelled",
       error: null,
     });
+    // 취소한 실행이 차례를 넘겼으면, 다음 실행은 앞 서버가 뜬 뒤 차례를 받아 끝난다.
     const after = run(
       sameOrganization(organizationId),
       new AbortController().signal
     );
+    await openGate();
     expect((await running).stopReason).toBe("completed");
     expect((await after).stopReason).toBe("completed");
   }, 30000);

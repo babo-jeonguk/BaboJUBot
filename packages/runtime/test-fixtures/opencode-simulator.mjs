@@ -348,9 +348,12 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500).end("{}");
   }
 });
-// --startup-race면 같은 데이터 폴더에서 다른 서버가 뜨는 중일 때 끝난다. 실제 2.2.6이 새 폴더의 DB를 둘이 함께 만들다
-// 하나가 끝나는 것(`table … already exists`, #147)의 합성이다. 뜨는 데 300ms 걸린다.
-if (process.argv.includes("--startup-race")) {
+// --startup-race <gate>면 같은 데이터 폴더에서 다른 서버가 뜨는 중일 때 끝난다. 실제 2.2.6이 새 폴더의 DB를 둘이 함께 만들다
+// 하나가 끝나는 것(`table … already exists`, #147)의 합성이다. 뜨는 중인 구간은 시험이 정한다: `<gate>` 파일이 생길 때까지
+// 뜨지 않는다. gate에 닿으면 `<gate>.reached`를 남긴다. 시험은 다른 실행이 차례를 기다린다는 신호를 받은 뒤에 gate를 연다.
+const startupRaceAt = process.argv.indexOf("--startup-race");
+if (startupRaceAt >= 0) {
+  const gate = process.argv[startupRaceAt + 1];
   await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
   const starting = path.join(process.env.XDG_DATA_HOME, "starting");
   try {
@@ -359,7 +362,12 @@ if (process.argv.includes("--startup-race")) {
     console.error("synthetic: table already exists");
     process.exit(1);
   }
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await writeFile(`${gate}.reached`, "");
+  // 열렸는지 다시 확인한다(파일 감시는 OS마다 알림이 다르다).
+  await new Promise((resolve) => {
+    const check = () => stat(gate).then(resolve, () => setTimeout(check, 10));
+    check();
+  });
   await rm(starting);
 }
 server.listen(0, "127.0.0.1", () =>

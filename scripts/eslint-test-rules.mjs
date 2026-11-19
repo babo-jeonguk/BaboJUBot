@@ -203,6 +203,75 @@ function onlyWakes(callback, resolve) {
   );
 }
 
+/** 함수 몸이 식 하나뿐이면 그 식(`() => x`, `() => { x; }`). */
+function onlyExpression(callback) {
+  if (!isFunction(callback)) return undefined;
+  const body = callback.body;
+  if (body.type !== "BlockStatement") return body;
+  return body.body.length === 1 && body.body[0].type === "ExpressionStatement"
+    ? body.body[0].expression
+    : undefined;
+}
+
+/** 타이머 콜백이 무언가의 `abort(…)`만 부르는가(`() => cancel.abort()`, `() => { stop.abort(reason); }`). */
+const onlyAborts = (callback) => methodOf(onlyExpression(callback)) === "abort";
+
+/** 반복의 몸이 문 하나뿐이면 그 문(`for (…) x;`, `for (…) { x; }`). */
+function onlyStatement(body) {
+  if (body.type !== "BlockStatement") return body;
+  return body.body.length === 1 ? body.body[0] : undefined;
+}
+
+// 이벤트 루프 차례 하나를 넘기는 호출: 지연 없는 타이머와 차례 예약.
+const turnSchedulers = new Set(["setImmediate", "queueMicrotask"]);
+/** `call`이 executor의 `resolve`로 차례 하나를 넘기는가: `setTimeout(r)`·`setTimeout(r, 0)`·`setTimeout(() => r(), 0)`·`setImmediate(r)`·`process.nextTick(r)`. */
+function schedulesTurn(call, resolve) {
+  if (call?.type !== "CallExpression") return false;
+  const { callee } = call;
+  const name =
+    callee.type === "Identifier"
+      ? callee.name
+      : callee.type === "MemberExpression" &&
+          !callee.computed &&
+          callee.object.type === "Identifier" &&
+          callee.object.name === "process" &&
+          callee.property.name === "nextTick"
+        ? "nextTick"
+        : undefined;
+  if (name === "setTimeout") {
+    const delay = call.arguments[1];
+    if (delay && !(delay.type === "Literal" && delay.value === 0)) return false;
+  } else if (name !== "nextTick" && !turnSchedulers.has(name)) return false;
+  return onlyWakes(call.arguments[0], resolve);
+}
+
+/** 문이 이벤트 루프 차례 하나를 기다리기만 하는가: `await new Promise((r) => setTimeout(r, 0))`, `await Promise.resolve()`. */
+function waitsOneTurn(statement) {
+  if (statement?.type !== "ExpressionStatement") return false;
+  const awaited = statement.expression;
+  if (awaited.type !== "AwaitExpression") return false;
+  const value = awaited.argument;
+  if (methodOf(value) === "resolve")
+    return (
+      value.callee.object.type === "Identifier" &&
+      value.callee.object.name === "Promise" &&
+      value.arguments.length === 0
+    );
+  if (
+    value?.type !== "NewExpression" ||
+    value.callee.type !== "Identifier" ||
+    value.callee.name !== "Promise"
+  )
+    return false;
+  const executor = value.arguments[0];
+  const resolve = executor?.params?.[0];
+  return (
+    isFunction(executor) &&
+    resolve?.type === "Identifier" &&
+    schedulesTurn(onlyExpression(executor), resolve.name)
+  );
+}
+
 /**
  * 시험이 정해진 시간만큼 잠들어 기다리면 결과가 실행기 속도에 달린다(CODING_STANDARDS.md#시간).
  * 타이머가 잠든 쪽을 깨우기만 하면 기다림으로 보고 짚는다.
@@ -212,16 +281,28 @@ function onlyWakes(callback, resolve) {
  * 가짜가 응답을 보내는 타이머, 깨어나 같은 조건을 다시 확인하는 타이머(`setTimeout(poll, N)`), 시계 주입 타이머(`clock.setTimeout`).
  * `Promise.race`·`Promise.any`의 한쪽으로 바로 넣은 타이머는 다른 쪽을 기다리는 상한이다. 지연이 0이거나 없는 것은 시간을 기다리지 않는다.
  * 그래서 표지 값으로 "아무 일도 없었다"를 확인하는 경주(`resolve("open")`)는 짚지 않는다. 다시 확인하는 반복의 상한 유무도 보지 않는다.
+ *
+ * 시간·횟수를 순서 신호로 쓰는 두 모양도 짚는다(CODING_STANDARDS.md#순서).
+ * - 정해진 시간 뒤 중단: `setTimeout(() => x.abort(), N)`처럼 돌려받은 타이머를 버리고 콜백이 `abort`만 부르는 것. 상대가 그때쯤 어떤
+ *   분기에 들어갔으리라 보고 중단하므로, 늦으면 그 분기를 거치지 않고 통과한다. 타이머를 담아 두는 상한(`const t = setTimeout(…)`·
+ *   `clearTimeout(t)`)과 kill·reject는 짚지 않는다.
+ * - 정해진 횟수만큼 차례 넘기기: `for (…) await new Promise((r) => setTimeout(r, 0))`처럼 반복의 몸이 이벤트 루프 차례를 기다리기만
+ *   하는 것(`setTimeout(r)`·`setImmediate(r)`·`queueMicrotask(r)`·`process.nextTick(r)`·`Promise.resolve()`). 처리에 차례가 더
+ *   걸리면 끝나기 전에 본다. 조건을 다시 확인하는 `while`·`do…while`과 도움 함수를 부르는 반복은 짚지 않는다.
  */
 const noFixedTimeWait = {
   meta: {
     type: "problem",
     docs: {
       description:
-        "disallow waiting a fixed time in tests instead of a state or a signal",
+        "disallow waiting a fixed time or a fixed number of event loop turns in tests instead of a state or a signal",
     },
     schema: [],
     messages: {
+      abortAfter:
+        "정해진 시간 뒤에 중단합니다. 상대가 그때쯤 기다리는 분기에 들어갔으리라는 가정이라, 늦거나 빠르면 그 분기를 거치지 않고 통과하거나 맞는 제품에서 실패합니다. 상대가 그 분기에 들어갔다는 신호(실행 활동의 진행 문구, 가짜 프로그램이 받은 요청, 붙잡은 gate에 도착)를 받은 뒤 중단하세요. 상한으로 쓰는 타이머는 담아 두고 clearTimeout으로 풉니다. CODING_STANDARDS.md#순서",
+      turns:
+        "이벤트 루프 차례를 정해진 횟수만큼 넘기고 처리가 끝났다고 봅니다. 처리에 차례가 더 걸리면 끝나기 전에 보고, '아무 일도 없었다'는 확인이 거짓으로 통과합니다. 처리 끝 신호(요청 시작·완료, 응답, 진행 문구)를 기다리거나, 가짜 타이머를 남은 것이 없을 때까지 돌리세요(vi.runAllTimersAsync). CODING_STANDARDS.md#순서",
       fixed:
         "시험이 정해진 시간만큼 잠들어 기다립니다. 잠든 시간은 신호가 아니어서 느린 실행기에서는 기다리던 일이 아직 끝나지 않습니다. 상태·준비 줄·처리 끝 신호를 vi.waitFor·expect.poll·공용 상한(eventually·leadRun·pageLoad)으로 기다리고, 타이머 순서는 시계를 주입해(manualClock·가짜 타이머) 시험이 정하세요. CODING_STANDARDS.md#시간",
     },
@@ -230,7 +311,14 @@ const noFixedTimeWait = {
     /** `timers/promises`에서 가져온 이름. */
     const timers = new Set();
     const report = (node) => context.report({ node, messageId: "fixed" });
+    const loop = (node) => {
+      if (waitsOneTurn(onlyStatement(node.body)))
+        context.report({ node, messageId: "turns" });
+    };
     return {
+      ForStatement: loop,
+      ForOfStatement: loop,
+      ForInStatement: loop,
       ImportDeclaration(node) {
         if (!timerModules.test(node.source.value)) return;
         for (const specifier of node.specifiers)
@@ -256,6 +344,11 @@ const noFixedTimeWait = {
           return;
         const delay = node.arguments[1];
         if (!delay || (delay.type === "Literal" && delay.value === 0)) return;
+        if (
+          node.parent.type === "ExpressionStatement" &&
+          onlyAborts(node.arguments[0])
+        )
+          return context.report({ node, messageId: "abortAfter" });
         const executor = enclosingExecutor(node);
         const resolve = executor?.params[0];
         if (resolve?.type !== "Identifier" || raceMember(executor.parent))
