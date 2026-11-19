@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { killUnlessGone, processAlive } from "@babojubot/runtime/test-cleanup";
+import {
+  awaitedLater,
+  killUnlessGone,
+  processAlive,
+} from "@babojubot/runtime/test-cleanup";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.
 // - 제품 폴더와 임시 폴더(TMP)를 새 임시 폴더 하나 안에 만들어 넘긴다. 임시 내장 Postgres(BABOJUBOT_EPHEMERAL_DB)의 dataDir도
@@ -110,12 +114,13 @@ export async function startServerProcess({
   child.stderr!.on("data", (chunk) => (stderr += chunk));
   const output = () =>
     `stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`;
-  // 종료 관찰은 시작을 기다리기 전에 붙인다. 시작 전에 끝나도 놓치지 않는다.
-  const exited = new Promise<Exit>((resolve, reject) => {
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-    child.once("error", reject);
-  });
-  void exited.catch(() => {});
+  // 종료 관찰은 시작을 기다리기 전에 붙인다. 시작 전에 끝나도 놓치지 않는다. 시작 대기·멈추기·실패 정리가 늘 기다린다.
+  const exited = awaitedLater(
+    new Promise<Exit>((resolve, reject) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+      child.once("error", reject);
+    })
+  );
   // 채널 오류(끊긴 채널로 보내기 등)는 멈추기에서 실패로 알린다. 처리하지 않은 `error`로 실행기를 끝내지 않는다.
   child.on("error", () => {});
 
@@ -161,18 +166,24 @@ export async function startServerProcess({
         killUnlessGone(pid);
       });
     // 준비 때 읽은 pid는 잠금 파일이 지워져도 이 서버의 Postgres다. 끝내지는 않고, 폴더를 지우기 전에 끝나기를 기다린다.
+    // 대상마다 따로 기다려, 한 대상의 조회가 실패해도 나머지가 끝나기를 기다린다.
     const watched = [
       ...new Set([...(locked ?? []), ...(postgresPid ? [postgresPid] : [])]),
     ];
-    await attempt(failures, undefined, async () => {
-      for (const pid of watched) await gone(pid, postgresExitMs);
-    });
-    // `undefined`는 남은 프로세스를 조회하지 못했다는 뜻이다(권한·I/O 오류). 끝났다고 보지 않는다.
-    const left = await attempt<number[] | undefined>(failures, undefined, () =>
-      [child.pid, ...watched].filter(
-        (pid): pid is number => !!pid && alive(pid)
-      )
-    );
+    for (const pid of watched)
+      await attempt(failures, undefined, () => gone(pid, postgresExitMs));
+    // 대상마다 따로 조회한다. 조회하지 못한 대상(권한·I/O 오류)은 끝났다고 보지 않고 `left`를 `undefined`로 둔다.
+    let left: number[] | undefined = [];
+    for (const pid of [child.pid, ...watched]) {
+      if (!pid) continue;
+      const running = await attempt<boolean | undefined>(
+        failures,
+        undefined,
+        () => alive(pid)
+      );
+      if (running === undefined) left = undefined;
+      else if (running) left?.push(pid);
+    }
     if (locked === undefined)
       failures.push(
         new Error(

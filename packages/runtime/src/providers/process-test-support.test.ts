@@ -2,7 +2,12 @@ import { spawn, type SpawnSyncReturns } from "node:child_process";
 import { once } from "node:events";
 import { finished } from "node:stream/promises";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { exited, killAndWait, readyLine } from "./process-test-support.ts";
+import {
+  exited,
+  killAndWait,
+  readyLine,
+  untilExited,
+} from "./process-test-support.ts";
 
 // 종료 확인에 조회 실패를 넣는 자리. 넣지 않으면 실제 함수를 그대로 부른다.
 const injected = vi.hoisted(() => ({
@@ -198,6 +203,53 @@ describe("exited", () => {
         `프로세스 ${pid}의 상태를 ps로 읽지 못했다(code null, signal null)`
       );
       expect(error.cause).toBe(cause);
+    });
+  });
+});
+
+// 한 대상의 조회가 실패해도 나머지 대상이 끝나기를 계속 기다리고, 그 실패를 pid·원인과 함께 알린다(#243). 앞 대상의 조회
+// 실패가 뒤 대상의 대기를 끝내면, 아직 살아 있는 프로그램의 폴더를 정리가 지우러 간다.
+describe("untilExited", () => {
+  it("keeps waiting for the other programs when one lookup fails, and reports that failure", async () => {
+    const child = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { stdio: "ignore" }
+    );
+    const exit = once(child, "exit");
+    onTestFinished(() => killAndWait([child.pid!]));
+    const refused = running();
+    const cause = failure("EPERM");
+    // 남은 대상을 두 번째로 확인하면, 조회 실패 뒤에도 기다리고 있다는 도착 신호다.
+    let lookups = 0;
+    let lookedAgain!: () => void;
+    const lookedUpAgain = new Promise<void>(
+      (resolve) => (lookedAgain = resolve)
+    );
+    const kill = process.kill.bind(process);
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (signal === 0 && pid === refused) throw cause;
+      if (signal === 0 && pid === child.pid && ++lookups === 2) lookedAgain();
+      return kill(pid, signal);
+    });
+    onTestFinished(() => {
+      vi.restoreAllMocks();
+    });
+    const waiting = untilExited([refused, child.pid!], 30_000).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(
+      await Promise.race([
+        lookedUpAgain.then(() => "still waiting"),
+        waiting.then(() => "ended"),
+      ])
+    ).toBe("still waiting");
+    child.kill("SIGKILL");
+    await exit;
+    expect(await waiting).toMatchObject({
+      message: `프로세스 ${refused}가 있는지 확인하지 못했다`,
+      cause,
     });
   });
 });
