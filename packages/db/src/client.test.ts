@@ -715,6 +715,55 @@ function readPostmaster(dataDir: string) {
   );
 }
 
+// 남은 Postgres를 끄는 정리는 한 대상의 조회·신호가 실패해도 다른 대상에 신호를 보내고 끝나기를 기다린 뒤, 그 실패를 함께
+// 알린다. 대상을 미리 한꺼번에 조회하면 첫 조회의 실패가 나머지 대상의 신호까지 막는다(#248 리뷰 SPEC-1).
+it("signals every leftover Postgres even when one of them cannot be looked up", async () => {
+  const sleeper = () =>
+    spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+    });
+  const refused = sleeper();
+  const other = sleeper();
+  onTestFinished(() =>
+    cleanUpAll([() => killHard(refused), () => killHard(other)])
+  );
+  const otherExit = watchExit(other);
+  // `refused`에 대한 신호 0과 끄기는 권한 거부로 실패한다. 다른 대상의 신호는 그대로 보낸다.
+  const kill = process.kill.bind(process);
+  const sent: [number, string | number | undefined][] = [];
+  const failure = Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+  vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    sent.push([pid, signal]);
+    if (pid === refused.pid) throw failure;
+    return kill(pid, signal);
+  });
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
+
+  const outcome = await killPostgres(refused.pid!, other.pid!).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(sent).toContainEqual([other.pid, "SIGKILL"]);
+  expect(await otherExit.within(10_000)).toEqual({
+    code: null,
+    signal: "SIGKILL",
+  });
+  // 보내지 못한 첫 신호와 끝났는지 확인하지 못한 것을 함께 알린다.
+  const first = process.platform === "win32" ? "SIGKILL" : "SIGCONT";
+  expect(outcome).toBeInstanceOf(AggregateError);
+  expect(
+    (outcome as AggregateError).errors.map((error: Error) => [
+      error.message,
+      error.cause,
+    ])
+  ).toEqual([
+    [`프로세스 ${refused.pid}에 ${first}을 보내지 못했다`, failure],
+    [`프로세스 ${refused.pid}가 있는지 확인하지 못했다`, failure],
+  ]);
+});
+
 /** 남은 postgres를 즉시 정지로 멈추고 끝날 때까지 기다린다. */
 async function stopPostgres(pid: number) {
   // 이미 끝났으면(ESRCH) 할 일이 없다. 그 밖의 실패는 pid와 함께 알린다.
