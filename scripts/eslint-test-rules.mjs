@@ -1589,7 +1589,7 @@ const noStateBetweenTests = {
   },
 };
 
-/** 이름이 `name`인 속성 접근인가(`x.name`·`x["name"]`). */
+/** 이름이 `name`인 속성 접근인가(`x.name`·`x["name"]`). 계산된 이름은 문자열 리터럴만 본다. */
 const memberNamed = (node, name) =>
   node.type === "MemberExpression" &&
   (node.computed
@@ -1710,14 +1710,15 @@ const noProcessEnvChange = {
         const { callee } = node;
         if (
           callee.type !== "MemberExpression" ||
-          callee.computed ||
           callee.object.type !== "Identifier" ||
           !globalName(sourceCode, callee.object, Object.keys(envChangingCalls))
         )
           return;
         const [target] = node.arguments;
         if (
-          envChangingCalls[callee.object.name].includes(callee.property.name) &&
+          envChangingCalls[callee.object.name].some((name) =>
+            memberNamed(callee, name)
+          ) &&
           target &&
           isProcessEnv(target, sourceCode)
         )

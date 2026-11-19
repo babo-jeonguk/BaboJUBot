@@ -1063,6 +1063,9 @@ const envChanges = {
   "Object.assign": `Object.assign(process.env, { SETTING: "1" });\n`,
   "Reflect.set": `Reflect.set(process.env, "SETTING", "1");\n`,
   "Reflect.deleteProperty": `Reflect.deleteProperty(process.env, "SETTING");\n`,
+  // 계산된 문자열 메서드 이름.
+  'Object["assign"]': `Object["assign"](process.env, { SETTING: "1" });\n`,
+  'Reflect["set"]': `Reflect["set"](process.env, "SETTING", "1");\n`,
   // 전역 객체를 거친 process.
   "globalThis.process": `globalThis.process.env.SETTING = "1";\n`,
   "a deleted entry through global": `delete global.process.env["SETTING"];\n`,
@@ -1112,6 +1115,8 @@ test("test code may read process.env, stub it, build a child's environment from 
     `import { env } from "./config.js";\nenv.SETTING = "1";\n`,
     `const config = { env: {} };\nconst { env } = config;\nenv.SETTING = "1";\n`,
     `const { argv } = process;\nargv[0] = "node";\ndelete argv[1];\n`,
+    // 바꾸지 않는 메서드는 계산된 이름이어도 짚지 않는다.
+    `export const keys = Object["keys"](process.env);\nexport const has = Reflect["has"](process.env, "PATH");\n`,
     // 새 값을 다시 받은 변수는 더는 process.env가 아니다.
     `let env = process.env;\nenv = { ...env };\nenv.SETTING = "1";\n`,
   ];
