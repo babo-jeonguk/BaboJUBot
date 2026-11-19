@@ -1,6 +1,7 @@
 import {
   goalMaxLength,
   organizationNameMaxLength,
+  settled,
   type ProviderChoice,
 } from "@babojubot/contracts";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -60,22 +61,24 @@ export function CreateOrganizationProvider({
   const submit = async () => {
     if (!ready || create.isPending) return;
     const mine = ++attempt.current;
-    try {
+    // 실패는 create.error로 보이고 입력은 그대로 둔다.
+    await settled(
       // 완료 기준을 비우면 보내지 않는다. Lead가 초기 연구 승인 요청에서 제안한다.
-      const org = await create.mutateAsync({
-        name: name.trim(),
-        goal: goal.trim(),
-        ...(criteria.trim() ? { completionCriteria: criteria.trim() } : {}),
-        // 설정을 읽지 못했으면 보내지 않는다. 서버가 전역 Lead 기본값을 쓴다.
-        ...(leadChoice ? { lead: leadChoice } : {}),
-      });
-      if (attempt.current !== mine) return;
-      setOpen(false);
-      clear();
-      void navigate(`/orgs/${org.id}/chat`);
-    } catch {
-      // 오류는 create.error로 보이고 입력은 그대로 둔다.
-    }
+      create
+        .mutateAsync({
+          name: name.trim(),
+          goal: goal.trim(),
+          ...(criteria.trim() ? { completionCriteria: criteria.trim() } : {}),
+          // 설정을 읽지 못했으면 보내지 않는다. 서버가 전역 Lead 기본값을 쓴다.
+          ...(leadChoice ? { lead: leadChoice } : {}),
+        })
+        .then((org) => {
+          if (attempt.current !== mine) return;
+          setOpen(false);
+          clear();
+          void navigate(`/orgs/${org.id}/chat`);
+        })
+    );
   };
 
   return (

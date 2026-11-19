@@ -5,6 +5,7 @@ import {
 } from "./artifact-file.tsx";
 import {
   messageBodyMaxLength,
+  settled,
   type Agent,
   type ArtifactSummary,
   type TaskComment,
@@ -386,12 +387,12 @@ function CommentComposer({
   const submit = async () => {
     const body = text.trim();
     if (!body || add.isPending) return;
-    try {
-      await add.mutateAsync(body);
-      setText((current) => (current.trim() === body ? "" : current));
-    } catch {
-      // 오류는 add.error로 보이고 입력은 그대로 둔다.
-    }
+    // 실패는 add.error로 보이고 입력은 그대로 둔다.
+    await settled(
+      add.mutateAsync(body).then(() => {
+        setText((current) => (current.trim() === body ? "" : current));
+      })
+    );
   };
   return (
     <form

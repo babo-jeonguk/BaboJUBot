@@ -1,6 +1,7 @@
 import {
   idempotencyKeyHeader,
   isOrgToolRead,
+  orIfUnreadable,
   orgToolErrorSchema,
   orgTools,
   orgToolsBasePath,
@@ -77,7 +78,10 @@ export function createOrgToolClient({
       body: post ? JSON.stringify(rest) : undefined,
       signal,
     });
-    const json: unknown = await res.json().catch(() => undefined);
+    const json: unknown = await orIfUnreadable(
+      (): Promise<unknown> => res.json(),
+      undefined
+    );
     if (!res.ok) {
       const refusal = orgToolErrorSchema.safeParse(json);
       throw new OrgToolError(
