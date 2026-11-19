@@ -94,7 +94,7 @@ export class IsolationGate {
       !this.#docker || this.#windows || this.#lifetime.signal.aborted;
     const current = this.#probe();
     if (immediate) this.#settled.add(current);
-    else void settled(current).then(() => this.#settled.add(current));
+    else void settled(current.finally(() => this.#settled.add(current)));
     return (this.#current = current);
   }
 

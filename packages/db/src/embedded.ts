@@ -405,13 +405,13 @@ function run(file: string, args: string[]): Promise<number> {
 }
 
 async function logTail(log: string) {
-  const text = await fsp
-    .readFile(log, "utf8")
-    .catch((error: unknown) =>
-      hasErrorCode("ENOENT")(error)
-        ? ""
-        : `Postgres log could not be read (${failureCode(error)})`
-    );
+  const text = await orIfMissing(
+    () => fsp.readFile(log, "utf8"),
+    hasErrorCode("ENOENT"),
+    ""
+  ).catch(
+    (error: unknown) => `Postgres log could not be read (${failureCode(error)})`
+  );
   return text.trim().slice(-1000) || "Postgres wrote no log";
 }
 
@@ -595,11 +595,20 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
  */
 async function removeTemporaryLeftovers() {
   const tmp = os.tmpdir();
-  const entries = await orIfMissing(
-    () => fsp.readdir(tmp, { withFileTypes: true }),
-    hasErrorCode("ENOENT"),
-    [] as fs.Dirent[]
-  );
+  const entries =
+    (await continueAfterFailure(
+      () =>
+        orIfMissing(
+          () => fsp.readdir(tmp, { withFileTypes: true }),
+          hasErrorCode("ENOENT"),
+          [] as fs.Dirent[]
+        ),
+      (error) =>
+        console.error(
+          "[db] the temporary folder could not be listed; leftover temporary clusters are not cleaned at this start",
+          error
+        )
+    )) ?? [];
   for (const entry of entries) {
     if (
       !entry.isDirectory() ||

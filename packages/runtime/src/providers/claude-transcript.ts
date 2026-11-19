@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import {
   addUsage,
+  continueAfterFailure,
   failureCode,
   hasErrorCode,
   isTokenCount,
@@ -37,16 +38,18 @@ async function sessionTranscripts<T>(
 ): Promise<T | undefined> {
   if (!/^[a-zA-Z0-9-]+$/.test(id)) return;
   const projects = path.join(home, "config/projects");
-  const folders = await orIfMissing(
-    () => readdir(projects, { withFileTypes: true }),
-    hasErrorCode("ENOENT", "ENOTDIR"),
-    undefined
-  ).catch((error: unknown) => {
-    console.warn(
-      `[provider] the Claude session folders could not be read (${failureCode(error)})`
-    );
-    return undefined;
-  });
+  const folders = await continueAfterFailure(
+    () =>
+      orIfMissing(
+        () => readdir(projects, { withFileTypes: true }),
+        hasErrorCode("ENOENT", "ENOTDIR"),
+        undefined
+      ),
+    (error) =>
+      console.warn(
+        `[provider] the Claude session folders could not be read (${failureCode(error)})`
+      )
+  );
   if (!folders) return;
   for (const folder of folders) {
     if (!folder.isDirectory()) continue;

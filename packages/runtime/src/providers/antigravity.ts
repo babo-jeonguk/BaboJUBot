@@ -266,19 +266,25 @@ export function createAntigravityProvider(options: {
     },
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
-      const checked = await orIfUnreadable(async () => {
-        await login.prepareConnection();
-        // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
-        // Windows의 access는 링크를 따라가지 않으므로 실제 파일을 찾아 본다.
-        const file = await realpath(login.loginFileIn(home)).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return undefined;
-            throw error;
-          }
-        );
-        if (file) await access(file, constants.R_OK | constants.W_OK);
-        return true;
-      }, false);
+      const checked = await continueAfterFailure(
+        async () => {
+          await login.prepareConnection();
+          // 실행이 읽는 로그인(링크면 원본, 링크를 만들 수 없는 컴퓨터면 연결 폴더의 파일)을 다시 쓰지 못하면 조직 실행이 낡은 로그인을 읽는다. 없으면(키링에 둔 로그인 등) 프로그램의 응답으로 판단한다.
+          // Windows의 access는 링크를 따라가지 않으므로 실제 파일을 찾아 본다.
+          const file = await realpath(login.loginFileIn(home)).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") return undefined;
+              throw error;
+            }
+          );
+          if (file) await access(file, constants.R_OK | constants.W_OK);
+          return true;
+        },
+        (error) =>
+          console.warn(
+            `[provider] the Antigravity login check failed (${failureCode(error)})`
+          )
+      );
       if (!checked) return { status: "not_ready", reason: "check_failed" };
       // 로그인이 맞는지는 프로그램의 응답으로 판단한다. 목록 조회는 모델을 부르지 않는다.
       try {

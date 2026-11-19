@@ -278,7 +278,9 @@ export async function recoverProviderProcesses(
       files = readdirSync(directory);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT")
-        console.warn(`[provider] could not read ${provider} process records`);
+        console.warn(
+          `[provider] could not read ${provider} process records; they are not recovered at this start (${failureCode(e)})`
+        );
       continue;
     }
     for (const name of files) {

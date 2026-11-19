@@ -22,7 +22,7 @@ export class InFlight {
       throw error;
     }
     if (value instanceof Promise)
-      void settled(value).then(() => this.leave(id));
+      void settled(value.finally(() => this.leave(id)));
     else this.leave(id);
     return value;
   }
