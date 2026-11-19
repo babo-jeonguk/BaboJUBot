@@ -43,8 +43,13 @@ const launchMessage =
   "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 이 함수들이 providerEnvironment로 격리 실행의 환경을 만들고, 입력·시작 오류와 종료를 처리합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
 
 // import 검사를 거치지 않고 모듈을 불러오는 길. 이름 그대로 가져오기·바꿔 가져오기·모듈 객체에서 읽기·구조 분해를 모두 본다.
-const moduleLoaders = "/^(createRequire|getBuiltinModule)$/";
-const loaderMessage = `createRequire·process.getBuiltinModule은 import 검사를 거치지 않고 모듈을 불러오므로 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
+// node:module은 createRequire·Module._load처럼 import 검사를 거치지 않는 길이 여럿이라 모듈째 막고(타입은 허용),
+// process의 getBuiltinModule은 이름 그대로 가져오기·읽기·구조 분해와 계산한 이름으로 읽기를 막는다.
+const moduleLoaderModules = ["module", "node:module"];
+const moduleMessage = `node:module은 createRequire·Module._load처럼 import 검사를 거치지 않고 모듈을 불러오는 길이 있어 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
+const getBuiltinModule = "getBuiltinModule";
+const loaderMessage = `process.getBuiltinModule은 import 검사를 거치지 않고 모듈을 불러오므로 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
+const computedProcessMessage = `process의 속성을 계산한 이름으로 읽으면 getBuiltinModule 같은 모듈 불러오기를 lint가 볼 수 없습니다. 속성 이름을 그대로 적으세요(process.env[name]처럼 그 안의 값은 그대로 읽습니다). ${launchMessage}`;
 const computedImportMessage = `계산한 경로·template literal의 dynamic import는 무엇을 가져오는지 lint가 볼 수 없어 child_process 금지를 피합니다. 경로를 문자열 그대로 적으세요(\`await import("./claude.ts")\`). ${launchMessage}`;
 
 const standards = "CODING_STANDARDS.md#정리";
@@ -242,18 +247,25 @@ export default defineConfig([
   {
     // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.
     // child_process와 runtime이 의존하는 cross-spawn의 정적 import·re-export·문자열 dynamic import를 막는다.
-    // 이 검사를 피하는 길(계산한 경로·template literal의 import, createRequire, process.getBuiltinModule)도 막는다.
+    // 이 검사를 피하는 길(계산한 경로·template literal의 import, node:module, process.getBuiltinModule, process의 계산한 이름)도 막는다.
     files: ["packages/runtime/src/**/*.{ts,tsx}"],
     ignores: [...testFiles, ...processOwners],
     rules: {
       "no-restricted-imports": [
         "error",
         {
-          paths: launchers.map((name) => ({
-            name,
-            allowTypeImports: true,
-            message: launchMessage,
-          })),
+          paths: [
+            ...launchers.map((name) => ({
+              name,
+              allowTypeImports: true,
+              message: launchMessage,
+            })),
+            ...moduleLoaderModules.map((name) => ({
+              name,
+              allowTypeImports: true,
+              message: moduleMessage,
+            })),
+          ],
         },
       ],
       "no-restricted-syntax": [
@@ -269,14 +281,24 @@ export default defineConfig([
           message: computedImportMessage,
         },
         {
+          selector: "ImportExpression[source.value=/^(node:)?module$/]",
+          message: moduleMessage,
+        },
+        {
           selector: [
-            `ImportSpecifier[imported.name=${moduleLoaders}]`,
-            `ExportSpecifier[local.name=${moduleLoaders}]`,
-            `MemberExpression[property.name=${moduleLoaders}]`,
-            `MemberExpression[property.value=${moduleLoaders}]`,
-            `ObjectPattern > Property[key.name=${moduleLoaders}]`,
+            `ImportSpecifier[imported.name='${getBuiltinModule}']`,
+            `ExportSpecifier[local.name='${getBuiltinModule}']`,
+            `MemberExpression[property.name='${getBuiltinModule}']`,
+            `MemberExpression[property.value='${getBuiltinModule}']`,
+            `ObjectPattern > Property[key.name='${getBuiltinModule}']`,
           ].join(", "),
           message: loaderMessage,
+        },
+        {
+          // process[name]·globalThis.process[name]. 이름을 그대로 적은 읽기와 process.env[name]은 보지 않는다.
+          selector:
+            "MemberExpression[computed=true]:not([property.type='Literal']):matches([object.name='process'], [object.object.name='globalThis'][object.property.name='process'])",
+          message: computedProcessMessage,
         },
       ],
     },
