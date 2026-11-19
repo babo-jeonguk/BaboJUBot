@@ -6,6 +6,7 @@ import path from "node:path";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { testFolders } from "./test-folders.ts";
 import type { RunResult, RuntimeAdapter } from "@babojubot/contracts";
+import { fakeDeclarations } from "../testing.ts";
 import { request } from "./test-support.ts";
 
 // 정리가 폴더 지우기를 부른 순서를 남긴다. 지우기는 그대로 한다.
@@ -97,7 +98,7 @@ it("counts a program that already ended as stopped", async () => {
 
 /** 멈춤 신호를 받아야 끝나는 실행 시도. `never`면 신호를 받아도 끝나지 않는다. */
 function heldProvider(order: string[], root: string, never = false) {
-  const execute = (_request: unknown, { signal }: { signal: AbortSignal }) =>
+  const execute: RuntimeAdapter["execute"] = (_request, { signal }) =>
     new Promise<RunResult>((resolve) => {
       if (never) return;
       signal.addEventListener("abort", () =>
@@ -105,15 +106,18 @@ function heldProvider(order: string[], root: string, never = false) {
           order.push(
             existsSync(root) ? "run ended with folder" : "folder gone"
           );
-          resolve({ stopReason: "cancelled" } as RunResult);
+          resolve({
+            stopReason: "cancelled",
+            error: null,
+            summary: null,
+            usage: null,
+            nextSession: null,
+          });
         }, 20)
       );
     });
   return {
-    adapter: {
-      execute,
-      checkReadiness: async () => ({ status: "ready" }) as never,
-    } as unknown as RuntimeAdapter,
+    adapter: { ...fakeDeclarations(), execute } satisfies RuntimeAdapter,
   };
 }
 

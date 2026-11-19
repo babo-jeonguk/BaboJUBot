@@ -624,11 +624,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
       })
     );
     env.container.docker = [
-      ...env.container.docker.slice(0, 3),
+      env.container.docker[0],
+      ...env.container.docker.slice(1, 3),
       JSON.stringify({
         claude: [process.execPath, fixture("replay.mjs"), compact],
       }),
-    ] as unknown as ContainerSettings["docker"];
+    ];
     const provider = createClaudeProvider({
       dataDir: env.root,
       container: env.container,

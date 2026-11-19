@@ -8,6 +8,7 @@ import {
   runDetailSchema,
   runSummaryListSchema,
   type ProviderReadinessCheck,
+  type RunResult,
   type RuntimeAdapter,
   type WakeReason,
 } from "@babojubot/contracts";
@@ -21,6 +22,7 @@ import {
 import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, idle, scriptedAgents } from "./scenarios.ts";
+import { outsideContract } from "./stand-ins.ts";
 import { eventually, startTestServer, type TestServer } from "./support.ts";
 
 // 넓힌 프로바이더 계약(#96): 실행 중 끼워 넣기와 거절 뒤 줄 세우기, 준비 확인의 갱신 시점, 실행 시도 상세의 사용량.
@@ -543,7 +545,7 @@ describe("usage numbers outside the contract (#140)", () => {
               return result;
             return {
               ...result,
-              stopReason: "finished" as never,
+              stopReason: outsideContract<RunResult["stopReason"]>("finished"),
               usage: { ...defaultFakeUsage, outputTokens: -1 },
             };
           },

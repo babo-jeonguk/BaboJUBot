@@ -355,9 +355,7 @@ describe("a Postgres left by a killed process", () => {
       });
       defer(() => handle.close());
       expect(isAlive(postmaster)).toBe(false);
-      const { rows } = await (
-        handle.db as unknown as { $client: pg.Pool }
-      ).$client.query("select value from kept");
+      const { rows } = await handle.db.execute(sql`select value from kept`);
       expect(rows).toEqual([{ value: 7 }]);
       // 정상 정지였으면 새 Postgres가 복구 과정 없이 시작한다.
       const log = fs.readFileSync(path.join(dataDir, "postgres.log"), "utf8");

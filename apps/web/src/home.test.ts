@@ -62,22 +62,46 @@ const overview = (organizations: OverviewOrganization[]): Overview => ({
   runs: { running: 0, cancelling: 0 },
   organizations,
 });
-const approval = (o: OverviewOrganization) =>
-  ({
-    kind: "approval",
-    read: true,
-    archived: false,
-    approval: { organizationId: o.organizationId, status: "pending" },
-  }) as unknown as InboxItem;
+const at = "2026-10-27T00:00:00.000Z";
+const approval = (o: OverviewOrganization): InboxItem => ({
+  kind: "approval",
+  organizationName: o.name,
+  read: true,
+  archived: false,
+  approval: {
+    id: uuid(2001),
+    organizationId: o.organizationId,
+    kind: "initial_research",
+    status: "pending",
+    requestedByAgentId: uuid(1000),
+    previousApprovalId: null,
+    createdAt: at,
+    decidedAt: null,
+  },
+});
 const failure = (
   o: OverviewOrganization,
   state: { read: boolean; archived: boolean }
-) =>
-  ({
-    kind: "run_failure",
-    ...state,
-    run: { organizationId: o.organizationId },
-  }) as unknown as InboxItem;
+): InboxItem => ({
+  kind: "run_failure",
+  organizationName: o.name,
+  ...state,
+  agentName: "Research Lead",
+  run: {
+    id: uuid(2002),
+    organizationId: o.organizationId,
+    agentId: uuid(1000),
+    status: "failed",
+    provider: "fake",
+    model: null,
+    cancelReason: null,
+    wakeCount: 1,
+    summary: null,
+    error: "실패",
+    startedAt: at,
+    finishedAt: at,
+  },
+});
 const names = (rooms: { org: OverviewOrganization }[]) =>
   rooms.map((r) => r.org.name);
 

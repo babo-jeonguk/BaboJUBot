@@ -1,4 +1,4 @@
-import type { Event, NewEvent } from "@babojubot/contracts";
+import type { Event, RunEndReason } from "@babojubot/contracts";
 import { describe, expect, it } from "vitest";
 import {
   notificationContent,
@@ -6,34 +6,37 @@ import {
   retryDelayMs,
 } from "./notification.ts";
 
-const notificationOf = (event: NewEvent) =>
+/** 저장 전 Event를 종류마다 나눈 것. 종류와 payload가 서로 맞아야 한다. */
+type Unstored<E = Event> = E extends unknown
+  ? Omit<E, "id" | "createdAt">
+  : never;
+const notificationOf = (event: Unstored) =>
   notificationOfStored({
     id: 1,
     createdAt: "2026-10-23T00:00:00.000Z",
     ...event,
-  } as Event);
+  });
 
 const org = "00000000-0000-4000-8000-000000000001";
 const agent = "00000000-0000-4000-8000-000000000002";
 const run = "00000000-0000-4000-8000-000000000003";
 const source = "00000000-0000-4000-8000-000000000004";
 
-const finished = (stopReason: string): NewEvent =>
-  ({
-    organizationId: org,
-    type: "run.finished",
-    payload: {
-      runId: run,
-      agentId: agent,
-      stopReason,
-      summary: null,
-      error: "오류",
-    },
-  }) as NewEvent;
+const finished = (stopReason: RunEndReason): Unstored => ({
+  organizationId: org,
+  type: "run.finished",
+  payload: {
+    runId: run,
+    agentId: agent,
+    stopReason,
+    summary: null,
+    error: "오류",
+  },
+});
 
 describe("notificationOf", () => {
   it("picks the Lead's conversation messages, not the owner's", () => {
-    const message = (author: "agent" | "owner"): NewEvent => ({
+    const message = (author: "agent" | "owner"): Unstored => ({
       organizationId: org,
       type: "message.created",
       payload: {
@@ -86,7 +89,7 @@ describe("notificationOf", () => {
       kind: "run_failure",
       sourceId: run,
     });
-    for (const reason of ["completed", "cancelled", "server_restart"])
+    for (const reason of ["completed", "cancelled", "server_restart"] as const)
       expect(notificationOf(finished(reason))).toBeNull();
   });
 

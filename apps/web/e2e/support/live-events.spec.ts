@@ -3,7 +3,7 @@ import { isReadyFrame, openWithLiveEvents } from "./live-events.ts";
 
 /** helper가 page에 남긴 listener 수. Playwright `Page`는 EventEmitter지만 타입에 `listenerCount`를 드러내지 않는다. */
 const listeners = (page: Page) => {
-  const emitter = page as unknown as { listenerCount(event: string): number };
+  const emitter = page as Page & { listenerCount(event: string): number };
   return emitter.listenerCount("websocket") + emitter.listenerCount("close");
 };
 
@@ -29,9 +29,11 @@ test("a page whose stream never sends ready fails within the deadline, naming wh
 }) => {
   // 화면이 Event stream을 열지 못해 ready frame이 오지 않는다.
   await page.addInitScript(() => {
+    // 연결을 시작하지 않는 대역. 화면이 쓰는 생성자와 close만 둔다.
     window.WebSocket = class {
+      constructor(_url: string | URL, _protocols?: string | string[]) {}
       close() {}
-    } as unknown as typeof WebSocket;
+    } as typeof WebSocket;
   });
   const before = listeners(page);
   // 실패 문구의 시한은 실패를 낸 타이머의 시한이다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).

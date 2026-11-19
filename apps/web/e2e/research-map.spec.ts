@@ -32,7 +32,7 @@ type SelectionFrame = {
  */
 async function watchSelection(page: Page) {
   await page.evaluate(() => {
-    const w = window as unknown as {
+    const w = window as typeof window & {
       selection: { frames: SelectionFrame[]; on: boolean };
     };
     const record: { frames: SelectionFrame[]; on: boolean } = {
@@ -68,7 +68,7 @@ async function watchSelection(page: Page) {
   });
   return () =>
     page.evaluate(() => {
-      const w = window as unknown as {
+      const w = window as typeof window & {
         selection: { frames: SelectionFrame[]; on: boolean };
       };
       w.selection.on = false;

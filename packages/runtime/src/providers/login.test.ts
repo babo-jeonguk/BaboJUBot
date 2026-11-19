@@ -50,7 +50,7 @@ it("runs the login with the connection's environment and saves a pasted token pr
 // 터미널의 echo는 입력 터미널 드라이버가 한다. 출력 스트림만 봐서는 보이지 않으므로, 입력이 raw mode로
 // 바뀌었다가 원래대로 돌아오는지와 출력에 토큰이 없는지를 함께 본다. 모든 OS에서 돈다.
 
-function stubConnection(dir: string): ProviderConnection {
+function stubConnection(dir: string): Pick<ProviderConnection, "id" | "login"> {
   return {
     id: "stub-login",
     login: {
@@ -59,7 +59,7 @@ function stubConnection(dir: string): ProviderConnection {
       env: { ...process.env, HOME: path.join(dir, "home") },
       tokenFile: path.join(dir, "home", "token"),
     },
-  } as unknown as ProviderConnection;
+  };
 }
 
 function fakeTerminalInput() {

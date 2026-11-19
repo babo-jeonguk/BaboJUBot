@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultAgentAppearance } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
@@ -257,10 +257,10 @@ describe("organization records", () => {
     const creation = plan("옛 얼굴 조직");
     await insertOrganizationCreation(t.db, creation);
     const lead = creation.agents[0]!;
-    await t.db
-      .update(agents)
-      .set({ appearance: { color: "neon" } as never })
-      .where(eq(agents.id, lead.id));
+    // 옛 얼굴은 지금 타입으로는 만들 수 없으므로, 저장된 그대로 SQL로 넣는다.
+    await t.db.execute(
+      sql`update agents set appearance = ${JSON.stringify({ color: "neon" })}::jsonb where id = ${lead.id}`
+    );
     expect(
       (await findOrganization(t.db, creation.organization.id))?.agents[0]
         ?.appearance

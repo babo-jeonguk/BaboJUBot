@@ -3,6 +3,7 @@ import { featureGaps, filesBase, remove, runPinned } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
+import { unused } from "./stand-ins.ts";
 
 // 링크로 바꿔치는 시험은 링크를 만들 수 없는 파일 시스템(FAT32)에서 건너뛴다. 폴더째 옮겨 바꾸는 시험은 그대로 돈다.
 const lacks = await featureGaps();
@@ -107,7 +108,7 @@ const known: unknown[] = Object.values(readerExit).filter(
 it("reads the file when nothing changes", async () => {
   const { root } = await organizations();
   const read = (relative: string) =>
-    new Workspaces(root, null as never).readArtifact(
+    new Workspaces(root, unused("db")).readArtifact(
       "organization-one",
       relative
     );
