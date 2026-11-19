@@ -6,6 +6,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,7 +16,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { withCleanup } from "@babojubot/runtime/test-cleanup";
-import { createLedger, gateConnection, writeBudget } from "./chaos-budget.mjs";
+import {
+  createLedger,
+  gateConnection,
+  writeBudget,
+  writeSecretFile,
+} from "./chaos-budget.mjs";
 
 // Windows는 파일 권한으로 읽기를 막을 수 없고, root는 권한과 상관없이 읽는다.
 const noPermissionDenial =
@@ -209,3 +216,32 @@ test("a failing readiness check refuses the run and names the failure", async (t
 function removeBudget(files) {
   rmSync(files.budgetFile);
 }
+
+test("a secret file whose write fails is not left behind and the write error is kept", async () => {
+  await withCleanup(async (defer) => {
+    const dir = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-secret-"));
+    defer(() => removeFolder(dir));
+    const file = path.join(dir, "token");
+    // 문자열·버퍼가 아닌 내용은 파일을 만든 뒤 쓰기에서 실패한다.
+    await assert.rejects(
+      async () => writeSecretFile(file, { not: "text" }),
+      TypeError
+    );
+    assert.deepEqual(readdirSync(dir), []);
+  });
+});
+
+test("a replacement whose write fails keeps the old file and leaves no partial one", async () => {
+  await withCleanup(async (defer) => {
+    const dir = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-secret-"));
+    defer(() => removeFolder(dir));
+    const file = path.join(dir, "control.json");
+    writeSecretFile(file, '{"before":true}');
+    await assert.rejects(
+      async () => writeSecretFile(file, { not: "text" }, { replace: true }),
+      TypeError
+    );
+    assert.deepEqual(readdirSync(dir), ["control.json"]);
+    assert.equal(readFileSync(file, "utf8"), '{"before":true}');
+  });
+});

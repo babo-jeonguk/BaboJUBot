@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { test } from "node:test";
 import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
-import { matchingPids, pidsFromPgrep } from "./processes.mjs";
+import { matchingPids, pidsFromPgrep, stillRunning } from "./processes.mjs";
 
 const pattern = "busy\\.mjs [0-9]+ marker$";
 const finished = (fields) => ({
@@ -83,3 +83,30 @@ test(
     assert.throws(() => matchingPids("["), /pgrep failed for \[/);
   }
 );
+
+test("a stopped process is no longer running, and one left alive is named", async () => {
+  await withCleanup(async (defer) => {
+    const spawnIdle = () => {
+      const child = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        {
+          stdio: "ignore",
+        }
+      );
+      const exited = once(child, "exit");
+      defer(async () => {
+        killUnlessGone(child.pid);
+        await exited;
+      });
+      return once(child, "spawn").then(() => child);
+    };
+    const stopped = await spawnIdle();
+    const alive = await spawnIdle();
+    killUnlessGone(stopped.pid);
+    // 끝난 것은 상한 안에서 빠지고, 끄지 않은 것은 상한(0.5초)이 지나도 남은 것으로 나온다.
+    assert.deepEqual(await stillRunning([stopped.pid, alive.pid], 500), [
+      alive.pid,
+    ]);
+  });
+});
