@@ -53,7 +53,13 @@ test("runtime code launches programs only through the process owners", async () 
     "createRequire from a dynamic import": `const { createRequire } = await import("node:module");\ncreateRequire(import.meta.url)("child_process");\n`,
     "createRequire re-exported": `export { createRequire } from "node:module";\n`,
     "createRequire by a string key": `import * as nodeModule from "node:module";\nnodeModule["createRequire"](import.meta.url)("child_process");\n`,
+    // node:module은 createRequire 말고도 Module._load처럼 import 검사를 거치지 않는 길이 있어 모듈째 막는다.
+    "Module._load": `import { Module } from "node:module";\nModule._load("child_process");\n`,
     "process.getBuiltinModule": `process.getBuiltinModule("node:child_process").spawn("x");\n`,
+    "getBuiltinModule from node:process": `import { getBuiltinModule } from "node:process";\ngetBuiltinModule("child_process");\n`,
+    "getBuiltinModule destructured": `const { getBuiltinModule } = process;\ngetBuiltinModule("child_process");\n`,
+    "a computed name on process": `const name = ["getBuiltin", "Module"].join("");\nprocess[name]("child_process");\n`,
+    "a computed name on globalThis.process": `const name = ["getBuiltin", "Module"].join("");\nglobalThis.process[name]("child_process");\n`,
   };
   for (const place of [
     "packages/runtime/src/providers/claude.ts",
@@ -91,15 +97,17 @@ test("process owners, type imports and code outside runtime may use child_proces
   // 실행 경계 밖의 모듈 불러오기는 막지 않는다: 문자열 경로의 import, node:module의 다른 함수.
   for (const [shape, code] of Object.entries({
     "a string dynamic import": `const claude = await import("./claude.ts");\nvoid claude;\n`,
-    "another node:module export": `import { isBuiltin } from "node:module";\nisBuiltin("fs");\n`,
+    "a type from node:module": `import type { Module } from "node:module";\nexport type Loader = Module;\n`,
+    // 계산한 이름은 process 자신에만 막는다. process.env 같은 그 안의 값은 그대로 읽는다.
+    "a computed name under process": `const name = String(Date.now());\nvoid process.env[name];\nvoid process.argv[Number(name)];\nvoid process["pid"];\n`,
   }))
     assert.deepEqual(
       await lint(code, "packages/runtime/src/providers/claude.ts", launchRules),
       [],
       shape
     );
-  // 실행 소유 파일과 runtime 밖은 createRequire·계산한 경로의 import를 쓸 수 있다.
-  const bypasses = `import { createRequire } from "node:module";\nconst name = String(Date.now());\nawait import(name);\ncreateRequire(import.meta.url)(name);\n`;
+  // 실행 소유 파일과 runtime 밖은 node:module·계산한 경로의 import·process의 계산한 이름을 쓸 수 있다.
+  const bypasses = `import { createRequire } from "node:module";\nconst name = String(Date.now());\nawait import(name);\ncreateRequire(import.meta.url)(name);\nvoid process[name as keyof typeof process];\n`;
   for (const place of [
     "packages/runtime/src/providers/process.ts",
     "packages/runtime/src/providers/process.test.ts",
