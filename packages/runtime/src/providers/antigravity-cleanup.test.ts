@@ -63,6 +63,10 @@ it("warns with the failure code and goes on when the organization folders cannot
 
   await cleanupAntigravityWorkspaces(root);
 
-  expect(warn).toHaveBeenCalledWith(expect.stringContaining("ENOTDIR"));
+  expect(warn).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /organization folders could not be listed.*\(ENOTDIR\)/
+    )
+  );
   expect(helper.clears).toBe(0);
 });

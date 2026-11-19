@@ -168,7 +168,8 @@ describe("settled", () => {
     const work = new Promise<void>((resolve) => (finish = resolve));
     let done = false;
     const waiting = settled(work).then(() => (done = true));
-    await Promise.resolve();
+    // 작업을 기다리지 않고 몇 차례 뒤 풀리는 구현도 걸러지게 여러 번 양보한다.
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve();
     expect(done).toBe(false);
     finish();
     await waiting;

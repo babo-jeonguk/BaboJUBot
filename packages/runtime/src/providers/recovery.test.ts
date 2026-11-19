@@ -586,5 +586,21 @@ it("warns with the failure code and goes on when the provider record folder cann
 
   await recoverProviderProcesses(root);
 
-  expect(warn).toHaveBeenCalledWith(expect.stringContaining("ENOTDIR"));
+  expect(warn).toHaveBeenCalledWith(
+    expect.stringMatching(/process records could not be listed.*\(ENOTDIR\)/)
+  );
+});
+
+it("warns with the failure code and goes on when one connection's record folder cannot be listed", async () => {
+  const root = await folders.make("babojubot-recovery-");
+  await mkdir(path.join(root, "providers", "codex"), { recursive: true });
+  await writeFile(path.join(root, "providers", "codex", "processes"), "");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+
+  await recoverProviderProcesses(root);
+
+  expect(warn).toHaveBeenCalledWith(
+    expect.stringMatching(/codex process records.*\(ENOTDIR\)/)
+  );
 });
