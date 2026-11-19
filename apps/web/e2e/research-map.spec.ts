@@ -16,34 +16,63 @@ async function openMap(page: Page, path: string) {
   await expect(heading).toBeVisible();
 }
 
-/** 주소의 선택 노드(`?node=`)와 상세 패널의 노드가 서로 다른 가장 긴 구간(ms)을 매 프레임 잰다. 돌려받은 함수가 재기를 멈추고 값을 준다. */
-async function watchSelectionLag(page: Page) {
+/** 한 프레임에서 함께 읽은 선택 상태: 주소의 선택 노드(`?node=`), 상세 패널의 노드, 그 패널 제목·상태 글. */
+type SelectionFrame = {
+  url: string | null;
+  panel: string | null;
+  heading: string | null;
+  status: string | null;
+  /** 이 상태가 이어진 프레임 수. */
+  frames: number;
+};
+
+/**
+ * 선택 상태를 매 프레임 같은 관찰에서 읽어, 바뀔 때마다 한 줄로 남긴다. 돌려받은 함수가 기록을 멈추고 기록을 준다.
+ * 걸린 시간은 재지 않는다(성능 측정의 몫). 기록은 패널이 빈 프레임과 다른 노드를 보인 프레임까지 담는다.
+ */
+async function watchSelection(page: Page) {
   await page.evaluate(() => {
     const w = window as unknown as {
-      selectionLag: { max: number; on: boolean };
+      selection: { frames: SelectionFrame[]; on: boolean };
     };
-    const lag = (w.selectionLag = { max: 0, on: true });
-    let since: number | undefined;
-    const tick = (t: number) => {
-      const wanted = new URL(location.href).searchParams.get("node");
-      const shown = document
-        .querySelector('[data-testid="node-detail"]')
-        ?.getAttribute("data-node-id");
-      if (wanted && shown && wanted !== shown) {
-        since ??= t;
-        lag.max = Math.max(lag.max, t - since);
-      } else since = undefined;
-      if (lag.on) requestAnimationFrame(tick);
+    const record: { frames: SelectionFrame[]; on: boolean } = {
+      frames: [],
+      on: true,
+    };
+    w.selection = record;
+    const tick = () => {
+      const detail = document.querySelector('[data-testid="node-detail"]');
+      const now = {
+        url: new URL(location.href).searchParams.get("node"),
+        panel: detail?.getAttribute("data-node-id") ?? null,
+        heading:
+          detail?.querySelector('[data-testid="node-heading"]')?.textContent ??
+          null,
+        status:
+          detail?.querySelector('[data-testid="node-status"]')?.textContent ??
+          null,
+      };
+      const last = record.frames.at(-1);
+      if (
+        last &&
+        last.url === now.url &&
+        last.panel === now.panel &&
+        last.heading === now.heading &&
+        last.status === now.status
+      )
+        last.frames++;
+      else record.frames.push({ ...now, frames: 1 });
+      if (record.on) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   });
   return () =>
     page.evaluate(() => {
       const w = window as unknown as {
-        selectionLag: { max: number; on: boolean };
+        selection: { frames: SelectionFrame[]; on: boolean };
       };
-      w.selectionLag.on = false;
-      return w.selectionLag.max;
+      w.selection.on = false;
+      return w.selection.frames;
     });
 }
 
@@ -102,15 +131,17 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
   await expect(other.getByTestId("map-node")).toHaveCount(2);
 
   // 하위 노드 추가: 종류 기본값은 부모 다음 단계다.
+  const parentId = (await first.getAttribute("data-node-id"))!;
   await panel.getByRole("button", { name: "＋ 하위 노드" }).click();
   await expect(
     panel.getByRole("radio", { name: "가설·아이디어" })
   ).toBeChecked();
   await panel.getByLabel("새 노드 제목").fill("잡음 구간이 오류의 원인이다");
-  // 추가한 노드가 선택되면 주소와 같은 때에 패널도 그 노드로 바뀐다. 편집 Event 재조회가 몰리는 느린 기기에서도
-  // 이전 노드를 보이며 입력을 받지 않는다(CPU 4배 감속에서 라우터 transition 사용 시 0.8~1.5초, 끈 뒤 0초).
+  // 추가한 노드가 선택되면 패널은 비거나 다른 노드를 보이지 않고 부모에서 그 노드로 바로 넘어가며, 패널의 제목·상태는
+  // 늘 패널이 보이는 노드의 것이다. 편집 Event 재조회가 몰리는 느린 기기(CPU 4배 감속)에서 매 프레임 기록해 본다.
+  // 주소가 먼저 바뀌고 패널이 따라오기까지의 시간은 성능 측정의 몫이라 여기서 재지 않는다.
   // 패널이 새 노드를 보인 뒤에 편집한다. 그 전에 편집하면 부모 노드가 바뀐다.
-  const lag = await watchSelectionLag(page);
+  const selection = await watchSelection(page);
   const cpu = await context.newCDPSession(page);
   await cpu.send("Emulation.setCPUThrottlingRate", { rate: 4 });
   await panel.getByRole("button", { name: "노드 추가" }).click();
@@ -120,12 +151,61 @@ test("the owner sees the primary tree with faint secondary links, edits the map 
     runs
   );
   await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-  expect(await lag()).toBeLessThan(300);
+  const frames = await selection();
+  const childId = new URL(page.url()).searchParams.get("node")!;
+  expect(childId).not.toBe(parentId);
+  // 프레임마다 허용한 상태 중 하나다: 고르기 전(부모), 주소만 새 노드, 패널도 새 노드. 상태는 뒤로 가지 않고 새 노드에서 끝난다.
+  const states = frames.map(({ url, panel: shown, heading, status }) =>
+    url === parentId &&
+    shown === parentId &&
+    heading?.startsWith("연구 문제 정리 1 · ")
+      ? "parent"
+      : url === childId &&
+          shown === parentId &&
+          heading?.startsWith("연구 문제 정리 1 · ")
+        ? "url-first"
+        : url === childId &&
+            shown === childId &&
+            heading?.startsWith("잡음 구간이 오류의 원인이다 · ") &&
+            status === "제안됨"
+          ? "child"
+          : JSON.stringify({ url, panel: shown, heading, status })
+  );
+  const order = ["parent", "url-first", "child"];
+  // 기록이 실제로 있어야 한다. 비어 있으면 아래 확인이 모두 통과한다.
+  expect(states.at(-1)).toBe("child");
+  expect(states.filter((state) => !order.includes(state))).toEqual([]);
+  expect(states).toEqual(
+    [...states].sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  );
+  // 지도에서 고른 노드(`aria-current`)와 패널의 노드·상태가 한 관찰에서 같다.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const card = document.querySelector(
+          '.react-flow__node[aria-current="true"] [data-testid="map-node"]'
+        );
+        const detail = document.querySelector('[data-testid="node-detail"]');
+        return {
+          url: new URL(location.href).searchParams.get("node"),
+          card: card?.getAttribute("data-node-id"),
+          cardStatus: card?.getAttribute("data-status"),
+          panel: detail?.getAttribute("data-node-id"),
+          panelStatus: detail?.querySelector('[data-testid="node-status"]')
+            ?.textContent,
+        };
+      })
+    )
+    .toEqual({
+      url: childId,
+      card: childId,
+      cardStatus: "proposed",
+      panel: childId,
+      panelStatus: "제안됨",
+    });
   await expect(other.getByTestId("map-node")).toHaveCount(3);
-  await expect(panel.getByTestId("node-status")).toHaveText("제안됨");
   await expect(panel).toContainText("연구 문제 정리 1");
   // 주 연결은 노드 아래 정적 레이어에 있고, 고른 노드의 경로는 그 위에 같은 경로로 진하게 겹쳐 그린다.
-  const childId = new URL(page.url()).searchParams.get("node")!;
   const curve = async (selector: string) =>
     ((await page.locator(selector).getAttribute("d")) ?? "")
       .match(/-?[\d.]+/g)!

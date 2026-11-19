@@ -49,18 +49,22 @@ function fakeServer() {
 }
 
 /**
- * Query의 알림(setTimeout 0 일괄 처리)과 Promise 연쇄가 끝나기를 기다린다. 시간이 아니라 이벤트 루프 차례를 세므로 느린
- * 기기의 영향은 없다. 한계(#215): 처리에 차례가 더 걸리게 바뀌면 그 뒤의 "다시 부르지 않았다" 확인이 너무 일찍 볼 수 있다.
+ * 처리가 끝나기를 기다린다: 예약된 타이머(Query의 알림 일괄 처리 등)가 모두 돌고 그 뒤의 Promise 연쇄도 새 타이머를 남기지
+ * 않은 때다. 타이머는 가짜라 시험이 돌리며, 다 돌 때까지 몇 차례가 걸리든 기다린다. 가짜 서버의 응답은 시험이 연다.
  */
 async function flush() {
-  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  await vi.runAllTimersAsync();
 }
 
 let client: QueryClient;
 let cleanups: (() => void)[];
 
 beforeEach(() => {
-  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  vi.useFakeTimers();
+  // 조회 캐시 정리 타이머(기본 5분)는 두지 않는다. 남은 타이머를 다 돌리는 flush가 보는 화면 없는 조회를 지우지 않게 한다.
+  client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+  });
   // 온라인 복귀 때 멈춘 조회를 이어가려면 앱처럼 client가 mount돼 있어야 한다.
   client.mount();
   cleanups = [];
@@ -71,6 +75,7 @@ afterEach(() => {
   client.clear();
   client.unmount();
   onlineManager.setOnline(true);
+  vi.useRealTimers();
 });
 
 /** 화면이 조회를 보고 있는 상태(active observer)를 만든다. 첫 조회가 바로 시작된다. */
