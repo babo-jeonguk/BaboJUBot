@@ -962,3 +962,70 @@ test("code outside tests may share state between calls and mark failures", async
     );
   }
 });
+
+// ---------- 시험 데이터의 타입 단언 (#243) ----------
+
+/** 시험 데이터 단언 규칙의 메시지만. */
+const fixtureMessages = (messages) =>
+  messages.filter(
+    (m) =>
+      m.ruleId === "no-restricted-syntax" &&
+      /CODING_STANDARDS\.md#시험-데이터/.test(m.message)
+  );
+/** TypeScript 시험 코드 자리. 타입 단언은 .mjs에 쓸 수 없다. */
+const typedTestPlaces = testPlaces.filter((place) => place.endsWith(".ts"));
+
+const fixtureAssertions = {
+  // 감사가 찾은 모양: 일부 필드만 넣은 객체를 unknown을 거쳐 실제 타입으로 바꾼다.
+  "a partial object through unknown": `type Item = { kind: "a"; id: string; at: string };\nexport const item = { kind: "a" } as unknown as Item;\n`,
+  "a value through any": `declare const value: string;\nexport const n = value as any as number;\n`,
+  "angle-bracket assertions through unknown": `declare const value: string;\nexport const n = <number>(<unknown>value);\n`,
+  "a mixed as and angle-bracket pair": `declare const value: string;\nexport const n = <number>(value as unknown);\n`,
+  // 객체 리터럴에 바로 붙인 단언은 필드를 빠뜨려도 통과한다.
+  "an object literal as its type": `type Result = { stopReason: string; error: string | null };\nexport const result = { stopReason: "cancelled" } as Result;\n`,
+  "an object literal argument": `type Options = { a: number };\ndeclare function f(options: Options): void;\nf({} as Options);\n`,
+  "an angle-bracket object literal": `type Options = { a: number };\nexport const options = <Options>{};\n`,
+};
+
+for (const [shape, code] of Object.entries(fixtureAssertions))
+  test(`test code may not build data with ${shape}`, async () => {
+    for (const place of typedTestPlaces) {
+      const [message, ...rest] = fixtureMessages(await lint(code, place));
+      assert.ok(message, `${place}: not reported`);
+      assert.deepEqual(rest, [], place);
+      // 메시지가 이유와 대안(satisfies·완전한 값·좁은 매개변수 타입)을 알려 준다.
+      assert.match(message.message, /필드/);
+      assert.match(message.message, /satisfies T/);
+      assert.match(message.message, /fakeDeclarations/);
+      assert.match(message.message, /Pick<T, …>/);
+    }
+  });
+
+test("test code may check data against its type, add properties with one assertion and narrow known values", async () => {
+  const allowed = [
+    // 완전한 값과 그 타입의 확인.
+    `type Result = { stopReason: string; error: string | null };\nexport const a: Result = { stopReason: "cancelled", error: null };\nexport const b = { stopReason: "cancelled", error: null } satisfies Result;\n`,
+    // as const, 객체 리터럴을 unknown·any·never로 바꾸기(T라고 주장하지 않는다).
+    `export const a = { kind: "a" } as const;\nexport const b = { kind: "a" } as unknown;\nexport const c = { kind: "a" } as any;\nexport const d = { color: "neon" } as never;\n`,
+    // 있는 객체에 속성을 덧붙여 읽기, 이미 검사한 값·식의 단언 한 번, 빈 배열의 원소 타입, non-null.
+    `declare const window: { name: string };\nexport const marker = (window as typeof window & { marker: number }).marker;\nexport const parsed = JSON.parse("{}") as { a: number };\nexport const list = [] as string[];\ndeclare const maybe: string | undefined;\nexport const sure = maybe!;\n`,
+    // 단언 하나 안의 unknown(이중 단언이 아님).
+    `declare const value: unknown;\nexport const n = value as number;\n`,
+  ];
+  for (const code of allowed)
+    for (const place of typedTestPlaces)
+      assert.deepEqual(fixtureMessages(await lint(code, place)), [], code);
+});
+
+test("product code may assert types", async () => {
+  // 제품 코드는 시험 데이터 규칙을 받지 않는다(타입 정보로 검사하므로 있는 파일 자리를 빌린다).
+  assert.deepEqual(
+    fixtureMessages(
+      await lint(
+        fixtureAssertions["a partial object through unknown"],
+        "packages/runtime/src/providers/login.ts"
+      )
+    ),
+    []
+  );
+});

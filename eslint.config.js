@@ -46,6 +46,11 @@ const recursiveRemovers = "/^(rm|rmSync)$/";
 const folderRemovers = "/^(rmdir|rmdirSync)$/";
 const removeFolderMessage = `시험의 폴더 지우기는 removeFolder(@babojubot/runtime/remove-folder)로 합니다. 폴더 안에서 돈 프로그램의 종료와 stdio 닫힘을 먼저 기다린 뒤 부르세요. Windows의 일시적인 잠김만 정해진 횟수 다시 시도합니다. ${standards}`;
 
+// 시험 데이터는 그 타입을 만족한다(CODING_STANDARDS.md#시험-데이터). 단언이 타입 검사를 끄는 두 모양을 막는다.
+const assertions = ":matches(TSAsExpression, TSTypeAssertion)";
+const fixtureAlternatives =
+  "실제 값을 흉내 내는 데이터는 완전한 값으로 만들어 `satisfies T`나 타입 표기(`const x: T = …`)로 확인하고, 있는 가짜·builder(`fakeDeclarations`·`createScriptedRuntime` 등)를 재사용하세요. 진입점이 정말 일부 필드만 쓰면 그 매개변수 타입을 그 범위(`Pick<T, …>`)로 좁힙니다. CODING_STANDARDS.md#시험-데이터";
+
 export default defineConfig([
   globalIgnores([
     ".babojubot/**",
@@ -112,6 +117,16 @@ export default defineConfig([
         {
           selector: `ImportDeclaration[source.value=/^(node:)?fs(\\/promises)?$/] > ImportSpecifier[imported.name=${removers}][local.name!=${removers}]`,
           message: `fs의 지우기 함수 이름을 바꿔 가져오면 폴더 지우기 검사를 피합니다. 이름 그대로 가져오세요. ${removeFolderMessage}`,
+        },
+        {
+          // `x as unknown as T`·`x as any as T`(꺾쇠 단언 포함).
+          selector: `${assertions}[expression.type=/^(TSAsExpression|TSTypeAssertion)$/][expression.typeAnnotation.type=/^TS(Unknown|Any)Keyword$/]`,
+          message: `unknown·any를 거친 이중 단언은 TypeScript가 두 타입이 겹치는지 보지 않게 해, T의 필수 필드가 빠지거나 T가 바뀌어도 타입 검사가 통과합니다. ${fixtureAlternatives} 있는 객체에 속성을 덧붙여 읽는 것이면 \`x as typeof x & { … }\` 한 번으로 씁니다.`,
+        },
+        {
+          // `{ … } as T`. `as const`와 unknown·any·never로 바꾸는 단언은 데이터를 T로 주장하지 않으므로 보지 않는다.
+          selector: `${assertions}[expression.type='ObjectExpression']:not([typeAnnotation.type=/^TS(Unknown|Any|Never)Keyword$/]):not([typeAnnotation.typeName.name='const'])`,
+          message: `객체 리터럴에 붙인 \`{ … } as T\`는 필드를 빠뜨리거나 T에 없는 필드를 넣어도 통과합니다. ${fixtureAlternatives}`,
         },
       ],
     },
