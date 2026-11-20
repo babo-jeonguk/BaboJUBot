@@ -31,19 +31,28 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 | `packages/core` | 생애주기·승인 정책·조직 경계 규칙. 웹 프레임워크·DB 의존 없음 | Control Plane |
 | `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구. 웹과 서버가 함께 쓰는 순수 판정(예: 입력창 버튼과 서버 거부의 `ownerActions`), 모든 패키지가 쓰는 오류를 버리는 의도별 함수(`failure.ts`) | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
-| `packages/runtime` | 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter. 지금은 프로세스 띄우기·끄기의 바탕(공용 실행 `@babojubot/runtime/launch`, 짧은 명령 `@babojubot/runtime/bounded-command`)도 함께 담음 | Agent Runtime, Surface |
+| `packages/runtime` | 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter, 실행 시도 기록과 서버 재시작 복구 | Agent Runtime, Surface |
+| `packages/process` | 프로그램 띄우기·끄기의 바탕: 공용 실행(`launchTree`·`runTree`, 띄우기와 그 트리의 끄기 `stop()`을 한 쌍으로), 짧은 명령의 끝 보장(`runCommand`), Windows 묶음 실행기, 그룹 끄기·표식 정리, 시계. 모든 패키지가 쓰는 시험 정리 도움 | 모든 module의 바탕 |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
 
 Memory port의 첫 판은 core interface·db 단순 구현입니다.
 
-**프로세스 바탕의 의존 방향(임시).** 프로세스를 띄우고 그 트리를 끄는 바탕(공용 실행, 짧은 명령의 끝 보장, Windows 묶음 실행기, 그룹·표식 정리)은 지금 `packages/runtime`에 있습니다(#262). 그래서 다른 module이 runtime에서 가져올 수 있는 길을 lint(`product/runtime-import-scope`)가 묶습니다.
+**프로세스 바탕의 의존 방향.** `@babojubot/process`는 `@babojubot/contracts`와 `cross-spawn`에만 기대고, runtime·db·server·개발 스크립트가 그것에 기댑니다(#266). db(Control Plane)는 runtime에 기대지 않습니다. 다른 영역이 가져올 수 있는 입구는 lint(`product/package-import-scope`)가 묶고, 안쪽 파일(상대 경로 포함)은 어느 목록에도 없습니다.
 
-| 가져오는 쪽 | runtime에서 가져올 수 있는 것 |
-|---|---|
-| `packages/db`(시험 제외) | `@babojubot/runtime/bounded-command`(내장 Postgres의 `pg_ctl`)만 |
-| 개발 스크립트(`scripts`·`.agents`, 시험 제외) | 제품 API인 패키지 입구 `@babojubot/runtime`, `/launch`, `/bounded-command`, 아직 옮기지 않은 정리 도움 `/test-cleanup`만 |
+```text
+contracts ← process ← runtime ← server
+                    ↖ db ↙
+```
 
-이 바탕은 #265(시험 정리 도움 정리) 병합 뒤 새 패키지 `@babojubot/process`로 옮깁니다. 범용 시험 도움(`remove-folder`·`test-cleanup` 등)과 표식 정리도 함께 옮기고, runtime·db·server·개발 스크립트가 모두 그 패키지에 기대게 해 runtime의 이 하위 경로들을 없앱니다.
+| 입구 | 담는 것 | 가져오는 곳 |
+|---|---|---|
+| `@babojubot/process` | `launchTree`·`runTree`·`TreeLaunchRefused`·`prepareJobObjectLauncher`, `runCommand`·`boundChild`, `Clock`·`realClock` | 제품 코드·개발 스크립트·시험 |
+| `/remove-folder` | 폴더 지우기(Windows의 일시적인 잠김만 다시 시도) | 제품 코드·개발 스크립트·시험 |
+| `/test-cleanup` | 시험의 프로세스·폴더 정리(`withCleanup`·`killUnlessGone`·`awaitedLater` 등) | 개발 스크립트·시험 |
+| `/lifelines`·`/testing`·`/launcher-setup` | 연결로 본 프로세스 종료, vitest 시험 도움(`testFolders`·`manualClock`·`probeEnvironment` 등), Windows 시험의 묶음 실행기 준비 | 시험 |
+| `/recovery` | 그룹 끄기·표식 정리와 기록한 프로세스의 신원 확인 | runtime의 재시작 복구(`providers/recovery.ts`)와 시험만 |
+
+그 밖의 곳은 띄울 때 받은 `stop()`으로 끕니다. runtime의 패키지 입구는 `@babojubot/runtime`(과 시험의 `/testing`·`/runtime-contract`)뿐이고, db는 시험까지 runtime을 가져오지 않습니다.
 
 ## Seam
 
