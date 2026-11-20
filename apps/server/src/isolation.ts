@@ -221,8 +221,9 @@ export class IsolationGate {
     }
   }
 
-  /** 지난 실행이 남긴 이 제품 폴더의 컨테이너를 지운다. Docker 환경이 없으면 하지 않는다. 지우지 못하면 던진다. */
+  /** 지난 실행이 남긴 이 제품 폴더의 컨테이너를 지운다. Windows는 격리 실행이 컨테이너를 띄우지 않으므로(안전 확인과 같은 규칙) Docker를 부르지 않고, Docker 환경이 없어도 하지 않는다. 지우지 못하면 던진다. */
   async removeOrphans(): Promise<void> {
+    if (this.#windows) return;
     await this.#docker?.removeOrphans();
   }
 
