@@ -417,6 +417,15 @@ test("product code does not assert a type on data it has just read", async () =>
     "another value": `export const read = (value: unknown) => value as string;\n`,
     "another then": `export const read = (work: Promise<unknown>) => work.then((value) => String(value)) as Promise<string>;\n`,
   };
+  // JSON은 글자 이름이 아니라 출처로 본다(#266 리뷰 SPEC-4): 별칭은 같고, 같은 이름의 지역 값은 아니다.
+  const [aliased] = await lint(
+    `type Row = { id: number };\nconst Json = JSON;\nexport const read = (text: string) => Json.parse(text) as Row;\n`,
+    productPlaces[0],
+    parsedRule
+  );
+  assert.ok(aliased, "an alias of JSON not reported");
+  checked["a local JSON"] =
+    `type Row = { id: number };\nconst JSON = { parse: (text: string): Row => ({ id: text.length }) };\nexport const read = (text: string) => JSON.parse(text) as Row;\n`;
   for (const [shape, code] of Object.entries(checked))
     assert.deepEqual(await lint(code, productPlaces[0], parsedRule), [], shape);
   for (const place of testPlaces)

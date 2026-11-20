@@ -1894,3 +1894,54 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
         `${place}: ${code}`
       );
 });
+
+// 시험 규칙은 JS 기본 전역(Promise·Math·console·process 등)과 시험 도구(expect·assert·test)도 글자 이름이 아니라 출처로 본다(#266
+// 리뷰 SPEC-4): 별칭·다른 이름으로 가져와도 같고, 같은 이름의 지역 값으로 가리면 그것이 아니다.
+test("test rules tell globals and test tools by origin, not by name", async () => {
+  const reported = [
+    // 다른 이름으로 가져온 expect로 경과 시간을 단언한다.
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { expect as check } from "vitest";\ncheck(Date.now() - started).toBeLessThan(5000);\n`,
+    ],
+    // 별칭으로 받은 Promise로 잠든다.
+    [
+      "tests/no-fixed-time-wait",
+      `const P = Promise;\nawait new P((resolve) => setTimeout(resolve, 50));\n`,
+    ],
+    // 별칭으로 받은 process의 kill 실패를 넘긴다.
+    [
+      "tests/no-ignored-kill-error",
+      `const proc = process;\ntry {\n  proc.kill(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+    ],
+  ];
+  for (const [rule, code] of reported)
+    for (const place of testPlaces) {
+      const messages = (await lint(code, place)).filter(
+        (m) => m.ruleId === rule
+      );
+      assert.ok(messages.length > 0, `${place}: ${rule} not reported: ${code}`);
+    }
+  const kept = [
+    // 같은 이름의 지역 값은 그 전역·도구가 아니다.
+    [
+      "tests/no-elapsed-time-assertion",
+      `const expect = (value) => ({ toBeLessThan: () => value });\nexpect(Date.now() - started).toBeLessThan(5000);\n`,
+    ],
+    [
+      "tests/no-fixed-time-wait",
+      `const Promise = FakePromise;\nawait new Promise((resolve) => setTimeout(resolve, 50));\n`,
+    ],
+    [
+      "tests/no-ignored-kill-error",
+      `const process = fakeProcess;\ntry {\n  process.kill(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+    ],
+  ];
+  for (const [rule, code] of kept)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        (await lint(code, place)).filter((m) => m.ruleId === rule),
+        [],
+        `${place}: ${code}`
+      );
+});
