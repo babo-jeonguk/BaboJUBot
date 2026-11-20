@@ -2002,6 +2002,15 @@ test("test rules see a tool under every name its module exports it", async () =>
       "tests/no-elapsed-time-assertion",
       `import { test } from "@playwright/test";\nconst { expect: check } = test;\ncheck(Date.now() - started).toBeLessThan(500);\n`,
     ],
+    // Playwright의 expect.extend·expect.configure는 새 expect를 돌려준다(test.extend처럼 따라간다).
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { expect as base } from "@playwright/test";\nconst expect = base.configure({ timeout: 1000 });\nexpect(Date.now() - started).toBeLessThan(500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { expect as base } from "@playwright/test";\nconst check = base.extend({});\ncheck(Date.now() - started).toBeLessThan(500);\n`,
+    ],
     [
       "tests/no-fixed-time-wait",
       `import { promises } from "node:timers";\nawait promises.setTimeout(100);\n`,
@@ -2047,6 +2056,10 @@ test("test rules see a tool under every name its module exports it", async () =>
     [
       "tests/no-elapsed-time-assertion",
       `const ok = record;\nok(Date.now() - started < 500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `const expect = tools.configure({ timeout: 1000 });\nexpect(Date.now() - started).toBeLessThan(500);\n`,
     ],
     [
       "tests/no-fixed-time-wait",
