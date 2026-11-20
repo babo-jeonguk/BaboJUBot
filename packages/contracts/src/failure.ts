@@ -29,8 +29,11 @@ export const isDisconnect = hasErrorCode(
   "EOF"
 );
 
-/** `read`가 promise를 돌려주는지 값의 `then`으로 가른다. 화면도 쓰므로 다른 realm의 promise도 받는다. */
-function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
+/**
+ * `read`·콜백이 promise를 돌려주는지 값의 `then`으로 가른다. 화면도 쓰므로 다른 realm의 promise도 받는다.
+ * 다른 모듈도 동기 콜백이 promise를 돌려줬는지 실행 중에 볼 때 쓴다(`Synchronous`가 타입 검사에서 거부하는 것을 우회한 경우).
+ */
+export function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
   return (
     typeof (value as { then?: unknown } | null | undefined)?.then === "function"
   );
@@ -141,8 +144,8 @@ export function orIfProbeFailed<T, F>(
   });
 }
 
-/** promise를 돌려주는 읽기를 타입 검사에서 거부한다(콜백의 반환 타입이 `never`가 된다). */
-type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
+/** promise를 돌려주는 값을 타입 검사에서 거부한다(동기 콜백·읽기의 반환 타입이 `never`가 된다). 다른 모듈도 동기 콜백 자리를 좁힐 때 쓴다. */
+export type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 
 /** 동기 해석만 받는 `orIfUnreadable`에 promise를 돌려주는 읽기를 넘겼다. 비동기 입출력은 확인 호출이므로 `orIfProbeFailed`로 감싼다. */
 export class AsyncReadError extends TypeError {

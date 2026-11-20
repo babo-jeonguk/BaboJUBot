@@ -13,6 +13,7 @@ import {
   orIfProbeFailed,
   orIfUnreadable,
 } from "@babojubot/contracts";
+import { psField } from "@babojubot/runtime/ps";
 import { candidatePort } from "./ports.ts";
 
 /** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 디스크 확정 기록 없이 띄우고 정지 때 dataDir를 지운다. */
@@ -316,11 +317,15 @@ function stopNow(
     return;
   const left = deadline - Date.now();
   if (left < 1) return;
-  spawnSync(pgCtl, ["kill", "QUIT", String(started.pid)], {
+  const result = spawnSync(pgCtl, ["kill", "QUIT", String(started.pid)], {
     stdio: "ignore",
     timeout: left,
     windowsHide: true,
   });
+  if (result.error || result.status !== 0)
+    console.warn(
+      `[db] could not ask Postgres (pid ${started.pid}) to stop as this process exits (${result.error ? failureCode(result.error) : `exit ${result.status ?? result.signal}`})`
+    );
 }
 
 /** 프로세스 신원을 읽지 못한 원인을 남긴다. 모르는 신원은 같은 프로세스로 보지 않는다(손대지 않는다). */
@@ -353,23 +358,21 @@ export function processIdentity(
     return stat?.split(") ").at(-1)!.split(" ")[19];
   }
   if (timeoutMs < 1) return undefined;
-  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-    encoding: "utf8",
-    env: { ...process.env, LC_ALL: "C" },
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: timeoutMs,
-  });
-  if (result.error) {
-    unknownIdentity(pid)(result.error);
-    return undefined;
-  }
-  const text = result.status === 0 ? result.stdout.trim() : "";
-  return text || undefined;
+  return orIfProbeFailed(
+    () => psField(pid, "lstart", timeoutMs),
+    undefined,
+    unknownIdentity(pid)
+  );
 }
 
-/** pg_ctl status: 0이면 그 dataDir의 잠금 파일에 적힌 프로세스가 살아 있다. */
+/** pg_ctl status: 0이면 그 dataDir의 잠금 파일에 적힌 프로세스가 살아 있고, 3(돌지 않음)·4(dataDir 없음)면 아니다. 그 밖의 끝남은 확인하지 못한 것이므로 던진다. */
 async function isRunning(pgCtl: string, dataDir: string) {
-  return (await run(pgCtl, ["status", "-D", dataDir])) === 0;
+  const code = await run(pgCtl, ["status", "-D", dataDir]);
+  if (code === 0) return true;
+  if (code === 3 || code === 4) return false;
+  throw new Error(
+    `pg_ctl status could not tell whether Postgres runs in ${dataDir} (exit ${code})`
+  );
 }
 
 /** 그 port의 Postgres가 이 dataDir를 쓰는지 접속해 확인한다. 접속하지 못하면 확인하지 못한 것이다. */

@@ -1,29 +1,43 @@
-import { continueAfterFailure } from "@babojubot/contracts";
+import {
+  continueAfterFailure,
+  isThenable,
+  type Synchronous,
+} from "@babojubot/contracts";
+
+/** `RerunLoop`·`RerunLoops`의 콜백이 promise를 돌려줬다. 회차는 콜백의 작업을 기다리지 않으므로, 비동기 일은 콜백 안에서 따로 시작하고 그 실패를 스스로 다룬다. */
+export class AsyncCallbackError extends TypeError {
+  override name = "AsyncCallbackError";
+  constructor(callback: "onError" | "onIdle") {
+    super(
+      `the rerun loop's ${callback} returned a promise; pass a synchronous function and start asynchronous work inside it with its own failure handling`
+    );
+  }
+}
 
 /**
  * 한 번에 한 회차만 도는 확인. 도는 동안 온 요청은 하나로 모아, 그 회차가 끝난 뒤 한 번 더 돈다.
  * 주기 확인(heartbeat·압축·알림)이 이 모양을 쓰고, 키마다 따로 도는 확인(에이전트별 깨우기 처리)은 `RerunLoops`를 쓴다.
  * 새 확인도 이 두 클래스를 쓴다.
  * 회차의 실패(거절·동기 throw)는 `onError`에 넘기고 다음 요청을 계속 받는다. 기다리는 쪽에는 실패를 던지지 않는다.
- * `onError`·`onIdle`이 던져도 회차는 끝나고(기다리는 쪽이 풀리고) 다음 요청을 받는다. `onIdle`이 던진 오류는 `onError`로, `onError`가 던진 오류는 넘겨받던 실패와 함께 서버 로그(console.error)로 보낸다.
+ * `onError`·`onIdle`은 동기 함수다. promise를 돌려주는 콜백은 타입 검사가 거부하고, 실행 중 받으면 `AsyncCallbackError`로 알린다(`onIdle`은 `onError`로, `onError`는 서버 로그로). 던져도 회차는 끝나고(기다리는 쪽이 풀리고) 다음 요청을 받는다. `onIdle`이 던진 오류는 `onError`로, `onError`가 던진 오류는 넘겨받던 실패와 함께 서버 로그(console.error)로 보낸다.
  * 마지막 회차가 끝나 쉬게 되면(재실행 없이 끝나거나 닫혀서 재실행을 버리면) `onIdle`을 부른다. 회차와 그 재실행 사이에는 부르지 않는다.
  */
-export class RerunLoop {
+export class RerunLoop<E = void, I = void> {
   readonly #check: () => Promise<void>;
-  readonly #onError: (error: unknown) => void;
-  readonly #onIdle: () => void;
+  readonly #onError: (error: unknown) => unknown;
+  readonly #onIdle: () => unknown;
   #running: Promise<void> | undefined;
   #again = false;
   #closed = false;
 
   constructor(
     check: () => Promise<void>,
-    onError: (error: unknown) => void,
-    onIdle: () => void = () => {}
+    onError: (error: unknown) => Synchronous<E>,
+    onIdle?: () => Synchronous<I>
   ) {
     this.#check = check;
     this.#onError = onError;
-    this.#onIdle = onIdle;
+    this.#onIdle = onIdle ?? (() => {});
   }
 
   /** 확인을 요청한다. 도는 중이면 끝난 뒤 한 번 더 돌게 한다. 닫힌 뒤에는 아무것도 하지 않는다. */
@@ -44,7 +58,10 @@ export class RerunLoop {
       }
       if (!this.#running)
         continueAfterFailure(
-          () => this.#onIdle(),
+          () => {
+            if (isThenable(this.#onIdle()))
+              this.#fail(new AsyncCallbackError("onIdle"));
+          },
           (error) => this.#fail(error)
         );
       pass.resolve();
@@ -62,7 +79,15 @@ export class RerunLoop {
   /** 실패를 `onError`에 넘긴다. `onError`가 던지면 넘기던 실패와 함께 서버 로그에 남기고, 회차는 그대로 끝낸다. */
   #fail(error: unknown): void {
     continueAfterFailure(
-      () => this.#onError(error),
+      () => {
+        const returned = this.#onError(error);
+        if (isThenable(returned))
+          console.error(
+            "[rerun-loop] onError returned a promise; the failure it was given follows",
+            new AsyncCallbackError("onError"),
+            error
+          );
+      },
       (thrown) =>
         console.error(
           "[rerun-loop] onError threw while handling a failure; the failure and what onError threw follow",
@@ -103,21 +128,21 @@ export class RerunLoop {
  * `onIdle`은 키를 잊은 뒤 그 키로 부른다.
  * 콜백이 던질 때도 `RerunLoop`과 같다: 키를 잊고, `onIdle`이 던진 오류는 그 키로 `onError`에 넘긴다.
  */
-export class RerunLoops {
+export class RerunLoops<E = void, I = void> {
   readonly #loops = new Map<string, RerunLoop>();
   readonly #check: (key: string) => Promise<void>;
-  readonly #onError: (key: string, error: unknown) => void;
-  readonly #onIdle: (key: string) => void;
+  readonly #onError: (key: string, error: unknown) => unknown;
+  readonly #onIdle: (key: string) => unknown;
   #closed = false;
 
   constructor(
     check: (key: string) => Promise<void>,
-    onError: (key: string, error: unknown) => void,
-    onIdle: (key: string) => void = () => {}
+    onError: (key: string, error: unknown) => Synchronous<E>,
+    onIdle?: (key: string) => Synchronous<I>
   ) {
     this.#check = check;
     this.#onError = onError;
-    this.#onIdle = onIdle;
+    this.#onIdle = onIdle ?? (() => {});
   }
 
   /** 그 키의 확인을 요청한다. 그 키가 도는 중이면 끝난 뒤 한 번 더 돌게 한다. 닫힌 뒤에는 아무것도 하지 않는다. */
@@ -130,7 +155,7 @@ export class RerunLoops {
         (error) => this.#onError(key, error),
         () => {
           this.#loops.delete(key);
-          this.#onIdle(key);
+          return this.#onIdle(key);
         }
       );
       this.#loops.set(key, loop);

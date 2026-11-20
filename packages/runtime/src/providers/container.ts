@@ -3,6 +3,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Destination, RunRequest } from "@babojubot/contracts";
+import { failureCode } from "@babojubot/contracts";
 import type { RelayHub, RelayIdentity } from "./relay.ts";
 
 /** 격리 실행의 Docker 설정. 서버가 시작할 때 정한다. */
@@ -482,7 +483,12 @@ export function runDocker(
   args: string[],
   timeoutMs = 30_000,
   signal?: AbortSignal
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  failure?: string;
+}> {
   return new Promise((resolve) => {
     execFile(
       settings.docker[0],
@@ -501,19 +507,39 @@ export function runDocker(
           : typeof error.code === "number"
             ? error.code
             : null;
-        resolve({ code, stdout, stderr });
+        resolve(
+          error && code === null
+            ? { code, stdout, stderr, failure: failureCode(error) }
+            : { code, stdout, stderr }
+        );
       }
     );
   });
+}
+
+/** docker 명령이 어떻게 끝났는지: 종료 코드나 띄우지 못한 이유, 오류 출력의 끝. 진단에만 쓴다. */
+function dockerEnding(result: {
+  code: number | null;
+  stderr: string;
+  failure?: string;
+}) {
+  const reported = result.stderr.trim().slice(-300);
+  return `${result.code === null ? (result.failure ?? "no exit code") : `exit ${result.code}`}${reported ? `: ${reported}` : ""}`;
 }
 
 export async function removeContainer(
   settings: ContainerSettings,
   name: string
 ): Promise<boolean> {
+  let lastFailure:
+    { code: number | null; stderr: string; failure?: string } | undefined;
+  let lastInspected:
+    { code: number | null; stderr: string; failure?: string } | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
-    await runDocker(settings, ["rm", "-f", name]);
+    const removed = await runDocker(settings, ["rm", "-f", name]);
+    if (removed.code !== 0) lastFailure = removed;
     const inspected = await runDocker(settings, ["container", "inspect", name]);
+    lastInspected = inspected;
     if (
       inspected.code !== 0 &&
       /no such (container|object)/i.test(inspected.stderr)
@@ -521,6 +547,11 @@ export async function removeContainer(
       return true;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
+  const reported = lastFailure ?? lastInspected;
+  if (reported)
+    console.warn(
+      `[provider] container ${name} could not be removed (${dockerEnding(reported)})`
+    );
   return false;
 }
 
@@ -643,7 +674,9 @@ export function createDockerEnvironment(
         );
         signal.throwIfAborted();
         if (context.code !== 0)
-          throw new Error("docker context could not be inspected");
+          throw new Error("docker context could not be inspected", {
+            cause: new Error(dockerEnding(context)),
+          });
         host = context.stdout.trim();
       }
       if (!host.startsWith("unix://"))
@@ -655,7 +688,10 @@ export function createDockerEnvironment(
         signal
       );
       signal.throwIfAborted();
-      if (info.code !== 0) throw new Error("docker is not available");
+      if (info.code !== 0)
+        throw new Error("docker is not available", {
+          cause: new Error(dockerEnding(info)),
+        });
       let value: unknown;
       try {
         value = JSON.parse(info.stdout);
@@ -692,7 +728,10 @@ export function createDockerEnvironment(
         signal
       );
       signal.throwIfAborted();
-      if (image.code !== 0) throw new Error("runner image is missing");
+      if (image.code !== 0)
+        throw new Error("runner image is missing", {
+          cause: new Error(dockerEnding(image)),
+        });
       if (image.stdout.trim() !== runnerVersion)
         throw new Error(
           "runner image is outdated; rebuild it with pnpm runner:build"
@@ -732,7 +771,9 @@ export function createDockerEnvironment(
         await relay.close();
         await removeContainer(settings, name);
         if (result.code !== 0)
-          throw new Error("isolation probe container failed");
+          throw new Error("isolation probe container failed", {
+            cause: new Error(dockerEnding(result)),
+          });
         const line = result.stdout
           .split("\n")
           .map((value) => value.trim())
@@ -784,7 +825,10 @@ export function createDockerEnvironment(
         "--filter",
         `label=babojubot.owner=${settings.owner}`,
       ]);
-      if (listed.code !== 0) return;
+      if (listed.code !== 0)
+        throw new Error(
+          `leftover containers could not be listed (${dockerEnding(listed)})`
+        );
       const failed: string[] = [];
       for (const id of listed.stdout
         .split("\n")

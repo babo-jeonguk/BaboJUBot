@@ -34,6 +34,7 @@ import {
   saysLoginProblem,
   commandFor,
   providerEnvironment,
+  probeEnding,
   runProbe,
 } from "./process.ts";
 import type { ContainerSettings } from "./container.ts";
@@ -249,11 +250,12 @@ export function createClaudeProvider(
           const failure = error as { code?: unknown };
           if (failure.code === "ENOENT")
             return { status: "not_ready", reason: "program_missing" };
-          return {
-            status: "not_ready",
-            reason:
-              failure.code === 1 ? "product_login_missing" : "check_failed",
-          };
+          if (failure.code === 1)
+            return { status: "not_ready", reason: "product_login_missing" };
+          console.warn(
+            `[provider] the ${id} readiness check failed (${probeEnding(error)})`
+          );
+          return { status: "not_ready", reason: "check_failed" };
         }
       },
       async precompact({ session, access, execution, organizationId }, signal) {

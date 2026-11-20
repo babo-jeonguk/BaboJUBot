@@ -202,6 +202,12 @@ export function runProbe(
   });
 }
 
+/** `runProbe` 실패의 짧은 이름: 끝남 코드(`exit 2`), 시한·멈춤(`killed`), 띄우지 못한 이유(`ENOENT`). 오류 출력은 담지 않는다(로그인 내용이 섞일 수 있음). */
+export function probeEnding(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "number" ? `exit ${code}` : failureCode(error);
+}
+
 // 시계는 lease.ts도 쓴다. process.ts를 거치면 두 파일이 서로 불러 clock.ts에 둔다.
 export { type Clock, realClock } from "./clock.ts";
 

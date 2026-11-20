@@ -30,6 +30,7 @@ import {
   startupLimitMs,
   commandFor,
   providerEnvironment,
+  probeEnding,
   runProbe,
 } from "./process.ts";
 import type { ContainerSettings } from "./container.ts";
@@ -596,13 +597,12 @@ export function createOpenCodeProvider(options: {
           ? { status: "ready", reason: null }
           : { status: "unknown", reason: "credentials_unverified" };
       } catch (e) {
-        return {
-          status: "not_ready",
-          reason:
-            (e as NodeJS.ErrnoException).code === "ENOENT"
-              ? "program_missing"
-              : "check_failed",
-        };
+        if ((e as NodeJS.ErrnoException).code === "ENOENT")
+          return { status: "not_ready", reason: "program_missing" };
+        console.warn(
+          `[provider] the ${connectionId} readiness check failed (${probeEnding(e)})`
+        );
+        return { status: "not_ready", reason: "check_failed" };
       }
     },
     async steer(message) {

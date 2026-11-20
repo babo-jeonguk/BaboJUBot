@@ -36,6 +36,7 @@ import {
   saysLoginProblem,
   commandFor,
   providerEnvironment,
+  probeEnding,
   runProbe,
 } from "./process.ts";
 import type { ContainerSettings } from "./container.ts";
@@ -366,25 +367,23 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
       // 프로그램이 있는지만 본다. 어떤 판이든 실제로 동작하면 쓴다.
       await probe(["--version"]);
     } catch (error) {
-      return {
-        status: "not_ready",
-        reason:
-          (error as NodeJS.ErrnoException).code === "ENOENT"
-            ? "program_missing"
-            : "check_failed",
-      };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return { status: "not_ready", reason: "program_missing" };
+      console.warn(
+        `[provider] the ${id} readiness check failed (${probeEnding(error)})`
+      );
+      return { status: "not_ready", reason: "check_failed" };
     }
     try {
       await probe(["login", "status"]);
       return { status: "unknown", reason: "credentials_unverified" };
     } catch (error) {
-      return {
-        status: "not_ready",
-        reason:
-          (error as { code?: number }).code === 1
-            ? "product_login_missing"
-            : "check_failed",
-      };
+      if ((error as { code?: number }).code === 1)
+        return { status: "not_ready", reason: "product_login_missing" };
+      console.warn(
+        `[provider] the ${id} readiness check failed (${probeEnding(error)})`
+      );
+      return { status: "not_ready", reason: "check_failed" };
     }
   };
   const active = new Map<
