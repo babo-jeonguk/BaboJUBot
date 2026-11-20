@@ -17,14 +17,14 @@ import {
 } from "./client.ts";
 import { candidatePort } from "./ports.ts";
 import { createTestDatabase } from "./testing.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   awaitedLater,
   folderCleanup,
   killUnlessGone,
   processAlive,
   withCleanup,
-} from "@babojubot/runtime/test-cleanup";
+} from "@babojubot/process/test-cleanup";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 describe("embedded Postgres lifetime", () => {

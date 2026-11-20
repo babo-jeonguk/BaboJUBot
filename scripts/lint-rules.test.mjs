@@ -56,7 +56,7 @@ for (const [shape, code] of Object.entries(folderRemovals))
       // 메시지가 대안과 기준 문서의 절을 알려 준다.
       assert.match(
         message.message,
-        /removeFolder\(@babojubot\/runtime\/remove-folder\)/
+        /removeFolder\(@babojubot\/process\/remove-folder\)/
       );
       assert.match(message.message, /CODING_STANDARDS\.md#정리/);
     }
@@ -86,7 +86,7 @@ test("test code may remove files, use recursive elsewhere and call removeFolder"
     `import { cp, mkdir, readdir } from "node:fs/promises";\nawait mkdir("dir", { recursive: true });\nawait cp("a", "b", { recursive: true });\nawait readdir("dir", { recursive: true });\n`,
     // 이름 그대로 가져오기, fs가 아닌 곳의 같은 이름.
     `import { rm } from "node:fs/promises";\nimport { rm as other } from "./elsewhere.mjs";\nawait rm("file");\nawait other("x");\n`,
-    `import { removeFolder } from "@babojubot/runtime/remove-folder";\nawait removeFolder("dir");\nawait removeFolder("dir", { retries: 10, retryDelayMs: 200 });\n`,
+    `import { removeFolder } from "@babojubot/process/remove-folder";\nawait removeFolder("dir");\nawait removeFolder("dir", { retries: 10, retryDelayMs: 200 });\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
@@ -528,7 +528,7 @@ test("test code may release without waiting in finally and register cleanups whe
     `try {\n  check();\n} finally {\n  try {\n    process.kill(pid, "SIGKILL");\n  } catch (error) {\n    if (error.code !== "ESRCH") failures.push(error);\n  }\n}\n`,
     // 자원을 잡은 직후 러너나 withCleanup에 정리를 등록한다.
     `import { onTestFinished } from "vitest";\nconst server = await start();\nonTestFinished(async () => {\n  await server.close();\n  await removeFolder(dir);\n});\n`,
-    `import { withCleanup } from "@babojubot/runtime/test-cleanup";\nawait withCleanup(async (defer) => {\n  const child = spawn();\n  defer(() => killHard(child));\n  await check(child);\n});\n`,
+    `import { withCleanup } from "@babojubot/process/test-cleanup";\nawait withCleanup(async (defer) => {\n  const child = spawn();\n  defer(() => killHard(child));\n  await check(child);\n});\n`,
     // finally 밖의 끄기·지우기와 Promise의 finally 메서드.
     `process.kill(pid, "SIGKILL");\nfs.rmSync("file", { force: true });\nawait work().finally(() => clearTimeout(timer));\n`,
   ];
@@ -747,7 +747,7 @@ test("test code may not ignore the error of process.kill", async () => {
 test("test code may pass over a finished process by its error code", async () => {
   const allowed = [
     `function alive(pid) {\n  try {\n    process.kill(pid, 0);\n    return true;\n  } catch (error) {\n    if (error.code === "ESRCH") return false;\n    throw error;\n  }\n}\n`,
-    `import { killUnlessGone, processAlive } from "@babojubot/runtime/test-cleanup";\nif (processAlive(pid)) killUnlessGone(pid);\n`,
+    `import { killUnlessGone, processAlive } from "@babojubot/process/test-cleanup";\nif (processAlive(pid)) killUnlessGone(pid);\n`,
     `expect(() => process.kill(pid, 0)).not.toThrow();\n`,
     // 끄기가 아닌 조회의 실패는 이 규칙이 보지 않는다.
     `try {\n  parse(text);\n} catch {\n  return undefined;\n}\n`,
@@ -1207,7 +1207,7 @@ test("tests may await, return, collect or later await a promise and hand failure
     // 먼저 시작해 두고 뒤에서 기다린다.
     `const later = work();\nawait reply;\nawait later;\n`,
     // 나중에 기다릴 Promise의 표시.
-    `import { awaitedLater } from "@babojubot/runtime/test-cleanup";\nconst exited = awaitedLater(work());\nawait exited;\n`,
+    `import { awaitedLater } from "@babojubot/process/test-cleanup";\nconst exited = awaitedLater(work());\nawait exited;\n`,
     // 실패를 받는 처리기가 있다.
     `reply.then(\n  (value) => value,\n  (error: unknown) => {\n    throw error;\n  }\n);\n`,
     // 가짜 서버의 실패는 요청한 쪽에 응답으로 돌려준다.
@@ -1581,7 +1581,7 @@ test("JS tests may not leave a promise unawaited either, while node:test's own t
 /** awaitedLater 규칙의 메시지만. */
 const laterMessages = (messages) =>
   messages.filter((m) => m.ruleId === "tests/no-unawaited-later");
-const laterImport = `import { awaitedLater } from "@babojubot/runtime/test-cleanup";\n`;
+const laterImport = `import { awaitedLater } from "@babojubot/process/test-cleanup";\n`;
 const laterHead = `const p = Promise.resolve(1);\nconst use = (value) => value;\nconst child = {};\n`;
 
 test("a promise marked with awaitedLater must be stored and awaited later in the same file", async () => {
@@ -1636,7 +1636,7 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
     ],
     // 출처로 판정한다: 다른 이름, 상대 경로, 이름공간, 다시 받은 const.
     "an aliased import": [
-      `import { awaitedLater as later } from "@babojubot/runtime/test-cleanup";\n${laterHead}later(p);\n`,
+      `import { awaitedLater as later } from "@babojubot/process/test-cleanup";\n${laterHead}later(p);\n`,
       /담지 않습니다/,
     ],
     "a relative import": [
@@ -1644,7 +1644,7 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       /기다리지 않습니다/,
     ],
     "a namespace import": [
-      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}cleanup.awaitedLater(p);\n`,
+      `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}cleanup.awaitedLater(p);\n`,
       /담지 않습니다/,
     ],
     "a const alias": [

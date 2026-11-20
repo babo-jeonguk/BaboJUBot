@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { afterAll, beforeEach, vi } from "vitest";
 
 // 테스트 파일마다 임시 제품 폴더를 쓴다. 데이터 폴더를 넘기지 않은 서버와 자식 서버(main.ts)도 BABOJUBOT_HOME을 따르므로

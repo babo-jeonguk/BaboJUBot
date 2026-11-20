@@ -19,8 +19,8 @@ import {
 } from "@babojubot/contracts";
 import { scriptedAgents, serverHelpers, calls, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 let t: TestServer | undefined;
 let root = "";
 afterEach(async () => {

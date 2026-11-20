@@ -10,31 +10,24 @@ const stop = vi.hoisted(() => ({
   leaseFails: false,
   leaseLeft: false,
 }));
-vi.mock("./recovery.ts", async (original) => {
-  const real = await original<typeof import("./recovery.ts")>();
-  return {
-    ...real,
-    stopProcessGroup: async (group: number) => {
+// 끄기의 실패는 공용 실행(@babojubot/process의 launchTree)이 돌려준 트리의 끄기에서 대역으로 만든다. 실제로 끈 뒤에 그 실패로
+// 답한다. 그룹 끄기·표식 정리 각각의 실패가 끄기의 실패가 되는지는 @babojubot/process의 launch-stop.test.ts가 본다.
+vi.mock("@babojubot/process", async (original) => {
+  const real = await original<typeof import("@babojubot/process")>();
+  const launchTree = ((...args: Parameters<typeof real.launchTree>) => {
+    const tree = real.launchTree(...args);
+    const stopTree = tree.stop.bind(tree);
+    tree.stop = async (options) => {
+      await stopTree(options);
       if (stop.fails) throw new Error("Process group did not stop");
-      await real.stopProcessGroup(group);
-    },
-  };
-});
-
-vi.mock("./lease.ts", async (original) => {
-  const real = await original<typeof import("./lease.ts")>();
-  return {
-    ...real,
-    stopLeaseHolders: async (
-      lease: string,
-      options?: Parameters<typeof real.stopLeaseHolders>[1]
-    ) => {
       if (stop.leaseFails) throw new Error("ps failed");
       // 끝까지 꺼지지 않은 프로그램이 남은 결과다.
-      if (stop.leaseLeft) return { stopped: [], left: [2 ** 22 + 1] };
-      return real.stopLeaseHolders(lease, options);
-    },
-  };
+      if (stop.leaseLeft)
+        throw new Error("Programs with the run marker did not stop");
+    };
+    return tree;
+  }) as typeof real.launchTree;
+  return { ...real, launchTree };
 });
 
 const folders = testFolders();

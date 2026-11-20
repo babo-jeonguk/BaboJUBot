@@ -2,7 +2,7 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { request } from "./test-support.ts";
-import { exited } from "./process-test-support.ts";
+import { exited } from "@babojubot/process/testing";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { testFolders } from "./test-folders.ts";
 

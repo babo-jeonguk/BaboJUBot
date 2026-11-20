@@ -29,11 +29,11 @@ import {
   createDockerEnvironment,
   type ContainerSettings,
 } from "./container.ts";
-import { attachedRelayHub, manualClock, request } from "./test-support.ts";
+import { killAndWait, manualClock } from "@babojubot/process/testing";
+import { attachedRelayHub, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
-import { killAndWait } from "./process-test-support.ts";
 
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.

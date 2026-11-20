@@ -8,8 +8,8 @@ import type {
   JSONReportSuite,
   JSONReportTestResult,
 } from "@playwright/test/reporter";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import { runPlaywright } from "./playwright-run.ts";
 import type { Entry } from "./shared-settings-run/fixture.ts";
 import { readSettings } from "./shared-settings.ts";

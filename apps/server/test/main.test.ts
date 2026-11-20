@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
@@ -16,7 +16,7 @@ import {
   killUnlessGone,
   processAlive,
   withCleanup,
-} from "@babojubot/runtime/test-cleanup";
+} from "@babojubot/process/test-cleanup";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 /** DB 닫기를 실패시키는 preload(`startMain`의 `preload`). */

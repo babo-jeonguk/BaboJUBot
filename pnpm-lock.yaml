@@ -13,6 +13,9 @@ importers:
 
   .:
     devDependencies:
+      '@babojubot/process':
+        specifier: workspace:*
+        version: link:packages/process
       '@babojubot/runtime':
         specifier: workspace:*
         version: link:packages/runtime
@@ -64,6 +67,9 @@ importers:
       '@babojubot/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@babojubot/process':
+        specifier: workspace:*
+        version: link:../../packages/process
       '@babojubot/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -132,9 +138,9 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
-      '@babojubot/runtime':
+      '@babojubot/process':
         specifier: workspace:*
-        version: link:../../packages/runtime
+        version: link:../../packages/process
       '@playwright/test':
         specifier: 1.65.1
         version: 1.65.1
@@ -188,9 +194,9 @@ importers:
       '@babojubot/core':
         specifier: workspace:*
         version: link:../core
-      '@babojubot/runtime':
+      '@babojubot/process':
         specifier: workspace:*
-        version: link:../runtime
+        version: link:../process
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(@types/pg@8.23.1)(pg@8.23.1)
@@ -211,11 +217,30 @@ importers:
         specifier: 5.0.5
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
+  packages/process:
+    dependencies:
+      '@babojubot/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      cross-spawn:
+        specifier: 7.0.6
+        version: 7.0.6
+    devDependencies:
+      '@types/cross-spawn':
+        specifier: 6.0.6
+        version: 6.0.6
+      vitest:
+        specifier: 5.0.5
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   packages/runtime:
     dependencies:
       '@babojubot/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@babojubot/process':
+        specifier: workspace:*
+        version: link:../process
       cross-spawn:
         specifier: 7.0.6
         version: 7.0.6

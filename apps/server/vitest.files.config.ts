@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 파일 읽기 프로세스도 같다.
-    setupFiles: ["test/launcher-setup.ts"],
+    setupFiles: ["@babojubot/process/launcher-setup"],
     include: [
       "test/workspace.test.ts",
       "test/workspace-race.test.ts",

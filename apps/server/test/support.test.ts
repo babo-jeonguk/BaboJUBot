@@ -1,7 +1,7 @@
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ProviderConnection } from "@babojubot/contracts";
 import { createFakeProviders } from "@babojubot/runtime";

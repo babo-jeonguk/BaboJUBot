@@ -1,7 +1,7 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { vi } from "vitest";
-import { killUnlessGone, processAlive } from "../test-cleanup.ts";
+import { killUnlessGone, processAlive } from "./test-cleanup.ts";
 import { attemptAll } from "@babojubot/contracts";
 
 /**

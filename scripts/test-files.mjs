@@ -10,8 +10,9 @@ export const testFiles = [
   "apps/web/e2e/**",
   "apps/web/test/**",
   "apps/server/test/**",
-  "packages/runtime/src/{testing,test-cleanup}.ts",
+  "packages/runtime/src/testing.ts",
   "packages/runtime/src/providers/{test-support,test-folders,*-support}.ts",
+  "packages/process/src/{testing,test-cleanup,test-support,test-folders,*-support}.ts",
   "packages/db/src/{testing,test-cluster}.ts",
 ];
 

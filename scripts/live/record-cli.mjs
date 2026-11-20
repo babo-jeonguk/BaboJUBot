@@ -4,10 +4,7 @@ import { createWriteStream } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  launchTree,
-  prepareJobObjectLauncher,
-} from "@babojubot/runtime/launch";
+import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
 import {
   failureCode,
   orIfUnreadable,

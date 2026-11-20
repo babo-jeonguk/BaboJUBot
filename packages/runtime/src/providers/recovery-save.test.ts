@@ -29,8 +29,8 @@ const query = vi.hoisted(() => ({
   hold: false,
   answer: undefined as (() => Promise<void>) | undefined,
 }));
-vi.mock("./bounded-command.ts", async (original) => {
-  const actual = await original<typeof import("./bounded-command.ts")>();
+vi.mock("@babojubot/process", async (original) => {
+  const actual = await original<typeof import("@babojubot/process")>();
   return {
     ...actual,
     runCommand: (...args: Parameters<typeof actual.runCommand>) => {

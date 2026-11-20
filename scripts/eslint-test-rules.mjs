@@ -66,7 +66,7 @@ const noElapsedTimeAssertion = {
     schema: [],
     messages: {
       elapsed:
-        "시험이 실제로 잰 경과 시간을 단언합니다. 결과가 실행기 속도에 달려 느린 실행기에서 깨집니다. 시한·타이머 순서는 가짜 시계(packages/runtime/src/providers/test-support.ts `manualClock`)를 주입해 시험이 정하고, 그 밖에는 걸린 시간 대신 순서·상태(처리 끝 신호, 시한을 적은 진단, 시험 시한)를 단언하세요. CODING_STANDARDS.md#시간",
+        "시험이 실제로 잰 경과 시간을 단언합니다. 결과가 실행기 속도에 달려 느린 실행기에서 깨집니다. 시한·타이머 순서는 가짜 시계(@babojubot/process/testing의 `manualClock`)를 주입해 시험이 정하고, 그 밖에는 걸린 시간 대신 순서·상태(처리 끝 신호, 시한을 적은 진단, 시험 시한)를 단언하세요. CODING_STANDARDS.md#시간",
     },
   },
   create(context) {
@@ -902,9 +902,9 @@ const noCleanupInFinally = {
     schema: [],
     messages: {
       awaited:
-        "finally에서 정리를 기다립니다. 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛰어 프로그램·폴더가 남습니다. 자원을 잡은 직후 정리를 등록하세요: Vitest는 onTestFinished, 시험 중간·node:test·Playwright는 withCleanup(@babojubot/runtime/test-cleanup)의 defer. 등록한 정리는 역순으로 모두 돌고 그 실패는 원래 실패와 함께 보고됩니다. 앞 단계가 끝나야 하는 정리(프로그램을 끈 뒤 그 폴더 지우기)는 한 등록 안에 차례로 두고, 서로 무관한 단계는 attemptAll로 모두 시도하세요. CODING_STANDARDS.md#정리",
+        "finally에서 정리를 기다립니다. 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛰어 프로그램·폴더가 남습니다. 자원을 잡은 직후 정리를 등록하세요: Vitest는 onTestFinished, 시험 중간·node:test·Playwright는 withCleanup(@babojubot/process/test-cleanup)의 defer. 등록한 정리는 역순으로 모두 돌고 그 실패는 원래 실패와 함께 보고됩니다. 앞 단계가 끝나야 하는 정리(프로그램을 끈 뒤 그 폴더 지우기)는 한 등록 안에 차례로 두고, 서로 무관한 단계는 attemptAll로 모두 시도하세요. CODING_STANDARDS.md#정리",
       thrown:
-        "finally에서 던질 수 있는 동기 정리(process.kill·*Sync)를 부릅니다. 대상이 이미 끝났거나 지우기가 실패하면 그 오류가 시험의 원래 실패를 가리고 뒤 정리를 건너뜁니다. 이미 사라진 대상만 넘어가는 끄기 함수(killAndWait 등)를 쓰고, 정리는 자원을 잡은 직후 onTestFinished나 withCleanup(@babojubot/runtime/test-cleanup)의 defer로 등록하세요. CODING_STANDARDS.md#정리",
+        "finally에서 던질 수 있는 동기 정리(process.kill·*Sync)를 부릅니다. 대상이 이미 끝났거나 지우기가 실패하면 그 오류가 시험의 원래 실패를 가리고 뒤 정리를 건너뜁니다. 이미 사라진 대상만 넘어가는 끄기 함수(killAndWait 등)를 쓰고, 정리는 자원을 잡은 직후 onTestFinished나 withCleanup(@babojubot/process/test-cleanup)의 defer로 등록하세요. CODING_STANDARDS.md#정리",
     },
   },
   create(context) {
@@ -1511,9 +1511,9 @@ const noIgnoredKillError = {
     schema: [],
     messages: {
       probe:
-        '신호 0의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM)·I/O 오류까지 "프로세스가 끝났다"로 숨어, 남은 프로그램의 폴더를 지우거나 멈춤 확인이 일찍 통과합니다. processAlive(@babojubot/runtime/test-cleanup)를 쓰세요. "프로세스 없음"(ESRCH)만 끝난 것으로 보고 다른 실패는 pid·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
+        '신호 0의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM)·I/O 오류까지 "프로세스가 끝났다"로 숨어, 남은 프로그램의 폴더를 지우거나 멈춤 확인이 일찍 통과합니다. processAlive(@babojubot/process/test-cleanup)를 쓰세요. "프로세스 없음"(ESRCH)만 끝난 것으로 보고 다른 실패는 pid·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
       signal:
-        '끄는 신호의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM) 같은 실패까지 "이미 끝났다"로 숨어 프로그램이 남습니다. killUnlessGone(@babojubot/runtime/test-cleanup)을 쓰세요. 이미 끝난 대상(ESRCH)만 넘어가고 다른 실패는 pid·신호·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
+        '끄는 신호의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM) 같은 실패까지 "이미 끝났다"로 숨어 프로그램이 남습니다. killUnlessGone(@babojubot/process/test-cleanup)을 쓰세요. 이미 끝난 대상(ESRCH)만 넘어가고 다른 실패는 pid·신호·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
     },
   },
   create(context) {
@@ -2173,7 +2173,7 @@ const noDroppedRejection = {
     schema: [],
     messages: {
       dropped:
-        "기다리지 않는 Promise의 거절을 빈 처리기로 버립니다. 그 작업이 실패해도 시험이 통과하고 실패가 어디에도 남지 않습니다. 결과를 기다려 단언하세요. 시험이 나중에 기다리는 Promise가 그 전에 거절될 수 있으면 awaitedLater(@babojubot/runtime/test-cleanup)로 감싸 두고 그 Promise를 기다립니다. CODING_STANDARDS.md#단언",
+        "기다리지 않는 Promise의 거절을 빈 처리기로 버립니다. 그 작업이 실패해도 시험이 통과하고 실패가 어디에도 남지 않습니다. 결과를 기다려 단언하세요. 시험이 나중에 기다리는 Promise가 그 전에 거절될 수 있으면 awaitedLater(@babojubot/process/test-cleanup)로 감싸 두고 그 Promise를 기다립니다. CODING_STANDARDS.md#단언",
     },
   },
   create(context) {
@@ -2198,7 +2198,7 @@ const noDroppedRejection = {
 };
 
 const cleanupModule =
-  /^(@babojubot\/runtime\/test-cleanup|(\.{1,2}\/)+(.*\/)?test-cleanup(\.ts)?)$/;
+  /^(@babojubot\/process\/test-cleanup|(\.{1,2}\/)+(.*\/)?test-cleanup(\.ts)?)$/;
 /**
  * 속성의 경로: 루트 식별자(또는 `this`)의 이름과 속성 이름들(`child.exited`, `this.server.closed`). 루트가 식별자·`this`가
  * 아니거나(호출 결과 등) 계산된 이름이 끼면 따라갈 수 없어 undefined다. 같은 객체를 다른 이름으로 부르면 다른 경로다.
@@ -2254,7 +2254,7 @@ function awaitedValue(node) {
 /**
  * `awaitedLater`(먼저 만들고 뒤에서 기다리는 Promise의 표시)는 빈 처리기를 붙이므로, 표시한 Promise를 정말 뒤에서 기다려야 한다
  * (CODING_STANDARDS.md#단언). 기다리지 않으면 `tests/no-dropped-rejection`이 막는 거절 버리기가 이 함수 안으로 옮겨진 것과 같다.
- * 출처로 판정한다: `@babojubot/runtime/test-cleanup`·상대 경로 `test-cleanup`에서 가져온 `awaitedLater`(다른 이름 포함), 이름공간
+ * 출처로 판정한다: `@babojubot/process/test-cleanup`·상대 경로 `test-cleanup`에서 가져온 `awaitedLater`(다른 이름 포함), 이름공간
  * 가져오기의 `x.awaitedLater`, 그것을 받은 `const`. 짚는 모양:
  * - 부른 결과를 `const` 변수나 객체 속성(`child.exited = …`)에 바로 담지 않는 것(`awaitedLater(p);`, `await awaitedLater(p)`, 인자로 넘기기).
  * - 담은 `const`를 같은 파일 어디서도 기다리지 않는 것. 기다림은 `await`·`return`, 그 값을 넘긴 배열·호출·메서드 끝의 `await`·`return`이다

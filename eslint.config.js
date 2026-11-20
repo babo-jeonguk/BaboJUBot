@@ -102,7 +102,7 @@ const standards = "CODING_STANDARDS.md#정리";
 const removers = "/^(rm|rmSync|rmdir|rmdirSync)$/";
 const recursiveRemovers = "/^(rm|rmSync)$/";
 const folderRemovers = "/^(rmdir|rmdirSync)$/";
-const removeFolderMessage = `시험의 폴더 지우기는 removeFolder(@babojubot/runtime/remove-folder)로 합니다. 폴더 안에서 돈 프로그램의 종료와 stdio 닫힘을 먼저 기다린 뒤 부르세요. Windows의 일시적인 잠김만 정해진 횟수 다시 시도합니다. ${standards}`;
+const removeFolderMessage = `시험의 폴더 지우기는 removeFolder(@babojubot/process/remove-folder)로 합니다. 폴더 안에서 돈 프로그램의 종료와 stdio 닫힘을 먼저 기다린 뒤 부르세요. Windows의 일시적인 잠김만 정해진 횟수 다시 시도합니다. ${standards}`;
 
 // 시험 데이터는 그 타입을 만족한다(CODING_STANDARDS.md#시험-데이터). 단언이 타입 검사를 끄는 두 모양을 막는다.
 const assertions = ":matches(TSAsExpression, TSTypeAssertion)";

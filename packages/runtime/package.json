@@ -6,12 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./testing": "./src/testing.ts",
-    "./runtime-contract": "./src/runtime-contract.ts",
-    "./remove-folder": "./src/remove-folder.ts",
-    "./launch": "./src/providers/launch.ts",
-    "./bounded-command": "./src/providers/bounded-command.ts",
-    "./lifelines": "./src/providers/lifeline-support.ts",
-    "./test-cleanup": "./src/test-cleanup.ts"
+    "./runtime-contract": "./src/runtime-contract.ts"
   },
   "scripts": {
     "test": "vitest run && vitest run --config vitest.alone.config.ts",
@@ -21,6 +16,7 @@
   },
   "dependencies": {
     "@babojubot/contracts": "workspace:*",
+    "@babojubot/process": "workspace:*",
     "cross-spawn": "7.0.6",
     "zod": "4.6.7"
   },

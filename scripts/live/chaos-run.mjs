@@ -11,7 +11,7 @@ import {
   failureCode,
   settled,
 } from "../../packages/contracts/src/failure.ts";
-import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
+import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
 import {
   createLedger,
   limits,

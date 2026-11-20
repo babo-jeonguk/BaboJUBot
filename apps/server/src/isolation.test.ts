@@ -13,8 +13,8 @@ import {
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
 import { IsolationGate } from "./isolation.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { folderCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { folderCleanup } from "@babojubot/process/test-cleanup";
 
 /** 링크 만들기를 거절하는 오류 코드(링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
 let refusal: string | null = null;

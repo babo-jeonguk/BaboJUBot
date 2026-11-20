@@ -13,10 +13,7 @@ import {
   hasErrorCode,
   orIfMissing,
 } from "../../packages/contracts/src/failure.ts";
-import {
-  launchTree,
-  prepareJobObjectLauncher,
-} from "@babojubot/runtime/launch";
+import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
 import { sharedVariables } from "@babojubot/runtime";
 

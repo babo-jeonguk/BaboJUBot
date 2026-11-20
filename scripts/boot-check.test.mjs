@@ -14,14 +14,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import {
   folderCleanup,
   killUnlessGone,
   processAlive as isAlive,
   withCleanup,
-} from "@babojubot/runtime/test-cleanup";
+} from "@babojubot/process/test-cleanup";
 import {
   attemptAll,
   attemptEach,

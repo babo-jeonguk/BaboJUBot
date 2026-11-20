@@ -8,10 +8,14 @@ import {
   recordProcess,
   recoverProviderProcesses,
 } from "./recovery.ts";
-import { leaseVariable, processStartTicks } from "./lease.ts";
-import { readyLine } from "./process-test-support.ts";
+import { leaseVariable, processStartTicks } from "@babojubot/process/recovery";
+import { readyLine } from "@babojubot/process/testing";
 import { testFolders } from "./test-folders.ts";
-import { killUnlessGone, processAlive, withCleanup } from "../test-cleanup.ts";
+import {
+  killUnlessGone,
+  processAlive,
+  withCleanup,
+} from "@babojubot/process/test-cleanup";
 import { attemptAll } from "@babojubot/contracts";
 
 // Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
@@ -23,8 +27,8 @@ const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
 }));
-vi.mock("./lease.ts", async (original) => {
-  const real = await original<typeof import("./lease.ts")>();
+vi.mock("@babojubot/process/recovery", async (original) => {
+  const real = await original<typeof import("@babojubot/process/recovery")>();
   return {
     ...real,
     stopLeaseHolders: async (

@@ -1,5 +1,5 @@
 // The attempts of one worker call and how it ends, for run-worker.mjs. Launching opencode is passed in as a function that
-// returns the launched tree with its own stop (the product's shared launch, @babojubot/runtime/launch), so the rules here are
+// returns the launched tree with its own stop (the product's shared launch, @babojubot/process), so the rules here are
 // tested with stand-ins on every system (worker-run.test.mjs).
 //
 // - A call makes at most two attempts: an attempt that never starts a session is launched once more.

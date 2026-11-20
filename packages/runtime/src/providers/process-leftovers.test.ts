@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { startProcess } from "./process.ts";
-import { exited, killAndWait, untilExited } from "./process-test-support.ts";
+import { exited, killAndWait, untilExited } from "@babojubot/process/testing";
 import { attemptAll } from "@babojubot/contracts";
 
 // Claude Code·Codex·Antigravity는 셸 명령을 새 세션에 띄운다. 프로그램이 어떻게 끝나든, 실행 시도의 정리가 끝나면(`done`)

@@ -26,7 +26,7 @@ import {
   type ContainerSettings,
 } from "./container.ts";
 import { createRelayHub } from "./relay.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 // 격리 실행의 폴더 권한(#149). 서버가 정한 신원(조직·에이전트)에 맞는 자리만, 링크를 따라가지 않고 확인한 실제 폴더로 넣는다.
 // 맞지 않으면 프로바이더를 띄우기 전에 거부한다. 거부 이유에는 이 컴퓨터의 경로를 넣지 않는다.

@@ -4,7 +4,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 /**
  * `prefix`로 임시 폴더를 만들고 `openDatabase()`로 DB를, `startServer({ database, workspace })`로 서버를 연 뒤 `check`를 돌린다.

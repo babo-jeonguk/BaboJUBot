@@ -1,0 +1,29 @@
+{
+  "name": "@babojubot/process",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./recovery": "./src/recovery.ts",
+    "./remove-folder": "./src/remove-folder.ts",
+    "./test-cleanup": "./src/test-cleanup.ts",
+    "./lifelines": "./src/lifeline-support.ts",
+    "./testing": "./src/testing.ts",
+    "./launcher-setup": "./src/launcher-setup-support.ts"
+  },
+  "scripts": {
+    "test": "vitest run && vitest run --config vitest.alone.config.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:src": "tsc -p tsconfig.src.json",
+    "typecheck:test": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@babojubot/contracts": "workspace:*",
+    "cross-spawn": "7.0.6"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
+    "vitest": "5.0.5"
+  }
+}

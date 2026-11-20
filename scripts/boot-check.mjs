@@ -9,11 +9,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import {
-  launchTree,
-  prepareJobObjectLauncher,
-} from "@babojubot/runtime/launch";
-import { processAlive } from "@babojubot/runtime/test-cleanup";
+import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
+import { processAlive } from "@babojubot/process/test-cleanup";
 import {
   attemptAll,
   continueAfterFailure,

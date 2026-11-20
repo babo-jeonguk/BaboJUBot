@@ -6,7 +6,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 시험 파일마다 준비한다.
-    setupFiles: ["src/providers/launcher-setup-support.ts"],
+    setupFiles: ["@babojubot/process/launcher-setup"],
     hookTimeout: 60_000,
     testTimeout: 60_000,
     exclude: [...configDefaults.exclude, "**/*.alone.test.ts"],

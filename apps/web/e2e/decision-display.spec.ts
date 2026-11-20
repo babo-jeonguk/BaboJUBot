@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { createSettledOrganization } from "./support/organization.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // 승인 요청·결과 제출의 결정 영역(#144): 이 화면의 성공만 결정 기록으로 포커스를 옮기고, 다른 화면의 결정(Event)과
 // 이미 결정됐다는 거절(409), 다른 항목으로 옮긴 뒤의 늦은 응답은 지금 포커스를 그대로 둔다.

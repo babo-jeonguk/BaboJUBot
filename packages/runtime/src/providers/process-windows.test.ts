@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { TreeLaunchRefused } from "./launch.ts";
+import {
+  prepareJobObjectLauncher,
+  TreeLaunchRefused,
+} from "@babojubot/process";
 import { startProcess } from "./process.ts";
-import { prepareJobObjectLauncher } from "./job-object.ts";
-import { removeFolder } from "../remove-folder.ts";
-import { openLifelines, type Lifelines } from "./lifeline-support.ts";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { attemptAll } from "@babojubot/contracts";
 
 // Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
@@ -344,7 +346,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
     const url = (file: string) => new URL(`./${file}`, import.meta.url).href;
     await writeFile(
       path.join(root, "server.mjs"),
-      `import { prepareJobObjectLauncher } from ${JSON.stringify(url("job-object.ts"))};
+      `import { prepareJobObjectLauncher } from ${JSON.stringify(import.meta.resolve("@babojubot/process"))};
        import { startProcess } from ${JSON.stringify(url("process.ts"))};
        await prepareJobObjectLauncher(${JSON.stringify(dataDir)});
        const program = ${JSON.stringify(

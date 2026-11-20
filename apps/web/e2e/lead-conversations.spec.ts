@@ -8,7 +8,7 @@ import {
 } from "./support/organization.ts";
 import { openWithLiveEvents, pageLoad } from "./support/live-events.ts";
 import { expectNoHorizontalOverflow, settledBoxes } from "./support/layout.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 const uuidPath = /\/chat\/[0-9a-f-]{36}$/;
 
