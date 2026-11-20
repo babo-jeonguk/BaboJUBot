@@ -175,7 +175,7 @@ BABOJUBOT_HOME="$product_root" node scripts/provider-smoke.mjs claude --allow-li
 # BABOJUBOT_CODEX_MODE=exec 선택; Codex·Antigravity는 BABOJUBOT_SMOKE_MODEL=<가장 저렴한 모델 ID> 지정
 ```
 
-이 시험은 단건 연결 확인이다. 백그라운드 명령(45초)·세션 재개·끼워 넣기·취소·세션 실패·압축까지 돌리는 시험은 같은 조건으로 `node scripts/provider-live.mjs <연결> --allow-live`이고, `--record`를 붙이면 원본을 Git 밖에 남긴다. 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.
+이 시험은 단건 연결 확인이다. 백그라운드 명령(45초)·세션 재개·끼워 넣기·취소·세션 실패·압축까지 돌리는 시험은 같은 조건으로 `node scripts/provider-live.mjs <연결> --allow-live`이고, `--record`를 붙이면 원본을 Git 밖에 남긴다. `--scenes=a,b`로 장면을 고르면 모르는 이름·빈 선택·그 연결이 할 수 없는 장면은 모델을 부르기 전에 거부하고, 고른 장면이 모두 돌아 확인한 항목으로 성공했을 때만 성공으로 끝난다(`scripts/live/provider-scenes.mjs`). 현재 자동 검사는 `packages/runtime/test-fixtures`의 **합성** CLI/HTTP/SSE peer를 쓴다. 실제 녹화로 표현하지 않는다. 재생 형식과 정제 기준은 [fixture 안내](../packages/runtime/test-fixtures/README.md)를 따른다.
 
 ## 실모델 장애 검사
 

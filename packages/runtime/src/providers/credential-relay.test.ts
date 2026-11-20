@@ -13,6 +13,7 @@ import {
 import { relayIdentityHeaders } from "./relay.ts";
 import { removeFolder } from "../remove-folder.ts";
 import { attemptAll } from "@babojubot/contracts";
+import { permissionDenial } from "./test-support.ts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
@@ -1147,7 +1148,7 @@ describe("login residue in an organization's product folder", () => {
   });
 
   // 폴더 권한으로 읽기를 막는다. root는 권한을 넘고, Windows는 POSIX 권한 비트로 읽기를 막지 않는다.
-  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
+  it.skipIf(process.platform === "win32" || !permissionDenial())(
     "counts a path it cannot inspect as residue",
     async () => {
       const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));

@@ -22,14 +22,14 @@ import {
   writeBudget,
   writeSecretFile,
 } from "./chaos-budget.mjs";
+import { permissionDenial } from "@babojubot/runtime/testing";
 
 // Windows는 파일 권한으로 읽기를 막을 수 없고, root는 권한과 상관없이 읽는다.
+// root는 권한을 넘어 읽으므로 그 시험은 root에서 건너뛴다. CI는 BABOJUBOT_REQUIRE_PERMISSION_DENIAL=1로 필수로 정한다.
 const noPermissionDenial =
   process.platform === "win32"
     ? "file modes cannot make a file unreadable on Windows"
-    : process.getuid?.() === 0
-      ? "root reads files regardless of their mode"
-      : false;
+    : !permissionDenial() && "root reads files regardless of their mode";
 
 const budget = {
   scene: "a",

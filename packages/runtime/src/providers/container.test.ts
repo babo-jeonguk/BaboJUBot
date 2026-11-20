@@ -10,7 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import http from "node:http";
@@ -31,7 +31,12 @@ import {
   removeContainer,
   runDocker,
 } from "./container.ts";
-import { attachedRelayHub, manualClock, request } from "./test-support.ts";
+import {
+  attachedRelayHub,
+  manualClock,
+  probeEnvironment,
+  request,
+} from "./test-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
@@ -2525,7 +2530,20 @@ describe.skipIf(process.platform === "win32")(
      * 링크를 모르는 실제 디스크(CI는 vfat 이미지를 loop로 붙인다)의 폴더. 링크 거절을 흉내 내지 않고 대표 장면을 돈다.
      * 붙일 수 없는 환경(로컬 기본값, macOS, Windows)에서는 비어 있어 건너뛴다.
      */
-    const volume = process.env.BABOJUBOT_TEST_NO_LINK_DIR;
+    // Linux CI는 링크를 모르는 실제 디스크(vfat)를 붙여 그 폴더를 BABOJUBOT_TEST_NO_LINK_DIR로 주고,
+    // BABOJUBOT_REQUIRE_NO_LINK_DIR=1로 이 검사를 필수로 정한다. 그때 폴더가 없으면 건너뛰지 않고 실패한다.
+    const volume = probeEnvironment({
+      variable: "BABOJUBOT_REQUIRE_NO_LINK_DIR",
+      what: "링크를 모르는 실제 디스크",
+      probe: () => {
+        const folder = process.env.BABOJUBOT_TEST_NO_LINK_DIR ?? "";
+        if (folder === "")
+          return { missing: "BABOJUBOT_TEST_NO_LINK_DIR가 비어 있다" };
+        return statSync(folder, { throwIfNoEntry: false })?.isDirectory()
+          ? { value: folder }
+          : { missing: `${folder}가 폴더가 아니다` };
+      },
+    });
     describe.skipIf(!volume)("on a real disk that refuses links", () => {
       it("refuses a file link in that folder", async () => {
         const probe = await mkdtemp(path.join(volume!, "babojubot-probe-"));

@@ -1,11 +1,17 @@
 import { appendFileSync } from "node:fs";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "../live-events.ts";
-import { test as base, type SharedSettings } from "../shared-settings.ts";
+import {
+  readSettings,
+  test as base,
+  type SharedSettings,
+} from "../shared-settings.ts";
 
 /** 안쪽 실행이 바깥 시험(../shared-settings.spec.ts)에 남기는 기록 한 줄. 일어난 차례대로 적는다. */
 export type Entry =
   | { step: "api put"; path: string }
+  /** 서버에 닿았으면 응답 상태, 끊겼으면 브라우저의 실패 문구. */
+  | { step: "late page write"; outcome: number | string }
   | {
       step: "late write answered";
       status: number;
@@ -21,15 +27,20 @@ export function record(entry: Entry) {
 }
 
 // `sharedSettings` fixture는 `request`로 되돌린다. API로 보낸 PUT을 차례대로 적어, 되돌리기가 화면의 늦은 저장보다 뒤였는지
-// 바깥 시험이 확인한다.
-export const test = base.extend({
-  request: async ({ request }, use) => {
+// 바깥 시험이 확인한다. `failingPut`을 주면 그 경로의 PUT을 서버에 보내지 않고 실패시킨다(되돌리기 하나가 실패하는 정리).
+export const test = base.extend<{ failingPut: string | undefined }>({
+  failingPut: [undefined, { option: true }],
+  request: async ({ request, failingPut }, use) => {
     await use(
       new Proxy(request, {
         get(target, key) {
           if (key === "put")
             return (...args: Parameters<APIRequestContext["put"]>) => {
               record({ step: "api put", path: String(args[0]) });
+              if (String(args[0]) === failingPut)
+                return Promise.reject(
+                  new Error(`${failingPut} PUT을 일부러 실패시켰다`)
+                );
               return target.put(...args);
             };
           const value: unknown = Reflect.get(target, key);
@@ -63,6 +74,14 @@ export async function leaveSettingsMidSave(
   ];
   for (const [path, data] of changes)
     expect((await request.put(path, { data })).status()).toBe(200);
+  // 성공 응답만으로는 저장됐는지 모른다. 서버에 저장된 값으로 확인한다. 저장되지 않았으면 되돌리기를 시험하지 못한다.
+  expect(await readSettings(request), "바꾼 전역 설정").toMatchObject({
+    leadDefault: { provider: "fake-2", model: "fake-2-max" },
+    workerDefault: { provider: "fake-2", model: null },
+    compaction: { thresholdTokens: 300000, ratio: 0.8 },
+    isolated: !sharedSettings.initial.isolated,
+    limits: { fake: 7 },
+  });
 
   await openWithLiveEvents(page, "/settings");
   const form = page.getByRole("form", { name: "기본 프로바이더" });

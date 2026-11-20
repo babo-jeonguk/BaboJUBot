@@ -19,7 +19,7 @@ import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
-import { request, attachedRelayHub } from "./test-support.ts";
+import { attachedRelayHub, permissionDenial, request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 조직별 제품 폴더(사용자 결정 2026-11-06, docs/research/org-product-folders-references.md).
@@ -548,7 +548,7 @@ describe("Antigravity", () => {
     expect(await readlink(tokenAt(connection))).toBe(original);
   }, 20000);
 
-  it.skipIf(process.getuid?.() === 0)(
+  it.skipIf(!permissionDenial())(
     "is not ready when the connection's login cannot be rewritten",
     async () => {
       const env = await setup();

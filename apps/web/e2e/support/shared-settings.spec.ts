@@ -171,3 +171,49 @@ test("a test whose sent settings save never gets a reply fails its cleanup in ti
   });
   await expectSettingsAsBefore(request, before, output);
 });
+
+test("a test whose defaults cannot be restored still restores the other settings and reports that failure", async ({
+  request,
+  baseURL,
+}) => {
+  const before = await readSettings(request);
+  const { code, output, result, log } = await runCheck(
+    "restore-fails.check.ts",
+    baseURL!
+  );
+  // 정리의 실패는 되돌리지 못한 기본값 하나다. 격리 실행과 상한은 그 뒤에도 되돌렸다.
+  expect(
+    result.errors.map((e) => e.message?.split("\n")[0]),
+    output
+  ).toEqual(["Error: /api/providers/defaults PUT을 일부러 실패시켰다"]);
+  expect(result.status, output).toBe("failed");
+  expect(code, output).toBe(1);
+  expect(log, output).toEqual(
+    expect.arrayContaining([
+      { step: "api put", path: "/api/providers/defaults" },
+      { step: "api put", path: "/api/providers/isolation" },
+      { step: "api put", path: "/api/providers/fake/limit" },
+    ])
+  );
+  await expectSettingsAsBefore(request, before, output);
+});
+
+test("a settings change the page sends after the test body is refused, so it cannot undo the restore", async ({
+  request,
+  baseURL,
+}) => {
+  const before = await readSettings(request);
+  const { code, output, result, log } = await runCheck(
+    "late-page-write.check.ts",
+    baseURL!
+  );
+  expect(result.errors, output).toEqual([]);
+  expect(result.status, output).toBe("passed");
+  expect(code, output).toBe(0);
+  // 정리가 끊은 요청은 Chromium에서 net::ERR_FAILED로 실패한다(route.abort의 기본 오류). 서버에 닿았다면 응답 상태가 남는다.
+  expect(log, output).toContainEqual({
+    step: "late page write",
+    outcome: "net::ERR_FAILED",
+  });
+  await expectSettingsAsBefore(request, before, output);
+});
