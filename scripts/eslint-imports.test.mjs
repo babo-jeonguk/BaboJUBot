@@ -317,6 +317,7 @@ test("finds createRequire by where it comes from: renamed, a namespace, a defaul
     `const { createRequire: make } = require("node:module");\nconst load = make(import.meta.url);\nvoid load.resolve("m4");\n`,
     `const make = process.getBuiltinModule("module").createRequire;\nvoid make(import.meta.url)("m5");\n`,
     `import { createRequire } from "node:module";\nconst make = createRequire;\nconst load = make(import.meta.url);\nvoid load("m6");\n`,
+    `void globalThis.process.getBuiltinModule("m7");\n`,
   ];
   assert.deepEqual(
     loads.flatMap((code) =>
@@ -331,6 +332,7 @@ test("finds createRequire by where it comes from: renamed, a namespace, a defaul
       "resolve m4",
       "require m5",
       "require m6",
+      "require m7",
     ]
   );
 });
@@ -342,9 +344,16 @@ test("does not take a local function named like require, createRequire or getBui
     `const createRequire = () => (name) => name;\nvoid createRequire(import.meta.url)("m3");\n`,
     `const process = { getBuiltinModule: (name) => name };\nvoid process.getBuiltinModule("m4");\n`,
     `const tools = { createRequire: () => (name) => name };\nconst load = tools.createRequire(import.meta.url);\nvoid load("m5");\n`,
+    // 다시 대입한 전역·변수는 무엇을 담는지 따라가지 않는다.
+    `require = (name) => name;\nvoid require("m6");\n`,
+    `import { createRequire } from "node:module";\nlet load = createRequire(import.meta.url);\nload = (name) => name;\nvoid load("m7");\n`,
   ];
   assert.deepEqual(
-    locals.flatMap((code) => sitesOf(code).map((site) => site.source)),
+    locals.flatMap((code) =>
+      sitesOf(code)
+        .filter((site) => site.kind !== "import")
+        .map((site) => site.source)
+    ),
     []
   );
 });
