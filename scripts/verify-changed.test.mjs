@@ -225,6 +225,71 @@ test("pnpm check runs every group, and changing a group's test file runs that gr
       );
 });
 
+test("with tests, runs the tests of the changed packages and the packages that use them", () => {
+  assert.deepEqual(
+    plan(["packages/core/src/policy.ts"], graph, { tests: true }),
+    [
+      lint("packages/core/src/policy.ts"),
+      typecheck("@babojubot/core"),
+      typecheck("@babojubot/server"),
+      docs,
+      "pnpm --filter @babojubot/core --filter @babojubot/server run test",
+    ]
+  );
+  // 뿌리 패키지가 쓰는 패키지가 바뀌면 뿌리의 시험(boot-check, 시험 실패 종료 코드)도 돈다.
+  assert.deepEqual(
+    plan(["packages/runtime/src/testing.ts"], graph, { tests: true }),
+    [
+      lint("packages/runtime/src/testing.ts"),
+      typecheck("@babojubot/runtime", "test"),
+      typecheck("@babojubot/server", "test"),
+      typecheck("@babojubot/web", "test"),
+      docs,
+      rules,
+      agents,
+      scripts,
+      "pnpm --filter @babojubot/runtime --filter @babojubot/server --filter @babojubot/web run test",
+      "pnpm test:root",
+    ]
+  );
+});
+
+test("with tests, runs the root tests when a root test or its script changed", () => {
+  for (const file of [
+    "scripts/boot-check.mjs",
+    "scripts/boot-check-flow.test.mjs",
+    "scripts/check-test-exit-code.mjs",
+    "scripts/fixtures/test-exit-code/broken-setup.mjs",
+  ])
+    assert.deepEqual(
+      plan([file], graph, { tests: true }),
+      [lint(file), docs, scripts, "pnpm test:root"],
+      file
+    );
+});
+
+test("with tests, runs no test for document changes and every test for shared settings", () => {
+  assert.deepEqual(plan(["docs/agents/worker.md"], graph, { tests: true }), [
+    docs,
+  ]);
+  assert.deepEqual(plan(["pnpm-lock.yaml"], graph, { tests: true }), [
+    "pnpm lint",
+    "pnpm typecheck",
+    "pnpm check",
+    "pnpm test",
+  ]);
+});
+
+test("pnpm test runs every package's tests and then the root tests", () => {
+  const { scripts: commands } = JSON.parse(
+    fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")
+  );
+  assert.equal(
+    commands.test,
+    "pnpm -r --if-present run test && pnpm run test:root"
+  );
+});
+
 test("does not lint deleted files but still type-checks their package", () => {
   const exists = (file) => file !== "packages/core/src/old.ts";
   assert.deepEqual(
@@ -384,6 +449,22 @@ test("prints the plan for uncommitted, untracked and deleted files against the b
     "pnpm --filter @x/a run typecheck",
     "pnpm --filter @x/b run typecheck",
     "pnpm check:docs",
+  ]);
+});
+
+test("adds the tests of the changed packages with --tests", (t) => {
+  const { cwd, base } = repository(t);
+  write(cwd, "packages/a/src/a.ts", "export const a = 2;\n");
+
+  const result = run(cwd, ["--dry-run", "--tests", "--base", base]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trimEnd().split("\n"), [
+    "pnpm exec eslint --no-warn-ignored packages/a/src/a.ts",
+    "pnpm --filter @x/a run typecheck",
+    "pnpm --filter @x/b run typecheck",
+    "pnpm check:docs",
+    "pnpm --filter @x/a --filter @x/b run test",
   ]);
 });
 
