@@ -77,10 +77,11 @@ export async function openLifelines() {
     /**
      * 프로그램 안에 넣는 JavaScript 문장. 이 서버에 연결해 이름을 보내고 연결을 쥔다. 서버가 이름을 받았다고 답하면 `then`을
      * 실행한다(그 뒤로는 이 프로그램이 끝나면 닫힘이 반드시 보인다). CommonJS(`node -e`)와 ES 모듈 모두에서 돈다.
-     * 연결이 끊기면(서버가 먼저 닫힘) 프로그램이 오류로 끝나지 않게 오류를 받는다.
+     * 연결이 끊기면(서버가 먼저 닫힘) 프로그램이 오류로 끝나지 않게 오류를 받는다. 끊김(EPIPE·ECONNRESET·ECONNABORTED·EOF)은 답이고,
+     * 그 밖의 실패(연결 거절 등)는 프로그램의 오류 출력에 남겨 `connected`의 시한 실패만 보이지 않게 한다.
      */
     hold: (name: string, then = "") =>
-      `{ const line = process.getBuiltinModule("node:net").connect(${port}, "127.0.0.1"); line.on("error", () => {}); line.write(${JSON.stringify(`${name}
+      `{ const line = process.getBuiltinModule("node:net").connect(${port}, "127.0.0.1"); line.on("error", (error) => { if (!["EPIPE", "ECONNRESET", "ECONNABORTED", "EOF"].includes(error.code)) process.stderr.write(${JSON.stringify(`[lifeline] ${name} failed (`)} + (error.code ?? error.name) + ")\\n"); }); line.write(${JSON.stringify(`${name}
 `)}); line.once("data", () => { ${then} }); }`,
     /** `name`의 연결이 왔을 때까지 기다린다. */
     connected: (name: string, ms = 10_000) =>
