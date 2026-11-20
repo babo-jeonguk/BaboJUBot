@@ -1,6 +1,6 @@
 // 시험 코드 전용 lint 규칙. 선택자만으로는 판단할 수 없는 규칙(값이 어디로 가는지, 타이머가 무엇을 하는지)을 둔다.
 // 설정은 eslint.config.js의 `testFiles` 범위에 걸고, 회귀 시험은 scripts/lint-rules.test.mjs가 맡는다.
-import { importOfBinding, originName, originOf } from "./eslint-imports.mjs";
+import { originName, originOf, targetOf } from "./eslint-imports.mjs";
 
 /**
  * 식의 출처(공용 판정 `originName`의 `global:Promise.race`·`module:vitest:expect` 꼴)가 `names` 중 하나인가. JS 기본 전역과 시험
@@ -8,43 +8,64 @@ import { importOfBinding, originName, originOf } from "./eslint-imports.mjs";
  */
 const comesFrom = (sourceCode, node, ...names) =>
   names.includes(originName(sourceCode, node));
-/** `expect`: Vitest 전역, vitest·Playwright에서 가져온 것. */
-const isExpect = (sourceCode, node) =>
-  comesFrom(
-    sourceCode,
-    node,
-    "global:expect",
-    "module:vitest:expect",
-    "module:@playwright/test:expect"
+/**
+ * `expect`: Vitest 전역, vitest·Playwright에서 가져온 것(Playwright의 `test.expect`는 공용 판정이 `expect`로 맞춘다), 같은 파일에서
+ * 그것으로 만든 const(Playwright의 `expect.extend(…)`·`expect.configure(…)`는 새 expect를 돌려준다. `test.extend`처럼 따라간다).
+ */
+function isExpect(sourceCode, node, seen = new Set()) {
+  if (
+    comesFrom(
+      sourceCode,
+      node,
+      "global:expect",
+      "module:vitest:expect",
+      "module:@playwright/test:expect"
+    )
+  )
+    return true;
+  if (node?.type !== "Identifier") return false;
+  const variable = bindingOf(sourceCode, node);
+  if (variable?.defs.length !== 1 || seen.has(variable)) return false;
+  seen.add(variable);
+  const [def] = variable.defs;
+  const init =
+    def.type === "Variable" && def.parent.kind === "const"
+      ? def.node.init
+      : undefined;
+  const made = methodOf(init);
+  return (
+    (made === "extend" || made === "configure") &&
+    isExpect(sourceCode, init.callee.object, seen)
   );
-/** `assert`: node:assert·node:assert/strict의 함수(기본·이름공간·`strict`), 가져오지 않은 시험 조각의 이름. */
+}
+/**
+ * 단언 함수와 그 메서드: node:assert·node:assert/strict가 내보내는 것(기본·이름공간·`strict`·`ok` 같은 이름 있는 함수), vitest의
+ * `assert`(= `chai.assert`·`expect.assert`, 공용 판정이 한 출처로 맞춤)와 `chai.expect`, Vitest 전역 `assert`(#266 리뷰 SPEC-5).
+ * node:test의 `assert`는 단언 함수가 아니라 단언을 등록하는 객체(`assert.register`)이고, `console.assert`는 실패해도 던지지 않아 넣지 않는다.
+ */
 const isAssert = (sourceCode, node) =>
-  /^(global:assert|module:assert(\/strict)?:(strict)?)$/.test(
+  /^(global:assert|module:assert(\/strict)?:.*|module:vitest:(assert|chai\.expect))(\..*)?$/.test(
     originName(sourceCode, node) ?? ""
   );
 
-// 실제 시계를 읽는 `Date.now()`·`performance.now()`(전역이나 node:perf_hooks에서 가져온 것).
-const clockReads = new Set([
-  "global:Date.now",
-  "global:performance.now",
-  "module:perf_hooks:performance.now",
-]);
+// 실제 시계를 읽는 `Date.now()`·`performance.now()`(node:perf_hooks의 performance는 공용 판정이 전역으로 맞춘다).
+const clockReads = new Set(["global:Date.now", "global:performance.now"]);
 const readsClock = (node, sourceCode) =>
   node?.type === "CallExpression" &&
   clockReads.has(originName(sourceCode, node.callee));
 
-/** `expect(...)`·`expect(...).toBe(...)`·`assert(...)`·`assert.ok(...)`처럼 expect·assert(출처로 봄)로 시작하는 호출인가. */
+/**
+ * `expect(...)`·`expect(...).toBe(...)`·`assert(...)`·`assert.ok(...)`·`chai.assert.isBelow(...)`처럼 expect·단언 함수(출처로 봄)로
+ * 시작하는 호출인가. 호출 사슬을 거슬러 올라가며 각 자리의 출처를 본다.
+ */
 function isAssertion(call, sourceCode) {
-  let callee = call.callee;
-  for (;;) {
+  for (let callee = call.callee; ;) {
+    if (isExpect(sourceCode, callee) || isAssert(sourceCode, callee))
+      return true;
     if (callee.type === "MemberExpression") callee = callee.object;
     else if (callee.type === "CallExpression") callee = callee.callee;
-    else break;
+    else return false;
   }
-  return (
-    callee.type === "Identifier" &&
-    (isExpect(sourceCode, callee) || isAssert(sourceCode, callee))
-  );
 }
 
 /** 값이 계산을 거쳐도 경과 시간인 채로 남는 자리: 산술·비교(`ms / 1000`, `ms < 500`), 부정, 타입 단언, `Math.round(ms)` 같은 계산. */
@@ -242,7 +263,8 @@ function onlyStatement(body) {
   return body.body.length === 1 ? body.body[0] : undefined;
 }
 
-// 지연(ms)을 기다리는 timers/promises 함수(Node 문서: setTimeout·setInterval, setTimeout과 같은 scheduler.wait).
+// 지연(ms)을 기다리는 timers/promises 함수(Node 문서: setTimeout·setInterval, setTimeout과 같은 scheduler.wait). node:timers의
+// `promises`로 꺼낸 것도 공용 판정이 timers/promises로 맞춘다.
 const delayWaits = new Set([
   "module:timers/promises:setTimeout",
   "module:timers/promises:setInterval",
@@ -253,15 +275,13 @@ const promiseTurns = new Set([
   "module:timers/promises:setImmediate",
   "module:timers/promises:scheduler.yield",
 ]);
-// 실제 타이머 `setTimeout`(전역이나 node:timers에서 가져온 것).
-const timeouts = new Set(["global:setTimeout", "module:timers:setTimeout"]);
-// 이벤트 루프 차례 하나를 넘기는 호출: 차례 예약(전역이나 node:timers·node:process에서 가져온 것).
+// 실제 타이머 `setTimeout`(node:timers에서 가져온 것도 공용 판정이 전역으로 맞춘다).
+const timeouts = new Set(["global:setTimeout"]);
+// 이벤트 루프 차례 하나를 넘기는 호출: 차례 예약(node:timers·node:process에서 가져온 것도 전역으로 맞춰진다).
 const turnSchedulers = new Set([
   "global:setImmediate",
-  "module:timers:setImmediate",
   "global:queueMicrotask",
   "global:process.nextTick",
-  "module:process:nextTick",
 ]);
 /** `call`이 executor의 `resolve`로 차례 하나를 넘기는가: `setTimeout(r)`·`setTimeout(r, 0)`·`setTimeout(() => r(), 0)`·`setImmediate(r)`·`process.nextTick(r)`. */
 function schedulesTurn(call, resolve, sourceCode) {
@@ -817,22 +837,6 @@ function bindingOf(sourceCode, identifier) {
   return undefined;
 }
 
-/**
- * 가져온 변수면 그 출처(`{ source, imported }`). imported는 가져온 이름, 기본 가져오기는 "default", 이름공간은 "*". 판정은 제품 규칙과
- * 같은 공용 가져오기 판정(scripts/eslint-imports.mjs)이 한다: import와 require·createRequire가 만든 함수·dynamic import에서 꺼낸 이름.
- */
-const importOf = importOfBinding;
-
-/** `identifier`가 `modules`에서 가져온 `names` 중 하나인가(다른 이름으로 가져와도). */
-function importedFrom(sourceCode, identifier, modules, names) {
-  const origin = importOf(bindingOf(sourceCode, identifier));
-  return (
-    origin !== undefined &&
-    modules.test(origin.source) &&
-    names.includes(origin.imported)
-  );
-}
-
 /** `outer`가 `inner`를 품는가. */
 const contains = (outer, inner) =>
   outer.range[0] <= inner.range[0] && inner.range[1] <= outer.range[1];
@@ -862,12 +866,8 @@ function walkBody(fn, found) {
  * `process`·`kill`(다른 이름으로 가져와도), 그 별칭. 같은 이름의 지역 값(`const process = fake`)은 아니다.
  */
 function processKill(call, sourceCode) {
-  return comesFrom(
-    sourceCode,
-    call.callee,
-    "global:process.kill",
-    "module:process:kill"
-  );
+  // node:process에서 가져온 것도 공용 판정이 전역 process로 맞춘다.
+  return comesFrom(sourceCode, call.callee, "global:process.kill");
 }
 
 /** 동기로 던지는 정리: `process.kill`(대상이 이미 사라지면 ESRCH)과 이름이 `Sync`로 끝나는 호출(`fs.rmSync`·`chmodSync` 등). */
@@ -950,35 +950,36 @@ const noCleanupInFinally = {
   },
 };
 
-// 여러 자원을 함께 정리하는 hook: 시험마다(`afterEach`), 파일·describe마다(`afterAll`, node:test의 `after`). 자원 하나를 잡은
-// 직후 등록하는 정리(`onTestFinished`·`t.after`·`defer`)는 그 자원의 단계를 차례로 잇는 자리라 보지 않는다.
-const sharedHookNames = new Map([
-  ["afterEach", "afterEach"],
-  ["afterAll", "afterAll"],
-  ["after", "afterAll"],
+/**
+ * 시험 함수의 출처. 공용 판정이 같은 값을 한 이름으로 맞춘다(#266 리뷰 SPEC-5): Playwright의 `test`(기본 내보내기 포함), vitest의
+ * `test`(`it`은 같은 함수), node:test 모듈 자체(기본 내보내기·`test`·`it`이 모두 그 함수).
+ */
+const testFunctions = new Set([
+  "module:@playwright/test:test",
+  "module:vitest:test",
+  "module:node:test:",
 ]);
-const hookModules = /^(vitest|node:test)$/;
-const playwrightModule = /^@playwright\/test$/;
-/** Vitest·node:test의 시험 함수 모듈. */
-const testRunnerModule = /^(vitest|node:test)$/;
 
 /**
- * 시험 함수 값(`test.afterAll`의 `test`)인가. 이름이 아니라 출처로 본다: `@playwright/test`에서 가져온 `test`, 저장소 지원 파일이
- * 넓혀 다시 내보낸 `test`·`…Test`(상대 경로로 가져온 것), 같은 파일에서 그것을 `extend`한 값. `global`이면 선언 없는 전역 이름도 받는다.
+ * 시험 함수 값(`test.afterAll`의 `test`)인가. 이름이 아니라 출처로 본다: 위 시험 함수(다른 이름으로 가져와도, 별칭도), 저장소 지원
+ * 파일이 넓혀 다시 내보낸 `test`·`…Test`(상대 경로나 패키지 이름으로 가져온 것), 같은 파일에서 그것을 `extend`한 값. `global`이면
+ * 선언 없는 전역 이름(Vitest globals)도 받는다.
  */
 function testObject(node, sourceCode, global, seen = new Set()) {
   if (node?.type !== "Identifier") return false;
+  const origin = originOf(sourceCode.getScope(node), node);
+  if (origin?.global !== undefined)
+    return global && origin.path.length === 0 && isTestName(node);
+  if (origin !== undefined)
+    return (
+      testFunctions.has(`module:${origin.module}:${origin.path.join(".")}`) ||
+      (repoModule.test(origin.module) &&
+        origin.path.length === 1 &&
+        testNames.test(origin.path[0]))
+    );
   const variable = bindingOf(sourceCode, node);
-  if (!variable) return global && isTestName(node);
-  if (seen.has(variable)) return false;
+  if (!variable || seen.has(variable)) return false;
   seen.add(variable);
-  const origin = importOf(variable);
-  if (origin)
-    return playwrightModule.test(origin.source)
-      ? origin.imported === "test" || origin.imported === "default"
-      : testRunnerModule.test(origin.source)
-        ? origin.imported === "test" || origin.imported === "it"
-        : origin.source.startsWith(".") && testNames.test(origin.imported);
   const def = variable.defs[0];
   const init = def.type === "Variable" ? def.node.init : undefined;
   return (
@@ -987,31 +988,24 @@ function testObject(node, sourceCode, global, seen = new Set()) {
   );
 }
 
+// 여러 자원을 함께 정리하는 hook: 시험마다(`afterEach`), 파일·describe마다(`afterAll`, node:test의 `after`). 자원 하나를 잡은
+// 직후 등록하는 정리(`onTestFinished`·`t.after`·`defer`)는 그 자원의 단계를 차례로 잇는 자리라 보지 않는다. 출처는 선언 없는 전역
+// hook(Vitest globals)과 vitest·node:test의 hook이다(모듈 객체의 속성으로 불러도 같다).
+const sharedHookOrigin =
+  /^(global|module:vitest|module:node:test):(afterEach|afterAll|after)$/;
+
 /**
- * `call`이 공용 정리 hook을 부르는가. 이름이 아니라 출처로 본다: 선언 없는 전역 hook(Vitest globals), vitest·node:test에서 가져온
- * hook(다른 이름으로 가져와도)과 그 모듈의 `x.afterEach`, 시험 함수 값의 `test.afterAll`. 같은 이름의 지역 함수는 아니다.
+ * `call`이 공용 정리 hook을 부르는가. 이름이 아니라 출처로 본다: 위 hook(다른 이름으로 가져와도, 별칭도)과 시험 함수 값의
+ * `test.afterAll`. 같은 이름의 지역 함수는 아니다.
  */
 function sharedHook(call, sourceCode) {
   const { callee } = call;
-  if (callee.type === "Identifier") {
-    const variable = bindingOf(sourceCode, callee);
-    if (!variable) return sharedHookNames.has(callee.name);
-    const origin = importOf(variable);
-    return (
-      origin !== undefined &&
-      hookModules.test(origin.source) &&
-      sharedHookNames.has(origin.imported)
-    );
-  }
-  if (callee.type !== "MemberExpression" || callee.computed) return false;
-  const name = callee.property.name;
-  if (
-    sharedHookNames.has(name) &&
-    importedFrom(sourceCode, callee.object, hookModules, ["default", "*"])
-  )
-    return true;
+  if (sharedHookOrigin.test(originName(sourceCode, callee) ?? "")) return true;
   return (
-    (name === "afterEach" || name === "afterAll") &&
+    callee.type === "MemberExpression" &&
+    !callee.computed &&
+    (callee.property.name === "afterEach" ||
+      callee.property.name === "afterAll") &&
     testObject(callee.object, sourceCode, true)
   );
 }
@@ -1420,11 +1414,10 @@ function killsIn(block, sourceCode) {
   return kills;
 }
 
-/** `call`이 전역 `console`의 메서드 호출(`console.warn(…)`)인가. */
+/** `call`이 `console`의 메서드 호출(`console.warn(…)`, node:console에서 가져온 `warn(…)`·모듈 객체도 전역 console로 맞춰짐)인가. */
 const consoleCall = (call, sourceCode) =>
   call?.type === "CallExpression" &&
-  call.callee.type === "MemberExpression" &&
-  comesFrom(sourceCode, call.callee.object, "global:console");
+  /^global:console\.[^.]+$/.test(originName(sourceCode, call.callee) ?? "");
 
 /** catch가 받은 오류를 읽는 자리가 console에 남기거나 `void`로 버리기만 하는가(`console.warn(error)`·`` `${error.message}` ``·`void error`). */
 function onlyLogged(identifier, sourceCode) {
@@ -1544,7 +1537,13 @@ const noIgnoredKillError = {
   },
 };
 
-const serverModules = /^(node:)?(net|http|https)$/;
+/**
+ * Node 서버를 만드는 출처: net·http·https·tls의 `createServer`·`new Server`, http2의 `createServer`·`createSecureServer`. 모두
+ * net.Server를 이어받아 `close(callback)`가 닫기 실패를 콜백의 첫 인수로 알린다(Node 문서 net·tls·http·https·http2).
+ */
+const serverMakers =
+  /^module:(net|http|https|tls|http2):(createServer|createSecureServer)$/;
+const serverClasses = /^module:(net|http|https|tls):Server$/;
 const arrayCopies = new Set([
   "splice",
   "slice",
@@ -1565,24 +1564,22 @@ const elementCallbacks = new Set([
 const SERVER = "server";
 
 /**
- * 값이 Node 서버(net·http·https의 `Server`)인지 출처로 본다. 타입 정보 없이 같은 파일 안에서 확인할 수 있는 범위만 따라간다:
+ * 값이 Node 서버(net·http·https·tls·http2, `serverMakers`)인지 출처로 본다. 타입 정보 없이 같은 파일 안에서 확인할 수 있는 범위만 따라간다:
  * `createServer(…)`·`new Server(…)`(그 모듈에서 가져온 것), `net.Server` 같은 타입 표기, 그 값을 담은 변수·배열·객체 속성,
  * 배열을 도는 반복 변수와 `map` 같은 콜백의 매개변수, 그 값을 돌려주는 같은 파일 함수. 돌려받는 값은 `SERVER`, 배열은 `{ element }`,
  * 객체는 `{ property(name) }`.
  */
 function serverShapes(sourceCode) {
   const visiting = new Set();
-  const fromServers = (identifier, names) =>
-    identifier?.type === "Identifier" &&
-    importedFrom(sourceCode, identifier, serverModules, names);
-  /** `createServer`·`Server`를 그 모듈에서 가져왔거나 `net.createServer`처럼 모듈 값에서 꺼낸다. */
-  const serverMember = (callee, name) =>
-    callee.type === "Identifier"
-      ? fromServers(callee, [name])
-      : callee.type === "MemberExpression" &&
-        !callee.computed &&
-        callee.property.name === name &&
-        fromServers(callee.object, ["default", "*"]);
+  /** 서버 모듈의 `Server` 타입 표기(`Server`·`net.Server`). 왼쪽 이름의 출처로 본다. */
+  const serverType = (name) =>
+    name.type === "Identifier"
+      ? serverClasses.test(originName(sourceCode, name) ?? "")
+      : name.type === "TSQualifiedName" &&
+        name.right.name === "Server" &&
+        /^module:(net|http|https|tls):$/.test(
+          originName(sourceCode, name.left) ?? ""
+        );
   function typeShape(type) {
     switch (type?.type) {
       case "TSTypeAnnotation":
@@ -1605,13 +1602,7 @@ function serverShapes(sourceCode) {
         const name = type.typeName;
         if (name.type === "Identifier" && name.name === "Array")
           return { element: typeShape(type.typeArguments?.params[0]) };
-        if (name.type === "Identifier")
-          return fromServers(name, ["Server"]) ? SERVER : undefined;
-        return name.type === "TSQualifiedName" &&
-          name.right.name === "Server" &&
-          fromServers(name.left, ["default", "*"])
-          ? SERVER
-          : undefined;
+        return serverType(name) ? SERVER : undefined;
       }
       default:
         return undefined;
@@ -1665,7 +1656,9 @@ function serverShapes(sourceCode) {
       case "TSSatisfiesExpression":
         return typeShape(node.typeAnnotation) ?? shape(node.expression);
       case "NewExpression":
-        return serverMember(node.callee, "Server") ? SERVER : undefined;
+        return serverClasses.test(originName(sourceCode, node.callee) ?? "")
+          ? SERVER
+          : undefined;
       case "Identifier":
         return variableShape(node);
       case "MemberExpression":
@@ -1684,7 +1677,8 @@ function serverShapes(sourceCode) {
         };
       case "CallExpression": {
         const { callee } = node;
-        if (serverMember(callee, "createServer")) return SERVER;
+        if (serverMakers.test(originName(sourceCode, callee) ?? ""))
+          return SERVER;
         if (callee.type === "Identifier") {
           const local = localFunction(callee, sourceCode);
           if (!local || visiting.has(local.fn)) return undefined;
@@ -1975,7 +1969,7 @@ const noStateBetweenTests = {
  * 같은 이름의 지역 값은 아니다.
  */
 const isProcessEnv = (node, sourceCode) =>
-  comesFrom(sourceCode, node, "global:process.env", "module:process:env");
+  comesFrom(sourceCode, node, "global:process.env");
 
 const envChangingCalls = [
   "global:Object.assign",
@@ -2134,8 +2128,8 @@ const noDroppedRejection = {
   },
 };
 
-const cleanupModule =
-  /^(@babojubot\/process\/test-cleanup|(\.{1,2}\/)+(.*\/)?test-cleanup(\.ts)?)$/;
+/** awaitedLater가 있는 파일. 경로 철자가 아니라 대상 파일로 본다(공용 판정의 targetOf, #266 리뷰 SPEC-5). */
+const cleanupFile = "packages/process/src/test-cleanup";
 /**
  * 속성의 경로: 루트 식별자(또는 `this`)의 이름과 속성 이름들(`child.exited`, `this.server.closed`). 루트가 식별자·`this`가
  * 아니거나(호출 결과 등) 계산된 이름이 끼면 따라갈 수 없어 undefined다. 같은 객체를 다른 이름으로 부르면 다른 경로다.
@@ -2288,9 +2282,11 @@ function waiting(sourceCode) {
         : "never";
     const variable = bindingOf(sourceCode, callee);
     if (!variable) return "never";
-    const origin = importOf(variable);
+    const origin = originOf(sourceCode.getScope(callee), callee);
     if (origin)
-      return index === 0 && repoModule.test(origin.source) ? "always" : "never";
+      return index === 0 && repoModule.test(origin.module ?? "")
+        ? "always"
+        : "never";
     const fn = functionOf(variable);
     const param = fn?.params[index];
     if (!fn || seen.has(fn) || param?.type !== "Identifier") return "never";
@@ -2451,6 +2447,9 @@ const noUnawaitedLater = {
   create(context) {
     const { sourceCode } = context;
     const { classify } = waiting(sourceCode);
+    /** 모듈 경로 `source`가 test-cleanup.ts를 가리키는가(패키지 입구·상대 경로·확장자 없는 철자 모두). */
+    const fromCleanup = (source) =>
+      targetOf(context.filename, source)?.file === cleanupFile;
     /**
      * 식이 test-cleanup의 awaitedLater인가. 이름이 아니라 출처로 본다(공용 판정 `originOf`): 다른 이름으로 가져오기, 이름공간의
      * `x.awaitedLater`, 그것을 받은 const·구조 분해, 동적 가져오기·require에서 꺼낸 것, 그 별칭. 같은 이름의 매개변수는 아니다.
@@ -2459,7 +2458,7 @@ const noUnawaitedLater = {
       const origin = originOf(sourceCode.getScope(node), node);
       return (
         origin?.module !== undefined &&
-        cleanupModule.test(origin.module) &&
+        fromCleanup(origin.module) &&
         origin.path.length === 1 &&
         origin.path[0] === "awaitedLater"
       );
@@ -2552,8 +2551,7 @@ const noUnawaitedLater = {
       },
       // 다시 내보내면 다른 파일에서 부른 결과를 따라갈 수 없다.
       ExportNamedDeclaration(node) {
-        if (!node.source || !cleanupModule.test(String(node.source.value)))
-          return;
+        if (!node.source || !fromCleanup(node.source.value)) return;
         for (const specifier of node.specifiers)
           if (
             (specifier.local.name ?? specifier.local.value) === "awaitedLater"
@@ -2561,7 +2559,7 @@ const noUnawaitedLater = {
             context.report({ node: specifier, messageId: "notCalled" });
       },
       ExportAllDeclaration(node) {
-        if (cleanupModule.test(String(node.source.value)))
+        if (fromCleanup(node.source.value))
           context.report({ node, messageId: "notCalled" });
       },
     };

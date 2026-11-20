@@ -77,6 +77,112 @@ function patternPath(pattern, target) {
   return undefined;
 }
 
+/**
+ * 같은 값을 다른 이름으로도 내놓는 곳: 왼쪽 출처는 오른쪽 출처와 같은 값이다(#266 리뷰 SPEC-5). 출처를 이 표로 한 이름에 맞춰,
+ * 규칙이 같은 값의 철자를 따로 적지 않게 한다. 근거는 각 모듈의 공식 문서와 이 저장소에 설치된 판의 실행·배포 파일 확인이다.
+ * - Node: `node:process`·`node:console`은 전역 `process`·`console` 그 자체, node:timers의 타이머 함수와 node:perf_hooks의
+ *   `performance`는 전역과 같은 함수·객체, node:timers의 `promises`는 `timers/promises`, `assert.strict`는 `assert/strict`,
+ *   node:module의 `Module`은 모듈 자신, node:test는 모듈 자체가 `test`이고 `test`·`it`은 그 별칭이다.
+ * - vitest: `it`은 `test`, `assert`·`expect.assert`는 `chai.assert`.
+ * - Playwright(@playwright/test): 기본 내보내기는 `test`, `test.expect`는 `expect`.
+ */
+const sameValues = [
+  [
+    { module: "process", path: [] },
+    { global: "process", path: [] },
+  ],
+  [
+    { module: "console", path: [] },
+    { global: "console", path: [] },
+  ],
+  ...[
+    "setTimeout",
+    "clearTimeout",
+    "setInterval",
+    "clearInterval",
+    "setImmediate",
+    "clearImmediate",
+  ].map((name) => [
+    { module: "timers", path: [name] },
+    { global: name, path: [] },
+  ]),
+  [
+    { module: "perf_hooks", path: ["performance"] },
+    { global: "performance", path: [] },
+  ],
+  [
+    { module: "timers", path: ["promises"] },
+    { module: "timers/promises", path: [] },
+  ],
+  [
+    { module: "assert", path: ["strict"] },
+    { module: "assert/strict", path: [] },
+  ],
+  [
+    { module: "assert/strict", path: ["strict"] },
+    { module: "assert/strict", path: [] },
+  ],
+  [
+    { module: "module", path: ["Module"] },
+    { module: "module", path: [] },
+  ],
+  [
+    { module: "node:test", path: ["test"] },
+    { module: "node:test", path: [] },
+  ],
+  [
+    { module: "node:test", path: ["it"] },
+    { module: "node:test", path: [] },
+  ],
+  [
+    { module: "vitest", path: ["it"] },
+    { module: "vitest", path: ["test"] },
+  ],
+  [
+    { module: "vitest", path: ["chai", "assert"] },
+    { module: "vitest", path: ["assert"] },
+  ],
+  [
+    { module: "vitest", path: ["expect", "assert"] },
+    { module: "vitest", path: ["assert"] },
+  ],
+  [
+    { module: "@playwright/test", path: ["default"] },
+    { module: "@playwright/test", path: ["test"] },
+  ],
+  [
+    { module: "@playwright/test", path: ["test", "expect"] },
+    { module: "@playwright/test", path: ["expect"] },
+  ],
+];
+
+/** 출처를 같은 값의 한 이름으로 맞춘다(`sameValues`). 앞부분이 표의 왼쪽과 같으면 오른쪽으로 바꾸고 나머지 속성을 잇는다. */
+function canonical(origin) {
+  for (const [from, to] of sameValues)
+    if (
+      origin.global === from.global &&
+      origin.module === from.module &&
+      from.path.length <= origin.path.length &&
+      from.path.every((name, i) => name === origin.path[i])
+    )
+      return canonical({
+        ...to,
+        path: [...to.path, ...origin.path.slice(from.path.length)],
+      });
+  return origin;
+}
+
+/** 가져온 모듈 값의 출처(모듈 객체 자체). */
+const moduleOrigin = (source) =>
+  canonical({ module: moduleName(source), path: [] });
+
+/** 기본 모듈 자체가 전역 값인 것(`node:process` → `process`): 그 모듈의 기본 가져오기도 그 전역이다. */
+const builtinGlobals = new Set(
+  sameValues
+    .filter(([from, to]) => from.path.length === 0 && to.global)
+    .map(([, to]) => to.global)
+);
+
 /** 출처에 속성 하나를 더한다. 기본 모듈의 기본 가져오기(`default`)는 모듈 객체 자체이고, 전역 객체를 거친 전역은 그 전역이다. */
 function extend(origin, name) {
   if (
@@ -86,13 +192,12 @@ function extend(origin, name) {
   )
     return { global: name, path: [] };
   if (
-    origin.module &&
     origin.path.length === 0 &&
     name === "default" &&
-    builtins.has(origin.module)
+    (builtins.has(origin.module) || builtinGlobals.has(origin.global))
   )
     return origin;
-  return { ...origin, path: [...origin.path, name] };
+  return canonical({ ...origin, path: [...origin.path, name] });
 }
 
 const same = (origin, expected) =>
@@ -121,7 +226,7 @@ export function originOf(scope, node, depth = 0) {
       return originOf(scope, node.argument, depth + 1);
     case "ImportExpression":
       return literalPath(node.source)
-        ? { module: moduleName(node.source.value), path: [] }
+        ? moduleOrigin(node.source.value)
         : undefined;
     case "MemberExpression": {
       const name = propertyName(node);
@@ -130,7 +235,7 @@ export function originOf(scope, node, depth = 0) {
     }
     case "CallExpression": {
       const loaded = loadOf(scope, node, depth + 1);
-      if (loaded) return { module: moduleName(loaded.source), path: [] };
+      if (loaded) return moduleOrigin(loaded.source);
       // createRequire(…)는 불러오는 함수를 만든다.
       return same(originOf(scope, node.callee, depth + 1), {
         module: "module",
@@ -185,10 +290,10 @@ function originOfVariable(variable, name, depth = 0) {
       const reference = specifier.moduleReference;
       return reference.type === "TSExternalModuleReference" &&
         literalPath(reference.expression)
-        ? { module: moduleName(reference.expression.value), path: [] }
+        ? moduleOrigin(reference.expression.value)
         : undefined;
     }
-    const module = { module: moduleName(def.parent.source.value), path: [] };
+    const module = moduleOrigin(def.parent.source.value);
     if (specifier.type === "ImportNamespaceSpecifier") return module;
     return extend(
       module,
@@ -214,10 +319,8 @@ function loaderOf(scope, callee, depth = 0) {
   if (same(origin, { global: "require", path: [] })) return "require";
   if (same(origin, madeRequire))
     return callee.type === "Identifier" ? callee.name : "createRequire(…)";
-  if (
-    same(origin, { global: "process", path: ["getBuiltinModule"] }) ||
-    same(origin, { module: "process", path: ["getBuiltinModule"] })
-  )
+  // node:process에서 가져온 것도 전역 process로 맞춰진다(sameValues).
+  if (same(origin, { global: "process", path: ["getBuiltinModule"] }))
     return "getBuiltinModule";
   return undefined;
 }
@@ -443,18 +546,6 @@ export function combineVisitors(...visitors) {
         : handler;
     }
   return combined;
-}
-
-/**
- * 변수가 가져온 값이면 그 출처(`{ source, imported }`), 아니면 `undefined`. `imported`는 가져온 이름이고 기본 가져오기는 `default`,
- * 모듈 객체는 `*`다. 모듈 이름은 `node:`를 뗀 철자다. 정적 import와 같게 `require`·createRequire가 만든 함수·`getBuiltinModule`·
- * `await import(…)`의 결과를 구조 분해하거나 담은 변수, 그 별칭도 본다(`originOf`와 같은 판정).
- */
-export function importOfBinding(variable) {
-  if (!variable) return undefined;
-  const origin = originOfVariable(variable, variable.name);
-  if (!origin?.module) return undefined;
-  return { source: origin.module, imported: origin.path[0] ?? "*" };
 }
 
 /** 저장소 뿌리. */

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Linter } from "eslint";
 import tseslint from "typescript-eslint";
-import { importOfBinding, importSites } from "./eslint-imports.mjs";
+import { importSites, originOf } from "./eslint-imports.mjs";
 
 /** `code`의 가져오는 자리를 `{ kind, source, loader, typeOnly, names }`로 모은다. 이름은 `imported>local` 문자열. */
 function sitesOf(code) {
@@ -239,7 +239,7 @@ test("reads resolve calls as paths without names", () => {
   );
 });
 
-/** `code`에서 부른 이름마다 그 출처(`importOfBinding`)를 `이름: 출처 원래이름` 문자열로 모은다. 출처가 없으면 `이름: -`. */
+/** `code`에서 부른 이름마다 그 출처(`originOf`)를 `이름: 모듈 속성` 문자열로 모은다. 모듈에서 오지 않았으면 `이름: -`. */
 function originsOf(code) {
   const origins = [];
   const linter = new Linter({ configType: "flat" });
@@ -252,14 +252,12 @@ function originsOf(code) {
             origins: {
               create: (context) => ({
                 "CallExpression > Identifier.callee"(node) {
-                  const variable = context.sourceCode
-                    .getScope(node)
-                    .references.find(
-                      (ref) => ref.identifier === node
-                    )?.resolved;
-                  const origin = importOfBinding(variable);
+                  const origin = originOf(
+                    context.sourceCode.getScope(node),
+                    node
+                  );
                   origins.push(
-                    `${node.name}: ${origin ? `${origin.source} ${origin.imported}` : "-"}`
+                    `${node.name}: ${origin?.module ? `${origin.module} ${origin.path.join(".")}` : "-"}`
                   );
                 },
               }),

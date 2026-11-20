@@ -420,6 +420,12 @@ function ioCallName(callee) {
   );
 }
 
+/** orIfUnreadable이 있는 파일: contracts의 failure.ts와 그것을 `export *`로 다시 내보내는 패키지 입구. */
+const unreadableFiles = new Set([
+  "packages/contracts/src/failure",
+  "packages/contracts/src/index",
+]);
+
 /**
  * `orIfUnreadable`은 이미 손에 든 값의 동기 해석·확인 한 단계만 감싼다. 콜백 안의 입출력은 권한·디스크·연결 오류까지 아님·없음으로
  * 바꿔 원인을 지우므로(#246 리뷰 S1, #258 리뷰 STD-1), 콜백 안의 `async`·`await`와 파일 읽기·쓰기, 명령·연결·이름 풀이·응답 본문
@@ -462,11 +468,18 @@ const noIoInUnreadable = {
     };
     return {
       CallExpression(node) {
-        // 이름이 아니라 출처로 본다: contracts의 orIfUnreadable(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도).
+        // 이름이 아니라 출처로 본다: contracts의 orIfUnreadable(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도). 모듈은 경로
+        // 철자가 아니라 대상 파일로 본다(#266 리뷰 SPEC-5): 패키지 이름·하위 입구·상대 경로 어느 것이든 contracts의 failure.ts나
+        // 그것을 다시 내보내는 입구(index.ts)면 같다.
+        const origin = originOf(
+          context.sourceCode.getScope(node.callee),
+          node.callee
+        );
         const called =
-          /^module:(@babojubot\/contracts(\/failure)?|(\.{1,2}\/)+(.*\/)?failure(\.ts)?):orIfUnreadable$/.test(
-            originName(context.sourceCode, node.callee) ?? ""
-          );
+          origin?.module !== undefined &&
+          origin.path.length === 1 &&
+          origin.path[0] === "orIfUnreadable" &&
+          unreadableFiles.has(targetOf(context.filename, origin.module)?.file);
         if (!called) return;
         const [read] = node.arguments;
         if (!read) return;
