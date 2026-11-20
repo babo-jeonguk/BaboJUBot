@@ -474,8 +474,9 @@ export default defineConfig([
     rules: { "product/package-entry-only": "error" },
   },
   {
-    // 다른 영역은 runtime·프로세스 패키지·db에서 목록에 없는 입구를 가져오지 않는다(#266, docs/architecture.md 패키지 구성).
-    // 제품 코드는 시험 도움·개발 도구 입구를 가져오지 않는다. db는 아래 설정이 따로 본다.
+    // 제품 코드는 runtime·프로세스 패키지·db에서 목록에 없는 입구를 가져오지 않는다(#266, docs/architecture.md 패키지 구성).
+    // 시험 도움·개발 도구 입구도 가져오지 않는다. 입구는 대상 파일로 판정해 그 패키지 자신의 제품 코드가 자기 이름이나 상대
+    // 경로로 입구 파일을 가져와도 같다(#266 리뷰 SPEC-6). db는 아래 설정이 따로 본다.
     files: productFiles,
     ignores: [
       ...testFiles,
@@ -526,6 +527,8 @@ export default defineConfig([
           packages: {
             "@babojubot/runtime": [],
             "@babojubot/process": processEntries.product,
+            // 다른 제품 코드처럼 db 자신의 시험·개발 도구 입구(testing·test-cluster·admin)도 가져오지 않는다(입구 파일로 판정).
+            "@babojubot/db": ["@babojubot/db"],
           },
           why: dbScopeWhy,
         },

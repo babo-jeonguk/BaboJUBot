@@ -789,9 +789,10 @@ const boundedCommand = {
 };
 
 /**
- * 다른 영역이 runtime·프로세스 패키지·db에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
- * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 패키지 자신의 파일은 보지 않는다. 다른 패키지
- * 안을 상대 경로로 가리키는 것과 내보내지 않은 하위 경로는 product/package-entry-only가 본다. 가져오는 자리는 공용 판정
+ * 영역마다 runtime·프로세스 패키지·db에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
+ * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 입구는 대상 파일로 판정해 자기 패키지 안에서
+ * 자기 이름이나 상대 경로로 입구 파일을 가져와도 같다. 다른 패키지 안을 상대 경로로 가리키는 것과 내보내지 않은 하위 경로는
+ * product/package-entry-only가 함께 본다. 가져오는 자리는 공용 판정
  * (scripts/eslint-imports.mjs)이 정한다: import·export·dynamic import·`require`·createRequire가 만든 함수·`.resolve`.
  */
 const importScopeAlternatives =
@@ -824,16 +825,22 @@ const packageImportScope = {
   },
   create(context) {
     const { packages, why } = context.options[0];
-    const file = context.filename.replaceAll("\\", "/");
-    /** 범위 안 패키지를 이름으로 가리키면 그 패키지와 입구, 아니면 undefined. 이 파일이 든 패키지는 보지 않는다. */
+    /**
+     * 범위 안 패키지의 입구를 가리키면 그 패키지와 입구(패키지 이름 경로), 아니면 undefined. 경로 철자가 아니라 대상으로 본다
+     * (공용 판정의 `targetOf`, #266 리뷰 SPEC-6): 자기 패키지 이름·상대 경로·확장자 없는 철자가 같은 입구 파일이면 같은 판정이고,
+     * 자기 패키지 안이어도 그렇다. 입구가 아닌 안쪽 파일(입구가 다시 내보내는 모듈 포함)은 이 규칙이 보지 않는다(다른 패키지
+     * 안쪽은 package-entry-only가, 그룹 끄기 이름은 no-group-stop-import가 본다).
+     */
     const target = (source) => {
-      if (typeof source !== "string") return undefined;
-      const name = Object.keys(packages).find(
-        (each) => source === each || source.startsWith(`${each}/`)
-      );
-      if (!name || file.includes(`/packages/${name.split("/")[1]}/`))
+      const found = targetOf(context.filename, source);
+      if (!found?.package || !(found.package.name in packages))
         return undefined;
-      return { name, entry: source };
+      if (found.entry === undefined) return undefined;
+      const { name } = found.package;
+      return {
+        name,
+        entry: found.entry === "." ? name : `${name}${found.entry.slice(1)}`,
+      };
     };
     const check = (node, source) => {
       const found = target(source);
