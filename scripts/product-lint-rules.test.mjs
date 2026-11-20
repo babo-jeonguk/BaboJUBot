@@ -32,7 +32,9 @@ const testPlaces = [
   "packages/runtime/src/providers/test-support.ts",
 ];
 
-const launchRules = ["no-restricted-imports", "no-restricted-syntax"];
+// 실행 경계: 가져오기는 공용 가져오기 판정을 쓰는 product/launch-boundary가, 가져오기 검사를 피하는 문법(계산한 경로, getBuiltinModule,
+// process의 계산한 이름)은 no-restricted-syntax가 본다.
+const launchRules = ["product/launch-boundary", "no-restricted-syntax"];
 
 const launches = {
   "a named import": `import { spawn } from "node:child_process";\nspawn("x");\n`,
@@ -42,6 +44,9 @@ const launches = {
   // runtime이 의존하는 cross-spawn도 같은 실행이다.
   "cross-spawn": `import spawn from "cross-spawn";\nspawn("x");\n`,
   "cross-spawn dynamically": `const { default: spawn } = await import("cross-spawn");\nspawn("x");\n`,
+  // 공용 가져오기 판정: require와 TypeScript의 import-equals도 같다(#266 리뷰 SPEC-1).
+  "a require": `const cp = require("node:child_process");\ncp.spawn("x");\n`,
+  "an import-equals require": `import cp = require("child_process");\ncp.spawn("x");\n`,
   // 실행 경계 검사를 거치지 않고 모듈을 불러오는 길도 막는다. 계산한 경로·template literal의 import는 무엇을 가져오는지 lint가 볼 수 없다.
   "a computed dynamic import": `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\n`,
   "a template literal dynamic import":
