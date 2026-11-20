@@ -2601,7 +2601,8 @@ describe("docker failures during container cleanup", () => {
   });
 });
 
-describe("the isolation probe", () => {
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 확인이 여는 중계의 파일 소켓은 Linux·macOS에서 본다.
+describe.skipIf(process.platform === "win32")("the isolation probe", () => {
   it("names each failure the container reported from the original error's code and name", async () => {
     const root = await folders.make("babojubot-probe-");
     // 컨테이너 안 확인 스크립트 대신 정해진 결과를 내는 프로그램. 확인 스크립트는 원래 오류의 code·name만 보낸다.
