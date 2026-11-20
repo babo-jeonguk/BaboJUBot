@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { failureCode } from "@babojubot/contracts";
 
 /**
  * `ps -o <칸>= -p <pid>`로 프로세스 하나의 칸 하나를 읽는다. 대상이 없으면 ps는 아무것도 쓰지 않고 1로 끝나므로(macOS·procps)
@@ -23,7 +24,7 @@ export function psField(
   if (!result.error && result.status === 1 && !out && !reported)
     return undefined;
   const ending = result.error
-    ? ((result.error as NodeJS.ErrnoException).code ?? result.error.name)
+    ? failureCode(result.error)
     : result.status === 0
       ? "no output"
       : `exit ${result.status ?? result.signal}`;

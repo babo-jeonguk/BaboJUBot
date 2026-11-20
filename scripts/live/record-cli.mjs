@@ -151,9 +151,7 @@ const exitAfterLog = (code) =>
   log.end((error) => {
     if (error)
       process.stderr.write(
-        "[record-cli] the recording could not be written (" +
-          (error.code ?? error.name) +
-          ")\n"
+        `[record-cli] the recording could not be written (${failureCode(error)})\n`
       );
     process.exit(error ? 1 : code);
   });
