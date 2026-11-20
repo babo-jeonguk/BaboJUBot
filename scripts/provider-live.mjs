@@ -10,7 +10,7 @@ import {
   createClaudeProvider,
   createCodexProvider,
   createOpenCodeProvider,
-} from "../packages/runtime/src/index.ts";
+} from "@babojubot/runtime";
 import { openEphemeralDatabase } from "../packages/db/src/index.ts";
 import { agentSessions } from "../packages/db/src/schema.ts";
 import { startServer } from "../apps/server/src/index.ts";

@@ -527,8 +527,8 @@ const boundedCommand = {
 
 /**
  * 다른 영역이 runtime·프로세스 패키지에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
- * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 상대 경로도 풀어서 본다: 그 패키지의
- * `src/index.ts`는 패키지 이름과 같게 보고, 그 밖의 파일(`packages/<폴더>/…`)은 어느 목록에도 들지 않는다. 패키지 자신의 파일은 보지 않는다.
+ * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 상대 경로도 풀어서 본다: 그 패키지 안을
+ * 가리키는 상대 경로(`packages/<폴더>/…`, 입구 파일 `src/index.ts` 포함)는 어느 목록에도 들지 않는다. 패키지 자신의 파일은 보지 않는다.
  */
 const importScopeAlternatives =
   "프로세스 띄우기·끄기와 짧은 명령은 @babojubot/process(launchTree·runTree·runCommand), 시험의 정리 도움은 @babojubot/process/test-cleanup·/remove-folder·/lifelines·/testing에 있습니다. 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 씁니다. 다른 곳은 띄울 때 launchTree가 돌려준 stop()으로 끕니다(docs/architecture.md 패키지 구성).";
@@ -554,7 +554,7 @@ const packageImportScope = {
       },
     ],
     messages: {
-      outside: `{{source}}: {{why}} 이 자리에서 {{name}}은 {{allowed}}만 가져옵니다. ${importScopeAlternatives}`,
+      outside: `{{source}}: {{why}} 이 자리에서 {{name}}은 {{allowed}}만 패키지 이름으로 가져옵니다(상대 경로 금지). ${importScopeAlternatives}`,
       none: `{{source}}: {{why}} 이 자리에서는 {{name}}을 가져오지 않습니다. ${importScopeAlternatives}`,
     },
   },
@@ -582,11 +582,7 @@ const packageImportScope = {
         const resolved = parts.join("/");
         const at = resolved.indexOf(folder);
         if (at < 0) continue;
-        const inside = resolved.slice(at + folder.length);
-        return {
-          name,
-          entry: inside === "src/index.ts" ? name : `${folder}${inside}`,
-        };
+        return { name, entry: resolved.slice(at) };
       }
       return undefined;
     };

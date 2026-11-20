@@ -172,8 +172,7 @@ export function chaosServer({
     };
     const { openDatabase, openEphemeralDatabase } =
       await import("../../packages/db/src/index.ts");
-    const { recoverProviderProcesses } =
-      await import("../../packages/runtime/src/index.ts");
+    const { recoverProviderProcesses } = await import("@babojubot/runtime");
     const pgDir = path.join(home, "postgres");
     // 서버 멈춤, 남은 DB·기록의 제품 정리, 띄운 모든 서버 트리 끄기. 앞 단계가 실패해도 트리는 끄고, 실패를 모아 알린다(홈은 남긴다).
     await cleanUpScene({
@@ -361,7 +360,7 @@ function fakeLiveAdapter(defaultFakeCapabilities) {
 async function runChild(configFile) {
   const config = JSON.parse(readFileSync(configFile, "utf8"));
   const { home, files } = config;
-  const runtime = await import("../../packages/runtime/src/index.ts");
+  const runtime = await import("@babojubot/runtime");
   const db = await import("../../packages/db/src/index.ts");
   const { startServer } = await import("../../apps/server/src/index.ts");
   const handle =

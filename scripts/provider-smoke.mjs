@@ -5,7 +5,7 @@ import {
   createCodexProvider,
   createOpenCodeProvider,
   createAntigravityProvider,
-} from "../packages/runtime/src/index.ts";
+} from "@babojubot/runtime";
 import { openEphemeralDatabase } from "../packages/db/src/index.ts";
 import { startServer } from "../apps/server/src/index.ts";
 import { withCheckServer } from "./live/check-server.mjs";
