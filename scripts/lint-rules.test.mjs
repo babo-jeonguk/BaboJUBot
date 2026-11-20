@@ -1698,6 +1698,27 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst noop = (value) => value !== undefined;\nawait noop(later);\n`,
       /기다리지 않습니다/,
     ],
+    // 내장·외부 패키지의 함수는 결과를 받는지 알 수 없다. 이 저장소의 시험 도움만 따라갈 수 없어도 기다림으로 본다.
+    "an await around an imported built-in function": [
+      `${laterImport}import { inspect } from "node:util";\n${laterHead}const later = awaitedLater(p);\nawait inspect(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await around a method of a built-in namespace": [
+      `${laterImport}import * as fsp from "node:fs/promises";\n${laterHead}const later = awaitedLater(p);\nawait fsp.readFile(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await of an array that holds it": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait [later];\n`,
+      /기다리지 않습니다/,
+    ],
+    "a switch without default that awaits in every case": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nswitch (Math.random() > 0.5) {\n  case true:\n    await later;\n    break;\n  case false:\n    await later;\n}\n`,
+      /한 분기/,
+    ],
+    "nested ifs with one leaf that does not await": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nif (Math.random() > 0.5) {\n  if (Math.random() > 0.5) await later;\n  else use(1);\n} else await later;\n`,
+      /한 분기/,
+    ],
     "an expect that neither rejects nor resolves": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(later).toBeInstanceOf(Promise);\n`,
       /기다리지 않습니다/,
@@ -1772,6 +1793,9 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     `const later = awaitedLater(p);\nif (Math.random() > 0.5) await later;\nelse await Promise.all([later]);\n`,
     `const later = awaitedLater(p);\nif (Math.random() > 0.5) use(1);\nawait later;\n`,
     `const later = awaitedLater(p);\ntry {\n  await later;\n} finally {\n  use(1);\n}\n`,
+    `const later = awaitedLater(p);\nswitch (Math.floor(Math.random() * 3)) {\n  case 0:\n  case 1:\n    await later;\n    break;\n  default:\n    await later;\n}\n`,
+    `const later = awaitedLater(p);\nif (Math.random() > 0.5) {\n  if (Math.random() > 0.5) await later;\n  else await later;\n} else await later;\n`,
+    `import { within } from "@babojubot/runtime/testing";\nconst later = awaitedLater(p);\nawait within(later, 1000);\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
