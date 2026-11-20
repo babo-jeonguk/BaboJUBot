@@ -27,28 +27,33 @@ const graph = {
     deps: ["@babojubot/core", "@babojubot/runtime"],
   },
   "@babojubot/web": { dir: "apps/web", deps: ["@babojubot/runtime"] },
+  // 저장소 뿌리 패키지: scripts·.agents의 시험이 쓰는 패키지를 의존성으로 둔다.
+  babojubot: { dir: ".", deps: ["@babojubot/runtime"] },
 };
 
 const lint = (...files) =>
   `pnpm exec eslint --no-warn-ignored ${files.join(" ")}`;
 const typecheck = (name, kind = "") =>
   `pnpm --filter ${name} run typecheck${kind ? `:${kind}` : ""}`;
+/** 문서 검사는 늘 돈다. 나머지 묶음은 그 묶음의 시험이 보는 파일이 바뀌었을 때만 돈다. */
+const docs = "pnpm check:docs";
+const rules = "pnpm check:rules";
+const agents = "pnpm check:agents";
+const scripts = "pnpm check:scripts";
 
-test("runs only the project check for document changes", () => {
-  assert.deepEqual(plan(["README.md", "docs/agents/worker.md"], graph), [
-    "pnpm check",
-  ]);
+test("runs only the document check for document changes", () => {
+  assert.deepEqual(plan(["README.md", "docs/agents/worker.md"], graph), [docs]);
 });
 
-test("runs only the project check when nothing changed", () => {
-  assert.deepEqual(plan([], graph), ["pnpm check"]);
+test("runs only the document check when nothing changed", () => {
+  assert.deepEqual(plan([], graph), [docs]);
 });
 
 test("type-checks only the test side when only tests changed", () => {
   assert.deepEqual(plan(["apps/server/test/a.test.ts"], graph), [
     lint("apps/server/test/a.test.ts"),
     typecheck("@babojubot/server", "test"),
-    "pnpm check",
+    docs,
   ]);
 });
 
@@ -57,7 +62,7 @@ test("type-checks the changed package and every package that uses it when produc
     lint("packages/core/src/policy.ts"),
     typecheck("@babojubot/core"),
     typecheck("@babojubot/server"),
-    "pnpm check",
+    docs,
   ]);
 });
 
@@ -69,7 +74,10 @@ test("follows users of users", () => {
     typecheck("@babojubot/runtime"),
     typecheck("@babojubot/server"),
     typecheck("@babojubot/web"),
-    "pnpm check",
+    docs,
+    rules,
+    agents,
+    scripts,
   ]);
 });
 
@@ -79,7 +87,10 @@ test("type-checks the test side of users when a shared test helper changed", () 
     typecheck("@babojubot/runtime", "test"),
     typecheck("@babojubot/server", "test"),
     typecheck("@babojubot/web", "test"),
-    "pnpm check",
+    docs,
+    rules,
+    agents,
+    scripts,
   ]);
 });
 
@@ -91,7 +102,10 @@ test("a full type check wins over a test-side one for the same package", () => {
       typecheck("@babojubot/runtime"),
       typecheck("@babojubot/server"),
       typecheck("@babojubot/web"),
-      "pnpm check",
+      docs,
+      rules,
+      agents,
+      scripts,
     ]
   );
 });
@@ -104,7 +118,7 @@ test("treats package settings outside src as product changes", () => {
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
       typecheck("@babojubot/web"),
-      "pnpm check",
+      docs,
     ]
   );
 });
@@ -134,9 +148,59 @@ test("lints scripts outside packages without type-checking a package", () => {
     plan(["scripts/ci-changes.mjs", ".agents/scripts/run-worker.mjs"], graph),
     [
       lint(".agents/scripts/run-worker.mjs", "scripts/ci-changes.mjs"),
-      "pnpm check",
+      docs,
+      agents,
+      scripts,
     ]
   );
+});
+
+test("runs the lint rule tests when a lint rule or its test changed", () => {
+  for (const file of [
+    "scripts/eslint-imports.mjs",
+    "scripts/lint-access-shapes.mjs",
+    "scripts/lint-rule-testing.mjs",
+    "scripts/lint-rules.test.mjs",
+    "scripts/product-lint-rules.test.mjs",
+  ])
+    assert.deepEqual(plan([file], graph), [lint(file), docs, rules], file);
+});
+
+test("runs the worker tests when the agent tools changed", () => {
+  assert.deepEqual(plan([".agents/agents/dev-worker.md"], graph), [
+    docs,
+    agents,
+  ]);
+  assert.deepEqual(plan([".opencode/agents/dev-worker.md"], graph), [
+    docs,
+    agents,
+  ]);
+});
+
+test("runs the script tests when a script or the CI workflow changed", () => {
+  assert.deepEqual(plan([".github/workflows/scaffold.yml"], graph), [
+    docs,
+    scripts,
+  ]);
+  assert.deepEqual(plan(["scripts/live/check-server.mjs"], graph), [
+    lint("scripts/live/check-server.mjs"),
+    docs,
+    scripts,
+  ]);
+});
+
+test("runs the rule, worker and script tests when a package the root uses changed", () => {
+  // 뿌리 패키지가 쓰는 runtime이 바뀌면 lint 규칙·scripts·.agents의 시험도 돈다. 쓰지 않는 core만 바뀌면 돌지 않는다.
+  assert.deepEqual(plan(["packages/runtime/src/run.ts"], graph), [
+    lint("packages/runtime/src/run.ts"),
+    typecheck("@babojubot/runtime"),
+    typecheck("@babojubot/server"),
+    typecheck("@babojubot/web"),
+    docs,
+    rules,
+    agents,
+    scripts,
+  ]);
 });
 
 test("does not lint deleted files but still type-checks their package", () => {
@@ -149,7 +213,7 @@ test("does not lint deleted files but still type-checks their package", () => {
       lint("packages/core/src/new.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
-      "pnpm check",
+      docs,
     ]
   );
 });
@@ -168,7 +232,7 @@ test("lints each file once, in path order", () => {
       lint("packages/core/src/a.ts", "packages/core/src/b.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
-      "pnpm check",
+      docs,
     ]
   );
 });
@@ -177,7 +241,7 @@ test("does not lint files ESLint does not read", () => {
   assert.deepEqual(plan(["packages/core/src/data.json"], graph), [
     typecheck("@babojubot/core"),
     typecheck("@babojubot/server"),
-    "pnpm check",
+    docs,
   ]);
 });
 
@@ -297,7 +361,7 @@ test("prints the plan for uncommitted, untracked and deleted files against the b
     "pnpm exec eslint --no-warn-ignored packages/a/src/a.ts packages/a/src/new.ts",
     "pnpm --filter @x/a run typecheck",
     "pnpm --filter @x/b run typecheck",
-    "pnpm check",
+    "pnpm check:docs",
   ]);
 });
 
