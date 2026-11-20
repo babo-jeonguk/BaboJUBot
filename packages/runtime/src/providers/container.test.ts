@@ -14,7 +14,7 @@ import { realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import http from "node:http";
-import type net from "node:net";
+import net from "node:net";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -2687,6 +2687,98 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
       "[provider] the isolation probe's proxied check failed (no answer within 5000 ms)",
       "[provider] the isolation probe's direct check failed (RangeError)",
     ]);
+  });
+
+  /** 모든 검사를 끝까지 한 확인 결과를 내는 가짜 docker와 그 기록 폴더. `files`는 가짜 docker의 상태 파일이다(`rm-fails` 등). */
+  async function cleanProbe(files: Record<string, string> = {}) {
+    const root = await folders.make("babojubot-probe-");
+    for (const [name, value] of Object.entries(files))
+      await writeFile(path.join(root, name), value);
+    const answer = path.join(root, "answer.mjs");
+    await writeFile(
+      answer,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: true,
+          failures: [],
+          proxyEnv: true,
+        })
+      )});\n`
+    );
+    const environment = createDockerEnvironment({
+      docker: [
+        process.execPath,
+        fixture("fake-docker.mjs"),
+        root,
+        JSON.stringify({ node: [process.execPath, answer] }),
+      ],
+      image,
+      owner: "owner-test",
+      relay: attachedRelayHub(),
+    });
+    const removals = async () =>
+      (await readFile(path.join(root, "calls.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Call)
+        .filter((call) => call.args[0] === "rm");
+    return { environment, removals };
+  }
+
+  // 중계 닫기와 확인 컨테이너 지우기는 서로 독립인 정리다. 한쪽이 실패해도 다른 쪽을 하고, 실패는 확인의 실패로 드러난다
+  // (#264 외부 리뷰 5회차 STD-4). 확인이 실패하면 관문은 격리 환경 없음으로 본다.
+  it("still removes its container when the relay does not close, and fails the check", async () => {
+    const { environment, removals } = await cleanProbe();
+    const close = net.Server.prototype.close;
+    const failing = vi
+      .spyOn(net.Server.prototype, "close")
+      .mockImplementation(function (
+        this: net.Server,
+        callback?: (error?: Error) => void
+      ) {
+        return close.call(this, (error?: Error) =>
+          callback?.(
+            error ?? Object.assign(new Error("close failed"), { code: "EBUSY" })
+          )
+        );
+      });
+    onTestFinished(() => failing.mockRestore());
+    await expect(
+      environment.probe(
+        { blocked: [], forbidden: [] },
+        AbortSignal.timeout(10_000)
+      )
+    ).rejects.toThrow("a relay server did not close (EBUSY)");
+    expect(await removals()).toEqual([
+      {
+        args: ["rm", "-f", expect.stringMatching(/^babojubot-probe-/)],
+        relayOpen: false,
+      },
+    ]);
+  });
+
+  it("fails the check when its container cannot be removed, after closing the relay", async () => {
+    const { environment, removals } = await cleanProbe({ "rm-fails": "" });
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    await expect(
+      environment.probe(
+        { blocked: [], forbidden: [] },
+        AbortSignal.timeout(10_000)
+      )
+    ).rejects.toThrow(
+      /the isolation probe container babojubot-probe-\S+ could not be removed/
+    );
+    // 지우기 전에 중계를 닫았다(가짜 docker가 rm 때 중계 소켓이 남았는지 기록한다). 지우기는 세 번 시도한다.
+    expect(await removals()).toEqual(
+      Array.from({ length: 3 }, () => ({
+        args: ["rm", "-f", expect.stringMatching(/^babojubot-probe-/)],
+        relayOpen: false,
+      }))
+    );
   });
 });
 
