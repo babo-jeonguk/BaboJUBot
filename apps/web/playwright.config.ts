@@ -11,7 +11,7 @@ export default defineConfig({
   // 실행 순서로 DB 상태를 정하지 않는다. 빈 DB가 필요한 검사는 자기 서버(e2e/support/isolated-server.ts)를 띄운다.
   workers: 1,
   forbidOnly: !!process.env.CI,
-  // CI는 줄 보고와 함께 JSON 보고서를 남겨 통과·실패·건너뜀 수와 서버 수명 시험의 실행을 판정한다(scripts/check-e2e-report.mjs).
+  // CI는 줄 보고와 함께 JSON 보고서를 남겨 통과·실패·건너뜀 수와 e2e 폴더의 spec마다 통과한 시험이 있는지 판정한다(scripts/check-e2e-report.mjs).
   reporter: process.env.CI
     ? [["line"], ["json", { outputFile: "test-results/e2e-report.json" }]]
     : "list",

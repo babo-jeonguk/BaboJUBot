@@ -150,7 +150,7 @@ test("runs the macOS and Windows suites on their own systems", () => {
   );
 });
 
-// Windows E2E는 두 job으로 나눠(Playwright shard) 동시에 돌고, 판정 job이 두 보고서를 합쳐 결과 수·서버 수명 시험을 판정한다.
+// Windows E2E는 두 job으로 나눠(Playwright shard) 동시에 돌고, 판정 job이 두 보고서를 합쳐 결과 수·예상 spec을 판정한다.
 test("splits the Windows E2E into two shard jobs and judges their reports together", () => {
   const shards = [1, 2].map((n) => workflow.jobs[`test-e2e-windows-${n}`]);
   const stopCheck = (each) => /test\/main\.test\.ts/.test(each.run ?? "");

@@ -111,7 +111,7 @@ jobs:
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
         timeout-minutes: 12
         run: pnpm run test:e2e
-      # 통과·실패·건너뜀 수를 남기고, 예상 밖 건너뜀과 빠진 서버 수명 시험을 실패로 본다.
+      # 통과·실패·건너뜀 수를 남기고, 실패 예정 결과·예상 밖 건너뜀·통과 없이 빠진 spec을 실패로 본다(scripts/check-e2e-report.mjs).
       - name: Check E2E report
         if: ${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}
         run: node scripts/check-e2e-report.mjs --os linux apps/web/test-results/e2e-report.json
@@ -576,7 +576,7 @@ jobs:
           path: apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 3
-  # 두 shard의 보고서를 합쳐 판정한다. 결과 수를 남기고 예상 밖 건너뜀·빠진 서버 수명 시험을 실패로 본다.
+  # 두 shard의 보고서를 합쳐 판정한다. 결과 수를 남기고 실패 예정 결과·예상 밖 건너뜀·통과 없이 빠진 spec, 통과한 시험이 없는 shard를 실패로 본다.
   # shard가 실패해도 돌아 수를 남기고, 보고서가 빠지면 실패한다.
   test-e2e-windows:
     name: e2e on windows-latest
