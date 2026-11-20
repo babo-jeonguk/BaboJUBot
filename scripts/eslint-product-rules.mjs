@@ -7,6 +7,8 @@ import path from "node:path";
 import {
   combineVisitors,
   importSites,
+  originName,
+  originOf,
   repositoryPath,
   targetOf,
   workspacePackages,
@@ -33,29 +35,33 @@ function unwrap(node) {
   return value;
 }
 
-/** `JSON.parse(...)`, 응답 본문 `x.json()`, 그 값에 기본값을 붙이거나 `.catch`·`.then`으로 이어 받은 값인가. */
-function readsOutsideData(node) {
+/**
+ * `JSON.parse(...)`, 응답 본문 `x.json()`, 그 값에 기본값을 붙이거나 `.catch`·`.then`으로 이어 받은 값인가. `JSON`은 이름이 아니라
+ * 출처로 본다(전역 JSON과 그 별칭, 같은 이름의 지역 값은 아님).
+ */
+function readsOutsideData(node, sourceCode) {
   const value = unwrap(node);
   if (value.type === "LogicalExpression")
-    return readsOutsideData(value.left) || readsOutsideData(value.right);
+    return (
+      readsOutsideData(value.left, sourceCode) ||
+      readsOutsideData(value.right, sourceCode)
+    );
   if (value.type !== "CallExpression") return false;
   const { callee } = value;
   if (callee.type !== "MemberExpression" || callee.computed) return false;
   switch (callee.property.name) {
     case "parse":
-      return (
-        callee.object.type === "Identifier" && callee.object.name === "JSON"
-      );
+      return originName(sourceCode, callee) === "global:JSON.parse";
     case "json":
       return true;
     case "catch":
-      return readsOutsideData(callee.object);
+      return readsOutsideData(callee.object, sourceCode);
     case "then": {
       const [callback] = value.arguments;
       return (
         callback?.type === "ArrowFunctionExpression" &&
         callback.body.type !== "BlockStatement" &&
-        readsOutsideData(callback.body)
+        readsOutsideData(callback.body, sourceCode)
       );
     }
     default:
@@ -86,7 +92,7 @@ const noAssertionOnParsedData = {
     return {
       TSAsExpression(node) {
         if (node.typeAnnotation.type === "TSUnknownKeyword") return;
-        if (readsOutsideData(node.expression))
+        if (readsOutsideData(node.expression, context.sourceCode))
           context.report({ node, messageId: "asserted" });
       },
     };
@@ -94,7 +100,6 @@ const noAssertionOnParsedData = {
 };
 
 const childProcess = new Set(["child_process", "node:child_process"]);
-const syncLaunchers = new Set(["execFileSync", "spawnSync", "execSync"]);
 
 /** 상한이 없다는 뜻인 값: Node는 `timeout`이 0이거나 없으면 기다림에 끝을 두지 않는다. */
 const unbounded = (value) =>
@@ -148,25 +153,14 @@ const syncCommandTimeout = {
     },
   },
   create(context) {
-    /** 이 파일에서 child_process의 동기 실행 함수를 가리키는 지역 이름 → 원래 이름. */
-    const imported = new Map();
-    const sites = importSites(context, (site) => {
-      if (!childProcess.has(site.source)) return;
-      for (const name of site.names)
-        if (name.local && syncLaunchers.has(name.imported))
-          imported.set(name.local, name.imported);
-    });
-    return combineVisitors(sites, {
+    return {
       CallExpression(node) {
-        const { callee } = node;
+        // 이름이 아니라 출처로 본다: child_process에서 온 동기 실행(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도).
+        const origin = originName(context.sourceCode, node.callee);
         const name =
-          callee.type === "Identifier"
-            ? imported.get(callee.name)
-            : callee.type === "MemberExpression" &&
-                !callee.computed &&
-                syncLaunchers.has(callee.property.name)
-              ? callee.property.name
-              : undefined;
+          /^module:child_process:(execFileSync|spawnSync|execSync)$/.exec(
+            origin ?? ""
+          )?.[1];
         if (!name) return;
         const options = node.arguments.find(hasTimeout);
         if (!options)
@@ -174,7 +168,7 @@ const syncCommandTimeout = {
         if (!killsAtTimeout(options))
           context.report({ node, messageId: "soft", data: { name } });
       },
-    });
+    };
   },
 };
 
@@ -451,7 +445,6 @@ const noIoInUnreadable = {
   },
   create(context) {
     /** 이 파일에서 orIfUnreadable을 가리키는 지역 이름. */
-    const names = new Set(["orIfUnreadable"]);
     const { visitorKeys } = context.sourceCode;
     /** 콜백 몸 전체를 돌며 `await`와 입출력 호출을 짚는다. 안쪽 함수도 본다. */
     const inspect = (node) => {
@@ -467,18 +460,13 @@ const noIoInUnreadable = {
           if (item && typeof item.type === "string") inspect(item);
       }
     };
-    const sites = importSites(context, (site) => {
-      for (const name of site.names)
-        if (name.local && name.imported === "orIfUnreadable")
-          names.add(name.local);
-    });
-    return combineVisitors(sites, {
+    return {
       CallExpression(node) {
-        const { callee } = node;
+        // 이름이 아니라 출처로 본다: contracts의 orIfUnreadable(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도).
         const called =
-          callee.type === "Identifier"
-            ? names.has(callee.name)
-            : calledMethod(callee) === "orIfUnreadable";
+          /^module:(@babojubot\/contracts(\/failure)?|(\.{1,2}\/)+(.*\/)?failure(\.ts)?):orIfUnreadable$/.test(
+            originName(context.sourceCode, node.callee) ?? ""
+          );
         if (!called) return;
         const [read] = node.arguments;
         if (!read) return;
@@ -489,7 +477,7 @@ const noIoInUnreadable = {
         if (read.async) context.report({ node: read, messageId: "async" });
         inspect(read.body);
       },
-    });
+    };
   },
 };
 
@@ -527,7 +515,7 @@ const noCleanupChain = {
     const reported = new Set();
     const check = (block) => {
       const found =
-        skippedCleanupIn(block) ??
+        skippedCleanupIn(block, context.sourceCode) ??
         skippedSyncCleanupIn(block, context.sourceCode);
       if (!found || reported.has(found.node)) return;
       reported.add(found.node);
@@ -624,8 +612,21 @@ const noDirectLaunch = {
     },
   },
   create(context) {
-    /** 이 파일에서 모듈 객체를 가리키는 지역 이름 → 모듈 종류. */
-    const modules = new Map();
+    /**
+     * 식이 실행 모듈의 모듈 객체(child_process 이름공간·기본 가져오기, cross-spawn의 기본 함수)면 그 모듈. 이름이 아니라 출처로 본다
+     * (별칭으로 받아도 같고, 같은 이름의 매개변수는 아니다).
+     */
+    const moduleObject = (node) => {
+      const origin = originOf(context.sourceCode.getScope(node), node);
+      if (!origin?.module || !launchModule(origin.module)) return undefined;
+      const module = launchModule(origin.module);
+      return origin.path.length === 0 ||
+        (module === crossSpawn &&
+          origin.path.length === 1 &&
+          origin.path[0] === "default")
+        ? module
+        : undefined;
+    };
     const report = (node, name, messageId = "direct") =>
       context.report({ node, messageId, data: { name } });
     const banned = (module, name) =>
@@ -641,35 +642,29 @@ const noDirectLaunch = {
         return report(site.node, `${site.loader}("${site.source}")`, "loaded");
       if (site.kind === "export" && site.names.some((n) => n.imported === "*"))
         return report(site.node, `${site.source}의 export *`);
-      for (const name of site.names) {
-        if (name.typeOnly) continue;
+      // 모듈 객체로 받은 것은 그것을 부르거나 읽는 자리에서 본다(아래).
+      for (const name of site.names)
         if (
-          site.kind === "import" &&
-          (name.imported === "*" || name.imported === "default")
+          !name.typeOnly &&
+          name.imported !== "*" &&
+          !(site.kind === "import" && name.imported === "default") &&
+          banned(module, name.imported)
         )
-          modules.set(name.local, module);
-        else if (banned(module, name.imported))
           report(name.node, `${site.source}의 ${name.imported}`);
-      }
     });
     return combineVisitors(sites, {
       CallExpression(node) {
         const { callee } = node;
         // cross-spawn의 기본 함수 자체를 부른다(`spawn(...)`).
-        if (
-          callee.type === "Identifier" &&
-          modules.get(callee.name) === crossSpawn
-        )
-          report(node, `${crossSpawn}`);
+        if (moduleObject(callee) === crossSpawn) report(node, `${crossSpawn}`);
       },
       MemberExpression(node) {
-        if (node.object.type !== "Identifier") return;
-        const module = modules.get(node.object.name);
+        const module = moduleObject(node.object);
         if (!module) return;
+        const where = context.sourceCode.getText(node.object);
         const name = propertyName(node);
-        if (name === undefined) report(node, `${node.object.name}[…]`);
-        else if (banned(module, name))
-          report(node, `${node.object.name}.${name}`);
+        if (name === undefined) report(node, `${where}[…]`);
+        else if (banned(module, name)) report(node, `${where}.${name}`);
       },
     });
   },
@@ -760,34 +755,12 @@ const boundedCommand = {
     },
   },
   create(context) {
-    /** child_process에서 가져온 비동기 실행의 지역 이름 → 원래 이름, 그리고 모듈 객체의 지역 이름. */
-    const named = new Map();
-    const modules = new Set();
-    const launcherOf = (callee) => {
-      if (callee.type === "Identifier") return named.get(callee.name);
-      if (
-        callee.type === "MemberExpression" &&
-        callee.object.type === "Identifier" &&
-        modules.has(callee.object.name)
-      ) {
-        const name = propertyName(callee);
-        return asyncLaunchers.has(name) ? name : undefined;
-      }
-      return undefined;
-    };
-    const sites = importSites(context, (site) => {
-      if (!childProcess.has(site.source) || site.typeOnly) return;
-      for (const name of site.names) {
-        if (name.typeOnly || !name.local) continue;
-        if (name.imported === "*" || name.imported === "default")
-          modules.add(name.local);
-        else if (asyncLaunchers.has(name.imported))
-          named.set(name.local, name.imported);
-      }
-    });
-    return combineVisitors(sites, {
+    return {
       CallExpression(node) {
-        const name = launcherOf(node.callee);
+        // 이름이 아니라 출처로 본다: child_process의 비동기 실행(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도).
+        const name = /^module:child_process:(spawn|fork|exec|execFile)$/.exec(
+          originName(context.sourceCode, node.callee) ?? ""
+        )?.[1];
         if (!name) return;
         if (name === "execFile" || name === "exec")
           return context.report({
@@ -798,7 +771,7 @@ const boundedCommand = {
         if (node.arguments.some(hasTimeout))
           context.report({ node, messageId: "timeout", data: { name } });
       },
-    });
+    };
   },
 };
 
@@ -1194,15 +1167,15 @@ const noFailureCollecting = {
       },
       NewExpression(node) {
         if (
-          node.callee.type === "Identifier" &&
-          node.callee.name === "AggregateError"
+          originName(context.sourceCode, node.callee) ===
+          "global:AggregateError"
         )
           report(node, "combined");
       },
       CallExpression(node) {
         if (
-          node.callee.type === "Identifier" &&
-          node.callee.name === "AggregateError"
+          originName(context.sourceCode, node.callee) ===
+          "global:AggregateError"
         )
           report(node, "combined");
         const handler = handlerFunction(

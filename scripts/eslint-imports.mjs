@@ -157,6 +157,18 @@ export function originOf(scope, node, depth = 0) {
   }
 }
 
+/**
+ * 자리 `node`의 식이 어디서 왔는지를 한 줄로: 전역이면 `global:이름.속성`, 모듈이면 `module:모듈:속성.속성`(모듈 객체 자체는
+ * `module:모듈:`), 모르면 `undefined`. 규칙은 이 이름을 출처 목록과 견준다(가져온 지역 이름을 모아 글자로 견주지 않는다).
+ */
+export function originName(sourceCode, node) {
+  const origin = originOf(sourceCode.getScope(node), node);
+  if (!origin) return undefined;
+  return origin.global !== undefined
+    ? `global:${[origin.global, ...origin.path].join(".")}`
+    : `module:${origin.module}:${origin.path.join(".")}`;
+}
+
 /** 변수가 어디서 왔는가(`originOf`와 같은 판정). 정의가 없는 전역 이름이면 전역, 다시 대입한 변수는 알 수 없다. */
 function originOfVariable(variable, name, depth = 0) {
   if (
