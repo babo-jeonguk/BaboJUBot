@@ -43,8 +43,19 @@ async function holdLead(
   ).toBe(201);
 }
 
-const stop = async (page: Page, org: { api: (path: string) => string }) =>
+/** 조직을 멈추고 붙잡힌 실행 시도까지 끝났는지 본다. 성공 응답만으로는 실행 시도가 끝났는지 모른다. */
+async function stop(
+  page: Page,
+  org: {
+    api: (path: string) => string;
+    runList: () => Promise<{ status: string }[]>;
+  }
+) {
   expect((await page.request.post(org.api("/stop"))).status()).toBe(200);
+  await expect
+    .poll(async () => (await org.runList()).map((r) => r.status), runs)
+    .not.toContain("running");
+}
 
 test("the global settings show each connection's readiness with a recheck, and a login command only for a missing product login", async ({
   page,

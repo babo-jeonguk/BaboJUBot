@@ -12,6 +12,9 @@ const brokenSetup = [
   "--config",
   path.join(fixtures, "broken-setup.config.mjs"),
 ];
+// 일부러 실패시키는 실행은 CI의 시험 묶음이 아니다. 보고 폴더(BABOJUBOT_TEST_REPORTS)를 물려주면 같은 설정을 쓰는 이 실행이
+// 그 패키지의 시험 보고서(db·server)를 덮어 scripts/check-test-reports.mjs가 이 실패를 묶음의 결과로 읽는다.
+const { BABOJUBOT_TEST_REPORTS: _, ...inherited } = process.env;
 const cases = [
   {
     name: "실패한 DB 테스트",
@@ -44,7 +47,7 @@ for (const { name, workspace, args, expected } of cases) {
       encoding: "utf8",
       timeout: 300_000,
       killSignal: "SIGKILL",
-      env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      env: { ...inherited, NO_COLOR: "1", FORCE_COLOR: "0" },
     }
   );
   const output = `${stdout}\n${stderr}`;

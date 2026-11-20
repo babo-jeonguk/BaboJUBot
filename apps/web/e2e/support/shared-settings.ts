@@ -1,4 +1,5 @@
 import {
+  attemptAll,
   attemptEach,
   combinedFailure,
   type ProviderSettings,
@@ -19,9 +20,10 @@ import {
 //
 // 저장 버튼이 잠기거나 클릭이 끝난 것은 저장 확정이 아니다. 저장을 확정한 뒤에 다음 동작을 하려면 `holdWrite`로 그 요청을
 // 붙잡아 진행 중 상태를 보고, `release`가 돌려준 서버 응답과 그 안의 저장값을 확인한다.
-// 정리는 (1) 아직 붙잡힌 요청을 서버에 보내지 않고 끊고 (2) 이 테스트의 화면(browser context)이 서버로 보낸 전역 설정 변경
-// 요청(`release`로 보낸 요청 포함)이 모두 끝나기를 기다린 뒤 (3) 되돌린다. 기다리다 시한을 넘기면 되돌리기는 시도하되
-// 정리를 실패로 알린다. API 요청(`request`·`page.request`)은 테스트가 응답을 기다리므로 추적하지 않는다.
+// 정리는 (1) 이 테스트의 화면(browser context)이 새로 보내는 전역 설정 변경을 서버에 닿기 전에 끊고 (2) 아직 붙잡힌 요청을
+// 서버에 보내지 않고 끊고 (3) 그 전에 화면이 서버로 보낸 전역 설정 변경 요청(`release`로 보낸 요청 포함)이 모두 끝나기를
+// 기다린 뒤 (4) 설정마다 따로 되돌린다. 기다리다 시한을 넘기거나 설정 하나를 되돌리지 못해도 나머지 단계는 하고 정리를 실패로
+// 알린다. API 요청(`request`·`page.request`)은 테스트가 응답을 기다리므로 추적하지 않는다.
 // 그래서 늦게 도착한 화면의 저장이 되돌린 값을 덮지 않고, 정리 뒤 route callback이 닫힌 page를 쓰지 않는다.
 
 // 붙잡은 요청의 도착·응답과 정리 단계마다 기다리는 시한.
@@ -91,19 +93,30 @@ async function put(request: APIRequestContext, path: string, data: unknown) {
   expect(response.status(), `${path} 되돌리기`).toBe(200);
 }
 
+/** 설정마다 따로 되돌린다. 기본값·격리 실행·연결별 상한은 서로 무관해 하나를 되돌리지 못해도 나머지를 되돌린다. */
 async function restore(request: APIRequestContext, initial: Snapshot) {
-  await put(request, "/api/providers/defaults", {
-    leadDefault: initial.leadDefault,
-    workerDefault: initial.workerDefault,
-    compaction: initial.compaction,
-  });
-  await put(request, "/api/providers/isolation", {
-    isolated: initial.isolated,
-  });
-  for (const [provider, maxConcurrentRuns] of Object.entries(initial.limits))
-    await put(request, `/api/providers/${provider}/limit`, {
-      maxConcurrentRuns,
-    });
+  await attemptAll(
+    [
+      () =>
+        put(request, "/api/providers/defaults", {
+          leadDefault: initial.leadDefault,
+          workerDefault: initial.workerDefault,
+          compaction: initial.compaction,
+        }),
+      () =>
+        put(request, "/api/providers/isolation", {
+          isolated: initial.isolated,
+        }),
+      ...Object.entries(initial.limits).map(
+        ([provider, maxConcurrentRuns]) =>
+          () =>
+            put(request, `/api/providers/${provider}/limit`, {
+              maxConcurrentRuns,
+            })
+      ),
+    ],
+    "전역 설정을 모두 되돌리지 못했다"
+  );
   expect(await readSettings(request), "되돌린 전역 설정").toEqual(initial);
 }
 
@@ -153,10 +166,18 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
         await target.route(url, handler);
         gates.push({
           drop: () => decide(false),
-          settle: async () => {
-            await failAfter(running, `${url} route callback이 끝나지 않았다`);
-            if (!target.isClosed()) await target.unroute(url, handler);
-          },
+          // callback을 기다리지 못해도 route는 뗀다. 둘은 서로 무관하다.
+          settle: () =>
+            attemptAll(
+              [
+                () =>
+                  failAfter(running, `${url} route callback이 끝나지 않았다`),
+                async () => {
+                  if (!target.isClosed()) await target.unroute(url, handler);
+                },
+              ],
+              `${url} route를 정리하지 못했다`
+            ),
         });
         const arrived = () =>
           failAfter(arrival, `${url} PUT이 route에 닿지 않았다`);
@@ -185,7 +206,13 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
       await use({ initial, holdWrite });
       // 앞 단계가 실패해도 되돌리기는 시도하고, 모은 실패를 함께 알린다.
       for (const gate of gates) gate.drop();
+      // 이제부터 화면이 보내는 전역 설정 변경은 서버에 닿기 전에 끊는다. 아래에서 기다리는 요청은 이 앞에 보낸 것뿐이므로, 끊지
+      // 않으면 기다리는 동안이나 되돌린 뒤에 보낸 변경이 되돌린 값을 덮는다. 붙잡은 요청을 보내는 route(page)는 이것(context)보다
+      // 먼저 돈다.
+      const refuseLate = (route: Route) =>
+        isSettingsWrite(route.request()) ? route.abort() : route.fallback();
       const problems = await attemptEach([
+        () => page.context().route("**/api/providers/**", refuseLate),
         ...gates.map((gate) => gate.settle),
         async () => {
           page.context().off("request", onRequest);
@@ -215,6 +242,8 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
             );
         },
         () => restore(request, initial),
+        // 되돌린 뒤에야 막기를 푼다.
+        () => page.context().unroute("**/api/providers/**", refuseLate),
       ]);
       if (problems.length)
         throw combinedFailure(problems, "전역 설정 정리가 실패했다");
