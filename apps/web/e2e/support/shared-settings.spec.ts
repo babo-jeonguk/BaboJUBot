@@ -210,10 +210,10 @@ test("a settings change the page sends after the test body is refused, so it can
   expect(result.errors, output).toEqual([]);
   expect(result.status, output).toBe("passed");
   expect(code, output).toBe(0);
-  // 화면의 변경이 서버에 닿았다면 응답 상태가 남는다.
+  // 정리가 끊은 요청은 Chromium에서 net::ERR_FAILED로 실패한다(route.abort의 기본 오류). 서버에 닿았다면 응답 상태가 남는다.
   expect(log, output).toContainEqual({
     step: "late page write",
-    outcome: "refused",
+    outcome: "net::ERR_FAILED",
   });
   await expectSettingsAsBefore(request, before, output);
 });

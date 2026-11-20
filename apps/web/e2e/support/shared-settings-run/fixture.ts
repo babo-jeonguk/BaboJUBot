@@ -10,7 +10,8 @@ import {
 /** 안쪽 실행이 바깥 시험(../shared-settings.spec.ts)에 남기는 기록 한 줄. 일어난 차례대로 적는다. */
 export type Entry =
   | { step: "api put"; path: string }
-  | { step: "late page write"; outcome: number | "refused" }
+  /** 서버에 닿았으면 응답 상태, 끊겼으면 브라우저의 실패 문구. */
+  | { step: "late page write"; outcome: number | string }
   | {
       step: "late write answered";
       status: number;

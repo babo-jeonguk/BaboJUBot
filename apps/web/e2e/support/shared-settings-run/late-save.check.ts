@@ -76,10 +76,14 @@ test("ends while a released settings save is still on its way", async ({
         status: response.status(),
         thresholdTokens: saved?.compaction?.thresholdTokens,
       });
-      // 정리가 이 저장을 기다리지 않으면 page가 먼저 닫혀 응답을 넘길 곳이 없다. 그때 난 오류만 넘기고, 열린 page에서 난
-      // 오류는 늦은 저장의 실패로 남긴다.
+      // 정리가 이 저장을 기다리지 않으면 page가 먼저 닫혀 응답을 넘길 곳이 없다. page가 닫혀 난 그 오류(Playwright의 닫힘 문구)만
+      // 넘기고, 그 밖의 오류는 늦은 저장의 실패로 남긴다.
       await route.fulfill({ response }).catch((error: unknown) => {
-        if (!page.isClosed()) throw error;
+        const closed =
+          page.isClosed() &&
+          error instanceof Error &&
+          /Target page, context or browser has been closed/.test(error.message);
+        if (!closed) throw error;
       });
     });
     lateSave.hand(work);
