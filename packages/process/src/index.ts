@@ -20,4 +20,5 @@ export {
   type BoundedRun,
   type WatchedChild,
 } from "./bounded-command.ts";
+export { psField } from "./ps.ts";
 export { realClock, type Clock } from "./clock.ts";
