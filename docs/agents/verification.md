@@ -5,8 +5,8 @@
 ## 실행 시점
 
 - 개발·리뷰 수정 중에는 관련 테스트와 필요한 패키지 타입 검사만 실행합니다. 공용 변경은 호출자까지 포함하며, 영향이 불명확하면 검사 범위를 넓힙니다. 타입 검사는 패키지별로 시험 코드(`typecheck:test`)와 제품 코드(`typecheck:src`)를 나눠 돌릴 수 있고, `typecheck`는 둘을 함께 봅니다. 범위를 직접 고르기 어려우면 `pnpm verify:changed`를 씁니다.
-- worker는 brief의 시험·타입 검사·lint를 직접 통과시키고 보고 직전에 `pnpm verify:changed --base <시험 커밋>`을 한 번 돌리며, parent는 인수할 때 슬라이스의 핵심 시험과 `pnpm verify:changed --base <시험 커밋>`(바뀐 파일의 lint, 영향받는 패키지의 타입 검사, `pnpm check`)을 다시 돌립니다. 타입 검사는 마지막 코드 변경 뒤에 돌린 결과면 재사용합니다. 근거가 부족하거나 권한·상태 전이·공유 계약처럼 위험이 큰 변경은 parent가 검사를 더 돌립니다.
-- 리뷰를 요청하기 전에 `pnpm verify:changed`를 통과시킵니다. 이 명령은 `origin/main`과 갈라진 지점 이후 바뀐 파일(커밋 전 변경 포함)로 lint 대상과 타입 검사할 패키지를 정하고, 마지막에 `pnpm check`를 돌립니다. 판정 규칙은 [verify-changed.mjs](../../scripts/verify-changed.mjs)에 있습니다.
+- worker는 brief의 시험·타입 검사·lint를 직접 통과시키고 보고 직전에 `pnpm verify:changed --base <시험 커밋>`을 한 번 돌리며, parent는 인수할 때 슬라이스의 핵심 시험과 `pnpm verify:changed --base <시험 커밋>`(바뀐 파일의 lint, 영향받는 패키지의 타입 검사, 바뀐 파일이 닿는 `pnpm check` 묶음)을 다시 돌립니다. 타입 검사는 마지막 코드 변경 뒤에 돌린 결과면 재사용합니다. 근거가 부족하거나 권한·상태 전이·공유 계약처럼 위험이 큰 변경은 parent가 검사를 더 돌립니다.
+- 리뷰를 요청하기 전에 `pnpm verify:changed`를 통과시킵니다. 이 명령은 `origin/main`과 갈라진 지점 이후 바뀐 파일(커밋 전 변경 포함)로 lint 대상과 타입 검사할 패키지, `pnpm check`의 묶음(문서 검사는 늘, 나머지는 그 묶음의 파일이나 저장소 스크립트가 쓰는 패키지가 바뀔 때)을 정합니다. 판정 규칙은 [verify-changed.mjs](../../scripts/verify-changed.mjs)에 있습니다.
 - 로컬 리뷰 수렴 후 커밋 대상만 있는 환경에서 포맷을 확정하고 아래 완료 검사를 실행합니다.
 - E2E는 고정 포트(`3199`/`5199`)를 쓰므로 worktree끼리 동시에 실행하지 않습니다.
 
@@ -14,12 +14,11 @@
 
 | 변경 | 검사 |
 | --- | --- |
-| 모든 변경 | `git diff --check`, `pnpm check` |
-| 제품 코드 | `pnpm test`, `pnpm typecheck`, `pnpm lint` |
+| 모든 변경 | `git diff --check`, `pnpm verify:changed --tests` |
 | 빌드·실행 환경 | `pnpm build`, 관련 실행 확인 |
 | 브라우저 동작 | 관련 E2E, 실제 화면·조작 확인 |
 
-해당 행을 모두 적용합니다. 조직 상태·승인·조직 분리 계약을 바꾸면 해당 핵심 시나리오도 검증합니다. 실패는 원인을 확인해 해소합니다.
+`--tests`는 리뷰 전 검사에 바뀐 패키지와 그 패키지를 쓰는 패키지의 시험을 더하고, 공용 설정이 바뀌면 전체 `pnpm lint`·`pnpm typecheck`·`pnpm check`·`pnpm test`를 돌립니다. 전체 검사는 CI가 push마다 패키지별로 나눠 돌리므로 로컬에서 따로 돌리지 않습니다. 영향이 불명확하면 해당 전체 검사를 직접 돌립니다. 해당 행을 모두 적용합니다. 조직 상태·승인·조직 분리 계약을 바꾸면 해당 핵심 시나리오도 검증합니다. 실패는 원인을 확인해 해소합니다.
 
 ## 결과 재사용
 

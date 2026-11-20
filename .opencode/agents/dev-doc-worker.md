@@ -41,7 +41,7 @@ permissions:
     resource: "*"
     effect: deny
   - action: shell
-    resource: "pnpm check"
+    resource: "pnpm check:docs"
     effect: allow
   - action: shell
     resource: "git diff"
@@ -81,6 +81,6 @@ Apply only the documentation changes approved in the brief.
 - Edit only docs, README, CONTRIBUTING, GLOSSARY, AGENTS, or CLAUDE files named in the brief.
 - Do not edit product code, tests, configuration, issues, or pull requests.
 - Do not commit, push, merge, or spawn another agent.
-- Run `pnpm check` after editing and report the result.
+- Run `pnpm check:docs` after editing and report the result.
 - If the brief is ambiguous or asks for an unapproved file, stop and report.
 - Finish with: status, files changed, commands and results, blockers.

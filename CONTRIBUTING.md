@@ -9,14 +9,18 @@ Node.js 24.x, pnpm 10.33.0 및 Git을 사용합니다. GitHub 이슈 작업에�
 ```bash
 pnpm install
 pnpm dev          # 개발용 hot reload. 서버(http://127.0.0.1:3100, 가짜 프로바이더 데모 시나리오)와 대시보드(http://127.0.0.1:5173)
-pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 embedded Postgres 하나를 띄우고 테스트마다 DB를 복제합니다. 끝으로 테스트 실패가 실패 종료로 이어지는지 확인합니다.
+pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 embedded Postgres 하나를 띄우고 테스트마다 DB를 복제합니다. 끝으로 pnpm test:root(테스트 실패가 실패 종료로 이어지는지 확인, boot-check 시험)를 돌립니다.
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
 pnpm typecheck:src  # 제품 코드만 타입 검사
 pnpm typecheck:test # 시험 코드를 시작점으로 타입 검사(가져다 쓰는 제품 코드도 함께 검사)
 pnpm lint         # 시험 코드에는 시험 전용 규칙(폴더 지우기는 removeFolder로)을, 제품 코드에는 제품 규칙(바깥 데이터는 확인 뒤 사용, JSON·응답 본문을 읽자마자 타입 단정 금지, 비동기 실패 방치 금지, 폐기 예정 기능 금지, runtime의 프로그램 실행은 정해진 파일에서만)을 더 겁니다. lint 예외 주석에는 `-- 이유`를 씁니다.
-pnpm check        # Markdown 로컬 링크 검사, lint 규칙 회귀(scripts/lint-rules.test.mjs, scripts/product-lint-rules.test.mjs, scripts/script-lint-rules.test.mjs)와 CI 회귀 검사(테스트 집계 scripts/ci-test-gate.test.mjs, 실패 이유 분류 scripts/ci-job-failures.test.mjs, 내려받기 재시도 scripts/ci-downloads.test.mjs, 실행 판정 scripts/ci-changes.test.mjs, 파일 경계 결과표 scripts/file-boundary-report.test.mjs, E2E 결과 판정 scripts/check-e2e-report.test.mjs, 시험 묶음의 실행·통과 수 판정 scripts/check-test-reports.test.mjs, 바뀐 파일 검사 범위 scripts/verify-changed.test.mjs, 실제 프로바이더 확인의 정리 scripts/live/check-server.test.mjs, 시험용 명령 찾기 scripts/live/processes.test.mjs, 장애 검사 실행 관문 scripts/live/chaos-budget.test.mjs, 장애 검사 장면 준비 scripts/live/chaos-run.test.mjs, 실제 프로바이더 점검의 장면 고르기·판정 scripts/live/provider-scenes.test.mjs, worker 실행 시간 한도·끄기 .agents/scripts/run-worker.test.mjs, worker 시도·멈춤 판정 .agents/scripts/worker-run.test.mjs). node:test 묶음은 `scripts/run-node-tests.mjs`로 돌려 CI에서 묶음마다 실행·통과 수를 판정합니다. 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
-pnpm verify:changed  # 바뀐 파일 기준으로 lint·타입 검사할 범위를 정해 돌리고 pnpm check까지 실행. --dry-run은 명령만 출력
+pnpm check        # 아래 네 묶음을 차례로 돈다. node:test 묶음은 `scripts/run-node-tests.mjs`로 돌려 CI에서 묶음마다 실행·통과 수를 판정합니다. 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
+pnpm check:docs   # Markdown 로컬 링크·Git 무시 경로·필수 파일·worker 설정 검사(scripts/check-project.mjs)
+pnpm check:rules  # lint 규칙 회귀(scripts/*lint-rules.test.mjs, scripts/eslint-imports.test.mjs)와 접근 모양 생성기 시험(scripts/lint-access-shapes.test.mjs). 확인할 규칙만 켜고 그 규칙이 쓸 때만 타입 정보를 만듭니다(scripts/lint-rule-testing.mjs).
+pnpm check:agents # worker 실행 시간 한도·끄기, 시도·멈춤 판정, 변경 인수 검사(.agents/scripts/*.test.mjs)
+pnpm check:scripts # CI·보고 회귀 검사(테스트 집계, 실패 이유 분류, 내려받기 재시도, 실행 판정, 파일 경계 결과표, E2E 결과 판정, 묶음의 실행·통과 수 판정, 바뀐 파일 검사 범위, 게시문 검사)와 실제 프로바이더·장애 검사 도구 시험(scripts/live/*.test.mjs)
+pnpm verify:changed  # 바뀐 파일 기준으로 lint·타입 검사할 범위와 pnpm check 묶음(문서 검사는 늘)을 정해 돌림. --tests는 바뀐 패키지와 그 패키지를 쓰는 패키지의 시험을 더함. 공용 설정이 바뀌면 전체. --dry-run은 명령만 출력
 ```
 
 ### 개발용 실행과 장시간 연구 실행

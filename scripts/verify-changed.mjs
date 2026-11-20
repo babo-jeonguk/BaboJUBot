@@ -1,7 +1,8 @@
-// 바뀐 파일을 보고 돌릴 정적 분석 명령을 정해 실행한다. `pnpm verify:changed -- --dry-run`은 명령만 출력한다.
+// 바뀐 파일을 보고 돌릴 검사 명령을 정해 실행한다. `pnpm verify:changed -- --dry-run`은 명령만 출력한다.
 // 공용 설정이 바뀌면 전체 lint·typecheck·check를, 패키지 파일이 바뀌면 그 패키지와 그 패키지를 쓰는 패키지의
 // typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고
 // 나머지 묶음은 그 묶음의 시험이 보는 파일이나 저장소 뿌리(scripts·.agents)가 쓰는 패키지가 바뀌었을 때만 돌린다.
+// `--tests`는 완료 검사용으로, 같은 범위의 패키지 시험과 (뿌리에 닿으면) 뿌리 시험(pnpm test:root)을 더한다.
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -36,6 +37,13 @@ function isShared(file) {
   return sharedSettings.has(file) || file.startsWith("patches/");
 }
 
+/** 뿌리 시험(pnpm test:root: boot-check, 시험 실패 종료 코드 확인)이 보는 파일. */
+function isRootTestFile(file) {
+  return /^scripts\/(boot-check|check-test-exit-code|fixtures\/test-exit-code\/)/.test(
+    file
+  );
+}
+
 /**
  * pnpm check의 묶음(package.json의 check:*)과 그 묶음의 시험이 보는 파일. 모든 묶음은 뿌리가 쓰는 패키지가 바뀌었을 때도 돈다
  * (lint 규칙 시험도 workspace 패키지의 package.json·파일 자리로 판정하고 @babojubot/process를 쓴다).
@@ -57,11 +65,20 @@ const checkGroups = [
   },
 ];
 
-export function plan(files, graph, { exists = () => true } = {}) {
+export function plan(
+  files,
+  graph,
+  { exists = () => true, tests = false } = {}
+) {
   const changed = [...new Set(files)].sort();
 
   if (changed.some(isShared))
-    return ["pnpm lint", "pnpm typecheck", "pnpm check"];
+    return [
+      "pnpm lint",
+      "pnpm typecheck",
+      "pnpm check",
+      ...(tests ? ["pnpm test"] : []),
+    ];
 
   // 뿌리 패키지(dir ".")는 파일 주인이 아니다. 그 패키지가 쓰는 패키지가 바뀌면 scripts·.agents의 시험이 영향을 받는다.
   const root = Object.keys(graph).find((name) => graph[name].dir === ".");
@@ -136,6 +153,18 @@ export function plan(files, graph, { exists = () => true } = {}) {
       (root !== undefined && affected.has(root))
     )
       commands.push(`pnpm check:${group.name}`);
+  if (tests) {
+    const packages = [...affected].filter((name) => name !== root).sort();
+    if (packages.length)
+      commands.push(
+        `pnpm ${packages.map((name) => `--filter ${name}`).join(" ")} run test`
+      );
+    if (
+      (root !== undefined && affected.has(root)) ||
+      changed.some(isRootTestFile)
+    )
+      commands.push("pnpm test:root");
+  }
   return commands;
 }
 
@@ -198,11 +227,16 @@ function fail(message) {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   let base = "origin/main";
   let dryRun = false;
+  let tests = false;
   for (let index = 2; index < process.argv.length; index += 1) {
     const argument = process.argv[index];
     if (argument === "--") continue;
     if (argument === "--dry-run") {
       dryRun = true;
+      continue;
+    }
+    if (argument === "--tests") {
+      tests = true;
       continue;
     }
     if (argument === "--base") {
@@ -254,7 +288,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     ]),
   ];
   const exists = (file) => fs.existsSync(path.join(root, file));
-  const commands = plan(files, readGraph(root), { exists });
+  const commands = plan(files, readGraph(root), { exists, tests });
 
   if (dryRun) {
     for (const command of commands) console.log(command);

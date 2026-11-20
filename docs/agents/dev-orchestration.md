@@ -55,7 +55,7 @@ merge 전 감사에 docs auditor와 issue auditor를 띄웁니다. 계정(main/s
 
 - 이 개발 PC(Ubuntu 24.04)에서는 AppArmor 때문에 Codex 격리가 시작되지 않아, 다른 mode는 명령마다 승인 요청이 생깁니다. 그래서 `full-access`로 띄우고 “파일을 고치지 않는다”는 지침과 사후 확인으로 지킵니다.
 - 감사가 끝나면 `git status --short`로 감사 전과 달라진 파일이 없는지 확인하고, finding을 **갱신 / 유지 / 후속 처리**로 분류합니다.
-- 승인된 문서 수정만 `dev-doc-worker`에 맡기고, parent가 문서 diff와 `pnpm check`를 확인합니다.
+- 승인된 문서 수정만 `dev-doc-worker`에 맡기고, parent가 문서 diff와 `pnpm check:docs`를 확인합니다.
 - auditor 결과는 merge 판단의 근거이며 **CI·테스트를 대신하지 않습니다.**
 
 ## 5. Paseo MCP 정책
