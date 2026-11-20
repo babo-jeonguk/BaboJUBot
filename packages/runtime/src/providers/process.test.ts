@@ -134,8 +134,8 @@ describe("runProbe", () => {
   });
 
   it("leaves why a run's program could not be started", async () => {
-    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-    onTestFinished(() => warned.mockRestore());
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => logged.mockRestore());
     const child = startProcess({
       command: ["/missing/program"],
       args: [],
@@ -144,7 +144,7 @@ describe("runProbe", () => {
       onFrame: async () => {},
     });
     expect((await child.done).broken).toBe(true);
-    expect(warned).toHaveBeenCalledWith(expect.stringContaining("(ENOENT)"));
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("(ENOENT)"));
   });
 
   it("reports a missing program", async () => {
