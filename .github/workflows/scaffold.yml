@@ -202,7 +202,7 @@ jobs:
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts
         if: ${{ !cancelled() }}
-        run: node scripts/check-test-reports.mjs --expect runtime,runtime-alone
+        run: node scripts/check-test-reports.mjs --expect process,process-alone,runtime,runtime-alone
   test-db:
     name: tests / db
     needs: changes
@@ -421,7 +421,7 @@ jobs:
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts
         if: ${{ !cancelled() }}
-        run: node scripts/check-test-reports.mjs --expect ci-gate,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
+        run: node scripts/check-test-reports.mjs --expect ci-gate,process,process-alone,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
   test-windows:
     name: runtime on windows-latest
     needs: changes
@@ -473,7 +473,7 @@ jobs:
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts
         if: ${{ !cancelled() }}
-        run: node scripts/check-test-reports.mjs --expect ci-gate,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
+        run: node scripts/check-test-reports.mjs --expect ci-gate,process,process-alone,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
   # Windows의 서버 정상 종료와 화면 E2E(#189). Windows에서는 부모가 신호로 서버에 정리를 맡길 수 없어 멈춤 메시지를 쓴다.
   # 서버 진입점의 멈춤 시험(POSIX 전용 신호·프로세스 그룹 시험은 건너뜀)과 Chromium 전체 E2E를 이 시스템에서 돈다.
   # 전체 시간을 줄이려고 E2E를 두 job으로 나눠(Playwright shard) 동시에 돈다. 두 job은 shard 번호와 멈춤 시험(1/2만) 말고

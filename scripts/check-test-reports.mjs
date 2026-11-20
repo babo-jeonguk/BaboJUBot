@@ -23,9 +23,10 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 export const intendedExclusions = [
   {
     report: "runtime",
-    file: "packages/runtime/src/providers/job-object.test.ts",
+    file: "packages/runtime/src/providers/process-windows.test.ts",
     systems: ["linux", "macos"],
-    reason: "Windows 묶음 실행기(Job Object) 시험이라 Windows에서만 돈다",
+    reason:
+      "Windows 묶음 실행기(Job Object)로 띄운 실행 시도의 시험이라 Windows에서만 돈다",
   },
   {
     report: "runtime",
@@ -49,8 +50,8 @@ export const intendedExclusions = [
       "격리 실행의 중계라 Docker 격리를 지원하지 않는 Windows에서는 쓰지 않는다",
   },
   {
-    report: "runtime",
-    file: "packages/runtime/src/providers/ps.test.ts",
+    report: "process",
+    file: "packages/process/src/ps.test.ts",
     systems: ["windows"],
     reason:
       "ps 한 칸 조회(psField)는 Linux·macOS의 프로세스 신원 조회라 Windows에서는 쓰지 않는다",
@@ -60,13 +61,27 @@ export const intendedExclusions = [
     file: "packages/runtime/src/providers/process-leftovers.test.ts",
     systems: ["windows"],
     reason:
-      "Windows에는 새 세션으로 나가는 명령이 없다(남은 프로그램은 job-object.test.ts가 본다)",
+      "Windows에는 새 세션으로 나가는 명령이 없다(남은 프로그램은 process-windows.test.ts가 본다)",
+  },
+  {
+    report: "process-alone",
+    file: "packages/process/src/lease-hidden.alone.test.ts",
+    systems: ["macos", "windows"],
+    reason: "systemd 사용자 scope는 Linux에만 있다",
   },
   {
     report: "runtime-alone",
-    file: "packages/runtime/src/providers/lease-hidden.alone.test.ts",
+    file: "packages/runtime/src/providers/process-hidden.alone.test.ts",
     systems: ["macos", "windows"],
-    reason: "systemd 사용자 scope는 Linux에만 있다",
+    reason:
+      "환경을 읽을 수 없게 막은 프로그램(prctl)과 그 표식 확인은 Linux의 /proc에만 있다",
+  },
+  {
+    report: "runtime",
+    file: "packages/runtime/src/providers/process-stop.test.ts",
+    systems: ["windows"],
+    reason:
+      "프로세스 그룹과 표식으로 끄는 길의 실패라 Linux·macOS에서만 돈다(Windows는 묶음 실행기가 끈다)",
   },
 ];
 

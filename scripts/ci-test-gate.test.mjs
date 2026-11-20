@@ -558,6 +558,7 @@ const folders = {
   contracts: "packages/contracts",
   core: "packages/core",
   db: "packages/db",
+  process: "packages/process",
   runtime: "packages/runtime",
   server: "apps/server",
   web: "apps/web",

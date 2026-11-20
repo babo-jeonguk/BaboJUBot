@@ -68,7 +68,6 @@ const projectService = {
 const processOwners = [
   "container.ts", // docker 클라이언트 호출과 격리 확인
   "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
-  "ps.ts", // ps 한 칸 조회: "대상 없음" 계약(출력 없이 1)을 한곳에 둔다
   "login.ts", // 사용자 터미널을 그대로 넘기는 대화형 로그인
 ].map((name) => `packages/runtime/src/providers/${name}`);
 // 프로세스 패키지(@babojubot/process)에서 프로그램을 직접 띄워도 되는 파일. 공용 실행과, 그 위에 놓을 수 없는 실행이다.
@@ -77,6 +76,7 @@ const processPackageOwners = [
   "launch.ts", // 공용 실행: 띄우기와 그 트리의 끄기(stop)를 한 쌍으로 돌려준다
   "bounded-command.ts", // 공용 실행 위에 놓을 수 없는 짧은 명령: 시한에 SIGKILL과 끝 보장
   "job-object.ts", // Windows 묶음 실행기를 만들고 시험한다. 실행기 위에는 놓을 수 없다
+  "ps.ts", // ps 한 칸 조회: "대상 없음" 계약(출력 없이 1)을 한곳에 둔다
 ].map((name) => `packages/process/src/${name}`);
 // 제품 코드·개발 스크립트에서 오래 도는 자식을 child_process·cross-spawn으로 직접 띄워도 되는 파일. 그 밖은 공용 실행
 // (@babojubot/process)으로 띄운다(product/no-direct-launch). 위 두 목록은 공용 실행 자신과 그것이 서는 실행(짧은 명령, 묶음 실행기,
