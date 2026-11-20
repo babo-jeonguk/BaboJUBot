@@ -515,6 +515,20 @@ test("failures are collected only through attemptAll, attemptEach and combinedFa
     "an index assignment": `export async function run(step, failures) {\n  try {\n    await step();\n  } catch (error) {\n    failures[failures.length] = error;\n  }\n}\n`,
     "an alias of the error": `export async function run(step, failures) {\n  try {\n    await step();\n  } catch (error) {\n    const wrapped = new Error("step failed", { cause: error });\n    const again = wrapped;\n    failures.push(again);\n  }\n}\n`,
     "a .catch handler that pushes a wrapped error": `const failures = [];\nexport const close = (db) => db.close().catch((closing) => failures.push(new Error("close", { cause: closing })));\n`,
+    // #263 3회차: 배열이 아닌 곳, 이름 붙은 처리기, continueAfterFailure의 처리기.
+    "a Map of caught errors": `export function settle(pids, lookups, look) {\n  for (const pid of pids)\n    try {\n      look(pid);\n    } catch (error) {\n      lookups.set(pid, error);\n    }\n}\n`,
+    "a Set of caught errors": `export async function run(steps, seen) {\n  for (const step of steps)\n    try {\n      await step();\n    } catch (error) {\n      seen.add(error);\n    }\n}\n`,
+    "a named handler passed to .catch": `export async function close(server, db) {\n  const failures = [];\n  const keep = (error) => failures.push(error);\n  await server.close().catch(keep);\n  await db.close().catch(keep);\n  return failures;\n}\n`,
+    "a named handler passed as a rejection": `export async function close(db) {\n  const failures = [];\n  function keep(error) {\n    failures.push(new Error("close", { cause: error }));\n  }\n  await db.close().then(undefined, keep);\n  return failures;\n}\n`,
+    "a named handler called in catch": `const failures = [];\nconst keep = (problem) => {\n  failures.push(problem);\n};\nexport async function run(step) {\n  try {\n    await step();\n  } catch (error) {\n    keep(error);\n  }\n}\n`,
+    "a continueAfterFailure report that pushes": `import { continueAfterFailure } from "@babojubot/contracts";\nexport function stop(pids, kill, failures) {\n  for (const pid of pids)\n    continueAfterFailure(\n      () => kill(pid),\n      (error) => failures.push(error)\n    );\n}\n`,
+    // 실패 처리 자리 여럿에서 같은 바깥 변수를 바꿔 실패를 표시·셈·이어 붙이기(apps/server/test/clock-server.ts, apps/server/src/shutdown.ts,
+    // packages/runtime/src/providers/process.ts, scripts/live/chaos-run.mjs).
+    "a flag set by a named handler": `export function stop(startup) {\n  let failed = false;\n  const fail = (error) => {\n    failed = true;\n    console.error("shutdown failed", error);\n  };\n  return (async () => {\n    const started = await startup.catch(fail);\n    await started?.server.close().catch(fail);\n    await started?.db.close().catch(fail);\n    return failed;\n  })();\n}\n`,
+    "a flag set by inline handlers": `export async function close(server, db, report) {\n  let failed = false;\n  await server.close().catch((error) => {\n    failed = true;\n    report(error);\n  });\n  await db.close().catch((error) => {\n    failed = true;\n    report(error);\n  });\n  return !failed;\n}\n`,
+    "a flag set in catch clauses": `export async function finish(relay, tree) {\n  let broken = false;\n  try {\n    await relay.close();\n  } catch (error) {\n    broken = true;\n    console.error(error);\n  }\n  try {\n    await tree.stop();\n  } catch (error) {\n    broken = true;\n    console.error(error);\n  }\n  return broken;\n}\n`,
+    "a counter of failures": `import { continueAfterFailure } from "@babojubot/contracts";\nexport async function clean(server, pids, kill) {\n  const cleanup = { problems: 0 };\n  try {\n    await server.dispose();\n  } catch (error) {\n    cleanup.problems++;\n    console.error(error);\n  }\n  for (const pid of pids)\n    continueAfterFailure(\n      () => kill(pid),\n      (error) => {\n        cleanup.problems += 1;\n        console.error(error);\n      }\n    );\n  return cleanup;\n}\n`,
+    "text joined from failures": `export function check(a, b) {\n  let report = "";\n  try {\n    a();\n  } catch (error) {\n    report += \`a: \${error}\`;\n  }\n  try {\n    b();\n  } catch (error) {\n    report += \`b: \${error}\`;\n  }\n  return report;\n}\n`,
   };
   const places = [
     "apps/server/src/app.ts",
@@ -543,6 +557,16 @@ test("failures are collected only through attemptAll, attemptEach and combinedFa
     `export async function scene(body, results) {\n  results.push(await body().then((outcome) => outcome, (error) => ({ failed: String(error) })));\n}\n`,
     // 받은 오류와 상관없는 값을 넣는다.
     `export async function run(step, attempts) {\n  try {\n    await step();\n  } catch (error) {\n    attempts.push("failed");\n    throw error;\n  }\n}\n`,
+    // 한 실패의 결과를 값으로 기록한다(한 자리에서 갈래마다 대입).
+    `export async function scene(run) {\n  let outcome;\n  let reason;\n  try {\n    outcome = await run();\n  } catch (error) {\n    if (error instanceof RangeError) {\n      outcome = "not_run";\n      reason = error.message;\n    } else {\n      outcome = "failed";\n      reason = String(error);\n    }\n  }\n  return { outcome, reason };\n}\n`,
+    // 기록하고 다시 던진다. 실패는 이어지지 않으므로 모으지 않는다.
+    `export async function open(resume, start) {\n  let sessionError;\n  try {\n    await resume();\n  } catch (error) {\n    if (error instanceof RangeError) {\n      sessionError = error.message;\n      throw error;\n    }\n  }\n  try {\n    await start();\n  } catch (error) {\n    if (error instanceof RangeError) sessionError = error.message;\n    throw error;\n  }\n  return sessionError;\n}\n`,
+    // 끝남(성공·실패 모두)을 표시하는 처리기. 실패 자리는 하나다.
+    `export function watch(answer) {\n  let settled = false;\n  const done = () => {\n    settled = true;\n  };\n  answer.then(done, done);\n  return () => settled;\n}\n`,
+    // 실패를 값 하나로 남기는 처리기를 여러 자리에 넘긴다(바깥 변수를 바꾸지 않는다).
+    `export async function after(effects, report) {\n  const failed = (error) => report("effect failed", error);\n  for (const effect of effects) await effect().catch(failed);\n}\n`,
+    // 정리 단계는 attemptEach로 돌리고 실패 목록으로 판단한다.
+    `import { attemptEach } from "@babojubot/contracts";\nexport async function close(server, db, report) {\n  const failures = await attemptEach([() => server.close(), () => db.close()]);\n  for (const failure of failures) report(failure);\n  return failures.length === 0;\n}\n`,
   ];
   for (const place of places)
     for (const code of kept)
