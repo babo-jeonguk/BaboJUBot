@@ -373,18 +373,15 @@ const { code } = await runBootCheckFlow({
       throw new Error("the embedded Postgres was still running after close");
     console.log("embedded Postgres stopped normally on close");
   },
-  cleanUp: async () => {
-    // 남은 DB를 pg_ctl로 멈추고, 띄운 서버 트리가 모두 끝난 것을 확인한다. 하나가 실패해도 다른 하나는 한다.
-    await attemptAll([
-      stopLeftPostgres,
-      ...servers.map((tree) => () => tree.stop()),
-    ]);
+  // 서로 독립인 끄기: 남은 DB를 pg_ctl로 멈추고, 띄운 서버 트리마다 끝난 것을 확인한다. 하나가 실패해도 나머지는 한다.
+  stops: () => [stopLeftPostgres, ...servers.map((tree) => () => tree.stop())],
+  // 끄기가 모두 성공한 뒤에만 부른다.
+  removeFolder: () =>
     rmSync(home, {
       recursive: true,
       force: true,
       maxRetries: 5,
       retryDelay: 100,
-    });
-  },
+    }),
 });
 process.exitCode = code;

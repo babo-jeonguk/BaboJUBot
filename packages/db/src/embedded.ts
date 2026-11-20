@@ -460,7 +460,10 @@ function readPidFile(
 // 지난 번호는 주인이 지운다. 오래전에 읽은 번호로 그 지워진 자리를 만든 프로세스는 더 큰 번호를 보고 물러난다.
 const ownerDir = (dataDir: string) => `${path.resolve(dataDir)}${ownerSuffix}`;
 
-/** 임시 cluster의 자원(dataDir와 주인 기록)을 함께 지운다. 임시 cluster를 지우는 모든 길이 이것을 쓴다. */
+/**
+ * 임시 cluster의 자원(dataDir와 주인 기록)을 함께 지운다. 임시 cluster를 지우는 모든 길이 이것을 쓴다. 주인 기록은 dataDir를
+ * 지운 뒤에만 지운다: 다음 시작의 남은 cluster 정리(`removeTemporaryLeftovers`)가 주인 기록으로 남은 dataDir를 찾는다.
+ */
 async function removeTemporary(dataDir: string) {
   await fsp.rm(dataDir, { recursive: true, force: true });
   await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
