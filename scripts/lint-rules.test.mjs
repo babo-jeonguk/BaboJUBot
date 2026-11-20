@@ -919,6 +919,8 @@ test("test code may not mark a test as expected to fail", async () => {
     "a test made by extend": `settingsTest.fail("saves", async () => {\n  await save();\n});\n`,
     "Vitest it.fails": `it.fails("saves", async () => {\n  await save();\n});\n`,
     // 시험 함수는 이름이 아니라 출처로 본다: vitest·node:test에서 다른 이름으로 가져와도 시험 함수다.
+    // 저장소 지원 파일이 넓혀 내보낸 시험 함수는 상대 경로든 패키지 이름이든 같다.
+    "a test a workspace package extends": `import { settingsTest } from "@babojubot/process/testing";\nsettingsTest.fail("saves", async () => {\n  await save();\n});\n`,
     "Vitest it imported under another name": `import { it as check } from "vitest";\ncheck.fails("saves", async () => {\n  await save();\n});\n`,
   };
   for (const [shape, code] of Object.entries(shapes))
