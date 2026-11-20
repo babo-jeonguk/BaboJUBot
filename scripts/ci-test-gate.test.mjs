@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { globSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -194,8 +194,11 @@ test("splits the Windows E2E into two shard jobs and judges their reports togeth
     [true, false]
   );
   // 두 job은 shard 번호와 멈춤 시험 말고 같은 단계를 돈다. 한쪽만 고치면 그 shard만 다르게 돈다.
+  // 멈춤 시험의 수 확인도 1/2에만 있다.
+  const stopOnly = (each) =>
+    stopCheck(each) || /check-test-reports\.mjs/.test(each.run ?? "");
   const shape = (job, n) =>
-    JSON.stringify(job.steps.filter((each) => !stopCheck(each)))
+    JSON.stringify(job.steps.filter((each) => !stopOnly(each)))
       .replaceAll(`${n}/2`, "N/2")
       .replaceAll(`-${n}"`, '-N"');
   assert.equal(shape(shards[0], 1), shape(shards[1], 2));
@@ -456,11 +459,11 @@ test("gives test and install steps time limits that fit inside the job's with ro
     ["check", /^pnpm run test:e2e$|playwright install/],
     ["test-unit", /run test/],
     ["test-runtime", /run test|apt-get/],
-    ["test-db", /run test|check-test-exit-code|boot-check/],
+    ["test-db", /run test|check-test-exit-code|run-node-tests/],
     ["test-server", /vitest run/],
     ["test-opencode", /vitest run|curl /],
-    ["test-macos", /runtime test|vitest|boot-check/],
-    ["test-windows", /runtime test|vitest|boot-check/],
+    ["test-macos", /runtime test|vitest|run-node-tests\.mjs boot-check/],
+    ["test-windows", /runtime test|vitest|run-node-tests\.mjs boot-check/],
     ["test-e2e-windows-1", /vitest|playwright/],
     ["test-e2e-windows-2", /playwright/],
   ];
@@ -535,4 +538,157 @@ test("gives the Linux Chromium and system dependency install room for a slow pac
     install["timeout-minutes"] >= 12,
     `${install["timeout-minutes"]} minutes`
   );
+});
+
+// Vitest·node:test는 시험 파일의 시험이 모두 건너뛰어져도 0으로 끝난다. 그래서 시험 묶음마다 보고서를 남기고 job의 마지막 단계가
+// 실행·통과 수를 판정한다(scripts/check-test-reports.mjs). 묶음을 더하거나 옮기고 그 판정을 고치지 않으면 그 묶음은 판정 밖에
+// 남는다. 단계의 명령에서 돌린 묶음을 끌어내 판정 단계의 목록과 맞춰 본다.
+const root = fileURLToPath(new URL("..", import.meta.url));
+const packageJson = (folder) =>
+  JSON.parse(readFileSync(path.join(root, folder, "package.json"), "utf8"));
+/** Vitest 설정 파일이 남기는 보고서 이름(vitest.reports.ts의 testReport). */
+function reportOf(config) {
+  const name = /testReport\("([\w-]+)"\)/.exec(
+    readFileSync(path.join(root, config), "utf8")
+  )?.[1];
+  assert.ok(name, `${config} must add testReport(<suite>) to its reporters`);
+  return name;
+}
+const folders = {
+  contracts: "packages/contracts",
+  core: "packages/core",
+  db: "packages/db",
+  runtime: "packages/runtime",
+  server: "apps/server",
+  web: "apps/web",
+};
+/** 명령 한 줄이 돌리는 시험 묶음. `vitest run`은 그 설정의 보고서, run-node-tests.mjs는 받은 이름이다. */
+function suitesOf(command, folder = ".") {
+  return command.split("&&").flatMap((part) => {
+    const words = part.trim().split(/\s+/);
+    if (words[0] === "node" && words[1] === "scripts/run-node-tests.mjs")
+      return [words[2]];
+    if (words[0] === "vitest") {
+      const at = words.indexOf("--config");
+      return [
+        reportOf(
+          path.join(folder, at === -1 ? "vitest.config.ts" : words[at + 1])
+        ),
+      ];
+    }
+    if (words[0] === "pnpm") {
+      const filters = words.flatMap((word, i) =>
+        words[i - 1] === "--filter" ? [word.replace("@babojubot/", "")] : []
+      );
+      const script = words.includes("exec") ? undefined : words.at(-1);
+      if (words.includes("exec"))
+        return filters.flatMap((name) =>
+          suitesOf(
+            words.slice(words.indexOf("exec") + 1).join(" "),
+            folders[name]
+          )
+        );
+      if (filters.length === 0)
+        return suitesOf(packageJson(".").scripts[script] ?? "", ".");
+      return filters.flatMap((name) =>
+        suitesOf(
+          packageJson(folders[name]).scripts[script] ?? "",
+          folders[name]
+        )
+      );
+    }
+    return [];
+  });
+}
+
+test("each job that runs test suites checks every suite's run and pass counts as its last test step", () => {
+  const counted = [];
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    const steps = job.steps ?? [];
+    const check = steps.find((each) =>
+      /check-test-reports\.mjs/.test(each.run ?? "")
+    );
+    // check job의 matrix 단계는 문서 검사(check)일 때만 node:test 묶음을 돈다. E2E는 자기 판정(check-e2e-report.mjs)을 한다.
+    const ran = steps.flatMap((each) => {
+      const run = (each.run ?? "").replace("${{ matrix.script }}", "check");
+      if (
+        /playwright|check-test-reports|check-test-exit-code|file-boundary/.test(
+          run
+        )
+      )
+        return [];
+      return suitesOf(run).map((suite) => ({ suite, if: each.if ?? "" }));
+    });
+    if (ran.length === 0) {
+      assert.equal(check, undefined, `${id} checks counts but runs no suite`);
+      continue;
+    }
+    assert.ok(
+      check,
+      `${id} runs ${ran.map((r) => r.suite).join(", ")} without checking their counts`
+    );
+    counted.push(id);
+    assert.equal(
+      job.env?.BABOJUBOT_TEST_REPORTS,
+      "${{ github.workspace }}/test-reports",
+      `${id} must give its suites a report folder`
+    );
+    assert.match(
+      check.if,
+      /!cancelled\(\)/,
+      `${id}: count even after a failed test`
+    );
+    const [, listed, conditional] =
+      /--expect ([\w,-]+)(?:\$\{\{ needs\.changes\.outputs\.files != 'true' && ',([\w-]+)' \|\| '' \}\})?$/.exec(
+        check.run
+      ) ?? [];
+    assert.ok(listed, `${id}: ${check.run}`);
+    const always = ran
+      .filter((r) => !/outputs\.files != 'true'/.test(r.if))
+      .map((r) => r.suite);
+    const onlyWithoutFiles = ran
+      .filter((r) => /outputs\.files != 'true'/.test(r.if))
+      .map((r) => r.suite);
+    assert.deepEqual(listed.split(",").sort(), [...new Set(always)].sort(), id);
+    assert.deepEqual(conditional ? [conditional] : [], onlyWithoutFiles, id);
+  }
+  assert.deepEqual(counted.sort(), [
+    "check",
+    "test-db",
+    "test-e2e-windows-1",
+    "test-macos",
+    "test-opencode",
+    "test-runtime",
+    "test-server",
+    "test-unit",
+    "test-windows",
+  ]);
+});
+
+test("runs every node:test suite through the counting runner and gives every Vitest config a report", () => {
+  const commands = [
+    ...Object.values(packageJson(".").scripts),
+    ...Object.values(workflow.jobs).flatMap((job) =>
+      (job.steps ?? []).map((each) => each.run ?? "")
+    ),
+  ];
+  for (const command of commands)
+    assert.doesNotMatch(
+      command,
+      /node --test/,
+      `use scripts/run-node-tests.mjs: ${command}`
+    );
+  const configs = globSync("{apps,packages}/*/vitest*.config.ts", {
+    cwd: root,
+  });
+  assert.ok(configs.length >= 8, configs.join(", "));
+  for (const config of configs) reportOf(config);
+  // 시험 파일이 있는 패키지는 모두 자기 설정으로 보고서를 남긴다(설정이 없으면 Vitest 기본값으로 돌아 보고서가 없다).
+  for (const [name, folder] of Object.entries(folders))
+    assert.ok(
+      configs.some((config) =>
+        config.replaceAll("\\", "/").startsWith(`${folder}/`)
+      ),
+      name
+    );
 });
