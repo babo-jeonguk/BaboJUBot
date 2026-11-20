@@ -15,6 +15,7 @@ export function psField(
     env: { ...process.env, LC_ALL: "C" },
     stdio: ["ignore", "pipe", "pipe"],
     timeout: timeoutMs,
+    killSignal: "SIGKILL",
   });
   const out = result.stdout?.trim() ?? "";
   const reported = result.stderr?.trim() ?? "";

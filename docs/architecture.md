@@ -31,7 +31,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 | `packages/core` | 생애주기·승인 정책·조직 경계 규칙. 웹 프레임워크·DB 의존 없음 | Control Plane |
 | `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구. 웹과 서버가 함께 쓰는 순수 판정(예: 입력창 버튼과 서버 거부의 `ownerActions`), 모든 패키지가 쓰는 오류를 버리는 의도별 함수(`failure.ts`) | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
-| `packages/runtime` | 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter. 지금은 프로세스 띄우기·끄기의 바탕(공용 실행 `@babojubot/runtime/launch`, 짧은 명령 `@babojubot/runtime/bounded-command`)도 함께 담음 | Agent Runtime, Surface |
+| `packages/runtime` | 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter. 지금은 프로세스 띄우기·끄기의 바탕(공용 실행 `@babojubot/runtime/launch`, 짧은 명령 `@babojubot/runtime/bounded-command`, `ps` 한 칸 조회 `@babojubot/runtime/ps`)도 함께 담음 | Agent Runtime, Surface |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
 
 Memory port의 첫 판은 core interface·db 단순 구현입니다.
@@ -40,10 +40,10 @@ Memory port의 첫 판은 core interface·db 단순 구현입니다.
 
 | 가져오는 쪽 | runtime에서 가져올 수 있는 것 |
 |---|---|
-| `packages/db`(시험 제외) | `@babojubot/runtime/bounded-command`(내장 Postgres의 `pg_ctl`)만 |
+| `packages/db`(시험 제외) | `@babojubot/runtime/bounded-command`(내장 Postgres의 `pg_ctl`)와 `/ps`(프로세스 신원의 `ps` 한 칸 조회, "대상 없음" 계약을 한곳에)만 |
 | 개발 스크립트(`scripts`·`.agents`, 시험 제외) | 제품 API인 패키지 입구 `@babojubot/runtime`, `/launch`, `/bounded-command`, 아직 옮기지 않은 정리 도움 `/test-cleanup`만 |
 
-이 바탕은 #265(시험 정리 도움 정리) 병합 뒤 새 패키지 `@babojubot/process`로 옮깁니다. 범용 시험 도움(`remove-folder`·`test-cleanup` 등)과 표식 정리도 함께 옮기고, runtime·db·server·개발 스크립트가 모두 그 패키지에 기대게 해 runtime의 이 하위 경로들을 없앱니다.
+이 바탕은 #265(시험 정리 도움 정리) 병합 뒤 새 패키지 `@babojubot/process`로 옮깁니다. 범용 시험 도움(`remove-folder`·`test-cleanup` 등), 표식 정리와 `ps` 한 칸 조회(`ps.ts`)도 함께 옮기고(#266), runtime·db·server·개발 스크립트가 모두 그 패키지에 기대게 해 runtime의 이 하위 경로들을 없앱니다.
 
 ## Seam
 

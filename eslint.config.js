@@ -401,7 +401,8 @@ export default defineConfig([
     rules: { "product/no-direct-launch": "error" },
   },
   {
-    // db는 Control Plane이다(docs/architecture.md). 프로세스 바탕이 runtime에 있는 동안 내장 Postgres의 pg_ctl 실행만 그 하위 경로를 쓴다.
+    // db는 Control Plane이다(docs/architecture.md). 프로세스 바탕이 runtime에 있는 동안 내장 Postgres의 pg_ctl 실행과 ps 한 칸 조회만
+    // 그 하위 경로를 쓴다(#266에서 @babojubot/process로 옮기며 없앤다).
     files: ["packages/db/src/**/*.{ts,tsx}"],
     ignores: testFiles,
     plugins: { product: productRules },
@@ -409,7 +410,10 @@ export default defineConfig([
       "product/runtime-import-scope": [
         "error",
         {
-          allowed: ["@babojubot/runtime/bounded-command"],
+          allowed: [
+            "@babojubot/runtime/bounded-command",
+            "@babojubot/runtime/ps",
+          ],
           why: "db(Control Plane)가 프로바이더 adapter 패키지(runtime)에 기대면 저장소가 실행 계층에 묶입니다.",
         },
       ],
