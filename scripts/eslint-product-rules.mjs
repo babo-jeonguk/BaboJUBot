@@ -133,7 +133,7 @@ const syncCommandTimeout = {
     schema: [],
     messages: {
       missing:
-        '{{name}} 호출은 프로그램이 끝날 때까지 서버·스크립트 전체를 멈춥니다. 비동기 실행(공용 실행의 runTree, @babojubot/runtime/launch)을 쓰거나, 동기 실행이 꼭 필요하면 옵션 객체 리터럴에 timeout과 killSignal: "SIGKILL"을 두고 상한이 지난 결과(error.code === "ETIMEDOUT")를 \'모름\'으로 처리하세요.',
+        '{{name}} 호출은 프로그램이 끝날 때까지 서버·스크립트 전체를 멈춥니다. 비동기 실행(공용 실행의 runTree, @babojubot/process)을 쓰거나, 동기 실행이 꼭 필요하면 옵션 객체 리터럴에 timeout과 killSignal: "SIGKILL"을 두고 상한이 지난 결과(error.code === "ETIMEDOUT")를 \'모름\'으로 처리하세요.',
       soft: '{{name}}의 timeout은 시한에 신호(기본 SIGTERM)만 보내고 끝날 때까지 기다립니다. 신호를 무시하는 프로그램이면 기다림이 끝나지 않습니다. 옵션 객체 리터럴에 killSignal: "SIGKILL"을 두어 시한에 끝을 보장하세요. CODING_STANDARDS.md#제품-코드',
     },
   },
@@ -308,7 +308,7 @@ const noCleanupChain = {
 const groupSignalers = new Set(["kill", "killUnlessGone", "processAlive"]);
 
 /**
- * 프로세스 그룹(음수 pid)에 신호를 보내는 일은 packages/runtime/src/providers/recovery.ts만 한다. 그룹 끄기는 생존 확인·SIGTERM·유예·
+ * 프로세스 그룹(음수 pid)에 신호를 보내는 일은 packages/process/src/group.ts만 한다. 그룹 끄기는 생존 확인·SIGTERM·유예·
  * SIGKILL·상한 있는 확인이 한 벌이어야 하고, 손으로 짠 복사본은 신호만 보내고 확인 없이 떠나는 빈틈을 되풀이했다(#255 리뷰 SPEC-3·4).
  * `process.kill(-x, …)`, `killUnlessGone(-x, …)`, `processAlive(-x)`처럼 첫 인수가 음수 부호 식인 호출을 짚는다. 음수 값을 변수에 담아
  * 넘기는 호출은 따라가지 않으며 리뷰가 본다.
@@ -323,7 +323,7 @@ const noProcessGroupSignal = {
     schema: [],
     messages: {
       group:
-        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/runtime/src/providers/recovery.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. 프로그램은 launchTree(@babojubot/runtime/launch)로 띄우고 그 stop()으로 끄세요. 트리 전체가 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
+        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/process/src/group.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. 프로그램은 launchTree(@babojubot/process)로 띄우고 그 stop()으로 끄세요. 트리 전체가 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
@@ -347,7 +347,7 @@ const noProcessGroupSignal = {
 const asyncLaunchers = new Set(["spawn", "fork", "exec", "execFile"]);
 const crossSpawn = "cross-spawn";
 const launchAlternatives =
-  "오래 도는 자식은 공용 실행으로 띄우세요: launchTree(@babojubot/runtime/launch, runtime 안은 providers/launch.ts)가 띄우면서 그 트리를 끄는 stop()을 함께 돌려줍니다(Linux·macOS는 프로세스 그룹과 표식, Windows는 묶음). 끝까지 돌릴 짧은 명령은 runTree가 상한·취소에서 트리를 끄고 확인합니다. 결과를 기다려도 되는 짧은 명령은 timeout을 둔 동기 실행(execFileSync·spawnSync)을 씁니다. 트리를 끄면 안 되는 실행(그 자체가 데몬을 띄움)만 eslint.config.js의 launchOwners에 이유와 함께 올립니다. CODING_STANDARDS.md#제품-코드";
+  "오래 도는 자식은 공용 실행으로 띄우세요: launchTree(@babojubot/process, 그 패키지 안은 launch.ts)가 띄우면서 그 트리를 끄는 stop()을 함께 돌려줍니다(Linux·macOS는 프로세스 그룹과 표식, Windows는 묶음). 끝까지 돌릴 짧은 명령은 runTree가 상한·취소에서 트리를 끄고 확인합니다. 결과를 기다려도 되는 짧은 명령은 timeout을 둔 동기 실행(execFileSync·spawnSync)을 씁니다. 트리를 끄면 안 되는 실행(그 자체가 데몬을 띄움)만 eslint.config.js의 launchOwners에 이유와 함께 올립니다. CODING_STANDARDS.md#제품-코드";
 
 /** 가져오는 곳이 child_process인가, cross-spawn인가. */
 const launchModule = (source) =>
@@ -476,7 +476,7 @@ const boundedCommand = {
     schema: [],
     messages: {
       callback:
-        "비동기 {{name}}은 시한에 신호만 보내고 출력이 닫히기를 기다립니다. 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않습니다. 짧은 명령은 runCommand(providers/bounded-command.ts, @babojubot/runtime/bounded-command)로 돌려 시한에 SIGKILL로 끝내고 끝을 보장하세요. 트리를 끌 명령은 runTree(@babojubot/runtime/launch)를 씁니다. CODING_STANDARDS.md#제품-코드",
+        "비동기 {{name}}은 시한에 신호만 보내고 출력이 닫히기를 기다립니다. 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않습니다. 짧은 명령은 runCommand(@babojubot/process, 그 패키지 안은 bounded-command.ts)로 돌려 시한에 SIGKILL로 끝내고 끝을 보장하세요. 트리를 끌 명령은 runTree(@babojubot/process)를 씁니다. CODING_STANDARDS.md#제품-코드",
       timeout:
         "{{name}}의 timeout은 시한에 신호만 보내고 끝을 보장하지 않습니다. timeout 없이 띄우고 boundChild(providers/bounded-command.ts)로 시한에 SIGKILL을 보내고 끝을 기다리세요. CODING_STANDARDS.md#제품-코드",
     },
@@ -526,65 +526,78 @@ const boundedCommand = {
 };
 
 /**
- * runtime에서 가져올 수 있는 길을 묶는다(#262). 프로세스 띄우기·끄기의 바탕은 지금 runtime에 있고, #265 뒤 새 패키지(@babojubot/process)로
- * 옮긴다. 그때까지 다른 module(db, 개발 스크립트)이 runtime의 하위 경로·내부 파일에 기대는 길이 퍼지지 않게, 설정에 적은 가져오기만
- * 받는다. `allowed`의 값은 패키지 이름 경로(`@babojubot/runtime/launch`)이고, 상대 경로로 runtime의 `src/index.ts`를 가리키는 것은
- * 패키지 이름(`@babojubot/runtime`)과 같게 본다.
+ * 다른 영역이 runtime·프로세스 패키지에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
+ * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 상대 경로도 풀어서 본다: 그 패키지의
+ * `src/index.ts`는 패키지 이름과 같게 보고, 그 밖의 파일(`packages/<폴더>/…`)은 어느 목록에도 들지 않는다. 패키지 자신의 파일은 보지 않는다.
  */
-const runtimeImportScope = {
+const importScopeAlternatives =
+  "프로세스 띄우기·끄기와 짧은 명령은 @babojubot/process(launchTree·runTree·runCommand), 시험의 정리 도움은 @babojubot/process/test-cleanup·/remove-folder·/lifelines·/testing에 있습니다. 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 씁니다. 다른 곳은 띄울 때 launchTree가 돌려준 stop()으로 끕니다(docs/architecture.md 패키지 구성).";
+const packageImportScope = {
   meta: {
     type: "problem",
     docs: {
       description:
-        "allow only the listed runtime entry points outside runtime until the process tools move to their own package",
+        "allow only the listed entry points of runtime and the process package outside them",
     },
     schema: [
       {
         type: "object",
         properties: {
-          allowed: { type: "array", items: { type: "string" } },
+          packages: {
+            type: "object",
+            additionalProperties: { type: "array", items: { type: "string" } },
+          },
           why: { type: "string" },
         },
-        required: ["allowed", "why"],
+        required: ["packages", "why"],
         additionalProperties: false,
       },
     ],
     messages: {
-      outside:
-        "{{source}}: {{why}} 이 자리에서 runtime은 {{allowed}}만 가져옵니다. 프로세스 띄우기·끄기는 @babojubot/runtime/launch(launchTree·runTree), 공용 실행 위에 놓을 수 없는 짧은 명령은 @babojubot/runtime/bounded-command(runCommand)를 쓰세요. 이 바탕은 #265 뒤 @babojubot/process로 옮깁니다(docs/architecture.md 패키지 구성).",
+      outside: `{{source}}: {{why}} 이 자리에서 {{name}}은 {{allowed}}만 가져옵니다. ${importScopeAlternatives}`,
+      none: `{{source}}: {{why}} 이 자리에서는 {{name}}을 가져오지 않습니다. ${importScopeAlternatives}`,
     },
   },
   create(context) {
-    const { allowed, why } = context.options[0];
-    const dir = context.filename.replaceAll("\\", "/").replace(/\/[^/]*$/, "");
-    /** runtime을 가리키면 패키지 이름 경로로 바꾼 값, 아니면 undefined. */
-    const runtimeEntry = (source) => {
+    const { packages, why } = context.options[0];
+    const file = context.filename.replaceAll("\\", "/");
+    const dir = file.replace(/\/[^/]*$/, "");
+    /** 패키지 이름과 그 폴더(`packages/<폴더>/`). 이 파일이 든 패키지는 뺀다. */
+    const scoped = Object.keys(packages)
+      .map((name) => ({ name, folder: `packages/${name.split("/")[1]}/` }))
+      .filter(
+        ({ folder }) => !file.includes(`/${folder}`) && !file.startsWith(folder)
+      );
+    /** 범위 안 패키지를 가리키면 그 패키지와 입구, 아니면 undefined. */
+    const target = (source) => {
       if (typeof source !== "string") return undefined;
-      if (
-        source === "@babojubot/runtime" ||
-        source.startsWith("@babojubot/runtime/")
-      )
-        return source;
-      if (!source.startsWith(".")) return undefined;
-      const parts = [];
-      for (const part of `${dir}/${source}`.split("/"))
-        if (part === "..") parts.pop();
-        else if (part !== ".") parts.push(part);
-      const resolved = parts.join("/");
-      const at = resolved.indexOf("packages/runtime/");
-      if (at < 0) return undefined;
-      const inside = resolved.slice(at + "packages/runtime/".length);
-      return inside === "src/index.ts"
-        ? "@babojubot/runtime"
-        : `packages/runtime/${inside}`;
+      for (const { name, folder } of scoped) {
+        if (source === name || source.startsWith(`${name}/`))
+          return { name, entry: source };
+        if (!source.startsWith(".")) continue;
+        const parts = [];
+        for (const part of `${dir}/${source}`.split("/"))
+          if (part === "..") parts.pop();
+          else if (part !== ".") parts.push(part);
+        const resolved = parts.join("/");
+        const at = resolved.indexOf(folder);
+        if (at < 0) continue;
+        const inside = resolved.slice(at + folder.length);
+        return {
+          name,
+          entry: inside === "src/index.ts" ? name : `${folder}${inside}`,
+        };
+      }
+      return undefined;
     };
     const check = (node, source) => {
-      const entry = runtimeEntry(source);
-      if (entry === undefined || allowed.includes(entry)) return;
+      const found = target(source);
+      if (!found || packages[found.name].includes(found.entry)) return;
+      const allowed = packages[found.name];
       context.report({
         node,
-        messageId: "outside",
-        data: { source, why, allowed: allowed.join(", ") },
+        messageId: allowed.length ? "outside" : "none",
+        data: { source, why, name: found.name, allowed: allowed.join(", ") },
       });
     };
     return {
@@ -914,13 +927,14 @@ const noFailureCollecting = {
 };
 
 const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
-const recoveryFile = "packages/runtime/src/providers/recovery";
+const groupFile = "packages/process/src/group";
 
 /**
  * 그룹 끄기의 반쪽(`stopProcessGroup`·`interruptProcessGroup`)만 가져다 쓰지 못하게 한다. 그룹 끄기는 그룹으로 띄운 트리에만 맞고,
  * 띄운 방법을 모르는 쪽이 빌려 쓰면 Windows에서 아무것도 끄지 않고 성공하거나 새 세션으로 나간 자식을 놓친다(#262).
- * - `outside: true`(runtime 밖): recovery.ts를 가리키는 가져오기·다시 내보내기·dynamic import와, 어디서든 그 두 이름을 가져오는 것.
- * - `outside: false`(runtime 안, 공용 실행·복구 밖): recovery.ts에서 그 두 이름을 가져오거나 다시 내보내는 것과 `export *`.
+ * - `outside: true`(프로세스 패키지 밖): 어디서든 그 두 이름을 가져오거나 다시 내보내는 것. 그 입구(@babojubot/process/recovery)를
+ *   가져오는 것 자체는 product/package-import-scope가 본다.
+ * - `outside: false`(프로세스 패키지 안, 공용 실행·복구 입구 밖): group.ts에서 그 두 이름을 가져오거나 다시 내보내는 것과 `export *`.
  */
 const noGroupStopImport = {
   meta: {
@@ -937,19 +951,15 @@ const noGroupStopImport = {
       },
     ],
     messages: {
-      recovery:
-        "runtime 밖에서 providers/recovery.ts를 가져옵니다. 그 파일은 서버 재시작 뒤의 정리와 공용 실행이 쓰는 그룹 끄기를 담습니다. 프로그램을 띄우고 끄는 일은 launchTree(@babojubot/runtime/launch)가 돌려주는 stop()으로, 재시작 복구는 @babojubot/runtime의 recoverProviderProcesses로 합니다. CODING_STANDARDS.md#제품-코드",
-      half: "{{name}}만 가져다 쓰면 띄운 방법과 맞지 않는 끄기가 됩니다(Windows에서 아무것도 끄지 않고 성공, 새 세션으로 나간 자식을 놓침). 띄울 때 launchTree가 돌려준 stop()·interrupt()를 쓰세요. 그룹 끄기는 공용 실행(providers/launch.ts)과 재시작 복구(recovery.ts)만 씁니다. CODING_STANDARDS.md#제품-코드",
+      half: "{{name}}만 가져다 쓰면 띄운 방법과 맞지 않는 끄기가 됩니다(Windows에서 아무것도 끄지 않고 성공, 새 세션으로 나간 자식을 놓침). 띄울 때 launchTree(@babojubot/process)가 돌려준 stop()·interrupt()를 쓰세요. 그룹 끄기는 공용 실행(@babojubot/process의 launch.ts)과 runtime의 재시작 복구(providers/recovery.ts)만 씁니다. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
     const outside = context.options[0]?.outside ?? true;
     const dir = context.filename.replaceAll("\\", "/").replace(/\/[^/]*$/, "");
-    /** 가져오는 곳이 runtime의 recovery.ts인가(상대 경로를 풀어 본다). */
-    const isRecovery = (source) => {
-      if (typeof source !== "string") return false;
-      if (/^@babojubot\/runtime\/.*recovery/.test(source)) return true;
-      if (!source.startsWith(".")) return false;
+    /** 가져오는 곳이 프로세스 패키지의 group.ts인가(상대 경로를 풀어 본다). */
+    const isGroup = (source) => {
+      if (typeof source !== "string" || !source.startsWith(".")) return false;
       const parts = [];
       for (const part of `${dir}/${source}`.split("/"))
         if (part === "..") parts.pop();
@@ -957,17 +967,15 @@ const noGroupStopImport = {
       return parts
         .join("/")
         .replace(/\.(ts|js|mjs)$/, "")
-        .endsWith(recoveryFile);
+        .endsWith(groupFile);
     };
     const check = (node, specifiers = []) => {
-      const fromRecovery = isRecovery(node.source?.value);
-      if (outside && fromRecovery)
-        return context.report({ node, messageId: "recovery" });
-      if (node.type === "ExportAllDeclaration" && fromRecovery)
+      const fromGroup = isGroup(node.source?.value);
+      if (node.type === "ExportAllDeclaration" && fromGroup)
         return context.report({
           node,
           messageId: "half",
-          data: { name: "recovery.ts의 export *" },
+          data: { name: "group.ts의 export *" },
         });
       for (const specifier of specifiers) {
         const name =
@@ -976,7 +984,7 @@ const noGroupStopImport = {
             : specifier.type === "ExportSpecifier"
               ? specifier.local.name
               : undefined;
-        if (groupStoppers.has(name) && (outside || fromRecovery))
+        if (groupStoppers.has(name) && (outside || fromGroup))
           context.report({
             node: specifier,
             messageId: "half",
@@ -989,10 +997,6 @@ const noGroupStopImport = {
       ExportNamedDeclaration: (node) =>
         node.source && check(node, node.specifiers),
       ExportAllDeclaration: (node) => check(node),
-      ImportExpression(node) {
-        if (outside && isRecovery(node.source.value))
-          context.report({ node, messageId: "recovery" });
-      },
     };
   },
 };
@@ -1006,7 +1010,7 @@ export default {
     "no-process-group-signal": noProcessGroupSignal,
     "no-direct-launch": noDirectLaunch,
     "bounded-command": boundedCommand,
-    "runtime-import-scope": runtimeImportScope,
+    "package-import-scope": packageImportScope,
     "no-failure-collecting": noFailureCollecting,
     "no-group-stop-import": noGroupStopImport,
   },

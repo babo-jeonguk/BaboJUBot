@@ -491,6 +491,11 @@ test("other modules reach runtime and the process package only through their lis
       "apps/server/src/app.ts",
       `const recovery = await import("@babojubot/process/recovery");\nvoid recovery;\n`,
     ],
+    // 제품 코드도 runtime은 패키지 입구만 가져온다. 프로세스 바탕은 runtime에서 옮겼다.
+    [
+      "apps/server/src/dispatcher.ts",
+      `import { TreeLaunchRefused } from "@babojubot/runtime/launch";\nvoid TreeLaunchRefused;\n`,
+    ],
     [
       "apps/server/src/app.ts",
       `import { testFolders } from "@babojubot/process/testing";\nvoid testFolders;\n`,

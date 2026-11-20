@@ -64,38 +64,129 @@ const projectService = {
 };
 
 // runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수(startProcess·runProbe)를 거치고,
-// 그 함수들은 공용 실행(launch.ts)으로 띄운다.
+// 그 함수들은 공용 실행(@babojubot/process의 launchTree·runTree)으로 띄운다.
 const processOwners = [
-  "launch.ts", // 공용 실행: 띄우기와 그 트리의 끄기(stop)를 한 쌍으로 돌려준다
-  "bounded-command.ts", // 공용 실행 위에 놓을 수 없는 짧은 명령: 시한에 SIGKILL과 끝 보장
   "container.ts", // docker 클라이언트 호출과 격리 확인
-  "job-object.ts", // Windows 묶음 실행기
   "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
-  "lease.ts", // 실행 칸을 쥔 프로그램 조회
   "login.ts", // 사용자 터미널을 그대로 넘기는 대화형 로그인
 ].map((name) => `packages/runtime/src/providers/${name}`);
+// 프로세스 패키지(@babojubot/process)에서 프로그램을 직접 띄워도 되는 파일. 공용 실행과, 그 위에 놓을 수 없는 실행이다.
+// 그 밖의 파일(표식 조회 등)은 이 파일들의 함수로 띄운다.
+const processPackageOwners = [
+  "launch.ts", // 공용 실행: 띄우기와 그 트리의 끄기(stop)를 한 쌍으로 돌려준다
+  "bounded-command.ts", // 공용 실행 위에 놓을 수 없는 짧은 명령: 시한에 SIGKILL과 끝 보장
+  "job-object.ts", // Windows 묶음 실행기를 만들고 시험한다. 실행기 위에는 놓을 수 없다
+].map((name) => `packages/process/src/${name}`);
 // 제품 코드·개발 스크립트에서 오래 도는 자식을 child_process·cross-spawn으로 직접 띄워도 되는 파일. 그 밖은 공용 실행
-// (@babojubot/runtime/launch)으로 띄운다(product/no-direct-launch). runtime의 위 파일들은 공용 실행이 그 위에 서는 실행(그룹·표식·
-// 묶음 조회, 복구 보조 명령, 대화형 로그인 등)이다. 그 밖은 공용 실행의 끄기가 맞지 않는 실행만 둔다.
+// (@babojubot/process)으로 띄운다(product/no-direct-launch). 위 두 목록은 공용 실행 자신과 그것이 서는 실행(짧은 명령, 묶음 실행기,
+// 복구 보조 명령, 대화형 로그인 등)이다. 그 밖은 공용 실행의 끄기가 맞지 않는 실행만 둔다.
 const launchOwners = [
   ...processOwners,
+  ...processPackageOwners,
   // 내장 Postgres는 pg_ctl이 띄운 데몬이 pg_ctl보다 오래 살아야 한다. 공용 실행의 끄기는 그 데몬까지 끄므로 맞지 않는다.
   // 데몬의 끄기는 pg_ctl stop과 잠금 파일·생성 신원 확인이 맡는다. pg_ctl의 기다림은 -t로 끝을 둔다.
   "packages/db/src/embedded.ts",
 ];
 const launchers = ["child_process", "node:child_process", "cross-spawn"];
-const launchMessage =
-  "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 호출자는 providerEnvironment로 격리 실행의 환경을 만들고, 이 함수들이 공용 실행(providers/launch.ts)으로 띄워 입력·시작 오류와 종료를 처리하고 트리 전체를 끈 것을 확인합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
+const runtimeLaunchMessage =
+  "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 호출자는 providerEnvironment로 격리 실행의 환경을 만들고, 이 함수들이 공용 실행(@babojubot/process의 launchTree·runTree)으로 띄워 입력·시작 오류와 종료를 처리하고 트리 전체를 끈 것을 확인합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
+const processPackageLaunchMessage =
+  "@babojubot/process 안의 프로그램 실행은 launch.ts의 launchTree·runTree(띄우기와 그 트리의 끄기를 한 쌍으로)나, 공용 실행 위에 놓을 수 없는 짧은 명령이면 bounded-command.ts의 runCommand·boundChild(시한에 SIGKILL과 끝 보장)로 합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processPackageOwners에 이유와 함께 올립니다.";
 
 // import 검사를 거치지 않고 모듈을 불러오는 길. 이름 그대로 가져오기·바꿔 가져오기·모듈 객체에서 읽기·구조 분해를 모두 본다.
 // node:module은 createRequire·Module._load처럼 import 검사를 거치지 않는 길이 여럿이라 모듈째 막고(타입은 허용),
 // process의 getBuiltinModule은 이름 그대로 가져오기·읽기·구조 분해와 계산한 이름으로 읽기를 막는다.
 const moduleLoaderModules = ["module", "node:module"];
-const moduleMessage = `node:module은 createRequire·Module._load처럼 import 검사를 거치지 않고 모듈을 불러오는 길이 있어 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
 const getBuiltinModule = "getBuiltinModule";
-const loaderMessage = `process.getBuiltinModule은 import 검사를 거치지 않고 모듈을 불러오므로 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
-const computedProcessMessage = `process의 속성을 계산한 이름으로 읽으면 getBuiltinModule 같은 모듈 불러오기를 lint가 볼 수 없습니다. 속성 이름을 그대로 적으세요(process.env[name]처럼 그 안의 값은 그대로 읽습니다). ${launchMessage}`;
-const computedImportMessage = `계산한 경로·template literal의 dynamic import는 무엇을 가져오는지 lint가 볼 수 없어 child_process 금지를 피합니다. 경로를 문자열 그대로 적으세요(\`await import("./claude.ts")\`). ${launchMessage}`;
+
+/**
+ * 격리 실행의 환경과 오류 처리, 띄우기와 끄기의 짝을 한 곳이 맡도록, 패키지 안에서 정해진 파일(`owners`)만 프로그램을 띄운다.
+ * child_process와 cross-spawn의 정적 import·re-export·문자열 dynamic import를 막는다. 이 검사를 피하는 길(계산한 경로·template
+ * literal의 import, node:module, process.getBuiltinModule, process의 계산한 이름)도 막는다. `message`는 그 패키지에서 띄우는 길이다.
+ */
+function launchBoundary(files, owners, launchMessage) {
+  const moduleMessage = `node:module은 createRequire·Module._load처럼 import 검사를 거치지 않고 모듈을 불러오는 길이 있어 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
+  return {
+    files,
+    ignores: [...testFiles, ...owners],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            ...launchers.map((name) => ({
+              name,
+              allowTypeImports: true,
+              message: launchMessage,
+            })),
+            ...moduleLoaderModules.map((name) => ({
+              name,
+              allowTypeImports: true,
+              message: moduleMessage,
+            })),
+          ],
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "ImportExpression[source.value=/^((node:)?child_process|cross-spawn)$/]",
+          message: launchMessage,
+        },
+        {
+          // 문자열이 아닌 경로. 문자열 경로는 위 규칙과 no-restricted-imports가 본다.
+          selector: "ImportExpression:not([source.type='Literal'])",
+          message: `계산한 경로·template literal의 dynamic import는 무엇을 가져오는지 lint가 볼 수 없어 child_process 금지를 피합니다. 경로를 문자열 그대로 적으세요(\`await import("./claude.ts")\`). ${launchMessage}`,
+        },
+        {
+          selector: "ImportExpression[source.value=/^(node:)?module$/]",
+          message: moduleMessage,
+        },
+        {
+          selector: [
+            `ImportSpecifier[imported.name='${getBuiltinModule}']`,
+            `ExportSpecifier[local.name='${getBuiltinModule}']`,
+            `MemberExpression[property.name='${getBuiltinModule}']`,
+            `MemberExpression[property.value='${getBuiltinModule}']`,
+            `ObjectPattern > Property[key.name='${getBuiltinModule}']`,
+          ].join(", "),
+          message: `process.getBuiltinModule은 import 검사를 거치지 않고 모듈을 불러오므로 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`,
+        },
+        {
+          // process[name]·globalThis.process[name]. 이름을 그대로 적은 읽기와 process.env[name]은 보지 않는다.
+          selector:
+            "MemberExpression[computed=true]:not([property.type='Literal']):matches([object.name='process'], [object.object.name='globalThis'][object.property.name='process'])",
+          message: `process의 속성을 계산한 이름으로 읽으면 getBuiltinModule 같은 모듈 불러오기를 lint가 볼 수 없습니다. 속성 이름을 그대로 적으세요(process.env[name]처럼 그 안의 값은 그대로 읽습니다). ${launchMessage}`,
+        },
+      ],
+    },
+  };
+}
+
+// 다른 영역이 runtime·프로세스 패키지에서 가져와도 되는 입구(product/package-import-scope, #266). 그룹 끄기·표식 정리 입구
+// (@babojubot/process/recovery)는 어느 목록에도 없다: runtime의 재시작 복구(providers/recovery.ts)만 쓰고 그 파일은 이 규칙 밖이다.
+const dbScopeWhy =
+  "db(Control Plane)가 프로바이더 adapter 패키지(runtime)에 기대면 저장소가 실행 계층에 묶입니다.";
+const processEntries = {
+  // 제품 코드: 공용 실행·짧은 명령·시계·묶음 실행기 준비와 폴더 지우기.
+  product: ["@babojubot/process", "@babojubot/process/remove-folder"],
+  // 개발 스크립트: 제품 코드의 입구와, 사고 재현 스크립트가 쓰는 프로세스 확인·정리.
+  scripts: [
+    "@babojubot/process",
+    "@babojubot/process/remove-folder",
+    "@babojubot/process/test-cleanup",
+  ],
+  // 시험 코드: 그 위에 시험 정리 도움(node:test에서도 쓰는 것과 vitest 전용)과 시험 준비.
+  tests: [
+    "@babojubot/process",
+    "@babojubot/process/remove-folder",
+    "@babojubot/process/test-cleanup",
+    "@babojubot/process/lifelines",
+    "@babojubot/process/testing",
+    "@babojubot/process/launcher-setup",
+  ],
+};
 
 const standards = "CODING_STANDARDS.md#정리";
 // rm·rmSync는 recursive일 때만 폴더를 지운다(파일 지우기는 허용). rmdir·rmdirSync는 옵션 없이도 빈 폴더를 지운다.
@@ -365,10 +456,10 @@ export default defineConfig([
     rules: { "product/no-cleanup-chain": "error" },
   },
   {
-    // 프로세스 그룹(음수 pid)에 신호를 보내는 일은 제품의 그룹 끄기(recovery.ts)만 한다(CODING_STANDARDS.md#제품-코드).
+    // 프로세스 그룹(음수 pid)에 신호를 보내는 일은 제품의 그룹 끄기(@babojubot/process의 group.ts)만 한다(CODING_STANDARDS.md#제품-코드).
     // 시험 코드는 이 범위에 아직 넣지 않았다.
     files: [...productFiles, ...scriptFiles],
-    ignores: [...scriptIgnores, "packages/runtime/src/providers/recovery.ts"],
+    ignores: [...scriptIgnores, "packages/process/src/group.ts"],
     plugins: { product: productRules },
     rules: { "product/no-process-group-signal": "error" },
   },
@@ -381,36 +472,77 @@ export default defineConfig([
     rules: { "product/no-direct-launch": "error" },
   },
   {
-    // db는 Control Plane이다(docs/architecture.md). 프로세스 바탕이 runtime에 있는 동안 내장 Postgres의 pg_ctl 실행만 그 하위 경로를 쓴다.
-    files: ["packages/db/src/**/*.{ts,tsx}"],
-    ignores: testFiles,
+    // 다른 영역은 runtime·프로세스 패키지의 안쪽 파일이나 목록에 없는 입구를 가져오지 않는다(#266, docs/architecture.md 패키지 구성).
+    // 제품 코드는 시험 도움 입구를 가져오지 않는다. db는 아래 설정이 따로 본다.
+    files: productFiles,
+    ignores: [
+      ...testFiles,
+      "packages/db/src/**",
+      "packages/runtime/src/providers/recovery.ts",
+    ],
     plugins: { product: productRules },
     rules: {
-      "product/runtime-import-scope": [
+      "product/package-import-scope": [
         "error",
         {
-          allowed: ["@babojubot/runtime/bounded-command"],
-          why: "db(Control Plane)가 프로바이더 adapter 패키지(runtime)에 기대면 저장소가 실행 계층에 묶입니다.",
+          packages: {
+            "@babojubot/runtime": ["@babojubot/runtime"],
+            "@babojubot/process": processEntries.product,
+          },
+          why: "runtime·프로세스 바탕의 안쪽 파일이나 시험 도움에 기대면 그 패키지 안을 바꿀 때 함께 깨지고, 그 모양이 다른 영역으로 퍼집니다.",
         },
       ],
     },
   },
   {
-    // 개발 스크립트는 제품 API(패키지 입구)와 프로세스 바탕, 아직 옮기지 않은 정리 도움만 runtime에서 가져온다.
+    // db는 Control Plane이다(docs/architecture.md). 시험까지 프로바이더 adapter 패키지(runtime)에 기대지 않고, 프로세스 바탕은
+    // 새 패키지에서 가져온다. 시험은 시험 정리 도움 입구까지, 제품 코드는 아래 설정이 제품 입구만 받는다.
+    files: ["packages/db/**/*.{ts,tsx}"],
+    plugins: { product: productRules },
+    rules: {
+      "product/package-import-scope": [
+        "error",
+        {
+          packages: {
+            "@babojubot/runtime": [],
+            "@babojubot/process": processEntries.tests,
+          },
+          why: dbScopeWhy,
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/db/src/**/*.{ts,tsx}"],
+    ignores: testFiles,
+    plugins: { product: productRules },
+    rules: {
+      "product/package-import-scope": [
+        "error",
+        {
+          packages: {
+            "@babojubot/runtime": [],
+            "@babojubot/process": processEntries.product,
+          },
+          why: dbScopeWhy,
+        },
+      ],
+    },
+  },
+  {
+    // 개발 스크립트는 runtime의 제품 API(패키지 입구)와 프로세스 바탕의 입구만 가져온다.
     files: scriptFiles,
     ignores: scriptIgnores,
     plugins: { product: productRules },
     rules: {
-      "product/runtime-import-scope": [
+      "product/package-import-scope": [
         "error",
         {
-          allowed: [
-            "@babojubot/runtime",
-            "@babojubot/runtime/launch",
-            "@babojubot/runtime/bounded-command",
-            "@babojubot/runtime/test-cleanup",
-          ],
-          why: "runtime의 내부 파일·다른 하위 경로에 기대면 runtime 안을 바꿀 때 스크립트가 함께 깨지고, 그 모양이 다른 스크립트로 퍼집니다.",
+          packages: {
+            "@babojubot/runtime": ["@babojubot/runtime"],
+            "@babojubot/process": processEntries.scripts,
+          },
+          why: "runtime·프로세스 바탕의 내부 파일이나 다른 입구에 기대면 그 패키지 안을 바꿀 때 스크립트가 함께 깨지고, 그 모양이 다른 스크립트로 퍼집니다.",
         },
       ],
     },
@@ -429,81 +561,39 @@ export default defineConfig([
     rules: { "product/bounded-command": "error" },
   },
   {
-    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. runtime 밖은 recovery.ts를 가져오지 않고, runtime 안에서도 공용 실행과 복구만 그룹을 끈다.
+    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 프로세스 패키지 밖은 그 두 이름을 가져오지 않고(runtime의 재시작 복구만 예외),
+    // 패키지 안에서도 공용 실행(launch.ts)과 복구 입구(recovery.ts)만 group.ts에서 가져온다.
     files: [...productFiles, ...scriptFiles],
-    ignores: [...scriptIgnores, "packages/runtime/src/**"],
+    ignores: [
+      ...scriptIgnores,
+      "packages/process/src/**",
+      "packages/runtime/src/providers/recovery.ts",
+    ],
     plugins: { product: productRules },
     rules: { "product/no-group-stop-import": ["error", { outside: true }] },
   },
   {
-    files: ["packages/runtime/src/**/*.{ts,tsx}"],
+    files: ["packages/process/src/**/*.{ts,tsx}"],
     ignores: [
       ...testFiles,
-      "packages/runtime/src/providers/launch.ts",
-      "packages/runtime/src/providers/recovery.ts",
+      "packages/process/src/launch.ts",
+      "packages/process/src/recovery.ts",
+      "packages/process/src/group.ts",
     ],
     plugins: { product: productRules },
     rules: { "product/no-group-stop-import": ["error", { outside: false }] },
   },
-  {
-    // 격리 실행의 환경과 오류 처리를 한 곳이 맡도록, runtime은 정해진 파일에서만 프로그램을 띄운다.
-    // child_process와 runtime이 의존하는 cross-spawn의 정적 import·re-export·문자열 dynamic import를 막는다.
-    // 이 검사를 피하는 길(계산한 경로·template literal의 import, node:module, process.getBuiltinModule, process의 계산한 이름)도 막는다.
-    files: ["packages/runtime/src/**/*.{ts,tsx}"],
-    ignores: [...testFiles, ...processOwners],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          paths: [
-            ...launchers.map((name) => ({
-              name,
-              allowTypeImports: true,
-              message: launchMessage,
-            })),
-            ...moduleLoaderModules.map((name) => ({
-              name,
-              allowTypeImports: true,
-              message: moduleMessage,
-            })),
-          ],
-        },
-      ],
-      "no-restricted-syntax": [
-        "error",
-        {
-          selector:
-            "ImportExpression[source.value=/^((node:)?child_process|cross-spawn)$/]",
-          message: launchMessage,
-        },
-        {
-          // 문자열이 아닌 경로. 문자열 경로는 위 규칙과 no-restricted-imports가 본다.
-          selector: "ImportExpression:not([source.type='Literal'])",
-          message: computedImportMessage,
-        },
-        {
-          selector: "ImportExpression[source.value=/^(node:)?module$/]",
-          message: moduleMessage,
-        },
-        {
-          selector: [
-            `ImportSpecifier[imported.name='${getBuiltinModule}']`,
-            `ExportSpecifier[local.name='${getBuiltinModule}']`,
-            `MemberExpression[property.name='${getBuiltinModule}']`,
-            `MemberExpression[property.value='${getBuiltinModule}']`,
-            `ObjectPattern > Property[key.name='${getBuiltinModule}']`,
-          ].join(", "),
-          message: loaderMessage,
-        },
-        {
-          // process[name]·globalThis.process[name]. 이름을 그대로 적은 읽기와 process.env[name]은 보지 않는다.
-          selector:
-            "MemberExpression[computed=true]:not([property.type='Literal']):matches([object.name='process'], [object.object.name='globalThis'][object.property.name='process'])",
-          message: computedProcessMessage,
-        },
-      ],
-    },
-  },
+  // runtime과 프로세스 패키지는 정해진 파일에서만 프로그램을 띄운다(위 launchBoundary).
+  launchBoundary(
+    ["packages/runtime/src/**/*.{ts,tsx}"],
+    processOwners,
+    runtimeLaunchMessage
+  ),
+  launchBoundary(
+    ["packages/process/src/**/*.{ts,tsx}"],
+    processPackageOwners,
+    processPackageLaunchMessage
+  ),
   {
     // 테스트는 응답 JSON을 그대로 다룬다.
     files: ["**/test/**", "**/*.test.ts"],
