@@ -1,9 +1,9 @@
 import {
   recoverProviderProcesses,
-  prepareJobObjectLauncher,
   cleanupAntigravityWorkspaces,
   type DockerEnvironment,
 } from "@babojubot/runtime";
+import { prepareJobObjectLauncher } from "@babojubot/process";
 import { CompactionScheduler } from "./compaction.ts";
 import { Workspaces } from "./workspace.ts";
 import { InFlight, trackHandlers } from "./in-flight.ts";

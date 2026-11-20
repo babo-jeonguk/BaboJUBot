@@ -1,4 +1,4 @@
-import { runTree } from "./launch.ts";
+import { runTree } from "@babojubot/process";
 
 export const ownerMark = "babojubot-antigravity-v1";
 const unsafe = 3;

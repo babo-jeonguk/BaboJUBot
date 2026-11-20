@@ -6,19 +6,20 @@ import {
   orIfUnreadable,
   settled,
 } from "@babojubot/contracts";
-import { type Clock, realClock } from "./clock.ts";
+import {
+  launchTree,
+  realClock,
+  requireJobObject,
+  runTree,
+  TreeLaunchRefused,
+  type Clock,
+} from "@babojubot/process";
 import type { ContainerLaunch } from "./container.ts";
 import {
   dockerClientEnv,
   dockerRunArgs,
   removeContainer,
 } from "./container.ts";
-import {
-  launchTree,
-  requireJobObject,
-  runTree,
-  TreeLaunchRefused,
-} from "./launch.ts";
 import { recordProcess } from "./recovery.ts";
 
 /** 프로그램이 있는지 보는 짧은 확인의 제한. 바쁜 컴퓨터에서도 넘지 않을 만큼 넉넉하게 둔다. */
@@ -177,11 +178,8 @@ export async function runProbe(
   return { stdout, stderr };
 }
 
-// 시계는 lease.ts도 쓴다. process.ts를 거치면 두 파일이 서로 불러 clock.ts에 둔다.
-export { type Clock, realClock } from "./clock.ts";
-
 /**
- * 실행 시도 하나. 프로그램은 공용 실행(`launch.ts`)으로 띄워 그 `stop()`으로 트리 전체를 끝내고 확인한다. 원래 오류 출력은 버리지
+ * 실행 시도 하나. 프로그램은 공용 실행(@babojubot/process의 `launchTree`)으로 띄워 그 `stop()`으로 트리 전체를 끝내고 확인한다. 원래 오류 출력은 버리지
  * 않고 판단에만 쓰며 공개 기록에 옮기지 않는다. 컨테이너 실행은 docker 클라이언트를 같은 공용 실행으로 띄우고, 중계와 컨테이너 지우기를
  * 여기서 맡는다.
  */
