@@ -643,6 +643,31 @@ test("other workspace packages are imported only through their exported entries"
       "packages/db/src/client.test.ts",
       `import { planRunStart } from "../../core/src/run.ts";\nvoid planRunStart;\n`,
     ],
+    // require·require.resolve·createRequire로 문자열 경로를 불러오거나 찾는 것도 같다.
+    [
+      "scripts/provider-live.mjs",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("../packages/db/src/client.ts");\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nvoid load.resolve("@babojubot/db/src/schema.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { createRequire } from "node:module";\nvoid createRequire(import.meta.url)("../../apps/server/src/index.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import nodeModule from "node:module";\nvoid nodeModule.createRequire(import.meta.url).resolve("../../packages/contracts/src/failure.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `void require("../../packages/db/src/client.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `void require.resolve("../../packages/db/package.json");\n`,
+    ],
     // 내보내지 않은 하위 경로.
     [
       "apps/web/src/api.ts",
@@ -679,6 +704,11 @@ test("other workspace packages are imported only through their exported entries"
     [
       "scripts/live/chaos-run.mjs",
       `import { withClient } from "@babojubot/db/admin";\nvoid withClient;\n`,
+    ],
+    // 저장소 밖 라이브러리와 패키지 입구는 require로도 그대로다.
+    [
+      "scripts/provider-live.mjs",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nvoid load.resolve("drizzle-orm");\nvoid load("@babojubot/db");\nvoid require("./live/check-server.mjs");\n`,
     ],
     // 같은 패키지 안의 상대 경로와 패키지 밖 라이브러리.
     [
