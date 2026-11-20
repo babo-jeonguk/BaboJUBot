@@ -284,11 +284,19 @@ export function describeRuntimeContract(
         };
       });
       tools.onRequest.add(markWorking);
+      // 돌아온 뒤에 온 활동. 오는 순간 조용히 있어야 할 구간의 확인이 실패한다.
+      let markLate!: () => void;
+      const lateArrived = new Promise<void>((resolve) => {
+        markLate = resolve;
+      });
       const result = adapter
         .execute(request, {
           signal: controller.signal,
           emit: async (activity) => {
-            (returned ? late : activities).push(activity);
+            if (returned) {
+              late.push(activity);
+              markLate();
+            } else activities.push(activity);
             markWorking();
             await gate;
           },
@@ -319,6 +327,7 @@ export function describeRuntimeContract(
         controller,
         activities,
         late,
+        lateArrived,
         result,
         started,
         working,
@@ -340,7 +349,13 @@ export function describeRuntimeContract(
           runtimeActivitySchema.safeParse(activity).error,
           JSON.stringify(activity)
         ).toBeUndefined();
-      await new Promise((r) => setTimeout(r, quietMs));
+      // 돌아온 뒤 quietMs 동안 활동이 오지 않아야 한다. 오면 그 순간 이 경주가 끝나 실패한다.
+      expect(
+        await Promise.race([
+          attempt.lateArrived.then(() => "late activity"),
+          new Promise((resolve) => setTimeout(() => resolve("quiet"), quietMs)),
+        ])
+      ).toBe("quiet");
       expect(attempt.late).toEqual([]);
       const published = JSON.stringify({
         error: result.error,
@@ -370,8 +385,18 @@ export function describeRuntimeContract(
       "settles as cancelled soon after a cancel and stays quiet afterwards",
       async () => {
         const attempt = run(worksUntilCancelled);
+        // 시작 신호가 없는 in-process 가짜는 quietStartMs 동안 스스로 돌아오지 않았는지를 보고 취소한다.
         if (quietStartMs === undefined) await attempt.started();
-        else await new Promise((resolve) => setTimeout(resolve, quietStartMs));
+        else
+          expect(
+            await Promise.race([
+              settled(attempt.result).then(() => "returned"),
+              new Promise((resolve) =>
+                setTimeout(() => resolve("still working"), quietStartMs)
+              ),
+            ]),
+            "returned before it was cancelled"
+          ).toBe("still working");
         expect(attempt.returned, "returned before it was cancelled").toBe(
           false
         );

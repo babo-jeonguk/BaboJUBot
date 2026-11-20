@@ -1,6 +1,9 @@
 // 제품 코드 lint 규칙. 설정은 eslint.config.js의 `productFiles` 범위에 걸고, 개발 스크립트(`scriptFiles`)에도 그중 일부를 건다.
 // 회귀 시험은 scripts/product-lint-rules.test.mjs와 scripts/script-lint-rules.test.mjs가 맡는다.
 // `no-restricted-syntax`는 설정 블록끼리 덮어써서 서버·runtime의 기존 금지와 함께 걸 수 없으므로 규칙으로 둔다.
+import { existsSync, readFileSync } from "node:fs";
+import { builtinModules } from "node:module";
+import path from "node:path";
 import {
   skippedCleanupIn,
   skippedSyncCleanupIn,
@@ -559,6 +562,119 @@ const noProcessGroupSignal = {
   },
 };
 
+const builtins = new Set(builtinModules);
+
+/** 가져온 이름의 패키지 이름. 상대·절대 경로, `#` 별칭, Node 기본 모듈은 패키지가 아니다(`undefined`). */
+function packageOf(specifier) {
+  if (/^[./#]/.test(specifier) || specifier.startsWith("node:"))
+    return undefined;
+  const parts = specifier.split("/");
+  const name = specifier.startsWith("@")
+    ? parts.slice(0, 2).join("/")
+    : parts[0];
+  return builtins.has(name) ? undefined : name;
+}
+
+/** 파일에서 가장 가까운 package.json(경로·이름·선언). 파일마다 다시 읽지 않도록 폴더별로 기억한다. */
+const manifests = new Map();
+function manifestFor(file) {
+  for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
+    if (manifests.has(dir)) return manifests.get(dir);
+    const at = path.join(dir, "package.json");
+    if (existsSync(at)) {
+      const json = JSON.parse(readFileSync(at, "utf8"));
+      const found = {
+        file: at,
+        name: json.name,
+        run: new Set([
+          ...Object.keys(json.dependencies ?? {}),
+          ...Object.keys(json.peerDependencies ?? {}),
+          ...Object.keys(json.optionalDependencies ?? {}),
+        ]),
+        dev: new Set(Object.keys(json.devDependencies ?? {})),
+      };
+      manifests.set(dir, found);
+      return found;
+    }
+    if (path.dirname(dir) === dir) return undefined;
+  }
+}
+
+/**
+ * 가져온 패키지는 그 코드가 속한 package.json에 선언한다. 제품 코드는 실행 의존성(`dependencies`·`peerDependencies`·
+ * `optionalDependencies`)에 있어야 한다: devDependencies에만 있으면 프로덕션 설치(`pnpm install --prod`)에서 그 가져오기가 깨진다
+ * (#264 리뷰 STD-2). 타입만 가져오는 것(`import type`)은 실행에 남지 않으므로 devDependencies도 된다. 개발 스크립트와 시험은
+ * `allowDev`로 devDependencies까지 받는다. 정적 import·re-export·문자열 dynamic import를 본다.
+ * 알려진 한계: 계산한 이름의 dynamic import와 `createRequire`로 부른 `require`는 보지 않는다(runtime의 실행 경계 lint가 막는 길은 거기서 막는다).
+ */
+const noUndeclaredImport = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "require imported packages to be declared in the nearest package.json, as runtime dependencies for product code",
+    },
+    schema: [
+      {
+        type: "object",
+        properties: { allowDev: { type: "boolean" } },
+        additionalProperties: false,
+      },
+    ],
+    messages: {
+      undeclared:
+        "{{name}}을(를) {{manifest}}에 선언하지 않고 가져옵니다. 설치에 따라 있을 수도 없을 수도 있는 패키지입니다. 그 package.json에 선언하세요. CODING_STANDARDS.md#제품-코드",
+      devOnly:
+        "{{name}}은(는) {{manifest}}의 devDependencies에만 있습니다. 제품 코드가 실행 중에 가져오면 프로덕션 설치(pnpm install --prod)에서 깨집니다. dependencies로 옮기거나, 타입만 쓰면 import type으로 가져오세요. CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    const allowDev = context.options[0]?.allowDev ?? false;
+    const manifest = manifestFor(context.filename);
+    if (!manifest) return {};
+    const where = path.relative(context.cwd, manifest.file) || "package.json";
+    const check = (source, typeOnly) => {
+      if (source?.type !== "Literal" || typeof source.value !== "string")
+        return;
+      const name = packageOf(source.value);
+      if (!name || name === manifest.name || manifest.run.has(name)) return;
+      if (manifest.dev.has(name)) {
+        if (allowDev || typeOnly) return;
+        context.report({
+          node: source,
+          messageId: "devOnly",
+          data: { name, manifest: where },
+        });
+        return;
+      }
+      context.report({
+        node: source,
+        messageId: "undeclared",
+        data: { name, manifest: where },
+      });
+    };
+    return {
+      ImportDeclaration(node) {
+        check(
+          node.source,
+          node.importKind === "type" ||
+            (node.specifiers.length > 0 &&
+              node.specifiers.every((s) => s.importKind === "type"))
+        );
+      },
+      ExportNamedDeclaration(node) {
+        if (node.source) check(node.source, node.exportKind === "type");
+      },
+      ExportAllDeclaration(node) {
+        check(node.source, node.exportKind === "type");
+      },
+      ImportExpression(node) {
+        check(node.source, false);
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -566,6 +682,7 @@ export default {
     "no-ignored-error": noIgnoredError,
     "no-io-in-unreadable": noIoInUnreadable,
     "no-silent-exit-status": noSilentExitStatus,
+    "no-undeclared-import": noUndeclaredImport,
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
   },

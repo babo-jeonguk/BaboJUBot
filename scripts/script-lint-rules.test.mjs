@@ -100,6 +100,23 @@ test("development scripts get the product rules", async () => {
     }
 });
 
+// 개발 스크립트와 그 시험은 루트 package.json의 devDependencies까지 받는다(yaml). 선언하지 않은 패키지(left-pad)는 막는다.
+test("development scripts and their tests import only declared packages", async () => {
+  const reported = `import pad from "left-pad";\nexport const padded = pad("1", 3);\n`;
+  const kept = `import { parse } from "yaml";\nexport const read = (text) => parse(text);\n`;
+  const rule = ["product/no-undeclared-import"];
+  for (const place of [
+    ...scriptPlaces,
+    ...scriptTestPlaces.filter((p) => !p.includes("fixtures")),
+  ]) {
+    const [message, ...rest] = await lint(reported, place, rule);
+    assert.ok(message, `${place}: not reported`);
+    assert.deepEqual(rest, [], place);
+    assert.match(message.message, /package\.json/);
+    assert.deepEqual(await lint(kept, place, rule), [], `${place}: ${kept}`);
+  }
+});
+
 // 오류 이벤트 처리기도 오류를 받아 확인한다. 상대가 끊은 것만 넘기고 나머지는 남긴다.
 test("development scripts do not drop the error an error listener receives", async () => {
   const reported = `export const watch = (child) => child.stdin.on("error", () => {});\n`;

@@ -683,3 +683,73 @@ test("product code does not fold a non-zero exit of an outside command into an e
         `${place}: ${code}`
       );
 });
+
+const importRule = ["product/no-undeclared-import"];
+
+test("product code imports only the packages its package.json declares, as runtime dependencies", async () => {
+  // packages/runtime: zod는 dependencies, vitest는 devDependencies, left-pad는 선언되지 않았다.
+  const place = "packages/runtime/src/providers/claude.ts";
+  const reported = {
+    "a dev-only package": [
+      `import { expect } from "vitest";\nexport const check = () => expect(1).toBe(1);\n`,
+      /devDependencies/,
+    ],
+    "a dev-only package re-exported": [
+      `export { expect } from "vitest";\n`,
+      /devDependencies/,
+    ],
+    "an undeclared package": [
+      `import pad from "left-pad";\nexport const padded = pad("1", 3);\n`,
+      /선언하지 않고/,
+    ],
+    "an undeclared package by a deep path": [
+      `import { pad } from "left-pad/lib/pad.js";\nexport const padded = pad("1", 3);\n`,
+      /선언하지 않고/,
+    ],
+    "an undeclared scoped package": [
+      `export * from "@scope/missing";\n`,
+      /선언하지 않고/,
+    ],
+    "an undeclared dynamic import": [
+      `export const load = () => import("left-pad");\n`,
+      /선언하지 않고/,
+    ],
+  };
+  for (const [shape, [code, kind]] of Object.entries(reported)) {
+    const [message, ...rest] = await lint(code, place, importRule);
+    assert.ok(message, `${shape} not reported`);
+    assert.deepEqual(rest, [], shape);
+    assert.match(message.message, kind, shape);
+    assert.match(message.message, /packages\/runtime\/package\.json/, shape);
+  }
+  const kept = [
+    `import { z } from "zod";\nexport const schema = z.string();\n`,
+    // 타입만 가져오면 실행에 남지 않는다.
+    `import type { Mock } from "vitest";\nexport type M = Mock;\n`,
+    `import { type Mock } from "vitest";\nexport type M = Mock;\n`,
+    // Node 기본 모듈, 상대 경로, 자기 패키지, 선언한 workspace 패키지.
+    `import { readFileSync } from "node:fs";\nimport path from "path";\nimport { record } from "./record.ts";\nexport const read = (p: string) => record(readFileSync(path.join(p), "utf8"));\n`,
+    `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
+    `import { failureCode } from "@babojubot/contracts";\nexport const code = failureCode;\n`,
+  ];
+  for (const code of kept)
+    assert.deepEqual(await lint(code, place, importRule), [], code);
+  // 시험 코드는 devDependencies까지 받는다. 선언하지 않은 패키지만 막는다.
+  for (const test of testPlaces) {
+    assert.deepEqual(
+      await lint(
+        `import { expect } from "vitest";\nexport const check = () => expect(1).toBe(1);\n`,
+        test,
+        importRule
+      ),
+      [],
+      test
+    );
+    const [message] = await lint(
+      `import pad from "left-pad";\nexport const padded = pad("1", 3);\n`,
+      test,
+      importRule
+    );
+    assert.ok(message, `${test}: undeclared package not reported`);
+  }
+});

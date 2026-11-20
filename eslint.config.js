@@ -353,6 +353,20 @@ export default defineConfig([
     },
   },
   {
+    // 가져온 패키지는 그 코드가 속한 package.json에 선언한다. 제품 코드는 실행 의존성이어야 프로덕션 설치에서 깨지지 않는다(#264 리뷰 STD-2).
+    files: productFiles,
+    ignores: testFiles,
+    plugins: { product: productRules },
+    rules: { "product/no-undeclared-import": "error" },
+  },
+  {
+    // 개발 스크립트와 시험은 devDependencies까지 받는다. 선언하지 않은 패키지만 막는다.
+    files: [...scriptFiles, ...testFiles],
+    ignores: ["**/test-fixtures/**", "scripts/fixtures/**"],
+    plugins: { product: productRules },
+    rules: { "product/no-undeclared-import": ["error", { allowDev: true }] },
+  },
+  {
     // finally·catch에서 서로 무관한 정리를 차례로 기다리면 앞 정리가 실패한 곳에서 뒤 정리를 건너뛴다(CODING_STANDARDS.md#제품-코드).
     // 시험의 공용 정리 hook 규칙과 같은 판정을 쓴다. 시험 코드는 시험 전용 정리 규칙이 본다.
     files: [...productFiles, ...scriptFiles],

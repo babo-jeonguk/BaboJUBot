@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { AsyncCallbackError, RerunLoop, RerunLoops } from "./rerun-loop.ts";
 
 /** 풀거나 거절할 수 있는 Promise. 시험이 회차의 시작과 끝을 정한다. */
@@ -410,6 +410,40 @@ describe("RerunLoop", () => {
     expect(await outcomeSoon(loop.settled())).toBe("resolved");
     expect(errors).toEqual([expect.any(AsyncCallbackError)]);
     expect(await outcomeSoon(loop.close())).toBe("resolved");
+  });
+
+  it("hands the rejection of a promise a callback returned to the same report, leaving no rejection unhandled", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    onTestFinished(() => {
+      process.off("unhandledRejection", listener);
+    });
+    const log = serverLog();
+    const { errors, onError } = failures();
+    const idleBroken = new Error("onIdle work failed");
+    const reportBroken = new Error("onError work failed");
+    const loop = new RerunLoop(
+      () => Promise.resolve(),
+      onError,
+      // @ts-expect-error promise를 돌려주는 onIdle은 타입 검사에서 거부된다.
+      () => Promise.reject(idleBroken)
+    );
+    loop.request();
+    // 회차는 그 promise를 기다리지 않고 끝난다.
+    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    const asyncReport = new RerunLoop(
+      () => Promise.reject(new Error("check failed")),
+      // @ts-expect-error promise를 돌려주는 onError는 타입 검사에서 거부된다.
+      () => Promise.reject(reportBroken)
+    );
+    asyncReport.request();
+    expect(await outcomeSoon(asyncReport.settled())).toBe("resolved");
+    await nextTurn();
+
+    expect(errors).toEqual([expect.any(AsyncCallbackError), idleBroken]);
+    expect(log.includes(reportBroken)).toBe(true);
+    expect(unhandled).toEqual([]);
   });
 
   it("logs an onError that returns a promise, with the failure it was given", async () => {
