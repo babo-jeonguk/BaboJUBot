@@ -281,6 +281,9 @@ const directLaunches = {
   // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire(#266 리뷰 SPEC-2).
   "child_process from a renamed createRequire": `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { spawn } = load("node:child_process");\nspawn("x", []);\n`,
   "child_process from getBuiltinModule": `process.getBuiltinModule("node:child_process");\n`,
+  // 출처로 본다: 모듈 객체의 별칭, cross-spawn 기본 함수의 별칭(#266 리뷰 SPEC-4).
+  "an alias of the module object": `import * as cp from "node:child_process";\nconst tools = cp;\ntools.spawn("x", []);\n`,
+  "an alias of the cross-spawn function": `import crossSpawn from "cross-spawn";\nconst run = crossSpawn;\nrun("x", []);\n`,
 };
 // 막지 않는 모양: 상한을 둔 동기 실행, cross-spawn의 동기 실행, 타입만 가져오기, 공용 실행.
 const keptLaunches = [
@@ -288,6 +291,8 @@ const keptLaunches = [
   `import crossSpawn from "cross-spawn";\ncrossSpawn.sync("x", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
   `import type { ChildProcess } from "node:child_process";\nexport type Child = ChildProcess;\n`,
   `import { launchTree } from "@babojubot/process";\nconst tree = launchTree({ command: ["x"], args: [], cwd: ".", env: {}, stdio: "pipe" });\nawait tree.stop();\n`,
+  // 모듈 객체를 지역 매개변수가 가리면 그 모듈이 아니다(#266 리뷰 SPEC-4).
+  `import * as cp from "node:child_process";\nvoid cp;\nexport function run(cp) {\n  cp.spawn("x", []);\n}\n`,
 ];
 const launchPlaces = [
   "apps/server/src/app.ts",
@@ -477,12 +482,15 @@ const softCommands = {
   // 공용 가져오기 판정: require·dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
   "execFile taken from a dynamic import": `const { execFile } = await import("node:child_process");\nexecFile("ps", [], () => {});\n`,
   "spawn taken from getBuiltinModule": `const { spawn } = process.getBuiltinModule("node:child_process");\nspawn("csc", [], { timeout: 1000 });\n`,
+  "a const alias of execFile": `import { execFile } from "node:child_process";\nconst run = execFile;\nrun("ps", [], () => {});\n`,
 };
 // 막지 않는 모양: timeout 없는 spawn(끝은 boundChild가 맡음), 시한에 강제 종료하는 동기 실행, 짧은 명령 실행 함수.
 const boundedCommands = [
   `import { spawn } from "node:child_process";\nspawn("csc", [], { stdio: "ignore" });\n`,
   `import { execFileSync } from "node:child_process";\nexecFileSync("ps", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
   `import { runCommand } from "./bounded-command.ts";\nawait runCommand("ps", [], { limitMs: 1000, maxOutputBytes: 1024 });\n`,
+  // 가져온 이름을 지역 매개변수가 가리면 그 함수가 아니다(#266 리뷰 SPEC-4).
+  `import { execFile } from "node:child_process";\nvoid execFile;\nexport function run(execFile) {\n  execFile("ps", [], () => {});\n}\n`,
 ];
 
 test("launch owners end short commands at their time limit", async () => {

@@ -468,6 +468,9 @@ test("product code runs a program synchronously only with a timeout", async () =
     // 공용 가져오기 판정: dynamic import·getBuiltinModule에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
     "a name taken from a dynamic import": `const { execFileSync } = await import("node:child_process");\nexport const out = () => execFileSync("ps", []);\n`,
     "a name taken from getBuiltinModule": `const { spawnSync: run } = process.getBuiltinModule("node:child_process");\nexport const out = () => run("ps", []);\n`,
+    // 출처로 본다: const 별칭과 모듈 객체의 별칭(#266 리뷰 SPEC-4).
+    "a const alias": `import { execFileSync } from "node:child_process";\nconst run = execFileSync;\nexport const out = () => run("ps", []);\n`,
+    "an alias of the module object": `import * as cp from "node:child_process";\nconst tools = cp;\nexport const out = () => tools.spawnSync("ps", []);\n`,
   };
   for (const place of productPlaces)
     for (const [shape, code] of Object.entries(unbounded)) {
@@ -499,6 +502,9 @@ test("product code runs a program synchronously only with a timeout", async () =
     `import { execSync } from "node:child_process";\nexport const out = () => execSync("ps", { timeout: 5000, "killSignal": "SIGKILL" });\n`,
     // child_process가 아닌 같은 이름의 함수는 대상이 아니다.
     `const execFileSync = (name: string) => name;\nexport const out = () => execFileSync("ps");\n`,
+    // 가져온 이름을 지역 매개변수가 가리거나, 지역 객체의 같은 이름 메서드는 그 함수가 아니다(#266 리뷰 SPEC-4).
+    `import { execFileSync } from "node:child_process";\nvoid execFileSync;\nexport const out = (execFileSync: (name: string) => string) => execFileSync("ps");\n`,
+    `const fake = { spawnSync: (name: string) => name };\nexport const out = () => fake.spawnSync("ps");\n`,
   ];
   for (const place of productPlaces)
     for (const code of bounded)
@@ -594,12 +600,17 @@ const unreadableIo = {
   "a renamed import": `import { readFileSync } from "node:fs";\nimport { orIfUnreadable as parsed } from "@babojubot/contracts";\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
   "a namespace import": `import { readFileSync } from "node:fs";\nimport * as failure from "@babojubot/contracts";\nexport const read = (file) => failure.orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`,
   "a callback passed by name": `${unreadableImport}const parse = () => JSON.parse("1");\nexport const read = () => orIfUnreadable(parse, undefined);\n`,
+  // 출처로 본다: const 별칭(#266 리뷰 SPEC-4).
+  "a const alias": `import { readFileSync } from "node:fs";\n${unreadableImport}const parsed = orIfUnreadable;\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
   // 공용 가져오기 판정: dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
   "a name taken from a dynamic import": `import { readFileSync } from "node:fs";\nconst { orIfUnreadable: parsed } = await import("@babojubot/contracts");\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
 };
 
 /** 이미 손에 든 값의 동기 해석·확인 한 단계. 정규식의 exec는 명령이 아니다. */
 const unreadableKept = [
+  // 가져온 이름을 지역 매개변수가 가리거나, 지역 객체의 같은 이름 메서드는 그 함수가 아니다(#266 리뷰 SPEC-4).
+  `import { readFileSync } from "node:fs";\n${unreadableImport}void orIfUnreadable;\nexport const read = (orIfUnreadable, file) => orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`,
+  `import { readFileSync } from "node:fs";\nconst tools = { orIfUnreadable: (read) => read() };\nexport const read = (file) => tools.orIfUnreadable(() => readFileSync(file, "utf8"));\n`,
   `${unreadableImport}export const read = (text) => orIfUnreadable(() => JSON.parse(text), undefined);\n`,
   `${unreadableImport}export const host = (origin) => orIfUnreadable(() => new URL(origin).host, false);\n`,
   `${unreadableImport}export const decode = (bytes) => orIfUnreadable(() => new TextDecoder("utf-8", { fatal: true }).decode(bytes), undefined);\n`,

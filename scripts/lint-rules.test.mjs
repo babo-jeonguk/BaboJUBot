@@ -232,6 +232,10 @@ test("test code may not wait a fixed time", async () => {
     // 공용 가져오기 판정: dynamic import·require에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
     "timers/promises from a dynamic import": `const { setTimeout: sleep } = await import("node:timers/promises");\nawait sleep(50);\n`,
     "timers/promises from require": `const { setTimeout: sleep } = require("node:timers/promises");\nawait sleep(50);\n`,
+    // 출처로 본다: const 별칭, 구조 분해한 scheduler.wait, 지연마다 값을 내는 setInterval(Node 문서: 지연을 기다리는 함수, #266 리뷰 SPEC-4).
+    "a const alias of timers/promises setTimeout": `import { setTimeout as original } from "node:timers/promises";\nconst wait = original;\nawait wait(50);\n`,
+    "scheduler.wait taken apart": `import { scheduler } from "node:timers/promises";\nconst { wait } = scheduler;\nawait wait(50);\n`,
+    "a timers/promises interval": `import { setInterval } from "node:timers/promises";\nfor await (const _ of setInterval(50)) break;\n`,
     // 타이머는 이름이 아니라 출처로 본다: 이름을 바꿔 가져온 node:timers의 setTimeout(#266 리뷰 SPEC-2).
     "setTimeout from node:timers under another name": `import { setTimeout as later } from "node:timers";\nawait new Promise((resolve) => later(resolve, 50));\n`,
     waitForTimeout: `await page.waitForTimeout(300);\n`,
@@ -271,6 +275,10 @@ test("test code may use timers that bound a wait, answer late, check again or co
     `await new Promise((resolve) => setTimeout(resolve));\n`,
     // timers/promises가 아닌 곳의 같은 이름, Playwright의 다른 대기.
     `import { setTimeout as later } from "./elsewhere.mjs";\nawait later(50);\nawait page.waitForURL("/");\n`,
+    // 가져온 이름을 지역 매개변수가 가리면 그 함수가 아니다(#266 리뷰 SPEC-4).
+    `import { setTimeout } from "node:timers/promises";\nexport async function run(setTimeout) {\n  await setTimeout(50);\n}\n`,
+    // timers/promises의 차례 넘기기(setImmediate·scheduler.yield)는 시간을 기다리지 않는다(Node 문서: setImmediate와 같음). 잇달아 쓰면 횟수 세기로 짚는다.
+    `import { setImmediate, scheduler } from "node:timers/promises";\nawait setImmediate();\nexpect(done).toBe(true);\nawait scheduler.yield();\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
@@ -330,6 +338,11 @@ test("test code may not abort after a fixed time or count event loop turns as th
     // 차례 예약도 출처로 본다: 이름을 바꿔 가져온 node:timers의 setImmediate(#266 리뷰 SPEC-2).
     "a counted setImmediate under another name": [
       `import { setImmediate as soon } from "node:timers";\nfor (let i = 0; i < 3; i++) await new Promise((resolve) => soon(resolve));\n`,
+      /정해진 횟수/,
+    ],
+    // timers/promises의 차례 넘기기도 횟수를 세면 같다(#266 리뷰 SPEC-4).
+    "counted timers/promises turns": [
+      `import { setImmediate as soon, scheduler } from "node:timers/promises";\nfor (let i = 0; i < 3; i++) await soon();\nawait scheduler.yield();\nawait scheduler.yield();\n`,
       /정해진 횟수/,
     ],
   };
@@ -1696,6 +1709,11 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterHead}const { awaitedLater } = await import("@babojubot/process/test-cleanup");\nawaitedLater(p);\n`,
       /담지 않습니다/,
     ],
+    // 출처로 본다: 이름공간에서 꺼낸 이름의 const 별칭(#266 리뷰 SPEC-4).
+    "a const alias of a name taken from the namespace": [
+      `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const { awaitedLater } = cleanup;\nconst mark = awaitedLater;\nmark(p);\n`,
+      /담지 않습니다/,
+    ],
     // 공용 가져오기 판정: require·createRequire에서 꺼낸 이름도 같다(#266 리뷰 SPEC-1).
     "a name taken from a renamed createRequire": [
       `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { awaitedLater: mark } = load("@babojubot/process/test-cleanup");\n${laterHead}mark(p);\n`,
@@ -1854,6 +1872,8 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     `const later = awaitedLater(p);\nswitch (Math.floor(Math.random() * 3)) {\n  case 0:\n  case 1:\n    await later;\n    break;\n  default:\n    await later;\n}\n`,
     `const later = awaitedLater(p);\nif (Math.random() > 0.5) {\n  if (Math.random() > 0.5) await later;\n  else await later;\n} else await later;\n`,
     `import { within } from "@babojubot/runtime/testing";\nconst later = awaitedLater(p);\nawait within(later, 1000);\n`,
+    // 가져온 이름을 지역 매개변수가 가리면 그 함수가 아니다(#266 리뷰 SPEC-4).
+    `export function mark(awaitedLater, value) {\n  awaitedLater(value);\n}\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
