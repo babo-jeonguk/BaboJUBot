@@ -1,15 +1,13 @@
 // 제품 코드 lint 규칙. 설정은 eslint.config.js의 `productFiles` 범위에 걸고, 개발 스크립트(`scriptFiles`)에도 그중 일부를 건다.
 // 회귀 시험은 scripts/product-lint-rules.test.mjs와 scripts/script-lint-rules.test.mjs가 맡는다.
 // `no-restricted-syntax`는 설정 블록끼리 덮어써서 서버·runtime의 기존 금지와 함께 걸 수 없으므로 규칙으로 둔다.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import path from "node:path";
 import {
   skippedCleanupIn,
   skippedSyncCleanupIn,
 } from "./eslint-test-rules.mjs";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import path from "node:path";
 
 const wrappers = new Set([
   "AwaitExpression",
