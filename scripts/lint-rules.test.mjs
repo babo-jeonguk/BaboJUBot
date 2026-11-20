@@ -1728,6 +1728,10 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}import { within } from "./support.ts";\n${laterHead}const later = awaitedLater(p);\nawait within(1000, later);\n`,
       /기다리지 않습니다/,
     ],
+    "a later argument of a helper from a namespace import": [
+      `${laterImport}import * as support from "./support.ts";\n${laterHead}const later = awaitedLater(p);\nawait support.within(1000, later);\n`,
+      /기다리지 않습니다/,
+    ],
     "an await of an array that holds it": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait [later];\n`,
       /기다리지 않습니다/,
