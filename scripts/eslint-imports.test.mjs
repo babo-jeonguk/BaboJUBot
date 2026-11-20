@@ -318,6 +318,8 @@ test("finds createRequire by where it comes from: renamed, a namespace, a defaul
     `const make = process.getBuiltinModule("module").createRequire;\nvoid make(import.meta.url)("m5");\n`,
     `import { createRequire } from "node:module";\nconst make = createRequire;\nconst load = make(import.meta.url);\nvoid load("m6");\n`,
     `void globalThis.process.getBuiltinModule("m7");\n`,
+    // node:module의 Module은 모듈 자신이라 Module.createRequire도 같은 함수다(#266 리뷰 SPEC-5).
+    `import { Module } from "node:module";\nconst { createRequire: make } = Module;\nvoid make(import.meta.url)("m8");\n`,
   ];
   assert.deepEqual(
     loads.flatMap((code) =>
@@ -333,6 +335,7 @@ test("finds createRequire by where it comes from: renamed, a namespace, a defaul
       "require m5",
       "require m6",
       "require m7",
+      "require m8",
     ]
   );
 });
@@ -344,6 +347,7 @@ test("does not take a local function named like require, createRequire or getBui
     `const createRequire = () => (name) => name;\nvoid createRequire(import.meta.url)("m3");\n`,
     `const process = { getBuiltinModule: (name) => name };\nvoid process.getBuiltinModule("m4");\n`,
     `const tools = { createRequire: () => (name) => name };\nconst load = tools.createRequire(import.meta.url);\nvoid load("m5");\n`,
+    `const Module = { createRequire: () => (name) => name };\nvoid Module.createRequire(import.meta.url)("m8");\n`,
     // 다시 대입한 전역·변수는 무엇을 담는지 따라가지 않는다.
     `require = (name) => name;\nvoid require("m6");\n`,
     `import { createRequire } from "node:module";\nlet load = createRequire(import.meta.url);\nload = (name) => name;\nvoid load("m7");\n`,

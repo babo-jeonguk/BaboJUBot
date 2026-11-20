@@ -658,6 +658,46 @@ test("orIfUnreadable callbacks do no I/O in product code", async () => {
       );
 });
 
+// orIfUnreadable은 경로 철자가 아니라 대상 파일로 본다(공용 판정의 targetOf, #266 리뷰 SPEC-5): contracts의 failure.ts를 패키지
+// 이름·하위 입구·상대 경로 어느 것으로 가리켜도 같고, 다른 파일의 같은 이름 함수는 아니다(그 파일 이름이 failure.ts여도).
+test("orIfUnreadable is told by the file it comes from, not by how the path is spelled", async () => {
+  const body = `export const read = (file) => orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`;
+  const read = `import { readFileSync } from "node:fs";\n`;
+  const reported = [
+    ["apps/server/src/app.ts", "../../../packages/contracts/src/failure.ts"],
+    ["packages/core/src/harness.ts", "../../contracts/src/failure.ts"],
+    ["packages/contracts/src/index.ts", "./failure.ts"],
+    ["packages/contracts/src/index.ts", "./failure"],
+    ["packages/core/src/harness.ts", "@babojubot/contracts/failure"],
+  ];
+  for (const [place, source] of reported)
+    assert.ok(
+      (
+        await lint(
+          `${read}import { orIfUnreadable } from "${source}";\n${body}`,
+          place,
+          unreadableRule
+        )
+      ).length > 0,
+      `${place}: ${source} not reported`
+    );
+  const kept = [
+    ["apps/server/src/app.ts", "./failure.ts"],
+    ["packages/core/src/harness.ts", "./failure"],
+    ["packages/runtime/src/providers/claude.ts", "../failure.ts"],
+  ];
+  for (const [place, source] of kept)
+    assert.deepEqual(
+      await lint(
+        `${read}import { orIfUnreadable } from "${source}";\n${body}`,
+        place,
+        unreadableRule
+      ),
+      [],
+      `${place}: ${source}`
+    );
+});
+
 test("product code does not drop the error an error listener or an error-first callback receives", async () => {
   const dropped = {
     "an error listener without a parameter": `export const watch = (socket) => socket.on("error", () => socket.destroy());\n`,

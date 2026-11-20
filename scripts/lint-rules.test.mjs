@@ -1949,3 +1949,136 @@ test("test rules tell globals and test tools by origin, not by name", async () =
         `${place}: ${code}`
       );
 });
+
+// 옛 이름 판정이 잡던 도구는 그 이름을 내보내는 모든 모듈에서 잡는다(#266 리뷰 SPEC-5). 같은 값을 다른 이름으로도 내놓는 곳
+// (vitest의 assert = chai.assert, Playwright의 test.expect = expect, node:test의 기본 내보내기 = test, node:timers의 promises =
+// timers/promises, node:console = 전역 console)은 공용 판정이 한 출처로 맞춘다.
+test("test rules see a tool under every name its module exports it", async () => {
+  const kill = (log) =>
+    `try {\n  process.kill(pid, "SIGKILL");\n} catch (error) {\n  ${log}(error);\n}\n`;
+  const shared = (runner) =>
+    `let before;\n${runner}("changes", async () => {\n  before = await read();\n});\n${runner}("restores", async () => {\n  assert.equal(await read(), before);\n});\n`;
+  const reported = [
+    // 리뷰의 재현: vitest의 assert로 경과 시간을 단언한다.
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { assert } from "vitest";\nconst started = Date.now();\nassert(Date.now() - started < 500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { assert } from "vitest";\nconst check = assert;\ncheck.isBelow(Date.now() - started, 500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { chai } from "vitest";\nchai.assert.isBelow(Date.now() - started, 500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { chai } from "vitest";\nchai.expect(Date.now() - started).to.be.below(500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { expect } from "vitest";\nexpect.assert(Date.now() - started < 500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { ok as check } from "node:assert/strict";\ncheck(Date.now() - started < 500);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `import { test } from "@playwright/test";\nconst { expect: check } = test;\ncheck(Date.now() - started).toBeLessThan(500);\n`,
+    ],
+    [
+      "tests/no-fixed-time-wait",
+      `import { promises } from "node:timers";\nawait promises.setTimeout(100);\n`,
+    ],
+    [
+      "tests/no-fixed-time-wait",
+      `import timers from "node:timers";\nconst { setTimeout: sleep } = timers.promises;\nawait sleep(100);\n`,
+    ],
+    [
+      "tests/no-state-between-tests",
+      `import check from "node:test";\n${shared("check")}`,
+    ],
+    [
+      "tests/no-state-between-tests",
+      `import nodeTest from "node:test";\nconst { it: check } = nodeTest;\n${shared("check")}`,
+    ],
+    [
+      "tests/no-ignored-kill-error",
+      `import { warn } from "node:console";\n${kill("warn")}`,
+    ],
+    [
+      "tests/no-ignored-kill-error",
+      `import logger from "node:console";\n${kill("logger.warn")}`,
+    ],
+  ];
+  for (const [rule, code] of reported)
+    for (const place of testPlaces) {
+      const messages = (await lint(code, place)).filter(
+        (m) => m.ruleId === rule
+      );
+      assert.ok(messages.length > 0, `${place}: ${rule} not reported: ${code}`);
+    }
+  const kept = [
+    // 같은 이름의 지역 값은 그 도구가 아니다.
+    [
+      "tests/no-elapsed-time-assertion",
+      `export function check(assert) {\n  assert(Date.now() - started < 500);\n}\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `const chai = { assert: { isBelow: record }, expect: record };\nchai.assert.isBelow(Date.now() - started, 500);\nchai.expect(Date.now() - started);\n`,
+    ],
+    [
+      "tests/no-elapsed-time-assertion",
+      `const ok = record;\nok(Date.now() - started < 500);\n`,
+    ],
+    [
+      "tests/no-fixed-time-wait",
+      `export async function wait(promises) {\n  await promises.setTimeout(100);\n}\n`,
+    ],
+    [
+      "tests/no-state-between-tests",
+      `const check = (name, fn) => fn();\n${shared("check")}`,
+    ],
+    ["tests/no-ignored-kill-error", `const warn = record;\n${kill("warn")}`],
+  ];
+  for (const [rule, code] of kept)
+    for (const place of testPlaces)
+      assert.deepEqual(
+        (await lint(code, place)).filter((m) => m.ruleId === rule),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+/** awaitedLater는 경로 철자가 아니라 대상 파일(@babojubot/process의 test-cleanup.ts)로 본다(#266 리뷰 SPEC-5). */
+test("awaitedLater is told by the file it comes from, not by how the path is spelled", async () => {
+  const marked = (source) =>
+    `import { awaitedLater } from "${source}";\nawaitedLater(work());\n`;
+  const reported = [
+    [
+      "apps/server/test/lint-sample.test.ts",
+      "../../../packages/process/src/test-cleanup.ts",
+    ],
+    ["packages/process/src/test-cleanup.test.ts", "./test-cleanup"],
+  ];
+  for (const [place, source] of reported)
+    assert.ok(
+      laterMessages(await lint(marked(source), place)).length > 0,
+      `${place}: ${source} not reported`
+    );
+  // 다른 폴더의 같은 이름 파일은 그 도움이 아니다.
+  for (const place of testPlaces)
+    for (const code of [
+      marked("./test-cleanup.ts"),
+      `export { awaitedLater } from "./test-cleanup.ts";\n`,
+      `export * from "./test-cleanup.ts";\n`,
+    ])
+      assert.deepEqual(
+        laterMessages(await lint(code, place)),
+        [],
+        `${place}: ${code}`
+      );
+});
