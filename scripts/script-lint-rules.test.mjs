@@ -479,6 +479,15 @@ test("other modules reach runtime and the process package only through their lis
       "scripts/provider-live.mjs",
       `import { launchTree } from "../packages/process/src/launch.ts";\nvoid launchTree;\n`,
     ],
+    // 패키지 입구 파일이라도 상대 경로로 가리키면 안쪽 파일이다. 패키지 이름으로 가져온다.
+    [
+      "scripts/provider-live.mjs",
+      `import { createConnection } from "../packages/runtime/src/index.ts";\nvoid createConnection;\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `const runtime = await import("../../packages/runtime/src/index.ts");\nvoid runtime;\n`,
+    ],
     [
       ".agents/scripts/run-worker.mjs",
       `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
@@ -530,10 +539,6 @@ test("other modules reach runtime and the process package only through their lis
     [
       "scripts/live/chaos-run.mjs",
       `import { sharedVariables } from "@babojubot/runtime";\nimport { launchTree, runCommand } from "@babojubot/process";\nimport { withCleanup } from "@babojubot/process/test-cleanup";\nvoid [sharedVariables, launchTree, runCommand, withCleanup];\n`,
-    ],
-    [
-      "scripts/provider-live.mjs",
-      `import { createConnection } from "../packages/runtime/src/index.ts";\nvoid createConnection;\n`,
     ],
     [
       "apps/server/src/app.ts",
