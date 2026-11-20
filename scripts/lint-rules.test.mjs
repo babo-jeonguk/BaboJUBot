@@ -1657,24 +1657,24 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
     ],
     // 출처는 이름공간에서 꺼낸 const, 구조 분해, 이름공간의 별칭, 동적 가져오기까지 따라간다(#269).
     "a const taken from the namespace": [
-      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}const mark = cleanup.awaitedLater;\nmark(p);\n`,
+      `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const mark = cleanup.awaitedLater;\nmark(p);\n`,
       /담지 않습니다/,
     ],
     "a name destructured from the namespace": [
-      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}const { awaitedLater: mark } = cleanup;\nmark(p);\n`,
+      `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const { awaitedLater: mark } = cleanup;\nmark(p);\n`,
       /담지 않습니다/,
     ],
     "an alias of the namespace": [
-      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}const tools = cleanup;\ntools.awaitedLater(p);\n`,
+      `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const tools = cleanup;\ntools.awaitedLater(p);\n`,
       /담지 않습니다/,
     ],
     "a name destructured from a dynamic import": [
-      `${laterHead}const { awaitedLater } = await import("@babojubot/runtime/test-cleanup");\nawaitedLater(p);\n`,
+      `${laterHead}const { awaitedLater } = await import("@babojubot/process/test-cleanup");\nawaitedLater(p);\n`,
       /담지 않습니다/,
     ],
     // 다시 내보내면 다른 파일에서 부른 결과를 따라갈 수 없다.
     "a re-export": [
-      `export { awaitedLater } from "@babojubot/runtime/test-cleanup";\n`,
+      `export { awaitedLater } from "@babojubot/process/test-cleanup";\n`,
       /부르지 않고/,
     ],
     "a renamed re-export from a relative path": [
@@ -1682,7 +1682,7 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       /부르지 않고/,
     ],
     "a re-export of the whole module": [
-      `export * from "@babojubot/runtime/test-cleanup";\n`,
+      `export * from "@babojubot/process/test-cleanup";\n`,
       /부르지 않고/,
     ],
     // 기다림은 그 Promise의 결과를 받는 호출만이다. 무관한 호출의 인자로 넣고 그 호출을 기다려도 기다린 것이 아니다.

@@ -760,7 +760,7 @@ test("product code imports only the packages its package.json declares, as runti
     `import { type Mock } from "vitest";\nexport type M = Mock;\n`,
     // Node 기본 모듈, 상대 경로, 자기 패키지, 선언한 workspace 패키지.
     `import { readFileSync } from "node:fs";\nimport path from "path";\nimport { record } from "./record.ts";\nexport const read = (p: string) => record(readFileSync(path.join(p), "utf8"));\n`,
-    `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
+    `export { removeFolder } from "@babojubot/process/remove-folder";\n`,
     `import { failureCode } from "@babojubot/contracts";\nexport const code = failureCode;\n`,
   ];
   for (const code of kept)
