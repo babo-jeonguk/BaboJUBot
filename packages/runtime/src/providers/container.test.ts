@@ -2585,7 +2585,7 @@ describe("docker failures during container cleanup", () => {
     await expect(
       createDockerEnvironment(failing).removeOrphans()
     ).rejects.toThrow(
-      /could not be listed \(exit 1\): Cannot connect to the Docker daemon/
+      /could not be listed \(exit 1: Cannot connect to the Docker daemon\)/
     );
   });
 

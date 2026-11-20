@@ -688,10 +688,10 @@ describe("RerunLoops", () => {
     expect(await outcomeSoon(loops.settled("a"))).toBe("resolved");
     expect(loops.busy("a")).toBe(false);
     expect(errors).toEqual([["a", expect.any(AsyncCallbackError)]]);
-    // @ts-expect-error promise를 돌려주는 onError도 거부된다.
     expect(
       new RerunLoops(
         async () => {},
+        // @ts-expect-error promise를 돌려주는 onError도 거부된다.
         async () => {}
       )
     ).toBeInstanceOf(RerunLoops);
