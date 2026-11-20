@@ -159,6 +159,8 @@ test("test code may not assert real elapsed time", async () => {
     // 두 시각을 따로 담아 빼는 우회(외부 리뷰 SPEC-A).
     "two stored times": `const started = Date.now();\nconst finished = Date.now();\nexpect(finished - started).toBeLessThan(500);\n`,
     "a reassigned stored time": `let started = 0;\nlet finished = 0;\nstarted = performance.now();\nfinished = performance.now();\nassert.ok(finished - started < 500);\n`,
+    // 시계는 이름이 아니라 출처로 본다: 이름을 바꿔 가져온 node:perf_hooks의 performance(#266 리뷰 SPEC-2).
+    "performance from perf_hooks under another name": `import { performance as perf } from "node:perf_hooks";\nconst started = perf.now();\nexpect(perf.now() - started).toBeLessThan(500);\n`,
   };
   for (const [shape, code] of Object.entries(asserted))
     for (const place of testPlaces) {
@@ -189,6 +191,8 @@ test("test code may make past times, log or record durations, wait to a deadline
     `const deadline = Date.now() + 5000;\nwhile (Date.now() < deadline) await tick();\nawait wait(deadline - Date.now());\nexpect(done).toBe(true);\n`,
     // 가짜 시계의 시간은 시험이 정한다.
     `expect(clock.now() - begin).toBe(1000);\n`,
+    // 같은 이름의 지역 값(가짜 시계)은 실제 시계가 아니다.
+    `const performance = fakeClock;\nconst started = performance.now();\nexpect(performance.now() - started).toBe(1000);\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
@@ -228,6 +232,8 @@ test("test code may not wait a fixed time", async () => {
     // 공용 가져오기 판정: dynamic import·require에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
     "timers/promises from a dynamic import": `const { setTimeout: sleep } = await import("node:timers/promises");\nawait sleep(50);\n`,
     "timers/promises from require": `const { setTimeout: sleep } = require("node:timers/promises");\nawait sleep(50);\n`,
+    // 타이머는 이름이 아니라 출처로 본다: 이름을 바꿔 가져온 node:timers의 setTimeout(#266 리뷰 SPEC-2).
+    "setTimeout from node:timers under another name": `import { setTimeout as later } from "node:timers";\nawait new Promise((resolve) => later(resolve, 50));\n`,
     waitForTimeout: `await page.waitForTimeout(300);\n`,
   };
   for (const [shape, code] of Object.entries(waits))
@@ -246,6 +252,7 @@ test("test code may use timers that bound a wait, answer late, check again or co
   const allowed = [
     // 시계를 주입한 타이머는 시험이 시간을 정한다.
     `await new Promise((resolve) => clock.setTimeout(resolve, 1000));\n`,
+    `const { setTimeout } = clock;\nawait new Promise((resolve) => setTimeout(resolve, 1000));\n`,
     // 실패를 알리는 상한과 경주의 상한.
     `await Promise.race([work, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 5000))]);\n`,
     `await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 2000))]);\n`,
@@ -318,6 +325,11 @@ test("test code may not abort after a fixed time or count event loop turns as th
     ],
     "counted microtasks": [
       `for (const _ of [1, 2]) await Promise.resolve();\nfor (let i = 0; i < 2; i++) await new Promise((r) => queueMicrotask(r));\nfor (let i = 0; i < 2; i++) await new Promise((r) => process.nextTick(r));\n`,
+      /정해진 횟수/,
+    ],
+    // 차례 예약도 출처로 본다: 이름을 바꿔 가져온 node:timers의 setImmediate(#266 리뷰 SPEC-2).
+    "a counted setImmediate under another name": [
+      `import { setImmediate as soon } from "node:timers";\nfor (let i = 0; i < 3; i++) await new Promise((resolve) => soon(resolve));\n`,
       /정해진 횟수/,
     ],
   };
