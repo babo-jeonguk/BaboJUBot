@@ -1,3 +1,4 @@
+import { attemptAll } from "@babojubot/contracts";
 import { expect, test, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { expectNoHorizontalOverflow, settled } from "./support/layout.ts";
@@ -255,7 +256,14 @@ test("the home is a lobby of rooms in creation order: attention shows in place, 
     new RegExp(`/orgs/${first.id}/agents/${worker.id}$`)
   );
 
-  // 붙잡은 실행 시도를 정리한다.
-  await page.request.post(first.api("/stop"), { data: {} });
-  await page.request.post(second.api("/stop"), { data: {} });
+  // 붙잡은 실행 시도를 정리한다. 두 조직은 서로 무관해 하나를 멈추지 못해도 다른 하나를 멈추고, 실행 시도가 끝났는지 본다.
+  await attemptAll(
+    [first, second].map((org) => async () => {
+      expect(
+        (await page.request.post(org.api("/stop"), { data: {} })).ok()
+      ).toBe(true);
+      await org.idle();
+    }),
+    "붙잡은 실행 시도를 정리하지 못했다"
+  );
 });
