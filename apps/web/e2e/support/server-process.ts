@@ -8,7 +8,7 @@ import {
   killUnlessGone,
   processAlive,
 } from "@babojubot/runtime/test-cleanup";
-import { attemptEach, combinedFailure } from "@babojubot/contracts";
+import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.
 // - 제품 폴더와 임시 폴더(TMP)를 새 임시 폴더 하나 안에 만들어 넘긴다. 임시 내장 Postgres(BABOJUBOT_EPHEMERAL_DB)의 dataDir도
@@ -127,16 +127,14 @@ export async function startServerProcess({
 
   let postgresPid = 0;
 
-  /** 폴더를 지운다. 지우지 못하면 `failures`에 남긴다. */
-  async function removeTemp(failures: unknown[]) {
+  /** 폴더를 지운다. 지우지 못하면 어느 폴더인지 담아 던진다. 실패는 부른 쪽이 `attemptEach`·`attemptAll`로 모은다. */
+  async function removeTemp() {
     try {
       await removeFolder(folder);
     } catch (error) {
-      failures.push(
-        new Error(`${label}의 폴더를 지우지 못했다: ${folder}`, {
-          cause: error,
-        })
-      );
+      throw new Error(`${label}의 폴더를 지우지 못했다: ${folder}`, {
+        cause: error,
+      });
     }
   }
 
@@ -222,7 +220,7 @@ export async function startServerProcess({
           `남은 프로세스(pid ${left.join(", ")})가 있어 ${label}의 폴더를 지우지 않았다: ${folder}`
         )
       );
-    else await removeTemp(failures);
+    else failures.push(...(await attemptEach([removeTemp])));
     throw combinedFailure(failures, `${label} could not be cleaned up`);
   }
 
@@ -243,10 +241,7 @@ export async function startServerProcess({
       } catch (error) {
         return release([error]);
       }
-      const failures: unknown[] = [];
-      await removeTemp(failures);
-      if (failures.length > 0)
-        throw combinedFailure(failures, `${label} could not be cleaned up`);
+      await attemptAll([removeTemp], `${label} could not be cleaned up`);
     })());
 
   try {

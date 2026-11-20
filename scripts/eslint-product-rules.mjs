@@ -598,11 +598,61 @@ const runtimeImportScope = {
   },
 };
 
+/** 노드 아래(안쪽 함수 포함)를 차례로 돈다. `parent`는 따라가지 않는다. */
+function walk(node, visit) {
+  if (!node || typeof node.type !== "string") return;
+  visit(node);
+  for (const key of Object.keys(node)) {
+    if (key === "parent") continue;
+    const value = node[key];
+    if (Array.isArray(value)) for (const item of value) walk(item, visit);
+    else if (value && typeof value.type === "string") walk(value, visit);
+  }
+}
+
+/** 식 안 어디에든(감싼 오류·객체·배열·템플릿·안쪽 함수 포함) `names` 중 하나를 읽는가. 속성 이름 자리는 빼고 본다. */
+function mentions(node, names) {
+  let found = false;
+  walk(node, (inner) => {
+    if (found || inner.type !== "Identifier" || !names.has(inner.name)) return;
+    const parent = inner.parent;
+    const propertyName =
+      (parent?.type === "MemberExpression" &&
+        parent.property === inner &&
+        !parent.computed) ||
+      (parent?.type === "Property" &&
+        parent.key === inner &&
+        !parent.computed &&
+        !parent.shorthand);
+    if (!propertyName) found = true;
+  });
+  return found;
+}
+
+/** 배열에 넣는 호출에서 넣는 값 자리: `push`·`unshift`는 모든 인수, `splice`는 셋째부터. */
+const insertedArguments = (call) => {
+  if (call.callee.type !== "MemberExpression" || call.callee.computed)
+    return [];
+  switch (call.callee.property.name) {
+    case "push":
+    case "unshift":
+      return call.arguments;
+    case "splice":
+      return call.arguments.slice(2);
+    default:
+      return [];
+  }
+};
+
 /**
  * 실패를 모으는 일을 직접 짜지 않는다. 받은 오류를 배열에 넣는 `catch`(절·`.catch` 처리기·`.then`의 거부 처리기)는 "모두 시도하고 실패를
  * 모아 알리기"를 다시 짜는 모양이다. 같은 일을 하는 도구가 이름만 달리 여럿 생겼다(#263 외부 리뷰 1회차 뒤).
- * `attemptAll`(던짐)·`attemptEach`(실패 목록)·`combinedFailure`(목록을 하나로, `@babojubot/contracts`의 failure.ts)를 쓴다.
- * 알려진 한계: 오류를 다른 이름에 담았다가 넣거나, 배열 말고 다른 곳(Map·문자열)에 모으는 것은 보지 않는다.
+ * `attemptAll`(던짐)·`attemptEach`(실패 목록)·`combinedFailure`(목록을 하나로, `@babojubot/contracts`의 failure.ts)를 쓴다. 문맥을 더한
+ * 오류는 그 단계 안에서 던진다.
+ * 받은 오류가 넣는 값 안 어디에든 들어 있으면(감싼 `new Error(…, { cause })`, 객체·배열·템플릿 안) 본다. 넣는 방법은 `push`·`unshift`·
+ * `splice`와 계산한 자리 대입(`failures[i] = …`)이고, 처리기 안에서 받은 오류로 만든 지역 이름(`const wrapped = new Error(…)`)도 따라간다.
+ * 알려진 한계: 처리기 밖의 변수에 담았다가 나중에 넣는 것, 배열이 아닌 곳(Map·Set·문자열)에 모으는 것, 이름 붙은 함수로 넘긴 처리기는
+ * 보지 않는다.
  */
 const noFailureCollecting = {
   meta: {
@@ -614,50 +664,39 @@ const noFailureCollecting = {
     schema: [],
     messages: {
       collected:
-        "받은 오류를 배열에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다. 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
+        "받은 오류를 배열에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다(감싼 오류도 같습니다). 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 문맥을 더할 오류는 그 단계 안에서 던지고, 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
-    /** `body` 안(안쪽 함수 제외)에서 `name`을 배열 `push`에 넘기는 호출. */
-    const pushes = (body, name) => {
-      const found = [];
-      const visit = (node) => {
-        if (!node || typeof node.type !== "string") return;
-        if (
-          node !== body &&
-          (node.type === "FunctionDeclaration" ||
-            node.type === "FunctionExpression" ||
-            node.type === "ArrowFunctionExpression")
-        )
-          return;
-        if (
-          node.type === "CallExpression" &&
-          node.callee.type === "MemberExpression" &&
-          !node.callee.computed &&
-          node.callee.property.name === "push" &&
-          node.arguments.some(
-            (arg) =>
-              (arg.type === "Identifier" && arg.name === name) ||
-              (arg.type === "SpreadElement" &&
-                arg.argument.type === "Identifier" &&
-                arg.argument.name === name)
-          )
-        )
-          found.push(node);
-        for (const key of Object.keys(node)) {
-          if (key === "parent") continue;
-          const value = node[key];
-          if (Array.isArray(value)) value.forEach(visit);
-          else if (value && typeof value.type === "string") visit(value);
-        }
-      };
-      visit(body);
-      return found;
-    };
     const check = (param, body) => {
       if (param?.type !== "Identifier") return;
-      for (const node of pushes(body, param.name))
-        context.report({ node, messageId: "collected" });
+      // 받은 오류와, 처리기 안에서 그것으로 만든 지역 이름.
+      const names = new Set([param.name]);
+      for (let grew = true; grew;) {
+        grew = false;
+        walk(body, (node) => {
+          if (
+            node.type === "VariableDeclarator" &&
+            node.id.type === "Identifier" &&
+            !names.has(node.id.name) &&
+            node.init &&
+            mentions(node.init, names)
+          ) {
+            names.add(node.id.name);
+            grew = true;
+          }
+        });
+      }
+      walk(body, (node) => {
+        const collected =
+          (node.type === "CallExpression" &&
+            insertedArguments(node).some((arg) => mentions(arg, names))) ||
+          (node.type === "AssignmentExpression" &&
+            node.left.type === "MemberExpression" &&
+            node.left.computed &&
+            mentions(node.right, names));
+        if (collected) context.report({ node, messageId: "collected" });
+      });
     };
     return {
       CatchClause: (node) => check(node.param, node.body),

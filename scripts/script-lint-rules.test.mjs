@@ -505,6 +505,16 @@ test("failures are collected only through attemptAll, attemptEach and combinedFa
     "a helper that pushes a caught error": `const failures = [];\nexport const attempt = async (step) => {\n  try {\n    await step();\n  } catch (problem) {\n    failures.push(problem);\n  }\n};\n`,
     "a .catch handler that pushes": `const failures = [];\nexport const close = (db) => db.close().catch((closing) => failures.push(closing));\n`,
     "a .then rejection handler that pushes": `const failures = [];\nexport const close = (db) => db.close().then(() => true, (closing) => { failures.push(closing); return false; });\n`,
+    // #263 외부 리뷰 2회차 S3: 감싼 오류와 다른 넣기 방법·별칭.
+    "a wrapped error with the cause": `export async function remove(folder, failures) {\n  try {\n    await folder.remove();\n  } catch (error) {\n    failures.push(new Error(\`could not remove \${folder.path}\`, { cause: error }));\n  }\n}\n`,
+    "the error inside an object": `export async function run(step, results) {\n  try {\n    await step();\n  } catch (error) {\n    results.push({ step: "x", error });\n  }\n}\n`,
+    "the error inside an array": `export async function run(step, results) {\n  try {\n    await step();\n  } catch (error) {\n    results.push(["x", error]);\n  }\n}\n`,
+    "the error inside a template": `export async function run(step, lines) {\n  try {\n    await step();\n  } catch (error) {\n    lines.push(\`step failed: \${error}\`);\n  }\n}\n`,
+    unshift: `export async function run(step, failures) {\n  try {\n    await step();\n  } catch (error) {\n    failures.unshift(error);\n  }\n}\n`,
+    splice: `export async function run(step, failures) {\n  try {\n    await step();\n  } catch (error) {\n    failures.splice(0, 0, error);\n  }\n}\n`,
+    "an index assignment": `export async function run(step, failures) {\n  try {\n    await step();\n  } catch (error) {\n    failures[failures.length] = error;\n  }\n}\n`,
+    "an alias of the error": `export async function run(step, failures) {\n  try {\n    await step();\n  } catch (error) {\n    const wrapped = new Error("step failed", { cause: error });\n    const again = wrapped;\n    failures.push(again);\n  }\n}\n`,
+    "a .catch handler that pushes a wrapped error": `const failures = [];\nexport const close = (db) => db.close().catch((closing) => failures.push(new Error("close", { cause: closing })));\n`,
   };
   const places = [
     "apps/server/src/app.ts",
@@ -527,6 +537,12 @@ test("failures are collected only through attemptAll, attemptEach and combinedFa
     // 오류를 모으지 않는 catch, 오류가 아닌 값을 넣는 처리기.
     `export function read(text, seen) {\n  try {\n    return JSON.parse(text);\n  } catch (error) {\n    seen.push(text);\n    throw error;\n  }\n}\n`,
     `export const watch = (hub, events) => hub.subscribe((event) => events.push(event));\n`,
+    // 문맥을 더한 오류를 그 단계 안에서 던지고, 모으기는 attemptEach가 한다.
+    `import { attemptEach } from "@babojubot/contracts";\nexport const remove = (folder) => attemptEach([async () => {\n  try {\n    await folder.remove();\n  } catch (error) {\n    throw new Error("could not remove", { cause: error });\n  }\n}]);\n`,
+    // 결과표는 성공과 실패를 같은 값으로 만들어 한 곳에서 기록한다.
+    `export async function scene(body, results) {\n  results.push(await body().then((outcome) => outcome, (error) => ({ failed: String(error) })));\n}\n`,
+    // 받은 오류와 상관없는 값을 넣는다.
+    `export async function run(step, attempts) {\n  try {\n    await step();\n  } catch (error) {\n    attempts.push("failed");\n    throw error;\n  }\n}\n`,
   ];
   for (const place of places)
     for (const code of kept)

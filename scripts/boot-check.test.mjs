@@ -22,7 +22,7 @@ import {
   processAlive as isAlive,
   withCleanup,
 } from "@babojubot/runtime/test-cleanup";
-import { attemptAll } from "../packages/contracts/src/failure.ts";
+import { attemptAll, attemptEach } from "../packages/contracts/src/failure.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;
@@ -420,35 +420,39 @@ async function forceStop(child, exited, graceMs) {
  * Postgres 멈추기가 실패해도 남은 프로세스는 마지막 확인이 따로 보므로, 그 실패만으로 폴더를 남기지 않는다.
  */
 async function cleanUpScope(scope, child, outputClosed) {
-  const problems = [];
-  const attempt = async (what, work) => {
+  /** 단계 이름을 붙여 던지는 정리 단계. 실패는 `attemptEach`가 모은다. */
+  const step = (what, work) => async () => {
     try {
       await work();
-      return true;
     } catch (error) {
-      problems.push(new Error(`${what}: ${error?.message ?? error}`));
-      return false;
+      throw new Error(`${what}: ${error?.message ?? error}`, { cause: error });
     }
   };
   // POSIX에서 그룹에 남은 자식. Windows는 트리를 부모가 살아 있을 때만 따라갈 수 있어 forceStop에서 끝냈다.
-  const groupStopped =
-    !child ||
-    process.platform === "win32" ||
-    (await attempt("stop the process group", () =>
-      signalGroup(child, "SIGKILL")
-    ));
-  await attempt("stop the Postgres left in the folder", () =>
-    stopPostmasters(scope)
-  );
-  const ended = await attempt(
-    "wait for the folder's processes to end",
-    async () => {
+  let groupStopped = !child || process.platform === "win32";
+  let ended = false;
+  const problems = await attemptEach([
+    ...(groupStopped
+      ? []
+      : [
+          step("stop the process group", () => {
+            signalGroup(child, "SIGKILL");
+            groupStopped = true;
+          }),
+        ]),
+    step("stop the Postgres left in the folder", () => stopPostmasters(scope)),
+    step("wait for the folder's processes to end", async () => {
       if (!(await waitUntil(() => runningIn(scope).length === 0, 10_000)))
         throw new Error(`still running: ${runningIn(scope).join("; ")}`);
-    }
-  );
+      ended = true;
+    }),
+  ]);
   if (groupStopped && ended && outputClosed)
-    await attempt("remove the folder", () => removeFolder(scope));
+    problems.push(
+      ...(await attemptEach([
+        step("remove the folder", () => removeFolder(scope)),
+      ]))
+    );
   else
     problems.push(
       new Error(
