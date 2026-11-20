@@ -16,6 +16,14 @@ import { agentSessions } from "../packages/db/src/schema.ts";
 import { startServer } from "../apps/server/src/index.ts";
 import { withCheckServer } from "./live/check-server.mjs";
 import { matchingPids } from "./live/processes.mjs";
+import {
+  movedToFreshSession,
+  parseScenes,
+  sameSession,
+  ScenesRefused,
+  usageFacts,
+  verdict,
+} from "./live/provider-scenes.mjs";
 
 // 저장소 루트는 drizzle에 의존하지 않으므로 db 패키지 기준으로 찾는다.
 const { eq } = await import(
@@ -44,11 +52,17 @@ if (
   );
   process.exit(2);
 }
-const record = flags.includes("--record");
-const only = flags
-  .find((flag) => flag.startsWith("--scenes="))
-  ?.slice("--scenes=".length)
-  .split(",");
+// 장면·인자 오타는 기록 폴더를 만들거나 모델을 부르기 전에 거부한다. 연결의 기능이 필요한 장면은 연결을 만든 뒤 다시 본다.
+const refuse = (check) => {
+  try {
+    return check();
+  } catch (error) {
+    if (!(error instanceof ScenesRefused)) throw error;
+    console.error(error.message);
+    process.exit(2);
+  }
+};
+refuse(() => parseScenes(flags, null));
 const home = path.resolve(process.env.BABOJUBOT_HOME);
 const recordings =
   process.env.BABOJUBOT_RECORDINGS ?? path.resolve(".scratch/recordings");
@@ -63,7 +77,7 @@ const mode =
 const label = provider === "codex" ? `codex-${mode}` : provider;
 const base = process.env.BABOJUBOT_LIVE_COMMAND ?? defaultCommand[provider];
 let command = [base];
-if (record) {
+if (flags.includes("--record")) {
   const directory = path.join(recordings, label, String(Date.now()));
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(recordings, 0o700);
@@ -80,6 +94,9 @@ const connection = factories[provider]({
   command,
   ...(provider === "codex" ? { mode } : {}),
 });
+const chosen = refuse(() =>
+  parseScenes(flags, connection.adapter.capabilities)
+);
 const stop = new AbortController();
 const ready = await connection.adapter.checkReadiness(stop.signal);
 console.log(JSON.stringify({ readiness: ready }));
@@ -209,7 +226,7 @@ async function scenes({ database, server }) {
       await sleep(everyMs);
     }
   };
-  const wanted = (name) => !only || only.includes(name);
+  const wanted = (name) => chosen.scenes.includes(name);
   const attempt = async (name, body) => {
     if (!wanted(name)) return;
     const at = Date.now();
@@ -297,27 +314,18 @@ async function scenes({ database, server }) {
       ok: last.includes(word) && !!handed,
       resumedSession: !!handed,
       recalled: last.includes(word),
-      sameSessionId: before?.state?.id === (await session())?.state?.id,
+      sameSessionId: sameSession(
+        before?.state?.id,
+        (await session())?.state?.id
+      ),
       ...(await finished(run.id)),
     };
   });
 
-  await attempt("usage-and-transcript", async () => {
-    const row = await session();
-    return {
-      ok: true,
-      maintenance: row?.maintenance
-        ? {
-            tokens: row.maintenance.tokens,
-            ttlMs: row.maintenance.ttlMs,
-            lastRequestAgeSeconds:
-              (Date.now() - Date.parse(row.maintenance.lastRequestAt)) / 1000,
-            tools: row.maintenance.tools?.length ?? 0,
-          }
-        : null,
-      sessionKeys: Object.keys(row?.state ?? {}),
-    };
-  });
+  // 세션 유지 정보는 미리 압축을 하는 연결만 남긴다(장면 목록의 needs). 정보가 실제로 남았을 때만 성공이다.
+  await attempt("usage-and-transcript", async () =>
+    usageFacts(await session())
+  );
 
   if (connection.adapter.capabilities.steer)
     await attempt("steer", async () => {
@@ -393,9 +401,10 @@ async function scenes({ database, server }) {
     await server.drain();
     const run = await newest();
     const after = (await session())?.state?.id;
+    const moved = movedToFreshSession({ previousId: previous.id, fake, after });
     return {
-      ok: run.status === "completed" && after !== fake,
-      movedToNewSession: after !== fake && after !== previous.id,
+      ok: run.status === "completed" && moved,
+      movedToNewSession: moved,
       progress: activityTypes(await detail(run.id))
         .filter((a) => a.type === "progress")
         .map((a) => a.text),
@@ -424,24 +433,28 @@ async function scenes({ database, server }) {
       clockShiftMs = 0;
       const after = await session();
       const stateRuns = await runs();
+      const kept = sameSession(before.state?.id, after?.state?.id);
       return {
-        ok: after.maintenance === null && after.state?.id === before.state?.id,
+        ok: after?.maintenance === null && kept,
         realTokens: before.maintenance.tokens,
-        sameSessionId: after.state?.id === before.state?.id,
+        sameSessionId: kept,
         runCount: stateRuns.length,
         seconds: (Date.now() - at) / 1000,
       };
     });
 
+  // 고른 장면이 모두 돌아 성공했을 때만 성공이다. 돌지 않은 장면은 따로 밝힌다.
+  const judged = verdict(results, chosen.scenes);
   console.log(
     JSON.stringify({
       provider: label,
       model: model ?? "catalog-free",
-      passed: results.filter((r) => r.ok).map((r) => r.scene),
-      failed: results.filter((r) => !r.ok).map((r) => r.scene),
+      passed: judged.passed,
+      failed: judged.failed,
+      notRun: judged.missing,
     })
   );
-  return results.every((r) => r.ok);
+  return judged.ok;
 }
 
 const passedAll = await withCheckServer(
