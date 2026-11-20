@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  attemptAll,
   continueAfterFailure,
   egressRefusalMessages,
   failureCode,
@@ -462,26 +463,32 @@ export function createRelayHub(): RelayHub {
               for (const socket of tunnel.sockets) socket.destroy();
             relay.tunnels.clear();
             for (const socket of [...idle, ...loose]) socket.destroy();
-            await Promise.all(
-              servers.map(
-                (server) =>
-                  new Promise<void>((resolve) => {
-                    (server as http.Server).closeAllConnections?.();
-                    // 듣기 전에 실패한 서버는 닫을 것이 없다(답이다). 그 밖의 닫기 실패는 남기고 나머지 정리를 이어 간다.
-                    server.close((error) => {
-                      if (
-                        error &&
-                        !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-                      )
-                        console.warn(
-                          `[provider] a relay server did not close cleanly (${failureCode(error)})`
-                        );
-                      resolve();
-                    });
-                  })
-              )
+            await attemptAll(
+              [
+                ...servers.map(
+                  (server) => () =>
+                    new Promise<void>((resolve, reject) => {
+                      (server as http.Server).closeAllConnections?.();
+                      // 듣기 전에 실패한 서버는 닫을 것이 없다(답이다). 그 밖의 닫기 실패는 거절로 드러낸다.
+                      server.close((error) => {
+                        if (
+                          error &&
+                          !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+                        )
+                          reject(
+                            new Error(
+                              `a relay server did not close (${failureCode(error)})`,
+                              { cause: error }
+                            )
+                          );
+                        else resolve();
+                      });
+                    })
+                ),
+                () => rmSync(directory, { recursive: true, force: true }),
+              ],
+              "the relay could not be closed"
             );
-            rmSync(directory, { recursive: true, force: true });
           })()),
       };
       relays.add(relay);

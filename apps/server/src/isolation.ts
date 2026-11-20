@@ -206,6 +206,13 @@ export class IsolationGate {
         result.proxied.length > 0
       )
         return { status: "unsafe" };
+      // 끝까지 확인하지 못한 검사가 있으면 결과를 모르는 것이므로 안전하다고 보지 않는다(fail closed).
+      if (result.unverified.length > 0) {
+        console.error(
+          `[isolation] safety check could not complete: ${result.unverified.join(", ")}`
+        );
+        return { status: "unavailable" };
+      }
       if (!result.toolsReached) return { status: "unavailable" };
       return { status: "safe", toolsBaseUrl: containerToolsOrigin };
     } catch (error) {

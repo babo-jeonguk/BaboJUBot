@@ -121,7 +121,7 @@ export function providerEnvironment(
 
 /**
  * 짧은 확인용 실행. Windows의 .cmd 프로그램도 찾는다. 공용 실행(`runTree`)으로 돌려 상한·취소에 닿거나 프로그램이 끝나면 그 트리
- * 전체를 끄고 끝난 것을 확인한다. 실패하면 `code`(종료 코드, 시작 오류 코드, 끈 경우 `killed`)·`stdout`·`stderr`를 담아 던진다.
+ * 전체를 끄고 끝난 것을 확인한다. 실패하면 `code`(종료 코드, 시작 오류 코드)·`stopped`(끈 이유)·`signal`(끝낸 신호)·`stdout`·`stderr`를 담아 던진다.
  */
 export async function runProbe(
   command: readonly [string, ...string[]],
@@ -164,24 +164,35 @@ export async function runProbe(
   const stdout = run.stdout.toString(),
     stderr = run.stderr.toString();
   if (run.stopped)
-    throw failed(new Error("Program was stopped"), {
-      code: "killed",
+    throw failed(new Error(`Program was stopped (${run.stopped})`), {
+      stopped: run.stopped,
       stdout,
       stderr,
     });
   if (run.code !== 0)
-    throw failed(new Error("Program failed"), {
-      code: run.code ?? "killed",
-      stdout,
-      stderr,
-    });
+    throw run.code === null
+      ? failed(new Error("Program ended by a signal"), {
+          signal: run.signal,
+          stdout,
+          stderr,
+        })
+      : failed(new Error("Program failed"), {
+          code: run.code,
+          stdout,
+          stderr,
+        });
   return { stdout, stderr };
 }
 
-/** `runProbe` 실패의 짧은 이름: 끝남 코드(`exit 2`), 시한·멈춤(`killed`), 띄우지 못한 이유(`ENOENT`). 오류 출력은 담지 않는다(로그인 내용이 섞일 수 있음). */
+/** `runProbe` 실패의 짧은 이름: 끈 이유(`stopped: limit`), 끝남 코드(`exit 2`), 끝낸 신호(`SIGTERM`), 띄우지 못한 이유(`ENOENT`). 오류 출력은 담지 않는다(로그인 내용이 섞일 수 있음). */
 export function probeEnding(error: unknown): string {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === "number" ? `exit ${code}` : failureCode(error);
+  const failure = error as
+    { code?: unknown; stopped?: unknown; signal?: unknown } | null | undefined;
+  if (typeof failure?.stopped === "string")
+    return `stopped: ${failure.stopped}`;
+  if (typeof failure?.code === "number") return `exit ${failure.code}`;
+  if (typeof failure?.signal === "string") return failure.signal;
+  return failureCode(error);
 }
 
 // 시계는 lease.ts도 쓴다. process.ts를 거치면 두 파일이 서로 불러 clock.ts에 둔다.

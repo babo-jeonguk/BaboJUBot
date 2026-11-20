@@ -6,7 +6,7 @@ import {
   type Destination,
   type RunRequest,
 } from "@babojubot/contracts";
-import { runTree, TreeLaunchRefused } from "./launch.ts";
+import { runTree, TreeLaunchRefused, type TreeRun } from "./launch.ts";
 import type { RelayHub, RelayIdentity } from "./relay.ts";
 
 /** 격리 실행의 Docker 설정. 서버가 시작할 때 정한다. */
@@ -481,6 +481,14 @@ export function dockerClientEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return result;
 }
 
+/** `runDocker`가 돌려주는 결과: 끝남 코드(또는 `null`)와 출력, 끈 경우 그 이유(공용 실행이 정한 값). */
+type DockerResult = {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  stopped?: Extract<TreeRun, { started: true }>["stopped"];
+};
+
 /**
  * docker 클라이언트 명령 하나를 공용 실행으로 끝까지 돌린다. 상한·취소에 닿으면 그 트리를 끄고 확인한다. 실패해도 던지지 않고
  * `code: null`로 돌려준다(띄우지 못함, 상한·취소·출력 상한, 끝났음을 확인하지 못함).
@@ -490,7 +498,7 @@ export async function runDocker(
   args: string[],
   timeoutMs = 30_000,
   signal?: AbortSignal
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+): Promise<DockerResult> {
   let run: Awaited<ReturnType<typeof runTree>>;
   try {
     run = await runTree({
@@ -515,25 +523,34 @@ export async function runDocker(
     };
   }
   if (!run.started) return { code: null, stdout: "", stderr: run.reason };
-  return {
-    code: run.stopped ? null : run.code,
-    stdout: run.stdout.toString(),
-    stderr: run.stderr.toString(),
-  };
+  const stdout = run.stdout.toString(),
+    stderr = run.stderr.toString();
+  if (run.stopped) return { code: null, stdout, stderr, stopped: run.stopped };
+  return { code: run.code, stdout, stderr };
 }
 
-/** docker 명령이 어떻게 끝났는지: 종료 코드(없으면 띄우지 못했거나 시한에 멈춤)와 오류 출력의 끝(`runDocker`는 띄우지 못한 이유를 여기 담는다). 진단에만 쓴다. */
-function dockerEnding(result: { code: number | null; stderr: string }) {
+/** docker 명령이 어떻게 끝났는지: 종료 코드(없으면 띄우지 못했거나 시한·취소·출력 상한에 멈춤과 그 이유)와 오류 출력의 끝(`runDocker`는 띄우지 못한 이유를 여기 담는다). 진단에만 쓴다. */
+function dockerEnding(
+  result: Pick<DockerResult, "code" | "stderr" | "stopped">
+) {
   const reported = result.stderr.trim().slice(-300);
-  return `${result.code === null ? "no exit code" : `exit ${result.code}`}${reported ? `: ${reported}` : ""}`;
+  const ending =
+    result.code === null
+      ? result.stopped
+        ? `stopped: ${result.stopped}`
+        : "no exit code"
+      : `exit ${result.code}`;
+  return `${ending}${reported ? `: ${reported}` : ""}`;
 }
 
 export async function removeContainer(
   settings: ContainerSettings,
   name: string
 ): Promise<boolean> {
-  let lastFailure: { code: number | null; stderr: string } | undefined;
-  let lastInspected: { code: number | null; stderr: string } | undefined;
+  let lastFailure:
+    Pick<DockerResult, "code" | "stderr" | "stopped"> | undefined;
+  let lastInspected:
+    Pick<DockerResult, "code" | "stderr" | "stopped"> | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const removed = await runDocker(settings, ["rm", "-f", name]);
     if (removed.code !== 0) lastFailure = removed;
@@ -591,7 +608,7 @@ const proxied = (host, port) =>
       socket.destroy();
       resolve(value);
     };
-    socket.setTimeout(5000, () => finish(false));
+    socket.setTimeout(5000, () => { failures.push({ probe: "proxied", timeoutMs: 5000 }); finish(false); });
     socket.once("error", (error) => { note("proxied", error, () => false); finish(false); });
     socket.on("connect", () =>
       socket.write("CONNECT " + (host.includes(":") ? "[" + host + "]" : host) + ":" + port + " HTTP/1.1\\r\\n\\r\\n")
@@ -609,7 +626,7 @@ const tools = () =>
       socket.destroy();
       resolve(value);
     };
-    socket.setTimeout(5000, () => finish(false));
+    socket.setTimeout(5000, () => { failures.push({ probe: "tools", timeoutMs: 5000 }); finish(false); });
     socket.once("error", (error) => { note("tools", error, () => false); finish(false); });
     socket.on("connect", () => socket.write("GET /api/tools/probe HTTP/1.1\\r\\nHost: tools\\r\\nConnection: close\\r\\n\\r\\n"));
     socket.on("data", (chunk) => {
@@ -648,13 +665,16 @@ const isTarget = (value: unknown): value is { host: string; port: number } =>
   typeof (value as { host?: unknown }).host === "string" &&
   typeof (value as { port?: unknown }).port === "number";
 
-/** 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다). */
-type ProbeFailure = { probe: string; code?: unknown; name: string };
+/** 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다), 답이 없었으면 기다린 시간. */
+type ProbeFailure =
+  | { probe: string; code?: unknown; name: string }
+  | { probe: string; timeoutMs: number };
 const isProbeFailure = (value: unknown): value is ProbeFailure =>
   typeof value === "object" &&
   value !== null &&
   typeof (value as { probe?: unknown }).probe === "string" &&
-  typeof (value as { name?: unknown }).name === "string";
+  (typeof (value as { name?: unknown }).name === "string" ||
+    typeof (value as { timeoutMs?: unknown }).timeoutMs === "number");
 
 export function createDockerEnvironment(
   settings: ContainerSettings
@@ -801,17 +821,27 @@ export function createDockerEnvironment(
           typeof value.proxyEnv !== "boolean"
         )
           throw new Error("isolation probe returned an invalid result");
-        // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다.
-        for (const { probe, code, name } of value.failures as ProbeFailure[])
+        // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다. 답이 없었으면 기다린 시간을 적는다.
+        const failures = value.failures as ProbeFailure[];
+        for (const failure of failures)
           console.warn(
-            `[provider] the isolation probe's ${probe} check failed (${failureCode(Object.assign(new Error(), { name, code }))})`
+            `[provider] the isolation probe's ${failure.probe} check failed (${
+              "timeoutMs" in failure
+                ? `no answer within ${failure.timeoutMs} ms`
+                : failureCode(
+                    Object.assign(new Error(), {
+                      name: failure.name,
+                      code: failure.code,
+                    })
+                  )
+            })`
           );
         return {
           interfaces: value.interfaces as string[],
           reached: value.reached as { host: string; port: number }[],
           proxied: value.proxied as { host: string; port: number }[],
           toolsReached: value.toolsReached && value.proxyEnv,
-          unverified: [],
+          unverified: [...new Set(failures.map((failure) => failure.probe))],
         };
       } finally {
         await relay.close();
