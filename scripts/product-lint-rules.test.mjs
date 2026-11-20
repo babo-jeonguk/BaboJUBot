@@ -453,6 +453,9 @@ test("product code runs a program synchronously only with a timeout", async () =
     "an undefined timeout": `import { spawnSync } from "node:child_process";\nexport const out = () => spawnSync("ps", [], { timeout: undefined });\n`,
     // 옵션을 변수로 넘기면 상한이 있는지 확인할 수 없다.
     "options in a variable": `import { execFileSync } from "node:child_process";\nconst options = { timeout: 1000 };\nexport const out = () => execFileSync("ps", [], options);\n`,
+    // 공용 가져오기 판정: dynamic import·getBuiltinModule에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+    "a name taken from a dynamic import": `const { execFileSync } = await import("node:child_process");\nexport const out = () => execFileSync("ps", []);\n`,
+    "a name taken from getBuiltinModule": `const { spawnSync: run } = process.getBuiltinModule("node:child_process");\nexport const out = () => run("ps", []);\n`,
   };
   for (const place of productPlaces)
     for (const [shape, code] of Object.entries(unbounded)) {
@@ -579,6 +582,8 @@ const unreadableIo = {
   "a renamed import": `import { readFileSync } from "node:fs";\nimport { orIfUnreadable as parsed } from "@babojubot/contracts";\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
   "a namespace import": `import { readFileSync } from "node:fs";\nimport * as failure from "@babojubot/contracts";\nexport const read = (file) => failure.orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`,
   "a callback passed by name": `${unreadableImport}const parse = () => JSON.parse("1");\nexport const read = () => orIfUnreadable(parse, undefined);\n`,
+  // 공용 가져오기 판정: dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+  "a name taken from a dynamic import": `import { readFileSync } from "node:fs";\nconst { orIfUnreadable: parsed } = await import("@babojubot/contracts");\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
 };
 
 /** 이미 손에 든 값의 동기 해석·확인 한 단계. 정규식의 exec는 명령이 아니다. */
@@ -744,6 +749,15 @@ test("product code imports only the packages its package.json declares, as runti
     "an undeclared dynamic import": [
       `export const load = () => import("left-pad");\n`,
       /선언하지 않고/,
+    ],
+    // 공용 가져오기 판정: require·require.resolve로 불러오거나 찾는 패키지도 같다(#266 리뷰 SPEC-1).
+    "an undeclared package taken by require": [
+      `export const pad = require("left-pad");\n`,
+      /선언하지 않고/,
+    ],
+    "a dev-only package resolved": [
+      `export const where = require.resolve("vitest");\n`,
+      /devDependencies/,
     ],
   };
   for (const [shape, [code, kind]] of Object.entries(reported)) {

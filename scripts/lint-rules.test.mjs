@@ -225,6 +225,9 @@ test("test code may not wait a fixed time", async () => {
     "timers/promises": `import { setTimeout } from "node:timers/promises";\nawait setTimeout(50);\n`,
     "timers/promises under another name": `import { setTimeout as sleep } from "timers/promises";\nawait sleep(50);\n`,
     "the timers/promises scheduler": `import { scheduler } from "node:timers/promises";\nawait scheduler.wait(50);\n`,
+    // 공용 가져오기 판정: dynamic import·require에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+    "timers/promises from a dynamic import": `const { setTimeout: sleep } = await import("node:timers/promises");\nawait sleep(50);\n`,
+    "timers/promises from require": `const { setTimeout: sleep } = require("node:timers/promises");\nawait sleep(50);\n`,
     waitForTimeout: `await page.waitForTimeout(300);\n`,
   };
   for (const [shape, code] of Object.entries(waits))
@@ -720,6 +723,15 @@ test("test code may not ignore the error of process.kill", async () => {
     "process imported from node:process": [
       `import proc from "node:process";\nfunction alive(pid) {\n  try {\n    proc.kill(pid, 0);\n    return true;\n  } catch {\n    return false;\n  }\n}\n`,
       "probe",
+    ],
+    // 공용 가져오기 판정: dynamic import·require에서 꺼낸 kill도 같다(#266 리뷰 SPEC-1).
+    "kill taken from a dynamic import": [
+      `const { kill } = await import("node:process");\ntry {\n  kill(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+      "signal",
+    ],
+    "kill taken from require": [
+      `const { kill: signal } = require("process");\ntry {\n  signal(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+      "signal",
     ],
     // 안쪽 catch가 ESRCH 밖의 실패를 다시 던져도 바깥 catch가 삼킨다.
     "an outer catch swallowing what an inner catch rethrows": [
@@ -1670,6 +1682,11 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
     ],
     "a name destructured from a dynamic import": [
       `${laterHead}const { awaitedLater } = await import("@babojubot/process/test-cleanup");\nawaitedLater(p);\n`,
+      /담지 않습니다/,
+    ],
+    // 공용 가져오기 판정: require·createRequire에서 꺼낸 이름도 같다(#266 리뷰 SPEC-1).
+    "a name taken from a createRequire function": [
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { awaitedLater: mark } = load("@babojubot/process/test-cleanup");\n${laterHead}mark(p);\n`,
       /담지 않습니다/,
     ],
     // 다시 내보내면 다른 파일에서 부른 결과를 따라갈 수 없다.

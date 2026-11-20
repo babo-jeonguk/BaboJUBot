@@ -62,8 +62,8 @@ const scriptRules = {
     kept: `export const text = (result) => {\n  if (result.status !== 0) throw new Error(\`git failed (exit \${result.status}): \${result.stderr}\`);\n  return result.stdout.trim();\n};\n`,
   },
   "product/no-io-in-unreadable": {
-    reported: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
-    kept: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => {\n  const text = readFileSync(file, "utf8");\n  return orIfUnreadable(() => JSON.parse(text), undefined);\n};\n`,
+    reported: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "@babojubot/contracts";\nexport const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
+    kept: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "@babojubot/contracts";\nexport const read = (file) => {\n  const text = readFileSync(file, "utf8");\n  return orIfUnreadable(() => JSON.parse(text), undefined);\n};\n`,
   },
   eqeqeq: {
     reported: `export const same = (a, b) => a == b;\n`,
@@ -120,7 +120,7 @@ test("development scripts and their tests import only declared packages", async 
 // 오류 이벤트 처리기도 오류를 받아 확인한다. 상대가 끊은 것만 넘기고 나머지는 남긴다.
 test("development scripts do not drop the error an error listener receives", async () => {
   const reported = `export const watch = (child) => child.stdin.on("error", () => {});\n`;
-  const kept = `import { isDisconnect } from "../packages/contracts/src/failure.ts";\nexport const watch = (child, record) =>\n  child.stdin.on("error", (error) => {\n    if (!isDisconnect(error)) record("stdin-error", { code: error.code });\n  });\n`;
+  const kept = `import { isDisconnect } from "@babojubot/contracts";\nexport const watch = (child, record) =>\n  child.stdin.on("error", (error) => {\n    if (!isDisconnect(error)) record("stdin-error", { code: error.code });\n  });\n`;
   const rule = ["product/no-ignored-error"];
   for (const place of scriptPlaces) {
     const [message, ...rest] = await lint(reported, place, rule);
@@ -356,6 +356,15 @@ const outsideHalves = {
     "packages/runtime/src/index.ts",
     `export { stopProcessGroup } from "@babojubot/process/recovery";\n`,
   ],
+  // 공용 가져오기 판정: require·createRequire·dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+  "stopProcessGroup taken from a createRequire function": [
+    "apps/server/src/app.ts",
+    `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
+  ],
+  "interruptProcessGroup taken from a dynamic import": [
+    ".agents/scripts/run-worker.mjs",
+    `const { interruptProcessGroup } = await import("@babojubot/process/recovery");\nvoid interruptProcessGroup;\n`,
+  ],
 };
 // 프로세스 패키지 안에서 공용 실행과 복구 입구 밖이 그룹 끄기를 가져오는 모양.
 const insideHalves = {
@@ -370,6 +379,14 @@ const insideHalves = {
   "everything from group.ts re-exported": [
     "packages/process/src/index.ts",
     `export * from "./group.ts";\n`,
+  ],
+  "stopProcessGroup taken from a dynamic import of group.ts": [
+    "packages/process/src/lease.ts",
+    `const { stopProcessGroup } = await import("./group.ts");\nvoid stopProcessGroup;\n`,
+  ],
+  "group.ts taken whole": [
+    "packages/process/src/index.ts",
+    `import * as group from "./group.ts";\nvoid group;\n`,
   ],
 };
 
@@ -433,6 +450,9 @@ const softCommands = {
   "execFile from a namespace": `import * as cp from "node:child_process";\ncp.execFile("ps", [], () => {});\n`,
   "a spawn with a timeout": `import { spawn } from "node:child_process";\nspawn("csc", [], { stdio: "ignore", timeout: 1000 });\n`,
   "a renamed spawn with a timeout": `import { spawn as run } from "node:child_process";\nrun("csc", [], { timeout: 1000 });\n`,
+  // 공용 가져오기 판정: require·dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+  "execFile taken from a dynamic import": `const { execFile } = await import("node:child_process");\nexecFile("ps", [], () => {});\n`,
+  "spawn taken from getBuiltinModule": `const { spawn } = process.getBuiltinModule("node:child_process");\nspawn("csc", [], { timeout: 1000 });\n`,
 };
 // 막지 않는 모양: timeout 없는 spawn(끝은 boundChild가 맡음), 시한에 강제 종료하는 동기 실행, 짧은 명령 실행 함수.
 const boundedCommands = [
@@ -534,6 +554,23 @@ test("other modules reach runtime and the process package only through their lis
       "apps/server/src/app.ts",
       `import { withClient } from "@babojubot/db/admin";\nvoid withClient;\n`,
     ],
+    // 공용 가져오기 판정: require·createRequire로 불러오거나 찾는 입구도 같다(#266 리뷰 SPEC-1).
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nvoid load("@babojubot/db/admin");\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nvoid createRequire(import.meta.url).resolve("@babojubot/process/recovery");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `void require("@babojubot/runtime/testing");\n`,
+    ],
     [
       "packages/runtime/src/providers/process.ts",
       `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
@@ -552,6 +589,10 @@ test("other modules reach runtime and the process package only through their lis
     [
       "packages/db/src/embedded.ts",
       `import { runCommand } from "@babojubot/process";\nvoid runCommand;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { launchTree } = load("@babojubot/process");\nvoid launchTree;\n`,
     ],
     [
       "packages/db/src/client.test.ts",
