@@ -37,7 +37,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 
 Memory port의 첫 판은 core interface·db 단순 구현입니다.
 
-**패키지 경계.** 다른 패키지는 패키지 이름으로, 그 `package.json`의 `exports`가 내보낸 입구로만 가져옵니다. 다른 패키지 폴더 안을 가리키는 상대 경로(입구 파일 포함)와 내보내지 않은 하위 경로는 제품 코드·개발 스크립트·시험·설정 모두에서 lint(`product/package-entry-only`)가 막습니다. 필요한 것이 입구에 없으면 그 패키지의 `exports`에 의미 있는 입구를 더하고, 시험 전용이면 시험 입구로 둡니다. 영역마다 어느 입구까지 받는지는 `product/package-import-scope`가 좁힙니다. contracts는 패키지 입구 말고 실패 판정 함수만 싣는 `@babojubot/contracts/failure`를 두어, 띄운 프로그램마다 싣는 작은 시험 파일이 zod 스키마까지 싣지 않게 합니다. db의 입구는 `@babojubot/db`(제품), `/testing`·`/test-cluster`(시험), `/admin`(사고 재현·실제 모델 시험 스크립트가 DB를 직접 보는 `withClient`·`agentSessions`)이고, 제품 코드는 `@babojubot/db`만 가져옵니다.
+**패키지 경계.** 다른 패키지는 패키지 이름으로, 그 `package.json`의 `exports`가 내보낸 입구로만 가져옵니다. 다른 패키지 폴더 안을 가리키는 상대 경로(입구 파일 포함)와 내보내지 않은 하위 경로는 제품 코드·개발 스크립트·시험·설정 모두에서 lint(`product/package-entry-only`)가 막습니다. 자기 패키지를 이름으로 가져와도 exports 입구만 닿습니다(Node.js self-reference와 같음). 소유를 묶는 규칙(그룹 끄기 등)은 경로 철자가 아니라 가리키는 파일로 판정합니다. 필요한 것이 입구에 없으면 그 패키지의 `exports`에 의미 있는 입구를 더하고, 시험 전용이면 시험 입구로 둡니다. 영역마다 어느 입구까지 받는지는 `product/package-import-scope`가 좁힙니다. contracts는 패키지 입구 말고 실패 판정 함수만 싣는 `@babojubot/contracts/failure`를 두어, 띄운 프로그램마다 싣는 작은 시험 파일이 zod 스키마까지 싣지 않게 합니다. db의 입구는 `@babojubot/db`(제품), `/testing`·`/test-cluster`(시험), `/admin`(사고 재현·실제 모델 시험 스크립트가 DB를 직접 보는 `withClient`·`agentSessions`)이고, 제품 코드는 `@babojubot/db`만 가져옵니다.
 
 **프로세스 바탕의 의존 방향.** `@babojubot/process`는 `@babojubot/contracts`와 `cross-spawn`에만 기대고, runtime·db·server·개발 스크립트가 그것에 기댑니다(#266). 다른 영역이 가져올 수 있는 입구는 lint(`product/package-import-scope`)가 묶습니다.
 
