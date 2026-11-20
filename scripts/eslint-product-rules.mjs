@@ -1,10 +1,16 @@
 // 제품 코드 lint 규칙. 설정은 eslint.config.js의 `productFiles` 범위에 걸고, 개발 스크립트(`scriptFiles`)에도 그중 일부를 건다.
 // 회귀 시험은 scripts/product-lint-rules.test.mjs와 scripts/script-lint-rules.test.mjs가 맡는다.
 // `no-restricted-syntax`는 설정 블록끼리 덮어써서 서버·runtime의 기존 금지와 함께 걸 수 없으므로 규칙으로 둔다.
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import path from "node:path";
-import { combineVisitors, importSites } from "./eslint-imports.mjs";
+import {
+  combineVisitors,
+  importSites,
+  repositoryPath,
+  targetOf,
+  workspacePackages,
+} from "./eslint-imports.mjs";
 import {
   skippedCleanupIn,
   skippedSyncCleanupIn,
@@ -144,7 +150,7 @@ const syncCommandTimeout = {
   create(context) {
     /** 이 파일에서 child_process의 동기 실행 함수를 가리키는 지역 이름 → 원래 이름. */
     const imported = new Map();
-    const sites = importSites((site) => {
+    const sites = importSites(context, (site) => {
       if (!childProcess.has(site.source)) return;
       for (const name of site.names)
         if (name.local && syncLaunchers.has(name.imported))
@@ -461,7 +467,7 @@ const noIoInUnreadable = {
           if (item && typeof item.type === "string") inspect(item);
       }
     };
-    const sites = importSites((site) => {
+    const sites = importSites(context, (site) => {
       for (const name of site.names)
         if (name.local && name.imported === "orIfUnreadable")
           names.add(name.local);
@@ -626,7 +632,7 @@ const noDirectLaunch = {
       module === crossSpawn
         ? name === "spawn" || name === "default"
         : asyncLaunchers.has(name);
-    const sites = importSites((site) => {
+    const sites = importSites(context, (site) => {
       const module = launchModule(site.source);
       if (!module || site.kind === "resolve" || site.typeOnly) return;
       if (site.kind === "dynamic")
@@ -715,7 +721,7 @@ const launchBoundary = {
   },
   create(context) {
     const { message } = context.options[0];
-    return importSites((site) => {
+    return importSites(context, (site) => {
       if (site.typeOnly || !boundaryLoadersSeen.has(site.loader)) return;
       const messageId = boundaryLaunchers.has(site.source)
         ? "launch"
@@ -769,7 +775,7 @@ const boundedCommand = {
       }
       return undefined;
     };
-    const sites = importSites((site) => {
+    const sites = importSites(context, (site) => {
       if (!childProcess.has(site.source) || site.typeOnly) return;
       for (const name of site.names) {
         if (name.typeOnly || !name.local) continue;
@@ -853,23 +859,10 @@ const packageImportScope = {
         data: { source, why, name: found.name, allowed: allowed.join(", ") },
       });
     };
-    return importSites((site) => check(site.node, site.source));
+    return importSites(context, (site) => check(site.node, site.source));
   },
 };
 
-/** 저장소의 workspace 패키지(apps·packages 아래 package.json): 폴더, 이름, 내보낸 입구(`exports`의 키). */
-const repositoryRoot = path.resolve(import.meta.dirname, "..");
-const workspacePackages = ["apps", "packages"].flatMap((group) =>
-  readdirSync(path.join(repositoryRoot, group), { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .flatMap((entry) => {
-      const folder = `${group}/${entry.name}`;
-      const manifest = path.join(repositoryRoot, folder, "package.json");
-      if (!existsSync(manifest)) return [];
-      const { name, exports = {} } = JSON.parse(readFileSync(manifest, "utf8"));
-      return [{ folder, name, entries: Object.keys(exports) }];
-    })
-);
 const entryNames = (pkg) =>
   pkg.entries.length
     ? pkg.entries
@@ -903,43 +896,28 @@ const packageEntryOnly = {
     },
   },
   create(context) {
-    const file = path
-      .relative(repositoryRoot, context.filename)
-      .replaceAll("\\", "/");
+    const file = repositoryPath(context.filename);
     const own = workspacePackages.find((pkg) =>
       file.startsWith(`${pkg.folder}/`)
     );
     const check = (node, source) => {
-      if (typeof source !== "string") return;
-      if (source.startsWith(".")) {
-        const resolved = path.posix.normalize(
-          path.posix.join(path.posix.dirname(file), source)
-        );
-        const pkg = workspacePackages.find((each) =>
-          resolved.startsWith(`${each.folder}/`)
-        );
-        if (pkg && pkg !== own)
-          context.report({
-            node,
-            messageId: "relative",
-            data: { source, name: pkg.name, entries: entryNames(pkg) },
-          });
+      const target = targetOf(context.filename, source);
+      if (!target?.package) return;
+      const data = {
+        source,
+        name: target.package.name,
+        entries: entryNames(target.package),
+      };
+      if (target.relative) {
+        if (target.package !== own)
+          context.report({ node, messageId: "relative", data });
         return;
       }
-      const pkg = workspacePackages.find(
-        (each) => source === each.name || source.startsWith(`${each.name}/`)
-      );
-      if (!pkg || pkg === own) return;
-      const entry =
-        source === pkg.name ? "." : `.${source.slice(pkg.name.length)}`;
-      if (!pkg.entries.includes(entry))
-        context.report({
-          node,
-          messageId: "unexported",
-          data: { source, name: pkg.name, entries: entryNames(pkg) },
-        });
+      // 자기 패키지도 이름으로 적으면 exports에 있는 입구만 닿는다(Node.js self-reference).
+      if (!target.exported)
+        context.report({ node, messageId: "unexported", data });
     };
-    return importSites((site) => check(site.node, site.source));
+    return importSites(context, (site) => check(site.node, site.source));
   },
 };
 
@@ -1259,17 +1237,20 @@ const noFailureCollecting = {
 };
 
 const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
-const groupFile = "packages/process/src/group";
+/** 그룹 끄기를 담은 파일: 그룹 끄기 자체와 그것을 다시 내보내는 복구 입구(확장자를 뗀 저장소 기준 경로). */
+const groupFiles = new Set([
+  "packages/process/src/group",
+  "packages/process/src/recovery",
+]);
 
 /**
  * 그룹 끄기의 반쪽(`stopProcessGroup`·`interruptProcessGroup`)만 가져다 쓰지 못하게 한다. 그룹 끄기는 그룹으로 띄운 트리에만 맞고,
  * 띄운 방법을 모르는 쪽이 빌려 쓰면 Windows에서 아무것도 끄지 않고 성공하거나 새 세션으로 나간 자식을 놓친다(#262).
- * - `outside: true`(프로세스 패키지 밖): 어디서든 그 두 이름을 가져오거나 다시 내보내는 것. 그 입구(@babojubot/process/recovery)를
- *   가져오는 것 자체는 product/package-import-scope가 본다.
- * - `outside: false`(프로세스 패키지 안, 공용 실행·복구 입구 밖): group.ts에서 그 두 이름을 가져오거나 다시 내보내는 것과 그 모듈
- *   객체(`export *`·`import * as`·통째로 받은 `require`).
- * 가져온 이름은 공용 판정(scripts/eslint-imports.mjs)이 정한다: import·re-export와 dynamic import·`require`·createRequire가 만든
- * 함수의 결과를 구조 분해한 이름.
+ * 설정이 이 규칙을 빼는 파일(공용 실행 launch.ts, 그룹 끄기 group.ts와 복구 입구 recovery.ts, runtime의 재시작 복구) 밖에서
+ * - 어디서든 그 두 이름을 가져오거나 다시 내보내는 것,
+ * - 그룹 끄기를 담은 파일(group.ts·복구 입구)의 모듈 객체를 통째로 받거나 다시 내보내는 것(`export *`·`import * as`·통째로 받은 `require`)
+ * 을 막는다. 파일은 경로 철자가 아니라 대상으로 판정한다(공용 판정의 `targetOf`): 상대 경로·자기 패키지 이름(`@babojubot/process/recovery`)·
+ * 확장자 없는 철자가 같은 파일이면 같다(#266 리뷰 SPEC-3). 가져온 이름은 공용 판정(`importSites`)이 정한다.
  */
 const noGroupStopImport = {
   meta: {
@@ -1278,49 +1259,30 @@ const noGroupStopImport = {
       description:
         "keep the process group stop inside the shared launch and the restart recovery",
     },
-    schema: [
-      {
-        type: "object",
-        properties: { outside: { type: "boolean" } },
-        additionalProperties: false,
-      },
-    ],
+    schema: [],
     messages: {
       half: "{{name}}만 가져다 쓰면 띄운 방법과 맞지 않는 끄기가 됩니다(Windows에서 아무것도 끄지 않고 성공, 새 세션으로 나간 자식을 놓침). 띄울 때 launchTree(@babojubot/process)가 돌려준 stop()·interrupt()를 쓰세요. 그룹 끄기는 공용 실행(@babojubot/process의 launch.ts)과 runtime의 재시작 복구(providers/recovery.ts)만 씁니다. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
-    const outside = context.options[0]?.outside ?? true;
-    const dir = context.filename.replaceAll("\\", "/").replace(/\/[^/]*$/, "");
-    /** 가져오는 곳이 프로세스 패키지의 group.ts인가(상대 경로를 풀어 본다). */
-    const isGroup = (source) => {
-      if (typeof source !== "string" || !source.startsWith(".")) return false;
-      const parts = [];
-      for (const part of `${dir}/${source}`.split("/"))
-        if (part === "..") parts.pop();
-        else if (part !== ".") parts.push(part);
-      return parts
-        .join("/")
-        .replace(/\.(ts|js|mjs)$/, "")
-        .endsWith(groupFile);
-    };
-    return importSites((site) => {
+    return importSites(context, (site) => {
       if (site.kind === "resolve") return;
-      const fromGroup = isGroup(site.source);
+      const target = targetOf(context.filename, site.source);
+      const holdsGroupStop = groupFiles.has(target?.file);
       for (const name of site.names) {
         // 모듈 객체를 통째로 받거나 다시 내보내면 그 안의 그룹 끄기도 함께 나간다.
-        if (name.imported === "*" && fromGroup)
+        if (name.imported === "*" && holdsGroupStop)
           context.report({
             node: name.node,
             messageId: "half",
             data: {
               name:
                 site.kind === "export"
-                  ? "group.ts의 export *"
-                  : "group.ts의 모듈 객체",
+                  ? `${site.source}의 export *`
+                  : `${site.source}의 모듈 객체`,
             },
           });
-        else if (groupStoppers.has(name.imported) && (outside || fromGroup))
+        else if (groupStoppers.has(name.imported))
           context.report({
             node: name.node,
             messageId: "half",
@@ -1422,7 +1384,9 @@ const noUndeclaredImport = {
         data: { name, manifest: where },
       });
     };
-    return importSites((site) => check(site.sourceNode, site.typeOnly));
+    return importSites(context, (site) =>
+      check(site.sourceNode, site.typeOnly)
+    );
   },
 };
 

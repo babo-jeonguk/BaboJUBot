@@ -755,6 +755,11 @@ test("other workspace packages are imported only through their exported entries"
       "scripts/provider-live.mjs",
       `import { launchTree } from "@babojubot/runtime/launch";\nvoid launchTree;\n`,
     ],
+    // 자기 패키지도 이름으로 적으면 exports에 있는 입구만 닿는다(Node.js self-reference, #266 리뷰 SPEC-3).
+    [
+      "packages/process/src/lease.ts",
+      `import { stopProcessGroup } from "@babojubot/process/src/group.ts";\nvoid stopProcessGroup;\n`,
+    ],
   ];
   for (const [place, code] of refused) {
     const [message, ...rest] = await lint(code, place, entryRule);

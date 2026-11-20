@@ -7,6 +7,16 @@
 // 이 저장소가 쓰는 길을 본다: `createRequire(…)`·`module.createRequire(…)`가 만든 함수(어떤 이름에 담아도), `.resolve("…")`,
 // `process.getBuiltinModule("…")`. 그리고 규칙들이 가져온 이름(그룹 끄기 함수, 실행 함수, 시험의 출처)을 봐야 해서 이름도 함께 넘긴다.
 // AMD(`define`)는 이 저장소에 없어 보지 않는다. 계산한 경로는 무엇을 가져오는지 알 수 없어 보지 않는다.
+//
+// 불러오는 함수(`require`·`createRequire`가 만든 함수·`getBuiltinModule`)는 글자 이름이 아니라 출처로 알아본다(#266 리뷰 SPEC-2).
+// 본보기는 @eslint-community/eslint-utils의 ReferenceTracker다(https://github.com/eslint-community/eslint-utils/blob/main/src/reference-tracker.mjs):
+// 가려지지 않은 전역에서 시작하고, 가져온 이름은 원래 이름으로 보고, 변수 별칭·구조 분해·속성 사슬을 따라간다. 그 도구는
+// createRequire가 만든 함수와 dynamic import를 따라가지 않아(eslint-plugin-n도 getBuiltinModule을 따로 본다) 같은 설계를 여기 둔다.
+// 가져오는 경로는 대상(패키지·exports 입구·파일)으로 풀어 판정할 수 있게 `targetOf`를 둔다(#266 리뷰 SPEC-3). 본보기는 import-x
+// no-restricted-paths가 경로 철자가 아니라 풀린 대상 파일로 판정하는 방식이다.
+import { builtinModules } from "node:module";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 /**
  * 가져오는 자리 하나.
@@ -31,22 +41,173 @@ function propertyName(member) {
     : undefined;
 }
 
-/** `createRequire(…)` 또는 `x.createRequire(…)` 호출인가. */
-export function isCreateRequire(node) {
-  if (node?.type !== "CallExpression") return false;
-  const { callee } = node;
-  return callee.type === "Identifier"
-    ? callee.name === "createRequire"
-    : callee.type === "MemberExpression" &&
-        propertyName(callee) === "createRequire";
+const builtins = new Set(builtinModules);
+/** Node 기본 모듈 이름은 `node:`를 떼어 한 철자로 본다. `node:test`처럼 접두사로만 있는 모듈은 그대로 둔다. */
+const moduleName = (source) =>
+  source.startsWith("node:") && builtins.has(source.slice(5))
+    ? source.slice(5)
+    : source;
+/** 전역 객체(`globalThis`·`global`)를 거쳐 읽은 전역은 그 전역 자체로 본다. */
+const globalObjects = new Set(["globalThis", "global"]);
+
+/** 이 scope에서 위로 올라가며 이름이 가리키는 변수. */
+function variableIn(scope, name) {
+  for (let at = scope; at; at = at.upper) {
+    const variable = at.set.get(name);
+    if (variable) return variable;
+  }
+  return undefined;
 }
 
-/** `getBuiltinModule` 또는 `x.getBuiltinModule`인가. */
-const isBuiltinLoader = (callee) =>
-  callee.type === "Identifier"
-    ? callee.name === "getBuiltinModule"
-    : callee.type === "MemberExpression" &&
-      propertyName(callee) === "getBuiltinModule";
+/** 구조 분해 `pattern`에서 `target` 이름 노드에 이르는 속성 이름들. 찾지 못하면 `undefined`. */
+function patternPath(pattern, target) {
+  if (pattern === target) return [];
+  if (pattern?.type === "AssignmentPattern")
+    return patternPath(pattern.left, target);
+  if (pattern?.type !== "ObjectPattern") return undefined;
+  for (const property of pattern.properties) {
+    if (property.type !== "Property") continue;
+    const key = propertyName({
+      computed: property.computed,
+      property: property.key,
+    });
+    const rest = patternPath(property.value, target);
+    if (rest !== undefined && key !== undefined) return [key, ...rest];
+  }
+  return undefined;
+}
+
+/** 출처에 속성 하나를 더한다. 기본 모듈의 기본 가져오기(`default`)는 모듈 객체 자체이고, 전역 객체를 거친 전역은 그 전역이다. */
+function extend(origin, name) {
+  if (
+    origin.global &&
+    origin.path.length === 0 &&
+    globalObjects.has(origin.global)
+  )
+    return { global: name, path: [] };
+  if (
+    origin.module &&
+    origin.path.length === 0 &&
+    name === "default" &&
+    builtins.has(origin.module)
+  )
+    return origin;
+  return { ...origin, path: [...origin.path, name] };
+}
+
+const same = (origin, expected) =>
+  origin !== undefined &&
+  origin.global === expected.global &&
+  origin.module === expected.module &&
+  origin.path.length === expected.path.length &&
+  origin.path.every((name, i) => name === expected.path[i]);
+
+/** createRequire가 만든 불러오는 함수의 출처. */
+const madeRequire = { module: "module", path: ["createRequire()"] };
+
+/**
+ * 식이 어디서 왔는가. 가져온 모듈에서 왔으면 `{ module, path }`(모듈 이름은 `node:`를 뗌), 가려지지 않은 전역에서 왔으면
+ * `{ global, path }`, 알 수 없으면(지역 값, 매개변수, 계산한 이름) `undefined`. `scope`는 `node`가 있는 자리의 scope다.
+ */
+export function originOf(scope, node, depth = 0) {
+  if (!node || depth > 30) return undefined;
+  switch (node.type) {
+    case "ChainExpression":
+    case "TSAsExpression":
+    case "TSNonNullExpression":
+    case "TSSatisfiesExpression":
+      return originOf(scope, node.expression, depth + 1);
+    case "AwaitExpression":
+      return originOf(scope, node.argument, depth + 1);
+    case "ImportExpression":
+      return literalPath(node.source)
+        ? { module: moduleName(node.source.value), path: [] }
+        : undefined;
+    case "MemberExpression": {
+      const name = propertyName(node);
+      const base = originOf(scope, node.object, depth + 1);
+      return name === undefined || !base ? undefined : extend(base, name);
+    }
+    case "CallExpression": {
+      const loaded = loadOf(scope, node, depth + 1);
+      if (loaded) return { module: moduleName(loaded.source), path: [] };
+      // createRequire(…)는 불러오는 함수를 만든다.
+      return same(originOf(scope, node.callee, depth + 1), {
+        module: "module",
+        path: ["createRequire"],
+      })
+        ? madeRequire
+        : undefined;
+    }
+    case "Identifier": {
+      const variable = variableIn(scope, node.name);
+      return originOfVariable(variable, node.name, depth + 1);
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** 변수가 어디서 왔는가(`originOf`와 같은 판정). 정의가 없는 전역 이름이면 전역, 다시 대입한 변수는 알 수 없다. */
+function originOfVariable(variable, name, depth = 0) {
+  if (
+    !variable ||
+    (variable.scope.type === "global" && variable.defs.length === 0)
+  ) {
+    const written = variable?.references.some((ref) => ref.isWrite());
+    return written ? undefined : { global: name, path: [] };
+  }
+  const def = variable.defs[0];
+  if (def.type === "ImportBinding") {
+    const specifier = def.node;
+    if (specifier.type === "TSImportEqualsDeclaration") {
+      const reference = specifier.moduleReference;
+      return reference.type === "TSExternalModuleReference" &&
+        literalPath(reference.expression)
+        ? { module: moduleName(reference.expression.value), path: [] }
+        : undefined;
+    }
+    const module = { module: moduleName(def.parent.source.value), path: [] };
+    if (specifier.type === "ImportNamespaceSpecifier") return module;
+    return extend(
+      module,
+      specifier.type === "ImportDefaultSpecifier"
+        ? "default"
+        : (specifier.imported.name ?? specifier.imported.value)
+    );
+  }
+  if (def.type !== "Variable" || !def.node.init) return undefined;
+  // 처음 값 말고 다시 대입하면 무엇을 담는지 따라가지 않는다.
+  if (variable.references.filter((ref) => ref.isWrite()).length > 1)
+    return undefined;
+  const keys = patternPath(def.node.id, def.name);
+  if (keys === undefined) return undefined;
+  let origin = originOf(variable.scope, def.node.init, depth + 1);
+  for (const key of keys) origin = origin && extend(origin, key);
+  return origin;
+}
+
+/** 부른 함수가 불러오는 함수면 그 이름(메시지용): `require`, createRequire가 만든 함수를 담은 이름·`createRequire(…)`, `getBuiltinModule`. */
+function loaderOf(scope, callee, depth = 0) {
+  const origin = originOf(scope, callee, depth);
+  if (same(origin, { global: "require", path: [] })) return "require";
+  if (same(origin, madeRequire))
+    return callee.type === "Identifier" ? callee.name : "createRequire(…)";
+  if (
+    same(origin, { global: "process", path: ["getBuiltinModule"] }) ||
+    same(origin, { module: "process", path: ["getBuiltinModule"] })
+  )
+    return "getBuiltinModule";
+  return undefined;
+}
+
+/** 호출이 모듈을 불러오면 그 경로와 방법, 아니면 `undefined`. */
+function loadOf(scope, call, depth = 0) {
+  const [first] = call.arguments;
+  if (!literalPath(first)) return undefined;
+  const loader = loaderOf(scope, call.callee, depth);
+  return loader === undefined ? undefined : { source: first.value, loader };
+}
 
 /**
  * 모듈 값을 만드는 식(`require(…)`·`await import(…)` 등)에서 꺼낸 이름. 구조 분해면 그 이름들, 이름 하나에 담으면 `*`,
@@ -125,19 +286,12 @@ function specifierNames(node) {
 }
 
 /**
- * 가져오는 자리마다 `onSite(site)`를 부르는 visitor. 규칙은 자기 visitor와 `combineVisitors`로 합친다.
+ * 가져오는 자리마다 `onSite(site)`를 부르는 visitor. 규칙은 자기 visitor와 `combineVisitors`로 합친다. `context`는 규칙의 문맥이다
+ * (불러오는 함수의 출처를 그 자리의 scope에서 찾는다).
  * @param {(site: ImportSite) => void} onSite
  */
-export function importSites(onSite) {
-  /** createRequire가 만든 함수를 담은 이름. 전역 `require`도 같은 함수로 본다. */
-  const loaders = new Set(["require"]);
-  const loaderOf = (callee) => {
-    if (callee.type === "Identifier" && loaders.has(callee.name))
-      return callee.name;
-    if (isCreateRequire(callee)) return "createRequire(…)";
-    if (isBuiltinLoader(callee)) return "getBuiltinModule";
-    return undefined;
-  };
+export function importSites(context, onSite) {
+  const scopeOf = (node) => context.sourceCode.getScope(node);
   return {
     ImportDeclaration(node) {
       const names = specifierNames(node);
@@ -218,22 +372,19 @@ export function importSites(onSite) {
         names: [{ imported: "*", local: node.id.name, node: node.id }],
       });
     },
-    VariableDeclarator(node) {
-      if (node.id.type === "Identifier" && isCreateRequire(node.init))
-        loaders.add(node.id.name);
-    },
     CallExpression(node) {
       const [first] = node.arguments;
       if (!literalPath(first)) return;
       const { callee } = node;
-      const loader = loaderOf(callee);
-      if (loader !== undefined)
+      const scope = scopeOf(node);
+      const loaded = loadOf(scope, node);
+      if (loaded)
         return onSite({
           node,
           source: first.value,
           sourceNode: first,
           kind: "require",
-          loader,
+          loader: loaded.loader,
           typeOnly: false,
           names: namesOfValue(node),
         });
@@ -241,7 +392,7 @@ export function importSites(onSite) {
         callee.type === "MemberExpression" &&
         propertyName(callee) === "resolve"
       ) {
-        const base = loaderOf(callee.object);
+        const base = loaderOf(scope, callee.object);
         if (base !== undefined && base !== "getBuiltinModule")
           onSite({
             node,
@@ -273,74 +424,92 @@ export function combineVisitors(...visitors) {
   return combined;
 }
 
-/** 이름이 가리키는 변수(`scope`에서 위로 찾아 올라감). */
-function variableNamed(scope, name) {
-  for (let at = scope; at; at = at.upper) {
-    const variable = at.set.get(name);
-    if (variable) return variable;
-  }
-  return undefined;
-}
-
-/** 불러오기 호출이 createRequire가 만든 함수를 담은 이름으로 부른 것인가(변수의 정의를 본다). */
-function isLoaderVariable(scope, callee) {
-  if (callee.type !== "Identifier") return false;
-  if (callee.name === "require") return true;
-  const variable = variableNamed(scope, callee.name);
-  const init = variable?.defs[0]?.node?.init;
-  return isCreateRequire(init);
-}
-
 /**
  * 변수가 가져온 값이면 그 출처(`{ source, imported }`), 아니면 `undefined`. `imported`는 가져온 이름이고 기본 가져오기는 `default`,
- * 모듈 객체는 `*`다. 정적 import와 같게 `require`·createRequire가 만든 함수·`getBuiltinModule`·`await import(…)`의 결과를
- * 구조 분해하거나 담은 변수도 본다(`importSites`와 같은 판정).
+ * 모듈 객체는 `*`다. 모듈 이름은 `node:`를 뗀 철자다. 정적 import와 같게 `require`·createRequire가 만든 함수·`getBuiltinModule`·
+ * `await import(…)`의 결과를 구조 분해하거나 담은 변수, 그 별칭도 본다(`originOf`와 같은 판정).
  */
 export function importOfBinding(variable) {
-  const def = variable?.defs[0];
-  if (!def) return undefined;
-  if (def.type === "ImportBinding") {
-    const specifier = def.node;
-    if (specifier.type === "TSImportEqualsDeclaration") {
-      const reference = specifier.moduleReference;
-      return reference.type === "TSExternalModuleReference" &&
-        literalPath(reference.expression)
-        ? { source: reference.expression.value, imported: "*" }
-        : undefined;
-    }
-    const imported =
-      specifier.type === "ImportDefaultSpecifier"
-        ? "default"
-        : specifier.type === "ImportNamespaceSpecifier"
-          ? "*"
-          : (specifier.imported.name ?? specifier.imported.value);
-    return { source: def.parent.source.value, imported };
+  if (!variable) return undefined;
+  const origin = originOfVariable(variable, variable.name);
+  if (!origin?.module) return undefined;
+  return { source: origin.module, imported: origin.path[0] ?? "*" };
+}
+
+/** 저장소 뿌리. */
+const repositoryRoot = path.resolve(import.meta.dirname, "..");
+const withoutExtension = (file) =>
+  file.replace(/\.(ts|tsx|mts|mjs|js|cjs)$/, "");
+
+/**
+ * 저장소의 workspace 패키지(apps·packages 아래 package.json): 폴더, 이름, 내보낸 입구(`exports`의 키)와 그 입구가 가리키는 파일
+ * (확장자를 뗀 저장소 기준 경로).
+ */
+export const workspacePackages = ["apps", "packages"].flatMap((group) =>
+  readdirSync(path.join(repositoryRoot, group), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => {
+      const folder = `${group}/${entry.name}`;
+      const manifest = path.join(repositoryRoot, folder, "package.json");
+      if (!existsSync(manifest)) return [];
+      const { name, exports = {} } = JSON.parse(readFileSync(manifest, "utf8"));
+      const files = Object.fromEntries(
+        Object.entries(exports).flatMap(([entry, target]) =>
+          typeof target === "string"
+            ? [[entry, withoutExtension(path.posix.join(folder, target))]]
+            : []
+        )
+      );
+      return [{ folder, name, entries: Object.keys(exports), files }];
+    })
+);
+
+/** 저장소 기준 경로(`/` 구분). */
+export const repositoryPath = (filename) =>
+  path.relative(repositoryRoot, filename).replaceAll("\\", "/");
+
+/**
+ * 가져오는 경로가 가리키는 대상(#266 리뷰 SPEC-3). 같은 대상을 상대 경로·자기 패키지 이름·확장자 없는 철자로 적어도 같은 답이다.
+ * - `package`: 대상이 든 workspace 패키지(없으면 저장소 밖).
+ * - `entry`: 패키지 이름으로 적었으면 그 하위 경로(`.`·`./recovery`), 상대 경로면 그 파일을 내보내는 입구(없으면 `undefined`).
+ * - `exported`: 패키지 이름으로 적은 하위 경로가 exports에 있는가.
+ * - `file`: 대상 파일(확장자를 뗀 저장소 기준 경로). 패키지 이름으로 적었는데 exports에 없으면 `undefined`.
+ * - `relative`: 상대 경로로 적었는가.
+ * workspace 패키지가 아닌 이름(저장소 밖 라이브러리, Node 기본 모듈)은 `undefined`다.
+ */
+export function targetOf(filename, source) {
+  if (typeof source !== "string") return undefined;
+  if (source.startsWith(".")) {
+    const file = withoutExtension(
+      path.posix.normalize(
+        path.posix.join(path.posix.dirname(repositoryPath(filename)), source)
+      )
+    );
+    const pkg = workspacePackages.find((each) =>
+      file.startsWith(`${each.folder}/`)
+    );
+    const entry = pkg
+      ? Object.keys(pkg.files).find((key) => pkg.files[key] === file)
+      : undefined;
+    return {
+      package: pkg,
+      entry,
+      exported: entry !== undefined,
+      file,
+      relative: true,
+    };
   }
-  if (def.type !== "Variable") return undefined;
-  let init = def.node.init;
-  if (init?.type === "AwaitExpression") init = init.argument;
-  let source;
-  if (init?.type === "ImportExpression" && literalPath(init.source))
-    source = init.source.value;
-  else if (
-    init?.type === "CallExpression" &&
-    literalPath(init.arguments[0]) &&
-    (isLoaderVariable(variable.scope, init.callee) ||
-      isCreateRequire(init.callee) ||
-      isBuiltinLoader(init.callee))
-  )
-    source = init.arguments[0].value;
-  if (source === undefined) return undefined;
-  if (def.node.id.type === "Identifier") return { source, imported: "*" };
-  const property = def.node.id.properties?.find(
-    (each) =>
-      each.type === "Property" &&
-      (each.value === def.name ||
-        (each.value.type === "AssignmentPattern" &&
-          each.value.left === def.name))
+  const pkg = workspacePackages.find(
+    (each) => source === each.name || source.startsWith(`${each.name}/`)
   );
-  const imported =
-    property &&
-    propertyName({ computed: property.computed, property: property.key });
-  return imported === undefined ? undefined : { source, imported };
+  if (!pkg) return undefined;
+  const entry = source === pkg.name ? "." : `.${source.slice(pkg.name.length)}`;
+  const exported = pkg.entries.includes(entry);
+  return {
+    package: pkg,
+    entry,
+    exported,
+    file: exported ? pkg.files[entry] : undefined,
+    relative: false,
+  };
 }

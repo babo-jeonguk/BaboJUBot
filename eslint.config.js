@@ -566,27 +566,18 @@ export default defineConfig([
     rules: { "product/bounded-command": "error" },
   },
   {
-    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 프로세스 패키지 밖은 그 두 이름을 가져오지 않고(runtime의 재시작 복구만 예외),
-    // 패키지 안에서도 공용 실행(launch.ts)과 복구 입구(recovery.ts)만 group.ts에서 가져온다.
+    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 공용 실행(launch.ts)과 그룹 끄기·복구 입구, runtime의 재시작 복구만 그 이름과 그 파일을
+    // 가져온다. 파일은 경로 철자가 아니라 대상으로 판정한다(자기 패키지 이름·상대 경로 모두).
     files: [...productFiles, ...scriptFiles],
     ignores: [
       ...scriptIgnores,
-      "packages/process/src/**",
+      "packages/process/src/launch.ts",
+      "packages/process/src/group.ts",
+      "packages/process/src/recovery.ts",
       "packages/runtime/src/providers/recovery.ts",
     ],
     plugins: { product: productRules },
-    rules: { "product/no-group-stop-import": ["error", { outside: true }] },
-  },
-  {
-    files: ["packages/process/src/**/*.{ts,tsx}"],
-    ignores: [
-      ...testFiles,
-      "packages/process/src/launch.ts",
-      "packages/process/src/recovery.ts",
-      "packages/process/src/group.ts",
-    ],
-    plugins: { product: productRules },
-    rules: { "product/no-group-stop-import": ["error", { outside: false }] },
+    rules: { "product/no-group-stop-import": "error" },
   },
   // runtime과 프로세스 패키지는 정해진 파일에서만 프로그램을 띄운다(위 launchBoundary).
   launchBoundary(
