@@ -37,7 +37,9 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 
 Memory port의 첫 판은 core interface·db 단순 구현입니다.
 
-**프로세스 바탕의 의존 방향.** `@babojubot/process`는 `@babojubot/contracts`와 `cross-spawn`에만 기대고, runtime·db·server·개발 스크립트가 그것에 기댑니다(#266). db(Control Plane)는 runtime에 기대지 않습니다. 다른 영역이 가져올 수 있는 입구는 lint(`product/package-import-scope`)가 묶고, 안쪽 파일(상대 경로 포함)은 어느 목록에도 없습니다.
+**패키지 경계.** 다른 패키지는 패키지 이름으로, 그 `package.json`의 `exports`가 내보낸 입구로만 가져옵니다. 다른 패키지 폴더 안을 가리키는 상대 경로(입구 파일 포함)와 내보내지 않은 하위 경로는 제품 코드·개발 스크립트·시험·설정 모두에서 lint(`product/package-entry-only`)가 막습니다. 필요한 것이 입구에 없으면 그 패키지의 `exports`에 의미 있는 입구를 더하고, 시험 전용이면 시험 입구로 둡니다. 영역마다 어느 입구까지 받는지는 `product/package-import-scope`가 좁힙니다. db의 입구는 `@babojubot/db`(제품), `/testing`·`/test-cluster`(시험), `/admin`(사고 재현·실제 모델 시험 스크립트가 DB를 직접 보는 `withClient`·`agentSessions`)이고, 제품 코드는 `@babojubot/db`만 가져옵니다.
+
+**프로세스 바탕의 의존 방향.** `@babojubot/process`는 `@babojubot/contracts`와 `cross-spawn`에만 기대고, runtime·db·server·개발 스크립트가 그것에 기댑니다(#266). 다른 영역이 가져올 수 있는 입구는 lint(`product/package-import-scope`)가 묶습니다.
 
 ```text
 contracts ← process ← runtime ← server
