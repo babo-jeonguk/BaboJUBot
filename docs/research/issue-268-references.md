@@ -1,6 +1,6 @@
 # issue-268 레퍼런스 조사
 
-실행 시도별 감독 실행기의 배포·프로토콜·정리 경계를 다룹니다. 확정 계약과 완료 조건은 [#268](https://github.com/babo-jeonguk/BaboJUBot/issues/268)에 있습니다. 조사일은 2026-11-20, 저장소 기준은 #263 병합 커밋 `4b3cb6a140d01e5503c8fefa65cfd4a1511e6312`입니다.
+실행 시도별 감독 실행기의 배포·프로토콜·정리 경계를 다룹니다. 확정 계약과 완료 조건은 [#268](https://github.com/babo-jeonguk/BaboJUBot/issues/268)에 있습니다. 조사와 후속 재확인은 2026-11-20에 했습니다. 저장소 기준은 #263 병합 커밋 `4b3cb6a140d01e5503c8fefa65cfd4a1511e6312`입니다.
 
 ## Brief
 
@@ -12,7 +12,7 @@
 | --- | --- | --- | --- |
 | Q1 | 사전 빌드 optional 패키지, 설치 시 빌드, 소스 checkout·CI·Docker 설치는 어떻게 다른가? | #268 착수 전 조사·실행 파일 | 레지스트리 메타데이터, 배포 소스, 깨끗한 설치와 optional 생략 대조 |
 | Q2 | 지원 OS·CPU·ABI와 서명·격리 정책을 어디서 검증하는가? | #268 착수 전 조사·준비 실패 | OS·패키지 관리자 공식 계약, 현재 CI·이미지 대조 |
-| Q3 | C·Rust·Go와 현 C# 실행기는 무엇을 직접 소유할 수 있는가? | #268 실행 언어·Linux/macOS 실행기 | 생성→관찰→그룹 신호→회수의 소스 비교 |
+| Q3 | Rust 하나로 세 OS의 수명 계약을 구현할 수 있는가? C·Go·기존 C#과 어떤 차이가 있는가? | #268 실행 언어·Linux/macOS 실행기 | 생성→관찰→그룹 신호→회수의 소스 비교 |
 | Q4 | Node와 감독 실행기 사이에서 제어·서버 사망·출력 닫힘을 어떻게 관찰하는가? | #268 제어 프로토콜·[#263 후속 댓글](https://github.com/babo-jeonguk/BaboJUBot/issues/268#issuecomment-7017314390) | Node/Win32 계약, 상속과 채널의 실패 경로 |
 | Q5 | OS별 실행기 사망과 재시작에서 어디까지 안전하게 정리할 수 있는가? | #268 B·C·D, 정리 안내 | 커널 계약·소스, Linux 실행, 실패·이전 기록 대조 |
 | Q6 | #219 일반 경로와 무엇이 달라지고 어디에 기록하는가? | #268 문서·범위, #266 패키지 경계 | 이슈·아키텍처·운영 계약 대조 |
@@ -25,7 +25,7 @@
 
 ## 레퍼런스
 
-배포는 npm 메타데이터에서 시작해 실행 파일·네이티브 모듈·설치 훅을 나눠 읽고, 마지막에 lockfile 이슈와 실제 optional 누락을 대조했습니다. 수명은 Bazel·Buck2의 실행별 감독, tini의 init, Go/Rust 표준 라이브러리에서 API의 회수 시점을 비교했습니다. IPC·플랫폼 정책은 기존 Windows 실행기에서 Node·Win32 계약과 Apple·Microsoft 공식 배포 지침으로 넓혔습니다. 마지막 비교에서 각각 패키지 누락, 그룹 밖 자손, 채널 상속과 시스템 실행 정책이라는 기존 실패 모드의 변형을 확인했습니다. 아래 비교에서 각 메커니즘을 대표하는 사례를 골랐습니다.
+배포는 npm 메타데이터에서 시작해 실행 파일·네이티브 모듈·설치 훅을 나눠 읽고, 마지막에 lockfile 이슈와 실제 optional 누락을 대조했습니다. 수명은 Bazel·Buck2의 실행별 감독, tini의 init, Go/Rust 표준 라이브러리에서 API의 회수 시점을 비교했습니다. IPC·플랫폼 정책은 기존 Windows 실행기에서 Node·Win32 계약과 Apple·Microsoft 공식 배포 지침으로 넓혔습니다. 마지막 비교에서 각각 패키지 누락, 그룹 밖 자손, 채널 상속과 시스템 실행 정책이라는 기존 실패 모드의 변형을 확인했습니다. 후속 조사에서는 Windows Job의 가입·종료·상속을 개별 비교하고, 릴리스의 빌드 소스와 npm 타르볼에 담긴 서명 자체를 대조했습니다. 아래 비교에서 각 메커니즘을 대표하는 사례를 골랐습니다.
 
 | 레퍼런스 | 분류 | 버전·SHA | 라이선스 | 깊이 | 선정 이유 |
 | --- | --- | --- | --- | --- | --- |
@@ -35,6 +35,8 @@
 | Go·Rust·Node | 런타임 API | E10–E11 | BSD-3-Clause·MIT/Apache-2.0·MIT | 공식 API·Node 고정 소스 | 언어별 자식 회수와 Node의 채널 계약 |
 | Linux 커널·XNU·Windows Job | 커널 자원 | E09, E12–E15 | GPL-2.0·APSL/BSD 계열·공식 OS 문서 | 소스·문서, Linux 실행 | 번호 재사용 방지와 실행기 사망 후 소유권 |
 | npm·pnpm·Docker·Apple·Microsoft | 설치·배포 계약 | E06–E08, E16 | 공식 문서 | 문서 | 타깃 설치, 출처 추적, 시스템 실행 정책 |
+| Cargo·process-wrap·win32job | Rust Windows Job | E22–E24의 고정 버전 | MIT/Apache-2.0 계열 | 소스 | 하나의 Rust 프로그램에서 Win32를 호출하는 범위와 동시 작업 토큰의 차이 |
+| pacote·node-tar·pnpm | 레지스트리 추출 및 캐시 | E26–E27의 고정 버전 | ISC·BlueOak-1.0.0·MIT | 소스 | 기본 레지스트리 설치와 캐시에서 전파되는 OS 속성의 차이 |
 
 ## 근거
 
@@ -61,6 +63,40 @@
 | <a id="E19"></a>E19 | Linux arm64에서 Node 24.21.0으로 상속 출력을 보유하는 합성 실행기를 시험했습니다. 정상 경로는 대표 exit 뒤 실행기와 fd 3이 살아 있을 때 stdout·stderr의 EOF와 개행 없는 마지막 바이트가 도착했습니다. 실행기가 출력 쓰기 사본을 고의 유지한 대조에서는 fd 3이 응답하는 동안 EOF가 없었고 실행기가 끝난 뒤 도착했습니다. | E11의 Node API를 사용한 합성 프로세스 | 실행 확인 |
 | <a id="E20"></a>E20 | Node 24.21.0의 지원 표에서 Linux GNU x64/arm64의 커널 하한은 4.18, glibc는 2.28이며 macOS의 두 CPU 하한은 13.5입니다. Windows의 지원 등급과 최소 버전은 CPU별로 기록됩니다. macOS GitHub 호스팅 실행기는 Intel과 arm64가 별도 라벨입니다. | [Node 지원 표](https://github.com/nodejs/node/blob/955266bfdd854cd280dffd47548673914484e4c0/BUILDING.md#L100-L121), [GitHub 실행기](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories) | 문서 주장 |
 | <a id="E21"></a>E21 | Go의 Linux 내부 관찰은 `WNOWAIT` 뒤 실제 Wait 호출을 준비하는 용도입니다. Go 소스가 Darwin의 정지 상태 반환을 명시하고, Buck2는 `si_code`로 실제 exit를 구별합니다. 설치 시 빌드의 예인 node-gyp는 Python과 대상 OS 빌드 도구를 요구합니다. | [Go `blockUntilWaitable`](https://github.com/golang/go/blob/6e676ab2b809d46623acb5988248d95d1eb7939c/src/os/wait_waitid.go#L5-L36), [Buck2 `is_exit`](https://github.com/facebook/buck2/blob/296d874cfd8a78834129d2e25395463dbfb37a1c/app/buck2_process_kill/src/unix.rs#L43-L81), [node-gyp 12.1.0](https://github.com/nodejs/node-gyp/blob/98307b03a1381cf6697d80081b6cd05a47e412bc/README.md#installation) | 소스 확인·문서 주장 |
+| <a id="E22"></a>E22 | Rust의 Buck2·watchexec/process-wrap은 플랫폼별 자원 제어를 공용 실행 흐름에 연결합니다. Windows 기능별 범위는 아래 비교표에 있습니다. | [Windows Job 비교](#windows-job-선례) | 소스 확인 |
+| <a id="E23"></a>E23 | Cargo의 자체 Job은 빌드 트리 수명을, jobserver-rs의 Windows 세마포어는 동시 작업 토큰을 다룹니다. | [Windows Job 비교](#windows-job-선례) | 소스 확인 |
+| <a id="E24"></a>E24 | win32job은 핸들·조회 래퍼입니다. Bazel의 Windows process-wrapper는 stub이고 C++ JNI 프로세스 구현이 Job과 제한 상속을 맡습니다. | [Windows Job 비교](#windows-job-선례) | 소스 확인 |
+| <a id="E25"></a>E25 | Windows Rust 이행에서 현재 Node의 Windows 명령줄과 상위 Job 계약을 유지할 수 있습니다. Rust 표준 API의 생성 속성 목록 전달은 조사 판에서 nightly입니다. 기존 CI의 직접 실행 비교와 정리 시험은 이행 전후 기준으로 쓸 수 있습니다. | [현재 인수 구성](https://github.com/babo-jeonguk/BaboJUBot/blob/4b3cb6a140d01e5503c8fefa65cfd4a1511e6312/packages/runtime/src/providers/job-object.ts#L45-L103), [인수 시험](https://github.com/babo-jeonguk/BaboJUBot/blob/4b3cb6a140d01e5503c8fefa65cfd4a1511e6312/packages/runtime/src/providers/job-object.test.ts#L300-L338), [Job·EOF 시험](https://github.com/babo-jeonguk/BaboJUBot/blob/4b3cb6a140d01e5503c8fefa65cfd4a1511e6312/packages/runtime/src/providers/job-object.test.ts#L223-L298), [서버 사망·거절](https://github.com/babo-jeonguk/BaboJUBot/blob/4b3cb6a140d01e5503c8fefa65cfd4a1511e6312/packages/runtime/src/providers/job-object.test.ts#L340-L428), [Rust CommandExt](https://doc.rust-lang.org/stable/std/os/windows/process/trait.CommandExt.html#tymethod.spawn_with_attributes), [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw), [중첩 Job](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs) | 소스 확인·문서 주장 |
+| <a id="E26"></a>E26 | npm 11.19.0의 pacote 21.5.1은 tarball을 HTTP 바이트 스트림으로 받아 node-tar 7.5.19로 씁니다. pnpm 10.33.0은 바이트를 저장소 파일로 쓰고 clone·hardlink·copy로 가져옵니다. 읽은 새 파일 쓰기 경로에는 quarantine·MOTW 설정이 없습니다. Apple의 파일 생성 시 기본 quarantine은 앱의 별도 옵트인이고, 재사용한 캐시 파일의 속성은 새 레지스트리 다운로드와 별개입니다. | [pacote stream](https://github.com/npm/pacote/blob/d36266f5e4001cffdf70de242b6e825cef06f0c1/lib/remote.js#L30-L55), [pacote extract](https://github.com/npm/pacote/blob/d36266f5e4001cffdf70de242b6e825cef06f0c1/lib/fetcher.js#L358-L404), [tar 파일 쓰기](https://github.com/npm/node-tar/blob/be440da64e9fe80c68c755d8147328ea1cc2a9ad/src/unpack.ts#L494-L575), [pnpm 파일 쓰기](https://github.com/pnpm/pnpm/blob/be07631710e869cd5bd1fc56538b1698aa2f65f7/store/cafs/src/writeBufferToCafs.ts#L31-L54), [pnpm 파일 배치](https://github.com/pnpm/pnpm/blob/be07631710e869cd5bd1fc56538b1698aa2f65f7/fs/indexed-pkg-importer/src/index.ts#L20-L86), [Apple 설정](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/LaunchServicesKeys.html), [pnpm #11056](https://github.com/pnpm/pnpm/issues/11056) | 소스 확인·문서 주장 |
+| <a id="E27"></a>E27 | Windows Attachment Manager가 NTFS ADS에 파일 출처를 남길 수 있습니다. Vercel은 자체 Windows CLI의 레지스트리 설치에서 MOTW가 붙지 않는다고 기록합니다. macOS arm64에서 Codex npm 설치 바이너리에 quarantine 속성이 없었다는 보고도 있습니다. | [Microsoft Attachment Manager](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-attachmentmanager), [IAttachmentExecute::Save](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-iattachmentexecute-save), [Vercel CLI 설치 관찰](https://github.com/vercel-labs/agent-desktop/blob/e8934a5e95e1d212c74ead95cd3e4701c04eca31/skills/agent-desktop-windows/references/troubleshooting.md#L60-L75), [Codex CLI 설치 관찰](https://github.com/openai/codex/issues/23649) | 문서 주장 |
+| <a id="E28"></a>E28 | 다섯 프로젝트의 공개 npm 타르볼 24개에서 무결성 해시를 확인한 뒤 Linux에서 Mach-O·PE의 서명 구조를 검사했습니다. arm64 Mach-O 5종 중 4종은 ad hoc, Turbo는 Vercel Developer ID가 있었습니다. Windows 실물은 모두 PE Certificate Table이 비어 있었고, 검사한 바이너리 tar 항목에는 PAX 속성이 없었습니다. | [패키지 실물 대조](#npm-패키지의-서명과-설치-출처-표식), [Microsoft PE Certificate Table](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#the-attribute-certificate-table-image-only) | 실행 확인 |
+| <a id="E29"></a>E29 | npm으로 설치한 unsigned Biome이 Smart App Control에 의해 차단된 사례가 있습니다. Microsoft는 이 정책이 안전으로 알려지거나 신뢰 서명된 코드에 실행을 허용한다고 설명합니다. | [Biome #12126](https://github.com/biomejs/biome/issues/12126), [Microsoft Smart App Control](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview), [기업 앱 제어](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/appcontrol) | 1차 이슈 보고·공식 문서 |
+
+### Windows Job 선례
+
+| 선례 | 생성·가입 | KILL_ON_JOB_CLOSE | 종료·활성 수 | HANDLE_LIST |
+| --- | --- | --- | --- | --- |
+| Buck2, Rust | Tokio 명령을 `CREATE_SUSPENDED`로 생성 → 실행별 Job 가입 → 재개. | 실행별 Job에 설정. | `TerminateJobObject` 후 완료 통지, `QueryInformationJobObject`로 `ActiveProcesses` 확인. | 해당 실행별 생성 코드에서 명시 설정 없음. [생성·재개](https://github.com/facebook/buck2/blob/296d874cfd8a78834129d2e25395463dbfb37a1c/app/buck2_execute_local/src/win/process_group.rs#L39-L103), [종료·조회](https://github.com/facebook/buck2/blob/296d874cfd8a78834129d2e25395463dbfb37a1c/app/buck2_execute_local/src/win/job_object.rs#L75-L134), [Job 제한](https://github.com/facebook/buck2/blob/296d874cfd8a78834129d2e25395463dbfb37a1c/app/buck2_execute_local/src/win/job_object.rs#L196-L210) |
+| Cargo·jobserver-rs, Rust | Cargo 자신을 Job에 가입시켜 앞으로 만드는 자식이 물려받습니다. jobserver는 이름 있는 세마포어로 토큰을 계수합니다. | Cargo Job은 설정하지만 breakaway를 허용하며 정상 해제 시 kill-on-close를 끕니다. | 해당 경로에 활성 수 조회 없음. | 자체 Job 연결이나 jobserver 토큰 경로에 없음. [Cargo Job](https://github.com/rust-lang/cargo/blob/561f6f80295c4ff5cc6627a0873b8c4994dbc847/src/util/job.rs#L83-L154), [jobserver 세마포어](https://github.com/rust-lang/jobserver-rs/blob/ea6c0ac276b0506c7e229882c3bf05e7bfc5dc5d/src/windows.rs#L76-L132) |
+| watchexec·process-wrap, Rust | 공용 빌더에서 POSIX 세션/그룹과 Windows Job을 선택. Windows 래퍼는 중단 생성 → 가입 → 재개. | `KillOnDrop` 옵션으로 설정. | 완료 통지와 `ActiveProcesses` 조회를 조합. | 래퍼 자체에 `JOB_LIST`·`HANDLE_LIST` 설정 없음. [공용 빌더](https://github.com/watchexec/watchexec/blob/f71af3b18d571c82e1904bb573809e05769b4faf/crates/supervisor/src/command/conversions.rs#L45-L73), [가입](https://github.com/watchexec/process-wrap/blob/2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e/src/std/job_object.rs#L81-L138), [Job 생성](https://github.com/watchexec/process-wrap/blob/2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e/src/windows.rs#L205-L269), [활성 수](https://github.com/watchexec/process-wrap/blob/2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e/src/windows.rs#L118-L135) |
+| win32job, Rust | Job 생성 및 기존 프로세스 가입 API. 실행 생성·순서는 호출자가 소유. | 옵션으로 설정. | 기본 회계 조회에 `ActiveProcesses`를 노출. | 생성 속성 설정은 호출자 책임. [생성·가입](https://github.com/ohadravid/win32job-rs/blob/9c980106cf7ac69cd471539300c21aca67c2e066/src/job.rs#L26-L107), [Job 제한](https://github.com/ohadravid/win32job-rs/blob/9c980106cf7ac69cd471539300c21aca67c2e066/src/limits.rs#L55-L68), [회계 조회](https://github.com/ohadravid/win32job-rs/blob/9c980106cf7ac69cd471539300c21aca67c2e066/src/query.rs#L70-L105) |
+| Bazel, C++ | Windows process-wrapper는 stub. 별도 C++ 프로세스 구현이 중단 생성 → 가입 → 재개. | 프로세스별 Job에 설정. | 활성 프로세스 0 완료 통지를 상한 안에서 대기. 해당 종료 경로에 활성 수 조회 없음. | 표준 핸들 허용 목록 사용. [stub](https://github.com/bazelbuild/bazel/blob/8de4b46b6a2823b68d7ee704621e8a2441d1d879/src/main/tools/process-wrapper-windows.cc#L17-L25), [생성](https://github.com/bazelbuild/bazel/blob/8de4b46b6a2823b68d7ee704621e8a2441d1d879/src/main/native/windows/process.cc#L97-L208), [종료](https://github.com/bazelbuild/bazel/blob/8de4b46b6a2823b68d7ee704621e8a2441d1d879/src/main/native/windows/process.cc#L250-L277), [상속 제한](https://github.com/bazelbuild/bazel/blob/8de4b46b6a2823b68d7ee704621e8a2441d1d879/src/main/native/windows/util.cc#L80-L124) |
+
+Buck2·watchexec는 플랫폼별 호출을 Rust 실행 흐름에서 소유할 수 있다는 선례입니다. 이 표의 라이브러리에서 #268에 필요한 원자 가입과 명시적 핸들 목록을 함께 제공하는 경로는 확인하지 못했습니다. 기존 제품의 `JOB_LIST`를 Win32 접점에서 유지하고 같은 생성 속성 목록에 `HANDLE_LIST`를 추가하는 안을 권고합니다. `bInheritHandles=TRUE`는 목록 사용 조건이고, 허용 목록에 있는 상속 가능한 핸들만 전달합니다. [E14](#E14), [E15](#E15).
+
+### npm 패키지의 서명과 설치 출처 표식
+
+| npm 패키지 버전 | Darwin x64 | Darwin arm64 | Windows | 고정 빌드·이슈 근거 |
+| --- | --- | --- | --- | --- |
+| esbuild 0.28.2 | 서명 없음 | 링커 ad hoc | 내장 Authenticode 없음 | [Go 타깃 빌드](https://github.com/evanw/esbuild/blob/609683d892977362a0f99026cb74b96263d728a9/Makefile#L362-L394), [Go의 Mach-O 서명 생성](https://github.com/golang/go/blob/c19862e5f8415b4f24b189d065ed739517c548ba/src/cmd/link/internal/ld/macho.go#L823-L845), [arm64 실행 회귀 #4504](https://github.com/evanw/esbuild/issues/4504) |
+| SWC 1.16.22 | ad hoc | ad hoc | 내장 Authenticode 없음 | [최종 바이너리 strip·ad hoc sign·verify](https://github.com/swc-project/swc/blob/0cf74ca167e745b03ee65e6645b215a6dc4c690e/scripts/native/finalize.mjs#L121-L126), [게시 워크플로](https://github.com/swc-project/swc/blob/0cf74ca167e745b03ee65e6645b215a6dc4c690e/.github/workflows/publish-npm-package.yml#L426-L451) |
+| Biome 2.6.8 | 서명 없음 | 링커 ad hoc | 내장 Authenticode 없음 | [Rust 릴리스 빌드](https://github.com/biomejs/biome/blob/8b032240882efdb1f9c3d3c77392c11877b4d6bb/.github/workflows/release_cli.yml#L58-L108), [macOS 유지보수 논의](https://github.com/biomejs/biome/discussions/11447), [Windows 차단 보고](https://github.com/biomejs/biome/issues/12126) |
+| Turbo 2.11.13 | Vercel Developer ID | Vercel Developer ID | 내장 Authenticode 없음 | [macOS 서명·공증 절차](https://github.com/vercel/turborepo/blob/c5ec6b7daecd18283bd3a931ff297f4dafcf3b71/.github/workflows/turborepo-release.yml#L474-L514), [npm 게시](https://github.com/vercel/turborepo/blob/c5ec6b7daecd18283bd3a931ff297f4dafcf3b71/.github/workflows/turborepo-release.yml#L604-L635) |
+| Rollup 4.68.7 | 서명 없음 | 링커 ad hoc | 내장 Authenticode 없음 | [네이티브 타깃](https://github.com/rollup/rollup/blob/dd75c77b718581406bd6886f84dfdf2ebf50c5e7/.github/workflows/build-and-tests.yml#L78-L109), [napi 빌드](https://github.com/rollup/rollup/blob/dd75c77b718581406bd6886f84dfdf2ebf50c5e7/.github/workflows/build-and-tests.yml#L280-L285) |
+
+esbuild·Biome·Turbo는 별도 프로세스로 실행하는 CLI이며 SWC·Rollup은 Node가 로드하는 모듈입니다. 표는 레지스트리 `dist.integrity`를 대조한 최종 패키지 바이트의 Mach-O load command·CodeDirectory 또는 PE Certificate Table을 확인한 결과입니다. Turbo는 CMS의 인증서 주체와 공증 워크플로까지 확인했습니다. 검사한 두 Windows 패키지는 같은 x64 바이너리를 담았습니다. 실제 Gatekeeper의 공증 티켓 조회 및 Windows 외부 서명 카탈로그는 이 검사의 범위 밖입니다. [E28](#E28).
+
+기본 레지스트리 설치는 tarball을 파일 바이트로 받아 새 파일을 쓰는 경로입니다. npm/pnpm 소스, 타르볼 실물, Apple·Microsoft의 표식 생성 조건으로 판단하면 일반 터미널에서 깨끗한 캐시로 설치할 때 `com.apple.quarantine`·`Zone.Identifier`가 새로 붙는 동작을 전제할 근거가 없습니다. Finder·브라우저로 별도 다운로드한 파일, 격리 속성을 붙이는 호스트 앱, 그 속성이 있는 캐시나 설치 폴더의 재사용은 별도입니다. pnpm 10.32.1의 [#11056](https://github.com/pnpm/pnpm/issues/11056)은 인위적으로 표식을 붙인 저장소를 전제로 제출된 재현 보고이며, 기본 설치에 자동으로 표식이 붙는 증거로 사용하지 않았습니다. 이 조사에서 실행한 것은 패키지 바이트 검사입니다. macOS·Windows 설치 후 속성과 실제 실행은 V02에서 직접 확인합니다. [E26](#E26), [E27](#E27), [E29](#E29).
 
 ## 패턴
 
@@ -77,8 +113,8 @@
 | ID | 권고 | 내용 | 근거 | 이유·트레이드오프 | 질문 |
 | --- | --- | --- | --- | --- | --- |
 | <a id="D01"></a>D01 | 채택 | CI가 재현 가능한 빌드 절차로 타깃별 실행 파일을 만들어 정확히 같은 버전의 npm optional 패키지로 배포합니다. checkout에서는 명시적인 개발 빌드가 같은 진입점의 산출물을 만들게 합니다. 시작 시 협상·실제 무해한 프로그램 실행·정리까지 확인합니다. | P01–P02, E16–E17 | 설치와 실행 판정 분리. 자동 다운로드·컴파일이나 Node 직접 실행을 두면 누락과 약화가 숨습니다. | Q1 |
-| <a id="D02"></a>D02 | 변형 채택 | 첫 배포 권고는 Linux glibc x64/arm64, macOS x64/arm64, Windows x64. 타깃 OS 최소판·Linux kernel/seccomp 능력은 실행 시험으로 고정합니다. Linux musl과 Windows arm64는 별도 네이티브 CI 및 제품 DB·프로바이더 설치 계약을 확보할 때 추가합니다. | E01·E06–E08·E13·E16·E20, 현 CI | 바이너리 지원과 제품 전체 지원 범위를 맞춥니다. | Q2 |
-| <a id="D03"></a>D03 | 변형 채택 | POSIX는 작은 Rust 실행기를 권고합니다. 명시적인 wait·해제와 소유 fd를 사용하고 OS 호출 경계를 좁힙니다. Windows는 현재 C# Job 코드를 공용 프로토콜과 CI 빌드에 맞춰 유지합니다. | E09–E10·E14–E15·E21 | 현재 Windows 인수 전달과 Job 계약을 재사용합니다. POSIX 쪽은 바이트 파싱·fd 수명 오류의 표면을 줄이는 대신 Rust 도구·라이브러리 버전을 유지합니다. | Q3 |
+| <a id="D02"></a>D02 | 변형 채택 | 지원 권고는 Linux glibc x64/arm64, macOS x64/arm64, Windows x64입니다. 타깃 OS 최소판과 Linux kernel/seccomp 능력은 실행으로 확인합니다. arm64 Mach-O 서명은 빌드에서 확인합니다. 기본 레지스트리 설치의 필수 조건에는 Developer ID·공증 및 Windows Authenticode를 넣지 않습니다. Linux musl과 Windows arm64는 별도 네이티브 CI와 제품 DB·프로바이더 설치를 확인한 뒤 추가합니다. | E01·E06–E08·E13·E16·E20·E26–E29 | 바이너리와 전체 제품의 지원 범위를 맞추고 설치 방식과 OS 정책을 구별합니다. | Q2 |
+| <a id="D03"></a>D03 | 변형 채택 | 세 OS에 하나의 Rust 실행기 소스와 빌드 경로를 사용합니다. 프로토콜·오류·정리 상태 전이·공용 계약 시험을 공유합니다. POSIX wait·신호와 Windows Win32 Job·핸들 연결은 각 OS 구현이 맡습니다. 기존 Windows 인수·Job 계약을 CI에 고정하고 같은 PR에서 C# 실행 경로를 제거합니다. | E09–E10·E14–E15·E21–E25 | ① 언어별 프로토콜과 도구 체인 중복을 없앱니다. ② Node 직접 실행과 CLR·컴파일러 의존을 없애면서 커널 자원의 수명을 실행기가 소유합니다. ③ Rust와 C++의 Win32 Job 선례에서 필요한 호출을 대조했습니다. | Q3 |
 | <a id="D04"></a>D04 | 채택 | fd 3의 전용 양방향 채널에 판·준비, 대표 exit, stop, 범위 종료 결과를 구분합니다. 서버가 유일한 상대 끝단 소유자임을 생성 단계에서 보장하고, 자식에게는 필요한 stdio만 넘깁니다. 제어 EOF는 정지 요청과 같은 정리 진입점입니다. | P03, E11·E14–E15·E19 | 프로바이더 입출력과 수명·정지 결과를 섞지 않습니다. 별도 소켓 리스너·복구 명령 채널의 운영 비용을 피합니다. | Q4 |
 | <a id="D05"></a>D05 | 변형 채택 | POSIX는 대표 미회수 상태에서 전용 그룹에 마지막 신호를 보냅니다. Linux는 subreaper·직접 자식 PDEATHSIG와 표식에 대한 fd 기반 신호를 조합합니다. macOS는 NOTE_EXIT 및 그룹 앵커, 그룹 밖은 검증·안내를 사용합니다. Windows는 Job에 생성 시 가입시키고 마지막 비상속 Job 핸들과 활성 수를 확인합니다. | P04–P05, E09·E12–E15·E18 | 앵커와 Job의 보장은 각 관리 범위에 한정됩니다. Windows 가입 실패를 시작 실패로 처리하면 중단 상태 고아 창도 제거할 수 있습니다. | Q3–Q5 |
 | <a id="D06"></a>D06 | 변형 채택 | 서버만 죽으면 실행기가 같은 정리를 수행하고 성공·미확인 결과를 실행 시도 기록에 남깁니다. 실행기가 함께 죽거나 완료 증거가 없으면 안정된 객체를 확보한 대상만 회수하며 기록·DB 폴더와 확인 상태를 남깁니다. 이전 포맷도 같은 규칙을 적용합니다. | P05, E12–E15·E18, #268 C·D | PID·시각 대조 후 숫자로 신호하는 모양을 없앱니다. 복구 증거 부족은 조직별 안내에 남습니다. | Q5 |
@@ -101,7 +137,7 @@
 
 | 환경 | 권고 설치 경로와 확인 |
 | --- | --- |
-| 릴리스 | 타깃 manifest에 `os`·`cpu`와 필요한 `libc` 제약을 둡니다. 버전별 아티팩트를 먼저 게시·검증하고 공용 패키지가 정확한 버전을 참조하게 합니다. 소스 SHA, 고정 툴체인·SDK·의존성, 서명 전 SHA-256, 최종 패키지 해시를 기록합니다. 두 빌드의 지정 산출물을 비교하고, 서명·공증 및 타임스탬프는 별도 배포 단계로 검증합니다. |
+| 릴리스 | 타깃 manifest에 `os`·`cpu`와 필요한 `libc` 제약을 둡니다. 버전별 아티팩트를 먼저 게시·검증하고 공용 패키지가 정확한 버전을 참조하게 합니다. 소스 SHA, 고정 툴체인·SDK·의존성, 서명 전 SHA-256, 최종 패키지 해시를 기록합니다. 두 빌드의 지정 산출물을 비교하고, 최종 바이너리의 OS별 서명 상태를 검사하고, 신뢰 정책용 서명을 적용하는 타깃에서는 서명 후 아티팩트도 검증합니다. |
 | 개발 checkout | 명시적 개발 빌드를 제공하고 같은 경로 선택·판 협상·정리 준비 시험을 씁니다. pnpm 10.33.0의 기존 내장 Postgres 설치 훅은 그대로 필요합니다. 배포된 감독 실행기는 설치 훅 없이 동작하도록 확인합니다. 누락 시 어떤 패키지나 빌드가 필요한지 알려 줍니다. |
 | CI | Linux x64/arm64, macOS Intel/Apple silicon, Windows x64에서 호스트 아키텍처·Node 아키텍처·실행 파일 종류를 기록합니다. `-latest` 이름 하나로 양쪽 CPU를 검증했다고 간주하지 않습니다. 깨끗한 설치와 frozen lockfile, optional 생략, 잘못된 바이너리/판, 실행 권한·정책 오류를 확인합니다. |
 | 서버 Docker 이미지 | 지원할 경우 최종 이미지의 대상 CPU와 libc에 맞게 target 단계에서 설치하거나 대상 아티팩트만 복사합니다. 호스트의 `node_modules` 재사용을 피하고 최종 이미지에서 probe를 돌립니다. |
@@ -109,13 +145,20 @@
 
 Linux glibc 바이너리는 실제 가장 오래된 지원 사용자 공간에서 로더·심볼 기준을 검사합니다. musl이 필요해지면 x64·arm64 각각 glibc/musl 패키지를 구분하는 안과 단일 정적 musl ELF를 배포하는 안을 비교할 수 있습니다. 정적 링크로 로더 의존성을 줄여도 둘의 커널·`/proc`·seccomp 시험은 각각 필요합니다. `pidfd_send_signal`은 Linux 5.1, `pidfd_open`은 5.3, `waitid(P_PIDFD)`는 5.4부터 문서화됐습니다. 5.4는 세 API를 사용하는 설계의 후보 하한이며, Node 자체의 GNU/Linux 하한인 4.18보다 높습니다. 지원 범위를 올리려면 ADR과 설치 안내에 드러내고, 커널 버전 문자열 대신 실제 기능으로 준비 여부를 판정합니다. [E08](#E08), [E13](#E13), [E20](#E20).
 
-macOS는 둘로 나눈 Mach-O를 권고합니다. universal은 같은 패키지를 수동으로 배포할 때는 편하지만 각 npm 타깃이 양쪽 슬라이스를 내려받습니다. Apple silicon의 ad hoc 링크 서명은 개발용, 공개 배포의 Developer ID·Hardened Runtime·공증은 별도 배포 파이프라인으로 둡니다. 일반 npm 설치와 브라우저로 받은 격리 속성 있는 아카이브를 각각 시험하고, `com.apple.quarantine`이 어떻게 전파되는지는 설치 경로별로 기록합니다. 공증 티켓을 개별 바이너리에 staple할 수 없으므로 격리된 오프라인 배포가 필요하면 staple 가능한 배포 포맷을 따로 검토합니다. [E07](#E07).
+macOS는 CPU별 Mach-O를 권고합니다. arm64는 유효한 코드 서명이 필수이며 링커의 ad hoc 서명으로 이 요구를 충족할 수 있습니다. 서명 뒤 바이너리를 변경하면 최종 아티팩트에서 유효성을 다시 확인합니다. Intel에는 같은 arm64 요구가 적용되지 않습니다. 기본 레지스트리 설치에서 Developer ID·공증을 전제하지 않습니다. 브라우저에서 받은 격리된 배포물이나 Gatekeeper가 신뢰할 서명을 요구하는 환경을 지원할 경우 Developer ID·Hardened Runtime·공증을 별도로 검증합니다. 독립 실행 파일에는 공증 티켓을 직접 staple할 수 없어 격리된 오프라인 배포는 티켓 검증 경로도 필요합니다. [E07](#E07), [E26](#E26), [E28](#E28).
 
-Windows는 공개 릴리스의 Authenticode 서명·타임스탬프를 권고합니다. 일반 npm 설치와 인터넷 표시(Mark of the Web)가 붙은 다운로드의 실행을 따로 보며 SmartScreen·Smart App Control·Defender 결과를 구분합니다. 정책에 막히면 준비 실패로 보고합니다. 현재 fd 3 어댑터는 Node/libuv가 넘기는 CRT 핸들 슬롯을 읽습니다. 해당 ABI를 Windows 어댑터에만 두고 같은 비트수의 Node와 실행기로 검증합니다. Windows arm64는 [Microsoft의 .NET Framework Arm 조건](https://learn.microsoft.com/en-us/lifecycle/faq/dotnet-framework)과 전체 제품 설치를 확인한 뒤 추가할 수 있습니다. [E08](#E08), [Node/libuv 핸들 슬롯](https://github.com/nodejs/node/blob/955266bfdd854cd280dffd47548673914484e4c0/deps/uv/src/win/process-stdio.c#L32-L54).
+Windows x64의 일반 레지스트리 설치·Node 실행에서 Authenticode를 필수로 두지 않습니다. 브라우저에서 받은 파일의 SmartScreen 평판 평가, 출처와 무관하게 작동하는 Smart App Control·기업 App Control, Defender 탐지를 구분합니다. 정책 적용 환경까지 지원할 때는 그 정책이 받아들이는 서명이나 관리자 승인 정책을 해당 환경에서 검증합니다. Smart App Control은 알려진 안전 평판 또는 신뢰 서명이 필요할 수 있으며, 서명은 SmartScreen 평판 경고가 없음을 보장하지 않습니다. 서명 정책 적용 시점을 공개판 출시의 사용자 결정으로 두지 않습니다. [E08](#E08), [E27](#E27), [E29](#E29).
 
 ### 언어와 제어 통로
 
-C는 tini처럼 의존성이 적고 OS 호출과 빌드가 직접적입니다. 이번에는 프로토콜 및 표식 바이트 파싱, 생성·실패 경로의 fd 정리가 필요해 메모리 안전성과 소유 fd가 있는 Rust가 유리합니다. Go는 esbuild처럼 사전 빌드하기 좋지만 `os/exec.Wait`만으로 회수 전 종료를 보는 계약을 만들 수 없고, 저수준 대기와 생성 스레드 수명을 명시적으로 다뤄야 합니다. C#은 기존 Windows 구현과 운영 경험을 이어 갈 수 있고 CI에서 사전 빌드하면 사용자의 컴파일러 의존은 사라지고 .NET Framework CLR 의존은 남습니다. CI는 고정된 참조 어셈블리와 결정적 빌드를 검증합니다. 한 언어로 통일하는 Rust/Win32 구현은 상속·인수·중첩 Job 경로를 다시 검증하는 비용이 있습니다. 출처의 코드는 설계 비교에 사용했습니다. [E02](#E02), [E09](#E09), [E10](#E10), [E14](#E14), [E15](#E15), [E21](#E21), [C# 결정적 컴파일](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/code-generation#deterministic).
+C는 tini처럼 의존성이 적고 OS 호출이 직접적입니다. Go는 esbuild처럼 사전 빌드하기 좋지만 `os/exec.Wait`만으로 회수 전 종료를 관찰할 수 없어 저수준 대기가 필요합니다. 현재 C# 구현은 Windows 계약의 기준입니다. C#을 별도 실행기로 유지하면 프로토콜과 오류 전이를 두 언어에서 수정해야 하고 CLR과 별도 빌드가 남습니다. Rust 하나로 공유하는 범위는 프레이밍, 준비·실패 사유, stop/EOF의 정리 전이와 계약 시험입니다. Linux·macOS의 wait·신호와 Windows Job·HANDLE 소유를 같은 상태 전이에서 호출합니다. Rust 표준 라이브러리의 Windows `spawn_with_attributes`는 조사 판에서 nightly API이므로, 안정판에서 `JOB_LIST`와 `HANDLE_LIST`를 함께 쓰려면 Windows 모듈에서 `windows-sys`의 `CreateProcessW`와 생성 속성으로 호출을 좁힙니다. 감독 실행기의 Windows ARM64는 네이티브 Node와 전체 제품 설치를 확인할 때 추가합니다. [E09](#E09), [E10](#E10), [E21](#E21), [E22–E25](#E22), [Microsoft Rust 바인딩](https://github.com/microsoft/windows-rs/blob/32c3144490c016fe496a0aed769bce60987a2e9d/crates/libs/sys/src/Windows/Win32/System/Threading/mod.rs#L808-L810).
+
+Windows 이행은 다음 계약을 유지합니다.
+
+- **인수 전달.** 현재 Node가 cross-spawn으로 해석한 실행 경로와 Windows용 명령줄을 그대로 `CreateProcessW`에 전달합니다. `.cmd`의 `cmd.exe /c` 이스케이프와 일반 CRT 인용은 규칙이 다릅니다. Rust에서 명령줄을 인수 배열로 다시 파싱하거나 재인용하는 경로를 두면 공백·빈 문자열·따옴표·역슬래시 경계가 달라질 수 있습니다. Windows에서 실제 프로그램이 받은 값으로 확인합니다.
+- **Job 가입.** `JOB_LIST`에서 생성과 가입을 한 번에 수행하고 `HANDLE_LIST`에는 필요한 표준 핸들만 넣습니다. 별도의 중단 생성→가입→재개 방식은 시작 전 고아가 남을 수 있습니다. 상위 libuv Job 안에서도 새 실행 시도 Job의 중첩을 유지하며 Job·제어 채널을 비상속으로 둡니다. 중첩 제약·가입 실패에서 실행을 거부합니다. 종료 통지를 받아도 Job의 `ActiveProcesses`가 0임을 확인합니다.
+- **제어 핸들.** 현재 fd 3은 Node/libuv가 넘기는 Windows CRT 슬롯입니다. 슬롯 크기·유효성을 확인하는 코드는 Windows 연결부 한 곳에 두고 같은 비트수의 Node와 실행기로 검증합니다. 이 어댑터와 별개로, 공용 프로토콜은 바이트 스트림과 끝단 소유만 가정합니다. [Node/libuv 슬롯](https://github.com/nodejs/node/blob/955266bfdd854cd280dffd47548673914484e4c0/deps/uv/src/win/process-stdio.c#L32-L54).
+- **CI 고정.** 기존 Windows CI의 `.cmd`·PATH 인수 비교, stdin/stderr·마지막 출력, detached 자손·취소·다른 실행 보존·서버 강제 종료와 시작 거부를 Rust 경로로 옮겨 회귀를 잡습니다. 별도로 실제 상위 Job 안에서 실행 시도별 중첩을 확인하고, 호환되지 않는 Job 가입 시 명령 미실행, 실행기 강제 종료, 의도한 핸들만 상속, 실제 EOF를 검증합니다. 기존 시험은 계약의 출발점이며 새 Rust 경로를 이 조사에서 실행한 결과는 없습니다. [E25](#E25).
 
 준비 응답에는 전용 그룹이나 Job과 제어 핸들 설정의 성공이 반영되어야 합니다. POSIX는 proc 생성 경계에서 close-on-exec와 허용 fd를 확인합니다. Windows는 `HANDLE_LIST`로 자식 상속을 stdin/stdout/stderr만 허용하고 실행기의 중복 표준 핸들을 준비 전에 닫습니다. 실제 프로바이더나 그 자손의 stdout/stderr 유지 여부, 실행기의 fd 3 종료, 대표 exit, 트리 종료는 별도 관찰값입니다. 시작 전 판 불일치, 손상 프레임, 중복 stop, EOF 중 부분 프레임, 끊긴 채널의 쓰기 오류에도 정리를 완료해야 합니다. 실행기 정리 중에는 결과 메시지를 보낼 상대가 남아 있다는 전제에 의존하지 않습니다. [E11](#E11), [E14](#E14), [E15](#E15).
 
@@ -136,19 +179,19 @@ C는 tini처럼 의존성이 적고 OS 호출과 빌드가 직접적입니다. �
 | ID | 검증할 경계 | 근거 |
 | --- | --- | --- |
 | V01 | 깨끗한 checkout·frozen lockfile·타깃 패키지 설치 → 실제 준비 probe → 설치 훅 없이 실행. 생략·타깃/판 불일치·권한 거절·손상 → 원인과 함께 실행 거부. Linux 대상 이미지에서도 probe | D01–D02 |
-| V02 | Intel/Apple silicon 실제 macOS와 Windows x64에서 설치 경로별로 서명 검증 → 기본 정책 그대로 spawn. 격리 속성·인터넷 표시와 실행 오류를 기록. 최소 지원 환경과 서명된 최종 패키지를 확인 | D02 |
-| V03 | 아무 자손 없이 마지막 개행이 없는 provider stdout·stderr 작성 → 대표 exit 뒤 실행기와 제어 통로가 살아 있는 상태에서 실제 EOF. 실행기나 자손이 각각 의도적으로 출력 핸들 하나 더 유지 → 닫기 전에는 EOF 없음, 닫으면 EOF. Windows에서 상속 허용·닫기 오류를 주입해 원인을 구분. 고정 대기 대신 사건과 실패 시한으로 검증 | D03–D04 |
+| V02 | 깨끗한 캐시의 일반 npm/pnpm 설치 → Intel/Apple silicon과 Windows x64의 바이너리를 `codesign`·`xattr` 또는 `Get-AuthenticodeSignature`·`Get-Item -Stream Zone.Identifier`로 검사한 뒤 실제 spawn. 격리된 다운로드와 Windows 앱 제어 적용 환경은 대조 결과를 따로 기록. arm64 Mach-O 서명 유효성을 확인 | D02 |
+| V03 | 아무 자손 없이 마지막 개행이 없는 프로바이더 stdout·stderr 작성 → 대표 exit 뒤 실행기와 제어 통로가 살아 있는 상태에서 실제 EOF. 실행기나 자손이 각각 의도적으로 출력 핸들 하나 더 유지 → 닫기 전에는 EOF 없음, 닫으면 EOF. Windows에서 기존 .cmd/PATH 인수와 중첩 Job·가입 실패 계약을 재검증하고, 상속 허용·닫기 오류를 주입해 원인을 구분. 실제 EOF와 실패 시한으로 검증 | D03–D04 |
 | V04 | TERM 무시·대표 먼저 종료·setsid/동등한 탈출 fixture·다른 실행 및 무관한 프로그램 → POSIX 그룹 마지막 신호 후 reap, macOS 즉시 종료·STOP과 NOTE_EXIT 구분, Linux fd 표식 정리, macOS 미확인 신고, Windows Job 활성 수 0. 무관한 프로세스는 같은 객체의 응답으로 생존 확인 | D05 |
 | V05 | 서버 단독·실행기 단독·둘 다 강제 종료 → 각각 EOF 정리, 커널 보장의 범위와 완료 증거 없는 기록 보존, 다음 시작의 보수적 복구. Windows 상위 libuv Job이 실행기도 같이 끄는 사례와 실제 EOF 정지를 독립 시험 | D04–D06 |
 | V06 | 이전 포맷·확인 중 신원 교체·권한 거절·조직 불일치·두 번째 재시작 → 다른 실행이나 조직에 신호 없음, 폴더와 사유 유지, 대시보드 안내 하나, 사용자 확인 시 기록 닫힘. 최초 실패 및 세 OS의 실제 시험 수를 CI 로그로 확인 | D06–D07 |
 
 | 열린 결정 | owner | 선택지와 근거 |
 | --- | --- | --- |
-| 첫 공개 릴리스 범위와 서명 자격 | 사용자 | 권고는 D02의 5개 타깃을 배포 단위로 삼고 macOS Developer ID·공증과 Windows Authenticode를 확보한 뒤 공개 지원. Linux 5.4를 최소판으로 삼는 조건도 포함합니다. 서명 자격 확보 전에는 같은 타깃에서 개발·CI 검증까지 진행하고 공개 지원 시점을 뒤로 둡니다. |
+| 지원할 OS·CPU와 Linux 최소판 | 사용자 | 권고는 Linux glibc x64/arm64, macOS x64/arm64, Windows x64와 Linux 5.4 후보 하한입니다. Linux 커널 기능 및 전체 제품 설치를 대상 CI에서 확인합니다. |
 | macOS 새 세션 자손의 합격 기준 | #268 | 권고는 그룹 밖에서 안정된 신호 권한을 확보할 수 없는 실제 fixture를 C의 미확인으로 두고, 신호 0건·안내·기록 보존을 합격으로 확인하는 것입니다. 모든 새 세션 자손의 자동 종료까지 합격 조건으로 해석하면 공개 API와 현재 범위에서 근거가 부족합니다. |
 
 ## 한계와 미확인
 
-- Linux에서 optional 설치, procdirfd 신호, 상속 출력 EOF의 정상·대조 경로를 실행했습니다. macOS·Windows 실제 실행, 코드 서명·공증, 격리 속성 전파, 실제 보안 정책과 #263 출력 보유 핸들은 이 조사에서 실행 확인하지 못했습니다. 제품 supervisor 통합·타깃별 ABI 하한·PID 번호의 실제 재사용 강제·Docker 이미지 설치는 구현 단계 검증입니다.
+- Linux에서 optional 설치, procdirfd 신호, 상속 출력 EOF의 정상·대조 경로를 실행했고 공개 npm 타르볼에서 Darwin/Windows 실행 파일의 서명 구조를 확인했습니다. 이 조사 환경에서 macOS·Windows 네이티브 설치 후 quarantine/ADS, 실제 OS 정책, 공증 티켓 유효성, #263 출력 보유 핸들은 실행 확인하지 못했습니다. 제품 supervisor 통합·타깃별 ABI 하한·PID 번호의 실제 재사용 강제·Docker 이미지 설치는 구현 단계 검증입니다.
 - macOS의 `ps -E`에서 표시되는 표식에는 환경 항목 경계 손실이 있습니다. 더 정확한 탐색을 확보해도 신호를 보내는 객체가 필요합니다. macOS 공개 API와 지원 판에서 둘을 함께 제공하는 경로는 조사 범위에서 확인하지 못했습니다.
 - npm 레지스트리·Apple·Windows의 정책과 runner 이미지는 바뀔 수 있으므로 배포 전 고정된 패키지 및 깨끗한 대상 OS에서 재확인합니다. upstream 코드를 가져올 경우 해당 버전의 파일 헤더·LICENSE·NOTICE를 다시 검토합니다.
