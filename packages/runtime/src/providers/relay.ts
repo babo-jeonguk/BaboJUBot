@@ -13,6 +13,7 @@ import {
   isDisconnect,
   orIfProbeFailed,
   orIfUnreadable,
+  settled,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
@@ -528,13 +529,14 @@ export function createRelayHub(): RelayHub {
           : []),
       ]).then(() => {});
       // 준비 실패는 ready를 기다리는 쪽(실행 시도·격리 확인)도 받는다. 그쪽이 붙기 전에 실패해도 중계는 스스로 닫는다.
+      // 닫기 실패는 나중에 닫는 쪽(실행 시도·격리 확인의 정리)이 같은 닫기에서 받는다.
       void continueAfterFailure(
         () => ready,
         (error) => {
           console.warn(
             `[provider] the isolated run relay could not open; closing it (${failureCode(error)})`
           );
-          void relay.close();
+          void settled(relay.close());
         }
       );
       const take = () =>
@@ -621,7 +623,10 @@ export function createRelayHub(): RelayHub {
     },
     async close() {
       hooks = undefined;
-      await Promise.all([...relays].map((relay) => relay.close()));
+      await attemptAll(
+        [...relays].map((relay) => () => relay.close()),
+        "the relays could not be closed"
+      );
     },
   };
 }

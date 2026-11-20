@@ -2,6 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  attemptAll,
   failureCode,
   type Destination,
   type RunRequest,
@@ -767,85 +768,97 @@ export function createDockerEnvironment(
           port: target.port,
         })),
       });
-      try {
-        await relay.ready;
-        const launch: ContainerLaunch = {
-          settings,
-          mounts: [],
-          labels: { probe: "1" },
-          program: "node",
-          env: {},
-          relay: {
-            identity: { organizationId: "isolation-probe" },
-            required: [],
+      let result: DockerResult | undefined;
+      // 본문(확인 컨테이너 실행)과 서로 독립인 정리(중계 닫기, 확인 컨테이너 지우기)를 모두 하고 실패를 함께 알린다.
+      // 중계를 먼저 닫아, 컨테이너가 늦게 지워지거나 못 지워져도 그 사이 밖에 닿지 못하게 한다.
+      await attemptAll(
+        [
+          async () => {
+            await relay.ready;
+            const launch: ContainerLaunch = {
+              settings,
+              mounts: [],
+              labels: { probe: "1" },
+              program: "node",
+              env: {},
+              relay: {
+                identity: { organizationId: "isolation-probe" },
+                required: [],
+              },
+            };
+            const args = dockerRunArgs(launch, {
+              name,
+              cwd: "/",
+              env: {},
+              args: ["-e", probeScript, JSON.stringify(input)],
+              relay: relay.directory,
+            });
+            result = await runDocker(settings, args, 60_000, signal);
           },
-        };
-        const args = dockerRunArgs(launch, {
-          name,
-          cwd: "/",
-          env: {},
-          args: ["-e", probeScript, JSON.stringify(input)],
-          relay: relay.directory,
+          () => relay.close(),
+          async () => {
+            if (!(await removeContainer(settings, name)))
+              throw new Error(
+                `the isolation probe container ${name} could not be removed`
+              );
+          },
+        ],
+        "the isolation probe could not finish"
+      );
+      const finished = result!;
+      if (finished.code !== 0)
+        throw new Error("isolation probe container failed", {
+          cause: new Error(dockerEnding(finished)),
         });
-        const result = await runDocker(settings, args, 60_000, signal);
-        await relay.close();
-        await removeContainer(settings, name);
-        if (result.code !== 0)
-          throw new Error("isolation probe container failed", {
-            cause: new Error(dockerEnding(result)),
-          });
-        const line = result.stdout
-          .split("\n")
-          .map((value) => value.trim())
-          .filter(Boolean)
-          .at(-1);
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line ?? "");
-        } catch {
-          throw new Error("isolation probe returned an invalid result");
-        }
-        const value = (
-          typeof parsed === "object" && parsed !== null ? parsed : {}
-        ) as Record<string, unknown>;
-        if (
-          !Array.isArray(value.interfaces) ||
-          !value.interfaces.every((entry) => typeof entry === "string") ||
-          !Array.isArray(value.reached) ||
-          !value.reached.every(isTarget) ||
-          !Array.isArray(value.proxied) ||
-          !value.proxied.every(isTarget) ||
-          typeof value.toolsReached !== "boolean" ||
-          !Array.isArray(value.failures) ||
-          !value.failures.every(isProbeFailure) ||
-          typeof value.proxyEnv !== "boolean"
-        )
-          throw new Error("isolation probe returned an invalid result");
-        // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다. 답이 없었으면 기다린 시간을 적는다.
-        const failures = value.failures as ProbeFailure[];
-        for (const failure of failures)
-          console.warn(
-            `[provider] the isolation probe's ${failure.probe} check failed (${
-              "timeoutMs" in failure
-                ? `no answer within ${failure.timeoutMs} ms`
-                : failureCode(
-                    Object.assign(new Error(), {
-                      name: failure.name,
-                      code: failure.code,
-                    })
-                  )
-            })`
-          );
-        return {
-          interfaces: value.interfaces as string[],
-          reached: value.reached as { host: string; port: number }[],
-          proxied: value.proxied as { host: string; port: number }[],
-          toolsReached: value.toolsReached && value.proxyEnv,
-          unverified: [...new Set(failures.map((failure) => failure.probe))],
-        };
-      } finally {
-        await relay.close();
+      const line = finished.stdout
+        .split("\n")
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .at(-1);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line ?? "");
+      } catch {
+        throw new Error("isolation probe returned an invalid result");
       }
+      const value = (
+        typeof parsed === "object" && parsed !== null ? parsed : {}
+      ) as Record<string, unknown>;
+      if (
+        !Array.isArray(value.interfaces) ||
+        !value.interfaces.every((entry) => typeof entry === "string") ||
+        !Array.isArray(value.reached) ||
+        !value.reached.every(isTarget) ||
+        !Array.isArray(value.proxied) ||
+        !value.proxied.every(isTarget) ||
+        typeof value.toolsReached !== "boolean" ||
+        !Array.isArray(value.failures) ||
+        !value.failures.every(isProbeFailure) ||
+        typeof value.proxyEnv !== "boolean"
+      )
+        throw new Error("isolation probe returned an invalid result");
+      // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다. 답이 없었으면 기다린 시간을 적는다.
+      const failures = value.failures as ProbeFailure[];
+      for (const failure of failures)
+        console.warn(
+          `[provider] the isolation probe's ${failure.probe} check failed (${
+            "timeoutMs" in failure
+              ? `no answer within ${failure.timeoutMs} ms`
+              : failureCode(
+                  Object.assign(new Error(), {
+                    name: failure.name,
+                    code: failure.code,
+                  })
+                )
+          })`
+        );
+      return {
+        interfaces: value.interfaces as string[],
+        reached: value.reached as { host: string; port: number }[],
+        proxied: value.proxied as { host: string; port: number }[],
+        toolsReached: value.toolsReached && value.proxyEnv,
+        unverified: [...new Set(failures.map((failure) => failure.probe))],
+      };
     },
     async removeOrphans() {
       const listed = await runDocker(settings, [
