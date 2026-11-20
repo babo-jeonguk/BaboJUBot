@@ -10,6 +10,7 @@
     "./test-cleanup": "./src/test-cleanup.ts",
     "./lifelines": "./src/lifeline-support.ts",
     "./testing": "./src/testing.ts",
+    "./test-support": "./src/test-support.ts",
     "./launcher-setup": "./src/launcher-setup-support.ts"
   },
   "scripts": {

@@ -12,7 +12,8 @@ import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
-import { permissionDenial, request } from "./test-support.ts";
+import { permissionDenial } from "@babojubot/process/test-support";
+import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 링크를 만들 수 없는 컴퓨터에서는 실행이 연결 폴더로 대신 돈다. 그때도 연결의 로그인 하나를 읽어야 한다.

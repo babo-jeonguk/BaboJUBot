@@ -10,7 +10,7 @@ import {
   judgeReports,
   systemOf,
 } from "./check-test-reports.mjs";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const at = (file) => path.join(root, file);

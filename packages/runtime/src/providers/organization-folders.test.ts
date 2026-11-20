@@ -19,7 +19,8 @@ import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
-import { attachedRelayHub, permissionDenial, request } from "./test-support.ts";
+import { permissionDenial } from "@babojubot/process/test-support";
+import { attachedRelayHub, request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 조직별 제품 폴더(사용자 결정 2026-11-06, docs/research/org-product-folders-references.md).

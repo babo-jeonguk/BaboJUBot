@@ -31,7 +31,8 @@ import {
   removeContainer,
   runDocker,
 } from "./container.ts";
-import { killAndWait, manualClock, probeEnvironment } from "@babojubot/process/testing";
+import { killAndWait } from "@babojubot/process/testing";
+import { manualClock, probeEnvironment } from "@babojubot/process/test-support";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";

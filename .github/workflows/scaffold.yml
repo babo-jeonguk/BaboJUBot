@@ -189,7 +189,7 @@ jobs:
       # 프로세스 바탕(@babojubot/process)의 시험이 먼저 돌고 그 위의 runtime 시험이 돈다(의존 순서).
       - name: Run runtime tests
         timeout-minutes: 12
-        # 바깥 환경이 필요한 시험은 이 job에서 필수다. 확인이 실패하면 건너뛰지 않고 원인과 함께 실패한다(@babojubot/process/testing의 probeEnvironment):
+        # 바깥 환경이 필요한 시험은 이 job에서 필수다. 확인이 실패하면 건너뛰지 않고 원인과 함께 실패한다(@babojubot/process/test-support의 probeEnvironment):
         # 실제 Docker 격리(container.docker.test.ts), python pty 실제 터미널(login.test.ts), systemd 사용자 scope(process의 lease-hidden.alone.test.ts),
         # 위에서 붙인 링크를 모르는 디스크(container.test.ts), root가 아니어서 권한으로 막을 수 있는 파일(permissionDenial).
         env:

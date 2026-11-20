@@ -6,7 +6,7 @@ import {
   type CodexOptions,
 } from "./codex.ts";
 import type { Clock } from "@babojubot/process";
-import { manualClock } from "@babojubot/process/testing";
+import { manualClock } from "@babojubot/process/test-support";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 import { processAlive } from "@babojubot/process/test-cleanup";
