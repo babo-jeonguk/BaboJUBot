@@ -434,7 +434,8 @@ test("launch owners end short commands at their time limit", async () => {
 
 const scopeRule = ["product/package-import-scope"];
 
-// 다른 영역은 runtime·프로세스 패키지의 안쪽 파일이나 목록에 없는 입구를 가져오지 않는다(#266). db는 runtime에 기대지 않고,
+// 다른 영역은 runtime·프로세스 패키지에서 목록에 없는 입구를 가져오지 않는다(#266). 안쪽 파일을 상대 경로로 가리키는 것은
+// product/package-entry-only가 본다(아래 시험). db는 runtime에 기대지 않고,
 // 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 쓴다. 제품 코드는 시험 도움 입구를 가져오지 않는다.
 test("other modules reach runtime and the process package only through their listed entry points", async () => {
   const refused = [
@@ -448,10 +449,6 @@ test("other modules reach runtime and the process package only through their lis
       `import { runCommand } from "@babojubot/runtime/bounded-command";\nvoid runCommand;\n`,
     ],
     [
-      "packages/db/src/client.ts",
-      `import { recordProcess } from "../../runtime/src/providers/recovery.ts";\nvoid recordProcess;\n`,
-    ],
-    [
       "packages/db/src/client.test.ts",
       `import { removeFolder } from "@babojubot/runtime/remove-folder";\nvoid removeFolder;\n`,
     ],
@@ -461,32 +458,11 @@ test("other modules reach runtime and the process package only through their lis
     ],
     [
       "packages/db/src/client.ts",
-      `import { launchTree } from "../../process/src/launch.ts";\nvoid launchTree;\n`,
-    ],
-    [
-      "packages/db/src/client.ts",
       `import { stopLeaseHolders } from "@babojubot/process/recovery";\nvoid stopLeaseHolders;\n`,
-    ],
-    [
-      "scripts/live/chaos-run.mjs",
-      `import { sharedVariables } from "../../packages/runtime/src/providers/process.ts";\nvoid sharedVariables;\n`,
     ],
     [
       "scripts/provider-live.mjs",
       `import { openLifelines } from "@babojubot/runtime/lifelines";\nvoid openLifelines;\n`,
-    ],
-    [
-      "scripts/provider-live.mjs",
-      `import { launchTree } from "../packages/process/src/launch.ts";\nvoid launchTree;\n`,
-    ],
-    // 패키지 입구 파일이라도 상대 경로로 가리키면 안쪽 파일이다. 패키지 이름으로 가져온다.
-    [
-      "scripts/provider-live.mjs",
-      `import { createConnection } from "../packages/runtime/src/index.ts";\nvoid createConnection;\n`,
-    ],
-    [
-      "scripts/live/chaos-run.mjs",
-      `const runtime = await import("../../packages/runtime/src/index.ts");\nvoid runtime;\n`,
     ],
     [
       ".agents/scripts/run-worker.mjs",
@@ -509,13 +485,18 @@ test("other modules reach runtime and the process package only through their lis
       "apps/server/src/app.ts",
       `import { testFolders } from "@babojubot/process/testing";\nvoid testFolders;\n`,
     ],
+    // 제품 코드는 db의 시험·개발 도구 입구를 가져오지 않는다.
     [
-      "packages/runtime/src/providers/process.ts",
-      `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
+      "apps/server/src/app.ts",
+      `import { createTestDatabase } from "@babojubot/db/testing";\nvoid createTestDatabase;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { withClient } from "@babojubot/db/admin";\nvoid withClient;\n`,
     ],
     [
       "packages/runtime/src/providers/process.ts",
-      `import { stopLeaseHolders } from "../../../process/src/lease.ts";\nvoid stopLeaseHolders;\n`,
+      `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
     ],
   ];
   for (const [place, code] of refused) {
@@ -569,6 +550,113 @@ test("other modules reach runtime and the process package only through their lis
   for (const [place, code] of kept)
     assert.deepEqual(
       await lint(code, place, scopeRule),
+      [],
+      `${place}: ${code}`
+    );
+});
+
+const entryRule = ["product/package-entry-only"];
+
+// 다른 workspace 패키지는 그 package.json의 exports가 내보낸 입구로만, 패키지 이름으로 가져온다(#266). 상대 경로로 다른 패키지
+// 폴더 안을 가리키거나(입구 파일 포함) 내보내지 않은 하위 경로를 가져오지 않는다. 제품 코드·개발 스크립트·시험 모두 같다.
+// 선례: import-x의 no-relative-packages(다른 패키지를 상대 경로로 가져오기)·no-internal-modules(안쪽 모듈 가져오기), Node.js의 exports.
+test("other workspace packages are imported only through their exported entries", async () => {
+  const refused = [
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { attemptAll } from "../../packages/contracts/src/failure.ts";\nvoid attemptAll;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { startServer } from "../apps/server/src/index.ts";\nvoid startServer;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { createConnection } from "../packages/runtime/src/index.ts";\nvoid createConnection;\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `const { withClient } = await import("../../packages/db/src/client.ts");\nvoid withClient;\n`,
+    ],
+    [
+      ".agents/scripts/run-worker.mjs",
+      `export { attemptAll } from "../../packages/contracts/src/failure.ts";\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { openDatabase } from "../../../packages/db/src/client.ts";\nvoid openDatabase;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/process.ts",
+      `import { stopLeaseHolders } from "../../../process/src/lease.ts";\nvoid stopLeaseHolders;\n`,
+    ],
+    [
+      "packages/db/src/client.ts",
+      `import { recordProcess } from "../../runtime/src/providers/recovery.ts";\nvoid recordProcess;\n`,
+    ],
+    // 시험 코드도 같다.
+    [
+      "apps/server/test/support.ts",
+      `import { createTestDatabase } from "../../../packages/db/src/testing.ts";\nvoid createTestDatabase;\n`,
+    ],
+    [
+      "packages/db/src/client.test.ts",
+      `import { planRunStart } from "../../core/src/run.ts";\nvoid planRunStart;\n`,
+    ],
+    // 내보내지 않은 하위 경로.
+    [
+      "apps/web/src/api.ts",
+      `import { attemptAll } from "@babojubot/contracts/src/failure.ts";\nvoid attemptAll;\n`,
+    ],
+    [
+      "apps/server/test/support.ts",
+      `import { createTestDatabase } from "@babojubot/db/src/testing.ts";\nvoid createTestDatabase;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { launchTree } from "@babojubot/runtime/launch";\nvoid launchTree;\n`,
+    ],
+  ];
+  for (const [place, code] of refused) {
+    const [message, ...rest] = await lint(code, place, entryRule);
+    assert.ok(message, `${place}: ${code} not reported`);
+    assert.deepEqual(rest, [], `${place}: ${code}`);
+    // 이유와 대안(패키지 이름과 그 exports의 입구, 입구가 없으면 더하기)을 알려 준다.
+    assert.match(message.message, /@babojubot\//);
+    assert.match(message.message, /exports/);
+    assert.match(message.message, /docs\/architecture\.md/);
+  }
+  const kept = [
+    // 다른 패키지는 이름과 내보낸 입구로.
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { attemptAll } from "@babojubot/contracts";\nimport { removeFolder } from "@babojubot/process/remove-folder";\nvoid [attemptAll, removeFolder];\n`,
+    ],
+    [
+      "apps/server/test/support.ts",
+      `import { createTestDatabase } from "@babojubot/db/testing";\nvoid createTestDatabase;\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { withClient } from "@babojubot/db/admin";\nvoid withClient;\n`,
+    ],
+    // 같은 패키지 안의 상대 경로와 패키지 밖 라이브러리.
+    [
+      "packages/db/src/client.test.ts",
+      `import { openDatabase } from "./client.ts";\nimport { eq } from "drizzle-orm";\nvoid [openDatabase, eq];\n`,
+    ],
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { createConnection } from "../index.ts";\nvoid createConnection;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { withCheckServer } from "./live/check-server.mjs";\nvoid withCheckServer;\n`,
+    ],
+  ];
+  for (const [place, code] of kept)
+    assert.deepEqual(
+      await lint(code, place, entryRule),
       [],
       `${place}: ${code}`
     );
