@@ -141,6 +141,15 @@ export function originOf(scope, node, depth = 0) {
     }
     case "Identifier": {
       const variable = variableIn(scope, node.name);
+      if (!variable) {
+        // 선언 없는 전역. 어디서든 대입했으면 무엇을 담는지 따라가지 않는다.
+        let global = scope;
+        while (global.upper) global = global.upper;
+        const written = global.through.some(
+          (ref) => ref.identifier.name === node.name && ref.isWrite()
+        );
+        return written ? undefined : { global: node.name, path: [] };
+      }
       return originOfVariable(variable, node.name, depth + 1);
     }
     default:
