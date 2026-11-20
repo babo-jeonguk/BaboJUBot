@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import path from "node:path";
+import { combineVisitors, importSites } from "./eslint-imports.mjs";
 import {
   skippedCleanupIn,
   skippedSyncCleanupIn,
@@ -143,16 +144,13 @@ const syncCommandTimeout = {
   create(context) {
     /** 이 파일에서 child_process의 동기 실행 함수를 가리키는 지역 이름 → 원래 이름. */
     const imported = new Map();
-    return {
-      ImportDeclaration(node) {
-        if (!childProcess.has(node.source.value)) return;
-        for (const specifier of node.specifiers)
-          if (
-            specifier.type === "ImportSpecifier" &&
-            syncLaunchers.has(specifier.imported.name)
-          )
-            imported.set(specifier.local.name, specifier.imported.name);
-      },
+    const sites = importSites((site) => {
+      if (!childProcess.has(site.source)) return;
+      for (const name of site.names)
+        if (name.local && syncLaunchers.has(name.imported))
+          imported.set(name.local, name.imported);
+    });
+    return combineVisitors(sites, {
       CallExpression(node) {
         const { callee } = node;
         const name =
@@ -170,7 +168,7 @@ const syncCommandTimeout = {
         if (!killsAtTimeout(options))
           context.report({ node, messageId: "soft", data: { name } });
       },
-    };
+    });
   },
 };
 
@@ -463,14 +461,12 @@ const noIoInUnreadable = {
           if (item && typeof item.type === "string") inspect(item);
       }
     };
-    return {
-      ImportSpecifier(node) {
-        const imported =
-          node.imported.type === "Identifier"
-            ? node.imported.name
-            : node.imported.value;
-        if (imported === "orIfUnreadable") names.add(node.local.name);
-      },
+    const sites = importSites((site) => {
+      for (const name of site.names)
+        if (name.local && name.imported === "orIfUnreadable")
+          names.add(name.local);
+    });
+    return combineVisitors(sites, {
       CallExpression(node) {
         const { callee } = node;
         const called =
@@ -487,7 +483,7 @@ const noIoInUnreadable = {
         if (read.async) context.report({ node: read, messageId: "async" });
         inspect(read.body);
       },
-    };
+    });
   },
 };
 
@@ -630,51 +626,29 @@ const noDirectLaunch = {
       module === crossSpawn
         ? name === "spawn" || name === "default"
         : asyncLaunchers.has(name);
-    const reExport = (node) => {
-      const module = launchModule(node.source?.value);
-      if (!module) return;
-      if (node.type === "ExportAllDeclaration")
-        return report(node, `${node.source.value}의 export *`);
-      for (const specifier of node.specifiers)
-        if (banned(module, specifier.local.name ?? specifier.local.value))
-          report(specifier, `${node.source.value}의 ${specifier.local.name}`);
-    };
-    return {
-      ImportDeclaration(node) {
-        if (node.importKind === "type") return;
-        const module = launchModule(node.source.value);
-        if (!module) return;
-        for (const specifier of node.specifiers) {
-          if (specifier.importKind === "type") continue;
-          if (specifier.type === "ImportSpecifier") {
-            const name = specifier.imported.name ?? specifier.imported.value;
-            if (banned(module, name))
-              report(specifier, `${node.source.value}의 ${name}`);
-          } else modules.set(specifier.local.name, module);
-        }
-      },
-      ExportNamedDeclaration: reExport,
-      ExportAllDeclaration: reExport,
-      ImportExpression(node) {
-        const module = launchModule(node.source.value);
-        if (module)
-          report(node, `${node.source.value}의 dynamic import`, "loaded");
-      },
+    const sites = importSites((site) => {
+      const module = launchModule(site.source);
+      if (!module || site.kind === "resolve" || site.typeOnly) return;
+      if (site.kind === "dynamic")
+        return report(site.node, `${site.source}의 dynamic import`, "loaded");
+      if (site.kind === "require")
+        return report(site.node, `${site.loader}("${site.source}")`, "loaded");
+      if (site.kind === "export" && site.names.some((n) => n.imported === "*"))
+        return report(site.node, `${site.source}의 export *`);
+      for (const name of site.names) {
+        if (name.typeOnly) continue;
+        if (
+          site.kind === "import" &&
+          (name.imported === "*" || name.imported === "default")
+        )
+          modules.set(name.local, module);
+        else if (banned(module, name.imported))
+          report(name.node, `${site.source}의 ${name.imported}`);
+      }
+    });
+    return combineVisitors(sites, {
       CallExpression(node) {
         const { callee } = node;
-        const [first] = node.arguments;
-        const loader =
-          callee.type === "Identifier"
-            ? callee.name
-            : callee.type === "MemberExpression"
-              ? propertyName(callee)
-              : undefined;
-        if (
-          (loader === "require" || loader === "getBuiltinModule") &&
-          first?.type === "Literal" &&
-          launchModule(first.value)
-        )
-          return report(node, `${loader}("${first.value}")`, "loaded");
         // cross-spawn의 기본 함수 자체를 부른다(`spawn(...)`).
         if (
           callee.type === "Identifier" &&
@@ -691,7 +665,7 @@ const noDirectLaunch = {
         else if (banned(module, name))
           report(node, `${node.object.name}.${name}`);
       },
-    };
+    });
   },
 };
 
@@ -732,18 +706,17 @@ const boundedCommand = {
       }
       return undefined;
     };
-    return {
-      ImportDeclaration(node) {
-        if (!childProcess.has(node.source.value) || node.importKind === "type")
-          return;
-        for (const specifier of node.specifiers) {
-          if (specifier.importKind === "type") continue;
-          if (specifier.type === "ImportSpecifier") {
-            const name = specifier.imported.name ?? specifier.imported.value;
-            if (asyncLaunchers.has(name)) named.set(specifier.local.name, name);
-          } else modules.add(specifier.local.name);
-        }
-      },
+    const sites = importSites((site) => {
+      if (!childProcess.has(site.source) || site.typeOnly) return;
+      for (const name of site.names) {
+        if (name.typeOnly || !name.local) continue;
+        if (name.imported === "*" || name.imported === "default")
+          modules.add(name.local);
+        else if (asyncLaunchers.has(name.imported))
+          named.set(name.local, name.imported);
+      }
+    });
+    return combineVisitors(sites, {
       CallExpression(node) {
         const name = launcherOf(node.callee);
         if (!name) return;
@@ -756,14 +729,15 @@ const boundedCommand = {
         if (node.arguments.some(hasTimeout))
           context.report({ node, messageId: "timeout", data: { name } });
       },
-    };
+    });
   },
 };
 
 /**
- * 다른 영역이 runtime·프로세스 패키지에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
+ * 다른 영역이 runtime·프로세스 패키지·db에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
  * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 패키지 자신의 파일은 보지 않는다. 다른 패키지
- * 안을 상대 경로로 가리키는 것과 내보내지 않은 하위 경로는 product/package-entry-only가 본다.
+ * 안을 상대 경로로 가리키는 것과 내보내지 않은 하위 경로는 product/package-entry-only가 본다. 가져오는 자리는 공용 판정
+ * (scripts/eslint-imports.mjs)이 정한다: import·export·dynamic import·`require`·createRequire가 만든 함수·`.resolve`.
  */
 const importScopeAlternatives =
   "프로세스 띄우기·끄기와 짧은 명령은 @babojubot/process(launchTree·runTree·runCommand), 시험의 정리 도움은 @babojubot/process/test-cleanup·/remove-folder·/lifelines·/testing에 있습니다. 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 씁니다. 다른 곳은 띄울 때 launchTree가 돌려준 stop()으로 끕니다(docs/architecture.md 패키지 구성).";
@@ -816,14 +790,7 @@ const packageImportScope = {
         data: { source, why, name: found.name, allowed: allowed.join(", ") },
       });
     };
-    return {
-      ImportDeclaration: (node) => check(node, node.source.value),
-      ExportNamedDeclaration: (node) =>
-        node.source && check(node, node.source.value),
-      ExportAllDeclaration: (node) => check(node, node.source.value),
-      ImportExpression: (node) =>
-        node.source.type === "Literal" && check(node, node.source.value),
-    };
+    return importSites((site) => check(site.node, site.source));
   },
 };
 
@@ -853,9 +820,9 @@ const entryNames = (pkg) =>
  * 다른 workspace 패키지는 그 package.json의 `exports`가 내보낸 입구로만, 패키지 이름으로 가져온다(#266). 다른 패키지 폴더 안을
  * 가리키는 상대 경로(입구 파일 포함)와 내보내지 않은 하위 경로를 막는다. 같은 패키지 안의 상대 경로와 저장소 밖 라이브러리는 보지
  * 않는다. 선례: import-x `no-relative-packages`(다른 패키지를 상대 경로로)·`no-internal-modules`(안쪽 모듈), Node.js `exports`
- * (내보내지 않은 하위 경로는 ERR_PACKAGE_PATH_NOT_EXPORTED). 문자열 경로의 import·export·dynamic import와 `require("…")`·
- * `require.resolve("…")`, `createRequire(…)`가 만든 함수의 `("…")`·`.resolve("…")`를 본다(상대 경로는 이 파일 기준으로 푼다).
- * 계산한 경로는 보지 않는다.
+ * (내보내지 않은 하위 경로는 ERR_PACKAGE_PATH_NOT_EXPORTED). 가져오는 자리는 공용 판정(scripts/eslint-imports.mjs)이 정한다:
+ * import·export·dynamic import·`require`·createRequire가 만든 함수·`.resolve`(상대 경로는 이 파일 기준으로 푼다). 계산한 경로는
+ * 보지 않는다.
  */
 const packageEntryOnly = {
   meta: {
@@ -909,44 +876,7 @@ const packageEntryOnly = {
           data: { source, name: pkg.name, entries: entryNames(pkg) },
         });
     };
-    /** `createRequire(…)` 또는 `x.createRequire(…)` 호출인가. */
-    const isCreateRequire = (node) =>
-      node?.type === "CallExpression" &&
-      (node.callee.type === "Identifier"
-        ? node.callee.name === "createRequire"
-        : node.callee.type === "MemberExpression" &&
-          !node.callee.computed &&
-          node.callee.property.name === "createRequire");
-    /** createRequire가 만든 함수를 담은 이름. 전역 `require`도 같은 함수로 본다. */
-    const loaders = new Set(["require"]);
-    /** 모듈을 불러오는 함수(`require`, createRequire가 만든 함수)인가. */
-    const isLoader = (callee) =>
-      (callee.type === "Identifier" && loaders.has(callee.name)) ||
-      isCreateRequire(callee);
-    return {
-      ImportDeclaration: (node) => check(node, node.source.value),
-      ExportNamedDeclaration: (node) =>
-        node.source && check(node, node.source.value),
-      ExportAllDeclaration: (node) => check(node, node.source.value),
-      ImportExpression: (node) =>
-        node.source.type === "Literal" && check(node, node.source.value),
-      VariableDeclarator(node) {
-        if (node.id.type === "Identifier" && isCreateRequire(node.init))
-          loaders.add(node.id.name);
-      },
-      // 불러오기(`load("…")`)와 찾기(`load.resolve("…")`)의 문자열 경로.
-      CallExpression(node) {
-        const [first] = node.arguments;
-        if (first?.type !== "Literal") return;
-        const { callee } = node;
-        const resolves =
-          callee.type === "MemberExpression" &&
-          !callee.computed &&
-          callee.property.name === "resolve" &&
-          isLoader(callee.object);
-        if (isLoader(callee) || resolves) check(node, first.value);
-      },
-    };
+    return importSites((site) => check(site.node, site.source));
   },
 };
 
@@ -1273,7 +1203,10 @@ const groupFile = "packages/process/src/group";
  * 띄운 방법을 모르는 쪽이 빌려 쓰면 Windows에서 아무것도 끄지 않고 성공하거나 새 세션으로 나간 자식을 놓친다(#262).
  * - `outside: true`(프로세스 패키지 밖): 어디서든 그 두 이름을 가져오거나 다시 내보내는 것. 그 입구(@babojubot/process/recovery)를
  *   가져오는 것 자체는 product/package-import-scope가 본다.
- * - `outside: false`(프로세스 패키지 안, 공용 실행·복구 입구 밖): group.ts에서 그 두 이름을 가져오거나 다시 내보내는 것과 `export *`.
+ * - `outside: false`(프로세스 패키지 안, 공용 실행·복구 입구 밖): group.ts에서 그 두 이름을 가져오거나 다시 내보내는 것과 그 모듈
+ *   객체(`export *`·`import * as`·통째로 받은 `require`).
+ * 가져온 이름은 공용 판정(scripts/eslint-imports.mjs)이 정한다: import·re-export와 dynamic import·`require`·createRequire가 만든
+ * 함수의 결과를 구조 분해한 이름.
  */
 const noGroupStopImport = {
   meta: {
@@ -1308,35 +1241,30 @@ const noGroupStopImport = {
         .replace(/\.(ts|js|mjs)$/, "")
         .endsWith(groupFile);
     };
-    const check = (node, specifiers = []) => {
-      const fromGroup = isGroup(node.source?.value);
-      if (node.type === "ExportAllDeclaration" && fromGroup)
-        return context.report({
-          node,
-          messageId: "half",
-          data: { name: "group.ts의 export *" },
-        });
-      for (const specifier of specifiers) {
-        const name =
-          specifier.type === "ImportSpecifier"
-            ? (specifier.imported.name ?? specifier.imported.value)
-            : specifier.type === "ExportSpecifier"
-              ? specifier.local.name
-              : undefined;
-        if (groupStoppers.has(name) && (outside || fromGroup))
+    return importSites((site) => {
+      if (site.kind === "resolve") return;
+      const fromGroup = isGroup(site.source);
+      for (const name of site.names) {
+        // 모듈 객체를 통째로 받거나 다시 내보내면 그 안의 그룹 끄기도 함께 나간다.
+        if (name.imported === "*" && fromGroup)
           context.report({
-            node: specifier,
+            node: name.node,
             messageId: "half",
-            data: { name },
+            data: {
+              name:
+                site.kind === "export"
+                  ? "group.ts의 export *"
+                  : "group.ts의 모듈 객체",
+            },
+          });
+        else if (groupStoppers.has(name.imported) && (outside || fromGroup))
+          context.report({
+            node: name.node,
+            messageId: "half",
+            data: { name: name.imported },
           });
       }
-    };
-    return {
-      ImportDeclaration: (node) => check(node, node.specifiers),
-      ExportNamedDeclaration: (node) =>
-        node.source && check(node, node.specifiers),
-      ExportAllDeclaration: (node) => check(node),
-    };
+    });
   },
 };
 
@@ -1382,8 +1310,8 @@ function manifestFor(file) {
  * 가져온 패키지는 그 코드가 속한 package.json에 선언한다. 제품 코드는 실행 의존성(`dependencies`·`peerDependencies`·
  * `optionalDependencies`)에 있어야 한다: devDependencies에만 있으면 프로덕션 설치(`pnpm install --prod`)에서 그 가져오기가 깨진다
  * (#264 리뷰 STD-2). 타입만 가져오는 것(`import type`)은 실행에 남지 않으므로 devDependencies도 된다. 개발 스크립트와 시험은
- * `allowDev`로 devDependencies까지 받는다. 정적 import·re-export·문자열 dynamic import를 본다.
- * 알려진 한계: 계산한 이름의 dynamic import와 `createRequire`로 부른 `require`는 보지 않는다(runtime의 실행 경계 lint가 막는 길은 거기서 막는다).
+ * `allowDev`로 devDependencies까지 받는다. 가져오는 자리는 공용 판정(scripts/eslint-imports.mjs)이 정한다: 정적 import·re-export·
+ * 문자열 dynamic import·`require`·createRequire가 만든 함수·`.resolve`. 알려진 한계: 계산한 경로는 보지 않는다.
  */
 const noUndeclaredImport = {
   meta: {
@@ -1431,25 +1359,7 @@ const noUndeclaredImport = {
         data: { name, manifest: where },
       });
     };
-    return {
-      ImportDeclaration(node) {
-        check(
-          node.source,
-          node.importKind === "type" ||
-            (node.specifiers.length > 0 &&
-              node.specifiers.every((s) => s.importKind === "type"))
-        );
-      },
-      ExportNamedDeclaration(node) {
-        if (node.source) check(node.source, node.exportKind === "type");
-      },
-      ExportAllDeclaration(node) {
-        check(node.source, node.exportKind === "type");
-      },
-      ImportExpression(node) {
-        check(node.source, false);
-      },
-    };
+    return importSites((site) => check(site.sourceNode, site.typeOnly));
   },
 };
 

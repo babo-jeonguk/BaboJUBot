@@ -1,5 +1,10 @@
 // 시험 코드 전용 lint 규칙. 선택자만으로는 판단할 수 없는 규칙(값이 어디로 가는지, 타이머가 무엇을 하는지)을 둔다.
 // 설정은 eslint.config.js의 `testFiles` 범위에 걸고, 회귀 시험은 scripts/lint-rules.test.mjs가 맡는다.
+import {
+  combineVisitors,
+  importOfBinding,
+  importSites,
+} from "./eslint-imports.mjs";
 
 const clocks = new Set(["Date", "performance"]);
 // 실제 시계를 읽는 `Date.now()`·`performance.now()`.
@@ -398,17 +403,16 @@ const noFixedTimeWait = {
         parent.arguments.slice(1).some(namesAbort)
       );
     };
-    return {
+    const sites = importSites((site) => {
+      if (!timerModules.test(site.source)) return;
+      for (const name of site.names) if (name.local) timers.add(name.local);
+    });
+    return combineVisitors(sites, {
       ForStatement: loop,
       ForOfStatement: loop,
       ForInStatement: loop,
       Program: (node) => consecutive(node.body),
       BlockStatement: (node) => consecutive(node.body),
-      ImportDeclaration(node) {
-        if (!timerModules.test(node.source.value)) return;
-        for (const specifier of node.specifiers)
-          timers.add(specifier.local.name);
-      },
       CallExpression(node) {
         const { callee } = node;
         if (takesTimedSignal(node) && expectsAbort(node))
@@ -442,7 +446,7 @@ const noFixedTimeWait = {
           return;
         if (onlyWakes(node.arguments[0], resolve.name)) report(node);
       },
-    };
+    });
   },
 };
 
@@ -797,19 +801,11 @@ function bindingOf(sourceCode, identifier) {
   return undefined;
 }
 
-/** 가져온 변수면 그 출처(`{ source, imported }`). imported는 가져온 이름, 기본 가져오기는 "default", 이름공간은 "*". */
-function importOf(variable) {
-  const def = variable?.defs[0];
-  if (def?.type !== "ImportBinding") return undefined;
-  const specifier = def.node;
-  const imported =
-    specifier.type === "ImportDefaultSpecifier"
-      ? "default"
-      : specifier.type === "ImportNamespaceSpecifier"
-        ? "*"
-        : (specifier.imported.name ?? specifier.imported.value);
-  return { source: def.parent.source.value, imported };
-}
+/**
+ * 가져온 변수면 그 출처(`{ source, imported }`). imported는 가져온 이름, 기본 가져오기는 "default", 이름공간은 "*". 판정은 제품 규칙과
+ * 같은 공용 가져오기 판정(scripts/eslint-imports.mjs)이 한다: import와 require·createRequire가 만든 함수·dynamic import에서 꺼낸 이름.
+ */
+const importOf = importOfBinding;
 
 /** `identifier`가 `modules`에서 가져온 `names` 중 하나인가(다른 이름으로 가져와도). */
 function importedFrom(sourceCode, identifier, modules, names) {
