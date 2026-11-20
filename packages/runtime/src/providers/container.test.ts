@@ -29,6 +29,7 @@ import {
   createDockerEnvironment,
   type ContainerSettings,
   removeContainer,
+  runDocker,
 } from "./container.ts";
 import { attachedRelayHub, manualClock, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
@@ -2589,6 +2590,35 @@ describe("docker failures during container cleanup", () => {
     );
   });
 
+  // 시한·출력 상한에 닿아 끈 것은 원인이다. "끝남 코드 없음"으로 접지 않는다(#264 외부 리뷰 4회차 STD-3).
+  it("keeps why a docker command was stopped when it stays silent past its limit", async () => {
+    const silent = {
+      ...failing,
+      docker: [process.execPath, "-e", "setInterval(() => {}, 1000);"] as const,
+    };
+    await expect(runDocker(silent, ["ps"], 200)).resolves.toMatchObject({
+      code: null,
+      stopped: "limit",
+      stderr: "",
+    });
+  });
+
+  it("fails leftover cleanup with the output limit as the cause when docker prints too much", async () => {
+    const flooding = {
+      ...failing,
+      docker: [
+        process.execPath,
+        "-e",
+        `process.stdout.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000);`,
+      ] as const,
+    };
+    await expect(
+      createDockerEnvironment(flooding).removeOrphans()
+    ).rejects.toThrow(
+      "leftover containers could not be listed (stopped: output)"
+    );
+  });
+
   it("leaves why a container could not be removed", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
@@ -2603,9 +2633,10 @@ describe("docker failures during container cleanup", () => {
 
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 확인이 여는 중계의 파일 소켓은 Linux·macOS에서 본다.
 describe.skipIf(process.platform === "win32")("the isolation probe", () => {
-  it("names each failure the container reported from the original error's code and name", async () => {
+  // 확인하지 못한 검사는 "막혔다"가 아니다. 결과를 모를 때 안전한 쪽은 확인 불가다(#264 외부 리뷰 4회차 SPEC-3).
+  it("reports the checks it could not complete as unverified and names each failure from the original error's code and name", async () => {
     const root = await folders.make("babojubot-probe-");
-    // 컨테이너 안 확인 스크립트 대신 정해진 결과를 내는 프로그램. 확인 스크립트는 원래 오류의 code·name만 보낸다.
+    // 컨테이너 안 확인 스크립트 대신 정해진 결과를 내는 프로그램. 확인 스크립트는 원래 오류의 code·name(답이 없으면 기다린 시간)만 보낸다.
     const answer = path.join(root, "answer.mjs");
     await writeFile(
       answer,
@@ -2618,6 +2649,7 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
           failures: [
             { probe: "tools", code: "ECONNREFUSED", name: "Error" },
             { probe: "proxied", name: "TypeError" },
+            { probe: "proxied", timeoutMs: 5000 },
             { probe: "direct", code: 7, name: "RangeError" },
           ],
           proxyEnv: true,
@@ -2647,10 +2679,12 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
       reached: [],
       proxied: [],
       toolsReached: false,
+      unverified: ["tools", "proxied", "direct"],
     });
     expect(warned.mock.calls.map(([line]) => line)).toEqual([
       "[provider] the isolation probe's tools check failed (ECONNREFUSED)",
       "[provider] the isolation probe's proxied check failed (TypeError)",
+      "[provider] the isolation probe's proxied check failed (no answer within 5000 ms)",
       "[provider] the isolation probe's direct check failed (RangeError)",
     ]);
   });

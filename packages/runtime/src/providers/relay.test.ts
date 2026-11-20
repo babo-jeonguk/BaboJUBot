@@ -536,6 +536,32 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(status).toBe(400);
   });
 
+  // 닫기 콜백의 실패는 거절로 드러낸다(CODING_STANDARDS.md#제품-코드). 남기기만 하고 "닫힘"으로 끝내지 않으며, 폴더 지우기는 그래도 한다
+  // (#264 외부 리뷰 4회차, 실패를 기록하고 성공 쪽으로 진행하는 모양).
+  it("fails its close with the cause when a relay server does not close, after still removing its folder", async () => {
+    const { relays } = hub();
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const close = net.Server.prototype.close;
+    const failing = vi
+      .spyOn(net.Server.prototype, "close")
+      .mockImplementationOnce(function (
+        this: net.Server,
+        callback?: (error?: Error) => void
+      ) {
+        return close.call(this, () =>
+          callback?.(
+            Object.assign(new Error("close failed"), { code: "EBUSY" })
+          )
+        );
+      });
+    onTestFinished(() => failing.mockRestore());
+    await expect(relay.close()).rejects.toThrow(
+      "a relay server did not close (EBUSY)"
+    );
+    expect(existsSync(relay.directory)).toBe(false);
+  });
+
   it("closes its tunnels and sockets when the run ends, so nothing can reuse them", async () => {
     const target = await fixture("echo");
     const { relays } = hub();

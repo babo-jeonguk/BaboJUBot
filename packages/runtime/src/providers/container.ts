@@ -811,6 +811,7 @@ export function createDockerEnvironment(
           reached: value.reached as { host: string; port: number }[],
           proxied: value.proxied as { host: string; port: number }[],
           toolsReached: value.toolsReached && value.proxyEnv,
+          unverified: [],
         };
       } finally {
         await relay.close();
@@ -855,6 +856,11 @@ export type IsolationProbeResult = {
   proxied: { host: string; port: number }[];
   /** 중계를 거쳐 조직 도구에 닿았고 이미지의 시작 프로그램이 프록시 환경을 정했는지. */
   toolsReached: boolean;
+  /**
+   * 끝까지 확인하지 못한 검사(`direct`·`proxied`·`tools`)의 이름. 예상한 차단(닿지 못한 연결)은 들지 않는다. 하나라도 있으면
+   * 결과를 모르는 것이므로 안전하다고 보지 않는다(fail closed).
+   */
+  unverified: string[];
 };
 /** 격리 실행의 Docker 환경. 서버가 안전 확인·남은 컨테이너 정리에 쓴다. */
 export type DockerEnvironment = {
