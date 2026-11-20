@@ -8,10 +8,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  hasErrorCode,
-  orIfMissing,
-} from "../packages/contracts/src/failure.ts";
+import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
 
 const systems = ["linux", "macos", "windows"];
 const root = fileURLToPath(new URL("..", import.meta.url));

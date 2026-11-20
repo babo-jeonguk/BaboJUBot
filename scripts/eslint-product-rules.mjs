@@ -853,7 +853,9 @@ const entryNames = (pkg) =>
  * 다른 workspace 패키지는 그 package.json의 `exports`가 내보낸 입구로만, 패키지 이름으로 가져온다(#266). 다른 패키지 폴더 안을
  * 가리키는 상대 경로(입구 파일 포함)와 내보내지 않은 하위 경로를 막는다. 같은 패키지 안의 상대 경로와 저장소 밖 라이브러리는 보지
  * 않는다. 선례: import-x `no-relative-packages`(다른 패키지를 상대 경로로)·`no-internal-modules`(안쪽 모듈), Node.js `exports`
- * (내보내지 않은 하위 경로는 ERR_PACKAGE_PATH_NOT_EXPORTED). 문자열 경로의 import·export·dynamic import만 본다.
+ * (내보내지 않은 하위 경로는 ERR_PACKAGE_PATH_NOT_EXPORTED). 문자열 경로의 import·export·dynamic import와 `require("…")`·
+ * `require.resolve("…")`, `createRequire(…)`가 만든 함수의 `("…")`·`.resolve("…")`를 본다(상대 경로는 이 파일 기준으로 푼다).
+ * 계산한 경로는 보지 않는다.
  */
 const packageEntryOnly = {
   meta: {
@@ -907,6 +909,20 @@ const packageEntryOnly = {
           data: { source, name: pkg.name, entries: entryNames(pkg) },
         });
     };
+    /** `createRequire(…)` 또는 `x.createRequire(…)` 호출인가. */
+    const isCreateRequire = (node) =>
+      node?.type === "CallExpression" &&
+      (node.callee.type === "Identifier"
+        ? node.callee.name === "createRequire"
+        : node.callee.type === "MemberExpression" &&
+          !node.callee.computed &&
+          node.callee.property.name === "createRequire");
+    /** createRequire가 만든 함수를 담은 이름. 전역 `require`도 같은 함수로 본다. */
+    const loaders = new Set(["require"]);
+    /** 모듈을 불러오는 함수(`require`, createRequire가 만든 함수)인가. */
+    const isLoader = (callee) =>
+      (callee.type === "Identifier" && loaders.has(callee.name)) ||
+      isCreateRequire(callee);
     return {
       ImportDeclaration: (node) => check(node, node.source.value),
       ExportNamedDeclaration: (node) =>
@@ -914,6 +930,22 @@ const packageEntryOnly = {
       ExportAllDeclaration: (node) => check(node, node.source.value),
       ImportExpression: (node) =>
         node.source.type === "Literal" && check(node, node.source.value),
+      VariableDeclarator(node) {
+        if (node.id.type === "Identifier" && isCreateRequire(node.init))
+          loaders.add(node.id.name);
+      },
+      // 불러오기(`load("…")`)와 찾기(`load.resolve("…")`)의 문자열 경로.
+      CallExpression(node) {
+        const [first] = node.arguments;
+        if (first?.type !== "Literal") return;
+        const { callee } = node;
+        const resolves =
+          callee.type === "MemberExpression" &&
+          !callee.computed &&
+          callee.property.name === "resolve" &&
+          isLoader(callee.object);
+        if (isLoader(callee) || resolves) check(node, first.value);
+      },
     };
   },
 };
