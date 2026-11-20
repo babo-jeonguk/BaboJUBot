@@ -221,6 +221,11 @@ export class IsolationGate {
     }
   }
 
+  /** 지난 실행이 남긴 이 제품 폴더의 컨테이너를 지운다. Docker 환경이 없으면 하지 않는다. 지우지 못하면 던진다. */
+  async removeOrphans(): Promise<void> {
+    await this.#docker?.removeOrphans();
+  }
+
   /** 관문을 닫는다. 진행 중인 확인은 격리 환경 없음으로 끝나고 그 뒤로는 확인하지 않는다. */
   async close(): Promise<void> {
     this.#lifetime.abort();

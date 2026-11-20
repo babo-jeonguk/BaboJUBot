@@ -1351,8 +1351,8 @@ export async function startServer({
     // Windows에서 실행 시도의 프로그램을 묶음에 넣어 띄우는 실행기를 준비한다(#205). 준비하지 못해도 서버는 뜨지만, 실행 시도는
     // 띄우지 않고 그 이유로 실패한다(#262 사용자 결정).
     await prepareJobObjectLauncher(dataDir);
-    // 지난 실행이 남긴 이 제품 폴더의 컨테이너를 실행 시도를 시작하기 전에 지운다. Docker가 없으면 건너뛴다.
-    await isolation?.docker
+    // 지난 실행이 남긴 이 제품 폴더의 컨테이너를 실행 시도를 시작하기 전에 지운다. Docker 환경이 없으면 건너뛴다.
+    await gate
       .removeOrphans()
       .catch((error: unknown) =>
         console.warn("[isolation] leftover containers were not removed", error)

@@ -139,6 +139,27 @@ describe("IsolationGate", () => {
     await off.close();
   });
 
+  // Windows에서는 격리 실행이 컨테이너를 띄우지 않으므로 지울 남은 컨테이너도 없다. 시작 정리도 Docker를 부르지 않는다
+  // (docs/providers.md 격리 실행, 안전 확인과 같은 규칙). Docker가 없는 Windows에서 시작마다 정리 실패를 남기던 일이 있었다.
+  it.each([
+    ["win32", 0],
+    ["linux", 1],
+  ] as const)(
+    "on %s asks Docker to remove leftover containers %i time(s) at start",
+    async (platform, times) => {
+      const removeOrphans = vi.fn(async () => {});
+      gate = new IsolationGate({
+        docker: { ...unresponsive, removeOrphans },
+        protectedPorts: () => [5432],
+        readIsolated: async () => true,
+        hostUrl: () => "http://127.0.0.1:1",
+        platform,
+      });
+      await gate.removeOrphans();
+      expect(removeOrphans).toHaveBeenCalledTimes(times);
+    }
+  );
+
   // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 격리를 켜면 Docker를 부르지 않고
   // 격리 환경 없음으로 두며, 이 컴퓨터로 대신 돌리지 않는다(PR #131 리뷰 3회차 P6).
   it("treats isolation as unavailable on Windows without asking Docker, and starts no run", async () => {
