@@ -28,10 +28,8 @@ let lifelines: Lifelines;
 let count = 0;
 /** 시험마다 겹치지 않는 연결 이름. */
 const unique = (label: string) => `${label}-${++count}`;
-/** 시험이 직접 띄운 프로그램. 핸들로 끄고 끝날 때까지 기다린다. */
-const spawned: ChildProcess[] = [];
-/** 시험이 직접 띄운 프로그램의 시작 실패. 정리 때 실패로 알린다. */
-const startFailures = new WeakMap<ChildProcess, Error>();
+/** 시험이 직접 띄운 프로그램의 정리. 핸들로 끄고 끝날 때까지 기다린다. */
+const spawned: (() => Promise<void>)[] = [];
 let dataDir = "";
 
 const temp = async (name: string) => {
@@ -70,20 +68,22 @@ function spawnTracked(
   options: Parameters<typeof spawn>[2]
 ) {
   const child = spawn(command, args, options);
+  /** 이 프로그램의 시작 실패. 정리 때 실패로 알린다. */
+  let startFailure: Error | undefined;
   child.on("error", (error) => {
-    if (child.pid === undefined) startFailures.set(child, error);
+    if (child.pid === undefined) startFailure = error;
   });
-  spawned.push(child);
+  spawned.push(() => stopSpawned(child, startFailure));
   return child;
 }
 /**
  * 시험이 직접 띄운 프로그램을 끄고 끝날 때까지 기다린다. 끝남은 `exit`로만 인정한다. `error`(끄지 못함)나 시한 초과는 실패다.
  * 시작하지 못한 프로그램은 `exit`가 오지 않고 끌 것도 없으므로 기다리지 않고 그 시작 실패를 알린다.
  */
-async function stopSpawned(child: ChildProcess) {
+async function stopSpawned(child: ChildProcess, startFailure?: Error) {
   if (child.pid === undefined)
     throw new Error("a process the test started could not start", {
-      cause: startFailures.get(child),
+      cause: startFailure,
     });
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, "exit", { signal: AbortSignal.timeout(10_000) });
@@ -201,7 +201,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
   afterEach(async () => {
     await attemptAll(
       [
-        ...spawned.splice(0).map((child) => () => stopSpawned(child)),
+        ...spawned.splice(0),
         // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
         ...attempts.splice(0).map((attempt) => async () => {
           attempt.end();

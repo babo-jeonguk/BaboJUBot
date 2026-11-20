@@ -122,70 +122,62 @@ async function serveAndKill(label) {
     stderrTail = (stderrTail + String(chunk)).slice(-4000);
   });
 
-  let failure;
-  try {
-    while (!readyUrl) {
-      if (spawnError)
-        throw new Error(
-          `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
-        );
-      if (hasExited)
-        throw new Error(
-          `${label}: server exited before it was ready (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
-        );
-      await delay(50);
-    }
-
-    let overview;
-    // 마지막 시도가 왜 답을 받지 못했는지. 시한에 닿아 멈출 때 원인으로 함께 알린다.
-    let lastAttempt = "no attempt yet";
-    while (overview === undefined) {
-      // 멈춤 문구는 다른 단계와 같은 "단계: 이유"로 시작하고, 마지막 시도가 답을 받지 못한 원인을 뒤에 붙인다.
-      if (stop.reason)
-        throw new Error(
-          `${label}: ${stop.reason} (last /api/overview attempt: ${lastAttempt})`
-        );
-      if (spawnError)
-        throw new Error(
-          `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
-        );
-      if (hasExited)
-        throw new Error(
-          `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
-        );
-      // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
-      overview = await continueAfterFailure(
-        async () => {
-          const response = await fetch(`${readyUrl}/api/overview`, {
-            signal: AbortSignal.timeout(fetchTimeoutMs),
-          });
-          lastAttempt = `HTTP ${response.status}`;
-          return response.ok ? await response.json() : undefined;
-        },
-        (error) => {
-          lastAttempt = failureCode(error.cause ?? error);
+  // 준비를 기다리고, 그 성패와 상관없이 서버를 강제로 끝내고 그 끝을 확인한다. 둘 다 실패하면 둘 다 알린다.
+  await attemptAll(
+    [
+      async () => {
+        while (!readyUrl) {
+          if (spawnError)
+            throw new Error(
+              `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
+            );
+          if (hasExited)
+            throw new Error(
+              `${label}: server exited before it was ready (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
+            );
+          await delay(50);
         }
-      );
-      if (overview === undefined) await delay(250);
-    }
-    console.log(
-      `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
-    );
-  } catch (error) {
-    failure = error;
-  }
-  try {
-    await crashServer(server);
-  } catch (stopError) {
-    if (failure) {
-      console.error(
-        `${label}: could not confirm the server ended: ${stopError instanceof Error ? stopError.message : stopError}`
-      );
-    } else {
-      throw stopError;
-    }
-  }
-  if (failure) throw failure;
+
+        let overview;
+        // 마지막 시도가 왜 답을 받지 못했는지. 시한에 닿아 멈출 때 원인으로 함께 알린다.
+        let lastAttempt = "no attempt yet";
+        while (overview === undefined) {
+          // 멈춤 문구는 다른 단계와 같은 "단계: 이유"로 시작하고, 마지막 시도가 답을 받지 못한 원인을 뒤에 붙인다.
+          if (stop.reason)
+            throw new Error(
+              `${label}: ${stop.reason} (last /api/overview attempt: ${lastAttempt})`
+            );
+          if (spawnError)
+            throw new Error(
+              `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
+            );
+          if (hasExited)
+            throw new Error(
+              `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
+            );
+          // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
+          overview = await continueAfterFailure(
+            async () => {
+              const response = await fetch(`${readyUrl}/api/overview`, {
+                signal: AbortSignal.timeout(fetchTimeoutMs),
+              });
+              lastAttempt = `HTTP ${response.status}`;
+              return response.ok ? await response.json() : undefined;
+            },
+            (error) => {
+              lastAttempt = failureCode(error.cause ?? error);
+            }
+          );
+          if (overview === undefined) await delay(250);
+        }
+        console.log(
+          `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
+        );
+      },
+      () => crashServer(server),
+    ],
+    `${label}: the server check failed`
+  );
 }
 
 /** 사고 재현: 서버 프로세스만 강제로 끝내고 그 끝을 상한 안에서 확인한다. 서버가 남긴 것(DB)은 남는다. */
@@ -385,9 +377,7 @@ const { code } = await runBootCheckFlow({
     // 남은 DB를 pg_ctl로 멈추고, 띄운 서버 트리가 모두 끝난 것을 확인한다. 하나가 실패해도 다른 하나는 한다.
     await attemptAll([
       stopLeftPostgres,
-      async () => {
-        await Promise.all(servers.map((tree) => tree.stop()));
-      },
+      ...servers.map((tree) => () => tree.stop()),
     ]);
     rmSync(home, {
       recursive: true,

@@ -174,9 +174,10 @@ async function trial(
       if (line === "exit 7") control.write("stop\n");
     }
   });
-  // 실행기가 끝나 통로가 닫히면 쓰기가 실패할 수 있다. 결과는 받은 줄로 판단하고 실패는 그 줄에 남긴다.
+  // 실행기가 끝나 통로가 닫히면 쓰기가 실패할 수 있다. 결과는 받은 줄로 판단하고, 통로의 첫 실패는 준비하지 못한 이유에 함께 적는다.
+  let controlError: string | undefined;
   control.on("error", (error) => {
-    lines.push(`control channel error: ${error.message}`);
+    controlError ??= error.message;
   });
   const controlClosed = new Promise<void>((resolve) =>
     control.once("close", () => resolve())
@@ -212,7 +213,7 @@ async function trial(
   if (status?.kind === "failed") return { ok: false, reason: status.reason };
   return {
     ok: false,
-    reason: `the job object launcher's trial ended with ${exit.killed ? "its time limit" : (exit.signal ?? `code ${exit.code}`)} after ${JSON.stringify(lines)}${stderr ? `: ${stderr.trim()}` : ""}`,
+    reason: `the job object launcher's trial ended with ${exit.killed ? "its time limit" : (exit.signal ?? `code ${exit.code}`)} after ${JSON.stringify(lines)}${controlError ? ` (control channel error: ${controlError})` : ""}${stderr ? `: ${stderr.trim()}` : ""}`,
   };
 }
 

@@ -629,13 +629,17 @@ function mentions(node, names) {
   return found;
 }
 
-/** 배열에 넣는 호출에서 넣는 값 자리: `push`·`unshift`는 모든 인수, `splice`는 셋째부터. */
+/**
+ * 모으는 호출에서 넣는 값 자리: 배열의 `push`·`unshift`는 모든 인수, `splice`는 셋째부터, Map의 `set`·Set의 `add`는 모든 인수.
+ */
 const insertedArguments = (call) => {
   if (call.callee.type !== "MemberExpression" || call.callee.computed)
     return [];
   switch (call.callee.property.name) {
     case "push":
     case "unshift":
+    case "set":
+    case "add":
       return call.arguments;
     case "splice":
       return call.arguments.slice(2);
@@ -644,15 +648,93 @@ const insertedArguments = (call) => {
   }
 };
 
+/** 부른 함수 이름(`continueAfterFailure(…)`)이나 메서드 이름(`.catch(…)`). */
+const calleeName = (callee) =>
+  callee.type === "Identifier" ? callee.name : calledMethod(callee);
+
 /**
- * 실패를 모으는 일을 직접 짜지 않는다. 받은 오류를 배열에 넣는 `catch`(절·`.catch` 처리기·`.then`의 거부 처리기)는 "모두 시도하고 실패를
- * 모아 알리기"를 다시 짜는 모양이다. 같은 일을 하는 도구가 이름만 달리 여럿 생겼다(#263 외부 리뷰 1회차 뒤).
+ * 호출이 실패 처리기를 받는 자리면 그 인수: `.catch(처리기)`, `.then(_, 처리기)`, `continueAfterFailure(일, 처리기)`,
+ * `.on("error", 처리기)`·`.once("error", 처리기)`.
+ */
+function failureHandlerArgument(call) {
+  const name = calleeName(call.callee);
+  if (call.callee.type === "MemberExpression") {
+    const position = handlerPositions.get(name);
+    if (position !== undefined) return call.arguments[position];
+    if (
+      (name === "on" || name === "once") &&
+      call.arguments[0]?.type === "Literal" &&
+      call.arguments[0].value === "error"
+    )
+      return call.arguments[1];
+    return undefined;
+  }
+  return name === "continueAfterFailure" ? call.arguments[1] : undefined;
+}
+
+/** 이름이 가리키는 변수. 찾지 못하면 undefined. */
+function resolveName(sourceCode, identifier) {
+  for (
+    let scope = sourceCode.getScope(identifier);
+    scope;
+    scope = scope.upper
+  ) {
+    const variable = scope.set.get(identifier.name);
+    if (variable) return variable;
+  }
+  return undefined;
+}
+
+/** 처리기 자리의 값이 함수면 그 함수. 이름이면 같은 파일에서 그 이름으로 정의한 함수(`function f`·`const f = () => …`)를 찾는다. */
+function handlerFunction(sourceCode, node) {
+  if (!node) return undefined;
+  if (functionTypes.has(node.type)) return node;
+  if (node.type !== "Identifier") return undefined;
+  const definition = resolveName(sourceCode, node)?.defs[0]?.node;
+  if (definition?.type === "FunctionDeclaration") return definition;
+  if (
+    definition?.type === "VariableDeclarator" &&
+    definition.init &&
+    functionTypes.has(definition.init.type)
+  )
+    return definition.init;
+  return undefined;
+}
+
+const encloses = (outer, inner) =>
+  outer.range[0] <= inner.range[0] && inner.range[1] <= outer.range[1];
+
+/** 대입·증감 뒤 같은 처리기 안에서 반드시 다시 던지는가(감싼 문장 목록에서 그 문장 뒤에 `throw`가 있다). 그 실패는 이어지지 않는다. */
+function rethrownAfter(node, handler) {
+  for (let current = node; current && current !== handler;) {
+    const parent = current.parent;
+    if (parent?.type === "BlockStatement") {
+      const after = parent.body.slice(parent.body.indexOf(current) + 1);
+      if (after.some((statement) => statement.type === "ThrowStatement"))
+        return true;
+    }
+    current = parent;
+  }
+  return false;
+}
+
+/**
+ * 실패를 모으는 일을 직접 짜지 않는다. "모두 시도하고 실패를 모아 알리기"를 다시 짜는 두 모양을 본다. 같은 일을 하는 도구가 이름만
+ * 달리 여럿 생겼고(#263 외부 리뷰 1회차 뒤), 손으로 짠 모으기가 앞 실패에 뒤 정리를 건너뛰거나 실패를 놓쳤다.
  * `attemptAll`(던짐)·`attemptEach`(실패 목록)·`combinedFailure`(목록을 하나로, `@babojubot/contracts`의 failure.ts)를 쓴다. 문맥을 더한
  * 오류는 그 단계 안에서 던진다.
- * 받은 오류가 넣는 값 안 어디에든 들어 있으면(감싼 `new Error(…, { cause })`, 객체·배열·템플릿 안) 본다. 넣는 방법은 `push`·`unshift`·
- * `splice`와 계산한 자리 대입(`failures[i] = …`)이고, 처리기 안에서 받은 오류로 만든 지역 이름(`const wrapped = new Error(…)`)도 따라간다.
- * 알려진 한계: 처리기 밖의 변수에 담았다가 나중에 넣는 것, 배열이 아닌 곳(Map·Set·문자열)에 모으는 것, 이름 붙은 함수로 넘긴 처리기는
- * 보지 않는다.
+ *
+ * 실패 처리기는 `catch` 절, `.catch`·`.then`의 거부 처리기, `continueAfterFailure`의 처리기, `"error"` 이벤트 처리기다. 이름으로 넘긴
+ * 처리기(`.catch(fail)`)와 `catch` 안에서 받은 오류를 넘겨 부르는 함수(`keep(error)`)는 같은 파일의 그 함수 본문을 본다.
+ * - `collected`: 받은 오류를 넣는 값 안 어디에든 담아(감싼 `new Error(…, { cause })`, 객체·배열·템플릿, 그것으로 만든 지역 이름)
+ *   모은다. 넣는 방법은 `push`·`unshift`·`splice`·Map의 `set`·Set의 `add`와 계산한 자리 대입(`failures[i] = …`)이다.
+ * - `flagged`: 처리기 밖에서 만든 같은 변수·속성을 실패 처리 자리 둘 이상에서 바꾼다(실패 표시 `failed = true`, 셈 `problems++`,
+ *   이어 붙이기 `report += …`). 한 처리기를 여러 자리에 넘겨도 자리마다 센다. 바꾼 뒤 반드시 다시 던지는 대입은 실패가 이어지지
+ *   않으므로 세지 않는다. 한 자리에서 갈래마다 대입하는 결과 기록(`outcome = "failed"`)은 한 자리다.
+ * - `combined`: `AggregateError`를 직접 만든다(본문 실패와 정리 실패를 손으로 묶기). 묶기는 `combinedFailure` 한 곳이 한다.
+ * 알려진 한계: 본문 실패를 처리기 밖 변수에 담아 두고 뒤 단계의 실패를 로그로만 남기거나 버리는 모양은 보지 않는다. 한 실패의 결과를
+ * 값으로 넘기는 한 번 기록(시작 줄 해석 실패, 알림 결과, 실행 결과)과 모양이 같아, 받은 오류를 처리기 밖 변수에 담는 22자리 중 진짜
+ * 모으기는 3자리였다(CODING_STANDARDS.md#제품-코드).
  */
 const noFailureCollecting = {
   meta: {
@@ -664,12 +746,42 @@ const noFailureCollecting = {
     schema: [],
     messages: {
       collected:
-        "받은 오류를 배열에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다(감싼 오류도 같습니다). 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 문맥을 더할 오류는 그 단계 안에서 던지고, 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
+        "받은 오류를 배열·Map·Set에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다(감싼 오류, 이름 붙은 처리기도 같습니다). 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 문맥을 더할 오류는 그 단계 안에서 던지고, 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
+      flagged:
+        "실패 처리 자리 {{count}}곳(줄 {{lines}})에서 같은 바깥 값 `{{name}}`을 바꿔 실패를 표시·셈·이어 붙여 모읍니다. 서로 독립인 단계는 attemptEach로 돌려 돌려받은 실패 목록으로 판단하고(남길 진단은 목록을 돌며 한 번씩), 던져야 하면 attemptAll, 원래 실패와 묶기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 단계마다 다른 문구는 그 단계 안에서 감싸 던집니다. CODING_STANDARDS.md#제품-코드",
+      combined:
+        "AggregateError를 직접 만들어 실패를 손으로 묶습니다. 서로 독립인 단계의 실패만 알리면 attemptAll, 원래 실패와 정리 실패를 함께 알리려면 정리를 attemptEach로 돌려 combinedFailure([원래 실패, ...정리 실패], 문구, { cause: 원래 실패 })로 던지세요(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts). 묶는 곳이 하나여야 문구 모양(목록을 펼치지 않는 출력에서도 모든 실패가 보임)이 같습니다. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
-    const check = (param, body) => {
+    const sourceCode = context.sourceCode;
+    const reported = new Set();
+    const report = (node, messageId, data) => {
+      if (reported.has(node)) return;
+      reported.add(node);
+      context.report({ node, messageId, data });
+    };
+    /** 실패 처리 자리: `{ owner, body, at }`. owner 밖에서 만든 값만 바깥 값이다. */
+    const points = [];
+    const checked = new Set();
+    /** 넣는 곳(`failures.push`의 `failures`)이 처리기(`owner`) 밖에서 만든 값인가. `this`·호출 결과에서 시작하면 밖으로 본다. */
+    const outside = (target, owner) => {
+      let root = target;
+      while (root.type === "MemberExpression" || root.type === "CallExpression")
+        root = root.type === "MemberExpression" ? root.object : root.callee;
+      if (root.type !== "Identifier") return root.type === "ThisExpression";
+      const definition = resolveName(sourceCode, root)?.defs[0]?.name;
+      return !definition || !encloses(owner, definition);
+    };
+    /**
+     * 처리기(`owner`) 본문에서 받은 오류(`param`)를 바깥 값에 모으는가. 받은 오류를 넘겨 부르는 같은 파일의 함수는 한 단계만 따라간다
+     * (`follow`). 그 함수가 다시 부르는 함수는 처리기가 아니라 받은 값을 쓰는 일반 함수다(저장 쿼리의 `.set` 등).
+     */
+    const check = (param, body, owner, follow = true) => {
       if (param?.type !== "Identifier") return;
+      const key = `${param.range[0]}`;
+      if (checked.has(key)) return;
+      checked.add(key);
       // 받은 오류와, 처리기 안에서 그것으로 만든 지역 이름.
       const names = new Set([param.name]);
       for (let grew = true; grew;) {
@@ -690,22 +802,112 @@ const noFailureCollecting = {
       walk(body, (node) => {
         const collected =
           (node.type === "CallExpression" &&
-            insertedArguments(node).some((arg) => mentions(arg, names))) ||
+            insertedArguments(node).some((arg) => mentions(arg, names)) &&
+            outside(node.callee.object, owner)) ||
           (node.type === "AssignmentExpression" &&
             node.left.type === "MemberExpression" &&
             node.left.computed &&
-            mentions(node.right, names));
-        if (collected) context.report({ node, messageId: "collected" });
+            mentions(node.right, names) &&
+            outside(node.left.object, owner));
+        if (collected) report(node, "collected");
+        if (
+          !follow ||
+          node.type !== "CallExpression" ||
+          node.callee.type !== "Identifier"
+        )
+          return;
+        const called = handlerFunction(sourceCode, node.callee);
+        if (!called) return;
+        node.arguments.forEach((arg, index) => {
+          if (mentions(arg, names))
+            check(called.params[index], called.body, called, false);
+        });
       });
     };
+    /** 처리기 본문에서 바깥 값을 바꾸는 곳(다시 던지는 대입은 빼고). */
+    const updates = ({ owner, body }) => {
+      const found = [];
+      walk(body, (node) => {
+        const target =
+          node.type === "AssignmentExpression"
+            ? node.left
+            : node.type === "UpdateExpression"
+              ? node.argument
+              : undefined;
+        if (!target) return;
+        let root = target;
+        while (root.type === "MemberExpression") root = root.object;
+        if (root.type !== "Identifier") return;
+        const definition = resolveName(sourceCode, root)?.defs[0]?.name;
+        if (!definition || encloses(owner, definition)) return;
+        if (rethrownAfter(node, body)) return;
+        found.push({
+          node,
+          key: `${sourceCode.getText(target)}@${definition.range[0]}`,
+          name: sourceCode.getText(target),
+        });
+      });
+      return found;
+    };
     return {
-      CatchClause: (node) => check(node.param, node.body),
+      CatchClause(node) {
+        check(node.param, node.body, node);
+        points.push({ owner: node, body: node.body, at: node });
+        // catch 안에서 받은 오류를 넘겨 부르는 같은 파일의 함수는 이 자리의 처리기다.
+        walk(node.body, (inner) => {
+          if (
+            inner.type !== "CallExpression" ||
+            inner.callee.type !== "Identifier" ||
+            node.param?.type !== "Identifier" ||
+            !inner.arguments.some((arg) =>
+              mentions(arg, new Set([node.param.name]))
+            )
+          )
+            return;
+          const called = handlerFunction(sourceCode, inner.callee);
+          if (called)
+            points.push({ owner: called, body: called.body, at: node });
+        });
+      },
+      NewExpression(node) {
+        if (
+          node.callee.type === "Identifier" &&
+          node.callee.name === "AggregateError"
+        )
+          report(node, "combined");
+      },
       CallExpression(node) {
-        const position = handlerPositions.get(calledMethod(node.callee));
-        const handler =
-          position === undefined ? undefined : node.arguments[position];
-        if (handler && functionTypes.has(handler.type))
-          check(handler.params[0], handler.body);
+        if (
+          node.callee.type === "Identifier" &&
+          node.callee.name === "AggregateError"
+        )
+          report(node, "combined");
+        const handler = handlerFunction(
+          sourceCode,
+          failureHandlerArgument(node)
+        );
+        if (!handler) return;
+        check(handler.params[0], handler.body, handler);
+        points.push({ owner: handler, body: handler.body, at: node });
+      },
+      "Program:exit"() {
+        const byValue = new Map();
+        for (const point of points)
+          for (const update of updates(point)) {
+            const entry = byValue.get(update.key) ?? {
+              update,
+              at: new Set(),
+            };
+            entry.at.add(point.at);
+            byValue.set(update.key, entry);
+          }
+        for (const { update, at } of byValue.values())
+          if (at.size >= 2)
+            report(update.node, "flagged", {
+              name: update.name,
+              count: String(at.size),
+              lines: [...at].map((point) => point.loc.start.line).join(", "),
+            });
       },
     };
   },

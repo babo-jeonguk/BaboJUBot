@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   attemptAll,
   continueAfterFailure,
@@ -78,41 +78,27 @@ describe("orIfMissing", () => {
 
 describe("continueAfterFailure", () => {
   it("returns the result and reports nothing when the work succeeds", async () => {
-    const reported: unknown[] = [];
-    expect(
-      continueAfterFailure(
-        () => 3,
-        (e) => reported.push(e)
-      )
-    ).toBe(3);
+    const report = vi.fn();
+    expect(continueAfterFailure(() => 3, report)).toBe(3);
     await expect(
-      continueAfterFailure(
-        () => Promise.resolve(4),
-        (e) => reported.push(e)
-      )
+      continueAfterFailure(() => Promise.resolve(4), report)
     ).resolves.toBe(4);
-    expect(reported).toEqual([]);
+    expect(report).not.toHaveBeenCalled();
   });
 
   it("reports the failure and goes on without a value", async () => {
-    const reported: unknown[] = [];
+    const report = vi.fn();
     const first = coded("EBUSY");
     const second = coded("EPERM");
     expect(
-      continueAfterFailure(
-        () => {
-          throw first;
-        },
-        (e) => reported.push(e)
-      )
+      continueAfterFailure(() => {
+        throw first;
+      }, report)
     ).toBeUndefined();
     await expect(
-      continueAfterFailure(
-        () => Promise.reject(second),
-        (e) => reported.push(e)
-      )
+      continueAfterFailure(() => Promise.reject(second), report)
     ).resolves.toBeUndefined();
-    expect(reported).toEqual([first, second]);
+    expect(report.mock.calls).toEqual([[first], [second]]);
   });
 
   it("lets a failing report surface instead of hiding it", async () => {

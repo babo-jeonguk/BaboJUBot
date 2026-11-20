@@ -1,6 +1,11 @@
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { failureCode, orIfUnreadable, settled } from "@babojubot/contracts";
+import {
+  attemptEach,
+  failureCode,
+  orIfUnreadable,
+  settled,
+} from "@babojubot/contracts";
 import { type Clock, realClock } from "./clock.ts";
 import type { ContainerLaunch } from "./container.ts";
 import {
@@ -349,51 +354,63 @@ export function startProcess(options: {
       // 끝나기 전에 낸 출력을 다 처리한 순간을 알린다. 출력이 닫히지 않은 채 시작했으면 그때까지 읽은 출력까지다. 실제 정리(중계·자식·컨테이너)는 아래가 하고 done이 기다린다.
       void queue.then(reportExit);
       void (async () => {
-        // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
-        try {
-          await relay?.close();
-        } catch (error) {
-          broken = true;
-          console.error(
-            `[provider] the isolated run relay could not be closed (${failureCode(error)})`
-          );
-        }
-        // 출력이 아직 열려 있으면(남긴 자식이 쥐고 있음) 이쪽 끝을 닫는다. 그 뒤로 온 출력은 읽지 않는다.
-        if (!outputClosed) {
-          tree.stdout.destroy();
-          tree.stderr.destroy();
-        }
-        // 대표는 셸·MCP 자식보다 먼저 끝날 수 있다. 새 세션으로 나간 명령까지 트리 전체가 끝난 것을 확인하기 전에는 기록을 지우지 않는다(#219).
-        let stopped = true;
-        try {
-          await tree.stop();
-        } catch (error) {
-          stopped = false;
-          broken = true;
-          console.error(
-            `[provider] programs this run started could not all be stopped; releasing the run and keeping its recovery record (${failureCode(error)}: ${error instanceof Error ? error.message : ""})`
-          );
-        }
-        // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
-        if (
-          options.container &&
-          !(await removeContainer(options.container.settings, name!))
-        ) {
-          broken = true;
-          console.error(
-            "[provider] a container could not be removed; it is removed at the next server start"
-          );
-        }
-        await queue;
-        if (stopped)
-          try {
-            forget();
-          } catch (error) {
-            broken = true;
-            console.error(
-              `[provider] process exited but its recovery record could not be removed (${failureCode(error)})`
-            );
-          }
+        /** 정리 단계 하나. 실패하면 그 자리에서 진단을 남기고 실패로 돌려준다(뒤 단계는 attemptEach가 이어 한다). */
+        const reported =
+          (what: (error: unknown) => string, work: () => unknown) =>
+          async () => {
+            try {
+              await work();
+            } catch (error) {
+              console.error(`[provider] ${what(error)}`);
+              throw error;
+            }
+          };
+        /** 트리 전체가 끝난 것을 확인했는가. 확인하기 전에는 기록을 지우지 않는다(#219). */
+        let stopped = false;
+        const failures = await attemptEach([
+          // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
+          reported(
+            (error) =>
+              `the isolated run relay could not be closed (${failureCode(error)})`,
+            () => relay?.close()
+          ),
+          // 출력이 아직 열려 있으면(남긴 자식이 쥐고 있음) 이쪽 끝을 닫는다. 그 뒤로 온 출력은 읽지 않는다.
+          () => {
+            if (outputClosed) return;
+            tree.stdout.destroy();
+            tree.stderr.destroy();
+          },
+          // 대표는 셸·MCP 자식보다 먼저 끝날 수 있다. 새 세션으로 나간 명령까지 트리 전체가 끝난 것을 확인해야 기록을 지운다.
+          reported(
+            (error) =>
+              `programs this run started could not all be stopped; releasing the run and keeping its recovery record (${failureCode(error)}: ${error instanceof Error ? error.message : ""})`,
+            async () => {
+              await tree.stop();
+              stopped = true;
+            }
+          ),
+          // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
+          reported(
+            (error) =>
+              `a container could not be removed; it is removed at the next server start (${error instanceof Error ? error.message : failureCode(error)})`,
+            async () => {
+              if (
+                options.container &&
+                !(await removeContainer(options.container.settings, name!))
+              )
+                throw new Error("it was still there after removing it");
+            }
+          ),
+          reported(
+            (error) =>
+              `process exited but its recovery record could not be removed (${failureCode(error)})`,
+            async () => {
+              await queue;
+              if (stopped) forget();
+            }
+          ),
+        ]);
+        if (failures.length > 0) broken = true;
         if (code)
           console.warn(
             `[provider] program exited with code ${code}: ${stderr

@@ -30,7 +30,7 @@ import {
   runs,
   toolOperations,
 } from "./schema.ts";
-import { attemptAll } from "@babojubot/contracts";
+import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 export type TestDatabase = DatabaseHandle;
 
@@ -63,13 +63,11 @@ export async function startTestCluster(
     return stop;
   } catch (error) {
     // 준비 실패를 그대로 알린다. 멈추기가 실패하면 그 실패를 함께 알린다.
-    await stop().catch((stopping) => {
-      throw new AggregateError(
-        [error, stopping],
-        "the test cluster was not prepared and stopping it failed"
-      );
-    });
-    throw error;
+    throw combinedFailure(
+      [error, ...(await attemptEach([stop]))],
+      "the test cluster was not prepared and stopping it failed",
+      { cause: error }
+    );
   }
 }
 
@@ -102,13 +100,11 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   try {
     handle = await openDatabase({ url: clusterUrl(port, name) });
   } catch (error) {
-    await drop().catch((dropping) => {
-      throw new AggregateError(
-        [error, dropping],
-        "the test database did not open and dropping it failed"
-      );
-    });
-    throw error;
+    throw combinedFailure(
+      [error, ...(await attemptEach([drop]))],
+      "the test database did not open and dropping it failed",
+      { cause: error }
+    );
   }
   return {
     ...handle,

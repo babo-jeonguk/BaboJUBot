@@ -25,7 +25,7 @@ import {
   processAlive,
   withCleanup,
 } from "@babojubot/runtime/test-cleanup";
-import { attemptAll } from "@babojubot/contracts";
+import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 describe("embedded Postgres lifetime", () => {
   // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
@@ -928,13 +928,11 @@ async function holdDatabase(open: string) {
     const lines = lineReader(child);
     return { child, line: await lines.next() };
   } catch (error) {
-    await killHard(child).catch((killing) => {
-      throw new AggregateError(
-        [error, killing],
-        "the child did not open the database and stopping it failed"
-      );
-    });
-    throw error;
+    throw combinedFailure(
+      [error, ...(await attemptEach([() => killHard(child)]))],
+      "the child did not open the database and stopping it failed",
+      { cause: error }
+    );
   }
 }
 

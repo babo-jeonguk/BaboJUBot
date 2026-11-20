@@ -82,9 +82,12 @@ test("fails and still cleans up when a step fails", async () => {
   const { events, ops } = fakeRun({
     open: () => Promise.reject(new Error("could not open")),
   });
-  const { code, failure } = await runBootCheckFlow(ops);
+  const { code, failures } = await runBootCheckFlow(ops);
   assert.equal(code, 1);
-  assert.equal(failure.message, "could not open");
+  assert.deepEqual(
+    failures.map((failure) => failure.message),
+    ["could not open"]
+  );
   assert.equal(events.at(-1), "cleanUp");
   assert.equal(events.filter((event) => event === "cleanUp").length, 1);
 });

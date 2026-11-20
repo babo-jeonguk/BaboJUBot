@@ -2,7 +2,7 @@ import { spawnSync, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { vi } from "vitest";
 import { killUnlessGone, processAlive } from "../test-cleanup.ts";
-import { attemptAll, combinedFailure } from "@babojubot/contracts";
+import { attemptAll } from "@babojubot/contracts";
 
 /**
  * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다.
@@ -100,35 +100,23 @@ function psState(pid: number) {
 
 /**
  * 모두 끝날 때까지 시한 안에서 기다린다. 대상마다 따로 보므로 한 대상의 조회가 실패해도 나머지가 끝나기를 계속 기다린다.
- * 시한을 넘기면 남은 번호를, 조회가 실패한 대상은 그 원인(pid 포함)을 모두 모아 실패한다.
+ * 시한을 넘긴 대상은 그 번호를, 조회가 실패한 대상은 그 원인(pid 포함)을 모두 모아 실패한다(`attemptAll`).
+ * 시한은 모든 대상이 함께 쓴다. 앞 대상을 기다리는 동안 뒤 대상의 시간도 간다.
  */
 export async function untilExited(pids: number[], timeoutMs = 5000) {
-  const lookups = new Map<number, unknown>();
-  /** 끝났거나 조회가 실패해 더 기다리지 않는 대상인가. */
-  const settled = (pid: number) => {
-    if (lookups.has(pid)) return true;
-    try {
-      return exited(pid);
-    } catch (error) {
-      lookups.set(pid, error);
-      return true;
-    }
-  };
-  const failures: unknown[] = [];
-  await vi
-    .waitUntil(() => pids.every(settled), { timeout: timeoutMs, interval: 25 })
-    .catch(() => {
-      const running = pids.filter((pid) => !settled(pid));
-      if (running.length > 0)
-        failures.push(
-          new Error(
-            `still running after ${timeoutMs} ms: ${running.join(", ")}`
-          )
-        );
-    });
-  failures.push(...lookups.values());
-  if (failures.length)
-    throw combinedFailure(failures, "processes did not all end");
+  const deadline = Date.now() + timeoutMs;
+  await attemptAll(
+    pids.map((pid) => async () => {
+      // 조회가 실패하면 waitUntil이 그 오류로 바로 끝난다. 시한은 함께 쓰는 마감으로 보고, waitUntil의 시한은 그 뒤의 안전판이다.
+      await vi.waitUntil(() => exited(pid) || Date.now() >= deadline, {
+        timeout: timeoutMs + 1_000,
+        interval: 25,
+      });
+      if (!exited(pid))
+        throw new Error(`process ${pid} still running after ${timeoutMs} ms`);
+    }),
+    "processes did not all end"
+  );
 }
 
 /** 시험 정리: 모두에게 SIGKILL을 보내고 끝날 때까지 기다린다. 한 대상에 보내지 못해도 나머지에 보내고 기다린 뒤 함께 알린다. */
