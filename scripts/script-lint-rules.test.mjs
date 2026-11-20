@@ -278,6 +278,8 @@ const directLaunches = {
   "child_process re-exported whole": `export * from "node:child_process";\n`,
   "child_process imported at run time": `const cp = await import("node:child_process");\nvoid cp;\n`,
   "child_process from require": `import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nrequire("child_process");\n`,
+  // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire(#266 리뷰 SPEC-2).
+  "child_process from a renamed createRequire": `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { spawn } = load("node:child_process");\nspawn("x", []);\n`,
   "child_process from getBuiltinModule": `process.getBuiltinModule("node:child_process");\n`,
 };
 // 막지 않는 모양: 상한을 둔 동기 실행, cross-spawn의 동기 실행, 타입만 가져오기, 공용 실행.
@@ -365,6 +367,11 @@ const outsideHalves = {
     ".agents/scripts/run-worker.mjs",
     `const { interruptProcessGroup } = await import("@babojubot/process/recovery");\nvoid interruptProcessGroup;\n`,
   ],
+  // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire도 같다(#266 리뷰 SPEC-2).
+  "stopProcessGroup taken from a renamed createRequire": [
+    "apps/server/src/app.ts",
+    `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
+  ],
 };
 // 프로세스 패키지 안에서 공용 실행과 복구 입구 밖이 그룹 끄기를 가져오는 모양.
 const insideHalves = {
@@ -387,6 +394,23 @@ const insideHalves = {
   "group.ts taken whole": [
     "packages/process/src/index.ts",
     `import * as group from "./group.ts";\nvoid group;\n`,
+  ],
+  // 같은 대상을 다른 철자로 적어도 같다: 자기 패키지 이름의 복구 입구, 확장자 없는 경로, src를 거친 경로(#266 리뷰 SPEC-3).
+  "stopProcessGroup from the package's own recovery entry": [
+    "packages/process/src/lease.ts",
+    `import { stopProcessGroup } from "@babojubot/process/recovery";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  ],
+  "stopProcessGroup from group without an extension": [
+    "packages/process/src/lease.ts",
+    `import { stopProcessGroup } from "./group";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  ],
+  "interruptProcessGroup through the src folder": [
+    "packages/process/src/clock.ts",
+    `export { interruptProcessGroup } from "../src/group.ts";\n`,
+  ],
+  "the recovery entry taken whole by the package's own name": [
+    "packages/process/src/index.ts",
+    `import * as entry from "@babojubot/process/recovery";\nvoid entry;\n`,
   ],
 };
 
@@ -566,6 +590,15 @@ test("other modules reach runtime and the process package only through their lis
     [
       "apps/server/src/app.ts",
       `import { createRequire } from "node:module";\nvoid createRequire(import.meta.url).resolve("@babojubot/process/recovery");\n`,
+    ],
+    // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire, 모듈 객체의 createRequire(#266 리뷰 SPEC-2).
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import * as nodeModule from "node:module";\nvoid nodeModule.createRequire(import.meta.url)("@babojubot/db/admin");\n`,
     ],
     [
       "scripts/live/chaos-run.mjs",

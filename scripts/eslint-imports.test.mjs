@@ -17,8 +17,8 @@ function sitesOf(code) {
         probe: {
           rules: {
             sites: {
-              create: () =>
-                importSites((site) =>
+              create: (context) =>
+                importSites(context, (site) =>
                   sites.push({
                     kind: site.kind,
                     source: site.source,
@@ -304,5 +304,47 @@ test("tells where a called name came from, whether imported, required or taken f
       "h: m6 h",
       "local: -",
     ]
+  );
+});
+
+// 불러오는 함수는 글자 이름이 아니라 출처로 알아본다(#266 리뷰 SPEC-2). 본보기는 @eslint-community/eslint-utils의 ReferenceTracker다:
+// 가려지지 않은 전역에서 시작하고, 가져온 이름은 원래 이름으로, 별칭·구조 분해·속성 사슬을 따라간다.
+test("finds createRequire by where it comes from: renamed, a namespace, a default, required or taken from getBuiltinModule", () => {
+  const loads = [
+    `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { a } = load("m1");\n`,
+    `import * as nodeModule from "module";\nvoid nodeModule.createRequire(import.meta.url)("m2");\n`,
+    `import nodeModule from "node:module";\nconst { createRequire: make } = nodeModule;\nvoid make(import.meta.url)("m3");\n`,
+    `const { createRequire: make } = require("node:module");\nconst load = make(import.meta.url);\nvoid load.resolve("m4");\n`,
+    `const make = process.getBuiltinModule("module").createRequire;\nvoid make(import.meta.url)("m5");\n`,
+    `import { createRequire } from "node:module";\nconst make = createRequire;\nconst load = make(import.meta.url);\nvoid load("m6");\n`,
+  ];
+  assert.deepEqual(
+    loads.flatMap((code) =>
+      sitesOf(code)
+        .filter((site) => /^m\d$/.test(site.source))
+        .map(({ kind, source }) => `${kind} ${source}`)
+    ),
+    [
+      "require m1",
+      "require m2",
+      "require m3",
+      "resolve m4",
+      "require m5",
+      "require m6",
+    ]
+  );
+});
+
+test("does not take a local function named like require, createRequire or getBuiltinModule as a loader", () => {
+  const locals = [
+    `const require = (name) => name;\nvoid require("m1");\n`,
+    `function load(require) {\n  return require("m2");\n}\nvoid load;\n`,
+    `const createRequire = () => (name) => name;\nvoid createRequire(import.meta.url)("m3");\n`,
+    `const process = { getBuiltinModule: (name) => name };\nvoid process.getBuiltinModule("m4");\n`,
+    `const tools = { createRequire: () => (name) => name };\nconst load = tools.createRequire(import.meta.url);\nvoid load("m5");\n`,
+  ];
+  assert.deepEqual(
+    locals.flatMap((code) => sitesOf(code).map((site) => site.source)),
+    []
   );
 });

@@ -1685,6 +1685,10 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       /담지 않습니다/,
     ],
     // 공용 가져오기 판정: require·createRequire에서 꺼낸 이름도 같다(#266 리뷰 SPEC-1).
+    "a name taken from a renamed createRequire": [
+      `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { awaitedLater: mark } = load("@babojubot/process/test-cleanup");\n${laterHead}mark(p);\n`,
+      /담지 않습니다/,
+    ],
     "a name taken from a createRequire function": [
       `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { awaitedLater: mark } = load("@babojubot/process/test-cleanup");\n${laterHead}mark(p);\n`,
       /담지 않습니다/,
