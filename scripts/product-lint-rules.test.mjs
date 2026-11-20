@@ -34,33 +34,34 @@ const testPlaces = [
 
 const launchRules = ["no-restricted-imports", "no-restricted-syntax"];
 
+const launches = {
+  "a named import": `import { spawn } from "node:child_process";\nspawn("x");\n`,
+  "a namespace import": `import * as cp from "child_process";\ncp.execFile("x");\n`,
+  "a re-export": `export { execFile } from "node:child_process";\n`,
+  "a dynamic import": `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
+  // runtime이 의존하는 cross-spawn도 같은 실행이다.
+  "cross-spawn": `import spawn from "cross-spawn";\nspawn("x");\n`,
+  "cross-spawn dynamically": `const { default: spawn } = await import("cross-spawn");\nspawn("x");\n`,
+  // 실행 경계 검사를 거치지 않고 모듈을 불러오는 길도 막는다. 계산한 경로·template literal의 import는 무엇을 가져오는지 lint가 볼 수 없다.
+  "a computed dynamic import": `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\n`,
+  "a template literal dynamic import":
+    "const cp = await import(`node:child_process`);\n",
+  createRequire: `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("child_process");\n`,
+  "createRequire renamed": `import { createRequire as make } from "module";\nmake(import.meta.url)("child_process");\n`,
+  "createRequire on the module": `import nodeModule from "node:module";\nnodeModule.createRequire(import.meta.url)("child_process");\n`,
+  "createRequire from a dynamic import": `const { createRequire } = await import("node:module");\ncreateRequire(import.meta.url)("child_process");\n`,
+  "createRequire re-exported": `export { createRequire } from "node:module";\n`,
+  "createRequire by a string key": `import * as nodeModule from "node:module";\nnodeModule["createRequire"](import.meta.url)("child_process");\n`,
+  // node:module은 createRequire 말고도 Module._load처럼 import 검사를 거치지 않는 길이 있어 모듈째 막는다.
+  "Module._load": `import { Module } from "node:module";\nModule._load("child_process");\n`,
+  "process.getBuiltinModule": `process.getBuiltinModule("node:child_process").spawn("x");\n`,
+  "getBuiltinModule from node:process": `import { getBuiltinModule } from "node:process";\ngetBuiltinModule("child_process");\n`,
+  "getBuiltinModule destructured": `const { getBuiltinModule } = process;\ngetBuiltinModule("child_process");\n`,
+  "a computed name on process": `const name = ["getBuiltin", "Module"].join("");\nprocess[name]("child_process");\n`,
+  "a computed name on globalThis.process": `const name = ["getBuiltin", "Module"].join("");\nglobalThis.process[name]("child_process");\n`,
+};
+
 test("runtime code launches programs only through the process owners", async () => {
-  const launches = {
-    "a named import": `import { spawn } from "node:child_process";\nspawn("x");\n`,
-    "a namespace import": `import * as cp from "child_process";\ncp.execFile("x");\n`,
-    "a re-export": `export { execFile } from "node:child_process";\n`,
-    "a dynamic import": `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
-    // runtime이 의존하는 cross-spawn도 같은 실행이다.
-    "cross-spawn": `import spawn from "cross-spawn";\nspawn("x");\n`,
-    "cross-spawn dynamically": `const { default: spawn } = await import("cross-spawn");\nspawn("x");\n`,
-    // 실행 경계 검사를 거치지 않고 모듈을 불러오는 길도 막는다. 계산한 경로·template literal의 import는 무엇을 가져오는지 lint가 볼 수 없다.
-    "a computed dynamic import": `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\n`,
-    "a template literal dynamic import":
-      "const cp = await import(`node:child_process`);\n",
-    createRequire: `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("child_process");\n`,
-    "createRequire renamed": `import { createRequire as make } from "module";\nmake(import.meta.url)("child_process");\n`,
-    "createRequire on the module": `import nodeModule from "node:module";\nnodeModule.createRequire(import.meta.url)("child_process");\n`,
-    "createRequire from a dynamic import": `const { createRequire } = await import("node:module");\ncreateRequire(import.meta.url)("child_process");\n`,
-    "createRequire re-exported": `export { createRequire } from "node:module";\n`,
-    "createRequire by a string key": `import * as nodeModule from "node:module";\nnodeModule["createRequire"](import.meta.url)("child_process");\n`,
-    // node:module은 createRequire 말고도 Module._load처럼 import 검사를 거치지 않는 길이 있어 모듈째 막는다.
-    "Module._load": `import { Module } from "node:module";\nModule._load("child_process");\n`,
-    "process.getBuiltinModule": `process.getBuiltinModule("node:child_process").spawn("x");\n`,
-    "getBuiltinModule from node:process": `import { getBuiltinModule } from "node:process";\ngetBuiltinModule("child_process");\n`,
-    "getBuiltinModule destructured": `const { getBuiltinModule } = process;\ngetBuiltinModule("child_process");\n`,
-    "a computed name on process": `const name = ["getBuiltin", "Module"].join("");\nprocess[name]("child_process");\n`,
-    "a computed name on globalThis.process": `const name = ["getBuiltin", "Module"].join("");\nglobalThis.process[name]("child_process");\n`,
-  };
   for (const place of [
     "packages/runtime/src/providers/claude.ts",
     "packages/runtime/src/providers/codex-connection.ts",
@@ -77,17 +78,35 @@ test("runtime code launches programs only through the process owners", async () 
     }
 });
 
+// 프로세스 패키지 안에서도 공용 실행·짧은 명령·묶음 실행기 밖의 파일은 프로그램을 직접 띄우지 않는다(#266).
+test("process package code launches programs only through its launch owners", async () => {
+  for (const place of [
+    "packages/process/src/lease.ts",
+    "packages/process/src/clock.ts",
+    "packages/process/src/remove-folder.ts",
+  ])
+    for (const [shape, code] of Object.entries(launches)) {
+      const [message, ...rest] = await lint(code, place, launchRules);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 띄우기와 끄기를 한 쌍으로 두는 함수와 짧은 명령 함수, 예외를 올리는 곳을 알려 준다.
+      assert.match(message.message, /launchTree/);
+      assert.match(message.message, /runCommand/);
+      assert.match(message.message, /processPackageOwners/);
+    }
+});
+
 test("process owners, type imports and code outside runtime may use child_process", async () => {
   const named = `import { execFile } from "node:child_process";\nexecFile("x");\n`;
   for (const place of [
-    "packages/runtime/src/providers/launch.ts",
+    "packages/process/src/launch.ts",
+    "packages/process/src/bounded-command.ts",
+    "packages/process/src/job-object.ts",
     "packages/runtime/src/providers/container.ts",
-    "packages/runtime/src/providers/job-object.ts",
     "packages/runtime/src/providers/recovery.ts",
-    "packages/runtime/src/providers/lease.ts",
     "packages/runtime/src/providers/login.ts",
     // 시험 코드와 다른 패키지는 이 경계 밖이다.
-    "packages/runtime/src/providers/process-test-support.ts",
+    "packages/process/src/process-test-support.ts",
     "packages/runtime/src/providers/process.test.ts",
     "packages/db/src/embedded.ts",
     "apps/server/src/workspace.ts",
@@ -108,7 +127,7 @@ test("process owners, type imports and code outside runtime may use child_proces
   // 실행 소유 파일과 runtime 밖은 node:module·계산한 경로의 import·process의 계산한 이름을 쓸 수 있다.
   const bypasses = `import { createRequire } from "node:module";\nconst name = String(Date.now());\nawait import(name);\ncreateRequire(import.meta.url)(name);\nvoid process[name as keyof typeof process];\n`;
   for (const place of [
-    "packages/runtime/src/providers/launch.ts",
+    "packages/process/src/launch.ts",
     "packages/runtime/src/providers/process.test.ts",
     "packages/db/src/embedded.ts",
     "apps/server/src/workspace.ts",
