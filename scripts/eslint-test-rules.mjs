@@ -514,6 +514,8 @@ const noPageWideLocator = {
     docs: {
       description:
         "disallow finding an E2E target by text on the whole page or by position among page-wide or same-name matches",
+      // 페이지·locator인지 타입으로 가린다. 타입 정보가 없으면 아무것도 짚지 않는다.
+      requiresTypeChecking: true,
     },
     schema: [],
     messages: {
@@ -684,6 +686,8 @@ const noOneShotUiRead = {
     docs: {
       description:
         "disallow asserting a UI state read once from a Playwright locator instead of a retrying web-first assertion",
+      // 페이지·locator인지 타입으로 가린다. 타입 정보가 없으면 아무것도 짚지 않는다.
+      requiresTypeChecking: true,
     },
     schema: [],
     messages: {

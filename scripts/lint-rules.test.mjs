@@ -4,20 +4,15 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ESLint } from "eslint";
 import { accessShapes } from "./lint-access-shapes.mjs";
+import { ruleLinter } from "./lint-rule-testing.mjs";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
-const eslint = new ESLint({ cwd: repository });
-
-/** `filePath` 자리에 둔 `code`의 lint 결과. 파일은 만들지 않는다. */
-async function lint(code, filePath) {
-  const [result] = await eslint.lintText(code, { filePath });
-  return result.messages;
-}
+/** `filePath` 자리에 둔 `code`의 lint 결과 중 `rules`의 메시지(빼면 모든 메시지). 파일은 만들지 않는다. */
+const lint = ruleLinter(repository);
 
 /** 시험 코드로 보는 자리들. 규칙은 이 모든 자리에 걸려야 한다. */
 const testPlaces = [
@@ -45,13 +40,12 @@ const folderRemovals = {
 };
 
 /** 폴더 지우기 규칙의 메시지만. */
-const removalMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "no-restricted-syntax");
+const removalRules = ["no-restricted-syntax"];
 
 for (const [shape, code] of Object.entries(folderRemovals))
   test(`test code may not remove a folder by ${shape}`, async () => {
     for (const place of testPlaces) {
-      const [message, ...rest] = removalMessages(await lint(code, place));
+      const [message, ...rest] = await lint(code, place, removalRules);
       assert.ok(message, `${place}: not reported`);
       assert.deepEqual(rest, [], place);
       // 메시지가 대안과 기준 문서의 절을 알려 준다.
@@ -69,8 +63,10 @@ test("test code may not import a remover from fs under another name", async () =
     `import { rmSync as wipe } from "fs";\nwipe("dir", { recursive: true });\n`,
     `import { rmdir as drop } from "node:fs";\ndrop("dir", () => {});\n`,
   ]) {
-    const messages = removalMessages(
-      await lint(code, "apps/server/test/lint-sample.test.ts")
+    const messages = await lint(
+      code,
+      "apps/server/test/lint-sample.test.ts",
+      removalRules
     );
     assert.equal(messages.length, 1, code);
     assert.match(messages[0].message, /이름 그대로 가져오세요/);
@@ -91,7 +87,7 @@ test("test code may remove files, use recursive elsewhere and call removeFolder"
   ];
   for (const code of allowed)
     for (const place of testPlaces)
-      assert.deepEqual(removalMessages(await lint(code, place)), [], code);
+      assert.deepEqual(await lint(code, place, removalRules), [], code);
 });
 
 test("code outside tests may remove a folder directly", async () => {
@@ -102,7 +98,7 @@ test("code outside tests may remove a folder directly", async () => {
     "packages/runtime/test-fixtures/lint-sample.mjs",
   ])
     assert.deepEqual(
-      removalMessages(await lint(folderRemovals["rm with recursive"], place)),
+      await lint(folderRemovals["rm with recursive"], place, removalRules),
       [],
       place
     );
@@ -142,8 +138,7 @@ test("a lint exception needs a reason, names its rules and is removed once unuse
 });
 
 /** 경과 시간 단언 규칙의 메시지만. */
-const elapsedMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-elapsed-time-assertion");
+const elapsedRules = ["tests/no-elapsed-time-assertion"];
 
 test("test code may not assert real elapsed time", async () => {
   const asserted = {
@@ -165,7 +160,7 @@ test("test code may not assert real elapsed time", async () => {
   };
   for (const [shape, code] of Object.entries(asserted))
     for (const place of testPlaces) {
-      const [message, ...rest] = elapsedMessages(await lint(code, place));
+      const [message, ...rest] = await lint(code, place, elapsedRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       // 메시지가 대안과 기준 문서의 절을 알려 준다.
@@ -197,7 +192,7 @@ test("test code may make past times, log or record durations, wait to a deadline
   ];
   for (const code of allowed)
     for (const place of testPlaces)
-      assert.deepEqual(elapsedMessages(await lint(code, place)), [], code);
+      assert.deepEqual(await lint(code, place, elapsedRules), [], code);
 });
 
 test("code outside tests may assert elapsed time", async () => {
@@ -206,8 +201,10 @@ test("code outside tests may assert elapsed time", async () => {
     "scripts/live/lint-sample.mjs",
   ])
     assert.deepEqual(
-      elapsedMessages(
-        await lint(`assert.ok(Date.now() - started < 5000);\n`, place)
+      await lint(
+        `assert.ok(Date.now() - started < 5000);\n`,
+        place,
+        elapsedRules
       ),
       [],
       place
@@ -215,8 +212,7 @@ test("code outside tests may assert elapsed time", async () => {
 });
 
 /** 고정 시간 기다림 규칙의 메시지만. */
-const waitMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-fixed-time-wait");
+const waitRules = ["tests/no-fixed-time-wait"];
 
 test("test code may not wait a fixed time", async () => {
   const waits = {
@@ -243,7 +239,7 @@ test("test code may not wait a fixed time", async () => {
   };
   for (const [shape, code] of Object.entries(waits))
     for (const place of testPlaces) {
-      const [message, ...rest] = waitMessages(await lint(code, place));
+      const [message, ...rest] = await lint(code, place, waitRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       // 메시지가 대안과 기준 문서의 절을 알려 준다.
@@ -283,7 +279,7 @@ test("test code may use timers that bound a wait, answer late, check again or co
   ];
   for (const code of allowed)
     for (const place of testPlaces)
-      assert.deepEqual(waitMessages(await lint(code, place)), [], code);
+      assert.deepEqual(await lint(code, place, waitRules), [], code);
 });
 
 test("code outside tests may wait a fixed time", async () => {
@@ -293,11 +289,10 @@ test("code outside tests may wait a fixed time", async () => {
     "packages/runtime/test-fixtures/lint-sample.mjs",
   ])
     assert.deepEqual(
-      waitMessages(
-        await lint(
-          `await new Promise((resolve) => setTimeout(resolve, 50));\n`,
-          place
-        )
+      await lint(
+        `await new Promise((resolve) => setTimeout(resolve, 50));\n`,
+        place,
+        waitRules
       ),
       [],
       place
@@ -349,7 +344,7 @@ test("test code may not abort after a fixed time or count event loop turns as th
   };
   for (const [shape, [code, kind]] of Object.entries(ordered))
     for (const place of testPlaces) {
-      const messages = waitMessages(await lint(code, place));
+      const messages = await lint(code, place, waitRules);
       assert.ok(messages.length, `${place}: ${shape} not reported`);
       for (const message of messages) {
         assert.match(message.message, kind, `${place}: ${shape}`);
@@ -360,7 +355,7 @@ test("test code may not abort after a fixed time or count event loop turns as th
     }
   // 한 반복은 한 번만 알린다.
   assert.equal(
-    waitMessages(await lint(ordered["counted microtasks"][0], testPlaces[0]))
+    (await lint(ordered["counted microtasks"][0], testPlaces[0], waitRules))
       .length,
     3
   );
@@ -381,12 +376,11 @@ test("test code may abort on a signal, keep an abort timer as a bound and repeat
   ];
   for (const code of allowed)
     for (const place of testPlaces)
-      assert.deepEqual(waitMessages(await lint(code, place)), [], code);
+      assert.deepEqual(await lint(code, place, waitRules), [], code);
 });
 
 /** 화면 전체 검색 규칙의 메시지만. */
-const locatorMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-page-wide-locator");
+const locatorRules = ["tests/no-page-wide-locator"];
 
 // E2E는 타입 정보로 페이지를 가리므로 있는 E2E 파일 자리를 빌린다.
 const e2ePlaces = [
@@ -445,8 +439,10 @@ test("an E2E may not search the whole page by text or pick by position among pag
   };
   for (const [shape, [code, kind]] of Object.entries(found))
     for (const place of e2ePlaces) {
-      const [message, ...rest] = locatorMessages(
-        await lint(e2eHead + code, place)
+      const [message, ...rest] = await lint(
+        e2eHead + code,
+        place,
+        locatorRules
       );
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
@@ -473,14 +469,12 @@ test("an E2E may find areas on the page, search inside them, pick list items by 
   ];
   for (const code of allowed)
     for (const place of e2ePlaces) {
-      const messages = await lint(e2eHead + code, place);
-      // 코드가 읽히지 않아 통과하는 것이 아니다.
+      // 코드가 읽히지 않으면 lint가 실패로 드러낸다. 읽히지 않아 통과하는 것이 아니다.
       assert.deepEqual(
-        messages.filter((m) => m.fatal),
+        await lint(e2eHead + code, place, locatorRules),
         [],
         code
       );
-      assert.deepEqual(locatorMessages(messages), [], code);
     }
 });
 
@@ -491,8 +485,10 @@ test("code outside the E2E may search a whole page", async () => {
     "scripts/live/lint-sample.mjs",
   ])
     assert.deepEqual(
-      locatorMessages(
-        await lint(`await page.getByText("대기").first().click();\n`, place)
+      await lint(
+        `await page.getByText("대기").first().click();\n`,
+        place,
+        locatorRules
       ),
       [],
       place
@@ -500,8 +496,7 @@ test("code outside the E2E may search a whole page", async () => {
 });
 
 /** finally 정리 규칙의 메시지만. */
-const finallyMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-cleanup-in-finally");
+const finallyRules = ["tests/no-cleanup-in-finally"];
 
 test("test code may not wait or call a failing cleanup in finally", async () => {
   const awaited = {
@@ -530,7 +525,7 @@ test("test code may not wait or call a failing cleanup in finally", async () => 
   ])
     for (const [shape, code] of Object.entries(shapes))
       for (const place of testPlaces) {
-        const [message, ...rest] = finallyMessages(await lint(code, place));
+        const [message, ...rest] = await lint(code, place, finallyRules);
         assert.ok(message, `${place}: ${shape} not reported`);
         assert.deepEqual(rest, [], `${place}: ${shape}`);
         // 메시지가 원래 실패를 가리는 까닭, 대안과 기준 문서의 절을 알려 준다.
@@ -563,7 +558,7 @@ test("test code may release without waiting in finally and register cleanups whe
   ];
   for (const code of allowed)
     for (const place of testPlaces)
-      assert.deepEqual(finallyMessages(await lint(code, place)), [], code);
+      assert.deepEqual(await lint(code, place, finallyRules), [], code);
 });
 
 test("code outside tests may wait in finally", async () => {
@@ -573,11 +568,10 @@ test("code outside tests may wait in finally", async () => {
     "packages/runtime/test-fixtures/lint-sample.mjs",
   ])
     assert.deepEqual(
-      finallyMessages(
-        await lint(
-          `try {\n  check();\n} finally {\n  await server.close();\n  process.kill(pid, "SIGKILL");\n}\n`,
-          place
-        )
+      await lint(
+        `try {\n  check();\n} finally {\n  await server.close();\n  process.kill(pid, "SIGKILL");\n}\n`,
+        place,
+        finallyRules
       ),
       [],
       place
@@ -585,8 +579,7 @@ test("code outside tests may wait in finally", async () => {
 });
 
 /** 정리 hook 규칙의 메시지만. */
-const skippedCleanupMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-skipped-cleanup");
+const skippedCleanupRules = ["tests/no-skipped-cleanup"];
 
 test("a shared cleanup hook may not stop at the first failing cleanup", async () => {
   const shapes = {
@@ -601,9 +594,7 @@ test("a shared cleanup hook may not stop at the first failing cleanup", async ()
   };
   for (const [shape, code] of Object.entries(shapes))
     for (const place of testPlaces) {
-      const [message, ...rest] = skippedCleanupMessages(
-        await lint(code, place)
-      );
+      const [message, ...rest] = await lint(code, place, skippedCleanupRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       assert.equal(message.messageId, "skipped", shape);
@@ -630,9 +621,7 @@ test("catching every cleanup in one try still skips the later ones", async () =>
   };
   for (const [shape, code] of Object.entries(shapes))
     for (const place of testPlaces) {
-      const [message, ...rest] = skippedCleanupMessages(
-        await lint(code, place)
-      );
+      const [message, ...rest] = await lint(code, place, skippedCleanupRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       assert.equal(message.messageId, "caught", shape);
@@ -659,9 +648,7 @@ test("cleanup hooks are told by where they come from, and the same check covers 
   };
   for (const [shape, code] of Object.entries(shapes))
     for (const place of testPlaces) {
-      const [message, ...rest] = skippedCleanupMessages(
-        await lint(code, place)
-      );
+      const [message, ...rest] = await lint(code, place, skippedCleanupRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       assertCleanupAdvice(message);
@@ -704,15 +691,14 @@ test("a shared cleanup hook may try every cleanup, and a resource's own cleanup 
   for (const code of allowed)
     for (const place of testPlaces)
       assert.deepEqual(
-        skippedCleanupMessages(await lint(code, place)),
+        await lint(code, place, skippedCleanupRules),
         [],
         `${place}: ${code}`
       );
 });
 
 /** 끄기 오류 규칙의 메시지만. */
-const killErrorMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-ignored-kill-error");
+const killErrorRules = ["tests/no-ignored-kill-error"];
 
 test("test code may not ignore the error of process.kill", async () => {
   const shapes = {
@@ -768,7 +754,7 @@ test("test code may not ignore the error of process.kill", async () => {
   };
   for (const [shape, [code, kind]] of Object.entries(shapes))
     for (const place of testPlaces) {
-      const [message, ...rest] = killErrorMessages(await lint(code, place));
+      const [message, ...rest] = await lint(code, place, killErrorRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       assert.equal(message.messageId, kind, shape);
@@ -803,15 +789,14 @@ test("test code may pass over a finished process by its error code", async () =>
   for (const code of allowed)
     for (const place of testPlaces)
       assert.deepEqual(
-        killErrorMessages(await lint(code, place)),
+        await lint(code, place, killErrorRules),
         [],
         `${place}: ${code}`
       );
 });
 
 /** 서버 닫기 오류 규칙의 메시지만. */
-const closeErrorMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-ignored-close-error");
+const closeErrorRules = ["tests/no-ignored-close-error"];
 /** 타입 표기를 쓰는 예를 돌릴 TypeScript 자리. */
 const typedPlaces = testPlaces.filter((place) => place.endsWith(".ts"));
 
@@ -855,7 +840,7 @@ test("test code may not fulfil a Promise with the error of a Node server's close
   };
   for (const [shape, [code, places]] of Object.entries(shapes))
     for (const place of places) {
-      const messages = closeErrorMessages(await lint(code, place));
+      const messages = await lint(code, place, closeErrorRules);
       assert.ok(messages.length > 0, `${place}: ${shape} not reported`);
       for (const message of messages) {
         // 메시지가 이유, 대안과 기준 문서의 절을 알려 준다.
@@ -866,8 +851,12 @@ test("test code may not fulfil a Promise with the error of a Node server's close
       }
     }
   assert.equal(
-    closeErrorMessages(
-      await lint(shapes["servers from a typed list"][0], typedPlaces[0])
+    (
+      await lint(
+        shapes["servers from a typed list"][0],
+        typedPlaces[0],
+        closeErrorRules
+      )
     ).length,
     2
   );
@@ -886,7 +875,7 @@ test("test code may reject with a close error and leave other close callbacks al
   for (const code of allowed)
     for (const place of testPlaces)
       assert.deepEqual(
-        closeErrorMessages(await lint(code, place)),
+        await lint(code, place, closeErrorRules),
         [],
         `${place}: ${code}`
       );
@@ -900,17 +889,15 @@ test("code outside tests may chain cleanups and ignore kill and close errors", a
   ]) {
     const messages = await lint(
       `import http from "node:http";\nafterEach(async () => {\n  await a.close();\n  await b.close();\n});\ntry {\n  process.kill(pid, 0);\n} catch {\n  /* gone */\n}\nconst server = http.createServer();\nawait new Promise((resolve) => server.close(resolve));\n`,
-      place
+      place,
+      [...skippedCleanupRules, ...killErrorRules, ...closeErrorRules]
     );
-    assert.deepEqual(skippedCleanupMessages(messages), [], place);
-    assert.deepEqual(killErrorMessages(messages), [], place);
-    assert.deepEqual(closeErrorMessages(messages), [], place);
+    assert.deepEqual(messages, [], place);
   }
 });
 
 /** 기대 실패 규칙의 메시지만. */
-const expectedFailureMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-expected-failure");
+const expectedFailureRules = ["tests/no-expected-failure"];
 
 test("test code may not mark a test as expected to fail", async () => {
   const shapes = {
@@ -927,9 +914,7 @@ test("test code may not mark a test as expected to fail", async () => {
   };
   for (const [shape, code] of Object.entries(shapes))
     for (const place of testPlaces) {
-      const [message, ...rest] = expectedFailureMessages(
-        await lint(code, place)
-      );
+      const [message, ...rest] = await lint(code, place, expectedFailureRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       // 메시지가 까닭, 대안(따로 돌린 실행의 종료 코드·고유 문구)과 기준 문서의 절을 알려 준다.
@@ -951,16 +936,11 @@ test("test code may fail on purpose through other values and check a failure by 
   ];
   for (const code of allowed)
     for (const place of testPlaces)
-      assert.deepEqual(
-        expectedFailureMessages(await lint(code, place)),
-        [],
-        code
-      );
+      assert.deepEqual(await lint(code, place, expectedFailureRules), [], code);
 });
 
 /** 시험 사이 상태 규칙의 메시지만. */
-const stateMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-state-between-tests");
+const stateRules = ["tests/no-state-between-tests"];
 
 test("test code may not pass state from one test to another", async () => {
   const shared = {
@@ -980,7 +960,7 @@ test("test code may not pass state from one test to another", async () => {
   ])
     for (const [shape, code] of Object.entries(shapes))
       for (const place of testPlaces) {
-        const [message, ...rest] = stateMessages(await lint(code, place));
+        const [message, ...rest] = await lint(code, place, stateRules);
         assert.ok(message, `${place}: ${shape} not reported`);
         assert.deepEqual(rest, [], `${place}: ${shape}`);
         assert.match(message.message, pattern, `${kind}: ${shape}`);
@@ -1005,7 +985,7 @@ test("test code may prepare state in hooks and keep each test's own values", asy
   ];
   for (const code of allowed)
     for (const place of testPlaces)
-      assert.deepEqual(stateMessages(await lint(code, place)), [], code);
+      assert.deepEqual(await lint(code, place, stateRules), [], code);
 });
 
 test("code outside tests may share state between calls and mark failures", async () => {
@@ -1015,18 +995,17 @@ test("code outside tests may share state between calls and mark failures", async
   ]) {
     const messages = await lint(
       `let before;\ntest("a", () => {\n  before = 1;\n});\ntest("b", () => {\n  read(before);\n});\ntest.fail("c", () => {});\ntest.describe.configure({ mode: "serial" });\n`,
-      place
+      place,
+      [...stateRules, ...expectedFailureRules]
     );
-    assert.deepEqual(
-      [...stateMessages(messages), ...expectedFailureMessages(messages)],
-      [],
-      place
-    );
+    assert.deepEqual(messages, [], place);
   }
 });
 
 // ---------- 시험 데이터의 타입 단언 (#243) ----------
 
+/** 시험 데이터 단언은 금지 구문 규칙의 한 갈래다. */
+const fixtureRules = ["no-restricted-syntax"];
 /** 시험 데이터 단언 규칙의 메시지만. */
 const fixtureMessages = (messages) =>
   messages.filter(
@@ -1056,7 +1035,9 @@ const fixtureAssertions = {
 for (const [shape, code] of Object.entries(fixtureAssertions))
   test(`test code may not build data with ${shape}`, async () => {
     for (const place of typedTestPlaces) {
-      const [message, ...rest] = fixtureMessages(await lint(code, place));
+      const [message, ...rest] = fixtureMessages(
+        await lint(code, place, fixtureRules)
+      );
       assert.ok(message, `${place}: not reported`);
       assert.deepEqual(rest, [], place);
       // 메시지가 이유와 대안(satisfies·완전한 값·좁은 매개변수 타입)을 알려 준다.
@@ -1089,7 +1070,11 @@ test("test code may check data against its type, add properties with one asserti
   ];
   for (const code of allowed)
     for (const place of typedTestPlaces)
-      assert.deepEqual(fixtureMessages(await lint(code, place)), [], code);
+      assert.deepEqual(
+        fixtureMessages(await lint(code, place, fixtureRules)),
+        [],
+        code
+      );
 });
 
 test("product code may assert types", async () => {
@@ -1098,7 +1083,8 @@ test("product code may assert types", async () => {
     fixtureMessages(
       await lint(
         fixtureAssertions["a partial object through unknown"],
-        "packages/runtime/src/providers/login.ts"
+        "packages/runtime/src/providers/login.ts",
+        fixtureRules
       )
     ),
     []
@@ -1108,8 +1094,7 @@ test("product code may assert types", async () => {
 // ---------- 프로세스 환경 직접 변경 (#243) ----------
 
 /** process.env 직접 변경 규칙의 메시지만. */
-const envMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-process-env-change");
+const envRules = ["tests/no-process-env-change"];
 
 const envChanges = {
   // 감사가 찾은 모양: 원래 값을 덮어쓰고, 복원은 서버 닫기 뒤에서 지운다.
@@ -1147,7 +1132,7 @@ const envChanges = {
 for (const [shape, code] of Object.entries(envChanges))
   test(`test code may not change process.env with ${shape}`, async () => {
     for (const place of testPlaces) {
-      const [message, ...rest] = envMessages(await lint(code, place));
+      const [message, ...rest] = await lint(code, place, envRules);
       assert.ok(message, `${place}: not reported`);
       assert.deepEqual(rest, [], place);
       // 메시지가 이유와 대안(stub과 복원, 자식 환경, globalSetup이 넘기는 값)을 알려 준다.
@@ -1185,7 +1170,7 @@ test("test code may read process.env, stub it, build a child's environment from 
   for (const code of allowed)
     for (const place of testPlaces)
       assert.deepEqual(
-        envMessages(await lint(code, place)),
+        await lint(code, place, envRules),
         [],
         `${place}: ${code}`
       );
@@ -1193,21 +1178,20 @@ test("test code may read process.env, stub it, build a child's environment from 
 
 test("code outside tests may set process.env", async () => {
   assert.deepEqual(
-    envMessages(
-      await lint(
-        envChanges["an assignment to an entry"],
-        "scripts/lint-sample.mjs"
-      )
+    await lint(
+      envChanges["an assignment to an entry"],
+      "scripts/lint-sample.mjs",
+      envRules
     ),
     []
   );
 });
 
 /** 기다리지 않은 Promise 규칙(타입 정보)의 메시지만. */
-const promiseMessages = (messages) =>
-  messages.filter((m) =>
-    /^@typescript-eslint\/no-(floating|misused)-promises$/.test(m.ruleId ?? "")
-  );
+const promiseRules = [
+  "@typescript-eslint/no-floating-promises",
+  "@typescript-eslint/no-misused-promises",
+];
 
 // 타입 정보는 TypeScript 프로젝트에 든 파일에만 생기므로 있는 시험 파일 자리를 빌린다. 서버·화면·패키지·E2E.
 const promisePlaces = [
@@ -1238,8 +1222,10 @@ test("tests may not leave a promise unawaited, drop it with void, or hand an asy
   };
   for (const [shape, code] of Object.entries(found))
     for (const place of promisePlaces) {
-      const [message, ...rest] = promiseMessages(
-        await lint(promiseHead(place) + code, place)
+      const [message, ...rest] = await lint(
+        promiseHead(place) + code,
+        place,
+        promiseRules
       );
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
@@ -1251,8 +1237,10 @@ test("tests may not leave a promise unawaited, drop it with void, or hand an asy
       `expect(status).not.toBeVisible();\n`,
       `void expect(status).toBeChecked();\n`,
     ]) {
-      const [message, ...rest] = promiseMessages(
-        await lint(promiseHead(place) + e2eOnly + code, place)
+      const [message, ...rest] = await lint(
+        promiseHead(place) + e2eOnly + code,
+        place,
+        promiseRules
       );
       assert.ok(message, `${place}: ${code} not reported`);
       assert.deepEqual(rest, [], `${place}: ${code}`);
@@ -1276,19 +1264,18 @@ test("tests may await, return, collect or later await a promise and hand failure
   for (const code of allowed)
     for (const place of promisePlaces)
       assert.deepEqual(
-        promiseMessages(await lint(promiseHead(place) + code, place)),
+        await lint(promiseHead(place) + code, place, promiseRules),
         [],
         `${place}: ${code}`
       );
   for (const place of promisePlaces.filter(isE2E))
     assert.deepEqual(
-      promiseMessages(
-        await lint(
-          promiseHead(place) +
-            e2eOnly +
-            `await expect(status).toHaveText("저장됨");\nawait expect(status).not.toBeVisible();\n`,
-          place
-        )
+      await lint(
+        promiseHead(place) +
+          e2eOnly +
+          `await expect(status).toHaveText("저장됨");\nawait expect(status).not.toBeVisible();\n`,
+        place,
+        promiseRules
       ),
       [],
       place
@@ -1296,8 +1283,7 @@ test("tests may await, return, collect or later await a promise and hand failure
 });
 
 /** 빈 처리기로 거절 버리기 규칙의 메시지만. */
-const droppedMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-dropped-rejection");
+const droppedRules = ["tests/no-dropped-rejection"];
 const droppedHead = `declare const p: Promise<number>;\ndeclare const failures: unknown[];\nexport {};\n`;
 
 test("tests may not drop the rejection of a promise they do not wait for with an empty handler", async () => {
@@ -1318,8 +1304,10 @@ test("tests may not drop the rejection of a promise they do not wait for with an
   };
   for (const [shape, code] of Object.entries(found))
     for (const place of testPlaces) {
-      const [message, ...rest] = droppedMessages(
-        await lint(droppedHead + code, place)
+      const [message, ...rest] = await lint(
+        droppedHead + code,
+        place,
+        droppedRules
       );
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
@@ -1347,7 +1335,7 @@ test("tests may use a caught value, handle the error, or mark a promise they han
   for (const code of allowed)
     for (const place of testPlaces)
       assert.deepEqual(
-        droppedMessages(await lint(droppedHead + code, place)),
+        await lint(droppedHead + code, place, droppedRules),
         [],
         `${place}: ${code}`
       );
@@ -1355,19 +1343,17 @@ test("tests may use a caught value, handle the error, or mark a promise they han
 
 test("code outside tests may drop a rejection", async () => {
   assert.deepEqual(
-    droppedMessages(
-      await lint(
-        droppedHead + `p.catch(() => {});\n`,
-        "scripts/lint-sample.mjs"
-      )
+    await lint(
+      droppedHead + `p.catch(() => {});\n`,
+      "scripts/lint-sample.mjs",
+      droppedRules
     ),
     []
   );
 });
 
 /** 화면 상태 한 번 읽기 규칙의 메시지만. */
-const oneShotMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-one-shot-ui-read");
+const oneShotRules = ["tests/no-one-shot-ui-read"];
 const oneShotHead = `import { expect, type Locator, type Page } from "@playwright/test";\ndeclare const page: Page;\ndeclare const box: Locator;\nexport {};\n`;
 
 test("an E2E may not assert a UI state it read once from a locator", async () => {
@@ -1503,8 +1489,10 @@ test("an E2E may not assert a UI state it read once from a locator", async () =>
   };
   for (const [shape, [code, method, matcher]] of Object.entries(found))
     for (const place of e2ePlaces) {
-      const [message, ...rest] = oneShotMessages(
-        await lint(oneShotHead + code, place)
+      const [message, ...rest] = await lint(
+        oneShotHead + code,
+        place,
+        oneShotRules
       );
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
@@ -1538,7 +1526,7 @@ test("an E2E may wait with web-first assertions, compare against a value read be
   for (const code of allowed)
     for (const place of e2ePlaces)
       assert.deepEqual(
-        oneShotMessages(await lint(oneShotHead + code, place)),
+        await lint(oneShotHead + code, place, oneShotRules),
         [],
         `${place}: ${code}`
       );
@@ -1575,7 +1563,7 @@ test("test code may not end a start on a fixed time or count event loop turns in
   };
   for (const [shape, [code, kind]] of Object.entries(found))
     for (const place of testPlaces) {
-      const [message, ...rest] = waitMessages(await lint(code, place));
+      const [message, ...rest] = await lint(code, place, waitRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       assert.match(message.message, kind, shape);
@@ -1598,7 +1586,7 @@ test("test code may bound a wait with a timed signal, expect another failure und
   for (const code of allowed)
     for (const place of testPlaces)
       assert.deepEqual(
-        waitMessages(await lint(code, place)),
+        await lint(code, place, waitRules),
         [],
         `${place}: ${code}`
       );
@@ -1623,8 +1611,10 @@ test("JS tests may not leave a promise unawaited either, while node:test's own t
   ];
   for (const code of found)
     for (const place of jsPromisePlaces) {
-      const [message, ...rest] = promiseMessages(
-        await lint(jsPromiseHead + code, place)
+      const [message, ...rest] = await lint(
+        jsPromiseHead + code,
+        place,
+        promiseRules
       );
       assert.ok(message, `${place}: ${code} not reported`);
       assert.deepEqual(rest, [], `${place}: ${code}`);
@@ -1632,15 +1622,14 @@ test("JS tests may not leave a promise unawaited either, while node:test's own t
   const allowed = `await work();\nawait assert.rejects(work());\ntest("runs", async () => {\n  await work();\n});\ndescribe("group", () => {\n  test("inside", () => {});\n});\n`;
   for (const place of jsPromisePlaces)
     assert.deepEqual(
-      promiseMessages(await lint(jsPromiseHead + allowed, place)),
+      await lint(jsPromiseHead + allowed, place, promiseRules),
       [],
       place
     );
 });
 
 /** awaitedLater 규칙의 메시지만. */
-const laterMessages = (messages) =>
-  messages.filter((m) => m.ruleId === "tests/no-unawaited-later");
+const laterRules = ["tests/no-unawaited-later"];
 const laterImport = `import { awaitedLater } from "@babojubot/process/test-cleanup";\n`;
 const laterHead = `const p = Promise.resolve(1);\nconst use = (value) => value;\nconst child = {};\n`;
 
@@ -1857,7 +1846,7 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
   };
   for (const [shape, [code, kind]] of Object.entries(found))
     for (const place of testPlaces) {
-      const [message, ...rest] = laterMessages(await lint(code, place));
+      const [message, ...rest] = await lint(code, place, laterRules);
       assert.ok(message, `${place}: ${shape} not reported`);
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       assert.match(message.message, kind, shape);
@@ -1900,7 +1889,7 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
   for (const code of allowed)
     for (const place of testPlaces)
       assert.deepEqual(
-        laterMessages(await lint(laterImport + laterHead + code, place)),
+        await lint(laterImport + laterHead + code, place, laterRules),
         [],
         `${place}: ${code}`
       );
@@ -1911,7 +1900,7 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
   ])
     for (const place of testPlaces)
       assert.deepEqual(
-        laterMessages(await lint(code, place)),
+        await lint(code, place, laterRules),
         [],
         `${place}: ${code}`
       );
@@ -1939,9 +1928,7 @@ test("test rules tell globals and test tools by origin, not by name", async () =
   ];
   for (const [rule, code] of reported)
     for (const place of testPlaces) {
-      const messages = (await lint(code, place)).filter(
-        (m) => m.ruleId === rule
-      );
+      const messages = await lint(code, place, [rule]);
       assert.ok(messages.length > 0, `${place}: ${rule} not reported: ${code}`);
     }
   const kept = [
@@ -1962,7 +1949,7 @@ test("test rules tell globals and test tools by origin, not by name", async () =
   for (const [rule, code] of kept)
     for (const place of testPlaces)
       assert.deepEqual(
-        (await lint(code, place)).filter((m) => m.ruleId === rule),
+        await lint(code, place, [rule]),
         [],
         `${place}: ${code}`
       );
@@ -2042,9 +2029,7 @@ test("test rules see a tool under every name its module exports it", async () =>
   ];
   for (const [rule, code] of reported)
     for (const place of testPlaces) {
-      const messages = (await lint(code, place)).filter(
-        (m) => m.ruleId === rule
-      );
+      const messages = await lint(code, place, [rule]);
       assert.ok(messages.length > 0, `${place}: ${rule} not reported: ${code}`);
     }
   const kept = [
@@ -2078,7 +2063,7 @@ test("test rules see a tool under every name its module exports it", async () =>
   for (const [rule, code] of kept)
     for (const place of testPlaces)
       assert.deepEqual(
-        (await lint(code, place)).filter((m) => m.ruleId === rule),
+        await lint(code, place, [rule]),
         [],
         `${place}: ${code}`
       );
@@ -2391,7 +2376,7 @@ test("every test rule that judges by origin sees its tool through every access s
   // 어긋난 사례를 모두 모아 한 번에 보인다(한 규칙의 여러 모양이 함께 깨지는 일이 많다).
   const wrong = [];
   const check = async (rule, place, { shape, code, same }, kept) => {
-    const found = (await lint(code, place)).some((m) => m.ruleId === rule);
+    const found = (await lint(code, place, [rule])).length > 0;
     if (found !== (kept ? !same : same))
       wrong.push(`${rule} ${shape} (${found ? "reported" : "kept"}): ${code}`);
   };
@@ -2435,7 +2420,7 @@ test("awaitedLater is told by the file it comes from, not by how the path is spe
   ];
   for (const [place, code] of reported)
     assert.ok(
-      laterMessages(await lint(code, place)).length > 0,
+      (await lint(code, place, laterRules)).length > 0,
       `${place}: ${code} not reported`
     );
   // 다른 폴더의 같은 이름 파일은 그 도움이 아니다.
@@ -2446,7 +2431,7 @@ test("awaitedLater is told by the file it comes from, not by how the path is spe
       `export * from "./test-cleanup.ts";\n`,
     ])
       assert.deepEqual(
-        laterMessages(await lint(code, place)),
+        await lint(code, place, laterRules),
         [],
         `${place}: ${code}`
       );

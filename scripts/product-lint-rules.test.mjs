@@ -5,20 +5,15 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ESLint } from "eslint";
+import { ruleLinter } from "./lint-rule-testing.mjs";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
 const eslint = new ESLint({ cwd: repository });
-
 /** `filePath` 자리에 둔 `code`의 lint 결과 중 `rules`의 메시지. 파일은 만들지 않는다. */
-async function lint(code, filePath, rules) {
-  const [result] = await eslint.lintText(code, { filePath });
-  const fatal = result.messages.filter((m) => m.fatal);
-  assert.deepEqual(fatal, [], `${filePath}: parsing failed`);
-  return result.messages.filter((m) => rules.includes(m.ruleId));
-}
+const lint = ruleLinter(repository);
 
 // src 안은 타입 정보로 검사하므로(TypeScript 프로젝트에 든 파일만) 있는 파일 자리를 빌린다.
 const productPlaces = [
