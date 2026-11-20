@@ -602,11 +602,8 @@ function suitesOf(command, folder = ".") {
 }
 
 test("each job that runs test suites checks every suite's run and pass counts as its last test step", () => {
-  // 모든 job의 시험 묶음이 같은 폴더에 보고서를 남긴다.
-  assert.equal(
-    workflow.env?.BABOJUBOT_TEST_REPORTS,
-    "${{ github.workspace }}/test-reports"
-  );
+  // 워크플로 전체에 두면 판정하지 않는 job에도 보고 폴더가 생긴다(run 44670627223의 files 세 job이 결과표를 잃음).
+  assert.equal(workflow.env?.BABOJUBOT_TEST_REPORTS, undefined);
   const counted = [];
   for (const [id, job] of Object.entries(workflow.jobs)) {
     const steps = job.steps ?? [];
@@ -626,6 +623,8 @@ test("each job that runs test suites checks every suite's run and pass counts as
     });
     if (ran.length === 0) {
       assert.equal(check, undefined, `${id} checks counts but runs no suite`);
+      // 보고 폴더는 판정하는 job에만 둔다. 다른 job(파일 경계 검증)이 자기 결과표용으로 넘긴 Vitest 보고를 설정의 보고기가 가로챈다.
+      assert.equal(job.env?.BABOJUBOT_TEST_REPORTS, undefined, id);
       continue;
     }
     assert.ok(
@@ -633,6 +632,11 @@ test("each job that runs test suites checks every suite's run and pass counts as
       `${id} runs ${ran.map((r) => r.suite).join(", ")} without checking their counts`
     );
     counted.push(id);
+    assert.equal(
+      job.env?.BABOJUBOT_TEST_REPORTS,
+      "${{ github.workspace }}/test-reports",
+      `${id} must give its suites a report folder`
+    );
     assert.match(
       check.if,
       /!cancelled\(\)/,
