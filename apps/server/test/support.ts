@@ -2,10 +2,13 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-  type NotificationChannel,
+  attemptAll,
+  attemptEach,
+  combinedFailure,
   eventStreamPath,
   streamFrameSchema,
   type Event,
+  type NotificationChannel,
   type ProviderConnection,
   type RuntimeAdapter,
   type StreamScope,
@@ -19,7 +22,6 @@ import {
   type ServerOptions,
 } from "../src/index.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { cleanUpAll } from "@babojubot/runtime/test-cleanup";
 
 /**
  * 서버 작업·Event·준비 확인처럼 끝나는 신호가 오는 대기의 상한(#215). 신호가 오면 바로 끝나므로 넉넉해도 통과 시간은
@@ -199,28 +201,24 @@ export async function startTestServer({
     if (failed) throw failed.error;
   } catch (error) {
     // 원래 실패를 그대로 알린다. 치우기는 단계마다 따로 시도하고, 실패하면 그 실패를 원래 실패와 함께 알린다.
-    const failures: unknown[] = [];
-    const serverClosed =
-      !server ||
-      (await server.close().then(
-        () => true,
-        (closing) => {
-          failures.push(closing);
-          return false;
-        }
-      ));
-    await database.close().catch((closing) => failures.push(closing));
+    let serverClosed = !server;
+    const failures = await attemptEach([
+      async () => {
+        await server?.close();
+        serverClosed = true;
+      },
+      () => database.close(),
+    ]);
     // 서버가 닫힌 것을 확인하지 못하면 그 서버가 쓰는 폴더는 남긴다.
-    if (ownDataDir && serverClosed)
-      await removeFolder(ownDataDir).catch((removing) =>
-        failures.push(removing)
-      );
-    else if (ownDataDir)
+    const dataDir = ownDataDir;
+    if (dataDir && serverClosed)
+      failures.push(...(await attemptEach([() => removeFolder(dataDir)])));
+    else if (dataDir)
       failures.push(
-        new Error(`kept ${ownDataDir}: the test server did not close`)
+        new Error(`kept ${dataDir}: the test server did not close`)
       );
     if (failures.length > 0)
-      throw new AggregateError(
+      throw combinedFailure(
         [error, ...failures],
         "the test server was not handed over and cleaning up after it failed",
         { cause: error }
@@ -319,7 +317,7 @@ export async function startTestServer({
     async close() {
       // 넘기기 전 실패의 정리와 같은 순서다. 서버가 닫힌 것을 확인하지 못하면 그 서버가 쓰는 폴더는 남기고 그 사실을 알린다.
       let serverClosed = serverStopped;
-      await cleanUpAll([
+      await attemptAll([
         async () => {
           for (const socket of sockets) socket.terminate();
           if (!serverClosed) await server.close();

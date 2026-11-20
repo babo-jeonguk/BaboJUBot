@@ -1061,23 +1061,28 @@ export function createScriptedRuntime({
             break;
           case "call":
             if (step.when && !step.when(state)) break;
-            try {
-              const output = await tools.call(
-                step.tool,
-                step.input?.(state) as OrgToolInput<typeof step.tool>,
-                isOrgToolRead(step.tool) ? {} : once(step.tool)
-              );
-              state.calls.push({ tool: step.tool, ok: true, output });
-            } catch (error) {
-              if (!(error instanceof OrgToolError) || !step.allowRefusal)
-                throw error;
-              state.calls.push({
-                tool: step.tool,
-                ok: false,
-                status: error.status,
-                code: error.code,
-              });
-            }
+            // 호출 기록은 성공과 허용된 거절을 같은 값으로 만들어 한 곳에서 남긴다. 그 밖의 실패는 그대로 던진다.
+            state.calls.push(
+              await tools
+                .call(
+                  step.tool,
+                  step.input?.(state) as OrgToolInput<typeof step.tool>,
+                  isOrgToolRead(step.tool) ? {} : once(step.tool)
+                )
+                .then(
+                  (output) => ({ tool: step.tool, ok: true as const, output }),
+                  (error: unknown) => {
+                    if (!(error instanceof OrgToolError) || !step.allowRefusal)
+                      throw error;
+                    return {
+                      tool: step.tool,
+                      ok: false as const,
+                      status: error.status,
+                      code: error.code,
+                    };
+                  }
+                )
+            );
             break;
           case "then":
             queue.unshift(...step.steps(state));

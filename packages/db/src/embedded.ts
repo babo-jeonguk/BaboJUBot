@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -14,6 +14,7 @@ import {
   orIfUnreadable,
 } from "@babojubot/contracts";
 import { psField } from "@babojubot/runtime/ps";
+import { runCommand } from "@babojubot/runtime/bounded-command";
 import { candidatePort } from "./ports.ts";
 
 /** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 디스크 확정 기록 없이 띄우고 정지 때 dataDir를 지운다. */
@@ -167,18 +168,22 @@ export async function startEmbeddedCluster(
           (setting) => ["-c", setting]
         ),
       ];
-      const code = await run(pgCtl, [
-        "start",
-        "-D",
-        dataDir,
-        "-w",
-        "-t",
-        String(startSeconds),
-        "-l",
-        log,
-        "-o",
-        options.join(" "),
-      ]);
+      const code = await run(
+        pgCtl,
+        [
+          "start",
+          "-D",
+          dataDir,
+          "-w",
+          "-t",
+          String(startSeconds),
+          "-l",
+          log,
+          "-o",
+          options.join(" "),
+        ],
+        startSeconds * 1000 + pgCtlMarginMs
+      );
       if (code === 0) {
         // 이 dataDir의 주인은 이 프로세스뿐이므로 잠금 파일의 postgres는 방금 켠 것이다.
         const running = readPidFile(dataDir);
@@ -277,16 +282,11 @@ async function stopCluster(
   for (const mode of escalate ? ["fast", "immediate"] : ["fast"]) {
     if (!(await isRunning(pgCtl, dataDir))) return;
     onMode(mode);
-    await run(pgCtl, [
-      "stop",
-      "-D",
-      dataDir,
-      "-m",
-      mode,
-      "-w",
-      "-t",
-      String(seconds),
-    ]);
+    await run(
+      pgCtl,
+      ["stop", "-D", dataDir, "-m", mode, "-w", "-t", String(seconds)],
+      seconds * 1000 + pgCtlMarginMs
+    );
   }
   if (await isRunning(pgCtl, dataDir))
     throw new Error(
@@ -320,6 +320,7 @@ function stopNow(
   const result = spawnSync(pgCtl, ["kill", "QUIT", String(started.pid)], {
     stdio: "ignore",
     timeout: left,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (result.error || result.status !== 0)
@@ -367,7 +368,7 @@ export function processIdentity(
 
 /** pg_ctl status: 0이면 그 dataDir의 잠금 파일에 적힌 프로세스가 살아 있고, 3(돌지 않음)·4(dataDir 없음)면 아니다. 그 밖의 끝남은 확인하지 못한 것이므로 던진다. */
 async function isRunning(pgCtl: string, dataDir: string) {
-  const code = await run(pgCtl, ["status", "-D", dataDir]);
+  const code = await run(pgCtl, ["status", "-D", dataDir], pgCtlQuickMs);
   if (code === 0) return true;
   if (code === 3 || code === 4) return false;
   throw new Error(
@@ -421,13 +422,23 @@ function samePath(a: string, b: string) {
 const stopCommand = (pgCtl: string, dataDir: string) =>
   `"${pgCtl}" stop -D "${dataDir}" -m fast`;
 
-/** 출력은 버리고 끝남 코드만 받는다(위 「켜기」 참고). */
-function run(file: string, args: string[]): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { stdio: "ignore", windowsHide: true });
-    child.once("error", reject);
-    child.once("exit", (code) => resolve(code ?? 1));
-  });
+/** `pg_ctl`이 `-t`로 기다리는 시간에 더해, 이 프로세스가 `pg_ctl` 자체의 끝을 기다리는 여유. */
+const pgCtlMarginMs = 15_000;
+/** 기다림이 없는 `pg_ctl` 명령(`status`)의 시한. */
+const pgCtlQuickMs = 15_000;
+
+/**
+ * `pg_ctl`을 끝까지 돌리고 끝남 코드만 받는다(출력은 버린다, 위 「켜기」 참고). `pg_ctl`은 띄운 Postgres 데몬이 자기보다 오래 살아야
+ * 하므로 공용 실행의 트리 끄기를 쓰지 않는다. 대신 시한(`limitMs`)에 `pg_ctl`만 SIGKILL로 끝내고 끝을 보장하며, 시한에 닿았으면
+ * 무엇을 기다렸는지와 함께 던진다(`runCommand`). `pg_ctl`의 `-t`에만 기대지 않는다.
+ */
+async function run(file: string, args: string[], limitMs: number) {
+  const result = await runCommand(file, args, { limitMs, maxOutputBytes: 0 });
+  if (result.killed)
+    throw new Error(
+      `pg_ctl ${args[0]} did not finish within ${limitMs / 1000}s and was ended`
+    );
+  return result.code ?? 1;
 }
 
 async function logTail(log: string) {
@@ -474,7 +485,10 @@ function readPidFile(
 // 지난 번호는 주인이 지운다. 오래전에 읽은 번호로 그 지워진 자리를 만든 프로세스는 더 큰 번호를 보고 물러난다.
 const ownerDir = (dataDir: string) => `${path.resolve(dataDir)}${ownerSuffix}`;
 
-/** 임시 cluster의 자원(dataDir와 주인 기록)을 함께 지운다. 임시 cluster를 지우는 모든 길이 이것을 쓴다. */
+/**
+ * 임시 cluster의 자원(dataDir와 주인 기록)을 함께 지운다. 임시 cluster를 지우는 모든 길이 이것을 쓴다. 주인 기록은 dataDir를
+ * 지운 뒤에만 지운다: 다음 시작의 남은 cluster 정리(`removeTemporaryLeftovers`)가 주인 기록으로 남은 dataDir를 찾는다.
+ */
 async function removeTemporary(dataDir: string) {
   await fsp.rm(dataDir, { recursive: true, force: true });
   await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });

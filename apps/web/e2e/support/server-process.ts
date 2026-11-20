@@ -8,6 +8,7 @@ import {
   killUnlessGone,
   processAlive,
 } from "@babojubot/runtime/test-cleanup";
+import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.
 // - 제품 폴더와 임시 폴더(TMP)를 새 임시 폴더 하나 안에 만들어 넘긴다. 임시 내장 Postgres(BABOJUBOT_EPHEMERAL_DB)의 dataDir도
@@ -126,16 +127,14 @@ export async function startServerProcess({
 
   let postgresPid = 0;
 
-  /** 폴더를 지운다. 지우지 못하면 `failures`에 남긴다. */
-  async function removeTemp(failures: unknown[]) {
+  /** 폴더를 지운다. 지우지 못하면 어느 폴더인지 담아 던진다. 실패는 부른 쪽이 `attemptEach`·`attemptAll`로 모은다. */
+  async function removeTemp() {
     try {
       await removeFolder(folder);
     } catch (error) {
-      failures.push(
-        new Error(`${label}의 폴더를 지우지 못했다: ${folder}`, {
-          cause: error,
-        })
-      );
+      throw new Error(`${label}의 폴더를 지우지 못했다: ${folder}`, {
+        cause: error,
+      });
     }
   }
 
@@ -146,44 +145,63 @@ export async function startServerProcess({
    * 남겼든 모은 실패를 모두 알린다. 각 단계는 `attempt`로 감싸 한 단계가 실패해도 다음 단계를 한다.
    */
   async function release(failures: unknown[]): Promise<never> {
-    await attempt(failures, undefined, async () => {
-      if (child.exitCode === null && child.signalCode === null)
-        child.kill("SIGKILL");
-      await within(
-        exited.catch(() => undefined),
-        killWaitMs
-      );
-    });
     // `undefined`는 폴더가 없거나 읽을 수 없어 남은 Postgres를 확인하지 못했다는 뜻이다.
-    const locked = await attempt<number[] | undefined>(
-      failures,
-      undefined,
-      () => lockedPostgresPids(temp)
+    let locked: number[] | undefined;
+    failures.push(
+      ...(await attemptEach([
+        async () => {
+          if (child.exitCode === null && child.signalCode === null)
+            child.kill("SIGKILL");
+          await within(
+            exited.catch(() => undefined),
+            killWaitMs
+          );
+        },
+        async () => {
+          locked = await lockedPostgresPids(temp);
+        },
+      ]))
     );
     // 이미 끝난 것(ESRCH)은 넘어가고, 보내지 못한 것은 실패로 남긴다.
-    for (const pid of locked ?? [])
-      await attempt(failures, undefined, () => {
-        killUnlessGone(pid);
-      });
+    failures.push(
+      ...(await attemptEach(
+        (locked ?? []).map((pid) => () => {
+          killUnlessGone(pid);
+        })
+      ))
+    );
     // 준비 때 읽은 pid는 잠금 파일이 지워져도 이 서버의 Postgres다. 끝내지는 않고, 폴더를 지우기 전에 끝나기를 기다린다.
     // 대상마다 따로 기다려, 한 대상의 조회가 실패해도 나머지가 끝나기를 기다린다.
     const watched = [
       ...new Set([...(locked ?? []), ...(postgresPid ? [postgresPid] : [])]),
     ];
-    for (const pid of watched)
-      await attempt(failures, undefined, () => gone(pid, postgresExitMs));
+    failures.push(
+      ...(await attemptEach(
+        watched.map((pid) => () => gone(pid, postgresExitMs))
+      ))
+    );
     // 대상마다 따로 조회한다. 조회하지 못한 대상(권한·I/O 오류)은 끝났다고 보지 않고 `left`를 `undefined`로 둔다.
     let left: number[] | undefined = [];
-    for (const pid of [child.pid, ...watched]) {
-      if (!pid) continue;
-      const running = await attempt<boolean | undefined>(
-        failures,
-        undefined,
-        () => alive(pid)
-      );
-      if (running === undefined) left = undefined;
-      else if (running) left?.push(pid);
-    }
+    failures.push(
+      ...(await attemptEach(
+        [child.pid, ...watched].flatMap((pid) =>
+          pid
+            ? [
+                async () => {
+                  let running: boolean;
+                  try {
+                    running = await alive(pid);
+                  } catch (error) {
+                    left = undefined;
+                    throw error;
+                  }
+                  if (running) left?.push(pid);
+                },
+              ]
+            : []
+        )
+      ))
+    );
     if (locked === undefined)
       failures.push(
         new Error(
@@ -202,8 +220,8 @@ export async function startServerProcess({
           `남은 프로세스(pid ${left.join(", ")})가 있어 ${label}의 폴더를 지우지 않았다: ${folder}`
         )
       );
-    else await removeTemp(failures);
-    throw combine(failures);
+    else failures.push(...(await attemptEach([removeTemp])));
+    throw combinedFailure(failures, `${label} could not be cleaned up`);
   }
 
   let stopping: Promise<void> | undefined;
@@ -223,9 +241,7 @@ export async function startServerProcess({
       } catch (error) {
         return release([error]);
       }
-      const failures: unknown[] = [];
-      await removeTemp(failures);
-      if (failures.length > 0) throw combine(failures);
+      await attemptAll([removeTemp], `${label} could not be cleaned up`);
     })());
 
   try {
@@ -243,33 +259,6 @@ export async function startServerProcess({
     // `release`는 언제나 던진다. 시작 실패를 먼저 두고 정리 실패를 함께 알린다.
     stopping ??= release([error]);
     throw await stopping;
-  }
-}
-
-/** 실패가 하나면 그대로 돌려주고, 여럿이면 메시지를 이어 붙인 `AggregateError`로 돌려준다. */
-function combine(failures: unknown[]) {
-  if (failures.length === 1) return failures[0];
-  return new AggregateError(
-    failures,
-    failures
-      .map((failure) =>
-        failure instanceof Error ? failure.message : String(failure)
-      )
-      .join(" — 그리고 ")
-  );
-}
-
-/** `step`을 하고, 던지면 `failures`에 남기고 `fallback`을 돌려준다. 실패 정리는 한 단계가 실패해도 다음 단계를 한다. */
-async function attempt<T>(
-  failures: unknown[],
-  fallback: T,
-  step: () => T | Promise<T>
-): Promise<T> {
-  try {
-    return await step();
-  } catch (error) {
-    failures.push(error);
-    return fallback;
   }
 }
 

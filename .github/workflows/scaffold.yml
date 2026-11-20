@@ -323,7 +323,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 23
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -350,17 +350,22 @@ jobs:
         timeout-minutes: 4
         run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
-      # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
-      # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
+      # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 묶음 실행기로
+      # 띄운 서버와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
         timeout-minutes: 3
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+      # 작업자 실행기가 worker의 트리 전체(SIGTERM을 무시하는 명령, 새 세션으로 나간 명령)를 끄는지 이 시스템의 실제 프로세스로
+      # 본다(#262). macOS는 프로세스 그룹과 표식(ps), Windows는 묶음 실행기다.
+      - name: Check worker runner on this system
+        timeout-minutes: 3
+        run: node --test .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
   test-windows:
     name: runtime on windows-latest
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 23
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -387,11 +392,16 @@ jobs:
         timeout-minutes: 4
         run: pnpm --filter @babojubot/server exec vitest run --config vitest.files.config.ts
       # 기본 설정의 서버가 이 시스템에서 실제로 뜨는지 본다. 내장 DB와 migration, 강제 종료 뒤 남은 DB의 정상 정지까지 포함한다.
-      # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 taskkill
-      # 분기와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
+      # 내장 DB는 pg_ctl로 켜므로 Windows CI의 관리자 계정에서도 뜬다. 부모 설정 격리와 시한에서의 정리(Windows는 묶음 실행기로
+      # 띄운 서버와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
         timeout-minutes: 3
         run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+      # 작업자 실행기가 worker의 트리 전체(SIGTERM을 무시하는 명령, 새 세션으로 나간 명령)를 끄는지 이 시스템의 실제 프로세스로
+      # 본다(#262). macOS는 프로세스 그룹과 표식(ps), Windows는 묶음 실행기다.
+      - name: Check worker runner on this system
+        timeout-minutes: 3
+        run: node --test .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
   # Windows의 서버 정상 종료와 화면 E2E(#189). Windows에서는 부모가 신호로 서버에 정리를 맡길 수 없어 멈춤 메시지를 쓴다.
   # 서버 진입점의 멈춤 시험(POSIX 전용 신호·프로세스 그룹 시험은 건너뜀)과 Chromium 전체 E2E를 이 시스템에서 돈다.
   # 전체 시간을 줄이려고 E2E를 두 job으로 나눠(Playwright shard) 동시에 돈다. 두 job은 shard 번호와 멈춤 시험(1/2만) 말고

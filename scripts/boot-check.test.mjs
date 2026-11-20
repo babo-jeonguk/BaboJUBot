@@ -17,12 +17,16 @@ import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import {
-  cleanUpAll,
   folderCleanup,
   killUnlessGone,
   processAlive as isAlive,
   withCleanup,
 } from "@babojubot/runtime/test-cleanup";
+import {
+  attemptAll,
+  attemptEach,
+  combinedFailure,
+} from "../packages/contracts/src/failure.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;
@@ -158,9 +162,8 @@ test(
       () => assert.fail("the supervisor did not report the failed step"),
       (error) => error
     );
-    assert.ok(error instanceof AggregateError, String(error));
     assert.match(
-      error.errors.map((e) => e.message).join("\n"),
+      String(error.cause?.message),
       /stop the Postgres left in the folder: .*EACCES/
     );
     const scope = /could not clean up (\S+)/.exec(error.message)?.[1];
@@ -213,9 +216,8 @@ test(
           );
       });
       assert.ok(error, "the supervisor did not report the running process");
-      assert.ok(error instanceof AggregateError, String(error));
       assert.ok(scope, error.message);
-      const messages = error.errors.map((e) => e.message).join("\n");
+      const messages = String(error.cause?.message);
       assert.match(
         messages,
         /wait for the folder's processes to end: still running/
@@ -271,10 +273,9 @@ test(
           );
       });
       assert.ok(error, "the supervisor did not report the held output");
-      assert.ok(error instanceof AggregateError, String(error));
       assert.ok(scope, error.message);
       assert.match(
-        error.errors.map((e) => e.message).join("\n"),
+        String(error.cause?.message),
         new RegExp(`kept ${RegExp.escape(scope)}`)
       );
       assert.equal(existsSync(scope), true, `${scope} was removed`);
@@ -326,7 +327,8 @@ async function occupyOldDefaultPort() {
 /**
  * 스크립트를 감독하며 돌린다. 임시 폴더(`TMPDIR` 등)를 이 감독자의 폴더로 정해 넘긴다. POSIX에서는 자기 프로세스 그룹으로 띄운다.
  * `leftBehind`는 스크립트가 끝난 직후 그 폴더에 남은 것, `leftAfterCleanup`은 감독자가 치운 뒤에 남은 것이다.
- * 치우기는 실행이 어떻게 끝났든 `finally`에서 단계마다 따로 시도하고, 실패한 단계는 원래 실패와 함께 알린다.
+ * 치우기는 실행이 어떻게 끝났든 따로 시도하고(`attemptEach`), 실패한 단계는 원래 실패와 함께 알린다. 치우기 실패는 그 폴더와
+ * 실행 결과를 문구에, 실패한 단계들을 `cause`에 담는다.
  */
 async function supervise(
   args,
@@ -336,63 +338,67 @@ async function supervise(
   const scope = await mkdtemp(path.join(tmpdir(), "boot-check-supervised-"));
   let child;
   let result;
-  let failure;
   // 띄운 실행의 출력 통로가 닫힌 것을 확인했는가. 띄우지 못했으면 확인할 출력이 없다.
   let outputClosed = true;
-  try {
-    child = spawn(process.execPath, args, {
-      cwd: root,
-      env: { ...env, TMPDIR: scope, TMP: scope, TEMP: scope },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+  // 실행과 정리를 따로 시도한다. 정리는 실행이 어떻게 끝났든 단계마다 따로 하고, 실패한 단계는 원래 실패와 함께 알린다.
+  const failures = await attemptEach([
+    async () => {
+      child = spawn(process.execPath, args, {
+        cwd: root,
+        env: { ...env, TMPDIR: scope, TMP: scope, TEMP: scope },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
+      outputClosed = false;
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      // 끝남은 exit로 본다. spawn 직후에 붙여 한 번만 오는 사건을 놓치지 않는다. close는 stdout/stderr를 끝까지 읽은 뒤
+      // 오지만, 끝난 프로세스가 남긴 자식이 출력 통로를 물려받아 잡고 있으면 오지 않는다(그 자식은 남은 것이다).
+      const exited = new Promise((resolve) => {
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+        child.once("error", (error) =>
+          resolve({ code: null, signal: null, error })
+        );
+      });
+      const closed = new Promise((resolve) => {
+        child.once("close", () => resolve(true));
+      });
+      let exit = await within(exited, limit);
+      const overrun = !exit;
+      if (!exit) exit = await forceStop(child, exited, graceMs);
+      outputClosed = (await within(closed, 5_000)) === true;
+      if (!outputClosed) {
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+      result = {
+        ...(exit ?? { code: null, signal: null }),
+        stdout,
+        stderr,
+        overrun,
+        leftBehind: leftovers(scope, outputClosed),
+      };
+    },
+    async () => {
+      const problems = await cleanUpScope(scope, child, outputClosed);
+      if (result) result.leftAfterCleanup = leftovers(scope);
+      if (problems.length > 0)
+        throw new Error(
+          `the supervisor could not clean up ${scope}${result ? `\n${describe(result)}` : ""}`,
+          { cause: combinedFailure(problems, "cleanup steps failed") }
+        );
+    },
+  ]);
+  if (failures.length > 0)
+    throw combinedFailure(failures, "the supervised run failed", {
+      cause: failures[0],
     });
-    outputClosed = false;
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    // 끝남은 exit로 본다. spawn 직후에 붙여 한 번만 오는 사건을 놓치지 않는다. close는 stdout/stderr를 끝까지 읽은 뒤
-    // 오지만, 끝난 프로세스가 남긴 자식이 출력 통로를 물려받아 잡고 있으면 오지 않는다(그 자식은 남은 것이다).
-    const exited = new Promise((resolve) => {
-      child.once("exit", (code, signal) => resolve({ code, signal }));
-      child.once("error", (error) =>
-        resolve({ code: null, signal: null, error })
-      );
-    });
-    const closed = new Promise((resolve) => {
-      child.once("close", () => resolve(true));
-    });
-    let exit = await within(exited, limit);
-    const overrun = !exit;
-    if (!exit) exit = await forceStop(child, exited, graceMs);
-    outputClosed = (await within(closed, 5_000)) === true;
-    if (!outputClosed) {
-      child.stdout.destroy();
-      child.stderr.destroy();
-    }
-    result = {
-      ...(exit ?? { code: null, signal: null }),
-      stdout,
-      stderr,
-      overrun,
-      leftBehind: leftovers(scope, outputClosed),
-    };
-  } catch (error) {
-    failure = error;
-  }
-  // 실행의 실패는 위에서 모두 받았다. 정리는 단계마다 따로 시도하고 그 실패를 모아 원래 실패와 함께 알린다.
-  const problems = await cleanUpScope(scope, child, outputClosed);
-  if (result) result.leftAfterCleanup = leftovers(scope);
-  if (problems.length > 0)
-    throw new AggregateError(
-      failure ? [failure, ...problems] : problems,
-      `the supervisor could not clean up ${scope}${result ? `\n${describe(result)}` : ""}`
-    );
-  if (failure) throw failure;
   return result;
 }
 
@@ -420,35 +426,39 @@ async function forceStop(child, exited, graceMs) {
  * Postgres 멈추기가 실패해도 남은 프로세스는 마지막 확인이 따로 보므로, 그 실패만으로 폴더를 남기지 않는다.
  */
 async function cleanUpScope(scope, child, outputClosed) {
-  const problems = [];
-  const attempt = async (what, work) => {
+  /** 단계 이름을 붙여 던지는 정리 단계. 실패는 `attemptEach`가 모은다. */
+  const step = (what, work) => async () => {
     try {
       await work();
-      return true;
     } catch (error) {
-      problems.push(new Error(`${what}: ${error?.message ?? error}`));
-      return false;
+      throw new Error(`${what}: ${error?.message ?? error}`, { cause: error });
     }
   };
   // POSIX에서 그룹에 남은 자식. Windows는 트리를 부모가 살아 있을 때만 따라갈 수 있어 forceStop에서 끝냈다.
-  const groupStopped =
-    !child ||
-    process.platform === "win32" ||
-    (await attempt("stop the process group", () =>
-      signalGroup(child, "SIGKILL")
-    ));
-  await attempt("stop the Postgres left in the folder", () =>
-    stopPostmasters(scope)
-  );
-  const ended = await attempt(
-    "wait for the folder's processes to end",
-    async () => {
+  let groupStopped = !child || process.platform === "win32";
+  let ended = false;
+  const problems = await attemptEach([
+    ...(groupStopped
+      ? []
+      : [
+          step("stop the process group", () => {
+            signalGroup(child, "SIGKILL");
+            groupStopped = true;
+          }),
+        ]),
+    step("stop the Postgres left in the folder", () => stopPostmasters(scope)),
+    step("wait for the folder's processes to end", async () => {
       if (!(await waitUntil(() => runningIn(scope).length === 0, 10_000)))
         throw new Error(`still running: ${runningIn(scope).join("; ")}`);
-    }
-  );
+      ended = true;
+    }),
+  ]);
   if (groupStopped && ended && outputClosed)
-    await attempt("remove the folder", () => removeFolder(scope));
+    problems.push(
+      ...(await attemptEach([
+        step("remove the folder", () => removeFolder(scope)),
+      ]))
+    );
   else
     problems.push(
       new Error(
@@ -501,7 +511,7 @@ function killTree(child) {
  */
 async function stopPostmasters(scope) {
   if (process.platform === "win32") return;
-  await cleanUpAll(
+  await attemptAll(
     postmasterPids(scope).map((pid) => async () => {
       if (!commandLine(pid).includes(scope)) return;
       for (const signal of ["SIGQUIT", "SIGKILL"]) {

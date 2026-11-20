@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import {
@@ -9,6 +8,7 @@ import {
   orIfProbeFailed,
   settled,
 } from "@babojubot/contracts";
+import { runCommand } from "./bounded-command.ts";
 import { type Clock, realClock } from "./clock.ts";
 
 /**
@@ -23,6 +23,49 @@ import { type Clock, realClock } from "./clock.ts";
  */
 export const leaseVariable = "BABOJUBOT_PROCESS_LEASE";
 export const leaseEntry = (lease: string) => `${leaseVariable}=${lease}`;
+/**
+ * 표식 변수 이름. 실행 시도 안에서 다시 띄운 트리(작업자가 돌리는 시험, 기록 중계 등)는 바깥 트리의 표식을 지운 채 새 표식만
+ * 가지면 바깥 트리의 끄기가 그 트리에 닿지 못한다. 그래서 띄우는 쪽이 가진 표식을 모두 물려주고 새 표식은 다음 번호의 이름에 둔다.
+ * 첫째 이름은 예전 기록·시험과 같은 `BABOJUBOT_PROCESS_LEASE`다.
+ */
+const leaseName = (index: number) =>
+  index === 0 ? leaseVariable : `${leaseVariable}_${index}`;
+const leaseNamePattern = new RegExp(`^${leaseVariable}(?:_\\d+)?$`);
+/** 환경 항목 하나(`이름=값`)가 이 표식인가. 표식 변수 이름 가운데 하나에 값이 정확히 같아야 한다. */
+export function isLeaseEntry(entry: string, lease: string) {
+  const equals = entry.indexOf("=");
+  return (
+    equals > 0 &&
+    leaseNamePattern.test(entry.slice(0, equals)) &&
+    entry.slice(equals + 1) === lease
+  );
+}
+/** 환경에 든 표식 값. */
+const leasesIn = (env: NodeJS.ProcessEnv) =>
+  Object.entries(env).flatMap(([name, value]) =>
+    leaseNamePattern.test(name) && value ? [value] : []
+  );
+/**
+ * 새로 띄울 트리의 환경. `env`의 표식 변수는 빼고, `env`와 이 프로세스(`own`, 기본은 지금 환경)가 가진 표식을 앞 번호에,
+ * 새 표식 `lease`를 마지막 번호에 둔다. 그래서 이 트리의 자손은 바깥 트리들의 표식도 함께 가진다.
+ */
+export function withLease(
+  env: NodeJS.ProcessEnv,
+  lease: string,
+  own: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const outer = [...new Set([...leasesIn(own), ...leasesIn(env)])].filter(
+    (value) => value !== lease
+  );
+  return {
+    ...Object.fromEntries(
+      Object.entries(env).filter(([name]) => !leaseNamePattern.test(name))
+    ),
+    ...Object.fromEntries(
+      [...outer, lease].map((value, index) => [leaseName(index), value])
+    ),
+  };
+}
 
 /** 끝났거나(ENOENT·ESRCH) 다른 사용자의 것이라 읽을 수 없는(EACCES·EPERM) 프로세스의 /proc 읽기 오류. */
 const unreadable = hasErrorCode("ENOENT", "ESRCH", "EACCES", "EPERM");
@@ -59,7 +102,7 @@ export async function holdsLease(pid: number, lease: string) {
     if (unreadable(e)) return false;
     throw e;
   }
-  return environment.split("\0").includes(leaseEntry(lease));
+  return environment.split("\0").some((entry) => isLeaseEntry(entry, lease));
 }
 
 /** 찾은 결과. `holders`는 표식을 확인한 프로그램, `unverified`는 우리 것일 수 있지만 환경을 읽을 수 없어 확인하지 못한 프로그램이다. */
@@ -109,7 +152,6 @@ async function linuxHolders(
 ): Promise<LeaseLookup> {
   const holders: number[] = [];
   const unverified: number[] = [];
-  const entry = leaseEntry(lease);
   // 서버의 cgroup은 확인이 필요할 때 한 번만 읽는다.
   let serverCgroup: Promise<string | undefined> | undefined;
   for (const name of await readdir("/proc")) {
@@ -136,25 +178,29 @@ async function linuxHolders(
       }
       continue;
     }
-    if (environment.split("\0").includes(entry)) holders.push(pid);
+    if (environment.split("\0").some((entry) => isLeaseEntry(entry, lease)))
+      holders.push(pid);
   }
   return { holders, unverified };
 }
 
-const ps = (extra: string[]) =>
-  new Promise<string>((resolve, reject) =>
-    execFile(
-      "ps",
-      ["-A", "-ww", ...extra, "-o", "pid=,command="],
-      {
-        encoding: "utf8",
-        env: { ...process.env, LC_ALL: "C" },
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: 15_000,
-      },
-      (error, stdout) => (error ? reject(error) : resolve(stdout))
-    )
+/** `ps` 목록. 시한(15초)에 끝을 보장하고(`runCommand`), 끝나지 않거나 실패하면 던진다. 공용 실행의 끄기가 쓰는 조회라 그 위에 놓지 않는다. */
+const ps = async (extra: string[]) => {
+  const result = await runCommand(
+    "ps",
+    ["-A", "-ww", ...extra, "-o", "pid=,command="],
+    {
+      env: { ...process.env, LC_ALL: "C" },
+      maxOutputBytes: 64 * 1024 * 1024,
+      limitMs: 15_000,
+    }
   );
+  if (result.killed || result.code !== 0)
+    throw new Error(
+      `ps ended with ${result.killed ? "its time limit" : (result.signal ?? `code ${result.code}`)}`
+    );
+  return result.stdout;
+};
 
 /** `ps -o pid=,command=` 출력의 번호별 줄. */
 function byPid(listing: string) {
@@ -180,11 +226,12 @@ export function lookupInPs(
 ): LeaseLookup {
   const plainBefore = byPid(before);
   const plainAfter = byPid(after);
-  const entry = leaseEntry(lease);
   const holders: number[] = [];
   const unverified: number[] = [];
+  const marked = (text: string) =>
+    text.split(/\s+/).some((token) => isLeaseEntry(token, lease));
   for (const [pid, line] of byPid(withEnvironment)) {
-    if (!line.split(/\s+/).includes(entry)) continue;
+    if (!marked(line)) continue;
     const command = plainBefore.get(pid);
     const confirmed =
       command !== undefined &&
@@ -194,13 +241,7 @@ export function lookupInPs(
       unverified.push(pid);
       continue;
     }
-    if (
-      line
-        .slice(command.length + 1)
-        .split(/\s+/)
-        .includes(entry)
-    )
-      holders.push(pid);
+    if (marked(line.slice(command.length + 1))) holders.push(pid);
   }
   return { holders, unverified };
 }

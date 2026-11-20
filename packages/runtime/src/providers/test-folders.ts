@@ -2,10 +2,14 @@ import type { ChildProcess } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { RuntimeAdapter } from "@babojubot/contracts";
 import { afterEach } from "vitest";
 import { removeFolder } from "../remove-folder.ts";
-import { cleanUpAll } from "../test-cleanup.ts";
+import {
+  attemptAll,
+  attemptEach,
+  combinedFailure,
+  type RuntimeAdapter,
+} from "@babojubot/contracts";
 
 type Hook = (cleanup: () => Promise<void>) => void;
 /** 시험이 만든 프로바이더 연결. 멈춤 신호를 받는 호출(실행·준비 확인·압축·모델 목록)을 정리가 맡는다. */
@@ -79,21 +83,23 @@ export function testFolders(
     };
   };
   hook(async () => {
-    const failures: unknown[] = [];
-    for (const { stop, what } of stops.splice(0).reverse())
-      try {
-        await within(stop(), what, stopTimeoutMs);
-      } catch (error) {
-        failures.push(error);
-      }
+    const failures = await attemptEach(
+      stops
+        .splice(0)
+        .reverse()
+        .map(
+          ({ stop, what }) =>
+            () =>
+              within(stop(), what, stopTimeoutMs)
+        )
+    );
+    // 끝나지 않은 것이 있으면 폴더는 지우지 않고 남긴다.
     if (failures.length) {
       folders.splice(0);
-      throw failures.length === 1
-        ? failures[0]
-        : new AggregateError(failures, "test cleanup failed");
+      throw combinedFailure(failures, "test cleanup failed");
     }
     // 한 폴더를 지우지 못해도 나머지를 지우고, 지우지 못한 폴더를 모두 알린다.
-    await cleanUpAll(
+    await attemptAll(
       folders.splice(0).map((folder) => () => removeFolder(folder))
     );
   });

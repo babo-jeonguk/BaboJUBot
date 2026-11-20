@@ -27,7 +27,7 @@ export function gitIgnores(root, location) {
   const result = spawnSync(
     "git",
     ["check-ignore", "--no-index", "-q", location],
-    { cwd: root, encoding: "utf8", timeout: 30_000 }
+    { cwd: root, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" }
   );
   if (result.error) throw result.error;
   if (result.status === 0) return true;

@@ -1,8 +1,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { attemptEach, combinedFailure } from "@babojubot/contracts";
 import { openEphemeralDatabase } from "@babojubot/db";
 import { createFakeProviders } from "@babojubot/runtime";
 import { startServer } from "../src/app.ts";
+import { closeStarted } from "../src/shutdown.ts";
 import { shutdownBudget } from "../src/shutdown-budget.ts";
 import { onStopRequest } from "../src/stop-request.ts";
 
@@ -53,22 +55,16 @@ const stop = () => {
     console.error(`[clock-server] shutdown did not finish in ${deadlineMs}ms`);
     process.exit(1);
   }, budget.cleanupMs).unref();
-  let failed = false;
-  const fail = (error: unknown) => {
-    failed = true;
-    console.error("[clock-server] shutdown failed", error);
-  };
-  const shutdown = async () => {
-    const started = await startup.catch(fail);
-    if (started) {
-      await started.server?.close().catch(fail);
-      await started.handle.close().catch(fail);
+  // 서버와 DB를 제품 진입점과 같은 순서로 닫는다. 하나가 실패해도 나머지를 닫고, 실패는 알린 뒤 실패 코드로 끝낸다.
+  void closeStarted(startup, (message, error) =>
+    console.error(message, error)
+  ).then(
+    (ok) => process.exit(ok ? 0 : 1),
+    (error: unknown) => {
+      console.error("[clock-server] shutdown failed", error);
+      process.exit(1);
     }
-  };
-  // 끝나기 전의 실패도 남기고 실패 코드로 끝낸다.
-  shutdown()
-    .catch(fail)
-    .finally(() => process.exit(failed ? 1 : 0));
+  );
 };
 onStopRequest(process, stop);
 
@@ -91,13 +87,11 @@ const startup = (async () => {
     return { handle, server };
   } catch (error) {
     // 시작 실패를 그대로 알린다. DB 닫기가 실패하면 그 실패를 함께 알린다.
-    await handle.close().catch((closing) => {
-      throw new AggregateError(
-        [error, closing],
-        "the server did not start and closing its database failed"
-      );
-    });
-    throw error;
+    throw combinedFailure(
+      [error, ...(await attemptEach([() => handle.close()]))],
+      "the server did not start and closing its database failed",
+      { cause: error }
+    );
   }
 })();
 const { server } = await startup;

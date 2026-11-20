@@ -902,7 +902,7 @@ const noCleanupInFinally = {
     schema: [],
     messages: {
       awaited:
-        "finally에서 정리를 기다립니다. 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛰어 프로그램·폴더가 남습니다. 자원을 잡은 직후 정리를 등록하세요: Vitest는 onTestFinished, 시험 중간·node:test·Playwright는 withCleanup(@babojubot/runtime/test-cleanup)의 defer. 등록한 정리는 역순으로 모두 돌고 그 실패는 원래 실패와 함께 보고됩니다. 앞 단계가 끝나야 하는 정리(프로그램을 끈 뒤 그 폴더 지우기)는 한 등록 안에 차례로 두고, 서로 무관한 단계는 cleanUpAll로 모두 시도하세요. CODING_STANDARDS.md#정리",
+        "finally에서 정리를 기다립니다. 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛰어 프로그램·폴더가 남습니다. 자원을 잡은 직후 정리를 등록하세요: Vitest는 onTestFinished, 시험 중간·node:test·Playwright는 withCleanup(@babojubot/runtime/test-cleanup)의 defer. 등록한 정리는 역순으로 모두 돌고 그 실패는 원래 실패와 함께 보고됩니다. 앞 단계가 끝나야 하는 정리(프로그램을 끈 뒤 그 폴더 지우기)는 한 등록 안에 차례로 두고, 서로 무관한 단계는 attemptAll로 모두 시도하세요. CODING_STANDARDS.md#정리",
       thrown:
         "finally에서 던질 수 있는 동기 정리(process.kill·*Sync)를 부릅니다. 대상이 이미 끝났거나 지우기가 실패하면 그 오류가 시험의 원래 실패를 가리고 뒤 정리를 건너뜁니다. 이미 사라진 대상만 넘어가는 끄기 함수(killAndWait 등)를 쓰고, 정리는 자원을 잡은 직후 onTestFinished나 withCleanup(@babojubot/runtime/test-cleanup)의 defer로 등록하세요. CODING_STANDARDS.md#정리",
     },
@@ -1263,9 +1263,9 @@ const noSkippedCleanup = {
     schema: [],
     messages: {
       skipped:
-        "정리 hook·fixture가 정리를 차례로 기다립니다. 앞 정리가 실패하면 거기서 끝나 뒤 자원(서버·listener·폴더)이 남습니다. 자원을 잡은 직후 onTestFinished(Vitest)나 withCleanup의 defer로 각각 등록하거나, 서로 무관한 단계는 cleanUpAll(@babojubot/runtime/test-cleanup)로 모두 시도하세요. 앞 단계가 끝나야 안전한 단계(프로그램을 끈 뒤 그 폴더 지우기)는 folderCleanup(…).own(…)에 맡기거나 cleanUpAll의 한 단계 안에 차례로 둡니다. CODING_STANDARDS.md#정리",
+        "정리 hook·fixture가 정리를 차례로 기다립니다. 앞 정리가 실패하면 거기서 끝나 뒤 자원(서버·listener·폴더)이 남습니다. 자원을 잡은 직후 onTestFinished(Vitest)나 withCleanup의 defer로 각각 등록하거나, 서로 무관한 단계는 attemptAll(@babojubot/contracts)로 모두 시도하세요. 앞 단계가 끝나야 안전한 단계(프로그램을 끈 뒤 그 폴더 지우기)는 folderCleanup(…).own(…)에 맡기거나 attemptAll의 한 단계 안에 차례로 둡니다. CODING_STANDARDS.md#정리",
       caught:
-        "정리 hook·fixture가 정리 여러 개를 한 try…catch로 감쌉니다. 앞 정리가 실패하면 catch로 넘어가, 실패는 모아도 같은 try의 뒤 정리(반복이면 남은 차례)를 건너뛰어 뒤 자원이 남습니다. 서로 무관한 단계는 cleanUpAll(@babojubot/runtime/test-cleanup)로 모두 시도하거나 자원을 잡은 직후 onTestFinished(Vitest)나 withCleanup의 defer로 각각 등록하고, 직접 모으려면 정리마다(반복이면 차례마다) catch를 두세요. 앞 단계가 끝나야 안전한 단계(프로그램을 끈 뒤 그 폴더 지우기)는 folderCleanup(…).own(…)에 맡깁니다. CODING_STANDARDS.md#정리",
+        "정리 hook·fixture가 정리 여러 개를 한 try…catch로 감쌉니다. 앞 정리가 실패하면 catch로 넘어가, 실패는 모아도 같은 try의 뒤 정리(반복이면 남은 차례)를 건너뛰어 뒤 자원이 남습니다. 서로 무관한 단계는 attemptAll(@babojubot/contracts)로 모두 시도하거나 자원을 잡은 직후 onTestFinished(Vitest)나 withCleanup의 defer로 각각 등록하고, 직접 모으려면 정리마다(반복이면 차례마다) catch를 두세요. 앞 단계가 끝나야 안전한 단계(프로그램을 끈 뒤 그 폴더 지우기)는 folderCleanup(…).own(…)에 맡깁니다. CODING_STANDARDS.md#정리",
     },
   },
   create(context) {
@@ -1724,7 +1724,7 @@ function dropsCloseError(callback, resolver, sourceCode) {
 /**
  * Node 서버의 `close(callback)`는 닫기 실패(이미 닫힘·열린 적 없음)를 콜백의 첫 인수로 알린다. 전역 Promise의 `resolve`를 그대로
  * 넘기거나(`new Promise((r) => server.close(r))`) 오류를 읽지 않고 `resolve`를 부르면 Promise가 이행해, 정리 등록 도우미
- * (onTestFinished·cleanUpAll·withCleanup)가 닫기 실패를 보고하지 못한다(CODING_STANDARDS.md#정리).
+ * (onTestFinished·attemptAll·withCleanup)가 닫기 실패를 보고하지 못한다(CODING_STANDARDS.md#정리).
  * 오류 계약을 아는 Node 서버(net·http·https)만 본다: 같은 파일에서 출처를 확인할 수 있는 값(`serverShapes`). 성공만 알리는 다른
  * `close` 콜백(dgram 소켓 등)과 출처를 모르는 값은 짚지 않는다.
  */
@@ -1738,7 +1738,7 @@ const noIgnoredCloseError = {
     schema: [],
     messages: {
       dropped:
-        "서버 닫기의 실패를 버립니다. Node 서버의 close는 실패(이미 닫힘·열린 적 없음)를 콜백의 첫 인수로 알리는데, 그 콜백이 resolve이거나 오류를 읽지 않고 resolve를 부르면 Promise가 이행해 정리 실패가 보고되지 않습니다. close((error) => (error ? reject(error) : resolve()))로 거절하세요. 서버 여러 개를 닫으면 하나가 실패해도 나머지를 닫게 cleanUpAll(@babojubot/runtime/test-cleanup)의 단계로 나누거나 서버마다 onTestFinished로 등록합니다. CODING_STANDARDS.md#정리",
+        "서버 닫기의 실패를 버립니다. Node 서버의 close는 실패(이미 닫힘·열린 적 없음)를 콜백의 첫 인수로 알리는데, 그 콜백이 resolve이거나 오류를 읽지 않고 resolve를 부르면 Promise가 이행해 정리 실패가 보고되지 않습니다. close((error) => (error ? reject(error) : resolve()))로 거절하세요. 서버 여러 개를 닫으면 하나가 실패해도 나머지를 닫게 attemptAll(@babojubot/contracts)의 단계로 나누거나 서버마다 onTestFinished로 등록합니다. CODING_STANDARDS.md#정리",
     },
   },
   create(context) {

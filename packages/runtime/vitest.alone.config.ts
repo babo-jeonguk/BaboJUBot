@@ -4,6 +4,8 @@ import { defineConfig } from "vitest/config";
 // 그 프로그램을 자기 것일 수 있다고 보므로(#219), 나머지 시험이 끝난 뒤 파일 하나씩 차례로 돈다.
 export default defineConfig({
   test: {
+    // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 시험 파일마다 준비한다.
+    setupFiles: ["src/providers/launcher-setup-support.ts"],
     include: ["src/**/*.alone.test.ts"],
     fileParallelism: false,
     hookTimeout: 60_000,

@@ -1,3 +1,5 @@
+import { attemptEach } from "@babojubot/contracts";
+
 /** 시작 결과(서버는 시작 중에 멈추라고 했으면 없다)와 그 자원. */
 export type Started = {
   server?: { close(): Promise<void>; progress?(): string };
@@ -14,7 +16,6 @@ export async function closeStarted(
   report: (message: string, error: unknown) => void,
   onStep: (where: () => string) => void = () => {}
 ): Promise<boolean> {
-  let failed = false;
   /** 끝난 단계와 걸린 시간. */
   const took: string[] = [];
   let current: string | undefined;
@@ -31,25 +32,35 @@ export async function closeStarted(
   };
   step("the start", () => undefined);
   // 시작이 실패했으면 열린 자원은 시작 쪽이 이미 닫았다. 실패는 그대로 알린다.
-  const started = await startup.catch((error: unknown) => {
-    failed = true;
+  let started: Started;
+  try {
+    started = await startup;
+  } catch (error) {
     report("[server] start failed", error);
-  });
-  if (!started) return false;
-  const close = async (resource: { close(): Promise<void> }) => {
-    await resource.close().catch((error: unknown) => {
-      failed = true;
-      report("[server] shutdown failed", error);
-    });
-  };
-  const { server, handle } = started;
-  if (server) {
-    step("the server", () => server.progress?.());
-    await close(server);
+    return false;
   }
-  step("the database", () => handle.progress?.());
-  await close(handle);
-  return !failed;
+  const { server, handle } = started;
+  // 실패는 닫기가 끝나는 대로 알린다. 뒤 닫기가 정리 시한을 넘겨 멈춰도 앞 실패는 남는다.
+  const close = async (resource: { close(): Promise<void> }) => {
+    try {
+      await resource.close();
+    } catch (error) {
+      report("[server] shutdown failed", error);
+      throw error;
+    }
+  };
+  const failures = await attemptEach([
+    async () => {
+      if (!server) return;
+      step("the server", () => server.progress?.());
+      await close(server);
+    },
+    async () => {
+      step("the database", () => handle.progress?.());
+      await close(handle);
+    },
+  ]);
+  return failures.length === 0;
 }
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;

@@ -2,15 +2,20 @@
 // 서버가 정리 없이 끝나 내장 DB가 남으면 다음 시작이 그 DB를 정상 정지하고 다시 뜨는지, 닫을 때 정상 정지하는지도 본다.
 // CI의 macOS·Windows 작업이 부른다. 상속 환경과 상관없이 임시 폴더·빈 port만 쓰고, 끝나면 DB가 실제로 멈춘 것을 기다린 뒤 폴더를 지운다.
 // 멈춤(자기 시한·SIGTERM·SIGINT)은 진행 중인 단계를 끊지 않고 다음 단계 경계에서 받아 한 곳의 정리로 끝낸다(boot-check-flow.mjs).
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import {
+  launchTree,
+  prepareJobObjectLauncher,
+} from "@babojubot/runtime/launch";
 import { processAlive } from "@babojubot/runtime/test-cleanup";
 import {
+  attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
@@ -65,12 +70,21 @@ function serverEnv() {
   };
 }
 
-/** 서버를 띄워 그 서버가 알린 URL의 API가 답하면 서버 프로세스만 강제로 끝낸다(IDE 강제 정지·OOM과 같은 상황). 내장 DB는 따로 남는다. */
+/**
+ * 서버를 띄워 그 서버가 알린 URL의 API가 답하면 서버 프로세스만 강제로 끝낸다(IDE 강제 정지·OOM과 같은 상황). 내장 DB는 따로 남는다.
+ * 서버는 공용 실행으로 띄워, 남은 것은 마지막 정리가 그 트리째 끄고 확인한다.
+ */
 async function serveAndKill(label) {
-  const server = spawn(process.execPath, ["apps/server/src/main.ts"], {
+  // Windows는 묶음 실행기 없이 띄우지 않는다(남긴 서버를 끌 수 없다). 다른 시스템에서는 아무것도 하지 않는다.
+  await prepareJobObjectLauncher(path.join(home, "boot-check"));
+  const server = launchTree({
+    command: [process.execPath],
+    args: ["apps/server/src/main.ts"],
+    cwd: process.cwd(),
     env: serverEnv(),
     stdio: ["ignore", "pipe", "pipe"],
   });
+  servers.push(server);
   let stdoutTail = "";
   let stderrTail = "";
   let pendingLine = "";
@@ -78,24 +92,15 @@ async function serveAndKill(label) {
   let exitInfo;
   let hasExited = false;
   let spawnError;
-  // 한 번만 오는 사건을 놓치지 않게 spawn 직후에 붙인다. error가 나면 exit가 오지 않아도 기다림을 끝낸다.
-  const exited = new Promise((resolve) => {
-    server.once("exit", (code, signal) => {
-      hasExited = true;
-      exitInfo = { code, signal };
-      resolve();
-    });
-    server.once("error", (error) => {
-      spawnError = error;
-      resolve();
-    });
+  // 시작 실패면 끝(exited)도 함께 온다. 기다림은 두 표시를 본다.
+  void server.started.then((started) => {
+    if (started.kind === "failed") spawnError = new Error(started.reason);
   });
-  current = {
-    label,
-    server,
-    exited,
-    output: () => outputTail(stdoutTail, stderrTail),
-  };
+  void server.exited.then((exit) => {
+    hasExited = true;
+    exitInfo = exit;
+  });
+
   server.stdout?.setEncoding("utf8");
   server.stderr?.setEncoding("utf8");
   server.stdout?.on("data", (chunk) => {
@@ -117,103 +122,77 @@ async function serveAndKill(label) {
     stderrTail = (stderrTail + String(chunk)).slice(-4000);
   });
 
-  let failure;
-  try {
-    while (!readyUrl) {
-      if (spawnError)
-        throw new Error(
-          `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
-        );
-      if (hasExited)
-        throw new Error(
-          `${label}: server exited before it was ready (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
-        );
-      await delay(50);
-    }
-
-    let overview;
-    // 마지막 시도가 왜 답을 받지 못했는지. 시한에 닿아 멈출 때 원인으로 함께 알린다.
-    let lastAttempt = "no attempt yet";
-    while (overview === undefined) {
-      // 멈춤 문구는 다른 단계와 같은 "단계: 이유"로 시작하고, 마지막 시도가 답을 받지 못한 원인을 뒤에 붙인다.
-      if (stop.reason)
-        throw new Error(
-          `${label}: ${stop.reason} (last /api/overview attempt: ${lastAttempt})`
-        );
-      if (spawnError)
-        throw new Error(
-          `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
-        );
-      if (hasExited)
-        throw new Error(
-          `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
-        );
-      // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
-      overview = await continueAfterFailure(
-        async () => {
-          const response = await fetch(`${readyUrl}/api/overview`, {
-            signal: AbortSignal.timeout(fetchTimeoutMs),
-          });
-          lastAttempt = `HTTP ${response.status}`;
-          return response.ok ? await response.json() : undefined;
-        },
-        (error) => {
-          lastAttempt = failureCode(error.cause ?? error);
+  // 준비를 기다리고, 그 성패와 상관없이 서버를 강제로 끝내고 그 끝을 확인한다. 둘 다 실패하면 둘 다 알린다.
+  await attemptAll(
+    [
+      async () => {
+        while (!readyUrl) {
+          if (spawnError)
+            throw new Error(
+              `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
+            );
+          if (hasExited)
+            throw new Error(
+              `${label}: server exited before it was ready (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
+            );
+          await delay(50);
         }
-      );
-      if (overview === undefined) await delay(250);
-    }
-    console.log(
-      `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
-    );
-  } catch (error) {
-    failure = error;
-  }
-  try {
-    await stopServer(server, exited, () => hasExited);
-  } catch (stopError) {
-    if (failure) {
-      console.error(
-        `${label}: could not confirm the server stopped: ${stopError instanceof Error ? stopError.message : stopError}`
-      );
-    } else {
-      throw stopError;
-    }
-  }
-  current = undefined;
-  if (failure) throw failure;
+
+        let overview;
+        // 마지막 시도가 왜 답을 받지 못했는지. 시한에 닿아 멈출 때 원인으로 함께 알린다.
+        let lastAttempt = "no attempt yet";
+        while (overview === undefined) {
+          // 멈춤 문구는 다른 단계와 같은 "단계: 이유"로 시작하고, 마지막 시도가 답을 받지 못한 원인을 뒤에 붙인다.
+          if (stop.reason)
+            throw new Error(
+              `${label}: ${stop.reason} (last /api/overview attempt: ${lastAttempt})`
+            );
+          if (spawnError)
+            throw new Error(
+              `${label}: could not start the server: ${spawnError.message}${outputTail(stdoutTail, stderrTail)}`
+            );
+          if (hasExited)
+            throw new Error(
+              `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
+            );
+          // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
+          overview = await continueAfterFailure(
+            async () => {
+              const response = await fetch(`${readyUrl}/api/overview`, {
+                signal: AbortSignal.timeout(fetchTimeoutMs),
+              });
+              lastAttempt = `HTTP ${response.status}`;
+              return response.ok ? await response.json() : undefined;
+            },
+            (error) => {
+              lastAttempt = failureCode(error.cause ?? error);
+            }
+          );
+          if (overview === undefined) await delay(250);
+        }
+        console.log(
+          `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
+        );
+      },
+      () => crashServer(server),
+    ],
+    `${label}: the server check failed`
+  );
 }
 
-/** 이 스크립트가 띄운 서버만 끝낸다. 이미 끝났으면 그 종료를 기다린다. */
-async function stopServer(server, exited, hasExited) {
-  if (!hasExited() && server.pid !== undefined)
-    // 강제 종료 명령이 실패하면 무엇이 실패했는지 남기고 이 프로세스의 자식 종료로 한 번 더 시도한다. 그 사이 끝났으면
-    // 자식 종료는 아무것도 하지 않는다. 끝났는지는 아래에서 종료를 기다려 확인한다.
-    continueAfterFailure(
-      () =>
-        process.platform === "win32"
-          ? execFileSync("taskkill", ["/F", "/PID", String(server.pid)], {
-              stdio: "ignore",
-              timeout: stopWaitMs,
-            })
-          : server.kill("SIGKILL"),
-      (error) => {
-        console.log(
-          `force stop of server ${server.pid} failed (${failureCode(error)}); killing the child directly`
-        );
-        server.kill("SIGKILL");
-      }
-    );
+/** 사고 재현: 서버 프로세스만 강제로 끝내고 그 끝을 상한 안에서 확인한다. 서버가 남긴 것(DB)은 남는다. */
+async function crashServer(server) {
+  server.killLeader();
   let timer;
   try {
     await Promise.race([
-      exited,
+      server.exited,
       new Promise((_, reject) => {
         timer = setTimeout(
           () =>
             reject(
               new Error(
-                `server did not exit within ${stopWaitMs}ms after SIGKILL`
+                `server ${server.pid} did not exit within ${stopWaitMs}ms after it was killed`
               )
             ),
           stopWaitMs
@@ -279,7 +258,11 @@ async function stopLeftPostgres() {
           "-t",
           String(cleanupTimeoutMs / 1000),
         ],
-        { stdio: "ignore", timeout: cleanupTimeoutMs + 5_000 }
+        {
+          stdio: "ignore",
+          timeout: cleanupTimeoutMs + 5_000,
+          killSignal: "SIGKILL",
+        }
       ),
     (error) =>
       console.log(
@@ -331,8 +314,8 @@ function outputTail(...texts) {
   return output ? `\n${output.slice(-4000)}` : "\n(no output)";
 }
 
-/** 지금 떠 있는 서버. 멈춤 시한이 지나 강제로 끝낼 때만 쓴다. */
-let current;
+/** 이 검사가 띄운 모든 서버 트리. 강제로 끝낸 서버가 남긴 것은 다음 시작이 정리하고, 마지막 정리가 트리째 끄고 확인한다. */
+const servers = [];
 const stop = createStop({
   graceMs: stopGraceMs,
   log: (message) => console.log(message),
@@ -340,26 +323,15 @@ const stop = createStop({
   onGraceExpired: () => void killServerAndExit(),
 });
 /**
- * 멈춤 시한이 지났을 때: 떠 있는 서버를 강제로 끝내고, 끝난 것을 상한(stopWaitMs) 안에서 확인한 뒤 실패로 끝낸다.
- * 신호만 보내고 떠나지 않는다. 끝나지 않았으면 그 pid를 남은 것으로 밝힌다. 이미 끝났으면 자식 종료는 아무것도 하지 않는다.
+ * 멈춤 시한이 지났을 때: 띄운 서버 트리를 모두 끄고 끝난 것을 확인한 뒤 실패로 끝낸다. 확인하지 못한 트리는 그 이유를 밝힌다.
  */
 async function killServerAndExit() {
-  const running = current;
-  if (running) {
-    continueAfterFailure(
-      () => running.server.kill("SIGKILL"),
-      (error) =>
-        console.log(`could not kill the server (${failureCode(error)})`)
-    );
-    const gone = await Promise.race([
-      running.exited.then(() => true),
-      delay(stopWaitMs).then(() => false),
-    ]);
-    if (!gone)
+  const results = await Promise.allSettled(servers.map((tree) => tree.stop()));
+  for (const result of results)
+    if (result.status === "rejected")
       console.log(
-        `server ${running.server.pid} did not exit within ${stopWaitMs}ms after SIGKILL and may remain`
+        `a server tree could not be confirmed stopped and may remain: ${result.reason instanceof Error ? result.reason.message : result.reason}`
       );
-  }
   process.exit(1);
 }
 
@@ -401,14 +373,15 @@ const { code } = await runBootCheckFlow({
       throw new Error("the embedded Postgres was still running after close");
     console.log("embedded Postgres stopped normally on close");
   },
-  cleanUp: async () => {
-    await stopLeftPostgres();
+  // 서로 독립인 끄기: 남은 DB를 pg_ctl로 멈추고, 띄운 서버 트리마다 끝난 것을 확인한다. 하나가 실패해도 나머지는 한다.
+  stops: () => [stopLeftPostgres, ...servers.map((tree) => () => tree.stop())],
+  // 끄기가 모두 성공한 뒤에만 부른다.
+  removeFolder: () =>
     rmSync(home, {
       recursive: true,
       force: true,
       maxRetries: 5,
       retryDelay: 100,
-    });
-  },
+    }),
 });
 process.exitCode = code;

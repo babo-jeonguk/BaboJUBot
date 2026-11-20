@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
+  attemptAll,
   conversationPageSchema,
   organizationDetailSchema,
   runSummaryListSchema,
@@ -26,7 +27,7 @@ import {
 } from "./local-model.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { cleanUpAll, folderCleanup } from "@babojubot/runtime/test-cleanup";
+import { folderCleanup } from "@babojubot/runtime/test-cleanup";
 
 // #147: 실제 OpenCode CLI + 이 컴퓨터의 가짜 모델로, 조직 도구 MCP → OpenCode가 모델에 보내는 도구 정의 → 실행 시도 종료·저장·API까지를 본다.
 // 가짜 모델은 대상 upstream이 거부한 `\0` 표기의 도구 정의를 400으로 거부한다. 실제 모델 호출·로그인·모델 목록 다운로드는 없다.
@@ -107,7 +108,7 @@ describe.skipIf(!program)(
       folder.own(() => t.close());
     });
     // 서버·폴더 정리와 모델 서버 닫기는 서로 무관하다. 한쪽이 실패해도 다른 쪽을 한다.
-    afterAll(() => cleanUpAll([() => folder?.cleanUp(), () => model?.close()]));
+    afterAll(() => attemptAll([() => folder?.cleanUp(), () => model?.close()]));
 
     const useOpenCode = async (orgId: string, agentId: string) => {
       const res = await t.request(

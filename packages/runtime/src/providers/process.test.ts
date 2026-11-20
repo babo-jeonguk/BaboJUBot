@@ -3,6 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { runProbe, startProcess } from "./process.ts";
+import { openLifelines } from "./lifeline-support.ts";
 import { killAndWait } from "./process-test-support.ts";
 import { awaitedLater, processAlive } from "../test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
@@ -76,6 +77,17 @@ it("skips only the line that is over the limit, across chunks", async () => {
 
 it("reads a last line that has no newline", async () => {
   const { frames, exit } = await run(`process.stdout.write('{"n":1}');`);
+  expect(frames).toEqual([{ n: 1 }]);
+  expect(exit.broken).toBe(false);
+});
+
+// 프로그램이 남긴 자식이 출력을 쥐면 출력이 닫히지 않아 종료 뒤 잠깐만 읽고 정리한다. 그때도 프로그램이 줄바꿈 없이 끝낸 마지막 줄은
+// 그 프로그램의 출력이다(Windows에서는 실행기가 끝날 때까지 출력의 닫힘이 늦게 올 수 있다). 남긴 자식은 실행 시도의 끄기가 끈다.
+it("reads a last line that has no newline when a child keeps the output open", async () => {
+  const keep = `require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true }).unref();`;
+  const { frames, exit } = await run(
+    `${keep} process.stdout.write('{"n":1}');`
+  );
   expect(frames).toEqual([{ n: 1 }]);
   expect(exit.broken).toBe(false);
 });
@@ -191,7 +203,7 @@ describe("runProbe", () => {
   );
 
   // 프로그램이 끝났어도 그 출력을 물려받은 다른 프로그램이 남으면 출력이 닫히지 않는다. 시한이 지나면 기다림을 끝내고
-  // 실패로 돌려주며, 회수하지 못한 것을 기록한다.
+  // 실패로 돌려주며, 출력을 쥔 그 프로그램까지 끈다(공용 실행의 트리 끄기, #262). 예전에는 회수하지 못하고 기록만 남겼다.
   // Windows에서는 물려받은 출력이 프로그램 종료 뒤 출력을 붙잡지 않아(CI에서 바로 닫힘을 확인) 이 상황이 이렇게 생기지 않는다.
   it.skipIf(process.platform === "win32")(
     "ends the wait after its limit when the program's output stays open",
@@ -202,20 +214,16 @@ describe("runProbe", () => {
         () => stopRecorded(holderFile),
         "the program holding the output"
       );
-      const logged = [
-        vi.spyOn(console, "warn").mockImplementation(() => {}),
-        vi.spyOn(console, "error").mockImplementation(() => {}),
-      ];
-      onTestFinished(() => {
-        for (const spy of logged) spy.mockRestore();
-      });
+      const lifelines = await openLifelines();
+      onTestFinished(() => lifelines.close());
+      const holder = `${lifelines.hold("holder")} setInterval(() => {}, 1000);`;
       await expect(
         probe(
-          `const holder = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
+          `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
           500
         )
       ).rejects.toThrow();
-      expect(logged.some((spy) => spy.mock.calls.length > 0)).toBe(true);
+      await lifelines.closed("holder");
     },
     30_000
   );

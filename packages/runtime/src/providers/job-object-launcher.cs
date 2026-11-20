@@ -1,22 +1,30 @@
-// BaboJUBot Windows job object launcher (#205).
+// BaboJUBot Windows job object launcher (#205, #262).
 //
-// On Windows the server starts this program in place of a provider program. It starts the provider inside a new job object
-// that ends every process in it when the job closes, waits for the provider, ends whatever the provider left running, and
-// exits with the provider's exit code. The provider inherits this program's standard input, output and error as they are;
-// nothing is relayed. Only this program holds the job handle, so the job also closes when this program is killed
-// (cancel, or the server ending and Node.js ending its children).
+// On Windows the server starts this program in place of a program whose whole tree it must be able to stop. It starts the program
+// inside a new job object that ends every process in it when the job closes. The program inherits this launcher's standard input,
+// output and error as they are; nothing is relayed, and this launcher closes its own copies once the program runs, so the server
+// sees the output end when the program's tree closes it.
 //
-// Command line: <this program> <application path in base64 UTF-8> <provider command line, passed on verbatim>
-// Before the provider can run, one status line goes to standard error:
-//   "[babojubot-job-object] ok"              the provider runs inside the job
-//   "[babojubot-job-object] warning: <why>"  the provider runs without the job (the job could not be made or joined)
-//   "[babojubot-job-object] failed: <why>"   the provider did not start
+// Command line: <this program> <application path in base64 UTF-8> <program command line, passed on verbatim>
+// The program never runs outside the job: when the job cannot be made or joined, the launcher reports "failed" and does not run it.
+//
+// The server talks to this launcher over a control channel: the fourth standard handle Node.js passes (stdio[3], a pipe).
+// The program does not inherit it. Lines this launcher writes:
+//   "ok" | "failed: <why>"                     once, how the start went ("failed": the program did not start, nothing follows)
+//   "exit <code>"                              the program ended (on its own or by "kill-leader")
+//   "ended" | "left: <n>" | "left: unknown (error <e>)"
+//                                              the reply to a stop: nothing in the job runs any more, or what was still running
+//                                              after ten seconds. The launcher exits right after.
+// Lines the server writes:
+//   "stop"         end everything in the job, report, and exit. The end of the channel (the server is gone) does the same.
+//   "kill-leader"  end the program only, as a crash would. What it started keeps running until "stop".
+// The program ending on its own does not end the job: the server's stop does, so leaving children behind looks the same on every
+// system. Only this launcher holds the job handle, so the job also closes when this launcher is killed.
 //
 // The server compiles this file with the C# compiler of the .NET Framework that ships with Windows, so it stays within C# 5.
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 
 static class JobObjectLauncher
 {
@@ -31,7 +39,8 @@ static class JobObjectLauncher
     const int STD_INPUT_HANDLE = -10;
     const int STD_OUTPUT_HANDLE = -11;
     const int STD_ERROR_HANDLE = -12;
-    const uint INFINITE = 0xFFFFFFFF;
+    const uint WAIT_OBJECT_0 = 0;
+    const uint HANDLE_FLAG_INHERIT = 0x1;
     static readonly IntPtr PROC_THREAD_ATTRIBUTE_JOB_LIST = (IntPtr)0x2000D;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -132,65 +141,164 @@ static class JobObjectLauncher
     static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")]
     static extern IntPtr GetCommandLineW();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern void GetStartupInfoW(out StartupInfo info);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool PeekNamedPipe(IntPtr pipe, IntPtr buffer, uint size, IntPtr read, out uint available, IntPtr left);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ReadFile(IntPtr file, byte[] buffer, uint count, out uint read, IntPtr overlapped);
+    [DllImport("kernel32.dll")]
+    static extern void Sleep(uint milliseconds);
+
+    static IntPtr control;
+    static string received = "";
 
     static int Main()
     {
-        string application, commandLine;
+        control = ControlChannel();
+        if (control == IntPtr.Zero)
+        {
+            Write(STD_ERROR_HANDLE, "[babojubot-job-object] failed: the launcher was not given a control channel\n");
+            return 1;
+        }
+        // The end of the channel tells this launcher the server is gone. The program must not keep it open.
+        SetHandleInformation(control, HANDLE_FLAG_INHERIT, 0);
+
+        string encoded, application, commandLine;
         try
         {
-            string encoded;
             commandLine = SplitCommandLine(Marshal.PtrToStringUni(GetCommandLineW()), out encoded);
             application = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
         }
         catch (FormatException)
         {
-            Status("failed: the launcher's command line could not be read");
+            Report("failed: the launcher's command line could not be read");
             return 1;
         }
         if (application.Length == 0 || commandLine.Length == 0)
         {
-            Status("failed: the launcher was not given a program");
+            Report("failed: the launcher was not given a program");
             return 1;
         }
 
-        string warning = null;
-        IntPtr job = CreateKillOnCloseJob(ref warning);
+        string problem = null;
+        IntPtr job = CreateKillOnCloseJob(ref problem);
+        if (job == IntPtr.Zero)
+        {
+            Report("failed: " + problem);
+            return 1;
+        }
         ProcessInformation info = new ProcessInformation();
         // Windows 10 and later can start the program already inside the job. Otherwise start it suspended and add it before it runs.
-        bool started = job != IntPtr.Zero && StartInJob(application, commandLine, job, out info);
+        bool started = StartInJob(application, commandLine, job, out info);
         if (!started)
         {
             if (!Start(application, commandLine, IntPtr.Zero, out info))
             {
-                Status("failed: the program could not start (error " + Marshal.GetLastWin32Error() + ")");
+                Report("failed: the program could not start (error " + Marshal.GetLastWin32Error() + ")");
                 return 1;
             }
-            if (job != IntPtr.Zero && !AssignProcessToJobObject(job, info.hProcess))
+            // The program was made suspended and has not run. It runs only once it is in the job.
+            if (!AssignProcessToJobObject(job, info.hProcess))
             {
-                warning = "the program could not join a job object (error " + Marshal.GetLastWin32Error() + ")";
-                CloseHandle(job);
-                job = IntPtr.Zero;
+                int error = Marshal.GetLastWin32Error();
+                TerminateProcess(info.hProcess, 1);
+                Report("failed: the program could not join a job object (error " + error + ")");
+                return 1;
             }
         }
-        // The program has not run yet, so this line comes before anything it writes.
-        Status(warning == null ? "ok" : "warning: " + warning);
         if (ResumeThread(info.hThread) == 0xFFFFFFFF)
         {
             int error = Marshal.GetLastWin32Error();
             TerminateProcess(info.hProcess, 1);
-            Write(STD_ERROR_HANDLE, "[babojubot-job-object] the program could not be resumed (error " + error + ")\n");
+            Report("failed: the program could not be resumed (error " + error + ")");
             return 1;
         }
         CloseHandle(info.hThread);
-        WaitForSingleObject(info.hProcess, INFINITE);
-        uint code;
-        if (!GetExitCodeProcess(info.hProcess, out code)) code = 1;
-        if (job != IntPtr.Zero) EndJob(job);
-        return unchecked((int)code);
+        Report("ok");
+        // The program holds its own copies of the standard handles.
+        CloseStandardHandles();
+
+        int code = 1;
+        bool exited = false;
+        for (;;)
+        {
+            if (!exited && WaitForSingleObject(info.hProcess, 0) == WAIT_OBJECT_0)
+            {
+                exited = true;
+                code = ExitCode(info.hProcess);
+                Report("exit " + code);
+            }
+            string command = ReadCommand();
+            if (command == null || command == "stop") break;
+            if (command == "kill-leader" && !exited) TerminateProcess(info.hProcess, 1);
+            if (command.Length > 0) continue;
+            if (exited) Sleep(50);
+            else WaitForSingleObject(info.hProcess, 50);
+        }
+        string end = EndJob(job);
+        if (!exited && WaitForSingleObject(info.hProcess, 0) == WAIT_OBJECT_0)
+        {
+            code = ExitCode(info.hProcess);
+            Report("exit " + code);
+        }
+        Report(end);
+        return code;
     }
 
-    // Splits "<launcher> <first> <rest>" without unquoting the rest, so the provider gets the exact command line the server built.
-    static string SplitCommandLine(string line, out string first)
+    static int ExitCode(IntPtr process)
+    {
+        uint code;
+        return GetExitCodeProcess(process, out code) ? unchecked((int)code) : 1;
+    }
+
+    // The fourth handle in the C runtime's handle table that Node.js (libuv) passes in lpReserved2:
+    // an int count, then count flag bytes, then count handles, packed without padding.
+    static IntPtr ControlChannel()
+    {
+        StartupInfo startup;
+        GetStartupInfoW(out startup);
+        if (startup.lpReserved2 == IntPtr.Zero || startup.cbReserved2 < 4) return IntPtr.Zero;
+        int count = Marshal.ReadInt32(startup.lpReserved2);
+        if (count < 4 || (ushort)startup.cbReserved2 < 4 + count + count * IntPtr.Size) return IntPtr.Zero;
+        IntPtr handle = Marshal.ReadIntPtr(startup.lpReserved2, 4 + count + 3 * IntPtr.Size);
+        return handle == new IntPtr(-1) ? IntPtr.Zero : handle;
+    }
+
+    static void CloseStandardHandles()
+    {
+        foreach (int which in new int[] { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE })
+        {
+            IntPtr handle = GetStdHandle(which);
+            if (handle != IntPtr.Zero && handle != new IntPtr(-1)) CloseHandle(handle);
+        }
+    }
+
+    // The next command from the server without waiting: "" when none has arrived, null when the channel ended.
+    static string ReadCommand()
+    {
+        int newline = received.IndexOf('\n');
+        if (newline < 0)
+        {
+            uint available;
+            if (!PeekNamedPipe(control, IntPtr.Zero, 0, IntPtr.Zero, out available, IntPtr.Zero)) return null;
+            if (available == 0) return "";
+            byte[] buffer = new byte[available];
+            uint read;
+            if (!ReadFile(control, buffer, available, out read, IntPtr.Zero)) return null;
+            received += Encoding.UTF8.GetString(buffer, 0, (int)read);
+            newline = received.IndexOf('\n');
+            if (newline < 0) return "";
+        }
+        string command = received.Substring(0, newline).Trim();
+        received = received.Substring(newline + 1);
+        return command;
+    }
+
+    // Splits "<launcher> <encoded> <rest>" without unquoting the rest, so the program gets the exact command line the server built.
+    static string SplitCommandLine(string line, out string encoded)
     {
         int i = 0;
         if (i < line.Length && line[i] == '"')
@@ -199,21 +307,28 @@ static class JobObjectLauncher
             i = close < 0 ? line.Length : close + 1;
         }
         while (i < line.Length && line[i] != ' ' && line[i] != '\t') i++;
+        encoded = NextToken(line, ref i);
+        return i < line.Length ? line.Substring(i) : "";
+    }
+
+    // The next word, and the one separator after it.
+    static string NextToken(string line, ref int i)
+    {
         while (i < line.Length && (line[i] == ' ' || line[i] == '\t')) i++;
         int start = i;
         while (i < line.Length && line[i] != ' ' && line[i] != '\t') i++;
-        first = line.Substring(start, i - start);
+        string token = line.Substring(start, i - start);
         if (i < line.Length) i++;
-        return line.Substring(i);
+        return token;
     }
 
     // The handle is not inheritable and has no name, so only this program holds it.
-    static IntPtr CreateKillOnCloseJob(ref string warning)
+    static IntPtr CreateKillOnCloseJob(ref string problem)
     {
         IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
         if (job == IntPtr.Zero)
         {
-            warning = "a job object could not be made (error " + Marshal.GetLastWin32Error() + ")";
+            problem = "a job object could not be made (error " + Marshal.GetLastWin32Error() + ")";
             return IntPtr.Zero;
         }
         // No breakaway flag: programs in the job cannot leave it.
@@ -221,7 +336,7 @@ static class JobObjectLauncher
         limit.Basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limit, Marshal.SizeOf(typeof(ExtendedLimit))))
         {
-            warning = "a job object could not be set to end its programs (error " + Marshal.GetLastWin32Error() + ")";
+            problem = "a job object could not be set to end its programs (error " + Marshal.GetLastWin32Error() + ")";
             CloseHandle(job);
             return IntPtr.Zero;
         }
@@ -270,23 +385,26 @@ static class JobObjectLauncher
             ref startup, out info);
     }
 
-    // Ends what the program left running and waits, for at most ten seconds, until nothing in the job runs.
-    static void EndJob(IntPtr job)
+    // Ends everything in the job and waits, for at most ten seconds, until nothing in it runs.
+    static string EndJob(IntPtr job)
     {
         TerminateJobObject(job, 1);
-        for (int i = 0; i < 1000; i++)
+        for (int i = 0; ; i++)
         {
             Accounting accounting;
-            if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, out accounting, Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)
-                || accounting.ActiveProcesses == 0)
-                return;
-            Thread.Sleep(10);
+            if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, out accounting, Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero))
+                return "left: unknown (error " + Marshal.GetLastWin32Error() + ")";
+            if (accounting.ActiveProcesses == 0) return "ended";
+            if (i >= 1000) return "left: " + accounting.ActiveProcesses;
+            Sleep(10);
         }
     }
 
-    static void Status(string text)
+    static void Report(string text)
     {
-        Write(STD_ERROR_HANDLE, "[babojubot-job-object] " + text + "\n");
+        byte[] bytes = Encoding.UTF8.GetBytes(text + "\n");
+        int written;
+        WriteFile(control, bytes, bytes.Length, out written, IntPtr.Zero);
     }
 
     static void Write(int which, string text)

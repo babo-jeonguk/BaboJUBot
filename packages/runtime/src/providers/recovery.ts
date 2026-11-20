@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   writeFileSync,
@@ -16,6 +16,7 @@ import {
   orIfMissing,
   orIfProbeFailed,
 } from "@babojubot/contracts";
+import { runCommand } from "./bounded-command.ts";
 import { holdsLease, stopLeaseHolders } from "./lease.ts";
 const boot = () =>
   readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
@@ -52,32 +53,17 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const helperCommandTimeoutMs = 10_000;
 /** Windows에서 시작 시각을 묻는 명령의 제한. 붙잡는 것이 없어 더 기다려도 되고, 실패하면 시작 시각 없는 기록으로 남으며 복구는 이미 그것을 모르는 것으로 다룬다. */
 const startRecordTimeoutMs = 30_000;
-/** 프로세스와 그 자식들에게 신호를 보낸다. Windows는 프로세스 그룹이 없어 taskkill로 트리를 끝낸다. */
-export function signalProcessTree(pid: number, signal: NodeJS.Signals) {
-  if (process.platform === "win32") {
-    // Windows에는 중단 신호가 없다. 입력을 닫은 뒤의 종료 단계에서 끝낸다.
-    if (signal === "SIGINT") return;
-    const args = ["/T", "/PID", String(pid)];
-    if (signal === "SIGKILL") args.unshift("/F");
-    execFile(
-      "taskkill",
-      args,
-      { windowsHide: true, timeout: helperCommandTimeoutMs },
-      // 이미 끝난 트리는 끌 것이 없다(답이다). 아직 도는데 taskkill이 실패하면 원인을 남긴다.
-      (error) => {
-        if (error && processAlive(pid))
-          console.warn(
-            `[provider] taskkill could not signal process tree ${pid} with ${signal} (${failureCode(error)})`
-          );
-      }
-    );
-    return;
-  }
+/**
+ * 프로세스 그룹에 중단(SIGINT)을 보낸다. 끄기가 아니라 지금 하던 일을 멈추라는 요청이다. Windows에는 그룹과 중단 신호가 없어 아무것도
+ * 하지 않는다. 트리를 끄는 일은 공용 실행(`launch.ts`)의 `stop()`이 맡는다.
+ */
+export function interruptProcessGroup(group: number) {
+  if (process.platform === "win32") return;
   try {
-    process.kill(-pid, signal);
+    process.kill(-group, "SIGINT");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ESRCH")
-      console.warn("[provider] could not signal a process group");
+      console.warn("[provider] could not interrupt a process group");
   }
 }
 /** 그룹에 살아 있는 프로세스가 있는가. Linux는 좀비를 빼고 세고, 그 밖의 POSIX는 신호 0으로 확인한다. */
@@ -91,8 +77,14 @@ function groupAlive(group: number) {
     return (e as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
-/** The group is already authenticated by spawn ownership or the recovery lease. */
-export async function stopProcessGroup(group: number) {
+/**
+ * 그룹을 끄고 끝난 것을 상한 안에서 확인한다. 확인하지 못하면 던진다. 그룹은 띄운 쪽(`launch.ts`)이나 복구 기록이 이미 확인했다.
+ * SIGTERM 뒤 `graceMs`만큼 스스로 끝나기를 기다리고 SIGKILL한다. 이 함수는 runtime 안의 공용 실행과 재시작 복구만 쓴다(lint).
+ */
+export async function stopProcessGroup(
+  group: number,
+  { graceMs = 2000 }: { graceMs?: number } = {}
+) {
   // Windows는 대표 프로세스가 끝나면 자식을 찾을 수 없다. 대표인 묶음 실행기가 끝나며 묶음을 닫아 남은 것을 끈다(job-object.ts).
   if (!groupAlive(group)) return;
   const signal = (value: NodeJS.Signals) => {
@@ -103,7 +95,7 @@ export async function stopProcessGroup(group: number) {
     }
   };
   signal("SIGTERM");
-  const until = Date.now() + 2000;
+  const until = Date.now() + graceMs;
   while (groupAlive(group) && Date.now() < until) await delay(25);
   if (groupAlive(group)) signal("SIGKILL");
   // 커널 작업에 묶여 죽지 않는 프로세스를 끝없이 기다리면 그 에이전트가 영원히 멈춘다. 기다림에 끝을 둔다.
@@ -134,14 +126,24 @@ function parseStart(text: string) {
   const at = Date.parse(text.trim());
   return Number.isFinite(at) ? at : undefined;
 }
+/** 동기 실행이 실패한 까닭: 끝남 코드(`exit 1`), 신호(`SIGKILL`), 띄우지 못한 이유(`ENOENT`). 오류 출력은 담지 않는다. */
+function commandEnding(error: unknown) {
+  const { status, signal } = (error ?? {}) as {
+    status?: unknown;
+    signal?: unknown;
+  };
+  if (typeof status === "number") return `exit ${status}`;
+  if (typeof signal === "string") return signal;
+  return failureCode(error);
+}
 /**
  * 시작 시각을 묻지 못한 원인을 남긴다. 그사이 끝난 프로세스는 물을 것이 없으므로(답이다) 남기지 않는다.
  * `outcome`은 모르는 시작 시각을 어떻게 다루는지다.
  */
-const unaskedStart = (pid: number, outcome: string) => (error: unknown) => {
+const unaskedStart = (pid: number, outcome: string) => (cause: string) => {
   if (processAlive(pid))
     console.warn(
-      `[provider] the start time of process ${pid} could not be asked; ${outcome} (${failureCode(error)})`
+      `[provider] the start time of process ${pid} could not be asked; ${outcome} (${cause})`
     );
 };
 
@@ -157,11 +159,13 @@ export function processStartedAt(pid: number, platform: NodeJS.Platform) {
           windowsHide: true,
           stdio: ["ignore", "pipe", "ignore"],
           timeout: helperCommandTimeoutMs,
+          killSignal: "SIGKILL",
         })
       );
     },
     undefined,
-    unaskedStart(pid, "it is not taken as ours")
+    (error) =>
+      unaskedStart(pid, "it is not taken as ours")(commandEnding(error))
   );
 }
 // Windows는 다른 프로그램이 파일을 열어 둔 동안 덮어쓰기를 거절한다. 잠깐이므로 약 5초 동안 다시 시도한다.
@@ -212,23 +216,31 @@ export function recordProcess(
     }
   };
   const [command, args] = startQuery(pid, platform);
-  execFile(
-    command,
-    args,
-    {
-      encoding: "utf8",
-      env: startQueryEnv(),
-      windowsHide: true,
-      timeout: startRecordTimeoutMs,
-    },
-    (error, stdout) => {
-      if (error) {
-        unaskedStart(pid, "its record stays without one")(error);
+  // 시한(30초)에 끝을 보장한다. 답이 없거나 끝내지 못하면 시작 시각 없는 기록으로 남고, 복구는 그것을 모르는 것으로 다룬다.
+  void runCommand(command, args, {
+    env: startQueryEnv(),
+    limitMs: startRecordTimeoutMs,
+    maxOutputBytes: 4096,
+  }).then(
+    (result) => {
+      if (result.code !== 0) {
+        unaskedStart(
+          pid,
+          "its record stays without one"
+        )(
+          result.killed
+            ? "ended at its limit"
+            : `exit ${result.code ?? result.signal}`
+        );
         return;
       }
-      const started = parseStart(stdout);
+      const started = parseStart(result.stdout);
       if (started !== undefined) saveStarted(started, startSaveTries);
-    }
+    },
+    (error: unknown) =>
+      console.warn(
+        `[provider] a process start time query did not end; the record keeps no start time (${failureCode(error)})`
+      )
   );
   return () => {
     forgotten = true;
@@ -269,11 +281,34 @@ async function recoverWithoutProc(
     };
   if (started !== saved.started) return;
   if (platform === "win32") {
-    execFileSync("taskkill", ["/F", "/T", "/PID", String(saved.pid)], {
-      windowsHide: true,
-      stdio: "ignore",
-      timeout: helperCommandTimeoutMs,
-    });
+    // 기록한 프로세스(번호와 시작 시각이 같은 것)의 트리를 끄고, 그 프로세스가 끝난 것을 상한 안에서 확인한다. 이미 끝나
+    // taskkill이 실패할 수 있으므로 실패는 남기고 아래 확인으로 판단한다. 부모가 먼저 끝난 자손은 Windows가 번호로 찾을 수 없다.
+    continueAfterFailure(
+      () =>
+        execFileSync("taskkill", ["/F", "/T", "/PID", String(saved.pid)], {
+          windowsHide: true,
+          stdio: "ignore",
+          timeout: helperCommandTimeoutMs,
+          killSignal: "SIGKILL",
+        }),
+      (error) =>
+        console.warn(
+          `[provider] taskkill of a recorded process did not succeed; checking whether it ended (${failureCode(error)})`
+        )
+    );
+    const deadline = Date.now() + helperCommandTimeoutMs;
+    // 산 프로세스의 번호는 그 프로세스가 끝나기 전에는 바뀌지 않는다. 번호가 남아 있으면 시작 시각으로 같은 프로세스인지 보고,
+    // 시작 시각을 읽지 못하면 끝났다고 치지 않는다.
+    const sameProcess = () => {
+      if (!processAlive(saved.pid)) return false;
+      const now = processStartedAt(saved.pid, platform);
+      return now === undefined || now === saved.started;
+    };
+    while (sameProcess()) {
+      if (Date.now() >= deadline)
+        throw new Error("Recorded process did not stop");
+      await delay(250);
+    }
     return;
   }
   // 기록을 남긴 프로세스는 그룹 대표로 띄웠다. 끝났는지 확인하고 돌아온다.

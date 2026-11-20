@@ -22,23 +22,25 @@ import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { removeFolder } from "../remove-folder.ts";
-import { cleanUpAll, withCleanup } from "../test-cleanup.ts";
+import { withCleanup } from "../test-cleanup.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // 로그인을 파일로 같이 쓰는 Codex·Antigravity의 실행 준비(#146). 조직 신원 확인 → 연결 로그인 준비 → 격리 실행이면 흔적 검사·
 // 실행 시도 전용 로그인 파일, 격리를 끈 실행이면 조직 자리 링크 → 돌 제품 폴더 → 프로세스 시작. 준비 중에 취소하면 시작한
 // 파일 작업은 끝내고 프로세스는 띄우지 않는다. 링크를 만들 수 없는 컴퓨터에서도 격리 실행은 조직 제품 폴더로만 돈다.
 
-/** 띄운 프로세스(이 컴퓨터의 프로그램이나 docker)의 명령. 실제로 프로세스를 시작했는지 여기서 본다. */
+/**
+ * 띄운 프로세스(이 컴퓨터의 프로그램이나 docker)의 명령. 실제로 프로세스를 시작했는지 여기서 본다. 실행 시도는 공용 실행(`launchTree`)
+ * 하나로만 띄우므로 그 입구를 본다(Windows는 묶음 실행기로 띄워 cross-spawn을 거치지 않는다).
+ */
 const spawned: string[][] = [];
-vi.mock("cross-spawn", async (importOriginal) => {
-  const actual = await importOriginal<{
-    default: (...args: unknown[]) => unknown;
-  }>();
-  const spawn = (command: string, args: string[] = [], ...rest: unknown[]) => {
-    spawned.push([command, ...args]);
-    return actual.default(command, args, ...rest);
-  };
-  return { ...actual, default: Object.assign(spawn, actual.default) };
+vi.mock("./launch.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./launch.ts")>();
+  const launchTree = ((options: Parameters<typeof actual.launchTree>[0]) => {
+    spawned.push([...options.command, ...options.args]);
+    return actual.launchTree(options);
+  }) as typeof actual.launchTree;
+  return { ...actual, launchTree };
 });
 
 /** 붙잡아 둘 파일 작업 하나. 그 작업에 들어오면 알리고, 풀어 줄 때까지 기다린 뒤 실제로 한다. */
@@ -114,7 +116,7 @@ afterEach(async () => {
   // 풀려난 실행이 끝나기를 시한 안에서 기다린다. 끝나든 시한이 지나든 서버를 닫고 상태를 되돌린다.
   await withCleanup(async (defer) => {
     defer(() =>
-      cleanUpAll(
+      attemptAll(
         servers.splice(0).map((server) => async () => {
           server.closeAllConnections();
           await new Promise<void>((resolve, reject) =>
@@ -141,7 +143,7 @@ afterEach(async () => {
   });
   // 실행이 모두 끝났을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 끝나지 않은 실행이
   // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다.
-  await cleanUpAll(folders.map((root) => () => removeFolder(root)));
+  await attemptAll(folders.map((root) => () => removeFolder(root)));
 });
 /** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
 function hold() {
@@ -463,7 +465,10 @@ describe.each(connections)("$name", (connection) => {
         await env.requestFor(crypto.randomUUID(), "container"),
         control()
       );
-      expect(spawned).toHaveLength(1);
+      // 정리의 docker 명령(rm·inspect)도 공용 실행으로 띄우므로, 실행 시도를 띄운 docker run만 센다.
+      expect(spawned.filter((command) => command.includes("run"))).toHaveLength(
+        1
+      );
     }
   );
 

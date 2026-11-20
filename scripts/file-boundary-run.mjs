@@ -29,6 +29,7 @@ const head = spawnSync("git", ["rev-parse", "HEAD"], {
   cwd: root,
   encoding: "utf8",
   timeout: 30_000,
+  killSignal: "SIGKILL",
 });
 const meta = {
   volume,
@@ -84,6 +85,7 @@ const result = spawnSync("pnpm", args, {
   // Windows의 pnpm은 .cmd라 셸로 띄운다. 인자에는 공백이 없다.
   shell: process.platform === "win32",
   timeout: 15 * 60_000,
+  killSignal: "SIGKILL",
   env: {
     ...process.env,
     BABOJUBOT_FILES_TMPDIR: dir,

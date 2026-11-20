@@ -12,7 +12,7 @@ import {
 } from "./credential-relay.ts";
 import { relayIdentityHeaders } from "./relay.ts";
 import { removeFolder } from "../remove-folder.ts";
-import { cleanUpAll } from "../test-cleanup.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
@@ -26,7 +26,7 @@ const closeServer = (server: net.Server) =>
   );
 // 한 서버를 닫지 못해도 나머지를 닫는다.
 afterEach(() =>
-  cleanUpAll([
+  attemptAll([
     ...wires.splice(0).map((wire) => () => {
       for (const socket of wire.sockets) socket.destroy();
       return closeServer(wire.server);

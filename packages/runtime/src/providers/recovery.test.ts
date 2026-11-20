@@ -11,12 +11,8 @@ import {
 import { leaseVariable, processStartTicks } from "./lease.ts";
 import { readyLine } from "./process-test-support.ts";
 import { testFolders } from "./test-folders.ts";
-import {
-  cleanUpAll,
-  killUnlessGone,
-  processAlive,
-  withCleanup,
-} from "../test-cleanup.ts";
+import { killUnlessGone, processAlive, withCleanup } from "../test-cleanup.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
 // 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
@@ -50,7 +46,7 @@ afterEach(() => {
   lease.fails = false;
   lease.stopped = [];
   // 그룹마다 끄고 끝나기를 기다린다. 한 그룹이 실패해도 나머지 그룹을 정리한다.
-  return cleanUpAll(
+  return attemptAll(
     groups.splice(0).map((group) => async () => {
       try {
         killUnlessGone(-group);

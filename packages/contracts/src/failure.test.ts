@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AsyncReadError,
+  attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
@@ -91,41 +92,27 @@ describe("orIfMissing", () => {
 
 describe("continueAfterFailure", () => {
   it("returns the result and reports nothing when the work succeeds", async () => {
-    const reported: unknown[] = [];
-    expect(
-      continueAfterFailure(
-        () => 3,
-        (e) => reported.push(e)
-      )
-    ).toBe(3);
+    const report = vi.fn();
+    expect(continueAfterFailure(() => 3, report)).toBe(3);
     await expect(
-      continueAfterFailure(
-        () => Promise.resolve(4),
-        (e) => reported.push(e)
-      )
+      continueAfterFailure(() => Promise.resolve(4), report)
     ).resolves.toBe(4);
-    expect(reported).toEqual([]);
+    expect(report).not.toHaveBeenCalled();
   });
 
   it("reports the failure and goes on without a value", async () => {
-    const reported: unknown[] = [];
+    const report = vi.fn();
     const first = coded("EBUSY");
     const second = coded("EPERM");
     expect(
-      continueAfterFailure(
-        () => {
-          throw first;
-        },
-        (e) => reported.push(e)
-      )
+      continueAfterFailure(() => {
+        throw first;
+      }, report)
     ).toBeUndefined();
     await expect(
-      continueAfterFailure(
-        () => Promise.reject(second),
-        (e) => reported.push(e)
-      )
+      continueAfterFailure(() => Promise.reject(second), report)
     ).resolves.toBeUndefined();
-    expect(reported).toEqual([first, second]);
+    expect(report.mock.calls).toEqual([[first], [second]]);
   });
 
   it("lets a failing report surface instead of hiding it", async () => {
@@ -297,5 +284,68 @@ describe("failureCode", () => {
     );
     expect(failureCode("plain")).toBe("unknown");
     expect(failureCode(undefined)).toBe("unknown");
+  });
+});
+
+describe("attemptAll", () => {
+  // 서로 독립인 정리(끄기·닫기·지우기)를 차례로 기다리면 앞 정리가 실패한 곳에서 뒤 정리를 건너뛴다(#263 외부 리뷰 S1·S2).
+  it("does every step though an earlier one fails, and throws the failures together", async () => {
+    const done: string[] = [];
+    const first = new Error("first failed");
+    const third = new Error("third failed");
+    const attempt = attemptAll(
+      [
+        async () => {
+          done.push("first");
+          throw first;
+        },
+        () => {
+          done.push("second");
+        },
+        async () => {
+          done.push("third");
+          throw third;
+        },
+      ],
+      "cleanup failed"
+    );
+    await expect(attempt).rejects.toMatchObject({
+      name: "AggregateError",
+      message: "cleanup failed: first failed — 그리고 third failed",
+      errors: [first, third],
+    });
+    expect(done).toEqual(["first", "second", "third"]);
+  });
+
+  it("does the steps in order, one after another", async () => {
+    const done: string[] = [];
+    let releaseFirst!: () => void;
+    const attempt = attemptAll(
+      [
+        () =>
+          new Promise<void>((resolve) => {
+            releaseFirst = () => {
+              done.push("first");
+              resolve();
+            };
+          }),
+        () => {
+          done.push("second");
+        },
+      ],
+      "cleanup failed"
+    );
+    await settled(Promise.resolve());
+    expect(done).toEqual([]);
+    releaseFirst();
+    await attempt;
+    expect(done).toEqual(["first", "second"]);
+  });
+
+  it("throws a single failure as it is", async () => {
+    const only = new Error("only");
+    await expect(
+      attemptAll([() => Promise.reject(only), () => undefined], "x")
+    ).rejects.toBe(only);
   });
 });

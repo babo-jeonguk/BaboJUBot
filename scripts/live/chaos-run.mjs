@@ -5,15 +5,13 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  attemptAll,
+  attemptEach,
   continueAfterFailure,
   failureCode,
   settled,
 } from "../../packages/contracts/src/failure.ts";
-import {
-  cleanUpAll,
-  killUnlessGone,
-  withCleanup,
-} from "@babojubot/runtime/test-cleanup";
+import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
 import {
   createLedger,
   limits,
@@ -348,7 +346,7 @@ export async function prepareScene(ready, root = tmpdir()) {
   } catch (error) {
     await continueAfterFailure(
       () =>
-        cleanUpAll(
+        attemptAll(
           made.map((dir) => () => rm(dir, { recursive: true, force: true }))
         ),
       (cleanupError) =>
@@ -361,75 +359,73 @@ export async function prepareScene(ready, root = tmpdir()) {
 }
 
 export async function cleanupScene({ server, home, harnessDir, marker }) {
-  const cleanup = {
-    serverStopped: false,
-    homeRemoved: false,
-    homeKept: false,
-    postgresLeft: false,
-    providerRecordsFound: 0,
-    providerRecordsLeft: 0,
-    commandPidsLeft: 0,
-    problems: 0,
+  /** 정리 단계 하나. 실패하면 터미널에만 짧게 알리고(증거에는 남기지 않는다) 실패로 돌려준다. 실패 수는 `attemptEach`의 목록이다. */
+  const step = (describe, work) => async () => {
+    try {
+      await work();
+    } catch (error) {
+      console.error(`[chaos] ${describe(error)}`);
+      throw error;
+    }
   };
-  try {
-    const leftovers = await server.dispose();
-    cleanup.postgresLeft = leftovers.postgres;
-    cleanup.homeKept = leftovers.homeKept;
-    cleanup.providerRecordsFound = leftovers.providerRecordsFound;
-    cleanup.providerRecordsLeft = leftovers.providerRecordsLeft;
-  } catch (error) {
-    cleanup.problems++;
-    // 증거에는 남기지 않고 터미널에만 짧은 오류 이름을 보인다.
-    console.error(
-      `[chaos] scene server cleanup failed (${failureCode(error)})`
-    );
-    // 홈에는 아직 프로세스 기록이 남아 있을 수 있다. 지우지 않고 남긴다.
-    cleanup.homeKept = existsSync(home);
-  }
-  cleanup.serverStopped = !server.running;
-  // 이 장면 표시가 붙은 시험용 명령만 남아 있으면 끝낸다. 다른 작업의 프로세스는 표시가 달라 건드리지 않는다.
-  // 조회가 실패하면 남은 명령을 모르므로 그 수를 비우고(null) 문제로 센 뒤 나머지 정리를 이어 간다.
-  const left = continueAfterFailure(
-    () => busyPids(marker),
-    (error) => {
-      cleanup.problems++;
-      console.error(
-        `[chaos] could not list test commands (${failureCode(error.cause ?? error)})`
-      );
-    }
-  );
-  // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
-  cleanup.commandPidsLeft = left?.length ?? null;
-  // 이미 끝난 명령(ESRCH)은 넘어가고, 끄지 못한 명령은 세고 알린 뒤 나머지 정리를 이어 간다.
-  for (const pid of left ?? [])
-    continueAfterFailure(
-      () => killUnlessGone(pid),
-      (error) => {
-        cleanup.problems++;
-        console.error(
-          `[chaos] could not stop test command ${pid} (${failureCode(error.cause ?? error)})`
-        );
+  const code = (error) => failureCode(error.cause ?? error);
+  let leftovers;
+  let left;
+  const serverAndList = await attemptEach([
+    step(
+      (error) => `scene server cleanup failed (${failureCode(error)})`,
+      async () => {
+        leftovers = await server.dispose();
       }
-    );
-  // 신호만 보내고 떠나지 않는다. 끈 명령이 실제로 끝났는지 상한 안에서 확인하고, 남은 것은 세고 알린다.
-  const survivors = await continueAfterFailure(
-    () => stillRunning(left ?? [], 10_000),
-    (error) => {
-      cleanup.problems++;
-      console.error(
-        `[chaos] could not confirm the test commands ended (${failureCode(error.cause ?? error)})`
-      );
-    }
-  );
-  if (survivors?.length) {
-    cleanup.problems++;
-    console.error(
-      `[chaos] test commands still running after SIGKILL: ${survivors.join(", ")}`
-    );
-  }
+    ),
+    // 이 장면 표시가 붙은 시험용 명령만 남아 있으면 끝낸다. 다른 작업의 프로세스는 표시가 달라 건드리지 않는다.
+    // 조회가 실패하면 남은 명령을 모르므로 그 수를 비우고(null) 문제로 센 뒤 나머지 정리를 이어 간다.
+    step(
+      (error) => `could not list test commands (${code(error)})`,
+      () => {
+        left = busyPids(marker);
+      }
+    ),
+  ]);
+  let survivors = [];
+  const commands = await attemptEach([
+    // 이미 끝난 명령(ESRCH)은 넘어가고, 끄지 못한 명령은 세고 알린 뒤 나머지 정리를 이어 간다.
+    ...(left ?? []).map((pid) =>
+      step(
+        (error) => `could not stop test command ${pid} (${code(error)})`,
+        () => killUnlessGone(pid)
+      )
+    ),
+    // 신호만 보내고 떠나지 않는다. 끈 명령이 실제로 끝났는지 상한 안에서 확인하고, 남은 것은 세고 알린다.
+    step(
+      (error) => `could not confirm the test commands ended (${code(error)})`,
+      async () => {
+        survivors = await stillRunning(left ?? [], 10_000);
+      }
+    ),
+    step(
+      (error) => error.message,
+      () => {
+        if (survivors.length)
+          throw new Error(
+            `test commands still running after SIGKILL: ${survivors.join(", ")}`
+          );
+      }
+    ),
+  ]);
   await rm(harnessDir, { recursive: true, force: true });
-  cleanup.homeRemoved = !existsSync(home);
-  return cleanup;
+  return {
+    serverStopped: !server.running,
+    homeRemoved: !existsSync(home),
+    // 서버 정리가 실패했으면 홈에는 아직 프로세스 기록이 남아 있을 수 있다. 지우지 않고 남긴다.
+    homeKept: leftovers ? leftovers.homeKept : existsSync(home),
+    postgresLeft: leftovers?.postgres ?? false,
+    providerRecordsFound: leftovers?.providerRecordsFound ?? 0,
+    providerRecordsLeft: leftovers?.providerRecordsLeft ?? 0,
+    // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
+    commandPidsLeft: left?.length ?? null,
+    problems: serverAndList.length + commands.length,
+  };
 }
 
 /** 증거에 남기지 않는 이름. 값이 무엇이든 지운다. */

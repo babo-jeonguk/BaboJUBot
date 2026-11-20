@@ -2,12 +2,12 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
-  cleanUpAll,
   folderCleanup,
   killUnlessGone,
   processAlive,
   withCleanup,
 } from "./test-cleanup.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // 정리 실패가 시험의 원래 실패를 가리지 않고, 한 정리가 실패해도 나머지 정리를 한다.
 describe("withCleanup", () => {
@@ -91,17 +91,17 @@ describe("withCleanup", () => {
   });
 });
 
-describe("cleanUpAll", () => {
+describe("attemptAll", () => {
   it("tries every step in order and succeeds when they all do", async () => {
     const ran: string[] = [];
-    await cleanUpAll([() => ran.push("stop"), async () => ran.push("remove")]);
+    await attemptAll([() => ran.push("stop"), async () => ran.push("remove")]);
     expect(ran).toEqual(["stop", "remove"]);
   });
 
   it("fails with the one failure as it is and still tries the later steps", async () => {
     const stop = new Error("did not stop");
     const ran: string[] = [];
-    const outcome = cleanUpAll([
+    const outcome = attemptAll([
       () => {
         ran.push("stop");
         throw stop;
@@ -115,7 +115,7 @@ describe("cleanUpAll", () => {
   it("fails with every failure together when several steps fail", async () => {
     const stop = new Error("did not stop");
     const remove = new Error("folder is locked");
-    const outcome = await cleanUpAll([
+    const outcome = await attemptAll([
       async () => {
         throw stop;
       },
