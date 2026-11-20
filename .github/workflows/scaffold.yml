@@ -105,7 +105,7 @@ jobs:
       # 문서 검사의 node:test 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다.
       - name: Check test counts
         if: ${{ !cancelled() && env.RUN == 'true' && matrix.script == 'check' }}
-        run: node scripts/check-test-reports.mjs --expect scripts-rules,scripts-ci
+        run: node scripts/check-test-reports.mjs --expect check-rules,check-agents,check-scripts
       # 시험 실행인 E2E만 단계 시한을 둔다(#218). 문서 검사·타입·lint·빌드는 job 시한만 받는다.
       - name: Run E2E
         if: env.RUN == 'true' && matrix.script == 'test:e2e'

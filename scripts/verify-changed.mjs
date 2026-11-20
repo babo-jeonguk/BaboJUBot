@@ -1,6 +1,7 @@
 // 바뀐 파일을 보고 돌릴 정적 분석 명령을 정해 실행한다. `pnpm verify:changed -- --dry-run`은 명령만 출력한다.
 // 공용 설정이 바뀌면 전체 lint·typecheck·check를, 패키지 파일이 바뀌면 그 패키지와 그 패키지를 쓰는 패키지의
-// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를, 나머지는 lint와 pnpm check를 고른다.
+// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고
+// 나머지 묶음은 그 묶음의 시험이 보는 파일이나 저장소 뿌리(scripts·.agents)가 쓰는 패키지가 바뀌었을 때만 돌린다.
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -35,13 +36,37 @@ function isShared(file) {
   return sharedSettings.has(file) || file.startsWith("patches/");
 }
 
+/**
+ * pnpm check의 묶음(package.json의 check:*)과 그 묶음의 시험이 보는 파일. 모든 묶음은 뿌리가 쓰는 패키지가 바뀌었을 때도 돈다
+ * (lint 규칙 시험도 workspace 패키지의 package.json·파일 자리로 판정하고 @babojubot/process를 쓴다).
+ */
+const checkGroups = [
+  {
+    name: "rules",
+    owns: (file) =>
+      /^scripts\/(eslint-|lint-|[\w-]+-lint-rules\.test\.mjs$)/.test(file),
+  },
+  {
+    name: "agents",
+    owns: (file) =>
+      file.startsWith(".agents/") || file.startsWith(".opencode/"),
+  },
+  {
+    name: "scripts",
+    owns: (file) => file.startsWith("scripts/") || file.startsWith(".github/"),
+  },
+];
+
 export function plan(files, graph, { exists = () => true } = {}) {
   const changed = [...new Set(files)].sort();
 
   if (changed.some(isShared))
     return ["pnpm lint", "pnpm typecheck", "pnpm check"];
 
+  // 뿌리 패키지(dir ".")는 파일 주인이 아니다. 그 패키지가 쓰는 패키지가 바뀌면 scripts·.agents의 시험이 영향을 받는다.
+  const root = Object.keys(graph).find((name) => graph[name].dir === ".");
   const directories = Object.entries(graph)
+    .filter(([name]) => name !== root)
     .map(([name, pkg]) => ({ name, dir: pkg.dir }))
     .sort((a, b) => b.dir.length - a.dir.length);
 
@@ -96,16 +121,32 @@ export function plan(files, graph, { exists = () => true } = {}) {
     commands.push(
       `pnpm exec eslint --no-warn-ignored ${lintFiles.map((file) => quote(file)).join(" ")}`
     );
-  for (const name of [...new Set([...full, ...test])].sort())
-    commands.push(
-      `pnpm --filter ${name} run ${full.has(name) ? "typecheck" : "typecheck:test"}`
-    );
-  commands.push("pnpm check");
+  const affected = new Set([...full, ...test]);
+  for (const name of [...affected].sort())
+    if (name !== root)
+      commands.push(
+        `pnpm --filter ${name} run ${full.has(name) ? "typecheck" : "typecheck:test"}`
+      );
+  commands.push("pnpm check:docs");
+  // 묶음마다 한 파일은 앞 묶음이 가져가 두 번 세지 않는다(lint 규칙 파일은 scripts 묶음을 부르지 않는다).
+  const owner = (file) => checkGroups.find((group) => group.owns(file));
+  for (const group of checkGroups)
+    if (
+      changed.some((file) => owner(file) === group) ||
+      (root !== undefined && affected.has(root))
+    )
+      commands.push(`pnpm check:${group.name}`);
   return commands;
 }
 
 export function readGraph(root) {
-  const graph = {};
+  // 뿌리 package.json은 scripts·.agents가 쓰는 workspace 패키지를 적는다.
+  const rootJson = JSON.parse(
+    fs.readFileSync(path.join(root, "package.json"), "utf8")
+  );
+  const graph = {
+    [rootJson.name]: { dir: ".", deps: workspaceDeps(rootJson) },
+  };
   for (const group of ["apps", "packages"]) {
     const folder = path.join(root, group);
     const missing = hasErrorCode("ENOENT");
@@ -125,23 +166,28 @@ export function readGraph(root) {
       );
       if (text === undefined) continue;
       const packageJson = JSON.parse(text);
-      const dependencies = {
-        ...packageJson.dependencies,
-        ...packageJson.devDependencies,
-      };
       graph[packageJson.name] = {
         dir: `${group}/${entry.name}`,
-        deps: Object.entries(dependencies)
-          .filter(
-            ([, version]) =>
-              typeof version === "string" && version.startsWith("workspace:")
-          )
-          .map(([name]) => name)
-          .sort(),
+        deps: workspaceDeps(packageJson),
       };
     }
   }
   return graph;
+}
+
+/** package.json이 workspace에서 가져오는 패키지 이름. */
+function workspaceDeps(packageJson) {
+  const dependencies = {
+    ...packageJson.dependencies,
+    ...packageJson.devDependencies,
+  };
+  return Object.entries(dependencies)
+    .filter(
+      ([, version]) =>
+        typeof version === "string" && version.startsWith("workspace:")
+    )
+    .map(([name]) => name)
+    .sort();
 }
 
 function fail(message) {

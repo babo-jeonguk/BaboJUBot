@@ -203,6 +203,28 @@ test("runs the rule, worker and script tests when a package the root uses change
   ]);
 });
 
+test("pnpm check runs every group, and changing a group's test file runs that group", () => {
+  // 묶음에 시험을 더하고 고르는 규칙을 고치지 않으면 그 시험만 바꿔도 묶음이 돌지 않는다.
+  const { scripts: commands } = JSON.parse(
+    fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")
+  );
+  const groups = Object.keys(commands)
+    .filter((name) => name.startsWith("check:"))
+    .map((name) => name.slice("check:".length));
+  assert.deepEqual(
+    commands.check.split("&&").map((part) => part.trim()),
+    groups.map((group) => `pnpm run check:${group}`)
+  );
+  for (const group of groups.filter((group) => group !== "docs"))
+    for (const file of commands[`check:${group}`]
+      .split(/\s+/)
+      .filter((word) => word.endsWith(".test.mjs")))
+      assert.ok(
+        plan([file], graph).includes(`pnpm check:${group}`),
+        `${file} does not run check:${group}`
+      );
+});
+
 test("does not lint deleted files but still type-checks their package", () => {
   const exists = (file) => file !== "packages/core/src/old.ts";
   assert.deepEqual(
