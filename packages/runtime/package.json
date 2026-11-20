@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./testing": "./src/testing.ts",
-    "./runtime-contract": "./src/runtime-contract.ts"
+    "./runtime-contract": "./src/runtime-contract.ts",
+    "./ps": "./src/providers/ps.ts"
   },
   "scripts": {
     "test": "vitest run && vitest run --config vitest.alone.config.ts",

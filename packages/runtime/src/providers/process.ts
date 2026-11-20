@@ -3,6 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import {
   attemptEach,
   failureCode,
+  isDisconnect,
   orIfUnreadable,
   settled,
 } from "@babojubot/contracts";
@@ -121,7 +122,7 @@ export function providerEnvironment(
 
 /**
  * 짧은 확인용 실행. Windows의 .cmd 프로그램도 찾는다. 공용 실행(`runTree`)으로 돌려 상한·취소에 닿거나 프로그램이 끝나면 그 트리
- * 전체를 끄고 끝난 것을 확인한다. 실패하면 `code`(종료 코드, 시작 오류 코드, 끈 경우 `killed`)·`stdout`·`stderr`를 담아 던진다.
+ * 전체를 끄고 끝난 것을 확인한다. 실패하면 `code`(종료 코드, 시작 오류 코드)·`stopped`(끈 이유)·`signal`(끝낸 신호)·`stdout`·`stderr`를 담아 던진다.
  */
 export async function runProbe(
   command: readonly [string, ...string[]],
@@ -164,18 +165,35 @@ export async function runProbe(
   const stdout = run.stdout.toString(),
     stderr = run.stderr.toString();
   if (run.stopped)
-    throw failed(new Error("Program was stopped"), {
-      code: "killed",
+    throw failed(new Error(`Program was stopped (${run.stopped})`), {
+      stopped: run.stopped,
       stdout,
       stderr,
     });
   if (run.code !== 0)
-    throw failed(new Error("Program failed"), {
-      code: run.code ?? "killed",
-      stdout,
-      stderr,
-    });
+    throw run.code === null
+      ? failed(new Error("Program ended by a signal"), {
+          signal: run.signal,
+          stdout,
+          stderr,
+        })
+      : failed(new Error("Program failed"), {
+          code: run.code,
+          stdout,
+          stderr,
+        });
   return { stdout, stderr };
+}
+
+/** `runProbe` 실패의 짧은 이름: 끈 이유(`stopped: limit`), 끝남 코드(`exit 2`), 끝낸 신호(`SIGTERM`), 띄우지 못한 이유(`ENOENT`). 오류 출력은 담지 않는다(로그인 내용이 섞일 수 있음). */
+export function probeEnding(error: unknown): string {
+  const failure = error as
+    { code?: unknown; stopped?: unknown; signal?: unknown } | null | undefined;
+  if (typeof failure?.stopped === "string")
+    return `stopped: ${failure.stopped}`;
+  if (typeof failure?.code === "number") return `exit ${failure.code}`;
+  if (typeof failure?.signal === "string") return failure.signal;
+  return failureCode(error);
 }
 
 /**
@@ -240,10 +258,12 @@ export function startProcess(options: {
   void tree.started.then((start) => {
     if (start.kind === "failed") {
       broken = true;
-      if (start.error === undefined)
-        console.error(
-          `[provider] the program could not start: ${start.reason}`
-        );
+      // 띄우지 못한 이유를 남긴다. 시작 오류(ENOENT 등)는 문구 대신 짧은 이름만(경로·로그인 내용이 섞일 수 있음).
+      console.error(
+        start.error === undefined
+          ? `[provider] the program could not start: ${start.reason}`
+          : `[provider] the program could not start (${failureCode(start.error)})`
+      );
     }
   });
   relay?.ready.catch((error: unknown) => {
@@ -299,7 +319,12 @@ export function startProcess(options: {
   const inputFailed = new Promise<void>((resolve) => {
     reportInputFailure = resolve;
   });
-  tree.stdin.on("error", () => {
+  // 프로그램이 끝나 입력이 끊긴 것(EPIPE)은 답이다. 그 밖의 쓰기 실패는 원인을 남긴다. 어느 쪽이든 입력은 실패로 본다.
+  tree.stdin.on("error", (error) => {
+    if (!isDisconnect(error))
+      console.warn(
+        `[provider] writing to the program's input failed (${failureCode(error)})`
+      );
     broken = true;
     reportInputFailure();
     end();

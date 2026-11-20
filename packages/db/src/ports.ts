@@ -10,7 +10,7 @@ export function candidatePort(): Promise<number> {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as net.AddressInfo;
-      server.close(() => resolve(port));
+      server.close((error) => (error ? reject(error) : resolve(port)));
     });
   });
 }

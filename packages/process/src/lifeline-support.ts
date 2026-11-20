@@ -1,4 +1,10 @@
 import net from "node:net";
+import { fileURLToPath } from "node:url";
+
+/** 시험 프로그램 안에서 연결을 쥐는 실제 파일. */
+const holder = fileURLToPath(
+  new URL("../../test-fixtures/lifeline.mjs", import.meta.url)
+);
 
 /**
  * 시험이 띄운 프로그램이 살아 있는지를 번호(pid)가 아니라 그 프로그램이 쥔 연결로 본다(#259).
@@ -75,13 +81,12 @@ export async function openLifelines() {
   return {
     port,
     /**
-     * 프로그램 안에 넣는 JavaScript 문장. 이 서버에 연결해 이름을 보내고 연결을 쥔다. 서버가 이름을 받았다고 답하면 `then`을
-     * 실행한다(그 뒤로는 이 프로그램이 끝나면 닫힘이 반드시 보인다). CommonJS(`node -e`)와 ES 모듈 모두에서 돈다.
-     * 연결이 끊기면(서버가 먼저 닫힘) 프로그램이 오류로 끝나지 않게 오류를 받는다.
+     * 프로그램 안에 넣는 JavaScript 문장. 연결을 쥐는 일은 실제 파일(`test-fixtures/lifeline.mjs`)이 맡고, 이 문장은 그 파일을
+     * 불러 부르기만 한다: 이 서버에 연결해 이름을 보내고 연결을 쥐며, 서버가 이름을 받았다고 답하면 `then`을 실행한다(그 뒤로는
+     * 이 프로그램이 끝나면 닫힘이 반드시 보인다). 동기 `require`로 부르므로 CommonJS(`node -e`)와 ES 모듈 모두에서 돈다.
      */
     hold: (name: string, then = "") =>
-      `{ const line = process.getBuiltinModule("node:net").connect(${port}, "127.0.0.1"); line.on("error", () => {}); line.write(${JSON.stringify(`${name}
-`)}); line.once("data", () => { ${then} }); }`,
+      `{ process.getBuiltinModule("node:module").createRequire(${JSON.stringify(holder)})(${JSON.stringify(holder)}).hold(${port}, ${JSON.stringify(name)}, () => { ${then} }); }`,
     /** `name`의 연결이 왔을 때까지 기다린다. */
     connected: (name: string, ms = 10_000) =>
       within(connected(name), ms, `${name} did not connect`),

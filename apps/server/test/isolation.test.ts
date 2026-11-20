@@ -165,6 +165,7 @@ function fakeDocker(
   options: {
     reached?: { host: string; port: number }[];
     interfaces?: string[];
+    unverified?: string[];
     broken?: boolean;
   } = {}
 ) {
@@ -212,6 +213,7 @@ function fakeDocker(
           reached: options.reached ?? [],
           proxied,
           toolsReached: tools,
+          unverified: options.unverified ?? [],
         };
       });
     },
@@ -554,6 +556,12 @@ describe("isolated runs", () => {
       name: "the test container has a network device",
       docker: () => fakeDocker({ interfaces: ["eth0"] }).docker,
       reason: "isolation_unsafe",
+    },
+    {
+      // 확인하지 못한 검사가 있으면 안전하다고 보지 않는다(fail closed, #264 외부 리뷰 4회차 SPEC-3).
+      name: "the test container could not complete a check",
+      docker: () => fakeDocker({ unverified: ["proxied"] }).docker,
+      reason: "isolation_unavailable",
     },
     {
       name: "Docker does not answer",

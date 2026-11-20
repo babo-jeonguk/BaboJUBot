@@ -2,11 +2,12 @@ import { lstatSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  attemptAll,
   failureCode,
   type Destination,
   type RunRequest,
 } from "@babojubot/contracts";
-import { runTree, TreeLaunchRefused } from "@babojubot/process";
+import { runTree, TreeLaunchRefused, type TreeRun } from "@babojubot/process";
 import type { RelayHub, RelayIdentity } from "./relay.ts";
 
 /** 격리 실행의 Docker 설정. 서버가 시작할 때 정한다. */
@@ -481,6 +482,14 @@ export function dockerClientEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return result;
 }
 
+/** `runDocker`가 돌려주는 결과: 끝남 코드(또는 `null`)와 출력, 끈 경우 그 이유(공용 실행이 정한 값). */
+type DockerResult = {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  stopped?: Extract<TreeRun, { started: true }>["stopped"];
+};
+
 /**
  * docker 클라이언트 명령 하나를 공용 실행으로 끝까지 돌린다. 상한·취소에 닿으면 그 트리를 끄고 확인한다. 실패해도 던지지 않고
  * `code: null`로 돌려준다(띄우지 못함, 상한·취소·출력 상한, 끝났음을 확인하지 못함).
@@ -490,7 +499,7 @@ export async function runDocker(
   args: string[],
   timeoutMs = 30_000,
   signal?: AbortSignal
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+): Promise<DockerResult> {
   let run: Awaited<ReturnType<typeof runTree>>;
   try {
     run = await runTree({
@@ -515,20 +524,39 @@ export async function runDocker(
     };
   }
   if (!run.started) return { code: null, stdout: "", stderr: run.reason };
-  return {
-    code: run.stopped ? null : run.code,
-    stdout: run.stdout.toString(),
-    stderr: run.stderr.toString(),
-  };
+  const stdout = run.stdout.toString(),
+    stderr = run.stderr.toString();
+  if (run.stopped) return { code: null, stdout, stderr, stopped: run.stopped };
+  return { code: run.code, stdout, stderr };
+}
+
+/** docker 명령이 어떻게 끝났는지: 종료 코드(없으면 띄우지 못했거나 시한·취소·출력 상한에 멈춤과 그 이유)와 오류 출력의 끝(`runDocker`는 띄우지 못한 이유를 여기 담는다). 진단에만 쓴다. */
+function dockerEnding(
+  result: Pick<DockerResult, "code" | "stderr" | "stopped">
+) {
+  const reported = result.stderr.trim().slice(-300);
+  const ending =
+    result.code === null
+      ? result.stopped
+        ? `stopped: ${result.stopped}`
+        : "no exit code"
+      : `exit ${result.code}`;
+  return `${ending}${reported ? `: ${reported}` : ""}`;
 }
 
 export async function removeContainer(
   settings: ContainerSettings,
   name: string
 ): Promise<boolean> {
+  let lastFailure:
+    Pick<DockerResult, "code" | "stderr" | "stopped"> | undefined;
+  let lastInspected:
+    Pick<DockerResult, "code" | "stderr" | "stopped"> | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
-    await runDocker(settings, ["rm", "-f", name]);
+    const removed = await runDocker(settings, ["rm", "-f", name]);
+    if (removed.code !== 0) lastFailure = removed;
     const inspected = await runDocker(settings, ["container", "inspect", name]);
+    lastInspected = inspected;
     if (
       inspected.code !== 0 &&
       /no such (container|object)/i.test(inspected.stderr)
@@ -536,6 +564,11 @@ export async function removeContainer(
       return true;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
+  const reported = lastFailure ?? lastInspected;
+  if (reported)
+    console.warn(
+      `[provider] container ${name} could not be removed (${dockerEnding(reported)})`
+    );
   return false;
 }
 
@@ -545,6 +578,14 @@ const probeScript = `
 const net = require("node:net");
 const os = require("node:os");
 const input = JSON.parse(process.argv[1]);
+// 금지 목적지에 닿지 못한 연결 오류는 답이다. 그 밖의 오류와 중계·조직 도구 연결의 오류는 원인을 남긴다.
+// 원래 오류의 사실(code·name)만 보내고 이름 붙이기는 서버(failureCode)가 한다. 문구는 주소가 섞일 수 있어 보내지 않는다.
+const failures = [];
+const unreachable = (error) =>
+  ["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "EPERM", "EACCES", "ENOTFOUND", "EAI_AGAIN"].includes(error.code);
+const note = (probe, error, expected) => {
+  if (!expected(error)) failures.push({ probe, code: error.code, name: error.name });
+};
 const attempt = (host, port) =>
   new Promise((resolve) => {
     const socket = net.connect({ host, port });
@@ -558,7 +599,7 @@ const attempt = (host, port) =>
     socket.setTimeout(3000);
     socket.once("connect", () => finish(true));
     socket.once("timeout", () => finish(false));
-    socket.once("error", () => finish(false));
+    socket.once("error", (error) => { note("direct", error, unreachable); finish(false); });
   });
 const proxied = (host, port) =>
   new Promise((resolve) => {
@@ -568,8 +609,8 @@ const proxied = (host, port) =>
       socket.destroy();
       resolve(value);
     };
-    socket.setTimeout(5000, () => finish(false));
-    socket.once("error", () => finish(false));
+    socket.setTimeout(5000, () => { failures.push({ probe: "proxied", timeoutMs: 5000 }); finish(false); });
+    socket.once("error", (error) => { note("proxied", error, () => false); finish(false); });
     socket.on("connect", () =>
       socket.write("CONNECT " + (host.includes(":") ? "[" + host + "]" : host) + ":" + port + " HTTP/1.1\\r\\n\\r\\n")
     );
@@ -586,8 +627,8 @@ const tools = () =>
       socket.destroy();
       resolve(value);
     };
-    socket.setTimeout(5000, () => finish(false));
-    socket.once("error", () => finish(false));
+    socket.setTimeout(5000, () => { failures.push({ probe: "tools", timeoutMs: 5000 }); finish(false); });
+    socket.once("error", (error) => { note("tools", error, () => false); finish(false); });
     socket.on("connect", () => socket.write("GET /api/tools/probe HTTP/1.1\\r\\nHost: tools\\r\\nConnection: close\\r\\n\\r\\n"));
     socket.on("data", (chunk) => {
       text += chunk;
@@ -609,6 +650,7 @@ const tools = () =>
       reached: direct.flat(),
       proxied: relayed.flat(),
       toolsReached,
+      failures,
       proxyEnv: process.env.HTTPS_PROXY === "http://127.0.0.1:${relayPorts.proxy}",
     })
   );
@@ -623,6 +665,17 @@ const isTarget = (value: unknown): value is { host: string; port: number } =>
   value !== null &&
   typeof (value as { host?: unknown }).host === "string" &&
   typeof (value as { port?: unknown }).port === "number";
+
+/** 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다), 답이 없었으면 기다린 시간. */
+type ProbeFailure =
+  | { probe: string; code?: unknown; name: string }
+  | { probe: string; timeoutMs: number };
+const isProbeFailure = (value: unknown): value is ProbeFailure =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { probe?: unknown }).probe === "string" &&
+  (typeof (value as { name?: unknown }).name === "string" ||
+    typeof (value as { timeoutMs?: unknown }).timeoutMs === "number");
 
 export function createDockerEnvironment(
   settings: ContainerSettings
@@ -642,7 +695,9 @@ export function createDockerEnvironment(
         );
         signal.throwIfAborted();
         if (context.code !== 0)
-          throw new Error("docker context could not be inspected");
+          throw new Error("docker context could not be inspected", {
+            cause: new Error(dockerEnding(context)),
+          });
         host = context.stdout.trim();
       }
       if (!host.startsWith("unix://"))
@@ -654,7 +709,10 @@ export function createDockerEnvironment(
         signal
       );
       signal.throwIfAborted();
-      if (info.code !== 0) throw new Error("docker is not available");
+      if (info.code !== 0)
+        throw new Error("docker is not available", {
+          cause: new Error(dockerEnding(info)),
+        });
       let value: unknown;
       try {
         value = JSON.parse(info.stdout);
@@ -691,7 +749,10 @@ export function createDockerEnvironment(
         signal
       );
       signal.throwIfAborted();
-      if (image.code !== 0) throw new Error("runner image is missing");
+      if (image.code !== 0)
+        throw new Error("runner image is missing", {
+          cause: new Error(dockerEnding(image)),
+        });
       if (image.stdout.trim() !== runnerVersion)
         throw new Error(
           "runner image is outdated; rebuild it with pnpm runner:build"
@@ -707,65 +768,97 @@ export function createDockerEnvironment(
           port: target.port,
         })),
       });
-      try {
-        await relay.ready;
-        const launch: ContainerLaunch = {
-          settings,
-          mounts: [],
-          labels: { probe: "1" },
-          program: "node",
-          env: {},
-          relay: {
-            identity: { organizationId: "isolation-probe" },
-            required: [],
+      let result: DockerResult | undefined;
+      // 본문(확인 컨테이너 실행)과 서로 독립인 정리(중계 닫기, 확인 컨테이너 지우기)를 모두 하고 실패를 함께 알린다.
+      // 중계를 먼저 닫아, 컨테이너가 늦게 지워지거나 못 지워져도 그 사이 밖에 닿지 못하게 한다.
+      await attemptAll(
+        [
+          async () => {
+            await relay.ready;
+            const launch: ContainerLaunch = {
+              settings,
+              mounts: [],
+              labels: { probe: "1" },
+              program: "node",
+              env: {},
+              relay: {
+                identity: { organizationId: "isolation-probe" },
+                required: [],
+              },
+            };
+            const args = dockerRunArgs(launch, {
+              name,
+              cwd: "/",
+              env: {},
+              args: ["-e", probeScript, JSON.stringify(input)],
+              relay: relay.directory,
+            });
+            result = await runDocker(settings, args, 60_000, signal);
           },
-        };
-        const args = dockerRunArgs(launch, {
-          name,
-          cwd: "/",
-          env: {},
-          args: ["-e", probeScript, JSON.stringify(input)],
-          relay: relay.directory,
+          () => relay.close(),
+          async () => {
+            if (!(await removeContainer(settings, name)))
+              throw new Error(
+                `the isolation probe container ${name} could not be removed`
+              );
+          },
+        ],
+        "the isolation probe could not finish"
+      );
+      const finished = result!;
+      if (finished.code !== 0)
+        throw new Error("isolation probe container failed", {
+          cause: new Error(dockerEnding(finished)),
         });
-        const result = await runDocker(settings, args, 60_000, signal);
-        await relay.close();
-        await removeContainer(settings, name);
-        if (result.code !== 0)
-          throw new Error("isolation probe container failed");
-        const line = result.stdout
-          .split("\n")
-          .map((value) => value.trim())
-          .filter(Boolean)
-          .at(-1);
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line ?? "");
-        } catch {
-          throw new Error("isolation probe returned an invalid result");
-        }
-        const value = (
-          typeof parsed === "object" && parsed !== null ? parsed : {}
-        ) as Record<string, unknown>;
-        if (
-          !Array.isArray(value.interfaces) ||
-          !value.interfaces.every((entry) => typeof entry === "string") ||
-          !Array.isArray(value.reached) ||
-          !value.reached.every(isTarget) ||
-          !Array.isArray(value.proxied) ||
-          !value.proxied.every(isTarget) ||
-          typeof value.toolsReached !== "boolean" ||
-          typeof value.proxyEnv !== "boolean"
-        )
-          throw new Error("isolation probe returned an invalid result");
-        return {
-          interfaces: value.interfaces as string[],
-          reached: value.reached as { host: string; port: number }[],
-          proxied: value.proxied as { host: string; port: number }[],
-          toolsReached: value.toolsReached && value.proxyEnv,
-        };
-      } finally {
-        await relay.close();
+      const line = finished.stdout
+        .split("\n")
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .at(-1);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line ?? "");
+      } catch {
+        throw new Error("isolation probe returned an invalid result");
       }
+      const value = (
+        typeof parsed === "object" && parsed !== null ? parsed : {}
+      ) as Record<string, unknown>;
+      if (
+        !Array.isArray(value.interfaces) ||
+        !value.interfaces.every((entry) => typeof entry === "string") ||
+        !Array.isArray(value.reached) ||
+        !value.reached.every(isTarget) ||
+        !Array.isArray(value.proxied) ||
+        !value.proxied.every(isTarget) ||
+        typeof value.toolsReached !== "boolean" ||
+        !Array.isArray(value.failures) ||
+        !value.failures.every(isProbeFailure) ||
+        typeof value.proxyEnv !== "boolean"
+      )
+        throw new Error("isolation probe returned an invalid result");
+      // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다. 답이 없었으면 기다린 시간을 적는다.
+      const failures = value.failures as ProbeFailure[];
+      for (const failure of failures)
+        console.warn(
+          `[provider] the isolation probe's ${failure.probe} check failed (${
+            "timeoutMs" in failure
+              ? `no answer within ${failure.timeoutMs} ms`
+              : failureCode(
+                  Object.assign(new Error(), {
+                    name: failure.name,
+                    code: failure.code,
+                  })
+                )
+          })`
+        );
+      return {
+        interfaces: value.interfaces as string[],
+        reached: value.reached as { host: string; port: number }[],
+        proxied: value.proxied as { host: string; port: number }[],
+        toolsReached: value.toolsReached && value.proxyEnv,
+        unverified: [...new Set(failures.map((failure) => failure.probe))],
+      };
     },
     async removeOrphans() {
       const listed = await runDocker(settings, [
@@ -774,7 +867,10 @@ export function createDockerEnvironment(
         "--filter",
         `label=babojubot.owner=${settings.owner}`,
       ]);
-      if (listed.code !== 0) return;
+      if (listed.code !== 0)
+        throw new Error(
+          `leftover containers could not be listed (${dockerEnding(listed)})`
+        );
       const failed: string[] = [];
       for (const id of listed.stdout
         .split("\n")
@@ -803,6 +899,11 @@ export type IsolationProbeResult = {
   proxied: { host: string; port: number }[];
   /** 중계를 거쳐 조직 도구에 닿았고 이미지의 시작 프로그램이 프록시 환경을 정했는지. */
   toolsReached: boolean;
+  /**
+   * 끝까지 확인하지 못한 검사(`direct`·`proxied`·`tools`)의 이름. 예상한 차단(닿지 못한 연결)은 들지 않는다. 하나라도 있으면
+   * 결과를 모르는 것이므로 안전하다고 보지 않는다(fail closed).
+   */
+  unverified: string[];
 };
 /** 격리 실행의 Docker 환경. 서버가 안전 확인·남은 컨테이너 정리에 쓴다. */
 export type DockerEnvironment = {

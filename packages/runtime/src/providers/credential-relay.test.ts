@@ -4,7 +4,7 @@ import { gzipSync } from "node:zlib";
 import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   createCredentialRelay,
   credentialResidue,
@@ -13,6 +13,7 @@ import {
 import { relayIdentityHeaders } from "./relay.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { attemptAll } from "@babojubot/contracts";
+import { permissionDenial } from "./test-support.ts";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
@@ -291,6 +292,34 @@ async function received(response: Response) {
 }
 
 describe("the credential relay", () => {
+  it("answers 502 and leaves why when it cannot reach the upstream", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    // 받는 곳이 없는 포트: 잠깐 열어 번호를 받고 닫는다.
+    const closed = net.createServer();
+    await new Promise<void>((resolve) =>
+      closed.listen(0, "127.0.0.1", resolve)
+    );
+    const port = (closed.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve, reject) =>
+      closed.close((error) => (error ? reject(error) : resolve()))
+    );
+    const { relay, url } = await setup({
+      through: async (up) => `http://127.0.0.1:${port}${new URL(up).pathname}`,
+    });
+    const grant = relay.grant({
+      ...scope(),
+      organizationId: "organization-id",
+      runId: "run-id",
+    });
+    const response = await send(url, grant.token);
+    expect(response.status).toBe(502);
+    await response.body?.cancel();
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringContaining("(ECONNREFUSED)")
+    );
+  });
+
   it("sends an allowed request to the fixed upstream with the real credential in place of the run's grant, and returns no cookie", async () => {
     const { up, relay, url } = await setup();
     const grant = relay.grant({
@@ -1119,7 +1148,7 @@ describe("login residue in an organization's product folder", () => {
   });
 
   // 폴더 권한으로 읽기를 막는다. root는 권한을 넘고, Windows는 POSIX 권한 비트로 읽기를 막지 않는다.
-  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
+  it.skipIf(process.platform === "win32" || !permissionDenial())(
     "counts a path it cannot inspect as residue",
     async () => {
       const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
@@ -1131,6 +1160,26 @@ describe("login residue in an organization's product folder", () => {
       await mkdir(path.join(root, "locked"));
       await chmod(path.join(root, "locked"), 0o000);
       expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
+    }
+  );
+
+  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
+    "leaves why it could not inspect a path it counts as residue",
+    async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
+      onTestFinished(async () => {
+        await chmod(path.join(root, "locked"), 0o700);
+        await removeFolder(root);
+      });
+      await mkdir(path.join(root, "locked"));
+      await chmod(path.join(root, "locked"), 0o000);
+      const login = path.join(root, "connection/login/auth.json");
+      expect(await credentialResidue(root, ["locked/auth.json"], login)).toBe(
+        true
+      );
+      expect(warned).toHaveBeenCalledWith(expect.stringContaining("(EACCES)"));
     }
   );
 });

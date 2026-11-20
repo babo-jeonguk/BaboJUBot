@@ -175,8 +175,10 @@ export async function request<T extends z.ZodType>(
 ): Promise<z.infer<T>> {
   const res = await fetch(path, init);
   if (!res.ok) {
-    const body: unknown = await orIfUnreadable(
-      (): Promise<unknown> => res.json(),
+    // 본문을 받다 끊긴 것은 서버의 거절이 아니므로 그대로 드러낸다. 받은 본문의 해석만 부정 결과로 본다.
+    const text = await res.text();
+    const body: unknown = orIfUnreadable(
+      (): unknown => JSON.parse(text),
       undefined
     );
     const failure = apiFailureSchema.safeParse(body);

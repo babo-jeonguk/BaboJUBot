@@ -459,6 +459,40 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(await viaProxy()).toBe(200);
   });
 
+  it("answers 502 and leaves why when it cannot connect to an allowed destination", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    // 받는 곳이 없는 포트: 잠깐 열어 번호를 받고 닫는다.
+    const listener = net.createServer();
+    await new Promise<void>((resolve) =>
+      listener.listen(0, "127.0.0.1", resolve)
+    );
+    const port = (listener.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve, reject) =>
+      listener.close((error) => (error ? reject(error) : resolve()))
+    );
+    const { relays } = hub();
+    const relay = relays.open({
+      identity,
+      required: [
+        // 이 컴퓨터에 따라 localhost는 두 주소로 풀린다. 둘 다 적어야 연결 시도까지 간다.
+        destination({
+          host: "localhost",
+          port,
+          addresses: ["127.0.0.1", "::1"],
+        }),
+      ],
+    });
+    await relay.ready;
+    const answer = await connectVia(relay.directory, `localhost:${port}`);
+    answer.socket.destroy();
+    expect(answer.head).toMatch(/^HTTP\/1\.1 502/);
+    // 마지막으로 시도한 주소의 실패 코드는 이 컴퓨터의 IPv6 설정에 따라 다르다(ECONNREFUSED·EADDRNOTAVAIL 등).
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringMatching(/answered 502 \(E[A-Z]+\)$/)
+    );
+  });
+
   it("refuses when the policy cannot be read", async () => {
     const target = await fixture("echo");
     const { relays } = hub({
@@ -500,6 +534,82 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       req.end();
     });
     expect(status).toBe(400);
+  });
+
+  /** 이 시험 동안 서버 닫기가 EBUSY로 실패하게 한다. 듣지 않던 서버의 원래 오류(ERR_SERVER_NOT_RUNNING)는 그대로 둔다. */
+  const failServerCloses = () => {
+    const close = net.Server.prototype.close;
+    const failing = vi
+      .spyOn(net.Server.prototype, "close")
+      .mockImplementation(function (
+        this: net.Server,
+        callback?: (error?: Error) => void
+      ) {
+        return close.call(this, (error?: Error) =>
+          callback?.(
+            error ?? Object.assign(new Error("close failed"), { code: "EBUSY" })
+          )
+        );
+      });
+    onTestFinished(() => failing.mockRestore());
+  };
+
+  // 닫기 콜백의 실패는 거절로 드러낸다(CODING_STANDARDS.md#제품-코드). 남기기만 하고 "닫힘"으로 끝내지 않으며, 폴더 지우기는 그래도 한다
+  // (#264 외부 리뷰 4회차, 실패를 기록하고 성공 쪽으로 진행하는 모양).
+  it("fails its close with the cause when a relay server does not close, after still removing its folder", async () => {
+    const { relays } = hub();
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    failServerCloses();
+    await expect(relay.close()).rejects.toThrow(
+      "a relay server did not close (EBUSY)"
+    );
+    expect(existsSync(relay.directory)).toBe(false);
+  });
+
+  // 닫기가 거절할 수 있게 된 뒤 그 호출자를 함께 점검했다(#264 외부 리뷰 5회차 STD-4). 열지 못해 스스로 닫는 중계는 닫기 실패를
+  // 처리되지 않은 거절로 버리지 않고, 나중에 닫는 쪽(실행 시도·격리 확인의 정리)이 같은 실패를 받는다.
+  it("closes itself after it could not open without dropping a close failure, and gives that failure to whoever closes it", async () => {
+    const { relays } = hub();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    onTestFinished(() => void process.off("unhandledRejection", unhandled));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => vi.mocked(console.warn).mockRestore());
+    const listen = vi
+      .spyOn(net.Server.prototype, "listen")
+      .mockImplementationOnce(function (this: net.Server) {
+        process.nextTick(() =>
+          this.emit(
+            "error",
+            Object.assign(new Error("listen failed"), { code: "EACCES" })
+          )
+        );
+        return this;
+      });
+    onTestFinished(() => listen.mockRestore());
+    failServerCloses();
+    const relay = relays.open({ identity, required: [] });
+    await expect(relay.ready).rejects.toThrow("listen failed");
+    // 스스로 닫기를 마쳤다(폴더 지우기가 마지막 단계다).
+    await vi.waitFor(() => expect(existsSync(relay.directory)).toBe(false));
+    expect(unhandled).not.toHaveBeenCalled();
+    await expect(relay.close()).rejects.toThrow(
+      "a relay server did not close (EBUSY)"
+    );
+  });
+
+  it("closes every relay when the hub closes and fails with each relay's failure, not only the first", async () => {
+    const { relays } = hub();
+    const first = relays.open({ identity, required: [] });
+    const second = relays.open({ identity, required: [] });
+    await Promise.all([first.ready, second.ready]);
+    failServerCloses();
+    await expect(relays.close()).rejects.toThrow(
+      /^the relays could not be closed: /
+    );
+    expect(existsSync(first.directory)).toBe(false);
+    expect(existsSync(second.directory)).toBe(false);
   });
 
   it("closes its tunnels and sockets when the run ends, so nothing can reuse them", async () => {

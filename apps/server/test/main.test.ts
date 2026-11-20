@@ -19,6 +19,13 @@ import {
 } from "@babojubot/process/test-cleanup";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+/**
+ * 서버 시작의 남은 컨테이너 정리가 부르는 docker. 이 컴퓨터의 Docker 유무·권한에 따라 시작 출력이 달라지지 않게 늘 "남은 것 없음"으로
+ * 답하는 가짜를 쓴다(Windows는 그 정리가 Docker를 부르지 않는다). 실제 Docker는 runtime의 실제 Docker 묶음만 쓴다.
+ */
+const noLeftoverDocker = fileURLToPath(
+  new URL("fixtures/no-leftover-docker.mjs", import.meta.url)
+);
 /** DB 닫기를 실패시키는 preload(`startMain`의 `preload`). */
 const failDatabaseClose = fileURLToPath(
   new URL("./fixtures/fail-database-close.ts", import.meta.url)
@@ -400,6 +407,7 @@ function startMain(
       BABOJUBOT_PROVIDERS: "",
       BABOJUBOT_FAKE_PROVIDERS: "1",
       BABOJUBOT_FAKE_PROVIDER_SETTINGS: "{}",
+      BABOJUBOT_DOCKER_COMMAND: noLeftoverDocker,
       ...env,
     },
     stdio: ipc ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],

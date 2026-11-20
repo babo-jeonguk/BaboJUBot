@@ -1655,6 +1655,132 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}[p].map(awaitedLater);\n`,
       /부르지 않고/,
     ],
+    // 출처는 이름공간에서 꺼낸 const, 구조 분해, 이름공간의 별칭, 동적 가져오기까지 따라간다(#269).
+    "a const taken from the namespace": [
+      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}const mark = cleanup.awaitedLater;\nmark(p);\n`,
+      /담지 않습니다/,
+    ],
+    "a name destructured from the namespace": [
+      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}const { awaitedLater: mark } = cleanup;\nmark(p);\n`,
+      /담지 않습니다/,
+    ],
+    "an alias of the namespace": [
+      `import * as cleanup from "@babojubot/runtime/test-cleanup";\n${laterHead}const tools = cleanup;\ntools.awaitedLater(p);\n`,
+      /담지 않습니다/,
+    ],
+    "a name destructured from a dynamic import": [
+      `${laterHead}const { awaitedLater } = await import("@babojubot/runtime/test-cleanup");\nawaitedLater(p);\n`,
+      /담지 않습니다/,
+    ],
+    // 다시 내보내면 다른 파일에서 부른 결과를 따라갈 수 없다.
+    "a re-export": [
+      `export { awaitedLater } from "@babojubot/runtime/test-cleanup";\n`,
+      /부르지 않고/,
+    ],
+    "a renamed re-export from a relative path": [
+      `export { awaitedLater as later } from "../test-cleanup.ts";\n`,
+      /부르지 않고/,
+    ],
+    "a re-export of the whole module": [
+      `export * from "@babojubot/runtime/test-cleanup";\n`,
+      /부르지 않고/,
+    ],
+    // 기다림은 그 Promise의 결과를 받는 호출만이다. 무관한 호출의 인자로 넣고 그 호출을 기다려도 기다린 것이 아니다.
+    "an await around an unrelated call": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Boolean(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await around a global method": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait console.log(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await around a local function that drops its argument": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst noop = (value) => value !== undefined;\nawait noop(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    // 내장·외부 패키지의 함수는 결과를 받는지 알 수 없다. 이 저장소의 시험 도움만 따라갈 수 없어도 기다림으로 본다.
+    "an await around an imported built-in function": [
+      `${laterImport}import { inspect } from "node:util";\n${laterHead}const later = awaitedLater(p);\nawait inspect(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await around a method of a built-in namespace": [
+      `${laterImport}import * as fsp from "node:fs/promises";\n${laterHead}const later = awaitedLater(p);\nawait fsp.readFile(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    // 결과를 받는 자리는 인자 위치까지 맞아야 한다. 조합 함수는 첫 인자 배열만, expect는 첫 인자만, 가져온 도움은 첫 인자만 받는다(#272 외부 리뷰 F1).
+    "a second argument of Promise.all": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.all([], later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a second argument of Promise.race": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.race([p], later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a promise passed to Promise.all without an array": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.all(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "the message argument of expect": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(p, later).resolves.toBe(1);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a later argument of an imported helper": [
+      `${laterImport}import { within } from "./support.ts";\n${laterHead}const later = awaitedLater(p);\nawait within(1000, later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a later argument of a helper from a namespace import": [
+      `${laterImport}import * as support from "./support.ts";\n${laterHead}const later = awaitedLater(p);\nawait support.within(1000, later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await of an array that holds it": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait [later];\n`,
+      /기다리지 않습니다/,
+    ],
+    "a switch without default that awaits in every case": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nswitch (Math.random() > 0.5) {\n  case true:\n    await later;\n    break;\n  case false:\n    await later;\n}\n`,
+      /한 분기/,
+    ],
+    "nested ifs with one leaf that does not await": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nif (Math.random() > 0.5) {\n  if (Math.random() > 0.5) await later;\n  else use(1);\n} else await later;\n`,
+      /한 분기/,
+    ],
+    "an expect that neither rejects nor resolves": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(later).toBeInstanceOf(Promise);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a property read that is not then, catch or finally": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait later.constructor;\n`,
+      /기다리지 않습니다/,
+    ],
+    // 한 분기에서만 기다리면 다른 길에서 거절이 감춰진다.
+    "an await in one branch of an if": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nif (Math.random() > 0.5) await later;\n`,
+      /한 분기/,
+    ],
+    "an await behind &&": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wanted = Math.random() > 0.5;\nwanted && (await later);\n`,
+      /한 분기/,
+    ],
+    "an await in one arm of a conditional expression": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait (Math.random() > 0.5 ? later : p);\n`,
+      /한 분기/,
+    ],
+    "an await in a loop that may not run": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nfor (const _ of []) await later;\n`,
+      /한 분기/,
+    ],
+    "an await only in a catch": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\ntry {\n  use(1);\n} catch {\n  await later;\n}\n`,
+      /한 분기/,
+    ],
+    "a property awaited in one branch": [
+      `${laterImport}${laterHead}child.exited = awaitedLater(p);\nif (Math.random() > 0.5) await child.exited;\n`,
+      /한 분기/,
+    ],
+    "a local function that awaits its argument in one branch": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wait = async (value) => {\n  if (Math.random() > 0.5) await value;\n};\nawait wait(later);\n`,
+      /한 분기/,
+    ],
   };
   for (const [shape, [code, kind]] of Object.entries(found))
     for (const place of testPlaces) {
@@ -1681,6 +1807,20 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     `child.exited = awaitedLater(p);\nexport const wait = (child) => Promise.race([child.exited, p]);\n`,
     `child.run = {};\nchild.run.exited = awaitedLater(p);\nawait child.run.exited;\n`,
     `export class Server {\n  start() {\n    this.exited = awaitedLater(p);\n  }\n  async stop() {\n    await this.exited;\n  }\n}\n`,
+    // 같은 파일의 함수는 받은 인자를 기다리는지 따라가고, 가져온 함수(시한 도움 등)는 따라갈 수 없어 기다림으로 본다.
+    `const later = awaitedLater(p);\nconst wait = async (value) => {\n  await value;\n};\nawait wait(later);\n`,
+    `const later = awaitedLater(p);\nfunction race(value) {\n  return Promise.race([value, p]);\n}\nawait race(later);\n`,
+    `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait within(later, 1000);\n`,
+    `import * as support from "./support.ts";\nconst later = awaitedLater(p);\nawait support.within(later, 1000);\n`,
+    `const later = awaitedLater(p);\nawait expect(later).resolves.toBe(1);\n`,
+    `const later = awaitedLater(p);\nawait later.finally(() => undefined);\n`,
+    // 모든 분기에서 기다리거나 분기 밖에서 기다리면 된다. try 블록 안의 기다림은 분기가 아니다.
+    `const later = awaitedLater(p);\nif (Math.random() > 0.5) await later;\nelse await Promise.all([later]);\n`,
+    `const later = awaitedLater(p);\nif (Math.random() > 0.5) use(1);\nawait later;\n`,
+    `const later = awaitedLater(p);\ntry {\n  await later;\n} finally {\n  use(1);\n}\n`,
+    `const later = awaitedLater(p);\nswitch (Math.floor(Math.random() * 3)) {\n  case 0:\n  case 1:\n    await later;\n    break;\n  default:\n    await later;\n}\n`,
+    `const later = awaitedLater(p);\nif (Math.random() > 0.5) {\n  if (Math.random() > 0.5) await later;\n  else await later;\n} else await later;\n`,
+    `import { within } from "@babojubot/runtime/testing";\nconst later = awaitedLater(p);\nawait within(later, 1000);\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)

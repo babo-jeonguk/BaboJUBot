@@ -1,8 +1,10 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+import { testReport } from "../../vitest.reports.ts";
 
 // 시스템마다 다른 파일 식별을 실제로 돌려 보는 검사다. DB를 쓰지 않으므로 시험용 DB를 띄우지 않는다.
 export default defineConfig({
   test: {
+    reporters: [...configDefaults.reporters, ...testReport("server-files")],
     // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 파일 읽기 프로세스도 같다.
     setupFiles: ["@babojubot/process/launcher-setup"],
     include: [

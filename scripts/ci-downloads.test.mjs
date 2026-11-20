@@ -1,8 +1,9 @@
 // CI의 OpenCode 내려받기(.github/workflows/scaffold.yml `Install OpenCode`)가 쓰는 curl 옵션을 그대로 꺼내
 // 이 컴퓨터의 HTTP 서버에 돌린다. 일시적인 오류 뒤에는 회복하고, 영구 오류는 바로 실패하고,
-// 시도가 다 떨어지면 마지막 오류로 실패하는지 본다(#218). curl이 없으면 건너뛴다.
+// 시도가 다 떨어지면 마지막 오류로 실패하는지 본다(#218). curl이 없으면 건너뛰지만, CI(문서 검사 job)는
+// BABOJUBOT_REQUIRE_CURL=1로 필수로 정해 curl이 없으면 건너뛰지 않고 원인과 함께 실패한다.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { commandFailure, probeEnvironment } from "@babojubot/runtime/testing";
 
 const workflow = parse(
   readFileSync(
@@ -24,7 +26,15 @@ const install = workflow.jobs["test-opencode"].steps.find(
 const flags = /^\s*curl ([^"$\\\n]+?) -o "\$archive" \\$/m
   .exec(install.run)?.[1]
   .split(/\s+/);
-const hasCurl = spawnSync("curl", ["--version"]).status === 0;
+const hasCurl =
+  probeEnvironment({
+    variable: "BABOJUBOT_REQUIRE_CURL",
+    what: "curl 내려받기 재시도",
+    probe: () => {
+      const missing = commandFailure("curl", ["--version"]);
+      return missing === undefined ? { value: true } : { missing };
+    },
+  }) ?? false;
 
 test("downloads to a file with curl's transient-only retries", () => {
   assert.ok(flags, install.run);

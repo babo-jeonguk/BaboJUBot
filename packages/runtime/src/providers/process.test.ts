@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { runProbe, startProcess } from "./process.ts";
+import { probeEnding, runProbe, startProcess } from "./process.ts";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { killAndWait } from "@babojubot/process/testing";
 import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
@@ -133,6 +133,20 @@ describe("runProbe", () => {
     ).rejects.toMatchObject({ code: 1, stderr: "not signed in\n" });
   });
 
+  it("leaves why a run's program could not be started", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => logged.mockRestore());
+    const child = startProcess({
+      command: ["/missing/program"],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      onFrame: async () => {},
+    });
+    expect((await child.done).broken).toBe(true);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("(ENOENT)"));
+  });
+
   it("reports a missing program", async () => {
     await expect(
       runProbe(["/missing/program"], [], {
@@ -145,9 +159,24 @@ describe("runProbe", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("stops a program that outlives its limit", async () => {
-    await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toThrow();
+  // 끈 이유(시한·취소)와 끝낸 신호는 원인이다. 일반 문구("killed")로 접지 않는다(#264 외부 리뷰 4회차 STD-3).
+  it("stops a program that outlives its limit and names the limit as the cause", async () => {
+    await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toSatisfy(
+      (error) => probeEnding(error) === "stopped: limit"
+    );
   });
+
+  // Windows에는 신호로 끝나는 프로세스가 없다.
+  it.skipIf(process.platform === "win32")(
+    "names the signal that ended a program",
+    async () => {
+      await expect(
+        probe(
+          `process.kill(process.pid, "SIGTERM"); setInterval(() => {}, 1000);`
+        )
+      ).rejects.toSatisfy((error) => probeEnding(error) === "SIGTERM");
+    }
+  );
 
   // 취소해 종료 신호를 보내도 끝나지 않는 프로그램은 유예 뒤 강제로 끝낸다. 호출자의 기다림이 그 프로그램에 매이지 않는다.
   // Windows의 종료는 프로그램이 거부할 수 없어 이 상황을 만들 수 없다.
@@ -182,7 +211,9 @@ describe("runProbe", () => {
       });
       const pid = Number(readFileSync(ready, "utf8"));
       controller.abort();
-      await expect(probing).rejects.toThrow();
+      await expect(probing).rejects.toSatisfy(
+        (error) => probeEnding(error) === "stopped: aborted"
+      );
       expect(alive(pid)).toBe(false);
     },
     30_000

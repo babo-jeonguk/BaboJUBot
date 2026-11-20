@@ -17,6 +17,7 @@ import { scriptedAgents, serverHelpers, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { permissionDenial } from "@babojubot/runtime/testing";
 
 // 조직 폴더는 자기 조직 ID를 안다. 경로 이름만으로는 다른 조직의 폴더를 구별할 수 없기 때문이다.
 let t: TestServer | undefined;
@@ -170,7 +171,8 @@ it("names the mark when the file system stops it being read", async () => {
   expect(failed.error).toContain("ENOTDIR");
 });
 
-it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
+// root는 권한을 넘어 쓰고, Windows는 POSIX 권한 비트로 쓰기를 막지 않는다. CI는 BABOJUBOT_REQUIRE_PERMISSION_DENIAL=1로 필수로 정한다.
+it.skipIf(process.platform === "win32" || !permissionDenial())(
   "names the mark when the file system stops it being written",
   async () => {
     const { agents, say, folder, latestRun } = await server();

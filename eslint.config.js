@@ -68,6 +68,7 @@ const projectService = {
 const processOwners = [
   "container.ts", // docker 클라이언트 호출과 격리 확인
   "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
+  "ps.ts", // ps 한 칸 조회: "대상 없음" 계약(출력 없이 1)을 한곳에 둔다
   "login.ts", // 사용자 터미널을 그대로 넘기는 대화형 로그인
 ].map((name) => `packages/runtime/src/providers/${name}`);
 // 프로세스 패키지(@babojubot/process)에서 프로그램을 직접 띄워도 되는 파일. 공용 실행과, 그 위에 놓을 수 없는 실행이다.
@@ -398,6 +399,7 @@ export default defineConfig([
     // 시작한 Promise의 실패는 기다리거나 받고, 결과를 기다리지 않을 때는 `void`로 드러낸다. 폐기 예정 기능은 쓰지 않는다.
     // 외부 프로그램을 동기로 띄우면 끝날 때까지 서버 전체가 멈추므로, 동기 실행은 옵션 객체에 timeout을 둘 때만 쓴다.
     // 오류는 받아 검사하거나 다시 던진다. 버려야 하면 왜 버리는지 이름 붙은 함수(contracts의 failure.ts)로 드러낸다.
+    // `orIfUnreadable`은 동기 해석 한 단계만 감싼다. 콜백 안의 입출력은 확인 호출(`orIfProbeFailed`)이나 읽기(`orIfMissing`)로 꺼낸다.
     files: productFiles,
     ignores: testFiles,
     plugins: { product: productRules },
@@ -408,6 +410,8 @@ export default defineConfig([
       "product/no-assertion-on-parsed-data": "error",
       "product/sync-command-timeout": "error",
       "product/no-ignored-error": "error",
+      "product/no-io-in-unreadable": "error",
+      "product/no-silent-exit-status": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",
@@ -429,6 +433,8 @@ export default defineConfig([
     rules: {
       "product/sync-command-timeout": "error",
       "product/no-ignored-error": "error",
+      "product/no-io-in-unreadable": "error",
+      "product/no-silent-exit-status": "error",
       eqeqeq: ["error", "always", { null: "ignore" }],
     },
   },
@@ -446,6 +452,20 @@ export default defineConfig([
       "@typescript-eslint/no-misused-promises": "error",
       "@typescript-eslint/no-deprecated": "error",
     },
+  },
+  {
+    // 가져온 패키지는 그 코드가 속한 package.json에 선언한다. 제품 코드는 실행 의존성이어야 프로덕션 설치에서 깨지지 않는다(#264 리뷰 STD-2).
+    files: productFiles,
+    ignores: testFiles,
+    plugins: { product: productRules },
+    rules: { "product/no-undeclared-import": "error" },
+  },
+  {
+    // 개발 스크립트와 시험은 devDependencies까지 받는다. 선언하지 않은 패키지만 막는다.
+    files: [...scriptFiles, ...testFiles],
+    ignores: ["**/test-fixtures/**", "scripts/fixtures/**"],
+    plugins: { product: productRules },
+    rules: { "product/no-undeclared-import": ["error", { allowDev: true }] },
   },
   {
     // finally·catch에서 서로 무관한 정리를 차례로 기다리면 앞 정리가 실패한 곳에서 뒤 정리를 건너뛴다(CODING_STANDARDS.md#제품-코드).

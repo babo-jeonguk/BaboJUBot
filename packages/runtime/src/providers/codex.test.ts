@@ -858,6 +858,26 @@ describe("one app-server connection per call (#145)", () => {
         }
       );
 
+      it("leaves why the record could not be read when the delivery stays unknown", async () => {
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          const t = await steerOnce({
+            read: thenCompletes(
+              slowRead({ error: { code: -32600, message: "no" } })
+            ),
+          });
+          expect(await t.steered()).toMatchObject({
+            error: expect.any(Error),
+          });
+          expect((await t.run).stopReason).toBe("completed");
+          expect(warned).toHaveBeenCalledWith(
+            expect.stringContaining("Codex thread record could not be read")
+          );
+        } finally {
+          warned.mockRestore();
+        }
+      });
+
       it("keeps the delivery unknown, within both limits, when the record read goes unanswered", async () => {
         // The turn only ends once the test lets the read go, after both limits.
         const t = await steerOnce({

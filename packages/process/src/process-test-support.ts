@@ -1,8 +1,9 @@
-import { spawnSync, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { vi } from "vitest";
 import { killUnlessGone, processAlive } from "./test-cleanup.ts";
 import { attemptAll } from "@babojubot/contracts";
+import { psField } from "./ps.ts";
 
 /**
  * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다.
@@ -79,23 +80,9 @@ function procState(pid: number) {
   return stat.slice(stat.lastIndexOf(") ") + 2)[0];
 }
 
-/**
- * `ps`가 알리는 상태 글자. 대상이 없으면 `ps`는 아무것도 쓰지 않고 1로 끝나므로(macOS·procps) 그때만 undefined다.
- * 실행하지 못했거나 다른 코드·오류 출력으로 끝나면 pid·원인과 함께 던진다.
- */
+/** `ps`가 알리는 상태 글자. 대상 없음과 실패의 판정은 제품의 `psField`(ps.ts)가 맡는다. */
 function psState(pid: number) {
-  const result = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const out = result.stdout?.trim() ?? "";
-  if (result.status === 0 && out) return out[0];
-  if (result.status === 1 && !out && !result.stderr?.trim()) return undefined;
-  const reported = result.stderr?.trim();
-  throw new Error(
-    `프로세스 ${pid}의 상태를 ps로 읽지 못했다(code ${result.status}, signal ${result.signal})${reported ? `: ${reported}` : ""}`,
-    { cause: result.error }
-  );
+  return psField(pid, "stat", 10_000)?.[0];
 }
 
 /**

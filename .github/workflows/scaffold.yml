@@ -64,6 +64,8 @@ jobs:
         script: [check, typecheck, lint, build, "test:e2e"]
     env:
       RUN: ${{ matrix.script == 'check' || needs.changes.outputs.code == 'true' }}
+      # 문서 검사(check)의 node:test 묶음이 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(scripts/run-node-tests.mjs).
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - if: env.RUN != 'true'
         run: echo "Markdown만 바뀌어 ${{ matrix.script }}를 건너뜁니다."
@@ -94,17 +96,25 @@ jobs:
         env:
           DEBUG: pw:install
         run: pnpm --filter @babojubot/web exec playwright install --with-deps chromium
+      # 문서 검사의 내려받기 재시도 시험은 curl, 장애 검사 관문 시험은 권한으로 막은 파일이 필수다. 없으면 건너뛰지 않고 실패한다.
       - if: env.RUN == 'true' && matrix.script != 'test:e2e'
+        env:
+          BABOJUBOT_REQUIRE_CURL: "1"
+          BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
         run: pnpm run ${{ matrix.script }}
+      # 문서 검사의 node:test 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다.
+      - name: Check test counts
+        if: ${{ !cancelled() && env.RUN == 'true' && matrix.script == 'check' }}
+        run: node scripts/check-test-reports.mjs --expect scripts-rules,scripts-ci
       # 시험 실행인 E2E만 단계 시한을 둔다(#218). 문서 검사·타입·lint·빌드는 job 시한만 받는다.
       - name: Run E2E
         if: env.RUN == 'true' && matrix.script == 'test:e2e'
         timeout-minutes: 12
         run: pnpm run test:e2e
-      # 통과·실패·건너뜀 수를 남기고, 예상 밖 건너뜀과 빠진 서버 수명 시험을 실패로 본다.
+      # 통과·실패·건너뜀 수를 남기고, 실패 예정 결과·예상 밖 건너뜀·통과 없이 빠진 spec을 실패로 본다(scripts/check-e2e-report.mjs).
       - name: Check E2E report
         if: ${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}
-        run: node scripts/check-e2e-report.mjs apps/web/test-results/e2e-report.json
+        run: node scripts/check-e2e-report.mjs --os linux apps/web/test-results/e2e-report.json
       - name: Keep failed E2E traces
         if: failure() && env.RUN == 'true' && matrix.script == 'test:e2e'
         uses: actions/upload-artifact@v7.0.2
@@ -120,6 +130,9 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -134,12 +147,19 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 12
         run: pnpm --filter @babojubot/contracts --filter @babojubot/core --filter @babojubot/web run test
+      # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
+      - name: Check test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect contracts,core,web
   test-runtime:
     name: tests / runtime
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -170,18 +190,28 @@ jobs:
       - name: Run runtime tests
         timeout-minutes: 12
         # 바깥 환경이 필요한 시험은 이 job에서 필수다. 확인이 실패하면 건너뛰지 않고 원인과 함께 실패한다(@babojubot/process/testing의 probeEnvironment):
-        # 실제 Docker 격리(container.docker.test.ts), python pty 실제 터미널(login.test.ts), systemd 사용자 scope(process의 lease-hidden.alone.test.ts).
+        # 실제 Docker 격리(container.docker.test.ts), python pty 실제 터미널(login.test.ts), systemd 사용자 scope(process의 lease-hidden.alone.test.ts),
+        # 위에서 붙인 링크를 모르는 디스크(container.test.ts), root가 아니어서 권한으로 막을 수 있는 파일(permissionDenial).
         env:
           BABOJUBOT_REQUIRE_DOCKER: "1"
           BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
           BABOJUBOT_REQUIRE_SYSTEMD_SCOPE: "1"
+          BABOJUBOT_REQUIRE_NO_LINK_DIR: "1"
+          BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
         run: pnpm --filter @babojubot/process --filter @babojubot/runtime run test
+      # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
+      - name: Check test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect runtime,runtime-alone
   test-db:
     name: tests / db
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -202,13 +232,20 @@ jobs:
         run: node scripts/check-test-exit-code.mjs
       - name: Check boot script isolation
         timeout-minutes: 5
-        run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+        run: node scripts/run-node-tests.mjs boot-check scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+      # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
+      - name: Check test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect db,boot-check
   test-server:
     name: tests / server
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -222,13 +259,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Run server tests
         timeout-minutes: 12
+        # 권한으로 막은 표식 파일 시험(workspace-identity.test.ts)은 필수다. root로 돌면 건너뛰지 않고 실패한다.
+        env:
+          BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
         run: pnpm --filter @babojubot/server exec vitest run --exclude test/opencode-real-cli.test.ts
+      # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
+      - name: Check test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect server
   test-opencode:
     name: tests / opencode
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -261,6 +308,10 @@ jobs:
       - name: Run real OpenCode CLI tests
         timeout-minutes: 10
         run: pnpm --filter @babojubot/server exec vitest run test/opencode-real-cli.test.ts
+      # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
+      - name: Check test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect server
   # 지점 보호가 기대하는 `ci / test` 이름을 유지하는 집계 job. 각 테스트 job의 성공·건너뜀·취소를 하나씩 판정한다.
   # 실패한 job마다 이유(시험 실패·실행 컴퓨터 미배정·취소·알 수 없음)를 job summary 표로 남긴다. 판정은 바꾸지 않는다.
   test:
@@ -325,6 +376,9 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 23
+    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -338,12 +392,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
-        run: node --test scripts/ci-test-gate.test.mjs
+        run: node scripts/run-node-tests.mjs ci-gate scripts/ci-test-gate.test.mjs
       - run: pnpm --filter @babojubot/process --filter @babojubot/runtime run typecheck
-      # python pty 실제 터미널 시험(login.test.ts)은 필수다. Windows는 POSIX pty가 없어 그 시험만 OS 이유로 건너뛴다.
+      # python pty 실제 터미널 시험(login.test.ts)과 권한으로 막은 파일 시험(permissionDenial)은 필수다. Windows는 POSIX pty·권한
+      # 비트가 없어 그 시험만 OS 이유로 건너뛴다.
       - timeout-minutes: 8
         env:
           BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
+          BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
         run: pnpm --filter @babojubot/process --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
@@ -355,18 +411,26 @@ jobs:
       # 띄운 서버와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
         timeout-minutes: 3
-        run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+        run: node scripts/run-node-tests.mjs boot-check scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
       # 작업자 실행기가 worker의 트리 전체(SIGTERM을 무시하는 명령, 새 세션으로 나간 명령)를 끄는지 이 시스템의 실제 프로세스로
       # 본다(#262). macOS는 프로세스 그룹과 표식(ps), Windows는 묶음 실행기다.
       - name: Check worker runner on this system
         timeout-minutes: 3
-        run: node --test .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
+        run: node scripts/run-node-tests.mjs worker-runner .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
+      # 파일 경계 시험은 전체 검증이 돌지 않는 변경에서만 여기서 돈다(위 단계). 그때만 그 보고서를 기다린다.
+      # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
+      - name: Check test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect ci-gate,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
   test-windows:
     name: runtime on windows-latest
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 23
+    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -380,12 +444,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
-        run: node --test scripts/ci-test-gate.test.mjs
+        run: node scripts/run-node-tests.mjs ci-gate scripts/ci-test-gate.test.mjs
       - run: pnpm --filter @babojubot/process --filter @babojubot/runtime run typecheck
-      # python pty 실제 터미널 시험(login.test.ts)은 필수다. Windows는 POSIX pty가 없어 그 시험만 OS 이유로 건너뛴다.
+      # python pty 실제 터미널 시험(login.test.ts)과 권한으로 막은 파일 시험(permissionDenial)은 필수다. Windows는 POSIX pty·권한
+      # 비트가 없어 그 시험만 OS 이유로 건너뛴다.
       - timeout-minutes: 8
         env:
           BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
+          BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
         run: pnpm --filter @babojubot/process --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
@@ -397,12 +463,17 @@ jobs:
       # 띄운 서버와 쓰는 중인 파일, 대소문자를 가리지 않는 환경 변수)도 이 시스템에서 확인한다.
       - name: Check boot script on this system
         timeout-minutes: 3
-        run: node --test scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
+        run: node scripts/run-node-tests.mjs boot-check scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs
       # 작업자 실행기가 worker의 트리 전체(SIGTERM을 무시하는 명령, 새 세션으로 나간 명령)를 끄는지 이 시스템의 실제 프로세스로
       # 본다(#262). macOS는 프로세스 그룹과 표식(ps), Windows는 묶음 실행기다.
       - name: Check worker runner on this system
         timeout-minutes: 3
-        run: node --test .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
+        run: node scripts/run-node-tests.mjs worker-runner .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
+      # 파일 경계 시험은 전체 검증이 돌지 않는 변경에서만 여기서 돈다(위 단계). 그때만 그 보고서를 기다린다.
+      # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
+      - name: Check test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect ci-gate,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
   # Windows의 서버 정상 종료와 화면 E2E(#189). Windows에서는 부모가 신호로 서버에 정리를 맡길 수 없어 멈춤 메시지를 쓴다.
   # 서버 진입점의 멈춤 시험(POSIX 전용 신호·프로세스 그룹 시험은 건너뜀)과 Chromium 전체 E2E를 이 시스템에서 돈다.
   # 전체 시간을 줄이려고 E2E를 두 job으로 나눠(Playwright shard) 동시에 돈다. 두 job은 shard 번호와 멈춤 시험(1/2만) 말고
@@ -413,6 +484,9 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 40
+    # 서버 멈춤 시험이 보고서를 남겨 그 실행·통과 수를 판정한다(vitest.reports.ts).
+    env:
+      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -427,6 +501,9 @@ jobs:
       - name: Check server stop on this system
         timeout-minutes: 5
         run: pnpm --filter @babojubot/server exec vitest run src/stop-request.test.ts test/main.test.ts
+      - name: Check server stop test counts
+        if: ${{ !cancelled() }}
+        run: node scripts/check-test-reports.mjs --expect server
       # Playwright가 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다.
       - name: Install Chromium
         timeout-minutes: 5
@@ -500,7 +577,7 @@ jobs:
           path: apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 3
-  # 두 shard의 보고서를 합쳐 판정한다. 결과 수를 남기고 예상 밖 건너뜀·빠진 서버 수명 시험을 실패로 본다.
+  # 두 shard의 보고서를 합쳐 판정한다. 결과 수를 남기고 실패 예정 결과·예상 밖 건너뜀·통과 없이 빠진 spec, 통과한 시험이 없는 shard를 실패로 본다.
   # shard가 실패해도 돌아 수를 남기고, 보고서가 빠지면 실패한다.
   test-e2e-windows:
     name: e2e on windows-latest
@@ -528,7 +605,7 @@ jobs:
           path: e2e-reports/2
       - name: Check E2E report
         if: ${{ !cancelled() }}
-        run: node scripts/check-e2e-report.mjs e2e-reports/1/e2e-report.json e2e-reports/2/e2e-report.json
+        run: node scripts/check-e2e-report.mjs --os windows e2e-reports/1/e2e-report.json e2e-reports/2/e2e-report.json
   # 파일 시스템별 전체 검증(#153). 조직 경계의 파일 읽기에 닿는 변경(scripts/ci-changes.mjs)과 수동 실행에서만 돈다.
   # OS마다 job 하나가 시험용 볼륨을 한 번 준비하고 볼륨마다 같은 시험(apps/server/vitest.files.config.ts)을 돈다.
   # 앞 볼륨이 실패해도 남은 볼륨·결과표·정리는 돌고(`!cancelled()`·`always()`), job은 실패로 남는다.

@@ -1,4 +1,3 @@
-import { orIfUnreadable } from "@babojubot/contracts";
 import { realClock, type Clock } from "@babojubot/process";
 import { startProcess } from "./process.ts";
 import { record } from "./record.ts";
@@ -93,8 +92,6 @@ export function openCodexConnection(
   // 예고 없이 끝나거나 입력 쓰기가 실패해도 같은 길로 닫는다. 정리 완료(done)를 기다리지 않고 대기를 바로 끝낸다.
   void child.exited.then(markClosed);
   void child.inputFailed.then(markClosed);
-  const write = (frame: unknown) =>
-    orIfUnreadable(() => child.write(frame), false);
   const request = (
     method: string,
     params: unknown,
@@ -113,13 +110,27 @@ export function openCodexConnection(
           timeoutMs
         ),
       });
-      if (!write({ id, method, params })) {
+      let sent: boolean;
+      try {
+        sent = child.write({ id, method, params });
+      } catch (error) {
+        // 보내지 못한 요청(직렬화할 수 없는 값 등)은 프로그램에 닿지 않았다. 연결은 그대로 두고 그 원인으로 이 요청만 실패시킨다.
+        settle(id, {
+          error:
+            error instanceof Error
+              ? error
+              : new Error("the request could not be written", { cause: error }),
+        });
+        return;
+      }
+      if (!sent) {
         settle(id, { error: new ProtocolClosed() });
         close();
       }
     });
   const notify = (method: string, params?: unknown) =>
-    !closed && write(params === undefined ? { method } : { method, params });
+    !closed &&
+    child.write(params === undefined ? { method } : { method, params });
   /** 닫기를 요청한다. 대기는 곧바로 끝나고, 프로세스는 입력을 닫은 뒤 정해진 순서로 끝난다. */
   const close = () => {
     markClosed();

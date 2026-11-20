@@ -10,8 +10,10 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
+  orIfProbeFailed,
   orIfUnreadable,
 } from "@babojubot/contracts";
+import { psField } from "@babojubot/runtime/ps";
 import { runCommand } from "@babojubot/process";
 import { candidatePort } from "./ports.ts";
 
@@ -315,13 +317,23 @@ function stopNow(
     return;
   const left = deadline - Date.now();
   if (left < 1) return;
-  spawnSync(pgCtl, ["kill", "QUIT", String(started.pid)], {
+  const result = spawnSync(pgCtl, ["kill", "QUIT", String(started.pid)], {
     stdio: "ignore",
     timeout: left,
     killSignal: "SIGKILL",
     windowsHide: true,
   });
+  if (result.error || result.status !== 0)
+    console.warn(
+      `[db] could not ask Postgres (pid ${started.pid}) to stop as this process exits (${result.error ? failureCode(result.error) : `exit ${result.status ?? result.signal}`})`
+    );
 }
+
+/** 프로세스 신원을 읽지 못한 원인을 남긴다. 모르는 신원은 같은 프로세스로 보지 않는다(손대지 않는다). */
+const unknownIdentity = (pid: number) => (error: unknown) =>
+  console.warn(
+    `[db] could not read the identity of process ${pid}; it is not taken as the same process (${failureCode(error)})`
+  );
 
 /**
  * OS가 매긴 프로세스 생성 신원. 같은 pid라도 나중에 시작한 다른 프로세스면 달라진다. Linux는 /proc의 시작 tick,
@@ -333,31 +345,35 @@ export function processIdentity(
 ): string | undefined {
   if (process.platform === "win32") return undefined;
   if (process.platform === "linux") {
-    return orIfUnreadable(
+    // 끝난 프로세스는 신원이 없다(답이다). 그 밖의 읽기 실패는 원인을 남기고 모르는 것으로 본다.
+    const stat = orIfProbeFailed(
       () =>
-        fs
-          .readFileSync(`/proc/${pid}/stat`, "utf8")
-          .split(") ")
-          .at(-1)!
-          .split(" ")[19],
-      undefined
+        orIfMissing(
+          () => fs.readFileSync(`/proc/${pid}/stat`, "utf8"),
+          hasErrorCode("ENOENT", "ESRCH"),
+          undefined
+        ),
+      undefined,
+      unknownIdentity(pid)
     );
+    return stat?.split(") ").at(-1)!.split(" ")[19];
   }
   if (timeoutMs < 1) return undefined;
-  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-    encoding: "utf8",
-    env: { ...process.env, LC_ALL: "C" },
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: timeoutMs,
-    killSignal: "SIGKILL",
-  });
-  const text = result.status === 0 ? result.stdout.trim() : "";
-  return text || undefined;
+  return orIfProbeFailed(
+    () => psField(pid, "lstart", timeoutMs),
+    undefined,
+    unknownIdentity(pid)
+  );
 }
 
-/** pg_ctl status: 0이면 그 dataDir의 잠금 파일에 적힌 프로세스가 살아 있다. */
+/** pg_ctl status: 0이면 그 dataDir의 잠금 파일에 적힌 프로세스가 살아 있고, 3(돌지 않음)·4(dataDir 없음)면 아니다. 그 밖의 끝남은 확인하지 못한 것이므로 던진다. */
 async function isRunning(pgCtl: string, dataDir: string) {
-  return (await run(pgCtl, ["status", "-D", dataDir], pgCtlQuickMs)) === 0;
+  const code = await run(pgCtl, ["status", "-D", dataDir], pgCtlQuickMs);
+  if (code === 0) return true;
+  if (code === 3 || code === 4) return false;
+  throw new Error(
+    `pg_ctl status could not tell whether Postgres runs in ${dataDir} (exit ${code})`
+  );
 }
 
 /** 그 port의 Postgres가 이 dataDir를 쓰는지 접속해 확인한다. 접속하지 못하면 확인하지 못한 것이다. */
@@ -366,15 +382,27 @@ async function servesDataDir(port: number, dataDir: string) {
     connectionString: clusterUrl(port, "postgres"),
     connectionTimeoutMillis: 5_000,
   });
-  client.on("error", () => {});
+  // 접속한 뒤 끊기는 오류도 이 확인의 실패다. 원인을 남긴다(접속·질의의 실패는 아래 확인이 남긴다).
+  client.on("error", (error) =>
+    console.warn(
+      `[db] the data directory check connection failed (${failureCode(error)})`
+    )
+  );
   try {
-    return await orIfUnreadable(async () => {
-      await client.connect();
-      const { rows } = await client.query<{ data_directory: string }>(
-        "show data_directory"
-      );
-      return samePath(rows[0]!.data_directory, dataDir);
-    }, false);
+    return await orIfProbeFailed(
+      async () => {
+        await client.connect();
+        const { rows } = await client.query<{ data_directory: string }>(
+          "show data_directory"
+        );
+        return samePath(rows[0]!.data_directory, dataDir);
+      },
+      false,
+      (error) =>
+        console.warn(
+          `[db] could not ask Postgres on port ${port} which data directory it serves (${failureCode(error)})`
+        )
+    );
   } finally {
     await continueAfterFailure(
       () => client.end(),
@@ -388,10 +416,7 @@ async function servesDataDir(port: number, dataDir: string) {
 }
 
 function samePath(a: string, b: string) {
-  return orIfUnreadable(
-    () => fs.realpathSync.native(a) === fs.realpathSync.native(b),
-    false
-  );
+  return fs.realpathSync.native(a) === fs.realpathSync.native(b);
 }
 
 const stopCommand = (pgCtl: string, dataDir: string) =>

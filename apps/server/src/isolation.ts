@@ -206,12 +206,25 @@ export class IsolationGate {
         result.proxied.length > 0
       )
         return { status: "unsafe" };
+      // 끝까지 확인하지 못한 검사가 있으면 결과를 모르는 것이므로 안전하다고 보지 않는다(fail closed).
+      if (result.unverified.length > 0) {
+        console.error(
+          `[isolation] safety check could not complete: ${result.unverified.join(", ")}`
+        );
+        return { status: "unavailable" };
+      }
       if (!result.toolsReached) return { status: "unavailable" };
       return { status: "safe", toolsBaseUrl: containerToolsOrigin };
     } catch (error) {
       console.error("[isolation] safety check failed", error);
       return { status: "unavailable" };
     }
+  }
+
+  /** 지난 실행이 남긴 이 제품 폴더의 컨테이너를 지운다. Windows는 격리 실행이 컨테이너를 띄우지 않으므로(안전 확인과 같은 규칙) Docker를 부르지 않고, Docker 환경이 없어도 하지 않는다. 지우지 못하면 던진다. */
+  async removeOrphans(): Promise<void> {
+    if (this.#windows) return;
+    await this.#docker?.removeOrphans();
   }
 
   /** 관문을 닫는다. 진행 중인 확인은 격리 환경 없음으로 끝나고 그 뒤로는 확인하지 않는다. */

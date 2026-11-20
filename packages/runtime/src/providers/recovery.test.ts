@@ -174,6 +174,35 @@ it("stops a leftover process on systems without /proc", async () => {
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
+// 시작 시각을 묻지 못하면 우리 것으로 보지 않고(끄지 않음) 그 원인을 남긴다. 실패하는 명령은 PATH 앞에 둔 가짜 ps가 맡는다.
+// 그사이 끝난 프로세스는 물을 것이 없으므로(답이다) 원인을 남기지 않는다.
+it.skipIf(process.platform === "win32")(
+  "leaves why it could not ask a running process's start time, but not for one that ended",
+  async () => {
+    const fake = await folders.make("babojubot-fake-ps-");
+    await writeFile(
+      path.join(fake, "ps"),
+      `#!${process.execPath}\nprocess.exit(1);\n`,
+      { mode: 0o755 }
+    );
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("PATH", `${fake}${path.delimiter}${process.env.PATH}`);
+    try {
+      expect(processStartedAt(process.pid, withoutProc)).toBeUndefined();
+      expect(warned).toHaveBeenCalledWith(
+        expect.stringContaining(`start time of process ${process.pid}`)
+      );
+      warned.mockClear();
+      const ended = spawnSync(process.execPath, ["-e", ""]).pid;
+      expect(processStartedAt(ended, withoutProc)).toBeUndefined();
+      expect(warned).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      warned.mockRestore();
+    }
+  }
+);
+
 // 시작 시각을 묻는 명령이 답하지 않아도 복구는 정해진 상한 안에 다음으로 넘어간다. 우리 것인지 모르는 프로세스와 그 기록은
 // 그대로 둔다. 답하지 않는 명령은 PATH 앞에 둔 가짜 ps가 맡는다(60초 뒤에야 다른 시작 시각을 답한다).
 // Windows는 PowerShell에 묻는데, 답하지 않는 PowerShell을 시험이 대신 둘 수 없다. 그 호출의 상한은 lint가 강제한다.

@@ -67,6 +67,7 @@ function start(then: string) {
   return { run, left };
 }
 
+// Windows에는 새 세션(setsid)으로 나가는 명령이 없다. 그곳의 남은 프로그램은 묶음 실행기 시험(job-object.test.ts)이 본다.
 describe.skipIf(process.platform === "win32")(
   "programs a run leaves in another session",
   () => {

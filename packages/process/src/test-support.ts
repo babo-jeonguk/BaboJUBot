@@ -68,6 +68,24 @@ export function commandFailure(
 }
 
 /**
+ * 파일·폴더 권한으로 읽기·쓰기를 막을 수 있는가. root는 권한을 넘어 막은 파일도 읽고 쓰므로 그 시험은 root에서 건너뛴다.
+ * CI는 `BABOJUBOT_REQUIRE_PERMISSION_DENIAL=1`로 필수로 정해, root로 돌면 건너뛰지 않고 실패한다. Windows는 이 확인과 따로
+ * POSIX 권한 비트를 쓰는 시험만 그 시험 옆에 OS 이유로 건너뛴다.
+ */
+export function permissionDenial(): boolean {
+  return (
+    probeEnvironment({
+      variable: "BABOJUBOT_REQUIRE_PERMISSION_DENIAL",
+      what: "권한으로 막은 파일·폴더",
+      probe: () =>
+        process.getuid?.() === 0
+          ? { missing: "root는 파일 권한을 넘어 읽고 쓴다" }
+          : { value: true },
+    }) ?? false
+  );
+}
+
+/**
  * 시험이 쓰는 바깥 환경(Docker, python pty, systemd 사용자 scope)을 확인한다. 쓸 수 있으면 `probe`의 값을, 건너뛸 때는
  * `undefined`를 돌려준다.
  * - `unsupported`: 이 OS가 그 환경을 지원하지 않는 이유. 있으면 확인 없이 그 이유로 건너뛴다.
