@@ -8,7 +8,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { orIfMissing } from "../packages/contracts/src/failure.ts";
+import {
+  hasErrorCode,
+  orIfMissing,
+} from "../packages/contracts/src/failure.ts";
 
 const systems = ["linux", "macos", "windows"];
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -149,7 +152,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   }
   const reports = new Map();
   // 폴더가 없으면 어느 묶음도 보고서를 남기지 않은 것이다. 그때는 예상한 묶음마다 보고서가 없다고 알린다.
-  const entries = orIfMissing(() => readdirSync(folder), []);
+  const entries = orIfMissing(
+    () => readdirSync(folder),
+    hasErrorCode("ENOENT"),
+    []
+  );
   for (const entry of entries.filter((e) => e.endsWith(".json"))) {
     const file = path.join(folder, entry);
     try {

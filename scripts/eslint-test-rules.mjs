@@ -2328,7 +2328,11 @@ function waiting(sourceCode) {
       ? namespaceOf(def.node.init, seen)
       : undefined;
   };
-  /** 호출 `call`의 `index`번째 인자로 넘긴 값의 결과를 그 호출이 받는가. */
+  /**
+   * 호출 `call`의 `index`번째 인자로 넘긴 값의 결과를 그 호출이 받는가. 받는 자리는 위치까지 맞아야 한다: 조합 함수는 첫 인자 배열,
+   * `expect`는 첫 인자(둘째는 문구), 가져온 시험 도움은 첫 인자(저장소의 기다림 도움 `within`·`settled`는 Promise를 첫 인자로
+   * 받는다), 같은 파일의 함수는 그 위치의 매개변수가 기다려질 때다.
+   */
   const callPasses = (call, index, isArray, seen) => {
     const callee = call.callee;
     if (callee.type === "MemberExpression") {
@@ -2339,22 +2343,25 @@ function waiting(sourceCode) {
         !bindingOf(sourceCode, callee.object) &&
         promiseCombinators.has(name)
       )
-        return "always";
-      if (isArray || callee.object.type !== "Identifier") return "never";
+        return index === 0 && isArray ? "always" : "never";
+      if (isArray || index !== 0 || callee.object.type !== "Identifier")
+        return "never";
       return repoModule.test(namespaceOf(callee.object)?.source ?? "")
         ? "always"
         : "never";
     }
     if (isArray || callee.type !== "Identifier") return "never";
     if (callee.name === "expect")
-      return ["rejects", "resolves"].includes(memberName(call.parent)) &&
+      return index === 0 &&
+        ["rejects", "resolves"].includes(memberName(call.parent)) &&
         call.parent.object === call
         ? "always"
         : "never";
     const variable = bindingOf(sourceCode, callee);
     if (!variable) return "never";
     const origin = importOf(variable);
-    if (origin) return repoModule.test(origin.source) ? "always" : "never";
+    if (origin)
+      return index === 0 && repoModule.test(origin.source) ? "always" : "never";
     const fn = functionOf(variable);
     const param = fn?.params[index];
     if (!fn || seen.has(fn) || param?.type !== "Identifier") return "never";
