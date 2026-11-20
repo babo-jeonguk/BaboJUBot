@@ -616,6 +616,41 @@ test("other modules reach runtime and the process package only through their lis
       "packages/runtime/src/providers/process.ts",
       `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
     ],
+    // 입구 제한은 경로 철자가 아니라 대상(입구 파일)으로 본다(#266 리뷰 SPEC-6): 자기 패키지 안에서도 자기 이름이나 상대 경로로
+    // 그 입구 파일을 가져오면 다른 영역과 같은 판정이다.
+    [
+      "packages/process/src/clock.ts",
+      `import { identity } from "@babojubot/process/recovery";\nvoid identity;\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { identity } from "./recovery.ts";\nvoid identity;\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { withCleanup } from "./test-cleanup";\nvoid withCleanup;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { createGate } from "../testing.ts";\nvoid createGate;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { createGate } from "@babojubot/runtime/testing";\nvoid createGate;\n`,
+    ],
+    [
+      "packages/db/src/approvals.ts",
+      `import { withClient } from "./admin.ts";\nvoid withClient;\n`,
+    ],
+    [
+      "packages/db/src/approvals.ts",
+      `import startTestCluster from "@babojubot/db/test-cluster";\nvoid startTestCluster;\n`,
+    ],
+    // 다른 패키지의 입구 파일을 상대 경로로 가리켜도 그 입구다.
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { identity } from "../../../process/src/recovery.ts";\nvoid identity;\n`,
+    ],
   ];
   for (const [place, code] of refused) {
     const [message, ...rest] = await lint(code, place, scopeRule);
@@ -655,10 +690,23 @@ test("other modules reach runtime and the process package only through their lis
       "packages/runtime/src/providers/recovery.ts",
       `import { holdsLease, stopProcessGroup } from "@babojubot/process/recovery";\nvoid [holdsLease, stopProcessGroup];\n`,
     ],
-    // 프로세스 패키지 자신과 db 밖의 시험 코드는 범위 밖이다.
+    // 자기 패키지 안의 입구가 아닌 파일(입구가 다시 내보내는 안쪽 모듈 포함)과 받는 입구는 그대로다. 그룹 끄기 이름은
+    // product/no-group-stop-import가 따로 본다. db 밖의 시험 코드는 범위 밖이다.
     [
       "packages/process/src/index.ts",
       `export { launchTree } from "./launch.ts";\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { holdsLease } from "./lease.ts";\nimport { identity } from "./group.ts";\nvoid [holdsLease, identity];\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { launchTree } from "@babojubot/process";\nimport { removeFolder } from "./remove-folder.ts";\nvoid [launchTree, removeFolder];\n`,
+    ],
+    [
+      "packages/db/src/approvals.ts",
+      `import * as db from "./index.ts";\nvoid db;\n`,
     ],
     [
       "packages/runtime/src/providers/recovery.test.ts",
