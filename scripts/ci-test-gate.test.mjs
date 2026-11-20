@@ -228,7 +228,7 @@ test("splits the Windows E2E into two shard jobs and judges their reports togeth
   );
   assert.equal(
     check?.run,
-    "node scripts/check-e2e-report.mjs e2e-reports/1/e2e-report.json e2e-reports/2/e2e-report.json"
+    "node scripts/check-e2e-report.mjs --os windows e2e-reports/1/e2e-report.json e2e-reports/2/e2e-report.json"
   );
   assert.equal(check.if, "${{ !cancelled() }}");
   for (const each of judge.steps)
@@ -240,6 +240,11 @@ test("splits the Windows E2E into two shard jobs and judges their reports togeth
   assert.equal(
     linux?.if,
     "${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}"
+  );
+  // 시스템별 건너뜀을 판정하도록 각 판정이 보고서를 만든 시스템을 밝힌다.
+  assert.equal(
+    linux.run,
+    "node scripts/check-e2e-report.mjs --os linux apps/web/test-results/e2e-report.json"
   );
 });
 

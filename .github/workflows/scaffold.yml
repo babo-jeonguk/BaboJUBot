@@ -104,7 +104,7 @@ jobs:
       # 통과·실패·건너뜀 수를 남기고, 예상 밖 건너뜀과 빠진 서버 수명 시험을 실패로 본다.
       - name: Check E2E report
         if: ${{ !cancelled() && env.RUN == 'true' && matrix.script == 'test:e2e' }}
-        run: node scripts/check-e2e-report.mjs apps/web/test-results/e2e-report.json
+        run: node scripts/check-e2e-report.mjs --os linux apps/web/test-results/e2e-report.json
       - name: Keep failed E2E traces
         if: failure() && env.RUN == 'true' && matrix.script == 'test:e2e'
         uses: actions/upload-artifact@v7.0.2
@@ -527,7 +527,7 @@ jobs:
           path: e2e-reports/2
       - name: Check E2E report
         if: ${{ !cancelled() }}
-        run: node scripts/check-e2e-report.mjs e2e-reports/1/e2e-report.json e2e-reports/2/e2e-report.json
+        run: node scripts/check-e2e-report.mjs --os windows e2e-reports/1/e2e-report.json e2e-reports/2/e2e-report.json
   # 파일 시스템별 전체 검증(#153). 조직 경계의 파일 읽기에 닿는 변경(scripts/ci-changes.mjs)과 수동 실행에서만 돈다.
   # OS마다 job 하나가 시험용 볼륨을 한 번 준비하고 볼륨마다 같은 시험(apps/server/vitest.files.config.ts)을 돈다.
   # 앞 볼륨이 실패해도 남은 볼륨·결과표·정리는 돌고(`!cancelled()`·`always()`), job은 실패로 남는다.
