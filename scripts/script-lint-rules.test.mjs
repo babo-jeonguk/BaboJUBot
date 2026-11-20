@@ -57,6 +57,14 @@ const scriptRules = {
     reported: `try {\n  JSON.parse("x");\n} catch {\n  console.log("not JSON");\n}\n`,
     kept: `try {\n  JSON.parse("x");\n} catch (error) {\n  if (!(error instanceof SyntaxError)) throw error;\n}\n`,
   },
+  "product/no-silent-exit-status": {
+    reported: `export const text = (result) => (result.status === 0 ? result.stdout.trim() : "");\n`,
+    kept: `export const text = (result) => {\n  if (result.status !== 0) throw new Error(\`git failed (exit \${result.status}): \${result.stderr}\`);\n  return result.stdout.trim();\n};\n`,
+  },
+  "product/no-io-in-unreadable": {
+    reported: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
+    kept: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => {\n  const text = readFileSync(file, "utf8");\n  return orIfUnreadable(() => JSON.parse(text), undefined);\n};\n`,
+  },
   eqeqeq: {
     reported: `export const same = (a, b) => a == b;\n`,
     kept: `export const same = (a, b) => a === b;\nexport const none = (a) => a == null;\n`,
@@ -90,6 +98,38 @@ test("development scripts get the product rules", async () => {
         `${place}: ${rule}`
       );
     }
+});
+
+// 개발 스크립트와 그 시험은 루트 package.json의 devDependencies까지 받는다(yaml). 선언하지 않은 패키지(left-pad)는 막는다.
+test("development scripts and their tests import only declared packages", async () => {
+  const reported = `import pad from "left-pad";\nexport const padded = pad("1", 3);\n`;
+  const kept = `import { parse } from "yaml";\nexport const read = (text) => parse(text);\n`;
+  const rule = ["product/no-undeclared-import"];
+  for (const place of [
+    ...scriptPlaces,
+    ...scriptTestPlaces.filter((p) => !p.includes("fixtures")),
+  ]) {
+    const [message, ...rest] = await lint(reported, place, rule);
+    assert.ok(message, `${place}: not reported`);
+    assert.deepEqual(rest, [], place);
+    assert.match(message.message, /package\.json/);
+    assert.deepEqual(await lint(kept, place, rule), [], `${place}: ${kept}`);
+  }
+});
+
+// 오류 이벤트 처리기도 오류를 받아 확인한다. 상대가 끊은 것만 넘기고 나머지는 남긴다.
+test("development scripts do not drop the error an error listener receives", async () => {
+  const reported = `export const watch = (child) => child.stdin.on("error", () => {});\n`;
+  const kept = `import { isDisconnect } from "../packages/contracts/src/failure.ts";\nexport const watch = (child, record) =>\n  child.stdin.on("error", (error) => {\n    if (!isDisconnect(error)) record("stdin-error", { code: error.code });\n  });\n`;
+  const rule = ["product/no-ignored-error"];
+  for (const place of scriptPlaces) {
+    const [message, ...rest] = await lint(reported, place, rule);
+    assert.ok(message, `${place}: not reported`);
+    assert.deepEqual(rest, [], place);
+    assert.deepEqual(await lint(kept, place, rule), [], `${place}: ${kept}`);
+  }
+  for (const place of scriptTestPlaces)
+    assert.deepEqual(await lint(reported, place, rule), [], place);
 });
 
 const chainRule = ["product/no-cleanup-chain"];

@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  AsyncReadError,
   attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
+  isDisconnect,
   orIfMissing,
+  orIfProbeFailed,
   orIfUnreadable,
   settled,
 } from "./failure.ts";
@@ -23,6 +26,17 @@ describe("hasErrorCode", () => {
     expect(missing({ code: 2 })).toBe(false);
     expect(missing("ENOENT")).toBe(false);
     expect(missing(undefined)).toBe(false);
+  });
+});
+
+describe("isDisconnect", () => {
+  it("matches only errors left by a peer that closed the connection or pipe", () => {
+    for (const code of ["EPIPE", "ECONNRESET", "ECONNABORTED", "EOF"])
+      expect(isDisconnect(coded(code))).toBe(true);
+    for (const code of ["EACCES", "ETIMEDOUT", "ECONNREFUSED", "EMFILE"])
+      expect(isDisconnect(coded(code))).toBe(false);
+    expect(isDisconnect(new Error("EPIPE"))).toBe(false);
+    expect(isDisconnect(undefined)).toBe(false);
   });
 });
 
@@ -124,8 +138,87 @@ describe("continueAfterFailure", () => {
   });
 });
 
+describe("orIfProbeFailed", () => {
+  it("returns what the probe found and reports nothing when it succeeds", async () => {
+    const reported: unknown[] = [];
+    expect(
+      orIfProbeFailed(
+        () => 7,
+        "unknown",
+        (e) => reported.push(e)
+      )
+    ).toBe(7);
+    await expect(
+      orIfProbeFailed(
+        () => Promise.resolve(8),
+        "unknown",
+        (e) => reported.push(e)
+      )
+    ).resolves.toBe(8);
+    expect(reported).toEqual([]);
+  });
+
+  it("reports why the probe failed and returns the safe result the caller chose", async () => {
+    const reported: unknown[] = [];
+    const denied = coded("EACCES");
+    const refused = coded("ECONNREFUSED");
+    const early = coded("ENOTFOUND");
+    expect(
+      orIfProbeFailed(
+        () => {
+          throw denied;
+        },
+        "unknown",
+        (e) => reported.push(e)
+      )
+    ).toBe("unknown");
+    await expect(
+      orIfProbeFailed(
+        () => Promise.reject(refused),
+        false,
+        (e) => reported.push(e)
+      )
+    ).resolves.toBe(false);
+    // 비동기 확인이 기다리기 전에 던져도 같은 길로 남긴다.
+    await expect(
+      orIfProbeFailed(
+        async () => {
+          throw early;
+        },
+        undefined,
+        (e) => reported.push(e)
+      )
+    ).resolves.toBeUndefined();
+    expect(reported).toEqual([denied, refused, early]);
+  });
+
+  it("lets a failing report surface instead of hiding it", async () => {
+    const broken = new Error("report failed");
+    expect(() =>
+      orIfProbeFailed(
+        () => {
+          throw coded("EACCES");
+        },
+        false,
+        () => {
+          throw broken;
+        }
+      )
+    ).toThrow(broken);
+    await expect(
+      orIfProbeFailed(
+        () => Promise.reject(coded("EACCES")),
+        false,
+        () => {
+          throw broken;
+        }
+      )
+    ).rejects.toBe(broken);
+  });
+});
+
 describe("orIfUnreadable", () => {
-  it("returns what was read, or the fixed negative result when reading fails", async () => {
+  it("returns what was read, or the fixed negative result when reading fails", () => {
     expect(
       orIfUnreadable(() => JSON.parse("[1]") as unknown, undefined)
     ).toEqual([1]);
@@ -133,12 +226,21 @@ describe("orIfUnreadable", () => {
       undefined
     );
     expect(orIfUnreadable(() => new URL("not a url").host, false)).toBe(false);
-    await expect(
-      orIfUnreadable(() => Promise.resolve(true), false)
-    ).resolves.toBe(true);
-    await expect(
-      orIfUnreadable(() => Promise.reject(new Error("closed")), false)
-    ).resolves.toBe(false);
+  });
+
+  it("refuses an asynchronous read instead of hiding its failure", async () => {
+    // 비동기 입출력(연결·이름 풀이·파일 읽기)은 확인 호출이다. 원인을 남기는 orIfProbeFailed로 감싼다.
+    // @ts-expect-error promise를 돌려주는 읽기는 타입 검사에서 거부된다.
+    expect(() => orIfUnreadable(() => Promise.resolve(true), false)).toThrow(
+      AsyncReadError
+    );
+    const closed = new Error("closed");
+    const rejected = Promise.reject(closed);
+    // 타입을 우회해 넘겨도 거절을 부정 결과로 바꾸지 않는다. 거절은 그 promise를 가진 쪽에 그대로 남는다.
+    expect(() => orIfUnreadable((): unknown => rejected, false)).toThrow(
+      /orIfProbeFailed/
+    );
+    await expect(rejected).rejects.toBe(closed);
   });
 });
 

@@ -372,6 +372,8 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
         reached: [],
         proxied: [],
         toolsReached: true,
+        // 모든 검사를 끝까지 했다(예상 밖 오류·답 없음이 없다).
+        unverified: [],
       });
       // 금지 목적지의 listener는 연결을 한 번도 받지 않았다.
       expect(accepted).toEqual([]);

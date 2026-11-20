@@ -15,6 +15,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
+  orIfProbeFailed,
   orIfUnreadable,
   settled,
   subtractUsage,
@@ -30,6 +31,7 @@ import {
   startupLimitMs,
   commandFor,
   providerEnvironment,
+  probeEnding,
   runProbe,
 } from "./process.ts";
 import type { ContainerSettings } from "./container.ts";
@@ -204,21 +206,28 @@ async function openCodeLoginResidue(dataHome: string): Promise<boolean> {
     return false;
   let db: DatabaseSync | undefined;
   try {
-    return orIfUnreadable(() => {
-      db = new DatabaseSync(file, { readOnly: true });
-      for (const table of ["credential", "account", "control_account"]) {
-        try {
-          const row = db
-            .prepare(`select count(*) as n from "${table}"`)
-            .get() as { n?: unknown } | undefined;
-          if (typeof row?.n === "number" && row.n > 0) return true;
-        } catch (error) {
-          // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
-          if (!/no such table/i.test(String(error))) throw error;
+    return orIfProbeFailed(
+      () => {
+        db = new DatabaseSync(file, { readOnly: true });
+        for (const table of ["credential", "account", "control_account"]) {
+          try {
+            const row = db
+              .prepare(`select count(*) as n from "${table}"`)
+              .get() as { n?: unknown } | undefined;
+            if (typeof row?.n === "number" && row.n > 0) return true;
+          } catch (error) {
+            // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
+            if (!/no such table/i.test(String(error))) throw error;
+          }
         }
-      }
-      return false;
-    }, true);
+        return false;
+      },
+      true,
+      (error) =>
+        console.warn(
+          `[provider] the OpenCode login store could not be read; it counts as a remaining login (${failureCode(error)})`
+        )
+    );
   } finally {
     db?.close();
   }
@@ -589,13 +598,12 @@ export function createOpenCodeProvider(options: {
           ? { status: "ready", reason: null }
           : { status: "unknown", reason: "credentials_unverified" };
       } catch (e) {
-        return {
-          status: "not_ready",
-          reason:
-            (e as NodeJS.ErrnoException).code === "ENOENT"
-              ? "program_missing"
-              : "check_failed",
-        };
+        if ((e as NodeJS.ErrnoException).code === "ENOENT")
+          return { status: "not_ready", reason: "program_missing" };
+        console.warn(
+          `[provider] the ${connectionId} readiness check failed (${probeEnding(e)})`
+        );
+        return { status: "not_ready", reason: "check_failed" };
       }
     },
     async steer(message) {

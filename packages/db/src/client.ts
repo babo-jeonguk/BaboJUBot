@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
+import { failureCode } from "@babojubot/contracts";
 import * as schema from "./schema.ts";
 import {
   clusterUrl,
@@ -112,8 +113,12 @@ async function connect(
   const pool = new pg.Pool({ connectionString: url });
   // 쉬는 연결이 끊기면(Postgres 재시작 등) pool이 그 연결을 버린다. listener가 없으면 프로세스가 죽는다.
   pool.on("error", (error) => console.error("[db]", error.message));
-  // 쓰는 중인 연결이 끊기면 pool의 error로 오지 않고 그 연결에서 난다. 그 일은 쿼리 실패로 이미 알게 되므로 여기서는 프로세스만 살린다.
-  pool.on("connect", (client) => client.on("error", () => {}));
+  // 쓰는 중인 연결이 끊기면 pool의 error로 오지 않고 그 연결에서 난다. 그 쿼리도 실패하지만, 원인을 여기서도 남긴다(listener가 없으면 프로세스가 죽는다).
+  pool.on("connect", (client) =>
+    client.on("error", (error) =>
+      console.error(`[db] a connection in use failed (${failureCode(error)})`)
+    )
+  );
   const db = drizzle(pool, { schema });
   let closing: "open" | "connections" | "release" | "closed" = "open";
   // 연결 닫기와 DB 놓기는 서로 독립이다. 앞이 실패해도 뒤를 하고 실패를 모아 던진다.

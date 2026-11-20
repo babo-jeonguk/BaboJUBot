@@ -1,8 +1,9 @@
 import {
   cidrContains,
+  failureCode,
   formatIp,
   normalizeHost,
-  orIfUnreadable,
+  orIfProbeFailed,
   parseCidr,
   parseIp,
   type Destination,
@@ -189,7 +190,14 @@ export async function decideDestination(
   const literal = parseIp(host);
   const resolved = literal
     ? [host]
-    : await orIfUnreadable(() => resolve(host), undefined);
+    : await orIfProbeFailed(
+        () => resolve(host),
+        undefined,
+        (error) =>
+          console.warn(
+            `[provider] a destination name could not be resolved; the connection is refused (${failureCode(error)})`
+          )
+      );
   if (!resolved) return { allowed: false, reason: "not_resolved" };
   const texts: string[] = resolved;
   const addresses = texts.map((text) => parseIp(text));

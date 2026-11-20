@@ -50,6 +50,13 @@ export const intendedExclusions = [
   },
   {
     report: "runtime",
+    file: "packages/runtime/src/providers/ps.test.ts",
+    systems: ["windows"],
+    reason:
+      "ps 한 칸 조회(psField)는 Linux·macOS의 프로세스 신원 조회라 Windows에서는 쓰지 않는다",
+  },
+  {
+    report: "runtime",
     file: "packages/runtime/src/providers/process-leftovers.test.ts",
     systems: ["windows"],
     reason:

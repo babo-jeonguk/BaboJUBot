@@ -5,10 +5,15 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  attemptAll,
   continueAfterFailure,
   egressRefusalMessages,
   failureCode,
+  hasErrorCode,
+  isDisconnect,
+  orIfProbeFailed,
   orIfUnreadable,
+  settled,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
@@ -150,12 +155,23 @@ function dial(
         socket.removeAllListeners("error");
         // 돌려주는 소켓에는 늘 오류 리스너가 있다. 부르는 쪽이 기다리는 사이 난 오류는 이 연결만 닫는다.
         // 부르는 쪽은 자기 처리를 따로 붙인다.
-        socket.on("error", () => socket.destroy());
+        closeOnError(socket, "a relay connection to an allowed destination");
         resolve({ socket, address });
       });
       socket.once("error", (error) => next(index + 1, error));
     };
     next(0);
+  });
+}
+
+/** 소켓 오류로 그 연결만 닫는다. 상대가 끊어 난 오류는 답이고, 그 밖의 오류는 무엇이 실패했는지 남긴다. */
+function closeOnError(socket: net.Socket, what: string) {
+  socket.on("error", (error) => {
+    if (!isDisconnect(error))
+      console.warn(
+        `[provider] ${what} failed; the connection is closed (${failureCode(error)})`
+      );
+    socket.destroy();
   });
 }
 
@@ -190,6 +206,17 @@ export function createRelayHub(): RelayHub {
         )
     );
   };
+
+  /** 확인한 주소에 붙는다. 붙지 못하면 원인을 남기고 `undefined`(부르는 쪽이 502로 답한다). */
+  const dialAllowed = (addresses: string[], port: number) =>
+    orIfProbeFailed(
+      () => dial(addresses, port),
+      undefined,
+      (error) =>
+        console.warn(
+          `[provider] the relay could not connect to an allowed destination; it answered 502 (${failureCode(error)})`
+        )
+    );
 
   const rulesFor = (
     relay: Relay,
@@ -236,7 +263,7 @@ export function createRelayHub(): RelayHub {
   const egressServer = (relay: Relay) => {
     const server = http.createServer();
     server.on("connect", (req, client: net.Socket, head: Buffer) => {
-      client.on("error", () => client.destroy());
+      closeOnError(client, "a relay client connection");
       const target = splitAuthority(req.url ?? "");
       if (!target) {
         client.end(refusalHead("protocol_not_supported", 400));
@@ -249,10 +276,7 @@ export function createRelayHub(): RelayHub {
           client.end(refusalHead(decision.reason));
           return;
         }
-        const dialed = await orIfUnreadable(
-          () => dial(decision.addresses, target.port),
-          undefined
-        );
+        const dialed = await dialAllowed(decision.addresses, target.port);
         if (!dialed) {
           client.end(
             "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
@@ -330,10 +354,7 @@ export function createRelayHub(): RelayHub {
           res.end();
         };
         // CONNECT와 같이 확인한 주소에 차례로 붙는다(이름을 다시 풀지 않는다).
-        const dialed = await orIfUnreadable(
-          () => dial(decision.addresses, port),
-          undefined
-        );
+        const dialed = await dialAllowed(decision.addresses, port);
         if (!dialed) return void badGateway();
         const socket = dialed.socket;
         const tunnel: Tunnel = {
@@ -390,7 +411,11 @@ export function createRelayHub(): RelayHub {
             response.on("end", done);
           }
         );
-        outgoing.on("error", () => {
+        outgoing.on("error", (error) => {
+          if (!isDisconnect(error))
+            console.warn(
+              `[provider] the relay could not forward a request to an allowed destination; it answered 502 (${failureCode(error)})`
+            );
           done();
           badGateway();
         });
@@ -439,16 +464,32 @@ export function createRelayHub(): RelayHub {
               for (const socket of tunnel.sockets) socket.destroy();
             relay.tunnels.clear();
             for (const socket of [...idle, ...loose]) socket.destroy();
-            await Promise.all(
-              servers.map(
-                (server) =>
-                  new Promise<void>((resolve) => {
-                    (server as http.Server).closeAllConnections?.();
-                    server.close(() => resolve());
-                  })
-              )
+            await attemptAll(
+              [
+                ...servers.map(
+                  (server) => () =>
+                    new Promise<void>((resolve, reject) => {
+                      (server as http.Server).closeAllConnections?.();
+                      // 듣기 전에 실패한 서버는 닫을 것이 없다(답이다). 그 밖의 닫기 실패는 거절로 드러낸다.
+                      server.close((error) => {
+                        if (
+                          error &&
+                          !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+                        )
+                          reject(
+                            new Error(
+                              `a relay server did not close (${failureCode(error)})`,
+                              { cause: error }
+                            )
+                          );
+                        else resolve();
+                      });
+                    })
+                ),
+                () => rmSync(directory, { recursive: true, force: true }),
+              ],
+              "the relay could not be closed"
             );
-            rmSync(directory, { recursive: true, force: true });
           })()),
       };
       relays.add(relay);
@@ -473,7 +514,7 @@ export function createRelayHub(): RelayHub {
           ? [
               listen(
                 net.createServer((socket) => {
-                  socket.on("error", () => socket.destroy());
+                  closeOnError(socket, "an inbound relay connection");
                   const give = waiting.shift();
                   if (give) return give(socket);
                   idle.push(socket);
@@ -488,13 +529,14 @@ export function createRelayHub(): RelayHub {
           : []),
       ]).then(() => {});
       // 준비 실패는 ready를 기다리는 쪽(실행 시도·격리 확인)도 받는다. 그쪽이 붙기 전에 실패해도 중계는 스스로 닫는다.
+      // 닫기 실패는 나중에 닫는 쪽(실행 시도·격리 확인의 정리)이 같은 닫기에서 받는다.
       void continueAfterFailure(
         () => ready,
         (error) => {
           console.warn(
             `[provider] the isolated run relay could not open; closing it (${failureCode(error)})`
           );
-          void relay.close();
+          void settled(relay.close());
         }
       );
       const take = () =>
@@ -520,7 +562,7 @@ export function createRelayHub(): RelayHub {
           return (local ??= (async () => {
             await ready;
             const server = net.createServer((client) => {
-              client.on("error", () => client.destroy());
+              closeOnError(client, "a local connection into the container");
               client.pause();
               take().then(
                 (reverse) => {
@@ -581,7 +623,10 @@ export function createRelayHub(): RelayHub {
     },
     async close() {
       hooks = undefined;
-      await Promise.all([...relays].map((relay) => relay.close()));
+      await attemptAll(
+        [...relays].map((relay) => () => relay.close()),
+        "the relays could not be closed"
+      );
     },
   };
 }

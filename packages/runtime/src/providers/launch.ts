@@ -236,8 +236,13 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
     };
   });
   child.on("error", (error) => {
-    // 띄운 뒤의 오류(신호를 보내지 못함 등)는 끝남이 아니다. 끝났는지는 stop()이 확인한다.
-    if (pid !== undefined) return;
+    // 띄운 뒤의 오류(신호를 보내지 못함 등)는 끝남이 아니다. 끝났는지는 stop()이 확인하고, 그 오류는 원인으로 남긴다.
+    if (pid !== undefined) {
+      console.warn(
+        `[provider] a launched program reported an error; stop() checks whether it ended (${failureCode(error)})`
+      );
+      return;
+    }
     reportStart({ kind: "failed", reason: error.message, error });
     reportExit({ code: null, signal: null });
   });

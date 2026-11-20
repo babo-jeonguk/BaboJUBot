@@ -4,7 +4,8 @@ import {
   continueAfterFailure,
   failureCode,
   hasErrorCode,
-  orIfUnreadable,
+  orIfMissing,
+  orIfProbeFailed,
   settled,
 } from "@babojubot/contracts";
 import { runCommand } from "./bounded-command.ts";
@@ -66,22 +67,29 @@ export function withLease(
   };
 }
 
-const unreadable = (e: unknown) =>
-  ["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(
-    (e as NodeJS.ErrnoException).code ?? ""
-  );
+/** 끝났거나(ENOENT·ESRCH) 다른 사용자의 것이라 읽을 수 없는(EACCES·EPERM) 프로세스의 /proc 읽기 오류. */
+const unreadable = hasErrorCode("ENOENT", "ESRCH", "EACCES", "EPERM");
 
-/** Linux: 프로세스 시작 시각(부팅 뒤 clock tick, /proc/<pid>/stat 22번째 칸). 그 밖의 시스템이거나 읽지 못하면 undefined. */
+/** Linux: 프로세스 시작 시각(부팅 뒤 clock tick, /proc/<pid>/stat 22번째 칸). 그 밖의 시스템이거나 끝난 프로세스면 undefined. 읽지 못하면 원인을 남기고 undefined. */
 export function processStartTicks(pid: number): number | undefined {
   if (process.platform !== "linux") return undefined;
-  return orIfUnreadable(() => {
-    const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
-      .split(") ")
-      .at(-1)!
-      .split(" ");
-    const start = Number(fields[19]);
-    return Number.isFinite(start) ? start : undefined;
-  }, undefined);
+  // 끝난 프로세스는 시작 시각이 없다(답이다). 그 밖의 읽기 실패는 원인을 남기고 모르는 것으로 본다.
+  const stat = orIfProbeFailed(
+    () =>
+      orIfMissing(
+        () => readFileSync(`/proc/${pid}/stat`, "utf8"),
+        hasErrorCode("ENOENT", "ESRCH"),
+        undefined
+      ),
+    undefined,
+    (error) =>
+      console.warn(
+        `[provider] could not read the start time of process ${pid} (${failureCode(error)})`
+      )
+  );
+  if (stat === undefined) return undefined;
+  const start = Number(stat.split(") ").at(-1)!.split(" ")[19]);
+  return Number.isFinite(start) ? start : undefined;
 }
 
 /** Linux: 환경 변수 항목 하나가 표식과 정확히 같은가. 끝났거나 읽을 수 없는 프로세스(다른 사용자 등)는 아니다. */
@@ -100,28 +108,42 @@ export async function holdsLease(pid: number, lease: string) {
 /** 찾은 결과. `holders`는 표식을 확인한 프로그램, `unverified`는 우리 것일 수 있지만 환경을 읽을 수 없어 확인하지 못한 프로그램이다. */
 export type LeaseLookup = { holders: number[]; unverified: number[] };
 
-/** Linux: 환경을 읽지 못한 프로세스가 이 실행 시도 뒤에 생긴 같은 사용자의 산 프로세스인가. 확인하지 못하면 아니다. */
+/** Linux: 환경을 읽지 못한 프로세스가 이 실행 시도 뒤에 생긴 같은 사용자의 산 프로세스인가. 끝났거나 다른 사용자의 것이면 아니다. 같은 사용자의 것을 끝까지 확인하지 못하면 던진다(정리가 실패로 드러난다). */
 async function mayBeOurs(
   pid: number,
   since: number,
   serverCgroup: string | undefined
 ) {
   if (serverCgroup === undefined) return false;
-  return orIfUnreadable(async () => {
-    const status = await readFile(`/proc/${pid}/status`, "utf8");
-    const uid = /^Uid:\s+(\d+)/m.exec(status);
-    if (!uid || Number(uid[1]) !== process.getuid!()) return false;
-    const fields = (await readFile(`/proc/${pid}/stat`, "utf8"))
-      .split(") ")
-      .at(-1)!
-      .split(" ");
-    // 끝났지만 거두어지지 않은 프로세스(좀비)는 산 것이 아니다.
-    if (fields[0] === "Z" || fields[0] === "X") return false;
-    const start = Number(fields[19]);
-    if (!Number.isFinite(start) || start < since) return false;
-    // 실행 시도의 자손은 서버의 cgroup을 물려받는다. 다른 cgroup(데스크톱 앱·systemd 서비스)의 프로그램은 우리 것이 아니다.
-    return (await readFile(`/proc/${pid}/cgroup`, "utf8")) === serverCgroup;
-  }, false);
+  // 다른 사용자의 프로세스는 상태를 읽지 못할 수 있다(hidepid). 끝났거나 그런 프로세스는 우리 것이 아니다.
+  const status = await orIfMissing(
+    () => readFile(`/proc/${pid}/status`, "utf8"),
+    unreadable,
+    undefined
+  );
+  if (status === undefined) return false;
+  const uid = /^Uid:\s+(\d+)/m.exec(status);
+  if (!uid || Number(uid[1]) !== process.getuid!()) return false;
+  // 같은 사용자의 것이다. 그사이 끝났으면 아니고, 그 밖의 읽기 실패는 던진다.
+  const gone = hasErrorCode("ENOENT", "ESRCH");
+  const stat = await orIfMissing(
+    () => readFile(`/proc/${pid}/stat`, "utf8"),
+    gone,
+    undefined
+  );
+  if (stat === undefined) return false;
+  const fields = stat.split(") ").at(-1)!.split(" ");
+  // 끝났지만 거두어지지 않은 프로세스(좀비)는 산 것이 아니다.
+  if (fields[0] === "Z" || fields[0] === "X") return false;
+  const start = Number(fields[19]);
+  if (!Number.isFinite(start) || start < since) return false;
+  // 실행 시도의 자손은 서버의 cgroup을 물려받는다. 다른 cgroup(데스크톱 앱·systemd 서비스)의 프로그램은 우리 것이 아니다.
+  const cgroup = await orIfMissing(
+    () => readFile(`/proc/${pid}/cgroup`, "utf8"),
+    gone,
+    undefined
+  );
+  return cgroup === serverCgroup;
 }
 
 async function linuxHolders(
@@ -145,8 +167,10 @@ async function linuxHolders(
       if (code !== "EACCES" && code !== "EPERM") throw e;
       // 환경을 읽지 못했다. 이 실행 시도 뒤에 생긴 같은 사용자의 산 프로세스면 우리 것일 수 있다.
       if (since !== undefined) {
-        serverCgroup ??= orIfUnreadable(
+        // cgroup을 끈 커널에는 서버의 cgroup이 없어 견줄 것이 없으므로 확인하지 않는다. 그 밖의 읽기 실패는 던진다.
+        serverCgroup ??= orIfMissing(
           () => readFile("/proc/self/cgroup", "utf8"),
+          hasErrorCode("ENOENT"),
           undefined
         );
         if (await mayBeOurs(pid, since, await serverCgroup))

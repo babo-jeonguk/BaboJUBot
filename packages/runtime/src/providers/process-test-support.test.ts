@@ -180,7 +180,7 @@ describe("exited", () => {
         injected.ps = undefined;
       });
       expect(thrown(() => exited(pid)).message).toBe(
-        `프로세스 ${pid}의 상태를 ps로 읽지 못했다(code 1, signal null): ps: injected failure`
+        `ps could not read stat of process ${pid} (exit 1): ps: injected failure`
       );
     });
 
@@ -200,7 +200,7 @@ describe("exited", () => {
       });
       const error = thrown(() => exited(pid));
       expect(error.message).toBe(
-        `프로세스 ${pid}의 상태를 ps로 읽지 못했다(code null, signal null)`
+        `ps could not read stat of process ${pid} (ENOENT)`
       );
       expect(error.cause).toBe(cause);
     });

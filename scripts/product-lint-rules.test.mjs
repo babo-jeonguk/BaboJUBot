@@ -535,3 +535,233 @@ test("product code does not drop an error without naming it", async () => {
         `${place}: ${code}`
       );
 });
+
+const unreadableRule = ["product/no-io-in-unreadable"];
+const unreadableImport = `import { orIfUnreadable } from "@babojubot/contracts";\n`;
+
+/** orIfUnreadable 콜백 안의 입출력. 제품 코드와 개발 스크립트가 같은 모양을 받는다(scripts/script-lint-rules.test.mjs). */
+const unreadableIo = {
+  "a file read": `import { readFileSync } from "node:fs";\n${unreadableImport}export const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
+  "a file read on the module": `import fs from "node:fs";\n${unreadableImport}export const read = (file) => orIfUnreadable(() => fs.readFileSync(file, "utf8").split(" ")[19], undefined);\n`,
+  "a nested sync call": `import fs from "node:fs";\n${unreadableImport}export const same = (a, b) => orIfUnreadable(() => fs.realpathSync.native(a) === b, false);\n`,
+  "a file status": `import { statSync } from "node:fs";\n${unreadableImport}export const big = (file) => orIfUnreadable(() => statSync(file).size > 10, false);\n`,
+  "a command": `import { execFileSync } from "node:child_process";\n${unreadableImport}export const start = (pid) => orIfUnreadable(() => execFileSync("ps", ["-p", String(pid)], { timeout: 1000 }), undefined);\n`,
+  "a spawned command": `import { spawnSync } from "node:child_process";\n${unreadableImport}export const start = () => orIfUnreadable(() => spawnSync("ps", [], { timeout: 1000 }).stdout, undefined);\n`,
+  "a child_process exec": `import { exec } from "node:child_process";\n${unreadableImport}export const run = () => orIfUnreadable(() => exec("ps"), undefined);\n`,
+  "a database opened": `import { DatabaseSync } from "node:sqlite";\n${unreadableImport}export const open = (file) => orIfUnreadable(() => new DatabaseSync(file), undefined);\n`,
+  "a connection": `${unreadableImport}export const check = (client) => orIfUnreadable(() => client.connect(), false);\n`,
+  "a request": `${unreadableImport}export const check = (connection) => orIfUnreadable(() => connection.request("thread/read", {}), false);\n`,
+  "a fetch": `${unreadableImport}export const check = (url) => orIfUnreadable(() => fetch(url), undefined);\n`,
+  "a name lookup": `import { lookup } from "node:dns/promises";\n${unreadableImport}export const check = (host) => orIfUnreadable(() => lookup(host), undefined);\n`,
+  "a response body": `${unreadableImport}export const body = (res) => orIfUnreadable(() => res.json(), undefined);\n`,
+  "a file write": `import { writeFileSync } from "node:fs";\n${unreadableImport}export const save = (file) => orIfUnreadable(() => writeFileSync(file, "x"), undefined);\n`,
+  "an async callback": `${unreadableImport}export const check = (work) => orIfUnreadable(async () => work, false);\n`,
+  "an await": `import { readFile } from "node:fs/promises";\n${unreadableImport}export const read = async (file) => orIfUnreadable(async () => JSON.parse(await readFile(file, "utf8")), undefined);\n`,
+  "a renamed import": `import { readFileSync } from "node:fs";\nimport { orIfUnreadable as parsed } from "@babojubot/contracts";\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
+  "a namespace import": `import { readFileSync } from "node:fs";\nimport * as failure from "@babojubot/contracts";\nexport const read = (file) => failure.orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`,
+  "a callback passed by name": `${unreadableImport}const parse = () => JSON.parse("1");\nexport const read = () => orIfUnreadable(parse, undefined);\n`,
+};
+
+/** 이미 손에 든 값의 동기 해석·확인 한 단계. 정규식의 exec는 명령이 아니다. */
+const unreadableKept = [
+  `${unreadableImport}export const read = (text) => orIfUnreadable(() => JSON.parse(text), undefined);\n`,
+  `${unreadableImport}export const host = (origin) => orIfUnreadable(() => new URL(origin).host, false);\n`,
+  `${unreadableImport}export const decode = (bytes) => orIfUnreadable(() => new TextDecoder("utf-8", { fatal: true }).decode(bytes), undefined);\n`,
+  `${unreadableImport}export const claims = (token) => orIfUnreadable(() => JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")), undefined);\n`,
+  `${unreadableImport}export const uid = (status) => orIfUnreadable(() => Number(/^Uid:\\s+(\\d+)/m.exec(status)[1]), undefined);\n`,
+  `${unreadableImport}export const valid = (schema, text) => orIfUnreadable(() => schema.safeParse(JSON.parse(text)), undefined);\n`,
+  // 입출력은 콜백 밖에서 하고, 확인 호출은 원인을 남기는 함수로 감싼다.
+  `import { readFileSync } from "node:fs";\nimport { hasErrorCode, orIfMissing, orIfProbeFailed, orIfUnreadable } from "@babojubot/contracts";\nexport const read = (file, report) => {\n  const text = orIfMissing(() => readFileSync(file, "utf8"), hasErrorCode("ENOENT"), undefined);\n  const start = orIfProbeFailed(() => readFileSync("/proc/1/stat", "utf8"), undefined, report);\n  return [text === undefined ? undefined : orIfUnreadable(() => JSON.parse(text), undefined), start];\n};\n`,
+];
+
+test("orIfUnreadable callbacks do no I/O in product code", async () => {
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(unreadableIo)) {
+      const messages = await lint(code, place, unreadableRule);
+      assert.ok(messages.length > 0, `${place}: ${shape} not reported`);
+      // 이유와 쓸 함수, 작성 기준을 안내한다.
+      for (const { message } of messages) {
+        assert.match(message, /orIfProbeFailed/);
+        assert.match(message, /orIfMissing/);
+        assert.match(message, /CODING_STANDARDS\.md#제품-코드/);
+      }
+    }
+  for (const place of productPlaces)
+    for (const code of unreadableKept)
+      assert.deepEqual(
+        await lint(code, place, unreadableRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    for (const code of Object.values(unreadableIo))
+      assert.deepEqual(
+        await lint(code, place, unreadableRule),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+test("product code does not drop the error an error listener or an error-first callback receives", async () => {
+  const dropped = {
+    "an error listener without a parameter": `export const watch = (socket) => socket.on("error", () => socket.destroy());\n`,
+    "an empty once error listener": `export const watch = (socket) => socket.once("error", () => {});\n`,
+    "an error listener that names the error and does not use it": `export const watch = (socket) => socket.on("error", (error) => {\n  socket.destroy();\n});\n`,
+    "an underscored error listener": `export const watch = (socket) => socket.addListener("error", (_error) => socket.destroy());\n`,
+    "a prepended error listener": `export const watch = (socket) => socket.prependListener("error", function () {\n  socket.destroy();\n});\n`,
+    "an execFile callback without a parameter": `import { execFile } from "node:child_process";\nexport const stop = (pid) => execFile("taskkill", ["/PID", String(pid)], { timeout: 1000 }, () => {});\n`,
+    "an execFile callback that ignores the error": `import { execFile } from "node:child_process";\nexport const ask = (resolve) => execFile("ps", [], { timeout: 1000 }, (error, stdout) => resolve(stdout));\n`,
+    "a server close callback without a parameter": `export const stop = (server) => new Promise((resolve) => server.close(() => resolve()));\n`,
+    "a pipeline callback without a parameter": `import { pipeline } from "node:stream";\nexport const copy = (from, to, done) => pipeline(from, to, () => done());\n`,
+    "a stream end callback without a parameter": `export const finish = (log, code) => log.end(() => process.exit(code));\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(dropped)) {
+      const [message, ...rest] = await lint(code, place, ignoredErrorRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 끊김을 고르는 함수와 작성 기준을 안내한다.
+      assert.match(message.message, /isDisconnect/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+  const kept = [
+    // 상대가 끊은 것만 넘기고 그 밖의 오류는 원인을 남긴다.
+    `import { failureCode, isDisconnect } from "@babojubot/contracts";\nexport const watch = (socket) =>\n  socket.on("error", (error) => {\n    if (!isDisconnect(error)) console.warn(\`socket failed (\${failureCode(error)})\`);\n    socket.destroy();\n  });\n`,
+    `export const listen = (server, reject) => server.once("error", reject);\n`,
+    `export const stop = (server) => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));\n`,
+    `import { execFile } from "node:child_process";\nexport const ask = (resolve, reject) => execFile("ps", [], { timeout: 1000 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));\n`,
+    // 다른 오류를 던지는 한 문장뿐인 처리, 오류가 아닌 이벤트, 오류를 넘기지 않는 콜백은 보지 않는다.
+    `export const watch = (socket) => socket.on("error", () => {\n  throw new Error("socket failed");\n});\n`,
+    `export const watch = (socket, done) => socket.on("close", () => done());\n`,
+    `export const start = (server, ready) => server.listen(0, "127.0.0.1", () => ready());\n`,
+    `export const close = (db) => db.close();\n`,
+  ];
+  for (const place of productPlaces)
+    for (const code of kept)
+      assert.deepEqual(
+        await lint(code, place, ignoredErrorRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    for (const code of Object.values(dropped))
+      assert.deepEqual(
+        await lint(code, place, ignoredErrorRule),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+const exitRule = ["product/no-silent-exit-status"];
+
+test("product code does not fold a non-zero exit of an outside command into an empty result", async () => {
+  const folded = {
+    "an empty string on failure": `import { spawnSync } from "node:child_process";\nexport const start = (pid) => {\n  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 1000, encoding: "utf8" });\n  return result.status === 0 ? result.stdout.trim() : "";\n};\n`,
+    "undefined on failure": `export const text = (result) => (result.status !== 0 ? undefined : result.stdout);\n`,
+    "an early return on failure": `export const list = (listed) => {\n  if (listed.code !== 0) return;\n  return listed.stdout.split("\\n");\n};\n`,
+    "an empty list on failure": `export const list = (listed) => {\n  if (listed.code !== 0) {\n    return [];\n  }\n  return listed.stdout.split("\\n");\n};\n`,
+    "false in the else branch": `export const running = (result) => {\n  if (result.status === 0) return true;\n  else return false;\n};\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(folded)) {
+      const [message, ...rest] = await lint(code, place, exitRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /없음/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+  const kept = [
+    // 그 명령의 "없음" 계약만 그 코드로 고르고, 나머지는 원인과 함께 던진다.
+    `export const pids = (result) => {\n  if (result.status === 1) return [];\n  if (result.status !== 0) throw new Error(\`pgrep failed (exit \${result.status}): \${result.stderr}\`);\n  return result.stdout.split("\\n");\n};\n`,
+    `const gone = (result) => result.status === 1 && !result.stdout && !result.stderr;\nexport const field = (result) => {\n  if (gone(result)) return undefined;\n  if (result.status !== 0) throw new Error(\`ps failed (exit \${result.status})\`);\n  return result.stdout.trim();\n};\n`,
+    // 성공 쪽이 빈 값인 것은 접는 것이 아니다.
+    `export const problem = (code, output) => (code === 0 ? undefined : \`compiler ended with code \${code}: \${output}\`);\n`,
+    `export const text = (result) => (result.status === 0 ? result.stdout : \`unknown (\${result.stderr})\`);\n`,
+    // HTTP 상태처럼 0과 견주지 않는 비교는 보지 않는다.
+    `export const ok = (res) => (res.status === 200 ? res.body : undefined);\n`,
+  ];
+  for (const place of productPlaces)
+    for (const code of kept)
+      assert.deepEqual(
+        await lint(code, place, exitRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    for (const code of Object.values(folded))
+      assert.deepEqual(
+        await lint(code, place, exitRule),
+        [],
+        `${place}: ${code}`
+      );
+});
+
+const importRule = ["product/no-undeclared-import"];
+
+test("product code imports only the packages its package.json declares, as runtime dependencies", async () => {
+  // packages/runtime: zod는 dependencies, vitest는 devDependencies, left-pad는 선언되지 않았다.
+  const place = "packages/runtime/src/providers/claude.ts";
+  const reported = {
+    "a dev-only package": [
+      `import { expect } from "vitest";\nexport const check = () => expect(1).toBe(1);\n`,
+      /devDependencies/,
+    ],
+    "a dev-only package re-exported": [
+      `export { expect } from "vitest";\n`,
+      /devDependencies/,
+    ],
+    "an undeclared package": [
+      `import pad from "left-pad";\nexport const padded = pad("1", 3);\n`,
+      /선언하지 않고/,
+    ],
+    "an undeclared package by a deep path": [
+      `import { pad } from "left-pad/lib/pad.js";\nexport const padded = pad("1", 3);\n`,
+      /선언하지 않고/,
+    ],
+    "an undeclared scoped package": [
+      `export * from "@scope/missing";\n`,
+      /선언하지 않고/,
+    ],
+    "an undeclared dynamic import": [
+      `export const load = () => import("left-pad");\n`,
+      /선언하지 않고/,
+    ],
+  };
+  for (const [shape, [code, kind]] of Object.entries(reported)) {
+    const [message, ...rest] = await lint(code, place, importRule);
+    assert.ok(message, `${shape} not reported`);
+    assert.deepEqual(rest, [], shape);
+    assert.match(message.message, kind, shape);
+    assert.match(message.message, /packages\/runtime\/package\.json/, shape);
+  }
+  const kept = [
+    `import { z } from "zod";\nexport const schema = z.string();\n`,
+    // 타입만 가져오면 실행에 남지 않는다.
+    `import type { Mock } from "vitest";\nexport type M = Mock;\n`,
+    `import { type Mock } from "vitest";\nexport type M = Mock;\n`,
+    // Node 기본 모듈, 상대 경로, 자기 패키지, 선언한 workspace 패키지.
+    `import { readFileSync } from "node:fs";\nimport path from "path";\nimport { record } from "./record.ts";\nexport const read = (p: string) => record(readFileSync(path.join(p), "utf8"));\n`,
+    `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
+    `import { failureCode } from "@babojubot/contracts";\nexport const code = failureCode;\n`,
+  ];
+  for (const code of kept)
+    assert.deepEqual(await lint(code, place, importRule), [], code);
+  // 시험 코드는 devDependencies까지 받는다. 선언하지 않은 패키지만 막는다.
+  for (const test of testPlaces) {
+    assert.deepEqual(
+      await lint(
+        `import { expect } from "vitest";\nexport const check = () => expect(1).toBe(1);\n`,
+        test,
+        importRule
+      ),
+      [],
+      test
+    );
+    const [message] = await lint(
+      `import pad from "left-pad";\nexport const padded = pad("1", 3);\n`,
+      test,
+      importRule
+    );
+    assert.ok(message, `${test}: undeclared package not reported`);
+  }
+});

@@ -139,6 +139,27 @@ describe("IsolationGate", () => {
     await off.close();
   });
 
+  // Windows에서는 격리 실행이 컨테이너를 띄우지 않으므로 지울 남은 컨테이너도 없다. 시작 정리도 Docker를 부르지 않는다
+  // (docs/providers.md 격리 실행, 안전 확인과 같은 규칙). Docker가 없는 Windows에서 시작마다 정리 실패를 남기던 일이 있었다.
+  it.each([
+    ["win32", 0],
+    ["linux", 1],
+  ] as const)(
+    "on %s asks Docker to remove leftover containers %i time(s) at start",
+    async (platform, times) => {
+      const removeOrphans = vi.fn(async () => {});
+      gate = new IsolationGate({
+        docker: { ...unresponsive, removeOrphans },
+        protectedPorts: () => [5432],
+        readIsolated: async () => true,
+        hostUrl: () => "http://127.0.0.1:1",
+        platform,
+      });
+      await gate.removeOrphans();
+      expect(removeOrphans).toHaveBeenCalledTimes(times);
+    }
+  );
+
   // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 격리를 켜면 Docker를 부르지 않고
   // 격리 환경 없음으로 두며, 이 컴퓨터로 대신 돌리지 않는다(PR #131 리뷰 3회차 P6).
   it("treats isolation as unavailable on Windows without asking Docker, and starts no run", async () => {
@@ -150,7 +171,13 @@ describe("IsolationGate", () => {
       },
       async probe() {
         asked.push("probe");
-        return { interfaces: [], reached: [], proxied: [], toolsReached: true };
+        return {
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: true,
+          unverified: [],
+        };
       },
     };
     gate = new IsolationGate({
@@ -249,7 +276,13 @@ describe("IsolationGate", () => {
         await finished;
       },
       async probe() {
-        return { interfaces: [], reached: [], proxied: [], toolsReached: true };
+        return {
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: true,
+          unverified: [],
+        };
       },
     };
     gate = new IsolationGate({
@@ -297,6 +330,7 @@ describe("IsolationGate", () => {
             reached: [],
             proxied: [],
             toolsReached: true,
+            unverified: [],
             ...found,
           };
         },
@@ -311,6 +345,33 @@ describe("IsolationGate", () => {
     });
   });
 
+  // 끝까지 확인하지 못한 검사가 있으면 결과를 모르는 것이다. 모를 때 안전한 쪽은 "안전"이 아니라 "확인 불가"다
+  // (OWASP Fail Securely, #264 외부 리뷰 4회차 SPEC-3).
+  it("finds the environment unavailable when a check could not be completed, even with nothing reached and the tools relay reached", async () => {
+    gate = new IsolationGate({
+      docker: {
+        ...unresponsive,
+        async checkDaemon() {},
+        async probe() {
+          return {
+            interfaces: [],
+            reached: [],
+            proxied: [],
+            toolsReached: true,
+            unverified: ["proxied"],
+          };
+        },
+      },
+      protectedPorts: () => [5432],
+      readIsolated: async () => true,
+      hostUrl: () => "http://127.0.0.1:1",
+    });
+    await expect(gate.readiness(verified)).resolves.toEqual({
+      status: "not_ready",
+      reason: "isolation_unavailable",
+    });
+  });
+
   it("finds the environment unavailable when the tools relay is not reached (positive control)", async () => {
     gate = new IsolationGate({
       docker: {
@@ -322,6 +383,7 @@ describe("IsolationGate", () => {
             reached: [],
             proxied: [],
             toolsReached: false,
+            unverified: [],
           };
         },
       },
@@ -369,7 +431,13 @@ describe.each([
       ...unresponsive,
       async checkDaemon() {},
       async probe() {
-        return { interfaces: [], reached: [], proxied: [], toolsReached: true };
+        return {
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: true,
+          unverified: [],
+        };
       },
     };
     async function failedRelay() {

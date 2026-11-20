@@ -14,7 +14,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
-  orIfUnreadable,
+  orIfProbeFailed,
 } from "@babojubot/contracts";
 import { runCommand } from "./bounded-command.ts";
 import { holdsLease, stopLeaseHolders } from "./lease.ts";
@@ -126,21 +126,47 @@ function parseStart(text: string) {
   const at = Date.parse(text.trim());
   return Number.isFinite(at) ? at : undefined;
 }
-/** /proc가 없는 시스템에서 프로세스 시작 시각. 물어볼 수 없으면 `undefined`다. */
-export function processStartedAt(pid: number, platform: NodeJS.Platform) {
-  return orIfUnreadable(() => {
-    const [command, args] = startQuery(pid, platform);
-    return parseStart(
-      execFileSync(command, args, {
-        encoding: "utf8",
-        env: startQueryEnv(),
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: helperCommandTimeoutMs,
-        killSignal: "SIGKILL",
-      })
+/** 동기 실행이 실패한 까닭: 끝남 코드(`exit 1`), 신호(`SIGKILL`), 띄우지 못한 이유(`ENOENT`). 오류 출력은 담지 않는다. */
+function commandEnding(error: unknown) {
+  const { status, signal } = (error ?? {}) as {
+    status?: unknown;
+    signal?: unknown;
+  };
+  if (typeof status === "number") return `exit ${status}`;
+  if (typeof signal === "string") return signal;
+  return failureCode(error);
+}
+/**
+ * 시작 시각을 묻지 못한 원인을 남긴다. 그사이 끝난 프로세스는 물을 것이 없으므로(답이다) 남기지 않는다.
+ * `outcome`은 모르는 시작 시각을 어떻게 다루는지다.
+ */
+const unaskedStart = (pid: number, outcome: string) => (cause: string) => {
+  if (processAlive(pid))
+    console.warn(
+      `[provider] the start time of process ${pid} could not be asked; ${outcome} (${cause})`
     );
-  }, undefined);
+};
+
+/** /proc가 없는 시스템에서 프로세스 시작 시각. 물어볼 수 없으면 원인을 남기고 `undefined`다(우리 것으로 보지 않는다). */
+export function processStartedAt(pid: number, platform: NodeJS.Platform) {
+  return orIfProbeFailed(
+    () => {
+      const [command, args] = startQuery(pid, platform);
+      return parseStart(
+        execFileSync(command, args, {
+          encoding: "utf8",
+          env: startQueryEnv(),
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: helperCommandTimeoutMs,
+          killSignal: "SIGKILL",
+        })
+      );
+    },
+    undefined,
+    (error) =>
+      unaskedStart(pid, "it is not taken as ours")(commandEnding(error))
+  );
 }
 // Windows는 다른 프로그램이 파일을 열어 둔 동안 덮어쓰기를 거절한다. 잠깐이므로 약 5초 동안 다시 시도한다.
 const startSaveTries = 20;
@@ -197,7 +223,18 @@ export function recordProcess(
     maxOutputBytes: 4096,
   }).then(
     (result) => {
-      const started = result.code === 0 ? parseStart(result.stdout) : undefined;
+      if (result.code !== 0) {
+        unaskedStart(
+          pid,
+          "its record stays without one"
+        )(
+          result.killed
+            ? "ended at its limit"
+            : `exit ${result.code ?? result.signal}`
+        );
+        return;
+      }
+      const started = parseStart(result.stdout);
       if (started !== undefined) saveStarted(started, startSaveTries);
     },
     (error: unknown) =>

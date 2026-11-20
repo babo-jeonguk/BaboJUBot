@@ -1,6 +1,9 @@
 // 제품 코드 lint 규칙. 설정은 eslint.config.js의 `productFiles` 범위에 걸고, 개발 스크립트(`scriptFiles`)에도 그중 일부를 건다.
 // 회귀 시험은 scripts/product-lint-rules.test.mjs와 scripts/script-lint-rules.test.mjs가 맡는다.
 // `no-restricted-syntax`는 설정 블록끼리 덮어써서 서버·runtime의 기존 금지와 함께 걸 수 없으므로 규칙으로 둔다.
+import { existsSync, readFileSync } from "node:fs";
+import { builtinModules } from "node:module";
+import path from "node:path";
 import {
   skippedCleanupIn,
   skippedSyncCleanupIn,
@@ -172,7 +175,7 @@ const syncCommandTimeout = {
 };
 
 const ignoredErrorGuide =
-  "버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfUnreadable(읽을 수 없으면 아님), settled(순서만 지킴). CODING_STANDARDS.md#제품-코드";
+  '버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). 오류 이벤트 처리기(on("error", …))와 오류를 넘기는 콜백(execFile·close 등)도 같습니다: 상대가 끊어 난 오류(EPIPE·ECONNRESET)만 isDisconnect로 확인해 넘기고, 그 밖의 오류는 원인을 남기거나 드러냅니다. CODING_STANDARDS.md#제품-코드';
 
 /** 오류를 받는 처리기의 자리: `.catch(처리기)`, `.then(성공, 처리기)`. */
 const handlerPositions = new Map([
@@ -193,16 +196,45 @@ function onlyThrows(body) {
   );
 }
 
-/** `_`로 시작해 쓰지 않는다고 표시하고 실제로 쓰지 않는 오류 이름인가. 쓰는 이름이면 버리는 것이 아니다. */
-const markedUnused = (context, param) =>
-  param?.type === "Identifier" &&
-  param.name.startsWith("_") &&
-  context.sourceCode
-    .getDeclaredVariables(param.parent)
+/**
+ * 함수가 첫 매개변수로 받는 오류를 버리는 모양. 매개변수가 없거나(다른 오류를 던지는 한 문장뿐이면 아님), 받고도 쓰지 않는다
+ * (`_`를 붙였든 아니든). 구조 분해·기본값으로 받는 매개변수는 보지 않는다. `catch` 절은 `{ params, body, scope: 절 }`로 넘긴다.
+ */
+function droppedError(context, fn) {
+  const [param] = fn.params;
+  if (!param) return onlyThrows(fn.body) ? undefined : "unnamed";
+  if (param.type !== "Identifier") return undefined;
+  const used = context.sourceCode
+    .getDeclaredVariables(fn.scope ?? fn)
     .some(
       (variable) =>
-        variable.name === param.name && variable.references.length === 0
+        variable.name === param.name && variable.references.length > 0
     );
+  if (used) return undefined;
+  return param.name.startsWith("_") ? "underscore" : "unused";
+}
+
+/** 오류 이벤트 처리기를 붙이는 메서드. `x.on("error", 처리기)`의 처리기는 오류를 첫 인수로 받는다. */
+const listenerMethods = new Set([
+  "on",
+  "once",
+  "addListener",
+  "prependListener",
+  "prependOnceListener",
+]);
+/**
+ * 끝날 때 오류(없으면 null)를 첫 인수로 넘기는 마지막 인수 콜백을 받는 호출: child_process의 execFile·exec, 서버·스트림의 close,
+ * 쓰기 스트림의 write·end, stream의 pipeline·finished.
+ */
+const errorFirstCalls = new Set([
+  "execFile",
+  "exec",
+  "close",
+  "write",
+  "end",
+  "pipeline",
+  "finished",
+]);
 
 /** 호출하는 메서드 이름. `x.catch(...)`와 `x["catch"](...)` 모두 본다. */
 function calledMethod(callee) {
@@ -216,10 +248,12 @@ function calledMethod(callee) {
 
 /**
  * 오류를 받지 않고 버리면 의도한 처리(파일 없음은 없는 것)와 실수(권한 오류까지 빈 결과로 바꿈)가 코드에서 같아 보인다.
- * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, `_`를 붙인 오류 이름을 막는다.
- * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다. 받고 쓰지 않는 오류는 `no-unused-vars`가 막는다.
+ * 오류 변수가 없는 `catch`, 인자 없는 `.catch` 처리기와 `.then`의 거부 처리기, 오류 이벤트 처리기(`on`·`once` 등의 "error"),
+ * 오류를 첫 인수로 넘기는 콜백(`execFile`·`exec`·`close`·`write`·`end`·`pipeline`·`finished`의 마지막 인수), 받고도 쓰지 않는 오류 이름(`_` 포함)을 막는다.
+ * 다른 오류를 던지는 한 문장뿐인 처리는 버리는 것이 아니므로 허용한다.
  * 알려진 한계: 이름으로 넘긴 처리기(`.then(settle, settle)`), 기본값·나머지 매개변수로 받는 오류, `void error`처럼 쓰는 척만 하는
- * 처리, 이름 붙은 함수를 의도와 다르게 쓰는 것(권한 오류까지 `orIfUnreadable`로 덮기)은 판정하지 않으며 리뷰가 본다.
+ * 처리, 위 목록 밖의 오류 우선 콜백(`fs`의 콜백 등), 글로 넣는 코드(OpenCode plugin·컨테이너 확인 스크립트의
+ * 문자열)는 판정하지 않으며 리뷰가 본다. `orIfUnreadable` 콜백 안의 입출력은 `no-io-in-unreadable`이 본다.
  */
 const noIgnoredError = {
   meta: {
@@ -232,25 +266,226 @@ const noIgnoredError = {
     messages: {
       unnamed: `오류를 받지 않고 버리면 왜 버리는지 보이지 않습니다. 오류를 받아 검사하거나 다시 던지세요. ${ignoredErrorGuide}`,
       underscore: `\`_\`를 붙여 쓰지 않는 오류도 버리는 것입니다. 오류를 받아 검사하거나 다시 던지세요. ${ignoredErrorGuide}`,
+      unused: `오류를 받고도 쓰지 않으면 버리는 것입니다. 오류를 검사하거나 원인을 남기거나 다시 던지세요. ${ignoredErrorGuide}`,
     },
   },
   create(context) {
     return {
       CatchClause(node) {
-        if (markedUnused(context, node.param))
-          context.report({ node: node.param, messageId: "underscore" });
-        else if (!node.param && !onlyThrows(node.body))
-          context.report({ node, messageId: "unnamed" });
+        const messageId = droppedError(context, {
+          params: node.param ? [node.param] : [],
+          body: node.body,
+          scope: node,
+        });
+        if (messageId) context.report({ node: node.param ?? node, messageId });
       },
       CallExpression(node) {
-        const position = handlerPositions.get(calledMethod(node.callee));
-        const handler =
-          position === undefined ? undefined : node.arguments[position];
+        const method = calledMethod(node.callee);
+        const name =
+          method ??
+          (node.callee.type === "Identifier" ? node.callee.name : undefined);
+        let handler;
+        if (handlerPositions.has(method))
+          handler = node.arguments[handlerPositions.get(method)];
+        else if (
+          listenerMethods.has(method) &&
+          node.arguments[0]?.type === "Literal" &&
+          node.arguments[0].value === "error"
+        )
+          handler = node.arguments[1];
+        else if (errorFirstCalls.has(name)) handler = node.arguments.at(-1);
         if (!handler || !functionTypes.has(handler.type)) return;
-        if (markedUnused(context, handler.params[0]))
-          context.report({ node: handler.params[0], messageId: "underscore" });
-        else if (handler.params.length === 0 && !onlyThrows(handler.body))
-          context.report({ node: handler, messageId: "unnamed" });
+        const messageId = droppedError(context, handler);
+        if (messageId)
+          context.report({ node: handler.params[0] ?? handler, messageId });
+      },
+    };
+  },
+};
+
+/** 외부 명령 결과의 성공 여부를 0과 견주는 식이면 실패 쪽이 어느 갈래인지(`"consequent"`·`"alternate"`). `result.status === 0`, `x.code !== 0`. */
+function exitComparison(test) {
+  if (test.type !== "BinaryExpression") return undefined;
+  const sides = [test.left, test.right];
+  const zero = sides.find((s) => s.type === "Literal" && s.value === 0);
+  const read = sides.find(
+    (s) =>
+      s.type === "MemberExpression" &&
+      !s.computed &&
+      (s.property.name === "status" || s.property.name === "code")
+  );
+  if (!zero || !read) return undefined;
+  if (test.operator === "===" || test.operator === "==") return "alternate";
+  if (test.operator === "!==" || test.operator === "!=") return "consequent";
+  return undefined;
+}
+
+/** 빈 결과로 보는 값: `""`, `undefined`, `null`, `false`, `[]`, `{}`. */
+function emptyValue(node) {
+  if (!node) return true; // return; 값 없음
+  if (node.type === "Literal")
+    return node.value === "" || node.value === null || node.value === false;
+  if (node.type === "Identifier") return node.name === "undefined";
+  if (node.type === "ArrayExpression") return node.elements.length === 0;
+  if (node.type === "ObjectExpression") return node.properties.length === 0;
+  return false;
+}
+
+/** 실패 갈래가 빈 결과를 돌려주는 문인가(`return;`, `return ""`, 그것뿐인 블록). */
+function returnsEmpty(statement) {
+  if (!statement) return false;
+  if (statement.type === "BlockStatement")
+    return statement.body.length === 1 && returnsEmpty(statement.body[0]);
+  return statement.type === "ReturnStatement" && emptyValue(statement.argument);
+}
+
+/**
+ * 외부 명령이 0이 아닌 코드로 끝난 것을 빈 결과로 접으면, 대상이 없다는 정상 답과 명령 실패(옵션 오류·권한·내부 실패)가 같은 값이 된다(#264 리뷰 STD-1).
+ * 종료 코드를 0과 견주고 실패 갈래가 빈 결과(`""`·`undefined`·`null`·`false`·`[]`·`{}`, 값 없는 `return`)인 삼항식과 if 문을 짚는다.
+ * 그 명령의 "없음" 계약(예: `ps`·`pgrep`은 출력 없이 1)은 그 코드와 견주거나 이름 붙은 판정 함수로 고르면 통과한다.
+ * 알려진 한계: 0과 견준 결과를 바로 돌려주는 식(`return code === 0`), 이름을 바꾼 결과 필드, 여러 조건을 묶은 식은 보지 않는다.
+ */
+const noSilentExitStatus = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Disallow folding a non-zero exit of an outside command into an empty result",
+    },
+    schema: [],
+    messages: {
+      folded:
+        '외부 명령이 0이 아닌 코드로 끝난 것을 빈 결과로 바꿉니다. 대상이 없다는 답과 명령 실패가 같은 값이 됩니다. 그 명령의 "없음" 계약(예: ps·pgrep은 출력 없이 1)만 그 코드나 이름 붙은 판정으로 고르고, 그 밖의 종료 코드와 오류 출력은 원인과 함께 던지거나(확인 호출이면 orIfProbeFailed로) 남기세요. CODING_STANDARDS.md#제품-코드',
+    },
+  },
+  create(context) {
+    return {
+      ConditionalExpression(node) {
+        const failure = exitComparison(node.test);
+        if (failure && emptyValue(node[failure]))
+          context.report({ node, messageId: "folded" });
+      },
+      IfStatement(node) {
+        const failure = exitComparison(node.test);
+        if (failure && returnsEmpty(node[failure]))
+          context.report({ node, messageId: "folded" });
+      },
+    };
+  },
+};
+
+const unreadableGuide =
+  "읽기는 콜백 밖에서 하세요: 데이터 파일은 orIfMissing(없음만 기본값), 실패하면 안전한 결과로 가는 확인 호출(프로세스 조회·연결·이름 풀이·다른 프로그램의 저장소 열기)은 orIfProbeFailed(원인을 report로 남김)로 감싸고, 읽은 값의 해석만 orIfUnreadable로 감쌉니다. 응답 본문은 await res.text()로 받아 끊김을 드러낸 뒤 해석합니다. CODING_STANDARDS.md#제품-코드";
+
+/** 입출력으로 보는 호출 이름의 앞부분. 파일 읽기·쓰기·열기, 명령 실행이다. `*Sync`(동기 입출력)는 따로 본다. */
+const ioPrefix =
+  /^(read|write|append|open|exists|realpath|copyFile|mkdir|unlink|rename|spawn|execFile|execSync|fork)/;
+/** 입출력으로 보는 호출 이름. 파일 상태, 연결·요청·질의, 이름 풀이, 응답 본문 읽기다. */
+const ioNames = new Set([
+  "stat",
+  "lstat",
+  "access",
+  "rm",
+  "fetch",
+  "connect",
+  "createConnection",
+  "request",
+  "query",
+  "lookup",
+  "json",
+  "text",
+  "arrayBuffer",
+  "blob",
+  "formData",
+]);
+
+/** 호출 대상의 이름들. `fs.realpathSync.native(…)`는 `native`·`realpathSync`, `readFile(…)`은 `readFile`. 맨 앞 객체 이름은 빼고 본다. */
+function calleeNames(callee) {
+  if (callee.type === "Identifier") return [callee.name];
+  const names = [];
+  for (let at = callee; at.type === "MemberExpression"; at = at.object) {
+    const name = at.computed
+      ? at.property.type === "Literal" && typeof at.property.value === "string"
+        ? at.property.value
+        : undefined
+      : at.property.name;
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+/** 입출력 호출로 보는 이름이면 그 이름. 정규식의 `exec`와 겹치는 child_process `exec`는 가져온 이름으로 부를 때만 본다. */
+function ioCallName(callee) {
+  if (callee.type === "Identifier" && callee.name === "exec") return "exec";
+  return calleeNames(callee).find(
+    (name) => ioNames.has(name) || ioPrefix.test(name) || /Sync$/.test(name)
+  );
+}
+
+/**
+ * `orIfUnreadable`은 이미 손에 든 값의 동기 해석·확인 한 단계만 감싼다. 콜백 안의 입출력은 권한·디스크·연결 오류까지 아님·없음으로
+ * 바꿔 원인을 지우므로(#246 리뷰 S1, #258 리뷰 STD-1), 콜백 안의 `async`·`await`와 파일 읽기·쓰기, 명령·연결·이름 풀이·응답 본문
+ * 읽기 직접 호출을 막는다. lint가 안을 보도록 콜백은 그 자리에 쓰게 한다(이름으로 넘긴 함수는 막는다).
+ * 가져온 이름을 바꿔 불러도(`import { orIfUnreadable as parse }`) 본다. 판정은 호출 이름으로 하므로 같은 이름의 순수 함수
+ * (`text()`·`request()` 등)도 짚는다. 그런 함수는 콜백 밖에서 부르고 결과만 해석한다.
+ * 알려진 한계: 콜백이 부르는 함수 안의 동기 입출력(`orIfUnreadable(() => parseConfig(file), …)`의 `parseConfig`가 `readFileSync`를 부름)은
+ * 모양으로 보이지 않으며 리뷰가 본다. 비동기 입출력은 promise를 돌려주므로 타입 검사와 실행 중 거부(`AsyncReadError`)가 막는다.
+ */
+const noIoInUnreadable = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Disallow I/O inside the callback of orIfUnreadable, which only wraps one synchronous parse",
+    },
+    schema: [],
+    messages: {
+      io: `orIfUnreadable 콜백 안에서 {{name}}을(를) 부릅니다. orIfUnreadable은 이미 손에 든 값의 동기 해석 한 단계만 감쌉니다. 입출력의 실패(권한·디스크·연결)를 아님·없음으로 바꾸면 원인이 사라집니다. ${unreadableGuide}`,
+      async: `orIfUnreadable 콜백이 비동기입니다(async·await). orIfUnreadable은 동기 해석만 받고, promise를 받으면 AsyncReadError를 던집니다. 비동기 입출력은 확인 호출이므로 orIfProbeFailed로 원인을 남기거나 없음만 기본값이면 orIfMissing을 쓰세요. ${unreadableGuide}`,
+      named: `orIfUnreadable에 콜백을 이름으로 넘깁니다. lint가 콜백 안의 입출력을 볼 수 있도록 해석을 그 자리에 쓰세요(orIfUnreadable(() => JSON.parse(text), undefined)). ${unreadableGuide}`,
+    },
+  },
+  create(context) {
+    /** 이 파일에서 orIfUnreadable을 가리키는 지역 이름. */
+    const names = new Set(["orIfUnreadable"]);
+    const { visitorKeys } = context.sourceCode;
+    /** 콜백 몸 전체를 돌며 `await`와 입출력 호출을 짚는다. 안쪽 함수도 본다. */
+    const inspect = (node) => {
+      if (node.type === "AwaitExpression")
+        context.report({ node, messageId: "async" });
+      if (node.type === "CallExpression" || node.type === "NewExpression") {
+        const name = ioCallName(node.callee);
+        if (name) context.report({ node, messageId: "io", data: { name } });
+      }
+      for (const key of visitorKeys[node.type] ?? []) {
+        const child = node[key];
+        for (const item of Array.isArray(child) ? child : [child])
+          if (item && typeof item.type === "string") inspect(item);
+      }
+    };
+    return {
+      ImportSpecifier(node) {
+        const imported =
+          node.imported.type === "Identifier"
+            ? node.imported.name
+            : node.imported.value;
+        if (imported === "orIfUnreadable") names.add(node.local.name);
+      },
+      CallExpression(node) {
+        const { callee } = node;
+        const called =
+          callee.type === "Identifier"
+            ? names.has(callee.name)
+            : calledMethod(callee) === "orIfUnreadable";
+        if (!called) return;
+        const [read] = node.arguments;
+        if (!read) return;
+        if (!functionTypes.has(read.type)) {
+          context.report({ node: read, messageId: "named" });
+          return;
+        }
+        if (read.async) context.report({ node: read, messageId: "async" });
+        inspect(read.body);
       },
     };
   },
@@ -997,11 +1232,127 @@ const noGroupStopImport = {
   },
 };
 
+const builtins = new Set(builtinModules);
+
+/** 가져온 이름의 패키지 이름. 상대·절대 경로, `#` 별칭, Node 기본 모듈은 패키지가 아니다(`undefined`). */
+function packageOf(specifier) {
+  if (/^[./#]/.test(specifier) || specifier.startsWith("node:"))
+    return undefined;
+  const parts = specifier.split("/");
+  const name = specifier.startsWith("@")
+    ? parts.slice(0, 2).join("/")
+    : parts[0];
+  return builtins.has(name) ? undefined : name;
+}
+
+/** 파일에서 가장 가까운 package.json(경로·이름·선언). 파일마다 다시 읽지 않도록 폴더별로 기억한다. */
+const manifests = new Map();
+function manifestFor(file) {
+  for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
+    if (manifests.has(dir)) return manifests.get(dir);
+    const at = path.join(dir, "package.json");
+    if (existsSync(at)) {
+      const json = JSON.parse(readFileSync(at, "utf8"));
+      const found = {
+        file: at,
+        name: json.name,
+        run: new Set([
+          ...Object.keys(json.dependencies ?? {}),
+          ...Object.keys(json.peerDependencies ?? {}),
+          ...Object.keys(json.optionalDependencies ?? {}),
+        ]),
+        dev: new Set(Object.keys(json.devDependencies ?? {})),
+      };
+      manifests.set(dir, found);
+      return found;
+    }
+    if (path.dirname(dir) === dir) return undefined;
+  }
+}
+
+/**
+ * 가져온 패키지는 그 코드가 속한 package.json에 선언한다. 제품 코드는 실행 의존성(`dependencies`·`peerDependencies`·
+ * `optionalDependencies`)에 있어야 한다: devDependencies에만 있으면 프로덕션 설치(`pnpm install --prod`)에서 그 가져오기가 깨진다
+ * (#264 리뷰 STD-2). 타입만 가져오는 것(`import type`)은 실행에 남지 않으므로 devDependencies도 된다. 개발 스크립트와 시험은
+ * `allowDev`로 devDependencies까지 받는다. 정적 import·re-export·문자열 dynamic import를 본다.
+ * 알려진 한계: 계산한 이름의 dynamic import와 `createRequire`로 부른 `require`는 보지 않는다(runtime의 실행 경계 lint가 막는 길은 거기서 막는다).
+ */
+const noUndeclaredImport = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "require imported packages to be declared in the nearest package.json, as runtime dependencies for product code",
+    },
+    schema: [
+      {
+        type: "object",
+        properties: { allowDev: { type: "boolean" } },
+        additionalProperties: false,
+      },
+    ],
+    messages: {
+      undeclared:
+        "{{name}}을(를) {{manifest}}에 선언하지 않고 가져옵니다. 설치에 따라 있을 수도 없을 수도 있는 패키지입니다. 그 package.json에 선언하세요. CODING_STANDARDS.md#제품-코드",
+      devOnly:
+        "{{name}}은(는) {{manifest}}의 devDependencies에만 있습니다. 제품 코드가 실행 중에 가져오면 프로덕션 설치(pnpm install --prod)에서 깨집니다. dependencies로 옮기거나, 타입만 쓰면 import type으로 가져오세요. CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    const allowDev = context.options[0]?.allowDev ?? false;
+    const manifest = manifestFor(context.filename);
+    if (!manifest) return {};
+    const where = path.relative(context.cwd, manifest.file) || "package.json";
+    const check = (source, typeOnly) => {
+      if (source?.type !== "Literal" || typeof source.value !== "string")
+        return;
+      const name = packageOf(source.value);
+      if (!name || name === manifest.name || manifest.run.has(name)) return;
+      if (manifest.dev.has(name)) {
+        if (allowDev || typeOnly) return;
+        context.report({
+          node: source,
+          messageId: "devOnly",
+          data: { name, manifest: where },
+        });
+        return;
+      }
+      context.report({
+        node: source,
+        messageId: "undeclared",
+        data: { name, manifest: where },
+      });
+    };
+    return {
+      ImportDeclaration(node) {
+        check(
+          node.source,
+          node.importKind === "type" ||
+            (node.specifiers.length > 0 &&
+              node.specifiers.every((s) => s.importKind === "type"))
+        );
+      },
+      ExportNamedDeclaration(node) {
+        if (node.source) check(node.source, node.exportKind === "type");
+      },
+      ExportAllDeclaration(node) {
+        check(node.source, node.exportKind === "type");
+      },
+      ImportExpression(node) {
+        check(node.source, false);
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
     "sync-command-timeout": syncCommandTimeout,
     "no-ignored-error": noIgnoredError,
+    "no-io-in-unreadable": noIoInUnreadable,
+    "no-silent-exit-status": noSilentExitStatus,
+    "no-undeclared-import": noUndeclaredImport,
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
     "no-direct-launch": noDirectLaunch,

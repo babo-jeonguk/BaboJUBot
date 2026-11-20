@@ -14,7 +14,7 @@ import { realpathSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import http from "node:http";
-import type net from "node:net";
+import net from "node:net";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -28,6 +28,8 @@ import { createAntigravityProvider as unownedAntigravityProvider } from "./antig
 import {
   createDockerEnvironment,
   type ContainerSettings,
+  removeContainer,
+  runDocker,
 } from "./container.ts";
 import {
   attachedRelayHub,
@@ -2584,6 +2586,219 @@ describe.skipIf(process.platform === "win32")(
     });
   }
 );
+
+// docker가 실패하면 그 종료 코드와 오류 출력을 남긴다. 목록을 읽지 못한 것을 "남은 컨테이너 없음"으로 바꾸지 않는다.
+describe("docker failures during container cleanup", () => {
+  const failing = {
+    docker: [
+      process.execPath,
+      "-e",
+      `process.stderr.write("Cannot connect to the Docker daemon"); process.exit(1);`,
+    ] as const,
+    image,
+    owner: "owner-test",
+    relay: attachedRelayHub(),
+  };
+
+  it("fails leftover cleanup with the cause when the containers cannot be listed", async () => {
+    await expect(
+      createDockerEnvironment(failing).removeOrphans()
+    ).rejects.toThrow(
+      /could not be listed \(exit 1: Cannot connect to the Docker daemon\)/
+    );
+  });
+
+  // 시한·출력 상한에 닿아 끈 것은 원인이다. "끝남 코드 없음"으로 접지 않는다(#264 외부 리뷰 4회차 STD-3).
+  it("keeps why a docker command was stopped when it stays silent past its limit", async () => {
+    const silent = {
+      ...failing,
+      docker: [process.execPath, "-e", "setInterval(() => {}, 1000);"] as const,
+    };
+    await expect(runDocker(silent, ["ps"], 200)).resolves.toMatchObject({
+      code: null,
+      stopped: "limit",
+      stderr: "",
+    });
+  });
+
+  it("fails leftover cleanup with the output limit as the cause when docker prints too much", async () => {
+    const flooding = {
+      ...failing,
+      docker: [
+        process.execPath,
+        "-e",
+        `process.stdout.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000);`,
+      ] as const,
+    };
+    await expect(
+      createDockerEnvironment(flooding).removeOrphans()
+    ).rejects.toThrow(
+      "leftover containers could not be listed (stopped: output)"
+    );
+  });
+
+  it("leaves why a container could not be removed", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    expect(await removeContainer(failing, "babojubot-test")).toBe(false);
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /babojubot-test.*exit 1.*Cannot connect to the Docker daemon/
+      )
+    );
+  });
+});
+
+// Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행). 확인이 여는 중계의 파일 소켓은 Linux·macOS에서 본다.
+describe.skipIf(process.platform === "win32")("the isolation probe", () => {
+  // 확인하지 못한 검사는 "막혔다"가 아니다. 결과를 모를 때 안전한 쪽은 확인 불가다(#264 외부 리뷰 4회차 SPEC-3).
+  it("reports the checks it could not complete as unverified and names each failure from the original error's code and name", async () => {
+    const root = await folders.make("babojubot-probe-");
+    // 컨테이너 안 확인 스크립트 대신 정해진 결과를 내는 프로그램. 확인 스크립트는 원래 오류의 code·name(답이 없으면 기다린 시간)만 보낸다.
+    const answer = path.join(root, "answer.mjs");
+    await writeFile(
+      answer,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: false,
+          failures: [
+            { probe: "tools", code: "ECONNREFUSED", name: "Error" },
+            { probe: "proxied", name: "TypeError" },
+            { probe: "proxied", timeoutMs: 5000 },
+            { probe: "direct", code: 7, name: "RangeError" },
+          ],
+          proxyEnv: true,
+        })
+      )});\n`
+    );
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const environment = createDockerEnvironment({
+      docker: [
+        process.execPath,
+        fixture("fake-docker.mjs"),
+        root,
+        JSON.stringify({ node: [process.execPath, answer] }),
+      ],
+      image,
+      owner: "owner-test",
+      relay: attachedRelayHub(),
+    });
+    await expect(
+      environment.probe(
+        { blocked: [], forbidden: [] },
+        AbortSignal.timeout(10_000)
+      )
+    ).resolves.toEqual({
+      interfaces: [],
+      reached: [],
+      proxied: [],
+      toolsReached: false,
+      unverified: ["tools", "proxied", "direct"],
+    });
+    expect(warned.mock.calls.map(([line]) => line)).toEqual([
+      "[provider] the isolation probe's tools check failed (ECONNREFUSED)",
+      "[provider] the isolation probe's proxied check failed (TypeError)",
+      "[provider] the isolation probe's proxied check failed (no answer within 5000 ms)",
+      "[provider] the isolation probe's direct check failed (RangeError)",
+    ]);
+  });
+
+  /** 모든 검사를 끝까지 한 확인 결과를 내는 가짜 docker와 그 기록 폴더. `files`는 가짜 docker의 상태 파일이다(`rm-fails` 등). */
+  async function cleanProbe(files: Record<string, string> = {}) {
+    const root = await folders.make("babojubot-probe-");
+    for (const [name, value] of Object.entries(files))
+      await writeFile(path.join(root, name), value);
+    const answer = path.join(root, "answer.mjs");
+    await writeFile(
+      answer,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: true,
+          failures: [],
+          proxyEnv: true,
+        })
+      )});\n`
+    );
+    const environment = createDockerEnvironment({
+      docker: [
+        process.execPath,
+        fixture("fake-docker.mjs"),
+        root,
+        JSON.stringify({ node: [process.execPath, answer] }),
+      ],
+      image,
+      owner: "owner-test",
+      relay: attachedRelayHub(),
+    });
+    const removals = async () =>
+      (await readFile(path.join(root, "calls.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Call)
+        .filter((call) => call.args[0] === "rm");
+    return { environment, removals };
+  }
+
+  // 중계 닫기와 확인 컨테이너 지우기는 서로 독립인 정리다. 한쪽이 실패해도 다른 쪽을 하고, 실패는 확인의 실패로 드러난다
+  // (#264 외부 리뷰 5회차 STD-4). 확인이 실패하면 관문은 격리 환경 없음으로 본다.
+  it("still removes its container when the relay does not close, and fails the check", async () => {
+    const { environment, removals } = await cleanProbe();
+    const close = net.Server.prototype.close;
+    const failing = vi
+      .spyOn(net.Server.prototype, "close")
+      .mockImplementation(function (
+        this: net.Server,
+        callback?: (error?: Error) => void
+      ) {
+        return close.call(this, (error?: Error) =>
+          callback?.(
+            error ?? Object.assign(new Error("close failed"), { code: "EBUSY" })
+          )
+        );
+      });
+    onTestFinished(() => failing.mockRestore());
+    await expect(
+      environment.probe(
+        { blocked: [], forbidden: [] },
+        AbortSignal.timeout(10_000)
+      )
+    ).rejects.toThrow("a relay server did not close (EBUSY)");
+    expect(await removals()).toEqual([
+      {
+        args: ["rm", "-f", expect.stringMatching(/^babojubot-probe-/)],
+        relayOpen: false,
+      },
+    ]);
+  });
+
+  it("fails the check when its container cannot be removed, after closing the relay", async () => {
+    const { environment, removals } = await cleanProbe({ "rm-fails": "" });
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    await expect(
+      environment.probe(
+        { blocked: [], forbidden: [] },
+        AbortSignal.timeout(10_000)
+      )
+    ).rejects.toThrow(
+      /the isolation probe container babojubot-probe-\S+ could not be removed/
+    );
+    // 지우기 전에 중계를 닫았다(가짜 docker가 rm 때 중계 소켓이 남았는지 기록한다). 지우기는 세 번 시도한다.
+    expect(await removals()).toEqual(
+      Array.from({ length: 3 }, () => ({
+        args: ["rm", "-f", expect.stringMatching(/^babojubot-probe-/)],
+        relayOpen: false,
+      }))
+    );
+  });
+});
 
 describe("the Docker engine check", () => {
   async function engine(files: Record<string, string> = {}) {

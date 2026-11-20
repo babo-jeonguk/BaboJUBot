@@ -78,8 +78,10 @@ export function createOrgToolClient({
       body: post ? JSON.stringify(rest) : undefined,
       signal,
     });
-    const json: unknown = await orIfUnreadable(
-      (): Promise<unknown> => res.json(),
+    // 본문을 받다 끊긴 것은 응답의 거절이 아니므로 그대로 드러낸다. 받은 본문의 해석만 부정 결과로 본다.
+    const text = await res.text();
+    const json: unknown = orIfUnreadable(
+      (): unknown => JSON.parse(text),
       undefined
     );
     if (!res.ok) {

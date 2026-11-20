@@ -10,6 +10,7 @@ import {
 } from "@babojubot/runtime/launch";
 import {
   failureCode,
+  isDisconnect,
   orIfUnreadable,
 } from "../../packages/contracts/src/failure.ts";
 
@@ -58,7 +59,10 @@ process.stdin.on("end", () => {
   record("stdin-end", {});
   child.stdin.end();
 });
-child.stdin.on("error", () => {});
+// 프로그램이 끝나 입력이 끊긴 것(EPIPE)은 답이다. 그 밖의 쓰기 실패는 기록에 남긴다.
+child.stdin.on("error", (error) => {
+  if (!isDisconnect(error)) record("stdin-error", { code: error.code });
+});
 child.stderr.on("data", (chunk) => {
   record("stderr", { text: chunk.toString() });
   process.stderr.write(chunk);
@@ -97,7 +101,10 @@ function proxy(target) {
               record("http-end", { id });
               res.end();
             });
-            answer.on("error", () => res.destroy());
+            answer.on("error", (error) => {
+              record("http-error", { id, code: error.code });
+              res.destroy();
+            });
           }
         );
         upstream.on("error", (error) => {
@@ -139,6 +146,15 @@ child.stdout.on("data", (chunk) => {
     }
   });
 });
+/** 기록을 닫고 끝낸다. 기록을 다 쓰지 못한 녹화는 쓸 수 없으므로 원인을 오류 출력에 남기고 실패로 끝낸다. */
+const exitAfterLog = (code) =>
+  log.end((error) => {
+    if (error)
+      process.stderr.write(
+        `[record-cli] the recording could not be written (${failureCode(error)})\n`
+      );
+    process.exit(error ? 1 : code);
+  });
 void (async () => {
   // 프로그램이 끝나거나 끄라는 신호가 오면 트리를 끈다(프로그램이 남긴 것까지). 끄기를 시작한 뒤의 끝은 끄기의 결과가 정한다: 끝났음을
   // 확인하지 못하면 그 이유를 남기고 실패로 끝난다.
@@ -152,7 +168,7 @@ void (async () => {
   );
   if (stopped && (await child.started).kind === "failed") {
     record("spawn-error", { code: failureCode((await child.started).error) });
-    log.end(() => process.exit(127));
+    exitAfterLog(127);
     return;
   }
   const { code, signal } = stopped
@@ -161,5 +177,5 @@ void (async () => {
   record("exit", { code, signal });
   await queue;
   if (pending) process.stdout.write(pending);
-  log.end(() => process.exit(stopped ? (code ?? 1) : 1));
+  exitAfterLog(stopped ? (code ?? 1) : 1);
 })();

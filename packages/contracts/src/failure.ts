@@ -18,11 +18,37 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-/** `read`가 promise를 돌려주는지 값의 `then`으로 가른다. 화면도 쓰므로 다른 realm의 promise도 받는다. */
-function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
+/**
+ * 상대가 연결·파이프를 끊어 난 오류인가(EPIPE·ECONNRESET·ECONNABORTED, Windows 파이프의 EOF). 쓰던 상대가 떠난 것은 답이므로,
+ * 오류 이벤트 처리기가 이것만 원인 없이 넘기고 그 밖의 오류는 원인을 남기거나 드러낼 때 고른다.
+ */
+export const isDisconnect = hasErrorCode(
+  "EPIPE",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EOF"
+);
+
+/**
+ * `read`·콜백이 promise를 돌려주는지 값의 `then`으로 가른다. 화면도 쓰므로 다른 realm의 promise도 받는다.
+ * 다른 모듈도 동기 콜백이 promise를 돌려줬는지 실행 중에 볼 때 쓴다(`Synchronous`가 타입 검사에서 거부하는 것을 우회한 경우).
+ */
+export function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
   return (
     typeof (value as { then?: unknown } | null | undefined)?.then === "function"
   );
+}
+
+/** 동기 읽기 한 번을 감싸 실패를 `onFailure`에 맡긴다. `onFailure`가 던지면 그대로 드러난다. */
+function recoverSync<T, F>(
+  read: () => T,
+  onFailure: (error: unknown) => F
+): T | F {
+  try {
+    return read();
+  } catch (error) {
+    return onFailure(error);
+  }
 }
 
 /**
@@ -33,12 +59,7 @@ function recover<T, F>(
   read: () => T | Promise<T>,
   onFailure: (error: unknown) => F
 ): T | F | Promise<T | F> {
-  let value: T | Promise<T>;
-  try {
-    value = read();
-  } catch (error) {
-    return onFailure(error);
-  }
+  const value = recoverSync(read, onFailure);
   if (isThenable(value)) {
     return Promise.resolve(value).then(undefined, (error: unknown) =>
       onFailure(error)
@@ -95,21 +116,63 @@ export function continueAfterFailure<T>(
 }
 
 /**
- * 읽을 수 없으면 아님. 해석(JSON·URL·인코딩)이나 확인, 연결 시도처럼 실패가 흔하고 그 결과(아님·없음·거부·502)로 드러나는 한 단계가 실패하면 정해진 부정 결과를 돌려준다.
- * 실패는 그 결과로 드러나므로 진단을 남기지 않는다. 해석이나 확인 한 단계만 감싼다. "없음"과 권한·디스크 오류를 나눠야 하는
- * 읽기는 감싸지 않고 `orIfMissing`을 쓴다. 프로세스 상태 조회처럼 "알 수 없음"이 곧 정해진 결과인 확인은 감싸도 된다.
- * `read`가 promise를 돌려주면 결과도 promise다.
+ * 확인 실패면 안전한 결과. 확인 호출(프로세스 상태 조회, 이름 풀이, 연결 시도, 다른 프로그램의 저장소 열기처럼 입출력으로 무엇인가를
+ * 알아보는 호출) 하나를 감싼다. 실패하면 `report(error)`로 원인을 남기고, 결과를 모를 때 해도 되는 쪽으로 호출자가 정한 `fallback`을
+ * 돌려준다(내 프로세스인지 모르면 끄지 않음, 주소를 모르면 연결을 거부함). 원인 없이 덮지 않도록 `report`는 반드시 받는다.
+ * "없음"이 정상 답인 확인(끝난 프로세스)은 안쪽 읽기를 `orIfMissing`으로 감싸 없음은 답으로 받고, 그 밖의 실패만 여기서 남긴다.
+ * 결과를 모를 때 안전한 쪽이 없으면 감싸지 않고 실패를 드러낸다. `report`가 던지면 그 오류는 숨기지 않는다.
+ * `probe`가 promise를 돌려주면 결과도 promise다.
+ */
+export function orIfProbeFailed<T, F>(
+  probe: () => Promise<T>,
+  fallback: F,
+  report: (error: unknown) => void
+): Promise<T | F>;
+export function orIfProbeFailed<T, F>(
+  probe: () => T,
+  fallback: F,
+  report: (error: unknown) => void
+): T | F;
+export function orIfProbeFailed<T, F>(
+  probe: () => T | Promise<T>,
+  fallback: F,
+  report: (error: unknown) => void
+): T | F | Promise<T | F> {
+  return recover(probe, (error) => {
+    report(error);
+    return fallback;
+  });
+}
+
+/** promise를 돌려주는 값을 타입 검사에서 거부한다(동기 콜백·읽기의 반환 타입이 `never`가 된다). 다른 모듈도 동기 콜백 자리를 좁힐 때 쓴다. */
+export type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
+
+/** 동기 해석만 받는 `orIfUnreadable`에 promise를 돌려주는 읽기를 넘겼다. 비동기 입출력은 확인 호출이므로 `orIfProbeFailed`로 감싼다. */
+export class AsyncReadError extends TypeError {
+  override name = "AsyncReadError";
+  constructor() {
+    super(
+      "orIfUnreadable reads synchronously; wrap an asynchronous probe with orIfProbeFailed and report why it failed"
+    );
+  }
+}
+
+/**
+ * 읽을 수 없으면 아님. 이미 손에 든 값의 동기 해석·확인 한 단계(JSON·URL·인코딩·형식 확인)가 실패하면 정해진 부정 결과를 돌려준다.
+ * 실패는 그 결과(아님·없음·422)로 드러나므로 진단을 남기지 않는다. 입출력(파일 읽기·연결·명령·이름 풀이)은 감싸지 않는다.
+ * 데이터 파일 읽기는 `orIfMissing`(없음만 기본값)으로 따로 하고 해석만 여기서 감싼다. 실패하면 안전한 결과로 가는 확인 호출은
+ * `orIfProbeFailed`로 원인을 남긴다. promise를 돌려주는 읽기는 타입 검사가 거부하고, 타입을 우회해 넘기면 `AsyncReadError`를
+ * 던진다(거절을 부정 결과로 바꾸지 않고, 거절은 그 promise를 가진 쪽에 남는다).
+ * 콜백 안의 `await`·파일 읽기·연결·명령 직접 호출은 lint(`product/no-io-in-unreadable`)가 막는다. 알려진 한계: 이름을 거친 동기
+ * 입출력(함수 안에서 `readFileSync`를 부르는 `orIfUnreadable(() => readConfig(file), …)`)은 모양으로 보이지 않으며 리뷰가 본다.
  */
 export function orIfUnreadable<T, F>(
-  read: () => Promise<T>,
+  read: () => Synchronous<T>,
   fallback: F
-): Promise<T | F>;
-export function orIfUnreadable<T, F>(read: () => T, fallback: F): T | F;
-export function orIfUnreadable<T, F>(
-  read: () => T | Promise<T>,
-  fallback: F
-): T | F | Promise<T | F> {
-  return recover(read, () => fallback);
+): T | F {
+  const value = recoverSync(read, () => fallback);
+  if (isThenable(value)) throw new AsyncReadError();
+  return value;
 }
 
 /**

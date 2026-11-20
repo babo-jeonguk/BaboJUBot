@@ -8,6 +8,7 @@
     "./testing": "./src/testing.ts",
     "./runtime-contract": "./src/runtime-contract.ts",
     "./remove-folder": "./src/remove-folder.ts",
+    "./ps": "./src/providers/ps.ts",
     "./launch": "./src/providers/launch.ts",
     "./bounded-command": "./src/providers/bounded-command.ts",
     "./lifelines": "./src/providers/lifeline-support.ts",
