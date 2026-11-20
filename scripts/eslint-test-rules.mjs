@@ -4,17 +4,30 @@ import {
   combineVisitors,
   importOfBinding,
   importSites,
+  originOf,
 } from "./eslint-imports.mjs";
 
-const clocks = new Set(["Date", "performance"]);
-// 실제 시계를 읽는 `Date.now()`·`performance.now()`.
-const readsClock = (node) =>
+/**
+ * 식이 어디서 왔는지를 `global:이름.속성`·`module:모듈:이름.속성` 한 줄로(공용 가져오기 판정의 `originOf`). 시계·타이머 같은 Node 전역과
+ * 모듈 함수를 글자 이름이 아니라 출처로 알아본다(#266 리뷰 SPEC-2): 이름을 바꿔 가져와도 같고, 같은 이름의 지역 값은 아니다.
+ */
+function originName(sourceCode, node) {
+  const origin = originOf(sourceCode.getScope(node), node);
+  if (!origin) return undefined;
+  return origin.global !== undefined
+    ? `global:${[origin.global, ...origin.path].join(".")}`
+    : `module:${origin.module}:${origin.path.join(".")}`;
+}
+
+// 실제 시계를 읽는 `Date.now()`·`performance.now()`(전역이나 node:perf_hooks에서 가져온 것).
+const clockReads = new Set([
+  "global:Date.now",
+  "global:performance.now",
+  "module:perf_hooks:performance.now",
+]);
+const readsClock = (node, sourceCode) =>
   node?.type === "CallExpression" &&
-  node.callee.type === "MemberExpression" &&
-  !node.callee.computed &&
-  node.callee.property.name === "now" &&
-  node.callee.object.type === "Identifier" &&
-  clocks.has(node.callee.object.name);
+  clockReads.has(originName(sourceCode, node.callee));
 
 /** `expect(...)`·`expect(...).toBe(...)`·`assert(...)`·`assert.ok(...)`처럼 이름이 expect·assert로 시작하는 호출인가. */
 function isAssertion(call) {
@@ -120,12 +133,13 @@ const noElapsedTimeAssertion = {
 
     /** 실제 시계를 읽은 값인가: `Date.now()`·`performance.now()` 호출, 또는 그 호출로 초기화·대입한 적이 있는 변수. */
     function isClockTime(node) {
-      if (readsClock(node)) return true;
+      if (readsClock(node, sourceCode)) return true;
       if (node.type !== "Identifier") return false;
       const variable = findVariable(node);
       return (
         variable?.references.some(
-          (reference) => reference.writeExpr && readsClock(reference.writeExpr)
+          (reference) =>
+            reference.writeExpr && readsClock(reference.writeExpr, sourceCode)
         ) ?? false
       );
     }
@@ -227,31 +241,29 @@ function onlyStatement(body) {
   return body.body.length === 1 ? body.body[0] : undefined;
 }
 
-// 이벤트 루프 차례 하나를 넘기는 호출: 지연 없는 타이머와 차례 예약.
-const turnSchedulers = new Set(["setImmediate", "queueMicrotask"]);
+// 실제 타이머 `setTimeout`(전역이나 node:timers에서 가져온 것).
+const timeouts = new Set(["global:setTimeout", "module:timers:setTimeout"]);
+// 이벤트 루프 차례 하나를 넘기는 호출: 차례 예약(전역이나 node:timers·node:process에서 가져온 것).
+const turnSchedulers = new Set([
+  "global:setImmediate",
+  "module:timers:setImmediate",
+  "global:queueMicrotask",
+  "global:process.nextTick",
+  "module:process:nextTick",
+]);
 /** `call`이 executor의 `resolve`로 차례 하나를 넘기는가: `setTimeout(r)`·`setTimeout(r, 0)`·`setTimeout(() => r(), 0)`·`setImmediate(r)`·`process.nextTick(r)`. */
-function schedulesTurn(call, resolve) {
+function schedulesTurn(call, resolve, sourceCode) {
   if (call?.type !== "CallExpression") return false;
-  const { callee } = call;
-  const name =
-    callee.type === "Identifier"
-      ? callee.name
-      : callee.type === "MemberExpression" &&
-          !callee.computed &&
-          callee.object.type === "Identifier" &&
-          callee.object.name === "process" &&
-          callee.property.name === "nextTick"
-        ? "nextTick"
-        : undefined;
-  if (name === "setTimeout") {
+  const name = originName(sourceCode, call.callee);
+  if (timeouts.has(name)) {
     const delay = call.arguments[1];
     if (delay && !(delay.type === "Literal" && delay.value === 0)) return false;
-  } else if (name !== "nextTick" && !turnSchedulers.has(name)) return false;
+  } else if (!turnSchedulers.has(name)) return false;
   return onlyWakes(call.arguments[0], resolve);
 }
 
 /** 문이 이벤트 루프 차례 하나를 기다리기만 하는가: `await new Promise((r) => setTimeout(r, 0))`, `await Promise.resolve()`. */
-function waitsOneTurn(statement) {
+function waitsOneTurn(statement, sourceCode) {
   if (statement?.type !== "ExpressionStatement") return false;
   const awaited = statement.expression;
   if (awaited.type !== "AwaitExpression") return false;
@@ -273,7 +285,7 @@ function waitsOneTurn(statement) {
   return (
     isFunction(executor) &&
     resolve?.type === "Identifier" &&
-    schedulesTurn(onlyExpression(executor), resolve.name)
+    schedulesTurn(onlyExpression(executor), resolve.name, sourceCode)
   );
 }
 
@@ -335,16 +347,22 @@ const noFixedTimeWait = {
     const timers = new Set();
     const report = (node) => context.report({ node, messageId: "fixed" });
     const loop = (node) => {
-      if (waitsOneTurn(onlyStatement(node.body)))
+      if (waitsOneTurn(onlyStatement(node.body), sourceCode))
         context.report({ node, messageId: "turns" });
     };
     /** 차례 넘기기를 잇달아 쓴 문 목록. 이어진 묶음마다 처음 문에서 한 번 알린다. */
     const consecutive = (statements) => {
       for (let i = 0; i + 1 < statements.length; i++) {
-        if (!waitsOneTurn(statements[i]) || !waitsOneTurn(statements[i + 1]))
+        if (
+          !waitsOneTurn(statements[i], sourceCode) ||
+          !waitsOneTurn(statements[i + 1], sourceCode)
+        )
           continue;
         context.report({ node: statements[i], messageId: "turns" });
-        while (i + 1 < statements.length && waitsOneTurn(statements[i + 1]))
+        while (
+          i + 1 < statements.length &&
+          waitsOneTurn(statements[i + 1], sourceCode)
+        )
           i++;
       }
     };
@@ -403,7 +421,7 @@ const noFixedTimeWait = {
         parent.arguments.slice(1).some(namesAbort)
       );
     };
-    const sites = importSites((site) => {
+    const sites = importSites(context, (site) => {
       if (!timerModules.test(site.source)) return;
       for (const name of site.names) if (name.local) timers.add(name.local);
     });
@@ -431,8 +449,7 @@ const noFixedTimeWait = {
           timers.has(callee.object.name)
         )
           return report(node);
-        if (callee.type !== "Identifier" || callee.name !== "setTimeout")
-          return;
+        if (!timeouts.has(originName(sourceCode, callee))) return;
         const delay = node.arguments[1];
         if (!delay || (delay.type === "Literal" && delay.value === 0)) return;
         if (
