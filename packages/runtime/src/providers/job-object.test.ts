@@ -4,19 +4,14 @@ import { once } from "node:events";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { existsSync } from "node:fs";
+import { TreeLaunchRefused } from "./launch.ts";
 import { startProcess } from "./process.ts";
 import { prepareJobObjectLauncher } from "./job-object.ts";
 import { removeFolder } from "../remove-folder.ts";
-import { processAlive } from "../test-cleanup.ts";
+import { openLifelines, type Lifelines } from "./lifeline-support.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
@@ -24,16 +19,19 @@ const windows = process.platform === "win32";
 const roots: string[] = [];
 /** 시험이 연 실행 시도. 끝마다 마저 끝내 묶음을 닫는다. */
 const attempts: ReturnType<typeof startProcess>[] = [];
-/** 실행 시도의 프로그램이 띄운 자손의 번호. 번호만 알므로 끄지 않고 꺼졌는지만 확인한다. */
-const descendants: number[] = [];
-/** 시험이 직접 띄운 프로그램. 핸들로 끄고 끝날 때까지 기다린다. */
-const spawned: ChildProcess[] = [];
-/** 시험이 직접 띄운 프로그램의 시작 실패. 정리 때 실패로 알린다. */
-const startFailures = new WeakMap<ChildProcess, Error>();
+/**
+ * 실행 시도의 프로그램과 그 자손이 쥔 연결의 이름. 끝마다 그 연결이 닫혔는지(그 프로세스가 끝났는지) 본다. 번호(pid)로 나중에 다시
+ * 보면 그사이 Windows가 그 번호를 다른 프로세스에 다시 줘 "살아 있음"으로 잘못 볼 수 있다(#259).
+ */
+const descendants: string[] = [];
+let lifelines: Lifelines;
+let count = 0;
+/** 시험마다 겹치지 않는 연결 이름. */
+const unique = (label: string) => `${label}-${++count}`;
+/** 시험이 직접 띄운 프로그램의 정리. 핸들로 끄고 끝날 때까지 기다린다. */
+const spawned: (() => Promise<void>)[] = [];
 let dataDir = "";
 
-/** 번호로 프로세스가 있는지 본다. 없다는 답(ESRCH)만 꺼진 것으로 보고, 다른 오류는 pid·원인과 함께 실패한다. */
-const alive = processAlive;
 const temp = async (name: string) => {
   const root = await mkdtemp(path.join(tmpdir(), name));
   roots.push(root);
@@ -70,20 +68,22 @@ function spawnTracked(
   options: Parameters<typeof spawn>[2]
 ) {
   const child = spawn(command, args, options);
+  /** 이 프로그램의 시작 실패. 정리 때 실패로 알린다. */
+  let startFailure: Error | undefined;
   child.on("error", (error) => {
-    if (child.pid === undefined) startFailures.set(child, error);
+    if (child.pid === undefined) startFailure = error;
   });
-  spawned.push(child);
+  spawned.push(() => stopSpawned(child, startFailure));
   return child;
 }
 /**
  * 시험이 직접 띄운 프로그램을 끄고 끝날 때까지 기다린다. 끝남은 `exit`로만 인정한다. `error`(끄지 못함)나 시한 초과는 실패다.
  * 시작하지 못한 프로그램은 `exit`가 오지 않고 끌 것도 없으므로 기다리지 않고 그 시작 실패를 알린다.
  */
-async function stopSpawned(child: ChildProcess) {
+async function stopSpawned(child: ChildProcess, startFailure?: Error) {
   if (child.pid === undefined)
     throw new Error("a process the test started could not start", {
-      cause: startFailures.get(child),
+      cause: startFailure,
     });
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, "exit", { signal: AbortSignal.timeout(10_000) });
@@ -97,18 +97,19 @@ async function stopSpawned(child: ChildProcess) {
     );
   }
 }
-/** 번호는 재사용될 수 있으므로 다시 끄지 않는다. 시한 안에 꺼지지 않았으면 시험이 남긴 것으로 보고 실패한다. */
-async function descendantsGone(pids: number[]) {
-  await vi
-    .waitUntil(() => !pids.some(alive), { timeout: 10_000, interval: 50 })
-    .catch(() => {
-      throw new Error(
-        `processes a run started are still running after 10000 ms: ${pids.filter(alive).join(", ")}`
-      );
-    });
+/** 실행 시도가 띄운 프로세스가 모두 끝났는지 그 연결로 본다. 시한 안에 닫히지 않은 연결이 있으면 그 이름과 함께 실패한다. */
+async function descendantsGone(names: string[]) {
+  const results = await Promise.allSettled(
+    names.map((name) => lifelines.closed(name))
+  );
+  const left = names.filter((_, i) => results[i]!.status === "rejected");
+  if (left.length)
+    throw new Error(
+      `processes a run started are still running after 10000 ms: ${left.join(", ")}`
+    );
 }
 
-/** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 번호를 남겨 끝에 꺼졌는지 확인한다. */
+/** 합성 프로그램을 실행 시도로 띄운다. `child` 프레임이 오면 그 연결 이름을 남겨 끝에 꺼졌는지 확인한다. */
 function run(
   script: string,
   options: {
@@ -118,8 +119,8 @@ function run(
   } = {}
 ) {
   const frames: Record<string, unknown>[] = [];
-  let reportChild!: (pid: number) => void;
-  const child = new Promise<number>((resolve) => {
+  let reportChild!: (name: string) => void;
+  const child = new Promise<string>((resolve) => {
     reportChild = resolve;
   });
   const attempt = startProcess({
@@ -129,9 +130,9 @@ function run(
     env: { PATH: process.env.PATH },
     onFrame: async (frame) => {
       frames.push(record(frame));
-      if (typeof record(frame).child === "number") {
-        descendants.push(record(frame).child as number);
-        reportChild(record(frame).child as number);
+      if (typeof record(frame).child === "string") {
+        descendants.push(record(frame).child as string);
+        reportChild(record(frame).child as string);
       }
     },
   });
@@ -148,30 +149,44 @@ async function printer(name: string) {
   );
   return root;
 }
-/** 실행 시도가 지금처럼(묶음 없이) 돌고 서버 운영 기록에 묶음이 없다고 경고한다. */
-async function expectRunWithoutJob() {
-  const warn = vi.spyOn(console, "warn");
+/** 프로그램이 돌았으면 남기는 표시 파일과, 그 파일을 남기는 프로그램. */
+async function marker() {
+  const file = path.join(await temp("babojubot-job-refused-"), "ran");
+  return {
+    file,
+    script: `require("node:fs").writeFileSync(${JSON.stringify(file)}, "")`,
+  };
+}
+/**
+ * 정리 장치를 쓸 수 없으면 실행 시도를 띄우지 않고, 무엇이 없어 준비하지 못했는지 담은 이름 붙은 실패(`TreeLaunchRefused`)로 거절한다
+ * (#262 사용자 결정: 묶음 없이 띄우는 길은 없다). 프로그램은 돌지 않는다.
+ */
+async function expectRefusedRun(reason: RegExp) {
+  const ran = await marker();
+  let refusal: unknown;
   try {
-    const { attempt, frames } = run(
-      `console.log(JSON.stringify({ ran: true }));`
-    );
-    expect((await attempt.done).code).toBe(0);
-    expect(frames).toEqual([{ ran: true }]);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("no Windows job object")
-    );
-  } finally {
-    warn.mockRestore();
+    run(ran.script);
+  } catch (error) {
+    refusal = error;
   }
+  expect(refusal).toBeInstanceOf(TreeLaunchRefused);
+  expect(refusal).toMatchObject({ message: expect.stringMatching(reason) });
+  expect(existsSync(ran.file)).toBe(false);
 }
 
-// 남긴 자식을 띄워 그 번호를 알린다. stdio는 남긴 자식이 프로그램의 출력을 쥐는지 정한다.
-const leaveChild = (stdio: string, extra = "") =>
-  `const c = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ${stdio}${extra} });
-   console.log(JSON.stringify({ child: c.pid }));`;
+// 남긴 자식을 띄운다. 자식이 연결을 쥐었다는 답을 받은 뒤에(넷째 핸들로 알림) 그 이름을 알리고 `then`을 한다. stdio는 남긴 자식이
+// 프로그램의 출력을 쥐는지 정한다. Windows의 Node.js는 detached가 아닌 자식을 자기가 끝날 때 함께 끄므로(libuv의 job) 프로그램보다
+// 오래 남는 자식은 detached로만 만들 수 있다.
+const leaveChild = (stdio: string, then: string) => {
+  const name = unique("child");
+  const child = `${lifelines.hold(name, 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
+  return `const c = require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: [...${stdio}, "pipe"], detached: true });
+   c.stdio[3].once("data", () => { console.log(JSON.stringify({ child: ${JSON.stringify(name)} })); ${then} });`;
+};
 
 describe.runIf(windows)("startProcess on Windows", () => {
   beforeAll(async () => {
+    lifelines = await openLifelines();
     dataDir = await temp("babojubot-job-");
     // 구현 첫 단계의 확인: 이 컴퓨터의 기본 .NET Framework C# 컴파일러로 실행기를 만들고 해가 없는 실행이 된다.
     const started = Date.now();
@@ -184,68 +199,61 @@ describe.runIf(windows)("startProcess on Windows", () => {
 
   // 정리 단계는 앞 단계가 실패해도 모두 돈다. 실패는 모아 마지막에 함께 알린다.
   afterEach(async () => {
-    const failures: unknown[] = [];
-    const settle = async (steps: Promise<unknown>[]) => {
-      for (const result of await Promise.allSettled(steps))
-        if (result.status === "rejected") failures.push(result.reason);
-    };
-    await settle(spawned.splice(0).map(stopSpawned));
-    // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
-    await settle(
-      attempts.splice(0).map(async (attempt) => {
-        attempt.end();
-        await within(attempt.done, 30_000, "the end of a run");
-      })
+    await attemptAll(
+      [
+        ...spawned.splice(0),
+        // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
+        ...attempts.splice(0).map((attempt) => async () => {
+          attempt.end();
+          await within(attempt.done, 30_000, "the end of a run");
+        }),
+        () => descendantsGone(descendants.splice(0)),
+      ],
+      "the test cleanup failed"
     );
-    await settle([descendantsGone(descendants.splice(0))]);
-    if (failures.length)
-      throw new AggregateError(failures, "the test cleanup failed");
   }, 60_000);
 
   afterAll(async () => {
-    await Promise.all(roots.map((root) => removeFolder(root)));
+    await attemptAll([
+      () => lifelines.close(),
+      ...roots.map((root) => () => removeFolder(root)),
+    ]);
   });
 
   it("stops a child that holds the output after the program ends, and keeps the last output and exit code", async () => {
     const { attempt, frames, child } = run(
-      `${leaveChild(`["ignore", "inherit", "ignore"]`)}
-       process.stdout.write(JSON.stringify({ last: "x".repeat(200000) }) + "\\n", () => process.exit(3));`
+      leaveChild(
+        `["ignore", "inherit", "ignore"]`,
+        `process.stdout.write(JSON.stringify({ last: "x".repeat(200000) }) + "\\n", () => process.exit(3));`
+      )
     );
-    const pid = await child;
+    const name = await child;
     const exit = await attempt.done;
     expect(exit.code).toBe(3);
     expect(exit.broken).toBe(false);
     expect(frames.at(-1)).toEqual({ last: "x".repeat(200000) });
-    expect(alive(pid)).toBe(false);
+    await lifelines.closed(name);
   });
 
+  // 남긴 자식은 모두 detached다(leaveChild). 예전의 "detached로 띄운 자식" 시험은 이 시험과 같아져 합쳤다.
   it("stops a child that does not hold the output after the program ends", async () => {
     const { attempt, child } = run(
-      `${leaveChild(`"ignore"`)} setTimeout(() => process.exit(0), 100);`
+      leaveChild(`["ignore", "ignore", "ignore"]`, "process.exit(0);")
     );
-    const pid = await child;
+    const name = await child;
     expect((await attempt.done).code).toBe(0);
-    expect(alive(pid)).toBe(false);
-  });
-
-  it("stops a child that the program started detached", async () => {
-    const { attempt, child } = run(
-      `${leaveChild(`"ignore"`, ", detached: true")} setTimeout(() => process.exit(0), 100);`
-    );
-    const pid = await child;
-    await attempt.done;
-    expect(alive(pid)).toBe(false);
+    await lifelines.closed(name);
   });
 
   it("stops the program and what it started when the run is cancelled", async () => {
     // The program ignores the end of its input, so only the tree stop ends it.
     const { attempt, child } = run(
-      `${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`
+      `${leaveChild(`["ignore", "ignore", "ignore"]`, "")} setInterval(() => {}, 1000);`
     );
-    const pid = await child;
+    const name = await child;
     attempt.end();
     await attempt.done;
-    expect(alive(pid)).toBe(false);
+    await lifelines.closed(name);
   }, 30_000);
 
   it("passes input to the program and keeps its error output without the launcher's status line", async () => {
@@ -264,24 +272,29 @@ describe.runIf(windows)("startProcess on Windows", () => {
   });
 
   it("leaves other runs and other programs running", async () => {
-    const bystander = spawnTracked(
+    const bystanderName = unique("bystander");
+    spawnTracked(
       process.execPath,
-      ["-e", "setInterval(() => {}, 1000)"],
+      ["-e", `${lifelines.hold(bystanderName)} setInterval(() => {}, 1000);`],
       { stdio: "ignore" }
     );
-    const other = run(`${leaveChild(`"ignore"`)} setInterval(() => {}, 1000);`);
-    const otherChild = await other.child;
-    const { attempt, child } = run(
-      `${leaveChild(`"ignore"`)} setTimeout(() => process.exit(0), 100);`
+    await lifelines.connected(bystanderName);
+    const other = run(
+      `${leaveChild(`["ignore", "ignore", "ignore"]`, "")} setInterval(() => {}, 1000);`
     );
-    const pid = await child;
+    const otherChild = await other.child;
+    await lifelines.connected(otherChild);
+    const { attempt, child } = run(
+      leaveChild(`["ignore", "ignore", "ignore"]`, "process.exit(0);")
+    );
+    const name = await child;
     await attempt.done;
-    expect(alive(pid)).toBe(false);
-    expect(alive(bystander.pid!)).toBe(true);
-    expect(alive(otherChild)).toBe(true);
+    await lifelines.closed(name);
+    expect(lifelines.open(bystanderName)).toBe(true);
+    expect(lifelines.open(otherChild)).toBe(true);
     other.attempt.end();
     await other.attempt.done;
-    expect(alive(otherChild)).toBe(false);
+    await lifelines.closed(otherChild);
   }, 30_000);
 
   it("passes arguments through a .cmd program as they are", async () => {
@@ -327,6 +340,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
   // 서버가 강제로 끝나면 Node.js가 자식(묶음 실행기)을 끄고, 그 묶음이 닫혀 실행 시도의 프로그램이 모두 꺼진다.
   it("stops the run's programs when the server is killed", async () => {
     const root = await temp("babojubot-job-server-");
+    const programName = unique("program");
     const url = (file: string) => new URL(`./${file}`, import.meta.url).href;
     await writeFile(
       path.join(root, "server.mjs"),
@@ -334,7 +348,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
        import { startProcess } from ${JSON.stringify(url("process.ts"))};
        await prepareJobObjectLauncher(${JSON.stringify(dataDir)});
        const program = ${JSON.stringify(
-         `${leaveChild(`"ignore"`)} console.log(JSON.stringify({ program: process.pid })); setInterval(() => {}, 1000);`
+         `${lifelines.hold(programName, `console.log(JSON.stringify({ program: ${JSON.stringify(programName)} }));`)} ${leaveChild(`["ignore", "ignore", "ignore"]`, "")} setInterval(() => {}, 1000);`
        )};
        startProcess({
          command: [process.execPath, "-e", program],
@@ -357,7 +371,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
         },
       }
     );
-    const seen: Record<string, number> = {};
+    const seen: Record<string, string> = {};
     await new Promise<void>((resolve, reject) => {
       let text = "";
       server.on("error", reject);
@@ -374,12 +388,8 @@ describe.runIf(windows)("startProcess on Windows", () => {
     const ended = new Promise((resolve) => server.on("exit", resolve));
     server.kill("SIGKILL");
     await ended;
-    await expect
-      .poll(() => [alive(seen.program!), alive(seen.child!)], {
-        timeout: 10_000,
-        interval: 50,
-      })
-      .toEqual([false, false]);
+    await lifelines.closed(seen.program!);
+    await lifelines.closed(seen.child!);
   }, 60_000);
 
   // 프로그램을 찾지 못하면 지금처럼 시작 실패로 알린다. 실행기의 cmd.exe 경유로 바뀌어 종료 코드 1로 끝나지 않는다.
@@ -388,28 +398,33 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect((await attempt.done).broken).toBe(true);
   });
 
-  it("runs without the launcher and warns when the launcher cannot start", async () => {
+  // 실행기 파일이 사라졌다(백신 등). 묶음 없이 대신 띄우지 않고 시작 실패로 끝난다.
+  it("fails to start, without running the program, when the launcher cannot start", async () => {
     const tools = path.join(dataDir, "tools");
     for (const file of await readdir(tools))
       await rm(path.join(tools, file), { force: true });
-    await expectRunWithoutJob();
+    const ran = await marker();
+    const { attempt, frames } = run(ran.script);
+    expect((await attempt.done).broken).toBe(true);
+    expect(frames).toEqual([]);
+    expect(existsSync(ran.file)).toBe(false);
   });
 
-  it("runs without the launcher and warns when it could not be prepared", async () => {
+  it("refuses the run and names what was missing when the launcher could not be prepared", async () => {
     const other = await temp("babojubot-job-none-");
     expect(
       await prepareJobObjectLauncher(other, {
         compilers: [path.join(other, "missing", "csc.exe")],
       })
     ).toMatchObject({ ok: false });
-    await expectRunWithoutJob();
+    await expectRefusedRun(/C# compiler of the \.NET Framework was not found/);
   });
 
-  // 준비 중 어떤 실패도 서버 시작을 막지 않는다. 데이터 폴더의 `tools` 자리에 파일이 있어 폴더를 만들 수 없는 경우다.
-  it("does not throw when the launcher's folder cannot be made", async () => {
+  // 준비 중 어떤 실패도 서버 시작을 막지 않는다. 데이터 폴더의 `tools` 자리에 파일이 있어 폴더를 만들 수 없는 경우다. 실행 시도는 거절한다.
+  it("does not throw when the launcher's folder cannot be made, and refuses the run", async () => {
     const other = await temp("babojubot-job-blocked-");
     await writeFile(path.join(other, "tools"), "");
     expect(await prepareJobObjectLauncher(other)).toMatchObject({ ok: false });
-    await expectRunWithoutJob();
+    await expectRefusedRun(/could not be prepared/);
   });
 });

@@ -1,10 +1,17 @@
 // 사람이 돌리는 실제 시험 전용. 프로바이더 명령 자리에 놓여 입출력을 그대로 넘기며 비공개 폴더에 남긴다.
 // 원본 기록은 모델 출력과 지침을 담으므로 Git 밖 로컬 기록 폴더에만 둔다. 인증 헤더와 환경 변수는 남기지 않는다.
-import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { orIfUnreadable } from "../../packages/contracts/src/failure.ts";
+import {
+  launchTree,
+  prepareJobObjectLauncher,
+} from "@babojubot/runtime/launch";
+import {
+  failureCode,
+  orIfUnreadable,
+} from "../../packages/contracts/src/failure.ts";
 
 const [directory, ...command] = process.argv.slice(2);
 const startedAt = Date.now();
@@ -18,12 +25,30 @@ const record = (kind, value) =>
   );
 record("start", { argv: command.slice(1), cwd: process.cwd() });
 
-const child = spawn(command[0], command.slice(1), {
-  stdio: ["pipe", "pipe", "pipe"],
+// Windows는 묶음 실행기 없이 띄우지 않는다. 이 사용자의 임시 폴더에 한 번 만들어 둔다(다른 시스템에서는 아무것도 하지 않는다).
+await prepareJobObjectLauncher(path.join(tmpdir(), "babojubot-record-cli"));
+// 실제 프로그램은 공용 실행으로 띄운다. 자기 그룹(Windows는 묶음)에 들어가므로 이 중계가 받은 신호를 넘기고, 끝나면 그 트리를 끈다.
+// 이 중계를 띄운 제품의 표식도 물려받으므로, 이 중계가 먼저 강제로 끝나도 제품의 끄기가 그 트리에 닿는다.
+const child = launchTree({
+  command: [command[0], ...command.slice(1)],
+  args: [],
+  cwd: process.cwd(),
+  env: process.env,
+  stdio: "pipe",
 });
-// 프로세스 그룹 신호는 자식도 함께 받는다. 자식이 끝날 때까지 기다린다.
-for (const signal of ["SIGINT", "SIGTERM"])
-  process.on(signal, () => record("signal", { signal }));
+process.on("SIGINT", () => {
+  record("signal", { signal: "SIGINT" });
+  child.interrupt();
+});
+// 끄라는 신호다. 아래 흐름이 트리를 끄고 그 결과로 끝난다.
+let requestStop;
+const stopRequested = new Promise((resolve) => {
+  requestStop = resolve;
+});
+process.on("SIGTERM", () => {
+  record("signal", { signal: "SIGTERM" });
+  requestStop();
+});
 
 process.stdin.on("data", (chunk) => {
   record("stdin", { text: chunk.toString() });
@@ -114,14 +139,27 @@ child.stdout.on("data", (chunk) => {
     }
   });
 });
-child.on("close", (code, signal) => {
+void (async () => {
+  // 프로그램이 끝나거나 끄라는 신호가 오면 트리를 끈다(프로그램이 남긴 것까지). 끄기를 시작한 뒤의 끝은 끄기의 결과가 정한다: 끝났음을
+  // 확인하지 못하면 그 이유를 남기고 실패로 끝난다.
+  await Promise.race([child.exited, stopRequested]);
+  const stopped = await child.stop().then(
+    () => true,
+    (error) => {
+      record("stop-failed", { code: failureCode(error) });
+      return false;
+    }
+  );
+  if (stopped && (await child.started).kind === "failed") {
+    record("spawn-error", { code: failureCode((await child.started).error) });
+    log.end(() => process.exit(127));
+    return;
+  }
+  const { code, signal } = stopped
+    ? await child.exited
+    : { code: null, signal: null };
   record("exit", { code, signal });
-  void queue.then(() => {
-    if (pending) process.stdout.write(pending);
-    log.end(() => process.exit(code ?? 1));
-  });
-});
-child.on("error", (error) => {
-  record("spawn-error", { code: error.code });
-  log.end(() => process.exit(127));
-});
+  await queue;
+  if (pending) process.stdout.write(pending);
+  log.end(() => process.exit(stopped ? (code ?? 1) : 1));
+})();

@@ -213,11 +213,14 @@ async function scenes({ database, server }) {
   const attempt = async (name, body) => {
     if (!wanted(name)) return;
     const at = Date.now();
-    try {
-      results.push({ scene: name, ...(await body()) });
-    } catch (error) {
-      results.push({ scene: name, failed: String(error.message ?? error) });
-    }
+    // 장면 결과는 성공과 실패를 같은 값(결과표의 한 줄)으로 만들어 한 곳에서 남긴다.
+    results.push({
+      scene: name,
+      ...(await body().then(
+        (outcome) => outcome,
+        (error) => ({ failed: String(error.message ?? error) })
+      )),
+    });
     console.log(
       JSON.stringify({ ...results.at(-1), elapsed: (Date.now() - at) / 1000 })
     );

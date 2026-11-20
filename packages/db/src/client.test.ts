@@ -20,12 +20,12 @@ import { createTestDatabase } from "./testing.ts";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
 import {
   awaitedLater,
-  cleanUpAll,
   folderCleanup,
   killUnlessGone,
   processAlive,
   withCleanup,
 } from "@babojubot/runtime/test-cleanup";
+import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 describe("embedded Postgres lifetime", () => {
   // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
@@ -537,7 +537,7 @@ describe("a Postgres left by a killed process", () => {
     onTestFinished(cluster.cleanUp);
     cluster.own(() => stopPostgres(postmaster));
     cluster.own(() =>
-      cleanUpAll(children.map((child) => () => killHard(child)))
+      attemptAll(children.map((child) => () => killHard(child)))
     );
     const lines = await Promise.all(readers.map((reader) => reader.next()));
     expect(lines.filter((line) => line === "opened")).toHaveLength(1);
@@ -675,7 +675,7 @@ describe("a Postgres left by a killed process", () => {
     );
     fs.symlinkSync(outside, link, "dir");
     onTestFinished(() =>
-      cleanUpAll([
+      attemptAll([
         () => fs.rmSync(link, { force: true }),
         () => removeFolder(outside),
       ])
@@ -691,7 +691,7 @@ const isAlive = processAlive;
 
 /** 테스트가 만든 cluster 폴더와 그 옆의 주인 기록을 지운다. */
 async function removeCluster(dataDir: string) {
-  await cleanUpAll([
+  await attemptAll([
     () => removeFolder(dataDir),
     () => removeFolder(`${dataDir}.owner`),
   ]);
@@ -724,7 +724,7 @@ it("signals every leftover Postgres even when one of them cannot be looked up", 
   const refused = sleeper();
   const other = sleeper();
   onTestFinished(() =>
-    cleanUpAll([() => killHard(refused), () => killHard(other)])
+    attemptAll([() => killHard(refused), () => killHard(other)])
   );
   const otherExit = watchExit(other);
   // `refused`에 대한 신호 0과 끄기는 권한 거부로 실패한다. 다른 대상의 신호는 그대로 보낸다.
@@ -781,7 +781,7 @@ async function stopPostgres(pid: number) {
  */
 async function killPostgres(...pids: number[]) {
   const targets = pids.filter((pid) => pid > 0);
-  await cleanUpAll([
+  await attemptAll([
     ...targets.map((pid) => () => {
       // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다. 이미 끝났으면(ESRCH) 넘어간다.
       if (process.platform !== "win32" && !killUnlessGone(pid, "SIGCONT"))
@@ -928,13 +928,11 @@ async function holdDatabase(open: string) {
     const lines = lineReader(child);
     return { child, line: await lines.next() };
   } catch (error) {
-    await killHard(child).catch((killing) => {
-      throw new AggregateError(
-        [error, killing],
-        "the child did not open the database and stopping it failed"
-      );
-    });
-    throw error;
+    throw combinedFailure(
+      [error, ...(await attemptEach([() => killHard(child)]))],
+      "the child did not open the database and stopping it failed",
+      { cause: error }
+    );
   }
 }
 

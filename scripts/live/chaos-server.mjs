@@ -1,20 +1,24 @@
 // 실모델 장애 검사의 서버. 서버를 별도 자식 프로세스로 띄우고, SIGKILL로 끝내고, 같은 임시 홈·DB로 다시 띄운다.
 // 이 파일을 설정 파일 경로와 함께 직접 실행하면 그 자식 프로세스가 된다(`node chaos-server.mjs <설정 파일>`).
 // 자식은 제품 서버(startServer)를 루프백·자동 배정 포트로 띄우고, 실행 관문(chaos-budget.mjs gateConnection)으로 연결을 감싼다.
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
   orIfMissing,
 } from "../../packages/contracts/src/failure.ts";
+import {
+  launchTree,
+  prepareJobObjectLauncher,
+} from "@babojubot/runtime/launch";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
-import { sharedVariables } from "../../packages/runtime/src/providers/process.ts";
+import { sharedVariables } from "@babojubot/runtime";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -59,8 +63,12 @@ export function chaosServer({
     control: path.join(harnessDir, "control.json"),
     tokens: path.join(harnessDir, "tokens"),
   };
+  /** 지금 서버의 트리. */
   let child;
+  /** 띄운 모든 서버 트리. 강제로 끝낸 서버가 남긴 것(DB·프로바이더)은 다음 시작의 제품 복구가 맡고, 마지막 정리가 모두 끈다. */
+  const trees = [];
   let exited;
+  let leaderGone = true;
   let info;
   let forced = false;
   let starts = 0;
@@ -74,15 +82,17 @@ export function chaosServer({
       { replace: true }
     );
     rmSync(files.info, { force: true });
-    child = spawn(
-      process.execPath,
-      [fileURLToPath(import.meta.url), files.config],
-      {
-        cwd: repoRoot,
-        env: chaosEnvironment(process.env, home),
-        stdio: ["ignore", "pipe", "pipe"],
-      }
-    );
+    // Windows는 묶음 실행기 없이 띄우지 않는다(이 검사가 남긴 서버를 끌 수 없다). 다른 시스템에서는 아무것도 하지 않는다.
+    await prepareJobObjectLauncher(harnessDir);
+    child = launchTree({
+      command: [process.execPath],
+      args: [fileURLToPath(import.meta.url), files.config],
+      cwd: repoRoot,
+      env: chaosEnvironment(process.env, home),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    trees.push(child);
+    leaderGone = false;
     starts++;
     // 서버 출력은 증거에 남기지 않는다. 시작 실패를 알릴 때만 끝부분을 보인다.
     let tail = "";
@@ -91,13 +101,11 @@ export function chaosServer({
     };
     child.stdout.on("data", keep);
     child.stderr.on("data", keep);
-    const current = child;
-    exited = new Promise((resolve) =>
-      current.once("exit", (code, signal) => resolve({ code, signal }))
-    );
+    exited = child.exited;
     let gone = false;
     void exited.then(() => {
       gone = true;
+      leaderGone = true;
     });
     const deadline = Date.now() + 180_000;
     while (!existsSync(files.info)) {
@@ -118,13 +126,13 @@ export function chaosServer({
   }
 
   /**
-   * 서버 프로세스만 SIGKILL로 끝낸다. 내장 DB와 프로바이더 프로세스는 남는다(다음 시작이 정리).
-   * SIGKILL 뒤에도 끝나지 않으면 기다림을 30초에서 끊고 pid와 함께 실패한다.
+   * 사고 재현: 서버 프로세스만 강제로 끝낸다. 내장 DB와 프로바이더 프로세스는 남는다(다음 시작의 제품 복구가 정리하고, 마지막 정리가
+   * 그 트리를 끈다). 끝나지 않으면 기다림을 30초에서 끊고 pid와 함께 실패한다.
    */
   async function kill() {
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    if (!child || leaderGone) return;
     forced = true;
-    child.kill("SIGKILL");
+    child.killLeader();
     const pid = child.pid;
     let timer;
     const late = new Promise((_, reject) => {
@@ -145,12 +153,13 @@ export function chaosServer({
     }
   }
 
-  /** 정상 종료(SIGTERM). 진행 중인 실행은 제품이 취소·정리한다. 시한 안에 끝나지 않으면 SIGKILL한다. */
+  /**
+   * 정상 종료. 서버 트리를 끈다: SIGTERM을 받은 서버가 진행 중인 실행을 취소·정리할 시간(`withinMs`)을 두고, 그 뒤에도 돌면 강제로
+   * 끝내며, 트리 전체가 끝난 것을 확인한다(Windows는 바로 끈다). 이미 강제로 끝난 서버의 남은 것은 그대로 둔다(다음 시작이 정리).
+   */
   async function stop(withinMs = 30_000) {
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    child.kill("SIGTERM");
-    const timer = new Promise((r) => setTimeout(() => r("timeout"), withinMs));
-    if ((await Promise.race([exited, timer])) === "timeout") await kill();
+    if (!child || leaderGone) return;
+    await child.stop({ graceMs: withinMs });
   }
 
   /**
@@ -158,7 +167,6 @@ export function chaosServer({
    * 다른 작업의 프로세스는 건드리지 않는다(이 홈의 기록과 이 홈의 DB만 본다).
    */
   async function dispose() {
-    await stop();
     const leftovers = {
       postgres: false,
       providerRecordsFound: 0,
@@ -170,25 +178,42 @@ export function chaosServer({
     const { recoverProviderProcesses } =
       await import("../../packages/runtime/src/index.ts");
     const pgDir = path.join(home, "postgres");
-    if (
-      database === "persistent" &&
-      existsSync(path.join(pgDir, "postmaster.pid"))
-    ) {
-      leftovers.postgres = true;
-      // 남은 DB는 제품 경로로 열면 정상 정지하고 다시 띄운다. 닫으면 정상 정지한다.
-      const handle = await openDatabase({
-        embedded: { dataDir: pgDir, persistent: true },
-      });
-      await handle.close();
-    }
-    if (database === "ephemeral" && forced) {
-      // 강제로 끝난 프로세스의 임시 DB는 다음 임시 DB를 열 때 제품이 정리한다.
-      const handle = await openEphemeralDatabase();
-      await handle.close();
-    }
-    leftovers.providerRecordsFound = processRecordPids(home).length;
-    await recoverProviderProcesses(home);
-    leftovers.providerRecordsLeft = processRecordPids(home).length;
+    // 서버 멈춤, 남은 DB·기록의 제품 정리, 띄운 모든 서버 트리 끄기. 앞 단계가 실패해도 트리는 끄고, 실패를 모아 알린다(홈은 남긴다).
+    await cleanUpScene({
+      stopServer: () => stop(),
+      cleanLeftovers: [
+        async () => {
+          if (
+            database === "persistent" &&
+            existsSync(path.join(pgDir, "postmaster.pid"))
+          ) {
+            leftovers.postgres = true;
+            // 남은 DB는 제품 경로로 열면 정상 정지하고 다시 띄운다. 닫으면 정상 정지한다.
+            const handle = await openDatabase({
+              embedded: { dataDir: pgDir, persistent: true },
+            });
+            await handle.close();
+          }
+          if (database === "ephemeral" && forced) {
+            // 강제로 끝난 프로세스의 임시 DB는 다음 임시 DB를 열 때 제품이 정리한다.
+            const handle = await openEphemeralDatabase();
+            await handle.close();
+          }
+        },
+        async () => {
+          leftovers.providerRecordsFound = processRecordPids(home).length;
+          await recoverProviderProcesses(home);
+          leftovers.providerRecordsLeft = processRecordPids(home).length;
+        },
+      ],
+      // 제품 정리가 놓친 것도 여기서 끈다. 확인하지 못한 트리가 있으면 실패한다.
+      stopTrees: () =>
+        attemptAll(
+          trees.map((tree) => () => tree.stop()),
+          "[chaos] server trees could not be confirmed stopped"
+        ),
+      message: `[chaos] the scene server could not be cleaned up; kept ${home}`,
+    });
     if (leftovers.providerRecordsLeft > 0) {
       // 우리 것인지 확인하지 못한 기록은 지우지 않는다. 사람이 정리할 수 있게 홈을 남긴다.
       leftovers.homeKept = true;
@@ -222,9 +247,31 @@ export function chaosServer({
       return starts;
     },
     get running() {
-      return !!child && child.exitCode === null && child.signalCode === null;
+      return !!child && !leaderGone;
     },
   };
+}
+
+/**
+ * 장면 서버의 마지막 정리 순서. 남은 DB·기록의 제품 정리(`cleanLeftovers`, 서로 독립)는 서버가 멈춘 뒤에만 한다: 살아 있는 서버의 DB를
+ * 제품 경로로 끄지 않는다. 띄운 서버 트리 끄기(`stopTrees`)는 앞 단계가 실패해도 한다. 실패는 모아 던진다(`attemptAll`).
+ */
+export async function cleanUpScene({
+  stopServer,
+  cleanLeftovers,
+  stopTrees,
+  message,
+}) {
+  await attemptAll(
+    [
+      async () => {
+        await stopServer();
+        await attemptAll(cleanLeftovers, message);
+      },
+      stopTrees,
+    ],
+    message
+  );
 }
 
 /** 서버 출력은 증거에 넣지 않는다. 사람이 원인을 보도록 터미널에만 보이고, 오류에는 짧은 문구만 담는다. */

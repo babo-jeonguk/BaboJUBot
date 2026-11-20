@@ -1,5 +1,6 @@
 import {
   agentDetailSchema,
+  attemptAll,
   organizationDetailSchema,
   providerSettingsSchema,
   runSummaryListSchema,
@@ -17,7 +18,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { eventually, startTestServer, type TestServer } from "./support.ts";
-import { cleanUpAll, withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/runtime/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -131,7 +132,7 @@ describe("concurrent global settings writes", () => {
       // 붙잡은 행을 풀고 경쟁한 쓰기가 모두 끝나기를 기다린다. 하나가 실패해도 나머지를 기다린다.
       await withCleanup(async (defer) => {
         defer(() =>
-          cleanUpAll([
+          attemptAll([
             () => locked.open(),
             () => blocker,
             () => changing,
@@ -189,7 +190,7 @@ describe("concurrent global settings writes", () => {
     // 붙잡은 insert를 풀고 두 쓰기가 끝나기를 기다린다. 하나가 실패해도 나머지를 기다린다.
     await withCleanup(async (defer) => {
       defer(() =>
-        cleanUpAll([() => inserted.open(), () => inserting, () => saving])
+        attemptAll([() => inserted.open(), () => inserting, () => saving])
       );
       await waitForSettingsWriters(1);
     });

@@ -6,7 +6,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     globalSetup: ["../../packages/db/src/test-cluster.ts"],
-    setupFiles: ["./test/product-home.ts"],
+    // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262, test/launcher-setup.ts).
+    setupFiles: ["./test/product-home.ts", "./test/launcher-setup.ts"],
     hookTimeout: 120_000,
     testTimeout: 120_000,
   },

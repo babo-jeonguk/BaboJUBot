@@ -1,8 +1,12 @@
-import { execFile } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Destination, RunRequest } from "@babojubot/contracts";
+import {
+  failureCode,
+  type Destination,
+  type RunRequest,
+} from "@babojubot/contracts";
+import { runTree, TreeLaunchRefused } from "./launch.ts";
 import type { RelayHub, RelayIdentity } from "./relay.ts";
 
 /** 격리 실행의 Docker 설정. 서버가 시작할 때 정한다. */
@@ -477,34 +481,45 @@ export function dockerClientEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return result;
 }
 
-export function runDocker(
+/**
+ * docker 클라이언트 명령 하나를 공용 실행으로 끝까지 돌린다. 상한·취소에 닿으면 그 트리를 끄고 확인한다. 실패해도 던지지 않고
+ * `code: null`로 돌려준다(띄우지 못함, 상한·취소·출력 상한, 끝났음을 확인하지 못함).
+ */
+export async function runDocker(
   settings: ContainerSettings,
   args: string[],
   timeoutMs = 30_000,
   signal?: AbortSignal
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile(
-      settings.docker[0],
-      [...settings.docker.slice(1), ...args],
-      {
-        env: dockerClientEnv({}),
-        windowsHide: true,
-        timeout: timeoutMs,
-        maxBuffer: 1024 * 1024,
-        encoding: "utf8",
-        ...(signal ? { signal } : {}),
-      },
-      (error, stdout, stderr) => {
-        const code = !error
-          ? 0
-          : typeof error.code === "number"
-            ? error.code
-            : null;
-        resolve({ code, stdout, stderr });
-      }
-    );
-  });
+  let run: Awaited<ReturnType<typeof runTree>>;
+  try {
+    run = await runTree({
+      command: settings.docker,
+      args,
+      cwd: process.cwd(),
+      env: dockerClientEnv({}),
+      limitMs: timeoutMs,
+      ...(signal ? { signal } : {}),
+      maxOutputBytes: 1024 * 1024,
+      overflow: "stop",
+    });
+  } catch (error) {
+    return {
+      code: null,
+      stdout: "",
+      // Windows에서 묶음 실행기를 쓸 수 없어 띄우지 않았거나, 띄운 클라이언트가 끝났음을 확인하지 못했다.
+      stderr:
+        error instanceof TreeLaunchRefused
+          ? error.message
+          : `the docker client could not be confirmed stopped (${failureCode(error)})`,
+    };
+  }
+  if (!run.started) return { code: null, stdout: "", stderr: run.reason };
+  return {
+    code: run.stopped ? null : run.code,
+    stdout: run.stdout.toString(),
+    stderr: run.stderr.toString(),
+  };
 }
 
 export async function removeContainer(

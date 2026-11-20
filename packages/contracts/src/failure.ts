@@ -128,3 +128,51 @@ export function failureCode(error: unknown): string {
   if (error instanceof Error) return error.name;
   return "unknown";
 }
+
+/**
+ * 서로 독립인 일(끄기·닫기·지우기 같은 정리)을 차례로 모두 시도하고 실패를 돌려준다. 앞 일이 실패해도 뒤 일을 한다. 동기로 던지든
+ * 거절하든 실패로 모은다. 실패를 원래 실패와 함께 묶어야 하는 쪽(`withCleanup`)이 쓰는 바탕이며, 보통은 `attemptAll`을 쓴다.
+ * 실패를 모으는 일을 따로 짜지 않는다(lint `product/no-failure-collecting`).
+ */
+export async function attemptEach(
+  steps: Iterable<() => unknown>
+): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  for (const step of steps)
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  return failures;
+}
+
+/**
+ * 모은 실패를 하나로 만든다. 하나면 그 오류를 그대로, 여럿이면 `message` 뒤에 각 문구를 이어 적은 AggregateError다. 목록을 펼치지 않는
+ * 출력(node:test의 TAP, 서버 운영 기록)에서도 모든 실패가 보이도록 문구에 함께 적는다.
+ */
+export function combinedFailure(
+  failures: readonly unknown[],
+  message: string,
+  options?: ErrorOptions
+): unknown {
+  if (failures.length === 1) return failures[0];
+  return new AggregateError(
+    failures,
+    `${message}: ${failures.map((failure) => (failure instanceof Error ? failure.message : String(failure))).join(" — 그리고 ")}`,
+    options
+  );
+}
+
+/**
+ * 서로 독립인 일(끄기·닫기·지우기 같은 정리)을 차례로 모두 하고, 실패가 있으면 모아 던진다(`combinedFailure`). 앞 일이 끝나야 안전한
+ * 뒤 일은 여기 넣지 않고 그 순서를 드러낸 한 단계로 묶거나 이것이 끝난 뒤에 부른다(이것이 던지면 이어지지 않는다).
+ * 차례로 기다린 정리가 앞의 실패에 뒤를 건너뛰었다(#263 외부 리뷰 S1·S2).
+ */
+export async function attemptAll(
+  steps: Iterable<() => unknown>,
+  message = "정리가 실패했다"
+): Promise<void> {
+  const failures = await attemptEach(steps);
+  if (failures.length) throw combinedFailure(failures, message);
+}

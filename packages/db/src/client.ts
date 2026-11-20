@@ -10,6 +10,7 @@ import {
   startEmbeddedCluster,
   type EmbeddedOptions,
 } from "./embedded.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 export {
   clusterUrl,
@@ -115,24 +116,25 @@ async function connect(
   pool.on("connect", (client) => client.on("error", () => {}));
   const db = drizzle(pool, { schema });
   let closing: "open" | "connections" | "release" | "closed" = "open";
+  // 연결 닫기와 DB 놓기는 서로 독립이다. 앞이 실패해도 뒤를 하고 실패를 모아 던진다.
   const close = async () => {
-    const errors: unknown[] = [];
-    closing = "connections";
     try {
-      await pool.end();
-    } catch (error) {
-      errors.push(error);
+      await attemptAll(
+        [
+          () => {
+            closing = "connections";
+            return pool.end();
+          },
+          () => {
+            closing = "release";
+            return release();
+          },
+        ],
+        "closing the database failed"
+      );
+    } finally {
+      closing = "closed";
     }
-    closing = "release";
-    try {
-      await release();
-    } catch (error) {
-      errors.push(error);
-    }
-    closing = "closed";
-    if (errors.length === 2)
-      throw new AggregateError(errors, "closing the database failed");
-    if (errors.length === 1) throw errors[0];
   };
   const progress = () =>
     closing === "connections"

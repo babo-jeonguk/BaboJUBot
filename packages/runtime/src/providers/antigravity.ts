@@ -19,6 +19,7 @@ import {
   usageAmount,
 } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
+import { TreeLaunchRefused } from "./launch.ts";
 import {
   startProcess,
   probeTimeoutMs,
@@ -626,6 +627,8 @@ export function createAntigravityProvider(options: {
         }
         return result;
       } catch (error) {
+        // Windows에서 정리 장치를 쓸 수 없어 띄우지 않은 거절은 그 이유가 실행 시도의 실패 원인으로 보이도록 넘긴다.
+        if (error instanceof TreeLaunchRefused) throw error;
         if (!control.signal.aborted)
           console.warn(
             `[provider] the Antigravity run failed (${failureCode(error)})`

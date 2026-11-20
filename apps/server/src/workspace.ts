@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   lstat,
@@ -23,6 +22,7 @@ import {
   recordWorkspaceIdentity,
   type Database,
 } from "@babojubot/db";
+import { runTree } from "@babojubot/runtime/launch";
 
 const identityFile = "workspace-identity.json";
 const identityMaxBytes = 4096;
@@ -305,53 +305,52 @@ try {
   fail(error);
 }
 `;
-function readPinned(start: string, args: string[]): Promise<PinnedRead> {
-  return new Promise<PinnedRead>((resolve, reject) => {
-    execFile(
-      process.execPath,
-      ["-e", pinnedReader, JSON.stringify([artifactFileMaxBytes, ...args])],
-      {
-        cwd: start,
-        // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
-        env: process.env.SystemRoot
-          ? { SystemRoot: process.env.SystemRoot }
-          : {},
-        encoding: "buffer",
-        maxBuffer: artifactFileMaxBytes + 64 * 1024,
-        timeout: 30_000,
-        windowsHide: true,
-      },
-      (error, stdout) => {
-        if (!error) {
-          const at = stdout.indexOf(0x0a);
-          const parts = orIfUnreadable(
-            (): unknown => JSON.parse(stdout.subarray(0, at).toString("utf8")),
-            undefined
-          );
-          if (
-            !Array.isArray(parts) ||
-            !parts.every((part): part is string => typeof part === "string")
-          )
-            return reject(new Error("file reader returned an invalid header"));
-          return resolve({ ok: true, parts, bytes: stdout.subarray(at + 1) });
-        }
-        // 끝난 코드가 있으면 읽기를 거부한 것이고, 없으면 띄우지 못했거나 시간이 넘은 서버 쪽 문제다.
-        const code = error.code;
-        if (typeof code !== "number") return reject(error);
-        if (code === readerExit.identity)
-          return reject(
-            new WorkspaceIdentityError(
-              "조직 폴더가 이 조직의 것으로 확인되지 않아 파일을 읽지 않았습니다. 조직 폴더가 옮겨지거나 링크로 바뀌었는지 확인해 주세요."
-            )
-          );
-        const refusal = readerRefusals[code];
-        // 알려진 거부 코드가 아니면 파일 문제가 아니라 서버 쪽 문제다.
-        if (!refusal)
-          return reject(new Error("artifact file could not be read"));
-        resolve({ ok: false, refusal });
-      }
-    );
+/**
+ * 고정한 폴더에서 파일 하나를 읽는 Node.js 프로세스를 공용 실행으로 끝까지 돌린다. 상한(30초)이나 출력 상한에 닿으면 그 트리를 끄고
+ * 끝난 것을 확인한 뒤 서버 쪽 문제로 던진다.
+ */
+async function readPinned(start: string, args: string[]): Promise<PinnedRead> {
+  const run = await runTree({
+    command: [process.execPath],
+    args: ["-e", pinnedReader, JSON.stringify([artifactFileMaxBytes, ...args])],
+    cwd: start,
+    // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
+    env: process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {},
+    limitMs: 30_000,
+    maxOutputBytes: artifactFileMaxBytes + 64 * 1024,
+    overflow: "stop",
   });
+  // 띄우지 못했거나 시간·출력 상한에 닿았으면 서버 쪽 문제다.
+  if (!run.started)
+    throw new Error(`file reader could not start: ${run.reason}`, {
+      cause: run.error,
+    });
+  if (run.stopped)
+    throw new Error(`file reader was stopped at its ${run.stopped} limit`);
+  if (run.code === 0) {
+    const at = run.stdout.indexOf(0x0a);
+    const parts = orIfUnreadable(
+      (): unknown => JSON.parse(run.stdout.subarray(0, at).toString("utf8")),
+      undefined
+    );
+    if (
+      !Array.isArray(parts) ||
+      !parts.every((part): part is string => typeof part === "string")
+    )
+      throw new Error("file reader returned an invalid header");
+    return { ok: true, parts, bytes: run.stdout.subarray(at + 1) };
+  }
+  // 끝난 코드가 있으면 읽기를 거부한 것이고, 없으면(신호로 끝남) 서버 쪽 문제다.
+  if (run.code === null)
+    throw new Error(`file reader ended by ${run.signal ?? "an unknown cause"}`);
+  if (run.code === readerExit.identity)
+    throw new WorkspaceIdentityError(
+      "조직 폴더가 이 조직의 것으로 확인되지 않아 파일을 읽지 않았습니다. 조직 폴더가 옮겨지거나 링크로 바뀌었는지 확인해 주세요."
+    );
+  const refusal = readerRefusals[run.code];
+  // 알려진 거부 코드가 아니면 파일 문제가 아니라 서버 쪽 문제다.
+  if (!refusal) throw new Error("artifact file could not be read");
+  return { ok: false, refusal };
 }
 
 /** Server-owned folder layout. Folder access permissions are enforced by the future container adapter, or instructions on the host. */

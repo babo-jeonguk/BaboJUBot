@@ -24,7 +24,9 @@ test("waits for an opening database before it cleans up on stop", async () => {
     "stop requested",
     "open:end",
     "close:handle",
-    "cleanUp",
+    "stop left Postgres",
+    "stop servers",
+    "removeFolder",
   ]);
 });
 
@@ -45,7 +47,9 @@ test("waits for a closing database before it cleans up on stop", async () => {
   // 닫은 handle은 다시 닫지 않는다.
   assert.deepEqual(after(events, "close:handle"), [
     "stop requested",
-    "cleanUp",
+    "stop left Postgres",
+    "stop servers",
+    "removeFolder",
   ]);
 });
 
@@ -61,7 +65,13 @@ test("stops at the next step after a server start and cleans up once", async () 
   starting.resolve();
   const { code } = await run;
   assert.equal(code, 1);
-  assert.deepEqual(events, ["serve:first start", "stop requested", "cleanUp"]);
+  assert.deepEqual(events, [
+    "serve:first start",
+    "stop requested",
+    "stop left Postgres",
+    "stop servers",
+    "removeFolder",
+  ]);
 });
 
 test("runs every step and cleans up once without a stop", async () => {
@@ -74,7 +84,9 @@ test("runs every step and cleans up once without a stop", async () => {
     "open:start",
     "open:end",
     "close:handle",
-    "cleanUp",
+    "stop left Postgres",
+    "stop servers",
+    "removeFolder",
   ]);
 });
 
@@ -82,11 +94,37 @@ test("fails and still cleans up when a step fails", async () => {
   const { events, ops } = fakeRun({
     open: () => Promise.reject(new Error("could not open")),
   });
-  const { code, failure } = await runBootCheckFlow(ops);
+  const { code, failures } = await runBootCheckFlow(ops);
   assert.equal(code, 1);
-  assert.equal(failure.message, "could not open");
-  assert.equal(events.at(-1), "cleanUp");
-  assert.equal(events.filter((event) => event === "cleanUp").length, 1);
+  assert.deepEqual(
+    failures.map((failure) => failure.message),
+    ["could not open"]
+  );
+  assert.equal(events.at(-1), "removeFolder");
+  assert.equal(events.filter((event) => event === "removeFolder").length, 1);
+});
+
+// #263 외부 리뷰 3회차 S4: 정리의 DB 닫기가 실패해도 서로 독립인 끄기(남은 Postgres 멈춤, 서버 트리 끄기)는 모두 시도하고 두 실패를
+// 함께 알린다. 끄기가 하나라도 실패하면 아직 쓰일 수 있는 폴더는 지우지 않는다.
+test("still stops the left Postgres and the servers when closing the database fails, and reports both", async () => {
+  const { events, ops } = fakeRun({
+    close: () => Promise.reject(new Error("could not close")),
+  });
+  ops.expectCleanStart = (label) => {
+    if (label === "open after another killed server")
+      throw new Error("not a clean start");
+  };
+  const { code, failures } = await runBootCheckFlow(ops);
+  assert.equal(code, 1);
+  assert.deepEqual(after(events, "open:end"), [
+    "close:handle",
+    "stop left Postgres",
+    "stop servers",
+  ]);
+  assert.match(
+    failures.map((failure) => failure.message).join("\n"),
+    /not a clean start[\s\S]*could not close/
+  );
 });
 
 test("gives up after the stop grace when a step never finishes", (t) => {
@@ -150,8 +188,18 @@ function fakeRun(overrides = {}) {
       await overrides.close?.(handle);
     },
     expectClosed: () => {},
-    async cleanUp() {
-      note("cleanUp");
+    // 서로 독립인 끄기(남은 Postgres 멈춤, 서버 트리 끄기)와, 그것이 모두 끝나야 하는 폴더 지우기.
+    stops: () => [
+      async () => {
+        note("stop left Postgres");
+        await overrides.stopLeftPostgres?.();
+      },
+      async () => {
+        note("stop servers");
+      },
+    ],
+    async removeFolder() {
+      note("removeFolder");
     },
   };
   return { events, ops, stop, reached };

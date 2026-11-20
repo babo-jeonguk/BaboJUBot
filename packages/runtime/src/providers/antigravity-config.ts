@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { runTree } from "./launch.ts";
 
 export const ownerMark = "babojubot-antigravity-v1";
 const unsafe = 3;
@@ -54,29 +54,34 @@ try {
 }
 `;
 
-function run(cwd: string) {
-  return new Promise<number>((resolve, reject) => {
-    const child = execFile(
-      process.execPath,
-      ["-e", configScript],
+/** 설정을 다루는 Node.js 프로세스를 공용 실행으로 끝까지 돌린다. 상한(30초)에 닿으면 그 트리를 끄고 확인한 뒤 실패로 던진다. */
+async function run(cwd: string) {
+  const result = await runTree({
+    command: [process.execPath],
+    args: ["-e", configScript],
+    cwd,
+    // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
+    env: process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {},
+    limitMs: 30_000,
+    maxOutputBytes: 64 * 1024,
+    overflow: "truncate",
+  });
+  if (!result.started)
+    throw new Error(
+      `the configuration script could not start: ${result.reason}`,
       {
-        cwd,
-        // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
-        env: process.env.SystemRoot
-          ? { SystemRoot: process.env.SystemRoot }
-          : {},
-        timeout: 30_000,
-        windowsHide: true,
-      },
-      (error) => {
-        if (!error) resolve(0);
-        else if (typeof error.code === "number") resolve(error.code);
-        else reject(error);
+        cause: result.error,
       }
     );
-    child.stdin?.on("error", () => {});
-    child.stdin?.end();
-  });
+  if (result.stopped)
+    throw new Error(
+      `the configuration script was stopped at its ${result.stopped} limit`
+    );
+  if (result.code === null)
+    throw new Error(
+      `the configuration script ended by ${result.signal ?? "an unknown cause"}`
+    );
+  return result.code;
 }
 
 /** 우리 표시가 있는 설정과 임시 파일을 지운다. 표시 없는 파일이나 링크가 있으면 오류다. */

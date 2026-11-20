@@ -34,6 +34,7 @@ import {
 import { applyAfterCommit } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import { IsolationError } from "./isolation.ts";
+import { TreeLaunchRefused } from "@babojubot/runtime/launch";
 import type { RunRequestAssembler } from "./run-request.ts";
 import { RerunLoops } from "./rerun-loop.ts";
 import { issueRunToken } from "./run-token.ts";
@@ -379,12 +380,14 @@ export class RunDispatcher {
         result = failed("프로바이더가 계약 밖의 종료 결과를 돌려주었습니다.");
       }
     } catch (error) {
-      // 프로바이더 오류 내용은 공개 기록에 그대로 옮기지 않는다. 조직 폴더 확인 실패는 제품이 쓴 안내라 그대로 보인다.
+      // 프로바이더 오류 내용은 공개 기록에 그대로 옮기지 않는다. 조직 폴더 확인 실패, 격리 실행 거절, Windows 정리 장치를 쓸 수 없어
+      // 프로그램을 띄우지 않은 거절은 제품이 쓴 안내라 그대로 보인다.
       console.error(`[runs] run ${run.id} runtime error`, error);
       result = controller.signal.aborted
         ? cancelled
         : error instanceof WorkspaceIdentityError ||
-            error instanceof IsolationError
+            error instanceof IsolationError ||
+            error instanceof TreeLaunchRefused
           ? failed(error.message)
           : failed("프로바이더가 오류로 끝났습니다.");
     } finally {

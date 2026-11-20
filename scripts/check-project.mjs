@@ -25,7 +25,7 @@ const repositoryFiles = new Set(
   execFileSync(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { cwd: root, encoding: "utf8", timeout: 60_000 }
+    { cwd: root, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" }
   )
     .split("\0")
     .filter(Boolean)

@@ -178,6 +178,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       cwd: process.cwd(),
       encoding: "utf8",
       timeout: 30_000,
+      killSignal: "SIGKILL",
     }).trim();
   } catch (error) {
     fail(`not inside a Git repository (${error.message})`);
@@ -188,6 +189,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       cwd: root,
       encoding: "utf8",
       timeout: 60_000,
+      killSignal: "SIGKILL",
     });
   const lines = (output) =>
     output
@@ -227,6 +229,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       shell: true,
       stdio: "inherit",
       timeout: 30 * 60_000,
+      killSignal: "SIGKILL",
     });
     if (result.error) console.error(`${command}: ${result.error.message}`);
     if (result.status !== 0) failed.push(command);

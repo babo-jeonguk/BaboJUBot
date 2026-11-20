@@ -1,4 +1,8 @@
-import type { ProviderSettings } from "@babojubot/contracts";
+import {
+  attemptEach,
+  combinedFailure,
+  type ProviderSettings,
+} from "@babojubot/contracts";
 import {
   expect,
   test as base,
@@ -180,46 +184,40 @@ export const test = base.extend<{ sharedSettings: SharedSettings }>({
       // 테스트가 실패해도 use는 돌아오고 아래 정리가 이어진다.
       await use({ initial, holdWrite });
       // 앞 단계가 실패해도 되돌리기는 시도하고, 모은 실패를 함께 알린다.
-      const problems: unknown[] = [];
-      const attempt = async (step: () => Promise<unknown>) => {
-        try {
-          await step();
-        } catch (error) {
-          problems.push(error);
-        }
-      };
       for (const gate of gates) gate.drop();
-      for (const gate of gates) await attempt(gate.settle);
-      page.context().off("request", onRequest);
-      // 실패한 요청은 null, 서버에 닿은 요청은 그 응답으로 끝난다. 그 뒤에는 화면이 보낸 변경이 되돌린 값을 덮지 않는다.
-      // 응답은 시한을 둔 이 한 번만 기다린다. 시한을 넘기면 그 실패를 남기고 되돌리기로 간다.
-      const pending = writes.filter((r) => !unsent.has(r));
-      let answered: Map<Request, Response | null> | undefined;
-      await attempt(async () => {
-        const responses = await failAfter(
-          Promise.all(pending.map((r) => r.response())),
-          "이 테스트가 보낸 전역 설정 변경이 끝나지 않았다"
-        );
-        answered = new Map(pending.map((r, i) => [r, responses[i]!]));
-      });
-      // `send`로 보낸 요청은 테스트가 응답을 보지 않았으므로 위에서 받은 응답이 성공인지 본다. 응답을 받지 못했으면 위의 실패가 남았다.
-      if (answered)
-        for (const { url, request: write } of sent) {
-          const response = answered.get(write);
-          if (!response?.ok())
-            problems.push(
-              new Error(
-                `send로 보낸 ${url} PUT이 ${response ? `${response.status()}로` : "응답 없이"} 끝났다`
-              )
+      const problems = await attemptEach([
+        ...gates.map((gate) => gate.settle),
+        async () => {
+          page.context().off("request", onRequest);
+          // 실패한 요청은 null, 서버에 닿은 요청은 그 응답으로 끝난다. 그 뒤에는 화면이 보낸 변경이 되돌린 값을 덮지 않는다.
+          // 응답은 시한을 둔 이 한 번만 기다린다. 시한을 넘기면 그 실패를 남기고 되돌리기로 간다.
+          const pending = writes.filter((r) => !unsent.has(r));
+          const responses = await failAfter(
+            Promise.all(pending.map((r) => r.response())),
+            "이 테스트가 보낸 전역 설정 변경이 끝나지 않았다"
+          );
+          const answered = new Map(pending.map((r, i) => [r, responses[i]!]));
+          // `send`로 보낸 요청은 테스트가 응답을 보지 않았으므로 위에서 받은 응답이 성공인지 본다.
+          const unanswered = sent.flatMap(({ url, request: write }) => {
+            const response = answered.get(write);
+            return response?.ok()
+              ? []
+              : [
+                  new Error(
+                    `send로 보낸 ${url} PUT이 ${response ? `${response.status()}로` : "응답 없이"} 끝났다`
+                  ),
+                ];
+          });
+          if (unanswered.length)
+            throw combinedFailure(
+              unanswered,
+              "send로 보낸 변경이 끝나지 않았다"
             );
-        }
-      await attempt(() => restore(request, initial));
-      if (problems.length === 1) throw problems[0];
-      if (problems.length > 1)
-        throw new AggregateError(
-          problems,
-          problems.map((p) => String(p)).join("\n")
-        );
+        },
+        () => restore(request, initial),
+      ]);
+      if (problems.length)
+        throw combinedFailure(problems, "전역 설정 정리가 실패했다");
     },
     { auto: true },
   ],

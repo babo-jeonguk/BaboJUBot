@@ -3,13 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/runtime/remove-folder";
-import {
-  cleanUpAll,
-  killUnlessGone,
-  withCleanup,
-} from "@babojubot/runtime/test-cleanup";
+import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
 import { expect, test } from "@playwright/test";
 import { alive, gone, startServerProcess } from "./server-process.ts";
+import { attemptAll } from "@babojubot/contracts";
 
 // E2E 서버 프로세스 helper의 실패 경로. 고장 난 가짜 서버(misbehaving-server.mjs)로 만든다. 어느 경우든 helper는 시한 안에
 // 실패를 알리고, 그 서버와 서버가 자기 임시 폴더에 띄운 Postgres를 끝내고, 그 임시 폴더를 지운다. 끝나지 않은 프로세스가 있거나
@@ -53,7 +50,7 @@ function misbehaving(
      * 끝나지 않으면 폴더를 남긴 채 그 사실로 실패한다.
      */
     cleanup: () =>
-      cleanUpAll([
+      attemptAll([
         async () => {
           if (!existsSync(file)) return;
           const { postgresPid, temp } = state();

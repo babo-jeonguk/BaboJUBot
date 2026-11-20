@@ -1,26 +1,25 @@
-import {
-  recordProcess,
-  signalProcessTree,
-  stopProcessGroup,
-} from "./recovery.ts";
-import spawn from "cross-spawn";
-import {
-  spawn as spawnChild,
-  type ChildProcessByStdio,
-} from "node:child_process";
 import path from "node:path";
-import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { failureCode, orIfUnreadable } from "@babojubot/contracts";
+import {
+  attemptEach,
+  failureCode,
+  orIfUnreadable,
+  settled,
+} from "@babojubot/contracts";
 import { type Clock, realClock } from "./clock.ts";
 import type { ContainerLaunch } from "./container.ts";
-import { jobObjectLaunch, readLauncherStatus } from "./job-object.ts";
-import { leaseVariable, processStartTicks, stopLeaseHolders } from "./lease.ts";
 import {
   dockerClientEnv,
   dockerRunArgs,
   removeContainer,
 } from "./container.ts";
+import {
+  launchTree,
+  requireJobObject,
+  runTree,
+  TreeLaunchRefused,
+} from "./launch.ts";
+import { recordProcess } from "./recovery.ts";
 
 /** 프로그램이 있는지 보는 짧은 확인의 제한. 바쁜 컴퓨터에서도 넘지 않을 만큼 넉넉하게 둔다. */
 export const probeTimeoutMs = 15_000;
@@ -32,8 +31,6 @@ const defaultMaxLineLength = 64 * 1024 * 1024;
 const unreadable = Symbol("unreadable");
 /** 프로그램이 끝난 뒤 남은 출력을 읽을 시간. 남긴 자식이 출력을 쥐고 있어 출력이 닫히지 않을 때만 쓰인다. */
 const exitDrainMs = 1000;
-/** 멈춘 확인 프로그램이 끝나기를 기다리는 시간. 이만큼 기다린 뒤 강제로 끝내고, 다시 이만큼 기다린 뒤 기다림을 포기한다. */
-const probeStopGraceMs = 2_000;
 
 /** 프로그램 출력이 로그인 문제를 말하는가. 공개 기록에 옮기지 않고 판단에만 쓴다. */
 export const saysLoginProblem = (text: unknown) =>
@@ -121,8 +118,11 @@ export function providerEnvironment(
   };
 }
 
-/** 짧은 확인용 실행. Windows의 .cmd 프로그램도 찾는다. 실패하면 `code`·`stdout`·`stderr`를 담아 던진다. */
-export function runProbe(
+/**
+ * 짧은 확인용 실행. Windows의 .cmd 프로그램도 찾는다. 공용 실행(`runTree`)으로 돌려 상한·취소에 닿거나 프로그램이 끝나면 그 트리
+ * 전체를 끄고 끝난 것을 확인한다. 실패하면 `code`(종료 코드, 시작 오류 코드, 끈 경우 `killed`)·`stdout`·`stderr`를 담아 던진다.
+ */
+export async function runProbe(
   command: readonly [string, ...string[]],
   args: readonly string[],
   options: {
@@ -133,75 +133,58 @@ export function runProbe(
     maxBuffer: number;
   }
 ): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command[0], [...command.slice(1), ...args], {
-      env: options.env,
+  const failed = (error: Error, fields: object) =>
+    Object.assign(error, { stdout: "", stderr: "" }, fields);
+  let run: Awaited<ReturnType<typeof runTree>>;
+  try {
+    run = await runTree({
+      command,
+      args,
       cwd: options.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
+      env: options.env,
+      limitMs: options.timeout,
+      signal: options.signal,
+      maxOutputBytes: options.maxBuffer,
+      overflow: "truncate",
     });
-    let stdout = "",
-      stderr = "";
-    const limit = (text: string) => text.slice(0, options.maxBuffer);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout = limit(stdout + chunk.toString());
+  } catch (error) {
+    // Windows에서 묶음 실행기를 쓸 수 없어 띄우지 않았다. 그 이유를 그대로 알린다.
+    if (error instanceof TreeLaunchRefused) throw failed(error, {});
+    // 끝났음을 확인하지 못했다. 그 트리는 남았을 수 있다.
+    throw failed(new Error("Program did not stop", { cause: error }), {
+      code: "killed",
     });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = limit(stderr + chunk.toString());
+  }
+  if (!run.started)
+    throw failed(
+      run.error instanceof Error ? run.error : new Error(run.reason),
+      {}
+    );
+  const stdout = run.stdout.toString(),
+    stderr = run.stderr.toString();
+  if (run.stopped)
+    throw failed(new Error("Program was stopped"), {
+      code: "killed",
+      stdout,
+      stderr,
     });
-    let settled = false;
-    let stopped = false;
-    let stopTimer: ReturnType<typeof setTimeout> | undefined;
-    let forceTimer: ReturnType<typeof setTimeout> | undefined;
-    const stop = () => {
-      if (stopped) return;
-      stopped = true;
-      clearTimeout(timer);
-      child.kill();
-      stopTimer = setTimeout(() => {
-        child.kill("SIGKILL");
-        forceTimer = setTimeout(() => {
-          console.warn(
-            "[provider] a check program's output did not close after it was stopped"
-          );
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          finish(
-            Object.assign(new Error("Program did not close"), {
-              code: "killed",
-            })
-          );
-        }, probeStopGraceMs);
-      }, probeStopGraceMs);
-    };
-    const timer = setTimeout(stop, options.timeout);
-    options.signal.addEventListener("abort", stop, { once: true });
-    if (options.signal.aborted) stop();
-    const finish = (error?: Error & { code?: unknown }) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearTimeout(stopTimer);
-      clearTimeout(forceTimer);
-      options.signal.removeEventListener("abort", stop);
-      if (error) reject(Object.assign(error, { stdout, stderr }));
-      else resolve({ stdout, stderr });
-    };
-    child.on("error", (error) => finish(error));
-    child.on("close", (code) => {
-      if (code === 0) finish();
-      else
-        finish(
-          Object.assign(new Error("Program failed"), { code: code ?? "killed" })
-        );
+  if (run.code !== 0)
+    throw failed(new Error("Program failed"), {
+      code: run.code ?? "killed",
+      stdout,
+      stderr,
     });
-  });
+  return { stdout, stderr };
 }
 
 // 시계는 lease.ts도 쓴다. process.ts를 거치면 두 파일이 서로 불러 clock.ts에 둔다.
 export { type Clock, realClock } from "./clock.ts";
 
-/** One process group per attempt. Raw stderr is drained, never propagated to public logs. */
+/**
+ * 실행 시도 하나. 프로그램은 공용 실행(`launch.ts`)으로 띄워 그 `stop()`으로 트리 전체를 끝내고 확인한다. 원래 오류 출력은 버리지
+ * 않고 판단에만 쓰며 공개 기록에 옮기지 않는다. 컨테이너 실행은 docker 클라이언트를 같은 공용 실행으로 띄우고, 중계와 컨테이너 지우기를
+ * 여기서 맡는다.
+ */
 export function startProcess(options: {
   command: readonly [string, ...string[]];
   args: string[];
@@ -216,101 +199,73 @@ export function startProcess(options: {
 }) {
   const clock = options.clock ?? realClock;
   const maxLineLength = options.maxLineLength ?? defaultMaxLineLength;
-  const lease = crypto.randomUUID();
-  const name = options.container ? "babojubot-" + lease : undefined;
+  const name = options.container
+    ? `babojubot-${crypto.randomUUID()}`
+    : undefined;
+  // Windows에서 묶음 실행기를 쓸 수 없으면 아무것도 열기 전에 그 이유로 거절한다(TreeLaunchRefused, 실행 시도의 실패 원인으로 보인다).
+  requireJobObject();
   // 컨테이너는 네트워크가 없다. 이 실행 시도의 중계를 먼저 열고(못 열면 띄우지 않고 던진다) 그 폴더를 넣는다. 끝나면 닫는다.
   const relay = options.container?.settings.relay.open({
     identity: options.container.relay.identity,
     required: options.container.relay.required,
     inbound: options.container.relay.inbound !== undefined,
   });
-  const env = options.container
-    ? {
-        ...dockerClientEnv({ ...options.env, ...options.container.env }),
-        [leaseVariable]: lease,
-      }
-    : { ...options.env, [leaseVariable]: lease };
-  // Windows에는 프로세스 그룹이 없다. 묶음 실행기가 프로그램을 묶음(Job Object)에 넣어 띄워, 먼저 끝난 프로그램이 남긴 것도 끈다(#205).
-  const job = options.container
-    ? undefined
-    : jobObjectLaunch(options.command, options.args, {
-        env: options.env,
-        cwd: options.cwd,
-      });
-  const withoutJob = (reason: string) =>
-    console.warn(
-      `[provider] this run has no Windows job object, so programs it leaves behind may keep running: ${reason}`
-    );
-  if (job && "unavailable" in job) withoutJob(job.unavailable);
-  let launcher: ChildProcessByStdio<Writable, Readable, Readable> | undefined;
-  if (job && "launch" in job) {
-    launcher = spawnChild(job.launch.file, job.launch.args, {
-      ...job.launch.options,
-      cwd: options.cwd,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
+  const tree = launchTree({
+    ...(options.container
+      ? {
+          command: options.container.settings.docker,
+          args: dockerRunArgs(options.container, {
+            name: name!,
+            cwd: options.cwd,
+            env: { ...options.env, ...options.container.env },
+            args: options.args,
+            relay: relay!.directory,
+          }),
+          env: dockerClientEnv({ ...options.env, ...options.container.env }),
+        }
+      : { command: options.command, args: options.args, env: options.env }),
+    cwd: options.cwd,
+    stdio: "pipe",
+  });
+  /** 끄기가 끝났는데 대표가 끝나지 않았을 때(끄기 실패) 정리를 시작한다. 실행 시도의 정리가 정해지면 바뀐다. */
+  let finishWithoutLeader = () => {};
+  /**
+   * 트리를 끈다. 결과는 정리(finish)가 같은 끄기를 기다려 받는다. 끄기를 시작한 뒤의 끝은 끄기의 결과가 정한다: 대표가 SIGKILL 뒤에도
+   * 끝나지 않아 끄기가 실패하면 대표의 끝을 기다리지 않고 그 실패로 정리한다(#263 외부 리뷰 SP1).
+   */
+  const stopTree = () =>
+    void settled(tree.stop()).then(() => {
+      if (!leaderExited) finishWithoutLeader();
     });
-    // 실행기를 띄우지 못했다(백신이 지웠거나 막음). 프로그램은 아직 시작하지 않았으므로 지금처럼 띄운다.
-    if (launcher.pid === undefined) {
-      launcher.on("error", () => {});
-      withoutJob("the job object launcher could not start");
-      launcher = undefined;
+  let broken = false,
+    leaderExited = false;
+  void tree.started.then((start) => {
+    if (start.kind === "failed") {
+      broken = true;
+      if (start.error === undefined)
+        console.error(
+          `[provider] the program could not start: ${start.reason}`
+        );
     }
-  }
-  const runsInJob = launcher !== undefined;
-  const child =
-    launcher ??
-    (spawn(
-      options.container
-        ? options.container.settings.docker[0]
-        : options.command[0],
-      options.container
-        ? [
-            ...options.container.settings.docker.slice(1),
-            ...dockerRunArgs(options.container, {
-              name: name!,
-              cwd: options.cwd,
-              env: { ...options.env, ...options.container.env },
-              args: options.args,
-              relay: relay!.directory,
-            }),
-          ]
-        : [...options.command.slice(1), ...options.args],
-      {
-        cwd: options.cwd,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-        // Windows에는 프로세스 그룹이 없다. 새 콘솔 창도 띄우지 않는다.
-        detached: process.platform !== "win32",
-        windowsHide: true,
-      }
-    ) as ChildProcessByStdio<Writable, Readable, Readable>);
-  // 표식을 읽을 수 없는 프로그램은 이 실행 시도가 시작한 뒤에 생겼을 때만 우리 것일 수 있다. 대표의 시작 시각을 기준으로 둔다(Linux).
-  const since =
-    process.platform === "linux" && child.pid
-      ? processStartTicks(child.pid)
-      : undefined;
+  });
   relay?.ready.catch((error: unknown) => {
     console.error(
       `[provider] the isolated run relay could not open (${failureCode(error)})`
     );
-    child.kill("SIGKILL");
+    stopTree();
   });
   let forget = () => {};
-  if (options.stateDir && child.pid)
+  if (options.stateDir && tree.pid)
     try {
-      forget = recordProcess(options.stateDir, child.pid, lease);
+      forget = recordProcess(options.stateDir, tree.pid, tree.lease);
     } catch (error) {
       console.error(
         `[provider] the process record could not be saved; stopping the program (${failureCode(error)})`
       );
-      child.kill("SIGKILL");
+      stopTree();
     }
   let closed = false,
     finished = false,
-    leaderExited = false,
-    broken = false,
     skipping = false,
     buffer = "",
     queue = Promise.resolve();
@@ -328,61 +283,35 @@ export function startProcess(options: {
         );
       });
   };
-  let term: unknown, kill: unknown;
-  // 대표 프로세스를 끝내려는 신호다. 끝난 뒤 남은 그룹은 finish가 중계를 먼저 닫고 정리한다.
-  const signalGroup = (signal: NodeJS.Signals) => {
-    if (child.pid && !leaderExited) signalProcessTree(child.pid, signal);
-  };
+  let term: unknown;
+  // 입력을 닫아 스스로 끝날 기회를 준 뒤에도 돌면 트리를 끈다. 대표가 그 전에 끝나면 남은 트리는 finish가 중계를 먼저 닫고 끈다.
   const end = () => {
     if (closed || term) return;
-    child.stdin.end();
+    tree.stdin.end();
     if (leaderExited) return;
-    term = clock.setTimeout(() => {
-      signalGroup("SIGTERM");
-      kill = clock.setTimeout(() => signalGroup("SIGKILL"), 2000);
-    }, 2000);
+    term = clock.setTimeout(stopTree, 2000);
   };
   const write = (frame: unknown) => {
-    if (closed || child.stdin.destroyed || child.stdin.writableEnded)
+    if (closed || tree.stdin.destroyed || tree.stdin.writableEnded)
       return false;
-    child.stdin.write(JSON.stringify(frame) + "\n");
+    tree.stdin.write(JSON.stringify(frame) + "\n");
     return true;
   };
   let reportInputFailure!: () => void;
   const inputFailed = new Promise<void>((resolve) => {
     reportInputFailure = resolve;
   });
-  child.stdin.on("error", () => {
+  tree.stdin.on("error", () => {
     broken = true;
     reportInputFailure();
     end();
   });
   // 끝부분만 남긴다. 판단과 서버 진단에만 쓰고 공개 기록에 옮기지 않는다.
   let stderr = "";
-  // 묶음 실행기는 프로그램이 돌기 전에 상태 줄 하나를 쓴다. 그 줄은 떼어 판단하고 나머지만 프로그램의 오류 출력으로 둔다.
-  let pendingStatus: string | undefined = runsInJob ? "" : undefined;
-  child.stderr.on("data", (chunk: Buffer) => {
-    let text = chunk.toString();
-    if (pendingStatus !== undefined) {
-      pendingStatus += text;
-      const newline = pendingStatus.indexOf("\n");
-      if (newline < 0 && pendingStatus.length < 4096) return;
-      const status = readLauncherStatus(
-        newline < 0 ? pendingStatus : pendingStatus.slice(0, newline)
-      );
-      text = status ? pendingStatus.slice(newline + 1) : pendingStatus;
-      pendingStatus = undefined;
-      if (status?.kind === "warning") withoutJob(status.reason);
-      if (status?.kind === "failed") {
-        broken = true;
-        console.error(
-          `[provider] the program could not start: ${status.reason}`
-        );
-      }
-    }
-    stderr = (stderr + text).slice(-8192);
+  tree.stderr.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString()).slice(-8192);
   });
-  child.stdout.on("data", (chunk: Buffer) => {
+  tree.stdout.on("data", (chunk: Buffer) => {
     buffer += decoder.write(chunk);
     for (;;) {
       const newline = buffer.indexOf("\n");
@@ -397,6 +326,14 @@ export function startProcess(options: {
       skipping = true;
     }
   });
+  /** 줄바꿈 없이 남은 마지막 줄을 넘긴다. 한 번만 한다. */
+  const deliverRest = () => {
+    const rest = buffer + decoder.end();
+    buffer = "";
+    if (!skipping && rest.length <= maxLineLength) deliver(rest);
+  };
+  const outputEnd = (stream: NodeJS.ReadableStream) =>
+    new Promise<void>((resolve) => stream.once("close", () => resolve()));
   let reportExit!: () => void;
   const exited = new Promise<void>((resolve) => {
     reportExit = resolve;
@@ -406,90 +343,74 @@ export function startProcess(options: {
     broken: boolean;
     stderr: string;
   }>((resolve) => {
-    child.on("error", () => {
-      broken = true;
-    });
     let drain: unknown;
     let outputClosed = false;
     const finish = (code: number | null) => {
       if (finished) return;
       closed = true;
       clock.clearTimeout(term);
-      clock.clearTimeout(kill);
       clock.clearTimeout(drain);
       finished = true;
       // 끝나기 전에 낸 출력을 다 처리한 순간을 알린다. 출력이 닫히지 않은 채 시작했으면 그때까지 읽은 출력까지다. 실제 정리(중계·자식·컨테이너)는 아래가 하고 done이 기다린다.
       void queue.then(reportExit);
       void (async () => {
-        // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
-        try {
-          await relay?.close();
-        } catch (error) {
-          broken = true;
-          console.error(
-            `[provider] the isolated run relay could not be closed (${failureCode(error)})`
-          );
-        }
-        // 출력이 아직 열려 있으면(남긴 자식이 쥐고 있음) 이쪽 끝을 닫는다. 그 뒤로 온 출력은 읽지 않는다.
-        if (!outputClosed) {
-          child.stdout.destroy();
-          child.stderr.destroy();
-        }
-        // The leader may exit before its shell/MCP children. Do not release the attempt while they live.
-        let stopped = true;
-        if (child.pid)
-          try {
-            await stopProcessGroup(child.pid);
-          } catch (error) {
-            stopped = false;
-            broken = true;
-            console.error(
-              `[provider] a process group could not be stopped; releasing the run and keeping its recovery record (${failureCode(error)})`
-            );
-          }
-        // 프로그램이 새 세션에 띄운 명령은 그룹 밖에 있다. 프로그램이 어떻게 끝났든 표식으로 시스템 전체에서 찾아 끈다(#219).
-        // 컨테이너는 아래에서 통째로 지우고, Windows는 묶음이 끈다.
-        if (!options.container && process.platform !== "win32") {
-          let left = true;
-          try {
-            // 대표의 시작 시각을 읽지 못했으면 가장 넓게 본다.
-            left =
-              (await stopLeaseHolders(lease, { since: since ?? 0 })).left
-                .length > 0;
-          } catch (error) {
-            console.error(
-              `[provider] the lease holder lookup failed (${failureCode(error)})`
-            );
-            // 찾기 자체가 실패했으면 끝났음을 확인하지 못한 것이다.
-          }
-          if (left) {
-            stopped = false;
-            broken = true;
-            console.error(
-              "[provider] programs this run started could not all be stopped; releasing the run and keeping its recovery record"
-            );
-          }
-        }
-        // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
-        if (
-          options.container &&
-          !(await removeContainer(options.container.settings, name!))
-        ) {
-          broken = true;
-          console.error(
-            "[provider] a container could not be removed; it is removed at the next server start"
-          );
-        }
-        await queue;
-        if (stopped)
-          try {
-            forget();
-          } catch (error) {
-            broken = true;
-            console.error(
-              `[provider] process exited but its recovery record could not be removed (${failureCode(error)})`
-            );
-          }
+        /** 정리 단계 하나. 실패하면 그 자리에서 진단을 남기고 실패로 돌려준다(뒤 단계는 attemptEach가 이어 한다). */
+        const reported =
+          (what: (error: unknown) => string, work: () => unknown) =>
+          async () => {
+            try {
+              await work();
+            } catch (error) {
+              console.error(`[provider] ${what(error)}`);
+              throw error;
+            }
+          };
+        /** 트리 전체가 끝난 것을 확인했는가. 확인하기 전에는 기록을 지우지 않는다(#219). */
+        let stopped = false;
+        const failures = await attemptEach([
+          // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
+          reported(
+            (error) =>
+              `the isolated run relay could not be closed (${failureCode(error)})`,
+            () => relay?.close()
+          ),
+          // 출력이 아직 열려 있으면(남긴 자식이 쥐고 있음) 이쪽 끝을 닫는다. 그 뒤로 온 출력은 읽지 않는다.
+          () => {
+            if (outputClosed) return;
+            tree.stdout.destroy();
+            tree.stderr.destroy();
+          },
+          // 대표는 셸·MCP 자식보다 먼저 끝날 수 있다. 새 세션으로 나간 명령까지 트리 전체가 끝난 것을 확인해야 기록을 지운다.
+          reported(
+            (error) =>
+              `programs this run started could not all be stopped; releasing the run and keeping its recovery record (${failureCode(error)}: ${error instanceof Error ? error.message : ""})`,
+            async () => {
+              await tree.stop();
+              stopped = true;
+            }
+          ),
+          // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
+          reported(
+            (error) =>
+              `a container could not be removed; it is removed at the next server start (${error instanceof Error ? error.message : failureCode(error)})`,
+            async () => {
+              if (
+                options.container &&
+                !(await removeContainer(options.container.settings, name!))
+              )
+                throw new Error("it was still there after removing it");
+            }
+          ),
+          reported(
+            (error) =>
+              `process exited but its recovery record could not be removed (${failureCode(error)})`,
+            async () => {
+              await queue;
+              if (stopped) forget();
+            }
+          ),
+        ]);
+        if (failures.length > 0) broken = true;
         if (code)
           console.warn(
             `[provider] program exited with code ${code}: ${stderr
@@ -499,19 +420,26 @@ export function startProcess(options: {
         resolve({ code, broken, stderr });
       })();
     };
-    child.on("exit", (code) => {
+    finishWithoutLeader = () => finish(null);
+    void tree.exited.then(({ code }) => {
       leaderExited = true;
       clock.clearTimeout(term);
-      clock.clearTimeout(kill);
-      // 프로그램이 끝났다. 보통은 곧 출력이 닫히고(close) 거기서 정리한다. 남긴 자식이 출력을 쥐고 있으면 close가 오지 않으므로, 남은 출력을 읽을 시간만 두고 같은 정리를 시작한다. 취소 중이던 종료 타이머도 여기서 멈춘다(남은 그룹은 finish가 중계를 먼저 닫고 정리).
-      if (!finished) drain = clock.setTimeout(() => finish(code), exitDrainMs);
+      // 프로그램이 끝났다. 보통은 곧 출력이 닫히고(아래) 거기서 정리한다. 남긴 자식이 출력을 쥐고 있으면 닫히지 않으므로, 남은 출력을 읽을 시간만 두고 같은 정리를 시작한다. 취소 중이던 종료 타이머도 여기서 멈춘다(남은 트리는 finish가 중계를 먼저 닫고 끈다).
+      if (!finished)
+        drain = clock.setTimeout(() => {
+          // 프로그램은 끝났으므로 지금까지 읽은 마지막 줄(줄바꿈 없이 끝난 줄)도 그 출력이다. 그 뒤로 온 출력은 읽지 않는다.
+          if (!finished) deliverRest();
+          finish(code);
+        }, exitDrainMs);
     });
-    child.on("close", (code) => {
+    void Promise.all([
+      tree.exited,
+      outputEnd(tree.stdout),
+      outputEnd(tree.stderr),
+    ]).then(([{ code }]) => {
       outputClosed = true;
       if (finished) return;
-      const rest = buffer + decoder.end();
-      buffer = "";
-      if (!skipping && rest.length <= maxLineLength) deliver(rest);
+      deliverRest();
       finish(code);
     });
   });
@@ -523,8 +451,8 @@ export function startProcess(options: {
     /** 입력 쓰기가 실패했다. 이후 보낸 내용은 프로그램에 닿지 않는다. 프로그램 종료는 end()의 순서대로 따로 진행한다. */
     inputFailed,
     done,
-    interrupt: () => signalGroup("SIGINT"),
-    endInput: () => child.stdin.end(),
+    interrupt: () => tree.interrupt(),
+    endInput: () => tree.stdin.end(),
     /** 컨테이너 안 서버(`relay.inbound` 포트)로 가는 이 컴퓨터 loopback 주소. */
     inboundOrigin: () =>
       relay
