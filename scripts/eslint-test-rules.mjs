@@ -2229,41 +2229,235 @@ function walkAll(node, found) {
   }
 }
 
+/** 값이 그대로 지나가는 감싸기. */
+const passThrough = new Set([
+  "TSAsExpression",
+  "TSNonNullExpression",
+  "TSSatisfiesExpression",
+  "TSTypeAssertion",
+  "ChainExpression",
+]);
+const promiseCombinators = new Set(["all", "allSettled", "race", "any"]);
+const functionTypes = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+
 /**
- * `node`의 값이 기다려지는가: 위로 가며 `await`·`return`(화살표 식 몸 포함)에 닿으면 참. 그 사이에 값을 넘기는 자리는 배열 원소,
- * 다른 호출의 인자(`Promise.all([...])`·`within(x, ms)`·`expect(x)`), 그 값의 메서드(`x.catch(…)`·`expect(x).rejects.toBe(…)`)다.
- * 문·다른 자리에 닿으면 거짓.
+ * `node`에서 그 함수의 끝(함수 경계)까지 지나는 분기 자리: if·조건식의 한쪽, `&&`·`||`·`??`의 오른쪽, switch의 case,
+ * 반복의 몸(한 번도 돌지 않을 수 있다), catch. try 블록·finally·do-while 몸은 분기가 아니다. 안에서 밖으로 `{ node, branch }`.
  */
-function awaitedValue(node) {
+function branchesOf(node) {
+  const edges = [];
   let child = node;
   for (let parent = child.parent; parent; parent = child.parent) {
-    if (parent.type === "AwaitExpression" || parent.type === "ReturnStatement")
-      return true;
-    if (parent.type === "ArrowFunctionExpression") return parent.body === child;
-    const passes =
-      parent.type === "ArrayExpression" ||
-      (parent.type === "MemberExpression" && parent.object === child) ||
-      (parent.type === "CallExpression" &&
-        (parent.callee === child || parent.arguments.includes(child)));
-    if (!passes) return false;
+    if (functionTypes.has(parent.type)) break;
+    if (parent.type === "IfStatement" && parent.test !== child)
+      edges.push({
+        node: parent,
+        branch: parent.consequent === child ? "then" : "else",
+      });
+    else if (parent.type === "ConditionalExpression" && parent.test !== child)
+      edges.push({
+        node: parent,
+        branch: parent.consequent === child ? "then" : "else",
+      });
+    else if (parent.type === "LogicalExpression" && parent.right === child)
+      edges.push({ node: parent, branch: "right" });
+    else if (parent.type === "SwitchCase" && parent.test !== child)
+      edges.push({ node: parent, branch: "case" });
+    else if (
+      [
+        "ForStatement",
+        "ForInStatement",
+        "ForOfStatement",
+        "WhileStatement",
+      ].includes(parent.type) &&
+      (parent.body === child ||
+        (parent.type === "ForStatement" && parent.update === child))
+    )
+      edges.push({ node: parent, branch: "loop" });
+    else if (parent.type === "CatchClause" && parent.body === child)
+      edges.push({ node: parent, branch: "catch" });
     child = parent;
   }
-  return false;
+  return edges;
+}
+
+/**
+ * 같은 파일에서 Promise를 기다리는지 판정한다(awaitedLater, CODING_STANDARDS.md#단언).
+ * `waitOf(node)`: `node`의 값이 기다려지는 길이면 `{ edges, conditional }`(그 기다림까지 지난 분기, 넘긴 함수 안에서 한 분기에서만
+ * 기다렸는지), 아니면 undefined. 기다림은 `await`·`return`(화살표 식 몸 포함)이다. 그 사이에 값을 넘기는 자리는 결과를 받는 것만이다:
+ * 그 값의 `then`·`catch`·`finally`, 배열을 받는 `Promise.all`·`race`·`allSettled`·`any`, `expect(x).rejects`·`.resolves`, 같은 파일의
+ * 함수 중 받은 인자를 기다리는 것, 가져온 함수(다른 파일이라 따라갈 수 없다). 전역 함수(`Boolean`·`console.log`)와 받은 인자를
+ * 기다리지 않는 같은 파일의 함수는 결과를 받지 않는다.
+ * `classify(nodes)`: 여러 읽기 자리를 모아 "always"(분기 없이 기다리거나 if·조건식의 두 쪽에서 모두 기다림), "branch"(한 분기에서만),
+ * "never"로 나눈다.
+ */
+function waiting(sourceCode) {
+  /** 같은 파일에 정의한 함수(함수 선언, const로 받은 함수 식). */
+  const functionOf = (variable) => {
+    const def = variable.defs[0];
+    if (def?.type === "FunctionName") return def.node;
+    if (
+      def?.type === "Variable" &&
+      def.parent.kind === "const" &&
+      def.node.id.type === "Identifier" &&
+      ["ArrowFunctionExpression", "FunctionExpression"].includes(
+        def.node.init?.type
+      )
+    )
+      return def.node.init;
+    return undefined;
+  };
+  /** 이름공간 가져오기(그것을 받은 const 포함)인가. */
+  const isNamespace = (identifier, seen = new Set()) => {
+    const variable = bindingOf(sourceCode, identifier);
+    if (!variable || seen.has(variable)) return false;
+    seen.add(variable);
+    if (importOf(variable)?.imported === "*") return true;
+    const def = variable.defs[0];
+    return (
+      def?.type === "Variable" &&
+      def.parent.kind === "const" &&
+      def.node.id.type === "Identifier" &&
+      def.node.init?.type === "Identifier" &&
+      isNamespace(def.node.init, seen)
+    );
+  };
+  /** 호출 `call`의 `index`번째 인자로 넘긴 값의 결과를 그 호출이 받는가. */
+  const callPasses = (call, index, isArray, seen) => {
+    const callee = call.callee;
+    if (callee.type === "MemberExpression") {
+      const name = memberName(callee);
+      if (
+        callee.object.type === "Identifier" &&
+        callee.object.name === "Promise" &&
+        !bindingOf(sourceCode, callee.object) &&
+        promiseCombinators.has(name)
+      )
+        return "always";
+      if (isArray) return "never";
+      return callee.object.type === "Identifier" && isNamespace(callee.object)
+        ? "always"
+        : "never";
+    }
+    if (isArray || callee.type !== "Identifier") return "never";
+    if (callee.name === "expect")
+      return ["rejects", "resolves"].includes(memberName(call.parent)) &&
+        call.parent.object === call
+        ? "always"
+        : "never";
+    const variable = bindingOf(sourceCode, callee);
+    if (!variable) return "never";
+    if (importOf(variable)) return "always";
+    const fn = functionOf(variable);
+    const param = fn?.params[index];
+    if (!fn || seen.has(fn) || param?.type !== "Identifier") return "never";
+    const parameter = sourceCode
+      .getDeclaredVariables(fn)
+      .find((each) => each.name === param.name);
+    return classify(
+      parameter.references
+        .filter((reference) => reference.isRead())
+        .map((reference) => reference.identifier),
+      new Set([...seen, fn])
+    );
+  };
+  const waitOf = (node, seen = new Set()) => {
+    let child = node;
+    // 아직 그 Promise 자신인가(호출 결과로 바뀌기 전). 자신의 속성은 then·catch·finally 호출만 결과를 받는다.
+    let original = true;
+    let conditional = false;
+    for (let parent = child.parent; parent; parent = child.parent) {
+      if (
+        parent.type === "AwaitExpression" ||
+        parent.type === "ReturnStatement" ||
+        (parent.type === "ArrowFunctionExpression" && parent.body === child)
+      )
+        return { edges: branchesOf(node), conditional };
+      if (
+        passThrough.has(parent.type) ||
+        parent.type === "ArrayExpression" ||
+        (parent.type === "ConditionalExpression" && parent.test !== child) ||
+        parent.type === "LogicalExpression"
+      ) {
+        child = parent;
+        continue;
+      }
+      if (parent.type === "MemberExpression" && parent.object === child) {
+        const settles =
+          ["then", "catch", "finally"].includes(memberName(parent)) &&
+          parent.parent.type === "CallExpression" &&
+          parent.parent.callee === parent;
+        if (original && !settles) return undefined;
+        child = parent;
+        continue;
+      }
+      if (parent.type === "CallExpression" && parent.callee === child) {
+        original = false;
+        child = parent;
+        continue;
+      }
+      if (
+        parent.type === "CallExpression" &&
+        parent.arguments.includes(child)
+      ) {
+        const passed = callPasses(
+          parent,
+          parent.arguments.indexOf(child),
+          child.type === "ArrayExpression",
+          seen
+        );
+        if (passed === "never") return undefined;
+        if (passed === "branch") conditional = true;
+        original = false;
+        child = parent;
+        continue;
+      }
+      return undefined;
+    }
+    return undefined;
+  };
+  const classify = (nodes, seen = new Set()) => {
+    const waits = nodes.flatMap((node) => {
+      const found = waitOf(node, seen);
+      return found ? [found] : [];
+    });
+    if (waits.length === 0) return "never";
+    if (waits.some((w) => w.edges.length === 0 && !w.conditional))
+      return "always";
+    // if·조건식의 두 쪽에서 모두 (그 밖의 분기 없이) 기다리면 모든 길에서 기다린다.
+    const only = waits.filter((w) => w.edges.length === 1 && !w.conditional);
+    const covered = only.some(
+      (w) =>
+        w.edges[0].branch === "then" &&
+        only.some(
+          (other) =>
+            other.edges[0].node === w.edges[0].node &&
+            other.edges[0].branch === "else"
+        )
+    );
+    return covered ? "always" : "branch";
+  };
+  return { classify, isNamespace };
 }
 
 /**
  * `awaitedLater`(먼저 만들고 뒤에서 기다리는 Promise의 표시)는 빈 처리기를 붙이므로, 표시한 Promise를 정말 뒤에서 기다려야 한다
  * (CODING_STANDARDS.md#단언). 기다리지 않으면 `tests/no-dropped-rejection`이 막는 거절 버리기가 이 함수 안으로 옮겨진 것과 같다.
  * 출처로 판정한다: `@babojubot/runtime/test-cleanup`·상대 경로 `test-cleanup`에서 가져온 `awaitedLater`(다른 이름 포함), 이름공간
- * 가져오기의 `x.awaitedLater`, 그것을 받은 `const`. 짚는 모양:
+ * 가져오기(그것을 받은 const 포함)의 `x.awaitedLater`, 그것을 받은 `const`, 이름공간·동적 가져오기에서 구조 분해한 이름. 짚는 모양:
  * - 부른 결과를 `const` 변수나 객체 속성(`child.exited = …`)에 바로 담지 않는 것(`awaitedLater(p);`, `await awaitedLater(p)`, 인자로 넘기기).
- * - 담은 `const`를 같은 파일 어디서도 기다리지 않는 것. 기다림은 `await`·`return`, 그 값을 넘긴 배열·호출·메서드 끝의 `await`·`return`이다
- *   (`await Promise.all([x])`, `await expect(x).rejects…`, `await within(x.catch(…), ms)`).
+ * - 담은 `const`를 같은 파일 어디서도 기다리지 않는 것. 기다림의 판정은 `waiting`이 한다: 결과를 받는 호출(`Promise.all`,
+ *   `expect(x).rejects`, 받은 인자를 기다리는 같은 파일의 함수, 가져온 함수)만 값을 넘기고, 무관한 호출(`await Boolean(x)`)은 아니다.
+ * - 한 분기(if·조건식의 한쪽, `&&`의 오른쪽, 반복의 몸, catch)에서만 기다리는 것. 두 쪽에서 모두 기다리면 된다.
  * - 담은 속성을 같은 파일에서 같은 경로(루트 식별자·`this`의 이름과 속성 이름들, `child.exited`)로 읽어 기다리는 곳이 없는 것.
  *   경로로 따라갈 수 없는 자리(계산된 이름, 호출 결과의 속성)와 같은 객체를 다른 이름으로 읽는 것은 기다리지 않은 것으로 본다.
- * - 부르지 않고 함수 값으로 넘기는 것(`items.map(awaitedLater)`). 결과를 따라갈 수 없다.
+ * - 부르지 않고 함수 값으로 넘기거나 다시 내보내는 것(`items.map(awaitedLater)`, `export { awaitedLater } from …`). 결과를 따라갈 수 없다.
  * 속성을 다른 파일에서 읽어 기다리는 것은 따라가지 않아 짚는다. 루트는 이름으로 맞추므로 같은 이름으로 넘겨받은 객체(다른 함수의
- * 매개변수 `child`)는 같은 경로다. 기다리는 자리가 실제로 실행되는지는 따라가지 않는다.
+ * 매개변수 `child`)는 같은 경로다. 기다리는 자리가 실제로 실행되는지(그 앞의 `return`, 기다림을 담은 함수를 부르는지)는 따라가지 않는다.
  */
 const noUnawaitedLater = {
   meta: {
@@ -2277,14 +2471,26 @@ const noUnawaitedLater = {
       notStored:
         "awaitedLater의 결과를 const 변수나 객체 속성에 바로 담지 않습니다. 이 함수는 빈 처리기를 붙여 거절을 감추므로, 담아 둔 Promise를 뒤에서 기다려야 그 실패가 시험에 닿습니다. 바로 기다릴 Promise면 awaitedLater 없이 await하세요. CODING_STANDARDS.md#단언",
       notAwaited:
-        "awaitedLater로 표시한 Promise를 이 파일에서 기다리지 않습니다. 빈 처리기가 그 거절을 감춰 실패해도 시험이 통과합니다. 뒤에서 await하거나(Promise.all·expect(…).rejects 포함) 돌려주세요. 기다릴 필요가 없으면 awaitedLater를 쓰지 말고 결과를 단언하세요. CODING_STANDARDS.md#단언",
+        "awaitedLater로 표시한 Promise를 이 파일에서 기다리지 않습니다. 빈 처리기가 그 거절을 감춰 실패해도 시험이 통과합니다. 뒤에서 await하거나(Promise.all·expect(…).rejects·받은 인자를 기다리는 함수 포함) 돌려주세요. 무관한 호출의 인자로 넣고 그 호출을 기다리는 것(await Boolean(x))은 기다림이 아닙니다. 기다릴 필요가 없으면 awaitedLater를 쓰지 말고 결과를 단언하세요. CODING_STANDARDS.md#단언",
+      awaitedInBranch:
+        "awaitedLater로 표시한 Promise를 한 분기(if·조건식의 한쪽, &&·||의 오른쪽, 반복의 몸, catch)에서만 기다립니다. 다른 길로 가면 기다리지 않아 빈 처리기가 그 거절을 감춥니다. 분기 앞에서 기다리거나 모든 분기에서 기다리세요. CODING_STANDARDS.md#단언",
       notCalled:
-        "awaitedLater를 부르지 않고 값으로 넘깁니다. 표시한 Promise를 기다리는지 따라갈 수 없습니다. 그 자리에서 불러 결과를 담고 기다리세요. CODING_STANDARDS.md#단언",
+        "awaitedLater를 부르지 않고 값으로 넘기거나 다시 내보냅니다. 표시한 Promise를 기다리는지 따라갈 수 없습니다. 그 자리에서 불러 결과를 담고 기다리세요. CODING_STANDARDS.md#단언",
     },
   },
   create(context) {
     const { sourceCode } = context;
-    /** `identifier`가 test-cleanup의 awaitedLater(다른 이름·그것을 받은 const 포함)인가. */
+    const { classify, isNamespace } = waiting(sourceCode);
+    /** 동적 가져오기(`import("…test-cleanup")`, 그 await 포함)인가. */
+    const cleanupImport = (node) => {
+      const target = node?.type === "AwaitExpression" ? node.argument : node;
+      return (
+        target?.type === "ImportExpression" &&
+        target.source.type === "Literal" &&
+        cleanupModule.test(String(target.source.value))
+      );
+    };
+    /** `identifier`가 test-cleanup의 awaitedLater(다른 이름·그것을 받은 const·구조 분해 포함)인가. */
     const isAwaitedLater = (identifier, seen = new Set()) => {
       const variable = bindingOf(sourceCode, identifier);
       if (!variable || seen.has(variable)) return false;
@@ -2296,40 +2502,54 @@ const noUnawaitedLater = {
           origin.imported === "awaitedLater"
         );
       const def = variable.defs[0];
+      if (def.type !== "Variable" || def.parent.kind !== "const") return false;
+      const { id, init } = def.node;
+      if (id.type === "Identifier")
+        return (
+          (init?.type === "Identifier" && isAwaitedLater(init, seen)) ||
+          (init?.type === "MemberExpression" && namespaceMember(init))
+        );
+      if (id.type !== "ObjectPattern") return false;
+      const property = id.properties.find(
+        (each) => each.type === "Property" && each.value === def.name
+      );
       return (
-        def.type === "Variable" &&
-        def.parent.kind === "const" &&
-        def.node.init?.type === "Identifier" &&
-        isAwaitedLater(def.node.init, seen)
+        property !== undefined &&
+        memberName({
+          type: "MemberExpression",
+          computed: property.computed,
+          property: property.key,
+        }) === "awaitedLater" &&
+        ((init?.type === "Identifier" &&
+          isNamespace(init) &&
+          cleanupModule.test(importOf(namespaceRoot(init))?.source ?? "")) ||
+          cleanupImport(init))
       );
     };
-    /** `x.awaitedLater`의 x가 test-cleanup의 이름공간 가져오기인가. */
-    const namespaceMember = (member) => {
-      if (
-        memberName(member) !== "awaitedLater" ||
-        member.object.type !== "Identifier"
-      )
-        return false;
-      const origin = importOf(bindingOf(sourceCode, member.object));
-      return (
-        origin !== undefined &&
-        origin.imported === "*" &&
-        cleanupModule.test(origin.source)
-      );
+    /** 이름공간 별칭을 따라가 가져온 이름공간 변수를 돌려준다. */
+    const namespaceRoot = (identifier, seen = new Set()) => {
+      const variable = bindingOf(sourceCode, identifier);
+      if (!variable || seen.has(variable)) return undefined;
+      seen.add(variable);
+      if (importOf(variable)) return variable;
+      const init = variable.defs[0]?.node.init;
+      return init?.type === "Identifier"
+        ? namespaceRoot(init, seen)
+        : undefined;
     };
-    /** 파일 전체에서 같은 경로(`child.exited`)의 속성 읽기 가운데 기다려지는 것이 있는가. */
-    const propertyAwaited = (path) => {
-      let found = false;
-      walkAll(sourceCode.ast, (node) => {
-        if (
-          !found &&
-          node.type === "MemberExpression" &&
-          objectPath(node) === path &&
-          awaitedValue(node)
-        )
-          found = true;
-      });
-      return found;
+    /** `x.awaitedLater`의 x가 test-cleanup의 이름공간 가져오기(그 별칭 포함)인가. */
+    const namespaceMember = (member) =>
+      memberName(member) === "awaitedLater" &&
+      member.object.type === "Identifier" &&
+      isNamespace(member.object) &&
+      cleanupModule.test(importOf(namespaceRoot(member.object))?.source ?? "");
+    /** 기다림이 없거나 한 분기에만 있으면 알린다. */
+    const reportWaiting = (call, reads) => {
+      const found = classify(reads);
+      if (found === "never")
+        context.report({ node: call, messageId: "notAwaited" });
+      else if (found === "branch")
+        context.report({ node: call, messageId: "awaitedInBranch" });
     };
     /** 부른 결과가 담긴 곳을 보고 알린다. */
     const checkCall = (call) => {
@@ -2341,12 +2561,12 @@ const noUnawaitedLater = {
         parent.parent.kind === "const"
       ) {
         const [variable] = sourceCode.getDeclaredVariables(parent);
-        const awaited = variable.references.some(
-          (reference) =>
-            reference.isRead() && awaitedValue(reference.identifier)
+        return reportWaiting(
+          call,
+          variable.references
+            .filter((reference) => reference.isRead())
+            .map((reference) => reference.identifier)
         );
-        if (!awaited) context.report({ node: call, messageId: "notAwaited" });
-        return;
       }
       if (
         parent.type === "AssignmentExpression" &&
@@ -2355,9 +2575,17 @@ const noUnawaitedLater = {
         parent.left.type === "MemberExpression"
       ) {
         const path = objectPath(parent.left);
-        if (path === undefined || !propertyAwaited(path))
-          context.report({ node: call, messageId: "notAwaited" });
-        return;
+        const reads = [];
+        if (path !== undefined)
+          walkAll(sourceCode.ast, (node) => {
+            if (
+              node !== parent.left &&
+              node.type === "MemberExpression" &&
+              objectPath(node) === path
+            )
+              reads.push(node);
+          });
+        return reportWaiting(call, reads);
       }
       context.report({ node: call, messageId: "notStored" });
     };
@@ -2388,13 +2616,28 @@ const noUnawaitedLater = {
           (parent.type === "VariableDeclarator" && parent.id === node) ||
           (parent.type === "Property" &&
             parent.key === node &&
-            !parent.computed)
+            !parent.computed) ||
+          bindingOf(sourceCode, node)?.defs.some((def) => def.name === node)
         )
           return;
         if (isAwaitedLater(node)) visit(node);
       },
       MemberExpression(node) {
         if (namespaceMember(node)) visit(node);
+      },
+      // 다시 내보내면 다른 파일에서 부른 결과를 따라갈 수 없다.
+      ExportNamedDeclaration(node) {
+        if (!node.source || !cleanupModule.test(String(node.source.value)))
+          return;
+        for (const specifier of node.specifiers)
+          if (
+            (specifier.local.name ?? specifier.local.value) === "awaitedLater"
+          )
+            context.report({ node: specifier, messageId: "notCalled" });
+      },
+      ExportAllDeclaration(node) {
+        if (cleanupModule.test(String(node.source.value)))
+          context.report({ node, messageId: "notCalled" });
       },
     };
   },
