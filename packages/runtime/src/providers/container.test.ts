@@ -28,6 +28,7 @@ import { createAntigravityProvider as unownedAntigravityProvider } from "./antig
 import {
   createDockerEnvironment,
   type ContainerSettings,
+  removeContainer,
 } from "./container.ts";
 import { attachedRelayHub, manualClock, request } from "./test-support.ts";
 import { startProcess } from "./process.ts";
@@ -2566,6 +2567,39 @@ describe.skipIf(process.platform === "win32")(
     });
   }
 );
+
+// docker가 실패하면 그 종료 코드와 오류 출력을 남긴다. 목록을 읽지 못한 것을 "남은 컨테이너 없음"으로 바꾸지 않는다.
+describe("docker failures during container cleanup", () => {
+  const failing = {
+    docker: [
+      process.execPath,
+      "-e",
+      `process.stderr.write("Cannot connect to the Docker daemon"); process.exit(1);`,
+    ] as const,
+    image,
+    owner: "owner-test",
+    relay: attachedRelayHub(),
+  };
+
+  it("fails leftover cleanup with the cause when the containers cannot be listed", async () => {
+    await expect(
+      createDockerEnvironment(failing).removeOrphans()
+    ).rejects.toThrow(
+      /could not be listed \(exit 1\): Cannot connect to the Docker daemon/
+    );
+  });
+
+  it("leaves why a container could not be removed", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    expect(await removeContainer(failing, "babojubot-test")).toBe(false);
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /babojubot-test.*exit 1.*Cannot connect to the Docker daemon/
+      )
+    );
+  });
+});
 
 describe("the Docker engine check", () => {
   async function engine(files: Record<string, string> = {}) {

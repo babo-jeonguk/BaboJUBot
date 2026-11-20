@@ -9,6 +9,7 @@
     "./runtime-contract": "./src/runtime-contract.ts",
     "./remove-folder": "./src/remove-folder.ts",
     "./process-group": "./src/process-group.ts",
+    "./ps": "./src/providers/ps.ts",
     "./test-cleanup": "./src/test-cleanup.ts"
   },
   "scripts": {

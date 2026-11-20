@@ -70,6 +70,7 @@ const processOwners = [
   "job-object.ts", // Windows 묶음 실행기
   "recovery.ts", // 서버 재시작 뒤 남은 프로그램 조회·정리
   "lease.ts", // 실행 칸을 쥔 프로그램 조회
+  "ps.ts", // ps 한 칸 조회: "대상 없음" 계약(출력 없이 1)을 한곳에 둔다
   "antigravity-config.ts", // 빈 환경으로 도는 Antigravity 설정 스크립트
   "login.ts", // 사용자 터미널을 그대로 넘기는 대화형 로그인
 ].map((name) => `packages/runtime/src/providers/${name}`);
@@ -309,6 +310,7 @@ export default defineConfig([
       "product/sync-command-timeout": "error",
       "product/no-ignored-error": "error",
       "product/no-io-in-unreadable": "error",
+      "product/no-silent-exit-status": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",
@@ -331,6 +333,7 @@ export default defineConfig([
       "product/sync-command-timeout": "error",
       "product/no-ignored-error": "error",
       "product/no-io-in-unreadable": "error",
+      "product/no-silent-exit-status": "error",
       eqeqeq: ["error", "always", { null: "ignore" }],
     },
   },

@@ -283,6 +283,77 @@ const noIgnoredError = {
   },
 };
 
+/** 외부 명령 결과의 성공 여부를 0과 견주는 식이면 실패 쪽이 어느 갈래인지(`"consequent"`·`"alternate"`). `result.status === 0`, `x.code !== 0`. */
+function exitComparison(test) {
+  if (test.type !== "BinaryExpression") return undefined;
+  const sides = [test.left, test.right];
+  const zero = sides.find((s) => s.type === "Literal" && s.value === 0);
+  const read = sides.find(
+    (s) =>
+      s.type === "MemberExpression" &&
+      !s.computed &&
+      (s.property.name === "status" || s.property.name === "code")
+  );
+  if (!zero || !read) return undefined;
+  if (test.operator === "===" || test.operator === "==") return "alternate";
+  if (test.operator === "!==" || test.operator === "!=") return "consequent";
+  return undefined;
+}
+
+/** 빈 결과로 보는 값: `""`, `undefined`, `null`, `false`, `[]`, `{}`. */
+function emptyValue(node) {
+  if (!node) return true; // return; 값 없음
+  if (node.type === "Literal")
+    return node.value === "" || node.value === null || node.value === false;
+  if (node.type === "Identifier") return node.name === "undefined";
+  if (node.type === "ArrayExpression") return node.elements.length === 0;
+  if (node.type === "ObjectExpression") return node.properties.length === 0;
+  return false;
+}
+
+/** 실패 갈래가 빈 결과를 돌려주는 문인가(`return;`, `return ""`, 그것뿐인 블록). */
+function returnsEmpty(statement) {
+  if (!statement) return false;
+  if (statement.type === "BlockStatement")
+    return statement.body.length === 1 && returnsEmpty(statement.body[0]);
+  return statement.type === "ReturnStatement" && emptyValue(statement.argument);
+}
+
+/**
+ * 외부 명령이 0이 아닌 코드로 끝난 것을 빈 결과로 접으면, 대상이 없다는 정상 답과 명령 실패(옵션 오류·권한·내부 실패)가 같은 값이 된다(#264 리뷰 STD-1).
+ * 종료 코드를 0과 견주고 실패 갈래가 빈 결과(`""`·`undefined`·`null`·`false`·`[]`·`{}`, 값 없는 `return`)인 삼항식과 if 문을 짚는다.
+ * 그 명령의 "없음" 계약(예: `ps`·`pgrep`은 출력 없이 1)은 그 코드와 견주거나 이름 붙은 판정 함수로 고르면 통과한다.
+ * 알려진 한계: 0과 견준 결과를 바로 돌려주는 식(`return code === 0`), 이름을 바꾼 결과 필드, 여러 조건을 묶은 식은 보지 않는다.
+ */
+const noSilentExitStatus = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Disallow folding a non-zero exit of an outside command into an empty result",
+    },
+    schema: [],
+    messages: {
+      folded:
+        '외부 명령이 0이 아닌 코드로 끝난 것을 빈 결과로 바꿉니다. 대상이 없다는 답과 명령 실패가 같은 값이 됩니다. 그 명령의 "없음" 계약(예: ps·pgrep은 출력 없이 1)만 그 코드나 이름 붙은 판정으로 고르고, 그 밖의 종료 코드와 오류 출력은 원인과 함께 던지거나(확인 호출이면 orIfProbeFailed로) 남기세요. CODING_STANDARDS.md#제품-코드',
+    },
+  },
+  create(context) {
+    return {
+      ConditionalExpression(node) {
+        const failure = exitComparison(node.test);
+        if (failure && emptyValue(node[failure]))
+          context.report({ node, messageId: "folded" });
+      },
+      IfStatement(node) {
+        const failure = exitComparison(node.test);
+        if (failure && returnsEmpty(node[failure]))
+          context.report({ node, messageId: "folded" });
+      },
+    };
+  },
+};
+
 const unreadableGuide =
   "읽기는 콜백 밖에서 하세요: 데이터 파일은 orIfMissing(없음만 기본값), 실패하면 안전한 결과로 가는 확인 호출(프로세스 조회·연결·이름 풀이·다른 프로그램의 저장소 열기)은 orIfProbeFailed(원인을 report로 남김)로 감싸고, 읽은 값의 해석만 orIfUnreadable로 감쌉니다. 응답 본문은 await res.text()로 받아 끊김을 드러낸 뒤 해석합니다. CODING_STANDARDS.md#제품-코드";
 
@@ -494,6 +565,7 @@ export default {
     "sync-command-timeout": syncCommandTimeout,
     "no-ignored-error": noIgnoredError,
     "no-io-in-unreadable": noIoInUnreadable,
+    "no-silent-exit-status": noSilentExitStatus,
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
   },

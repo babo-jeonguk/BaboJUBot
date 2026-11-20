@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RerunLoop, RerunLoops } from "./rerun-loop.ts";
+import { AsyncCallbackError, RerunLoop, RerunLoops } from "./rerun-loop.ts";
 
 /** 풀거나 거절할 수 있는 Promise. 시험이 회차의 시작과 끝을 정한다. */
 function gate() {
@@ -74,8 +74,10 @@ async function outcomeSoon(waiting: Promise<unknown>) {
 /** 콜백이 던진 오류가 서버 로그(console.error)에 남았는지 본다. 시험 출력에는 찍지 않는다. */
 function serverLog() {
   const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  const values = () => logged.mock.calls.flat();
   return {
-    includes: (value: unknown) => logged.mock.calls.flat().includes(value),
+    includes: (value: unknown) => values().includes(value),
+    some: (match: (value: unknown) => boolean) => values().some(match),
   };
 }
 
@@ -395,6 +397,36 @@ describe("RerunLoop", () => {
     expect(await outcomeSoon(loop.close())).toBe("resolved");
   });
 
+  it("refuses callbacks that return a promise, in the type and through onError, and still ends the pass", async () => {
+    const { errors, onError } = failures();
+    // 회차는 콜백의 작업을 기다리지 않는다. 비동기 콜백은 회차가 끝났다는 신호를 그 작업보다 먼저 내게 한다.
+    const loop = new RerunLoop(
+      () => Promise.resolve(),
+      onError,
+      // @ts-expect-error promise를 돌려주는 onIdle은 타입 검사에서 거부된다.
+      async () => {}
+    );
+    loop.request();
+    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(errors).toEqual([expect.any(AsyncCallbackError)]);
+    expect(await outcomeSoon(loop.close())).toBe("resolved");
+  });
+
+  it("logs an onError that returns a promise, with the failure it was given", async () => {
+    const log = serverLog();
+    const failure = new Error("check failed");
+    const loop = new RerunLoop(
+      () => Promise.reject(failure),
+      // @ts-expect-error promise를 돌려주는 onError는 타입 검사에서 거부된다.
+      async () => {}
+    );
+    loop.request();
+    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(log.includes(failure)).toBe(true);
+    expect(log.some((value) => value instanceof AsyncCallbackError)).toBe(true);
+    expect(await outcomeSoon(loop.close())).toBe("resolved");
+  });
+
   it("logs the onIdle error when onError throws too, and still ends the pass", async () => {
     const log = serverLog();
     const idleBroken = new Error("onIdle failed");
@@ -642,6 +674,27 @@ describe("RerunLoops", () => {
     expect(checks.of("c").passes()).toBe(0);
     expect(loops.busy("a")).toBe(false);
     expect(loops.busy("c")).toBe(false);
+  });
+
+  it("refuses callbacks that return a promise like RerunLoop, handing the error to onError with its key", async () => {
+    const errors: [string, unknown][] = [];
+    const loops = new RerunLoops(
+      async () => {},
+      (key, error) => errors.push([key, error]),
+      // @ts-expect-error promise를 돌려주는 onIdle은 타입 검사에서 거부된다.
+      async () => {}
+    );
+    loops.request("a");
+    expect(await outcomeSoon(loops.settled("a"))).toBe("resolved");
+    expect(loops.busy("a")).toBe(false);
+    expect(errors).toEqual([["a", expect.any(AsyncCallbackError)]]);
+    // @ts-expect-error promise를 돌려주는 onError도 거부된다.
+    expect(
+      new RerunLoops(
+        async () => {},
+        async () => {}
+      )
+    ).toBeInstanceOf(RerunLoops);
   });
 
   it("forgets the key and serves it again when onError throws", async () => {

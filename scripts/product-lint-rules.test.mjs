@@ -639,3 +639,47 @@ test("product code does not drop the error an error listener or an error-first c
         `${place}: ${code}`
       );
 });
+
+const exitRule = ["product/no-silent-exit-status"];
+
+test("product code does not fold a non-zero exit of an outside command into an empty result", async () => {
+  const folded = {
+    "an empty string on failure": `import { spawnSync } from "node:child_process";\nexport const start = (pid) => {\n  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 1000, encoding: "utf8" });\n  return result.status === 0 ? result.stdout.trim() : "";\n};\n`,
+    "undefined on failure": `export const text = (result) => (result.status !== 0 ? undefined : result.stdout);\n`,
+    "an early return on failure": `export const list = (listed) => {\n  if (listed.code !== 0) return;\n  return listed.stdout.split("\\n");\n};\n`,
+    "an empty list on failure": `export const list = (listed) => {\n  if (listed.code !== 0) {\n    return [];\n  }\n  return listed.stdout.split("\\n");\n};\n`,
+    "false in the else branch": `export const running = (result) => {\n  if (result.status === 0) return true;\n  else return false;\n};\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(folded)) {
+      const [message, ...rest] = await lint(code, place, exitRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /없음/);
+      assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
+    }
+  const kept = [
+    // 그 명령의 "없음" 계약만 그 코드로 고르고, 나머지는 원인과 함께 던진다.
+    `export const pids = (result) => {\n  if (result.status === 1) return [];\n  if (result.status !== 0) throw new Error(\`pgrep failed (exit \${result.status}): \${result.stderr}\`);\n  return result.stdout.split("\\n");\n};\n`,
+    `const gone = (result) => result.status === 1 && !result.stdout && !result.stderr;\nexport const field = (result) => {\n  if (gone(result)) return undefined;\n  if (result.status !== 0) throw new Error(\`ps failed (exit \${result.status})\`);\n  return result.stdout.trim();\n};\n`,
+    // 성공 쪽이 빈 값인 것은 접는 것이 아니다.
+    `export const problem = (code, output) => (code === 0 ? undefined : \`compiler ended with code \${code}: \${output}\`);\n`,
+    `export const text = (result) => (result.status === 0 ? result.stdout : \`unknown (\${result.stderr})\`);\n`,
+    // HTTP 상태처럼 0과 견주지 않는 비교는 보지 않는다.
+    `export const ok = (res) => (res.status === 200 ? res.body : undefined);\n`,
+  ];
+  for (const place of productPlaces)
+    for (const code of kept)
+      assert.deepEqual(
+        await lint(code, place, exitRule),
+        [],
+        `${place}: ${code}`
+      );
+  for (const place of testPlaces)
+    for (const code of Object.values(folded))
+      assert.deepEqual(
+        await lint(code, place, exitRule),
+        [],
+        `${place}: ${code}`
+      );
+});
