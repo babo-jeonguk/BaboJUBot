@@ -833,6 +833,19 @@ test("test code may not fulfil a Promise with the error of a Node server's close
       `import net from "node:net";\nexport const closing = (probe: net.Server) =>\n  new Promise<void>((resolve) => probe.close(() => resolve()));\n`,
       typedPlaces,
     ],
+    // net.Server를 이어받는 다른 서버 모듈(tls·http2)도 같은 close 계약이다(#266 리뷰 SPEC-5).
+    "a tls server": [
+      `import tls from "node:tls";\nconst server = tls.createServer({});\nawait new Promise((resolve) => server.close(resolve));\n`,
+      testPlaces,
+    ],
+    "a renamed http2 server": [
+      `import { createSecureServer as secure } from "node:http2";\nconst server = secure({});\nawait new Promise((resolve) => server.close(resolve));\n`,
+      testPlaces,
+    ],
+    "a parameter typed as a tls server": [
+      `import type { Server } from "node:tls";\nexport const closing = (probe: Server) =>\n  new Promise<void>((resolve) => probe.close(() => resolve()));\n`,
+      typedPlaces,
+    ],
     "servers from a typed list": [
       `import http from "node:http";\nimport type { Server } from "node:net";\nconst servers: http.Server[] = [];\nconst wires: { server: Server }[] = [];\nfor (const wire of wires.splice(0)) await new Promise((resolve) => wire.server.close(resolve));\nawait attemptAll(servers.map((server) => () => new Promise((resolve) => server.close(resolve))));\n`,
       typedPlaces,
@@ -865,6 +878,8 @@ test("test code may reject with a close error and leave other close callbacks al
     // 출처를 모르는 값과 성공만 알리는 close(dgram 소켓)는 보지 않는다.
     `await new Promise((resolve) => watcher.close(resolve));\n`,
     `import dgram from "node:dgram";\nconst socket = dgram.createSocket("udp4");\nawait new Promise((resolve) => socket.close(resolve));\n`,
+    // 같은 이름의 지역 값은 서버 모듈이 아니다.
+    `const tls = { createServer: () => watcher };\nconst server = tls.createServer();\nawait new Promise((resolve) => server.close(resolve));\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
@@ -1680,10 +1695,8 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `import { awaitedLater as later } from "@babojubot/process/test-cleanup";\n${laterHead}later(p);\n`,
       /담지 않습니다/,
     ],
-    "a relative import": [
-      `import { awaitedLater } from "../test-cleanup.ts";\n${laterHead}const x = awaitedLater(p);\nuse(x);\n`,
-      /기다리지 않습니다/,
-    ],
+    // 상대 경로로 가져온 것은 자리마다 실제 test-cleanup.ts를 가리키는 경로로 아래 "awaitedLater is told by the file it comes from"이
+    // 본다. 모든 자리에 같은 `../test-cleanup.ts`를 쓰면 다른 파일을 가리킨다(경로 철자로 보던 판정이 받던 모양, #266 리뷰 SPEC-5).
     "a namespace import": [
       `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}cleanup.awaitedLater(p);\n`,
       /담지 않습니다/,
@@ -1732,8 +1745,9 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `export { awaitedLater } from "@babojubot/process/test-cleanup";\n`,
       /부르지 않고/,
     ],
-    "a renamed re-export from a relative path": [
-      `export { awaitedLater as later } from "../test-cleanup.ts";\n`,
+    // 상대 경로의 다시 내보내기는 자리마다 실제 파일을 가리키는 경로로 "awaitedLater is told by the file it comes from"이 본다.
+    "a renamed re-export": [
+      `export { awaitedLater as later } from "@babojubot/process/test-cleanup";\n`,
       /부르지 않고/,
     ],
     "a re-export of the whole module": [
@@ -2060,14 +2074,22 @@ test("awaitedLater is told by the file it comes from, not by how the path is spe
   const reported = [
     [
       "apps/server/test/lint-sample.test.ts",
-      "../../../packages/process/src/test-cleanup.ts",
+      marked("../../../packages/process/src/test-cleanup.ts"),
     ],
-    ["packages/process/src/test-cleanup.test.ts", "./test-cleanup"],
+    ["packages/process/src/test-cleanup.test.ts", marked("./test-cleanup")],
+    [
+      "apps/server/test/lint-sample.test.ts",
+      `export { awaitedLater as later } from "../../../packages/process/src/test-cleanup.ts";\n`,
+    ],
+    [
+      "packages/process/src/test-cleanup.test.ts",
+      `export * from "./test-cleanup.ts";\n`,
+    ],
   ];
-  for (const [place, source] of reported)
+  for (const [place, code] of reported)
     assert.ok(
-      laterMessages(await lint(marked(source), place)).length > 0,
-      `${place}: ${source} not reported`
+      laterMessages(await lint(code, place)).length > 0,
+      `${place}: ${code} not reported`
     );
   // 다른 폴더의 같은 이름 파일은 그 도움이 아니다.
   for (const place of testPlaces)
