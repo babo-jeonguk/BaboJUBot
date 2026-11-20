@@ -903,6 +903,8 @@ test("test code may not mark a test as expected to fail", async () => {
     "test.fail.only": `test.fail.only("saves", async () => {\n  await save();\n});\n`,
     "a test made by extend": `settingsTest.fail("saves", async () => {\n  await save();\n});\n`,
     "Vitest it.fails": `it.fails("saves", async () => {\n  await save();\n});\n`,
+    // 시험 함수는 이름이 아니라 출처로 본다: vitest·node:test에서 다른 이름으로 가져와도 시험 함수다.
+    "Vitest it imported under another name": `import { it as check } from "vitest";\ncheck.fails("saves", async () => {\n  await save();\n});\n`,
   };
   for (const [shape, code] of Object.entries(shapes))
     for (const place of testPlaces) {
@@ -925,6 +927,8 @@ test("test code may fail on purpose through other values and check a failure by 
     `gate.fail();\nrun.fails = 1;\n`,
     `await expect(save()).rejects.toThrow("저장 실패");\n`,
     `test.skip(process.platform === "win32", "Windows에서는 막을 수 없다");\n`,
+    // 시험 함수 이름을 가린 지역 매개변수의 `fails`는 시험 표시가 아니다.
+    `export function count(it) {\n  return it.fails;\n}\n`,
   ];
   for (const code of allowed)
     for (const place of testPlaces)
