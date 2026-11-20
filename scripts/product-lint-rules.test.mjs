@@ -435,10 +435,17 @@ test("the read-assertion rule does not replace the bans already on server and ru
     ["no-restricted-syntax"]
   );
   assert.ok(hub, "the server's commit-effect ban is gone");
+  // runtime의 실행 경계: 가져오기 검사를 피하는 문법은 no-restricted-syntax가, 가져오기는 product/launch-boundary가 본다.
+  const [bypass] = await lint(
+    `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\nvoid cp;\n`,
+    "packages/runtime/src/providers/claude.ts",
+    ["no-restricted-syntax"]
+  );
+  assert.ok(bypass, "the runtime's launch bypass ban is gone");
   const [launch] = await lint(
     `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
     "packages/runtime/src/providers/claude.ts",
-    ["no-restricted-syntax"]
+    ["product/launch-boundary"]
   );
   assert.ok(launch, "the runtime's launch ban is gone");
 });

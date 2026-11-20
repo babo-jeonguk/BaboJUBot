@@ -173,7 +173,7 @@ const syncCommandTimeout = {
 };
 
 const ignoredErrorGuide =
-  '버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). 오류 이벤트 처리기(on("error", …))와 오류를 넘기는 콜백(execFile·close 등)도 같습니다: 상대가 끊어 난 오류(EPIPE·ECONNRESET)만 isDisconnect로 확인해 넘기고, 그 밖의 오류는 원인을 남기거나 드러냅니다. CODING_STANDARDS.md#제품-코드';
+  '버려야 하면 @babojubot/contracts의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). 오류 이벤트 처리기(on("error", …))와 오류를 넘기는 콜백(execFile·close 등)도 같습니다: 상대가 끊어 난 오류(EPIPE·ECONNRESET)만 isDisconnect로 확인해 넘기고, 그 밖의 오류는 원인을 남기거나 드러냅니다. CODING_STANDARDS.md#제품-코드';
 
 /** 오류를 받는 처리기의 자리: `.catch(처리기)`, `.then(성공, 처리기)`. */
 const handlerPositions = new Map([
@@ -669,10 +669,73 @@ const noDirectLaunch = {
   },
 };
 
+/** 실행 경계가 막는 모듈: 프로그램을 띄우는 모듈과, import 검사를 거치지 않고 모듈을 불러오는 길이 있는 node:module. */
+const boundaryLaunchers = new Set([
+  "child_process",
+  "node:child_process",
+  "cross-spawn",
+]);
+const boundaryLoaders = new Set(["module", "node:module"]);
+/** 이 규칙이 보는 불러오기. createRequire가 만든 함수와 getBuiltinModule은 그 함수를 얻는 길(node:module, getBuiltinModule)을 막아 알린다. */
+const boundaryLoadersSeen = new Set([
+  "import",
+  "export",
+  "import()",
+  "require",
+  "import =",
+]);
+
+/**
+ * 격리 실행의 환경과 오류 처리, 띄우기와 끄기의 짝을 한 곳이 맡도록, 패키지 안에서 정해진 파일만 프로그램을 띄운다(eslint.config.js의
+ * launchBoundary가 패키지마다 소유 파일을 빼고 건다). child_process·cross-spawn과 node:module을 가져오는 모든 자리를 공용 가져오기
+ * 판정(scripts/eslint-imports.mjs)으로 본다: 정적 import·re-export·문자열 dynamic import·require·TS import-equals. 타입만 가져오는
+ * 것은 그대로 둔다. `message`는 그 패키지에서 띄우는 길이다. 가져오기 검사를 피하는 문법(계산한 경로의 import, getBuiltinModule,
+ * process의 계산한 이름)은 설정의 no-restricted-syntax가 막는다.
+ */
+const launchBoundary = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "launch programs only from the listed owner files of a package, whatever way the launcher module is loaded",
+    },
+    schema: [
+      {
+        type: "object",
+        properties: { message: { type: "string" } },
+        required: ["message"],
+        additionalProperties: false,
+      },
+    ],
+    messages: {
+      launch: "{{source}}: {{message}}",
+      loader:
+        "{{source}}: node:module은 createRequire·Module._load처럼 import 검사를 거치지 않고 모듈을 불러오는 길이 있어 child_process 금지를 피합니다. 패키지는 import로 가져오세요. {{message}}",
+    },
+  },
+  create(context) {
+    const { message } = context.options[0];
+    return importSites((site) => {
+      if (site.typeOnly || !boundaryLoadersSeen.has(site.loader)) return;
+      const messageId = boundaryLaunchers.has(site.source)
+        ? "launch"
+        : boundaryLoaders.has(site.source)
+          ? "loader"
+          : undefined;
+      if (messageId)
+        context.report({
+          node: site.node,
+          messageId,
+          data: { source: site.source, message },
+        });
+    });
+  },
+};
+
 /**
  * 실행 소유 파일에서 Node.js의 시한에 끝을 맡기는 비동기 실행을 막는다. 비동기 `execFile`·`exec`는 시한에 신호만 보내고 출력이 닫히기를
  * 기다려, 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않는다. `spawn`·`fork`의 `timeout`도 신호만 보낸다(#262).
- * 짧은 명령은 runCommand·boundChild(providers/bounded-command.ts, 시한에 SIGKILL과 끝 보장), 트리를 끌 명령은 runTree를 쓴다.
+ * 짧은 명령은 runCommand·boundChild(@babojubot/process, 시한에 SIGKILL과 끝 보장), 트리를 끌 명령은 runTree를 쓴다.
  * 알려진 한계: 모듈 객체를 다른 변수로 넘긴 뒤의 호출, 옵션을 변수로 넘긴 `spawn`의 `timeout`은 보지 않는다.
  */
 const boundedCommand = {
@@ -687,7 +750,7 @@ const boundedCommand = {
       callback:
         "비동기 {{name}}은 시한에 신호만 보내고 출력이 닫히기를 기다립니다. 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않습니다. 짧은 명령은 runCommand(@babojubot/process, 그 패키지 안은 bounded-command.ts)로 돌려 시한에 SIGKILL로 끝내고 끝을 보장하세요. 트리를 끌 명령은 runTree(@babojubot/process)를 씁니다. CODING_STANDARDS.md#제품-코드",
       timeout:
-        "{{name}}의 timeout은 시한에 신호만 보내고 끝을 보장하지 않습니다. timeout 없이 띄우고 boundChild(providers/bounded-command.ts)로 시한에 SIGKILL을 보내고 끝을 기다리세요. CODING_STANDARDS.md#제품-코드",
+        "{{name}}의 timeout은 시한에 신호만 보내고 끝을 보장하지 않습니다. timeout 없이 띄우고 boundChild(@babojubot/process의 bounded-command.ts)로 시한에 SIGKILL을 보내고 끝을 기다리세요. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
@@ -1028,11 +1091,11 @@ const noFailureCollecting = {
     schema: [],
     messages: {
       collected:
-        "받은 오류를 배열·Map·Set에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다(감싼 오류, 이름 붙은 처리기도 같습니다). 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 문맥을 더할 오류는 그 단계 안에서 던지고, 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
+        "받은 오류를 배열·Map·Set에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다(감싼 오류, 이름 붙은 처리기도 같습니다). 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts)를 쓰세요. 문맥을 더할 오류는 그 단계 안에서 던지고, 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
       flagged:
-        "실패 처리 자리 {{count}}곳(줄 {{lines}})에서 같은 바깥 값 `{{name}}`을 바꿔 실패를 표시·셈·이어 붙여 모읍니다. 서로 독립인 단계는 attemptEach로 돌려 돌려받은 실패 목록으로 판단하고(남길 진단은 목록을 돌며 한 번씩), 던져야 하면 attemptAll, 원래 실패와 묶기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 단계마다 다른 문구는 그 단계 안에서 감싸 던집니다. CODING_STANDARDS.md#제품-코드",
+        "실패 처리 자리 {{count}}곳(줄 {{lines}})에서 같은 바깥 값 `{{name}}`을 바꿔 실패를 표시·셈·이어 붙여 모읍니다. 서로 독립인 단계는 attemptEach로 돌려 돌려받은 실패 목록으로 판단하고(남길 진단은 목록을 돌며 한 번씩), 던져야 하면 attemptAll, 원래 실패와 묶기는 combinedFailure(@babojubot/contracts)를 쓰세요. 단계마다 다른 문구는 그 단계 안에서 감싸 던집니다. CODING_STANDARDS.md#제품-코드",
       combined:
-        "AggregateError를 직접 만들어 실패를 손으로 묶습니다. 서로 독립인 단계의 실패만 알리면 attemptAll, 원래 실패와 정리 실패를 함께 알리려면 정리를 attemptEach로 돌려 combinedFailure([원래 실패, ...정리 실패], 문구, { cause: 원래 실패 })로 던지세요(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts). 묶는 곳이 하나여야 문구 모양(목록을 펼치지 않는 출력에서도 모든 실패가 보임)이 같습니다. CODING_STANDARDS.md#제품-코드",
+        "AggregateError를 직접 만들어 실패를 손으로 묶습니다. 서로 독립인 단계의 실패만 알리면 attemptAll, 원래 실패와 정리 실패를 함께 알리려면 정리를 attemptEach로 돌려 combinedFailure([원래 실패, ...정리 실패], 문구, { cause: 원래 실패 })로 던지세요(@babojubot/contracts). 묶는 곳이 하나여야 문구 모양(목록을 펼치지 않는 출력에서도 모든 실패가 보임)이 같습니다. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
@@ -1374,6 +1437,7 @@ export default {
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
     "no-direct-launch": noDirectLaunch,
+    "launch-boundary": launchBoundary,
     "bounded-command": boundedCommand,
     "package-import-scope": packageImportScope,
     "package-entry-only": packageEntryOnly,

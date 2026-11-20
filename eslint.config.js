@@ -88,61 +88,35 @@ const launchOwners = [
   // 데몬의 끄기는 pg_ctl stop과 잠금 파일·생성 신원 확인이 맡는다. pg_ctl의 기다림은 -t로 끝을 둔다.
   "packages/db/src/embedded.ts",
 ];
-const launchers = ["child_process", "node:child_process", "cross-spawn"];
 const runtimeLaunchMessage =
   "runtime의 프로그램 실행은 providers/process.ts의 startProcess(실행 시도)·runProbe(확인 명령)로 합니다. 호출자는 providerEnvironment로 격리 실행의 환경을 만들고, 이 함수들이 공용 실행(@babojubot/process의 launchTree·runTree)으로 띄워 입력·시작 오류와 종료를 처리하고 트리 전체를 끈 것을 확인합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processOwners에 이유와 함께 올립니다.";
 const processPackageLaunchMessage =
   "@babojubot/process 안의 프로그램 실행은 launch.ts의 launchTree·runTree(띄우기와 그 트리의 끄기를 한 쌍으로)나, 공용 실행 위에 놓을 수 없는 짧은 명령이면 bounded-command.ts의 runCommand·boundChild(시한에 SIGKILL과 끝 보장)로 합니다. 전용 실행이 꼭 필요하면 eslint.config.js의 processPackageOwners에 이유와 함께 올립니다.";
 
-// import 검사를 거치지 않고 모듈을 불러오는 길. 이름 그대로 가져오기·바꿔 가져오기·모듈 객체에서 읽기·구조 분해를 모두 본다.
-// node:module은 createRequire·Module._load처럼 import 검사를 거치지 않는 길이 여럿이라 모듈째 막고(타입은 허용),
-// process의 getBuiltinModule은 이름 그대로 가져오기·읽기·구조 분해와 계산한 이름으로 읽기를 막는다.
-const moduleLoaderModules = ["module", "node:module"];
+// process의 getBuiltinModule은 import 검사를 거치지 않고 모듈을 불러온다. 이름 그대로 가져오기·읽기·구조 분해와 계산한 이름으로 읽기를 막는다.
 const getBuiltinModule = "getBuiltinModule";
 
 /**
  * 격리 실행의 환경과 오류 처리, 띄우기와 끄기의 짝을 한 곳이 맡도록, 패키지 안에서 정해진 파일(`owners`)만 프로그램을 띄운다.
- * child_process와 cross-spawn의 정적 import·re-export·문자열 dynamic import를 막는다. 이 검사를 피하는 길(계산한 경로·template
- * literal의 import, node:module, process.getBuiltinModule, process의 계산한 이름)도 막는다. `message`는 그 패키지에서 띄우는 길이다.
+ * child_process·cross-spawn과 node:module을 가져오는 자리는 product/launch-boundary가 공용 가져오기 판정(scripts/eslint-imports.mjs)으로
+ * 본다(정적 import·re-export·문자열 dynamic import·require·TS import-equals). 이 검사를 피하는 문법(계산한 경로·template literal의
+ * import, process.getBuiltinModule, process의 계산한 이름)도 막는다. `message`는 그 패키지에서 띄우는 길이다.
  */
 function launchBoundary(files, owners, launchMessage) {
-  const moduleMessage = `node:module은 createRequire·Module._load처럼 import 검사를 거치지 않고 모듈을 불러오는 길이 있어 child_process 금지를 피합니다. 패키지는 import로 가져오세요. ${launchMessage}`;
   return {
     files,
     ignores: [...testFiles, ...owners],
+    plugins: { product: productRules },
     rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          paths: [
-            ...launchers.map((name) => ({
-              name,
-              allowTypeImports: true,
-              message: launchMessage,
-            })),
-            ...moduleLoaderModules.map((name) => ({
-              name,
-              allowTypeImports: true,
-              message: moduleMessage,
-            })),
-          ],
-        },
-      ],
+      // 띄우는 모듈과 node:module을 가져오는 모든 자리(공용 가져오기 판정).
+      "product/launch-boundary": ["error", { message: launchMessage }],
+      // 가져오기 검사를 피하는 문법.
       "no-restricted-syntax": [
         "error",
         {
-          selector:
-            "ImportExpression[source.value=/^((node:)?child_process|cross-spawn)$/]",
-          message: launchMessage,
-        },
-        {
-          // 문자열이 아닌 경로. 문자열 경로는 위 규칙과 no-restricted-imports가 본다.
+          // 문자열이 아닌 경로. 문자열 경로는 product/launch-boundary가 본다.
           selector: "ImportExpression:not([source.type='Literal'])",
           message: `계산한 경로·template literal의 dynamic import는 무엇을 가져오는지 lint가 볼 수 없어 child_process 금지를 피합니다. 경로를 문자열 그대로 적으세요(\`await import("./claude.ts")\`). ${launchMessage}`,
-        },
-        {
-          selector: "ImportExpression[source.value=/^(node:)?module$/]",
-          message: moduleMessage,
         },
         {
           selector: [
