@@ -561,11 +561,12 @@ const net = require("node:net");
 const os = require("node:os");
 const input = JSON.parse(process.argv[1]);
 // 금지 목적지에 닿지 못한 연결 오류는 답이다. 그 밖의 오류와 중계·조직 도구 연결의 오류는 원인을 남긴다.
+// 원래 오류의 사실(code·name)만 보내고 이름 붙이기는 서버(failureCode)가 한다. 문구는 주소가 섞일 수 있어 보내지 않는다.
 const failures = [];
 const unreachable = (error) =>
   ["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "EPERM", "EACCES", "ENOTFOUND", "EAI_AGAIN"].includes(error.code);
 const note = (probe, error, expected) => {
-  if (!expected(error)) failures.push({ probe, code: typeof error.code === "string" ? error.code : error.name });
+  if (!expected(error)) failures.push({ probe, code: error.code, name: error.name });
 };
 const attempt = (host, port) =>
   new Promise((resolve) => {
@@ -647,13 +648,13 @@ const isTarget = (value: unknown): value is { host: string; port: number } =>
   typeof (value as { host?: unknown }).host === "string" &&
   typeof (value as { port?: unknown }).port === "number";
 
-const isProbeFailure = (
-  value: unknown
-): value is { probe: string; code: string } =>
+/** 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다). */
+type ProbeFailure = { probe: string; code?: unknown; name: string };
+const isProbeFailure = (value: unknown): value is ProbeFailure =>
   typeof value === "object" &&
   value !== null &&
   typeof (value as { probe?: unknown }).probe === "string" &&
-  typeof (value as { code?: unknown }).code === "string";
+  typeof (value as { name?: unknown }).name === "string";
 
 export function createDockerEnvironment(
   settings: ContainerSettings
@@ -800,12 +801,10 @@ export function createDockerEnvironment(
           typeof value.proxyEnv !== "boolean"
         )
           throw new Error("isolation probe returned an invalid result");
-        for (const failure of value.failures as {
-          probe: string;
-          code: string;
-        }[])
+        // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다.
+        for (const { probe, code, name } of value.failures as ProbeFailure[])
           console.warn(
-            `[provider] the isolation probe's ${failure.probe} check failed (${failure.code})`
+            `[provider] the isolation probe's ${probe} check failed (${failureCode(Object.assign(new Error(), { name, code }))})`
           );
         return {
           interfaces: value.interfaces as string[],

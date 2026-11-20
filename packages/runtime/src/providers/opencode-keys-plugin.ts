@@ -119,8 +119,8 @@ export default {
       return applied;
     };
     const stop = new AbortController();
-    /** 오류의 짧은 이름. 문구에는 모델 출력이 섞일 수 있어 담지 않는다. */
-    const failureName = (error) => (typeof error?.code === "string" ? error.code : error?.name ?? "unknown");
+    /** 원래 오류의 사실(code·name)을 그대로 적는다. 이름 붙이기는 하지 않는다. 문구에는 모델 출력·키가 섞일 수 있어 담지 않는다. */
+    const facts = (error) => JSON.stringify({ code: error?.code, name: error?.name });
     void (async () => {
       let last;
       for (let attempt = 0; attempt < 600 && !stop.signal.aborted; attempt++) {
@@ -133,19 +133,19 @@ export default {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       if (!stop.signal.aborted)
-        console.error("[babojubot] organization tool keys were not applied" + (last === undefined ? "" : " (" + failureName(last) + ")"));
+        console.error("[babojubot] organization tool keys were not applied" + (last === undefined ? "" : " (" + facts(last) + ")"));
     })();
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ types: ["mcp.tools.changed"], signal: stop.signal })) {
           if (event?.data?.server !== server) continue;
           await new Promise((resolve) => setTimeout(resolve, 300));
-          await ensure().catch((error) => console.error("[babojubot] organization tool keys could not be applied again (" + failureName(error) + ")"));
+          await ensure().catch((error) => console.error("[babojubot] organization tool keys could not be applied again (" + facts(error) + ")"));
         }
       } catch (error) {
         // 목록 바뀜 알림을 받지 못하는 판이면 처음 확인만 한다. 멈추며 끝난 것은 답이다.
         if (!stop.signal.aborted)
-          console.error("[babojubot] tool change events are not available; only the first check applies (" + failureName(error) + ")");
+          console.error("[babojubot] tool change events are not available; only the first check applies (" + facts(error) + ")");
       }
     })();
     return () => stop.abort();

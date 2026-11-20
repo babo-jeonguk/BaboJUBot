@@ -2601,6 +2601,60 @@ describe("docker failures during container cleanup", () => {
   });
 });
 
+describe("the isolation probe", () => {
+  it("names each failure the container reported from the original error's code and name", async () => {
+    const root = await folders.make("babojubot-probe-");
+    // 컨테이너 안 확인 스크립트 대신 정해진 결과를 내는 프로그램. 확인 스크립트는 원래 오류의 code·name만 보낸다.
+    const answer = path.join(root, "answer.mjs");
+    await writeFile(
+      answer,
+      `console.log(${JSON.stringify(
+        JSON.stringify({
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: false,
+          failures: [
+            { probe: "tools", code: "ECONNREFUSED", name: "Error" },
+            { probe: "proxied", name: "TypeError" },
+            { probe: "direct", code: 7, name: "RangeError" },
+          ],
+          proxyEnv: true,
+        })
+      )});\n`
+    );
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const environment = createDockerEnvironment({
+      docker: [
+        process.execPath,
+        fixture("fake-docker.mjs"),
+        root,
+        JSON.stringify({ node: [process.execPath, answer] }),
+      ],
+      image,
+      owner: "owner-test",
+      relay: attachedRelayHub(),
+    });
+    await expect(
+      environment.probe(
+        { blocked: [], forbidden: [] },
+        AbortSignal.timeout(10_000)
+      )
+    ).resolves.toEqual({
+      interfaces: [],
+      reached: [],
+      proxied: [],
+      toolsReached: false,
+    });
+    expect(warned.mock.calls.map(([line]) => line)).toEqual([
+      "[provider] the isolation probe's tools check failed (ECONNREFUSED)",
+      "[provider] the isolation probe's proxied check failed (TypeError)",
+      "[provider] the isolation probe's direct check failed (RangeError)",
+    ]);
+  });
+});
+
 describe("the Docker engine check", () => {
   async function engine(files: Record<string, string> = {}) {
     const root = await folders.make("babojubot-engine-");
