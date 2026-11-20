@@ -21,14 +21,19 @@ const folder = process.env.BABOJUBOT_TEST_REPORTS;
 const byFile = new Map();
 /** 파일별로 지금 열려 있는 묶음 이름(nesting 깊이 순). */
 const suites = new Map();
+const openSuites = (file) => {
+  if (!suites.has(file)) suites.set(file, []);
+  return suites.get(file);
+};
+/** node:test의 skip·todo 표시(이유 문자열 또는 true)가 붙었는가. */
+const marked = (flag) => flag !== undefined && flag !== false;
 const record = (data, failed) => {
-  const open = suites.get(data.file) ?? [];
-  suites.set(data.file, open);
+  const open = openSuites(data.file);
+  // 묶음은 세지 않는다. 묶음의 실패(hook 실패 등)는 안쪽 시험의 실패와 종료 코드로 드러난다.
   if (data.details?.type === "suite") {
     open.length = data.nesting;
     return;
   }
-  const marked = (flag) => flag !== undefined && flag !== false;
   const status = marked(data.todo)
     ? "todo"
     : failed
@@ -49,15 +54,14 @@ const record = (data, failed) => {
 const stream = run({ files, concurrency: true });
 // 묶음은 안쪽 시험이 끝난 뒤에 끝을 알리므로, 시작(test:start)에서 이름을 열어 안쪽 시험의 전체 이름에 붙인다.
 stream.on("test:start", (data) => {
-  const open = suites.get(data.file) ?? [];
-  suites.set(data.file, open);
+  const open = openSuites(data.file);
   open.length = data.nesting;
   open.push(data.name);
 });
 stream.on("test:pass", (data) => record(data, false));
 stream.on("test:fail", (data) => {
   // `node --test`처럼 todo 시험의 실패는 실행을 실패시키지 않는다.
-  if (!(data.todo !== undefined && data.todo !== false)) process.exitCode = 1;
+  if (!marked(data.todo)) process.exitCode = 1;
   record(data, true);
 });
 stream.on("end", () => {

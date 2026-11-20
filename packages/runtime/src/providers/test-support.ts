@@ -161,13 +161,6 @@ export function commandFailure(
 }
 
 /**
- * 시험이 쓰는 바깥 환경(Docker, python pty, systemd 사용자 scope)을 확인한다. 쓸 수 있으면 `probe`의 값을, 건너뛸 때는
- * `undefined`를 돌려준다.
- * - `unsupported`: 이 OS가 그 환경을 지원하지 않는 이유. 있으면 확인 없이 그 이유로 건너뛴다.
- * - 지원하는 OS에서 확인이 실패하면, CI가 그 단계에 `variable=1`을 두어 필수로 정했을 때는 확인 결과(명령·종료 코드·stderr)와
- *   함께 던져 시험 파일이 실패한다. 변수가 없으면(로컬) 이유를 출력하고 건너뛴다. `1`·빈 값 밖의 값은 잘못 쓴 것이라 던진다.
- */
-/**
  * 파일·폴더 권한으로 읽기·쓰기를 막을 수 있는가. root는 권한을 넘어 막은 파일도 읽고 쓰므로 그 시험은 root에서 건너뛴다.
  * CI는 `BABOJUBOT_REQUIRE_PERMISSION_DENIAL=1`로 필수로 정해, root로 돌면 건너뛰지 않고 실패한다. Windows는 이 확인과 따로
  * POSIX 권한 비트를 쓰는 시험만 그 시험 옆에 OS 이유로 건너뛴다.
@@ -185,6 +178,13 @@ export function permissionDenial(): boolean {
   );
 }
 
+/**
+ * 시험이 쓰는 바깥 환경(Docker, python pty, systemd 사용자 scope)을 확인한다. 쓸 수 있으면 `probe`의 값을, 건너뛸 때는
+ * `undefined`를 돌려준다.
+ * - `unsupported`: 이 OS가 그 환경을 지원하지 않는 이유. 있으면 확인 없이 그 이유로 건너뛴다.
+ * - 지원하는 OS에서 확인이 실패하면, CI가 그 단계에 `variable=1`을 두어 필수로 정했을 때는 확인 결과(명령·종료 코드·stderr)와
+ *   함께 던져 시험 파일이 실패한다. 변수가 없으면(로컬) 이유를 출력하고 건너뛴다. `1`·빈 값 밖의 값은 잘못 쓴 것이라 던진다.
+ */
 export function probeEnvironment<T>({
   variable,
   what,

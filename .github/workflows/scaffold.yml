@@ -14,6 +14,11 @@ on:
         type: string
 permissions:
   contents: read
+# 시험 묶음(Vitest 설정의 testReport, scripts/run-node-tests.mjs)은 이 폴더에 보고서를 남기고, 묶음을 돈 job의 마지막 단계
+# `Check test counts`가 실행·통과 수를 판정한다(scripts/check-test-reports.mjs). 보고서를 판정하지 않는 job(파일 경계 검증 등)은
+# 자기 결과표로 판정한다.
+env:
+  BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -64,8 +69,6 @@ jobs:
         script: [check, typecheck, lint, build, "test:e2e"]
     env:
       RUN: ${{ matrix.script == 'check' || needs.changes.outputs.code == 'true' }}
-      # 문서 검사(check)의 node:test 묶음이 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(scripts/run-node-tests.mjs).
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - if: env.RUN != 'true'
         run: echo "Markdown만 바뀌어 ${{ matrix.script }}를 건너뜁니다."
@@ -130,9 +133,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -157,9 +157,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -208,9 +205,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -242,9 +236,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -272,9 +263,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -375,9 +363,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 23
-    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -427,9 +412,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 23
-    # 시험 묶음마다 보고서를 남겨 마지막 단계가 실행·통과 수를 판정한다(vitest.reports.ts, scripts/run-node-tests.mjs).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -483,9 +465,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 40
-    # 서버 멈춤 시험이 보고서를 남겨 그 실행·통과 수를 판정한다(vitest.reports.ts).
-    env:
-      BABOJUBOT_TEST_REPORTS: ${{ github.workspace }}/test-reports
     steps:
       - uses: actions/checkout@v7.0.1
         with:
