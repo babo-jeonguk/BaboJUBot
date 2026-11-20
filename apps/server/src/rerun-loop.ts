@@ -19,7 +19,7 @@ export class AsyncCallbackError extends TypeError {
  * 주기 확인(heartbeat·압축·알림)이 이 모양을 쓰고, 키마다 따로 도는 확인(에이전트별 깨우기 처리)은 `RerunLoops`를 쓴다.
  * 새 확인도 이 두 클래스를 쓴다.
  * 회차의 실패(거절·동기 throw)는 `onError`에 넘기고 다음 요청을 계속 받는다. 기다리는 쪽에는 실패를 던지지 않는다.
- * `onError`·`onIdle`은 동기 함수다. promise를 돌려주는 콜백은 타입 검사가 거부하고, 실행 중 받으면 `AsyncCallbackError`로 알린다(`onIdle`은 `onError`로, `onError`는 서버 로그로). 던져도 회차는 끝나고(기다리는 쪽이 풀리고) 다음 요청을 받는다. `onIdle`이 던진 오류는 `onError`로, `onError`가 던진 오류는 넘겨받던 실패와 함께 서버 로그(console.error)로 보낸다.
+ * `onError`·`onIdle`은 동기 함수다. promise를 돌려주는 콜백은 타입 검사가 거부하고, 실행 중 받으면 `AsyncCallbackError`로 알린다(`onIdle`은 `onError`로, `onError`는 서버 로그로). 돌려받은 promise는 기다리지 않고, 그 거절만 같은 보고(`onIdle`은 `onError`, `onError`는 서버 로그)로 넘긴다. 던져도 회차는 끝나고(기다리는 쪽이 풀리고) 다음 요청을 받는다. `onIdle`이 던진 오류는 `onError`로, `onError`가 던진 오류는 넘겨받던 실패와 함께 서버 로그(console.error)로 보낸다.
  * 마지막 회차가 끝나 쉬게 되면(재실행 없이 끝나거나 닫혀서 재실행을 버리면) `onIdle`을 부른다. 회차와 그 재실행 사이에는 부르지 않는다.
  */
 export class RerunLoop<E = void, I = void> {
@@ -59,8 +59,14 @@ export class RerunLoop<E = void, I = void> {
       if (!this.#running)
         continueAfterFailure(
           () => {
-            if (isThenable(this.#onIdle()))
+            const returned = this.#onIdle();
+            if (isThenable(returned)) {
               this.#fail(new AsyncCallbackError("onIdle"));
+              // 회차는 그 작업을 기다리지 않는다. 그 실패만 같은 보고로 넘겨 처리되지 않은 거절로 두지 않는다.
+              void Promise.resolve(returned).then(undefined, (error: unknown) =>
+                this.#fail(error)
+              );
+            }
           },
           (error) => this.#fail(error)
         );
@@ -81,12 +87,20 @@ export class RerunLoop<E = void, I = void> {
     continueAfterFailure(
       () => {
         const returned = this.#onError(error);
-        if (isThenable(returned))
+        if (isThenable(returned)) {
           console.error(
             "[rerun-loop] onError returned a promise; the failure it was given follows",
             new AsyncCallbackError("onError"),
             error
           );
+          // 그 작업의 실패도 서버 로그에 남긴다. 회차는 기다리지 않는다.
+          void Promise.resolve(returned).then(undefined, (thrown: unknown) =>
+            console.error(
+              "[rerun-loop] the promise onError returned failed",
+              thrown
+            )
+          );
+        }
       },
       (thrown) =>
         console.error(
