@@ -1707,6 +1707,27 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}import * as fsp from "node:fs/promises";\n${laterHead}const later = awaitedLater(p);\nawait fsp.readFile(later);\n`,
       /기다리지 않습니다/,
     ],
+    // 결과를 받는 자리는 인자 위치까지 맞아야 한다. 조합 함수는 첫 인자 배열만, expect는 첫 인자만, 가져온 도움은 첫 인자만 받는다(#272 외부 리뷰 F1).
+    "a second argument of Promise.all": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.all([], later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a second argument of Promise.race": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.race([p], later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a promise passed to Promise.all without an array": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.all(later);\n`,
+      /기다리지 않습니다/,
+    ],
+    "the message argument of expect": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(p, later).resolves.toBe(1);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a later argument of an imported helper": [
+      `${laterImport}import { within } from "./support.ts";\n${laterHead}const later = awaitedLater(p);\nawait within(1000, later);\n`,
+      /기다리지 않습니다/,
+    ],
     "an await of an array that holds it": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait [later];\n`,
       /기다리지 않습니다/,

@@ -227,6 +227,21 @@ test("fails the command for a rejected, unreadable or unnamed report and prints 
   assert.equal(unreadable.status, 1);
   assert.match(unreadable.stderr, /cannot read test report .*web\.json/);
   assert.equal(run().status, 1);
+  // 보고 폴더를 줬는데 아무 묶음도 보고서를 남기지 않았으면 묶음마다 보고서가 없다고 알린다(#272 외부 리뷰 S1).
+  const empty = spawnSync(
+    process.execPath,
+    [checker, "--expect", "server,web"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BABOJUBOT_TEST_REPORTS: path.join(dir, "never-made"),
+      },
+    }
+  );
+  assert.equal(empty.status, 1, empty.stderr);
+  assert.match(empty.stderr, /^server: no test report$/m);
+  assert.match(empty.stderr, /^web: no test report$/m);
   const noFolder = spawnSync(
     process.execPath,
     [checker, "--expect", "server"],
