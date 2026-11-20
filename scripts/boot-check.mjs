@@ -17,7 +17,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
-} from "../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import { createStop, runBootCheckFlow } from "./boot-check-flow.mjs";
 

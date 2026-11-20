@@ -22,11 +22,7 @@ import {
   processAlive as isAlive,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
-import {
-  attemptAll,
-  attemptEach,
-  combinedFailure,
-} from "../packages/contracts/src/failure.ts";
+import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;

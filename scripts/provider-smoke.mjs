@@ -6,8 +6,8 @@ import {
   createOpenCodeProvider,
   createAntigravityProvider,
 } from "@babojubot/runtime";
-import { openEphemeralDatabase } from "../packages/db/src/index.ts";
-import { startServer } from "../apps/server/src/index.ts";
+import { openEphemeralDatabase } from "@babojubot/db";
+import { startServer } from "@babojubot/server";
 import { withCheckServer } from "./live/check-server.mjs";
 const [provider, consent] = process.argv.slice(2);
 const factories = {

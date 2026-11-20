@@ -4,7 +4,7 @@
 // claude-background는 provider-live의 background 장면을 replay.mjs 순서(입력 → 첫 결과 → 입력 닫힘 → 나머지 → 종료)로 만든다.
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { orIfUnreadable } from "../../packages/contracts/src/failure.ts";
+import { orIfUnreadable } from "@babojubot/contracts";
 
 const [provider, output, ...directories] = process.argv.slice(2);
 const versions = {

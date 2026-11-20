@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./test-cluster": "./src/test-cluster.ts",
+    "./admin": "./src/admin.ts"
   },
   "files": [
     "src",

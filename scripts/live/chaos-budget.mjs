@@ -17,7 +17,7 @@ import {
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
-} from "../../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 
 /** 이슈 #154에서 합의한 상한. 여기보다 크게 실행하지 않는다. */
 export const limits = Object.freeze({

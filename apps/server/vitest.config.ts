@@ -5,7 +5,7 @@ import { defineConfig } from "vitest/config";
 // 테스트 파일마다 임시 제품 폴더(BABOJUBOT_HOME)를 쓴다(test/product-home.ts).
 export default defineConfig({
   test: {
-    globalSetup: ["../../packages/db/src/test-cluster.ts"],
+    globalSetup: ["@babojubot/db/test-cluster"],
     // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 시험 파일마다 @babojubot/process의 시험 준비가 실행기를 준비한다.
     setupFiles: ["./test/product-home.ts", "@babojubot/process/launcher-setup"],
     hookTimeout: 120_000,

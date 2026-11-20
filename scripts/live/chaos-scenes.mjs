@@ -11,7 +11,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
-} from "../../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 import { limits, maxOverlap } from "./chaos-budget.mjs";
 import { matchingPids } from "./processes.mjs";
 

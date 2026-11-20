@@ -22,7 +22,7 @@ import {
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
-} from "../../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 import { createWorkerRun, outcome } from "./worker-run.mjs";
 
 const USAGE = `usage: run-worker.mjs --model <provider/model> --title <title> --out <file.jsonl>

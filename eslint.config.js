@@ -472,8 +472,15 @@ export default defineConfig([
     rules: { "product/no-direct-launch": "error" },
   },
   {
-    // 다른 영역은 runtime·프로세스 패키지의 안쪽 파일이나 목록에 없는 입구를 가져오지 않는다(#266, docs/architecture.md 패키지 구성).
-    // 제품 코드는 시험 도움 입구를 가져오지 않는다. db는 아래 설정이 따로 본다.
+    // 다른 workspace 패키지는 그 package.json exports의 입구로만, 패키지 이름으로 가져온다(#266). 제품 코드·개발 스크립트·시험·
+    // 설정 모두. 같은 패키지 안의 상대 경로는 그대로다. 영역마다 어느 입구까지 받는지는 아래 package-import-scope가 좁힌다.
+    files: ["**/*.{ts,tsx,mts,mjs,js}"],
+    plugins: { product: productRules },
+    rules: { "product/package-entry-only": "error" },
+  },
+  {
+    // 다른 영역은 runtime·프로세스 패키지·db에서 목록에 없는 입구를 가져오지 않는다(#266, docs/architecture.md 패키지 구성).
+    // 제품 코드는 시험 도움·개발 도구 입구를 가져오지 않는다. db는 아래 설정이 따로 본다.
     files: productFiles,
     ignores: [
       ...testFiles,
@@ -488,6 +495,7 @@ export default defineConfig([
           packages: {
             "@babojubot/runtime": ["@babojubot/runtime"],
             "@babojubot/process": processEntries.product,
+            "@babojubot/db": ["@babojubot/db"],
           },
           why: "runtime·프로세스 바탕의 안쪽 파일이나 시험 도움에 기대면 그 패키지 안을 바꿀 때 함께 깨지고, 그 모양이 다른 영역으로 퍼집니다.",
         },
@@ -541,6 +549,8 @@ export default defineConfig([
           packages: {
             "@babojubot/runtime": ["@babojubot/runtime"],
             "@babojubot/process": processEntries.scripts,
+            // 사고 재현·실제 모델 시험은 DB를 직접 들여다본다(연결 하나 열기와 표 정의).
+            "@babojubot/db": ["@babojubot/db", "@babojubot/db/admin"],
           },
           why: "runtime·프로세스 바탕의 내부 파일이나 다른 입구에 기대면 그 패키지 안을 바꿀 때 스크립트가 함께 깨지고, 그 모양이 다른 스크립트로 퍼집니다.",
         },

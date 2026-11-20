@@ -3,7 +3,7 @@
 // 사용: node scripts/live/make-opencode-fixture.mjs <녹화 폴더> <출력 파일>
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { orIfUnreadable } from "../../packages/contracts/src/failure.ts";
+import { orIfUnreadable } from "@babojubot/contracts";
 
 const [directory, output] = process.argv.slice(2);
 const keptStrings = new Set([

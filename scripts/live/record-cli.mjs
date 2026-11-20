@@ -5,10 +5,7 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
-import {
-  failureCode,
-  orIfUnreadable,
-} from "../../packages/contracts/src/failure.ts";
+import { failureCode, orIfUnreadable } from "@babojubot/contracts";
 
 const [directory, ...command] = process.argv.slice(2);
 const startedAt = Date.now();

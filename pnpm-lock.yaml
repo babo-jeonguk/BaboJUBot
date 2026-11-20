@@ -13,12 +13,21 @@ importers:
 
   .:
     devDependencies:
+      '@babojubot/contracts':
+        specifier: workspace:*
+        version: link:packages/contracts
+      '@babojubot/db':
+        specifier: workspace:*
+        version: link:packages/db
       '@babojubot/process':
         specifier: workspace:*
         version: link:packages/process
       '@babojubot/runtime':
         specifier: workspace:*
         version: link:packages/runtime
+      '@babojubot/server':
+        specifier: workspace:*
+        version: link:apps/server
       '@eslint-community/eslint-plugin-eslint-comments':
         specifier: 4.8.1
         version: 4.8.1(eslint@10.12.0(jiti@2.7.0))
@@ -28,6 +37,9 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
+      drizzle-orm:
+        specifier: 0.45.4
+        version: 0.45.4(@types/pg@8.23.1)(pg@8.23.1)
       eslint:
         specifier: 10.12.0
         version: 10.12.0(jiti@2.7.0)

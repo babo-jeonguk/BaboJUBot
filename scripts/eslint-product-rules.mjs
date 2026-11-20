@@ -5,6 +5,8 @@ import {
   skippedCleanupIn,
   skippedSyncCleanupIn,
 } from "./eslint-test-rules.mjs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 const wrappers = new Set([
   "AwaitExpression",
@@ -527,8 +529,8 @@ const boundedCommand = {
 
 /**
  * 다른 영역이 runtime·프로세스 패키지에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
- * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 상대 경로도 풀어서 본다: 그 패키지 안을
- * 가리키는 상대 경로(`packages/<폴더>/…`, 입구 파일 `src/index.ts` 포함)는 어느 목록에도 들지 않는다. 패키지 자신의 파일은 보지 않는다.
+ * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 패키지 자신의 파일은 보지 않는다. 다른 패키지
+ * 안을 상대 경로로 가리키는 것과 내보내지 않은 하위 경로는 product/package-entry-only가 본다.
  */
 const importScopeAlternatives =
   "프로세스 띄우기·끄기와 짧은 명령은 @babojubot/process(launchTree·runTree·runCommand), 시험의 정리 도움은 @babojubot/process/test-cleanup·/remove-folder·/lifelines·/testing에 있습니다. 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 씁니다. 다른 곳은 띄울 때 launchTree가 돌려준 stop()으로 끕니다(docs/architecture.md 패키지 구성).";
@@ -554,37 +556,22 @@ const packageImportScope = {
       },
     ],
     messages: {
-      outside: `{{source}}: {{why}} 이 자리에서 {{name}}은 {{allowed}}만 패키지 이름으로 가져옵니다(상대 경로 금지). ${importScopeAlternatives}`,
+      outside: `{{source}}: {{why}} 이 자리에서 {{name}}은 {{allowed}}만 가져옵니다. ${importScopeAlternatives}`,
       none: `{{source}}: {{why}} 이 자리에서는 {{name}}을 가져오지 않습니다. ${importScopeAlternatives}`,
     },
   },
   create(context) {
     const { packages, why } = context.options[0];
     const file = context.filename.replaceAll("\\", "/");
-    const dir = file.replace(/\/[^/]*$/, "");
-    /** 패키지 이름과 그 폴더(`packages/<폴더>/`). 이 파일이 든 패키지는 뺀다. */
-    const scoped = Object.keys(packages)
-      .map((name) => ({ name, folder: `packages/${name.split("/")[1]}/` }))
-      .filter(
-        ({ folder }) => !file.includes(`/${folder}`) && !file.startsWith(folder)
-      );
-    /** 범위 안 패키지를 가리키면 그 패키지와 입구, 아니면 undefined. */
+    /** 범위 안 패키지를 이름으로 가리키면 그 패키지와 입구, 아니면 undefined. 이 파일이 든 패키지는 보지 않는다. */
     const target = (source) => {
       if (typeof source !== "string") return undefined;
-      for (const { name, folder } of scoped) {
-        if (source === name || source.startsWith(`${name}/`))
-          return { name, entry: source };
-        if (!source.startsWith(".")) continue;
-        const parts = [];
-        for (const part of `${dir}/${source}`.split("/"))
-          if (part === "..") parts.pop();
-          else if (part !== ".") parts.push(part);
-        const resolved = parts.join("/");
-        const at = resolved.indexOf(folder);
-        if (at < 0) continue;
-        return { name, entry: resolved.slice(at) };
-      }
-      return undefined;
+      const name = Object.keys(packages).find(
+        (each) => source === each || source.startsWith(`${each}/`)
+      );
+      if (!name || file.includes(`/packages/${name.split("/")[1]}/`))
+        return undefined;
+      return { name, entry: source };
     };
     const check = (node, source) => {
       const found = target(source);
@@ -595,6 +582,97 @@ const packageImportScope = {
         messageId: allowed.length ? "outside" : "none",
         data: { source, why, name: found.name, allowed: allowed.join(", ") },
       });
+    };
+    return {
+      ImportDeclaration: (node) => check(node, node.source.value),
+      ExportNamedDeclaration: (node) =>
+        node.source && check(node, node.source.value),
+      ExportAllDeclaration: (node) => check(node, node.source.value),
+      ImportExpression: (node) =>
+        node.source.type === "Literal" && check(node, node.source.value),
+    };
+  },
+};
+
+/** 저장소의 workspace 패키지(apps·packages 아래 package.json): 폴더, 이름, 내보낸 입구(`exports`의 키). */
+const repositoryRoot = path.resolve(import.meta.dirname, "..");
+const workspacePackages = ["apps", "packages"].flatMap((group) =>
+  readdirSync(path.join(repositoryRoot, group), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => {
+      const folder = `${group}/${entry.name}`;
+      const manifest = path.join(repositoryRoot, folder, "package.json");
+      if (!existsSync(manifest)) return [];
+      const { name, exports = {} } = JSON.parse(readFileSync(manifest, "utf8"));
+      return [{ folder, name, entries: Object.keys(exports) }];
+    })
+);
+const entryNames = (pkg) =>
+  pkg.entries.length
+    ? pkg.entries
+        .map((entry) =>
+          entry === "." ? pkg.name : `${pkg.name}${entry.slice(1)}`
+        )
+        .join(", ")
+    : "없음";
+
+/**
+ * 다른 workspace 패키지는 그 package.json의 `exports`가 내보낸 입구로만, 패키지 이름으로 가져온다(#266). 다른 패키지 폴더 안을
+ * 가리키는 상대 경로(입구 파일 포함)와 내보내지 않은 하위 경로를 막는다. 같은 패키지 안의 상대 경로와 저장소 밖 라이브러리는 보지
+ * 않는다. 선례: import-x `no-relative-packages`(다른 패키지를 상대 경로로)·`no-internal-modules`(안쪽 모듈), Node.js `exports`
+ * (내보내지 않은 하위 경로는 ERR_PACKAGE_PATH_NOT_EXPORTED). 문자열 경로의 import·export·dynamic import만 본다.
+ */
+const packageEntryOnly = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "import other workspace packages only by name through the entries their package.json exports",
+    },
+    schema: [],
+    messages: {
+      relative:
+        "{{source}}: 다른 패키지({{name}})의 폴더 안을 상대 경로로 가져옵니다. 그 패키지 안을 바꿀 때 함께 깨지고, 패키지 경계를 넘는 모양이 퍼집니다. 패키지 이름으로 그 package.json exports의 입구({{entries}})에서 가져오세요. 필요한 것이 입구에 없으면 그 패키지 exports에 의미 있는 입구를 더합니다(시험 전용이면 시험 입구로). docs/architecture.md 패키지 구성",
+      unexported:
+        "{{source}}: {{name}}이 package.json exports로 내보내지 않은 하위 경로입니다. 내보낸 입구({{entries}})에서 가져오세요. 필요한 것이 입구에 없으면 그 패키지 exports에 의미 있는 입구를 더합니다(시험 전용이면 시험 입구로). docs/architecture.md 패키지 구성",
+    },
+  },
+  create(context) {
+    const file = path
+      .relative(repositoryRoot, context.filename)
+      .replaceAll("\\", "/");
+    const own = workspacePackages.find((pkg) =>
+      file.startsWith(`${pkg.folder}/`)
+    );
+    const check = (node, source) => {
+      if (typeof source !== "string") return;
+      if (source.startsWith(".")) {
+        const resolved = path.posix.normalize(
+          path.posix.join(path.posix.dirname(file), source)
+        );
+        const pkg = workspacePackages.find((each) =>
+          resolved.startsWith(`${each.folder}/`)
+        );
+        if (pkg && pkg !== own)
+          context.report({
+            node,
+            messageId: "relative",
+            data: { source, name: pkg.name, entries: entryNames(pkg) },
+          });
+        return;
+      }
+      const pkg = workspacePackages.find(
+        (each) => source === each.name || source.startsWith(`${each.name}/`)
+      );
+      if (!pkg || pkg === own) return;
+      const entry =
+        source === pkg.name ? "." : `.${source.slice(pkg.name.length)}`;
+      if (!pkg.entries.includes(entry))
+        context.report({
+          node,
+          messageId: "unexported",
+          data: { source, name: pkg.name, entries: entryNames(pkg) },
+        });
     };
     return {
       ImportDeclaration: (node) => check(node, node.source.value),
@@ -1007,6 +1085,7 @@ export default {
     "no-direct-launch": noDirectLaunch,
     "bounded-command": boundedCommand,
     "package-import-scope": packageImportScope,
+    "package-entry-only": packageEntryOnly,
     "no-failure-collecting": noFailureCollecting,
     "no-group-stop-import": noGroupStopImport,
   },
