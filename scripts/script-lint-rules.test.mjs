@@ -958,3 +958,54 @@ test("failures are collected only through attemptAll, attemptEach and combinedFa
     []
   );
 });
+
+// 출처로 판정하는 제품·스크립트 규칙은 모두 같은 두 가지를 지킨다(#266 리뷰 SPEC-7): const 별칭·구조 분해로 받은 것도 잡고, 같은
+// 이름의 지역 값(매개변수)은 통과시킨다. 다른 출처 규칙(sync-command-timeout·no-io-in-unreadable·bounded-command·no-assertion-on-parsed-data)의
+// 같은 시험은 각 규칙의 시험 묶음에 있다.
+test("every product rule that judges by origin catches a const alias and passes a same-named local", async () => {
+  const places = ["apps/server/src/app.ts", "scripts/live/chaos-run.mjs"];
+  const cases = [
+    {
+      rule: launchRule,
+      reported: [
+        `import * as cp from "node:child_process";\nconst launcher = cp;\nlauncher.spawn("x", []);\n`,
+        `import * as cp from "node:child_process";\nconst { spawn } = cp;\nspawn("x", []);\n`,
+      ],
+      kept: [
+        `export function run(cp) {\n  const { spawn } = cp;\n  spawn("x", []);\n}\n`,
+      ],
+    },
+    {
+      rule: collectingRule,
+      reported: [
+        `const Failures = AggregateError;\nexport function fail(errors) {\n  throw new Failures(errors, "failed");\n}\n`,
+      ],
+      kept: [
+        `export function fail(errors, AggregateError) {\n  throw new AggregateError(errors, "failed");\n}\n`,
+      ],
+    },
+    {
+      rule: chainRule,
+      reported: [
+        `const { kill } = process;\nexport async function run(work, pids) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) kill(pid, "SIGKILL");\n  }\n}\n`,
+      ],
+      kept: [
+        `export async function run(work, pids, kill) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) kill(pid, "SIGKILL");\n  }\n}\n`,
+      ],
+    },
+  ];
+  for (const { rule, reported, kept } of cases)
+    for (const place of places) {
+      for (const code of reported)
+        assert.ok(
+          (await lint(code, place, rule)).length > 0,
+          `${place}: ${rule} not reported: ${code}`
+        );
+      for (const code of kept)
+        assert.deepEqual(
+          await lint(code, place, rule),
+          [],
+          `${place}: ${rule}: ${code}`
+        );
+    }
+});

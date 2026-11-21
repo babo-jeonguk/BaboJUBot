@@ -2082,6 +2082,157 @@ test("test rules see a tool under every name its module exports it", async () =>
       );
 });
 
+// 출처로 판정하는 시험 규칙은 모두 같은 두 가지를 지킨다(#266 리뷰 SPEC-7): const 별칭·구조 분해로 받은 도구도 잡고, 같은 이름의
+// 지역 값은 통과시킨다. 출처를 구한 뒤 판정에서 다시 지금 노드의 글자 이름(별칭 이름)을 보면 앞쪽이 깨진다.
+const shareState = (runner) =>
+  `let shared;\n${runner}("first", () => {\n  shared = 1;\n});\n${runner}("second", () => {\n  expect(shared).toBe(1);\n});\n`;
+const originRules = [
+  {
+    rule: "tests/no-elapsed-time-assertion",
+    reported: [
+      `const check = expect;\ncheck(Date.now() - started).toBeLessThan(5000);\n`,
+      `const { now } = Date;\nconst started = now();\nexpect(now() - started).toBeLessThan(5000);\n`,
+    ],
+    kept: [
+      `const Date = fakeClock;\nexpect(Date.now() - started).toBeLessThan(5000);\n`,
+    ],
+  },
+  {
+    rule: "tests/no-fixed-time-wait",
+    reported: [
+      `const later = setTimeout;\nawait new Promise((resolve) => later(resolve, 50));\n`,
+      `const { timeout } = AbortSignal;\nawait expect(server.start(timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
+      `const check = expect;\nawait check(server.start(AbortSignal.timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
+      `import assert from "node:assert/strict";\nconst { rejects } = assert;\nawait rejects(server.start(AbortSignal.timeout(200)), { name: "AbortError" });\n`,
+    ],
+    kept: [
+      `export function sleep(setTimeout) {\n  return new Promise((resolve) => setTimeout(resolve, 50));\n}\n`,
+      `const AbortSignal = fakeSignals;\nawait expect(server.start(AbortSignal.timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
+    ],
+  },
+  {
+    rule: "tests/no-unawaited-later",
+    reported: [
+      `import * as cleanup from "@babojubot/process/test-cleanup";\nconst later = cleanup.awaitedLater;\nlater(work());\n`,
+    ],
+    kept: [
+      `export function mark(awaitedLater) {\n  awaitedLater(work());\n}\n`,
+    ],
+  },
+  {
+    rule: "tests/no-process-env-change",
+    reported: [
+      `const proc = process;\nproc.env.SETTING = "1";\n`,
+      `const { assign } = Object;\nassign(process.env, { SETTING: "1" });\n`,
+    ],
+    kept: [
+      `const process = fakeProcess;\nprocess.env.SETTING = "1";\n`,
+      `const Object = fakeObject;\nObject.assign(process.env, { SETTING: "1" });\n`,
+    ],
+  },
+  {
+    rule: "tests/no-ignored-kill-error",
+    reported: [
+      `const { kill } = process;\ntry {\n  kill(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+    ],
+    kept: [
+      `const kill = fakeKill;\ntry {\n  kill(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+    ],
+  },
+  {
+    rule: "tests/no-cleanup-in-finally",
+    reported: [
+      `const { kill } = process;\ntry {\n  check();\n} finally {\n  kill(pid, "SIGKILL");\n}\n`,
+    ],
+    kept: [
+      `export function stop(process) {\n  try {\n    check();\n  } finally {\n    process.kill(pid, "SIGKILL");\n  }\n}\n`,
+    ],
+  },
+  {
+    rule: "tests/no-skipped-cleanup",
+    reported: [
+      `const atEnd = afterAll;\natEnd(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
+      `import { test } from "@playwright/test";\nconst { afterAll: atEnd } = test;\natEnd(async () => {\n  await server.stop();\n  await relays.close();\n});\n`,
+    ],
+    kept: [
+      `const afterAll = (fn) => fn;\nafterAll(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
+    ],
+  },
+  {
+    rule: "tests/no-ignored-close-error",
+    reported: [
+      `import http from "node:http";\nconst make = http.createServer;\nconst server = make();\nawait new Promise((resolve) => server.close(resolve));\n`,
+    ],
+    kept: [
+      `const http = { createServer: () => watcher };\nconst server = http.createServer();\nawait new Promise((resolve) => server.close(resolve));\n`,
+    ],
+  },
+  {
+    rule: "tests/no-expected-failure",
+    reported: [
+      // 리뷰의 재현.
+      `const check = it;\ncheck.fails("saves", async () => {\n  await save();\n});\n`,
+      `import { test } from "@playwright/test";\nconst { fail } = test;\nfail("saves", async () => {\n  await save();\n});\n`,
+    ],
+    kept: [
+      `const check = runner;\ncheck.fails("saves", async () => {\n  await save();\n});\n`,
+    ],
+  },
+  {
+    rule: "tests/no-state-between-tests",
+    reported: [
+      // 리뷰의 재현.
+      `const check = test;\n${shareState("check")}`,
+      `import { test } from "@playwright/test";\nconst { describe } = test;\ndescribe.configure({ mode: "serial" });\n`,
+      `import { test } from "@playwright/test";\nconst serial = test.describe.serial;\nserial("steps", () => {\n  test("a", () => {});\n});\n`,
+    ],
+    kept: [
+      `const check = (name, fn) => fn();\n${shareState("check")}`,
+      `const describe = { configure: record };\ndescribe.configure({ mode: "serial" });\n`,
+    ],
+  },
+];
+
+test("every test rule that judges by origin catches a const alias and passes a same-named local", async () => {
+  for (const { rule, reported, kept } of originRules) {
+    for (const code of reported)
+      for (const place of testPlaces)
+        assert.ok(
+          (await lint(code, place)).some((m) => m.ruleId === rule),
+          `${place}: ${rule} not reported: ${code}`
+        );
+    for (const code of kept)
+      for (const place of testPlaces)
+        assert.deepEqual(
+          (await lint(code, place)).filter((m) => m.ruleId === rule),
+          [],
+          `${place}: ${rule}: ${code}`
+        );
+  }
+  // 타입 정보로 보는 E2E 규칙도 expect는 출처로 본다.
+  const place = "apps/web/e2e/support/organization.ts";
+  const oneShot = (messages) =>
+    messages.filter((m) => m.ruleId === "tests/no-one-shot-ui-read");
+  assert.ok(
+    oneShot(
+      await lint(
+        `${e2eOnly}const check = expect;\ncheck(await status.isChecked()).toBe(true);\n`,
+        place
+      )
+    ).length > 0,
+    "a const alias of expect not reported"
+  );
+  assert.deepEqual(
+    oneShot(
+      await lint(
+        `${e2eOnly}const expect = record;\nexpect(await status.isChecked()).toBe(true);\n`,
+        place
+      )
+    ),
+    []
+  );
+});
+
 /** awaitedLater는 경로 철자가 아니라 대상 파일(@babojubot/process의 test-cleanup.ts)로 본다(#266 리뷰 SPEC-5). */
 test("awaitedLater is told by the file it comes from, not by how the path is spelled", async () => {
   const marked = (source) =>

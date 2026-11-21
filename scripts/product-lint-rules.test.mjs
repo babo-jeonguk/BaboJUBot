@@ -392,6 +392,9 @@ const parsedRule = ["product/no-assertion-on-parsed-data"];
 test("product code does not assert a type on data it has just read", async () => {
   const asserted = {
     "parsed text": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as Row;\n`,
+    // 출처로 본다: const 별칭·구조 분해로 받은 JSON.parse(#266 리뷰 SPEC-7).
+    "a const alias of JSON.parse": `type Row = { id: number };\nconst parse = JSON.parse;\nexport const read = (text: string) => parse(text) as Row;\n`,
+    "a destructured JSON.parse": `type Row = { id: number };\nconst { parse } = JSON;\nexport const read = (text: string) => parse(text) as Row;\n`,
     "parsed text or null": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as Row | null;\n`,
     "through unknown": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as unknown as Row;\n`,
     "a response body": `type Row = { id: number };\nexport const read = async (res: Response) => (await res.json()) as Row;\n`,
