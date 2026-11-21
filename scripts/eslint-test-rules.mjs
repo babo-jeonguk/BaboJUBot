@@ -955,11 +955,6 @@ function isTestOrigin(origin, global) {
   );
 }
 
-/** 식 `node`가 시험 함수 값(`test.afterAll`의 `test`)인가. 이름이 아니라 출처로 본다(별칭·구조 분해 포함, 같은 이름의 지역 값은 아님). */
-const testObject = (node, sourceCode, global) =>
-  node != null &&
-  isTestOrigin(originOf(sourceCode.getScope(node), node), global);
-
 const hookModules = new Set(["vitest", "node:test"]);
 /**
  * 출처가 `names` 중 하나의 hook이면 그 이름: 선언 없는 전역 hook(Vitest globals), vitest·node:test 모듈의 hook, 시험 함수 값의 hook
@@ -1337,9 +1332,11 @@ const noSkippedCleanup = {
           const fn = hookFunction(call);
           if (fn) hooks.push({ fn, call });
         }
+        // 시험 함수 값의 extend(…)가 fixture를 받는다. 출처로 본다(별칭·구조 분해로 받아도 같다).
+        const made = originOf(sourceCode.getScope(call.callee), call.callee);
         if (
-          methodOf(call) === "extend" &&
-          testObject(call.callee.object, sourceCode, false)
+          made?.path.at(-1) === "extend" &&
+          isTestOrigin({ ...made, path: made.path.slice(0, -1) }, false)
         )
           addFixtures(call);
       },
