@@ -2153,9 +2153,13 @@ const originRules = [
     reported: [
       `const atEnd = afterAll;\natEnd(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
       `import { test } from "@playwright/test";\nconst { afterAll: atEnd } = test;\natEnd(async () => {\n  await server.stop();\n  await relays.close();\n});\n`,
+      // 같은 이름의 지역 함수는 공용 폴더 지우기가 아니다.
+      `const removeFolder = (dir) => trash(dir);\nafterEach(async () => {\n  await server.close();\n  await removeFolder(root);\n});\n`,
     ],
     kept: [
       `const afterAll = (fn) => fn;\nafterAll(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
+      // 닫은 뒤 폴더 지우기만 이어지면 통과한다. removeFolder는 이름이 아니라 출처로 본다(다른 이름으로 가져와도 같다).
+      `import { removeFolder as wipe } from "@babojubot/process/remove-folder";\nafterEach(async () => {\n  await server.close();\n  await wipe(root);\n});\n`,
     ],
   },
   {

@@ -985,6 +985,16 @@ test("every product rule that judges by origin catches a const alias and passes 
       ],
     },
     {
+      // contracts의 continueAfterFailure는 이름이 아니라 출처로 본다(다른 이름으로 가져와도, 같은 이름의 지역 함수는 아님).
+      rule: collectingRule,
+      reported: [
+        `import { continueAfterFailure as keepGoing } from "@babojubot/contracts";\nexport function stop(pids, kill, failures) {\n  for (const pid of pids)\n    keepGoing(\n      () => kill(pid),\n      (error) => failures.push(error)\n    );\n}\n`,
+      ],
+      kept: [
+        `const continueAfterFailure = (work, report) => report(work());\nexport function stop(pids, kill, results) {\n  for (const pid of pids)\n    continueAfterFailure(\n      () => kill(pid),\n      (outcome) => results.push(outcome)\n    );\n}\n`,
+      ],
+    },
+    {
       rule: chainRule,
       reported: [
         `const { kill } = process;\nexport async function run(work, pids) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) kill(pid, "SIGKILL");\n  }\n}\n`,
