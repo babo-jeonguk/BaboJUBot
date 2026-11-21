@@ -48,10 +48,11 @@ function readsOutsideData(node, sourceCode) {
     );
   if (value.type !== "CallExpression") return false;
   const { callee } = value;
+  // 전역 JSON.parse: 출처로 본다(별칭·구조 분해 포함).
+  if (originName(sourceCode, callee) === "global:JSON.parse") return true;
   if (callee.type !== "MemberExpression" || callee.computed) return false;
+  // 응답 본문과 그 Promise를 잇는 메서드는 호출 결과(출처를 모르는 값)의 메서드라 이름으로 본다.
   switch (callee.property.name) {
-    case "parse":
-      return originName(sourceCode, callee) === "global:JSON.parse";
     case "json":
       return true;
     case "catch":
@@ -420,11 +421,24 @@ function ioCallName(callee) {
   );
 }
 
-/** orIfUnreadable이 있는 파일: contracts의 failure.ts와 그것을 `export *`로 다시 내보내는 패키지 입구. */
-const unreadableFiles = new Set([
+/** contracts의 실패 도구(orIfUnreadable·continueAfterFailure 등)가 있는 파일: failure.ts와 그것을 `export *`로 다시 내보내는 패키지 입구. */
+const failureFiles = new Set([
   "packages/contracts/src/failure",
   "packages/contracts/src/index",
 ]);
+/**
+ * 식 `node`가 contracts 실패 도구 `name`인가. 이름이 아니라 출처로 본다: 다른 이름으로 가져오기·별칭·모듈 객체의 속성이어도 같고,
+ * 같은 이름의 지역 함수는 아니다. 모듈은 경로 철자가 아니라 대상 파일로 판정한다(`targetOf`).
+ */
+function failureTool(context, node, name) {
+  const origin = originOf(context.sourceCode.getScope(node), node);
+  return (
+    origin?.module !== undefined &&
+    origin.path.length === 1 &&
+    origin.path[0] === name &&
+    failureFiles.has(targetOf(context.filename, origin.module)?.file)
+  );
+}
 
 /**
  * `orIfUnreadable`은 이미 손에 든 값의 동기 해석·확인 한 단계만 감싼다. 콜백 안의 입출력은 권한·디스크·연결 오류까지 아님·없음으로
@@ -471,16 +485,7 @@ const noIoInUnreadable = {
         // 이름이 아니라 출처로 본다: contracts의 orIfUnreadable(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도). 모듈은 경로
         // 철자가 아니라 대상 파일로 본다(#266 리뷰 SPEC-5): 패키지 이름·하위 입구·상대 경로 어느 것이든 contracts의 failure.ts나
         // 그것을 다시 내보내는 입구(index.ts)면 같다.
-        const origin = originOf(
-          context.sourceCode.getScope(node.callee),
-          node.callee
-        );
-        const called =
-          origin?.module !== undefined &&
-          origin.path.length === 1 &&
-          origin.path[0] === "orIfUnreadable" &&
-          unreadableFiles.has(targetOf(context.filename, origin.module)?.file);
-        if (!called) return;
+        if (!failureTool(context, node.callee, "orIfUnreadable")) return;
         const [read] = node.arguments;
         if (!read) return;
         if (!functionTypes.has(read.type)) {
@@ -528,7 +533,7 @@ const noCleanupChain = {
     const reported = new Set();
     const check = (block) => {
       const found =
-        skippedCleanupIn(block, context.sourceCode) ??
+        skippedCleanupIn(block, context) ??
         skippedSyncCleanupIn(block, context.sourceCode);
       if (!found || reported.has(found.node)) return;
       reported.add(found.node);
@@ -678,6 +683,31 @@ const noDirectLaunch = {
         const name = propertyName(node);
         if (name === undefined) report(node, `${where}[…]`);
         else if (banned(module, name)) report(node, `${where}.${name}`);
+      },
+      // 모듈 객체(별칭 포함)를 구조 분해해 꺼내도 같다(`const { spawn } = cp`, #266 리뷰 SPEC-7). 불러오는 호출의 구조 분해는
+      // 가져오는 자리(위)가 본다.
+      VariableDeclarator(node) {
+        if (
+          node.id.type !== "ObjectPattern" ||
+          (node.init?.type !== "Identifier" &&
+            node.init?.type !== "MemberExpression")
+        )
+          return;
+        const module = moduleObject(node.init);
+        if (!module) return;
+        const where = context.sourceCode.getText(node.init);
+        for (const property of node.id.properties) {
+          if (property.type !== "Property") {
+            report(property, `${where}의 나머지`);
+            continue;
+          }
+          const name = propertyName({
+            computed: property.computed,
+            property: property.key,
+          });
+          if (name === undefined) report(property, `${where}[…]`);
+          else if (banned(module, name)) report(property, `${where}.${name}`);
+        }
       },
     });
   },
@@ -972,7 +1002,7 @@ const calleeName = (callee) =>
  * 호출이 실패 처리기를 받는 자리면 그 인수: `.catch(처리기)`, `.then(_, 처리기)`, `continueAfterFailure(일, 처리기)`,
  * `.on("error", 처리기)`·`.once("error", 처리기)`.
  */
-function failureHandlerArgument(call) {
+function failureHandlerArgument(call, context) {
   const name = calleeName(call.callee);
   if (call.callee.type === "MemberExpression") {
     const position = handlerPositions.get(name);
@@ -985,7 +1015,10 @@ function failureHandlerArgument(call) {
       return call.arguments[1];
     return undefined;
   }
-  return name === "continueAfterFailure" ? call.arguments[1] : undefined;
+  // contracts의 continueAfterFailure(일, 처리기). 이름이 아니라 출처로 본다(#266 리뷰 SPEC-7).
+  return failureTool(context, call.callee, "continueAfterFailure")
+    ? call.arguments[1]
+    : undefined;
 }
 
 /** 이름이 가리키는 변수. 찾지 못하면 undefined. */
@@ -1200,7 +1233,7 @@ const noFailureCollecting = {
           report(node, "combined");
         const handler = handlerFunction(
           sourceCode,
-          failureHandlerArgument(node)
+          failureHandlerArgument(node, context)
         );
         if (!handler) return;
         check(handler.params[0], handler.body, handler);

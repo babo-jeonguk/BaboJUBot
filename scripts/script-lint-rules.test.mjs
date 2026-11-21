@@ -168,8 +168,9 @@ const keptChains = [
   `export async function run(server) {\n  try {\n    await server.listen();\n  } finally {\n    await server.close();\n  }\n}\n`,
   // 던지지 않는 정리를 함께 시작해 한 번 기다린다.
   `export async function run(work, removeAttemptFolder, a, b) {\n  try {\n    await work();\n  } finally {\n    await Promise.all([removeAttemptFolder(a), removeAttemptFolder(b)]);\n  }\n}\n`,
-  // 프로그램을 끈 뒤 그 폴더를 지운다(앞 단계가 끝나야 안전한 단계).
-  `export async function run(child, dir, killProgram, removeFolder) {\n  try {\n    await child.done;\n  } finally {\n    await killProgram(child);\n    await removeFolder(dir);\n  }\n}\n`,
+  // 프로그램을 끈 뒤 그 폴더를 지운다(앞 단계가 끝나야 안전한 단계). 폴더 지우기는 출처(공용 removeFolder)로 알아본다(#266 리뷰
+  // SPEC-7: 같은 이름의 매개변수는 그 도구가 아니다).
+  `import { removeFolder } from "@babojubot/process/remove-folder";\nexport async function run(child, dir, killProgram) {\n  try {\n    await child.done;\n  } finally {\n    await killProgram(child);\n    await removeFolder(dir);\n  }\n}\n`,
   // 서로 다른 갈래의 정리.
   `export async function run(a, b) {\n  try {\n    await a.listen();\n  } finally {\n    if (a.open) await a.close();\n    else await b.close();\n  }\n}\n`,
   // 순서를 이름으로 드러낸 한 단계.

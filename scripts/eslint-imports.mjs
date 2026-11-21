@@ -84,7 +84,8 @@ function patternPath(pattern, target) {
  *   `performance`는 전역과 같은 함수·객체, node:timers의 `promises`는 `timers/promises`, `assert.strict`는 `assert/strict`,
  *   node:module의 `Module`은 모듈 자신, node:test는 모듈 자체가 `test`이고 `test`·`it`은 그 별칭이다.
  * - vitest: `it`은 `test`, `assert`·`expect.assert`는 `chai.assert`.
- * - Playwright(@playwright/test): 기본 내보내기는 `test`, `test.expect`는 `expect`.
+ * - Playwright(@playwright/test): 기본 내보내기는 `test`, `test.expect`는 `expect`, `expect.extend(…)`·`expect.configure(…)`가
+ *   돌려준 값도 `expect`.
  */
 const sameValues = [
   [
@@ -154,6 +155,15 @@ const sameValues = [
     { module: "@playwright/test", path: ["test", "expect"] },
     { module: "@playwright/test", path: ["expect"] },
   ],
+  // Playwright: `expect.extend(…)`·`expect.configure(…)`는 새 expect를 돌려준다.
+  [
+    { module: "@playwright/test", path: ["expect", "extend()"] },
+    { module: "@playwright/test", path: ["expect"] },
+  ],
+  [
+    { module: "@playwright/test", path: ["expect", "configure()"] },
+    { module: "@playwright/test", path: ["expect"] },
+  ],
 ];
 
 /** 출처를 같은 값의 한 이름으로 맞춘다(`sameValues`). 앞부분이 표의 왼쪽과 같으면 오른쪽으로 바꾸고 나머지 속성을 잇는다. */
@@ -207,7 +217,7 @@ const same = (origin, expected) =>
   origin.path.length === expected.path.length &&
   origin.path.every((name, i) => name === expected.path[i]);
 
-/** createRequire가 만든 불러오는 함수의 출처. */
+/** createRequire가 만든 불러오는 함수의 출처(호출 결과는 끝에 `()`를 붙여 적는다). */
 const madeRequire = { module: "module", path: ["createRequire()"] };
 
 /**
@@ -236,12 +246,14 @@ export function originOf(scope, node, depth = 0) {
     case "CallExpression": {
       const loaded = loadOf(scope, node, depth + 1);
       if (loaded) return moduleOrigin(loaded.source);
-      // createRequire(…)는 불러오는 함수를 만든다.
-      return same(originOf(scope, node.callee, depth + 1), {
-        module: "module",
-        path: ["createRequire"],
-      })
-        ? madeRequire
+      // 호출 결과는 부른 함수의 출처 끝에 `()`를 붙여 적는다: createRequire(…)가 만든 불러오는 함수는 `createRequire()`,
+      // `test.extend(…)`가 만든 시험 함수는 `test.extend()`(#266 리뷰 SPEC-7). 별칭·구조 분해로 받은 결과도 같은 출처다.
+      const callee = originOf(scope, node.callee, depth + 1);
+      return callee && callee.path.length > 0
+        ? canonical({
+            ...callee,
+            path: [...callee.path.slice(0, -1), `${callee.path.at(-1)}()`],
+          })
         : undefined;
     }
     case "Identifier": {

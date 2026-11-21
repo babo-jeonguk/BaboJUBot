@@ -670,8 +670,9 @@ test("cleanup hooks are told by where they come from, and the same check covers 
 test("a shared cleanup hook may try every cleanup, and a resource's own cleanup may chain its steps", async () => {
   const allowed = [
     `afterAll(() => attemptAll([() => folder?.cleanUp(), () => model?.close()]));\n`,
-    // 그 폴더를 쓰는 서버를 끈 뒤에 지운다. 끄기가 실패하면 폴더를 남긴다.
-    `afterEach(async () => {\n  await t?.close();\n  t = undefined;\n  if (root) await removeFolder(root);\n});\n`,
+    // 그 폴더를 쓰는 서버를 끈 뒤에 지운다. 끄기가 실패하면 폴더를 남긴다. 폴더 지우기는 출처(공용 removeFolder)로 알아본다
+    // (#266 리뷰 SPEC-7: 선언 없는 같은 이름은 그 도구가 아니다).
+    `import { removeFolder } from "@babojubot/process/remove-folder";\nafterEach(async () => {\n  await t?.close();\n  t = undefined;\n  if (root) await removeFolder(root);\n});\n`,
     // 앞 단계가 끝나야 하는 단계는 한 단계 안에 둔다.
     `afterAll(() =>\n  attemptAll([\n    async () => {\n      await environment.removeOrphans();\n      await removeFolder(root);\n    },\n    () => relays.close(),\n  ])\n);\n`,
     // 실패를 모은다.
@@ -686,7 +687,7 @@ test("a shared cleanup hook may try every cleanup, and a resource's own cleanup 
     `afterEach(async () => {\n  if (remote) await remote.close();\n  else await local.close();\n});\n`,
     `afterEach(async () => {\n  try {\n    if (remote) await remote.close();\n    else await local.close();\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
     // try 안에서도 끈 뒤에 그 폴더를 지운다. 끄기가 실패하면 폴더를 남긴다.
-    `afterEach(async () => {\n  try {\n    await server.stop();\n    await removeFolder(root);\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
+    `import { removeFolder } from "@babojubot/process/remove-folder";\nafterEach(async () => {\n  try {\n    await server.stop();\n    await removeFolder(root);\n  } catch (error) {\n    failures.push(error);\n  }\n});\n`,
     // return 뒤의 정리는 앞 정리와 이어지지 않는다.
     `afterEach(async () => {\n  if (shared) {\n    await shared.close();\n    return;\n  }\n  await own.close();\n});\n`,
     // 같은 이름의 지역 함수는 hook이 아니다(scripts/boot-check-flow.test.mjs의 after).
