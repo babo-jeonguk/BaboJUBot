@@ -27,7 +27,7 @@ import {
   runPinned,
   windows,
 } from "./files-volume.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // #153: 파일 경로 격리의 사례 표(C01–C37, F1–F6)를 지금 이 파일 시스템에서 확인한다. 같은 파일이 일반 PR의 세 OS와
 // 환경별 전체 검증의 각 디스크(NTFS·FAT·SMB, APFS·HFS+)에서 돈다. 사례마다 결과를 test meta(`cases`)에 남기고

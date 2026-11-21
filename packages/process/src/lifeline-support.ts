@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 /** 시험 프로그램 안에서 연결을 쥐는 실제 파일. */
 const holder = fileURLToPath(
-  new URL("../../test-fixtures/lifeline.mjs", import.meta.url)
+  new URL("../test-fixtures/lifeline.mjs", import.meta.url)
 );
 
 /**

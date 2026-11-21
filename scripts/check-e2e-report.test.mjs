@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { combine, expectedSpecs, judge } from "./check-e2e-report.mjs";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 // Playwright JSON 보고서의 모양(파일별 suite → specs → tests, 시험마다 기대 상태·주석·결과 상태)을 줄여 만든다.
 const passing = (file, title = "works") => ({

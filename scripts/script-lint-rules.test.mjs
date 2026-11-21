@@ -62,8 +62,8 @@ const scriptRules = {
     kept: `export const text = (result) => {\n  if (result.status !== 0) throw new Error(\`git failed (exit \${result.status}): \${result.stderr}\`);\n  return result.stdout.trim();\n};\n`,
   },
   "product/no-io-in-unreadable": {
-    reported: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
-    kept: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "../packages/contracts/src/failure.ts";\nexport const read = (file) => {\n  const text = readFileSync(file, "utf8");\n  return orIfUnreadable(() => JSON.parse(text), undefined);\n};\n`,
+    reported: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "@babojubot/contracts";\nexport const read = (file) => orIfUnreadable(() => JSON.parse(readFileSync(file, "utf8")), undefined);\n`,
+    kept: `import { readFileSync } from "node:fs";\nimport { orIfUnreadable } from "@babojubot/contracts";\nexport const read = (file) => {\n  const text = readFileSync(file, "utf8");\n  return orIfUnreadable(() => JSON.parse(text), undefined);\n};\n`,
   },
   eqeqeq: {
     reported: `export const same = (a, b) => a == b;\n`,
@@ -120,7 +120,7 @@ test("development scripts and their tests import only declared packages", async 
 // 오류 이벤트 처리기도 오류를 받아 확인한다. 상대가 끊은 것만 넘기고 나머지는 남긴다.
 test("development scripts do not drop the error an error listener receives", async () => {
   const reported = `export const watch = (child) => child.stdin.on("error", () => {});\n`;
-  const kept = `import { isDisconnect } from "../packages/contracts/src/failure.ts";\nexport const watch = (child, record) =>\n  child.stdin.on("error", (error) => {\n    if (!isDisconnect(error)) record("stdin-error", { code: error.code });\n  });\n`;
+  const kept = `import { isDisconnect } from "@babojubot/contracts";\nexport const watch = (child, record) =>\n  child.stdin.on("error", (error) => {\n    if (!isDisconnect(error)) record("stdin-error", { code: error.code });\n  });\n`;
   const rule = ["product/no-ignored-error"];
   for (const place of scriptPlaces) {
     const [message, ...rest] = await lint(reported, place, rule);
@@ -141,7 +141,7 @@ const chainPlaces = [
 ];
 const chainTestPlaces = [
   "packages/db/src/client.test.ts",
-  "packages/runtime/src/test-cleanup.ts",
+  "packages/process/src/test-cleanup.ts",
   ...scriptTestPlaces,
 ];
 
@@ -168,8 +168,9 @@ const keptChains = [
   `export async function run(server) {\n  try {\n    await server.listen();\n  } finally {\n    await server.close();\n  }\n}\n`,
   // 던지지 않는 정리를 함께 시작해 한 번 기다린다.
   `export async function run(work, removeAttemptFolder, a, b) {\n  try {\n    await work();\n  } finally {\n    await Promise.all([removeAttemptFolder(a), removeAttemptFolder(b)]);\n  }\n}\n`,
-  // 프로그램을 끈 뒤 그 폴더를 지운다(앞 단계가 끝나야 안전한 단계).
-  `export async function run(child, dir, killProgram, removeFolder) {\n  try {\n    await child.done;\n  } finally {\n    await killProgram(child);\n    await removeFolder(dir);\n  }\n}\n`,
+  // 프로그램을 끈 뒤 그 폴더를 지운다(앞 단계가 끝나야 안전한 단계). 폴더 지우기는 출처(공용 removeFolder)로 알아본다(#266 리뷰
+  // SPEC-7: 같은 이름의 매개변수는 그 도구가 아니다).
+  `import { removeFolder } from "@babojubot/process/remove-folder";\nexport async function run(child, dir, killProgram) {\n  try {\n    await child.done;\n  } finally {\n    await killProgram(child);\n    await removeFolder(dir);\n  }\n}\n`,
   // 서로 다른 갈래의 정리.
   `export async function run(a, b) {\n  try {\n    await a.listen();\n  } finally {\n    if (a.open) await a.close();\n    else await b.close();\n  }\n}\n`,
   // 순서를 이름으로 드러낸 한 단계.
@@ -242,7 +243,7 @@ test("signalling a process group is left to the product's process group stop", a
       assert.deepEqual(rest, [], `${place}: ${shape}`);
       // 이유와 대안을 알려 준다.
       assert.match(message.message, /launchTree/);
-      assert.match(message.message, /recovery\.ts/);
+      assert.match(message.message, /group\.ts/);
       assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
     }
     for (const code of keptGroupCalls)
@@ -253,10 +254,7 @@ test("signalling a process group is left to the product's process group stop", a
       );
   }
   // 그 함수를 둔 파일과 시험 코드는 범위 밖이다.
-  for (const place of [
-    "packages/runtime/src/providers/recovery.ts",
-    ...chainTestPlaces,
-  ])
+  for (const place of ["packages/process/src/group.ts", ...chainTestPlaces])
     for (const code of Object.values(groupSignals))
       assert.deepEqual(
         await lint(code, place, groupRule),
@@ -281,19 +279,28 @@ const directLaunches = {
   "child_process re-exported whole": `export * from "node:child_process";\n`,
   "child_process imported at run time": `const cp = await import("node:child_process");\nvoid cp;\n`,
   "child_process from require": `import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nrequire("child_process");\n`,
+  // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire(#266 리뷰 SPEC-2).
+  "child_process from a renamed createRequire": `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { spawn } = load("node:child_process");\nspawn("x", []);\n`,
   "child_process from getBuiltinModule": `process.getBuiltinModule("node:child_process");\n`,
+  // 출처로 본다: 모듈 객체의 별칭, cross-spawn 기본 함수의 별칭(#266 리뷰 SPEC-4).
+  "an alias of the module object": `import * as cp from "node:child_process";\nconst tools = cp;\ntools.spawn("x", []);\n`,
+  "an alias of the cross-spawn function": `import crossSpawn from "cross-spawn";\nconst run = crossSpawn;\nrun("x", []);\n`,
 };
 // 막지 않는 모양: 상한을 둔 동기 실행, cross-spawn의 동기 실행, 타입만 가져오기, 공용 실행.
 const keptLaunches = [
   `import { execFileSync, spawnSync } from "node:child_process";\nexecFileSync("x", [], { timeout: 1000, killSignal: "SIGKILL" });\nspawnSync("x", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
   `import crossSpawn from "cross-spawn";\ncrossSpawn.sync("x", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
   `import type { ChildProcess } from "node:child_process";\nexport type Child = ChildProcess;\n`,
-  `import { launchTree } from "@babojubot/runtime/launch";\nconst tree = launchTree({ command: ["x"], args: [], cwd: ".", env: {}, stdio: "pipe" });\nawait tree.stop();\n`,
+  `import { launchTree } from "@babojubot/process";\nconst tree = launchTree({ command: ["x"], args: [], cwd: ".", env: {}, stdio: "pipe" });\nawait tree.stop();\n`,
+  // 모듈 객체를 지역 매개변수가 가리면 그 모듈이 아니다(#266 리뷰 SPEC-4).
+  `import * as cp from "node:child_process";\nvoid cp;\nexport function run(cp) {\n  cp.spawn("x", []);\n}\n`,
 ];
 const launchPlaces = [
   "apps/server/src/app.ts",
   "packages/db/src/client.ts",
   "packages/runtime/src/providers/claude.ts",
+  // 프로세스 패키지 안에서도 실행 소유 파일 밖은 공용 실행으로 띄운다.
+  "packages/process/src/lease.ts",
   ...scriptPlaces,
 ];
 
@@ -305,6 +312,7 @@ test("long-running children are launched only through the shared launch", async 
       assert.ok(messages.length > 0, `${place}: ${shape} not reported`);
       // 이유와 대안(공용 실행과 그 끄기, 동기 실행, 실행 소유 목록)을 알려 준다.
       assert.match(messages[0].message, /launchTree/);
+      assert.match(messages[0].message, /@babojubot\/process/);
       assert.match(messages[0].message, /stop\(\)/);
       assert.match(messages[0].message, /launchOwners/);
       assert.match(messages[0].message, /CODING_STANDARDS\.md#제품-코드/);
@@ -320,8 +328,10 @@ test("long-running children are launched only through the shared launch", async 
   }
   // 실행 소유 파일(공용 실행과 그것이 서는 실행, 데몬을 띄우는 pg_ctl)과 시험 코드는 범위 밖이다.
   for (const place of [
-    "packages/runtime/src/providers/launch.ts",
-    "packages/runtime/src/providers/lease.ts",
+    "packages/process/src/launch.ts",
+    "packages/process/src/job-object.ts",
+    "packages/process/src/bounded-command.ts",
+    "packages/runtime/src/providers/container.ts",
     "packages/db/src/embedded.ts",
     ...chainTestPlaces,
   ])
@@ -336,72 +346,122 @@ test("long-running children are launched only through the shared launch", async 
 });
 
 const halfRule = ["product/no-group-stop-import"];
-// runtime 밖에서 그룹 끄기의 반쪽이나 recovery.ts를 가져오는 모양.
+// 프로세스 패키지 밖(runtime의 재시작 복구 제외)에서 그룹 끄기의 반쪽을 가져오는 모양. 어느 경로에서 가져와도 이름으로 본다.
 const outsideHalves = {
-  "recovery.ts by a relative path": [
-    "scripts/live/chaos-run.mjs",
-    `import { recoverProviderProcesses } from "../../packages/runtime/src/providers/recovery.ts";\nawait recoverProviderProcesses(".");\n`,
-  ],
-  "stopProcessGroup from the runtime package": [
+  "stopProcessGroup from the package entry": [
     ".agents/scripts/run-worker.mjs",
-    `import { stopProcessGroup } from "@babojubot/runtime";\nawait stopProcessGroup(1);\n`,
+    `import { stopProcessGroup } from "@babojubot/process";\nawait stopProcessGroup(1);\n`,
   ],
-  "a runtime subpath that opens recovery": [
+  "stopProcessGroup from the recovery entry": [
     "apps/server/src/app.ts",
-    `import { stopProcessGroup } from "@babojubot/runtime/recovery";\nawait stopProcessGroup(1);\n`,
+    `import { stopProcessGroup } from "@babojubot/process/recovery";\nawait stopProcessGroup(1);\n`,
   ],
-  "recovery.ts imported at run time": [
-    "scripts/live/chaos-run.mjs",
-    `const recovery = await import("../../packages/runtime/src/providers/recovery.ts");\nvoid recovery;\n`,
+  "interruptProcessGroup in runtime": [
+    "packages/runtime/src/providers/process.ts",
+    `import { interruptProcessGroup } from "@babojubot/process/recovery";\ninterruptProcessGroup(1);\n`,
+  ],
+  "stopProcessGroup re-exported by runtime": [
+    "packages/runtime/src/index.ts",
+    `export { stopProcessGroup } from "@babojubot/process/recovery";\n`,
+  ],
+  // 공용 가져오기 판정: require·createRequire·dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+  "stopProcessGroup taken from a createRequire function": [
+    "apps/server/src/app.ts",
+    `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
+  ],
+  "interruptProcessGroup taken from a dynamic import": [
+    ".agents/scripts/run-worker.mjs",
+    `const { interruptProcessGroup } = await import("@babojubot/process/recovery");\nvoid interruptProcessGroup;\n`,
+  ],
+  // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire도 같다(#266 리뷰 SPEC-2).
+  "stopProcessGroup taken from a renamed createRequire": [
+    "apps/server/src/app.ts",
+    `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
   ],
 };
-// runtime 안에서 공용 실행·복구 밖이 그룹 끄기를 가져오는 모양.
+// 프로세스 패키지 안에서 공용 실행과 복구 입구 밖이 그룹 끄기를 가져오는 모양.
 const insideHalves = {
-  "stopProcessGroup in process.ts": `import { stopProcessGroup } from "./recovery.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
-  "interruptProcessGroup re-exported": `export { interruptProcessGroup } from "./recovery.ts";\n`,
-  "everything from recovery re-exported": `export * from "./recovery.ts";\n`,
+  "stopProcessGroup in lease.ts": [
+    "packages/process/src/lease.ts",
+    `import { stopProcessGroup } from "./group.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  ],
+  "interruptProcessGroup re-exported by the entry": [
+    "packages/process/src/index.ts",
+    `export { interruptProcessGroup } from "./group.ts";\n`,
+  ],
+  "everything from group.ts re-exported": [
+    "packages/process/src/index.ts",
+    `export * from "./group.ts";\n`,
+  ],
+  "stopProcessGroup taken from a dynamic import of group.ts": [
+    "packages/process/src/lease.ts",
+    `const { stopProcessGroup } = await import("./group.ts");\nvoid stopProcessGroup;\n`,
+  ],
+  "group.ts taken whole": [
+    "packages/process/src/index.ts",
+    `import * as group from "./group.ts";\nvoid group;\n`,
+  ],
+  // 같은 대상을 다른 철자로 적어도 같다: 자기 패키지 이름의 복구 입구, 확장자 없는 경로, src를 거친 경로(#266 리뷰 SPEC-3).
+  "stopProcessGroup from the package's own recovery entry": [
+    "packages/process/src/lease.ts",
+    `import { stopProcessGroup } from "@babojubot/process/recovery";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  ],
+  "stopProcessGroup from group without an extension": [
+    "packages/process/src/lease.ts",
+    `import { stopProcessGroup } from "./group";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  ],
+  "interruptProcessGroup through the src folder": [
+    "packages/process/src/clock.ts",
+    `export { interruptProcessGroup } from "../src/group.ts";\n`,
+  ],
+  "the recovery entry taken whole by the package's own name": [
+    "packages/process/src/index.ts",
+    `import * as entry from "@babojubot/process/recovery";\nvoid entry;\n`,
+  ],
 };
 
 test("the process group stop stays inside the shared launch and the restart recovery", async () => {
-  for (const [shape, [place, code]] of Object.entries(outsideHalves)) {
+  for (const [shape, [place, code]] of Object.entries({
+    ...outsideHalves,
+    ...insideHalves,
+  })) {
     const [message, ...rest] = await lint(code, place, halfRule);
     assert.ok(message, `${place}: ${shape} not reported`);
     assert.deepEqual(rest, [], `${place}: ${shape}`);
+    // 이유와 대안(띄울 때 받은 끄기)을 알려 준다.
     assert.match(message.message, /launchTree/);
+    assert.match(message.message, /stop\(\)/);
     assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
   }
-  for (const [shape, code] of Object.entries(insideHalves)) {
-    const place = "packages/runtime/src/providers/process.ts";
-    const [message, ...rest] = await lint(code, place, halfRule);
-    assert.ok(message, `${place}: ${shape} not reported`);
-    assert.deepEqual(rest, [], `${place}: ${shape}`);
-    assert.match(message.message, /stop\(\)/);
-  }
-  // 막지 않는 모양: runtime 밖의 재시작 복구와 공용 실행, runtime 안의 다른 recovery 함수, 공용 실행·복구 자신과 시험 코드.
+  // 막지 않는 모양: 공용 실행과 복구 입구, runtime의 재시작 복구, 그룹 끄기가 아닌 함수, 시험 코드.
   const kept = [
+    [
+      "packages/process/src/launch.ts",
+      `import { interruptProcessGroup, stopProcessGroup } from "./group.ts";\nvoid [interruptProcessGroup, stopProcessGroup];\n`,
+    ],
+    [
+      "packages/process/src/recovery.ts",
+      `export { groupAlive, stopProcessGroup } from "./group.ts";\n`,
+    ],
+    [
+      "packages/process/src/index.ts",
+      `export { launchTree, runTree } from "./launch.ts";\n`,
+    ],
+    [
+      "packages/runtime/src/providers/recovery.ts",
+      `import { groupAlive, stopProcessGroup } from "@babojubot/process/recovery";\nvoid [groupAlive, stopProcessGroup];\n`,
+    ],
     [
       "apps/server/src/app.ts",
       `import { recoverProviderProcesses } from "@babojubot/runtime";\nawait recoverProviderProcesses(".");\n`,
     ],
     [
       ".agents/scripts/run-worker.mjs",
-      `import { launchTree } from "@babojubot/runtime/launch";\nvoid launchTree;\n`,
-    ],
-    [
-      "packages/runtime/src/providers/process.ts",
-      `import { recordProcess } from "./recovery.ts";\nvoid recordProcess;\n`,
-    ],
-    [
-      "packages/runtime/src/index.ts",
-      `export { recoverProviderProcesses } from "./providers/recovery.ts";\n`,
-    ],
-    [
-      "packages/runtime/src/providers/launch.ts",
-      insideHalves["stopProcessGroup in process.ts"],
+      `import { launchTree } from "@babojubot/process";\nvoid launchTree;\n`,
     ],
     [
       "packages/runtime/src/providers/recovery.test.ts",
-      insideHalves["stopProcessGroup in process.ts"],
+      `import { stopProcessGroup } from "@babojubot/process/recovery";\nvoid stopProcessGroup;\n`,
     ],
   ];
   for (const [place, code] of kept)
@@ -420,18 +480,24 @@ const softCommands = {
   "execFile from a namespace": `import * as cp from "node:child_process";\ncp.execFile("ps", [], () => {});\n`,
   "a spawn with a timeout": `import { spawn } from "node:child_process";\nspawn("csc", [], { stdio: "ignore", timeout: 1000 });\n`,
   "a renamed spawn with a timeout": `import { spawn as run } from "node:child_process";\nrun("csc", [], { timeout: 1000 });\n`,
+  // 공용 가져오기 판정: require·dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+  "execFile taken from a dynamic import": `const { execFile } = await import("node:child_process");\nexecFile("ps", [], () => {});\n`,
+  "spawn taken from getBuiltinModule": `const { spawn } = process.getBuiltinModule("node:child_process");\nspawn("csc", [], { timeout: 1000 });\n`,
+  "a const alias of execFile": `import { execFile } from "node:child_process";\nconst run = execFile;\nrun("ps", [], () => {});\n`,
 };
 // 막지 않는 모양: timeout 없는 spawn(끝은 boundChild가 맡음), 시한에 강제 종료하는 동기 실행, 짧은 명령 실행 함수.
 const boundedCommands = [
   `import { spawn } from "node:child_process";\nspawn("csc", [], { stdio: "ignore" });\n`,
   `import { execFileSync } from "node:child_process";\nexecFileSync("ps", [], { timeout: 1000, killSignal: "SIGKILL" });\n`,
   `import { runCommand } from "./bounded-command.ts";\nawait runCommand("ps", [], { limitMs: 1000, maxOutputBytes: 1024 });\n`,
+  // 가져온 이름을 지역 매개변수가 가리면 그 함수가 아니다(#266 리뷰 SPEC-4).
+  `import { execFile } from "node:child_process";\nvoid execFile;\nexport function run(execFile) {\n  execFile("ps", [], () => {});\n}\n`,
 ];
 
 test("launch owners end short commands at their time limit", async () => {
   for (const place of [
-    "packages/runtime/src/providers/lease.ts",
-    "packages/runtime/src/providers/job-object.ts",
+    "packages/process/src/job-object.ts",
+    "packages/runtime/src/providers/recovery.ts",
     "packages/db/src/embedded.ts",
   ]) {
     for (const [shape, code] of Object.entries(softCommands)) {
@@ -459,31 +525,33 @@ test("launch owners end short commands at their time limit", async () => {
       );
 });
 
-const scopeRule = ["product/runtime-import-scope"];
+const scopeRule = ["product/package-import-scope"];
 
-test("db and development scripts reach runtime only through the listed entry points", async () => {
+// 다른 영역은 runtime·프로세스 패키지에서 목록에 없는 입구를 가져오지 않는다(#266). 안쪽 파일을 상대 경로로 가리키는 것은
+// product/package-entry-only가 본다(아래 시험). db는 runtime에 기대지 않고,
+// 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 쓴다. 제품 코드는 시험 도움 입구를 가져오지 않는다.
+test("other modules reach runtime and the process package only through their listed entry points", async () => {
   const refused = [
-    // db는 pg_ctl 실행 말고는 runtime에 기대지 않는다.
-    [
-      "packages/db/src/client.ts",
-      `import { launchTree } from "@babojubot/runtime/launch";\nvoid launchTree;\n`,
-    ],
     [
       "packages/db/src/client.ts",
       `import { createConnection } from "@babojubot/runtime";\nvoid createConnection;\n`,
     ],
+    // 옮기기 전의 runtime 하위 경로.
     [
       "packages/db/src/client.ts",
-      `import { recordProcess } from "../../runtime/src/providers/recovery.ts";\nvoid recordProcess;\n`,
+      `import { runCommand } from "@babojubot/runtime/bounded-command";\nvoid runCommand;\n`,
+    ],
+    [
+      "packages/db/src/client.test.ts",
+      `import { removeFolder } from "@babojubot/runtime/remove-folder";\nvoid removeFolder;\n`,
     ],
     [
       "packages/db/src/client.ts",
-      `const runtime = await import("@babojubot/runtime/testing");\nvoid runtime;\n`,
+      `import { withCleanup } from "@babojubot/process/test-cleanup";\nvoid withCleanup;\n`,
     ],
-    // 스크립트는 runtime 내부 파일과 목록에 없는 하위 경로를 가져오지 않는다.
     [
-      "scripts/live/chaos-run.mjs",
-      `import { sharedVariables } from "../../packages/runtime/src/providers/process.ts";\nvoid sharedVariables;\n`,
+      "packages/db/src/client.ts",
+      `import { stopLeaseHolders } from "@babojubot/process/recovery";\nvoid stopLeaseHolders;\n`,
     ],
     [
       "scripts/provider-live.mjs",
@@ -493,19 +561,185 @@ test("db and development scripts reach runtime only through the listed entry poi
       ".agents/scripts/run-worker.mjs",
       `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
     ],
+    [
+      ".agents/scripts/run-worker.mjs",
+      `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `const recovery = await import("@babojubot/process/recovery");\nvoid recovery;\n`,
+    ],
+    // 제품 코드도 runtime은 패키지 입구만 가져온다. 프로세스 바탕은 runtime에서 옮겼다.
+    [
+      "apps/server/src/dispatcher.ts",
+      `import { TreeLaunchRefused } from "@babojubot/runtime/launch";\nvoid TreeLaunchRefused;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { testFolders } from "@babojubot/process/testing";\nvoid testFolders;\n`,
+    ],
+    // 제품 코드는 db의 시험·개발 도구 입구를 가져오지 않는다.
+    [
+      "apps/server/src/app.ts",
+      `import { createTestDatabase } from "@babojubot/db/testing";\nvoid createTestDatabase;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { withClient } from "@babojubot/db/admin";\nvoid withClient;\n`,
+    ],
+    // 공용 가져오기 판정: require·createRequire로 불러오거나 찾는 입구도 같다(#266 리뷰 SPEC-1).
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nvoid load("@babojubot/db/admin");\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nvoid createRequire(import.meta.url).resolve("@babojubot/process/recovery");\n`,
+    ],
+    // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire, 모듈 객체의 createRequire(#266 리뷰 SPEC-2).
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import * as nodeModule from "node:module";\nvoid nodeModule.createRequire(import.meta.url)("@babojubot/db/admin");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `void require("@babojubot/runtime/testing");\n`,
+    ],
+    [
+      "packages/runtime/src/providers/process.ts",
+      `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
+    ],
+    // 입구 제한은 경로 철자가 아니라 대상(입구 파일)으로 본다(#266 리뷰 SPEC-6): 자기 패키지 안에서도 자기 이름이나 상대 경로로
+    // 그 입구 파일을 가져오면 다른 영역과 같은 판정이다.
+    [
+      "packages/process/src/clock.ts",
+      `import { identity } from "@babojubot/process/recovery";\nvoid identity;\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { identity } from "./recovery.ts";\nvoid identity;\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { withCleanup } from "./test-cleanup";\nvoid withCleanup;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { createGate } from "../testing.ts";\nvoid createGate;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { createGate } from "@babojubot/runtime/testing";\nvoid createGate;\n`,
+    ],
+    [
+      "packages/db/src/approvals.ts",
+      `import { withClient } from "./admin.ts";\nvoid withClient;\n`,
+    ],
+    [
+      "packages/db/src/approvals.ts",
+      `import startTestCluster from "@babojubot/db/test-cluster";\nvoid startTestCluster;\n`,
+    ],
+    // 다른 패키지의 입구 파일을 상대 경로로 가리켜도 그 입구다.
+    [
+      "packages/runtime/src/providers/claude.ts",
+      `import { identity } from "../../../process/src/recovery.ts";\nvoid identity;\n`,
+    ],
   ];
   for (const [place, code] of refused) {
     const [message, ...rest] = await lint(code, place, scopeRule);
     assert.ok(message, `${place}: ${code} not reported`);
     assert.deepEqual(rest, [], `${place}: ${code}`);
-    // 이유와 대안, 옮길 곳을 알려 준다.
-    assert.match(message.message, /@babojubot\/runtime\/launch/);
+    // 이유와 대안(새 패키지의 입구), 구조 문서를 알려 준다.
     assert.match(message.message, /@babojubot\/process/);
+    assert.match(message.message, /launchTree/);
+    assert.match(message.message, /docs\/architecture\.md/);
   }
   const kept = [
     [
       "packages/db/src/embedded.ts",
-      `import { runCommand } from "@babojubot/runtime/bounded-command";\nvoid runCommand;\n`,
+      `import { runCommand } from "@babojubot/process";\nvoid runCommand;\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { launchTree } = load("@babojubot/process");\nvoid launchTree;\n`,
+    ],
+    [
+      "packages/db/src/client.test.ts",
+      `import { removeFolder } from "@babojubot/process/remove-folder";\nimport { withCleanup } from "@babojubot/process/test-cleanup";\nimport { testFolders } from "@babojubot/process/testing";\nvoid [removeFolder, withCleanup, testFolders];\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { sharedVariables } from "@babojubot/runtime";\nimport { launchTree, runCommand } from "@babojubot/process";\nimport { withCleanup } from "@babojubot/process/test-cleanup";\nvoid [sharedVariables, launchTree, runCommand, withCleanup];\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { prepareJobObjectLauncher } from "@babojubot/process";\nimport { recoverProviderProcesses } from "@babojubot/runtime";\nvoid [prepareJobObjectLauncher, recoverProviderProcesses];\n`,
+    ],
+    [
+      "packages/runtime/src/providers/attempt-folder.ts",
+      `import { removeFolder } from "@babojubot/process/remove-folder";\nvoid removeFolder;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/recovery.ts",
+      `import { holdsLease, stopProcessGroup } from "@babojubot/process/recovery";\nvoid [holdsLease, stopProcessGroup];\n`,
+    ],
+    // 자기 패키지 안의 입구가 아닌 파일(입구가 다시 내보내는 안쪽 모듈 포함)과 받는 입구는 그대로다. 그룹 끄기 이름은
+    // product/no-group-stop-import가 따로 본다. db 밖의 시험 코드는 범위 밖이다.
+    [
+      "packages/process/src/index.ts",
+      `export { launchTree } from "./launch.ts";\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { holdsLease } from "./lease.ts";\nimport { identity } from "./group.ts";\nvoid [holdsLease, identity];\n`,
+    ],
+    [
+      "packages/process/src/clock.ts",
+      `import { launchTree } from "@babojubot/process";\nimport { removeFolder } from "./remove-folder.ts";\nvoid [launchTree, removeFolder];\n`,
+    ],
+    [
+      "packages/db/src/approvals.ts",
+      `import * as db from "./index.ts";\nvoid db;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/recovery.test.ts",
+      `import { leaseVariable } from "@babojubot/process/recovery";\nvoid leaseVariable;\n`,
+    ],
+    [
+      "scripts/gh-post.test.mjs",
+      `import { openLifelines } from "@babojubot/process/lifelines";\nvoid openLifelines;\n`,
+    ],
+  ];
+  for (const [place, code] of kept)
+    assert.deepEqual(
+      await lint(code, place, scopeRule),
+      [],
+      `${place}: ${code}`
+    );
+});
+
+const entryRule = ["product/package-entry-only"];
+
+// 다른 workspace 패키지는 그 package.json의 exports가 내보낸 입구로만, 패키지 이름으로 가져온다(#266). 상대 경로로 다른 패키지
+// 폴더 안을 가리키거나(입구 파일 포함) 내보내지 않은 하위 경로를 가져오지 않는다. 제품 코드·개발 스크립트·시험 모두 같다.
+// 선례: import-x의 no-relative-packages(다른 패키지를 상대 경로로 가져오기)·no-internal-modules(안쪽 모듈 가져오기), Node.js의 exports.
+test("other workspace packages are imported only through their exported entries", async () => {
+  const refused = [
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { attemptAll } from "../../packages/contracts/src/failure.ts";\nvoid attemptAll;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { startServer } from "../apps/server/src/index.ts";\nvoid startServer;\n`,
     ],
     [
       "scripts/provider-live.mjs",
@@ -513,25 +747,122 @@ test("db and development scripts reach runtime only through the listed entry poi
     ],
     [
       "scripts/live/chaos-run.mjs",
-      `import { sharedVariables } from "@babojubot/runtime";\nimport { launchTree } from "@babojubot/runtime/launch";\nimport { runCommand } from "@babojubot/runtime/bounded-command";\nimport { withCleanup } from "@babojubot/runtime/test-cleanup";\nvoid [sharedVariables, launchTree, runCommand, withCleanup];\n`,
+      `const { withClient } = await import("../../packages/db/src/client.ts");\nvoid withClient;\n`,
     ],
-    // 시험 코드와 runtime 자신은 범위 밖이다.
     [
-      "scripts/gh-post.test.mjs",
-      `import { openLifelines } from "@babojubot/runtime/lifelines";\nvoid openLifelines;\n`,
+      ".agents/scripts/run-worker.mjs",
+      `export { attemptAll } from "../../packages/contracts/src/failure.ts";\n`,
+    ],
+    [
+      "apps/server/src/app.ts",
+      `import { openDatabase } from "../../../packages/db/src/client.ts";\nvoid openDatabase;\n`,
+    ],
+    [
+      "packages/runtime/src/providers/process.ts",
+      `import { stopLeaseHolders } from "../../../process/src/lease.ts";\nvoid stopLeaseHolders;\n`,
+    ],
+    [
+      "packages/db/src/client.ts",
+      `import { recordProcess } from "../../runtime/src/providers/recovery.ts";\nvoid recordProcess;\n`,
+    ],
+    // 시험 코드도 같다.
+    [
+      "apps/server/test/support.ts",
+      `import { createTestDatabase } from "../../../packages/db/src/testing.ts";\nvoid createTestDatabase;\n`,
     ],
     [
       "packages/db/src/client.test.ts",
-      `import { removeFolder } from "@babojubot/runtime/remove-folder";\nvoid removeFolder;\n`,
+      `import { planRunStart } from "../../core/src/run.ts";\nvoid planRunStart;\n`,
+    ],
+    // require·require.resolve·createRequire로 문자열 경로를 불러오거나 찾는 것도 같다.
+    [
+      "scripts/provider-live.mjs",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("../packages/db/src/client.ts");\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nvoid load.resolve("@babojubot/db/src/schema.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { createRequire } from "node:module";\nvoid createRequire(import.meta.url)("../../apps/server/src/index.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import nodeModule from "node:module";\nvoid nodeModule.createRequire(import.meta.url).resolve("../../packages/contracts/src/failure.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `void require("../../packages/db/src/client.ts");\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `void require.resolve("../../packages/db/package.json");\n`,
+    ],
+    // 내보내지 않은 하위 경로.
+    [
+      "apps/web/src/api.ts",
+      `import { attemptAll } from "@babojubot/contracts/src/failure.ts";\nvoid attemptAll;\n`,
+    ],
+    [
+      "apps/server/test/support.ts",
+      `import { createTestDatabase } from "@babojubot/db/src/testing.ts";\nvoid createTestDatabase;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { launchTree } from "@babojubot/runtime/launch";\nvoid launchTree;\n`,
+    ],
+    // 자기 패키지도 이름으로 적으면 exports에 있는 입구만 닿는다(Node.js self-reference, #266 리뷰 SPEC-3).
+    [
+      "packages/process/src/lease.ts",
+      `import { stopProcessGroup } from "@babojubot/process/src/group.ts";\nvoid stopProcessGroup;\n`,
+    ],
+  ];
+  for (const [place, code] of refused) {
+    const [message, ...rest] = await lint(code, place, entryRule);
+    assert.ok(message, `${place}: ${code} not reported`);
+    assert.deepEqual(rest, [], `${place}: ${code}`);
+    // 이유와 대안(패키지 이름과 그 exports의 입구, 입구가 없으면 더하기)을 알려 준다.
+    assert.match(message.message, /@babojubot\//);
+    assert.match(message.message, /exports/);
+    assert.match(message.message, /docs\/architecture\.md/);
+  }
+  const kept = [
+    // 다른 패키지는 이름과 내보낸 입구로.
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { attemptAll } from "@babojubot/contracts";\nimport { removeFolder } from "@babojubot/process/remove-folder";\nvoid [attemptAll, removeFolder];\n`,
+    ],
+    [
+      "apps/server/test/support.ts",
+      `import { createTestDatabase } from "@babojubot/db/testing";\nvoid createTestDatabase;\n`,
+    ],
+    [
+      "scripts/live/chaos-run.mjs",
+      `import { withClient } from "@babojubot/db/admin";\nvoid withClient;\n`,
+    ],
+    // 저장소 밖 라이브러리와 패키지 입구는 require로도 그대로다.
+    [
+      "scripts/provider-live.mjs",
+      `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nvoid load.resolve("drizzle-orm");\nvoid load("@babojubot/db");\nvoid require("./live/check-server.mjs");\n`,
+    ],
+    // 같은 패키지 안의 상대 경로와 패키지 밖 라이브러리.
+    [
+      "packages/db/src/client.test.ts",
+      `import { openDatabase } from "./client.ts";\nimport { eq } from "drizzle-orm";\nvoid [openDatabase, eq];\n`,
     ],
     [
       "packages/runtime/src/providers/claude.ts",
-      `import { recordProcess } from "./recovery.ts";\nvoid recordProcess;\n`,
+      `import { createConnection } from "../index.ts";\nvoid createConnection;\n`,
+    ],
+    [
+      "scripts/provider-live.mjs",
+      `import { withCheckServer } from "./live/check-server.mjs";\nvoid withCheckServer;\n`,
     ],
   ];
   for (const [place, code] of kept)
     assert.deepEqual(
-      await lint(code, place, scopeRule),
+      await lint(code, place, entryRule),
       [],
       `${place}: ${code}`
     );
@@ -627,4 +958,65 @@ test("failures are collected only through attemptAll, attemptEach and combinedFa
     ),
     []
   );
+});
+
+// 출처로 판정하는 제품·스크립트 규칙은 모두 같은 두 가지를 지킨다(#266 리뷰 SPEC-7): const 별칭·구조 분해로 받은 것도 잡고, 같은
+// 이름의 지역 값(매개변수)은 통과시킨다. 다른 출처 규칙(sync-command-timeout·no-io-in-unreadable·bounded-command·no-assertion-on-parsed-data)의
+// 같은 시험은 각 규칙의 시험 묶음에 있다.
+test("every product rule that judges by origin catches a const alias and passes a same-named local", async () => {
+  const places = ["apps/server/src/app.ts", "scripts/live/chaos-run.mjs"];
+  const cases = [
+    {
+      rule: launchRule,
+      reported: [
+        `import * as cp from "node:child_process";\nconst launcher = cp;\nlauncher.spawn("x", []);\n`,
+        `import * as cp from "node:child_process";\nconst { spawn } = cp;\nspawn("x", []);\n`,
+      ],
+      kept: [
+        `export function run(cp) {\n  const { spawn } = cp;\n  spawn("x", []);\n}\n`,
+      ],
+    },
+    {
+      rule: collectingRule,
+      reported: [
+        `const Failures = AggregateError;\nexport function fail(errors) {\n  throw new Failures(errors, "failed");\n}\n`,
+      ],
+      kept: [
+        `export function fail(errors, AggregateError) {\n  throw new AggregateError(errors, "failed");\n}\n`,
+      ],
+    },
+    {
+      // contracts의 continueAfterFailure는 이름이 아니라 출처로 본다(다른 이름으로 가져와도, 같은 이름의 지역 함수는 아님).
+      rule: collectingRule,
+      reported: [
+        `import { continueAfterFailure as keepGoing } from "@babojubot/contracts";\nexport function stop(pids, kill, failures) {\n  for (const pid of pids)\n    keepGoing(\n      () => kill(pid),\n      (error) => failures.push(error)\n    );\n}\n`,
+      ],
+      kept: [
+        `const continueAfterFailure = (work, report) => report(work());\nexport function stop(pids, kill, results) {\n  for (const pid of pids)\n    continueAfterFailure(\n      () => kill(pid),\n      (outcome) => results.push(outcome)\n    );\n}\n`,
+      ],
+    },
+    {
+      rule: chainRule,
+      reported: [
+        `const { kill } = process;\nexport async function run(work, pids) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) kill(pid, "SIGKILL");\n  }\n}\n`,
+      ],
+      kept: [
+        `export async function run(work, pids, kill) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) kill(pid, "SIGKILL");\n  }\n}\n`,
+      ],
+    },
+  ];
+  for (const { rule, reported, kept } of cases)
+    for (const place of places) {
+      for (const code of reported)
+        assert.ok(
+          (await lint(code, place, rule)).length > 0,
+          `${place}: ${rule} not reported: ${code}`
+        );
+      for (const code of kept)
+        assert.deepEqual(
+          await lint(code, place, rule),
+          [],
+          `${place}: ${rule}: ${code}`
+        );
+    }
 });

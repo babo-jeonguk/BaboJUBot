@@ -7,9 +7,9 @@ import { testReport } from "../../vitest.reports.ts";
 export default defineConfig({
   test: {
     reporters: [...configDefaults.reporters, ...testReport("server")],
-    globalSetup: ["../../packages/db/src/test-cluster.ts"],
-    // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262, test/launcher-setup.ts).
-    setupFiles: ["./test/product-home.ts", "./test/launcher-setup.ts"],
+    globalSetup: ["@babojubot/db/test-cluster"],
+    // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 시험 파일마다 @babojubot/process의 시험 준비가 실행기를 준비한다.
+    setupFiles: ["./test/product-home.ts", "@babojubot/process/launcher-setup"],
     hookTimeout: 120_000,
     testTimeout: 120_000,
   },

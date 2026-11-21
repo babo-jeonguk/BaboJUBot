@@ -6,7 +6,7 @@ import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import { loginLink } from "./login-link.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
-import { withCleanup } from "../test-cleanup.ts";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // Codex 로그인 하나를 연결의 모든 조직이 링크로 같이 쓴다(docs/research/org-product-folders-references.md 사용자 결정).
 // 링크를 만들 수 없는 컴퓨터와 여러 조직이 한꺼번에 시작하는 장면에서도 로그인이 남아야 한다.

@@ -14,7 +14,7 @@ import {
   sentMessage,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 const runs = { timeout: 20_000 };
 const widths = [

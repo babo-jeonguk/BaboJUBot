@@ -4,23 +4,18 @@
 // 멈춤(자기 시한·SIGTERM·SIGINT)은 진행 중인 단계를 끊지 않고 다음 단계 경계에서 받아 한 곳의 정리로 끝낸다(boot-check-flow.mjs).
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
-import {
-  launchTree,
-  prepareJobObjectLauncher,
-} from "@babojubot/runtime/launch";
-import { processAlive } from "@babojubot/runtime/test-cleanup";
+import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
+import { processAlive } from "@babojubot/process/test-cleanup";
 import {
   attemptAll,
   continueAfterFailure,
   failureCode,
   hasErrorCode,
   orIfMissing,
-} from "../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import { createStop, runBootCheckFlow } from "./boot-check-flow.mjs";
 
@@ -277,12 +272,9 @@ async function stopLeftPostgres() {
     );
 }
 
-/** 제품(packages/db)이 쓰는 내장 Postgres의 pg_ctl. */
+/** 제품(packages/db)이 쓰는 내장 Postgres의 pg_ctl. 루트도 db와 같은 판(같은 patch)을 선언해 같은 설치 폴더를 받는다. */
 async function pgCtl() {
-  const require = createRequire(path.resolve("packages/db/package.json"));
-  const { getBinaries } = await import(
-    pathToFileURL(require.resolve("embedded-postgres")).href
-  );
+  const { getBinaries } = await import("embedded-postgres");
   return (await getBinaries()).pg_ctl;
 }
 
@@ -360,9 +352,7 @@ const { code } = await runBootCheckFlow({
       throw new Error(
         `could not read the embedded Postgres port from ${pidFile}`
       );
-    const { openDatabase } = await import(
-      pathToFileURL(path.resolve("packages/db/src/index.ts")).href
-    );
+    const { openDatabase } = await import("@babojubot/db");
     return openDatabase({
       embedded: { dataDir, port: running.port, persistent: true },
     });

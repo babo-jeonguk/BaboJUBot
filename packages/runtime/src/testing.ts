@@ -7,13 +7,6 @@ import {
   type ScriptStep,
 } from "./scripted.ts";
 
-// 바깥 환경이 있어야 도는 시험의 확인(CI는 BABOJUBOT_REQUIRE_*로 필수를 정한다). 다른 패키지의 시험·개발 스크립트도 쓴다.
-export {
-  commandFailure,
-  permissionDenial,
-  probeEnvironment,
-} from "./providers/test-support.ts";
-
 /**
  * 가짜 프로바이더의 선언(지원하는 일·준비 확인·로그인 명령)만. 검사가 `execute`를 직접 쓰는 adapter에 붙인다.
  * 그 adapter는 가짜 프로바이더의 실행을 쓰지 않으므로 끼워 넣기는 늘 거절된다.

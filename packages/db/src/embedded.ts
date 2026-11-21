@@ -13,8 +13,7 @@ import {
   orIfProbeFailed,
   orIfUnreadable,
 } from "@babojubot/contracts";
-import { psField } from "@babojubot/runtime/ps";
-import { runCommand } from "@babojubot/runtime/bounded-command";
+import { psField, runCommand } from "@babojubot/process";
 import { candidatePort } from "./ports.ts";
 
 /** 이 프로세스가 띄우고 멈추는 embedded Postgres. `persistent: false`면 디스크 확정 기록 없이 띄우고 정지 때 dataDir를 지운다. */

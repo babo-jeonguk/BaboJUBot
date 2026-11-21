@@ -11,9 +11,9 @@ import {
   type RelayProfile,
 } from "./credential-relay.ts";
 import { relayIdentityHeaders } from "./relay.ts";
-import { removeFolder } from "../remove-folder.ts";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { attemptAll } from "@babojubot/contracts";
-import { permissionDenial } from "./test-support.ts";
+import { permissionDenial } from "@babojubot/process/test-support";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 

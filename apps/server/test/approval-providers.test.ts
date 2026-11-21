@@ -8,7 +8,7 @@ import {
 } from "@babojubot/contracts";
 import { createFakeProviders, type Script } from "@babojubot/runtime";
 import { createGate, type Gate } from "@babojubot/runtime/testing";
-import { awaitedLater } from "@babojubot/runtime/test-cleanup";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   idle,

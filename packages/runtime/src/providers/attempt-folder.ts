@@ -1,4 +1,4 @@
-import { removeFolder } from "../remove-folder.ts";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 /**
  * 실행 시도가 만든 폴더를 지운다. 폴더를 쓰던 프로그램이 끝난 뒤에 부른다.

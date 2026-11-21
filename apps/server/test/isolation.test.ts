@@ -3,7 +3,7 @@ import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   eventListSchema,
   organizationDetailSchema,
@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { jsonBodyLimitBytes } from "../src/app.ts";
 import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import { eventually, startTestServer, type TestServer } from "./support.ts";
-import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
+import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {

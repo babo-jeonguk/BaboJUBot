@@ -21,8 +21,8 @@ import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
-import { removeFolder } from "../remove-folder.ts";
-import { withCleanup } from "../test-cleanup.ts";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import { attemptAll } from "@babojubot/contracts";
 
 // 로그인을 파일로 같이 쓰는 Codex·Antigravity의 실행 준비(#146). 조직 신원 확인 → 연결 로그인 준비 → 격리 실행이면 흔적 검사·
@@ -34,8 +34,8 @@ import { attemptAll } from "@babojubot/contracts";
  * 하나로만 띄우므로 그 입구를 본다(Windows는 묶음 실행기로 띄워 cross-spawn을 거치지 않는다).
  */
 const spawned: string[][] = [];
-vi.mock("./launch.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./launch.ts")>();
+vi.mock("@babojubot/process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@babojubot/process")>();
   const launchTree = ((options: Parameters<typeof actual.launchTree>[0]) => {
     spawned.push([...options.command, ...options.args]);
     return actual.launchTree(options);

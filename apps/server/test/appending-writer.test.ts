@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { keepAppending } from "./appending-writer.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // timer를 멈춰도 이미 시작한 쓰기는 계속된다. 그 쓰기가 폴더 정리와 겹치면 끝난 시험 뒤에 오류가 난다.
 // writer를 멈추는 쪽은 새 쓰기를 막고, 시작한 쓰기가 모두 끝날 때까지 기다리며, 그 실패를 숨기지 않는다.

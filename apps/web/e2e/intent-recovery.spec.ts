@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { goalInput } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // #150 복구 멈춤 화면. 서버 재시작 뒤 실행 의도 정산이 막힌 상태는 서버를 멈춰야만 생기므로(서버 회귀 시험
 // apps/server/test/intent-recovery.test.ts가 실제 상태 전이를 검사한다), 이 시험은 에이전트 상세 응답의 복구 상태만

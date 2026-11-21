@@ -32,35 +32,41 @@ const testPlaces = [
   "packages/runtime/src/providers/test-support.ts",
 ];
 
-const launchRules = ["no-restricted-imports", "no-restricted-syntax"];
+// 실행 경계: 가져오기는 공용 가져오기 판정을 쓰는 product/launch-boundary가, 가져오기 검사를 피하는 문법(계산한 경로, getBuiltinModule,
+// process의 계산한 이름)은 no-restricted-syntax가 본다.
+const launchRules = ["product/launch-boundary", "no-restricted-syntax"];
+
+const launches = {
+  "a named import": `import { spawn } from "node:child_process";\nspawn("x");\n`,
+  "a namespace import": `import * as cp from "child_process";\ncp.execFile("x");\n`,
+  "a re-export": `export { execFile } from "node:child_process";\n`,
+  "a dynamic import": `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
+  // runtime이 의존하는 cross-spawn도 같은 실행이다.
+  "cross-spawn": `import spawn from "cross-spawn";\nspawn("x");\n`,
+  "cross-spawn dynamically": `const { default: spawn } = await import("cross-spawn");\nspawn("x");\n`,
+  // 공용 가져오기 판정: require와 TypeScript의 import-equals도 같다(#266 리뷰 SPEC-1).
+  "a require": `const cp = require("node:child_process");\ncp.spawn("x");\n`,
+  "an import-equals require": `import cp = require("child_process");\ncp.spawn("x");\n`,
+  // 실행 경계 검사를 거치지 않고 모듈을 불러오는 길도 막는다. 계산한 경로·template literal의 import는 무엇을 가져오는지 lint가 볼 수 없다.
+  "a computed dynamic import": `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\n`,
+  "a template literal dynamic import":
+    "const cp = await import(`node:child_process`);\n",
+  createRequire: `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("child_process");\n`,
+  "createRequire renamed": `import { createRequire as make } from "module";\nmake(import.meta.url)("child_process");\n`,
+  "createRequire on the module": `import nodeModule from "node:module";\nnodeModule.createRequire(import.meta.url)("child_process");\n`,
+  "createRequire from a dynamic import": `const { createRequire } = await import("node:module");\ncreateRequire(import.meta.url)("child_process");\n`,
+  "createRequire re-exported": `export { createRequire } from "node:module";\n`,
+  "createRequire by a string key": `import * as nodeModule from "node:module";\nnodeModule["createRequire"](import.meta.url)("child_process");\n`,
+  // node:module은 createRequire 말고도 Module._load처럼 import 검사를 거치지 않는 길이 있어 모듈째 막는다.
+  "Module._load": `import { Module } from "node:module";\nModule._load("child_process");\n`,
+  "process.getBuiltinModule": `process.getBuiltinModule("node:child_process").spawn("x");\n`,
+  "getBuiltinModule from node:process": `import { getBuiltinModule } from "node:process";\ngetBuiltinModule("child_process");\n`,
+  "getBuiltinModule destructured": `const { getBuiltinModule } = process;\ngetBuiltinModule("child_process");\n`,
+  "a computed name on process": `const name = ["getBuiltin", "Module"].join("");\nprocess[name]("child_process");\n`,
+  "a computed name on globalThis.process": `const name = ["getBuiltin", "Module"].join("");\nglobalThis.process[name]("child_process");\n`,
+};
 
 test("runtime code launches programs only through the process owners", async () => {
-  const launches = {
-    "a named import": `import { spawn } from "node:child_process";\nspawn("x");\n`,
-    "a namespace import": `import * as cp from "child_process";\ncp.execFile("x");\n`,
-    "a re-export": `export { execFile } from "node:child_process";\n`,
-    "a dynamic import": `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
-    // runtime이 의존하는 cross-spawn도 같은 실행이다.
-    "cross-spawn": `import spawn from "cross-spawn";\nspawn("x");\n`,
-    "cross-spawn dynamically": `const { default: spawn } = await import("cross-spawn");\nspawn("x");\n`,
-    // 실행 경계 검사를 거치지 않고 모듈을 불러오는 길도 막는다. 계산한 경로·template literal의 import는 무엇을 가져오는지 lint가 볼 수 없다.
-    "a computed dynamic import": `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\n`,
-    "a template literal dynamic import":
-      "const cp = await import(`node:child_process`);\n",
-    createRequire: `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nload("child_process");\n`,
-    "createRequire renamed": `import { createRequire as make } from "module";\nmake(import.meta.url)("child_process");\n`,
-    "createRequire on the module": `import nodeModule from "node:module";\nnodeModule.createRequire(import.meta.url)("child_process");\n`,
-    "createRequire from a dynamic import": `const { createRequire } = await import("node:module");\ncreateRequire(import.meta.url)("child_process");\n`,
-    "createRequire re-exported": `export { createRequire } from "node:module";\n`,
-    "createRequire by a string key": `import * as nodeModule from "node:module";\nnodeModule["createRequire"](import.meta.url)("child_process");\n`,
-    // node:module은 createRequire 말고도 Module._load처럼 import 검사를 거치지 않는 길이 있어 모듈째 막는다.
-    "Module._load": `import { Module } from "node:module";\nModule._load("child_process");\n`,
-    "process.getBuiltinModule": `process.getBuiltinModule("node:child_process").spawn("x");\n`,
-    "getBuiltinModule from node:process": `import { getBuiltinModule } from "node:process";\ngetBuiltinModule("child_process");\n`,
-    "getBuiltinModule destructured": `const { getBuiltinModule } = process;\ngetBuiltinModule("child_process");\n`,
-    "a computed name on process": `const name = ["getBuiltin", "Module"].join("");\nprocess[name]("child_process");\n`,
-    "a computed name on globalThis.process": `const name = ["getBuiltin", "Module"].join("");\nglobalThis.process[name]("child_process");\n`,
-  };
   for (const place of [
     "packages/runtime/src/providers/claude.ts",
     "packages/runtime/src/providers/codex-connection.ts",
@@ -77,17 +83,35 @@ test("runtime code launches programs only through the process owners", async () 
     }
 });
 
+// 프로세스 패키지 안에서도 공용 실행·짧은 명령·묶음 실행기 밖의 파일은 프로그램을 직접 띄우지 않는다(#266).
+test("process package code launches programs only through its launch owners", async () => {
+  for (const place of [
+    "packages/process/src/lease.ts",
+    "packages/process/src/clock.ts",
+    "packages/process/src/remove-folder.ts",
+  ])
+    for (const [shape, code] of Object.entries(launches)) {
+      const [message, ...rest] = await lint(code, place, launchRules);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 메시지가 띄우기와 끄기를 한 쌍으로 두는 함수와 짧은 명령 함수, 예외를 올리는 곳을 알려 준다.
+      assert.match(message.message, /launchTree/);
+      assert.match(message.message, /runCommand/);
+      assert.match(message.message, /processPackageOwners/);
+    }
+});
+
 test("process owners, type imports and code outside runtime may use child_process", async () => {
   const named = `import { execFile } from "node:child_process";\nexecFile("x");\n`;
   for (const place of [
-    "packages/runtime/src/providers/launch.ts",
+    "packages/process/src/launch.ts",
+    "packages/process/src/bounded-command.ts",
+    "packages/process/src/job-object.ts",
     "packages/runtime/src/providers/container.ts",
-    "packages/runtime/src/providers/job-object.ts",
     "packages/runtime/src/providers/recovery.ts",
-    "packages/runtime/src/providers/lease.ts",
     "packages/runtime/src/providers/login.ts",
     // 시험 코드와 다른 패키지는 이 경계 밖이다.
-    "packages/runtime/src/providers/process-test-support.ts",
+    "packages/process/src/process-test-support.ts",
     "packages/runtime/src/providers/process.test.ts",
     "packages/db/src/embedded.ts",
     "apps/server/src/workspace.ts",
@@ -108,7 +132,7 @@ test("process owners, type imports and code outside runtime may use child_proces
   // 실행 소유 파일과 runtime 밖은 node:module·계산한 경로의 import·process의 계산한 이름을 쓸 수 있다.
   const bypasses = `import { createRequire } from "node:module";\nconst name = String(Date.now());\nawait import(name);\ncreateRequire(import.meta.url)(name);\nvoid process[name as keyof typeof process];\n`;
   for (const place of [
-    "packages/runtime/src/providers/launch.ts",
+    "packages/process/src/launch.ts",
     "packages/runtime/src/providers/process.test.ts",
     "packages/db/src/embedded.ts",
     "apps/server/src/workspace.ts",
@@ -368,6 +392,9 @@ const parsedRule = ["product/no-assertion-on-parsed-data"];
 test("product code does not assert a type on data it has just read", async () => {
   const asserted = {
     "parsed text": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as Row;\n`,
+    // 출처로 본다: const 별칭·구조 분해로 받은 JSON.parse(#266 리뷰 SPEC-7).
+    "a const alias of JSON.parse": `type Row = { id: number };\nconst parse = JSON.parse;\nexport const read = (text: string) => parse(text) as Row;\n`,
+    "a destructured JSON.parse": `type Row = { id: number };\nconst { parse } = JSON;\nexport const read = (text: string) => parse(text) as Row;\n`,
     "parsed text or null": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as Row | null;\n`,
     "through unknown": `type Row = { id: number };\nexport const read = (text: string) => JSON.parse(text) as unknown as Row;\n`,
     "a response body": `type Row = { id: number };\nexport const read = async (res: Response) => (await res.json()) as Row;\n`,
@@ -393,6 +420,15 @@ test("product code does not assert a type on data it has just read", async () =>
     "another value": `export const read = (value: unknown) => value as string;\n`,
     "another then": `export const read = (work: Promise<unknown>) => work.then((value) => String(value)) as Promise<string>;\n`,
   };
+  // JSON은 글자 이름이 아니라 출처로 본다(#266 리뷰 SPEC-4): 별칭은 같고, 같은 이름의 지역 값은 아니다.
+  const [aliased] = await lint(
+    `type Row = { id: number };\nconst Json = JSON;\nexport const read = (text: string) => Json.parse(text) as Row;\n`,
+    productPlaces[0],
+    parsedRule
+  );
+  assert.ok(aliased, "an alias of JSON not reported");
+  checked["a local JSON"] =
+    `type Row = { id: number };\nconst JSON = { parse: (text: string): Row => ({ id: text.length }) };\nexport const read = (text: string) => JSON.parse(text) as Row;\n`;
   for (const [shape, code] of Object.entries(checked))
     assert.deepEqual(await lint(code, productPlaces[0], parsedRule), [], shape);
   for (const place of testPlaces)
@@ -411,10 +447,17 @@ test("the read-assertion rule does not replace the bans already on server and ru
     ["no-restricted-syntax"]
   );
   assert.ok(hub, "the server's commit-effect ban is gone");
+  // runtime의 실행 경계: 가져오기 검사를 피하는 문법은 no-restricted-syntax가, 가져오기는 product/launch-boundary가 본다.
+  const [bypass] = await lint(
+    `const name = ["node", "child_process"].join(":");\nconst cp = await import(name);\nvoid cp;\n`,
+    "packages/runtime/src/providers/claude.ts",
+    ["no-restricted-syntax"]
+  );
+  assert.ok(bypass, "the runtime's launch bypass ban is gone");
   const [launch] = await lint(
     `const cp = await import("node:child_process");\ncp.spawn("x");\n`,
     "packages/runtime/src/providers/claude.ts",
-    ["no-restricted-syntax"]
+    ["product/launch-boundary"]
   );
   assert.ok(launch, "the runtime's launch ban is gone");
 });
@@ -434,6 +477,12 @@ test("product code runs a program synchronously only with a timeout", async () =
     "an undefined timeout": `import { spawnSync } from "node:child_process";\nexport const out = () => spawnSync("ps", [], { timeout: undefined });\n`,
     // 옵션을 변수로 넘기면 상한이 있는지 확인할 수 없다.
     "options in a variable": `import { execFileSync } from "node:child_process";\nconst options = { timeout: 1000 };\nexport const out = () => execFileSync("ps", [], options);\n`,
+    // 공용 가져오기 판정: dynamic import·getBuiltinModule에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+    "a name taken from a dynamic import": `const { execFileSync } = await import("node:child_process");\nexport const out = () => execFileSync("ps", []);\n`,
+    "a name taken from getBuiltinModule": `const { spawnSync: run } = process.getBuiltinModule("node:child_process");\nexport const out = () => run("ps", []);\n`,
+    // 출처로 본다: const 별칭과 모듈 객체의 별칭(#266 리뷰 SPEC-4).
+    "a const alias": `import { execFileSync } from "node:child_process";\nconst run = execFileSync;\nexport const out = () => run("ps", []);\n`,
+    "an alias of the module object": `import * as cp from "node:child_process";\nconst tools = cp;\nexport const out = () => tools.spawnSync("ps", []);\n`,
   };
   for (const place of productPlaces)
     for (const [shape, code] of Object.entries(unbounded)) {
@@ -465,6 +514,9 @@ test("product code runs a program synchronously only with a timeout", async () =
     `import { execSync } from "node:child_process";\nexport const out = () => execSync("ps", { timeout: 5000, "killSignal": "SIGKILL" });\n`,
     // child_process가 아닌 같은 이름의 함수는 대상이 아니다.
     `const execFileSync = (name: string) => name;\nexport const out = () => execFileSync("ps");\n`,
+    // 가져온 이름을 지역 매개변수가 가리거나, 지역 객체의 같은 이름 메서드는 그 함수가 아니다(#266 리뷰 SPEC-4).
+    `import { execFileSync } from "node:child_process";\nvoid execFileSync;\nexport const out = (execFileSync: (name: string) => string) => execFileSync("ps");\n`,
+    `const fake = { spawnSync: (name: string) => name };\nexport const out = () => fake.spawnSync("ps");\n`,
   ];
   for (const place of productPlaces)
     for (const code of bounded)
@@ -560,10 +612,17 @@ const unreadableIo = {
   "a renamed import": `import { readFileSync } from "node:fs";\nimport { orIfUnreadable as parsed } from "@babojubot/contracts";\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
   "a namespace import": `import { readFileSync } from "node:fs";\nimport * as failure from "@babojubot/contracts";\nexport const read = (file) => failure.orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`,
   "a callback passed by name": `${unreadableImport}const parse = () => JSON.parse("1");\nexport const read = () => orIfUnreadable(parse, undefined);\n`,
+  // 출처로 본다: const 별칭(#266 리뷰 SPEC-4).
+  "a const alias": `import { readFileSync } from "node:fs";\n${unreadableImport}const parsed = orIfUnreadable;\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
+  // 공용 가져오기 판정: dynamic import에서 구조 분해한 이름도 같다(#266 리뷰 SPEC-1).
+  "a name taken from a dynamic import": `import { readFileSync } from "node:fs";\nconst { orIfUnreadable: parsed } = await import("@babojubot/contracts");\nexport const read = (file) => parsed(() => readFileSync(file, "utf8"), undefined);\n`,
 };
 
 /** 이미 손에 든 값의 동기 해석·확인 한 단계. 정규식의 exec는 명령이 아니다. */
 const unreadableKept = [
+  // 가져온 이름을 지역 매개변수가 가리거나, 지역 객체의 같은 이름 메서드는 그 함수가 아니다(#266 리뷰 SPEC-4).
+  `import { readFileSync } from "node:fs";\n${unreadableImport}void orIfUnreadable;\nexport const read = (orIfUnreadable, file) => orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`,
+  `import { readFileSync } from "node:fs";\nconst tools = { orIfUnreadable: (read) => read() };\nexport const read = (file) => tools.orIfUnreadable(() => readFileSync(file, "utf8"));\n`,
   `${unreadableImport}export const read = (text) => orIfUnreadable(() => JSON.parse(text), undefined);\n`,
   `${unreadableImport}export const host = (origin) => orIfUnreadable(() => new URL(origin).host, false);\n`,
   `${unreadableImport}export const decode = (bytes) => orIfUnreadable(() => new TextDecoder("utf-8", { fatal: true }).decode(bytes), undefined);\n`,
@@ -600,6 +659,46 @@ test("orIfUnreadable callbacks do no I/O in product code", async () => {
         [],
         `${place}: ${code}`
       );
+});
+
+// orIfUnreadable은 경로 철자가 아니라 대상 파일로 본다(공용 판정의 targetOf, #266 리뷰 SPEC-5): contracts의 failure.ts를 패키지
+// 이름·하위 입구·상대 경로 어느 것으로 가리켜도 같고, 다른 파일의 같은 이름 함수는 아니다(그 파일 이름이 failure.ts여도).
+test("orIfUnreadable is told by the file it comes from, not by how the path is spelled", async () => {
+  const body = `export const read = (file) => orIfUnreadable(() => readFileSync(file, "utf8"), undefined);\n`;
+  const read = `import { readFileSync } from "node:fs";\n`;
+  const reported = [
+    ["apps/server/src/app.ts", "../../../packages/contracts/src/failure.ts"],
+    ["packages/core/src/harness.ts", "../../contracts/src/failure.ts"],
+    ["packages/contracts/src/index.ts", "./failure.ts"],
+    ["packages/contracts/src/index.ts", "./failure"],
+    ["packages/core/src/harness.ts", "@babojubot/contracts/failure"],
+  ];
+  for (const [place, source] of reported)
+    assert.ok(
+      (
+        await lint(
+          `${read}import { orIfUnreadable } from "${source}";\n${body}`,
+          place,
+          unreadableRule
+        )
+      ).length > 0,
+      `${place}: ${source} not reported`
+    );
+  const kept = [
+    ["apps/server/src/app.ts", "./failure.ts"],
+    ["packages/core/src/harness.ts", "./failure"],
+    ["packages/runtime/src/providers/claude.ts", "../failure.ts"],
+  ];
+  for (const [place, source] of kept)
+    assert.deepEqual(
+      await lint(
+        `${read}import { orIfUnreadable } from "${source}";\n${body}`,
+        place,
+        unreadableRule
+      ),
+      [],
+      `${place}: ${source}`
+    );
 });
 
 test("product code does not drop the error an error listener or an error-first callback receives", async () => {
@@ -726,6 +825,15 @@ test("product code imports only the packages its package.json declares, as runti
       `export const load = () => import("left-pad");\n`,
       /선언하지 않고/,
     ],
+    // 공용 가져오기 판정: require·require.resolve로 불러오거나 찾는 패키지도 같다(#266 리뷰 SPEC-1).
+    "an undeclared package taken by require": [
+      `export const pad = require("left-pad");\n`,
+      /선언하지 않고/,
+    ],
+    "a dev-only package resolved": [
+      `export const where = require.resolve("vitest");\n`,
+      /devDependencies/,
+    ],
   };
   for (const [shape, [code, kind]] of Object.entries(reported)) {
     const [message, ...rest] = await lint(code, place, importRule);
@@ -741,7 +849,7 @@ test("product code imports only the packages its package.json declares, as runti
     `import { type Mock } from "vitest";\nexport type M = Mock;\n`,
     // Node 기본 모듈, 상대 경로, 자기 패키지, 선언한 workspace 패키지.
     `import { readFileSync } from "node:fs";\nimport path from "path";\nimport { record } from "./record.ts";\nexport const read = (p: string) => record(readFileSync(path.join(p), "utf8"));\n`,
-    `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
+    `export { removeFolder } from "@babojubot/process/remove-folder";\n`,
     `import { failureCode } from "@babojubot/contracts";\nexport const code = failureCode;\n`,
   ];
   for (const code of kept)

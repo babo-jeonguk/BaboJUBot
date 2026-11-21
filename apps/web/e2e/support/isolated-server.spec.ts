@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { startIsolatedServer } from "./isolated-server.ts";
 import { goalInput } from "./organization.ts";
 import { alive } from "./server-process.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // 모든 OS(Windows 포함)에서 같은 멈춤 경로(부모의 멈춤 메시지)로 확인한다.
 test("stopping a server that is still running succeeds after it stops its Postgres and removes its data", async () => {

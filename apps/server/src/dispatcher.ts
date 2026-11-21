@@ -34,7 +34,7 @@ import {
 import { applyAfterCommit } from "./after-commit.ts";
 import type { EventHub } from "./event-hub.ts";
 import { IsolationError } from "./isolation.ts";
-import { TreeLaunchRefused } from "@babojubot/runtime/launch";
+import { TreeLaunchRefused } from "@babojubot/process";
 import type { RunRequestAssembler } from "./run-request.ts";
 import { RerunLoops } from "./rerun-loop.ts";
 import { issueRunToken } from "./run-token.ts";

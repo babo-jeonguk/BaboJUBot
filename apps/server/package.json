@@ -18,6 +18,7 @@
     "@babojubot/contracts": "workspace:*",
     "@babojubot/core": "workspace:*",
     "@babojubot/db": "workspace:*",
+    "@babojubot/process": "workspace:*",
     "@babojubot/runtime": "workspace:*",
     "express": "5.3.0",
     "ws": "8.22.0",
@@ -25,7 +26,9 @@
   },
   "devDependencies": {
     "@types/express": "5.0.6",
+    "@types/pg": "8.23.1",
     "@types/ws": "8.18.2",
+    "pg": "8.23.1",
     "vitest": "5.0.5"
   }
 }

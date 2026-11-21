@@ -24,7 +24,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // 줄 세운 메시지: `중단하고 보내기`가 먼저 가고 줄 세운 메시지는 그 뒤 실행 시도가 받는다, 거두기·지금 보내기 API.
 

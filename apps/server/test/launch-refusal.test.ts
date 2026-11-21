@@ -1,5 +1,5 @@
 import { runSummaryListSchema } from "@babojubot/contracts";
-import { TreeLaunchRefused } from "@babojubot/runtime/launch";
+import { TreeLaunchRefused } from "@babojubot/process";
 import { afterEach, expect, it } from "vitest";
 import { scriptedAgents, serverHelpers, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";

@@ -9,7 +9,7 @@ import {
 } from "./bounded-command.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { testFolders } from "./test-folders.ts";
-import { killUnlessGone } from "../test-cleanup.ts";
+import { killUnlessGone } from "./test-cleanup.ts";
 
 // 공용 실행 위에 놓을 수 없는 짧은 명령도 시한에 끝을 보장한다(#262). Node.js의 timeout은 신호만 보내고 기다리므로, 신호를 무시하는
 // 조회나 출력을 물려받은 자손이 남은 조회에서 끝나지 않았다. 남았는지는 번호가 아니라 그 프로세스가 쥔 연결로 본다(#259).

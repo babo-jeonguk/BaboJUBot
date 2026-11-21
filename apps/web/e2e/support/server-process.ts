@@ -2,12 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   awaitedLater,
   killUnlessGone,
   processAlive,
-} from "@babojubot/runtime/test-cleanup";
+} from "@babojubot/process/test-cleanup";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.

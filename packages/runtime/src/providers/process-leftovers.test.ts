@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { startProcess } from "./process.ts";
-import { exited, killAndWait, untilExited } from "./process-test-support.ts";
+import { exited, killAndWait, untilExited } from "@babojubot/process/testing";
 import { attemptAll } from "@babojubot/contracts";
 
 // Claude Code·Codex·Antigravity는 셸 명령을 새 세션에 띄운다. 프로그램이 어떻게 끝나든, 실행 시도의 정리가 끝나면(`done`)
@@ -67,7 +67,7 @@ function start(then: string) {
   return { run, left };
 }
 
-// Windows에는 새 세션(setsid)으로 나가는 명령이 없다. 그곳의 남은 프로그램은 묶음 실행기 시험(job-object.test.ts)이 본다.
+// Windows에는 새 세션(setsid)으로 나가는 명령이 없다. 그곳의 남은 프로그램은 묶음 실행기로 띄운 실행 시도 시험(process-windows.test.ts)이 본다.
 describe.skipIf(process.platform === "win32")(
   "programs a run leaves in another session",
   () => {

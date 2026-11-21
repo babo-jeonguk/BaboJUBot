@@ -1,4 +1,5 @@
-import { type Clock, realClock, startProcess } from "./process.ts";
+import { realClock, type Clock } from "@babojubot/process";
+import { startProcess } from "./process.ts";
 import { record } from "./record.ts";
 
 /**

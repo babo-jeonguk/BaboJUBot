@@ -5,13 +5,13 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { processAlive } from "@babojubot/runtime/test-cleanup";
+import { processAlive } from "@babojubot/process/test-cleanup";
 import {
   continueAfterFailure,
   failureCode,
   hasErrorCode,
   orIfMissing,
-} from "../../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 import { limits, maxOverlap } from "./chaos-budget.mjs";
 import { matchingPids } from "./processes.mjs";
 

@@ -3,9 +3,9 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { probeEnding, runProbe, startProcess } from "./process.ts";
-import { openLifelines } from "./lifeline-support.ts";
-import { killAndWait } from "./process-test-support.ts";
-import { awaitedLater, processAlive } from "../test-cleanup.ts";
+import { openLifelines } from "@babojubot/process/lifelines";
+import { killAndWait } from "@babojubot/process/testing";
+import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();

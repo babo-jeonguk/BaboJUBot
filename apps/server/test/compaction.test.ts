@@ -5,8 +5,8 @@ import {
   within,
   type TestServer,
 } from "./support.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { folderCleanup, withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
 
 const leadOf = (org: { agents: { id: string; role: string }[] }) =>
   org.agents.find((a) => a.role === "lead")!.id;
