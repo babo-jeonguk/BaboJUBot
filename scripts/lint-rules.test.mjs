@@ -2154,6 +2154,8 @@ const originRules = [
     reported: [
       `const atEnd = afterAll;\natEnd(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
       `import { test } from "@playwright/test";\nconst { afterAll: atEnd } = test;\natEnd(async () => {\n  await server.stop();\n  await relays.close();\n});\n`,
+      // fixture를 만드는 extend도 출처로 본다(별칭으로 받아도 같다).
+      `import { test as base } from "@playwright/test";\nconst { extend } = base;\nexport const test = extend({\n  servers: async ({ page }, provide) => {\n    await provide(page);\n    await server.close();\n    await model.close();\n  },\n});\n`,
       // 같은 이름의 지역 함수는 공용 폴더 지우기가 아니다.
       `const removeFolder = (dir) => trash(dir);\nafterEach(async () => {\n  await server.close();\n  await removeFolder(root);\n});\n`,
     ],
