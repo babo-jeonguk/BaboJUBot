@@ -1,7 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, openSync } from "node:fs";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { hasErrorCode } from "@babojubot/contracts";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readRegularFile } from "./regular-file.ts";
@@ -30,6 +33,26 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
   return { ...real, open, default: { ...real, open } };
 });
+
+/**
+ * 이 컴퓨터에서 링크를 만들 수 있는가. Windows는 링크 만들기 권한(관리자·개발자 모드)이 있어야 하고, 없으면 EPERM이다.
+ * 권한이 있는 Windows(CI 실행기)에서는 링크 시험이 연 뒤 경로 항목과 연 파일을 대조하는 길을 실제로 돈다.
+ */
+async function linksAllowed() {
+  if (process.platform !== "win32") return true;
+  return withCleanup(async (defer) => {
+    const root = await mkdtemp(path.join(tmpdir(), "babojubot-link-"));
+    defer(() => removeFolder(root));
+    try {
+      await symlink(path.join(root, "target"), path.join(root, "link"));
+      return true;
+    } catch (error) {
+      if (hasErrorCode("EPERM")(error)) return false;
+      throw error;
+    }
+  });
+}
+const canLink = await linksAllowed();
 
 const folders = testFolders();
 afterEach(() => {
@@ -65,8 +88,7 @@ describe("reading a file only if it is a regular file", () => {
     await expect(readRegularFile(file)).rejects.toBe(denied);
   });
 
-  // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하다. 링크를 거절하는 동작은 POSIX에서 본다.
-  it.skipIf(process.platform === "win32")(
+  it.skipIf(!canLink)(
     "returns nothing for a link, even to a regular file",
     async () => {
       const root = await folders.make("babojubot-regular-");
@@ -76,6 +98,35 @@ describe("reading a file only if it is a regular file", () => {
       expect(
         await readRegularFile(path.join(root, "link.json"))
       ).toBeUndefined();
+    }
+  );
+
+  // 링크를 따라가는 열기(Windows)는 대상 없는 링크에서 ENOENT로 실패한다. 그래도 그 자리는 없는 경로가 아니라 링크다.
+  it.skipIf(!canLink)(
+    "returns nothing for a link whose target is missing",
+    async () => {
+      const root = await folders.make("babojubot-regular-");
+      await symlink(
+        path.join(root, "missing.json"),
+        path.join(root, "link.json")
+      );
+      expect(
+        await readRegularFile(path.join(root, "link.json"))
+      ).toBeUndefined();
+    }
+  );
+
+  // 위 폴더의 링크 순환은 그 경로의 링크·폴더·없음이 아니라 읽지 못한 것이다. 링크를 따라가지 않는 열기도 같은 ELOOP을 낸다.
+  // Windows는 링크 순환을 POSIX의 ELOOP 규칙으로 알리지 않는다.
+  it.skipIf(process.platform === "win32")(
+    "throws when a link loop above the path stops it being read",
+    async () => {
+      const root = await folders.make("babojubot-regular-");
+      const loop = path.join(root, "loop");
+      await symlink(loop, loop);
+      await expect(
+        readRegularFile(path.join(loop, "login.json"))
+      ).rejects.toMatchObject({ code: "ELOOP" });
     }
   );
 

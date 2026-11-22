@@ -128,6 +128,20 @@ describe("refusing what is not a mark", () => {
     }
   );
 
+  // 표식 위 폴더의 링크 순환은 표식이 아니라 경로의 문제다. 링크를 따라가지 않는 열기도 같은 ELOOP을 내지만, 표식이 다르다고
+  // 하지 않고 읽지 못한 원인을 그대로 알린다.
+  it.skipIf(process.platform === "win32")(
+    "names the cause when a link loop above the mark stops it being read",
+    async () => {
+      const org = await organization();
+      await removeFolder(org.folder);
+      await symlink(org.folder, org.folder);
+      await expect(org.ensure()).rejects.toThrow(
+        /표식을 읽을 수 없습니다\(ELOOP\)/
+      );
+    }
+  );
+
   // FIFO는 쓰는 쪽이 나타날 때까지 열기가 끝나지 않는다. 열어서 확인하더라도 기다리지 않고 거부해야 한다.
   it.skipIf(process.platform === "win32")(
     "refuses a FIFO in the mark's place without waiting for a writer",
