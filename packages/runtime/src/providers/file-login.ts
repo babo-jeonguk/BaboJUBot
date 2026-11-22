@@ -151,8 +151,23 @@ export function fileLogin(
         },
       };
     }
-    if (await shape.isStandIn(loginAt)) await rm(loginAt, { force: true });
-    const linked = await share(loginAt);
+    // 이 컴퓨터의 실행도 확인한 폴더를 거쳐 내려간다. 격리 실행이 남긴 폴더 링크는 격리를 끈 뒤에도 남아 있다.
+    await mkdir(organization, { recursive: true, mode: 0o700 });
+    const placed = await inFolder(
+      organization,
+      loginParts,
+      async (folder) => {
+        const at = folder.at(loginName);
+        if (await shape.isStandIn(at)) await rm(at, { force: true });
+        return share(at);
+      },
+      { create: true }
+    );
+    if (!placed.reached)
+      throw new Error(
+        "the login place in the organization folder is not a folder; the run was not started"
+      );
+    const linked = placed.value;
     const productHome = linked ? organization : home;
     await mkdir(productHome, { recursive: true, mode: 0o700 });
     return { home: productHome };
