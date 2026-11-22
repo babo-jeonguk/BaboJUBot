@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -399,10 +400,12 @@ describe("a Postgres left by a killed process", () => {
       { stdio: "ignore" }
     );
     cluster.own(() => killHard(unrelated));
+    // 주인 연결과 같은 모양의 자리(제품이 믿는 모양)지만 아무도 듣지 않는다.
+    const id = randomUUID().replaceAll("-", "");
     const gone =
       process.platform === "win32"
-        ? `\\\\.\\pipe\\babojubot-owner-gone-${process.pid}-${Date.now()}`
-        : path.join(os.tmpdir(), `babojubot-owner-gone-${process.pid}.sock`);
+        ? `\\\\.\\pipe\\babojubot-owner-${id}`
+        : path.join(os.tmpdir(), `babojubot-owner-${id.slice(0, 16)}.sock`);
     await recordOwner(dataDir, {
       pid: unrelated.pid!,
       persistent: true,
