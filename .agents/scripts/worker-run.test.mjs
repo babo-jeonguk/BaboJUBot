@@ -211,13 +211,13 @@ test("a worker that ends on its own but whose tree cannot be confirmed stopped e
   ]);
 });
 
-// Windows에서 묶음 실행기를 쓸 수 없으면 공용 실행이 띄우기를 거절한다. 그 이유가 시작 실패로 남고 다시 띄우지 않는다.
+// 감독 실행기를 쓸 수 없으면 공용 실행이 띄우기를 거절한다. 그 이유가 시작 실패로 남고 다시 띄우지 않는다.
 test("a refused launch ends the call with exit code 4 and its reason", async () => {
   let launches = 0;
   const run = createWorkerRun({
     launch: () => {
       launches += 1;
-      throw new Error("the Windows job object launcher is not available");
+      throw new Error("the supervisor is not available");
     },
     hasSession: () => false,
     startCheckMs: 60_000,
@@ -226,7 +226,7 @@ test("a refused launch ends the call with exit code 4 and its reason", async () 
   const ended = await finish(run, { limitMs: 60_000, session: "", errors: [] });
   assert.equal(launches, 1);
   assert.deepEqual(ended.outcome, [
-    "spawn failed: the Windows job object launcher is not available",
+    "spawn failed: the supervisor is not available",
     4,
   ]);
 });

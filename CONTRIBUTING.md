@@ -4,16 +4,18 @@
 
 ## 개발 시작
 
-Node.js 24.x, pnpm 10.33.0 및 Git을 사용합니다. GitHub 이슈 작업에는 인증된 `gh`가 필요합니다.
+Node.js 24.x, pnpm 10.33.0, Git과 Rust 도구(rustup)를 사용합니다. GitHub 이슈 작업에는 인증된 `gh`가 필요합니다. 실행 시도를 띄우는 감독 실행기(`packages/process/supervisor`)는 checkout에서 빌드합니다. Rust 판은 `rust-toolchain.toml`이 고정하므로 rustup이 그 판을 받습니다. 의존 crate의 빌드 스크립트를 링크할 시스템 도구(Linux `cc`, macOS Xcode Command Line Tools, Windows MSVC 빌드 도구)도 필요합니다. 빌드하지 않으면 서버와 시험이 실행 시도를 띄우지 않고 그 이유를 보입니다([ADR-0006](docs/adr/0006-per-run-native-supervisor.md)).
 
 ```bash
 pnpm install
+pnpm --filter @babojubot/process run build   # 감독 실행기를 이 시스템 대상으로 빌드(소스·Cargo.lock이 바뀌면 다시)
 pnpm dev          # 개발용 hot reload. 서버(http://127.0.0.1:3100, 가짜 프로바이더 데모 시나리오)와 대시보드(http://127.0.0.1:5173)
 pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 embedded Postgres 하나를 띄우고 테스트마다 DB를 복제합니다. 끝으로 pnpm test:root(테스트 실패가 실패 종료로 이어지는지 확인, boot-check 시험)를 돌립니다.
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
 pnpm typecheck
 pnpm typecheck:src  # 제품 코드만 타입 검사
 pnpm typecheck:test # 시험 코드를 시작점으로 타입 검사(가져다 쓰는 제품 코드도 함께 검사)
+pnpm typecheck:js   # JS(스크립트·agent 도구·가짜 프로그램·시험의 JS) 타입 검사. 아직 pnpm typecheck·CI·verify:changed에 연결되지 않아 아무것도 막지 않음(#270 PR 3a-2가 연결)
 pnpm lint         # 시험 코드에는 시험 전용 규칙(폴더 지우기는 removeFolder로)을, 제품 코드에는 제품 규칙(바깥 데이터는 확인 뒤 사용, JSON·응답 본문을 읽자마자 타입 단정 금지, 비동기 실패 방치 금지, 폐기 예정 기능 금지, runtime의 프로그램 실행은 정해진 파일에서만)을 더 겁니다. 주석은 lint 규칙을 바꾸지 못합니다(`eslint-disable`·`/* eslint … */`·`/* global */` 모두 효과가 없고 오류입니다). 예외가 정말 필요하면 `eslint.config.js`에 파일·규칙을 좁혀 이유와 함께 둡니다.
 pnpm check        # 아래 네 묶음을 차례로 돈다. node:test 묶음은 `scripts/run-node-tests.mjs`로 돌려 CI에서 묶음마다 실행·통과 수를 판정합니다. 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
 pnpm check:docs   # Markdown 로컬 링크·Git 무시 경로·필수 파일·worker 설정 검사(scripts/check-project.mjs)와 코드 지도의 파일 표기·이름·시험 이름·패키지 입구·pnpm 스크립트 검사(scripts/check-code-map.mjs)

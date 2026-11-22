@@ -48,7 +48,7 @@ export async function runChaos({
   signal = new AbortController().signal,
   totalMs = limits.totalMs,
   sceneMs = limits.sceneMs,
-  log = () => {},
+  log = (_line) => {},
   /** 전체 시간의 시작. 실제 호출 전 확인을 먼저 했으면 그 시작 시각을 준다. */
   startedAt = Date.now(),
 }) {
@@ -369,7 +369,9 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
     }
   };
   const code = (error) => failureCode(error.cause ?? error);
+  /** @type {Awaited<ReturnType<typeof server.dispose>> | undefined} */
   let leftovers;
+  /** @type {ReturnType<typeof busyPids> | undefined} */
   let left;
   const serverAndList = await attemptEach([
     step(

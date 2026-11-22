@@ -14,6 +14,13 @@ const versions = {
   "codex-exec": "codex-cli 0.166.0",
   antigravity: "1.4.12",
 };
+// 일반 객체의 `in`은 물려받은 이름(constructor·toString)도 통과시키므로 가진 키인지 본다(#281 리뷰 REC-1).
+if (!provider || !Object.hasOwn(versions, provider) || !output) {
+  console.error(
+    "Usage: node scripts/live/make-stdio-fixture.mjs <claude|claude-background|codex-app-server|codex-exec|antigravity> <output file> <recording folder...>"
+  );
+  process.exit(2);
+}
 const keptStrings = new Set([
   "type",
   "subtype",

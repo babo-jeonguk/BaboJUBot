@@ -194,7 +194,12 @@ export function combine(reports) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const [flag, os, ...files] = process.argv.slice(2);
-  if (flag !== "--os" || !systems.includes(os) || files.length === 0) {
+  if (
+    flag !== "--os" ||
+    os === undefined ||
+    !systems.includes(os) ||
+    files.length === 0
+  ) {
     console.error(
       `usage: node scripts/check-e2e-report.mjs --os <${systems.join("|")}> <report.json> [<report.json> ...]`
     );
@@ -205,7 +210,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     try {
       reports.push(JSON.parse(readFileSync(file, "utf8")));
     } catch (error) {
-      console.error(`cannot read E2E report ${file}: ${error.message}`);
+      console.error(
+        `cannot read E2E report ${file}: ${error instanceof Error ? error.message : String(error)}`
+      );
       process.exit(1);
     }
   }

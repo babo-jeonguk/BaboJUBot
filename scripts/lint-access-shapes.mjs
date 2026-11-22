@@ -67,9 +67,11 @@ const facts = new Map();
  * - `required`: 그 모듈을 선언한 패키지 자리에서 require해 본 결과. `"namespace"`(ESM 모듈을 require한 결과), `"value"`(CJS의
  *   module.exports). 던지면 `requireError`에 오류 첫 줄(vitest의 CJS 입구처럼 require를 막는 패키지).
  * - `esmEntry`: import가 ESM 입구로 가는가(package.json의 `type: "module"`이거나 exports에 `import` 조건).
+ * @typedef {{ builtin?: boolean, required?: "namespace" | "value", requireError?: string, esmEntry?: boolean }} ModuleFacts
  */
 function moduleFacts(specifier) {
   if (facts.has(specifier)) return facts.get(specifier);
+  /** @type {ModuleFacts} */
   let found;
   if (isBuiltin(specifier)) found = { builtin: true };
   else {
@@ -77,9 +79,10 @@ function moduleFacts(specifier) {
     const home =
       manifests.find(({ json }) =>
         [json.name === name, json.dependencies, json.devDependencies].some(
-          (each) => each === true || (each && name in each)
+          (each) => each === true || (each && Object.hasOwn(each, name))
         )
       ) ?? manifests[0];
+    if (!home) throw new Error("저장소에서 package.json을 찾지 못했다");
     const load = createRequire(path.join(repository, home.dir, "package.json"));
     found = {};
     try {
@@ -88,7 +91,9 @@ function moduleFacts(specifier) {
           ? "namespace"
           : "value";
     } catch (error) {
-      found.requireError = String(error?.message ?? error).split("\n")[0];
+      found.requireError = String(
+        error instanceof Error ? error.message : error
+      ).split("\n")[0];
     }
     const manifest = installedManifest(load, specifier, name);
     found.esmEntry =
@@ -245,6 +250,8 @@ function plan(value, local) {
  * 값 `value`에 닿는 접근 모양마다 사례를 만든다(`plan`). `use(ref)`는 그 값을 `ref`로 쓰는 시험 코드, `head`는 모든 사례 앞에 둘 코드다.
  * 돌려주는 사례는 `{ shape, code, same }`이고, `same`이 참이면 정식 사례와 같은 판정, 거짓(같은 이름의 지역 값)이면 반대 판정이어야 한다.
  * `local: false`면 지역 값 사례를 만들지 않는다(그 이유를 `localSkipped`에 적는다).
+ * @param {{ value: { module?: string, global?: string, path: string[] }, use: (ref: string) => string, head?: string,
+ *   local?: boolean, localSkipped?: string }} options
  */
 export function accessShapes({
   value,

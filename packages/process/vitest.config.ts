@@ -7,7 +7,7 @@ import { testReport } from "../../vitest.reports.ts";
 export default defineConfig({
   test: {
     reporters: [...configDefaults.reporters, ...testReport("process")],
-    // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 시험 파일마다 준비한다.
+    // 세 OS 모두 감독 실행기 없이 프로그램을 띄우지 않는다(#268). 시험 파일마다 준비한다.
     setupFiles: ["src/launcher-setup-support.ts"],
     hookTimeout: 60_000,
     testTimeout: 60_000,

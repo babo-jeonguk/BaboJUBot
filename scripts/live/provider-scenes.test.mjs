@@ -61,7 +61,8 @@ test("passes only when every chosen scene ran and passed", () => {
     ),
     { passed: ["finish", "cancel"], failed: [], missing: [], ok: true }
   );
-  for (const [name, results, scenes] of [
+  /** @type {Array<[string, Array<{ scene: string, ok?: unknown, failed?: string }>, string[]]>} */
+  const failing = [
     ["no scene at all", [], []],
     [
       "no result for a chosen scene",
@@ -75,7 +76,8 @@ test("passes only when every chosen scene ran and passed", () => {
       [{ scene: "finish", ok: "yes" }],
       ["finish"],
     ],
-  ])
+  ];
+  for (const [name, results, scenes] of failing)
     assert.equal(verdict(results, scenes).ok, false, name);
   assert.deepEqual(
     verdict([{ scene: "finish", ok: true }], ["finish", "cancel"]).missing,
@@ -105,7 +107,8 @@ test("counts the session usage scene only when the session left its usage facts"
     },
     sessionKeys: ["id"],
   });
-  for (const [name, broken] of [
+  /** @type {Array<[string, unknown]>} */
+  const broken = [
     ["no session", undefined],
     ["no usage facts", { ...row, maintenance: null }],
     ["no session id", { ...row, state: {} }],
@@ -119,8 +122,9 @@ test("counts the session usage scene only when the session left its usage facts"
       "an unreadable time",
       { ...row, maintenance: { ...row.maintenance, lastRequestAt: "later" } },
     ],
-  ])
-    assert.equal(usageFacts(broken, now).ok, false, name);
+  ];
+  for (const [name, facts] of broken)
+    assert.equal(usageFacts(facts, now).ok, false, name);
 });
 
 test("needs both session ids before calling a session new or the same", () => {

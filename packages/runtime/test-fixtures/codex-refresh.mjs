@@ -16,12 +16,21 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-const [log, mode = "ok", ...rest] = process.argv.slice(2);
+const [logArgument, mode = "ok", ...rest] = process.argv.slice(2);
 if (rest.includes("--version")) {
   console.log("codex-cli 9.9.9");
   process.exit(0);
 }
 if (rest.includes("login")) process.exit(0);
+if (logArgument === undefined)
+  throw new Error("usage: codex-refresh.mjs <log> [mode] ...");
+const log = logArgument;
+/** 시험이 이 프로그램에 주는 CODEX_HOME. */
+function codexHome() {
+  const folder = process.env.CODEX_HOME;
+  if (!folder) throw new Error("synthetic: CODEX_HOME is not set");
+  return folder;
+}
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const jwt = (claims) =>
@@ -30,7 +39,7 @@ const jwt = (claims) =>
     .join(".") + ".sig";
 
 async function refresh() {
-  const target = await realpath(path.join(process.env.CODEX_HOME, "auth.json"));
+  const target = await realpath(path.join(codexHome(), "auth.json"));
   const login = JSON.parse(await readFile(target, "utf8"));
   if (mode === "slow") await pause(300);
   const count =

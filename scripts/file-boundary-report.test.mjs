@@ -21,6 +21,7 @@ const meta = {
 
 /** Vitest JSON 결과를 흉내 낸다. 사례마다 시험 하나, `outcomes`로 일부 사례의 결과를 바꾼다. */
 function report(outcomes = {}) {
+  /** @type {{ title: string, status: string, meta: Record<string, unknown> }[]} */
   const tests = [
     {
       title: "ENV records the file system",
@@ -65,9 +66,10 @@ test("fails a volume when a case could not be verified, even though Vitest exite
 
 test("fails a case that was skipped without recording why", () => {
   const skipped = report();
-  const c18 = skipped.testResults[0].assertionResults.find((t) =>
-    t.title.startsWith("C18")
-  );
+  const [results] = skipped.testResults;
+  assert.ok(results, "no test file");
+  const c18 = results.assertionResults.find((t) => t.title.startsWith("C18"));
+  assert.ok(c18, "no C18 case");
   c18.status = "skipped";
   c18.meta = {};
   assert.deepEqual(summarize("NTFS", meta, skipped).problems, [

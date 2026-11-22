@@ -15,10 +15,16 @@ if (args.includes("--version")) {
   console.log("9.9.9");
   process.exit(0);
 }
+/** 시험이 이 프로그램에 주는 HOME. */
+function home() {
+  const folder = process.env.HOME;
+  if (!folder) throw new Error("synthetic: HOME is not set");
+  return folder;
+}
 // 실제 프로그램(키링 없는 컴퓨터)은 HOME의 이 파일로 로그인한다. 접근 토큰이 만료됐으면 `agy models`가 갱신해 같은 경로에 덮어쓴다
 // (링크면 따라가 원본 자리에 쓴다. 1.5.3·1.5.4 확인). 컨테이너 안에서는 실행 시도 전용 파일이 이 자리 위에 들어갈 수 있다.
 const loginAt = path.join(
-  process.env.HOME,
+  home(),
   ".gemini/antigravity-cli/antigravity-oauth-token"
 );
 const mounted = JSON.parse(process.env.FAKE_DOCKER_MOUNTS ?? "[]").find(
@@ -52,7 +58,7 @@ if (args[0] === "models") {
   process.exit(0);
 }
 const conversations = path.join(
-  process.env.HOME,
+  home(),
   ".gemini/antigravity-cli/conversations"
 );
 const models = ["simulated-model", "other-model"];
@@ -193,6 +199,8 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (!models.includes(params.modelId))
       out({ id, error: { code: -32602, message: "Unknown model ID" } });
     else {
+      if (!session)
+        throw new Error("synthetic: session/set_model before session/new");
       session.model = params.modelId;
       out({ id, result: {} });
     }

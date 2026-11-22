@@ -8,7 +8,7 @@ export default defineConfig({
   test: {
     reporters: [...configDefaults.reporters, ...testReport("server")],
     globalSetup: ["@babojubot/db/test-cluster"],
-    // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 시험 파일마다 @babojubot/process의 시험 준비가 실행기를 준비한다.
+    // 세 OS 모두 감독 실행기 없이 프로그램을 띄우지 않는다(#268). 시험 파일마다 @babojubot/process의 시험 준비가 실행기를 준비한다.
     setupFiles: ["./test/product-home.ts", "@babojubot/process/launcher-setup"],
     hookTimeout: 120_000,
     testTimeout: 120_000,

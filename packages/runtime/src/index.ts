@@ -25,12 +25,24 @@ export * from "./providers/relay.ts";
 export * from "./providers/egress-policy.ts";
 export * from "./providers/destinations.ts";
 
-const kinds = {
-  claude: createClaudeProvider,
-  codex: createCodexProvider,
-  opencode: createOpenCodeProvider,
-  antigravity: createAntigravityProvider,
+type ConnectionOptions = {
+  dataDir: string;
+  mode?: "app-server" | "exec";
+  id?: string;
+  label?: string;
+  container?: ContainerSettings;
 };
+// 연결 이름은 사용자 설정(BABOJUBOT_PROVIDERS)과 로그인 명령 인수에서 온다. 일반 객체로 찾으면 물려받은 이름(constructor)도
+// 종류로 통과하므로 Map으로 찾는다(CODING_STANDARDS.md#제품-코드).
+const kinds = new Map<
+  string,
+  (options: ConnectionOptions) => ProviderConnection
+>([
+  ["claude", createClaudeProvider],
+  ["codex", createCodexProvider],
+  ["opencode", createOpenCodeProvider],
+  ["antigravity", createAntigravityProvider],
+]);
 /** `claude` 또는 `claude:work`로 연결을 만든다. 뒤의 이름은 같은 프로그램의 다른 계정을 구분한다. */
 export function createConnection(
   name: string,
@@ -40,15 +52,9 @@ export function createConnection(
     container?: ContainerSettings;
   }
 ) {
-  const [kind, account] = name.split(":") as [string, string | undefined];
-  if (!(kind in kinds)) throw new Error(`Unknown provider connection: ${name}`);
-  const create = kinds[kind as keyof typeof kinds] as (options: {
-    dataDir: string;
-    mode?: "app-server" | "exec";
-    id?: string;
-    label?: string;
-    container?: ContainerSettings;
-  }) => ProviderConnection;
+  const [kind = "", account] = name.split(":");
+  const create = kinds.get(kind);
+  if (!create) throw new Error(`Unknown provider connection: ${name}`);
   const base = create({
     dataDir: options.dataDir,
     mode: options.mode,

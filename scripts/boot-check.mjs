@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
+import { launchTree, prepareSupervisor } from "@babojubot/process";
 import { processAlive } from "@babojubot/process/test-cleanup";
 import {
   attemptAll,
@@ -70,8 +70,8 @@ function serverEnv() {
  * 서버는 공용 실행으로 띄워, 남은 것은 마지막 정리가 그 트리째 끄고 확인한다.
  */
 async function serveAndKill(label) {
-  // Windows는 묶음 실행기 없이 띄우지 않는다(남긴 서버를 끌 수 없다). 다른 시스템에서는 아무것도 하지 않는다.
-  await prepareJobObjectLauncher(path.join(home, "boot-check"));
+  // 감독 실행기 없이는 띄우지 않는다(남긴 서버를 끌 수 없다). 준비하지 못하면 launchTree가 그 이유로 거절한다.
+  await prepareSupervisor();
   const server = launchTree({
     command: [process.execPath],
     args: ["apps/server/src/main.ts"],

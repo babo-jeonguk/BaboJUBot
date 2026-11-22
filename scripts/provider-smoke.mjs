@@ -6,6 +6,12 @@ import {
   createOpenCodeProvider,
   createAntigravityProvider,
 } from "@babojubot/runtime";
+import {
+  conversationPageSchema,
+  organizationDetailSchema,
+  runDetailSchema,
+  runSummaryListSchema,
+} from "@babojubot/contracts";
 import { openEphemeralDatabase } from "@babojubot/db";
 import { startServer } from "@babojubot/server";
 import { withCheckServer } from "./live/check-server.mjs";
@@ -17,7 +23,8 @@ const factories = {
   antigravity: createAntigravityProvider,
 };
 if (
-  !(provider in factories) ||
+  provider === undefined ||
+  !Object.hasOwn(factories, provider) ||
   consent !== "--allow-live" ||
   !process.env.BABOJUBOT_HOME
 ) {
@@ -108,20 +115,28 @@ async function check(server) {
   });
   if (!created.ok)
     throw new Error("Could not create isolated smoke organization");
-  const organization = await created.json();
+  // 응답은 화면(apps/web/src/api.ts)과 같은 계약 스키마로 읽는다.
+  const organization = organizationDetailSchema.parse(await created.json());
   await server.drain();
-  const runs = await (
-    await fetch(`${server.url}/api/organizations/${organization.id}/runs`)
-  ).json();
-  const conversation = await (
-    await fetch(`${server.url}/api/organizations/${organization.id}/messages`)
-  ).json();
+  const runs = runSummaryListSchema.parse(
+    await (
+      await fetch(`${server.url}/api/organizations/${organization.id}/runs`)
+    ).json()
+  );
+  const conversation = conversationPageSchema.parse(
+    await (
+      await fetch(`${server.url}/api/organizations/${organization.id}/messages`)
+    ).json()
+  );
   const run = runs[0];
-  const detail = await (
-    await fetch(
-      `${server.url}/api/organizations/${organization.id}/runs/${run.id}`
-    )
-  ).json();
+  if (!run) throw new Error("The smoke organization has no run");
+  const detail = runDetailSchema.parse(
+    await (
+      await fetch(
+        `${server.url}/api/organizations/${organization.id}/runs/${run.id}`
+      )
+    ).json()
+  );
   const reply = conversation.messages.some(
     (message) => message.author === "agent" && message.body.trim() === "OK"
   );

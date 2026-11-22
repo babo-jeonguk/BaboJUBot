@@ -4,6 +4,7 @@ import { vi } from "vitest";
 import { killUnlessGone, processAlive } from "./test-cleanup.ts";
 import { attemptAll } from "@babojubot/contracts";
 import { psField } from "./ps.ts";
+import { statFields, statRuns } from "./proc-stat.ts";
 
 /**
  * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다.
@@ -54,18 +55,22 @@ export function readyLine(
 }
 
 /**
- * 프로세스가 끝났는가. 거두어지기 전의 좀비도 끝난 것으로 본다. "없음"만 끝난 것으로 보고(신호 0의 ESRCH, 사라진 `/proc` 항목,
+ * 프로세스가 끝났는가. 거두어지기 전의 좀비도 끝난 것으로 본다(Linux는 마지막 스레드까지 끝난 좀비만). "없음"만 끝난 것으로 보고(신호 0의 ESRCH, 사라진 `/proc` 항목,
  * 대상이 없다는 `ps`의 답) 그 밖의 조회 실패는 pid·원인과 함께 던진다. Windows에는 좀비가 없어 신호 0의 답만 본다.
  */
 export function exited(pid: number) {
   if (!processAlive(pid)) return true;
   if (process.platform === "win32") return false;
-  const state = process.platform === "linux" ? procState(pid) : psState(pid);
+  if (process.platform === "linux") {
+    const fields = procFields(pid);
+    return fields === undefined || !statRuns(fields);
+  }
+  const state = psState(pid);
   return state === undefined || state === "Z" || state === "X";
 }
 
-/** `/proc/<pid>/stat`의 상태 글자. 묻는 사이에 끝나 항목이 없으면(ENOENT, 읽는 중 사라지면 ESRCH) undefined. */
-function procState(pid: number) {
+/** `/proc/<pid>/stat`의 칸(`statFields`). 묻는 사이에 끝나 항목이 없으면(ENOENT, 읽는 중 사라지면 ESRCH) undefined. */
+function procFields(pid: number) {
   const file = `/proc/${pid}/stat`;
   let stat: string;
   try {
@@ -77,7 +82,7 @@ function procState(pid: number) {
       cause: error,
     });
   }
-  return stat.slice(stat.lastIndexOf(") ") + 2)[0];
+  return statFields(stat);
 }
 
 /** `ps`가 알리는 상태 글자. 대상 없음과 실패의 판정은 제품의 `psField`(ps.ts)가 맡는다. */

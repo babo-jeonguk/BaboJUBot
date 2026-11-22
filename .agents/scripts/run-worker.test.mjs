@@ -174,19 +174,15 @@ test(
   }
 );
 
-// Windows에서는 runner가 강제로 끝나도 묶음 실행기가 제어 통로의 끝을 보고 worker의 묶음을 끈다. POSIX의 그룹·표식에는 그런
-// 장치가 없어 runner가 SIGKILL로 끝나면 worker가 남는다(PR 「한계」).
-test(
-  "a runner that is killed leaves no worker on Windows",
-  { skip: windows ? false : "process groups do not end with a killed runner" },
-  async () => {
-    await withCleanup(async (defer) => {
-      const f = await fixture(defer, { stubborn: true });
-      const run = runner(defer, f, 10);
-      await f.lifelines.connected("stubborn", 30_000);
-      run.child.kill("SIGKILL");
-      await run.exited;
-      await f.lifelines.closed("stubborn", 15_000);
-    });
-  }
-);
+// runner가 강제로 끝나도 감독 실행기가 제어 통로의 끝을 보고 worker의 트리(Linux·macOS는 그룹, Windows는 묶음)를 끈다(#268). 세 OS가
+// 같다. 새 세션으로 나간 명령은 아직 이 길에 닿지 않는다(제품의 재시작 복구가 표식으로 끈다).
+test("a runner that is killed leaves no worker", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer, { stubborn: true });
+    const run = runner(defer, f, 10);
+    await f.lifelines.connected("stubborn", 30_000);
+    run.child.kill("SIGKILL");
+    await run.exited;
+    await f.lifelines.closed("stubborn", 15_000);
+  });
+});

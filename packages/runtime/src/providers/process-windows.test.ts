@@ -1,21 +1,27 @@
 import crossSpawn from "cross-spawn";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { existsSync } from "node:fs";
 import {
-  prepareJobObjectLauncher,
-  TreeLaunchRefused,
-} from "@babojubot/process";
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
+import { existsSync } from "node:fs";
+import { prepareSupervisor, TreeLaunchRefused } from "@babojubot/process";
 import { startProcess } from "./process.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { attemptAll } from "@babojubot/contracts";
 
-// Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 묶음 실행기가 끄는지를 startProcess 바깥에서 본다(#205).
+// Windows에는 프로세스 그룹이 없다. 실행 시도의 프로그램이 남긴 프로그램을 감독 실행기의 묶음(Job Object)이 끄는지를 startProcess
+// 바깥에서 본다(#205, #268).
 // 실제 에이전트 프로그램 대신 Node.js 합성 프로그램을 쓴다.
 const windows = process.platform === "win32";
 const roots: string[] = [];
@@ -32,7 +38,8 @@ let count = 0;
 const unique = (label: string) => `${label}-${++count}`;
 /** 시험이 직접 띄운 프로그램의 정리. 핸들로 끄고 끝날 때까지 기다린다. */
 const spawned: (() => Promise<void>)[] = [];
-let dataDir = "";
+/** 이 시험 프로세스가 준비한 감독 실행기 파일. 준비를 바꾼 시험은 끝에 이것으로 되돌린다. */
+let supervisorFile = "";
 
 const temp = async (name: string) => {
   const root = await mkdtemp(path.join(tmpdir(), name));
@@ -189,14 +196,9 @@ const leaveChild = (stdio: string, then: string) => {
 describe.runIf(windows)("startProcess on Windows", () => {
   beforeAll(async () => {
     lifelines = await openLifelines();
-    dataDir = await temp("babojubot-job-");
-    // 구현 첫 단계의 확인: 이 컴퓨터의 기본 .NET Framework C# 컴파일러로 실행기를 만들고 해가 없는 실행이 된다.
-    const started = Date.now();
-    const launcher = await prepareJobObjectLauncher(dataDir);
-    console.log(
-      `[job-object] prepared in ${Date.now() - started} ms: ${JSON.stringify(launcher)}`
-    );
-    expect(launcher).toMatchObject({ ok: true });
+    const supervisor = await prepareSupervisor();
+    if (!supervisor.ok) throw new Error(supervisor.reason);
+    supervisorFile = supervisor.file;
   }, 180_000);
 
   // 정리 단계는 앞 단계가 실패해도 모두 돈다. 실패는 모아 마지막에 함께 알린다.
@@ -339,16 +341,17 @@ describe.runIf(windows)("startProcess on Windows", () => {
     ]);
   });
 
-  // 서버가 강제로 끝나면 Node.js가 자식(묶음 실행기)을 끄고, 그 묶음이 닫혀 실행 시도의 프로그램이 모두 꺼진다.
+  // 서버가 강제로 끝나면 Node.js가 자식(감독 실행기)을 끄고, 그 묶음이 닫혀 실행 시도의 프로그램이 모두 꺼진다.
   it("stops the run's programs when the server is killed", async () => {
     const root = await temp("babojubot-job-server-");
     const programName = unique("program");
     const url = (file: string) => new URL(`./${file}`, import.meta.url).href;
     await writeFile(
       path.join(root, "server.mjs"),
-      `import { prepareJobObjectLauncher } from ${JSON.stringify(import.meta.resolve("@babojubot/process"))};
+      `import { prepareSupervisor } from ${JSON.stringify(import.meta.resolve("@babojubot/process"))};
        import { startProcess } from ${JSON.stringify(url("process.ts"))};
-       await prepareJobObjectLauncher(${JSON.stringify(dataDir)});
+       const supervisor = await prepareSupervisor();
+       if (!supervisor.ok) throw new Error(supervisor.reason);
        const program = ${JSON.stringify(
          `${lifelines.hold(programName, `console.log(JSON.stringify({ program: ${JSON.stringify(programName)} }));`)} ${leaveChild(`["ignore", "ignore", "ignore"]`, "")} setInterval(() => {}, 1000);`
        )};
@@ -400,11 +403,17 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect((await attempt.done).broken).toBe(true);
   });
 
-  // 실행기 파일이 사라졌다(백신 등). 묶음 없이 대신 띄우지 않고 시작 실패로 끝난다.
-  it("fails to start, without running the program, when the launcher cannot start", async () => {
-    const tools = path.join(dataDir, "tools");
-    for (const file of await readdir(tools))
-      await rm(path.join(tools, file), { force: true });
+  // 준비한 뒤 실행기 파일이 사라졌다(백신 등). 실행기 없이 대신 띄우지 않고 시작 실패로 끝난다.
+  it("fails to start, without running the program, when the supervisor cannot start", async () => {
+    const copy = path.join(await temp("babojubot-job-gone-"), "supervisor.exe");
+    await copyFile(supervisorFile, copy);
+    onTestFinished(async () => {
+      expect(await prepareSupervisor({ file: supervisorFile })).toMatchObject({
+        ok: true,
+      });
+    });
+    expect(await prepareSupervisor({ file: copy })).toMatchObject({ ok: true });
+    await rm(copy, { force: true });
     const ran = await marker();
     const { attempt, frames } = run(ran.script);
     expect((await attempt.done).broken).toBe(true);
@@ -412,21 +421,16 @@ describe.runIf(windows)("startProcess on Windows", () => {
     expect(existsSync(ran.file)).toBe(false);
   });
 
-  it("refuses the run and names what was missing when the launcher could not be prepared", async () => {
-    const other = await temp("babojubot-job-none-");
-    expect(
-      await prepareJobObjectLauncher(other, {
-        compilers: [path.join(other, "missing", "csc.exe")],
-      })
-    ).toMatchObject({ ok: false });
-    await expectRefusedRun(/C# compiler of the \.NET Framework was not found/);
-  });
-
-  // 준비 중 어떤 실패도 서버 시작을 막지 않는다. 데이터 폴더의 `tools` 자리에 파일이 있어 폴더를 만들 수 없는 경우다. 실행 시도는 거절한다.
-  it("does not throw when the launcher's folder cannot be made, and refuses the run", async () => {
-    const other = await temp("babojubot-job-blocked-");
-    await writeFile(path.join(other, "tools"), "");
-    expect(await prepareJobObjectLauncher(other)).toMatchObject({ ok: false });
-    await expectRefusedRun(/could not be prepared/);
+  it("refuses the run and names what was missing when the supervisor could not be prepared", async () => {
+    const missing = path.join(await temp("babojubot-job-none-"), "missing.exe");
+    onTestFinished(async () => {
+      expect(await prepareSupervisor({ file: supervisorFile })).toMatchObject({
+        ok: true,
+      });
+    });
+    expect(await prepareSupervisor({ file: missing })).toMatchObject({
+      ok: false,
+    });
+    await expectRefusedRun(/the supervisor program was not found/);
   });
 });

@@ -6,6 +6,7 @@ import { probeEnding, runProbe, startProcess } from "./process.ts";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { killAndWait } from "@babojubot/process/testing";
 import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
+import { manualClock } from "@babojubot/process/test-support";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();
@@ -91,6 +92,42 @@ it("reads a last line that has no newline when a child keeps the output open", a
   expect(frames).toEqual([{ n: 1 }]);
   expect(exit.broken).toBe(false);
 });
+
+// 프로그램이 끝나면 남긴 자식이 출력을 쥐고 있어도 출력이 닫히기를 시간으로 기다리지 않는다. 바로 트리를 끄고, 끈 뒤 닫힌 출력의
+// 끝(줄바꿈 없는 마지막 줄 포함)까지 읽는다(#268). 시계를 돌리지 않아도 끝나므로, 정리가 시계의 기다림에 매이지 않는다.
+it("finishes a run when its program ends without waiting on the clock for a child that holds the output", async () => {
+  const lifelines = await openLifelines();
+  onTestFinished(() => lifelines.close());
+  // 남긴 자식이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 마지막 줄을 쓰고 끝난다. 그 전에 끝나면 자식이 연결을 쥐기 전에 꺼진다.
+  const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
+  const frames: unknown[] = [];
+  const child = startProcess({
+    command: [
+      process.execPath,
+      "-e",
+      `const h = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "ignore", "pipe"] }); h.stdio[3].once("data", () => { h.stdio[3].destroy(); h.unref(); process.stdout.write('{"n":1}'); });`,
+    ],
+    args: [],
+    cwd: process.cwd(),
+    env: { PATH: process.env.PATH },
+    clock: manualClock(),
+    onFrame: async (frame) => {
+      frames.push(frame);
+    },
+  });
+  const exit = await Promise.race([
+    child.done,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error("the run did not finish within 20000 ms")),
+        20_000
+      )
+    ),
+  ]);
+  expect(frames).toEqual([{ n: 1 }]);
+  expect(exit).toMatchObject({ code: 0, broken: false });
+  await lifelines.closed("holder");
+}, 30_000);
 
 it("keeps reading after a frame handler fails", async () => {
   const { frames, exit } = await run(
@@ -219,29 +256,25 @@ describe("runProbe", () => {
     30_000
   );
 
-  // 프로그램이 끝났어도 그 출력을 물려받은 다른 프로그램이 남으면 출력이 닫히지 않는다. 시한이 지나면 기다림을 끝내고
-  // 실패로 돌려주며, 출력을 쥔 그 프로그램까지 끈다(공용 실행의 트리 끄기, #262). 예전에는 회수하지 못하고 기록만 남겼다.
-  // Windows에서는 물려받은 출력이 프로그램 종료 뒤 출력을 붙잡지 않아(CI에서 바로 닫힘을 확인) 이 상황이 이렇게 생기지 않는다.
-  it.skipIf(process.platform === "win32")(
-    "ends the wait after its limit when the program's output stays open",
-    async () => {
-      const folder = await folders.make("babojubot-probe-");
-      const holderFile = path.join(folder, "holder");
-      folders.own(
-        () => stopRecorded(holderFile),
-        "the program holding the output"
-      );
-      const lifelines = await openLifelines();
-      onTestFinished(() => lifelines.close());
-      const holder = `${lifelines.hold("holder")} setInterval(() => {}, 1000);`;
-      await expect(
-        probe(
-          `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref();`,
-          500
-        )
-      ).rejects.toThrow();
-      await lifelines.closed("holder");
-    },
-    30_000
-  );
+  // 프로그램이 끝났는데 그 출력을 물려받은 다른 프로그램이 남으면, 출력이 닫히기를 기다리지 않고 바로 트리를 끈다(공용 실행의 트리
+  // 끄기). 출력을 쥔 그 프로그램까지 끝나 출력이 닫히고, 결과는 프로그램의 결과다. 시한(500ms)이 지나기를 기다리지 않는다. 예전에는
+  // 출력 닫힘을 1초 기다리다 시한에 닿아 실패로 돌려주었다(#268, 시간 기다림 제거).
+  it("stops what the program left holding its output as soon as the program ends, and returns the program's result", async () => {
+    const folder = await folders.make("babojubot-probe-");
+    const holderFile = path.join(folder, "holder");
+    folders.own(
+      () => stopRecorded(holderFile),
+      "the program holding the output"
+    );
+    const lifelines = await openLifelines();
+    onTestFinished(() => lifelines.close());
+    // 출력을 쥔 프로그램이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 끝난다.
+    const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
+    const result = await probe(
+      `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
+      500
+    );
+    expect(result.stdout).toBe("done\n");
+    await lifelines.closed("holder");
+  }, 30_000);
 });

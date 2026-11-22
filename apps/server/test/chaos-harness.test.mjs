@@ -36,6 +36,7 @@ import {
   chaosServer,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
+import { hasErrorCode } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   awaitedLater,
@@ -131,6 +132,10 @@ describe("chaos harness environment", () => {
 });
 
 describe("chaos harness budget gate", () => {
+  /**
+   * @param {object} budget
+   * @param {{ status: string, reason: string | null }} [readiness]
+   */
   async function gated(budget, readiness = { status: "ready", reason: null }) {
     const dir = await mkdtemp(path.join(tmpdir(), "chaos-gate-"));
     // 시험이 중간에 실패해도 지운다.
@@ -619,6 +624,7 @@ describe("chaos harness on a fake connection", () => {
   }, 180_000);
 
   it("stops a scene at its time limit after a forced kill and cleans the server, database, and home", async () => {
+    /** @type {string | undefined} */
     let home;
     const hang = {
       id: "a",
@@ -643,6 +649,7 @@ describe("chaos harness on a fake connection", () => {
       // 시한 안에 들게 준비 시간의 여러 배를 두고, 나머지는 시험 시한(120s) 안에 정리할 몫으로 남긴다(#215).
       sceneMs: 30_000,
     });
+    if (home === undefined) throw new Error("the scene did not run");
     const [scene] = summary.scenes;
     expect(scene).toMatchObject({
       outcome: "failed",
@@ -774,6 +781,8 @@ describe("chaos harness on a fake connection", () => {
     });
     await once(leader, "exit");
     const group = leader.pid;
+    if (group === undefined) throw new Error("the leader did not start");
+    /** @type {string | undefined} */
     let home;
     // 남은 그룹을 끄고 홈을 지운다. 그룹이 이미 끝났으면 넘어간다.
     // 남은 sleep은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 끝나기를 기다리지 않고 지운다.
@@ -782,7 +791,7 @@ describe("chaos harness on a fake connection", () => {
       try {
         process.kill(-group, "SIGKILL");
       } catch (error) {
-        if (error.code !== "ESRCH") throw error;
+        if (!hasErrorCode("ESRCH")(error)) throw error;
       }
       if (home) await removeFolder(home);
     });
@@ -792,8 +801,9 @@ describe("chaos harness on a fake connection", () => {
       minLiveRuns: 0,
       database: "ephemeral",
       async run(ctx) {
-        home = ctx.home;
-        const dir = path.join(home, "providers/opencode/processes");
+        const sceneHome = ctx.home;
+        home = sceneHome;
+        const dir = path.join(sceneHome, "providers/opencode/processes");
         await mkdir(dir, { recursive: true });
         await writeFile(
           path.join(dir, `${group}.json`),
@@ -815,6 +825,7 @@ describe("chaos harness on a fake connection", () => {
       connection: "fake-live",
       scenes: [planted],
     });
+    if (home === undefined) throw new Error("the scene did not run");
     const [scene] = summary.scenes;
     expect(scene.outcome).toBe("failed");
     expect(scene.cleanup).toMatchObject({

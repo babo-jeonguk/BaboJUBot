@@ -17,7 +17,7 @@ if (!name) {
 try {
   await runLogin(createConnection(name, { dataDir }));
 } catch (error) {
-  if (error?.name === "AbortError") {
+  if (error instanceof Error && error.name === "AbortError") {
     console.error("Login cancelled.");
     process.exitCode = 130;
   } else {

@@ -28,7 +28,7 @@ const install = workflow.jobs["test-opencode"].steps.find(
 // `curl <옵션> -o "$archive" \` 줄에서 옵션만 꺼낸다. 옵션에는 따옴표·변수가 없어야 한다.
 const flags = /^\s*curl ([^"$\\\n]+?) -o "\$archive" \\$/m
   .exec(install.run)?.[1]
-  .split(/\s+/);
+  ?.split(/\s+/);
 const hasCurl =
   probeEnvironment({
     variable: "BABOJUBOT_REQUIRE_CURL",
@@ -53,6 +53,16 @@ test("downloads to a file with curl's transient-only retries", () => {
   assert.match(install.run, /tar -xzf "\$archive"/);
 });
 
+/** listen한 서버의 port. */
+function portOf(server) {
+  const address = server.address();
+  assert.ok(
+    address !== null && typeof address === "object",
+    "the server is not listening on a port"
+  );
+  return address.port;
+}
+
 // statuses[i]는 i번째 요청의 응답 코드다. 모자라면 마지막 값을 쓴다.
 async function serve(statuses, context) {
   const requests = [];
@@ -63,15 +73,18 @@ async function serve(statuses, context) {
     response.writeHead(status, { "retry-after": "0" });
     response.end(status === 200 ? "archive" : `error ${status}`);
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve(undefined))
+  );
   context.after(() => server.close());
   return {
-    url: `http://127.0.0.1:${server.address().port}/opencode.tar.gz`,
+    url: `http://127.0.0.1:${portOf(server)}/opencode.tar.gz`,
     requests,
   };
 }
 
 async function download(url, context) {
+  assert.ok(flags, install.run);
   const dir = mkdtempSync(path.join(tmpdir(), "ci-download-"));
   context.after(() => removeFolder(dir));
   const file = path.join(dir, "archive.tar.gz");
@@ -137,6 +150,7 @@ test(
 // 재시도 전체를 묶는다. 그 시간 안에 시작한 마지막 시도는 --max-time까지 돌 수 있다(curl --retry-max-time 문서).
 // 최악 시간 = --retry-max-time + --max-time + 압축 풀기·안내 여유 30초.
 test("fits the retries' worst case, server-requested waits included, inside the install step's time limit", () => {
+  assert.ok(flags, install.run);
   const value = (name) => Number(flags[flags.indexOf(name) + 1]);
   const total = value("--retry-max-time");
   const perAttempt = value("--max-time");
@@ -160,11 +174,13 @@ test(
       response.writeHead(429, { "retry-after": "600" });
       response.end("slow down");
     });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) =>
+      server.listen(0, "127.0.0.1", () => resolve(undefined))
+    );
     context.after(() => server.close());
     // 600초를 기다렸다면 download의 시한(20초)에 curl이 꺼져 종료 코드가 없다(null). 22는 curl이 스스로 끝냈다는 뜻이다.
     const result = await download(
-      `http://127.0.0.1:${server.address().port}/opencode.tar.gz`,
+      `http://127.0.0.1:${portOf(server)}/opencode.tar.gz`,
       context
     );
     assert.equal(result.status, 22, result.stderr);
@@ -187,11 +203,14 @@ test(
       response.write("partial");
     });
     server.on("connection", (socket) => sockets.add(socket));
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) =>
+      server.listen(0, "127.0.0.1", () => resolve(undefined))
+    );
     context.after(() => {
       for (const socket of sockets) socket.destroy();
       server.close();
     });
+    assert.ok(flags, install.run);
     const dir = mkdtempSync(path.join(tmpdir(), "ci-download-"));
     context.after(() => removeFolder(dir));
     const child = spawn(
@@ -204,7 +223,7 @@ test(
         "0",
         "-o",
         path.join(dir, "archive.tar.gz"),
-        `http://127.0.0.1:${server.address().port}/opencode.tar.gz`,
+        `http://127.0.0.1:${portOf(server)}/opencode.tar.gz`,
       ],
       { stdio: ["ignore", "ignore", "pipe"] }
     );
@@ -228,6 +247,7 @@ test(
 // 멈춘 전송만 --speed-limit·--speed-time으로 끊는다. #221 CI에서 Ubuntu 미러가 느려 3분 시한에 설치가 끊긴 일이 있다
 // (run 44222170536). 시도마다 상한은 이 묶음을 초당 400KB로 받을 시간 이상이다.
 test("cuts only a stalled download and gives a slow one time to finish", () => {
+  assert.ok(flags, install.run);
   const value = (name) => Number(flags[flags.indexOf(name) + 1]);
   assert.ok(value("--speed-limit") > 0 && value("--speed-time") > 0);
   const archiveBytes = 122 * 1024 * 1024;

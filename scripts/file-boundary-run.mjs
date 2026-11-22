@@ -53,7 +53,9 @@ try {
   if (!dir) ready = "no --dir";
   else if (!statSync(dir).isDirectory()) ready = `${dir} is not a folder`;
 } catch (error) {
-  ready = `${dir}: ${error.code ?? error}`;
+  const code =
+    error instanceof Error && "code" in error ? error.code : undefined;
+  ready = `${dir}: ${code ?? error}`;
 }
 if (ready) {
   console.error(`volume ${volume} is not prepared: ${ready}`);

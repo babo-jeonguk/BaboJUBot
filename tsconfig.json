@@ -1,0 +1,7 @@
+// 저장소 뿌리의 설정 파일(eslint.config.js 등)과 컨테이너 안에서 도는 중계(docker/)를 pnpm typecheck:js가 타입 검사한다.
+// JS를 .ts로 옮기기 전까지 암시적 any만 끈다(#270 PR 3a).
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "checkJs": true, "noImplicitAny": false },
+  "include": ["*", "docker/**/*"]
+}

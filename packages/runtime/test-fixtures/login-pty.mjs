@@ -16,7 +16,13 @@ try {
     },
   });
 } catch (error) {
-  if (error?.name !== "AbortError") throw error;
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("name" in error) ||
+    error.name !== "AbortError"
+  )
+    throw error;
   process.stdout.write(`cancelled:${error.name}\n`);
 }
 process.stdout.write(`raw:${process.stdin.isRaw === true}\n`);

@@ -250,6 +250,7 @@ function originsOf(code) {
         probe: {
           rules: {
             origins: {
+              /** @param {import("eslint").Rule.RuleContext} context */
               create: (context) => ({
                 "CallExpression > Identifier.callee"(node) {
                   const origin = originOf(

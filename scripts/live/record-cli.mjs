@@ -2,9 +2,8 @@
 // 원본 기록은 모델 출력과 지침을 담으므로 Git 밖 로컬 기록 폴더에만 둔다. 인증 헤더와 환경 변수는 남기지 않는다.
 import { createWriteStream } from "node:fs";
 import http from "node:http";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
+import { launchTree, prepareSupervisor } from "@babojubot/process";
 import {
   failureCode,
   isDisconnect,
@@ -23,8 +22,8 @@ const record = (kind, value) =>
   );
 record("start", { argv: command.slice(1), cwd: process.cwd() });
 
-// Windows는 묶음 실행기 없이 띄우지 않는다. 이 사용자의 임시 폴더에 한 번 만들어 둔다(다른 시스템에서는 아무것도 하지 않는다).
-await prepareJobObjectLauncher(path.join(tmpdir(), "babojubot-record-cli"));
+// 감독 실행기 없이는 띄우지 않는다. 준비하지 못하면 launchTree가 그 이유로 거절한다.
+await prepareSupervisor();
 // 실제 프로그램은 공용 실행으로 띄운다. 자기 그룹(Windows는 묶음)에 들어가므로 이 중계가 받은 신호를 넘기고, 끝나면 그 트리를 끈다.
 // 이 중계를 띄운 제품의 표식도 물려받으므로, 이 중계가 먼저 강제로 끝나도 제품의 끄기가 그 트리에 닿는다.
 const child = launchTree({

@@ -68,6 +68,7 @@
 - [#205 Windows 후손 정리 조사](research/issue-205-references.md): 로컬 C# 묶음 실행기·백신 차단·libuv 소유권 연쇄의 선례와 미검증 조건.
 - [#205 구현 기록](research/issue-205-implementation.md): 묶음 실행기의 원문 확인, 사용자 결정, Windows CI 첫 단계 확인과 시험 결과·미검증 범위.
 - [하위 프로세스 정리 조사](research/orphan-process-cleanup-references.md): 프로바이더가 먼저 죽은 뒤 새 세션 자손을 회수하는 OS별 수단(cgroup·subreaper·표식 탐색·Job Object)의 선례와 한계.
+- [#268 감독 실행기 조사](research/issue-268-references.md)에서 플랫폼별 배포, 제어 통로, 실행기 사망과 재시작 복구의 권고를 확인합니다.
 - [#219 구현 기록](research/issue-219-implementation.md): Linux·macOS 표식 정리의 원문 확인, 사용자 결정, 수정 전후 시험 도구 결과와 미검증 범위.
 - [#189 Windows E2E 정상 종료 조사](research/issue-189-references.md): IPC 종료 요청·공용 서버 수명 소유·Windows E2E CI 권고와 미검증 범위.
 - [#211 구현 기록](research/issue-211-implementation.md): 변경 응답 캐시 쓰기 공통 규칙의 원문 확인, 적용·제외 위치, 순서 강제 시험과 대조 결과.

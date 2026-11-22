@@ -32,7 +32,7 @@ import { attemptAll } from "@babojubot/contracts";
 
 /**
  * 띄운 프로세스(이 컴퓨터의 프로그램이나 docker)의 명령. 실제로 프로세스를 시작했는지 여기서 본다. 실행 시도는 공용 실행(`launchTree`)
- * 하나로만 띄우므로 그 입구를 본다(Windows는 묶음 실행기로 띄워 cross-spawn을 거치지 않는다).
+ * 하나로만 띄우므로 그 입구를 본다(감독 실행기로 띄워 cross-spawn을 거치지 않는다).
  */
 const spawned: string[][] = [];
 vi.mock("@babojubot/process", async (importOriginal) => {

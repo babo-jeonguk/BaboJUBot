@@ -54,7 +54,8 @@ for (const relative of repositoryFiles) {
   // 링크는 CommonMark·GFM 구문 트리로 읽는다: 참조식 링크 정의도 링크이고, 코드 안 글은 링크가 아니다.
   for (const { url, line } of linkTargets(parseMarkdown(content))) {
     if (/^(https?:|mailto:|#)/.test(url)) continue;
-    const local = url.split("#")[0];
+    const hash = url.indexOf("#");
+    const local = hash === -1 ? url : url.slice(0, hash);
     const resolved = path.resolve(path.dirname(location), local);
     assert(
       fs.existsSync(resolved),

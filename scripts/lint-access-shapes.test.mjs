@@ -82,13 +82,14 @@ test("every access shape the generator makes reaches the same value as the canon
         shape,
         same,
         ...(await import(pathToFileURL(file).href).then(
-          (loaded) => ({ value: loaded.value }),
-          (error) => ({ error: String(error).split("\n")[0] })
+          (loaded) => ({ value: loaded.value, error: undefined }),
+          (error) => ({ value: undefined, error: String(error).split("\n")[0] })
         )),
       });
     }
     const [canonical] = evaluated;
     const name = value.module ?? `global ${value.global}`;
+    assert.ok(canonical, `${name}: no case`);
     assert.equal(canonical.error, undefined, `${name}: ${canonical.error}`);
     assert.notEqual(canonical.value, undefined, `${name}: no value`);
     for (const each of evaluated.slice(1))
@@ -128,8 +129,7 @@ test("the generator leaves out shapes a module's format cannot reach, with the r
     )
   );
   // 전역은 가져오는 모양이 없다.
-  assert.match(
-    reasons({ global: "JSON", path: ["parse"] })[0],
-    /전역 값은 가져오는 모양이 없다/
-  );
+  const [globalReason] = reasons({ global: "JSON", path: ["parse"] });
+  assert.ok(globalReason !== undefined, "no reason for a global");
+  assert.match(globalReason, /전역 값은 가져오는 모양이 없다/);
 });

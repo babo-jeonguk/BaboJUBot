@@ -49,6 +49,10 @@ const gateScript = fileURLToPath(
 // an individual test did not succeed. Resolve the workflow's actual env bindings
 // and run its actual Node gate with the current Node binary; do not substitute a
 // second gate implementation.
+/**
+ * @param {{ code?: string, files?: string, changes?: string, results?: Record<string, string>,
+ *   fileResults?: Record<string, string>, executablePath?: string, summary?: string }} [options]
+ */
 function runGate({
   code = "true",
   files = "false",
@@ -456,6 +460,7 @@ const runSteps = (job) => job.steps.filter((each) => each.run);
 // job 시한보다 먼저 그 단계 시한에 걸려 그 단계만 실패하고, 뒤의 보고 단계(`!cancelled()`·`failure()`)가 돈다.
 // 단계 시한에 걸린 단계는 실패로 끝나고 두 보고 단계가 모두 돈다(#218, GitHub Actions run 44133006534에서 확인).
 test("gives test and install steps time limits that fit inside the job's with room for reports", () => {
+  /** @type {[string, RegExp][]} */
   const timed = [
     ["check", /^pnpm run test:e2e$|playwright install/],
     ["test-unit", /run test/],

@@ -8,14 +8,19 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 
-const scene = JSON.parse(await readFile(process.argv[2], "utf8"));
+const sceneFile = process.argv[2];
+if (sceneFile === undefined)
+  throw new Error("usage: claude-cost-state.synthetic <scene file> <args...>");
+const scene = JSON.parse(await readFile(sceneFile, "utf8"));
 const args = process.argv.slice(3);
 const resume = args.indexOf("--resume");
 const id = resume >= 0 ? args[resume + 1] : "fresh-session";
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 async function saveCost() {
   if (!scene.costState) return;
-  const folder = path.join(process.env.CLAUDE_CONFIG_DIR, "projects/synthetic");
+  const config = process.env.CLAUDE_CONFIG_DIR;
+  if (!config) throw new Error("synthetic: CLAUDE_CONFIG_DIR is not set");
+  const folder = path.join(config, "projects/synthetic");
   await mkdir(folder, { recursive: true });
   await appendFile(
     path.join(folder, `${id}.jsonl`),

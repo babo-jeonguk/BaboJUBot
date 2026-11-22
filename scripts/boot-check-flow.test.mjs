@@ -41,7 +41,7 @@ test("waits for a closing database before it cleans up on stop", async () => {
   stop.request("stop requested");
   assert.deepEqual(after(events, "close:handle"), ["stop requested"]);
 
-  closing.resolve();
+  closing.resolve(undefined);
   const { code } = await run;
   assert.equal(code, 1);
   // 닫은 handle은 다시 닫지 않는다.
@@ -62,7 +62,7 @@ test("stops at the next step after a server start and cleans up once", async () 
   await reached("serve:first start");
 
   stop.request("stop requested");
-  starting.resolve();
+  starting.resolve(undefined);
   const { code } = await run;
   assert.equal(code, 1);
   assert.deepEqual(events, [
@@ -96,10 +96,7 @@ test("fails and still cleans up when a step fails", async () => {
   });
   const { code, failures } = await runBootCheckFlow(ops);
   assert.equal(code, 1);
-  assert.deepEqual(
-    failures.map((failure) => failure.message),
-    ["could not open"]
-  );
+  assert.deepEqual(messagesOf(failures), ["could not open"]);
   assert.equal(events.at(-1), "removeFolder");
   assert.equal(events.filter((event) => event === "removeFolder").length, 1);
 });
@@ -122,7 +119,7 @@ test("still stops the left Postgres and the servers when closing the database fa
     "stop servers",
   ]);
   assert.match(
-    failures.map((failure) => failure.message).join("\n"),
+    messagesOf(failures).join("\n"),
     /not a clean start[\s\S]*could not close/
   );
 });
@@ -206,13 +203,14 @@ function fakeRun(overrides = {}) {
 }
 
 function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
+  return Promise.withResolvers();
 }
+
+/** 실패마다 Error인지 확인하고 그 문구. */
+const messagesOf = (failures) =>
+  failures.map((failure) => {
+    assert.ok(failure instanceof Error, String(failure));
+    return failure.message;
+  });
 
 const after = (events, marker) => events.slice(events.indexOf(marker) + 1);

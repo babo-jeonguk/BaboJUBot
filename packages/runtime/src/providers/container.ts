@@ -516,7 +516,7 @@ export async function runDocker(
     return {
       code: null,
       stdout: "",
-      // Windows에서 묶음 실행기를 쓸 수 없어 띄우지 않았거나, 띄운 클라이언트가 끝났음을 확인하지 못했다.
+      // 감독 실행기를 쓸 수 없어 띄우지 않았거나, 띄운 클라이언트가 끝났음을 확인하지 못했다.
       stderr:
         error instanceof TreeLaunchRefused
           ? error.message

@@ -11,12 +11,21 @@ if (args.includes("--version")) {
 }
 if (args.includes("login")) process.exit(0);
 const exec = args.includes("exec");
-let id = crypto.randomUUID(),
-  turn = "turn-one",
+/** 시험이 이 프로그램에 주는 CODEX_HOME(세션 메모를 둔다). */
+function codexHome() {
+  const folder = process.env.CODEX_HOME;
+  if (!folder) throw new Error("synthetic: CODEX_HOME is not set");
+  return folder;
+}
+/** @type {string} */
+let id = crypto.randomUUID();
+let turn = "turn-one",
   context,
   waiting = false,
   note = "";
 const address = args.find((x) => x.startsWith("mcp_servers.organization.url="));
+if (address === undefined)
+  throw new Error("synthetic: no mcp_servers.organization.url argument");
 const base = JSON.parse(address.slice(address.indexOf("=") + 1)).replace(
   /\/mcp$/,
   ""
@@ -24,10 +33,7 @@ const base = JSON.parse(address.slice(address.indexOf("=") + 1)).replace(
 
 async function load() {
   try {
-    note = await readFile(
-      path.join(process.env.CODEX_HOME, id + ".note"),
-      "utf8"
-    );
+    note = await readFile(path.join(codexHome(), id + ".note"), "utf8");
   } catch {
     note = "";
   }
@@ -109,11 +115,16 @@ async function begin(text) {
   }
   if (body.startsWith("메모해 주세요: ")) {
     note = body.slice("메모해 주세요: ".length);
-    await writeFile(path.join(process.env.CODEX_HOME, id + ".note"), note);
+    await writeFile(path.join(codexHome(), id + ".note"), note);
   }
   await reply(body === "세션 메모를 알려 주세요" ? note || "없음" : "완료");
 }
-if (exec && args.includes("resume")) id = args[args.indexOf("resume") + 1];
+if (exec && args.includes("resume")) {
+  const resumed = args[args.indexOf("resume") + 1];
+  if (resumed === undefined)
+    throw new Error("synthetic: resume needs a thread id");
+  id = resumed;
+}
 if (exec && id === "expired") {
   // 실제 프로그램은 표준 출력 없이 표준 오류로 알리고 끝난다.
   console.error(
@@ -128,7 +139,8 @@ for await (const line of lines) {
   if (exec) {
     out({ type: "thread.started", thread_id: id });
     await begin(line);
-    if (context.wakeReasons[0].body === "실행 유지 연습") {
+    // begin이 같은 줄을 읽어 둔 맥락이 이 frame이다.
+    if (frame.wakeReasons[0].body === "실행 유지 연습") {
       setInterval(() => {}, 1000);
     }
     break;
