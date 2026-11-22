@@ -1,6 +1,5 @@
-import { open, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { constants } from "node:fs";
 import {
   addUsage,
   continueAfterFailure,
@@ -14,7 +13,7 @@ import {
   type SessionMaintenance,
   type UsageAmount,
 } from "@babojubot/contracts";
-import { inFolder } from "./pinned-folder.ts";
+import { inFolder, openFileIn, type OpenedFile } from "./pinned-folder.ts";
 import { record } from "./record.ts";
 
 const unreadable = Symbol("unreadable");
@@ -59,15 +58,12 @@ async function sessionTranscripts<T>(
     const found = await continueAfterFailure(
       () =>
         inFolder(home, ["config", "projects", entry.name], async (folder) => {
-          let file;
+          let file: OpenedFile | undefined;
           try {
-            file = await open(
-              folder.at(`${id}.jsonl`),
-              constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-            );
-            const info = await file.stat();
-            if (!info.isFile()) return;
-            return await read(file, info.size);
+            const opened = await openFileIn(folder, `${id}.jsonl`);
+            if (typeof opened === "string") return;
+            file = opened;
+            return await read(opened.handle, opened.size);
           } catch (error) {
             if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
               console.warn(
@@ -75,7 +71,7 @@ async function sessionTranscripts<T>(
               );
             /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
           } finally {
-            await file?.close();
+            await file?.handle.close();
           }
         }),
       (error) =>

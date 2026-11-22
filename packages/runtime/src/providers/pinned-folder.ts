@@ -56,6 +56,41 @@ function checkStep(name: string): void {
 const folderFlags =
   constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 
+/** 확인한 폴더 안의 파일 하나를 여는 flag. 링크를 거절하고 FIFO에서 기다리지 않는다. */
+const fileFlags =
+  constants.O_RDONLY |
+  (constants.O_NOFOLLOW ?? 0) |
+  (constants.O_NONBLOCK ?? 0);
+
+/** `openFileIn`이 연 일반 파일: handle과 연 때의 크기. 부르는 쪽이 handle을 닫는다. */
+export type OpenedFile = { handle: FileHandle; size: number };
+/** 확인한 폴더 안의 이름 하나를 연다. 링크를 따라가지 않고(O_NOFOLLOW) FIFO에서 기다리지 않는다(O_NONBLOCK). 열린 것이 일반 파일일 때만 그 handle과 크기를 돌려주고, 없음·링크·일반 파일 아님은 값으로 가른다. 그 밖의 열기·확인 오류는 던진다. */
+export async function openFileIn(
+  folder: Folder,
+  name: string
+): Promise<OpenedFile | "missing" | "link" | "not_regular"> {
+  let handle: FileHandle;
+  try {
+    handle = await open(folder.at(name), fileFlags);
+  } catch (error) {
+    if (hasErrorCode("ENOENT", "ENOTDIR")(error)) return "missing";
+    if (hasErrorCode("ELOOP")(error)) return "link";
+    if (hasErrorCode("EISDIR")(error)) return "not_regular";
+    throw error;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      await closeHandles([handle]);
+      return "not_regular";
+    }
+    return { handle, size: info.size };
+  } catch (error) {
+    await closeHandles([handle]);
+    throw error;
+  }
+}
+
 /** Linux: 연 폴더 handle의 /proc/self/fd 경로로 한 칸씩 내려간다. 확인한 폴더를 옮기거나 바꿔도 같은 폴더를 가리킨다. */
 async function inFolderLinux<T>(
   root: string,

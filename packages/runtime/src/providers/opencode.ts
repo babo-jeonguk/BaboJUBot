@@ -1,4 +1,4 @@
-import { constants, lstatSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { mkdir, mkdtemp, lstat, open, rm, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
@@ -24,7 +24,7 @@ import {
   usageAmount,
 } from "@babojubot/contracts";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
-import { inFolder } from "./pinned-folder.ts";
+import { inFolder, openFileIn, type Folder } from "./pinned-folder.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import { TreeLaunchRefused } from "@babojubot/process";
@@ -183,37 +183,22 @@ const residueCopyMaxBytes = 512 * 1024 * 1024;
 /** 저장소를 개인 폴더로 복사할 때 읽는 조각. */
 const residueChunkBytes = 1024 * 1024;
 /**
- * 링크를 따라가지 않고 FIFO에서 기다리지도 않은 채 이름을 연다. 없음과 링크를 값으로 가르고, 그 밖의 열기 오류는 던진다.
- */
-async function openResidueFile(
-  at: string
-): Promise<FileHandle | "absent" | "unsafe"> {
-  try {
-    return await open(
-      at,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-    );
-  } catch (error) {
-    if (hasErrorCode("ENOENT")(error)) return "absent";
-    if (hasErrorCode("ELOOP")(error)) return "unsafe";
-    throw error;
-  }
-}
-/**
- * 확인한 폴더 안의 로그인 저장소 하나를 개인 폴더로 복사한다. 일반 파일이 아니거나(폴더·FIFO 등) 크기 제한을 넘으면 `unsafe`다.
+ * 확인한 폴더 안의 로그인 저장소 하나를 개인 폴더로 복사한다. 없으면 `absent`, 링크·일반 파일 아님·크기 제한 초과면 `unsafe`다.
  * 다 읽은 파일 핸들은 하나를 닫지 못해도 모두 닫고 원인을 남긴다.
  */
 async function copyResidueFile(
-  source: string,
+  folder: Folder,
+  name: string,
   destination: string,
   limit: number
 ): Promise<{ copied: number } | "absent" | "unsafe"> {
-  const from = await openResidueFile(source);
-  if (from === "absent" || from === "unsafe") return from;
+  const opened = await openFileIn(folder, name);
+  if (opened === "missing") return "absent";
+  if (opened === "link" || opened === "not_regular") return "unsafe";
+  const from = opened.handle;
   let to: FileHandle | undefined;
   try {
-    const info = await from.stat();
-    if (!info.isFile() || info.size > limit) return "unsafe";
+    if (opened.size > limit) return "unsafe";
     to = await open(destination, "wx", 0o600);
     const buffer = Buffer.alloc(residueChunkBytes);
     let copied = 0;
@@ -289,14 +274,16 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
           try {
             const copy = path.join(copyFolder, "opencode.db");
             const main = await copyResidueFile(
-              folder.at("opencode.db"),
+              folder,
+              "opencode.db",
               copy,
               residueCopyMaxBytes
             );
             if (main === "absent") return false;
             if (main === "unsafe") return true;
             const wal = await copyResidueFile(
-              folder.at("opencode.db-wal"),
+              folder,
+              "opencode.db-wal",
               `${copy}-wal`,
               residueCopyMaxBytes - main.copied
             );
