@@ -422,6 +422,38 @@ describe("a Postgres left by a killed process", () => {
     expect(isAlive(unrelated.pid!)).toBe(true);
   }, 60_000);
 
+  // 주인 연결의 소켓 경로는 OS 한도(Linux 107, macOS 103) 안이어야 한다. 임시 폴더를 깊게 바꿔도(boot-check처럼) 이 사용자 전용
+  // 폴더로 옮겨 시작한다. Windows는 named pipe라 경로 한도가 없다.
+  it.skipIf(process.platform === "win32")(
+    "keeps its owner connection under the socket path limit when the temporary folder has a long path",
+    async () => {
+      const dataDir = await fsp.mkdtemp(
+        path.join(os.tmpdir(), "babojubot-pg-")
+      );
+      const long = await fsp.mkdtemp(
+        path.join(os.tmpdir(), `babojubot-long-${"x".repeat(90)}-`)
+      );
+      const cluster = folderCleanup(() =>
+        attemptAll([() => removeCluster(dataDir), () => removeFolder(long)])
+      );
+      onTestFinished(cluster.cleanUp);
+      vi.stubEnv("TMPDIR", long);
+      vi.stubEnv("XDG_RUNTIME_DIR", "");
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      await withCleanup(async (defer) => {
+        const handle = await openDatabase({
+          embedded: { dataDir, persistent: true },
+        });
+        defer(() => handle.close());
+        const { rows } = await handle.db.execute(sql`select 1 as one`);
+        expect(rows).toEqual([{ one: 1 }]);
+      });
+    },
+    60_000
+  );
+
   // 잠금 파일의 pid가 무관한 프로세스를 가리킬 수 있다(pid 재사용). 그 프로세스를 멈추지 않고 시작을 멈춘다.
   it.each([
     {
