@@ -94,6 +94,9 @@ importers:
       '@babojubot/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@babojubot/files':
+        specifier: workspace:*
+        version: link:../../packages/files
       '@babojubot/process':
         specifier: workspace:*
         version: link:../../packages/process
@@ -284,6 +287,9 @@ importers:
       '@babojubot/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@babojubot/files':
+        specifier: workspace:*
+        version: link:../files
       '@babojubot/process':
         specifier: workspace:*
         version: link:../process
