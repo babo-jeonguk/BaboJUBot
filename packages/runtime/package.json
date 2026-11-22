@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@babojubot/contracts": "workspace:*",
+    "@babojubot/files": "workspace:*",
     "@babojubot/process": "workspace:*",
     "cross-spawn": "7.0.6",
     "zod": "4.6.7"

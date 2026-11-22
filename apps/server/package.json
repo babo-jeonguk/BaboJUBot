@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@babojubot/contracts": "workspace:*",
+    "@babojubot/files": "workspace:*",
     "@babojubot/core": "workspace:*",
     "@babojubot/db": "workspace:*",
     "@babojubot/process": "workspace:*",

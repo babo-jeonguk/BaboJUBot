@@ -76,18 +76,22 @@ function Chart({ orgId, agents }: { orgId: string; agents: Agent[] }) {
   const width = useWidth(box);
   const layout: Layout = width > 0 && width < stackBelow ? "stack" : "tree";
   const running = useRunningRuns(orgId).data;
-  // 조직 상세는 Event마다 새 배열로 오므로, 보이는 값이 같으면 같은 그래프를 쓴다.
+  // 조직 상세는 Event마다 새 배열로 오므로, 보이는 값이 같으면 앞의 배열을 그대로 써 같은 그래프를 쓴다. 바뀌면 이번 렌더에서 바로
+  // 바꾼다(https://react.dev/reference/react/useState#storing-information-from-previous-renders).
   const shown = JSON.stringify(
     agents.map((a) => [a.id, a.role, a.name, a.appearance])
   );
+  const [seen, setSeen] = useState({ shown, agents });
+  if (seen.shown !== shown) setSeen({ shown, agents });
+  const members = seen.agents;
   const busy = (running ?? [])
     .map((r) => r.agentId)
     .sort()
     .join();
   const graph = useMemo(() => {
-    const lead = agents.find((a) => a.role === "lead");
+    const lead = members.find((a) => a.role === "lead");
     if (!lead || !width) return { nodes: [], edges: [], height: 0 };
-    const workers = agents.filter((a) => a.role === "worker");
+    const workers = members.filter((a) => a.role === "worker");
     const built =
       layout === "tree"
         ? treeLayout(orgId, lead, workers)
@@ -95,9 +99,8 @@ function Chart({ orgId, agents }: { orgId: string; agents: Agent[] }) {
     const active = new Set(busy.split(","));
     for (const edge of built.edges) edge.animated = active.has(edge.target);
     return built;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- agents는 shown으로 비교한다.
-  }, [orgId, layout, width, shown, busy]);
-  const members = agents.map((a) => a.id).join();
+  }, [orgId, layout, width, members, busy]);
+  const memberIds = agents.map((a) => a.id).join();
   const height =
     layout === "tree"
       ? Math.min(Math.max(graph.height + 96, 300), 560)
@@ -113,7 +116,7 @@ function Chart({ orgId, agents }: { orgId: string; agents: Agent[] }) {
           key={layout}
           graph={graph}
           tree={layout === "tree"}
-          fitKey={`${members}|${width}`}
+          fitKey={`${memberIds}|${width}`}
         />
       )}
     </div>

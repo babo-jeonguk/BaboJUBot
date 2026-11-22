@@ -1,0 +1,22 @@
+{
+  "name": "@babojubot/files",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:src": "tsc -p tsconfig.src.json",
+    "typecheck:test": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@babojubot/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@babojubot/process": "workspace:*",
+    "vitest": "5.0.5"
+  }
+}
