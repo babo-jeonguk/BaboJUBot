@@ -9,10 +9,16 @@ import {
   orIfMissing,
 } from "@babojubot/contracts/failure";
 
-/** 칸을 따라 내려가지 못한 이유. 없음, 링크, 폴더가 아님(파일·FIFO 등). */
-export type FolderMiss = "missing" | "link" | "not_folder";
+/** 칸을 확인할 수 없는 이유: 링크, 폴더가 아님(파일·FIFO 등), 확인하는 사이에 바뀜(열지 못한 칸이 그 뒤 사라짐). */
+export type Unverifiable = "link" | "not_folder" | "changed";
+/**
+ * 칸을 따라 내려가 본 결과. 안전하게 "없다"고 말할 수 있는 것은 가는 길의 칸이 실제로 없는 `absent` 하나다. 링크·폴더가 아닌 것·
+ * 바뀐 것은 그 안을 확인할 수 없는 `unverifiable`이다. 허용 판정(남은 로그인 등)은 `unverifiable`을 없음으로 접지 않는다.
+ */
 export type InFolder<T> =
-  { reached: true; value: T } | { reached: false; miss: FolderMiss };
+  | { state: "reached"; value: T }
+  | { state: "absent" }
+  | { state: "unverifiable"; found: Unverifiable };
 /** 확인한 폴더 안의 이름을 여는 데 쓸 경로. 이 경로는 그 폴더 handle을 거치므로 중간 칸이 바뀌어도 같은 폴더를 가리킨다. */
 export type Folder = { path: string; at(name: string): string };
 
@@ -25,8 +31,9 @@ export type Folder = { path: string; at(name: string): string };
  * 이 프로세스의 작업 폴더를 건드리지 않으므로 서버 안에서 쓴다. 별도 프로세스가 작업 폴더로 폴더를 붙드는 길은 `enterFolder`다.
  *
  * 마지막 이름의 파일은 `openRegularFile(folder.at(이름))`으로 연다(링크를 따라가지 않고 FIFO에서 기다리지 않음). 이름 자체에
- * 작용하는 `lstat`·`readlink`·`rm`·`writeFile`(flag `"wx"`)은 `folder.at(이름)`에 그대로 써도 된다. 한 칸이라도 폴더가 아니면
- * `use`를 부르지 않고 없음·링크·폴더 아님을 돌려준다. 모든 이름은 경로 칸 하나여야 한다.
+ * 작용하는 `lstat`·`readlink`·`rm`·`writeFile`(flag `"wx"`)은 `folder.at(이름)`에 그대로 써도 된다. 한 칸이라도 확인할 수 없으면
+ * `use`를 부르지 않고 `absent`·`unverifiable`을 돌려준다. 허용 판정을 하는 부른 쪽은 `unverifiable`을 없음으로 접지 않는다.
+ * 모든 이름은 경로 칸 하나여야 한다.
  */
 export async function inFolder<T>(
   root: string,
@@ -70,7 +77,7 @@ async function inFolderLinux<T>(
       hasErrorCode("ENOENT"),
       undefined
     );
-    if (first === undefined) return { reached: false, miss: "missing" };
+    if (first === undefined) return { state: "absent" };
     handles.push(first);
     try {
       // /proc이 없으면 없는 경로가 "없음"으로 읽혀 확인을 통과할 수 있다. handle을 거치는 길이 있는지 먼저 본다.
@@ -96,10 +103,9 @@ async function inFolderLinux<T>(
       try {
         opened = await open(next, folderFlags);
       } catch (error) {
-        if (hasErrorCode("ENOENT")(error))
-          return { reached: false, miss: "missing" };
+        if (hasErrorCode("ENOENT")(error)) return { state: "absent" };
         if (hasErrorCode("ENOTDIR", "ELOOP")(error))
-          return { reached: false, miss: await missAt(next) };
+          return { state: "unverifiable", found: await missAt(next) };
         throw error;
       }
       handles.push(opened);
@@ -113,20 +119,20 @@ async function inFolderLinux<T>(
         return `/proc/self/fd/${last.fd}/${name}`;
       },
     };
-    return { reached: true, value: await use(folder) };
+    return { state: "reached", value: await use(folder) };
   } finally {
     await closeHandles(handles);
   }
 }
 
-/** 열지 못한 칸이 링크인지 폴더가 아닌지 이름 자체로 가른다. 그 사이 사라졌으면 없음이다. */
-async function missAt(at: string): Promise<FolderMiss> {
+/** 열지 못한 칸이 링크인지 폴더가 아닌지 이름 자체로 가른다. 그 사이 사라졌으면 바뀐 것(`changed`)이다. */
+async function missAt(at: string): Promise<Unverifiable> {
   const found = await orIfMissing(
     () => lstat(at),
     hasErrorCode("ENOENT"),
     undefined
   );
-  if (!found) return "missing";
+  if (!found) return "changed";
   return found.isSymbolicLink() ? "link" : "not_folder";
 }
 
@@ -138,7 +144,10 @@ async function inFolderByPath<T>(
   options: { create?: boolean }
 ): Promise<InFolder<T>> {
   const rootMiss = await folderMissAt(root);
-  if (rootMiss) return { reached: false, miss: rootMiss };
+  if (rootMiss !== undefined)
+    return rootMiss === "absent"
+      ? { state: "absent" }
+      : { state: "unverifiable", found: rootMiss };
   let at = root;
   for (const part of parts) {
     at = path.join(at, part);
@@ -151,7 +160,10 @@ async function inFolderByPath<T>(
       }
     }
     const miss = await folderMissAt(at);
-    if (miss) return { reached: false, miss };
+    if (miss !== undefined)
+      return miss === "absent"
+        ? { state: "absent" }
+        : { state: "unverifiable", found: miss };
   }
   const folder: Folder = {
     path: at,
@@ -160,17 +172,19 @@ async function inFolderByPath<T>(
       return path.join(at, name);
     },
   };
-  return { reached: true, value: await use(folder) };
+  return { state: "reached", value: await use(folder) };
 }
 
 /** 경로 하나가 폴더인가. 없음(상위가 파일인 것 포함)·링크·폴더 아님을 돌려주고, 그 밖의 오류는 던진다. */
-async function folderMissAt(at: string): Promise<FolderMiss | undefined> {
+async function folderMissAt(
+  at: string
+): Promise<"absent" | Unverifiable | undefined> {
   const found = await orIfMissing(
     () => lstat(at),
     hasErrorCode("ENOENT", "ENOTDIR"),
     undefined
   );
-  if (!found) return "missing";
+  if (!found) return "absent";
   if (found.isSymbolicLink()) return "link";
   if (!found.isDirectory()) return "not_folder";
   return undefined;

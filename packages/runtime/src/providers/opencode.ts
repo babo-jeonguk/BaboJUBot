@@ -23,7 +23,7 @@ import {
   subtractUsage,
   usageAmount,
 } from "@babojubot/contracts";
-import { inFolder, openRegularFile, type Folder } from "@babojubot/files";
+import { openRegularFile, type Folder } from "@babojubot/files";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
@@ -45,6 +45,7 @@ import {
 } from "./container.ts";
 import {
   createCredentialRelay,
+  residueInFolder,
   type RelayGrant,
   type RelayProfile,
   residueRefusal,
@@ -252,7 +253,7 @@ async function writeAll(file: FileHandle, buffer: Buffer): Promise<void> {
 async function openCodeLoginResidue(organization: string): Promise<boolean> {
   return orIfProbeFailed(
     async () => {
-      const reached = await inFolder(
+      return await residueInFolder(
         organization,
         ["data", "opencode"],
         async (folder) => {
@@ -310,7 +311,6 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
           }
         }
       );
-      return reached.reached ? reached.value : reached.miss === "link";
     },
     true,
     (error) =>

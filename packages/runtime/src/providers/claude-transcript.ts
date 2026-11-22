@@ -54,7 +54,9 @@ async function sessionTranscripts<T>(
         `[provider] the Claude session folders could not be read (${failureCode(error)})`
       )
   );
-  if (!listed?.reached) return;
+  // Transcripts are read for usage facts, not to allow anything: both absent and unverifiable are skipped,
+  // so no facts are found and no maintenance request is scheduled.
+  if (listed?.state !== "reached") return;
   const folders = listed.value;
   if (!folders) return;
   for (const entry of folders) {
@@ -83,7 +85,7 @@ async function sessionTranscripts<T>(
           `[provider] a Claude session transcript could not be read (${failureCode(error)})`
         )
     );
-    if (!found?.reached) continue;
+    if (found?.state !== "reached") continue;
     if (found.value !== undefined) return found.value;
   }
 }

@@ -109,17 +109,20 @@ export function fileLogin(
       },
       { create: true }
     );
-    if (!placed.reached)
+    if (placed.state !== "reached")
       throw new Error(
         "the login place in the organization folder is not a folder; the stand-in was not placed"
       );
   };
-  /** 조직 폴더의 로그인 자리에 이 어댑터가 둔 자리 표시가 있는가. 폴더 칸이 링크 등이면 확인할 수 없으므로 아니다. */
+  /**
+   * 조직 폴더의 로그인 자리에 이 어댑터가 둔 자리 표시가 있는가. 폴더 칸이 링크 등이면 확인할 수 없으므로 아니다. 자리 표시는
+   * 확인된 흔적만 면제하므로 확인할 수 없으면 `false`가 fail-closed 답이다.
+   */
   const standIn = async (organization: string) => {
     const checked = await inFolder(organization, loginParts, (folder) =>
       shape.isStandIn(folder.at(loginName))
     );
-    return checked.reached ? checked.value : false;
+    return checked.state === "reached" ? checked.value : false;
   };
   const prepare = async (
     organizationId: string,
@@ -163,7 +166,7 @@ export function fileLogin(
       },
       { create: true }
     );
-    if (!placed.reached)
+    if (placed.state !== "reached")
       throw new Error(
         "the login place in the organization folder is not a folder; the run was not started"
       );
