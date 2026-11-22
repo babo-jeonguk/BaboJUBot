@@ -213,85 +213,6 @@ impl Leader {
         exit_of(info.si_code, status)
     }
 
-    fn signal_group(&self, signal: libc::c_int) -> Result<(), String> {
-        // SAFETY: killpg has no memory effects. The group id is the unreaped leader's id, so it is still this tree's group.
-        if unsafe { libc::killpg(self.pid, signal) } == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ESRCH) => Ok(()),
-            // Darwin answers EPERM when the group's only members are zombies (the unreaped program): nothing is left to signal.
-            Some(libc::EPERM) if live_group_members(self.pid).is_ok_and(|live| live == 0) => Ok(()),
-            _ => Err(format!(
-                "unknown (the process group could not be signalled: {error})"
-            )),
-        }
-    }
-
-    /// What still runs of the tree: the group's live members and, on Linux, the orphans outside the group that this supervisor took in.
-    fn live_members(&self) -> Result<usize, String> {
-        let group = live_group_members(self.pid)
-            .map_err(|error| format!("unknown (the process group could not be listed: {error})"))?;
-        Ok(group + orphans_outside(self.pid)?.len())
-    }
-
-    fn signal_tree(&self, signal: libc::c_int) -> Result<(), String> {
-        self.signal_group(signal)?;
-        self.signal_orphans(signal)
-    }
-
-    fn signal_orphans(&self, signal: libc::c_int) -> Result<(), String> {
-        for orphan in orphans_outside(self.pid)? {
-            // SAFETY: kill has no memory effects. The orphan is this supervisor's unreaped child, so its id is still that process's.
-            if unsafe { libc::kill(orphan, signal) } != 0 && errno() != libc::ESRCH {
-                return Err(format!(
-                    "unknown (a program that left the process group could not be signalled: {})",
-                    io::Error::last_os_error()
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// Waits until nothing of the tree runs, or until `limit`. Gives how many are left. `repeat` is sent again on every look to the
-    /// orphans outside the group, so it also reaches those taken in during the wait (a program's children are taken in when it
-    /// ends). The group got its signal already, and what is in it cannot leave a group being killed.
-    fn wait_until_empty(
-        &self,
-        limit: Duration,
-        repeat: Option<libc::c_int>,
-    ) -> Result<usize, String> {
-        let deadline = Instant::now() + limit;
-        loop {
-            let left = self.live_members()?;
-            if left == 0 || Instant::now() >= deadline {
-                return Ok(left);
-            }
-            if let Some(signal) = repeat {
-                self.signal_orphans(signal)?;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    /// SIGTERM, the grace, SIGKILL, then a bounded wait until nothing of the tree runs.
-    fn end_tree(&self, grace: Duration) -> StopResult {
-        let mut left = self.live_members()?;
-        if left > 0 {
-            self.signal_tree(libc::SIGTERM)?;
-            left = self.wait_until_empty(grace, None)?;
-        }
-        if left > 0 {
-            self.signal_tree(libc::SIGKILL)?;
-            left = self.wait_until_empty(protocol::END_LIMIT, Some(libc::SIGKILL))?;
-        }
-        if left > 0 {
-            return Err(format!("{left} (the tree did not end)"));
-        }
-        Ok(())
-    }
-
     /// After the last group signal: reaps the program and gives its end. A program that left its group is ended here, while its id
     /// is still ours.
     fn reap(&self) -> Result<Exit, String> {
@@ -329,6 +250,108 @@ impl Leader {
     }
 }
 
+/// The system calls a stop makes on the tree: the program's group and, on Linux, the orphans outside it that this supervisor took
+/// in. Kept apart from the stop's order (`end_tree`) so that order can be tested without real processes.
+trait Reach {
+    fn group_live(&self) -> Result<usize, String>;
+    fn orphans(&self) -> Result<Vec<libc::pid_t>, String>;
+    fn signal_group(&self, signal: libc::c_int) -> Result<(), String>;
+    fn signal_orphan(&self, orphan: libc::pid_t, signal: libc::c_int) -> Result<(), String>;
+}
+
+impl Reach for Leader {
+    fn group_live(&self) -> Result<usize, String> {
+        live_group_members(self.pid)
+            .map_err(|error| format!("unknown (the process group could not be listed: {error})"))
+    }
+
+    fn orphans(&self) -> Result<Vec<libc::pid_t>, String> {
+        orphans_outside(self.pid)
+    }
+
+    fn signal_group(&self, signal: libc::c_int) -> Result<(), String> {
+        // SAFETY: killpg has no memory effects. The group id is the unreaped leader's id, so it is still this tree's group.
+        if unsafe { libc::killpg(self.pid, signal) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(()),
+            // Darwin answers EPERM when the group's only members are zombies (the unreaped program): nothing is left to signal.
+            Some(libc::EPERM) if live_group_members(self.pid).is_ok_and(|live| live == 0) => Ok(()),
+            _ => Err(format!(
+                "unknown (the process group could not be signalled: {error})"
+            )),
+        }
+    }
+
+    fn signal_orphan(&self, orphan: libc::pid_t, signal: libc::c_int) -> Result<(), String> {
+        // SAFETY: kill has no memory effects. The orphan is this supervisor's unreaped child, so its id is still that process's.
+        if unsafe { libc::kill(orphan, signal) } != 0 && errno() != libc::ESRCH {
+            return Err(format!(
+                "unknown (a program that left the process group could not be signalled: {})",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// What still runs of the tree.
+fn live_members(reach: &impl Reach) -> Result<usize, String> {
+    Ok(reach.group_live()? + reach.orphans()?.len())
+}
+
+fn signal_tree(reach: &impl Reach, signal: libc::c_int) -> Result<(), String> {
+    reach.signal_group(signal)?;
+    signal_orphans(reach, signal)
+}
+
+fn signal_orphans(reach: &impl Reach, signal: libc::c_int) -> Result<(), String> {
+    for orphan in reach.orphans()? {
+        reach.signal_orphan(orphan, signal)?;
+    }
+    Ok(())
+}
+
+/// Waits until nothing of the tree runs, or until `limit`. Gives how many are left. `repeat` is sent again on every look to the
+/// orphans outside the group, so it also reaches those taken in during the wait (a program's children are taken in when it
+/// ends). The group got its signal already, and what is in it cannot leave a group being killed.
+fn wait_until_empty(
+    reach: &impl Reach,
+    limit: Duration,
+    repeat: Option<libc::c_int>,
+) -> Result<usize, String> {
+    let deadline = Instant::now() + limit;
+    loop {
+        let left = live_members(reach)?;
+        if left == 0 || Instant::now() >= deadline {
+            return Ok(left);
+        }
+        if let Some(signal) = repeat {
+            signal_orphans(reach, signal)?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// SIGTERM, the grace, SIGKILL, then a bounded wait (`limit`) until nothing of the tree runs.
+fn end_tree(reach: &impl Reach, grace: Duration, limit: Duration) -> StopResult {
+    let mut left = live_members(reach)?;
+    if left > 0 {
+        signal_tree(reach, libc::SIGTERM)?;
+        left = wait_until_empty(reach, grace, None)?;
+    }
+    if left > 0 {
+        signal_tree(reach, libc::SIGKILL)?;
+        left = wait_until_empty(reach, limit, Some(libc::SIGKILL))?;
+    }
+    if left > 0 {
+        return Err(format!("{left} (the tree did not end)"));
+    }
+    Ok(())
+}
+
 /// Reaps the children that ended (on Linux, also the orphans this supervisor took in as their subreaper).
 fn reap_ended_children() {
     let mut status = 0;
@@ -347,7 +370,7 @@ impl Tree for Leader {
 
     fn interrupt(&mut self) {
         // An interrupt is a request, not a stop: a group that is already gone has nothing to interrupt.
-        let _ = self.signal_group(libc::SIGINT);
+        let _ = Reach::signal_group(self, libc::SIGINT);
     }
 
     fn kill_leader(&mut self) {
@@ -356,7 +379,7 @@ impl Tree for Leader {
     }
 
     fn stop(&mut self, grace: Duration) -> (Option<Exit>, StopResult) {
-        if let Err(left) = self.end_tree(grace) {
+        if let Err(left) = end_tree(self, grace, protocol::END_LIMIT) {
             // Something of the group still runs. The program stays unreaped so its ids stay taken.
             return (self.peek(), Err(left));
         }
