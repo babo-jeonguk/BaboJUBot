@@ -16,6 +16,7 @@ import { lstat, readlink, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import {
+  continueAfterFailure,
   failureCode,
   hasErrorCode,
   orIfProbeFailed,
@@ -188,7 +189,13 @@ const claimed = await orIfProbeFailed(
         ? (parsed as { organizationId?: unknown }).organizationId
         : undefined;
     } finally {
-      await opened.handle.close();
+      await continueAfterFailure(
+        () => opened.handle.close(),
+        (error) =>
+          process.stderr.write(
+            `[reader] a file handle could not be closed (${failureCode(error)})\n`
+          )
+      );
     }
   },
   undefined,
@@ -280,7 +287,13 @@ try {
       ])
     );
   } finally {
-    await opened.handle.close();
+    await continueAfterFailure(
+      () => opened.handle.close(),
+      (error) =>
+        process.stderr.write(
+          `[reader] a file handle could not be closed (${failureCode(error)})\n`
+        )
+    );
   }
 } catch (error) {
   fail(error);

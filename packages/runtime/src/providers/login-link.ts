@@ -10,7 +10,11 @@ import {
   symlink,
 } from "node:fs/promises";
 import path from "node:path";
-import { settled } from "@babojubot/contracts";
+import {
+  continueAfterFailure,
+  failureCode,
+  settled,
+} from "@babojubot/contracts";
 
 /**
  * 로그인 원본마다 링크 작업과 로그인 읽기(`readLogin`)를 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다.
@@ -157,7 +161,13 @@ async function linkLogin(
     } else if (current) await rm(at, { recursive: true, force: true });
     await rename(temporary, at);
   } finally {
-    await rm(temporary, { force: true });
+    await continueAfterFailure(
+      () => rm(temporary, { force: true }),
+      (error) =>
+        console.warn(
+          `[provider] a temporary login link could not be removed (${failureCode(error)})`
+        )
+    );
   }
   return true;
 }

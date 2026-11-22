@@ -77,7 +77,15 @@ async function sessionTranscripts<T>(
               );
             /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
           } finally {
-            await file?.handle.close();
+            const opened = file;
+            if (opened)
+              await continueAfterFailure(
+                () => opened.handle.close(),
+                (error) =>
+                  console.warn(
+                    `[provider] a Claude session transcript handle could not be closed (${failureCode(error)})`
+                  )
+              );
           }
         }),
       (error) =>

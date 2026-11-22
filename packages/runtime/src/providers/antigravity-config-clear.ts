@@ -4,6 +4,8 @@
 // 끝난 코드: 0 지움(또는 지울 것 없음), 3 우리 표시가 없는 설정이나 확인한 폴더가 아님(지우지 않음), 그 밖은 실패.
 import { lstat, readdir, unlink } from "node:fs/promises";
 import {
+  continueAfterFailure,
+  failureCode,
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
@@ -28,7 +30,13 @@ async function owned(name: string): Promise<boolean | "missing"> {
     const parsed = orIfUnreadable((): unknown => JSON.parse(text), undefined);
     return record(parsed).babojubotOwner === ownerMark;
   } finally {
-    await opened.handle.close();
+    await continueAfterFailure(
+      () => opened.handle.close(),
+      (error) =>
+        process.stderr.write(
+          `[config] a file handle could not be closed (${failureCode(error)})\n`
+        )
+    );
   }
 }
 const temporary = (name: string) =>

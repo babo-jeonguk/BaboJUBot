@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import {
   artifactFileMaxBytes,
@@ -17,7 +16,7 @@ import {
   recordWorkspaceIdentity,
   type Database,
 } from "@babojubot/db";
-import { openRegularFile } from "@babojubot/files";
+import { openRegularFile, publishFile } from "@babojubot/files";
 import { runTree } from "@babojubot/process";
 import {
   identityFile,
@@ -144,16 +143,11 @@ export class Workspaces {
     // 처음 쓰는 폴더이거나 폴더가 통째로 없어 다른 조직과 헷갈릴 일이 없다. 한 번에 나타나게 쓴다.
     try {
       await mkdir(folder, { recursive: true });
-      const temp = `${file}.${randomUUID()}.tmp`;
-      await writeFile(
-        temp,
+      await publishFile(
+        file,
         JSON.stringify({ version: 1, organizationId: id }),
-        {
-          flag: "wx",
-          mode: 0o600,
-        }
+        { mode: 0o600 }
       );
-      await rename(temp, file);
     } catch (e) {
       throw identityBlocked("쓸", file, e);
     }

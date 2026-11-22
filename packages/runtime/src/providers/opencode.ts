@@ -303,11 +303,20 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
             }
             return false;
           } finally {
-            try {
-              db?.close();
-            } finally {
-              await rm(copyFolder, { recursive: true, force: true });
-            }
+            continueAfterFailure(
+              () => db?.close(),
+              (error) =>
+                console.warn(
+                  `[provider] the copied OpenCode store could not be closed (${failureCode(error)})`
+                )
+            );
+            await continueAfterFailure(
+              () => rm(copyFolder, { recursive: true, force: true }),
+              (error) =>
+                console.warn(
+                  `[provider] the copied OpenCode store folder could not be removed (${failureCode(error)})`
+                )
+            );
           }
         }
       );
