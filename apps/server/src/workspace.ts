@@ -516,7 +516,7 @@ export class Workspaces {
 /**
  * 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. 종류·크기·내용을 한 번 연 파일 하나에서
  * 보므로, 확인한 뒤 그 경로에 다른 것이 들어와도 연 파일의 내용으로 판정한다. POSIX에서는 `O_NOFOLLOW`로 링크를 열 때부터
- * 거절하고, `O_NONBLOCK`으로 FIFO를 열 때 멈추지 않는다.
+ * 거절하고, `O_NONBLOCK`으로 FIFO를 열 때 멈추지 않는다. 열지 못하면 그 자리를 `unopenedIdentity`가 가린다.
  */
 async function readIdentity(file: string) {
   let handle: Awaited<ReturnType<typeof open>>;
@@ -528,10 +528,7 @@ async function readIdentity(file: string) {
         (constants.O_NONBLOCK ?? 0)
     );
   } catch (e) {
-    const code = failureCode(e);
-    if (code === "ENOENT") return undefined;
-    if (code === "ELOOP" || code === "EISDIR") return null;
-    throw identityBlocked("읽을", file, e);
+    return await unopenedIdentity(file, e);
   }
   try {
     const info = await handle.stat({ bigint: true });
@@ -573,6 +570,24 @@ async function readIdentity(file: string) {
         )
     );
   }
+}
+
+/**
+ * 열지 못한 표식 자리를 링크를 따라가지 않고 본다. 열기 오류 코드만으로는 경로 항목을 알 수 없다: 링크를 따라 여는 Windows에서
+ * 대상 없는 링크도 ENOENT이고, 위 폴더의 링크 순환도 `O_NOFOLLOW`의 링크 거절과 같은 ELOOP이다. 정말 없으면 `undefined`,
+ * 일반 파일이 아닌 항목(링크·폴더·특수 파일)이면 `null`, 그 밖에는 열기 오류를 그대로 알린다. 내용은 읽지 않으므로 본 뒤 바뀌어도
+ * 쓰는 것이 없다.
+ */
+async function unopenedIdentity(file: string, openError: unknown) {
+  let entry;
+  try {
+    entry = await lstat(file);
+  } catch (e) {
+    if (failureCode(e) === "ENOENT") return undefined;
+    throw identityBlocked("읽을", file, openError);
+  }
+  if (!entry.isFile()) return null;
+  throw identityBlocked("읽을", file, openError);
 }
 async function exists(target: string) {
   try {
