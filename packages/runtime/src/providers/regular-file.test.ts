@@ -1,4 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, openSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { hasErrorCode } from "@babojubot/contracts";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readRegularFile } from "./regular-file.ts";
@@ -88,6 +91,27 @@ describe("reading a file only if it is a regular file", () => {
       swap.path = file;
       swap.replacement = replacement;
       expect(await readRegularFile(file)).toBe("opened");
+    }
+  );
+
+  // 다른 쪽(격리 실행의 에이전트)이 쓸 수 있는 자리에 FIFO를 두면, 쓰는 쪽 없이 읽기로 여는 열기는 끝나지 않는다(POSIX open()).
+  // 열어서 종류를 확인하더라도 기다리지 않고 일반 파일이 아니라고 답해야 한다.
+  it.skipIf(process.platform === "win32")(
+    "returns nothing for a FIFO without waiting for a writer",
+    { timeout: 10_000 },
+    async () => {
+      const root = await folders.make("babojubot-regular-");
+      const fifo = path.join(root, "login.json");
+      execFileSync("mkfifo", [fifo], { timeout: 10_000 });
+      // 열기가 멈춰 있으면 쓰는 쪽으로 한 번 열어 풀어 준다. 읽는 쪽이 없으면(이미 끝남) ENXIO다.
+      folders.own(async () => {
+        try {
+          closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK));
+        } catch (error) {
+          if (!hasErrorCode("ENXIO")(error)) throw error;
+        }
+      }, "fifo writer");
+      expect(await readRegularFile(fifo)).toBeUndefined();
     }
   );
 });
