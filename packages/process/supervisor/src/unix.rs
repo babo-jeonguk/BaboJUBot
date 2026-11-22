@@ -303,6 +303,10 @@ fn reap_ended_children() {
 }
 
 impl Tree for Leader {
+    fn tend(&mut self) {
+        reap_ended_orphans(self.pid);
+    }
+
     fn leader_exit(&mut self) -> Option<Exit> {
         self.peek()
     }
@@ -420,10 +424,26 @@ fn live_group_members(group: libc::pid_t) -> io::Result<usize> {
     Ok(count)
 }
 
-/// Linux: the supervisor takes in the tree's orphans (subreaper), so their ids stay taken until the supervisor reaps them at the end,
-/// and the program dies with the supervisor (parent-death signal). Neither reaches what left for a new session by itself.
+/// Linux: the supervisor takes in the tree's orphans (subreaper): a live orphan's id cannot go to another process, because only this
+/// supervisor reaps it. Like an init process (tini, dumb-init), the supervisor reaps an orphan as soon as it ends, so an ended program
+/// does not linger as a zombie that looks alive to others. Only the program itself stays unreaped until the last group signal. The
+/// program also dies with the supervisor (parent-death signal). Neither reaches what left for a new session by itself.
 #[cfg(target_os = "linux")]
 fn prepare_system() -> Result<(), String> {
+    // SAFETY: a zeroed sigaction is valid, and the handler only stores to an atomic.
+    let caught = unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_child_ended as *const () as libc::sighandler_t;
+        action.sa_flags = libc::SA_NOCLDSTOP | libc::SA_RESTART;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) == 0
+    };
+    if !caught {
+        return Err(format!(
+            "the supervisor could not watch its children: {}",
+            io::Error::last_os_error()
+        ));
+    }
     // SAFETY: prctl with integer arguments.
     if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
         return Err(format!(
@@ -438,6 +458,71 @@ fn prepare_system() -> Result<(), String> {
 fn prepare_system() -> Result<(), String> {
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+static CHILD_ENDED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+extern "C" fn on_child_ended(_: libc::c_int) {
+    CHILD_ENDED.store(true, Ordering::SeqCst);
+}
+
+/// Linux: the supervisor's children, live or ended but not reaped (the program and the orphans it took in). The kernel lists them
+/// in `/proc/self/task/<id>/children`; without that file (`CONFIG_PROC_CHILDREN` off), every process's parent is read instead.
+#[cfg(target_os = "linux")]
+fn children() -> io::Result<Vec<libc::pid_t>> {
+    // SAFETY: getpid has no memory effects.
+    let me = unsafe { libc::getpid() };
+    match std::fs::read_to_string(format!("/proc/self/task/{me}/children")) {
+        Ok(list) => {
+            return Ok(list
+                .split_whitespace()
+                .filter_map(|pid| pid.parse().ok())
+                .collect());
+        }
+        Err(error) if error.raw_os_error() != Some(libc::ENOENT) => return Err(error),
+        Err(_) => {}
+    }
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc")? {
+        let name = entry?.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let parent = stat
+            .rsplit_once(") ")
+            .and_then(|(_, rest)| rest.split(' ').nth(1)?.parse::<libc::pid_t>().ok());
+        if parent == Some(me) {
+            found.push(pid);
+        }
+    }
+    Ok(found)
+}
+
+/// Linux: after a child ended (SIGCHLD), reaps every ended child except the program. A child that is still running is not touched.
+/// When the children cannot be listed, the next SIGCHLD tries again and the stop reaps them at the latest.
+#[cfg(target_os = "linux")]
+fn reap_ended_orphans(program: libc::pid_t) {
+    if !CHILD_ENDED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let Ok(children) = children() else { return };
+    for child in children.into_iter().filter(|&child| child != program) {
+        let mut status = 0;
+        // SAFETY: valid pointer to status; WNOHANG leaves a running child alone.
+        unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+    }
+}
+
+/// macOS has no subreaper: the program is the supervisor's only child, and it stays unreaped until the last group signal.
+#[cfg(target_os = "macos")]
+fn reap_ended_orphans(_program: libc::pid_t) {}
 
 #[cfg(target_os = "linux")]
 fn die_with_supervisor(command: &mut Command) {

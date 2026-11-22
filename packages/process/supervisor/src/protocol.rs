@@ -110,6 +110,8 @@ pub trait Channel {
 
 /// The tree under one supervisor: the program it started and everything the system ties to it (process group, job object).
 pub trait Tree {
+    /// Housekeeping on every turn of the loop, before and after the program ends (Linux reaps the orphans that ended).
+    fn tend(&mut self) {}
     /// The program's end, without releasing its process id: the id is not reused until the stop's last signal.
     fn leader_exit(&mut self) -> Option<Exit>;
     fn interrupt(&mut self);
@@ -133,6 +135,7 @@ pub fn supervise(
     let mut commands = Commands::default();
     let mut exited = false;
     let grace = 'run: loop {
+        tree.tend();
         if !exited && let Some(exit) = tree.leader_exit() {
             channel.write_line(&exit_line(&exit));
             exited = true;
