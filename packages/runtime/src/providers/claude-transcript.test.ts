@@ -8,6 +8,7 @@ import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();
+const windows = process.platform === "win32";
 const session = "3f8a2c1e-0000-4000-8000-000000000001";
 const transcript = [
   JSON.stringify({
@@ -31,7 +32,7 @@ const readers = [
 
 // Claude의 세션 기록은 조직 제품 폴더에 있고, 격리 실행에서는 같은 조직의 컨테이너가 그 폴더에 쓸 수 있다.
 // 서버는 그 폴더 안을 링크를 따라가거나 FIFO에서 기다리며 열지 않는다.
-describe.skipIf(process.platform === "win32").each(readers)(
+describe.each(readers)(
   "%s reading a session transcript in a folder an isolated agent can write",
   (_name, readTranscript) => {
     it("reads a transcript in the organization's own folders", async () => {
@@ -42,21 +43,25 @@ describe.skipIf(process.platform === "win32").each(readers)(
       expect(await readTranscript(home, session)).toBeDefined();
     });
 
-    it("does not follow a link in place of a folder on the way to the transcript", async () => {
-      const home = await folders.make("babojubot-transcript-");
-      const elsewhere = path.join(home, "elsewhere");
-      await mkdir(path.join(elsewhere, "projects", "project"), {
-        recursive: true,
-      });
-      await writeFile(
-        path.join(elsewhere, "projects", "project", `${session}.jsonl`),
-        transcript
-      );
-      await symlink(elsewhere, path.join(home, "config"));
-      expect(await readTranscript(home, session)).toBeUndefined();
-    });
+    // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하고, FIFO가 없다. 링크·FIFO 경우는 POSIX에서 본다.
+    it.skipIf(windows)(
+      "does not follow a link in place of a folder on the way to the transcript",
+      async () => {
+        const home = await folders.make("babojubot-transcript-");
+        const elsewhere = path.join(home, "elsewhere");
+        await mkdir(path.join(elsewhere, "projects", "project"), {
+          recursive: true,
+        });
+        await writeFile(
+          path.join(elsewhere, "projects", "project", `${session}.jsonl`),
+          transcript
+        );
+        await symlink(elsewhere, path.join(home, "config"));
+        expect(await readTranscript(home, session)).toBeUndefined();
+      }
+    );
 
-    it(
+    it.skipIf(windows)(
       "answers nothing for a FIFO in place of the transcript without waiting for a writer",
       { timeout: 10_000 },
       async () => {
