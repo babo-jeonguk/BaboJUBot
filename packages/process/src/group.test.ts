@@ -3,8 +3,27 @@ import { afterEach, expect, it, vi } from "vitest";
 import { stopProcessGroup } from "./group.ts";
 import { exited, killAndWait, readyLine } from "./process-test-support.ts";
 
+const fault = vi.hoisted(() => ({
+  /** 이만큼의 `/proc` 목록 읽기가 먼저 실패한다(일시적인 조회 실패). */
+  failedLooks: 0,
+}));
+vi.mock("node:fs", async (original) => {
+  const real = await original<typeof import("node:fs")>();
+  return {
+    ...real,
+    readdirSync: ((...args: Parameters<typeof real.readdirSync>) => {
+      if (args[0] === "/proc" && fault.failedLooks > 0) {
+        fault.failedLooks--;
+        throw Object.assign(new Error("readdir EIO"), { code: "EIO" });
+      }
+      return real.readdirSync(...args);
+    }) as typeof real.readdirSync,
+  };
+});
+
 const pids: number[] = [];
 afterEach(async () => {
+  fault.failedLooks = 0;
   vi.restoreAllMocks();
   await killAndWait(pids.splice(0));
 });
@@ -27,6 +46,25 @@ it.skipIf(process.platform === "win32")(
         throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
       return kill(pid, signal);
     });
+    await stopProcessGroup(group, { graceMs: 100 });
+    expect(exited(group)).toBe(true);
+  }
+);
+
+// 조회 실패는 그룹이 끝났다는 뜻이 아니고 일시적일 수 있다. 감독 실행기처럼 끝 확인의 시한까지 다시 본다(#274 외부 리뷰 3회차 뒤).
+// 그룹을 `/proc`로 세는 것은 Linux뿐이다(macOS는 신호 0으로 본다).
+it.runIf(process.platform === "linux")(
+  "keeps looking at a group whose listing fails for a while, and stops it",
+  async () => {
+    const child = spawn(
+      process.execPath,
+      ["-e", 'console.log("ready"); setInterval(() => {}, 1000);'],
+      { detached: true, stdio: ["ignore", "pipe", "ignore"] }
+    );
+    const group = child.pid!;
+    pids.push(group);
+    await readyLine(child, "ready");
+    fault.failedLooks = 3;
     await stopProcessGroup(group, { graceMs: 100 });
     expect(exited(group)).toBe(true);
   }

@@ -626,3 +626,100 @@ pub fn run() -> i32 {
     release_standard_handles();
     protocol::supervise(&mut control, &mut job, &NoTermination, start_request)
 }
+
+/// The job stop's order with an end and reads that fail (#274 external review 3, STD-4): neither may skip the wait for the job to
+/// empty, and a failed read tells nothing about whether it emptied.
+#[cfg(test)]
+mod stop_tests {
+    use super::{JobReach, end_job};
+    use crate::protocol::StopResult;
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    /// A job whose processes end after `runs_for` reads, or at once when the end works. `failed_reads` reads fail first.
+    struct Fake {
+        end_works: bool,
+        runs_for: Cell<usize>,
+        failed_reads: Cell<usize>,
+        waited_for_program: Cell<bool>,
+    }
+
+    impl Fake {
+        fn new(end_works: bool, runs_for: usize, failed_reads: usize) -> Self {
+            Fake {
+                end_works,
+                runs_for: Cell::new(runs_for),
+                failed_reads: Cell::new(failed_reads),
+                waited_for_program: Cell::new(false),
+            }
+        }
+    }
+
+    impl JobReach for Fake {
+        fn terminate(&self) -> Result<(), String> {
+            if !self.end_works {
+                return Err("the job object could not be ended: error 5".to_owned());
+            }
+            self.runs_for.set(0);
+            Ok(())
+        }
+
+        fn active(&self) -> Result<usize, String> {
+            if self.failed_reads.get() > 0 {
+                self.failed_reads.set(self.failed_reads.get() - 1);
+                return Err("the job object could not be read: error 6".to_owned());
+            }
+            let runs_for = self.runs_for.get();
+            if runs_for == usize::MAX {
+                return Ok(1);
+            }
+            self.runs_for.set(runs_for.saturating_sub(1));
+            Ok(usize::from(runs_for > 0))
+        }
+
+        fn wait_for_program(&self) -> StopResult {
+            self.waited_for_program.set(true);
+            Ok(())
+        }
+    }
+
+    fn stop(job: &Fake) -> StopResult {
+        end_job(job, Duration::from_millis(200))
+    }
+
+    #[test]
+    fn a_failed_end_still_waits_for_the_job_to_empty() {
+        let job = Fake::new(false, 2, 0);
+        assert_eq!(stop(&job), Ok(()));
+        assert!(job.waited_for_program.get());
+    }
+
+    #[test]
+    fn a_job_that_does_not_empty_after_a_failed_end_names_both() {
+        let job = Fake::new(false, usize::MAX, 0);
+        let left = stop(&job).expect_err("the job still runs");
+        assert!(
+            left.starts_with("1 (the job object did not empty; "),
+            "{left}"
+        );
+        assert!(left.contains("could not be ended"), "{left}");
+        assert!(!job.waited_for_program.get());
+    }
+
+    #[test]
+    fn a_failed_read_is_tried_again() {
+        let job = Fake::new(true, 1, 2);
+        assert_eq!(stop(&job), Ok(()));
+        assert!(job.waited_for_program.get());
+    }
+
+    #[test]
+    fn reads_that_keep_failing_leave_the_end_unknown() {
+        let job = Fake::new(true, 0, usize::MAX);
+        let left = stop(&job).expect_err("the end could not be read");
+        assert!(
+            left.starts_with("unknown (the job object could not be read"),
+            "{left}"
+        );
+    }
+}
