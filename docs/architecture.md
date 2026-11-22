@@ -32,7 +32,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 | `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구. 웹과 서버가 함께 쓰는 순수 판정(예: 입력창 버튼과 서버 거부의 `ownerActions`), 모든 패키지가 쓰는 오류를 버리는 의도별 함수(`failure.ts`) | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
 | `packages/runtime` | 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter, 실행 시도 기록과 서버 재시작 복구 | Agent Runtime, Surface |
-| `packages/files` | 다른 쪽이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 열기: 파일 하나(`openRegularFile`: 링크·FIFO·바꿔치기 거절, 열지 못한 자리의 분류), 폴더 안으로 한 칸씩 확인하며 들어가기(`inFolder`: 서버 안, Linux는 폴더 handle), 작업 폴더로 폴더 붙들기(`enterFolder`: 별도 프로세스), 파일 식별 대조(`sameEntry`). 서버 표식·산출물 읽기, runtime 로그인 파일·조직 제품 폴더 읽기, Antigravity 설정 정리가 씀(#242·#278) | 모든 module의 바탕 |
+| `packages/files` | 다른 쪽이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 열기: 파일 하나(`openRegularFile`: 링크·FIFO·바꿔치기 거절, 열지 못한 자리의 분류), 폴더 안으로 한 칸씩 확인하며 들어가기(`inFolder`: 서버 안, Linux는 폴더 handle), 작업 폴더로 폴더 붙들기(`enterFolder`: 별도 프로세스), 파일 식별 대조(`sameEntry`), 파일 하나를 한 번에 바꾸기(`publishFile`: 임시 이름에 쓴 뒤 rename, 실패 정리). 서버 표식·산출물 읽기, runtime 로그인 파일·조직 제품 폴더 읽기, Antigravity 설정 정리가 씀(#242·#278) | 모든 module의 바탕 |
 | `packages/process` | 프로그램 띄우기·끄기의 바탕: 공용 실행(`launchTree`·`runTree`, 띄우기와 그 트리의 끄기 `stop()`을 한 쌍으로), 짧은 명령의 끝 보장(`runCommand`), `ps` 한 칸 조회의 "대상 없음" 계약(`psField`), 세 OS의 실행 시도별 감독 실행기(Rust, `packages/process/supervisor`), 그룹 끄기·표식 정리, 시계. 모든 패키지가 쓰는 시험 정리 도움 | 모든 module의 바탕 |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
 
