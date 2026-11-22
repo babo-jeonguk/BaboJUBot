@@ -373,8 +373,12 @@ const outsideHalves = {
     `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
   ],
 };
-// 프로세스 패키지 안에서 공용 실행과 복구 입구 밖이 그룹 끄기를 가져오는 모양.
+// 프로세스 패키지 안에서 복구 입구 밖이(공용 실행 포함) 그룹 끄기를 가져오는 모양.
 const insideHalves = {
+  "stopProcessGroup in launch.ts": [
+    "packages/process/src/launch.ts",
+    `import { stopProcessGroup } from "./group.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  ],
   "stopProcessGroup in lease.ts": [
     "packages/process/src/lease.ts",
     `import { stopProcessGroup } from "./group.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
@@ -427,12 +431,9 @@ test("the process group stop stays inside the shared launch and the restart reco
     assert.match(message.message, /stop\(\)/);
     assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
   }
-  // 막지 않는 모양: 공용 실행과 복구 입구, runtime의 재시작 복구, 그룹 끄기가 아닌 함수, 시험 코드.
+  // 막지 않는 모양: 복구 입구, runtime의 재시작 복구, 그룹 끄기가 아닌 함수, 시험 코드. 공용 실행(launch.ts)은 감독 실행기로
+  // 끄므로 그룹 끄기를 가져오지 않는다(#268, 위 insideHalves).
   const kept = [
-    [
-      "packages/process/src/launch.ts",
-      `import { interruptProcessGroup, stopProcessGroup } from "./group.ts";\nvoid [interruptProcessGroup, stopProcessGroup];\n`,
-    ],
     [
       "packages/process/src/recovery.ts",
       `export { groupAlive, stopProcessGroup } from "./group.ts";\n`,

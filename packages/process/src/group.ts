@@ -1,4 +1,4 @@
-// 프로세스 그룹 끄기. 공용 실행(launch.ts)의 stop()과 runtime의 재시작 복구만 쓴다(eslint.config.js의 no-group-stop-import).
+// 프로세스 그룹 끄기. runtime의 재시작 복구만 쓴다(eslint.config.js의 no-group-stop-import). 실행 중인 트리는 감독 실행기가 끈다(#268).
 import { readFileSync, readdirSync } from "node:fs";
 export function identity(pid: number) {
   const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
@@ -29,19 +29,6 @@ export function members(group: number) {
     });
 }
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/**
- * 프로세스 그룹에 중단(SIGINT)을 보낸다. 끄기가 아니라 지금 하던 일을 멈추라는 요청이다. Windows에는 그룹과 중단 신호가 없어 아무것도
- * 하지 않는다. 트리를 끄는 일은 공용 실행(`launch.ts`)의 `stop()`이 맡는다.
- */
-export function interruptProcessGroup(group: number) {
-  if (process.platform === "win32") return;
-  try {
-    process.kill(-group, "SIGINT");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ESRCH")
-      console.warn("[provider] could not interrupt a process group");
-  }
-}
 /** 그룹에 살아 있는 프로세스가 있는가. Linux는 좀비를 빼고 세고, 그 밖의 POSIX는 신호 0으로 확인한다. */
 export function groupAlive(group: number) {
   if (process.platform === "win32") return false;
@@ -55,7 +42,7 @@ export function groupAlive(group: number) {
 }
 /**
  * 그룹을 끄고 끝난 것을 상한 안에서 확인한다. 확인하지 못하면 던진다. 그룹은 띄운 쪽(`launch.ts`)이나 복구 기록이 이미 확인했다.
- * SIGTERM 뒤 `graceMs`만큼 스스로 끝나기를 기다리고 SIGKILL한다. 이 함수는 공용 실행(launch.ts)과 runtime의 재시작 복구(@babojubot/process/recovery로 가져감)만 쓴다(lint).
+ * SIGTERM 뒤 `graceMs`만큼 스스로 끝나기를 기다리고 SIGKILL한다. 이 함수는 runtime의 재시작 복구(@babojubot/process/recovery로 가져감)만 쓴다(lint).
  */
 export async function stopProcessGroup(
   group: number,

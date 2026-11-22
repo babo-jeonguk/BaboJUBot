@@ -569,12 +569,11 @@ export default defineConfig([
     rules: { "product/bounded-command": "error" },
   },
   {
-    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 공용 실행(launch.ts)과 그룹 끄기·복구 입구, runtime의 재시작 복구만 그 이름과 그 파일을
+    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 그룹 끄기·복구 입구와 runtime의 재시작 복구만 그 이름과 그 파일을
     // 가져온다. 파일은 경로 철자가 아니라 대상으로 판정한다(자기 패키지 이름·상대 경로 모두).
     files: [...productFiles, ...scriptFiles],
     ignores: [
       ...scriptIgnores,
-      "packages/process/src/launch.ts",
       "packages/process/src/group.ts",
       "packages/process/src/recovery.ts",
       "packages/runtime/src/providers/recovery.ts",
