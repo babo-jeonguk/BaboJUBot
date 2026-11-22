@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { isTestFile } from "./test-files.mjs";
+import { codeFormats, isTestFile } from "./test-files.mjs";
 import { plan } from "./verify-changed.mjs";
 
 const script = fileURLToPath(new URL("./verify-changed.mjs", import.meta.url));
@@ -153,6 +153,14 @@ test("lints scripts outside packages without type-checking a package", () => {
       scripts,
     ]
   );
+});
+
+test("lints a changed code file in every format", () => {
+  // lint가 검사하는 형식(scripts/test-files.mjs의 codeFormats)이면 어느 것이든 바뀐 파일을 lint한다(#270).
+  for (const format of codeFormats.slice(1, -1).split(",")) {
+    const file = `packages/core/src/a.${format}`;
+    assert.equal(plan([file], graph)[0], lint(file), file);
+  }
 });
 
 test("runs the lint rule tests when a lint rule or its test changed", () => {
