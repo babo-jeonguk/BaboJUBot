@@ -93,7 +93,8 @@ test("lists each intended exclusion with its suite, systems and reason, and only
   }
 });
 
-for (const [name, entries, os = "linux", expected] of [
+/** @type {[string, Record<string, ReturnType<typeof report>>, string?, string[]?][]} */
+const rejected = [
   // 이 파일의 시험이 모두 건너뛰어져도 Vitest는 0으로 끝난다(재현: test.skip만 있는 파일).
   [
     "a test file whose every test was skipped",
@@ -172,7 +173,8 @@ for (const [name, entries, os = "linux", expected] of [
     "linux",
     ["server"],
   ],
-]) {
+];
+for (const [name, entries, os = "linux", expected] of rejected) {
   test(`rejects ${name}`, () => {
     assert.notDeepEqual(problemsOf(entries, os, expected), [], name);
   });

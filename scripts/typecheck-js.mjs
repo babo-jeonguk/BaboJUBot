@@ -48,7 +48,10 @@ export function javaScriptConfigs(root = repository) {
     .filter(({ parsed }) => parsed.options.checkJs === true);
 }
 
-/** TypeScript가 JS로 읽는 형식. */
+/**
+ * TypeScript가 JS로 읽는 형식.
+ * @type {Set<string>}
+ */
 const javaScriptExtensions = new Set([
   ts.Extension.Js,
   ts.Extension.Jsx,

@@ -9,12 +9,20 @@ import { combine, expectedSpecs, judge } from "./check-e2e-report.mjs";
 import { removeFolder } from "@babojubot/process/remove-folder";
 
 // Playwright JSON 보고서의 모양(파일별 suite → specs → tests, 시험마다 기대 상태·주석·결과 상태)을 줄여 만든다.
+/**
+ * @typedef {{ file: string, title: string, status: string, expectedStatus: string,
+ *   annotations?: { type: string, description: string }[] }} Case
+ * @typedef {{ current: number, total: number }} Shard
+ * @typedef {{ errors?: { message: string }[], shard?: Shard }} ReportOptions
+ */
+/** @returns {Case} */
 const passing = (file, title = "works") => ({
   file,
   title,
   status: "expected",
   expectedStatus: "passed",
 });
+/** @returns {Case} */
 const skipped = (file, title, reason) => ({
   file,
   title,
@@ -22,6 +30,10 @@ const skipped = (file, title, reason) => ({
   expectedStatus: "skipped",
   annotations: [{ type: "skip", description: reason }],
 });
+/**
+ * @param {Case[]} tests
+ * @param {ReportOptions} [options]
+ */
 function report(tests, { errors = [], shard } = {}) {
   const byFile = new Map();
   for (const t of tests) {
@@ -121,7 +133,8 @@ test("reads the expected specs from the E2E folder", () => {
 
 const replace = (title, replacement) =>
   allPassing().map((t) => (t.title === title ? replacement : t));
-for (const [name, tests, os = "linux", options] of [
+/** @type {[string, Case[], string?, ReportOptions?][]} */
+const rejected = [
   [
     "a failed test",
     [
@@ -217,7 +230,8 @@ for (const [name, tests, os = "linux", options] of [
     "linux",
     { errors: [{ message: "공용 E2E 서버가 정리에 실패했다" }] },
   ],
-]) {
+];
+for (const [name, tests, os = "linux", options] of rejected) {
   test(`rejects ${name}`, () => {
     assert.notDeepEqual(check(tests, os, options), [], name);
   });
@@ -232,6 +246,7 @@ test("rejects a run without a known system", () => {
 
 test("judges shard reports together, with any spec in either shard", () => {
   const [first, ...rest] = allPassing();
+  assert.ok(first, "no test case");
   const shards = [
     report([first], { shard: { current: 1, total: 2 } }),
     report(rest, { shard: { current: 2, total: 2 } }),
@@ -265,7 +280,8 @@ test("judges shard reports together, with any spec in either shard", () => {
     ]).includes("run error: shard report 2 passed no test")
   );
   // shard 번호가 겹치거나 빠지거나 없으면 나머지 절반을 돌았는지 알 수 없다.
-  for (const [name, numbers] of [
+  /** @type {[string, (Shard | undefined)[]][]} */
+  const splits = [
     [
       "the same shard twice",
       [
@@ -281,7 +297,8 @@ test("judges shard reports together, with any spec in either shard", () => {
       ],
     ],
     ["a report without its shard", [{ current: 1, total: 2 }, undefined]],
-  ])
+  ];
+  for (const [name, numbers] of splits)
     assert.ok(
       problemsOf([
         report([first], { shard: numbers[0] }),
@@ -347,6 +364,7 @@ test("fails the command when one of several reports is unreadable or none is giv
   const dir = mkdtempSync(path.join(tmpdir(), "e2e-report-"));
   context.after(() => removeFolder(dir));
   const [first, ...rest] = everySpec();
+  assert.ok(first, "no test case");
   const good = path.join(dir, "good.json");
   const other = path.join(dir, "other.json");
   const bad = path.join(dir, "bad.json");

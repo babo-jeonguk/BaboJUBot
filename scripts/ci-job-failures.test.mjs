@@ -14,7 +14,13 @@ const context = (overrides = {}) => ({
   ...overrides,
 });
 
+/**
+ * @typedef {{ id: number, name: string, run_attempt: number, status: string, conclusion: string, runner_id: number,
+ *   runner_name: string, steps: { name: string, conclusion: string }[] }} Job
+ * @typedef {{ annotation_level: string, message: string }} Note
+ */
 // 실제 미배정 기록(run 43910774802의 runtime on macos-latest)과 같은 모양이다.
+/** @type {Job} */
 const unassignedJob = {
   id: 133451917895,
   name: "runtime on macos-latest",
@@ -87,10 +93,12 @@ test("calls a cancelled job with no runner, no steps and the not-acquired note u
     [failure("runtime on macos-latest")],
     context({ fetch })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unassigned");
 });
 
-for (const [what, job, notes] of [
+/** @type {[string, Job, Note[]][]} */
+const notUnassigned = [
   ["a runner", { ...unassignedJob, runner_id: 7 }, [unassignedNote]],
   [
     "a step",
@@ -101,7 +109,8 @@ for (const [what, job, notes] of [
     [unassignedNote],
   ],
   ["no not-acquired note", unassignedJob, [capacityNote]],
-]) {
+];
+for (const [what, job, notes] of notUnassigned) {
   test(`calls a cancelled job with ${what} unknown, not unassigned`, async () => {
     const { fetch } = fakeApi({
       [jobsPath()]: { body: { total_count: 1, jobs: [job] } },
@@ -111,6 +120,7 @@ for (const [what, job, notes] of [
       [failure(job.name)],
       context({ fetch })
     );
+    assert.ok(row, "no row");
     assert.equal(row.kind, "unknown");
   });
 }
@@ -134,6 +144,7 @@ test("calls a job cancelled after it ran cancelled", async () => {
     },
   });
   const [row] = await classifyFailures([failure(job.name)], context({ fetch }));
+  assert.ok(row, "no row");
   assert.equal(row.kind, "cancelled");
 });
 
@@ -146,6 +157,7 @@ test("calls a job whose step failed a test failure and names the step", async ()
     [failure(job.name, "failure")],
     context({ fetch })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "test");
   assert.match(row.reason, /Run tests/);
   // 시험 실패는 주석을 읽지 않는다.
@@ -161,6 +173,7 @@ test("calls a cancelled job unknown when its notes cannot be read", async () => 
     [failure(unassignedJob.name)],
     context({ fetch })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unknown");
   assert.match(row.reason, /주석 조회 실패: HTTP 500/);
 });
@@ -187,6 +200,7 @@ test("calls every failure unknown without a token or run, and asks nothing", asy
     [failure(unassignedJob.name)],
     context({ fetch, token: "", runId: undefined })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unknown");
   assert.equal(calls.length, 0);
 });
@@ -210,6 +224,7 @@ test("reads every page of the job list", async () => {
     [failure(unassignedJob.name)],
     context({ fetch })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unassigned");
   assert.deepEqual(
     calls.slice(0, 2).map((call) => call.url),
@@ -234,6 +249,7 @@ test("reads only the current attempt and ignores the same job from an earlier at
     [failure(unassignedJob.name, "failure")],
     context({ fetch, runAttempt: "2" })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "test");
   assert.equal(calls[0].url, `${api}${jobsPath(1, 2)}`);
 });
@@ -246,6 +262,7 @@ test("calls a failure unknown when the current attempt has no record of the job"
     [failure(unassignedJob.name)],
     context({ fetch, runAttempt: "2" })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unknown");
 });
 
@@ -291,6 +308,7 @@ test("calls a job cancelled while still queued unknown", async () => {
     [failure(unassignedJob.name)],
     context({ fetch })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unknown");
   assert.match(row.reason, /실행기 없음, 단계 0개, 미배정 주석 없음/);
 });
@@ -313,6 +331,7 @@ test("gives up within the overall lookup deadline and calls the rest unknown", a
     [failure(unassignedJob.name)],
     context({ fetch: hangingThenDeadline, deadline: overall.signal })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unknown");
   assert.match(row.reason, /주석 조회 실패: 전체 조회 시한이 지났다/);
 });
@@ -329,5 +348,6 @@ test("calls an unassigned job unassigned when the gate input says abandoned", as
     [failure(job.name, "abandoned")],
     context({ fetch })
   );
+  assert.ok(row, "no row");
   assert.equal(row.kind, "unassigned");
 });

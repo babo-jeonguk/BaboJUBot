@@ -26,6 +26,9 @@ const scriptRoot = path.resolve(
 /**
  * git 출력. `absent`에 든 종료 코드(없는 remote·ref)는 빈 문자열이고, git을 띄우지 못했거나 그 밖의 코드로 끝나면 원인과 함께 던진다.
  * 게시를 막는 검사이므로 모르는 것을 "없음"으로 보고 넘기지 않는다.
+ * @param {string} root
+ * @param {string[]} args
+ * @param {{ absent?: number[] }} [options]
  */
 function gitOutput(root, args, { absent = [] } = {}) {
   const result = spawnSync("git", args, {
@@ -37,7 +40,7 @@ function gitOutput(root, args, { absent = [] } = {}) {
   });
   if (result.error) throw result.error;
   if (result.status === 0) return result.stdout.trim();
-  if (absent.includes(result.status)) return "";
+  if (result.status !== null && absent.includes(result.status)) return "";
   throw new Error(
     `git ${args.join(" ")} failed (exit ${result.status ?? result.signal}): ${result.stderr.trim()}`
   );
@@ -222,23 +225,27 @@ const textOptions = {
 // close의 --comment/-c는 글을 받지만, pr review의 --comment는 값 없는 선택지다.
 const closeTextOptions = { ...textOptions, "--comment": "text", "-c": "text" };
 
+/**
+ * @param {string[]} args
+ * @param {{ cwd: string, readStdin: () => string }} io
+ * @returns {{ error: string } | { texts: { source: string, text: string }[], input: string | undefined }}
+ */
 function collectTexts(args, { cwd, readStdin }) {
   const [command, subcommand] = args;
-  if (!["issue", "pr"].includes(command))
+  if (command === undefined || !["issue", "pr"].includes(command))
     return { error: "Only `gh issue ...` and `gh pr ...` are supported." };
   const options = subcommand === "close" ? closeTextOptions : textOptions;
   const texts = [];
   let input;
   for (let index = 2; index < args.length; index++) {
     const argument = args[index];
+    if (argument === undefined) continue;
     const equals = argument.startsWith("--") ? argument.indexOf("=") : -1;
     const name = equals === -1 ? argument : argument.slice(0, equals);
     const kind = options[name];
     if (!kind) continue;
-    let value;
-    if (equals !== -1) value = argument.slice(equals + 1);
-    else if (index + 1 < args.length) value = args[++index];
-    else return { error: `${name} needs a value.` };
+    const value = equals === -1 ? args[++index] : argument.slice(equals + 1);
+    if (value === undefined) return { error: `${name} needs a value.` };
     if (kind === "text") {
       texts.push({ source: name, text: value });
     } else if (value === "-") {
@@ -251,7 +258,9 @@ function collectTexts(args, { cwd, readStdin }) {
           text: fs.readFileSync(path.resolve(cwd, value), "utf8"),
         });
       } catch (error) {
-        return { error: `Cannot read ${value}: ${error.message}` };
+        return {
+          error: `Cannot read ${value}: ${error instanceof Error ? error.message : String(error)}`,
+        };
       }
     }
   }
@@ -260,7 +269,7 @@ function collectTexts(args, { cwd, readStdin }) {
 
 export function postToGitHub(args, { context, cwd, readStdin, runGh, report }) {
   const collected = collectTexts(args, { cwd, readStdin });
-  if (collected.error) {
+  if ("error" in collected) {
     report(
       `${collected.error}\nUsage: node scripts/gh-post.mjs <issue|pr> <subcommand> [gh arguments]`
     );

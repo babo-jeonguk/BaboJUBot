@@ -65,6 +65,11 @@ const checkGroups = [
   },
 ];
 
+/**
+ * @param {string[]} files 바뀐 파일(저장소 기준 경로)
+ * @param {Record<string, { dir: string, deps: string[] }>} graph workspace 패키지와 그 의존성
+ * @param {{ exists?: (file: string) => boolean, tests?: boolean }} [options]
+ */
 export function plan(
   files,
   graph,
@@ -81,7 +86,7 @@ export function plan(
     ];
 
   // 뿌리 패키지(dir ".")는 파일 주인이 아니다. 그 패키지가 쓰는 패키지가 바뀌면 scripts·.agents의 시험이 영향을 받는다.
-  const root = Object.keys(graph).find((name) => graph[name].dir === ".");
+  const root = Object.entries(graph).find(([, pkg]) => pkg.dir === ".")?.[0];
   const directories = Object.entries(graph)
     .filter(([name]) => name !== root)
     .map(([name, pkg]) => ({ name, dir: pkg.dir }))
@@ -103,10 +108,10 @@ export function plan(
       direct.set(owner.name, kind);
   }
 
+  /** @type {Map<string, string[]>} */
   const reverse = new Map(Object.keys(graph).map((name) => [name, []]));
   for (const [name, pkg] of Object.entries(graph))
-    for (const dependency of pkg.deps)
-      if (reverse.has(dependency)) reverse.get(dependency).push(name);
+    for (const dependency of pkg.deps) reverse.get(dependency)?.push(name);
 
   const closure = (seeds) => {
     const seen = new Set(seeds);
@@ -222,6 +227,10 @@ function workspaceDeps(packageJson) {
     .sort();
 }
 
+/**
+ * @param {string} message
+ * @returns {never}
+ */
 function fail(message) {
   console.error(message);
   process.exit(2);
@@ -261,7 +270,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       killSignal: "SIGKILL",
     }).trim();
   } catch (error) {
-    fail(`not inside a Git repository (${error.message})`);
+    fail(
+      `not inside a Git repository (${error instanceof Error ? error.message : String(error)})`
+    );
   }
 
   const git = (...args) =>
@@ -281,7 +292,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     comparison = git("merge-base", "HEAD", base).trim();
   } catch (error) {
-    fail(`cannot compare HEAD with ${base} (${error.message})`);
+    fail(
+      `cannot compare HEAD with ${base} (${error instanceof Error ? error.message : String(error)})`
+    );
   }
 
   const files = [

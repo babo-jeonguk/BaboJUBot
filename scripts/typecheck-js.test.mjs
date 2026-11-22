@@ -87,8 +87,10 @@ test("the JS check finds JS checking configs, reports the mistakes of their JS f
     results.map(({ file }) => file),
     ["tsconfig.json"]
   );
+  const [checked] = results;
+  assert.ok(checked);
   assert.deepEqual(
-    results[0].diagnostics.map((diagnostic) => [
+    checked.diagnostics.map((diagnostic) => [
       path.basename(diagnostic.file?.fileName ?? ""),
       diagnostic.code,
     ]),
