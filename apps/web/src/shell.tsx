@@ -85,12 +85,15 @@ const detailSection: Record<string, string> = {
   artifacts: "artifacts",
   results: "review",
 };
+/** 주소의 섹션 자리(`/orgs/:orgId/:section`)가 가리키는 섹션. 사용자가 주소에 무엇이든 적을 수 있다. */
+export const sectionOfPath = (segment: string) =>
+  detailSection[segment] ?? segment;
 
 function useCurrent() {
   const org = useMatch("/orgs/:orgId/*")?.params.orgId;
   const matched = useMatch("/orgs/:orgId/:section/*")?.params.section;
   const section = matched
-    ? (detailSection[matched] ?? matched)
+    ? sectionOfPath(matched)
     : org
       ? defaultSection
       : undefined;

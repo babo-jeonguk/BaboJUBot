@@ -286,6 +286,62 @@ test("product code compares strictly except for the null check", async () => {
     );
 });
 
+// 계산한 키를 `in`으로 확인하면 물려받은 이름(constructor·toString)도 있다고 답해, 허용 목록 검사를 바깥 입력이 지나간다
+// (#281 리뷰 REC-1). 객체가 어디서 왔든(지역 객체 리터럴, 읽은 JSON, 설정) 같으므로 제품 코드·스크립트·시험·가짜 프로그램·설정 모두 본다.
+const computedInRule = ["product/no-computed-in"];
+const everyCodePlace = [
+  ...productPlaces,
+  "apps/web/src/shell.tsx",
+  ...testPlaces,
+  "apps/web/e2e/sample.spec.ts",
+  "scripts/sample.mjs",
+  "scripts/live/sample.mjs",
+  ".agents/scripts/sample.mjs",
+  "packages/runtime/test-fixtures/sample.mjs",
+  "docker/runner/sample.mjs",
+  "eslint.config.js",
+];
+
+test("code does not check a computed key with in", async () => {
+  const caught = {
+    "an argument against a local table": `const table = { a: 1 };\nexport const allowed = (key) => key in table;\n`,
+    "a field against read data": `export const listed = (manifest, name) => name in manifest.dependencies;\n`,
+    "a template with a value":
+      "export const has = (table, key) => `x-${key}` in table;\n",
+    "a call result": `export const has = (table, raw) => raw.trim() in table;\n`,
+  };
+  for (const place of everyCodePlace)
+    for (const [shape, code] of Object.entries(caught)) {
+      const [message, ...rest] = await lint(code, place, computedInRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      // 무엇이 틀리는지와 쓸 수단을 알려 준다.
+      assert.match(message.message, /constructor/);
+      assert.match(message.message, /Object\.hasOwn/);
+      assert.match(message.message, /Map/);
+    }
+});
+
+test("code may check a written key with in, and checks a computed key with Object.hasOwn or a Map", async () => {
+  // 적어 둔 이름은 그 모양을 가진 값인지 가리는 확인이다(TypeScript가 그 이름으로 타입을 좁힌다). 물려받은 이름을 적을 일이 없다.
+  const allowed = [
+    `export const coded = (error) => typeof error === "object" && error !== null && "code" in error;\n`,
+    "export const written = (value) => `code` in value;\n",
+    `export const first = (list) => 0 in list;\n`,
+    `export class Box {\n  #value = 1;\n  static is(other) {\n    return #value in other;\n  }\n}\n`,
+    `const table = { a: 1 };\nexport const allowed = (key) => Object.hasOwn(table, key);\n`,
+    `const table = new Map([["a", 1]]);\nexport const allowed = (key) => table.has(key);\n`,
+    `export function each(table) {\n  for (const key in table) console.log(key);\n}\n`,
+  ];
+  for (const place of everyCodePlace)
+    for (const code of allowed)
+      assert.deepEqual(
+        await lint(code, place, computedInRule),
+        [],
+        `${place}: ${code}`
+      );
+});
+
 const asyncWork = `const work = async () => 1;\n`;
 const floatingRule = ["@typescript-eslint/no-floating-promises"];
 
