@@ -39,7 +39,7 @@ const isAssert = (sourceCode, node) =>
 const clockReads = new Set(["global:Date.now", "global:performance.now"]);
 const readsClock = (node, sourceCode) =>
   node?.type === "CallExpression" &&
-  clockReads.has(originName(sourceCode, node.callee));
+  clockReads.has(originName(sourceCode, node.callee) ?? "");
 
 /**
  * `expect(...)`·`expect(...).toBe(...)`·`assert(...)`·`assert.ok(...)`·`chai.assert.isBelow(...)`처럼 expect·단언 함수(출처로 봄)로
@@ -87,6 +87,7 @@ function keepsValue(parent, child, sourceCode) {
  */
 const noElapsedTimeAssertion = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -273,7 +274,7 @@ const turnSchedulers = new Set([
 /** `call`이 executor의 `resolve`로 차례 하나를 넘기는가: `setTimeout(r)`·`setTimeout(r, 0)`·`setTimeout(() => r(), 0)`·`setImmediate(r)`·`process.nextTick(r)`. */
 function schedulesTurn(call, resolve, sourceCode) {
   if (call?.type !== "CallExpression") return false;
-  const name = originName(sourceCode, call.callee);
+  const name = originName(sourceCode, call.callee) ?? "";
   if (timeouts.has(name)) {
     const delay = call.arguments[1];
     if (delay && !(delay.type === "Literal" && delay.value === 0)) return false;
@@ -289,7 +290,7 @@ function waitsOneTurn(statement, sourceCode) {
   const value = awaited.argument;
   if (
     value?.type === "CallExpression" &&
-    promiseTurns.has(originName(sourceCode, value.callee))
+    promiseTurns.has(originName(sourceCode, value.callee) ?? "")
   )
     return true;
   if (
@@ -348,6 +349,7 @@ function namesAbort(node) {
 
 const noFixedTimeWait = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -440,8 +442,9 @@ const noFixedTimeWait = {
         )
           return report(node);
         // 지연을 기다리는 timers/promises 함수(Node 문서: setTimeout·setInterval·scheduler.wait). 출처로 본다.
-        if (delayWaits.has(originName(sourceCode, callee))) return report(node);
-        if (!timeouts.has(originName(sourceCode, callee))) return;
+        const name = originName(sourceCode, callee) ?? "";
+        if (delayWaits.has(name)) return report(node);
+        if (!timeouts.has(name)) return;
         const delay = node.arguments[1];
         if (!delay || (delay.type === "Literal" && delay.value === 0)) return;
         if (
@@ -510,6 +513,7 @@ function matchesByName(call) {
  */
 const noPageWideLocator = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -682,6 +686,7 @@ function assertionSubject(call, child, sourceCode) {
  */
 const noOneShotUiRead = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -875,6 +880,7 @@ function throwsSync(call, sourceCode) {
  */
 const noCleanupInFinally = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1249,6 +1255,7 @@ export function skippedSyncCleanupIn(block, context) {
  */
 const noSkippedCleanup = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1493,6 +1500,7 @@ function passesOver(handler, sourceCode) {
  */
 const noIgnoredKillError = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description: "disallow ignoring the error of process.kill in tests",
@@ -1720,6 +1728,7 @@ function dropsCloseError(callback, resolver, sourceCode) {
  */
 const noIgnoredCloseError = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1789,6 +1798,7 @@ function testBody(call, sourceCode) {
  */
 const noExpectedFailure = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1853,6 +1863,7 @@ function enclosingTestBody(node, bodies) {
  */
 const noStateBetweenTests = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1966,6 +1977,7 @@ const envChangingCalls = [
  */
 const noProcessEnvChange = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: { description: "disallow changing process.env in tests" },
     schema: [],
@@ -2075,6 +2087,7 @@ function returnedAsIs(identifier, sourceCode) {
  */
 const noDroppedRejection = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -2399,6 +2412,7 @@ function waiting(sourceCode) {
  */
 const noUnawaitedLater = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:

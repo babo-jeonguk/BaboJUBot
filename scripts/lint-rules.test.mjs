@@ -203,6 +203,7 @@ test("every directive comment ESLint reads is reported in every code area, and o
           `${comment}\nexport const a = 1;\n`,
           { filePath: place }
         );
+        assert.ok(result, `${place}: no lint result`);
         const reported = result.messages.some((m) => m.ruleId === directive);
         const eslintReads = result.messages.some(
           (m) => m.ruleId === null && /has no effect/.test(m.message)
@@ -430,6 +431,7 @@ test("code outside tests may wait a fixed time", async () => {
 });
 
 test("test code may not abort after a fixed time or count event loop turns as the end of the work", async () => {
+  /** @type {Record<string, [string, RegExp]>} */
   const ordered = {
     // 정해진 시간 뒤 중단.
     "an abort timer": [
@@ -484,11 +486,9 @@ test("test code may not abort after a fixed time or count event loop turns as th
       }
     }
   // 한 반복은 한 번만 알린다.
-  assert.equal(
-    (await lint(ordered["counted microtasks"][0], testPlaces[0], waitRules))
-      .length,
-    3
-  );
+  const microtasks = ordered["counted microtasks"];
+  assert.ok(microtasks, "no counted microtasks case");
+  assert.equal((await lint(microtasks[0], testPlaces[0], waitRules)).length, 3);
 });
 
 test("test code may abort on a signal, keep an abort timer as a bound and repeat a turn until a condition holds", async () => {
@@ -521,6 +521,7 @@ const e2ePlaces = [
 const e2eHead = `import type { BrowserContext, Locator, Page } from "@playwright/test";\ndeclare const page: Page;\ndeclare const context: BrowserContext;\ndeclare const area: Locator;\nconst other = await context.newPage();\nexport {};\n`;
 
 test("an E2E may not search the whole page by text or pick by position among page-wide or same-name matches", async () => {
+  /** @type {Record<string, [string, RegExp]>} */
   const found = {
     // 화면 전체에서 글자로 찾기.
     "page text": [`await page.getByText("대기").click();\n`, /글자로/],
@@ -649,10 +650,12 @@ test("test code may not wait or call a failing cleanup in finally", async () => 
     "fs.rmSync": `import fs from "node:fs";\ntry {\n  check();\n} finally {\n  fs.rmSync("link", { force: true });\n}\n`,
     chmodSync: `import { chmodSync } from "node:fs";\ntry {\n  check();\n} finally {\n  chmodSync("dir", 0o700);\n}\n`,
   };
-  for (const [kind, shapes, pattern] of [
+  /** @type {Array<[string, Record<string, string>, RegExp]>} */
+  const kinds = [
     ["await", awaited, /onTestFinished/],
     ["sync", thrown, /이미 사라진 대상/],
-  ])
+  ];
+  for (const [kind, shapes, pattern] of kinds)
     for (const [shape, code] of Object.entries(shapes))
       for (const place of testPlaces) {
         const [message, ...rest] = await lint(code, place, finallyRules);
@@ -931,6 +934,7 @@ const closeErrorRules = ["tests/no-ignored-close-error"];
 const typedPlaces = testPlaces.filter((place) => place.endsWith(".ts"));
 
 test("test code may not fulfil a Promise with the error of a Node server's close", async () => {
+  /** @type {Record<string, [string, string[]]>} */
   const shapes = {
     // 열리지 않았거나 이미 닫힌 서버면 오류 객체로 이행한다.
     "resolve given to close": [
@@ -980,14 +984,10 @@ test("test code may not fulfil a Promise with the error of a Node server's close
         assert.match(message.message, /CODING_STANDARDS\.md#정리/);
       }
     }
+  const typedList = shapes["servers from a typed list"];
+  assert.ok(typedList, "no typed list case");
   assert.equal(
-    (
-      await lint(
-        shapes["servers from a typed list"][0],
-        typedPlaces[0],
-        closeErrorRules
-      )
-    ).length,
+    (await lint(typedList[0], typedPlaces[0], closeErrorRules)).length,
     2
   );
 });
@@ -1084,10 +1084,12 @@ test("test code may not pass state from one test to another", async () => {
     "serial mode": `test.describe.configure({ mode: "serial" });\ntest("a", () => {});\n`,
     "a serial group": `test.describe.serial("steps", () => {\n  test("a", () => {});\n});\n`,
   };
-  for (const [kind, shapes, pattern] of [
+  /** @type {Array<[string, Record<string, string>, RegExp]>} */
+  const kinds = [
     ["shared", shared, /다른 시험이 대입한 값/],
     ["serial", serial, /차례대로 묶습니다/],
-  ])
+  ];
+  for (const [kind, shapes, pattern] of kinds)
     for (const [shape, code] of Object.entries(shapes))
       for (const place of testPlaces) {
         const [message, ...rest] = await lint(code, place, stateRules);
@@ -1487,6 +1489,7 @@ const oneShotRules = ["tests/no-one-shot-ui-read"];
 const oneShotHead = `import { expect, type Locator, type Page } from "@playwright/test";\ndeclare const page: Page;\ndeclare const box: Locator;\nexport {};\n`;
 
 test("an E2E may not assert a UI state it read once from a locator", async () => {
+  /** @type {Record<string, [string, string, string]>} */
   const found = {
     "isChecked into toBe": [
       `expect(await box.isChecked()).toBe(true);\n`,
@@ -1663,6 +1666,7 @@ test("an E2E may wait with web-first assertions, compare against a value read be
 });
 
 test("test code may not end a start on a fixed time or count event loop turns in a row", async () => {
+  /** @type {Record<string, [string, RegExp]>} */
   const found = {
     // 중단 시한의 이유로 거절되기를 기대한다.
     "an expected timeout": [
@@ -1764,6 +1768,7 @@ const laterImport = `import { awaitedLater } from "@babojubot/process/test-clean
 const laterHead = `const p = Promise.resolve(1);\nconst use = (value) => value;\nconst child = {};\n`;
 
 test("a promise marked with awaitedLater must be stored and awaited later in the same file", async () => {
+  /** @type {Record<string, [string, RegExp]>} */
   const found = {
     "a dropped call": [
       `${laterImport}${laterHead}awaitedLater(p);\n`,
@@ -2207,6 +2212,10 @@ const shareState = (runner) =>
 const hookCleanups = (hook) =>
   `${hook}(async () => {\n  await t?.close();\n  await model?.close();\n});\n`;
 const laterHeadImport = `import { awaitedLater } from "@babojubot/process/test-cleanup";\n`;
+/**
+ * @type {Array<{ rule: string, kept?: boolean, value: { module?: string, global?: string, path: string[] },
+ *   use: (ref: string) => string, head?: string, local?: boolean, localSkipped?: string }>}
+ */
 const originCases = [
   // 경과 시간 단언: 단언 도구·시계·계산.
   ...[

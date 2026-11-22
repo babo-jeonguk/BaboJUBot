@@ -144,7 +144,14 @@ test("runner configs get the test rules", async () => {
 test("a file gets the same rules in every format", async () => {
   // 형식으로 갈리는 규칙은 typescript-eslint가 TypeScript 형식에서 컴파일러와 겹치는 핵심 규칙을 바꾸는 것뿐이다(eslintRecommended).
   // 그 밖의 규칙(패키지 입구·영역 경계·프로그램 띄우기·시험 규칙과 그 완화)은 같은 자리의 파일이면 형식과 상관없이 같아야 한다.
-  const { files, rules: compilerChecked } = tseslint.configs.eslintRecommended;
+  const recommended = tseslint.configs.eslintRecommended;
+  assert.ok(
+    "files" in recommended &&
+      Array.isArray(recommended.files) &&
+      recommended.rules,
+    "typescript-eslint eslintRecommended has no files or rules"
+  );
+  const { files, rules: compilerChecked } = recommended;
   // 자리마다 `.ts`와 다른 형식과 그 규칙을 모은다.
   const gaps = [];
   // 위 자리 목록에 더해 workspace 패키지마다 제품·시험 자리를 둔다(새 패키지도 대조한다).

@@ -65,13 +65,10 @@ function shortForm(file) {
 /**
  * 정의를 읽는 법을 아는 파일 종류(확장자별). script: TypeScript 구문 트리, json: TypeScript JSON 구문 트리, yaml: yaml,
  * comments: 지울 주석 문법(구문 분석기가 없는 소스). source: 줄에 파일이 없을 때 이름을 찾는 소스 코드인가.
+ * @typedef {{ script?: boolean, json?: boolean, yaml?: boolean, comments?: RegExp[], source: boolean }} Language
  */
+/** @type {Map<string, Language>} */
 const languages = new Map([
-  // 코드 형식(scripts/test-files.mjs). TypeScript가 파일 이름으로 구문(TS·TSX·JS·JSX)을 고른다.
-  ...codeFormatNames.map((format) => [
-    `.${format}`,
-    { script: true, source: true },
-  ]),
   [".json", { json: true, source: false }],
   [".yml", { yaml: true, source: false }],
   [".yaml", { yaml: true, source: false }],
@@ -82,6 +79,9 @@ const languages = new Map([
   [".ps1", { comments: [/<#[\s\S]*?#>/g, /(^|\s)#.*$/gm], source: true }],
   [".html", { comments: [/<!--[\s\S]*?-->/g], source: true }],
 ]);
+// 코드 형식(scripts/test-files.mjs). TypeScript가 파일 이름으로 구문(TS·TSX·JS·JSX)을 고른다.
+for (const format of codeFormatNames)
+  languages.set(`.${format}`, { script: true, source: true });
 const titleCallees = new Set(["describe", "it", "test", "suite"]);
 
 /** 이름(식별자·비공개 이름·문자열·숫자). 계산한 이름(`[key]`)은 없다. */
@@ -158,6 +158,7 @@ export function definitionsOf(file, text) {
     strings: new Set(),
     titles: new Set(),
   };
+  /** @type {Partial<Language>} */
   const language = languages.get(path.extname(file)) ?? {};
   const addMembers = (prefix, members) => {
     for (const member of members ?? []) {
@@ -500,7 +501,9 @@ export function findCodeMapProblems({ root, files }) {
   };
 
   const specifierProblem = (specifier) => {
-    const [, name, subpath] = packageSpecifier.exec(specifier);
+    const match = packageSpecifier.exec(specifier);
+    if (!match) throw new Error(`패키지 표기가 아니다: ${specifier}`);
+    const [, name, subpath] = match;
     const manifest = manifests.byName.get(name);
     if (!manifest)
       return manifests.declared.has(name)
@@ -610,7 +613,8 @@ export function findCodeMapProblems({ root, files }) {
         for (const { value: notation, line } of notations) {
           const matches = resolve(notation);
           if (matches.length === 1) {
-            if (isCodeFile.has(matches[0])) cellFiles.push(matches[0]);
+            for (const only of matches)
+              if (isCodeFile.has(only)) cellFiles.push(only);
           } else if (matches.length === 0)
             problems.push(
               `${at(line)}: 맞는 파일이 없는 파일 표기 \`${notation}\``
