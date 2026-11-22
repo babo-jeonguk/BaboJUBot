@@ -320,7 +320,10 @@ fn signal_orphans(reach: &impl Reach, signal: libc::c_int) -> Result<(), String>
 /// skipped because a signal or a look before it failed: a failed signal leaves the next one and the end check to tell, and a failed
 /// look tells nothing. During the last wait SIGKILL goes again to the orphans outside the group, so it also reaches those taken in
 /// meanwhile (a program's children are taken in when it ends); a group being killed cannot grow. The tree counts as ended only when
-/// a look finds nothing; otherwise the result names what is left with the failures on the way.
+/// a look finds nothing; otherwise the result names what is left with the failures on the way. The restart recovery's group stop
+/// (`packages/process/src/group.ts`) keeps the same rules with one difference: it finds the group by a recorded number, which can go
+/// to another group once the group is empty, so it signals only right after a look saw the group. Here the unreaped program keeps
+/// the number, so the signals go whatever the looks say.
 fn end_tree(reach: &impl Reach, grace: Duration, limit: Duration) -> StopResult {
     let mut failures = attempt::Failures::default();
     let look = || live_members(reach);
