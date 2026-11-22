@@ -1,8 +1,7 @@
 // 코드 지도(docs/agents/code-map.md와 docs/agents/code-map/의 절 파일)가 가리키는 파일·이름이 저장소에 있는지 확인한다(#250).
 // 링크가 열리는지는 check-project.mjs가 본다. 여기서는 링크 밖의 짧은 파일 표기와 코드 표기(백틱)를 본다.
-// Markdown은 CommonMark 0.31.2(https://spec.commonmark.org/0.31.2/)와 GFM 표(https://github.github.com/gfm/#tables-extension-)대로
-// 읽는다: 펜스 코드 블록(§4.5)·들여쓰기 코드 블록(§4.4)은 보지 않고, 코드 스팬은 같은 길이의 백틱 줄로 닫으며(§6.1), 표 칸은
-// 이스케이프하지 않은 `|`로 나눈다. 판정 단위는 줄 하나(표의 행, 문단의 줄)다.
+// Markdown은 CommonMark·GFM 구문 트리(scripts/markdown.mjs)로 읽는다. 판정 단위는 표의 행(머리 행 뺌)과 표 밖의 문단·제목이고,
+// 코드 블록·HTML 블록은 보지 않는다. 칸의 링크(참조식 링크는 그 정의), 링크 밖 글, 코드 스팬을 트리에서 얻고, 줄 번호는 노드의 위치다.
 // 코드 표기는 아래 순서로 한 갈래에 넣고, 어느 갈래에도 맞지 않으면 실패한다. 표기마다 예외를 두지 않는다.
 // - 파일 표기: 마지막 조각이 `이름.확장자`인 경로. 확장자는 저장소가 추적하는 파일의 확장자와 이 검사가 읽을 줄 아는 확장자
 //   (languages)다. 백틱 밖 글에서도 같은 판정으로 찾는다. 저장소 경로, 또는 `packages/<이름>/`·`apps/<이름>/` 뒤의
@@ -30,6 +29,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
+import { parseMarkdown, SKIP, visit } from "./markdown.mjs";
 import { isTestFile } from "./test-files.mjs";
 
 const segment = "[A-Za-z_$#][\\w$]*(?:-[\\w$]+)*";
@@ -312,180 +312,81 @@ function defines(definitions, name) {
   );
 }
 
+/** 노드 안의 글자(글·코드 스팬)를 이어 붙인다. */
+function plainTextOf(node) {
+  let text = "";
+  visit(node, (child) => {
+    if (child.type === "text" || child.type === "inlineCode")
+      text += child.value;
+  });
+  return text;
+}
+
 /**
- * 코드 스팬(CommonMark §6.1)을 꺼내고 그 자리를 비운 글을 돌려준다. 백틱 n개로 연 스팬은 정확히 n개인 백틱 줄로 닫고, 닫히지 않은
- * 백틱은 글자다. 스팬 밖의 `\``는 이스케이프한 백틱이다(§2.4). 스팬 안의 앞뒤 공백 하나씩은 양쪽에 다 있고 공백만이 아닐 때 뺀다.
+ * 지도의 판정 단위: 표의 행(머리 행 뺌)과 표 밖의 문단·제목. 칸마다 그 노드와 `테스트` 열인가. 참조식 링크를 풀 정의도 돌려준다.
+ * @returns {{ units: { node: object, testColumn: boolean }[][], definitions: Map<string, string> }}
  */
-function codeSpans(text) {
+function unitsOf(tree) {
+  const definitions = new Map();
+  visit(tree, "definition", (node) => {
+    definitions.set(node.identifier, node.url);
+  });
+  const units = [];
+  visit(tree, (node) => {
+    if (node.type === "table") {
+      const [header, ...rows] = node.children;
+      const testColumn = header.children.findIndex(
+        (cell) => plainTextOf(cell).trim() === "테스트"
+      );
+      for (const row of rows)
+        units.push(
+          row.children.map((cell, column) => ({
+            node: cell,
+            testColumn: column === testColumn,
+          }))
+        );
+      return SKIP;
+    }
+    if (node.type === "paragraph" || node.type === "heading") {
+      units.push([{ node, testColumn: false }]);
+      return SKIP;
+    }
+    return undefined;
+  });
+  return { units, definitions };
+}
+
+/** 칸 하나의 링크 대상(참조식은 그 정의), 링크 밖 글, 코드 스팬. 글·코드 스팬은 줄 번호와 함께. */
+function readCell(node, definitions) {
+  const links = [];
+  const texts = [];
   const spans = [];
-  let plain = "";
-  let index = 0;
-  while (index < text.length) {
-    if (text[index] === "\\" && /[!-/:-@[-`{-~]/.test(text[index + 1] ?? "")) {
-      plain += text.slice(index, index + 2);
-      index += 2;
-      continue;
+  const addSpan = (child) => {
+    spans.push({ value: child.value, line: child.position.start.line });
+  };
+  visit(node, (child) => {
+    if (child.type === "link" || child.type === "image") {
+      links.push(child.url);
+      visit(child, "inlineCode", addSpan);
+      return SKIP;
     }
-    if (text[index] !== "`") {
-      plain += text[index];
-      index += 1;
-      continue;
+    if (child.type === "linkReference" || child.type === "imageReference") {
+      const url = definitions.get(child.identifier);
+      if (url !== undefined) links.push(url);
+      visit(child, "inlineCode", addSpan);
+      return SKIP;
     }
-    let end = index;
-    while (text[end] === "`") end += 1;
-    const length = end - index;
-    let close = end;
-    let found = -1;
-    while (close < text.length) {
-      if (text[close] !== "`") {
-        close += 1;
-        continue;
-      }
-      let after = close;
-      while (text[after] === "`") after += 1;
-      if (after - close === length) {
-        found = close;
-        break;
-      }
-      close = after;
-    }
-    if (found < 0) {
-      plain += text.slice(index, end);
-      index = end;
-      continue;
-    }
-    let content = text.slice(end, found);
-    if (/^ [\s\S]* $/.test(content) && /[^ ]/.test(content))
-      content = content.slice(1, -1);
-    spans.push(content);
-    plain += " ";
-    index = found + length;
-  }
-  return { spans, plain };
-}
-
-/** GFM 표의 한 행을 칸으로 나눈다. 이스케이프한 `\|`는 칸 구분이 아니라 글자 `|`다(코드 스팬 안도 같다). */
-function splitRow(line) {
-  let row = line.trim();
-  if (row.startsWith("|")) row = row.slice(1);
-  if (row.endsWith("|") && !row.endsWith("\\|")) row = row.slice(0, -1);
-  const cells = [""];
-  for (let index = 0; index < row.length; index += 1) {
-    if (row[index] === "\\" && row[index + 1] === "|") {
-      cells[cells.length - 1] += "|";
-      index += 1;
-    } else if (row[index] === "|") cells.push("");
-    else cells[cells.length - 1] += row[index];
-  }
-  return cells.map((cell) => cell.trim());
-}
-
-const delimiterRow = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-
-/** 줄 앞 공백의 열 수(탭은 다음 4의 배수 열까지, CommonMark §2.2). */
-function indentOf(line) {
-  let columns = 0;
-  for (const char of line) {
-    if (char === " ") columns += 1;
-    else if (char === "\t") columns += 4 - (columns % 4);
-    else break;
-  }
-  return columns;
-}
-
-/**
- * 지도 본문을 판정 단위로 나눈다(CommonMark·GFM). 코드 블록, 표의 머리 행·구분 행, 빈 줄은 건너뛴다. 목록 항목(§5.2) 안에서는
- * 항목 내용의 열을 기준으로 들여쓰기를 잰다. 들여쓰기 코드 블록은 문단을 끊지 못한다(§4.4).
- * @returns {Generator<{ line: number, cells: { text: string, testColumn: boolean }[] }>}
- */
-function* unitsOf(text) {
-  const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
-  let fence;
-  let listIndent = 0;
-  let previous = "blank";
-  let table;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const indent = indentOf(line);
-    if (fence) {
-      const closing = /^[ \t]*(`+|~+)[ \t]*$/.exec(line);
-      if (
-        closing &&
-        indent - listIndent <= 3 &&
-        closing[1][0] === fence.char &&
-        closing[1].length >= fence.length
-      )
-        fence = undefined;
-      continue;
-    }
-    if (/^[ \t]*$/.test(line)) {
-      previous = "blank";
-      table = undefined;
-      continue;
-    }
-    const item = /^([ \t]*)([-+*]|\d{1,9}[.)])([ \t]+|$)/.exec(line);
-    if (item && indent - listIndent <= 3)
-      listIndent =
-        indentOf(item[1]) +
-        item[2].length +
-        (item[3].length >= 1 && item[3].length <= 4 ? item[3].length : 1);
-    else if (indent < listIndent && previous !== "paragraph") listIndent = 0;
-    const relative = item ? 0 : indent - listIndent;
-    if (relative >= 4 && previous !== "paragraph") {
-      previous = "code";
-      continue;
-    }
-    const opening = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
-    if (
-      opening &&
-      relative <= 3 &&
-      !(opening[1][0] === "`" && opening[2].includes("`"))
-    ) {
-      fence = { char: opening[1][0], length: opening[1].length };
-      previous = "other";
-      table = undefined;
-      continue;
-    }
-    if (table) {
-      yield {
-        line: index + 1,
-        cells: splitRow(line).map((cell, column) => ({
-          text: cell,
-          testColumn: column === table.testColumn,
-        })),
-      };
-      continue;
-    }
-    const next = lines[index + 1];
-    if (
-      line.includes("|") &&
-      next !== undefined &&
-      next.includes("|") &&
-      delimiterRow.test(next) &&
-      splitRow(line).length === splitRow(next).length
-    ) {
-      table = { testColumn: splitRow(line).indexOf("테스트") };
-      previous = "other";
-      index += 1;
-      continue;
-    }
-    previous = /^[ \t]*#{1,6}([ \t]|$)/.test(line) ? "other" : "paragraph";
-    yield { line: index + 1, cells: [{ text: line, testColumn: false }] };
-  }
-}
-
-/** 칸 하나의 링크 대상과 링크 밖 글, 코드 표기. */
-function readCell({ text, testColumn }) {
-  const { spans, plain } = codeSpans(text);
-  const links = [...plain.matchAll(/\]\(([^)\s]+)\)/g)]
-    .map((match) => match[1])
-    .filter((target) => !/^(https?:|mailto:|#)/.test(target))
-    .map((target) => target.split("#")[0]);
+    if (child.type === "inlineCode") addSpan(child);
+    else if (child.type === "text")
+      texts.push({ value: child.value, line: child.position.start.line });
+    return undefined;
+  });
   return {
-    links,
-    text: plain.replace(/\[[^\]]*\]\([^)]*\)/g, " "),
+    links: links
+      .filter((target) => !/^(https?:|mailto:|#)/.test(target))
+      .map((target) => target.split("#")[0]),
+    texts,
     spans,
-    testColumn,
   };
 }
 
@@ -656,43 +557,55 @@ export function findCodeMapProblems({ root, files }) {
   const problems = [];
   for (const mapFile of present.filter(isCodeMapFile)) {
     const folder = path.dirname(path.join(root, mapFile));
-    for (const unit of unitsOf(read(mapFile))) {
-      const where = `${mapFile}:${unit.line}`;
+    const at = (line) => `${mapFile}:${line}`;
+    const { units, definitions: references } = unitsOf(
+      parseMarkdown(read(mapFile))
+    );
+    for (const cells of units) {
       const pointed = new Set();
       const pointedTests = new Set();
       const names = [];
       const testNames = [];
       const titlesOrNames = [];
-      for (const cell of unit.cells) {
-        const { links, text, spans, testColumn } = readCell(cell);
-        const notations = text.match(fileInText) ?? [];
+      for (const { node, testColumn } of cells) {
+        const { links, texts, spans } = readCell(node, references);
+        const notations = texts.flatMap(({ value, line }) =>
+          [...value.matchAll(fileInText)].map((match) => ({
+            value: match[0],
+            line:
+              line + (value.slice(0, match.index).match(/\n/g) ?? []).length,
+          }))
+        );
         // 코드 표기를 한 갈래에 넣는다. 순서: 파일 → 폴더 → 패키지 → pnpm 명령 → (테스트 열) 시험 제목 → 이름 → 제외 → 실패.
-        for (const span of spans) {
+        for (const { value: span, line } of spans) {
           const name = namePattern.exec(span)?.[1];
-          if (fileNotation.test(span)) notations.push(span);
+          if (fileNotation.test(span)) notations.push({ value: span, line });
           else if (folderNotation.test(span)) {
             if (!folderExists(span))
-              problems.push(`${where}: 맞는 폴더가 없는 폴더 표기 \`${span}\``);
+              problems.push(
+                `${at(line)}: 맞는 폴더가 없는 폴더 표기 \`${span}\``
+              );
           } else if (packageSpecifier.test(span)) {
             const problem = specifierProblem(span);
-            if (problem) problems.push(`${where}: ${problem}`);
+            if (problem) problems.push(`${at(line)}: ${problem}`);
           } else if (/^pnpm\s/.test(span)) {
             const problem = commandProblem(span);
             if (problem)
               problems.push(
-                `${where}: 없는 pnpm 스크립트 \`${span}\` — ${problem}`
+                `${at(line)}: 없는 pnpm 스크립트 \`${span}\` — ${problem}`
               );
           } else if (span === name && manifests.declared.has(span)) continue;
-          else if (testColumn && name !== undefined) titlesOrNames.push(name);
+          else if (testColumn && name !== undefined)
+            titlesOrNames.push({ value: name, line });
           else if (
             testColumn &&
             [undefined, "문구"].includes(exclusionOf(span))
           )
-            testNames.push(span);
-          else if (name !== undefined) names.push(name);
+            testNames.push({ value: span, line });
+          else if (name !== undefined) names.push({ value: name, line });
           else if (exclusionOf(span) === undefined)
             problems.push(
-              `${where}: 분류할 수 없는 코드 표기 \`${span}\` — 파일·폴더·패키지·pnpm 명령·이름·제외 규칙(문구, HTTP 경로, 무늬, 점·대시로 시작, 기호만) 어디에도 맞지 않음`
+              `${at(line)}: 분류할 수 없는 코드 표기 \`${span}\` — 파일·폴더·패키지·pnpm 명령·이름·제외 규칙(문구, HTTP 경로, 무늬, 점·대시로 시작, 기호만) 어디에도 맞지 않음`
             );
         }
         const cellFiles = links
@@ -703,17 +616,17 @@ export function findCodeMapProblems({ root, files }) {
               .join("/")
           )
           .filter((file) => isCodeFile.has(file));
-        for (const notation of notations) {
+        for (const { value: notation, line } of notations) {
           const matches = resolve(notation);
           if (matches.length === 1) {
             if (isCodeFile.has(matches[0])) cellFiles.push(matches[0]);
           } else if (matches.length === 0)
             problems.push(
-              `${where}: 맞는 파일이 없는 파일 표기 \`${notation}\``
+              `${at(line)}: 맞는 파일이 없는 파일 표기 \`${notation}\``
             );
           else
             problems.push(
-              `${where}: 여러 파일과 맞는 파일 표기 \`${notation}\`: ${matches.join(", ")} — 경로를 더 적어 하나로 좁히세요`
+              `${at(line)}: 여러 파일과 맞는 파일 표기 \`${notation}\`: ${matches.join(", ")} — 경로를 더 적어 하나로 좁히세요`
             );
         }
         for (const file of cellFiles) {
@@ -737,20 +650,20 @@ export function findCodeMapProblems({ root, files }) {
           [...definitions(file).titles].some(titled)
         );
       };
-      for (const name of names)
+      for (const { value: name, line } of names)
         if (!defined(name))
-          problems.push(`${where}: 없는 이름 \`${name}\` — ${scopeText}`);
-      for (const name of titlesOrNames)
+          problems.push(`${at(line)}: 없는 이름 \`${name}\` — ${scopeText}`);
+      for (const { value: name, line } of titlesOrNames)
         if (!hasTitle(name) && !defined(name))
           problems.push(
-            `${where}: 없는 시험 이름·이름 \`${name}\` — ${scopeText}`
+            `${at(line)}: 없는 시험 이름·이름 \`${name}\` — ${scopeText}`
           );
-      for (const testName of testNames)
+      for (const { value: testName, line } of testNames)
         if (!hasTitle(testName))
           problems.push(
             pointedTests.size
-              ? `${where}: 없는 시험 이름 \`${testName}\` — 이 줄이 가리키는 시험 파일: ${titleScope.join(", ")}`
-              : `${where}: 없는 시험 이름 \`${testName}\` — 저장소 시험 파일 전체에서 찾음`
+              ? `${at(line)}: 없는 시험 이름 \`${testName}\` — 이 줄이 가리키는 시험 파일: ${titleScope.join(", ")}`
+              : `${at(line)}: 없는 시험 이름 \`${testName}\` — 저장소 시험 파일 전체에서 찾음`
           );
     }
   }
