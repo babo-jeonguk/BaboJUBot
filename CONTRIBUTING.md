@@ -4,10 +4,11 @@
 
 ## 개발 시작
 
-Node.js 24.x, pnpm 10.33.0 및 Git을 사용합니다. GitHub 이슈 작업에는 인증된 `gh`가 필요합니다.
+Node.js 24.x, pnpm 10.33.0, Git과 Rust 도구(rustup)를 사용합니다. GitHub 이슈 작업에는 인증된 `gh`가 필요합니다. 실행 시도를 띄우는 감독 실행기(`packages/process/supervisor`)는 checkout에서 빌드합니다. Rust 판은 `rust-toolchain.toml`이 고정하므로 rustup이 그 판을 받습니다. 의존 crate의 빌드 스크립트를 링크할 시스템 도구(Linux `cc`, macOS Xcode Command Line Tools, Windows MSVC 빌드 도구)도 필요합니다. 빌드하지 않으면 서버와 시험이 실행 시도를 띄우지 않고 그 이유를 보입니다([ADR-0006](docs/adr/0006-per-run-native-supervisor.md)).
 
 ```bash
 pnpm install
+pnpm --filter @babojubot/process run build   # 감독 실행기를 이 시스템 대상으로 빌드(소스·Cargo.lock이 바뀌면 다시)
 pnpm dev          # 개발용 hot reload. 서버(http://127.0.0.1:3100, 가짜 프로바이더 데모 시나리오)와 대시보드(http://127.0.0.1:5173)
 pnpm test         # 패키지별 Vitest. 서버·DB 테스트는 실행마다 embedded Postgres 하나를 띄우고 테스트마다 DB를 복제합니다. 끝으로 pnpm test:root(테스트 실패가 실패 종료로 이어지는지 확인, boot-check 시험)를 돌립니다.
 pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움). 처음 한 번 `pnpm --filter @babojubot/web exec playwright install chromium`
