@@ -8,7 +8,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
-import { isTestFile } from "./test-files.mjs";
+import {
+  codeFormatNames,
+  codeFormatPattern,
+  isTestFile,
+} from "./test-files.mjs";
 
 const sharedSettings = new Set([
   "eslint.config.js",
@@ -23,15 +27,12 @@ const sharedSettings = new Set([
   ".agents/tsconfig.json",
 ]);
 
-const lintExtensions = new Set([
-  ".ts",
-  ".tsx",
-  ".mts",
-  ".cts",
-  ".js",
-  ".mjs",
-  ".cjs",
-]);
+/** lint가 검사하는 형식(eslint.config.js와 같은 목록). */
+const lintExtensions = new Set(codeFormatNames.map((format) => `.${format}`));
+/** lint 규칙과 그 시험. */
+const ruleFile = new RegExp(
+  `^scripts/(eslint-|lint-|[\\w-]+-lint-rules\\.test\\.${codeFormatPattern}$)`
+);
 
 function isShared(file) {
   return sharedSettings.has(file) || file.startsWith("patches/");
@@ -51,8 +52,7 @@ function isRootTestFile(file) {
 const checkGroups = [
   {
     name: "rules",
-    owns: (file) =>
-      /^scripts\/(eslint-|lint-|[\w-]+-lint-rules\.test\.mjs$)/.test(file),
+    owns: (file) => ruleFile.test(file),
   },
   {
     name: "agents",

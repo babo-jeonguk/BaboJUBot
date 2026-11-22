@@ -5,6 +5,7 @@
 // 사용: node scripts/check-e2e-report.mjs --os <linux|windows> <report.json> [<report.json> ...]
 import { globSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { codeFormats } from "./test-files.mjs";
 
 /** 판정할 수 있는 실행 시스템. CI는 Linux job과 Windows shard job에서 E2E를 돈다. */
 const systems = ["linux", "windows"];
@@ -32,9 +33,10 @@ export const allowedSkips = [
 
 const e2eFolder = fileURLToPath(new URL("../apps/web/e2e/", import.meta.url));
 
-/** 실행해야 하는 spec(playwright.config.ts의 testDir `e2e`, Playwright 기본 testMatch의 `*.spec.ts`). */
+// 실행해야 하는 spec. playwright.config.ts의 testDir `e2e`에서 Playwright 기본 testMatch(`**/*.@(spec|test).?(c|m)[jt]s?(x)`)가
+// 모으는 파일과 같은 범위를 codeFormats로 고른다.
 export function expectedSpecs() {
-  return globSync("**/*.spec.ts", { cwd: e2eFolder })
+  return globSync(`**/*.{spec,test}.${codeFormats}`, { cwd: e2eFolder })
     .map((file) => file.replaceAll("\\", "/"))
     .sort();
 }

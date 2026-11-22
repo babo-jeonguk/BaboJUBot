@@ -3,6 +3,7 @@
 // - files: 조직 경계의 파일 읽기·그 계약·시험·환경 준비·의존성·CI 설정이 바뀌었다. 파일 시스템별 전체 검증(`files / …`)을 돈다.
 // `--full`은 비교할 기준이 없을 때(첫 push, 수동 실행)다. 영향을 모르므로 모두 돈다.
 import { pathToFileURL } from "node:url";
+import { codeFormatPattern } from "./test-files.mjs";
 
 /**
  * 파일 읽기 경계에 닿는 경로. 영향이 불명확한 공용 설정(의존성·CI)도 넣는다. 전체 검증은 읽는 프로세스와
@@ -11,8 +12,10 @@ import { pathToFileURL } from "node:url";
  */
 export const fileBoundaryPaths = [
   // 서버의 산출물 읽기와 그 별도 프로세스(workspace-reader.ts)·둘이 함께 쓰는 값.
-  /^apps\/server\/src\/workspace[^/]*\.ts$/,
-  /^apps\/server\/test\/(workspace[^/]*|files-volume)\.ts$/,
+  new RegExp(`^apps/server/src/workspace[^/]*\\.${codeFormatPattern}$`),
+  new RegExp(
+    `^apps/server/test/(workspace[^/]*|files-volume)\\.${codeFormatPattern}$`
+  ),
   /^apps\/server\/vitest\.files\.config\.ts$/,
   /^apps\/server\/package\.json$/,
   // 산출물 파일 읽기의 거부 이유·크기 한도 계약.
@@ -20,7 +23,9 @@ export const fileBoundaryPaths = [
   // 읽는 프로세스가 파일·폴더를 여는 바탕(@babojubot/files)과 그 실패 판정.
   /^packages\/files\//,
   /^packages\/contracts\/src\/failure\.ts$/,
-  /^scripts\/(ci-changes|check-ci-test-gate|ci-test-gate|file-boundary-[^/]+)\.(m?js|test\.mjs)$/,
+  new RegExp(
+    `^scripts/(ci-changes|check-ci-test-gate|ci-test-gate|file-boundary-[^/]+)(\\.test)?\\.${codeFormatPattern}$`
+  ),
   /^scripts\/files\//,
   /^\.github\/workflows\/scaffold\.yml$/,
   /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc|\.nvmrc|\.node-version)$/,

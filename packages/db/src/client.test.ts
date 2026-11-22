@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -31,19 +32,27 @@ describe("embedded Postgres lifetime", () => {
   // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
   it("reports what closing is doing, from the connections to stopping Postgres", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    onTestFinished(() => removeCluster(dataDir));
+    const cluster = folderCleanup(() => removeCluster(dataDir));
+    onTestFinished(cluster.cleanUp);
     const handle = await openDatabase({
       embedded: { dataDir, persistent: false },
     });
+    // 닫기는 이 시험의 대상이다. 시험이 닫기 전에 실패해도 정리가 닫은 뒤에 폴더를 지운다(한 번만 닫는다).
+    let closing: Promise<void> | undefined;
+    const close = () => (closing ??= handle.close());
+    cluster.own(close);
     expect(handle.progress()).toBe("open");
     const seen = new Set<string>();
     let closed = false;
-    const closing = handle.close().finally(() => (closed = true));
+    void close().then(
+      () => (closed = true),
+      () => (closed = true)
+    );
     while (!closed) {
       seen.add(handle.progress());
       await new Promise((resolve) => setImmediate(resolve));
     }
-    await closing;
+    await close();
     expect(handle.progress()).toBe("closed");
     expect(seen).toContain("stopping Postgres (fast)");
     expect(
@@ -216,7 +225,10 @@ describe("embedded Postgres lifetime", () => {
       const handle = await openDatabase({
         embedded: { dataDir, persistent: true },
       });
-      await handle.close();
+      let closing: Promise<void> | undefined;
+      const close = () => (closing ??= handle.close());
+      cluster.own(close);
+      await close();
     },
     60_000
   );
@@ -386,6 +398,73 @@ describe("a Postgres left by a killed process", () => {
     expect(isAlive(postmaster)).toBe(true);
   }, 60_000);
 
+  // 주인이 살아 있는지는 기록한 번호가 아니라 주인이 쥔 연결로 본다(#268). 번호는 주인이 죽은 뒤 다른 프로그램에 다시 주어지거나,
+  // 거두지 않은 채(좀비) 남아 "살아 있음"으로 보일 수 있다. 연결은 주인이 죽으면 OS가 닫는다. 기록한 번호의 프로그램이 돌아도
+  // 연결이 없으면 주인이 죽은 것이다.
+  it("takes over a folder whose recorded owner no longer holds its connection, even when its process id belongs to a running program", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const cluster = folderCleanup(() => removeCluster(dataDir));
+    onTestFinished(cluster.cleanUp);
+    const unrelated = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { stdio: "ignore" }
+    );
+    cluster.own(() => killHard(unrelated));
+    // 주인 연결과 같은 모양의 자리(제품이 믿는 모양)지만 아무도 듣지 않는다.
+    const id = randomUUID().replaceAll("-", "");
+    const gone =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\babojubot-owner-${id}`
+        : path.join(os.tmpdir(), `babojubot-owner-${id.slice(0, 16)}.sock`);
+    await recordOwner(dataDir, {
+      pid: unrelated.pid!,
+      persistent: true,
+      handle: gone,
+    });
+    await withCleanup(async (defer) => {
+      const handle = await openDatabase({
+        embedded: { dataDir, persistent: true },
+      });
+      defer(() => handle.close());
+      const { rows } = await handle.db.execute(sql`select 1 as one`);
+      expect(rows).toEqual([{ one: 1 }]);
+    });
+    expect(isAlive(unrelated.pid!)).toBe(true);
+  }, 60_000);
+
+  // 주인 연결의 소켓 경로는 OS 한도(Linux 107, macOS 103) 안이어야 한다. 임시 폴더를 깊게 바꿔도(boot-check처럼) 이 사용자 전용
+  // 폴더로 옮겨 시작한다. Windows는 named pipe라 경로 한도가 없다.
+  it.skipIf(process.platform === "win32")(
+    "keeps its owner connection under the socket path limit when the temporary folder has a long path",
+    async () => {
+      const dataDir = await fsp.mkdtemp(
+        path.join(os.tmpdir(), "babojubot-pg-")
+      );
+      const long = await fsp.mkdtemp(
+        path.join(os.tmpdir(), `babojubot-long-${"x".repeat(90)}-`)
+      );
+      const cluster = folderCleanup(() =>
+        attemptAll([() => removeCluster(dataDir), () => removeFolder(long)])
+      );
+      onTestFinished(cluster.cleanUp);
+      vi.stubEnv("TMPDIR", long);
+      vi.stubEnv("XDG_RUNTIME_DIR", "");
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      await withCleanup(async (defer) => {
+        const handle = await openDatabase({
+          embedded: { dataDir, persistent: true },
+        });
+        defer(() => handle.close());
+        const { rows } = await handle.db.execute(sql`select 1 as one`);
+        expect(rows).toEqual([{ one: 1 }]);
+      });
+    },
+    60_000
+  );
+
   // 잠금 파일의 pid가 무관한 프로세스를 가리킬 수 있다(pid 재사용). 그 프로세스를 멈추지 않고 시작을 멈춘다.
   it.each([
     {
@@ -401,11 +480,13 @@ describe("a Postgres left by a killed process", () => {
       );
       const cluster = folderCleanup(() => removeCluster(dataDir));
       onTestFinished(cluster.cleanUp);
-      await (
-        await openDatabase({
-          embedded: { dataDir, persistent: true },
-        })
-      ).close();
+      const opened = await openDatabase({
+        embedded: { dataDir, persistent: true },
+      });
+      let closing: Promise<void> | undefined;
+      const close = () => (closing ??= opened.close());
+      cluster.own(close);
+      await close();
       const unrelated = spawn(
         process.execPath,
         ["-e", "setInterval(() => {}, 1000)"],
@@ -700,7 +781,7 @@ async function removeCluster(dataDir: string) {
 /** 주인 기록을 그 프로세스가 지금 주인인 것으로 바꿔 둔다. */
 async function recordOwner(
   dataDir: string,
-  owner: { pid: number; persistent: boolean }
+  owner: { pid: number; persistent: boolean; handle?: string }
 ) {
   const dir = `${dataDir}.owner`;
   await removeFolder(dir);
