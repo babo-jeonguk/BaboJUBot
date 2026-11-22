@@ -1,9 +1,52 @@
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { hasErrorCode } from "@babojubot/contracts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fileLogin, type FileLoginShape } from "./file-login.ts";
 import { readRegularFile } from "./regular-file.ts";
 import { testFolders } from "./test-folders.ts";
+
+// 같은 조직의 두 실행 시도가 함께 자리 표시를 두는 순서를 고정한다. 실행 시도 폴더 밖의 첫 쓰기를 잡아 그 사이에 다른 시도를 돌리고,
+// 그 시도의 열기가 "없음"으로 실패하면 첫 쓰기가 끝날 때까지 그 실패를 붙든다.
+const race = vi.hoisted(() => ({
+  /** 이 폴더들 안의 쓰기(실행 시도 전용 로그인 파일)는 잡지 않는다. */
+  outside: [] as string[],
+  holdFirstWrite: undefined as
+    undefined | ((write: () => Promise<void>) => Promise<void>),
+  onOpenMissing: undefined as undefined | (() => Promise<void>),
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const writeFile: typeof real.writeFile = async (file, ...rest) => {
+    const hold = race.holdFirstWrite;
+    if (
+      hold &&
+      !race.outside.some((folder) => String(file).startsWith(folder))
+    ) {
+      race.holdFirstWrite = undefined;
+      return hold(() => real.writeFile(file, ...rest));
+    }
+    return real.writeFile(file, ...rest);
+  };
+  const open: typeof real.open = async (...args) => {
+    try {
+      return await real.open(...args);
+    } catch (error) {
+      const missed = race.onOpenMissing;
+      if (missed && hasErrorCode("ENOENT")(error)) {
+        race.onOpenMissing = undefined;
+        await missed();
+      }
+      throw error;
+    }
+  };
+  return { ...real, writeFile, open, default: { ...real, writeFile, open } };
+});
+afterEach(() => {
+  race.outside = [];
+  race.holdFirstWrite = undefined;
+  race.onOpenMissing = undefined;
+});
 
 const folders = testFolders();
 const windows = process.platform === "win32";
@@ -103,4 +146,54 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
       expect(await readFile(original, "utf8")).toBe("REAL LOGIN");
     }
   );
+
+  // 같은 조직의 두 실행 시도가 함께 자리 표시를 둔다(#279 CI macOS 간헐 실패). 한쪽이 자리를 비우고 쓰는 사이에 다른 쪽이 확인하면
+  // 열기는 "없음"인데 바로 뒤에는 파일이 있어 확인이 오류로 끝났다. 자리 표시는 완성된 파일로 한 번에 나타나야 하고, 이미 있는
+  // 자리 표시는 다른 컨테이너가 그 위에 로그인을 넣고 있을 수 있어 바꾸지 않는다.
+  it("lets two attempts of one organization place the stand-in at the same time", async () => {
+    const root = await folders.make("babojubot-file-login-");
+    const login = fileLogin(root, "nested", nested);
+    const prepared = await login.prepare(organizationId, true);
+    if (prepared.refusal !== undefined || !prepared.attemptLogin)
+      throw new Error(`no isolated login: ${prepared.refusal}`);
+    const attemptLogin = prepared.attemptLogin;
+    const first = await folders.make("babojubot-attempt-");
+    const second = await folders.make("babojubot-attempt-");
+    race.outside = [first, second];
+    let secondDone: Promise<unknown> = Promise.resolve();
+    let missed!: () => void;
+    const secondMissed = new Promise<void>((resolve) => (missed = resolve));
+    let wrote!: () => void;
+    const firstWrote = new Promise<void>((resolve) => (wrote = resolve));
+    race.holdFirstWrite = async (write) => {
+      race.onOpenMissing = async () => {
+        missed();
+        await firstWrote;
+      };
+      secondDone = attemptLogin(second, "grant-two");
+      await Promise.race([
+        secondMissed,
+        secondDone.then(
+          () => undefined,
+          () => undefined
+        ),
+      ]);
+      await write();
+      wrote();
+    };
+
+    const placed = await attemptLogin(first, "grant-one");
+    const other = (await secondDone) as typeof placed;
+    expect(await readFile(placed.source, "utf8")).toBe(
+      JSON.stringify({ token: "grant-one" })
+    );
+    expect(await readFile(other.source, "utf8")).toBe(
+      JSON.stringify({ token: "grant-two" })
+    );
+    expect(await readFile(placed.target, "utf8")).toBe(
+      JSON.stringify({ token: "" })
+    );
+    // 쓰다 만 임시 파일을 남기지 않는다.
+    expect(await readdir(path.dirname(placed.target))).toEqual(["token"]);
+  });
 });
