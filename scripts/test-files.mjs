@@ -1,12 +1,17 @@
 // 시험 코드 범위를 eslint.config.js와 scripts/verify-changed.mjs가 함께 쓴다. 패키지의 tsconfig.test.json·tsconfig.src.json의
 // include/exclude도 이 범위에 맞춘다.
-// 시험 코드: 시험 파일과 시험 폴더, src 안의 시험 도움 파일(프로바이더 계약 공통 검사 `runtime-contract.ts` 포함). 시험 전용 규칙은 이 범위에 건다.
+// 시험 코드: 시험 파일과 시험 러너 설정, 시험 폴더, src 안의 시험 도움 파일(프로바이더 계약 공통 검사 `runtime-contract.ts` 포함). 시험 전용 규칙은 이 범위에 건다.
 // 외부 프로그램을 흉내 내는 가짜 CLI(`*/test-fixtures/`)와 손으로 돌리는 스크립트(`scripts/live/` 등)는 시험 코드가 아니다.
 import path from "node:path";
 
+// 코드 파일 형식. vitest 기본 include(`**/*.{test,spec}.?(c|m)[jt]s?(x)`)와 Playwright 기본 testMatch가 모으는 형식과 같다. 시험
+// 범위·타입 정보·화면 규칙·스크립트와 제품 규칙이 모두 이 목록을 써서, 확장자만 바꿔 규칙을 피하지 못한다(#270).
+export const codeFormats = "{ts,tsx,mts,cts,js,jsx,mjs,cjs}";
+
 export const testFiles = [
-  "**/*.test.{ts,tsx,mts,mjs,js}",
-  "**/*.spec.{ts,tsx}",
+  `**/*.{test,spec}.${codeFormats}`,
+  // 시험 러너 설정(전역 준비·보고·시한을 정한다).
+  `**/{vitest,playwright}{,.*}.config.${codeFormats}`,
   "apps/web/e2e/**",
   "apps/web/test/**",
   "apps/server/test/**",

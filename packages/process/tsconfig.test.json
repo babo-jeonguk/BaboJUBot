@@ -7,6 +7,6 @@
     "src/test-support.ts",
     "src/test-folders.ts",
     "src/*-support.ts",
-    "vitest.config.ts"
+    "vitest*.config.ts"
   ]
 }
