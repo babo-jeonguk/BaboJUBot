@@ -869,3 +869,54 @@ test("product code imports only the packages its package.json declares, as runti
     assert.ok(message, `${test}: undeclared package not reported`);
   }
 });
+const reopenRule = ["product/no-check-then-reopen"];
+
+// 경로로 상태를 확인한 뒤 같은 경로를 다시 열면 그 사이 바뀐 파일을 읽거나 쓴다(#242, CWE-367). 선례 CodeQL js/file-system-race의
+// 확인·사용 목록과 같은 모양이고, 출처는 공용 판정(`originOf`)으로 본다.
+test("product code does not reopen by name a path it has just checked by name", async () => {
+  const reopened = {
+    "lstat then readFile": `import { lstat, readFile } from "node:fs/promises";\nexport async function read(file: string) {\n  const info = await lstat(file);\n  if (!info.isFile()) return undefined;\n  return readFile(file, "utf8");\n}\n`,
+    "statSync then writeFileSync in a branch": `import { statSync, writeFileSync } from "node:fs";\nexport function write(file: string) {\n  if (statSync(file).isFile()) writeFileSync(file, "x");\n}\n`,
+    "existsSync then writeFileSync": `import { existsSync, writeFileSync } from "node:fs";\nexport function create(file: string) {\n  if (!existsSync(file)) writeFileSync(file, "x");\n}\n`,
+    "open inside the access callback": `import { access, open } from "node:fs";\nexport function append(file: string) {\n  access(file, () => {\n    open(file, "a", () => {});\n  });\n}\n`,
+    "fs.promises from the default import": `import fs from "node:fs";\nexport async function read(file: string) {\n  await fs.promises.stat(file);\n  return fs.promises.open(file, "r");\n}\n`,
+    "the same joined path": `import path from "node:path";\nimport { lstatSync, readFileSync } from "node:fs";\nexport function read(dir: string) {\n  if (!lstatSync(path.join(dir, "mark.json")).isFile()) return undefined;\n  return readFileSync(path.join(dir, "mark.json"), "utf8");\n}\n`,
+    "a stream after a check": `import { createWriteStream, statSync } from "node:fs";\nexport function log(file: string) {\n  if (statSync(file).size > 1000) return undefined;\n  return createWriteStream(file, { flags: "a" });\n}\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(reopened)) {
+      const [message, ...rest] = await lint(code, place, reopenRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /handle/);
+      assert.match(message.message, /CWE-367/);
+    }
+  const kept = {
+    // 고친 모양: 한 번 연 handle에서 확인하고 읽는다.
+    "one opened handle": `import { constants } from "node:fs";\nimport { open } from "node:fs/promises";\nexport async function read(file: string) {\n  const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));\n  try {\n    if (!(await handle.stat()).isFile()) return undefined;\n    return await handle.readFile("utf8");\n  } finally {\n    await handle.close();\n  }\n}\n`,
+    // 연 뒤에 경로가 연 파일을 가리키는지 보는 것은 확인한 뒤 다시 여는 것이 아니다.
+    "a check after the open": `import { lstat, open } from "node:fs/promises";\nexport async function read(file: string) {\n  const handle = await open(file, "r");\n  const entry = await lstat(file);\n  return { handle, entry };\n}\n`,
+    // 있는지 본 뒤 읽기는 그 사이 사라지면 읽기가 실패할 뿐이다(CodeQL과 같다).
+    "a read after an existence check": `import { existsSync, readFileSync } from "node:fs";\nexport const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : undefined);\n`,
+    "another path": `import { lstat, readFile } from "node:fs/promises";\nexport async function read(file: string, other: string) {\n  await lstat(file);\n  return readFile(other, "utf8");\n}\n`,
+    // 다시 대입한 변수는 같은 경로인지 모른다.
+    "a reassigned name": `import { lstat, readFile } from "node:fs/promises";\nexport async function read(file: string, other: string) {\n  await lstat(file);\n  file = other;\n  return readFile(file, "utf8");\n}\n`,
+    "a check in another function": `import { lstat, readFile } from "node:fs/promises";\nexport const look = (file: string) => lstat(file);\nexport const read = (file: string) => readFile(file, "utf8");\n`,
+    // 지우기·이름 바꾸기는 이름 자체에 하는 일이라 링크를 따라가 다른 대상의 내용을 쓰지 않는다(CodeQL도 보지 않는다).
+    "a removal after a check": `import { lstat, rm } from "node:fs/promises";\nexport async function clear(file: string) {\n  if ((await lstat(file)).isDirectory()) await rm(file, { recursive: true });\n}\n`,
+    "same-named local functions": `const lstat = async (file: string) => file;\nconst readFile = async (file: string) => file;\nexport async function read(file: string) {\n  await lstat(file);\n  return readFile(file);\n}\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(kept))
+      assert.deepEqual(
+        await lint(code, place, reopenRule),
+        [],
+        `${place}: ${shape}`
+      );
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(reopened["lstat then readFile"], place, reopenRule),
+      [],
+      place
+    );
+});

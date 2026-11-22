@@ -1010,6 +1010,29 @@ const productOriginCases = [
     use: (r) =>
       `export async function run(work, pids) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) ${r}(pid, "SIGKILL");\n  }\n}\n`,
   },
+  // 경로로 확인한 뒤 같은 경로를 다시 열기(#242): 확인 쪽과 사용 쪽 모두 출처로 본다.
+  ...[
+    { module: "node:fs/promises", path: ["lstat"] },
+    { module: "node:fs", path: ["promises", "stat"] },
+    { module: "node:fs", path: ["accessSync"] },
+  ].map((value) => ({
+    rule: "product/no-check-then-reopen",
+    value,
+    head: `import { readFileSync as reopen } from "node:fs";\n`,
+    use: (r) =>
+      `export async function read(file: string) {\n  await ${r}(file);\n  return reopen(file, "utf8");\n}\n`,
+  })),
+  ...[
+    { module: "node:fs/promises", path: ["readFile"] },
+    { module: "node:fs", path: ["promises", "open"] },
+    { module: "node:fs", path: ["writeFileSync"] },
+  ].map((value) => ({
+    rule: "product/no-check-then-reopen",
+    value,
+    head: `import { lstatSync as look } from "node:fs";\n`,
+    use: (r) =>
+      `export async function read(file: string) {\n  look(file);\n  return ${r}(file, "utf8");\n}\n`,
+  })),
   // 공용 폴더 지우기: 끈 뒤 지우기만 이어지면 통과하고, 첫 정리로 지우면 뒤 정리를 건너뛸 수 있다.
   {
     rule: "product/no-cleanup-chain",

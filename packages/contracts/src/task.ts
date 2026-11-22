@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { messageAuthorSchema, messageBodyMaxLength } from "./message.ts";
+import { nulFree } from "./nul-free.ts";
 
 // 작업·작업 댓글·산출물·에이전트 간 메시지. 같은 조직 안의 협력 기록이며, 조직·작성자·실행 시도는
 // 입력이 아니라 실행 시도별 토큰(에이전트) 또는 경로(사용자)가 정한다.
@@ -62,9 +63,8 @@ export const recordArtifactInputSchema = z
       .string()
       .min(1)
       .max(4096)
-      // NUL을 거부한다. 같은 뜻의 `\0` 표기는 도구 정의의 pattern으로 나가면 일부 모델 서비스가 요청 전체를 거부한다(#147).
-      // eslint-disable-next-line no-control-regex -- NUL을 일부러 거부하며, 이 표기가 도구 정의 pattern으로 그대로 나간다.
-      .regex(/^[^\x00]*$/)
+      // NUL을 거부한다. 도구 정의의 pattern으로 나가는 표기는 nul-free.ts에 있다(#147).
+      .regex(nulFree)
       .optional(),
   })
   .refine(

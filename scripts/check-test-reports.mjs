@@ -61,6 +61,13 @@ export const intendedExclusions = [
       "Windows에는 새 세션으로 나가는 명령이 없다(남은 프로그램은 process-windows.test.ts가 본다)",
   },
   {
+    report: "files",
+    file: "packages/files/src/regular-file-follow.test.ts",
+    systems: ["windows"],
+    reason:
+      "링크를 따라가는 Windows의 열기를 Linux·macOS에서 재현하는 시험이라, Windows에서는 regular-file.test.ts가 실제 길을 본다",
+  },
+  {
     report: "process-alone",
     file: "packages/process/src/lease-hidden.alone.test.ts",
     systems: ["macos", "windows"],

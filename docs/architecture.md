@@ -32,6 +32,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 | `packages/contracts` | seam별 zod 스키마: 제어 명령, 사용자 메시지, Event, 실행 시도, 조직 도구. 웹과 서버가 함께 쓰는 순수 판정(예: 입력창 버튼과 서버 거부의 `ownerActions`), 모든 패키지가 쓰는 오류를 버리는 의도별 함수(`failure.ts`) | 모든 seam |
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
 | `packages/runtime` | 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter, 실행 시도 기록과 서버 재시작 복구 | Agent Runtime, Surface |
+| `packages/files` | 다른 쪽이 바꿀 수 있는 자리의 파일을 확인한 대상 그대로 열기(`openRegularFile`: 링크·FIFO·바꿔치기 거절, 열지 못한 자리의 분류). 서버 표식 읽기와 runtime 로그인 파일 읽기가 씀(#242) | 모든 module의 바탕 |
 | `packages/process` | 프로그램 띄우기·끄기의 바탕: 공용 실행(`launchTree`·`runTree`, 띄우기와 그 트리의 끄기 `stop()`을 한 쌍으로), 짧은 명령의 끝 보장(`runCommand`), `ps` 한 칸 조회의 "대상 없음" 계약(`psField`), 세 OS의 실행 시도별 감독 실행기(Rust, `packages/process/supervisor`), 그룹 끄기·표식 정리, 시계. 모든 패키지가 쓰는 시험 정리 도움 | 모든 module의 바탕 |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
 
@@ -44,14 +45,17 @@ Memory port의 첫 판은 core interface·db 단순 구현입니다.
 ```text
 contracts ← process ← runtime ← server
                     ↖ db ↙
+contracts ← files ← runtime, server
 ```
+
+`@babojubot/files`는 `@babojubot/contracts`에만 기대고, 입구는 `@babojubot/files` 하나입니다. 다른 쪽(격리 실행의 에이전트)이 바꿀 수 있는 자리의 파일을 열 때는 직접 `open`하지 않고 이것을 씁니다. 시험은 process의 시험 정리 도움만 씁니다.
 
 | 입구 | 담는 것 | 가져오는 곳 |
 |---|---|---|
 | `@babojubot/process` | `launchTree`·`runTree`·`TreeLaunchRefused`·`prepareSupervisor`·`requireSupervisor`, `runCommand`·`boundChild`, `psField`, `Clock`·`realClock` | 제품 코드·개발 스크립트·시험 |
 | `/remove-folder` | 폴더 지우기(Windows의 일시적인 잠김만 다시 시도) | 제품 코드·개발 스크립트·시험 |
 | `/test-cleanup` | 시험의 프로세스·폴더 정리(`withCleanup`·`killUnlessGone`·`awaitedLater` 등) | 개발 스크립트·시험 |
-| `/lifelines`·`/testing`·`/test-support`·`/launcher-setup` | 연결로 본 프로세스 종료, vitest 시험 도움(`testFolders`·`killAndWait` 등), vitest 없이 쓰는 바깥 환경 확인·시험 시계(`probeEnvironment`·`permissionDenial`·`commandFailure`·`manualClock`), Windows 시험의 묶음 실행기 준비 | 시험 |
+| `/lifelines`·`/testing`·`/test-support`·`/launcher-setup` | 연결로 본 프로세스 종료, vitest 시험 도움(`testFolders`·`killAndWait` 등), vitest 없이 쓰는 바깥 환경 확인·시험 시계(`probeEnvironment`·`permissionDenial`·`commandFailure`·`manualClock`), 시험 파일마다의 감독 실행기 준비 | 시험 |
 | `/recovery` | 그룹 끄기·표식 정리와 기록한 프로세스의 신원 확인 | runtime의 재시작 복구(`providers/recovery.ts`)와 시험만 |
 
 그 밖의 곳은 띄울 때 받은 `stop()`으로 끕니다. runtime의 패키지 입구는 `@babojubot/runtime`(과 시험의 `/testing`·`/runtime-contract`)뿐이고, db는 시험까지 runtime을 가져오지 않습니다.
