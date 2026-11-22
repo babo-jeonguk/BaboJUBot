@@ -104,74 +104,72 @@ test("code outside tests may remove a folder directly", async () => {
     );
 });
 
-test("a lint exception needs a reason, names its rules and is removed once unused", async () => {
-  const place = "scripts/lint-sample.mjs";
-  const rules = async (code) =>
-    (await lint(code, place)).map((m) => m.ruleId ?? m.message);
-
-  assert.deepEqual(
-    await rules(
-      "// eslint-disable-next-line no-empty-pattern\nconst {} = {};\n"
-    ),
-    ["@eslint-community/eslint-comments/require-description"]
-  );
-  assert.deepEqual(
-    await rules("const {} = {}; // eslint-disable-line -- 이유\n"),
-    ["@eslint-community/eslint-comments/no-unlimited-disable"]
-  );
-  assert.deepEqual(
-    await rules(
-      "// eslint-disable-next-line no-empty-pattern -- 이유\nconst {} = {};\n"
-    ),
-    []
-  );
-  // 쓰이지 않는 예외는 경고가 아니라 오류다.
-  const unused = await lint(
-    "// eslint-disable-next-line no-empty-pattern -- 이유\nconst a = 1;\nexport { a };\n",
-    place
-  );
-  assert.equal(unused.length, 1);
-  assert.equal(unused[0].severity, 2);
-  assert.match(unused[0].message, /Unused eslint-disable directive/);
-});
-
-// 주석 한 줄로 파일 전체·구간에서 규칙을 끄거나 심각도를 낮추면 그 파일의 모든 위반이 사라진다(#270). 시험 코드는 주석으로 규칙을
-// 바꾸지 못하고(예외가 필요하면 eslint.config.js에 이유와 함께 둔다), 그 밖의 코드는 그 줄에만 거는 예외(`eslint-disable-next-line`·
-// `eslint-disable-line`)만 쓴다.
+// 주석은 lint 규칙을 바꾸지 못한다(#270). 주석 한 줄로 파일 전체·구간·줄에서 규칙을 끄거나 경고로 낮추면 그 위반이 사라지고, 주석의 설정은
+// 설정 파일보다 우선해 막는 규칙까지 같은 주석으로 끌 수 있다. 예외는 eslint.config.js에 파일·규칙을 좁혀 이유와 함께 둔다.
+// 시험 코드는 시험 규칙(`tests/no-fixed-time-wait`)으로, 제품 코드·스크립트는 모든 코드가 받는 규칙(`no-empty-pattern`)으로 본다.
 const sleep = "await new Promise((resolve) => setTimeout(resolve, 50));\n";
-const fileWideComments = {
-  "lowers a rule to a warning": `/* eslint tests/no-fixed-time-wait: "warn" -- 이유 */\n${sleep}`,
-  "turns a rule off": `/* eslint tests/no-fixed-time-wait: "off" -- 이유 */\n${sleep}`,
-  "turns off the rule that bans such comments first": `/* eslint @eslint-community/eslint-comments/no-use: "off", tests/no-fixed-time-wait: "off" -- 이유 */\n${sleep}`,
-  "disables a rule to the end of the file": `/* eslint-disable tests/no-fixed-time-wait -- 이유 */\n${sleep}`,
-  "disables a rule over a range": `/* eslint-disable tests/no-fixed-time-wait -- 이유 */\n${sleep}/* eslint-enable tests/no-fixed-time-wait -- 이유 */\n`,
-  "disables a rule on the next line": `// eslint-disable-next-line tests/no-fixed-time-wait -- 이유\n${sleep}`,
-  "disables a rule on its line": `${sleep.trimEnd()} // eslint-disable-line tests/no-fixed-time-wait -- 이유\n`,
+const commentedAreas = [
+  { places: testPlaces, rule: "tests/no-fixed-time-wait", violation: sleep },
+  {
+    places: [
+      "scripts/lint-sample.mjs",
+      "packages/core/src/lint-sample.ts",
+      "apps/web/src/lint-sample.tsx",
+    ],
+    rule: "no-empty-pattern",
+    violation: "const {} = {};\n",
+  },
+];
+const directive = "@eslint-community/eslint-comments/no-use";
+const liftingComments = {
+  "lowers a rule to a warning": (rule, code) =>
+    `/* eslint ${rule}: "warn" -- 이유 */\n${code}`,
+  "turns a rule off": (rule, code) =>
+    `/* eslint ${rule}: "off" -- 이유 */\n${code}`,
+  "turns off the rule that bans such comments first": (rule, code) =>
+    `/* eslint ${directive}: "off", ${rule}: "off" -- 이유 */\n${code}`,
+  "disables a rule to the end of the file": (rule, code) =>
+    `/* eslint-disable ${rule} -- 이유 */\n${code}`,
+  "disables every rule to the end of the file": (rule, code) =>
+    `/* eslint-disable */\n${code}`,
+  "disables a rule over a range": (rule, code) =>
+    `/* eslint-disable ${rule} -- 이유 */\n${code}/* eslint-enable ${rule} -- 이유 */\n`,
+  "disables a rule on the next line": (rule, code) =>
+    `// eslint-disable-next-line ${rule} -- 이유\n${code}`,
+  "disables a rule on its line": (rule, code) =>
+    `${code.trimEnd()} // eslint-disable-line ${rule} -- 이유\n`,
 };
 
-for (const [shape, code] of Object.entries(fileWideComments))
-  test(`a comment that ${shape} does not lift a test rule`, async () => {
-    for (const place of testPlaces) {
-      const messages = await lint(code, place);
-      const errors = messages.filter(
-        (m) => m.ruleId === "tests/no-fixed-time-wait"
-      );
-      assert.deepEqual(
-        errors.map((m) => m.severity),
-        [2],
-        `${place}: ${code}`
-      );
-      // 효과 없는 주석도 남지 않게 오류로 짚는다(본보기로 베껴지지 않게).
-      assert.ok(
-        messages.some(
-          (m) =>
-            m.ruleId === "@eslint-community/eslint-comments/no-use" &&
-            m.severity === 2
-        ),
-        `${place}: the comment is not reported`
-      );
-    }
+for (const [shape, comment] of Object.entries(liftingComments))
+  test(`a comment that ${shape} does not lift the rule`, async () => {
+    for (const { places, rule, violation } of commentedAreas)
+      for (const place of places) {
+        const code = comment(rule, violation);
+        const messages = await lint(code, place, [rule, directive]);
+        assert.deepEqual(
+          messages.filter((m) => m.ruleId === rule).map((m) => m.severity),
+          [2],
+          `${place}: ${code}`
+        );
+        // 효과 없는 주석도 남지 않게 오류로 짚는다(본보기로 베껴지지 않게).
+        assert.ok(
+          messages.some((m) => m.ruleId === directive && m.severity === 2),
+          `${place}: the comment is not reported`
+        );
+      }
   });
+
+test("a comment does not declare a global", async () => {
+  const code = "/* global answer -- 이유 */\nexport const a = answer;\n";
+  const messages = await lint(code, "scripts/lint-sample.mjs", [
+    "no-undef",
+    directive,
+  ]);
+  assert.deepEqual(messages.map((m) => m.ruleId).sort(), [
+    directive,
+    "no-undef",
+  ]);
+});
 
 test("a Playwright fixture may take its dependencies as an empty pattern in test code without an exception", async () => {
   const fixture = `export const fixtures = { baseURL: async ({}, use) => {\n  await use("http://127.0.0.1");\n} };\n`;
@@ -190,34 +188,24 @@ test("a Playwright fixture may take its dependencies as an empty pattern in test
     );
 });
 
-test("code outside tests lifts a rule only on one line", async () => {
-  const banned = ["@eslint-community/eslint-comments/no-use"];
-  const places = [
+test("a regex may hold a control character only in the file that holds the NUL-free pattern", async () => {
+  const code = "export const nulFree = /^[^\\x00]*$/;\n";
+  assert.deepEqual(
+    await lint(code, "packages/contracts/src/nul-free.ts", [
+      "no-control-regex",
+    ]),
+    []
+  );
+  for (const place of [
+    "packages/contracts/src/task.ts",
     "scripts/lint-sample.mjs",
-    "packages/core/src/lint-sample.ts",
-  ];
-  const wide = {
-    "rule setting": `/* eslint no-empty-pattern: "off" -- 이유 */\nconst {} = {};\n`,
-    "disable to the end of the file": `/* eslint-disable no-empty-pattern -- 이유 */\nconst {} = {};\n`,
-    "disable over a range": `/* eslint-disable no-empty-pattern -- 이유 */\nconst {} = {};\n/* eslint-enable no-empty-pattern -- 이유 */\n`,
-    globals: `/* global answer -- 이유 */\nexport const a = answer;\n`,
-  };
-  for (const place of places) {
-    for (const [shape, code] of Object.entries(wide))
-      assert.ok(
-        (await lint(code, place, banned)).length > 0,
-        `${place}: ${shape} not reported`
-      );
-    for (const code of [
-      "// eslint-disable-next-line no-empty-pattern -- 이유\nconst {} = {};\n",
-      "const {} = {}; // eslint-disable-line no-empty-pattern -- 이유\n",
-    ])
-      assert.deepEqual(
-        await lint(code, place, banned),
-        [],
-        `${place}: ${code}`
-      );
-  }
+    ...testPlaces,
+  ])
+    assert.equal(
+      (await lint(code, place, ["no-control-regex"])).length,
+      1,
+      place
+    );
 });
 
 /** 경과 시간 단언 규칙의 메시지만. */
