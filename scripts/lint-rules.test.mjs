@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
+import { ESLint } from "eslint";
 import { fileURLToPath } from "node:url";
 import { accessShapes } from "./lint-access-shapes.mjs";
 import { ruleLinter } from "./lint-rule-testing.mjs";
@@ -158,6 +159,64 @@ for (const [shape, comment] of Object.entries(liftingComments))
         );
       }
   });
+
+// no-use가 알아보는 지시 주석 종류 전부(@eslint-community/eslint-plugin-eslint-comments 4.8.1 `lib/internal/utils.js`의
+// DIRECTIVE_PATTERN, https://eslint-community.github.io/eslint-plugin-eslint-comments/rules/no-use.html). 블록 주석이면 모두, 줄 주석이면
+// 두 `-line` 종류만 지시 주석이다(같은 파일의 LINE_COMMENT_PATTERN). ESLint가 지시 주석으로 읽는 것(주석 설정을 읽지 않을 때 "has no
+// effect"로 알림)과 no-use가 짚는 것이 모양마다 같아야, ESLint가 새로 읽는 모양이 생겨도 효과 없는 주석이 오류 없이 남지 않는다.
+const directiveKinds = {
+  eslint: 'eslint no-empty-pattern: "off"',
+  "eslint-env": "eslint-env browser",
+  "eslint-enable": "eslint-enable no-empty-pattern",
+  "eslint-disable": "eslint-disable no-empty-pattern",
+  "eslint-disable-line": "eslint-disable-line no-empty-pattern",
+  "eslint-disable-next-line": "eslint-disable-next-line no-empty-pattern",
+  exported: "exported answer",
+  global: "global answer",
+  globals: "globals answer",
+};
+
+test("every directive comment ESLint reads is reported in every code area, and only those", async () => {
+  const eslint = new ESLint({
+    cwd: repository,
+    ruleFilter: ({ ruleId }) => ruleId === directive,
+    overrideConfig: [
+      {
+        languageOptions: {
+          parserOptions: { projectService: false, project: null },
+        },
+      },
+    ],
+  });
+  const places = [
+    ...testPlaces,
+    "scripts/lint-sample.mjs",
+    "packages/core/src/lint-sample.ts",
+    "apps/web/src/lint-sample.tsx",
+  ];
+  const wrong = [];
+  let read = 0;
+  for (const place of places)
+    for (const [kind, text] of Object.entries(directiveKinds))
+      for (const comment of [`/* ${text} -- 이유 */`, `// ${text} -- 이유`]) {
+        const [result] = await eslint.lintText(
+          `${comment}\nexport const a = 1;\n`,
+          { filePath: place }
+        );
+        const reported = result.messages.some((m) => m.ruleId === directive);
+        const eslintReads = result.messages.some(
+          (m) => m.ruleId === null && /has no effect/.test(m.message)
+        );
+        if (eslintReads) read += 1;
+        if (reported !== eslintReads)
+          wrong.push(
+            `${place} ${kind} ${comment}: no-use ${reported}, ESLint reads ${eslintReads}`
+          );
+      }
+  assert.deepEqual(wrong, []);
+  // 아홉 종류의 블록 주석과 두 `-line` 종류의 줄 주석: 자리마다 11개.
+  assert.equal(read, places.length * 11);
+});
 
 test("a comment does not declare a global", async () => {
   const code = "/* global answer -- 이유 */\nexport const a = answer;\n";
