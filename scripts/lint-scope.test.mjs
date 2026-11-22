@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   copyFileSync,
   existsSync,
+  globSync,
   mkdirSync,
   mkdtempSync,
   symlinkSync,
@@ -24,7 +25,6 @@ const repository = path.resolve(
   ".."
 );
 const eslint = new ESLint({ cwd: repository });
-const ts = createRequire(import.meta.url)("typescript");
 const tseslint = createRequire(import.meta.url)("typescript-eslint");
 
 /** vitest·Playwright가 기본으로 모으는 형식. */
@@ -108,84 +108,6 @@ test("runner configs get the test rules", async () => {
     if (!isError((await rulesOf(file))["tests/no-fixed-time-wait"]))
       gaps.push(file);
   assert.deepEqual(gaps, []);
-});
-
-/**
- * 파일이 가장 가까운 tsconfig.json의 프로그램에 드는가. 타입 정보를 쓰는 규칙(Promise·화면)은 그 프로그램에서 타입을 얻는다. 파일을 만들지
- * 않으려고 그 폴더에 표본 하나가 있는 것처럼 보이게 하고, include·exclude·확장자·allowJs 판정은 TypeScript에 맡긴다.
- */
-function inProject(relative) {
-  const file = path.join(repository, relative);
-  const configPath = ts.findConfigFile(
-    path.dirname(file),
-    ts.sys.fileExists,
-    "tsconfig.json"
-  );
-  const { config } = ts.readConfigFile(configPath, ts.sys.readFile);
-  const base = path.dirname(configPath);
-  // 표본이 든 폴더만 보이는 가짜 파일 시스템. TypeScript의 matchFiles(내부 함수)가 include 판정을 한다.
-  const entries = (dir) => {
-    const rest = path.relative(dir, file);
-    if (rest.startsWith("..")) return { files: [], directories: [] };
-    const [first, ...deeper] = rest.split(path.sep);
-    return deeper.length
-      ? { files: [], directories: [first] }
-      : { files: [first], directories: [] };
-  };
-  const host = {
-    ...ts.sys,
-    readDirectory: (root, extensions, excludes, includes, depth) =>
-      ts.matchFiles(
-        root,
-        extensions,
-        excludes,
-        includes,
-        ts.sys.useCaseSensitiveFileNames,
-        base,
-        depth,
-        entries,
-        (p) => p
-      ),
-  };
-  return ts
-    .parseJsonConfigFileContent(config, host, base)
-    .fileNames.some((name) => path.resolve(name) === file);
-}
-
-test("every test file format belongs to a TypeScript project", () => {
-  const gaps = [];
-  for (const place of [...testPlaces, ...scriptPlaces])
-    for (const format of runnerFormats) {
-      const file = `${place}.${format}`;
-      if (!inProject(file)) gaps.push(file);
-    }
-  assert.deepEqual(gaps, []);
-});
-
-test("every runner config belongs to a TypeScript project", () => {
-  // 시험 러너 설정은 시험 코드라 타입 정보로 검사한다. 저장소에 있는 설정을 모두 본다.
-  const configs = ts.sys
-    .readDirectory(
-      repository,
-      [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"],
-      ["**/node_modules"],
-      ["**/*.config.*"]
-    )
-    .map((file) => path.relative(repository, file))
-    .filter((file) =>
-      /(^|\/)(vitest|playwright)(\.[\w-]+)?\.config\./.test(file)
-    );
-  assert.ok(configs.length > 0, "no runner config found");
-  assert.deepEqual(
-    configs.filter((file) => !inProject(file)),
-    []
-  );
-});
-
-test("the project check sees a file it should (a check that cannot fail proves nothing)", () => {
-  assert.equal(inProject("packages/core/src/sample.test.ts"), true);
-  // 프로젝트 밖(빌드 산출물 폴더)은 들지 않는다.
-  assert.equal(inProject("packages/core/dist/sample.test.ts"), false);
 });
 
 /** 표본 파일에서 가장 가까운 tsconfig.json(저장소 안). */
@@ -275,5 +197,24 @@ test("the project check tells a file in a project from one outside every project
       "packages/core/sample-outside.test.ts",
       "packages/core/dist/sample.test.ts",
     ]
+  );
+});
+
+test("every test file format and runner config belongs to a TypeScript project", async (context) => {
+  // TypeScript는 이름이 같고 확장자만 다른 파일 중 하나만 프로그램에 넣으므로(`a.ts`가 있으면 `a.tsx`·`a.js`는 빠진다) 형식마다 이름을 다르게 한다.
+  const samples = [...testPlaces, ...scriptPlaces].flatMap((place) =>
+    runnerFormats.map(
+      (format) => `${place.replace("sample", `sample-${format}`)}.${format}`
+    )
+  );
+  // 저장소의 시험 러너 설정(vitest·Playwright)도 시험 코드라 타입 정보로 검사한다.
+  const configs = globSync("**/{vitest,playwright}{,.*}.config.*", {
+    cwd: repository,
+    exclude: (entry) => /(^|[\\/])node_modules$/.test(entry),
+  });
+  assert.ok(configs.length > 0, "no runner config found");
+  assert.deepEqual(
+    await outsideProjects(context, [...samples, ...configs]),
+    []
   );
 });
