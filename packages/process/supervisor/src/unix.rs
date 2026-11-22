@@ -764,3 +764,124 @@ mod tests {
         assert!(!group_member_runs("garbage", 100));
     }
 }
+
+/// The stop's order with signals and looks that fail (#274 external review 3, STD-4): one failure must not keep the other parts of the
+/// tree from their signals, nor skip the grace, SIGKILL and the end check.
+#[cfg(test)]
+mod stop_tests {
+    use super::{Reach, end_tree};
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeSet;
+    use std::time::Duration;
+
+    /// A tree whose group members and orphans ignore SIGTERM and end on SIGKILL. `refuses` lists the (target, signal) pairs that
+    /// fail, as for a program of another user (EPERM); the group is target 0. `failed_looks` is how many looks fail first.
+    struct Fake {
+        group: Cell<usize>,
+        orphans: RefCell<BTreeSet<libc::pid_t>>,
+        refuses: Vec<(libc::pid_t, libc::c_int)>,
+        failed_looks: Cell<usize>,
+        sent: RefCell<Vec<(libc::pid_t, libc::c_int)>>,
+    }
+
+    impl Fake {
+        fn new(
+            group: usize,
+            orphans: &[libc::pid_t],
+            refuses: &[(libc::pid_t, libc::c_int)],
+        ) -> Self {
+            Fake {
+                group: Cell::new(group),
+                orphans: RefCell::new(orphans.iter().copied().collect()),
+                refuses: refuses.to_vec(),
+                failed_looks: Cell::new(0),
+                sent: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn got(&self, target: libc::pid_t, signal: libc::c_int) -> bool {
+            self.sent.borrow().contains(&(target, signal))
+        }
+
+        fn deliver(&self, target: libc::pid_t, signal: libc::c_int) -> Result<(), String> {
+            self.sent.borrow_mut().push((target, signal));
+            if self.refuses.contains(&(target, signal)) {
+                return Err(format!(
+                    "{target} could not be signalled: Operation not permitted"
+                ));
+            }
+            if signal == libc::SIGKILL {
+                if target == 0 {
+                    self.group.set(0);
+                } else {
+                    self.orphans.borrow_mut().remove(&target);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl Reach for Fake {
+        fn group_live(&self) -> Result<usize, String> {
+            Ok(self.group.get())
+        }
+
+        fn orphans(&self) -> Result<Vec<libc::pid_t>, String> {
+            if self.failed_looks.get() > 0 {
+                self.failed_looks.set(self.failed_looks.get() - 1);
+                return Err("the orphans could not be listed".to_owned());
+            }
+            Ok(self.orphans.borrow().iter().copied().collect())
+        }
+
+        fn signal_group(&self, signal: libc::c_int) -> Result<(), String> {
+            self.deliver(0, signal)
+        }
+
+        fn signal_orphan(&self, orphan: libc::pid_t, signal: libc::c_int) -> Result<(), String> {
+            self.deliver(orphan, signal)
+        }
+    }
+
+    fn stop(tree: &Fake) -> Result<(), String> {
+        end_tree(tree, Duration::ZERO, Duration::from_millis(200))
+    }
+
+    #[test]
+    fn an_orphan_that_refuses_its_signals_does_not_keep_the_others_from_theirs() {
+        let tree = Fake::new(0, &[11, 12], &[(11, libc::SIGTERM), (11, libc::SIGKILL)]);
+        let result = stop(&tree);
+        assert!(tree.got(12, libc::SIGTERM));
+        assert!(tree.got(12, libc::SIGKILL));
+        let left = result.expect_err("orphan 11 still runs");
+        assert!(left.starts_with("1 ("), "{left}");
+        assert!(left.contains("11 could not be signalled"), "{left}");
+    }
+
+    #[test]
+    fn a_group_that_refuses_its_signals_does_not_keep_the_orphans_from_theirs() {
+        let tree = Fake::new(1, &[12], &[(0, libc::SIGTERM), (0, libc::SIGKILL)]);
+        let result = stop(&tree);
+        assert!(tree.got(12, libc::SIGTERM));
+        assert!(tree.got(12, libc::SIGKILL));
+        let left = result.expect_err("the group still runs");
+        assert!(left.starts_with("1 ("), "{left}");
+        assert!(left.contains("0 could not be signalled"), "{left}");
+    }
+
+    #[test]
+    fn a_tree_that_ends_after_a_refused_signal_has_ended() {
+        let tree = Fake::new(1, &[11], &[(0, libc::SIGTERM), (11, libc::SIGTERM)]);
+        assert_eq!(stop(&tree), Ok(()));
+        assert!(tree.got(0, libc::SIGKILL));
+        assert!(tree.got(11, libc::SIGKILL));
+    }
+
+    #[test]
+    fn a_failed_look_does_not_end_the_stop() {
+        let tree = Fake::new(0, &[12], &[]);
+        tree.failed_looks.set(1);
+        assert_eq!(stop(&tree), Ok(()));
+        assert!(tree.got(12, libc::SIGKILL));
+    }
+}
