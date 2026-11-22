@@ -39,37 +39,40 @@ function runCheckerFailure(fixture) {
   assert.fail("check-project.mjs unexpectedly succeeded");
 }
 
-test("check-project checks Git's file list without scanning ignored worktrees", async () => {
+/** check-project.mjs를 돌릴 임시 저장소. 필수 파일과 스크립트를 넣고 저장소의 node_modules를 잇는다. */
+function createFixture(defer) {
   const fixture = fs.mkdtempSync(
     path.join(os.tmpdir(), "babojubot-check-project-")
   );
-  await withCleanup(async (defer) => {
-    defer(() => removeFolder(fixture));
-    copyFromRepository(
-      "scripts/check-project.mjs",
-      path.join(fixture, "scripts/check-project.mjs")
-    );
-    copyFromRepository(
-      "scripts/ignored-dot-folders.mjs",
-      path.join(fixture, "scripts/ignored-dot-folders.mjs")
-    );
-    copyFromRepository(
-      ".agents/scripts/run-worker.mjs",
-      path.join(fixture, ".agents/scripts/run-worker.mjs")
-    );
-    copyFromRepository(
-      ".opencode/agents/dev-worker.md",
-      path.join(fixture, ".opencode/agents/dev-worker.md")
-    );
+  defer(() => removeFolder(fixture));
+  for (const relative of [
+    "scripts/check-project.mjs",
+    "scripts/ignored-dot-folders.mjs",
+    "scripts/markdown.mjs",
+    ".agents/scripts/run-worker.mjs",
+    ".opencode/agents/dev-worker.md",
+  ])
+    copyFromRepository(relative, path.join(fixture, relative));
+  // 복사한 스크립트가 저장소의 Markdown 파서를 가져가도록 node_modules를 잇는다.
+  fs.symlinkSync(
+    path.join(repository, "node_modules"),
+    path.join(fixture, "node_modules"),
+    "junction"
+  );
+  fs.writeFileSync(
+    path.join(fixture, ".gitignore"),
+    ".worktrees/\nnode_modules\n"
+  );
+  fs.writeFileSync(path.join(fixture, "AGENTS.md"), "# AGENTS\n");
+  fs.writeFileSync(path.join(fixture, "GLOSSARY.md"), "# GLOSSARY\n");
+  fs.mkdirSync(path.join(fixture, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(fixture, "docs/features.md"), "# Features\n");
+  return fixture;
+}
 
-    fs.writeFileSync(
-      path.join(fixture, ".gitignore"),
-      ".worktrees/\nnode_modules/\n"
-    );
-    fs.writeFileSync(path.join(fixture, "AGENTS.md"), "# AGENTS\n");
-    fs.writeFileSync(path.join(fixture, "GLOSSARY.md"), "# GLOSSARY\n");
-    fs.mkdirSync(path.join(fixture, "docs"), { recursive: true });
-    fs.writeFileSync(path.join(fixture, "docs/features.md"), "# Features\n");
+test("check-project checks Git's file list without scanning ignored worktrees", async () => {
+  await withCleanup(async (defer) => {
+    const fixture = createFixture(defer);
 
     // Git이 무시하는 worktree의 깨진 문서·점 폴더 언급은 검사 대상이 아니다.
     fs.mkdirSync(path.join(fixture, ".worktrees/other"), { recursive: true });
@@ -106,5 +109,31 @@ test("check-project checks Git's file list without scanning ignored worktrees", 
     const tracked = runCheckerFailure(fixture);
     assert.notEqual(tracked.status, 0);
     assert.match(tracked.output, /Broken local link/);
+  });
+});
+
+test("check-project reads links by CommonMark: reference definitions count, code does not", async () => {
+  await withCleanup(async (defer) => {
+    const fixture = createFixture(defer);
+    execFileSync("git", ["init"], { cwd: fixture, stdio: "ignore" });
+
+    // 코드 블록·코드 스팬 안 글은 링크가 아니다(CommonMark §4.5·§6.1).
+    fs.writeFileSync(
+      path.join(fixture, "docs/code.md"),
+      "```md\n[예시](./missing.md)\n```\n\n`[예시](./missing.md)`\n"
+    );
+    assert.match(runChecker(fixture), /Checked local links/);
+
+    // 참조식 링크 정의(§4.7)는 링크다.
+    fs.writeFileSync(
+      path.join(fixture, "docs/reference.md"),
+      "[예시][r]\n\n[r]: ./missing.md\n"
+    );
+    const reference = runCheckerFailure(fixture);
+    assert.notEqual(reference.status, 0);
+    assert.match(
+      reference.output,
+      /Broken local link .*docs\/reference\.md:3: \.\/missing\.md/
+    );
   });
 });

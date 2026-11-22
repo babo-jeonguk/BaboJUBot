@@ -763,12 +763,41 @@ test("reads code spans and table cells by CommonMark and GFM: backtick runs of e
   );
 });
 
+test("reads blocks by the parser: reference links point to files, block quotes are checked, HTML blocks are not Markdown", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      [area]: [
+        "# 영역",
+        "",
+        "| 작업·증상 | 진입점 | 테스트 |",
+        "| --- | --- | --- |",
+        "| 실행 | [core][run] `planRunStart`·`planRunGone` | |",
+        "",
+        "> 인용 `planRunQuoted`",
+        "",
+        "<div>",
+        "`planRunInHtml`",
+        "</div>",
+        "",
+        "[run]: ../../../packages/core/src/run.ts",
+        "",
+      ].join("\n"),
+    }),
+    [
+      `${area}:5: 없는 이름 \`planRunGone\` — 이 줄이 가리키는 파일: packages/core/src/run.ts`,
+      `${area}:7: 없는 이름 \`planRunQuoted\` — 저장소 소스 코드 전체에서 찾음`,
+    ]
+  );
+});
+
 test("the command checks Git's file list and fails with the problems", async () => {
   await withCleanup((defer) => {
     const fixture = mkdtempSync(path.join(tmpdir(), "babojubot-code-map-cli-"));
     defer(() => removeFolder(fixture));
     for (const script of [
       "scripts/check-code-map.mjs",
+      "scripts/markdown.mjs",
       "scripts/test-files.mjs",
     ]) {
       mkdirSync(path.dirname(path.join(fixture, script)), { recursive: true });
