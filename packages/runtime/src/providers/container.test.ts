@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -1617,6 +1618,30 @@ describe.skipIf(process.platform === "win32")(
         async (data: string) => {
           await mkdir(path.join(data, "opencode"), { recursive: true });
           await writeFile(path.join(data, "opencode", "auth.json"), "{}");
+        },
+      ],
+      // 조직 제품 폴더는 같은 조직의 컨테이너가 쓸 수 있다. 데이터베이스 자리의 FIFO를 경로로 열면 쓰는 쪽이 나타날 때까지
+      // 열기가 끝나지 않고, 데이터베이스 도구의 열기는 동기라 서버 전체가 멈춘다. 확인할 수 없는 것은 남은 로그인으로 본다.
+      [
+        "a FIFO in place of the organization's database",
+        async (data: string) => {
+          await mkdir(path.join(data, "opencode"), { recursive: true });
+          execFileSync("mkfifo", [path.join(data, "opencode", "opencode.db")], {
+            timeout: 10_000,
+          });
+        },
+      ],
+      // 로그인 폴더 자리의 링크를 따라가면 조직 폴더 밖(여기서는 로그인이 없는 데이터베이스)을 보고 통과시킨다.
+      [
+        "a link in place of the organization's login folder",
+        async (data: string) => {
+          const elsewhere = `${data}-elsewhere`;
+          await storeLogins(elsewhere, []);
+          await mkdir(data, { recursive: true });
+          await symlink(
+            path.join(elsewhere, "opencode"),
+            path.join(data, "opencode")
+          );
         },
       ],
     ])(
