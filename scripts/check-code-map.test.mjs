@@ -96,14 +96,26 @@ test("fails a name that lives only in a file the row does not point to", async (
   );
 });
 
-test("searches every code file but Markdown when the row points to no file", async () => {
+test("searches only source code when the row points to no file; data and lock files count only when the line points to them", async () => {
   const files = {
     ...core,
     "docs/notes.md": "`releaseSlot`\n",
-    [area]: table(["실행 시작", "`planRunStart`·`releaseSlot`", ""]),
+    "pnpm-lock.yaml": "packages:\n  lockedName: {}\n",
+    "packages/core/package.json": JSON.stringify({ configName: 1 }),
+    "apps/web/src/index.css": ".shellFrame { color: red; }\n",
+    [area]: table(
+      [
+        "실행 시작",
+        "`planRunStart`·`releaseSlot`·`lockedName`·`configName`·`shellFrame`",
+        "",
+      ],
+      ["설정", "core/package.json `configName`", ""]
+    ),
   };
   assert.deepEqual(await problemsOf(files), [
-    `${area}:5: 없는 이름 \`releaseSlot\` — 저장소 코드 전체에서 찾음`,
+    `${area}:5: 없는 이름 \`releaseSlot\` — 저장소 소스 코드 전체에서 찾음`,
+    `${area}:5: 없는 이름 \`lockedName\` — 저장소 소스 코드 전체에서 찾음`,
+    `${area}:5: 없는 이름 \`configName\` — 저장소 소스 코드 전체에서 찾음`,
   ]);
 });
 
@@ -232,7 +244,7 @@ test("resolves Markdown file notations to one file without searching names in th
       ),
     }),
     [
-      `${area}:5: 없는 이름 \`planRunGone\` — 저장소 코드 전체에서 찾음`,
+      `${area}:5: 없는 이름 \`planRunGone\` — 저장소 소스 코드 전체에서 찾음`,
       `${area}:6: 맞는 파일이 없는 파일 표기 \`docs/agents/gone.md\``,
       `${area}:7: 여러 파일과 맞는 파일 표기 \`README.md\`: README.md, docs/README.md — 경로를 더 적어 하나로 좁히세요`,
     ]
@@ -579,7 +591,7 @@ test("reads only the code map index and its section files", async () => {
       "docs/agents/code-map/nested/old.md": "`planRunGone`\n",
     }),
     [
-      `docs/agents/code-map.md:1: 없는 이름 \`planRunGone\` — 저장소 코드 전체에서 찾음`,
+      `docs/agents/code-map.md:1: 없는 이름 \`planRunGone\` — 저장소 소스 코드 전체에서 찾음`,
     ]
   );
 });
@@ -603,8 +615,152 @@ test("skips listed paths that are not regular files, such as a link to a folder"
     });
   });
   assert.deepEqual(problems, [
-    `${area}:5: 없는 이름 \`planRunGone\` — 저장소 코드 전체에서 찾음`,
+    `${area}:5: 없는 이름 \`planRunGone\` — 저장소 소스 코드 전체에서 찾음`,
   ]);
+});
+
+test("recognizes file notations with one rule inside and outside backticks, by the extensions the repository tracks or can read", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      "packages/process/src/job-object-launcher.cs": "class Launcher { }\n",
+      ".github/workflows/scaffold.yml": "jobs: {}\n",
+      [area]: table(
+        [
+          "실행기",
+          "`process/job-object-launcher.cs` `Launcher`, process/gone.cs",
+          "",
+        ],
+        ["화면", "`web/gone.jsx`, web/other.jsx", ""],
+        [
+          "CI",
+          ".github/workflows/scaffold.yml, .github/workflows/missing.yml",
+          "",
+        ]
+      ),
+    }),
+    [
+      `${area}:5: 맞는 파일이 없는 파일 표기 \`process/gone.cs\``,
+      `${area}:6: 맞는 파일이 없는 파일 표기 \`web/other.jsx\``,
+      `${area}:6: 맞는 파일이 없는 파일 표기 \`web/gone.jsx\``,
+      `${area}:7: 맞는 파일이 없는 파일 표기 \`.github/workflows/missing.yml\``,
+    ]
+  );
+});
+
+test("checks folder notations against the tracked files", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      "scripts/tool.mjs": "export {};\n",
+      [area]: table(["폴더", "`scripts/`·`core/`·`set-aside/`", ""]),
+    }),
+    [`${area}:5: 맞는 폴더가 없는 폴더 표기 \`set-aside/\``]
+  );
+});
+
+test("fails a code notation that no rule classifies, and leaves out only the shapes the exclusion rules name", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      [area]: table([
+        "실행 시작",
+        "core/run.ts `planRunStart`, `run ended` `실행 중` `/api/runs` `plan*` `{a,b}` `.skip-link` `--color-slate-500` `-2` `()` `MAP_PERF=1` `a:b`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 분류할 수 없는 코드 표기 \`MAP_PERF=1\` — 파일·폴더·패키지·pnpm 명령·이름·제외 규칙(문구, HTTP 경로, 무늬, 점·대시로 시작, 기호만) 어디에도 맞지 않음`,
+      `${area}:5: 분류할 수 없는 코드 표기 \`a:b\` — 파일·폴더·패키지·pnpm 명령·이름·제외 규칙(문구, HTTP 경로, 무늬, 점·대시로 시작, 기호만) 어디에도 맞지 않음`,
+    ]
+  );
+});
+
+test("reads a bare package name as a package that some package.json must declare, not as a name an import string satisfies", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...workspace,
+      "scripts/tool.mjs":
+        'import ts from "typescript";\nimport pad from "leftpad";\nconst lazy = await import("lazypkg");\nconst req = require("reqpkg");\n',
+      [area]: table([
+        "도구",
+        "scripts/tool.mjs `@types/node`·`leftpad`·`lazypkg`·`reqpkg`",
+        "",
+      ]),
+    }),
+    [
+      // 가져오기만 한 이름(\`import ts\`)도 모듈 경로 문자열도 정의가 아니다.
+      `${area}:5: 없는 이름 \`leftpad\` — 이 줄이 가리키는 파일: scripts/tool.mjs`,
+      `${area}:5: 없는 이름 \`lazypkg\` — 이 줄이 가리키는 파일: scripts/tool.mjs`,
+      `${area}:5: 없는 이름 \`reqpkg\` — 이 줄이 가리키는 파일: scripts/tool.mjs`,
+    ]
+  );
+  assert.deepEqual(
+    await problemsOf({
+      ...workspace,
+      "package.json": JSON.stringify({
+        name: "root",
+        devDependencies: { typescript: "6.0.0", yaml: "2.0.0" },
+      }),
+      [area]: table(["도구", "`typescript`·`yaml`", ""]),
+    }),
+    []
+  );
+});
+
+test("skips code blocks by CommonMark: tilde and longer fences, unclosed fences and indented blocks, but not indented paragraph or list continuations", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      [area]: [
+        "# 영역",
+        "",
+        "~~~text",
+        "`goneInTilde`",
+        "~~~",
+        "",
+        "````md",
+        "```",
+        "`goneInLongFence`",
+        "````",
+        "",
+        "    `goneInIndentedBlock`",
+        "",
+        "문단 첫 줄 `planRunStart`",
+        "    `goneInParagraphContinuation`",
+        "",
+        "- 목록 항목 `planRunStart`",
+        "",
+        "    `goneInListContinuation`",
+        "",
+        "```",
+        "`goneInUnclosedFence`",
+      ].join("\n"),
+    }),
+    [
+      `${area}:15: 없는 이름 \`goneInParagraphContinuation\` — 저장소 소스 코드 전체에서 찾음`,
+      `${area}:19: 없는 이름 \`goneInListContinuation\` — 저장소 소스 코드 전체에서 찾음`,
+    ]
+  );
+});
+
+test("reads code spans and table cells by CommonMark and GFM: backtick runs of equal length and escaped pipes", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      [area]: [
+        "# 영역",
+        "",
+        "| 작업·증상 | 진입점 | 테스트 |",
+        "| --- | --- | --- |",
+        "| 실행 | core/run.ts ``planRunStart`` `` `planRunGone` `` \\| `planRunEnd` | |",
+        "",
+      ].join("\n"),
+    }),
+    [
+      `${area}:5: 없는 이름 \`planRunEnd\` — 이 줄이 가리키는 파일: packages/core/src/run.ts`,
+    ]
+  );
 });
 
 test("the command checks Git's file list and fails with the problems", async () => {
@@ -642,7 +798,7 @@ test("the command checks Git's file list and fails with the problems", async () 
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
-      /docs\/agents\/code-map\/area\.md:5: 없는 이름 `claimNextRun` — 저장소 코드 전체에서 찾음/
+      /docs\/agents\/code-map\/area\.md:5: 없는 이름 `claimNextRun` — 저장소 소스 코드 전체에서 찾음/
     );
     assert.doesNotMatch(result.stderr, /planRunStart/);
   });
