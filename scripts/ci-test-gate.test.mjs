@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { codeFormats } from "./test-files.mjs";
 
 const workflow = parse(
   readFileSync(
@@ -683,9 +684,12 @@ test("runs every node:test suite through the counting runner and gives every Vit
       /node --test/,
       `use scripts/run-node-tests.mjs: ${command}`
     );
-  const configs = globSync("{apps,packages}/*/vitest*.config.ts", {
-    cwd: root,
-  });
+  const configs = globSync(
+    `{apps,packages}/*/vitest{,.*}.config.${codeFormats}`,
+    {
+      cwd: root,
+    }
+  );
   assert.ok(configs.length >= 8, configs.join(", "));
   for (const config of configs) reportOf(config);
   // 시험 파일이 있는 패키지는 모두 자기 설정으로 보고서를 남긴다(설정이 없으면 Vitest 기본값으로 돌아 보고서가 없다).

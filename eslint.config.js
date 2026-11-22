@@ -191,8 +191,9 @@ export default defineConfig([
   tseslint.configs.recommended,
   { languageOptions: { globals: globals.node } },
   {
-    // ESLint은 .js·.mjs·.cjs와 TypeScript 형식만 기본으로 검사한다. .jsx도 검사해, 그 형식의 시험(러너는 모은다)이 규칙 밖에 남지 않게 한다.
-    files: ["**/*.jsx"],
+    // ESLint은 .js·.mjs·.cjs와 TypeScript 형식만 기본으로 검사한다. 모든 코드 형식(.jsx 포함)을 검사해, 그 형식의 시험(러너는 모은다)이
+    // 규칙 밖에 남지 않게 한다.
+    files: [`**/*.${codeFormats}`],
     languageOptions: { parserOptions: { ecmaFeatures: { jsx: true } } },
   },
   {
@@ -219,7 +220,7 @@ export default defineConfig([
   },
   {
     // check-test-exit-code.mjs가 vitest를 --globals로 돌려 넣는 이름(일부러 실패하는 시험).
-    files: ["scripts/fixtures/test-exit-code/*.test.mjs"],
+    files: ["scripts/fixtures/test-exit-code/**"],
     languageOptions: { globals: globals.vitest },
   },
   {
@@ -358,7 +359,7 @@ export default defineConfig([
   {
     // commit 뒤 할 일(Event 알리기·취소·조직 재개·깨우기)은 저장 결과에 담아 applyAfterCommit 한 곳이 적용한다(#84).
     // 실행 시도 자체의 흐름은 dispatcher가, 저장과 상관없이 시작·끝나는 준비 확인 중 신호는 readiness가 맡는다.
-    files: ["apps/server/src/**/*.{ts,tsx}"],
+    files: [`apps/server/src/**/*.${codeFormats}`],
     ignores: [
       "apps/server/src/after-commit.ts",
       "apps/server/src/dispatcher.ts",
@@ -487,7 +488,7 @@ export default defineConfig([
   {
     // 다른 workspace 패키지는 그 package.json exports의 입구로만, 패키지 이름으로 가져온다(#266). 제품 코드·개발 스크립트·시험·
     // 설정 모두. 같은 패키지 안의 상대 경로는 그대로다. 영역마다 어느 입구까지 받는지는 아래 package-import-scope가 좁힌다.
-    files: ["**/*.{ts,tsx,mts,mjs,js}"],
+    files: [`**/*.${codeFormats}`],
     plugins: { product: productRules },
     rules: { "product/package-entry-only": "error" },
   },
@@ -519,7 +520,7 @@ export default defineConfig([
   {
     // db는 Control Plane이다(docs/architecture.md). 시험까지 프로바이더 adapter 패키지(runtime)에 기대지 않고, 프로세스 바탕은
     // 새 패키지에서 가져온다. 시험은 시험 정리 도움 입구까지, 제품 코드는 아래 설정이 제품 입구만 받는다.
-    files: ["packages/db/**/*.{ts,tsx}"],
+    files: [`packages/db/**/*.${codeFormats}`],
     plugins: { product: productRules },
     rules: {
       "product/package-import-scope": [
@@ -535,7 +536,7 @@ export default defineConfig([
     },
   },
   {
-    files: ["packages/db/src/**/*.{ts,tsx}"],
+    files: [`packages/db/src/**/*.${codeFormats}`],
     ignores: testFiles,
     plugins: { product: productRules },
     rules: {
@@ -602,18 +603,18 @@ export default defineConfig([
   },
   // runtime과 프로세스 패키지는 정해진 파일에서만 프로그램을 띄운다(위 launchBoundary).
   launchBoundary(
-    ["packages/runtime/src/**/*.{ts,tsx}"],
+    [`packages/runtime/src/**/*.${codeFormats}`],
     processOwners,
     runtimeLaunchMessage
   ),
   launchBoundary(
-    ["packages/process/src/**/*.{ts,tsx}"],
+    [`packages/process/src/**/*.${codeFormats}`],
     processPackageOwners,
     processPackageLaunchMessage
   ),
   {
     // 테스트는 응답 JSON을 그대로 다룬다.
-    files: ["**/test/**", "**/*.test.ts"],
+    files: ["**/test/**", `**/*.test.${codeFormats}`],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
   },
   {

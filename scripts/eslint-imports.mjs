@@ -17,6 +17,7 @@
 import { builtinModules } from "node:module";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { codeFormatPattern } from "./test-files.mjs";
 
 /**
  * 가져오는 자리 하나.
@@ -562,8 +563,8 @@ export function combineVisitors(...visitors) {
 
 /** 저장소 뿌리. */
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
-const withoutExtension = (file) =>
-  file.replace(/\.(ts|tsx|mts|mjs|js|cjs)$/, "");
+const codeExtension = new RegExp(`\\.${codeFormatPattern}$`);
+const withoutExtension = (file) => file.replace(codeExtension, "");
 
 /**
  * 저장소의 workspace 패키지(apps·packages 아래 package.json): 폴더, 이름, 내보낸 입구(`exports`의 키)와 그 입구가 가리키는 파일
