@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -18,6 +18,8 @@ const swap = vi.hoisted(() => ({
   /** 이 경로에 처음 닿으면, 그 호출이 끝난 직후 `replacement`를 이 경로로 옮긴다. */
   path: undefined as string | undefined,
   replacement: undefined as string | undefined,
+  /** 표식 쓰기가 파일을 만든 뒤 이 오류로 실패한다(디스크가 찬 경우처럼). */
+  failWrite: undefined as Error | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
@@ -34,6 +36,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       return result;
     };
   }
+  watched.writeFile = async (...args: Parameters<typeof real.writeFile>) => {
+    if (swap.failWrite) {
+      await real.writeFile(args[0], "", args[2]);
+      throw swap.failWrite;
+    }
+    return real.writeFile(...args);
+  };
   return { ...real, ...watched, default: { ...real, ...watched } };
 });
 
@@ -41,6 +50,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   swap.path = undefined;
   swap.replacement = undefined;
+  swap.failWrite = undefined;
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
@@ -151,4 +161,12 @@ describe("refusing what is not a mark", () => {
       await expect(org.ensure()).rejects.toThrow(/표식이 이 조직과 다릅니다/);
     }
   );
+});
+
+// 표식을 쓰다 실패하면 조직 폴더에 임시 파일을 남기지 않고, 그 실패를 알린다(#280 리뷰 2회차 STD-2와 같은 모양).
+it("leaves no temporary file in the organization folder when writing the mark fails", async () => {
+  const org = await organization();
+  swap.failWrite = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+  await expect(org.ensure()).rejects.toThrow(/ENOSPC/);
+  expect(await readdir(org.folder)).toEqual([]);
 });

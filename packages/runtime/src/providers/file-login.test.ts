@@ -14,10 +14,20 @@ const race = vi.hoisted(() => ({
   holdFirstWrite: undefined as
     undefined | ((write: () => Promise<void>) => Promise<void>),
   onOpenMissing: undefined as undefined | (() => Promise<void>),
+  /** 실행 시도 폴더 밖의 쓰기가 파일을 만든 뒤 이 오류로 실패한다(디스크가 찬 경우처럼). */
+  failAfterCreate: undefined as Error | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const writeFile: typeof real.writeFile = async (file, ...rest) => {
+    const failure = race.failAfterCreate;
+    if (
+      failure &&
+      !race.outside.some((folder) => String(file).startsWith(folder))
+    ) {
+      await real.writeFile(file, "", rest[1]);
+      throw failure;
+    }
     const hold = race.holdFirstWrite;
     if (
       hold &&
@@ -46,6 +56,7 @@ afterEach(() => {
   race.outside = [];
   race.holdFirstWrite = undefined;
   race.onOpenMissing = undefined;
+  race.failAfterCreate = undefined;
 });
 
 const folders = testFolders();
@@ -195,5 +206,29 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     );
     // 쓰다 만 임시 파일을 남기지 않는다.
     expect(await readdir(path.dirname(placed.target))).toEqual(["token"]);
+  });
+
+  // 자리 표시를 쓰다 실패해도 조직 폴더에 임시 파일을 남기지 않는다(#280 리뷰 2회차 STD-2).
+  it("leaves no temporary file in the organization folder when writing the stand-in fails", async () => {
+    const root = await folders.make("babojubot-file-login-");
+    const login = fileLogin(root, "nested", nested);
+    const prepared = await login.prepare(organizationId, true);
+    if (prepared.refusal !== undefined || !prepared.attemptLogin)
+      throw new Error(`no isolated login: ${prepared.refusal}`);
+    const attempt = await folders.make("babojubot-attempt-");
+    race.outside = [attempt];
+    const full = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    race.failAfterCreate = full;
+    await expect(prepared.attemptLogin(attempt, "grant")).rejects.toBe(full);
+    const place = path.join(
+      root,
+      "providers",
+      "nested",
+      "organizations",
+      organizationId,
+      ".gemini",
+      "antigravity-cli"
+    );
+    expect(await readdir(place)).toEqual([]);
   });
 });
