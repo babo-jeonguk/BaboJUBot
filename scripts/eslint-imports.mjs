@@ -52,7 +52,7 @@ const moduleName = (source) =>
 const globalObjects = new Set(["globalThis", "global"]);
 
 /** 이 scope에서 위로 올라가며 이름이 가리키는 변수. */
-function variableIn(scope, name) {
+export function variableIn(scope, name) {
   for (let at = scope; at; at = at.upper) {
     const variable = at.set.get(name);
     if (variable) return variable;
@@ -82,7 +82,7 @@ function patternPath(pattern, target) {
  * 같은 값을 다른 이름으로도 내놓는 곳: 왼쪽 출처는 오른쪽 출처와 같은 값이다(#266 리뷰 SPEC-5). 출처를 이 표로 한 이름에 맞춰,
  * 규칙이 같은 값의 철자를 따로 적지 않게 한다. 근거는 각 모듈의 공식 문서와 이 저장소에 설치된 판의 실행·배포 파일 확인이다.
  * - Node: `node:process`·`node:console`은 전역 `process`·`console` 그 자체, node:timers의 타이머 함수와 node:perf_hooks의
- *   `performance`는 전역과 같은 함수·객체, node:timers의 `promises`는 `timers/promises`, `assert.strict`는 `assert/strict`,
+ *   `performance`는 전역과 같은 함수·객체, node:timers의 `promises`는 `timers/promises`, node:fs의 `promises`는 `fs/promises`, `assert.strict`는 `assert/strict`,
  *   node:module의 `Module`은 모듈 자신, node:test는 모듈 자체가 `test`이고 `test`·`it`은 그 별칭이다.
  * - vitest: `it`은 `test`, `assert`·`expect.assert`는 `chai.assert`.
  * - Playwright(@playwright/test): 기본 내보내기는 `test`, `test.expect`는 `expect`, `expect.extend(…)`·`expect.configure(…)`가
@@ -115,6 +115,10 @@ const sameValues = [
   [
     { module: "timers", path: ["promises"] },
     { module: "timers/promises", path: [] },
+  ],
+  [
+    { module: "fs", path: ["promises"] },
+    { module: "fs/promises", path: [] },
   ],
   [
     { module: "assert", path: ["strict"] },
