@@ -150,11 +150,104 @@ test("leaves out code notations that are not identifiers: Korean, spaces, quotes
       ...core,
       [area]: table([
         '`중단하고 보내기` 버튼, `run ended` 문구, `"queued"`',
-        "core/run.ts `planRunStart`, `POST /api/runs`, `/runs/:id`, `pnpm check`, `plan*`, `@babojubot/core`",
+        "core/run.ts `planRunStart`, `POST /api/runs`, `/runs/:id`, `git status`, `plan*`",
         "",
       ]),
     }),
     []
+  );
+});
+
+const workspace = {
+  "package.json": JSON.stringify({
+    name: "root",
+    scripts: { "check:docs": "node scripts/check-project.mjs", test: "x" },
+    devDependencies: { "@types/node": "24.0.0" },
+  }),
+  "packages/process/package.json": JSON.stringify({
+    name: "@babojubot/process",
+    exports: {
+      ".": "./src/index.ts",
+      "./remove-folder": "./src/remove-folder.ts",
+      "./fixtures/*": "./src/fixtures/*.ts",
+    },
+  }),
+  "apps/web/package.json": JSON.stringify({
+    name: "@babojubot/web",
+    scripts: { "test:e2e": "playwright test" },
+  }),
+  "apps/web/src/main.tsx": "export {};\n",
+};
+
+test("passes package specifiers whose workspace entry is exported or whose package is declared", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...workspace,
+      [area]: table([
+        "공용 실행",
+        "`@babojubot/process`·`@babojubot/process/remove-folder`·`@babojubot/process/fixtures/lifeline`·`@babojubot/web/src/main.tsx`·`@types/node`",
+        "",
+      ]),
+    }),
+    []
+  );
+});
+
+test("fails a package specifier whose entry is not exported, whose workspace package is missing or which no package declares", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...workspace,
+      [area]: table([
+        "공용 실행",
+        "`@babojubot/process/test-cleanup`·`@babojubot/launch`·`@babojubot/web/src/gone.tsx`·`@vitest/ui`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/test-cleanup\` — packages/process/package.json의 exports: ., ./remove-folder, ./fixtures/*`,
+      `${area}:5: 없는 패키지 \`@babojubot/launch\` — workspace 패키지가 아니고 어느 package.json에도 의존성으로 없음`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/web/src/gone.tsx\` — apps/web/package.json에 exports가 없고 apps/web/src/gone.tsx 파일도 없음`,
+      `${area}:5: 없는 패키지 \`@vitest/ui\` — workspace 패키지가 아니고 어느 package.json에도 의존성으로 없음`,
+    ]
+  );
+});
+
+test("resolves Markdown file notations to one file without searching names in them", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      "docs/agents/worker.md": "`planRunGone`\n",
+      "README.md": "# r\n",
+      "docs/README.md": "# d\n",
+      [area]: table(
+        ["worker 문서", "`docs/agents/worker.md`, worker.md `planRunGone`", ""],
+        ["없는 문서", "`docs/agents/gone.md`", ""],
+        ["모호한 문서", "README.md", ""]
+      ),
+    }),
+    [
+      `${area}:5: 없는 이름 \`planRunGone\` — 저장소 코드 전체에서 찾음`,
+      `${area}:6: 맞는 파일이 없는 파일 표기 \`docs/agents/gone.md\``,
+      `${area}:7: 여러 파일과 맞는 파일 표기 \`README.md\`: README.md, docs/README.md — 경로를 더 적어 하나로 좁히세요`,
+    ]
+  );
+});
+
+test("checks that the script a pnpm command runs is in the package.json it targets", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...workspace,
+      [area]: table([
+        "검사",
+        "`pnpm check:docs`·`pnpm run test`·`pnpm --filter @babojubot/web run test:e2e`·`pnpm --filter=@babojubot/web test:e2e`·`pnpm exec eslint .`·`pnpm install`·`pnpm check:gone`·`pnpm --filter @babojubot/web run build`·`pnpm --filter @babojubot/nope test`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 없는 pnpm 스크립트 \`pnpm check:gone\` — package.json의 scripts에 check:gone 없음`,
+      `${area}:5: 없는 pnpm 스크립트 \`pnpm --filter @babojubot/web run build\` — apps/web/package.json의 scripts에 build 없음`,
+      `${area}:5: 없는 pnpm 스크립트 \`pnpm --filter @babojubot/nope test\` — workspace 패키지 @babojubot/nope 없음`,
+    ]
   );
 });
 
