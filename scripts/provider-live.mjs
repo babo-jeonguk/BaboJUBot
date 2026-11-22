@@ -40,7 +40,7 @@ const defaultCommand = {
 };
 if (
   provider === undefined ||
-  !(provider in factories) ||
+  !Object.hasOwn(factories, provider) ||
   consent !== "--allow-live" ||
   !process.env.BABOJUBOT_HOME
 ) {

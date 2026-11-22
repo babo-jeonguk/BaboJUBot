@@ -79,7 +79,7 @@ function moduleFacts(specifier) {
     const home =
       manifests.find(({ json }) =>
         [json.name === name, json.dependencies, json.devDependencies].some(
-          (each) => each === true || (each && name in each)
+          (each) => each === true || (each && Object.hasOwn(each, name))
         )
       ) ?? manifests[0];
     if (!home) throw new Error("저장소에서 package.json을 찾지 못했다");

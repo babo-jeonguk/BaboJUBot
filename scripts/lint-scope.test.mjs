@@ -181,7 +181,7 @@ test("a file gets the same rules in every format", async () => {
       for (const rule of new Set([...Object.keys(base), ...Object.keys(set)]))
         if (
           JSON.stringify(set[rule]) !== JSON.stringify(base[rule]) &&
-          (typeScript || !(rule in compilerChecked))
+          (typeScript || !Object.hasOwn(compilerChecked, rule))
         ) {
           formats.add(format);
           rules.add(rule);

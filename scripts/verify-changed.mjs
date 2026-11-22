@@ -178,9 +178,11 @@ export function readGraph(root) {
   const rootJson = JSON.parse(
     fs.readFileSync(path.join(root, "package.json"), "utf8")
   );
-  const graph = {
-    [rootJson.name]: { dir: ".", deps: workspaceDeps(rootJson) },
-  };
+  // 이름은 package.json에서 온다. 대입 대신 Object.fromEntries로 만들어 어떤 이름이든 그 이름의 속성이 된다.
+  /** @type {[string, { dir: string, deps: string[] }][]} */
+  const packages = [
+    [rootJson.name, { dir: ".", deps: workspaceDeps(rootJson) }],
+  ];
   for (const group of ["apps", "packages"]) {
     const folder = path.join(root, group);
     const missing = hasErrorCode("ENOENT");
@@ -200,13 +202,13 @@ export function readGraph(root) {
       );
       if (text === undefined) continue;
       const packageJson = JSON.parse(text);
-      graph[packageJson.name] = {
-        dir: `${group}/${entry.name}`,
-        deps: workspaceDeps(packageJson),
-      };
+      packages.push([
+        packageJson.name,
+        { dir: `${group}/${entry.name}`, deps: workspaceDeps(packageJson) },
+      ]);
     }
   }
-  return graph;
+  return Object.fromEntries(packages);
 }
 
 /** package.json이 workspace에서 가져오는 패키지 이름. */

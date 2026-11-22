@@ -902,7 +902,7 @@ const packageImportScope = {
      */
     const target = (source) => {
       const found = targetOf(context.filename, source);
-      if (!found?.package || !(found.package.name in packages))
+      if (!found?.package || !Object.hasOwn(packages, found.package.name))
         return undefined;
       if (found.entry === undefined) return undefined;
       const { name } = found.package;

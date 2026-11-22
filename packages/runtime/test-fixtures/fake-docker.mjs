@@ -59,8 +59,9 @@ if (verb === "run") {
   const rest = args.slice(args.indexOf("run") + 1);
   /** @type {Map<string, string[]>} */
   const options = new Map();
-  /** @type {Record<string, string | undefined>} */
-  const env = {};
+  // 변수 이름은 docker 인수(`-e NAME=value`)에서 온다. 대입한 `__proto__`는 속성이 되지 않으므로 Map에 모은다.
+  /** @type {Map<string, string>} */
+  const variables = new Map();
   let i = 0;
   for (
     let arg = rest[i];
@@ -74,13 +75,18 @@ if (verb === "run") {
       options.set(arg, [...(options.get(arg) ?? []), value]);
       if (arg === "-e" || arg === "--env") {
         const at = value.indexOf("=");
-        if (at >= 0) env[value.slice(0, at)] = value.slice(at + 1);
-        else if (process.env[value] !== undefined)
-          env[value] = process.env[value];
+        // process.env도 물려받은 이름(constructor)에 함수를 돌려주므로 가진 변수인지 본다.
+        const inherited =
+          at < 0 && Object.hasOwn(process.env, value)
+            ? process.env[value]
+            : undefined;
+        if (at >= 0) variables.set(value.slice(0, at), value.slice(at + 1));
+        else if (inherited !== undefined) variables.set(value, inherited);
       }
     }
   }
   const [, program, ...programArgs] = rest.slice(i);
+  const env = Object.fromEntries(variables);
   record({ args, env });
   const mounts = (options.get("--mount") ?? []).map((spec) =>
     Object.fromEntries(spec.split(",").map((part) => part.split("=")))
@@ -115,7 +121,10 @@ if (verb === "run") {
     });
   };
   const passOutput = existsSync(path.join(stateDir, "pass-output"));
-  const mapped = program === undefined ? undefined : programs[program];
+  const mapped =
+    program === undefined || !Object.hasOwn(programs, program)
+      ? undefined
+      : programs[program];
   if (!mapped) {
     process.stderr.write(`fake docker: unknown program ${program}\n`);
     process.exit(127);

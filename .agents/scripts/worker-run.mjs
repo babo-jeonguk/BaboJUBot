@@ -146,7 +146,8 @@ export function outcome({
     ];
   }
   const signal =
-    requested ?? (result.stopped in signalNumbers ? result.stopped : undefined);
+    requested ??
+    (Object.hasOwn(signalNumbers, result.stopped) ? result.stopped : undefined);
   if (signal) return [`stopped by ${signal}`, 128 + signalNumbers[signal]];
   if (errors.length) return ["error", 2];
   if (result.stopped === "limit" || (!session && now >= deadlineAt))
