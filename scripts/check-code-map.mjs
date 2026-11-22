@@ -1,15 +1,20 @@
 // 코드 지도(docs/agents/code-map.md와 docs/agents/code-map/의 절 파일)가 가리키는 파일·이름이 저장소에 있는지 확인한다(#250).
 // 링크가 열리는지는 check-project.mjs가 본다. 여기서는 링크 밖의 짧은 파일 표기와 코드 표기(백틱)의 이름을 본다.
 // 판정 단위는 줄 하나(표의 행, 문단의 줄)이고 코드 블록(```)은 보지 않는다. 표기마다 예외를 두지 않고 아래 규칙만 쓴다.
-// - 파일 표기: 확장자로 끝나는 경로(`core/run.ts`, `rows.ts`). 저장소 경로, 또는 `packages/<이름>/`·`apps/<이름>/` 뒤의
-//   `src/`·`test/`·`e2e/`를 뺀 짧은 경로(`packages/core/src/run.ts` → `core/run.ts`)의 끝과 맞는 Markdown 밖 파일 하나로 푼다.
-//   맞는 파일이 없거나 둘 이상이면 실패한다.
+// - 파일 표기: 확장자로 끝나는 경로(`core/run.ts`, `rows.ts`, `docs/providers.md`). 저장소 경로, 또는 `packages/<이름>/`·
+//   `apps/<이름>/` 뒤의 `src/`·`test/`·`e2e/`를 뺀 짧은 경로(`packages/core/src/run.ts` → `core/run.ts`)의 끝과 맞는 파일 하나로
+//   푼다. 맞는 파일이 없거나 둘 이상이면 실패한다. Markdown 파일은 있는지만 보고 이름을 찾는 곳에 넣지 않는다.
+// - 패키지 지정자(`@babojubot/process/remove-folder`): workspace 패키지(뿌리·`packages/*`·`apps/*`의 package.json)면 그 입구가
+//   `exports`에 있어야 한다(`*` 무늬 포함, `exports`가 없으면 그 경로의 파일). workspace 패키지가 아니면 어느 package.json이든
+//   의존성으로 적혀 있어야 한다.
+// - pnpm 명령(`pnpm check:docs`, `pnpm --filter <패키지> run <스크립트>`): 돌리는 스크립트가 대상 package.json(`--filter`가 없으면
+//   뿌리)의 `scripts`에 있어야 한다. pnpm 자체 명령(`pnpm install`, `pnpm exec …`)과 모든 패키지에 도는 `-r`은 보지 않는다.
 // - 이름: 식별자 모양(영문·숫자·`_`·`$`, `-`로 이은 낱말, `.`로 이은 조각, 앞의 `#`, 뒤의 호출 괄호)의 코드 표기. 그 줄이 가리키는
 //   파일(링크·파일 표기) 본문에 낱말로 있어야 한다. 줄에 파일이 없으면 Markdown이 아닌 저장소 파일 전체에서 찾는다. `.`로 이은
 //   이름은 통째로 있거나 조각마다 있으면 통과한다. 문자열로만 쓰이는 상태 값도 본문에 있으면 통과한다.
 // - 시험 이름: 표의 `테스트` 열에서 식별자 모양도 파일 표기도 아니고 `/`·`*`가 없는 코드 표기. 그 줄이 가리키는 시험 파일 본문에
 //   글자 그대로 있어야 하고(끝의 `…`는 앞부분만 본다), 줄에 시험 파일이 없으면 저장소의 시험 파일 전체에서 찾는다.
-// - 그 밖의 코드 표기(한글·공백·따옴표가 든 문구, 경로, 명령, `*`)는 보지 않는다.
+// - 그 밖의 코드 표기(한글·공백·따옴표가 든 문구, 경로, pnpm 밖 명령, `*`)는 보지 않는다. 환경 변수(`BABOJUBOT_*`)는 이름이다.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,7 +22,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { isTestFile } from "./test-files.mjs";
 
 const extensions =
-  "ts|tsx|mts|cts|js|mjs|cjs|json|ya?ml|sql|css|html|sh|ps1|patch";
+  "ts|tsx|mts|cts|js|mjs|cjs|json|ya?ml|sql|css|html|sh|ps1|patch|md";
 const fileNotation = new RegExp(
   `^(?:[\\w.-]+/)*[\\w-][\\w.-]*\\.(?:${extensions})$`
 );
@@ -28,6 +33,16 @@ const fileInText = new RegExp(
 const segment = "[A-Za-z_$#][\\w$]*(?:-[\\w$]+)*";
 const namePattern = new RegExp(
   `^(${segment}(?:\\.${segment})*)(?:\\((?:[^()]|\\([^()]*\\))*\\))?$`
+);
+const packageSpecifier = /^(@[\w.-]+\/[\w.-]+)(?:\/([\w./-]+))?$/;
+/** `pnpm <이름>`이 스크립트가 아니라 pnpm 자체 명령인 이름(https://pnpm.io/cli/run). */
+const pnpmCommands = new Set(
+  (
+    "add approve-builds audit bin cache cat-file cat-index config create dedupe deploy dlx doctor env exec fetch " +
+    "find-hash help i ignored-builds import init install install-test it licenses link list ln ls outdated pack " +
+    "patch patch-commit patch-remove prune publish rb rebuild remove rm root self-update server setup store un " +
+    "uninstall unlink up update why"
+  ).split(" ")
 );
 
 function isCodeMapFile(file) {
@@ -107,12 +122,60 @@ function readCell({ text, testColumn }) {
   const notations = plain.match(fileInText) ?? [];
   const names = [];
   const testNames = [];
+  const specifiers = [];
+  const commands = [];
   for (const [, span] of text.matchAll(/`([^`]+)`/g)) {
     if (fileNotation.test(span)) notations.push(span);
+    else if (packageSpecifier.test(span)) specifiers.push(span);
+    else if (/^pnpm\s/.test(span)) commands.push(span);
     else if (namePattern.test(span)) names.push(namePattern.exec(span)[1]);
     else if (testColumn && !/[/*]/.test(span)) testNames.push(span);
   }
-  return { links, notations, names, testNames };
+  return { links, notations, names, testNames, specifiers, commands };
+}
+
+/** workspace의 package.json(뿌리·`packages/*`·`apps/*`)과 어느 package.json이든 의존성으로 적은 패키지 이름. */
+function readManifests(present, read) {
+  const manifests = present
+    .filter((file) =>
+      /^(?:(?:packages|apps)\/[^/]+\/)?package\.json$/.test(file)
+    )
+    .map((file) => ({ file, json: JSON.parse(read(file)) }));
+  const declared = new Set(
+    manifests.flatMap(({ json }) =>
+      [
+        json.dependencies,
+        json.devDependencies,
+        json.peerDependencies,
+        json.optionalDependencies,
+      ].flatMap((dependencies) => Object.keys(dependencies ?? {}))
+    )
+  );
+  return {
+    root: manifests.find(({ file }) => file === "package.json"),
+    byName: new Map(
+      manifests.map((manifest) => [manifest.json.name, manifest])
+    ),
+    declared,
+  };
+}
+
+/** package.json `exports`의 입구 이름(`.`, `./testing`, `./fixtures/*`). 조건만 적은 객체와 문자열은 `.` 하나다. */
+function exportEntries(exports) {
+  if (exports === null || typeof exports !== "object" || Array.isArray(exports))
+    return ["."];
+  const keys = Object.keys(exports);
+  return keys.some((key) => key.startsWith(".")) ? keys : ["."];
+}
+
+function matchesEntry(entry, key) {
+  if (!key.includes("*")) return entry === key;
+  const [prefix, suffix] = key.split("*");
+  return (
+    entry.length > prefix.length + suffix.length &&
+    entry.startsWith(prefix) &&
+    entry.endsWith(suffix)
+  );
 }
 
 /**
@@ -137,8 +200,10 @@ export function findCodeMapProblems({ root, files }) {
       contents.set(file, fs.readFileSync(path.join(root, file), "utf8"));
     return contents.get(file);
   };
+  const manifests = readManifests(present, read);
+  const presentFiles = new Set(present);
   const resolve = (notation) =>
-    codeFiles.filter((file) =>
+    present.filter((file) =>
       [file, shortForm(file)].some(
         (form) => form === notation || form.endsWith(`/${notation}`)
       )
@@ -152,6 +217,52 @@ export function findCodeMapProblems({ root, files }) {
     return (
       hasWord(name) || (name.includes(".") && name.split(".").every(hasWord))
     );
+  };
+
+  const specifierProblem = (specifier) => {
+    const [, name, subpath] = packageSpecifier.exec(specifier);
+    const manifest = manifests.byName.get(name);
+    if (!manifest)
+      return manifests.declared.has(name)
+        ? undefined
+        : `없는 패키지 \`${specifier}\` — workspace 패키지가 아니고 어느 package.json에도 의존성으로 없음`;
+    if (manifest.json.exports === undefined) {
+      const file = path.posix.join(
+        path.posix.dirname(manifest.file),
+        subpath ?? ""
+      );
+      if (subpath === undefined || presentFiles.has(file)) return undefined;
+      return `없는 패키지 입구 \`${specifier}\` — ${manifest.file}에 exports가 없고 ${file} 파일도 없음`;
+    }
+    const entries = exportEntries(manifest.json.exports);
+    const entry = subpath === undefined ? "." : `./${subpath}`;
+    if (entries.some((key) => matchesEntry(entry, key))) return undefined;
+    return `없는 패키지 입구 \`${specifier}\` — ${manifest.file}의 exports: ${entries.join(", ")}`;
+  };
+  const commandProblem = (command) => {
+    const words = command.split(/\s+/).slice(1);
+    const filters = [];
+    while (words[0]?.startsWith("-")) {
+      const flag = words.shift();
+      if (flag === "-r" || flag === "--recursive") return undefined;
+      if (flag === "--filter" || flag === "-F") filters.push(words.shift());
+      else if (flag.startsWith("--filter=")) filters.push(flag.slice(9));
+    }
+    const [first, second] = words;
+    const script = first === "run" ? second : first;
+    if (script === undefined || (first !== "run" && pnpmCommands.has(first)))
+      return undefined;
+    for (const target of filters.length ? filters : [undefined]) {
+      const manifest =
+        target === undefined ? manifests.root : manifests.byName.get(target);
+      if (!manifest)
+        return target === undefined
+          ? "뿌리 package.json 없음"
+          : `workspace 패키지 ${target} 없음`;
+      if (!Object.hasOwn(manifest.json.scripts ?? {}, script))
+        return `${manifest.file}의 scripts에 ${script} 없음`;
+    }
+    return undefined;
   };
 
   const problems = [];
@@ -177,8 +288,9 @@ export function findCodeMapProblems({ root, files }) {
           .filter((file) => isCodeFile.has(file));
         for (const notation of found.notations) {
           const matches = resolve(notation);
-          if (matches.length === 1) cellFiles.push(matches[0]);
-          else if (matches.length === 0)
+          if (matches.length === 1) {
+            if (isCodeFile.has(matches[0])) cellFiles.push(matches[0]);
+          } else if (matches.length === 0)
             problems.push(
               `${where}: 맞는 파일이 없는 파일 표기 \`${notation}\``
             );
@@ -190,6 +302,17 @@ export function findCodeMapProblems({ root, files }) {
         for (const file of cellFiles) {
           pointed.add(file);
           if (isTestFile(file)) pointedTests.add(file);
+        }
+        for (const specifier of found.specifiers) {
+          const problem = specifierProblem(specifier);
+          if (problem) problems.push(`${where}: ${problem}`);
+        }
+        for (const command of found.commands) {
+          const problem = commandProblem(command);
+          if (problem)
+            problems.push(
+              `${where}: 없는 pnpm 스크립트 \`${command}\` — ${problem}`
+            );
         }
       }
 
@@ -236,6 +359,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     process.exitCode = 1;
   } else
     console.log(
-      "Checked file notations, names and test names in the code map. No product functionality was tested."
+      "Checked file notations, names, test names, package entries and pnpm scripts in the code map. No product functionality was tested."
     );
 }
