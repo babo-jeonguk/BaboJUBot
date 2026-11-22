@@ -20,7 +20,7 @@
     "typecheck:test": "pnpm -r --if-present run typecheck:test",
     "lint": "eslint .",
     "check": "pnpm run check:docs && pnpm run check:rules && pnpm run check:agents && pnpm run check:scripts",
-    "check:docs": "node scripts/check-project.mjs",
+    "check:docs": "node scripts/check-project.mjs && node scripts/check-code-map.mjs",
     "check:rules": "node scripts/run-node-tests.mjs check-rules scripts/eslint-imports.test.mjs scripts/lint-access-shapes.test.mjs scripts/lint-rules.test.mjs scripts/product-lint-rules.test.mjs scripts/script-lint-rules.test.mjs",
     "check:agents": "node scripts/run-node-tests.mjs check-agents .agents/scripts/check-worker-change.test.mjs .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs",
     "check:scripts": "node scripts/run-node-tests.mjs check-scripts scripts/check-project.test.mjs scripts/check-code-map.test.mjs scripts/gh-post.test.mjs scripts/ci-test-gate.test.mjs scripts/check-test-reports.test.mjs scripts/ci-job-failures.test.mjs scripts/ci-downloads.test.mjs scripts/ci-changes.test.mjs scripts/file-boundary-report.test.mjs scripts/check-e2e-report.test.mjs scripts/verify-changed.test.mjs scripts/live/check-server.test.mjs scripts/live/processes.test.mjs scripts/live/chaos-budget.test.mjs scripts/live/chaos-run.test.mjs scripts/live/chaos-server.test.mjs scripts/live/provider-scenes.test.mjs",
