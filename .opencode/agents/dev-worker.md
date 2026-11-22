@@ -47,19 +47,19 @@ permissions:
     resource: "*/fixtures/*"
     effect: deny
   - action: edit
-    resource: "*/testing.ts"
+    resource: "*/testing.*"
     effect: deny
   - action: edit
-    resource: "*/test-support.ts"
+    resource: "*/test-support.*"
     effect: deny
   - action: edit
-    resource: "*/test-folders.ts"
+    resource: "*/test-folders.*"
     effect: deny
   - action: edit
-    resource: "*/test-cluster.ts"
+    resource: "*/test-cluster.*"
     effect: deny
   - action: edit
-    resource: "*/providers/*-support.ts"
+    resource: "*/providers/*-support.*"
     effect: deny
   - action: edit
     resource: "*eslint.config.*"
