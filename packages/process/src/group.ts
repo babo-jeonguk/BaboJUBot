@@ -61,7 +61,7 @@ export async function stopProcessGroup(
   group: number,
   { graceMs = 2000 }: { graceMs?: number } = {}
 ) {
-  // Windows는 대표 프로세스가 끝나면 자식을 찾을 수 없다. 대표인 묶음 실행기가 끝나며 묶음을 닫아 남은 것을 끈다(job-object.ts).
+  // Windows에는 프로세스 그룹이 없다. 그곳의 트리는 감독 실행기의 묶음이 끈다(supervisor.ts). 이 함수는 재시작 복구만 쓴다.
   if (!groupAlive(group)) return;
   const signal = (value: NodeJS.Signals) => {
     try {
