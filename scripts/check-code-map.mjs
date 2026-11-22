@@ -10,15 +10,20 @@
 // - pnpm 명령(`pnpm check:docs`, `pnpm --filter <패키지> run <스크립트>`): 돌리는 스크립트가 대상 package.json(`--filter`가 없으면
 //   뿌리)의 `scripts`에 있어야 한다. pnpm 자체 명령(`pnpm install`, `pnpm exec …`)과 모든 패키지에 도는 `-r`은 보지 않는다.
 // - 이름: 식별자 모양(영문·숫자·`_`·`$`, `-`로 이은 낱말, `.`로 이은 조각, 앞의 `#`, 뒤의 호출 괄호)의 코드 표기. 그 줄이 가리키는
-//   파일(링크·파일 표기) 본문에 낱말로 있어야 한다. 줄에 파일이 없으면 Markdown이 아닌 저장소 파일 전체에서 찾는다. `.`로 이은
-//   이름은 통째로 있거나 조각마다 있으면 통과한다. 문자열로만 쓰이는 상태 값도 본문에 있으면 통과한다.
-// - 시험 이름: 표의 `테스트` 열에서 식별자 모양도 파일 표기도 아니고 `/`·`*`가 없는 코드 표기. 그 줄이 가리키는 시험 파일 본문에
-//   글자 그대로 있어야 하고(끝의 `…`는 앞부분만 본다), 줄에 시험 파일이 없으면 저장소의 시험 파일 전체에서 찾는다.
-// - 그 밖의 코드 표기(한글·공백·따옴표가 든 문구, 경로, pnpm 밖 명령, `*`)는 보지 않는다. 환경 변수(`BABOJUBOT_*`)는 이름이다.
+//   파일(링크·파일 표기)이 그 이름을 정의해야 하고(definitionsOf), 줄에 파일이 없으면 Markdown이 아닌 저장소 파일 전체의 정의에서
+//   찾는다. 정의는 선언(함수·클래스·인터페이스·타입·변수·enum 멤버, export 여부 무관)과 객체·클래스·인터페이스·객체 타입의 속성·메서드,
+//   JSX 속성, 환경 변수를 읽는 자리, 문자열 리터럴(상태 값·오류 코드)이다. 주석, 다른 낱말의 일부, 가져오기·부르기만 한 이름은 아니다.
+//   `a.b`는 클래스·인터페이스·객체 상수·타입·enum의 경로(`RunDispatcher.handled`)이거나 글자 그대로의 문자열(`message.created`)이다.
+// - 시험 이름: 표의 `테스트` 열에서 파일 표기·패키지 지정자·pnpm 명령이 아니고 `/`·`*`가 없는 코드 표기. 그 줄이 가리키는 시험 파일의
+//   `describe`·`it`·`test` 제목과 같아야 하고(끝의 `…`는 앞부분만 본다), 줄에 시험 파일이 없으면 저장소의 시험 파일 전체에서 찾는다.
+//   이 열의 식별자 모양 표기는 시험 도움 이름도 적히므로 시험 제목이거나 그 줄의 파일이 정의한 이름이면 된다.
+// - 그 밖의 코드 표기(한글·공백·따옴표가 든 문구, 경로, pnpm 밖 명령, `*`)는 보지 않는다.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
+import { parseAllDocuments } from "yaml";
 import { isTestFile } from "./test-files.mjs";
 
 const extensions =
@@ -60,8 +65,232 @@ function shortForm(file) {
   );
 }
 
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const scriptKinds = new Map([
+  [".ts", ts.ScriptKind.TS],
+  [".mts", ts.ScriptKind.TS],
+  [".cts", ts.ScriptKind.TS],
+  [".tsx", ts.ScriptKind.TSX],
+  [".js", ts.ScriptKind.JS],
+  [".mjs", ts.ScriptKind.JS],
+  [".cjs", ts.ScriptKind.JS],
+  [".jsx", ts.ScriptKind.JSX],
+]);
+/** 구문 분석기가 없는 파일에서 지울 주석(파일 확장자별). */
+const comments = new Map([
+  [".css", [/\/\*[\s\S]*?\*\//g]],
+  [".sql", [/\/\*[\s\S]*?\*\//g, /--.*$/gm]],
+  [".cs", [/\/\*[\s\S]*?\*\//g, /\/\/.*$/gm]],
+  [".sh", [/(^|\s)#.*$/gm]],
+  [".ps1", [/<#[\s\S]*?#>/g, /(^|\s)#.*$/gm]],
+  [".html", [/<!--[\s\S]*?-->/g]],
+]);
+const titleCallees = new Set(["describe", "it", "test", "suite"]);
+
+/** 이름(식별자·비공개 이름·문자열·숫자). 계산한 이름(`[key]`)은 없다. */
+function textOf(name) {
+  if (
+    name &&
+    (ts.isIdentifier(name) ||
+      ts.isPrivateIdentifier(name) ||
+      ts.isStringLiteral(name) ||
+      ts.isNumericLiteral(name) ||
+      ts.isNoSubstitutionTemplateLiteral(name))
+  )
+    return name.text;
+  return undefined;
+}
+
+function unwrap(expression) {
+  let current = expression;
+  while (
+    current &&
+    (ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isTypeAssertionExpression(current))
+  )
+    current = current.expression;
+  return current;
+}
+
+/** 경로의 다음 조각이 되는 멤버 목록(객체 리터럴·타입 리터럴·클래스·인터페이스·enum). */
+function membersOf(node) {
+  if (!node) return undefined;
+  if (
+    ts.isClassLike(node) ||
+    ts.isInterfaceDeclaration(node) ||
+    ts.isEnumDeclaration(node) ||
+    ts.isTypeLiteralNode(node)
+  )
+    return node.members;
+  if (ts.isTypeAliasDeclaration(node)) return membersOf(node.type);
+  if (ts.isObjectLiteralExpression(node)) return node.properties;
+  if (
+    ts.isVariableDeclaration(node) ||
+    ts.isPropertyAssignment(node) ||
+    ts.isPropertyDeclaration(node)
+  ) {
+    const value = unwrap(node.initializer);
+    if (
+      value &&
+      (ts.isObjectLiteralExpression(value) || ts.isClassExpression(value))
+    )
+      return membersOf(value);
+  }
+  if (ts.isPropertySignature(node)) return membersOf(node.type);
+  return undefined;
+}
+
+/** 부른 함수의 맨 앞 이름(`describe.skipIf(x)("…")` → `describe`). */
+function calleeRoot(expression) {
+  let current = expression;
+  while (ts.isPropertyAccessExpression(current) || ts.isCallExpression(current))
+    current = current.expression;
+  return ts.isIdentifier(current) ? current.text : undefined;
+}
+
+/**
+ * 파일 하나가 정의하는 이름. names: 선언·멤버 이름과 환경 변수를 읽는 자리, paths: `컨테이너.멤버` 경로, strings: 문자열 리터럴,
+ * titles: `describe`·`it`·`test` 제목. TS·JS·JSON은 TypeScript 구문 트리로, YAML은 yaml로 읽고, 그 밖의 파일은 주석을 지운 낱말이다.
+ */
+export function definitionsOf(file, text) {
+  const found = {
+    names: new Set(),
+    paths: new Set(),
+    strings: new Set(),
+    titles: new Set(),
+  };
+  const extension = path.extname(file);
+  const addMembers = (prefix, members) => {
+    for (const member of members ?? []) {
+      // 생성자의 매개변수 속성(`constructor(private readonly clock)`)은 클래스 멤버다.
+      if (ts.isConstructorDeclaration(member))
+        addMembers(
+          prefix,
+          member.parameters.filter(
+            (parameter) => ts.getModifiers(parameter)?.length
+          )
+        );
+      const name = textOf(member.name);
+      if (name === undefined) continue;
+      const full = prefix ? `${prefix}.${name}` : name;
+      found.names.add(name);
+      found.paths.add(full);
+      addMembers(full, membersOf(member));
+    }
+  };
+  const addBindings = (binding) => {
+    if (ts.isIdentifier(binding)) found.names.add(binding.text);
+    else
+      for (const element of binding.elements)
+        if (!ts.isOmittedExpression(element)) addBindings(element.name);
+  };
+  const addValue = (prefix, value) => {
+    if (typeof value === "string") found.strings.add(value);
+    else if (Array.isArray(value))
+      for (const item of value) addValue(prefix, item);
+    else if (value && typeof value === "object")
+      for (const [key, inner] of Object.entries(value)) {
+        const full = prefix ? `${prefix}.${key}` : key;
+        found.names.add(key);
+        found.paths.add(full);
+        addValue(full, inner);
+      }
+  };
+
+  if (scriptKinds.has(extension) || extension === ".json") {
+    const source =
+      extension === ".json"
+        ? ts.parseJsonText(file, text)
+        : ts.createSourceFile(
+            file,
+            text,
+            ts.ScriptTarget.Latest,
+            false,
+            scriptKinds.get(extension)
+          );
+    const visit = (node) => {
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+        found.strings.add(node.text);
+      if (
+        (ts.isFunctionLike(node) || ts.isClassLike(node)) &&
+        !ts.isMethodDeclaration(node) &&
+        !ts.isMethodSignature(node)
+      ) {
+        const name = textOf(node.name);
+        if (name !== undefined) found.names.add(name);
+      }
+      if (
+        ts.isClassLike(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node) ||
+        ts.isEnumDeclaration(node)
+      ) {
+        const name = textOf(node.name);
+        if (name !== undefined) found.names.add(name);
+        addMembers(name ?? "", membersOf(node));
+      } else if (ts.isVariableDeclaration(node)) {
+        addBindings(node.name);
+        if (ts.isIdentifier(node.name))
+          addMembers(node.name.text, membersOf(node));
+      } else if (
+        ts.isObjectLiteralExpression(node) ||
+        ts.isTypeLiteralNode(node)
+      )
+        // 이름 없는 자리(인자·매개변수 타입)의 객체도 속성 이름을 정의한다. 이름 있는 자리는 위에서 경로까지 모았다.
+        addMembers("", membersOf(node));
+      else if (ts.isJsxAttribute(node)) {
+        // JSX 속성은 컴포넌트에 넘기는 props 객체의 속성이다.
+        const name = textOf(node.name);
+        if (name !== undefined) found.names.add(name);
+      } else if (ts.isModuleDeclaration(node) || ts.isExportSpecifier(node)) {
+        const name = textOf(node.name);
+        if (name !== undefined) found.names.add(name);
+      } else if (
+        ts.isPropertyAccessExpression(node) &&
+        ((ts.isIdentifier(node.expression) && node.expression.text === "env") ||
+          (ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "env"))
+      )
+        // 환경 변수는 선언이 없고 읽는 자리가 정의다(`process.env.BABOJUBOT_PROVIDERS`).
+        found.names.add(node.name.text);
+      else if (
+        ts.isCallExpression(node) &&
+        titleCallees.has(calleeRoot(node.expression) ?? "")
+      ) {
+        const title = node.arguments[0] && textOf(node.arguments[0]);
+        if (title !== undefined) found.titles.add(title);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return found;
+  }
+  if (extension === ".yml" || extension === ".yaml") {
+    for (const document of parseAllDocuments(text)) {
+      if (document.errors.length)
+        throw new Error(`${file}: YAML을 읽지 못했다`, {
+          cause: document.errors[0],
+        });
+      addValue("", document.toJS());
+    }
+    return found;
+  }
+  let body = text;
+  for (const pattern of comments.get(extension) ?? [])
+    body = body.replace(pattern, "$1");
+  for (const word of body.match(/[A-Za-z_$#][\w$-]*/g) ?? [])
+    found.names.add(word.replace(/-+$/, ""));
+  return found;
+}
+
+function defines(definitions, name) {
+  return (
+    definitions.strings.has(name) ||
+    (name.includes(".")
+      ? definitions.paths.has(name)
+      : definitions.names.has(name))
+  );
 }
 
 /** 표의 한 행을 칸으로 나눈다. 코드 표기 안의 `|`는 칸 구분이 아니다. */
@@ -122,16 +351,28 @@ function readCell({ text, testColumn }) {
   const notations = plain.match(fileInText) ?? [];
   const names = [];
   const testNames = [];
+  const titlesOrNames = [];
   const specifiers = [];
   const commands = [];
   for (const [, span] of text.matchAll(/`([^`]+)`/g)) {
     if (fileNotation.test(span)) notations.push(span);
     else if (packageSpecifier.test(span)) specifiers.push(span);
     else if (/^pnpm\s/.test(span)) commands.push(span);
+    else if (testColumn && namePattern.test(span))
+      // `테스트` 열에는 시험 제목과 시험 도움 이름이 함께 적힌다.
+      titlesOrNames.push(namePattern.exec(span)[1]);
     else if (namePattern.test(span)) names.push(namePattern.exec(span)[1]);
     else if (testColumn && !/[/*]/.test(span)) testNames.push(span);
   }
-  return { links, notations, names, testNames, specifiers, commands };
+  return {
+    links,
+    notations,
+    names,
+    testNames,
+    titlesOrNames,
+    specifiers,
+    commands,
+  };
 }
 
 /** workspace의 package.json(뿌리·`packages/*`·`apps/*`)과 어느 package.json이든 의존성으로 적은 패키지 이름. */
@@ -208,15 +449,11 @@ export function findCodeMapProblems({ root, files }) {
         (form) => form === notation || form.endsWith(`/${notation}`)
       )
     );
-  const contains = (file, name) => {
-    const boundary = name.includes("-") ? "[\\w$-]" : "[\\w$]";
-    const hasWord = (word) =>
-      new RegExp(`(?<!${boundary})${escapeRegExp(word)}(?!${boundary})`).test(
-        read(file)
-      );
-    return (
-      hasWord(name) || (name.includes(".") && name.split(".").every(hasWord))
-    );
+  const definitionCache = new Map();
+  const definitions = (file) => {
+    if (!definitionCache.has(file))
+      definitionCache.set(file, definitionsOf(file, read(file)));
+    return definitionCache.get(file);
   };
 
   const specifierProblem = (specifier) => {
@@ -274,10 +511,12 @@ export function findCodeMapProblems({ root, files }) {
       const pointedTests = new Set();
       const names = [];
       const testNames = [];
+      const titlesOrNames = [];
       for (const cell of unit.cells) {
         const found = readCell(cell);
         names.push(...found.names);
         testNames.push(...found.testNames);
+        titlesOrNames.push(...found.titlesOrNames);
         const cellFiles = found.links
           .map((target) =>
             path
@@ -318,17 +557,40 @@ export function findCodeMapProblems({ root, files }) {
 
       for (const name of names) {
         const scope = pointed.size ? [...pointed] : codeFiles;
-        if (scope.some((file) => contains(file, name))) continue;
+        if (scope.some((file) => defines(definitions(file), name))) continue;
         problems.push(
           pointed.size
             ? `${where}: 없는 이름 \`${name}\` — 이 줄이 가리키는 파일: ${scope.join(", ")}`
             : `${where}: 없는 이름 \`${name}\` — 저장소 코드 전체에서 찾음`
         );
       }
-      for (const testName of testNames) {
-        const scope = pointedTests.size ? [...pointedTests] : testFiles;
+      const titleScope = pointedTests.size ? [...pointedTests] : testFiles;
+      const hasTitle = (testName) => {
         const literal = testName.replace(/…$/, "");
-        if (scope.some((file) => read(file).includes(literal))) continue;
+        const titled = (title) =>
+          testName.endsWith("…")
+            ? title.startsWith(literal)
+            : title === literal;
+        return titleScope.some((file) =>
+          [...definitions(file).titles].some(titled)
+        );
+      };
+      for (const name of titlesOrNames) {
+        const scope = pointed.size ? [...pointed] : codeFiles;
+        if (
+          hasTitle(name) ||
+          scope.some((file) => defines(definitions(file), name))
+        )
+          continue;
+        problems.push(
+          pointed.size
+            ? `${where}: 없는 시험 이름·이름 \`${name}\` — 이 줄이 가리키는 파일: ${scope.join(", ")}`
+            : `${where}: 없는 시험 이름·이름 \`${name}\` — 저장소 코드 전체에서 찾음`
+        );
+      }
+      for (const testName of testNames) {
+        const scope = titleScope;
+        if (hasTitle(testName)) continue;
         problems.push(
           pointedTests.size
             ? `${where}: 없는 시험 이름 \`${testName}\` — 이 줄이 가리키는 시험 파일: ${scope.join(", ")}`
