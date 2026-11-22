@@ -456,3 +456,24 @@ it("reports what is still running when the wait runs out", async () => {
   });
   expect(result).toEqual({ stopped: [], left: [2 ** 22 + 1] });
 });
+
+// #268 PR 2: 찾은 번호에 나중에 신호하면, 찾은 뒤 그 번호가 다른 프로그램에 다시 주어졌을 때 그 프로그램이 신호를 받는다. 신원을
+// 확인한 바로 그 프로세스에만 신호해야 한다. 첫 조회가 돌려준 직후 그 번호가 표식 없는 다른 프로그램에 갔다고 본다.
+it("sends no signal to a number that went to another program after it was found", async () => {
+  const fake = fakeTime();
+  const pid = 2 ** 22 + 5;
+  const result = await fake.run(
+    stopLeaseHolders("lease", {
+      clock: fake.clock,
+      graceMs: 100,
+      waitMs: 100,
+      find: fake.find((call) =>
+        call === 0
+          ? { holders: [pid], unverified: [] }
+          : { holders: [], unverified: [] }
+      ),
+    })
+  );
+  expect(fake.signalsTo(pid)).toEqual([]);
+  expect(result.left).toEqual([]);
+});

@@ -1,4 +1,4 @@
-import { ChildProcess, spawnSync } from "node:child_process";
+import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { attemptAll } from "@babojubot/contracts";
 import { chmod, readFile, writeFile } from "node:fs/promises";
@@ -235,6 +235,60 @@ describe("launchTree", () => {
     await lifelines.closed(leader);
     await lifelines.closed(stubborn);
   }, 60_000);
+
+  // #268 PR 2: 서버가 죽으면 서버 쪽 정리는 돌지 못한다. 트리 밖(다른 subreaper 아래, systemd-run 등)으로 나가 이 실행 시도의
+  // 표식만 지닌 프로그램도 감독 실행기가 표식으로 찾아 끈다. 시험은 대표가 알린 자기 표식을 지닌 프로그램을 트리 밖에 띄운다.
+  it.skipIf(windows)(
+    "stops what carries the run's marker outside the tree when the process that launched it is killed",
+    async () => {
+      const leader = unique("leader");
+      const outside = unique("outside");
+      const markerFile = path.join(dataDir, `${leader}.marker`);
+      const script = path.join(dataDir, `${leader}.mjs`);
+      // 대표의 표식 가운데 번호가 가장 큰 것이 이 실행 시도의 것이다(앞 번호는 바깥 트리, 여기서는 서버를 띄운 트리의 것).
+      const writeOwnMarker = `{ const marks = Object.entries(process.env).filter(([name]) => /^BABOJUBOT_PROCESS_LEASE(_\\d+)?$/.test(name)).sort(([a], [b]) => Number(a.split("_").at(-1)) - Number(b.split("_").at(-1)) || a.length - b.length); process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(markerFile)}, marks.at(-1)[1]); }`;
+      await writeFile(
+        script,
+        `import { launchTree, prepareSupervisor } from ${launchModule};
+         const supervisor = await prepareSupervisor();
+         if (!supervisor.ok) throw new Error(supervisor.reason);
+         launchTree({
+           command: [process.execPath, "-e", ${JSON.stringify(`${writeOwnMarker} ${lifelines.hold(leader)} ${keep}`)}],
+           args: [],
+           cwd: process.cwd(),
+           env: { PATH: process.env.PATH },
+           stdio: ["ignore", "ignore", "ignore"],
+         });
+         setInterval(() => {}, 1000);`
+      );
+      const server = launchTree({
+        command: [process.execPath, script],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stdio: ["ignore", "ignore", 2],
+      });
+      trees.push(server);
+      await lifelines.connected(leader, 30_000);
+      const marker = await readFile(markerFile, "utf8");
+      const stray = spawn(
+        process.execPath,
+        ["-e", `${lifelines.hold(outside)} ${ignoreTerm} ${keep}`],
+        {
+          detached: true,
+          stdio: "ignore",
+          env: { PATH: process.env.PATH, BABOJUBOT_PROCESS_LEASE: marker },
+        }
+      );
+      onTestFinished(() => killUnlessGone(stray.pid!));
+      await lifelines.connected(outside);
+      server.killLeader();
+      await server.exited;
+      await lifelines.closed(leader);
+      await lifelines.closed(outside, 30_000);
+    },
+    90_000
+  );
 
   // 감독 실행기는 트리의 관리자다. 실행 시도의 표식은 실행기가 띄우는 프로그램에만 주고 실행기 자신은 지니지 않는다. 그래야 표식
   // 정리가 트리를 끄는 중인 실행기에 신호를 보내지 않는다(#274 외부 리뷰 1회차 STD-1/SPEC-1). Windows는 표식 정리가 없다.
