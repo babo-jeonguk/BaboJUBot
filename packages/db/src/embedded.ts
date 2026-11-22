@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import EmbeddedPostgres, { getBinaries } from "embedded-postgres";
@@ -37,7 +39,8 @@ export const clusterUrl = (port: number, database: string) =>
 // - 끄기: 정상 정지(fast)를 요청하고 끝날 때까지 기다린다. Windows도 Postgres 자체 신호로 정상 정지한다.
 // - 임시 cluster: 멈출 때 지우므로 디스크 확정 기록(fsync)·commit 확정 대기·전체 page 기록을 끄고 띄운다(PostgreSQL 문서 「Non-Durable Settings」).
 //   켜 두면 정지 때 밀린 기록을 확정하느라 디스크가 느린 곳(Windows CI의 OS 디스크)에서 몇 초씩 걸려 서버 정리 시한을 넘긴다.
-// - 주인: dataDir 하나는 한 프로세스만 쓴다(`acquireOwner`). 만들기·남은 Postgres 정리·켜기·끄기·지우기는 주인만 한다.
+// - 주인: dataDir 하나는 한 프로세스만 쓴다(`acquireOwner`). 만들기·남은 Postgres 정리·켜기·끄기·지우기는 주인만 한다. 주인이 살아
+//   있는지는 기록한 번호가 아니라 주인이 듣는 연결로 본다(`ownerAlive`, #268).
 // - 다음 시작: 강제로 끝난 프로세스가 남긴 Postgres는 기록된 주인이 죽었고 그 서버가 이 dataDir를 쓰는 것이 접속으로 확인될
 //   때만 멈춘다. 잠금 파일(postmaster.pid)만으로는 무관한 프로세스와 구별할 수 없다.
 // - port: 정한 port가 없으면 빈 port 후보로 켜고, 그 후보를 잡지 못했으면(그 사이 남이 잡았거나 그 port만 막힘) 다른 후보로 다시 켠다. 번호만 미리 받아 두면 다른 프로세스가 먼저 잡을 수 있다.
@@ -58,8 +61,11 @@ const temporaryPrefix = "babojubot-pg-";
 const ownerSuffix = ".owner";
 const logName = "postgres.log";
 
-/** 이 dataDir를 쓰는 프로세스. */
-type Owner = { pid: number; persistent: boolean };
+/**
+ * 이 dataDir를 쓰는 프로세스. `handle`은 주인이 살아 있는 동안 듣는 연결의 자리(Unix 소켓 파일, Windows named pipe)다. 주인이 죽으면
+ * OS가 그 연결을 닫는다. `pid`는 안내 문구에만 쓴다. `handle`이 없는 기록은 이 판 전에 쓴 예전 형식이다.
+ */
+type Owner = { pid: number; persistent: boolean; handle?: string };
 /** 이 프로세스가 얻은 주인 세대와, 바로 전 세대의 죽은 주인. */
 type Lease = { generation: number; previous: Owner | undefined };
 /** 이 프로세스가 켠 postgres. `identity`는 OS가 매긴 프로세스 생성 신원이다(`processIdentity`). */
@@ -93,7 +99,7 @@ export async function startEmbeddedCluster(
     if (!/^[A-Za-z_][A-Za-z0-9_.]*=[A-Za-z0-9_.:/-]+$/.test(setting))
       throw new Error(`unsupported Postgres setting "${setting}"`);
   const { pg_ctl: pgCtl } = await getBinaries();
-  const lease = acquireOwner(dataDir, persistent);
+  const lease = await acquireOwner(dataDir, persistent);
   try {
     if (!fs.existsSync(path.join(dataDir, "PG_VERSION")))
       await initialise(dataDir);
@@ -491,6 +497,7 @@ const ownerDir = (dataDir: string) => `${path.resolve(dataDir)}${ownerSuffix}`;
 async function removeTemporary(dataDir: string) {
   await fsp.rm(dataDir, { recursive: true, force: true });
   await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
+  dropConnection(ownerDir(dataDir));
 }
 
 function generations(dir: string): number[] {
@@ -545,24 +552,169 @@ function removeQuietly(file: string) {
 }
 
 /**
- * 이 dataDir의 주인이 된다. 지금 기록의 주인이 살아 있으면 실패한다. 죽었거나 내려놓았으면 다음 번호를 만든다.
- * 돌려주는 `previous`는 바로 전 세대의 죽은 주인이다(남은 Postgres를 멈춰도 되는지 판단할 때 쓴다).
+ * 주인 연결(#268). 번호(pid)는 주인이 죽은 뒤 다른 프로그램에 다시 주어지거나, 부모가 거두지 않은 채(좀비) 남아 신호 0에 "살아 있음"으로
+ * 답할 수 있다. 그래서 주인은 주인인 동안 연결 하나를 듣고, 다른 프로세스는 그 연결에 닿는지로 주인이 살아 있는지 본다. 주인이 죽으면
+ * OS가 연결을 닫는다. VS Code가 한 사용자 데이터 폴더를 한 프로세스만 쓰게 하는 방식과 같다(IPC 핸들을 듣고, 닿지 않으면 남은 것으로
+ * 보고 치운다). 소켓 파일 경로는 OS의 길이 한도(Linux 107, macOS 103) 안에 둔다.
  */
-function acquireOwner(dataDir: string, persistent: boolean): Lease {
+const handlePrefix = "babojubot-owner-";
+const socketPathLimit: Partial<Record<NodeJS.Platform, number>> = {
+  linux: 107,
+  darwin: 103,
+};
+/** 이 프로세스가 주인으로 듣는 연결. 주인 기록 폴더 → 그 연결. */
+const held = new Map<string, { handle: string; server: net.Server }>();
+
+/** 새 주인 연결의 자리. Linux는 사용자 전용 실행 폴더(`XDG_RUNTIME_DIR`)가 있으면 거기, 없으면 임시 폴더에 둔다. */
+function newHandle() {
+  const id = randomUUID().replaceAll("-", "");
+  if (process.platform === "win32") return `\\\\.\\pipe\\${handlePrefix}${id}`;
+  const base =
+    process.platform !== "darwin" && process.env.XDG_RUNTIME_DIR
+      ? process.env.XDG_RUNTIME_DIR
+      : os.tmpdir();
+  const limit = socketPathLimit[process.platform] ?? 103;
+  const room = limit - 1 - path.join(base, `${handlePrefix}.sock`).length;
+  if (room < 16)
+    throw new Error(
+      `the folder for embedded Postgres owner connections has too long a path for a socket: ${base}`
+    );
+  return path.join(base, `${handlePrefix}${id.slice(0, room)}.sock`);
+}
+
+/** 이 프로세스가 연 주인 연결의 자리인가. 기록에서 읽은 자리는 이 모양일 때만 믿는다(지울 수 있는 파일을 이것으로 묶는다). */
+function isOwnerHandle(handle: string) {
+  const name =
+    process.platform === "win32"
+      ? handle.replace(/^\\\\\.\\pipe\\/, "")
+      : path.basename(handle);
+  return new RegExp(`^${handlePrefix}[0-9a-f]{16,32}(\\.sock)?$`).test(name);
+}
+
+/** 이 주인 기록 폴더의 주인으로 연결 하나를 듣는다. 이 프로세스가 끝날 때까지 붙잡지 않는다(unref). */
+async function holdConnection(dir: string) {
+  const handle = newHandle();
+  const server = net.createServer((socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(handle, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  server.unref();
+  held.set(dir, { handle, server });
+  return handle;
+}
+
+/** 이 주인 기록 폴더의 주인 연결을 닫는다(소켓 파일도 함께 지워진다). 쥐지 않았으면 아무것도 하지 않는다. */
+function dropConnection(dir: string) {
+  const connection = held.get(dir);
+  if (!connection) return;
+  held.delete(dir);
+  connection.server.close();
+}
+
+/** 주인이 죽어 남은 소켓 파일. 이 모양의 소켓만 지운다. 이미 없으면 그만이다. */
+function removeStaleSocket(handle: string) {
+  if (process.platform === "win32") return;
+  continueAfterFailure(
+    () => {
+      const stat = fs.lstatSync(handle, { throwIfNoEntry: false });
+      if (stat?.isSocket()) fs.rmSync(handle, { force: true });
+    },
+    (error) =>
+      console.error(
+        `[db] a stale owner connection ${handle} could not be removed; it is harmless`,
+        error
+      )
+  );
+}
+
+/** 주인 연결에 닿는지 보는 상한. 같은 컴퓨터의 연결이라 곧 답한다. */
+const ownerCheckMs = 5_000;
+
+/**
+ * 기록한 주인이 지금 살아 있는가. 주인 연결에 닿으면 살아 있고, 그 자리가 없거나(ENOENT) 듣는 쪽이 없으면(ECONNREFUSED) 죽었다.
+ * 그 밖의 실패나 상한 초과는 모르는 것이라 원인과 함께 던진다(손대지 않는다). 예전 형식 기록(연결 없음)은 이 판 전에 쓴 것이라
+ * 번호로만 본다(`legacyOwnerAlive`).
+ */
+async function ownerAlive(dir: string, owner: Owner): Promise<boolean> {
+  if (owner.handle === undefined) return legacyOwnerAlive(owner.pid);
+  if (held.get(dir)?.handle === owner.handle) return true;
+  const handle = owner.handle;
+  return new Promise<boolean>((resolve, reject) => {
+    const socket = net.connect(handle);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(
+        new Error(
+          `whether the owner of ${dir} runs could not be checked: its connection did not answer within ${ownerCheckMs} ms`
+        )
+      );
+    }, ownerCheckMs);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      if (hasErrorCode("ENOENT", "ECONNREFUSED")(error)) {
+        removeStaleSocket(handle);
+        resolve(false);
+        return;
+      }
+      reject(
+        new Error(`whether the owner of ${dir} runs could not be checked`, {
+          cause: error,
+        })
+      );
+    });
+  });
+}
+
+/**
+ * 예전 형식 기록(연결 없이 번호만 적음)의 주인이 살아 있는가. 다른 사용자의 프로세스면 EPERM이며 살아 있다. 번호가 재사용됐으면
+ * 살아 있다고 보아 손대지 않는다(이전 판과 같은 판단). 이 판부터 쓰는 기록에는 연결이 있어 이 길을 지나지 않는다.
+ */
+function legacyOwnerAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * 이 dataDir의 주인이 된다. 지금 기록의 주인이 살아 있으면 실패한다. 죽었거나 내려놓았으면 주인 연결을 듣고, 그 자리를 담아 다음
+ * 번호를 만든다. 돌려주는 `previous`는 바로 전 세대의 죽은 주인이다(남은 Postgres를 멈춰도 되는지 판단할 때 쓴다).
+ */
+async function acquireOwner(
+  dataDir: string,
+  persistent: boolean
+): Promise<Lease> {
   const dir = ownerDir(dataDir);
   fs.mkdirSync(dir, { recursive: true });
   for (let attempt = 0; attempt < 20; attempt++) {
     const { generation, owner } = latest(dir);
-    if (owner && isAlive(owner.pid)) {
-      // 임시 cluster는 ephemeralCluster가 만들 때 이 프로세스 이름으로 이미 기록했다.
-      if (owner.pid === process.pid && !owner.persistent && !persistent)
+    if (owner && (await ownerAlive(dir, owner))) {
+      // 임시 cluster는 ephemeralCluster가 만들 때 이 프로세스가 이미 주인이 되었다.
+      if (
+        owner.handle !== undefined &&
+        held.get(dir)?.handle === owner.handle &&
+        !owner.persistent &&
+        !persistent
+      )
         return { generation, previous: undefined };
       throw new Error(
         `embedded Postgres in ${dataDir} is in use by a running process (pid ${owner.pid}). Stop that process first. If no BaboJUBot process uses it, delete ${dir}.`
       );
     }
+    const handle = held.get(dir)?.handle ?? (await holdConnection(dir));
     const mine = generation + 1;
-    const record: Owner = { pid: process.pid, persistent };
+    const record: Owner = { pid: process.pid, persistent, handle };
     if (!claim(dir, mine, record)) continue;
     if (latest(dir).generation !== mine) {
       removeQuietly(path.join(dir, String(mine)));
@@ -572,14 +724,16 @@ function acquireOwner(dataDir: string, persistent: boolean): Lease {
       if (old < mine) removeQuietly(path.join(dir, String(old)));
     return { generation: mine, previous: owner };
   }
+  dropConnection(dir);
   throw new Error(`could not take ownership of ${dataDir}`);
 }
 
-/** 주인을 내려놓는다. 다음 번호에 내려놓음을 남기거나, 시작하지 못했을 때는 치운 죽은 주인을 되돌려 남긴다. */
+/** 주인을 내려놓는다. 다음 번호에 내려놓음을 남기거나, 시작하지 못했을 때는 치운 죽은 주인을 되돌려 남긴다. 주인 연결도 닫는다. */
 function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
   const dir = ownerDir(dataDir);
   if (claim(dir, lease.generation + 1, restore ?? { released: true }))
     removeQuietly(path.join(dir, String(lease.generation)));
+  dropConnection(dir);
 }
 
 function readOwnerFile(file: string): Owner | undefined {
@@ -595,21 +749,18 @@ function readOwnerFile(file: string): Owner | undefined {
     return undefined;
   if (!("pid" in owner) || !("persistent" in owner)) return undefined;
   const { pid, persistent } = owner;
-  return typeof pid === "number" &&
-    Number.isInteger(pid) &&
-    typeof persistent === "boolean"
-    ? { pid, persistent }
+  if (
+    typeof pid !== "number" ||
+    !Number.isInteger(pid) ||
+    typeof persistent !== "boolean"
+  )
+    return undefined;
+  if (!("handle" in owner)) return { pid, persistent };
+  // 주인 연결이 있는 기록은 이 판이 쓴 모양이어야 한다. 아니면 해석할 수 없는 기록이다.
+  const { handle } = owner;
+  return typeof handle === "string" && isOwnerHandle(handle)
+    ? { pid, persistent, handle }
     : undefined;
-}
-
-/** 다른 사용자의 프로세스면 EPERM이며 살아 있다. pid가 재사용됐으면 살아 있다고 보아 손대지 않는다. */
-function isAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 /** 임시 dataDir. port는 켤 때 고른다(`startEmbeddedCluster`). 정지 때 dataDir를 지운다. 먼저 강제로 끝난 프로세스가 남긴 임시 cluster를 치운다. */
@@ -617,7 +768,7 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
   await removeTemporaryLeftovers();
   const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), temporaryPrefix));
   try {
-    acquireOwner(dataDir, false);
+    await acquireOwner(dataDir, false);
     return { dataDir, persistent: false };
   } catch (error) {
     await removeTemporary(dataDir).catch((removeError: unknown) =>
@@ -676,9 +827,20 @@ async function removeTemporaryLeftovers() {
     const { folder, owner } = inspected;
     if (folder && !folder.isDirectory()) continue;
     // 죽은 임시 주인의 것, 또는 주인 없이(내려놓았거나 내용을 해석할 수 없음) 기록만 남고 dataDir가 없는 것만 치운다.
-    if (owner ? owner.persistent || isAlive(owner.pid) : folder !== undefined)
-      continue;
-    const lease = continueAfterFailure(
+    if (owner ? owner.persistent : folder !== undefined) continue;
+    // 주인이 살아 있으면 둔다. 살아 있는지 모르면(연결 확인 실패) 기록만 하고 둔다.
+    if (owner) {
+      const alive = await continueAfterFailure(
+        () => ownerAlive(ownerDir(dataDir), owner),
+        (error) =>
+          console.error(
+            `[db] whether the owner of the leftover temporary cluster ${dataDir} runs could not be checked; it is left`,
+            error
+          )
+      );
+      if (alive !== false) continue;
+    }
+    const lease = await continueAfterFailure(
       () => acquireOwner(dataDir, false),
       (error) =>
         console.error(

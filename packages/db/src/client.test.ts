@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -386,6 +387,41 @@ describe("a Postgres left by a killed process", () => {
     expect(isAlive(postmaster)).toBe(true);
   }, 60_000);
 
+  // 주인이 살아 있는지는 기록한 번호가 아니라 주인이 쥔 연결로 본다(#268). 번호는 주인이 죽은 뒤 다른 프로그램에 다시 주어지거나,
+  // 거두지 않은 채(좀비) 남아 "살아 있음"으로 보일 수 있다. 연결은 주인이 죽으면 OS가 닫는다. 기록한 번호의 프로그램이 돌아도
+  // 연결이 없으면 주인이 죽은 것이다.
+  it("takes over a folder whose recorded owner no longer holds its connection, even when its process id belongs to a running program", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const cluster = folderCleanup(() => removeCluster(dataDir));
+    onTestFinished(cluster.cleanUp);
+    const unrelated = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { stdio: "ignore" }
+    );
+    cluster.own(() => killHard(unrelated));
+    // 주인 연결과 같은 모양의 자리(제품이 믿는 모양)지만 아무도 듣지 않는다.
+    const id = randomUUID().replaceAll("-", "");
+    const gone =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\babojubot-owner-${id}`
+        : path.join(os.tmpdir(), `babojubot-owner-${id.slice(0, 16)}.sock`);
+    await recordOwner(dataDir, {
+      pid: unrelated.pid!,
+      persistent: true,
+      handle: gone,
+    });
+    await withCleanup(async (defer) => {
+      const handle = await openDatabase({
+        embedded: { dataDir, persistent: true },
+      });
+      defer(() => handle.close());
+      const { rows } = await handle.db.execute(sql`select 1 as one`);
+      expect(rows).toEqual([{ one: 1 }]);
+    });
+    expect(isAlive(unrelated.pid!)).toBe(true);
+  }, 60_000);
+
   // 잠금 파일의 pid가 무관한 프로세스를 가리킬 수 있다(pid 재사용). 그 프로세스를 멈추지 않고 시작을 멈춘다.
   it.each([
     {
@@ -700,7 +736,7 @@ async function removeCluster(dataDir: string) {
 /** 주인 기록을 그 프로세스가 지금 주인인 것으로 바꿔 둔다. */
 async function recordOwner(
   dataDir: string,
-  owner: { pid: number; persistent: boolean }
+  owner: { pid: number; persistent: boolean; handle?: string }
 ) {
   const dir = `${dataDir}.owner`;
   await removeFolder(dir);
