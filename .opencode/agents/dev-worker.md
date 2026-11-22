@@ -59,6 +59,15 @@ permissions:
     resource: "*/test-cluster.*"
     effect: deny
   - action: edit
+    resource: "*/test-cleanup.*"
+    effect: deny
+  - action: edit
+    resource: "*/runtime-contract.*"
+    effect: deny
+  - action: edit
+    resource: "*/process/src/*-support.*"
+    effect: deny
+  - action: edit
     resource: "*/providers/*-support.*"
     effect: deny
   - action: edit
@@ -104,7 +113,7 @@ permissions:
     resource: "*vitest.workspace.*"
     effect: deny
   - action: edit
-    resource: "*playwright.config.*"
+    resource: "*playwright*config*"
     effect: deny
   - action: edit
     resource: "*tsconfig*.json"

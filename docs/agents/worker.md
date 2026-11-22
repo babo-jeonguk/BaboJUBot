@@ -14,7 +14,7 @@
 - worker는 시험·단언·검사 설정·검사 명령을 고치거나 끄지 않습니다. 시험이 틀려 보이거나 brief 밖 변경·설계 판단·허용되지 않은 명령이 필요하면 멈추고 보고합니다.
 - 인수·커밋·push·PR과 추가 agent 생성은 parent만 합니다.
 
-시험·검사 설정 수정 거부와 허용 명령은 [dev-worker](../../.opencode/agents/dev-worker.md) 권한이 강제하고, 실제 변경은 §6의 확인 스크립트가 다시 확인합니다. 나머지는 이 계약과 parent의 diff 검토로 지킵니다.
+시험·검사 설정 수정 거부와 허용 명령은 [dev-worker](../../.opencode/agents/dev-worker.md) 권한이 강제하고, 실제 변경은 §6의 확인 스크립트가 다시 확인합니다. 거부하는 시험 파일은 시험 범위([test-files.mjs](../../scripts/test-files.mjs) `testFiles`) 전부이고 제품 코드는 막지 않습니다. 권한 파일은 그 범위를 가져올 수 없어 [권한 범위 검사](../../.agents/scripts/worker-permissions.test.mjs)가 맞춥니다. 나머지는 이 계약과 parent의 diff 검토로 지킵니다.
 
 ## 2. 모델
 
