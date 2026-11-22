@@ -30,7 +30,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { parseMarkdown, SKIP, visit } from "./markdown.mjs";
-import { isTestFile } from "./test-files.mjs";
+import { codeFormatNames, isTestFile } from "./test-files.mjs";
 
 const segment = "[A-Za-z_$#][\\w$]*(?:-[\\w$]+)*";
 const namePattern = new RegExp(
@@ -67,14 +67,11 @@ function shortForm(file) {
  * comments: 지울 주석 문법(구문 분석기가 없는 소스). source: 줄에 파일이 없을 때 이름을 찾는 소스 코드인가.
  */
 const languages = new Map([
-  [".ts", { script: ts.ScriptKind.TS, source: true }],
-  [".mts", { script: ts.ScriptKind.TS, source: true }],
-  [".cts", { script: ts.ScriptKind.TS, source: true }],
-  [".tsx", { script: ts.ScriptKind.TSX, source: true }],
-  [".js", { script: ts.ScriptKind.JS, source: true }],
-  [".mjs", { script: ts.ScriptKind.JS, source: true }],
-  [".cjs", { script: ts.ScriptKind.JS, source: true }],
-  [".jsx", { script: ts.ScriptKind.JSX, source: true }],
+  // 코드 형식(scripts/test-files.mjs). TypeScript가 파일 이름으로 구문(TS·TSX·JS·JSX)을 고른다.
+  ...codeFormatNames.map((format) => [
+    `.${format}`,
+    { script: true, source: true },
+  ]),
   [".json", { json: true, source: false }],
   [".yml", { yaml: true, source: false }],
   [".yaml", { yaml: true, source: false }],
@@ -199,16 +196,10 @@ export function definitionsOf(file, text) {
       }
   };
 
-  if (language.script !== undefined || language.json) {
+  if (language.script || language.json) {
     const source = language.json
       ? ts.parseJsonText(file, text)
-      : ts.createSourceFile(
-          file,
-          text,
-          ts.ScriptTarget.Latest,
-          false,
-          language.script
-        );
+      : ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false);
     // 모듈 경로 문자열(`import … from "x"`, `import("x")`, `require("x")`, `import x = require("x")`, `import("x").T`)은 정의가 아니다.
     const moduleSpecifiers = new Set();
     const visit = (node) => {

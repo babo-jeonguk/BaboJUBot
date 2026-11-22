@@ -7,7 +7,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 import productRules from "./scripts/eslint-product-rules.mjs";
 import testRules from "./scripts/eslint-test-rules.mjs";
-import { testFiles } from "./scripts/test-files.mjs";
+import { codeFormats, testFiles } from "./scripts/test-files.mjs";
 
 // 도메인 규칙과 seam 계약은 프레임워크·DB·화면에 의존하지 않는다(docs/architecture.md 패키지 구성).
 const framework = [
@@ -23,18 +23,18 @@ const framework = [
   "@radix-ui/*",
 ];
 
-// 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다. 화면 파일(.tsx)도 같은 규칙을 받는다.
+// 제품 코드: 앱·패키지의 src에서 시험 코드를 뺀 곳. 타입 정보로 검사하는 범위와 같다. 형식(화면 파일 .tsx, JS 포함)과 상관없이 같은 규칙을 받는다.
 const productFiles = [
-  "apps/*/src/**/*.{ts,tsx}",
-  "packages/*/src/**/*.{ts,tsx}",
+  `apps/*/src/**/*.${codeFormats}`,
+  `packages/*/src/**/*.${codeFormats}`,
 ];
-// 개발 스크립트: 사람과 CI가 돌리는 scripts 아래 .mjs와 agent가 직접 돌리는 도구 스크립트(.agents의 scripts)에서 시험 코드를
+// 개발 스크립트: 사람과 CI가 돌리는 scripts 아래 파일과 agent가 직접 돌리는 도구 스크립트(.agents의 scripts)에서 시험 코드를
 // 뺀 곳. 시험이 부르는 가짜 프로그램(`test-fixtures`)과 일부러 실패하는 시험 묶음(`scripts/fixtures`)은 시험 쪽이다.
 // 타입 정보는 각 폴더의 tsconfig.json(allowJs)으로 얻는다.
 const scriptFiles = [
-  "scripts/**/*.mjs",
-  ".agents/scripts/*.mjs",
-  ".agents/skills/*/scripts/*.mjs",
+  `scripts/**/*.${codeFormats}`,
+  `.agents/scripts/*.${codeFormats}`,
+  `.agents/skills/*/scripts/*.${codeFormats}`,
 ];
 // 타입 정보는 디스크에 있는 파일에만 생긴다. lint 시험이 lintText로 넣는 없는 경로는 타입 정보 없는 규칙만 받는다.
 const scriptsOnDisk = globSync(scriptFiles, { cwd: import.meta.dirname });
@@ -44,24 +44,22 @@ const scriptIgnores = [
   "scripts/fixtures/**",
 ];
 
-// 타입 정보로 검사하는 시험 코드: 디스크에 있는 시험 파일(폴더 glob이 잡는 폴더는 뺀다). TypeScript 파일은 각 패키지의
-// tsconfig.json, scripts·.agents의 .mjs는 그 폴더의 tsconfig.json(allowJs)으로 타입 정보를 얻는다. 어느 프로젝트에도 들지 않는
-// 시험 폴더의 .mjs(가짜 서버·시험)는 기본 프로젝트로 읽는다.
-const typedTestFiles = globSync([...testFiles, ".agents/scripts/*.test.mjs"], {
-  cwd: import.meta.dirname,
-  exclude: (entry) => /(^|[\\/])node_modules$/.test(entry),
-}).filter((file) => /\.(ts|tsx|mts|mjs|js)$/.test(file));
+// 타입 정보로 검사하는 시험 코드: 디스크에 있는 시험 파일(폴더 glob이 잡는 폴더는 뺀다). 모든 형식이 그 폴더의 가장 가까운
+// tsconfig.json(JS는 tsconfig.base.json의 allowJs) 프로그램에 들어 타입 정보를 얻는다(scripts/lint-scope.test.mjs가 형식마다 확인).
+// globSync는 점으로 시작하는 폴더를 `**`로 찾지 않아 .agents를 따로 적는다.
+const codeFile = new RegExp(
+  `\\.(${codeFormats.slice(1, -1).replaceAll(",", "|")})$`
+);
+const typedTestFiles = globSync(
+  [...testFiles, `.agents/**/*.{test,spec}.${codeFormats}`],
+  {
+    cwd: import.meta.dirname,
+    exclude: (entry) => /(^|[\\/])node_modules$/.test(entry),
+  }
+).filter((file) => codeFile.test(file));
 // 타입 정보를 만드는 project service는 lint 실행 하나에 하나뿐이어서 처음 만든 설정을 모두 같이 쓴다. 그래서 타입 정보를 쓰는
-// 설정은 모두 이 값을 넘긴다.
-const projectService = {
-  // 기본 프로젝트도 Node 타입을 읽고 JS를 받는다(scripts/tsconfig.json의 설정).
-  defaultProject: "scripts/tsconfig.json",
-  allowDefaultProject: [
-    "apps/server/test/*.mjs",
-    "apps/server/test/fixtures/*.mjs",
-    "apps/web/e2e/support/*.mjs",
-  ],
-};
+// 설정은 모두 이 값을 넘긴다. 어느 프로젝트에도 들지 않는 파일을 받아 줄 기본 프로젝트 목록은 두지 않는다.
+const projectService = true;
 
 // runtime에서 프로그램을 직접 띄워도 되는 파일. 그 밖의 연결 코드는 process.ts의 실행 함수(startProcess·runProbe)를 거치고,
 // 그 함수들은 공용 실행(@babojubot/process의 launchTree·runTree)으로 띄운다.
@@ -192,6 +190,12 @@ export default defineConfig([
   tseslint.configs.recommended,
   { languageOptions: { globals: globals.node } },
   {
+    // ESLint은 .js·.mjs·.cjs와 TypeScript 형식만 기본으로 검사한다. 모든 코드 형식(.jsx 포함)을 검사해, 그 형식의 시험(러너는 모은다)이
+    // 규칙 밖에 남지 않게 한다.
+    files: [`**/*.${codeFormats}`],
+    languageOptions: { parserOptions: { ecmaFeatures: { jsx: true } } },
+  },
+  {
     // 주석은 lint 규칙을 바꾸지 못한다(#270). 주석 한 줄(`/* eslint 규칙: "off" */`, 끝을 닫지 않은 `/* eslint-disable */`)이면 파일 전체의
     // 위반이 사라지고, 주석의 설정은 설정 파일보다 우선해 막는 규칙까지 같은 주석으로 끌 수 있어서 주석의 설정을 아예 읽지 않는다.
     // 예외가 정말 필요하면 이 파일에 파일·규칙을 좁혀 이유와 함께 둔다. 효과 없는 지시 주석도 본보기로 베껴지지 않게 오류로 짚는다.
@@ -215,7 +219,7 @@ export default defineConfig([
   },
   {
     // check-test-exit-code.mjs가 vitest를 --globals로 돌려 넣는 이름(일부러 실패하는 시험).
-    files: ["scripts/fixtures/test-exit-code/*.test.mjs"],
+    files: ["scripts/fixtures/test-exit-code/**"],
     languageOptions: { globals: globals.vitest },
   },
   {
@@ -284,7 +288,7 @@ export default defineConfig([
   {
     // E2E는 대상을 그 조직·대화·영역 안에서 찾는다(CODING_STANDARDS.md#화면). 페이지인지 타입으로 가려야 해서 타입 정보를 쓴다.
     // 화면 상태는 다시 시도하는 web-first 단언으로 확인한다(CODING_STANDARDS.md#화면). Playwright locator인지 타입으로 가린다.
-    files: ["apps/web/e2e/**/*.ts"],
+    files: [`apps/web/e2e/**/*.${codeFormats}`],
     languageOptions: {
       parserOptions: {
         projectService,
@@ -354,7 +358,7 @@ export default defineConfig([
   {
     // commit 뒤 할 일(Event 알리기·취소·조직 재개·깨우기)은 저장 결과에 담아 applyAfterCommit 한 곳이 적용한다(#84).
     // 실행 시도 자체의 흐름은 dispatcher가, 저장과 상관없이 시작·끝나는 준비 확인 중 신호는 readiness가 맡는다.
-    files: ["apps/server/src/**/*.{ts,tsx}"],
+    files: [`apps/server/src/**/*.${codeFormats}`],
     ignores: [
       "apps/server/src/after-commit.ts",
       "apps/server/src/dispatcher.ts",
@@ -484,7 +488,7 @@ export default defineConfig([
   {
     // 다른 workspace 패키지는 그 package.json exports의 입구로만, 패키지 이름으로 가져온다(#266). 제품 코드·개발 스크립트·시험·
     // 설정 모두. 같은 패키지 안의 상대 경로는 그대로다. 영역마다 어느 입구까지 받는지는 아래 package-import-scope가 좁힌다.
-    files: ["**/*.{ts,tsx,mts,mjs,js}"],
+    files: [`**/*.${codeFormats}`],
     plugins: { product: productRules },
     rules: { "product/package-entry-only": "error" },
   },
@@ -517,7 +521,7 @@ export default defineConfig([
   {
     // db는 Control Plane이다(docs/architecture.md). 시험까지 프로바이더 adapter 패키지(runtime)에 기대지 않고, 프로세스 바탕은
     // 새 패키지에서 가져온다. 시험은 시험 정리 도움 입구까지, 제품 코드는 아래 설정이 제품 입구만 받는다.
-    files: ["packages/db/**/*.{ts,tsx}"],
+    files: [`packages/db/**/*.${codeFormats}`],
     plugins: { product: productRules },
     rules: {
       "product/package-import-scope": [
@@ -533,7 +537,7 @@ export default defineConfig([
     },
   },
   {
-    files: ["packages/db/src/**/*.{ts,tsx}"],
+    files: [`packages/db/src/**/*.${codeFormats}`],
     ignores: testFiles,
     plugins: { product: productRules },
     rules: {
@@ -599,18 +603,18 @@ export default defineConfig([
   },
   // runtime과 프로세스 패키지는 정해진 파일에서만 프로그램을 띄운다(위 launchBoundary).
   launchBoundary(
-    ["packages/runtime/src/**/*.{ts,tsx}"],
+    [`packages/runtime/src/**/*.${codeFormats}`],
     processOwners,
     runtimeLaunchMessage
   ),
   launchBoundary(
-    ["packages/process/src/**/*.{ts,tsx}"],
+    [`packages/process/src/**/*.${codeFormats}`],
     processPackageOwners,
     processPackageLaunchMessage
   ),
   {
     // 테스트는 응답 JSON을 그대로 다룬다.
-    files: ["**/test/**", "**/*.test.ts"],
+    files: ["**/test/**", `**/*.test.${codeFormats}`],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
   },
   {
