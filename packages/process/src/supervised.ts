@@ -533,3 +533,16 @@ export function superviseTree(
   };
   return { tree, abandon };
 }
+
+// #274 외부 리뷰 2회차: 제어 통로의 틀(netstring)과 상태 전이 표의 입구. 이 커밋은 시험이 쓰는 입구만 두고, 구현은 다음 커밋에서 한다.
+export function encodeMessage(_text: string): Buffer {
+  throw new Error("control message framing is not implemented yet");
+}
+export class MessageReader {
+  push(_chunk: Buffer): string[] {
+    throw new Error("control message framing is not implemented yet");
+  }
+}
+export function nextPhase(_phase: string, _event: string): string | undefined {
+  return undefined;
+}

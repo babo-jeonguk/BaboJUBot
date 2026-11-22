@@ -1,0 +1,20 @@
+# Control channel framing (#274 review 2): every message in both directions is one netstring, [len]":"[bytes]","
+# (D. J. Bernstein, https://cr.yp.to/proto/netstrings.txt). The TS reader (src/supervised.ts) and the Rust reader
+# (src/protocol.rs) both read this file in their tests.
+#   ok <message hex, or - when empty> <encoded hex>   the message encodes to these bytes and reads back from them
+#   bad <encoded hex>                                 a reader refuses these bytes (leading zero, missing ":" or ",",
+#                                                     a length that is not digits, or over the 1 MiB limit)
+ok - 303a2c
+ok 7374617274 353a73746172742c
+ok 68656c6c6f20776f726c6421 31323a68656c6c6f20776f726c64212c
+ok 656e76204241424f4a55424f545f50524f434553535f4c454153453d6f757465720a7374617274 33393a656e76204241424f4a55424f545f50524f434553535f4c454153453d6f757465720a73746172742c
+ok 6c6566743a20312028610d0a6229 31343a6c6566743a20312028610d0a62292c
+ok 656e7620413d780079 393a656e7620413d7800792c
+ok 6661696c65643a20ed959ceab88020ec9db4ec9ca0 32313a6661696c65643a20ed959ceab88020ec9db4ec9ca02c
+bad 30353a68656c6c6f2c
+bad 3568656c6c6f2c
+bad 353a68656c6c6f3b
+bad 3a68656c6c6f2c
+bad 2d313a782c
+bad 323030303030303a
+bad 31613a782c

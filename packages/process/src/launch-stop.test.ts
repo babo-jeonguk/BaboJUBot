@@ -98,17 +98,26 @@ async function holder(label: string, body = keep) {
 }
 
 /**
- * 프로그램을 띄우고 시작을 알리지만, 끄기 요청에는 그룹이 끝나지 않았다고 답하고 아무것도 끄지 않는 가짜 실행기. 서버가 제어 통로로
- * 준 환경(표식)을 프로그램에 주고, 약속 판 2부터는 `start`를 받은 뒤에 띄운다. 답한 뒤 `linger`ms 있다가 끝난다. SIGTERM을 받으면
- * 기록 파일에 남긴다(관리자인 실행기에 표식 정리가 신호를 보냈는지 본다). Linux·macOS 제어 통로는 넷째 표준 핸들의 소켓이다.
+ * 프로그램을 띄우고 시작을 알리지만, 끄기 요청에는 `reply`(기본은 그룹이 끝나지 않았다는 답)로 답하고 아무것도 끄지 않는 가짜 실행기.
+ * 프로그램의 끝은 알리지 않는다. 서버가 제어 통로로 준 환경(표식)을 프로그램에 주고, 약속 판 2부터는 `start`를 받은 뒤에 띄운다. 판
+ * 3부터는 메시지를 netstring으로 주고받는다. 답한 뒤 `linger`ms 있다가 `code`로 끝난다. SIGTERM을 받으면 기록 파일에 남긴다(관리자인
+ * 실행기에 표식 정리가 신호를 보냈는지 본다). Linux·macOS 제어 통로는 넷째 표준 핸들의 소켓이다.
  */
-const stubbornSupervisor = (linger: number) => `
+const stubbornSupervisor = (
+  linger: number,
+  {
+    reply = "left: 1 (the process group did not end)",
+    code = 1,
+  }: { reply?: string; code?: number } = {}
+) => `
   const net = require("node:net");
   const fs = require("node:fs");
   const [protocol, commandJson, termLog] = process.argv.slice(2);
+  const framed = Number(protocol) >= 3;
+  const frame = (text) => framed ? Buffer.byteLength(text) + ":" + text + "," : text + "\\n";
   process.on("SIGTERM", () => { if (termLog) fs.appendFileSync(termLog, "TERM\\n"); });
   const control = new net.Socket({ fd: 3 });
-  control.write("babojubot-supervisor " + protocol + "\\n");
+  control.write(frame("babojubot-supervisor " + protocol));
   const env = { ...process.env };
   let started = false;
   const start = () => {
@@ -116,21 +125,35 @@ const stubbornSupervisor = (linger: number) => `
     const [command, ...args] = JSON.parse(commandJson);
     const leader = require("node:child_process").spawn(command, args, { stdio: "ignore", detached: true, env });
     leader.unref();
-    control.write("ok " + leader.pid + "\\n");
+    control.write(frame("ok " + leader.pid));
   };
   if (Number(protocol) < 2) start();
-  let received = "";
+  let received = Buffer.alloc(0);
+  const next = () => {
+    if (framed) {
+      const colon = received.indexOf(58);
+      if (colon < 0) return undefined;
+      const length = Number(received.subarray(0, colon).toString());
+      if (received.length < colon + length + 2) return undefined;
+      const message = received.subarray(colon + 1, colon + 1 + length).toString();
+      received = received.subarray(colon + length + 2);
+      return message;
+    }
+    const newline = received.indexOf(10);
+    if (newline < 0) return undefined;
+    const message = received.subarray(0, newline).toString();
+    received = received.subarray(newline + 1);
+    return message;
+  };
   control.on("data", (chunk) => {
-    received += chunk;
-    for (let newline; (newline = received.indexOf("\\n")) >= 0; ) {
-      const line = received.slice(0, newline);
-      received = received.slice(newline + 1);
-      if (line.startsWith("env ")) {
-        const pair = line.slice(4);
+    received = Buffer.concat([received, chunk]);
+    for (let message; (message = next()) !== undefined; ) {
+      if (message.startsWith("env ")) {
+        const pair = message.slice(4);
         env[pair.slice(0, pair.indexOf("="))] = pair.slice(pair.indexOf("=") + 1);
-      } else if (line === "start" && !started) start();
-      else if (line.startsWith("stop"))
-        control.write("left: 1 (the process group did not end)\\n", () => setTimeout(() => process.exit(1), ${linger}));
+      } else if (message === "start" && !started) start();
+      else if (message.startsWith("stop"))
+        control.write(frame(${JSON.stringify(reply)}), () => setTimeout(() => process.exit(${code}), ${linger}));
     }
   });
   control.on("end", () => process.exit(1));
@@ -188,6 +211,45 @@ describe.skipIf(process.platform === "win32")(
       await expect(tree.stop()).rejects.toThrow(/process group did not end/);
       await lifelines.closed(leader.name);
       expect(existsSync(fault.termLog)).toBe(false);
+    }, 60_000);
+
+    // #274 외부 리뷰 2회차 SPEC-4: 트리가 끝났다는 답(`ended`)은 프로그램의 끝(`exit`)이 온 뒤에만 받는다. 프로그램의 끝 없이 온 답은
+    // 약속 위반이라 끄기를 성공으로 보지 않는다.
+    it("refuses an end reply that comes without the program's end", async () => {
+      const leader = await holder("leader");
+      fault.supervisor = await fakeSupervisor(
+        stubbornSupervisor(0, { reply: "ended", code: 0 })
+      );
+      const tree = launchTree({
+        command: [process.execPath, "-e", leader.script],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      await lifelines.connected(leader.name);
+      await expect(tree.stop()).rejects.toThrow(/broke the protocol/);
+      await lifelines.closed(leader.name);
+    }, 60_000);
+
+    // #274 외부 리뷰 2회차 SPEC-4: 실행기가 프로그램의 끝을 알리지 않고 끝나면, 프로그램의 끝은 모르는 것이다. 실행기 자신의 종료
+    // 코드를 프로그램의 끝으로 대신 쓰지 않는다.
+    it("does not report the supervisor's own exit code as the program's end", async () => {
+      const leader = await holder("leader");
+      fault.supervisor = await fakeSupervisor(
+        stubbornSupervisor(0, { code: 5 })
+      );
+      const tree = launchTree({
+        command: [process.execPath, "-e", leader.script],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      await lifelines.connected(leader.name);
+      await expect(tree.stop()).rejects.toThrow(/process group did not end/);
+      expect(await tree.exited).toEqual({ code: null, signal: null });
+      await lifelines.closed(leader.name);
     }, 60_000);
 
     // SP1: 끄기를 시작한 뒤의 끝은 끄기의 결과로 정한다. 트리가 끝나지 않으면 끄기는 원인과 함께 실패하고, 그 실패로 끝나야 한다.

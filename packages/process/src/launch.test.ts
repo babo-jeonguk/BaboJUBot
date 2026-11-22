@@ -1,11 +1,25 @@
-import { spawnSync } from "node:child_process";
+import { ChildProcess, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { attemptAll } from "@babojubot/contracts";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { launchTree, runTree, type LaunchedTree } from "./launch.ts";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
+import {
+  launchTree,
+  prepareSupervisor,
+  runTree,
+  type LaunchedTree,
+} from "./launch.ts";
 import { leaseHolders } from "./lease.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { supervisorProtocol } from "./supervisor.ts";
@@ -270,11 +284,11 @@ describe("launchTree", () => {
  * 이 시험 프로세스와 따로 돈 Node.js 프로그램(모듈)의 표준 출력 줄. 감독 실행기 준비는 프로세스 전체의 상태라, 준비하지 않았거나 다른
  * 실행기를 준비한 프로세스는 따로 띄워 본다.
  */
-function separately(module: string) {
+function separately(module: string, env: NodeJS.ProcessEnv = process.env) {
   const result = spawnSync(
     process.execPath,
     ["--input-type=module", "-e", module],
-    { encoding: "utf8", timeout: 60_000 }
+    { encoding: "utf8", timeout: 60_000, env }
   );
   expect(result.status, result.stderr).toBe(0);
   return result.stdout.trim().split("\n");
@@ -317,6 +331,13 @@ describe("launchTree without a supervisor", () => {
     );
   });
 
+  /**
+   * 가짜 실행기가 제어 통로에 쓰는 셸 명령. 약속 판 3부터는 메시지 하나가 netstring 하나다(`[길이]:[내용],`), 그 전에는 한 줄이다.
+   */
+  const say = (text: string) =>
+    supervisorProtocol >= 3
+      ? `printf '%s' '${Buffer.byteLength(text)}:${text},' >&3`
+      : `echo "${text}" >&3`;
   /** 셸 스크립트로 만든 가짜 실행기. 넷째 핸들(제어 통로)에 쓰고 읽는다. */
   async function fakeSupervisor(name: string, body: string) {
     const file = path.join(dataDir, name);
@@ -335,7 +356,7 @@ describe("launchTree without a supervisor", () => {
     async () => {
       const file = await fakeSupervisor(
         "mimic-supervisor",
-        `echo "babojubot-supervisor ${supervisorProtocol}" >&3\necho "exit 7" >&3\nwhile read line <&3; do case "$line" in stop*) echo ended >&3; exit 0;; esac; done\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\n${say("exit 7")}\nwhile read line <&3; do case "$line" in *stop*) ${say("ended")}; exit 0;; esac; done\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -356,7 +377,7 @@ describe("launchTree without a supervisor", () => {
       }, "the child that holds the control channel");
       const file = await fakeSupervisor(
         "leaky-supervisor",
-        `echo "babojubot-supervisor ${supervisorProtocol}" >&3\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -366,6 +387,48 @@ describe("launchTree without a supervisor", () => {
     },
     90_000
   );
+
+  // #274 외부 리뷰 2회차 STD-3: 시험 실행이 시한을 넘기면 실행기를 강제로 끝낸 뒤 그 끝까지 상한 안에서 확인한다. 끝을 확인하지
+  // 못하면(여기서는 강제 종료 신호가 닿지 않게 막았다) "시한 초과"와 "끝 확인 실패"를 둘 다 알린다. 끝을 보지 않고 실패만 돌려주지 않는다.
+  it.skipIf(windows)(
+    "confirms the supervisor's end after the trial's time limit, and says when it cannot",
+    async () => {
+      const pidFile = path.join(dataDir, "stuck-supervisor-pids");
+      folders.own(async () => {
+        for (const pid of (await readFile(pidFile, "utf8")).trim().split(/\s+/))
+          killUnlessGone(Number(pid));
+      }, "the stuck supervisor and its child");
+      const file = await fakeSupervisor(
+        "stuck-supervisor",
+        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\nsleep 600 &\necho $! >> ${JSON.stringify(pidFile)}\necho $$ >> ${JSON.stringify(pidFile)}\nexec sleep 600\n`
+      );
+      vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(() => true);
+      onTestFinished(async () => {
+        vi.restoreAllMocks();
+        expect(await prepareSupervisor()).toMatchObject({ ok: true });
+      });
+      expect(await prepareSupervisor({ file })).toEqual({
+        ok: false,
+        reason: expect.stringMatching(
+          /did not finish within \d+ ms.*could not be confirmed/s
+        ),
+      });
+    },
+    90_000
+  );
+
+  // #274 외부 리뷰 2회차 SPEC-3: 물려받은 표식이 이 제품이 만든 모양이 아니면(개행 등) 제어 통로로 넘기지 않고 실행을 거절한다.
+  // 그 값을 그대로 넘기면 새 실행 시도의 표식이 빠진 채 프로그램이 돌아, 표식 정리가 그 자손을 놓친다.
+  it("refuses to pass on an inherited marker that this product did not make", () => {
+    const lines = separately(
+      `import { launchTree, prepareSupervisor } from ${launchModule};
+       const supervisor = await prepareSupervisor();
+       if (!supervisor.ok) throw new Error(supervisor.reason);
+       ${tryLaunch}`,
+      { ...process.env, BABOJUBOT_PROCESS_LEASE: "outer\nstart" }
+    );
+    expect(lines.at(-1)).toMatch(/^TreeLaunchRefused: 실행 시도의 표식이 /);
+  });
 
   // 다른 판의 실행기(예전에 빌드한 것, 다른 판의 패키지)는 약속이 달라 쓰지 않는다. 실행기가 첫 줄로 알리는 약속 판으로 가린다.
   // 그 판만 알리는 가짜 실행기는 셸 스크립트로 만든다(Windows에는 넷째 핸들에 쓰는 셸 스크립트가 없다).
