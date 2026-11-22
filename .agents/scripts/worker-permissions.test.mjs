@@ -78,3 +78,32 @@ test("the code worker may edit product code", () => {
     []
   );
 });
+
+test("the code worker may edit a product file named like a test helper or placed like a test folder", () => {
+  // The denied names come from the test scope, which names helpers only in some packages and folders. The same name
+  // elsewhere in product code (another package's src, a sub folder) is product code and stays editable.
+  const sources = execFileSync("git", ["ls-files", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean)
+    .map((file) => /^(?:apps|packages)\/[^/]+\/src\//.exec(file)?.[0])
+    .filter((folder, index, all) => folder && all.indexOf(folder) === index);
+  assert.ok(sources.length > 1);
+  const twins = testFiles.flatMap(samples).flatMap((file) => {
+    const name = path.posix.basename(file);
+    const tail = file.replace(/^(?:apps|packages)\/[^/]+\/(?:src\/)?/, "");
+    return sources.flatMap((src) => [
+      `${src}${name}`,
+      `${src}sample/${name}`,
+      `${src}${tail}`,
+    ]);
+  });
+  const product = [...new Set(twins)].filter((file) => !isTestFile(file));
+  assert.ok(product.length > 0);
+  assert.deepEqual(
+    product.filter((file) => isProtected(rules, file)),
+    []
+  );
+});
