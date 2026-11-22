@@ -19,7 +19,7 @@ import {
   usageAmount,
 } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
-import { TreeLaunchRefused } from "./launch.ts";
+import { TreeLaunchRefused } from "@babojubot/process";
 import {
   startProcess,
   probeTimeoutMs,

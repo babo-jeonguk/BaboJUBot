@@ -37,8 +37,11 @@ import {
 } from "./container.ts";
 import { startProcess } from "./process.ts";
 import { createRelayHub } from "./relay.ts";
-import { removeFolder } from "../remove-folder.ts";
-import { commandFailure, probeEnvironment } from "./test-support.ts";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import {
+  commandFailure,
+  probeEnvironment,
+} from "@babojubot/process/test-support";
 
 // 실제 Docker가 있는 환경에서만 도는 격리 경계 검사(#102, #149). 로컬에서 Docker를 쓸 수 없으면 원인을 출력하고 건너뛴다.
 // Linux CI는 BABOJUBOT_REQUIRE_DOCKER=1로 이 검사를 필수로 정한다(.github/workflows/scaffold.yml `tests / runtime`). 그때는

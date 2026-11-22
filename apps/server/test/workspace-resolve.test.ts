@@ -11,7 +11,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 // 서버 프로세스가 경로를 풀면서 본 위치를 남기고, 본 바로 뒤에 바꿔치기를 넣는다.
 // 경로는 고정한 폴더에서 읽는 프로세스 안에서만 풀어야 한다. 서버 프로세스가 경로로 한 칸씩 보면 그 사이의 바꿔치기로

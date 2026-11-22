@@ -31,7 +31,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // 사용자 제어 명령: 조직 일시정지·재개·중단, 에이전트 일시정지·재개·실행 중단, Lead 대화의 `중단하고 보내기`(#59).
 

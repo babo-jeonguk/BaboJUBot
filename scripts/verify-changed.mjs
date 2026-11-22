@@ -5,10 +5,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  hasErrorCode,
-  orIfMissing,
-} from "../packages/contracts/src/failure.ts";
+import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
 import { isTestFile } from "./test-files.mjs";
 
 const sharedSettings = new Set([

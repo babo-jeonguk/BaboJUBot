@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { runPlaywright } from "./playwright-run.ts";
 import { alive, type ServerProcess } from "./server-process.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // 공용 E2E 서버의 수명은 globalSetup이 가진다(e2e/global-setup.ts). 테스트가 성공해도, 본문이 실패해도, setup이 서버를 띄운 뒤
 // 실패해도 Playwright가 끝나기 전에 서버가 정상 정리(종료 코드 0, 내장 Postgres 정지와 그 dataDir 삭제)를 마치고 폴더가 남지

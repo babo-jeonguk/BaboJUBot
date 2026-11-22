@@ -5,7 +5,7 @@ import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput, railOrganizationLink } from "./support/organization.ts";
 import { test as settingsTest } from "./support/shared-settings.ts";
 import { expectNoHorizontalOverflow } from "./support/layout.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // 키보드·포커스·접근 이름과 상태·실패 복구·실제 대비(#152). 실제 화면 읽기 프로그램은 실행하지 않고 Chromium 접근성 트리로 확인한다.
 

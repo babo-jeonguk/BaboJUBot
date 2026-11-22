@@ -4,15 +4,12 @@ import { createWriteStream } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  launchTree,
-  prepareJobObjectLauncher,
-} from "@babojubot/runtime/launch";
+import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
 import {
   failureCode,
   isDisconnect,
   orIfUnreadable,
-} from "../../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 
 const [directory, ...command] = process.argv.slice(2);
 const startedAt = Date.now();

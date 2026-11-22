@@ -25,7 +25,7 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {

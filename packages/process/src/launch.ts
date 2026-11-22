@@ -15,7 +15,7 @@ import {
   readLauncherStatus,
 } from "./job-object.ts";
 import { processStartTicks, stopLeaseHolders, withLease } from "./lease.ts";
-import { interruptProcessGroup, stopProcessGroup } from "./recovery.ts";
+import { interruptProcessGroup, stopProcessGroup } from "./group.ts";
 
 export { prepareJobObjectLauncher } from "./job-object.ts";
 

@@ -16,16 +16,13 @@ import { closeSync, openSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  launchTree,
-  prepareJobObjectLauncher,
-} from "@babojubot/runtime/launch";
+import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
 import {
   continueAfterFailure,
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
-} from "../../packages/contracts/src/failure.ts";
+} from "@babojubot/contracts";
 import { createWorkerRun, outcome } from "./worker-run.mjs";
 
 const USAGE = `usage: run-worker.mjs --model <provider/model> --title <title> --out <file.jsonl>

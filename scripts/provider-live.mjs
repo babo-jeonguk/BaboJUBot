@@ -3,17 +3,17 @@
 // 출력은 메타데이터뿐이다. 모델 원문·토큰은 찍지 않는다. `--record`면 원본을 Git 밖 로컬 기록 폴더(`BABOJUBOT_RECORDINGS`로 지정)에 남긴다.
 import { mkdir, chmod } from "node:fs/promises";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   createAntigravityProvider,
   createClaudeProvider,
   createCodexProvider,
   createOpenCodeProvider,
-} from "../packages/runtime/src/index.ts";
-import { openEphemeralDatabase } from "../packages/db/src/index.ts";
-import { agentSessions } from "../packages/db/src/schema.ts";
-import { startServer } from "../apps/server/src/index.ts";
+} from "@babojubot/runtime";
+import { openEphemeralDatabase } from "@babojubot/db";
+import { agentSessions } from "@babojubot/db/admin";
+import { eq } from "drizzle-orm";
+import { startServer } from "@babojubot/server";
 import { withCheckServer } from "./live/check-server.mjs";
 import { matchingPids } from "./live/processes.mjs";
 import {
@@ -25,10 +25,6 @@ import {
   verdict,
 } from "./live/provider-scenes.mjs";
 
-// 저장소 루트는 drizzle에 의존하지 않으므로 db 패키지 기준으로 찾는다.
-const { eq } = await import(
-  createRequire(path.resolve("packages/db/package.json")).resolve("drizzle-orm")
-);
 const [provider, consent, ...flags] = process.argv.slice(2);
 const factories = {
   claude: createClaudeProvider,

@@ -10,8 +10,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { commandFailure, probeEnvironment } from "@babojubot/runtime/testing";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import {
+  commandFailure,
+  probeEnvironment,
+} from "@babojubot/process/test-support";
 
 const workflow = parse(
   readFileSync(

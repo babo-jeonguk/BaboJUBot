@@ -36,12 +36,12 @@ import {
   chaosServer,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   awaitedLater,
   folderCleanup,
   withCleanup,
-} from "@babojubot/runtime/test-cleanup";
+} from "@babojubot/process/test-cleanup";
 
 const ids = scenes.map((s) => s.id);
 const launchAll = { scenes: ids, maxLiveRuns: 24 };

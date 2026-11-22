@@ -10,10 +10,9 @@ import {
   onTestFinished,
   vi,
 } from "vitest";
-import { killUnlessGone } from "../test-cleanup.ts";
+import { killUnlessGone } from "./test-cleanup.ts";
 import { launchTree, runTree } from "./launch.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
-import { startProcess } from "./process.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 끄기가 실패하는 길(#263 외부 리뷰 1회차 S2·SP1·SP2). 실제 프로세스로는 그룹 끄기 실패, SIGKILL 뒤에도 끝나지 않는 대표,
@@ -26,8 +25,8 @@ const fault = vi.hoisted(() => ({
   /** Windows 묶음 실행기 대신 시작 응답을 쓰지 않고 멈춘 프로그램을 띄운다. */
   silentLauncher: undefined as string | undefined,
 }));
-vi.mock("./recovery.ts", async (original) => {
-  const real = await original<typeof import("./recovery.ts")>();
+vi.mock("./group.ts", async (original) => {
+  const real = await original<typeof import("./group.ts")>();
   return {
     ...real,
     stopProcessGroup: async (
@@ -150,33 +149,6 @@ describe.skipIf(process.platform === "win32")(
           overflow: "stop",
         })
       ).rejects.toThrow(/process group|marker/);
-    }, 60_000);
-
-    it("ends an attempt as broken when its stop fails and the leader does not end", async () => {
-      const leader = await holder("stuck-attempt");
-      fault.group = true;
-      fault.marks = true;
-      const error = vi.spyOn(console, "error").mockImplementation(() => {});
-      onTestFinished(() => error.mockRestore());
-      const attempt = startProcess({
-        // 입력이 닫혀도 끝나지 않는다.
-        command: [
-          process.execPath,
-          "-e",
-          `process.stdin.resume(); ${leader.script}`,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        onFrame: async () => {},
-      });
-      await lifelines.connected(leader.name);
-      attempt.end();
-      const exit = await attempt.done;
-      expect(exit.broken).toBe(true);
-      expect(error).toHaveBeenCalledWith(
-        expect.stringContaining("could not all be stopped")
-      );
     }, 60_000);
   }
 );

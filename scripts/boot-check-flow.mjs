@@ -1,7 +1,7 @@
 // boot-check의 단계 진행과 멈춤. 정리하는 쪽은 이 흐름 하나다: 멈춤(자기 시한·SIGTERM 등)은 이유만 기록하고, 진행 중인
 // 단계(서버 시작, DB 열기·닫기)가 끝난 뒤 다음 단계 경계에서 멈춰 한 곳의 정리로 끝난다. 실제 단계는 scripts/boot-check.mjs가 넘긴다.
 
-import { attemptAll, attemptEach } from "../packages/contracts/src/failure.ts";
+import { attemptAll, attemptEach } from "@babojubot/contracts";
 
 /**
  * 멈춤 요청. 처음 이유만 남기고 한 번만 알린다. 멈춤 시한(`graceMs`)이 지나도 흐름이 끝나지 않으면 `onGraceExpired`를 부른다.

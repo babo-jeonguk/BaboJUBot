@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

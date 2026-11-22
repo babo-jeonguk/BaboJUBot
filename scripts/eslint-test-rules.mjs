@@ -1,32 +1,62 @@
 // 시험 코드 전용 lint 규칙. 선택자만으로는 판단할 수 없는 규칙(값이 어디로 가는지, 타이머가 무엇을 하는지)을 둔다.
 // 설정은 eslint.config.js의 `testFiles` 범위에 걸고, 회귀 시험은 scripts/lint-rules.test.mjs가 맡는다.
+import { originName, originOf, targetOf } from "./eslint-imports.mjs";
 
-const clocks = new Set(["Date", "performance"]);
-// 실제 시계를 읽는 `Date.now()`·`performance.now()`.
-const readsClock = (node) =>
+/**
+ * 식의 출처(공용 판정 `originName`의 `global:Promise.race`·`module:vitest:expect` 꼴)가 `names` 중 하나인가. JS 기본 전역과 시험
+ * 도구도 글자 이름이 아니라 출처로 본다(#266 리뷰 SPEC-4): 별칭·다른 이름으로 가져와도 같고, 같은 이름의 지역 값은 아니다.
+ */
+const comesFrom = (sourceCode, node, ...names) =>
+  names.includes(originName(sourceCode, node));
+/** expect의 출처: Vitest 전역, vitest·Playwright에서 가져온 것. Playwright의 `test.expect`와 `expect.extend(…)`·`expect.configure(…)`가
+ * 돌려준 값은 공용 판정이 `expect`로 맞춘다. */
+const expectOrigins = [
+  "global:expect",
+  "module:vitest:expect",
+  "module:@playwright/test:expect",
+];
+/** `node`가 expect인가(출처로 봄, 별칭·구조 분해 포함). */
+const isExpect = (sourceCode, node) =>
+  comesFrom(sourceCode, node, ...expectOrigins);
+/** `node`가 expect의 `method`(`expect.poll`·`expect.soft`)인가. 별칭·구조 분해로 받아도 같다. */
+const isExpectMethod = (sourceCode, node, method) =>
+  comesFrom(
+    sourceCode,
+    node,
+    ...expectOrigins.map((origin) => `${origin}.${method}`)
+  );
+/**
+ * 단언 함수와 그 메서드: node:assert·node:assert/strict가 내보내는 것(기본·이름공간·`strict`·`ok` 같은 이름 있는 함수), vitest의
+ * `assert`(= `chai.assert`·`expect.assert`, 공용 판정이 한 출처로 맞춤)와 `chai.expect`, Vitest 전역 `assert`(#266 리뷰 SPEC-5).
+ * node:test의 `assert`는 단언 함수가 아니라 단언을 등록하는 객체(`assert.register`)이고, `console.assert`는 실패해도 던지지 않아 넣지 않는다.
+ */
+const isAssert = (sourceCode, node) =>
+  /^(global:assert|module:assert(\/strict)?:.*|module:vitest:(assert|chai\.expect))(\..*)?$/.test(
+    originName(sourceCode, node) ?? ""
+  );
+
+// 실제 시계를 읽는 `Date.now()`·`performance.now()`(node:perf_hooks의 performance는 공용 판정이 전역으로 맞춘다).
+const clockReads = new Set(["global:Date.now", "global:performance.now"]);
+const readsClock = (node, sourceCode) =>
   node?.type === "CallExpression" &&
-  node.callee.type === "MemberExpression" &&
-  !node.callee.computed &&
-  node.callee.property.name === "now" &&
-  node.callee.object.type === "Identifier" &&
-  clocks.has(node.callee.object.name);
+  clockReads.has(originName(sourceCode, node.callee));
 
-/** `expect(...)`·`expect(...).toBe(...)`·`assert(...)`·`assert.ok(...)`처럼 이름이 expect·assert로 시작하는 호출인가. */
-function isAssertion(call) {
-  let callee = call.callee;
-  for (;;) {
+/**
+ * `expect(...)`·`expect(...).toBe(...)`·`assert(...)`·`assert.ok(...)`·`chai.assert.isBelow(...)`처럼 expect·단언 함수(출처로 봄)로
+ * 시작하는 호출인가. 호출 사슬을 거슬러 올라가며 각 자리의 출처를 본다.
+ */
+function isAssertion(call, sourceCode) {
+  for (let callee = call.callee; ;) {
+    if (isExpect(sourceCode, callee) || isAssert(sourceCode, callee))
+      return true;
     if (callee.type === "MemberExpression") callee = callee.object;
     else if (callee.type === "CallExpression") callee = callee.callee;
-    else break;
+    else return false;
   }
-  return (
-    callee.type === "Identifier" &&
-    (callee.name === "expect" || callee.name === "assert")
-  );
 }
 
 /** 값이 계산을 거쳐도 경과 시간인 채로 남는 자리: 산술·비교(`ms / 1000`, `ms < 500`), 부정, 타입 단언, `Math.round(ms)` 같은 계산. */
-function keepsValue(parent, child) {
+function keepsValue(parent, child, sourceCode) {
   switch (parent.type) {
     case "BinaryExpression":
     case "UnaryExpression":
@@ -36,11 +66,10 @@ function keepsValue(parent, child) {
     case "ChainExpression":
       return true;
     case "CallExpression":
+      // 전역 Math의 계산(`Math.round`·별칭·구조 분해로 받은 `round`). 부르는 모양과 무관하게 출처로 본다.
       return (
         parent.arguments.includes(child) &&
-        parent.callee.type === "MemberExpression" &&
-        parent.callee.object.type === "Identifier" &&
-        parent.callee.object.name === "Math"
+        /^global:Math\./.test(originName(sourceCode, parent.callee) ?? "")
       );
     default:
       return false;
@@ -66,7 +95,7 @@ const noElapsedTimeAssertion = {
     schema: [],
     messages: {
       elapsed:
-        "시험이 실제로 잰 경과 시간을 단언합니다. 결과가 실행기 속도에 달려 느린 실행기에서 깨집니다. 시한·타이머 순서는 가짜 시계(packages/runtime/src/providers/test-support.ts `manualClock`)를 주입해 시험이 정하고, 그 밖에는 걸린 시간 대신 순서·상태(처리 끝 신호, 시한을 적은 진단, 시험 시한)를 단언하세요. CODING_STANDARDS.md#시간",
+        "시험이 실제로 잰 경과 시간을 단언합니다. 결과가 실행기 속도에 달려 느린 실행기에서 깨집니다. 시한·타이머 순서는 가짜 시계(@babojubot/process/test-support의 `manualClock`)를 주입해 시험이 정하고, 그 밖에는 걸린 시간 대신 순서·상태(처리 끝 신호, 시한을 적은 진단, 시험 시한)를 단언하세요. CODING_STANDARDS.md#시간",
     },
   },
   create(context) {
@@ -79,7 +108,7 @@ const noElapsedTimeAssertion = {
         if (
           parent.type === "CallExpression" &&
           parent.arguments.includes(child) &&
-          isAssertion(parent)
+          isAssertion(parent, sourceCode)
         )
           return true;
         if (
@@ -99,7 +128,7 @@ const noElapsedTimeAssertion = {
           return variable ? readsReach(variable, seen) : false;
         }
         // 객체·다른 함수·문·함수 경계에 닿으면 더 따라가지 않는다(반환값도 따라가지 않는다).
-        if (!keepsValue(parent, child)) return false;
+        if (!keepsValue(parent, child, sourceCode)) return false;
         child = parent;
       }
       return false;
@@ -115,12 +144,13 @@ const noElapsedTimeAssertion = {
 
     /** 실제 시계를 읽은 값인가: `Date.now()`·`performance.now()` 호출, 또는 그 호출로 초기화·대입한 적이 있는 변수. */
     function isClockTime(node) {
-      if (readsClock(node)) return true;
+      if (readsClock(node, sourceCode)) return true;
       if (node.type !== "Identifier") return false;
       const variable = findVariable(node);
       return (
         variable?.references.some(
-          (reference) => reference.writeExpr && readsClock(reference.writeExpr)
+          (reference) =>
+            reference.writeExpr && readsClock(reference.writeExpr, sourceCode)
         ) ?? false
       );
     }
@@ -149,36 +179,34 @@ const noElapsedTimeAssertion = {
   },
 };
 
-const timerModules = /^(node:)?timers\/promises$/;
 const isFunction = (node) =>
   node?.type === "ArrowFunctionExpression" ||
   node?.type === "FunctionExpression";
 
 /** `Promise.race([...])`·`Promise.any([...])`의 한쪽으로 바로 넣은 값인가. */
-function raceMember(node) {
+function raceMember(node, sourceCode) {
   const array = node.parent;
   if (array?.type !== "ArrayExpression") return false;
   const call = array.parent;
   return (
     call?.type === "CallExpression" &&
     call.arguments[0] === array &&
-    call.callee.type === "MemberExpression" &&
-    !call.callee.computed &&
-    call.callee.object.type === "Identifier" &&
-    call.callee.object.name === "Promise" &&
-    (call.callee.property.name === "race" ||
-      call.callee.property.name === "any")
+    comesFrom(
+      sourceCode,
+      call.callee,
+      "global:Promise.race",
+      "global:Promise.any"
+    )
   );
 }
 
 /** `node`를 품은 가장 가까운 `new Promise(executor)`의 executor. */
-function enclosingExecutor(node) {
+function enclosingExecutor(node, sourceCode) {
   for (let parent = node.parent; parent; parent = parent.parent)
     if (
       isFunction(parent) &&
       parent.parent?.type === "NewExpression" &&
-      parent.parent.callee.type === "Identifier" &&
-      parent.parent.callee.name === "Promise" &&
+      comesFrom(sourceCode, parent.parent.callee, "global:Promise") &&
       parent.parent.arguments[0] === parent
     )
       return parent;
@@ -222,45 +250,56 @@ function onlyStatement(body) {
   return body.body.length === 1 ? body.body[0] : undefined;
 }
 
-// 이벤트 루프 차례 하나를 넘기는 호출: 지연 없는 타이머와 차례 예약.
-const turnSchedulers = new Set(["setImmediate", "queueMicrotask"]);
+// 지연(ms)을 기다리는 timers/promises 함수(Node 문서: setTimeout·setInterval, setTimeout과 같은 scheduler.wait). node:timers의
+// `promises`로 꺼낸 것도 공용 판정이 timers/promises로 맞춘다.
+const delayWaits = new Set([
+  "module:timers/promises:setTimeout",
+  "module:timers/promises:setInterval",
+  "module:timers/promises:scheduler.wait",
+]);
+// 차례 하나만 넘기는 timers/promises 함수(Node 문서: setImmediate, setImmediate()와 같은 scheduler.yield).
+const promiseTurns = new Set([
+  "module:timers/promises:setImmediate",
+  "module:timers/promises:scheduler.yield",
+]);
+// 실제 타이머 `setTimeout`(node:timers에서 가져온 것도 공용 판정이 전역으로 맞춘다).
+const timeouts = new Set(["global:setTimeout"]);
+// 이벤트 루프 차례 하나를 넘기는 호출: 차례 예약(node:timers·node:process에서 가져온 것도 전역으로 맞춰진다).
+const turnSchedulers = new Set([
+  "global:setImmediate",
+  "global:queueMicrotask",
+  "global:process.nextTick",
+]);
 /** `call`이 executor의 `resolve`로 차례 하나를 넘기는가: `setTimeout(r)`·`setTimeout(r, 0)`·`setTimeout(() => r(), 0)`·`setImmediate(r)`·`process.nextTick(r)`. */
-function schedulesTurn(call, resolve) {
+function schedulesTurn(call, resolve, sourceCode) {
   if (call?.type !== "CallExpression") return false;
-  const { callee } = call;
-  const name =
-    callee.type === "Identifier"
-      ? callee.name
-      : callee.type === "MemberExpression" &&
-          !callee.computed &&
-          callee.object.type === "Identifier" &&
-          callee.object.name === "process" &&
-          callee.property.name === "nextTick"
-        ? "nextTick"
-        : undefined;
-  if (name === "setTimeout") {
+  const name = originName(sourceCode, call.callee);
+  if (timeouts.has(name)) {
     const delay = call.arguments[1];
     if (delay && !(delay.type === "Literal" && delay.value === 0)) return false;
-  } else if (name !== "nextTick" && !turnSchedulers.has(name)) return false;
+  } else if (!turnSchedulers.has(name)) return false;
   return onlyWakes(call.arguments[0], resolve);
 }
 
 /** 문이 이벤트 루프 차례 하나를 기다리기만 하는가: `await new Promise((r) => setTimeout(r, 0))`, `await Promise.resolve()`. */
-function waitsOneTurn(statement) {
+function waitsOneTurn(statement, sourceCode) {
   if (statement?.type !== "ExpressionStatement") return false;
   const awaited = statement.expression;
   if (awaited.type !== "AwaitExpression") return false;
   const value = awaited.argument;
-  if (methodOf(value) === "resolve")
-    return (
-      value.callee.object.type === "Identifier" &&
-      value.callee.object.name === "Promise" &&
-      value.arguments.length === 0
-    );
+  if (
+    value?.type === "CallExpression" &&
+    promiseTurns.has(originName(sourceCode, value.callee))
+  )
+    return true;
+  if (
+    value?.type === "CallExpression" &&
+    comesFrom(sourceCode, value.callee, "global:Promise.resolve")
+  )
+    return value.arguments.length === 0;
   if (
     value?.type !== "NewExpression" ||
-    value.callee.type !== "Identifier" ||
-    value.callee.name !== "Promise"
+    !comesFrom(sourceCode, value.callee, "global:Promise")
   )
     return false;
   const executor = value.arguments[0];
@@ -268,7 +307,7 @@ function waitsOneTurn(statement) {
   return (
     isFunction(executor) &&
     resolve?.type === "Identifier" &&
-    schedulesTurn(onlyExpression(executor), resolve.name)
+    schedulesTurn(onlyExpression(executor), resolve.name, sourceCode)
   );
 }
 
@@ -326,41 +365,30 @@ const noFixedTimeWait = {
   },
   create(context) {
     const { sourceCode } = context;
-    /** `timers/promises`에서 가져온 이름. */
-    const timers = new Set();
     const report = (node) => context.report({ node, messageId: "fixed" });
     const loop = (node) => {
-      if (waitsOneTurn(onlyStatement(node.body)))
+      if (waitsOneTurn(onlyStatement(node.body), sourceCode))
         context.report({ node, messageId: "turns" });
     };
     /** 차례 넘기기를 잇달아 쓴 문 목록. 이어진 묶음마다 처음 문에서 한 번 알린다. */
     const consecutive = (statements) => {
       for (let i = 0; i + 1 < statements.length; i++) {
-        if (!waitsOneTurn(statements[i]) || !waitsOneTurn(statements[i + 1]))
+        if (
+          !waitsOneTurn(statements[i], sourceCode) ||
+          !waitsOneTurn(statements[i + 1], sourceCode)
+        )
           continue;
         context.report({ node: statements[i], messageId: "turns" });
-        while (i + 1 < statements.length && waitsOneTurn(statements[i + 1]))
+        while (
+          i + 1 < statements.length &&
+          waitsOneTurn(statements[i + 1], sourceCode)
+        )
           i++;
       }
     };
-    /** 전역 `AbortSignal.timeout(…)`인가. 같은 파일의 `const`에 담은 것도 본다. */
-    const timedSignal = (node) => {
-      if (node?.type === "Identifier") {
-        const def = bindingOf(sourceCode, node)?.defs[0];
-        return (
-          def?.type === "Variable" &&
-          def.parent.kind === "const" &&
-          timedSignal(def.node.init)
-        );
-      }
-      return (
-        node?.type === "CallExpression" &&
-        memberName(node.callee) === "timeout" &&
-        node.callee.object.type === "Identifier" &&
-        node.callee.object.name === "AbortSignal" &&
-        !bindingOf(sourceCode, node.callee.object)
-      );
-    };
+    /** 전역 `AbortSignal.timeout(…)`이 돌려준 값인가(별칭으로 부른 것, 그 값을 담은 변수 포함). 호출 결과의 출처는 끝에 `()`가 붙는다. */
+    const timedSignal = (node) =>
+      comesFrom(sourceCode, node, "global:AbortSignal.timeout()");
     /** 호출이 중단 시한을 받는가: 인자 자체이거나 옵션 객체의 속성 값. */
     const takesTimedSignal = (call) =>
       call.arguments.some(
@@ -377,10 +405,7 @@ const noFixedTimeWait = {
       const parent = call.parent;
       if (parent?.type !== "CallExpression" || parent.arguments[0] !== call)
         return false;
-      if (
-        parent.callee.type === "Identifier" &&
-        parent.callee.name === "expect"
-      ) {
+      if (isExpect(sourceCode, parent.callee)) {
         if (memberName(parent.parent) !== "rejects") return false;
         let matcher = parent.parent;
         while (matcher.parent?.type === "MemberExpression")
@@ -391,11 +416,11 @@ const noFixedTimeWait = {
           matcher.parent.arguments.some(namesAbort)
         );
       }
+      // node:assert의 rejects(별칭·구조 분해·이름 있는 가져오기 포함). 출처로 본다.
       return (
-        memberName(parent.callee) === "rejects" &&
-        parent.callee.object.type === "Identifier" &&
-        parent.callee.object.name === "assert" &&
-        parent.arguments.slice(1).some(namesAbort)
+        /^(global:assert\.|module:assert(\/strict)?:)rejects$/.test(
+          originName(sourceCode, parent.callee) ?? ""
+        ) && parent.arguments.slice(1).some(namesAbort)
       );
     };
     return {
@@ -404,11 +429,6 @@ const noFixedTimeWait = {
       ForInStatement: loop,
       Program: (node) => consecutive(node.body),
       BlockStatement: (node) => consecutive(node.body),
-      ImportDeclaration(node) {
-        if (!timerModules.test(node.source.value)) return;
-        for (const specifier of node.specifiers)
-          timers.add(specifier.local.name);
-      },
       CallExpression(node) {
         const { callee } = node;
         if (takesTimedSignal(node) && expectsAbort(node))
@@ -419,16 +439,9 @@ const noFixedTimeWait = {
           callee.property.name === "waitForTimeout"
         )
           return report(node);
-        if (callee.type === "Identifier" && timers.has(callee.name))
-          return report(node);
-        if (
-          callee.type === "MemberExpression" &&
-          callee.object.type === "Identifier" &&
-          timers.has(callee.object.name)
-        )
-          return report(node);
-        if (callee.type !== "Identifier" || callee.name !== "setTimeout")
-          return;
+        // 지연을 기다리는 timers/promises 함수(Node 문서: setTimeout·setInterval·scheduler.wait). 출처로 본다.
+        if (delayWaits.has(originName(sourceCode, callee))) return report(node);
+        if (!timeouts.has(originName(sourceCode, callee))) return;
         const delay = node.arguments[1];
         if (!delay || (delay.type === "Literal" && delay.value === 0)) return;
         if (
@@ -436,9 +449,12 @@ const noFixedTimeWait = {
           onlyAborts(node.arguments[0])
         )
           return context.report({ node, messageId: "abortAfter" });
-        const executor = enclosingExecutor(node);
+        const executor = enclosingExecutor(node, sourceCode);
         const resolve = executor?.params[0];
-        if (resolve?.type !== "Identifier" || raceMember(executor.parent))
+        if (
+          resolve?.type !== "Identifier" ||
+          raceMember(executor.parent, sourceCode)
+        )
           return;
         if (onlyWakes(node.arguments[0], resolve.name)) report(node);
       },
@@ -560,7 +576,7 @@ const locatorReads = new Map([
 ]);
 const pageReads = new Map([["title", "toHaveTitle"]]);
 // 읽은 값이 바뀌지 않고 단언까지 가는 형변환 함수(`Number(await count())`).
-const conversions = new Set(["Number", "String", "Boolean"]);
+const conversions = ["global:Number", "global:String", "global:Boolean"];
 
 /** 점·문자열 대괄호로 쓴 속성 이름(`x.a`·`x["a"]`). */
 function memberName(member) {
@@ -573,7 +589,7 @@ function memberName(member) {
 }
 
 /** 읽은 값이 그대로(또는 꺼내·바꿔) 다음 식으로 가는 자리: 기다림, 부정·비교, 단언, `?? ""`, `.trim()`·`.length`, `Number(…)`. */
-function carriesRead(parent, child) {
+function carriesRead(parent, child, sourceCode) {
   switch (parent.type) {
     case "AwaitExpression":
     case "UnaryExpression":
@@ -589,8 +605,7 @@ function carriesRead(parent, child) {
       return (
         parent.callee === child ||
         (parent.arguments.includes(child) &&
-          parent.callee.type === "Identifier" &&
-          conversions.has(parent.callee.name))
+          comesFrom(sourceCode, parent.callee, ...conversions))
       );
     default:
       return false;
@@ -607,15 +622,14 @@ function returningFunction(node) {
 }
 
 /** `value`가 다시 시도하는 자리에 넘겨지는가: `expect.poll(value)`·`expect(value).toPass()`. */
-function retriedArgument(value) {
+function retriedArgument(value, sourceCode) {
   const call = value.parent;
   if (call?.type !== "CallExpression" || call.arguments[0] !== value)
     return false;
   const { callee } = call;
-  const isExpect = (n) => n.type === "Identifier" && n.name === "expect";
   return (
-    (memberName(callee) === "poll" && isExpect(callee.object)) ||
-    (isExpect(callee) && memberName(call.parent) === "toPass")
+    isExpectMethod(sourceCode, callee, "poll") ||
+    (isExpect(sourceCode, callee) && memberName(call.parent) === "toPass")
   );
 }
 
@@ -626,7 +640,7 @@ function retriedArgument(value) {
 function retryingFunction(node, sourceCode) {
   for (let parent = node.parent; parent; parent = parent.parent) {
     if (!isFunction(parent) && parent.type !== "FunctionDeclaration") continue;
-    if (retriedArgument(parent)) return parent;
+    if (retriedArgument(parent, sourceCode)) return parent;
     const declarator = parent.parent;
     const variable =
       parent.type === "FunctionDeclaration"
@@ -635,22 +649,23 @@ function retryingFunction(node, sourceCode) {
             declarator.init === parent
           ? sourceCode.getDeclaredVariables(declarator)[0]
           : undefined;
-    if (variable?.references.some((r) => retriedArgument(r.identifier)))
+    if (
+      variable?.references.some((r) =>
+        retriedArgument(r.identifier, sourceCode)
+      )
+    )
       return parent;
   }
   return undefined;
 }
 
 /** `call`이 단언의 대상 자리 `expect(x)`·`expect.soft(x)`이고 `child`가 그 x인가. */
-function assertionSubject(call, child) {
+function assertionSubject(call, child, sourceCode) {
   if (call.type !== "CallExpression" || call.arguments[0] !== child)
     return false;
   const { callee } = call;
   return (
-    (callee.type === "Identifier" && callee.name === "expect") ||
-    (memberName(callee) === "soft" &&
-      callee.object.type === "Identifier" &&
-      callee.object.name === "expect")
+    isExpect(sourceCode, callee) || isExpectMethod(sourceCode, callee, "soft")
   );
 }
 
@@ -693,7 +708,7 @@ const noOneShotUiRead = {
     function reachesSubject(node, seen, origin = node) {
       let child = node;
       for (let parent = child.parent; parent; parent = child.parent) {
-        if (assertionSubject(parent, child)) {
+        if (assertionSubject(parent, child, sourceCode)) {
           const retry = retryingFunction(parent, sourceCode);
           return !retry || !contains(retry, origin);
         }
@@ -719,7 +734,7 @@ const noOneShotUiRead = {
           (parent.type === "ArrowFunctionExpression" && parent.body === child)
         )
           return callsReach(returningFunction(parent), seen);
-        if (!carriesRead(parent, child)) return false;
+        if (!carriesRead(parent, child, sourceCode)) return false;
         child = parent;
       }
       return false;
@@ -797,30 +812,6 @@ function bindingOf(sourceCode, identifier) {
   return undefined;
 }
 
-/** 가져온 변수면 그 출처(`{ source, imported }`). imported는 가져온 이름, 기본 가져오기는 "default", 이름공간은 "*". */
-function importOf(variable) {
-  const def = variable?.defs[0];
-  if (def?.type !== "ImportBinding") return undefined;
-  const specifier = def.node;
-  const imported =
-    specifier.type === "ImportDefaultSpecifier"
-      ? "default"
-      : specifier.type === "ImportNamespaceSpecifier"
-        ? "*"
-        : (specifier.imported.name ?? specifier.imported.value);
-  return { source: def.parent.source.value, imported };
-}
-
-/** `identifier`가 `modules`에서 가져온 `names` 중 하나인가(다른 이름으로 가져와도). */
-function importedFrom(sourceCode, identifier, modules, names) {
-  const origin = importOf(bindingOf(sourceCode, identifier));
-  return (
-    origin !== undefined &&
-    modules.test(origin.source) &&
-    names.includes(origin.imported)
-  );
-}
-
 /** `outer`가 `inner`를 품는가. */
 const contains = (outer, inner) =>
   outer.range[0] <= inner.range[0] && inner.range[1] <= outer.range[1];
@@ -845,28 +836,13 @@ function walkBody(fn, found) {
   visit(fn);
 }
 
-const processModules = /^(node:)?process$/;
 /**
- * `call`이 Node의 `process.kill`인가. 이름이 아니라 출처로 본다: 전역 `process`, `node:process`에서 가져온 `process`(기본·이름공간)와
- * `kill`(다른 이름으로 가져와도). 같은 이름의 지역 값(`const process = fake`)은 아니다.
+ * `call`이 Node의 `process.kill`인가. 이름이 아니라 출처로 본다(공용 판정 `originOf`): 전역 `process`, `node:process`에서 가져온
+ * `process`·`kill`(다른 이름으로 가져와도), 그 별칭. 같은 이름의 지역 값(`const process = fake`)은 아니다.
  */
 function processKill(call, sourceCode) {
-  const { callee } = call;
-  if (callee.type === "Identifier")
-    return importedFrom(sourceCode, callee, processModules, ["kill"]);
-  if (
-    callee.type !== "MemberExpression" ||
-    callee.computed ||
-    callee.property.name !== "kill" ||
-    callee.object.type !== "Identifier"
-  )
-    return false;
-  if (!bindingOf(sourceCode, callee.object))
-    return callee.object.name === "process";
-  return importedFrom(sourceCode, callee.object, processModules, [
-    "default",
-    "*",
-  ]);
+  // node:process에서 가져온 것도 공용 판정이 전역 process로 맞춘다.
+  return comesFrom(sourceCode, call.callee, "global:process.kill");
 }
 
 /** 동기로 던지는 정리: `process.kill`(대상이 이미 사라지면 ESRCH)과 이름이 `Sync`로 끝나는 호출(`fs.rmSync`·`chmodSync` 등). */
@@ -878,8 +854,9 @@ function throwsSync(call, sourceCode) {
       : callee.type === "MemberExpression" && !callee.computed
         ? callee.property.name
         : undefined;
+  // process.kill은 출처로(별칭·구조 분해 포함), `…Sync`는 이름의 모양으로 본다.
   return (
-    name !== undefined && (/Sync$/.test(name) || processKill(call, sourceCode))
+    processKill(call, sourceCode) || (name !== undefined && /Sync$/.test(name))
   );
 }
 
@@ -902,9 +879,9 @@ const noCleanupInFinally = {
     schema: [],
     messages: {
       awaited:
-        "finally에서 정리를 기다립니다. 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛰어 프로그램·폴더가 남습니다. 자원을 잡은 직후 정리를 등록하세요: Vitest는 onTestFinished, 시험 중간·node:test·Playwright는 withCleanup(@babojubot/runtime/test-cleanup)의 defer. 등록한 정리는 역순으로 모두 돌고 그 실패는 원래 실패와 함께 보고됩니다. 앞 단계가 끝나야 하는 정리(프로그램을 끈 뒤 그 폴더 지우기)는 한 등록 안에 차례로 두고, 서로 무관한 단계는 attemptAll로 모두 시도하세요. CODING_STANDARDS.md#정리",
+        "finally에서 정리를 기다립니다. 정리가 실패하면 그 오류가 시험의 원래 실패를 가리고, 앞 정리가 실패하면 뒤 정리를 건너뛰어 프로그램·폴더가 남습니다. 자원을 잡은 직후 정리를 등록하세요: Vitest는 onTestFinished, 시험 중간·node:test·Playwright는 withCleanup(@babojubot/process/test-cleanup)의 defer. 등록한 정리는 역순으로 모두 돌고 그 실패는 원래 실패와 함께 보고됩니다. 앞 단계가 끝나야 하는 정리(프로그램을 끈 뒤 그 폴더 지우기)는 한 등록 안에 차례로 두고, 서로 무관한 단계는 attemptAll로 모두 시도하세요. CODING_STANDARDS.md#정리",
       thrown:
-        "finally에서 던질 수 있는 동기 정리(process.kill·*Sync)를 부릅니다. 대상이 이미 끝났거나 지우기가 실패하면 그 오류가 시험의 원래 실패를 가리고 뒤 정리를 건너뜁니다. 이미 사라진 대상만 넘어가는 끄기 함수(killAndWait 등)를 쓰고, 정리는 자원을 잡은 직후 onTestFinished나 withCleanup(@babojubot/runtime/test-cleanup)의 defer로 등록하세요. CODING_STANDARDS.md#정리",
+        "finally에서 던질 수 있는 동기 정리(process.kill·*Sync)를 부릅니다. 대상이 이미 끝났거나 지우기가 실패하면 그 오류가 시험의 원래 실패를 가리고 뒤 정리를 건너뜁니다. 이미 사라진 대상만 넘어가는 끄기 함수(killAndWait 등)를 쓰고, 정리는 자원을 잡은 직후 onTestFinished나 withCleanup(@babojubot/process/test-cleanup)의 defer로 등록하세요. CODING_STANDARDS.md#정리",
     },
   },
   create(context) {
@@ -949,67 +926,63 @@ const noCleanupInFinally = {
   },
 };
 
+/**
+ * 시험 함수의 출처. 공용 판정이 같은 값을 한 이름으로 맞춘다(#266 리뷰 SPEC-5): Playwright의 `test`(기본 내보내기 포함), vitest의
+ * `test`(`it`은 같은 함수), node:test 모듈 자체(기본 내보내기·`test`·`it`이 모두 그 함수).
+ */
+const testFunctions = new Set([
+  "module:@playwright/test:test",
+  "module:vitest:test",
+  "module:node:test:",
+]);
+
+/**
+ * 출처가 시험 함수 값인가: 위 시험 함수, 저장소 지원 파일이 넓혀 내보낸 `test`·`…Test`(상대 경로나 패키지 이름으로 가져온 것),
+ * 그것을 `extend(…)`한 값(출처 끝의 `extend()`). `global`이면 선언 없는 전역(Vitest globals와 다른 파일이 둔 `…Test`)도 받는다.
+ * 판정은 출처의 이름(전역 이름·모듈의 속성)으로 한다. 별칭의 지금 이름은 보지 않는다(#266 리뷰 SPEC-7).
+ */
+function isTestOrigin(origin, global) {
+  if (!origin) return false;
+  let { path } = origin;
+  while (path.at(-1) === "extend()") path = path.slice(0, -1);
+  if (origin.global !== undefined)
+    return global && path.length === 0 && testNames.test(origin.global);
+  return (
+    testFunctions.has(`module:${origin.module}:${path.join(".")}`) ||
+    (repoModule.test(origin.module) &&
+      path.length === 1 &&
+      testNames.test(path[0]))
+  );
+}
+
+const hookModules = new Set(["vitest", "node:test"]);
+/**
+ * 출처가 `names` 중 하나의 hook이면 그 이름: 선언 없는 전역 hook(Vitest globals), vitest·node:test 모듈의 hook, 시험 함수 값의 hook
+ * (`test.afterEach`). 모두 출처의 이름으로 본다(다른 이름으로 가져오기·별칭·구조 분해 포함, 같은 이름의 지역 함수는 아님).
+ */
+function hookOf(origin, names) {
+  if (!origin) return undefined;
+  if (origin.global !== undefined && origin.path.length === 0)
+    return names.has(origin.global) ? origin.global : undefined;
+  const name = origin.path.at(-1);
+  if (!names.has(name)) return undefined;
+  const base = { ...origin, path: origin.path.slice(0, -1) };
+  return (base.path.length === 0 && hookModules.has(base.module)) ||
+    isTestOrigin(base, true)
+    ? name
+    : undefined;
+}
+
 // 여러 자원을 함께 정리하는 hook: 시험마다(`afterEach`), 파일·describe마다(`afterAll`, node:test의 `after`). 자원 하나를 잡은
 // 직후 등록하는 정리(`onTestFinished`·`t.after`·`defer`)는 그 자원의 단계를 차례로 잇는 자리라 보지 않는다.
-const sharedHookNames = new Map([
-  ["afterEach", "afterEach"],
-  ["afterAll", "afterAll"],
-  ["after", "afterAll"],
-]);
-const hookModules = /^(vitest|node:test)$/;
-const playwrightModule = /^@playwright\/test$/;
+const sharedHookNames = new Set(["afterEach", "afterAll", "after"]);
 
-/**
- * 시험 함수 값(`test.afterAll`의 `test`)인가. 이름이 아니라 출처로 본다: `@playwright/test`에서 가져온 `test`, 저장소 지원 파일이
- * 넓혀 다시 내보낸 `test`·`…Test`(상대 경로로 가져온 것), 같은 파일에서 그것을 `extend`한 값. `global`이면 선언 없는 전역 이름도 받는다.
- */
-function testObject(node, sourceCode, global, seen = new Set()) {
-  if (node?.type !== "Identifier") return false;
-  const variable = bindingOf(sourceCode, node);
-  if (!variable) return global && isTestName(node);
-  if (seen.has(variable)) return false;
-  seen.add(variable);
-  const origin = importOf(variable);
-  if (origin)
-    return playwrightModule.test(origin.source)
-      ? origin.imported === "test" || origin.imported === "default"
-      : origin.source.startsWith(".") && testNames.test(origin.imported);
-  const def = variable.defs[0];
-  const init = def.type === "Variable" ? def.node.init : undefined;
-  return (
-    methodOf(init) === "extend" &&
-    testObject(init.callee.object, sourceCode, global, seen)
-  );
-}
-
-/**
- * `call`이 공용 정리 hook을 부르는가. 이름이 아니라 출처로 본다: 선언 없는 전역 hook(Vitest globals), vitest·node:test에서 가져온
- * hook(다른 이름으로 가져와도)과 그 모듈의 `x.afterEach`, 시험 함수 값의 `test.afterAll`. 같은 이름의 지역 함수는 아니다.
- */
-function sharedHook(call, sourceCode) {
-  const { callee } = call;
-  if (callee.type === "Identifier") {
-    const variable = bindingOf(sourceCode, callee);
-    if (!variable) return sharedHookNames.has(callee.name);
-    const origin = importOf(variable);
-    return (
-      origin !== undefined &&
-      hookModules.test(origin.source) &&
-      sharedHookNames.has(origin.imported)
-    );
-  }
-  if (callee.type !== "MemberExpression" || callee.computed) return false;
-  const name = callee.property.name;
-  if (
-    sharedHookNames.has(name) &&
-    importedFrom(sourceCode, callee.object, hookModules, ["default", "*"])
-  )
-    return true;
-  return (
-    (name === "afterEach" || name === "afterAll") &&
-    testObject(callee.object, sourceCode, true)
-  );
-}
+/** `call`이 공용 정리 hook을 부르는가(`hookOf`). */
+const sharedHook = (call, sourceCode) =>
+  hookOf(
+    originOf(sourceCode.getScope(call.callee), call.callee),
+    sharedHookNames
+  ) !== undefined;
 
 /** `identifier`가 같은 파일에 하나만 정의하고 다시 대입하지 않는 함수를 가리키면 `{ fn, variable }`. */
 function localFunction(identifier, sourceCode) {
@@ -1041,18 +1014,20 @@ const cleanupNames =
  * 기다리는 값이 정리인가: 정리 호출(`server.close()`·`t?.close()`·`removeFolder(dir)`), 반복 변수의 호출(`cleanup()`),
  * 정리 호출 하나만 하는 Promise(`new Promise((r) => server.close(r))`).
  */
-function cleanupCall(argument, loopVariables) {
+function cleanupCall(argument, loopVariables, context) {
+  const { sourceCode } = context;
   const call =
     argument.type === "ChainExpression" ? argument.expression : argument;
   if (
     call.type === "NewExpression" &&
-    call.callee.type === "Identifier" &&
-    call.callee.name === "Promise"
+    comesFrom(sourceCode, call.callee, "global:Promise")
   ) {
     const only = onlyExpression(call.arguments[0]);
-    return only !== undefined && cleanupCall(only, new Set());
+    return only !== undefined && cleanupCall(only, new Set(), context);
   }
   if (call.type !== "CallExpression") return false;
+  // 출처가 확인된 정리 도구는 부르는 모양·이름과 무관하게 정리다(#266 리뷰 SPEC-9). 이름 휴리스틱은 그 밖의 정리를 넓게 잡는다.
+  if (folderRemoval(call, context)) return true;
   const { callee } = call;
   if (callee.type === "Identifier")
     return cleanupNames.test(callee.name) || loopVariables.has(callee.name);
@@ -1063,19 +1038,23 @@ function cleanupCall(argument, loopVariables) {
   );
 }
 
-/** 기다리는 값이 폴더 지우기(`removeFolder(dir)`)인가. */
-function folderRemoval(argument) {
+/** removeFolder가 있는 파일(@babojubot/process/remove-folder). */
+const removeFolderFile = "packages/process/src/remove-folder";
+/**
+ * 기다리는 값이 공용 폴더 지우기(`removeFolder(dir)`)인가. 이름이 아니라 출처로 본다(#266 리뷰 SPEC-7): 다른 이름으로 가져오기·
+ * 별칭·모듈 객체의 속성이어도 같고, 같은 이름의 지역 함수는 아니다. 모듈은 대상 파일로 판정한다(`targetOf`).
+ */
+function folderRemoval(argument, context) {
   const call =
     argument.type === "ChainExpression" ? argument.expression : argument;
   if (call.type !== "CallExpression") return false;
-  const { callee } = call;
-  const name =
-    callee.type === "Identifier"
-      ? callee.name
-      : callee.type === "MemberExpression" && !callee.computed
-        ? callee.property.name
-        : undefined;
-  return name === "removeFolder";
+  const origin = originOf(context.sourceCode.getScope(call), call.callee);
+  return (
+    origin?.module !== undefined &&
+    origin.path.length === 1 &&
+    origin.path[0] === "removeFolder" &&
+    targetOf(context.filename, origin.module)?.file === removeFolderFile
+  );
 }
 
 const loopTypes = new Set([
@@ -1165,10 +1144,10 @@ function mayFollow(a, b) {
  * - try 안(catch가 있는 것): 같은 try 본문에 정리 기다림이 더 이어지거나, 그 try가 정리 반복문 전체를 감싼다(`caught`).
  * 끄기 뒤에 폴더 지우기만 이어지면 짚지 않는다. 그 폴더를 쓰는 프로그램을 끈 뒤에 지우는 순서로, 끄기가 실패하면 폴더를 남기는 것이 맞다.
  */
-function firstSkipped(fn, awaits) {
+function firstSkipped(fn, awaits, context) {
   for (const [index, node] of awaits.entries()) {
     const path = failurePath(node, fn);
-    if (!cleanupCall(node.argument, path.loopVariables)) continue;
+    if (!cleanupCall(node.argument, path.loopVariables, context)) continue;
     const messageId = path.guard ? "caught" : "skipped";
     if (path.inLoop) return { node, messageId };
     let later = awaits.slice(index + 1).filter((next) => mayFollow(node, next));
@@ -1176,12 +1155,16 @@ function firstSkipped(fn, awaits) {
       later = later.filter(
         (next) =>
           contains(path.guard.block, next) &&
-          cleanupCall(next.argument, failurePath(next, fn).loopVariables)
+          cleanupCall(
+            next.argument,
+            failurePath(next, fn).loopVariables,
+            context
+          )
       );
     if (later.length === 0) continue;
     if (
-      !folderRemoval(node.argument) &&
-      later.every((next) => folderRemoval(next.argument))
+      !folderRemoval(node.argument, context) &&
+      later.every((next) => folderRemoval(next.argument, context))
     )
       continue;
     return { node, messageId };
@@ -1200,9 +1183,11 @@ function awaitsIn(fn) {
 
 /**
  * `block`(함수·`finally`·`catch`의 몸) 안의 기다림 중 실패하면 뒤 정리를 건너뛰는 첫 정리(`{ node, messageId }`). 없으면 undefined.
- * 제품 코드·스크립트의 정리 연쇄 규칙(scripts/eslint-product-rules.mjs `no-cleanup-chain`)이 이 판정을 그대로 쓴다.
+ * 제품 코드·스크립트의 정리 연쇄 규칙(scripts/eslint-product-rules.mjs `no-cleanup-chain`)이 이 판정을 그대로 쓴다. `context`는 규칙의
+ * context다(가져온 경로를 그 파일 기준으로 푼다).
  */
-export const skippedCleanupIn = (block) => firstSkipped(block, awaitsIn(block));
+export const skippedCleanupIn = (block, context) =>
+  firstSkipped(block, awaitsIn(block), context);
 
 /**
  * `block` 안에서 던질 수 있는 동기 정리(`process.kill`·`*Sync`, `no-cleanup-in-finally`와 같은 판정)가 실패하면 건너뛰는 뒤 정리가
@@ -1210,16 +1195,21 @@ export const skippedCleanupIn = (block) => firstSkipped(block, awaitsIn(block));
  * - try 밖: 동기 정리 뒤에 다른 정리(동기 정리·기다린 정리 호출)가 이어지거나, 기다린 정리 뒤에 동기 정리가 이어지거나, 동기 정리를
  *   반복문 안에서 부른다(`skipped`).
  * - 블록 안 try(catch가 있는 것) 본문: 같은 본문에 그런 정리가 이어진다(`caught`).
- * 블록 안에 정의한 함수(`continueAfterFailure(() => rmSync(…))` 등)의 몸은 따로 돈다고 보고 보지 않는다.
+ * 블록 안에 정의한 함수(`continueAfterFailure(() => rmSync(…))` 등)의 몸은 따로 돈다고 보고 보지 않는다. `context`는 규칙의
+ * context다(가져온 경로를 그 파일 기준으로 푼다).
  */
-export function skippedSyncCleanupIn(block, sourceCode) {
+export function skippedSyncCleanupIn(block, context) {
   const steps = [];
   walkBody(block, (node) => {
-    if (node.type === "CallExpression" && throwsSync(node, sourceCode))
+    if (node.type === "CallExpression" && throwsSync(node, context.sourceCode))
       steps.push({ node, sync: true });
     else if (
       node.type === "AwaitExpression" &&
-      cleanupCall(node.argument, failurePath(node, block).loopVariables)
+      cleanupCall(
+        node.argument,
+        failurePath(node, block).loopVariables,
+        context
+      )
     )
       steps.push({ node, sync: false });
   });
@@ -1345,9 +1335,11 @@ const noSkippedCleanup = {
           const fn = hookFunction(call);
           if (fn) hooks.push({ fn, call });
         }
+        // 시험 함수 값의 extend(…)가 fixture를 받는다. 출처로 본다(별칭·구조 분해로 받아도 같다).
+        const made = originOf(sourceCode.getScope(call.callee), call.callee);
         if (
-          methodOf(call) === "extend" &&
-          testObject(call.callee.object, sourceCode, false)
+          made?.path.at(-1) === "extend" &&
+          isTestOrigin({ ...made, path: made.path.slice(0, -1) }, false)
         )
           addFixtures(call);
       },
@@ -1355,11 +1347,12 @@ const noSkippedCleanup = {
         const hookFunctions = new Set(hooks.map(({ fn }) => fn));
         const hookCalls = new Set(hooks.map(({ call }) => call));
         for (const { fn } of hooks) {
-          if (report(firstSkipped(fn, awaitsIn(fn)))) continue;
+          if (report(firstSkipped(fn, awaitsIn(fn), context))) continue;
           for (const helper of helpersOf(fn, hookFunctions, hookCalls))
-            if (report(firstSkipped(helper, awaitsIn(helper)))) break;
+            if (report(firstSkipped(helper, awaitsIn(helper), context))) break;
         }
-        for (const { fn, awaits } of fixtures) report(firstSkipped(fn, awaits));
+        for (const { fn, awaits } of fixtures)
+          report(firstSkipped(fn, awaits, context));
       },
     };
   },
@@ -1405,14 +1398,10 @@ function killsIn(block, sourceCode) {
   return kills;
 }
 
-/** `call`이 전역 `console`의 메서드 호출(`console.warn(…)`)인가. */
+/** `call`이 `console`의 메서드 호출(`console.warn(…)`, node:console에서 가져온 `warn(…)`·모듈 객체도 전역 console로 맞춰짐)인가. */
 const consoleCall = (call, sourceCode) =>
   call?.type === "CallExpression" &&
-  call.callee.type === "MemberExpression" &&
-  !call.callee.computed &&
-  call.callee.object.type === "Identifier" &&
-  call.callee.object.name === "console" &&
-  !bindingOf(sourceCode, call.callee.object);
+  /^global:console\.[^.]+$/.test(originName(sourceCode, call.callee) ?? "");
 
 /** catch가 받은 오류를 읽는 자리가 console에 남기거나 `void`로 버리기만 하는가(`console.warn(error)`·`` `${error.message}` ``·`void error`). */
 function onlyLogged(identifier, sourceCode) {
@@ -1427,11 +1416,7 @@ function onlyLogged(identifier, sourceCode) {
     if (parent.type === "CallExpression") {
       if (!parent.arguments.includes(child)) return false;
       if (consoleCall(parent, sourceCode)) return true;
-      if (
-        parent.callee.type === "Identifier" &&
-        parent.callee.name === "String"
-      )
-        continue;
+      if (comesFrom(sourceCode, parent.callee, "global:String")) continue;
       return false;
     }
     if (
@@ -1511,9 +1496,9 @@ const noIgnoredKillError = {
     schema: [],
     messages: {
       probe:
-        '신호 0의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM)·I/O 오류까지 "프로세스가 끝났다"로 숨어, 남은 프로그램의 폴더를 지우거나 멈춤 확인이 일찍 통과합니다. processAlive(@babojubot/runtime/test-cleanup)를 쓰세요. "프로세스 없음"(ESRCH)만 끝난 것으로 보고 다른 실패는 pid·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
+        '신호 0의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM)·I/O 오류까지 "프로세스가 끝났다"로 숨어, 남은 프로그램의 폴더를 지우거나 멈춤 확인이 일찍 통과합니다. processAlive(@babojubot/process/test-cleanup)를 쓰세요. "프로세스 없음"(ESRCH)만 끝난 것으로 보고 다른 실패는 pid·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
       signal:
-        '끄는 신호의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM) 같은 실패까지 "이미 끝났다"로 숨어 프로그램이 남습니다. killUnlessGone(@babojubot/runtime/test-cleanup)을 쓰세요. 이미 끝난 대상(ESRCH)만 넘어가고 다른 실패는 pid·신호·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
+        '끄는 신호의 실패를 오류 코드를 보지 않고 넘깁니다(로그만 남기고 넘겨도 같습니다). 권한 거부(EPERM) 같은 실패까지 "이미 끝났다"로 숨어 프로그램이 남습니다. killUnlessGone(@babojubot/process/test-cleanup)을 쓰세요. 이미 끝난 대상(ESRCH)만 넘어가고 다른 실패는 pid·신호·원인과 함께 던집니다. CODING_STANDARDS.md#정리',
     },
   },
   create(context) {
@@ -1536,7 +1521,13 @@ const noIgnoredKillError = {
   },
 };
 
-const serverModules = /^(node:)?(net|http|https)$/;
+/**
+ * Node 서버를 만드는 출처: net·http·https·tls의 `createServer`·`new Server`, http2의 `createServer`·`createSecureServer`. 모두
+ * net.Server를 이어받아 `close(callback)`가 닫기 실패를 콜백의 첫 인수로 알린다(Node 문서 net·tls·http·https·http2).
+ */
+const serverMakers =
+  /^module:(net|http|https|tls|http2):(createServer|createSecureServer)$/;
+const serverClasses = /^module:(net|http|https|tls):Server$/;
 const arrayCopies = new Set([
   "splice",
   "slice",
@@ -1557,24 +1548,22 @@ const elementCallbacks = new Set([
 const SERVER = "server";
 
 /**
- * 값이 Node 서버(net·http·https의 `Server`)인지 출처로 본다. 타입 정보 없이 같은 파일 안에서 확인할 수 있는 범위만 따라간다:
+ * 값이 Node 서버(net·http·https·tls·http2, `serverMakers`)인지 출처로 본다. 타입 정보 없이 같은 파일 안에서 확인할 수 있는 범위만 따라간다:
  * `createServer(…)`·`new Server(…)`(그 모듈에서 가져온 것), `net.Server` 같은 타입 표기, 그 값을 담은 변수·배열·객체 속성,
  * 배열을 도는 반복 변수와 `map` 같은 콜백의 매개변수, 그 값을 돌려주는 같은 파일 함수. 돌려받는 값은 `SERVER`, 배열은 `{ element }`,
  * 객체는 `{ property(name) }`.
  */
 function serverShapes(sourceCode) {
   const visiting = new Set();
-  const fromServers = (identifier, names) =>
-    identifier?.type === "Identifier" &&
-    importedFrom(sourceCode, identifier, serverModules, names);
-  /** `createServer`·`Server`를 그 모듈에서 가져왔거나 `net.createServer`처럼 모듈 값에서 꺼낸다. */
-  const serverMember = (callee, name) =>
-    callee.type === "Identifier"
-      ? fromServers(callee, [name])
-      : callee.type === "MemberExpression" &&
-        !callee.computed &&
-        callee.property.name === name &&
-        fromServers(callee.object, ["default", "*"]);
+  /** 서버 모듈의 `Server` 타입 표기(`Server`·`net.Server`). 왼쪽 이름의 출처로 본다. */
+  const serverType = (name) =>
+    name.type === "Identifier"
+      ? serverClasses.test(originName(sourceCode, name) ?? "")
+      : name.type === "TSQualifiedName" &&
+        name.right.name === "Server" &&
+        /^module:(net|http|https|tls):$/.test(
+          originName(sourceCode, name.left) ?? ""
+        );
   function typeShape(type) {
     switch (type?.type) {
       case "TSTypeAnnotation":
@@ -1597,13 +1586,7 @@ function serverShapes(sourceCode) {
         const name = type.typeName;
         if (name.type === "Identifier" && name.name === "Array")
           return { element: typeShape(type.typeArguments?.params[0]) };
-        if (name.type === "Identifier")
-          return fromServers(name, ["Server"]) ? SERVER : undefined;
-        return name.type === "TSQualifiedName" &&
-          name.right.name === "Server" &&
-          fromServers(name.left, ["default", "*"])
-          ? SERVER
-          : undefined;
+        return serverType(name) ? SERVER : undefined;
       }
       default:
         return undefined;
@@ -1657,7 +1640,9 @@ function serverShapes(sourceCode) {
       case "TSSatisfiesExpression":
         return typeShape(node.typeAnnotation) ?? shape(node.expression);
       case "NewExpression":
-        return serverMember(node.callee, "Server") ? SERVER : undefined;
+        return serverClasses.test(originName(sourceCode, node.callee) ?? "")
+          ? SERVER
+          : undefined;
       case "Identifier":
         return variableShape(node);
       case "MemberExpression":
@@ -1676,7 +1661,8 @@ function serverShapes(sourceCode) {
         };
       case "CallExpression": {
         const { callee } = node;
-        if (serverMember(callee, "createServer")) return SERVER;
+        if (serverMakers.test(originName(sourceCode, callee) ?? ""))
+          return SERVER;
         if (callee.type === "Identifier") {
           const local = localFunction(callee, sourceCode);
           if (!local || visiting.has(local.fn)) return undefined;
@@ -1747,7 +1733,7 @@ const noIgnoredCloseError = {
     return {
       CallExpression(call) {
         if (methodOf(call) !== "close" || call.arguments.length !== 1) return;
-        const executor = enclosingExecutor(call);
+        const executor = enclosingExecutor(call, sourceCode);
         if (!executor || bindingOf(sourceCode, executor.parent.callee)) return;
         const [resolve] = executor.params;
         if (resolve?.type !== "Identifier") return;
@@ -1764,10 +1750,8 @@ const noIgnoredCloseError = {
   },
 };
 
-/** 시험 함수 이름인가: `it`·`test`, `base.extend`로 만든 `settingsTest` 같은 이름. */
+/** 시험 함수 이름: `it`·`test`, `base.extend`로 만든 `settingsTest` 같은 이름. 출처의 이름(전역 이름·지원 파일이 내보낸 이름)에 쓴다. */
 const testNames = /^(it|test)$|Test$/;
-const isTestName = (node) =>
-  node?.type === "Identifier" && testNames.test(node.name);
 // 시험 하나를 등록하는 수식어(`test.only(…)`·`it.skip(…)`). `describe`·hook·`step`은 시험이 아니다.
 const caseModifiers = new Set([
   "only",
@@ -1781,22 +1765,14 @@ const caseModifiers = new Set([
 ]);
 
 /** `call`이 시험 하나를 등록하면 그 본문 함수: `test(이름, fn)`, `it.only(이름, fn)`, `test.each(표)(이름, fn)`. */
-function testBody(call) {
-  let callee = call.callee;
-  if (
-    callee.type === "CallExpression" &&
-    callee.callee.type === "MemberExpression" &&
-    !callee.callee.computed &&
-    callee.callee.property.name === "each"
-  )
-    callee = callee.callee.object;
-  while (
-    callee.type === "MemberExpression" &&
-    !callee.computed &&
-    caseModifiers.has(callee.property.name)
-  )
-    callee = callee.object;
-  if (!isTestName(callee)) return undefined;
+function testBody(call, sourceCode) {
+  // 부른 것의 출처에서 `each(…)`의 결과와 수식어를 떼면 시험 함수여야 한다(별칭·구조 분해로 받아도 같다).
+  const origin = originOf(sourceCode.getScope(call.callee), call.callee);
+  if (!origin) return undefined;
+  let { path } = origin;
+  if (path.at(-1) === "each()") path = path.slice(0, -1);
+  while (caseModifiers.has(path.at(-1))) path = path.slice(0, -1);
+  if (!isTestOrigin({ ...origin, path }, true)) return undefined;
   const body = call.arguments.at(-1);
   return isFunction(body) ? body : undefined;
 }
@@ -1821,12 +1797,18 @@ const noExpectedFailure = {
     },
   },
   create(context) {
+    const { sourceCode } = context;
     return {
-      MemberExpression(node) {
+      CallExpression(node) {
+        // `it.fails.each(표)(…)`의 바깥 호출은 안쪽 호출(`it.fails.each(표)`)에서 본다.
+        if (node.callee.type === "CallExpression") return;
+        // 부른 것의 출처에 시험 함수 값의 `fail`·`fails`가 있으면 짚는다(별칭·구조 분해로 받아도 같다).
+        const origin = originOf(sourceCode.getScope(node.callee), node.callee);
+        const at =
+          origin?.path.findIndex((name) => /^fails?(\(\))?$/.test(name)) ?? -1;
         if (
-          !node.computed &&
-          (node.property.name === "fail" || node.property.name === "fails") &&
-          isTestName(node.object)
+          at >= 0 &&
+          isTestOrigin({ ...origin, path: origin.path.slice(0, at) }, true)
         )
           context.report({ node, messageId: "expected" });
       },
@@ -1836,17 +1818,15 @@ const noExpectedFailure = {
 
 const perTestHookNames = new Set(["beforeEach", "afterEach"]);
 /** `call`이 시험마다 도는 hook(`beforeEach(fn)`·`test.afterEach(fn)`)이면 그 함수. */
-function perTestHook(call) {
-  const { callee } = call;
-  const name =
-    callee.type === "Identifier"
-      ? callee.name
-      : callee.type === "MemberExpression" &&
-          !callee.computed &&
-          isTestName(callee.object)
-        ? callee.property.name
-        : undefined;
-  if (!perTestHookNames.has(name)) return undefined;
+function perTestHook(call, sourceCode) {
+  // 이름이 아니라 출처로 본다(`hookOf`): Vitest 전역, vitest·node:test의 hook, 시험 함수 값의 `test.afterEach`(별칭·구조 분해 포함).
+  if (
+    !hookOf(
+      originOf(sourceCode.getScope(call.callee), call.callee),
+      perTestHookNames
+    )
+  )
+    return undefined;
   const body = call.arguments.at(-1);
   return isFunction(body) ? body : undefined;
 }
@@ -1889,16 +1869,16 @@ const noStateBetweenTests = {
     const report = (node) => context.report({ node, messageId: "serial" });
     return {
       CallExpression(node) {
-        const body = testBody(node);
+        const body = testBody(node, sourceCode);
         if (body) bodies.add(body);
-        const hook = perTestHook(node);
+        const hook = perTestHook(node, sourceCode);
         if (hook) perTestHooks.add(hook);
-        const method = methodOf(node);
-        const owner = node.callee.object;
+        // 시험 함수 값의 `describe.serial`·`describe.configure`. 출처로 본다(별칭·구조 분해 포함).
+        const origin = originOf(sourceCode.getScope(node.callee), node.callee);
+        const method = origin?.path.at(-1);
         const onDescribe =
-          owner?.type === "MemberExpression" &&
-          !owner.computed &&
-          owner.property.name === "describe";
+          origin?.path.at(-2) === "describe" &&
+          isTestOrigin({ ...origin, path: origin.path.slice(0, -2) }, true);
         if (method === "serial" && onDescribe) report(node);
         if (
           method === "configure" &&
@@ -1958,88 +1938,22 @@ const noStateBetweenTests = {
   },
 };
 
-/** 이름이 `name`인 속성 접근인가(`x.name`·`x["name"]`). 계산된 이름은 문자열 리터럴만 본다. */
-const memberNamed = (node, name) =>
-  node.type === "MemberExpression" &&
-  (node.computed
-    ? node.property.type === "Literal" && node.property.value === name
-    : node.property.name === name);
-
-/** 선언 없는 전역 이름인가(같은 이름의 지역 값이 아님). */
-const globalName = (sourceCode, node, names) =>
-  node.type === "Identifier" &&
-  names.includes(node.name) &&
-  !bindingOf(sourceCode, node);
-
 /**
- * 한 번만 값을 받는 변수의 그 선언(`const x = …`·`const { a: x } = …`). 다시 대입하거나 매개변수·가져오기면 undefined.
- * 같은 파일 안에서 값의 출처를 따라갈 때 쓴다.
+ * `node`가 `process.env` 객체인가: `process`의 `env`, `node:process`에서 가져온 `env`(다른 이름으로 가져와도), 그것을 한 번 받은
+ * 변수·구조 분해(`const env = process.env`, `const { env } = process`). 출처로 본다. 새로 만든 객체(`{ ...process.env }`)·매개변수·
+ * 같은 이름의 지역 값은 아니다.
  */
-function onlyDeclarator(variable) {
-  const def = variable?.defs[0];
-  if (variable?.defs.length !== 1 || def.type !== "Variable") return undefined;
-  if (variable.references.filter((ref) => ref.isWrite()).length > 1)
-    return undefined;
-  return def.node.init ? def.node : undefined;
-}
+const isProcessEnv = (node, sourceCode) =>
+  comesFrom(sourceCode, node, "global:process.env");
 
-/**
- * `node`가 Node의 `process`인가. 이름이 아니라 출처로 본다: 전역 `process`·`globalThis.process`·`global.process`,
- * `node:process`에서 가져온 기본·이름공간, 같은 파일에서 그 값을 한 번 받은 변수(`const p = process`).
- * 같은 이름의 지역 값(`const process = fake`)·매개변수는 아니다.
- */
-function isProcess(node, sourceCode, depth = 0) {
-  if (depth > 5) return false;
-  if (globalName(sourceCode, node, ["process"])) return true;
-  if (
-    memberNamed(node, "process") &&
-    globalName(sourceCode, node.object, ["globalThis", "global"])
-  )
-    return true;
-  if (node.type !== "Identifier") return false;
-  const variable = bindingOf(sourceCode, node);
-  if (importedFrom(sourceCode, node, processModules, ["default", "*"]))
-    return true;
-  const declarator = onlyDeclarator(variable);
-  return (
-    declarator?.id.type === "Identifier" &&
-    isProcess(declarator.init, sourceCode, depth + 1)
-  );
-}
-
-/**
- * `node`가 `process.env` 객체인가. `process`(위 출처)의 `env`, `node:process`에서 가져온 `env`(다른 이름으로 가져와도),
- * 같은 파일에서 그것을 한 번 받은 변수(`const env = process.env`, `const { env } = process`·`globalThis.process`).
- * 새로 만든 객체(`{ ...process.env }`)·매개변수·같은 이름의 지역 값은 아니다.
- */
-function isProcessEnv(node, sourceCode, depth = 0) {
-  if (depth > 5) return false;
-  if (memberNamed(node, "env")) return isProcess(node.object, sourceCode);
-  if (node.type !== "Identifier") return false;
-  if (importedFrom(sourceCode, node, processModules, ["env"])) return true;
-  const declarator = onlyDeclarator(bindingOf(sourceCode, node));
-  if (!declarator) return false;
-  if (declarator.id.type === "Identifier")
-    return isProcessEnv(declarator.init, sourceCode, depth + 1);
-  // `const { env } = process`·`const { env: e } = process`. 안쪽 패턴이 이 이름을 받는 `env` 속성이어야 한다.
-  return (
-    declarator.id.type === "ObjectPattern" &&
-    declarator.id.properties.some(
-      (property) =>
-        property.type === "Property" &&
-        !property.computed &&
-        (property.key.name ?? property.key.value) === "env" &&
-        property.value.type === "Identifier" &&
-        property.value.name === node.name
-    ) &&
-    isProcess(declarator.init, sourceCode, depth + 1)
-  );
-}
-
-const envChangingCalls = {
-  Object: ["assign", "defineProperty", "defineProperties"],
-  Reflect: ["set", "deleteProperty", "defineProperty"],
-};
+const envChangingCalls = [
+  "global:Object.assign",
+  "global:Object.defineProperty",
+  "global:Object.defineProperties",
+  "global:Reflect.set",
+  "global:Reflect.deleteProperty",
+  "global:Reflect.defineProperty",
+];
 
 /**
  * 시험이 프로세스 환경을 직접 바꾸면 원래 값을 잃고, 복원을 빠뜨리거나 다른 정리 뒤에 두면 뒤 시험·같은 프로세스의 다른 파일이
@@ -2077,17 +1991,9 @@ const noProcessEnvChange = {
       },
       CallExpression(node) {
         const { callee } = node;
-        if (
-          callee.type !== "MemberExpression" ||
-          callee.object.type !== "Identifier" ||
-          !globalName(sourceCode, callee.object, Object.keys(envChangingCalls))
-        )
-          return;
         const [target] = node.arguments;
         if (
-          envChangingCalls[callee.object.name].some((name) =>
-            memberNamed(callee, name)
-          ) &&
+          comesFrom(sourceCode, callee, ...envChangingCalls) &&
           target &&
           isProcessEnv(target, sourceCode)
         )
@@ -2173,7 +2079,7 @@ const noDroppedRejection = {
     schema: [],
     messages: {
       dropped:
-        "기다리지 않는 Promise의 거절을 빈 처리기로 버립니다. 그 작업이 실패해도 시험이 통과하고 실패가 어디에도 남지 않습니다. 결과를 기다려 단언하세요. 시험이 나중에 기다리는 Promise가 그 전에 거절될 수 있으면 awaitedLater(@babojubot/runtime/test-cleanup)로 감싸 두고 그 Promise를 기다립니다. CODING_STANDARDS.md#단언",
+        "기다리지 않는 Promise의 거절을 빈 처리기로 버립니다. 그 작업이 실패해도 시험이 통과하고 실패가 어디에도 남지 않습니다. 결과를 기다려 단언하세요. 시험이 나중에 기다리는 Promise가 그 전에 거절될 수 있으면 awaitedLater(@babojubot/process/test-cleanup)로 감싸 두고 그 Promise를 기다립니다. CODING_STANDARDS.md#단언",
     },
   },
   create(context) {
@@ -2197,8 +2103,8 @@ const noDroppedRejection = {
   },
 };
 
-const cleanupModule =
-  /^(@babojubot\/runtime\/test-cleanup|(\.{1,2}\/)+(.*\/)?test-cleanup(\.ts)?)$/;
+/** awaitedLater가 있는 파일. 경로 철자가 아니라 대상 파일로 본다(공용 판정의 targetOf, #266 리뷰 SPEC-5). */
+const cleanupFile = "packages/process/src/test-cleanup";
 /**
  * 속성의 경로: 루트 식별자(또는 `this`)의 이름과 속성 이름들(`child.exited`, `this.server.closed`). 루트가 식별자·`this`가
  * 아니거나(호출 결과 등) 계산된 이름이 끼면 따라갈 수 없어 undefined다. 같은 객체를 다른 이름으로 부르면 다른 경로다.
@@ -2313,21 +2219,7 @@ function waiting(sourceCode) {
       return def.node.init;
     return undefined;
   };
-  /** 이름공간 가져오기면(그것을 받은 const를 따라가) 그 출처(`{ source, imported: "*" }`), 아니면 undefined. */
-  const namespaceOf = (identifier, seen = new Set()) => {
-    const variable = bindingOf(sourceCode, identifier);
-    if (!variable || seen.has(variable)) return undefined;
-    seen.add(variable);
-    const origin = importOf(variable);
-    if (origin) return origin.imported === "*" ? origin : undefined;
-    const def = variable.defs[0];
-    return def?.type === "Variable" &&
-      def.parent.kind === "const" &&
-      def.node.id.type === "Identifier" &&
-      def.node.init?.type === "Identifier"
-      ? namespaceOf(def.node.init, seen)
-      : undefined;
-  };
+
   /**
    * 호출 `call`의 `index`번째 인자로 넘긴 값의 결과를 그 호출이 받는가. 받는 자리는 위치까지 맞아야 한다: 조합 함수는 첫 인자 배열,
    * `expect`는 첫 인자(둘째는 문구), 가져온 시험 도움은 첫 인자(저장소의 기다림 도움 `within`·`settled`는 Promise를 첫 인자로
@@ -2335,33 +2227,34 @@ function waiting(sourceCode) {
    */
   const callPasses = (call, index, isArray, seen) => {
     const callee = call.callee;
-    if (callee.type === "MemberExpression") {
-      const name = memberName(callee);
-      if (
-        callee.object.type === "Identifier" &&
-        callee.object.name === "Promise" &&
-        !bindingOf(sourceCode, callee.object) &&
-        promiseCombinators.has(name)
+    // 출처가 확인된 받는 자리(Promise 조합·expect·저장소 시험 도움)를 부르는 모양과 무관하게 먼저 본다(이름 바꾼 가져오기·별칭·
+    // 이름공간 속성·구조 분해, #266 리뷰 SPEC-8·9). 저장소 도움은 그 함수 자체여야 한다(호출 결과 `()`는 무엇인지 모른다).
+    if (
+      comesFrom(
+        sourceCode,
+        callee,
+        ...[...promiseCombinators].map((name) => `global:Promise.${name}`)
       )
-        return index === 0 && isArray ? "always" : "never";
-      if (isArray || index !== 0 || callee.object.type !== "Identifier")
-        return "never";
-      return repoModule.test(namespaceOf(callee.object)?.source ?? "")
-        ? "always"
-        : "never";
-    }
-    if (isArray || callee.type !== "Identifier") return "never";
-    if (callee.name === "expect")
-      return index === 0 &&
+    )
+      return index === 0 && isArray ? "always" : "never";
+    if (isExpect(sourceCode, callee))
+      return !isArray &&
+        index === 0 &&
         ["rejects", "resolves"].includes(memberName(call.parent)) &&
         call.parent.object === call
         ? "always"
         : "never";
+    const origin = originOf(sourceCode.getScope(callee), callee);
+    if (origin)
+      return !isArray &&
+        index === 0 &&
+        repoModule.test(origin.module ?? "") &&
+        !origin.path.some((name) => name.endsWith("()"))
+        ? "always"
+        : "never";
+    if (isArray || callee.type !== "Identifier") return "never";
     const variable = bindingOf(sourceCode, callee);
     if (!variable) return "never";
-    const origin = importOf(variable);
-    if (origin)
-      return index === 0 && repoModule.test(origin.source) ? "always" : "never";
     const fn = functionOf(variable);
     const param = fn?.params[index];
     if (!fn || seen.has(fn) || param?.type !== "Identifier") return "never";
@@ -2482,13 +2375,13 @@ function waiting(sourceCode) {
         return true;
     return false;
   };
-  return { classify, namespaceOf };
+  return { classify };
 }
 
 /**
  * `awaitedLater`(먼저 만들고 뒤에서 기다리는 Promise의 표시)는 빈 처리기를 붙이므로, 표시한 Promise를 정말 뒤에서 기다려야 한다
  * (CODING_STANDARDS.md#단언). 기다리지 않으면 `tests/no-dropped-rejection`이 막는 거절 버리기가 이 함수 안으로 옮겨진 것과 같다.
- * 출처로 판정한다: `@babojubot/runtime/test-cleanup`·상대 경로 `test-cleanup`에서 가져온 `awaitedLater`(다른 이름 포함), 이름공간
+ * 출처로 판정한다: `@babojubot/process/test-cleanup`·상대 경로 `test-cleanup`에서 가져온 `awaitedLater`(다른 이름 포함), 이름공간
  * 가져오기(그것을 받은 const 포함)의 `x.awaitedLater`, 그것을 받은 `const`, 이름공간·동적 가져오기에서 구조 분해한 이름. 짚는 모양:
  * - 부른 결과를 `const` 변수나 객체 속성(`child.exited = …`)에 바로 담지 않는 것(`awaitedLater(p);`, `await awaitedLater(p)`, 인자로 넘기기).
  * - 담은 `const`를 같은 파일 어디서도 기다리지 않는 것. 기다림의 판정은 `waiting`이 한다: 결과를 받는 호출(`Promise.all`,
@@ -2521,56 +2414,26 @@ const noUnawaitedLater = {
   },
   create(context) {
     const { sourceCode } = context;
-    const { classify, namespaceOf } = waiting(sourceCode);
-    /** `identifier`가 test-cleanup의 이름공간 가져오기(그 별칭 포함)인가. */
-    const isCleanupNamespace = (identifier) =>
-      cleanupModule.test(namespaceOf(identifier)?.source ?? "");
-    /** 동적 가져오기(`import("…test-cleanup")`, 그 await 포함)인가. */
-    const cleanupImport = (node) => {
-      const target = node?.type === "AwaitExpression" ? node.argument : node;
+    const { classify } = waiting(sourceCode);
+    /** 모듈 경로 `source`가 test-cleanup.ts를 가리키는가(패키지 입구·상대 경로·확장자 없는 철자 모두). */
+    const fromCleanup = (source) =>
+      targetOf(context.filename, source)?.file === cleanupFile;
+    /**
+     * 식이 test-cleanup의 awaitedLater인가. 이름이 아니라 출처로 본다(공용 판정 `originOf`): 다른 이름으로 가져오기, 이름공간의
+     * `x.awaitedLater`, 그것을 받은 const·구조 분해, 동적 가져오기·require에서 꺼낸 것, 그 별칭. 같은 이름의 매개변수는 아니다.
+     */
+    const isLaterOrigin = (node) => {
+      const origin = originOf(sourceCode.getScope(node), node);
       return (
-        target?.type === "ImportExpression" &&
-        target.source.type === "Literal" &&
-        cleanupModule.test(String(target.source.value))
+        origin?.module !== undefined &&
+        fromCleanup(origin.module) &&
+        origin.path.length === 1 &&
+        origin.path[0] === "awaitedLater"
       );
     };
-    /** `identifier`가 test-cleanup의 awaitedLater(다른 이름·그것을 받은 const·구조 분해 포함)인가. */
-    const isAwaitedLater = (identifier, seen = new Set()) => {
-      const variable = bindingOf(sourceCode, identifier);
-      if (!variable || seen.has(variable)) return false;
-      seen.add(variable);
-      const origin = importOf(variable);
-      if (origin)
-        return (
-          cleanupModule.test(origin.source) &&
-          origin.imported === "awaitedLater"
-        );
-      const def = variable.defs[0];
-      if (def.type !== "Variable" || def.parent.kind !== "const") return false;
-      const { id, init } = def.node;
-      if (id.type === "Identifier")
-        return (
-          (init?.type === "Identifier" && isAwaitedLater(init, seen)) ||
-          (init?.type === "MemberExpression" && namespaceMember(init))
-        );
-      if (id.type !== "ObjectPattern") return false;
-      const property = id.properties.find(
-        (each) => each.type === "Property" && each.value === def.name
-      );
-      const key = property?.computed
-        ? property.key.type === "Literal" && property.key.value
-        : property?.key.name;
-      return (
-        key === "awaitedLater" &&
-        ((init?.type === "Identifier" && isCleanupNamespace(init)) ||
-          cleanupImport(init))
-      );
-    };
-    /** `x.awaitedLater`의 x가 test-cleanup의 이름공간 가져오기(그 별칭 포함)인가. */
-    const namespaceMember = (member) =>
-      memberName(member) === "awaitedLater" &&
-      member.object.type === "Identifier" &&
-      isCleanupNamespace(member.object);
+    const isAwaitedLater = (identifier) => isLaterOrigin(identifier);
+    /** `x.awaitedLater`의 x가 test-cleanup의 모듈 객체(그 별칭 포함)인가. */
+    const namespaceMember = (member) => isLaterOrigin(member);
     /** 기다림이 없거나 한 분기에만 있으면 알린다. */
     const reportWaiting = (call, reads) => {
       const found = classify(reads);
@@ -2655,8 +2518,7 @@ const noUnawaitedLater = {
       },
       // 다시 내보내면 다른 파일에서 부른 결과를 따라갈 수 없다.
       ExportNamedDeclaration(node) {
-        if (!node.source || !cleanupModule.test(String(node.source.value)))
-          return;
+        if (!node.source || !fromCleanup(node.source.value)) return;
         for (const specifier of node.specifiers)
           if (
             (specifier.local.name ?? specifier.local.value) === "awaitedLater"
@@ -2664,7 +2526,7 @@ const noUnawaitedLater = {
             context.report({ node: specifier, messageId: "notCalled" });
       },
       ExportAllDeclaration(node) {
-        if (cleanupModule.test(String(node.source.value)))
+        if (fromCleanup(node.source.value))
           context.report({ node, messageId: "notCalled" });
       },
     };

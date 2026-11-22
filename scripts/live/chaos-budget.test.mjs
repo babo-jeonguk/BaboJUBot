@@ -14,15 +14,15 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import {
   createLedger,
   gateConnection,
   writeBudget,
   writeSecretFile,
 } from "./chaos-budget.mjs";
-import { permissionDenial } from "@babojubot/runtime/testing";
+import { permissionDenial } from "@babojubot/process/test-support";
 
 // Windows는 파일 권한으로 읽기를 막을 수 없고, root는 권한과 상관없이 읽는다.
 // root는 권한을 넘어 읽으므로 그 시험은 root에서 건너뛴다. CI는 BABOJUBOT_REQUIRE_PERMISSION_DENIAL=1로 필수로 정한다.

@@ -6,8 +6,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { caseIds, summarize } from "./file-boundary-report.mjs";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 const script = fileURLToPath(
   new URL("./file-boundary-report.mjs", import.meta.url)

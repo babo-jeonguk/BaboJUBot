@@ -1,6 +1,6 @@
 import { settled, type ProviderSettings } from "@babojubot/contracts";
 import type { APIRequestContext } from "@playwright/test";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import { openWithLiveEvents } from "../live-events.ts";
 import { record, test as base } from "./fixture.ts";
 

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openWithLiveEvents } from "./support/live-events.ts";
 import { goalInput } from "./support/organization.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 // 넓힌 프로바이더 계약(#96)의 화면. E2E 서버의 `fake`는 끼워 넣기를 하고 준비됨이며, `fake-2`는 끼워 넣기를 못 하고
 // 제품 로그인이 없어 준비안됨이다(playwright.config.ts `BABOJUBOT_FAKE_PROVIDER_SETTINGS`).

@@ -15,9 +15,9 @@ import { insertLegacyOrganization } from "@babojubot/db/testing";
 import { afterEach, expect, it } from "vitest";
 import { scriptedAgents, serverHelpers, idle } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
-import { permissionDenial } from "@babojubot/runtime/testing";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
+import { permissionDenial } from "@babojubot/process/test-support";
 
 // 조직 폴더는 자기 조직 ID를 안다. 경로 이름만으로는 다른 조직의 폴더를 구별할 수 없기 때문이다.
 let t: TestServer | undefined;

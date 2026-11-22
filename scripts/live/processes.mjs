@@ -2,7 +2,7 @@
 // `pgrep`은 POSIX 도구다. 실행 결과를 pid 목록이나 오류로 바꾸는 판정(`pidsFromPgrep`)은 따로 두어 어느 OS에서나 시험한다.
 import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { processAlive } from "@babojubot/runtime/test-cleanup";
+import { processAlive } from "@babojubot/process/test-cleanup";
 
 /**
  * 명령줄이 `pattern`(확장 정규식)에 맞는 프로세스의 pid. 맞는 것이 없으면 빈 목록이다.

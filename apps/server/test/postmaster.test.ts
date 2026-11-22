@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { waitForPostmaster, type ObservedChild } from "./postmaster.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 // Postgres는 시작·종료 중에 pid 파일을 쓰고 지운다. 확인과 읽기 사이에 파일이 사라져도 준비 관찰을 이어가고,
 // 준비를 볼 수 없는 경우(시한·자식 종료·다른 읽기 오류)만 그 이유로 실패한다.

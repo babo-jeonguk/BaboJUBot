@@ -22,7 +22,7 @@ import {
   recordWorkspaceIdentity,
   type Database,
 } from "@babojubot/db";
-import { runTree } from "@babojubot/runtime/launch";
+import { runTree } from "@babojubot/process";
 
 const identityFile = "workspace-identity.json";
 const identityMaxBytes = 4096;

@@ -10,7 +10,7 @@ import {
   judgeReports,
   systemOf,
 } from "./check-test-reports.mjs";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const at = (file) => path.join(root, file);
@@ -32,7 +32,7 @@ const reportsOf = (entries) => new Map(Object.entries(entries));
 const problemsOf = (entries, os = "linux", expected = Object.keys(entries)) =>
   judgeReports(reportsOf(entries), { os, expected }).problems;
 
-const jobObject = "packages/runtime/src/providers/job-object.test.ts";
+const jobObject = "packages/runtime/src/providers/process-windows.test.ts";
 const docker = "packages/runtime/src/providers/container.docker.test.ts";
 
 test("accepts reports where every test file passed a test, skips beside passes included", () => {

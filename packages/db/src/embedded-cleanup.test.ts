@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ephemeralCluster, startEmbeddedCluster } from "./embedded.ts";
 import { attemptAll } from "@babojubot/contracts";

@@ -15,7 +15,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { WorkspaceIdentityError, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 // 링크를 만들 수 없는 파일 시스템(FAT32)에서는 링크가 필요한 시험을 건너뛴다. 그 볼륨의 링크 없는 경계 사례는
 // workspace-cases.test.ts가 같은 볼륨에서 돌고, 링크 사례는 적용 불가로 결과표에 남는다.

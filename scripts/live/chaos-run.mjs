@@ -10,8 +10,8 @@ import {
   continueAfterFailure,
   failureCode,
   settled,
-} from "../../packages/contracts/src/failure.ts";
-import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
+} from "@babojubot/contracts";
+import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
 import {
   createLedger,
   limits,
@@ -218,7 +218,7 @@ async function runScene({
       return { status: response.status, body: text ? JSON.parse(text) : null };
     },
     query: async (sql, params) => {
-      const { withClient } = await import("../../packages/db/src/client.ts");
+      const { withClient } = await import("@babojubot/db/admin");
       return withClient(
         server.info.dbUrl,
         async (client) => (await client.query(sql, params)).rows

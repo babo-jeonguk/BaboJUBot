@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { isTestFile } from "./test-files.mjs";
 import { plan } from "./verify-changed.mjs";
 
@@ -190,6 +190,13 @@ for (const file of [
   "packages/runtime/src/providers/test-support.ts",
   "packages/runtime/src/providers/test-folders.ts",
   "packages/runtime/src/providers/cli-tolerance-support.ts",
+  "packages/process/src/testing.ts",
+  "packages/process/src/test-cleanup.ts",
+  "packages/process/src/test-support.ts",
+  "packages/process/src/test-folders.ts",
+  "packages/process/src/lifeline-support.ts",
+  "packages/process/src/process-test-support.ts",
+  "packages/process/src/launcher-setup-support.ts",
   "packages/db/src/testing.ts",
   "packages/db/src/test-cluster.ts",
   "scripts/ci-changes.test.mjs",
@@ -203,6 +210,9 @@ for (const file of [
   "apps/web/src/App.tsx",
   "apps/server/src/main.ts",
   "packages/runtime/src/providers/process.ts",
+  "packages/process/src/launch.ts",
+  "packages/process/src/remove-folder.ts",
+  "packages/process/src/recovery.ts",
   "apps/server/test-fixtures/fake-cli.mjs",
 ]) {
   test(`counts ${file} as non-test code`, () => {

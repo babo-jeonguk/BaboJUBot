@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import { LaunchRefused, limits, parseLaunch } from "./live/chaos-budget.mjs";
 import { exitCodeOf, runChaos, writeEvidence } from "./live/chaos-run.mjs";
 import { scrubEnvironment } from "./live/chaos-server.mjs";
@@ -51,8 +51,7 @@ process.on("SIGINT", () => {
 
 /** 실제 호출 전 확인: 프로그램·로그인 상태와 무료 모델. 임시 홈에서 하고 지운다. 사용자 OpenCode 설정·자격 증명은 읽지 않는다. */
 async function preflight() {
-  const { createOpenCodeProvider } =
-    await import("../packages/runtime/src/index.ts");
+  const { createOpenCodeProvider } = await import("@babojubot/runtime");
   // 임시 홈은 만든 직후 지우기를 등록한다. 지우기 실패는 확인의 원래 실패를 가리지 않고 함께 알린다.
   return withCleanup(async (defer) => {
     const home = await mkdtemp(

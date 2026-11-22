@@ -13,9 +13,21 @@ importers:
 
   .:
     devDependencies:
+      '@babojubot/contracts':
+        specifier: workspace:*
+        version: link:packages/contracts
+      '@babojubot/db':
+        specifier: workspace:*
+        version: link:packages/db
+      '@babojubot/process':
+        specifier: workspace:*
+        version: link:packages/process
       '@babojubot/runtime':
         specifier: workspace:*
         version: link:packages/runtime
+      '@babojubot/server':
+        specifier: workspace:*
+        version: link:apps/server
       '@eslint-community/eslint-plugin-eslint-comments':
         specifier: 4.8.1
         version: 4.8.1(eslint@10.12.0(jiti@2.7.0))
@@ -25,6 +37,12 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
+      drizzle-orm:
+        specifier: 0.45.4
+        version: 0.45.4(@types/pg@8.23.1)(pg@8.23.1)
+      embedded-postgres:
+        specifier: 18.6.0-beta.19
+        version: 18.6.0-beta.19(patch_hash=23fca3fdc5edac867e32f440fb861f4d3957407ba54e1a05abcd714d8686789a)
       eslint:
         specifier: 10.12.0
         version: 10.12.0(jiti@2.7.0)
@@ -64,6 +82,9 @@ importers:
       '@babojubot/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@babojubot/process':
+        specifier: workspace:*
+        version: link:../../packages/process
       '@babojubot/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -80,9 +101,15 @@ importers:
       '@types/express':
         specifier: 5.0.6
         version: 5.0.6
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
       '@types/ws':
         specifier: 8.18.2
         version: 8.18.2
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
       vitest:
         specifier: 5.0.5
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
@@ -132,9 +159,9 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
-      '@babojubot/runtime':
+      '@babojubot/process':
         specifier: workspace:*
-        version: link:../../packages/runtime
+        version: link:../../packages/process
       '@playwright/test':
         specifier: 1.65.1
         version: 1.65.1
@@ -188,9 +215,9 @@ importers:
       '@babojubot/core':
         specifier: workspace:*
         version: link:../core
-      '@babojubot/runtime':
+      '@babojubot/process':
         specifier: workspace:*
-        version: link:../runtime
+        version: link:../process
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(@types/pg@8.23.1)(pg@8.23.1)
@@ -211,11 +238,30 @@ importers:
         specifier: 5.0.5
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
+  packages/process:
+    dependencies:
+      '@babojubot/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      cross-spawn:
+        specifier: 7.0.6
+        version: 7.0.6
+    devDependencies:
+      '@types/cross-spawn':
+        specifier: 6.0.6
+        version: 6.0.6
+      vitest:
+        specifier: 5.0.5
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   packages/runtime:
     dependencies:
       '@babojubot/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@babojubot/process':
+        specifier: workspace:*
+        version: link:../process
       cross-spawn:
         specifier: 7.0.6
         version: 7.0.6

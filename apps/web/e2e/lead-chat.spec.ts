@@ -7,7 +7,7 @@ import {
   sendingMessage,
 } from "./support/organization.ts";
 import { openWithLiveEvents } from "./support/live-events.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 test("keeps a draft edited while the previous message is being sent", async ({
   page,

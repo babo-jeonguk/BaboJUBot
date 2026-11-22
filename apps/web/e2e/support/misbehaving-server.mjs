@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
+import { removeFolder } from "@babojubot/process/remove-folder";
 
 const temp = os.tmpdir();
 const dataDir = path.join(temp, "babojubot-pg-fake");

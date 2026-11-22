@@ -29,7 +29,7 @@ import {
   ProtocolTimeout,
 } from "./codex-connection.ts";
 import { readRegularFile } from "./regular-file.ts";
-import { type Clock, realClock } from "./process.ts";
+import { realClock, type Clock } from "@babojubot/process";
 import {
   startProcess,
   probeTimeoutMs,

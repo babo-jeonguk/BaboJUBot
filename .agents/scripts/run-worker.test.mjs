@@ -11,9 +11,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { openLifelines } from "@babojubot/runtime/lifelines";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
+import { openLifelines } from "@babojubot/process/lifelines";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
 
 const script = fileURLToPath(new URL("./run-worker.mjs", import.meta.url));
 const windows = process.platform === "win32";

@@ -12,11 +12,8 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
-} from "../../packages/contracts/src/failure.ts";
-import {
-  launchTree,
-  prepareJobObjectLauncher,
-} from "@babojubot/runtime/launch";
+} from "@babojubot/contracts";
+import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
 import { sharedVariables } from "@babojubot/runtime";
 
@@ -174,9 +171,8 @@ export function chaosServer({
       homeKept: false,
     };
     const { openDatabase, openEphemeralDatabase } =
-      await import("../../packages/db/src/index.ts");
-    const { recoverProviderProcesses } =
-      await import("../../packages/runtime/src/index.ts");
+      await import("@babojubot/db");
+    const { recoverProviderProcesses } = await import("@babojubot/runtime");
     const pgDir = path.join(home, "postgres");
     // 서버 멈춤, 남은 DB·기록의 제품 정리, 띄운 모든 서버 트리 끄기. 앞 단계가 실패해도 트리는 끄고, 실패를 모아 알린다(홈은 남긴다).
     await cleanUpScene({
@@ -364,9 +360,9 @@ function fakeLiveAdapter(defaultFakeCapabilities) {
 async function runChild(configFile) {
   const config = JSON.parse(readFileSync(configFile, "utf8"));
   const { home, files } = config;
-  const runtime = await import("../../packages/runtime/src/index.ts");
-  const db = await import("../../packages/db/src/index.ts");
-  const { startServer } = await import("../../apps/server/src/index.ts");
+  const runtime = await import("@babojubot/runtime");
+  const db = await import("@babojubot/db");
+  const { startServer } = await import("@babojubot/server");
   const handle =
     config.database === "persistent"
       ? await db.openDatabase({

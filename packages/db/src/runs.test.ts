@@ -33,7 +33,7 @@ import {
   failRunEnd,
   type TestDatabase,
 } from "./testing.ts";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestDatabase;
 beforeAll(async () => {

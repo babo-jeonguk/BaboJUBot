@@ -31,8 +31,8 @@ import {
 import { conversations, organizations, wakes } from "./schema.ts";
 import { createTestDatabase, type TestDatabase } from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
-import { removeFolder } from "@babojubot/runtime/remove-folder";
-import { withCleanup } from "@babojubot/runtime/test-cleanup";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestDatabase;
 beforeAll(async () => {

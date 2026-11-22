@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { test } from "node:test";
-import { killUnlessGone, withCleanup } from "@babojubot/runtime/test-cleanup";
+import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
 import { matchingPids, pidsFromPgrep, stillRunning } from "./processes.mjs";
 
 const pattern = "busy\\.mjs [0-9]+ marker$";

@@ -186,10 +186,11 @@ jobs:
           sudo mount -o "loop,uid=$(id -u),gid=$(id -g),umask=077" "$img" "$dir"
           [ "$(findmnt -n -o FSTYPE -T "$dir")" = vfat ] || { echo "::error::$dir is not on vfat"; exit 1; }
           echo "BABOJUBOT_TEST_NO_LINK_DIR=$dir" >> "$GITHUB_ENV"
+      # 프로세스 바탕(@babojubot/process)의 시험이 먼저 돌고 그 위의 runtime 시험이 돈다(의존 순서).
       - name: Run runtime tests
         timeout-minutes: 12
-        # 바깥 환경이 필요한 시험은 이 job에서 필수다. 확인이 실패하면 건너뛰지 않고 원인과 함께 실패한다(test-support.ts probeEnvironment):
-        # 실제 Docker 격리(container.docker.test.ts), python pty 실제 터미널(login.test.ts), systemd 사용자 scope(lease-hidden.alone.test.ts),
+        # 바깥 환경이 필요한 시험은 이 job에서 필수다. 확인이 실패하면 건너뛰지 않고 원인과 함께 실패한다(@babojubot/process/test-support의 probeEnvironment):
+        # 실제 Docker 격리(container.docker.test.ts), python pty 실제 터미널(login.test.ts), systemd 사용자 scope(process의 lease-hidden.alone.test.ts),
         # 위에서 붙인 링크를 모르는 디스크(container.test.ts), root가 아니어서 권한으로 막을 수 있는 파일(permissionDenial).
         env:
           BABOJUBOT_REQUIRE_DOCKER: "1"
@@ -197,11 +198,11 @@ jobs:
           BABOJUBOT_REQUIRE_SYSTEMD_SCOPE: "1"
           BABOJUBOT_REQUIRE_NO_LINK_DIR: "1"
           BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
-        run: pnpm --filter @babojubot/runtime run test
+        run: pnpm --filter @babojubot/process --filter @babojubot/runtime run test
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts
         if: ${{ !cancelled() }}
-        run: node scripts/check-test-reports.mjs --expect runtime,runtime-alone
+        run: node scripts/check-test-reports.mjs --expect process,process-alone,runtime,runtime-alone
   test-db:
     name: tests / db
     needs: changes
@@ -392,14 +393,14 @@ jobs:
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
         run: node scripts/run-node-tests.mjs ci-gate scripts/ci-test-gate.test.mjs
-      - run: pnpm --filter @babojubot/runtime run typecheck
+      - run: pnpm --filter @babojubot/process --filter @babojubot/runtime run typecheck
       # python pty 실제 터미널 시험(login.test.ts)과 권한으로 막은 파일 시험(permissionDenial)은 필수다. Windows는 POSIX pty·권한
       # 비트가 없어 그 시험만 OS 이유로 건너뛴다.
       - timeout-minutes: 8
         env:
           BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
           BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
-        run: pnpm --filter @babojubot/runtime test
+        run: pnpm --filter @babojubot/process --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
       - if: needs.changes.outputs.files != 'true'
@@ -420,7 +421,7 @@ jobs:
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts
         if: ${{ !cancelled() }}
-        run: node scripts/check-test-reports.mjs --expect ci-gate,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
+        run: node scripts/check-test-reports.mjs --expect ci-gate,process,process-alone,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
   test-windows:
     name: runtime on windows-latest
     needs: changes
@@ -444,14 +445,14 @@ jobs:
       # 집계 판정과 그 회귀 검사가 Bash 없이 이 시스템의 Node에서도 도는지 본다. PATH를 비운 검사도 포함한다.
       - name: Check CI gate portability
         run: node scripts/run-node-tests.mjs ci-gate scripts/ci-test-gate.test.mjs
-      - run: pnpm --filter @babojubot/runtime run typecheck
+      - run: pnpm --filter @babojubot/process --filter @babojubot/runtime run typecheck
       # python pty 실제 터미널 시험(login.test.ts)과 권한으로 막은 파일 시험(permissionDenial)은 필수다. Windows는 POSIX pty·권한
       # 비트가 없어 그 시험만 OS 이유로 건너뛴다.
       - timeout-minutes: 8
         env:
           BABOJUBOT_REQUIRE_PYTHON_PTY: "1"
           BABOJUBOT_REQUIRE_PERMISSION_DENIAL: "1"
-        run: pnpm --filter @babojubot/runtime test
+        run: pnpm --filter @babojubot/process --filter @babojubot/runtime test
       # 조직 경계의 파일 읽기는 시스템마다 파일 식별이 달라 실제로 돌려 본다. 파일 시스템별 전체 검증이 도는 변경이면
       # 그 job이 이 시스템의 기본 볼륨을 포함해 같은 시험을 돌므로 여기서는 거듭하지 않는다.
       - if: needs.changes.outputs.files != 'true'
@@ -472,7 +473,7 @@ jobs:
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts
         if: ${{ !cancelled() }}
-        run: node scripts/check-test-reports.mjs --expect ci-gate,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
+        run: node scripts/check-test-reports.mjs --expect ci-gate,process,process-alone,runtime,runtime-alone,boot-check,worker-runner${{ needs.changes.outputs.files != 'true' && ',server-files' || '' }}
   # Windows의 서버 정상 종료와 화면 E2E(#189). Windows에서는 부모가 신호로 서버에 정리를 맡길 수 없어 멈춤 메시지를 쓴다.
   # 서버 진입점의 멈춤 시험(POSIX 전용 신호·프로세스 그룹 시험은 건너뜀)과 Chromium 전체 E2E를 이 시스템에서 돈다.
   # 전체 시간을 줄이려고 E2E를 두 job으로 나눠(Playwright shard) 동시에 돈다. 두 job은 shard 번호와 멈춤 시험(1/2만) 말고

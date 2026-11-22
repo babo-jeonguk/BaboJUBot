@@ -7,7 +7,7 @@ import {
   type Destination,
   type RunRequest,
 } from "@babojubot/contracts";
-import { runTree, TreeLaunchRefused, type TreeRun } from "./launch.ts";
+import { runTree, TreeLaunchRefused, type TreeRun } from "@babojubot/process";
 import type { RelayHub, RelayIdentity } from "./relay.ts";
 
 /** 격리 실행의 Docker 설정. 서버가 시작할 때 정한다. */

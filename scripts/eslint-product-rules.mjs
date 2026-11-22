@@ -5,6 +5,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import path from "node:path";
 import {
+  combineVisitors,
+  importSites,
+  originName,
+  originOf,
+  repositoryPath,
+  targetOf,
+  workspacePackages,
+} from "./eslint-imports.mjs";
+import {
   skippedCleanupIn,
   skippedSyncCleanupIn,
 } from "./eslint-test-rules.mjs";
@@ -26,29 +35,34 @@ function unwrap(node) {
   return value;
 }
 
-/** `JSON.parse(...)`, 응답 본문 `x.json()`, 그 값에 기본값을 붙이거나 `.catch`·`.then`으로 이어 받은 값인가. */
-function readsOutsideData(node) {
+/**
+ * `JSON.parse(...)`, 응답 본문 `x.json()`, 그 값에 기본값을 붙이거나 `.catch`·`.then`으로 이어 받은 값인가. `JSON`은 이름이 아니라
+ * 출처로 본다(전역 JSON과 그 별칭, 같은 이름의 지역 값은 아님).
+ */
+function readsOutsideData(node, sourceCode) {
   const value = unwrap(node);
   if (value.type === "LogicalExpression")
-    return readsOutsideData(value.left) || readsOutsideData(value.right);
+    return (
+      readsOutsideData(value.left, sourceCode) ||
+      readsOutsideData(value.right, sourceCode)
+    );
   if (value.type !== "CallExpression") return false;
   const { callee } = value;
+  // 전역 JSON.parse: 출처로 본다(별칭·구조 분해 포함).
+  if (originName(sourceCode, callee) === "global:JSON.parse") return true;
   if (callee.type !== "MemberExpression" || callee.computed) return false;
+  // 응답 본문과 그 Promise를 잇는 메서드는 호출 결과(출처를 모르는 값)의 메서드라 이름으로 본다.
   switch (callee.property.name) {
-    case "parse":
-      return (
-        callee.object.type === "Identifier" && callee.object.name === "JSON"
-      );
     case "json":
       return true;
     case "catch":
-      return readsOutsideData(callee.object);
+      return readsOutsideData(callee.object, sourceCode);
     case "then": {
       const [callback] = value.arguments;
       return (
         callback?.type === "ArrowFunctionExpression" &&
         callback.body.type !== "BlockStatement" &&
-        readsOutsideData(callback.body)
+        readsOutsideData(callback.body, sourceCode)
       );
     }
     default:
@@ -79,7 +93,7 @@ const noAssertionOnParsedData = {
     return {
       TSAsExpression(node) {
         if (node.typeAnnotation.type === "TSUnknownKeyword") return;
-        if (readsOutsideData(node.expression))
+        if (readsOutsideData(node.expression, context.sourceCode))
           context.report({ node, messageId: "asserted" });
       },
     };
@@ -87,7 +101,6 @@ const noAssertionOnParsedData = {
 };
 
 const childProcess = new Set(["child_process", "node:child_process"]);
-const syncLaunchers = new Set(["execFileSync", "spawnSync", "execSync"]);
 
 /** 상한이 없다는 뜻인 값: Node는 `timeout`이 0이거나 없으면 기다림에 끝을 두지 않는다. */
 const unbounded = (value) =>
@@ -136,33 +149,19 @@ const syncCommandTimeout = {
     schema: [],
     messages: {
       missing:
-        '{{name}} 호출은 프로그램이 끝날 때까지 서버·스크립트 전체를 멈춥니다. 비동기 실행(공용 실행의 runTree, @babojubot/runtime/launch)을 쓰거나, 동기 실행이 꼭 필요하면 옵션 객체 리터럴에 timeout과 killSignal: "SIGKILL"을 두고 상한이 지난 결과(error.code === "ETIMEDOUT")를 \'모름\'으로 처리하세요.',
+        '{{name}} 호출은 프로그램이 끝날 때까지 서버·스크립트 전체를 멈춥니다. 비동기 실행(공용 실행의 runTree, @babojubot/process)을 쓰거나, 동기 실행이 꼭 필요하면 옵션 객체 리터럴에 timeout과 killSignal: "SIGKILL"을 두고 상한이 지난 결과(error.code === "ETIMEDOUT")를 \'모름\'으로 처리하세요.',
       soft: '{{name}}의 timeout은 시한에 신호(기본 SIGTERM)만 보내고 끝날 때까지 기다립니다. 신호를 무시하는 프로그램이면 기다림이 끝나지 않습니다. 옵션 객체 리터럴에 killSignal: "SIGKILL"을 두어 시한에 끝을 보장하세요. CODING_STANDARDS.md#제품-코드',
     },
   },
   create(context) {
-    /** 이 파일에서 child_process의 동기 실행 함수를 가리키는 지역 이름 → 원래 이름. */
-    const imported = new Map();
     return {
-      ImportDeclaration(node) {
-        if (!childProcess.has(node.source.value)) return;
-        for (const specifier of node.specifiers)
-          if (
-            specifier.type === "ImportSpecifier" &&
-            syncLaunchers.has(specifier.imported.name)
-          )
-            imported.set(specifier.local.name, specifier.imported.name);
-      },
       CallExpression(node) {
-        const { callee } = node;
+        // 이름이 아니라 출처로 본다: child_process에서 온 동기 실행(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도).
+        const origin = originName(context.sourceCode, node.callee);
         const name =
-          callee.type === "Identifier"
-            ? imported.get(callee.name)
-            : callee.type === "MemberExpression" &&
-                !callee.computed &&
-                syncLaunchers.has(callee.property.name)
-              ? callee.property.name
-              : undefined;
+          /^module:child_process:(execFileSync|spawnSync|execSync)$/.exec(
+            origin ?? ""
+          )?.[1];
         if (!name) return;
         const options = node.arguments.find(hasTimeout);
         if (!options)
@@ -175,7 +174,7 @@ const syncCommandTimeout = {
 };
 
 const ignoredErrorGuide =
-  '버려야 하면 @babojubot/contracts(스크립트는 packages/contracts/src/failure.ts)의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). 오류 이벤트 처리기(on("error", …))와 오류를 넘기는 콜백(execFile·close 등)도 같습니다: 상대가 끊어 난 오류(EPIPE·ECONNRESET)만 isDisconnect로 확인해 넘기고, 그 밖의 오류는 원인을 남기거나 드러냅니다. CODING_STANDARDS.md#제품-코드';
+  '버려야 하면 @babojubot/contracts의 이름 붙은 함수를 쓰세요: orIfMissing(없으면 기본값), continueAfterFailure(실패해도 진행), orIfProbeFailed(확인 실패면 안전한 결과, 원인을 남김), orIfUnreadable(동기 해석을 읽을 수 없으면 아님), settled(순서만 지킴). 오류 이벤트 처리기(on("error", …))와 오류를 넘기는 콜백(execFile·close 등)도 같습니다: 상대가 끊어 난 오류(EPIPE·ECONNRESET)만 isDisconnect로 확인해 넘기고, 그 밖의 오류는 원인을 남기거나 드러냅니다. CODING_STANDARDS.md#제품-코드';
 
 /** 오류를 받는 처리기의 자리: `.catch(처리기)`, `.then(성공, 처리기)`. */
 const handlerPositions = new Map([
@@ -422,6 +421,25 @@ function ioCallName(callee) {
   );
 }
 
+/** contracts의 실패 도구(orIfUnreadable·continueAfterFailure 등)가 있는 파일: failure.ts와 그것을 `export *`로 다시 내보내는 패키지 입구. */
+const failureFiles = new Set([
+  "packages/contracts/src/failure",
+  "packages/contracts/src/index",
+]);
+/**
+ * 식 `node`가 contracts 실패 도구 `name`인가. 이름이 아니라 출처로 본다: 다른 이름으로 가져오기·별칭·모듈 객체의 속성이어도 같고,
+ * 같은 이름의 지역 함수는 아니다. 모듈은 경로 철자가 아니라 대상 파일로 판정한다(`targetOf`).
+ */
+function failureTool(context, node, name) {
+  const origin = originOf(context.sourceCode.getScope(node), node);
+  return (
+    origin?.module !== undefined &&
+    origin.path.length === 1 &&
+    origin.path[0] === name &&
+    failureFiles.has(targetOf(context.filename, origin.module)?.file)
+  );
+}
+
 /**
  * `orIfUnreadable`은 이미 손에 든 값의 동기 해석·확인 한 단계만 감싼다. 콜백 안의 입출력은 권한·디스크·연결 오류까지 아님·없음으로
  * 바꿔 원인을 지우므로(#246 리뷰 S1, #258 리뷰 STD-1), 콜백 안의 `async`·`await`와 파일 읽기·쓰기, 명령·연결·이름 풀이·응답 본문
@@ -447,7 +465,6 @@ const noIoInUnreadable = {
   },
   create(context) {
     /** 이 파일에서 orIfUnreadable을 가리키는 지역 이름. */
-    const names = new Set(["orIfUnreadable"]);
     const { visitorKeys } = context.sourceCode;
     /** 콜백 몸 전체를 돌며 `await`와 입출력 호출을 짚는다. 안쪽 함수도 본다. */
     const inspect = (node) => {
@@ -464,20 +481,11 @@ const noIoInUnreadable = {
       }
     };
     return {
-      ImportSpecifier(node) {
-        const imported =
-          node.imported.type === "Identifier"
-            ? node.imported.name
-            : node.imported.value;
-        if (imported === "orIfUnreadable") names.add(node.local.name);
-      },
       CallExpression(node) {
-        const { callee } = node;
-        const called =
-          callee.type === "Identifier"
-            ? names.has(callee.name)
-            : calledMethod(callee) === "orIfUnreadable";
-        if (!called) return;
+        // 이름이 아니라 출처로 본다: contracts의 orIfUnreadable(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도). 모듈은 경로
+        // 철자가 아니라 대상 파일로 본다(#266 리뷰 SPEC-5): 패키지 이름·하위 입구·상대 경로 어느 것이든 contracts의 failure.ts나
+        // 그것을 다시 내보내는 입구(index.ts)면 같다.
+        if (!failureTool(context, node.callee, "orIfUnreadable")) return;
         const [read] = node.arguments;
         if (!read) return;
         if (!functionTypes.has(read.type)) {
@@ -525,8 +533,8 @@ const noCleanupChain = {
     const reported = new Set();
     const check = (block) => {
       const found =
-        skippedCleanupIn(block) ??
-        skippedSyncCleanupIn(block, context.sourceCode);
+        skippedCleanupIn(block, context) ??
+        skippedSyncCleanupIn(block, context);
       if (!found || reported.has(found.node)) return;
       reported.add(found.node);
       context.report({ node: found.node, messageId: found.messageId });
@@ -543,7 +551,7 @@ const noCleanupChain = {
 const groupSignalers = new Set(["kill", "killUnlessGone", "processAlive"]);
 
 /**
- * 프로세스 그룹(음수 pid)에 신호를 보내는 일은 packages/runtime/src/providers/recovery.ts만 한다. 그룹 끄기는 생존 확인·SIGTERM·유예·
+ * 프로세스 그룹(음수 pid)에 신호를 보내는 일은 packages/process/src/group.ts만 한다. 그룹 끄기는 생존 확인·SIGTERM·유예·
  * SIGKILL·상한 있는 확인이 한 벌이어야 하고, 손으로 짠 복사본은 신호만 보내고 확인 없이 떠나는 빈틈을 되풀이했다(#255 리뷰 SPEC-3·4).
  * `process.kill(-x, …)`, `killUnlessGone(-x, …)`, `processAlive(-x)`처럼 첫 인수가 음수 부호 식인 호출을 짚는다. 음수 값을 변수에 담아
  * 넘기는 호출은 따라가지 않으며 리뷰가 본다.
@@ -558,7 +566,7 @@ const noProcessGroupSignal = {
     schema: [],
     messages: {
       group:
-        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/runtime/src/providers/recovery.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. 프로그램은 launchTree(@babojubot/runtime/launch)로 띄우고 그 stop()으로 끄세요. 트리 전체가 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
+        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/process/src/group.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. 프로그램은 launchTree(@babojubot/process)로 띄우고 그 stop()으로 끄세요. 트리 전체가 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
@@ -582,7 +590,7 @@ const noProcessGroupSignal = {
 const asyncLaunchers = new Set(["spawn", "fork", "exec", "execFile"]);
 const crossSpawn = "cross-spawn";
 const launchAlternatives =
-  "오래 도는 자식은 공용 실행으로 띄우세요: launchTree(@babojubot/runtime/launch, runtime 안은 providers/launch.ts)가 띄우면서 그 트리를 끄는 stop()을 함께 돌려줍니다(Linux·macOS는 프로세스 그룹과 표식, Windows는 묶음). 끝까지 돌릴 짧은 명령은 runTree가 상한·취소에서 트리를 끄고 확인합니다. 결과를 기다려도 되는 짧은 명령은 timeout을 둔 동기 실행(execFileSync·spawnSync)을 씁니다. 트리를 끄면 안 되는 실행(그 자체가 데몬을 띄움)만 eslint.config.js의 launchOwners에 이유와 함께 올립니다. CODING_STANDARDS.md#제품-코드";
+  "오래 도는 자식은 공용 실행으로 띄우세요: launchTree(@babojubot/process, 그 패키지 안은 launch.ts)가 띄우면서 그 트리를 끄는 stop()을 함께 돌려줍니다(Linux·macOS는 프로세스 그룹과 표식, Windows는 묶음). 끝까지 돌릴 짧은 명령은 runTree가 상한·취소에서 트리를 끄고 확인합니다. 결과를 기다려도 되는 짧은 명령은 timeout을 둔 동기 실행(execFileSync·spawnSync)을 씁니다. 트리를 끄면 안 되는 실행(그 자체가 데몬을 띄움)만 eslint.config.js의 launchOwners에 이유와 함께 올립니다. CODING_STANDARDS.md#제품-코드";
 
 /** 가져오는 곳이 child_process인가, cross-spawn인가. */
 const launchModule = (source) =>
@@ -622,83 +630,158 @@ const noDirectLaunch = {
     },
   },
   create(context) {
-    /** 이 파일에서 모듈 객체를 가리키는 지역 이름 → 모듈 종류. */
-    const modules = new Map();
+    /**
+     * 식이 실행 모듈의 모듈 객체(child_process 이름공간·기본 가져오기, cross-spawn의 기본 함수)면 그 모듈. 이름이 아니라 출처로 본다
+     * (별칭으로 받아도 같고, 같은 이름의 매개변수는 아니다).
+     */
+    const moduleObject = (node) => {
+      const origin = originOf(context.sourceCode.getScope(node), node);
+      if (!origin?.module || !launchModule(origin.module)) return undefined;
+      const module = launchModule(origin.module);
+      return origin.path.length === 0 ||
+        (module === crossSpawn &&
+          origin.path.length === 1 &&
+          origin.path[0] === "default")
+        ? module
+        : undefined;
+    };
     const report = (node, name, messageId = "direct") =>
       context.report({ node, messageId, data: { name } });
     const banned = (module, name) =>
       module === crossSpawn
         ? name === "spawn" || name === "default"
         : asyncLaunchers.has(name);
-    const reExport = (node) => {
-      const module = launchModule(node.source?.value);
-      if (!module) return;
-      if (node.type === "ExportAllDeclaration")
-        return report(node, `${node.source.value}의 export *`);
-      for (const specifier of node.specifiers)
-        if (banned(module, specifier.local.name ?? specifier.local.value))
-          report(specifier, `${node.source.value}의 ${specifier.local.name}`);
-    };
-    return {
-      ImportDeclaration(node) {
-        if (node.importKind === "type") return;
-        const module = launchModule(node.source.value);
-        if (!module) return;
-        for (const specifier of node.specifiers) {
-          if (specifier.importKind === "type") continue;
-          if (specifier.type === "ImportSpecifier") {
-            const name = specifier.imported.name ?? specifier.imported.value;
-            if (banned(module, name))
-              report(specifier, `${node.source.value}의 ${name}`);
-          } else modules.set(specifier.local.name, module);
-        }
-      },
-      ExportNamedDeclaration: reExport,
-      ExportAllDeclaration: reExport,
-      ImportExpression(node) {
-        const module = launchModule(node.source.value);
-        if (module)
-          report(node, `${node.source.value}의 dynamic import`, "loaded");
-      },
+    const sites = importSites(context, (site) => {
+      const module = launchModule(site.source);
+      if (!module || site.kind === "resolve" || site.typeOnly) return;
+      if (site.kind === "dynamic")
+        return report(site.node, `${site.source}의 dynamic import`, "loaded");
+      if (site.kind === "require")
+        return report(site.node, `${site.loader}("${site.source}")`, "loaded");
+      if (site.kind === "export" && site.names.some((n) => n.imported === "*"))
+        return report(site.node, `${site.source}의 export *`);
+      // 모듈 객체로 받은 것은 그것을 부르거나 읽는 자리에서 본다(아래).
+      for (const name of site.names)
+        if (
+          !name.typeOnly &&
+          name.imported !== "*" &&
+          !(site.kind === "import" && name.imported === "default") &&
+          banned(module, name.imported)
+        )
+          report(name.node, `${site.source}의 ${name.imported}`);
+    });
+    return combineVisitors(sites, {
       CallExpression(node) {
         const { callee } = node;
-        const [first] = node.arguments;
-        const loader =
-          callee.type === "Identifier"
-            ? callee.name
-            : callee.type === "MemberExpression"
-              ? propertyName(callee)
-              : undefined;
-        if (
-          (loader === "require" || loader === "getBuiltinModule") &&
-          first?.type === "Literal" &&
-          launchModule(first.value)
-        )
-          return report(node, `${loader}("${first.value}")`, "loaded");
         // cross-spawn의 기본 함수 자체를 부른다(`spawn(...)`).
-        if (
-          callee.type === "Identifier" &&
-          modules.get(callee.name) === crossSpawn
-        )
-          report(node, `${crossSpawn}`);
+        if (moduleObject(callee) === crossSpawn) report(node, `${crossSpawn}`);
       },
       MemberExpression(node) {
-        if (node.object.type !== "Identifier") return;
-        const module = modules.get(node.object.name);
+        const module = moduleObject(node.object);
         if (!module) return;
+        const where = context.sourceCode.getText(node.object);
         const name = propertyName(node);
-        if (name === undefined) report(node, `${node.object.name}[…]`);
-        else if (banned(module, name))
-          report(node, `${node.object.name}.${name}`);
+        if (name === undefined) report(node, `${where}[…]`);
+        else if (banned(module, name)) report(node, `${where}.${name}`);
       },
-    };
+      // 모듈 객체(별칭 포함)를 구조 분해해 꺼내도 같다(`const { spawn } = cp`, #266 리뷰 SPEC-7). 불러오는 호출의 구조 분해는
+      // 가져오는 자리(위)가 본다.
+      VariableDeclarator(node) {
+        if (node.id.type !== "ObjectPattern" || !node.init) return;
+        const value =
+          node.init.type === "AwaitExpression" ? node.init.argument : node.init;
+        if (
+          value.type === "CallExpression" ||
+          value.type === "ImportExpression"
+        )
+          return;
+        const module = moduleObject(node.init);
+        if (!module) return;
+        const where = context.sourceCode.getText(node.init);
+        for (const property of node.id.properties) {
+          if (property.type !== "Property") {
+            report(property, `${where}의 나머지`);
+            continue;
+          }
+          const name = propertyName({
+            computed: property.computed,
+            property: property.key,
+          });
+          if (name === undefined) report(property, `${where}[…]`);
+          else if (banned(module, name)) report(property, `${where}.${name}`);
+        }
+      },
+    });
+  },
+};
+
+/** 실행 경계가 막는 모듈: 프로그램을 띄우는 모듈과, import 검사를 거치지 않고 모듈을 불러오는 길이 있는 node:module. */
+const boundaryLaunchers = new Set([
+  "child_process",
+  "node:child_process",
+  "cross-spawn",
+]);
+const boundaryLoaders = new Set(["module", "node:module"]);
+/** 이 규칙이 보는 불러오기. createRequire가 만든 함수와 getBuiltinModule은 그 함수를 얻는 길(node:module, getBuiltinModule)을 막아 알린다. */
+const boundaryLoadersSeen = new Set([
+  "import",
+  "export",
+  "import()",
+  "require",
+  "import =",
+]);
+
+/**
+ * 격리 실행의 환경과 오류 처리, 띄우기와 끄기의 짝을 한 곳이 맡도록, 패키지 안에서 정해진 파일만 프로그램을 띄운다(eslint.config.js의
+ * launchBoundary가 패키지마다 소유 파일을 빼고 건다). child_process·cross-spawn과 node:module을 가져오는 모든 자리를 공용 가져오기
+ * 판정(scripts/eslint-imports.mjs)으로 본다: 정적 import·re-export·문자열 dynamic import·require·TS import-equals. 타입만 가져오는
+ * 것은 그대로 둔다. `message`는 그 패키지에서 띄우는 길이다. 가져오기 검사를 피하는 문법(계산한 경로의 import, getBuiltinModule,
+ * process의 계산한 이름)은 설정의 no-restricted-syntax가 막는다.
+ */
+const launchBoundary = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "launch programs only from the listed owner files of a package, whatever way the launcher module is loaded",
+    },
+    schema: [
+      {
+        type: "object",
+        properties: { message: { type: "string" } },
+        required: ["message"],
+        additionalProperties: false,
+      },
+    ],
+    messages: {
+      launch: "{{source}}: {{message}}",
+      loader:
+        "{{source}}: node:module은 createRequire·Module._load처럼 import 검사를 거치지 않고 모듈을 불러오는 길이 있어 child_process 금지를 피합니다. 패키지는 import로 가져오세요. {{message}}",
+    },
+  },
+  create(context) {
+    const { message } = context.options[0];
+    return importSites(context, (site) => {
+      if (site.typeOnly || !boundaryLoadersSeen.has(site.loader)) return;
+      const messageId = boundaryLaunchers.has(site.source)
+        ? "launch"
+        : boundaryLoaders.has(site.source)
+          ? "loader"
+          : undefined;
+      if (messageId)
+        context.report({
+          node: site.node,
+          messageId,
+          data: { source: site.source, message },
+        });
+    });
   },
 };
 
 /**
  * 실행 소유 파일에서 Node.js의 시한에 끝을 맡기는 비동기 실행을 막는다. 비동기 `execFile`·`exec`는 시한에 신호만 보내고 출력이 닫히기를
  * 기다려, 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않는다. `spawn`·`fork`의 `timeout`도 신호만 보낸다(#262).
- * 짧은 명령은 runCommand·boundChild(providers/bounded-command.ts, 시한에 SIGKILL과 끝 보장), 트리를 끌 명령은 runTree를 쓴다.
+ * 짧은 명령은 runCommand·boundChild(@babojubot/process, 시한에 SIGKILL과 끝 보장), 트리를 끌 명령은 runTree를 쓴다.
  * 알려진 한계: 모듈 객체를 다른 변수로 넘긴 뒤의 호출, 옵션을 변수로 넘긴 `spawn`의 `timeout`은 보지 않는다.
  */
 const boundedCommand = {
@@ -711,41 +794,18 @@ const boundedCommand = {
     schema: [],
     messages: {
       callback:
-        "비동기 {{name}}은 시한에 신호만 보내고 출력이 닫히기를 기다립니다. 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않습니다. 짧은 명령은 runCommand(providers/bounded-command.ts, @babojubot/runtime/bounded-command)로 돌려 시한에 SIGKILL로 끝내고 끝을 보장하세요. 트리를 끌 명령은 runTree(@babojubot/runtime/launch)를 씁니다. CODING_STANDARDS.md#제품-코드",
+        "비동기 {{name}}은 시한에 신호만 보내고 출력이 닫히기를 기다립니다. 신호를 무시하거나 출력을 물려받은 자손이 남으면 끝나지 않습니다. 짧은 명령은 runCommand(@babojubot/process, 그 패키지 안은 bounded-command.ts)로 돌려 시한에 SIGKILL로 끝내고 끝을 보장하세요. 트리를 끌 명령은 runTree(@babojubot/process)를 씁니다. CODING_STANDARDS.md#제품-코드",
       timeout:
-        "{{name}}의 timeout은 시한에 신호만 보내고 끝을 보장하지 않습니다. timeout 없이 띄우고 boundChild(providers/bounded-command.ts)로 시한에 SIGKILL을 보내고 끝을 기다리세요. CODING_STANDARDS.md#제품-코드",
+        "{{name}}의 timeout은 시한에 신호만 보내고 끝을 보장하지 않습니다. timeout 없이 띄우고 boundChild(@babojubot/process의 bounded-command.ts)로 시한에 SIGKILL을 보내고 끝을 기다리세요. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
-    /** child_process에서 가져온 비동기 실행의 지역 이름 → 원래 이름, 그리고 모듈 객체의 지역 이름. */
-    const named = new Map();
-    const modules = new Set();
-    const launcherOf = (callee) => {
-      if (callee.type === "Identifier") return named.get(callee.name);
-      if (
-        callee.type === "MemberExpression" &&
-        callee.object.type === "Identifier" &&
-        modules.has(callee.object.name)
-      ) {
-        const name = propertyName(callee);
-        return asyncLaunchers.has(name) ? name : undefined;
-      }
-      return undefined;
-    };
     return {
-      ImportDeclaration(node) {
-        if (!childProcess.has(node.source.value) || node.importKind === "type")
-          return;
-        for (const specifier of node.specifiers) {
-          if (specifier.importKind === "type") continue;
-          if (specifier.type === "ImportSpecifier") {
-            const name = specifier.imported.name ?? specifier.imported.value;
-            if (asyncLaunchers.has(name)) named.set(specifier.local.name, name);
-          } else modules.add(specifier.local.name);
-        }
-      },
       CallExpression(node) {
-        const name = launcherOf(node.callee);
+        // 이름이 아니라 출처로 본다: child_process의 비동기 실행(이름을 바꿔 가져와도, 별칭·모듈 객체로 불러도).
+        const name = /^module:child_process:(spawn|fork|exec|execFile)$/.exec(
+          originName(context.sourceCode, node.callee) ?? ""
+        )?.[1];
         if (!name) return;
         if (name === "execFile" || name === "exec")
           return context.report({
@@ -761,75 +821,128 @@ const boundedCommand = {
 };
 
 /**
- * runtime에서 가져올 수 있는 길을 묶는다(#262). 프로세스 띄우기·끄기의 바탕은 지금 runtime에 있고, #265 뒤 새 패키지(@babojubot/process)로
- * 옮긴다. 그때까지 다른 module(db, 개발 스크립트)이 runtime의 하위 경로·내부 파일에 기대는 길이 퍼지지 않게, 설정에 적은 가져오기만
- * 받는다. `allowed`의 값은 패키지 이름 경로(`@babojubot/runtime/launch`)이고, 상대 경로로 runtime의 `src/index.ts`를 가리키는 것은
- * 패키지 이름(`@babojubot/runtime`)과 같게 본다.
+ * 영역마다 runtime·프로세스 패키지·db에서 가져올 수 있는 입구를 묶는다(#262, #266). `packages`는 패키지 이름마다 이 자리에서 가져와도
+ * 되는 입구(패키지 이름 경로)의 목록이고, 빈 목록이면 그 패키지를 가져오지 않는다. 입구는 대상 파일로 판정해 자기 패키지 안에서
+ * 자기 이름이나 상대 경로로 입구 파일을 가져와도 같다. 다른 패키지 안을 상대 경로로 가리키는 것과 내보내지 않은 하위 경로는
+ * product/package-entry-only가 함께 본다. 가져오는 자리는 공용 판정
+ * (scripts/eslint-imports.mjs)이 정한다: import·export·dynamic import·`require`·createRequire가 만든 함수·`.resolve`.
  */
-const runtimeImportScope = {
+const importScopeAlternatives =
+  "프로세스 띄우기·끄기와 짧은 명령은 @babojubot/process(launchTree·runTree·runCommand), 시험의 정리 도움은 @babojubot/process/test-cleanup·/remove-folder·/lifelines·/testing에 있습니다. 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 씁니다. 다른 곳은 띄울 때 launchTree가 돌려준 stop()으로 끕니다(docs/architecture.md 패키지 구성).";
+const packageImportScope = {
   meta: {
     type: "problem",
     docs: {
       description:
-        "allow only the listed runtime entry points outside runtime until the process tools move to their own package",
+        "allow only the listed entry points of runtime and the process package outside them",
     },
     schema: [
       {
         type: "object",
         properties: {
-          allowed: { type: "array", items: { type: "string" } },
+          packages: {
+            type: "object",
+            additionalProperties: { type: "array", items: { type: "string" } },
+          },
           why: { type: "string" },
         },
-        required: ["allowed", "why"],
+        required: ["packages", "why"],
         additionalProperties: false,
       },
     ],
     messages: {
-      outside:
-        "{{source}}: {{why}} 이 자리에서 runtime은 {{allowed}}만 가져옵니다. 프로세스 띄우기·끄기는 @babojubot/runtime/launch(launchTree·runTree), 공용 실행 위에 놓을 수 없는 짧은 명령은 @babojubot/runtime/bounded-command(runCommand)를 쓰세요. 이 바탕은 #265 뒤 @babojubot/process로 옮깁니다(docs/architecture.md 패키지 구성).",
+      outside: `{{source}}: {{why}} 이 자리에서 {{name}}은 {{allowed}}만 가져옵니다. ${importScopeAlternatives}`,
+      none: `{{source}}: {{why}} 이 자리에서는 {{name}}을 가져오지 않습니다. ${importScopeAlternatives}`,
     },
   },
   create(context) {
-    const { allowed, why } = context.options[0];
-    const dir = context.filename.replaceAll("\\", "/").replace(/\/[^/]*$/, "");
-    /** runtime을 가리키면 패키지 이름 경로로 바꾼 값, 아니면 undefined. */
-    const runtimeEntry = (source) => {
-      if (typeof source !== "string") return undefined;
-      if (
-        source === "@babojubot/runtime" ||
-        source.startsWith("@babojubot/runtime/")
-      )
-        return source;
-      if (!source.startsWith(".")) return undefined;
-      const parts = [];
-      for (const part of `${dir}/${source}`.split("/"))
-        if (part === "..") parts.pop();
-        else if (part !== ".") parts.push(part);
-      const resolved = parts.join("/");
-      const at = resolved.indexOf("packages/runtime/");
-      if (at < 0) return undefined;
-      const inside = resolved.slice(at + "packages/runtime/".length);
-      return inside === "src/index.ts"
-        ? "@babojubot/runtime"
-        : `packages/runtime/${inside}`;
+    const { packages, why } = context.options[0];
+    /**
+     * 범위 안 패키지의 입구를 가리키면 그 패키지와 입구(패키지 이름 경로), 아니면 undefined. 경로 철자가 아니라 대상으로 본다
+     * (공용 판정의 `targetOf`, #266 리뷰 SPEC-6): 자기 패키지 이름·상대 경로·확장자 없는 철자가 같은 입구 파일이면 같은 판정이고,
+     * 자기 패키지 안이어도 그렇다. 입구가 아닌 안쪽 파일(입구가 다시 내보내는 모듈 포함)은 이 규칙이 보지 않는다(다른 패키지
+     * 안쪽은 package-entry-only가, 그룹 끄기 이름은 no-group-stop-import가 본다).
+     */
+    const target = (source) => {
+      const found = targetOf(context.filename, source);
+      if (!found?.package || !(found.package.name in packages))
+        return undefined;
+      if (found.entry === undefined) return undefined;
+      const { name } = found.package;
+      return {
+        name,
+        entry: found.entry === "." ? name : `${name}${found.entry.slice(1)}`,
+      };
     };
     const check = (node, source) => {
-      const entry = runtimeEntry(source);
-      if (entry === undefined || allowed.includes(entry)) return;
+      const found = target(source);
+      if (!found || packages[found.name].includes(found.entry)) return;
+      const allowed = packages[found.name];
       context.report({
         node,
-        messageId: "outside",
-        data: { source, why, allowed: allowed.join(", ") },
+        messageId: allowed.length ? "outside" : "none",
+        data: { source, why, name: found.name, allowed: allowed.join(", ") },
       });
     };
-    return {
-      ImportDeclaration: (node) => check(node, node.source.value),
-      ExportNamedDeclaration: (node) =>
-        node.source && check(node, node.source.value),
-      ExportAllDeclaration: (node) => check(node, node.source.value),
-      ImportExpression: (node) =>
-        node.source.type === "Literal" && check(node, node.source.value),
+    return importSites(context, (site) => check(site.node, site.source));
+  },
+};
+
+const entryNames = (pkg) =>
+  pkg.entries.length
+    ? pkg.entries
+        .map((entry) =>
+          entry === "." ? pkg.name : `${pkg.name}${entry.slice(1)}`
+        )
+        .join(", ")
+    : "없음";
+
+/**
+ * 다른 workspace 패키지는 그 package.json의 `exports`가 내보낸 입구로만, 패키지 이름으로 가져온다(#266). 다른 패키지 폴더 안을
+ * 가리키는 상대 경로(입구 파일 포함)와 내보내지 않은 하위 경로를 막는다. 같은 패키지 안의 상대 경로와 저장소 밖 라이브러리는 보지
+ * 않는다. 선례: import-x `no-relative-packages`(다른 패키지를 상대 경로로)·`no-internal-modules`(안쪽 모듈), Node.js `exports`
+ * (내보내지 않은 하위 경로는 ERR_PACKAGE_PATH_NOT_EXPORTED). 가져오는 자리는 공용 판정(scripts/eslint-imports.mjs)이 정한다:
+ * import·export·dynamic import·`require`·createRequire가 만든 함수·`.resolve`(상대 경로는 이 파일 기준으로 푼다). 계산한 경로는
+ * 보지 않는다.
+ */
+const packageEntryOnly = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "import other workspace packages only by name through the entries their package.json exports",
+    },
+    schema: [],
+    messages: {
+      relative:
+        "{{source}}: 다른 패키지({{name}})의 폴더 안을 상대 경로로 가져옵니다. 그 패키지 안을 바꿀 때 함께 깨지고, 패키지 경계를 넘는 모양이 퍼집니다. 패키지 이름으로 그 package.json exports의 입구({{entries}})에서 가져오세요. 필요한 것이 입구에 없으면 그 패키지 exports에 의미 있는 입구를 더합니다(시험 전용이면 시험 입구로). docs/architecture.md 패키지 구성",
+      unexported:
+        "{{source}}: {{name}}이 package.json exports로 내보내지 않은 하위 경로입니다. 내보낸 입구({{entries}})에서 가져오세요. 필요한 것이 입구에 없으면 그 패키지 exports에 의미 있는 입구를 더합니다(시험 전용이면 시험 입구로). docs/architecture.md 패키지 구성",
+    },
+  },
+  create(context) {
+    const file = repositoryPath(context.filename);
+    const own = workspacePackages.find((pkg) =>
+      file.startsWith(`${pkg.folder}/`)
+    );
+    const check = (node, source) => {
+      const target = targetOf(context.filename, source);
+      if (!target?.package) return;
+      const data = {
+        source,
+        name: target.package.name,
+        entries: entryNames(target.package),
+      };
+      if (target.relative) {
+        if (target.package !== own)
+          context.report({ node, messageId: "relative", data });
+        return;
+      }
+      // 자기 패키지도 이름으로 적으면 exports에 있는 입구만 닿는다(Node.js self-reference).
+      if (!target.exported)
+        context.report({ node, messageId: "unexported", data });
     };
+    return importSites(context, (site) => check(site.node, site.source));
   },
 };
 
@@ -891,7 +1004,11 @@ const calleeName = (callee) =>
  * 호출이 실패 처리기를 받는 자리면 그 인수: `.catch(처리기)`, `.then(_, 처리기)`, `continueAfterFailure(일, 처리기)`,
  * `.on("error", 처리기)`·`.once("error", 처리기)`.
  */
-function failureHandlerArgument(call) {
+function failureHandlerArgument(call, context) {
+  // contracts의 continueAfterFailure(일, 처리기)를 먼저 출처로 본다. 부르는 모양(이름 바꾼 가져오기·별칭·이름공간 속성·구조 분해)과
+  // 무관하다(#266 리뷰 SPEC-8: 이름공간 속성이면 아래 메서드 분기가 먼저 돌아가 놓쳤다).
+  if (failureTool(context, call.callee, "continueAfterFailure"))
+    return call.arguments[1];
   const name = calleeName(call.callee);
   if (call.callee.type === "MemberExpression") {
     const position = handlerPositions.get(name);
@@ -904,7 +1021,7 @@ function failureHandlerArgument(call) {
       return call.arguments[1];
     return undefined;
   }
-  return name === "continueAfterFailure" ? call.arguments[1] : undefined;
+  return undefined;
 }
 
 /** 이름이 가리키는 변수. 찾지 못하면 undefined. */
@@ -981,11 +1098,11 @@ const noFailureCollecting = {
     schema: [],
     messages: {
       collected:
-        "받은 오류를 배열·Map·Set에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다(감싼 오류, 이름 붙은 처리기도 같습니다). 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 문맥을 더할 오류는 그 단계 안에서 던지고, 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
+        "받은 오류를 배열·Map·Set에 모아 '모두 시도하고 실패를 모아 알리기'를 직접 짭니다(감싼 오류, 이름 붙은 처리기도 같습니다). 서로 독립인 단계는 attemptAll(던짐)·attemptEach(실패 목록을 돌려줌), 모은 실패를 하나로 만들기는 combinedFailure(@babojubot/contracts)를 쓰세요. 문맥을 더할 오류는 그 단계 안에서 던지고, 단계가 값을 내야 하면 그 단계 안에서 바깥 변수에 담습니다. CODING_STANDARDS.md#제품-코드",
       flagged:
-        "실패 처리 자리 {{count}}곳(줄 {{lines}})에서 같은 바깥 값 `{{name}}`을 바꿔 실패를 표시·셈·이어 붙여 모읍니다. 서로 독립인 단계는 attemptEach로 돌려 돌려받은 실패 목록으로 판단하고(남길 진단은 목록을 돌며 한 번씩), 던져야 하면 attemptAll, 원래 실패와 묶기는 combinedFailure(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts)를 쓰세요. 단계마다 다른 문구는 그 단계 안에서 감싸 던집니다. CODING_STANDARDS.md#제품-코드",
+        "실패 처리 자리 {{count}}곳(줄 {{lines}})에서 같은 바깥 값 `{{name}}`을 바꿔 실패를 표시·셈·이어 붙여 모읍니다. 서로 독립인 단계는 attemptEach로 돌려 돌려받은 실패 목록으로 판단하고(남길 진단은 목록을 돌며 한 번씩), 던져야 하면 attemptAll, 원래 실패와 묶기는 combinedFailure(@babojubot/contracts)를 쓰세요. 단계마다 다른 문구는 그 단계 안에서 감싸 던집니다. CODING_STANDARDS.md#제품-코드",
       combined:
-        "AggregateError를 직접 만들어 실패를 손으로 묶습니다. 서로 독립인 단계의 실패만 알리면 attemptAll, 원래 실패와 정리 실패를 함께 알리려면 정리를 attemptEach로 돌려 combinedFailure([원래 실패, ...정리 실패], 문구, { cause: 원래 실패 })로 던지세요(@babojubot/contracts, 스크립트는 packages/contracts/src/failure.ts). 묶는 곳이 하나여야 문구 모양(목록을 펼치지 않는 출력에서도 모든 실패가 보임)이 같습니다. CODING_STANDARDS.md#제품-코드",
+        "AggregateError를 직접 만들어 실패를 손으로 묶습니다. 서로 독립인 단계의 실패만 알리면 attemptAll, 원래 실패와 정리 실패를 함께 알리려면 정리를 attemptEach로 돌려 combinedFailure([원래 실패, ...정리 실패], 문구, { cause: 원래 실패 })로 던지세요(@babojubot/contracts). 묶는 곳이 하나여야 문구 모양(목록을 펼치지 않는 출력에서도 모든 실패가 보임)이 같습니다. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
@@ -1106,20 +1223,20 @@ const noFailureCollecting = {
       },
       NewExpression(node) {
         if (
-          node.callee.type === "Identifier" &&
-          node.callee.name === "AggregateError"
+          originName(context.sourceCode, node.callee) ===
+          "global:AggregateError"
         )
           report(node, "combined");
       },
       CallExpression(node) {
         if (
-          node.callee.type === "Identifier" &&
-          node.callee.name === "AggregateError"
+          originName(context.sourceCode, node.callee) ===
+          "global:AggregateError"
         )
           report(node, "combined");
         const handler = handlerFunction(
           sourceCode,
-          failureHandlerArgument(node)
+          failureHandlerArgument(node, context)
         );
         if (!handler) return;
         check(handler.params[0], handler.body, handler);
@@ -1149,13 +1266,20 @@ const noFailureCollecting = {
 };
 
 const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
-const recoveryFile = "packages/runtime/src/providers/recovery";
+/** 그룹 끄기를 담은 파일: 그룹 끄기 자체와 그것을 다시 내보내는 복구 입구(확장자를 뗀 저장소 기준 경로). */
+const groupFiles = new Set([
+  "packages/process/src/group",
+  "packages/process/src/recovery",
+]);
 
 /**
  * 그룹 끄기의 반쪽(`stopProcessGroup`·`interruptProcessGroup`)만 가져다 쓰지 못하게 한다. 그룹 끄기는 그룹으로 띄운 트리에만 맞고,
  * 띄운 방법을 모르는 쪽이 빌려 쓰면 Windows에서 아무것도 끄지 않고 성공하거나 새 세션으로 나간 자식을 놓친다(#262).
- * - `outside: true`(runtime 밖): recovery.ts를 가리키는 가져오기·다시 내보내기·dynamic import와, 어디서든 그 두 이름을 가져오는 것.
- * - `outside: false`(runtime 안, 공용 실행·복구 밖): recovery.ts에서 그 두 이름을 가져오거나 다시 내보내는 것과 `export *`.
+ * 설정이 이 규칙을 빼는 파일(공용 실행 launch.ts, 그룹 끄기 group.ts와 복구 입구 recovery.ts, runtime의 재시작 복구) 밖에서
+ * - 어디서든 그 두 이름을 가져오거나 다시 내보내는 것,
+ * - 그룹 끄기를 담은 파일(group.ts·복구 입구)의 모듈 객체를 통째로 받거나 다시 내보내는 것(`export *`·`import * as`·통째로 받은 `require`)
+ * 을 막는다. 파일은 경로 철자가 아니라 대상으로 판정한다(공용 판정의 `targetOf`): 상대 경로·자기 패키지 이름(`@babojubot/process/recovery`)·
+ * 확장자 없는 철자가 같은 파일이면 같다(#266 리뷰 SPEC-3). 가져온 이름은 공용 판정(`importSites`)이 정한다.
  */
 const noGroupStopImport = {
   meta: {
@@ -1164,71 +1288,37 @@ const noGroupStopImport = {
       description:
         "keep the process group stop inside the shared launch and the restart recovery",
     },
-    schema: [
-      {
-        type: "object",
-        properties: { outside: { type: "boolean" } },
-        additionalProperties: false,
-      },
-    ],
+    schema: [],
     messages: {
-      recovery:
-        "runtime 밖에서 providers/recovery.ts를 가져옵니다. 그 파일은 서버 재시작 뒤의 정리와 공용 실행이 쓰는 그룹 끄기를 담습니다. 프로그램을 띄우고 끄는 일은 launchTree(@babojubot/runtime/launch)가 돌려주는 stop()으로, 재시작 복구는 @babojubot/runtime의 recoverProviderProcesses로 합니다. CODING_STANDARDS.md#제품-코드",
-      half: "{{name}}만 가져다 쓰면 띄운 방법과 맞지 않는 끄기가 됩니다(Windows에서 아무것도 끄지 않고 성공, 새 세션으로 나간 자식을 놓침). 띄울 때 launchTree가 돌려준 stop()·interrupt()를 쓰세요. 그룹 끄기는 공용 실행(providers/launch.ts)과 재시작 복구(recovery.ts)만 씁니다. CODING_STANDARDS.md#제품-코드",
+      half: "{{name}}만 가져다 쓰면 띄운 방법과 맞지 않는 끄기가 됩니다(Windows에서 아무것도 끄지 않고 성공, 새 세션으로 나간 자식을 놓침). 띄울 때 launchTree(@babojubot/process)가 돌려준 stop()·interrupt()를 쓰세요. 그룹 끄기는 공용 실행(@babojubot/process의 launch.ts)과 runtime의 재시작 복구(providers/recovery.ts)만 씁니다. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
-    const outside = context.options[0]?.outside ?? true;
-    const dir = context.filename.replaceAll("\\", "/").replace(/\/[^/]*$/, "");
-    /** 가져오는 곳이 runtime의 recovery.ts인가(상대 경로를 풀어 본다). */
-    const isRecovery = (source) => {
-      if (typeof source !== "string") return false;
-      if (/^@babojubot\/runtime\/.*recovery/.test(source)) return true;
-      if (!source.startsWith(".")) return false;
-      const parts = [];
-      for (const part of `${dir}/${source}`.split("/"))
-        if (part === "..") parts.pop();
-        else if (part !== ".") parts.push(part);
-      return parts
-        .join("/")
-        .replace(/\.(ts|js|mjs)$/, "")
-        .endsWith(recoveryFile);
-    };
-    const check = (node, specifiers = []) => {
-      const fromRecovery = isRecovery(node.source?.value);
-      if (outside && fromRecovery)
-        return context.report({ node, messageId: "recovery" });
-      if (node.type === "ExportAllDeclaration" && fromRecovery)
-        return context.report({
-          node,
-          messageId: "half",
-          data: { name: "recovery.ts의 export *" },
-        });
-      for (const specifier of specifiers) {
-        const name =
-          specifier.type === "ImportSpecifier"
-            ? (specifier.imported.name ?? specifier.imported.value)
-            : specifier.type === "ExportSpecifier"
-              ? specifier.local.name
-              : undefined;
-        if (groupStoppers.has(name) && (outside || fromRecovery))
+    return importSites(context, (site) => {
+      if (site.kind === "resolve") return;
+      const target = targetOf(context.filename, site.source);
+      const holdsGroupStop = groupFiles.has(target?.file);
+      for (const name of site.names) {
+        // 모듈 객체를 통째로 받거나 다시 내보내면 그 안의 그룹 끄기도 함께 나간다.
+        if (name.imported === "*" && holdsGroupStop)
           context.report({
-            node: specifier,
+            node: name.node,
             messageId: "half",
-            data: { name },
+            data: {
+              name:
+                site.kind === "export"
+                  ? `${site.source}의 export *`
+                  : `${site.source}의 모듈 객체`,
+            },
+          });
+        else if (groupStoppers.has(name.imported))
+          context.report({
+            node: name.node,
+            messageId: "half",
+            data: { name: name.imported },
           });
       }
-    };
-    return {
-      ImportDeclaration: (node) => check(node, node.specifiers),
-      ExportNamedDeclaration: (node) =>
-        node.source && check(node, node.specifiers),
-      ExportAllDeclaration: (node) => check(node),
-      ImportExpression(node) {
-        if (outside && isRecovery(node.source.value))
-          context.report({ node, messageId: "recovery" });
-      },
-    };
+    });
   },
 };
 
@@ -1274,8 +1364,8 @@ function manifestFor(file) {
  * 가져온 패키지는 그 코드가 속한 package.json에 선언한다. 제품 코드는 실행 의존성(`dependencies`·`peerDependencies`·
  * `optionalDependencies`)에 있어야 한다: devDependencies에만 있으면 프로덕션 설치(`pnpm install --prod`)에서 그 가져오기가 깨진다
  * (#264 리뷰 STD-2). 타입만 가져오는 것(`import type`)은 실행에 남지 않으므로 devDependencies도 된다. 개발 스크립트와 시험은
- * `allowDev`로 devDependencies까지 받는다. 정적 import·re-export·문자열 dynamic import를 본다.
- * 알려진 한계: 계산한 이름의 dynamic import와 `createRequire`로 부른 `require`는 보지 않는다(runtime의 실행 경계 lint가 막는 길은 거기서 막는다).
+ * `allowDev`로 devDependencies까지 받는다. 가져오는 자리는 공용 판정(scripts/eslint-imports.mjs)이 정한다: 정적 import·re-export·
+ * 문자열 dynamic import·`require`·createRequire가 만든 함수·`.resolve`. 알려진 한계: 계산한 경로는 보지 않는다.
  */
 const noUndeclaredImport = {
   meta: {
@@ -1323,25 +1413,9 @@ const noUndeclaredImport = {
         data: { name, manifest: where },
       });
     };
-    return {
-      ImportDeclaration(node) {
-        check(
-          node.source,
-          node.importKind === "type" ||
-            (node.specifiers.length > 0 &&
-              node.specifiers.every((s) => s.importKind === "type"))
-        );
-      },
-      ExportNamedDeclaration(node) {
-        if (node.source) check(node.source, node.exportKind === "type");
-      },
-      ExportAllDeclaration(node) {
-        check(node.source, node.exportKind === "type");
-      },
-      ImportExpression(node) {
-        check(node.source, false);
-      },
-    };
+    return importSites(context, (site) =>
+      check(site.sourceNode, site.typeOnly)
+    );
   },
 };
 
@@ -1356,8 +1430,10 @@ export default {
     "no-cleanup-chain": noCleanupChain,
     "no-process-group-signal": noProcessGroupSignal,
     "no-direct-launch": noDirectLaunch,
+    "launch-boundary": launchBoundary,
     "bounded-command": boundedCommand,
-    "runtime-import-scope": runtimeImportScope,
+    "package-import-scope": packageImportScope,
+    "package-entry-only": packageEntryOnly,
     "no-failure-collecting": noFailureCollecting,
     "no-group-stop-import": noGroupStopImport,
   },
