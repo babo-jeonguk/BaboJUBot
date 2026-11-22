@@ -98,13 +98,14 @@ it("reads a last line that has no newline when a child keeps the output open", a
 it("finishes a run when its program ends without waiting on the clock for a child that holds the output", async () => {
   const lifelines = await openLifelines();
   onTestFinished(() => lifelines.close());
-  const holder = `${lifelines.hold("holder")} setInterval(() => {}, 1000);`;
+  // 남긴 자식이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 마지막 줄을 쓰고 끝난다. 그 전에 끝나면 자식이 연결을 쥐기 전에 꺼진다.
+  const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
   const frames: unknown[] = [];
   const child = startProcess({
     command: [
       process.execPath,
       "-e",
-      `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "ignore"] }).unref(); process.stdout.write('{"n":1}');`,
+      `const h = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "ignore", "pipe"] }); h.stdio[3].once("data", () => { h.stdio[3].destroy(); h.unref(); process.stdout.write('{"n":1}'); });`,
     ],
     args: [],
     cwd: process.cwd(),
@@ -267,9 +268,10 @@ describe("runProbe", () => {
     );
     const lifelines = await openLifelines();
     onTestFinished(() => lifelines.close());
-    const holder = `${lifelines.hold("holder")} setInterval(() => {}, 1000);`;
+    // 출력을 쥔 프로그램이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 끝난다.
+    const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
     const result = await probe(
-      `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.unref(); console.log("done");`,
+      `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
       500
     );
     expect(result.stdout).toBe("done\n");

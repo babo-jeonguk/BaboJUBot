@@ -483,8 +483,9 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     folders.own(async () => {
       if (child) await killAndWait([child]);
     }, "the child the program left");
-    // The stop timer (2 s after the cancel) and the wait for output after the program ends (1 s) run on the test clock, so the
-    // program ends between them by state, not by racing them on a slow machine.
+    // The stop timer (2 s after the cancel) runs on the test clock, so the program ends before it by state, not by racing it on a
+    // slow machine. Once the program ends, the run takes the relay back and stops the tree at once; nothing waits on the clock for
+    // the output (#268; before, a 1 s output wait ran on this clock too).
     const clock = manualClock();
     const started = startProcess({
       clock,
@@ -509,10 +510,8 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
 
     await expect.poll(() => clock.scheduled(), programStart).toEqual([2_000]);
     clock.advance(1_500);
-    // The program ends 1.5 s after the cancel; the output wait then runs past the moment the stop timer was set for.
+    // The program ends 1.5 s after the cancel, before the stop timer.
     await writeFile(log + ".exit", "");
-    await expect.poll(() => clock.scheduled(), programStart).toContain(1_000);
-    clock.advance(1_000);
     await started.done;
     expect(await readFile(log, "utf8")).toBe("relay closed");
   }, 20_000);
