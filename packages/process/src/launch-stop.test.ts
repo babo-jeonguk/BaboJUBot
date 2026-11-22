@@ -20,6 +20,8 @@ import { testFolders } from "./test-folders.ts";
 const fault = vi.hoisted(() => ({
   /** 표식 정리가 아무것도 끄지 않고 대표가 남았다고 답한다. */
   marks: false,
+  /** 표식 정리가 아무것도 하지 않고 남은 것이 없다고 답한다(실행기만으로 트리가 끝나는지 본다). */
+  marksIdle: false,
   /** 진짜 감독 실행기 대신 이 Node.js 프로그램을 띄운다. 프로그램은 약속 판과 띄울 명령(JSON), SIGTERM 기록 파일을 인수로 받는다. */
   supervisor: undefined as string | undefined,
   /** 가짜 실행기가 SIGTERM을 받으면 이 파일에 남긴다. */
@@ -34,7 +36,9 @@ vi.mock("./lease.ts", async (original) => {
     ) =>
       fault.marks
         ? { stopped: [], left: [4242] }
-        : real.stopLeaseHolders(...args),
+        : fault.marksIdle
+          ? { stopped: [], left: [] }
+          : real.stopLeaseHolders(...args),
   };
 });
 vi.mock("./supervisor.ts", async (original) => {
@@ -71,6 +75,7 @@ afterAll(async () => {
 });
 afterEach(() => {
   fault.marks = false;
+  fault.marksIdle = false;
   fault.supervisor = undefined;
   fault.termLog = undefined;
 });
@@ -268,7 +273,40 @@ describe.skipIf(process.platform === "win32")(
           maxOutputBytes: 1024,
           overflow: "stop",
         })
-      ).rejects.toThrow(/process group did not end|marker/);
+      ).rejects.toThrow(/marker did not stop: 4242/);
+    }, 60_000);
+  }
+);
+
+// Linux의 감독 실행기는 트리의 고아를 거두는 부모(subreaper)다. 그룹을 끈 뒤 새 세션으로 나간 자손도 자기 자식이 되므로 직접 끄고
+// 끝까지 확인한다. 서버 쪽 표식 정리가 아무것도 하지 않아도(부하로 시한을 넘긴 경우와 같다) 트리가 남지 않는다. 거두지 않은 자식이라
+// 그 번호는 다른 프로세스에 가지 않는다. macOS에는 subreaper가 없어 표식 정리가 맡는다.
+describe.runIf(process.platform === "linux")(
+  "stopping a tree on Linux without the marker cleanup",
+  () => {
+    it("ends what left for a new session through the supervisor alone", async () => {
+      const leader = await holder("leader");
+      const moved = await holder(
+        "moved",
+        `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`
+      );
+      fault.marksIdle = true;
+      const tree = launchTree({
+        command: [
+          process.execPath,
+          "-e",
+          `${leader.script} require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(moved.script)}], { stdio: "ignore", detached: true });`,
+        ],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      await lifelines.connected(leader.name);
+      await lifelines.connected(moved.name);
+      await tree.stop();
+      await lifelines.closed(leader.name);
+      await lifelines.closed(moved.name);
     }, 60_000);
   }
 );
