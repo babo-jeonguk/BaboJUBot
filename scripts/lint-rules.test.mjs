@@ -116,9 +116,7 @@ test("a lint exception needs a reason, names its rules and is removed once unuse
     ["@eslint-community/eslint-comments/require-description"]
   );
   assert.deepEqual(
-    await rules(
-      "/* eslint-disable -- 이유 */\nconst {} = {};\n/* eslint-enable -- 이유 */\n"
-    ),
+    await rules("const {} = {}; // eslint-disable-line -- 이유\n"),
     ["@eslint-community/eslint-comments/no-unlimited-disable"]
   );
   assert.deepEqual(
@@ -135,6 +133,81 @@ test("a lint exception needs a reason, names its rules and is removed once unuse
   assert.equal(unused.length, 1);
   assert.equal(unused[0].severity, 2);
   assert.match(unused[0].message, /Unused eslint-disable directive/);
+});
+
+// 주석 한 줄로 파일 전체·구간에서 규칙을 끄거나 심각도를 낮추면 그 파일의 모든 위반이 사라진다(#270). 시험 코드는 주석으로 규칙을
+// 바꾸지 못하고(예외가 필요하면 eslint.config.js에 이유와 함께 둔다), 그 밖의 코드는 그 줄에만 거는 예외(`eslint-disable-next-line`·
+// `eslint-disable-line`)만 쓴다.
+const sleep = "await new Promise((resolve) => setTimeout(resolve, 50));\n";
+const fileWideComments = {
+  "lowers a rule to a warning": `/* eslint tests/no-fixed-time-wait: "warn" -- 이유 */\n${sleep}`,
+  "turns a rule off": `/* eslint tests/no-fixed-time-wait: "off" -- 이유 */\n${sleep}`,
+  "turns off the rule that bans such comments first": `/* eslint @eslint-community/eslint-comments/no-use: "off", tests/no-fixed-time-wait: "off" -- 이유 */\n${sleep}`,
+  "disables a rule to the end of the file": `/* eslint-disable tests/no-fixed-time-wait -- 이유 */\n${sleep}`,
+  "disables a rule over a range": `/* eslint-disable tests/no-fixed-time-wait -- 이유 */\n${sleep}/* eslint-enable tests/no-fixed-time-wait -- 이유 */\n`,
+  "disables a rule on the next line": `// eslint-disable-next-line tests/no-fixed-time-wait -- 이유\n${sleep}`,
+  "disables a rule on its line": `${sleep.trimEnd()} // eslint-disable-line tests/no-fixed-time-wait -- 이유\n`,
+};
+
+for (const [shape, code] of Object.entries(fileWideComments))
+  test(`a comment that ${shape} does not lift a test rule`, async () => {
+    for (const place of testPlaces) {
+      const errors = (await lint(code, place)).filter(
+        (m) => m.ruleId === "tests/no-fixed-time-wait"
+      );
+      assert.deepEqual(
+        errors.map((m) => m.severity),
+        [2],
+        `${place}: ${code}`
+      );
+    }
+  });
+
+test("a Playwright fixture may take its dependencies as an empty pattern in test code without an exception", async () => {
+  const fixture = `export const fixtures = { baseURL: async ({}, use) => {\n  await use("http://127.0.0.1");\n} };\n`;
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(fixture, place, ["no-empty-pattern"]),
+      [],
+      place
+    );
+  // 매개변수가 아닌 빈 분해는 그대로 짚는다.
+  for (const place of testPlaces)
+    assert.equal(
+      (await lint("const {} = {};\n", place, ["no-empty-pattern"])).length,
+      1,
+      place
+    );
+});
+
+test("code outside tests lifts a rule only on one line", async () => {
+  const banned = ["@eslint-community/eslint-comments/no-use"];
+  const places = [
+    "scripts/lint-sample.mjs",
+    "packages/core/src/lint-sample.ts",
+  ];
+  const wide = {
+    "rule setting": `/* eslint no-empty-pattern: "off" -- 이유 */\nconst {} = {};\n`,
+    "disable to the end of the file": `/* eslint-disable no-empty-pattern -- 이유 */\nconst {} = {};\n`,
+    "disable over a range": `/* eslint-disable no-empty-pattern -- 이유 */\nconst {} = {};\n/* eslint-enable no-empty-pattern -- 이유 */\n`,
+    globals: `/* global answer -- 이유 */\nexport const a = answer;\n`,
+  };
+  for (const place of places) {
+    for (const [shape, code] of Object.entries(wide))
+      assert.ok(
+        (await lint(code, place, banned)).length > 0,
+        `${place}: ${shape} not reported`
+      );
+    for (const code of [
+      "// eslint-disable-next-line no-empty-pattern -- 이유\nconst {} = {};\n",
+      "const {} = {}; // eslint-disable-line no-empty-pattern -- 이유\n",
+    ])
+      assert.deepEqual(
+        await lint(code, place, banned),
+        [],
+        `${place}: ${code}`
+      );
+  }
 });
 
 /** 경과 시간 단언 규칙의 메시지만. */
