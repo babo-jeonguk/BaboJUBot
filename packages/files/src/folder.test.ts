@@ -33,31 +33,31 @@ describe("reaching a name inside folders others can change", () => {
   it("reaches a nested folder and opens a file in it", async () => {
     const root = await placed(["data", "store"], "file.db", "content");
     expect(await openedIn(root, ["data", "store"], "file.db")).toEqual({
-      reached: true,
+      state: "reached",
       value: "content",
     });
   });
 
-  it("calls a missing folder on the way missing without using it", async () => {
+  it("calls a missing folder on the way absent without using it", async () => {
     const root = await folders.make("babojubot-folder-");
     let used = false;
     expect(
       await inFolder(root, ["data", "store"], async () => {
         used = true;
       })
-    ).toEqual({ reached: false, miss: "missing" });
+    ).toEqual({ state: "absent" });
     expect(used).toBe(false);
     expect(
       await inFolder(path.join(root, "missing"), [], async () => undefined)
-    ).toEqual({ reached: false, miss: "missing" });
+    ).toEqual({ state: "absent" });
   });
 
-  it("calls a file in place of a folder not a folder", async () => {
+  it("calls a file in place of a folder unverifiable, not absent", async () => {
     const root = await folders.make("babojubot-folder-");
     await writeFile(path.join(root, "data"), "a file");
     expect(await inFolder(root, ["data"], async () => undefined)).toEqual({
-      reached: false,
-      miss: "not_folder",
+      state: "unverifiable",
+      found: "not_folder",
     });
   });
 
@@ -71,7 +71,7 @@ describe("reaching a name inside folders others can change", () => {
       },
       { create: true }
     );
-    expect(reached).toEqual({ reached: true, value: undefined });
+    expect(reached).toEqual({ state: "reached", value: undefined });
     expect(
       await readFile(path.join(root, "login", "nested", "token"), "utf8")
     ).toBe("placed");
@@ -91,13 +91,27 @@ describe("reaching a name inside folders others can change", () => {
 
   // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하고, FIFO가 없다. 링크·FIFO 경우는 POSIX에서 본다.
   it.skipIf(windows)(
-    "calls a link in place of a folder a link without following it",
+    "calls a link in place of a folder unverifiable without following it",
     async () => {
       const root = await placed(["elsewhere"], "file.db", "elsewhere");
       await symlink(path.join(root, "elsewhere"), path.join(root, "data"));
       expect(await openedIn(root, ["data"], "file.db")).toEqual({
-        reached: false,
-        miss: "link",
+        state: "unverifiable",
+        found: "link",
+      });
+    }
+  );
+
+  // FIFO 자리를 폴더로 열 때 쓰는 쪽을 기다리지 않고, 없는 것이 아니라 확인할 수 없는 것으로 답한다(#280 리뷰 1회차 STD-1).
+  it.skipIf(windows)(
+    "calls a FIFO in place of a folder unverifiable without waiting",
+    { timeout: 10_000 },
+    async () => {
+      const root = await folders.make("babojubot-folder-");
+      execFileSync("mkfifo", [path.join(root, "data")], { timeout: 10_000 });
+      expect(await inFolder(root, ["data"], async () => undefined)).toEqual({
+        state: "unverifiable",
+        found: "not_folder",
       });
     }
   );
@@ -122,11 +136,11 @@ describe("reaching a name inside folders others can change", () => {
         }
       }, "fifo writer");
       expect(await openedIn(root, ["data"], "link.db")).toEqual({
-        reached: true,
+        state: "reached",
         value: "not-regular",
       });
       expect(await openedIn(root, ["data"], "fifo.db")).toEqual({
-        reached: true,
+        state: "reached",
         value: "not-regular",
       });
     }
@@ -146,7 +160,7 @@ describe("reaching a name inside folders others can change", () => {
           await symlink(path.join(root, "other"), path.join(root, "data"));
           return readFile(folder.at("file.db"), "utf8");
         })
-      ).toEqual({ reached: true, value: "reached" });
+      ).toEqual({ state: "reached", value: "reached" });
     }
   );
 });
