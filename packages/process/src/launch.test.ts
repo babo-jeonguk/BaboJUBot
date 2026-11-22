@@ -1,12 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { attemptAll } from "@babojubot/contracts";
-import { chmod, writeFile } from "node:fs/promises";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { launchTree, runTree, type LaunchedTree } from "./launch.ts";
+import { leaseHolders } from "./lease.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
+import { supervisorProtocol } from "./supervisor.ts";
+import { killUnlessGone } from "./test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 공용 실행(#262): 띄운 트리를 stop()이 모두 끄고 확인한다. 실제 프로세스로 보고, 남았는지는 번호가 아니라 각 프로세스가 쥔 연결로
@@ -218,6 +221,21 @@ describe("launchTree", () => {
     await lifelines.closed(stubborn);
   }, 60_000);
 
+  // 감독 실행기는 트리의 관리자다. 실행 시도의 표식은 실행기가 띄우는 프로그램에만 주고 실행기 자신은 지니지 않는다. 그래야 표식
+  // 정리가 트리를 끄는 중인 실행기에 신호를 보내지 않는다(#274 외부 리뷰 1회차 STD-1/SPEC-1). Windows는 표식 정리가 없다.
+  it.skipIf(windows)(
+    "keeps the run's marker off its supervisor",
+    async () => {
+      const leader = unique("leader");
+      const tree = launch(`${lifelines.hold(leader)} ${keep}`);
+      await lifelines.connected(leader);
+      const { holders } = await leaseHolders(tree.lease);
+      expect(holders.length).toBeGreaterThan(0);
+      expect(holders).not.toContain(tree.pid);
+    },
+    60_000
+  );
+
   // 프로그램이 끝나면 그 출력은 감독 실행기가 살아 있는 동안에도 닫힌다. 실행기는 물려준 표준 입력·출력·오류의 자기 사본을 쥐지 않고,
   // 프로그램에는 표준 핸들만 물려준다(#263에서 Windows 출력이 실행기가 끝날 때까지 닫히지 않던 경우). 닫힘을 시간으로 기다리지 않는다.
   it("closes the output when the program ends, while its supervisor still runs", async () => {
@@ -298,6 +316,56 @@ describe("launchTree without a supervisor", () => {
       /^TreeLaunchRefused: 감독 실행기를 준비하지 못해 프로그램을 시작하지 않았습니다\. 이유: the supervisor program was not found at /
     );
   });
+
+  /** 셸 스크립트로 만든 가짜 실행기. 넷째 핸들(제어 통로)에 쓰고 읽는다. */
+  async function fakeSupervisor(name: string, body: string) {
+    const file = path.join(dataDir, name);
+    await writeFile(file, `#!/bin/sh\n${body}`);
+    await chmod(file, 0o755);
+    return file;
+  }
+  const tryPrepare = (file: string) =>
+    separately(`import { launchTree, prepareSupervisor } from ${launchModule};
+       console.log(JSON.stringify(await prepareSupervisor({ file: ${JSON.stringify(file)} })));`);
+
+  // 준비의 시험 실행은 실제 실행과 같은 약속을 처음부터 끝까지 본다(#274 외부 리뷰 1회차 SPEC-2). 약속 판을 알리고 끝 답을
+  // 흉내 내도, 프로그램을 띄웠다는 답(`ok`) 없이 프로그램의 끝을 알리는 파일은 실행기로 쓰지 않는다.
+  it.skipIf(windows)(
+    "refuses a file that answers like a supervisor but starts nothing",
+    async () => {
+      const file = await fakeSupervisor(
+        "mimic-supervisor",
+        `echo "babojubot-supervisor ${supervisorProtocol}" >&3\necho "exit 7" >&3\nwhile read line <&3; do case "$line" in stop*) echo ended >&3; exit 0;; esac; done\n`
+      );
+      const [prepared] = tryPrepare(file);
+      expect(JSON.parse(prepared!)).toEqual({
+        ok: false,
+        reason: expect.stringContaining("broke the protocol"),
+      });
+    }
+  );
+
+  // 준비의 시험 실행 전체에 시한이 하나 있다(#274 외부 리뷰 1회차 STD-2). 잘못 만든 실행기가 제어 통로를 자손에게 넘기고 끝나 통로가
+  // 닫히지 않아도, 준비는 시한 안에 원인과 함께 실패한다.
+  it.skipIf(windows)(
+    "gives up a trial at its time limit when a child keeps the control channel open",
+    async () => {
+      const pidFile = path.join(dataDir, "channel-holder-pid");
+      folders.own(async () => {
+        killUnlessGone(Number(await readFile(pidFile, "utf8")));
+      }, "the child that holds the control channel");
+      const file = await fakeSupervisor(
+        "leaky-supervisor",
+        `echo "babojubot-supervisor ${supervisorProtocol}" >&3\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
+      );
+      const [prepared] = tryPrepare(file);
+      expect(JSON.parse(prepared!)).toEqual({
+        ok: false,
+        reason: expect.stringMatching(/within \d+ ms/),
+      });
+    },
+    90_000
+  );
 
   // 다른 판의 실행기(예전에 빌드한 것, 다른 판의 패키지)는 약속이 달라 쓰지 않는다. 실행기가 첫 줄로 알리는 약속 판으로 가린다.
   // 그 판만 알리는 가짜 실행기는 셸 스크립트로 만든다(Windows에는 넷째 핸들에 쓰는 셸 스크립트가 없다).

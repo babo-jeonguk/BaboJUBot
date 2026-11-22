@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -19,8 +20,10 @@ import { testFolders } from "./test-folders.ts";
 const fault = vi.hoisted(() => ({
   /** 표식 정리가 아무것도 끄지 않고 대표가 남았다고 답한다. */
   marks: false,
-  /** 진짜 감독 실행기 대신 이 Node.js 프로그램을 띄운다. 프로그램은 띄울 명령을 JSON 인수 하나로 받는다. */
+  /** 진짜 감독 실행기 대신 이 Node.js 프로그램을 띄운다. 프로그램은 약속 판과 띄울 명령(JSON), SIGTERM 기록 파일을 인수로 받는다. */
   supervisor: undefined as string | undefined,
+  /** 가짜 실행기가 SIGTERM을 받으면 이 파일에 남긴다. */
+  termLog: undefined as string | undefined,
 }));
 vi.mock("./lease.ts", async (original) => {
   const real = await original<typeof import("./lease.ts")>();
@@ -45,7 +48,12 @@ vi.mock("./supervisor.ts", async (original) => {
         kind: "launch" as const,
         launch: {
           file: process.execPath,
-          args: [fault.supervisor, JSON.stringify([...command, ...rest])],
+          args: [
+            fault.supervisor,
+            String(real.supervisorProtocol),
+            JSON.stringify([...command, ...rest]),
+            fault.termLog ?? "",
+          ],
           options: {},
         },
       };
@@ -64,6 +72,7 @@ afterAll(async () => {
 afterEach(() => {
   fault.marks = false;
   fault.supervisor = undefined;
+  fault.termLog = undefined;
 });
 let count = 0;
 const unique = (label: string) => `${label}-${++count}`;
@@ -89,20 +98,40 @@ async function holder(label: string, body = keep) {
 }
 
 /**
- * 프로그램을 띄우고 시작을 알리지만, 끄기 요청에는 그룹이 끝나지 않았다고 답하고 아무것도 끄지 않은 채 끝나는 가짜 실행기. 띄운
- * 프로그램은 표식(환경)을 물려받는다. Linux·macOS 제어 통로는 넷째 표준 핸들의 소켓이다.
+ * 프로그램을 띄우고 시작을 알리지만, 끄기 요청에는 그룹이 끝나지 않았다고 답하고 아무것도 끄지 않는 가짜 실행기. 서버가 제어 통로로
+ * 준 환경(표식)을 프로그램에 주고, 약속 판 2부터는 `start`를 받은 뒤에 띄운다. 답한 뒤 `linger`ms 있다가 끝난다. SIGTERM을 받으면
+ * 기록 파일에 남긴다(관리자인 실행기에 표식 정리가 신호를 보냈는지 본다). Linux·macOS 제어 통로는 넷째 표준 핸들의 소켓이다.
  */
-const stubbornSupervisor = `
+const stubbornSupervisor = (linger: number) => `
   const net = require("node:net");
+  const fs = require("node:fs");
+  const [protocol, commandJson, termLog] = process.argv.slice(2);
+  process.on("SIGTERM", () => { if (termLog) fs.appendFileSync(termLog, "TERM\\n"); });
   const control = new net.Socket({ fd: 3 });
-  const [command, ...args] = JSON.parse(process.argv[2]);
-  const leader = require("node:child_process").spawn(command, args, { stdio: "ignore", detached: true });
-  leader.unref();
-  control.write("babojubot-supervisor 1\\nok " + leader.pid + "\\n");
+  control.write("babojubot-supervisor " + protocol + "\\n");
+  const env = { ...process.env };
+  let started = false;
+  const start = () => {
+    started = true;
+    const [command, ...args] = JSON.parse(commandJson);
+    const leader = require("node:child_process").spawn(command, args, { stdio: "ignore", detached: true, env });
+    leader.unref();
+    control.write("ok " + leader.pid + "\\n");
+  };
+  if (Number(protocol) < 2) start();
   let received = "";
   control.on("data", (chunk) => {
     received += chunk;
-    if (received.includes("stop")) control.end("left: 1 (the process group did not end)\\n", () => process.exit(1));
+    for (let newline; (newline = received.indexOf("\\n")) >= 0; ) {
+      const line = received.slice(0, newline);
+      received = received.slice(newline + 1);
+      if (line.startsWith("env ")) {
+        const pair = line.slice(4);
+        env[pair.slice(0, pair.indexOf("="))] = pair.slice(pair.indexOf("=") + 1);
+      } else if (line === "start" && !started) start();
+      else if (line.startsWith("stop"))
+        control.write("left: 1 (the process group did not end)\\n", () => setTimeout(() => process.exit(1), ${linger}));
+    }
   });
   control.on("end", () => process.exit(1));
 `;
@@ -122,7 +151,7 @@ describe.skipIf(process.platform === "win32")(
     it("still stops what carries the marker when the supervisor could not stop the group", async () => {
       const leader = await holder("leader");
       const moved = await holder("moved");
-      fault.supervisor = await fakeSupervisor(stubbornSupervisor);
+      fault.supervisor = await fakeSupervisor(stubbornSupervisor(0));
       const tree = launchTree({
         command: [
           process.execPath,
@@ -141,11 +170,31 @@ describe.skipIf(process.platform === "win32")(
       await lifelines.closed(leader.name);
     }, 60_000);
 
+    // #274 외부 리뷰 1회차 STD-1/SPEC-1: 감독 실행기는 트리의 관리자라 실행 시도의 표식을 지니지 않는다. 실행기가 트리의 끝을 확인하지
+    // 못했다고 답하고 아직 끝나지 않았어도, 표식 정리는 실행기에 신호를 보내지 않는다(표식 정리는 실행기가 끝난 뒤에 한다).
+    it("never signals the supervisor while cleaning up what carries the marker", async () => {
+      const leader = await holder("leader");
+      const folder = await folders.make("babojubot-launch-stop-term-");
+      fault.termLog = path.join(folder, "term");
+      fault.supervisor = await fakeSupervisor(stubbornSupervisor(1500));
+      const tree = launchTree({
+        command: [process.execPath, "-e", leader.script],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      await lifelines.connected(leader.name);
+      await expect(tree.stop()).rejects.toThrow(/process group did not end/);
+      await lifelines.closed(leader.name);
+      expect(existsSync(fault.termLog)).toBe(false);
+    }, 60_000);
+
     // SP1: 끄기를 시작한 뒤의 끝은 끄기의 결과로 정한다. 트리가 끝나지 않으면 끄기는 원인과 함께 실패하고, 그 실패로 끝나야 한다.
     // 대표의 끝만 기다리면 끝나지 않는다.
     it("ends a run at its limit with the stop failure when the leader does not end", async () => {
       const leader = await holder("stuck-run");
-      fault.supervisor = await fakeSupervisor(stubbornSupervisor);
+      fault.supervisor = await fakeSupervisor(stubbornSupervisor(0));
       fault.marks = true;
       await expect(
         runTree({
