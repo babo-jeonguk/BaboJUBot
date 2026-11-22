@@ -565,30 +565,55 @@ const socketPathLimit: Partial<Record<NodeJS.Platform, number>> = {
 /** 이 프로세스가 주인으로 듣는 연결. 주인 기록 폴더 → 그 연결. */
 const held = new Map<string, { handle: string; server: net.Server }>();
 
-/** 새 주인 연결의 자리. Linux는 사용자 전용 실행 폴더(`XDG_RUNTIME_DIR`)가 있으면 거기, 없으면 임시 폴더에 둔다. */
-function newHandle() {
-  const id = randomUUID().replaceAll("-", "");
-  if (process.platform === "win32") return `\\\\.\\pipe\\${handlePrefix}${id}`;
-  const base =
+/** 소켓 파일 이름: 접두어 + 16진 16자 + `.sock`(37자). Windows named pipe 이름은 16진 32자다. */
+const socketName = (id: string) => `${handlePrefix}${id.slice(0, 16)}.sock`;
+const socketNameLength = socketName("0".repeat(16)).length;
+
+/**
+ * 소켓 파일을 둘 폴더. Linux는 사용자 전용 실행 폴더(`XDG_RUNTIME_DIR`), 없으면 임시 폴더다. 그 경로가 길어 소켓 경로가 OS 한도를
+ * 넘으면(임시 폴더를 깊게 바꾼 경우) `/tmp` 아래 이 사용자 전용 폴더를 쓴다. 그 폴더는 이 사용자의 것이고 남이 읽거나 쓸 수 없고
+ * 링크가 아닐 때만 쓴다.
+ */
+function socketFolder() {
+  const limit = socketPathLimit[process.platform] ?? 103;
+  const fits = (base: string) => base.length + 1 + socketNameLength < limit;
+  const preferred =
     process.platform !== "darwin" && process.env.XDG_RUNTIME_DIR
       ? process.env.XDG_RUNTIME_DIR
       : os.tmpdir();
-  const limit = socketPathLimit[process.platform] ?? 103;
-  const room = limit - 1 - path.join(base, `${handlePrefix}.sock`).length;
-  if (room < 16)
+  if (fits(preferred)) return preferred;
+  const uid = process.getuid!();
+  const own = path.join("/tmp", `babojubot-${uid}`);
+  fs.mkdirSync(own, { mode: 0o700, recursive: true });
+  const stat = fs.lstatSync(own);
+  if (
+    !stat.isDirectory() ||
+    stat.uid !== uid ||
+    (stat.mode & 0o077) !== 0 ||
+    !fits(own)
+  )
     throw new Error(
-      `the folder for embedded Postgres owner connections has too long a path for a socket: ${base}`
+      `no safe folder for embedded Postgres owner connections: ${preferred} is too long for a socket and ${own} is not a private folder of this user`
     );
-  return path.join(base, `${handlePrefix}${id.slice(0, room)}.sock`);
+  return own;
+}
+
+/** 새 주인 연결의 자리. */
+function newHandle() {
+  const id = randomUUID().replaceAll("-", "");
+  if (process.platform === "win32") return `\\\\.\\pipe\\${handlePrefix}${id}`;
+  return path.join(socketFolder(), socketName(id));
 }
 
 /** 이 프로세스가 연 주인 연결의 자리인가. 기록에서 읽은 자리는 이 모양일 때만 믿는다(지울 수 있는 파일을 이것으로 묶는다). */
 function isOwnerHandle(handle: string) {
-  const name =
-    process.platform === "win32"
-      ? handle.replace(/^\\\\\.\\pipe\\/, "")
-      : path.basename(handle);
-  return new RegExp(`^${handlePrefix}[0-9a-f]{16,32}(\\.sock)?$`).test(name);
+  if (process.platform === "win32")
+    return new RegExp(
+      `^\\\\\\\\\\.\\\\pipe\\\\${handlePrefix}[0-9a-f]{32}$`
+    ).test(handle);
+  return new RegExp(`^${handlePrefix}[0-9a-f]{16}\\.sock$`).test(
+    path.basename(handle)
+  );
 }
 
 /** 이 주인 기록 폴더의 주인으로 연결 하나를 듣는다. 이 프로세스가 끝날 때까지 붙잡지 않는다(unref). */
