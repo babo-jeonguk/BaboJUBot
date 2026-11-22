@@ -349,9 +349,9 @@ const outsideHalves = {
     "apps/server/src/app.ts",
     `import { stopProcessGroup } from "@babojubot/process/recovery";\nawait stopProcessGroup(1);\n`,
   ],
-  "interruptProcessGroup in runtime": [
+  "stopProcessGroup called in runtime": [
     "packages/runtime/src/providers/process.ts",
-    `import { interruptProcessGroup } from "@babojubot/process/recovery";\ninterruptProcessGroup(1);\n`,
+    `import { stopProcessGroup } from "@babojubot/process/recovery";\nawait stopProcessGroup(1, { graceMs: 0 });\n`,
   ],
   "stopProcessGroup re-exported by runtime": [
     "packages/runtime/src/index.ts",
@@ -362,9 +362,9 @@ const outsideHalves = {
     "apps/server/src/app.ts",
     `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
   ],
-  "interruptProcessGroup taken from a dynamic import": [
+  "stopProcessGroup taken from a dynamic import of the recovery entry": [
     ".agents/scripts/run-worker.mjs",
-    `const { interruptProcessGroup } = await import("@babojubot/process/recovery");\nvoid interruptProcessGroup;\n`,
+    `const { stopProcessGroup } = await import("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
   ],
   // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire도 같다(#266 리뷰 SPEC-2).
   "stopProcessGroup taken from a renamed createRequire": [
@@ -382,9 +382,9 @@ const insideHalves = {
     "packages/process/src/lease.ts",
     `import { stopProcessGroup } from "./group.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
   ],
-  "interruptProcessGroup re-exported by the entry": [
+  "stopProcessGroup re-exported by the entry": [
     "packages/process/src/index.ts",
-    `export { interruptProcessGroup } from "./group.ts";\n`,
+    `export { stopProcessGroup } from "./group.ts";\n`,
   ],
   "everything from group.ts re-exported": [
     "packages/process/src/index.ts",
@@ -407,9 +407,9 @@ const insideHalves = {
     "packages/process/src/lease.ts",
     `import { stopProcessGroup } from "./group";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
   ],
-  "interruptProcessGroup through the src folder": [
+  "stopProcessGroup through the src folder": [
     "packages/process/src/clock.ts",
-    `export { interruptProcessGroup } from "../src/group.ts";\n`,
+    `export { stopProcessGroup } from "../src/group.ts";\n`,
   ],
   "the recovery entry taken whole by the package's own name": [
     "packages/process/src/index.ts",
