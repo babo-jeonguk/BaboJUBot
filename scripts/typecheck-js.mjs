@@ -1,6 +1,8 @@
 // 저장소의 JS(개발 스크립트·agent 도구·가짜 프로그램·시험의 JS·뿌리 설정)를 타입 검사한다(#270 PR 3a). 대상은 JS 검사(checkJs)를 켠
 // tsconfig이고 저장소의 tsconfig에서 찾는다: 목록을 손으로 두지 않아 새 tsconfig도 빠지지 않는다. 모든 JS가 그중 하나에 드는지는
-// scripts/lint-scope.test.mjs가 본다. JS를 .ts로 옮기면 그 영역은 패키지 typecheck의 엄격 설정을 받는다.
+// scripts/typecheck-js.test.mjs가 본다. JS를 .ts로 옮기면 그 영역은 패키지 typecheck의 엄격 설정을 받는다.
+// 아직 pnpm typecheck·CI·verify:changed에 연결하지 않았다: #274·#280이 고치는 파일에 오류가 남아(#270 PR 3a-1) 그 PR들이 병합된 뒤
+// PR 3a-2가 남은 오류를 고치고 연결한다. 그 전까지는 이 검사가 아무것도 막지 않는다.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";

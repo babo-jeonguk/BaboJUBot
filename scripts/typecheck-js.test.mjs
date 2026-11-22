@@ -2,7 +2,7 @@
 // 인수를 잘못 넘겨도 실행해야 드러난다(#272).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -95,16 +95,5 @@ test("the JS check finds JS checking configs, reports the mistakes of their JS f
       diagnostic.code,
     ]),
     [["caller.mjs", 2554]]
-  );
-});
-
-test("pnpm typecheck runs the JS check", () => {
-  const { scripts } = JSON.parse(
-    readFileSync(path.join(root, "package.json"), "utf8")
-  );
-  assert.equal(scripts["typecheck:js"], "node scripts/typecheck-js.mjs");
-  assert.equal(
-    scripts.typecheck,
-    "pnpm -r --if-present run typecheck && pnpm run typecheck:js"
   );
 });

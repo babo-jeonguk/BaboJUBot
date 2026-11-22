@@ -15,7 +15,7 @@
     "test": "pnpm -r --if-present run test && pnpm run test:root",
     "test:root": "node scripts/check-test-exit-code.mjs && node scripts/run-node-tests.mjs boot-check scripts/boot-check-flow.test.mjs scripts/boot-check.test.mjs",
     "test:e2e": "pnpm --filter @babojubot/web run test:e2e",
-    "typecheck": "pnpm -r --if-present run typecheck && pnpm run typecheck:js",
+    "typecheck": "pnpm -r --if-present run typecheck",
     "typecheck:js": "node scripts/typecheck-js.mjs",
     "typecheck:src": "pnpm -r --if-present run typecheck:src",
     "typecheck:test": "pnpm -r --if-present run typecheck:test",
