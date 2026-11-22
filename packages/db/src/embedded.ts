@@ -8,6 +8,9 @@ import path from "node:path";
 import EmbeddedPostgres, { getBinaries } from "embedded-postgres";
 import pg from "pg";
 import {
+  attemptAll,
+  attemptEach,
+  combinedFailure,
   continueAfterFailure,
   failureCode,
   settled,
@@ -129,7 +132,9 @@ export async function startEmbeddedCluster(
   const stopOnExit = () => {
     if (started) stopNow(pgCtl, dataDir, started, emergencyBudgetMs);
   };
-  // 비상 정지는 정지가 끝난 뒤에야 내려놓는다.
+  // 비상 정지는 정지가 끝난 뒤에야 내려놓는다. 이 순서는 일부러 의존한다: Postgres가 멈춘 것을 확인하지 못하면(stopCluster가 던짐)
+  // 비상 정지와 주인 자격(기록·주인 연결)을 그대로 둔다. 아직 돌 수 있는 Postgres의 주인이 살아 있어야 다른 프로세스가 그 폴더를
+  // 가져가 같은 Postgres 위에 켜지 않는다. 멈춘 것을 확인한 뒤의 정리 단계끼리는 서로 독립이다(removeTemporary).
   const stop = async () => {
     stopPhase = "stopping Postgres";
     await stopCluster(
@@ -496,9 +501,20 @@ const ownerDir = (dataDir: string) => `${path.resolve(dataDir)}${ownerSuffix}`;
  * 지운 뒤에만 지운다: 다음 시작의 남은 cluster 정리(`removeTemporaryLeftovers`)가 주인 기록으로 남은 dataDir를 찾는다.
  */
 async function removeTemporary(dataDir: string) {
-  await fsp.rm(dataDir, { recursive: true, force: true });
-  await fsp.rm(ownerDir(dataDir), { recursive: true, force: true });
-  dropConnection(ownerDir(dataDir));
+  const dir = ownerDir(dataDir);
+  await attemptAll(
+    [
+      // 주인 기록은 dataDir를 지운 뒤에만 지운다(dataDir 지우기가 실패하면 기록을 남겨 다음 시작이 남은 dataDir를 찾는다).
+      async () => {
+        await fsp.rm(dataDir, { recursive: true, force: true });
+        await fsp.rm(dir, { recursive: true, force: true });
+      },
+      // 폴더 지우기와 무관하게 주인 연결은 닫는다. 이 함수는 Postgres가 멈췄거나 켜지 않은 뒤에만 불리므로 붙잡을 것이 없고, 남은
+      // 폴더는 주인 없는 남은 cluster로 다음 시작의 정리(`removeTemporaryLeftovers`)가 가져가 지운다.
+      () => dropConnection(dir),
+    ],
+    `the temporary cluster ${dataDir} could not be removed`
+  );
 }
 
 function generations(dir: string): number[] {
@@ -581,7 +597,7 @@ const swept = new Set<string>();
  * 바이트 한도 안에 드는 첫 자리를 쓴다. 그 폴더가 이 사용자 소유의 0700 폴더(링크 아님)가 아니면 다음 후보로 가고, 모두 안 되면
  * 그 이유들과 함께 던진다.
  */
-function privateSocketFolder() {
+async function privateSocketFolder() {
   const limit = socketPathLimit[process.platform] ?? 103;
   const uid = process.getuid!();
   const sample = `${handlePrefix}${"0".repeat(16)}.sock`;
@@ -592,25 +608,39 @@ function privateSocketFolder() {
     os.tmpdir(),
     "/tmp",
   ];
-  const folders = [...new Set(bases)]
-    .map((base) => path.join(base, `babojubot-${uid}`))
-    .filter((folder) => Buffer.byteLength(path.join(folder, sample)) < limit);
-  for (const folder of folders) {
-    fs.mkdirSync(folder, { mode: 0o700, recursive: true });
-    const stat = fs.lstatSync(folder);
-    if (stat.isDirectory() && stat.uid === uid && (stat.mode & 0o077) === 0)
-      return folder;
-  }
-  throw new Error(
-    `no private folder for embedded Postgres owner connections: none of ${bases.join(", ")} gives a folder of this user only (mode 0700, not a link) whose socket path fits ${limit} bytes`
+  let chosen: string | undefined;
+  // 후보마다 따로 본다: 한 후보를 쓸 수 없으면(경로가 길다, 그 자리에 파일이 있다, 이 사용자 전용이 아니다, 이 사용자도 쓸 수
+  // 없다) 그 이유를 남기고 다음 후보로 간다. 모두 안 되면 후보별 이유를 함께 담아 거절한다.
+  const failures = await attemptEach(
+    [...new Set(bases)].map((base) => () => {
+      if (chosen !== undefined) return;
+      const folder = path.join(base, `babojubot-${uid}`);
+      if (Buffer.byteLength(path.join(folder, sample)) >= limit)
+        throw new Error(
+          `${folder}: a socket path there would be longer than ${limit} bytes`
+        );
+      fs.mkdirSync(folder, { mode: 0o700, recursive: true });
+      const stat = fs.lstatSync(folder);
+      if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0)
+        throw new Error(
+          `${folder} is not a private folder of this user (owned by this user, mode 0700, not a link)`
+        );
+      // 소켓을 만들려면 이 사용자가 그 폴더에 쓰고 들어갈 수 있어야 한다(0500 같은 폴더는 남은 막혀도 이 사용자도 못 쓴다).
+      fs.accessSync(folder, fs.constants.W_OK | fs.constants.X_OK);
+      chosen = folder;
+    })
   );
+  if (chosen !== undefined) return chosen;
+  throw new Error("no private folder for embedded Postgres owner connections", {
+    cause: combinedFailure(failures, "every candidate folder failed"),
+  });
 }
 
 /** 새 주인 연결의 자리. */
-function newHandle() {
+async function newHandle() {
   const id = randomUUID().replaceAll("-", "");
   if (process.platform === "win32") return `\\\\.\\pipe\\${handlePrefix}${id}`;
-  const folder = privateSocketFolder();
+  const folder = await privateSocketFolder();
   sweepStaleSockets(folder);
   return path.join(folder, `${handlePrefix}${id.slice(0, 16)}.sock`);
 }
@@ -661,7 +691,7 @@ function sweepStaleSockets(folder: string) {
 
 /** 이 주인 기록 폴더의 주인으로 연결 하나를 듣는다. 이 프로세스가 끝날 때까지 붙잡지 않는다(unref). 들은 자리를 돌려준다. */
 async function holdConnection(dir: string) {
-  const handle = newHandle();
+  const handle = await newHandle();
   const server = net.createServer((socket) => socket.destroy());
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
