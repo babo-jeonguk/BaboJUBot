@@ -14,7 +14,7 @@ import {
   orIfUnreadable,
   type CredentialRelayEndpoint,
 } from "@babojubot/contracts";
-import { inFolder } from "./pinned-folder.ts";
+import { inFolder } from "@babojubot/files";
 import { relayIdentityHeaders } from "./relay.ts";
 
 /**

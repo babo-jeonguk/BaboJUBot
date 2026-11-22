@@ -19,23 +19,14 @@ import {
 } from "@babojubot/db";
 import { openRegularFile } from "@babojubot/files";
 import { runTree } from "@babojubot/process";
+import {
+  identityFile,
+  identityMaxBytes,
+  pinnedReaderFile,
+  readerExit,
+} from "./workspace-reader-contract.ts";
 
-const identityFile = "workspace-identity.json";
-const identityMaxBytes = 4096;
-
-/** 고정한 폴더에서 읽는 프로세스가 거부를 알리는 종료 코드. */
-export const readerExit = {
-  changed: 3,
-  notFile: 4,
-  tooLarge: 5,
-  hardLink: 6,
-  identity: 7,
-  notFound: 8,
-  unreadable: 9,
-  linkLoop: 10,
-  failed: 11,
-  outside: 12,
-} as const;
+export { pinnedReaderFile, readerExit } from "./workspace-reader-contract.ts";
 
 /** 거부 종료 코드 → 거부 이유. 표식 불일치는 거부가 아니라 서버 쪽 문제라 따로 던진다. */
 const readerRefusals: Record<number, ArtifactFileRefusal> = {
@@ -66,249 +57,14 @@ function identityBlocked(action: string, file: string, error: unknown) {
 }
 
 /**
- * 조직 폴더 안의 파일을 다른 프로세스에서 읽는다. Node에는 폴더 핸들로 여는 기능이 없어 경로를 여러 번 확인해도
- * 그 사이의 바꿔치기를 막지 못한다. 작업 폴더는 커널이 폴더 자체를 붙들므로 한 칸씩 들어가며 확인한 폴더인지 보고,
- * 고정된 폴더 안에서 연다. 들어간 뒤에 바깥 경로가 바뀌어도 영향이 없다.
- * 요청 경로도 이 프로세스가 고정한 폴더 안에서 한 칸씩 직접 풀고, 링크는 안에 머무는 동안에만 따라간다. 바깥으로
- * 나가는 `..`나 링크는 그 너머를 보지 않고 거부한다. 본 바로 뒤에 바뀐 칸은 `changed`다.
- * 절대 경로의 작업 폴더 부분은 이름 하나씩 대조하고, 나머지는 글자로 먼저 줄이지 않고 상대 경로처럼 걸어가므로
- * 링크 뒤의 `..`는 링크가 가리키는 자리에서 올라간다.
- * 경로를 고정해도 처음 고른 폴더가 다른 조직이면 소용없으므로, 고정한 폴더가 자기 ID를 말하게 해 대조한다.
- * Windows에서는 Win32가 다른 드라이브·장치·스트림으로 읽거나 끝의 점이나 공백을 떼는 이름을 파일 시스템에 닿기 전에 거부한다.
- */
-export const pinnedReader = `
-const fs = require("node:fs");
-const path = require("node:path");
-const { constants } = fs;
-const [maxBytes, organizationId, requested, working, real] = JSON.parse(process.argv[1]);
-const stat = { bigint: true };
-const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
-const windows = path.sep === "\\\\";
-/** Windows는 경로의 ".."를 글자로 줄여 연다(Win32). 링크 대상은 이것만 따른다. */
-const lexical = (value) => (windows ? path.normalize(value) : value);
-/** 에이전트가 입력한 경로. Windows는 글자로 줄인 뒤 끝의 구분자도 떼고 연다(Win32). */
-const typed = (value) => {
-  if (!windows) return value;
-  const cleaned = path.normalize(value);
-  return cleaned.length > path.parse(cleaned).root.length
-    ? cleaned.replace(/[\\\\/]+$/, "")
-    : cleaned;
-};
-const separator = path.sep === "\\\\" ? /[\\\\/]+/ : /\\/+/;
-/** Names of a path, without empty names or ".". ".." stays where it is. */
-const names = (value) => value.split(separator).filter((name) => name !== "" && name !== ".");
-/**
- * 작업 폴더 부분의 이름 대조. 대소문자까지 같아야 한다. Windows도 폴더마다 대소문자를 가리게 할 수 있어 대소문자만 다른 이름은
- * 다른 폴더일 수 있다. 같은 폴더를 대소문자만 다르게 적은 경로는 밖으로 보는 안전한 오거부다. 드라이브 문자는 늘 같은 드라이브다.
- */
-const sameName = (a, b) =>
-  a === b || (windows && /^[A-Za-z]:$/.test(a) && a.toLowerCase() === b.toLowerCase());
-/** Windows가 이름 하나를 다른 것으로 읽는 경우의 거부 종료 코드. 없으면 undefined다(Go filepath.IsLocal·os.Root, cap-std, node-tar). */
-const windowsName = (name) => {
-  if (!windows) return undefined;
-  // 드라이브 문자로 시작하면 그 드라이브의 현재 폴더 기준이다.
-  if (/^[A-Za-z]:/.test(name)) return ${readerExit.outside};
-  // 이름 중간의 ":"는 NTFS 스트림이다.
-  if (name.includes(":")) return ${readerExit.notFile};
-  // Win32는 끝의 점·공백을 떼고 연다. ".. "는 위 폴더가 된다.
-  if (/[. ]$/.test(name)) return ${readerExit.notFile};
-  // 예약된 장치 이름은 확장자가 붙어도 장치다.
-  const base = name.split(".")[0].replace(/ +$/, "").toUpperCase();
-  if (/^(CON|PRN|AUX|NUL|CONIN\\$|CONOUT\\$|COM[1-9¹²³]|LPT[1-9¹²³])$/.test(base)) return ${readerExit.notFile};
-  return undefined;
-};
-const inside = (absolute, clean) => {
-  // 확장 표기는 같은 곳이다. "\\\\?\\C:\\…"는 "C:\\…", "\\\\?\\UNC\\server\\share\\…"는 "\\\\server\\share\\…"다.
-  const target = !windows
-    ? absolute
-    : absolute.startsWith("\\\\\\\\?\\\\UNC\\\\")
-      ? "\\\\\\\\" + absolute.slice(8)
-      : absolute.startsWith("\\\\\\\\?\\\\")
-        ? absolute.slice(4)
-        : absolute;
-  const given = clean(target).split(separator);
-  for (const base of [working, real]) {
-    const prefix = names(base);
-    let at = 0;
-    let matched = 0;
-    while (matched < prefix.length && at < given.length) {
-      const name = given[at];
-      at += 1;
-      if (name === "" || name === ".") continue;
-      if (!sameName(name, prefix[matched])) break;
-      matched += 1;
-    }
-    if (matched === prefix.length) return given.slice(at);
-  }
-  return undefined;
-};
-const server = (name) => {
-  try {
-    const expected = fs.lstatSync(name, stat);
-    if (!expected.isDirectory()) process.exit(${readerExit.identity});
-    process.chdir(name);
-    if (!same(expected, fs.statSync(".", stat))) process.exit(${readerExit.identity});
-  } catch (error) {
-    process.exit(${readerExit.identity});
-  }
-};
-const into = (name, expected) => {
-  try {
-    process.chdir(name);
-  } catch (error) {
-    const code = error && error.code;
-    if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP")
-      process.exit(${readerExit.changed});
-    if (code === "EACCES" || code === "EPERM") {
-      let now;
-      try {
-        now = fs.lstatSync(name, stat);
-      } catch {
-        process.exit(${readerExit.changed});
-      }
-      if (same(expected, now) && now.isDirectory())
-        process.exit(${readerExit.unreadable});
-      process.exit(${readerExit.changed});
-    }
-    fail(error);
-  }
-  if (!same(expected, fs.statSync(".", stat))) process.exit(${readerExit.changed});
-};
-/** 확인한 \`expected\`와 같은 파일만 연다. 확인한 바로 뒤에 사라지거나 바뀌었으면 \`changedExit\`다. */
-const open = (name, expected, limit, notFileExit, changedExit, tooLargeExit) => {
-  if (!expected.isFile()) process.exit(notFileExit);
-  let fd;
-  try {
-    fd = fs.openSync(
-      name,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-    );
-  } catch (error) {
-    const code = error && error.code;
-    if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP" || code === "EISDIR")
-      process.exit(changedExit);
-    throw error;
-  }
-  const opened = fs.fstatSync(fd, stat);
-  if (!same(expected, opened) || !opened.isFile())
-    process.exit(changedExit);
-  if (opened.size > BigInt(limit)) process.exit(tooLargeExit);
-  return { fd, opened };
-};
-const read = ({ fd, opened }) => {
-  const buffer = Buffer.alloc(Number(opened.size));
-  let length = 0;
-  while (length < buffer.length) {
-    const count = fs.readSync(fd, buffer, length, buffer.length - length, null);
-    if (!count) break;
-    length += count;
-  }
-  return buffer.subarray(0, length);
-};
-const fail = (error) => {
-  const code = error && error.code;
-  process.exit(
-    code === "ENOENT" || code === "ENOTDIR" || code === "ENAMETOOLONG"
-      ? ${readerExit.notFound}
-      : code === "EACCES" || code === "EPERM"
-        ? ${readerExit.unreadable}
-        : code === "ELOOP"
-          ? ${readerExit.changed}
-          : ${readerExit.failed}
-  );
-};
-server(organizationId);
-let claimed;
-try {
-  const mark = ${JSON.stringify(identityFile)};
-  claimed = JSON.parse(read(open(mark, fs.lstatSync(mark, stat), ${identityMaxBytes}, ${readerExit.identity}, ${readerExit.identity}, ${readerExit.identity})).toString("utf8"))?.organizationId;
-} catch {
-  process.exit(${readerExit.identity});
-}
-if (claimed !== organizationId) process.exit(${readerExit.identity});
-server("shared");
-try {
-  const dirs = [fs.statSync(".", stat)];
-  const done = [];
-  const up = () => {
-    process.chdir("..");
-    dirs.pop();
-    done.pop();
-    if (!same(dirs[dirs.length - 1], fs.statSync(".", stat)))
-      process.exit(${readerExit.changed});
-  };
-  let pending;
-  if (path.isAbsolute(requested)) {
-    const fromRoot = inside(requested, typed);
-    if (!fromRoot) process.exit(${readerExit.outside});
-    pending = fromRoot;
-  } else pending = typed(requested).split(separator);
-  let links = 0;
-  let name;
-  let checked;
-  while (pending.length > 0) {
-    const part = pending.shift();
-    if (part === "" || part === ".") continue;
-    if (part === "..") {
-      if (done.length === 0) process.exit(${readerExit.outside});
-      up();
-      continue;
-    }
-    const refused = windowsName(part);
-    if (refused !== undefined) process.exit(refused);
-    let info;
-    try {
-      info = fs.lstatSync(part, stat);
-    } catch (error) {
-      fail(error);
-    }
-    if (info.isSymbolicLink()) {
-      links += 1;
-      if (links > 40) process.exit(${readerExit.linkLoop});
-      let target;
-      try {
-        target = fs.readlinkSync(part);
-      } catch (error) {
-        const code = error && error.code;
-        if (code === "ENOENT" || code === "EINVAL" || code === "ENOTDIR")
-          process.exit(${readerExit.changed});
-        fail(error);
-      }
-      if (path.isAbsolute(target)) {
-        const fromRoot = inside(target, lexical);
-        if (!fromRoot) process.exit(${readerExit.outside});
-        while (done.length > 0) up();
-        pending = [...fromRoot, ...pending];
-      } else pending = [...lexical(target).split(separator), ...pending];
-      continue;
-    }
-    if (pending.length === 0) {
-      name = part;
-      checked = info;
-      break;
-    }
-    if (!info.isDirectory()) process.exit(${readerExit.notFound});
-    into(part, info);
-    dirs.push(info);
-    done.push(part);
-  }
-  if (name === undefined) process.exit(${readerExit.notFile});
-  // 걸으며 확인한 그 파일을 연다. 다시 확인하면 그 사이에 사라지거나 바뀐 것을 없는 파일·다른 종류로 잘못 알린다.
-  const file = open(name, checked, maxBytes, ${readerExit.notFile}, ${readerExit.changed}, ${readerExit.tooLarge});
-  if (file.opened.nlink !== 1n) process.exit(${readerExit.hardLink});
-  process.stdout.write(Buffer.concat([Buffer.from(JSON.stringify([...done, name]) + "\\n"), read(file)]));
-} catch (error) {
-  fail(error);
-}
-`;
-/**
- * 고정한 폴더에서 파일 하나를 읽는 Node.js 프로세스를 공용 실행으로 끝까지 돌린다. 상한(30초)이나 출력 상한에 닿으면 그 트리를 끄고
+ * 고정한 폴더에서 파일 하나를 읽는 Node.js 프로세스(workspace-reader.ts)를 공용 실행으로 끝까지 돌린다. Node에는 폴더 핸들로 여는
+ * 기능이 없어, 작업 폴더로 폴더를 붙드는 그 프로세스가 한 칸씩 확인하며 들어가 고정된 폴더 안에서 연다(자세한 것은 그 파일). 상한(30초)이나 출력 상한에 닿으면 그 트리를 끄고
  * 끝난 것을 확인한 뒤 서버 쪽 문제로 던진다.
  */
 async function readPinned(start: string, args: string[]): Promise<PinnedRead> {
   const run = await runTree({
     command: [process.execPath],
-    args: ["-e", pinnedReader, JSON.stringify([artifactFileMaxBytes, ...args])],
+    args: [pinnedReaderFile, JSON.stringify([artifactFileMaxBytes, ...args])],
     cwd: start,
     // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
     env: process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {},

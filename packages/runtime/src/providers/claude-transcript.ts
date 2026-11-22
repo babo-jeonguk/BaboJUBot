@@ -13,7 +13,11 @@ import {
   type SessionMaintenance,
   type UsageAmount,
 } from "@babojubot/contracts";
-import { inFolder, openFileIn, type OpenedFile } from "./pinned-folder.ts";
+import {
+  inFolder,
+  openRegularFile,
+  type OpenedRegularFile,
+} from "@babojubot/files";
 import { record } from "./record.ts";
 
 const unreadable = Symbol("unreadable");
@@ -58,12 +62,12 @@ async function sessionTranscripts<T>(
     const found = await continueAfterFailure(
       () =>
         inFolder(home, ["config", "projects", entry.name], async (folder) => {
-          let file: OpenedFile | undefined;
+          let file: OpenedRegularFile | undefined;
           try {
-            const opened = await openFileIn(folder, `${id}.jsonl`);
+            const opened = await openRegularFile(folder.at(`${id}.jsonl`));
             if (typeof opened === "string") return;
             file = opened;
-            return await read(opened.handle, opened.size);
+            return await read(opened.handle, Number(opened.info.size));
           } catch (error) {
             if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
               console.warn(

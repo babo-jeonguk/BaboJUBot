@@ -935,12 +935,17 @@ test("product code outside @babojubot/files does not write its own open of a pla
     "a flag in script text": `export const script = \`\nconst fs = require("node:fs");\nfs.openSync(name, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);\n\`;\n`,
     "an ino comparison in script text": `export const script = "const same = (a, b) => a.dev === b.dev && a.ino === b.ino;";\n`,
   };
+  // 읽은 자리마다 짚는다(dev·ino 대조는 양쪽 `ino` 두 곳).
   for (const place of productPlaces)
     for (const [shape, code] of Object.entries(own)) {
-      const [message, ...rest] = await lint(code, place, ownOpenRule);
-      assert.ok(message, `${place}: ${shape} not reported`);
-      assert.deepEqual(rest, [], `${place}: ${shape}`);
-      assert.match(message.message, /@babojubot\/files/);
+      const messages = await lint(code, place, ownOpenRule);
+      assert.ok(messages.length > 0, `${place}: ${shape} not reported`);
+      for (const message of messages)
+        assert.match(
+          message.message,
+          /@babojubot\/files/,
+          `${place}: ${shape}`
+        );
     }
   const kept = {
     "the shared open": `import { openRegularFile } from "@babojubot/files";\nexport const read = (file: string) => openRegularFile(file);\n`,

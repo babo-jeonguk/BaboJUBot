@@ -10,12 +10,16 @@ import { pathToFileURL } from "node:url";
  * (file-artifacts.test.ts)이 맡고 여기에 넣지 않는다.
  */
 export const fileBoundaryPaths = [
-  /^apps\/server\/src\/workspace\.ts$/,
+  // 서버의 산출물 읽기와 그 별도 프로세스(workspace-reader.ts)·둘이 함께 쓰는 값.
+  /^apps\/server\/src\/workspace[^/]*\.ts$/,
   /^apps\/server\/test\/(workspace[^/]*|files-volume)\.ts$/,
   /^apps\/server\/vitest\.files\.config\.ts$/,
   /^apps\/server\/package\.json$/,
   // 산출물 파일 읽기의 거부 이유·크기 한도 계약.
   /^packages\/contracts\/src\/task\.ts$/,
+  // 읽는 프로세스가 파일·폴더를 여는 바탕(@babojubot/files)과 그 실패 판정.
+  /^packages\/files\//,
+  /^packages\/contracts\/src\/failure\.ts$/,
   /^scripts\/(ci-changes|check-ci-test-gate|ci-test-gate|file-boundary-[^/]+)\.(m?js|test\.mjs)$/,
   /^scripts\/files\//,
   /^\.github\/workflows\/scaffold\.yml$/,

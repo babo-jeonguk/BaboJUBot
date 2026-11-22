@@ -3,7 +3,7 @@ import path from "node:path";
 import { credentialResidue, residueRefusal } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink, readLogin } from "./login-link.ts";
-import { inFolder } from "./pinned-folder.ts";
+import { inFolder } from "@babojubot/files";
 
 /**
  * 로그인을 파일로 같이 쓰는 연결(Codex·Antigravity)마다 다른 것. 나머지 준비 순서는 `fileLogin`이 맡는다(#146).

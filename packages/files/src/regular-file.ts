@@ -2,12 +2,21 @@ import { constants } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { continueAfterFailure, failureCode } from "@babojubot/contracts";
+import {
+  continueAfterFailure,
+  failureCode,
+} from "@babojubot/contracts/failure";
 
 /** 열고 확인한 일반 파일. 부른 쪽이 `handle`을 닫는다. `info`는 그 handle의 종류·크기다. */
 export type OpenedRegularFile = { handle: FileHandle; info: BigIntStats };
 /** 열지 않은 이유: 경로에 아무것도 없음, 또는 그 자리가 일반 파일이 아님(링크·폴더·FIFO 같은 특수 파일). */
 export type NotOpened = "missing" | "not-regular";
+/** 파일 식별(장치·inode). 같은 두 값이면 같은 파일 시스템 항목이다. */
+export type EntryIdentity = { dev: bigint; ino: bigint };
+
+/** 두 항목이 같은 파일인가. 경로로 본 항목(`lstat`)과 연 것(handle의 `stat`)을 대조할 때 쓴다. */
+export const sameEntry = (a: EntryIdentity, b: EntryIdentity) =>
+  a.dev === b.dev && a.ino === b.ino;
 
 /**
  * 다른 쪽이 바꿀 수 있는 자리의 파일을 확인한 대상 그대로 연다(#242, CWE-367). 종류·크기는 돌려준 handle의 것이므로, 연 뒤
@@ -38,8 +47,7 @@ export async function openRegularFile(
     const info = await handle.stat({ bigint: true });
     if (!info.isFile()) return "not-regular";
     if (constants.O_NOFOLLOW === undefined) {
-      const entry = await lstat(file, { bigint: true });
-      if (entry.dev !== info.dev || entry.ino !== info.ino)
+      if (!sameEntry(await lstat(file, { bigint: true }), info))
         return "not-regular";
     }
     kept = true;

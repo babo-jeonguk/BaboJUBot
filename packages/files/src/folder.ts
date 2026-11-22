@@ -7,7 +7,7 @@ import {
   failureCode,
   hasErrorCode,
   orIfMissing,
-} from "@babojubot/contracts";
+} from "@babojubot/contracts/failure";
 
 /** 칸을 따라 내려가지 못한 이유. 없음, 링크, 폴더가 아님(파일·FIFO 등). */
 export type FolderMiss = "missing" | "link" | "not_folder";
@@ -17,16 +17,16 @@ export type InFolder<T> =
 export type Folder = { path: string; at(name: string): string };
 
 /**
- * 조직 폴더처럼 격리 실행의 컨테이너가 쓸 수 있는 폴더 안으로 한 칸씩 들어가, 확인한 폴더의 handle을 거쳐 그 안의 이름을 연다.
- * Node에는 openat이 없어 경로를 확인한 뒤 다시 열면 그 사이에 중간 칸이 링크로 바뀌어 다른 곳을 열 수 있다. 경로를 고정해 읽는
- * 선례(apps/server/src/workspace.ts와 antigravity-config.ts가 고정한 자식 프로세스로 하는 일)를, 여기서는 폴더 handle의
- * `/proc/self/fd/<fd>/<이름>` 경로로 이 프로세스 안에서 한다. Linux에서는 fd가 연 폴더 자체를 붙들므로, 그 폴더를 옮기고 다른
- * 폴더로 바꿔도 경로는 원래 폴더를 가리킨다. 그 밖의 시스템은 격리 실행을 하지 않으므로(docs/providers.md), 경로를 따라가며
- * `lstat`으로 확인하는 지금과 같은 보장만 한다.
+ * 조직 제품 폴더처럼 격리 실행의 컨테이너가 쓸 수 있는 폴더 안으로 한 칸씩 들어가, 확인한 폴더의 handle을 거쳐 그 안의 이름을
+ * 다룬다(#278, CWE-59·CWE-367). Node에는 openat이 없어(nodejs/node#31110) 경로를 확인한 뒤 다시 열면 그 사이에 중간 칸이 링크로
+ * 바뀌어 다른 곳을 열 수 있다. Linux에서는 연 폴더의 `/proc/self/fd/<fd>/<이름>` 경로로 연다. 이 경로는 이름으로 다시 찾지 않고
+ * fd가 붙든 폴더 자체를 가리키므로(symlink(7)), 그 폴더를 옮기고 그 자리를 다른 폴더나 링크로 바꿔도 원래 폴더 안을 연다. 그 밖의
+ * 시스템은 격리 실행을 하지 않아(docs/providers.md) 이 사이에 바꾸는 쪽이 없으므로, 경로를 따라가며 `lstat`으로 확인만 한다.
+ * 이 프로세스의 작업 폴더를 건드리지 않으므로 서버 안에서 쓴다. 별도 프로세스가 작업 폴더로 폴더를 붙드는 길은 `enterFolder`다.
  *
- * 부르는 쪽은 돌려받은 `Folder.at(이름)`으로 마지막 이름을 열 때 `O_NOFOLLOW | O_NONBLOCK`을 써야 한다(링크를 따라가지 않고
- * FIFO에서 기다리지 않는다). 이름 자체에 작용하는 `lstat`·`readlink`·`rm`·`writeFile`(flag `"wx"`)은 그대로 써도 된다. 한 칸이라도
- * 폴더가 아니면 `use`를 부르지 않고 없음·링크·폴더 아님을 돌려준다. 모든 이름은 경로 칸 하나여야 한다.
+ * 마지막 이름의 파일은 `openRegularFile(folder.at(이름))`으로 연다(링크를 따라가지 않고 FIFO에서 기다리지 않음). 이름 자체에
+ * 작용하는 `lstat`·`readlink`·`rm`·`writeFile`(flag `"wx"`)은 `folder.at(이름)`에 그대로 써도 된다. 한 칸이라도 폴더가 아니면
+ * `use`를 부르지 않고 없음·링크·폴더 아님을 돌려준다. 모든 이름은 경로 칸 하나여야 한다.
  */
 export async function inFolder<T>(
   root: string,
@@ -55,41 +55,6 @@ function checkStep(name: string): void {
 /** 링크를 따라가지 않고 폴더만 여는 flag. 열 때부터 링크·파일을 거절한다. */
 const folderFlags =
   constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-
-/** 확인한 폴더 안의 파일 하나를 여는 flag. 링크를 거절하고 FIFO에서 기다리지 않는다. */
-const fileFlags =
-  constants.O_RDONLY |
-  (constants.O_NOFOLLOW ?? 0) |
-  (constants.O_NONBLOCK ?? 0);
-
-/** `openFileIn`이 연 일반 파일: handle과 연 때의 크기. 부르는 쪽이 handle을 닫는다. */
-export type OpenedFile = { handle: FileHandle; size: number };
-/** 확인한 폴더 안의 이름 하나를 연다. 링크를 따라가지 않고(O_NOFOLLOW) FIFO에서 기다리지 않는다(O_NONBLOCK). 열린 것이 일반 파일일 때만 그 handle과 크기를 돌려주고, 없음·링크·일반 파일 아님은 값으로 가른다. 그 밖의 열기·확인 오류는 던진다. */
-export async function openFileIn(
-  folder: Folder,
-  name: string
-): Promise<OpenedFile | "missing" | "link" | "not_regular"> {
-  let handle: FileHandle;
-  try {
-    handle = await open(folder.at(name), fileFlags);
-  } catch (error) {
-    if (hasErrorCode("ENOENT", "ENOTDIR")(error)) return "missing";
-    if (hasErrorCode("ELOOP")(error)) return "link";
-    if (hasErrorCode("EISDIR")(error)) return "not_regular";
-    throw error;
-  }
-  try {
-    const info = await handle.stat();
-    if (!info.isFile()) {
-      await closeHandles([handle]);
-      return "not_regular";
-    }
-    return { handle, size: info.size };
-  } catch (error) {
-    await closeHandles([handle]);
-    throw error;
-  }
-}
 
 /** Linux: 연 폴더 handle의 /proc/self/fd 경로로 한 칸씩 내려간다. 확인한 폴더를 옮기거나 바꿔도 같은 폴더를 가리킨다. */
 async function inFolderLinux<T>(
@@ -219,7 +184,7 @@ async function closeHandles(handles: readonly FileHandle[]): Promise<void> {
         () => handle.close(),
         (error) =>
           console.warn(
-            `[provider] a folder handle could not be closed (${failureCode(error)})`
+            `[files] a folder handle could not be closed (${failureCode(error)})`
           )
       )
     )

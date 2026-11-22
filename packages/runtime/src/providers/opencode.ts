@@ -23,8 +23,8 @@ import {
   subtractUsage,
   usageAmount,
 } from "@babojubot/contracts";
+import { inFolder, openRegularFile, type Folder } from "@babojubot/files";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
-import { inFolder, openFileIn, type Folder } from "./pinned-folder.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import { TreeLaunchRefused } from "@babojubot/process";
@@ -192,13 +192,13 @@ async function copyResidueFile(
   destination: string,
   limit: number
 ): Promise<{ copied: number } | "absent" | "unsafe"> {
-  const opened = await openFileIn(folder, name);
+  const opened = await openRegularFile(folder.at(name));
   if (opened === "missing") return "absent";
-  if (opened === "link" || opened === "not_regular") return "unsafe";
+  if (opened === "not-regular") return "unsafe";
   const from = opened.handle;
   let to: FileHandle | undefined;
   try {
-    if (opened.size > limit) return "unsafe";
+    if (opened.info.size > limit) return "unsafe";
     to = await open(destination, "wx", 0o600);
     const buffer = Buffer.alloc(residueChunkBytes);
     let copied = 0;

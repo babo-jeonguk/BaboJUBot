@@ -44,6 +44,7 @@ for (const file of [
   "packages/contracts/src/task.ts",
   "packages/files/src/regular-file.ts",
   "packages/files/package.json",
+  "packages/contracts/src/failure.ts",
   "scripts/file-boundary-report.mjs",
   "scripts/files/prepare-windows.ps1",
   "scripts/check-ci-test-gate.mjs",
