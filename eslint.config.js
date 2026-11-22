@@ -193,33 +193,26 @@ export default defineConfig([
   tseslint.configs.recommended,
   { languageOptions: { globals: globals.node } },
   {
-    // lint 예외는 이유를 적고(`-- 이유`), 규칙을 이름으로 고르며, 더는 필요 없으면 지운다.
-    // 예외는 그 줄에만 건다(`eslint-disable-next-line`·`eslint-disable-line`). 규칙 설정 주석(`/* eslint 규칙: "off" */`)과 끝을 닫지
-    // 않은 `/* eslint-disable */`는 파일 전체에서 규칙을 끄거나 경고로 낮춰 그 파일의 위반을 모두 지운다(#270). 전역 이름은 설정에 둔다.
-    linterOptions: {
-      reportUnusedDisableDirectives: "error",
-      reportUnusedInlineConfigs: "error",
-    },
+    // 주석은 lint 규칙을 바꾸지 못한다(#270). 주석 한 줄(`/* eslint 규칙: "off" */`, 끝을 닫지 않은 `/* eslint-disable */`)이면 파일 전체의
+    // 위반이 사라지고, 주석의 설정은 설정 파일보다 우선해 막는 규칙까지 같은 주석으로 끌 수 있어서 주석의 설정을 아예 읽지 않는다.
+    // 예외가 정말 필요하면 이 파일에 파일·규칙을 좁혀 이유와 함께 둔다. 효과 없는 지시 주석도 본보기로 베껴지지 않게 오류로 짚는다.
+    linterOptions: { noInlineConfig: true },
     plugins: comments.recommended.plugins,
     rules: {
-      "@eslint-community/eslint-comments/require-description": "error",
-      "@eslint-community/eslint-comments/no-unlimited-disable": "error",
-      "@eslint-community/eslint-comments/no-use": [
-        "error",
-        { allow: ["eslint-disable-next-line", "eslint-disable-line"] },
-      ],
+      "@eslint-community/eslint-comments/no-use": ["error", { allow: [] }],
     },
   },
   {
-    // 시험 코드는 주석으로 규칙을 바꾸지 못한다. 위 금지 규칙도 주석 하나(`/* eslint …/no-use: "off", … */`)로 함께 끌 수 있어서, 주석의
-    // 설정을 아예 읽지 않는다(`noInlineConfig`). 시험에 예외가 필요하면 이 파일에 이유와 함께 둔다. 남은 주석은 어떤 것이든 no-use가 짚는다.
+    // Playwright는 fixture의 첫 인자가 객체 분해여야 의존 fixture를 읽는다(`async ({}, use) => …`). 매개변수 자리의 빈 분해만 받는다.
     files: testFiles,
-    linterOptions: { noInlineConfig: true },
     rules: {
-      "@eslint-community/eslint-comments/no-use": ["error", { allow: [] }],
-      // Playwright는 fixture의 첫 인자가 객체 분해여야 의존 fixture를 읽는다(`async ({}, use) => …`). 매개변수 자리의 빈 분해만 받는다.
       "no-empty-pattern": ["error", { allowObjectPatternsAsParameters: true }],
     },
+  },
+  {
+    // 경로에 NUL이 없음을 뜻하는 정규식은 NUL을 일부러 담는다. 그 정규식 하나만 담은 파일에서만 끈다(packages/contracts/src/nul-free.ts).
+    files: ["packages/contracts/src/nul-free.ts"],
+    rules: { "no-control-regex": "off" },
   },
   {
     // check-test-exit-code.mjs가 vitest를 --globals로 돌려 넣는 이름(일부러 실패하는 시험).
