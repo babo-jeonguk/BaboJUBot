@@ -66,10 +66,10 @@ function keepsValue(parent, child, sourceCode) {
     case "ChainExpression":
       return true;
     case "CallExpression":
+      // 전역 Math의 계산(`Math.round`·별칭·구조 분해로 받은 `round`). 부르는 모양과 무관하게 출처로 본다.
       return (
         parent.arguments.includes(child) &&
-        parent.callee.type === "MemberExpression" &&
-        comesFrom(sourceCode, parent.callee.object, "global:Math")
+        /^global:Math\./.test(originName(sourceCode, parent.callee) ?? "")
       );
     default:
       return false;
@@ -1014,7 +1014,8 @@ const cleanupNames =
  * 기다리는 값이 정리인가: 정리 호출(`server.close()`·`t?.close()`·`removeFolder(dir)`), 반복 변수의 호출(`cleanup()`),
  * 정리 호출 하나만 하는 Promise(`new Promise((r) => server.close(r))`).
  */
-function cleanupCall(argument, loopVariables, sourceCode) {
+function cleanupCall(argument, loopVariables, context) {
+  const { sourceCode } = context;
   const call =
     argument.type === "ChainExpression" ? argument.expression : argument;
   if (
@@ -1022,9 +1023,11 @@ function cleanupCall(argument, loopVariables, sourceCode) {
     comesFrom(sourceCode, call.callee, "global:Promise")
   ) {
     const only = onlyExpression(call.arguments[0]);
-    return only !== undefined && cleanupCall(only, new Set(), sourceCode);
+    return only !== undefined && cleanupCall(only, new Set(), context);
   }
   if (call.type !== "CallExpression") return false;
+  // 출처가 확인된 정리 도구는 부르는 모양·이름과 무관하게 정리다(#266 리뷰 SPEC-9). 이름 휴리스틱은 그 밖의 정리를 넓게 잡는다.
+  if (folderRemoval(call, context)) return true;
   const { callee } = call;
   if (callee.type === "Identifier")
     return cleanupNames.test(callee.name) || loopVariables.has(callee.name);
@@ -1142,10 +1145,9 @@ function mayFollow(a, b) {
  * 끄기 뒤에 폴더 지우기만 이어지면 짚지 않는다. 그 폴더를 쓰는 프로그램을 끈 뒤에 지우는 순서로, 끄기가 실패하면 폴더를 남기는 것이 맞다.
  */
 function firstSkipped(fn, awaits, context) {
-  const { sourceCode } = context;
   for (const [index, node] of awaits.entries()) {
     const path = failurePath(node, fn);
-    if (!cleanupCall(node.argument, path.loopVariables, sourceCode)) continue;
+    if (!cleanupCall(node.argument, path.loopVariables, context)) continue;
     const messageId = path.guard ? "caught" : "skipped";
     if (path.inLoop) return { node, messageId };
     let later = awaits.slice(index + 1).filter((next) => mayFollow(node, next));
@@ -1156,7 +1158,7 @@ function firstSkipped(fn, awaits, context) {
           cleanupCall(
             next.argument,
             failurePath(next, fn).loopVariables,
-            sourceCode
+            context
           )
       );
     if (later.length === 0) continue;
@@ -1193,19 +1195,20 @@ export const skippedCleanupIn = (block, context) =>
  * - try 밖: 동기 정리 뒤에 다른 정리(동기 정리·기다린 정리 호출)가 이어지거나, 기다린 정리 뒤에 동기 정리가 이어지거나, 동기 정리를
  *   반복문 안에서 부른다(`skipped`).
  * - 블록 안 try(catch가 있는 것) 본문: 같은 본문에 그런 정리가 이어진다(`caught`).
- * 블록 안에 정의한 함수(`continueAfterFailure(() => rmSync(…))` 등)의 몸은 따로 돈다고 보고 보지 않는다.
+ * 블록 안에 정의한 함수(`continueAfterFailure(() => rmSync(…))` 등)의 몸은 따로 돈다고 보고 보지 않는다. `context`는 규칙의
+ * context다(가져온 경로를 그 파일 기준으로 푼다).
  */
-export function skippedSyncCleanupIn(block, sourceCode) {
+export function skippedSyncCleanupIn(block, context) {
   const steps = [];
   walkBody(block, (node) => {
-    if (node.type === "CallExpression" && throwsSync(node, sourceCode))
+    if (node.type === "CallExpression" && throwsSync(node, context.sourceCode))
       steps.push({ node, sync: true });
     else if (
       node.type === "AwaitExpression" &&
       cleanupCall(
         node.argument,
         failurePath(node, block).loopVariables,
-        sourceCode
+        context
       )
     )
       steps.push({ node, sync: false });
@@ -2216,13 +2219,7 @@ function waiting(sourceCode) {
       return def.node.init;
     return undefined;
   };
-  /** 모듈 객체(이름공간 가져오기와 그 별칭)면 그 출처(`{ source, imported: "*" }`), 아니면 undefined. 공용 출처 판정으로 본다. */
-  const namespaceOf = (identifier) => {
-    const origin = originOf(sourceCode.getScope(identifier), identifier);
-    return origin?.module !== undefined && origin.path.length === 0
-      ? { source: origin.module, imported: "*" }
-      : undefined;
-  };
+
   /**
    * 호출 `call`의 `index`번째 인자로 넘긴 값의 결과를 그 호출이 받는가. 받는 자리는 위치까지 맞아야 한다: 조합 함수는 첫 인자 배열,
    * `expect`는 첫 인자(둘째는 문구), 가져온 시험 도움은 첫 인자(저장소의 기다림 도움 `within`·`settled`는 Promise를 첫 인자로
@@ -2230,35 +2227,34 @@ function waiting(sourceCode) {
    */
   const callPasses = (call, index, isArray, seen) => {
     const callee = call.callee;
-    if (callee.type === "MemberExpression") {
-      if (
-        comesFrom(
-          sourceCode,
-          callee,
-          ...[...promiseCombinators].map((name) => `global:Promise.${name}`)
-        )
+    // 출처가 확인된 받는 자리(Promise 조합·expect·저장소 시험 도움)를 부르는 모양과 무관하게 먼저 본다(이름 바꾼 가져오기·별칭·
+    // 이름공간 속성·구조 분해, #266 리뷰 SPEC-8·9). 저장소 도움은 그 함수 자체여야 한다(호출 결과 `()`는 무엇인지 모른다).
+    if (
+      comesFrom(
+        sourceCode,
+        callee,
+        ...[...promiseCombinators].map((name) => `global:Promise.${name}`)
       )
-        return index === 0 && isArray ? "always" : "never";
-      if (isArray || index !== 0 || callee.object.type !== "Identifier")
-        return "never";
-      return repoModule.test(namespaceOf(callee.object)?.source ?? "")
-        ? "always"
-        : "never";
-    }
-    if (isArray || callee.type !== "Identifier") return "never";
+    )
+      return index === 0 && isArray ? "always" : "never";
     if (isExpect(sourceCode, callee))
-      return index === 0 &&
+      return !isArray &&
+        index === 0 &&
         ["rejects", "resolves"].includes(memberName(call.parent)) &&
         call.parent.object === call
         ? "always"
         : "never";
-    const variable = bindingOf(sourceCode, callee);
-    if (!variable) return "never";
     const origin = originOf(sourceCode.getScope(callee), callee);
     if (origin)
-      return index === 0 && repoModule.test(origin.module ?? "")
+      return !isArray &&
+        index === 0 &&
+        repoModule.test(origin.module ?? "") &&
+        !origin.path.some((name) => name.endsWith("()"))
         ? "always"
         : "never";
+    if (isArray || callee.type !== "Identifier") return "never";
+    const variable = bindingOf(sourceCode, callee);
+    if (!variable) return "never";
     const fn = functionOf(variable);
     const param = fn?.params[index];
     if (!fn || seen.has(fn) || param?.type !== "Identifier") return "never";
@@ -2437,8 +2433,7 @@ const noUnawaitedLater = {
     };
     const isAwaitedLater = (identifier) => isLaterOrigin(identifier);
     /** `x.awaitedLater`의 x가 test-cleanup의 모듈 객체(그 별칭 포함)인가. */
-    const namespaceMember = (member) =>
-      memberName(member) === "awaitedLater" && isLaterOrigin(member);
+    const namespaceMember = (member) => isLaterOrigin(member);
     /** 기다림이 없거나 한 분기에만 있으면 알린다. */
     const reportWaiting = (call, reads) => {
       const found = classify(reads);

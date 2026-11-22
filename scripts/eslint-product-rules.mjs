@@ -534,7 +534,7 @@ const noCleanupChain = {
     const check = (block) => {
       const found =
         skippedCleanupIn(block, context) ??
-        skippedSyncCleanupIn(block, context.sourceCode);
+        skippedSyncCleanupIn(block, context);
       if (!found || reported.has(found.node)) return;
       reported.add(found.node);
       context.report({ node: found.node, messageId: found.messageId });
@@ -687,10 +687,12 @@ const noDirectLaunch = {
       // 모듈 객체(별칭 포함)를 구조 분해해 꺼내도 같다(`const { spawn } = cp`, #266 리뷰 SPEC-7). 불러오는 호출의 구조 분해는
       // 가져오는 자리(위)가 본다.
       VariableDeclarator(node) {
+        if (node.id.type !== "ObjectPattern" || !node.init) return;
+        const value =
+          node.init.type === "AwaitExpression" ? node.init.argument : node.init;
         if (
-          node.id.type !== "ObjectPattern" ||
-          (node.init?.type !== "Identifier" &&
-            node.init?.type !== "MemberExpression")
+          value.type === "CallExpression" ||
+          value.type === "ImportExpression"
         )
           return;
         const module = moduleObject(node.init);
@@ -1003,6 +1005,10 @@ const calleeName = (callee) =>
  * `.on("error", 처리기)`·`.once("error", 처리기)`.
  */
 function failureHandlerArgument(call, context) {
+  // contracts의 continueAfterFailure(일, 처리기)를 먼저 출처로 본다. 부르는 모양(이름 바꾼 가져오기·별칭·이름공간 속성·구조 분해)과
+  // 무관하다(#266 리뷰 SPEC-8: 이름공간 속성이면 아래 메서드 분기가 먼저 돌아가 놓쳤다).
+  if (failureTool(context, call.callee, "continueAfterFailure"))
+    return call.arguments[1];
   const name = calleeName(call.callee);
   if (call.callee.type === "MemberExpression") {
     const position = handlerPositions.get(name);
@@ -1015,10 +1021,7 @@ function failureHandlerArgument(call, context) {
       return call.arguments[1];
     return undefined;
   }
-  // contracts의 continueAfterFailure(일, 처리기). 이름이 아니라 출처로 본다(#266 리뷰 SPEC-7).
-  return failureTool(context, call.callee, "continueAfterFailure")
-    ? call.arguments[1]
-    : undefined;
+  return undefined;
 }
 
 /** 이름이 가리키는 변수. 찾지 못하면 undefined. */
