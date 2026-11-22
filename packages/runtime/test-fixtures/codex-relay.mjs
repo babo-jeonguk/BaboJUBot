@@ -10,19 +10,25 @@ import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const args = process.argv.slice(2);
+/** 시험이 이 프로그램에 주는 CODEX_HOME. */
+function codexHome() {
+  const folder = process.env.CODEX_HOME;
+  if (!folder) throw new Error("synthetic: CODEX_HOME is not set");
+  return folder;
+}
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const provider = args.find((arg) =>
   arg.startsWith("model_providers.babojubot_relay=")
 );
 const baseUrl = provider ? /base_url="([^"]+)"/.exec(provider)?.[1] : undefined;
 // Inside a container a per-attempt file may be mounted over CODEX_HOME/auth.json; the fake docker lists its mounts.
-const loginAt = path.join(process.env.CODEX_HOME, "auth.json");
+const loginAt = path.join(codexHome(), "auth.json");
 const mounted = JSON.parse(process.env.FAKE_DOCKER_MOUNTS ?? "[]").find(
   (mount) => mount.target === loginAt
 );
 const login = JSON.parse(await readFile(mounted?.source ?? loginAt, "utf8"));
 await appendFile(
-  path.join(process.env.CODEX_HOME, "seen-auth.jsonl"),
+  path.join(codexHome(), "seen-auth.jsonl"),
   JSON.stringify({
     login,
     args,

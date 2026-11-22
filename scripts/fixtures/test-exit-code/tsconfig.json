@@ -1,0 +1,7 @@
+// 시험 실패 종료 코드 확인(scripts/check-test-exit-code.mjs)이 vitest `--globals`로 돌리는 시험. 그 전역(`it`) 선언
+// (vitest-globals.d.ts)이 다른 스크립트로 새지 않게 이 폴더만 따로 검사한다. JS를 .ts로 옮기기 전까지 암시적 any만 끈다(#270 PR 3a).
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "checkJs": true, "noImplicitAny": false },
+  "include": ["**/*"]
+}

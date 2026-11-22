@@ -21,6 +21,10 @@ import net from "node:net";
 import path from "node:path";
 
 const [stateDir, programsJson, ...args] = process.argv.slice(2);
+if (stateDir === undefined || programsJson === undefined)
+  throw new Error(
+    "usage: fake-docker <stateDir> <programs JSON> <docker args...>"
+  );
 const programs = JSON.parse(programsJson);
 const record = (entry) =>
   appendFileSync(
@@ -53,14 +57,20 @@ const flagsWithValue = new Set([
 const verb = args[0] === "container" ? args[1] : args[0];
 if (verb === "run") {
   const rest = args.slice(args.indexOf("run") + 1);
+  /** @type {Map<string, string[]>} */
   const options = new Map();
+  /** @type {Record<string, string | undefined>} */
   const env = {};
   let i = 0;
-  for (; i < rest.length; i++) {
-    const arg = rest[i];
-    if (!arg.startsWith("-")) break;
+  for (
+    let arg = rest[i];
+    arg !== undefined && arg.startsWith("-");
+    arg = rest[++i]
+  ) {
     if (flagsWithValue.has(arg)) {
       const value = rest[++i];
+      if (value === undefined)
+        throw new Error(`fake docker: ${arg} has no value`);
       options.set(arg, [...(options.get(arg) ?? []), value]);
       if (arg === "-e" || arg === "--env") {
         const at = value.indexOf("=");
@@ -80,13 +90,17 @@ if (verb === "run") {
   )?.source;
   if (relay) writeFileSync(path.join(stateDir, "relay-dir"), relay);
   const inbound = Boolean(env.BABOJUBOT_INBOUND_PORT);
-  const offer = (port) => {
-    const reverse = net.connect(path.join(relay, "inbound.sock"));
+  /**
+   * @param {string} folder the relay folder (the `/run/babojubot` mount source)
+   * @param {number} port
+   */
+  const offer = (folder, port) => {
+    const reverse = net.connect(path.join(folder, "inbound.sock"));
     let used = false;
     reverse.once("data", (first) => {
       used = true;
       reverse.pause();
-      offer(port);
+      offer(folder, port);
       const local = net.connect(port, "127.0.0.1", () => {
         local.write(first);
         reverse.pipe(local).pipe(reverse);
@@ -97,11 +111,11 @@ if (verb === "run") {
     });
     reverse.on("error", () => reverse.destroy());
     reverse.on("close", () => {
-      if (!used) setTimeout(() => offer(port), 100).unref();
+      if (!used) setTimeout(() => offer(folder, port), 100).unref();
     });
   };
   const passOutput = existsSync(path.join(stateDir, "pass-output"));
-  const mapped = programs[program];
+  const mapped = program === undefined ? undefined : programs[program];
   if (!mapped) {
     process.stderr.write(`fake docker: unknown program ${program}\n`);
     process.exit(127);
@@ -129,14 +143,15 @@ if (verb === "run") {
       try {
         const url = JSON.parse(line).url;
         if (typeof url === "string" && inbound && relay)
-          for (let k = 0; k < 4; k++) offer(Number(new URL(url).port));
+          for (let k = 0; k < 4; k++) offer(relay, Number(new URL(url).port));
       } catch {
         /* not a frame */
       }
     }
   });
-  for (const signal of ["SIGINT", "SIGTERM"])
-    process.on(signal, () => child.kill(signal));
+  /** @type {NodeJS.Signals[]} */
+  const forwarded = ["SIGINT", "SIGTERM"];
+  for (const signal of forwarded) process.on(signal, () => child.kill(signal));
   child.on(passOutput ? "exit" : "close", (code, signal) =>
     process.exit(code ?? (signal ? 137 : 1))
   );

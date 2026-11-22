@@ -3,5 +3,7 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": { "checkJs": true, "noImplicitAny": false },
-  "include": ["**/*"]
+  "include": ["**/*"],
+  // 시험 실패 종료 코드 확인의 vitest 전역(`it`)은 그 폴더의 설정만 받는다(fixtures/test-exit-code/tsconfig.json).
+  "exclude": ["fixtures/test-exit-code"]
 }

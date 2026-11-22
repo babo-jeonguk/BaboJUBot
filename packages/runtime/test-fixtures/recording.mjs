@@ -2,8 +2,10 @@
 import { readFile } from "node:fs/promises";
 
 const at = process.argv.indexOf("--recording");
+const file = at < 0 ? null : process.argv[at + 1];
+if (file === undefined) throw new Error("synthetic: --recording needs a file");
 export const recording =
-  at < 0 ? null : JSON.parse(await readFile(process.argv[at + 1], "utf8"));
+  file === null ? null : JSON.parse(await readFile(file, "utf8"));
 export const bind = (frame, session, turn = "turn-one") =>
   JSON.parse(
     JSON.stringify(frame)

@@ -16,7 +16,12 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 if (args.includes("login")) process.exit(0);
-const script = JSON.parse(readFileSync(args[0], "utf8"));
+const [scriptFile] = args;
+if (scriptFile === undefined)
+  throw new Error(
+    "usage: codex-peer.synthetic.mjs <script.json> [arguments...]"
+  );
+const script = JSON.parse(readFileSync(scriptFile, "utf8"));
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const seen = {};
 appendFileSync(script.log, JSON.stringify({ pid: process.pid }) + "\n");
@@ -31,7 +36,7 @@ input.on("line", async (line) => {
   seen[frame.method] = index + 1;
   const step = steps[Math.min(index, steps.length - 1)];
   if (step.holdUntil) {
-    const release = path.join(path.dirname(args[0]), step.holdUntil);
+    const release = path.join(path.dirname(scriptFile), step.holdUntil);
     while (!existsSync(release)) await new Promise((r) => setTimeout(r, 10));
   }
   if (step.delayMs) await new Promise((r) => setTimeout(r, step.delayMs));

@@ -33,10 +33,10 @@ writeFileSync(
   path.join(dataDir, "postmaster.pid"),
   `${postgres.pid}\n${dataDir}\n`
 );
-writeFileSync(
-  process.env.MISBEHAVE_STATE,
-  JSON.stringify({ postgresPid: postgres.pid, temp })
-);
+const stateFile = process.env.MISBEHAVE_STATE;
+if (!stateFile)
+  throw new Error("misbehaving server: MISBEHAVE_STATE is not set");
+writeFileSync(stateFile, JSON.stringify({ postgresPid: postgres.pid, temp }));
 
 const ready = "BaboJUBot server on http://127.0.0.1:9 (misbehaving)\n";
 switch (process.env.MISBEHAVE) {
@@ -54,7 +54,13 @@ switch (process.env.MISBEHAVE) {
     break;
   case "leave-postgres-on-stop":
     process.on("message", (message) => {
-      if (message?.type !== "babojubot:stop") return;
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        !("type" in message) ||
+        message.type !== "babojubot:stop"
+      )
+        return;
       // 지우지 못하면 그 원인을 남기고 실패 코드로 끝난다.
       removeFolder(dataDir).then(
         () => process.exit(0),

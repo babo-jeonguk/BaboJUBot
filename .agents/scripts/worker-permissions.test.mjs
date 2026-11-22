@@ -27,7 +27,8 @@ const tracked = execFileSync("git", ["ls-files", "-z"], {
 function expand(pattern) {
   const group = /\{([^{}]*)\}/.exec(pattern);
   if (!group) return [pattern];
-  return group[1]
+  return pattern
+    .slice(group.index + 1, group.index + group[0].length - 1)
     .split(",")
     .flatMap((choice) =>
       expand(
