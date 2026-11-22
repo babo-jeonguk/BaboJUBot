@@ -414,7 +414,8 @@ function valueStrings(value) {
 test("format lists and format globs are built from codeFormats", () => {
   // 형식 목록은 scripts/test-files.mjs의 codeFormats 하나다. lint·검사 스크립트·러너와 TypeScript 설정·CI가 손으로 적은 형식 목록이나
   // 형식 glob을 두면 형식이 하나 빠진 사본이 생겨(확장자만 바꾸면 규칙·검사 밖) 그 목록에서 만들어 쓴다. 일부 형식만 받는 곳은
-  // codeFormats에서 이름 붙여 걸러 낸다. 시험 파일의 표본 이름·입력은 형식 목록이 아니어서 보지 않는다.
+  // codeFormats에서 이름 붙여 걸러 낸다. 시험 파일의 표본 이름·입력은 형식 목록이 아니어서 보지 않는다. agent 정의(.opencode)는
+  // 머리말(YAML)의 권한 경로를 본다(코드 worker가 고치지 못하는 시험 파일).
   const files = execFileSync("git", ["ls-files", "-z"], {
     cwd: repository,
     encoding: "utf8",
@@ -424,7 +425,7 @@ test("format lists and format globs are built from codeFormats", () => {
     .filter(
       (file) =>
         !path.matchesGlob(file, `**/*.{test,spec}.${codeFormats}`) &&
-        (/^(?:scripts|\.agents|\.github)\//.test(file) ||
+        (/^(?:scripts|\.agents|\.github|\.opencode)\//.test(file) ||
           !file.includes("/") ||
           /(?:^|\/)(?:tsconfig[^/]*\.json|package\.json|(?:vitest|playwright)[^/]*\.config\.[^/]+)$/.test(
             file
@@ -440,6 +441,10 @@ test("format lists and format globs are built from codeFormats", () => {
       literals = valueStrings(ts.parseConfigFileTextToJson(file, text).config);
     else if (/\.ya?ml$/.test(file))
       literals = valueStrings(parseDocument(text).toJS());
+    else if (file.startsWith(".opencode/") && file.endsWith(".md"))
+      literals = valueStrings(
+        parseDocument(/^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "").toJS()
+      );
     else continue;
     for (const literal of literals)
       if (handWrittenFormats.some((shape) => shape.test(literal)))
