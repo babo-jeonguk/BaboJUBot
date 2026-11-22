@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ESLint } from "eslint";
+import { accessShapes } from "./lint-access-shapes.mjs";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -2083,161 +2084,334 @@ test("test rules see a tool under every name its module exports it", async () =>
       );
 });
 
-// 출처로 판정하는 시험 규칙은 모두 같은 두 가지를 지킨다(#266 리뷰 SPEC-7): const 별칭·구조 분해로 받은 도구도 잡고, 같은 이름의
-// 지역 값은 통과시킨다. 출처를 구한 뒤 판정에서 다시 지금 노드의 글자 이름(별칭 이름)을 보면 앞쪽이 깨진다.
+// 출처로 판정하는 시험 규칙은 모두 같은 두 가지를 지킨다(#266 리뷰 SPEC-7·8·9): 같은 값에 닿는 접근 모양(정식 이름·이름 바꾼 가져오기·
+// const 별칭·이름공간 속성·구조 분해·require, 전역이면 별칭·구조 분해·전역 객체 속성)이 달라도 같은 판정을 내고, 같은 이름의 지역 값에는
+// 반대 판정을 낸다. 사례는 정식 이름으로 하나만 적고 모양은 scripts/lint-access-shapes.mjs가 만든다. `kept`면 정식 사례가 통과하는 사례다.
 const shareState = (runner) =>
   `let shared;\n${runner}("first", () => {\n  shared = 1;\n});\n${runner}("second", () => {\n  expect(shared).toBe(1);\n});\n`;
-const originRules = [
+const hookCleanups = (hook) =>
+  `${hook}(async () => {\n  await t?.close();\n  await model?.close();\n});\n`;
+const laterHeadImport = `import { awaitedLater } from "@babojubot/process/test-cleanup";\n`;
+const originCases = [
+  // 경과 시간 단언: 단언 도구·시계·계산.
+  ...[
+    { module: "vitest", path: ["expect"] },
+    { module: "@playwright/test", path: ["expect"] },
+    { module: "@playwright/test", path: ["test", "expect"] },
+    { global: "expect", path: [] },
+  ].map((value) => ({
+    rule: "tests/no-elapsed-time-assertion",
+    value,
+    use: (r) => `${r}(Date.now() - started).toBeLessThan(5000);\n`,
+  })),
+  ...[
+    { module: "vitest", path: ["assert"] },
+    { module: "vitest", path: ["chai", "assert"] },
+    { module: "node:assert/strict", path: ["ok"] },
+    { module: "node:assert", path: ["strict", "ok"] },
+  ].map((value) => ({
+    rule: "tests/no-elapsed-time-assertion",
+    value,
+    use: (r) => `${r}(Date.now() - started < 5000);\n`,
+  })),
+  ...[
+    { global: "Date", path: ["now"] },
+    { global: "performance", path: ["now"] },
+    { module: "node:perf_hooks", path: ["performance", "now"] },
+  ].map((value) => ({
+    rule: "tests/no-elapsed-time-assertion",
+    value,
+    use: (r) =>
+      `const started = ${r}();\nexpect(${r}() - started).toBeLessThan(5000);\n`,
+  })),
   {
     rule: "tests/no-elapsed-time-assertion",
-    reported: [
-      `const check = expect;\ncheck(Date.now() - started).toBeLessThan(5000);\n`,
-      `const { now } = Date;\nconst started = now();\nexpect(now() - started).toBeLessThan(5000);\n`,
-    ],
-    kept: [
-      `const Date = fakeClock;\nexpect(Date.now() - started).toBeLessThan(5000);\n`,
-    ],
+    value: { global: "Math", path: ["round"] },
+    use: (r) => `expect(${r}(Date.now() - started)).toBeLessThan(5);\n`,
+  },
+  // 정해진 시간 대기·중단·차례 세기.
+  ...[
+    { global: "setTimeout", path: [] },
+    { module: "node:timers", path: ["setTimeout"] },
+  ].map((value) => ({
+    rule: "tests/no-fixed-time-wait",
+    value,
+    use: (r) => `await new Promise((resolve) => ${r}(resolve, 50));\n`,
+  })),
+  ...[
+    { module: "node:timers/promises", path: ["setTimeout"] },
+    { module: "node:timers/promises", path: ["scheduler", "wait"] },
+    { module: "node:timers", path: ["promises", "setTimeout"] },
+  ].map((value) => ({
+    rule: "tests/no-fixed-time-wait",
+    value,
+    use: (r) => `await ${r}(100);\n`,
+  })),
+  {
+    rule: "tests/no-fixed-time-wait",
+    value: { global: "Promise", path: [] },
+    use: (r) => `await new ${r}((resolve) => setTimeout(resolve, 50));\n`,
   },
   {
     rule: "tests/no-fixed-time-wait",
-    reported: [
-      `const later = setTimeout;\nawait new Promise((resolve) => later(resolve, 50));\n`,
-      `const { timeout } = AbortSignal;\nawait expect(server.start(timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
-      `const check = expect;\nawait check(server.start(AbortSignal.timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
-      `import assert from "node:assert/strict";\nconst { rejects } = assert;\nawait rejects(server.start(AbortSignal.timeout(200)), { name: "AbortError" });\n`,
-    ],
-    kept: [
-      `export function sleep(setTimeout) {\n  return new Promise((resolve) => setTimeout(resolve, 50));\n}\n`,
-      `const AbortSignal = fakeSignals;\nawait expect(server.start(AbortSignal.timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
-    ],
+    value: { global: "AbortSignal", path: ["timeout"] },
+    use: (r) =>
+      `await expect(server.start(${r}(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
   },
+  {
+    rule: "tests/no-fixed-time-wait",
+    value: { module: "vitest", path: ["expect"] },
+    use: (r) =>
+      `await ${r}(server.start(AbortSignal.timeout(200))).rejects.toMatchObject({ name: "TimeoutError" });\n`,
+  },
+  {
+    rule: "tests/no-fixed-time-wait",
+    value: { module: "node:assert/strict", path: ["rejects"] },
+    use: (r) =>
+      `await ${r}(server.start(AbortSignal.timeout(200)), { name: "AbortError" });\n`,
+  },
+  ...[
+    { global: "setImmediate", path: [] },
+    { global: "process", path: ["nextTick"] },
+    { module: "node:process", path: ["nextTick"] },
+  ].map((value) => ({
+    rule: "tests/no-fixed-time-wait",
+    value,
+    use: (r) =>
+      `for (let i = 0; i < 5; i++) await new Promise((wake) => ${r}(wake));\n`,
+  })),
+  ...[
+    { module: "node:timers/promises", path: ["setImmediate"] },
+    { module: "node:timers/promises", path: ["scheduler", "yield"] },
+    { global: "Promise", path: ["resolve"] },
+  ].map((value) => ({
+    rule: "tests/no-fixed-time-wait",
+    value,
+    use: (r) => `for (let i = 0; i < 5; i++) await ${r}();\n`,
+  })),
+  // 나중에 기다릴 표시와 그것을 받는 자리(Promise 조합·expect·저장소 도움).
   {
     rule: "tests/no-unawaited-later",
-    reported: [
-      `import * as cleanup from "@babojubot/process/test-cleanup";\nconst later = cleanup.awaitedLater;\nlater(work());\n`,
-    ],
-    kept: [
-      `export function mark(awaitedLater) {\n  awaitedLater(work());\n}\n`,
-    ],
+    value: {
+      module: "@babojubot/process/test-cleanup",
+      path: ["awaitedLater"],
+    },
+    use: (r) => `const p = Promise.resolve(1);\n${r}(p);\n`,
   },
-  {
+  ...[
+    {
+      value: { global: "Promise", path: ["all"] },
+      use: (r) => `await ${r}([exited]);\n`,
+    },
+    {
+      value: { module: "vitest", path: ["expect"] },
+      use: (r) => `await ${r}(exited).resolves.toBe(1);\n`,
+    },
+    {
+      value: { module: "@babojubot/contracts", path: ["settled"] },
+      use: (r) => `await ${r}(exited);\n`,
+    },
+  ].map(({ value, use }) => ({
+    rule: "tests/no-unawaited-later",
+    value,
+    head: `${laterHeadImport}const exited = awaitedLater(work());\n`,
+    use,
+    kept: true,
+  })),
+  // process.env 바꾸기.
+  ...[
+    { global: "process", path: ["env"] },
+    { module: "node:process", path: ["env"] },
+  ].map((value) => ({
     rule: "tests/no-process-env-change",
-    reported: [
-      `const proc = process;\nproc.env.SETTING = "1";\n`,
-      `const { assign } = Object;\nassign(process.env, { SETTING: "1" });\n`,
-    ],
-    kept: [
-      `const process = fakeProcess;\nprocess.env.SETTING = "1";\n`,
-      `const Object = fakeObject;\nObject.assign(process.env, { SETTING: "1" });\n`,
-    ],
-  },
-  {
+    value,
+    use: (r) => `${r}.SETTING = "1";\n`,
+  })),
+  ...[
+    { global: "Object", path: ["assign"] },
+    { global: "Reflect", path: ["set"] },
+  ].map((value) => ({
+    rule: "tests/no-process-env-change",
+    value,
+    use: (r) => `${r}(process.env, "SETTING", "1");\n`,
+  })),
+  // process.kill의 실패 넘기기·finally의 동기 정리·로그만 남기기.
+  ...[
+    { global: "process", path: ["kill"] },
+    { module: "node:process", path: ["kill"] },
+  ].flatMap((value) => [
+    {
+      rule: "tests/no-ignored-kill-error",
+      value,
+      use: (r) =>
+        `try {\n  ${r}(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
+    },
+    {
+      rule: "tests/no-cleanup-in-finally",
+      value,
+      use: (r) =>
+        `try {\n  check();\n} finally {\n  ${r}(pid, "SIGKILL");\n}\n`,
+    },
+  ]),
+  ...[
+    { global: "console", path: ["warn"] },
+    { module: "node:console", path: ["warn"] },
+  ].map((value) => ({
     rule: "tests/no-ignored-kill-error",
-    reported: [
-      `const { kill } = process;\ntry {\n  kill(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
-    ],
-    kept: [
-      `const kill = fakeKill;\ntry {\n  kill(pid, "SIGTERM");\n} catch {\n  /* gone */\n}\n`,
-    ],
-  },
+    value,
+    use: (r) =>
+      `try {\n  process.kill(pid, "SIGKILL");\n} catch (error) {\n  ${r}(error);\n}\n`,
+  })),
+  // 공용 정리 hook·fixture의 정리 연쇄.
+  ...[
+    { module: "vitest", path: ["afterAll"] },
+    { module: "vitest", path: ["afterEach"] },
+    { module: "node:test", path: ["after"] },
+    { module: "node:test", path: ["test", "after"] },
+    { global: "afterAll", path: [] },
+    { module: "@playwright/test", path: ["test", "afterAll"] },
+  ].map((value) => ({
+    rule: "tests/no-skipped-cleanup",
+    value,
+    use: hookCleanups,
+  })),
   {
-    rule: "tests/no-cleanup-in-finally",
-    reported: [
-      `const { kill } = process;\ntry {\n  check();\n} finally {\n  kill(pid, "SIGKILL");\n}\n`,
-    ],
-    kept: [
-      `export function stop(process) {\n  try {\n    check();\n  } finally {\n    process.kill(pid, "SIGKILL");\n  }\n}\n`,
-    ],
+    rule: "tests/no-skipped-cleanup",
+    value: { global: "Promise", path: [] },
+    use: (r) =>
+      `afterEach(async () => {\n  await new ${r}((resolve) => server.close(resolve));\n  await model.close();\n});\n`,
   },
   {
     rule: "tests/no-skipped-cleanup",
-    reported: [
-      `const atEnd = afterAll;\natEnd(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
-      `import { test } from "@playwright/test";\nconst { afterAll: atEnd } = test;\natEnd(async () => {\n  await server.stop();\n  await relays.close();\n});\n`,
-      // fixture를 만드는 extend도 출처로 본다(별칭으로 받아도 같다).
-      `import { test as base } from "@playwright/test";\nconst { extend } = base;\nexport const test = extend({\n  servers: async ({ page }, provide) => {\n    await provide(page);\n    await server.close();\n    await model.close();\n  },\n});\n`,
-      // 같은 이름의 지역 함수는 공용 폴더 지우기가 아니다.
-      `const removeFolder = (dir) => trash(dir);\nafterEach(async () => {\n  await server.close();\n  await removeFolder(root);\n});\n`,
-    ],
-    kept: [
-      `const afterAll = (fn) => fn;\nafterAll(async () => {\n  await t?.close();\n  await model?.close();\n});\n`,
-      // 닫은 뒤 폴더 지우기만 이어지면 통과한다. removeFolder는 이름이 아니라 출처로 본다(다른 이름으로 가져와도 같다).
-      `import { removeFolder as wipe } from "@babojubot/process/remove-folder";\nafterEach(async () => {\n  await server.close();\n  await wipe(root);\n});\n`,
-    ],
+    value: { module: "@playwright/test", path: ["test", "extend"] },
+    use: (r) =>
+      `export const fixtures = ${r}({\n  servers: async ({ page }, provide) => {\n    await provide(page);\n    await server.close();\n    await model.close();\n  },\n});\n`,
   },
+  // 공용 폴더 지우기: 닫은 뒤 지우기만 이어지면 통과하고, 첫 정리로 지우면 뒤 정리를 건너뛸 수 있다.
+  {
+    rule: "tests/no-skipped-cleanup",
+    value: {
+      module: "@babojubot/process/remove-folder",
+      path: ["removeFolder"],
+    },
+    use: (r) =>
+      `afterEach(async () => {\n  await server.close();\n  await ${r}(root);\n});\n`,
+    kept: true,
+  },
+  {
+    rule: "tests/no-skipped-cleanup",
+    value: {
+      module: "@babojubot/process/remove-folder",
+      path: ["removeFolder"],
+    },
+    use: (r) =>
+      `afterAll(async () => {\n  await ${r}(root);\n  await model.close();\n});\n`,
+    local: false,
+    localSkipped:
+      "정리 동사 이름(remove…)으로 알아보는 휴리스틱이 같은 이름의 지역 함수도 정리로 본다(출처 판정은 그 위에 덧붙인다).",
+  },
+  // 서버 닫기의 실패 버리기.
+  ...[
+    { module: "node:http", path: ["createServer"] },
+    { module: "node:tls", path: ["createServer"] },
+    { module: "node:http2", path: ["createSecureServer"] },
+  ].map((value) => ({
+    rule: "tests/no-ignored-close-error",
+    value,
+    use: (r) =>
+      `const server = ${r}();\nawait new Promise((resolve) => server.close(resolve));\n`,
+  })),
   {
     rule: "tests/no-ignored-close-error",
-    reported: [
-      `import http from "node:http";\nconst make = http.createServer;\nconst server = make();\nawait new Promise((resolve) => server.close(resolve));\n`,
-    ],
-    kept: [
-      `const http = { createServer: () => watcher };\nconst server = http.createServer();\nawait new Promise((resolve) => server.close(resolve));\n`,
-    ],
+    value: { module: "node:net", path: ["Server"] },
+    use: (r) =>
+      `const server = new ${r}();\nawait new Promise((resolve) => server.close(resolve));\n`,
   },
-  {
+  // 기대한 실패 표시.
+  ...[
+    { global: "it", path: ["fails"] },
+    { module: "vitest", path: ["it", "fails"] },
+    { module: "vitest", path: ["test", "fails"] },
+    { module: "@playwright/test", path: ["test", "fail"] },
+  ].map((value) => ({
     rule: "tests/no-expected-failure",
-    reported: [
-      // 리뷰의 재현.
-      `const check = it;\ncheck.fails("saves", async () => {\n  await save();\n});\n`,
-      `import { test } from "@playwright/test";\nconst { fail } = test;\nfail("saves", async () => {\n  await save();\n});\n`,
-    ],
-    kept: [
-      `const check = runner;\ncheck.fails("saves", async () => {\n  await save();\n});\n`,
-    ],
+    value,
+    use: (r) => `${r}("saves", async () => {\n  await save();\n});\n`,
+  })),
+  // 시험 사이 상태·직렬 모드, 시험마다 도는 hook의 비우기.
+  ...[
+    { global: "test", path: [] },
+    { module: "vitest", path: ["test"] },
+    { module: "vitest", path: ["it"] },
+    { module: "node:test", path: ["test"] },
+    { module: "node:test", path: ["it"] },
+    { module: "@playwright/test", path: ["test"] },
+  ].map((value) => ({
+    rule: "tests/no-state-between-tests",
+    value,
+    use: shareState,
+  })),
+  {
+    rule: "tests/no-state-between-tests",
+    value: {
+      module: "@playwright/test",
+      path: ["test", "describe", "configure"],
+    },
+    use: (r) => `${r}({ mode: "serial" });\n`,
   },
   {
     rule: "tests/no-state-between-tests",
-    reported: [
-      // 리뷰의 재현.
-      `const check = test;\n${shareState("check")}`,
-      `import { test } from "@playwright/test";\nconst { describe } = test;\ndescribe.configure({ mode: "serial" });\n`,
-      `import { test } from "@playwright/test";\nconst serial = test.describe.serial;\nserial("steps", () => {\n  test("a", () => {});\n});\n`,
-    ],
-    kept: [
-      `const check = (name, fn) => fn();\n${shareState("check")}`,
-      `const describe = { configure: record };\ndescribe.configure({ mode: "serial" });\n`,
-    ],
+    value: { module: "@playwright/test", path: ["test", "describe", "serial"] },
+    use: (r) => `${r}("steps", () => {});\n`,
   },
+  ...[
+    { module: "vitest", path: ["afterEach"] },
+    { module: "@playwright/test", path: ["test", "afterEach"] },
+  ].map((value) => ({
+    rule: "tests/no-state-between-tests",
+    value,
+    use: (r) => `${r}(() => {\n  shared = undefined;\n});\n${shareState("it")}`,
+    kept: true,
+  })),
 ];
 
-test("every test rule that judges by origin catches a const alias and passes a same-named local", async () => {
-  for (const { rule, reported, kept } of originRules) {
-    for (const code of reported)
-      for (const place of testPlaces)
-        assert.ok(
-          (await lint(code, place)).some((m) => m.ruleId === rule),
-          `${place}: ${rule} not reported: ${code}`
-        );
-    for (const code of kept)
-      for (const place of testPlaces)
-        assert.deepEqual(
-          (await lint(code, place)).filter((m) => m.ruleId === rule),
-          [],
-          `${place}: ${rule}: ${code}`
-        );
-  }
-  // 타입 정보로 보는 E2E 규칙도 expect는 출처로 본다.
-  const place = "apps/web/e2e/support/organization.ts";
-  const oneShot = (messages) =>
-    messages.filter((m) => m.ruleId === "tests/no-one-shot-ui-read");
-  assert.ok(
-    oneShot(
-      await lint(
-        `${e2eOnly}const check = expect;\ncheck(await status.isChecked()).toBe(true);\n`,
-        place
-      )
-    ).length > 0,
-    "a const alias of expect not reported"
-  );
-  assert.deepEqual(
-    oneShot(
-      await lint(
-        `${e2eOnly}const expect = record;\nexpect(await status.isChecked()).toBe(true);\n`,
-        place
-      )
-    ),
-    []
-  );
+/** E2E 규칙(타입 정보): 한 번 읽은 화면 상태의 단언. expect와 변환 함수도 출처로 본다. */
+const oneShotCases = [
+  {
+    value: { module: "@playwright/test", path: ["expect"] },
+    use: (r) => `${r}(await status.isChecked()).toBe(true);\n`,
+  },
+  ...["Number", "String", "Boolean"].map((name) => ({
+    value: { global: name, path: [] },
+    use: (r) => `expect(${r}(await status.isChecked())).toBe(true);\n`,
+  })),
+];
+
+test("every test rule that judges by origin sees its tool through every access shape and passes a same-named local", async () => {
+  // 어긋난 사례를 모두 모아 한 번에 보인다(한 규칙의 여러 모양이 함께 깨지는 일이 많다).
+  const wrong = [];
+  const check = async (rule, place, { shape, code, same }, kept) => {
+    const found = (await lint(code, place)).some((m) => m.ruleId === rule);
+    if (found !== (kept ? !same : same))
+      wrong.push(`${rule} ${shape} (${found ? "reported" : "kept"}): ${code}`);
+  };
+  for (const { rule, kept, ...spec } of originCases)
+    for (const generated of accessShapes(spec))
+      await check(
+        rule,
+        "apps/server/test/lint-sample.test.ts",
+        generated,
+        kept
+      );
+  for (const spec of oneShotCases)
+    for (const generated of accessShapes({ ...spec, head: e2eOnly }))
+      await check(
+        "tests/no-one-shot-ui-read",
+        "apps/web/e2e/support/organization.ts",
+        generated,
+        false
+      );
+  assert.deepEqual(wrong, []);
 });
 
 /** awaitedLater는 경로 철자가 아니라 대상 파일(@babojubot/process의 test-cleanup.ts)로 본다(#266 리뷰 SPEC-5). */

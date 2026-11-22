@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ESLint } from "eslint";
+import { accessShapes } from "./lint-access-shapes.mjs";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -960,63 +961,97 @@ test("failures are collected only through attemptAll, attemptEach and combinedFa
   );
 });
 
-// 출처로 판정하는 제품·스크립트 규칙은 모두 같은 두 가지를 지킨다(#266 리뷰 SPEC-7): const 별칭·구조 분해로 받은 것도 잡고, 같은
-// 이름의 지역 값(매개변수)은 통과시킨다. 다른 출처 규칙(sync-command-timeout·no-io-in-unreadable·bounded-command·no-assertion-on-parsed-data)의
-// 같은 시험은 각 규칙의 시험 묶음에 있다.
-test("every product rule that judges by origin catches a const alias and passes a same-named local", async () => {
-  const places = ["apps/server/src/app.ts", "scripts/live/chaos-run.mjs"];
-  const cases = [
-    {
-      rule: launchRule,
-      reported: [
-        `import * as cp from "node:child_process";\nconst launcher = cp;\nlauncher.spawn("x", []);\n`,
-        `import * as cp from "node:child_process";\nconst { spawn } = cp;\nspawn("x", []);\n`,
-      ],
-      kept: [
-        `export function run(cp) {\n  const { spawn } = cp;\n  spawn("x", []);\n}\n`,
-      ],
+// 출처로 판정하는 제품·스크립트 규칙은 모두 같은 두 가지를 지킨다(#266 리뷰 SPEC-7·8·9): 같은 값에 닿는 접근 모양이 달라도 같은 판정,
+// 같은 이름의 지역 값에는 반대 판정. 사례는 정식 이름으로 하나만 적고 모양은 scripts/lint-access-shapes.mjs가 만든다. `kept`면 정식
+// 사례가 통과하는 사례다. 가져오는 자리를 보는 규칙(package-entry-only·package-import-scope·launch-boundary·no-group-stop-import·
+// no-undeclared-import)은 값이 아니라 가져오는 경로로 판정해 여기에 넣지 않는다(불러오는 함수의 모양은 scripts/eslint-imports.test.mjs).
+const product = "apps/server/src/app.ts";
+const productOriginCases = [
+  {
+    rule: "product/sync-command-timeout",
+    value: { module: "node:child_process", path: ["execFileSync"] },
+    use: (r) => `export const out = () => ${r}("ps", []);\n`,
+  },
+  {
+    rule: "product/no-io-in-unreadable",
+    value: { module: "@babojubot/contracts", path: ["orIfUnreadable"] },
+    head: `import { readFileSync } from "node:fs";\n`,
+    use: (r) =>
+      `export const read = (file) => ${r}(() => readFileSync(file, "utf8"), undefined);\n`,
+  },
+  ...[
+    { module: "node:child_process", path: ["spawn"] },
+    { module: "cross-spawn", path: ["default"] },
+  ].map((value) => ({
+    rule: "product/no-direct-launch",
+    value,
+    use: (r) => `${r}("x", []);\n`,
+  })),
+  {
+    rule: "product/bounded-command",
+    place: "packages/process/src/job-object.ts",
+    value: { module: "node:child_process", path: ["execFile"] },
+    use: (r) => `${r}("ps", [], () => {});\n`,
+  },
+  {
+    rule: "product/no-assertion-on-parsed-data",
+    value: { global: "JSON", path: ["parse"] },
+    use: (r) =>
+      `type Row = { id: number };\nexport const read = (text: string) => ${r}(text) as Row;\n`,
+  },
+  {
+    rule: "product/no-failure-collecting",
+    value: { global: "AggregateError", path: [] },
+    use: (r) =>
+      `export function fail(errors) {\n  throw new ${r}(errors, "failed");\n}\n`,
+  },
+  {
+    rule: "product/no-failure-collecting",
+    value: { module: "@babojubot/contracts", path: ["continueAfterFailure"] },
+    use: (r) =>
+      `export function stop(pids, kill, failures) {\n  for (const pid of pids)\n    ${r}(\n      () => kill(pid),\n      (error) => failures.push(error)\n    );\n}\n`,
+  },
+  {
+    rule: "product/no-cleanup-chain",
+    value: { global: "process", path: ["kill"] },
+    use: (r) =>
+      `export async function run(work, pids) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) ${r}(pid, "SIGKILL");\n  }\n}\n`,
+  },
+  // 공용 폴더 지우기: 끈 뒤 지우기만 이어지면 통과하고, 첫 정리로 지우면 뒤 정리를 건너뛸 수 있다.
+  {
+    rule: "product/no-cleanup-chain",
+    value: {
+      module: "@babojubot/process/remove-folder",
+      path: ["removeFolder"],
     },
-    {
-      rule: collectingRule,
-      reported: [
-        `const Failures = AggregateError;\nexport function fail(errors) {\n  throw new Failures(errors, "failed");\n}\n`,
-      ],
-      kept: [
-        `export function fail(errors, AggregateError) {\n  throw new AggregateError(errors, "failed");\n}\n`,
-      ],
+    use: (r) =>
+      `export async function run(child, dir, killProgram) {\n  try {\n    await child.done;\n  } finally {\n    await killProgram(child);\n    await ${r}(dir);\n  }\n}\n`,
+    kept: true,
+  },
+  {
+    rule: "product/no-cleanup-chain",
+    value: {
+      module: "@babojubot/process/remove-folder",
+      path: ["removeFolder"],
     },
-    {
-      // contracts의 continueAfterFailure는 이름이 아니라 출처로 본다(다른 이름으로 가져와도, 같은 이름의 지역 함수는 아님).
-      rule: collectingRule,
-      reported: [
-        `import { continueAfterFailure as keepGoing } from "@babojubot/contracts";\nexport function stop(pids, kill, failures) {\n  for (const pid of pids)\n    keepGoing(\n      () => kill(pid),\n      (error) => failures.push(error)\n    );\n}\n`,
-      ],
-      kept: [
-        `const continueAfterFailure = (work, report) => report(work());\nexport function stop(pids, kill, results) {\n  for (const pid of pids)\n    continueAfterFailure(\n      () => kill(pid),\n      (outcome) => results.push(outcome)\n    );\n}\n`,
-      ],
-    },
-    {
-      rule: chainRule,
-      reported: [
-        `const { kill } = process;\nexport async function run(work, pids) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) kill(pid, "SIGKILL");\n  }\n}\n`,
-      ],
-      kept: [
-        `export async function run(work, pids, kill) {\n  try {\n    await work();\n  } finally {\n    for (const pid of pids) kill(pid, "SIGKILL");\n  }\n}\n`,
-      ],
-    },
-  ];
-  for (const { rule, reported, kept } of cases)
-    for (const place of places) {
-      for (const code of reported)
-        assert.ok(
-          (await lint(code, place, rule)).length > 0,
-          `${place}: ${rule} not reported: ${code}`
-        );
-      for (const code of kept)
-        assert.deepEqual(
-          await lint(code, place, rule),
-          [],
-          `${place}: ${rule}: ${code}`
+    use: (r) =>
+      `export async function run(dir, db) {\n  try {\n    await db.query();\n  } finally {\n    await ${r}(dir);\n    await db.close();\n  }\n}\n`,
+    local: false,
+    localSkipped:
+      "정리 동사 이름(remove…)으로 알아보는 휴리스틱이 같은 이름의 지역 함수도 정리로 본다(출처 판정은 그 위에 덧붙인다).",
+  },
+];
+
+test("every product rule that judges by origin sees its value through every access shape and passes a same-named local", async () => {
+  // 어긋난 사례를 모두 모아 한 번에 보인다.
+  const wrong = [];
+  for (const { rule, place = product, kept, ...spec } of productOriginCases)
+    for (const { shape, code, same } of accessShapes(spec)) {
+      const found = (await lint(code, place, [rule])).length > 0;
+      if (found !== (kept ? !same : same))
+        wrong.push(
+          `${rule} ${shape} (${found ? "reported" : "kept"}): ${code}`
         );
     }
+  assert.deepEqual(wrong, []);
 });
