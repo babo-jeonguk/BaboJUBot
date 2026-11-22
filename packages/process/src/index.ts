@@ -3,6 +3,7 @@
 export {
   launchTree,
   prepareJobObjectLauncher,
+  prepareSupervisor,
   requireJobObject,
   runTree,
   TreeLaunchRefused,

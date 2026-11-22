@@ -18,6 +18,7 @@ import { processStartTicks, stopLeaseHolders, withLease } from "./lease.ts";
 import { interruptProcessGroup, stopProcessGroup } from "./group.ts";
 
 export { prepareJobObjectLauncher } from "./job-object.ts";
+export { prepareSupervisor } from "./supervisor.ts";
 
 /**
  * 공용 실행(#262). 프로그램을 띄우면서, 그렇게 띄운 프로그램과 그 자손 전체(트리)를 끄는 `stop()`을 함께 돌려준다.

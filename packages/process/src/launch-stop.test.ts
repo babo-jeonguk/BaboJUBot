@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   afterAll,
@@ -7,7 +7,6 @@ import {
   describe,
   expect,
   it,
-  onTestFinished,
   vi,
 } from "vitest";
 import { killUnlessGone } from "./test-cleanup.ts";
@@ -15,28 +14,14 @@ import { launchTree, runTree } from "./launch.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { testFolders } from "./test-folders.ts";
 
-// 끄기가 실패하는 길(#263 외부 리뷰 1회차 S2·SP1·SP2). 실제 프로세스로는 그룹 끄기 실패, SIGKILL 뒤에도 끝나지 않는 대표,
-// 시작 응답 전에 멈춘 묶음 실행기를 만들 수 없어, 그 부분만 대역으로 바꾸고 나머지는 실제 프로세스로 본다.
+// 끄기가 실패하는 길(#263 외부 리뷰 1회차 S2·SP1·SP2). 실제 감독 실행기로는 그룹을 끄지 못한 답, 시작 응답 전에 멈춘 실행기를 만들 수
+// 없어, 실행기만 같은 약속으로 답하는 가짜(Node.js 프로그램)로 바꾸고 나머지는 실제 프로세스로 본다(#268).
 const fault = vi.hoisted(() => ({
-  /** 그룹 끄기가 끝을 확인하지 못하고 던진다. */
-  group: false,
   /** 표식 정리가 아무것도 끄지 않고 대표가 남았다고 답한다. */
   marks: false,
-  /** Windows 묶음 실행기 대신 시작 응답을 쓰지 않고 멈춘 프로그램을 띄운다. */
-  silentLauncher: undefined as string | undefined,
+  /** 진짜 감독 실행기 대신 이 Node.js 프로그램을 띄운다. 프로그램은 띄울 명령을 JSON 인수 하나로 받는다. */
+  supervisor: undefined as string | undefined,
 }));
-vi.mock("./group.ts", async (original) => {
-  const real = await original<typeof import("./group.ts")>();
-  return {
-    ...real,
-    stopProcessGroup: async (
-      ...args: Parameters<typeof real.stopProcessGroup>
-    ) => {
-      if (fault.group) throw new Error("Process group did not stop");
-      return real.stopProcessGroup(...args);
-    },
-  };
-});
 vi.mock("./lease.ts", async (original) => {
   const real = await original<typeof import("./lease.ts")>();
   return {
@@ -49,24 +34,22 @@ vi.mock("./lease.ts", async (original) => {
         : real.stopLeaseHolders(...args),
   };
 });
-vi.mock("./job-object.ts", async (original) => {
-  const real = await original<typeof import("./job-object.ts")>();
+vi.mock("./supervisor.ts", async (original) => {
+  const real = await original<typeof import("./supervisor.ts")>();
   return {
     ...real,
-    jobObjectLaunch: (...args: Parameters<typeof real.jobObjectLaunch>) =>
-      fault.silentLauncher === undefined
-        ? real.jobObjectLaunch(...args)
-        : {
-            kind: "launch" as const,
-            launch: {
-              file: process.execPath,
-              args: ["-e", fault.silentLauncher],
-              options: {
-                argv0: process.execPath,
-                windowsVerbatimArguments: false,
-              },
-            },
-          },
+    supervisorLaunch: (...args: Parameters<typeof real.supervisorLaunch>) => {
+      if (fault.supervisor === undefined) return real.supervisorLaunch(...args);
+      const [command, rest] = args;
+      return {
+        kind: "launch" as const,
+        launch: {
+          file: process.execPath,
+          args: [fault.supervisor, JSON.stringify([...command, ...rest])],
+          options: {},
+        },
+      };
+    },
   };
 });
 
@@ -79,9 +62,8 @@ afterAll(async () => {
   await lifelines.close();
 });
 afterEach(() => {
-  fault.group = false;
   fault.marks = false;
-  fault.silentLauncher = undefined;
+  fault.supervisor = undefined;
 });
 let count = 0;
 const unique = (label: string) => `${label}-${++count}`;
@@ -106,14 +88,41 @@ async function holder(label: string, body = keep) {
   };
 }
 
+/**
+ * 프로그램을 띄우고 시작을 알리지만, 끄기 요청에는 그룹이 끝나지 않았다고 답하고 아무것도 끄지 않은 채 끝나는 가짜 실행기. 띄운
+ * 프로그램은 표식(환경)을 물려받는다. Linux·macOS 제어 통로는 넷째 표준 핸들의 소켓이다.
+ */
+const stubbornSupervisor = `
+  const net = require("node:net");
+  const control = new net.Socket({ fd: 3 });
+  const [command, ...args] = JSON.parse(process.argv[2]);
+  const leader = require("node:child_process").spawn(command, args, { stdio: "ignore", detached: true });
+  leader.unref();
+  control.write("babojubot-supervisor 1\\nok " + leader.pid + "\\n");
+  let received = "";
+  control.on("data", (chunk) => {
+    received += chunk;
+    if (received.includes("stop")) control.end("left: 1 (the process group did not end)\\n", () => process.exit(1));
+  });
+  control.on("end", () => process.exit(1));
+`;
+
+async function fakeSupervisor(body: string) {
+  const folder = await folders.make("babojubot-fake-supervisor-");
+  const file = path.join(folder, "supervisor.cjs");
+  await writeFile(file, body);
+  return file;
+}
+
 describe.skipIf(process.platform === "win32")(
   "stopping a tree on Linux and macOS",
   () => {
-    // S2: 그룹 끄기와 표식 정리는 서로 독립이다. 그룹 끄기가 실패해도 새 세션으로 나간 자손을 표식으로 끄고, 실패는 알린다.
-    it("still stops what carries the marker when the group stop fails", async () => {
+    // S2: 그룹 끄기(감독 실행기)와 표식 정리는 서로 독립이다. 실행기가 그룹을 끄지 못했다고 답해도 새 세션으로 나간 자손과 대표를
+    // 표식으로 끄고, 실패는 알린다.
+    it("still stops what carries the marker when the supervisor could not stop the group", async () => {
       const leader = await holder("leader");
       const moved = await holder("moved");
-      fault.group = true;
+      fault.supervisor = await fakeSupervisor(stubbornSupervisor);
       const tree = launchTree({
         command: [
           process.execPath,
@@ -127,16 +136,16 @@ describe.skipIf(process.platform === "win32")(
       });
       await lifelines.connected(leader.name);
       await lifelines.connected(moved.name);
-      await expect(tree.stop()).rejects.toThrow(/process group/);
+      await expect(tree.stop()).rejects.toThrow(/process group did not end/);
       await lifelines.closed(moved.name);
       await lifelines.closed(leader.name);
     }, 60_000);
 
-    // SP1: 끄기를 시작한 뒤의 끝은 끄기의 결과로 정한다. 대표가 SIGKILL 뒤에도 끝나지 않으면 끄기는 상한 뒤 원인과 함께 실패하고,
-    // 그 실패로 끝나야 한다. 대표의 끝만 기다리면 끝나지 않는다.
+    // SP1: 끄기를 시작한 뒤의 끝은 끄기의 결과로 정한다. 트리가 끝나지 않으면 끄기는 원인과 함께 실패하고, 그 실패로 끝나야 한다.
+    // 대표의 끝만 기다리면 끝나지 않는다.
     it("ends a run at its limit with the stop failure when the leader does not end", async () => {
       const leader = await holder("stuck-run");
-      fault.group = true;
+      fault.supervisor = await fakeSupervisor(stubbornSupervisor);
       fault.marks = true;
       await expect(
         runTree({
@@ -148,37 +157,26 @@ describe.skipIf(process.platform === "win32")(
           maxOutputBytes: 1024,
           overflow: "stop",
         })
-      ).rejects.toThrow(/process group|marker/);
+      ).rejects.toThrow(/process group did not end|marker/);
     }, 60_000);
   }
 );
 
-// SP2: 끄기는 시작 응답을 상한 없이 기다리지 않는다. 시작 응답 전에 멈춘 묶음 실행기는 그 프로세스를 끄고 끝을 확인한 뒤, 묶음의 끝을
-// 확인하지 못했다는 원인과 함께 실패한다. Windows 길을 대역 실행기(시작 응답을 쓰지 않는 Node 프로그램)로 본다.
-describe("stopping a tree whose launcher never reports its start", () => {
-  it("ends the launcher and fails with the cause within its limit", async () => {
-    const launcher = await holder("silent-launcher");
-    fault.silentLauncher = launcher.script;
-    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { value: "win32" });
-    let tree: ReturnType<typeof launchTree>;
-    try {
-      tree = launchTree({
-        command: [process.execPath],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        stdio: ["ignore", "ignore", "ignore"],
-      });
-    } finally {
-      Object.defineProperty(process, "platform", platform);
-    }
-    await lifelines.connected(launcher.name);
-    Object.defineProperty(process, "platform", { value: "win32" });
-    onTestFinished(() => {
-      Object.defineProperty(process, "platform", platform);
+// SP2: 끄기는 시작 응답을 상한 없이 기다리지 않는다. 시작 응답 전에 멈춘 감독 실행기는 그 프로세스를 끄고 끝을 확인한 뒤, 트리의 끝을
+// 확인하지 못했다는 원인과 함께 실패한다. 세 OS가 같은 길이다.
+describe("stopping a tree whose supervisor never reports its start", () => {
+  it("ends the supervisor and fails with the cause within its limit", async () => {
+    const silent = await holder("silent-supervisor");
+    fault.supervisor = await fakeSupervisor(silent.script);
+    const tree = launchTree({
+      command: [process.execPath],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      stdio: ["ignore", "ignore", "ignore"],
     });
+    await lifelines.connected(silent.name);
     await expect(tree.stop()).rejects.toThrow(/did not report its start/);
-    await lifelines.closed(launcher.name);
+    await lifelines.closed(silent.name);
   }, 60_000);
 });
