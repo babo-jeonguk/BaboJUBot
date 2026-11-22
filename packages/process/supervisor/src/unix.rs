@@ -215,13 +215,18 @@ impl Leader {
 
     fn signal_group(&self, signal: libc::c_int) -> Result<(), String> {
         // SAFETY: killpg has no memory effects. The group id is the unreaped leader's id, so it is still this tree's group.
-        if unsafe { libc::killpg(self.pid, signal) } == 0 || errno() == libc::ESRCH {
+        if unsafe { libc::killpg(self.pid, signal) } == 0 {
             return Ok(());
         }
-        Err(format!(
-            "unknown (the process group could not be signalled: {})",
-            io::Error::last_os_error()
-        ))
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(()),
+            // Darwin answers EPERM when the group's only members are zombies (the unreaped program): nothing is left to signal.
+            Some(libc::EPERM) if live_group_members(self.pid).is_ok_and(|live| live == 0) => Ok(()),
+            _ => Err(format!(
+                "unknown (the process group could not be signalled: {error})"
+            )),
+        }
     }
 
     /// What still runs of the tree: the group's live members and, on Linux, the orphans outside the group that this supervisor took in.
@@ -233,6 +238,10 @@ impl Leader {
 
     fn signal_tree(&self, signal: libc::c_int) -> Result<(), String> {
         self.signal_group(signal)?;
+        self.signal_orphans(signal)
+    }
+
+    fn signal_orphans(&self, signal: libc::c_int) -> Result<(), String> {
         for orphan in orphans_outside(self.pid)? {
             // SAFETY: kill has no memory effects. The orphan is this supervisor's unreaped child, so its id is still that process's.
             if unsafe { libc::kill(orphan, signal) } != 0 && errno() != libc::ESRCH {
@@ -245,8 +254,9 @@ impl Leader {
         Ok(())
     }
 
-    /// Waits until nothing of the tree runs, or until `limit`. Gives how many are left. `repeat` is sent again on every look, so it
-    /// also reaches orphans taken in during the wait (a program's children are taken in when it ends).
+    /// Waits until nothing of the tree runs, or until `limit`. Gives how many are left. `repeat` is sent again on every look to the
+    /// orphans outside the group, so it also reaches those taken in during the wait (a program's children are taken in when it
+    /// ends). The group got its signal already, and what is in it cannot leave a group being killed.
     fn wait_until_empty(
         &self,
         limit: Duration,
@@ -259,7 +269,7 @@ impl Leader {
                 return Ok(left);
             }
             if let Some(signal) = repeat {
-                self.signal_tree(signal)?;
+                self.signal_orphans(signal)?;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
