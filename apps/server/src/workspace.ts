@@ -1,13 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  open,
-  realpath,
-  rename,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   artifactFileMaxBytes,
@@ -25,6 +17,7 @@ import {
   recordWorkspaceIdentity,
   type Database,
 } from "@babojubot/db";
+import { openRegularFile } from "@babojubot/files";
 import { runTree } from "@babojubot/process";
 
 const identityFile = "workspace-identity.json";
@@ -514,30 +507,22 @@ export class Workspaces {
 }
 
 /**
- * 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. 종류·크기·내용을 한 번 연 파일 하나에서
- * 보므로, 확인한 뒤 그 경로에 다른 것이 들어와도 연 파일의 내용으로 판정한다. POSIX에서는 `O_NOFOLLOW`로 링크를 열 때부터
- * 거절하고, `O_NONBLOCK`으로 FIFO를 열 때 멈추지 않는다. 열지 못하면 그 자리를 `unopenedIdentity`가 가린다.
+ * 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. 표식은 `@babojubot/files`의
+ * `openRegularFile`로 한 번 열고, 그 handle의 종류·크기·내용으로 판정한다. 열기가 던진 오류(위 칸이 폴더가 아님·위 폴더
+ * 순환·권한 등)는 "표식을 읽을 수 없습니다(코드)"로 알린다.
  */
 async function readIdentity(file: string) {
-  let handle: Awaited<ReturnType<typeof open>>;
+  let opened;
   try {
-    handle = await open(
-      file,
-      constants.O_RDONLY |
-        (constants.O_NOFOLLOW ?? 0) |
-        (constants.O_NONBLOCK ?? 0)
-    );
+    opened = await openRegularFile(file);
   } catch (e) {
-    return await unopenedIdentity(file, e);
+    throw identityBlocked("읽을", file, e);
   }
+  if (opened === "missing") return undefined;
+  if (opened === "not-regular") return null;
+  const { handle, info } = opened;
   try {
-    const info = await handle.stat({ bigint: true });
-    if (!info.isFile() || info.size > BigInt(identityMaxBytes)) return null;
-    // Windows에는 O_NOFOLLOW가 없어 열기가 링크를 따라간다. 경로가 연 파일 자신을 가리키는지만 다시 확인해 링크를 거절한다.
-    if (constants.O_NOFOLLOW === undefined) {
-      const entry = await lstat(file, { bigint: true });
-      if (entry.dev !== info.dev || entry.ino !== info.ino) return null;
-    }
+    if (info.size > BigInt(identityMaxBytes)) return null;
     const buffer = Buffer.alloc(identityMaxBytes + 1);
     let length = 0;
     while (length < buffer.length) {
@@ -572,23 +557,6 @@ async function readIdentity(file: string) {
   }
 }
 
-/**
- * 열지 못한 표식 자리를 링크를 따라가지 않고 본다. 열기 오류 코드만으로는 경로 항목을 알 수 없다: 링크를 따라 여는 Windows에서
- * 대상 없는 링크도 ENOENT이고, 위 폴더의 링크 순환도 `O_NOFOLLOW`의 링크 거절과 같은 ELOOP이다. 정말 없으면 `undefined`,
- * 일반 파일이 아닌 항목(링크·폴더·특수 파일)이면 `null`, 그 밖에는 열기 오류를 그대로 알린다. 내용은 읽지 않으므로 본 뒤 바뀌어도
- * 쓰는 것이 없다.
- */
-async function unopenedIdentity(file: string, openError: unknown) {
-  let entry;
-  try {
-    entry = await lstat(file);
-  } catch (e) {
-    if (failureCode(e) === "ENOENT") return undefined;
-    throw identityBlocked("읽을", file, openError);
-  }
-  if (!entry.isFile()) return null;
-  throw identityBlocked("읽을", file, openError);
-}
 async function exists(target: string) {
   try {
     await lstat(target);
