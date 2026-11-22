@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -266,20 +272,176 @@ test("passes a state value written as a string in the file", async () => {
   );
 });
 
-test("finds dotted names whole or piece by piece, private names and call notations", async () => {
-  const dispatcher =
-    "class RunDispatcher {\n  #settle() {}\n  handled() {}\n}\nhub.publish('message.created');\n";
+test("reads dotted names as paths of classes, interfaces, object constants, type literals and enums", async () => {
+  const dispatcher = [
+    "class RunDispatcher {",
+    "  #settle() {}",
+    "  handled() {}",
+    "}",
+    "interface RunningServer { kickHandled(): void }",
+    "export const queryKeys = { overview: ['overview'], nested: { deep: 1 } } as const;",
+    "type Options = { clock: { now(): number } };",
+    "enum Stage { Planning }",
+    "const hub = new EventHub();",
+    "hub.publish('message.created');",
+  ].join("\n");
   const problems = await problemsOf({
     "apps/server/src/dispatcher.ts": dispatcher,
     [area]: table([
       "깨우기",
-      "server/dispatcher.ts `RunDispatcher.handled`·`#settle`·`handled()`·`message.created`·`hub.publish`·`RunDispatcher.kick`",
+      "server/dispatcher.ts `RunDispatcher.handled`·`#settle`·`handled()`·`RunningServer.kickHandled`·`queryKeys.overview`·`queryKeys.nested.deep`·`Options.clock.now`·`Stage.Planning`·`message.created`·`hub.publish`·`RunDispatcher.kick`",
       "",
     ]),
   });
   assert.deepEqual(problems, [
+    `${area}:5: 없는 이름 \`hub.publish\` — 이 줄이 가리키는 파일: apps/server/src/dispatcher.ts`,
     `${area}:5: 없는 이름 \`RunDispatcher.kick\` — 이 줄이 가리키는 파일: apps/server/src/dispatcher.ts`,
   ]);
+});
+
+test("fails a name whose definition is gone though a comment or another word still holds it", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      "packages/core/src/run.ts": [
+        "// planRunStart는 planRun으로 합쳤다.",
+        "/** planRunBegin도 없다. */",
+        "export function planRun() { return 'planRunStart was here'; }",
+      ].join("\n"),
+      [area]: table([
+        "실행 시작",
+        "core/run.ts `planRunStart`·`planRunBegin`·`planRun`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 없는 이름 \`planRunStart\` — 이 줄이 가리키는 파일: packages/core/src/run.ts`,
+      `${area}:5: 없는 이름 \`planRunBegin\` — 이 줄이 가리키는 파일: packages/core/src/run.ts`,
+    ]
+  );
+});
+
+test("fails a name the file only imports or calls; the defining file must be on the line", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      "packages/db/src/runs.ts": "export async function claimNextRun() {}\n",
+      "apps/server/src/dispatcher.ts":
+        'import { claimNextRun } from "@babojubot/db";\nawait claimNextRun();\n',
+      [area]: table(
+        ["깨우기", "server/dispatcher.ts `claimNextRun`", ""],
+        ["깨우기", "server/dispatcher.ts, db/runs.ts `claimNextRun`", ""]
+      ),
+    }),
+    [
+      `${area}:5: 없는 이름 \`claimNextRun\` — 이 줄이 가리키는 파일: apps/server/src/dispatcher.ts`,
+    ]
+  );
+});
+
+test("accepts declarations of every kind, exported or not, in TypeScript and JavaScript files", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      "packages/core/src/kinds.ts": [
+        "function localPlan() {}",
+        "export class Planner { readonly limit = 1; constructor(private readonly clock: Clock) {} get size() { return 1; } }",
+        "interface Clock { now(): number }",
+        "export type Choice = 'a' | 'b';",
+        "const { first, second: renamed } = pair;",
+        "enum Stage { Planning, Done }",
+        "export { localPlan as exportedPlan };",
+        "const handlers = { onStop, 'kebab-key': 1 };",
+      ].join("\n"),
+      "scripts/tool.mjs":
+        "export const toolName = 'x';\nfunction helper() {}\n",
+      [area]: table(
+        [
+          "종류",
+          "core/kinds.ts `localPlan`·`Planner`·`limit`·`clock`·`size`·`Clock`·`now`·`Choice`·`first`·`renamed`·`Stage`·`Done`·`exportedPlan`·`onStop`·`kebab-key`",
+          "",
+        ],
+        ["스크립트", "scripts/tool.mjs `toolName`·`helper`", ""]
+      ),
+    }),
+    []
+  );
+});
+
+test("takes an environment variable's read site as its definition, not other property reads", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      "apps/server/src/main.ts": [
+        "const providers = process.env.BABOJUBOT_PROVIDERS;",
+        "const fake = env.BABOJUBOT_FAKE_PROVIDERS;",
+        "const other = options.BABOJUBOT_OTHER;",
+      ].join("\n"),
+      [area]: table([
+        "설정",
+        "server/main.ts `BABOJUBOT_PROVIDERS`·`BABOJUBOT_FAKE_PROVIDERS`·`BABOJUBOT_OTHER`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 없는 이름 \`BABOJUBOT_OTHER\` — 이 줄이 가리키는 파일: apps/server/src/main.ts`,
+    ]
+  );
+});
+
+test("reads JSON and YAML keys and values, and other text files without their comments", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      "harness/roles/lead/role.json": JSON.stringify({
+        heartbeatMinutes: 30,
+        skills: ["planning"],
+      }),
+      ".github/workflows/scaffold.yml":
+        "jobs:\n  test-windows:\n    name: windows # test-gone\n",
+      "apps/web/src/index.css":
+        "/* skip-gone */\n@media (prefers-reduced-motion: reduce) { .skip-link { color: red; } }\n",
+      [area]: table(
+        ["Role", "roles/lead/role.json `heartbeatMinutes`·`planning`", ""],
+        ["CI", "scaffold.yml `test-windows`·`windows`·`test-gone`", ""],
+        [
+          "화면",
+          "web/index.css `prefers-reduced-motion`·`skip-link`·`skip-gone`",
+          "",
+        ]
+      ),
+    }),
+    [
+      `${area}:6: 없는 이름 \`test-gone\` — 이 줄이 가리키는 파일: .github/workflows/scaffold.yml`,
+      `${area}:7: 없는 이름 \`skip-gone\` — 이 줄이 가리키는 파일: apps/web/src/index.css`,
+    ]
+  );
+});
+
+test("takes test names only from describe, it and test titles", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      "apps/server/test/isolation.test.ts": [
+        "// isolated runs used to be here",
+        "const label = 'stale runs';",
+        'describe.skipIf(!available)("isolated runs on a real Docker engine", () => {',
+        '  it("keeps the relay", () => {});',
+        '  test.describe("container mounts", () => {});',
+        "});",
+      ].join("\n"),
+      [area]: table(
+        [
+          "격리",
+          "",
+          "[서버](../../../apps/server/test/isolation.test.ts) `isolated runs on…`·`keeps the relay`·`container mounts`",
+        ],
+        [
+          "격리",
+          "",
+          "[서버](../../../apps/server/test/isolation.test.ts) `isolated runs`·`stale runs`",
+        ]
+      ),
+    }),
+    [
+      `${area}:6: 없는 시험 이름 \`isolated runs\` — 이 줄이 가리키는 시험 파일: apps/server/test/isolation.test.ts`,
+      `${area}:6: 없는 시험 이름 \`stale runs\` — 이 줄이 가리키는 시험 파일: apps/server/test/isolation.test.ts`,
+    ]
+  );
 });
 
 test("matches names as whole words", async () => {
@@ -417,8 +579,14 @@ test("the command checks Git's file list and fails with the problems", async () 
       mkdirSync(path.dirname(path.join(fixture, script)), { recursive: true });
       copyFileSync(path.join(repository, script), path.join(fixture, script));
     }
+    // 복사한 검사기가 저장소의 typescript·yaml을 가져가도록 node_modules를 잇는다.
+    symlinkSync(
+      path.join(repository, "node_modules"),
+      path.join(fixture, "node_modules"),
+      "junction"
+    );
     writeFiles(fixture, {
-      ".gitignore": ".worktrees/\n",
+      ".gitignore": ".worktrees/\nnode_modules\n",
       ...core,
       // Git이 무시하는 worktree의 같은 이름은 찾은 것으로 치지 않는다.
       ".worktrees/other/packages/db/src/runs.ts":
