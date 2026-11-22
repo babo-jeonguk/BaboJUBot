@@ -147,12 +147,21 @@ test("a file gets the same rules in every format", async () => {
   const { files, rules: compilerChecked } = tseslint.configs.eslintRecommended;
   // 자리마다 `.ts`와 다른 형식과 그 규칙을 모은다.
   const gaps = [];
-  for (const place of [
+  // 위 자리 목록에 더해 workspace 패키지마다 제품·시험 자리를 둔다(새 패키지도 대조한다).
+  const packageFolders = globSync("{apps,packages}/*/package.json", {
+    cwd: repository,
+  }).map((file) => path.dirname(file).replaceAll("\\", "/"));
+  const places = new Set([
     ...testPlaces,
     ...scriptPlaces,
     ...runnerConfigPlaces,
     ...productPlaces,
-  ]) {
+    ...packageFolders.flatMap((folder) => [
+      `${folder}/src/sample`,
+      `${folder}/src/sample.test`,
+    ]),
+  ]);
+  for (const place of places) {
     const base = await rulesOf(`${place}.ts`);
     const formats = new Set();
     const rules = new Set();
@@ -355,10 +364,19 @@ test("the product and test type checks split files the way the test scope does",
   }).map((file) => path.dirname(file).replaceAll("\\", "/"));
   assert.ok(packages.length > 0, "no tsconfig.test.json found");
   assert.deepEqual(splitGaps(repository, packages), []);
-  const samples = [...testPlaces, ...runnerConfigPlaces, ...productPlaces]
-    .filter((place) =>
-      packages.some((folder) => place.startsWith(`${folder}/`))
-    )
+  // 패키지마다 제품·시험·러너 설정 자리를 두어(새 패키지도 표본을 받는다) 위의 자리 목록과 함께 쓴다.
+  const samples = [
+    ...packages.flatMap((folder) => [
+      `${folder}/src/sample`,
+      `${folder}/src/sample.test`,
+      `${folder}/src/sample.spec`,
+      `${folder}/vitest.sample.config`,
+    ]),
+    ...[...testPlaces, ...runnerConfigPlaces, ...productPlaces].filter(
+      (place) => packages.some((folder) => place.startsWith(`${folder}/`))
+    ),
+  ]
+    .filter((place, index, all) => all.indexOf(place) === index)
     .flatMap((place) =>
       runnerFormats.map(
         (format) => `${place.replace("sample", `sample-${format}`)}.${format}`
