@@ -3,10 +3,11 @@
 // 다른 값이어야 한다. 모듈 형식마다 대표 하나씩: Node 내장, module.exports가 함수인 CJS(cross-spawn), ESM 전용(vitest), CJS와 ESM
 // 입구를 함께 둔 패키지(@playwright/test), 저장소 패키지.
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { accessShapes, skippedShapes } from "./lint-access-shapes.mjs";
 
 const repository = path.resolve(import.meta.dirname, "..");
@@ -52,7 +53,7 @@ const values = [
 // 같은 이름의 지역 값이 가리킬 값을 둔다.
 const prelude = `import { createRequire as makeRequire } from "node:module";\nconst require = makeRequire(import.meta.url);\nconst fakeValue = Symbol("fake");\n`;
 
-test("every access shape the generator makes reaches the same value as the canonical name", async () => {
+test("every access shape the generator makes reaches the same value as the canonical name", async (t) => {
   const wrong = [];
   for (const entry of values) {
     const { value, home } = entry;
@@ -63,42 +64,42 @@ test("every access shape the generator makes reaches the same value as the canon
       `.access-shapes-${process.pid}`
     );
     mkdirSync(folder, { recursive: true });
-    try {
-      const cases = accessShapes({
-        value,
-        use: (ref) => `export const value = ${ref};\n`,
+    t.after(() => removeFolder(folder));
+    const cases = accessShapes({
+      value,
+      use: (ref) => `export const value = ${ref};\n`,
+    });
+    const evaluated = [];
+    for (const [index, { shape, code, same }] of cases.entries()) {
+      // 같은 경로를 다시 쓰면 ESM 캐시가 앞 값의 모듈을 돌려주므로 값마다 다른 파일 이름을 쓴다.
+      const file = path.join(
+        folder,
+        `case-${values.indexOf(entry)}-${index}.mjs`
+      );
+      writeFileSync(file, `${prelude}${code}`);
+      // 평가 결과는 값과 오류를 같은 모양의 값으로 남긴다.
+      evaluated.push({
+        shape,
+        same,
+        ...(await import(pathToFileURL(file).href).then(
+          (loaded) => ({ value: loaded.value }),
+          (error) => ({ error: String(error).split("\n")[0] })
+        )),
       });
-      const evaluated = [];
-      for (const [index, { shape, code, same }] of cases.entries()) {
-        // 같은 경로를 다시 쓰면 ESM 캐시가 앞 값의 모듈을 돌려주므로 값마다 다른 파일 이름을 쓴다.
-        const file = path.join(
-          folder,
-          `case-${values.indexOf(entry)}-${index}.mjs`
-        );
-        writeFileSync(file, `${prelude}${code}`);
-        try {
-          const loaded = await import(pathToFileURL(file).href);
-          evaluated.push({ shape, same, value: loaded.value });
-        } catch (error) {
-          evaluated.push({ shape, same, error: String(error).split("\n")[0] });
-        }
-      }
-      const [canonical] = evaluated;
-      const name = value.module ?? `global ${value.global}`;
-      assert.equal(canonical.error, undefined, `${name}: ${canonical.error}`);
-      assert.notEqual(canonical.value, undefined, `${name}: no value`);
-      for (const each of evaluated.slice(1))
-        if (each.error)
-          wrong.push(
-            `${name} ${value.path.join(".")} ${each.shape}: ${each.error}`
-          );
-        else if ((each.value === canonical.value) !== each.same)
-          wrong.push(
-            `${name} ${value.path.join(".")} ${each.shape}: ${each.same ? "another value" : "the same value"}`
-          );
-    } finally {
-      rmSync(folder, { recursive: true, force: true });
     }
+    const [canonical] = evaluated;
+    const name = value.module ?? `global ${value.global}`;
+    assert.equal(canonical.error, undefined, `${name}: ${canonical.error}`);
+    assert.notEqual(canonical.value, undefined, `${name}: no value`);
+    for (const each of evaluated.slice(1))
+      if (each.error)
+        wrong.push(
+          `${name} ${value.path.join(".")} ${each.shape}: ${each.error}`
+        );
+      else if ((each.value === canonical.value) !== each.same)
+        wrong.push(
+          `${name} ${value.path.join(".")} ${each.shape}: ${each.same ? "another value" : "the same value"}`
+        );
   }
   assert.deepEqual(wrong, []);
 });
