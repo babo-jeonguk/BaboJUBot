@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
   lstat,
   mkdir,
-  readFile,
+  open,
   realpath,
   rename,
   writeFile,
@@ -10,6 +11,8 @@ import {
 import path from "node:path";
 import {
   artifactFileMaxBytes,
+  continueAfterFailure,
+  failureCode,
   orIfUnreadable,
   type ArtifactFileRead,
   type ArtifactFileRefusal,
@@ -510,18 +513,48 @@ export class Workspaces {
   }
 }
 
-/** 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. */
+/**
+ * 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. 종류·크기·내용을 한 번 연 파일 하나에서
+ * 보므로, 확인한 뒤 그 경로에 다른 것이 들어와도 연 파일의 내용으로 판정한다. POSIX에서는 `O_NOFOLLOW`로 링크를 열 때부터
+ * 거절하고, `O_NONBLOCK`으로 FIFO를 열 때 멈추지 않는다.
+ */
 async function readIdentity(file: string) {
-  let info;
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    info = await lstat(file);
+    handle = await open(
+      file,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0)
+    );
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = failureCode(e);
+    if (code === "ENOENT") return undefined;
+    if (code === "ELOOP" || code === "EISDIR") return null;
     throw identityBlocked("읽을", file, e);
   }
-  if (!info.isFile() || info.size > identityMaxBytes) return null;
   try {
-    const value: unknown = JSON.parse(await readFile(file, "utf8"));
+    const info = await handle.stat({ bigint: true });
+    if (!info.isFile() || info.size > BigInt(identityMaxBytes)) return null;
+    // Windows에는 O_NOFOLLOW가 없어 열기가 링크를 따라간다. 경로가 연 파일 자신을 가리키는지만 다시 확인해 링크를 거절한다.
+    if (constants.O_NOFOLLOW === undefined) {
+      const entry = await lstat(file, { bigint: true });
+      if (entry.dev !== info.dev || entry.ino !== info.ino) return null;
+    }
+    const buffer = Buffer.alloc(identityMaxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        length,
+        buffer.length - length,
+        length
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > identityMaxBytes) return null;
+    const value: unknown = JSON.parse(buffer.toString("utf8", 0, length));
     return typeof value === "object" &&
       value !== null &&
       "organizationId" in value &&
@@ -531,6 +564,14 @@ async function readIdentity(file: string) {
   } catch (e) {
     if (e instanceof SyntaxError) return null;
     throw identityBlocked("읽을", file, e);
+  } finally {
+    await continueAfterFailure(
+      () => handle.close(),
+      (error) =>
+        console.warn(
+          `[workspace] a file handle could not be closed (${failureCode(error)})`
+        )
+    );
   }
 }
 async function exists(target: string) {
